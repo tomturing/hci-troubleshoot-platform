@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-07-29
+last_updated: 2026-07-30
 owner: team
 update_trigger: Agent 层功能新增/重构/问题修复任务
 ---
@@ -15,7 +15,8 @@ update_trigger: Agent 层功能新增/重构/问题修复任务
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
-| 2026-07-29 | v2.1 | 完成 KBD 专家复核、不可变 Proposal/Expert/Bundle/Release、Capability Request/Registry、完整 Replay 与 7000+ 生命周期闭环方案和实施任务分解；当前待产品与架构确认，尚未实施业务逻辑 | [KBD专家复核与全生命周期闭环实施任务](./events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
+| 2026-07-30 | v2.2 | KBD 轻治理纵向切片已实施：复用现有审核页、最小 Proposal/Expert Revision、published maintenance working、Vision/Signal 专家编辑、静态 Validation、统一写门禁和 Capability Runtime Discovery。当前仍无可信 Admin SSO、真实 Agent replay、reason_code/评估导出；122 Proposal 尚未开始正式专家复核。 | [KBD专家复核与全生命周期闭环实施任务](./events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
+| 2026-07-29 | v2.1 | 原重治理方案归档；随后已按用户确认收敛为轻治理、自动化优先，不采用独立工作台、双审、多表 Release 或 Capability Registry | [KBD专家复核与全生命周期闭环实施任务](./events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
 | 2026-07-29 | v2.0 | 完成 222/222 Vision Evidence 数据库工程审计与 Agent 推断硬隔离；Signal Prompt 升级 v1.3/revision 8，补齐 rejected candidates、零信号 needs_review、保存时运行语义门禁、安全日志 basename 和诊断/处置 Contract 归一；新增 126 条分层验证报告 | [KBD截图证据与可执行诊断契约实施任务](./events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) |
 | 2026-07-29 | v1.9 | 原 39 条扩展为 126 条真实语料；126/126 来源、222 张图片与 52 条零图完整性通过；修复抓取失败标记、数据库 DSN 方言和 Vision Prompt 漂移；当时将 4 条工程 Contract fixture 简称 Gold，已由 v2.1 纠正，当前仍为 0/126 Expert Gold | [KBD截图证据与可执行诊断契约实施任务](./events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) |
 | 2026-07-28 | v1.7 | 完成 KBD 截图证据、信号抽取与案例自动验证的现状审计，确认关键信号为必要原子层，并规划 Evidence/Compiler/Replay/Case Verification Contract 分阶段实施 | [KBD截图证据与可执行诊断契约实施任务](./events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) |
@@ -33,7 +34,7 @@ update_trigger: Agent 层功能新增/重构/问题修复任务
 
 | 状态 | 任务 | 创建日期 | 关联方案 |
 |------|------|---------|---------|
-| 待确认（仅方案与任务归档；业务实现未开始） | [KBD 专家复核、版本治理与生产消费闭环](./events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) | 2026-07-29 | [完整方案](../../solution/agent/events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
+| 进行中（静态审核与维护发布闭环已完成；可信身份、真实 replay、评估数据闭环待实施；0/126 专家 Gold） | [KBD 专家复核、版本治理与生产消费闭环](./events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) | 2026-07-29 | [完整方案](../../solution/agent/events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
 | 进行中（126/126 来源完成；4 条工程 Contract fixture 仅 Decision Replay；0/126 专家 Gold） | [KBD 截图证据与可执行诊断契约](./events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) | 2026-07-28 | [系统级方案](../../solution/agent/events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) |
 | ✅ 已完成 | KBD 27123 三信号执行闭环与 39 MB 大输出边缘筛选 | 2026-07-27 | [KBD27123三信号执行闭环方案](../../solution/events/2026-07-27-KBD27123三信号执行闭环方案.md) |
 | 进行中 | [Agent 可靠性改造（4 阶段）](./Agent可靠性改造任务清单.md) | 2026-06-08 | [Agent 可靠性三方案对比分析](../../solution/agent/02-架构设计/Agent可靠性三方案对比分析.md) |

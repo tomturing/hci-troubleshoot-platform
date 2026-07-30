@@ -54,6 +54,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.kbd_entry import KbdEntry, KbdImage
+from app.services.kbd_mutation_guard import require_mutable_kbd
 
 logger = get_logger("kb-service-vision-processor")
 
@@ -916,10 +917,7 @@ async def reanalyze_kbd_images(
     # 6. 写入阶段：再开启一个 short-lived session 写入数据库（重新查询并更新）
     async with session_factory() as db_session:
         try:
-            entry_result = await db_session.execute(
-                select(KbdEntry).where(KbdEntry.id == kbd_entry_id)
-            )
-            kbd_entry = entry_result.scalar_one()
+            kbd_entry = await require_mutable_kbd(db_session, kbd_entry_id, for_update=True)
             old_images = list(kbd_entry.images_json or [])
             kbd_entry.images_json = images_json
             _mark_signal_generation_stale(kbd_entry)
@@ -936,10 +934,7 @@ async def reanalyze_kbd_images(
             # 连接可能已关闭，回滚后重新尝试一次
             await db_session.rollback()
             try:
-                entry_result = await db_session.execute(
-                    select(KbdEntry).where(KbdEntry.id == kbd_entry_id)
-                )
-                kbd_entry = entry_result.scalar_one()
+                kbd_entry = await require_mutable_kbd(db_session, kbd_entry_id, for_update=True)
                 old_images = list(kbd_entry.images_json or [])
                 kbd_entry.images_json = images_json
                 _mark_signal_generation_stale(kbd_entry)
@@ -1141,10 +1136,7 @@ async def reanalyze_single_image(
     # 4. 写入阶段：再开启一个 short-lived session 写入数据库（重新查询并更新，防止断线）
     async with session_factory() as db_session:
         try:
-            entry_result = await db_session.execute(
-                select(KbdEntry).where(KbdEntry.id == kbd_entry_id)
-            )
-            kbd_entry = entry_result.scalar_one()
+            kbd_entry = await require_mutable_kbd(db_session, kbd_entry_id, for_update=True)
 
             old_images = list(kbd_entry.images_json or [])
             # 更新 images_json（保留其他图片的描述，仅更新当前 seq）
@@ -1185,10 +1177,7 @@ async def reanalyze_single_image(
             )
             await db_session.rollback()
             try:
-                entry_result = await db_session.execute(
-                    select(KbdEntry).where(KbdEntry.id == kbd_entry_id)
-                )
-                kbd_entry = entry_result.scalar_one()
+                kbd_entry = await require_mutable_kbd(db_session, kbd_entry_id, for_update=True)
                 old_images = list(kbd_entry.images_json or [])
                 images_json = [dict(item) for item in (kbd_entry.images_json or [])]
                 section = old_section

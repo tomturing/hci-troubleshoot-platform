@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-30 | v3.39 | **KBD Capability 运行时发现**：Agent 新增内部只读探测端点，按当前进程真实状态报告 QKV/QFK Validator、HandlerRegistry、Terminal Bridge Executor 和 usable；Gateway 与 shared Descriptor 合并，Agent 不可达时保持 unknown。该状态用于平台诊断，不再冒充专家可处理的逐 KBD 告警。 | [KBD 轻治理闭环方案](../../solution/agent/events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
 | 2026-07-30 | v3.38 | **PR #644：qfk_log 统一契约与 KBD Pipeline 收敛**：将日志信号审计领域逻辑迁入 `data-pipeline/kbd/log_signal_audit.py`，通过唯一 `kbd.run` 入口统一关键信号抽取和只读审计；KBD DAG 扩展为 FETCH→IMPORT→VISION→CLASSIFY→EXTRACT_SIGNALS→AUDIT_LOG_SIGNALS；qfk_log、qkv_dialog、aCLI/运行时能力边界与专家复核清单同步固化。 | [qfk_log统一日志采集解析与判定设计](../../solution/agent/02-架构设计/qfk_log统一日志采集解析与判定设计.md) |
 | 2026-07-29 | v3.37 | **HCI/aCLI 实机契约审计与 PR #641 CI 收敛**：完成 HCI 6.11.1_R1 + aCLI 1.0.0 的只读知识采集；修复 Signal Schema 合法 fixture 的 `file/path` 旧写法并增加完整路径反例；形成日志、blackbox、配置、数据、补丁、容器、设备 manifest、自观测污染与能力漂移基线。运行语义改造在用户确认后分 P0-P4 实施。关联：[HCI底层目录日志容器与aCLI知识基线](../../solution/agent/02-架构设计/HCI底层目录日志容器与aCLI知识基线.md) |
 | 2026-07-29 | v3.36 | **Terminal Bridge 真实入口 P0 修复**：删除普通 Markdown `CommandBlock → ssh_input` 自动执行旁路；S0 在 LLM 前拒绝显式命令执行请求并阻断无工具证据的伪造输出；Alloy 固化资源、探针、指标抓取与流水线告警。状态：自动化回归已启动，真实 S1/ReAct 正向与 S0/Markdown 负向验收通过前不得宣称完整可观测，也不得进入 hci-sim。 |

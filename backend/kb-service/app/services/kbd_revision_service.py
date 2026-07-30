@@ -136,8 +136,43 @@ async def ensure_kbd_revision(
     Pipeline/审核 API 从不同入口并发创建 revision。
     """
 
-    await session.execute(select(func.pg_advisory_xact_lock(kbd.id)))
     payload = build_kbd_revision_payload(kbd)
+    return await ensure_kbd_revision_payload(
+        session,
+        kbd=kbd,
+        payload=payload,
+        revision_type=revision_type,
+        actor_type=actor_type,
+        actor_id=actor_id,
+        parent_revision_id=parent_revision_id,
+        generation_metadata=generation_metadata,
+        validation_summary=validation_summary,
+        trace_id=trace_id,
+        reuse_existing=reuse_existing,
+    )
+
+
+async def ensure_kbd_revision_payload(
+    session: AsyncSession,
+    *,
+    kbd: KbdEntry,
+    payload: dict[str, Any],
+    revision_type: RevisionType,
+    actor_type: ActorType,
+    actor_id: str | None = None,
+    parent_revision_id: int | None = None,
+    generation_metadata: dict[str, Any] | None = None,
+    validation_summary: dict[str, Any] | None = None,
+    trace_id: str | None = None,
+    reuse_existing: bool = True,
+) -> KbdRevision:
+    """基于显式 payload 创建 revision。
+
+    已发布维护时 ``kbd_entry`` 必须继续代表当前生效内容，因此工作稿不能先覆盖主记录；
+    该入口允许直接冻结独立 payload，并沿用同一套 checksum、head 和历史规则。
+    """
+
+    await session.execute(select(func.pg_advisory_xact_lock(kbd.id)))
     checksum = payload_checksum(payload)
 
     revision = None
@@ -181,6 +216,15 @@ async def ensure_kbd_revision(
         kbd.working_revision_id = revision.id
     await session.flush()
     return revision
+
+
+def apply_kbd_revision_payload(kbd: KbdEntry, payload: dict[str, Any]) -> None:
+    """将已通过校验的 revision payload 应用到兼容主记录。"""
+
+    for field in KBD_PAYLOAD_FIELDS:
+        if field in payload:
+            setattr(kbd, field, payload[field])
+    kbd.entry_metadata = payload.get("metadata") or {}
 
 
 def revision_metadata(revision: KbdRevision | None) -> dict[str, Any] | None:

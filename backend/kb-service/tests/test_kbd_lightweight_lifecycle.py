@@ -2,45 +2,39 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import app.routes.admin as admin_route
-from app.routes.admin import kbd_router, set_dependencies
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+import pytest
 
 
-def _client_with_session(session: AsyncMock) -> tuple[TestClient, MagicMock, object]:
-    app = FastAPI()
-    app.include_router(kbd_router)
+def _db_with_session(session: AsyncMock) -> MagicMock:
     db = MagicMock()
     session.__aenter__.return_value = session
     db.async_session_factory.return_value = session
-    original = admin_route._check_auth
-    admin_route._check_auth = lambda request: None
-    set_dependencies(db)
-    return TestClient(app), db, original
+    return db
 
 
-def test_published_entry_patch_is_blocked_before_unreviewed_content_can_replace_active():
+@pytest.mark.asyncio
+async def test_published_entry_patch_is_blocked_before_unreviewed_content_can_replace_active():
     session = AsyncMock()
     status_result = MagicMock()
     status_result.scalar_one_or_none.return_value = "published"
     session.execute.return_value = status_result
-    client, _, original_auth = _client_with_session(session)
+    db = _db_with_session(session)
 
-    try:
-        response = client.patch(
-            "/api/admin/kbd/9",
-            json={"title": "未经复核的新标题"},
-            headers={"Authorization": "Bearer test"},
-        )
-    finally:
-        admin_route._check_auth = original_auth
+    with patch.object(admin_route, "_check_auth"), patch.object(admin_route, "_db_manager", db):
+        with pytest.raises(admin_route.HTTPException) as exc_info:
+            await admin_route.update_kbd_entry(
+                MagicMock(),
+                9,
+                admin_route.KbdUpdateRequest(title="未经复核的新标题"),
+            )
 
-    assert response.status_code == 409
-    assert "不能直接覆盖编辑" in response.json()["detail"]
+    assert exc_info.value.status_code == 409
+    assert "不能直接覆盖编辑" in exc_info.value.detail
     assert all("UPDATE kbd_entry" not in str(call.args[0]) for call in session.execute.call_args_list)
 
 
-def test_revert_to_draft_deactivates_existing_runtime_pointer_in_same_transaction():
+@pytest.mark.asyncio
+async def test_revert_to_draft_deactivates_existing_runtime_pointer_in_same_transaction():
     session = AsyncMock()
     select_result = MagicMock()
     select_result.mappings.return_value.first.return_value = {"id": 9, "status": "published"}
@@ -48,25 +42,20 @@ def test_revert_to_draft_deactivates_existing_runtime_pointer_in_same_transactio
     delete_result = MagicMock()
     delete_result.rowcount = 1
     session.execute.side_effect = [select_result, update_result, delete_result]
-    client, _, original_auth = _client_with_session(session)
+    db = _db_with_session(session)
 
-    try:
-        response = client.post(
-            "/api/admin/kbd/9/revert-to-draft",
-            headers={"Authorization": "Bearer test"},
-        )
-    finally:
-        admin_route._check_auth = original_auth
+    with patch.object(admin_route, "_check_auth"), patch.object(admin_route, "_db_manager", db):
+        response = await admin_route.revert_kbd_to_draft(MagicMock(), 9)
 
-    assert response.status_code == 200
-    assert response.json()["active_deactivated"] is True
+    assert response["active_deactivated"] is True
     delete_sql = str(session.execute.call_args_list[2].args[0])
     assert "DELETE FROM dynamic_resource_active" in delete_sql
     assert session.execute.call_args_list[2].args[1] == {"resource_name": "9"}
     session.commit.assert_awaited_once()
 
 
-def test_candidate_validation_is_side_effect_free_and_separates_contract_from_runtime_proof():
+@pytest.mark.asyncio
+async def test_candidate_validation_is_side_effect_free_and_separates_contract_from_runtime_proof():
     session = AsyncMock()
     session.get.return_value = SimpleNamespace(
         id=9,
@@ -91,22 +80,17 @@ def test_candidate_validation_is_side_effect_free_and_separates_contract_from_ru
             ],
         },
     )
-    client, _, original_auth = _client_with_session(session)
+    db = _db_with_session(session)
 
-    try:
-        response = client.post(
-            "/api/admin/kbd/9/validate",
-            headers={"Authorization": "Bearer test"},
-        )
-    finally:
-        admin_route._check_auth = original_auth
+    with patch.object(admin_route, "_check_auth"), patch.object(admin_route, "_db_manager", db):
+        body = await admin_route.validate_kbd_candidate(MagicMock(), 9)
 
-    assert response.status_code == 200
-    body = response.json()
     assert body["publishable"] is True
     assert body["runtime_verified"] is False
-    assert body["warning_count"] == 1
-    assert body["issues"][0]["code"] == "CAPABILITY_RUNTIME_UNVERIFIED"
+    assert body["warning_count"] == 0
+    assert body["issues"] == []
+    assert body["platform_status"][0]["code"] == "CAPABILITY_RUNTIME_UNVERIFIED"
+    assert body["platform_status"][0]["expert_action_required"] is False
     session.commit.assert_not_awaited()
 
 

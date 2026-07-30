@@ -408,6 +408,18 @@ async def ingest_kbd_entry(request: Request, body: KbdIngestRequest):
             # 已存在记录的处理逻辑
             existing_status = existing_entry.status
 
+            # Pipeline 重跑也不能成为已发布内容的旁路写入口。模型/转换器的新结果应先
+            # 形成 Proposal 或维护工作稿，再由专家显式发布；当前 active 必须保持稳定。
+            if body.override and existing_status == "published":
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "KBD_MAINTENANCE_WORKING_REQUIRED",
+                        "message": "已发布 KBD 禁止由 ingest 直接覆盖，请通过维护工作稿复核后发布",
+                        "agent_active_unchanged": True,
+                    },
+                )
+
             if body.override:
                 # 检查状态是否允许覆盖
                 status_allowed = (

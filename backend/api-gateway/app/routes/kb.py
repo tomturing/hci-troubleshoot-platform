@@ -313,10 +313,40 @@ async def kbd_convert_safe_pipeline_proxy(request: Request):
 
 @kbd_router.get("/capabilities")
 async def kbd_capabilities_proxy(request: Request):
-    """代理代码生成的 KBD Capability Descriptor；不读取可热编辑 Registry。"""
+    """合并共享参数契约与 Agent 当前 Pod 的真实运行时发现结果。"""
     headers = _internal_auth_headers()
     response = await _kbd_proxy("GET", "/capabilities", headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    if response.status_code >= 400:
+        return JSONResponse(content=response.json(), status_code=response.status_code)
+    document = response.json()
+    runtime_document = None
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            runtime_response = await client.get(
+                f"{settings.AGENT_SERVICE_URL}/internal/capabilities",
+                headers=headers,
+            )
+            if runtime_response.status_code == 200:
+                runtime_document = runtime_response.json()
+    except httpx.RequestError as exc:
+        logger.warning(event="agent_capability_discovery_unavailable", error=str(exc))
+
+    runtime_by_id = {
+        item["capability_id"]: item
+        for item in (runtime_document or {}).get("capabilities", [])
+        if isinstance(item, dict) and item.get("capability_id")
+    }
+    for descriptor in document.get("capabilities", []):
+        runtime = runtime_by_id.get(descriptor.get("capability_id"))
+        if runtime:
+            descriptor["runtime_status"] = runtime["runtime_status"]
+            descriptor["verification_status"] = "runtime_discovered"
+            descriptor["runtime"] = runtime
+    document["runtime_discovery"] = {
+        "status": "available" if runtime_document else "unavailable",
+        "service": (runtime_document or {}).get("service"),
+    }
+    return JSONResponse(content=document, status_code=200)
 
 
 @kbd_router.get("/{kbd_id}/revisions")
@@ -367,6 +397,46 @@ async def kbd_update_proxy(kbd_id: int, request: Request):
     body = await request.json()
     headers = _internal_auth_headers()
     response = await _kbd_proxy("PATCH", f"/{kbd_id}", payload=body, headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@kbd_router.post("/{kbd_id}/maintenance")
+async def kbd_create_maintenance_proxy(kbd_id: int, request: Request):
+    """创建已发布 KBD 的独立维护工作稿。"""
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", f"/{kbd_id}/maintenance", headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@kbd_router.patch("/{kbd_id}/maintenance")
+async def kbd_update_maintenance_proxy(kbd_id: int, request: Request):
+    """保存维护工作稿，不切换 Agent active。"""
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("PATCH", f"/{kbd_id}/maintenance", payload=body, headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@kbd_router.delete("/{kbd_id}/maintenance")
+async def kbd_discard_maintenance_proxy(kbd_id: int, request: Request):
+    """放弃维护工作稿，Agent active 保持不变。"""
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("DELETE", f"/{kbd_id}/maintenance", headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@kbd_router.post("/{kbd_id}/maintenance/publish")
+async def kbd_publish_maintenance_proxy(kbd_id: int, request: Request):
+    """发布维护工作稿并原子切换 Agent active。"""
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy(
+        "POST",
+        f"/{kbd_id}/maintenance/publish",
+        payload=body,
+        headers=headers,
+        timeout=120.0,
+    )
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 

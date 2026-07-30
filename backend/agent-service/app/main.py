@@ -46,6 +46,7 @@ from app.adapters.agents.ops.ops_agent_adapter import OpsAgentAdapter
 from app.config import settings
 from app.routes.agent import router as agent_router_route
 from app.routes.agent import set_agent_router, set_confirm_service
+from app.routes.capabilities import router as capabilities_router
 
 if TYPE_CHECKING:
     from app.adapters.clients.acli_client import AcliClient
@@ -640,6 +641,7 @@ register_exception_handlers(app)
 
 # 路由挂载
 app.include_router(agent_router_route)
+app.include_router(capabilities_router)
 
 
 @app.get("/health/live")

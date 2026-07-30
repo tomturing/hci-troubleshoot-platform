@@ -15,6 +15,7 @@ update_trigger: Agent 方案新增、重构或状态变更
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |---|---|---|---|
+| 2026-07-30 | v1.4 | 完成 KBD 专家主路径信息分层、独立维护工作稿和 Agent Capability Runtime Discovery；明确静态 Validation、未认证审核身份与真实 Expert Gold/replay 的边界 | [KBD 专家复核与全生命周期闭环方案](events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
 | 2026-07-30 | v1.3 | 补齐 hci-real/hci-sim 双轨、Go SSH 容器运行时、K3s 独立部署与 100+ Scenario 并发设计导航 | [HCI 真实环境与 hci-sim 双轨运行时设计](events/2026-07-30-HCI真实环境与hci-sim双轨运行时设计.md) |
 | 2026-07-29 | v1.2 | 新增 HCI 6.11.1_R1 + aCLI 1.0.0 实机知识基线，明确日志、配置、数据、补丁、容器、aCLI 与 QKV/QFK 的事实边界和待确认演进 | [HCI 底层目录、日志、容器与 aCLI 知识基线](02-架构设计/HCI底层目录日志容器与aCLI知识基线.md) |
 | 2026-07-29 | v1.1 | 新增 KBD 专家复核、不可变版本、Capability Registry 与全生命周期闭环方案导航 | [KBD 专家复核与全生命周期闭环方案](events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |

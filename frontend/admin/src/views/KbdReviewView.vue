@@ -43,6 +43,8 @@ interface KbdEntry {
   latest_proposal_revision_id?: number | null
   working_revision_id?: number | null
   lock_version?: number
+  maintenance_working?: boolean
+  review_view?: 'entry' | 'maintenance_working'
 }
 
 interface RevisionMetadata {
@@ -77,7 +79,14 @@ interface CandidateValidation {
   runtime_verified: boolean
   error_count: number
   warning_count: number
-  issues: Array<{ level: string; code: string; location: string; message: string }>
+  issues: Array<{
+    level: string
+    code: string
+    location: string
+    message: string
+    action?: { type: string; signal_id?: string; suggested_tool?: string }
+  }>
+  platform_status?: Array<Record<string, unknown>>
 }
 
 // ============ 关键信号 v2 数据模型（RFC §7 前端原生读 v2 对象化，2026-07-22） ============
@@ -249,6 +258,9 @@ const { categoryOptions, categoriesLoading, fetchCategories } = useCategories()
 const detailDialogVisible = ref(false)
 const detailFullscreen = ref(false)
 const detailEntry = ref<KbdEntry | null>(null)
+const canEditCurrent = computed(() =>
+  detailEntry.value?.status !== 'published' || Boolean(detailEntry.value?.maintenance_working),
+)
 const reviewNote = ref('')
 const editableCategoryId = ref('')
 
@@ -280,6 +292,19 @@ interface ParsedImageJson {
   expanded: boolean
 }
 const parsedImagesJson = ref<ParsedImageJson[]>([])
+interface ImageEditDraft {
+  seq: number
+  section: string
+  background: string
+  screenshotType: string
+  fullText: string
+  description: string
+  observedFacts: string
+  inferences: string
+}
+const editingImageSeq = ref<number | null>(null)
+const imageEditDraft = ref<ImageEditDraft | null>(null)
+const imageSaveLoading = ref(false)
 const revisionState = ref<KbdRevisionState | null>(null)
 const revisionLoading = ref(false)
 const capabilityMap = ref<Record<string, CapabilityDescriptor>>({})
@@ -292,8 +317,36 @@ const rejectingEntry = ref<KbdEntry | null>(null)
 const rejectNote = ref('')
 const rejectLoading = ref(false)
 
-// 审核人 ID（实际项目中应来自登录态，当前临时使用 1）
-const currentUser = ref(1)
+// 当前部署尚未接入 Admin SSO。不得再用固定 currentUser=1 冒充真实专家；在发布/拒绝
+// 等形成审核事实前，显式要求操作者填写其审核 ID，并由后端标记为 unverified。
+const savedReviewerId = Number(window.localStorage.getItem('hci-admin-reviewer-id') || 0)
+const currentUser = ref(Number.isInteger(savedReviewerId) && savedReviewerId > 0 ? savedReviewerId : 0)
+
+async function ensureReviewerIdentity(): Promise<number | null> {
+  if (currentUser.value > 0) return currentUser.value
+  try {
+    const result = await ElMessageBox.prompt(
+      '当前环境尚未接入 Admin SSO。请输入你的真实审核人 ID；系统会如实记录为“未认证身份”，不会把它冒充为已认证 Expert Gold。',
+      '填写审核身份',
+      {
+        confirmButtonText: '确认',
+        cancelButtonText: '取消',
+        inputPattern: /^[1-9]\d*$/,
+        inputErrorMessage: '审核人 ID 必须是正整数',
+      },
+    )
+    currentUser.value = Number(result.value)
+    window.localStorage.setItem('hci-admin-reviewer-id', String(currentUser.value))
+    return currentUser.value
+  } catch {
+    return null
+  }
+}
+
+async function changeReviewerIdentity() {
+  currentUser.value = 0
+  await ensureReviewerIdentity()
+}
 
 // 编辑弹窗
 const editDialogVisible = ref(false)
@@ -309,6 +362,21 @@ const editLoading = ref(false)
 // ──────────────────────────────────────────────────────────────────────────────
 const internalToken = import.meta.env.VITE_INTERNAL_API_TOKEN || 'hci-dev-internal-token'
 const authHeader = { Authorization: `Bearer ${internalToken}` }
+
+function kbdEditEndpoint(entry: KbdEntry): string {
+  return entry.maintenance_working
+    ? `/api/v1/kbd/${entry.id}/maintenance`
+    : `/api/v1/kbd/${entry.id}`
+}
+
+function applyMaintenanceResponse(entry: KbdEntry, responseBody: any): void {
+  if (!responseBody?.payload) return
+  Object.assign(entry, responseBody.payload)
+  entry.maintenance_working = true
+  entry.review_view = 'maintenance_working'
+  entry.working_revision_id = responseBody.working_revision_id
+  entry.lock_version = responseBody.lock_version
+}
 
 async function fetchPending() {
   loading.value = true
@@ -360,6 +428,7 @@ async function fetchPending() {
 
 
 async function handleApprove(entry: KbdEntry) {
+  if (!(await ensureReviewerIdentity())) return
   try {
     await ElMessageBox.confirm(
       `确认通过此 KBD 条目？\n\n「${entry.title}」`,
@@ -433,7 +502,7 @@ async function validateCurrentCandidate(options: { silent?: boolean } = {}) {
     candidateValidation.value = body
     if (!options.silent) {
       if (body.status === 'ok') ElMessage.success('当前专家稿校验通过')
-      else if (body.status === 'warning') ElMessage.warning(`无阻断错误，但有 ${body.warning_count} 条运行能力提示`)
+      else if (body.status === 'warning') ElMessage.warning(`有 ${body.warning_count} 项内容需要专家确认`)
       else ElMessage.error(`发现 ${body.error_count} 个阻断问题，请按提示修复`)
     }
   } catch (error) {
@@ -442,6 +511,16 @@ async function validateCurrentCandidate(options: { silent?: boolean } = {}) {
   } finally {
     candidateValidationLoading.value = false
   }
+}
+
+function handleValidationAction(issue: CandidateValidation['issues'][number]) {
+  const signalId = issue.action?.signal_id
+  if (!signalId) return
+  const index = signalList.value.findIndex((signal) => String(signal.id) === String(signalId))
+  if (index < 0) return
+  startEditSignal(index)
+  if (issue.action?.suggested_tool) onSignalToolChange(issue.action.suggested_tool)
+  ElMessage.info('已定位并按建议切换采集类型，请复核参数后保存')
 }
 
 function capabilityStatus(tool: string): 'declared' | 'missing' {
@@ -456,6 +535,7 @@ function openRejectDialog(entry: KbdEntry) {
 
 async function submitReject() {
   if (!rejectingEntry.value) return
+  if (!(await ensureReviewerIdentity())) return
   if (!rejectNote.value.trim()) {
     ElMessage.warning('请填写拒绝原因')
     return
@@ -734,6 +814,92 @@ async function openDetailDialog(entry: KbdEntry) {
   void validateCurrentCandidate({ silent: true })
 }
 
+async function refreshOpenedDetail(): Promise<void> {
+  if (!detailEntry.value) return
+  const response = await fetch(`/api/v1/kbd/${detailEntry.value.id}`, { headers: authHeader })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  const fresh = await response.json()
+  detailEntry.value = fresh
+  editableCategoryId.value = fresh.category_id || fresh.ai_category_id || ''
+  inlineContent.value = fresh.content_md || ''
+  parsedSegments.value = parseContentMd(fresh.content_md || '')
+  parsedImagesJson.value = parseImagesJson(fresh.images_json || [])
+  associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
+  await fetchRevisionState(fresh.id)
+  await validateCurrentCandidate({ silent: true })
+}
+
+async function createMaintenanceWorking() {
+  if (!detailEntry.value) return
+  try {
+    const response = await fetch(`/api/v1/kbd/${detailEntry.value.id}/maintenance`, {
+      method: 'POST',
+      headers: authHeader,
+    })
+    const body = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(body.detail?.message || body.detail || `HTTP ${response.status}`)
+    applyMaintenanceResponse(detailEntry.value, body)
+    await refreshOpenedDetail()
+    ElMessage.success('维护工作稿已创建；Agent 继续使用当前生效版')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '创建维护工作稿失败')
+  }
+}
+
+async function discardMaintenanceWorking() {
+  if (!detailEntry.value) return
+  try {
+    await ElMessageBox.confirm(
+      '确认放弃当前维护工作稿？历史 Revision 会保留，Agent 当前生效版不受影响。',
+      '放弃维护工作稿',
+      { type: 'warning', confirmButtonText: '确认放弃', cancelButtonText: '取消' },
+    )
+    const response = await fetch(`/api/v1/kbd/${detailEntry.value.id}/maintenance`, {
+      method: 'DELETE',
+      headers: authHeader,
+    })
+    const body = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`)
+    await refreshOpenedDetail()
+    ElMessage.success('维护工作稿已放弃，Agent 当前生效版未改变')
+  } catch (error) {
+    if ((error as { message?: string })?.message === 'cancel') return
+    ElMessage.error(error instanceof Error ? error.message : '放弃维护工作稿失败')
+  }
+}
+
+async function publishMaintenanceWorking() {
+  if (!detailEntry.value) return
+  if (!(await ensureReviewerIdentity())) return
+  try {
+    await validateCurrentCandidate()
+    if (!candidateValidation.value?.publishable) return
+    await ElMessageBox.confirm(
+      '确认发布当前维护工作稿？发布成功后 Agent 将原子切换到新版本；失败时继续使用旧版本。',
+      '发布维护版',
+      { type: 'success', confirmButtonText: '确认发布', cancelButtonText: '取消' },
+    )
+    const response = await fetch(`/api/v1/kbd/${detailEntry.value.id}/maintenance/publish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify({
+        reviewer_id: currentUser.value,
+        review_note: reviewNote.value || '',
+        category_id: editableCategoryId.value || null,
+        lock_version: detailEntry.value.lock_version,
+      }),
+    })
+    const body = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(body.detail?.message || body.detail || `HTTP ${response.status}`)
+    ElMessage.success('维护版已发布并生效')
+    await refreshOpenedDetail()
+    await fetchPending()
+  } catch (error) {
+    if ((error as { message?: string })?.message === 'cancel') return
+    ElMessage.error(error instanceof Error ? error.message : '发布维护版失败')
+  }
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // 关键信号面板（signals_json）：基于 v2 文档直接渲染/编辑（RFC §7 前端原生读 v2 对象化）
 // ──────────────────────────────────────────────────────────────────────────────
@@ -760,33 +926,124 @@ function isBackendSig(sig: SignalV2): boolean {
   return sigTool(sig).startsWith('qfk') || sig.provenance?.category === 'backend'
 }
 
-// 一个 KBD 的多条旧信号可能同时带有管道。各条修改在当前审核会话中暂存，仅当全部信号都通过严格 v2 校验后才会一次性持久化。
-const stagedSignalEdits = ref<Record<number, SignalV2>>({})
+// 一个 KBD 的多条旧信号可能同时带有管道。暂存区必须用稳定 Signal ID，而不是数组
+// 下标：专家排序或删除信号后，下标会变化，继续用下标会把草稿错误套到另一条信号。
+const stagedSignalEdits = ref<Record<string, SignalV2>>({})
+const newSignalId = ref<string | null>(null)
 
 function cloneSignal(signal: SignalV2): SignalV2 {
   return JSON.parse(JSON.stringify(signal)) as SignalV2
+}
+
+function signalStableId(signal: SignalV2, index: number): string {
+  if (!signal.id) {
+    signal.id = createSignalId()
+    signal.provenance = {
+      ...(signal.provenance || {}),
+      needs_review: true,
+      legacy_id_assigned: true,
+      legacy_display_position: index + 1,
+    }
+  }
+  return String(signal.id)
+}
+
+function createSignalId(): string {
+  const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID().replace(/-/g, '').slice(0, 12)
+    : Math.random().toString(36).slice(2, 14)
+  return `expert_${Date.now()}_${random}`
+}
+
+function schemaDefaultArgs(tool: string): Record<string, any> {
+  const schema = capabilityMap.value[tool]?.args_schema || {}
+  const args: Record<string, any> = {}
+  for (const [name, property] of Object.entries(schema.properties || {}) as Array<[string, Record<string, any>]>) {
+    if (property.default !== undefined) args[name] = cloneSignal(property.default as any)
+  }
+  return args
+}
+
+function defaultProduces(tool: string): Array<Record<string, any>> {
+  if (tool === 'qkv_dialog') {
+    return [
+      { name: 'END', path: 'end' },
+      { name: 'REQUEST_ID', path: 'request_id' },
+      { name: 'HOST', path: 'host' },
+    ]
+  }
+  if (tool === 'qkv_task') {
+    return [
+      { name: 'VM', path: 'vm' },
+      { name: 'HOST', path: 'host' },
+      { name: 'END', path: 'end' },
+    ]
+  }
+  if (tool === 'qkv_alert') {
+    return [
+      { name: 'HOST', path: 'host' },
+      { name: 'END', path: 'end' },
+    ]
+  }
+  return []
+}
+
+function buildSignalForTool(tool: string, previous?: SignalV2): SignalV2 {
+  const producer = tool.startsWith('qkv')
+  const oldArgs = previous?.acquire?.args || {}
+  const args = schemaDefaultArgs(tool)
+  if (typeof oldArgs.instruction === 'string') args.instruction = oldArgs.instruction
+  if (producer && typeof oldArgs.keyword === 'string') args.keyword = oldArgs.keyword
+  if (tool === 'qkv_task') args.is_failed = true
+  if (tool === 'qkv_dialog') {
+    args.paths = ['/sf/log/today', '/sf/log/today/vt']
+    args.context_lines ??= 2
+  }
+  return {
+    id: previous?.id || createSignalId(),
+    role: previous?.role || 'should',
+    acquire: { tool, args },
+    match: producer ? null : { type: 'keyword', pattern: '', mode: 'or', expected: true },
+    orchestrate: {
+      phase: previous?.orchestrate?.phase || 'diagnostic',
+      produces: producer ? defaultProduces(tool) : [],
+      requires: [],
+    },
+    provenance: {
+      ...(previous?.provenance || {}),
+      category: producer ? 'frontend' : 'backend',
+      needs_review: true,
+      expert_created: previous ? previous.provenance?.expert_created : true,
+    },
+    review: { require_human_confirm: true },
+  }
+}
+
+function onSignalToolChange(tool: string) {
+  signalEditDraft.value = buildSignalForTool(tool, signalEditDraft.value)
+  if (tool.startsWith('qfk')) syncDraftRequires()
 }
 
 function clearStagedSignalEdits() {
   stagedSignalEdits.value = {}
 }
 
-function discardStagedSignalEdit(index: number) {
-  if (!Object.prototype.hasOwnProperty.call(stagedSignalEdits.value, index)) return
+function discardStagedSignalEdit(signalId: string) {
+  if (!Object.prototype.hasOwnProperty.call(stagedSignalEdits.value, signalId)) return
   const next = { ...stagedSignalEdits.value }
-  delete next[index]
+  delete next[signalId]
   stagedSignalEdits.value = next
 }
 
 const stagedSignalEditCount = computed(() => Object.keys(stagedSignalEdits.value).length)
 
-function hasStagedSignalEdit(index: number): boolean {
-  return Object.prototype.hasOwnProperty.call(stagedSignalEdits.value, index)
+function hasStagedSignalEdit(signal: SignalV2, index: number): boolean {
+  return Object.prototype.hasOwnProperty.call(stagedSignalEdits.value, signalStableId(signal, index))
 }
 
 const signalList = computed<SignalV2[]>(() => {
   const source = (detailEntry.value?.signals_json as SignalsDoc | undefined)?.signals || []
-  return source.map((signal, index) => stagedSignalEdits.value[index] || signal)
+  return source.map((signal, index) => stagedSignalEdits.value[signalStableId(signal, index)] || signal)
 })
 const signalGenerationMetadata = computed<Record<string, any>>(
   () => (detailEntry.value?.signals_json as SignalsDoc | undefined)?.generation_metadata || {},
@@ -842,9 +1099,10 @@ const pipelineConvertLoading = ref(false)
 
 function stageCurrentSignalEdit() {
   if (editingSignalIndex.value === null) return
+  const signalId = signalStableId(signalEditDraft.value, editingSignalIndex.value)
   stagedSignalEdits.value = {
     ...stagedSignalEdits.value,
-    [editingSignalIndex.value]: cloneSignal(signalEditDraft.value),
+    [signalId]: cloneSignal(signalEditDraft.value),
   }
 }
 
@@ -998,13 +1256,134 @@ function setQfkOutputMode(mode: 'keyword' | 'produces') {
 }
 
 function cancelEditSignal() {
-  if (editingSignalIndex.value !== null) discardStagedSignalEdit(editingSignalIndex.value)
+  if (newSignalId.value && detailEntry.value?.signals_json) {
+    detailEntry.value.signals_json.signals = detailEntry.value.signals_json.signals.filter(
+      (signal) => String(signal.id) !== newSignalId.value,
+    )
+    newSignalId.value = null
+  }
+  if (editingSignalIndex.value !== null && signalEditDraft.value.id) {
+    discardStagedSignalEdit(String(signalEditDraft.value.id))
+  }
   editingSignalIndex.value = null
   signalEditDraft.value = {
     acquire: { tool: '', args: {} },
     match: { type: 'keyword', pattern: '', mode: 'or', expected: true },
     orchestrate: {},
   }
+}
+
+async function persistSignalList(list: SignalV2[], successMessage: string): Promise<boolean> {
+  if (!detailEntry.value) return false
+  const currentDoc = (detailEntry.value.signals_json || {}) as SignalsDoc
+  const payload: SignalsDoc = { ...currentDoc, schema_version: 2, signals: list.map(cloneSignal) }
+  const resp = await fetch(kbdEditEndpoint(detailEntry.value), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...authHeader },
+    body: JSON.stringify({ signals_json: payload, lock_version: detailEntry.value.lock_version }),
+  })
+  const responseBody = await resp.json().catch(() => ({}))
+  if (!resp.ok) {
+    const detail = typeof responseBody?.detail === 'string'
+      ? responseBody.detail
+      : responseBody?.detail?.message || `HTTP ${resp.status}`
+    throw new Error(detail)
+  }
+  applyMaintenanceResponse(detailEntry.value, responseBody)
+  const newDoc: SignalsDoc = responseBody?.payload?.signals_json || responseBody?.signals_json || payload
+  detailEntry.value.signals_json = newDoc
+  detailEntry.value.lock_version = responseBody?.lock_version ?? detailEntry.value.lock_version
+  const entryIndex = entries.value.findIndex((entry) => entry.id === detailEntry.value!.id)
+  if (entryIndex !== -1) entries.value[entryIndex].signals_json = newDoc
+  clearStagedSignalEdits()
+  newSignalId.value = null
+  void fetchRevisionState(detailEntry.value.id)
+  void validateCurrentCandidate({ silent: true })
+  ElMessage.success(successMessage)
+  return true
+}
+
+function addSignal(tool: string) {
+  if (!detailEntry.value) return
+  const doc = (detailEntry.value.signals_json || { schema_version: 2, signals: [] }) as SignalsDoc
+  const signal = buildSignalForTool(tool)
+  doc.signals = [...(doc.signals || []), signal]
+  detailEntry.value.signals_json = doc
+  newSignalId.value = String(signal.id)
+  startEditSignal(doc.signals.length - 1)
+  ElMessage.info('请补全新信号的必填项后保存')
+}
+
+async function deleteSignal(index: number) {
+  if (!detailEntry.value) return
+  const signal = signalList.value[index]
+  try {
+    await ElMessageBox.confirm(
+      `确认删除“${sigArgs(signal).instruction || sigTool(signal) || signalStableId(signal, index)}”？`,
+      '删除关键信号',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  signalSaveLoading.value = true
+  try {
+    await persistSignalList(signalList.value.filter((_, itemIndex) => itemIndex !== index), '关键信号已删除')
+    editingSignalIndex.value = null
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? `删除失败：${error.message}` : '删除失败，请重试')
+  } finally {
+    signalSaveLoading.value = false
+  }
+}
+
+async function duplicateSignal(index: number) {
+  const source = signalList.value[index]
+  if (!source) return
+  const duplicate = cloneSignal(source)
+  duplicate.id = createSignalId()
+  duplicate.provenance = { ...(duplicate.provenance || {}), expert_created: true, needs_review: true }
+  const list = signalList.value.map(cloneSignal)
+  list.splice(index + 1, 0, duplicate)
+  signalSaveLoading.value = true
+  try {
+    await persistSignalList(list, '已复制关键信号')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? `复制失败：${error.message}` : '复制失败，请重试')
+  } finally {
+    signalSaveLoading.value = false
+  }
+}
+
+async function moveSignal(index: number, direction: -1 | 1) {
+  const target = index + direction
+  if (target < 0 || target >= signalList.value.length) return
+  const list = signalList.value.map(cloneSignal)
+  ;[list[index], list[target]] = [list[target], list[index]]
+  signalSaveLoading.value = true
+  try {
+    await persistSignalList(list, '关键信号顺序已更新')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? `排序失败：${error.message}` : '排序失败，请重试')
+  } finally {
+    signalSaveLoading.value = false
+  }
+}
+
+function restoreRejectedCandidate(candidate: unknown) {
+  if (!candidate || typeof candidate !== 'object' || !('acquire' in candidate)) {
+    ElMessage.error('该候选不是可编辑的 Signal 结构，无法直接恢复')
+    return
+  }
+  if (!detailEntry.value) return
+  const restored = cloneSignal(candidate as SignalV2)
+  restored.id = createSignalId()
+  restored.provenance = { ...(restored.provenance || {}), needs_review: true, expert_restored: true }
+  const doc = detailEntry.value.signals_json as SignalsDoc
+  doc.signals = [...(doc.signals || []), restored]
+  newSignalId.value = String(restored.id)
+  startEditSignal(doc.signals.length - 1)
+  ElMessage.info('候选已恢复为编辑草稿，请复核并保存')
 }
 
 async function saveSignalEdit() {
@@ -1056,38 +1435,7 @@ async function saveSignalEdit() {
       ElMessage.error(`已暂存本条修改；仍有含 Shell 管道的信号：${targets.join('、')}。请点击该卡片的“编辑”逐条修复，再保存。`)
       return
     }
-    // 回写完整 v2 文档（后端 update_kbd_entry 幂等归约），不再发扁平 list
-    const currentDoc = (detailEntry.value.signals_json || {}) as SignalsDoc
-    // 手工编辑只替换 signals，必须保留 Contract、生成指纹和拒绝候选审计记录。
-    // 后端会把 generation_metadata.status 收敛为 manual_reviewed。
-    const payload: SignalsDoc = { ...currentDoc, schema_version: 2, signals: list }
-    const resp = await fetch(`/api/v1/kbd/${detailEntry.value.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', ...authHeader },
-      body: JSON.stringify({ signals_json: payload, lock_version: detailEntry.value.lock_version }),
-    })
-    if (!resp.ok) {
-      let detail = `HTTP ${resp.status}`
-      try {
-        const errorBody = await resp.json()
-        if (typeof errorBody?.detail === 'string' && errorBody.detail.trim()) {
-          detail = errorBody.detail
-        }
-      } catch {
-        // 非 JSON 错误响应继续使用 HTTP 状态码提示
-      }
-      throw new Error(detail)
-    }
-    const updated = (await resp.json()) as any
-    const newDoc: SignalsDoc = updated?.signals_json || payload
-    detailEntry.value.signals_json = newDoc
-    detailEntry.value.lock_version = updated?.lock_version ?? detailEntry.value.lock_version
-    void fetchRevisionState(detailEntry.value.id)
-    void validateCurrentCandidate({ silent: true })
-    const idx = entries.value.findIndex((e) => e.id === detailEntry.value!.id)
-    if (idx !== -1) entries.value[idx].signals_json = newDoc
-    ElMessage.success('关键信号已保存')
-    clearStagedSignalEdits()
+    await persistSignalList(list, '关键信号已保存')
     cancelEditSignal()
   } catch (error) {
     const detail = error instanceof Error ? error.message : ''
@@ -1190,6 +1538,7 @@ async function handleRevertToDraft(entry: KbdEntry) {
 }
 
 async function handleRepublish(entry: KbdEntry) {
+  if (!(await ensureReviewerIdentity())) return
   try {
     await ElMessageBox.confirm(
       `确认重新发布此 KBD 条目？\n\n「${entry.title}」\n\n将重新生成 embedding 并发布。`,
@@ -1576,7 +1925,7 @@ async function saveInlineEdit() {
   }
   inlineEditLoading.value = true
   try {
-    const resp = await fetch(`/api/v1/kbd/${detailEntry.value.id}`, {
+    const resp = await fetch(kbdEditEndpoint(detailEntry.value), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...authHeader },
       body: JSON.stringify({ content_md: newContent, lock_version: detailEntry.value.lock_version }),
@@ -1584,7 +1933,8 @@ async function saveInlineEdit() {
     const responseBody = await resp.json().catch(() => ({}))
     if (!resp.ok) throw new Error(typeof responseBody?.detail === 'string' ? responseBody.detail : `HTTP ${resp.status}`)
     // 同步更新本地状态
-    detailEntry.value.content_md = newContent
+    applyMaintenanceResponse(detailEntry.value, responseBody)
+    detailEntry.value.content_md = responseBody.payload?.content_md ?? newContent
     detailEntry.value.lock_version = responseBody?.lock_version ?? detailEntry.value.lock_version
     void fetchRevisionState(detailEntry.value.id)
     void validateCurrentCandidate({ silent: true })
@@ -1702,6 +2052,100 @@ function parseImagesJson(images: ImageJsonItem[]): ParsedImageJson[] {
       expanded: false,
     }
   }).sort((a, b) => a.seq - b.seq)
+}
+
+function listToTextarea(items: string[]): string {
+  return items.join('\n')
+}
+
+function textareaToList(value: string): string[] {
+  return value.split('\n').map((item) => item.trim()).filter(Boolean)
+}
+
+function startEditImage(image: ParsedImageJson) {
+  editingImageSeq.value = image.seq
+  imageEditDraft.value = {
+    seq: image.seq,
+    section: image.section,
+    background: image.background,
+    screenshotType: image.typeInfo.label,
+    fullText: listToTextarea(image.fullText),
+    description: image.description === '（无描述）' ? '' : image.description,
+    observedFacts: listToTextarea(image.observedFacts),
+    inferences: listToTextarea(image.inferences),
+  }
+  image.expanded = true
+}
+
+function cancelEditImage() {
+  editingImageSeq.value = null
+  imageEditDraft.value = null
+}
+
+function formatExpertImageDesc(draft: ImageEditDraft): string {
+  const lines = textareaToList(draft.fullText)
+  return [
+    `BACKGROUND: ${draft.background || '其他'}`,
+    `TYPE: ${draft.screenshotType || '其他截图'}`,
+    'FULL_TEXT:',
+    ...(lines.length ? lines.map((line) => `- ${line}`) : ['- （无文字）']),
+    'DESCRIPTION:',
+    draft.description.trim() || '（无描述）',
+  ].join('\n')
+}
+
+async function saveImageEdit() {
+  if (!detailEntry.value || !imageEditDraft.value) return
+  const draft = imageEditDraft.value
+  const images = (detailEntry.value.images_json || []).map((item) => cloneSignal(item as any) as any as ImageJsonItem)
+  const index = images.findIndex((item) => item.seq === draft.seq)
+  if (index < 0) return
+  const evidence = (images[index].evidence && typeof images[index].evidence === 'object')
+    ? cloneSignal(images[index].evidence as any) as any
+    : {}
+  const regions = Array.isArray(evidence.regions) ? evidence.regions : []
+  const primaryRegion = regions[0] && typeof regions[0] === 'object' ? { ...regions[0] } : {}
+  primaryRegion.observed_facts = textareaToList(draft.observedFacts)
+  primaryRegion.inferences = textareaToList(draft.inferences)
+  evidence.regions = [primaryRegion, ...regions.slice(1)]
+  evidence.quality = {
+    ...(evidence.quality || {}),
+    status: 'manual_reviewed',
+    needs_review: false,
+    inference_status: 'expert_confirmed',
+    inference_needs_review: false,
+  }
+  images[index] = {
+    ...images[index],
+    section: draft.section,
+    desc: formatExpertImageDesc(draft),
+    evidence,
+  }
+  imageSaveLoading.value = true
+  try {
+    const resp = await fetch(kbdEditEndpoint(detailEntry.value), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify({ images_json: images, lock_version: detailEntry.value.lock_version }),
+    })
+    const body = await resp.json().catch(() => ({}))
+    if (!resp.ok) throw new Error(typeof body.detail === 'string' ? body.detail : body.detail?.message || `HTTP ${resp.status}`)
+    applyMaintenanceResponse(detailEntry.value, body)
+    detailEntry.value.images_json = body.payload?.images_json || body.images_json || images
+    detailEntry.value.content_md = body.payload?.content_md ?? body.content_md ?? detailEntry.value.content_md
+    detailEntry.value.lock_version = body.lock_version ?? detailEntry.value.lock_version
+    parsedImagesJson.value = parseImagesJson(detailEntry.value.images_json)
+    parsedSegments.value = parseContentMd(detailEntry.value.content_md || '')
+    associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
+    cancelEditImage()
+    void fetchRevisionState(detailEntry.value.id)
+    void validateCurrentCandidate({ silent: true })
+    ElMessage.success('截图识别内容已按专家修订保存')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '截图修订保存失败')
+  } finally {
+    imageSaveLoading.value = false
+  }
 }
 
 const metaKeys: (keyof KbdMetadata)[] = [
@@ -1980,10 +2424,12 @@ onMounted(() => {
               :style="{ marginLeft: '8px', color: confidenceColor(detailEntry.ai_category_conf) }"
             >{{ confidenceLabel(detailEntry.ai_category_conf) }}</span>
             <el-button
+              v-if="detailEntry.status !== 'published'"
               type="warning"
               size="small"
               style="margin-left: 8px;"
               :loading="reclassifyLoading === detailEntry.id"
+              :disabled="!canEditCurrent"
               @click="handleReclassify(detailEntry)"
               title="重新分类"
             >
@@ -2004,6 +2450,7 @@ onMounted(() => {
               placeholder="选择或搜索分类（如 虚拟机-001）"
               style="width: 280px"
               :loading="categoriesLoading"
+              :disabled="!canEditCurrent"
             >
               <el-option
                 v-for="cat in categoryOptions"
@@ -2024,15 +2471,33 @@ onMounted(() => {
 
         <div class="section-block" v-loading="revisionLoading">
           <div class="section-header-row">
-            <h4 class="section-title">版本、生效与即时校验</h4>
+            <h4 class="section-title">版本、生效与发布前检查</h4>
             <el-button
               size="small"
               type="primary"
               plain
               :loading="candidateValidationLoading"
               @click="validateCurrentCandidate()"
-            >验证当前内容</el-button>
+            >检查当前内容</el-button>
           </div>
+          <el-alert
+            v-if="detailEntry.status === 'published' && !detailEntry.maintenance_working"
+            type="info"
+            :closable="false"
+            show-icon
+            title="当前展示的是 Agent 生效版。要修改时请先创建维护工作稿；编辑期间 Agent 继续使用此版本。"
+            style="margin-bottom: 10px"
+          >
+            <el-button type="primary" size="small" @click="createMaintenanceWorking">创建维护工作稿</el-button>
+          </el-alert>
+          <el-alert
+            v-else-if="detailEntry.maintenance_working"
+            type="warning"
+            :closable="false"
+            show-icon
+            title="当前正在编辑维护工作稿；保存不会影响 Agent，只有点击“发布维护版”才会生效。"
+            style="margin-bottom: 10px"
+          />
           <el-descriptions :column="3" border size="small">
             <el-descriptions-item label="模型 Proposal">
               <span v-if="revisionState?.latest_proposal_revision_id">#{{ revisionState.latest_proposal_revision_id }}</span>
@@ -2050,27 +2515,27 @@ onMounted(() => {
             </el-descriptions-item>
           </el-descriptions>
           <div class="section-hint" style="margin-top: 8px">
-            保存只形成专家工作版本；只有“审核通过并发布”才切换 Agent 生效 revision。
+            保存只形成专家工作版本；只有“{{ detailEntry.maintenance_working ? '发布维护版' : '审核通过并发布' }}”才切换 Agent 生效版本。
             <template v-if="revisionState?.history?.[0]?.diff_from_parent?.length">
               当前专家稿相对基线修改 {{ revisionState.history[0].diff_from_parent.length }} 项。
             </template>
           </div>
-          <el-alert
-            v-if="candidateValidation"
-            :type="candidateValidation.status === 'error' ? 'error' : candidateValidation.status === 'warning' ? 'warning' : 'success'"
-            :closable="false"
-            show-icon
-            style="margin-top: 10px"
-            :title="candidateValidation.status === 'ok'
-              ? '当前内容静态校验通过'
-              : `发现 ${candidateValidation.error_count} 个错误、${candidateValidation.warning_count} 个运行能力提示`"
-          >
-            <ul v-if="candidateValidation.issues.length" class="validation-issue-list">
-              <li v-for="issue in candidateValidation.issues" :key="`${issue.code}-${issue.location}`">
-                <code>{{ issue.location }}</code>：{{ issue.message }}
-              </li>
-            </ul>
-          </el-alert>
+          <div v-if="candidateValidation" class="expert-validation-panel" :class="`is-${candidateValidation.status}`">
+            <div class="validation-summary">
+              <span class="validation-icon">{{ candidateValidation.status === 'error' ? '✕' : candidateValidation.status === 'warning' ? '!' : '✓' }}</span>
+              <div>
+                <strong>{{ candidateValidation.status === 'ok' ? '发布前静态检查已通过' : `有 ${candidateValidation.issues.length} 项需要专家处理` }}</strong>
+                <div class="section-hint">这里检查内容与参数契约，只显示可通过编辑当前 KBD 解决的问题；真实现场执行验证仍由 Agent 测试链路负责，平台部署状态不会混入专家待办。</div>
+              </div>
+            </div>
+            <div v-for="issue in candidateValidation.issues" :key="`${issue.code}-${issue.location}`" class="validation-issue">
+              <div class="validation-issue-content">
+                <strong>{{ issue.message }}</strong>
+                <code>{{ issue.location }}</code>
+              </div>
+              <el-button v-if="issue.action?.type === 'edit_signal'" type="primary" size="small" @click="handleValidationAction(issue)">定位并修改</el-button>
+            </div>
+          </div>
         </div>
 
         <!-- 元数据面板 -->
@@ -2090,11 +2555,30 @@ onMounted(() => {
           <div class="section-header-row">
             <h4 class="section-title">关键信号（QKV / QFK）</h4>
             <div class="section-actions">
-              <span class="section-hint">占位符统一为 &#123;&#123;VAR&#125;&#125; 大写；每条可编辑后 PATCH 回写</span>
+              <el-dropdown :disabled="!canEditCurrent" @command="(tool: string) => addSignal(tool)">
+                <el-button type="primary" size="small">新增信号</el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="qkv_task">任务信号 qkv_task</el-dropdown-item>
+                    <el-dropdown-item command="qkv_alert">告警信号 qkv_alert</el-dropdown-item>
+                    <el-dropdown-item command="qkv_dialog">纯弹框信号 qkv_dialog</el-dropdown-item>
+                    <el-dropdown-item divided command="qfk_log">日志信号 qfk_log</el-dropdown-item>
+                    <el-dropdown-item command="qfk_system">系统检查 qfk_system</el-dropdown-item>
+                    <el-dropdown-item command="qfk_service">服务检查 qfk_service</el-dropdown-item>
+                    <el-dropdown-item command="qfk_vm">虚拟机检查 qfk_vm</el-dropdown-item>
+                    <el-dropdown-item command="qfk_network">网络检查 qfk_network</el-dropdown-item>
+                    <el-dropdown-item command="qfk_storage">存储检查 qfk_storage</el-dropdown-item>
+                    <el-dropdown-item command="qfk_hardware">硬件检查 qfk_hardware</el-dropdown-item>
+                    <el-dropdown-item command="qfk_platform">平台检查 qfk_platform</el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
               <el-button
+                v-if="detailEntry.status !== 'published'"
                 type="warning"
                 size="small"
                 :loading="reextractSignalsLoading === detailEntry.id"
+                :disabled="!canEditCurrent"
                 @click="handleReextractSignals(detailEntry)"
                 title="用最新 Prompt 重新抽取关键信号抽取"
               >
@@ -2117,9 +2601,23 @@ onMounted(() => {
             show-icon
             title="正文、截图或工具契约已变化：当前 Signal/Contract 已过期，禁止自动执行；请重新抽取或完成人工复核。"
           />
-          <div v-if="signalGenerationMetadata.generation_fingerprint" class="section-hint generation-fingerprint">
-            generation={{ signalGenerationMetadata.generation_fingerprint }} · model={{ signalGenerationMetadata.model_id }} · prompt={{ signalGenerationMetadata.prompt_revision }}
+          <div v-if="signalGenerationMetadata.model_id" class="proposal-summary">
+            <span>AI Proposal：{{ signalGenerationMetadata.model_id }}</span>
+            <el-tag
+              size="small"
+              :type="signalGenerationMetadata.status === 'stale' ? 'danger' : signalGenerationMetadata.status === 'manual_reviewed' ? 'success' : 'info'"
+            >{{ signalGenerationMetadata.status === 'stale' ? '已过期' : signalGenerationMetadata.status === 'manual_reviewed' ? '已人工修改' : '未修改' }}</el-tag>
+            <span v-if="revisionState?.history?.[0]?.diff_from_parent?.length">
+              相对 AI Proposal 修改 {{ revisionState.history[0].diff_from_parent.length }} 项
+            </span>
           </div>
+          <details v-if="signalGenerationMetadata.generation_fingerprint" class="generation-trace-details">
+            <summary>生成追溯详情</summary>
+            <div><span>模型</span><code>{{ signalGenerationMetadata.model_id || '—' }}</code></div>
+            <div><span>Prompt 版本</span><code>{{ signalGenerationMetadata.prompt_revision || '—' }}</code></div>
+            <div><span>生成环境指纹</span><code>{{ signalGenerationMetadata.generation_fingerprint }}</code></div>
+            <div class="field-hint">用于问题追溯和模型评估，审核时通常无需处理。</div>
+          </details>
           <el-alert
             v-if="rejectedSignalCandidates.length > 0"
             type="warning"
@@ -2135,6 +2633,7 @@ onMounted(() => {
               :name="`rejected-${index}`"
             >
               <pre class="code rejected-candidate-json">{{ JSON.stringify(item.candidate, null, 2) }}</pre>
+              <el-button type="primary" size="small" @click="restoreRejectedCandidate(item.candidate)">恢复并编辑</el-button>
             </el-collapse-item>
           </el-collapse>
 
@@ -2142,20 +2641,19 @@ onMounted(() => {
           <div class="signal-group">
             <div class="signal-group-title">生产者信号（QKV：前端采集，写入变量池）</div>
             <el-empty v-if="producerSignals.length === 0" description="暂无生产者信号" :image-size="44" />
-            <div v-for="item in producerSignals" :key="'p-' + item.origIdx" class="signal-card">
+            <div v-for="item in producerSignals" :key="signalStableId(item.sig, item.origIdx)" class="signal-card">
               <div class="signal-card-head">
                 <el-tag size="small" type="success">{{ sigTool(item.sig) || 'qkv' }}</el-tag>
-                <el-tag
-                  size="small"
-                  :type="capabilityStatus(sigTool(item.sig)) === 'declared' ? 'info' : 'danger'"
-                  effect="plain"
-                >{{ capabilityStatus(sigTool(item.sig)) === 'declared' ? '契约已声明·运行待探测' : '能力未声明' }}</el-tag>
+                <el-tag v-if="capabilityStatus(sigTool(item.sig)) !== 'declared'" size="small" type="danger" effect="plain">能力未声明，请更换采集类型</el-tag>
                 <el-tag size="small" effect="plain">{{ sigRoleLabel(item.sig) }}</el-tag>
                 <el-tag v-if="sigProvenance(item.sig).needs_review" size="small" type="warning">需人工复核</el-tag>
-                <el-tag v-if="hasStagedSignalEdit(item.origIdx)" size="small" type="warning" effect="plain">已暂存</el-tag>
+                <el-tag v-if="hasStagedSignalEdit(item.sig, item.origIdx)" size="small" type="warning" effect="plain">已暂存</el-tag>
                 <div class="signal-card-actions">
-                  <el-button text size="small" @click="goToToolManage(sigTool(item.sig))">工具管理</el-button>
-                  <el-button v-if="editingSignalIndex !== item.origIdx" text type="primary" size="small" @click="startEditSignal(item.origIdx)">编辑</el-button>
+                  <el-button text size="small" :disabled="!canEditCurrent || item.origIdx === 0" @click="moveSignal(item.origIdx, -1)">上移</el-button>
+                  <el-button text size="small" :disabled="!canEditCurrent || item.origIdx === signalList.length - 1" @click="moveSignal(item.origIdx, 1)">下移</el-button>
+                  <el-button text size="small" :disabled="!canEditCurrent" @click="duplicateSignal(item.origIdx)">复制</el-button>
+                  <el-button text type="danger" size="small" :disabled="!canEditCurrent" @click="deleteSignal(item.origIdx)">删除</el-button>
+                  <el-button v-if="editingSignalIndex !== item.origIdx" text type="primary" size="small" :disabled="!canEditCurrent" @click="startEditSignal(item.origIdx)">编辑</el-button>
                   <template v-else>
                     <el-button text size="small" @click="cancelEditSignal">取消</el-button>
                     <el-button text type="primary" size="small" :loading="signalSaveLoading" @click="saveSignalEdit">保存</el-button>
@@ -2173,7 +2671,8 @@ onMounted(() => {
                 <div v-else>
                   <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" type="textarea" :rows="2" placeholder="信号说明，如 镜像文件占用检查" /></div>
                   <div class="field-hint">信号语义说明：用自然语言描述这个采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
-                  <div class="signal-row"><span class="signal-k">采集类型</span><span class="signal-v code">{{ sigTool(signalEditDraft) || 'qkv' }}</span><span class="signal-nature">{{ qkvNatureLabel(sigTool(signalEditDraft)) }}</span></div>
+                  <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据" value="must" /><el-option label="增强证据" value="should" /><el-option label="排除证据" value="exclude" /><el-option label="上下文" value="context" /></el-select></div>
+                  <div class="signal-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" @change="onSignalToolChange"><el-option label="任务 qkv_task" value="qkv_task" /><el-option label="告警 qkv_alert" value="qkv_alert" /><el-option label="纯弹框 qkv_dialog" value="qkv_dialog" /></el-select><span class="signal-nature">{{ qkvNatureLabel(sigTool(signalEditDraft)) }}</span></div>
                   <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.acquire.args.keyword" size="small" :placeholder="qkvKeywordPlaceholder(sigTool(signalEditDraft))" /></div>
                   <div v-if="sigTool(signalEditDraft) === 'qkv_alert'" class="field-hint">告警型关键字（acli alert get -k）：取自「分类基线 · 告警型故障」（标签以「告警」结尾），如 虚拟机CPU或内存占用过高告警、主机网口丢包告警、序列号过期告警。多个用逗号分隔</div>
                   <div v-else-if="sigTool(signalEditDraft) === 'qkv_task'" class="field-hint">任务失败型关键字（acli task get -k）：取自「分类基线 · 任务失败型故障」，如 虚拟机开机失败、虚拟机快照失败、虚拟机scmt迁移失败。多个用逗号分隔</div>
@@ -2207,20 +2706,19 @@ onMounted(() => {
           <div class="signal-group">
             <div class="signal-group-title">消费者信号（QFK：后端采集+判定，读取变量池）</div>
             <el-empty v-if="consumerSignals.length === 0" description="暂无消费者信号" :image-size="44" />
-            <div v-for="item in consumerSignals" :key="'c-' + item.origIdx" class="signal-card">
+            <div v-for="item in consumerSignals" :key="signalStableId(item.sig, item.origIdx)" class="signal-card">
               <div class="signal-card-head">
                 <el-tag size="small" type="warning">{{ sigTool(item.sig) || 'qfk' }}</el-tag>
-                <el-tag
-                  size="small"
-                  :type="capabilityStatus(sigTool(item.sig)) === 'declared' ? 'info' : 'danger'"
-                  effect="plain"
-                >{{ capabilityStatus(sigTool(item.sig)) === 'declared' ? '契约已声明·运行待探测' : '能力未声明' }}</el-tag>
+                <el-tag v-if="capabilityStatus(sigTool(item.sig)) !== 'declared'" size="small" type="danger" effect="plain">能力未声明，请更换采集类型</el-tag>
                 <el-tag size="small" effect="plain">{{ sigRoleLabel(item.sig) }}</el-tag>
                 <el-tag v-if="sigProvenance(item.sig).needs_review" size="small" type="warning">需人工复核</el-tag>
-                <el-tag v-if="hasStagedSignalEdit(item.origIdx)" size="small" type="warning" effect="plain">已暂存</el-tag>
+                <el-tag v-if="hasStagedSignalEdit(item.sig, item.origIdx)" size="small" type="warning" effect="plain">已暂存</el-tag>
                 <div class="signal-card-actions">
-                  <el-button text size="small" @click="goToToolManage(sigTool(item.sig))">工具管理</el-button>
-                  <el-button v-if="editingSignalIndex !== item.origIdx" text type="primary" size="small" @click="startEditSignal(item.origIdx)">编辑</el-button>
+                  <el-button text size="small" :disabled="!canEditCurrent || item.origIdx === 0" @click="moveSignal(item.origIdx, -1)">上移</el-button>
+                  <el-button text size="small" :disabled="!canEditCurrent || item.origIdx === signalList.length - 1" @click="moveSignal(item.origIdx, 1)">下移</el-button>
+                  <el-button text size="small" :disabled="!canEditCurrent" @click="duplicateSignal(item.origIdx)">复制</el-button>
+                  <el-button text type="danger" size="small" :disabled="!canEditCurrent" @click="deleteSignal(item.origIdx)">删除</el-button>
+                  <el-button v-if="editingSignalIndex !== item.origIdx" text type="primary" size="small" :disabled="!canEditCurrent" @click="startEditSignal(item.origIdx)">编辑</el-button>
                   <template v-else>
                     <el-button text size="small" @click="cancelEditSignal">取消</el-button>
                     <el-button text type="primary" size="small" :loading="signalSaveLoading" @click="saveSignalEdit">保存</el-button>
@@ -2291,6 +2789,8 @@ onMounted(() => {
                   <!-- 共有字段 -->
                   <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" placeholder="信号说明，如 镜像文件占用检查" /></div>
                   <div class="field-hint">信号语义说明：用自然语言描述这个检查/采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
+                  <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据" value="must" /><el-option label="增强证据" value="should" /><el-option label="排除证据" value="exclude" /><el-option label="上下文" value="context" /></el-select></div>
+                  <div class="signal-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" filterable @change="onSignalToolChange"><el-option label="日志 qfk_log" value="qfk_log" /><el-option label="系统 qfk_system" value="qfk_system" /><el-option label="服务 qfk_service" value="qfk_service" /><el-option label="虚拟机 qfk_vm" value="qfk_vm" /><el-option label="网络 qfk_network" value="qfk_network" /><el-option label="存储 qfk_storage" value="qfk_storage" /><el-option label="硬件 qfk_hardware" value="qfk_hardware" /><el-option label="平台 qfk_platform" value="qfk_platform" /></el-select></div>
                   <div class="signal-row"><span class="signal-k">主机</span><el-input v-model="signalEditDraft.acquire.args.host" size="small" placeholder="{{HOST}} 或 cluster" /></div>
                   <div class="field-hint" v-pre>采集目标主机，使用变量池占位符 {{HOST}}（由上游生产者信号产出）或固定值 cluster</div>
                   <!-- 容器与执行命令：位于输入/输出契约之前，先明确命令在哪里、执行什么。 -->
@@ -2470,7 +2970,7 @@ onMounted(() => {
             <h4 class="section-title">内容预览</h4>
             <div class="section-actions">
               <el-button
-                v-if="!editingContent"
+                v-if="!editingContent && canEditCurrent"
                 text type="primary" size="small"
                 @click="startInlineEdit"
               >✏️ 编辑原文</el-button>
@@ -2520,10 +3020,12 @@ onMounted(() => {
                     {{ seg.fields.intro.slice(0, 30) }}{{ seg.fields.intro.length > 30 ? '…' : '' }}
                   </span>
                   <el-button
+                    v-if="detailEntry.status !== 'published'"
                     type="warning"
                     size="small"
                     style="margin-right: 8px;"
                     :loading="reanalyzeSingleLoading?.kbdId === detailEntry.id && reanalyzeSingleLoading?.seq === seg.seq"
+                    :disabled="!canEditCurrent"
                     @click.stop="handleReanalyzeSingleImage(detailEntry, seg.seq !== undefined ? seg.seq : 0)"
                     title="重新识图此张"
                   >
@@ -2598,10 +3100,23 @@ onMounted(() => {
                     语义推断 {{ img.inferenceStatus }}
                   </el-tag>
                   <el-button
+                    v-if="editingImageSeq !== img.seq"
+                    type="primary"
+                    size="small"
+                    @click.stop="startEditImage(img)"
+                    :disabled="!canEditCurrent"
+                  >编辑识图内容</el-button>
+                  <template v-else>
+                    <el-button size="small" @click.stop="cancelEditImage">取消</el-button>
+                    <el-button type="primary" size="small" :loading="imageSaveLoading" @click.stop="saveImageEdit">保存修订</el-button>
+                  </template>
+                  <el-button
+                    v-if="detailEntry.status !== 'published'"
                     type="warning"
                     size="small"
                     style="margin-right: 8px;"
                     :loading="reanalyzeSingleLoading?.kbdId === detailEntry.id && reanalyzeSingleLoading?.seq === img.seq"
+                    :disabled="!canEditCurrent"
                     @click.stop="handleReanalyzeSingleImage(detailEntry, img.seq)"
                     title="重新识图此张"
                   >
@@ -2613,6 +3128,45 @@ onMounted(() => {
 
                 <!-- 展开内容 -->
                 <div v-if="img.expanded" class="screenshot-body">
+                  <template v-if="editingImageSeq === img.seq && imageEditDraft">
+                    <div class="image-evidence-editor">
+                      <label>所属章节</label>
+                      <el-select v-model="imageEditDraft.section" size="small">
+                        <el-option label="问题描述" value="problem_description" />
+                        <el-option label="告警信息" value="alert_info" />
+                        <el-option label="有效排查步骤" value="steps_text" />
+                        <el-option label="根因" value="root_cause" />
+                        <el-option label="解决方案" value="solution" />
+                        <el-option label="操作影响" value="operational_impact" />
+                        <el-option label="临时方案" value="is_temporary" />
+                        <el-option label="建议总结" value="recommendations" />
+                      </el-select>
+                      <label>截图类型</label>
+                      <el-select v-model="imageEditDraft.screenshotType" size="small">
+                        <el-option label="任务截图" value="任务截图" />
+                        <el-option label="告警截图" value="告警截图" />
+                        <el-option label="弹框截图" value="弹框截图" />
+                        <el-option label="终端截图" value="终端截图" />
+                        <el-option label="日志截图" value="日志截图" />
+                        <el-option label="配置截图" value="配置截图" />
+                        <el-option label="其他截图" value="其他截图" />
+                      </el-select>
+                      <label>背景</label>
+                      <el-select v-model="imageEditDraft.background" size="small">
+                        <el-option v-for="color in ['白色', '黑色', '灰色', '彩色', '其他']" :key="color" :label="color" :value="color" />
+                      </el-select>
+                      <label>截图可见文字</label>
+                      <el-input v-model="imageEditDraft.fullText" type="textarea" :rows="6" placeholder="每行一条，必须忠实记录截图可见文字" />
+                      <label>Observed Facts</label>
+                      <el-input v-model="imageEditDraft.observedFacts" type="textarea" :rows="4" placeholder="每行一条可直接观察事实，可用于生成关键信号" />
+                      <label>Inferences</label>
+                      <el-input v-model="imageEditDraft.inferences" type="textarea" :rows="3" placeholder="每行一条推断；不要把推断写成直接观察事实" />
+                      <label>语义描述</label>
+                      <el-input v-model="imageEditDraft.description" type="textarea" :rows="4" placeholder="这张截图对排障的含义" />
+                    </div>
+                    <el-alert type="info" :closable="false" show-icon title="保存后以专家修订作为有效 Evidence；模型原稿仍保留在 Revision 历史中用于对比评估。" />
+                  </template>
+                  <template v-else>
                   <!-- 1. 背景颜色 -->
                   <div class="ss-field">
                     <div class="ss-field-label">背景颜色</div>
@@ -2671,14 +3225,14 @@ onMounted(() => {
                       风险码：{{ img.inferenceIssues.join(', ') }}
                     </div>
                   </div>
-                  <div class="ss-field evidence-provenance">
-                    <div class="ss-field-label">Provenance</div>
-                    <div>image_sha256：<code>{{ img.provenance.image_sha256 || '—' }}</code></div>
-                    <div>vision_model：<code>{{ img.provenance.vision_model || '—' }}</code></div>
-                    <div>prompt_revision：<code>{{ img.provenance.prompt_revision || '—' }}</code></div>
-                    <div>transform：<code>{{ img.provenance.transform || '—' }}</code></div>
-                    <div v-if="Array.isArray(img.provenance.transforms)">source tiles：<code>{{ JSON.stringify(img.provenance.transforms) }}</code></div>
-                  </div>
+                  <details class="evidence-provenance">
+                    <summary>识图追溯详情</summary>
+                    <div>图片摘要：<code>{{ img.provenance.image_sha256 || '—' }}</code></div>
+                    <div>识图模型：<code>{{ img.provenance.vision_model || '—' }}</code></div>
+                    <div>Prompt 版本：<code>{{ img.provenance.prompt_revision || '—' }}</code></div>
+                    <div>图像变换：<code>{{ img.provenance.transform || '—' }}</code></div>
+                  </details>
+                  </template>
                 </div>
               </div>
             </template>
@@ -2688,6 +3242,12 @@ onMounted(() => {
         <!-- 审核备注 -->
         <div class="section-block">
           <h4 class="section-title">审核备注</h4>
+          <div class="reviewer-identity-row">
+            <span>审核记录身份：</span>
+            <strong>{{ currentUser > 0 ? `#${currentUser}` : '未填写' }}</strong>
+            <el-tag type="warning" size="small" effect="plain">未接入 SSO，不计为认证 Expert Gold</el-tag>
+            <el-button text type="primary" size="small" @click="changeReviewerIdentity">{{ currentUser > 0 ? '更换' : '填写' }}</el-button>
+          </div>
           <el-input
             v-model="reviewNote"
             type="textarea"
@@ -2706,6 +3266,13 @@ onMounted(() => {
         <template v-else-if="detailEntry && detailEntry.status === 'rejected'">
           <el-button type="warning" @click="handleRepublish(detailEntry)">重新发布</el-button>
           <el-button type="info" @click="handleRevertToDraft(detailEntry)">退回草稿</el-button>
+        </template>
+        <template v-else-if="detailEntry && detailEntry.status === 'published'">
+          <template v-if="detailEntry.maintenance_working">
+            <el-button type="danger" plain @click="discardMaintenanceWorking">放弃维护稿</el-button>
+            <el-button type="success" @click="publishMaintenanceWorking">发布维护版</el-button>
+          </template>
+          <el-button v-else type="primary" @click="createMaintenanceWorking">创建维护工作稿</el-button>
         </template>
         <template v-else-if="detailEntry">
           <el-button type="info" @click="handleRevertToDraft(detailEntry)">退回草稿</el-button>
@@ -3006,6 +3573,134 @@ onMounted(() => {
   margin: 8px 0;
   font-family: monospace;
   overflow-wrap: anywhere;
+}
+
+.proposal-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+  color: #606266;
+  font-size: 13px;
+}
+
+.generation-trace-details,
+.evidence-provenance {
+  margin: 8px 0;
+  color: #606266;
+  font-size: 12px;
+}
+
+.generation-trace-details summary,
+.evidence-provenance summary {
+  width: fit-content;
+  cursor: pointer;
+  color: #409eff;
+}
+
+.generation-trace-details > div,
+.evidence-provenance > div {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.expert-validation-panel {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid #b3e19d;
+  border-radius: 6px;
+  background: #f0f9eb;
+}
+
+.expert-validation-panel.is-warning {
+  border-color: #f3d19e;
+  background: #fdf6ec;
+}
+
+.expert-validation-panel.is-error {
+  border-color: #fab6b6;
+  background: #fef0f0;
+}
+
+.validation-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.validation-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  color: #fff;
+  background: #67c23a;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.is-warning .validation-icon { background: #e6a23c; }
+.is-error .validation-icon { background: #f56c6c; }
+
+.validation-issue {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 10px 0 0 30px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(144, 147, 153, 0.22);
+}
+
+.validation-issue-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.validation-issue-content code {
+  color: #909399;
+  font-size: 12px;
+}
+
+.image-evidence-editor {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.image-evidence-editor > label {
+  padding-top: 6px;
+  color: #606266;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.reviewer-identity-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: #606266;
+  font-size: 13px;
+}
+
+/* 选中态只改变颜色和背景，不改变文字尺寸/字重，避免切换时布局跳动。 */
+.signal-card :deep(.el-radio-button__inner) {
+  min-width: 96px;
+  height: 32px;
+  padding: 7px 15px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
 }
 
 /* 图片列表容器（images_json 渲染） */

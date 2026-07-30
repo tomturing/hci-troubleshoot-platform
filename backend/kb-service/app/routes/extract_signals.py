@@ -36,6 +36,7 @@ from shared.schemas.signal_schema import validate_signals_json
 from shared.utils.prompt_loader import StrictPromptLoader
 from sqlalchemy import select, text
 
+from app.services.kbd_mutation_guard import PublishedKbdMutationError, require_mutable_kbd
 from app.services.safe_pipeline_converter import (
     SafePipelineConversionError,
     apply_safe_pipeline_to_signal,
@@ -969,10 +970,14 @@ async def _persist_signals(
     )
     validate_signals_json(doc)
     async with db_manager.async_session_factory() as session:
-        await session.execute(
-            text(f"UPDATE {table} SET signals_json = CAST(:sj AS jsonb), updated_at = NOW() WHERE id = :id"),
-            {"sj": json.dumps(doc, ensure_ascii=False), "id": source_id},
-        )
+        if table == "kbd_entry":
+            entry = await require_mutable_kbd(session, source_id, for_update=True)
+            entry.signals_json = doc
+        else:
+            await session.execute(
+                text(f"UPDATE {table} SET signals_json = CAST(:sj AS jsonb), updated_at = NOW() WHERE id = :id"),
+                {"sj": json.dumps(doc, ensure_ascii=False), "id": source_id},
+            )
         await session.commit()
 
 
@@ -983,13 +988,17 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
     root_cause 与 solution 是抽取 OUTPUT（确认后返回给用户），不再作为信号抽取来源，
     从根上杜绝把"处置动作"（如 acli vm start / kill -9）误抽成诊断信号。
     """
-    from app.models.kbd_entry import KbdEntry
 
     async with db_manager.async_session_factory() as session:
-        result = await session.execute(select(KbdEntry).where(KbdEntry.id == kbd_id))
-        entry = result.scalar_one_or_none()
-        if entry is None:
-            raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
+        try:
+            entry = await require_mutable_kbd(session, kbd_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except PublishedKbdMutationError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "KBD_MAINTENANCE_WORKING_REQUIRED", "message": str(exc)},
+            ) from exc
 
         # StrictPromptLoader 会审计并 commit；在此之前复制所有字段，避免 session 关闭后
         # 访问 expired ORM 属性触发 async lazy-load / MissingGreenlet。
@@ -1061,15 +1070,21 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
         model_id=LLM_MODEL,
     )
 
-    await _persist_signals(
-        db_manager,
-        "kbd_entry",
-        kbd_id,
-        validated,
-        verification_contract,
-        generation_metadata,
-        rejected,
-    )
+    try:
+        await _persist_signals(
+            db_manager,
+            "kbd_entry",
+            kbd_id,
+            validated,
+            verification_contract,
+            generation_metadata,
+            rejected,
+        )
+    except PublishedKbdMutationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "KBD_MAINTENANCE_WORKING_REQUIRED", "message": str(exc)},
+        ) from exc
     logger.info(
         event="extract_signals_kbd_done",
         kbd_id=kbd_id,
