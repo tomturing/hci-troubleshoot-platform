@@ -20,10 +20,10 @@
     "container": {
       "type": "string",
       "enum": [
-        "host",
         "asv-con",
-        "vn-con",
+        "host",
         "vn-agent",
+        "vn-con",
         "vs-cp-manager"
       ],
       "default": "asv-con",

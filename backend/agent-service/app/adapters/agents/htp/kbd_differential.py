@@ -1056,12 +1056,28 @@ class KBDDiagnostic:
                             }
                         )
 
+                target_node_ip = env_context.get("node_ip")
+                if bsignal.host:
+                    resolved_host = await self._resolve_host_ip(
+                        bsignal.host,
+                        node_ip=target_node_ip,
+                        session_id=session_id,
+                    )
+                    if not self._is_ip_address(resolved_host):
+                        return (
+                            None,
+                            f"QFK_TARGET_HOST_UNRESOLVED: 无法把目标 HOST={bsignal.host} 解析为节点 IP，"
+                            "为避免在当前主机误查，已停止执行",
+                            None,
+                        )
+                    target_node_ip = str(resolved_host)
+
                 res = await qfk_exec(
                     signal=bsignal,
                     conversation_id=self._conversation_id or session_id,
-                    # QKV 生产者的 HOST 已归一化为节点 IP 时，QFK 必须路由到该节点；
-                    # 非 IP（如 cluster 或解析失败的旧主机名）继续使用环境上下文地址。
-                    node_ip=(bsignal.host if self._is_ip_address(bsignal.host) else env_context.get("node_ip")),
+                    # QKV 生产者的 HOST 或专家指定主机名已解析为节点 IP；解析失败会在
+                    # 上方 fail closed，绝不静默回退当前节点造成跨主机误查。
+                    node_ip=target_node_ip,
                     case_id=self._case_id,  # 透传工单 ID，确保 terminal_bridge 能路由到正确的 SSH 会话
                     exec_id=exec_id,
                     required_output_sources=required_output_sources,
@@ -1304,6 +1320,8 @@ class KBDDiagnostic:
                     "keyword": str(args.get("keyword", "")),
                     "is_failed": bool(args.get("is_failed", False)),
                     "limit": int(args.get("limit", 100)),
+                    "paths": args.get("paths", ["/sf/log/today", "/sf/log/today/vt"]),
+                    "context_lines": int(args.get("context_lines", 2)),
                     "produces": produces,
                 }
             )
@@ -1381,6 +1399,13 @@ class KBDDiagnostic:
             "file": args.get("file"),
             "path": args.get("path"),
             "time_window": args.get("time_window"),
+            "source_family": args.get("source_family", "auto"),
+            "parser": args.get("parser"),
+            "request_id": args.get("request_id"),
+            "context_lines": args.get("context_lines", 0),
+            "include_archives": args.get("include_archives", False),
+            "archive_precheck": args.get("archive_precheck"),
+            "matcher": matcher or None,
         }
 
         # qfk_service 契约用 resource_keyword(服务名)/command(动作)，而运行时 BackendSignal

@@ -18,9 +18,15 @@ from app.tools.qkv.signal import FrontendQueryType
 
 # ─── request_id 正则模式 ───────────────────────────────────────────────────────
 # 匹配格式如: request_id: ,a5ed4ad9340ce338ba1ac71d13ffcfb9
-_REQUEST_ID_PATTERN = re.compile(r"request_id[:\s]*,?([a-f0-9]{32})", re.IGNORECASE)
+_REQUEST_ID_PATTERN = re.compile(
+    r"request[_-]?id\s*(?::|=)\s*,?([a-f0-9]{32})",
+    re.IGNORECASE,
+)
 # 匹配格式如: trace":"a5ed4ad9340ce338ba1ac71d13ffcfb9:...
-_TRACE_ID_PATTERN = re.compile(r"trace['\"]?\s*:\s*['\"]([a-f0-9]{32})", re.IGNORECASE)
+_TRACE_ID_PATTERN = re.compile(
+    r"(?:trace|trace[_-]id)['\"]?\s*(?::|=)\s*['\"]?([a-f0-9]{32})",
+    re.IGNORECASE,
+)
 
 # ─── 日志时间正则模式 ───────────────────────────────────────────────────────
 # 格式1: [2026-07-21 22:09:43]
@@ -29,6 +35,8 @@ _LOG_TIME_BRACKET = re.compile(r"\[(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\]")
 _LOG_TIME_DOT = re.compile(r"(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\.\d+")
 # 格式3: 2026/07/21 10:10:45
 _LOG_TIME_SLASH = re.compile(r"(\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2})")
+# 格式4: 2026-07-21 10:10（少数弹框关联日志只精确到分钟）
+_LOG_TIME_MINUTE = re.compile(r"(?<!\d)(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})(?!:\d{2})")
 
 
 def _convert_timestamp(time_str: str | None) -> str:
@@ -107,6 +115,10 @@ def _extract_time_from_log_line(line: str) -> str:
     if match:
         return _convert_timestamp(match.group(1))
 
+    match = _LOG_TIME_MINUTE.search(line)
+    if match:
+        return f"{match.group(1)}:00"
+
     return ""
 
 
@@ -125,12 +137,26 @@ def _extract_from_dialog_log(stdout_text: str) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     seen_request_ids: set[str] = set()
 
-    for line in stdout_text.splitlines():
+    lines = [line for line in stdout_text.splitlines() if line.strip()]
+
+    def nearest_time(index: int) -> str:
+        """从命中行及其 aCLI context 邻行中确定事件 END，禁止使用当前系统时间猜测。"""
+
+        for distance in (0, 1, 2):
+            candidates = (index - distance, index + distance) if distance else (index,)
+            for candidate in candidates:
+                if 0 <= candidate < len(lines):
+                    value = _extract_time_from_log_line(lines[candidate])
+                    if value:
+                        return value
+        return ""
+
+    for index, line in enumerate(lines):
         if not line.strip():
             continue
 
         # 提取日志时间作为 end 字段
-        end_ts = _extract_time_from_log_line(line)
+        end_ts = nearest_time(index)
 
         # 尝试匹配 request_id
         match = _REQUEST_ID_PATTERN.search(line)
@@ -157,19 +183,21 @@ def _extract_from_dialog_log(stdout_text: str) -> list[dict[str, Any]]:
                     "line": line.strip(),
                 })
 
-    # 如果没有找到 request_id，返回原始行（带时间戳）
-    if not results:
-        return [
-            {
-                "line": line.strip(),
-                "end": _extract_time_from_log_line(line),
-                "description": line.strip(),
-            }
-            for line in stdout_text.splitlines()
-            if line.strip()
-        ][:10]
+    # 同一弹框文本可能重复出现；按 END 降序让当前/最近一次事件优先，避免依赖
+    # aCLI 的文件遍历顺序。仍返回全部候选，由 QKV limit 统一截断并在 Evidence 展示歧义。
+    if results:
+        results.sort(key=lambda item: str(item.get("end") or ""), reverse=True)
+        return results
 
-    return results[:10]  # 限制返回数量，避免过多数据
+    # 如果没有找到 request_id，返回原始行（带时间戳）。
+    return [
+        {
+            "line": line.strip(),
+            "end": _extract_time_from_log_line(line),
+            "description": line.strip(),
+        }
+        for line in lines
+    ]
 
 
 def parse_frontend_value(

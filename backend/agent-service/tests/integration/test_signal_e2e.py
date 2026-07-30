@@ -44,7 +44,7 @@ def test_qfk_log_command_build():
     assert "acli log get" in cmds[0]
     assert "-k" in cmds[0] and "iotimeout" in cmds[0]
     assert "sfvt_qemu" in cmds[0]
-    assert "/sf/log/3/" in cmds[0]
+    assert "-p /sf/log/3" in cmds[0]
     print("  ✅ 命令构建正确")
 
     # 案例 40652: 内核日志检查
@@ -59,7 +59,7 @@ def test_qfk_log_command_build():
     cmds2 = handler.build_commands(sig2)
     print("\n案例 40750 - 内核日志检查:")
     print(f"  命令: {cmds2[0]}")
-    assert "/sf/log/today/" in cmds2[0]
+    assert "-p /sf/log/today" in cmds2[0]
     assert "kernel.log" in cmds2[0]
     print("  ✅ 命令构建正确")
 

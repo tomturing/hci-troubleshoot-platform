@@ -1,18 +1,18 @@
 """
 QFK 信号处理器
 
-将 BackendSignal（v2 扁平运行模型）转换为 acli 命令行，并提供关键字评估（evaluate）。
+将 BackendSignal（v2 扁平运行模型）转换为 aCLI 命令行，并提供兼容关键字评估。
 
 路由：HandlerRegistry 按 namespace 字符串路由到对应处理器：
-- log          → LogKeywordHandler（日志关键字，grep -E 风格）
+- log          → LogKeywordHandler（统一日志源 Catalog + 结构化 matcher）
 - service      → ServiceHandler（acli service <container> <name> <action>）
 - system       → GenericSubCommandHandler
 - vm/network/storage/hardware/platform → GenericSubCommandHandler
 
 字段映射（与 acquirer_args 契约一致）：
 - command      → acli <namespace> <command>
-- file/path    → qfk_log 的 -f / -p
-- time_window  → qfk_log 的 -t
+- file/path/source_family/parser → qfk_log 的 Catalog 定位与解析
+- time_window/request_id/context_lines/include_archives → qfk_log 的 -t/-i/-c/-g
 - service/action → qfk_service 的 <container> <name> <action>
 - container    → qfk_system 的 terminal_bridge 执行位置（host 表示宿主机）
 注：host 不参与命令行构建--目标主机路由在传输层（engine.py 经 node_ip/case_id 由 terminal_bridge 选择 SSH 会话），BackendSignal.host 仅作运行时记录。
@@ -21,10 +21,16 @@ QFK 信号处理器
 import re
 import shlex
 
-from shared.schemas.acquirer_args import ALLOWED_LOG_PATH_PREFIXES, SAFE_LOG_FILE_PATTERN
+from shared.schemas.acquirer_args import SAFE_LOG_FILE_PATTERN, VALID_SERVICE_CONTAINERS
+from shared.schemas.log_source_catalog import (
+    LOG_MATCHER_TYPES,
+    REQUEST_ARTIFACT_ROOT,
+    normalize_absolute_log_time,
+    normalize_log_path,
+    resolve_log_source,
+)
 
 from app.tools.qfk.signal import (
-    VALID_SERVICE_CONTAINERS,
     BackendSignal,
 )
 
@@ -131,46 +137,130 @@ class BackendSignalHandler:
 
 
 class LogKeywordHandler(BackendSignalHandler):
+    """统一 qfk_log 命令构建器。
+
+    类名为兼容既有导入保留；实现已不限于 keyword。blackbox/whitebox 的差异只体现在
+    Catalog 的默认目录、parser 和允许 predicate，不再拆成独立工具。
+    """
+
+    @staticmethod
+    def _matcher_selector(signal: BackendSignal) -> tuple[str | None, bool, str]:
+        """返回 ``(selector, extended_regex, matcher_type)``。"""
+
+        matcher = signal.matcher or {}
+        matcher_type = str(matcher.get("type") or ("keyword" if signal.keyword else ""))
+        if matcher_type and matcher_type not in LOG_MATCHER_TYPES:
+            raise CommandBuildError(f"qfk_log 不支持 matcher.type={matcher_type}")
+
+        pattern = matcher.get("pattern")
+        if matcher_type == "keyword":
+            raw_items = pattern if isinstance(pattern, list) else [pattern] if pattern else signal.keyword
+            unique = sorted({str(item) for item in raw_items if str(item)})
+            if unique:
+                return "|".join(re.escape(item) for item in unique), True, matcher_type
+        elif matcher_type == "regex":
+            if not isinstance(pattern, str) or not pattern:
+                raise CommandBuildError("qfk_log regex matcher 必须提供非空 pattern")
+            if len(pattern) > 2048 or "\n" in pattern or "\r" in pattern:
+                raise CommandBuildError("qfk_log regex pattern 过长或包含换行")
+            return pattern, True, matcher_type
+        elif matcher_type == "state":
+            if not isinstance(pattern, str) or not pattern:
+                raise CommandBuildError("qfk_log state matcher 必须提供非空 pattern")
+            return re.escape(pattern), True, matcher_type
+        elif matcher_type in {"threshold", "delta", "trend"}:
+            metric = matcher.get("metric") or signal.resource_keyword
+            if not isinstance(metric, str) or not metric:
+                raise CommandBuildError(f"qfk_log {matcher_type} matcher 必须提供 metric")
+            return re.escape(metric), True, matcher_type
+        elif matcher_type == "exists":
+            return ".", True, matcher_type
+
+        # 产出变量信号没有 matcher 时，必须有 request_id 或受控行选择器，禁止整文件回传。
+        if signal.resource_keyword:
+            return re.escape(signal.resource_keyword), True, matcher_type or "producer"
+        if signal.request_id:
+            return None, False, matcher_type or "producer"
+        if signal.keyword:
+            raise CommandBuildError("关键字全部为空：至少需要一个非空关键字")
+        raise CommandBuildError("qfk_log 必须提供关键字 matcher、resource_keyword 或 request_id 以限制日志输出")
+
     def build_commands(self, signal: BackendSignal) -> list[str]:
-        keywords = signal.keyword or []
-
-        # 去重、跳空、按字母序排序，再 re.escape 为字面量子串
-        seen: set[str] = set()
-        unique: list[str] = []
-        for kw in keywords:
-            if not kw or kw in seen:
-                continue
-            seen.add(kw)
-            unique.append(kw)
-        if not unique:
-            if keywords:
-                raise CommandBuildError("关键字全部为空：至少需要一个非空关键字")
-            raise CommandBuildError("qfk_log 必须提供关键字（keyword）才能构建检索命令")
-
-        unique.sort()
-        pattern = "|".join(re.escape(kw) for kw in unique)
-
-        parts = ["acli", "log", "get", "-E", "-k", shlex.quote(pattern)]
-
-        # 日志路径（仅允许以 /sf/... 前缀开头，先于文件名校验触发以暴露越权）
-        if signal.path:
-            if not signal.path.startswith(ALLOWED_LOG_PATH_PREFIXES):
-                raise CommandBuildError(f"日志路径只允许以以下前缀开头: {ALLOWED_LOG_PATH_PREFIXES}")
-            parts.extend(["-p", shlex.quote(signal.path)])
-
-        # 日志文件名（file 字段）
         file = signal.file
-        if not file:
-            raise CommandBuildError("qfk_log 必须提供日志文件名（通过 file 字段）")
-        if "/" in file or "\\" in file:
-            raise CommandBuildError(f"日志文件名非法：不能包含路径分隔符：{file}")
-        if file in {".", ".."} or not re.fullmatch(SAFE_LOG_FILE_PATTERN, file):
-            raise CommandBuildError(f"日志文件名必须是无目录、无控制字符的安全 basename：{file}")
-        parts.extend(["-f", shlex.quote(file)])
+        try:
+            path = normalize_log_path(signal.path)
+            absolute_time = normalize_absolute_log_time(signal.time_window)
+        except ValueError as exc:
+            raise CommandBuildError(str(exc)) from exc
 
-        # 时间窗
-        if signal.time_window:
-            parts.extend(["-t", shlex.quote(signal.time_window)])
+        is_request_artifact = bool(
+            path and (path == REQUEST_ARTIFACT_ROOT or path.startswith(f"{REQUEST_ARTIFACT_ROOT}/"))
+        )
+        if is_request_artifact:
+            if not signal.request_id:
+                raise CommandBuildError("/sf/data/local 不是日志目录；仅允许携带 request_id 的辅助关联搜索")
+            if signal.source_family != "auto":
+                raise CommandBuildError("/sf/data/local 辅助搜索不得声明日志 source_family")
+            source = {
+                "source_id": "request_artifact_scope",
+                "parser": "plain_text",
+                "predicates": ("keyword", "regex", "state", "exists"),
+            }
+        else:
+            if not file:
+                raise CommandBuildError("常规 qfk_log 必须提供 /sf/log 下的日志文件名（file basename）")
+            if "/" in file or "\\" in file:
+                raise CommandBuildError(f"日志文件名非法：不能包含路径分隔符：{file}")
+            if file in {".", ".."} or not re.fullmatch(SAFE_LOG_FILE_PATTERN, file):
+                raise CommandBuildError(f"日志文件名必须是无目录、无控制字符的安全 basename：{file}")
+            try:
+                source = resolve_log_source(
+                    file,
+                    source_family=signal.source_family,
+                    path=path,
+                    parser=signal.parser,
+                )
+                path = normalize_log_path(source.get("path"))
+            except ValueError as exc:
+                raise CommandBuildError(str(exc)) from exc
+
+            # aCLI -t 自己负责 whitebox 日期目录定位与历史日志解压。若 path 是 Catalog
+            # 的 today 默认值，继续传 -p today 会把历史 END 错锁到今天，因此省略 -p；
+            # blackbox 不走 whitebox 解压逻辑，按固定 YYYYMMDD 目录确定性改写。
+            if absolute_time and signal.path_inferred:
+                date_token = absolute_time[:10].replace("-", "")
+                if source["family"] == "whitebox":
+                    path = None
+                elif source["family"] == "blackbox":
+                    path = f"/sf/log/blackbox/{date_token}"
+                elif source["family"] == "vn_blackbox":
+                    path = f"/sf/log/vn-blackbox/{date_token}"
+
+        selector, use_extended, matcher_type = self._matcher_selector(signal)
+        if matcher_type in LOG_MATCHER_TYPES and matcher_type not in source["predicates"]:
+            raise CommandBuildError(
+                f"日志源 {source['source_id']} 的 parser={source['parser']} 不支持 {matcher_type} predicate"
+            )
+
+        parts = ["acli", "log", "get"]
+        if selector is not None:
+            if use_extended:
+                parts.append("-E")
+            parts.extend(["-k", shlex.quote(selector)])
+        if signal.request_id:
+            parts.extend(["-i", shlex.quote(signal.request_id)])
+        if file:
+            parts.extend(["-f", shlex.quote(file)])
+        if path:
+            parts.extend(["-p", shlex.quote(path)])
+        if absolute_time:
+            parts.extend(["-t", shlex.quote(absolute_time)])
+        if signal.context_lines:
+            parts.extend(["-c", str(signal.context_lines)])
+        if signal.include_archives:
+            if signal.archive_precheck != "verified":
+                raise CommandBuildError("搜索 .gz 归档前必须完成磁盘/日期/路径前置检查")
+            parts.append("-g")
 
         return [" ".join(parts)]
 

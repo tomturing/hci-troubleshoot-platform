@@ -6,6 +6,7 @@ import { FullScreen, Refresh } from '@element-plus/icons-vue'
 import { useCategories } from '../composables/useCategories'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import { MatcherEditor } from '@/components/editors'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 类型定义
@@ -802,7 +803,7 @@ const consumerSignals = computed(() =>
 
 // ── QKV 生产者关键字 × 分类基线 辅助（实例/注释/软校验）───────────────────────
 // 分类基线（category_baseline.yaml, 198 类）按标签语义分两性：
-//   · 任务失败型故障：标签多以 失败/卡住/异常/不达预期 结尾 → acli task/dialog get -k（qkv_task/qkv_dialog）
+//   · 任务失败型故障：有任务记录走 qkv_task；纯弹框走 qkv_dialog（当前主控日志定位 END/REQUEST_ID）
 //   · 告警型故障    ：标签以「告警」结尾               → acli alert get -k（qkv_alert）
 // keyword 是 acli <type> get -k 的检索词，须与本案例所属分类基线标签语义一致，否则查不到记录、信号恒为假。
 function qkvNatureLabel(tool: string): string {
@@ -949,9 +950,22 @@ function startEditSignal(origIdx: number) {
   // 确保嵌套对象存在，便于 v-model 直接绑定 v2 字段路径
   draft.acquire = draft.acquire || { tool: '', args: {} }
   draft.acquire.args = draft.acquire.args || {}
-  // QFK 的“产出变量”模式必须保留 match=null，不能在进入编辑态时无条件补成关键字 matcher。
-  if (!isBackendSig(draft) && !draft.match) {
-    draft.match = { type: 'keyword', pattern: '', mode: 'or', expected: true }
+  // 所有 QKV 都是变量生产者，必须保持 match=null。旧逻辑在进入编辑态时补 keyword
+  // matcher，会导致专家只改关键字也无法通过保存契约。
+  if (!isBackendSig(draft)) {
+    draft.match = null
+    if (sigTool(draft) === 'qkv_dialog') {
+      draft.acquire.args.paths ??= ['/sf/log/today', '/sf/log/today/vt']
+      draft.acquire.args.context_lines ??= 2
+      draft.orchestrate = draft.orchestrate || {}
+      if (!Array.isArray(draft.orchestrate.produces) || draft.orchestrate.produces.length === 0) {
+        draft.orchestrate.produces = [
+          { name: 'END', path: 'end' },
+          { name: 'REQUEST_ID', path: 'request_id' },
+          { name: 'HOST', path: 'host' },
+        ]
+      }
+    }
   }
   draft.orchestrate = draft.orchestrate || {}
   for (const produce of draft.orchestrate.produces || []) normalizeTextExtract(produce)
@@ -2163,8 +2177,13 @@ onMounted(() => {
                   <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.acquire.args.keyword" size="small" :placeholder="qkvKeywordPlaceholder(sigTool(signalEditDraft))" /></div>
                   <div v-if="sigTool(signalEditDraft) === 'qkv_alert'" class="field-hint">告警型关键字（acli alert get -k）：取自「分类基线 · 告警型故障」（标签以「告警」结尾），如 虚拟机CPU或内存占用过高告警、主机网口丢包告警、序列号过期告警。多个用逗号分隔</div>
                   <div v-else-if="sigTool(signalEditDraft) === 'qkv_task'" class="field-hint">任务失败型关键字（acli task get -k）：取自「分类基线 · 任务失败型故障」，如 虚拟机开机失败、虚拟机快照失败、虚拟机scmt迁移失败。多个用逗号分隔</div>
-                  <div v-else-if="sigTool(signalEditDraft) === 'qkv_dialog'" class="field-hint">任务失败型弹框关键字（acli dialog get -k）：取自「分类基线 · 任务失败型故障」，如 虚拟机创建失败、磁盘替换失败、版本升级失败。多个用逗号分隔</div>
+                  <div v-else-if="sigTool(signalEditDraft) === 'qkv_dialog'" class="field-hint">无任务/告警承载的页面弹框原文或稳定片段。运行时在当前主控 /sf/log/today 与 /sf/log/today/vt 检索，并提取 END、REQUEST_ID、HOST；若存在对应失败任务，应优先使用 qkv_task。</div>
                   <div v-else class="field-hint">前端采集匹配关键字（acli &lt;task|dialog|alert&gt; get -k）：取自「分类基线」标签。多个用逗号分隔</div>
+                  <template v-if="sigTool(signalEditDraft) === 'qkv_dialog'">
+                    <div class="signal-row"><span class="signal-k">搜索目录</span><span class="signal-v code">/sf/log/today、/sf/log/today/vt（固定）</span></div>
+                    <div class="signal-row"><span class="signal-k">上下文行</span><el-input-number v-model="signalEditDraft.acquire.args.context_lines" :min="0" :max="10" size="small" /></div>
+                    <div class="field-hint">qkv_dialog 不执行虚构的 acli dialog get；两个固定目录用于兼容不同版本的 aCLI 目录搜索深度。</div>
+                  </template>
                   <div class="field-hint keyword-check" :class="{ 'is-warn': qkvKeywordMismatch(signalEditDraft) }">校验规则：关键字须与本案例「分类基线」标签语义一致——任务失败型（…失败/卡住/异常/不达预期）用 qkv_task/qkv_dialog；告警型（…告警）用 qkv_alert。类型选错会导致 acli 查不到记录、信号恒为假<template v-if="qkvKeywordMismatch(signalEditDraft)"> ⚠ 当前「{{ sigTool(signalEditDraft) }} + 该关键字」疑似类型不匹配，请复核</template></div>
                   <!-- 产出变量编辑（v2 orchestrate.produces） -->
                   <div class="signal-row">
@@ -2245,7 +2264,10 @@ onMounted(() => {
                     </div>
                   </template>
                   <template v-else>
-                    <div class="signal-row"><span class="signal-k">关键字</span><span class="signal-v">{{ sigMatch(item.sig).pattern || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">判定类型</span><span class="signal-v code">{{ sigMatch(item.sig).type || '—' }}</span></div>
+                    <div v-if="sigMatch(item.sig).pattern" class="signal-row"><span class="signal-k">匹配内容</span><span class="signal-v">{{ Array.isArray(sigMatch(item.sig).pattern) ? sigMatch(item.sig).pattern.join(' / ') : sigMatch(item.sig).pattern }}</span></div>
+                    <div v-if="sigMatch(item.sig).metric" class="signal-row"><span class="signal-k">指标字段</span><span class="signal-v code">{{ sigMatch(item.sig).metric }}</span></div>
+                    <div v-if="sigMatch(item.sig).value !== undefined" class="signal-row"><span class="signal-k">比较条件</span><span class="signal-v">{{ sigMatch(item.sig).operator || sigMatch(item.sig).direction || '' }} {{ sigMatch(item.sig).value }}</span></div>
                     <div class="signal-row"><span class="signal-k">期望</span><span class="signal-v">{{ sigMatch(item.sig).expected === true ? '存在' : sigMatch(item.sig).expected === false ? '不存在' : '—' }}</span></div>
                     <div class="signal-row"><span class="signal-k">匹配模式</span><span class="signal-v">{{ sigMatch(item.sig).mode || 'or' }}</span></div>
                   </template>
@@ -2254,7 +2276,10 @@ onMounted(() => {
                   <div v-if="sigTool(item.sig) === 'qfk_system' && sigArgs(item.sig).resource_keyword" class="signal-row"><span class="signal-k">命令参数</span><span class="signal-v code">{{ sigArgs(item.sig).resource_keyword }}</span></div>
                   <template v-if="sigTool(item.sig) === 'qfk_log'">
                     <div class="signal-row"><span class="signal-k">文件</span><span class="signal-v code">{{ sigArgs(item.sig).file || '—' }}</span></div>
-                    <div class="signal-row"><span class="signal-k">结束时间</span><span class="signal-v">{{ sigArgs(item.sig).time_window || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">日志族</span><span class="signal-v">{{ sigArgs(item.sig).source_family || 'auto' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">路径</span><span class="signal-v code">{{ sigArgs(item.sig).path || 'Catalog 自动推断' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">解析器</span><span class="signal-v code">{{ sigArgs(item.sig).parser || 'Catalog 自动选择' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">绝对时间</span><span class="signal-v">{{ sigArgs(item.sig).time_window || '—' }}</span></div>
                   </template>
                   <template v-if="sigTool(item.sig) === 'qfk_service'">
                     <div class="signal-row"><span class="signal-k">服务</span><span class="signal-v code">{{ sigArgs(item.sig).resource_keyword || '—' }}</span></div>
@@ -2325,18 +2350,12 @@ onMounted(() => {
                   </div>
                   <div class="field-hint">二选一：关键字模式判断命令结果；产出变量模式把命令结果写入变量池，供后续信号使用。</div>
                   <template v-if="qfkOutputMode(signalEditDraft) === 'keyword' && signalEditDraft.match">
-                    <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.match.pattern" size="small" placeholder="检查命令结果是否包含的关键字" /></div>
-                    <div class="signal-row"><span class="signal-k">期望</span>
-                      <el-switch v-model="signalEditDraft.match.expected" :active-value="true" :inactive-value="false" active-text="存在" inactive-text="不存在" />
-                    </div>
-                    <div class="signal-row"><span class="signal-k">匹配模式</span>
-                      <el-select v-model="signalEditDraft.match.mode" size="small">
-                        <el-option label="or（任一匹配）" value="or" />
-                        <el-option label="and（全部匹配）" value="and" />
-                        <el-option label="not（均不出现）" value="not" />
-                      </el-select>
-                    </div>
-                    <div class="field-hint">or 任一出现即命中，and 全部出现才命中，not 均不出现才命中。</div>
+                    <MatcherEditor
+                      v-model="signalEditDraft.match"
+                      :allowed-types="sigTool(signalEditDraft) === 'qfk_log'
+                        ? ['keyword', 'regex', 'state', 'threshold', 'delta', 'trend', 'exists']
+                        : undefined"
+                    />
                   </template>
                   <template v-else-if="qfkOutputMode(signalEditDraft) === 'produces'">
                     <div class="signal-row">
@@ -2404,9 +2423,36 @@ onMounted(() => {
                     <div class="field-hint">作为一个安全参数追加到执行命令，例如 <code v-pre>lsof + {{VM}}</code>；完整命令已经包含参数时可留空。它不参与结果匹配。</div>
                   </template>
                   <template v-if="sigTool(signalEditDraft) === 'qfk_log'">
-                    <div class="signal-row"><span class="signal-k">文件</span><el-input v-model="signalEditDraft.acquire.args.file" size="small" placeholder="日志文件/来源，如 /var/log/messages、dmesg" /></div>
-                    <div class="field-hint">日志文件名或来源；支持路径，留空则取默认日志。</div>
-                    <div class="signal-row"><span class="signal-k">结束时间</span><el-input v-model="signalEditDraft.acquire.args.time_window" size="small" placeholder="结束时间窗，如 now/-1h 或 2026-07-23T10:00" /></div>
+                    <div class="signal-row"><span class="signal-k">文件</span><el-input v-model="signalEditDraft.acquire.args.file" size="small" placeholder="安全 basename，如 sfvt_vtpdaemon.log / LOG_ifconfig.txt" /></div>
+                    <div class="field-hint">只填 basename，禁止包含目录；扩展名不限。blackbox、whitebox 和其他 /sf/log 日志都使用 qfk_log。</div>
+                    <div class="signal-row"><span class="signal-k">日志族</span>
+                      <el-select v-model="signalEditDraft.acquire.args.source_family" size="small" clearable placeholder="auto（推荐）">
+                        <el-option label="auto（Catalog 自动推断）" value="auto" />
+                        <el-option label="whitebox" value="whitebox" />
+                        <el-option label="blackbox" value="blackbox" />
+                        <el-option label="vn_blackbox" value="vn_blackbox" />
+                        <el-option label="pod" value="pod" />
+                      </el-select>
+                    </div>
+                    <div class="signal-row"><span class="signal-k">路径</span><el-input v-model="signalEditDraft.acquire.args.path" size="small" placeholder="可选；如 /sf/log/blackbox/today，留空由 Catalog 推断" /></div>
+                    <div class="field-hint">常规日志只允许 /sf/log；/sf/data/local 不是日志目录，仅可与 request_id 同时用于辅助关联。&lt;日期&gt;/[日期] 不是可执行路径。</div>
+                    <div class="signal-row"><span class="signal-k">解析器</span>
+                      <el-select v-model="signalEditDraft.acquire.args.parser" size="small" clearable placeholder="留空由 Catalog 选择">
+                        <el-option label="plain_text" value="plain_text" />
+                        <el-option label="timestamped_lines" value="timestamped_lines" />
+                        <el-option label="timestamped_blocks" value="timestamped_blocks" />
+                        <el-option label="ifconfig_snapshot" value="ifconfig_snapshot" />
+                        <el-option label="kv_counter_snapshot" value="kv_counter_snapshot" />
+                        <el-option label="process_snapshot" value="process_snapshot" />
+                      </el-select>
+                    </div>
+                    <div class="signal-row"><span class="signal-k">绝对时间</span><el-input v-model="signalEditDraft.acquire.args.time_window" size="small" placeholder="YYYY-MM-DD / YYYY-MM-DD HH / YYYY-MM-DD HH:MM:SS / {{ABSOLUTE_TIME}}" /></div>
+                    <div class="field-hint">不得填 now/-1h；Agent 必须先按客户问题时间和 HCI 时区解析为绝对时间。</div>
+                    <div class="signal-row"><span class="signal-k">Request ID</span><el-input v-model="signalEditDraft.acquire.args.request_id" size="small" placeholder="可选，如 {{REQUEST_ID}}" /></div>
+                    <div class="signal-row"><span class="signal-k">上下文行</span><el-input-number v-model="signalEditDraft.acquire.args.context_lines" :min="0" :max="50" size="small" /></div>
+                    <div class="signal-row"><span class="signal-k">历史归档</span><el-switch v-model="signalEditDraft.acquire.args.include_archives" active-text="搜索 .gz" /></div>
+                    <div v-if="signalEditDraft.acquire.args.include_archives" class="signal-row"><span class="signal-k">前置检查</span><el-select v-model="signalEditDraft.acquire.args.archive_precheck" size="small"><el-option label="已确认磁盘/日期/路径" value="verified" /></el-select></div>
+                    <div v-if="signalEditDraft.acquire.args.include_archives" class="field-hint">whitebox 历史日期优先用绝对时间 -t，由 aCLI 自动定位和解压；此开关只用于显式 path 下的 .gz 搜索，需先确认空间、日期和范围。</div>
                   </template>
                   <template v-if="sigTool(signalEditDraft) === 'qfk_service'">
                     <div class="signal-row"><span class="signal-k">服务</span><el-input v-model="signalEditDraft.acquire.args.resource_keyword" size="small" placeholder="服务名，如 asv、nginx、mgmt" /></div>

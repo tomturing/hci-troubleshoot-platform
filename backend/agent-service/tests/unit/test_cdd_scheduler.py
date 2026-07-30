@@ -259,7 +259,7 @@ def test_contract_replay_confirms_only_after_must_should_and_exclude_are_resolve
 
 
 def test_verification_contract_role_overrides_stale_signal_proposal_role():
-    candidate = kbd("39471", [signal("backup-config", "qkv_dialog", "设置备份策略")])
+    candidate = kbd("39471", [signal("backup-config", "qkv_task", "设置备份策略")])
     candidate.signals[0]["role"] = "should"
     candidate.verification_contract = {
         "scope": {"products": ["HCI"]},

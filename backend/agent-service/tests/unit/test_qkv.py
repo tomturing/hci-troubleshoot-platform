@@ -86,6 +86,56 @@ async def test_qkv_command_build():
 
 
 @pytest.mark.asyncio
+async def test_qkv_dialog_searches_master_logs_and_extracts_end_request_id_host():
+    signal = FrontendSignal(
+        query=FrontendQueryType.DIALOG,
+        keyword="编辑显卡核心失败",
+        produces=[
+            {"name": "END", "path": "end"},
+            {"name": "REQUEST_ID", "path": "request_id"},
+            {"name": "HOST", "path": "host"},
+        ],
+    )
+    mock_executor = AsyncMock()
+    request_id = "a5ed4ad9340ce338ba1ac71d13ffcfb9"
+    mock_executor.execute.side_effect = [
+        ExecResult(
+            stdout=(
+                "/sf/log/today/audit_log/root/cmd.log:[2026-07-30 10:00:00] "
+                "acli log get -k '编辑显卡核心失败' -p /sf/log/today -c 2\n"
+                f"/sf/log/today/api.log:[2026-07-30 10:01:02] 编辑显卡核心失败 request_id={request_id}:123"
+            ),
+            stderr="", exit_code=0, command="", node="172.28.24.1", duration_ms=1,
+            truncated=False, risk_level=1, exec_id="dialog-1",
+        ),
+        ExecResult(
+            stdout="", stderr="", exit_code=0, command="", node="172.28.24.1", duration_ms=1,
+            truncated=False, risk_level=1, exec_id="dialog-2",
+        ),
+    ]
+
+    with patch("app.tools.acli.executor._executor", mock_executor):
+        result = await qkv_exec(signal, conversation_id="test", node_ip="172.28.24.1")
+
+    assert result.success is True
+    assert result.values == [{
+        "request_id": request_id,
+        "end": "2026-07-30 10:01:02",
+        "line": (
+            f"/sf/log/today/api.log:[2026-07-30 10:01:02] 编辑显卡核心失败 request_id={request_id}:123"
+        ),
+        "host": "172.28.24.1",
+    }]
+    assert mock_executor.execute.await_count == 2
+    commands = [call.kwargs["args"]["command"] for call in mock_executor.execute.await_args_list]
+    assert commands == [
+        "acli log get -k '编辑显卡核心失败' -p /sf/log/today -c 2",
+        "acli log get -k '编辑显卡核心失败' -p /sf/log/today/vt -c 2",
+    ]
+    assert all(" -l " not in command for command in commands)
+
+
+@pytest.mark.asyncio
 async def test_qkv_terminal_timeout_is_error_not_empty_success():
     signal = FrontendSignal(query=FrontendQueryType.TASK, keyword="启动虚拟机失败", is_failed=True)
     mock_executor = AsyncMock()
@@ -202,6 +252,16 @@ class TestQKVParser:
         assert len(vals) == 2
         assert vals[0]["line"] == "2026-07-08 10:00 [INFO] popup: reboot confirmed"
         assert vals[1]["description"] == "2026-07-08 10:01 [WARN] dismiss"
+
+    def test_parse_dialog_uses_context_time_and_trace_id_equals_shape(self):
+        trace_id = "b5ed4ad9340ce338ba1ac71d13ffcfb8"
+        stdout = (
+            "/sf/log/today/api.log:[2026-07-30 11:22:33] 编辑失败\n"
+            f"/sf/log/today/api.log: trace_id={trace_id}"
+        )
+        vals = parse_frontend_value(FrontendQueryType.DIALOG, stdout)
+        assert vals[0]["request_id"] == trace_id
+        assert vals[0]["end"] == "2026-07-30 11:22:33"
 
 
 class TestQKVParserDynamicProduces:

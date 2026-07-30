@@ -8,7 +8,7 @@ import json
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class FrontendQueryType(StrEnum):
@@ -73,10 +73,25 @@ class FrontendSignal(BaseModel):
     keyword: str = Field(..., description="K: 匹配关键字")
     is_failed: bool = Field(default=False, description="是否只查失败任务 (仅在 query 为 task 时生效)")
     limit: int = Field(default=100, description="最大返回数据量限制")
+    paths: list[str] = Field(
+        default_factory=lambda: ["/sf/log/today", "/sf/log/today/vt"],
+        description="qkv_dialog 固定日志搜索域",
+    )
+    context_lines: int = Field(default=2, ge=0, le=10, description="qkv_dialog 命中行上下文")
     produces: list[dict[str, str]] = Field(
         default_factory=list,
         description="产出变量规格：[{name: 'HOST', path: 'host'}, ...]，为空时 parser 走硬编码兜底",
     )
+
+    @model_validator(mode="after")
+    def _validate_dialog_scope(self) -> FrontendSignal:
+        if self.query == FrontendQueryType.DIALOG:
+            allowed = {"/sf/log/today", "/sf/log/today/vt"}
+            if not self.paths or len(self.paths) > 2 or len(set(self.paths)) != len(self.paths):
+                raise ValueError("qkv_dialog.paths 必须包含 1-2 个不重复的固定日志目录")
+            if any(path not in allowed for path in self.paths):
+                raise ValueError("qkv_dialog.paths 只允许 /sf/log/today 与 /sf/log/today/vt")
+        return self
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> FrontendSignal:
@@ -95,6 +110,8 @@ class FrontendSignal(BaseModel):
                 "keyword": args.get("keyword", ""),
                 "is_failed": bool(args.get("is_failed", False)),
                 "limit": args.get("limit", 100),
+                "paths": args.get("paths", ["/sf/log/today", "/sf/log/today/vt"]),
+                "context_lines": args.get("context_lines", 2),
                 "produces": (data.get("orchestrate") or {}).get("produces", []),
             }
         # 自动清洗关键词和检测状态

@@ -16,6 +16,12 @@ from jsonschema import Draft7Validator, ValidationError
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT7
 from shared.schemas.acquirer_args import validate_acquire_args
+from shared.schemas.log_source_catalog import (
+    LOG_MATCHER_TYPES,
+    REQUEST_ARTIFACT_ROOT,
+    normalize_log_path,
+    resolve_log_source,
+)
 
 _SIGNALS_DIR = Path(__file__).resolve().parent / "signals"
 
@@ -141,12 +147,55 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
             raise ValidationError(
                 f"signals[{index}] 的 {tool} 必须且只能配置“关键字判定(match)”或“产出变量(orchestrate.produces)”之一"
             )
-        if tool == "qfk_log" and (not has_match or matcher.get("type") != "keyword"):
-            raise ValidationError(
-                f"signals[{index}] 的 qfk_log 必须使用 keyword matcher；运行时以 match.pattern 构建日志检索关键字"
+        if tool == "qfk_log":
+            args = ((signal.get("acquire") or {}).get("args") or {})
+            normalized_path = normalize_log_path(str(args.get("path"))) if args.get("path") else None
+            is_request_artifact = bool(
+                normalized_path
+                and (
+                    normalized_path == REQUEST_ARTIFACT_ROOT
+                    or normalized_path.startswith(f"{REQUEST_ARTIFACT_ROOT}/")
+                )
             )
+            if not is_request_artifact and not str(args.get("file") or "").strip():
+                raise ValidationError(f"signals[{index}] 的 qfk_log 常规日志缺少必填字段 file")
+            if has_match:
+                matcher_type = str(matcher.get("type") or "")
+                if matcher_type not in LOG_MATCHER_TYPES:
+                    raise ValidationError(
+                        f"signals[{index}] 的 qfk_log matcher.type={matcher_type} 不受支持；"
+                        f"允许: {LOG_MATCHER_TYPES}"
+                    )
+                if is_request_artifact:
+                    source = {
+                        "source_id": "request_artifact_scope",
+                        "parser": "plain_text",
+                        "predicates": ["keyword", "regex", "state", "exists"],
+                    }
+                else:
+                    try:
+                        source = resolve_log_source(
+                            str(args.get("file") or ""),
+                            source_family=str(args.get("source_family") or "auto"),
+                            path=normalized_path,
+                            parser=str(args.get("parser")) if args.get("parser") else None,
+                        )
+                    except ValueError as exc:
+                        raise ValidationError(f"signals[{index}] 的 qfk_log 日志源不可解析: {exc}") from exc
+                if matcher_type not in source.get("predicates", []):
+                    raise ValidationError(
+                        f"signals[{index}] 的日志源 {source.get('source_id')} / parser={source.get('parser')} "
+                        f"不支持 {matcher_type} predicate"
+                    )
+            elif not (args.get("resource_keyword") or args.get("request_id")):
+                raise ValidationError(
+                    f"signals[{index}] 的 qfk_log 产出变量采集必须提供 resource_keyword 或 request_id，"
+                    "禁止无界整文件回传"
+                )
         if isinstance(matcher, dict) and matcher.get("type") == "regex":
             pattern = matcher.get("pattern")
+            if not isinstance(pattern, str):
+                raise ValidationError(f"signals[{index}] 的 regex pattern 必须是字符串")
             try:
                 re.compile(pattern)
             except (re.error, TypeError) as exc:

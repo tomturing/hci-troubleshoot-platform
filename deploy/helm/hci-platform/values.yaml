@@ -534,6 +534,8 @@ agentService:
   reactEnabled: "false"
   pydanticAiEnabled: "false"
   confirmTimeoutSec: "120"
+  # 本地 aCLI Catalog 未知命令：confirm=允许进入人工确认；deny=执行前拒绝（生产推荐）
+  acliUnknownCommandPolicy: "confirm"
   resources:
     requests:
       cpu: "100m"

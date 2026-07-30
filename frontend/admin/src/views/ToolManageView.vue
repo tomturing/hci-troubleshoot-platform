@@ -48,10 +48,15 @@ interface ToolValidationResult {
 
 interface CapabilityDescriptor {
   capability_id: string
+  kind: string
+  args_schema: Record<string, any>
+  supported_matchers: string[]
   contract_status: string
   runtime_status: string
   verification_status: string
   source: string
+  limitations?: string[]
+  catalog?: Record<string, any> | null
 }
 
 const tools = ref<ToolDefinition[]>([])
@@ -113,6 +118,31 @@ function isKbdCapability(row: ToolDefinition) {
 function capabilityFor(toolName: string) {
   return capabilityMap.value[toolName]
 }
+
+function capabilityRuntimeText(descriptor?: CapabilityDescriptor) {
+  if (!descriptor) return '能力未声明'
+  if (descriptor.runtime_status === 'unsupported') return '运行不支持'
+  if (descriptor.runtime_status === 'available') return '运行已探测'
+  return '运行待探测'
+}
+
+function capabilityRuntimeTag(descriptor?: CapabilityDescriptor) {
+  if (!descriptor || descriptor.runtime_status === 'unsupported') return 'danger'
+  if (descriptor.runtime_status === 'available') return 'success'
+  return 'warning'
+}
+
+function serviceDomainText(catalog?: Record<string, any> | null) {
+  const domains = catalog?.service_domains || {}
+  return Object.entries(domains)
+    .map(([name, raw]) => {
+      const value = raw as Record<string, any>
+      return `${name}=${value.plane}/${value.name}${value.runtime_exposed ? '（已暴露）' : '（当前未暴露）'}`
+    })
+    .join('；')
+}
+
+const editingCapability = computed(() => capabilityFor(formModel.value.tool_name))
 
 // 快速切换启用状态
 async function handleStatusChange(row: ToolDefinition) {
@@ -710,7 +740,13 @@ onMounted(() => {
             <template v-if="isKbdCapability(row)">
               <div v-if="capabilityFor(row.tool_name)" class="capability-state">
                 <el-tag size="small" type="success" effect="plain">参数契约已声明</el-tag>
-                <el-tag size="small" type="warning" effect="plain">运行待探测</el-tag>
+                <el-tag
+                  size="small"
+                  :type="capabilityRuntimeTag(capabilityFor(row.tool_name))"
+                  effect="plain"
+                >
+                  {{ capabilityRuntimeText(capabilityFor(row.tool_name)) }}
+                </el-tag>
               </div>
               <el-tag v-else size="small" type="danger" effect="plain">仅有配置·能力未声明</el-tag>
             </template>
@@ -795,14 +831,40 @@ onMounted(() => {
           <el-col :span="16" style="padding-left: 20px;">
             <el-alert
               v-if="isSignalTool"
-              :type="capabilityFor(formModel.tool_name) ? 'warning' : 'error'"
+              :type="editingCapability?.runtime_status === 'unsupported' ? 'error' : editingCapability ? 'warning' : 'error'"
               :closable="false"
               show-icon
               style="margin-bottom: 16px"
-              :title="capabilityFor(formModel.tool_name)
-                ? '该 Signal 已有代码参数契约，但 Agent Handler/Validator 部署状态尚未探测；此处编辑说明或配置不会修改可执行语义。'
+              :title="editingCapability?.runtime_status === 'unsupported'
+                ? `该 Signal 代码契约明确标记为运行不支持：${(editingCapability.limitations || []).join('；')}`
+                : editingCapability
+                ? '该 Signal 已有代码参数契约，但 Agent Handler/Validator 部署状态尚未探测；此处可编辑说明和示例，执行语义以只读代码契约为准。'
                 : '该 Signal 当前只有数据库配置或尚未保存，代码能力未声明；保存后仍不能直接被 KBD 当作可执行能力。'"
             />
+            <el-collapse v-if="editingCapability" class="capability-contract" style="margin-bottom: 16px">
+              <el-collapse-item title="查看只读代码契约与日志 Catalog" name="contract">
+                <el-descriptions :column="2" border size="small">
+                  <el-descriptions-item label="能力类型">{{ editingCapability.kind }}</el-descriptions-item>
+                  <el-descriptions-item label="验证状态">{{ editingCapability.verification_status }}</el-descriptions-item>
+                  <el-descriptions-item label="支持判定器" :span="2">
+                    {{ editingCapability.supported_matchers.length ? editingCapability.supported_matchers.join(' / ') : '无（变量生产者）' }}
+                  </el-descriptions-item>
+                  <el-descriptions-item v-if="editingCapability.catalog?.families" label="日志族" :span="2">
+                    {{ (editingCapability.catalog.families || []).join(' / ') }}
+                  </el-descriptions-item>
+                  <el-descriptions-item v-if="editingCapability.catalog?.parsers" label="日志解析器" :span="2">
+                    {{ (editingCapability.catalog.parsers || []).join(' / ') }}
+                  </el-descriptions-item>
+                  <el-descriptions-item v-if="editingCapability.catalog?.request_artifact_policy" label="辅助搜索域" :span="2">
+                    {{ editingCapability.catalog.request_artifact_root }}：{{ editingCapability.catalog.request_artifact_policy }}
+                  </el-descriptions-item>
+                  <el-descriptions-item v-if="editingCapability.catalog?.service_domains" label="服务领域 / 当前实机" :span="2">
+                    {{ serviceDomainText(editingCapability.catalog) }}
+                  </el-descriptions-item>
+                </el-descriptions>
+                <pre class="contract-json">{{ JSON.stringify(editingCapability.args_schema, null, 2) }}</pre>
+              </el-collapse-item>
+            </el-collapse>
             <el-form-item label="功能描述" required>
               <el-input
                 v-model="formModel.description"
@@ -1004,6 +1066,19 @@ onMounted(() => {
   justify-content: center;
   gap: 4px;
   flex-wrap: wrap;
+}
+
+.contract-json {
+  max-height: 260px;
+  margin: 12px 0 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  background: #f7f8fa;
+  color: #303133;
+  font: 12px/1.5 Consolas, Monaco, monospace;
+  white-space: pre-wrap;
 }
 
 .json-editor-wrapper {

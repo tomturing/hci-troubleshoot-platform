@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-07-29
+last_updated: 2026-07-30
 related_prs:
   - PR #474: invoke() 重试 + tool_calls 清理 + skill 可观测 + 报告模板简化 + solution 格式合并
 owner: team
@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-30 | v3.38 | **PR #644：qfk_log 统一契约与 KBD Pipeline 收敛**：将日志信号审计领域逻辑迁入 `data-pipeline/kbd/log_signal_audit.py`，通过唯一 `kbd.run` 入口统一关键信号抽取和只读审计；KBD DAG 扩展为 FETCH→IMPORT→VISION→CLASSIFY→EXTRACT_SIGNALS→AUDIT_LOG_SIGNALS；qfk_log、qkv_dialog、aCLI/运行时能力边界与专家复核清单同步固化。 | [qfk_log统一日志采集解析与判定设计](../../solution/agent/02-架构设计/qfk_log统一日志采集解析与判定设计.md) |
 | 2026-07-29 | v3.37 | **HCI/aCLI 实机契约审计与 PR #641 CI 收敛**：完成 HCI 6.11.1_R1 + aCLI 1.0.0 的只读知识采集；修复 Signal Schema 合法 fixture 的 `file/path` 旧写法并增加完整路径反例；形成日志、blackbox、配置、数据、补丁、容器、设备 manifest、自观测污染与能力漂移基线。运行语义改造在用户确认后分 P0-P4 实施。关联：[HCI底层目录日志容器与aCLI知识基线](../../solution/agent/02-架构设计/HCI底层目录日志容器与aCLI知识基线.md) |
 | 2026-07-29 | v3.36 | **Terminal Bridge 真实入口 P0 修复**：删除普通 Markdown `CommandBlock → ssh_input` 自动执行旁路；S0 在 LLM 前拒绝显式命令执行请求并阻断无工具证据的伪造输出；Alloy 固化资源、探针、指标抓取与流水线告警。状态：自动化回归已启动，真实 S1/ReAct 正向与 S0/Markdown 负向验收通过前不得宣称完整可观测，也不得进入 hci-sim。 |
 | 2026-07-28 | v3.35 | **KBD 关键信号结果用户化与 ps 输出契约修正**：主报告改为检查说明/状态/结果/结构化产出，技术 ID 与原始输出留在审计层；golden chain 使用 `ps -p PID -o cmd=` 产出 CMD，并固定旧 PID include 会过滤 cmd 输出的反例。关联：[KBD关键信号结果展示与ps输出提取方案](../../solution/events/2026-07-28-KBD关键信号结果展示与ps输出提取方案.md) |

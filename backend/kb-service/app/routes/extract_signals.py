@@ -84,9 +84,13 @@ _EXTRACT_PROMPT_NAME = "kbd_extract_signals_v2"
 ACQUIRER_CATALOG: dict[str, str] = {
     "qkv_alert": "前端信号-告警查询：acli alert get，产出 host/vm/target/alert_type/end 等",
     "qkv_task": "前端信号-任务查询：acli task get，产出 status/host/vm/errcode_tracing/request_id 等",
-    "qkv_dialog": "前端信号-弹框查询：acli dialog/log get",
-    "qfk_log": "后端信号-日志检查和操作：acli log get -k <keyword> [-f resource] [-p path] [-t time_window]，keyword 求值",
-    "qfk_service": "后端信号-服务检查和操作：acli service {asv|anet|host} <name> status，state 求值",
+    "qkv_dialog": "弹框复合取值：在当前主控 today 与 today/vt 日志检索弹框文本，产出 END/REQUEST_ID/HOST",
+    "qfk_log": (
+        "统一日志判定：/sf/log 下 whitebox/blackbox/vn-blackbox/pod 均由 acli log get 获取；"
+        "/sf/data/local 仅允许 request_id 辅助关联，"
+        "Catalog 推断 path/parser，支持 keyword/regex/state/threshold/delta/trend/exists"
+    ),
+    "qfk_service": "服务状态：领域含 asv(vt)/anet(vn)/asan(vs)/host；当前运行时按 acli capability probe 执行",
     "qfk_system": "后端信号-系统检查和操作：acli system <command>（如 lsof/ps/lsblk/iostat/smartctl），threshold/keyword/json_path 求值",
     "qfk_vm": "后端信号-虚拟机相关操作：acli vm <command>，state/json_path/exists 求值",
     "qfk_network": "后端信号-网络相关操作：acli network <command>，state/json_path/exists 求值",
@@ -109,7 +113,7 @@ DEFAULT_VARIABLE_SCHEMA: list[str] = [
 ]
 
 VALID_CATEGORIES = {"frontend", "backend"}
-VALID_MATCHER_TYPES = {"keyword", "regex", "state", "threshold", "json_path", "exists"}
+VALID_MATCHER_TYPES = {"keyword", "regex", "state", "threshold", "delta", "trend", "json_path", "exists"}
 VALID_VARIABLE_TYPES = {"string", "integer", "number", "boolean", "array"}
 
 # ADR-2：{{VAR}} 大写占位符正则（单一真相源；运行期校验用）

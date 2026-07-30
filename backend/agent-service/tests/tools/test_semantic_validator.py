@@ -100,7 +100,15 @@ def test_acli_exec_catalog_accepts_supported_command_with_global_option():
     assert result.ok
 
 
-def test_acli_exec_catalog_rejects_unsupported_command():
+def test_acli_exec_catalog_unknown_command_requires_confirmation_by_default():
+    result = _validate("acli_exec", {"command": "acli storage disk list", "reason": "检查磁盘"})
+    assert result.ok
+    assert result.issues[0].code == "ACLI_COMMAND_NOT_IN_CATALOG_CONFIRM"
+    assert result.issues[0].level == "warning"
+
+
+def test_acli_exec_catalog_unknown_command_can_be_denied_in_production(monkeypatch):
+    monkeypatch.setenv("ACLI_UNKNOWN_COMMAND_POLICY", "deny")
     result = _validate("acli_exec", {"command": "acli storage disk list", "reason": "检查磁盘"})
     assert not result.ok
     assert result.issues[0].code == "ACLI_COMMAND_NOT_IN_CATALOG"
