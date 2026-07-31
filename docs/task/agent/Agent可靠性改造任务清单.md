@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-31 | v3.47 | **KBD Matcher/行选择模式与 Extract 契约收敛**：修复 LLM 将 `rows.include_mode=any/all` 误写为 `match.mode` 的 Prompt 歧义；backend Matcher 强制复用 `produces` 的声明式 Extract，`match.mode` 收口为 `or/and/not`，JSON 路径收口至 `extract.type=json`。新增迁移 017 和 Prompt/花括号契约回归测试；不添加 `any→or` / `all→and` 旧兼容，非法候选只保留审计后重新抽取。 | [KBD Matcher 模式与 Extract 契约对齐](../../solution/events/2026-07-31-KBD-Matcher-模式与Extract契约对齐.md) |
 | 2026-07-31 | v3.46 | **KBD Prompt JSON 花括号转义修复**：015 热加载 Prompt 的新增 JSON 示例未按 Python `str.format()` 转义，导致 `key`/`mode`/`name` 被误判为非法运行时占位符并使重抽 HTTP 500；016 将已部署数据修正为 `{{`/`}}` 字面量并将 Prompt 提升为 v1.5，新增 seed 与数据迁移的 StrictPromptLoader 回归校验。 | [KBD 重抽取与任务详情截图语义收口](../../solution/knowledge-base/events/2026-07-31-KBD重抽取与任务详情截图语义收口.md) |
 | 2026-07-31 | v3.45 | **Prompt 与重抽版本一致性**：`kbd_extract_signals_v2` 热加载 Prompt 只教授声明式 Extract 和 `or/and/not`；KBD 重抽写入新 Proposal revision，草稿旧 Expert 指针不再冒充当前稿；任务详情弹窗按可见任务字段确定性归类为任务截图。 | [KBD 重抽取与任务详情截图语义收口](../../solution/knowledge-base/events/2026-07-31-KBD重抽取与任务详情截图语义收口.md) |
 | 2026-07-31 | v3.44 | **QFK 声明式取值统一**：Matcher 与 produces 强制共用新版 `ValueExtract`；文本行可按关键字或行号选择，列可按表头或列号提取；删除旧单列 TextExtract、QFK `produces.path`、无 extract 全文判定和 `json_path` Matcher，变量写入保持原子。 | [QFK 声明式取值与匹配模式统一方案](../../solution/agent/events/2026-07-31-QFK取值先行与全模式安全管道统一方案.md) |
