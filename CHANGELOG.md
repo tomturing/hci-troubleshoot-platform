@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.21.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.20.0...v2.21.0) (2026-07-31)
+
+
+### ✨ 新功能
+
+* **qfk:** 统一声明式取值与匹配模式 ([#654](https://github.com/tomturing/hci-troubleshoot-platform/issues/654)) ([1110ba6](https://github.com/tomturing/hci-troubleshoot-platform/commit/1110ba6fc4fa45e70806fbda3e335cadc38d9c4d))
+* unify KBD pipeline signal production and audit ([#644](https://github.com/tomturing/hci-troubleshoot-platform/issues/644)) ([d5d7887](https://github.com/tomturing/hci-troubleshoot-platform/commit/d5d78874648e264e29253ed49c17b5def2af322c))
+* 完善KBD截图证据与可执行诊断契约 ([#641](https://github.com/tomturing/hci-troubleshoot-platform/issues/641)) ([5076c65](https://github.com/tomturing/hci-troubleshoot-platform/commit/5076c65aff2cb9d5840f6424a9bd1031632d153b))
+* 实现 hci-sim 并跑通 KBD 27123 端到端 ([#645](https://github.com/tomturing/hci-troubleshoot-platform/issues/645)) ([f281778](https://github.com/tomturing/hci-troubleshoot-platform/commit/f2817781d8575aab00f364d32d7ea945b732c95c))
+* 落地 hci-sim P0 Spike 模拟运行时与 terminal_bridge sim-ssh 接入点 ([#652](https://github.com/tomturing/hci-troubleshoot-platform/issues/652)) ([10f6ff9](https://github.com/tomturing/hci-troubleshoot-platform/commit/10f6ff93a371b2e88ef78b82f5b1174f5c6d1ed1))
+
+
+### 🐛 Bug 修复
+
+* **kbd:** 转义信号 Prompt JSON 示例 ([#657](https://github.com/tomturing/hci-troubleshoot-platform/issues/657)) ([9beb96e](https://github.com/tomturing/hci-troubleshoot-platform/commit/9beb96e3a235909d66c67803f6e99c0868c49472))
+* 对齐 KBD Matcher 与 Extract 抽取契约 ([#658](https://github.com/tomturing/hci-troubleshoot-platform/issues/658)) ([7f636f1](https://github.com/tomturing/hci-troubleshoot-platform/commit/7f636f1062d6735a074ba3887ca55e6c9ea5f373))
+* 收口 KBD 重抽取与任务截图语义 ([#656](https://github.com/tomturing/hci-troubleshoot-platform/issues/656)) ([233648e](https://github.com/tomturing/hci-troubleshoot-platform/commit/233648e603dc5156b976df179090ff8fc1a334b4))
+
+
+### 📝 文档
+
+* 归档HCI双轨与hci-sim运行时设计 ([#643](https://github.com/tomturing/hci-troubleshoot-platform/issues/643)) ([633b539](https://github.com/tomturing/hci-troubleshoot-platform/commit/633b53918952670279cd9f1371dbc07e27310e0b))
+
 ## [2.20.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.19.0...v2.20.0) (2026-07-29)
 
 
