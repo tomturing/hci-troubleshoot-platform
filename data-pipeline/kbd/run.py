@@ -4,33 +4,33 @@ data-pipeline/kbd/run.py — KBD 知识生产管道 CLI 入口（API 调用版�
 使用方式（在项目根目录下）：
 
   # 完整流水线（从 Excel 读取所有 ID）
-  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline --excel
+  uv run python -m data-pipeline.kbd.run pipeline --excel
 
   # 完整流水线（指定 ID 列表）
-  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline --ids 34977,36179,36166
+  uv run python -m data-pipeline.kbd.run pipeline --ids 34977,36179,36166
 
   # 只跑特定 Stage
-  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run fetch --excel --limit 100
-  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run import --excel
-  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run vision --ids 34977,36179
-  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run classify --excel
-  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run extract-signals --excel
-  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run audit-log-signals --all
+  uv run python -m data-pipeline.kbd.run fetch --excel --limit 100
+  uv run python -m data-pipeline.kbd.run import --excel
+  uv run python -m data-pipeline.kbd.run vision --ids 34977,36179
+  uv run python -m data-pipeline.kbd.run classify --excel
+  uv run python -m data-pipeline.kbd.run extract-signals --excel
+  uv run python -m data-pipeline.kbd.run audit-log-signals --all
 
   # 从上次中断处继续（断点续传）
-  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline --excel --resume
+  uv run python -m data-pipeline.kbd.run pipeline --excel --resume
 
   # 仅处理失败的案例
-  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run vision --excel --failed-only
+  uv run python -m data-pipeline.kbd.run vision --excel --failed-only
 
   # 强制重新处理（覆盖已完成的记录）
-  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline --excel --force-fetch --override
+  uv run python -m data-pipeline.kbd.run pipeline --excel --force-fetch --override
 
   # SOP 文档导入
-  PYTHONPATH=data-pipeline:backend uv run python -m kbd.import_sop --file /path/to/sop.docx --category-id "虚拟机-001"
+  uv run python -m data-pipeline.kbd.import_sop --file /path/to/sop.docx --category-id "虚拟机-001"
 
   # 查看配置
-  PYTHONPATH=data-pipeline:backend uv run python -m kbd.run config
+  uv run python -m data-pipeline.kbd.run config
 """
 from __future__ import annotations
 
@@ -48,6 +48,7 @@ from .config import settings
 from .fetcher import read_ids_from_excel
 from .observability import install_trace_logging, new_trace_id, set_trace_id
 from .pipeline import Stage, run_from_excel
+from .runtime import require_shared_contracts
 
 # ─── 日志配置（终端 + 文件双输出）────────────────────────────────────────────────
 
@@ -518,7 +519,7 @@ def _cmd_config(_args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m kbd.run",
+        prog="python -m data-pipeline.kbd.run",
         description="KBD 知识生产管道",
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -678,6 +679,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+
+    # 完整 pipeline 默认包含 Stage 6；在任何 fetch/import/LLM 调用前确认其
+    # 唯一外部源码依赖可用，避免跑完前五阶段后才因 shared 导入失败。
+    requires_shared_contracts = args.command in {"audit-log-signals", "audit-signals", "audit"}
+    if args.command == "pipeline":
+        requires_shared_contracts = Stage.AUDIT_LOG_SIGNALS in _parse_stages(args.stages)
+    if requires_shared_contracts:
+        try:
+            require_shared_contracts()
+        except RuntimeError as exc:
+            parser.error(str(exc))
 
     cmd_map = {
         "pipeline":    _cmd_pipeline,

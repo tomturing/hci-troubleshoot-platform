@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
+from kbd import runtime
 from kbd.pipeline import Stage
 from kbd.run import (
     _cmd_audit_log_signals,
@@ -150,3 +155,62 @@ async def test_audit_log_signals_fail_on_blocked_is_opt_in(tmp_path):
 
     assert await _cmd_audit_log_signals(normal, "20260730_120000") == 0
     assert await _cmd_audit_log_signals(strict, "20260730_120001") == 1
+
+
+def test_repository_module_entrypoint_bootstraps_shared_contract_without_pythonpath(tmp_path):
+    """真实用户入口不应在 Stage 6 才因 backend/shared 导入失败。"""
+
+    source = tmp_path / "signals.json"
+    source.write_text(
+        json.dumps(
+            [
+                {
+                    "support_id": "40061",
+                    "signals_json": {
+                        "signals": [
+                            {
+                                "id": "log_ok",
+                                "acquire": {"tool": "qfk_log", "args": {"file": "messages"}},
+                                "match": {"type": "keyword", "pattern": "failed"},
+                            }
+                        ]
+                    },
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    repository_root = Path(__file__).resolve().parents[3]
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "data-pipeline.kbd.run",
+            "audit-log-signals",
+            "--file",
+            str(source),
+        ],
+        cwd=repository_root,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert '"PASS_LOG_CONTRACT": 1' in result.stdout
+
+
+def test_shared_contract_preflight_only_blocks_commands_that_need_stage_six(monkeypatch, tmp_path):
+    """缺少共享契约必须得到明确错误，而不是等到审计模块 traceback。"""
+
+    monkeypatch.setattr(runtime, "repository_root", lambda: tmp_path)
+    monkeypatch.setattr(runtime.sys, "path", list(runtime.sys.path))
+    assert runtime.bootstrap_repository_imports() == tmp_path / "backend"
+
+    with pytest.raises(RuntimeError, match="backend/shared"):
+        runtime.require_shared_contracts()

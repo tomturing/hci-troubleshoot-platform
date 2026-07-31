@@ -110,16 +110,18 @@ cp data-pipeline/kbd/.env.example data-pipeline/kbd/.env
 本文命令都从仓库根目录执行：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run <command>
+uv run python -m data-pipeline.kbd.run <command>
 ```
 
-必须同时包含 `data-pipeline` 和 `backend`：前者提供 `kbd` 包，后者提供生产端与 Agent 共用的 `shared.schemas`。不要使用非法模块路径 `python -m data-pipeline.kbd.run`。
+标准入口在包加载时自动定位同一 checkout 的 `backend/shared`；包含 Stage 6 的命令会在执行任何生产阶段前预检这份共享契约。这样不会在 fetch/import/Vision/LLM 已执行后，才因 `No module named shared` 失败。
+
+`PYTHONPATH=data-pipeline:backend uv run python -m kbd.run <command>` 保留为兼容旧自动化的入口，但新的手工操作、文档和故障排查均以本节标准入口为准。
 
 先做健康检查：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run config
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run --help
+uv run python -m data-pipeline.kbd.run config
+uv run python -m data-pipeline.kbd.run --help
 ```
 
 `config` 会遮蔽 Cookie、Token 和数据库敏感值。
@@ -129,27 +131,27 @@ PYTHONPATH=data-pipeline:backend uv run python -m kbd.run --help
 对单条案例运行完整生产闭环：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline --ids 37150
+uv run python -m data-pipeline.kbd.run pipeline --ids 37150
 ```
 
 批量指定 ID：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline \
+uv run python -m data-pipeline.kbd.run pipeline \
   --ids 37150,39436,41818
 ```
 
 从文本文件读取，每行一个 support_id：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline \
+uv run python -m data-pipeline.kbd.run pipeline \
   --id-file /path/to/kbd_ids.txt
 ```
 
 从配置的 Excel 读取并先试跑 10 条：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline \
+uv run python -m data-pipeline.kbd.run pipeline \
   --excel \
   --limit 10
 ```
@@ -181,7 +183,7 @@ PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline \
 ### 7.1 Stage 1：fetch
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run fetch --ids 37150
+uv run python -m data-pipeline.kbd.run fetch --ids 37150
 ```
 
 产物：
@@ -197,7 +199,7 @@ data-pipeline/kbd/cache/37150/
 默认存在有效 `raw.json` 时跳过。需要重新获取源案例时显式使用：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run fetch \
+uv run python -m data-pipeline.kbd.run fetch \
   --ids 37150 \
   --force
 ```
@@ -207,7 +209,7 @@ PYTHONPATH=data-pipeline:backend uv run python -m kbd.run fetch \
 ### 7.2 Stage 2：import
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run import --ids 37150
+uv run python -m data-pipeline.kbd.run import --ids 37150
 ```
 
 处理内容：
@@ -223,7 +225,7 @@ Pipeline 不再依赖 `.desc.txt`，也不在本地独立拼装最终 `content_m
 覆盖 draft：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run import \
+uv run python -m data-pipeline.kbd.run import \
   --ids 37150 \
   --override
 ```
@@ -231,7 +233,7 @@ PYTHONPATH=data-pipeline:backend uv run python -m kbd.run import \
 覆盖 published 风险更高，只有明确需要重建且已备份/理解专家修改影响时才使用：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run import \
+uv run python -m data-pipeline.kbd.run import \
   --ids 37150 \
   --override \
   --override-status all
@@ -240,7 +242,7 @@ PYTHONPATH=data-pipeline:backend uv run python -m kbd.run import \
 ### 7.3 Stage 3：vision
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run vision --ids 37150
+uv run python -m data-pipeline.kbd.run vision --ids 37150
 ```
 
 Vision 从数据库 `kbd_image` 读取原图，结合章节和前后文，调用 KB Service 异步任务并轮询。结果写入 `images_json`，核心原则是分离：
@@ -254,7 +256,7 @@ Vision 从数据库 `kbd_image` 读取原图，结合章节和前后文，调用
 仅重试自动可恢复的失败图片：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run vision \
+uv run python -m data-pipeline.kbd.run vision \
   --ids 37150 \
   --failed-only
 ```
@@ -264,7 +266,7 @@ PYTHONPATH=data-pipeline:backend uv run python -m kbd.run vision \
 ### 7.4 Stage 4：classify
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run classify --ids 37150
+uv run python -m data-pipeline.kbd.run classify --ids 37150
 ```
 
 仅处理 draft 且尚无 AI 分类的条目，写入：
@@ -280,14 +282,14 @@ PYTHONPATH=data-pipeline:backend uv run python -m kbd.run classify --ids 37150
 关键信号抽取现在是 `kbd.run` 的一等子命令：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run extract-signals \
+uv run python -m data-pipeline.kbd.run extract-signals \
   --ids 37150,41818
 ```
 
 兼容别名：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run extract --ids 37150
+uv run python -m data-pipeline.kbd.run extract --ids 37150
 ```
 
 独立命令只处理同时满足以下条件的条目：
@@ -327,7 +329,7 @@ kb-service
 也可以在 Pipeline 中显式运行到抽取：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline \
+uv run python -m data-pipeline.kbd.run pipeline \
   --ids 37150 \
   --stages extract-signals
 ```
@@ -349,14 +351,14 @@ PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline \
 审计指定数据库案例：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run audit-log-signals \
+uv run python -m data-pipeline.kbd.run audit-log-signals \
   --ids 37150,41818
 ```
 
 数据库全量审计并把完整报告归档：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run audit-log-signals \
+uv run python -m data-pipeline.kbd.run audit-log-signals \
   --all \
   --output /tmp/kbd-log-signal-audit.json
 ```
@@ -364,7 +366,7 @@ PYTHONPATH=data-pipeline:backend uv run python -m kbd.run audit-log-signals \
 审计文件输入：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run audit-log-signals \
+uv run python -m data-pipeline.kbd.run audit-log-signals \
   --file /tmp/kbd-signals.json \
   --output /tmp/kbd-log-signal-audit.json
 ```
@@ -374,7 +376,7 @@ PYTHONPATH=data-pipeline:backend uv run python -m kbd.run audit-log-signals \
 ```bash
 kubectl exec -n hci-dev <postgres-pod> -- psql -U <user> -d <db> -Atc \
   "SELECT jsonb_agg(jsonb_build_object('support_id', support_id, 'signals_json', signals_json)) FROM kbd_entry" \
-  | PYTHONPATH=data-pipeline:backend uv run python -m kbd.run audit-log-signals --stdin
+  | uv run python -m data-pipeline.kbd.run audit-log-signals --stdin
 ```
 
 输入必须是 JSON 数组：
@@ -414,7 +416,7 @@ kubectl exec -n hci-dev <postgres-pod> -- psql -U <user> -d <db> -Atc \
 默认情况下，发现 Proposal 问题仍返回 0，因为报告本身是专家复核清单。用于 CI 时显式开启严格门禁：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run audit-log-signals \
+uv run python -m data-pipeline.kbd.run audit-log-signals \
   --file /tmp/kbd-signals.json \
   --fail-on-blocked
 ```
@@ -426,7 +428,7 @@ PYTHONPATH=data-pipeline:backend uv run python -m kbd.run audit-log-signals \
 指定阶段：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline \
+uv run python -m data-pipeline.kbd.run pipeline \
   --ids 37150 \
   --stages fetch,import,vision
 ```
@@ -436,7 +438,7 @@ PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline \
 从数据库现状续跑：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline \
+uv run python -m data-pipeline.kbd.run pipeline \
   --ids 37150 \
   --resume
 ```
@@ -446,7 +448,7 @@ PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline \
 仅处理自动识别出的抓取/Vision 失败案例：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline \
+uv run python -m data-pipeline.kbd.run pipeline \
   --excel \
   --failed-only
 ```
@@ -454,7 +456,7 @@ PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline \
 强制重新抓取并覆盖允许状态的导入记录：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline \
+uv run python -m data-pipeline.kbd.run pipeline \
   --ids 37150 \
   --force-fetch \
   --override
@@ -541,12 +543,12 @@ ls -1t data-pipeline/kbd/logs/kbd_*.log | head -1
 从仓库根目录使用：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run --help
+uv run python -m data-pipeline.kbd.run --help
 ```
 
 ### 12.2 `No module named shared`
 
-审计复用 `backend/shared`，说明 `PYTHONPATH` 少了 `backend`。使用同一标准前缀即可。
+标准入口会自动补上当前 checkout 的 `backend`。如果仍报错，说明 checkout 缺少或损坏 `backend/shared`，先执行 `uv sync`，再确认在仓库根目录存在 `backend/shared/schemas/`；不要通过跳过 Stage 6 或重跑前五阶段绕过这个错误。
 
 ### 12.3 Portal 401/返回登录页
 
@@ -597,10 +599,10 @@ git diff --check
 验证 README 中的统一入口：
 
 ```bash
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run --help
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run pipeline --help
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run extract-signals --help
-PYTHONPATH=data-pipeline:backend uv run python -m kbd.run audit-log-signals --help
+uv run python -m data-pipeline.kbd.run --help
+uv run python -m data-pipeline.kbd.run pipeline --help
+uv run python -m data-pipeline.kbd.run extract-signals --help
+uv run python -m data-pipeline.kbd.run audit-log-signals --help
 ```
 
 修改任一 Stage 时，测试必须覆盖输入、前置条件、成功、失败、幂等/保护性跳过和输出统计。修改 Signal 或 qfk_log 契约时，生产端审计与 Agent 运行时必须复用同一 Schema/Catalog，禁止各自维护一份近似规则。
