@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from app.models.kbd_entry import KbdEntry
 from app.routes.admin import kbd_router, set_dependencies
+from app.services.kbd_revision_service import KBD_PAYLOAD_FIELDS
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -104,15 +105,23 @@ async def test_update_kbd_entry_api_sync_sections():
         "images_json": [{"seq": 0, "desc": "TYPE: ERR\nBG: BLU\nTest image."}]
     }
 
+    # 普通编辑会冻结 Expert revision；测试替身需提供完整可审核 payload。
+    kbd_payload = {field: "" for field in KBD_PAYLOAD_FIELDS}
+    kbd_payload.update(
+        {
+            "signals_json": {},
+            "images_json": [{"seq": 0, "desc": "TYPE: ERR\nBG: BLU\nTest image."}],
+            "content_md": "",
+        }
+    )
     kbd = SimpleNamespace(
         id=123,
         latest_proposal_revision_id=None,
         working_revision_id=None,
         lock_version=0,
         status="draft",
-        signals_json={},
-        images_json=[{"seq": 0, "desc": "TYPE: ERR\nBG: BLU\nTest image."}],
-        content_md="",
+        entry_metadata={},
+        **kbd_payload,
     )
     kbd_row = MagicMock()
     kbd_row.scalar_one_or_none.return_value = kbd

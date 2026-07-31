@@ -31,6 +31,26 @@ class DynamicResourceLoader:
             return await self._cache.get_or_load(key, lambda: self._load_active(key))
         return await self._load_active(key)
 
+    async def get_revision(self, resource_type: str, resource_name: str, revision: int) -> ResourceSnapshot:
+        """按运行时已加载的精确 revision 读取快照。
+
+        使用审计不能在诊断结束时回读 active：期间若专家发布了新版本，active 已经
+        指向另一份知识，会把旧执行结果错误归属给新 KBD。调用方从检索响应携带的
+        ``resource_revision`` 传入该值，缺失时宁可放弃这条审计也不偷换版本。
+        """
+
+        result = await self._session.execute(
+            select(DynamicResourceRevision).where(
+                DynamicResourceRevision.resource_type == resource_type,
+                DynamicResourceRevision.resource_name == resource_name,
+                DynamicResourceRevision.revision == revision,
+            )
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            raise ResourceNotFoundError(f"动态资源 revision 不存在: {resource_type}/{resource_name}@{revision}")
+        return self._to_snapshot(row)
+
     async def list_active(self, resource_type: str) -> list[ResourceSnapshot]:
         """列出某类资源的所有 active 快照。"""
         result = await self._session.execute(

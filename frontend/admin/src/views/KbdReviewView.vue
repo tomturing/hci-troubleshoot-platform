@@ -110,6 +110,13 @@ interface SignalsDoc {
   publish_validation?: Record<string, any>
 }
 
+interface ChangeAnnotation {
+  path?: string
+  signal_id?: string
+  reason_code: string
+  note?: string
+}
+
 // 图片描述项（images_json 数组元素）
 interface ImageJsonItem {
   seq: number           // 图片序号
@@ -943,6 +950,21 @@ function cloneSignal(signal: SignalV2): SignalV2 {
 }
 
 const evidenceRoles = ['must', 'should', 'exclude', 'context'] as const
+const changeReasonOptions = [
+  ['source_missed', '原始案例遗漏'],
+  ['screenshot_misread', '截图识别错误'],
+  ['fact_inference_confused', '事实与推断混淆'],
+  ['wrong_category', '分类错误'],
+  ['wrong_capability', '工具能力错误'],
+  ['invalid_argument', '工具参数错误'],
+  ['missing_signal', '缺少关键信号'],
+  ['redundant_signal', '冗余或示例信号'],
+  ['unsafe_command', '命令不安全'],
+  ['unsupported_semantics', '平台暂不支持的语义'],
+  ['threshold_or_match_error', '判定或阈值错误'],
+  ['wording_only', '仅表述优化'],
+  ['other_expert_correction', '其他专家修正'],
+] as const
 
 /**
  * 专家只编辑每条 Signal 的“证据作用”。执行 Contract 是这份角色清单的派生
@@ -1352,14 +1374,22 @@ function cancelEditSignal() {
   }
 }
 
-async function persistSignalList(list: SignalV2[], successMessage: string): Promise<boolean> {
+async function persistSignalList(
+  list: SignalV2[],
+  successMessage: string,
+  changeAnnotations: ChangeAnnotation[] = [],
+): Promise<boolean> {
   if (!detailEntry.value) return false
   const currentDoc = (detailEntry.value.signals_json || {}) as SignalsDoc
   const payload = reconcileSignalContract({ ...currentDoc, schema_version: 2 }, list)
   const resp = await fetch(kbdEditEndpoint(detailEntry.value), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', ...authHeader },
-    body: JSON.stringify({ signals_json: payload, lock_version: detailEntry.value.lock_version }),
+    body: JSON.stringify({
+      signals_json: payload,
+      change_annotations: changeAnnotations,
+      lock_version: detailEntry.value.lock_version,
+    }),
   })
   const responseBody = await resp.json().catch(() => ({}))
   if (!resp.ok) {
@@ -1393,7 +1423,12 @@ function addSignal(tool: string) {
   ElMessage.info('请补全新信号的必填项后保存')
 }
 
-async function deleteSignal(index: number) {
+const deletingSignalIndex = ref<number | null>(null)
+const deleteSignalReason = ref<string>('redundant_signal')
+const deleteSignalNote = ref<string>('')
+const deleteSignalDialogVisible = ref(false)
+
+function deleteSignal(index: number) {
   if (!detailEntry.value) return
   const signal = signalList.value[index]
   const role = sigRoleLabel(signal)
@@ -1407,19 +1442,35 @@ async function deleteSignal(index: number) {
     thresholdWillChange ? '增强证据门槛会自动收敛，避免要求已删除的信号。' : '',
     '原始 KBD 正文和截图证据不会删除。',
   ].filter(Boolean).join('\n\n')
-  try {
-    await ElMessageBox.confirm(
-      `确认删除“${sigArgs(signal).instruction || sigTool(signal) || signalStableId(signal, index)}”？\n\n${impact}`,
-      '删除关键信号',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
-    )
-  } catch {
+  deletingSignalIndex.value = index
+  deleteSignalReason.value = 'redundant_signal'
+  deleteSignalNote.value = ''
+  deleteSignalDialogVisible.value = true
+  ElMessage.info(impact)
+}
+
+async function submitDeleteSignal() {
+  if (!detailEntry.value || deletingSignalIndex.value === null) return
+  const index = deletingSignalIndex.value
+  const signal = signalList.value[index]
+  if (!signal || !deleteSignalReason.value) {
+    ElMessage.warning('请选择删除原因')
     return
   }
   signalSaveLoading.value = true
   try {
-    await persistSignalList(signalList.value.filter((_, itemIndex) => itemIndex !== index), '关键信号已删除')
+    await persistSignalList(
+      signalList.value.filter((_, itemIndex) => itemIndex !== index),
+      '关键信号已删除',
+      [{
+        signal_id: signalStableId(signal, index),
+        reason_code: deleteSignalReason.value,
+        ...(deleteSignalNote.value.trim() ? { note: deleteSignalNote.value.trim() } : {}),
+      }],
+    )
     editingSignalIndex.value = null
+    deleteSignalDialogVisible.value = false
+    deletingSignalIndex.value = null
   } catch (error) {
     ElMessage.error(error instanceof Error ? `删除失败：${error.message}` : '删除失败，请重试')
   } finally {
@@ -3409,6 +3460,34 @@ onMounted(() => {
       </template>
     </el-dialog>
 
+    <!-- 删除是影响模型纠错样本的重要操作：原因必须由专家显式选择，正文/截图不会删除。 -->
+    <el-dialog v-model="deleteSignalDialogVisible" title="删除关键信号" width="520px" :close-on-click-modal="false">
+      <p class="delete-signal-hint">
+        将从 Agent 验证规则中移除此信号；原始 KBD 正文和截图证据保持不变。请选择最符合的原因，供后续模型和工具改进使用。
+      </p>
+      <el-form label-position="top">
+        <el-form-item label="删除原因" required>
+          <el-select v-model="deleteSignalReason" placeholder="请选择删除原因" style="width: 100%">
+            <el-option v-for="item in changeReasonOptions" :key="item[0]" :label="item[1]" :value="item[0]" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="补充说明（可选）">
+          <el-input
+            v-model="deleteSignalNote"
+            type="textarea"
+            :rows="3"
+            maxlength="500"
+            show-word-limit
+            placeholder="例如：这是正常 GPU 主机的示例说明，不应在异常主机上执行。"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="deleteSignalDialogVisible = false">取消</el-button>
+        <el-button type="danger" :loading="signalSaveLoading" @click="submitDeleteSignal">确认删除</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 编辑弹窗 -->
     <el-dialog
       v-model="editDialogVisible"
@@ -3813,6 +3892,12 @@ onMounted(() => {
   margin-bottom: 10px;
   color: #606266;
   font-size: 13px;
+}
+
+.delete-signal-hint {
+  margin: 0 0 16px;
+  color: var(--el-text-color-regular);
+  line-height: 1.65;
 }
 
 /* 选中态只改变颜色和背景，不改变文字尺寸/字重，避免切换时布局跳动。 */

@@ -124,6 +124,7 @@ async def ensure_kbd_revision(
     parent_revision_id: int | None = None,
     generation_metadata: dict[str, Any] | None = None,
     validation_summary: dict[str, Any] | None = None,
+    review_metadata: dict[str, Any] | None = None,
     trace_id: str | None = None,
     reuse_existing: bool = True,
 ) -> KbdRevision:
@@ -147,6 +148,7 @@ async def ensure_kbd_revision(
         parent_revision_id=parent_revision_id,
         generation_metadata=generation_metadata,
         validation_summary=validation_summary,
+        review_metadata=review_metadata,
         trace_id=trace_id,
         reuse_existing=reuse_existing,
     )
@@ -163,6 +165,7 @@ async def ensure_kbd_revision_payload(
     parent_revision_id: int | None = None,
     generation_metadata: dict[str, Any] | None = None,
     validation_summary: dict[str, Any] | None = None,
+    review_metadata: dict[str, Any] | None = None,
     trace_id: str | None = None,
     reuse_existing: bool = True,
 ) -> KbdRevision:
@@ -203,6 +206,7 @@ async def ensure_kbd_revision_payload(
             checksum=checksum,
             generation_metadata=generation_metadata or {},
             validation_summary=validation_summary or {},
+            review_metadata=review_metadata or {},
             actor_id=actor_id,
             actor_type=actor_type,
             trace_id=trace_id,
@@ -241,5 +245,6 @@ def revision_metadata(revision: KbdRevision | None) -> dict[str, Any] | None:
         "actor_id": revision.actor_id,
         "actor_type": revision.actor_type,
         "validation_summary": revision.validation_summary or {},
+        "review_metadata": getattr(revision, "review_metadata", None) or {},
         "created_at": revision.created_at.isoformat() if revision.created_at else None,
     }

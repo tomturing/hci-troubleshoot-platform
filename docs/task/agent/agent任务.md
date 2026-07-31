@@ -15,6 +15,7 @@ update_trigger: Agent 层功能新增/重构/问题修复任务
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
+| 2026-07-31 | v2.5 | 完成可独立产生的 KBD 数据闭环：reason_code、专家删除原因、精确 runtime revision、CDD 编译/逐 Signal outcome、Capability Gap、使用效果/失败模式与评估导出；SSO、Replay、真实客户执行和 Champion/Challenger 仍待后续阶段。 | [KBD 专家监督与运行效果数据闭环任务](events/2026-07-31-KBD专家监督与运行效果数据闭环任务.md) |
 | 2026-07-31 | v2.4 | qfk_system 的 aCLI `--container` 与 Bridge container 执行边界分离；Matcher 和产出变量共用 TextExtract，替代 df 特判；真实 HCI/Agent replay 待实施。 | [QFK 系统执行域与统一文本取值任务](./events/2026-07-31-QFK系统执行域与统一文本取值任务.md) |
 | 2026-07-31 | v2.3 | Expert 发布增加当前 Tool Contract 独立盖章，Agent 保留真实 Handler/DAG 编译；QKV END 统一、task/alert/dialog 锚点优先级确定化，threshold 正确解析 df Use%。真实客户环境 replay 仍待实施。 | [KBD 发布消费一致性任务](./events/2026-07-31-KBD发布消费一致性与专家审核易用性任务.md) |
 | 2026-07-30 | v2.2 | KBD 轻治理纵向切片已实施：复用现有审核页、最小 Proposal/Expert Revision、published maintenance working、Vision/Signal 专家编辑、静态 Validation、统一写门禁和 Capability Runtime Discovery。当前仍无可信 Admin SSO、真实 Agent replay、reason_code/评估导出；122 Proposal 尚未开始正式专家复核。 | [KBD专家复核与全生命周期闭环实施任务](./events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
@@ -37,6 +38,7 @@ update_trigger: Agent 层功能新增/重构/问题修复任务
 | 状态 | 任务 | 创建日期 | 关联方案 |
 |------|------|---------|---------|
 | ✅ 完成（代码级；真实 HCI 回归待做） | T-AGT-QFK-EXEC：aCLI 系统执行域、Bridge 边界和统一 TextExtract | 2026-07-31 | [QFK 系统执行域与统一文本取值方案](../../solution/agent/events/2026-07-31-QFK系统执行域与统一文本取值方案.md) |
+| ✅ 完成（代码级；不代表可信身份或真实客户 replay） | T-AGT-KBD-DATA-CLOSURE：专家原因/删除原因、精确版本运行审计、Capability Gap、运行指标与评估导出 | 2026-07-31 | [KBD 专家监督与运行效果数据闭环方案](../../solution/agent/events/2026-07-31-KBD专家监督与运行效果数据闭环方案.md) |
 | ✅ 完成（代码级） | T-AGT-KBD-PUBLISH：发布盖章 freshness、END 标准变量、替代 QKV 优先级和 df 阈值解析 | 2026-07-31 | [KBD 发布消费一致性方案](../../solution/agent/events/2026-07-31-KBD发布消费一致性与专家审核易用性方案.md) |
 | 进行中（静态审核与维护发布闭环已完成；可信身份、真实 replay、评估数据闭环待实施；0/126 专家 Gold） | [KBD 专家复核、版本治理与生产消费闭环](./events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) | 2026-07-29 | [完整方案](../../solution/agent/events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
 | 进行中（126/126 来源完成；4 条工程 Contract fixture 仅 Decision Replay；0/126 专家 Gold） | [KBD 截图证据与可执行诊断契约](./events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) | 2026-07-28 | [系统级方案](../../solution/agent/events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) |

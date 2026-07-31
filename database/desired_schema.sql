@@ -1135,6 +1135,7 @@ CREATE TABLE IF NOT EXISTS kbd_revision (
     checksum varchar(64) NOT NULL,
     generation_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
     validation_summary jsonb NOT NULL DEFAULT '{}'::jsonb,
+    review_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
     actor_id varchar(128),
     actor_type varchar(16) NOT NULL,
     trace_id varchar(64),
@@ -1157,6 +1158,7 @@ COMMENT ON COLUMN kbd_revision.payload_json IS '与 KBD 可审核字段同构的
 COMMENT ON COLUMN kbd_revision.checksum IS 'payload_json 的稳定 SHA-256，用于幂等和差异定位';
 COMMENT ON COLUMN kbd_revision.generation_metadata IS '模型、Prompt、配置、来源或迁移元数据；专家版本保留其基线生成信息';
 COMMENT ON COLUMN kbd_revision.validation_summary IS '该 revision 最近一次确定性静态校验摘要，不代表业务 Expert Gold';
+COMMENT ON COLUMN kbd_revision.review_metadata IS '专家修改原因、删除说明、审核身份状态与 Expert Gold 准备度；payload 差异仍以 parent_revision_id + payload_json 为准';
 COMMENT ON COLUMN kbd_revision.actor_id IS '创建者身份；服务认证未提供用户身份时允许为空但必须诚实记录 actor_type';
 COMMENT ON COLUMN kbd_revision.actor_type IS 'llm/expert/migration/system；不得用 engineering fixture 冒充 expert';
 COMMENT ON COLUMN kbd_revision.trace_id IS '创建 revision 的 W3C trace 链路标识';

@@ -63,6 +63,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | KBD 专家 Signal 编辑与执行契约一致性 | ✅ 代码级完成：角色单一事实来源、编辑 Contract 自动同步、草稿/发布门禁分层；KBD30880 UI 人工验收待部署后执行，不计 Expert Gold | 2026-07-30 |
 | KBD Expert 发布与 Agent 消费一致性 | 🟡 代码级完成：独立发布盖章、Agent freshness、旧角色冲突规范化、替代证据、END 与 df Use% 修复；部署后 KBD30880/40061 真实 replay 待完成，0/126 Expert Gold | 2026-07-31 |
 | QFK 系统执行域与统一文本取值 | 🟡 代码级完成：aCLI `--container` 与 Bridge container 边界分离；Matcher/产出变量复用安全 TextExtract；真实 HCI、Admin 构建和 KBD40061 replay 待验 | 2026-07-31 |
+| KBD 专家监督与运行效果数据闭环 | 🟡 已完成可独立产生的数据：原因码/删除原因、精确 Agent runtime revision、CDD 编译/逐 Signal outcome、Capability Gap、运行指标和评估导出；可信 SSO、Replay、真实客户执行、0/126 Expert Gold、Challenger 仍未完成 | 2026-07-31 |
 | hci-real/hci-sim 双轨与 100+ Agent 并发回归 | 🟡 KBD 27123 P0 Golden Agent E2E 已通过；real/sim diff、20 次稳定性与 100+ 容量尚未完成 | 2026-07-30 |
 
 **当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）；KBD 27123 已完成首个真实 Evidence/Execution P0 Golden E2E，链路经过 Customer UI Headless Runner、Agent/CDD、Terminal Bridge SSH、hci-sim、Artifact、Evaluation 和 Conclusion，证据见 [KBD 27123 hci-sim P0 验证](verify/events/2026-07-30-KBD27123-hci-sim-P0端到端验证.md)。下一步不是直接宣称 100+，而是完成 Windows Bridge compatibility、real/sim differential、fault variant、20 次稳定性，再进入 1/10/50/100/200 容量梯度；两条轨道单次运行严格互斥，禁止 sim 失败 fallback real。同时按 [Source → Proposal Revision → 单专家修订 → Expert Revision → Dynamic Resource Active](solution/agent/events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) 的轻治理链路开始 122 条正式专家复核；未认证 reviewer ID 不计 Expert Gold。

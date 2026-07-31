@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import app.routes.admin as admin_route
 import pytest
+from app.services.kbd_revision_service import KBD_PAYLOAD_FIELDS
 
 
 def _db_with_session(session: AsyncMock) -> MagicMock:
@@ -96,7 +97,17 @@ async def test_candidate_validation_is_side_effect_free_and_separates_contract_f
 
 async def test_approval_freezes_a_distinct_expert_revision_even_when_payload_is_unchanged():
     session = AsyncMock()
-    kbd = SimpleNamespace(id=9, latest_proposal_revision_id=1, working_revision_id=2)
+    # 审批冻结现在同时记录结构化 review metadata，因此测试替身也必须具备完整
+    # 可审核 payload，而不是只提供版本指针。
+    kbd_payload = {field: "" for field in KBD_PAYLOAD_FIELDS}
+    kbd_payload.update({"signals_json": {"schema_version": 2, "signals": []}, "images_json": []})
+    kbd = SimpleNamespace(
+        id=9,
+        latest_proposal_revision_id=1,
+        working_revision_id=2,
+        entry_metadata={},
+        **kbd_payload,
+    )
     kbd_result = MagicMock()
     kbd_result.scalar_one.return_value = kbd
     session.execute.return_value = kbd_result
@@ -116,3 +127,4 @@ async def test_approval_freezes_a_distinct_expert_revision_even_when_payload_is_
     assert ensure.await_args.kwargs["parent_revision_id"] == 2
     assert ensure.await_args.kwargs["reuse_existing"] is False
     assert ensure.await_args.kwargs["generation_metadata"]["review_note"] == "专家确认可发布"
+    assert ensure.await_args.kwargs["review_metadata"]["review_state"] == "approved"

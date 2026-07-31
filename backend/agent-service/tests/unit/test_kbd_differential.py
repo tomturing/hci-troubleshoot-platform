@@ -13,7 +13,16 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from app.adapters.agents.htp.cdd import SignalOutcome
+from app.adapters.agents.htp.cdd import (
+    CandidateAssessment,
+    CandidateState,
+    ConclusionDecision,
+    ConclusionLevel,
+    EvidenceRole,
+    SignalOutcome,
+    SignalPlan,
+    SignalRef,
+)
 from app.adapters.agents.htp.kbd_differential import KBDDiagnostic, StepResult
 from app.adapters.agents.htp.kbd_model import KBD, KBDStep
 
@@ -98,6 +107,19 @@ def make_tool_executor(results: dict[str, str]) -> MagicMock:
 
     mock.execute = execute
     return mock
+
+
+class _AsyncSessionContext:
+    """为运行时审计测试提供最小异步 Session 上下文。"""
+
+    def __init__(self) -> None:
+        self.commit = AsyncMock()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
 
 
 # ─── 单元测试：_resolve_args ──────────────────────────────────────────────────
@@ -1386,3 +1408,136 @@ class TestEvidenceGatedCDD:
         values, source = result
         assert source == "task_logs"
         assert values == [{"vm": "4359974862144", "host": "SVR_aCloud_668"}]
+
+
+@pytest.mark.asyncio
+async def test_runtime_audit_uses_exact_loaded_kbd_revision_not_active(monkeypatch):
+    """诊断结束后的审计必须归属检索时已加载的 revision。"""
+
+    import shared.dynamic_resource.loader as dynamic_loader
+    from shared.dynamic_resource.models import ResourceSnapshot
+
+    captured: dict[str, object] = {}
+
+    class FakeLoader:
+        def __init__(self, session):
+            captured["session"] = session
+
+        async def get_revision(self, resource_type, resource_name, revision):
+            captured["get_revision"] = (resource_type, resource_name, revision)
+            return ResourceSnapshot(
+                resource_type=resource_type,
+                resource_name=resource_name,
+                revision=revision,
+                version="1.0",
+                status="published",
+                content={},
+                contract={},
+                dependencies=[],
+                checksum="a" * 64,
+            )
+
+        async def audit_usage(self, snapshot, usage):
+            captured["snapshot"] = snapshot
+            captured["usage"] = usage
+
+    monkeypatch.setattr(dynamic_loader, "DynamicResourceLoader", FakeLoader)
+    session = _AsyncSessionContext()
+    kbd = KBD(
+        id="30880",
+        support_id="30880",
+        resource_revision={"resource_type": "kbd", "resource_name": "30880", "revision": 17},
+    )
+    signal = {"acquire": {"tool": "qfk_log", "args": {}}, "role": "must"}
+    ref = SignalRef(
+        ref_id="30880:sig_001",
+        kbd_id="30880",
+        support_id="30880",
+        revision="17",
+        signal_id="sig_001",
+        signal=signal,
+        required_for_support=True,
+        evidence_role=EvidenceRole.MUST,
+        failure_effect="inconclusive",
+        requires=(),
+        produces=(),
+        phase="diagnostic",
+        matcher_fingerprint="matcher",
+    )
+    plan = SignalPlan(
+        plan_id="plan-1",
+        category_id="gpu",
+        snapshot_id="snapshot-1",
+        candidates={"30880": kbd},
+        signals={ref.ref_id: ref},
+        acquisitions={},
+        compile_errors={"30880": ["缺少 HOST"]},
+    )
+    assessment = CandidateAssessment(
+        kbd_id="30880",
+        state=CandidateState.NOT_EXECUTABLE,
+        signal_outcomes={ref.ref_id: SignalOutcome.BLOCKED},
+    )
+    decision = ConclusionDecision(
+        level=ConclusionLevel.INCONCLUSIVE,
+        supported_ids=(),
+        rejected_ids=(),
+        inconclusive_ids=(),
+        not_executable_ids=("30880",),
+        reason="缺少变量",
+    )
+    diag = KBDDiagnostic(
+        ai_registry=MagicMock(),
+        tool_executor=MagicMock(),
+        conversation_id="conversation-1",
+        case_id="case-1",
+        db_session_factory=lambda: session,
+    )
+
+    await diag._audit_kbd_runtime_outcomes(
+        plan=plan,
+        assessments={"30880": assessment},
+        steps_executed=[],
+        session_id="conversation-1",
+        decision=decision,
+    )
+
+    assert captured["get_revision"] == ("kbd", "30880", 17)
+    usage = captured["usage"]
+    assert usage.status.value == "failed"
+    assert usage.metadata["compile"]["status"] == "failed"
+    assert usage.metadata["signal_outcomes"] == [
+        {
+            "signal_ref_id": "30880:sig_001",
+            "signal_id": "sig_001",
+            "tool": "qfk_log",
+            "role": "must",
+            "outcome": "BLOCKED",
+            "failure_mode": "dependency_unresolved",
+            "exec_id": None,
+            "evaluation_id": None,
+            "error": None,
+        }
+    ]
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_resource_loader_get_revision_does_not_fallback_to_active():
+    """精确 revision 不存在时必须报错，不能静默切换为当前 active。"""
+
+    from shared.dynamic_resource.loader import DynamicResourceLoader, ResourceNotFoundError
+
+    missing_result = MagicMock()
+    missing_result.scalar_one_or_none.return_value = None
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=missing_result)
+    loader = DynamicResourceLoader(session)
+
+    with pytest.raises(ResourceNotFoundError):
+        await loader.get_revision("kbd", "30880", 17)
+
+    statement = session.execute.await_args.args[0]
+    compiled = str(statement.compile(compile_kwargs={"literal_binds": True}))
+    assert "dynamic_resource_revision" in compiled
+    assert "17" in compiled

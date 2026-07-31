@@ -44,6 +44,9 @@ class KbdRevision(Base):
     checksum = Column(String(64), nullable=False)
     generation_metadata = Column(JSONB, nullable=False, default=dict)
     validation_summary = Column(JSONB, nullable=False, default=dict)
+    # 专家修改的结构化监督信息（原因码、删除说明、Gold 准备度）。与 LLM 生成追溯
+    # 分离，避免把人工审核事实混入 generation_metadata，也避免另建审批流表。
+    review_metadata = Column(JSONB, nullable=False, default=dict)
     actor_id = Column(String(128), nullable=True)
     actor_type = Column(String(16), nullable=False)
     trace_id = Column(String(64), nullable=True, index=True)

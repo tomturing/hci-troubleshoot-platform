@@ -51,6 +51,7 @@ from app.models.kbd_revision import KbdRevision
 from app.models.sop_document import SopDocument
 from app.schemas.sop_template import ValidationIssue
 from app.services.kbd_mutation_guard import PublishedKbdMutationError, require_mutable_kbd
+from app.services.kbd_review_metadata import build_review_metadata, normalize_change_annotations
 from app.services.kbd_revision_service import (
     KBD_PAYLOAD_FIELDS,
     apply_kbd_revision_payload,
@@ -179,6 +180,244 @@ async def get_kbd_capabilities(request: Request) -> dict[str, Any]:
     return capability_descriptor_document()
 
 
+def _derive_capability_gaps(raw_signals: Any) -> list[dict[str, str]]:
+    """从当前 Signal 契约派生工程能力缺口，不把部署状态伪装成专家待办。"""
+
+    document = _load_signals_json(raw_signals)
+    gaps: list[dict[str, str]] = []
+    for signal in document.get("signals") or []:
+        if not isinstance(signal, dict):
+            continue
+        tool = str((signal.get("acquire") or {}).get("tool") or "").strip()
+        if not tool:
+            continue
+        descriptor = get_capability_descriptor(tool)
+        if descriptor is None:
+            gaps.append(
+                {
+                    "capability_id": tool,
+                    "code": "CAPABILITY_UNDECLARED",
+                    "signal_id": str(signal.get("id") or ""),
+                    "message": "当前平台没有声明该采集能力；应实现能力或修改信号，不能靠自由 Shell 兜底。",
+                }
+            )
+        elif descriptor["runtime_status"] != "available":
+            gaps.append(
+                {
+                    "capability_id": tool,
+                    "code": "CAPABILITY_RUNTIME_UNVERIFIED",
+                    "signal_id": str(signal.get("id") or ""),
+                    "message": "参数契约已声明，但 Agent Handler/部署状态尚未被运行时探测确认。",
+                }
+            )
+    return gaps
+
+
+@kbd_router.get("/capability-gaps")
+async def get_kbd_capability_gaps(request: Request, limit: int = 200) -> dict[str, Any]:
+    """提供工程侧 Capability Gap 聚合；不展示在专家的常规编辑待办中。"""
+
+    _check_auth(request)
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+    bounded_limit = min(max(limit, 1), 1000)
+    async with _db_manager.async_session_factory() as session:
+        result = await session.execute(
+            select(KbdEntry.id, KbdEntry.support_id, KbdEntry.title, KbdEntry.status, KbdEntry.signals_json)
+            .order_by(KbdEntry.updated_at.desc())
+            .limit(bounded_limit)
+        )
+        rows = result.all()
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        for gap in _derive_capability_gaps(row.signals_json):
+            key = (gap["capability_id"], gap["code"])
+            record = grouped.setdefault(
+                key,
+                {
+                    "capability_id": gap["capability_id"],
+                    "code": gap["code"],
+                    "affected_kbd_count": 0,
+                    "affected_signal_count": 0,
+                    "examples": [],
+                    "_kbd_ids": set(),
+                },
+            )
+            record["affected_signal_count"] += 1
+            if row.id not in record["_kbd_ids"]:
+                record["_kbd_ids"].add(row.id)
+                record["affected_kbd_count"] += 1
+                if len(record["examples"]) < 5:
+                    record["examples"].append(
+                        {
+                            "kbd_id": row.id,
+                            "support_id": row.support_id,
+                            "title": row.title,
+                            "status": row.status,
+                            "signal_id": gap["signal_id"],
+                        }
+                    )
+    gaps = sorted(grouped.values(), key=lambda item: (-item["affected_signal_count"], item["capability_id"]))
+    for item in gaps:
+        item.pop("_kbd_ids", None)
+    return {
+        "schema_version": 1,
+        "scanned_kbd_count": len(rows),
+        "gaps": gaps,
+    }
+
+
+@kbd_router.get("/evaluation-export")
+async def export_kbd_evaluation_data(request: Request, limit: int = 200) -> dict[str, Any]:
+    """导出 LLM Proposal→Expert 与运行结果的结构化样本，不运行 Challenger。"""
+
+    _check_auth(request)
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+    bounded_limit = min(max(limit, 1), 1000)
+    async with _db_manager.async_session_factory() as session:
+        revision_result = await session.execute(
+            select(KbdRevision)
+            .order_by(KbdRevision.kbd_entry_id, KbdRevision.revision_no)
+            .limit(bounded_limit * 8)
+        )
+        revisions = list(revision_result.scalars().all())
+        audit_result = await session.execute(
+            text(
+                """
+                SELECT resource_name, revision, status, error, metadata_json, created_at
+                FROM dynamic_resource_usage_audit
+                WHERE resource_type = 'kbd'
+                  AND consumer = 'agent-service.kbd_differential'
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"limit": bounded_limit * 20},
+        )
+        audits = list(audit_result.mappings().all())
+    revisions_by_kbd: dict[int, list[KbdRevision]] = {}
+    for revision in revisions:
+        revisions_by_kbd.setdefault(int(revision.kbd_entry_id), []).append(revision)
+    audits_by_resource: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for audit in audits:
+        audits_by_resource.setdefault((str(audit["resource_name"]), int(audit["revision"])), []).append(
+            {
+                "status": audit["status"],
+                "error": audit["error"],
+                "metadata": audit["metadata_json"] or {},
+                "created_at": audit["created_at"].isoformat() if audit["created_at"] else None,
+            }
+        )
+    examples: list[dict[str, Any]] = []
+    for kbd_id, history in revisions_by_kbd.items():
+        if len(examples) >= bounded_limit:
+            break
+        by_id = {item.id: item for item in history}
+        proposal = next((item for item in history if item.revision_type == "proposal"), None)
+        for expert in (item for item in history if item.revision_type == "expert"):
+            parent = by_id.get(expert.parent_revision_id)
+            if proposal is None and parent is None:
+                continue
+            baseline = parent or proposal
+            examples.append(
+                {
+                    "kbd_id": kbd_id,
+                    "proposal_revision": {
+                        "id": proposal.id,
+                        "payload": proposal.payload_json,
+                        "generation_metadata": proposal.generation_metadata or {},
+                    }
+                    if proposal is not None
+                    else None,
+                    "expert_revision": {
+                        "id": expert.id,
+                        "payload": expert.payload_json,
+                        "review_metadata": expert.review_metadata or {},
+                        "validation_summary": expert.validation_summary or {},
+                    },
+                    "diff_from_parent": diff_revision_payloads(baseline.payload_json, expert.payload_json),
+                    "runtime_outcomes": [
+                        item
+                        for (resource_name, _revision), items in audits_by_resource.items()
+                        if resource_name == str(kbd_id)
+                        for item in items
+                    ],
+                }
+            )
+            if len(examples) >= bounded_limit:
+                break
+    return {
+        "schema_version": 1,
+        "kind": "kbd_proposal_expert_runtime_export",
+        "facts_boundary": {
+            "trusted_reviewer": False,
+            "expert_gold": False,
+            "evidence_replay": False,
+            "execution_replay": False,
+            "real_customer_execution": False,
+            "challenger_generated": False,
+        },
+        "examples": examples,
+    }
+
+
+@kbd_router.get("/runtime-metrics")
+async def get_kbd_runtime_metrics(request: Request, limit: int = 5000) -> dict[str, Any]:
+    """返回已发布 KBD 的实际消费、编译和 Signal 失败模式聚合。"""
+
+    _check_auth(request)
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+    bounded_limit = min(max(limit, 1), 20000)
+    async with _db_manager.async_session_factory() as session:
+        result = await session.execute(
+            text(
+                """
+                SELECT status, metadata_json
+                FROM dynamic_resource_usage_audit
+                WHERE resource_type = 'kbd'
+                  AND consumer = 'agent-service.kbd_differential'
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"limit": bounded_limit},
+        )
+        rows = list(result.mappings().all())
+    status_counts: dict[str, int] = {}
+    candidate_state_counts: dict[str, int] = {}
+    compile_counts: dict[str, int] = {}
+    outcome_counts: dict[str, int] = {}
+    failure_mode_counts: dict[str, int] = {}
+    for row in rows:
+        status_counts[row["status"]] = status_counts.get(row["status"], 0) + 1
+        metadata = row["metadata_json"] or {}
+        candidate_state = str(metadata.get("candidate_state") or "UNKNOWN")
+        candidate_state_counts[candidate_state] = candidate_state_counts.get(candidate_state, 0) + 1
+        compile_status = str((metadata.get("compile") or {}).get("status") or "not_recorded")
+        compile_counts[compile_status] = compile_counts.get(compile_status, 0) + 1
+        for item in metadata.get("signal_outcomes") or []:
+            if not isinstance(item, dict):
+                continue
+            outcome = str(item.get("outcome") or "NOT_RECORDED")
+            outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
+            failure_mode = item.get("failure_mode")
+            if failure_mode:
+                key = str(failure_mode)
+                failure_mode_counts[key] = failure_mode_counts.get(key, 0) + 1
+    return {
+        "schema_version": 1,
+        "sample_size": len(rows),
+        "status_counts": status_counts,
+        "candidate_state_counts": candidate_state_counts,
+        "compile_counts": compile_counts,
+        "signal_outcome_counts": outcome_counts,
+        "failure_mode_counts": failure_mode_counts,
+        "facts_boundary": "仅聚合 Agent 实际运行产生的审计；不等同于真实客户环境回放或 Expert Gold。",
+    }
+
+
 def _check_auth(request: Request) -> None:
     """验证内部服务 Token"""
     from app.config import settings
@@ -247,6 +486,15 @@ async def _freeze_approved_expert_revision(
     parent_revision_id = kbd.working_revision_id or (
         proposal_revision.id if proposal_revision is not None else None
     )
+    parent_revision = await session.get(KbdRevision, parent_revision_id) if parent_revision_id else None
+    review_metadata = build_review_metadata(
+        parent_payload=getattr(parent_revision, "payload_json", None) if parent_revision is not None else {},
+        payload=build_kbd_revision_payload(kbd),
+        identity_status="unverified_body_reviewer_id",
+        review_state="approved",
+        reviewer_id=reviewer_id,
+        review_note=review_note,
+    )
     return await ensure_kbd_revision(
         session,
         kbd=kbd,
@@ -261,6 +509,7 @@ async def _freeze_approved_expert_revision(
             "review_note": review_note or "",
         },
         validation_summary={"status": "passed", "gate": "publishable_signals_json"},
+        review_metadata=review_metadata,
         trace_id=trace_id,
         # 即使知识 payload 未变化，也必须单独冻结“专家已批准”这一事实；工作稿 revision
         # 保持不可变，批准备注和 validation 不能被幂等复用吞掉。
@@ -2122,6 +2371,10 @@ class KbdUpdateRequest(BaseModel):
     content_md: str | None = Field(None, description="聚合 Markdown（优先用传入的值；不传则自动由章节重建）")
     content_raw: str | None = Field(None, description="新纯文本去噪内容（可选）")
     category_id: str | None = Field(None, description="新分类 ID（可选）")
+    change_annotations: list[dict[str, Any]] | None = Field(
+        None,
+        description="专家修改原因标注；支持 path 或稳定 signal_id，供后续 LLM 评估使用",
+    )
     lock_version: int | None = Field(None, ge=0, description="可选乐观锁版本；不匹配时返回 409")
 
 
@@ -2312,6 +2565,10 @@ async def update_kbd_maintenance_working(
         current = await session.get(KbdRevision, kbd.working_revision_id)
         if current is None or (current.generation_metadata or {}).get("origin") != "admin_maintenance":
             raise HTTPException(status_code=409, detail="当前不存在可编辑的维护工作稿")
+        try:
+            annotations = normalize_change_annotations(body.change_annotations)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         payload = _patch_maintenance_payload(current.payload_json, body)
         revision = await ensure_kbd_revision_payload(
             session,
@@ -2323,6 +2580,13 @@ async def update_kbd_maintenance_working(
             parent_revision_id=current.id,
             generation_metadata={"origin": "admin_maintenance", "status": "saved", "identity_status": "unavailable"},
             validation_summary={"status": "saved", "publish_validation": "not_run"},
+            review_metadata=build_review_metadata(
+                parent_payload=current.payload_json,
+                payload=payload,
+                annotations=annotations,
+                identity_status="unavailable",
+                review_state="working",
+            ),
             trace_id=get_current_trace_id(),
         )
         kbd.lock_version += 1
@@ -2759,6 +3023,10 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
                     "current_lock_version": kbd.lock_version,
                 },
             )
+        try:
+            annotations = normalize_change_annotations(body.change_annotations)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         old_images_json = list(kbd.images_json or [])
 
         if kbd.latest_proposal_revision_id is None:
@@ -2776,6 +3044,10 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
         parent_revision_id = kbd.working_revision_id or (
             proposal_revision.id if proposal_revision is not None else None
         )
+        # 工作稿允许连续保存。训练/评估数据中的字段差异必须相对“这一次编辑的
+        # 直接父版本”计算，不能一直相对最初 Proposal；否则第二次保存会把此前已经
+        # 标注过的改动重复记为本次专家修正，reason_code 将失真。
+        parent_revision = await session.get(KbdRevision, parent_revision_id) if parent_revision_id else None
 
         set_clauses.append("lock_version = lock_version + 1")
         result = await session.execute(
@@ -2801,6 +3073,13 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
             parent_revision_id=parent_revision_id,
             generation_metadata={"origin": "admin_working_edit", "identity_status": "unavailable"},
             validation_summary={"status": "saved", "publish_validation": "not_run"},
+            review_metadata=build_review_metadata(
+                parent_payload=getattr(parent_revision, "payload_json", None) if parent_revision is not None else {},
+                payload=build_kbd_revision_payload(kbd),
+                annotations=annotations,
+                identity_status="unavailable",
+                review_state="working",
+            ),
             trace_id=get_current_trace_id(),
         )
         await session.commit()

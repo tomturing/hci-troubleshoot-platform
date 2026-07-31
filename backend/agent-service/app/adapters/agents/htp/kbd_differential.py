@@ -17,6 +17,7 @@ from typing import Any
 
 from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
+from shared.observability.otel import get_current_trace_id
 
 from app.adapters.agents.htp.cdd import (
     ActiveDiagnosticScheduler,
@@ -543,6 +544,17 @@ class KBDDiagnostic:
                     status="confirmed",
                 )
 
+        # ``diagnostic_item`` 面向会话恢复；动态资源审计面向“某一份已发布 KBD
+        # 被 Agent 怎样消费、每个 Signal 最终怎样”的长期评估。两者职责不同，不能
+        # 仅因为页面已展示执行步骤就省略后者。
+        await self._audit_kbd_runtime_outcomes(
+            plan=plan,
+            assessments=assessments,
+            steps_executed=steps_executed,
+            session_id=session_id,
+            decision=decision,
+        )
+
         yield AgentStageUpdate(
             stage="kbd_diag_complete",
             metadata={
@@ -558,6 +570,136 @@ class KBDDiagnostic:
                 "stop_reason": decision.reason,
             },
         )
+
+    async def _audit_kbd_runtime_outcomes(
+        self,
+        *,
+        plan: Any,
+        assessments: dict[str, Any],
+        steps_executed: list[StepResult],
+        session_id: str,
+        decision: Any,
+    ) -> None:
+        """按精确 KBD resource revision 写入运行结果，供评估和失败模式聚合使用。
+
+        该审计只保存结构化 outcome、错误类别和哈希输入/输出；原始命令输出继续由
+        terminal bridge artifact 管理，避免将可能含现场敏感信息的日志复制进分析表。
+        审计失败不得中断客户排障主流程。
+        """
+
+        if self._db_session_factory is None:
+            return
+        try:
+            from shared.dynamic_resource.loader import DynamicResourceLoader, ResourceNotFoundError
+            from shared.dynamic_resource.models import UsageRecord, UsageStatus
+
+            steps_by_kbd_signal = {(step.kbd_id, step.signal_id): step for step in steps_executed}
+            async with self._db_session_factory() as session:
+                loader = DynamicResourceLoader(session)
+                for kbd_id, kbd in plan.candidates.items():
+                    revision_info = kbd.resource_revision or {}
+                    revision = revision_info.get("revision")
+                    resource_name = str(revision_info.get("resource_name") or kbd.id or kbd_id)
+                    if not isinstance(revision, int):
+                        logger.warning(
+                            event="kbd_runtime_audit_skipped_missing_revision",
+                            kbd_id=kbd_id,
+                            resource_name=resource_name,
+                        )
+                        continue
+                    try:
+                        snapshot = await loader.get_revision("kbd", resource_name, revision)
+                    except ResourceNotFoundError:
+                        logger.warning(
+                            event="kbd_runtime_audit_skipped_unknown_revision",
+                            kbd_id=kbd_id,
+                            resource_name=resource_name,
+                            revision=revision,
+                        )
+                        continue
+
+                    assessment = assessments[kbd_id]
+                    signal_rows: list[dict[str, Any]] = []
+                    for ref in sorted(
+                        (item for item in plan.signals.values() if item.kbd_id == kbd_id),
+                        key=lambda item: item.ref_id,
+                    ):
+                        outcome = assessment.signal_outcomes.get(ref.ref_id, SignalOutcome.NOT_RUN)
+                        step = steps_by_kbd_signal.get((kbd_id, ref.signal_id))
+                        error = step.error if step is not None else None
+                        if outcome is SignalOutcome.BLOCKED:
+                            failure_mode = "dependency_unresolved"
+                        elif outcome is SignalOutcome.ERROR:
+                            failure_mode = "tool_execution_error"
+                        elif outcome is SignalOutcome.UNKNOWN:
+                            failure_mode = "matcher_indeterminate"
+                        elif outcome is SignalOutcome.NOT_APPLICABLE:
+                            failure_mode = "scope_not_applicable"
+                        else:
+                            failure_mode = None
+                        signal_rows.append(
+                            {
+                                "signal_ref_id": ref.ref_id,
+                                "signal_id": ref.signal_id,
+                                "tool": _acquire_tool(ref.signal),
+                                "role": ref.evidence_role.value,
+                                "outcome": outcome.value,
+                                "failure_mode": failure_mode,
+                                "exec_id": step.exec_id if step is not None else None,
+                                "evaluation_id": step.evaluation_id if step is not None else None,
+                                "error": smart_truncate(error or "", max_chars=300) or None,
+                            }
+                        )
+                    compile_errors = list(plan.compile_errors.get(kbd_id) or [])
+                    has_execution_failure = bool(compile_errors) or any(
+                        row["outcome"] in {SignalOutcome.ERROR.value, SignalOutcome.BLOCKED.value}
+                        for row in signal_rows
+                    )
+                    audit_exec_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{plan.plan_id}:kbd:{kbd_id}"))
+                    await loader.audit_usage(
+                        snapshot,
+                        UsageRecord(
+                            consumer="agent-service.kbd_differential",
+                            status=UsageStatus.FAILED if has_execution_failure else UsageStatus.SUCCESS,
+                            conversation_id=self._conversation_id or session_id,
+                            case_id=self._case_id,
+                            trace_id=get_current_trace_id(),
+                            exec_id=audit_exec_id,
+                            input_payload={
+                                "plan_id": plan.plan_id,
+                                "snapshot_id": plan.snapshot_id,
+                                "candidate_id": kbd_id,
+                                "signal_ids": [row["signal_id"] for row in signal_rows],
+                            },
+                            output_payload={
+                                "conclusion_level": decision.level.value,
+                                "candidate_state": assessment.state.value,
+                                "compile_status": "failed" if compile_errors else "passed",
+                                "signal_outcomes": [
+                                    {key: row[key] for key in ("signal_id", "outcome", "failure_mode")}
+                                    for row in signal_rows
+                                ],
+                            },
+                            error="; ".join(compile_errors) if compile_errors else None,
+                            metadata={
+                                "schema_version": 1,
+                                "event_type": "kbd_diagnostic_outcome",
+                                "plan_id": plan.plan_id,
+                                "snapshot_id": plan.snapshot_id,
+                                "candidate_state": assessment.state.value,
+                                "conclusion_level": decision.level.value,
+                                "compile": {
+                                    "status": "failed" if compile_errors else "passed",
+                                    "compiler": "agent-service.cdd.plan_compiler",
+                                    "errors": compile_errors,
+                                },
+                                "signal_outcomes": signal_rows,
+                            },
+                        ),
+                    )
+                await session.commit()
+        except Exception as exc:
+            logger.warning(event="kbd_runtime_outcome_audit_failed", error=str(exc), session_id=session_id)
 
     @staticmethod
     def _unresolved_placeholders(args: dict[str, Any]) -> set[str]:
