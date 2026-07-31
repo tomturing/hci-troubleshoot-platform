@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.21.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.20.0...v2.21.0) (2026-07-31)
+
+
+### ✨ 新功能
+
+* unify KBD pipeline signal production and audit ([#644](https://github.com/tomturing/hci-troubleshoot-platform/issues/644)) ([d5d7887](https://github.com/tomturing/hci-troubleshoot-platform/commit/d5d78874648e264e29253ed49c17b5def2af322c))
+* 完善KBD截图证据与可执行诊断契约 ([#641](https://github.com/tomturing/hci-troubleshoot-platform/issues/641)) ([5076c65](https://github.com/tomturing/hci-troubleshoot-platform/commit/5076c65aff2cb9d5840f6424a9bd1031632d153b))
+* 实现 hci-sim 并跑通 KBD 27123 端到端 ([#645](https://github.com/tomturing/hci-troubleshoot-platform/issues/645)) ([f281778](https://github.com/tomturing/hci-troubleshoot-platform/commit/f2817781d8575aab00f364d32d7ea945b732c95c))
+* 落地 hci-sim P0 Spike 模拟运行时与 terminal_bridge sim-ssh 接入点 ([#652](https://github.com/tomturing/hci-troubleshoot-platform/issues/652)) ([10f6ff9](https://github.com/tomturing/hci-troubleshoot-platform/commit/10f6ff93a371b2e88ef78b82f5b1174f5c6d1ed1))
+
+
+### 📝 文档
+
+* 归档HCI双轨与hci-sim运行时设计 ([#643](https://github.com/tomturing/hci-troubleshoot-platform/issues/643)) ([633b539](https://github.com/tomturing/hci-troubleshoot-platform/commit/633b53918952670279cd9f1371dbc07e27310e0b))
+
 ## [2.20.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.19.0...v2.20.0) (2026-07-29)
 
 
