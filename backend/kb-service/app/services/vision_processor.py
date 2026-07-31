@@ -72,6 +72,11 @@ _VISION_CONCURRENCY = 3  # 并发 LLM 调用数（P1-1 异步化后提高，配�
 _SCREENSHOT_TYPES = ("终端截图", "日志截图", "告警截图", "任务截图", "弹框截图", "配置截图", "其他截图")
 _BACKGROUND_COLORS = ("白色", "黑色", "灰色", "彩色", "其他")
 
+# 任务详情在 HCI 中经常以模态窗口承载。容器外观只是展示方式，不能覆盖窗口内
+# 已明确可见的任务记录语义；这些字段组合才是可复核的分类依据。
+_TASK_DETAIL_REQUIRED_FIELDS = ("状态", "行为")
+_TASK_DETAIL_SUPPORTING_FIELDS = ("起始时间", "开始时间", "结束时间", "完成时间", "对象类型", "对象", "主机", "用户名")
+
 # Vision Prompt 名称（从 system_prompt 表热加载）
 _KBD_VISION_PROMPT_NAME = "kbd_vision_v1"
 
@@ -589,6 +594,7 @@ async def _vision_analyze(
     background = _parse_background(raw)
     full_text = _parse_full_text(raw)
     description = _parse_description(raw)
+    screenshot_type = _prefer_task_detail_type(screenshot_type, full_text)
 
     return screenshot_type, background, full_text, description
 
@@ -630,6 +636,24 @@ def _parse_full_text(raw: str) -> list[str]:
                 lines.append(content)
 
     return lines
+
+
+def _prefer_task_detail_type(screenshot_type: str, full_text: list[str]) -> str:
+    """将有完整可见任务字段的详情弹窗归类为任务截图。
+
+    Vision 模型可能被“弹窗”这一视觉外观干扰。这里不读取 DESCRIPTION 或文档上下文，
+    只检查 OCR 的可见字段：同时具备状态、行为，且另有时间/对象等至少一个任务字段
+    时，语义已足以确定为任务详情。普通错误弹窗通常不满足该组合，仍保留弹框截图。
+    """
+
+    if screenshot_type not in {"弹框截图", "配置截图", "其他截图"}:
+        return screenshot_type
+    text = "\n".join(str(line) for line in full_text)
+    if not all(field in text for field in _TASK_DETAIL_REQUIRED_FIELDS):
+        return screenshot_type
+    if not any(field in text for field in _TASK_DETAIL_SUPPORTING_FIELDS):
+        return screenshot_type
+    return "任务截图"
 
 
 def _parse_description(raw: str) -> str:

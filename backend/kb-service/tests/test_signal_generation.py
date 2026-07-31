@@ -1,6 +1,10 @@
 """Signal/Contract generation provenance and stale detection tests."""
 
-from app.routes.extract_signals import _signals_to_v2
+import asyncio
+from types import SimpleNamespace
+
+from app.routes import extract_signals
+from app.routes.extract_signals import _persist_signals, _signals_to_v2
 from shared.schemas.signal_generation import (
     build_signal_generation_metadata,
     current_tool_contract_revision,
@@ -75,3 +79,61 @@ def test_staleness_reports_source_prompt_model_tool_and_explicit_changes():
         "tool_contract_revision_changed",
     ]
     assert staleness_reasons(None, current) == ["generation_metadata_missing"]
+
+
+def test_kbd_reextract_creates_fresh_proposal_and_clears_stale_draft_pointer(monkeypatch):
+    entry = SimpleNamespace(id=27123, status="draft", signals_json={}, latest_proposal_revision_id=11, working_revision_id=13)
+    calls = {}
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def flush(self):
+            calls["flushed"] = True
+
+        async def commit(self):
+            calls["committed"] = True
+
+    class FakeDbManager:
+        @staticmethod
+        def async_session_factory():
+            return FakeSession()
+
+    async def fake_require_mutable_kbd(_session, source_id, *, for_update=False):
+        assert source_id == 27123
+        assert for_update is True
+        return entry
+
+    async def fake_ensure_kbd_revision(_session, **kwargs):
+        calls["revision"] = kwargs
+        return SimpleNamespace(id=14)
+
+    monkeypatch.setattr(extract_signals, "require_mutable_kbd", fake_require_mutable_kbd)
+    monkeypatch.setattr(extract_signals, "ensure_kbd_revision", fake_ensure_kbd_revision)
+
+    revision_id = asyncio.run(
+        _persist_signals(
+            FakeDbManager(),
+            "kbd_entry",
+            27123,
+            [],
+            generation_metadata=build_signal_generation_metadata(
+                source={"title": "虚拟机开机失败"},
+                prompt_template="current prompt",
+                model_id="glm-5",
+            ),
+        )
+    )
+
+    assert revision_id == 14
+    assert entry.working_revision_id is None
+    assert calls["revision"]["revision_type"] == "proposal"
+    assert calls["revision"]["actor_type"] == "llm"
+    assert calls["revision"]["parent_revision_id"] == 11
+    assert calls["revision"]["generation_metadata"]["origin"] == "signal_reextract"
+    assert calls["flushed"] is True
+    assert calls["committed"] is True

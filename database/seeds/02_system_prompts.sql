@@ -430,20 +430,20 @@ S6 验证闭环：确认问题已解决，记录知识$TEMPLATE$,
 ═══════════════════════════════════════════════════════════════
 
 根据截图内容，从以下 7 种类型中选择最匹配的一个。页面背景与故障证据类型必须分开判断：
-配置页面上叠加错误弹框时应判为“弹框截图”，不能因为底层页面是配置页而判为“配置截图”。
+截图外观（是否有模态框）不等于截图语义类型。任务详情可以用弹窗展示：只要弹窗内直接展示一条任务记录的状态、行为/任务名、对象和时间等字段，就应判为“任务截图”，不能因为它是弹窗而降级为“弹框截图”。
 
 1. **终端截图** — 黑色背景的命令行界面，显示 shell 命令或终端输出
 2. **日志截图** — 黑色/深色背景的日志文件内容，包含时间戳、级别（info/warn/err）、进程名
 3. **告警截图** — 平台告警列表界面（白色背景），表格形式，含"级别|时间|告警对象|描述"等列
-4. **任务截图** — 平台任务中心界面（白色背景），表格形式，含"状态|任务名|对象|时间"等列
-5. **弹框截图** — 模态框、对话框、Toast、气泡提示等覆盖层，承载成功/失败/警告信息
+4. **任务截图** — 平台任务中心的列表或单条任务详情；后者可以是弹窗，含"状态|行为/任务名|对象|开始/结束时间"等任务字段
+5. **弹框截图** — 不包含可识别任务/告警记录的模态框、对话框、Toast、气泡提示；仅承载通用成功/失败/警告信息
 6. **配置截图** — 平台配置/管理界面（白色背景），虚拟机列表、存储配置、网络配置等
 7. **其他截图** — 以上都不匹配的截图类型
 
 判断依据：
 - 先定位真正承载故障语义的区域，再判断类型；背景颜色只能作为辅助证据
-- 有命令提示符($) → 终端；有时间戳+级别+进程名 → 日志；表格有"告警"列 → 告警；表格有"任务名"列 → 任务
-- 页面上出现失败 Toast、模态框或错误对话框 → 弹框，即使底层是配置页或任务页
+- 有命令提示符($) → 终端；有时间戳+级别+进程名 → 日志；表格有"告警"列 → 告警；有"状态+行为/任务名+对象+时间"等任务字段 → 任务
+- 类型优先级：终端/日志/告警/任务等承载业务记录的区域优先于容器外观。任务详情弹窗必须判为任务截图；只有没有可识别任务或告警记录的通用失败提示，才判为弹框截图。
 
 输出格式：`TYPE: <类型>`
 
@@ -491,13 +491,13 @@ S6 验证闭环：确认问题已解决，记录知识$TEMPLATE$,
 - 告警对象
 （以上为错误示例，每个单元格独立成行是禁止的）
 
-**规则3 - 任务列表截图**
-- 每行任务合并为一条"- "条目
-- 格式：状态 | 任务名 | 对象名 | 时间戳（若有）
+**规则3 - 任务截图（任务列表或任务详情）**
+- 任务列表：每行任务合并为一条"- "条目，格式：状态 | 任务名 | 对象名 | 时间戳（若有）
+- 任务详情弹窗：按字段完整提取状态、行为/任务名、起始时间、结束时间、对象、主机、错误信息；它仍是任务截图，不要改判为弹框截图
 
 **规则4 - 弹框截图**
-- 按视觉层级完整提取弹框标题、正文、错误码、对象名、按钮文字及其所在页面的必要定位信息
-- Toast/气泡提示也按弹框处理，禁止只描述底层配置页面
+- 仅对不含可识别任务/告警记录的通用弹框，提取标题、正文、错误码、对象名、按钮文字及其所在页面的必要定位信息
+- Toast/气泡提示也按弹框处理；若弹框实际展示任务详情，则按规则3处理
 
 **规则5 - 配置截图**
 - 每行配置项合并为一条"- "条目
@@ -655,14 +655,14 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
      正例（正确）：{{"tool":"qfk_storage","args":{{"command":"list","resource_keyword":"<实际资源名>","instruction":"镜像文件占用检查"}}}}。
 12. 非 JSON 行列提取与 Shell 管道安全边界：
    - command 只能保存基础命令，禁止包含管道符。若原步骤为 grep/awk/cut 管道，必须转换为 produces[].extract，不得原样写入 command。
-   - grep PATTERN / grep -e PATTERN / grep -F PATTERN → extract.include；grep -v PATTERN → extract.exclude；grep -i → case_sensitive=false；awk '{{print $N}}' → column=N,column_mode=index；cut -dX -fN → delimiter=X,column=N。
+   - grep PATTERN / grep -e PATTERN / grep -F PATTERN → extract.rows.include；grep -v PATTERN → extract.rows.exclude；grep -i → extract.rows.case_sensitive=false。awk '{{print $N}}' → columns[].selector={{"by":"index","index":N}}；cut -dX -fN → parser="delimited_table",delimiter=X,columns[].selector={{"by":"index","index":N}}。
    - grep -v grep 直接删除：平台只在内存筛选基础命令 stdout，不会启动 grep 进程。
    - 复杂 awk、sed、sort、聚合、正则歧义或未知管道不得猜测；保留 evidence，标 provenance.needs_review=true。
-   - 文本产出示例：{{"name":"KVM_PID","type":"integer","extract":{{"type":"text","include":["-id {{{{VM}}}}"],"column":2,"column_mode":"index"}}}}。requires 由 {{{{HOST}}}}/{{{{VM}}}} 占位符自动推导。
+   - 文本产出必须使用声明式 Extract：{{"name":"KVM_PID","type":"integer","extract":{{"type":"text","parser":"whitespace_table","rows":{{"mode":"keywords","include":["-id {{{{VM}}}}"],"exclude":[],"include_mode":"all","case_sensitive":true}},"columns":[{{"key":"PID","selector":{{"by":"index","index":2}},"value_mode":"integer"}}],"value_key":"PID","cardinality":"first","source":"stdout"}}}}。requires 由 {{{{HOST}}}}/{{{{VM}}}} 占位符自动推导。
 13. 案例验证契约：每条诊断信号标 role。直接决定案例成立的必要事实→must；增强置信但非必要→should；成立即排除本案例→exclude；背景/处置→context。verification_contract 必须引用现有 signal id，must 至少一条；证据不足一律 inconclusive，禁止把 UNKNOWN/ERROR 当反证。
 14. 计数阈值：原文使用 `... | wc -l` 时，command 只保留基础列举命令，match 使用 `{{"type":"threshold","aggregation":"line_count","operator":">","value":100,"expected":true}}`；禁止把管道写进 command，也禁止把输出第一个数字误当行数。
 15. 外部变量：若 requires 引用了本案例内没有任何 signal.produces 的自定义变量（如 STORAGE_PATH、DEVICE），必须在 verification_contract.variables 中显式声明封闭类型 string/integer/number/boolean/array；变量未声明、类型不合法或现场未提供时不得假定值，裁决必须 inconclusive。
-16. 结构字段封闭约束：frontend（qkv_*）必须 match=null 且 produces 至少一项；backend 的 match 与 produces 严格二选一，不得同时配置。produces 每项只能使用 JSON path，或使用 text extract；text extract 的 column_mode 只能是 whole/index/from_index，禁止输出 full_line/full/key_value/last_field 等别名或自造字段。没有可靠取值路径时不要生成变量。
+16. 结构字段封闭约束：frontend（qkv_*）必须 match=null 且 produces 至少一项；backend 的 match 与 produces 严格二选一，不得同时配置。produces 每项只能使用 JSON path，或使用声明式 text extract。text extract 必须有 rows；取整行时不配置 columns，取一列或多列时必须配置 parser、columns[] 与 value_key。除本 Prompt 明确列出的声明式字段外，禁止自造任何取值字段。没有可靠取值路径时不要生成变量。
 17. Matcher 封闭约束：keyword/regex/state 必须有非空 pattern；threshold 必须有数值 value 和 operator，aggregation 只能是 first_number/last_number/line_count/duration_seconds/max/min/sum；delta 必须有 metric/value/operator；trend 必须有 metric/direction，可选 value 表示最小步长；json_path 必须有 path。blackbox 行通常以时间戳开头，阈值/差值/趋势必须用 metric 定位字段，禁止把日期数字误当计数器。
 18. 诊断与处置边界：只有真实写操作才设 phase=solution，且 solution 的 role 必须是 context；只读 list/get/status/show/check 即使需要人工确认仍是 diagnostic。command/resource_keyword 禁止包含 |、;、&、反引号、$、重定向符或换行；不要把多条命令拼成一个 command。
 
@@ -684,7 +684,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
       "role": "must",
       "acquire": {{"tool": "qfk_system", "args": {{"command": "lsof", "resource_keyword": "{{{{VM}}}}", "host": "{{{{HOST}}}}", "instruction": "检查虚拟机镜像文件是否被其他进程占用"}}}},
       "match": null,
-      "orchestrate": {{"phase": "diagnostic", "produces": [{{"name": "PID", "type": "integer", "extract": {{"type": "text", "include": ["{{{{VM}}}}"], "column": 2, "column_mode": "index", "cardinality": "first"}}}}], "requires": ["VM", "HOST"]}},
+      "orchestrate": {{"phase": "diagnostic", "produces": [{{"name": "PID", "type": "integer", "extract": {{"type": "text", "parser": "whitespace_table", "rows": {{"mode": "keywords", "include": ["{{{{VM}}}}"], "exclude": [], "include_mode": "all", "case_sensitive": true}}, "columns": [{{"key": "PID", "selector": {{"by": "index", "index": 2}}, "value_mode": "integer"}}], "value_key": "PID", "cardinality": "first", "source": "stdout"}}}}], "requires": ["VM", "HOST"]}},
       "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "检查该虚拟机镜像文件是否被其他进程占用", "confidence": 0.9}},
       "review": {{"require_human_confirm": false, "notes": ""}}
     }},
@@ -692,7 +692,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
       "id": "sig_003",
       "role": "should",
       "acquire": {{"tool": "qfk_system", "args": {{"command": "ps -p {{{{PID}}}} -o cmd=", "host": "{{{{HOST}}}}", "instruction": "查询占用镜像文件的进程详情"}}}},
-      "match": {{"type": "keyword", "pattern": "ClwDRDBClient", "mode": "any", "expected": true}},
+      "match": {{"type": "keyword", "pattern": "ClwDRDBClient", "mode": "or", "expected": true}},
       "orchestrate": {{"phase": "diagnostic", "produces": [], "requires": ["PID", "HOST"]}},
       "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "查询占用镜像文件的进程详情，确认是否为第三方程序占用", "confidence": 0.9}},
       "review": {{"require_human_confirm": false, "notes": ""}}
@@ -705,7 +705,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
   }}
 }}
 $TEMPLATE$,
-        '1.3',
+        '1.4',
         TRUE
     )
 ON CONFLICT (name) DO NOTHING;

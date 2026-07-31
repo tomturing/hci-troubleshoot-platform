@@ -38,6 +38,7 @@ from shared.utils.prompt_loader import StrictPromptLoader
 from sqlalchemy import select, text
 
 from app.services.kbd_mutation_guard import PublishedKbdMutationError, require_mutable_kbd
+from app.services.kbd_revision_service import ensure_kbd_revision
 from app.services.safe_pipeline_converter import (
     SafePipelineConversionError,
     apply_safe_pipeline_to_signal,
@@ -966,11 +967,16 @@ async def _persist_signals(
     verification_contract: dict[str, Any] | None = None,
     generation_metadata: dict[str, Any] | None = None,
     rejected_candidates: list[dict[str, Any]] | None = None,
-) -> None:
+) -> int | None:
     """通用写回：signals_json 列。table ∈ {'kbd_entry', 'sop_document'}。
 
     持久化形态为 v2 数组级文档（RFC §7）：{schema_version, signals}。
     LLM 已直出 v2，抽取链路全程以 v2 契约处理；`_signals_to_v2` 直接包装 v2 文档。
+
+    KBD 重新抽取除更新兼容主记录外，还必须冻结新的 Proposal revision。否则主记录
+    已是新版信号、审核页却仍显示旧 Proposal/Expert 快照，用户会看到已经重抽却仍
+    被旧格式拦住的自相矛盾状态。草稿 KBD 的旧 Expert 工作稿不再代表当前 Proposal，
+    保留其不可变历史但清空工作指针，避免它继续被误认为当前编辑对象。
     """
     doc = _signals_to_v2(
         signals,
@@ -983,12 +989,35 @@ async def _persist_signals(
         if table == "kbd_entry":
             entry = await require_mutable_kbd(session, source_id, for_update=True)
             entry.signals_json = doc
+            await session.flush()
+            proposal_revision = await ensure_kbd_revision(
+                session,
+                kbd=entry,
+                revision_type="proposal",
+                actor_type="llm",
+                parent_revision_id=entry.latest_proposal_revision_id,
+                generation_metadata={
+                    "origin": "signal_reextract",
+                    **(generation_metadata or {}),
+                },
+                validation_summary={
+                    "status": "passed",
+                    "signals_count": len(signals),
+                    "rejected_count": len(rejected_candidates or []),
+                },
+                trace_id=get_current_trace_id(),
+            )
+            if entry.status != "published":
+                entry.working_revision_id = None
+            revision_id: int | None = proposal_revision.id
         else:
             await session.execute(
                 text(f"UPDATE {table} SET signals_json = CAST(:sj AS jsonb), updated_at = NOW() WHERE id = :id"),
                 {"sj": json.dumps(doc, ensure_ascii=False), "id": source_id},
             )
+            revision_id = None
         await session.commit()
+    return revision_id
 
 
 async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> dict[str, Any]:
@@ -1081,7 +1110,7 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
     )
 
     try:
-        await _persist_signals(
+        proposal_revision_id = await _persist_signals(
             db_manager,
             "kbd_entry",
             kbd_id,
@@ -1111,6 +1140,7 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
         "rejected": rejected,
         "verification_contract": verification_contract,
         "generation_metadata": generation_metadata,
+        "proposal_revision_id": proposal_revision_id,
     }
 
 

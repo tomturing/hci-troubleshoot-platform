@@ -9,6 +9,7 @@ from app.services.vision_processor import (
     _build_evidence_ir,
     _compress_image_if_needed,
     _parse_type,
+    _prefer_task_detail_type,
     _prepare_vision_images,
 )
 from PIL import Image
@@ -29,6 +30,26 @@ def test_context_comes_from_persisted_image_metadata():
 
 def test_dialog_is_a_first_class_screenshot_type():
     assert _parse_type("TYPE: 弹框截图\nBACKGROUND: 白色") == "弹框截图"
+
+
+def test_task_detail_modal_is_not_downgraded_to_dialog():
+    assert _prefer_task_detail_type(
+        "弹框截图",
+        [
+            "状态：失败",
+            "行为：启动虚拟机",
+            "起始时间：2024-03-14 16:03:45",
+            "结束时间：2024-03-14 16:04:00",
+            "对象类型：虚拟机",
+        ],
+    ) == "任务截图"
+
+
+def test_generic_error_dialog_remains_dialog():
+    assert _prefer_task_detail_type(
+        "弹框截图",
+        ["操作失败", "错误信息：虚拟机镜像忙，正在执行其他操作"],
+    ) == "弹框截图"
 
 
 def test_evidence_ir_separates_observed_text_from_inference():
