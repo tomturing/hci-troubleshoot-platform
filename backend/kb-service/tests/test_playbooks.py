@@ -7,6 +7,16 @@ import pytest
 from app.routes import playbooks
 
 
+def _text_extract() -> dict:
+    return {
+        "type": "text",
+        "rows": {"mode": "all"},
+        "cardinality": "all",
+        "source": "stdout",
+        "value_mode": "string",
+    }
+
+
 class _ScalarResult:
     def __init__(self, rows):
         self._rows = rows
@@ -87,7 +97,7 @@ def test_qkv_with_residual_match_is_visible_but_not_executable():
         {
             "id": "sig_001",
             "acquire": {"tool": "qkv_task", "args": {"keyword": "启动虚拟机失败"}},
-            "match": {"type": "keyword", "pattern": "", "expected": True},
+            "match": {"type": "keyword", "pattern": "", "expected": True, "extract": _text_extract()},
             "orchestrate": {"produces": [{"name": "VM", "path": "vm"}]},
         }
     ]
@@ -101,7 +111,15 @@ def test_backend_signal_with_output_variables_is_executable_without_matcher():
             "id": "sig_002",
             "acquire": {"tool": "qfk_system", "args": {"command": "lsof"}},
             "match": None,
-            "orchestrate": {"produces": [{"name": "PID", "type": "string", "path": ""}]},
+            "orchestrate": {
+                "produces": [
+                    {
+                        "name": "PID",
+                        "type": "string",
+                        "extract": {**_text_extract(), "cardinality": "first"},
+                    }
+                ]
+            },
         }
     ]
 
@@ -114,7 +132,7 @@ def test_backend_signal_with_match_and_output_is_not_executable():
         {
             "id": "sig_002",
             "acquire": {"tool": "qfk_system", "args": {"command": "lsof"}},
-            "match": {"type": "keyword", "pattern": "busy", "expected": True},
+            "match": {"type": "keyword", "pattern": "busy", "expected": True, "extract": _text_extract()},
             "orchestrate": {"produces": [{"name": "PID", "type": "string", "path": ""}]},
         }
     ]
@@ -127,7 +145,7 @@ def test_stale_generation_metadata_is_visible_but_not_executable():
         {
             "id": "sig_002",
             "acquire": {"tool": "qfk_system", "args": {"command": "ps"}},
-            "match": {"type": "exists", "expected": True},
+            "match": {"type": "exists", "expected": True, "extract": _text_extract()},
         }
     ]
     metadata = {
@@ -157,7 +175,7 @@ def test_current_expert_publish_stamp_overrides_old_generation_contract_revision
         {
             "id": "sig_002",
             "acquire": {"tool": "qfk_system", "args": {"command": "ps"}},
-            "match": {"type": "exists", "expected": True},
+            "match": {"type": "exists", "expected": True, "extract": _text_extract()},
         }
     ]
     document = {

@@ -49,7 +49,17 @@ async def test_approve_clears_stale_embedding_when_provider_fails():
                 {
                     "id": "sig_001",
                     "acquire": {"tool": "qfk_system", "args": {"command": "ps"}},
-                    "match": {"type": "exists", "expected": True},
+                    "match": {
+                        "type": "exists",
+                        "expected": True,
+                        "extract": {
+                            "type": "text",
+                            "rows": {"mode": "all"},
+                            "cardinality": "all",
+                            "source": "stdout",
+                            "value_mode": "string",
+                        },
+                    },
                     "provenance": {"category": "backend"},
                 }
             ],

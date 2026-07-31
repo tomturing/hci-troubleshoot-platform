@@ -73,7 +73,19 @@ def _payload() -> dict:
                             "time_window": "{{END}}",
                         },
                     },
-                    "match": {"type": "keyword", "pattern": ["镜像被占用"], "mode": "or", "expected": True},
+                    "match": {
+                        "type": "keyword",
+                        "pattern": ["镜像被占用"],
+                        "mode": "or",
+                        "expected": True,
+                        "extract": {
+                            "type": "text",
+                            "rows": {"mode": "all"},
+                            "cardinality": "all",
+                            "source": "stdout",
+                            "value_mode": "string",
+                        },
+                    },
                     "orchestrate": {"produces": [], "requires": ["END"]},
                     "provenance": {"category": "backend"},
                 }
@@ -166,7 +178,17 @@ def test_expert_delete_context_signal_removes_its_agent_contract_reference():
                 "command": "cat /sf/cfg/gpu_info.ini",
             },
         },
-        "match": {"type": "exists", "expected": True},
+        "match": {
+            "type": "exists",
+            "expected": True,
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "all"},
+                "cardinality": "all",
+                "source": "stdout",
+                "value_mode": "string",
+            },
+        },
         "orchestrate": {"phase": "diagnostic", "produces": [], "requires": ["HOST"]},
         "provenance": {"category": "backend"},
     }
