@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-31 | v3.43 | **KBD 最小 Replay artifact 契约**：在既有精确 revision 运行审计中追加 `replay_manifest`，记录不可变 KBD checksum、计划、环境/参数哈希、逐 Signal evaluation 与 Terminal Bridge artifact 查找键；不复制 stdout/stderr，明确 `replayable=false`，尚未形成 Evidence/Execution Replay。 | [KBD 最小回放证据契约与正式专家复核启动方案](../../solution/agent/events/2026-07-31-KBD最小回放证据契约与正式专家复核启动方案.md) |
 | 2026-07-31 | v3.42 | **KBD 专家监督与运行效果数据闭环**：专家 revision 保存受控原因码和删除说明；Agent 按检索时加载的精确 Dynamic Resource revision 审计 CDD 编译、逐 Signal outcome 和失败模式，审计失败不阻断诊断。运行指标、Capability Gap 与评估导出只承载实际已知事实，不冒充客户 replay 或 Expert Gold。 | [KBD 专家监督与运行效果数据闭环方案](../../solution/agent/events/2026-07-31-KBD专家监督与运行效果数据闭环方案.md) |
 | 2026-07-31 | v3.41 | **KBD Expert 发布/Agent 消费一致性**：发布盖章与 LLM 生成指纹分离；Agent 优先校验当前盖章并继续 Handler/DAG 编译；END 标准化、task 锚点优先级与 df Use% 阈值改为确定性语义。qfk_system host/容器边界本轮未改。 | [KBD 发布消费一致性方案](../../solution/agent/events/2026-07-31-KBD发布消费一致性与专家审核易用性方案.md) |
 | 2026-07-30 | v3.40 | **KBD 执行 Contract 单向投影**：专家与 LLM 写路径以 `signals[].id + role` 生成 evidence policy；Agent 编译器消费持久化 Contract，不在现场反向改写知识。对绕过新写路径的历史不一致数据保持 Contract 兼容边界。 | [KBD 专家信号编辑与执行契约一致性方案](../../solution/agent/events/2026-07-30-KBD专家信号编辑与执行契约一致性方案.md) |

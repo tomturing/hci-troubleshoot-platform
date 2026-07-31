@@ -1500,6 +1500,7 @@ async def test_runtime_audit_uses_exact_loaded_kbd_revision_not_active(monkeypat
         steps_executed=[],
         session_id="conversation-1",
         decision=decision,
+        environment={"product": "HCI", "node_ip": "10.0.0.1"},
     )
 
     assert captured["get_revision"] == ("kbd", "30880", 17)
@@ -1519,6 +1520,12 @@ async def test_runtime_audit_uses_exact_loaded_kbd_revision_not_active(monkeypat
             "error": None,
         }
     ]
+    manifest = usage.metadata["replay_manifest"]
+    assert manifest["kind"] == "kbd_execution_replay_manifest"
+    assert manifest["resource"]["revision"] == 17
+    assert manifest["readiness"]["replayable"] is False
+    assert manifest["readiness"]["evidence"] == "absent"
+    assert "EXECUTION_REPLAY_RUNNER_NOT_IMPLEMENTED" in manifest["readiness"]["blockers"]
     session.commit.assert_awaited_once()
 
 

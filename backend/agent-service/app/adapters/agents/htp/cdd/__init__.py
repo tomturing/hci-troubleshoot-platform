@@ -18,6 +18,7 @@ from .models import (
 )
 from .plan_compiler import compile_signal_plan
 from .replay import ReplayError, replay_evaluations
+from .replay_manifest import build_kbd_replay_manifest
 from .scheduler import ActiveDiagnosticScheduler, SchedulerWeights
 from .scope import ScopeResult, ScopeState, apply_scope_results, evaluate_scope
 
@@ -42,6 +43,7 @@ __all__ = [
     "SignalPlan",
     "SignalRef",
     "build_coverage_report",
+    "build_kbd_replay_manifest",
     "apply_scope_results",
     "compile_signal_plan",
     "decide_conclusion",

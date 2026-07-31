@@ -25,6 +25,7 @@ from app.adapters.agents.htp.cdd import (
     ConclusionLevel,
     SignalOutcome,
     apply_scope_results,
+    build_kbd_replay_manifest,
     compile_signal_plan,
     decide_conclusion,
 )
@@ -553,6 +554,7 @@ class KBDDiagnostic:
             steps_executed=steps_executed,
             session_id=session_id,
             decision=decision,
+            environment=env_context,
         )
 
         yield AgentStageUpdate(
@@ -579,6 +581,7 @@ class KBDDiagnostic:
         steps_executed: list[StepResult],
         session_id: str,
         decision: Any,
+        environment: dict[str, Any],
     ) -> None:
         """按精确 KBD resource revision 写入运行结果，供评估和失败模式聚合使用。
 
@@ -656,6 +659,20 @@ class KBDDiagnostic:
                         for row in signal_rows
                     )
                     audit_exec_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{plan.plan_id}:kbd:{kbd_id}"))
+                    replay_manifest = build_kbd_replay_manifest(
+                        resource={
+                            "resource_type": snapshot.resource_type,
+                            "resource_name": snapshot.resource_name,
+                            "revision": snapshot.revision,
+                            "checksum": snapshot.checksum,
+                        },
+                        plan_id=plan.plan_id,
+                        snapshot_id=plan.snapshot_id,
+                        environment=environment,
+                        signal_outcomes=signal_rows,
+                        steps_by_signal=steps_by_kbd_signal,
+                        kbd_id=kbd_id,
+                    )
                     await loader.audit_usage(
                         snapshot,
                         UsageRecord(
@@ -694,6 +711,10 @@ class KBDDiagnostic:
                                     "errors": compile_errors,
                                 },
                                 "signal_outcomes": signal_rows,
+                                # 最小 replay artifact 契约：仅存不可变版本、哈希和 artifact
+                                # 查找键。它明确标为 not replayable，不能把现有运行审计说成
+                                # 已完成 Evidence/Execution Replay。
+                                "replay_manifest": replay_manifest,
                             },
                         ),
                     )
