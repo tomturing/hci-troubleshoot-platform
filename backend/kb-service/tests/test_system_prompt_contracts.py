@@ -9,6 +9,9 @@ _SEED_PATH = _REPOSITORY_ROOT / "database" / "seeds" / "02_system_prompts.sql"
 _MIGRATION_PATH = (
     _REPOSITORY_ROOT / "database" / "data-migrations" / "015_align_signal_and_vision_prompts_to_current_contract.sql"
 )
+_MATCHER_MIGRATION_PATH = (
+    _REPOSITORY_ROOT / "database" / "data-migrations" / "017_align_matcher_prompt_with_extract_contract.sql"
+)
 
 
 def _seed_template(prompt_name: str) -> str:
@@ -30,6 +33,12 @@ def test_signal_extract_prompt_only_teaches_declarative_text_extract_and_current
     assert "column_mode" not in template
     assert '"mode": "any"' not in template
     assert '"mode": "or"' in template
+    assert '"type": "<keyword|regex|state|threshold|delta|trend|exists>"' in template
+    assert "json_path" not in template
+    assert "判定模式的 match 必须包含 extract" in template
+    assert "字段严格隔离：rows.include_mode" in template
+    assert "绝不可把 any 或 all 写入 match.mode" in template
+    assert '"pattern": "ClwDRDBClient", "mode": "or", "expected": true, "extract"' in template
 
 
 def test_signal_extract_prompt_json_examples_escape_format_braces():
@@ -51,6 +60,13 @@ def test_signal_extract_prompt_json_examples_escape_format_braces():
 
 def test_prompt_migration_escapes_declarative_extract_json_examples():
     migration = _MIGRATION_PATH.read_text(encoding="utf-8")
+    supplemental_rule = migration.split("|| $RULE$", 1)[1].split("$RULE$,", 1)[0]
+
+    assert StrictPromptLoader.get_template_placeholders(supplemental_rule) == set()
+
+
+def test_matcher_prompt_migration_escapes_declarative_extract_json_examples():
+    migration = _MATCHER_MIGRATION_PATH.read_text(encoding="utf-8")
     supplemental_rule = migration.split("|| $RULE$", 1)[1].split("$RULE$,", 1)[0]
 
     assert StrictPromptLoader.get_template_placeholders(supplemental_rule) == set()

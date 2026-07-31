@@ -35,7 +35,7 @@ def test_match_and_produces_reuse_the_same_value_extract_contract():
     validate_signals_json(_qfk_produce({"name": "USE_PERCENT", "type": "number", "extract": extract}))
 
 
-def test_matcher_extract_is_required_and_old_json_path_matcher_is_rejected():
+def test_matcher_extract_is_required_and_json_path_is_not_a_matcher_type():
     with pytest.raises(ValidationError, match="extract"):
         validate_signals_json(_qfk_match({"type": "exists", "expected": True}))
     with pytest.raises(ValidationError):
