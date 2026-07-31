@@ -1,0 +1,18 @@
+{
+  "fixture_id": "fx-kbd27123-pos-001",
+  "scenario_id": "",
+  "kbd_id": "KBD27123",
+  "kbd_revision": "r1",
+  "acquisition_key": "qfk_log",
+  "tool": "qfk_log",
+  "variant": "positive",
+  "command_match": "acli\\s+log\\s+get",
+  "target_host": "",
+  "container": "host",
+  "exit_code": 0,
+  "stdout": "2026-07-28 10:23:11 ERROR too many file descriptors (total 65535, used 65535) on node-001\n2026-07-28 10:23:12 WARN connection pool exhausted\n",
+  "delay_profile_ms": 0,
+  "chunk_profile_ms": 0,
+  "fixture_manifest_hash": "sha256:positive-demo",
+  "status": "published"
+}

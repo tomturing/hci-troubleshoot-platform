@@ -1,0 +1,13 @@
+{
+  "fixture_id": "fx-kbd27123-timeout-001",
+  "scenario_id": "scenario-0003",
+  "kbd_id": "KBD27123",
+  "acquisition_key": "qfk_log",
+  "tool": "qfk_log",
+  "variant": "timeout",
+  "command_match": "acli\\s+log\\s+get",
+  "exit_code": -1,
+  "timeout": true,
+  "fixture_manifest_hash": "sha256:timeout-demo",
+  "status": "published"
+}
