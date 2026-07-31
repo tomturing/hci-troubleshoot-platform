@@ -1,4 +1,3 @@
-import pytest
 from app.tools.qfk.matcher import evaluate_matcher
 
 

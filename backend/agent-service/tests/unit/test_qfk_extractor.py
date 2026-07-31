@@ -4,7 +4,6 @@ import pytest
 from app.tools.acli.executor import ExecResult
 from app.tools.qfk.extractor import QFKExtractionError, extract_output_values, extract_value, get_complete_output
 
-
 DF_OUTPUT = """Filesystem  Size  Used  Avail  Use%  Mounted on
 tmpfs       512M   22M   491M    5%  /run
 tmpfs       8.0M   12K   8.0M    1%  /run/lock

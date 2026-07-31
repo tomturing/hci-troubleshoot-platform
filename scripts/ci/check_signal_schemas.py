@@ -83,7 +83,7 @@ def _main() -> int:
                         "timeout": 10,
                     },
                 },
-                "match": {"type": "keyword", "pattern": "绑定vgpu命令失败", "mode": "any", "expected": True},
+                "match": {"type": "keyword", "pattern": "绑定vgpu命令失败", "mode": "or", "expected": True, "extract": {"type": "text", "rows": {"mode": "all"}}},
                 "orchestrate": {"produces": [{"name": "X", "path": "$.x"}], "requires": ["Y"], "phase": "diag"},
                 "provenance": {"category": "backend", "confidence": 0.9, "risk": 2},
                 "review": {"require_human_confirm": True},

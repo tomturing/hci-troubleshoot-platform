@@ -17,7 +17,7 @@ def _base_signal(resource_keyword: str | None = None, instruction: str | None = 
     return {
         "id": "sig_x",
         "acquire": {"tool": "qfk_storage", "args": args},
-        "match": {"type": "keyword", "pattern": "镜像占用", "mode": "any", "expected": True},
+        "match": {"type": "keyword", "pattern": "镜像占用", "mode": "or", "expected": True},
         "orchestrate": {"produces": [], "requires": ["HOST"]},
         "provenance": {
             "category": "backend",
@@ -92,7 +92,7 @@ def test_match_pattern_relocated_when_descriptive_long_sentence():
     sig = {
         "id": "sig_y",
         "acquire": {"tool": "qfk_system", "args": {"command": "lsof"}},
-        "match": {"type": "keyword", "pattern": "镜像文件占用检查", "mode": "any", "expected": True},
+        "match": {"type": "keyword", "pattern": "镜像文件占用检查", "mode": "or", "expected": True},
         "orchestrate": {"produces": [], "requires": ["HOST"]},
         "provenance": {
             "category": "backend",
@@ -114,7 +114,7 @@ def test_cleaner_wired_into_enrich_signal_for_pattern():
     sig = {
         "id": "sig_z",
         "acquire": {"tool": "qfk_system", "args": {"command": "ps"}},
-        "match": {"type": "keyword", "pattern": "第三方进程确认", "mode": "any", "expected": True},
+        "match": {"type": "keyword", "pattern": "第三方进程确认", "mode": "or", "expected": True},
         "orchestrate": {"produces": [], "requires": ["HOST"]},
         "provenance": {
             "category": "backend",
