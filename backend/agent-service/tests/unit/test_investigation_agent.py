@@ -175,7 +175,19 @@ class TestInvestigationAgentRouting:
                         {
                             "id": "sig_001",
                             "acquire": {"tool": "get_failed_tasks", "args": {}},
-                            "match": {"type": "keyword", "pattern": "redis", "expected": True},
+                            "match": {
+                                "type": "keyword",
+                                "pattern": "redis",
+                                "mode": "or",
+                                "expected": True,
+                                "extract": {
+                                    "type": "text",
+                                    "rows": {"mode": "all"},
+                                    "cardinality": "all",
+                                    "source": "stdout",
+                                    "value_mode": "string",
+                                },
+                            },
                             "provenance": {"category": "backend"},
                             "orchestrate": {"phase": "diagnostic", "requires": [], "produces": []},
                         }
