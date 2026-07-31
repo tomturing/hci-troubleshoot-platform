@@ -216,6 +216,32 @@ type OutMessage struct {
 	TimedOut        bool   `json:"timed_out,omitempty"`
 	Cancelled       bool   `json:"cancelled,omitempty"`
 	ErrorType       string `json:"error_type,omitempty"`
+	// 模拟执行标记：命中 HCI_BRIDGE_SIM_TARGETS 的 host 时打标（方案 5.2 / sim-ssh 接入点）
+	Simulation        bool   `json:"simulation,omitempty"`
+	ExecutionMode     string `json:"execution_mode,omitempty"`
+	SimulationBackend string `json:"simulation_backend,omitempty"`
+}
+
+// simTargetHosts 列出被标记为"模拟目标"的 host（端口可选）。命中后 exec_result 会标注
+// simulation=true / execution_mode=sim-ssh，便于上层把 hci-sim 执行与真实 HCI 执行区分开。
+var simTargetHosts = func() []string {
+	var out []string
+	for _, t := range strings.Split(os.Getenv("HCI_BRIDGE_SIM_TARGETS"), ",") {
+		if s := strings.TrimSpace(t); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}()
+
+// resolveSimulation 判断给定 host 是否为模拟目标，并返回模拟标注三元组。
+func resolveSimulation(host string) (bool, string, string) {
+	for _, t := range simTargetHosts {
+		if t != "" && strings.Contains(host, t) {
+			return true, "sim-ssh", "hci-sim"
+		}
+	}
+	return false, "", ""
 }
 
 type execRequestContext struct {
@@ -658,6 +684,10 @@ func (s *SSHSession) execCommand(command, execID string, timeout time.Duration) 
 // 独立连接是硬超时的必要条件：仅关闭共享连接上的 Session 时，部分 SSH 服务端会等待
 // 远端进程自然退出，导致 deadline 已触发但调用仍被阻塞；关闭独立连接才能确定性中止。
 func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestContext, requestedTimeout time.Duration, outputFilters []OutputFilter) {
+	// sim-ssh 接入点：根据目标 host 判定是否为模拟执行（hci-sim），结果打标。
+	simHost := strings.Split(s.address, ":")[0]
+	sim, execMode, simBackend := resolveSimulation(simHost)
+
 	timeout := requestedTimeout
 	if timeout <= 0 {
 		timeout = commandTimeout(envIntOrDefault("HCI_BRIDGE_EXEC_TIMEOUT_SECONDS", 120))
@@ -894,6 +924,7 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestCont
 		StdoutSHA256: stdoutCapture.SHA256(), StderrSHA256: stderrCapture.SHA256(),
 		StdoutTruncated: stdoutCapture.truncated, StderrTruncated: stderrCapture.truncated,
 		DurationMS: duration.Milliseconds(), TimedOut: timedOut, ErrorType: errorType,
+		Simulation: sim, ExecutionMode: execMode, SimulationBackend: simBackend,
 	})
 	resultSpan.End()
 }
