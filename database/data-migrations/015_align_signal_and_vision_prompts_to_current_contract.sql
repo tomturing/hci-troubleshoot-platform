@@ -20,9 +20,9 @@ SET content_template = regexp_replace(
 
 # 补充规则 20：声明式 Extract 是唯一文本取值语法（最高优先级）
 - 文本输出先声明取值，再进行 Matcher 判定或写入变量。取值必须使用 type=text、rows、可选 parser/header、可选 columns[] 与 value_key；不得使用未在此契约声明的字段。
-- 行选择：按关键字时使用 rows={"mode":"keywords","include":[...],"exclude":[...],"include_mode":"all|any","case_sensitive":true}；按行号时使用 rows={"mode":"indices","basis":"data","indices":[...],"ranges":[...]}；所有行使用 rows={"mode":"all"}。
-- 列选择：整行不配置 columns；空白分列使用 parser="whitespace_table"；单字符分隔使用 parser="delimited_table" 与 delimiter。每一列使用 {"key":"稳定大写名","selector":{"by":"index","index":N}|{"by":"header","name":"列名","aliases":[...]},"value_mode":"string|integer|number|boolean"}；需要标量值时 value_key 必须等于其中一个 key。
-- 示例：{"name":"PID","type":"integer","extract":{"type":"text","parser":"whitespace_table","rows":{"mode":"keywords","include":["{{VM}}"],"exclude":[],"include_mode":"all","case_sensitive":true},"columns":[{"key":"PID","selector":{"by":"index","index":2},"value_mode":"integer"}],"value_key":"PID","cardinality":"first","source":"stdout"}}。
+- 行选择：按关键字时使用 rows={{"mode":"keywords","include":[...],"exclude":[...],"include_mode":"all|any","case_sensitive":true}}；按行号时使用 rows={{"mode":"indices","basis":"data","indices":[...],"ranges":[...]}}；所有行使用 rows={{"mode":"all"}}。
+- 列选择：整行不配置 columns；空白分列使用 parser="whitespace_table"；单字符分隔使用 parser="delimited_table" 与 delimiter。每一列使用 {{"key":"稳定大写名","selector":{{"by":"index","index":N}}|{{"by":"header","name":"列名","aliases":[...]}},"value_mode":"string|integer|number|boolean"}}；需要标量值时 value_key 必须等于其中一个 key。
+- 示例：{{"name":"PID","type":"integer","extract":{{"type":"text","parser":"whitespace_table","rows":{{"mode":"keywords","include":["{{{{VM}}}}"],"exclude":[],"include_mode":"all","case_sensitive":true}},"columns":[{{"key":"PID","selector":{{"by":"index","index":2}},"value_mode":"integer"}}],"value_key":"PID","cardinality":"first","source":"stdout"}}}}。
 - Matcher 的 mode 只允许 or、and、not。keyword、regex、state、threshold、delta、trend 的取值对象都可配置同一份 extract；不要因为使用 Matcher 而跳过安全转换管道。
 $RULE$,
     description = description || '；声明式 Extract 与匹配模式收口至当前 Schema',

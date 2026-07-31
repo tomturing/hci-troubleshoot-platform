@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-07-31 | v3.46 | **KBD Prompt JSON 花括号转义修复**：015 热加载 Prompt 的新增 JSON 示例未按 Python `str.format()` 转义，导致 `key`/`mode`/`name` 被误判为非法运行时占位符并使重抽 HTTP 500；016 将已部署数据修正为 `{{`/`}}` 字面量并将 Prompt 提升为 v1.5，新增 seed 与数据迁移的 StrictPromptLoader 回归校验。 | [KBD 重抽取与任务详情截图语义收口](../../solution/knowledge-base/events/2026-07-31-KBD重抽取与任务详情截图语义收口.md) |
 | 2026-07-31 | v3.45 | **Prompt 与重抽版本一致性**：`kbd_extract_signals_v2` 热加载 Prompt 只教授声明式 Extract 和 `or/and/not`；KBD 重抽写入新 Proposal revision，草稿旧 Expert 指针不再冒充当前稿；任务详情弹窗按可见任务字段确定性归类为任务截图。 | [KBD 重抽取与任务详情截图语义收口](../../solution/knowledge-base/events/2026-07-31-KBD重抽取与任务详情截图语义收口.md) |
 | 2026-07-31 | v3.44 | **QFK 声明式取值统一**：Matcher 与 produces 强制共用新版 `ValueExtract`；文本行可按关键字或行号选择，列可按表头或列号提取；删除旧单列 TextExtract、QFK `produces.path`、无 extract 全文判定和 `json_path` Matcher，变量写入保持原子。 | [QFK 声明式取值与匹配模式统一方案](../../solution/agent/events/2026-07-31-QFK取值先行与全模式安全管道统一方案.md) |
 | 2026-07-31 | v3.43 | **KBD 最小 Replay artifact 契约**：在既有精确 revision 运行审计中追加 `replay_manifest`，记录不可变 KBD checksum、计划、环境/参数哈希、逐 Signal evaluation 与 Terminal Bridge artifact 查找键；不复制 stdout/stderr，明确 `replayable=false`，尚未形成 Evidence/Execution Replay。 | [KBD 最小回放证据契约与正式专家复核启动方案](../../solution/agent/events/2026-07-31-KBD最小回放证据契约与正式专家复核启动方案.md) |
