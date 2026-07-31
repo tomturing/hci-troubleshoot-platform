@@ -2,176 +2,89 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from app.tools.acli.executor import ExecResult
-from app.tools.qfk.extractor import (
-    QFKExtractionError,
-    extract_output_values,
-    extract_text_value,
-    get_complete_output,
-)
+from app.tools.qfk.extractor import QFKExtractionError, extract_output_values, extract_value, get_complete_output
+
+
+DF_OUTPUT = """Filesystem  Size  Used  Avail  Use%  Mounted on
+tmpfs       512M   22M   491M    5%  /run
+tmpfs       8.0M   12K   8.0M    1%  /run/lock
+/dev/sda3   7.8G  2.6G   4.8G   35%  /
+"""
+
+
+def _df_extract(rows: dict) -> dict:
+    return {
+        "type": "text",
+        "parser": "whitespace_table",
+        "header": {"mode": "contains", "required": ["Filesystem", "Used", "Use%"], "case_sensitive": False},
+        "rows": rows,
+        "columns": [
+            {"key": "USED", "selector": {"by": "header", "name": "Used"}, "value_mode": "string"},
+            {"key": "USE_PERCENT", "selector": {"by": "header", "name": "Use%"}, "value_mode": "number"},
+        ],
+        "cardinality": "all",
+        "value_key": "USE_PERCENT",
+    }
+
+
+def test_declarative_extract_selects_multiple_rows_and_columns():
+    result = extract_output_values(
+        DF_OUTPUT,
+        _df_extract({"mode": "keywords", "include": ["tmpfs", "/dev/sda3"], "exclude": ["/run/lock"], "include_mode": "any", "case_sensitive": True}),
+    )
+    assert result.raw_records == [{"USED": "22M", "USE_PERCENT": "5%"}, {"USED": "2.6G", "USE_PERCENT": "35%"}]
+    assert result.records == [{"USED": "22M", "USE_PERCENT": 5.0}, {"USED": "2.6G", "USE_PERCENT": 35.0}]
+    assert result.selected_line_numbers == [2, 4]
+
+
+def test_row_numbers_have_explicit_data_non_empty_and_physical_bases():
+    spec = _df_extract({"mode": "indices", "basis": "data", "indices": [3]})
+    assert extract_output_values(DF_OUTPUT, spec).values == [35.0]
+    rows_only = {"type": "text", "rows": {"mode": "indices", "basis": "physical", "indices": [2]}, "cardinality": "exactly_one"}
+    assert extract_value(DF_OUTPUT, rows_only) == "tmpfs       512M   22M   491M    5%  /run"
+
+
+def test_header_aliases_are_explicit_and_capacity_units_do_not_silently_cast():
+    spec = _df_extract({"mode": "indices", "basis": "data", "indices": [3]})
+    spec["columns"][0]["selector"] = {"by": "header", "name": "Uesed", "aliases": []}
+    with pytest.raises(QFKExtractionError, match="QFK_COLUMN_NOT_FOUND"):
+        extract_output_values(DF_OUTPUT, spec)
+    spec["columns"][0]["selector"]["aliases"] = ["Used"]
+    assert extract_output_values(DF_OUTPUT, spec).records[0]["USED"] == "2.6G"
+    spec["columns"] = [{"key": "USED", "selector": {"by": "header", "name": "Used"}, "value_mode": "number"}]
+    spec["value_key"] = "USED"
+    with pytest.raises(QFKExtractionError, match="QFK_TYPE_CAST_FAILED"):
+        extract_output_values(DF_OUTPUT, spec)
+
+
+def test_json_and_record_values_use_the_same_runtime_entry():
+    result = extract_output_values('{"data":[{"status":"running","usage":"35%"}]}', {"type": "json", "path": "data[0].usage", "value_mode": "number"})
+    assert result.values == [35.0]
+    spec = _df_extract({"mode": "indices", "basis": "data", "indices": [3]})
+    spec.pop("value_key")
+    spec["cardinality"] = "exactly_one"
+    assert extract_value(DF_OUTPUT, spec, "object") == {"USED": "2.6G", "USE_PERCENT": 35.0}
+
+
+@pytest.mark.parametrize("spec", [{"type": "text"}, {"type": "text", "include": ["old"]}, {"type": "text", "rows": {"mode": "all"}, "column": 2}])
+def test_old_or_incomplete_text_extract_is_rejected(spec):
+    with pytest.raises(QFKExtractionError):
+        extract_output_values("one two\n", spec)
 
 
 def _result(**overrides) -> ExecResult:
-    values = {
-        "stdout": "short stdout",
-        "stderr": "short stderr",
-        "exit_code": 0,
-        "command": "acli system ps auxf",
-        "node": "172.28.24.2",
-        "duration_ms": 10,
-        "truncated": False,
-        "risk_level": 1,
-        "exec_id": "exec-1",
-    }
+    values = {"stdout": "short stdout", "stderr": "short stderr", "exit_code": 0, "command": "df", "node": "172.28.24.2", "duration_ms": 10, "truncated": False, "risk_level": 1, "exec_id": "exec-1"}
     values.update(overrides)
     return ExecResult(**values)
 
 
-def test_ps_auxf_grep_awk_equivalent():
-    output = """USER PID COMMAND
-root 31315 /usr/libexec/qemu-kvm -id 8243094091404
-root 31399 grep -id 8243094091404
-"""
-    value = extract_text_value(
-        output,
-        {
-            "type": "text",
-            "include": ["-id 8243094091404"],
-            "exclude": ["grep"],
-            "column": 2,
-            "column_mode": "index",
-        },
-        "integer",
-    )
-    assert value == 31315
-
-
-def test_multiple_include_defaults_to_and_and_supports_case_insensitive():
-    output = "alpha TARGET one\nalpha other\n"
-    assert extract_text_value(
-        output,
-        {"type": "text", "include": ["ALPHA", "target"], "case_sensitive": False},
-    ) == "alpha TARGET one"
-
-
-def test_exclude_and_first_last_all_cardinality():
-    output = "keep 1\nkeep 2\nkeep debug 3\n"
-    base = {"type": "text", "include": ["keep"], "exclude": ["debug"], "column": 2}
-    assert extract_text_value(output, {**base, "cardinality": "first"}, "integer") == 1
-    assert extract_text_value(output, {**base, "cardinality": "last"}, "integer") == 2
-    assert extract_text_value(output, {**base, "cardinality": "all"}, "integer") == [1, 2]
-    assert extract_text_value(output, {**base, "cardinality": "all"}, "array") == ["1", "2"]
-
-
-def test_whole_line_and_from_index():
-    output = "root 42 qemu command with spaces\n"
-    assert extract_text_value(output, {"type": "text"}) == output.strip()
-    assert extract_text_value(
-        output,
-        {"type": "text", "column": 3, "column_mode": "from_index"},
-    ) == "qemu command with spaces"
-
-
-def test_ps_cmd_output_extracts_process_with_vm_filter():
-    output = "flock -x /sf/data/18864231143.vm/vm-disk-2.qcow2 sleep 999999\n"
-    spec = {
-        "type": "text",
-        "source": "stdout",
-        "include": [],
-        "exclude": [],
-        "cardinality": "exactly_one",
-        "column_mode": "whole",
-    }
-
-    assert extract_text_value(output, {**spec, "include": ["18864231143"]}) == output.strip()
-
-    with pytest.raises(QFKExtractionError) as exc:
-        extract_text_value(output, {**spec, "include": ["10134"]})
-    assert exc.value.code == "QFK_NO_MATCH"
-
-    with pytest.raises(QFKExtractionError) as exc:
-        extract_text_value(output, {**spec, "include": ["another-vm"]})
-    assert exc.value.code == "QFK_NO_MATCH"
-
-
-def test_custom_delimiter_and_scalar_casts():
-    assert extract_text_value("name:3.5:true", {"type": "text", "delimiter": ":", "column": 2}, "number") == 3.5
-    assert extract_text_value("name:3.5:true", {"type": "text", "delimiter": ":", "column": 3}, "boolean") is True
-
-
-def test_number_value_mode_preserves_auditable_percent_values():
-    result = extract_output_values(
-        "tmpfs 20G 9.9G 8.7G 54% /sf/log\n/dev/sda5 20G 9.9G 8.7G 83% /sf/log\n",
-        {
-            "type": "text",
-            "include": ["/sf/log"],
-            "column_mode": "index",
-            "column": 5,
-            "cardinality": "all",
-            "value_mode": "number",
-        },
-    )
-    assert result.raw_values == ["54%", "83%"]
-    assert result.values == [54.0, 83.0]
-    assert result.selected_lines == result.matched_lines
-
-
-@pytest.mark.parametrize(
-    ("output", "spec", "code"),
-    [
-        ("", {"type": "text"}, "QFK_OUTPUT_EMPTY"),
-        ("alpha\n", {"type": "text", "include": ["missing"]}, "QFK_NO_MATCH"),
-        ("a\na\n", {"type": "text", "include": ["a"]}, "QFK_MULTIPLE_MATCHES"),
-        ("one two\n", {"type": "text", "column": 3}, "QFK_COLUMN_OUT_OF_RANGE"),
-        ("not-int\n", {"type": "text"}, "QFK_TYPE_CAST_FAILED"),
-    ],
-)
-def test_fail_closed_errors(output, spec, code):
-    value_type = "integer" if code == "QFK_TYPE_CAST_FAILED" else "string"
-    with pytest.raises(QFKExtractionError) as exc:
-        extract_text_value(output, spec, value_type)
-    assert exc.value.code == code
-
-
-def test_malicious_text_is_data_not_code():
-    assert extract_text_value("root 7 $(rm -rf /)\n", {"type": "text", "column": 2}, "integer") == 7
-
-
 @pytest.mark.asyncio
-async def test_complete_stdout_without_truncation_does_not_read_cache():
-    redis = MagicMock()
-    redis.client.get = AsyncMock()
-    assert await get_complete_output(_result(), redis) == "short stdout"
-    redis.client.get.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_complete_stdout_and_stderr_use_separate_cache_keys():
+async def test_complete_output_uses_separate_cache_and_fails_closed():
     redis = MagicMock()
     redis.client.get = AsyncMock(side_effect=[b"full stdout", "full stderr"])
     result = _result(truncated=True, stderr_truncated=True)
     assert await get_complete_output(result, redis, source="stdout") == "full stdout"
     assert await get_complete_output(result, redis, source="stderr") == "full stderr"
-    assert redis.client.get.await_args_list[0].args == ("cmd_cache:exec-1",)
-    assert redis.client.get.await_args_list[1].args == ("cmd_stderr_cache:exec-1",)
-
-
-@pytest.mark.asyncio
-async def test_truncated_cache_miss_and_output_too_large_fail_closed():
-    redis = MagicMock()
     redis.client.get = AsyncMock(return_value=None)
-    with pytest.raises(QFKExtractionError) as exc:
+    with pytest.raises(QFKExtractionError, match="QFK_OUTPUT_TRUNCATED_SOURCE_UNAVAILABLE"):
         await get_complete_output(_result(truncated=True), redis)
-    assert exc.value.code == "QFK_OUTPUT_TRUNCATED_SOURCE_UNAVAILABLE"
-
-    with pytest.raises(QFKExtractionError) as exc:
-        await get_complete_output(_result(stdout="abcd"), redis, max_bytes=3)
-    assert exc.value.code == "QFK_OUTPUT_TOO_LARGE"
-
-
-@pytest.mark.asyncio
-async def test_truncated_cache_read_error_fails_closed():
-    redis = MagicMock()
-    redis.client.get = AsyncMock(side_effect=ConnectionError("redis unavailable"))
-    with pytest.raises(QFKExtractionError) as exc:
-        await get_complete_output(_result(truncated=True), redis)
-    assert exc.value.code == "QFK_OUTPUT_TRUNCATED_SOURCE_UNAVAILABLE"

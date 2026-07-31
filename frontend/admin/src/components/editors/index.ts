@@ -9,3 +9,4 @@
 export { default as ProducesEditor } from './ProducesEditor.vue'
 export { default as MatcherEditor } from './MatcherEditor.vue'
 export { default as TextExtractEditor } from './TextExtractEditor.vue'
+export { default as ValueExtractEditor } from './ValueExtractEditor.vue'

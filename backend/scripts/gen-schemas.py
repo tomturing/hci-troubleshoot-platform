@@ -144,13 +144,8 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                 },
                 "allOf": acquire_allof,
             },
-            # 判定段：运行时 evaluate_matcher 支持 8 类（见 agent-service matcher.py），
-            # 此处按类型允许各自字段，并保留 additionalProperties:false 拒绝幽灵字段。
-            # - keyword/regex/state: 用 pattern（+ mode 多词逻辑）
-            # - threshold/delta:   用 value + operator，可按 metric 提取日志数值
-            # - trend:             用 direction/value/minimum_samples
-            # - json_path:         用 path + expected_value
-            # - exists:            仅需 expected
+            # 匹配模式只消费同一份声明式 ValueExtract 的结果。JSON 路径属于取值层，
+            # 不是单独的 Matcher；保存时拒绝无 extract 的旧全文判定。
             "match": {
                 "type": ["object", "null"],
                 "required": ["type", "expected"],
@@ -159,7 +154,7 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     "type": {
                         "type": "string",
                         "enum": [
-                            "keyword", "regex", "state", "threshold", "delta", "trend", "json_path", "exists"
+                            "keyword", "regex", "state", "threshold", "delta", "trend", "exists"
                         ],
                     },
                     "pattern": {
@@ -168,7 +163,7 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                             {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
                         ]
                     },
-                    "mode": {"type": "string", "enum": ["or", "and", "not", "any", "all"]},
+                    "mode": {"type": "string", "enum": ["or", "and", "not"]},
                     "expected": {"type": "boolean"},
                     "value": {"type": ["number", "integer"]},
                     "operator": {"type": "string", "enum": [">", ">=", "<", "<=", "==", "=", "!="]},
@@ -179,18 +174,14 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                         ],
                         "default": "first_number",
                     },
-                    # 与 produces[].extract 引用同一份 textExtract；用于先安全地
-                    # 做“筛选行 + 第 N 列”取值，再聚合并判断，不执行自由 grep/awk。
-                    "extract": {"$ref": "#/definitions/textExtract"},
-                    "metric": {"type": "string", "minLength": 1},
+                    # 与 produces[].extract 引用同一份 valueExtract；取值层与
+                    # Predicate 正交，不执行自由 grep/awk/jq。
+                    "extract": {"$ref": "#/definitions/valueExtract"},
                     "minimum_samples": {"type": "integer", "minimum": 2, "maximum": 10000},
                     "direction": {"type": "string", "enum": ["increasing", "decreasing", "stable"]},
-                    "path": {"type": "string"},
-                    "expected_value": {
-                        "type": ["string", "number", "boolean", "null"]
-                    },
                 },
                 "allOf": [
+                    {"required": ["extract"]},
                     {
                         "if": {"properties": {"type": {"enum": ["keyword", "regex", "state"]}}},
                         "then": {"required": ["pattern"]},
@@ -199,18 +190,8 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                         "if": {"properties": {"type": {"const": "threshold"}}},
                         "then": {"required": ["value", "operator"]},
                     },
-                    {
-                        "if": {"properties": {"type": {"const": "delta"}}},
-                        "then": {"required": ["metric", "value", "operator"]},
-                    },
-                    {
-                        "if": {"properties": {"type": {"const": "trend"}}},
-                        "then": {"required": ["metric", "direction"]},
-                    },
-                    {
-                        "if": {"properties": {"type": {"const": "json_path"}}},
-                        "then": {"required": ["path"]},
-                    },
+                    {"if": {"properties": {"type": {"const": "delta"}}}, "then": {"required": ["value", "operator"]}},
+                    {"if": {"properties": {"type": {"const": "trend"}}}, "then": {"required": ["direction"]}},
                 ],
             },
             "orchestrate": {
@@ -224,7 +205,7 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     "container": {"type": "string"},
                     "produces": {
                         "type": "array",
-                        "description": "该信号向变量池产出的变量；JSON 用 path，文本用 extract",
+                        "description": "该信号向变量池产出的变量；统一使用声明式 extract",
                         "items": {
                             "type": "object",
                             "additionalProperties": False,
@@ -233,10 +214,13 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                                 "name": {"type": "string"},
                                 "type": {
                                     "type": "string",
-                                    "enum": ["string", "integer", "number", "boolean", "array"],
+                                    "enum": [
+                                        "string", "integer", "number", "boolean", "array",
+                                        "object", "array<object>",
+                                    ],
                                 },
                                 "path": {"type": "string"},
-                                "extract": {"$ref": "#/definitions/textExtract"},
+                                "extract": {"$ref": "#/definitions/valueExtract"},
                             },
                             "not": {"required": ["path", "extract"]},
                         },
@@ -244,33 +228,128 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     "requires": {"type": "array", "items": {"type": "string"}},
                 },
             },
+            "rowRange": {
+                "type": "object",
+                "required": ["start", "end"],
+                "additionalProperties": False,
+                "properties": {
+                    "start": {"type": "integer", "minimum": 1},
+                    "end": {"type": "integer", "minimum": 1},
+                },
+            },
+            "rowSelector": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "required": ["mode"],
+                        "additionalProperties": False,
+                        "properties": {"mode": {"const": "all"}},
+                    },
+                    {
+                        "type": "object",
+                        "required": ["mode"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "mode": {"const": "keywords"},
+                            "include": {
+                                "type": "array",
+                                "items": {"type": "string", "minLength": 1},
+                            },
+                            "exclude": {
+                                "type": "array",
+                                "items": {"type": "string", "minLength": 1},
+                            },
+                            "include_mode": {"type": "string", "enum": ["all", "any"], "default": "all"},
+                            "case_sensitive": {"type": "boolean", "default": True},
+                        },
+                    },
+                    {
+                        "type": "object",
+                        "required": ["mode", "basis"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "mode": {"const": "indices"},
+                            "basis": {"type": "string", "enum": ["physical", "non_empty", "data"]},
+                            "indices": {
+                                "type": "array",
+                                "items": {"type": "integer", "minimum": 1},
+                                "uniqueItems": True,
+                            },
+                            "ranges": {
+                                "type": "array",
+                                "items": {"$ref": "#/definitions/rowRange"},
+                            },
+                        },
+                        "anyOf": [
+                            {"required": ["indices"], "properties": {"indices": {"minItems": 1}}},
+                            {"required": ["ranges"], "properties": {"ranges": {"minItems": 1}}},
+                        ],
+                    },
+                ],
+            },
+            "tableHeader": {
+                "type": "object",
+                "required": ["mode", "required"],
+                "additionalProperties": False,
+                "properties": {
+                    "mode": {"const": "contains"},
+                    "required": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                        "minItems": 1,
+                        "uniqueItems": True,
+                    },
+                    "case_sensitive": {"type": "boolean", "default": False},
+                },
+            },
+            "textColumnSelector": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "required": ["by", "index"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "by": {"const": "index"},
+                            "index": {"type": "integer", "minimum": 1},
+                        },
+                    },
+                    {
+                        "type": "object",
+                        "required": ["by", "name"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "by": {"const": "header"},
+                            "name": {"type": "string", "minLength": 1},
+                            "aliases": {
+                                "type": "array",
+                                "items": {"type": "string", "minLength": 1},
+                                "uniqueItems": True,
+                            },
+                        },
+                    },
+                ],
+            },
+            "textColumn": {
+                "type": "object",
+                "required": ["key", "selector"],
+                "additionalProperties": False,
+                "properties": {
+                    "key": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+                    "selector": {"$ref": "#/definitions/textColumnSelector"},
+                    "value_mode": {
+                        "type": "string",
+                        "enum": ["string", "integer", "number", "boolean"],
+                        "default": "string",
+                    },
+                },
+            },
             "textExtract": {
                 "type": "object",
                 "description": "QFK 非 JSON 输出的受控行筛选与列提取规则；不接受 shell/grep/awk 脚本",
                 "additionalProperties": False,
-                "required": ["type"],
+                "required": ["type", "rows"],
                 "properties": {
                     "type": {"const": "text"},
-                    "include": {
-                        "type": "array",
-                        "items": {"type": "string", "minLength": 1},
-                    },
-                    "exclude": {
-                        "type": "array",
-                        "items": {"type": "string", "minLength": 1},
-                    },
-                    "include_mode": {
-                        "type": "string",
-                        "enum": ["all", "any"],
-                        "default": "all",
-                    },
-                    "case_sensitive": {"type": "boolean", "default": True},
-                    "column": {"type": "integer", "minimum": 1},
-                    "column_mode": {
-                        "type": "string",
-                        "enum": ["whole", "index", "from_index"],
-                        "default": "whole",
-                    },
                     "delimiter": {
                         "anyOf": [
                             {"const": "whitespace"},
@@ -291,18 +370,57 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     "value_mode": {
                         "type": "string",
                         "enum": ["string", "integer", "number", "boolean", "array"],
-                        "description": "提取后的确定性类型；number 支持 54%/21.5ms 等常见单位后缀",
+                        "description": "提取后的确定性类型；number 支持 54%→54，不剥离容量/时长单位",
                     },
+                    "parser": {"type": "string", "enum": ["whitespace_table", "delimited_table"]},
+                    "header": {"$ref": "#/definitions/tableHeader"},
+                    "rows": {"$ref": "#/definitions/rowSelector"},
+                    "columns": {
+                        "type": "array",
+                        "items": {"$ref": "#/definitions/textColumn"},
+                        "minItems": 1,
+                    },
+                    "value_key": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
                 },
                 "allOf": [
                     {
+                        "if": {"required": ["columns"]},
+                        "then": {"required": ["parser", "rows"]},
+                    },
+                    {
                         "if": {
-                            "properties": {"column_mode": {"enum": ["index", "from_index"]}},
-                            "required": ["column_mode"],
+                            "properties": {"parser": {"const": "delimited_table"}},
+                            "required": ["parser"],
                         },
-                        "then": {"required": ["column"]},
-                    }
+                        "then": {"required": ["delimiter"]},
+                    },
                 ],
+            },
+            "jsonExtract": {
+                "type": "object",
+                "description": "QFK JSON 输出的受控点号/数组下标取值；不接受 jq 表达式",
+                "required": ["type", "path"],
+                "additionalProperties": False,
+                "properties": {
+                    "type": {"const": "json"},
+                    "source": {"type": "string", "enum": ["stdout", "stderr"], "default": "stdout"},
+                    "path": {"type": "string"},
+                    "cardinality": {
+                        "type": "string",
+                        "enum": ["exactly_one", "first", "last", "all"],
+                        "default": "exactly_one",
+                    },
+                    "value_mode": {
+                        "type": "string",
+                        "enum": ["string", "integer", "number", "boolean", "array", "object", "array<object>"],
+                    },
+                },
+            },
+            "valueExtract": {
+                "oneOf": [
+                    {"$ref": "#/definitions/textExtract"},
+                    {"$ref": "#/definitions/jsonExtract"},
+                ]
             },
             "provenance": {
                 "type": "object",

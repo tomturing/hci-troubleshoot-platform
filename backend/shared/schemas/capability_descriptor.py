@@ -26,7 +26,7 @@ def build_capability_descriptors() -> list[dict[str, Any]]:
             if is_frontend
             else list(LOG_MATCHER_TYPES)
             if capability_id == "qfk_log"
-            else ["keyword", "regex", "state", "threshold", "delta", "trend", "json_path", "exists"]
+            else ["keyword", "regex", "state", "threshold", "delta", "trend", "exists"]
         )
         descriptors.append(
             {

@@ -93,12 +93,12 @@ ACQUIRER_CATALOG: dict[str, str] = {
         "Catalog 推断 path/parser，支持 keyword/regex/state/threshold/delta/trend/exists"
     ),
     "qfk_service": "服务状态：领域含 asv(vt)/anet(vn)/asan(vs)/host；当前运行时按 acli capability probe 执行",
-    "qfk_system": "后端信号-系统检查和操作：acli system <command>（如 lsof/ps/lsblk/iostat/smartctl），threshold/keyword/json_path 求值",
-    "qfk_vm": "后端信号-虚拟机相关操作：acli vm <command>，state/json_path/exists 求值",
-    "qfk_network": "后端信号-网络相关操作：acli network <command>，state/json_path/exists 求值",
-    "qfk_storage": "后端信号-存储相关操作：acli storage <command>（如 asan disk list），state/json_path/exists 求值",
-    "qfk_hardware": "后端信号-硬件相关操作：acli hardware <command>，state/json_path/exists 求值",
-    "qfk_platform": "后端信号-平台相关操作：acli platform <command>，state/json_path/exists 求值",
+    "qfk_system": "后端信号-系统检查和操作：acli system <command>（如 lsof/ps/lsblk/iostat/smartctl），使用声明式取值后再判定",
+    "qfk_vm": "后端信号-虚拟机相关操作：acli vm <command>，使用声明式取值后再判定",
+    "qfk_network": "后端信号-网络相关操作：acli network <command>，使用声明式取值后再判定",
+    "qfk_storage": "后端信号-存储相关操作：acli storage <command>（如 asan disk list），使用声明式取值后再判定",
+    "qfk_hardware": "后端信号-硬件相关操作：acli hardware <command>，使用声明式取值后再判定",
+    "qfk_platform": "后端信号-平台相关操作：acli platform <command>，使用声明式取值后再判定",
 }
 
 # ─── 默认变量池 schema（produces/requires 引用的变量名集合）───────────────────
@@ -115,7 +115,7 @@ DEFAULT_VARIABLE_SCHEMA: list[str] = [
 ]
 
 VALID_CATEGORIES = {"frontend", "backend"}
-VALID_MATCHER_TYPES = {"keyword", "regex", "state", "threshold", "delta", "trend", "json_path", "exists"}
+VALID_MATCHER_TYPES = {"keyword", "regex", "state", "threshold", "delta", "trend", "exists"}
 VALID_VARIABLE_TYPES = {"string", "integer", "number", "boolean", "array"}
 
 # ADR-2：{{VAR}} 大写占位符正则（单一真相源；运行期校验用）
@@ -1223,6 +1223,7 @@ class SafePipelineResponse(BaseModel):
     command: str
     extract: dict[str, Any]
     removed_segments: list[str] = Field(default_factory=list)
+    conversion_id: str
 
 
 @router.post("/kbd/tools/convert-safe-pipeline", response_model=SafePipelineResponse)
@@ -1237,6 +1238,7 @@ async def convert_safe_pipeline_api(request: Request, body: SafePipelineRequest)
         command=result.command,
         extract=result.extract,
         removed_segments=result.removed_segments,
+        conversion_id=result.conversion_id,
     )
 
 

@@ -1,91 +1,229 @@
 <script setup lang="ts">
-/**
- * TextExtractEditor - QFK 受控文本取值编辑器。
- *
- * Produces 与 Matcher 共用本组件和后端 ``textExtract`` 契约：界面用“筛选行 +
- * 第 N 列”的 grep/awk 心智模型，但平台只执行安全的声明式子集，不执行任意脚本。
- */
+/** QFK 声明式文本取值编辑器：行选择与列选择正交。 */
 import { computed, watch } from 'vue'
 
 const props = withDefaults(defineProps<{
   modelValue?: Record<string, any>
-  valueMode?: boolean
-}>(), { valueMode: false })
+  defaultValueMode?: string
+}>(), { defaultValueMode: 'string' })
 
 const emit = defineEmits<{ 'update:modelValue': [value: Record<string, any>] }>()
 
 const extract = computed({
-  get: (): Record<string, any> => ({
-    type: 'text', include: [], exclude: [], include_mode: 'all', case_sensitive: true,
-    column_mode: 'whole', delimiter: 'whitespace', cardinality: 'exactly_one', source: 'stdout',
-    ...(props.modelValue || {}),
-  }),
-  set: (value) => emit('update:modelValue', value),
+  get: () => props.modelValue || { type: 'text', rows: { mode: 'all' }, cardinality: 'exactly_one', source: 'stdout' },
+  set: (value: Record<string, any>) => emit('update:modelValue', value),
 })
+const rows = computed(() => extract.value.rows || { mode: 'all' })
+const columns = computed(() => Array.isArray(extract.value.columns) ? extract.value.columns : [])
+const columnMode = computed(() => columns.value.length ? 'columns' : 'whole')
 
+function setExtract(value: Record<string, any>) {
+  extract.value = { ...value, type: 'text' }
+}
 function setField(key: string, value: any) {
-  extract.value = { ...extract.value, [key]: value }
+  setExtract({ ...extract.value, [key]: value })
 }
-function lineText(key: 'include' | 'exclude') {
-  return (extract.value[key] || []).join('\n')
+function removeField(key: string) {
+  const value = { ...extract.value }
+  delete value[key]
+  setExtract(value)
 }
-function setLines(key: 'include' | 'exclude', value: string) {
-  setField(key, value.split('\n').map((line) => line.trim()).filter(Boolean))
+function setRowsField(key: string, value: any) {
+  setField('rows', { ...rows.value, [key]: value })
 }
-watch(() => props.modelValue, (value) => {
-  if (!value || value.type !== 'text') emit('update:modelValue', extract.value)
+function listText(value: any): string {
+  return Array.isArray(value) ? value.join('\n') : ''
+}
+function setStringList(target: Record<string, any>, key: string, value: string) {
+  target[key] = value.split('\n').map(item => item.trim()).filter(Boolean)
+  setExtract({ ...extract.value })
+}
+function setRowMode(mode: string) {
+  if (mode === 'keywords') {
+    setField('rows', { mode, include: [], exclude: [], include_mode: 'all', case_sensitive: true })
+  } else if (mode === 'indices') {
+    setField('rows', { mode, basis: 'data', indices: [1], ranges: [] })
+  } else {
+    setField('rows', { mode: 'all' })
+  }
+}
+function indexText(): string {
+  return (rows.value.indices || []).join(', ')
+}
+function setIndices(value: string) {
+  const indices = value.split(',').map(item => Number(item.trim())).filter(item => Number.isInteger(item) && item > 0)
+  setRowsField('indices', [...new Set(indices)])
+}
+function rangeText(): string {
+  return (rows.value.ranges || []).map((item: any) => `${item.start}-${item.end}`).join('\n')
+}
+function setRanges(value: string) {
+  const ranges = value.split('\n').map(item => item.trim()).filter(Boolean).map(item => {
+    const match = item.match(/^(\d+)\s*-\s*(\d+)$/)
+    return match ? { start: Number(match[1]), end: Number(match[2]) } : null
+  }).filter(Boolean)
+  setRowsField('ranges', ranges)
+}
+function setColumnMode(mode: string) {
+  if (mode === 'whole') {
+    const value = { ...extract.value }
+    delete value.parser
+    delete value.header
+    delete value.columns
+    delete value.value_key
+    delete value.delimiter
+    setExtract(value)
+    return
+  }
+  setExtract({
+    ...extract.value,
+    parser: 'whitespace_table',
+    columns: [{ key: 'VALUE', selector: { by: 'index', index: 1 }, value_mode: props.defaultValueMode }],
+    value_key: 'VALUE',
+  })
+}
+function setParser(parser: string) {
+  const value: Record<string, any> = { ...extract.value, parser }
+  if (parser === 'delimited_table') value.delimiter ||= ':'
+  else delete value.delimiter
+  setExtract(value)
+}
+function setHeaderEnabled(enabled: boolean) {
+  if (enabled) setField('header', { mode: 'contains', required: [], case_sensitive: false })
+  else removeField('header')
+}
+function setHeaderCaseSensitive(value: boolean) {
+  setField('header', { ...extract.value.header, case_sensitive: value })
+}
+function addColumn() {
+  const next = columns.value.length + 1
+  setField('columns', [
+    ...columns.value,
+    { key: `VALUE_${next}`, selector: { by: 'index', index: next }, value_mode: props.defaultValueMode },
+  ])
+}
+function removeColumn(index: number) {
+  const next = columns.value.filter((_: any, itemIndex: number) => itemIndex !== index)
+  const value: Record<string, any> = { ...extract.value, columns: next }
+  if (!next.some((item: any) => item.key === value.value_key)) value.value_key = next[0]?.key
+  setExtract(value)
+}
+function updateColumn(index: number, patch: Record<string, any>) {
+  const next = columns.value.map((item: any, itemIndex: number) => itemIndex === index ? { ...item, ...patch } : item)
+  setField('columns', next)
+}
+function updateSelector(index: number, patch: Record<string, any>) {
+  updateColumn(index, { selector: { ...columns.value[index].selector, ...patch } })
+}
+function setSelectorMode(index: number, by: string) {
+  updateColumn(index, {
+    selector: by === 'header' ? { by, name: '', aliases: [] } : { by, index: index + 1 },
+  })
+}
+watch(() => props.modelValue, value => {
+  if (!value || value.type !== 'text') setExtract({ type: 'text', rows: { mode: 'all' }, cardinality: 'exactly_one', source: 'stdout' })
 }, { immediate: true })
 </script>
 
 <template>
   <div class="text-extract-editor">
-    <el-form label-position="left" label-width="92px" size="small">
-      <el-form-item label="筛选行（包含）">
-        <el-input :model-value="lineText('include')" type="textarea" :rows="2" placeholder="每行一个条件；默认全部满足（安全 grep）" @input="(value: string) => setLines('include', value)" />
+    <el-form label-position="left" label-width="96px" size="small">
+      <el-form-item label="行选择">
+        <el-radio-group :model-value="rows.mode" @change="setRowMode">
+          <el-radio-button value="all">全部行</el-radio-button>
+          <el-radio-button value="keywords">按关键字</el-radio-button>
+          <el-radio-button value="indices">按行号</el-radio-button>
+        </el-radio-group>
       </el-form-item>
-      <el-form-item label="筛选行（不含）">
-        <el-input :model-value="lineText('exclude')" type="textarea" :rows="2" placeholder="可选，每行一个排除条件" @input="(value: string) => setLines('exclude', value)" />
-      </el-form-item>
-      <el-form-item label="提取值">
-        <div class="inline-controls">
-          <el-select :model-value="extract.column_mode" @update:model-value="(value) => setField('column_mode', value)">
-            <el-option label="整行" value="whole" />
-            <el-option label="第 N 列" value="index" />
-            <el-option label="从第 N 列到末尾" value="from_index" />
+      <template v-if="rows.mode === 'keywords'">
+        <el-form-item label="包含关键字">
+          <el-input :model-value="listText(rows.include)" type="textarea" :rows="2" placeholder="每行一个字面量" @input="(value: string) => setStringList(rows, 'include', value)" />
+        </el-form-item>
+        <el-form-item label="排除关键字">
+          <el-input :model-value="listText(rows.exclude)" type="textarea" :rows="2" @input="(value: string) => setStringList(rows, 'exclude', value)" />
+        </el-form-item>
+        <el-form-item label="关键字关系">
+          <el-select :model-value="rows.include_mode || 'all'" @change="(value: string) => setRowsField('include_mode', value)">
+            <el-option label="全部满足（AND）" value="all" /><el-option label="任一满足（OR）" value="any" />
           </el-select>
-          <el-input-number v-if="extract.column_mode !== 'whole'" :model-value="extract.column" :min="1" :max="999" @update:model-value="(value) => setField('column', value)" />
-        </div>
+          <el-switch class="case-switch" :model-value="rows.case_sensitive ?? true" active-text="区分大小写" @change="(value: boolean) => setRowsField('case_sensitive', value)" />
+        </el-form-item>
+      </template>
+      <template v-else-if="rows.mode === 'indices'">
+        <el-form-item label="行号基准">
+          <el-select :model-value="rows.basis || 'data'" @change="(value: string) => setRowsField('basis', value)">
+            <el-option label="数据行（不含表头）" value="data" /><el-option label="非空行" value="non_empty" /><el-option label="物理行（含空行/表头）" value="physical" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="行号列表"><el-input :model-value="indexText()" placeholder="如 1, 3, 8（从 1 开始）" @input="setIndices" /></el-form-item>
+        <el-form-item label="行号范围"><el-input :model-value="rangeText()" type="textarea" :rows="2" placeholder="每行一个范围，如 5-7" @input="setRanges" /></el-form-item>
+      </template>
+
+      <el-form-item label="列选择">
+        <el-radio-group :model-value="columnMode" @change="setColumnMode">
+          <el-radio-button value="whole">整行</el-radio-button><el-radio-button value="columns">一列或多列</el-radio-button>
+        </el-radio-group>
       </el-form-item>
-      <el-form-item v-if="valueMode" label="取值类型">
-        <el-select :model-value="extract.value_mode || 'number'" @update:model-value="(value) => setField('value_mode', value)">
-          <el-option label="数值（54% → 54）" value="number" />
-          <el-option label="整数" value="integer" />
-          <el-option label="文本" value="string" />
-          <el-option label="布尔值" value="boolean" />
+      <template v-if="columnMode === 'columns'">
+        <el-form-item label="表格解析">
+          <el-select :model-value="extract.parser || 'whitespace_table'" @change="setParser">
+            <el-option label="空白分列" value="whitespace_table" /><el-option label="单字符分隔" value="delimited_table" />
+          </el-select>
+          <el-input v-if="extract.parser === 'delimited_table'" class="delimiter-input" maxlength="1" :model-value="extract.delimiter" placeholder=":" @input="(value: string) => setField('delimiter', value)" />
+        </el-form-item>
+        <el-form-item label="识别表头">
+          <el-switch :model-value="Boolean(extract.header)" @change="setHeaderEnabled" />
+        </el-form-item>
+        <template v-if="extract.header">
+          <el-form-item label="表头特征">
+            <el-input :model-value="listText(extract.header.required)" type="textarea" :rows="2" placeholder="每行一个必含列名，如 Filesystem、Use%" @input="(value: string) => setStringList(extract.header, 'required', value)" />
+          </el-form-item>
+          <el-form-item label="表头大小写"><el-switch :model-value="extract.header.case_sensitive" active-text="区分大小写" @change="setHeaderCaseSensitive" /></el-form-item>
+        </template>
+
+        <div class="columns-editor">
+          <div v-for="(column, index) in columns" :key="index" class="column-card">
+            <el-input :model-value="column.key" placeholder="稳定 key，如 USE_PERCENT" @input="(value: string) => updateColumn(index, { key: value.toUpperCase() })" />
+            <el-select :model-value="column.selector.by" @change="(value: string) => setSelectorMode(index, value)">
+              <el-option label="按列号" value="index" /><el-option label="按表头列名" value="header" />
+            </el-select>
+            <el-input-number v-if="column.selector.by === 'index'" :model-value="column.selector.index" :min="1" @change="(value: number) => updateSelector(index, { index: value })" />
+            <template v-else>
+              <el-input :model-value="column.selector.name" placeholder="列名，如 Used / Use%" @input="(value: string) => updateSelector(index, { name: value })" />
+              <el-input :model-value="(column.selector.aliases || []).join(', ')" placeholder="别名，逗号分隔（可选）" @input="(value: string) => updateSelector(index, { aliases: value.split(',').map(item => item.trim()).filter(Boolean) })" />
+            </template>
+            <el-select :model-value="column.value_mode || 'string'" @change="(value: string) => updateColumn(index, { value_mode: value })">
+              <el-option label="文本" value="string" /><el-option label="整数" value="integer" /><el-option label="数字（35%→35）" value="number" /><el-option label="布尔值" value="boolean" />
+            </el-select>
+            <el-button text type="danger" @click="removeColumn(index)">删除</el-button>
+          </div>
+          <el-button text type="primary" @click="addColumn">+ 添加列</el-button>
+        </div>
+        <el-form-item label="主值列">
+          <el-select :model-value="extract.value_key" clearable placeholder="Matcher/标量变量必须选择" @change="(value: string) => setField('value_key', value)">
+            <el-option v-for="column in columns" :key="column.key" :label="column.key" :value="column.key" />
+          </el-select>
+        </el-form-item>
+      </template>
+
+      <el-form-item label="结果数量">
+        <el-select :model-value="extract.cardinality || 'exactly_one'" @change="(value: string) => setField('cardinality', value)">
+          <el-option label="必须唯一" value="exactly_one" /><el-option label="第一行" value="first" /><el-option label="最后一行" value="last" /><el-option label="全部行" value="all" />
         </el-select>
       </el-form-item>
-      <el-form-item label="高级设置">
-        <details class="extract-advanced">
-          <summary>默认：空白分隔、区分大小写、唯一匹配、stdout</summary>
-          <div class="advanced-grid">
-            <span>包含关系</span><el-select :model-value="extract.include_mode" @update:model-value="(value) => setField('include_mode', value)"><el-option label="全部满足（AND）" value="all" /><el-option label="任一满足（OR）" value="any" /></el-select>
-            <span>区分大小写</span><el-switch :model-value="extract.case_sensitive" @update:model-value="(value) => setField('case_sensitive', value)" />
-            <span>匹配数量</span><el-select :model-value="extract.cardinality" @update:model-value="(value) => setField('cardinality', value)"><el-option label="必须唯一" value="exactly_one" /><el-option label="第一行" value="first" /><el-option label="最后一行" value="last" /><el-option label="全部行" value="all" /></el-select>
-            <span>输出来源</span><el-select :model-value="extract.source" @update:model-value="(value) => setField('source', value)"><el-option label="stdout" value="stdout" /><el-option label="stderr" value="stderr" /></el-select>
-            <span>分隔符</span><el-input :model-value="extract.delimiter" placeholder="whitespace 或单字符" @update:model-value="(value) => setField('delimiter', value)" />
-          </div>
-        </details>
+      <el-form-item label="输出来源">
+        <el-select :model-value="extract.source || 'stdout'" @change="(value: string) => setField('source', value)"><el-option label="stdout" value="stdout" /><el-option label="stderr" value="stderr" /></el-select>
       </el-form-item>
     </el-form>
-    <div class="field-hint">列号从 1 开始，语义等价于安全的 <code>awk '{print $N}'</code>；平台不执行 awk、grep 或 Shell 管道。</div>
+    <div class="field-hint">关键字/行号负责选行，表头/列号负责选列；行列提取完成后才进入 Matcher 或变量写入。所有行号、列号均从 1 开始。</div>
   </div>
 </template>
 
 <style scoped>
-.inline-controls { display: flex; gap: 8px; width: 100%; }
-.inline-controls .el-select { flex: 1; }
-.extract-advanced { width: 100%; color: var(--el-text-color-regular); }
-.extract-advanced summary { cursor: pointer; }
-.advanced-grid { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 8px; align-items: center; margin-top: 10px; }
+.text-extract-editor { width: 100%; }
+.case-switch { margin-left: 12px; }
+.delimiter-input { width: 72px; margin-left: 8px; }
+.columns-editor { display: flex; flex-direction: column; gap: 8px; margin: 0 0 12px 96px; }
+.column-card { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(110px, 140px) minmax(120px, 1fr) minmax(130px, 1fr) auto; gap: 8px; align-items: center; padding: 10px; border: 1px solid var(--el-border-color-light); border-radius: 6px; }
 .field-hint { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.55; }
 </style>

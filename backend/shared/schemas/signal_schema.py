@@ -244,6 +244,24 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
             raise ValidationError(
                 f"signals[{index}] 的 {tool} 必须且只能配置“关键字判定(match)”或“产出变量(orchestrate.produces)”之一"
             )
+        if isinstance(matcher, dict):
+            if not isinstance(matcher.get("extract"), dict):
+                raise ValidationError(f"signals[{index}].match 必须配置新版 extract")
+            _validate_value_extract(
+                matcher["extract"],
+                location=f"signals[{index}].match.extract",
+                consumer_type="matcher",
+            )
+        for produce_index, produce in enumerate(produces):
+            if not isinstance(produce, dict) or not isinstance(produce.get("extract"), dict):
+                raise ValidationError(
+                    f"signals[{index}].orchestrate.produces[{produce_index}] 必须配置新版 extract"
+                )
+            _validate_value_extract(
+                produce["extract"],
+                location=f"signals[{index}].orchestrate.produces[{produce_index}].extract",
+                consumer_type=str(produce.get("type") or "string"),
+            )
         if tool == "qfk_log":
             args = ((signal.get("acquire") or {}).get("args") or {})
             normalized_path = normalize_log_path(str(args.get("path"))) if args.get("path") else None
@@ -299,3 +317,60 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                 raise ValidationError(
                     f"signals[{index}] 的 regex pattern 非法: {exc}"
                 ) from exc
+
+
+def _validate_value_extract(
+    extract: dict[str, Any],
+    *,
+    location: str,
+    consumer_type: str,
+) -> None:
+    """补充 JSON Schema 不便表达的 Extract 跨字段约束。"""
+
+    extract_type = str(extract.get("type") or "")
+    if extract_type == "json":
+        cardinality = str(extract.get("cardinality") or "exactly_one")
+        if consumer_type == "object" and cardinality == "all":
+            raise ValidationError(f"{location} 的 object 产出不能使用 cardinality=all")
+        if consumer_type == "array<object>" and cardinality != "all":
+            raise ValidationError(f"{location} 的 array<object> 产出必须使用 cardinality=all")
+        return
+    if extract_type != "text":
+        raise ValidationError(f"{location}.type 仅支持 text/json")
+
+    columns = extract.get("columns")
+    rows = extract.get("rows")
+    if not isinstance(rows, dict):
+        raise ValidationError(f"{location} 的 text extract 必须配置 rows")
+    if rows.get("mode") == "indices" and rows.get("basis") == "data" and not isinstance(extract.get("header"), dict):
+        raise ValidationError(f"{location} 使用 basis=data 时必须配置 header")
+    if not isinstance(columns, list):
+        if consumer_type in {"object", "array<object>"}:
+            raise ValidationError(f"{location} 的复合变量必须配置结构化 columns")
+        return
+
+    keys = [str(column.get("key") or "") for column in columns if isinstance(column, dict)]
+    if len(keys) != len(set(keys)):
+        raise ValidationError(f"{location}.columns 的 key 必须唯一")
+    value_key = str(extract.get("value_key") or "")
+    if value_key and value_key not in keys:
+        raise ValidationError(f"{location}.value_key={value_key} 不属于 columns key")
+    if len(columns) > 1 and consumer_type not in {"object", "array<object>"} and not value_key:
+        raise ValidationError(f"{location} 的多列标量/Matcher 消费必须显式配置 value_key")
+
+    selectors = [
+        column.get("selector")
+        for column in columns
+        if isinstance(column, dict) and isinstance(column.get("selector"), dict)
+    ]
+    if any(selector.get("by") == "header" for selector in selectors) and not isinstance(extract.get("header"), dict):
+        raise ValidationError(f"{location} 按表头选列时必须配置 header")
+    for row_range in rows.get("ranges") or []:
+        if isinstance(row_range, dict) and int(row_range.get("start") or 0) > int(row_range.get("end") or 0):
+            raise ValidationError(f"{location}.rows.ranges 的 start 不能大于 end")
+
+    cardinality = str(extract.get("cardinality") or "exactly_one")
+    if consumer_type == "object" and cardinality == "all":
+        raise ValidationError(f"{location} 的 object 产出不能使用 cardinality=all")
+    if consumer_type == "array<object>" and cardinality != "all":
+        raise ValidationError(f"{location} 的 array<object> 产出必须使用 cardinality=all")

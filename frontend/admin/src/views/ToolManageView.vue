@@ -294,7 +294,7 @@ function syncFormToJson() {
         schema.properties.matcher = {
           type: 'object',
           properties: {
-            type: { type: 'string', enum: ['keyword', 'regex', 'state', 'threshold', 'json_path', 'exists'] },
+            type: { type: 'string', enum: ['keyword', 'regex', 'state', 'threshold', 'delta', 'trend', 'exists'] },
             expected: { type: 'boolean', default: true }
           },
           required: ['type']

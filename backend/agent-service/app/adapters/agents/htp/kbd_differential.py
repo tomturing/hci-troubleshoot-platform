@@ -857,7 +857,7 @@ class KBDDiagnostic:
         """对单条 Matcher 契约做确定性（非 LLM）布尔求值（委托单一真相源）。
 
         返回 True/False 表示“符合期望”；返回 None 表示无法定值并保持 UNKNOWN。
-        支持类型：keyword / regex / state / threshold / json_path / exists。
+        支持类型：keyword / regex / state / threshold / delta / trend / exists。
 
         实现已统一迁移至 app.tools.qfk.matcher.evaluate_matcher，此处仅作委托，
         确保 KBD 差异诊断与 QFK 引擎使用同一套求值逻辑、证据链与 or/and/not 语义，
@@ -1240,14 +1240,22 @@ class KBDDiagnostic:
                     # 边缘执行器只做安全的逐行筛选；列提取、基数校验和类型转换仍由
                     # Agent 的确定性 extractor 完成。无筛选条件时不前移，后端按大小
                     # 上限 Fail Closed，避免把“全量输出”伪装成过滤结果。
-                    if resolved_extract.get("include") or resolved_extract.get("exclude"):
+                    rows = resolved_extract.get("rows") or {}
+                    structured_keywords = (
+                        rows
+                        if rows.get("mode") == "keywords" and not isinstance(resolved_extract.get("header"), dict)
+                        else {}
+                    )
+                    include = structured_keywords.get("include") or []
+                    exclude = structured_keywords.get("exclude") or []
+                    if include or exclude:
                         output_filters.append(
                             {
                                 "source": str(resolved_extract.get("source") or "stdout"),
-                                "include": list(resolved_extract.get("include") or []),
-                                "exclude": list(resolved_extract.get("exclude") or []),
-                                "include_mode": str(resolved_extract.get("include_mode") or "all"),
-                                "case_sensitive": resolved_extract.get("case_sensitive", True),
+                                "include": list(include),
+                                "exclude": list(exclude),
+                                "include_mode": str(structured_keywords.get("include_mode") or "all"),
+                                "case_sensitive": structured_keywords.get("case_sensitive", True),
                             }
                         )
 
@@ -1295,17 +1303,10 @@ class KBDDiagnostic:
                         return res.raw_output, extract_error, None
                     # 产出变量模式只关心命令是否成功且结果是否已写入变量池，不再进行 matcher 判定。
                     return res.raw_output, None, True
-                # keyword 已由 qfk_exec 在安全服务端过滤后判定。数值 matcher 若使用
-                # match.extract，则必须从同一份完整物理流取值，不能退回截断 stdout。
-                if matcher.get("type") == "keyword":
+                # qfk_exec 是全部 Matcher 的唯一求值入口；配置 Extract 时它会从
+                # complete_outputs 取值，禁止调用方再次从展示摘要重复求值。
+                if isinstance(matcher, dict):
                     return res.raw_output, None, res.matched
-                if isinstance(matcher_extract, dict):
-                    resolved_matcher = self._resolve_template_value(matcher, resolver_variables)
-                    source = str((resolved_matcher.get("extract") or {}).get("source") or "stdout")
-                    outputs = res.complete_outputs if hasattr(res, "complete_outputs") else {"stdout": res.raw_output}
-                    if source not in outputs:
-                        return res.raw_output, f"QFK_EXTRACT_INVALID_SPEC: 未取得完整 {source} 输出", None
-                    return res.raw_output, None, self._evaluate_matcher(resolved_matcher, outputs[source])
                 return res.raw_output, None, None
             except Exception as exc:
                 return None, str(exc), None
@@ -1326,11 +1327,10 @@ class KBDDiagnostic:
     ) -> tuple[bool, str | None]:
         """将 QFK 命令结果按产出变量约定写入变量池。
 
-        空 path、``stdout`` 与 ``output`` 代表完整命令输出；JSON 输出可使用点路径，
-        并支持 ``|`` 分隔的候选路径；文本输出通过结构化 extract 做行筛选与列提取。
-        所有产出只读取完整物理流，JSON 路径或文本提取失败都显式报错。
+        每个变量都必须声明新版 extract。所有产出只读取完整物理流，取值失败时
+        显式报错；所有变量先完成取值后才会原子写入变量池。
         """
-        from app.tools.qfk.extractor import QFKExtractionError, extract_text_value
+        from app.tools.qfk.extractor import QFKExtractionError, extract_value
 
         # 兼容直接调用该私有辅助的既有测试/扩展；真实 QFK 路径始终传完整物理流字典。
         if isinstance(complete_outputs, str):
@@ -1338,7 +1338,7 @@ class KBDDiagnostic:
         resolver_variables = dict(context_variables or {})
         resolver_variables.update(self._variable_pool)
 
-        json_payload: Any | None = None
+        pending_values: list[tuple[str, Any]] = []
         valid_specs = [item for item in produces if isinstance(item, dict) and str(item.get("name") or "").strip()]
         if not valid_specs:
             return False, "QFK 产出变量未配置有效 name"
@@ -1346,40 +1346,22 @@ class KBDDiagnostic:
         for spec in valid_specs:
             name = str(spec["name"]).strip()
             extract_spec = spec.get("extract")
-            if isinstance(extract_spec, dict):
-                resolved_extract = self._resolve_template_value(extract_spec, resolver_variables)
-                source = str(resolved_extract.get("source") or "stdout")
-                if source not in complete_outputs:
-                    return False, f"QFK_EXTRACT_INVALID_SPEC: 未取得完整 {source} 输出"
-                try:
-                    value = extract_text_value(
-                        complete_outputs[source],
-                        resolved_extract,
-                        str(spec.get("type") or "string"),
-                    )
-                except QFKExtractionError as exc:
-                    return False, f"QFK 产出变量 {name} 提取失败：{exc}"
-                self._set_pool_var(name, value)
-                continue
-
-            raw_output = complete_outputs.get("stdout", "")
-            path = str(spec.get("path") or "").strip()
-            if not path or path in {"stdout", "output"}:
-                if not raw_output.strip():
-                    return False, f"QFK 产出变量 {name} 提取失败：QFK_OUTPUT_EMPTY: 命令标准输出为空"
-                self._set_pool_var(name, raw_output)
-                continue
-            if json_payload is None:
-                try:
-                    json_payload = json.loads(raw_output)
-                except json.JSONDecodeError:
-                    return (
-                        False,
-                        f"QFK_EXTRACT_INVALID_SPEC: QFK 产出变量 {name} 配置了 JSON 路径 {path}，但命令输出不是合法 JSON",
-                    )
-            value = self._extract_qfk_json_path(json_payload, path)
-            if value is None:
-                return False, f"QFK_NO_MATCH: QFK 产出变量 {name} 未能从命令输出路径 {path} 取值"
+            if not isinstance(extract_spec, dict):
+                return False, f"QFK_EXTRACT_INVALID_SPEC: QFK 产出变量 {name} 必须配置新版 extract"
+            resolved_extract = self._resolve_template_value(extract_spec, resolver_variables)
+            source = str(resolved_extract.get("source") or "stdout")
+            if source not in complete_outputs:
+                return False, f"QFK_EXTRACT_INVALID_SPEC: 未取得完整 {source} 输出"
+            try:
+                value = extract_value(
+                    complete_outputs[source],
+                    resolved_extract,
+                    str(spec.get("type") or "string"),
+                )
+            except QFKExtractionError as exc:
+                return False, f"QFK 产出变量 {name} 提取失败：{exc}"
+            pending_values.append((name, value))
+        for name, value in pending_values:
             self._set_pool_var(name, value)
         return True, None
 
@@ -1393,26 +1375,6 @@ class KBDDiagnostic:
         if isinstance(value, dict):
             return {key: cls._resolve_template_value(item, variable_pool) for key, item in value.items()}
         return value
-
-    @staticmethod
-    def _extract_qfk_json_path(payload: Any, path_spec: str) -> Any | None:
-        """从 QFK JSON 输出读取点路径，``|`` 表示按顺序回退。"""
-        for candidate in (part.strip() for part in path_spec.split("|")):
-            if not candidate:
-                continue
-            value: Any = payload
-            found = True
-            for part in candidate.split("."):
-                if isinstance(value, dict) and part in value:
-                    value = value[part]
-                elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
-                    value = value[int(part)]
-                else:
-                    found = False
-                    break
-            if found and value is not None:
-                return value
-        return None
 
     @staticmethod
     def _qkv_values_from_context(
@@ -1568,6 +1530,8 @@ class KBDDiagnostic:
         matcher = step.matcher
         if not matcher:
             matcher = self._tool_def_default(acquirer, "matcher") or {}
+        if variables is not None:
+            matcher = self._resolve_template_value(matcher, variables)
 
         # 提取关键字
         keywords: list[str] = []

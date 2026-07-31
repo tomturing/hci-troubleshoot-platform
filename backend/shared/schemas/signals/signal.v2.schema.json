@@ -346,7 +346,6 @@
             "threshold",
             "delta",
             "trend",
-            "json_path",
             "exists"
           ]
         },
@@ -370,9 +369,7 @@
           "enum": [
             "or",
             "and",
-            "not",
-            "any",
-            "all"
+            "not"
           ]
         },
         "expected": {
@@ -410,11 +407,7 @@
           "default": "first_number"
         },
         "extract": {
-          "$ref": "#/definitions/textExtract"
-        },
-        "metric": {
-          "type": "string",
-          "minLength": 1
+          "$ref": "#/definitions/valueExtract"
         },
         "minimum_samples": {
           "type": "integer",
@@ -428,20 +421,14 @@
             "decreasing",
             "stable"
           ]
-        },
-        "path": {
-          "type": "string"
-        },
-        "expected_value": {
-          "type": [
-            "string",
-            "number",
-            "boolean",
-            "null"
-          ]
         }
       },
       "allOf": [
+        {
+          "required": [
+            "extract"
+          ]
+        },
         {
           "if": {
             "properties": {
@@ -485,7 +472,6 @@
           },
           "then": {
             "required": [
-              "metric",
               "value",
               "operator"
             ]
@@ -501,22 +487,7 @@
           },
           "then": {
             "required": [
-              "metric",
               "direction"
-            ]
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "type": {
-                "const": "json_path"
-              }
-            }
-          },
-          "then": {
-            "required": [
-              "path"
             ]
           }
         }
@@ -543,7 +514,7 @@
         },
         "produces": {
           "type": "array",
-          "description": "该信号向变量池产出的变量；JSON 用 path，文本用 extract",
+          "description": "该信号向变量池产出的变量；统一使用声明式 extract",
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -561,14 +532,16 @@
                   "integer",
                   "number",
                   "boolean",
-                  "array"
+                  "array",
+                  "object",
+                  "array<object>"
                 ]
               },
               "path": {
                 "type": "string"
               },
               "extract": {
-                "$ref": "#/definitions/textExtract"
+                "$ref": "#/definitions/valueExtract"
               }
             },
             "not": {
@@ -587,55 +560,245 @@
         }
       }
     },
+    "rowRange": {
+      "type": "object",
+      "required": [
+        "start",
+        "end"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "rowSelector": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "mode"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "const": "all"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "mode"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "const": "keywords"
+            },
+            "include": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "exclude": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "include_mode": {
+              "type": "string",
+              "enum": [
+                "all",
+                "any"
+              ],
+              "default": "all"
+            },
+            "case_sensitive": {
+              "type": "boolean",
+              "default": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "mode",
+            "basis"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "const": "indices"
+            },
+            "basis": {
+              "type": "string",
+              "enum": [
+                "physical",
+                "non_empty",
+                "data"
+              ]
+            },
+            "indices": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "uniqueItems": true
+            },
+            "ranges": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/rowRange"
+              }
+            }
+          },
+          "anyOf": [
+            {
+              "required": [
+                "indices"
+              ],
+              "properties": {
+                "indices": {
+                  "minItems": 1
+                }
+              }
+            },
+            {
+              "required": [
+                "ranges"
+              ],
+              "properties": {
+                "ranges": {
+                  "minItems": 1
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "tableHeader": {
+      "type": "object",
+      "required": [
+        "mode",
+        "required"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "const": "contains"
+        },
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "case_sensitive": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "textColumnSelector": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "by",
+            "index"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "by": {
+              "const": "index"
+            },
+            "index": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "by",
+            "name"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "by": {
+              "const": "header"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "aliases": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
+            }
+          }
+        }
+      ]
+    },
+    "textColumn": {
+      "type": "object",
+      "required": [
+        "key",
+        "selector"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
+        "selector": {
+          "$ref": "#/definitions/textColumnSelector"
+        },
+        "value_mode": {
+          "type": "string",
+          "enum": [
+            "string",
+            "integer",
+            "number",
+            "boolean"
+          ],
+          "default": "string"
+        }
+      }
+    },
     "textExtract": {
       "type": "object",
       "description": "QFK 非 JSON 输出的受控行筛选与列提取规则；不接受 shell/grep/awk 脚本",
       "additionalProperties": false,
       "required": [
-        "type"
+        "type",
+        "rows"
       ],
       "properties": {
         "type": {
           "const": "text"
-        },
-        "include": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "exclude": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "include_mode": {
-          "type": "string",
-          "enum": [
-            "all",
-            "any"
-          ],
-          "default": "all"
-        },
-        "case_sensitive": {
-          "type": "boolean",
-          "default": true
-        },
-        "column": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "column_mode": {
-          "type": "string",
-          "enum": [
-            "whole",
-            "index",
-            "from_index"
-          ],
-          "default": "whole"
         },
         "delimiter": {
           "anyOf": [
@@ -677,29 +840,120 @@
             "boolean",
             "array"
           ],
-          "description": "提取后的确定性类型；number 支持 54%/21.5ms 等常见单位后缀"
+          "description": "提取后的确定性类型；number 支持 54%→54，不剥离容量/时长单位"
+        },
+        "parser": {
+          "type": "string",
+          "enum": [
+            "whitespace_table",
+            "delimited_table"
+          ]
+        },
+        "header": {
+          "$ref": "#/definitions/tableHeader"
+        },
+        "rows": {
+          "$ref": "#/definitions/rowSelector"
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/textColumn"
+          },
+          "minItems": 1
+        },
+        "value_key": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
         }
       },
       "allOf": [
         {
           "if": {
-            "properties": {
-              "column_mode": {
-                "enum": [
-                  "index",
-                  "from_index"
-                ]
-              }
-            },
             "required": [
-              "column_mode"
+              "columns"
             ]
           },
           "then": {
             "required": [
-              "column"
+              "parser",
+              "rows"
             ]
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "parser": {
+                "const": "delimited_table"
+              }
+            },
+            "required": [
+              "parser"
+            ]
+          },
+          "then": {
+            "required": [
+              "delimiter"
+            ]
+          }
+        }
+      ]
+    },
+    "jsonExtract": {
+      "type": "object",
+      "description": "QFK JSON 输出的受控点号/数组下标取值；不接受 jq 表达式",
+      "required": [
+        "type",
+        "path"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "const": "json"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "stdout",
+            "stderr"
+          ],
+          "default": "stdout"
+        },
+        "path": {
+          "type": "string"
+        },
+        "cardinality": {
+          "type": "string",
+          "enum": [
+            "exactly_one",
+            "first",
+            "last",
+            "all"
+          ],
+          "default": "exactly_one"
+        },
+        "value_mode": {
+          "type": "string",
+          "enum": [
+            "string",
+            "integer",
+            "number",
+            "boolean",
+            "array",
+            "object",
+            "array<object>"
+          ]
+        }
+      }
+    },
+    "valueExtract": {
+      "oneOf": [
+        {
+          "$ref": "#/definitions/textExtract"
+        },
+        {
+          "$ref": "#/definitions/jsonExtract"
         }
       ]
     },

@@ -1,16 +1,15 @@
 <script setup lang="ts">
 /**
- * MatcherEditor - 判定器可视化编辑器
+ * MatcherEditor - 匹配模式可视化编辑器
  *
  * 用于 QFK 工具的 matcher 字段编辑。
- * 支持 8 种判定类型：
+ * 支持 7 种判定类型：
  *   - keyword: 关键字匹配（pattern, mode, expected）
  *   - regex: 正则表达式（pattern, expected）
  *   - state: 状态值匹配（pattern, expected）
  *   - threshold: 数值阈值（operator, value, expected）
- *   - delta: 多样本首末差值（metric, operator, value, minimum_samples）
- *   - trend: 多样本趋势（metric, direction, value, minimum_samples）
- *   - json_path: JSON 路径取值（path, expected_value, expected）
+ *   - delta: 多样本首末差值（operator, value, minimum_samples）
+ *   - trend: 多样本趋势（direction, value, minimum_samples）
  *   - exists: 存在性判定（expected）
  *
  * 使用方式（v-model 双向绑定对象）：
@@ -19,7 +18,7 @@
 
 import { computed, watch } from 'vue'
 import { InfoFilled } from '@element-plus/icons-vue'
-import TextExtractEditor from './TextExtractEditor.vue'
+import ValueExtractEditor from './ValueExtractEditor.vue'
 
 const props = defineProps<{
   modelValue: Record<string, any>
@@ -38,7 +37,8 @@ const matcher = computed({
 const matcherType = computed({
   get: () => matcher.value.type || 'keyword',
   set: (type: string) => {
-    // 切换类型时重置参数
+    // Predicate 切换只重置判定字段；已经确认的 Extract 必须保留。
+    const existingExtract = matcher.value.extract
     const newMatcher: Record<string, any> = { type, expected: true }
     if (type === 'keyword') {
       newMatcher.pattern = ''
@@ -49,22 +49,19 @@ const matcherType = computed({
       newMatcher.operator = '>'
       newMatcher.value = 0
       newMatcher.aggregation = 'first_number'
-      newMatcher.extract = { type: 'text', value_mode: 'number' }
     } else if (type === 'delta') {
-      newMatcher.metric = ''
       newMatcher.operator = '>'
       newMatcher.value = 0
       newMatcher.minimum_samples = 2
-      newMatcher.extract = { type: 'text', cardinality: 'all', value_mode: 'number' }
     } else if (type === 'trend') {
-      newMatcher.metric = ''
       newMatcher.direction = 'increasing'
       newMatcher.value = 0
       newMatcher.minimum_samples = 3
-      newMatcher.extract = { type: 'text', cardinality: 'all', value_mode: 'number' }
-    } else if (type === 'json_path') {
-      newMatcher.path = ''
-      newMatcher.expected_value = null
+    }
+    const numeric = ['threshold', 'delta', 'trend'].includes(type)
+    newMatcher.extract = existingExtract || {
+      type: 'text', rows: { mode: 'all' }, cardinality: 'all', source: 'stdout',
+      value_mode: numeric ? 'number' : 'string',
     }
     matcher.value = newMatcher
   },
@@ -106,13 +103,15 @@ const allMatcherTypeOptions = [
   { label: '数值阈值（比较数字）', value: 'threshold', desc: '数值比较判定' },
   { label: '首末差值（比较变化量）', value: 'delta', desc: '周期日志计数器差值' },
   { label: '变化趋势（连续变化）', value: 'trend', desc: '周期日志连续趋势' },
-  { label: 'JSON 路径（读取字段）', value: 'json_path', desc: '从 JSON 中提取值比较' },
   { label: '存在性判定（是否有输出）', value: 'exists', desc: '检查输出是否非空' },
 ]
 const matcherTypeOptions = computed(() => {
   if (!props.allowedTypes?.length) return allMatcherTypeOptions
   return allMatcherTypeOptions.filter((item) => props.allowedTypes?.includes(item.value))
 })
+const extractDefaultValueMode = computed(() => (
+  ['threshold', 'delta', 'trend'].includes(matcherType.value) ? 'number' : 'string'
+))
 </script>
 
 <template>
@@ -129,9 +128,8 @@ const matcherTypeOptions = computed(() => {
               <br/><b>regex</b> — 正则表达式匹配。
               <br/><b>state</b> — 匹配特定状态值（如 running、stopped）。
               <br/><b>threshold</b> — 数值阈值比较（支持 &gt; &gt;= &lt; &lt;= == !=）。
-              <br/><b>delta</b> — 按 metric 提取多次采样，比较末值减首值。
-              <br/><b>trend</b> — 按 metric 判断连续上升、下降或稳定。
-              <br/><b>json_path</b> — 从 JSON 输出中提取字段值比较。
+              <br/><b>delta</b> — 比较多个样本的末值减首值。
+              <br/><b>trend</b> — 判断多个样本连续上升、下降或稳定。
               <br/><b>exists</b> — 检查输出是否非空。
               <br/><b>expected</b> — 期望结果：true=期望匹配（异常判定），false=期望不匹配（健康判定）。
             </div>
@@ -159,6 +157,9 @@ const matcherTypeOptions = computed(() => {
         </el-select>
       </el-form-item>
 
+      <ValueExtractEditor v-model="matcher.extract" :default-value-mode="extractDefaultValueMode" />
+      <div class="predicate-order-title">二、判定配置</div>
+
       <!-- keyword 类型参数 -->
       <template v-if="matcherType === 'keyword'">
         <el-form-item label="关键字">
@@ -167,9 +168,9 @@ const matcherTypeOptions = computed(() => {
             placeholder="输入关键字，多个用逗号分隔"
             spellcheck="false"
           />
-          <div class="field-hint">多个关键字时，下方匹配模式决定组合逻辑</div>
+          <div class="field-hint">多个关键字时，下方组合关系决定匹配逻辑</div>
         </el-form-item>
-        <el-form-item label="匹配模式">
+        <el-form-item label="组合关系">
           <el-radio-group v-model="matcher.mode">
             <el-radio-button value="or">任一匹配（OR）</el-radio-button>
             <el-radio-button value="and">全部匹配（AND）</el-radio-button>
@@ -203,7 +204,6 @@ const matcherTypeOptions = computed(() => {
 
       <!-- threshold 类型参数 -->
       <template v-else-if="matcherType === 'threshold'">
-        <TextExtractEditor v-model="matcher.extract" value-mode />
         <el-form-item label="聚合方式">
           <el-select v-model="matcher.aggregation" style="width: 100%;">
             <el-option label="首个取值" value="first_number" />
@@ -237,7 +237,6 @@ const matcherTypeOptions = computed(() => {
       </template>
 
       <template v-else-if="matcherType === 'delta'">
-        <TextExtractEditor v-model="matcher.extract" value-mode />
         <el-form-item label="运算符">
           <el-select v-model="matcher.operator" style="width: 100%;">
             <el-option v-for="opt in operatorOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
@@ -248,7 +247,6 @@ const matcherTypeOptions = computed(() => {
       </template>
 
       <template v-else-if="matcherType === 'trend'">
-        <TextExtractEditor v-model="matcher.extract" value-mode />
         <el-form-item label="趋势方向">
           <el-select v-model="matcher.direction" style="width: 100%;">
             <el-option label="连续上升" value="increasing" />
@@ -258,25 +256,6 @@ const matcherTypeOptions = computed(() => {
         </el-form-item>
         <el-form-item label="最小步长"><el-input-number v-model="matcher.value" :precision="2" :min="0" style="width: 100%;" /></el-form-item>
         <el-form-item label="最少样本"><el-input-number v-model="matcher.minimum_samples" :min="3" :max="10000" style="width: 100%;" /></el-form-item>
-      </template>
-
-      <!-- json_path 类型参数 -->
-      <template v-else-if="matcherType === 'json_path'">
-        <el-form-item label="JSON 路径">
-          <el-input
-            v-model="matcher.path"
-            placeholder="如：data.status 或 result[0].code"
-            spellcheck="false"
-          />
-          <div class="field-hint">使用点号分隔路径，数组用 [index] 访问</div>
-        </el-form-item>
-        <el-form-item label="期望值">
-          <el-input
-            v-model="matcher.expected_value"
-            placeholder="期望提取到的值"
-            spellcheck="false"
-          />
-        </el-form-item>
       </template>
 
       <!-- exists 类型：无额外参数 -->

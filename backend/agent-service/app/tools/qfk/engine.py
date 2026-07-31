@@ -281,7 +281,7 @@ async def qfk_exec(
                 match_mode=signal.match_mode,
                 matched_keywords=[],
                 evidence=combined[:800],
-                error=f"QFK_COMMAND_FAILED: 命令退出码为 {failed.exit_code}，不写入产出变量",
+                error=f"QFK_COMMAND_FAILED: 命令退出码为 {failed.exit_code}，不执行判定或变量写入",
                 exec_ids=exec_ids,
                 raw_output=combined,
             )
@@ -306,18 +306,32 @@ async def qfk_exec(
                 raw_output="\n".join(result.stdout or "" for result in results),
             )
 
-    # 4. 解析结果并做结构化 Matcher 求值。KBD v2 携带完整 matcher；旧的直接 QFK
-    # 调用继续使用 keyword/match_mode/expected 兼容路径。
+    # 4. 解析结果并做结构化 Matcher 求值。所有 QFK 判定均依赖新版 matcher.extract。
     combined_output = "\n".join(
         f"{getattr(result, 'stdout', '') or ''}\n{getattr(result, 'stderr', '') or ''}" for result in results
     )
     evaluated_output, excluded_probe_lines = _exclude_probe_self_observation(combined_output, commands)
     if signal.matcher:
-        matcher_result = evaluate_matcher(
-            signal.matcher,
-            evaluated_output,
-            server_pre_filtered=(signal.namespace == "log" and signal.matcher.get("type") == "keyword"),
-        )
+        matcher_input = evaluated_output
+        matcher_extract = signal.matcher.get("extract")
+        if isinstance(matcher_extract, dict):
+            source = str(matcher_extract.get("source") or "stdout")
+            if source not in complete_outputs:
+                return QFKResult(
+                    matched=False,
+                    namespace=signal.namespace,
+                    commands=commands,
+                    keywords=signal.keyword,
+                    match_mode=signal.match_mode,
+                    matched_keywords=[],
+                    evidence="",
+                    error=f"QFK_EXTRACT_INVALID_SPEC: 未取得完整 {source} 输出",
+                    exec_ids=exec_ids,
+                    raw_output=combined_output,
+                    complete_outputs=complete_outputs,
+                )
+            matcher_input, excluded_probe_lines = _exclude_probe_self_observation(complete_outputs[source], commands)
+        matcher_result = evaluate_matcher(signal.matcher, matcher_input)
         if matcher_result.matched is None:
             return QFKResult(
                 matched=False,
@@ -343,17 +357,21 @@ async def qfk_exec(
             )
         matched = bool(matcher_result.detail.get("hit", final_matched))
     else:
-        matched, matched_kws, evidence = handler.evaluate(results, signal.keyword, signal.match_mode)
-
-        # 5. 旧兼容路径最终布尔判定
-        mode_norm = {"any": "or", "all": "and"}.get(
-            (signal.match_mode or "or").lower(), (signal.match_mode or "or").lower()
+        return QFKResult(
+            matched=False,
+            namespace=signal.namespace,
+            commands=commands,
+            keywords=signal.keyword,
+            match_mode=signal.match_mode,
+            matched_keywords=[],
+            evidence="",
+            error="QFK_MATCHER_MISSING: QFK 判定必须配置新版 match.extract",
+            exec_ids=exec_ids,
+            raw_output=combined_output,
+            complete_outputs=complete_outputs,
         )
-        final_matched = matched if mode_norm == "not" else matched if (signal.expected is True) else not matched
 
     # 5. 最终布尔判定
-    # match_mode == "not" 已在 evaluate 内部表达取反语义（均不出现才为真），无需再翻转；
-    # 其余模式（or/and）兼容旧 matcher 的 expected 翻转（expected=False 表示"不出现才符合预期"）。
     logger.info(
         event="qfk_engine_finished",
         namespace=signal.namespace,

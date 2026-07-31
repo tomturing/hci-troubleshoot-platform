@@ -15,6 +15,7 @@ update_trigger: Agent 方案新增、重构或状态变更
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |---|---|---|---|
+| 2026-07-31 | implementation_in_progress | 实施 QFK“取值先行、判定在后”的统一 ValueExtract：关键字/行号多行、表头/列号多列、JSON 路径、匹配模式/产出变量共用运行时和安全管道 Preview/Apply；旧单列 TextExtract、QFK `produces.path` 与旧全文 Matcher 不再保留。 | [QFK 声明式取值与匹配模式统一方案](events/2026-07-31-QFK取值先行与全模式安全管道统一方案.md) |
 | 2026-07-31 | v1.6 | 启动 KBD 正式专家复核并将最小 Replay manifest 写入运行审计：只保存不可变 revision、计划/环境/参数哈希和 Terminal Bridge artifact 查找键；明确 `replayable=false`，不把引用冒充为完整回放。 | [KBD 最小回放证据契约与正式专家复核启动方案](events/2026-07-31-KBD最小回放证据契约与正式专家复核启动方案.md) |
 | 2026-07-31 | v1.5 | 完成 KBD 专家监督与运行效果最小数据闭环：原因码/删除原因、精确 KBD runtime revision、CDD 编译与逐 Signal outcome、Capability Gap/metrics/评估导出；可信身份与 Replay/Gold/Challenger 仍保持未完成边界 | [KBD 专家监督与运行效果数据闭环方案](events/2026-07-31-KBD专家监督与运行效果数据闭环方案.md) |
 | 2026-07-30 | v1.4 | 完成 KBD 专家主路径信息分层、独立维护工作稿和 Agent Capability Runtime Discovery；明确静态 Validation、未认证审核身份与真实 Expert Gold/replay 的边界 | [KBD 专家复核与全生命周期闭环方案](events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
