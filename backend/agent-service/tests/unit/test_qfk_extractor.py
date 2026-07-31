@@ -4,6 +4,7 @@ import pytest
 from app.tools.acli.executor import ExecResult
 from app.tools.qfk.extractor import (
     QFKExtractionError,
+    extract_output_values,
     extract_text_value,
     get_complete_output,
 )
@@ -95,6 +96,23 @@ def test_ps_cmd_output_extracts_process_with_vm_filter():
 def test_custom_delimiter_and_scalar_casts():
     assert extract_text_value("name:3.5:true", {"type": "text", "delimiter": ":", "column": 2}, "number") == 3.5
     assert extract_text_value("name:3.5:true", {"type": "text", "delimiter": ":", "column": 3}, "boolean") is True
+
+
+def test_number_value_mode_preserves_auditable_percent_values():
+    result = extract_output_values(
+        "tmpfs 20G 9.9G 8.7G 54% /sf/log\n/dev/sda5 20G 9.9G 8.7G 83% /sf/log\n",
+        {
+            "type": "text",
+            "include": ["/sf/log"],
+            "column_mode": "index",
+            "column": 5,
+            "cardinality": "all",
+            "value_mode": "number",
+        },
+    )
+    assert result.raw_values == ["54%", "83%"]
+    assert result.values == [54.0, 83.0]
+    assert result.selected_lines == result.matched_lines
 
 
 @pytest.mark.parametrize(

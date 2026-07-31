@@ -29,6 +29,7 @@ def derive_signal_requires(signal: dict[str, Any]) -> list[str]:
                 collect(item)
 
     collect(acquire.get("args") or {})
+    collect((signal.get("match") or {}).get("extract") or {})
     for produce in ((signal.get("orchestrate") or {}).get("produces") or []):
         if isinstance(produce, dict):
             collect(produce.get("extract") or {})

@@ -29,6 +29,9 @@
     },
     "generation_metadata": {
       "$ref": "#/definitions/generationMetadata"
+    },
+    "publish_validation": {
+      "$ref": "#/definitions/publishValidation"
     }
   },
   "definitions": {
@@ -406,6 +409,9 @@
           ],
           "default": "first_number"
         },
+        "extract": {
+          "$ref": "#/definitions/textExtract"
+        },
         "metric": {
           "type": "string",
           "minLength": 1
@@ -661,6 +667,17 @@
             "stderr"
           ],
           "default": "stdout"
+        },
+        "value_mode": {
+          "type": "string",
+          "enum": [
+            "string",
+            "integer",
+            "number",
+            "boolean",
+            "array"
+          ],
+          "description": "提取后的确定性类型；number 支持 54%/21.5ms 等常见单位后缀"
         }
       },
       "allOf": [
@@ -851,6 +868,34 @@
               "const": "inconclusive"
             }
           }
+        }
+      }
+    },
+    "publishValidation": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "tool_contract_revision",
+        "validator"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "status": {
+          "type": "string",
+          "const": "passed"
+        },
+        "tool_contract_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "validator": {
+          "type": "string",
+          "const": "expert_publish_gate"
         }
       }
     },

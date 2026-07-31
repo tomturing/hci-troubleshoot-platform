@@ -271,6 +271,11 @@ def _extract_by_produces(items: list[Any], produces: list[dict[str, str]]) -> li
                 val = item.get(cand.strip()) if isinstance(cand, str) else None
                 if val:
                     break
+            # END 是跨 QKV/QFK 的标准时间变量。无论 LLM 是否显式声明 produces，
+            # 变量池都只保存 HCI 本地绝对时间；各消费者再按日志族转换日期格式。
+            # 否则显式 produces 会把 Unix 秒原样写入，qfk_log 的 -t 随后必然拒绝。
+            if name.strip().upper() == "END" and val not in (None, ""):
+                val = _convert_timestamp(val)
             extracted[name.lower()] = val if val is not None else ""
         if any(extracted.values()):
             results.append(extracted)

@@ -6,7 +6,7 @@ import { FullScreen, Refresh } from '@element-plus/icons-vue'
 import { useCategories } from '../composables/useCategories'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { MatcherEditor } from '@/components/editors'
+import { MatcherEditor, TextExtractEditor } from '@/components/editors'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 类型定义
@@ -96,7 +96,7 @@ interface SignalV2 {
   id?: number | string
   role?: 'must' | 'should' | 'exclude' | 'context'
   acquire: { tool: string; args: Record<string, any> }
-  match: { type?: string; pattern?: string; mode?: string; expected?: boolean } | null
+  match: { type?: string; pattern?: string | string[]; mode?: string; expected?: boolean; value?: number; [key: string]: any } | null
   orchestrate: Record<string, any>
   provenance?: Record<string, any>
   review?: { require_human_confirm?: boolean }
@@ -107,6 +107,7 @@ interface SignalsDoc {
   rejected_candidates?: Array<{ candidate: unknown; reason: string }>
   verification_contract?: Record<string, any>
   generation_metadata?: Record<string, any>
+  publish_validation?: Record<string, any>
 }
 
 // 图片描述项（images_json 数组元素）
@@ -920,7 +921,7 @@ function sigSourceRefs(sig: SignalV2): string[] {
   return Array.isArray(refs) ? refs.map((item) => String(item)) : []
 }
 function sigRoleLabel(sig: SignalV2): string {
-  return ({ must: '必要证据', should: '增强证据', exclude: '排除证据', context: '上下文证据（仍执行）' } as Record<string, string>)[sig.role || ''] || '未分配'
+  return ({ must: '必要证据（必须满足）', should: '增强证据（按门槛满足）', exclude: '排除证据（出现即排除）', context: '上下文证据（执行但不参与结论）' } as Record<string, string>)[sig.role || ''] || '未分配'
 }
 function qualityTagType(status: string): 'success' | 'warning' | 'danger' | 'info' {
   if (status === 'success') return 'success'
@@ -1067,6 +1068,15 @@ function onSignalToolChange(tool: string) {
   if (tool.startsWith('qfk')) syncDraftRequires()
 }
 
+function commandArgsText(args: Record<string, any>): string {
+  return Array.isArray(args.command_args) ? args.command_args.join('\n') : ''
+}
+
+function setCommandArgsText(args: Record<string, any>, value: string) {
+  args.command_args = value.split('\n').map((item) => item.trim()).filter(Boolean)
+  syncDraftRequires()
+}
+
 function clearStagedSignalEdits() {
   stagedSignalEdits.value = {}
 }
@@ -1100,6 +1110,31 @@ const producerSignals = computed(() =>
 const consumerSignals = computed(() =>
   signalList.value.map((s, i) => ({ sig: s, origIdx: i })).filter((x) => isBackendSig(x.sig)),
 )
+const shouldSignalCount = computed(() => signalList.value.filter((signal) => signal.role === 'should').length)
+const minimumShouldCount = computed<number>({
+  get: () => Number((detailEntry.value?.signals_json as SignalsDoc | undefined)?.verification_contract?.evidence_policy?.minimum_should || 0),
+  set: (value: number) => {
+    if (!detailEntry.value?.signals_json) return
+    const doc = detailEntry.value.signals_json as SignalsDoc
+    doc.verification_contract ||= { schema_version: 1, evidence_policy: {} }
+    doc.verification_contract.evidence_policy ||= {}
+    doc.verification_contract.evidence_policy.minimum_should = Math.min(
+      Math.max(0, Number(value) || 0),
+      shouldSignalCount.value,
+    )
+  },
+})
+
+async function saveMinimumShouldRule() {
+  signalSaveLoading.value = true
+  try {
+    await persistSignalList(signalList.value.map(cloneSignal), '增强证据规则已保存')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? `保存失败：${error.message}` : '保存失败，请重试')
+  } finally {
+    signalSaveLoading.value = false
+  }
+}
 
 // ── QKV 生产者关键字 × 分类基线 辅助（实例/注释/软校验）───────────────────────
 // 分类基线（category_baseline.yaml, 198 类）按标签语义分两性：
@@ -1161,6 +1196,7 @@ function deriveSignalRequires(sig: SignalV2): string[] {
     }
   }
   collect(sig.acquire?.args || {})
+  collect(sig.match?.extract || {})
   for (const produce of sig.orchestrate?.produces || []) collect(produce?.extract || {})
   return [...found].sort()
 }
@@ -1450,8 +1486,15 @@ async function saveSignalEdit() {
       ElMessage.error('后端信号必须且只能选择“关键字判定”或“产出变量”之一')
       return
     }
-    if (hasMatch && !String(signalEditDraft.value.match?.pattern || '').trim()) {
-      ElMessage.error('请填写用于判定命令结果的关键字')
+    const matcherType = String(signalEditDraft.value.match?.type || '')
+    if (hasMatch && ['keyword', 'regex', 'state'].includes(matcherType)
+      && !String(signalEditDraft.value.match?.pattern || '').trim()) {
+      ElMessage.error('请填写用于判定命令结果的匹配内容')
+      return
+    }
+    if (hasMatch && ['threshold', 'delta', 'trend'].includes(matcherType)
+      && signalEditDraft.value.match?.value === undefined) {
+      ElMessage.error('请填写数值判定的阈值')
       return
     }
     if (String(signalEditDraft.value.acquire?.args?.command || '').includes('|')) {
@@ -2691,6 +2734,17 @@ onMounted(() => {
             </el-collapse-item>
           </el-collapse>
 
+          <div v-if="shouldSignalCount > 0" class="evidence-policy-editor">
+            <div>
+              <strong>增强证据规则</strong>
+              <span>共 {{ shouldSignalCount }} 条，至少满足</span>
+              <el-input-number v-model="minimumShouldCount" :min="0" :max="shouldSignalCount" size="small" :disabled="!canEditCurrent" />
+              <span>条</span>
+              <el-button type="primary" plain size="small" :disabled="!canEditCurrent" :loading="signalSaveLoading" @click="saveMinimumShouldRule">保存规则</el-button>
+            </div>
+            <div class="field-hint">0 表示这些证据可有可无；1 表示至少满足一条。若 qkv_alert 与 qkv_task 二选一，请都设为“增强证据”，并把这里设为 1。</div>
+          </div>
+
           <!-- 生产者信号（QKV） -->
           <div class="signal-group">
             <div class="signal-group-title">生产者信号（QKV：前端采集，写入变量池）</div>
@@ -2719,13 +2773,16 @@ onMounted(() => {
                   <div class="signal-row"><span class="signal-k">说明</span><span class="signal-v">{{ sigArgs(item.sig).instruction || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">关键字</span><span class="signal-v">{{ sigArgs(item.sig).keyword || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">产出变量</span><span class="signal-v">{{ (sigOrch(item.sig).produces || []).map((p: any) => p.name).join('、') || '—' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">证据来源</span><span class="signal-v code">{{ sigSourceRefs(item.sig).join('、') || sigProvenance(item.sig).source_section || '—' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">证据原文</span><span class="signal-v">{{ sigProvenance(item.sig).evidence || '—' }}</span></div>
+                  <details class="signal-evidence-details">
+                    <summary>来源证据（默认收起，不参与编辑）</summary>
+                    <div class="signal-row"><span class="signal-k">证据来源</span><span class="signal-v code">{{ sigSourceRefs(item.sig).join('、') || sigProvenance(item.sig).source_section || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">证据原文</span><span class="signal-v">{{ sigProvenance(item.sig).evidence || '—' }}</span></div>
+                  </details>
                 </div>
                 <div v-else>
                   <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" type="textarea" :rows="2" placeholder="信号说明，如 镜像文件占用检查" /></div>
                   <div class="field-hint">信号语义说明：用自然语言描述这个采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
-                  <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据" value="must" /><el-option label="增强证据" value="should" /><el-option label="排除证据" value="exclude" /><el-option label="上下文证据（仍执行）" value="context" /></el-select></div>
+                  <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据（必须满足）" value="must" /><el-option label="增强证据（按门槛满足）" value="should" /><el-option label="排除证据（出现即排除）" value="exclude" /><el-option label="上下文证据（执行但不参与结论）" value="context" /></el-select></div>
                   <div class="signal-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" @change="onSignalToolChange"><el-option label="任务 qkv_task" value="qkv_task" /><el-option label="告警 qkv_alert" value="qkv_alert" /><el-option label="纯弹框 qkv_dialog" value="qkv_dialog" /></el-select><span class="signal-nature">{{ qkvNatureLabel(sigTool(signalEditDraft)) }}</span></div>
                   <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.acquire.args.keyword" size="small" :placeholder="qkvKeywordPlaceholder(sigTool(signalEditDraft))" /></div>
                   <div v-if="sigTool(signalEditDraft) === 'qkv_alert'" class="field-hint">告警型关键字（acli alert get -k）：取自「分类基线 · 告警型故障」（标签以「告警」结尾），如 虚拟机CPU或内存占用过高告警、主机网口丢包告警、序列号过期告警。多个用逗号分隔</div>
@@ -2786,7 +2843,9 @@ onMounted(() => {
                   <div class="signal-row"><span class="signal-k">说明</span><span class="signal-v">{{ sigArgs(item.sig).instruction || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">主机</span><span class="signal-v code">{{ sigArgs(item.sig).host || '—' }}</span></div>
                   <template v-if="sigTool(item.sig) === 'qfk_system'">
-                    <div class="signal-row"><span class="signal-k">容器</span><span class="signal-v">{{ sigArgs(item.sig).container || 'asv-con' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">aCLI 执行域</span><span class="signal-v">{{ sigArgs(item.sig).container || 'HOST-OS（aCLI 默认）' }}</span></div>
+                    <div v-if="sigArgs(item.sig).cluster" class="signal-row"><span class="signal-k">集群执行</span><span class="signal-v">是（acli --cluster）</span></div>
+                    <div v-if="sigArgs(item.sig).formatter" class="signal-row"><span class="signal-k">输出格式</span><span class="signal-v code">{{ sigArgs(item.sig).formatter }}</span></div>
                     <div class="signal-row"><span class="signal-k">执行命令</span><span class="signal-v code">{{ sigArgs(item.sig).command || '—' }}</span></div>
                     <el-alert v-if="String(sigArgs(item.sig).command || '').includes('|')" title="历史命令含 Shell 管道，必须编辑并清理后才能统一保存" type="warning" :closable="false" show-icon />
                   </template>
@@ -2800,8 +2859,11 @@ onMounted(() => {
                   <div class="signal-row"><span class="signal-k">输入变量</span><span class="signal-v code">{{ (sigOrch(item.sig).requires || []).join('、') || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">超时时间</span><span class="signal-v">{{ sigArgs(item.sig).timeout || 10 }}s</span></div>
                   <div class="signal-row"><span class="signal-k">执行模式</span><span class="signal-v">{{ qfkOutputMode(item.sig) === 'produces' ? '产出变量（采集命令结果）' : '关键字判定' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">证据来源</span><span class="signal-v code">{{ sigSourceRefs(item.sig).join('、') || sigProvenance(item.sig).source_section || '—' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">证据原文</span><span class="signal-v">{{ sigProvenance(item.sig).evidence || '—' }}</span></div>
+                  <details class="signal-evidence-details">
+                    <summary>来源证据（默认收起，不参与编辑）</summary>
+                    <div class="signal-row"><span class="signal-k">证据来源</span><span class="signal-v code">{{ sigSourceRefs(item.sig).join('、') || sigProvenance(item.sig).source_section || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">证据原文</span><span class="signal-v">{{ sigProvenance(item.sig).evidence || '—' }}</span></div>
+                  </details>
                   <template v-if="qfkOutputMode(item.sig) === 'produces'">
                     <div v-for="(p, idx) in (sigOrch(item.sig).produces || [])" :key="`output-${idx}`" class="signal-row">
                       <span class="signal-k">{{ idx === 0 ? '产出变量' : '' }}</span>
@@ -2828,10 +2890,13 @@ onMounted(() => {
                   <div v-if="sigTool(item.sig) === 'qfk_system' && sigArgs(item.sig).resource_keyword" class="signal-row"><span class="signal-k">命令参数</span><span class="signal-v code">{{ sigArgs(item.sig).resource_keyword }}</span></div>
                   <template v-if="sigTool(item.sig) === 'qfk_log'">
                     <div class="signal-row"><span class="signal-k">文件</span><span class="signal-v code">{{ sigArgs(item.sig).file || '—' }}</span></div>
-                    <div class="signal-row"><span class="signal-k">日志族</span><span class="signal-v">{{ sigArgs(item.sig).source_family || 'auto' }}</span></div>
-                    <div class="signal-row"><span class="signal-k">路径</span><span class="signal-v code">{{ sigArgs(item.sig).path || 'Catalog 自动推断' }}</span></div>
-                    <div class="signal-row"><span class="signal-k">解析器</span><span class="signal-v code">{{ sigArgs(item.sig).parser || 'Catalog 自动选择' }}</span></div>
-                    <div class="signal-row"><span class="signal-k">绝对时间</span><span class="signal-v">{{ sigArgs(item.sig).time_window || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">时间</span><span class="signal-v">{{ sigArgs(item.sig).time_window || '—' }}</span></div>
+                    <details class="signal-advanced-details">
+                      <summary>日志定位高级设置</summary>
+                      <div class="signal-row"><span class="signal-k">日志族</span><span class="signal-v">{{ sigArgs(item.sig).source_family || 'auto（按文件/路径推断）' }}</span></div>
+                      <div class="signal-row"><span class="signal-k">路径</span><span class="signal-v code">{{ sigArgs(item.sig).path || '通用定位（默认搜索 /sf/log）' }}</span></div>
+                      <div class="signal-row"><span class="signal-k">解析器</span><span class="signal-v code">{{ sigArgs(item.sig).parser || '自动选择' }}</span></div>
+                    </details>
                   </template>
                   <template v-if="sigTool(item.sig) === 'qfk_service'">
                     <div class="signal-row"><span class="signal-k">服务</span><span class="signal-v code">{{ sigArgs(item.sig).resource_keyword || '—' }}</span></div>
@@ -2843,22 +2908,25 @@ onMounted(() => {
                   <!-- 共有字段 -->
                   <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" placeholder="信号说明，如 镜像文件占用检查" /></div>
                   <div class="field-hint">信号语义说明：用自然语言描述这个检查/采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
-                  <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据" value="must" /><el-option label="增强证据" value="should" /><el-option label="排除证据" value="exclude" /><el-option label="上下文证据（仍执行）" value="context" /></el-select></div>
+                  <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据（必须满足）" value="must" /><el-option label="增强证据（按门槛满足）" value="should" /><el-option label="排除证据（出现即排除）" value="exclude" /><el-option label="上下文证据（执行但不参与结论）" value="context" /></el-select></div>
                   <div class="signal-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" filterable @change="onSignalToolChange"><el-option label="日志 qfk_log" value="qfk_log" /><el-option label="系统 qfk_system" value="qfk_system" /><el-option label="服务 qfk_service" value="qfk_service" /><el-option label="虚拟机 qfk_vm" value="qfk_vm" /><el-option label="网络 qfk_network" value="qfk_network" /><el-option label="存储 qfk_storage" value="qfk_storage" /><el-option label="硬件 qfk_hardware" value="qfk_hardware" /><el-option label="平台 qfk_platform" value="qfk_platform" /></el-select></div>
-                  <div class="signal-row"><span class="signal-k">主机</span><el-input v-model="signalEditDraft.acquire.args.host" size="small" placeholder="{{HOST}} 或 cluster" /></div>
-                  <div class="field-hint" v-pre>采集目标主机，使用变量池占位符 {{HOST}}（由上游生产者信号产出）或固定值 cluster</div>
+                  <div class="signal-row"><span class="signal-k">主机</span><el-input v-model="signalEditDraft.acquire.args.host" size="small" placeholder="{{HOST}} 或固定主机名/IP" /></div>
+                  <div class="field-hint" v-pre>Terminal Bridge 通过此主机选择 SSH 会话；它不是 aCLI 参数。要遍历集群，请在下方启用“集群执行”。</div>
                   <!-- 容器与执行命令：位于输入/输出契约之前，先明确命令在哪里、执行什么。 -->
                   <template v-if="sigTool(signalEditDraft) === 'qfk_system'">
-                    <div class="signal-row"><span class="signal-k">容器</span>
-                      <el-select v-model="signalEditDraft.acquire.args.container" size="small">
-                        <el-option label="host（宿主机，不进入容器）" value="host" />
+                    <div class="signal-row"><span class="signal-k">aCLI 执行域</span>
+                      <el-select v-model="signalEditDraft.acquire.args.container" size="small" clearable placeholder="HOST-OS（aCLI 默认）">
                         <el-option label="asv-con" value="asv-con" />
                         <el-option label="vn-con" value="vn-con" />
                         <el-option label="vn-agent" value="vn-agent" />
                         <el-option label="vs-cp-manager" value="vs-cp-manager" />
                       </el-select>
                     </div>
+                    <div class="field-hint">这是 <code>acli --container</code> 参数，不是让 Terminal Bridge 进入容器；aCLI 始终先在目标 HOST-OS 执行。</div>
+                    <div class="signal-row"><span class="signal-k">集群执行</span><el-switch v-model="signalEditDraft.acquire.args.cluster" active-text="添加 acli --cluster" /></div>
+                    <div class="signal-row"><span class="signal-k">输出格式</span><el-select v-model="signalEditDraft.acquire.args.formatter" size="small" clearable placeholder="默认文本"><el-option label="json" value="json" /><el-option label="keyvalue" value="keyvalue" /><el-option label="csv" value="csv" /><el-option label="xml" value="xml" /></el-select></div>
                     <div class="signal-row"><span class="signal-k">执行命令</span><el-input v-model="signalEditDraft.acquire.args.command" size="small" placeholder="执行命令（必填，不含 acli system 前缀）" /></div>
+                    <div class="signal-row"><span class="signal-k">命令参数</span><el-input :model-value="commandArgsText(signalEditDraft.acquire.args)" size="small" type="textarea" :rows="2" placeholder="每行一个参数（可选，例如 /sf/log）" @input="(value: string) => setCommandArgsText(signalEditDraft.acquire.args, value)" /></div>
                     <div v-if="String(signalEditDraft.acquire.args.command || '').includes('|')" class="signal-row pipeline-warning">
                       <span class="signal-k"></span>
                       <div class="signal-v">
@@ -2866,7 +2934,7 @@ onMounted(() => {
                         <el-button type="primary" size="small" :loading="pipelineConvertLoading" @click="convertDraftPipeline">安全转换管道</el-button>
                       </div>
                     </div>
-                    <div class="field-hint">宿主机只执行基础命令；grep/awk/cut 的安全子集由平台转换为内存中的“筛选行 + 提取值”。</div>
+                    <div class="field-hint">最终命令形如 <code>acli [--cluster] [--timeout N] [--formatter X] [--container X] system 命令 参数</code>。grep/awk/cut 的安全子集改用下方“文本取值”，不执行 Shell 管道。</div>
                   </template>
                   <template v-if="sigTool(signalEditDraft) === 'qfk_service'">
                     <div class="signal-row"><span class="signal-k">容器</span><el-input v-model="signalEditDraft.acquire.args.container" size="small" placeholder="服务容器，如 asv" /></div>
@@ -2937,30 +3005,8 @@ onMounted(() => {
                               <el-input v-model="p.path" size="small" placeholder="如 data.0.pid；空=完整 stdout" />
                             </template>
                             <template v-else>
-                              <label>筛选行（包含）</label>
-                              <el-input :model-value="extractLinesText(p, 'include')" type="textarea" :rows="2" placeholder="每行一个条件；多条件默认同时满足" @input="(value: string) => setExtractLines(p, 'include', value)" />
-                              <label>筛选行（不包含）</label>
-                              <el-input :model-value="extractLinesText(p, 'exclude')" type="textarea" :rows="2" placeholder="可选，每行一个排除条件" @input="(value: string) => setExtractLines(p, 'exclude', value)" />
-                              <label>提取值</label>
-                              <div class="inline-controls">
-                                <el-select v-model="p.extract.column_mode" size="small">
-                                  <el-option label="整行" value="whole" />
-                                  <el-option label="第 N 列" value="index" />
-                                  <el-option label="从第 N 列到末尾" value="from_index" />
-                                </el-select>
-                                <el-input-number v-if="p.extract.column_mode !== 'whole'" v-model="p.extract.column" :min="1" :max="999" size="small" />
-                              </div>
-                              <label>高级设置</label>
-                              <details class="extract-advanced">
-                                <summary>默认：空白分隔、区分大小写、唯一匹配、stdout</summary>
-                                <div class="advanced-grid">
-                                  <span>包含关系</span><el-select v-model="p.extract.include_mode" size="small"><el-option label="全部满足（AND）" value="all" /><el-option label="任一满足（OR）" value="any" /></el-select>
-                                  <span>区分大小写</span><el-switch v-model="p.extract.case_sensitive" />
-                                  <span>匹配数量</span><el-select v-model="p.extract.cardinality" size="small"><el-option label="必须唯一" value="exactly_one" /><el-option label="第一行" value="first" /><el-option label="最后一行" value="last" /><el-option label="全部行" value="all" /></el-select>
-                                  <span>输出来源</span><el-select v-model="p.extract.source" size="small"><el-option label="stdout" value="stdout" /><el-option label="stderr" value="stderr" /></el-select>
-                                  <span>分隔符</span><el-input v-model="p.extract.delimiter" size="small" placeholder="whitespace 或单字符" />
-                                </div>
-                              </details>
+                              <label>文本取值</label>
+                              <TextExtractEditor v-model="p.extract" />
                             </template>
                           </div>
                           <el-button text type="danger" size="small" @click="signalEditDraft.orchestrate.produces?.splice(idx, 1)">删除变量</el-button>
@@ -2979,34 +3025,38 @@ onMounted(() => {
                   <template v-if="sigTool(signalEditDraft) === 'qfk_log'">
                     <div class="signal-row"><span class="signal-k">文件</span><el-input v-model="signalEditDraft.acquire.args.file" size="small" placeholder="安全 basename，如 sfvt_vtpdaemon.log / LOG_ifconfig.txt" /></div>
                     <div class="field-hint">只填 basename，禁止包含目录；扩展名不限。blackbox、whitebox 和其他 /sf/log 日志都使用 qfk_log。</div>
-                    <div class="signal-row"><span class="signal-k">日志族</span>
-                      <el-select v-model="signalEditDraft.acquire.args.source_family" size="small" clearable placeholder="auto（推荐）">
-                        <el-option label="auto（Catalog 自动推断）" value="auto" />
-                        <el-option label="whitebox" value="whitebox" />
-                        <el-option label="blackbox" value="blackbox" />
-                        <el-option label="vn_blackbox" value="vn_blackbox" />
-                        <el-option label="pod" value="pod" />
-                      </el-select>
-                    </div>
-                    <div class="signal-row"><span class="signal-k">路径</span><el-input v-model="signalEditDraft.acquire.args.path" size="small" placeholder="可选；如 /sf/log/blackbox/today，留空由 Catalog 推断" /></div>
-                    <div class="field-hint">常规日志只允许 /sf/log；/sf/data/local 不是日志目录，仅可与 request_id 同时用于辅助关联。&lt;日期&gt;/[日期] 不是可执行路径。</div>
-                    <div class="signal-row"><span class="signal-k">解析器</span>
-                      <el-select v-model="signalEditDraft.acquire.args.parser" size="small" clearable placeholder="留空由 Catalog 选择">
-                        <el-option label="plain_text" value="plain_text" />
-                        <el-option label="timestamped_lines" value="timestamped_lines" />
-                        <el-option label="timestamped_blocks" value="timestamped_blocks" />
-                        <el-option label="ifconfig_snapshot" value="ifconfig_snapshot" />
-                        <el-option label="kv_counter_snapshot" value="kv_counter_snapshot" />
-                        <el-option label="process_snapshot" value="process_snapshot" />
-                      </el-select>
-                    </div>
-                    <div class="signal-row"><span class="signal-k">绝对时间</span><el-input v-model="signalEditDraft.acquire.args.time_window" size="small" placeholder="YYYY-MM-DD / YYYY-MM-DD HH / YYYY-MM-DD HH:MM:SS / {{ABSOLUTE_TIME}}" /></div>
-                    <div class="field-hint">不得填 now/-1h；Agent 必须先按客户问题时间和 HCI 时区解析为绝对时间。</div>
+                    <div class="signal-row"><span class="signal-k">时间</span><el-input v-model="signalEditDraft.acquire.args.time_window" size="small" placeholder="{{END}}（推荐）或 YYYY-MM-DD HH:MM:SS" /></div>
+                    <div class="field-hint">推荐引用上游 qkv_task/qkv_alert/qkv_dialog 产出的 <code v-pre>{{END}}</code>。Agent 保持绝对时间，再由 qfk_log 按日志族转换为所需日期格式。</div>
                     <div class="signal-row"><span class="signal-k">Request ID</span><el-input v-model="signalEditDraft.acquire.args.request_id" size="small" placeholder="可选，如 {{REQUEST_ID}}" /></div>
                     <div class="signal-row"><span class="signal-k">上下文行</span><el-input-number v-model="signalEditDraft.acquire.args.context_lines" :min="0" :max="50" size="small" /></div>
-                    <div class="signal-row"><span class="signal-k">历史归档</span><el-switch v-model="signalEditDraft.acquire.args.include_archives" active-text="搜索 .gz" /></div>
-                    <div v-if="signalEditDraft.acquire.args.include_archives" class="signal-row"><span class="signal-k">前置检查</span><el-select v-model="signalEditDraft.acquire.args.archive_precheck" size="small"><el-option label="已确认磁盘/日期/路径" value="verified" /></el-select></div>
-                    <div v-if="signalEditDraft.acquire.args.include_archives" class="field-hint">whitebox 历史日期优先用绝对时间 -t，由 aCLI 自动定位和解压；此开关只用于显式 path 下的 .gz 搜索，需先确认空间、日期和范围。</div>
+                    <details class="signal-advanced-details">
+                      <summary>日志定位高级设置（通常无需修改）</summary>
+                      <div class="field-hint">留空时按文件名和默认 /sf/log 范围自动定位。只有自动定位失败或案例明确指定特殊日志域时才设置。</div>
+                      <div class="signal-row"><span class="signal-k">日志族</span>
+                        <el-select v-model="signalEditDraft.acquire.args.source_family" size="small" clearable placeholder="auto（按文件/路径推断）">
+                          <el-option label="auto（按文件/路径推断）" value="auto" />
+                          <el-option label="whitebox（白盒日志）" value="whitebox" />
+                          <el-option label="blackbox（黑盒日志）" value="blackbox" />
+                          <el-option label="vn_blackbox（虚拟网络黑盒）" value="vn_blackbox" />
+                          <el-option label="pod（容器日志）" value="pod" />
+                        </el-select>
+                      </div>
+                      <div class="signal-row"><span class="signal-k">路径</span><el-input v-model="signalEditDraft.acquire.args.path" size="small" placeholder="可选；留空默认搜索 /sf/log" /></div>
+                      <div class="field-hint">显式路径只允许受控日志域；&lt;日期&gt;/[日期] 不是可执行路径。</div>
+                      <div class="signal-row"><span class="signal-k">解析器</span>
+                        <el-select v-model="signalEditDraft.acquire.args.parser" size="small" clearable placeholder="自动选择">
+                          <el-option label="plain_text（普通文本）" value="plain_text" />
+                          <el-option label="timestamped_lines（带时间行）" value="timestamped_lines" />
+                          <el-option label="timestamped_blocks（带时间块）" value="timestamped_blocks" />
+                          <el-option label="ifconfig_snapshot（网卡快照）" value="ifconfig_snapshot" />
+                          <el-option label="kv_counter_snapshot（计数器快照）" value="kv_counter_snapshot" />
+                          <el-option label="process_snapshot（进程快照）" value="process_snapshot" />
+                        </el-select>
+                      </div>
+                      <div class="signal-row"><span class="signal-k">显式路径搜索 .gz</span><el-switch v-model="signalEditDraft.acquire.args.include_archives" /></div>
+                      <div v-if="signalEditDraft.acquire.args.include_archives" class="signal-row"><span class="signal-k">前置检查</span><el-select v-model="signalEditDraft.acquire.args.archive_precheck" size="small"><el-option label="已确认磁盘、日期和路径" value="verified" /></el-select></div>
+                      <div v-if="signalEditDraft.acquire.args.include_archives" class="field-hint">普通 whitebox 历史日志由 END + aCLI 自动定位和解压；这里只控制显式 path 下的 .gz 搜索。</div>
+                    </details>
                   </template>
                   <template v-if="sigTool(signalEditDraft) === 'qfk_service'">
                     <div class="signal-row"><span class="signal-k">服务</span><el-input v-model="signalEditDraft.acquire.args.resource_keyword" size="small" placeholder="服务名，如 asv、nginx、mgmt" /></div>
@@ -3660,6 +3710,24 @@ onMounted(() => {
   margin-top: 6px;
 }
 
+.evidence-policy-editor {
+  margin: 10px 0 14px;
+  padding: 10px 12px;
+  border: 1px solid #d9ecff;
+  border-radius: 6px;
+  background: #f4f9ff;
+}
+.evidence-policy-editor > div:first-child {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.evidence-policy-editor .field-hint {
+  margin-left: 0;
+  margin-bottom: 0;
+}
+
 .expert-validation-panel {
   margin-top: 10px;
   padding: 12px 14px;
@@ -3907,6 +3975,25 @@ onMounted(() => {
 }
 .signal-card-body {
   padding: 8px 10px;
+}
+.signal-evidence-details,
+.signal-advanced-details {
+  margin: 7px 0 2px;
+  padding: 6px 8px;
+  border: 1px solid #ebeef5;
+  border-radius: 5px;
+  background: #fff;
+  color: #606266;
+  font-size: 12px;
+}
+.signal-evidence-details summary,
+.signal-advanced-details summary {
+  cursor: pointer;
+  color: #409eff;
+  user-select: none;
+}
+.signal-advanced-details .field-hint {
+  margin-left: 94px;
 }
 .signal-row {
   display: flex;

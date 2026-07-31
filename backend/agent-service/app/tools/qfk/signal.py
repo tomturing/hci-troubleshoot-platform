@@ -3,12 +3,12 @@ BackendSignal — QFK 后端排查信号（v2 扁平运行时模型）
 
 字段命名与 acquirer_args 契约及 signals_json v2 完全一致：
 - namespace    对应 acquirer 名称（log/service/system/vm/network/storage/hardware/platform）
-- host         acli --host / --cluster
+- host         Terminal Bridge/SSH 的目标主机路由（不拼入 aCLI 命令）
 - command      acli <namespace> <command>
 - file/path/source_family/parser  qfk_log 的日志源 Catalog 定位与解析
 - time_window  qfk_log 的绝对 -t（相对时间在进入 QFK 前解析）
 - service/action qfk_service 的 <container> <name> <action>
-- container    qfk_system 的 terminal_bridge 执行位置（host=宿主机）
+- container    qfk_system 的 aCLI ``--container`` 执行域（不是 Terminal Bridge 容器）
 - keyword      匹配关键字（list[str]）
 - instruction  匹配说明
 - match_mode   or/and/not
@@ -47,14 +47,16 @@ class BackendSignal(BaseModel):
     )
 
     # ─── 主机作用域 ───────────────────────────────────────────────────────────
-    host: str | None = Field(default=None, description="主机名；'cluster' 表示集群模式")
+    host: str | None = Field(default=None, description="目标主机；由 Terminal Bridge 选择 SSH 会话，不拼入 aCLI")
     vm: str | None = Field(default=None, description="虚拟机标识")
     timeout: int = Field(default=30, ge=1, le=300, description="执行超时（秒，1-300）")
-    container: str | None = Field(default=None, description="容器/执行位置（qfk_service/qfk_system 用；host=宿主机）")
-    cluster: bool = Field(default=False, description="是否集群模式")
+    container: str | None = Field(default=None, description="qfk_system 的 aCLI --container 或 qfk_service 服务组")
+    cluster: bool = Field(default=False, description="qfk_system 是否添加 acli --cluster")
+    formatter: str | None = Field(default=None, description="qfk_system 的 aCLI --formatter")
 
     # ─── 特有字段 ─────────────────────────────────────────────────────────────
     command: str | None = Field(default=None, description="acli 子命令（vm/network/storage/hardware/platform/system）")
+    command_args: list[str] = Field(default_factory=list, description="qfk_system 结构化命令参数")
     file: str | None = Field(default=None, description="日志安全 basename（qfk_log 的 -f）")
     path: str | None = Field(default=None, description="日志绝对路径；省略时由 Catalog 推断")
     path_inferred: bool = Field(default=False, exclude=True, description="运行时内部字段：path 是否由 Catalog 推断")
@@ -79,12 +81,19 @@ class BackendSignal(BaseModel):
     # ─── 校验 ─────────────────────────────────────────────────────────────────
     @model_validator(mode="after")
     def _validate(self) -> BackendSignal:
+        # 已发布的旧 v2 文档曾把 ``host`` 错写为 qfk_system.container。其原始
+        # 运行含义是“不要进入 Bridge 容器”，与当前“省略 aCLI --container”一致；
+        # 在运行时显式归一，既不把 acli 放进容器，也不静默改变旧案例的执行域。
+        if self.namespace == "system" and self.container == "host":
+            self.container = None
         if self.match_mode not in VALID_MATCH_MODES:
             raise ValueError(f"match_mode 必须是 {VALID_MATCH_MODES} 之一，收到: {self.match_mode}")
         if self.namespace == "system" and self.container and self.container not in VALID_SYSTEM_CONTAINERS:
             raise ValueError(
                 f"qfk_system 容器必须是 {sorted(VALID_SYSTEM_CONTAINERS)} 之一，收到: {self.container}"
             )
+        if self.namespace == "system" and self.formatter and self.formatter not in {"xml", "csv", "keyvalue", "json"}:
+            raise ValueError("qfk_system formatter 必须是 xml/csv/keyvalue/json 之一")
         if self.namespace == "log":
             self.path_inferred = self.path is None
             if self.source_family not in LOG_SOURCE_FAMILIES:
@@ -137,7 +146,8 @@ class BackendSignal(BaseModel):
     # ─── 工具方法 ─────────────────────────────────────────────────────────────
     def is_cluster_mode(self) -> bool:
         """判断是否为集群模式"""
-        return self.host == "cluster"
+        # ``host=cluster`` 是旧数据兼容写法；新信号使用显式 cluster=true。
+        return self.cluster or self.host == "cluster"
 
     @classmethod
     def from_dict(cls, data: Any) -> BackendSignal:

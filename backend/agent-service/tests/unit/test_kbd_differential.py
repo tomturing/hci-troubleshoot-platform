@@ -167,6 +167,17 @@ class TestVariablePoolCaseNormalization:
         result2 = KBDDiagnostic._resolve_args({"scope": "{{host}}"}, {}, diag._variable_pool)
         assert result2 == {"scope": "node-001"}
 
+    def test_higher_priority_qkv_anchor_is_independent_of_execution_order(self):
+        diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())
+
+        diag._set_pool_var("HOST", "task-host", producer_priority=30)
+        diag._set_pool_var("HOST", "alert-host", producer_priority=20)
+        assert diag._variable_pool["host"] == "task-host"
+
+        diag._set_pool_var("END", "alert-end", producer_priority=20)
+        diag._set_pool_var("END", "task-end", producer_priority=30)
+        assert diag._variable_pool["end"] == "task-end"
+
 
 class TestHostIPResolution:
     """QKV 产出主机名后，按 HCI 节点列表归一化为节点 IP。"""
@@ -368,8 +379,11 @@ class TestQFKProduces:
             tool_name="qfk_system",
             tool_args_template={
                 "host": "{{HOST}}",
-                "command": "ls -1 /proc/{{PID}}/fd",
+                "command": "df",
+                "command_args": ["/proc/{{PID}}/fd"],
                 "resource_keyword": "{{VM}}",
+                "cluster": True,
+                "formatter": "json",
             },
             matcher={"type": "exists", "expected": True},
         )
@@ -381,8 +395,12 @@ class TestQFKProduces:
 
         assert signal is not None
         assert signal.host == "10.0.0.1"
-        assert signal.command == "ls -1 /proc/4046749/fd"
+        assert signal.command == "df"
+        assert signal.command_args == ["/proc/4046749/fd"]
         assert signal.resource_keyword == "vm-01"
+        assert signal.cluster is True
+        assert signal.formatter == "json"
+        assert signal.container is None
 
     def test_extracts_full_output_and_json_paths(self):
         diag = KBDDiagnostic(ai_registry=MagicMock(), tool_executor=MagicMock())

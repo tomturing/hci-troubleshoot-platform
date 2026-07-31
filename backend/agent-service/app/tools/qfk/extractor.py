@@ -27,6 +27,22 @@ class QFKExtractionError(ValueError):
         return f"{self.code}: {self.message}"
 
 
+@dataclass(frozen=True)
+class ExtractionResult:
+    """公共文本提取的完整、可审计结果。
+
+    这是 QFK ``produces[].extract`` 与 ``match.extract`` 的同一底层产物：两者
+    使用相同的筛选、列提取、基数校验和类型转换，调用方仅决定把 values 写入变量池
+    还是继续聚合并做 predicate。不会执行专家填写的 grep/awk/shell 文本。
+    """
+
+    matched_lines: list[str]
+    selected_lines: list[str]
+    raw_values: list[str]
+    values: list[Any]
+    value_type: str
+
+
 async def get_complete_output(
     result: ExecResult,
     redis: Any,
@@ -86,8 +102,12 @@ async def get_complete_output(
     return output
 
 
-def extract_text_value(output: str, spec: dict[str, Any], value_type: str = "string") -> Any:
-    """按“筛选行 + 提取值”规格从文本输出中确定性取值。"""
+def extract_output_values(output: str, spec: dict[str, Any], value_type: str = "string") -> ExtractionResult:
+    """按受控“筛选行 + 列提取”规格从文本输出中确定性取值。
+
+    ``value_type`` 为调用方的业务类型；若 ``spec.value_mode`` 有值则优先使用它。
+    这样 Matcher 的数值比较与 Produces 的数值变量可以共享同一份文本语义。
+    """
 
     if not isinstance(spec, dict) or spec.get("type", "text") != "text":
         raise QFKExtractionError("QFK_EXTRACT_INVALID_SPEC", "extract.type 必须为 text")
@@ -127,14 +147,29 @@ def extract_text_value(output: str, spec: dict[str, Any], value_type: str = "str
         else [matched_lines[-1] if cardinality == "last" else matched_lines[0]]
     )
 
-    values = [_extract_column(line, spec) for line in selected]
-    if cardinality == "all":
-        if value_type == "array":
-            return values
-        return [_cast_scalar(value, value_type) for value in values]
-    if value_type == "array":
-        return values
-    return _cast_scalar(values[0], value_type)
+    raw_values = [_extract_column(line, spec) for line in selected]
+    effective_type = str(spec.get("value_mode") or value_type or "string")
+    if effective_type == "array":
+        converted: list[Any] = list(raw_values)
+    else:
+        converted = [_cast_scalar(value, effective_type) for value in raw_values]
+    return ExtractionResult(
+        matched_lines=matched_lines,
+        selected_lines=selected,
+        raw_values=raw_values,
+        values=converted,
+        value_type=effective_type,
+    )
+
+
+def extract_text_value(output: str, spec: dict[str, Any], value_type: str = "string") -> Any:
+    """向后兼容的标量/数组接口；实现委托给唯一的公共提取核心。"""
+
+    result = extract_output_values(output, spec, value_type)
+    cardinality = spec.get("cardinality", "exactly_one")
+    if cardinality == "all" or value_type == "array" or result.value_type == "array":
+        return result.values
+    return result.values[0]
 
 
 def _string_list(value: Any, field: str) -> list[str]:
@@ -199,7 +234,13 @@ def _cast_scalar(value: str, value_type: str) -> Any:
                 raise ValueError
             return int(text)
         if normalized_type == "number":
-            return float(value.strip())
+            # 允许 HCI 常见的带单位文本，例如 ``54%``、``21.5ms``。单位只是
+            # 展示语义，数值 predicate 只比较确定性数值部分；不接受任意混合文本。
+            text = value.strip()
+            match = re.fullmatch(r"([+-]?\d+(?:\.\d+)?)(?:\s*(?:%|[A-Za-z]+))?", text)
+            if not match:
+                raise ValueError
+            return float(match.group(1))
         if normalized_type == "boolean":
             text = value.strip().casefold()
             if text in {"true", "1", "yes", "on"}:

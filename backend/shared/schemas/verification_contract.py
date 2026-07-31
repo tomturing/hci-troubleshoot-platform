@@ -14,6 +14,44 @@ from typing import Any
 EVIDENCE_ROLES = ("must", "should", "exclude", "context")
 
 
+def normalize_legacy_role_contract(document: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """在专家读取边界修复历史 ``role``/Contract 双写冲突。
+
+    旧抽取器曾把 ``signals[].role`` 全写为 must，却在执行 Contract 中正确保留
+    should/context。历史运行时一直消费 Contract，因此首次打开旧数据时必须先以
+    既有 Contract 回填 role，不能因专家只改说明等无关字段就把执行语义静默改成
+    全部 must。该函数只返回规范化副本；Proposal Revision 仍保持不可变，专家保存
+    后会自然形成一条新的、两者一致的 Revision。
+    """
+
+    result = copy.deepcopy(document)
+    signals = result.get("signals") if isinstance(result, dict) else None
+    contract = result.get("verification_contract") if isinstance(result, dict) else None
+    policy = contract.get("evidence_policy") if isinstance(contract, dict) else None
+    if not isinstance(signals, list) or not isinstance(policy, dict):
+        return result, {"normalized_signal_ids": [], "count": 0}
+
+    contract_roles = {
+        str(signal_id): role
+        for role in EVIDENCE_ROLES
+        for signal_id in (policy.get(role) or [])
+        if isinstance(signal_id, str) and signal_id.strip()
+    }
+    normalized: list[str] = []
+    for signal in signals:
+        if not isinstance(signal, dict):
+            continue
+        signal_id = str(signal.get("id") or "").strip()
+        contract_role = contract_roles.get(signal_id)
+        explicit_role = str(signal.get("role") or "").lower()
+        if contract_role and explicit_role != contract_role:
+            signal["role"] = contract_role
+            normalized.append(signal_id)
+
+    canonical, _ = reconcile_verification_contract(result)
+    return canonical, {"normalized_signal_ids": normalized, "count": len(normalized)}
+
+
 def reconcile_verification_contract(document: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """按存活 Signal 的稳定 id + role 重建 ``evidence_policy``。
 

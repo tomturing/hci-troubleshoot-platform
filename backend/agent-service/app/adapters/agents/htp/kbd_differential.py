@@ -172,6 +172,7 @@ class KBDDiagnostic:
         self._result: KBDDiagResult | None = None
         # 会话级变量池（黑板）：阶段 A 生产者(QKV)写入，阶段 B 消费者(QFK)读取
         self._variable_pool: dict[str, Any] = {}
+        self._variable_pool_priority: dict[str, int] = {}
         # 当前诊断会话内缓存 HCI 节点名称到 IP 的映射，避免每个 QKV 结果重复查询节点列表。
         self._host_ip_cache: dict[str, str] = {}
 
@@ -179,7 +180,7 @@ class KBDDiagnostic:
         """获取最近一次 diagnose() 调用的结果（调用前返回 None）。"""
         return self._result
 
-    def _set_pool_var(self, name: str, value: Any) -> None:
+    def _set_pool_var(self, name: str, value: Any, *, producer_priority: int | None = None) -> None:
         """写入会话变量池（黑板）的规范化入口。
 
         生产侧静默规范化：Key 强制统一小写存储，从源头消除变量池内部大小写
@@ -192,8 +193,21 @@ class KBDDiagnostic:
         P2 增强：记录变量池变更日志，便于追溯信号执行链路。
         """
         key = name.strip().lower()
+        existing_priority = self._variable_pool_priority.get(key)
+        if producer_priority is not None and existing_priority is not None and producer_priority < existing_priority:
+            logger.info(
+                event="variable_pool_lower_priority_ignored",
+                name=name,
+                key=key,
+                producer_priority=producer_priority,
+                existing_priority=existing_priority,
+                session_id=self._conversation_id or "",
+            )
+            return
         old_value = self._variable_pool.get(key)
         self._variable_pool[key] = value
+        if producer_priority is not None:
+            self._variable_pool_priority[key] = producer_priority
 
         # P2: 变量池变更日志
         value_preview = str(value)[:100] if value is not None else None
@@ -916,6 +930,13 @@ class KBDDiagnostic:
             session_id=session_id or self._conversation_id or "",
         )
         first = res.values[0]
+        # 同一案例允许 qkv_alert/qkv_task 作为替代证据。任务记录包含更完整的执行
+        # 上下文，故标准变量采用 task > alert > dialog 的确定性优先级，与执行顺序无关。
+        producer_priority = {
+            "qkv_task": 30,
+            "qkv_alert": 20,
+            "qkv_dialog": 10,
+        }.get(_acquire_tool(signal), 0)
         for spec in produces:
             name = spec.get("name") if isinstance(spec, dict) else None
             if not name:
@@ -923,7 +944,7 @@ class KBDDiagnostic:
             # 提取后的 dict key 是 name.lower()（见 parser._extract_by_produces line 90）
             val = first.get(name.lower()) if isinstance(first, dict) else None
             if val is not None:
-                self._set_pool_var(name, val)
+                self._set_pool_var(name, val, producer_priority=producer_priority)
 
     async def _execute_acquirer(
         self,
@@ -1032,16 +1053,27 @@ class KBDDiagnostic:
                 from app.tools.qfk.engine import qfk_exec
 
                 produces = ((signal or {}).get("orchestrate") or {}).get("produces") or []
+                matcher = step.matcher or {}
+                matcher_extract = matcher.get("extract") if isinstance(matcher, dict) else None
                 required_output_sources = {
                     str((item.get("extract") or {}).get("source") or "stdout")
                     for item in produces
                     if isinstance(item, dict)
                 }
+                if isinstance(matcher_extract, dict):
+                    required_output_sources.add(str(matcher_extract.get("source") or "stdout"))
                 output_filters: list[dict[str, Any]] = []
-                for item in produces:
-                    if not isinstance(item, dict) or not isinstance(item.get("extract"), dict):
+                extract_specs = [
+                    item.get("extract")
+                    for item in produces
+                    if isinstance(item, dict) and isinstance(item.get("extract"), dict)
+                ]
+                if isinstance(matcher_extract, dict):
+                    extract_specs.append(matcher_extract)
+                for extract_spec in extract_specs:
+                    if not isinstance(extract_spec, dict):
                         continue
-                    resolved_extract = self._resolve_template_value(item["extract"], resolver_variables)
+                    resolved_extract = self._resolve_template_value(extract_spec, resolver_variables)
                     # 边缘执行器只做安全的逐行筛选；列提取、基数校验和类型转换仍由
                     # Agent 的确定性 extractor 完成。无筛选条件时不前移，后端按大小
                     # 上限 Fail Closed，避免把“全量输出”伪装成过滤结果。
@@ -1100,9 +1132,17 @@ class KBDDiagnostic:
                         return res.raw_output, extract_error, None
                     # 产出变量模式只关心命令是否成功且结果是否已写入变量池，不再进行 matcher 判定。
                     return res.raw_output, None, True
-                matcher = step.matcher or {}
+                # keyword 已由 qfk_exec 在安全服务端过滤后判定。数值 matcher 若使用
+                # match.extract，则必须从同一份完整物理流取值，不能退回截断 stdout。
                 if matcher.get("type") == "keyword":
                     return res.raw_output, None, res.matched
+                if isinstance(matcher_extract, dict):
+                    resolved_matcher = self._resolve_template_value(matcher, resolver_variables)
+                    source = str((resolved_matcher.get("extract") or {}).get("source") or "stdout")
+                    outputs = res.complete_outputs if hasattr(res, "complete_outputs") else {"stdout": res.raw_output}
+                    if source not in outputs:
+                        return res.raw_output, f"QFK_EXTRACT_INVALID_SPEC: 未取得完整 {source} 输出", None
+                    return res.raw_output, None, self._evaluate_matcher(resolved_matcher, outputs[source])
                 return res.raw_output, None, None
             except Exception as exc:
                 return None, str(exc), None
@@ -1372,13 +1412,9 @@ class KBDDiagnostic:
             p = matcher.get("pattern", "")
             keywords = [p] if isinstance(p, str) else list(p or [])
 
-        # 容器默认值按 namespace 语义：qfk_service 为服务组(asv)，qfk_system 为执行容器(asv-con)
-        if namespace == "service":
-            _container_default = "asv"
-        elif namespace == "system":
-            _container_default = "asv-con"
-        else:
-            _container_default = None
+        # 容器默认值按 namespace 语义：qfk_service 为服务组(asv)。qfk_system
+        # 未声明时由 aCLI 在 HOST-OS 默认执行，绝不默认把 acli 放进 asv-con。
+        _container_default = "asv" if namespace == "service" else None
 
         # 构建 v2 扁平信号数据（字段名与 acquirer_args 契约一致）
         signal_data = {
@@ -1394,7 +1430,10 @@ class KBDDiagnostic:
             "timeout": args.get("timeout", 10),
             # 特有字段
             "command": args.get("command"),
+            "command_args": args.get("command_args") or [],
             "container": args.get("container", _container_default),
+            "cluster": bool(args.get("cluster", False)),
+            "formatter": args.get("formatter"),
             "resource_keyword": args.get("resource_keyword"),
             "file": args.get("file"),
             "path": args.get("path"),

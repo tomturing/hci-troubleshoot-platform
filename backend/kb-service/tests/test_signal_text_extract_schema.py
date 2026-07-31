@@ -10,6 +10,7 @@ from app.routes.extract_signals import (
 from jsonschema import ValidationError
 from shared.schemas.signal_output import derive_signal_requires, sync_signal_requires
 from shared.schemas.signal_schema import (
+    certify_publishable_signals_json,
     validate_publishable_signals_json,
     validate_signals_json,
 )
@@ -30,7 +31,82 @@ def _doc(produce, *, tool="qfk_system", command="ps auxf"):
 
 def test_old_json_path_and_empty_path_remain_compatible():
     validate_signals_json(_doc({"name": "PID", "type": "integer", "path": "data.0.pid"}))
+
+
+def test_publish_certification_preserves_generation_origin_and_stamps_current_contract():
+    document = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "sig_001",
+                "role": "must",
+                "acquire": {"tool": "qfk_system", "args": {"command": "ps"}},
+                "match": {"type": "exists", "expected": True},
+                "orchestrate": {"requires": [], "produces": []},
+            }
+        ],
+        "verification_contract": {
+            "schema_version": 1,
+            "evidence_policy": {"must": ["sig_001"], "minimum_should": 0},
+        },
+        "generation_metadata": {
+            "schema_version": 1,
+            "status": "current",
+            "source_fingerprint": "0" * 64,
+            "prompt_revision": "1" * 64,
+            "model_id": "model-v1",
+            "tool_contract_revision": "2" * 64,
+            "generation_fingerprint": "3" * 64,
+        },
+    }
+
+    certified = certify_publishable_signals_json(document)
+
+    assert certified["publish_validation"]["status"] == "passed"
+    assert certified["publish_validation"]["tool_contract_revision"] != "2" * 64
+    assert certified["generation_metadata"]["tool_contract_revision"] == "2" * 64
+    assert "publish_validation" not in document
+
+
+def test_publish_rejects_unreachable_variable_dependency():
+    document = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "sig_001",
+                "role": "must",
+                "acquire": {"tool": "qfk_system", "args": {"command": "ps {{PID}}"}},
+                "match": {"type": "exists", "expected": True},
+                "orchestrate": {"requires": ["PID"], "produces": []},
+            }
+        ],
+        "verification_contract": {
+            "schema_version": 1,
+            "evidence_policy": {"must": ["sig_001"], "minimum_should": 0},
+        },
+    }
+
+    with pytest.raises(ValidationError, match="输入变量没有上游产出或外部声明: PID"):
+        validate_publishable_signals_json(document)
     validate_signals_json(_doc({"name": "RAW", "path": ""}))
+
+
+def test_match_extract_reuses_text_extract_schema_and_derives_requires():
+    document = {
+        "schema_version": 2,
+        "signals": [{
+            "id": "log_usage",
+            "role": "must",
+            "acquire": {"tool": "qfk_system", "args": {"command": "df", "command_args": ["/sf/log"]}},
+            "match": {
+                "type": "threshold", "aggregation": "max", "operator": ">", "value": 80, "expected": True,
+                "extract": {"type": "text", "include": ["{{MOUNT}}"], "column_mode": "index", "column": 5, "cardinality": "all", "value_mode": "number"},
+            },
+            "orchestrate": {"produces": [], "requires": []},
+        }],
+    }
+    validate_signals_json(document)
+    assert derive_signal_requires(document["signals"][0]) == ["MOUNT"]
 
 
 def test_verification_contract_external_variables_require_closed_types():

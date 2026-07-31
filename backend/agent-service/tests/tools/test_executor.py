@@ -229,8 +229,8 @@ class TestBridgeRelayExecutor:
             assert payload["command"].startswith("HCI_CONTAINER=asv-con;")
 
     @pytest.mark.asyncio
-    async def test_acli_exec_forwards_host_container_and_requested_timeout(self, executor, mock_redis):
-        """QFK 的 host 执行位置与超时必须进入 SSE/terminal bridge 事件。"""
+    async def test_acli_exec_never_forwards_container_and_keeps_requested_timeout(self, executor, mock_redis):
+        """aCLI --container 属于命令文本，不能被 Bridge 解释为 container_exec。"""
         with patch.object(executor._http_client, "post") as mock_post:
             mock_response = MagicMock()
             mock_response.json.return_value = {"ok": True, "exec_id": "test-exec-id"}
@@ -249,9 +249,9 @@ class TestBridgeRelayExecutor:
             )
 
         assert result.exit_code == 0
-        assert result.container == "host"
+        assert result.container is None
         payload = mock_post.call_args.kwargs["json"]
-        assert payload["container"] == "host"
+        assert payload["container"] is None
         assert payload["timeout"] == 12
         assert mock_redis.client.blpop.await_args.kwargs["timeout"] == 17
 

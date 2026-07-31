@@ -14,7 +14,8 @@ QFK 信号处理器
 - file/path/source_family/parser → qfk_log 的 Catalog 定位与解析
 - time_window/request_id/context_lines/include_archives → qfk_log 的 -t/-i/-c/-g
 - service/action → qfk_service 的 <container> <name> <action>
-- container    → qfk_system 的 terminal_bridge 执行位置（host 表示宿主机）
+- container    → qfk_system 的 aCLI ``--container`` 全局参数（不是 terminal_bridge 容器）
+- cluster/timeout/formatter → qfk_system 的 aCLI 全局参数
 注：host 不参与命令行构建--目标主机路由在传输层（engine.py 经 node_ip/case_id 由 terminal_bridge 选择 SSH 会话），BackendSignal.host 仅作运行时记录。
 """
 
@@ -288,12 +289,27 @@ class SystemHandler(BackendSignalHandler):
             raise CommandBuildError("qfk_system 必须在 command 中提供执行命令")
         if _has_illegal_chars(command):
             raise CommandBuildError(f"系统命令包含非法字符: {command}")
+        parts = ["acli"]
+        if signal.is_cluster_mode():
+            parts.append("--cluster")
+        # aCLI 的 timeout 是内层命令超时；Bridge 的外层 timeout 由 engine/executor
+        # 另行控制，避免 SSH 转发在 aCLI 尚未返回前提前中断。
+        parts.extend(["--timeout", str(signal.timeout)])
+        if signal.formatter:
+            parts.extend(["--formatter", shlex.quote(signal.formatter)])
+        if signal.container:
+            parts.extend(["--container", shlex.quote(signal.container)])
+        parts.extend(["system", command])
+        for arg in signal.command_args:
+            if not isinstance(arg, str) or _has_illegal_chars(arg):
+                raise CommandBuildError("系统命令参数包含非法字符")
+            parts.append(shlex.quote(arg))
         resource = (signal.resource_keyword or "").strip()
         if resource:
             if _has_illegal_chars(resource):
                 raise CommandBuildError(f"系统命令资源参数包含非法字符: {resource}")
-            command = f"{command} {shlex.quote(resource)}"
-        return [f"acli system {command}"]
+            parts.append(shlex.quote(resource))
+        return [" ".join(parts)]
 
 
 class GenericSubCommandHandler(BackendSignalHandler):

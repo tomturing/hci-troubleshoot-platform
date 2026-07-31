@@ -181,8 +181,9 @@ async def qfk_exec(
             tool_args = {
                 "command": cmd,
                 "reason": f"QFK诊断信号提取执行: {signal.instruction or ''}",
-                # qfk_system 的 container 由 terminal_bridge 包装；host 会原样在宿主机执行。
-                "container": signal.container if signal.namespace == "system" else None,
+                # qfk_system.container 已编译为 aCLI --container；它绝不能再被
+                # Terminal Bridge 解释为 container_exec 目标，否则容器内会找不到 acli。
+                "container": None,
                 # 非 JSON 产出变量的行筛选必须在 terminal_bridge 流式执行边界
                 # 完成，避免几十 MB 原始输出先穿过 WebSocket/浏览器/HTTP。
                 "output_filters": output_filters or [],

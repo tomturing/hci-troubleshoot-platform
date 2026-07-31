@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from pathlib import Path
@@ -22,6 +23,7 @@ from shared.schemas.log_source_catalog import (
     normalize_log_path,
     resolve_log_source,
 )
+from shared.schemas.signal_generation import current_tool_contract_revision
 
 _SIGNALS_DIR = Path(__file__).resolve().parent / "signals"
 
@@ -97,6 +99,87 @@ def validate_publishable_signals_json(raw: Any) -> None:
         if signal_id in seen:
             raise ValidationError(f"signal id 重复，禁止发布: {signal_id}")
         seen.add(signal_id)
+    _validate_variable_dependency_graph(raw)
+
+
+def certify_publishable_signals_json(raw: Any) -> dict[str, Any]:
+    """用当前代码契约校验并生成发布盖章，不覆盖 LLM 原始生成元数据。
+
+    ``generation_metadata.tool_contract_revision`` 记录 Proposal 生成时使用的契约，
+    属于不可变的生产追溯事实；专家发布时若直接覆盖它，后续就无法评估旧模型与新
+    契约的差异。``publish_validation`` 单独记录本次 Expert 内容已经通过当前静态
+    Schema、参数语义和发布门禁。Agent 仍会在消费侧编译真实 Handler 与变量 DAG。
+    """
+
+    certified = copy.deepcopy(raw)
+    # 先验证专家提交的原始文档，避免盖章字段掩盖任何输入错误。
+    validate_publishable_signals_json(certified)
+    certified["publish_validation"] = {
+        "schema_version": 1,
+        "status": "passed",
+        "tool_contract_revision": current_tool_contract_revision(),
+        "validator": "expert_publish_gate",
+    }
+    # 再验证最终持久化形态，确保 Schema 与代码没有发生自相矛盾。
+    validate_publishable_signals_json(certified)
+    return certified
+
+
+def _validate_variable_dependency_graph(raw: dict[str, Any]) -> None:
+    """发布前验证 diagnostic 变量链可达，避免 Admin 成功而 Agent 编译失败。"""
+
+    contract = raw.get("verification_contract") or {}
+    declared_external = {
+        str(name).strip().upper()
+        for name in (contract.get("variables") or {})
+        if str(name).strip()
+    }
+    nodes: list[tuple[str, set[str], set[str]]] = []
+    for index, signal in enumerate(raw.get("signals") or [], start=1):
+        if not isinstance(signal, dict):
+            continue
+        orchestrate = signal.get("orchestrate") or {}
+        if str(orchestrate.get("phase") or "diagnostic") == "solution":
+            continue
+        signal_id = str(signal.get("id") or f"signal_{index:03d}")
+        requires = {
+            str(name).strip().upper()
+            for name in (orchestrate.get("requires") or [])
+            if str(name).strip()
+        }
+        produces = {
+            str(item.get("name") if isinstance(item, dict) else item).strip().upper()
+            for item in (orchestrate.get("produces") or [])
+            if str(item.get("name") if isinstance(item, dict) else item).strip()
+        }
+        nodes.append((signal_id, requires, produces))
+
+    all_produced = {name for _, _, produces in nodes for name in produces}
+    if not contract:
+        # 无 Verification Contract 的历史数据兼容运行时 env_context；首次专家保存
+        # 会补全 Contract，之后即进入严格外部变量声明。
+        declared_external.update(
+            name for _, requires, _ in nodes for name in requires if name not in all_produced
+        )
+    undeclared = {
+        name
+        for _, requires, _ in nodes
+        for name in requires
+        if name not in all_produced and name not in declared_external
+    }
+    if undeclared:
+        raise ValidationError(f"输入变量没有上游产出或外部声明: {', '.join(sorted(undeclared))}")
+
+    available = set(declared_external)
+    remaining = list(nodes)
+    while remaining:
+        ready = [node for node in remaining if node[1].issubset(available)]
+        if not ready:
+            blocked = ", ".join(f"{signal_id} 需要 {sorted(requires)}" for signal_id, requires, _ in remaining)
+            raise ValidationError(f"关键信号变量依赖存在环或不可达: {blocked}")
+        for node in ready:
+            available.update(node[2])
+            remaining.remove(node)
 
 
 def _validate_verification_contract(raw: Any, *, require_must: bool) -> None:

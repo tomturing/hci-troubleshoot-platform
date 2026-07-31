@@ -313,6 +313,21 @@ class TestQKVParserDynamicProduces:
         assert len(vals) == 1
         assert vals[0]["host"] == "node-001"
 
+    def test_explicit_end_produce_normalizes_unix_timestamp(self):
+        """显式 produces 与硬编码路径必须产出相同的绝对时间 END。"""
+
+        task_json = '{"data": [{"end": 1767778352}]}'
+
+        vals = parse_frontend_value(
+            FrontendQueryType.TASK,
+            task_json,
+            [{"name": "END", "path": "end"}],
+        )
+        fallback = parse_frontend_value(FrontendQueryType.TASK, task_json)
+
+        assert vals[0]["end"] == fallback[0]["end"]
+        assert vals[0]["end"].count(":") == 2
+
     def test_extract_empty_produces_falls_back(self):
         """produces 为空时走硬编码兜底"""
         alert_json = """

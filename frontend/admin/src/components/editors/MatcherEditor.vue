@@ -19,6 +19,7 @@
 
 import { computed, watch } from 'vue'
 import { InfoFilled } from '@element-plus/icons-vue'
+import TextExtractEditor from './TextExtractEditor.vue'
 
 const props = defineProps<{
   modelValue: Record<string, any>
@@ -48,16 +49,19 @@ const matcherType = computed({
       newMatcher.operator = '>'
       newMatcher.value = 0
       newMatcher.aggregation = 'first_number'
+      newMatcher.extract = { type: 'text', value_mode: 'number' }
     } else if (type === 'delta') {
       newMatcher.metric = ''
       newMatcher.operator = '>'
       newMatcher.value = 0
       newMatcher.minimum_samples = 2
+      newMatcher.extract = { type: 'text', cardinality: 'all', value_mode: 'number' }
     } else if (type === 'trend') {
       newMatcher.metric = ''
       newMatcher.direction = 'increasing'
       newMatcher.value = 0
       newMatcher.minimum_samples = 3
+      newMatcher.extract = { type: 'text', cardinality: 'all', value_mode: 'number' }
     } else if (type === 'json_path') {
       newMatcher.path = ''
       newMatcher.expected_value = null
@@ -96,14 +100,14 @@ const operatorOptions = [
 ]
 
 const allMatcherTypeOptions = [
-  { label: '关键字匹配', value: 'keyword', desc: '在输出中搜索关键字' },
-  { label: '正则表达式', value: 'regex', desc: '用正则匹配输出' },
-  { label: '状态判定', value: 'state', desc: '匹配特定状态值' },
-  { label: '数值阈值', value: 'threshold', desc: '数值比较判定' },
-  { label: '首末差值', value: 'delta', desc: '周期日志计数器差值' },
-  { label: '变化趋势', value: 'trend', desc: '周期日志连续趋势' },
-  { label: 'JSON 路径', value: 'json_path', desc: '从 JSON 中提取值比较' },
-  { label: '存在性判定', value: 'exists', desc: '检查输出是否非空' },
+  { label: '关键字匹配（搜索文字）', value: 'keyword', desc: '在输出中搜索关键字' },
+  { label: '正则表达式（模式匹配）', value: 'regex', desc: '用正则匹配输出' },
+  { label: '状态判定（匹配状态值）', value: 'state', desc: '匹配特定状态值' },
+  { label: '数值阈值（比较数字）', value: 'threshold', desc: '数值比较判定' },
+  { label: '首末差值（比较变化量）', value: 'delta', desc: '周期日志计数器差值' },
+  { label: '变化趋势（连续变化）', value: 'trend', desc: '周期日志连续趋势' },
+  { label: 'JSON 路径（读取字段）', value: 'json_path', desc: '从 JSON 中提取值比较' },
+  { label: '存在性判定（是否有输出）', value: 'exists', desc: '检查输出是否非空' },
 ]
 const matcherTypeOptions = computed(() => {
   if (!props.allowedTypes?.length) return allMatcherTypeOptions
@@ -167,9 +171,9 @@ const matcherTypeOptions = computed(() => {
         </el-form-item>
         <el-form-item label="匹配模式">
           <el-radio-group v-model="matcher.mode">
-            <el-radio-button value="or">任一匹配 (OR)</el-radio-button>
-            <el-radio-button value="and">全部匹配 (AND)</el-radio-button>
-            <el-radio-button value="not">均不匹配 (NOT)</el-radio-button>
+            <el-radio-button value="or">任一匹配（OR）</el-radio-button>
+            <el-radio-button value="and">全部匹配（AND）</el-radio-button>
+            <el-radio-button value="not">均不匹配（NOT）</el-radio-button>
           </el-radio-group>
         </el-form-item>
       </template>
@@ -199,18 +203,16 @@ const matcherTypeOptions = computed(() => {
 
       <!-- threshold 类型参数 -->
       <template v-else-if="matcherType === 'threshold'">
-        <el-form-item label="指标字段">
-          <el-input v-model="matcher.metric" placeholder="日志可填，如 rx_missed_errors；普通命令可留空" />
-        </el-form-item>
+        <TextExtractEditor v-model="matcher.extract" value-mode />
         <el-form-item label="聚合方式">
           <el-select v-model="matcher.aggregation" style="width: 100%;">
-            <el-option label="首个数值" value="first_number" />
-            <el-option label="最后数值" value="last_number" />
-            <el-option label="最大值" value="max" />
-            <el-option label="最小值" value="min" />
-            <el-option label="求和" value="sum" />
-            <el-option label="非空行数" value="line_count" />
-            <el-option label="命令耗时秒" value="duration_seconds" />
+            <el-option label="首个取值" value="first_number" />
+            <el-option label="最后数值（最后一个样本）" value="last_number" />
+            <el-option label="最大值（所有样本）" value="max" />
+            <el-option label="最小值（所有样本）" value="min" />
+            <el-option label="求和（所有样本相加）" value="sum" />
+            <el-option label="非空行数（统计行数）" value="line_count" />
+            <el-option label="命令耗时秒（解析 real）" value="duration_seconds" />
           </el-select>
         </el-form-item>
         <el-form-item label="运算符">
@@ -235,7 +237,7 @@ const matcherTypeOptions = computed(() => {
       </template>
 
       <template v-else-if="matcherType === 'delta'">
-        <el-form-item label="指标字段"><el-input v-model="matcher.metric" placeholder="如 rx_missed_errors" /></el-form-item>
+        <TextExtractEditor v-model="matcher.extract" value-mode />
         <el-form-item label="运算符">
           <el-select v-model="matcher.operator" style="width: 100%;">
             <el-option v-for="opt in operatorOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
@@ -246,7 +248,7 @@ const matcherTypeOptions = computed(() => {
       </template>
 
       <template v-else-if="matcherType === 'trend'">
-        <el-form-item label="指标字段"><el-input v-model="matcher.metric" placeholder="如 rx_missed_errors" /></el-form-item>
+        <TextExtractEditor v-model="matcher.extract" value-mode />
         <el-form-item label="趋势方向">
           <el-select v-model="matcher.direction" style="width: 100%;">
             <el-option label="连续上升" value="increasing" />
@@ -288,13 +290,13 @@ const matcherTypeOptions = computed(() => {
       <el-form-item label="期望结果">
         <el-switch
           v-model="matcher.expected"
-          active-text="符合期望"
-          inactive-text="不符合期望"
+          active-text="应命中（命中支持本案例）"
+          inactive-text="不应命中（未命中支持本案例）"
           active-color="#f56c6c"
           inactive-color="#67c23a"
         />
         <div class="field-hint">
-          {{ matcher.expected ? '期望匹配成功 → 异常判定' : '期望匹配失败 → 健康判定' }}
+          {{ matcher.expected ? '采集结果命中上述条件时，这条证据成立。' : '采集结果未命中上述条件时，这条证据成立。' }}
         </div>
       </el-form-item>
     </el-form>

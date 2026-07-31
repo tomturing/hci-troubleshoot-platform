@@ -34,10 +34,15 @@ from shared.schemas.acquirer_args import validate_acquire_args
 from shared.schemas.capability_descriptor import capability_descriptor_document, get_capability_descriptor
 from shared.schemas.signal_output import sync_signal_requires
 from shared.schemas.signal_schema import (
+    certify_publishable_signals_json,
     validate_draft_signals_json,
     validate_publishable_signals_json,
 )
-from shared.schemas.verification_contract import expert_editor_issues, reconcile_verification_contract
+from shared.schemas.verification_contract import (
+    expert_editor_issues,
+    normalize_legacy_role_contract,
+    reconcile_verification_contract,
+)
 from shared.utils.acquisition_strategy import parse_strategy
 from sqlalchemy import select, text
 
@@ -67,10 +72,23 @@ def _load_signals_json(raw: Any) -> dict:
     """
     if isinstance(raw, str):
         try:
-            return json.loads(raw)
+            document = json.loads(raw)
         except json.JSONDecodeError:
             return {}
-    return raw or {}
+    else:
+        document = raw or {}
+    # 旧 UI 把 qfk_system.container=host 当成 Terminal Bridge 执行域。新契约
+    # 中 container 只表示 aCLI --container；host 的等价表达是省略该字段。读取
+    # 即归一，使专家下一次保存自然完成无损迁移，且旧 published 文档仍可消费。
+    if isinstance(document, dict):
+        for signal in document.get("signals") or []:
+            acquire = signal.get("acquire") if isinstance(signal, dict) else None
+            if not isinstance(acquire, dict) or acquire.get("tool") != "qfk_system":
+                continue
+            args = acquire.get("args")
+            if isinstance(args, dict) and args.get("container") == "host":
+                args.pop("container", None)
+    return document if isinstance(document, dict) else {}
 
 
 def _signals_for_response(raw: Any) -> dict:
@@ -79,7 +97,17 @@ def _signals_for_response(raw: Any) -> dict:
     直接返回标准化 v2 文档 ``{schema_version, signals:[...]}``，前端
     ``KbdReviewView.vue`` 已原生基于 v2 结构渲染/编辑（无适配层、零信息损失）。
     运行时仅存在 v2 单一版本，无 v1 扁平 list 与 to_legacy_signal 反向桥接。"""
-    return _load_signals_json(raw)
+    document = _load_signals_json(raw)
+    normalized, _ = normalize_legacy_role_contract(document)
+    return normalized
+
+
+def _prepare_expert_publish_signals(raw: Any) -> dict[str, Any]:
+    """规范化历史角色冲突，并用当前工具契约为 Expert 发布内容盖章。"""
+
+    normalized, _ = normalize_legacy_role_contract(_load_signals_json(raw))
+    canonical, _ = reconcile_verification_contract(normalized)
+    return certify_publishable_signals_json(canonical)
 
 
 def _humanize_signal_validation_error(error: jsonschema.ValidationError) -> dict[str, Any]:
@@ -970,7 +998,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                 detail=f"KBD 条目 {kbd_id} 缺少关键信号（signals_json 为空），请先调用 /extract-signals 抽取后再审核",
             )
         try:
-            validate_publishable_signals_json(_signals_doc)
+            _signals_doc = _prepare_expert_publish_signals(_signals_doc)
         except jsonschema.ValidationError as exc:
             raise HTTPException(
                 status_code=422,
@@ -1050,6 +1078,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                     review_note = COALESCE(:review_note, review_note),
                     content_raw = :content_raw,
                     category_id = :category_id,
+                    signals_json = CAST(:signals_json AS jsonb),
                     embedding = CAST(:embedding AS vector),
                     embedding_model = :embedding_model,
                     embedding_content_hash = :embedding_content_hash,
@@ -1068,6 +1097,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                 "review_note": body.review_note,
                 "content_raw": current_content_raw,
                 "category_id": effective_category_id,
+                "signals_json": json.dumps(_signals_doc, ensure_ascii=False),
                 "embedding": vector_str,
                 "embedding_model": _embedding_service.model_name,
                 "embedding_content_hash": embedding_content_hash,
@@ -1086,6 +1116,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                     review_note = COALESCE(:review_note, review_note),
                     content_raw = :content_raw,
                     category_id = :category_id,
+                    signals_json = CAST(:signals_json AS jsonb),
                     embedding = NULL,
                     embedding_model = NULL,
                     embedding_content_hash = NULL,
@@ -1104,6 +1135,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                 "review_note": body.review_note,
                 "content_raw": current_content_raw,
                 "category_id": effective_category_id,
+                "signals_json": json.dumps(_signals_doc, ensure_ascii=False),
                 "tsv_text": tsv_text,
             }
 
@@ -2357,9 +2389,10 @@ async def publish_kbd_maintenance_working(
             raise HTTPException(status_code=422, detail=f"{label}不能为空")
     signals_doc = _load_signals_json(payload.get("signals_json"))
     try:
-        validate_publishable_signals_json(signals_doc)
+        signals_doc = _prepare_expert_publish_signals(signals_doc)
     except jsonschema.ValidationError as exc:
         raise HTTPException(status_code=422, detail=f"关键信号不可发布：{exc.message}") from exc
+    payload["signals_json"] = signals_doc
     signals = signals_doc.get("signals") or []
     if not any(
         isinstance(signal, dict)
@@ -2839,7 +2872,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
                 detail=f"KBD 条目 {kbd_id} 缺少关键信号，禁止重新发布",
             )
         try:
-            validate_publishable_signals_json(_republish_doc)
+            _republish_doc = _prepare_expert_publish_signals(_republish_doc)
         except jsonschema.ValidationError as exc:
             raise HTTPException(
                 status_code=422,
@@ -2890,6 +2923,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
                     review_note = COALESCE(:review_note, review_note),
                     content_raw = :content_raw,
                     category_id = :category_id,
+                    signals_json = CAST(:signals_json AS jsonb),
                     embedding = CAST(:embedding AS vector),
                     embedding_model = :embedding_model,
                     embedding_content_hash = :embedding_content_hash,
@@ -2908,6 +2942,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
                 "review_note": body.review_note,
                 "content_raw": current_content_raw,
                 "category_id": effective_category_id,
+                "signals_json": json.dumps(_republish_doc, ensure_ascii=False),
                 "embedding": vector_str,
                 "embedding_model": _embedding_service.model_name,
                 "embedding_content_hash": embedding_content_hash,
@@ -2925,6 +2960,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
                     review_note = COALESCE(:review_note, review_note),
                     content_raw = :content_raw,
                     category_id = :category_id,
+                    signals_json = CAST(:signals_json AS jsonb),
                     embedding = NULL,
                     embedding_model = NULL,
                     embedding_content_hash = NULL,
@@ -2943,6 +2979,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
                 "review_note": body.review_note,
                 "content_raw": current_content_raw,
                 "category_id": effective_category_id,
+                "signals_json": json.dumps(_republish_doc, ensure_ascii=False),
                 "tsv_text": tsv_text,
             }
 

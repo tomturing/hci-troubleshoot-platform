@@ -93,8 +93,14 @@ def _execution_issues(
         or "是产出变量信号，必须配置 orchestrate.produces 且 match 必须为 null" in schema_issue
     ):
         issues.insert(0, f"signals_json 契约校验失败: {schema_issue}")
+    publish_validation = validation_document.get("publish_validation") or {}
     generation = validation_document.get("generation_metadata") or {}
-    if isinstance(generation, dict) and generation:
+    if isinstance(publish_validation, dict) and publish_validation:
+        if publish_validation.get("status") != "passed":
+            issues.append("专家发布校验状态无效，必须重新发布")
+        if publish_validation.get("tool_contract_revision") != current_tool_contract_revision():
+            issues.append("专家发布时使用的工具契约版本已过期，必须重新发布")
+    elif isinstance(generation, dict) and generation:
         if generation.get("status") == "stale":
             issues.append("Signal/Contract 生成输入已变化，必须重新抽取或完成人工复核")
         if generation.get("tool_contract_revision") != current_tool_contract_revision():
@@ -156,6 +162,7 @@ async def get_category_playbooks(
             raw_signal_doc = kbd.signals_json if isinstance(kbd.signals_json, dict) else {}
             verification_contract = raw_signal_doc.get("verification_contract") or {}
             generation_metadata = raw_signal_doc.get("generation_metadata") or {}
+            publish_validation = raw_signal_doc.get("publish_validation") or {}
             issues = _execution_issues(signals, raw_signal_doc)
             snapshot = await DynamicResourcePublisher(session).ensure_published(
                 **kbd_resource_payload(kbd), trace_id=trace_id
@@ -176,6 +183,7 @@ async def get_category_playbooks(
                     "signals": signals,
                     "verification_contract": verification_contract,
                     "generation_metadata": generation_metadata,
+                    "publish_validation": publish_validation,
                     "root_cause": kbd.root_cause,
                     "solution": kbd.solution,
                     "problem_description": kbd.problem_description,

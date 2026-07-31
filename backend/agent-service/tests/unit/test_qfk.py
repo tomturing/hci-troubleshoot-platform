@@ -202,6 +202,25 @@ class TestHandlerRegistryAndBuilders:
         with pytest.raises(CommandBuildError, match="非法服务容器"):
             handler.build_commands(sig)
 
+    def test_system_builder_compiles_real_acli_global_options_on_host_os(self):
+        sig = BackendSignal(
+            namespace="system",
+            command="df",
+            command_args=["/sf/log"],
+            container="asv-con",
+            cluster=True,
+            formatter="json",
+            timeout=120,
+        )
+        assert HandlerRegistry.get("system").build_commands(sig) == [
+            "acli --cluster --timeout 120 --formatter json --container asv-con system df /sf/log"
+        ]
+
+    def test_legacy_system_host_container_normalizes_to_no_acli_container(self):
+        sig = BackendSignal(namespace="system", command="ps", container="host")
+        assert sig.container is None
+        assert HandlerRegistry.get("system").build_commands(sig) == ["acli --timeout 30 system ps"]
+
     def test_generic_command_builder(self):
         sig = BackendSignal(namespace="vm", command="list")
         handler = HandlerRegistry.get("vm")
@@ -218,7 +237,7 @@ class TestHandlerRegistryAndBuilders:
         sig = BackendSignal(namespace="system", command="lsblk")
         handler = HandlerRegistry.get("system")
         cmds = handler.build_commands(sig)
-        assert cmds == ["acli system lsblk"]
+        assert cmds == ["acli --timeout 30 system lsblk"]
 
     def test_generic_command_missing_sub(self):
         sig = BackendSignal(namespace="vm")
@@ -327,6 +346,58 @@ def test_threshold_duration_ignores_numbers_in_storage_path():
     assert result.detail["value"] == 21.615
 
 
+def test_threshold_uses_shared_text_extract_for_df_use_percent():
+    from app.tools.qfk.matcher import evaluate_matcher
+
+    output = (
+        "Filesystem     1K-blocks     Used Available Use% Mounted on\n"
+        "/dev/sda5       20466388 10390792   9027020  54% /sf/log\n"
+    )
+    result = evaluate_matcher(
+        {
+            "type": "threshold",
+            "aggregation": "max",
+            "extract": {
+                "type": "text",
+                "include": ["/sf/log"],
+                "column_mode": "index",
+                "column": 5,
+                "cardinality": "all",
+                "value_mode": "number",
+            },
+            "operator": ">",
+            "value": 80,
+            "expected": True,
+        },
+        output,
+    )
+
+    assert result.detail["value"] == 54.0
+    assert result.matched is False
+    assert result.detail["extract"]["raw_values"] == ["54%"]
+
+
+def test_threshold_shared_extract_uses_max_when_any_mount_exceeds_limit():
+    from app.tools.qfk.matcher import evaluate_matcher
+
+    result = evaluate_matcher(
+        {
+            "type": "threshold",
+            "aggregation": "max",
+            "extract": {
+                "type": "text", "include": ["/sf/log"], "column_mode": "index",
+                "column": 5, "cardinality": "all", "value_mode": "number",
+            },
+            "operator": ">",
+            "value": 80,
+            "expected": True,
+        },
+        "tmpfs 20G 9.9G 8.7G 54% /sf/log\n/dev/sda5 20G 9.9G 8.7G 83% /sf/log\n",
+    )
+    assert result.detail["value"] == 83.0
+    assert result.matched is True
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # QFKResult 与 ReAct Observation 文本格式化测试
 # ─────────────────────────────────────────────────────────────────────────────
@@ -384,9 +455,9 @@ async def test_qfk_engine_expected_true_matched():
 
 
 @pytest.mark.asyncio
-async def test_qfk_system_host_and_timeout_are_forwarded_to_bridge():
-    """qfk_system 的 host 语义和超时必须透传到实际执行通道。"""
-    sig = BackendSignal(namespace="system", command="ps", container="host", timeout=12)
+async def test_qfk_system_acli_options_are_compiled_but_not_forwarded_to_bridge():
+    """qfk_system 的 aCLI 执行域属于命令文本，Bridge 不得进入容器。"""
+    sig = BackendSignal(namespace="system", command="ps", container="asv-con", timeout=12)
     mock_exec_res = ExecResult(
         stdout="process list",
         stderr="",
@@ -405,7 +476,8 @@ async def test_qfk_system_host_and_timeout_are_forwarded_to_bridge():
 
     assert result.error is None
     assert mock_executor.execute.await_args.kwargs["timeout"] == 12
-    assert mock_executor.execute.await_args.kwargs["args"]["container"] == "host"
+    assert mock_executor.execute.await_args.kwargs["args"]["container"] is None
+    assert mock_executor.execute.await_args.kwargs["args"]["command"] == "acli --timeout 12 --container asv-con system ps"
 
 
 @pytest.mark.asyncio

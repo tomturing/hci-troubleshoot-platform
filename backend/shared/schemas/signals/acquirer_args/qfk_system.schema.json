@@ -7,11 +7,33 @@
     },
     "command": {
       "type": "string",
-      "description": "acli system <command>（如 lsof/ps auxf/lsblk/iostat/smartctl）"
+      "description": "acli system 的子命令（如 lsof/ps/df/lsblk/iostat/smartctl）；不得含 acli 前缀或 shell 管道"
+    },
+    "command_args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "可选的结构化命令参数；逐项安全转义后追加到 acli system <command> 之后"
     },
     "host": {
       "type": "string",
       "description": "采集目标主机/作用域（如 {{HOST}}），特殊值 cluster 表示遍历集群"
+    },
+    "cluster": {
+      "type": "boolean",
+      "default": false,
+      "description": "是否添加 acli --cluster，在集群所有节点执行；不再使用 host=cluster 表达此语义"
+    },
+    "formatter": {
+      "type": "string",
+      "enum": [
+        "xml",
+        "csv",
+        "keyvalue",
+        "json"
+      ],
+      "description": "可选的 acli --formatter 输出格式，位于 system namespace 之前"
     },
     "resource_keyword": {
       "type": "string",
@@ -21,13 +43,11 @@
       "type": "string",
       "enum": [
         "asv-con",
-        "host",
         "vn-agent",
         "vn-con",
         "vs-cp-manager"
       ],
-      "default": "asv-con",
-      "description": "执行位置；host 表示直接在宿主机执行"
+      "description": "可选的 acli --container 执行域；不填写时由 aCLI 在 HOST-OS 默认执行，不会由 Terminal Bridge 进入容器"
     },
     "instruction": {
       "type": "string",

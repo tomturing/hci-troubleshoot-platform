@@ -60,8 +60,10 @@ SERVICE_DOMAIN_CATALOG: dict[str, dict[str, Any]] = {
 }
 # 当前版本 ``acli service --help`` 实际可执行的服务组。
 VALID_SERVICE_CONTAINERS = frozenset({"asv", "anet", "host"})
-# qfk_system 使用 terminal bridge 的受控执行位置；host 表示不进入容器。
-VALID_SYSTEM_CONTAINERS = frozenset({"host", "asv-con", "vn-con", "vn-agent", "vs-cp-manager"})
+# ``qfk_system.container`` 是 aCLI 的 ``--container`` 全局参数，而不是
+# Terminal Bridge 的 container_exec 参数。未填写表示由 aCLI 在 HOST-OS 默认执行；
+# ``host`` 因而不是一个合法的 --container 枚举值。
+VALID_SYSTEM_CONTAINERS = frozenset({"asv-con", "vn-con", "vn-agent", "vs-cp-manager"})
 _PLACEHOLDER_RE = re.compile(r"\{\{[A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*\}\}")
 
 
@@ -248,9 +250,24 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             "timeout": COMMON_ARGS["timeout"],
             "command": {
                 "type": "string",
-                "description": "acli system <command>（如 lsof/ps auxf/lsblk/iostat/smartctl）",
+                "description": "acli system 的子命令（如 lsof/ps/df/lsblk/iostat/smartctl）；不得含 acli 前缀或 shell 管道",
+            },
+            "command_args": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "可选的结构化命令参数；逐项安全转义后追加到 acli system <command> 之后",
             },
             "host": _TARGET_DIMENSIONS["host"],
+            "cluster": {
+                "type": "boolean",
+                "default": False,
+                "description": "是否添加 acli --cluster，在集群所有节点执行；不再使用 host=cluster 表达此语义",
+            },
+            "formatter": {
+                "type": "string",
+                "enum": ["xml", "csv", "keyvalue", "json"],
+                "description": "可选的 acli --formatter 输出格式，位于 system namespace 之前",
+            },
             "resource_keyword": {
                 "type": "string",
                 "description": "系统检查资源/主题选择器（可选，如镜像层路径 overlay2/docker）",
@@ -258,8 +275,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             "container": {
                 "type": "string",
                 "enum": sorted(VALID_SYSTEM_CONTAINERS),
-                "default": "asv-con",
-                "description": "执行位置；host 表示直接在宿主机执行",
+                "description": "可选的 acli --container 执行域；不填写时由 aCLI 在 HOST-OS 默认执行，不会由 Terminal Bridge 进入容器",
             },
         },
         "required": ["command"],

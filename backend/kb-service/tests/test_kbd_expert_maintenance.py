@@ -7,7 +7,12 @@ from app.models.kbd_revision import KbdRevision
 from app.routes import admin
 from app.routes.admin import KbdApproveRequest, KbdUpdateRequest, _patch_maintenance_payload
 from app.services.kbd_mutation_guard import PublishedKbdMutationError, require_mutable_kbd
-from shared.schemas.verification_contract import expert_editor_issues, reconcile_verification_contract
+from shared.schemas.signal_generation import current_tool_contract_revision
+from shared.schemas.verification_contract import (
+    expert_editor_issues,
+    normalize_legacy_role_contract,
+    reconcile_verification_contract,
+)
 
 
 class _SessionContext:
@@ -52,7 +57,10 @@ def _payload() -> dict:
                     "role": "must",
                     "acquire": {"tool": "qkv_task", "args": {"keyword": "虚拟机启动失败"}},
                     "match": None,
-                    "orchestrate": {"produces": [{"name": "HOST", "path": "host"}], "requires": []},
+                    "orchestrate": {
+                        "produces": [{"name": "HOST", "path": "host"}, {"name": "END", "path": "end"}],
+                        "requires": [],
+                    },
                     "provenance": {"category": "frontend"},
                 },
                 {
@@ -230,6 +238,34 @@ def test_reconcile_contract_moves_signal_when_expert_changes_role():
     assert policy["context"] == []
     assert canonical["verification_contract"]["scope"] == {"products": ["HCI"]}
     assert impact["after"] == {"must": 2, "should": 0, "exclude": 0, "context": 0}
+
+
+def test_legacy_role_contract_conflict_uses_existing_runtime_contract_on_read():
+    """KBD40061 类旧数据不能因编辑说明字段而把 should 静默改成 must。"""
+
+    document = {
+        "schema_version": 2,
+        "signals": [
+            {"id": "sig_001", "role": "must", "acquire": {"tool": "qkv_alert", "args": {}}},
+            {"id": "sig_002", "role": "must", "acquire": {"tool": "qkv_task", "args": {}}},
+        ],
+        "verification_contract": {
+            "schema_version": 1,
+            "evidence_policy": {
+                "must": ["sig_001"],
+                "should": ["sig_002"],
+                "minimum_should": 1,
+            },
+        },
+    }
+
+    normalized, impact = normalize_legacy_role_contract(document)
+
+    assert normalized["signals"][1]["role"] == "should"
+    assert normalized["verification_contract"]["evidence_policy"]["should"] == ["sig_002"]
+    assert normalized["verification_contract"]["evidence_policy"]["minimum_should"] == 1
+    assert impact == {"normalized_signal_ids": ["sig_002"], "count": 1}
+    assert document["signals"][1]["role"] == "must"
 
 
 @pytest.mark.asyncio
@@ -410,6 +446,10 @@ async def test_maintenance_publish_applies_payload_before_atomic_runtime_switch(
         assert kbd_id == 9
         assert entry.title == "已复核维护版"
         assert entry.working_revision_id == 23
+        validation = entry.signals_json["publish_validation"]
+        assert validation["status"] == "passed"
+        assert validation["tool_contract_revision"] == current_tool_contract_revision()
+        assert entry.signals_json["generation_metadata"]["tool_contract_revision"] == "3" * 64
         return {"revision": 8, "checksum": "d" * 64}
 
     async def freeze_approved_revision(*args, **kwargs):

@@ -84,6 +84,7 @@ class KBD(BaseModel):
     resource_revision: dict = Field(default_factory=dict)
     verification_contract: dict = Field(default_factory=dict)
     generation_metadata: dict = Field(default_factory=dict)
+    publish_validation: dict = Field(default_factory=dict)
 
 
 def kbd_from_dict(d: dict[str, Any]) -> KBD:
@@ -101,12 +102,15 @@ def kbd_from_dict(d: dict[str, Any]) -> KBD:
     if isinstance(signals, dict):
         verification_contract = signals.get("verification_contract") or verification_contract
         generation_metadata = signals.get("generation_metadata") or d.get("generation_metadata") or {}
+        publish_validation = signals.get("publish_validation") or d.get("publish_validation") or {}
         signals = signals.get("signals", [])
     elif not isinstance(signals, list):
         signals = []
         generation_metadata = d.get("generation_metadata") or {}
+        publish_validation = d.get("publish_validation") or {}
     else:
         generation_metadata = d.get("generation_metadata") or {}
+        publish_validation = d.get("publish_validation") or {}
     return KBD(
         id=d.get("id", ""),
         support_id=str(d.get("support_id", "") or ""),
@@ -120,4 +124,5 @@ def kbd_from_dict(d: dict[str, Any]) -> KBD:
         resource_revision=d.get("resource_revision") or {},
         verification_contract=verification_contract,
         generation_metadata=generation_metadata,
+        publish_validation=publish_validation,
     )

@@ -106,6 +106,7 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
             },
             "verification_contract": {"$ref": "#/definitions/verificationContract"},
             "generation_metadata": {"$ref": "#/definitions/generationMetadata"},
+            "publish_validation": {"$ref": "#/definitions/publishValidation"},
         },
         "definitions": {
             "rejectedCandidate": {
@@ -178,6 +179,9 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                         ],
                         "default": "first_number",
                     },
+                    # 与 produces[].extract 引用同一份 textExtract；用于先安全地
+                    # 做“筛选行 + 第 N 列”取值，再聚合并判断，不执行自由 grep/awk。
+                    "extract": {"$ref": "#/definitions/textExtract"},
                     "metric": {"type": "string", "minLength": 1},
                     "minimum_samples": {"type": "integer", "minimum": 2, "maximum": 10000},
                     "direction": {"type": "string", "enum": ["increasing", "decreasing", "stable"]},
@@ -284,6 +288,11 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                         "enum": ["stdout", "stderr"],
                         "default": "stdout",
                     },
+                    "value_mode": {
+                        "type": "string",
+                        "enum": ["string", "integer", "number", "boolean", "array"],
+                        "description": "提取后的确定性类型；number 支持 54%/21.5ms 等常见单位后缀",
+                    },
                 },
                 "allOf": [
                     {
@@ -365,6 +374,17 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                             "on_missing_must": {"type": "string", "const": "inconclusive"},
                         },
                     },
+                },
+            },
+            "publishValidation": {
+                "type": "object",
+                "required": ["schema_version", "status", "tool_contract_revision", "validator"],
+                "additionalProperties": False,
+                "properties": {
+                    "schema_version": {"type": "integer", "const": 1},
+                    "status": {"type": "string", "const": "passed"},
+                    "tool_contract_revision": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                    "validator": {"type": "string", "const": "expert_publish_gate"},
                 },
             },
             "generationMetadata": {

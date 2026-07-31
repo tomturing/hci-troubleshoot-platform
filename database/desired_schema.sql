@@ -1063,7 +1063,7 @@ COMMENT ON COLUMN kbd_entry.solution IS '解决方案（8 大章节之一，pipe
 COMMENT ON COLUMN kbd_entry.operational_impact IS '操作影响范围（8 大章节之一，admin 可编辑）';
 COMMENT ON COLUMN kbd_entry.is_temporary IS '是否是临时解决方案（8 大章节之一，admin 可编辑）';
 COMMENT ON COLUMN kbd_entry.recommendations IS '建议与总结（8 大章节之一，admin 可编辑）';
-COMMENT ON COLUMN kbd_entry.signals_json IS '关键信号集合（producer/consumer 信号，agent 执行与判定；默认[]，抽取阶段/审核期填充，占位符 {{VAR}} 大写）；非空时 kbd_entry 才对 InvestigationAgent 可见';
+COMMENT ON COLUMN kbd_entry.signals_json IS 'KBD Signal v2 文档：producer/consumer、verification_contract、不可变 generation_metadata，以及 Expert 显式发布时写入的 publish_validation；占位符 {{VAR}} 大写。非空仅表示有信号，是否可执行仍由当前发布盖章与 Agent 编译共同判定';
 COMMENT ON COLUMN kbd_entry.images_json IS '图片视觉描述（pipeline Vision LLM 生成）；格式：[{"seq": N, "section": "field_name", "desc": "..."}]；章节字段中以 ![img:N] 标记位置，rebuild_content_md() 展开为 > **【截图说明】** 块；独立存储确保 admin 编辑章节字段后视觉信息不丢失';
 COMMENT ON COLUMN kbd_entry.content_md IS '聚合渲染 Markdown（含截图视觉描述）；由 pipeline 生成或 rebuild_content_md() 从章节字段+images_json 重建；供 LLM 上下文注入；embedding 不使用此字段（使用问题侧字段 title+problem_description+alert_info+root_cause）';
 COMMENT ON COLUMN kbd_entry.content_raw IS '纯文本内容（剔除 Markdown 格式标记和图片占位符），专供 LLM 和 RAG 检索/Embedding 使用';

@@ -17,7 +17,7 @@ from app.adapters.agents.htp.cdd import (
 )
 from app.adapters.agents.htp.cdd.candidate_reducer import initial_assessments, reduce_candidates
 from app.adapters.agents.htp.kbd_model import KBD
-from shared.schemas.signal_generation import build_signal_generation_metadata
+from shared.schemas.signal_generation import build_signal_generation_metadata, current_tool_contract_revision
 
 
 def signal(
@@ -420,6 +420,27 @@ def test_compiler_rejects_stale_generation_or_tool_contract_revision():
 
     assert "generation metadata is stale" in " ".join(stale.compile_errors[candidate.id])
     assert "tool contract revision is stale" in " ".join(stale.compile_errors[candidate.id])
+
+
+def test_compiler_accepts_current_expert_publish_stamp_without_overwriting_generation_origin():
+    candidate = _contract_kbd()
+    candidate.generation_metadata = build_signal_generation_metadata(
+        source={"case": "37150"},
+        prompt_template="prompt-v1",
+        model_id="model-v1",
+    )
+    candidate.generation_metadata["tool_contract_revision"] = "0" * 64
+    candidate.publish_validation = {
+        "schema_version": 1,
+        "status": "passed",
+        "tool_contract_revision": current_tool_contract_revision(),
+        "validator": "expert_publish_gate",
+    }
+
+    plan = compile_signal_plan([candidate])
+
+    assert candidate.id not in plan.compile_errors
+    assert candidate.generation_metadata["tool_contract_revision"] == "0" * 64
 
 
 def test_scope_mismatch_rejects_without_becoming_signal_contradiction():

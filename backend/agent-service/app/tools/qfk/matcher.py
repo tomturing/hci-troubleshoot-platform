@@ -30,6 +30,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.tools.qfk.extractor import QFKExtractionError, extract_output_values
+
 # mode 归一化：向后兼容旧 any/all 词表
 _MODE_ALIASES = {"any": "or", "all": "and"}
 
@@ -169,7 +171,13 @@ def evaluate_matcher(
 
     if mtype == "threshold":
         aggregation = str(matcher.get("aggregation") or "first_number")
-        values = _extract_metric_numbers(text, matcher.get("metric"))
+        values, extraction_detail, extraction_error = _extract_match_values(text, matcher)
+        if extraction_error:
+            return MatcherResult(
+                matched=None,
+                detail={"error": extraction_error, **extraction_detail},
+                evidence=f"【Matcher 求值 (threshold)】文本取值失败: {extraction_error}",
+            )
         if aggregation == "line_count":
             val = float(sum(1 for line in (text or "").splitlines() if line.strip()))
         elif aggregation == "duration_seconds":
@@ -205,6 +213,7 @@ def evaluate_matcher(
                 "operator": op,
                 "aggregation": aggregation,
                 "metric": matcher.get("metric"),
+                **extraction_detail,
             },
             evidence=(
                 f"【Matcher 求值 (threshold/{aggregation})】\n提取数值: {val} {op} {target}\n"
@@ -213,11 +222,17 @@ def evaluate_matcher(
         )
 
     if mtype == "delta":
-        values = _extract_metric_numbers(text, matcher.get("metric"))
+        values, extraction_detail, extraction_error = _extract_match_values(text, matcher)
+        if extraction_error:
+            return MatcherResult(
+                matched=None,
+                detail={"error": extraction_error, **extraction_detail},
+                evidence=f"【Matcher 求值 (delta)】文本取值失败: {extraction_error}",
+            )
         if len(values) < int(matcher.get("minimum_samples") or 2):
             return MatcherResult(
                 matched=None,
-                detail={"sample_count": len(values), "error": "insufficient_samples"},
+                detail={"sample_count": len(values), "error": "insufficient_samples", **extraction_detail},
                 evidence=f"【Matcher 求值 (delta)】样本不足: {len(values)}",
             )
         delta = values[-1] - values[0]
@@ -242,6 +257,7 @@ def evaluate_matcher(
                 "operator": op,
                 "target": target,
                 "metric": matcher.get("metric"),
+                **extraction_detail,
             },
             evidence=(
                 f"【Matcher 求值 (delta)】\nmetric: {matcher.get('metric') or '(all)'}\n"
@@ -251,12 +267,18 @@ def evaluate_matcher(
         )
 
     if mtype == "trend":
-        values = _extract_metric_numbers(text, matcher.get("metric"))
+        values, extraction_detail, extraction_error = _extract_match_values(text, matcher)
+        if extraction_error:
+            return MatcherResult(
+                matched=None,
+                detail={"error": extraction_error, **extraction_detail},
+                evidence=f"【Matcher 求值 (trend)】文本取值失败: {extraction_error}",
+            )
         minimum_samples = int(matcher.get("minimum_samples") or 3)
         if len(values) < minimum_samples:
             return MatcherResult(
                 matched=None,
-                detail={"sample_count": len(values), "error": "insufficient_samples"},
+                detail={"sample_count": len(values), "error": "insufficient_samples", **extraction_detail},
                 evidence=f"【Matcher 求值 (trend)】样本不足: {len(values)} < {minimum_samples}",
             )
         direction = str(matcher.get("direction") or "increasing")
@@ -279,6 +301,7 @@ def evaluate_matcher(
                 "minimum_step": min_step,
                 "sample_count": len(values),
                 "metric": matcher.get("metric"),
+                **extraction_detail,
             },
             evidence=(
                 f"【Matcher 求值 (trend)】\nmetric: {matcher.get('metric') or '(all)'}\n"
@@ -334,6 +357,38 @@ def evaluate_matcher(
 # ─────────────────────────────────────────────────────────────────────────────
 # 内部工具函数（原 kbd_differential 的静态方法，现为单一真相源一部分）
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def _extract_match_values(
+    text: str,
+    matcher: dict[str, Any],
+) -> tuple[list[float], dict[str, Any], str | None]:
+    """用 Produces 与 Matcher 共用的提取器生成数值样本。
+
+    未配置 ``match.extract`` 的历史 Matcher 保持既有 metric/全局数字逻辑；新
+    Matcher 一旦配置 extract，绝不再猜测文本中的第一个数字。错误返回给上层作为
+    UNKNOWN，避免把“无法精确取值”误判为阈值未命中。
+    """
+
+    extract = matcher.get("extract")
+    if not isinstance(extract, dict):
+        return _extract_metric_numbers(text, matcher.get("metric")), {}, None
+    try:
+        result = extract_output_values(text, extract, "number")
+    except QFKExtractionError as exc:
+        return [], {}, str(exc)
+    try:
+        values = [float(value) for value in result.values]
+    except (TypeError, ValueError):
+        return [], {}, "QFK_TYPE_CAST_FAILED: 文本取值结果不是数值"
+    return values, {
+        "extract": {
+            "matched_lines": result.matched_lines,
+            "selected_lines": result.selected_lines,
+            "raw_values": result.raw_values,
+            "values": values,
+        }
+    }, None
 
 
 def _extract_number(text: str) -> float | None:

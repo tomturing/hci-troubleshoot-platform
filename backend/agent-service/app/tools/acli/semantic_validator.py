@@ -117,8 +117,8 @@ def _strip_global_options(tokens: list[str]) -> list[str]:
     """去除 aCLI 全局参数，返回命令路径 token。"""
     result: list[str] = []
     i = 0
-    value_options = {"--formatter", "--cluster", "--timeout", "--container"}
-    bool_options = {"--debug", "--force", "--version", "--help", "-?", "-h"}
+    value_options = {"--formatter", "--timeout", "--container"}
+    bool_options = {"--cluster", "--debug", "--force", "--version", "--help", "-?", "-h"}
     while i < len(tokens):
         token = tokens[i]
         if token in value_options:

@@ -241,7 +241,13 @@ def compile_signal_plan(
         revision = str((kbd.resource_revision or {}).get("revision") or "0")
         verification_policy = verification_policies[kbd.id]
         generation = kbd.generation_metadata or {}
-        if kbd.verification_contract and generation:
+        publish_validation = kbd.publish_validation or {}
+        if kbd.verification_contract and publish_validation:
+            if publish_validation.get("status") != "passed":
+                errors.setdefault(kbd.id, []).append("expert publish validation status is invalid")
+            if publish_validation.get("tool_contract_revision") != current_tool_contract_revision():
+                errors.setdefault(kbd.id, []).append("expert publish tool contract revision is stale")
+        elif kbd.verification_contract and generation:
             if generation.get("status") == "stale":
                 errors.setdefault(kbd.id, []).append("signal generation metadata is stale")
             if generation.get("tool_contract_revision") != current_tool_contract_revision():

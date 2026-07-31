@@ -100,6 +100,11 @@ def test_acli_exec_catalog_accepts_supported_command_with_global_option():
     assert result.ok
 
 
+def test_acli_exec_catalog_treats_cluster_as_boolean_global_option():
+    result = _validate("acli_exec", {"command": "acli --cluster --container asv-con system df /sf/log", "reason": "检查日志盘"})
+    assert result.ok
+
+
 def test_acli_exec_catalog_unknown_command_requires_confirmation_by_default():
     result = _validate("acli_exec", {"command": "acli storage disk list", "reason": "检查磁盘"})
     assert result.ok

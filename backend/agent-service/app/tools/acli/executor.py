@@ -508,8 +508,9 @@ class BridgeRelayExecutor:
                     original_command=original_command,
                 )
 
-        # acli_exec 通常不带容器；qfk_system 是例外，它把 container 原样传给 terminal_bridge。
-        relay_container = built.container if built else (str(args.get("container") or "") or None)
+        # Bridge 容器只属于 bash_exec/container_exec 语义。aCLI 的 --container 是
+        # 命令文本的一部分，必须在 HOST-OS 上原样执行，不能再传给 Bridge。
+        relay_container = built.container if built else None
 
         # 3. 风险分类（动态工具）
         if tool_name in ("acli_exec", "bash_exec"):
