@@ -38,6 +38,64 @@ JACCARD_THRESHOLD = 0.6
 HISTORY_LIMIT = 10
 
 
+def _with_scope_context(
+    context_info: dict[str, Any] | None,
+    *,
+    category_id: str | None,
+) -> dict[str, Any] | None:
+    """补齐 CDD Scope Gate 所需的、可审计的标准环境维度。
+
+    Case service 的环境接口以 ``env_info`` 承载集群数据，CDD 则消费顶层的
+    ``product/version/components/topology``。这不是推断性数据转换：产品和版本
+    来自采集到的集群信息；组件只使用已经由 KB 目录校验并由用户确认的 S0 分类
+    一级域。没有这些权威来源时保留缺失，继续让 Scope Gate fail closed。
+    """
+    if context_info is None:
+        return None
+
+    enriched = dict(context_info)
+    env_info = enriched.get("env_info")
+    env_info = env_info if isinstance(env_info, dict) else {}
+
+    def _non_empty(value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text if text and text != "未知" else None
+
+    if not _non_empty(enriched.get("product")):
+        product = _non_empty(env_info.get("product")) or _non_empty(env_info.get("platform"))
+        # `hci_version` 是 acli platform info get 的受控字段，存在即说明当前
+        # 环境是 HCI；不能以集群名称或自由文本反推出产品类型。
+        if product is None and _non_empty(env_info.get("hci_version")):
+            product = "HCI"
+        if product is not None:
+            enriched["product"] = product
+
+    if not _non_empty(enriched.get("version")):
+        version = _non_empty(env_info.get("version")) or _non_empty(env_info.get("hci_version"))
+        if version is not None:
+            enriched["version"] = version
+
+    component = category_id.split("-", 1)[0].strip() if category_id else ""
+    configured_components = enriched.get("components", env_info.get("components"))
+    if isinstance(configured_components, (list, tuple, set)):
+        components = [str(item).strip() for item in configured_components if str(item).strip()]
+    elif _non_empty(configured_components):
+        components = [str(configured_components).strip()]
+    else:
+        components = []
+    if component and component not in components:
+        components.append(component)
+    if components:
+        enriched["components"] = components
+
+    if "topology" not in enriched and isinstance(env_info.get("topology"), (list, tuple, set)):
+        enriched["topology"] = list(env_info["topology"])
+
+    return enriched
+
+
 def _build_remote_trace_context(trace_id_hex: str):
     """根据会话 trace_id 构造合法的远端父上下文。
 
@@ -396,6 +454,11 @@ class ConversationService:
                             alert_count=len(env_context.alert_logs),
                             task_count=len(env_context.task_logs),
                         )
+
+            context_info = _with_scope_context(
+                context_info,
+                category_id=_confirmed_category_code,
+            )
 
             # 3. 获取历史上下文 (最近 20 条)
             # 注意：必须使用独立 session，避免请求作用域 session 在流式传输期间长期持有事务锁
