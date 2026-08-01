@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-04-06
+last_updated: 2026-08-01
 owner: team
 ---
 
@@ -22,6 +22,7 @@ owner: team
 | 2026-03-28-Task04-知识原子数据库设计与迁移.md | 2026-03-28 | 知识原子数据库设计与迁移实现 |
 | 2026-03-28-Task05-DocxExtractor-将docx手册转为知识原子.md | 2026-03-28 | Docx 提取器，将手册转为知识原子 |
 | 2026-03-28-Task06-KBService知识原子检索API扩展.md | 2026-03-28 | KB Service 知识原子检索 API 扩展 |
+| 2026-08-01-KBD截图Evidence-v3展示与专家确认边界任务.md | 2026-08-01 | Evidence v3 管理台展示、单图确认范围与验证任务 |
 
 ---
 
@@ -32,4 +33,4 @@ owner: team
 
 ---
 
-*更新日期: 2026-04-06*
+*更新日期: 2026-08-01*

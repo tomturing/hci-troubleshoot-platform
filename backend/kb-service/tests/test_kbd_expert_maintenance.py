@@ -147,6 +147,37 @@ def test_maintenance_patch_updates_image_evidence_without_touching_active_entry(
     assert patched["signals_json"]["generation_metadata"]["status"] == "stale"
 
 
+def test_maintenance_patch_only_confirms_explicitly_reviewed_image():
+    original = _payload()
+    untouched_image = original["images_json"][0]
+    reviewed_image = {
+        **untouched_image,
+        "seq": 1,
+        "desc": untouched_image["desc"].replace("启动失败", "镜像忙"),
+        "evidence": {
+            "quality": {
+                "status": "success",
+                "inference_status": "unverified",
+                "inference_needs_review": True,
+            },
+            "provenance": {"image_sha256": "def"},
+        },
+    }
+
+    patched = _patch_maintenance_payload(
+        original,
+        KbdUpdateRequest(
+            images_json=[untouched_image, reviewed_image],
+            reviewed_image_seqs=[1],
+        ),
+    )
+
+    assert patched["images_json"][0]["evidence"]["quality"] == {"status": "success"}
+    assert patched["images_json"][0]["evidence"]["provenance"] == {"image_sha256": "abc"}
+    assert patched["images_json"][1]["evidence"]["quality"]["inference_status"] == "expert_confirmed"
+    assert patched["images_json"][1]["evidence"]["provenance"]["expert_edited"] is True
+
+
 def test_maintenance_signal_edit_is_validated_and_marked_manual_reviewed():
     original = _payload()
     signals = original["signals_json"] | {

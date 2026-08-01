@@ -164,11 +164,11 @@ interface ScreenshotFields {
    *   告警/任务/弹框/配置截图 → FULL_TEXT 前 N 行（最新内容在最前）
    */
   visibleContent: string[]
-  /** 类型相关关键内容（KEY 字段）：终端→命令返回；日志→错误日志；告警→重要告警；任务→失败任务 */
+  /** 历史 v2 类型相关关键内容（KEY 字段）；Evidence v3 不再生成 */
   key: string[]
-  /** 排障建议（TIPS 字段） */
+  /** 历史 v2 排障建议（TIPS 字段）；Evidence v3 不再生成 */
   tips: string[]
-  /** 语义描述（DESCRIPTION 字段，v3 格式）：Vision LLM 生成的图片语义摘要，供 RAG 召回 */
+  /** 语义描述（DESCRIPTION 字段）：是否可信由 images_json Evidence quality 决定 */
   description: string
   // ── v1 兼容字段（旧格式 0-4 字段，新条目不再写入）────────────────────────
   intro: string
@@ -190,6 +190,8 @@ interface ScreenshotSegment {
   fields: ScreenshotFields
   expanded: boolean
   seq?: number
+  /** 与 images_json 权威 Evidence 的关联；同一图片允许在正文中被多次引用 */
+  evidence?: ParsedImageJson
 }
 
 type ContentSegment = NormalSegment | ScreenshotSegment
@@ -931,7 +933,7 @@ function sigRoleLabel(sig: SignalV2): string {
   return ({ must: '必要证据（必须满足）', should: '增强证据（按门槛满足）', exclude: '排除证据（出现即排除）', context: '上下文证据（执行但不参与结论）' } as Record<string, string>)[sig.role || ''] || '未分配'
 }
 function qualityTagType(status: string): 'success' | 'warning' | 'danger' | 'info' {
-  if (status === 'success') return 'success'
+  if (['success', 'manual_reviewed'].includes(status)) return 'success'
   if (status === 'failed') return 'danger'
   if (['partial', 'low_quality', 'needs_review'].includes(status)) return 'warning'
   return 'info'
@@ -2015,15 +2017,15 @@ function parseContentMd(md: string): ContentSegment[] {
   return segments
 }
 
-/** 匹配并关联文档段落中的截图与 parsedImagesJson 中的 seq 序号 */
+/** 匹配并关联文档段落中的截图与 images_json 权威 Evidence。 */
 function associateSegmentsWithSeq(segments: ContentSegment[], images: ParsedImageJson[]) {
+  // fallback 仍按出现顺序分配，但精确内容匹配允许同一图片在不同章节重复引用。
+  // 不能把 matchedIndices 应用于精确匹配，否则 KBD27123 这类重复 img_0 会被错配到 img_1。
   const matchedIndices = new Set<number>()
   segments.forEach(seg => {
     if (seg.type === 'screenshot') {
       // 优先匹配内容（DESCRIPTION / visibleContent）
-      let matchIdx = images.findIndex((img, idx) => {
-        if (matchedIndices.has(idx)) return false
-
+      let matchIdx = images.findIndex((img) => {
         // 比较 DESCRIPTION
         if (seg.fields.description && img.description && img.description !== '（无描述）' && img.description !== '(无描述)') {
           return seg.fields.description === img.description
@@ -2045,9 +2047,26 @@ function associateSegmentsWithSeq(segments: ContentSegment[], images: ParsedImag
       if (matchIdx !== -1) {
         matchedIndices.add(matchIdx)
         seg.seq = images[matchIdx].seq
+        seg.evidence = images[matchIdx]
       }
     }
   })
+}
+
+function hasImageDescription(image: ParsedImageJson): boolean {
+  const description = image.description.trim()
+  return Boolean(description && description !== '（无描述）' && description !== '(无描述)')
+}
+
+function isExpertConfirmed(image: ParsedImageJson): boolean {
+  return image.inferenceStatus === 'expert_confirmed' && !image.inferenceNeedsReview
+}
+
+function inferenceStatusLabel(image: ParsedImageJson): string {
+  if (isExpertConfirmed(image)) return '专家已确认'
+  if (image.inferenceStatus === 'needs_review') return '需专家复核'
+  if (image.inferenceStatus === 'not_present') return '无语义推断'
+  return '模型推断 · 待确认'
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -2175,6 +2194,10 @@ function parseImagesJson(images: ImageJsonItem[]): ParsedImageJson[] {
     )
     const quality = (evidence.quality || {}) as Record<string, any>
 
+    const inferenceNeedsReview = typeof quality.inference_needs_review === 'boolean'
+      ? quality.inference_needs_review
+      : inferences.length > 0
+
     return {
       seq: img.seq,
       section: img.section,
@@ -2190,7 +2213,7 @@ function parseImagesJson(images: ImageJsonItem[]): ParsedImageJson[] {
       qualityStatus: String(quality.status || (desc ? 'legacy' : 'failed')),
       needsReview: Boolean(quality.needs_review || !img.evidence),
       inferenceStatus: String(quality.inference_status || (inferences.length ? 'legacy_unverified' : 'not_present')),
-      inferenceNeedsReview: Boolean(quality.inference_needs_review || inferences.length),
+      inferenceNeedsReview,
       inferenceIssues: Array.isArray(quality.inference_issues)
         ? quality.inference_issues.map((item: unknown) => String(item))
         : [],
@@ -2272,7 +2295,11 @@ async function saveImageEdit() {
     const resp = await fetch(kbdEditEndpoint(detailEntry.value), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', ...authHeader },
-      body: JSON.stringify({ images_json: images, lock_version: detailEntry.value.lock_version }),
+      body: JSON.stringify({
+        images_json: images,
+        reviewed_image_seqs: [draft.seq],
+        lock_version: detailEntry.value.lock_version,
+      }),
     })
     const body = await resp.json().catch(() => ({}))
     if (!resp.ok) throw new Error(typeof body.detail === 'string' ? body.detail : body.detail?.message || `HTTP ${resp.status}`)
@@ -2286,7 +2313,7 @@ async function saveImageEdit() {
     cancelEditImage()
     void fetchRevisionState(detailEntry.value.id)
     void validateCurrentCandidate({ silent: true })
-    ElMessage.success('截图识别内容已按专家修订保存')
+    ElMessage.success('截图 Evidence 已按专家确认保存；既有关键信号已标记为过期，请重新抽取并复核')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '截图修订保存失败')
   } finally {
@@ -3192,23 +3219,59 @@ onMounted(() => {
                     </ul>
                     <span v-else class="ss-empty">无</span>
                   </div>
-                  <!-- 2. 语义描述（v3 DESCRIPTION）或类型关键内容（v2 KEY）-->
-                  <div class="ss-field">
-                    <div class="ss-field-label">2. <strong>{{ seg.fields.description ? '语义描述' : seg.errorLabel }}</strong></div>
-                    <p v-if="seg.fields.description" class="ss-description">{{ seg.fields.description }}</p>
-                    <ul v-else-if="seg.fields.key.length" class="ss-field-list">
-                      <li v-for="(item, j) in seg.fields.key" :key="j">{{ item }}</li>
-                    </ul>
-                    <span v-else class="ss-empty">无</span>
-                  </div>
-                  <!-- 3. 排障建议（v2 TIPS，v3 无此字段时隐藏）-->
-                  <div v-if="!seg.fields.description || seg.fields.tips.length" class="ss-field">
-                    <div class="ss-field-label">3. <strong>排障建议</strong></div>
-                    <ul v-if="seg.fields.tips.length" class="ss-field-list">
-                      <li v-for="(item, j) in seg.fields.tips" :key="j">{{ item }}</li>
-                    </ul>
-                    <span v-else class="ss-empty">无</span>
-                  </div>
+                  <!-- Evidence v3：权威事实与模型推断分栏。未确认推断只供管理端复核。 -->
+                  <template v-if="seg.evidence">
+                    <div class="ss-field">
+                      <div class="ss-field-label evidence-label-row">
+                        <span>2. <strong>Observed Facts（可作为关键信号事实）</strong></span>
+                        <el-tag size="small" type="success" effect="plain">直接观察</el-tag>
+                      </div>
+                      <ul v-if="seg.evidence.observedFacts.length" class="ss-field-list evidence-facts">
+                        <li v-for="(fact, j) in seg.evidence.observedFacts" :key="`fact-${j}`">{{ fact }}</li>
+                      </ul>
+                      <span v-else class="ss-empty">未生成独立 Observed Facts；关键信号仍可使用上方 FULL_TEXT/OCR 原文</span>
+                    </div>
+                    <div
+                      v-if="hasImageDescription(seg.evidence) || seg.evidence.inferences.length"
+                      class="ss-field evidence-inferences"
+                    >
+                      <div class="ss-field-label evidence-label-row">
+                        <span>3. <strong>语义描述</strong></span>
+                        <el-tag
+                          size="small"
+                          :type="isExpertConfirmed(seg.evidence) ? 'success' : 'warning'"
+                          effect="plain"
+                        >
+                          {{ inferenceStatusLabel(seg.evidence) }}
+                        </el-tag>
+                      </div>
+                      <p v-if="hasImageDescription(seg.evidence)" class="ss-description">
+                        {{ seg.evidence.description }}
+                      </p>
+                      <ul v-else class="ss-field-list">
+                        <li v-for="(inference, j) in seg.evidence.inferences" :key="`inference-${j}`">{{ inference }}</li>
+                      </ul>
+                      <div v-if="!isExpertConfirmed(seg.evidence)" class="evidence-boundary-note">
+                        仅供专家复核；不会进入 Agent 文档，也不会参与关键信号运行参数生成。
+                      </div>
+                    </div>
+                  </template>
+                  <!-- 历史 v2：只有源数据确实包含 KEY/TIPS 时才展示，不再制造“无”字段。 -->
+                  <template v-else>
+                    <div v-if="seg.fields.description || seg.fields.key.length" class="ss-field">
+                      <div class="ss-field-label">2. <strong>{{ seg.fields.description ? '语义描述' : seg.errorLabel }}</strong></div>
+                      <p v-if="seg.fields.description" class="ss-description">{{ seg.fields.description }}</p>
+                      <ul v-else class="ss-field-list">
+                        <li v-for="(item, j) in seg.fields.key" :key="j">{{ item }}</li>
+                      </ul>
+                    </div>
+                    <div v-if="seg.fields.tips.length" class="ss-field">
+                      <div class="ss-field-label">3. <strong>排障建议</strong></div>
+                      <ul class="ss-field-list">
+                        <li v-for="(item, j) in seg.fields.tips" :key="j">{{ item }}</li>
+                      </ul>
+                    </div>
+                  </template>
                 </div>
               </div>
             </template>
@@ -3239,8 +3302,13 @@ onMounted(() => {
                   <el-tag :type="qualityTagType(img.qualityStatus)" size="small" effect="plain">
                     {{ img.qualityStatus }}<template v-if="img.needsReview"> · 需复核</template>
                   </el-tag>
-                  <el-tag v-if="img.inferenceNeedsReview" type="warning" size="small" effect="plain">
-                    语义推断 {{ img.inferenceStatus }}
+                  <el-tag
+                    v-if="hasImageDescription(img) || img.inferences.length"
+                    :type="isExpertConfirmed(img) ? 'success' : 'warning'"
+                    size="small"
+                    effect="plain"
+                  >
+                    {{ inferenceStatusLabel(img) }}
                   </el-tag>
                   <el-button
                     v-if="editingImageSeq !== img.seq"
@@ -3251,7 +3319,7 @@ onMounted(() => {
                   >编辑识图内容</el-button>
                   <template v-else>
                     <el-button size="small" @click.stop="cancelEditImage">取消</el-button>
-                    <el-button type="primary" size="small" :loading="imageSaveLoading" @click.stop="saveImageEdit">保存修订</el-button>
+                    <el-button type="primary" size="small" :loading="imageSaveLoading" @click.stop="saveImageEdit">确认并保存修订</el-button>
                   </template>
                   <el-button
                     v-if="detailEntry.status !== 'published'"
@@ -3307,7 +3375,12 @@ onMounted(() => {
                       <label>语义描述</label>
                       <el-input v-model="imageEditDraft.description" type="textarea" :rows="4" placeholder="这张截图对排障的含义" />
                     </div>
-                    <el-alert type="info" :closable="false" show-icon title="保存后以专家修订作为有效 Evidence；模型原稿仍保留在 Revision 历史中用于对比评估。" />
+                    <el-alert
+                      type="info"
+                      :closable="false"
+                      show-icon
+                      title="确认并保存后，该截图语义标记为 expert_confirmed，并进入当前工作稿的 Agent 文档；既有关键信号会标记为 stale，需重新抽取并复核。模型原稿仍保留在 Revision 历史中。"
+                    />
                   </template>
                   <template v-else>
                   <!-- 1. 背景颜色 -->
@@ -3356,8 +3429,13 @@ onMounted(() => {
                   <div class="ss-field evidence-inferences">
                     <div class="ss-field-label">
                       Inferences（模型推测，不得独立生成运行参数）
-                      <el-tag v-if="img.inferenceNeedsReview" type="warning" size="small" effect="plain">
-                        {{ img.inferenceStatus }}
+                      <el-tag
+                        v-if="img.inferences.length"
+                        :type="isExpertConfirmed(img) ? 'success' : 'warning'"
+                        size="small"
+                        effect="plain"
+                      >
+                        {{ inferenceStatusLabel(img) }}
                       </el-tag>
                     </div>
                     <ul v-if="img.inferences.length" class="ss-field-list">
@@ -3970,6 +4048,12 @@ onMounted(() => {
   color: #303133;
   margin-bottom: 4px;
 }
+.evidence-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
 
 .ss-field-list {
   margin: 0 0 0 20px;
@@ -4000,6 +4084,12 @@ onMounted(() => {
   border: 1px solid #f3d19e;
   border-radius: 4px;
   background: #fdf6ec;
+}
+.evidence-boundary-note {
+  margin-top: 6px;
+  color: #b88230;
+  font-size: 12px;
+  line-height: 1.6;
 }
 .evidence-provenance code {
   font-size: 11px;
