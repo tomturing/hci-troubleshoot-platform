@@ -17,12 +17,12 @@ import io
 import json
 import re
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import jsonschema
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictInt
 from shared.dynamic_resource.adapters import kbd_resource_payload, sop_resource_payload
 from shared.dynamic_resource.loader import snapshot_revision_metadata
 from shared.dynamic_resource.publisher import DynamicResourcePublisher
@@ -2339,6 +2339,9 @@ async def update_sop_variable_schema(request: Request, document_id: int, body: S
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+ReviewedImageSeq = Annotated[StrictInt, Field(ge=0)]
+
+
 class KbdUpdateRequest(BaseModel):
     """KBD 条目内容编辑请求
 
@@ -2367,7 +2370,7 @@ class KbdUpdateRequest(BaseModel):
         None,
         description="截图 Evidence；按稳定 seq 整体保存",
     )
-    reviewed_image_seqs: list[int] | None = Field(
+    reviewed_image_seqs: list[ReviewedImageSeq] | None = Field(
         None,
         description=(
             "本次明确由专家确认的图片 seq；只提升这些图片为 expert_confirmed。"
@@ -2425,15 +2428,19 @@ def _normalize_maintenance_images(
             raise HTTPException(status_code=422, detail=f"images_json[{index}].section 不能为空")
         if not isinstance(image.get("desc"), str):
             raise HTTPException(status_code=422, detail=f"images_json[{index}].desc 必须是字符串")
-        evidence = image.setdefault("evidence", {})
-        if not isinstance(evidence, dict):
-            evidence = {}
-            image["evidence"] = evidence
-        quality = evidence.setdefault("quality", {})
-        if not isinstance(quality, dict):
-            quality = {}
-            evidence["quality"] = quality
+        evidence = image.get("evidence")
+        if "evidence" in image and not isinstance(evidence, dict):
+            raise HTTPException(status_code=422, detail=f"images_json[{index}].evidence 必须是对象")
+        if isinstance(evidence, dict):
+            if "quality" in evidence and not isinstance(evidence["quality"], dict):
+                raise HTTPException(status_code=422, detail=f"images_json[{index}].evidence.quality 必须是对象")
+            if "provenance" in evidence and not isinstance(evidence["provenance"], dict):
+                raise HTTPException(status_code=422, detail=f"images_json[{index}].evidence.provenance 必须是对象")
         if reviewed_seqs is None or seq in reviewed_seqs:
+            if evidence is None:
+                evidence = {}
+                image["evidence"] = evidence
+            quality = evidence.setdefault("quality", {})
             quality.update(
                 {
                     "status": "manual_reviewed",
