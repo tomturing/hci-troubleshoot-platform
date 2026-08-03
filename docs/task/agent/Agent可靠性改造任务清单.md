@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-08-03
+last_updated: 2026-08-04
 related_prs:
   - PR #474: invoke() 重试 + tool_calls 清理 + skill 可观测 + 报告模板简化 + solution 格式合并
 owner: team
@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-08-04 | v3.52 | **KBD 处置 Signal 纵深防御统一**：`kbd_differential` 复用共享 KBD 只读判定，历史 `phase=solution`、人工确认或明确写动作继续在调度前 blocked；正常只读 Signal 不受影响。 | [KBD 关键信号只读边界方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号只读边界方案.md) |
 | 2026-08-03 | v3.51 | **KBD 抽取质量守门**：Prompt v1.8 强制失败任务 `qkv_task`、QFK producer 下游消费、120 秒与多图引用；KB 后处理拒绝 dead producer，并将 `/sf/cfg` cat 收敛为 `command_args`。 | [KBD 关键信号抽取反馈闭环与版本治理任务](../knowledge-base/events/2026-08-03-KBD关键信号抽取反馈闭环与版本治理任务.md) |
 | 2026-08-03 | v3.50 | **QFK timeout 缺省值统一**：`BackendSignal`、KBD Differential 和 CDD 命令编译都使用共享的 120 秒缺省值；命令预览与真实执行不再因缺字段产生不同 timeout。 | PR #663 |
 | 2026-08-03 | v3.49 | **QFK 只读命令编译预览**：Agent 新增内部预览端点，复用运行中 `BackendSignal` 与 `HandlerRegistry` 编译完整 aCLI 模板；保留运行时变量、明确 host 只用于 SSH 路由，预览不进入执行器。 | PR #663 |

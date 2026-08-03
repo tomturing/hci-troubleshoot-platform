@@ -34,6 +34,11 @@ from shared.schemas.acquirer_args import (
     SAFE_LOG_FILE_PATTERN,
     validate_acquire_args,
 )
+from shared.schemas.kbd_signal_safety import (
+    kbd_signal_read_only_violation,
+    signal_write_operation_command,
+    signal_write_operation_risk,
+)
 from shared.schemas.signal_generation import build_signal_generation_metadata
 from shared.schemas.signal_output import sync_signal_requires
 from shared.schemas.signal_schema import validate_signals_json
@@ -198,52 +203,6 @@ def _format_image_evidence(images_json: Any, *, max_chars: int = 12000) -> str:
     payload = json.dumps(formatted, ensure_ascii=False, separators=(",", ":"))
     return payload[:max_chars] if payload else "[]"
 
-# ─── 写操作子命令词表（处置/变更动作，不得自动执行）────────────────────────
-# 这是"诊断只读"原则的硬边界：凡 command 命中以下动词的后端信号，一律标记为
-# phase=solution / require_human_confirm=True，执行层绝不自动运行，必须人工授权。
-WRITE_OP_SUB_COMMANDS: set[str] = {
-    "start",
-    "stop",
-    "shutdown",
-    "restart",
-    "suspend",
-    "resume",
-    "migrate",
-    "clone",
-    "reset",
-    "reboot",
-    "delete",
-    "remove",
-    "del",
-    "rm",
-    "format",
-    "wipe",
-    "destroy",
-    "enable",
-    "disable",
-    "kill",
-    "killall",
-    "pkill",
-    "up",
-    "down",
-    "set",
-    "create",
-    "add",
-    "modify",
-    "update",
-}
-# 破坏性（不可逆）子命令 → risk=3（block）
-_DESTRUCTIVE_SUB_COMMANDS: set[str] = {
-    "delete",
-    "remove",
-    "del",
-    "rm",
-    "format",
-    "wipe",
-    "destroy",
-}
-
-
 def _read_signal_fields(signal: dict[str, Any]) -> tuple[str, dict, str, list, list, Any, dict]:
     """从 v2 嵌套信号统一读取结构化字段（单一真相源）。
 
@@ -263,30 +222,6 @@ def _read_signal_fields(signal: dict[str, Any]) -> tuple[str, dict, str, list, l
     requires = orchestrate.get("requires") or []
     matcher = signal.get("match") or None
     return tool, args, cat, produces, requires, matcher, provenance
-
-
-def _is_write_op_signal(signal: dict[str, Any]) -> bool:
-    """判断一条后端信号是否为写操作/处置动作（基于 acquire.tool + command 词表）。
-
-    仅 backend（qfk_*）信号可能携带写操作；前端生产者（qkv_*）均为只读查询。
-    command 形如 'kill -9 240132' / 'ps auxf' / 'start'，按空白与 | / 切词后命中词表即判写操作。
-    """
-    tool, args, cat, _, _, _, _ = _read_signal_fields(signal)
-    if cat != "backend" or not str(tool).startswith("qfk_"):
-        return False
-    sub = str(args.get("command", "") or "")
-    tokens = re.split(r"[\s|/]+", sub.strip())
-    return any(tok in WRITE_OP_SUB_COMMANDS for tok in tokens)
-
-
-def _write_op_risk(signal: dict[str, Any]) -> int:
-    """写操作信号的风险等级：破坏性子命令=3(block)，其余写操作=2(confirm)。"""
-    _, args, _, _, _, _, _ = _read_signal_fields(signal)
-    sub = str(args.get("command", "") or "").lower()
-    tokens = set(re.split(r"[\s|/]+", sub))
-    if tokens & _DESTRUCTIVE_SUB_COMMANDS:
-        return 3
-    return 2
 
 
 def _signal_quality_score(signal: dict[str, Any]) -> float:
@@ -408,7 +343,11 @@ def _clean_signal_description(signal: dict[str, Any]) -> None:
                 )
 
 
-def _enrich_signal(signal: dict[str, Any]) -> dict[str, Any]:
+def _enrich_signal(
+    signal: dict[str, Any],
+    *,
+    allow_solution_signals: bool = True,
+) -> dict[str, Any]:
     """为单条 v2 信号补充字段级溯源与置信度校准，全部写入 v2 段（不产生顶层冗余字段）。
 
     写入目标（均落于 v2 契约允许字段，保证保存时 validate_signals_json 通过）：
@@ -449,14 +388,15 @@ def _enrich_signal(signal: dict[str, Any]) -> dict[str, Any]:
     )
     provenance["needs_review"] = needs_review
 
-    # 写操作/处置动作信号：标记为人⼯授权，绝不自动执行（诊断只读原则）
-    if _is_write_op_signal(signal):
+    write_operation = signal_write_operation_command(signal)
+    if allow_solution_signals and write_operation:
+        # SOP 继续保留既有处置 Signal 标注与授权语义；KBD 在 enrich 前已直接拒绝。
         orchestrate["phase"] = "solution"
         review["require_human_confirm"] = True
-        provenance["risk"] = _write_op_risk(signal)
+        provenance["risk"] = signal_write_operation_risk(signal)
     else:
-        # 人工确认是执行授权策略，不等价于处置动作。只读诊断即使需要确认，
-        # 仍必须保留在诊断证据图中；只有确定性写操作词表可以把 phase 升为 solution。
+        # 人工确认是执行授权策略，不等价于处置动作；只读诊断即使需要确认，
+        # 仍保留在诊断证据图中。
         orchestrate["phase"] = orchestrate.get("phase", "diagnostic")
         review.setdefault("require_human_confirm", False)
         provenance["risk"] = provenance.get(
@@ -501,12 +441,16 @@ def validate_placeholder_case(template_str: str) -> list[str]:
     return valid
 
 
-def _validate_signal(signal: dict[str, Any], available_vars: set[str]) -> tuple[bool, str | None]:
+def _validate_signal(
+    signal: dict[str, Any],
+    available_vars: set[str],
+    *,
+    enforce_kbd_read_only: bool = False,
+) -> tuple[bool, str | None]:
     """校验单条 v2 嵌套信号。
 
-    写操作拦截：对 backend（qfk_*）信号，若 acquire.args.command 命中写操作词表，
-    则就地标记 review.require_human_confirm=True / orchestrate.phase=solution / provenance.risk，
-    使其被排除在自动执行之外，交由人工授权。
+    KBD 路径启用只读门禁后，处置阶段或明确写操作候选会直接拒绝，不能以
+    ``phase=solution`` 形式保存为 Signal。
     v1 扁平格式（acquirer/acquirer_args/signal_category/matcher 顶层字段）已彻底下线，
     缺失 acquire 段的信号将被直接拒绝（不再经 migrate 兜底归一）。
     """
@@ -531,6 +475,12 @@ def _validate_signal(signal: dict[str, Any], available_vars: set[str]) -> tuple[
     if cat not in VALID_CATEGORIES:
         return False, f"provenance.category 非法: {cat}"
 
+    # KBD 处置动作必须先于 match/produces 结构校验拒绝，确保专家看到真正原因。
+    if enforce_kbd_read_only:
+        read_only_violation = kbd_signal_read_only_violation(signal)
+        if read_only_violation:
+            return False, read_only_violation
+
     # produces/requires 变量命名与可见性（均取自 v2 orchestrate 段）
     orchestrate = signal.get("orchestrate") or {}
     produces = orchestrate.get("produces") or []
@@ -551,7 +501,7 @@ def _validate_signal(signal: dict[str, Any], available_vars: set[str]) -> tuple[
         if r not in available_vars:
             return False, f"requires 变量不在 schema 内: {r}"
 
-    # backend 的判定与产出变量严格二选一；写操作拦截
+    # backend 的判定与产出变量严格二选一
     matcher = signal.get("match")
     if cat == "backend":
         has_match = isinstance(matcher, dict)
@@ -560,10 +510,6 @@ def _validate_signal(signal: dict[str, Any], available_vars: set[str]) -> tuple[
             return False, "backend 信号必须且只能配置 match 或 orchestrate.produces 之一"
         if has_match and matcher.get("type") not in VALID_MATCHER_TYPES:
             return False, f"backend 信号 match.type 非法: {matcher.get('type')}"
-        if _is_write_op_signal(signal):
-            signal.setdefault("review", {})["require_human_confirm"] = True
-            signal.setdefault("orchestrate", {})["phase"] = "solution"
-            signal.setdefault("provenance", {})["risk"] = _write_op_risk(signal)
     return True, None
 
 
@@ -817,6 +763,8 @@ def _validate_and_collect_signals(
     raw_signals: list,
     source_id: Any,
     external_variables: set[str] | None = None,
+    *,
+    enforce_kbd_read_only: bool = False,
 ) -> tuple[list, list]:
     """对 LLM 返回的 v2 信号列表做校验，返回 (validated, rejected)。
 
@@ -865,6 +813,18 @@ def _validate_and_collect_signals(
         if "acquire" not in s:
             rejected.append({"signal": s, "reason": "信号缺少 acquire 段（v1 扁平格式已不再支持）"})
             continue
+        if enforce_kbd_read_only:
+            read_only_violation = kbd_signal_read_only_violation(s)
+            if read_only_violation:
+                s.setdefault("provenance", {})["needs_review"] = True
+                s.setdefault("review", {})["notes"] = read_only_violation
+                rejected.append({"signal": s, "reason": read_only_violation})
+                logger.warning(
+                    "extract_signals 拒绝 KBD 处置动作 source=%s reason=%s",
+                    source_id,
+                    read_only_violation,
+                )
+                continue
         if id(s) in preparation_errors:
             reason = preparation_errors[id(s)]
             s.setdefault("provenance", {})["needs_review"] = True
@@ -879,10 +839,17 @@ def _validate_and_collect_signals(
             rejected.append({"signal": s, "reason": reason})
             logger.warning("extract_signals 拒绝未消费 QFK producer source=%s reason=%s", source_id, reason)
             continue
-        ok, err = _validate_signal(s, available_vars)
+        ok, err = _validate_signal(
+            s,
+            available_vars,
+            enforce_kbd_read_only=enforce_kbd_read_only,
+        )
         if ok:
             # 字段级溯源 + 置信度校准（写入 v2 段：provenance.* / review.* / orchestrate.*）
-            enriched = _enrich_signal(s)
+            enriched = _enrich_signal(
+                s,
+                allow_solution_signals=not enforce_kbd_read_only,
+            )
             try:
                 validate_signals_json({"schema_version": 2, "signals": [enriched]})
             except ValidationError as exc:
@@ -1175,6 +1142,7 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
         raw_signals,
         f"kbd:{kbd_id}",
         external_variables,
+        enforce_kbd_read_only=True,
     )
     verification_contract = _build_verification_contract(
         validated,

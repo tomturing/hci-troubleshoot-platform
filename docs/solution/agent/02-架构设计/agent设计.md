@@ -2,7 +2,7 @@
 status: active
 category: architecture
 audience: engineer
-last_updated: 2026-07-27
+last_updated: 2026-08-04
 owner: team
 ---
 
@@ -1367,6 +1367,11 @@ SOP `## 变量` 章节写法示例（全类型覆盖）：
 
 调用方已有的环境变量或上游信号产出进入 KBD 运行时变量池；`{{NAME}}` 在执行前确定性解析。缺少必需变量时信号必须 `blocked`，不得让 LLM 猜值。
 
+KBD Signal 运行时只允许事实采集、判定和变量生产。Agent 调度前复用共享 KBD 只读
+判定：历史 `orchestrate.phase=solution`、显式 `require_human_confirm` 或既有明确写动作
+词表命中的信号一律 `blocked`，不得因旧 Proposal 或旧发布数据绕过 KB Service 的
+当前保存门禁。该规则只约束 KBD 证据图，不替代 SOP 的处置节点授权流程。
+
 **Layer 2：现场采集与产出变量**
 
 - QKV 生产者信号真实执行声明的 aCLI JSON 查询，通过 `path` 产出变量；会话预取的 `task_logs/alerts` 只用于 S0 分类，不得静默替代 KBD acquisition。
@@ -1402,6 +1407,7 @@ flowchart LR
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-08-04 | v6.2 | KBD 运行时复用共享只读边界，历史 solution/明确写动作 Signal 在调度前 fail closed；SOP 处置节点授权语义保持不变 | [KBD 关键信号只读边界方案](../../knowledge-base/events/2026-08-04-KBD关键信号只读边界方案.md) |
 | 2026-07-27 | v6.1 | 修正 KBD “不主动获取值”的过期描述；补充 QKV/QFK 现场 acquisition、变量池、边缘字面量筛选、256 KiB Fail Closed 与统一工具生命周期设计 | [KBD27123三信号执行闭环方案](../../events/2026-07-27-KBD27123三信号执行闭环方案.md) |
 | 2026-06-01 | v6.0 | 清理僵尸组件：删除 IntentAgent（@deprecated）和 DiagnosticAgent（零调用），更新 AgentRouter v4.3 架构（S0→TriageAgent, S1-S4→InvestigationAgent, S5→RemediationAgent） | — |
 | 2026-06-01 | v5.9 | TriageAgent S0 意图识别三缺陷修复：① 废除直接确认路径，所有情况统一走 AgentInteractiveRequest（缺陷二）；② 增加解析失败兜底，提示用户重新描述（缺陷三）；③ `_format_categories()` 增加 code 格式校验过滤中间节点；④ `_parse_intent_result()` 正则修复（Unicode 转义+半角冒号兼容） | [./events/2026-06-01-S0意图识别三大缺陷根因与改进方案.md](./events/2026-06-01-S0意图识别三大缺陷根因与改进方案.md) |

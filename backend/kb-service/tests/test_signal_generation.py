@@ -3,6 +3,7 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
 from app.routes import extract_signals
 from app.routes.extract_signals import (
     _normalize_config_file_read,
@@ -12,6 +13,8 @@ from app.routes.extract_signals import (
     _unconsumed_qfk_producer_reasons,
     _validate_and_collect_signals,
 )
+from jsonschema import ValidationError
+from shared.schemas.kbd_signal_safety import validate_kbd_read_only_signals_json
 from shared.schemas.signal_generation import (
     build_signal_generation_metadata,
     current_tool_contract_revision,
@@ -208,6 +211,132 @@ def test_dead_qfk_producer_gate_records_rejected_candidate_reason():
     assert accepted == []
     assert rejected[0]["signal"]["acquire"]["args"]["timeout"] == 120
     assert "未被任何下游信号消费" in rejected[0]["reason"]
+
+
+def test_kbd_solution_candidate_is_rejected_before_match_or_produces_gate():
+    candidate = {
+        "id": "sig_003",
+        "role": "context",
+        "acquire": {
+            "tool": "qfk_system",
+            "args": {
+                "command": "sed",
+                "command_args": ["-i", "/gpu_type/d", "/sf/cfg/gpu_info.ini"],
+                "timeout": 120,
+            },
+        },
+        "match": None,
+        "orchestrate": {"phase": "solution", "produces": [], "requires": ["HOST"]},
+        "provenance": {
+            "category": "backend",
+            "source_section": "steps_text",
+            "evidence": "取消gpu_type字段",
+        },
+        "review": {"require_human_confirm": True},
+    }
+
+    accepted, rejected = _validate_and_collect_signals(
+        [candidate],
+        source_id="KBD30880",
+        enforce_kbd_read_only=True,
+    )
+
+    assert accepted == []
+    assert rejected[0]["signal"] == candidate
+    assert "处置动作不属于 KBD 关键信号" in rejected[0]["reason"]
+    assert "match 或 orchestrate.produces" not in rejected[0]["reason"]
+
+
+def test_kbd_read_only_match_signal_remains_accepted():
+    candidate = {
+        "id": "sig_001",
+        "role": "must",
+        "acquire": {
+            "tool": "qfk_system",
+            "args": {
+                "command": "cat",
+                "command_args": ["/sf/cfg/gpu_info.ini"],
+                "timeout": 120,
+            },
+        },
+        "match": {
+            "type": "keyword",
+            "pattern": "gpu_type",
+            "mode": "or",
+            "expected": True,
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "all"},
+                "cardinality": "all",
+                "source": "stdout",
+            },
+        },
+        "orchestrate": {"phase": "diagnostic", "produces": [], "requires": ["HOST"]},
+        "provenance": {
+            "category": "backend",
+            "source_section": "steps_text",
+            "evidence": "检查gpu_type字段",
+            "confidence": 0.9,
+        },
+        "review": {"require_human_confirm": False},
+    }
+
+    accepted, rejected = _validate_and_collect_signals(
+        [candidate],
+        source_id="KBD-read-only",
+        enforce_kbd_read_only=True,
+    )
+
+    assert rejected == []
+    assert [signal["id"] for signal in accepted] == ["sig_001"]
+
+
+def test_kbd_expert_save_gate_rejects_explicit_write_action():
+    document = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "sig_001",
+                "acquire": {"tool": "qfk_service", "args": {"command": "restart"}},
+                "orchestrate": {"phase": "diagnostic", "produces": [], "requires": []},
+            }
+        ],
+    }
+
+    with pytest.raises(ValidationError, match="检测到写操作命令 restart"):
+        validate_kbd_read_only_signals_json(document)
+
+
+def test_sop_extraction_keeps_existing_solution_annotation_behavior():
+    candidate = {
+        "id": "sig_001",
+        "role": "context",
+        "acquire": {
+            "tool": "qfk_service",
+            "args": {"resource_keyword": "sfvt-apache", "command": "restart"},
+        },
+        "match": {
+            "type": "state",
+            "pattern": "running",
+            "mode": "or",
+            "expected": True,
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "all"},
+                "cardinality": "all",
+                "source": "stdout",
+            },
+        },
+        "orchestrate": {"phase": "diagnostic", "produces": [], "requires": []},
+        "provenance": {"category": "backend", "source_section": "steps_text"},
+        "review": {"require_human_confirm": False},
+    }
+
+    accepted, rejected = _validate_and_collect_signals([candidate], source_id="sop:1")
+
+    assert rejected == []
+    assert accepted[0]["orchestrate"]["phase"] == "solution"
+    assert accepted[0]["review"]["require_human_confirm"] is True
 
 
 def test_config_file_normalization_uses_current_qfk_system_command_args_contract():

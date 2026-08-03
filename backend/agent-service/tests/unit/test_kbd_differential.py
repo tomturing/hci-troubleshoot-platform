@@ -1,12 +1,33 @@
 from unittest.mock import MagicMock
 
-from app.adapters.agents.htp.kbd_differential import KBDDiagnostic
+from app.adapters.agents.htp.kbd_differential import KBDDiagnostic, _signal_requires_human
 from app.tools.qfk.handlers import SystemHandler
 from app.tools.qfk.signal import BackendSignal
 
 
 def _diag() -> KBDDiagnostic:
     return KBDDiagnostic(MagicMock(), MagicMock())
+
+
+def test_runtime_blocks_historical_solution_and_write_signals_but_not_read_only_checks():
+    assert _signal_requires_human(
+        {
+            "acquire": {"tool": "qfk_system", "args": {"command": "sed"}},
+            "orchestrate": {"phase": "solution"},
+        }
+    )
+    assert _signal_requires_human(
+        {
+            "acquire": {"tool": "qfk_service", "args": {"command": "restart"}},
+            "orchestrate": {"phase": "diagnostic"},
+        }
+    )
+    assert not _signal_requires_human(
+        {
+            "acquire": {"tool": "qfk_system", "args": {"command": "cat"}},
+            "orchestrate": {"phase": "diagnostic"},
+        }
+    )
 
 
 def test_qfk_produces_use_new_text_and_json_extracts_atomically():

@@ -568,7 +568,7 @@ DESCRIPTION:
     (
         'KEY',
         'kbd_extract_signals_v2',
-        '关键信号分级抽取 Prompt v2 - 同时消费文档章节与结构化截图 Evidence IR；LLM 直出 v2 嵌套结构；占位符 {{VAR}} 大写强制；封闭采集器词表；写操作安全默认；变量: title,problem_description,alert_info,steps_text,root_cause,solution,category_id,acquirer_catalog,variable_schema,image_evidence',
+        '关键信号分级抽取 Prompt v2 - 同时消费文档章节与结构化截图 Evidence IR；LLM 直出 v2 嵌套结构；占位符 {{VAR}} 大写强制；封闭采集器词表；KBD Signal 只读边界；变量: title,problem_description,alert_info,steps_text,root_cause,solution,category_id,acquirer_catalog,variable_schema,image_evidence',
         $TEMPLATE$你是 HCI 超融合平台的关键信号抽取专家。
 
 # 角色与目标
@@ -582,7 +582,7 @@ DESCRIPTION:
 2. 生产者-消费者解耦：producer 写变量（orchestrate.produces）→ consumer 读变量（orchestrate.requires）；变量是两者唯一契约面。
 3. 溯源与门禁分离：provenance 记录来自哪、可信度多少（含 evidence 逐字证据，便于审计）；review 记录是否需人工门禁。二者都不进执行路径。
 4. 诊断只读原则：仅「诊断叙事字段」可作为信号来源；根因/解决方案是 OUTPUT，绝不作为信号抽取输入。
-5. 安全默认（写操作）：凡涉及写/变更操作（acquire.args.command 命中写操作词表），必须 review.require_human_confirm=true 且 orchestrate.phase=solution，绝不自动执行；且只在排查步骤明确描述「处置/修复动作」时才抽取此类信号。
+5. Signal 只读边界：Signal 只能是只读事实采集、确定性判定或变量生产。输入中即使出现修改配置、启停/重启、删除、迁移等处置/修复动作，也不得生成 Signal；动作应留在 KBD 解决方案中，若它出现在排查描述则交由专家修正文。
 
 # 输入案例
 - 标题：{title}
@@ -616,7 +616,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
       "role": "<must|should|exclude|context>",
       "acquire": {{"tool": "<acquire.tool，取自采集器目录>", "args": {{"...": "依据该 tool 的契约，见下方规则 6"}}}},
       "match": {{"type": "<keyword|regex|state|threshold|delta|trend|exists>", "pattern": "<匹配式>", "mode": "or|and|not", "expected": true, "extract": {{"type": "text", "rows": {{"mode": "all"}}, "cardinality": "all", "source": "stdout"}}}},
-      "orchestrate": {{"phase": "<diagnostic|solution>", "action": "<可选>", "produces": [{{"name": "<VAR>", "path": "<取值路径>"}}], "requires": ["<VAR>"]}},
+      "orchestrate": {{"phase": "diagnostic", "action": "<可选>", "produces": [{{"name": "<VAR>", "path": "<取值路径>"}}], "requires": ["<VAR>"]}},
       "provenance": {{"category": "frontend|backend", "source_section": "title|problem_description|alert_info|steps_text", "source_refs": ["img:0/region:img_0:r_0"], "evidence": "<逐字引用输入中的证据句或截图可见文字>", "confidence": 0.9}},
       "review": {{"require_human_confirm": false, "notes": "<可选说明>"}}
     }}
@@ -640,11 +640,11 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
    - qkv_task：必填 keyword；可选 is_failed/limit/timeout/instruction。（is_failed 仅属于 qkv_task，不属于 qkv_alert）
    - qkv_dialog：有对应任务/告警时优先 qkv_task/qkv_alert；仅有页面弹框时生成 qkv_dialog，keyword 必须取弹框原文或稳定片段，默认在当前主控 /sf/log/today 与 /sf/log/today/vt 检索，并在 orchestrate.produces 声明 END(end)、REQUEST_ID(request_id)、HOST(host)。禁止生成虚构的 acli dialog get；弹框文本不稳定或无法关联日志时标 needs_review。
    - qfk_log：统一覆盖 /sf/log 下 whitebox、blackbox、vn-blackbox 与 pods；禁止生成 qfk_blackbox。常规日志必填 file（安全 basename，禁止目录分隔符和控制字符，扩展名不限；BMC_Event_Log 不是本机日志，应使用 qfk_hardware）。可选 source_family=auto|whitebox|blackbox|vn_blackbox|pod、path、parser、request_id、context_lines、time_window、include_archives/archive_precheck、host/timeout/instruction。/sf/data/local 不是日志族，仅允许携带 request_id 做辅助关联搜索。time_window 只能是 HCI 时区绝对时间或 {{{{ABSOLUTE_TIME}}}}，now/-1h 必须先解析。普通报错用 keyword/regex/state/exists；数值计数用 threshold；周期快照变化用 delta/trend 且必须提供 metric。产出变量模式必须用 resource_keyword 或 request_id 限制输出。无法从正文/截图确定 file 或现场来源属于 UI/BMC/NBU/外部存储时，不得伪造成 qfk_log。
-   - qfk_service：领域服务域为 asv(vt)/anet(vn)/asan(vs)/host；当前版本 `acli service --help` 已验证可执行组为 asv/anet/host，生成命令必须取运行时能力交集。resource_keyword 为服务名，container 为已探测组（默认 asv）；可选 command（status/restart 等）/timeout/instruction。不要把 `acli storage asan ...` 与 `acli service asan ...` 混同。
+   - qfk_service：领域服务域为 asv(vt)/anet(vn)/asan(vs)/host；当前版本 `acli service --help` 已验证可执行组为 asv/anet/host，生成命令必须取运行时能力交集。resource_keyword 为服务名，container 为已探测组（默认 asv）；Signal 的 command 仅允许 status 等只读检查命令。不要把 `acli storage asan ...` 与 `acli service asan ...` 混同。
    - qfk_system：command 只写基础子命令（如 lsof/ps），普通参数唯一写入 command_args 数组（如 ["-p","{{{{PID}}}}","-o","cmd="]）；可选 host（{{{{HOST}}}}）/timeout/instruction。qfk_system 禁止 resource_keyword，VM ID 必须放在 produces.extract.rows.include 的受控行筛选中，不能追加给 lsof。
    - qfk_vm/network/storage/hardware/platform：command（如 list/show/...，acli <namespace> <command>）；可选 host（{{{{HOST}}}}）/resource_keyword/timeout/instruction。
    - host 即原 v1 的 target.scope：采集目标主机/作用域，用 {{{{HOST}}}} 占位（变量池解析）或字面 cluster；不要再用嵌套 target 对象。
-7. 写操作安全：若 acquire.tool 为 qfk_* 且 acquire.args.command 命中写/变更动词（start/stop/restart/delete/set/create/...），必须 review.require_human_confirm=true、orchestrate.phase=solution；且只在排查步骤明确描述「处置/修复动作」时才抽取此类信号，纯诊断步骤不要编造写操作。
+7. 变更动作禁止输出：若正文出现 start/stop/restart/delete/set/create/rm/kill 等写入、变更或处置语义，不生成对应 Signal，不以 require_human_confirm 或 phase=solution 方式保留；只抽取与其相邻、证据充分的只读检查事实。
 8. source_section 只能取 title/problem_description/alert_info/steps_text（根因/解决方案不作为信号来源）；evidence 必须逐字引用正文原句或截图 observed_facts/text_lines。来自截图时必须填写 source_refs（如 img:0/region:img_0:r_0），便于审计和重识图 stale 传播。
 9. confidence 诚实自评（0-1）：证据清晰、采集器与变量明确→0.8+；记忆模糊、靠推测→0.4-0.6；不确定→更低。无法可靠映射为合法采集器的步骤，宁缺毋滥，不要硬造信号。
 10. id 顺序编号 sig_001、sig_002...；每条信号字段严格遵循上方结构，不得新增额外顶层字段（additionalProperties=false）。
@@ -666,7 +666,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
 15. 外部变量：若 requires 引用了本案例内没有任何 signal.produces 的自定义变量（如 STORAGE_PATH、DEVICE），必须在 verification_contract.variables 中显式声明封闭类型 string/integer/number/boolean/array；变量未声明、类型不合法或现场未提供时不得假定值，裁决必须 inconclusive。
 16. 结构字段封闭约束：frontend（qkv_*）必须 match=null 且 produces 至少一项；backend 的 match 与 produces 严格二选一，不得同时配置。每个 match.extract 与 produces[].extract 都只能使用 JSON extract 或声明式 text extract。text extract 必须有 rows；取整行时不配置 columns，取一列或多列时必须配置 parser、columns[] 与 value_key。除本 Prompt 明确列出的声明式字段外，禁止自造任何取值字段。没有可靠取值路径时不要生成变量。
 17. Matcher 封闭约束：keyword/regex/state 必须有非空 pattern；threshold 必须有数值 value 和 operator，aggregation 只能是 first_number/last_number/line_count/duration_seconds/max/min/sum；delta 必须有 metric/value/operator；trend 必须有 metric/direction，可选 value 表示最小步长。需要读取 JSON 字段时必须在 match.extract 或 produces[].extract 使用 type=json 与 path；再用 state、threshold 或 exists 判定取值。blackbox 行通常以时间戳开头，阈值/差值/趋势必须用 metric 定位字段，禁止把日期数字误当计数器。
-18. 诊断与处置边界：只有真实写操作才设 phase=solution，且 solution 的 role 必须是 context；只读 list/get/status/show/check 即使需要人工确认仍是 diagnostic。command/command_args/resource_keyword 禁止包含 |、;、&、反引号、$、重定向符或换行；不要把多条命令拼成一个 command。
+18. 诊断与处置边界：所有输出 Signal 的 phase 必须为 diagnostic；phase=solution 禁止输出。只读 list/get/status/show/check 可以生成 Signal；任何写入、配置变更、启停/重启、删除或其他修复行为都不属于 Signal。command/command_args/resource_keyword 禁止包含 |、;、&、反引号、$、重定向符或换行；不要把多条命令拼成一个 command。
 19. 任务生产者、QFK 消费关系、超时与多图证据：
    - 当标题、问题描述、任务详情或任务截图明确表达启动、创建、迁移虚拟机失败，且后续检查需要故障 HOST 或 VM 时，必须先生成 qkv_task producer。keyword 使用正文或截图中稳定的任务动作，is_failed=true，produces 至少声明 HOST 和 VM；后续 QFK 通过 requires 使用这些变量。能够从失败任务取得的 HOST/VM 不得降级为未声明外部变量。
    - qfk_system 等 QFK producer 只允许产出至少被一个下游信号 requires 消费的变量。读取配置文件后直接判断字段存在、缺失或状态时，应生成带 match 的独立 matcher；禁止把配置文件全文产出为无人消费的变量。配置文件中代表不同诊断事实的字段应分别生成 matcher，不得用一个泛化 producer 替代。
@@ -714,7 +714,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
   }}
 }}
 $TEMPLATE$,
-        '1.8',
+        '1.9',
         TRUE
     )
 ON CONFLICT (name) DO NOTHING;

@@ -7,6 +7,7 @@ from app.models.kbd_revision import KbdRevision
 from app.routes import admin
 from app.routes.admin import KbdApproveRequest, KbdUpdateRequest, _patch_maintenance_payload
 from app.services.kbd_mutation_guard import PublishedKbdMutationError, require_mutable_kbd
+from fastapi import HTTPException
 from pydantic import ValidationError
 from shared.schemas.signal_generation import current_tool_contract_revision
 from shared.schemas.verification_contract import (
@@ -239,6 +240,27 @@ def test_maintenance_signal_edit_is_validated_and_marked_manual_reviewed():
 
     assert patched["signals_json"]["generation_metadata"]["status"] == "manual_reviewed"
     assert patched["signals_json"]["signals"][0]["orchestrate"]["requires"] == []
+
+
+def test_maintenance_rejects_solution_action_signal_for_expert_handling():
+    original = _payload()
+    signals = original["signals_json"] | {
+        "signals": [
+            original["signals_json"]["signals"][0],
+            original["signals_json"]["signals"][1]
+            | {
+                "role": "context",
+                "orchestrate": {
+                    "phase": "solution",
+                    "produces": [],
+                    "requires": ["END"],
+                },
+            },
+        ]
+    }
+
+    with pytest.raises(HTTPException, match="处置动作不属于 KBD 关键信号"):
+        _patch_maintenance_payload(original, KbdUpdateRequest(signals_json=signals))
 
 
 def test_expert_delete_context_signal_removes_its_agent_contract_reference():

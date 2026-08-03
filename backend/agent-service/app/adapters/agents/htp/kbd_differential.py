@@ -19,6 +19,7 @@ from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from shared.schemas.acquirer_args import DEFAULT_SIGNAL_TIMEOUT_SECONDS
+from shared.schemas.kbd_signal_safety import kbd_signal_read_only_violation
 
 from app.adapters.agents.htp.cdd import (
     ActiveDiagnosticScheduler,
@@ -50,66 +51,19 @@ logger = get_logger("kbd-differential")
 #      未命中（如生产者尚未产出该变量）的占位符保留原样，不抛异常，交由下层处理。
 _PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z0-9_.]+)\}\}")
 
-# 写操作子命令词表（与 kb-service.extract_signals.WRITE_OP_SUB_COMMANDS 保持一致）。
-# 执行层以此做纵深防御：即便信号 schema 未带 require_human_confirm，只要 command
-# 命中写动词，也绝不自动执行，必须人工授权。
-_WRITE_OP_SUB_COMMANDS: set[str] = {
-    "start",
-    "stop",
-    "shutdown",
-    "restart",
-    "suspend",
-    "resume",
-    "migrate",
-    "clone",
-    "snapshot",
-    "reset",
-    "reboot",
-    "delete",
-    "remove",
-    "del",
-    "rm",
-    "format",
-    "wipe",
-    "destroy",
-    # 注：上文之外补充 qfk_system 常见包裹动作
-    "enable",
-    "disable",
-    "kill",
-    "killall",
-    "pkill",
-    "up",
-    "down",
-    "set",
-    "create",
-    "add",
-    "modify",
-    "update",
-}
-
 
 def _signal_requires_human(signal: dict | None) -> bool:
     """写操作/处置动作信号判定：诊断阶段绝不自动执行，必须人工授权。
 
     判定优先级：
       1) 信号已显式标记 require_human_confirm / phase=solution（抽取层已标注）
-      2) 纵深防御：backend（qfk_*）信号 command 命中写动词词表
+      2) 纵深防御：共享 KBD 只读边界识别到处置阶段或明确写动作
     """
     if not signal:
         return False
     if (signal.get("review") or {}).get("require_human_confirm"):
         return True
-    if (signal.get("orchestrate") or {}).get("phase") == "solution":
-        return True
-    acquire = signal.get("acquire") or {}
-    acquirer = acquire.get("tool", "")
-    if acquirer.startswith("qfk_"):
-        a = acquire.get("args") or {}
-        sub = str(a.get("command") or "")
-        tokens = set(re.split(r"[\s|/]+", sub.strip()))
-        if tokens & _WRITE_OP_SUB_COMMANDS:
-            return True
-    return False
+    return kbd_signal_read_only_violation(signal) is not None
 
 
 @dataclass

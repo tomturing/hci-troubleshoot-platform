@@ -18,6 +18,9 @@ _QFK_SYSTEM_MIGRATION_PATH = (
 _QFK_QUALITY_MIGRATION_PATH = (
     _REPOSITORY_ROOT / "database" / "data-migrations" / "019_align_task_and_qfk_producer_prompt_quality.sql"
 )
+_KBD_READ_ONLY_MIGRATION_PATH = (
+    _REPOSITORY_ROOT / "database" / "data-migrations" / "020_enforce_kbd_signal_read_only_boundary.sql"
+)
 
 
 def _seed_template(prompt_name: str) -> str:
@@ -110,6 +113,29 @@ def test_seed_signal_prompt_contains_same_quality_boundaries():
     assert "必须先生成 qkv_task producer" in template
     assert "配置文件全文产出为无人消费的变量" in template
     assert "timeout 默认写为 120" in template
+
+
+def test_kbd_read_only_prompt_migration_replaces_old_solution_signal_guidance():
+    migration = _KBD_READ_ONLY_MIGRATION_PATH.read_text(encoding="utf-8")
+    supplemental_rule = migration.split("|| $RULE$", 1)[1].split("$RULE$,", 1)[0]
+
+    assert "补充规则 24：KBD Signal 只读边界" in supplemental_rule
+    assert "所有输出 Signal 的 orchestrate.phase 必须为 diagnostic" in supplemental_rule
+    assert "不以 phase=solution 或 require_human_confirm 形式保留" in supplemental_rule
+    assert "由专家修正源内容后重新抽取" in supplemental_rule
+    assert "'\"phase\": \"<diagnostic|solution>\"'" in migration
+    assert "'\"phase\": \"diagnostic\"'" in migration
+    assert StrictPromptLoader.get_template_placeholders(supplemental_rule) == set()
+
+
+def test_seed_signal_prompt_forbids_solution_and_write_action_signals():
+    template = _seed_template("kbd_extract_signals_v2")
+
+    assert '"phase": "diagnostic"' in template
+    assert "Signal 只能是只读事实采集、确定性判定或变量生产" in template
+    assert "不以 require_human_confirm 或 phase=solution 方式保留" in template
+    assert "所有输出 Signal 的 phase 必须为 diagnostic" in template
+    assert "只在排查步骤明确描述「处置/修复动作」时才抽取此类信号" not in template
 
 
 def test_vision_prompt_gives_task_detail_modal_task_semantic_priority():

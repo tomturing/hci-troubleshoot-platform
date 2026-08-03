@@ -32,6 +32,7 @@ from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from shared.schemas.acquirer_args import normalize_qfk_system_args, validate_acquire_args
 from shared.schemas.capability_descriptor import capability_descriptor_document, get_capability_descriptor
+from shared.schemas.kbd_signal_safety import validate_kbd_read_only_signals_json
 from shared.schemas.signal_output import sync_signal_requires
 from shared.schemas.signal_schema import (
     certify_publishable_signals_json,
@@ -127,7 +128,22 @@ def _prepare_expert_publish_signals(raw: Any) -> dict[str, Any]:
 
     normalized, _ = normalize_legacy_role_contract(_load_signals_json(raw))
     canonical, _ = reconcile_verification_contract(normalized)
+    validate_kbd_read_only_signals_json(canonical)
     return certify_publishable_signals_json(canonical)
+
+
+def _validate_kbd_draft_signals_json(raw: Any) -> None:
+    """KBD 工作稿门禁：先给出处置边界原因，再校验通用 v2 结构。"""
+
+    validate_kbd_read_only_signals_json(raw)
+    validate_draft_signals_json(raw)
+
+
+def _validate_kbd_publishable_signals_json(raw: Any) -> None:
+    """KBD 发布预检：先给出处置边界原因，再校验通用发布契约。"""
+
+    validate_kbd_read_only_signals_json(raw)
+    validate_publishable_signals_json(raw)
 
 
 def _signal_id_from_validation_error(error: jsonschema.ValidationError, signals: list[Any]) -> str | None:
@@ -1036,7 +1052,7 @@ async def validate_kbd_candidate(request: Request, kbd_id: int) -> dict[str, Any
                 }
             )
         try:
-            validate_publishable_signals_json(signals_doc)
+            _validate_kbd_publishable_signals_json(signals_doc)
         except jsonschema.ValidationError as exc:
             human_issue = _humanize_signal_validation_error(exc, signals)
             if not any(issue["code"] == human_issue["code"] for issue in issues):
@@ -2549,7 +2565,7 @@ def _patch_maintenance_payload(payload: dict[str, Any], body: KbdUpdateRequest) 
             if not ok:
                 raise HTTPException(status_code=422, detail=f"signals_json 校验失败: {error}")
         try:
-            validate_draft_signals_json(signals_doc)
+            _validate_kbd_draft_signals_json(signals_doc)
         except jsonschema.ValidationError as exc:
             raise HTTPException(status_code=422, detail=f"signals_json 不符合 v2 契约：{exc.message}") from exc
         result["signals_json"] = signals_doc
@@ -2961,7 +2977,7 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
         # §6.1 保存时强制：jsonschema 整段校验（含逐条 acquire.args 按 tool 选 schema、
         # 各段结构不变量、additionalProperties:false 拒幽灵字段/顶层 keyword 回归）
         try:
-            validate_draft_signals_json(v2_doc)
+            _validate_kbd_draft_signals_json(v2_doc)
         except jsonschema.ValidationError as exc:
             raise HTTPException(
                 status_code=422,
