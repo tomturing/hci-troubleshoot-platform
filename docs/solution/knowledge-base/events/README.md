@@ -2,7 +2,7 @@
 status: active
 category: solution
 audience: developer
-last_updated: 2026-04-07
+last_updated: 2026-08-03
 owner: team
 ---
 
@@ -23,6 +23,8 @@ owner: team
 | 2026-07-26-Q2026072624224-S0到S1知识路由与CDD失效分析.md | 2026-07-26 | S0 分类结果被二次检索推翻、CDD 无证据结论与自由 fallback 的现场复盘 |
 | 2026-07-26-S0分类驱动的KBD证据诊断与CDD闭环设计.md | 2026-07-26 | S0 分类权威输入、KnowledgeSnapshot 和 KBD 证据闭环目标架构 |
 | 2026-07-26-KBD主动诊断信号调度与证据闭环算法设计.md | 2026-07-26 | 分类全量 KBD 上的主动 acquisition 调度、候选状态机与 Conclusion Gate |
+| 2026-08-01-KBD截图Evidence-v3展示与专家确认边界方案.md | 2026-08-01 | Evidence v3 卡片展示、单图专家确认与 Signal 输入安全边界 |
+| 2026-08-03-KBD-Evidence单图确认输入与未确认图片保真修复方案.md | 2026-08-03 | 单图确认严格输入、未确认图片保真与异常 Evidence 拒绝 |
 
 ---
 
@@ -47,4 +49,4 @@ owner: team
 
 ---
 
-*更新日期: 2026-07-26*
+*更新日期: 2026-08-03*

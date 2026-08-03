@@ -7,6 +7,7 @@ from app.models.kbd_revision import KbdRevision
 from app.routes import admin
 from app.routes.admin import KbdApproveRequest, KbdUpdateRequest, _patch_maintenance_payload
 from app.services.kbd_mutation_guard import PublishedKbdMutationError, require_mutable_kbd
+from pydantic import ValidationError
 from shared.schemas.signal_generation import current_tool_contract_revision
 from shared.schemas.verification_contract import (
     expert_editor_issues,
@@ -145,6 +146,84 @@ def test_maintenance_patch_updates_image_evidence_without_touching_active_entry(
     assert patched["images_json"][0]["evidence"]["provenance"]["expert_edited"] is True
     assert "TYPE: 任务截图" in patched["content_md"]
     assert patched["signals_json"]["generation_metadata"]["status"] == "stale"
+
+
+def test_maintenance_patch_only_confirms_explicitly_reviewed_image():
+    original = _payload()
+    untouched_image = original["images_json"][0]
+    reviewed_image = {
+        **untouched_image,
+        "seq": 1,
+        "desc": untouched_image["desc"].replace("启动失败", "镜像忙"),
+        "evidence": {
+            "quality": {
+                "status": "success",
+                "inference_status": "unverified",
+                "inference_needs_review": True,
+            },
+            "provenance": {"image_sha256": "def"},
+        },
+    }
+
+    patched = _patch_maintenance_payload(
+        original,
+        KbdUpdateRequest(
+            images_json=[untouched_image, reviewed_image],
+            reviewed_image_seqs=[1],
+        ),
+    )
+
+    assert patched["images_json"][0]["evidence"]["quality"] == {"status": "success"}
+    assert patched["images_json"][0]["evidence"]["provenance"] == {"image_sha256": "abc"}
+    assert patched["images_json"][1]["evidence"]["quality"]["inference_status"] == "expert_confirmed"
+    assert patched["images_json"][1]["evidence"]["provenance"]["expert_edited"] is True
+
+
+def test_maintenance_patch_preserves_unreviewed_image_without_evidence():
+    original = _payload()
+    unreviewed_image = {
+        "seq": 0,
+        "section": "problem_description",
+        "desc": original["images_json"][0]["desc"],
+    }
+    reviewed_image = {
+        **unreviewed_image,
+        "seq": 1,
+        "desc": unreviewed_image["desc"].replace("启动失败", "镜像忙"),
+    }
+
+    patched = _patch_maintenance_payload(
+        original,
+        KbdUpdateRequest(
+            images_json=[unreviewed_image, reviewed_image],
+            reviewed_image_seqs=[1],
+        ),
+    )
+
+    assert patched["images_json"][0] == unreviewed_image
+    assert patched["images_json"][1]["evidence"]["quality"]["inference_status"] == "expert_confirmed"
+    assert patched["images_json"][1]["evidence"]["provenance"]["expert_edited"] is True
+
+
+def test_maintenance_patch_rejects_malformed_unreviewed_evidence():
+    original = _payload()
+    malformed_image = {**original["images_json"][0], "evidence": "not-an-object"}
+    reviewed_image = {**original["images_json"][0], "seq": 1}
+
+    with pytest.raises(admin.HTTPException, match="evidence 必须是对象"):
+        _patch_maintenance_payload(
+            original,
+            KbdUpdateRequest(
+                images_json=[malformed_image, reviewed_image],
+                reviewed_image_seqs=[1],
+            ),
+        )
+
+
+@pytest.mark.parametrize("reviewed_image_seqs", [[True], ["1"], [1.0], [-1]])
+def test_reviewed_image_seqs_requires_strict_non_negative_integers(reviewed_image_seqs):
+    with pytest.raises(ValidationError):
+        KbdUpdateRequest(reviewed_image_seqs=reviewed_image_seqs)
 
 
 def test_maintenance_signal_edit_is_validated_and_marked_manual_reviewed():

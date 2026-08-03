@@ -17,12 +17,12 @@ import io
 import json
 import re
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import jsonschema
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictInt
 from shared.dynamic_resource.adapters import kbd_resource_payload, sop_resource_payload
 from shared.dynamic_resource.loader import snapshot_revision_metadata
 from shared.dynamic_resource.publisher import DynamicResourcePublisher
@@ -2339,6 +2339,9 @@ async def update_sop_variable_schema(request: Request, document_id: int, body: S
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+ReviewedImageSeq = Annotated[StrictInt, Field(ge=0)]
+
+
 class KbdUpdateRequest(BaseModel):
     """KBD 条目内容编辑请求
 
@@ -2365,7 +2368,14 @@ class KbdUpdateRequest(BaseModel):
     )
     images_json: list[dict[str, Any]] | None = Field(
         None,
-        description="专家确认后的截图 Evidence；按稳定 seq 整体保存",
+        description="截图 Evidence；按稳定 seq 整体保存",
+    )
+    reviewed_image_seqs: list[ReviewedImageSeq] | None = Field(
+        None,
+        description=(
+            "本次明确由专家确认的图片 seq；只提升这些图片为 expert_confirmed。"
+            "兼容旧调用方：省略时表示提交的全部图片均已审核"
+        ),
     )
     # 聚合渲染（可选，不传则自动由章节重建）
     content_md: str | None = Field(None, description="聚合 Markdown（优先用传入的值；不传则自动由章节重建）")
@@ -2388,11 +2398,22 @@ def _mark_payload_signal_generation_stale(payload: dict[str, Any]) -> None:
         payload["signals_json"] = signals_doc
 
 
-def _normalize_maintenance_images(raw_images: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """校验并标记专家确认后的截图 Evidence。"""
+def _normalize_maintenance_images(
+    raw_images: list[dict[str, Any]],
+    reviewed_image_seqs: list[int] | None = None,
+) -> list[dict[str, Any]]:
+    """校验截图 Evidence，并只提升本次明确审核的图片。
+
+    ``images_json`` 是整体保存契约，但一次 UI 操作只编辑一张图。新版调用方通过
+    ``reviewed_image_seqs`` 声明本次真实审核范围，避免把未打开的其他图片连带标成
+    ``expert_confirmed``。省略该字段时保留历史“整组均已审核”语义。
+    """
 
     normalized: list[dict[str, Any]] = []
     seen_seqs: set[int] = set()
+    reviewed_seqs = set(reviewed_image_seqs) if reviewed_image_seqs is not None else None
+    if reviewed_seqs is not None and len(reviewed_seqs) != len(reviewed_image_seqs):
+        raise HTTPException(status_code=422, detail="reviewed_image_seqs 不能包含重复 seq")
     for index, raw_image in enumerate(raw_images):
         if not isinstance(raw_image, dict):
             raise HTTPException(status_code=422, detail=f"images_json[{index}] 必须是对象")
@@ -2407,28 +2428,41 @@ def _normalize_maintenance_images(raw_images: list[dict[str, Any]]) -> list[dict
             raise HTTPException(status_code=422, detail=f"images_json[{index}].section 不能为空")
         if not isinstance(image.get("desc"), str):
             raise HTTPException(status_code=422, detail=f"images_json[{index}].desc 必须是字符串")
-        evidence = image.setdefault("evidence", {})
-        if not isinstance(evidence, dict):
-            evidence = {}
-            image["evidence"] = evidence
-        quality = evidence.setdefault("quality", {})
-        if not isinstance(quality, dict):
-            quality = {}
-            evidence["quality"] = quality
-        quality.update(
-            {
-                "status": "manual_reviewed",
-                "needs_review": False,
-                "inference_status": "expert_confirmed",
-                "inference_needs_review": False,
-            }
-        )
-        provenance = evidence.setdefault("provenance", {})
-        if not isinstance(provenance, dict):
-            provenance = {}
-            evidence["provenance"] = provenance
-        provenance["expert_edited"] = True
+        evidence = image.get("evidence")
+        if "evidence" in image and not isinstance(evidence, dict):
+            raise HTTPException(status_code=422, detail=f"images_json[{index}].evidence 必须是对象")
+        if isinstance(evidence, dict):
+            if "quality" in evidence and not isinstance(evidence["quality"], dict):
+                raise HTTPException(status_code=422, detail=f"images_json[{index}].evidence.quality 必须是对象")
+            if "provenance" in evidence and not isinstance(evidence["provenance"], dict):
+                raise HTTPException(status_code=422, detail=f"images_json[{index}].evidence.provenance 必须是对象")
+        if reviewed_seqs is None or seq in reviewed_seqs:
+            if evidence is None:
+                evidence = {}
+                image["evidence"] = evidence
+            quality = evidence.setdefault("quality", {})
+            quality.update(
+                {
+                    "status": "manual_reviewed",
+                    "needs_review": False,
+                    "inference_status": "expert_confirmed",
+                    "inference_needs_review": False,
+                }
+            )
+            provenance = evidence.setdefault("provenance", {})
+            if not isinstance(provenance, dict):
+                provenance = {}
+                evidence["provenance"] = provenance
+            provenance["expert_edited"] = True
         normalized.append(image)
+    if reviewed_seqs is not None:
+        unknown_seqs = reviewed_seqs - seen_seqs
+        if unknown_seqs:
+            unknown_text = ", ".join(str(seq) for seq in sorted(unknown_seqs))
+            raise HTTPException(
+                status_code=422,
+                detail=f"reviewed_image_seqs 包含 images_json 中不存在的 seq: {unknown_text}",
+            )
     return sorted(normalized, key=lambda item: item["seq"])
 
 
@@ -2468,7 +2502,10 @@ def _patch_maintenance_payload(payload: dict[str, Any], body: KbdUpdateRequest) 
 
     old_images = copy.deepcopy(result.get("images_json") or [])
     if body.images_json is not None:
-        result["images_json"] = _normalize_maintenance_images(body.images_json)
+        result["images_json"] = _normalize_maintenance_images(
+            body.images_json,
+            body.reviewed_image_seqs,
+        )
 
     if body.content_md is not None:
         result["content_md"] = body.content_md
@@ -2873,45 +2910,10 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
 
     normalized_images: list[dict[str, Any]] | None = None
     if body.images_json is not None:
-        normalized_images = []
-        seen_seqs: set[int] = set()
-        for index, raw_image in enumerate(body.images_json):
-            if not isinstance(raw_image, dict):
-                raise HTTPException(status_code=422, detail=f"images_json[{index}] 必须是对象")
-            image = copy.deepcopy(raw_image)
-            seq = image.get("seq")
-            if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
-                raise HTTPException(status_code=422, detail=f"images_json[{index}].seq 必须是非负整数")
-            if seq in seen_seqs:
-                raise HTTPException(status_code=422, detail=f"images_json 存在重复 seq={seq}")
-            seen_seqs.add(seq)
-            if not isinstance(image.get("section"), str) or not image["section"].strip():
-                raise HTTPException(status_code=422, detail=f"images_json[{index}].section 不能为空")
-            if not isinstance(image.get("desc"), str):
-                raise HTTPException(status_code=422, detail=f"images_json[{index}].desc 必须是字符串")
-            evidence = image.get("evidence")
-            if not isinstance(evidence, dict):
-                evidence = {}
-                image["evidence"] = evidence
-            quality = evidence.get("quality")
-            if not isinstance(quality, dict):
-                quality = {}
-                evidence["quality"] = quality
-            quality.update(
-                {
-                    "status": "manual_reviewed",
-                    "needs_review": False,
-                    "inference_status": "expert_confirmed",
-                    "inference_needs_review": False,
-                }
-            )
-            provenance = evidence.get("provenance")
-            if not isinstance(provenance, dict):
-                provenance = {}
-                evidence["provenance"] = provenance
-            provenance["expert_edited"] = True
-            normalized_images.append(image)
-        normalized_images.sort(key=lambda item: item["seq"])
+        normalized_images = _normalize_maintenance_images(
+            body.images_json,
+            body.reviewed_image_seqs,
+        )
         set_clauses.append("images_json = CAST(:images_json AS jsonb)")
         params["images_json"] = json.dumps(normalized_images, ensure_ascii=False)
     elif signal_source_changed:

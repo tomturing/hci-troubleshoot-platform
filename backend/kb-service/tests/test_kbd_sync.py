@@ -77,6 +77,35 @@ def test_rebuild_content_md_excludes_unverified_image_inference_from_agent_view(
     kbd.sync_sections_from_content_md()
     assert kbd.problem_description.replace("\n", "") == "故障现象如下：![img:0]"
 
+
+def test_rebuild_content_md_includes_expert_confirmed_description_in_agent_view():
+    kbd = KbdEntry()
+    kbd.problem_description = "故障现象如下：![img:0]"
+    kbd.images_json = [{
+        "seq": 0,
+        "section": "problem_description",
+        "desc": (
+            "TYPE: 任务截图\nBACKGROUND: 白色\nFULL_TEXT:\n"
+            "- 启动虚拟机失败\nDESCRIPTION:\n"
+            "任务详情显示启动虚拟机失败。"
+        ),
+        "evidence": {
+            "quality": {
+                "status": "manual_reviewed",
+                "needs_review": False,
+                "inference_status": "expert_confirmed",
+                "inference_needs_review": False,
+            }
+        },
+    }]
+
+    content_md = kbd.rebuild_content_md()
+
+    assert "DESCRIPTION:" in content_md
+    assert "任务详情显示启动虚拟机失败。" in content_md
+    assert "INFERENCE_NOTICE" not in content_md
+
+
 @pytest.mark.anyio
 async def test_update_kbd_entry_api_sync_sections():
     # Test patch api route
