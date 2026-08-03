@@ -2882,8 +2882,8 @@ onMounted(() => {
                   <el-dropdown-menu>
                     <el-dropdown-item command="qkv_task">任务信号 qkv_task</el-dropdown-item>
                     <el-dropdown-item command="qkv_alert">告警信号 qkv_alert</el-dropdown-item>
-                    <el-dropdown-item command="qkv_dialog">纯弹框信号 qkv_dialog</el-dropdown-item>
-                    <el-dropdown-item divided command="qfk_log">日志信号 qfk_log</el-dropdown-item>
+                    <el-dropdown-item command="qkv_dialog">弹框信号 qkv_dialog</el-dropdown-item>
+                    <el-dropdown-item divided command="qfk_log">日志检查 qfk_log</el-dropdown-item>
                     <el-dropdown-item command="qfk_system">系统检查 qfk_system</el-dropdown-item>
                     <el-dropdown-item command="qfk_service">服务检查 qfk_service</el-dropdown-item>
                     <el-dropdown-item command="qfk_vm">虚拟机检查 qfk_vm</el-dropdown-item>
@@ -3164,7 +3164,7 @@ onMounted(() => {
                   <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" placeholder="信号说明，如 镜像文件占用检查" /></div>
                   <div class="field-hint">信号语义说明：用自然语言描述这个检查/采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
                   <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据（必须满足）" value="must" /><el-option label="增强证据（按门槛满足）" value="should" /><el-option label="排除证据（出现即排除）" value="exclude" /><el-option label="上下文证据（执行但不参与结论）" value="context" /></el-select></div>
-                  <div class="signal-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" filterable @change="onSignalToolChange"><el-option label="日志 qfk_log" value="qfk_log" /><el-option label="系统 qfk_system" value="qfk_system" /><el-option label="服务 qfk_service" value="qfk_service" /><el-option label="虚拟机 qfk_vm" value="qfk_vm" /><el-option label="网络 qfk_network" value="qfk_network" /><el-option label="存储 qfk_storage" value="qfk_storage" /><el-option label="硬件 qfk_hardware" value="qfk_hardware" /><el-option label="平台 qfk_platform" value="qfk_platform" /></el-select></div>
+                  <div class="signal-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" filterable @change="onSignalToolChange"><el-option label="日志检查 qfk_log" value="qfk_log" /><el-option label="系统 qfk_system" value="qfk_system" /><el-option label="服务 qfk_service" value="qfk_service" /><el-option label="虚拟机 qfk_vm" value="qfk_vm" /><el-option label="网络 qfk_network" value="qfk_network" /><el-option label="存储 qfk_storage" value="qfk_storage" /><el-option label="硬件 qfk_hardware" value="qfk_hardware" /><el-option label="平台 qfk_platform" value="qfk_platform" /></el-select></div>
                   <div class="signal-row"><span class="signal-k">主机</span><el-input v-model="signalEditDraft.acquire.args.host" size="small" placeholder="{{HOST}} 或固定主机名/IP" /></div>
                   <div class="field-hint" v-pre>Terminal Bridge 通过此主机选择 SSH 会话；它不是 aCLI 参数。要遍历集群，请在下方启用“集群执行”。</div>
                   <!-- 容器与执行命令：位于输入/输出契约之前，先明确命令在哪里、执行什么。 -->
