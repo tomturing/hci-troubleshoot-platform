@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-07-31
+last_updated: 2026-08-03
 related_prs:
   - PR #474: invoke() 重试 + tool_calls 清理 + skill 可观测 + 报告模板简化 + solution 格式合并
 owner: team
@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-08-03 | v3.49 | **QFK 只读命令编译预览**：Agent 新增内部预览端点，复用运行中 `BackendSignal` 与 `HandlerRegistry` 编译完整 aCLI 模板；保留运行时变量、明确 host 只用于 SSH 路由，预览不进入执行器。 | PR #663 |
 | 2026-08-03 | v3.48 | **QFK producer 执行链修复**：显式区分 produce/match，lsof 成功输出可进入 PID 变量池；qfk_system 收敛为唯一 argv 命令模型。 | [KBD27123产出变量执行链与QFK命令参数模型收敛任务](../events/2026-08-03-KBD27123产出变量执行链与QFK命令参数模型收敛.md) |
 | 2026-07-31 | v3.47 | **KBD Matcher/行选择模式与 Extract 契约收敛**：修复 LLM 将 `rows.include_mode=any/all` 误写为 `match.mode` 的 Prompt 歧义；backend Matcher 强制复用 `produces` 的声明式 Extract，`match.mode` 收口为 `or/and/not`，JSON 路径收口至 `extract.type=json`。新增迁移 017 和 Prompt/花括号契约回归测试；不添加 `any→or` / `all→and` 旧兼容，非法候选只保留审计后重新抽取。 | [KBD Matcher 模式与 Extract 契约对齐](../../solution/events/2026-07-31-KBD-Matcher-模式与Extract契约对齐.md) |
 | 2026-07-31 | v3.46 | **KBD Prompt JSON 花括号转义修复**：015 热加载 Prompt 的新增 JSON 示例未按 Python `str.format()` 转义，导致 `key`/`mode`/`name` 被误判为非法运行时占位符并使重抽 HTTP 500；016 将已部署数据修正为 `{{`/`}}` 字面量并将 Prompt 提升为 v1.5，新增 seed 与数据迁移的 StrictPromptLoader 回归校验。 | [KBD 重抽取与任务详情截图语义收口](../../solution/knowledge-base/events/2026-07-31-KBD重抽取与任务详情截图语义收口.md) |

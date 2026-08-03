@@ -1,7 +1,6 @@
 from collections import deque
 
 import jsonschema
-
 from app.routes.admin import _humanize_signal_validation_error
 
 
