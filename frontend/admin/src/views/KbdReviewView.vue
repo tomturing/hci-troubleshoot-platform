@@ -60,6 +60,15 @@ interface KbdRevisionState {
   latest_proposal_revision_id: number | null
   working_revision_id: number | null
   lock_version: number
+  expert_signal_edit_summary: {
+    status: 'no_expert_draft' | 'unchanged' | 'modified'
+    proposal_revision_id: number | null
+    expert_revision_id: number | null
+    changed_signal_count: number
+    added_signal_ids: string[]
+    removed_signal_ids: string[]
+    modified_signal_ids: string[]
+  }
   history: RevisionMetadata[]
   active_resource: { revision: number; checksum: string; version: string } | null
 }
@@ -818,6 +827,12 @@ async function handleReextractSignals(entry: KbdEntry) {
         const fresh = await detailResp.json()
         detailEntry.value = fresh
       }
+      // Proposal 已在服务端切换为新的审核基线；必须同步刷新 revision，不能继续
+      // 使用重抽前的 history[0] Diff 误报为专家修改。
+      await Promise.all([
+        fetchRevisionState(entry.id),
+        validateCurrentCandidate({ silent: true }),
+      ])
     }
   } catch (err: any) {
     ElMessage.error({
@@ -1242,6 +1257,9 @@ const signalList = computed<SignalV2[]>(() => {
 })
 const signalGenerationMetadata = computed<Record<string, any>>(
   () => (detailEntry.value?.signals_json as SignalsDoc | undefined)?.generation_metadata || {},
+)
+const expertSignalEditSummary = computed(
+  () => revisionState.value?.expert_signal_edit_summary,
 )
 const rejectedSignalCandidates = computed(
   () => (detailEntry.value?.signals_json as SignalsDoc | undefined)?.rejected_candidates || [],
@@ -2804,8 +2822,8 @@ onMounted(() => {
           </el-descriptions>
           <div class="section-hint" style="margin-top: 8px">
             保存只形成专家工作版本；只有“{{ detailEntry.maintenance_working ? '发布维护版' : '审核通过并发布' }}”才切换 Agent 生效版本。
-            <template v-if="revisionState?.history?.[0]?.diff_from_parent?.length">
-              当前专家稿相对基线修改 {{ revisionState.history[0].diff_from_parent.length }} 项。
+            <template v-if="expertSignalEditSummary">
+              当前专家稿相对 AI Proposal 修改 {{ expertSignalEditSummary.changed_signal_count }} 条关键信号。
             </template>
           </div>
           <div v-if="candidateValidation" class="expert-validation-panel" :class="`is-${candidateValidation.status}`">
@@ -2909,9 +2927,9 @@ onMounted(() => {
             <el-tag
               size="small"
               :type="signalGenerationMetadata.status === 'stale' ? 'danger' : signalGenerationMetadata.status === 'manual_reviewed' ? 'success' : 'info'"
-            >{{ signalGenerationMetadata.status === 'stale' ? '已过期' : signalGenerationMetadata.status === 'manual_reviewed' ? '已人工修改' : '未修改' }}</el-tag>
-            <span v-if="revisionState?.history?.[0]?.diff_from_parent?.length">
-              相对 AI Proposal 修改 {{ revisionState.history[0].diff_from_parent.length }} 项
+            >{{ signalGenerationMetadata.status === 'stale' ? '已过期' : signalGenerationMetadata.status === 'manual_reviewed' ? '已人工修改' : '当前 AI Proposal' }}</el-tag>
+            <span v-if="expertSignalEditSummary">
+              专家修改：{{ expertSignalEditSummary.changed_signal_count }} 条关键信号
             </span>
           </div>
           <details v-if="signalGenerationMetadata.generation_fingerprint" class="generation-trace-details">

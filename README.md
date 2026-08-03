@@ -1,8 +1,15 @@
 # HCI 智能排障平台
 
-> 版本 **v2.1.4** · 2026-06-11
+> 版本 **v2.21.0** · 2026-08-03
 
 HCI 环境 AI 故障诊断平台。微服务架构 + S0-S6 六阶段诊断状态机 + 双轨知识检索（SOP + RAG）。
+
+### v2.21.0 当前里程碑（2026-08-03）
+
+- **KBD Proposal/Expert 学习闭环**：当前 AI Proposal 与专家工作稿通过显式 baseline 配对；专家修改按稳定关键信号计数，AI 重抽不再误记为人工修改。不可变历史继续用于模型回归、评估和运行追溯，中间工作稿不默认进入训练样本。
+- **关键信号抽取质量**：Prompt 和确定性后处理共同约束失败任务 `qkv_task`、QFK producer 下游消费、配置文件 matcher、多图证据和 120 秒默认超时；`qfk_system` 统一使用 `command + command_args`。
+- **当前阶段**：代码级修复与本地回归完成；PR 合并部署后需在 dev 对 KBD30880 重新抽取验收 `1 qkv_task + 2 qfk_system`。
+- **冷启动阅读路径**：[文档规范](docs/文档管理规范.md) → [版本治理方案](docs/solution/knowledge-base/events/2026-08-03-KBD关键信号抽取反馈闭环与版本治理方案.md) → [知识库设计](docs/solution/knowledge-base/知识库设计.md) → [验证指南](docs/verify/测试指南.md)。
 
 ### v2.1.4 更新说明（2026-06-11）
 

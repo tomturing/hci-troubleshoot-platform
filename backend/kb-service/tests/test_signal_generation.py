@@ -4,7 +4,14 @@ import asyncio
 from types import SimpleNamespace
 
 from app.routes import extract_signals
-from app.routes.extract_signals import _persist_signals, _signals_to_v2
+from app.routes.extract_signals import (
+    _normalize_config_file_read,
+    _normalize_generated_timeouts,
+    _persist_signals,
+    _signals_to_v2,
+    _unconsumed_qfk_producer_reasons,
+    _validate_and_collect_signals,
+)
 from shared.schemas.signal_generation import (
     build_signal_generation_metadata,
     current_tool_contract_revision,
@@ -137,3 +144,88 @@ def test_kbd_reextract_creates_fresh_proposal_and_clears_stale_draft_pointer(mon
     assert calls["revision"]["generation_metadata"]["origin"] == "signal_reextract"
     assert calls["flushed"] is True
     assert calls["committed"] is True
+
+
+def test_generated_qkv_qfk_timeouts_use_120_for_missing_and_historical_defaults():
+    signals = [
+        {"acquire": {"tool": "qkv_task", "args": {"keyword": "启动虚拟机"}}},
+        {"acquire": {"tool": "qfk_system", "args": {"command": "cat", "timeout": 10}}},
+        {"acquire": {"tool": "qfk_system", "args": {"command": "ps", "timeout": 30}}},
+        {"acquire": {"tool": "qfk_system", "args": {"command": "lsof", "timeout": 180}}},
+    ]
+
+    assert _normalize_generated_timeouts(signals) == 3
+    assert [signal["acquire"]["args"]["timeout"] for signal in signals] == [120, 120, 120, 180]
+
+
+def test_unconsumed_qfk_producer_is_rejected_but_real_downstream_consumer_is_allowed():
+    dead = {
+        "id": "sig_001",
+        "acquire": {"tool": "qfk_system", "args": {"command": "cat"}},
+        "match": None,
+        "orchestrate": {"produces": [{"name": "GPU_INFO_CONTENT", "path": "stdout"}], "requires": []},
+    }
+    self_reference = {
+        "id": "sig_002",
+        "acquire": {"tool": "qfk_system", "args": {"command": "cat"}},
+        "match": None,
+        "orchestrate": {"produces": [{"name": "SELF", "path": "stdout"}], "requires": ["SELF"]},
+    }
+
+    reasons = _unconsumed_qfk_producer_reasons([dead, self_reference])
+    assert "GPU_INFO_CONTENT" in reasons[id(dead)]
+    assert "SELF" in reasons[id(self_reference)]
+
+    consumer = {
+        "id": "sig_003",
+        "acquire": {"tool": "qfk_system", "args": {"command": "ps"}},
+        "match": {"type": "keyword", "pattern": "qemu"},
+        "orchestrate": {"produces": [], "requires": ["GPU_INFO_CONTENT"]},
+    }
+    assert id(dead) not in _unconsumed_qfk_producer_reasons([dead, consumer])
+
+
+def test_dead_qfk_producer_gate_records_rejected_candidate_reason():
+    dead = {
+        "id": "sig_001",
+        "role": "must",
+        "acquire": {
+            "tool": "qfk_system",
+            "args": {"command": "cat", "command_args": ["/sf/cfg/gpu_info.ini"], "timeout": 10},
+        },
+        "match": None,
+        "orchestrate": {
+            "phase": "diagnostic",
+            "produces": [{"name": "GPU_INFO_CONTENT", "path": "stdout"}],
+            "requires": [],
+        },
+        "provenance": {"category": "backend", "source_section": "steps_text", "evidence": "读取配置"},
+        "review": {"require_human_confirm": False},
+    }
+
+    accepted, rejected = _validate_and_collect_signals([dead], source_id="KBD30880")
+
+    assert accepted == []
+    assert rejected[0]["signal"]["acquire"]["args"]["timeout"] == 120
+    assert "未被任何下游信号消费" in rejected[0]["reason"]
+
+
+def test_config_file_normalization_uses_current_qfk_system_command_args_contract():
+    signal = {
+        "acquire": {
+            "tool": "qfk_log",
+            "args": {"path": "/sf/cfg", "file": "gpu_info.ini", "timeout": 30},
+        },
+        "review": {},
+    }
+
+    assert _normalize_config_file_read(signal) is True
+    assert signal["acquire"] == {
+        "tool": "qfk_system",
+        "args": {
+            "command": "cat",
+            "command_args": ["/sf/cfg/gpu_info.ini"],
+            "timeout": 30,
+        },
+    }
+    assert "resource_keyword" not in signal["acquire"]["args"]

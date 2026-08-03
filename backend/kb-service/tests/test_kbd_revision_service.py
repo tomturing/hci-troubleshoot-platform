@@ -4,7 +4,11 @@ from app.services.kbd_revision_service import (
     KBD_PAYLOAD_FIELDS,
     build_kbd_revision_payload,
     diff_revision_payloads,
+    is_evaluation_candidate,
     payload_checksum,
+    resolve_proposal_baseline,
+    select_current_expert_pair,
+    summarize_expert_signal_changes,
 )
 
 
@@ -77,3 +81,170 @@ def test_revision_diff_records_add_delete_and_replace():
 
     assert {change["operation"] for change in changes} == {"add", "delete", "replace"}
     assert {change["path"] for change in changes} == {"/recommendations", "/root_cause", "/title"}
+
+
+def test_expert_signal_summary_ignores_ai_generation_metadata_and_counts_signals_once():
+    proposal = {
+        "signals_json": {
+            "generation_metadata": {"prompt_revision": "old"},
+            "signals": [
+                {"id": "sig_001", "acquire": {"tool": "qkv_task", "args": {"keyword": "启动"}}},
+                {"id": "sig_002", "acquire": {"tool": "qfk_system", "args": {"command": "cat"}}},
+            ],
+        }
+    }
+    expert = {
+        "signals_json": {
+            "generation_metadata": {"prompt_revision": "new"},
+            "signals": [
+                {"id": "sig_001", "acquire": {"tool": "qkv_task", "args": {"keyword": "启动"}}},
+                {
+                    "id": "sig_002",
+                    "acquire": {"tool": "qfk_system", "args": {"command": "cat", "timeout": 120}},
+                    "review": {"notes": "专家确认"},
+                },
+                {"id": "sig_003", "acquire": {"tool": "qfk_system", "args": {"command": "ps"}}},
+            ],
+        }
+    }
+
+    summary = summarize_expert_signal_changes(
+        proposal,
+        expert,
+        proposal_revision_id=41,
+        expert_revision_id=42,
+    )
+
+    assert summary == {
+        "status": "modified",
+        "proposal_revision_id": 41,
+        "expert_revision_id": 42,
+        "changed_signal_count": 2,
+        "added_signal_ids": ["sig_003"],
+        "removed_signal_ids": [],
+        "modified_signal_ids": ["sig_002"],
+    }
+
+
+def test_expert_signal_summary_is_zero_without_an_expert_draft():
+    summary = summarize_expert_signal_changes(
+        {"signals_json": {"signals": [{"id": "sig_001"}]}},
+        None,
+        proposal_revision_id=45,
+        expert_revision_id=None,
+    )
+
+    assert summary["status"] == "no_expert_draft"
+    assert summary["changed_signal_count"] == 0
+
+
+def test_explicit_proposal_baseline_wins_over_history_order_and_parent_chain():
+    old_proposal = SimpleNamespace(
+        id=1,
+        revision_type="proposal",
+        parent_revision_id=None,
+        baseline_proposal_revision_id=None,
+    )
+    current_proposal = SimpleNamespace(
+        id=44,
+        revision_type="proposal",
+        parent_revision_id=1,
+        baseline_proposal_revision_id=None,
+    )
+    expert = SimpleNamespace(
+        id=45,
+        revision_type="expert",
+        parent_revision_id=1,
+        baseline_proposal_revision_id=44,
+    )
+
+    assert resolve_proposal_baseline(
+        expert,
+        {1: old_proposal, 44: current_proposal, 45: expert},
+    ) is current_proposal
+
+
+def test_historical_expert_baseline_falls_back_to_parent_chain():
+    proposal = SimpleNamespace(
+        id=10,
+        revision_type="proposal",
+        parent_revision_id=None,
+    )
+    first_expert = SimpleNamespace(
+        id=11,
+        revision_type="expert",
+        parent_revision_id=10,
+    )
+    latest_expert = SimpleNamespace(
+        id=12,
+        revision_type="expert",
+        parent_revision_id=11,
+    )
+
+    assert resolve_proposal_baseline(
+        latest_expert,
+        {10: proposal, 11: first_expert, 12: latest_expert},
+    ) is proposal
+
+
+def test_only_approved_or_published_expert_revision_is_evaluation_candidate():
+    working = SimpleNamespace(
+        revision_type="expert",
+        review_metadata={"review_state": "working"},
+        generation_metadata={"origin": "admin_working_edit"},
+    )
+    approved = SimpleNamespace(
+        revision_type="expert",
+        review_metadata={"review_state": "approved"},
+        generation_metadata={"origin": "admin_review"},
+    )
+    legacy_publish = SimpleNamespace(
+        revision_type="expert",
+        review_metadata={},
+        generation_metadata={"origin": "admin_maintenance_publish"},
+    )
+
+    assert is_evaluation_candidate(working) is False
+    assert is_evaluation_candidate(approved) is True
+    assert is_evaluation_candidate(legacy_publish) is True
+
+
+def test_current_expert_pair_uses_approved_revision_after_publish_but_not_after_reextract():
+    proposal = SimpleNamespace(
+        id=10,
+        revision_no=10,
+        revision_type="proposal",
+        parent_revision_id=None,
+        baseline_proposal_revision_id=None,
+        review_metadata={},
+        generation_metadata={},
+    )
+    approved = SimpleNamespace(
+        id=11,
+        revision_no=11,
+        revision_type="expert",
+        parent_revision_id=10,
+        baseline_proposal_revision_id=10,
+        review_metadata={"review_state": "approved"},
+        generation_metadata={"origin": "admin_review"},
+    )
+    reextract = SimpleNamespace(
+        id=12,
+        revision_no=12,
+        revision_type="proposal",
+        parent_revision_id=10,
+        baseline_proposal_revision_id=None,
+        review_metadata={},
+        generation_metadata={"origin": "signal_reextract"},
+    )
+
+    assert select_current_expert_pair(
+        [proposal, approved],
+        working_revision_id=None,
+        latest_proposal_revision_id=10,
+    ) == (approved, proposal)
+    assert select_current_expert_pair(
+        [proposal, approved, reextract],
+        working_revision_id=None,
+        latest_proposal_revision_id=12,
+    ) == (None, None)

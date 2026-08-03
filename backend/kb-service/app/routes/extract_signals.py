@@ -29,7 +29,11 @@ from jsonschema import ValidationError
 from pydantic import BaseModel, Field
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
-from shared.schemas.acquirer_args import SAFE_LOG_FILE_PATTERN, validate_acquire_args
+from shared.schemas.acquirer_args import (
+    DEFAULT_SIGNAL_TIMEOUT_SECONDS,
+    SAFE_LOG_FILE_PATTERN,
+    validate_acquire_args,
+)
 from shared.schemas.signal_generation import build_signal_generation_metadata
 from shared.schemas.signal_output import sync_signal_requires
 from shared.schemas.signal_schema import validate_signals_json
@@ -685,7 +689,7 @@ def _normalize_config_file_read(signal: dict[str, Any]) -> bool:
         for key in ("host", "timeout", "instruction")
         if key in args
     }
-    system_args.update({"command": "cat", "resource_keyword": f"{path}/{file_name}"})
+    system_args.update({"command": "cat", "command_args": [f"{path}/{file_name}"]})
     acquire["tool"] = "qfk_system"
     acquire["args"] = system_args
     review = signal.setdefault("review", {})
@@ -705,7 +709,7 @@ def _normalize_derived_file_assertions(raw_signals: list[Any]) -> int:
     唯一的 ``qfk_system cat`` 产出，本函数把下游 matcher 的 acquisition 参数替换为
     上游只读参数。Compiler 随后会把它们合并成一次采集，并分别运行 matcher。
 
-    只处理 resource_keyword 为单一 ``{{VAR}}``、上游是明确 ``cat`` 且下游有 matcher
+    只处理 command_args 为单一 ``{{VAR}}``、上游是明确 ``cat`` 且下游有 matcher
     的封闭形态；其他变量语义不做猜测。返回规范化数量供测试和审计。
     """
 
@@ -718,7 +722,8 @@ def _normalize_derived_file_assertions(raw_signals: list[Any]) -> int:
         args = acquire.get("args") or {}
         if acquire.get("tool") != "qfk_system" or str(args.get("command") or "").strip() != "cat":
             continue
-        resource = str(args.get("resource_keyword") or "")
+        command_args = args.get("command_args")
+        resource = str(command_args[0]) if isinstance(command_args, list) and len(command_args) == 1 else ""
         if not resource or _PLACEHOLDER_RE.fullmatch(resource):
             continue
         for produced in (signal.get("orchestrate") or {}).get("produces") or []:
@@ -738,7 +743,9 @@ def _normalize_derived_file_assertions(raw_signals: list[Any]) -> int:
         args = acquire.get("args") or {}
         if acquire.get("tool") != "qfk_system" or str(args.get("command") or "").strip() != "cat":
             continue
-        match = _PLACEHOLDER_RE.fullmatch(str(args.get("resource_keyword") or ""))
+        command_args = args.get("command_args")
+        resource = str(command_args[0]) if isinstance(command_args, list) and len(command_args) == 1 else ""
+        match = _PLACEHOLDER_RE.fullmatch(resource)
         variable = match.group(1) if match else ""
         if not variable or variable in ambiguous or variable not in producers:
             continue
@@ -750,6 +757,60 @@ def _normalize_derived_file_assertions(raw_signals: list[Any]) -> int:
             review["notes"] = f"{previous}；{note}" if previous else note
         normalized += 1
     return normalized
+
+
+def _normalize_generated_timeouts(raw_signals: list[Any]) -> int:
+    """将 LLM 抽取结果中的缺省/历史缺省超时收敛到统一 120 秒。
+
+    这是自动抽取的后处理，不会触碰专家手工保存的信号。模型把训练语料中的
+    ``10``/``30`` 当作“默认值”写入时，它已不再是缺字段，运行时的默认值无法生效；
+    仅对这两个历史默认值归一，保留专家或案例明确选择的其他超时值。
+    """
+
+    normalized = 0
+    for signal in raw_signals:
+        if not isinstance(signal, dict):
+            continue
+        acquire = signal.get("acquire")
+        if not isinstance(acquire, dict) or not str(acquire.get("tool") or "").startswith(("qkv_", "qfk_")):
+            continue
+        args = acquire.get("args")
+        if not isinstance(args, dict):
+            continue
+        if args.get("timeout") is None or args.get("timeout") in {10, 30}:
+            args["timeout"] = DEFAULT_SIGNAL_TIMEOUT_SECONDS
+            normalized += 1
+    return normalized
+
+
+def _unconsumed_qfk_producer_reasons(raw_signals: list[Any]) -> dict[int, str]:
+    """识别没有下游使用者的 QFK producer，阻止无意义的全文取值信号落库。"""
+
+    rejected: dict[int, str] = {}
+    for signal in raw_signals:
+        if not isinstance(signal, dict):
+            continue
+        acquire = signal.get("acquire") or {}
+        if not str(acquire.get("tool") or "").startswith("qfk_") or signal.get("match") is not None:
+            continue
+        produced = {
+            str(item.get("name"))
+            for item in ((signal.get("orchestrate") or {}).get("produces") or [])
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        }
+        consumed_variables = {
+            str(name)
+            for consumer in raw_signals
+            if isinstance(consumer, dict) and consumer is not signal
+            for name in ((consumer.get("orchestrate") or {}).get("requires") or [])
+            if str(name).strip()
+        }
+        unused = sorted(produced - consumed_variables)
+        if unused:
+            rejected[id(signal)] = (
+                "QFK producer 产出变量未被任何下游信号消费: " + ", ".join(unused)
+            )
+    return rejected
 
 
 def _validate_and_collect_signals(
@@ -773,6 +834,7 @@ def _validate_and_collect_signals(
         if isinstance(signal, dict):
             _normalize_config_file_read(signal)
     _normalize_derived_file_assertions(raw_signals)
+    _normalize_generated_timeouts(raw_signals)
 
     available_vars = set(DEFAULT_VARIABLE_SCHEMA) | set(external_variables or set())
     for s in raw_signals:
@@ -785,6 +847,17 @@ def _validate_and_collect_signals(
 
     validated: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
+    preparation_errors: dict[int, str] = {}
+    for s in raw_signals:
+        if not isinstance(s, dict) or "acquire" not in s:
+            continue
+        try:
+            apply_safe_pipeline_to_signal(s)
+            sync_signal_requires(s)
+        except SafePipelineConversionError as exc:
+            preparation_errors[id(s)] = str(exc)
+    unconsumed_producers = _unconsumed_qfk_producer_reasons(raw_signals)
+
     for s in raw_signals:
         if not isinstance(s, dict):
             rejected.append({"signal": s, "reason": "信号非对象"})
@@ -792,14 +865,19 @@ def _validate_and_collect_signals(
         if "acquire" not in s:
             rejected.append({"signal": s, "reason": "信号缺少 acquire 段（v1 扁平格式已不再支持）"})
             continue
-        try:
-            apply_safe_pipeline_to_signal(s)
-            sync_signal_requires(s)
-        except SafePipelineConversionError as exc:
+        if id(s) in preparation_errors:
+            reason = preparation_errors[id(s)]
             s.setdefault("provenance", {})["needs_review"] = True
-            s.setdefault("review", {})["notes"] = str(exc)
-            rejected.append({"signal": s, "reason": str(exc)})
-            logger.warning("extract_signals 安全管道转换失败 source=%s reason=%s", source_id, exc)
+            s.setdefault("review", {})["notes"] = reason
+            rejected.append({"signal": s, "reason": reason})
+            logger.warning("extract_signals 安全管道转换失败 source=%s reason=%s", source_id, reason)
+            continue
+        if id(s) in unconsumed_producers:
+            reason = unconsumed_producers[id(s)]
+            s.setdefault("provenance", {})["needs_review"] = True
+            s.setdefault("review", {})["notes"] = reason
+            rejected.append({"signal": s, "reason": reason})
+            logger.warning("extract_signals 拒绝未消费 QFK producer source=%s reason=%s", source_id, reason)
             continue
         ok, err = _validate_signal(s, available_vars)
         if ok:

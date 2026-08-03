@@ -59,7 +59,11 @@ from app.services.kbd_revision_service import (
     diff_revision_payloads,
     ensure_kbd_revision,
     ensure_kbd_revision_payload,
+    is_evaluation_candidate,
+    resolve_proposal_baseline,
     revision_metadata,
+    select_current_expert_pair,
+    summarize_expert_signal_changes,
 )
 from app.services.sop_parser import extract_sop_variables, merge_variable_schema, parse_sop_markdown
 from app.services.sop_tool_contract_validator import validate_sop_tool_contract
@@ -349,12 +353,11 @@ async def export_kbd_evaluation_data(request: Request, limit: int = 200) -> dict
         if len(examples) >= bounded_limit:
             break
         by_id = {item.id: item for item in history}
-        proposal = next((item for item in history if item.revision_type == "proposal"), None)
-        for expert in (item for item in history if item.revision_type == "expert"):
-            parent = by_id.get(expert.parent_revision_id)
-            if proposal is None and parent is None:
+        for expert in (item for item in history if is_evaluation_candidate(item)):
+            proposal = resolve_proposal_baseline(expert, by_id)
+            if proposal is None:
                 continue
-            baseline = parent or proposal
+            proposal_diff = diff_revision_payloads(proposal.payload_json, expert.payload_json)
             examples.append(
                 {
                     "kbd_id": kbd_id,
@@ -362,16 +365,17 @@ async def export_kbd_evaluation_data(request: Request, limit: int = 200) -> dict
                         "id": proposal.id,
                         "payload": proposal.payload_json,
                         "generation_metadata": proposal.generation_metadata or {},
-                    }
-                    if proposal is not None
-                    else None,
+                    },
                     "expert_revision": {
                         "id": expert.id,
+                        "baseline_proposal_revision_id": proposal.id,
                         "payload": expert.payload_json,
                         "review_metadata": expert.review_metadata or {},
                         "validation_summary": expert.validation_summary or {},
                     },
-                    "diff_from_parent": diff_revision_payloads(baseline.payload_json, expert.payload_json),
+                    "diff_from_proposal": proposal_diff,
+                    # v1 消费方兼容别名；语义已固定为 Proposal baseline，不再是任意 direct parent。
+                    "diff_from_parent": proposal_diff,
                     "runtime_outcomes": [
                         item
                         for (resource_name, _revision), items in audits_by_resource.items()
@@ -383,7 +387,7 @@ async def export_kbd_evaluation_data(request: Request, limit: int = 200) -> dict
             if len(examples) >= bounded_limit:
                 break
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "kbd_proposal_expert_runtime_export",
         "facts_boundary": {
             "trusted_reviewer": False,
@@ -898,6 +902,11 @@ async def get_kbd_revisions(request: Request, kbd_id: int) -> dict[str, Any]:
         )
         history = list(history_result.scalars().all())
         revision_by_id = {item.id: item for item in history}
+        current_expert, proposal_baseline = select_current_expert_pair(
+            history,
+            working_revision_id=entry.working_revision_id,
+            latest_proposal_revision_id=entry.latest_proposal_revision_id,
+        )
         active_result = await session.execute(
             text(
                 """
@@ -919,6 +928,12 @@ async def get_kbd_revisions(request: Request, kbd_id: int) -> dict[str, Any]:
         "latest_proposal_revision_id": entry.latest_proposal_revision_id,
         "working_revision_id": entry.working_revision_id,
         "lock_version": entry.lock_version,
+        "expert_signal_edit_summary": summarize_expert_signal_changes(
+            proposal_baseline.payload_json if proposal_baseline is not None else {},
+            current_expert.payload_json if current_expert is not None else None,
+            proposal_revision_id=proposal_baseline.id if proposal_baseline is not None else entry.latest_proposal_revision_id,
+            expert_revision_id=current_expert.id if current_expert is not None else None,
+        ),
         "history": [
             {
                 **(revision_metadata(item) or {}),
@@ -2824,6 +2839,14 @@ async def publish_kbd_maintenance_working(
                 "review_note": body.review_note or "",
             },
             validation_summary={"status": "passed", "gate": "publishable_signals_json"},
+            review_metadata=build_review_metadata(
+                parent_payload=working.payload_json,
+                payload=build_kbd_revision_payload(kbd),
+                identity_status="unverified_body_reviewer_id",
+                review_state="approved",
+                reviewer_id=body.reviewer_id,
+                review_note=body.review_note,
+            ),
             trace_id=get_current_trace_id(),
             reuse_existing=False,
         )

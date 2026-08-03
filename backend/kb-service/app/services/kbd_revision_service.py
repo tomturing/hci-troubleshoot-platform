@@ -114,6 +114,168 @@ def diff_revision_payloads(before: Any, after: Any, path: str = "") -> list[dict
     return [{"operation": "replace", "path": path or "/", "before": before, "after": after}]
 
 
+def summarize_expert_signal_changes(
+    proposal_payload: Any,
+    expert_payload: Any | None,
+    *,
+    proposal_revision_id: int | None,
+    expert_revision_id: int | None,
+) -> dict[str, Any]:
+    """返回面向审核 UI 的专家关键信号修改摘要。
+
+    ``diff_revision_payloads`` 是包含 Prompt 指纹、正文和任意字段的通用审计
+    Diff，不能直接解释为“专家修改”。本摘要只比较 AI Proposal 与当前专家稿中
+    ``signals_json.signals`` 的稳定 signal id，确保一次重抽的 AI→AI 变化和运行时
+    元数据永远不会计入专家修改数。
+    """
+
+    empty = {
+        "status": "no_expert_draft",
+        "proposal_revision_id": proposal_revision_id,
+        "expert_revision_id": expert_revision_id,
+        "changed_signal_count": 0,
+        "added_signal_ids": [],
+        "removed_signal_ids": [],
+        "modified_signal_ids": [],
+    }
+    if not isinstance(expert_payload, dict):
+        return empty
+
+    def signal_map(payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {}
+        signals_json = payload.get("signals_json")
+        signals = signals_json.get("signals") if isinstance(signals_json, dict) else None
+        if not isinstance(signals, list):
+            return {}
+        return {
+            str(signal["id"]): signal
+            for signal in signals
+            if isinstance(signal, dict) and signal.get("id") is not None
+        }
+
+    proposal_signals = signal_map(proposal_payload)
+    expert_signals = signal_map(expert_payload)
+    added = sorted(set(expert_signals) - set(proposal_signals))
+    removed = sorted(set(proposal_signals) - set(expert_signals))
+    modified = sorted(
+        signal_id
+        for signal_id in set(proposal_signals) & set(expert_signals)
+        if proposal_signals[signal_id] != expert_signals[signal_id]
+    )
+    changed = len(added) + len(removed) + len(modified)
+    return {
+        "status": "modified" if changed else "unchanged",
+        "proposal_revision_id": proposal_revision_id,
+        "expert_revision_id": expert_revision_id,
+        "changed_signal_count": changed,
+        "added_signal_ids": added,
+        "removed_signal_ids": removed,
+        "modified_signal_ids": modified,
+    }
+
+
+def resolve_proposal_baseline(
+    revision: KbdRevision | None,
+    revisions_by_id: dict[int, KbdRevision],
+) -> KbdRevision | None:
+    """解析 Expert 明确绑定的 Proposal，并兼容迁移前的 parent 链。
+
+    新版本以 ``baseline_proposal_revision_id`` 为权威；历史版本尚未回填或测试夹具
+    缺少该属性时，才沿不可变 parent 链回溯。不得使用 history 第一项、最后一项或
+    当前 latest proposal 猜测，否则重抽后会把 AI→AI 变化错误归到专家名下。
+    """
+
+    if revision is None:
+        return None
+    baseline_id = getattr(revision, "baseline_proposal_revision_id", None)
+    if baseline_id is not None:
+        baseline = revisions_by_id.get(int(baseline_id))
+        if baseline is not None and baseline.revision_type == "proposal":
+            return baseline
+
+    current = revision
+    visited: set[int] = set()
+    while current is not None and current.id not in visited:
+        visited.add(current.id)
+        if current.revision_type == "proposal":
+            return current
+        if current.parent_revision_id is None:
+            break
+        current = revisions_by_id.get(int(current.parent_revision_id))
+    return None
+
+
+def is_evaluation_candidate(revision: KbdRevision) -> bool:
+    """仅把已完成审核/发布的 Expert 快照作为默认评估候选。
+
+    working/saved/opened 是可追溯的编辑血缘，不是稳定目标答案；保留它们不等于允许
+    直接进入训练或评估集。兼容旧数据时允许由稳定的发布 origin 判定 approved。
+    """
+
+    if revision.revision_type != "expert":
+        return False
+    review_state = str((revision.review_metadata or {}).get("review_state") or "")
+    origin = str((revision.generation_metadata or {}).get("origin") or "")
+    return review_state == "approved" or origin in {"admin_review", "admin_maintenance_publish"}
+
+
+def select_current_expert_pair(
+    revisions: list[KbdRevision],
+    *,
+    working_revision_id: int | None,
+    latest_proposal_revision_id: int | None,
+) -> tuple[KbdRevision | None, KbdRevision | None]:
+    """选择页面当前 Expert 及其 Proposal，不让旧审核稿跨重抽冒充当前稿。
+
+    有 working head 时它是当前编辑态；发布后 working 会被清空，此时选择仍绑定当前
+    latest Proposal 的最新 approved/published Expert。若已经重抽出新 Proposal，而历史
+    Expert 只审核过旧基线，则返回空 Expert，页面显示 0。
+    """
+
+    revisions_by_id = {int(item.id): item for item in revisions}
+    if working_revision_id is not None:
+        working = revisions_by_id.get(int(working_revision_id))
+        if working is not None and working.revision_type == "expert":
+            return working, resolve_proposal_baseline(working, revisions_by_id)
+
+    for expert in sorted(revisions, key=lambda item: item.revision_no, reverse=True):
+        if not is_evaluation_candidate(expert):
+            continue
+        baseline = resolve_proposal_baseline(expert, revisions_by_id)
+        if (
+            baseline is not None
+            and latest_proposal_revision_id is not None
+            and int(baseline.id) == int(latest_proposal_revision_id)
+        ):
+            return expert, baseline
+    return None, None
+
+
+async def _resolve_baseline_proposal_id(
+    session: AsyncSession,
+    *,
+    kbd: KbdEntry,
+    parent_revision_id: int | None,
+) -> int | None:
+    """在创建 Expert 快照时冻结其 Proposal 基线，避免后续重抽改变配对。"""
+
+    current_id = parent_revision_id
+    visited: set[int] = set()
+    while current_id is not None and current_id not in visited:
+        visited.add(current_id)
+        current = await session.get(KbdRevision, current_id)
+        if current is None:
+            break
+        if current.revision_type == "proposal":
+            return int(current.id)
+        baseline_id = getattr(current, "baseline_proposal_revision_id", None)
+        if baseline_id is not None:
+            return int(baseline_id)
+        current_id = current.parent_revision_id
+    return int(kbd.latest_proposal_revision_id) if kbd.latest_proposal_revision_id is not None else None
+
+
 async def ensure_kbd_revision(
     session: AsyncSession,
     *,
@@ -122,6 +284,7 @@ async def ensure_kbd_revision(
     actor_type: ActorType,
     actor_id: str | None = None,
     parent_revision_id: int | None = None,
+    baseline_proposal_revision_id: int | None = None,
     generation_metadata: dict[str, Any] | None = None,
     validation_summary: dict[str, Any] | None = None,
     review_metadata: dict[str, Any] | None = None,
@@ -146,6 +309,7 @@ async def ensure_kbd_revision(
         actor_type=actor_type,
         actor_id=actor_id,
         parent_revision_id=parent_revision_id,
+        baseline_proposal_revision_id=baseline_proposal_revision_id,
         generation_metadata=generation_metadata,
         validation_summary=validation_summary,
         review_metadata=review_metadata,
@@ -163,6 +327,7 @@ async def ensure_kbd_revision_payload(
     actor_type: ActorType,
     actor_id: str | None = None,
     parent_revision_id: int | None = None,
+    baseline_proposal_revision_id: int | None = None,
     generation_metadata: dict[str, Any] | None = None,
     validation_summary: dict[str, Any] | None = None,
     review_metadata: dict[str, Any] | None = None,
@@ -177,16 +342,28 @@ async def ensure_kbd_revision_payload(
 
     await session.execute(select(func.pg_advisory_xact_lock(kbd.id)))
     checksum = payload_checksum(payload)
+    if revision_type == "expert" and baseline_proposal_revision_id is None:
+        baseline_proposal_revision_id = await _resolve_baseline_proposal_id(
+            session,
+            kbd=kbd,
+            parent_revision_id=parent_revision_id,
+        )
 
     revision = None
     if reuse_existing:
+        reuse_filters = [
+            KbdRevision.kbd_entry_id == kbd.id,
+            KbdRevision.revision_type == revision_type,
+            KbdRevision.checksum == checksum,
+        ]
+        if revision_type == "expert":
+            # 相同正文基于不同 Proposal 仍是不同监督样本，不能跨基线复用。
+            reuse_filters.append(
+                KbdRevision.baseline_proposal_revision_id == baseline_proposal_revision_id
+            )
         existing_result = await session.execute(
             select(KbdRevision)
-            .where(
-                KbdRevision.kbd_entry_id == kbd.id,
-                KbdRevision.revision_type == revision_type,
-                KbdRevision.checksum == checksum,
-            )
+            .where(*reuse_filters)
             .order_by(KbdRevision.revision_no.desc())
             .limit(1)
         )
@@ -202,6 +379,7 @@ async def ensure_kbd_revision_payload(
             revision_no=int(next_no_result.scalar_one()),
             revision_type=revision_type,
             parent_revision_id=parent_revision_id,
+            baseline_proposal_revision_id=baseline_proposal_revision_id,
             payload_json=payload,
             checksum=checksum,
             generation_metadata=generation_metadata or {},
@@ -241,6 +419,7 @@ def revision_metadata(revision: KbdRevision | None) -> dict[str, Any] | None:
         "revision_no": revision.revision_no,
         "revision_type": revision.revision_type,
         "parent_revision_id": revision.parent_revision_id,
+        "baseline_proposal_revision_id": getattr(revision, "baseline_proposal_revision_id", None),
         "checksum": revision.checksum,
         "actor_id": revision.actor_id,
         "actor_type": revision.actor_type,

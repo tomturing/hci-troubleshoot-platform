@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-08-03 | v3.51 | **KBD 抽取质量守门**：Prompt v1.8 强制失败任务 `qkv_task`、QFK producer 下游消费、120 秒与多图引用；KB 后处理拒绝 dead producer，并将 `/sf/cfg` cat 收敛为 `command_args`。 | [KBD 关键信号抽取反馈闭环与版本治理任务](../knowledge-base/events/2026-08-03-KBD关键信号抽取反馈闭环与版本治理任务.md) |
 | 2026-08-03 | v3.50 | **QFK timeout 缺省值统一**：`BackendSignal`、KBD Differential 和 CDD 命令编译都使用共享的 120 秒缺省值；命令预览与真实执行不再因缺字段产生不同 timeout。 | PR #663 |
 | 2026-08-03 | v3.49 | **QFK 只读命令编译预览**：Agent 新增内部预览端点，复用运行中 `BackendSignal` 与 `HandlerRegistry` 编译完整 aCLI 模板；保留运行时变量、明确 host 只用于 SSH 路由，预览不进入执行器。 | PR #663 |
 | 2026-08-03 | v3.48 | **QFK producer 执行链修复**：显式区分 produce/match，lsof 成功输出可进入 PID 变量池；qfk_system 收敛为唯一 argv 命令模型。 | [KBD27123产出变量执行链与QFK命令参数模型收敛任务](../events/2026-08-03-KBD27123产出变量执行链与QFK命令参数模型收敛.md) |

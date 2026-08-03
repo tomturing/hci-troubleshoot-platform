@@ -667,6 +667,13 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
 16. 结构字段封闭约束：frontend（qkv_*）必须 match=null 且 produces 至少一项；backend 的 match 与 produces 严格二选一，不得同时配置。每个 match.extract 与 produces[].extract 都只能使用 JSON extract 或声明式 text extract。text extract 必须有 rows；取整行时不配置 columns，取一列或多列时必须配置 parser、columns[] 与 value_key。除本 Prompt 明确列出的声明式字段外，禁止自造任何取值字段。没有可靠取值路径时不要生成变量。
 17. Matcher 封闭约束：keyword/regex/state 必须有非空 pattern；threshold 必须有数值 value 和 operator，aggregation 只能是 first_number/last_number/line_count/duration_seconds/max/min/sum；delta 必须有 metric/value/operator；trend 必须有 metric/direction，可选 value 表示最小步长。需要读取 JSON 字段时必须在 match.extract 或 produces[].extract 使用 type=json 与 path；再用 state、threshold 或 exists 判定取值。blackbox 行通常以时间戳开头，阈值/差值/趋势必须用 metric 定位字段，禁止把日期数字误当计数器。
 18. 诊断与处置边界：只有真实写操作才设 phase=solution，且 solution 的 role 必须是 context；只读 list/get/status/show/check 即使需要人工确认仍是 diagnostic。command/command_args/resource_keyword 禁止包含 |、;、&、反引号、$、重定向符或换行；不要把多条命令拼成一个 command。
+19. 任务生产者、QFK 消费关系、超时与多图证据：
+   - 当标题、问题描述、任务详情或任务截图明确表达启动、创建、迁移虚拟机失败，且后续检查需要故障 HOST 或 VM 时，必须先生成 qkv_task producer。keyword 使用正文或截图中稳定的任务动作，is_failed=true，produces 至少声明 HOST 和 VM；后续 QFK 通过 requires 使用这些变量。能够从失败任务取得的 HOST/VM 不得降级为未声明外部变量。
+   - qfk_system 等 QFK producer 只允许产出至少被一个下游信号 requires 消费的变量。读取配置文件后直接判断字段存在、缺失或状态时，应生成带 match 的独立 matcher；禁止把配置文件全文产出为无人消费的变量。配置文件中代表不同诊断事实的字段应分别生成 matcher，不得用一个泛化 producer 替代。
+   - 故障主机截图与正常参考截图同时出现时，只对故障目标机上可执行、可验证的事实生成 QFK。正常参考截图只用于确定预期或辅助证据，不得把正常机专有字面值强制生成为故障主机必须命中的远程检查。
+   - 所有 qkv_ 和 qfk_ 信号的 timeout 默认写为 120。没有明确、可审计的特殊耗时依据时，禁止使用 10、30 等历史默认值。
+   - evidence 同时引用多张截图或同时比较故障图与参考图时，source_refs 必须包含 evidence 实际使用的全部截图引用；禁止文字声称比较多图而只记录一张图。
+   - 信息不足时标记 needs_review 或减少候选；不得为了凑数量生成无下游消费者的 producer。
 
 # 输出示例（对齐真实 KBD：虚拟机开机失败→镜像忙→进程占用；已对齐全 v2 契约与采集器字段）
 {{
@@ -707,7 +714,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
   }}
 }}
 $TEMPLATE$,
-        '1.4',
+        '1.8',
         TRUE
     )
 ON CONFLICT (name) DO NOTHING;
