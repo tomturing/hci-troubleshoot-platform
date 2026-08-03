@@ -84,7 +84,8 @@ def test_instruction_text_does_not_split_identical_runtime_acquisition():
     for item, instruction in ((first, "检查 GPU 类型"), (second, "检查切分方式")):
         item["acquire"]["args"].update({
             "host": "{{HOST}}",
-            "resource_keyword": "/sf/cfg/gpu_info.ini",
+            "command": "cat",
+            "command_args": ["/sf/cfg/gpu_info.ini"],
             "instruction": instruction,
         })
         item["orchestrate"]["requires"] = ["HOST"]
