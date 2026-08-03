@@ -1,4 +1,12 @@
+from types import SimpleNamespace
+
+import pytest
+
+from app.tools.acli import executor as executor_module
+from app.tools.acli.executor import ExecResult
+from app.tools.qfk import engine
 from app.tools.qfk.matcher import evaluate_matcher
+from app.tools.qfk.signal import BackendSignal
 
 
 def _rows_all(*, value_mode="string") -> dict:
@@ -41,3 +49,75 @@ def test_matcher_without_extract_fails_closed():
     result = evaluate_matcher({"type": "threshold", "operator": ">", "value": 1, "expected": True}, "value=2")
     assert result.matched is None
     assert "extract" in result.detail["error"]
+
+
+@pytest.mark.asyncio
+async def test_producer_mode_returns_complete_output_without_matcher(monkeypatch):
+    """KBD 的 lsof -> PID producer 不能被 QFK_MATCHER_MISSING 短路。"""
+
+    output = "flock      8369 root /18864231143.vm/vm-disk-2.qcow2\n"
+
+    class FakeExecutor:
+        _redis = SimpleNamespace()
+
+        async def execute(self, **_kwargs):
+            return ExecResult(
+                stdout=output,
+                stderr="",
+                exit_code=0,
+                command="acli --timeout 120 system lsof",
+                node="172.28.25.4",
+                duration_ms=22000,
+                truncated=True,
+                risk_level=1,
+                exec_id="qfk-producer-test",
+            )
+
+    async def fake_complete_output(_result, _redis, *, source):
+        assert source == "stdout"
+        return output
+
+    monkeypatch.setattr(executor_module, "_executor", FakeExecutor())
+    monkeypatch.setattr(engine, "get_complete_output", fake_complete_output)
+    signal = BackendSignal(namespace="system", command="lsof", matcher=None, timeout=120)
+
+    result = await engine.qfk_exec(
+        signal,
+        conversation_id="producer-test",
+        required_output_sources={"stdout"},
+        execution_mode="produce",
+    )
+
+    assert result.error is None
+    assert result.matched is True
+    assert result.complete_outputs == {"stdout": output}
+    assert "产出变量规则" in result.evidence
+
+
+@pytest.mark.asyncio
+async def test_producer_mode_rejects_matcher_conflict_before_variable_extraction(monkeypatch):
+    class FakeExecutor:
+        _redis = SimpleNamespace()
+
+        async def execute(self, **_kwargs):
+            return ExecResult(
+                stdout="ClwDRDBClient",
+                stderr="",
+                exit_code=0,
+                command="acli system ps",
+                node="172.28.25.4",
+                duration_ms=1,
+                truncated=False,
+                risk_level=1,
+            )
+
+    monkeypatch.setattr(executor_module, "_executor", FakeExecutor())
+    signal = BackendSignal(
+        namespace="system",
+        command="ps",
+        matcher={"type": "keyword", "pattern": "ClwDRDBClient", "expected": True},
+    )
+
+    result = await engine.qfk_exec(signal, conversation_id="producer-conflict", execution_mode="produce")
+
+    assert result.error == "QFK_PRODUCER_MATCH_CONFLICT: 产出变量模式不得同时配置 matcher"

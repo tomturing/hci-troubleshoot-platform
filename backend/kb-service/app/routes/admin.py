@@ -30,7 +30,7 @@ from shared.models.skill_definition import SkillDefinitionORM
 from shared.models.tool_definition import ToolDefinitionORM
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
-from shared.schemas.acquirer_args import validate_acquire_args
+from shared.schemas.acquirer_args import normalize_qfk_system_args, validate_acquire_args
 from shared.schemas.capability_descriptor import capability_descriptor_document, get_capability_descriptor
 from shared.schemas.signal_output import sync_signal_requires
 from shared.schemas.signal_schema import (
@@ -101,6 +101,21 @@ def _signals_for_response(raw: Any) -> dict:
     document = _load_signals_json(raw)
     normalized, _ = normalize_legacy_role_contract(document)
     return normalized
+
+
+def _normalize_qfk_system_command_args(document: dict[str, Any]) -> dict[str, Any]:
+    """在保存工作稿前收敛 qfk_system 的唯一命令表达。
+
+    完整命令只做可逆 argv 规范化；旧 resource_keyword 不具备可推导命令语义，
+    特别不能把 VM ID 盲目追加给 lsof，因此由共享契约要求人工复核。
+    """
+
+    for signal in document.get("signals") or []:
+        acquire = signal.get("acquire") if isinstance(signal, dict) else None
+        if not isinstance(acquire, dict) or acquire.get("tool") != "qfk_system":
+            continue
+        acquire["args"] = normalize_qfk_system_args(acquire.get("args") or {})
+    return document
 
 
 def _prepare_expert_publish_signals(raw: Any) -> dict[str, Any]:
@@ -2483,6 +2498,10 @@ def _patch_maintenance_payload(payload: dict[str, Any], body: KbdUpdateRequest) 
     if body.signals_json is not None:
         signals_doc = _load_signals_json(body.signals_json)
         signals_doc, _ = reconcile_verification_contract(signals_doc)
+        try:
+            signals_doc = _normalize_qfk_system_command_args(signals_doc)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"signals_json 校验失败: {exc}") from exc
         metadata = signals_doc.get("generation_metadata")
         if isinstance(metadata, dict):
             metadata["status"] = "manual_reviewed"
@@ -2878,6 +2897,10 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
         # 直接切 v2 列形态（RFC §7）：保存时统一归约为 v2 数组级对象
         v2_doc = _load_signals_json(body.signals_json)
         v2_doc, _ = reconcile_verification_contract(v2_doc)
+        try:
+            v2_doc = _normalize_qfk_system_command_args(v2_doc)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"signals_json 校验失败: {exc}") from exc
         # 自动生成物经管理端手工修改后不再冒充“模型原样 current”。保留全部生成
         # 指纹用于审计，并显式标记为人工复核版本；来源随后变化时仍会进入 stale。
         generation_metadata = v2_doc.get("generation_metadata")

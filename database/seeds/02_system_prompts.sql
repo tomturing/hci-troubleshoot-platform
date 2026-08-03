@@ -641,7 +641,8 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
    - qkv_dialog：有对应任务/告警时优先 qkv_task/qkv_alert；仅有页面弹框时生成 qkv_dialog，keyword 必须取弹框原文或稳定片段，默认在当前主控 /sf/log/today 与 /sf/log/today/vt 检索，并在 orchestrate.produces 声明 END(end)、REQUEST_ID(request_id)、HOST(host)。禁止生成虚构的 acli dialog get；弹框文本不稳定或无法关联日志时标 needs_review。
    - qfk_log：统一覆盖 /sf/log 下 whitebox、blackbox、vn-blackbox 与 pods；禁止生成 qfk_blackbox。常规日志必填 file（安全 basename，禁止目录分隔符和控制字符，扩展名不限；BMC_Event_Log 不是本机日志，应使用 qfk_hardware）。可选 source_family=auto|whitebox|blackbox|vn_blackbox|pod、path、parser、request_id、context_lines、time_window、include_archives/archive_precheck、host/timeout/instruction。/sf/data/local 不是日志族，仅允许携带 request_id 做辅助关联搜索。time_window 只能是 HCI 时区绝对时间或 {{{{ABSOLUTE_TIME}}}}，now/-1h 必须先解析。普通报错用 keyword/regex/state/exists；数值计数用 threshold；周期快照变化用 delta/trend 且必须提供 metric。产出变量模式必须用 resource_keyword 或 request_id 限制输出。无法从正文/截图确定 file 或现场来源属于 UI/BMC/NBU/外部存储时，不得伪造成 qfk_log。
    - qfk_service：领域服务域为 asv(vt)/anet(vn)/asan(vs)/host；当前版本 `acli service --help` 已验证可执行组为 asv/anet/host，生成命令必须取运行时能力交集。resource_keyword 为服务名，container 为已探测组（默认 asv）；可选 command（status/restart 等）/timeout/instruction。不要把 `acli storage asan ...` 与 `acli service asan ...` 混同。
-   - qfk_system/vm/network/storage/hardware/platform：command（如 lsof/ps/...，acli <namespace> <command>）；可选 host（{{{{HOST}}}}）/resource_keyword/timeout/instruction。
+   - qfk_system：command 只写基础子命令（如 lsof/ps），普通参数唯一写入 command_args 数组（如 ["-p","{{{{PID}}}}","-o","cmd="]）；可选 host（{{{{HOST}}}}）/timeout/instruction。qfk_system 禁止 resource_keyword，VM ID 必须放在 produces.extract.rows.include 的受控行筛选中，不能追加给 lsof。
+   - qfk_vm/network/storage/hardware/platform：command（如 list/show/...，acli <namespace> <command>）；可选 host（{{{{HOST}}}}）/resource_keyword/timeout/instruction。
    - host 即原 v1 的 target.scope：采集目标主机/作用域，用 {{{{HOST}}}} 占位（变量池解析）或字面 cluster；不要再用嵌套 target 对象。
 7. 写操作安全：若 acquire.tool 为 qfk_* 且 acquire.args.command 命中写/变更动词（start/stop/restart/delete/set/create/...），必须 review.require_human_confirm=true、orchestrate.phase=solution；且只在排查步骤明确描述「处置/修复动作」时才抽取此类信号，纯诊断步骤不要编造写操作。
 8. source_section 只能取 title/problem_description/alert_info/steps_text（根因/解决方案不作为信号来源）；evidence 必须逐字引用正文原句或截图 observed_facts/text_lines。来自截图时必须填写 source_refs（如 img:0/region:img_0:r_0），便于审计和重识图 stale 传播。
@@ -654,7 +655,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
    - 反例（禁止）：{{"tool":"qfk_storage","args":{{"resource_keyword":"镜像文件占用检查"}}}} ❌
      正例（正确）：{{"tool":"qfk_storage","args":{{"command":"list","resource_keyword":"<实际资源名>","instruction":"镜像文件占用检查"}}}}。
 12. 非 JSON 行列提取与 Shell 管道安全边界：
-   - command 只能保存基础命令，禁止包含管道符。若原步骤为 grep/awk/cut 管道，必须转换为 produces[].extract，不得原样写入 command。
+   - qfk_system.command 只能保存基础命令；参数写 command_args，禁止管道符。若原步骤为 grep/awk/cut 管道，必须转换为 produces[].extract，不得原样写入 command。
    - grep PATTERN / grep -e PATTERN / grep -F PATTERN → extract.rows.include；grep -v PATTERN → extract.rows.exclude；grep -i → extract.rows.case_sensitive=false。awk '{{print $N}}' → columns[].selector={{"by":"index","index":N}}；cut -dX -fN → parser="delimited_table",delimiter=X,columns[].selector={{"by":"index","index":N}}。
    - grep -v grep 直接删除：平台只在内存筛选基础命令 stdout，不会启动 grep 进程。
    - 复杂 awk、sed、sort、聚合、正则歧义或未知管道不得猜测；保留 evidence，标 provenance.needs_review=true。
@@ -665,7 +666,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
 15. 外部变量：若 requires 引用了本案例内没有任何 signal.produces 的自定义变量（如 STORAGE_PATH、DEVICE），必须在 verification_contract.variables 中显式声明封闭类型 string/integer/number/boolean/array；变量未声明、类型不合法或现场未提供时不得假定值，裁决必须 inconclusive。
 16. 结构字段封闭约束：frontend（qkv_*）必须 match=null 且 produces 至少一项；backend 的 match 与 produces 严格二选一，不得同时配置。每个 match.extract 与 produces[].extract 都只能使用 JSON extract 或声明式 text extract。text extract 必须有 rows；取整行时不配置 columns，取一列或多列时必须配置 parser、columns[] 与 value_key。除本 Prompt 明确列出的声明式字段外，禁止自造任何取值字段。没有可靠取值路径时不要生成变量。
 17. Matcher 封闭约束：keyword/regex/state 必须有非空 pattern；threshold 必须有数值 value 和 operator，aggregation 只能是 first_number/last_number/line_count/duration_seconds/max/min/sum；delta 必须有 metric/value/operator；trend 必须有 metric/direction，可选 value 表示最小步长。需要读取 JSON 字段时必须在 match.extract 或 produces[].extract 使用 type=json 与 path；再用 state、threshold 或 exists 判定取值。blackbox 行通常以时间戳开头，阈值/差值/趋势必须用 metric 定位字段，禁止把日期数字误当计数器。
-18. 诊断与处置边界：只有真实写操作才设 phase=solution，且 solution 的 role 必须是 context；只读 list/get/status/show/check 即使需要人工确认仍是 diagnostic。command/resource_keyword 禁止包含 |、;、&、反引号、$、重定向符或换行；不要把多条命令拼成一个 command。
+18. 诊断与处置边界：只有真实写操作才设 phase=solution，且 solution 的 role 必须是 context；只读 list/get/status/show/check 即使需要人工确认仍是 diagnostic。command/command_args/resource_keyword 禁止包含 |、;、&、反引号、$、重定向符或换行；不要把多条命令拼成一个 command。
 
 # 输出示例（对齐真实 KBD：虚拟机开机失败→镜像忙→进程占用；已对齐全 v2 契约与采集器字段）
 {{
@@ -683,7 +684,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
     {{
       "id": "sig_002",
       "role": "must",
-      "acquire": {{"tool": "qfk_system", "args": {{"command": "lsof", "resource_keyword": "{{{{VM}}}}", "host": "{{{{HOST}}}}", "instruction": "检查虚拟机镜像文件是否被其他进程占用"}}}},
+      "acquire": {{"tool": "qfk_system", "args": {{"command": "lsof", "command_args": [], "host": "{{{{HOST}}}}", "timeout": 120, "instruction": "检查虚拟机镜像文件是否被其他进程占用"}}}},
       "match": null,
       "orchestrate": {{"phase": "diagnostic", "produces": [{{"name": "PID", "type": "integer", "extract": {{"type": "text", "parser": "whitespace_table", "rows": {{"mode": "keywords", "include": ["{{{{VM}}}}"], "exclude": [], "include_mode": "all", "case_sensitive": true}}, "columns": [{{"key": "PID", "selector": {{"by": "index", "index": 2}}, "value_mode": "integer"}}], "value_key": "PID", "cardinality": "first", "source": "stdout"}}}}], "requires": ["VM", "HOST"]}},
       "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "检查该虚拟机镜像文件是否被其他进程占用", "confidence": 0.9}},
@@ -692,7 +693,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
     {{
       "id": "sig_003",
       "role": "should",
-      "acquire": {{"tool": "qfk_system", "args": {{"command": "ps -p {{{{PID}}}} -o cmd=", "host": "{{{{HOST}}}}", "instruction": "查询占用镜像文件的进程详情"}}}},
+      "acquire": {{"tool": "qfk_system", "args": {{"command": "ps", "command_args": ["-p", "{{{{PID}}}}", "-o", "cmd="], "host": "{{{{HOST}}}}", "instruction": "查询占用镜像文件的进程详情"}}}},
       "match": {{"type": "keyword", "pattern": "ClwDRDBClient", "mode": "or", "expected": true, "extract": {{"type": "text", "rows": {{"mode": "all"}}, "cardinality": "all", "source": "stdout"}}}},
       "orchestrate": {{"phase": "diagnostic", "produces": [], "requires": ["PID", "HOST"]}},
       "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "查询占用镜像文件的进程详情，确认是否为第三方程序占用", "confidence": 0.9}},

@@ -95,6 +95,7 @@ async def qfk_exec(
     exec_id: str | None = None,
     required_output_sources: set[str] | None = None,
     output_filters: list[dict[str, Any]] | None = None,
+    execution_mode: str = "match",
 ) -> QFKResult:
     """
     根据给定的标准化后端信号，寻找对应 Handler 执行 acli 底层命令，并自动执行关键字逻辑评估
@@ -105,10 +106,24 @@ async def qfk_exec(
         node_ip: 执行目标节点 IP（可指定，默认在集群主控节点）
         case_id: 工单 ID（可选；缺失时由 conversation-service 从会话解析，对齐 B1/B2 修复）
         exec_id: 流水号跟踪
+        execution_mode: ``match`` 执行 Matcher 判定；``produce`` 只取得完整输出，
+            交由 KBD 编排层按 ``orchestrate.produces`` 写入变量池。
 
     Returns:
         QFKResult
     """
+    if execution_mode not in {"match", "produce"}:
+        return QFKResult(
+            matched=False,
+            namespace=signal.namespace,
+            commands=[],
+            keywords=signal.keyword,
+            match_mode=signal.match_mode,
+            matched_keywords=[],
+            evidence="",
+            error=f"QFK_EXECUTION_MODE_INVALID: 不支持的 QFK 执行模式 {execution_mode}",
+        )
+
     # 1. 寻找 handler 处理器并构建指令
     try:
         handler = HandlerRegistry.get(signal.namespace)
@@ -306,10 +321,40 @@ async def qfk_exec(
                 raw_output="\n".join(result.stdout or "" for result in results),
             )
 
-    # 4. 解析结果并做结构化 Matcher 求值。所有 QFK 判定均依赖新版 matcher.extract。
+    # 4. producer 与 matcher 是不同执行语义。producer 的完整输出必须先返回给
+    # 编排层取值，绝不能因为没有 matcher 而被 QFK_MATCHER_MISSING 短路。
     combined_output = "\n".join(
         f"{getattr(result, 'stdout', '') or ''}\n{getattr(result, 'stderr', '') or ''}" for result in results
     )
+    if execution_mode == "produce":
+        if signal.matcher:
+            return QFKResult(
+                matched=False,
+                namespace=signal.namespace,
+                commands=commands,
+                keywords=signal.keyword,
+                match_mode=signal.match_mode,
+                matched_keywords=[],
+                evidence="",
+                error="QFK_PRODUCER_MATCH_CONFLICT: 产出变量模式不得同时配置 matcher",
+                exec_ids=exec_ids,
+                raw_output=combined_output,
+                complete_outputs=complete_outputs,
+            )
+        return QFKResult(
+            matched=True,
+            namespace=signal.namespace,
+            commands=commands,
+            keywords=signal.keyword,
+            match_mode=signal.match_mode,
+            matched_keywords=[],
+            evidence="QFK 命令执行成功，完整输出已交由产出变量规则处理",
+            exec_ids=exec_ids,
+            raw_output=combined_output,
+            complete_outputs=complete_outputs,
+        )
+
+    # match 模式的所有 QFK 判定均依赖新版 matcher.extract。
     evaluated_output, excluded_probe_lines = _exclude_probe_self_observation(combined_output, commands)
     if signal.matcher:
         matcher_input = evaluated_output

@@ -23,6 +23,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from shared.schemas.acquirer_args import (
     VALID_SYSTEM_CONTAINERS,
+    normalize_qfk_system_args,
 )
 from shared.schemas.log_source_catalog import (
     LOG_PARSERS,
@@ -86,6 +87,20 @@ class BackendSignal(BaseModel):
         # 在运行时显式归一，既不把 acli 放进容器，也不静默改变旧案例的执行域。
         if self.namespace == "system" and self.container == "host":
             self.container = None
+        if self.namespace == "system":
+            try:
+                normalized = normalize_qfk_system_args(
+                    {
+                        "command": self.command,
+                        "command_args": self.command_args,
+                        **({"resource_keyword": self.resource_keyword} if self.resource_keyword else {}),
+                    }
+                )
+            except ValueError as exc:
+                raise ValueError(str(exc)) from exc
+            self.command = normalized["command"]
+            self.command_args = normalized["command_args"]
+            self.resource_keyword = None
         if self.match_mode not in VALID_MATCH_MODES:
             raise ValueError(f"match_mode 必须是 {VALID_MATCH_MODES} 之一，收到: {self.match_mode}")
         if self.namespace == "system" and self.container and self.container not in VALID_SYSTEM_CONTAINERS:

@@ -7,7 +7,7 @@
     },
     "command": {
       "type": "string",
-      "description": "acli system 的子命令（如 lsof/ps/df/lsblk/iostat/smartctl）；不得含 acli 前缀或 shell 管道"
+      "description": "acli system 的基础子命令（如 lsof/ps/df/lsblk/iostat/smartctl）；不得含参数、acli 前缀或 shell 管道"
     },
     "command_args": {
       "type": "array",
@@ -34,10 +34,6 @@
         "json"
       ],
       "description": "可选的 acli --formatter 输出格式，位于 system namespace 之前"
-    },
-    "resource_keyword": {
-      "type": "string",
-      "description": "系统检查资源/主题选择器（可选，如镜像层路径 overlay2/docker）"
     },
     "container": {
       "type": "string",

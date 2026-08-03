@@ -93,3 +93,15 @@ PY
 **修复：** 逐层核对 remote exit code、raw stdout、filtered stdout 和 extractor 结果。对于 `ps -p {{PID}} -o cmd=`，由命令参数完成 PID 定向，extract 使用空 include/exclude、`exactly_one + whole` 取得 CMD。
 
 **预防：** 命令参数或输出列发生变化时，把整套 extract 视为同一个契约重新评审；golden test 除 PASS 状态外必须断言实际产出值，并保留旧筛选条件的失败反例。禁止运行时静默忽略人工配置的 include。
+
+---
+
+## V-006：QFK 产出变量模式不得被 Matcher 前置校验短路
+
+**症状：** Bridge/远端命令已经返回 `exit_code=0`，筛选后的 stdout 也能按 KBD 的 `produces` 规则取到值，但 `tool_result` 却失败为 `QFK_MATCHER_MISSING: QFK 判定必须配置新版 match.extract`；下游信号随后显示 `blocked_dependency`，例如缺少 `PID`。KBD27123 的 `lsof -> PID -> ps` 链在 `Q2026080323483` 中即出现该现象：lsof 从约 413462 行筛出两行，现场复放可取得 `PID=8369`，但变量池没有该值。
+
+**根因：** QFK 有两种不同的语义：`match` 模式用于判断证据是否命中，`match=null + orchestrate.produces` 的 producer 模式用于从成功输出中产出变量。若 QFK 引擎在命令成功后无条件要求 `matcher`，producer 会在调用提取函数前被错误短路。此时不能依据工具总状态推断远端命令执行失败，必须同时检查 remote exit、筛选后输出、QFK 引擎错误和变量池。
+
+**修复：** 由调用方显式传入 `execution_mode="produce" | "match"`。producer 成功时返回受输出上限保护的完整结果给 `produces` 提取；仅 match 模式要求 matcher。调用链必须在 producer 成功后执行变量池填充，并将“命令执行”“结果处理/变量提取”“下游依赖”作为独立状态记录和展示。
+
+**预防：** 为完整链路建立端到端测试：执行 `qfk_system lsof`、按 VM 字面量筛选、从第 2 列提取 PID、再执行 `ps -p {{PID}} -o cmd=`。测试同时断言实际 PID、变量池内容、下游调度和各阶段状态；不能只覆盖 `_fill_pool_from_qfk()` 等局部辅助函数。保存/发布校验必须把 producer 与 matcher 作为互斥的、均可执行的模式验证。

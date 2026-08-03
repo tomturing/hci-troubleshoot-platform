@@ -1095,13 +1095,23 @@ function onSignalToolChange(tool: string) {
   if (tool.startsWith('qfk')) syncDraftRequires()
 }
 
-function commandArgsText(args: Record<string, any>): string {
-  return Array.isArray(args.command_args) ? args.command_args.join('\n') : ''
+function qfkSystemCommandText(args: Record<string, any>): string {
+  return [args.command, ...(Array.isArray(args.command_args) ? args.command_args : [])]
+    .filter((item) => typeof item === 'string' && item.trim())
+    .join(' ')
 }
 
-function setCommandArgsText(args: Record<string, any>, value: string) {
-  args.command_args = value.split('\n').map((item) => item.trim()).filter(Boolean)
+function setQfkSystemCommandText(args: Record<string, any>, value: string) {
+  // 后端在保存时用 shlex 做权威分词；这里保留完整编辑文本，避免前端猜测引号语义。
+  args.command = value
+  args.command_args = []
   syncDraftRequires()
+}
+
+function qfkSystemCommandPreview(args: Record<string, any>): string {
+  const timeout = Number(args.timeout || 10)
+  const container = args.container ? ` --container ${args.container}` : ''
+  return `acli --timeout ${timeout}${container} system ${qfkSystemCommandText(args) || '<命令>'}`
 }
 
 function clearStagedSignalEdits() {
@@ -2955,7 +2965,7 @@ onMounted(() => {
                   </template>
 
                   <!-- 其他工具特有字段 -->
-                  <div v-if="sigTool(item.sig) === 'qfk_system' && sigArgs(item.sig).resource_keyword" class="signal-row"><span class="signal-k">命令参数</span><span class="signal-v code">{{ sigArgs(item.sig).resource_keyword }}</span></div>
+                  <div v-if="sigTool(item.sig) === 'qfk_system'" class="signal-row"><span class="signal-k">执行命令</span><span class="signal-v code">{{ qfkSystemCommandText(sigArgs(item.sig)) || '—' }}</span></div>
                   <template v-if="sigTool(item.sig) === 'qfk_log'">
                     <div class="signal-row"><span class="signal-k">文件</span><span class="signal-v code">{{ sigArgs(item.sig).file || '—' }}</span></div>
                     <div class="signal-row"><span class="signal-k">时间</span><span class="signal-v">{{ sigArgs(item.sig).time_window || '—' }}</span></div>
@@ -3000,8 +3010,7 @@ onMounted(() => {
                     <div class="field-hint"><code>host</code> 表示不添加 <code>acli --container</code>；其他选项会作为 aCLI 容器参数。Terminal Bridge 始终在目标主机上启动 aCLI。</div>
                     <div class="signal-row"><span class="signal-k">集群执行</span><el-switch v-model="signalEditDraft.acquire.args.cluster" active-text="添加 acli --cluster" /></div>
                     <div class="signal-row"><span class="signal-k">输出格式</span><el-select v-model="signalEditDraft.acquire.args.formatter" size="small" clearable placeholder="默认文本"><el-option label="json" value="json" /><el-option label="keyvalue" value="keyvalue" /><el-option label="csv" value="csv" /><el-option label="xml" value="xml" /></el-select></div>
-                    <div class="signal-row"><span class="signal-k">执行命令</span><el-input v-model="signalEditDraft.acquire.args.command" size="small" placeholder="执行命令（必填，不含 acli system 前缀）" /></div>
-                    <div class="signal-row"><span class="signal-k">命令参数</span><el-input :model-value="commandArgsText(signalEditDraft.acquire.args)" size="small" type="textarea" :rows="2" placeholder="每行一个参数（可选，例如 /sf/log）" @input="(value: string) => setCommandArgsText(signalEditDraft.acquire.args, value)" /></div>
+                    <div class="signal-row"><span class="signal-k">执行命令</span><el-input :model-value="qfkSystemCommandText(signalEditDraft.acquire.args)" size="small" placeholder="如 ps -p {{PID}} -o cmd=（不含 acli system）" @input="(value: string) => setQfkSystemCommandText(signalEditDraft.acquire.args, value)" /></div>
                     <div v-if="String(signalEditDraft.acquire.args.command || '').includes('|')" class="signal-row pipeline-warning">
                       <span class="signal-k"></span>
                       <div class="signal-v">
@@ -3009,7 +3018,7 @@ onMounted(() => {
                         <el-button type="primary" size="small" :loading="pipelineConvertLoading" @click="convertDraftPipeline">安全转换管道</el-button>
                       </div>
                     </div>
-                    <div class="field-hint">最终命令形如 <code>acli [--cluster] [--timeout N] [--formatter X] [--container X] system 命令 参数</code>。grep/awk/cut 的安全子集改用下方“文本取值”，不执行 Shell 管道。</div>
+                    <div class="field-hint">最终命令：<code>{{ qfkSystemCommandPreview(signalEditDraft.acquire.args) }}</code>。保存时系统会把命令安全规范化为基础命令和 argv；grep/awk/cut 的安全子集改用下方“文本取值”，不执行 Shell 管道。</div>
                   </template>
                   <template v-if="sigTool(signalEditDraft) === 'qfk_service'">
                     <div class="signal-row"><span class="signal-k">容器</span><el-input v-model="signalEditDraft.acquire.args.container" size="small" placeholder="服务容器，如 asv" /></div>
@@ -3084,10 +3093,6 @@ onMounted(() => {
                   </template>
 
                   <!-- 其他工具特有字段 -->
-                  <template v-if="sigTool(signalEditDraft) === 'qfk_system'">
-                    <div class="signal-row"><span class="signal-k">命令参数</span><el-input v-model="signalEditDraft.acquire.args.resource_keyword" size="small" placeholder="可选，如 {{VM}}、{{PID}}、设备名" /></div>
-                    <div class="field-hint">作为一个安全参数追加到执行命令，例如 <code v-pre>lsof + {{VM}}</code>；完整命令已经包含参数时可留空。它不参与结果匹配。</div>
-                  </template>
                   <template v-if="sigTool(signalEditDraft) === 'qfk_log'">
                     <div class="signal-row"><span class="signal-k">文件</span><el-input v-model="signalEditDraft.acquire.args.file" size="small" placeholder="安全 basename，如 sfvt_vtpdaemon.log / LOG_ifconfig.txt" /></div>
                     <div class="field-hint">只填 basename，禁止包含目录；扩展名不限。blackbox、whitebox 和其他 /sf/log 日志都使用 qfk_log。</div>

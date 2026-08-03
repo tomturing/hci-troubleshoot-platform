@@ -1285,6 +1285,7 @@ class KBDDiagnostic:
                     exec_id=exec_id,
                     required_output_sources=required_output_sources,
                     output_filters=output_filters,
+                    execution_mode="produce" if produces else "match",
                 )
                 if res.error:
                     return res.raw_output or None, res.error, None

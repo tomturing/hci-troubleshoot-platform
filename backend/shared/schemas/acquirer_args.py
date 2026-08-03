@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import copy
 import re
+import shlex
 from typing import Any
 
 from shared.schemas.log_source_catalog import (
@@ -250,7 +251,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             "timeout": COMMON_ARGS["timeout"],
             "command": {
                 "type": "string",
-                "description": "acli system 的子命令（如 lsof/ps/df/lsblk/iostat/smartctl）；不得含 acli 前缀或 shell 管道",
+                "description": "acli system 的基础子命令（如 lsof/ps/df/lsblk/iostat/smartctl）；不得含参数、acli 前缀或 shell 管道",
             },
             "command_args": {
                 "type": "array",
@@ -267,10 +268,6 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
                 "type": "string",
                 "enum": ["xml", "csv", "keyvalue", "json"],
                 "description": "可选的 acli --formatter 输出格式，位于 system namespace 之前",
-            },
-            "resource_keyword": {
-                "type": "string",
-                "description": "系统检查资源/主题选择器（可选，如镜像层路径 overlay2/docker）",
             },
             "container": {
                 "type": "string",
@@ -380,6 +377,46 @@ def _check_type(value: Any, expected: str) -> bool:
     return True  # 未声明类型的字段放行
 
 
+def normalize_qfk_system_args(args: Any) -> dict[str, Any]:
+    """把 qfk_system 的单一命令输入规范为 ``command + command_args``。
+
+    旧 ``resource_keyword`` 不具备可推导的 argv 语义，特别是 VM ID 不能直接追加给
+    ``lsof``，因此一律要求人工复核，而不是静默改变命令。
+    """
+
+    if not isinstance(args, dict):
+        raise ValueError("acquire.args 必须是对象")
+    normalized = copy.deepcopy(args)
+    legacy_resource = normalized.get("resource_keyword")
+    if isinstance(legacy_resource, str) and legacy_resource.strip():
+        raise ValueError(
+            "qfk_system 已不支持 resource_keyword 命令参数；请将确有语义的参数写入命令，并人工复核后删除旧字段"
+        )
+    normalized.pop("resource_keyword", None)
+
+    command = normalized.get("command")
+    if not isinstance(command, str) or not command.strip():
+        raise ValueError("qfk_system 必须提供非空 command")
+    try:
+        command_tokens = shlex.split(command.strip())
+    except ValueError as exc:
+        raise ValueError(f"qfk_system.command 无法安全分词: {exc}") from exc
+    if not command_tokens or any(_contains_illegal_command_chars(token) for token in command_tokens):
+        raise ValueError("qfk_system.command 包含命令注入类非法字符")
+
+    configured_args = normalized.get("command_args") or []
+    if not isinstance(configured_args, list) or not all(isinstance(item, str) for item in configured_args):
+        raise ValueError("qfk_system.command_args 必须是字符串数组")
+    if len(command_tokens) > 1 and configured_args:
+        raise ValueError("qfk_system.command 已含参数时不得同时填写 command_args")
+    command_args = command_tokens[1:] if len(command_tokens) > 1 else configured_args
+    if any(not item or _contains_illegal_command_chars(item) for item in command_args):
+        raise ValueError("qfk_system.command_args 包含空值或命令注入类非法字符")
+    normalized["command"] = command_tokens[0]
+    normalized["command_args"] = command_args
+    return normalized
+
+
 def validate_acquire_args(tool: str, args: Any) -> tuple[bool, str | None]:
     """纯 Python 校验 `acquire.args`，与 §6.1 JSON Schema 语义对齐。
 
@@ -478,6 +515,12 @@ def validate_acquire_args(tool: str, args: Any) -> tuple[bool, str | None]:
         container = str(args.get("container") or "asv")
         if container not in VALID_SERVICE_CONTAINERS:
             return False, f"acquire.args.container 非法: {container}"
+
+    if tool == "qfk_system":
+        try:
+            normalize_qfk_system_args(args)
+        except ValueError as exc:
+            return False, str(exc)
 
     if tool.startswith("qfk_"):
         for field in ("command", "resource_keyword"):

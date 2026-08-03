@@ -67,10 +67,11 @@ _ILLEGAL_CHARS = set("|#;&`$<>{}\n\r")
 
 
 def _has_illegal_chars(value: str | None) -> bool:
-    """检测是否含命令注入类非法字符。"""
+    """检测是否含命令注入类非法字符，保留已验证的 ``{{VAR}}`` 占位符。"""
     if not value:
         return False
-    return any(c in _ILLEGAL_CHARS for c in value)
+    without_placeholders = re.sub(r"\{\{[A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*\}\}", "VALUE", value)
+    return any(c in _ILLEGAL_CHARS for c in without_placeholders)
 
 
 def _normalize_mode(mode: str | None) -> str:
@@ -304,11 +305,6 @@ class SystemHandler(BackendSignalHandler):
             if not isinstance(arg, str) or _has_illegal_chars(arg):
                 raise CommandBuildError("系统命令参数包含非法字符")
             parts.append(shlex.quote(arg))
-        resource = (signal.resource_keyword or "").strip()
-        if resource:
-            if _has_illegal_chars(resource):
-                raise CommandBuildError(f"系统命令资源参数包含非法字符: {resource}")
-            parts.append(shlex.quote(resource))
         return [" ".join(parts)]
 
 

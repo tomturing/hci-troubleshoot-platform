@@ -1,4 +1,4 @@
-h1:/OjleH/Gi3wBsgLPSRsbdLi0ZRQafYZpSP/1jTBs3Qg=
+h1:09ssPs1Dq4m2r94s1c2Af6EjWPC5q0DR99Jg3QWXWvE=
 20260525000000_kbd_structured_sections.sql h1:HK5p3/VudQhI6ZupzyZ3PEt00fqqLt5ExEovpDym/jc=
 20260526000000_create_sop_execution.sql h1:qAmFaHEbjh9R4eRIjcMM4QLx6wPw/LCDwvPoxBRXHlQ=
 20260526100000_add_variable_schema_to_sop_document.sql h1:tJjimwpXh/VwAAP1zWChXMgkuzjiK8WV+W55JO7BY/w=
@@ -24,3 +24,4 @@ h1:/OjleH/Gi3wBsgLPSRsbdLi0ZRQafYZpSP/1jTBs3Qg=
 20260730000000_align_tool_definition_capability_contract.sql h1:l5J8OnMLyGzkJUD7Sg8i35s2hbd4ZVr/1QESjGjT1RI=
 20260730000001_update_qfk_log_unified_prompt.sql h1:l8B7g5MAxlRLgYiFD2zp3CfCvoqYCRP/zY24z116eHM=
 20260730000002_restore_qkv_dialog_and_restrict_data_local.sql h1:H0CaxUKdw1CCe+UlDVp7ZdHkKGtQkoY4YHXbtIdhAlY=
+20260803000000_qfk_system_command_model.sql h1:wKDCF1VoCdLQbOkF1/7CwYaodVsorRSlpUWEKmwDgSo=
