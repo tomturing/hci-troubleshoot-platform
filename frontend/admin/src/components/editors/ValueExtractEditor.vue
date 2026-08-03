@@ -15,7 +15,21 @@ const extract = computed({
 })
 const mode = computed(() => {
   if (extract.value.type === 'json') return 'json'
-  return extract.value.columns?.length ? 'text' : 'complete'
+  // ``columns`` 只是“文本行列”模式中的一个可选子配置：专家可以只按行筛选，
+  // 不选列。此前把是否存在 columns 当作模式标识，切到“文本行列”后会马上被
+  // 重新判成“完整输出”，因此按钮看似无法点击、配置区也不会展开。
+  const rows = extract.value.rows
+  const isTextSelection = Boolean(
+    extract.value.columns?.length
+    || extract.value.parser
+    || extract.value.header
+    || extract.value.value_key
+    || extract.value.delimiter
+    || (rows && rows.mode && rows.mode !== 'all')
+    || extract.value.cardinality !== 'all'
+    || (extract.value.source && extract.value.source !== 'stdout'),
+  )
+  return isTextSelection ? 'text' : 'complete'
 })
 
 function completeExtract(): Record<string, any> {

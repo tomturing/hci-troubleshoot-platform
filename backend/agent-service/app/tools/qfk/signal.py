@@ -22,6 +22,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from shared.schemas.acquirer_args import (
+    DEFAULT_SIGNAL_TIMEOUT_SECONDS,
     VALID_SYSTEM_CONTAINERS,
     normalize_qfk_system_args,
 )
@@ -50,7 +51,7 @@ class BackendSignal(BaseModel):
     # ─── 主机作用域 ───────────────────────────────────────────────────────────
     host: str | None = Field(default=None, description="目标主机；由 Terminal Bridge 选择 SSH 会话，不拼入 aCLI")
     vm: str | None = Field(default=None, description="虚拟机标识")
-    timeout: int = Field(default=30, ge=1, le=300, description="执行超时（秒，1-300）")
+    timeout: int = Field(default=DEFAULT_SIGNAL_TIMEOUT_SECONDS, ge=1, le=300, description="执行超时（秒，1-300）")
     container: str | None = Field(default=None, description="qfk_system 的 aCLI --container 或 qfk_service 服务组")
     cluster: bool = Field(default=False, description="qfk_system 是否添加 acli --cluster")
     formatter: str | None = Field(default=None, description="qfk_system 的 aCLI --formatter")

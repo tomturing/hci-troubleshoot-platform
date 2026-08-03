@@ -18,6 +18,7 @@ from typing import Any
 from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
+from shared.schemas.acquirer_args import DEFAULT_SIGNAL_TIMEOUT_SECONDS
 
 from app.adapters.agents.htp.cdd import (
     ActiveDiagnosticScheduler,
@@ -1555,7 +1556,7 @@ class KBDDiagnostic:
             # v2 扁平字段
             "instruction": args.get("instruction"),
             "host": args.get("host"),
-            "timeout": args.get("timeout", 10),
+            "timeout": args.get("timeout", DEFAULT_SIGNAL_TIMEOUT_SECONDS),
             # 特有字段
             "command": args.get("command"),
             "command_args": args.get("command_args") or [],

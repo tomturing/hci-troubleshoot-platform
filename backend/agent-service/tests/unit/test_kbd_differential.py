@@ -63,4 +63,4 @@ def test_kbd27123_lsof_pid_then_ps_uses_canonical_argv_and_precise_process_ident
     ps = BackendSignal(namespace="system", command="ps -p {{PID}} -o cmd=", matcher=None)
     assert ps.command == "ps"
     assert ps.command_args == ["-p", "{{PID}}", "-o", "cmd="]
-    assert SystemHandler().build_commands(ps) == ["acli --timeout 30 system ps -p '{{PID}}' -o cmd="]
+    assert SystemHandler().build_commands(ps) == ["acli --timeout 120 system ps -p '{{PID}}' -o cmd="]

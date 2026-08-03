@@ -1151,8 +1151,8 @@ function setQfkSystemCommandText(args: Record<string, any>, value: string) {
 }
 
 function qfkSystemCommandPreview(args: Record<string, any>): string {
-  const timeoutRaw = Number(args.timeout || 10)
-  const timeout = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 10
+  const timeoutRaw = Number(args.timeout || 120)
+  const timeout = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 120
   const cluster = args.cluster ? ' --cluster' : ''
   const formatterValue = typeof args.formatter === 'string' ? args.formatter.trim() : ''
   const formatter = formatterValue ? ` --formatter ${formatterValue}` : ''
@@ -3075,7 +3075,7 @@ onMounted(() => {
                     <div class="signal-row"><span class="signal-k">执行命令</span><span class="signal-v code">{{ sigArgs(item.sig).command || '—' }}</span></div>
                   </template>
                   <div class="signal-row"><span class="signal-k">输入变量</span><span class="signal-v code">{{ (sigOrch(item.sig).requires || []).join('、') || '—' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">超时时间</span><span class="signal-v">{{ sigArgs(item.sig).timeout || 10 }}s</span></div>
+                  <div class="signal-row"><span class="signal-k">超时时间</span><span class="signal-v">{{ sigArgs(item.sig).timeout || 120 }}s</span></div>
                   <div class="signal-row"><span class="signal-k">执行模式</span><span class="signal-v">{{ qfkOutputMode(item.sig) === 'produces' ? '产出变量（采集命令结果）' : '匹配模式' }}</span></div>
                   <template v-if="qfkOutputMode(item.sig) === 'produces'">
                     <div v-for="(p, idx) in (sigOrch(item.sig).produces || [])" :key="`output-${idx}`" class="signal-row">

@@ -10,6 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+from shared.schemas.acquirer_args import DEFAULT_SIGNAL_TIMEOUT_SECONDS
 
 from app.config import settings
 from app.tools.qfk.handlers import HandlerRegistry, build_acli_command
@@ -102,7 +103,7 @@ def compile_qfk_command_preview(raw_signal: dict[str, Any]) -> dict[str, Any]:
         "expected": bool(matcher.get("expected", True)),
         "instruction": args.get("instruction"),
         "host": args.get("host"),
-        "timeout": args.get("timeout", 10),
+        "timeout": args.get("timeout", DEFAULT_SIGNAL_TIMEOUT_SECONDS),
         "command": args.get("command"),
         "command_args": args.get("command_args") or [],
         "container": args.get("container", "asv" if namespace == "service" else None),

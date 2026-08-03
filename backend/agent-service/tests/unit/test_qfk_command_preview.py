@@ -26,6 +26,17 @@ def test_command_preview_reuses_system_handler_and_keeps_runtime_variables():
     assert preview["variables"] == ["HOST", "PID"]
 
 
+def test_command_preview_uses_120_seconds_when_signal_omits_timeout():
+    preview = compile_qfk_command_preview(
+        {
+            "acquire": {"tool": "qfk_system", "args": {"command": "df"}},
+            "match": {"type": "keyword", "pattern": "data", "mode": "or"},
+        }
+    )
+
+    assert preview["command"] == "acli --timeout 120 system df"
+
+
 def test_command_preview_uses_service_runtime_mapping():
     preview = compile_qfk_command_preview(
         {
