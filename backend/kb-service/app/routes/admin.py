@@ -126,7 +126,20 @@ def _prepare_expert_publish_signals(raw: Any) -> dict[str, Any]:
     return certify_publishable_signals_json(canonical)
 
 
-def _humanize_signal_validation_error(error: jsonschema.ValidationError) -> dict[str, Any]:
+def _signal_id_from_validation_error(error: jsonschema.ValidationError, signals: list[Any]) -> str | None:
+    """从 JSON Schema 的数组路径恢复稳定 Signal ID，绝不把展示下标返回给前端。"""
+
+    path = list(error.absolute_path)
+    if len(path) < 2 or path[0] != "signals" or not isinstance(path[1], int):
+        return None
+    index = path[1]
+    if index < 0 or index >= len(signals) or not isinstance(signals[index], dict):
+        return None
+    signal_id = str(signals[index].get("id") or "").strip()
+    return signal_id or None
+
+
+def _humanize_signal_validation_error(error: jsonschema.ValidationError, signals: list[Any]) -> dict[str, Any]:
     """把发布门禁错误转换成专家可以直接处理的语言。
 
     JSON Schema 路径是工程实现细节，不能作为专家审核任务。这里保留机器可检索
@@ -149,12 +162,19 @@ def _humanize_signal_validation_error(error: jsonschema.ValidationError) -> dict
             "location": "关键信号",
             "message": "有一条关键信号的内部标识异常，请删除后重新新增该信号。",
         }
-    return {
+    issue: dict[str, Any] = {
         "level": "error",
         "code": "KBD_SIGNALS_INVALID",
         "location": "关键信号",
         "message": f"关键信号尚未满足发布要求：{message}",
     }
+    signal_id = _signal_id_from_validation_error(error, signals)
+    if signal_id:
+        # schema 的 signals[3] 是不稳定渲染位置；前端只消费稳定 signal_id，
+        # 以便筛选、排序或删除其他信号后仍能定位正确的编辑卡片。
+        issue["location"] = f"关键信号 · {signal_id}"
+        issue["action"] = {"type": "edit_signal", "signal_id": signal_id}
+    return issue
 
 
 if TYPE_CHECKING:
@@ -1003,7 +1023,7 @@ async def validate_kbd_candidate(request: Request, kbd_id: int) -> dict[str, Any
         try:
             validate_publishable_signals_json(signals_doc)
         except jsonschema.ValidationError as exc:
-            human_issue = _humanize_signal_validation_error(exc)
+            human_issue = _humanize_signal_validation_error(exc, signals)
             if not any(issue["code"] == human_issue["code"] for issue in issues):
                 issues.append(human_issue)
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { FullScreen, Refresh } from '@element-plus/icons-vue'
@@ -87,6 +87,14 @@ interface CandidateValidation {
     action?: { type: string; signal_id?: string; suggested_tool?: string }
   }>
   platform_status?: Array<Record<string, unknown>>
+}
+
+interface CommandPreview {
+  tool: string
+  command: string
+  host?: string | null
+  variables?: string[]
+  notice?: string
 }
 
 // ============ 关键信号 v2 数据模型（RFC §7 前端原生读 v2 对象化，2026-07-22） ============
@@ -320,6 +328,11 @@ const revisionLoading = ref(false)
 const capabilityMap = ref<Record<string, CapabilityDescriptor>>({})
 const candidateValidation = ref<CandidateValidation | null>(null)
 const candidateValidationLoading = ref(false)
+const focusedSignalId = ref<string | null>(null)
+const commandPreviews = ref<Record<string, CommandPreview | undefined>>({})
+const commandPreviewErrors = ref<Record<string, string | undefined>>({})
+const commandPreviewLoading = ref<Record<string, boolean | undefined>>({})
+const expandedCommandPreviews = ref<Record<string, boolean | undefined>>({})
 
 // 拒绝弹窗
 const rejectDialogVisible = ref(false)
@@ -523,11 +536,34 @@ async function validateCurrentCandidate(options: { silent?: boolean } = {}) {
   }
 }
 
-function handleValidationAction(issue: CandidateValidation['issues'][number]) {
+function signalDomId(signalId: string): string {
+  return `kbd-signal-${signalId.replace(/[^a-zA-Z0-9_-]/g, '_')}`
+}
+
+function signalLabel(signal: SignalV2, index: number): string {
+  const instruction = String(sigArgs(signal).instruction || '').trim()
+  return `${sigTool(signal) || '未选择采集类型'} · ${instruction || `信号 ${index + 1}`}`
+}
+
+function validationIssueSignal(issue: CandidateValidation['issues'][number]): { signal: SignalV2; index: number } | null {
+  const signalId = issue.action?.signal_id
+  if (!signalId) return null
+  const index = signalList.value.findIndex((signal) => String(signal.id) === String(signalId))
+  return index >= 0 ? { signal: signalList.value[index], index } : null
+}
+
+async function focusSignal(signalId: string): Promise<void> {
+  focusedSignalId.value = signalId
+  await nextTick()
+  document.getElementById(signalDomId(signalId))?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
+async function handleValidationAction(issue: CandidateValidation['issues'][number]) {
   const signalId = issue.action?.signal_id
   if (!signalId) {
     if (issue.action?.type === 'edit_signal_role' && signalList.value.length) {
       startEditSignal(0)
+      await focusSignal(signalStableId(signalList.value[0], 0))
       ElMessage.info('请在“证据作用”中将至少一条可执行信号设为“必要证据”后保存')
     }
     return
@@ -536,6 +572,7 @@ function handleValidationAction(issue: CandidateValidation['issues'][number]) {
   if (index < 0) return
   startEditSignal(index)
   if (issue.action?.suggested_tool) onSignalToolChange(issue.action.suggested_tool)
+  await focusSignal(String(signalId))
   ElMessage.info('已定位并按建议切换采集类型，请复核参数后保存')
 }
 
@@ -801,6 +838,11 @@ async function openDetailDialog(entry: KbdEntry) {
   cancelEditSignal()
   revisionState.value = null
   candidateValidation.value = null
+  focusedSignalId.value = null
+  commandPreviews.value = {}
+  commandPreviewErrors.value = {}
+  commandPreviewLoading.value = {}
+  expandedCommandPreviews.value = {}
   void fetchRevisionState(entry.id)
   // 拉取完整详情（确保含 signals_json）
   try {
@@ -1119,6 +1161,62 @@ function qfkSystemCommandPreview(args: Record<string, any>): string {
     ? ` --container ${containerValue}`
     : ''
   return `acli${cluster} --timeout ${timeout}${formatter}${container} system ${qfkSystemCommandText(args) || '<命令>'}`
+}
+
+function commandPreviewKey(signal: SignalV2, index: number): string {
+  return signalStableId(signal, index)
+}
+
+function hasCommandPreview(signal: SignalV2, index: number): boolean {
+  return Boolean(expandedCommandPreviews.value[commandPreviewKey(signal, index)])
+}
+
+async function loadCommandPreview(signal: SignalV2, index: number, force = false): Promise<void> {
+  const key = commandPreviewKey(signal, index)
+  expandedCommandPreviews.value = { ...expandedCommandPreviews.value, [key]: true }
+  if (!force && (commandPreviews.value[key] || commandPreviewErrors.value[key])) return
+
+  commandPreviewLoading.value = { ...commandPreviewLoading.value, [key]: true }
+  commandPreviewErrors.value = { ...commandPreviewErrors.value, [key]: undefined }
+  try {
+    const resp = await fetch('/api/v1/kbd/command-preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify({ signal }),
+    })
+    const body = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      throw new Error(typeof body?.detail === 'string' ? body.detail : `HTTP ${resp.status}`)
+    }
+    commandPreviews.value = { ...commandPreviews.value, [key]: body as CommandPreview }
+  } catch (error) {
+    commandPreviewErrors.value = {
+      ...commandPreviewErrors.value,
+      [key]: error instanceof Error ? error.message : '命令编译预览失败',
+    }
+  } finally {
+    commandPreviewLoading.value = { ...commandPreviewLoading.value, [key]: false }
+  }
+}
+
+function toggleCommandPreview(signal: SignalV2, index: number): void {
+  const key = commandPreviewKey(signal, index)
+  if (expandedCommandPreviews.value[key]) {
+    expandedCommandPreviews.value = { ...expandedCommandPreviews.value, [key]: false }
+    return
+  }
+  void loadCommandPreview(signal, index)
+}
+
+async function copyCommandPreview(signal: SignalV2, index: number): Promise<void> {
+  const preview = commandPreviews.value[commandPreviewKey(signal, index)]
+  if (!preview?.command) return
+  try {
+    await navigator.clipboard.writeText(preview.command)
+    ElMessage.success('完整命令已复制；请在已授权的 HCI 终端中人工核查')
+  } catch {
+    ElMessage.error('复制失败，请手动选择命令文本')
+  }
 }
 
 function clearStagedSignalEdits() {
@@ -2721,9 +2819,24 @@ onMounted(() => {
             <div v-for="issue in candidateValidation.issues" :key="`${issue.code}-${issue.location}`" class="validation-issue">
               <div class="validation-issue-content">
                 <strong>{{ issue.message }}</strong>
+                <el-button
+                  v-if="validationIssueSignal(issue)"
+                  class="validation-signal-link"
+                  type="primary"
+                  text
+                  size="small"
+                  @click="handleValidationAction(issue)"
+                >
+                  问题关键信号：{{ signalLabel(validationIssueSignal(issue)!.signal, validationIssueSignal(issue)!.index) }}（{{ validationIssueSignal(issue)!.signal.id }}）
+                </el-button>
                 <code>{{ issue.location }}</code>
               </div>
-              <el-button v-if="issue.action?.type === 'edit_signal'" type="primary" size="small" @click="handleValidationAction(issue)">定位并修改</el-button>
+              <el-button
+                v-if="validationIssueSignal(issue) || issue.action?.type === 'edit_signal_role'"
+                type="primary"
+                size="small"
+                @click="handleValidationAction(issue)"
+              >定位并编辑</el-button>
             </div>
           </div>
         </div>
@@ -2842,7 +2955,13 @@ onMounted(() => {
           <div class="signal-group">
             <div class="signal-group-title">生产者信号（QKV：前端采集，写入变量池）</div>
             <el-empty v-if="producerSignals.length === 0" description="暂无生产者信号" :image-size="44" />
-            <div v-for="item in producerSignals" :key="signalStableId(item.sig, item.origIdx)" class="signal-card">
+            <div
+              v-for="item in producerSignals"
+              :id="signalDomId(signalStableId(item.sig, item.origIdx))"
+              :key="signalStableId(item.sig, item.origIdx)"
+              class="signal-card"
+              :class="{ 'is-focused': focusedSignalId === signalStableId(item.sig, item.origIdx) }"
+            >
               <div class="signal-card-head">
                 <el-tag size="small" type="success">{{ sigTool(item.sig) || 'qkv' }}</el-tag>
                 <el-tag v-if="capabilityStatus(sigTool(item.sig)) !== 'declared'" size="small" type="danger" effect="plain">能力未声明，请更换采集类型</el-tag>
@@ -2911,7 +3030,13 @@ onMounted(() => {
           <div class="signal-group">
             <div class="signal-group-title">消费者信号（QFK：后端采集+判定，读取变量池）</div>
             <el-empty v-if="consumerSignals.length === 0" description="暂无消费者信号" :image-size="44" />
-            <div v-for="item in consumerSignals" :key="signalStableId(item.sig, item.origIdx)" class="signal-card">
+            <div
+              v-for="item in consumerSignals"
+              :id="signalDomId(signalStableId(item.sig, item.origIdx))"
+              :key="signalStableId(item.sig, item.origIdx)"
+              class="signal-card"
+              :class="{ 'is-focused': focusedSignalId === signalStableId(item.sig, item.origIdx) }"
+            >
               <div class="signal-card-head">
                 <el-tag size="small" type="warning">{{ sigTool(item.sig) || 'qfk' }}</el-tag>
                 <el-tag v-if="capabilityStatus(sigTool(item.sig)) !== 'declared'" size="small" type="danger" effect="plain">能力未声明，请更换采集类型</el-tag>
@@ -2940,7 +3065,6 @@ onMounted(() => {
                     <div class="signal-row"><span class="signal-k">容器</span><span class="signal-v">{{ sigArgs(item.sig).container || 'host' }}</span></div>
                     <div v-if="sigArgs(item.sig).cluster" class="signal-row"><span class="signal-k">集群执行</span><span class="signal-v">是（acli --cluster）</span></div>
                     <div v-if="sigArgs(item.sig).formatter" class="signal-row"><span class="signal-k">输出格式</span><span class="signal-v code">{{ sigArgs(item.sig).formatter }}</span></div>
-                    <div class="signal-row"><span class="signal-k">执行命令</span><span class="signal-v code">{{ sigArgs(item.sig).command || '—' }}</span></div>
                     <el-alert v-if="String(sigArgs(item.sig).command || '').includes('|')" title="历史命令含 Shell 管道，必须编辑并清理后才能统一保存" type="warning" :closable="false" show-icon />
                   </template>
                   <template v-if="sigTool(item.sig) === 'qfk_service'">
@@ -2972,7 +3096,7 @@ onMounted(() => {
                   </template>
 
                   <!-- 其他工具特有字段 -->
-                  <div v-if="sigTool(item.sig) === 'qfk_system'" class="signal-row"><span class="signal-k">执行命令</span><span class="signal-v code">{{ qfkSystemCommandText(sigArgs(item.sig)) || '—' }}</span></div>
+                  <div v-if="sigTool(item.sig) === 'qfk_system'" class="signal-row"><span class="signal-k">命令字段</span><span class="signal-v code">{{ qfkSystemCommandText(sigArgs(item.sig)) || '—' }}</span></div>
                   <template v-if="sigTool(item.sig) === 'qfk_log'">
                     <div class="signal-row"><span class="signal-k">文件</span><span class="signal-v code">{{ sigArgs(item.sig).file || '—' }}</span></div>
                     <div class="signal-row"><span class="signal-k">时间</span><span class="signal-v">{{ sigArgs(item.sig).time_window || '—' }}</span></div>
@@ -2986,6 +3110,28 @@ onMounted(() => {
                   <template v-if="sigTool(item.sig) === 'qfk_service'">
                     <div class="signal-row"><span class="signal-k">服务</span><span class="signal-v code">{{ sigArgs(item.sig).resource_keyword || '—' }}</span></div>
                   </template>
+                  <div class="signal-row command-preview-row">
+                    <span class="signal-k">完整命令</span>
+                    <div class="signal-v">
+                      <el-button text type="primary" size="small" :loading="commandPreviewLoading[commandPreviewKey(item.sig, item.origIdx)]" @click="toggleCommandPreview(item.sig, item.origIdx)">
+                        {{ hasCommandPreview(item.sig, item.origIdx) ? '收起完整命令' : '查看完整 HCI 执行命令' }}
+                      </el-button>
+                      <div v-if="hasCommandPreview(item.sig, item.origIdx)" class="command-preview-panel">
+                        <template v-if="commandPreviews[commandPreviewKey(item.sig, item.origIdx)]">
+                          <code>{{ commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.command }}</code>
+                          <div class="command-preview-meta">
+                            <span>SSH 目标主机：{{ commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.host || '由运行时上下文决定' }}</span>
+                            <span v-if="commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.variables?.length">执行前替换变量：{{ commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.variables!.join('、') }}</span>
+                            <el-button text type="primary" size="small" @click="copyCommandPreview(item.sig, item.origIdx)">复制命令</el-button>
+                          </div>
+                          <div class="field-hint command-preview-notice">{{ commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.notice }}</div>
+                        </template>
+                        <el-alert v-else-if="commandPreviewErrors[commandPreviewKey(item.sig, item.origIdx)]" type="warning" :closable="false" show-icon :title="`无法编译完整命令：${commandPreviewErrors[commandPreviewKey(item.sig, item.origIdx)]}`">
+                          <el-button text type="primary" size="small" @click="loadCommandPreview(item.sig, item.origIdx, true)">重新编译</el-button>
+                        </el-alert>
+                      </div>
+                    </div>
+                  </div>
                   <!-- 来源证据只用于追溯 LLM/原案例依据；固定放在卡片末尾，默认不展开。 -->
                   <details class="signal-evidence-details">
                     <summary>来源证据（默认收起，不参与编辑）</summary>
@@ -3042,6 +3188,27 @@ onMounted(() => {
                     <div class="signal-row"><span class="signal-k">执行命令</span><el-input v-model="signalEditDraft.acquire.args.command" size="small" placeholder="子命令，如 list / show / get status" /></div>
                     <div class="field-hint">acli 之后的子命令（如 list、show、get status）；命名空间由工具名（qfk_vm 等）隐含，勿含 acli 前缀</div>
                   </template>
+
+                  <div class="signal-row command-preview-row">
+                    <span class="signal-k">完整命令</span>
+                    <div class="signal-v">
+                      <el-button text type="primary" size="small" :loading="commandPreviewLoading[commandPreviewKey(signalEditDraft, editingSignalIndex ?? 0)]" @click="loadCommandPreview(signalEditDraft, editingSignalIndex ?? 0, true)">
+                        编译当前草稿的 HCI 执行命令
+                      </el-button>
+                      <div v-if="commandPreviews[commandPreviewKey(signalEditDraft, editingSignalIndex ?? 0)] || commandPreviewErrors[commandPreviewKey(signalEditDraft, editingSignalIndex ?? 0)]" class="command-preview-panel">
+                        <template v-if="commandPreviews[commandPreviewKey(signalEditDraft, editingSignalIndex ?? 0)]">
+                          <code>{{ commandPreviews[commandPreviewKey(signalEditDraft, editingSignalIndex ?? 0)]!.command }}</code>
+                          <div class="command-preview-meta">
+                            <span>SSH 目标主机：{{ commandPreviews[commandPreviewKey(signalEditDraft, editingSignalIndex ?? 0)]!.host || '由运行时上下文决定' }}</span>
+                            <span v-if="commandPreviews[commandPreviewKey(signalEditDraft, editingSignalIndex ?? 0)]!.variables?.length">执行前替换变量：{{ commandPreviews[commandPreviewKey(signalEditDraft, editingSignalIndex ?? 0)]!.variables!.join('、') }}</span>
+                            <el-button text type="primary" size="small" @click="copyCommandPreview(signalEditDraft, editingSignalIndex ?? 0)">复制命令</el-button>
+                          </div>
+                        </template>
+                        <el-alert v-else type="warning" :closable="false" show-icon :title="`无法编译完整命令：${commandPreviewErrors[commandPreviewKey(signalEditDraft, editingSignalIndex ?? 0)]}`" />
+                      </div>
+                      <div class="field-hint command-preview-notice">预览由当前 Agent Handler 编译，不执行命令；未就绪变量会以 <code v-pre>{{变量名}}</code> 形式保留。</div>
+                    </div>
+                  </div>
 
                   <!-- 输入变量由所有 {{VAR}} 占位符自动推导，避免重复维护两份契约。 -->
                   <div class="signal-row">
@@ -3948,6 +4115,16 @@ onMounted(() => {
   font-size: 12px;
 }
 
+.validation-signal-link {
+  align-self: flex-start;
+  height: auto;
+  padding: 0;
+  font-family: monospace;
+  line-height: 1.45;
+  text-align: left;
+  white-space: normal;
+}
+
 .image-evidence-editor {
   display: grid;
   grid-template-columns: 120px minmax(0, 1fr);
@@ -4136,6 +4313,12 @@ onMounted(() => {
   border-radius: 6px;
   margin-bottom: 8px;
   background: #fafafa;
+  scroll-margin-top: 28px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.signal-card.is-focused {
+  border-color: #409eff;
+  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.16);
 }
 .signal-card-head {
   display: flex;
@@ -4191,6 +4374,41 @@ onMounted(() => {
   background: #f0f2f5;
   padding: 0 4px;
   border-radius: 3px;
+}
+.command-preview-row .signal-v {
+  min-width: 0;
+}
+.command-preview-panel {
+  margin-top: 5px;
+  padding: 8px 10px;
+  border: 1px solid #d9ecff;
+  border-radius: 5px;
+  background: #f4f9ff;
+}
+.command-preview-panel > code {
+  display: block;
+  overflow-x: auto;
+  padding: 7px 9px;
+  border-radius: 4px;
+  background: #1f2937;
+  color: #e5e7eb;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.command-preview-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  color: #606266;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.field-hint.command-preview-notice {
+  margin: 6px 0 0;
 }
 
 /* 产出变量迷你编辑器 */
