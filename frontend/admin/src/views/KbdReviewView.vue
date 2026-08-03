@@ -1109,9 +1109,16 @@ function setQfkSystemCommandText(args: Record<string, any>, value: string) {
 }
 
 function qfkSystemCommandPreview(args: Record<string, any>): string {
-  const timeout = Number(args.timeout || 10)
-  const container = args.container ? ` --container ${args.container}` : ''
-  return `acli --timeout ${timeout}${container} system ${qfkSystemCommandText(args) || '<命令>'}`
+  const timeoutRaw = Number(args.timeout || 10)
+  const timeout = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 10
+  const cluster = args.cluster ? ' --cluster' : ''
+  const formatterValue = typeof args.formatter === 'string' ? args.formatter.trim() : ''
+  const formatter = formatterValue ? ` --formatter ${formatterValue}` : ''
+  const containerValue = typeof args.container === 'string' ? args.container.trim() : ''
+  const container = containerValue && containerValue !== 'host'
+    ? ` --container ${containerValue}`
+    : ''
+  return `acli${cluster} --timeout ${timeout}${formatter}${container} system ${qfkSystemCommandText(args) || '<命令>'}`
 }
 
 function clearStagedSignalEdits() {
