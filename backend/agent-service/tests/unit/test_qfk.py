@@ -1,7 +1,6 @@
 from types import SimpleNamespace
 
 import pytest
-
 from app.tools.acli import executor as executor_module
 from app.tools.acli.executor import ExecResult
 from app.tools.qfk import engine

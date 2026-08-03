@@ -1,9 +1,8 @@
 from unittest.mock import MagicMock
 
-from app.tools.qfk.signal import BackendSignal
-from app.tools.qfk.handlers import SystemHandler
-
 from app.adapters.agents.htp.kbd_differential import KBDDiagnostic
+from app.tools.qfk.handlers import SystemHandler
+from app.tools.qfk.signal import BackendSignal
 
 
 def _diag() -> KBDDiagnostic:
