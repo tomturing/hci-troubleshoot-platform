@@ -77,18 +77,22 @@ def _with_scope_context(
         if version is not None:
             enriched["version"] = version
 
-    component = category_id.split("-", 1)[0].strip() if category_id else ""
+    raw_component = category_id.split("-", 1)[0] if category_id else None
+    component = _non_empty(raw_component)
     configured_components = enriched.get("components", env_info.get("components"))
     if isinstance(configured_components, (list, tuple, set)):
-        components = [str(item).strip() for item in configured_components if str(item).strip()]
-    elif _non_empty(configured_components):
-        components = [str(configured_components).strip()]
+        components = [item for item in (_non_empty(item) for item in configured_components) if item]
     else:
-        components = []
-    if component and component not in components:
+        single_component = _non_empty(configured_components)
+        components = [single_component] if single_component else []
+    if component is not None and component not in components:
         components.append(component)
     if components:
         enriched["components"] = components
+    else:
+        # 空列表、JSON null、空白或“未知”不是组件的确定否定事实。移除这些
+        # 无效值后，要求组件 Scope 的 KBD 会得到 UNKNOWN，而非被错误拒绝。
+        enriched.pop("components", None)
 
     if "topology" not in enriched and isinstance(env_info.get("topology"), (list, tuple, set)):
         enriched["topology"] = list(env_info["topology"])

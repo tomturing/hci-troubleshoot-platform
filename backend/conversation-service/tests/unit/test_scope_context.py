@@ -45,5 +45,28 @@ def test_scope_context_does_not_invent_scope_facts_without_cluster_or_confirmed_
     assert result == context
 
 
+def test_scope_context_drops_invalid_configured_components_without_a_confirmed_domain():
+    context = {
+        "components": [None, "", "  ", "未知"],
+        "env_info": {"cluster_name": "only-a-name"},
+    }
+
+    result = _with_scope_context(context, category_id="-003")
+
+    assert result == {"env_info": {"cluster_name": "only-a-name"}}
+
+
+def test_scope_context_discards_invalid_components_before_adding_confirmed_domain():
+    context = {
+        "components": [None, " ", "未知", "存储"],
+        "env_info": {"hci_version": "6.11.1_R1"},
+    }
+
+    result = _with_scope_context(context, category_id="虚拟机-003")
+
+    assert result is not None
+    assert result["components"] == ["存储", "虚拟机"]
+
+
 def test_scope_context_keeps_absent_context_absent():
     assert _with_scope_context(None, category_id="虚拟机-003") is None
