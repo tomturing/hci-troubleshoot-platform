@@ -71,6 +71,7 @@ Prompt v2.1 输出 Candidate，但传输层保留历史 key `signals`，避免 P
    - `keyword` Matcher 的每一个 pattern 无法从 Candidate 的逐字 evidence 或合法变量追溯，尤其是把脱敏 IP/ID 降级成 `address`、`ip`、`error` 等宽泛词，或在一个有证据项旁混入模型猜测项；
    - catalog 已登记，但编译调用缺少命令自身必需的最小参数；例如裸 `acli system smartctl` 只会打印 usage/失败，不能冒充可执行采集；
    - 采集器与 Candidate evidence 不一致：BMC/iBMC 外部事件伪装成 HCI `qkv_alert`，或 `qfk_log` 没有日志文件/路径且 evidence 也不具备日志形态；
+   - `.conf/.cfg/.ini/.json/.yaml` 配置文件被伪装成 qfk_log；明确 `/sf/cfg` 读取可确定性归一为只读 cat，其他不明配置路径进入 `run_failed`；
    - 命令固有能力与目标事实不一致，或 regex 连 Candidate 自己的逐字 evidence 都无法命中；前者如用 `ipmitool mc info` 采集 RAID 适配器固件；
    - 后续编译/预运行和真实执行失败也使用相同分类，并保留更具体失败模式。
 4. 通过后执行既有 enrich、Verification Contract 投影并保存为 Signal。
@@ -149,6 +150,7 @@ Prompt 数据迁移采用“收敛”而不是“只追加新规则”：存量�
 | Matcher 数组首项有证据、其余项靠猜 | “至少一项可追溯”让猜测项搭便车成为 Signal | 对数组逐项校验；任一无法追溯即保留完整 Candidate 并归入 `run_failed` |
 | catalog 已登记但调用缺少必需参数 | 裸 `smartctl` 被误认为“catalog 命中即可运行” | 复用命令级最小 argv 契约；失败进入 `run_failed`，不冒充 `not_exists` |
 | BMC 页面/普通版本字段被伪造成告警或日志 | Schema 与 catalog 均合法，但运行采集源不存在 | acquisition 必须由 evidence 支持；不一致时完整保留 Candidate 并进入 `run_failed` |
+| `/cfs/.../vmid.conf` 被映射为 qfk_log | 文件名可追溯但采集器类型错误，默认日志路径会执行错误目标 | 配置扩展名不得作为日志；明确安全配置路径才归一只读 cat，否则 `run_failed` |
 | 同篇已有 smartctl 后省略明确平台告警 | 只保留后台判定会丢失用户可见的生产者事实 | Prompt 对明确 HCI 告警逐项召回 qkv_alert，BMC 外部事件明确排除 |
 | `ipmitool mc info` 判断 RAID 固件 | 命令能运行但输出领域不含目标事实 | 命令能力契约拒绝，进入 `run_failed` |
 | regex 表达了意图却无法命中 evidence | 保存后现场必然无法按当前证据成立 | 编译并对逐字 evidence 预匹配；失败进入 `run_failed` |

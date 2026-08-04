@@ -453,6 +453,17 @@ def test_regex_matcher_must_match_its_own_evidence():
             },
             "采集来源无法验证",
         ),
+        (
+            {
+                "acquire": {"tool": "qfk_log", "args": {"file": "vmid.conf"}},
+                "match": {"type": "keyword", "pattern": "vtool_installed", "expected": True},
+                "orchestrate": {"produces": [], "requires": []},
+                "provenance": {
+                    "evidence": "cat `find /cfs/nodes/ -name vmid.conf` | grep vtool_installed"
+                },
+            },
+            "不能把配置文件 vmid.conf 作为日志",
+        ),
     ],
 )
 def test_acquisition_must_be_supported_by_candidate_evidence(candidate, expected):

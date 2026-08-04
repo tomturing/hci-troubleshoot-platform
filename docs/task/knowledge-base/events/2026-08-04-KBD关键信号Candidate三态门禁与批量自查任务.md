@@ -30,6 +30,7 @@ owner: team
 | T-KB-GATE-07 | 修复后只读验证 phase 纠偏 | ✅ 代码完成 | 封闭只读命令不因上下文重启误报 write_signal；真实写命令仍优先拒绝 |
 | T-KB-CANDIDATE-04 | 明确 HCI 平台告警逐项召回 | ✅ Prompt 完成 | 每个不同告警至少一个 qkv_alert；已有后台检查不能替代，BMC 外部事件除外 |
 | T-KB-CONTRACT-01 | 空 must Contract 确定性兜底 | ✅ 代码完成 | 第一条 diagnostic Signal 同步提升为 must；全拒绝时不生成 Contract；抽取不得 500 |
+| T-KB-GATE-08 | 配置文件不得伪装 qfk_log | ✅ 代码完成 | 明确安全配置路径归一 cat；其他配置扩展名 Candidate 进入 run_failed |
 | T-KB-SCHEMA-01 | `rejected_candidates[].reason_code` 增加三值枚举且保持可选 | ✅ 代码完成 | 新数据可分类，历史快照继续合法 |
 | T-KB-UI-01 | 审核页展示三类标签、关注级别、原因与完整 Candidate | ✅ 代码完成 | 专家能区分安全、能力和运行问题 |
 | T-KB-PROMPT-DB-01 | seed 升至 v2.1，data migration 021 前向修复已部署 v1.9 | ✅ dev 收敛验证 | 迁移不只追加规则，并以负向断言保证不残留模型侧过滤规则 |
@@ -38,7 +39,7 @@ owner: team
 | T-KB-BATCH-00 | KBD30880 连续重抽 5 次回归 | ✅ 5/5 | Proposal 57～61 均有 qkv_task；最新 Proposal 无 Expert 配对，修改数为 0 |
 | T-KB-BATCH-01 | 重跑 KBD27079/27173/27222/27653/27736 | ✅ 六轮闭环 | revisions 93～97 正常 Signal 与 write_signal/not_exists/run_failed 均按预期分流，无新增问题 |
 | T-KB-BATCH-02 | 重跑 KBD28094/28156/28177/28900/29294 | ✅ 三轮闭环 | revisions 108～112 明确告警、正常后台检查与三类拒绝均按预期分流 |
-| T-KB-BATCH-03 | 重跑 KBD29713/30396/30838/30884/32010 | 🔄 修复后待重跑 | KBD32010 空 must Contract 导致 500，已补角色与投影同步兜底 |
+| T-KB-BATCH-03 | 重跑 KBD29713/30396/30838/30884/32010 | 🔄 第三次同批待重跑 | revisions 117～121 验证空 must 修复；发现 vmid.conf 伪装 qfk_log，已补采集器门禁 |
 | T-KB-BATCH-N | 剩余草稿按每批 5 篇自查、修复、重跑、独立提交 | ⬜ 待执行 | 前一批通过后才进入下一批 |
 | T-KB-PR | 汇总本地提交并创建 PR | ⬜ 待全部批次完成 | CI 全绿；标签齐全 |
 

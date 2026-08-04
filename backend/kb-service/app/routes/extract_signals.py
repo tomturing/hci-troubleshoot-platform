@@ -140,6 +140,7 @@ _EXTERNAL_BMC_EVENT_RE = re.compile(
     r"(?:\b(?:i?BMC)\b.{0,80}(?:event|日志|restarted)|restarted\s+by\s+(?:i?BMC))",
     re.IGNORECASE,
 )
+_CONFIG_FILE_EXTENSION_RE = re.compile(r"\.(?:cfg|conf|ini|json|ya?ml)$", re.IGNORECASE)
 VALID_MATCHER_TYPES = {"keyword", "regex", "state", "threshold", "delta", "trend", "exists"}
 VALID_VARIABLE_TYPES = {"string", "integer", "number", "boolean", "array"}
 REJECT_REASON_CODES = frozenset({"write_signal", "not_exists", "run_failed"})
@@ -503,6 +504,8 @@ def _validate_signal(
     if tool == "qfk_log":
         file_name = str(args.get("file") or "").strip()
         path = str(args.get("path") or "").strip()
+        if _CONFIG_FILE_EXTENSION_RE.search(file_name):
+            return False, f"qfk_log 只能采集日志，不能把配置文件 {file_name} 作为日志执行"
         has_explicit_source = bool(
             (file_name and file_name.casefold() in evidence.casefold())
             or (path and path.casefold() in evidence.casefold())

@@ -64,7 +64,7 @@ data migration 021：在 hci-dev PostgreSQL 对当前 Prompt v1.9 执行 BEGIN �
 
 首次实际应用 migration 021 后，KBD30880 的 Proposal revision 56 仍未生成 `qkv_task`。数据库中的 v2.1 Prompt 事实检查发现：新规则 25 虽已追加，但 PR #668 的补充规则 24 仍明确要求“不生成 Signal，不以 phase=solution 形式保留”，同时还残留“宁缺毋滥”“不产出信号”和带下游条件的旧任务规则。版本号与正向关键字断言均通过，却不是语义完整的升级。
 
-migration 021 随后改为收敛迁移：替换上述全部已知反向指令，并增加负向断言。KBD30880 五次回归期间使用的 Prompt SHA-256 为 `268e2f960e3fc80117cd4a8f72650f4e76e88177bac21aaceb27f26f8357101a`；旧规则 24、“宁缺毋滥/不产出”和任务下游前置条件均不存在。首批又依次发现脱敏值宽泛化、Matcher 数组夹带、裸 `smartctl`、BMC 页面伪装告警/本机日志、命令能力错配与 regex 自身不可命中等反例；第二批补充 phase 只描述 Candidate 自身命令及明确平台告警逐项召回语义。Prompt 与服务端门禁均按通用契约逐轮收敛。当前实装 Prompt MD5 为 `5551cefa7e878367eb16b459ec12edf3`，SHA-256 为 `d3617c17068f466f9fd938a12f6dbe70f9102cf0ecbcd5567946a62b6e7dcd2b`。
+migration 021 随后改为收敛迁移：替换上述全部已知反向指令，并增加负向断言。KBD30880 五次回归期间使用的 Prompt SHA-256 为 `268e2f960e3fc80117cd4a8f72650f4e76e88177bac21aaceb27f26f8357101a`；旧规则 24、“宁缺毋滥/不产出”和任务下游前置条件均不存在。首批又依次发现脱敏值宽泛化、Matcher 数组夹带、裸 `smartctl`、BMC 页面伪装告警/本机日志、命令能力错配与 regex 自身不可命中等反例；第二批补充 phase 与明确平台告警召回语义，第三批补充配置文件不能伪装 qfk_log。Prompt 与服务端门禁均按通用契约逐轮收敛。当前实装 Prompt MD5 为 `b11de211cf9a25779f0504666a3757ec`，SHA-256 为 `bb5b632abe4eb1dc8b202cda361ac309d504ecf624b71cbf88a4b6100492405e`。
 
 ## KBD30880 回归协议
 
@@ -129,6 +129,8 @@ migration 021 随后改为收敛迁移：替换上述全部已知反向指令，
 ### 第三批初跑
 
 第三批固定 KBD29713/30396/30838/30884/32010（IDs 15/16/17/19/20；已完成 5/5 专项回归的 published KBD30880 不重复计入）。前四篇完成 Proposal，KBD32010 在 Candidate 分流后因所有通过项均为 `role=context`，verification_contract 的 must 为空，持久化抛出 500，导致 Proposal 与 Rejected Candidate 均未保存。修复将第一条 diagnostic Signal 的角色与 Contract 投影同时确定性提升为 must；没有 Signal 时继续返回 `verification_contract=null`。第三批必须整批重跑。
+
+第二次同批 revisions 117～121 已确认 KBD32010 以 0 Signal + 5 Rejected Candidate 正常持久化，不再 500；KBD29713/30396 的明确平台告警通过，KBD30838 的 RAID 进程/硬件事实通过，KBD30884 的失败任务 producer 与命令检查通过。新发现 KBD30884 将 `/cfs/nodes/.../vmid.conf` 配置文件错误映射成无 path 的 qfk_log 并通过；已补配置扩展名采集器门禁，同批待第三次重跑。
 
 每批事件记录以下内容：
 

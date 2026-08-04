@@ -162,6 +162,12 @@ WHERE name = 'kbd_extract_signals_v2'
   AND content_template NOT LIKE '%每个不同告警至少输出一个 qkv_alert Candidate%';
 
 UPDATE system_prompt
+SET content_template = content_template || E'\n- qfk_log 只能采集日志，不能把 .conf/.cfg/.ini/.json/.yaml 配置文件伪装成日志；配置读取应使用有明确安全路径的只读系统采集，无法映射时保留 Candidate 进入 run_failed。',
+    updated_at = NOW()
+WHERE name = 'kbd_extract_signals_v2'
+  AND content_template NOT LIKE '%不能把 .conf/.cfg/.ini/.json/.yaml 配置文件伪装成日志%';
+
+UPDATE system_prompt
 SET content_template = replace(
         content_template,
         'qfk_hardware 当前已注册 cpu microcode file list、gpu config get/list、hostcli hostcli。',
@@ -199,6 +205,7 @@ BEGIN
        OR extract_prompt NOT LIKE '%regex pattern 必须能实际命中逐字 evidence%'
        OR extract_prompt NOT LIKE '%phase 描述 Candidate 自身执行的命令%'
        OR extract_prompt NOT LIKE '%每个不同告警至少输出一个 qkv_alert Candidate%'
+       OR extract_prompt NOT LIKE '%不能把 .conf/.cfg/.ini/.json/.yaml 配置文件伪装成日志%'
        OR extract_prompt NOT LIKE '%"signals": [%'
        OR extract_prompt LIKE '%所有输出 Signal 的 phase 必须为 diagnostic；phase=solution 禁止输出%'
        OR extract_prompt LIKE '%无法映射到 catalog 时不生成 Signal%'
