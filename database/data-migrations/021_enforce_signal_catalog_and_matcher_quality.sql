@@ -21,7 +21,7 @@ SET content_template = replace(
 # 补充规则 25：Candidate/Signal/Rejected Candidate 三态门禁
 - 只使用三个概念：Candidate 是模型识别出的全部候选；Signal 是服务端门禁通过的候选；Rejected Candidate 是门禁未通过但完整保留、交专家处理的候选。模型不得替服务端过滤 Candidate。
 - qkv_task 是历史任务查询。keyword 中的启动、创建、迁移、删除只是查询条件，不是执行写动作，必须按只读 diagnostic Candidate 输出。
-- 写入、配置变更、启停/重启、删除等真实执行动作仍须输出 Candidate 并标 phase=solution；服务端归入 write_signal，必须审核。
+- 写入、配置变更、启停/重启、删除等真实执行动作仍须输出 Candidate 并标 phase=solution；服务端归入 write_signal，必须审核。phase 描述 Candidate 自身执行的命令，不描述它发生在修复前还是修复后；“重启后执行 lspci/lsblk 等只读验证”仍须标 diagnostic。
 - 当前内置 aCLI catalog 是生成知识而不是模型侧门禁。优先使用已注册命令；证据明确但 catalog 缺失时仍输出 Candidate 并标 needs_review，服务端归入 not_exists，供专家确认 catalog 缺口或模型乱造。
 - Schema、args、变量依赖、Matcher、编译/预运行或真实运行验证失败统一视为 run_failed。命令在 catalog 中只证明“已登记”，不证明能运行成功。
 - BMC/iBMC 管理页面中的事件日志不是 HCI 平台告警。smartctl、ipmitool、dmidecode 属于 qfk_system；不得把 ipmitool mc info 或 BMC Web 页面查看伪造成 qfk_hardware。smartctl 必须提供能够实际运行的 command_args（例如 --scan，或采集选项加设备路径），禁止输出无参数的裸 smartctl。ipmitool mc info 只查看 BMC/MC 信息，不能用来采集 RAID 卡或适配器固件。qfk_hardware 当前已注册 cpu microcode file list、gpu config get/list、hostcli hostcli。qfk_log 的 evidence 必须逐字包含日志文件/路径或真实日志形态文本，不能把硬件/BMC 页面中的普通版本字段伪造成本机 messages 日志。
@@ -150,6 +150,12 @@ WHERE name = 'kbd_extract_signals_v2'
   AND content_template NOT LIKE '%ipmitool mc info 只查看 BMC/MC 信息%';
 
 UPDATE system_prompt
+SET content_template = content_template || E'\n- phase 描述 Candidate 自身执行的命令，不描述它发生在修复前还是修复后；“重启后执行 lspci/lsblk 等只读验证”仍须标 diagnostic，不能因上下文有重启而标 solution。',
+    updated_at = NOW()
+WHERE name = 'kbd_extract_signals_v2'
+  AND content_template NOT LIKE '%phase 描述 Candidate 自身执行的命令%';
+
+UPDATE system_prompt
 SET content_template = replace(
         content_template,
         'qfk_hardware 当前已注册 cpu microcode file list、gpu config get/list、hostcli hostcli。',
@@ -185,6 +191,7 @@ BEGIN
        OR extract_prompt NOT LIKE '%不能把硬件/BMC 页面中的普通版本字段伪造成本机 messages 日志%'
        OR extract_prompt NOT LIKE '%ipmitool mc info 只查看 BMC/MC 信息%'
        OR extract_prompt NOT LIKE '%regex pattern 必须能实际命中逐字 evidence%'
+       OR extract_prompt NOT LIKE '%phase 描述 Candidate 自身执行的命令%'
        OR extract_prompt NOT LIKE '%"signals": [%'
        OR extract_prompt LIKE '%所有输出 Signal 的 phase 必须为 diagnostic；phase=solution 禁止输出%'
        OR extract_prompt LIKE '%无法映射到 catalog 时不生成 Signal%'

@@ -27,6 +27,7 @@ owner: team
 | T-KB-GATE-04 | catalog 命令最小 argv 运行契约 | ✅ 代码完成 | 裸 smartctl 等已登记但不能运行的调用进入 run_failed；KBD/SOP 复用 |
 | T-KB-GATE-05 | acquisition/evidence 一致性门禁 | ✅ 代码完成 | BMC 事件不伪装 qkv_alert；无日志来源/形态证据不伪装 qfk_log |
 | T-KB-GATE-06 | 命令能力与 regex evidence 预运行门禁 | ✅ 代码完成 | ipmitool mc info 不采集 RAID 固件；regex 必须命中自身 evidence |
+| T-KB-GATE-07 | 修复后只读验证 phase 纠偏 | ✅ 代码完成 | 封闭只读命令不因上下文重启误报 write_signal；真实写命令仍优先拒绝 |
 | T-KB-SCHEMA-01 | `rejected_candidates[].reason_code` 增加三值枚举且保持可选 | ✅ 代码完成 | 新数据可分类，历史快照继续合法 |
 | T-KB-UI-01 | 审核页展示三类标签、关注级别、原因与完整 Candidate | ✅ 代码完成 | 专家能区分安全、能力和运行问题 |
 | T-KB-PROMPT-DB-01 | seed 升至 v2.1，data migration 021 前向修复已部署 v1.9 | ✅ dev 收敛验证 | 迁移不只追加规则，并以负向断言保证不残留模型侧过滤规则 |
@@ -34,6 +35,7 @@ owner: team
 | T-KB-VERIFY-01 | 后端专项/完整测试、Ruff、Schema、前端类型与构建 | ✅ 完成 | 49 项聚焦测试、303 项完整测试、Ruff、Schema 漂移和 Admin 构建通过 |
 | T-KB-BATCH-00 | KBD30880 连续重抽 5 次回归 | ✅ 5/5 | Proposal 57～61 均有 qkv_task；最新 Proposal 无 Expert 配对，修改数为 0 |
 | T-KB-BATCH-01 | 重跑 KBD27079/27173/27222/27653/27736 | ✅ 六轮闭环 | revisions 93～97 正常 Signal 与 write_signal/not_exists/run_failed 均按预期分流，无新增问题 |
+| T-KB-BATCH-02 | 重跑 KBD28094/28156/28177/28900/29294 | 🔄 修复后待重跑 | revisions 98～102 发现只读 lspci 因“重启后验证”错标 write_signal，已补 phase 纠偏 |
 | T-KB-BATCH-N | 剩余草稿按每批 5 篇自查、修复、重跑、独立提交 | ⬜ 待执行 | 前一批通过后才进入下一批 |
 | T-KB-PR | 汇总本地提交并创建 PR | ⬜ 待全部批次完成 | CI 全绿；标签齐全 |
 

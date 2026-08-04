@@ -158,6 +158,7 @@ def test_signal_executability_prompt_migration_teaches_catalog_and_matcher_bound
     assert "不能把硬件/BMC 页面中的普通版本字段伪造成本机 messages 日志" in supplemental_rule
     assert "ipmitool mc info 只查看 BMC/MC 信息" in supplemental_rule
     assert "regex pattern 必须能实际命中逐字 evidence" in supplemental_rule
+    assert "phase 描述 Candidate 自身执行的命令" in supplemental_rule
     assert 'command="asan disk list"' in supplemental_rule
     assert "BMC/iBMC 管理页面中的事件日志不是 HCI 平台告警" in supplemental_rule
     assert "exists 只判断提取结果是否存在" in supplemental_rule
@@ -191,6 +192,7 @@ def test_seed_signal_prompt_contains_catalog_and_matcher_quality_boundaries():
     assert "不能把硬件/BMC 页面中的普通版本字段伪造成本机 messages 日志" in template
     assert "ipmitool mc info 只查看 BMC/MC 信息" in template
     assert "regex pattern 必须能实际命中逐字 evidence" in template
+    assert "phase 描述 Candidate 自身执行的命令" in template
     assert 'command="asan disk list"' in template
     assert "不得降级改写成 address、ip、error 等更宽泛关键词" in template
     assert "保留脱敏 pattern" in template

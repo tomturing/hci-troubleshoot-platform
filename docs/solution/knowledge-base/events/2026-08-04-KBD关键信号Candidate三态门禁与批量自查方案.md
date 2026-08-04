@@ -60,6 +60,7 @@ Prompt v2.1 输出 Candidate，但传输层保留历史 key `signals`，避免 P
    - `orchestrate.phase=solution`；或
    - `qfk_*` Candidate 的实际 `command` 命中现有明确写动作词表。
    - 必须先判，避免写操作因 args/Matcher 错误被误标成普通运行失败。
+   - phase 描述 Candidate 自身执行语义；对封闭词表可证明的只读命令，若 LLM 仅因“修复后验证”错标 solution，先归一为 diagnostic，再继续 catalog/运行门禁。
 2. `not_exists`
    - Candidate 的 tool/args 已足以按运行时同形规则编译；
    - 编译出的 `acli <namespace> <command>` 不在当前代码随附 catalog。
@@ -136,6 +137,7 @@ Prompt 数据迁移采用“收敛”而不是“只追加新规则”：存量�
 | catalog 本身不完整 | 将所有缺失命令当模型错误会阻碍 catalog 演进 | `not_exists` 明确要求专家区分真实缺口与乱造 |
 | 命令在 catalog 但参数/环境不兼容 | 误认为 catalog 命中即可运行 | Schema/编译/预运行/真实运行失败统一 `run_failed` |
 | 写命令同时有非法 Matcher | 若先做 Matcher 校验，会掩盖安全风险 | `write_signal` 优先 |
+| “重启后执行 lspci 验证”被标 solution | 把上下文中的历史变更误当 Candidate 自身写操作 | 封闭只读命令证明后归一 diagnostic，继续进入 `not_exists/run_failed/Signal` |
 | 同批一个坏候选 | 整批失败会吞掉正常事实 | 逐 Candidate 分流，正常项独立成为 Signal |
 | 历史 revision 没有新字段 | 强制 required 会破坏不可变历史读取 | `reason_code` 可选兼容，新增数据稳定写入 |
 | 自动修复 Candidate | 修改原意后无法审计模型真实输出 | 仅允许封闭的确定性规范化；拒绝项保留完整 Candidate |

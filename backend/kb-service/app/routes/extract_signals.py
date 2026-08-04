@@ -417,7 +417,9 @@ def _enrich_signal(
     else:
         # 人工确认是执行授权策略，不等价于处置动作；只读诊断即使需要确认，
         # 仍保留在诊断证据图中。
-        orchestrate["phase"] = orchestrate.get("phase", "diagnostic")
+        orchestrate["phase"] = (
+            orchestrate.get("phase", "diagnostic") if allow_solution_signals else "diagnostic"
+        )
         review.setdefault("require_human_confirm", False)
         provenance["risk"] = provenance.get(
             "risk", 2 if review.get("require_human_confirm") else 1

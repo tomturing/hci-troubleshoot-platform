@@ -147,6 +147,27 @@ def test_kbd_candidate_gate_uses_three_stable_reason_codes_and_keeps_good_signal
     assert "provenance" not in rejected[0]["signal"]
 
 
+def test_post_remediation_read_only_check_is_not_misclassified_as_write_signal():
+    candidate = {
+        "id": "post-check",
+        "acquire": {
+            "tool": "qfk_system",
+            "args": {"command": "lspci", "command_args": ["-vvv"]},
+        },
+        "match": {"type": "keyword", "pattern": "NVMe", "expected": True},
+        "orchestrate": {"phase": "solution", "produces": [], "requires": []},
+        "provenance": {"evidence": "重启后执行 lspci -vvv，可看到 NVMe 控制器"},
+    }
+
+    accepted, rejected = _validate_and_collect_signals(
+        [candidate], "kbd:test", enforce_kbd_read_only=True
+    )
+
+    assert accepted == []
+    assert rejected[0]["reason_code"] == "not_exists"
+    assert rejected[0]["signal"]["orchestrate"]["phase"] == "solution"
+
+
 def test_consumer_of_rejected_producer_is_run_failed_instead_of_using_ghost_variable():
     candidates = [
         {

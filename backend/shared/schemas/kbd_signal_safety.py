@@ -2,8 +2,8 @@
 
 KBD Signal 只描述事实采集、确定性判定或变量生产。处置/修复动作仍属于
 KBD 正文的解决方案，不得进入 ``signals_json``。本模块刻意不实现通用 Shell
-风险分析，只识别 Signal 自身已经声明的 solution 阶段，以及平台既有的明确
-写动作命令词表。
+风险分析，只识别平台既有的明确写动作命令词表；LLM 错把“修复后执行的只读
+验证”标成 solution 时，可由封闭只读命令表证明并纠正，不能误报为 write_signal。
 """
 
 from __future__ import annotations
@@ -50,6 +50,29 @@ WRITE_OPERATION_COMMANDS = frozenset(
 DESTRUCTIVE_OPERATION_COMMANDS = frozenset(
     {"delete", "remove", "del", "rm", "format", "wipe", "destroy"}
 )
+READ_ONLY_SYSTEM_COMMANDS = frozenset(
+    {
+        "cat",
+        "df",
+        "dmidecode",
+        "du",
+        "ethtool",
+        "free",
+        "iostat",
+        "ll",
+        "ls",
+        "lsblk",
+        "lsof",
+        "lspci",
+        "lsmod",
+        "ps",
+        "realethtool",
+        "sensors",
+        "smartctl",
+        "stat",
+    }
+)
+READ_ONLY_SUBCOMMAND_SUFFIXES = frozenset({"check", "get", "info", "list", "show", "status"})
 
 _REMEDIATION_GUIDANCE = (
     "处置动作不属于 KBD 关键信号；请修正案例中的排查描述，"
@@ -63,14 +86,37 @@ def kbd_signal_read_only_violation(signal: Any) -> str | None:
     if not isinstance(signal, dict):
         return None
 
-    orchestrate = signal.get("orchestrate") or {}
-    if str(orchestrate.get("phase") or "diagnostic") == "solution":
-        return f"检测到处置阶段信号（orchestrate.phase=solution）；{_REMEDIATION_GUIDANCE}"
-
     write_command = signal_write_operation_command(signal)
     if write_command:
         return f"检测到写操作命令 {write_command}；{_REMEDIATION_GUIDANCE}"
+
+    orchestrate = signal.get("orchestrate") or {}
+    if (
+        str(orchestrate.get("phase") or "diagnostic") == "solution"
+        and not signal_explicitly_read_only_command(signal)
+    ):
+        return f"检测到处置阶段信号（orchestrate.phase=solution）；{_REMEDIATION_GUIDANCE}"
     return None
+
+
+def signal_explicitly_read_only_command(signal: Any) -> bool:
+    """封闭证明 Candidate 的实际执行命令是只读采集。"""
+
+    if not isinstance(signal, dict):
+        return False
+    acquire = signal.get("acquire") or {}
+    tool = str(acquire.get("tool") or "")
+    if tool == "qfk_log":
+        return True
+    if not tool.startswith("qfk_"):
+        return False
+    command = str((acquire.get("args") or {}).get("command") or "").strip().lower()
+    tokens = [token for token in re.split(r"[\s|/]+", command) if token]
+    if not tokens:
+        return False
+    if tool == "qfk_system":
+        return tokens[0] in READ_ONLY_SYSTEM_COMMANDS
+    return tokens[-1] in READ_ONLY_SUBCOMMAND_SUFFIXES
 
 
 def signal_write_operation_command(signal: Any) -> str | None:

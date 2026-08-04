@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-08-04 | v3.59 | **KBD 修复后只读验证 phase 纠偏**：phase 只描述 Candidate 自身命令；封闭可证明的只读验证不再因“重启后”上下文误报 write_signal，归一 diagnostic 后继续 catalog/run 门禁。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
 | 2026-08-04 | v3.58 | **KBD 命令能力与 regex 预运行门禁**：`ipmitool mc info` 不再冒充 RAID 固件采集，regex 必须命中自身逐字 evidence；失败进入 `run_failed`，Agent 只消费能力与 Matcher 均可成立的 Signal。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
 | 2026-08-04 | v3.57 | **KBD acquisition/evidence 一致性门禁**：BMC 外部事件不再伪装 HCI 告警，缺少日志来源或日志形态 evidence 的 qfk_log 进入 `run_failed`；Agent 只消费证据支持采集器语义的 Signal。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
 | 2026-08-04 | v3.56 | **KBD catalog 命令最小 argv 门禁**：catalog 命中不再直接等价于可运行；裸 `smartctl` 等缺少命令必需参数的调用进入 `run_failed`，Agent 只消费满足调用契约的 Signal。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |

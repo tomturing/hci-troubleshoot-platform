@@ -64,7 +64,7 @@ data migration 021：在 hci-dev PostgreSQL 对当前 Prompt v1.9 执行 BEGIN �
 
 首次实际应用 migration 021 后，KBD30880 的 Proposal revision 56 仍未生成 `qkv_task`。数据库中的 v2.1 Prompt 事实检查发现：新规则 25 虽已追加，但 PR #668 的补充规则 24 仍明确要求“不生成 Signal，不以 phase=solution 形式保留”，同时还残留“宁缺毋滥”“不产出信号”和带下游条件的旧任务规则。版本号与正向关键字断言均通过，却不是语义完整的升级。
 
-migration 021 随后改为收敛迁移：替换上述全部已知反向指令，并增加负向断言。KBD30880 五次回归期间使用的 Prompt SHA-256 为 `268e2f960e3fc80117cd4a8f72650f4e76e88177bac21aaceb27f26f8357101a`；旧规则 24、“宁缺毋滥/不产出”和任务下游前置条件均不存在。第一批又依次发现脱敏值宽泛化、Matcher 数组夹带、裸 `smartctl`、BMC 页面伪装告警/本机日志、命令能力错配与 regex 自身不可命中等反例；Prompt 与服务端门禁均按通用契约逐轮收敛。当前实装 Prompt MD5 为 `6b1a6cb6ce17906a2b7e995f07bb2198`，SHA-256 为 `964086046eccf74ec7dccec21d4de34d29f66e8ec5ce46f62422df52494213d3`。
+migration 021 随后改为收敛迁移：替换上述全部已知反向指令，并增加负向断言。KBD30880 五次回归期间使用的 Prompt SHA-256 为 `268e2f960e3fc80117cd4a8f72650f4e76e88177bac21aaceb27f26f8357101a`；旧规则 24、“宁缺毋滥/不产出”和任务下游前置条件均不存在。首批又依次发现脱敏值宽泛化、Matcher 数组夹带、裸 `smartctl`、BMC 页面伪装告警/本机日志、命令能力错配与 regex 自身不可命中等反例；第二批补充 phase 只描述 Candidate 自身命令的语义。Prompt 与服务端门禁均按通用契约逐轮收敛。当前实装 Prompt MD5 为 `12dfb19cfa89874809a93cd6c889a238`，SHA-256 为 `b1d03afd25d8d9fd149f080176482bddff23d8d616235cab768c60ad8b761d20`。
 
 ## KBD30880 回归协议
 
@@ -109,6 +109,18 @@ migration 021 随后改为收敛迁移：替换上述全部已知反向指令，
 每篇逐 Candidate 检查：证据是否来自允许的四个章节；工具与参数是否合理；编译命令是否真实；Matcher 是否能在现场数据上成立；变量链是否可达；正常 Candidate 是否未受拒绝项牵连。
 
 ## 后续批次模板
+
+### 第二批初跑
+
+第二批固定 IDs 10～14（KBD28094/28156/28177/28900/29294），初跑 Proposal revisions 98～102：
+
+- KBD28094：5 个 Candidate 均因现场占位参数、无 Matcher/producer 或证据不足进入 `run_failed`，未静默丢失；
+- KBD28156：坏 qkv args、exists null、keyword 伪 regex 进入 `run_failed`，lspci 进入 `not_exists`；但“重启后 lspci 验证”因 phase=solution 被误分到 `write_signal`；
+- KBD28177：正常平台告警与 kernel `PCIe link lost` 日志为 Signal，结构/来源不成立的日志 Candidate 为 `run_failed`；
+- KBD28900：只读 ipmitool/lsmod/raw 查询为 Signal，关闭 RAID 监控动作进入 `write_signal`；
+- KBD29294：磁盘温度告警与带参数 smartctl 阈值为 Signal，无人消费 producer 为 `run_failed`。
+
+本批唯一通用阻断项是 phase 语义误用。修复只对封闭可证明的只读命令纠偏；实际命令命中写词表时仍优先 `write_signal`，未知/opaque solution Candidate 仍保守进入 `write_signal`。同批待重跑。
 
 每批事件记录以下内容：
 
