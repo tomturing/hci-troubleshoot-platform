@@ -1069,6 +1069,21 @@ function normalizeOptionalMatcherNulls(signal: SignalV2): SignalV2 {
   return normalized
 }
 
+function normalizeQfkProduceExtracts(signal: SignalV2): SignalV2 {
+  const normalized = cloneSignal(signal)
+  if (!sigTool(normalized).startsWith('qfk')) return normalized
+  const produces = normalized.orchestrate?.produces
+  if (!Array.isArray(produces)) return normalized
+  for (const produce of produces) {
+    if (produce && typeof produce === 'object' && produce.extract && typeof produce.extract === 'object') {
+      // QFK 使用声明式 extract；顶层 path 是旧 QKV JSON path 字段。两者并存即使
+      // path 为空也违反 Schema，保存前收敛，避免专家看不见的历史草稿字段造成 422。
+      delete produce.path
+    }
+  }
+  return normalized
+}
+
 function markLocalSignal(signalId: string): void {
   localSignalIds.value = new Set([...localSignalIds.value, signalId])
 }
@@ -1113,7 +1128,7 @@ function reconcileSignalContract(currentDoc: SignalsDoc, list: SignalV2[]): Sign
   ) as Record<string, SignalV2['role']>
   const policy: Record<string, string[]> = Object.fromEntries(evidenceRoles.map((role) => [role, []]))
   payload.signals = list.map((raw) => {
-    const signal = cloneSignal(raw)
+    const signal = normalizeQfkProduceExtracts(raw)
     const id = String(signal.id || '')
     const role = evidenceRoles.includes(signal.role as typeof evidenceRoles[number])
       ? signal.role!
@@ -1575,7 +1590,13 @@ function setQfkOutputMode(mode: 'keyword' | 'produces') {
     // 输出采集不做匹配判定，命令成功后把 stdout/JSON 路径结果写入变量池。
     draft.match = null
     if (!Array.isArray(draft.orchestrate.produces) || draft.orchestrate.produces.length === 0) {
-      draft.orchestrate.produces = [{ name: '', type: 'string', path: '' }]
+      draft.orchestrate.produces = [{
+        name: '',
+        type: 'string',
+        extract: {
+          type: 'text', rows: { mode: 'all' }, cardinality: 'exactly_one', source: 'stdout', value_mode: 'string',
+        },
+      }]
     }
     return
   }

@@ -19,6 +19,7 @@
 import { computed, watch } from 'vue'
 import { InfoFilled } from '@element-plus/icons-vue'
 import ValueExtractEditor from './ValueExtractEditor.vue'
+import { formatKeywordInput, parseKeywordInput } from '../../utils/keywordInput'
 
 const props = defineProps<{
   modelValue: Record<string, any>
@@ -67,21 +68,18 @@ const matcherType = computed({
   },
 })
 
-// keyword 模式的 pattern（支持数组，用逗号分隔输入）
+// keyword 模式的 pattern（支持数组，每行一个字面量输入）
 const keywordPatternsStr = computed({
   get: () => {
     const p = matcher.value.pattern
-    if (Array.isArray(p)) return p.join(', ')
+    if (Array.isArray(p)) return formatKeywordInput(p)
     return p || ''
   },
   set: (val: string) => {
-    if (val.includes(',')) {
-      matcher.value = {
-        ...matcher.value,
-        pattern: val.split(',').map((s: string) => s.trim()).filter(Boolean),
-      }
-    } else {
-      matcher.value = { ...matcher.value, pattern: val.trim() }
+    const patterns = parseKeywordInput(val)
+    matcher.value = {
+      ...matcher.value,
+      pattern: patterns.length > 1 ? patterns : patterns[0] || '',
     }
   },
 })
@@ -165,10 +163,12 @@ const extractDefaultValueMode = computed(() => (
         <el-form-item label="关键字">
           <el-input
             v-model="keywordPatternsStr"
-            placeholder="输入关键字，多个用逗号分隔"
+            type="textarea"
+            :rows="3"
+            placeholder="每行一个关键字"
             spellcheck="false"
           />
-          <div class="field-hint">多个关键字时，下方组合关系决定匹配逻辑</div>
+          <div class="field-hint">每行一个字面量；中英文逗号属于关键字内容。多个关键字时，下方组合关系决定匹配逻辑</div>
         </el-form-item>
         <el-form-item label="组合关系">
           <el-radio-group v-model="matcher.mode">

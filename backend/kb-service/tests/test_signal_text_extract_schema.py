@@ -101,6 +101,27 @@ def test_qfk_produces_path_is_rejected_but_json_extract_is_allowed():
     validate_signals_json(_qfk_produce({"name": "PID", "type": "integer", "extract": {"type": "json", "path": "data[0].pid", "cardinality": "exactly_one", "source": "stdout", "value_mode": "integer"}}))
 
 
+def test_qfk_produce_path_and_extract_conflict_has_actionable_message():
+    document = _qfk_produce(
+        {
+            "name": "DUP_IP",
+            "type": "string",
+            "path": "",
+            "extract": _text_extract(rows={"mode": "keywords", "include": ["检测到IP", "冲突"]}),
+        }
+    )
+    document["signals"][0]["id"] = "sig_kbd27736_dup_ip"
+
+    with pytest.raises(ValidationError) as exc_info:
+        validate_signals_json(document)
+
+    issue = humanize_signal_validation_error(exc_info.value, document["signals"])
+    assert issue["code"] == "PRODUCE_PATH_EXTRACT_CONFLICT"
+    assert issue["field_path"] == "orchestrate.produces.0"
+    assert "path" in issue["message"]
+    assert "extract" in issue["message"]
+
+
 def test_multicolumn_scalar_requires_value_key_and_object_cardinality_is_closed():
     columns = [
         {"key": "USED", "selector": {"by": "index", "index": 3}, "value_mode": "string"},

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 /** QFK 声明式文本取值编辑器：行选择与列选择正交。 */
 import { computed, watch } from 'vue'
+import { formatKeywordInput, parseKeywordInput } from '../../utils/keywordInput'
 
 const props = withDefaults(defineProps<{
   modelValue?: Record<string, any>
@@ -37,6 +38,9 @@ function listText(value: any): string {
 function setStringList(target: Record<string, any>, key: string, value: string) {
   target[key] = value.split('\n').map(item => item.trim()).filter(Boolean)
   setExtract({ ...extract.value })
+}
+function setKeywordList(key: 'include' | 'exclude', value: string) {
+  setRowsField(key, parseKeywordInput(value))
 }
 function setRowMode(mode: string) {
   if (mode === 'keywords') {
@@ -137,10 +141,10 @@ watch(() => props.modelValue, value => {
       </el-form-item>
       <template v-if="rows.mode === 'keywords'">
         <el-form-item label="包含关键字">
-          <el-input :model-value="listText(rows.include)" type="textarea" :rows="2" placeholder="每行一个字面量" @input="(value: string) => setStringList(rows, 'include', value)" />
+          <el-input :model-value="formatKeywordInput(rows.include)" type="textarea" :rows="3" placeholder="每行一个关键字" @input="(value: string) => setKeywordList('include', value)" />
         </el-form-item>
         <el-form-item label="排除关键字">
-          <el-input :model-value="listText(rows.exclude)" type="textarea" :rows="2" @input="(value: string) => setStringList(rows, 'exclude', value)" />
+          <el-input :model-value="formatKeywordInput(rows.exclude)" type="textarea" :rows="3" placeholder="每行一个关键字" @input="(value: string) => setKeywordList('exclude', value)" />
         </el-form-item>
         <el-form-item label="关键字关系">
           <el-select :model-value="rows.include_mode || 'all'" @change="(value: string) => setRowsField('include_mode', value)">
@@ -148,6 +152,7 @@ watch(() => props.modelValue, value => {
           </el-select>
           <el-switch class="case-switch" :model-value="rows.case_sensitive ?? true" active-text="区分大小写" @change="(value: boolean) => setRowsField('case_sensitive', value)" />
         </el-form-item>
+        <div class="field-hint">与判定器一致：每行一个字面量；中英文逗号属于关键字内容。</div>
       </template>
       <template v-else-if="rows.mode === 'indices'">
         <el-form-item label="行号基准">

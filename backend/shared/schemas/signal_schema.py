@@ -117,6 +117,9 @@ def humanize_signal_validation_error(error: ValidationError, signals: list[Any])
     if field_path == "match.pattern" and matcher_type == "exists":
         message = "存在性判定只检查输出是否为空，不使用“匹配内容”；请重新保存，平台会自动清理历史空值。"
         code = "MATCHER_UNUSED_FIELD"
+    elif error.validator == "not" and field_path.startswith("orchestrate.produces"):
+        message = "产出变量不能同时配置旧版 JSON 路径(path)和声明式取值(extract)；请保留当前取值配置后重新保存。"
+        code = "PRODUCE_PATH_EXTRACT_CONFLICT"
     elif error.validator == "required":
         missing = str(error.message).split("'")[1] if "'" in error.message else "必填字段"
         message = f"{field_label}缺少必填项“{missing}”，请补充后保存。"
