@@ -1,5 +1,15 @@
 # 前端避坑（pnpm / TypeScript / Vue）
 
+## V-008：前端恢复/复制 Signal 不得写入 Schema 未声明的 provenance 字段
+
+**症状：** 专家点击“恢复并编辑”或“复制”后，即使已将 QFK 从“产出变量”切为“匹配模式”，保存仍返回 `422 SIGNAL_FIELD_UNSUPPORTED`，定位到 `provenance`。页面若只展示通用文案，会误以为是 matcher、产出变量或下游消费关系配置错误。
+
+**根因：** Signal Schema 对 `provenance` 使用 `additionalProperties: false`，仅允许可追溯的来源事实。旧 Admin UI 将 `expert_created`、`expert_restored` 这类本地交互标记写入该对象，自己生成了 Schema 不支持的字段；恢复候选后的每次整稿保存都会被拒绝。
+
+**修复：** 前端不再写入上述字段，恢复时深拷贝审计候选；服务端保存边界兼容移除历史 UI 已写入的两个字段。专家操作的审计应由 KBD Expert Revision / review metadata 承担，不能污染 Signal 的来源事实。
+
+**预防：** UI 要新增持久化字段前，必须先确认共享 JSON Schema 已声明且运行时会消费；对“恢复候选→编辑→保存”及“复制→保存”均需增加回归测试。未知字段仍应 Fail Closed，兼容清理只能针对已知的历史 UI 字段。
+
 ## V-007：单对象删除不得携带无关草稿，校验错误必须保留稳定定位
 
 **症状：** 用户恢复或编辑多条 Signal 后，删除其中一条却因另一条无效草稿失败；错误只显示 `None is not valid under anyOf`，无法知道哪条 Signal、哪个字段需要修改。

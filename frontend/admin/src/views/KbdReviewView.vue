@@ -1185,7 +1185,6 @@ function buildSignalForTool(tool: string, previous?: SignalV2): SignalV2 {
       ...(previous?.provenance || {}),
       category: producer ? 'frontend' : 'backend',
       needs_review: true,
-      expert_created: previous ? previous.provenance?.expert_created : true,
     },
     review: { require_human_confirm: true },
   }
@@ -1739,7 +1738,7 @@ async function duplicateSignal(index: number) {
   if (!source) return
   const duplicate = cloneSignal(source)
   duplicate.id = createSignalId()
-  duplicate.provenance = { ...(duplicate.provenance || {}), expert_created: true, needs_review: true }
+  duplicate.provenance = { ...(duplicate.provenance || {}), needs_review: true }
   const list = signalList.value.map(cloneSignal)
   list.splice(index + 1, 0, duplicate)
   signalSaveLoading.value = true
@@ -1773,9 +1772,12 @@ function restoreRejectedCandidate(candidate: unknown) {
     return
   }
   if (!detailEntry.value) return
-  const restored = normalizeOptionalMatcherNulls(candidate as SignalV2)
+  // 拒绝候选是审计快照，恢复时必须先复制，不能在编辑过程中修改原始候选。
+  const restored = normalizeOptionalMatcherNulls(cloneSignal(candidate as SignalV2))
   restored.id = createSignalId()
-  restored.provenance = { ...(restored.provenance || {}), needs_review: true, expert_restored: true }
+  // ``provenance`` 是受 Schema 约束的来源事实，不能写入仅供前端标记的
+  // ``expert_restored``。本次专家修改已经由 Expert Revision/review metadata 审计。
+  restored.provenance = { ...(restored.provenance || {}), needs_review: true }
   const doc = detailEntry.value.signals_json as SignalsDoc
   doc.signals = [...(doc.signals || []), restored]
   markLocalSignal(String(restored.id))

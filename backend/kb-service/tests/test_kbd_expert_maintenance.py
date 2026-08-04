@@ -344,6 +344,35 @@ def test_kbd30880_exists_matcher_null_pattern_is_canonicalized_on_save():
     assert "pattern" not in patched["signals_json"]["signals"][1]["match"]
 
 
+def test_kbd30880_restored_or_duplicated_signal_legacy_provenance_flags_do_not_block_save():
+    """旧页面恢复/复制 Signal 时写入的 UI 标记必须在保存边界兼容移除。"""
+
+    original = _payload()
+    restored = copy.deepcopy(original["signals_json"]["signals"][1])
+    restored["id"] = "expert_restored_gpu_config"
+    restored["provenance"] = {
+        **restored["provenance"],
+        "expert_created": True,
+        "expert_restored": True,
+        "needs_review": True,
+    }
+    signals = original["signals_json"] | {
+        "signals": [*original["signals_json"]["signals"], restored]
+    }
+
+    patched = _patch_maintenance_payload(original, KbdUpdateRequest(signals_json=signals))
+    provenance = patched["signals_json"]["signals"][-1]["provenance"]
+
+    assert provenance["needs_review"] is True
+    assert "expert_created" not in provenance
+    assert "expert_restored" not in provenance
+
+    published = admin._prepare_expert_publish_signals(signals)
+    published_provenance = published["signals"][-1]["provenance"]
+    assert "expert_created" not in published_provenance
+    assert "expert_restored" not in published_provenance
+
+
 def test_delete_signal_id_uses_authoritative_document_and_reconciles_contract():
     """删除按稳定 ID 作用于权威稿，不需要提交其他未完成的前端暂存编辑。"""
 

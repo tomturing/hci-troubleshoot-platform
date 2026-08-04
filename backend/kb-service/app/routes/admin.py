@@ -127,10 +127,32 @@ def _normalize_qfk_system_command_args(document: dict[str, Any]) -> dict[str, An
     return document
 
 
+def _strip_legacy_expert_provenance_flags(document: dict[str, Any]) -> dict[str, Any]:
+    """兼容移除旧 Admin UI 写入的非契约 provenance 标记。
+
+    ``expert_created``/``expert_restored`` 曾由页面用于标记本地交互来源，
+    却不属于 Signal ``provenance``（来源事实）的 Schema。它们因此会让恢复
+    拒绝候选或复制信号的整个工作稿返回 422，反而堵住专家修复路径。专家操作
+    本身已在 KbdRevision 的 review metadata 中审计，所以保存边界可安全移除
+    这两个仅前端使用过的历史字段；其他未知 provenance 字段仍由 Schema 拒绝。
+    """
+
+    for signal in document.get("signals") or []:
+        if not isinstance(signal, dict):
+            continue
+        provenance = signal.get("provenance")
+        if not isinstance(provenance, dict):
+            continue
+        provenance.pop("expert_created", None)
+        provenance.pop("expert_restored", None)
+    return document
+
+
 def _prepare_expert_publish_signals(raw: Any) -> dict[str, Any]:
     """规范化历史角色冲突，并用当前工具契约为 Expert 发布内容盖章。"""
 
     normalized, _ = normalize_legacy_role_contract(_load_signals_json(raw))
+    _strip_legacy_expert_provenance_flags(normalized)
     normalize_optional_matcher_nulls(normalized)
     canonical, _ = reconcile_verification_contract(normalized)
     validate_kbd_read_only_signals_json(canonical)
@@ -219,6 +241,7 @@ def _prepare_expert_draft_signals(raw: Any) -> dict[str, Any]:
     """归约并校验专家工作稿，保存与按 ID 删除共用同一权威边界。"""
 
     document = copy.deepcopy(_load_signals_json(raw))
+    _strip_legacy_expert_provenance_flags(document)
     normalize_optional_matcher_nulls(document)
     document, _ = reconcile_verification_contract(document)
     try:
