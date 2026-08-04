@@ -1277,7 +1277,7 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
     if raw_signals is None:
         raw_signals = llm_result.get("signals", [])
     if not isinstance(raw_signals, list):
-        raise HTTPException(status_code=500, detail="LLM 未返回 candidates 数组")
+        raise HTTPException(status_code=500, detail="LLM 未返回 Candidate 数组（candidates/signals）")
     proposed_contract = llm_result.get("verification_contract")
     external_variables = set(_normalize_contract_variables(proposed_contract))
     validated, rejected = _validate_and_collect_signals(
@@ -1396,7 +1396,7 @@ async def extract_signals_for_sop(db_manager: DatabaseManager, sop_id: int) -> d
     if raw_signals is None:
         raw_signals = llm_result.get("signals", [])
     if not isinstance(raw_signals, list):
-        raise HTTPException(status_code=500, detail="LLM 未返回 candidates 数组")
+        raise HTTPException(status_code=500, detail="LLM 未返回 Candidate 数组（candidates/signals）")
     validated, rejected = _validate_and_collect_signals(raw_signals, f"sop:{sop_id}")
 
     # SOP 执行由 tree_json 决策树拥有裁决契约，不生成 KBD Case Verification Contract。

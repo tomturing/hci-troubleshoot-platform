@@ -18,7 +18,7 @@ owner: team
 
 | ID | 任务 | 状态 | 验收 |
 |---|---|---|---|
-| T-KB-CANDIDATE-01 | Prompt 输出从 `signals` 改为 `candidates`，后端兼容旧 key | ✅ 代码完成 | 新旧 Prompt 响应均可处理 |
+| T-KB-CANDIDATE-01 | Prompt 完整输出 Candidate；传输层保留兼容 key `signals`，后端同时接受 `candidates` | ✅ 代码完成 | Prompt/服务可非原子滚动升级，不会产生空 Proposal |
 | T-KB-CANDIDATE-02 | 移除模型侧写动作/catalog 缺失过滤，明确 `qkv_task` 只读查询语义 | ✅ 代码完成 | KBD30880 连续 5 次出现 qkv_task |
 | T-KB-CANDIDATE-03 | 动态注入当前 aCLI catalog 命令知识 | ✅ 代码完成 | Prompt 有依据生成，缺失命令仍不被模型侧删除 |
 | T-KB-GATE-01 | 建立 `write_signal → not_exists → run_failed → Signal` 分流 | ✅ 代码完成 | 单测覆盖固定优先级和混合候选 |

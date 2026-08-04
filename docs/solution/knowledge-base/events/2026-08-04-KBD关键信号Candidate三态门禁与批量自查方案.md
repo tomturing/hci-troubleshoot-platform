@@ -34,16 +34,16 @@ Candidate（全部候选）
 
 ### 2. LLM 边界
 
-Prompt v2.1 输出：
+Prompt v2.1 输出 Candidate，但传输层保留历史 key `signals`，避免 Prompt 数据迁移与服务滚动发布必须原子切换：
 
 ```json
 {
   "schema_version": 2,
-  "candidates": []
+  "signals": []
 }
 ```
 
-后端兼容旧 Prompt 的 `signals` 数组。LLM 获得以下知识：
+这里的 `signals[]` 在服务端门禁前全部视为 Candidate，不代表已经成为领域 Signal。后端同时兼容未来的 `candidates[]`，但当前 Prompt 不改 wire key。LLM 获得以下知识：
 
 - 采集器及 args 契约；
 - QKV 是前台历史事实查询，QFK 是后台采集/判定；
@@ -133,6 +133,7 @@ Prompt v2.1 输出：
 | 同批一个坏候选 | 整批失败会吞掉正常事实 | 逐 Candidate 分流，正常项独立成为 Signal |
 | 历史 revision 没有新字段 | 强制 required 会破坏不可变历史读取 | `reason_code` 可选兼容，新增数据稳定写入 |
 | 自动修复 Candidate | 修改原意后无法审计模型真实输出 | 仅允许封闭的确定性规范化；拒绝项保留完整 Candidate |
+| Prompt 先于服务滚动升级 | 若改成新 JSON key，旧服务会保存空 Proposal | wire key 继续使用 `signals`；新服务把它解释为 Candidate 并兼容 `candidates` |
 
 ### 为什么不选其他方案
 
@@ -142,6 +143,7 @@ Prompt v2.1 输出：
 - 不做自动修复循环：会增加不可解释状态和模型调用成本，且可能把错误命令改成“看似合法”的另一个错误命令。
 - 不为 KBD27173/KBD27222/KBD27653/KBD27736 写案例硬编码：案例只是通用门禁的回归样本。
 - 不把真实运行失败自动永久改写历史 Proposal：运行结果受现场版本、节点和时点影响，应以运行审计关联精确 revision；确认需要修改知识时由专家产生新 Expert/Proposal。
+- 不为概念纯度强制重命名 LLM wire key：`signals` 是既有滚动发布契约，门禁前按 Candidate 解释即可；改名会制造 Prompt/服务非原子升级故障。
 
 ## 事实边界
 

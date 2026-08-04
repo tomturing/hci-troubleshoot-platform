@@ -7,7 +7,6 @@ UPDATE system_prompt
 SET content_template = replace(
         replace(
             replace(
-                replace(
                     content_template,
                     '5. Signal 只读边界：Signal 只能是只读事实采集、确定性判定或变量生产。输入中即使出现修改配置、启停/重启、删除、迁移等处置/修复动作，也不得生成 Signal；动作应留在 KBD 解决方案中，若它出现在排查描述则交由专家修正文。',
                     '5. 生成与门禁分离：有证据支持的候选都必须输出。只读事实候选通常会成为 Signal；写动作、当前 catalog 缺失命令或验证失败候选会由服务端进入 Rejected Candidate。不要因为预判门禁不通过而省略 Candidate。'
@@ -17,10 +16,7 @@ SET content_template = replace(
             ),
             '18. 诊断与处置边界：所有输出 Signal 的 phase 必须为 diagnostic；phase=solution 禁止输出。只读 list/get/status/show/check 可以生成 Signal；任何写入、配置变更、启停/重启、删除或其他修复行为都不属于 Signal。command/command_args/resource_keyword 禁止包含 |、;、&、反引号、$、重定向符或换行；不要把多条命令拼成一个 command。',
             '18. 诊断与处置标注：只读事实采集、判定和变量生产 Candidate 使用 phase=diagnostic；真实写入、配置变更、启停/重启、删除或其他修复 Candidate 使用 phase=solution。后者不会成为 Signal，但必须输出并由服务端归入 write_signal。command/command_args/resource_keyword 不拼接多条命令；保持原始执行语义，不能为了过门禁而改写。'
-        ),
-        '"signals": [',
-        '"candidates": ['
-    ) || $RULE$
+        ) || $RULE$
 
 # 补充规则 25：Candidate/Signal/Rejected Candidate 三态门禁
 - 只使用三个概念：Candidate 是模型识别出的全部候选；Signal 是服务端门禁通过的候选；Rejected Candidate 是门禁未通过但完整保留、交专家处理的候选。模型不得替服务端过滤 Candidate。
@@ -78,7 +74,7 @@ BEGIN
        OR extract_prompt NOT LIKE '%服务端归入 write_signal%'
        OR extract_prompt NOT LIKE '%服务端归入 not_exists%'
        OR extract_prompt NOT LIKE '%统一视为 run_failed%'
-       OR extract_prompt NOT LIKE '%"candidates": [%'
+       OR extract_prompt NOT LIKE '%"signals": [%'
        OR extract_prompt LIKE '%所有输出 Signal 的 phase 必须为 diagnostic；phase=solution 禁止输出%'
        OR extract_prompt LIKE '%无法映射到 catalog 时不生成 Signal%' THEN
         RAISE EXCEPTION 'kbd_extract_signals_v2 未对齐 Candidate 三态门禁';

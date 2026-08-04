@@ -611,7 +611,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
 # 输出契约（严格 JSON，不要任何额外说明、不要 markdown 代码块）
 {{
   "schema_version": 2,
-  "candidates": [
+  "signals": [
     {{
       "id": "sig_001",
       "role": "<must|should|exclude|context>",
@@ -684,7 +684,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
 # 输出示例（对齐真实 KBD：虚拟机开机失败→镜像忙→进程占用；已对齐全 v2 契约与采集器字段）
 {{
   "schema_version": 2,
-  "candidates": [
+  "signals": [
     {{
       "id": "sig_001",
       "role": "must",

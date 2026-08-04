@@ -22,7 +22,7 @@ owner: team
 | 单元 | 脱敏 Matcher、keyword 伪正则、exists 携带 pattern | `run_failed` | ✅ 已覆盖 |
 | Schema | 新 rejected candidate 带三值 reason_code | 合法 | ✅ 已通过 |
 | Schema | 历史 rejected candidate 无 reason_code | 仍合法 | ✅ 已通过 |
-| Prompt | 输出 `candidates`，不含模型侧“不得输出”回归规则 | 合法且占位符集合不变 | ✅ 已通过 |
+| Prompt | 兼容 key `signals` 输出完整 Candidate，不含模型侧“不得输出”回归规则 | 合法且占位符集合不变；Prompt/服务任一先升级不产生空 Proposal | ✅ 已通过 |
 | 数据迁移 | v1.9 → v2.1 前向替换与幂等断言 | 不改写历史 KBD/revision | ✅ hci-dev 事务内通过并 ROLLBACK，线上仍为 v1.9 |
 | 前端 | 三类标签与 TypeScript | 类型检查、构建通过 | ✅ Admin 生产构建通过 |
 | 后端 | kb-service 完整测试与 Ruff | 全绿 | ✅ 303 passed；Ruff 通过 |
@@ -50,6 +50,12 @@ Admin UI：vue-tsc -b + vite build 通过（1724 modules transformed）
 docs naming --full：仅报告仓库既有 docs/solution/agent/关键信号架构落地设计.md 白名单问题；本次四份事件文档无新增问题
 data migration 021：在 hci-dev PostgreSQL 对当前 Prompt v1.9 执行 BEGIN → UPDATE/DO 断言 → ROLLBACK 成功；回滚后复核仍为 v1.9，未提前造成新 Prompt/旧服务不兼容
 ```
+
+### 滚动升级对抗性验证
+
+首次验证版将 Prompt wire key 改为 `candidates`。手工更新 kb-service Deployment 后，ArgoCD 立即恢复旧镜像；若此时单独应用 Prompt v2.1，旧服务只读取 `signals`，存在保存空 Proposal 的窗口。验证期间未触发任何 KBD 重抽，Prompt 随即从当天 02:00 PostgreSQL 备份精确恢复，MD5 与操作前一致：`c0e4028d38f712697a16dda59e9fe2af`。
+
+最终方案保留 `signals` 传输 key，但明确其内容在服务端门禁前都是 Candidate；新服务同时接受 `candidates`。修订后的 migration 021 已再次在当前 v1.9 上执行 BEGIN → 全部断言 → ROLLBACK，操作前后版本和 MD5 完全一致。由此证明 Prompt 与服务任一先升级都不会因 key 不兼容产生空 Proposal。
 
 ## KBD30880 回归协议
 

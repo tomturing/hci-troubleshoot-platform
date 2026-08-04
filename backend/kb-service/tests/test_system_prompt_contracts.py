@@ -134,7 +134,7 @@ def test_kbd_read_only_prompt_migration_replaces_old_solution_signal_guidance():
 def test_seed_signal_prompt_outputs_all_candidates_and_leaves_gate_to_service():
     template = _seed_template("kbd_extract_signals_v2")
 
-    assert '"candidates": [' in template
+    assert '"signals": [' in template
     assert '"phase": "<diagnostic|solution>"' in template
     assert "你只负责提出 Candidate，不得在生成阶段替服务端过滤或删除候选" in template
     assert "服务端会归入 Rejected Candidate/write_signal" in template
