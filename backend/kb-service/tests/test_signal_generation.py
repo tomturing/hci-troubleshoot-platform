@@ -8,6 +8,7 @@ from app.routes import extract_signals
 from app.routes.extract_signals import (
     ExtractSignalsResponse,
     _acquirer_catalog_prompt_text,
+    _build_verification_contract,
     _matcher_quality_violation,
     _normalize_config_file_read,
     _normalize_generated_timeouts,
@@ -166,6 +167,32 @@ def test_post_remediation_read_only_check_is_not_misclassified_as_write_signal()
     assert accepted == []
     assert rejected[0]["reason_code"] == "not_exists"
     assert rejected[0]["signal"]["orchestrate"]["phase"] == "solution"
+
+
+def test_verification_contract_promotes_first_diagnostic_context_when_must_is_empty():
+    signals = [
+        {
+            "id": "context-only",
+            "role": "context",
+            "acquire": {"tool": "qkv_alert", "args": {"keyword": "接收丢包率过高"}},
+            "match": None,
+            "orchestrate": {
+                "phase": "diagnostic",
+                "produces": [{"name": "HOST", "path": "host"}],
+                "requires": [],
+            },
+        }
+    ]
+
+    contract = _build_verification_contract(
+        signals,
+        {"evidence_policy": {"context": ["context-only"]}},
+        case_id="kbd:test",
+    )
+
+    assert signals[0]["role"] == "must"
+    assert contract["evidence_policy"]["must"] == ["context-only"]
+    assert contract["evidence_policy"]["context"] == []
 
 
 def test_consumer_of_rejected_producer_is_run_failed_instead_of_using_ghost_variable():

@@ -126,6 +126,10 @@ migration 021 随后改为收敛迁移：替换上述全部已知反向指令，
 
 第三次同批 revisions 108～112 通过：KBD29294 的磁盘温度 qkv_alert 与 smartctl 阈值均为 Signal；KBD28156 两条平台告警分别召回、lspci 为 `not_exists`、reboot 为 `write_signal`；KBD28177 正常告警/日志为 Signal，坏 exists 为 `run_failed`；KBD28900 的 raw 写动作继续为 `write_signal`，结构不完整只读项为 `run_failed`；KBD28094 的正文 `alert_info=无`，未把案例标题标签强制冒充平台告警，LAN set 动作进入 `write_signal`。第二批允许退出。
 
+### 第三批初跑
+
+第三批固定 KBD29713/30396/30838/30884/32010（IDs 15/16/17/19/20；已完成 5/5 专项回归的 published KBD30880 不重复计入）。前四篇完成 Proposal，KBD32010 在 Candidate 分流后因所有通过项均为 `role=context`，verification_contract 的 must 为空，持久化抛出 500，导致 Proposal 与 Rejected Candidate 均未保存。修复将第一条 diagnostic Signal 的角色与 Contract 投影同时确定性提升为 must；没有 Signal 时继续返回 `verification_contract=null`。第三批必须整批重跑。
+
 每批事件记录以下内容：
 
 ```text

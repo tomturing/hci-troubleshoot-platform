@@ -140,6 +140,7 @@ Prompt 数据迁移采用“收敛”而不是“只追加新规则”：存量�
 | 写命令同时有非法 Matcher | 若先做 Matcher 校验，会掩盖安全风险 | `write_signal` 优先 |
 | “重启后执行 lspci 验证”被标 solution | 把上下文中的历史变更误当 Candidate 自身写操作 | 封闭只读命令证明后归一 diagnostic，继续进入 `not_exists/run_failed/Signal` |
 | 同批一个坏候选 | 整批失败会吞掉正常事实 | 逐 Candidate 分流，正常项独立成为 Signal |
+| 所有通过门禁的 Signal 都被 LLM 标为 context | verification_contract 没有 must，持久化 500，整篇 Candidate/Rejected 审计丢失 | 确定性提升第一条 diagnostic Signal 为 must；无 Signal 时不生成 Contract |
 | 历史 revision 没有新字段 | 强制 required 会破坏不可变历史读取 | `reason_code` 可选兼容，新增数据稳定写入 |
 | 自动修复 Candidate | 修改原意后无法审计模型真实输出 | 仅允许封闭的确定性规范化；拒绝项保留完整 Candidate |
 | Prompt 先于服务滚动升级 | 若改成新 JSON key，旧服务会保存空 Proposal | wire key 继续使用 `signals`；新服务把它解释为 Candidate 并兼容 `candidates` |

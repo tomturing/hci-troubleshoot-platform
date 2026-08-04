@@ -1151,16 +1151,23 @@ def _build_verification_contract(
                 assigned.add(signal_id)
     if not normalized["must"]:
         # 自动诊断没有必要证据就不能确认；选择首个非 solution 信号作为保守 must。
-        fallback = next(
+        fallback_signal = next(
             (
-                str(signal.get("id"))
+                signal
                 for signal in signals
-                if signal.get("id") and str(signal.get("id")) not in normalized["context"]
+                if signal.get("id")
+                and str((signal.get("orchestrate") or {}).get("phase") or "diagnostic")
+                != "solution"
             ),
             None,
         )
-        if fallback:
-            for role in ("should", "exclude"):
+        if fallback_signal:
+            fallback = str(fallback_signal["id"])
+            # reconcile_verification_contract 以 signals[].role 为唯一事实源，因此
+            # 不能只修改投影数组；必须同步提升 Signal 角色，避免最终 canonical
+            # 又把它放回 context 并产生空 must。
+            fallback_signal["role"] = "must"
+            for role in ("should", "exclude", "context"):
                 if fallback in normalized[role]:
                     normalized[role].remove(fallback)
             normalized["must"].append(fallback)
