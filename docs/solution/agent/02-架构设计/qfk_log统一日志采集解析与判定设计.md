@@ -43,8 +43,8 @@ blackbox 与 whitebox 的差异是数据布局和解释方法，不是执行通�
 |---|---|
 | `/sf/data/local` | 不是常规日志根；常规日志根只有 `/sf/log`。它包含镜像、备份、TSDB、升级包、info_collect 产物等。因为实机 `acli log get` 明确允许该路径，所以只保留 `request_id + path=/sf/data/local` 的辅助关联模式 |
 | 文件与路径映射 | 不是散落条件，也不是简单 `dict[str, str]`；代码使用有序、不可变 `tuple[LogSourceDefinition, ...]`。条目包含 file pattern、family、default path、parser、predicates 和 acquisition |
-| HOST/END/VM/file | KBD 先由 QKV 生产 HOST/END/REQUEST_ID/VM，变量池递归替换 `{{VAR}}`；HOST 由 bridge 选择对应 SSH 会话；VM 可进入 `sfvt_qemu_{{VM}}.log`；END 决定 `-t` 或 blackbox `YYYYMMDD` 路径；file/Catalog 决定默认路径和 parser |
-| 解压 | qfk_log 不直接执行解压命令。它决定安全参数；whitebox 历史日期使用 `-t`，实际日期定位和自动解压由 `acli log get` 完成；显式 gzip path 才使用 `-g` |
+| HOST/END/VM/file | KBD 先由 QKV 生产 HOST/END/REQUEST_ID/VM，变量池递归替换 `{{VAR}}`；HOST 由 bridge 选择对应 SSH 会话；VM 可进入 `sfvt_qemu_{{VM}}.log`；END 同时决定 `-t` 与日志目录：whitebox 使用月内日号 `/sf/log/<D或DD>[/vt]`，blackbox 使用 `YYYYMMDD`；file/Catalog 决定目录子层与 parser。无法得到实际 END 时，whitebox 回退 `/sf/log`。 |
+| 解压 | qfk_log 不直接执行解压命令。它决定安全参数；`-t` 保留为日志行的绝对时间过滤，历史归档处理仍由 `acli log get` 完成；显式 gzip path 才使用 `-g`。 |
 | qfk_log 与 aCLI | qfk_log 是 HTP 语义层和确定性判定层，`acli log get` 是当前主机的设备采集原语。两者不是重复实现，也不能互相替代 |
 | qkv_dialog | 在当前主控分别搜索 `/sf/log/today` 和 `/sf/log/today/vt`，过滤本次探针被 audit 记录的自观测行，兼容 `request_id:`、`request_id=` 和 trace 格式，产出 `END/REQUEST_ID/HOST` |
 
@@ -334,6 +334,15 @@ aCLI 明确说明：
 - `-t` 会定位日期并自动解压 whitebox 历史日志；qfk_log 不自行解压；
 - `-g` 用于显式 path 下的 `.gz` 搜索，不应与“所有历史日志都必须手动解压”混为一谈；
 - path 为目录时的搜索深度属于 aCLI 版本能力，因此 dialog 明确查询 today 与 today/vt 两个目录。
+
+whitebox 的运行时目录不能继续固定为 `today`：`END=2026-08-04 10:11:12` 且文件为
+`sfvt_vtpdaemon.log` 时，实际命令目录为 `/sf/log/4/vt`；没有已解析的 END 时才使用
+`/sf/log` 兜底。这里的 `4` 是月内日号，既不是 `2026-08-04`，也不是 `20260804`。
+
+对于 keyword matcher，`acli log get -E -k 'A|B'` 只负责把包含任一关键字的候选日志行
+缩小后返回；`match.mode=and` 由 Agent matcher 在完整候选输出上确认 A、B 均命中。管理台
+必须将它展示为“OR 预筛 + 后端 AND 最终判定”，不得把 `|` 误称为 AND，也不得使用在扩展
+正则中没有 AND 语义的 `A&B`。
 
 现有代码曾把 `-1h`、`now` 原样传给 `-t`，也曾使用不存在的 `-l`；这些都属于“看起来合理但不符合真实 aCLI”的契约漂移。
 

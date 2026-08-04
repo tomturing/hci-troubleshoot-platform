@@ -925,6 +925,22 @@ function sigArgs(sig: SignalV2): Record<string, any> { return sig.acquire?.args 
 function sigMatch(sig: SignalV2): Record<string, any> { return sig.match || {} }
 function sigOrch(sig: SignalV2): Record<string, any> { return sig.orchestrate || {} }
 function sigProvenance(sig: SignalV2): Record<string, any> { return sig.provenance || {} }
+function keywordMatchModeLabel(sig: SignalV2): string {
+  const mode = String(sigMatch(sig).mode || 'or').toLowerCase()
+  if (sigTool(sig) === 'qfk_log' && mode === 'and') {
+    return 'AND（后端最终判定；日志命令以 OR 预筛）'
+  }
+  return mode.toUpperCase()
+}
+function inferredQfkLogPathLabel(sig: SignalV2): string {
+  const args = sigArgs(sig)
+  const file = String(args.file || '')
+  const isVtLog = file === 'sfvt_vtpdaemon.log' || file.startsWith('sfvt_qemu_')
+  const datePath = isVtLog ? '/sf/log/{D}/vt' : '/sf/log/{D}'
+  return args.time_window
+    ? `自动定位：END → ${datePath}；未解析 END 时回退 /sf/log`
+    : '自动定位：/sf/log'
+}
 type SignalReviewTag = { label: string, type: 'success' | 'warning' }
 function signalReviewTag(sig: SignalV2): SignalReviewTag | null {
   const needsReview = sigProvenance(sig).needs_review === true || sig.review?.require_human_confirm === true
@@ -2983,7 +2999,7 @@ onMounted(() => {
                     <div v-if="sigMatch(item.sig).metric" class="signal-row"><span class="signal-k">指标字段</span><span class="signal-v code">{{ sigMatch(item.sig).metric }}</span></div>
                     <div v-if="sigMatch(item.sig).value !== undefined" class="signal-row"><span class="signal-k">比较条件</span><span class="signal-v">{{ sigMatch(item.sig).operator || sigMatch(item.sig).direction || '' }} {{ sigMatch(item.sig).value }}</span></div>
                     <div class="signal-row"><span class="signal-k">期望</span><span class="signal-v">{{ sigMatch(item.sig).expected === true ? '存在' : sigMatch(item.sig).expected === false ? '不存在' : '—' }}</span></div>
-                    <div v-if="sigMatch(item.sig).type === 'keyword'" class="signal-row"><span class="signal-k">组合关系</span><span class="signal-v">{{ sigMatch(item.sig).mode || 'or' }}</span></div>
+                    <div v-if="sigMatch(item.sig).type === 'keyword'" class="signal-row"><span class="signal-k">组合关系</span><span class="signal-v">{{ keywordMatchModeLabel(item.sig) }}</span></div>
                   </template>
 
                   <!-- 其他工具特有字段 -->
@@ -2994,7 +3010,7 @@ onMounted(() => {
                     <details class="signal-advanced-details">
                       <summary>日志定位高级设置</summary>
                       <div class="signal-row"><span class="signal-k">日志族</span><span class="signal-v">{{ sigArgs(item.sig).source_family || 'auto（按文件/路径推断）' }}</span></div>
-                      <div class="signal-row"><span class="signal-k">路径</span><span class="signal-v code">{{ sigArgs(item.sig).path || '通用定位（默认搜索 /sf/log）' }}</span></div>
+                      <div class="signal-row"><span class="signal-k">路径</span><span class="signal-v code">{{ sigArgs(item.sig).path || inferredQfkLogPathLabel(item.sig) }}</span></div>
                       <div class="signal-row"><span class="signal-k">解析器</span><span class="signal-v code">{{ sigArgs(item.sig).parser || '自动选择' }}</span></div>
                     </details>
                   </template>

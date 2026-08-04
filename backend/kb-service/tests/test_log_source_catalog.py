@@ -10,7 +10,8 @@ from shared.schemas.log_source_catalog import (
 def test_catalog_resolves_whitebox_and_blackbox_defaults():
     vtp = resolve_log_source("sfvt_vtpdaemon.log")
     assert vtp["family"] == "whitebox"
-    assert vtp["path"] == "/sf/log/today/vt"
+    assert vtp["path"] == "/sf/log"
+    assert vtp["date_subpath"] == "vt"
     assert vtp["parser"] == "timestamped_lines"
 
     counter = resolve_log_source("LOG_ethtool_statistic.txt")

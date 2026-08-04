@@ -25,7 +25,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any
 
-LOG_SOURCE_CATALOG_VERSION = "1.1"
+LOG_SOURCE_CATALOG_VERSION = "1.2"
 
 LOG_SOURCE_FAMILIES = (
     "auto",
@@ -79,6 +79,7 @@ class LogSourceDefinition:
     parser: str
     predicates: tuple[str, ...]
     description: str
+    date_subpath: str | None = None
     runtime_supported: bool = True
     acquisition: str = "acli_log_get"
 
@@ -156,28 +157,32 @@ LOG_SOURCE_CATALOG: tuple[LogSourceDefinition, ...] = (
         source_id="vtpdaemon",
         file_pattern=r"sfvt_vtpdaemon\.log",
         family="whitebox",
-        default_path="/sf/log/today/vt",
+        # 未提供可用 END 时必须回退到 /sf/log；不能把历史查询错误锁在 today。
+        # END 已解析时由 qfk_log 按月内日号定位 /sf/log/<D 或 DD>/vt。
+        default_path=LOG_ROOT,
         parser="timestamped_lines",
         predicates=("keyword", "regex", "state", "threshold", "exists"),
-        description="vtpdaemon 白盒日志；实机位于当日 vt 子目录",
+        description="vtpdaemon 白盒日志；END 可用时位于 /sf/log/<D或DD>/vt，未提供 END 时回退 /sf/log",
+        date_subpath="vt",
     ),
     LogSourceDefinition(
         source_id="qemu_vm",
         file_pattern=rf"sfvt_qemu_(?:[A-Za-z0-9_.-]+|{_PLACEHOLDER})\.log",
         family="whitebox",
-        default_path="/sf/log/today/vt",
+        default_path=LOG_ROOT,
         parser="timestamped_lines",
         predicates=("keyword", "regex", "state", "threshold", "exists"),
-        description="按虚拟机标识分文件的 QEMU 白盒日志",
+        description="按虚拟机标识分文件的 QEMU 白盒日志；END 可用时位于 /sf/log/<D或DD>/vt",
+        date_subpath="vt",
     ),
     LogSourceDefinition(
         source_id="kernel",
         file_pattern=r"kernel\.log",
         family="whitebox",
-        default_path="/sf/log/today",
+        default_path=LOG_ROOT,
         parser="timestamped_lines",
         predicates=("keyword", "regex", "state", "threshold", "exists"),
-        description="宿主机内核白盒日志",
+        description="宿主机内核白盒日志；END 可用时位于 /sf/log/<D或DD>",
     ),
     LogSourceDefinition(
         source_id="system_messages",
@@ -193,10 +198,10 @@ LOG_SOURCE_CATALOG: tuple[LogSourceDefinition, ...] = (
         source_id="whitebox_common",
         file_pattern=r"[A-Za-z0-9_.{}-]+",
         family="whitebox",
-        default_path="/sf/log/today",
+        default_path=LOG_ROOT,
         parser="timestamped_lines",
         predicates=("keyword", "regex", "state", "threshold", "exists"),
-        description="普通 HCI whitebox 文本日志的安全回退",
+        description="普通 HCI whitebox 文本日志的安全回退；未提供可用 END 时回退 /sf/log",
     ),
 )
 

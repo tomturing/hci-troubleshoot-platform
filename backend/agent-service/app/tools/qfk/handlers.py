@@ -25,6 +25,7 @@ import shlex
 from shared.schemas.acquirer_args import SAFE_LOG_FILE_PATTERN, VALID_SERVICE_CONTAINERS
 from shared.schemas.log_source_catalog import (
     LOG_MATCHER_TYPES,
+    LOG_ROOT,
     REQUEST_ARTIFACT_ROOT,
     normalize_absolute_log_time,
     normalize_log_path,
@@ -187,6 +188,30 @@ class LogKeywordHandler(BackendSignalHandler):
             raise CommandBuildError("关键字全部为空：至少需要一个非空关键字")
         raise CommandBuildError("qfk_log 必须提供关键字 matcher、resource_keyword 或 request_id 以限制日志输出")
 
+    @staticmethod
+    def _inferred_whitebox_path(source: dict[str, object], absolute_time: str | None) -> str:
+        """按白盒日志布局定位目录；无法从 END 得到日号时回退日志根。
+
+        HCI whitebox 实机目录使用月内日号（``/sf/log/4``），不是 ISO 日期或
+        ``YYYYMMDD``。``absolute_time`` 在正常执行前已由变量池将 ``{{END}}``
+        替换为实际绝对时间；若仍为占位符，不能猜测日期或继续使用 ``today``。
+        """
+        if not absolute_time or absolute_time.startswith("{{"):
+            return LOG_ROOT
+
+        # time_window 已由 normalize_absolute_log_time 校验为 YYYY-MM-DD[ ...]。
+        day_token = str(int(absolute_time[8:10]))
+        date_subpath = str(source.get("date_subpath") or "").strip("/")
+        return f"{LOG_ROOT}/{day_token}/{date_subpath}" if date_subpath else f"{LOG_ROOT}/{day_token}"
+
+    @staticmethod
+    def _is_legacy_whitebox_today_path(path: str | None, source: dict[str, object]) -> bool:
+        """识别旧 KBD 写入的 today 路径，以免它覆盖 END 的精确目录定位。"""
+        if path == f"{LOG_ROOT}/today":
+            return True
+        date_subpath = str(source.get("date_subpath") or "").strip("/")
+        return bool(date_subpath and path == f"{LOG_ROOT}/today/{date_subpath}")
+
     def build_commands(self, signal: BackendSignal) -> list[str]:
         file = signal.file
         try:
@@ -226,14 +251,15 @@ class LogKeywordHandler(BackendSignalHandler):
             except ValueError as exc:
                 raise CommandBuildError(str(exc)) from exc
 
-            # aCLI -t 自己负责 whitebox 日期目录定位与历史日志解压。若 path 是 Catalog
-            # 的 today 默认值，继续传 -p today 会把历史 END 错锁到今天，因此省略 -p；
-            # blackbox 不走 whitebox 解压逻辑，按固定 YYYYMMDD 目录确定性改写。
-            if absolute_time and signal.path_inferred:
+            # 白盒日志目录按 END 的月内日号组织。默认和旧 KBD 中的 today 路径都不能
+            # 覆盖这个定位，否则历史故障会被错误限制在今天。END 未解析时回退 /sf/log。
+            # blackbox 不走 whitebox 的日号目录规则，仍按固定 YYYYMMDD 目录确定性改写。
+            legacy_whitebox_today_path = self._is_legacy_whitebox_today_path(path, source)
+            if source["family"] == "whitebox" and (signal.path_inferred or legacy_whitebox_today_path):
+                path = self._inferred_whitebox_path(source, absolute_time)
+            elif absolute_time and signal.path_inferred:
                 date_token = absolute_time[:10].replace("-", "")
-                if source["family"] == "whitebox":
-                    path = None
-                elif source["family"] == "blackbox":
+                if source["family"] == "blackbox":
                     path = f"/sf/log/blackbox/{date_token}"
                 elif source["family"] == "vn_blackbox":
                     path = f"/sf/log/vn-blackbox/{date_token}"

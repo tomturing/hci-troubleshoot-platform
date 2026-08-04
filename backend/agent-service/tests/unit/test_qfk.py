@@ -4,6 +4,7 @@ import pytest
 from app.tools.acli import executor as executor_module
 from app.tools.acli.executor import ExecResult
 from app.tools.qfk import engine
+from app.tools.qfk.handlers import LogKeywordHandler
 from app.tools.qfk.matcher import evaluate_matcher
 from app.tools.qfk.signal import BackendSignal
 
@@ -48,6 +49,63 @@ def test_matcher_without_extract_fails_closed():
     result = evaluate_matcher({"type": "threshold", "operator": ">", "value": 1, "expected": True}, "value=2")
     assert result.matched is None
     assert "extract" in result.detail["error"]
+
+
+def test_whitebox_vt_uses_end_day_directory_and_and_remains_a_backend_predicate():
+    """日志命令只做 OR 预筛，最终 AND 必须由 matcher 在完整输出上判定。"""
+    matcher = {
+        "type": "keyword",
+        "pattern": ["检测到IP", "冲突"],
+        "mode": "and",
+        "expected": True,
+        "extract": _rows_all(),
+    }
+    signal = BackendSignal(
+        namespace="log",
+        file="sfvt_vtpdaemon.log",
+        time_window="2026-08-04 10:11:12",
+        matcher=matcher,
+    )
+
+    command = LogKeywordHandler().build_commands(signal)[0]
+
+    assert "-E -k" in command
+    assert "检测到IP|冲突" in command or "冲突|检测到IP" in command
+    assert "-p /sf/log/4/vt" in command
+    assert "-t '2026-08-04 10:11:12'" in command
+    assert evaluate_matcher(matcher, "仅检测到IP\n").matched is False
+    assert evaluate_matcher(matcher, "检测到IP，发生冲突\n").matched is True
+
+
+@pytest.mark.parametrize("time_window", [None, "{{END}}"])
+def test_whitebox_vt_falls_back_to_log_root_without_resolved_end(time_window):
+    signal = BackendSignal(
+        namespace="log",
+        file="sfvt_vtpdaemon.log",
+        time_window=time_window,
+        matcher={"type": "keyword", "pattern": ["检测到IP", "冲突"], "mode": "and", "expected": True},
+    )
+
+    command = LogKeywordHandler().build_commands(signal)[0]
+
+    assert "-p /sf/log" in command
+    assert "/today" not in command
+    assert "/vt" not in command
+
+
+def test_legacy_whitebox_today_path_does_not_override_end_day_directory():
+    signal = BackendSignal(
+        namespace="log",
+        file="sfvt_vtpdaemon.log",
+        path="/sf/log/today",
+        time_window="2026-08-04",
+        matcher={"type": "keyword", "pattern": "冲突", "mode": "or", "expected": True},
+    )
+
+    command = LogKeywordHandler().build_commands(signal)[0]
+
+    assert "-p /sf/log/4/vt" in command
+    assert "/sf/log/today" not in command
 
 
 @pytest.mark.asyncio
