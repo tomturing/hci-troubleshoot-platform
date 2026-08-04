@@ -337,6 +337,71 @@ def test_qfk_invocation_violation_rejects_catalog_hit_that_cannot_run():
     assert "smartctl 至少需要 1 个命令参数" in _qfk_invocation_violation(
         "qfk_system", {"command": "smartctl"}
     )
+
+
+@pytest.mark.parametrize(
+    ("candidate", "expected"),
+    [
+        (
+            {
+                "acquire": {
+                    "tool": "qkv_alert",
+                    "args": {"keyword": "The host was restarted by BMC."},
+                },
+                "match": None,
+                "orchestrate": {
+                    "produces": [{"name": "HOST", "path": "host"}],
+                    "requires": [],
+                },
+                "provenance": {"evidence": "The host was restarted by BMC."},
+            },
+            "外部事件日志不是 HCI 平台告警",
+        ),
+        (
+            {
+                "acquire": {"tool": "qfk_log", "args": {"file": "messages"}},
+                "match": {"type": "keyword", "pattern": "51.13", "expected": True},
+                "orchestrate": {"produces": [], "requires": []},
+                "provenance": {"evidence": "截图可见文字：51.13.0-3427"},
+            },
+            "采集来源无法验证",
+        ),
+    ],
+)
+def test_acquisition_must_be_supported_by_candidate_evidence(candidate, expected):
+    accepted, rejected = _validate_and_collect_signals(
+        [candidate], "kbd:test", enforce_kbd_read_only=True
+    )
+
+    assert accepted == []
+    assert rejected[0]["reason_code"] == "run_failed"
+    assert expected in rejected[0]["reason"]
+
+
+def test_log_shaped_evidence_keeps_normal_qfk_log_candidate():
+    candidate = {
+        "acquire": {"tool": "qfk_log", "args": {"file": "messages"}},
+        "match": {
+            "type": "keyword",
+            "pattern": "MCE: Killing",
+            "expected": True,
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "all"},
+                "cardinality": "all",
+                "source": "stdout",
+            },
+        },
+        "orchestrate": {"produces": [], "requires": []},
+        "provenance": {"evidence": "err [kernel:] MCE: Killing due to memory fault"},
+    }
+
+    accepted, rejected = _validate_and_collect_signals(
+        [candidate], "kbd:test", enforce_kbd_read_only=True
+    )
+
+    assert len(accepted) == 1
+    assert rejected == []
     assert (
         _qfk_invocation_violation(
             "qfk_system", {"command": "smartctl", "command_args": ["--scan"]}

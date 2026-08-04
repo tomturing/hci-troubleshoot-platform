@@ -131,6 +131,15 @@ DEFAULT_VARIABLE_SCHEMA: list[str] = [
 ]
 
 VALID_CATEGORIES = {"frontend", "backend"}
+_LOG_EVIDENCE_RE = re.compile(
+    r"(?:日志|\blog\b|\bkernel\b|\b(?:err|error|warn|warning|info|debug|critical)\b|"
+    r"\b20\d{2}[-/]\d{1,2}[-/]\d{1,2}[ T]\d{1,2}:\d{2})",
+    re.IGNORECASE,
+)
+_EXTERNAL_BMC_EVENT_RE = re.compile(
+    r"(?:\b(?:i?BMC)\b.{0,80}(?:event|日志|restarted)|restarted\s+by\s+(?:i?BMC))",
+    re.IGNORECASE,
+)
 VALID_MATCHER_TYPES = {"keyword", "regex", "state", "threshold", "delta", "trend", "exists"}
 VALID_VARIABLE_TYPES = {"string", "integer", "number", "boolean", "array"}
 REJECT_REASON_CODES = frozenset({"write_signal", "not_exists", "run_failed"})
@@ -485,6 +494,19 @@ def _validate_signal(
         cat = "backend" if str(tool).startswith("qfk_") else "frontend"
     if cat not in VALID_CATEGORIES:
         return False, f"provenance.category 非法: {cat}"
+
+    evidence = str(prov.get("evidence") or "").strip()
+    if tool == "qkv_alert" and _EXTERNAL_BMC_EVENT_RE.search(evidence):
+        return False, "BMC/iBMC 外部事件日志不是 HCI 平台告警，不能由 qkv_alert 获取"
+    if tool == "qfk_log":
+        file_name = str(args.get("file") or "").strip()
+        path = str(args.get("path") or "").strip()
+        has_explicit_source = bool(
+            (file_name and file_name.casefold() in evidence.casefold())
+            or (path and path.casefold() in evidence.casefold())
+        )
+        if not has_explicit_source and not _LOG_EVIDENCE_RE.search(evidence):
+            return False, "qfk_log 缺少可追溯的日志文件/路径或日志形态 evidence，采集来源无法验证"
 
     # KBD 处置动作必须先于 match/produces 结构校验拒绝，确保专家看到真正原因。
     if enforce_kbd_read_only:
