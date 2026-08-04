@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-07-31
+last_updated: 2026-08-05
 owner: team
 update_trigger: Agent 层功能新增/重构/问题修复任务
 ---
@@ -15,6 +15,7 @@ update_trigger: Agent 层功能新增/重构/问题修复任务
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
+| 2026-08-05 | v2.9 | 完成 QFK 完整输出 AI 提取：确定性 Extract/Matcher 先行，AI 只能定位候选原文中的字面量并逐字回查；Matcher evidence 与 produces 共享实现，失败关闭且变量池原子写入。 | [QFK完整输出AI提取任务](events/2026-08-05-QFK完整输出AI提取任务.md) |
 | 2026-08-04 | v2.8 | 收敛 KBD27736 图片来源门禁：保留四个诊断字段图片白名单、自由上下文隔离和 source ref 实际输入集合检查；移除正文 evidence 与截图 OCR 的跨来源逐字强绑定，恢复后续运行语义门禁的真实拒绝原因。 | [KBD关键信号图片来源门禁收敛修复任务](events/2026-08-04-KBD关键信号图片来源门禁收敛修复任务.md) |
 | 2026-08-04 | v2.7 | 修复 KBD27736 截图 Evidence 输入边界泄漏：根因/方案图片、上下文及未知章节 fail closed；初版实现额外加入逐字 evidence 强校验，后由 v2.8 收敛。 | [KBD关键信号输入边界泄漏修复任务](events/2026-08-04-KBD关键信号输入边界泄漏修复任务.md) |
 | 2026-07-31 | v2.6 | 启动正式专家复核并在 Agent KBD 运行审计写入最小 Replay manifest：精确版本、计划、环境/参数哈希、逐 Signal evaluation 和 Terminal Bridge artifact 指针；不复制现场输出且不宣称完整 Replay。 | [KBD 最小回放证据契约与正式专家复核启动任务](events/2026-07-31-KBD最小回放证据契约与正式专家复核启动任务.md) |
@@ -40,6 +41,7 @@ update_trigger: Agent 层功能新增/重构/问题修复任务
 
 | 状态 | 任务 | 创建日期 | 关联方案 |
 |------|------|---------|---------|
+| ✅ 完成（代码级；真实 HCI/模型服务回归待做） | T-AGT-QFK-AI-EXTRACT：完整输出/文本行列的受控 AI 字面量提取、引用行和值逐字回查、Matcher/produces 一致性与原子变量写入 | 2026-08-05 | [QFK 完整输出 AI 提取方案](../../solution/agent/events/2026-08-05-QFK完整输出AI提取方案.md) |
 | ✅ 完成（代码级；KBD27736 重抽仍须专家触发） | T-AGT-KBD-SIGNAL-IMAGE-REF-BOUNDARY：诊断截图白名单、截图上下文隔离与 source ref 实际输入集合检查；不要求正文 evidence 与图片 OCR 跨来源逐字相等 | 2026-08-04 | [KBD关键信号图片来源门禁收敛修复方案](../../solution/agent/events/2026-08-04-KBD关键信号图片来源门禁收敛修复方案.md) |
 | ✅ 完成（代码级；真实 HCI 回归待做） | T-AGT-QFK-EXEC：aCLI 系统执行域、Bridge 边界和统一 TextExtract | 2026-07-31 | [QFK 系统执行域与统一文本取值方案](../../solution/agent/events/2026-07-31-QFK系统执行域与统一文本取值方案.md) |
 | ✅ 完成（代码级；不代表可信身份或真实客户 replay） | T-AGT-KBD-DATA-CLOSURE：专家原因/删除原因、精确版本运行审计、Capability Gap、运行指标与评估导出 | 2026-07-31 | [KBD 专家监督与运行效果数据闭环方案](../../solution/agent/events/2026-07-31-KBD专家监督与运行效果数据闭环方案.md) |

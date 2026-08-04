@@ -13,6 +13,7 @@ from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 
 from app.tools.acli.executor import exec_result_observation
+from app.tools.qfk.ai_extractor import extract_ai_value, has_ai_extract
 from app.tools.qfk.extractor import QFKExtractionError, get_complete_output
 from app.tools.qfk.handlers import HandlerRegistry
 from app.tools.qfk.matcher import evaluate_matcher
@@ -52,6 +53,7 @@ class QFKResult:
     exec_ids: list[str] = field(default_factory=list)  # 追踪流流水号记录
     raw_output: str = ""  # 未混入 matcher 目标文本的现场原始输出
     complete_outputs: dict[str, str] = field(default_factory=dict)  # 产出变量使用的完整物理流
+    ai_value: Any | None = None  # 命中后由受控 AI 从完整候选日志提取的值
 
     def to_observation(self) -> str:
         """
@@ -68,6 +70,8 @@ class QFKResult:
             lines.append(f"执行异常: {self.error}")
         if self.evidence:
             lines.append("\n" + self.evidence)
+        if self.ai_value is not None:
+            lines.append(f"AI 提取值: {self.ai_value}")
         return "\n".join(lines)
 
 
@@ -96,6 +100,7 @@ async def qfk_exec(
     required_output_sources: set[str] | None = None,
     output_filters: list[dict[str, Any]] | None = None,
     execution_mode: str = "match",
+    ai_client: Any | None = None,
 ) -> QFKResult:
     """
     根据给定的标准化后端信号，寻找对应 Handler 执行 acli 底层命令，并自动执行关键字逻辑评估
@@ -394,6 +399,40 @@ async def qfk_exec(
         final_matched = bool(matcher_result.matched)
         matched_kws = list(matcher_result.detail.get("matched_keywords") or [])
         evidence = matcher_result.evidence
+        ai_value: Any | None = None
+        # AI 只在确定性 Matcher 已真实命中时处理同一份完整候选日志。expected=False
+        # 或 NOT 的“符合预期”不是正向日志命中，不允许借此凭空提取一个值。
+        if has_ai_extract(matcher_extract) and bool(matcher_result.detail.get("hit")):
+            try:
+                ai_result = await extract_ai_value(
+                    matcher_input,
+                    matcher_extract,
+                    "string",
+                    ai_client,
+                    matcher=signal.matcher,
+                    conversation_id=conversation_id,
+                    case_id=case_id or "",
+                )
+            except QFKExtractionError as exc:
+                return QFKResult(
+                    matched=False,
+                    namespace=signal.namespace,
+                    commands=commands,
+                    keywords=signal.keyword,
+                    match_mode=signal.match_mode,
+                    matched_keywords=matched_kws,
+                    evidence=evidence,
+                    error=str(exc),
+                    exec_ids=exec_ids,
+                    raw_output=combined_output,
+                    complete_outputs=complete_outputs,
+                )
+            ai_value = ai_result.value
+            evidence = (
+                f"{evidence}\n【AI 提取】说明: {ai_result.instruction}\n"
+                f"候选行: {ai_result.candidate_count}；引用物理行: {ai_result.evidence_line_numbers}\n"
+                f"提取值: {ai_result.value!r}"
+            )
         if signal.namespace == "log":
             evidence = (
                 f"【qfk_log 解释契约】family={signal.source_family}, parser={signal.parser}, "
@@ -436,4 +475,5 @@ async def qfk_exec(
         exec_ids=exec_ids,
         raw_output=combined_output,
         complete_outputs=complete_outputs,
+        ai_value=ai_value,
     )

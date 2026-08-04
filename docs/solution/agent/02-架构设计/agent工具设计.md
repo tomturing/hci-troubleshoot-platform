@@ -6,6 +6,18 @@
 
 ---
 
+## 2026-08-05 权威修订：QFK 完整输出上的受控 AI 提取
+
+- `ValueExtract.type=text` 可选 `ai_extract.instruction`；完整输出与文本行列复用同一输入，JSON 路径不支持该步骤；
+- Matcher 始终先由确定性 Extract + Predicate 判断真实 `hit`，AI 无权判定故障；keyword AND 的 AI 候选限定为同一物理行包含全部关键字，NOT 不产生候选；
+- AI 只返回 JSON 的 `value` 和 `evidence_lines`，服务端验证行属于实际候选且值逐字位于引用行；候选上限为 200 行/64 KiB，超限不截断继续；
+- AI 调用、JSON、类型或溯源失败均 Fail Closed；Matcher 不成立，produces 不写变量池；多个 produces 先全部验证，后原子写入；
+- 这是日志字面量定位能力，不放宽 QFK 只读、Handler 编译、变量依赖或其他机器执行门禁。
+
+详见 [QFK 完整输出 AI 提取方案](../events/2026-08-05-QFK完整输出AI提取方案.md)。
+
+---
+
 ## 2026-08-03 权威修订：QFK producer 与自动抽取质量边界
 
 - QFK producer 只在每个产出变量至少被一个其他下游 Signal `requires` 时合法；自引用不算下游消费；

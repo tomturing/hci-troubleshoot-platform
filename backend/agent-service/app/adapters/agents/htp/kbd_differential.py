@@ -83,6 +83,7 @@ class StepResult:
     outcome: SignalOutcome = SignalOutcome.NOT_RUN
     required: bool = True
     produced_variables: dict[str, Any] = field(default_factory=dict)
+    ai_value: Any | None = None  # Matcher 命中后受控 AI 提取并已逐字溯源的值
 
 
 @dataclass
@@ -320,6 +321,7 @@ class KBDDiagnostic:
             raw_output: str | None = None
             error: str | None = blocked_reason
             pre_matched: bool | None = None
+            ai_value: Any | None = None
             if not blocked_reason:
                 step = KBDStep(
                     tool_name=acquisition.tool_name,
@@ -327,7 +329,7 @@ class KBDDiagnostic:
                     matcher=representative.signal.get("match"),
                 )
                 try:
-                    raw_output, error, pre_matched = await self._execute_acquirer(
+                    raw_output, error, pre_matched, ai_value = await self._execute_acquirer(
                         step,
                         env_context,
                         session_id,
@@ -375,6 +377,7 @@ class KBDDiagnostic:
                     outcome=outcome,
                     required=ref.required_for_support,
                     produced_variables=produced_variables,
+                    ai_value=ai_value,
                 )
                 steps_executed.append(result)
                 yield AgentStageUpdate(stage="tool_result", metadata=self._tool_result_metadata(result))
@@ -767,6 +770,7 @@ class KBDDiagnostic:
             "kbd_id": result.kbd_id,
             "signal_id": result.signal_id,
             "produced_variables": result.produced_variables,
+            "ai_value": result.ai_value,
         }
 
     @staticmethod
@@ -1073,13 +1077,14 @@ class KBDDiagnostic:
         *,
         signal: dict[str, Any] | None = None,
         exec_id: str | None = None,
-    ) -> tuple[str | None, str | None, bool | None]:
+    ) -> tuple[str | None, str | None, bool | None, Any | None]:
         """按 acquirer 路由执行：qkv→QKV 引擎 / qfk→QFK 引擎 / 其他→通用 tool_executor。
 
-        返回 (raw_output, error, pre_matched)：
+        返回 (raw_output, error, pre_matched, ai_value)：
           - raw_output: 供确定性 matcher 求值的文本（None 表示执行失败）
           - error: 错误信息
           - pre_matched: qfk keyword 类型已由引擎判定时直接给出布尔，否则 None
+          - ai_value: 已通过引用行逐字回查的 AI 提取值；非 AI Matcher 时为 None
         """
         acquirer = step.tool_name
 
@@ -1111,7 +1116,7 @@ class KBDDiagnostic:
                         reason="无法构建前端信号",
                         session_id=session_id,
                     )
-                    return None, "无法构建前端信号", None
+                    return None, "无法构建前端信号", None, None
                 from app.tools.qkv.engine import qkv_exec
 
                 res = await qkv_exec(
@@ -1127,7 +1132,7 @@ class KBDDiagnostic:
                         error=res.error,
                         session_id=session_id,
                     )
-                    return None, res.error, None
+                    return None, res.error, None, None
                 if signal is not None:
                     await self._fill_pool_from_qkv(
                         signal,
@@ -1150,7 +1155,7 @@ class KBDDiagnostic:
                     values_count=len(res.values) if res.values else 0,
                     session_id=session_id,
                 )
-                return res.to_observation(), None, bool(res.values)
+                return res.to_observation(), None, bool(res.values), None
             except Exception as exc:
                 logger.error(
                     event="signal_exec_exception",
@@ -1158,7 +1163,7 @@ class KBDDiagnostic:
                     error=str(exc),
                     session_id=session_id,
                 )
-                return None, str(exc), None
+                return None, str(exc), None, None
 
         if acquirer.startswith("qfk_"):
             # 消费者：QFK 引擎取数并判定；keyword 类型直接采信引擎布尔。
@@ -1167,7 +1172,7 @@ class KBDDiagnostic:
                 resolver_variables.update(self._variable_pool)
                 bsignal = self._signal_to_qfk(step, resolver_variables)
                 if bsignal is None:
-                    return None, "无法构建后端信号", None
+                    return None, "无法构建后端信号", None, None
                 from app.tools.qfk.engine import qfk_exec
 
                 produces = ((signal or {}).get("orchestrate") or {}).get("produces") or []
@@ -1227,6 +1232,7 @@ class KBDDiagnostic:
                             f"QFK_TARGET_HOST_UNRESOLVED: 无法把目标 HOST={bsignal.host} 解析为节点 IP，"
                             "为避免在当前主机误查，已停止执行",
                             None,
+                            None,
                         )
                     target_node_ip = str(resolved_host)
 
@@ -1241,45 +1247,55 @@ class KBDDiagnostic:
                     required_output_sources=required_output_sources,
                     output_filters=output_filters,
                     execution_mode="produce" if produces else "match",
+                    ai_client=self._ai_registry.get_client(self._assistant_type),
                 )
                 if res.error:
-                    return res.raw_output or None, res.error, None
+                    return res.raw_output or None, res.error, None, None
                 if produces:
                     outputs = (
                         res.complete_outputs
                         if hasattr(res, "complete_outputs")
                         else {"stdout": res.raw_output}  # 兼容测试桩/旧扩展返回对象
                     )
-                    ok, extract_error = self._fill_pool_from_qfk(
+                    ai_values, ai_error = await self._extract_ai_values_from_qfk(
                         produces,
                         outputs,
                         context_variables=env_context,
                     )
+                    if ai_error:
+                        return res.raw_output, ai_error, None, None
+                    ok, extract_error = self._fill_pool_from_qfk(
+                        produces,
+                        outputs,
+                        context_variables=env_context,
+                        ai_values=ai_values,
+                    )
                     if not ok:
-                        return res.raw_output, extract_error, None
+                        return res.raw_output, extract_error, None, None
                     # 产出变量模式只关心命令是否成功且结果是否已写入变量池，不再进行 matcher 判定。
-                    return res.raw_output, None, True
+                    return res.raw_output, None, True, None
                 # qfk_exec 是全部 Matcher 的唯一求值入口；配置 Extract 时它会从
                 # complete_outputs 取值，禁止调用方再次从展示摘要重复求值。
                 if isinstance(matcher, dict):
-                    return res.raw_output, None, res.matched
-                return res.raw_output, None, None
+                    return res.raw_output, None, res.matched, res.ai_value
+                return res.raw_output, None, None, None
             except Exception as exc:
-                return None, str(exc), None
+                return None, str(exc), None, None
 
         # 遗留/通用工具（acli_* 等）：走既有 tool_executor
         try:
             args = self._resolve_args(step.tool_args_template, env_context, self._variable_pool)
             result = await self._tool_executor.execute(acquirer, args)
-            return (str(result) if result is not None else "", None, None)
+            return (str(result) if result is not None else "", None, None, None)
         except Exception as exc:
-            return None, str(exc), None
+            return None, str(exc), None, None
 
     def _fill_pool_from_qfk(
         self,
         produces: list[Any],
         complete_outputs: dict[str, str] | str,
         context_variables: dict[str, Any] | None = None,
+        ai_values: dict[str, Any] | None = None,
     ) -> tuple[bool, str | None]:
         """将 QFK 命令结果按产出变量约定写入变量池。
 
@@ -1293,6 +1309,7 @@ class KBDDiagnostic:
             complete_outputs = {"stdout": complete_outputs}
         resolver_variables = dict(context_variables or {})
         resolver_variables.update(self._variable_pool)
+        ai_values = ai_values or {}
 
         pending_values: list[tuple[str, Any]] = []
         valid_specs = [item for item in produces if isinstance(item, dict) and str(item.get("name") or "").strip()]
@@ -1301,6 +1318,9 @@ class KBDDiagnostic:
 
         for spec in valid_specs:
             name = str(spec["name"]).strip()
+            if name in ai_values:
+                pending_values.append((name, ai_values[name]))
+                continue
             extract_spec = spec.get("extract")
             if not isinstance(extract_spec, dict):
                 return False, f"QFK_EXTRACT_INVALID_SPEC: QFK 产出变量 {name} 必须配置新版 extract"
@@ -1320,6 +1340,55 @@ class KBDDiagnostic:
         for name, value in pending_values:
             self._set_pool_var(name, value)
         return True, None
+
+    async def _extract_ai_values_from_qfk(
+        self,
+        produces: list[Any],
+        complete_outputs: dict[str, str] | str,
+        context_variables: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], str | None]:
+        """统一执行 QFK 产出变量的 AI 提取，并在原子写池前完成溯源校验。"""
+
+        from app.tools.qfk.ai_extractor import extract_ai_value, has_ai_extract
+        from app.tools.qfk.extractor import QFKExtractionError
+
+        if isinstance(complete_outputs, str):
+            complete_outputs = {"stdout": complete_outputs}
+        resolver_variables = dict(context_variables or {})
+        resolver_variables.update(self._variable_pool)
+        ai_client = self._ai_registry.get_client(self._assistant_type)
+        values: dict[str, Any] = {}
+        for spec in produces:
+            if not isinstance(spec, dict) or not str(spec.get("name") or "").strip():
+                continue
+            extract_spec = spec.get("extract")
+            if not has_ai_extract(extract_spec):
+                continue
+            name = str(spec["name"]).strip()
+            resolved_extract = self._resolve_template_value(extract_spec, resolver_variables)
+            source = str(resolved_extract.get("source") or "stdout")
+            if source not in complete_outputs:
+                return {}, f"QFK_EXTRACT_INVALID_SPEC: 未取得完整 {source} 输出"
+            try:
+                result = await extract_ai_value(
+                    complete_outputs[source],
+                    resolved_extract,
+                    str(spec.get("type") or "string"),
+                    ai_client,
+                    conversation_id=self._conversation_id or "",
+                    case_id=self._case_id or "",
+                )
+            except QFKExtractionError as exc:
+                return {}, f"QFK 产出变量 {name} AI 提取失败：{exc}"
+            values[name] = result.value
+            logger.info(
+                event="qfk_ai_extract_produce_ready",
+                name=name,
+                candidate_count=result.candidate_count,
+                evidence_line_numbers=result.evidence_line_numbers,
+                conversation_id=self._conversation_id or "",
+            )
+        return values, None
 
     @classmethod
     def _resolve_template_value(cls, value: Any, variable_pool: dict[str, Any]) -> Any:
@@ -1655,6 +1724,9 @@ class KBDDiagnostic:
                 label = KBDDiagnostic._variable_display_label(name)
                 rendered = KBDDiagnostic._format_inline_code(value, max_chars=500)
                 lines.append(f"  - **{label}（{str(name).upper()}）**：{rendered}")
+        if step.ai_value is not None:
+            rendered = KBDDiagnostic._format_inline_code(step.ai_value, max_chars=500)
+            lines.append(f"- **AI 提取值**：{rendered}")
         elif step.outcome is SignalOutcome.BLOCKED:
             missing = KBDDiagnostic._missing_variable_names(step.error)
             if missing:

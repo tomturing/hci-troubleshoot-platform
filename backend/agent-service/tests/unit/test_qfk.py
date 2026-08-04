@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -178,3 +179,59 @@ async def test_producer_mode_rejects_matcher_conflict_before_variable_extraction
     result = await engine.qfk_exec(signal, conversation_id="producer-conflict", execution_mode="produce")
 
     assert result.error == "QFK_PRODUCER_MATCH_CONFLICT: 产出变量模式不得同时配置 matcher"
+
+
+@pytest.mark.asyncio
+async def test_matcher_ai_extract_runs_only_after_deterministic_hit_and_records_grounded_value(monkeypatch):
+    output = "检测到IP，但没有冲突\n检测到IP，发生冲突，ip=192.168.100.55\n"
+
+    class FakeExecutor:
+        _redis = SimpleNamespace()
+
+        async def execute(self, **_kwargs):
+            return ExecResult(
+                stdout=output,
+                stderr="",
+                exit_code=0,
+                command="acli --timeout 120 system ps",
+                node="172.28.25.4",
+                duration_ms=1,
+                truncated=False,
+                risk_level=1,
+            )
+
+    class FakeAIClient:
+        async def invoke(self, **_kwargs):
+            return SimpleNamespace(
+                content=json.dumps({"ok": True, "value": "192.168.100.55", "evidence_lines": [2]})
+            )
+
+    monkeypatch.setattr(executor_module, "_executor", FakeExecutor())
+    signal = BackendSignal(
+        namespace="system",
+        command="ps",
+        matcher={
+            "type": "keyword",
+            "pattern": ["检测到IP", "冲突"],
+            "mode": "and",
+            "expected": True,
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "all"},
+                "cardinality": "all",
+                "source": "stdout",
+                "ai_extract": {"instruction": "提取其中的第一个 IP 地址"},
+            },
+        },
+    )
+
+    result = await engine.qfk_exec(
+        signal,
+        conversation_id="matcher-ai-extract",
+        required_output_sources={"stdout"},
+        ai_client=FakeAIClient(),
+    )
+
+    assert result.matched is True
+    assert result.ai_value == "192.168.100.55"
+    assert "引用物理行: [2]" in result.evidence

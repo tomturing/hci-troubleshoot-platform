@@ -377,6 +377,9 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                         "enum": ["string", "integer", "number", "boolean", "array"],
                         "description": "提取后的确定性类型；number 支持 54%→54，不剥离容量/时长单位",
                     },
+                    # AI 只能在该 Extract 已确定的完整文本行中摘取字面量；
+                    # 不参与 Matcher 的确定性命中判定。
+                    "ai_extract": {"$ref": "#/definitions/aiExtract"},
                     "parser": {"type": "string", "enum": ["whitespace_table", "delimited_table"]},
                     "header": {"$ref": "#/definitions/tableHeader"},
                     "rows": {"$ref": "#/definitions/rowSelector"},
@@ -400,6 +403,19 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                         "then": {"required": ["delimiter"]},
                     },
                 ],
+            },
+            "aiExtract": {
+                "type": "object",
+                "description": "在确定性筛选出的完整文本行上执行受控 AI 字面量提取；AI 不参与 Matcher 是否命中的判定",
+                "additionalProperties": False,
+                "required": ["instruction"],
+                "properties": {
+                    "instruction": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 1000,
+                    },
+                },
             },
             "jsonExtract": {
                 "type": "object",

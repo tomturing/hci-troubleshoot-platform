@@ -57,6 +57,13 @@ function setField(key: string, value: any) {
 function setExtract(value: Record<string, any>) {
   extract.value = value
 }
+function setAiInstruction(value: string) {
+  const next = { ...extract.value }
+  const instruction = value.trim()
+  if (instruction) next.ai_extract = { instruction }
+  else delete next.ai_extract
+  extract.value = next
+}
 
 watch(() => props.modelValue, value => {
   if (!value || !['text', 'json'].includes(String(value.type))) extract.value = completeExtract()
@@ -94,7 +101,23 @@ watch(() => props.modelValue, value => {
       <el-form-item label="输出来源"><el-select :model-value="extract.source || 'stdout'" @change="(value: string) => setField('source', value)"><el-option label="stdout" value="stdout" /><el-option label="stderr" value="stderr" /></el-select></el-form-item>
       <div class="field-hint">只支持受控点号和数组下标，例如 <code>data[0].status</code>；不执行 jq、函数、过滤器或通配符。</div>
     </el-form>
-    <el-alert v-else title="完整输出仍通过统一 Extractor 产生值，不走历史全文旁路。" type="info" :closable="false" />
+    <template v-else>
+      <el-alert title="完整输出仍通过统一 Extractor 产生值，不走历史全文旁路。" type="info" :closable="false" />
+    </template>
+    <el-form v-if="mode !== 'json'" label-position="left" label-width="96px" size="small" class="ai-extract-form">
+      <el-form-item label="AI 提取">
+        <el-input
+          :model-value="extract.ai_extract?.instruction || ''"
+          type="textarea"
+          :rows="2"
+          maxlength="1000"
+          show-word-limit
+          placeholder="可选，例如：提取其中的第一个 IP 地址"
+          @input="setAiInstruction"
+        />
+      </el-form-item>
+      <div class="field-hint">可选。平台先按当前取值配置从完整输出确定候选行，再让 AI 从候选原文中提取值；AI 返回值和引用行必须可逐字回查，否则本次信号失败。Matcher 的命中结论仍由确定性规则决定。</div>
+    </el-form>
   </div>
 </template>
 
@@ -102,4 +125,5 @@ watch(() => props.modelValue, value => {
 .value-extract-editor { width: 100%; padding: 12px; border: 1px solid var(--el-border-color-light); border-radius: 6px; background: var(--el-fill-color-blank); }
 .extract-order-title { margin-bottom: 12px; font-weight: 600; color: var(--el-text-color-primary); }
 .field-hint { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.55; }
+.ai-extract-form { margin-top: 12px; }
 </style>

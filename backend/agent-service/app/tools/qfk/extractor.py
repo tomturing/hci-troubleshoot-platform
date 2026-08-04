@@ -152,7 +152,7 @@ def extract_value(output: str, spec: dict[str, Any], value_type: str = "string")
 
 
 def _extract_structured_text_values(output: str, spec: dict[str, Any], value_type: str) -> ExtractionResult:
-    allowed = {"type", "rows", "parser", "header", "columns", "value_key", "delimiter", "cardinality", "source", "value_mode"}
+    allowed = {"type", "rows", "parser", "header", "columns", "value_key", "delimiter", "cardinality", "source", "value_mode", "ai_extract"}
     unsupported = sorted(set(spec) - allowed)
     if unsupported:
         raise QFKExtractionError("QFK_EXTRACT_INVALID_SPEC", f"不支持旧版或未知 text extract 字段: {', '.join(unsupported)}")

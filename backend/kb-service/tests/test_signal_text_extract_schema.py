@@ -122,6 +122,21 @@ def test_qfk_produce_path_and_extract_conflict_has_actionable_message():
     assert "extract" in issue["message"]
 
 
+def test_text_extract_allows_grounded_ai_extract_instruction():
+    document = _qfk_produce(
+        {
+            "name": "DUP_IP",
+            "type": "string",
+            "extract": {
+                **_text_extract(rows={"mode": "all"}),
+                "ai_extract": {"instruction": "提取其中的第一个 IP 地址"},
+            },
+        }
+    )
+
+    validate_signals_json(document)
+
+
 def test_multicolumn_scalar_requires_value_key_and_object_cardinality_is_closed():
     columns = [
         {"key": "USED", "selector": {"by": "index", "index": 3}, "value_mode": "string"},

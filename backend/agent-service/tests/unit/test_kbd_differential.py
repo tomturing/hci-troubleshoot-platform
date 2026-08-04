@@ -1,6 +1,10 @@
+import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from app.adapters.agents.htp.kbd_differential import KBDDiagnostic, _signal_requires_human
+import pytest
+from app.adapters.agents.htp.cdd import SignalOutcome
+from app.adapters.agents.htp.kbd_differential import KBDDiagnostic, StepResult, _signal_requires_human
 from app.tools.qfk.handlers import SystemHandler
 from app.tools.qfk.signal import BackendSignal
 
@@ -51,6 +55,106 @@ def test_qfk_produces_reject_old_path_and_never_partially_write():
     assert ok is False
     assert "新版 extract" in str(error)
     assert diag._variable_pool == {}
+
+
+@pytest.mark.asyncio
+async def test_qfk_ai_extract_produces_uses_grounded_value_and_preserves_atomic_write():
+    registry = MagicMock()
+    client = MagicMock()
+
+    async def invoke(**_kwargs):
+        return SimpleNamespace(
+            content=json.dumps({"ok": True, "value": "192.168.100.55", "evidence_lines": [1]})
+        )
+
+    client.invoke.side_effect = invoke
+    registry.get_client.return_value = client
+    diag = KBDDiagnostic(registry, MagicMock())
+    produces = [
+        {
+            "name": "DUP_IP",
+            "type": "string",
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "all"},
+                "cardinality": "all",
+                "source": "stdout",
+                "ai_extract": {"instruction": "提取其中的第一个 IP 地址"},
+            },
+        },
+        {
+            "name": "SECOND",
+            "type": "string",
+            "extract": {"type": "text", "rows": {"mode": "all"}, "cardinality": "first"},
+        },
+    ]
+    outputs = {"stdout": "检测到IP，发生冲突，ip=192.168.100.55\nsecond\n"}
+
+    ai_values, ai_error = await diag._extract_ai_values_from_qfk(produces, outputs)
+    ok, extract_error = diag._fill_pool_from_qfk(produces, outputs, ai_values=ai_values)
+
+    assert (ai_error, ok, extract_error) == (None, True, None)
+    assert diag._variable_pool == {"dup_ip": "192.168.100.55", "second": "检测到IP，发生冲突，ip=192.168.100.55"}
+
+
+@pytest.mark.asyncio
+async def test_qfk_ai_extract_produces_failure_never_partially_writes_pool():
+    registry = MagicMock()
+    client = MagicMock()
+
+    async def invoke(**_kwargs):
+        return SimpleNamespace(
+            content=json.dumps({"ok": True, "value": "192.168.100.99", "evidence_lines": [1]})
+        )
+
+    client.invoke.side_effect = invoke
+    registry.get_client.return_value = client
+    diag = KBDDiagnostic(registry, MagicMock())
+    produces = [
+        {
+            "name": "SAFE",
+            "type": "string",
+            "extract": {"type": "text", "rows": {"mode": "all"}, "cardinality": "first"},
+        },
+        {
+            "name": "DUP_IP",
+            "type": "string",
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "all"},
+                "cardinality": "all",
+                "source": "stdout",
+                "ai_extract": {"instruction": "提取其中的第一个 IP 地址"},
+            },
+        },
+    ]
+
+    ai_values, error = await diag._extract_ai_values_from_qfk(
+        produces,
+        {"stdout": "检测到IP，发生冲突，ip=192.168.100.55\n"},
+    )
+
+    assert ai_values == {}
+    assert "QFK_AI_EXTRACT_UNGROUNDED" in str(error)
+    assert diag._variable_pool == {}
+
+
+def test_qfk_ai_matcher_value_is_exposed_in_tool_result_and_user_evidence():
+    step = StepResult(
+        tool_name="qfk_system",
+        tool_args={"instruction": "检查 IP 冲突"},
+        raw_output="检测到IP，发生冲突，ip=192.168.100.55",
+        error=None,
+        outcome=SignalOutcome.SATISFIED,
+        ai_value="192.168.100.55",
+    )
+
+    metadata = KBDDiagnostic._tool_result_metadata(step)
+    report = KBDDiagnostic._format_step_evidence(step)
+
+    assert metadata["ai_value"] == "192.168.100.55"
+    assert "AI 提取值" in report
+    assert "192.168.100.55" in report
 
 
 def test_state_matching_is_exact_after_json_extract():
