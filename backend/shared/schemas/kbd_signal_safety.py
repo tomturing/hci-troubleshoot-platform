@@ -91,8 +91,16 @@ _REMEDIATION_GUIDANCE = (
 )
 
 
-def kbd_signal_read_only_violation(signal: Any) -> str | None:
-    """返回 KBD Signal 的只读边界违规原因；合法时返回 ``None``。"""
+def kbd_signal_read_only_violation(
+    signal: Any,
+    *,
+    allow_read_only_solution_correction: bool = False,
+) -> str | None:
+    """返回 KBD Signal 的只读边界违规原因；合法时返回 ``None``。
+
+    只有 LLM Candidate 抽取入口可显式开启只读 solution 纠偏；专家保存、发布与
+    Agent 运行必须使用默认严格模式，防止未归一的处置阶段 Signal 进入执行图。
+    """
 
     if not isinstance(signal, dict):
         return None
@@ -104,7 +112,10 @@ def kbd_signal_read_only_violation(signal: Any) -> str | None:
     orchestrate = signal.get("orchestrate") or {}
     if (
         str(orchestrate.get("phase") or "diagnostic") == "solution"
-        and not signal_explicitly_read_only_command(signal)
+        and not (
+            allow_read_only_solution_correction
+            and signal_explicitly_read_only_command(signal)
+        )
     ):
         return f"检测到处置阶段信号（orchestrate.phase=solution）；{_REMEDIATION_GUIDANCE}"
     return None

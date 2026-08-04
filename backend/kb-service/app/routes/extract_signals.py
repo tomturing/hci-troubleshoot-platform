@@ -515,7 +515,10 @@ def _validate_signal(
 
     # KBD 处置动作必须先于 match/produces 结构校验拒绝，确保专家看到真正原因。
     if enforce_kbd_read_only:
-        read_only_violation = kbd_signal_read_only_violation(signal)
+        read_only_violation = kbd_signal_read_only_violation(
+            signal,
+            allow_read_only_solution_correction=True,
+        )
         if read_only_violation:
             return False, read_only_violation
 
@@ -938,7 +941,13 @@ def _validate_and_collect_signals(
         id(item): violation
         for item in raw_signals
         if enforce_kbd_read_only
-        and (violation := kbd_signal_read_only_violation(item)) is not None
+        and (
+            violation := kbd_signal_read_only_violation(
+                item,
+                allow_read_only_solution_correction=True,
+            )
+        )
+        is not None
     }
 
     # 先在整个 Candidate 集合上做跨信号规范化，再逐条校验。这使下游
