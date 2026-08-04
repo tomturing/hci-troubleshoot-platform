@@ -568,12 +568,13 @@ DESCRIPTION:
     (
         'KEY',
         'kbd_extract_signals_v2',
-        '关键信号分级抽取 Prompt v2 - 同时消费文档章节与结构化截图 Evidence IR；LLM 直出 v2 嵌套结构；占位符 {{VAR}} 大写强制；封闭采集器词表；KBD Signal 只读边界；变量: title,problem_description,alert_info,steps_text,root_cause,solution,category_id,acquirer_catalog,variable_schema,image_evidence',
+        '关键信号 Candidate 抽取 Prompt v2 - LLM 完整提出 Candidate，服务端门禁分流 Signal/Rejected Candidate；同时消费文档章节与结构化截图 Evidence IR；变量: title,problem_description,alert_info,steps_text,root_cause,solution,category_id,acquirer_catalog,variable_schema,image_evidence',
         $TEMPLATE$你是 HCI 超融合平台的关键信号抽取专家。
 
 # 角色与目标
-从 KBD 案例的自然语言章节中，按「字段级分别抽取」第一性原理，产出关键信号集合（v2 嵌套结构）。
-关键信号分两类角色：
+从 KBD 案例的自然语言章节中，按「字段级分别抽取」第一性原理，完整产出关键信号 Candidate 集合（v2 嵌套结构）。
+必须区分且只使用三个概念：Candidate 是你识别出的全部候选；Signal 是服务端门禁通过的候选；Rejected Candidate 是服务端门禁未通过但完整保留、交专家处理的候选。你只负责提出 Candidate，不得在生成阶段替服务端过滤或删除候选。
+Candidate 分两类角色：
 - 生产者信号（frontend，QKV 采集器）：取数并向变量池写入变量（orchestrate.produces）。
 - 消费者信号（backend，QFK 采集器）：取数并判定，读取变量池变量渲染目标（orchestrate.requires）。
 
@@ -582,7 +583,7 @@ DESCRIPTION:
 2. 生产者-消费者解耦：producer 写变量（orchestrate.produces）→ consumer 读变量（orchestrate.requires）；变量是两者唯一契约面。
 3. 溯源与门禁分离：provenance 记录来自哪、可信度多少（含 evidence 逐字证据，便于审计）；review 记录是否需人工门禁。二者都不进执行路径。
 4. 诊断只读原则：仅「诊断叙事字段」可作为信号来源；根因/解决方案是 OUTPUT，绝不作为信号抽取输入。
-5. Signal 只读边界：Signal 只能是只读事实采集、确定性判定或变量生产。输入中即使出现修改配置、启停/重启、删除、迁移等处置/修复动作，也不得生成 Signal；动作应留在 KBD 解决方案中，若它出现在排查描述则交由专家修正文。
+5. 生成与门禁分离：有证据支持的候选都必须输出。只读事实候选通常会成为 Signal；写动作、当前 catalog 缺失命令或验证失败候选会由服务端进入 Rejected Candidate。不要因为预判门禁不通过而省略 Candidate。
 
 # 输入案例
 - 标题：{title}
@@ -601,7 +602,7 @@ DESCRIPTION:
 inference_status/inference_issues 反推、补写或猜测运行参数。
 quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能生成 needs_review 候选。
 
-# 采集器目录（封闭词表，acquire.tool 必须取自此处）
+# 采集器与当前 aCLI catalog 知识（用于正确映射和减少乱造，不是模型侧过滤器）
 {acquirer_catalog}
 
 # 可用变量（variable_schema，orchestrate.produces[].name 与 requires[] 引用的变量名必须在此集合内；不在集合内的新变量须先声明进 produces）
@@ -610,13 +611,13 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
 # 输出契约（严格 JSON，不要任何额外说明、不要 markdown 代码块）
 {{
   "schema_version": 2,
-  "signals": [
+  "candidates": [
     {{
       "id": "sig_001",
       "role": "<must|should|exclude|context>",
       "acquire": {{"tool": "<acquire.tool，取自采集器目录>", "args": {{"...": "依据该 tool 的契约，见下方规则 6"}}}},
       "match": {{"type": "<keyword|regex|state|threshold|delta|trend|exists>", "pattern": "<匹配式>", "mode": "or|and|not", "expected": true, "extract": {{"type": "text", "rows": {{"mode": "all"}}, "cardinality": "all", "source": "stdout"}}}},
-      "orchestrate": {{"phase": "diagnostic", "action": "<可选>", "produces": [{{"name": "<VAR>", "path": "<取值路径>"}}], "requires": ["<VAR>"]}},
+      "orchestrate": {{"phase": "<diagnostic|solution>", "action": "<可选>", "produces": [{{"name": "<VAR>", "path": "<取值路径>"}}], "requires": ["<VAR>"]}},
       "provenance": {{"category": "frontend|backend", "source_section": "title|problem_description|alert_info|steps_text", "source_refs": ["img:0/region:img_0:r_0"], "evidence": "<逐字引用输入中的证据句或截图可见文字>", "confidence": 0.9}},
       "review": {{"require_human_confirm": false, "notes": "<可选说明>"}}
     }}
@@ -644,9 +645,9 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
    - qfk_system：command 只写基础子命令（如 lsof/ps），普通参数唯一写入 command_args 数组（如 ["-p","{{{{PID}}}}","-o","cmd="]）；可选 host（{{{{HOST}}}}）/timeout/instruction。qfk_system 禁止 resource_keyword，VM ID 必须放在 produces.extract.rows.include 的受控行筛选中，不能追加给 lsof。
    - qfk_vm/network/storage/hardware/platform：command（如 list/show/...，acli <namespace> <command>）；可选 host（{{{{HOST}}}}）/resource_keyword/timeout/instruction。
    - host 即原 v1 的 target.scope：采集目标主机/作用域，用 {{{{HOST}}}} 占位（变量池解析）或字面 cluster；不要再用嵌套 target 对象。
-7. 变更动作禁止输出：若正文出现 start/stop/restart/delete/set/create/rm/kill 等写入、变更或处置语义，不生成对应 Signal，不以 require_human_confirm 或 phase=solution 方式保留；只抽取与其相邻、证据充分的只读检查事实。
+7. 变更动作必须作为 Candidate 输出：若正文证据明确包含 start/stop/restart/delete/set/create/rm/kill 等写入、变更或处置语义，保留原始执行语义并设置 phase=solution、needs_review=true；服务端会归入 Rejected Candidate/write_signal。禁止伪装成只读动作，也禁止直接省略。
 8. source_section 只能取 title/problem_description/alert_info/steps_text（根因/解决方案不作为信号来源）；evidence 必须逐字引用正文原句或截图 observed_facts/text_lines。来自截图时必须填写 source_refs（如 img:0/region:img_0:r_0），便于审计和重识图 stale 传播。
-9. confidence 诚实自评（0-1）：证据清晰、采集器与变量明确→0.8+；记忆模糊、靠推测→0.4-0.6；不确定→更低。无法可靠映射为合法采集器的步骤，宁缺毋滥，不要硬造信号。
+9. confidence 诚实自评（0-1）：证据清晰、采集器与变量明确→0.8+；记忆模糊、靠推测→0.4-0.6；不确定→更低。不得凭空添加正文没有的命令；但正文已构成候选而映射不确定时仍要输出 Candidate，并标 needs_review，供工程门禁与专家复核。
 10. id 顺序编号 sig_001、sig_002...；每条信号字段严格遵循上方结构，不得新增额外顶层字段（additionalProperties=false）。
 11. 说明(instruction) 与 关键字 的边界（高频易错点，务必遵守）：
    - acquire.args.instruction＝信号语义说明：用自然语言描述"这个检查/采集是做什么的"（如「镜像文件占用检查」「第三方进程确认」），是人类可读的标题/说明，不是匹配条件。
@@ -658,27 +659,32 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
    - qfk_system.command 只能保存基础命令；参数写 command_args，禁止管道符。若原步骤为 grep/awk/cut 管道，必须转换为 produces[].extract，不得原样写入 command。
    - grep PATTERN / grep -e PATTERN / grep -F PATTERN → extract.rows.include；grep -v PATTERN → extract.rows.exclude；grep -i → extract.rows.case_sensitive=false。awk '{{print $N}}' → columns[].selector={{"by":"index","index":N}}；cut -dX -fN → parser="delimited_table",delimiter=X,columns[].selector={{"by":"index","index":N}}。
    - grep -v grep 直接删除：平台只在内存筛选基础命令 stdout，不会启动 grep 进程。
-   - 复杂 awk、sed、sort、聚合、正则歧义或未知管道不得猜测；保留 evidence，标 provenance.needs_review=true。
+   - 复杂 awk、sed、sort、聚合、正则歧义或未知管道不得猜测或改写执行语义；仍保留 Candidate 与 evidence，标 provenance.needs_review=true，由服务端验证。
    - Matcher 与产出变量都必须使用声明式 Extract：{{"name":"KVM_PID","type":"integer","extract":{{"type":"text","parser":"whitespace_table","rows":{{"mode":"keywords","include":["-id {{{{VM}}}}"],"exclude":[],"include_mode":"all","case_sensitive":true}},"columns":[{{"key":"PID","selector":{{"by":"index","index":2}},"value_mode":"integer"}}],"value_key":"PID","cardinality":"first","source":"stdout"}}}}；判定模式把同一 extract 放在 match.extract。requires 由 {{{{HOST}}}}/{{{{VM}}}} 占位符自动推导。
    - 字段严格隔离：rows.include_mode 只允许 all/any，只用于多行关键字筛选；match.mode 只允许 or/and/not，只用于 Matcher 判定。绝不可把 any 或 all 写入 match.mode，也绝不可把 or、and、not 写入 rows.include_mode。
 13. 案例验证契约：每条诊断信号标 role。直接决定案例成立的必要事实→must；增强置信但非必要→should；成立即排除本案例→exclude；背景/处置→context。verification_contract 必须引用现有 signal id，must 至少一条；证据不足一律 inconclusive，禁止把 UNKNOWN/ERROR 当反证。
 14. 计数阈值：原文使用 `... | wc -l` 时，command 只保留基础列举命令，match 使用 `{{"type":"threshold","aggregation":"line_count","operator":">","value":100,"expected":true}}`；禁止把管道写进 command，也禁止把输出第一个数字误当行数。
 15. 外部变量：若 requires 引用了本案例内没有任何 signal.produces 的自定义变量（如 STORAGE_PATH、DEVICE），必须在 verification_contract.variables 中显式声明封闭类型 string/integer/number/boolean/array；变量未声明、类型不合法或现场未提供时不得假定值，裁决必须 inconclusive。
-16. 结构字段封闭约束：frontend（qkv_*）必须 match=null 且 produces 至少一项；backend 的 match 与 produces 严格二选一，不得同时配置。每个 match.extract 与 produces[].extract 都只能使用 JSON extract 或声明式 text extract。text extract 必须有 rows；取整行时不配置 columns，取一列或多列时必须配置 parser、columns[] 与 value_key。除本 Prompt 明确列出的声明式字段外，禁止自造任何取值字段。没有可靠取值路径时不要生成变量。
+16. 结构字段知识：frontend（qkv_*）应使用 match=null 且 produces 至少一项；backend 的 match 与 produces 应严格二选一。每个 match.extract 与 produces[].extract 都应使用 JSON extract 或声明式 text extract。text extract 应有 rows；取整行时不配置 columns，取一列或多列时配置 parser、columns[] 与 value_key。不要自造取值字段；证据构成候选但当前无法可靠表达时仍输出最接近原意的 Candidate 并标 needs_review，由服务端归入 run_failed，而不是静默丢失。
 17. Matcher 封闭约束：keyword/regex/state 必须有非空 pattern；threshold 必须有数值 value 和 operator，aggregation 只能是 first_number/last_number/line_count/duration_seconds/max/min/sum；delta 必须有 metric/value/operator；trend 必须有 metric/direction，可选 value 表示最小步长。需要读取 JSON 字段时必须在 match.extract 或 produces[].extract 使用 type=json 与 path；再用 state、threshold 或 exists 判定取值。blackbox 行通常以时间戳开头，阈值/差值/趋势必须用 metric 定位字段，禁止把日期数字误当计数器。
-18. 诊断与处置边界：所有输出 Signal 的 phase 必须为 diagnostic；phase=solution 禁止输出。只读 list/get/status/show/check 可以生成 Signal；任何写入、配置变更、启停/重启、删除或其他修复行为都不属于 Signal。command/command_args/resource_keyword 禁止包含 |、;、&、反引号、$、重定向符或换行；不要把多条命令拼成一个 command。
+18. 诊断与处置标注：只读事实采集、判定和变量生产 Candidate 使用 phase=diagnostic；真实写入、配置变更、启停/重启、删除或其他修复 Candidate 使用 phase=solution。后者不会成为 Signal，但必须输出并由服务端归入 write_signal。command/command_args/resource_keyword 不拼接多条命令；保持原始执行语义，不能为了过门禁而改写。
 19. 任务生产者、QFK 消费关系、超时与多图证据：
-   - 当标题、问题描述、任务详情或任务截图明确表达启动、创建、迁移虚拟机失败，且后续检查需要故障 HOST 或 VM 时，必须先生成 qkv_task producer。keyword 使用正文或截图中稳定的任务动作，is_failed=true，produces 至少声明 HOST 和 VM；后续 QFK 通过 requires 使用这些变量。能够从失败任务取得的 HOST/VM 不得降级为未声明外部变量。
+   - 当标题、问题描述、任务详情或任务截图明确表达启动、创建、迁移、删除虚拟机失败时，必须先生成 qkv_task producer。qkv_task 是查询历史任务的只读采集；keyword 中的“启动/创建/迁移/删除”只是查询条件，绝不等于执行写动作。keyword 使用正文或截图中稳定的任务动作，is_failed=true，produces 至少声明 HOST 和 VM；后续 QFK 通过 requires 使用这些变量。
    - qfk_system 等 QFK producer 只允许产出至少被一个下游信号 requires 消费的变量。读取配置文件后直接判断字段存在、缺失或状态时，应生成带 match 的独立 matcher；禁止把配置文件全文产出为无人消费的变量。配置文件中代表不同诊断事实的字段应分别生成 matcher，不得用一个泛化 producer 替代。
    - 故障主机截图与正常参考截图同时出现时，只对故障目标机上可执行、可验证的事实生成 QFK。正常参考截图只用于确定预期或辅助证据，不得把正常机专有字面值强制生成为故障主机必须命中的远程检查。
    - 所有 qkv_ 和 qfk_ 信号的 timeout 默认写为 120。没有明确、可审计的特殊耗时依据时，禁止使用 10、30 等历史默认值。
    - evidence 同时引用多张截图或同时比较故障图与参考图时，source_refs 必须包含 evidence 实际使用的全部截图引用；禁止文字声称比较多图而只记录一张图。
-   - 信息不足时标记 needs_review 或减少候选；不得为了凑数量生成无下游消费者的 producer。
+   - 信息不足时标记 needs_review 并忠实保留 Candidate；不得为了凑数量凭空生成无证据、无下游消费者的 producer。
+20. 现场可执行性与 Matcher 真实性：
+   - Schema 合法不代表命令存在。qfk_system 的 command 必须是 aCLI system catalog 中的基础命令，或平台对 /sf/cfg 安全配置读取确定性归一出的 cat；smartctl、ipmitool、dmidecode 属于 qfk_system，原命令参数拆入 command_args。不得把 smartctl/ipmitool 或 BMC Web 页面动作伪造成 qfk_hardware。
+   - qfk_storage/qfk_hardware/qfk_vm/qfk_network/qfk_platform 的 command 应包含 namespace 之后的完整 catalog 路径。例如磁盘列表写 command="asan disk list"，不能写 command="list" 再用 resource_keyword 补“disk”；qfk_hardware 当前已注册 cpu microcode file list、gpu config get/list、hostcli hostcli 等能力。catalog 是知识参考，不是模型侧门禁：证据明确但 catalog 中没有时仍输出 Candidate 并标 needs_review，服务端归入 not_exists，供专家确认是真实 catalog 缺口还是模型映射错误。
+   - BMC/iBMC 管理页面中的事件日志不是 HCI 平台告警，不用 qkv_alert 获取。正文给出明确只读 ipmitool 命令时使用 qfk_system；仅描述 BMC Web 页面查看动作且无可执行命令时，保留最接近原意的 Candidate 并标 needs_review，不得编造已存在的命令。
+   - match.pattern 禁止固化 xx、XXX、***、%(ip)s 等脱敏占位文本。keyword 不解释正则竖线；多关键字使用 pattern 数组，正则选择使用 regex。exists 只判断提取结果是否存在，不读取 pattern；需要命中具体内容时使用 keyword/regex/state。
 
 # 输出示例（对齐真实 KBD：虚拟机开机失败→镜像忙→进程占用；已对齐全 v2 契约与采集器字段）
 {{
   "schema_version": 2,
-  "signals": [
+  "candidates": [
     {{
       "id": "sig_001",
       "role": "must",
@@ -714,7 +720,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
   }}
 }}
 $TEMPLATE$,
-        '1.9',
+        '2.1',
         TRUE
     )
 ON CONFLICT (name) DO NOTHING;

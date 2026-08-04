@@ -121,7 +121,11 @@ interface SignalV2 {
 interface SignalsDoc {
   schema_version: number
   signals: SignalV2[]
-  rejected_candidates?: Array<{ candidate: unknown; reason: string }>
+  rejected_candidates?: Array<{
+    candidate: unknown
+    reason_code?: 'write_signal' | 'not_exists' | 'run_failed'
+    reason: string
+  }>
   verification_contract?: Record<string, any>
   generation_metadata?: Record<string, any>
   publish_validation?: Record<string, any>
@@ -1264,6 +1268,31 @@ const expertSignalEditSummary = computed(
 const rejectedSignalCandidates = computed(
   () => (detailEntry.value?.signals_json as SignalsDoc | undefined)?.rejected_candidates || [],
 )
+const rejectedCandidateMeta = {
+  write_signal: {
+    label: '变更动作',
+    tagType: 'danger',
+    guidance: '必须审核：该候选包含真实写操作，不能直接作为 KBD Signal 执行。',
+  },
+  not_exists: {
+    label: '命令未实现',
+    tagType: 'warning',
+    guidance: '需要关注：请确认命令真实存在但 catalog 尚未补充，还是模型映射错误。',
+  },
+  run_failed: {
+    label: '验证/执行失败',
+    tagType: 'danger',
+    guidance: '必须重点处理：catalog 已登记也不代表可运行，请依据具体失败原因修正。',
+  },
+} as const
+
+function rejectedCandidatePresentation(reasonCode?: string) {
+  return rejectedCandidateMeta[reasonCode as keyof typeof rejectedCandidateMeta] || {
+    label: '历史拒绝候选',
+    tagType: 'info' as const,
+    guidance: '历史快照没有稳定分类码，请结合原始候选与拒绝原因复核。',
+  }
+}
 const producerSignals = computed(() =>
   signalList.value.map((s, i) => ({ sig: s, origIdx: i })).filter((x) => !isBackendSig(x.sig)),
 )
@@ -2950,9 +2979,17 @@ onMounted(() => {
             <el-collapse-item
               v-for="(item, index) in rejectedSignalCandidates"
               :key="`rejected-${index}`"
-              :title="`拒绝候选 ${index + 1}：${item.reason}`"
+              :title="`拒绝候选 ${index + 1}`"
               :name="`rejected-${index}`"
             >
+              <div class="rejected-candidate-reason">
+                <el-tag
+                  size="small"
+                  :type="rejectedCandidatePresentation(item.reason_code).tagType"
+                >{{ rejectedCandidatePresentation(item.reason_code).label }}</el-tag>
+                <strong>{{ item.reason }}</strong>
+              </div>
+              <div class="field-hint">{{ rejectedCandidatePresentation(item.reason_code).guidance }}</div>
               <pre class="code rejected-candidate-json">{{ JSON.stringify(item.candidate, null, 2) }}</pre>
               <el-button type="primary" size="small" @click="restoreRejectedCandidate(item.candidate)">恢复并编辑</el-button>
             </el-collapse-item>
@@ -4351,6 +4388,15 @@ onMounted(() => {
 }
 .signal-card-body {
   padding: 8px 10px;
+}
+.rejected-candidate-reason {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.rejected-candidate-reason strong {
+  line-height: 24px;
 }
 .signal-evidence-details,
 .signal-advanced-details {

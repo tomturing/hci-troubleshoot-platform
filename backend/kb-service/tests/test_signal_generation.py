@@ -6,9 +6,12 @@ from types import SimpleNamespace
 import pytest
 from app.routes import extract_signals
 from app.routes.extract_signals import (
+    _acquirer_catalog_prompt_text,
+    _matcher_quality_violation,
     _normalize_config_file_read,
     _normalize_generated_timeouts,
     _persist_signals,
+    _qfk_catalog_violation,
     _signals_to_v2,
     _unconsumed_qfk_producer_reasons,
     _validate_and_collect_signals,
@@ -48,6 +51,7 @@ def test_rejected_candidates_are_persisted_for_expert_audit():
         rejected_candidates=[
             {
                 "signal": {"id": "unsafe", "acquire": {"tool": "unknown"}},
+                "reason_code": "run_failed",
                 "reason": "不支持的采集器",
             },
             {"signal": "not-an-object", "reason": "信号非对象"},
@@ -58,10 +62,128 @@ def test_rejected_candidates_are_persisted_for_expert_audit():
     assert document["rejected_candidates"] == [
         {
             "candidate": {"id": "unsafe", "acquire": {"tool": "unknown"}},
+            "reason_code": "run_failed",
             "reason": "不支持的采集器",
         },
         {"candidate": "not-an-object", "reason": "信号非对象"},
     ]
+
+
+def test_rejected_candidate_reason_code_is_optional_for_historical_snapshots():
+    document = _signals_to_v2(
+        [],
+        rejected_candidates=[{"signal": {"id": "legacy"}, "reason": "历史拒绝原因"}],
+    )
+
+    validate_signals_json(document)
+    assert "reason_code" not in document["rejected_candidates"][0]
+
+
+def test_kbd_candidate_gate_uses_three_stable_reason_codes_and_keeps_good_signal():
+    candidates = [
+        {
+            "id": "task",
+            "acquire": {
+                "tool": "qkv_task",
+                "args": {"keyword": "启动虚拟机", "is_failed": True},
+            },
+            "match": None,
+            "orchestrate": {
+                "phase": "diagnostic",
+                "produces": [{"name": "HOST", "path": "host"}],
+                "requires": [],
+            },
+        },
+        {
+            "id": "write",
+            "acquire": {"tool": "qfk_system", "args": {"command": "restart"}},
+            "match": {"type": "exists", "expected": True},
+            "orchestrate": {"phase": "solution", "produces": [], "requires": []},
+        },
+        {
+            "id": "missing",
+            "acquire": {
+                "tool": "qfk_hardware",
+                "args": {"command": "mc info"},
+            },
+            "match": {"type": "exists", "expected": True},
+            "orchestrate": {"phase": "diagnostic", "produces": [], "requires": []},
+        },
+        {
+            "id": "invalid",
+            "acquire": {
+                "tool": "qfk_system",
+                "args": {"command": "ps", "resource_keyword": "vm"},
+            },
+            "match": {"type": "exists", "expected": True},
+            "orchestrate": {"phase": "diagnostic", "produces": [], "requires": []},
+        },
+    ]
+
+    accepted, rejected = _validate_and_collect_signals(
+        candidates,
+        "kbd:test",
+        enforce_kbd_read_only=True,
+    )
+
+    assert [item["id"] for item in accepted] == ["task"]
+    assert [(item["signal"]["id"], item["reason_code"]) for item in rejected] == [
+        ("write", "write_signal"),
+        ("missing", "not_exists"),
+        ("invalid", "run_failed"),
+    ]
+    assert rejected[0]["signal"]["orchestrate"]["phase"] == "solution"
+    assert "provenance" not in rejected[0]["signal"]
+
+
+def test_consumer_of_rejected_producer_is_run_failed_instead_of_using_ghost_variable():
+    candidates = [
+        {
+            "id": "producer",
+            "acquire": {"tool": "qfk_hardware", "args": {"command": "mc info"}},
+            "match": None,
+            "orchestrate": {
+                "phase": "diagnostic",
+                "produces": [{"name": "MC_INFO", "path": "stdout"}],
+                "requires": [],
+            },
+        },
+        {
+            "id": "consumer",
+            "acquire": {
+                "tool": "qfk_system",
+                "args": {"command": "ps", "command_args": ["{{MC_INFO}}"]},
+            },
+            "match": {
+                "type": "exists",
+                "expected": True,
+                "extract": {
+                    "type": "text",
+                    "rows": {"mode": "all"},
+                    "cardinality": "all",
+                    "source": "stdout",
+                },
+            },
+            "orchestrate": {
+                "phase": "diagnostic",
+                "produces": [],
+                "requires": ["MC_INFO"],
+            },
+        },
+    ]
+
+    accepted, rejected = _validate_and_collect_signals(
+        candidates,
+        "kbd:test",
+        enforce_kbd_read_only=True,
+    )
+
+    assert accepted == []
+    assert [(item["signal"]["id"], item["reason_code"]) for item in rejected] == [
+        ("producer", "not_exists"),
+        ("consumer", "run_failed"),
+    ]
+    assert "变量依赖不可达" in rejected[1]["reason"]
 
 
 def test_staleness_reports_source_prompt_model_tool_and_explicit_changes():
@@ -161,6 +283,56 @@ def test_generated_qkv_qfk_timeouts_use_120_for_missing_and_historical_defaults(
     assert [signal["acquire"]["args"]["timeout"] for signal in signals] == [120, 120, 120, 180]
 
 
+def test_prompt_catalog_reference_uses_current_catalog_as_knowledge_not_model_gate():
+    reference = _acquirer_catalog_prompt_text()
+
+    assert "acli hardware gpu config get" in reference
+    assert "acli system ipmitool" in reference
+    assert "acli hardware mc info" not in reference
+    assert "缺失时仍须输出 Candidate" in reference
+
+
+@pytest.mark.parametrize(
+    ("tool", "args", "expected_fragment"),
+    [
+        ("qfk_system", {"command": "cat", "command_args": ["/sf/cfg/if.d/eth0"]}, None),
+        ("qfk_system", {"command": "lspci", "command_args": []}, "不在当前 catalog"),
+        ("qfk_hardware", {"command": "mc info"}, "acli hardware mc info"),
+        ("qfk_hardware", {"command": "web_info"}, "acli hardware web_info"),
+        ("qfk_storage", {"command": "list", "resource_keyword": "disk"}, "acli storage list"),
+        ("qfk_storage", {"command": "asan disk list"}, None),
+    ],
+)
+def test_qfk_proposal_command_must_exist_in_runtime_catalog(tool, args, expected_fragment):
+    reason = _qfk_catalog_violation(tool, args)
+
+    if expected_fragment is None:
+        assert reason is None
+    else:
+        assert expected_fragment in reason
+
+
+@pytest.mark.parametrize(
+    ("matcher", "expected_fragment"),
+    [
+        ({"type": "keyword", "pattern": "address xx.100.88"}, "脱敏占位文本"),
+        ({"type": "regex", "pattern": r"host-***"}, "脱敏占位文本"),
+        ({"type": "keyword", "pattern": "530-8i|530-16i"}, "不解释正则竖线"),
+        ({"type": "exists", "pattern": "HDD"}, "不读取 match.pattern"),
+        ({"type": "keyword", "pattern": ["530-8i", "530-16i"]}, None),
+        ({"type": "regex", "pattern": r"530-(8i|16i)"}, None),
+        ({"type": "exists"}, None),
+    ],
+)
+def test_matcher_quality_gate_rejects_silent_false_positive_and_impossible_patterns(matcher, expected_fragment):
+    reason = _matcher_quality_violation(matcher)
+
+    if expected_fragment is None:
+        assert reason is None
+    else:
+        assert expected_fragment in reason
+
+
 def test_unconsumed_qfk_producer_is_rejected_but_real_downstream_consumer_is_allowed():
     dead = {
         "id": "sig_001",
@@ -209,7 +381,8 @@ def test_dead_qfk_producer_gate_records_rejected_candidate_reason():
     accepted, rejected = _validate_and_collect_signals([dead], source_id="KBD30880")
 
     assert accepted == []
-    assert rejected[0]["signal"]["acquire"]["args"]["timeout"] == 120
+    # Rejected Candidate 保存模型原始对象；工作副本虽归一为 120，但不得冒充原始输出。
+    assert rejected[0]["signal"]["acquire"]["args"]["timeout"] == 10
     assert "未被任何下游信号消费" in rejected[0]["reason"]
 
 
@@ -242,7 +415,8 @@ def test_kbd_solution_candidate_is_rejected_before_match_or_produces_gate():
     )
 
     assert accepted == []
-    assert rejected[0]["signal"] == candidate
+    assert rejected[0]["signal"]["orchestrate"]["requires"] == ["HOST"]
+    assert candidate["orchestrate"]["requires"] == []
     assert "处置动作不属于 KBD 关键信号" in rejected[0]["reason"]
     assert "match 或 orchestrate.produces" not in rejected[0]["reason"]
 

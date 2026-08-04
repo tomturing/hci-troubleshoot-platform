@@ -34,7 +34,9 @@ def _tokenize(command: str) -> list[str]:
 
 
 @lru_cache(maxsize=1)
-def _get_acli_catalog_commands() -> frozenset[str]:
+def get_acli_catalog_commands() -> frozenset[str]:
+    """返回当前代码随附的 aCLI catalog 命令集合。"""
+
     with _ACLI_CATALOG_PATH.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -76,6 +78,34 @@ def _catalog_matches(path_tokens: list[str], catalog_commands: frozenset[str]) -
     return False
 
 
+def validate_acli_catalog_command(command: str) -> str | None:
+    """校验只读编译结果是否落在本地 aCLI 命令目录中。
+
+    返回 ``None`` 表示命令可由当前 catalog 识别；否则返回面向专家的原因。该函数
+    同时供 SOP 发布校验和 KBD Signal Proposal 保存门禁复用，避免两个知识生产入口
+    对“Schema 合法但现场命令不存在”给出不同结论。
+    """
+
+    tokens = _tokenize(command)
+    if not tokens:
+        return f"aCLI 命令无法解析为合法参数：{command}"
+    if tokens[0] != "acli":
+        return None
+    if "--help" in tokens or "-?" in tokens or "-h" in tokens:
+        return None
+
+    path_tokens = _strip_global_options(tokens)
+    normalized_path = _normalize_spaces(" ".join(path_tokens))
+    if normalized_path == "acli acli command list":
+        return None
+    if not _catalog_matches(path_tokens, get_acli_catalog_commands()):
+        return (
+            f"aCLI 命令不在当前 catalog 中：{normalized_path}。"
+            "请改为已注册的只读命令，或交由专家确认现场能力"
+        )
+    return None
+
+
 def _make_issue(code: str, message: str, location: str, line_number: int | None = None) -> ValidationIssue:
     return ValidationIssue(
         code=code,
@@ -87,8 +117,7 @@ def _make_issue(code: str, message: str, location: str, line_number: int | None 
 
 
 def _validate_acli_command(command: str, location: str, line_number: int | None) -> list[ValidationIssue]:
-    tokens = _tokenize(command)
-    if not tokens:
+    if not _tokenize(command):
         return [
             _make_issue(
                 "sop_tool_acli_parse_failed",
@@ -97,23 +126,12 @@ def _validate_acli_command(command: str, location: str, line_number: int | None)
                 line_number,
             )
         ]
-
-    if tokens[0] != "acli":
-        return []
-
-    if "--help" in tokens or "-?" in tokens or "-h" in tokens:
-        return []
-
-    path_tokens = _strip_global_options(tokens)
-    normalized_path = _normalize_spaces(" ".join(path_tokens))
-    if normalized_path == "acli acli command list":
-        return []
-
-    if not _catalog_matches(path_tokens, _get_acli_catalog_commands()):
+    reason = validate_acli_catalog_command(command)
+    if reason:
         return [
             _make_issue(
                 "sop_tool_acli_command_not_in_catalog",
-                f"SOP 中的 aCLI 命令不在本地 catalog 中：{normalized_path}。请改为受支持命令，或先使用 acli ... --help 探索。",
+                f"SOP 中的{reason}",
                 location,
                 line_number,
             )

@@ -40,7 +40,11 @@ async def test_update_kbd_entry_signals_json_sql_cast():
             "generation_fingerprint": "3" * 64,
         },
         "rejected_candidates": [
-            {"candidate": {"id": "bad"}, "reason": "缺少 acquire"}
+            {
+                "candidate": {"id": "bad"},
+                "reason_code": "run_failed",
+                "reason": "缺少 acquire",
+            }
         ],
         "signals": [
             {

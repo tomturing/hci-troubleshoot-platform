@@ -21,6 +21,9 @@ _QFK_QUALITY_MIGRATION_PATH = (
 _KBD_READ_ONLY_MIGRATION_PATH = (
     _REPOSITORY_ROOT / "database" / "data-migrations" / "020_enforce_kbd_signal_read_only_boundary.sql"
 )
+_SIGNAL_EXECUTABILITY_MIGRATION_PATH = (
+    _REPOSITORY_ROOT / "database" / "data-migrations" / "021_enforce_signal_catalog_and_matcher_quality.sql"
+)
 
 
 def _seed_template(prompt_name: str) -> str:
@@ -128,14 +131,43 @@ def test_kbd_read_only_prompt_migration_replaces_old_solution_signal_guidance():
     assert StrictPromptLoader.get_template_placeholders(supplemental_rule) == set()
 
 
-def test_seed_signal_prompt_forbids_solution_and_write_action_signals():
+def test_seed_signal_prompt_outputs_all_candidates_and_leaves_gate_to_service():
     template = _seed_template("kbd_extract_signals_v2")
 
-    assert '"phase": "diagnostic"' in template
-    assert "Signal 只能是只读事实采集、确定性判定或变量生产" in template
-    assert "不以 require_human_confirm 或 phase=solution 方式保留" in template
-    assert "所有输出 Signal 的 phase 必须为 diagnostic" in template
-    assert "只在排查步骤明确描述「处置/修复动作」时才抽取此类信号" not in template
+    assert '"candidates": [' in template
+    assert '"phase": "<diagnostic|solution>"' in template
+    assert "你只负责提出 Candidate，不得在生成阶段替服务端过滤或删除候选" in template
+    assert "服务端会归入 Rejected Candidate/write_signal" in template
+    assert "qkv_task 是查询历史任务的只读采集" in template
+    assert "keyword 中的“启动/创建/迁移/删除”只是查询条件" in template
+    assert "所有输出 Signal 的 phase 必须为 diagnostic" not in template
+    assert "无法映射到 catalog 时不生成 Signal" not in template
+
+
+def test_signal_executability_prompt_migration_teaches_catalog_and_matcher_boundaries():
+    migration = _SIGNAL_EXECUTABILITY_MIGRATION_PATH.read_text(encoding="utf-8")
+    supplemental_rule = migration.split("|| $RULE$", 1)[1].split("$RULE$", 1)[0]
+
+    assert "补充规则 25：Candidate/Signal/Rejected Candidate 三态门禁" in supplemental_rule
+    assert "模型不得替服务端过滤 Candidate" in supplemental_rule
+    assert "服务端归入 write_signal" in supplemental_rule
+    assert "服务端归入 not_exists" in supplemental_rule
+    assert "统一视为 run_failed" in supplemental_rule
+    assert "smartctl、ipmitool、dmidecode 属于 qfk_system" in supplemental_rule
+    assert 'command="asan disk list"' in supplemental_rule
+    assert "BMC/iBMC 管理页面中的事件日志不是 HCI 平台告警" in supplemental_rule
+    assert "exists 只判断提取结果是否存在" in supplemental_rule
+    assert StrictPromptLoader.get_template_placeholders(supplemental_rule) == set()
+
+
+def test_seed_signal_prompt_contains_catalog_and_matcher_quality_boundaries():
+    template = _seed_template("kbd_extract_signals_v2")
+
+    assert "当前内置 aCLI catalog（生成时优先采用；缺失时仍须输出 Candidate" not in template
+    assert "catalog 是知识参考，不是模型侧门禁" in template
+    assert "不得把 smartctl/ipmitool 或 BMC Web 页面动作伪造成 qfk_hardware" in template
+    assert 'command="asan disk list"' in template
+    assert "match.pattern 禁止固化 xx、XXX、***、%(ip)s" in template
 
 
 def test_vision_prompt_gives_task_detail_modal_task_semantic_priority():
