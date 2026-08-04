@@ -15,7 +15,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 > 2. 再写入对应分类文件  
 > 3. 同一 commit/PR 提交，不允许分开提交  
 >
-> **下一个可用编号：V-009**（旧格式延续：PIT-042）
+> **下一个可用编号：V-010**（旧格式延续：PIT-042）
 
 ---
 
@@ -48,6 +48,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 | V-006 | debugging.md | QFK 产出变量模式不得被 Matcher 前置校验短路 |
 | V-007 | frontend.md | 单对象删除不得携带无关未保存草稿，校验错误不得丢失稳定对象与字段路径 |
 | V-008 | frontend.md | 前端恢复/复制 Signal 不得写入 Schema 未声明的 provenance 字段 |
+| V-009 | python.md | Signal 图片输入必须按章节白名单且与 Candidate 溯源闭环 |
 | PIT-004 | python.md | Pydantic 验证 |
 | PIT-005 | frontend.md | pnpm workspace |
 | PIT-006 | dispatcher.md | 分布式锁 |

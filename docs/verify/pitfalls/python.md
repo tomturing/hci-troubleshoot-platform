@@ -69,3 +69,21 @@ class KbCategory(Base):
 - 一个表只定义一个 ORM 类
 - 其他文件通过 `from app.models import KbCategory` 导入
 - 避免在路由文件中重复定义模型
+
+## V-009：Signal 图片输入必须按章节白名单且与 Candidate 溯源闭环
+
+**症状：** KBD 关键信号 Prompt 已将 `root_cause`、`solution` 直接字段置空，却仍生成来自删除配置、
+重启服务等方案动作的 Candidate；Candidate 的 `source_section` 看似是 `steps_text`，但 evidence 不在
+该段落或标注截图中。
+
+**根因：** `images_json` 是另一条自然语言输入通道。若把所有图片的 OCR、observed facts、fields 或
+`context_before/context_after` 无差别拼入 Prompt，solution/root_cause 所属图片会绕过字段级置空；仅把
+LLM 自报的 `source_section` 限制为枚举也不能证明其 `source_refs/evidence` 真实可追溯。
+
+**修复：** 在调用 LLM 前按诊断章节白名单过滤图片，未知 section fail closed；图片只传原子观察事实，
+不传自由上下文、DESCRIPTION、inferences 或 legacy desc；由同一份过滤结果建立 `source_ref -> facts`
+索引，拒绝未进入输入的 source ref、非诊断章节和无法逐字回溯的图片 evidence。
+
+**预防：** 增加反例测试：solution/root_cause 截图含 `rm`/`restart` 文本时，序列化 Prompt 不得含该文本；
+Candidate 引用该截图或将方案文字伪标为诊断图 evidence 时必须进入 rejected candidates。不要把“写操作
+后置拒绝”误当成输入隔离，它只能防执行，不能防标签泄漏。
