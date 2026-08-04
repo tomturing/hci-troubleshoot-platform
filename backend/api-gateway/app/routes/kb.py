@@ -349,6 +349,25 @@ async def kbd_capabilities_proxy(request: Request):
     return JSONResponse(content=document, status_code=200)
 
 
+@kbd_router.post("/command-preview")
+async def kbd_command_preview_proxy(request: Request):
+    """使用 Agent 当前部署的 QFK Handler 编译只读命令模板。"""
+
+    body = await request.json()
+    headers = _internal_auth_headers()
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(
+                f"{settings.AGENT_SERVICE_URL}/internal/qfk-command-preview",
+                json=body,
+                headers=headers,
+            )
+    except httpx.RequestError as exc:
+        logger.error(event="qfk_command_preview_unavailable", error=str(exc))
+        raise HTTPException(status_code=503, detail="Agent command preview unavailable") from exc
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 @kbd_router.get("/{kbd_id}/revisions")
 async def kbd_revisions_proxy(kbd_id: int, request: Request):
     """代理 KBD Proposal/Expert 历史与当前 runtime active 元数据。"""

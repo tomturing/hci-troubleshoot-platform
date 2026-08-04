@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-07-31
+last_updated: 2026-08-04
 related_prs:
   - PR #474: invoke() 重试 + tool_calls 清理 + skill 可观测 + 报告模板简化 + solution 格式合并
 owner: team
@@ -19,6 +19,20 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-08-04 | v3.62 | **KBD 配置文件/qfk_log 采集器门禁**：常见配置扩展名不再冒充日志；明确安全配置路径归一只读 cat，其他配置 Candidate 进入 `run_failed`，Agent 不执行错误默认日志路径。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
+| 2026-08-04 | v3.61 | **KBD 空 must Contract 兜底**：通过门禁的 diagnostic Signal 全为 context 时同步提升首条为 must；全拒绝时不生成 Contract，避免抽取 500 让 Candidate/Rejected 审计整体消失。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
+| 2026-08-04 | v3.60 | **KBD 明确平台告警逐项召回**：每个不同 HCI 平台告警至少输出一个 qkv_alert Candidate，不能被同篇 smartctl/qfk_log 等后台检查替代；BMC 外部事件保持排除。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
+| 2026-08-04 | v3.59 | **KBD 修复后只读验证 phase 纠偏**：phase 只描述 Candidate 自身命令；封闭可证明的只读验证不再因“重启后”上下文误报 write_signal，归一 diagnostic 后继续 catalog/run 门禁。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
+| 2026-08-04 | v3.58 | **KBD 命令能力与 regex 预运行门禁**：`ipmitool mc info` 不再冒充 RAID 固件采集，regex 必须命中自身逐字 evidence；失败进入 `run_failed`，Agent 只消费能力与 Matcher 均可成立的 Signal。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
+| 2026-08-04 | v3.57 | **KBD acquisition/evidence 一致性门禁**：BMC 外部事件不再伪装 HCI 告警，缺少日志来源或日志形态 evidence 的 qfk_log 进入 `run_failed`；Agent 只消费证据支持采集器语义的 Signal。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
+| 2026-08-04 | v3.56 | **KBD catalog 命令最小 argv 门禁**：catalog 命中不再直接等价于可运行；裸 `smartctl` 等缺少命令必需参数的调用进入 `run_failed`，Agent 只消费满足调用契约的 Signal。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
+| 2026-08-04 | v3.55 | **KBD Matcher 数组逐项证据门禁**：keyword pattern 数组每项均须从逐字 evidence 或合法变量追溯，无证据猜测项不能依附真实项通过；失败仍统一进入 `run_failed`，Agent 只消费门禁通过的 Signal。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
+| 2026-08-04 | v3.54 | **KBD 脱敏 Matcher 防绕过**：Prompt 不再把脱敏值静默改写为 `address`/`ip` 等宽泛 matcher；Candidate 保留原证据，KB 门禁要求 keyword pattern 可由逐字 evidence 追溯，失败统一进入 `run_failed`，Agent 只消费通过门禁的 Signal。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
+| 2026-08-04 | v3.53 | **KBD Candidate 生成与执行门禁分离**：Prompt v2.1 完整输出 Candidate 并使用当前 aCLI catalog 作为知识参考；kb-service 按 write_signal/not_exists/run_failed 分类，catalog 命中不冒充运行成功，Agent 继续只消费门禁通过并发布的 Signal。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
+| 2026-08-04 | v3.52 | **KBD 处置 Signal 纵深防御统一**：`kbd_differential` 复用共享 KBD 只读判定，历史 `phase=solution`、人工确认或明确写动作继续在调度前 blocked；正常只读 Signal 不受影响。 | [KBD 关键信号只读边界方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号只读边界方案.md) |
+| 2026-08-03 | v3.51 | **KBD 抽取质量守门**：Prompt v1.8 强制失败任务 `qkv_task`、QFK producer 下游消费、120 秒与多图引用；KB 后处理拒绝 dead producer，并将 `/sf/cfg` cat 收敛为 `command_args`。 | [KBD 关键信号抽取反馈闭环与版本治理任务](../knowledge-base/events/2026-08-03-KBD关键信号抽取反馈闭环与版本治理任务.md) |
+| 2026-08-03 | v3.50 | **QFK timeout 缺省值统一**：`BackendSignal`、KBD Differential 和 CDD 命令编译都使用共享的 120 秒缺省值；命令预览与真实执行不再因缺字段产生不同 timeout。 | PR #663 |
+| 2026-08-03 | v3.49 | **QFK 只读命令编译预览**：Agent 新增内部预览端点，复用运行中 `BackendSignal` 与 `HandlerRegistry` 编译完整 aCLI 模板；保留运行时变量、明确 host 只用于 SSH 路由，预览不进入执行器。 | PR #663 |
 | 2026-08-03 | v3.48 | **QFK producer 执行链修复**：显式区分 produce/match，lsof 成功输出可进入 PID 变量池；qfk_system 收敛为唯一 argv 命令模型。 | [KBD27123产出变量执行链与QFK命令参数模型收敛任务](../events/2026-08-03-KBD27123产出变量执行链与QFK命令参数模型收敛.md) |
 | 2026-07-31 | v3.47 | **KBD Matcher/行选择模式与 Extract 契约收敛**：修复 LLM 将 `rows.include_mode=any/all` 误写为 `match.mode` 的 Prompt 歧义；backend Matcher 强制复用 `produces` 的声明式 Extract，`match.mode` 收口为 `or/and/not`，JSON 路径收口至 `extract.type=json`。新增迁移 017 和 Prompt/花括号契约回归测试；不添加 `any→or` / `all→and` 旧兼容，非法候选只保留审计后重新抽取。 | [KBD Matcher 模式与 Extract 契约对齐](../../solution/events/2026-07-31-KBD-Matcher-模式与Extract契约对齐.md) |
 | 2026-07-31 | v3.46 | **KBD Prompt JSON 花括号转义修复**：015 热加载 Prompt 的新增 JSON 示例未按 Python `str.format()` 转义，导致 `key`/`mode`/`name` 被误判为非法运行时占位符并使重抽 HTTP 500；016 将已部署数据修正为 `{{`/`}}` 字面量并将 Prompt 提升为 v1.5，新增 seed 与数据迁移的 StrictPromptLoader 回归校验。 | [KBD 重抽取与任务详情截图语义收口](../../solution/knowledge-base/events/2026-07-31-KBD重抽取与任务详情截图语义收口.md) |

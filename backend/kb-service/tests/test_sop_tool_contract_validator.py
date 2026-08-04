@@ -69,6 +69,33 @@ acli命令行：
     assert not issues
 
 
+def test_warns_when_catalog_command_has_no_required_invocation_args():
+    root = _parse_root(
+        """\
+# 磁盘故障
+
+## SMART 检查
+
+### 判断方法
+
+acli命令行：
+- acli system smartctl
+
+### 解决方案
+
+快速恢复：
+- 观察磁盘状态
+
+彻底解决方案：
+- 根据检查结果处理
+"""
+    )
+
+    issues = validate_sop_tool_contract(root)
+
+    assert any(i.code == "sop_tool_acli_invocation_invalid" for i in issues)
+
+
 def test_accepts_naked_bash_command_as_host_boundary():
     root = _parse_root(
         """\

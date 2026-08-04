@@ -1,3 +1,4 @@
+import copy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -5,8 +6,14 @@ import pytest
 from app.models.kbd_entry import KbdEntry
 from app.models.kbd_revision import KbdRevision
 from app.routes import admin
-from app.routes.admin import KbdApproveRequest, KbdUpdateRequest, _patch_maintenance_payload
+from app.routes.admin import (
+    KbdApproveRequest,
+    KbdUpdateRequest,
+    _delete_signal_from_document,
+    _patch_maintenance_payload,
+)
 from app.services.kbd_mutation_guard import PublishedKbdMutationError, require_mutable_kbd
+from fastapi import HTTPException
 from pydantic import ValidationError
 from shared.schemas.signal_generation import current_tool_contract_revision
 from shared.schemas.signal_schema import certify_publishable_signals_json
@@ -273,6 +280,27 @@ def test_maintenance_signal_change_reverts_only_changed_signal_to_review_require
     assert untouched["review"]["require_human_confirm"] is False
 
 
+def test_maintenance_rejects_solution_action_signal_for_expert_handling():
+    original = _payload()
+    signals = original["signals_json"] | {
+        "signals": [
+            original["signals_json"]["signals"][0],
+            original["signals_json"]["signals"][1]
+            | {
+                "role": "context",
+                "orchestrate": {
+                    "phase": "solution",
+                    "produces": [],
+                    "requires": ["END"],
+                },
+            },
+        ]
+    }
+
+    with pytest.raises(HTTPException, match="处置动作不属于 KBD 关键信号"):
+        _patch_maintenance_payload(original, KbdUpdateRequest(signals_json=signals))
+
+
 def test_expert_delete_context_signal_removes_its_agent_contract_reference():
     """KBD30880：正常 GPU 主机示例不应留下可执行的幽灵 Signal。"""
 
@@ -326,6 +354,75 @@ def test_expert_delete_context_signal_removes_its_agent_contract_reference():
     assert policy["context"] == []
     assert policy["must"] == ["task_failure", "log_failure"]
     assert "sig_004" not in {item for values in policy.values() if isinstance(values, list) for item in values}
+
+
+def test_kbd30880_exists_matcher_null_pattern_is_canonicalized_on_save():
+    """exists 不消费 pattern；显式 null 应在权威保存边界归约为字段缺失。"""
+
+    original = _payload()
+    exists_signal = copy.deepcopy(original["signals_json"]["signals"][1])
+    exists_signal["match"] = {
+        **exists_signal["match"],
+        "type": "exists",
+        "pattern": None,
+    }
+    signals = original["signals_json"] | {
+        "signals": [original["signals_json"]["signals"][0], exists_signal]
+    }
+
+    patched = _patch_maintenance_payload(original, KbdUpdateRequest(signals_json=signals))
+
+    assert patched["signals_json"]["signals"][1]["match"]["type"] == "exists"
+    assert "pattern" not in patched["signals_json"]["signals"][1]["match"]
+
+
+def test_kbd30880_restored_or_duplicated_signal_legacy_provenance_flags_do_not_block_save():
+    """旧页面恢复/复制 Signal 时写入的 UI 标记必须在保存边界兼容移除。"""
+
+    original = _payload()
+    restored = copy.deepcopy(original["signals_json"]["signals"][1])
+    restored["id"] = "expert_restored_gpu_config"
+    restored["provenance"] = {
+        **restored["provenance"],
+        "expert_created": True,
+        "expert_restored": True,
+        "needs_review": True,
+    }
+    signals = original["signals_json"] | {
+        "signals": [*original["signals_json"]["signals"], restored]
+    }
+
+    patched = _patch_maintenance_payload(original, KbdUpdateRequest(signals_json=signals))
+    provenance = patched["signals_json"]["signals"][-1]["provenance"]
+
+    assert provenance["needs_review"] is True
+    assert "expert_created" not in provenance
+    assert "expert_restored" not in provenance
+
+    published = admin._prepare_expert_publish_signals(signals)
+    published_provenance = published["signals"][-1]["provenance"]
+    assert "expert_created" not in published_provenance
+    assert "expert_restored" not in published_provenance
+
+
+def test_delete_signal_id_uses_authoritative_document_and_reconciles_contract():
+    """删除按稳定 ID 作用于权威稿，不需要提交其他未完成的前端暂存编辑。"""
+
+    original = _payload()
+    original["signals_json"], _ = reconcile_verification_contract(original["signals_json"])
+
+    deleted = _delete_signal_from_document(original["signals_json"], "log_failure")
+
+    assert [signal["id"] for signal in deleted["signals"]] == ["task_failure"]
+    assert deleted["verification_contract"]["evidence_policy"]["must"] == ["task_failure"]
+
+
+def test_delete_signal_id_rejects_missing_stable_target():
+    with pytest.raises(HTTPException) as exc_info:
+        _delete_signal_from_document(_payload()["signals_json"], "missing_signal")
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail["code"] == "KBD_SIGNAL_NOT_FOUND"
 
 
 def test_expert_can_save_working_draft_without_must_and_gets_actionable_issue():

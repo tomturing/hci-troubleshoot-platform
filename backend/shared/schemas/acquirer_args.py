@@ -75,12 +75,16 @@ def _contains_illegal_command_chars(value: str) -> bool:
     return any(char in ILLEGAL_COMMAND_CHARS for char in without_placeholders)
 
 # ─── 公共参数：全局只定义一次 ───────────────────────────────────────────────────
+# 关键信号要覆盖跨节点/跨容器的正常 aCLI 耗时，120 秒是新建信号和未声明 timeout
+# 的统一运行时默认值。显式配置的历史信号保持原值，不在读取时被迁移或覆盖。
+DEFAULT_SIGNAL_TIMEOUT_SECONDS = 120
+
 COMMON_ARGS: dict[str, dict[str, Any]] = {
     "timeout": {
         "type": "integer",
         "minimum": 1,
         "maximum": 300,
-        "default": 10,
+        "default": DEFAULT_SIGNAL_TIMEOUT_SECONDS,
         "description": "采集/执行超时（秒，1-300）；QKV/QFK 通用",
     },
 }

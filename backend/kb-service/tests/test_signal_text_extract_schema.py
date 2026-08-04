@@ -1,7 +1,11 @@
 import pytest
 from jsonschema import ValidationError
 from shared.schemas.signal_output import derive_signal_requires
-from shared.schemas.signal_schema import validate_signals_json
+from shared.schemas.signal_schema import (
+    humanize_signal_validation_error,
+    normalize_optional_matcher_nulls,
+    validate_signals_json,
+)
 
 
 def _text_extract(*, rows=None, columns=None, value_key=None, value_mode="string"):
@@ -40,6 +44,45 @@ def test_matcher_extract_is_required_and_json_path_is_not_a_matcher_type():
         validate_signals_json(_qfk_match({"type": "exists", "expected": True}))
     with pytest.raises(ValidationError):
         validate_signals_json(_qfk_match({"type": "json_path", "path": "status", "expected": True, "extract": {"type": "json", "path": "status"}}))
+
+
+def test_exists_matcher_explicit_null_pattern_is_semantically_absent():
+    document = _qfk_match(
+        {
+            "type": "exists",
+            "pattern": None,
+            "expected": True,
+            "extract": _text_extract(),
+        }
+    )
+
+    normalize_optional_matcher_nulls(document)
+    validate_signals_json(document)
+
+    assert "pattern" not in document["signals"][0]["match"]
+
+
+def test_required_keyword_null_pattern_is_not_silently_removed_and_has_field_target():
+    document = _qfk_match(
+        {
+            "type": "keyword",
+            "pattern": None,
+            "expected": True,
+            "extract": _text_extract(),
+        }
+    )
+    document["signals"][0]["id"] = "sig_kbd30880"
+
+    normalize_optional_matcher_nulls(document)
+    with pytest.raises(ValidationError) as exc_info:
+        validate_signals_json(document)
+
+    issue = humanize_signal_validation_error(exc_info.value, document["signals"])
+    assert document["signals"][0]["match"]["pattern"] is None
+    assert issue["signal_id"] == "sig_kbd30880"
+    assert issue["field_path"] == "match.pattern"
+    assert issue["location"] == "关键信号 · sig_kbd30880 · 判定器 / 匹配内容"
+    assert "值类型不正确" in issue["message"]
 
 
 @pytest.mark.parametrize("extract", [

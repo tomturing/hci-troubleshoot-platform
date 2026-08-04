@@ -1131,6 +1131,7 @@ CREATE TABLE IF NOT EXISTS kbd_revision (
     revision_no integer NOT NULL,
     revision_type varchar(16) NOT NULL,
     parent_revision_id bigint,
+    baseline_proposal_revision_id bigint,
     payload_json jsonb NOT NULL,
     checksum varchar(64) NOT NULL,
     generation_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -1143,6 +1144,7 @@ CREATE TABLE IF NOT EXISTS kbd_revision (
     CONSTRAINT kbd_revision_pkey PRIMARY KEY (id),
     CONSTRAINT fk_kbd_revision_kbd_entry_id FOREIGN KEY (kbd_entry_id) REFERENCES kbd_entry (id) ON DELETE RESTRICT,
     CONSTRAINT fk_kbd_revision_parent_revision_id FOREIGN KEY (parent_revision_id) REFERENCES kbd_revision (id) ON DELETE RESTRICT,
+    CONSTRAINT fk_kbd_revision_baseline_proposal_revision_id FOREIGN KEY (baseline_proposal_revision_id) REFERENCES kbd_revision (id) ON DELETE RESTRICT,
     CONSTRAINT chk_kbd_revision_revision_no CHECK (revision_no > 0),
     CONSTRAINT chk_kbd_revision_type CHECK (revision_type IN ('proposal', 'expert')),
     CONSTRAINT chk_kbd_revision_actor_type CHECK (actor_type IN ('llm', 'expert', 'migration', 'system')),
@@ -1154,6 +1156,7 @@ COMMENT ON COLUMN kbd_revision.kbd_entry_id IS '所属 KBD 主记录 ID';
 COMMENT ON COLUMN kbd_revision.revision_no IS '同一 KBD 内单调递增版本号';
 COMMENT ON COLUMN kbd_revision.revision_type IS 'proposal=LLM/迁移模型稿；expert=专家工作稿或确认稿';
 COMMENT ON COLUMN kbd_revision.parent_revision_id IS '本版本直接基于的 Proposal/Expert revision';
+COMMENT ON COLUMN kbd_revision.baseline_proposal_revision_id IS 'Expert Revision 明确审核的 Proposal 基线；统计和评估配对不得按 history 顺序猜测';
 COMMENT ON COLUMN kbd_revision.payload_json IS '与 KBD 可审核字段同构的完整规范化快照';
 COMMENT ON COLUMN kbd_revision.checksum IS 'payload_json 的稳定 SHA-256，用于幂等和差异定位';
 COMMENT ON COLUMN kbd_revision.generation_metadata IS '模型、Prompt、配置、来源或迁移元数据；专家版本保留其基线生成信息';
@@ -1165,6 +1168,7 @@ COMMENT ON COLUMN kbd_revision.trace_id IS '创建 revision 的 W3C trace 链路
 
 CREATE INDEX IF NOT EXISTS idx_kbd_revision_entry_created ON kbd_revision (kbd_entry_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_kbd_revision_parent ON kbd_revision (parent_revision_id) WHERE parent_revision_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_kbd_revision_baseline_proposal ON kbd_revision (baseline_proposal_revision_id) WHERE baseline_proposal_revision_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_kbd_revision_trace_id ON kbd_revision (trace_id) WHERE trace_id IS NOT NULL;
 
 -- head 指针外键延后声明，避免 kbd_entry 与 kbd_revision 建表顺序形成循环依赖。

@@ -32,11 +32,16 @@ from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from shared.schemas.acquirer_args import normalize_qfk_system_args, validate_acquire_args
 from shared.schemas.capability_descriptor import capability_descriptor_document, get_capability_descriptor
+from shared.schemas.kbd_signal_safety import validate_kbd_read_only_signals_json
 from shared.schemas.signal_output import sync_signal_requires
 from shared.schemas.signal_schema import (
     certify_publishable_signals_json,
+    normalize_optional_matcher_nulls,
     validate_draft_signals_json,
     validate_publishable_signals_json,
+)
+from shared.schemas.signal_schema import (
+    humanize_signal_validation_error as humanize_schema_validation_error,
 )
 from shared.schemas.verification_contract import (
     expert_editor_issues,
@@ -59,7 +64,11 @@ from app.services.kbd_revision_service import (
     diff_revision_payloads,
     ensure_kbd_revision,
     ensure_kbd_revision_payload,
+    is_evaluation_candidate,
+    resolve_proposal_baseline,
     revision_metadata,
+    select_current_expert_pair,
+    summarize_expert_signal_changes,
 )
 from app.services.sop_parser import extract_sop_variables, merge_variable_schema, parse_sop_markdown
 from app.services.sop_tool_contract_validator import validate_sop_tool_contract
@@ -118,15 +127,53 @@ def _normalize_qfk_system_command_args(document: dict[str, Any]) -> dict[str, An
     return document
 
 
+def _strip_legacy_expert_provenance_flags(document: dict[str, Any]) -> dict[str, Any]:
+    """兼容移除旧 Admin UI 写入的非契约 provenance 标记。
+
+    ``expert_created``/``expert_restored`` 曾由页面用于标记本地交互来源，
+    却不属于 Signal ``provenance``（来源事实）的 Schema。它们因此会让恢复
+    拒绝候选或复制信号的整个工作稿返回 422，反而堵住专家修复路径。专家操作
+    本身已在 KbdRevision 的 review metadata 中审计，所以保存边界可安全移除
+    这两个仅前端使用过的历史字段；其他未知 provenance 字段仍由 Schema 拒绝。
+    """
+
+    for signal in document.get("signals") or []:
+        if not isinstance(signal, dict):
+            continue
+        provenance = signal.get("provenance")
+        if not isinstance(provenance, dict):
+            continue
+        provenance.pop("expert_created", None)
+        provenance.pop("expert_restored", None)
+    return document
+
+
 def _prepare_expert_publish_signals(raw: Any) -> dict[str, Any]:
     """规范化历史角色冲突，并用当前工具契约为 Expert 发布内容盖章。"""
 
     normalized, _ = normalize_legacy_role_contract(_load_signals_json(raw))
+    _strip_legacy_expert_provenance_flags(normalized)
+    normalize_optional_matcher_nulls(normalized)
     canonical, _ = reconcile_verification_contract(normalized)
+    validate_kbd_read_only_signals_json(canonical)
     return certify_publishable_signals_json(canonical)
 
 
-def _humanize_signal_validation_error(error: jsonschema.ValidationError) -> dict[str, Any]:
+def _validate_kbd_draft_signals_json(raw: Any) -> None:
+    """KBD 工作稿门禁：先给出处置边界原因，再校验通用 v2 结构。"""
+
+    validate_kbd_read_only_signals_json(raw)
+    validate_draft_signals_json(raw)
+
+
+def _validate_kbd_publishable_signals_json(raw: Any) -> None:
+    """KBD 发布预检：先给出处置边界原因，再校验通用发布契约。"""
+
+    validate_kbd_read_only_signals_json(raw)
+    validate_publishable_signals_json(raw)
+
+
+def _humanize_signal_validation_error(error: jsonschema.ValidationError, signals: list[Any]) -> dict[str, Any]:
     """把发布门禁错误转换成专家可以直接处理的语言。
 
     JSON Schema 路径是工程实现细节，不能作为专家审核任务。这里保留机器可检索
@@ -149,12 +196,125 @@ def _humanize_signal_validation_error(error: jsonschema.ValidationError) -> dict
             "location": "关键信号",
             "message": "有一条关键信号的内部标识异常，请删除后重新新增该信号。",
         }
-    return {
-        "level": "error",
-        "code": "KBD_SIGNALS_INVALID",
-        "location": "关键信号",
-        "message": f"关键信号尚未满足发布要求：{message}",
-    }
+    if "输入变量没有上游产出" in message or "变量依赖存在环或不可达" in message:
+        return {
+            "level": "error",
+            "code": "SIGNAL_VARIABLE_DEPENDENCY_INVALID",
+            "location": "关键信号 / 输入变量",
+            "message": message,
+        }
+    if "处置动作不属于 KBD 关键信号" in message:
+        index_match = re.search(r"signals\[(\d+)]", message)
+        signal_index = int(index_match.group(1)) if index_match else -1
+        signal_id = (
+            str(signals[signal_index].get("id") or "").strip()
+            if 0 <= signal_index < len(signals) and isinstance(signals[signal_index], dict)
+            else ""
+        )
+        issue: dict[str, Any] = {
+            "level": "error",
+            "code": "KBD_SOLUTION_SIGNAL_FORBIDDEN",
+            "location": f"关键信号 · {signal_id} · 执行阶段" if signal_id else "关键信号 / 执行阶段",
+            "message": "处置动作不属于 KBD 关键信号；请保留在解决方案中，或将该信号改为只读诊断检查。",
+        }
+        if signal_id:
+            issue.update(
+                {
+                    "signal_id": signal_id,
+                    "action": {"type": "edit_signal", "signal_id": signal_id, "focus": "orchestrate.phase"},
+                }
+            )
+        return issue
+    return humanize_schema_validation_error(error, signals)
+
+
+def _raise_signal_validation_error(error: jsonschema.ValidationError, signals: list[Any]) -> None:
+    """统一把保存、删除和发布错误返回为前端可定位的结构化问题。"""
+
+    raise HTTPException(
+        status_code=422,
+        detail=_humanize_signal_validation_error(error, signals),
+    ) from error
+
+
+def _prepare_expert_draft_signals(raw: Any) -> dict[str, Any]:
+    """归约并校验专家工作稿，保存与按 ID 删除共用同一权威边界。"""
+
+    document = copy.deepcopy(_load_signals_json(raw))
+    _strip_legacy_expert_provenance_flags(document)
+    normalize_optional_matcher_nulls(document)
+    document, _ = reconcile_verification_contract(document)
+    try:
+        document = _normalize_qfk_system_command_args(document)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "level": "error",
+                "code": "SIGNAL_ACQUIRE_ARGS_INVALID",
+                "location": "关键信号 / 采集参数",
+                "message": str(exc),
+            },
+        ) from exc
+    metadata = document.get("generation_metadata")
+    if isinstance(metadata, dict):
+        metadata["status"] = "manual_reviewed"
+    signals = document.get("signals") or []
+    for signal in signals:
+        if not isinstance(signal, dict):
+            continue
+        sync_signal_requires(signal)
+        acquire = signal.get("acquire") or {}
+        ok, error = validate_acquire_args(acquire.get("tool"), acquire.get("args", {}))
+        if not ok:
+            signal_id = str(signal.get("id") or "").strip()
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "level": "error",
+                    "code": "SIGNAL_ACQUIRE_ARGS_INVALID",
+                    "location": f"关键信号 · {signal_id} · 采集参数" if signal_id else "关键信号 / 采集参数",
+                    "message": str(error),
+                    **(
+                        {
+                            "signal_id": signal_id,
+                            "action": {"type": "edit_signal", "signal_id": signal_id, "focus": "acquire.args"},
+                        }
+                        if signal_id
+                        else {}
+                    ),
+                },
+            )
+    try:
+        _validate_kbd_draft_signals_json(document)
+    except jsonschema.ValidationError as exc:
+        _raise_signal_validation_error(exc, signals)
+    return document
+
+
+def _delete_signal_from_document(raw: Any, signal_id: str) -> dict[str, Any]:
+    """按稳定 ID 删除权威工作稿中的 Signal，并同步重算 Agent Contract。"""
+
+    normalized_id = str(signal_id or "").strip()
+    document = copy.deepcopy(_load_signals_json(raw))
+    signals = document.get("signals") or []
+    if not normalized_id or not any(
+        isinstance(signal, dict) and str(signal.get("id") or "") == normalized_id for signal in signals
+    ):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "KBD_SIGNAL_NOT_FOUND",
+                "message": "目标关键信号已不存在，请刷新后重试。",
+                "signal_id": normalized_id or None,
+            },
+        )
+    document["signals"] = [
+        signal
+        for signal in signals
+        if not (isinstance(signal, dict) and str(signal.get("id") or "") == normalized_id)
+    ]
+    return _prepare_expert_draft_signals(document)
 
 
 if TYPE_CHECKING:
@@ -329,12 +489,11 @@ async def export_kbd_evaluation_data(request: Request, limit: int = 200) -> dict
         if len(examples) >= bounded_limit:
             break
         by_id = {item.id: item for item in history}
-        proposal = next((item for item in history if item.revision_type == "proposal"), None)
-        for expert in (item for item in history if item.revision_type == "expert"):
-            parent = by_id.get(expert.parent_revision_id)
-            if proposal is None and parent is None:
+        for expert in (item for item in history if is_evaluation_candidate(item)):
+            proposal = resolve_proposal_baseline(expert, by_id)
+            if proposal is None:
                 continue
-            baseline = parent or proposal
+            proposal_diff = diff_revision_payloads(proposal.payload_json, expert.payload_json)
             examples.append(
                 {
                     "kbd_id": kbd_id,
@@ -342,16 +501,17 @@ async def export_kbd_evaluation_data(request: Request, limit: int = 200) -> dict
                         "id": proposal.id,
                         "payload": proposal.payload_json,
                         "generation_metadata": proposal.generation_metadata or {},
-                    }
-                    if proposal is not None
-                    else None,
+                    },
                     "expert_revision": {
                         "id": expert.id,
+                        "baseline_proposal_revision_id": proposal.id,
                         "payload": expert.payload_json,
                         "review_metadata": expert.review_metadata or {},
                         "validation_summary": expert.validation_summary or {},
                     },
-                    "diff_from_parent": diff_revision_payloads(baseline.payload_json, expert.payload_json),
+                    "diff_from_proposal": proposal_diff,
+                    # v1 消费方兼容别名；语义已固定为 Proposal baseline，不再是任意 direct parent。
+                    "diff_from_parent": proposal_diff,
                     "runtime_outcomes": [
                         item
                         for (resource_name, _revision), items in audits_by_resource.items()
@@ -363,7 +523,7 @@ async def export_kbd_evaluation_data(request: Request, limit: int = 200) -> dict
             if len(examples) >= bounded_limit:
                 break
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "kbd_proposal_expert_runtime_export",
         "facts_boundary": {
             "trusted_reviewer": False,
@@ -878,6 +1038,11 @@ async def get_kbd_revisions(request: Request, kbd_id: int) -> dict[str, Any]:
         )
         history = list(history_result.scalars().all())
         revision_by_id = {item.id: item for item in history}
+        current_expert, proposal_baseline = select_current_expert_pair(
+            history,
+            working_revision_id=entry.working_revision_id,
+            latest_proposal_revision_id=entry.latest_proposal_revision_id,
+        )
         active_result = await session.execute(
             text(
                 """
@@ -899,6 +1064,12 @@ async def get_kbd_revisions(request: Request, kbd_id: int) -> dict[str, Any]:
         "latest_proposal_revision_id": entry.latest_proposal_revision_id,
         "working_revision_id": entry.working_revision_id,
         "lock_version": entry.lock_version,
+        "expert_signal_edit_summary": summarize_expert_signal_changes(
+            proposal_baseline.payload_json if proposal_baseline is not None else {},
+            current_expert.payload_json if current_expert is not None else None,
+            proposal_revision_id=proposal_baseline.id if proposal_baseline is not None else entry.latest_proposal_revision_id,
+            expert_revision_id=current_expert.id if current_expert is not None else None,
+        ),
         "history": [
             {
                 **(revision_metadata(item) or {}),
@@ -1001,9 +1172,9 @@ async def validate_kbd_candidate(request: Request, kbd_id: int) -> dict[str, Any
                 }
             )
         try:
-            validate_publishable_signals_json(signals_doc)
+            _validate_kbd_publishable_signals_json(signals_doc)
         except jsonschema.ValidationError as exc:
-            human_issue = _humanize_signal_validation_error(exc)
+            human_issue = _humanize_signal_validation_error(exc, signals)
             if not any(issue["code"] == human_issue["code"] for issue in issues):
                 issues.append(human_issue)
 
@@ -1264,10 +1435,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
         try:
             _signals_doc = _prepare_expert_publish_signals(_signals_doc)
         except jsonschema.ValidationError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=f"KBD 条目 {kbd_id} 的关键信号不可执行，禁止发布：{exc.message}",
-            ) from exc
+            _raise_signal_validation_error(exc, _signals_doc.get("signals") or [])
         # 门 1.5：至少含 1 条消费者(backend)信号，否则 CDD 无法执行差异消除（§9）
         # v2 原生判定：acquire.tool 以 qfk 开头 或 provenance.category==backend
         _has_consumer = any(
@@ -2381,6 +2549,12 @@ class KbdUpdateRequest(BaseModel):
         None,
         description="关键信号集合：v2 对象 {schema_version,signals}",
     )
+    delete_signal_id: str | None = Field(
+        None,
+        min_length=1,
+        max_length=256,
+        description="按稳定 Signal ID 删除权威工作稿中的单条信号；不得与 signals_json 同时提交",
+    )
     images_json: list[dict[str, Any]] | None = Field(
         None,
         description="截图 Evidence；按稳定 seq 整体保存",
@@ -2548,6 +2722,8 @@ def _normalize_maintenance_images(
 def _patch_maintenance_payload(payload: dict[str, Any], body: KbdUpdateRequest) -> dict[str, Any]:
     """把 Admin Patch 应用到独立维护 payload，不触碰已发布主记录。"""
 
+    if body.signals_json is not None and body.delete_signal_id is not None:
+        raise HTTPException(status_code=400, detail="signals_json 与 delete_signal_id 不能同时提交")
     result = copy.deepcopy(payload)
     section_fields = KbdEntry.SECTION_FIELDS
     source_changed = any(
@@ -2560,32 +2736,16 @@ def _patch_maintenance_payload(payload: dict[str, Any], body: KbdUpdateRequest) 
             result[field] = value
 
     if body.signals_json is not None:
-        signals_doc = _load_signals_json(body.signals_json)
-        signals_doc, _ = reconcile_verification_contract(signals_doc)
-        try:
-            signals_doc = _normalize_qfk_system_command_args(signals_doc)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=f"signals_json 校验失败: {exc}") from exc
-        metadata = signals_doc.get("generation_metadata")
-        if isinstance(metadata, dict):
-            metadata["status"] = "manual_reviewed"
+        # 先归约并执行主干统一的专家工作稿校验，再与维护开始时的已发布版本比较。
+        # 这样既不会绕过删除/处置边界，也能让真正修改或新增的 Signal 回退待人工复核。
+        signals_doc = _prepare_expert_draft_signals(body.signals_json)
         _mark_changed_signals_needing_review(
             _load_signals_json(result.get("signals_json")),
             signals_doc,
         )
-        for signal in signals_doc.get("signals", []):
-            if not isinstance(signal, dict):
-                continue
-            sync_signal_requires(signal)
-            acquire = signal.get("acquire") or {}
-            ok, error = validate_acquire_args(acquire.get("tool"), acquire.get("args", {}))
-            if not ok:
-                raise HTTPException(status_code=422, detail=f"signals_json 校验失败: {error}")
-        try:
-            validate_draft_signals_json(signals_doc)
-        except jsonschema.ValidationError as exc:
-            raise HTTPException(status_code=422, detail=f"signals_json 不符合 v2 契约：{exc.message}") from exc
         result["signals_json"] = signals_doc
+    elif body.delete_signal_id is not None:
+        result["signals_json"] = _delete_signal_from_document(result.get("signals_json"), body.delete_signal_id)
 
     old_images = copy.deepcopy(result.get("images_json") or [])
     if body.images_json is not None:
@@ -2779,7 +2939,7 @@ async def publish_kbd_maintenance_working(
     try:
         signals_doc = _prepare_expert_publish_signals(signals_doc)
     except jsonschema.ValidationError as exc:
-        raise HTTPException(status_code=422, detail=f"关键信号不可发布：{exc.message}") from exc
+        _raise_signal_validation_error(exc, signals_doc.get("signals") or [])
     payload["signals_json"] = signals_doc
     signals = signals_doc.get("signals") or []
     if not any(
@@ -2872,6 +3032,14 @@ async def publish_kbd_maintenance_working(
                 "review_note": body.review_note or "",
             },
             validation_summary={"status": "passed", "gate": "publishable_signals_json"},
+            review_metadata=build_review_metadata(
+                parent_payload=working.payload_json,
+                payload=build_kbd_revision_payload(kbd),
+                identity_status="unverified_body_reviewer_id",
+                review_state="approved",
+                reviewer_id=body.reviewer_id,
+                review_note=body.review_note,
+            ),
             trace_id=get_current_trace_id(),
             reuse_existing=False,
         )
@@ -2902,6 +3070,8 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
 
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
+    if body.signals_json is not None and body.delete_signal_id is not None:
+        raise HTTPException(status_code=400, detail="signals_json 与 delete_signal_id 不能同时提交")
 
     # kbd_entry 仍是 Agent 当前生效内容的兼容主记录。已发布维护必须走独立 maintenance
     # working；普通 PATCH 不得把未审核内容写入主记录或静默切换 active。
@@ -2940,6 +3110,7 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
         body.title is not None
         or any_section_changed
         or body.signals_json is not None
+        or body.delete_signal_id is not None
         or body.images_json is not None
         or body.content_md is not None
         or body.content_raw is not None
@@ -2963,35 +3134,7 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
 
     if body.signals_json is not None:
         # 直接切 v2 列形态（RFC §7）：保存时统一归约为 v2 数组级对象
-        v2_doc = _load_signals_json(body.signals_json)
-        v2_doc, _ = reconcile_verification_contract(v2_doc)
-        try:
-            v2_doc = _normalize_qfk_system_command_args(v2_doc)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=f"signals_json 校验失败: {exc}") from exc
-        # 自动生成物经管理端手工修改后不再冒充“模型原样 current”。保留全部生成
-        # 指纹用于审计，并显式标记为人工复核版本；来源随后变化时仍会进入 stale。
-        generation_metadata = v2_doc.get("generation_metadata")
-        if isinstance(generation_metadata, dict):
-            generation_metadata["status"] = "manual_reviewed"
-        for signal in v2_doc.get("signals", []):
-            if isinstance(signal, dict):
-                sync_signal_requires(signal)
-        # 轻量纯 Python 校验（字段级友好提示，语义与 JSON Schema 对齐）
-        for s in v2_doc.get("signals", []):
-            acquire = s.get("acquire") or {}
-            ok, err = validate_acquire_args(acquire.get("tool"), acquire.get("args", {}))
-            if not ok:
-                raise HTTPException(status_code=422, detail=f"signals_json 校验失败: {err}")
-        # §6.1 保存时强制：jsonschema 整段校验（含逐条 acquire.args 按 tool 选 schema、
-        # 各段结构不变量、additionalProperties:false 拒幽灵字段/顶层 keyword 回归）
-        try:
-            validate_draft_signals_json(v2_doc)
-        except jsonschema.ValidationError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=f"signals_json 不符合 v2 契约：{exc.message}",
-            )
+        v2_doc = _prepare_expert_draft_signals(body.signals_json)
         # 必须用 CAST(:signals_json AS jsonb)，不能写成 ":signals_json::jsonb"。
         # 后者中 ':signals_json' 紧跟 '::'，SQLAlchemy 命名绑定正则(负向预查 (?!:))
         # 不把它识别为绑定参数，会原样发给 Postgres 触发 'syntax error at or near ":"' (500)，
@@ -3122,6 +3265,11 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         old_images_json = list(kbd.images_json or [])
 
+        if body.delete_signal_id is not None:
+            v2_doc = _delete_signal_from_document(kbd.signals_json, body.delete_signal_id)
+            set_clauses.append("signals_json = CAST(:signals_json AS jsonb)")
+            params["signals_json"] = json.dumps(v2_doc, ensure_ascii=False)
+
         if kbd.latest_proposal_revision_id is None:
             signal_metadata = _load_signals_json(kbd.signals_json).get("generation_metadata") or {}
             proposal_revision = await ensure_kbd_revision(
@@ -3246,10 +3394,7 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
         try:
             _republish_doc = _prepare_expert_publish_signals(_republish_doc)
         except jsonschema.ValidationError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=f"KBD 条目 {kbd_id} 的关键信号不可执行，禁止重新发布：{exc.message}",
-            ) from exc
+            _raise_signal_validation_error(exc, _republish_doc.get("signals") or [])
         embedding_text = build_kbd_embedding_text(
             title=row["title"],
             problem_description=row["problem_description"],

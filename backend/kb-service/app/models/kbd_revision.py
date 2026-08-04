@@ -40,6 +40,11 @@ class KbdRevision(Base):
     revision_no = Column(Integer, nullable=False)
     revision_type = Column(String(16), nullable=False)
     parent_revision_id = Column(BigInteger, ForeignKey("kbd_revision.id", ondelete="RESTRICT"), nullable=True)
+    baseline_proposal_revision_id = Column(
+        BigInteger,
+        ForeignKey("kbd_revision.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     payload_json = Column(JSONB, nullable=False)
     checksum = Column(String(64), nullable=False)
     generation_metadata = Column(JSONB, nullable=False, default=dict)

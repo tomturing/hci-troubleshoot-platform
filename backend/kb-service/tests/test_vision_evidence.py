@@ -1,8 +1,13 @@
 """Vision Evidence IR 的纯函数契约测试，不调用外部模型。"""
 
 import io
+import json
 
-from app.routes.extract_signals import _format_image_evidence
+from app.routes.extract_signals import (
+    _diagnostic_image_source_index,
+    _format_image_evidence,
+    _validate_and_collect_signals,
+)
 from app.services.vision_processor import (
     _assess_inference,
     _build_context_map_from_images_json,
@@ -190,4 +195,125 @@ def test_signal_prompt_never_receives_legacy_description_text():
     }])
 
     assert "未经验证的根因推断" not in evidence_json
-    assert '"legacy_evidence_unavailable":true' in evidence_json
+    assert evidence_json == "[]"
+
+
+def test_signal_prompt_excludes_root_cause_and_solution_images_and_context():
+    images = [
+        {
+            "seq": 0,
+            "section": "steps_text",
+            "context_before": "查看配置文件",
+            "context_after": "此处不应出现在图片输入中",
+            "evidence": {
+                "regions": [
+                    {
+                        "region_id": "img_0:r_0",
+                        "text_lines": [{"text": "address 10.0.0.8"}],
+                        "fields": {},
+                        "observed_facts": ["截图可见文字：address 10.0.0.8"],
+                    }
+                ],
+            },
+        },
+        {
+            "seq": 1,
+            "section": "root_cause",
+            "context_before": "根因中的敏感结论",
+            "evidence": {
+                "regions": [{"region_id": "img_1:r_0", "text_lines": [{"text": "根因命令"}]}],
+            },
+        },
+        {
+            "seq": 2,
+            "section": "solution",
+            "context_before": "rm /sf/cfg/if.d/eth0",
+            "evidence": {
+                "regions": [{"region_id": "img_2:r_0", "text_lines": [{"text": "service restart"}]}],
+            },
+        },
+    ]
+
+    evidence = json.loads(_format_image_evidence(images))
+
+    assert [item["source_ref"] for item in evidence] == ["img:0"]
+    assert "context_before" not in evidence[0]
+    assert "context_after" not in evidence[0]
+    serialized = json.dumps(evidence, ensure_ascii=False)
+    assert "根因中的敏感结论" not in serialized
+    assert "rm /sf/cfg/if.d/eth0" not in serialized
+    assert "service restart" not in serialized
+
+
+def test_kbd_candidate_cannot_reference_excluded_solution_image_or_mismatched_evidence():
+    images = [
+        {
+            "seq": 0,
+            "section": "steps_text",
+            "evidence": {
+                "regions": [
+                    {
+                        "region_id": "img_0:r_0",
+                        "text_lines": [{"text": "address 10.0.0.8"}],
+                        "fields": {},
+                        "observed_facts": ["截图可见文字：address 10.0.0.8"],
+                    }
+                ],
+            },
+        }
+    ]
+    candidate = {
+        "id": "sig_001",
+        "acquire": {"tool": "qfk_system", "args": {"command": "cat", "command_args": ["/sf/cfg/if.d/eth0"]}},
+        "match": {
+            "type": "keyword",
+            "pattern": "address",
+            "mode": "or",
+            "expected": True,
+            "extract": {"type": "text", "rows": {"mode": "all"}, "cardinality": "all", "source": "stdout"},
+        },
+        "orchestrate": {"phase": "diagnostic", "produces": [], "requires": []},
+        "provenance": {
+            "category": "backend",
+            "source_section": "steps_text",
+            "source_refs": ["img:2/region:img_2:r_0"],
+            "evidence": "rm /sf/cfg/if.d/eth0",
+        },
+    }
+
+    accepted, rejected = _validate_and_collect_signals(
+        [candidate],
+        source_id="kbd:27736",
+        enforce_kbd_read_only=True,
+        diagnostic_image_sources=_diagnostic_image_source_index(images),
+    )
+
+    assert accepted == []
+    assert rejected[0]["reason_code"] == "run_failed"
+    assert "未进入诊断输入的截图" in rejected[0]["reason"]
+
+
+def test_signal_image_prompt_limit_keeps_only_complete_images_and_matching_source_index():
+    images = [
+        {
+            "seq": 0,
+            "section": "steps_text",
+            "evidence": {
+                "regions": [{"region_id": "img_0:r_0", "text_lines": [{"text": "first"}]}],
+            },
+        },
+        {
+            "seq": 1,
+            "section": "steps_text",
+            "evidence": {
+                "regions": [{"region_id": "img_1:r_0", "text_lines": [{"text": "second"}]}],
+            },
+        },
+    ]
+    first_image_payload = _format_image_evidence([images[0]])
+
+    payload = _format_image_evidence(images, max_chars=len(first_image_payload))
+    source_index = _diagnostic_image_source_index(images, max_chars=len(first_image_payload))
+
+    assert json.loads(payload) == json.loads(first_image_payload)
+    assert set(source_index) == {"img:0/region:img_0:r_0"}

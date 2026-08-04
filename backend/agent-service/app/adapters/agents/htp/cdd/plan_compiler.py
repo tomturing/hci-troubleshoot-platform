@@ -8,7 +8,7 @@ import re
 import uuid
 from typing import Any
 
-from shared.schemas.acquirer_args import SUPPORTED_TOOLS, validate_acquire_args
+from shared.schemas.acquirer_args import DEFAULT_SIGNAL_TIMEOUT_SECONDS, SUPPORTED_TOOLS, validate_acquire_args
 from shared.schemas.signal_generation import current_tool_contract_revision
 
 from app.adapters.agents.htp.kbd_model import KBD, _acquire_tool
@@ -155,7 +155,7 @@ def _compile_tool_contract(tool: str, signal: dict[str, Any]) -> str | None:
     data: dict[str, Any] = {
         "namespace": namespace,
         "host": compiled_args.get("host"),
-        "timeout": compiled_args.get("timeout", 10),
+        "timeout": compiled_args.get("timeout", DEFAULT_SIGNAL_TIMEOUT_SECONDS),
         "container": compiled_args.get("container"),
         "command": compiled_args.get("command"),
         "resource_keyword": compiled_args.get("resource_keyword"),

@@ -21,6 +21,7 @@ import copy
 import json
 import os
 import re
+import shlex
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -29,10 +30,23 @@ from jsonschema import ValidationError
 from pydantic import BaseModel, Field
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
-from shared.schemas.acquirer_args import SAFE_LOG_FILE_PATTERN, validate_acquire_args
+from shared.schemas.acquirer_args import (
+    DEFAULT_SIGNAL_TIMEOUT_SECONDS,
+    SAFE_LOG_FILE_PATTERN,
+    validate_acquire_args,
+)
+from shared.schemas.kbd_signal_safety import (
+    kbd_signal_read_only_violation,
+    signal_write_operation_command,
+    signal_write_operation_risk,
+)
 from shared.schemas.signal_generation import build_signal_generation_metadata
 from shared.schemas.signal_output import sync_signal_requires
-from shared.schemas.signal_schema import validate_signals_json
+from shared.schemas.signal_schema import (
+    humanize_signal_validation_error,
+    normalize_optional_matcher_nulls,
+    validate_signals_json,
+)
 from shared.schemas.verification_contract import reconcile_verification_contract
 from shared.utils.prompt_loader import StrictPromptLoader
 from sqlalchemy import select, text
@@ -45,6 +59,11 @@ from app.services.safe_pipeline_converter import (
     convert_safe_pipeline,
 )
 from app.services.signal_job_manager import get_signal_job_manager
+from app.services.sop_tool_contract_validator import (
+    get_acli_catalog_commands,
+    validate_acli_catalog_command,
+    validate_acli_invocation_command,
+)
 
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
@@ -116,13 +135,28 @@ DEFAULT_VARIABLE_SCHEMA: list[str] = [
 ]
 
 VALID_CATEGORIES = {"frontend", "backend"}
+_LOG_EVIDENCE_RE = re.compile(
+    r"(?:日志|\blog\b|\bkernel\b|\b(?:err|error|warn|warning|info|debug|critical)\b|"
+    r"\b20\d{2}[-/]\d{1,2}[-/]\d{1,2}[ T]\d{1,2}:\d{2})",
+    re.IGNORECASE,
+)
+_EXTERNAL_BMC_EVENT_RE = re.compile(
+    r"(?:\b(?:i?BMC)\b.{0,80}(?:event|日志|restarted)|restarted\s+by\s+(?:i?BMC))",
+    re.IGNORECASE,
+)
+_CONFIG_FILE_EXTENSION_RE = re.compile(r"\.(?:cfg|conf|ini|json|ya?ml)$", re.IGNORECASE)
 VALID_MATCHER_TYPES = {"keyword", "regex", "state", "threshold", "delta", "trend", "exists"}
 VALID_VARIABLE_TYPES = {"string", "integer", "number", "boolean", "array"}
+REJECT_REASON_CODES = frozenset({"write_signal", "not_exists", "run_failed"})
 
 # ADR-2：{{VAR}} 大写占位符正则（单一真相源；运行期校验用）
 _PLACEHOLDER_RE = re.compile(r"\{\{([A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*)\}\}")
 # 用于检测"任何双花括号占位符"（含非法大小写）以报错
 _ANY_PLACEHOLDER_RE = re.compile(r"\{\{([^}]*)\}\}")
+_REDACTED_MATCHER_RE = re.compile(
+    r"(?:\*{2,}|%(?:\([^)]+\))?[a-z]|(?<![A-Za-z0-9])x{2,}(?=[^A-Za-z0-9]|$))",
+    re.IGNORECASE,
+)
 
 # 字段级溯源：抽取方法标识（写入每条信号的 provenance.method）
 EXTRACTION_METHOD = "llm_field_level_v2"
@@ -140,104 +174,127 @@ _VALID_SOURCE_SECTIONS = {
 }
 
 
-def _format_image_evidence(images_json: Any, *, max_chars: int = 12000) -> str:
-    """将截图 Evidence IR 规整为 Signal Proposal 的只读输入。
+def _image_section(item: dict[str, Any]) -> str:
+    """返回图片所属的 KBD 章节；缺失章节一律视为不可用于诊断。"""
+    evidence = item.get("evidence")
+    section = item.get("section") or (evidence.get("section") if isinstance(evidence, dict) else "")
+    return str(section or "").strip()
 
-    新链路只把 observed_facts/fields/OCR 原文作为可生成信号的事实。模型 DESCRIPTION、
-    regions[].inferences 与 legacy desc 在结构上不进入 Signal LLM，只保留质量状态供门禁；
-    完整推断仍在 images_json 和管理端可见。这样“推断不得进入运行参数”不是 Prompt 约定，
-    而是输入数据最小化形成的硬边界。
+
+def _diagnostic_image_items(images_json: Any) -> list[dict[str, Any]]:
+    """筛出可进入 Signal Prompt 的诊断截图，未知章节 fail closed。
+
+    截图附属的章节与正文拥有相同的信息分级：根因、解决方案、影响范围等
+    是诊断后的知识输出，不能借由 OCR 或截图前后文重新进入诊断输入。
     """
+    return [
+        item
+        for item in images_json or []
+        if isinstance(item, dict) and item.get("seq") is not None and _image_section(item) in _VALID_SOURCE_SECTIONS
+    ]
 
+
+def _image_fact_texts(region: dict[str, Any]) -> tuple[str, ...]:
+    """提取一张图片区域中允许被逐字溯源的原子观察事实。"""
+    values: list[str] = []
+    for line in region.get("text_lines") or []:
+        if isinstance(line, dict) and isinstance(line.get("text"), str):
+            values.append(line["text"])
+    for fact in region.get("observed_facts") or []:
+        if isinstance(fact, str):
+            values.append(fact)
+
+    def collect_fields(value: Any) -> None:
+        if isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, dict):
+            for nested in value.values():
+                collect_fields(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                collect_fields(nested)
+
+    collect_fields(region.get("fields") or {})
+    return tuple(value for value in values if value.strip())
+
+
+def _build_image_evidence_input(
+    images_json: Any,
+    *,
+    max_chars: int = 12000,
+) -> tuple[str, dict[str, tuple[str, ...]]]:
+    """构造完整图片单元的 Prompt 输入和同源索引，绝不截断到半张图。"""
     formatted: list[dict[str, Any]] = []
-    for item in images_json or []:
-        if not isinstance(item, dict) or item.get("seq") is None:
+    source_index: dict[str, tuple[str, ...]] = {}
+    payload_size = 2  # ``[]``
+    for item in _diagnostic_image_items(images_json):
+        evidence = item.get("evidence")
+        if not isinstance(evidence, dict):
             continue
         seq = int(item["seq"])
-        evidence = item.get("evidence")
-        if isinstance(evidence, dict):
-            regions: list[dict[str, Any]] = []
-            for region in evidence.get("regions") or []:
-                if not isinstance(region, dict):
-                    continue
-                region_id = str(region.get("region_id") or f"img_{seq}:r_0")
-                regions.append({
-                    "source_ref": f"img:{seq}/region:{region_id}",
+        regions: list[dict[str, Any]] = []
+        item_source_index: dict[str, tuple[str, ...]] = {}
+        for region in evidence.get("regions") or []:
+            if not isinstance(region, dict):
+                continue
+            region_id = str(region.get("region_id") or f"img_{seq}:r_0")
+            source_ref = f"img:{seq}/region:{region_id}"
+            regions.append(
+                {
+                    "source_ref": source_ref,
                     "surface": region.get("surface"),
                     "evidence_type": region.get("evidence_type"),
                     "text_lines": region.get("text_lines") or [],
                     "fields": region.get("fields") or {},
                     "observed_facts": region.get("observed_facts") or [],
-                })
-            quality = evidence.get("quality") or {}
-            formatted.append({
-                "source_ref": f"img:{seq}",
-                "section": item.get("section") or evidence.get("section") or "steps_text",
-                "context_before": item.get("context_before") or evidence.get("context_before") or "",
-                "context_after": item.get("context_after") or evidence.get("context_after") or "",
-                "regions": regions,
-                "quality": {
-                    "status": quality.get("status"),
-                    "needs_review": quality.get("needs_review", False),
-                    "inference_status": quality.get("inference_status"),
-                    "inference_needs_review": quality.get("inference_needs_review", False),
-                    "inference_issues": quality.get("inference_issues") or [],
-                },
-            })
-        elif (item.get("desc") or "").strip():
-            formatted.append({
-                "source_ref": f"img:{seq}",
-                "section": item.get("section") or "steps_text",
-                "legacy_evidence_unavailable": True,
-                "quality": {"status": "needs_review", "needs_review": True},
-            })
-    payload = json.dumps(formatted, ensure_ascii=False, separators=(",", ":"))
-    return payload[:max_chars] if payload else "[]"
+                }
+            )
+            item_source_index[source_ref] = _image_fact_texts(region)
+        quality = evidence.get("quality") or {}
+        formatted_item = {
+            "source_ref": f"img:{seq}",
+            "section": _image_section(item),
+            "regions": regions,
+            "quality": {
+                "status": quality.get("status"),
+                "needs_review": quality.get("needs_review", False),
+                "inference_status": quality.get("inference_status"),
+                "inference_needs_review": quality.get("inference_needs_review", False),
+                "inference_issues": quality.get("inference_issues") or [],
+            },
+        }
+        serialized_item = json.dumps(formatted_item, ensure_ascii=False, separators=(",", ":"))
+        delimiter_size = 1 if formatted else 0
+        if payload_size + delimiter_size + len(serialized_item) > max_chars:
+            break
+        formatted.append(formatted_item)
+        source_index.update(item_source_index)
+        payload_size += delimiter_size + len(serialized_item)
+    return json.dumps(formatted, ensure_ascii=False, separators=(",", ":")), source_index
 
-# ─── 写操作子命令词表（处置/变更动作，不得自动执行）────────────────────────
-# 这是"诊断只读"原则的硬边界：凡 command 命中以下动词的后端信号，一律标记为
-# phase=solution / require_human_confirm=True，执行层绝不自动运行，必须人工授权。
-WRITE_OP_SUB_COMMANDS: set[str] = {
-    "start",
-    "stop",
-    "shutdown",
-    "restart",
-    "suspend",
-    "resume",
-    "migrate",
-    "clone",
-    "reset",
-    "reboot",
-    "delete",
-    "remove",
-    "del",
-    "rm",
-    "format",
-    "wipe",
-    "destroy",
-    "enable",
-    "disable",
-    "kill",
-    "killall",
-    "pkill",
-    "up",
-    "down",
-    "set",
-    "create",
-    "add",
-    "modify",
-    "update",
-}
-# 破坏性（不可逆）子命令 → risk=3（block）
-_DESTRUCTIVE_SUB_COMMANDS: set[str] = {
-    "delete",
-    "remove",
-    "del",
-    "rm",
-    "format",
-    "wipe",
-    "destroy",
-}
+
+def _diagnostic_image_source_index(
+    images_json: Any,
+    *,
+    max_chars: int = 12000,
+) -> dict[str, tuple[str, ...]]:
+    """建立本次实际传入 Prompt 的图片区域索引，供 Candidate 溯源强校验。"""
+    _, source_index = _build_image_evidence_input(images_json, max_chars=max_chars)
+    return source_index
+
+
+def _format_image_evidence(images_json: Any, *, max_chars: int = 12000) -> str:
+    """将截图 Evidence IR 规整为 Signal Proposal 的只读输入。
+
+    新链路只把 observed_facts/fields/OCR 原文作为可生成信号的事实。模型 DESCRIPTION、
+    regions[].inferences 与 legacy desc 在结构上不进入 Signal LLM，只保留质量状态供门禁；
+    完整推断仍在 images_json 和管理端可见。只有诊断叙事章节的截图才可进入；截图前后文
+    是任意自然语言，可能跨章节带入根因或方案，因此也不作为 Prompt 输入。这样“推断、
+    根因和方案不得进入运行参数”不是 Prompt 约定，而是输入数据最小化形成的硬边界。
+    """
+
+    payload, _ = _build_image_evidence_input(images_json, max_chars=max_chars)
+    return payload
 
 
 def _read_signal_fields(signal: dict[str, Any]) -> tuple[str, dict, str, list, list, Any, dict]:
@@ -259,30 +316,6 @@ def _read_signal_fields(signal: dict[str, Any]) -> tuple[str, dict, str, list, l
     requires = orchestrate.get("requires") or []
     matcher = signal.get("match") or None
     return tool, args, cat, produces, requires, matcher, provenance
-
-
-def _is_write_op_signal(signal: dict[str, Any]) -> bool:
-    """判断一条后端信号是否为写操作/处置动作（基于 acquire.tool + command 词表）。
-
-    仅 backend（qfk_*）信号可能携带写操作；前端生产者（qkv_*）均为只读查询。
-    command 形如 'kill -9 240132' / 'ps auxf' / 'start'，按空白与 | / 切词后命中词表即判写操作。
-    """
-    tool, args, cat, _, _, _, _ = _read_signal_fields(signal)
-    if cat != "backend" or not str(tool).startswith("qfk_"):
-        return False
-    sub = str(args.get("command", "") or "")
-    tokens = re.split(r"[\s|/]+", sub.strip())
-    return any(tok in WRITE_OP_SUB_COMMANDS for tok in tokens)
-
-
-def _write_op_risk(signal: dict[str, Any]) -> int:
-    """写操作信号的风险等级：破坏性子命令=3(block)，其余写操作=2(confirm)。"""
-    _, args, _, _, _, _, _ = _read_signal_fields(signal)
-    sub = str(args.get("command", "") or "").lower()
-    tokens = set(re.split(r"[\s|/]+", sub))
-    if tokens & _DESTRUCTIVE_SUB_COMMANDS:
-        return 3
-    return 2
 
 
 def _signal_quality_score(signal: dict[str, Any]) -> float:
@@ -404,7 +437,11 @@ def _clean_signal_description(signal: dict[str, Any]) -> None:
                 )
 
 
-def _enrich_signal(signal: dict[str, Any]) -> dict[str, Any]:
+def _enrich_signal(
+    signal: dict[str, Any],
+    *,
+    allow_solution_signals: bool = True,
+) -> dict[str, Any]:
     """为单条 v2 信号补充字段级溯源与置信度校准，全部写入 v2 段（不产生顶层冗余字段）。
 
     写入目标（均落于 v2 契约允许字段，保证保存时 validate_signals_json 通过）：
@@ -445,15 +482,18 @@ def _enrich_signal(signal: dict[str, Any]) -> dict[str, Any]:
     )
     provenance["needs_review"] = needs_review
 
-    # 写操作/处置动作信号：标记为人⼯授权，绝不自动执行（诊断只读原则）
-    if _is_write_op_signal(signal):
+    write_operation = signal_write_operation_command(signal)
+    if allow_solution_signals and write_operation:
+        # SOP 继续保留既有处置 Signal 标注与授权语义；KBD 在 enrich 前已直接拒绝。
         orchestrate["phase"] = "solution"
         review["require_human_confirm"] = True
-        provenance["risk"] = _write_op_risk(signal)
+        provenance["risk"] = signal_write_operation_risk(signal)
     else:
-        # 人工确认是执行授权策略，不等价于处置动作。只读诊断即使需要确认，
-        # 仍必须保留在诊断证据图中；只有确定性写操作词表可以把 phase 升为 solution。
-        orchestrate["phase"] = orchestrate.get("phase", "diagnostic")
+        # 人工确认是执行授权策略，不等价于处置动作；只读诊断即使需要确认，
+        # 仍保留在诊断证据图中。
+        orchestrate["phase"] = (
+            orchestrate.get("phase", "diagnostic") if allow_solution_signals else "diagnostic"
+        )
         review.setdefault("require_human_confirm", False)
         provenance["risk"] = provenance.get(
             "risk", 2 if review.get("require_human_confirm") else 1
@@ -497,12 +537,16 @@ def validate_placeholder_case(template_str: str) -> list[str]:
     return valid
 
 
-def _validate_signal(signal: dict[str, Any], available_vars: set[str]) -> tuple[bool, str | None]:
+def _validate_signal(
+    signal: dict[str, Any],
+    available_vars: set[str],
+    *,
+    enforce_kbd_read_only: bool = False,
+) -> tuple[bool, str | None]:
     """校验单条 v2 嵌套信号。
 
-    写操作拦截：对 backend（qfk_*）信号，若 acquire.args.command 命中写操作词表，
-    则就地标记 review.require_human_confirm=True / orchestrate.phase=solution / provenance.risk，
-    使其被排除在自动执行之外，交由人工授权。
+    KBD 路径启用只读门禁后，处置阶段或明确写操作候选会直接拒绝，不能以
+    ``phase=solution`` 形式保存为 Signal。
     v1 扁平格式（acquirer/acquirer_args/signal_category/matcher 顶层字段）已彻底下线，
     缺失 acquire 段的信号将被直接拒绝（不再经 migrate 兜底归一）。
     """
@@ -527,6 +571,30 @@ def _validate_signal(signal: dict[str, Any], available_vars: set[str]) -> tuple[
     if cat not in VALID_CATEGORIES:
         return False, f"provenance.category 非法: {cat}"
 
+    evidence = str(prov.get("evidence") or "").strip()
+    if tool == "qkv_alert" and _EXTERNAL_BMC_EVENT_RE.search(evidence):
+        return False, "BMC/iBMC 外部事件日志不是 HCI 平台告警，不能由 qkv_alert 获取"
+    if tool == "qfk_log":
+        file_name = str(args.get("file") or "").strip()
+        path = str(args.get("path") or "").strip()
+        if _CONFIG_FILE_EXTENSION_RE.search(file_name):
+            return False, f"qfk_log 只能采集日志，不能把配置文件 {file_name} 作为日志执行"
+        has_explicit_source = bool(
+            (file_name and file_name.casefold() in evidence.casefold())
+            or (path and path.casefold() in evidence.casefold())
+        )
+        if not has_explicit_source and not _LOG_EVIDENCE_RE.search(evidence):
+            return False, "qfk_log 缺少可追溯的日志文件/路径或日志形态 evidence，采集来源无法验证"
+
+    # KBD 处置动作必须先于 match/produces 结构校验拒绝，确保专家看到真正原因。
+    if enforce_kbd_read_only:
+        read_only_violation = kbd_signal_read_only_violation(
+            signal,
+            allow_read_only_solution_correction=True,
+        )
+        if read_only_violation:
+            return False, read_only_violation
+
     # produces/requires 变量命名与可见性（均取自 v2 orchestrate 段）
     orchestrate = signal.get("orchestrate") or {}
     produces = orchestrate.get("produces") or []
@@ -547,7 +615,7 @@ def _validate_signal(signal: dict[str, Any], available_vars: set[str]) -> tuple[
         if r not in available_vars:
             return False, f"requires 变量不在 schema 内: {r}"
 
-    # backend 的判定与产出变量严格二选一；写操作拦截
+    # backend 的判定与产出变量严格二选一
     matcher = signal.get("match")
     if cat == "backend":
         has_match = isinstance(matcher, dict)
@@ -556,11 +624,125 @@ def _validate_signal(signal: dict[str, Any], available_vars: set[str]) -> tuple[
             return False, "backend 信号必须且只能配置 match 或 orchestrate.produces 之一"
         if has_match and matcher.get("type") not in VALID_MATCHER_TYPES:
             return False, f"backend 信号 match.type 非法: {matcher.get('type')}"
-        if _is_write_op_signal(signal):
-            signal.setdefault("review", {})["require_human_confirm"] = True
-            signal.setdefault("orchestrate", {})["phase"] = "solution"
-            signal.setdefault("provenance", {})["risk"] = _write_op_risk(signal)
+        if has_match:
+            matcher_violation = _matcher_quality_violation(
+                matcher,
+                evidence=str(prov.get("evidence") or ""),
+            )
+            if matcher_violation:
+                return False, matcher_violation
     return True, None
+
+
+def _qfk_catalog_violation(tool: str, args: dict[str, Any]) -> str | None:
+    """把 Proposal 编译为运行时同形命令，并以 aCLI catalog 做存在性门禁。"""
+
+    if tool == "qfk_system":
+        command = str(args.get("command") or "").strip()
+        command_args = args.get("command_args") or []
+        # /sf/cfg 配置读取由本模块确定性地从 qfk_log 归一成 system cat；这是现有
+        # KBD 只读契约，不应被设备 Catalog 的采集缺口反向拒绝。
+        if command == "cat":
+            return None
+        compiled = shlex.join(["acli", "system", command, *command_args])
+    elif tool in {"qfk_vm", "qfk_network", "qfk_storage", "qfk_hardware", "qfk_platform"}:
+        namespace = tool.removeprefix("qfk_")
+        command = str(args.get("command") or "").strip()
+        compiled = f"acli {namespace} {command}"
+    else:
+        # qfk_log 和 qfk_service 使用专用 Handler；其结构/语义已由 acquire args 门禁覆盖。
+        return None
+
+    reason = validate_acli_catalog_command(compiled)
+    return f"关键信号命令不可执行: {reason}" if reason else None
+
+
+def _qfk_invocation_violation(tool: str, args: dict[str, Any]) -> str | None:
+    """校验已登记命令的最小 argv；失败属于 run_failed 而非 not_exists。"""
+
+    if tool != "qfk_system":
+        return None
+    command = str(args.get("command") or "").strip()
+    command_args = args.get("command_args") or []
+    compiled = shlex.join(["acli", "system", command, *command_args])
+    reason = validate_acli_invocation_command(compiled)
+    return f"关键信号验证执行不通过: {reason}" if reason else None
+
+
+def _qfk_command_capability_violation(signal: dict[str, Any]) -> str | None:
+    """校验命令固有能力能否采集 Candidate 声称的目标事实。"""
+
+    acquire = signal.get("acquire") or {}
+    if acquire.get("tool") != "qfk_system":
+        return None
+    args = acquire.get("args") or {}
+    command = str(args.get("command") or "").strip()
+    command_args = args.get("command_args") or []
+    if command != "ipmitool" or command_args[:2] != ["mc", "info"]:
+        return None
+    evidence = str((signal.get("provenance") or {}).get("evidence") or "")
+    instruction = str(args.get("instruction") or "")
+    if re.search(r"(?:RAID|适配器|阵列卡|磁盘控制器)", f"{instruction}\n{evidence}", re.IGNORECASE):
+        return (
+            "ipmitool mc info 只能采集 BMC/MC 信息，不能采集 RAID/适配器固件；"
+            "命令能力与 Candidate 目标事实不一致"
+        )
+    return None
+
+
+def _acquirer_catalog_prompt_text() -> str:
+    """同时给模型工具语义和当前 catalog 事实，知识只用于减少乱造，不代替门禁。"""
+
+    tools = [f"- {name}: {description}" for name, description in ACQUIRER_CATALOG.items()]
+    commands = [f"- {command}" for command in sorted(get_acli_catalog_commands())]
+    return "\n".join(
+        [
+            *tools,
+            "",
+            "当前内置 aCLI catalog（生成时优先采用；缺失时仍须输出 Candidate，由服务端分流）：",
+            *commands,
+        ]
+    )
+
+
+def _matcher_quality_violation(matcher: dict[str, Any], *, evidence: str = "") -> str | None:
+    """拒绝结构合法但运行时会静默误判的 Matcher。"""
+
+    matcher_type = str(matcher.get("type") or "")
+    pattern = matcher.get("pattern")
+    patterns = pattern if isinstance(pattern, list) else [pattern]
+    text_patterns = [str(item) for item in patterns if item is not None]
+
+    redacted = next((item for item in text_patterns if _REDACTED_MATCHER_RE.search(item)), None)
+    if redacted:
+        return f"match.pattern 包含脱敏占位文本，无法在现场可靠命中: {redacted}"
+    if matcher_type == "exists" and any(item.strip() for item in text_patterns):
+        return "exists Matcher 不读取 match.pattern；如需匹配具体内容请使用 keyword/regex/state"
+    if matcher_type == "keyword" and any(re.search(r"\S\|\S", item) for item in text_patterns):
+        return "keyword Matcher 不解释正则竖线；多关键字请使用 pattern 数组，正则语义请使用 regex"
+    if matcher_type in {"keyword", "state"} and text_patterns and evidence.strip():
+        untraceable_patterns = [
+            item
+            for item in text_patterns
+            if not _PLACEHOLDER_RE.search(item) and item.casefold() not in evidence.casefold()
+        ]
+        if untraceable_patterns:
+            return (
+                f"{matcher_type} Matcher 的 match.pattern 无法从 provenance.evidence 逐字追溯；"
+                f"禁止改写或混入无证据的通用关键词: {untraceable_patterns[0]}"
+            )
+    if matcher_type == "regex" and text_patterns and evidence.strip():
+        for regex_pattern in text_patterns:
+            try:
+                matched = re.search(regex_pattern, evidence) is not None
+            except re.error as exc:
+                return f"regex Matcher 无法编译: {exc}"
+            if not matched:
+                return (
+                    "regex Matcher 的 match.pattern 无法命中 provenance.evidence，"
+                    f"现场执行前已验证失败: {regex_pattern}"
+                )
+    return None
 
 
 def _validate_obj_placeholders(obj: Any) -> None:
@@ -573,6 +755,35 @@ def _validate_obj_placeholders(obj: Any) -> None:
     elif isinstance(obj, list):
         for v in obj:
             _validate_obj_placeholders(v)
+
+
+def _image_provenance_violation(
+    signal: dict[str, Any],
+    diagnostic_image_sources: dict[str, tuple[str, ...]] | None,
+) -> str | None:
+    """校验 Candidate 引用的截图确实属于本轮诊断输入且证据逐字可回溯。"""
+    if diagnostic_image_sources is None:
+        return None
+
+    provenance = signal.get("provenance") or {}
+    source_section = provenance.get("source_section")
+    if source_section is not None and str(source_section).strip() not in _VALID_SOURCE_SECTIONS:
+        return f"provenance.source_section 非诊断章节: {source_section}"
+
+    source_refs = provenance.get("source_refs")
+    if source_refs is None:
+        return None
+    if not isinstance(source_refs, list) or not all(isinstance(ref, str) and ref.strip() for ref in source_refs):
+        return "provenance.source_refs 必须是非空截图区域引用数组"
+
+    evidence = str(provenance.get("evidence") or "").strip()
+    for source_ref in source_refs:
+        facts = diagnostic_image_sources.get(source_ref)
+        if facts is None:
+            return f"provenance.source_refs 引用了未进入诊断输入的截图: {source_ref}"
+        if evidence and not any(evidence in fact for fact in facts):
+            return f"provenance.evidence 无法在截图来源 {source_ref} 的原子事实中逐字追溯"
+    return None
 
 
 async def _call_llm(prompt: str) -> dict[str, Any]:
@@ -685,7 +896,7 @@ def _normalize_config_file_read(signal: dict[str, Any]) -> bool:
         for key in ("host", "timeout", "instruction")
         if key in args
     }
-    system_args.update({"command": "cat", "resource_keyword": f"{path}/{file_name}"})
+    system_args.update({"command": "cat", "command_args": [f"{path}/{file_name}"]})
     acquire["tool"] = "qfk_system"
     acquire["args"] = system_args
     review = signal.setdefault("review", {})
@@ -705,7 +916,7 @@ def _normalize_derived_file_assertions(raw_signals: list[Any]) -> int:
     唯一的 ``qfk_system cat`` 产出，本函数把下游 matcher 的 acquisition 参数替换为
     上游只读参数。Compiler 随后会把它们合并成一次采集，并分别运行 matcher。
 
-    只处理 resource_keyword 为单一 ``{{VAR}}``、上游是明确 ``cat`` 且下游有 matcher
+    只处理 command_args 为单一 ``{{VAR}}``、上游是明确 ``cat`` 且下游有 matcher
     的封闭形态；其他变量语义不做猜测。返回规范化数量供测试和审计。
     """
 
@@ -718,7 +929,8 @@ def _normalize_derived_file_assertions(raw_signals: list[Any]) -> int:
         args = acquire.get("args") or {}
         if acquire.get("tool") != "qfk_system" or str(args.get("command") or "").strip() != "cat":
             continue
-        resource = str(args.get("resource_keyword") or "")
+        command_args = args.get("command_args")
+        resource = str(command_args[0]) if isinstance(command_args, list) and len(command_args) == 1 else ""
         if not resource or _PLACEHOLDER_RE.fullmatch(resource):
             continue
         for produced in (signal.get("orchestrate") or {}).get("produces") or []:
@@ -738,7 +950,9 @@ def _normalize_derived_file_assertions(raw_signals: list[Any]) -> int:
         args = acquire.get("args") or {}
         if acquire.get("tool") != "qfk_system" or str(args.get("command") or "").strip() != "cat":
             continue
-        match = _PLACEHOLDER_RE.fullmatch(str(args.get("resource_keyword") or ""))
+        command_args = args.get("command_args")
+        resource = str(command_args[0]) if isinstance(command_args, list) and len(command_args) == 1 else ""
+        match = _PLACEHOLDER_RE.fullmatch(resource)
         variable = match.group(1) if match else ""
         if not variable or variable in ambiguous or variable not in producers:
             continue
@@ -752,10 +966,67 @@ def _normalize_derived_file_assertions(raw_signals: list[Any]) -> int:
     return normalized
 
 
+def _normalize_generated_timeouts(raw_signals: list[Any]) -> int:
+    """将 LLM 抽取结果中的缺省/历史缺省超时收敛到统一 120 秒。
+
+    这是自动抽取的后处理，不会触碰专家手工保存的信号。模型把训练语料中的
+    ``10``/``30`` 当作“默认值”写入时，它已不再是缺字段，运行时的默认值无法生效；
+    仅对这两个历史默认值归一，保留专家或案例明确选择的其他超时值。
+    """
+
+    normalized = 0
+    for signal in raw_signals:
+        if not isinstance(signal, dict):
+            continue
+        acquire = signal.get("acquire")
+        if not isinstance(acquire, dict) or not str(acquire.get("tool") or "").startswith(("qkv_", "qfk_")):
+            continue
+        args = acquire.get("args")
+        if not isinstance(args, dict):
+            continue
+        if args.get("timeout") is None or args.get("timeout") in {10, 30}:
+            args["timeout"] = DEFAULT_SIGNAL_TIMEOUT_SECONDS
+            normalized += 1
+    return normalized
+
+
+def _unconsumed_qfk_producer_reasons(raw_signals: list[Any]) -> dict[int, str]:
+    """识别没有下游使用者的 QFK producer，阻止无意义的全文取值信号落库。"""
+
+    rejected: dict[int, str] = {}
+    for signal in raw_signals:
+        if not isinstance(signal, dict):
+            continue
+        acquire = signal.get("acquire") or {}
+        if not str(acquire.get("tool") or "").startswith("qfk_") or signal.get("match") is not None:
+            continue
+        produced = {
+            str(item.get("name"))
+            for item in ((signal.get("orchestrate") or {}).get("produces") or [])
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        }
+        consumed_variables = {
+            str(name)
+            for consumer in raw_signals
+            if isinstance(consumer, dict) and consumer is not signal
+            for name in ((consumer.get("orchestrate") or {}).get("requires") or [])
+            if str(name).strip()
+        }
+        unused = sorted(produced - consumed_variables)
+        if unused:
+            rejected[id(signal)] = (
+                "QFK producer 产出变量未被任何下游信号消费: " + ", ".join(unused)
+            )
+    return rejected
+
+
 def _validate_and_collect_signals(
     raw_signals: list,
     source_id: Any,
     external_variables: set[str] | None = None,
+    *,
+    enforce_kbd_read_only: bool = False,
+    diagnostic_image_sources: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[list, list]:
     """对 LLM 返回的 v2 信号列表做校验，返回 (validated, rejected)。
 
@@ -767,12 +1038,34 @@ def _validate_and_collect_signals(
         raw_signals: LLM 返回的 signal dict 列表
         source_id: 来源标识（用于日志：kbd_id / sop_id）
     """
+    # Rejected Candidate 必须保留 LLM 原始对象；规范化和 enrich 只作用于工作副本。
+    original_candidates = {id(item): copy.deepcopy(item) for item in raw_signals}
+    read_only_violations = {
+        id(item): violation
+        for item in raw_signals
+        if enforce_kbd_read_only
+        and (
+            violation := kbd_signal_read_only_violation(
+                item,
+                allow_read_only_solution_correction=True,
+            )
+        )
+        is not None
+    }
+    image_provenance_violations = {
+        id(item): violation
+        for item in raw_signals
+        if isinstance(item, dict)
+        and (violation := _image_provenance_violation(item, diagnostic_image_sources)) is not None
+    }
+
     # 先在整个 Candidate 集合上做跨信号规范化，再逐条校验。这使下游
     # matcher 可以复用上游安全采集，也避免放宽 qfk_log 的 path 边界。
     for signal in raw_signals:
         if isinstance(signal, dict):
             _normalize_config_file_read(signal)
     _normalize_derived_file_assertions(raw_signals)
+    _normalize_generated_timeouts(raw_signals)
 
     available_vars = set(DEFAULT_VARIABLE_SCHEMA) | set(external_variables or set())
     for s in raw_signals:
@@ -785,36 +1078,162 @@ def _validate_and_collect_signals(
 
     validated: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
+
+    def reject(candidate: Any, reason_code: str, reason: str) -> None:
+        """以稳定三分类完整保留坏候选，禁止静默丢弃。"""
+
+        if reason_code not in REJECT_REASON_CODES:  # pragma: no cover - 内部编程错误防御
+            raise ValueError(f"未知 Candidate 拒绝码: {reason_code}")
+        original = original_candidates.get(id(candidate), copy.deepcopy(candidate))
+        rejected.append(
+            {"signal": original, "reason_code": reason_code, "reason": reason}
+        )
+
+    preparation_errors: dict[int, str] = {}
     for s in raw_signals:
-        if not isinstance(s, dict):
-            rejected.append({"signal": s, "reason": "信号非对象"})
-            continue
-        if "acquire" not in s:
-            rejected.append({"signal": s, "reason": "信号缺少 acquire 段（v1 扁平格式已不再支持）"})
+        if not isinstance(s, dict) or "acquire" not in s:
             continue
         try:
             apply_safe_pipeline_to_signal(s)
             sync_signal_requires(s)
         except SafePipelineConversionError as exc:
-            s.setdefault("provenance", {})["needs_review"] = True
-            s.setdefault("review", {})["notes"] = str(exc)
-            rejected.append({"signal": s, "reason": str(exc)})
-            logger.warning("extract_signals 安全管道转换失败 source=%s reason=%s", source_id, exc)
+            preparation_errors[id(s)] = str(exc)
+    unconsumed_producers = _unconsumed_qfk_producer_reasons(raw_signals)
+
+    for s in raw_signals:
+        if not isinstance(s, dict):
+            reject(s, "run_failed", "Candidate 非对象，无法执行结构校验")
             continue
-        ok, err = _validate_signal(s, available_vars)
+        if "acquire" not in s:
+            reject(s, "run_failed", "Candidate 缺少 acquire 段（v1 扁平格式已不再支持）")
+            continue
+        if id(s) in image_provenance_violations:
+            provenance_violation = image_provenance_violations[id(s)]
+            reject(s, "run_failed", provenance_violation)
+            logger.warning(
+                "extract_signals 拒绝截图溯源越界 source=%s reason=%s",
+                source_id,
+                provenance_violation,
+            )
+            continue
+        if id(s) in read_only_violations:
+            read_only_violation = read_only_violations[id(s)]
+            reject(s, "write_signal", read_only_violation)
+            logger.warning(
+                "extract_signals 拒绝 KBD 处置动作 source=%s reason=%s",
+                source_id,
+                read_only_violation,
+            )
+            continue
+        acquire = s.get("acquire") or {}
+        tool = str(acquire.get("tool") or "")
+        args = acquire.get("args") or {}
+        args_ok, _ = (
+            validate_acquire_args(tool, args)
+            if tool in ACQUIRER_CATALOG
+            else (False, None)
+        )
+        if args_ok:
+            catalog_violation = _qfk_catalog_violation(tool, args)
+            if catalog_violation:
+                reject(s, "not_exists", catalog_violation)
+                logger.warning(
+                    "extract_signals 拒绝 catalog 缺失命令 source=%s reason=%s",
+                    source_id,
+                    catalog_violation,
+                )
+                continue
+            invocation_violation = _qfk_invocation_violation(tool, args)
+            if invocation_violation:
+                reject(s, "run_failed", invocation_violation)
+                logger.warning(
+                    "extract_signals 拒绝无法运行的命令调用 source=%s reason=%s",
+                    source_id,
+                    invocation_violation,
+                )
+                continue
+            capability_violation = _qfk_command_capability_violation(s)
+            if capability_violation:
+                reject(s, "run_failed", capability_violation)
+                logger.warning(
+                    "extract_signals 拒绝命令能力错配 source=%s reason=%s",
+                    source_id,
+                    capability_violation,
+                )
+                continue
+        if id(s) in preparation_errors:
+            reason = preparation_errors[id(s)]
+            reject(s, "run_failed", reason)
+            logger.warning("extract_signals 安全管道转换失败 source=%s reason=%s", source_id, reason)
+            continue
+        if id(s) in unconsumed_producers:
+            reason = unconsumed_producers[id(s)]
+            reject(s, "run_failed", reason)
+            logger.warning("extract_signals 拒绝未消费 QFK producer source=%s reason=%s", source_id, reason)
+            continue
+        ok, err = _validate_signal(
+            s,
+            available_vars,
+            enforce_kbd_read_only=enforce_kbd_read_only,
+        )
         if ok:
+            # Candidate 语义校验已经完成后，再把非当前 Matcher 必填项的显式 null
+            # 归约为字段缺失。这样 exists.pattern=null 不会被 JSON Schema 误拒，
+            # 而 exists.pattern="keyword" 仍会被上游质量门禁明确拒绝。
+            normalize_optional_matcher_nulls(s)
             # 字段级溯源 + 置信度校准（写入 v2 段：provenance.* / review.* / orchestrate.*）
-            enriched = _enrich_signal(s)
+            enriched = _enrich_signal(
+                s,
+                allow_solution_signals=not enforce_kbd_read_only,
+            )
             try:
                 validate_signals_json({"schema_version": 2, "signals": [enriched]})
             except ValidationError as exc:
-                rejected.append({"signal": enriched, "reason": f"v2 契约校验失败: {exc.message}"})
+                issue = humanize_signal_validation_error(exc, [enriched])
+                reject(enriched, "run_failed", issue["message"])
                 logger.warning("extract_signals 信号被契约拒绝 source=%s reason=%s", source_id, exc.message)
                 continue
             validated.append(enriched)
         else:
-            rejected.append({"signal": s, "reason": err})
+            reject(s, "run_failed", str(err or "Candidate 未通过执行校验"))
             logger.warning("extract_signals 信号被丢弃 source=%s reason=%s", source_id, err)
+
+    # 只允许依赖“最终能成为 Signal”的 producer。若 producer 已因 write/catalog/结构
+    # 问题被拒，consumer 不能借原始 Candidate 集合中的幽灵变量误过门禁。
+    reachable_variables = set(DEFAULT_VARIABLE_SCHEMA) | set(external_variables or set())
+    remaining = list(validated)
+    reachable_ids: set[int] = set()
+    while remaining:
+        ready = [
+            signal
+            for signal in remaining
+            if set((signal.get("orchestrate") or {}).get("requires") or []).issubset(
+                reachable_variables
+            )
+        ]
+        if not ready:
+            break
+        for signal in ready:
+            reachable_ids.add(id(signal))
+            reachable_variables.update(
+                str(item.get("name"))
+                for item in ((signal.get("orchestrate") or {}).get("produces") or [])
+                if isinstance(item, dict) and item.get("name")
+            )
+            remaining.remove(signal)
+    if remaining:
+        validated = [signal for signal in validated if id(signal) in reachable_ids]
+        for signal in remaining:
+            requires = sorted(
+                set((signal.get("orchestrate") or {}).get("requires") or [])
+                - reachable_variables
+            )
+            reject(
+                signal,
+                "run_failed",
+                "变量依赖不可达，所需 producer 未通过门禁或依赖成环: "
+                + ", ".join(requires),
+            )
 
     return validated, rejected
 
@@ -868,16 +1287,23 @@ def _build_verification_contract(
                 assigned.add(signal_id)
     if not normalized["must"]:
         # 自动诊断没有必要证据就不能确认；选择首个非 solution 信号作为保守 must。
-        fallback = next(
+        fallback_signal = next(
             (
-                str(signal.get("id"))
+                signal
                 for signal in signals
-                if signal.get("id") and str(signal.get("id")) not in normalized["context"]
+                if signal.get("id")
+                and str((signal.get("orchestrate") or {}).get("phase") or "diagnostic")
+                != "solution"
             ),
             None,
         )
-        if fallback:
-            for role in ("should", "exclude"):
+        if fallback_signal:
+            fallback = str(fallback_signal["id"])
+            # reconcile_verification_contract 以 signals[].role 为唯一事实源，因此
+            # 不能只修改投影数组；必须同步提升 Signal 角色，避免最终 canonical
+            # 又把它放回 context 并产生空 must。
+            fallback_signal["role"] = "must"
+            for role in ("should", "exclude", "context"):
                 if fallback in normalized[role]:
                     normalized[role].remove(fallback)
             normalized["must"].append(fallback)
@@ -945,13 +1371,16 @@ def _signals_to_v2(
     """
     doc: dict[str, Any] = {"schema_version": 2, "signals": signals}
     if rejected_candidates:
-        doc["rejected_candidates"] = [
-            {
+        doc["rejected_candidates"] = []
+        for item in rejected_candidates:
+            rejected = {
                 "candidate": item.get("signal"),
                 "reason": str(item.get("reason") or "未提供拒绝原因"),
             }
-            for item in rejected_candidates
-        ]
+            reason_code = item.get("reason_code")
+            if reason_code in REJECT_REASON_CODES:
+                rejected["reason_code"] = reason_code
+            doc["rejected_candidates"].append(rejected)
     if verification_contract is not None:
         doc["verification_contract"] = verification_contract
     if generation_metadata is not None:
@@ -1070,9 +1499,10 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
             consumer="kb-service.extract_signals.kbd",
         )
 
-    acquirer_catalog_text = "\n".join(f"- {k}: {v}" for k, v in ACQUIRER_CATALOG.items())
+    acquirer_catalog_text = _acquirer_catalog_prompt_text()
     variable_schema_text = ", ".join(DEFAULT_VARIABLE_SCHEMA)
     image_evidence_text = _format_image_evidence(entry_data["images_json"])
+    diagnostic_image_sources = _diagnostic_image_source_index(entry_data["images_json"])
     prompt = prompt_template.format(
         title=entry_data["title"],
         problem_description=entry_data["problem_description"][:2000],
@@ -1088,15 +1518,19 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
     )
 
     llm_result = await _call_llm(prompt)
-    raw_signals = llm_result.get("signals", [])
+    raw_signals = llm_result.get("candidates")
+    if raw_signals is None:
+        raw_signals = llm_result.get("signals", [])
     if not isinstance(raw_signals, list):
-        raise HTTPException(status_code=500, detail="LLM 未返回 signals 数组")
+        raise HTTPException(status_code=500, detail="LLM 未返回 Candidate 数组（candidates/signals）")
     proposed_contract = llm_result.get("verification_contract")
     external_variables = set(_normalize_contract_variables(proposed_contract))
     validated, rejected = _validate_and_collect_signals(
         raw_signals,
         f"kbd:{kbd_id}",
         external_variables,
+        enforce_kbd_read_only=True,
+        diagnostic_image_sources=diagnostic_image_sources,
     )
     verification_contract = _build_verification_contract(
         validated,
@@ -1187,7 +1621,7 @@ async def extract_signals_for_sop(db_manager: DatabaseManager, sop_id: int) -> d
             consumer="kb-service.extract_signals.sop",
         )
 
-    acquirer_catalog_text = "\n".join(f"- {k}: {v}" for k, v in ACQUIRER_CATALOG.items())
+    acquirer_catalog_text = _acquirer_catalog_prompt_text()
     variable_schema_text = ", ".join(merged_vars)
     # SOP 复用同一 Prompt：以 tree_json 当作 steps_text 输入
     prompt = prompt_template.format(
@@ -1204,9 +1638,11 @@ async def extract_signals_for_sop(db_manager: DatabaseManager, sop_id: int) -> d
     )
 
     llm_result = await _call_llm(prompt)
-    raw_signals = llm_result.get("signals", [])
+    raw_signals = llm_result.get("candidates")
+    if raw_signals is None:
+        raw_signals = llm_result.get("signals", [])
     if not isinstance(raw_signals, list):
-        raise HTTPException(status_code=500, detail="LLM 未返回 signals 数组")
+        raise HTTPException(status_code=500, detail="LLM 未返回 Candidate 数组（candidates/signals）")
     validated, rejected = _validate_and_collect_signals(raw_signals, f"sop:{sop_id}")
 
     # SOP 执行由 tree_json 决策树拥有裁决契约，不生成 KBD Case Verification Contract。
@@ -1238,6 +1674,7 @@ class ExtractSignalsResponse(BaseModel):
     success: bool
     kbd_id: int | None = None
     sop_id: int | None = None
+    proposal_revision_id: int | None = None
     signals_count: int
     rejected_count: int = 0
     signals: list[dict[str, Any]] = Field(default_factory=list)

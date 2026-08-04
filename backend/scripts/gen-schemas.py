@@ -117,6 +117,11 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     # 保留模型原始候选供审核；候选之所以在这里，正是因为它不一定
                     # 符合 signal definition，因此不能用 signal schema 约束。
                     "candidate": {},
+                    # v2.1 起保存稳定的工程门禁分类；保持可选以兼容历史快照。
+                    "reason_code": {
+                        "type": "string",
+                        "enum": ["write_signal", "not_exists", "run_failed"],
+                    },
                     "reason": {"type": "string", "minLength": 1},
                 },
             },

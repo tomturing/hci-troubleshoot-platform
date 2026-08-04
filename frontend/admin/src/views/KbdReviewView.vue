@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { FullScreen, Refresh } from '@element-plus/icons-vue'
@@ -60,6 +60,15 @@ interface KbdRevisionState {
   latest_proposal_revision_id: number | null
   working_revision_id: number | null
   lock_version: number
+  expert_signal_edit_summary: {
+    status: 'no_expert_draft' | 'unchanged' | 'modified'
+    proposal_revision_id: number | null
+    expert_revision_id: number | null
+    changed_signal_count: number
+    added_signal_ids: string[]
+    removed_signal_ids: string[]
+    modified_signal_ids: string[]
+  }
   history: RevisionMetadata[]
   active_resource: { revision: number; checksum: string; version: string } | null
 }
@@ -89,6 +98,14 @@ interface CandidateValidation {
   platform_status?: Array<Record<string, unknown>>
 }
 
+interface CommandPreview {
+  tool: string
+  command: string
+  host?: string | null
+  variables?: string[]
+  notice?: string
+}
+
 // ============ 关键信号 v2 数据模型（RFC §7 前端原生读 v2 对象化，2026-07-22） ============
 // GET 边界直接返回 v2 文档，前端不再归一/适配，直接基于该结构渲染与编辑；
 // 回写时仍发回完整 v2 文档（{schema_version, signals}），后端 update_kbd_entry 幂等归约。
@@ -104,7 +121,11 @@ interface SignalV2 {
 interface SignalsDoc {
   schema_version: number
   signals: SignalV2[]
-  rejected_candidates?: Array<{ candidate: unknown; reason: string }>
+  rejected_candidates?: Array<{
+    candidate: unknown
+    reason_code?: 'write_signal' | 'not_exists' | 'run_failed'
+    reason: string
+  }>
   verification_contract?: Record<string, any>
   generation_metadata?: Record<string, any>
   publish_validation?: Record<string, any>
@@ -320,6 +341,11 @@ const revisionLoading = ref(false)
 const capabilityMap = ref<Record<string, CapabilityDescriptor>>({})
 const candidateValidation = ref<CandidateValidation | null>(null)
 const candidateValidationLoading = ref(false)
+const focusedSignalId = ref<string | null>(null)
+const commandPreviews = ref<Record<string, CommandPreview | undefined>>({})
+const commandPreviewErrors = ref<Record<string, string | undefined>>({})
+const commandPreviewLoading = ref<Record<string, boolean | undefined>>({})
+const expandedCommandPreviews = ref<Record<string, boolean | undefined>>({})
 
 // 拒绝弹窗
 const rejectDialogVisible = ref(false)
@@ -523,11 +549,43 @@ async function validateCurrentCandidate(options: { silent?: boolean } = {}) {
   }
 }
 
-function handleValidationAction(issue: CandidateValidation['issues'][number]) {
+function signalDomId(signalId: string): string {
+  return `kbd-signal-${signalId.replace(/[^a-zA-Z0-9_-]/g, '_')}`
+}
+
+function signalLabel(signal: SignalV2, index: number): string {
+  const instruction = String(sigArgs(signal).instruction || '').trim()
+  return `${sigTool(signal) || '未选择采集类型'} · ${instruction || `信号 ${index + 1}`}`
+}
+
+function validationIssueSignal(issue: CandidateValidation['issues'][number]): { signal: SignalV2; index: number } | null {
+  const signalId = issue.action?.signal_id
+  if (!signalId) return null
+  const index = signalList.value.findIndex((signal) => String(signal.id) === String(signalId))
+  return index >= 0 ? { signal: signalList.value[index], index } : null
+}
+
+async function focusSignal(signalId: string): Promise<void> {
+  focusedSignalId.value = signalId
+  await nextTick()
+  document.getElementById(signalDomId(signalId))?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
+async function focusSignalRequestError(error: unknown): Promise<void> {
+  const signalId = (error as { signalId?: string })?.signalId
+  if (!signalId) return
+  const index = signalList.value.findIndex((signal) => String(signal.id) === signalId)
+  if (index < 0) return
+  startEditSignal(index)
+  await focusSignal(signalId)
+}
+
+async function handleValidationAction(issue: CandidateValidation['issues'][number]) {
   const signalId = issue.action?.signal_id
   if (!signalId) {
     if (issue.action?.type === 'edit_signal_role' && signalList.value.length) {
       startEditSignal(0)
+      await focusSignal(signalStableId(signalList.value[0], 0))
       ElMessage.info('请在“证据作用”中将至少一条可执行信号设为“必要证据”后保存')
     }
     return
@@ -536,6 +594,7 @@ function handleValidationAction(issue: CandidateValidation['issues'][number]) {
   if (index < 0) return
   startEditSignal(index)
   if (issue.action?.suggested_tool) onSignalToolChange(issue.action.suggested_tool)
+  await focusSignal(String(signalId))
   ElMessage.info('已定位并按建议切换采集类型，请复核参数后保存')
 }
 
@@ -781,6 +840,12 @@ async function handleReextractSignals(entry: KbdEntry) {
         const fresh = await detailResp.json()
         detailEntry.value = fresh
       }
+      // Proposal 已在服务端切换为新的审核基线；必须同步刷新 revision，不能继续
+      // 使用重抽前的 history[0] Diff 误报为专家修改。
+      await Promise.all([
+        fetchRevisionState(entry.id),
+        validateCurrentCandidate({ silent: true }),
+      ])
     }
   } catch (err: any) {
     ElMessage.error({
@@ -798,9 +863,15 @@ async function openDetailDialog(entry: KbdEntry) {
   detailDialogVisible.value = true
   editingContent.value = false
   clearStagedSignalEdits()
+  clearLocalSignals()
   cancelEditSignal()
   revisionState.value = null
   candidateValidation.value = null
+  focusedSignalId.value = null
+  commandPreviews.value = {}
+  commandPreviewErrors.value = {}
+  commandPreviewLoading.value = {}
+  expandedCommandPreviews.value = {}
   void fetchRevisionState(entry.id)
   // 拉取完整详情（确保含 signals_json）
   try {
@@ -976,10 +1047,40 @@ function isBackendSig(sig: SignalV2): boolean {
 // 一个 KBD 的多条旧信号可能同时带有管道。暂存区必须用稳定 Signal ID，而不是数组
 // 下标：专家排序或删除信号后，下标会变化，继续用下标会把草稿错误套到另一条信号。
 const stagedSignalEdits = ref<Record<string, SignalV2>>({})
-const newSignalId = ref<string | null>(null)
+const localSignalIds = ref<Set<string>>(new Set())
 
 function cloneSignal(signal: SignalV2): SignalV2 {
   return JSON.parse(JSON.stringify(signal)) as SignalV2
+}
+
+function normalizeOptionalMatcherNulls(signal: SignalV2): SignalV2 {
+  const normalized = cloneSignal(signal)
+  const matcher = normalized.match
+  if (!matcher || typeof matcher !== 'object') return normalized
+  const requiredByType: Record<string, string[]> = {
+    keyword: ['pattern'], regex: ['pattern'], state: ['pattern'],
+    threshold: ['value', 'operator'], delta: ['value', 'operator'], trend: ['direction'], exists: [],
+  }
+  const optionalFields = ['pattern', 'mode', 'value', 'operator', 'aggregation', 'minimum_samples', 'direction']
+  const required = new Set(requiredByType[String(matcher.type || '')] || [])
+  for (const field of optionalFields) {
+    if (!required.has(field) && matcher[field] === null) delete matcher[field]
+  }
+  return normalized
+}
+
+function markLocalSignal(signalId: string): void {
+  localSignalIds.value = new Set([...localSignalIds.value, signalId])
+}
+
+function unmarkLocalSignal(signalId: string): void {
+  const next = new Set(localSignalIds.value)
+  next.delete(signalId)
+  localSignalIds.value = next
+}
+
+function clearLocalSignals(): void {
+  localSignalIds.value = new Set()
 }
 
 const evidenceRoles = ['must', 'should', 'exclude', 'context'] as const
@@ -1115,7 +1216,6 @@ function buildSignalForTool(tool: string, previous?: SignalV2): SignalV2 {
       ...(previous?.provenance || {}),
       category: producer ? 'frontend' : 'backend',
       needs_review: true,
-      expert_created: previous ? previous.provenance?.expert_created : true,
     },
     review: { require_human_confirm: true },
   }
@@ -1140,8 +1240,8 @@ function setQfkSystemCommandText(args: Record<string, any>, value: string) {
 }
 
 function qfkSystemCommandPreview(args: Record<string, any>): string {
-  const timeoutRaw = Number(args.timeout || 10)
-  const timeout = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 10
+  const timeoutRaw = Number(args.timeout || 120)
+  const timeout = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 120
   const cluster = args.cluster ? ' --cluster' : ''
   const formatterValue = typeof args.formatter === 'string' ? args.formatter.trim() : ''
   const formatter = formatterValue ? ` --formatter ${formatterValue}` : ''
@@ -1150,6 +1250,62 @@ function qfkSystemCommandPreview(args: Record<string, any>): string {
     ? ` --container ${containerValue}`
     : ''
   return `acli${cluster} --timeout ${timeout}${formatter}${container} system ${qfkSystemCommandText(args) || '<命令>'}`
+}
+
+function commandPreviewKey(signal: SignalV2, index: number): string {
+  return signalStableId(signal, index)
+}
+
+function hasCommandPreview(signal: SignalV2, index: number): boolean {
+  return Boolean(expandedCommandPreviews.value[commandPreviewKey(signal, index)])
+}
+
+async function loadCommandPreview(signal: SignalV2, index: number, force = false): Promise<void> {
+  const key = commandPreviewKey(signal, index)
+  expandedCommandPreviews.value = { ...expandedCommandPreviews.value, [key]: true }
+  if (!force && (commandPreviews.value[key] || commandPreviewErrors.value[key])) return
+
+  commandPreviewLoading.value = { ...commandPreviewLoading.value, [key]: true }
+  commandPreviewErrors.value = { ...commandPreviewErrors.value, [key]: undefined }
+  try {
+    const resp = await fetch('/api/v1/kbd/command-preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify({ signal }),
+    })
+    const body = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      throw new Error(typeof body?.detail === 'string' ? body.detail : `HTTP ${resp.status}`)
+    }
+    commandPreviews.value = { ...commandPreviews.value, [key]: body as CommandPreview }
+  } catch (error) {
+    commandPreviewErrors.value = {
+      ...commandPreviewErrors.value,
+      [key]: error instanceof Error ? error.message : '命令编译预览失败',
+    }
+  } finally {
+    commandPreviewLoading.value = { ...commandPreviewLoading.value, [key]: false }
+  }
+}
+
+function toggleCommandPreview(signal: SignalV2, index: number): void {
+  const key = commandPreviewKey(signal, index)
+  if (expandedCommandPreviews.value[key]) {
+    expandedCommandPreviews.value = { ...expandedCommandPreviews.value, [key]: false }
+    return
+  }
+  void loadCommandPreview(signal, index)
+}
+
+async function copyCommandPreview(signal: SignalV2, index: number): Promise<void> {
+  const preview = commandPreviews.value[commandPreviewKey(signal, index)]
+  if (!preview?.command) return
+  try {
+    await navigator.clipboard.writeText(preview.command)
+    ElMessage.success('完整命令已复制；请在已授权的 HCI 终端中人工核查')
+  } catch {
+    ElMessage.error('复制失败，请手动选择命令文本')
+  }
 }
 
 function clearStagedSignalEdits() {
@@ -1176,9 +1332,37 @@ const signalList = computed<SignalV2[]>(() => {
 const signalGenerationMetadata = computed<Record<string, any>>(
   () => (detailEntry.value?.signals_json as SignalsDoc | undefined)?.generation_metadata || {},
 )
+const expertSignalEditSummary = computed(
+  () => revisionState.value?.expert_signal_edit_summary,
+)
 const rejectedSignalCandidates = computed(
   () => (detailEntry.value?.signals_json as SignalsDoc | undefined)?.rejected_candidates || [],
 )
+const rejectedCandidateMeta = {
+  write_signal: {
+    label: '变更动作',
+    tagType: 'danger',
+    guidance: '必须审核：该候选包含真实写操作，不能直接作为 KBD Signal 执行。',
+  },
+  not_exists: {
+    label: '命令未实现',
+    tagType: 'warning',
+    guidance: '需要关注：请确认命令真实存在但 catalog 尚未补充，还是模型映射错误。',
+  },
+  run_failed: {
+    label: '验证/执行失败',
+    tagType: 'danger',
+    guidance: '必须重点处理：catalog 已登记也不代表可运行，请依据具体失败原因修正。',
+  },
+} as const
+
+function rejectedCandidatePresentation(reasonCode?: string) {
+  return rejectedCandidateMeta[reasonCode as keyof typeof rejectedCandidateMeta] || {
+    label: '历史拒绝候选',
+    tagType: 'info' as const,
+    guidance: '历史快照没有稳定分类码，请结合原始候选与拒绝原因复核。',
+  }
+}
 const producerSignals = computed(() =>
   signalList.value.map((s, i) => ({ sig: s, origIdx: i })).filter((x) => !isBackendSig(x.sig)),
 )
@@ -1401,11 +1585,12 @@ function setQfkOutputMode(mode: 'keyword' | 'produces') {
 }
 
 function cancelEditSignal() {
-  if (newSignalId.value && detailEntry.value?.signals_json) {
+  const editingSignalId = String(signalEditDraft.value.id || '')
+  if (editingSignalId && localSignalIds.value.has(editingSignalId) && detailEntry.value?.signals_json) {
     detailEntry.value.signals_json.signals = detailEntry.value.signals_json.signals.filter(
-      (signal) => String(signal.id) !== newSignalId.value,
+      (signal) => String(signal.id) !== editingSignalId,
     )
-    newSignalId.value = null
+    unmarkLocalSignal(editingSignalId)
   }
   if (editingSignalIndex.value !== null && signalEditDraft.value.id) {
     discardStagedSignalEdit(String(signalEditDraft.value.id))
@@ -1425,7 +1610,10 @@ async function persistSignalList(
 ): Promise<boolean> {
   if (!detailEntry.value) return false
   const currentDoc = (detailEntry.value.signals_json || {}) as SignalsDoc
-  const payload = reconcileSignalContract({ ...currentDoc, schema_version: 2 }, list)
+  const payload = reconcileSignalContract(
+    { ...currentDoc, schema_version: 2 },
+    list.map(normalizeOptionalMatcherNulls),
+  )
   const resp = await fetch(kbdEditEndpoint(detailEntry.value), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', ...authHeader },
@@ -1437,10 +1625,12 @@ async function persistSignalList(
   })
   const responseBody = await resp.json().catch(() => ({}))
   if (!resp.ok) {
-    const detail = typeof responseBody?.detail === 'string'
-      ? responseBody.detail
-      : responseBody?.detail?.message || `HTTP ${resp.status}`
-    throw new Error(detail)
+    const detail = responseBody?.detail
+    const message = typeof detail === 'string' ? detail : detail?.message || `HTTP ${resp.status}`
+    const location = typeof detail === 'object' ? String(detail?.location || '') : ''
+    const error = new Error(location ? `${location}：${message}` : message) as Error & { signalId?: string }
+    if (typeof detail === 'object' && detail?.signal_id) error.signalId = String(detail.signal_id)
+    throw error
   }
   applyMaintenanceResponse(detailEntry.value, responseBody)
   const newDoc: SignalsDoc = responseBody?.payload?.signals_json || responseBody?.signals_json || payload
@@ -1449,7 +1639,7 @@ async function persistSignalList(
   const entryIndex = entries.value.findIndex((entry) => entry.id === detailEntry.value!.id)
   if (entryIndex !== -1) entries.value[entryIndex].signals_json = newDoc
   clearStagedSignalEdits()
-  newSignalId.value = null
+  clearLocalSignals()
   void fetchRevisionState(detailEntry.value.id)
   await validateCurrentCandidate({ silent: true })
   ElMessage.success(successMessage)
@@ -1462,7 +1652,7 @@ function addSignal(tool: string) {
   const signal = buildSignalForTool(tool)
   doc.signals = [...(doc.signals || []), signal]
   detailEntry.value.signals_json = doc
-  newSignalId.value = String(signal.id)
+  markLocalSignal(String(signal.id))
   startEditSignal(doc.signals.length - 1)
   ElMessage.info('请补全新信号的必填项后保存')
 }
@@ -1503,19 +1693,71 @@ async function submitDeleteSignal() {
   }
   signalSaveLoading.value = true
   try {
-    await persistSignalList(
-      signalList.value.filter((_, itemIndex) => itemIndex !== index),
-      '关键信号已删除',
-      [{
-        signal_id: signalStableId(signal, index),
-        reason_code: deleteSignalReason.value,
-        ...(deleteSignalNote.value.trim() ? { note: deleteSignalNote.value.trim() } : {}),
-      }],
-    )
+    const signalId = signalStableId(signal, index)
+    const currentDoc = detailEntry.value.signals_json as SignalsDoc
+    const annotation = {
+      signal_id: signalId,
+      reason_code: deleteSignalReason.value,
+      ...(deleteSignalNote.value.trim() ? { note: deleteSignalNote.value.trim() } : {}),
+    }
+
+    // “恢复并编辑”或“新增”尚未写入权威工作稿；删除它只是撤销本地草稿，
+    // 不应把其他未完成编辑捆绑成一次全量 PATCH。
+    if (localSignalIds.value.has(signalId)) {
+      currentDoc.signals = (currentDoc.signals || []).filter((item) => String(item.id) !== signalId)
+      discardStagedSignalEdit(signalId)
+      unmarkLocalSignal(signalId)
+      ElMessage.success('未保存的关键信号草稿已移除')
+    } else {
+      const localSignals = (currentDoc.signals || [])
+        .filter((item) => localSignalIds.value.has(String(item.id)))
+        .map(cloneSignal)
+      const retainedStaged = { ...stagedSignalEdits.value }
+      delete retainedStaged[signalId]
+
+      const resp = await fetch(kbdEditEndpoint(detailEntry.value), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeader },
+        body: JSON.stringify({
+          delete_signal_id: signalId,
+          change_annotations: [annotation],
+          lock_version: detailEntry.value.lock_version,
+        }),
+      })
+      const responseBody = await resp.json().catch(() => ({}))
+      if (!resp.ok) {
+        const detail = responseBody?.detail
+        const message = typeof detail === 'string' ? detail : detail?.message || `HTTP ${resp.status}`
+        const location = typeof detail === 'object' ? String(detail?.location || '') : ''
+        const error = new Error(location ? `${location}：${message}` : message) as Error & { signalId?: string }
+        if (typeof detail === 'object' && detail?.signal_id) error.signalId = String(detail.signal_id)
+        throw error
+      }
+
+      const serverDoc = (responseBody?.payload?.signals_json || responseBody?.signals_json) as SignalsDoc
+      if (!serverDoc) throw new Error('服务端未返回删除后的关键信号工作稿')
+      applyMaintenanceResponse(detailEntry.value, responseBody)
+      detailEntry.value.lock_version = responseBody?.lock_version ?? detailEntry.value.lock_version
+      const combinedDoc = JSON.parse(JSON.stringify(serverDoc)) as SignalsDoc
+      const serverIds = new Set((combinedDoc.signals || []).map((item) => String(item.id)))
+      combinedDoc.signals = [
+        ...(combinedDoc.signals || []),
+        ...localSignals.filter((item) => !serverIds.has(String(item.id))),
+      ]
+      detailEntry.value.signals_json = combinedDoc
+      stagedSignalEdits.value = retainedStaged
+
+      const entryIndex = entries.value.findIndex((entry) => entry.id === detailEntry.value!.id)
+      if (entryIndex !== -1) entries.value[entryIndex].signals_json = serverDoc
+      void fetchRevisionState(detailEntry.value.id)
+      await validateCurrentCandidate({ silent: true })
+      ElMessage.success('关键信号已删除')
+    }
     editingSignalIndex.value = null
     deleteSignalDialogVisible.value = false
     deletingSignalIndex.value = null
   } catch (error) {
+    await focusSignalRequestError(error)
     ElMessage.error(error instanceof Error ? `删除失败：${error.message}` : '删除失败，请重试')
   } finally {
     signalSaveLoading.value = false
@@ -1527,7 +1769,7 @@ async function duplicateSignal(index: number) {
   if (!source) return
   const duplicate = cloneSignal(source)
   duplicate.id = createSignalId()
-  duplicate.provenance = { ...(duplicate.provenance || {}), expert_created: true, needs_review: true }
+  duplicate.provenance = { ...(duplicate.provenance || {}), needs_review: true }
   const list = signalList.value.map(cloneSignal)
   list.splice(index + 1, 0, duplicate)
   signalSaveLoading.value = true
@@ -1561,12 +1803,15 @@ function restoreRejectedCandidate(candidate: unknown) {
     return
   }
   if (!detailEntry.value) return
-  const restored = cloneSignal(candidate as SignalV2)
+  // 拒绝候选是审计快照，恢复时必须先复制，不能在编辑过程中修改原始候选。
+  const restored = normalizeOptionalMatcherNulls(cloneSignal(candidate as SignalV2))
   restored.id = createSignalId()
-  restored.provenance = { ...(restored.provenance || {}), needs_review: true, expert_restored: true }
+  // ``provenance`` 是受 Schema 约束的来源事实，不能写入仅供前端标记的
+  // ``expert_restored``。本次专家修改已经由 Expert Revision/review metadata 审计。
+  restored.provenance = { ...(restored.provenance || {}), needs_review: true }
   const doc = detailEntry.value.signals_json as SignalsDoc
   doc.signals = [...(doc.signals || []), restored]
-  newSignalId.value = String(restored.id)
+  markLocalSignal(String(restored.id))
   startEditSignal(doc.signals.length - 1)
   ElMessage.info('候选已恢复为编辑草稿，请复核并保存')
 }
@@ -1634,6 +1879,7 @@ async function saveSignalEdit() {
     await persistSignalList(list, '关键信号已保存')
     cancelEditSignal()
   } catch (error) {
+    await focusSignalRequestError(error)
     const detail = error instanceof Error ? error.message : ''
     ElMessage.error(detail ? `保存失败：${detail}` : '保存失败，请重试')
   } finally {
@@ -2737,8 +2983,8 @@ onMounted(() => {
           </el-descriptions>
           <div class="section-hint" style="margin-top: 8px">
             保存只形成专家工作版本；只有“{{ detailEntry.maintenance_working ? '发布维护版' : '审核通过并发布' }}”才切换 Agent 生效版本。
-            <template v-if="revisionState?.history?.[0]?.diff_from_parent?.length">
-              当前专家稿相对基线修改 {{ revisionState.history[0].diff_from_parent.length }} 项。
+            <template v-if="expertSignalEditSummary">
+              当前专家稿相对 AI Proposal 修改 {{ expertSignalEditSummary.changed_signal_count }} 条关键信号。
             </template>
           </div>
           <div v-if="candidateValidation" class="expert-validation-panel" :class="`is-${candidateValidation.status}`">
@@ -2752,9 +2998,24 @@ onMounted(() => {
             <div v-for="issue in candidateValidation.issues" :key="`${issue.code}-${issue.location}`" class="validation-issue">
               <div class="validation-issue-content">
                 <strong>{{ issue.message }}</strong>
+                <el-button
+                  v-if="validationIssueSignal(issue)"
+                  class="validation-signal-link"
+                  type="primary"
+                  text
+                  size="small"
+                  @click="handleValidationAction(issue)"
+                >
+                  问题关键信号：{{ signalLabel(validationIssueSignal(issue)!.signal, validationIssueSignal(issue)!.index) }}（{{ validationIssueSignal(issue)!.signal.id }}）
+                </el-button>
                 <code>{{ issue.location }}</code>
               </div>
-              <el-button v-if="issue.action?.type === 'edit_signal'" type="primary" size="small" @click="handleValidationAction(issue)">定位并修改</el-button>
+              <el-button
+                v-if="validationIssueSignal(issue) || issue.action?.type === 'edit_signal_role'"
+                type="primary"
+                size="small"
+                @click="handleValidationAction(issue)"
+              >定位并编辑</el-button>
             </div>
           </div>
         </div>
@@ -2782,8 +3043,8 @@ onMounted(() => {
                   <el-dropdown-menu>
                     <el-dropdown-item command="qkv_task">任务信号 qkv_task</el-dropdown-item>
                     <el-dropdown-item command="qkv_alert">告警信号 qkv_alert</el-dropdown-item>
-                    <el-dropdown-item command="qkv_dialog">纯弹框信号 qkv_dialog</el-dropdown-item>
-                    <el-dropdown-item divided command="qfk_log">日志信号 qfk_log</el-dropdown-item>
+                    <el-dropdown-item command="qkv_dialog">弹框信号 qkv_dialog</el-dropdown-item>
+                    <el-dropdown-item divided command="qfk_log">日志检查 qfk_log</el-dropdown-item>
                     <el-dropdown-item command="qfk_system">系统检查 qfk_system</el-dropdown-item>
                     <el-dropdown-item command="qfk_service">服务检查 qfk_service</el-dropdown-item>
                     <el-dropdown-item command="qfk_vm">虚拟机检查 qfk_vm</el-dropdown-item>
@@ -2827,9 +3088,9 @@ onMounted(() => {
             <el-tag
               size="small"
               :type="signalGenerationMetadata.status === 'stale' ? 'danger' : signalGenerationMetadata.status === 'manual_reviewed' ? 'success' : 'info'"
-            >{{ signalGenerationMetadata.status === 'stale' ? '已过期' : signalGenerationMetadata.status === 'manual_reviewed' ? '已人工修改' : '未修改' }}</el-tag>
-            <span v-if="revisionState?.history?.[0]?.diff_from_parent?.length">
-              相对 AI Proposal 修改 {{ revisionState.history[0].diff_from_parent.length }} 项
+            >{{ signalGenerationMetadata.status === 'stale' ? '已过期' : signalGenerationMetadata.status === 'manual_reviewed' ? '已人工修改' : '当前 AI Proposal' }}</el-tag>
+            <span v-if="expertSignalEditSummary">
+              专家修改：{{ expertSignalEditSummary.changed_signal_count }} 条关键信号
             </span>
           </div>
           <details v-if="signalGenerationMetadata.generation_fingerprint" class="generation-trace-details">
@@ -2850,9 +3111,17 @@ onMounted(() => {
             <el-collapse-item
               v-for="(item, index) in rejectedSignalCandidates"
               :key="`rejected-${index}`"
-              :title="`拒绝候选 ${index + 1}：${item.reason}`"
+              :title="`拒绝候选 ${index + 1}`"
               :name="`rejected-${index}`"
             >
+              <div class="rejected-candidate-reason">
+                <el-tag
+                  size="small"
+                  :type="rejectedCandidatePresentation(item.reason_code).tagType"
+                >{{ rejectedCandidatePresentation(item.reason_code).label }}</el-tag>
+                <strong>{{ item.reason }}</strong>
+              </div>
+              <div class="field-hint">{{ rejectedCandidatePresentation(item.reason_code).guidance }}</div>
               <pre class="code rejected-candidate-json">{{ JSON.stringify(item.candidate, null, 2) }}</pre>
               <el-button type="primary" size="small" @click="restoreRejectedCandidate(item.candidate)">恢复并编辑</el-button>
             </el-collapse-item>
@@ -2873,7 +3142,13 @@ onMounted(() => {
           <div class="signal-group">
             <div class="signal-group-title">生产者信号（QKV：前端采集，写入变量池）</div>
             <el-empty v-if="producerSignals.length === 0" description="暂无生产者信号" :image-size="44" />
-            <div v-for="item in producerSignals" :key="signalStableId(item.sig, item.origIdx)" class="signal-card">
+            <div
+              v-for="item in producerSignals"
+              :id="signalDomId(signalStableId(item.sig, item.origIdx))"
+              :key="signalStableId(item.sig, item.origIdx)"
+              class="signal-card"
+              :class="{ 'is-focused': focusedSignalId === signalStableId(item.sig, item.origIdx) }"
+            >
               <div class="signal-card-head">
                 <el-tag size="small" type="success">{{ sigTool(item.sig) || 'qkv' }}</el-tag>
                 <el-tag v-if="capabilityStatus(sigTool(item.sig)) !== 'declared'" size="small" type="danger" effect="plain">能力未声明，请更换采集类型</el-tag>
@@ -2942,7 +3217,13 @@ onMounted(() => {
           <div class="signal-group">
             <div class="signal-group-title">消费者信号（QFK：后端采集+判定，读取变量池）</div>
             <el-empty v-if="consumerSignals.length === 0" description="暂无消费者信号" :image-size="44" />
-            <div v-for="item in consumerSignals" :key="signalStableId(item.sig, item.origIdx)" class="signal-card">
+            <div
+              v-for="item in consumerSignals"
+              :id="signalDomId(signalStableId(item.sig, item.origIdx))"
+              :key="signalStableId(item.sig, item.origIdx)"
+              class="signal-card"
+              :class="{ 'is-focused': focusedSignalId === signalStableId(item.sig, item.origIdx) }"
+            >
               <div class="signal-card-head">
                 <el-tag size="small" type="warning">{{ sigTool(item.sig) || 'qfk' }}</el-tag>
                 <el-tag v-if="capabilityStatus(sigTool(item.sig)) !== 'declared'" size="small" type="danger" effect="plain">能力未声明，请更换采集类型</el-tag>
@@ -2971,7 +3252,6 @@ onMounted(() => {
                     <div class="signal-row"><span class="signal-k">容器</span><span class="signal-v">{{ sigArgs(item.sig).container || 'host' }}</span></div>
                     <div v-if="sigArgs(item.sig).cluster" class="signal-row"><span class="signal-k">集群执行</span><span class="signal-v">是（acli --cluster）</span></div>
                     <div v-if="sigArgs(item.sig).formatter" class="signal-row"><span class="signal-k">输出格式</span><span class="signal-v code">{{ sigArgs(item.sig).formatter }}</span></div>
-                    <div class="signal-row"><span class="signal-k">执行命令</span><span class="signal-v code">{{ sigArgs(item.sig).command || '—' }}</span></div>
                     <el-alert v-if="String(sigArgs(item.sig).command || '').includes('|')" title="历史命令含 Shell 管道，必须编辑并清理后才能统一保存" type="warning" :closable="false" show-icon />
                   </template>
                   <template v-if="sigTool(item.sig) === 'qfk_service'">
@@ -2982,7 +3262,7 @@ onMounted(() => {
                     <div class="signal-row"><span class="signal-k">执行命令</span><span class="signal-v code">{{ sigArgs(item.sig).command || '—' }}</span></div>
                   </template>
                   <div class="signal-row"><span class="signal-k">输入变量</span><span class="signal-v code">{{ (sigOrch(item.sig).requires || []).join('、') || '—' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">超时时间</span><span class="signal-v">{{ sigArgs(item.sig).timeout || 10 }}s</span></div>
+                  <div class="signal-row"><span class="signal-k">超时时间</span><span class="signal-v">{{ sigArgs(item.sig).timeout || 120 }}s</span></div>
                   <div class="signal-row"><span class="signal-k">执行模式</span><span class="signal-v">{{ qfkOutputMode(item.sig) === 'produces' ? '产出变量（采集命令结果）' : '匹配模式' }}</span></div>
                   <template v-if="qfkOutputMode(item.sig) === 'produces'">
                     <div v-for="(p, idx) in (sigOrch(item.sig).produces || [])" :key="`output-${idx}`" class="signal-row">
@@ -3003,7 +3283,7 @@ onMounted(() => {
                   </template>
 
                   <!-- 其他工具特有字段 -->
-                  <div v-if="sigTool(item.sig) === 'qfk_system'" class="signal-row"><span class="signal-k">执行命令</span><span class="signal-v code">{{ qfkSystemCommandText(sigArgs(item.sig)) || '—' }}</span></div>
+                  <div v-if="sigTool(item.sig) === 'qfk_system'" class="signal-row"><span class="signal-k">命令字段</span><span class="signal-v code">{{ qfkSystemCommandText(sigArgs(item.sig)) || '—' }}</span></div>
                   <template v-if="sigTool(item.sig) === 'qfk_log'">
                     <div class="signal-row"><span class="signal-k">文件</span><span class="signal-v code">{{ sigArgs(item.sig).file || '—' }}</span></div>
                     <div class="signal-row"><span class="signal-k">时间</span><span class="signal-v">{{ sigArgs(item.sig).time_window || '—' }}</span></div>
@@ -3017,6 +3297,28 @@ onMounted(() => {
                   <template v-if="sigTool(item.sig) === 'qfk_service'">
                     <div class="signal-row"><span class="signal-k">服务</span><span class="signal-v code">{{ sigArgs(item.sig).resource_keyword || '—' }}</span></div>
                   </template>
+                  <div class="signal-row command-preview-row">
+                    <span class="signal-k">完整命令</span>
+                    <div class="signal-v">
+                      <el-button text type="primary" size="small" :loading="commandPreviewLoading[commandPreviewKey(item.sig, item.origIdx)]" @click="toggleCommandPreview(item.sig, item.origIdx)">
+                        {{ hasCommandPreview(item.sig, item.origIdx) ? '收起完整命令' : '查看完整 HCI 执行命令' }}
+                      </el-button>
+                      <div v-if="hasCommandPreview(item.sig, item.origIdx)" class="command-preview-panel">
+                        <template v-if="commandPreviews[commandPreviewKey(item.sig, item.origIdx)]">
+                          <code>{{ commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.command }}</code>
+                          <div class="command-preview-meta">
+                            <span>SSH 目标主机：{{ commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.host || '由运行时上下文决定' }}</span>
+                            <span v-if="commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.variables?.length">执行前替换变量：{{ commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.variables!.join('、') }}</span>
+                            <el-button text type="primary" size="small" @click="copyCommandPreview(item.sig, item.origIdx)">复制命令</el-button>
+                          </div>
+                          <div class="field-hint command-preview-notice">{{ commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.notice }}</div>
+                        </template>
+                        <el-alert v-else-if="commandPreviewErrors[commandPreviewKey(item.sig, item.origIdx)]" type="warning" :closable="false" show-icon :title="`无法编译完整命令：${commandPreviewErrors[commandPreviewKey(item.sig, item.origIdx)]}`">
+                          <el-button text type="primary" size="small" @click="loadCommandPreview(item.sig, item.origIdx, true)">重新编译</el-button>
+                        </el-alert>
+                      </div>
+                    </div>
+                  </div>
                   <!-- 来源证据只用于追溯 LLM/原案例依据；固定放在卡片末尾，默认不展开。 -->
                   <details class="signal-evidence-details">
                     <summary>来源证据（默认收起，不参与编辑）</summary>
@@ -3031,7 +3333,7 @@ onMounted(() => {
                   <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" placeholder="信号说明，如 镜像文件占用检查" /></div>
                   <div class="field-hint">信号语义说明：用自然语言描述这个检查/采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
                   <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据（必须满足）" value="must" /><el-option label="增强证据（按门槛满足）" value="should" /><el-option label="排除证据（出现即排除）" value="exclude" /><el-option label="上下文证据（执行但不参与结论）" value="context" /></el-select></div>
-                  <div class="signal-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" filterable @change="onSignalToolChange"><el-option label="日志 qfk_log" value="qfk_log" /><el-option label="系统 qfk_system" value="qfk_system" /><el-option label="服务 qfk_service" value="qfk_service" /><el-option label="虚拟机 qfk_vm" value="qfk_vm" /><el-option label="网络 qfk_network" value="qfk_network" /><el-option label="存储 qfk_storage" value="qfk_storage" /><el-option label="硬件 qfk_hardware" value="qfk_hardware" /><el-option label="平台 qfk_platform" value="qfk_platform" /></el-select></div>
+                  <div class="signal-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" filterable @change="onSignalToolChange"><el-option label="日志检查 qfk_log" value="qfk_log" /><el-option label="系统 qfk_system" value="qfk_system" /><el-option label="服务 qfk_service" value="qfk_service" /><el-option label="虚拟机 qfk_vm" value="qfk_vm" /><el-option label="网络 qfk_network" value="qfk_network" /><el-option label="存储 qfk_storage" value="qfk_storage" /><el-option label="硬件 qfk_hardware" value="qfk_hardware" /><el-option label="平台 qfk_platform" value="qfk_platform" /></el-select></div>
                   <div class="signal-row"><span class="signal-k">主机</span><el-input v-model="signalEditDraft.acquire.args.host" size="small" placeholder="{{HOST}} 或固定主机名/IP" /></div>
                   <div class="field-hint" v-pre>Terminal Bridge 通过此主机选择 SSH 会话；它不是 aCLI 参数。要遍历集群，请在下方启用“集群执行”。</div>
                   <!-- 容器与执行命令：位于输入/输出契约之前，先明确命令在哪里、执行什么。 -->
@@ -3073,6 +3375,27 @@ onMounted(() => {
                     <div class="signal-row"><span class="signal-k">执行命令</span><el-input v-model="signalEditDraft.acquire.args.command" size="small" placeholder="子命令，如 list / show / get status" /></div>
                     <div class="field-hint">acli 之后的子命令（如 list、show、get status）；命名空间由工具名（qfk_vm 等）隐含，勿含 acli 前缀</div>
                   </template>
+
+                  <div class="signal-row command-preview-row">
+                    <span class="signal-k">完整命令</span>
+                    <div class="signal-v">
+                      <el-button text type="primary" size="small" :loading="commandPreviewLoading[commandPreviewKey(signalEditDraft, editingSignalIndex ?? 0)]" @click="loadCommandPreview(signalEditDraft, editingSignalIndex ?? 0, true)">
+                        编译当前草稿的 HCI 执行命令
+                      </el-button>
+                      <div v-if="commandPreviews[commandPreviewKey(signalEditDraft, editingSignalIndex ?? 0)] || commandPreviewErrors[commandPreviewKey(signalEditDraft, editingSignalIndex ?? 0)]" class="command-preview-panel">
+                        <template v-if="commandPreviews[commandPreviewKey(signalEditDraft, editingSignalIndex ?? 0)]">
+                          <code>{{ commandPreviews[commandPreviewKey(signalEditDraft, editingSignalIndex ?? 0)]!.command }}</code>
+                          <div class="command-preview-meta">
+                            <span>SSH 目标主机：{{ commandPreviews[commandPreviewKey(signalEditDraft, editingSignalIndex ?? 0)]!.host || '由运行时上下文决定' }}</span>
+                            <span v-if="commandPreviews[commandPreviewKey(signalEditDraft, editingSignalIndex ?? 0)]!.variables?.length">执行前替换变量：{{ commandPreviews[commandPreviewKey(signalEditDraft, editingSignalIndex ?? 0)]!.variables!.join('、') }}</span>
+                            <el-button text type="primary" size="small" @click="copyCommandPreview(signalEditDraft, editingSignalIndex ?? 0)">复制命令</el-button>
+                          </div>
+                        </template>
+                        <el-alert v-else type="warning" :closable="false" show-icon :title="`无法编译完整命令：${commandPreviewErrors[commandPreviewKey(signalEditDraft, editingSignalIndex ?? 0)]}`" />
+                      </div>
+                      <div class="field-hint command-preview-notice">预览由当前 Agent Handler 编译，不执行命令；未就绪变量会以 <code v-pre>{{变量名}}</code> 形式保留。</div>
+                    </div>
+                  </div>
 
                   <!-- 输入变量由所有 {{VAR}} 占位符自动推导，避免重复维护两份契约。 -->
                   <div class="signal-row">
@@ -3979,6 +4302,16 @@ onMounted(() => {
   font-size: 12px;
 }
 
+.validation-signal-link {
+  align-self: flex-start;
+  height: auto;
+  padding: 0;
+  font-family: monospace;
+  line-height: 1.45;
+  text-align: left;
+  white-space: normal;
+}
+
 .image-evidence-editor {
   display: grid;
   grid-template-columns: 120px minmax(0, 1fr);
@@ -4167,6 +4500,12 @@ onMounted(() => {
   border-radius: 6px;
   margin-bottom: 8px;
   background: #fafafa;
+  scroll-margin-top: 28px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.signal-card.is-focused {
+  border-color: #409eff;
+  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.16);
 }
 .signal-card-head {
   display: flex;
@@ -4181,6 +4520,15 @@ onMounted(() => {
 }
 .signal-card-body {
   padding: 8px 10px;
+}
+.rejected-candidate-reason {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.rejected-candidate-reason strong {
+  line-height: 24px;
 }
 .signal-evidence-details,
 .signal-advanced-details {
@@ -4222,6 +4570,41 @@ onMounted(() => {
   background: #f0f2f5;
   padding: 0 4px;
   border-radius: 3px;
+}
+.command-preview-row .signal-v {
+  min-width: 0;
+}
+.command-preview-panel {
+  margin-top: 5px;
+  padding: 8px 10px;
+  border: 1px solid #d9ecff;
+  border-radius: 5px;
+  background: #f4f9ff;
+}
+.command-preview-panel > code {
+  display: block;
+  overflow-x: auto;
+  padding: 7px 9px;
+  border-radius: 4px;
+  background: #1f2937;
+  color: #e5e7eb;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.command-preview-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  color: #606266;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.field-hint.command-preview-notice {
+  margin: 6px 0 0;
 }
 
 /* 产出变量迷你编辑器 */

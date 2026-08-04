@@ -150,6 +150,33 @@ class TestGateway(unittest.TestCase):
         self.assertEqual(kwargs.get("json"), payload)
         self.assertEqual(kwargs.get("headers"), {"Authorization": "Bearer test"})
 
+    @patch("app.routes.kb._internal_auth_headers")
+    @patch("app.routes.kb.httpx.AsyncClient")
+    def test_qfk_command_preview_uses_agent_handler_endpoint(self, mock_client_cls, mock_auth):
+        """管理端命令预览必须走 Agent Handler，不能在网关或浏览器自行拼接。"""
+        mock_auth.return_value = {"Authorization": "Bearer test"}
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "tool": "qfk_system",
+            "command": "acli --timeout 10 system ps",
+        }
+        mock_client.post.return_value = mock_response
+
+        payload = {"signal": {"acquire": {"tool": "qfk_system", "args": {"command": "ps"}}}}
+        response = self.client.post("/api/v1/kbd/command-preview", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), mock_response.json.return_value)
+        mock_client.post.assert_called_once()
+        args, kwargs = mock_client.post.call_args
+        self.assertIn("/internal/qfk-command-preview", args[0])
+        self.assertEqual(kwargs["json"], payload)
+        self.assertEqual(kwargs["headers"], {"Authorization": "Bearer test"})
+
 
 if __name__ == "__main__":
     unittest.main()

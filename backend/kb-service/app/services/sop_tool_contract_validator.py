@@ -21,6 +21,12 @@ ALLOWED_BASH_CONTAINERS = ALLOWED_SOP_BASH_CONTAINERS
 _BASH_FORBIDDEN_PREFIX_RE = re.compile(r"(^|\s)(docker\s+exec|kubectl\s+exec|nsenter)\b", re.IGNORECASE)
 _ACLI_CATALOG_PATH = Path(__file__).resolve().parent / "catalog" / "acli_command_catalog.json"
 
+# aCLI catalog 目前只记录命令路径，不记录 argv schema。这里只维护已经由回归
+# 证实的最小调用契约；它描述命令本身，不绑定 KBD/support_id。
+_ACLI_MIN_TAIL_ARGS = {
+    "acli system smartctl": 1,
+}
+
 
 def _normalize_spaces(value: str) -> str:
     return " ".join(value.strip().split())
@@ -34,7 +40,9 @@ def _tokenize(command: str) -> list[str]:
 
 
 @lru_cache(maxsize=1)
-def _get_acli_catalog_commands() -> frozenset[str]:
+def get_acli_catalog_commands() -> frozenset[str]:
+    """返回当前代码随附的 aCLI catalog 命令集合。"""
+
     with _ACLI_CATALOG_PATH.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -76,6 +84,58 @@ def _catalog_matches(path_tokens: list[str], catalog_commands: frozenset[str]) -
     return False
 
 
+def validate_acli_catalog_command(command: str) -> str | None:
+    """校验只读编译结果是否落在本地 aCLI 命令目录中。
+
+    返回 ``None`` 表示命令可由当前 catalog 识别；否则返回面向专家的原因。该函数
+    同时供 SOP 发布校验和 KBD Signal Proposal 保存门禁复用，避免两个知识生产入口
+    对“Schema 合法但现场命令不存在”给出不同结论。
+    """
+
+    tokens = _tokenize(command)
+    if not tokens:
+        return f"aCLI 命令无法解析为合法参数：{command}"
+    if tokens[0] != "acli":
+        return None
+    if "--help" in tokens or "-?" in tokens or "-h" in tokens:
+        return None
+
+    path_tokens = _strip_global_options(tokens)
+    normalized_path = _normalize_spaces(" ".join(path_tokens))
+    if normalized_path == "acli acli command list":
+        return None
+    if not _catalog_matches(path_tokens, get_acli_catalog_commands()):
+        return (
+            f"aCLI 命令不在当前 catalog 中：{normalized_path}。"
+            "请改为已注册的只读命令，或交由专家确认现场能力"
+        )
+    return None
+
+
+def validate_acli_invocation_command(command: str) -> str | None:
+    """校验 catalog 已登记命令是否具备可运行的最小 argv。
+
+    catalog 命中仅证明命令路径存在；缺少命令本身必需的参数时，调用仍会直接
+    打印 usage 或失败。该结果属于 ``run_failed``，不能归为 ``not_exists``。
+    """
+
+    tokens = _tokenize(command)
+    if not tokens or tokens[0] != "acli":
+        return None
+    path_tokens = _strip_global_options(tokens)
+    for command_path, minimum in _ACLI_MIN_TAIL_ARGS.items():
+        prefix = command_path.split()
+        if path_tokens[: len(prefix)] != prefix:
+            continue
+        actual = len(path_tokens) - len(prefix)
+        if actual < minimum:
+            return (
+                f"aCLI 命令缺少运行所需参数：{_normalize_spaces(command)}；"
+                f"{command_path} 至少需要 {minimum} 个命令参数"
+            )
+    return None
+
+
 def _make_issue(code: str, message: str, location: str, line_number: int | None = None) -> ValidationIssue:
     return ValidationIssue(
         code=code,
@@ -87,8 +147,7 @@ def _make_issue(code: str, message: str, location: str, line_number: int | None 
 
 
 def _validate_acli_command(command: str, location: str, line_number: int | None) -> list[ValidationIssue]:
-    tokens = _tokenize(command)
-    if not tokens:
+    if not _tokenize(command):
         return [
             _make_issue(
                 "sop_tool_acli_parse_failed",
@@ -97,23 +156,22 @@ def _validate_acli_command(command: str, location: str, line_number: int | None)
                 line_number,
             )
         ]
-
-    if tokens[0] != "acli":
-        return []
-
-    if "--help" in tokens or "-?" in tokens or "-h" in tokens:
-        return []
-
-    path_tokens = _strip_global_options(tokens)
-    normalized_path = _normalize_spaces(" ".join(path_tokens))
-    if normalized_path == "acli acli command list":
-        return []
-
-    if not _catalog_matches(path_tokens, _get_acli_catalog_commands()):
+    reason = validate_acli_catalog_command(command)
+    if reason:
         return [
             _make_issue(
                 "sop_tool_acli_command_not_in_catalog",
-                f"SOP 中的 aCLI 命令不在本地 catalog 中：{normalized_path}。请改为受支持命令，或先使用 acli ... --help 探索。",
+                f"SOP 中的{reason}",
+                location,
+                line_number,
+            )
+        ]
+    invocation_reason = validate_acli_invocation_command(command)
+    if invocation_reason:
+        return [
+            _make_issue(
+                "sop_tool_acli_invocation_invalid",
+                f"SOP 中的{invocation_reason}",
                 location,
                 line_number,
             )

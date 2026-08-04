@@ -1,8 +1,21 @@
 # Agent 工具设计
 
-> 权威来源：本文件（v3.3，核心执行契约、工具管理 UI 校验、QKV/QFK Capability Descriptor、统一 qfk_log Catalog、SOP 发布联动、容器执行适配器、运行时变量来源门禁与工具注册表热刷新均已落地）。
+> 权威来源：本文件（v3.4，核心执行契约、工具管理 UI 校验、QKV/QFK Capability Descriptor、统一 qfk_log Catalog、抽取质量守门、SOP 发布联动、容器执行适配器、运行时变量来源门禁与工具注册表热刷新均已落地）。
 > 关联文档：[agent设计.md](./agent设计.md) §十（目录结构）、[agent记忆设计.md](./agent记忆设计.md)
 > 最新事件方案：[ReAct 工具调用历史跨轮次持久化设计](events/2026-06-17-ReAct工具调用历史跨轮次持久化.md)
+
+---
+
+## 2026-08-03 权威修订：QFK producer 与自动抽取质量边界
+
+- QFK producer 只在每个产出变量至少被一个其他下游 Signal `requires` 时合法；自引用不算下游消费；
+- 配置文件内容被直接用于存在、缺失或状态判断时，使用 matcher，不生成无人消费的全文变量；
+- `/sf/cfg` 安全文件读取使用 `qfk_system command="cat" + command_args=[path]`，`qfk_system` 不接受 `resource_keyword`；
+- 自动生成的 QKV/QFK 缺省和历史 10/30 秒 timeout 收敛为 120 秒；
+- 失败虚拟机任务且后续需要 HOST/VM 时，由 `qkv_task` 生产变量，QFK 不得把可采集任务变量伪装为外部输入；
+- Prompt 负责提供生成先验，确定性后处理负责拒绝 dead producer；两者都不得按具体 KBD ID 特判。
+
+对应版本血缘和评估边界见 [KBD 关键信号抽取反馈闭环与版本治理方案](../events/2026-08-03-KBD关键信号抽取反馈闭环与版本治理方案.md)。
 
 ---
 

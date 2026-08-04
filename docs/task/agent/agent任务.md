@@ -15,6 +15,7 @@ update_trigger: Agent 层功能新增/重构/问题修复任务
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
+| 2026-08-04 | v2.7 | 修复 KBD27736 截图 Evidence 输入边界泄漏：根因/方案图片、上下文及未知章节 fail closed；Candidate 图片来源与逐字 evidence 强校验，阻止方案侧 OCR/文本绕过直接字段置空。 | [KBD关键信号输入边界泄漏修复任务](events/2026-08-04-KBD关键信号输入边界泄漏修复任务.md) |
 | 2026-07-31 | v2.6 | 启动正式专家复核并在 Agent KBD 运行审计写入最小 Replay manifest：精确版本、计划、环境/参数哈希、逐 Signal evaluation 和 Terminal Bridge artifact 指针；不复制现场输出且不宣称完整 Replay。 | [KBD 最小回放证据契约与正式专家复核启动任务](events/2026-07-31-KBD最小回放证据契约与正式专家复核启动任务.md) |
 | 2026-07-31 | v2.5 | 完成可独立产生的 KBD 数据闭环：reason_code、专家删除原因、精确 runtime revision、CDD 编译/逐 Signal outcome、Capability Gap、使用效果/失败模式与评估导出；SSO、Replay、真实客户执行和 Champion/Challenger 仍待后续阶段。 | [KBD 专家监督与运行效果数据闭环任务](events/2026-07-31-KBD专家监督与运行效果数据闭环任务.md) |
 | 2026-07-31 | v2.4 | qfk_system 的 aCLI `--container` 与 Bridge container 执行边界分离；Matcher 和产出变量共用 TextExtract，替代 df 特判；真实 HCI/Agent replay 待实施。 | [QFK 系统执行域与统一文本取值任务](./events/2026-07-31-QFK系统执行域与统一文本取值任务.md) |
@@ -38,6 +39,7 @@ update_trigger: Agent 层功能新增/重构/问题修复任务
 
 | 状态 | 任务 | 创建日期 | 关联方案 |
 |------|------|---------|---------|
+| ✅ 完成（代码级；KBD27736 重抽仍须专家触发） | T-AGT-KBD-SIGNAL-INPUT-BOUNDARY：诊断截图白名单、截图上下文隔离与 source ref/evidence 强校验 | 2026-08-04 | [KBD 关键信号输入边界泄漏修复方案](../../solution/agent/events/2026-08-04-KBD关键信号输入边界泄漏修复方案.md) |
 | ✅ 完成（代码级；真实 HCI 回归待做） | T-AGT-QFK-EXEC：aCLI 系统执行域、Bridge 边界和统一 TextExtract | 2026-07-31 | [QFK 系统执行域与统一文本取值方案](../../solution/agent/events/2026-07-31-QFK系统执行域与统一文本取值方案.md) |
 | ✅ 完成（代码级；不代表可信身份或真实客户 replay） | T-AGT-KBD-DATA-CLOSURE：专家原因/删除原因、精确版本运行审计、Capability Gap、运行指标与评估导出 | 2026-07-31 | [KBD 专家监督与运行效果数据闭环方案](../../solution/agent/events/2026-07-31-KBD专家监督与运行效果数据闭环方案.md) |
 | ✅ 完成（代码级；不代表完整回放） | T-AGT-KBD-REPLAY-MANIFEST：运行审计中的不可变版本、哈希与 Terminal Bridge artifact 最小引用；正式专家复核入口沿用现有轻治理审核页 | 2026-07-31 | [KBD 最小回放证据契约与正式专家复核启动方案](../../solution/agent/events/2026-07-31-KBD最小回放证据契约与正式专家复核启动方案.md) |
