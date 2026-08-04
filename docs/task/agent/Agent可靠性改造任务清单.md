@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-08-04 | v3.53 | **KBD Candidate 生成与执行门禁分离**：Prompt v2.1 完整输出 Candidate 并使用当前 aCLI catalog 作为知识参考；kb-service 按 write_signal/not_exists/run_failed 分类，catalog 命中不冒充运行成功，Agent 继续只消费门禁通过并发布的 Signal。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
 | 2026-08-04 | v3.52 | **KBD 处置 Signal 纵深防御统一**：`kbd_differential` 复用共享 KBD 只读判定，历史 `phase=solution`、人工确认或明确写动作继续在调度前 blocked；正常只读 Signal 不受影响。 | [KBD 关键信号只读边界方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号只读边界方案.md) |
 | 2026-08-03 | v3.51 | **KBD 抽取质量守门**：Prompt v1.8 强制失败任务 `qkv_task`、QFK producer 下游消费、120 秒与多图引用；KB 后处理拒绝 dead producer，并将 `/sf/cfg` cat 收敛为 `command_args`。 | [KBD 关键信号抽取反馈闭环与版本治理任务](../knowledge-base/events/2026-08-03-KBD关键信号抽取反馈闭环与版本治理任务.md) |
 | 2026-08-03 | v3.50 | **QFK timeout 缺省值统一**：`BackendSignal`、KBD Differential 和 CDD 命令编译都使用共享的 120 秒缺省值；命令预览与真实执行不再因缺字段产生不同 timeout。 | PR #663 |
