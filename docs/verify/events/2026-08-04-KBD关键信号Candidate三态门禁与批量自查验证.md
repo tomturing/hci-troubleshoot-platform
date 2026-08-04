@@ -102,6 +102,8 @@ migration 021 随后改为收敛迁移：替换上述全部已知反向指令，
 
 第五次同批 revisions 88～92 验证：上述 BMC `qkv_alert` 已进入 `run_failed`，伪造 `messages` Signal 未再通过；正常 MCE 日志、平台告警、`smartctl -i` 与 `ipmitool mc info` 的 BMC 固件判定保持 Signal。进一步逐项审查发现 KBD27222 用 `ipmitool mc info` 判断 RAID 适配器固件，KBD27173 的 `^(9H|F6H)` 无法命中自身 evidence；已补命令能力契约与 regex evidence 预匹配，首批需第六次同批复跑。
 
+第六次同批 revisions 93～97 通过：KBD27079 正常 MCE 日志/core 检查为 Signal，坏 qkv args 为 `run_failed`，处置为 `write_signal`；KBD27173 正常 BMC 固件命令为 Signal、外部 BMC 事件为 `run_failed`；KBD27222 的两个 `lspci` 为 `not_exists`、错误 RAID 固件 `ipmitool mc info` 为 `run_failed`；KBD27653 正常带参数 smartctl 为 Signal、坏 qkv args/无人消费 producer 为 `run_failed`；KBD27736 脱敏检查为 `run_failed`、处置为 `write_signal`。首批允许退出并进入下一批。
+
 首批初跑证明三类分流路径均可见，但未达到整批退出标准。KBD27736 的脱敏 IP 没有直接进入 pattern，模型改用 `address`，只能证明配置存在地址行，不能证明 eth0 与 channel4 冲突。修复同时覆盖两层：Prompt 要求忠实保留脱敏 Candidate，服务端要求 keyword pattern 可从 `provenance.evidence` 逐字追溯；否则归入 `run_failed`。第二次同批重跑已闭环 KBD27736，但 KBD27222 暴露“数组至少一项可追溯”仍不充分：模型可在真实 evidence 项旁混入三个猜测项。第三轮收紧为数组每一项均需由逐字 evidence 或合法变量追溯。第三次复跑又发现 catalog 命中的裸 `smartctl` 会错误通过；新增 KBD/SOP 共用的命令最小 argv 契约，将该调用归为 `run_failed`，而 KBD27653 的 `smartctl -i /dev/sdj` 保持通过。第四次复跑补充采集器/evidence 一致性：BMC 外部事件不是 HCI 告警，普通页面字段不是本机日志。所有规则均不读取 support_id，不依赖单案例硬编码。
 
 每篇逐 Candidate 检查：证据是否来自允许的四个章节；工具与参数是否合理；编译命令是否真实；Matcher 是否能在现场数据上成立；变量链是否可达；正常 Candidate 是否未受拒绝项牵连。

@@ -33,7 +33,7 @@ owner: team
 | T-KB-DOC-01 | 事件文档和现行全量文档同步 | ✅ 完成 | docs 治理检查通过 |
 | T-KB-VERIFY-01 | 后端专项/完整测试、Ruff、Schema、前端类型与构建 | ✅ 完成 | 49 项聚焦测试、303 项完整测试、Ruff、Schema 漂移和 Admin 构建通过 |
 | T-KB-BATCH-00 | KBD30880 连续重抽 5 次回归 | ✅ 5/5 | Proposal 57～61 均有 qkv_task；最新 Proposal 无 Expert 配对，修改数为 0 |
-| T-KB-BATCH-01 | 重跑 KBD27079/27173/27222/27653/27736 | 🔄 第六次同批待重跑 | revisions 88～92 验证采集器一致性；发现命令能力错配与不可命中 regex，已补通用 run_failed 门禁 |
+| T-KB-BATCH-01 | 重跑 KBD27079/27173/27222/27653/27736 | ✅ 六轮闭环 | revisions 93～97 正常 Signal 与 write_signal/not_exists/run_failed 均按预期分流，无新增问题 |
 | T-KB-BATCH-N | 剩余草稿按每批 5 篇自查、修复、重跑、独立提交 | ⬜ 待执行 | 前一批通过后才进入下一批 |
 | T-KB-PR | 汇总本地提交并创建 PR | ⬜ 待全部批次完成 | CI 全绿；标签齐全 |
 
