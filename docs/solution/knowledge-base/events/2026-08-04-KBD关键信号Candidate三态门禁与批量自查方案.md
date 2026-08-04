@@ -49,6 +49,7 @@ Prompt v2.1 输出 Candidate，但传输层保留历史 key `signals`，避免 P
 - QKV 是前台历史事实查询，QFK 是后台采集/判定；
 - 当前代码随附 aCLI catalog 命令列表；
 - Matcher、声明式 Extract 和变量依赖基本规则。
+- 明确 HCI 平台告警的召回契约：每个不同告警至少一个 qkv_alert Candidate，不能因已有后台检查而省略；BMC/iBMC 外部事件除外。
 
 知识只用于提高映射质量。若正文已有明确候选但属于写动作、catalog 缺失或表达不完整，LLM 仍输出 Candidate 并诚实标注 `phase=solution`/`needs_review`，不能自行删除。
 
@@ -147,6 +148,7 @@ Prompt 数据迁移采用“收敛”而不是“只追加新规则”：存量�
 | Matcher 数组首项有证据、其余项靠猜 | “至少一项可追溯”让猜测项搭便车成为 Signal | 对数组逐项校验；任一无法追溯即保留完整 Candidate 并归入 `run_failed` |
 | catalog 已登记但调用缺少必需参数 | 裸 `smartctl` 被误认为“catalog 命中即可运行” | 复用命令级最小 argv 契约；失败进入 `run_failed`，不冒充 `not_exists` |
 | BMC 页面/普通版本字段被伪造成告警或日志 | Schema 与 catalog 均合法，但运行采集源不存在 | acquisition 必须由 evidence 支持；不一致时完整保留 Candidate 并进入 `run_failed` |
+| 同篇已有 smartctl 后省略明确平台告警 | 只保留后台判定会丢失用户可见的生产者事实 | Prompt 对明确 HCI 告警逐项召回 qkv_alert，BMC 外部事件明确排除 |
 | `ipmitool mc info` 判断 RAID 固件 | 命令能运行但输出领域不含目标事实 | 命令能力契约拒绝，进入 `run_failed` |
 | regex 表达了意图却无法命中 evidence | 保存后现场必然无法按当前证据成立 | 编译并对逐字 evidence 预匹配；失败进入 `run_failed` |
 
