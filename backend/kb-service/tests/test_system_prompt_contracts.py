@@ -160,6 +160,20 @@ def test_signal_executability_prompt_migration_teaches_catalog_and_matcher_bound
     assert StrictPromptLoader.get_template_placeholders(supplemental_rule) == set()
 
 
+def test_signal_executability_prompt_migration_removes_all_model_side_filters():
+    migration = _SIGNAL_EXECUTABILITY_MIGRATION_PATH.read_text(encoding="utf-8")
+
+    assert "完整产出关键信号 Candidate 集合" in migration
+    assert "你只负责提出 Candidate，不得在生成阶段替服务端过滤或删除候选" in migration
+    assert "qkv_task 是查询历史任务的只读采集" in migration
+    assert "补充规则 24：KBD Candidate 执行语义分流边界" in migration
+    assert "仍保留最接近原意的 Candidate" in migration
+    assert "extract_prompt LIKE '%补充规则 24：KBD Signal 只读边界%'" in migration
+    assert "extract_prompt LIKE '%无法可靠映射为合法采集器的步骤，宁缺毋滥%'" in migration
+    assert "extract_prompt LIKE '%宁可标记 needs_review 或不产出信号%'" in migration
+    assert "extract_prompt LIKE '%且后续检查需要故障 HOST 或 VM 时%'" in migration
+
+
 def test_seed_signal_prompt_contains_catalog_and_matcher_quality_boundaries():
     template = _seed_template("kbd_extract_signals_v2")
 

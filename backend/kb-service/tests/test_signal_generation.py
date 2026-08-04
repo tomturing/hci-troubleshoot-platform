@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from app.routes import extract_signals
 from app.routes.extract_signals import (
+    ExtractSignalsResponse,
     _acquirer_catalog_prompt_text,
     _matcher_quality_violation,
     _normalize_config_file_read,
@@ -269,6 +270,17 @@ def test_kbd_reextract_creates_fresh_proposal_and_clears_stale_draft_pointer(mon
     assert calls["revision"]["generation_metadata"]["origin"] == "signal_reextract"
     assert calls["flushed"] is True
     assert calls["committed"] is True
+
+
+def test_extract_response_preserves_proposal_revision_id_for_batch_audit():
+    response = ExtractSignalsResponse(
+        success=True,
+        kbd_id=27123,
+        proposal_revision_id=14,
+        signals_count=0,
+    )
+
+    assert response.model_dump()["proposal_revision_id"] == 14
 
 
 def test_generated_qkv_qfk_timeouts_use_120_for_missing_and_historical_defaults():

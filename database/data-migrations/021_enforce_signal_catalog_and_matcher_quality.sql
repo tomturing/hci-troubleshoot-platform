@@ -50,6 +50,47 @@ SET content_template = replace(
     updated_at = NOW()
 WHERE name = 'kbd_extract_signals_v2';
 
+-- 存量环境会按 015~020 逐次追加规则。仅追加规则 25 仍会留下 PR #668 的
+-- “不生成 Signal/不产出信号/宁缺毋滥”等反向指令，导致版本号虽为 2.1，模型却
+-- 继续静默丢弃 Candidate。这里把所有已知冲突语句收敛到三态语义；不能依赖
+-- “后出现的规则优先”让模型自行解决矛盾。
+UPDATE system_prompt
+SET content_template = replace(
+        replace(
+            replace(
+                replace(
+                    replace(
+                        replace(
+                            replace(
+                                replace(
+                                    content_template,
+                                    '从 KBD 案例的自然语言章节中，按「字段级分别抽取」第一性原理，产出关键信号集合（v2 嵌套结构）。' || E'\n' || '关键信号分两类角色：',
+                                    '从 KBD 案例的自然语言章节中，按「字段级分别抽取」第一性原理，完整产出关键信号 Candidate 集合（v2 嵌套结构）。' || E'\n' || '必须区分且只使用三个概念：Candidate 是你识别出的全部候选；Signal 是服务端门禁通过的候选；Rejected Candidate 是服务端门禁未通过但完整保留、交专家处理的候选。你只负责提出 Candidate，不得在生成阶段替服务端过滤或删除候选。' || E'\n' || 'Candidate 分两类角色：'
+                                ),
+                                '# 采集器目录（封闭词表，acquire.tool 必须取自此处）',
+                                '# 采集器与当前 aCLI catalog 知识（用于正确映射和减少乱造，不是模型侧过滤器）'
+                            ),
+                            '无法可靠映射为合法采集器的步骤，宁缺毋滥，不要硬造信号。',
+                            '不得凭空添加正文没有的命令；但正文已构成候选而映射不确定时仍要输出 Candidate，并标 needs_review，供工程门禁与专家复核。'
+                        ),
+                        '复杂 awk、sed、sort、聚合、正则歧义或未知管道不得猜测；保留 evidence，标 provenance.needs_review=true。',
+                        '复杂 awk、sed、sort、聚合、正则歧义或未知管道不得猜测或改写执行语义；仍保留 Candidate 与 evidence，标 provenance.needs_review=true，由服务端验证。'
+                    ),
+                    '信息不足、无法构造上述合法结构时，宁可标记 needs_review 或不产出信号；绝不生成 resource_keyword 等旧字段。',
+                    '信息不足、无法构造合法结构时仍保留最接近原意的 Candidate 与 evidence，并标 needs_review；不得用 resource_keyword 等旧字段伪装成合法 Signal，由服务端归入 run_failed。'
+                ),
+                '当标题、问题描述、任务详情或任务截图明确表达启动、创建、迁移虚拟机失败，且后续检查需要故障 HOST 或 VM 时，必须先生成 qkv_task producer。keyword 使用正文或截图中稳定的任务动作，is_failed=true，produces 至少声明 HOST 和 VM；后续 QFK 通过 requires 使用这些变量。能够从失败任务取得的 HOST/VM 不得降级为未声明外部变量。',
+                '当标题、问题描述、任务详情或任务截图明确表达启动、创建、迁移、删除虚拟机失败时，必须先生成 qkv_task producer。qkv_task 是查询历史任务的只读采集；keyword 中的“启动/创建/迁移/删除”只是查询条件，绝不等于执行写动作。keyword 使用正文或截图中稳定的任务动作，is_failed=true，produces 至少声明 HOST 和 VM；后续 QFK 通过 requires 使用这些变量。'
+            ),
+            '# 补充规则 24：KBD Signal 只读边界（最高优先级）' || E'\n' || '- Signal 只能是只读事实采集、确定性判定或变量生产，所有输出 Signal 的 orchestrate.phase 必须为 diagnostic。' || E'\n' || '- 标题、问题描述、告警信息或有效排查步骤中出现写入、配置变更、启停/重启、删除、迁移等处置动作时，不生成 Signal，不以 phase=solution 或 require_human_confirm 形式保留。' || E'\n' || '- 处置动作应留在 KBD 解决方案中；若它误写在排查描述中，由专家修正源内容后重新抽取。不得自动改写案例正文，也不得根据单个案例硬编码抽取结果。',
+            '# 补充规则 24：KBD Candidate 执行语义分流边界（最高优先级）' || E'\n' || '- 只读事实采集、确定性判定或变量生产 Candidate 使用 orchestrate.phase=diagnostic，通过门禁后才成为 Signal。' || E'\n' || '- 真实写入、配置变更、启停/重启、删除、迁移等执行动作仍须完整输出 Candidate，使用 phase=solution，由服务端归入 write_signal 并强制专家审核。' || E'\n' || '- qkv_task 只查询历史任务；keyword 中出现启动、创建、迁移或删除不代表执行这些动作，必须作为 diagnostic Candidate 输出。不得自动改写案例正文，也不得根据单个案例硬编码抽取结果。'
+        ),
+        '无法从正文或截图可见文字确定 file 时不得生成 qfk_log。',
+        '无法从正文或截图可见文字确定 file 时仍保留最接近原意的 Candidate 并标 needs_review，由服务端归入 run_failed。'
+    ),
+    updated_at = NOW()
+WHERE name = 'kbd_extract_signals_v2';
+
 UPDATE system_prompt
 SET version = '2.1',
     updated_at = NOW()
@@ -74,9 +115,16 @@ BEGIN
        OR extract_prompt NOT LIKE '%服务端归入 write_signal%'
        OR extract_prompt NOT LIKE '%服务端归入 not_exists%'
        OR extract_prompt NOT LIKE '%统一视为 run_failed%'
+       OR extract_prompt NOT LIKE '%完整产出关键信号 Candidate 集合%'
+       OR extract_prompt NOT LIKE '%qkv_task 是查询历史任务的只读采集%'
        OR extract_prompt NOT LIKE '%"signals": [%'
        OR extract_prompt LIKE '%所有输出 Signal 的 phase 必须为 diagnostic；phase=solution 禁止输出%'
-       OR extract_prompt LIKE '%无法映射到 catalog 时不生成 Signal%' THEN
+       OR extract_prompt LIKE '%无法映射到 catalog 时不生成 Signal%'
+       OR extract_prompt LIKE '%补充规则 24：KBD Signal 只读边界%'
+       OR extract_prompt LIKE '%无法可靠映射为合法采集器的步骤，宁缺毋滥%'
+       OR extract_prompt LIKE '%宁可标记 needs_review 或不产出信号%'
+       OR extract_prompt LIKE '%且后续检查需要故障 HOST 或 VM时%'
+       OR extract_prompt LIKE '%且后续检查需要故障 HOST 或 VM 时%' THEN
         RAISE EXCEPTION 'kbd_extract_signals_v2 未对齐 Candidate 三态门禁';
     END IF;
 END

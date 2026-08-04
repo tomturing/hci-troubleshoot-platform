@@ -23,7 +23,7 @@ owner: team
 | Schema | 新 rejected candidate 带三值 reason_code | 合法 | ✅ 已通过 |
 | Schema | 历史 rejected candidate 无 reason_code | 仍合法 | ✅ 已通过 |
 | Prompt | 兼容 key `signals` 输出完整 Candidate，不含模型侧“不得输出”回归规则 | 合法且占位符集合不变；Prompt/服务任一先升级不产生空 Proposal | ✅ 已通过 |
-| 数据迁移 | v1.9 → v2.1 前向替换与幂等断言 | 不改写历史 KBD/revision | ✅ hci-dev 事务内通过并 ROLLBACK，线上仍为 v1.9 |
+| 数据迁移 | v1.9 → v2.1 前向替换、旧规则收敛与幂等断言 | 不改写历史 KBD/revision；不得残留模型侧过滤语句 | ✅ hci-dev 实际升级至 v2.1，并通过正向/负向断言 |
 | 前端 | 三类标签与 TypeScript | 类型检查、构建通过 | ✅ Admin 生产构建通过 |
 | 后端 | kb-service 完整测试与 Ruff | 全绿 | ✅ 303 passed；Ruff 通过 |
 
@@ -57,13 +57,19 @@ data migration 021：在 hci-dev PostgreSQL 对当前 Prompt v1.9 执行 BEGIN �
 
 最终方案保留 `signals` 传输 key，但明确其内容在服务端门禁前都是 Candidate；新服务同时接受 `candidates`。修订后的 migration 021 已再次在当前 v1.9 上执行 BEGIN → 全部断言 → ROLLBACK，操作前后版本和 MD5 完全一致。由此证明 Prompt 与服务任一先升级都不会因 key 不兼容产生空 Proposal。
 
+### 存量 Prompt 冲突的对抗性验证
+
+首次实际应用 migration 021 后，KBD30880 的 Proposal revision 56 仍未生成 `qkv_task`。数据库中的 v2.1 Prompt 事实检查发现：新规则 25 虽已追加，但 PR #668 的补充规则 24 仍明确要求“不生成 Signal，不以 phase=solution 形式保留”，同时还残留“宁缺毋滥”“不产出信号”和带下游条件的旧任务规则。版本号与正向关键字断言均通过，却不是语义完整的升级。
+
+migration 021 随后改为收敛迁移：替换上述全部已知反向指令，并增加负向断言。hci-dev 重跑后 Prompt 版本为 2.1，MD5 为 `3ce7dfb26ba929c5d8c58996702a7189`，SHA-256 为 `268e2f960e3fc80117cd4a8f72650f4e76e88177bac21aaceb27f26f8357101a`；旧规则 24、“宁缺毋滥/不产出”和任务下游前置条件均不存在。
+
 ## KBD30880 回归协议
 
 部署当前分支与 Prompt v2.1 后连续重新抽取 5 次，每次记录：
 
 | 次数 | Proposal revision | Prompt hash | qkv_task | Signal 数 | Rejected 分类 | 结论 |
 |---:|---:|---|---|---:|---|---|
-| 1 | 待执行 | 待记录 | 必须存在 | 待记录 | 待记录 | 待记录 |
+| 1 | 57 | `268e2f960e3fc80117cd4a8f72650f4e76e88177bac21aaceb27f26f8357101a` | ✅ `keyword=启动虚拟机`、`is_failed=true`、产出 HOST/VM | 1 | write_signal=1，run_failed=2 | ✅ qkv_task 通过；“取消 gpu_type”写动作可见；最新 Proposal 无 Expert 配对 |
 | 2 | 待执行 | 待记录 | 必须存在 | 待记录 | 待记录 | 待记录 |
 | 3 | 待执行 | 待记录 | 必须存在 | 待记录 | 待记录 | 待记录 |
 | 4 | 待执行 | 待记录 | 必须存在 | 待记录 | 待记录 | 待记录 |
@@ -76,6 +82,8 @@ data migration 021：在 hci-dev PostgreSQL 对当前 Prompt v1.9 执行 BEGIN �
 - phase 为 diagnostic，进入 Signal；
 - 没有 Candidate 因 keyword 含“启动”进入 write_signal；
 - 新 Proposal 尚无专家修改时，页面相对 AI Proposal 修改数为 0。
+
+第 1 次数据库配对核验：`latest_proposal_revision_id=57`、`working_revision_id=NULL`，以 revision 57 为 `baseline_proposal_revision_id` 的 Expert revision 数量为 0，因此相对当前 AI Proposal 的专家修改数应为 0。同步 API 内部已返回 revision id，但响应模型曾遗漏该字段并显示为 `null`；已将 `proposal_revision_id` 加入响应契约，后续镜像回归验证。
 
 ## 第一批 5 篇复跑协议
 

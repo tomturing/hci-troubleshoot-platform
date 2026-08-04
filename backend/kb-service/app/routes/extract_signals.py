@@ -1428,6 +1428,7 @@ class ExtractSignalsResponse(BaseModel):
     success: bool
     kbd_id: int | None = None
     sop_id: int | None = None
+    proposal_revision_id: int | None = None
     signals_count: int
     rejected_count: int = 0
     signals: list[dict[str, Any]] = Field(default_factory=list)

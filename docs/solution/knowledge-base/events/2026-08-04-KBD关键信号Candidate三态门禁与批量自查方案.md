@@ -91,6 +91,8 @@ Prompt v2.1 输出 Candidate，但传输层保留历史 key `signals`，避免 P
 
 `reason_code` 对新数据写入，对历史快照保持可选。重新抽取继续产生不可变 Proposal revision，不改写历史 Proposal/Expert。
 
+Prompt 数据迁移采用“收敛”而不是“只追加新规则”：存量库会依次经历 015～020，旧 Prompt 中可能同时存在“不得输出”“宁缺毋滥”“不产出信号”和新版“完整输出 Candidate”。migration 021 必须替换这些已知反向指令，并在结束时断言它们已经消失；仅把版本号改成 2.1 或在末尾追加规则 25 不算升级成功。新装环境的 seed 与存量迁移后的 Prompt 必须表达同一三态语义。
+
 ### 5. 专家界面
 
 - Signal 区域保持现有查看、编辑和完整命令预览。
@@ -134,6 +136,7 @@ Prompt v2.1 输出 Candidate，但传输层保留历史 key `signals`，避免 P
 | 历史 revision 没有新字段 | 强制 required 会破坏不可变历史读取 | `reason_code` 可选兼容，新增数据稳定写入 |
 | 自动修复 Candidate | 修改原意后无法审计模型真实输出 | 仅允许封闭的确定性规范化；拒绝项保留完整 Candidate |
 | Prompt 先于服务滚动升级 | 若改成新 JSON key，旧服务会保存空 Proposal | wire key 继续使用 `signals`；新服务把它解释为 Candidate 并兼容 `candidates` |
+| 新规则只追加在旧 Prompt 末尾 | 模型同时收到“完整输出”和“不得输出”，行为取决于冲突消解 | migration 021 替换全部已知反向语句，并以负向断言阻止假升级 |
 
 ### 为什么不选其他方案
 
