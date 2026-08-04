@@ -124,6 +124,8 @@ migration 021 随后改为收敛迁移：替换上述全部已知反向指令，
 
 第二次同批 revisions 103～107 已证明 phase 纠偏生效：KBD28156 的修复后 lspci 从错误 `write_signal` 改为 `not_exists`，KBD28900 的真实 raw 写动作仍为 `write_signal`。但 KBD29294 明确的磁盘温度告警在本轮被随机省略，说明 Prompt 缺少逐告警召回硬约束；已补“每个不同 HCI 平台告警至少一个 qkv_alert Candidate，BMC 外部事件除外”，同批需第三次重跑。
 
+第三次同批 revisions 108～112 通过：KBD29294 的磁盘温度 qkv_alert 与 smartctl 阈值均为 Signal；KBD28156 两条平台告警分别召回、lspci 为 `not_exists`、reboot 为 `write_signal`；KBD28177 正常告警/日志为 Signal，坏 exists 为 `run_failed`；KBD28900 的 raw 写动作继续为 `write_signal`，结构不完整只读项为 `run_failed`；KBD28094 的正文 `alert_info=无`，未把案例标题标签强制冒充平台告警，LAN set 动作进入 `write_signal`。第二批允许退出。
+
 每批事件记录以下内容：
 
 ```text
