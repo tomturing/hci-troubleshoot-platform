@@ -40,6 +40,7 @@ interface KbdEntry {
   ai_category_label?: string | null
   // 关键信号集合：后端 GET 直出标准化 v2 文档 {schema_version, signals}（前端原生读 v2，RFC §7）
   signals_json?: SignalsDoc | null
+  signal_review_facts?: Record<string, { status: 'needs_review' | 'reviewed' }>
   latest_proposal_revision_id?: number | null
   working_revision_id?: number | null
   lock_version?: number
@@ -1015,16 +1016,15 @@ function inferredQfkLogPathLabel(sig: SignalV2): string {
 type SignalReviewTag = { label: string, type: 'success' | 'warning' }
 function signalReviewTag(sig: SignalV2): SignalReviewTag | null {
   const needsReview = sigProvenance(sig).needs_review === true || sig.review?.require_human_confirm === true
-  if (needsReview) {
-    // 历史已发布数据未保存 review.require_human_confirm=false。已发布的生效版本
-    // 已完成专家审核，展示层将其正确解释为“已人工复核”；创建维护工作稿后则立即
-    // 回到待复核，避免把正在修改的内容误称为已确认。
-    if (detailEntry.value?.status === 'published' && !detailEntry.value.maintenance_working) {
-      return { label: '已人工复核', type: 'success' }
-    }
-    return { label: '需人工复核', type: 'warning' }
-  }
-  if (sig.review?.require_human_confirm === false) return { label: '已人工复核', type: 'success' }
+  const signalId = String(sig.id || '')
+  const hasLocalChange = Boolean(
+    signalId
+    && (localSignalIds.value.has(signalId) || Object.prototype.hasOwnProperty.call(stagedSignalEdits.value, signalId)),
+  )
+  if (hasLocalChange) return needsReview ? { label: '需人工复核', type: 'warning' } : null
+  const reviewStatus = signalId ? detailEntry.value?.signal_review_facts?.[signalId]?.status : undefined
+  if (reviewStatus === 'reviewed') return { label: '已人工复核', type: 'success' }
+  if (reviewStatus === 'needs_review' || needsReview) return { label: '需人工复核', type: 'warning' }
   return null
 }
 function sigSourceRefs(sig: SignalV2): string[] {
@@ -1640,8 +1640,13 @@ async function persistSignalList(
   if (entryIndex !== -1) entries.value[entryIndex].signals_json = newDoc
   clearStagedSignalEdits()
   clearLocalSignals()
-  void fetchRevisionState(detailEntry.value.id)
-  await validateCurrentCandidate({ silent: true })
+  try {
+    await refreshOpenedDetail()
+  } catch {
+    // Signal 已保存成功时，详情刷新失败不能反报“保存失败”；保留当前非绿色状态，
+    // 直到用户重新加载并取得后端派生的审核事实。
+    ElMessage.warning('保存成功，但复核标签刷新失败，请重新加载详情')
+  }
   ElMessage.success(successMessage)
   return true
 }

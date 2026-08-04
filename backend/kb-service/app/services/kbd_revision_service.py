@@ -252,6 +252,104 @@ def select_current_expert_pair(
     return None, None
 
 
+def _signal_map(payload_or_document: Any) -> dict[str, dict[str, Any]]:
+    """按稳定 ID 读取 Signal；同时接受 revision payload 与 signals_json 文档。"""
+
+    if not isinstance(payload_or_document, dict):
+        return {}
+    document = payload_or_document.get("signals_json")
+    if not isinstance(document, dict):
+        document = payload_or_document
+    signals = document.get("signals") if isinstance(document, dict) else None
+    if not isinstance(signals, list):
+        return {}
+    return {
+        str(signal["id"]): signal
+        for signal in signals
+        if isinstance(signal, dict) and str(signal.get("id") or "").strip()
+    }
+
+
+def _signal_requires_human_review(signal: Any) -> bool:
+    """复用既有 Signal 字段判断这条内容是否属于人工复核待办。"""
+
+    if not isinstance(signal, dict):
+        return False
+    provenance = signal.get("provenance")
+    review = signal.get("review")
+    return bool(
+        (isinstance(provenance, dict) and provenance.get("needs_review") is True)
+        or (isinstance(review, dict) and review.get("require_human_confirm") is True)
+    )
+
+
+def _is_expert_saved_revision(revision: KbdRevision) -> bool:
+    """只把专家真实保存的 Expert Revision 当成标签转换依据。"""
+
+    return revision.revision_type == "expert" and getattr(revision, "actor_type", None) == "expert"
+
+
+def derive_signal_review_facts(
+    signals_document: Any,
+    revisions: list[KbdRevision],
+    *,
+    working_revision_id: int | None,
+    latest_proposal_revision_id: int | None,
+) -> dict[str, dict[str, str]]:
+    """派生无标签/需复核/已复核三态，不创建第二份持久化审核状态。
+
+    返回值只包含原本需要人工复核的 Signal：尚无专家保存覆盖时为 ``needs_review``，
+    当前内容已被专家保存的 Expert Revision 覆盖时为 ``reviewed``。普通 Signal 省略，
+    前端因此不显示标签。发布盖章可能清除当前 payload 的待办布尔值，所以 reviewed
+    Revision 还要查看它的直接父版本或 Proposal baseline，恢复“原本是否需要复核”。
+    """
+
+    current_signals = _signal_map(signals_document)
+    if not current_signals:
+        return {}
+
+    revisions_by_id = {int(item.id): item for item in revisions}
+    eligible: list[KbdRevision] = []
+    for revision in sorted(revisions, key=lambda item: item.revision_no, reverse=True):
+        if not _is_expert_saved_revision(revision):
+            continue
+        baseline = resolve_proposal_baseline(revision, revisions_by_id)
+        if latest_proposal_revision_id is not None and (
+            baseline is None or int(baseline.id) != int(latest_proposal_revision_id)
+        ):
+            continue
+        if (
+            revision.id == working_revision_id
+            or is_evaluation_candidate(revision)
+            or str((getattr(revision, "review_metadata", None) or {}).get("review_state") or "") == "working"
+        ):
+            eligible.append(revision)
+
+    facts: dict[str, dict[str, str]] = {}
+    for signal_id, current_signal in current_signals.items():
+        requires_review = _signal_requires_human_review(current_signal)
+        covering_revision: KbdRevision | None = None
+        for revision in eligible:
+            saved_signal = _signal_map(revision.payload_json).get(signal_id)
+            if saved_signal == current_signal:
+                covering_revision = revision
+                break
+
+        if covering_revision is not None:
+            parent = revisions_by_id.get(int(covering_revision.parent_revision_id or 0))
+            baseline = resolve_proposal_baseline(covering_revision, revisions_by_id)
+            requires_review = requires_review or _signal_requires_human_review(
+                _signal_map(getattr(parent, "payload_json", None)).get(signal_id)
+            )
+            requires_review = requires_review or _signal_requires_human_review(
+                _signal_map(getattr(baseline, "payload_json", None)).get(signal_id)
+            )
+
+        if requires_review:
+            facts[signal_id] = {"status": "reviewed" if covering_revision is not None else "needs_review"}
+    return facts
+
+
 async def _resolve_baseline_proposal_id(
     session: AsyncSession,
     *,

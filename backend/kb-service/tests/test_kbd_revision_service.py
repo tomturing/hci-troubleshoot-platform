@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from app.services.kbd_revision_service import (
     KBD_PAYLOAD_FIELDS,
     build_kbd_revision_payload,
+    derive_signal_review_facts,
     diff_revision_payloads,
     is_evaluation_candidate,
     payload_checksum,
@@ -248,3 +249,159 @@ def test_current_expert_pair_uses_approved_revision_after_publish_but_not_after_
         working_revision_id=None,
         latest_proposal_revision_id=12,
     ) == (None, None)
+
+
+def _signal(signal_id: str, *, needs_review: bool = False, require_confirm: bool = False) -> dict:
+    return {
+        "id": signal_id,
+        "acquire": {"tool": "qkv_task", "args": {"keyword": "启动失败"}},
+        "provenance": {"needs_review": needs_review},
+        "review": {"require_human_confirm": require_confirm},
+    }
+
+
+def _revision(
+    revision_id: int,
+    revision_type: str,
+    signal: dict,
+    *,
+    parent_revision_id: int | None = None,
+    baseline_proposal_revision_id: int | None = None,
+    actor_type: str = "llm",
+    review_state: str = "",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=revision_id,
+        revision_no=revision_id,
+        revision_type=revision_type,
+        parent_revision_id=parent_revision_id,
+        baseline_proposal_revision_id=baseline_proposal_revision_id,
+        payload_json={"signals_json": {"schema_version": 2, "signals": [signal]}},
+        actor_type=actor_type,
+        review_metadata={"review_state": review_state} if review_state else {},
+        generation_metadata={},
+    )
+
+
+def test_signal_review_facts_omit_signal_that_does_not_require_review():
+    proposal_signal = _signal("sig-normal")
+    proposal = _revision(1, "proposal", proposal_signal)
+
+    facts = derive_signal_review_facts(
+        {"signals": [proposal_signal]},
+        [proposal],
+        working_revision_id=None,
+        latest_proposal_revision_id=1,
+    )
+
+    assert facts == {}
+
+
+def test_signal_review_facts_mark_unreviewed_proposal_as_needing_review():
+    proposal_signal = _signal("sig-review", needs_review=True)
+    proposal = _revision(1, "proposal", proposal_signal)
+
+    facts = derive_signal_review_facts(
+        {"signals": [proposal_signal]},
+        [proposal],
+        working_revision_id=None,
+        latest_proposal_revision_id=1,
+    )
+
+    assert facts == {"sig-review": {"status": "needs_review"}}
+
+
+def test_signal_review_facts_turn_green_after_expert_working_save():
+    proposal_signal = _signal("sig-review", require_confirm=True)
+    proposal = _revision(1, "proposal", proposal_signal)
+    working = _revision(
+        2,
+        "expert",
+        proposal_signal,
+        parent_revision_id=1,
+        baseline_proposal_revision_id=1,
+        actor_type="expert",
+        review_state="working",
+    )
+
+    facts = derive_signal_review_facts(
+        {"signals": [proposal_signal]},
+        [proposal, working],
+        working_revision_id=2,
+        latest_proposal_revision_id=1,
+    )
+
+    assert facts == {"sig-review": {"status": "reviewed"}}
+
+
+def test_signal_review_facts_do_not_treat_system_working_revision_as_expert_save():
+    proposal_signal = _signal("sig-review", needs_review=True)
+    proposal = _revision(1, "proposal", proposal_signal)
+    system_working = _revision(
+        2,
+        "expert",
+        proposal_signal,
+        parent_revision_id=1,
+        baseline_proposal_revision_id=1,
+        actor_type="system",
+        review_state="working",
+    )
+
+    facts = derive_signal_review_facts(
+        {"signals": [proposal_signal]},
+        [proposal, system_working],
+        working_revision_id=2,
+        latest_proposal_revision_id=1,
+    )
+
+    assert facts == {"sig-review": {"status": "needs_review"}}
+
+
+def test_signal_review_facts_restore_original_requirement_after_publish_stamp():
+    proposal_signal = _signal("sig-review", needs_review=True)
+    published_signal = _signal("sig-review")
+    proposal = _revision(1, "proposal", proposal_signal)
+    approved = _revision(
+        2,
+        "expert",
+        published_signal,
+        parent_revision_id=1,
+        baseline_proposal_revision_id=1,
+        actor_type="expert",
+        review_state="approved",
+    )
+
+    facts = derive_signal_review_facts(
+        {"signals": [published_signal]},
+        [proposal, approved],
+        working_revision_id=None,
+        latest_proposal_revision_id=1,
+    )
+
+    assert facts == {"sig-review": {"status": "reviewed"}}
+
+
+def test_signal_review_facts_do_not_inherit_old_expert_save_after_reextract():
+    old_signal = _signal("sig-review", needs_review=True)
+    new_signal = _signal("sig-review", needs_review=True)
+    new_signal["acquire"]["args"]["keyword"] = "新的启动失败"
+    old_proposal = _revision(1, "proposal", old_signal)
+    old_approved = _revision(
+        2,
+        "expert",
+        old_signal,
+        parent_revision_id=1,
+        baseline_proposal_revision_id=1,
+        actor_type="expert",
+        review_state="approved",
+    )
+    new_proposal = _revision(3, "proposal", new_signal, parent_revision_id=1)
+
+    facts = derive_signal_review_facts(
+        {"signals": [new_signal]},
+        [old_proposal, old_approved, new_proposal],
+        working_revision_id=None,
+        latest_proposal_revision_id=3,
+    )
+
+    assert facts == {"sig-review": {"status": "needs_review"}}

@@ -61,6 +61,7 @@ from app.services.kbd_revision_service import (
     KBD_PAYLOAD_FIELDS,
     apply_kbd_revision_payload,
     build_kbd_revision_payload,
+    derive_signal_review_facts,
     diff_revision_payloads,
     ensure_kbd_revision,
     ensure_kbd_revision_payload,
@@ -974,11 +975,25 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
                 and (working_revision.generation_metadata or {}).get("origin") == "admin_maintenance"
             ):
                 working_payload = working_revision.payload_json
+        history_result = await session.execute(
+            select(KbdRevision)
+            .where(KbdRevision.kbd_entry_id == kbd_id)
+            .order_by(KbdRevision.revision_no.desc())
+        )
+        revision_history = list(history_result.scalars().all())
 
     def review_value(field: str, fallback: Any = None) -> Any:
         if working_payload is not None and field in working_payload:
             return working_payload[field]
         return row.get(field, fallback)
+
+    visible_signals_json = review_value("signals_json")
+    signal_review_facts = derive_signal_review_facts(
+        visible_signals_json,
+        revision_history,
+        working_revision_id=row["working_revision_id"],
+        latest_proposal_revision_id=row["latest_proposal_revision_id"],
+    )
 
     return {
         "id": row["id"],
@@ -993,7 +1008,8 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
         "operational_impact": review_value("operational_impact") or "",
         "is_temporary": review_value("is_temporary") or "",
         "recommendations": review_value("recommendations") or "",
-        "signals_json": _signals_for_response(review_value("signals_json")),
+        "signals_json": _signals_for_response(visible_signals_json),
+        "signal_review_facts": signal_review_facts,
         "content_md": review_value("content_md") or "",
         "content_raw": review_value("content_raw") or "",
         "images_json": review_value("images_json") or [],

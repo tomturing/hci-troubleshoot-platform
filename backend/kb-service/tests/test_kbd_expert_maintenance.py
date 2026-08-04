@@ -592,6 +592,8 @@ async def test_maintenance_save_updates_only_revision_payload_and_working_pointe
 async def test_published_detail_overlays_maintenance_payload_without_changing_status():
     """专家详情读维护稿，状态与 Agent active 仍保持 published。"""
 
+    payload = _payload()
+    payload["signals_json"]["signals"][0].setdefault("provenance", {})["needs_review"] = True
     row = {
         "id": 9,
         "support_id": "37150",
@@ -604,7 +606,7 @@ async def test_published_detail_overlays_maintenance_payload_without_changing_st
         "operational_impact": "",
         "is_temporary": "",
         "recommendations": "",
-        "signals_json": _payload()["signals_json"],
+        "signals_json": payload["signals_json"],
         "content_md": "旧内容",
         "content_raw": "旧内容",
         "images_json": [],
@@ -623,12 +625,29 @@ async def test_published_detail_overlays_maintenance_payload_without_changing_st
         "updated_at": None,
         "published_at": None,
     }
+    proposal = SimpleNamespace(
+        id=1,
+        revision_no=1,
+        revision_type="proposal",
+        parent_revision_id=None,
+        baseline_proposal_revision_id=None,
+        payload_json=payload,
+    )
     working = SimpleNamespace(
-        payload_json=_payload() | {"title": "维护工作稿标题", "steps_text": "新步骤"},
+        id=21,
+        revision_no=2,
+        revision_type="expert",
+        actor_type="expert",
+        parent_revision_id=1,
+        baseline_proposal_revision_id=1,
+        payload_json=payload | {"title": "维护工作稿标题", "steps_text": "新步骤"},
         generation_metadata={"origin": "admin_maintenance"},
+        review_metadata={"review_state": "working"},
     )
     session = AsyncMock()
-    session.execute.return_value = _MappingResult(row)
+    history_result = MagicMock()
+    history_result.scalars.return_value.all.return_value = [working, proposal]
+    session.execute.side_effect = [_MappingResult(row), history_result]
     session.get.return_value = working
     db = SimpleNamespace(async_session_factory=lambda: _SessionContext(session))
 
@@ -640,6 +659,7 @@ async def test_published_detail_overlays_maintenance_payload_without_changing_st
     assert response["status"] == "published"
     assert response["maintenance_working"] is True
     assert response["review_view"] == "maintenance_working"
+    assert response["signal_review_facts"] == {"task_failure": {"status": "reviewed"}}
 
 
 @pytest.mark.asyncio
