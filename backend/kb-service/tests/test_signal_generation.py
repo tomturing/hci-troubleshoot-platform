@@ -21,7 +21,10 @@ from app.routes.extract_signals import (
     _validate_and_collect_signals,
 )
 from jsonschema import ValidationError
-from shared.schemas.kbd_signal_safety import validate_kbd_read_only_signals_json
+from shared.schemas.kbd_signal_safety import (
+    signal_write_operation_command,
+    validate_kbd_read_only_signals_json,
+)
 from shared.schemas.signal_generation import (
     build_signal_generation_metadata,
     current_tool_contract_revision,
@@ -173,6 +176,7 @@ def test_post_remediation_read_only_check_is_not_misclassified_as_write_signal()
     ("command", "command_args", "expected_action"),
     [
         ("soft_raid_lit", ["--off", "/dev/sda"], "--off"),
+        ("sf_cli", ["disk", "light", "off", "/dev/sda"], "off"),
         (
             "strace",
             ["-f", "/sf/bin/sfscp", "/sf/data/source", "/sf/data/target"],
@@ -201,6 +205,55 @@ def test_write_gate_inspects_actual_command_vector_before_catalog(
     assert accepted == []
     assert rejected[0]["reason_code"] == "write_signal"
     assert f"写操作命令 {expected_action}" in rejected[0]["reason"]
+
+
+@pytest.mark.parametrize(
+    ("command", "command_args"),
+    [
+        ("cat", ["/var/log/power-on-history.log"]),
+        ("ls", ["-l", "/sf/bin/sfscp"]),
+    ],
+)
+def test_write_gate_does_not_treat_read_only_arguments_as_actions(command, command_args):
+    candidate = {
+        "id": "read-only-argument",
+        "acquire": {
+            "tool": "qfk_system",
+            "args": {
+                "command": command,
+                "command_args": command_args,
+            },
+        },
+        "match": {
+            "type": "exists",
+            "expected": True,
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "all"},
+                "cardinality": "all",
+                "source": "stdout",
+            },
+        },
+        "orchestrate": {"phase": "diagnostic", "produces": [], "requires": []},
+    }
+
+    accepted, rejected = _validate_and_collect_signals(
+        [candidate], "kbd:test", enforce_kbd_read_only=True
+    )
+
+    assert [item["id"] for item in accepted] == ["read-only-argument"]
+    assert rejected == []
+
+
+def test_write_gate_parses_full_read_only_command_before_scanning_argv():
+    signal = {
+        "acquire": {
+            "tool": "qfk_system",
+            "args": {"command": "/usr/bin/ls -l /sf/bin/sfscp"},
+        }
+    }
+
+    assert signal_write_operation_command(signal) is None
 
 
 def test_verification_contract_promotes_first_diagnostic_context_when_must_is_empty():
@@ -557,12 +610,65 @@ def test_matcher_quality_gate_rejects_silent_false_positive_and_impossible_patte
         assert expected_fragment in reason
 
 
+def test_kbd30880_exists_candidate_null_pattern_is_normalized_before_schema_gate():
+    candidate = {
+        "id": "sig_002",
+        "role": "must",
+        "acquire": {
+            "tool": "qfk_system",
+            "args": {
+                "host": "{{HOST}}",
+                "command": "cat",
+                "command_args": ["/sf/cfg/gpu_info.ini"],
+                "timeout": 120,
+                "instruction": "查看报错主机的GPU配置文件",
+            },
+        },
+        "match": {
+            "type": "exists",
+            "pattern": None,
+            "expected": True,
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "all"},
+                "cardinality": "all",
+                "source": "stdout",
+            },
+        },
+        "orchestrate": {"phase": "diagnostic", "produces": [], "requires": ["HOST"]},
+        "provenance": {"evidence": "查看报错主机的/sf/cfg/gpu_info.ini配置文件"},
+    }
+
+    accepted, rejected = _validate_and_collect_signals(
+        [candidate], "kbd:30880", enforce_kbd_read_only=True
+    )
+
+    assert len(accepted) == 1
+    assert rejected == []
+    assert accepted[0]["match"]["type"] == "exists"
+    assert "pattern" not in accepted[0]["match"]
+
+
 def test_keyword_matcher_must_be_traceable_in_candidate_evidence():
     matcher = {"type": "keyword", "pattern": "address"}
 
     assert "无法从 provenance.evidence 逐字追溯" in _matcher_quality_violation(
         matcher,
         evidence="管理口为channel4，但是eth0口也残留了跟管理口一样的ip",
+    )
+
+
+def test_state_matcher_must_use_a_literal_state_from_candidate_evidence():
+    assert "state Matcher" in _matcher_quality_violation(
+        {"type": "state", "pattern": "aggregationNum"},
+        evidence="正常情况下聚合内各成员口的对端聚合 ID 值相同",
+    )
+    assert (
+        _matcher_quality_violation(
+            {"type": "state", "pattern": "running"},
+            evidence="服务状态应为 running",
+        )
+        is None
     )
     assert "530-16i" in _matcher_quality_violation(
         {"type": "keyword", "pattern": ["530-8i", "530-16i"]},

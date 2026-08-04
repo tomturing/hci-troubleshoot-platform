@@ -36,6 +36,8 @@ WRITE_OPERATION_COMMANDS = frozenset(
         "destroy",
         "enable",
         "disable",
+        "on",
+        "off",
         "kill",
         "killall",
         "pkill",
@@ -91,6 +93,13 @@ _REMEDIATION_GUIDANCE = (
 )
 
 
+def _command_executable(command: str) -> str:
+    """返回 command 首个 token 的 basename；参数不参与可执行程序判定。"""
+
+    parts = [token for token in re.split(r"\s+", command.strip().lower()) if token]
+    return parts[0].rstrip("/").rsplit("/", 1)[-1] if parts else ""
+
+
 def kbd_signal_read_only_violation(
     signal: Any,
     *,
@@ -137,7 +146,7 @@ def signal_explicitly_read_only_command(signal: Any) -> bool:
     if not tokens:
         return False
     if tool == "qfk_system":
-        return tokens[0] in READ_ONLY_SYSTEM_COMMANDS
+        return _command_executable(command) in READ_ONLY_SYSTEM_COMMANDS
     return tokens[-1] in READ_ONLY_SUBCOMMAND_SUFFIXES
 
 
@@ -152,17 +161,28 @@ def signal_write_operation_command(signal: Any) -> str | None:
         return None
     args = acquire.get("args") or {}
     command = str(args.get("command") or "").strip().lower()
-    tokens = {token for token in re.split(r"[\s|/]+", command) if token}
-    write_tokens = sorted(tokens & WRITE_OPERATION_COMMANDS)
-    if write_tokens:
-        return write_tokens[0]
+    command_parts = [token for token in re.split(r"\s+", command) if token]
+    executable = _command_executable(command)
+    if executable in WRITE_OPERATION_COMMANDS:
+        return executable
+
+    if tool != "qfk_system":
+        tokens = {token for token in re.split(r"[\s|/]+", command) if token}
+        write_tokens = sorted(tokens & WRITE_OPERATION_COMMANDS)
+        return write_tokens[0] if write_tokens else None
+
+    # 封闭只读命令的参数是被读取的对象或筛选条件，不是被执行的子命令。
+    # 例如 ``ls -l /sf/bin/sfscp`` 只查看文件，不能因路径 basename 命中
+    # ``sfscp`` 就判为写操作；strace 等 wrapper 不在只读表中，仍继续扫描 argv。
+    if tool == "qfk_system" and executable in READ_ONLY_SYSTEM_COMMANDS:
+        return None
 
     # qfk_system 将子命令、开关和被 strace 等包装器执行的程序放在
     # command_args。只匹配完整参数或路径 basename，避免把正文关键字当动作。
     command_args = args.get("command_args") or []
     if not isinstance(command_args, list):
         return None
-    for item in command_args:
+    for item in [*command_parts[1:], *command_args]:
         argument = str(item).strip().lower()
         if argument in WRITE_OPERATION_FLAGS:
             return argument

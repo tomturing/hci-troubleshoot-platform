@@ -42,7 +42,11 @@ from shared.schemas.kbd_signal_safety import (
 )
 from shared.schemas.signal_generation import build_signal_generation_metadata
 from shared.schemas.signal_output import sync_signal_requires
-from shared.schemas.signal_schema import validate_signals_json
+from shared.schemas.signal_schema import (
+    humanize_signal_validation_error,
+    normalize_optional_matcher_nulls,
+    validate_signals_json,
+)
 from shared.schemas.verification_contract import reconcile_verification_contract
 from shared.utils.prompt_loader import StrictPromptLoader
 from sqlalchemy import select, text
@@ -647,7 +651,7 @@ def _matcher_quality_violation(matcher: dict[str, Any], *, evidence: str = "") -
         return "exists Matcher 不读取 match.pattern；如需匹配具体内容请使用 keyword/regex/state"
     if matcher_type == "keyword" and any(re.search(r"\S\|\S", item) for item in text_patterns):
         return "keyword Matcher 不解释正则竖线；多关键字请使用 pattern 数组，正则语义请使用 regex"
-    if matcher_type == "keyword" and text_patterns and evidence.strip():
+    if matcher_type in {"keyword", "state"} and text_patterns and evidence.strip():
         untraceable_patterns = [
             item
             for item in text_patterns
@@ -655,7 +659,7 @@ def _matcher_quality_violation(matcher: dict[str, Any], *, evidence: str = "") -
         ]
         if untraceable_patterns:
             return (
-                "keyword Matcher 的 match.pattern 无法从 provenance.evidence 逐字追溯；"
+                f"{matcher_type} Matcher 的 match.pattern 无法从 provenance.evidence 逐字追溯；"
                 f"禁止改写或混入无证据的通用关键词: {untraceable_patterns[0]}"
             )
     if matcher_type == "regex" and text_patterns and evidence.strip():
@@ -1058,6 +1062,10 @@ def _validate_and_collect_signals(
             enforce_kbd_read_only=enforce_kbd_read_only,
         )
         if ok:
+            # Candidate 语义校验已经完成后，再把非当前 Matcher 必填项的显式 null
+            # 归约为字段缺失。这样 exists.pattern=null 不会被 JSON Schema 误拒，
+            # 而 exists.pattern="keyword" 仍会被上游质量门禁明确拒绝。
+            normalize_optional_matcher_nulls(s)
             # 字段级溯源 + 置信度校准（写入 v2 段：provenance.* / review.* / orchestrate.*）
             enriched = _enrich_signal(
                 s,
@@ -1066,7 +1074,8 @@ def _validate_and_collect_signals(
             try:
                 validate_signals_json({"schema_version": 2, "signals": [enriched]})
             except ValidationError as exc:
-                reject(enriched, "run_failed", f"v2 契约校验失败: {exc.message}")
+                issue = humanize_signal_validation_error(exc, [enriched])
+                reject(enriched, "run_failed", issue["message"])
                 logger.warning("extract_signals 信号被契约拒绝 source=%s reason=%s", source_id, exc.message)
                 continue
             validated.append(enriched)

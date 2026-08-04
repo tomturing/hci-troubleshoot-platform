@@ -67,10 +67,10 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | KBD 最小回放证据契约与正式专家复核启动 | 🟡 运行审计已保存不可变版本、哈希和 Terminal Bridge artifact 查找键；正式专家复核可开始积累，但 manifest 明确不可重放，0/126 Expert Gold | 2026-07-31 |
 | KBD Pipeline Stage 6 运行时契约预检 | ✅ 代码级完成：标准源码入口自动加载同 checkout 的 `backend/shared`，包含审计的完整流水线在任何生产 Stage 前预检；KBD40061 完整环境重跑待人工确认，不计 Expert Gold | 2026-07-31 |
 | KBD 截图 Evidence v3 展示与单图专家确认 | 🟡 代码级完成：正文卡片展示 OCR、Observed Facts 与语义确认状态；`reviewed_image_seqs` 只接受严格非负整数，未确认图片 Evidence 不被补写；hci-dev UI 人工验收待新镜像部署 | 2026-08-03 |
-| KBD Candidate 三态门禁与批量自查 | 🔄 Candidate/Signal/Rejected Candidate、write/not_exists/run_failed 分类、Prompt v2.1 与审核标签代码级完成；KBD30880 5 次及剩余草稿每批 5 篇验证进行中 | 2026-08-04 |
+| KBD Candidate 三态门禁与批量自查 | 🔄 专家修复/删除边界已完成；第四批 KBD32300/33510/33882/34094/34164 revisions 142～146 真实同批复验通过；后续批次继续按每批 5 篇推进 | 2026-08-04 |
 | hci-real/hci-sim 双轨与 100+ Agent 并发回归 | 🟡 KBD 27123 P0 Golden Agent E2E 已通过；real/sim diff、20 次稳定性与 100+ 容量尚未完成 | 2026-07-30 |
 
-**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）；先按 [KBD Candidate 三态门禁与批量自查任务](task/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查任务.md) 完成 KBD30880 连续 5 次回归和首批 5 篇同批闭环，再以每批 5 篇推进剩余草稿。Candidate 必须完整保留，只有服务端可按 write_signal/not_exists/run_failed 分流；catalog 命中不等同真实运行成功。KBD27123 Evidence v3 与首个 hci-sim P0 Golden E2E 证据分别见对应任务和 [端到端验证](verify/events/2026-07-30-KBD27123-hci-sim-P0端到端验证.md)。真实执行、可信专家 Gold 与 100+ 并发仍按既有事实边界推进，不因静态门禁完成而提前宣称闭环。
+**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）；[KBD 专家信号修复与删除可用性](task/knowledge-base/events/2026-08-04-KBD专家信号修复与删除可用性任务.md) 已完成代码与第四批真实重抽，后续仍按 [Candidate 三态门禁批量任务](task/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查任务.md) 每批 5 篇推进。Candidate 必须完整保留，只有服务端可按 write_signal/not_exists/run_failed 分流；catalog 命中不等同真实运行成功。真实执行、可信专家 Gold 与 100+ 并发仍按既有事实边界推进。
 
 ### 冷启动阅读路径
 

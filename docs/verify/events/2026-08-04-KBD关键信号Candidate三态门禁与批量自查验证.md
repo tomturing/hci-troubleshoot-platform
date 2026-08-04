@@ -28,7 +28,7 @@ owner: team
 | Prompt | 兼容 key `signals` 输出完整 Candidate，不含模型侧“不得输出”回归规则 | 合法且占位符集合不变；Prompt/服务任一先升级不产生空 Proposal | ✅ 已通过 |
 | 数据迁移 | v1.9 → v2.1 前向替换、旧规则收敛与幂等断言 | 不改写历史 KBD/revision；不得残留模型侧过滤语句 | ✅ hci-dev 实际升级至 v2.1，并通过正向/负向断言 |
 | 前端 | 三类标签与 TypeScript | 类型检查、构建通过 | ✅ Admin 生产构建通过 |
-| 后端 | kb-service 完整测试与 Ruff | 全绿 | ✅ 303 passed；Ruff 通过 |
+| 后端 | kb-service 完整测试与 Ruff | 全绿 | ✅ 330 passed；Ruff 通过 |
 
 ## 已执行命令与环境
 
@@ -155,7 +155,19 @@ migration 021 随后改为收敛迁移：替换上述全部已知反向指令，
 
 修复提交后的确定性回放使用 revisions 127/131 中不可变保存的原始 Rejected Candidate：`soft_raid_lit --off /dev/sda` 命中写动作 `--off`，`strace -f /sf/bin/sfscp ...` 命中被包装写程序 `sfscp`，两者均在 catalog 前得到 `write_signal` 原因。完整代码回归为 319 passed（1 条既有 AsyncMock warning），Ruff、Signal Schema 自身/fixture/代码导出漂移、Admin `vue-tsc -b + vite build` 与 docs 治理均通过。
 
-真实第二次同批重抽尚未发生：原 LLM 凭据对 5 篇并发和单篇串行均返回 DashScope HTTP 429 `usage allocated quota exceeded`；独立视觉凭据调用同一 `glm-5` 返回相同总配额错误；Agent 的 `SCP_API_KEY` 在当前 dev Secret 为空。上述失败均发生在 LLM 返回 Candidate 之前，没有生成新 Proposal revision。隔离 Pod 已恢复原凭据并运行最新候选镜像 `dev-candidate-8665d0c`。因此确定性回放只能证明门禁代码修复，不能冒充真实重抽；第四批保持未闭环，禁止进入第五批。
+配额恢复后先后完成两轮真实同批重抽。revisions 132～136 的 KBD33510 生成等价写向量 `sf_cli disk light off /dev/sda`，暴露裸状态子命令 `off` 未进入 write_signal；revisions 137～141 又暴露 KBD34164 的 `ls -l /sf/bin/sfscp` 被按路径 basename 误判写动作，以及 KBD32300 的无证据 state 字面值可进入 Signal。修复采用通用闭集：明确 `on/off` 状态子命令；封闭只读顶层命令不扫描 argv 为动作；非只读 wrapper 继续扫描实际执行程序；state pattern 与 keyword 一样要求 evidence 逐字可追溯。
+
+最终同批重抽使用 `glm-5`，Prompt SHA-256 为 `bb5b632abe4eb1dc8b202cda361ac309d504ecf624b71cbf88a4b6100492405e`：
+
+| KBD | Revision | Signal | Rejected | 结论 |
+|---|---:|---:|---:|---|
+| 32300 | 142 | 3 | 0 | 平台告警与只读 LLDP 采集独立通过；未再出现无证据 state 字面值 |
+| 33510 | 143 | 1 | 3 | `soft_raid_lit --off` 为 write_signal；两个无消费 producer 为 run_failed |
+| 33882 | 144 | 2 | 2 | 任务与 MTU 证据通过；无证据日志/ping Matcher 为 run_failed |
+| 34094 | 145 | 2 | 2 | 任务与 VM 配置通过；不可追溯 qfk_log 来源为 run_failed |
+| 34164 | 146 | 2 | 3 | `strace → sfscp` 为 write_signal；无消费 producer、无判定器信号为 run_failed |
+
+5/5 请求返回 200，revisions 连续 142～146，无 429、API 500、空 Proposal 或 Candidate 静默丢失。`sf_cli ... off` 与 `ls ... sfscp` 本轮模型未同时复现，分别由确定性单测锁定；真实重抽未执行任何 HCI 命令。第四批允许退出，后续批次仍须独立提交和同批闭环。
 
 每批事件记录以下内容：
 

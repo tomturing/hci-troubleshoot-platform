@@ -1,3 +1,4 @@
+import copy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -5,7 +6,12 @@ import pytest
 from app.models.kbd_entry import KbdEntry
 from app.models.kbd_revision import KbdRevision
 from app.routes import admin
-from app.routes.admin import KbdApproveRequest, KbdUpdateRequest, _patch_maintenance_payload
+from app.routes.admin import (
+    KbdApproveRequest,
+    KbdUpdateRequest,
+    _delete_signal_from_document,
+    _patch_maintenance_payload,
+)
 from app.services.kbd_mutation_guard import PublishedKbdMutationError, require_mutable_kbd
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -316,6 +322,46 @@ def test_expert_delete_context_signal_removes_its_agent_contract_reference():
     assert policy["context"] == []
     assert policy["must"] == ["task_failure", "log_failure"]
     assert "sig_004" not in {item for values in policy.values() if isinstance(values, list) for item in values}
+
+
+def test_kbd30880_exists_matcher_null_pattern_is_canonicalized_on_save():
+    """exists 不消费 pattern；显式 null 应在权威保存边界归约为字段缺失。"""
+
+    original = _payload()
+    exists_signal = copy.deepcopy(original["signals_json"]["signals"][1])
+    exists_signal["match"] = {
+        **exists_signal["match"],
+        "type": "exists",
+        "pattern": None,
+    }
+    signals = original["signals_json"] | {
+        "signals": [original["signals_json"]["signals"][0], exists_signal]
+    }
+
+    patched = _patch_maintenance_payload(original, KbdUpdateRequest(signals_json=signals))
+
+    assert patched["signals_json"]["signals"][1]["match"]["type"] == "exists"
+    assert "pattern" not in patched["signals_json"]["signals"][1]["match"]
+
+
+def test_delete_signal_id_uses_authoritative_document_and_reconciles_contract():
+    """删除按稳定 ID 作用于权威稿，不需要提交其他未完成的前端暂存编辑。"""
+
+    original = _payload()
+    original["signals_json"], _ = reconcile_verification_contract(original["signals_json"])
+
+    deleted = _delete_signal_from_document(original["signals_json"], "log_failure")
+
+    assert [signal["id"] for signal in deleted["signals"]] == ["task_failure"]
+    assert deleted["verification_contract"]["evidence_policy"]["must"] == ["task_failure"]
+
+
+def test_delete_signal_id_rejects_missing_stable_target():
+    with pytest.raises(HTTPException) as exc_info:
+        _delete_signal_from_document(_payload()["signals_json"], "missing_signal")
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail["code"] == "KBD_SIGNAL_NOT_FOUND"
 
 
 def test_expert_can_save_working_draft_without_must_and_gets_actionable_issue():

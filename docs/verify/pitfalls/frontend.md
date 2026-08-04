@@ -1,5 +1,19 @@
 # 前端避坑（pnpm / TypeScript / Vue）
 
+## V-007：单对象删除不得携带无关草稿，校验错误必须保留稳定定位
+
+**症状：** 用户恢复或编辑多条 Signal 后，删除其中一条却因另一条无效草稿失败；错误只显示 `None is not valid under anyOf`，无法知道哪条 Signal、哪个字段需要修改。
+
+**根因：** 页面把服务端权威文档与未保存本地草稿合并成同一个 `signalList`，删除时以整份 PATCH 模拟单对象意图；同时把后端结构化校验降级成字符串 toast，丢失稳定 ID 和字段路径。
+
+**修复：** 本地新增/恢复对象删除只撤销本地状态；已持久化对象只提交稳定 `delete_signal_id`，由服务端作用于权威工作稿。校验错误保留 `signal_id/field_path/location/message/action`，页面按稳定 ID 展开、滚动并高亮对应卡片。
+
+**预防：**
+
+- 任何 delete/approve/retry 等单对象动作均审查请求体是否夹带无关编辑态；
+- 服务端错误契约包含机器定位与用户文案，前端不得只取 `String(error)`；
+- 测试至少包含“一条无效未保存草稿 + 删除另一条持久化对象”和“筛选/排序后仍按稳定 ID 定位”反例。
+
 ## PIT-005：pnpm workspace 下子包未声明依赖直接引用
 
 子包使用其他子包的代码时，必须在 `package.json` 中显式声明 `workspace:*` 依赖，否则 pnpm strict 模式下构建失败。

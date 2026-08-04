@@ -571,6 +571,15 @@ async function focusSignal(signalId: string): Promise<void> {
   document.getElementById(signalDomId(signalId))?.scrollIntoView({ behavior: 'smooth', block: 'center' })
 }
 
+async function focusSignalRequestError(error: unknown): Promise<void> {
+  const signalId = (error as { signalId?: string })?.signalId
+  if (!signalId) return
+  const index = signalList.value.findIndex((signal) => String(signal.id) === signalId)
+  if (index < 0) return
+  startEditSignal(index)
+  await focusSignal(signalId)
+}
+
 async function handleValidationAction(issue: CandidateValidation['issues'][number]) {
   const signalId = issue.action?.signal_id
   if (!signalId) {
@@ -854,6 +863,7 @@ async function openDetailDialog(entry: KbdEntry) {
   detailDialogVisible.value = true
   editingContent.value = false
   clearStagedSignalEdits()
+  clearLocalSignals()
   cancelEditSignal()
   revisionState.value = null
   candidateValidation.value = null
@@ -1006,10 +1016,40 @@ function isBackendSig(sig: SignalV2): boolean {
 // 一个 KBD 的多条旧信号可能同时带有管道。暂存区必须用稳定 Signal ID，而不是数组
 // 下标：专家排序或删除信号后，下标会变化，继续用下标会把草稿错误套到另一条信号。
 const stagedSignalEdits = ref<Record<string, SignalV2>>({})
-const newSignalId = ref<string | null>(null)
+const localSignalIds = ref<Set<string>>(new Set())
 
 function cloneSignal(signal: SignalV2): SignalV2 {
   return JSON.parse(JSON.stringify(signal)) as SignalV2
+}
+
+function normalizeOptionalMatcherNulls(signal: SignalV2): SignalV2 {
+  const normalized = cloneSignal(signal)
+  const matcher = normalized.match
+  if (!matcher || typeof matcher !== 'object') return normalized
+  const requiredByType: Record<string, string[]> = {
+    keyword: ['pattern'], regex: ['pattern'], state: ['pattern'],
+    threshold: ['value', 'operator'], delta: ['value', 'operator'], trend: ['direction'], exists: [],
+  }
+  const optionalFields = ['pattern', 'mode', 'value', 'operator', 'aggregation', 'minimum_samples', 'direction']
+  const required = new Set(requiredByType[String(matcher.type || '')] || [])
+  for (const field of optionalFields) {
+    if (!required.has(field) && matcher[field] === null) delete matcher[field]
+  }
+  return normalized
+}
+
+function markLocalSignal(signalId: string): void {
+  localSignalIds.value = new Set([...localSignalIds.value, signalId])
+}
+
+function unmarkLocalSignal(signalId: string): void {
+  const next = new Set(localSignalIds.value)
+  next.delete(signalId)
+  localSignalIds.value = next
+}
+
+function clearLocalSignals(): void {
+  localSignalIds.value = new Set()
 }
 
 const evidenceRoles = ['must', 'should', 'exclude', 'context'] as const
@@ -1515,11 +1555,12 @@ function setQfkOutputMode(mode: 'keyword' | 'produces') {
 }
 
 function cancelEditSignal() {
-  if (newSignalId.value && detailEntry.value?.signals_json) {
+  const editingSignalId = String(signalEditDraft.value.id || '')
+  if (editingSignalId && localSignalIds.value.has(editingSignalId) && detailEntry.value?.signals_json) {
     detailEntry.value.signals_json.signals = detailEntry.value.signals_json.signals.filter(
-      (signal) => String(signal.id) !== newSignalId.value,
+      (signal) => String(signal.id) !== editingSignalId,
     )
-    newSignalId.value = null
+    unmarkLocalSignal(editingSignalId)
   }
   if (editingSignalIndex.value !== null && signalEditDraft.value.id) {
     discardStagedSignalEdit(String(signalEditDraft.value.id))
@@ -1539,7 +1580,10 @@ async function persistSignalList(
 ): Promise<boolean> {
   if (!detailEntry.value) return false
   const currentDoc = (detailEntry.value.signals_json || {}) as SignalsDoc
-  const payload = reconcileSignalContract({ ...currentDoc, schema_version: 2 }, list)
+  const payload = reconcileSignalContract(
+    { ...currentDoc, schema_version: 2 },
+    list.map(normalizeOptionalMatcherNulls),
+  )
   const resp = await fetch(kbdEditEndpoint(detailEntry.value), {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', ...authHeader },
@@ -1551,10 +1595,12 @@ async function persistSignalList(
   })
   const responseBody = await resp.json().catch(() => ({}))
   if (!resp.ok) {
-    const detail = typeof responseBody?.detail === 'string'
-      ? responseBody.detail
-      : responseBody?.detail?.message || `HTTP ${resp.status}`
-    throw new Error(detail)
+    const detail = responseBody?.detail
+    const message = typeof detail === 'string' ? detail : detail?.message || `HTTP ${resp.status}`
+    const location = typeof detail === 'object' ? String(detail?.location || '') : ''
+    const error = new Error(location ? `${location}：${message}` : message) as Error & { signalId?: string }
+    if (typeof detail === 'object' && detail?.signal_id) error.signalId = String(detail.signal_id)
+    throw error
   }
   applyMaintenanceResponse(detailEntry.value, responseBody)
   const newDoc: SignalsDoc = responseBody?.payload?.signals_json || responseBody?.signals_json || payload
@@ -1563,7 +1609,7 @@ async function persistSignalList(
   const entryIndex = entries.value.findIndex((entry) => entry.id === detailEntry.value!.id)
   if (entryIndex !== -1) entries.value[entryIndex].signals_json = newDoc
   clearStagedSignalEdits()
-  newSignalId.value = null
+  clearLocalSignals()
   void fetchRevisionState(detailEntry.value.id)
   await validateCurrentCandidate({ silent: true })
   ElMessage.success(successMessage)
@@ -1576,7 +1622,7 @@ function addSignal(tool: string) {
   const signal = buildSignalForTool(tool)
   doc.signals = [...(doc.signals || []), signal]
   detailEntry.value.signals_json = doc
-  newSignalId.value = String(signal.id)
+  markLocalSignal(String(signal.id))
   startEditSignal(doc.signals.length - 1)
   ElMessage.info('请补全新信号的必填项后保存')
 }
@@ -1617,19 +1663,71 @@ async function submitDeleteSignal() {
   }
   signalSaveLoading.value = true
   try {
-    await persistSignalList(
-      signalList.value.filter((_, itemIndex) => itemIndex !== index),
-      '关键信号已删除',
-      [{
-        signal_id: signalStableId(signal, index),
-        reason_code: deleteSignalReason.value,
-        ...(deleteSignalNote.value.trim() ? { note: deleteSignalNote.value.trim() } : {}),
-      }],
-    )
+    const signalId = signalStableId(signal, index)
+    const currentDoc = detailEntry.value.signals_json as SignalsDoc
+    const annotation = {
+      signal_id: signalId,
+      reason_code: deleteSignalReason.value,
+      ...(deleteSignalNote.value.trim() ? { note: deleteSignalNote.value.trim() } : {}),
+    }
+
+    // “恢复并编辑”或“新增”尚未写入权威工作稿；删除它只是撤销本地草稿，
+    // 不应把其他未完成编辑捆绑成一次全量 PATCH。
+    if (localSignalIds.value.has(signalId)) {
+      currentDoc.signals = (currentDoc.signals || []).filter((item) => String(item.id) !== signalId)
+      discardStagedSignalEdit(signalId)
+      unmarkLocalSignal(signalId)
+      ElMessage.success('未保存的关键信号草稿已移除')
+    } else {
+      const localSignals = (currentDoc.signals || [])
+        .filter((item) => localSignalIds.value.has(String(item.id)))
+        .map(cloneSignal)
+      const retainedStaged = { ...stagedSignalEdits.value }
+      delete retainedStaged[signalId]
+
+      const resp = await fetch(kbdEditEndpoint(detailEntry.value), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', ...authHeader },
+        body: JSON.stringify({
+          delete_signal_id: signalId,
+          change_annotations: [annotation],
+          lock_version: detailEntry.value.lock_version,
+        }),
+      })
+      const responseBody = await resp.json().catch(() => ({}))
+      if (!resp.ok) {
+        const detail = responseBody?.detail
+        const message = typeof detail === 'string' ? detail : detail?.message || `HTTP ${resp.status}`
+        const location = typeof detail === 'object' ? String(detail?.location || '') : ''
+        const error = new Error(location ? `${location}：${message}` : message) as Error & { signalId?: string }
+        if (typeof detail === 'object' && detail?.signal_id) error.signalId = String(detail.signal_id)
+        throw error
+      }
+
+      const serverDoc = (responseBody?.payload?.signals_json || responseBody?.signals_json) as SignalsDoc
+      if (!serverDoc) throw new Error('服务端未返回删除后的关键信号工作稿')
+      applyMaintenanceResponse(detailEntry.value, responseBody)
+      detailEntry.value.lock_version = responseBody?.lock_version ?? detailEntry.value.lock_version
+      const combinedDoc = JSON.parse(JSON.stringify(serverDoc)) as SignalsDoc
+      const serverIds = new Set((combinedDoc.signals || []).map((item) => String(item.id)))
+      combinedDoc.signals = [
+        ...(combinedDoc.signals || []),
+        ...localSignals.filter((item) => !serverIds.has(String(item.id))),
+      ]
+      detailEntry.value.signals_json = combinedDoc
+      stagedSignalEdits.value = retainedStaged
+
+      const entryIndex = entries.value.findIndex((entry) => entry.id === detailEntry.value!.id)
+      if (entryIndex !== -1) entries.value[entryIndex].signals_json = serverDoc
+      void fetchRevisionState(detailEntry.value.id)
+      await validateCurrentCandidate({ silent: true })
+      ElMessage.success('关键信号已删除')
+    }
     editingSignalIndex.value = null
     deleteSignalDialogVisible.value = false
     deletingSignalIndex.value = null
   } catch (error) {
+    await focusSignalRequestError(error)
     ElMessage.error(error instanceof Error ? `删除失败：${error.message}` : '删除失败，请重试')
   } finally {
     signalSaveLoading.value = false
@@ -1675,12 +1773,12 @@ function restoreRejectedCandidate(candidate: unknown) {
     return
   }
   if (!detailEntry.value) return
-  const restored = cloneSignal(candidate as SignalV2)
+  const restored = normalizeOptionalMatcherNulls(candidate as SignalV2)
   restored.id = createSignalId()
   restored.provenance = { ...(restored.provenance || {}), needs_review: true, expert_restored: true }
   const doc = detailEntry.value.signals_json as SignalsDoc
   doc.signals = [...(doc.signals || []), restored]
-  newSignalId.value = String(restored.id)
+  markLocalSignal(String(restored.id))
   startEditSignal(doc.signals.length - 1)
   ElMessage.info('候选已恢复为编辑草稿，请复核并保存')
 }
@@ -1748,6 +1846,7 @@ async function saveSignalEdit() {
     await persistSignalList(list, '关键信号已保存')
     cancelEditSignal()
   } catch (error) {
+    await focusSignalRequestError(error)
     const detail = error instanceof Error ? error.message : ''
     ElMessage.error(detail ? `保存失败：${detail}` : '保存失败，请重试')
   } finally {

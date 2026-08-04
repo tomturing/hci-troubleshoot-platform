@@ -17,5 +17,10 @@ def test_schema_validation_issue_targets_stable_signal_id_not_array_position():
         ],
     )
 
-    assert issue["location"] == "关键信号 · sig_backend"
-    assert issue["action"] == {"type": "edit_signal", "signal_id": "sig_backend"}
+    assert issue["location"] == "关键信号 · sig_backend · 判定器"
+    assert issue["field_path"] == "match.mode"
+    assert issue["action"] == {
+        "type": "edit_signal",
+        "signal_id": "sig_backend",
+        "focus": "match.mode",
+    }

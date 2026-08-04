@@ -27,6 +27,127 @@ from shared.schemas.signal_generation import current_tool_contract_revision
 
 _SIGNALS_DIR = Path(__file__).resolve().parent / "signals"
 
+_MATCHER_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
+    "keyword": frozenset({"pattern"}),
+    "regex": frozenset({"pattern"}),
+    "state": frozenset({"pattern"}),
+    "threshold": frozenset({"value", "operator"}),
+    "delta": frozenset({"value", "operator"}),
+    "trend": frozenset({"direction"}),
+    "exists": frozenset(),
+}
+_MATCHER_OPTIONAL_FIELDS = frozenset(
+    {
+        "pattern",
+        "mode",
+        "value",
+        "operator",
+        "aggregation",
+        "minimum_samples",
+        "direction",
+    }
+)
+_SIGNAL_FIELD_LABELS = {
+    "acquire": "采集配置",
+    "acquire.args": "采集参数",
+    "match": "判定器",
+    "match.pattern": "判定器 / 匹配内容",
+    "match.extract": "判定器 / 取值配置",
+    "match.value": "判定器 / 数值阈值",
+    "match.operator": "判定器 / 比较方式",
+    "orchestrate": "执行编排",
+    "orchestrate.requires": "输入变量",
+    "orchestrate.produces": "产出变量",
+    "role": "证据作用",
+}
+
+
+def normalize_optional_matcher_nulls(raw: Any) -> Any:
+    """移除 Matcher 中语义上可省略的显式 ``null``，不掩盖必填字段错误。
+
+    JSON 的 ``null`` 与字段缺失是不同值；LLM/历史快照却经常为所有可能字段
+    输出 ``null``。例如 ``exists`` 不读取 ``pattern``，所以 ``pattern=null`` 应
+    归约为字段缺失。若 keyword/regex/state 的 pattern 为 null，则它仍是必填
+    字段错误，必须保留给校验器和专家定位，不能静默修复。
+
+    函数原地规范化并返回输入，便于抽取、保存和发布入口共用同一确定性边界。
+    """
+
+    if not isinstance(raw, dict):
+        return raw
+    signals = raw.get("signals") if isinstance(raw.get("signals"), list) else [raw]
+    for signal in signals:
+        if not isinstance(signal, dict) or not isinstance(signal.get("match"), dict):
+            continue
+        matcher = signal["match"]
+        required = _MATCHER_REQUIRED_FIELDS.get(str(matcher.get("type") or ""), frozenset())
+        for field in _MATCHER_OPTIONAL_FIELDS - required:
+            if matcher.get(field) is None:
+                matcher.pop(field, None)
+    return raw
+
+
+def humanize_signal_validation_error(error: ValidationError, signals: list[Any]) -> dict[str, Any]:
+    """把 JSON Schema 错误转换成可定位、可执行的专家问题。
+
+    ``ValidationError.message`` 只适合工程调试；专家至少需要知道稳定 Signal ID、
+    页面字段和修复动作。机器字段保留给前端聚焦与日志检索，展示文本不泄漏
+    ``anyOf``、``None`` 等 Schema 实现细节。
+    """
+
+    path = list(error.absolute_path)
+    signal_index = path[1] if len(path) >= 2 and path[0] == "signals" and isinstance(path[1], int) else None
+    signal = (
+        signals[signal_index]
+        if signal_index is not None and 0 <= signal_index < len(signals) and isinstance(signals[signal_index], dict)
+        else None
+    )
+    signal_id = str(signal.get("id") or "").strip() if signal else ""
+    relative_path = path[2:] if signal_index is not None else path
+    field_path = ".".join(str(part) for part in relative_path)
+    field_label = _SIGNAL_FIELD_LABELS.get(field_path)
+    if field_label is None:
+        field_label = next(
+            (label for key, label in _SIGNAL_FIELD_LABELS.items() if field_path.startswith(f"{key}.")),
+            "关键信号",
+        )
+
+    matcher = signal.get("match") if signal and isinstance(signal.get("match"), dict) else {}
+    matcher_type = str(matcher.get("type") or "")
+    if field_path == "match.pattern" and matcher_type == "exists":
+        message = "存在性判定只检查输出是否为空，不使用“匹配内容”；请重新保存，平台会自动清理历史空值。"
+        code = "MATCHER_UNUSED_FIELD"
+    elif error.validator == "required":
+        missing = str(error.message).split("'")[1] if "'" in error.message else "必填字段"
+        message = f"{field_label}缺少必填项“{missing}”，请补充后保存。"
+        code = "SIGNAL_FIELD_REQUIRED"
+    elif error.validator == "additionalProperties":
+        message = f"{field_label}包含当前版本不支持的字段，请重新选择对应类型后保存。"
+        code = "SIGNAL_FIELD_UNSUPPORTED"
+    elif error.validator in {"type", "anyOf", "oneOf"}:
+        message = f"{field_label}的值类型不正确，请重新填写或重新选择对应类型。"
+        code = "SIGNAL_FIELD_INVALID"
+    else:
+        message = f"{field_label}未满足当前关键信号规则，请检查该区域后保存。"
+        code = "SIGNAL_FIELD_INVALID"
+
+    issue: dict[str, Any] = {
+        "level": "error",
+        "code": code,
+        "location": f"关键信号 · {signal_id} · {field_label}" if signal_id else field_label,
+        "message": message,
+    }
+    if field_path:
+        issue["field_path"] = field_path
+    if signal_id:
+        issue["signal_id"] = signal_id
+        issue["action"] = {
+            "type": "edit_signal",
+            "signal_id": signal_id,
+            "focus": field_path or None,
+        }
+    return issue
+
 
 def _build_registry() -> Registry:
     """把所有 *.schema.json 装入 referencing Registry（以各自 $id 为键）。"""
