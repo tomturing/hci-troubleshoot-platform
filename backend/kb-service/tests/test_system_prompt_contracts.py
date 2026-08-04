@@ -157,6 +157,8 @@ def test_signal_executability_prompt_migration_teaches_catalog_and_matcher_bound
     assert 'command="asan disk list"' in supplemental_rule
     assert "BMC/iBMC 管理页面中的事件日志不是 HCI 平台告警" in supplemental_rule
     assert "exists 只判断提取结果是否存在" in supplemental_rule
+    assert "不得降级改写成 address、ip、error 等更宽泛关键词" in supplemental_rule
+    assert "保留脱敏 pattern" in supplemental_rule
     assert StrictPromptLoader.get_template_placeholders(supplemental_rule) == set()
 
 
@@ -181,7 +183,8 @@ def test_seed_signal_prompt_contains_catalog_and_matcher_quality_boundaries():
     assert "catalog 是知识参考，不是模型侧门禁" in template
     assert "不得把 smartctl/ipmitool 或 BMC Web 页面动作伪造成 qfk_hardware" in template
     assert 'command="asan disk list"' in template
-    assert "match.pattern 禁止固化 xx、XXX、***、%(ip)s" in template
+    assert "不得降级改写成 address、ip、error 等更宽泛关键词" in template
+    assert "保留脱敏 pattern" in template
 
 
 def test_vision_prompt_gives_task_detail_modal_task_semantic_priority():

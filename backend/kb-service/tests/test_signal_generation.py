@@ -345,6 +345,22 @@ def test_matcher_quality_gate_rejects_silent_false_positive_and_impossible_patte
         assert expected_fragment in reason
 
 
+def test_keyword_matcher_must_be_traceable_in_candidate_evidence():
+    matcher = {"type": "keyword", "pattern": "address"}
+
+    assert "无法从 provenance.evidence 逐字追溯" in _matcher_quality_violation(
+        matcher,
+        evidence="管理口为channel4，但是eth0口也残留了跟管理口一样的ip",
+    )
+    assert (
+        _matcher_quality_violation(
+            {"type": "keyword", "pattern": ["530-8i", "530-16i"]},
+            evidence="Subsystem: Lenovo ThinkSystem RAID 530-8i PCIe 12Gb Adapter",
+        )
+        is None
+    )
+
+
 def test_unconsumed_qfk_producer_is_rejected_but_real_downstream_consumer_is_allowed():
     dead = {
         "id": "sig_001",

@@ -23,13 +23,14 @@ owner: team
 | T-KB-CANDIDATE-03 | 动态注入当前 aCLI catalog 命令知识 | ✅ 代码完成 | Prompt 有依据生成，缺失命令仍不被模型侧删除 |
 | T-KB-GATE-01 | 建立 `write_signal → not_exists → run_failed → Signal` 分流 | ✅ 代码完成 | 单测覆盖固定优先级和混合候选 |
 | T-KB-GATE-02 | catalog 校验复用 SOP 单一实现 | ✅ 代码完成 | KBD/SOP 不再维护两套 catalog 判定 |
+| T-KB-GATE-03 | keyword Matcher 必须能从 Candidate evidence 逐字追溯 | ✅ 代码完成 | 脱敏值不得降级为 address/ip/error 等宽泛词后误通过 |
 | T-KB-SCHEMA-01 | `rejected_candidates[].reason_code` 增加三值枚举且保持可选 | ✅ 代码完成 | 新数据可分类，历史快照继续合法 |
 | T-KB-UI-01 | 审核页展示三类标签、关注级别、原因与完整 Candidate | ✅ 代码完成 | 专家能区分安全、能力和运行问题 |
 | T-KB-PROMPT-DB-01 | seed 升至 v2.1，data migration 021 前向修复已部署 v1.9 | ✅ dev 收敛验证 | 迁移不只追加规则，并以负向断言保证不残留模型侧过滤规则 |
 | T-KB-DOC-01 | 事件文档和现行全量文档同步 | ✅ 完成 | docs 治理检查通过 |
 | T-KB-VERIFY-01 | 后端专项/完整测试、Ruff、Schema、前端类型与构建 | ✅ 完成 | 49 项聚焦测试、303 项完整测试、Ruff、Schema 漂移和 Admin 构建通过 |
-| T-KB-BATCH-00 | KBD30880 连续重抽 5 次回归 | 🔄 1/5 | 首次发现存量 Prompt 冲突并修复；修复后第 1 次 qkv_task 通过，专家未改时修改数为 0 |
-| T-KB-BATCH-01 | 重跑 KBD27079/27173/27222/27653/27736 | ⬜ 待 dev 部署 | 同批发现问题全部闭环 |
+| T-KB-BATCH-00 | KBD30880 连续重抽 5 次回归 | ✅ 5/5 | Proposal 57～61 均有 qkv_task；最新 Proposal 无 Expert 配对，修改数为 0 |
+| T-KB-BATCH-01 | 重跑 KBD27079/27173/27222/27653/27736 | 🔄 修复后待重跑 | 初跑确认三类分流；KBD27736 宽泛 address matcher 漏过，已修通用 evidence 追溯门禁 |
 | T-KB-BATCH-N | 剩余草稿按每批 5 篇自查、修复、重跑、独立提交 | ⬜ 待执行 | 前一批通过后才进入下一批 |
 | T-KB-PR | 汇总本地提交并创建 PR | ⬜ 待全部批次完成 | CI 全绿；标签齐全 |
 

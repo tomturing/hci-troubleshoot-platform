@@ -61,7 +61,7 @@ data migration 021：在 hci-dev PostgreSQL 对当前 Prompt v1.9 执行 BEGIN �
 
 首次实际应用 migration 021 后，KBD30880 的 Proposal revision 56 仍未生成 `qkv_task`。数据库中的 v2.1 Prompt 事实检查发现：新规则 25 虽已追加，但 PR #668 的补充规则 24 仍明确要求“不生成 Signal，不以 phase=solution 形式保留”，同时还残留“宁缺毋滥”“不产出信号”和带下游条件的旧任务规则。版本号与正向关键字断言均通过，却不是语义完整的升级。
 
-migration 021 随后改为收敛迁移：替换上述全部已知反向指令，并增加负向断言。hci-dev 重跑后 Prompt 版本为 2.1，MD5 为 `3ce7dfb26ba929c5d8c58996702a7189`，SHA-256 为 `268e2f960e3fc80117cd4a8f72650f4e76e88177bac21aaceb27f26f8357101a`；旧规则 24、“宁缺毋滥/不产出”和任务下游前置条件均不存在。
+migration 021 随后改为收敛迁移：替换上述全部已知反向指令，并增加负向断言。KBD30880 五次回归期间使用的 Prompt SHA-256 为 `268e2f960e3fc80117cd4a8f72650f4e76e88177bac21aaceb27f26f8357101a`；旧规则 24、“宁缺毋滥/不产出”和任务下游前置条件均不存在。第一批又发现脱敏值被模型降级成宽泛 matcher，修订后 hci-dev Prompt 仍为 2.1，MD5 为 `ecebfe41f13b43e768677cf7d714ac18`，SHA-256 为 `432155ecb4ca218df6b395627491cef5397bf3ad37615b14aeafb6961f9b03db`。
 
 ## KBD30880 回归协议
 
@@ -70,10 +70,10 @@ migration 021 随后改为收敛迁移：替换上述全部已知反向指令，
 | 次数 | Proposal revision | Prompt hash | qkv_task | Signal 数 | Rejected 分类 | 结论 |
 |---:|---:|---|---|---:|---|---|
 | 1 | 57 | `268e2f960e3fc80117cd4a8f72650f4e76e88177bac21aaceb27f26f8357101a` | ✅ `keyword=启动虚拟机`、`is_failed=true`、产出 HOST/VM | 1 | write_signal=1，run_failed=2 | ✅ qkv_task 通过；“取消 gpu_type”写动作可见；最新 Proposal 无 Expert 配对 |
-| 2 | 待执行 | 待记录 | 必须存在 | 待记录 | 待记录 | 待记录 |
-| 3 | 待执行 | 待记录 | 必须存在 | 待记录 | 待记录 | 待记录 |
-| 4 | 待执行 | 待记录 | 必须存在 | 待记录 | 待记录 | 待记录 |
-| 5 | 待执行 | 待记录 | 必须存在 | 待记录 | 待记录 | 待记录 |
+| 2 | 58 | `268e2f960e3fc80117cd4a8f72650f4e76e88177bac21aaceb27f26f8357101a` | ✅ title，HOST/VM | 3 | run_failed=1 | ✅ |
+| 3 | 59 | `268e2f960e3fc80117cd4a8f72650f4e76e88177bac21aaceb27f26f8357101a` | ✅ problem_description，HOST/VM | 2 | run_failed=1 | ✅ |
+| 4 | 60 | `268e2f960e3fc80117cd4a8f72650f4e76e88177bac21aaceb27f26f8357101a` | ✅ problem_description，HOST/VM | 2 | write_signal=1，run_failed=1 | ✅ |
+| 5 | 61 | `268e2f960e3fc80117cd4a8f72650f4e76e88177bac21aaceb27f26f8357101a` | ✅ title，HOST/VM | 1 | write_signal=1，run_failed=3 | ✅ |
 
 全部 5 次需满足：
 
@@ -89,11 +89,13 @@ migration 021 随后改为收敛迁移：替换上述全部已知反向指令，
 
 | KBD | 最新方案预期 | 首次结果 | 修复后结果 | 状态 |
 |---|---|---|---|---|
-| 27079 | 正常告警、日志、系统检查保持 Signal | 4 Signal / 0 Rejected（v1.9） | 待 v2.1 重跑 | ⬜ |
-| 27173 | 不存在 hardware 命令进入 not_exists | 3 Signal / 0 Rejected（v1.9） | 待 v2.1 重跑 | ⬜ |
-| 27222 | 不存在命令 not_exists；Matcher 问题 run_failed | 4 Signal / 0 Rejected（v1.9） | 待 v2.1 重跑 | ⬜ |
-| 27653 | args/变量/编译问题 run_failed | 1 Signal / 3 Rejected（无稳定分类） | 待 v2.1 重跑 | ⬜ |
-| 27736 | 脱敏 Matcher 进入 run_failed | 4 Signal / 0 Rejected（v1.9） | 待 v2.1 重跑 | ⬜ |
+| 27079 | 正常告警、日志、系统检查保持 Signal | revision 62：4 Signal；write_signal=1 | 待同批重跑 | 🔄 |
+| 27173 | 不存在 hardware 命令进入 not_exists；若正确映射 ipmitool 则正常通过 | revision 63：2 Signal；重复无人消费 producer → run_failed=1 | 待同批重跑 | 🔄 |
+| 27222 | 不存在命令 not_exists；Matcher 问题 run_failed | revision 64：2 Signal；lspci not_exists=2；write_signal=1 | 待同批重跑 | 🔄 |
+| 27653 | args/变量/编译问题 run_failed | revision 65：1 Signal；qkv_alert keyword list 与无人消费 producer → run_failed=2 | 待同批重跑 | 🔄 |
+| 27736 | 脱敏 Matcher 进入 run_failed | revision 66：4 Signal；write_signal=1；发现 `pattern=address` 宽泛降级误通过 | 待同批重跑 | ❌ 已定位并修复通用门禁 |
+
+首批初跑证明三类分流路径均可见，但未达到整批退出标准。KBD27736 的脱敏 IP 没有直接进入 pattern，模型改用 `address`，只能证明配置存在地址行，不能证明 eth0 与 channel4 冲突。修复同时覆盖两层：Prompt 要求忠实保留脱敏 Candidate，服务端要求 keyword pattern 至少有一项能从 `provenance.evidence` 逐字追溯；否则归入 `run_failed`。该规则不读取 support_id，不依赖 IP 专项硬编码。
 
 每篇逐 Candidate 检查：证据是否来自允许的四个章节；工具与参数是否合理；编译命令是否真实；Matcher 是否能在现场数据上成立；变量链是否可达；正常 Candidate 是否未受拒绝项牵连。
 

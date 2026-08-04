@@ -521,7 +521,10 @@ def _validate_signal(
         if has_match and matcher.get("type") not in VALID_MATCHER_TYPES:
             return False, f"backend 信号 match.type 非法: {matcher.get('type')}"
         if has_match:
-            matcher_violation = _matcher_quality_violation(matcher)
+            matcher_violation = _matcher_quality_violation(
+                matcher,
+                evidence=str(prov.get("evidence") or ""),
+            )
             if matcher_violation:
                 return False, matcher_violation
     return True, None
@@ -565,7 +568,7 @@ def _acquirer_catalog_prompt_text() -> str:
     )
 
 
-def _matcher_quality_violation(matcher: dict[str, Any]) -> str | None:
+def _matcher_quality_violation(matcher: dict[str, Any], *, evidence: str = "") -> str | None:
     """拒绝结构合法但运行时会静默误判的 Matcher。"""
 
     matcher_type = str(matcher.get("type") or "")
@@ -580,6 +583,14 @@ def _matcher_quality_violation(matcher: dict[str, Any]) -> str | None:
         return "exists Matcher 不读取 match.pattern；如需匹配具体内容请使用 keyword/regex/state"
     if matcher_type == "keyword" and any(re.search(r"\S\|\S", item) for item in text_patterns):
         return "keyword Matcher 不解释正则竖线；多关键字请使用 pattern 数组，正则语义请使用 regex"
+    if matcher_type == "keyword" and text_patterns and evidence.strip():
+        traceable_patterns = [
+            item
+            for item in text_patterns
+            if _PLACEHOLDER_RE.search(item) or item.casefold() in evidence.casefold()
+        ]
+        if not traceable_patterns:
+            return "keyword Matcher 的 match.pattern 无法从 provenance.evidence 逐字追溯；禁止改写为更宽泛的通用关键词"
     return None
 
 
