@@ -39,7 +39,7 @@ owner: team
 | T-KB-BATCH-00 | KBD30880 连续重抽 5 次回归 | ✅ 5/5 | Proposal 57～61 均有 qkv_task；最新 Proposal 无 Expert 配对，修改数为 0 |
 | T-KB-BATCH-01 | 重跑 KBD27079/27173/27222/27653/27736 | ✅ 六轮闭环 | revisions 93～97 正常 Signal 与 write_signal/not_exists/run_failed 均按预期分流，无新增问题 |
 | T-KB-BATCH-02 | 重跑 KBD28094/28156/28177/28900/29294 | ✅ 三轮闭环 | revisions 108～112 明确告警、正常后台检查与三类拒绝均按预期分流 |
-| T-KB-BATCH-03 | 重跑 KBD29713/30396/30838/30884/32010 | 🔄 第三次同批待重跑 | revisions 117～121 验证空 must 修复；发现 vmid.conf 伪装 qfk_log，已补采集器门禁 |
+| T-KB-BATCH-03 | 重跑 KBD29713/30396/30838/30884/32010 | ✅ 三轮闭环 | revisions 122～126 验证配置文件不再伪装 qfk_log；5/5 返回 200，正常 Signal 与三类拒绝独立分流 |
 | T-KB-BATCH-N | 剩余草稿按每批 5 篇自查、修复、重跑、独立提交 | ⬜ 待执行 | 前一批通过后才进入下一批 |
 | T-KB-PR | 汇总本地提交并创建 PR | ⬜ 待全部批次完成 | CI 全绿；标签齐全 |
 

@@ -132,6 +132,18 @@ migration 021 随后改为收敛迁移：替换上述全部已知反向指令，
 
 第二次同批 revisions 117～121 已确认 KBD32010 以 0 Signal + 5 Rejected Candidate 正常持久化，不再 500；KBD29713/30396 的明确平台告警通过，KBD30838 的 RAID 进程/硬件事实通过，KBD30884 的失败任务 producer 与命令检查通过。新发现 KBD30884 将 `/cfs/nodes/.../vmid.conf` 配置文件错误映射成无 path 的 qfk_log 并通过；已补配置扩展名采集器门禁，同批待第三次重跑。
 
+第三次同批 revisions 122～126 通过，使用 Prompt SHA-256 `bb5b632abe4eb1dc8b202cda361ac309d504ecf624b71cbf88a4b6100492405e`：
+
+| KBD | Proposal revision | Signal | Rejected Candidate | 结论 |
+|---|---:|---:|---|---|
+| 29713 | 122 | 2 | run_failed=1，write_signal=1 | CPU 温度平台告警与 sensors 只读检查通过；宽泛 BMC 检查不可判定，BMC reset 作为写动作可见 |
+| 30396 | 123 | 1 | run_failed=2，write_signal=1 | 网口损坏平台告警通过；结构或来源不成立的日志检查被拒绝；删除日志文件作为写动作可见 |
+| 30838 | 124 | 3 | run_failed=1 | RAID 告警、进程及硬件事实检查通过；坏 qkv 参数继续可见且未影响正常项 |
+| 30884 | 125 | 1 | run_failed=5 | 跨集群迁移失败 qkv_task 通过；无人消费 producer、证据不足的日志/进程检查及 `/cfs/nodes/.../vmid.conf` 配置读取均进入 run_failed，不再伪装为 qfk_log Signal |
+| 32010 | 126 | 2 | not_exists=2，run_failed=2 | Proposal 正常持久化；正常网卡统计/历史日志通过，ifconfig/netdoctor catalog 缺口可见，坏 qkv 参数与 Extract 契约进入 run_failed |
+
+5/5 请求均返回 200，没有 API 500、Proposal 丢失或 Candidate 静默过滤。第三批允许退出并进入下一批。
+
 每批事件记录以下内容：
 
 ```text
