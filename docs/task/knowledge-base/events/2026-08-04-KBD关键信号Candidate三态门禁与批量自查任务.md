@@ -41,7 +41,7 @@ owner: team
 | T-KB-BATCH-01 | 重跑 KBD27079/27173/27222/27653/27736 | ✅ 六轮闭环 | revisions 93～97 正常 Signal 与 write_signal/not_exists/run_failed 均按预期分流，无新增问题 |
 | T-KB-BATCH-02 | 重跑 KBD28094/28156/28177/28900/29294 | ✅ 三轮闭环 | revisions 108～112 明确告警、正常后台检查与三类拒绝均按预期分流 |
 | T-KB-BATCH-03 | 重跑 KBD29713/30396/30838/30884/32010 | ✅ 三轮闭环 | revisions 122～126 验证配置文件不再伪装 qfk_log；5/5 返回 200，正常 Signal 与三类拒绝独立分流 |
-| T-KB-BATCH-04 | 重跑 KBD32300/33510/33882/34094/34164 | 🔄 第二次同批待重跑 | revisions 127～131 暴露 command_args 写动作被 not_exists 掩盖；已补实际执行向量写门禁 |
+| T-KB-BATCH-04 | 重跑 KBD32300/33510/33882/34094/34164 | ⏸️ 等待外部配额后第二次同批重跑 | revisions 127～131 暴露 command_args 写动作被 not_exists 掩盖；确定性回放已命中 write_signal，但 DashScope 总配额 429，未生成复跑 revision，不得进入下一批 |
 | T-KB-BATCH-N | 剩余草稿按每批 5 篇自查、修复、重跑、独立提交 | ⬜ 待执行 | 前一批通过后才进入下一批 |
 | T-KB-PR | 汇总本地提交并创建 PR | ⬜ 待全部批次完成 | CI 全绿；标签齐全 |
 

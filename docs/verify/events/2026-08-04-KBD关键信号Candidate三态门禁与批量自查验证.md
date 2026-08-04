@@ -153,6 +153,10 @@ migration 021 随后改为收敛迁移：替换上述全部已知反向指令，
 
 修复将明确写门禁扩展到 `command_args` 中的完整写子命令/开关和被包装执行程序 basename，仍不做自由 Shell 推断；`write_signal` 固定优先于 catalog 与运行门禁。第四批必须整批重跑。
 
+修复提交后的确定性回放使用 revisions 127/131 中不可变保存的原始 Rejected Candidate：`soft_raid_lit --off /dev/sda` 命中写动作 `--off`，`strace -f /sf/bin/sfscp ...` 命中被包装写程序 `sfscp`，两者均在 catalog 前得到 `write_signal` 原因。完整代码回归为 319 passed（1 条既有 AsyncMock warning），Ruff、Signal Schema 自身/fixture/代码导出漂移、Admin `vue-tsc -b + vite build` 与 docs 治理均通过。
+
+真实第二次同批重抽尚未发生：原 LLM 凭据对 5 篇并发和单篇串行均返回 DashScope HTTP 429 `usage allocated quota exceeded`；独立视觉凭据调用同一 `glm-5` 返回相同总配额错误；Agent 的 `SCP_API_KEY` 在当前 dev Secret 为空。上述失败均发生在 LLM 返回 Candidate 之前，没有生成新 Proposal revision。隔离 Pod 已恢复原凭据并运行最新候选镜像 `dev-candidate-8665d0c`。因此确定性回放只能证明门禁代码修复，不能冒充真实重抽；第四批保持未闭环，禁止进入第五批。
+
 每批事件记录以下内容：
 
 ```text
