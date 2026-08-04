@@ -66,5 +66,8 @@ def test_command_preview_uses_log_handler_and_preserves_time_template():
         }
     )
 
-    assert preview["command"] == "acli log get -E -k 'too\\ many\\ file' -f sfvt_vtpdaemon.log -t '{{END}}'"
+    assert preview["command"] == (
+        "acli log get -E -k 'too\\ many\\ file' "
+        "-f sfvt_vtpdaemon.log -p /sf/log -t '{{END}}'"
+    )
     assert preview["variables"] == ["END", "HOST"]

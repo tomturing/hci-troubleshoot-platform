@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-08-04 | v3.63 | **QFK 白盒日志定位与 AND 判定收敛**：`qfk_log` 按已解析 `END` 的月内日号定位白盒 `vt` 目录，`END` 未解析时显式回退 `/sf/log`；keyword AND 使用 OR 命令预筛并由后端对完整输出做最终 AND 判定，命令预览复用运行时规则。 | PR #672 |
 | 2026-08-04 | v3.62 | **KBD 配置文件/qfk_log 采集器门禁**：常见配置扩展名不再冒充日志；明确安全配置路径归一只读 cat，其他配置 Candidate 进入 `run_failed`，Agent 不执行错误默认日志路径。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
 | 2026-08-04 | v3.61 | **KBD 空 must Contract 兜底**：通过门禁的 diagnostic Signal 全为 context 时同步提升首条为 must；全拒绝时不生成 Contract，避免抽取 500 让 Candidate/Rejected 审计整体消失。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
 | 2026-08-04 | v3.60 | **KBD 明确平台告警逐项召回**：每个不同 HCI 平台告警至少输出一个 qkv_alert Candidate，不能被同篇 smartctl/qfk_log 等后台检查替代；BMC 外部事件保持排除。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
