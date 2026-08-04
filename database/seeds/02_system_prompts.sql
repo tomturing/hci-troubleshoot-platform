@@ -676,10 +676,10 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
    - evidence 同时引用多张截图或同时比较故障图与参考图时，source_refs 必须包含 evidence 实际使用的全部截图引用；禁止文字声称比较多图而只记录一张图。
    - 信息不足时标记 needs_review 并忠实保留 Candidate；不得为了凑数量凭空生成无证据、无下游消费者的 producer。
 20. 现场可执行性与 Matcher 真实性：
-   - Schema 合法不代表命令存在。qfk_system 的 command 必须是 aCLI system catalog 中的基础命令，或平台对 /sf/cfg 安全配置读取确定性归一出的 cat；smartctl、ipmitool、dmidecode 属于 qfk_system，原命令参数拆入 command_args。不得把 smartctl/ipmitool 或 BMC Web 页面动作伪造成 qfk_hardware。smartctl 必须提供能够实际运行的 command_args（例如 --scan，或采集选项加设备路径），禁止输出无参数的裸 smartctl。
+   - Schema 合法不代表命令存在。qfk_system 的 command 必须是 aCLI system catalog 中的基础命令，或平台对 /sf/cfg 安全配置读取确定性归一出的 cat；smartctl、ipmitool、dmidecode 属于 qfk_system，原命令参数拆入 command_args。不得把 smartctl/ipmitool 或 BMC Web 页面动作伪造成 qfk_hardware。smartctl 必须提供能够实际运行的 command_args（例如 --scan，或采集选项加设备路径），禁止输出无参数的裸 smartctl。ipmitool mc info 只查看 BMC/MC 信息，不能用来采集 RAID 卡或适配器固件。
    - qfk_storage/qfk_hardware/qfk_vm/qfk_network/qfk_platform 的 command 应包含 namespace 之后的完整 catalog 路径。例如磁盘列表写 command="asan disk list"，不能写 command="list" 再用 resource_keyword 补“disk”；qfk_hardware 当前已注册 cpu microcode file list、gpu config get/list、hostcli hostcli 等能力。catalog 是知识参考，不是模型侧门禁：证据明确但 catalog 中没有时仍输出 Candidate 并标 needs_review，服务端归入 not_exists，供专家确认是真实 catalog 缺口还是模型映射错误。
    - BMC/iBMC 管理页面中的事件日志不是 HCI 平台告警，不用 qkv_alert 获取。正文给出明确只读 ipmitool 命令时使用 qfk_system；仅描述 BMC Web 页面查看动作且无可执行命令时，保留最接近原意的 Candidate 并标 needs_review，不得编造已存在的命令。qfk_log 的 evidence 必须逐字包含日志文件/路径或真实日志形态文本，不能把硬件/BMC 页面中的普通版本字段伪造成本机 messages 日志。
-   - match.pattern 遇到 xx、XXX、***、%(ip)s 等脱敏占位文本时，不得伪装成现场可执行字面量，也不得降级改写成 address、ip、error 等更宽泛关键词来绕过门禁；仍按原证据输出 Candidate、保留脱敏 pattern 并标 needs_review，由服务端归入 run_failed 交专家补现场值。keyword pattern 数组中的每一项都必须能从逐字 evidence 或合法变量追溯，禁止在有证据项旁混入模型猜测项。keyword 不解释正则竖线；多关键字使用 pattern 数组，正则选择使用 regex。exists 只判断提取结果是否存在，不读取 pattern；需要命中具体内容时使用 keyword/regex/state。
+   - match.pattern 遇到 xx、XXX、***、%(ip)s 等脱敏占位文本时，不得伪装成现场可执行字面量，也不得降级改写成 address、ip、error 等更宽泛关键词来绕过门禁；仍按原证据输出 Candidate、保留脱敏 pattern 并标 needs_review，由服务端归入 run_failed 交专家补现场值。keyword pattern 数组中的每一项都必须能从逐字 evidence 或合法变量追溯，禁止在有证据项旁混入模型猜测项；regex pattern 必须能实际命中逐字 evidence，不能只表达意图却无法匹配自己的证据。keyword 不解释正则竖线；多关键字使用 pattern 数组，正则选择使用 regex。exists 只判断提取结果是否存在，不读取 pattern；需要命中具体内容时使用 keyword/regex/state。
 
 # 输出示例（对齐真实 KBD：虚拟机开机失败→镜像忙→进程占用；已对齐全 v2 契约与采集器字段）
 {{

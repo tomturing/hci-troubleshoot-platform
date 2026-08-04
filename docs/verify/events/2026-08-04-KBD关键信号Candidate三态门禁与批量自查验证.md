@@ -22,6 +22,7 @@ owner: team
 | 单元 | 脱敏 Matcher、keyword 伪正则、exists 携带 pattern、数组混入无证据项 | `run_failed` | ✅ 已覆盖，数组逐项追溯 |
 | 单元 | catalog 命中的裸 `acli system smartctl` | 缺少最小 argv，归入 `run_failed` | ✅ KBD 与 SOP 共用命令调用契约 |
 | 单元 | BMC 外部事件→qkv_alert、普通版本截图→qfk_log(messages) | 采集器/evidence 不一致，归入 `run_failed` | ✅ 正常日志形态 evidence 反例保持通过 |
+| 单元 | `ipmitool mc info`→RAID 固件、regex 无法命中自身 evidence | 命令能力/Matcher 预运行失败，归入 `run_failed` | ✅ 正常 BMC 固件与可命中 regex 不受影响 |
 | Schema | 新 rejected candidate 带三值 reason_code | 合法 | ✅ 已通过 |
 | Schema | 历史 rejected candidate 无 reason_code | 仍合法 | ✅ 已通过 |
 | Prompt | 兼容 key `signals` 输出完整 Candidate，不含模型侧“不得输出”回归规则 | 合法且占位符集合不变；Prompt/服务任一先升级不产生空 Proposal | ✅ 已通过 |
@@ -63,7 +64,7 @@ data migration 021：在 hci-dev PostgreSQL 对当前 Prompt v1.9 执行 BEGIN �
 
 首次实际应用 migration 021 后，KBD30880 的 Proposal revision 56 仍未生成 `qkv_task`。数据库中的 v2.1 Prompt 事实检查发现：新规则 25 虽已追加，但 PR #668 的补充规则 24 仍明确要求“不生成 Signal，不以 phase=solution 形式保留”，同时还残留“宁缺毋滥”“不产出信号”和带下游条件的旧任务规则。版本号与正向关键字断言均通过，却不是语义完整的升级。
 
-migration 021 随后改为收敛迁移：替换上述全部已知反向指令，并增加负向断言。KBD30880 五次回归期间使用的 Prompt SHA-256 为 `268e2f960e3fc80117cd4a8f72650f4e76e88177bac21aaceb27f26f8357101a`；旧规则 24、“宁缺毋滥/不产出”和任务下游前置条件均不存在。第一批又发现脱敏值被模型降级成宽泛 matcher，修订后 hci-dev Prompt 仍为 2.1。第二次同批重跑进一步发现 KBD27222 的 pattern 数组可在一个有证据项旁混入无证据猜测项；服务端和 Prompt 已收紧为数组逐项追溯。第三次同批重跑发现裸 `smartctl` 调用错误通过后，Prompt 追加最小调用参数知识。第四次同批重跑发现 BMC 页面事实仍可能被伪造成平台告警或本机日志，新增 acquisition/evidence 一致性规则。当前实装 Prompt MD5 为 `757e9918bd6bb997fa6f353e7e035744`，SHA-256 为 `f1864281277177f8c060a10b30acbf94d593d8237581f5a79ddaf3c10bb6e8be`。
+migration 021 随后改为收敛迁移：替换上述全部已知反向指令，并增加负向断言。KBD30880 五次回归期间使用的 Prompt SHA-256 为 `268e2f960e3fc80117cd4a8f72650f4e76e88177bac21aaceb27f26f8357101a`；旧规则 24、“宁缺毋滥/不产出”和任务下游前置条件均不存在。第一批又依次发现脱敏值宽泛化、Matcher 数组夹带、裸 `smartctl`、BMC 页面伪装告警/本机日志、命令能力错配与 regex 自身不可命中等反例；Prompt 与服务端门禁均按通用契约逐轮收敛。当前实装 Prompt MD5 为 `6b1a6cb6ce17906a2b7e995f07bb2198`，SHA-256 为 `964086046eccf74ec7dccec21d4de34d29f66e8ec5ce46f62422df52494213d3`。
 
 ## KBD30880 回归协议
 
@@ -98,6 +99,8 @@ migration 021 随后改为收敛迁移：替换上述全部已知反向指令，
 | 27736 | revision 71：1 Signal；run_failed=3；write_signal=2 | revision 77：2 Signal；run_failed=2；write_signal=2；脱敏地址继续被拒，正常对话/日志检查保留 | ✅ |
 
 第四次同批 revisions 78/79/83/84/87 验证：KBD27079 的 4 个正常告警/日志/core 检查均通过且处置 Candidate 为 `write_signal`；KBD27653 的 `smartctl -i /dev/sdj` 通过；KBD27736 的脱敏地址与写动作继续正确分流；KBD27222 的 lspci 为 `not_exists`，裸 smartctl 已不再出现。然而模型把 KBD27173 的 BMC 事件误生成为 `qkv_alert`，并把 KBD27222 的 BMC 固件页面版本误生成为本机 `messages` 日志 Signal。两项均是 acquisition/evidence 不一致，已修通用 `run_failed` 门禁，首批需第五次同批复跑。
+
+第五次同批 revisions 88～92 验证：上述 BMC `qkv_alert` 已进入 `run_failed`，伪造 `messages` Signal 未再通过；正常 MCE 日志、平台告警、`smartctl -i` 与 `ipmitool mc info` 的 BMC 固件判定保持 Signal。进一步逐项审查发现 KBD27222 用 `ipmitool mc info` 判断 RAID 适配器固件，KBD27173 的 `^(9H|F6H)` 无法命中自身 evidence；已补命令能力契约与 regex evidence 预匹配，首批需第六次同批复跑。
 
 首批初跑证明三类分流路径均可见，但未达到整批退出标准。KBD27736 的脱敏 IP 没有直接进入 pattern，模型改用 `address`，只能证明配置存在地址行，不能证明 eth0 与 channel4 冲突。修复同时覆盖两层：Prompt 要求忠实保留脱敏 Candidate，服务端要求 keyword pattern 可从 `provenance.evidence` 逐字追溯；否则归入 `run_failed`。第二次同批重跑已闭环 KBD27736，但 KBD27222 暴露“数组至少一项可追溯”仍不充分：模型可在真实 evidence 项旁混入三个猜测项。第三轮收紧为数组每一项均需由逐字 evidence 或合法变量追溯。第三次复跑又发现 catalog 命中的裸 `smartctl` 会错误通过；新增 KBD/SOP 共用的命令最小 argv 契约，将该调用归为 `run_failed`，而 KBD27653 的 `smartctl -i /dev/sdj` 保持通过。第四次复跑补充采集器/evidence 一致性：BMC 外部事件不是 HCI 告警，普通页面字段不是本机日志。所有规则均不读取 support_id，不依赖单案例硬编码。
 

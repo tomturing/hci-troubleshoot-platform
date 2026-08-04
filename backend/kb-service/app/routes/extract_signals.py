@@ -588,6 +588,27 @@ def _qfk_invocation_violation(tool: str, args: dict[str, Any]) -> str | None:
     return f"关键信号验证执行不通过: {reason}" if reason else None
 
 
+def _qfk_command_capability_violation(signal: dict[str, Any]) -> str | None:
+    """校验命令固有能力能否采集 Candidate 声称的目标事实。"""
+
+    acquire = signal.get("acquire") or {}
+    if acquire.get("tool") != "qfk_system":
+        return None
+    args = acquire.get("args") or {}
+    command = str(args.get("command") or "").strip()
+    command_args = args.get("command_args") or []
+    if command != "ipmitool" or command_args[:2] != ["mc", "info"]:
+        return None
+    evidence = str((signal.get("provenance") or {}).get("evidence") or "")
+    instruction = str(args.get("instruction") or "")
+    if re.search(r"(?:RAID|适配器|阵列卡|磁盘控制器)", f"{instruction}\n{evidence}", re.IGNORECASE):
+        return (
+            "ipmitool mc info 只能采集 BMC/MC 信息，不能采集 RAID/适配器固件；"
+            "命令能力与 Candidate 目标事实不一致"
+        )
+    return None
+
+
 def _acquirer_catalog_prompt_text() -> str:
     """同时给模型工具语义和当前 catalog 事实，知识只用于减少乱造，不代替门禁。"""
 
@@ -629,6 +650,17 @@ def _matcher_quality_violation(matcher: dict[str, Any], *, evidence: str = "") -
                 "keyword Matcher 的 match.pattern 无法从 provenance.evidence 逐字追溯；"
                 f"禁止改写或混入无证据的通用关键词: {untraceable_patterns[0]}"
             )
+    if matcher_type == "regex" and text_patterns and evidence.strip():
+        for regex_pattern in text_patterns:
+            try:
+                matched = re.search(regex_pattern, evidence) is not None
+            except re.error as exc:
+                return f"regex Matcher 无法编译: {exc}"
+            if not matched:
+                return (
+                    "regex Matcher 的 match.pattern 无法命中 provenance.evidence，"
+                    f"现场执行前已验证失败: {regex_pattern}"
+                )
     return None
 
 
@@ -985,6 +1017,15 @@ def _validate_and_collect_signals(
                     "extract_signals 拒绝无法运行的命令调用 source=%s reason=%s",
                     source_id,
                     invocation_violation,
+                )
+                continue
+            capability_violation = _qfk_command_capability_violation(s)
+            if capability_violation:
+                reject(s, "run_failed", capability_violation)
+                logger.warning(
+                    "extract_signals 拒绝命令能力错配 source=%s reason=%s",
+                    source_id,
+                    capability_violation,
                 )
                 continue
         if id(s) in preparation_errors:

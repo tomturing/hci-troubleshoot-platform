@@ -13,6 +13,7 @@ from app.routes.extract_signals import (
     _normalize_generated_timeouts,
     _persist_signals,
     _qfk_catalog_violation,
+    _qfk_command_capability_violation,
     _qfk_invocation_violation,
     _signals_to_v2,
     _unconsumed_qfk_producer_reasons,
@@ -337,6 +338,44 @@ def test_qfk_invocation_violation_rejects_catalog_hit_that_cannot_run():
     assert "smartctl 至少需要 1 个命令参数" in _qfk_invocation_violation(
         "qfk_system", {"command": "smartctl"}
     )
+    assert (
+        _qfk_invocation_violation(
+            "qfk_system", {"command": "smartctl", "command_args": ["--scan"]}
+        )
+        is None
+    )
+
+
+def test_ipmitool_mc_info_cannot_claim_raid_firmware_capability():
+    signal = {
+        "acquire": {
+            "tool": "qfk_system",
+            "args": {
+                "command": "ipmitool",
+                "command_args": ["mc", "info"],
+                "instruction": "检查 RAID 卡固件版本",
+            },
+        },
+        "provenance": {"evidence": "适配器固件版本为 51.13"},
+    }
+
+    assert "只能采集 BMC/MC 信息" in _qfk_command_capability_violation(signal)
+
+
+def test_regex_matcher_must_match_its_own_evidence():
+    reason = _matcher_quality_violation(
+        {"type": "regex", "pattern": "^(9H|F6H)"},
+        evidence="SN为9H、F6H开头服务器",
+    )
+
+    assert "无法命中 provenance.evidence" in reason
+    assert (
+        _matcher_quality_violation(
+            {"type": "regex", "pattern": "core-lcore-slave-0-\\d+-\\d+"},
+            evidence="core-lcore-slave-0-55166-1710466980",
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -402,12 +441,6 @@ def test_log_shaped_evidence_keeps_normal_qfk_log_candidate():
 
     assert len(accepted) == 1
     assert rejected == []
-    assert (
-        _qfk_invocation_violation(
-            "qfk_system", {"command": "smartctl", "command_args": ["--scan"]}
-        )
-        is None
-    )
 
 
 @pytest.mark.parametrize(

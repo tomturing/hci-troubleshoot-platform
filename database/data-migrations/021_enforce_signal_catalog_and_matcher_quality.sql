@@ -24,9 +24,9 @@ SET content_template = replace(
 - 写入、配置变更、启停/重启、删除等真实执行动作仍须输出 Candidate 并标 phase=solution；服务端归入 write_signal，必须审核。
 - 当前内置 aCLI catalog 是生成知识而不是模型侧门禁。优先使用已注册命令；证据明确但 catalog 缺失时仍输出 Candidate 并标 needs_review，服务端归入 not_exists，供专家确认 catalog 缺口或模型乱造。
 - Schema、args、变量依赖、Matcher、编译/预运行或真实运行验证失败统一视为 run_failed。命令在 catalog 中只证明“已登记”，不证明能运行成功。
-- BMC/iBMC 管理页面中的事件日志不是 HCI 平台告警。smartctl、ipmitool、dmidecode 属于 qfk_system；不得把 ipmitool mc info 或 BMC Web 页面查看伪造成 qfk_hardware。smartctl 必须提供能够实际运行的 command_args（例如 --scan，或采集选项加设备路径），禁止输出无参数的裸 smartctl。qfk_hardware 当前已注册 cpu microcode file list、gpu config get/list、hostcli hostcli。qfk_log 的 evidence 必须逐字包含日志文件/路径或真实日志形态文本，不能把硬件/BMC 页面中的普通版本字段伪造成本机 messages 日志。
+- BMC/iBMC 管理页面中的事件日志不是 HCI 平台告警。smartctl、ipmitool、dmidecode 属于 qfk_system；不得把 ipmitool mc info 或 BMC Web 页面查看伪造成 qfk_hardware。smartctl 必须提供能够实际运行的 command_args（例如 --scan，或采集选项加设备路径），禁止输出无参数的裸 smartctl。ipmitool mc info 只查看 BMC/MC 信息，不能用来采集 RAID 卡或适配器固件。qfk_hardware 当前已注册 cpu microcode file list、gpu config get/list、hostcli hostcli。qfk_log 的 evidence 必须逐字包含日志文件/路径或真实日志形态文本，不能把硬件/BMC 页面中的普通版本字段伪造成本机 messages 日志。
 - qfk_storage、qfk_hardware、qfk_vm、qfk_network、qfk_platform 的 command 应包含 namespace 后完整 catalog 路径，例如 command="asan disk list"，不能写 command="list" 再用 resource_keyword 补“disk”。
-- match.pattern 遇到 xx、XXX、***、%(ip)s 等脱敏占位文本时，不得伪装成现场可执行字面量，也不得降级改写成 address、ip、error 等更宽泛关键词来绕过门禁；仍按原证据输出 Candidate、保留脱敏 pattern 并标 needs_review，由服务端归入 run_failed 交专家补现场值。keyword pattern 数组中的每一项都必须能从逐字 evidence 或合法变量追溯，禁止在有证据项旁混入模型猜测项。keyword 不解释正则竖线；多关键字使用数组，正则选择使用 regex。exists 只判断提取结果是否存在，不读取 pattern。
+- match.pattern 遇到 xx、XXX、***、%(ip)s 等脱敏占位文本时，不得伪装成现场可执行字面量，也不得降级改写成 address、ip、error 等更宽泛关键词来绕过门禁；仍按原证据输出 Candidate、保留脱敏 pattern 并标 needs_review，由服务端归入 run_failed 交专家补现场值。keyword pattern 数组中的每一项都必须能从逐字 evidence 或合法变量追溯，禁止在有证据项旁混入模型猜测项；regex pattern 必须能实际命中逐字 evidence，不能只表达意图却无法匹配自己的证据。keyword 不解释正则竖线；多关键字使用数组，正则选择使用 regex。exists 只判断提取结果是否存在，不读取 pattern。
 $RULE$,
     description = CASE
         WHEN COALESCE(description, '') LIKE '%Candidate 三态门禁%' THEN description
@@ -137,6 +137,20 @@ WHERE name = 'kbd_extract_signals_v2'
 
 UPDATE system_prompt
 SET content_template = replace(
+        replace(
+            content_template,
+            '禁止输出无参数的裸 smartctl。',
+            '禁止输出无参数的裸 smartctl。ipmitool mc info 只查看 BMC/MC 信息，不能用来采集 RAID 卡或适配器固件。'
+        ),
+        'keyword pattern 数组中的每一项都必须能从逐字 evidence 或合法变量追溯，禁止在有证据项旁混入模型猜测项。',
+        'keyword pattern 数组中的每一项都必须能从逐字 evidence 或合法变量追溯，禁止在有证据项旁混入模型猜测项；regex pattern 必须能实际命中逐字 evidence，不能只表达意图却无法匹配自己的证据。'
+    ),
+    updated_at = NOW()
+WHERE name = 'kbd_extract_signals_v2'
+  AND content_template NOT LIKE '%ipmitool mc info 只查看 BMC/MC 信息%';
+
+UPDATE system_prompt
+SET content_template = replace(
         content_template,
         'qfk_hardware 当前已注册 cpu microcode file list、gpu config get/list、hostcli hostcli。',
         'qfk_hardware 当前已注册 cpu microcode file list、gpu config get/list、hostcli hostcli。qfk_log 的 evidence 必须逐字包含日志文件/路径或真实日志形态文本，不能把硬件/BMC 页面中的普通版本字段伪造成本机 messages 日志。'
@@ -169,6 +183,8 @@ BEGIN
        OR extract_prompt NOT LIKE '%keyword pattern 数组中的每一项都必须能从逐字 evidence 或合法变量追溯%'
        OR extract_prompt NOT LIKE '%禁止输出无参数的裸 smartctl%'
        OR extract_prompt NOT LIKE '%不能把硬件/BMC 页面中的普通版本字段伪造成本机 messages 日志%'
+       OR extract_prompt NOT LIKE '%ipmitool mc info 只查看 BMC/MC 信息%'
+       OR extract_prompt NOT LIKE '%regex pattern 必须能实际命中逐字 evidence%'
        OR extract_prompt NOT LIKE '%"signals": [%'
        OR extract_prompt LIKE '%所有输出 Signal 的 phase 必须为 diagnostic；phase=solution 禁止输出%'
        OR extract_prompt LIKE '%无法映射到 catalog 时不生成 Signal%'
