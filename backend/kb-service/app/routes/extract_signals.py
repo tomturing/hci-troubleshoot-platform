@@ -194,38 +194,14 @@ def _diagnostic_image_items(images_json: Any) -> list[dict[str, Any]]:
     ]
 
 
-def _image_fact_texts(region: dict[str, Any]) -> tuple[str, ...]:
-    """提取一张图片区域中允许被逐字溯源的原子观察事实。"""
-    values: list[str] = []
-    for line in region.get("text_lines") or []:
-        if isinstance(line, dict) and isinstance(line.get("text"), str):
-            values.append(line["text"])
-    for fact in region.get("observed_facts") or []:
-        if isinstance(fact, str):
-            values.append(fact)
-
-    def collect_fields(value: Any) -> None:
-        if isinstance(value, str):
-            values.append(value)
-        elif isinstance(value, dict):
-            for nested in value.values():
-                collect_fields(nested)
-        elif isinstance(value, list):
-            for nested in value:
-                collect_fields(nested)
-
-    collect_fields(region.get("fields") or {})
-    return tuple(value for value in values if value.strip())
-
-
 def _build_image_evidence_input(
     images_json: Any,
     *,
     max_chars: int = 12000,
-) -> tuple[str, dict[str, tuple[str, ...]]]:
-    """构造完整图片单元的 Prompt 输入和同源索引，绝不截断到半张图。"""
+) -> tuple[str, set[str]]:
+    """构造完整图片单元的 Prompt 输入及其实际区域引用，绝不截断到半张图。"""
     formatted: list[dict[str, Any]] = []
-    source_index: dict[str, tuple[str, ...]] = {}
+    source_refs: set[str] = set()
     payload_size = 2  # ``[]``
     for item in _diagnostic_image_items(images_json):
         evidence = item.get("evidence")
@@ -233,7 +209,7 @@ def _build_image_evidence_input(
             continue
         seq = int(item["seq"])
         regions: list[dict[str, Any]] = []
-        item_source_index: dict[str, tuple[str, ...]] = {}
+        item_source_refs: set[str] = set()
         for region in evidence.get("regions") or []:
             if not isinstance(region, dict):
                 continue
@@ -249,7 +225,7 @@ def _build_image_evidence_input(
                     "observed_facts": region.get("observed_facts") or [],
                 }
             )
-            item_source_index[source_ref] = _image_fact_texts(region)
+            item_source_refs.add(source_ref)
         quality = evidence.get("quality") or {}
         formatted_item = {
             "source_ref": f"img:{seq}",
@@ -268,19 +244,19 @@ def _build_image_evidence_input(
         if payload_size + delimiter_size + len(serialized_item) > max_chars:
             break
         formatted.append(formatted_item)
-        source_index.update(item_source_index)
+        source_refs.update(item_source_refs)
         payload_size += delimiter_size + len(serialized_item)
-    return json.dumps(formatted, ensure_ascii=False, separators=(",", ":")), source_index
+    return json.dumps(formatted, ensure_ascii=False, separators=(",", ":")), source_refs
 
 
-def _diagnostic_image_source_index(
+def _diagnostic_image_source_refs(
     images_json: Any,
     *,
     max_chars: int = 12000,
-) -> dict[str, tuple[str, ...]]:
-    """建立本次实际传入 Prompt 的图片区域索引，供 Candidate 溯源强校验。"""
-    _, source_index = _build_image_evidence_input(images_json, max_chars=max_chars)
-    return source_index
+) -> set[str]:
+    """返回本次实际传入 Prompt 的图片区域引用，供 Candidate 来源边界校验。"""
+    _, source_refs = _build_image_evidence_input(images_json, max_chars=max_chars)
+    return source_refs
 
 
 def _format_image_evidence(images_json: Any, *, max_chars: int = 12000) -> str:
@@ -759,10 +735,16 @@ def _validate_obj_placeholders(obj: Any) -> None:
 
 def _image_provenance_violation(
     signal: dict[str, Any],
-    diagnostic_image_sources: dict[str, tuple[str, ...]] | None,
+    diagnostic_image_source_refs: set[str] | None,
 ) -> str | None:
-    """校验 Candidate 引用的截图确实属于本轮诊断输入且证据逐字可回溯。"""
-    if diagnostic_image_sources is None:
+    """校验 Candidate 引用的截图确实属于本轮诊断输入。
+
+    ``provenance.evidence`` 可以是正文原句、截图可见文字或两者组合后的诊断说明；
+    单一 evidence 字段无法逐项表达混合来源，不能因声明了 source_refs 就要求整句
+    evidence 逐字存在于每张图片。这里仅执行本修复所需的输入边界检查：被引用的
+    图片区域必须确实进入了本轮 Prompt。
+    """
+    if diagnostic_image_source_refs is None:
         return None
 
     provenance = signal.get("provenance") or {}
@@ -776,13 +758,9 @@ def _image_provenance_violation(
     if not isinstance(source_refs, list) or not all(isinstance(ref, str) and ref.strip() for ref in source_refs):
         return "provenance.source_refs 必须是非空截图区域引用数组"
 
-    evidence = str(provenance.get("evidence") or "").strip()
     for source_ref in source_refs:
-        facts = diagnostic_image_sources.get(source_ref)
-        if facts is None:
+        if source_ref not in diagnostic_image_source_refs:
             return f"provenance.source_refs 引用了未进入诊断输入的截图: {source_ref}"
-        if evidence and not any(evidence in fact for fact in facts):
-            return f"provenance.evidence 无法在截图来源 {source_ref} 的原子事实中逐字追溯"
     return None
 
 
@@ -1026,7 +1004,7 @@ def _validate_and_collect_signals(
     external_variables: set[str] | None = None,
     *,
     enforce_kbd_read_only: bool = False,
-    diagnostic_image_sources: dict[str, tuple[str, ...]] | None = None,
+    diagnostic_image_source_refs: set[str] | None = None,
 ) -> tuple[list, list]:
     """对 LLM 返回的 v2 信号列表做校验，返回 (validated, rejected)。
 
@@ -1056,7 +1034,7 @@ def _validate_and_collect_signals(
         id(item): violation
         for item in raw_signals
         if isinstance(item, dict)
-        and (violation := _image_provenance_violation(item, diagnostic_image_sources)) is not None
+        and (violation := _image_provenance_violation(item, diagnostic_image_source_refs)) is not None
     }
 
     # 先在整个 Candidate 集合上做跨信号规范化，再逐条校验。这使下游
@@ -1502,7 +1480,7 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
     acquirer_catalog_text = _acquirer_catalog_prompt_text()
     variable_schema_text = ", ".join(DEFAULT_VARIABLE_SCHEMA)
     image_evidence_text = _format_image_evidence(entry_data["images_json"])
-    diagnostic_image_sources = _diagnostic_image_source_index(entry_data["images_json"])
+    diagnostic_image_source_refs = _diagnostic_image_source_refs(entry_data["images_json"])
     prompt = prompt_template.format(
         title=entry_data["title"],
         problem_description=entry_data["problem_description"][:2000],
@@ -1530,7 +1508,7 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
         f"kbd:{kbd_id}",
         external_variables,
         enforce_kbd_read_only=True,
-        diagnostic_image_sources=diagnostic_image_sources,
+        diagnostic_image_source_refs=diagnostic_image_source_refs,
     )
     verification_contract = _build_verification_contract(
         validated,

@@ -4,7 +4,7 @@ import io
 import json
 
 from app.routes.extract_signals import (
-    _diagnostic_image_source_index,
+    _diagnostic_image_source_refs,
     _format_image_evidence,
     _validate_and_collect_signals,
 )
@@ -245,7 +245,7 @@ def test_signal_prompt_excludes_root_cause_and_solution_images_and_context():
     assert "service restart" not in serialized
 
 
-def test_kbd_candidate_cannot_reference_excluded_solution_image_or_mismatched_evidence():
+def test_kbd_candidate_cannot_reference_image_not_entering_diagnostic_prompt():
     images = [
         {
             "seq": 0,
@@ -285,7 +285,7 @@ def test_kbd_candidate_cannot_reference_excluded_solution_image_or_mismatched_ev
         [candidate],
         source_id="kbd:27736",
         enforce_kbd_read_only=True,
-        diagnostic_image_sources=_diagnostic_image_source_index(images),
+        diagnostic_image_source_refs=_diagnostic_image_source_refs(images),
     )
 
     assert accepted == []
@@ -293,7 +293,100 @@ def test_kbd_candidate_cannot_reference_excluded_solution_image_or_mismatched_ev
     assert "未进入诊断输入的截图" in rejected[0]["reason"]
 
 
-def test_signal_image_prompt_limit_keeps_only_complete_images_and_matching_source_index():
+def test_kbd_candidate_allows_body_evidence_with_diagnostic_image_reference():
+    """正文证据和辅助截图可联合引用，不能被要求逐字相等。"""
+    images = [
+        {
+            "seq": 2,
+            "section": "steps_text",
+            "evidence": {
+                "regions": [
+                    {
+                        "region_id": "img_2:r_0",
+                        "text_lines": [{"text": "address 10.0.0.8"}],
+                    }
+                ],
+            },
+        }
+    ]
+    candidate = {
+        "id": "sig_001",
+        "acquire": {"tool": "qfk_system", "args": {"command": "cat", "command_args": ["/sf/cfg/if.d/eth0"]}},
+        "match": {
+            "type": "exists",
+            "mode": "or",
+            "expected": True,
+            "extract": {"type": "text", "rows": {"mode": "all"}, "cardinality": "all", "source": "stdout"},
+        },
+        "orchestrate": {"phase": "diagnostic", "produces": [], "requires": []},
+        "provenance": {
+            "category": "backend",
+            "source_section": "steps_text",
+            "source_refs": ["img:2/region:img_2:r_0"],
+            "evidence": "管理口为channel4，但是eth0口也残留了跟管理口一样的ip",
+        },
+    }
+
+    accepted, rejected = _validate_and_collect_signals(
+        [candidate],
+        source_id="kbd:27736",
+        enforce_kbd_read_only=True,
+        diagnostic_image_source_refs=_diagnostic_image_source_refs(images),
+    )
+
+    assert len(accepted) == 1
+    assert rejected == []
+
+
+def test_kbd_candidate_with_body_evidence_reaches_matcher_gate_after_image_ref_check():
+    """KBD27736 型候选应报告真实 Matcher 问题，而非虚假的图片逐字追溯错误。"""
+    images = [
+        {
+            "seq": 2,
+            "section": "steps_text",
+            "evidence": {
+                "regions": [
+                    {
+                        "region_id": "img_2:r_0",
+                        "text_lines": [{"text": "address xx.100.88"}],
+                    }
+                ],
+            },
+        }
+    ]
+    candidate = {
+        "id": "sig_004",
+        "acquire": {"tool": "qfk_system", "args": {"command": "cat", "command_args": ["/sf/cfg/if.d/channel4"]}},
+        "match": {
+            "type": "keyword",
+            "pattern": "address xx.100.88",
+            "mode": "or",
+            "expected": True,
+            "extract": {"type": "text", "rows": {"mode": "all"}, "cardinality": "all", "source": "stdout"},
+        },
+        "orchestrate": {"phase": "diagnostic", "produces": [], "requires": []},
+        "provenance": {
+            "category": "backend",
+            "source_section": "steps_text",
+            "source_refs": ["img:2/region:img_2:r_0"],
+            "evidence": "管理口为channel4，但是eth0口也残留了跟管理口一样的ip",
+        },
+    }
+
+    accepted, rejected = _validate_and_collect_signals(
+        [candidate],
+        source_id="kbd:27736",
+        enforce_kbd_read_only=True,
+        diagnostic_image_source_refs=_diagnostic_image_source_refs(images),
+    )
+
+    assert accepted == []
+    assert rejected[0]["reason_code"] == "run_failed"
+    assert "match.pattern 包含脱敏占位文本" in rejected[0]["reason"]
+    assert "原子事实中逐字追溯" not in rejected[0]["reason"]
+
+
+def test_signal_image_prompt_limit_keeps_only_complete_images_and_matching_source_refs():
     images = [
         {
             "seq": 0,
@@ -313,7 +406,7 @@ def test_signal_image_prompt_limit_keeps_only_complete_images_and_matching_sourc
     first_image_payload = _format_image_evidence([images[0]])
 
     payload = _format_image_evidence(images, max_chars=len(first_image_payload))
-    source_index = _diagnostic_image_source_index(images, max_chars=len(first_image_payload))
+    source_refs = _diagnostic_image_source_refs(images, max_chars=len(first_image_payload))
 
     assert json.loads(payload) == json.loads(first_image_payload)
-    assert set(source_index) == {"img:0/region:img_0:r_0"}
+    assert source_refs == {"img:0/region:img_0:r_0"}

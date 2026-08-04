@@ -81,9 +81,25 @@ class KbCategory(Base):
 LLM 自报的 `source_section` 限制为枚举也不能证明其 `source_refs/evidence` 真实可追溯。
 
 **修复：** 在调用 LLM 前按诊断章节白名单过滤图片，未知 section fail closed；图片只传原子观察事实，
-不传自由上下文、DESCRIPTION、inferences 或 legacy desc；由同一份过滤结果建立 `source_ref -> facts`
-索引，拒绝未进入输入的 source ref、非诊断章节和无法逐字回溯的图片 evidence。
+不传自由上下文、DESCRIPTION、inferences 或 legacy desc；由同一份过滤结果建立实际输入的
+`source_ref` 集合，拒绝未进入输入的 source ref 和非诊断章节。
 
 **预防：** 增加反例测试：solution/root_cause 截图含 `rm`/`restart` 文本时，序列化 Prompt 不得含该文本；
-Candidate 引用该截图或将方案文字伪标为诊断图 evidence 时必须进入 rejected candidates。不要把“写操作
-后置拒绝”误当成输入隔离，它只能防执行，不能防标签泄漏。
+Candidate 引用该截图时必须进入 rejected candidates。不要把“写操作后置拒绝”误当成输入隔离，它只能防
+执行，不能防标签泄漏。
+
+## V-010：图片来源集合检查不得升级为正文 evidence 与 OCR 的跨来源逐字强绑定
+
+**症状：** Candidate 的 `provenance.evidence` 是 `steps_text` 中逐字存在的诊断结论，并引用了本轮
+实际进入 Prompt 的排查截图；服务端却报“evidence 无法在截图原子事实中逐字追溯”，提前拒绝候选。
+
+**根因：** 单一 `provenance.evidence` 可以是正文引用、截图可见文字，或两者共同支持的诊断说明。若
+仅因 Candidate 填写 `source_refs`，就要求完整 evidence 出现在每一张截图 OCR 中，会把“正文主证据 +
+截图辅助事实”误判为越界来源，并遮蔽后续真实的 Matcher、Catalog 或运行语义问题。
+
+**修复：** 图片来源门禁只校验 `source_refs` 是否属于按章节过滤后、实际送入 Prompt 的图片区域；保留
+`source_section` 的诊断章节约束，但不比较正文 evidence 与图片 OCR。需要逐证据原子绑定来源时，先扩展
+数据模型，不能复用单一 evidence 字段强行表达。
+
+**预防：** 覆盖三类回归：允许“正文 evidence + 合法诊断图 source ref”；拒绝 solution/未知/截断而未进入
+Prompt 的 source ref；KBD27736 型脱敏 Matcher 必须到达其自身的 Matcher 门禁，而不是被图片来源门禁抢先拒绝。
