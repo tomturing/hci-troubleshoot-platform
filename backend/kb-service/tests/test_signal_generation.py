@@ -13,6 +13,7 @@ from app.routes.extract_signals import (
     _normalize_generated_timeouts,
     _persist_signals,
     _qfk_catalog_violation,
+    _qfk_invocation_violation,
     _signals_to_v2,
     _unconsumed_qfk_producer_reasons,
     _validate_and_collect_signals,
@@ -119,6 +120,12 @@ def test_kbd_candidate_gate_uses_three_stable_reason_codes_and_keeps_good_signal
             "match": {"type": "exists", "expected": True},
             "orchestrate": {"phase": "diagnostic", "produces": [], "requires": []},
         },
+        {
+            "id": "cannot-run",
+            "acquire": {"tool": "qfk_system", "args": {"command": "smartctl"}},
+            "match": {"type": "exists", "expected": True},
+            "orchestrate": {"phase": "diagnostic", "produces": [], "requires": []},
+        },
     ]
 
     accepted, rejected = _validate_and_collect_signals(
@@ -132,7 +139,9 @@ def test_kbd_candidate_gate_uses_three_stable_reason_codes_and_keeps_good_signal
         ("write", "write_signal"),
         ("missing", "not_exists"),
         ("invalid", "run_failed"),
+        ("cannot-run", "run_failed"),
     ]
+    assert "缺少运行所需参数" in rejected[-1]["reason"]
     assert rejected[0]["signal"]["orchestrate"]["phase"] == "solution"
     assert "provenance" not in rejected[0]["signal"]
 
@@ -322,6 +331,18 @@ def test_qfk_proposal_command_must_exist_in_runtime_catalog(tool, args, expected
         assert reason is None
     else:
         assert expected_fragment in reason
+
+
+def test_qfk_invocation_violation_rejects_catalog_hit_that_cannot_run():
+    assert "smartctl 至少需要 1 个命令参数" in _qfk_invocation_violation(
+        "qfk_system", {"command": "smartctl"}
+    )
+    assert (
+        _qfk_invocation_violation(
+            "qfk_system", {"command": "smartctl", "command_args": ["--scan"]}
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(

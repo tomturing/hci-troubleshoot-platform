@@ -21,6 +21,12 @@ ALLOWED_BASH_CONTAINERS = ALLOWED_SOP_BASH_CONTAINERS
 _BASH_FORBIDDEN_PREFIX_RE = re.compile(r"(^|\s)(docker\s+exec|kubectl\s+exec|nsenter)\b", re.IGNORECASE)
 _ACLI_CATALOG_PATH = Path(__file__).resolve().parent / "catalog" / "acli_command_catalog.json"
 
+# aCLI catalog 目前只记录命令路径，不记录 argv schema。这里只维护已经由回归
+# 证实的最小调用契约；它描述命令本身，不绑定 KBD/support_id。
+_ACLI_MIN_TAIL_ARGS = {
+    "acli system smartctl": 1,
+}
+
 
 def _normalize_spaces(value: str) -> str:
     return " ".join(value.strip().split())
@@ -106,6 +112,30 @@ def validate_acli_catalog_command(command: str) -> str | None:
     return None
 
 
+def validate_acli_invocation_command(command: str) -> str | None:
+    """校验 catalog 已登记命令是否具备可运行的最小 argv。
+
+    catalog 命中仅证明命令路径存在；缺少命令本身必需的参数时，调用仍会直接
+    打印 usage 或失败。该结果属于 ``run_failed``，不能归为 ``not_exists``。
+    """
+
+    tokens = _tokenize(command)
+    if not tokens or tokens[0] != "acli":
+        return None
+    path_tokens = _strip_global_options(tokens)
+    for command_path, minimum in _ACLI_MIN_TAIL_ARGS.items():
+        prefix = command_path.split()
+        if path_tokens[: len(prefix)] != prefix:
+            continue
+        actual = len(path_tokens) - len(prefix)
+        if actual < minimum:
+            return (
+                f"aCLI 命令缺少运行所需参数：{_normalize_spaces(command)}；"
+                f"{command_path} 至少需要 {minimum} 个命令参数"
+            )
+    return None
+
+
 def _make_issue(code: str, message: str, location: str, line_number: int | None = None) -> ValidationIssue:
     return ValidationIssue(
         code=code,
@@ -132,6 +162,16 @@ def _validate_acli_command(command: str, location: str, line_number: int | None)
             _make_issue(
                 "sop_tool_acli_command_not_in_catalog",
                 f"SOP 中的{reason}",
+                location,
+                line_number,
+            )
+        ]
+    invocation_reason = validate_acli_invocation_command(command)
+    if invocation_reason:
+        return [
+            _make_issue(
+                "sop_tool_acli_invocation_invalid",
+                f"SOP 中的{invocation_reason}",
                 location,
                 line_number,
             )

@@ -67,6 +67,7 @@ Prompt v2.1 输出 Candidate，但传输层保留历史 key `signals`，避免 P
    - 非对象、缺少 acquire、未知 tool、args Schema 失败；
    - 安全管道转换、变量依赖、未消费 producer、Matcher 质量、Signal v2 Schema 失败；
    - `keyword` Matcher 的每一个 pattern 无法从 Candidate 的逐字 evidence 或合法变量追溯，尤其是把脱敏 IP/ID 降级成 `address`、`ip`、`error` 等宽泛词，或在一个有证据项旁混入模型猜测项；
+   - catalog 已登记，但编译调用缺少命令自身必需的最小参数；例如裸 `acli system smartctl` 只会打印 usage/失败，不能冒充可执行采集；
    - 后续编译/预运行和真实执行失败也使用相同分类，并保留更具体失败模式。
 4. 通过后执行既有 enrich、Verification Contract 投影并保存为 Signal。
 
@@ -140,6 +141,7 @@ Prompt 数据迁移采用“收敛”而不是“只追加新规则”：存量�
 | 新规则只追加在旧 Prompt 末尾 | 模型同时收到“完整输出”和“不得输出”，行为取决于冲突消解 | migration 021 替换全部已知反向语句，并以负向断言阻止假升级 |
 | 脱敏值无法直接运行 | 模型把 `xx.100.88` 改成 `address` 以绕过脱敏门禁，产生必然误报 | Prompt 要求保留原始脱敏 Candidate；服务端同时要求 keyword pattern 逐项可由 evidence 或合法变量追溯，否则 `run_failed` |
 | Matcher 数组首项有证据、其余项靠猜 | “至少一项可追溯”让猜测项搭便车成为 Signal | 对数组逐项校验；任一无法追溯即保留完整 Candidate 并归入 `run_failed` |
+| catalog 已登记但调用缺少必需参数 | 裸 `smartctl` 被误认为“catalog 命中即可运行” | 复用命令级最小 argv 契约；失败进入 `run_failed`，不冒充 `not_exists` |
 
 ### 为什么不选其他方案
 
@@ -148,6 +150,7 @@ Prompt 数据迁移采用“收敛”而不是“只追加新规则”：存量�
 - 不增加第四种状态：三态已覆盖输入、通过、拒绝；具体差异由三个 reason code 表达。
 - 不做自动修复循环：会增加不可解释状态和模型调用成本，且可能把错误命令改成“看似合法”的另一个错误命令。
 - 不为 KBD27173/KBD27222/KBD27653/KBD27736 写案例硬编码：案例只是通用门禁的回归样本。
+- 不把 `smartctl` 最小 argv 规则写成 KBD27222 特判：规则属于命令调用契约，KBD 与 SOP 共用；catalog 将来提供结构化 argv schema 后可直接替换当前最小元数据。
 - 不把真实运行失败自动永久改写历史 Proposal：运行结果受现场版本、节点和时点影响，应以运行审计关联精确 revision；确认需要修改知识时由专家产生新 Expert/Proposal。
 - 不为概念纯度强制重命名 LLM wire key：`signals` 是既有滚动发布契约，门禁前按 Candidate 解释即可；改名会制造 Prompt/服务非原子升级故障。
 

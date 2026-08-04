@@ -58,6 +58,7 @@ from app.services.signal_job_manager import get_signal_job_manager
 from app.services.sop_tool_contract_validator import (
     get_acli_catalog_commands,
     validate_acli_catalog_command,
+    validate_acli_invocation_command,
 )
 
 if TYPE_CHECKING:
@@ -553,6 +554,18 @@ def _qfk_catalog_violation(tool: str, args: dict[str, Any]) -> str | None:
     return f"关键信号命令不可执行: {reason}" if reason else None
 
 
+def _qfk_invocation_violation(tool: str, args: dict[str, Any]) -> str | None:
+    """校验已登记命令的最小 argv；失败属于 run_failed 而非 not_exists。"""
+
+    if tool != "qfk_system":
+        return None
+    command = str(args.get("command") or "").strip()
+    command_args = args.get("command_args") or []
+    compiled = shlex.join(["acli", "system", command, *command_args])
+    reason = validate_acli_invocation_command(compiled)
+    return f"关键信号验证执行不通过: {reason}" if reason else None
+
+
 def _acquirer_catalog_prompt_text() -> str:
     """同时给模型工具语义和当前 catalog 事实，知识只用于减少乱造，不代替门禁。"""
 
@@ -941,6 +954,15 @@ def _validate_and_collect_signals(
                     "extract_signals 拒绝 catalog 缺失命令 source=%s reason=%s",
                     source_id,
                     catalog_violation,
+                )
+                continue
+            invocation_violation = _qfk_invocation_violation(tool, args)
+            if invocation_violation:
+                reject(s, "run_failed", invocation_violation)
+                logger.warning(
+                    "extract_signals 拒绝无法运行的命令调用 source=%s reason=%s",
+                    source_id,
+                    invocation_violation,
                 )
                 continue
         if id(s) in preparation_errors:
