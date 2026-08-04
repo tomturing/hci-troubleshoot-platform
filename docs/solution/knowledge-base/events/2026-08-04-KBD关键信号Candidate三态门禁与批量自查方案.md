@@ -59,7 +59,7 @@ Prompt v2.1 输出 Candidate，但传输层保留历史 key `signals`，避免 P
 
 1. `write_signal`
    - `orchestrate.phase=solution`；或
-   - `qfk_*` Candidate 的实际 `command` 命中现有明确写动作词表。
+   - `qfk_*` Candidate 的实际执行向量命中明确写动作：同时检查 `command`、完整的写子命令/开关，以及被包装执行程序的 basename；例如 `soft_raid_lit --off` 与 `strace ... /sf/bin/sfscp` 均先归入 `write_signal`，不能被后续 catalog 结果掩盖。
    - 必须先判，避免写操作因 args/Matcher 错误被误标成普通运行失败。
    - phase 描述 Candidate 自身执行语义；对封闭词表可证明的只读命令，若 LLM 仅因“修复后验证”错标 solution，先归一为 diagnostic，再继续 catalog/运行门禁。
 2. `not_exists`

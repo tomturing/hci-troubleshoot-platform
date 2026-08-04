@@ -144,6 +144,15 @@ migration 021 随后改为收敛迁移：替换上述全部已知反向指令，
 
 5/5 请求均返回 200，没有 API 500、Proposal 丢失或 Candidate 静默过滤。第三批允许退出并进入下一批。
 
+### 第四批初跑
+
+第四批固定 KBD32300/33510/33882/34094/34164（IDs 21～25），初跑 Proposal revisions 127～131。5/5 请求返回 200，任务/平台告警、可追溯日志与 catalog 内只读检查可以独立通过；无消费 producer、坏 Matcher/路径及 catalog 缺口均完整可见。对抗性审查发现写门禁只扫描 `acquire.args.command`，遗漏实际执行向量中的变更：
+
+- KBD33510 的 `soft_raid_lit --off /dev/sda` 会关闭磁盘灯，却被 `not_exists` 掩盖；
+- KBD34164 的 `strace -f /sf/bin/sfscp 源 目标` 会执行文件复制，却只按外层 strace 进入 `not_exists`。
+
+修复将明确写门禁扩展到 `command_args` 中的完整写子命令/开关和被包装执行程序 basename，仍不做自由 Shell 推断；`write_signal` 固定优先于 catalog 与运行门禁。第四批必须整批重跑。
+
 每批事件记录以下内容：
 
 ```text

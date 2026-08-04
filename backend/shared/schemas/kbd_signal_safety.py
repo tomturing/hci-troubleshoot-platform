@@ -2,8 +2,9 @@
 
 KBD Signal 只描述事实采集、确定性判定或变量生产。处置/修复动作仍属于
 KBD 正文的解决方案，不得进入 ``signals_json``。本模块刻意不实现通用 Shell
-风险分析，只识别平台既有的明确写动作命令词表；LLM 错把“修复后执行的只读
-验证”标成 solution 时，可由封闭只读命令表证明并纠正，不能误报为 write_signal。
+风险分析，只识别实际执行向量中的明确写命令、子命令与开关；LLM 错把“修复后
+执行的只读验证”标成 solution 时，可由封闭只读命令表证明并纠正，不能误报为
+write_signal。
 """
 
 from __future__ import annotations
@@ -45,8 +46,18 @@ WRITE_OPERATION_COMMANDS = frozenset(
         "add",
         "modify",
         "update",
+        "cp",
+        "mv",
+        "sfscp",
+        "touch",
+        "truncate",
+        "chmod",
+        "chown",
+        "mount",
+        "umount",
     }
 )
+WRITE_OPERATION_FLAGS = frozenset({"--off", "--on"})
 DESTRUCTIVE_OPERATION_COMMANDS = frozenset(
     {"delete", "remove", "del", "rm", "format", "wipe", "destroy"}
 )
@@ -120,7 +131,7 @@ def signal_explicitly_read_only_command(signal: Any) -> bool:
 
 
 def signal_write_operation_command(signal: Any) -> str | None:
-    """返回既有明确写动作词表命中的命令；不推断命令参数语义。"""
+    """返回实际执行向量中命中的明确写动作；不做通用 Shell 推断。"""
 
     if not isinstance(signal, dict):
         return None
@@ -128,10 +139,26 @@ def signal_write_operation_command(signal: Any) -> str | None:
     tool = str(acquire.get("tool") or "")
     if not tool.startswith("qfk_"):
         return None
-    command = str((acquire.get("args") or {}).get("command") or "").strip().lower()
+    args = acquire.get("args") or {}
+    command = str(args.get("command") or "").strip().lower()
     tokens = {token for token in re.split(r"[\s|/]+", command) if token}
     write_tokens = sorted(tokens & WRITE_OPERATION_COMMANDS)
-    return write_tokens[0] if write_tokens else None
+    if write_tokens:
+        return write_tokens[0]
+
+    # qfk_system 将子命令、开关和被 strace 等包装器执行的程序放在
+    # command_args。只匹配完整参数或路径 basename，避免把正文关键字当动作。
+    command_args = args.get("command_args") or []
+    if not isinstance(command_args, list):
+        return None
+    for item in command_args:
+        argument = str(item).strip().lower()
+        if argument in WRITE_OPERATION_FLAGS:
+            return argument
+        basename = argument.rstrip("/").rsplit("/", 1)[-1]
+        if basename in WRITE_OPERATION_COMMANDS:
+            return basename
+    return None
 
 
 def signal_write_operation_risk(signal: Any) -> int:

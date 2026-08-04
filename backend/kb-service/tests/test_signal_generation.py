@@ -169,6 +169,40 @@ def test_post_remediation_read_only_check_is_not_misclassified_as_write_signal()
     assert rejected[0]["signal"]["orchestrate"]["phase"] == "solution"
 
 
+@pytest.mark.parametrize(
+    ("command", "command_args", "expected_action"),
+    [
+        ("soft_raid_lit", ["--off", "/dev/sda"], "--off"),
+        (
+            "strace",
+            ["-f", "/sf/bin/sfscp", "/sf/data/source", "/sf/data/target"],
+            "sfscp",
+        ),
+        ("ipmitool", ["mc", "reset", "cold"], "reset"),
+    ],
+)
+def test_write_gate_inspects_actual_command_vector_before_catalog(
+    command, command_args, expected_action
+):
+    candidate = {
+        "id": "write-in-argv",
+        "acquire": {
+            "tool": "qfk_system",
+            "args": {"command": command, "command_args": command_args},
+        },
+        "match": {"type": "exists", "expected": True},
+        "orchestrate": {"phase": "diagnostic", "produces": [], "requires": []},
+    }
+
+    accepted, rejected = _validate_and_collect_signals(
+        [candidate], "kbd:test", enforce_kbd_read_only=True
+    )
+
+    assert accepted == []
+    assert rejected[0]["reason_code"] == "write_signal"
+    assert f"写操作命令 {expected_action}" in rejected[0]["reason"]
+
+
 def test_verification_contract_promotes_first_diagnostic_context_when_must_is_empty():
     signals = [
         {
