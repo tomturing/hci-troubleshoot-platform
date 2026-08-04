@@ -2404,13 +2404,77 @@ class KbdUpdateRequest(BaseModel):
 
 
 def _mark_payload_signal_generation_stale(payload: dict[str, Any]) -> None:
-    """知识来源变化时把工作稿 Signal 标为过期，但保留生成追溯元数据。"""
+    """知识来源变化时把工作稿 Signal 标为过期并重新纳入人工复核。"""
 
     signals_doc = _load_signals_json(payload.get("signals_json"))
     metadata = signals_doc.get("generation_metadata")
     if isinstance(metadata, dict):
         metadata["status"] = "stale"
-        payload["signals_json"] = signals_doc
+    for signal in signals_doc.get("signals") or []:
+        if not isinstance(signal, dict):
+            continue
+        provenance = signal.get("provenance")
+        if not isinstance(provenance, dict):
+            provenance = {}
+            signal["provenance"] = provenance
+        provenance["needs_review"] = True
+        review = signal.get("review")
+        if not isinstance(review, dict):
+            review = {}
+            signal["review"] = review
+        review["require_human_confirm"] = True
+    payload["signals_json"] = signals_doc
+
+
+def _signal_without_review_state(signal: dict[str, Any]) -> dict[str, Any]:
+    """返回用于比较 Signal 实质内容的副本，忽略会随审核流转的状态位。"""
+
+    comparable = copy.deepcopy(signal)
+    provenance = comparable.get("provenance")
+    if isinstance(provenance, dict):
+        provenance.pop("needs_review", None)
+        if not provenance:
+            comparable.pop("provenance", None)
+    review = comparable.get("review")
+    if isinstance(review, dict):
+        review.pop("require_human_confirm", None)
+        if not review:
+            comparable.pop("review", None)
+    return comparable
+
+
+def _mark_changed_signals_needing_review(
+    previous_document: dict[str, Any],
+    candidate_document: dict[str, Any],
+) -> None:
+    """将本次修改或新增的 Signal 标回待人工复核。
+
+    已发布版本在 publish gate 中会被统一盖为已人工复核。维护工作稿再次改动后，
+    不能继续沿用这个结论；仅改动的 Signal 回退，未修改的 Signal 保留其历史状态。
+    """
+
+    previous_by_id = {
+        str(signal.get("id")): signal
+        for signal in previous_document.get("signals") or []
+        if isinstance(signal, dict) and str(signal.get("id") or "").strip()
+    }
+    for signal in candidate_document.get("signals") or []:
+        if not isinstance(signal, dict):
+            continue
+        signal_id = str(signal.get("id") or "").strip()
+        previous = previous_by_id.get(signal_id)
+        if previous is not None and _signal_without_review_state(previous) == _signal_without_review_state(signal):
+            continue
+        provenance = signal.get("provenance")
+        if not isinstance(provenance, dict):
+            provenance = {}
+            signal["provenance"] = provenance
+        provenance["needs_review"] = True
+        review = signal.get("review")
+        if not isinstance(review, dict):
+            review = {}
+            signal["review"] = review
+        review["require_human_confirm"] = True
 
 
 def _normalize_maintenance_images(
@@ -2505,6 +2569,10 @@ def _patch_maintenance_payload(payload: dict[str, Any], body: KbdUpdateRequest) 
         metadata = signals_doc.get("generation_metadata")
         if isinstance(metadata, dict):
             metadata["status"] = "manual_reviewed"
+        _mark_changed_signals_needing_review(
+            _load_signals_json(result.get("signals_json")),
+            signals_doc,
+        )
         for signal in signals_doc.get("signals", []):
             if not isinstance(signal, dict):
                 continue

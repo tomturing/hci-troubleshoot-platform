@@ -925,6 +925,21 @@ function sigArgs(sig: SignalV2): Record<string, any> { return sig.acquire?.args 
 function sigMatch(sig: SignalV2): Record<string, any> { return sig.match || {} }
 function sigOrch(sig: SignalV2): Record<string, any> { return sig.orchestrate || {} }
 function sigProvenance(sig: SignalV2): Record<string, any> { return sig.provenance || {} }
+type SignalReviewTag = { label: string, type: 'success' | 'warning' }
+function signalReviewTag(sig: SignalV2): SignalReviewTag | null {
+  const needsReview = sigProvenance(sig).needs_review === true || sig.review?.require_human_confirm === true
+  if (needsReview) {
+    // 历史已发布数据未保存 review.require_human_confirm=false。已发布的生效版本
+    // 已完成专家审核，展示层将其正确解释为“已人工复核”；创建维护工作稿后则立即
+    // 回到待复核，避免把正在修改的内容误称为已确认。
+    if (detailEntry.value?.status === 'published' && !detailEntry.value.maintenance_working) {
+      return { label: '已人工复核', type: 'success' }
+    }
+    return { label: '需人工复核', type: 'warning' }
+  }
+  if (sig.review?.require_human_confirm === false) return { label: '已人工复核', type: 'success' }
+  return null
+}
 function sigSourceRefs(sig: SignalV2): string[] {
   const refs = sigProvenance(sig).source_refs
   return Array.isArray(refs) ? refs.map((item) => String(item)) : []
@@ -2847,7 +2862,7 @@ onMounted(() => {
                 <el-tag size="small" type="success">{{ sigTool(item.sig) || 'qkv' }}</el-tag>
                 <el-tag v-if="capabilityStatus(sigTool(item.sig)) !== 'declared'" size="small" type="danger" effect="plain">能力未声明，请更换采集类型</el-tag>
                 <el-tag size="small" effect="plain">{{ sigRoleLabel(item.sig) }}</el-tag>
-                <el-tag v-if="sigProvenance(item.sig).needs_review" size="small" type="warning">需人工复核</el-tag>
+                <el-tag v-if="signalReviewTag(item.sig)" size="small" :type="signalReviewTag(item.sig)!.type">{{ signalReviewTag(item.sig)!.label }}</el-tag>
                 <el-tag v-if="hasStagedSignalEdit(item.sig, item.origIdx)" size="small" type="warning" effect="plain">已暂存</el-tag>
                 <div class="signal-card-actions">
                   <el-button text size="small" :disabled="!canEditCurrent || item.origIdx === 0" @click="moveSignal(item.origIdx, -1)">上移</el-button>
@@ -2916,7 +2931,7 @@ onMounted(() => {
                 <el-tag size="small" type="warning">{{ sigTool(item.sig) || 'qfk' }}</el-tag>
                 <el-tag v-if="capabilityStatus(sigTool(item.sig)) !== 'declared'" size="small" type="danger" effect="plain">能力未声明，请更换采集类型</el-tag>
                 <el-tag size="small" effect="plain">{{ sigRoleLabel(item.sig) }}</el-tag>
-                <el-tag v-if="sigProvenance(item.sig).needs_review" size="small" type="warning">需人工复核</el-tag>
+                <el-tag v-if="signalReviewTag(item.sig)" size="small" :type="signalReviewTag(item.sig)!.type">{{ signalReviewTag(item.sig)!.label }}</el-tag>
                 <el-tag v-if="hasStagedSignalEdit(item.sig, item.origIdx)" size="small" type="warning" effect="plain">已暂存</el-tag>
                 <div class="signal-card-actions">
                   <el-button text size="small" :disabled="!canEditCurrent || item.origIdx === 0" @click="moveSignal(item.origIdx, -1)">上移</el-button>

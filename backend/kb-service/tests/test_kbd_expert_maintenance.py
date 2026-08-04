@@ -9,6 +9,7 @@ from app.routes.admin import KbdApproveRequest, KbdUpdateRequest, _patch_mainten
 from app.services.kbd_mutation_guard import PublishedKbdMutationError, require_mutable_kbd
 from pydantic import ValidationError
 from shared.schemas.signal_generation import current_tool_contract_revision
+from shared.schemas.signal_schema import certify_publishable_signals_json
 from shared.schemas.verification_contract import (
     expert_editor_issues,
     normalize_legacy_role_contract,
@@ -146,6 +147,9 @@ def test_maintenance_patch_updates_image_evidence_without_touching_active_entry(
     assert patched["images_json"][0]["evidence"]["provenance"]["expert_edited"] is True
     assert "TYPE: 任务截图" in patched["content_md"]
     assert patched["signals_json"]["generation_metadata"]["status"] == "stale"
+    for signal in patched["signals_json"]["signals"]:
+        assert signal["provenance"]["needs_review"] is True
+        assert signal["review"]["require_human_confirm"] is True
 
 
 def test_maintenance_patch_only_confirms_explicitly_reviewed_image():
@@ -239,6 +243,34 @@ def test_maintenance_signal_edit_is_validated_and_marked_manual_reviewed():
 
     assert patched["signals_json"]["generation_metadata"]["status"] == "manual_reviewed"
     assert patched["signals_json"]["signals"][0]["orchestrate"]["requires"] == []
+
+
+def test_publish_certification_marks_every_signal_as_human_reviewed():
+    certified = certify_publishable_signals_json(_payload()["signals_json"])
+
+    for signal in certified["signals"]:
+        assert signal["provenance"]["needs_review"] is False
+        assert signal["review"]["require_human_confirm"] is False
+
+
+def test_maintenance_signal_change_reverts_only_changed_signal_to_review_required():
+    original = _payload()
+    original["signals_json"] = certify_publishable_signals_json(original["signals_json"])
+    edited = original["signals_json"] | {
+        "signals": [
+            original["signals_json"]["signals"][0]
+            | {"acquire": {"tool": "qkv_task", "args": {"keyword": "创建虚拟机失败"}}},
+            original["signals_json"]["signals"][1],
+        ],
+    }
+
+    patched = _patch_maintenance_payload(original, KbdUpdateRequest(signals_json=edited))
+
+    changed, untouched = patched["signals_json"]["signals"]
+    assert changed["provenance"]["needs_review"] is True
+    assert changed["review"]["require_human_confirm"] is True
+    assert untouched["provenance"]["needs_review"] is False
+    assert untouched["review"]["require_human_confirm"] is False
 
 
 def test_expert_delete_context_signal_removes_its_agent_contract_reference():

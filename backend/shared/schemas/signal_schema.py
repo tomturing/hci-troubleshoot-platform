@@ -108,7 +108,9 @@ def certify_publishable_signals_json(raw: Any) -> dict[str, Any]:
     ``generation_metadata.tool_contract_revision`` 记录 Proposal 生成时使用的契约，
     属于不可变的生产追溯事实；专家发布时若直接覆盖它，后续就无法评估旧模型与新
     契约的差异。``publish_validation`` 单独记录本次 Expert 内容已经通过当前静态
-    Schema、参数语义和发布门禁。Agent 仍会在消费侧编译真实 Handler 与变量 DAG。
+    Schema、参数语义和发布门禁。发布是专家对当前整份 Signal 文档的确认，因此也会
+    将逐条 Signal 的待复核标记归档为已人工复核。Agent 仍会在消费侧编译真实
+    Handler 与变量 DAG。
     """
 
     certified = copy.deepcopy(raw)
@@ -120,6 +122,21 @@ def certify_publishable_signals_json(raw: Any) -> dict[str, Any]:
         "tool_contract_revision": current_tool_contract_revision(),
         "validator": "expert_publish_gate",
     }
+    for signal in certified.get("signals") or []:
+        if not isinstance(signal, dict):
+            continue
+        provenance = signal.get("provenance")
+        if not isinstance(provenance, dict):
+            provenance = {}
+            signal["provenance"] = provenance
+        # needs_review 是当前版本的待办状态，不能在专家审核并发布后继续保留为 true。
+        # 原始模型来源、证据和风险字段均不改变，仍可在 Revision 中完整追溯。
+        provenance["needs_review"] = False
+        review = signal.get("review")
+        if not isinstance(review, dict):
+            review = {}
+            signal["review"] = review
+        review["require_human_confirm"] = False
     # 再验证最终持久化形态，确保 Schema 与代码没有发生自相矛盾。
     validate_publishable_signals_json(certified)
     return certified
