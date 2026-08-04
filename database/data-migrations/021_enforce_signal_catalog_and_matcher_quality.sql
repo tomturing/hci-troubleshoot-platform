@@ -26,7 +26,7 @@ SET content_template = replace(
 - Schema、args、变量依赖、Matcher、编译/预运行或真实运行验证失败统一视为 run_failed。命令在 catalog 中只证明“已登记”，不证明能运行成功。
 - BMC/iBMC 管理页面中的事件日志不是 HCI 平台告警。smartctl、ipmitool、dmidecode 属于 qfk_system；不得把 ipmitool mc info 或 BMC Web 页面查看伪造成 qfk_hardware。qfk_hardware 当前已注册 cpu microcode file list、gpu config get/list、hostcli hostcli。
 - qfk_storage、qfk_hardware、qfk_vm、qfk_network、qfk_platform 的 command 应包含 namespace 后完整 catalog 路径，例如 command="asan disk list"，不能写 command="list" 再用 resource_keyword 补“disk”。
-- match.pattern 遇到 xx、XXX、***、%(ip)s 等脱敏占位文本时，不得伪装成现场可执行字面量，也不得降级改写成 address、ip、error 等更宽泛关键词来绕过门禁；仍按原证据输出 Candidate、保留脱敏 pattern 并标 needs_review，由服务端归入 run_failed 交专家补现场值。keyword 不解释正则竖线；多关键字使用数组，正则选择使用 regex。exists 只判断提取结果是否存在，不读取 pattern。
+- match.pattern 遇到 xx、XXX、***、%(ip)s 等脱敏占位文本时，不得伪装成现场可执行字面量，也不得降级改写成 address、ip、error 等更宽泛关键词来绕过门禁；仍按原证据输出 Candidate、保留脱敏 pattern 并标 needs_review，由服务端归入 run_failed 交专家补现场值。keyword pattern 数组中的每一项都必须能从逐字 evidence 或合法变量追溯，禁止在有证据项旁混入模型猜测项。keyword 不解释正则竖线；多关键字使用数组，正则选择使用 regex。exists 只判断提取结果是否存在，不读取 pattern。
 $RULE$,
     description = CASE
         WHEN COALESCE(description, '') LIKE '%Candidate 三态门禁%' THEN description
@@ -46,6 +46,15 @@ SET content_template = replace(
         ),
         '信息不足时标记 needs_review 或减少候选；不得为了凑数量生成无下游消费者的 producer。',
         '信息不足时标记 needs_review 并忠实保留 Candidate；不得为了凑数量凭空生成无证据、无下游消费者的 producer。'
+    ),
+    updated_at = NOW()
+WHERE name = 'kbd_extract_signals_v2';
+
+UPDATE system_prompt
+SET content_template = replace(
+        content_template,
+        '由服务端归入 run_failed 交专家补现场值。keyword 不解释正则竖线；多关键字使用数组，正则选择使用 regex。',
+        '由服务端归入 run_failed 交专家补现场值。keyword pattern 数组中的每一项都必须能从逐字 evidence 或合法变量追溯，禁止在有证据项旁混入模型猜测项。keyword 不解释正则竖线；多关键字使用数组，正则选择使用 regex。'
     ),
     updated_at = NOW()
 WHERE name = 'kbd_extract_signals_v2';
@@ -127,6 +136,7 @@ BEGIN
        OR extract_prompt NOT LIKE '%完整产出关键信号 Candidate 集合%'
        OR extract_prompt NOT LIKE '%qkv_task 是查询历史任务的只读采集%'
        OR extract_prompt NOT LIKE '%不得降级改写成 address、ip、error 等更宽泛关键词%'
+       OR extract_prompt NOT LIKE '%keyword pattern 数组中的每一项都必须能从逐字 evidence 或合法变量追溯%'
        OR extract_prompt NOT LIKE '%"signals": [%'
        OR extract_prompt LIKE '%所有输出 Signal 的 phase 必须为 diagnostic；phase=solution 禁止输出%'
        OR extract_prompt LIKE '%无法映射到 catalog 时不生成 Signal%'

@@ -352,10 +352,14 @@ def test_keyword_matcher_must_be_traceable_in_candidate_evidence():
         matcher,
         evidence="管理口为channel4，但是eth0口也残留了跟管理口一样的ip",
     )
+    assert "530-16i" in _matcher_quality_violation(
+        {"type": "keyword", "pattern": ["530-8i", "530-16i"]},
+        evidence="Subsystem: Lenovo ThinkSystem RAID 530-8i PCIe 12Gb Adapter",
+    )
     assert (
         _matcher_quality_violation(
             {"type": "keyword", "pattern": ["530-8i", "530-16i"]},
-            evidence="Subsystem: Lenovo ThinkSystem RAID 530-8i PCIe 12Gb Adapter",
+            evidence="支持 530-8i 或 530-16i",
         )
         is None
     )

@@ -584,13 +584,16 @@ def _matcher_quality_violation(matcher: dict[str, Any], *, evidence: str = "") -
     if matcher_type == "keyword" and any(re.search(r"\S\|\S", item) for item in text_patterns):
         return "keyword Matcher 不解释正则竖线；多关键字请使用 pattern 数组，正则语义请使用 regex"
     if matcher_type == "keyword" and text_patterns and evidence.strip():
-        traceable_patterns = [
+        untraceable_patterns = [
             item
             for item in text_patterns
-            if _PLACEHOLDER_RE.search(item) or item.casefold() in evidence.casefold()
+            if not _PLACEHOLDER_RE.search(item) and item.casefold() not in evidence.casefold()
         ]
-        if not traceable_patterns:
-            return "keyword Matcher 的 match.pattern 无法从 provenance.evidence 逐字追溯；禁止改写为更宽泛的通用关键词"
+        if untraceable_patterns:
+            return (
+                "keyword Matcher 的 match.pattern 无法从 provenance.evidence 逐字追溯；"
+                f"禁止改写或混入无证据的通用关键词: {untraceable_patterns[0]}"
+            )
     return None
 
 

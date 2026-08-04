@@ -19,7 +19,7 @@ owner: team
 | 单元 | 正常 `qkv_task(keyword=启动虚拟机)` + 三类坏候选混合 | qkv_task 通过；其余依次为 write/not_exists/run_failed | ✅ 已通过 |
 | 单元 | write Candidate 同时有其他结构问题 | 优先 `write_signal` | ✅ 已覆盖 |
 | 单元 | `acli hardware mc info/web_info`、`acli storage list` | `not_exists` 且 reason 含编译命令 | ✅ 已覆盖 |
-| 单元 | 脱敏 Matcher、keyword 伪正则、exists 携带 pattern | `run_failed` | ✅ 已覆盖 |
+| 单元 | 脱敏 Matcher、keyword 伪正则、exists 携带 pattern、数组混入无证据项 | `run_failed` | ✅ 已覆盖，数组逐项追溯 |
 | Schema | 新 rejected candidate 带三值 reason_code | 合法 | ✅ 已通过 |
 | Schema | 历史 rejected candidate 无 reason_code | 仍合法 | ✅ 已通过 |
 | Prompt | 兼容 key `signals` 输出完整 Candidate，不含模型侧“不得输出”回归规则 | 合法且占位符集合不变；Prompt/服务任一先升级不产生空 Proposal | ✅ 已通过 |
@@ -61,7 +61,7 @@ data migration 021：在 hci-dev PostgreSQL 对当前 Prompt v1.9 执行 BEGIN �
 
 首次实际应用 migration 021 后，KBD30880 的 Proposal revision 56 仍未生成 `qkv_task`。数据库中的 v2.1 Prompt 事实检查发现：新规则 25 虽已追加，但 PR #668 的补充规则 24 仍明确要求“不生成 Signal，不以 phase=solution 形式保留”，同时还残留“宁缺毋滥”“不产出信号”和带下游条件的旧任务规则。版本号与正向关键字断言均通过，却不是语义完整的升级。
 
-migration 021 随后改为收敛迁移：替换上述全部已知反向指令，并增加负向断言。KBD30880 五次回归期间使用的 Prompt SHA-256 为 `268e2f960e3fc80117cd4a8f72650f4e76e88177bac21aaceb27f26f8357101a`；旧规则 24、“宁缺毋滥/不产出”和任务下游前置条件均不存在。第一批又发现脱敏值被模型降级成宽泛 matcher，修订后 hci-dev Prompt 仍为 2.1，MD5 为 `ecebfe41f13b43e768677cf7d714ac18`，SHA-256 为 `432155ecb4ca218df6b395627491cef5397bf3ad37615b14aeafb6961f9b03db`。
+migration 021 随后改为收敛迁移：替换上述全部已知反向指令，并增加负向断言。KBD30880 五次回归期间使用的 Prompt SHA-256 为 `268e2f960e3fc80117cd4a8f72650f4e76e88177bac21aaceb27f26f8357101a`；旧规则 24、“宁缺毋滥/不产出”和任务下游前置条件均不存在。第一批又发现脱敏值被模型降级成宽泛 matcher，修订后 hci-dev Prompt 仍为 2.1。第二次同批重跑进一步发现 KBD27222 的 pattern 数组可在一个有证据项旁混入无证据猜测项；服务端和 Prompt 已收紧为数组逐项追溯。最新实装 Prompt MD5 为 `88cbad39bd0b1233b2ff04d7c2058f2a`，SHA-256 为 `daaf029f8f817eecd3bef552b4cf00dda199deab3c5c43097725bfe1297c8049`。
 
 ## KBD30880 回归协议
 
@@ -87,15 +87,15 @@ migration 021 随后改为收敛迁移：替换上述全部已知反向指令，
 
 ## 第一批 5 篇复跑协议
 
-| KBD | 最新方案预期 | 首次结果 | 修复后结果 | 状态 |
+| KBD | 最新方案预期 | 首次结果 | 第二次同批结果 | 状态 |
 |---|---|---|---|---|
-| 27079 | 正常告警、日志、系统检查保持 Signal | revision 62：4 Signal；write_signal=1 | 待同批重跑 | 🔄 |
-| 27173 | 不存在 hardware 命令进入 not_exists；若正确映射 ipmitool 则正常通过 | revision 63：2 Signal；重复无人消费 producer → run_failed=1 | 待同批重跑 | 🔄 |
-| 27222 | 不存在命令 not_exists；Matcher 问题 run_failed | revision 64：2 Signal；lspci not_exists=2；write_signal=1 | 待同批重跑 | 🔄 |
-| 27653 | args/变量/编译问题 run_failed | revision 65：1 Signal；qkv_alert keyword list 与无人消费 producer → run_failed=2 | 待同批重跑 | 🔄 |
-| 27736 | 脱敏 Matcher 进入 run_failed | revision 66：4 Signal；write_signal=1；发现 `pattern=address` 宽泛降级误通过 | 待同批重跑 | ❌ 已定位并修复通用门禁 |
+| 27079 | 正常告警、日志、系统检查保持 Signal | revision 62：4 Signal；write_signal=1 | revision 67：4 Signal；write_signal=1 | ✅ 正常候选未被误伤 |
+| 27173 | 不存在 hardware 命令进入 not_exists；若正确映射 ipmitool 则正常通过 | revision 63：2 Signal；重复无人消费 producer → run_failed=1 | revision 68：1 Signal；run_failed=3；`ipmitool mc info` 正常通过，BMC Web/无人消费 producer 未伪装为 Signal | ✅ 当前语义闭环 |
+| 27222 | 不存在命令 not_exists；Matcher 问题 run_failed | revision 64：2 Signal；lspci not_exists=2；write_signal=1 | revision 69：3 Signal；not_exists=1；run_failed=1；发现 pattern 数组仅部分可追溯 | ❌ 已修逐项追溯，待第三次同批复跑 |
+| 27653 | args/变量/编译问题 run_failed | revision 65：1 Signal；qkv_alert keyword list 与无人消费 producer → run_failed=2 | revision 70：1 Signal；run_failed=2；write_signal=2 | ✅ smartctl 正常项与坏 args/producer/写动作正确分流 |
+| 27736 | 脱敏 Matcher 进入 run_failed | revision 66：4 Signal；write_signal=1；发现 `pattern=address` 宽泛降级误通过 | revision 71：1 Signal；run_failed=3；write_signal=2 | ✅ 脱敏检查未再伪装通过 |
 
-首批初跑证明三类分流路径均可见，但未达到整批退出标准。KBD27736 的脱敏 IP 没有直接进入 pattern，模型改用 `address`，只能证明配置存在地址行，不能证明 eth0 与 channel4 冲突。修复同时覆盖两层：Prompt 要求忠实保留脱敏 Candidate，服务端要求 keyword pattern 至少有一项能从 `provenance.evidence` 逐字追溯；否则归入 `run_failed`。该规则不读取 support_id，不依赖 IP 专项硬编码。
+首批初跑证明三类分流路径均可见，但未达到整批退出标准。KBD27736 的脱敏 IP 没有直接进入 pattern，模型改用 `address`，只能证明配置存在地址行，不能证明 eth0 与 channel4 冲突。修复同时覆盖两层：Prompt 要求忠实保留脱敏 Candidate，服务端要求 keyword pattern 可从 `provenance.evidence` 逐字追溯；否则归入 `run_failed`。第二次同批重跑已闭环 KBD27736，但 KBD27222 暴露“数组至少一项可追溯”仍不充分：模型可在真实 evidence 项旁混入三个猜测项。第三轮收紧为数组每一项均需由逐字 evidence 或合法变量追溯。两轮规则均不读取 support_id，不依赖 IP、dmidecode 或单案例硬编码。
 
 每篇逐 Candidate 检查：证据是否来自允许的四个章节；工具与参数是否合理；编译命令是否真实；Matcher 是否能在现场数据上成立；变量链是否可达；正常 Candidate 是否未受拒绝项牵连。
 

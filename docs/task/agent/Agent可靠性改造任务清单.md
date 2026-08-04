@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-08-04 | v3.55 | **KBD Matcher 数组逐项证据门禁**：keyword pattern 数组每项均须从逐字 evidence 或合法变量追溯，无证据猜测项不能依附真实项通过；失败仍统一进入 `run_failed`，Agent 只消费门禁通过的 Signal。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
 | 2026-08-04 | v3.54 | **KBD 脱敏 Matcher 防绕过**：Prompt 不再把脱敏值静默改写为 `address`/`ip` 等宽泛 matcher；Candidate 保留原证据，KB 门禁要求 keyword pattern 可由逐字 evidence 追溯，失败统一进入 `run_failed`，Agent 只消费通过门禁的 Signal。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
 | 2026-08-04 | v3.53 | **KBD Candidate 生成与执行门禁分离**：Prompt v2.1 完整输出 Candidate 并使用当前 aCLI catalog 作为知识参考；kb-service 按 write_signal/not_exists/run_failed 分类，catalog 命中不冒充运行成功，Agent 继续只消费门禁通过并发布的 Signal。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |
 | 2026-08-04 | v3.52 | **KBD 处置 Signal 纵深防御统一**：`kbd_differential` 复用共享 KBD 只读判定，历史 `phase=solution`、人工确认或明确写动作继续在调度前 blocked；正常只读 Signal 不受影响。 | [KBD 关键信号只读边界方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号只读边界方案.md) |

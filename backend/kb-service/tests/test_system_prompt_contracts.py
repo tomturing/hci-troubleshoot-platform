@@ -159,6 +159,7 @@ def test_signal_executability_prompt_migration_teaches_catalog_and_matcher_bound
     assert "exists 只判断提取结果是否存在" in supplemental_rule
     assert "不得降级改写成 address、ip、error 等更宽泛关键词" in supplemental_rule
     assert "保留脱敏 pattern" in supplemental_rule
+    assert "keyword pattern 数组中的每一项都必须能从逐字 evidence" in supplemental_rule
     assert StrictPromptLoader.get_template_placeholders(supplemental_rule) == set()
 
 
@@ -185,6 +186,7 @@ def test_seed_signal_prompt_contains_catalog_and_matcher_quality_boundaries():
     assert 'command="asan disk list"' in template
     assert "不得降级改写成 address、ip、error 等更宽泛关键词" in template
     assert "保留脱敏 pattern" in template
+    assert "keyword pattern 数组中的每一项都必须能从逐字 evidence" in template
 
 
 def test_vision_prompt_gives_task_detail_modal_task_semantic_priority():

@@ -66,7 +66,7 @@ Prompt v2.1 输出 Candidate，但传输层保留历史 key `signals`，避免 P
 3. `run_failed`
    - 非对象、缺少 acquire、未知 tool、args Schema 失败；
    - 安全管道转换、变量依赖、未消费 producer、Matcher 质量、Signal v2 Schema 失败；
-   - `keyword` Matcher 的 pattern 无法从 Candidate 的逐字 evidence 追溯，尤其是把脱敏 IP/ID 降级成 `address`、`ip`、`error` 等宽泛词；
+   - `keyword` Matcher 的每一个 pattern 无法从 Candidate 的逐字 evidence 或合法变量追溯，尤其是把脱敏 IP/ID 降级成 `address`、`ip`、`error` 等宽泛词，或在一个有证据项旁混入模型猜测项；
    - 后续编译/预运行和真实执行失败也使用相同分类，并保留更具体失败模式。
 4. 通过后执行既有 enrich、Verification Contract 投影并保存为 Signal。
 
@@ -138,7 +138,8 @@ Prompt 数据迁移采用“收敛”而不是“只追加新规则”：存量�
 | 自动修复 Candidate | 修改原意后无法审计模型真实输出 | 仅允许封闭的确定性规范化；拒绝项保留完整 Candidate |
 | Prompt 先于服务滚动升级 | 若改成新 JSON key，旧服务会保存空 Proposal | wire key 继续使用 `signals`；新服务把它解释为 Candidate 并兼容 `candidates` |
 | 新规则只追加在旧 Prompt 末尾 | 模型同时收到“完整输出”和“不得输出”，行为取决于冲突消解 | migration 021 替换全部已知反向语句，并以负向断言阻止假升级 |
-| 脱敏值无法直接运行 | 模型把 `xx.100.88` 改成 `address` 以绕过脱敏门禁，产生必然误报 | Prompt 要求保留原始脱敏 Candidate；服务端同时要求 keyword pattern 可由逐字 evidence 追溯，否则 `run_failed` |
+| 脱敏值无法直接运行 | 模型把 `xx.100.88` 改成 `address` 以绕过脱敏门禁，产生必然误报 | Prompt 要求保留原始脱敏 Candidate；服务端同时要求 keyword pattern 逐项可由 evidence 或合法变量追溯，否则 `run_failed` |
+| Matcher 数组首项有证据、其余项靠猜 | “至少一项可追溯”让猜测项搭便车成为 Signal | 对数组逐项校验；任一无法追溯即保留完整 Candidate 并归入 `run_failed` |
 
 ### 为什么不选其他方案
 
