@@ -51,6 +51,17 @@ jobs:
           cache: true
           cache-dependency-path: terminal_bridge/go.sum
 
+      - name: Go 格式与单元测试
+        working-directory: terminal_bridge
+        run: |
+          UNFORMATTED="$(gofmt -l .)"
+          if [[ -n "$UNFORMATTED" ]]; then
+            echo "以下 Go 文件未经 gofmt:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+          go test ./...
+
       - name: 交叉编译 terminal_bridge.exe (windows/amd64)
         run: bash scripts/build_terminal_bridge.sh
 
