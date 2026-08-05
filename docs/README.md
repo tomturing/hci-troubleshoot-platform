@@ -72,9 +72,9 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | KBD 人工复核标签三态纠偏 | ✅ 代码与自动验证完成：普通 Signal 无标签；待复核 Signal 按专家是否保存显示黄/绿；详情 API 从现有 Revision 派生，不新增数据库状态 | 2026-08-04 |
 | KBD 关键信号统一过滤、取值与输出 | ✅ 代码与自动验证完成：same_record 包含/排除独立关系、完整行/文本行列/JSON、可选 AI、Match/Produce、qfk_log 有界保存与四类完整链路矩阵；真实 HCI replay 待部署后执行 | 2026-08-05 |
 | KBD 关键信号两步处理交互统一 | ✅ 代码与自动验证完成：匹配模式和每个产出变量统一为“处理单元 → 第一步取值 → 第二步判断/产出”；取值/判定关键字独立，交互与样式由共享组件保证一致 | 2026-08-05 |
-| hci-real/hci-sim 双轨与 100+ Agent 并发回归 | 🟡 阶段 A/B 已完成代码级收敛：唯一 `hci_sim/` Runtime、Manifest/Lease v2、Bridge 权威认证模式和 PR 门禁已实现；未部署 dev，真实 SSH、差分、20-repeat、100+ 并发及 C–E 自动环境构建仍未验证 | 2026-08-05 |
+| hci-real/hci-sim 双轨与 100+ Agent 并发回归 | 🟡 A/B Runtime 与 C–E 控制面代码级基础已实现：不可变 Bundle、审批/stale、TestRun/Lease、差分/mutation/容量门禁均有测试；未部署 dev，真实 Artifact/Bridge E2E、20-repeat、真实校准与 100+ 并发仍未验证 | 2026-08-06 |
 
-**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）继续推进；hci-sim 阶段 A/B 的代码级实施和本地门禁已进入 PR，见[实施验证报告](verify/events/2026-08-05-hci-sim阶段A-B代码级实施验证报告.md)。阶段 C–E 仍受共享 Store、Fixture Compiler、TestRun 调度与部署验证前置阻断；不得把本次代码级结果写成 dev 在线、真实 SSH、差分或 100+ 并发通过。[KBD 专家信号修复与删除可用性](task/knowledge-base/events/2026-08-04-KBD专家信号修复与删除可用性任务.md)已完成代码与第四批真实重抽，后续仍按 [Candidate 三态门禁批量任务](task/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查任务.md)每批 5 篇推进。真实执行、可信 Expert Gold 与 100+ 并发仍按既有事实边界推进。
+**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）继续推进；hci-sim A/B 已通过 PR CI，C–E 的控制面代码级基础见[实施验证报告](verify/events/2026-08-06-hci-sim阶段C-E控制面代码级实施验证报告.md)。C–E 真实验收仍受 PostgreSQL/对象存储、权威 KBD Resolver/批准 Artifact、Customer UI/Bridge E2E、受控 real HCI 和容量环境前置阻断；不得把代码级结果写成 dev 在线、真实 SSH、差分或 100+ 并发通过。[KBD 专家信号修复与删除可用性](task/knowledge-base/events/2026-08-04-KBD专家信号修复与删除可用性任务.md)已完成代码与第四批真实重抽，后续仍按 [Candidate 三态门禁批量任务](task/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查任务.md)每批 5 篇推进。真实执行、可信 Expert Gold 与 100+ 并发仍按既有事实边界推进。
 
 ### 冷启动阅读路径
 

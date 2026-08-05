@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: in_progress
 category: task
 audience: developer, tester, operator, expert, security
 last_updated: 2026-08-05
@@ -10,7 +10,7 @@ owner: team
 
 关联[阶段 C 需求](../../../requirement/events/2026-08-05-hci-sim阶段C-Fixture编译与注册控制面需求.md)、[阶段 C 方案](../../../solution/agent/events/2026-08-05-hci-sim阶段C-Fixture编译与注册控制面方案.md)和[阶段 C 验证](../../../verify/events/2026-08-05-hci-sim阶段C-Fixture编译与注册控制面验证方案.md)。
 
-> 当前事实：仓库目前没有 Fixture Compiler、Registry 生命周期或对应数据库表。阶段 C 尚未实施，并被阶段 B Go/No-Go 阻断。
+> 当前事实：控制面代码级内核、Registry 生命周期、Atlas migration 与 desired schema 已实施；真实 KBD Resolver、Artifact/对象存储/RBAC 和三 KBD 试点仍未获环境与数据授权，不能写为阶段 C 环境验收完成。见[阶段 C–E 控制面代码级实施验证报告](../../../verify/events/2026-08-06-hci-sim阶段C-E控制面代码级实施验证报告.md)。
 
 ## 前置 Go/No-Go
 
@@ -40,15 +40,15 @@ owner: team
 ## 实现检查
 
 - [ ] `active` 在编译开始时锁定为不可变 revision/checksum，运行中不漂移。
-- [ ] 同一输入/Compiler revision 并发请求不会生成冲突版本。
+- [x] 同一输入/Compiler revision 并发请求不会生成冲突版本（内存参考实现；生产需 PostgreSQL 唯一键/CAS）。
 - [ ] production Tool/Command contract 是唯一命令规则来源。
 - [ ] 变量图拒绝循环、缺失、类型/基数冲突和跨节点越权。
 - [ ] positive-realistic 必须有批准真实 Artifact provenance。
 - [ ] OCR/图片不能直接成为机器 observation。
-- [ ] 自动生成最大状态为 validated，不能自动 approved/published。
-- [ ] published 字节不可改，只能发布新 digest。
-- [ ] Runtime reader 只可读取 published，无法发布或访问草稿。
-- [ ] stale 阻止新 Run，但历史证据仍可查询。
+- [x] 自动生成最大状态为 validated，不能自动 approved/published。
+- [x] published 字节不可改，只能发布新 digest。
+- [x] Runtime reader 只可读取 published，无法发布或访问草稿。
+- [x] stale 阻止新 Run，但历史证据仍可查询。
 
 ## 数据库与存储任务
 

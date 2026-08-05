@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: in_progress
 category: task
 audience: developer, tester, operator, security
 last_updated: 2026-08-05
@@ -10,7 +10,7 @@ owner: team
 
 关联[阶段 D 需求](../../../requirement/events/2026-08-05-hci-sim阶段D-Scenario调度与通用KBD测试需求.md)、[阶段 D 方案](../../../solution/agent/events/2026-08-05-hci-sim阶段D-Scenario调度与通用KBD测试方案.md)和[阶段 D 验证](../../../verify/events/2026-08-05-hci-sim阶段D-Scenario调度与通用KBD测试验证方案.md)。
 
-> 当前事实：TestRun 表、Scenario API、Scheduler 和通用 Runner 均不存在。阶段 D 尚未实施，并被阶段 C Go/No-Go 阻断。
+> 当前事实：TestRun/Attempt schema、immutable Bundle pin、幂等请求、容量预留、Run Lease 与状态机参考内核已实施；真实 API、持久 Scheduler 与 Customer UI/Bridge Headless Runner 未接入，仍不能写为阶段 D E2E 完成。见[阶段 C–E 控制面代码级实施验证报告](../../../verify/events/2026-08-06-hci-sim阶段C-E控制面代码级实施验证报告.md)。
 
 ## 前置 Go/No-Go
 
@@ -38,14 +38,14 @@ owner: team
 
 ## 实现检查
 
-- [ ] `active` 只在 Run 创建时解析，持久化精确 revision/digest。
-- [ ] 同 idempotency key/body 返回同 Run；不同 body 冲突。
+- [x] 已发布 Bundle 在 Run 创建时固定为精确 revision/digest；生产 active Resolver 待接入。
+- [x] 同 idempotency key/body 返回同 Run；不同 body 冲突。
 - [ ] Retry 创建新 Attempt，不覆盖首次失败和 Artifact。
 - [ ] stale/unpublished/missing/incompatible Bundle 创建无副作用。
 - [ ] reserve→pin→Lease 任一步失败都补偿，reconciliation 可重入。
 - [ ] stateful overlay 以 Run/Scenario 隔离、CAS 更新、有 TTL/字节上限。
 - [ ] Runner 走真实 Bridge contract，无 Runtime/DB 捷径。
-- [ ] ERROR/UNKNOWN/BLOCKED/INCONCLUSIVE 不归约为 false/PASS。
+- [x] ERROR/UNKNOWN/BLOCKED/INCONCLUSIVE 不归约为 false/PASS。
 - [ ] execution mode 不可变，所有失败路径禁止 real fallback。
 
 ## 测试任务

@@ -97,6 +97,10 @@ CI 流程自动执行：
 - **已有 DB**（存量 dev/staging/prod）：`atlas migrate apply --env prod --baseline 20260408000000`（baseline 跳过，从后续迁移开始）
 - **CI 环境**：`atlas migrate apply --env ci`（全量执行，每次 PR 验证）
 
+## hci-sim 控制面 Schema（阶段 C/D）
+
+`agent_test_*` 表是 hci-sim 控制面 metadata：Scenario、不可变 Fixture Bundle、依赖、provenance、审批、审计、TestRun、Attempt、Event、Result 和 Runtime capability。它们只保存精确 revision、受控对象 URI、digest/哈希、状态与审计关联；**禁止**保存原始客户 Artifact、任意外部 URL 或可重放的 Lease 明文。真实 Artifact 进入具备审批、版本与保留策略的对象存储，Runtime 只能读取 `published` Bundle。
+
 > **历史说明**：`schema_migrations` 表为旧 dbmate 工具表（已废弃）。Atlas 使用 `atlas_schema_revisions` 表跟踪版本。
 
 ---
@@ -219,4 +223,3 @@ CREATE TABLE IF NOT EXISTS migration_history (
 - 新需求必须新增文件
 - 大数据量迁移需分批处理
 - 生产问题采用 Forward Fix，不回滚
-
