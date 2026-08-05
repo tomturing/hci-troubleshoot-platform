@@ -213,3 +213,24 @@ async def test_update_kbd_entry_api_sync_sections():
 
     assert params["problem_description"] == "新的问题描述。"
     assert params["alert_info"] == "![img:0]"
+
+
+def test_rebuild_content_md_preserves_pending_image_placeholders():
+    """测试当图片未识别（desc 为空）时，rebuild_content_md 保留待识图占位块，sync_sections 能正确还原占位符。"""
+    kbd = KbdEntry()
+    kbd.problem_description = "故障现象如下：![img:0]"
+    kbd.steps_text = "步骤包含截图：![img:1]"
+    kbd.images_json = [
+        {"seq": 0, "section": "problem_description", "desc": ""},
+        {"seq": 1, "section": "steps_text", "desc": ""},
+    ]
+
+    content_md = kbd.rebuild_content_md()
+
+    assert "> **【截图 0】**（待识图）" in content_md
+    assert "> **【截图 1】**（待识图）" in content_md
+
+    kbd.content_md = content_md
+    kbd.sync_sections_from_content_md()
+    assert kbd.problem_description.strip() == "故障现象如下：\n\n![img:0]"
+    assert kbd.steps_text.strip() == "步骤包含截图：\n\n![img:1]"
