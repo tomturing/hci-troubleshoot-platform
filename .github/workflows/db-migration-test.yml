@@ -6,6 +6,8 @@ on:
     paths:
       # 表结构变更时触发（Atlas 管理）
       - "database/desired_schema.sql"
+      # Atlas 迁移与完整性哈希变化同样必须触发，避免只改 migration 绕过验证
+      - "database/atlas-migrations/**"
       # 函数/触发器变更时触发（psql 管理）
       - "database/desired_extras.sql"
       # 数据迁移变更时触发（migration-runner 管理）
@@ -123,6 +125,11 @@ jobs:
             "kbd_image" "sop_execution" "skill_definition"
             "migration_history" "terminal_operation" "prompt_slot"
             "fact" "claim_evidence_link"
+            "agent_test_scenario" "agent_test_fixture_bundle"
+            "agent_test_fixture_dependency" "agent_test_fixture_provenance"
+            "agent_test_fixture_approval" "agent_test_fixture_audit"
+            "agent_test_run" "agent_test_run_attempt" "agent_test_run_event"
+            "agent_test_run_result" "agent_test_runtime_instance"
           )
           DEPRECATED_TABLES=(
             "kb_chunk" "kb_document" "kb_sop_node" "kb_synonym"
