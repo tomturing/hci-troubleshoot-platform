@@ -16,6 +16,7 @@ owner: team
 
 | 文件 | 日期 | 说明 |
 |------|------|------|
+| [2026-08-06-hci-sim阶段C1权威KBD解析与全量能力验证报告.md](2026-08-06-hci-sim阶段C1权威KBD解析与全量能力验证报告.md) | 2026-08-06 | in_progress：126 条 KBD 的 active snapshot/Tool Contract 只读能力基线，Artifact/E2E 未验证 |
 | [2026-08-06-hci-sim阶段C-E控制面代码级实施验证报告.md](2026-08-06-hci-sim阶段C-E控制面代码级实施验证报告.md) | 2026-08-06 | in_progress：C–E 控制面/差分/容量代码级闭环与真实环境阻断证据 |
 | [2026-08-05-hci-sim阶段A-B代码级实施验证报告.md](2026-08-05-hci-sim阶段A-B代码级实施验证报告.md) | 2026-08-05 | in_progress：A/B 代码与本地门禁证据、明确未部署/未做容量验证的边界 |
 | [2026-08-05-hci-sim阶段A目录收敛与基础门禁验证方案.md](2026-08-05-hci-sim阶段A目录收敛与基础门禁验证方案.md) | 2026-08-05 | proposed：唯一源码、Go/race、Manifest/Helm、Bridge/真实 SSH 和反退化 CI 验收计划 |

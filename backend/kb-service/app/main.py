@@ -23,6 +23,7 @@ from app.routes import (
     categories,
     classify,
     extract_signals,
+    hci_sim,
     health,
     hits,
     ingest,
@@ -84,6 +85,7 @@ async def lifespan(app: FastAPI):
     sop_ingest.set_dependencies(database_manager)  # SOP 文档入库
     categories.set_dependencies(database_manager, embedding_service)  # 分类管理路由
     hits.set_dependencies(database_manager)  # 知识命中统计路由
+    hci_sim.set_dependencies(database_manager)  # hci-sim 控制面只读 KBD Resolver
 
     logger.info(event="service_started", message=f"{settings.SERVICE_NAME} ready")
 
@@ -121,6 +123,7 @@ app.include_router(sop_ingest.router)  # SOP 文档入库
 app.include_router(categories.router)  # 分类管理路由
 app.include_router(hits.sop_hit_router)  # SOP 命中统计路由
 app.include_router(hits.kbd_hit_router)  # KBD 命中统计路由
+app.include_router(hci_sim.router)  # hci-sim 不可变 KBD 快照与批量 capability report
 
 
 @app.get("/metrics")
