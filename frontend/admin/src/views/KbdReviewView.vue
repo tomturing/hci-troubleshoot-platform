@@ -2833,7 +2833,7 @@ onMounted(() => {
         </el-table-column>
 
         <!-- 操作 -->
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column label="操作" width="260" fixed="right">
           <template #default="{ row }">
             <div class="action-btn-group">
             <el-button type="info" size="small" text @click="openDetailDialog(row)">详情</el-button>
@@ -4014,7 +4014,12 @@ onMounted(() => {
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
-  gap: 2px;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.action-btn-group :deep(.el-button + .el-button) {
+  margin-left: 0;
 }
 
 .page-header {
