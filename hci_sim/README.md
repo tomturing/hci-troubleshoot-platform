@@ -10,6 +10,12 @@
 - `exec` 与交互 shell 共用有界 worker 队列、每命令授权和 fail-closed 路由；原始命令和 token 不进入日志。
 - Terminal Bridge 只能通过完整的 `auth_type=lease`、`execution_mode=sim-ssh`、`htp2.*` 认证上下文标记模拟执行，绝不根据 host 名猜测。
 
+## C–E 控制面基础
+
+`internal/controlplane` 实现了不在 SSH 数据面运行的阶段 C–E 业务内核：冻结编译输入与 Bundle 生命周期、双角色审批和 stale；按精确 Bundle 创建的 TestRun、短时 Run Lease 与容量预留；差分、mutation、稳定性和容量阶梯证据模型。`MemoryRegistry` 只用于确定性单元测试，绝不能部署为多副本生产存储。
+
+生产接入仍必须提供 PostgreSQL CAS/审计、不可变对象存储、权威 KBD/Tool/Artifact Resolver 和走 Customer UI/Terminal Bridge 协议的 `Runner`。没有这些依赖或受控真实 HCI 校准环境时，系统只能声明“代码级基础已就绪”，不能声明已支持任意 KBD 自动构建环境或完成产品级验证。
+
 当前内存配额 Tracker 是单副本实现，因此 Helm `replicaCount` 必须为 `1`。共享 Store、Fixture 编译发布、TestRun 调度和规模验证属于后续阶段 C–E，不能据此基线推断已经支持自动化环境构建。
 
 ## 本地验证
