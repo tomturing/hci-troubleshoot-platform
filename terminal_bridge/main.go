@@ -217,32 +217,10 @@ type OutMessage struct {
 	TimedOut        bool   `json:"timed_out,omitempty"`
 	Cancelled       bool   `json:"cancelled,omitempty"`
 	ErrorType       string `json:"error_type,omitempty"`
-	// 模拟执行标记：命中 HCI_BRIDGE_SIM_TARGETS 的 host 时打标（方案 5.2 / sim-ssh 接入点）
+	// 模拟执行标记只来自已认证的 sim-ssh 租约上下文，绝不从 host 名推断。
 	Simulation        bool   `json:"simulation,omitempty"`
 	ExecutionMode     string `json:"execution_mode,omitempty"`
 	SimulationBackend string `json:"simulation_backend,omitempty"`
-}
-
-// simTargetHosts 列出被标记为"模拟目标"的 host（端口可选）。命中后 exec_result 会标注
-// simulation=true / execution_mode=sim-ssh，便于上层把 hci-sim 执行与真实 HCI 执行区分开。
-var simTargetHosts = func() []string {
-	var out []string
-	for _, t := range strings.Split(os.Getenv("HCI_BRIDGE_SIM_TARGETS"), ",") {
-		if s := strings.TrimSpace(t); s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
-}()
-
-// resolveSimulation 判断给定 host 是否为模拟目标，并返回模拟标注三元组。
-func resolveSimulation(host string) (bool, string, string) {
-	for _, t := range simTargetHosts {
-		if t != "" && strings.Contains(host, t) {
-			return true, "sim-ssh", "hci-sim"
-		}
-	}
-	return false, "", ""
 }
 
 type execRequestContext struct {
@@ -348,23 +326,25 @@ type ExecResult struct {
 // ── SSH 会话 ──────────────────────────────────────────────────────────────────
 
 type SSHSession struct {
-	caseID       string
-	client       *ssh.Client
-	clientConfig *ssh.ClientConfig
-	address      string
-	session      *ssh.Session
-	stdin        io.WriteCloser
-	mu           sync.Mutex
-	closed       bool
-	listenersMu  sync.Mutex
-	listeners    map[string]*ExecListener // key: execID
-	simulation   bool                     // signed htp1 lease 或显式 sim-ssh 模式
+	caseID            string
+	client            *ssh.Client
+	clientConfig      *ssh.ClientConfig
+	address           string
+	session           *ssh.Session
+	stdin             io.WriteCloser
+	mu                sync.Mutex
+	closed            bool
+	listenersMu       sync.Mutex
+	listeners         map[string]*ExecListener // key: execID
+	simulation        bool
+	executionMode     string
+	simulationBackend string
 }
 
 func isSimulationLeaseCredential(msg InMessage) bool {
 	authType := strings.ToLower(strings.TrimSpace(msg.AuthType))
-	return strings.EqualFold(strings.TrimSpace(msg.ExecutionMode), "sim-ssh") ||
-		authType == "lease" || strings.HasPrefix(strings.TrimSpace(msg.Password), "htp1.")
+	return strings.EqualFold(strings.TrimSpace(msg.ExecutionMode), "sim-ssh") &&
+		authType == "lease" && strings.HasPrefix(strings.TrimSpace(msg.Password), "htp2.")
 }
 
 func newSSHSession(msg InMessage) (*SSHSession, error) {
@@ -382,8 +362,8 @@ func newSSHSession(msg InMessage) (*SSHSession, error) {
 	}
 	msg.Username = username
 
-	// 2. 真实 HCI 保持历史密码后缀行为；signed Scenario Lease 必须原样传输。
-	// lease 由 hci-sim 校验签名、时效、mode、manifest hash 和配额，Bridge 不解析载荷。
+	// 2. 真实 HCI 保持历史密码后缀行为；完整 htp2 Scenario Lease 必须原样传输。
+	// lease 由 hci-sim 校验签名、时效、mode、bundle 和配额，Bridge 不解析载荷。
 	authType := strings.TrimSpace(strings.ToLower(msg.AuthType))
 	simulation := isSimulationLeaseCredential(msg)
 	if (authType == "password" || authType == "") && msg.Password != "" && !simulation {
@@ -430,6 +410,18 @@ func newSSHSession(msg InMessage) (*SSHSession, error) {
 		session:      session,
 		listeners:    make(map[string]*ExecListener),
 		simulation:   simulation,
+		executionMode: func() string {
+			if simulation {
+				return "sim-ssh"
+			}
+			return ""
+		}(),
+		simulationBackend: func() string {
+			if simulation {
+				return "hci-sim"
+			}
+			return ""
+		}(),
 	}, nil
 }
 
@@ -685,9 +677,8 @@ func (s *SSHSession) execCommand(command, execID string, timeout time.Duration) 
 // 独立连接是硬超时的必要条件：仅关闭共享连接上的 Session 时，部分 SSH 服务端会等待
 // 远端进程自然退出，导致 deadline 已触发但调用仍被阻塞；关闭独立连接才能确定性中止。
 func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestContext, requestedTimeout time.Duration, outputFilters []OutputFilter) {
-	// sim-ssh 接入点：根据目标 host 判定是否为模拟执行（hci-sim），结果打标。
-	simHost := strings.Split(s.address, ":")[0]
-	sim, execMode, simBackend := resolveSimulation(simHost)
+	// 模拟属性固定于连接创建时验证的认证上下文，host/DNS 名不会改变其语义。
+	sim, execMode, simBackend := s.simulation, s.executionMode, s.simulationBackend
 
 	timeout := requestedTimeout
 	if timeout <= 0 {

@@ -52,6 +52,12 @@ spec:
               value: {{ .Values.runtime.workers | quote }}
             - name: HCI_SIM_QUEUE_SIZE
               value: {{ .Values.runtime.queueSize | quote }}
+            - name: HCI_SIM_MAX_OUTPUT_BYTES
+              value: {{ .Values.runtime.maxOutputBytes | quote }}
+            - name: HCI_SIM_LEASE_ISSUER
+              value: {{ .Values.runtime.leaseIssuer | quote }}
+            - name: HCI_SIM_LEASE_AUDIENCE
+              value: {{ .Values.runtime.leaseAudience | quote }}
             - name: HCI_SIM_LEASE_HMAC_KEY
               valueFrom:
                 secretKeyRef:
