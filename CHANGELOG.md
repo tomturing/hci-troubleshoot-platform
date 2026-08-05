@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.22.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.21.0...v2.22.0) (2026-08-05)
+
+
+### ✨ 新功能
+
+* **kbd:** 精准定位专家待办并预览 HCI 执行命令 ([#663](https://github.com/tomturing/hci-troubleshoot-platform/issues/663)) ([e063ac7](https://github.com/tomturing/hci-troubleshoot-platform/commit/e063ac7797c544590e1c697fce41f9376dc54ad3))
+* **kbd:** 统一关键信号两步处理交互 ([#679](https://github.com/tomturing/hci-troubleshoot-platform/issues/679)) ([35d4545](https://github.com/tomturing/hci-troubleshoot-platform/commit/35d45454c50409e18b8d86a71ce1ac4401b52fb7))
+* **kbd:** 统一关键信号过滤取值与输出契约 ([#677](https://github.com/tomturing/hci-troubleshoot-platform/issues/677)) ([38f48a8](https://github.com/tomturing/hci-troubleshoot-platform/commit/38f48a864efb94f6a0403aeb6317e94a49f3b7ec))
+
+
+### 🐛 Bug 修复
+
+* **admin:** 修正 KBD 操作列按钮裁切 ([#681](https://github.com/tomturing/hci-troubleshoot-platform/issues/681)) ([fba478a](https://github.com/tomturing/hci-troubleshoot-platform/commit/fba478aee4a5450b4d3d926f5af931e32c7e1b54))
+* **admin:** 统一关键信号入口文案 ([#667](https://github.com/tomturing/hci-troubleshoot-platform/issues/667)) ([525659d](https://github.com/tomturing/hci-troubleshoot-platform/commit/525659d218bc25e5931974c673c64ccf65390687))
+* **admin:** 调整 QFK 信号字段顺序 ([#680](https://github.com/tomturing/hci-troubleshoot-platform/issues/680)) ([3a713a6](https://github.com/tomturing/hci-troubleshoot-platform/commit/3a713a671083301a258f3fc70ae16824a96aff0a))
+* **conversation:** 补齐 CDD Scope 环境上下文 ([#660](https://github.com/tomturing/hci-troubleshoot-platform/issues/660)) ([ff4beee](https://github.com/tomturing/hci-troubleshoot-platform/commit/ff4beeed19c0c958dca95fc6e4d17d9dd4a48cbe))
+* **kbd:** Candidate 三态门禁与批量自查闭环 ([#669](https://github.com/tomturing/hci-troubleshoot-platform/issues/669)) ([a6d1456](https://github.com/tomturing/hci-troubleshoot-platform/commit/a6d1456d437fdce9b4bc4d9f479e66638425e695))
+* **kbd:** 修复专家恢复信号保存阻断 ([#671](https://github.com/tomturing/hci-troubleshoot-platform/issues/671)) ([a461475](https://github.com/tomturing/hci-troubleshoot-platform/commit/a461475b95abfe6224c7bd65e9dbec33af31b74d))
+* **kbd:** 修复抽取反馈统计与版本配对 ([#666](https://github.com/tomturing/hci-troubleshoot-platform/issues/666)) ([4f5ed84](https://github.com/tomturing/hci-troubleshoot-platform/commit/4f5ed843c26b182570673a927c210721dd15f77a))
+* **kbd:** 修复文本取值与超时默认值 ([#664](https://github.com/tomturing/hci-troubleshoot-platform/issues/664)) ([715882f](https://github.com/tomturing/hci-troubleshoot-platform/commit/715882f2a1a33dfa8cec15b0a60f037124b00f76))
+* **kbd:** 同步 qfk_system 抽取提示词 ([#665](https://github.com/tomturing/hci-troubleshoot-platform/issues/665)) ([ba737a0](https://github.com/tomturing/hci-troubleshoot-platform/commit/ba737a03a279b7ffc10fe48f8796d544d1ec730e))
+* **kbd:** 对齐人工复核标签与发布状态 ([#672](https://github.com/tomturing/hci-troubleshoot-platform/issues/672)) ([cbd8710](https://github.com/tomturing/hci-troubleshoot-platform/commit/cbd871059c3fd6c1e514790a3c757655de59cd30))
+* **kbd:** 拒绝处置动作关键信号 [env:dev:sf][agent:codex] ([#668](https://github.com/tomturing/hci-troubleshoot-platform/issues/668)) ([ec231f1](https://github.com/tomturing/hci-troubleshoot-platform/commit/ec231f1bc43544005db7fc48aa7b1760a7036e52))
+* **kbd:** 收敛 QFK 取值并支持完整输出 AI 提取 ([#676](https://github.com/tomturing/hci-troubleshoot-platform/issues/676)) ([055b32a](https://github.com/tomturing/hci-troubleshoot-platform/commit/055b32a01e1364c761e104295429611afbd79e50))
+* **kbd:** 收敛人工复核标签三态事实 ([#675](https://github.com/tomturing/hci-troubleshoot-platform/issues/675)) ([73e3f99](https://github.com/tomturing/hci-troubleshoot-platform/commit/73e3f998e6666a7a44e177b5c4232182cf7af5d1))
+* **kbd:** 收敛图片来源门禁 ([#674](https://github.com/tomturing/hci-troubleshoot-platform/issues/674)) ([b0301e5](https://github.com/tomturing/hci-troubleshoot-platform/commit/b0301e5bc97a20d05741c2e6fa52e29960e24745))
+* **kbd:** 隔离关键信号截图输入边界 ([#673](https://github.com/tomturing/hci-troubleshoot-platform/issues/673)) ([a53ccbd](https://github.com/tomturing/hci-troubleshoot-platform/commit/a53ccbd947b9f87dd5be887042d1cea585b1eb83))
+* 收口KBD截图Evidence展示与单图确认 ([#659](https://github.com/tomturing/hci-troubleshoot-platform/issues/659)) ([4541525](https://github.com/tomturing/hci-troubleshoot-platform/commit/4541525566c86f04d41a9202a0243945be864121))
+
 ## [2.21.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.20.0...v2.21.0) (2026-07-31)
 
 
