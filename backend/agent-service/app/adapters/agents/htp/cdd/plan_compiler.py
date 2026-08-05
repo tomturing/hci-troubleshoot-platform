@@ -176,8 +176,8 @@ def _compile_tool_contract(tool: str, signal: dict[str, Any]) -> str | None:
         "expected": bool(matcher.get("expected", True)),
     }
     if namespace == "service":
-        data["service"] = compiled_args.get("resource_keyword")
-        data["action"] = compiled_args.get("command") or "status"
+        data["service"] = compiled_args.get("service") or compiled_args.get("resource_keyword")
+        data["action"] = compiled_args.get("action") or compiled_args.get("command") or "status"
     try:
         build_acli_command(BackendSignal.model_validate(data))
     except Exception as exc:

@@ -54,11 +54,16 @@ class _KeywordEval:
     matched_kws: list[str]
 
 
-def _eval_keyword(kws: list[str], out_l: str, mode: str) -> _KeywordEval:
-    """纯客户端关键字求值（不涉服务端过滤）。返回原始 hit 与命中关键字列表。"""
-    matched_kws = [k for k in kws if k.lower() in out_l]
+def _eval_keyword(kws: list[str], records: list[str], mode: str) -> _KeywordEval:
+    """逐条候选记录求值；AND 不能由跨行分别出现的关键字拼成。"""
+
+    normalized_records = [record.casefold() for record in records]
+    matched_kws = [k for k in kws if any(k.casefold() in record for record in normalized_records)]
     if mode == "and":
-        hit = bool(kws) and len(matched_kws) == len(kws)
+        hit = bool(kws) and any(
+            all(keyword.casefold() in record for keyword in kws)
+            for record in normalized_records
+        )
     elif mode == "not":
         # not 模式本身编码"取反"语义：均不出现才是命中
         hit = len(matched_kws) == 0
@@ -105,9 +110,9 @@ def evaluate_matcher(
                 evidence=f"【Matcher 求值 (keyword)】取值失败: {extraction_error}",
             )
         predicate_text = predicate_text or ""
-        predicate_text_l = predicate_text.lower()
-
-        ev = _eval_keyword(kws, predicate_text_l, mode)
+        extracted_values = ((extraction_detail.get("extract") or {}).get("values") or [])
+        records = [str(value) for value in extracted_values] or [predicate_text]
+        ev = _eval_keyword(kws, records, mode)
         hit, matched_kws = ev.hit, ev.matched_kws
 
         # not 模式已在 hit 内表达取反；其余模式按 expected 翻转

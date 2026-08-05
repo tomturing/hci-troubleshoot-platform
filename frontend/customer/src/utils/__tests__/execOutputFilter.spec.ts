@@ -29,6 +29,18 @@ describe('execOutputFilter', () => {
       include_mode: 'any',
       case_sensitive: false,
     })).toBe(true)
+    expect(lineMatchesExecFilter('检测到IP 发生冲突 测试数据', {
+      ...allFilter,
+      include: ['检测到IP', '冲突'],
+      exclude: ['测试数据', '模拟冲突'],
+      exclude_mode: 'all',
+    })).toBe(true)
+    expect(lineMatchesExecFilter('检测到IP 发生冲突 测试数据 模拟冲突', {
+      ...allFilter,
+      include: ['检测到IP', '冲突'],
+      exclude: ['测试数据', '模拟冲突'],
+      exclude_mode: 'all',
+    })).toBe(false)
   })
 
   it('关键字跨 WebSocket chunk 时仍保留完整逻辑行', () => {

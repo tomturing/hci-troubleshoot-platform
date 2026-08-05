@@ -6,7 +6,8 @@ import { formatKeywordInput, parseKeywordInput } from '../../utils/keywordInput'
 const props = withDefaults(defineProps<{
   modelValue?: Record<string, any>
   defaultValueMode?: string
-}>(), { defaultValueMode: 'string' })
+  wholeLineOnly?: boolean
+}>(), { defaultValueMode: 'string', wholeLineOnly: false })
 
 const emit = defineEmits<{ 'update:modelValue': [value: Record<string, any>] }>()
 
@@ -44,7 +45,15 @@ function setKeywordList(key: 'include' | 'exclude', value: string) {
 }
 function setRowMode(mode: string) {
   if (mode === 'keywords') {
-    setField('rows', { mode, include: [], exclude: [], include_mode: 'all', case_sensitive: true })
+    setField('rows', {
+      mode,
+      scope: 'same_record',
+      include: [],
+      exclude: [],
+      include_mode: 'all',
+      exclude_mode: 'any',
+      case_sensitive: true,
+    })
   } else if (mode === 'indices') {
     setField('rows', { mode, basis: 'data', indices: [1], ranges: [] })
   } else {
@@ -136,7 +145,7 @@ watch(() => props.modelValue, value => {
         <el-radio-group :model-value="rows.mode" @change="setRowMode">
           <el-radio-button value="all">全部行</el-radio-button>
           <el-radio-button value="keywords">按关键字</el-radio-button>
-          <el-radio-button value="indices">按行号</el-radio-button>
+          <el-radio-button v-if="!wholeLineOnly" value="indices">按行号</el-radio-button>
         </el-radio-group>
       </el-form-item>
       <template v-if="rows.mode === 'keywords'">
@@ -146,13 +155,18 @@ watch(() => props.modelValue, value => {
         <el-form-item label="排除关键字">
           <el-input :model-value="formatKeywordInput(rows.exclude)" type="textarea" :rows="3" placeholder="每行一个关键字" @input="(value: string) => setKeywordList('exclude', value)" />
         </el-form-item>
-        <el-form-item label="关键字关系">
+        <el-form-item label="包含关系">
           <el-select :model-value="rows.include_mode || 'all'" @change="(value: string) => setRowsField('include_mode', value)">
             <el-option label="全部满足（AND）" value="all" /><el-option label="任一满足（OR）" value="any" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="排除关系">
+          <el-select :model-value="rows.exclude_mode || 'any'" @change="(value: string) => setRowsField('exclude_mode', value)">
+            <el-option label="任一出现即排除（OR）" value="any" /><el-option label="全部同时出现才排除（AND）" value="all" />
+          </el-select>
           <el-switch class="case-switch" :model-value="rows.case_sensitive ?? true" active-text="区分大小写" @change="(value: boolean) => setRowsField('case_sensitive', value)" />
         </el-form-item>
-        <div class="field-hint">与判定器一致：每行一个字面量；中英文逗号属于关键字内容。</div>
+        <div class="field-hint">同一行先满足包含条件，再确认没有触发排除条件；每行一个字面量，中英文逗号属于关键字内容。</div>
       </template>
       <template v-else-if="rows.mode === 'indices'">
         <el-form-item label="行号基准">
@@ -164,12 +178,12 @@ watch(() => props.modelValue, value => {
         <el-form-item label="行号范围"><el-input :model-value="rangeText()" type="textarea" :rows="2" placeholder="每行一个范围，如 5-7" @input="setRanges" /></el-form-item>
       </template>
 
-      <el-form-item label="列选择">
+      <el-form-item v-if="!wholeLineOnly" label="列选择">
         <el-radio-group :model-value="columnMode" @change="setColumnMode">
           <el-radio-button value="whole">整行</el-radio-button><el-radio-button value="columns">一列或多列</el-radio-button>
         </el-radio-group>
       </el-form-item>
-      <template v-if="columnMode === 'columns'">
+      <template v-if="!wholeLineOnly && columnMode === 'columns'">
         <el-form-item label="表格解析">
           <el-select :model-value="extract.parser || 'whitespace_table'" @change="setParser">
             <el-option label="空白分列" value="whitespace_table" /><el-option label="单字符分隔" value="delimited_table" />
@@ -220,7 +234,7 @@ watch(() => props.modelValue, value => {
         <el-select :model-value="extract.source || 'stdout'" @change="(value: string) => setField('source', value)"><el-option label="stdout" value="stdout" /><el-option label="stderr" value="stderr" /></el-select>
       </el-form-item>
     </el-form>
-    <div class="field-hint">关键字/行号负责选行，表头/列号负责选列；行列提取完成后才进入 Matcher 或变量写入。所有行号、列号均从 1 开始。</div>
+    <div class="field-hint">{{ wholeLineOnly ? '关键字只负责筛选候选记录，结果保留完整一行，不截取列。' : '关键字/行号负责选行，表头/列号负责选列；行列提取完成后才进入 Matcher 或变量写入。所有行号、列号均从 1 开始。' }}</div>
   </div>
 </template>
 

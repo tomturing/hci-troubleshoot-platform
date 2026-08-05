@@ -443,10 +443,17 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                         f"signals[{index}] 的日志源 {source.get('source_id')} / parser={source.get('parser')} "
                         f"不支持 {matcher_type} predicate"
                     )
-            elif not (args.get("resource_keyword") or args.get("request_id")):
+            elif not (
+                args.get("request_id")
+                or any(
+                    _value_extract_has_bounded_include(item.get("extract"))
+                    for item in produces
+                    if isinstance(item, dict)
+                )
+            ):
                 raise ValidationError(
-                    f"signals[{index}] 的 qfk_log 产出变量采集必须提供 resource_keyword 或 request_id，"
-                    "禁止无界整文件回传"
+                    f"signals[{index}] 的 qfk_log 产出变量采集必须在完整行/文本取值中配置非空包含关键字，"
+                    "或提供 request_id；仅排除关键字不能限制输出范围"
                 )
         if isinstance(matcher, dict) and matcher.get("type") == "regex":
             pattern = matcher.get("pattern")
@@ -485,6 +492,8 @@ def _validate_value_extract(
         raise ValidationError(f"{location} 的 text extract 必须配置 rows")
     if rows.get("mode") == "indices" and rows.get("basis") == "data" and not isinstance(extract.get("header"), dict):
         raise ValidationError(f"{location} 使用 basis=data 时必须配置 header")
+    if rows.get("mode") == "keywords" and str(rows.get("scope") or "same_record") != "same_record":
+        raise ValidationError(f"{location}.rows.scope 仅支持 same_record")
     if not isinstance(columns, list):
         if consumer_type in {"object", "array<object>"}:
             raise ValidationError(f"{location} 的复合变量必须配置结构化 columns")
@@ -515,3 +524,15 @@ def _validate_value_extract(
         raise ValidationError(f"{location} 的 object 产出不能使用 cardinality=all")
     if consumer_type == "array<object>" and cardinality != "all":
         raise ValidationError(f"{location} 的 array<object> 产出必须使用 cardinality=all")
+
+
+def _value_extract_has_bounded_include(extract: Any) -> bool:
+    """qfk_log 有界性只认可逐记录的非空 include，exclude 单独存在不缩小上界。"""
+
+    if not isinstance(extract, dict) or extract.get("type") != "text":
+        return False
+    rows = extract.get("rows")
+    if not isinstance(rows, dict) or rows.get("mode") != "keywords":
+        return False
+    include = rows.get("include")
+    return isinstance(include, list) and any(isinstance(item, str) and item.strip() for item in include)

@@ -54,6 +54,35 @@ class QFKResult:
     raw_output: str = ""  # 未混入 matcher 目标文本的现场原始输出
     complete_outputs: dict[str, str] = field(default_factory=dict)  # 产出变量使用的完整物理流
     ai_value: Any | None = None  # 命中后由受控 AI 从完整候选日志提取的值
+    execution_status: str = ""  # succeeded / failed / timed_out / cancelled
+    processing_status: str = ""  # not_started / succeeded / failed
+    output_mode: str = "match"  # match / produce
+    business_output_available: bool = False
+
+    def __post_init__(self) -> None:
+        """兼容既有构造点，同时保证执行失败不会冒充业务 False。"""
+
+        if not self.execution_status:
+            error = str(self.error or "")
+            if not error:
+                self.execution_status = "succeeded"
+            elif "timeout" in error.casefold() or "超时" in error:
+                self.execution_status = "timed_out"
+            elif error.startswith(("QFK_EXTRACT_", "QFK_AI_", "QFK_MATCHER_", "QFK_PRODUCER_")):
+                self.execution_status = "succeeded"
+            else:
+                self.execution_status = "failed"
+        if not self.processing_status:
+            if self.execution_status != "succeeded":
+                self.processing_status = "not_started"
+            else:
+                self.processing_status = "failed" if self.error else "succeeded"
+        self.business_output_available = bool(
+            self.output_mode == "match"
+            and self.execution_status == "succeeded"
+            and self.processing_status == "succeeded"
+            and not self.error
+        )
 
     def to_observation(self) -> str:
         """
@@ -148,6 +177,7 @@ async def qfk_exec(
             matched_keywords=[],
             evidence="",
             error=f"QFK 信号解析与命令构建失败: {e}",
+            output_mode=execution_mode,
         )
 
     logger.info(
@@ -180,6 +210,7 @@ async def qfk_exec(
                 "并非终端桥未启动。请检查 agent-service 启动日志（bridge_relay_executor_registered 事件），"
                 "确认 REDIS_URL / CONVERSATION_SERVICE_URL / INTERNAL_API_TOKEN 均已就绪后重启 agent-service。"
             ),
+            output_mode=execution_mode,
         )
 
     # 终端级失败哨兵：命令根本没在 HCI 主机上执行（会话缺失 / 桥未运行 / 超时）。
@@ -264,6 +295,7 @@ async def qfk_exec(
                         "无法判定信号。请先通过 Custom-UI 建立 SSH 连接（ssh_connect）后再触发诊断。"
                     ),
                     exec_ids=exec_ids,
+                    output_mode=execution_mode,
                 )
             results.append(exec_res)
             if exec_res.exec_id:
@@ -284,27 +316,32 @@ async def qfk_exec(
                 evidence=f"在通过 Bridge 执行命令 [{cmd}] 时抛出底层异常: {exec_err}",
                 error=str(exec_err),
                 exec_ids=exec_ids,
+                output_mode=execution_mode,
             )
 
-    # 3. 产出变量必须使用完整物理流。展示摘要仍可截断；缓存缺失/超限时 Fail Closed。
+    # 3. 非零退出是执行失败，与是否请求完整输出无关。任何调用方即使漏传
+    # required_output_sources，也不能让 stderr/空 stdout 进入 Matcher 并冒充业务 False。
+    failed = next((result for result in results if result.exit_code not in (0, None)), None)
+    if failed is not None:
+        combined = f"{failed.stdout or ''}\n{failed.stderr or ''}".strip()
+        return QFKResult(
+            matched=False,
+            namespace=signal.namespace,
+            commands=commands,
+            keywords=signal.keyword,
+            match_mode=signal.match_mode,
+            matched_keywords=[],
+            evidence=combined[:800],
+            error=f"QFK_COMMAND_FAILED: 命令退出码为 {failed.exit_code}，不执行判定或变量写入",
+            exec_ids=exec_ids,
+            raw_output=combined,
+            output_mode=execution_mode,
+        )
+
+    # 4. 产出变量必须使用完整物理流。展示摘要仍可截断；缓存缺失/超限时 Fail Closed。
     complete_outputs: dict[str, str] = {}
     requested_sources = required_output_sources or set()
     if requested_sources:
-        failed = next((result for result in results if result.exit_code not in (0, None)), None)
-        if failed is not None:
-            combined = f"{failed.stdout or ''}\n{failed.stderr or ''}".strip()
-            return QFKResult(
-                matched=False,
-                namespace=signal.namespace,
-                commands=commands,
-                keywords=signal.keyword,
-                match_mode=signal.match_mode,
-                matched_keywords=[],
-                evidence=combined[:800],
-                error=f"QFK_COMMAND_FAILED: 命令退出码为 {failed.exit_code}，不执行判定或变量写入",
-                exec_ids=exec_ids,
-                raw_output=combined,
-            )
         try:
             for source in requested_sources:
                 if source not in {"stdout", "stderr"}:
@@ -324,9 +361,10 @@ async def qfk_exec(
                 error=str(exc),
                 exec_ids=exec_ids,
                 raw_output="\n".join(result.stdout or "" for result in results),
+                output_mode=execution_mode,
             )
 
-    # 4. producer 与 matcher 是不同执行语义。producer 的完整输出必须先返回给
+    # 5. producer 与 matcher 是不同执行语义。producer 的完整输出必须先返回给
     # 编排层取值，绝不能因为没有 matcher 而被 QFK_MATCHER_MISSING 短路。
     combined_output = "\n".join(
         f"{getattr(result, 'stdout', '') or ''}\n{getattr(result, 'stderr', '') or ''}" for result in results
@@ -345,6 +383,7 @@ async def qfk_exec(
                 exec_ids=exec_ids,
                 raw_output=combined_output,
                 complete_outputs=complete_outputs,
+                output_mode=execution_mode,
             )
         return QFKResult(
             matched=True,
@@ -357,9 +396,11 @@ async def qfk_exec(
             exec_ids=exec_ids,
             raw_output=combined_output,
             complete_outputs=complete_outputs,
+            output_mode="produce",
+            business_output_available=False,
         )
 
-    # match 模式的所有 QFK 判定均依赖新版 matcher.extract。
+    # 6. match 模式的所有 QFK 判定均依赖新版 matcher.extract。
     evaluated_output, excluded_probe_lines = _exclude_probe_self_observation(combined_output, commands)
     if signal.matcher:
         matcher_input = evaluated_output
@@ -379,6 +420,7 @@ async def qfk_exec(
                     exec_ids=exec_ids,
                     raw_output=combined_output,
                     complete_outputs=complete_outputs,
+                    output_mode=execution_mode,
                 )
             matcher_input, excluded_probe_lines = _exclude_probe_self_observation(complete_outputs[source], commands)
         matcher_result = evaluate_matcher(signal.matcher, matcher_input)
@@ -395,6 +437,7 @@ async def qfk_exec(
                 exec_ids=exec_ids,
                 raw_output=combined_output,
                 complete_outputs=complete_outputs,
+                output_mode=execution_mode,
             )
         final_matched = bool(matcher_result.matched)
         matched_kws = list(matcher_result.detail.get("matched_keywords") or [])
@@ -426,6 +469,7 @@ async def qfk_exec(
                     exec_ids=exec_ids,
                     raw_output=combined_output,
                     complete_outputs=complete_outputs,
+                    output_mode=execution_mode,
                 )
             ai_value = ai_result.value
             evidence = (
@@ -453,9 +497,10 @@ async def qfk_exec(
             exec_ids=exec_ids,
             raw_output=combined_output,
             complete_outputs=complete_outputs,
+            output_mode=execution_mode,
         )
 
-    # 5. 最终布尔判定
+    # 7. 最终布尔判定
     logger.info(
         event="qfk_engine_finished",
         namespace=signal.namespace,
@@ -476,4 +521,8 @@ async def qfk_exec(
         raw_output=combined_output,
         complete_outputs=complete_outputs,
         ai_value=ai_value,
+        execution_status="succeeded",
+        processing_status="succeeded",
+        output_mode="match",
+        business_output_available=True,
     )

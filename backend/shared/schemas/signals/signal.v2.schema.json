@@ -624,6 +624,13 @@
                 "minLength": 1
               }
             },
+            "scope": {
+              "type": "string",
+              "enum": [
+                "same_record"
+              ],
+              "default": "same_record"
+            },
             "include_mode": {
               "type": "string",
               "enum": [
@@ -631,6 +638,14 @@
                 "any"
               ],
               "default": "all"
+            },
+            "exclude_mode": {
+              "type": "string",
+              "enum": [
+                "all",
+                "any"
+              ],
+              "default": "any"
             },
             "case_sensitive": {
               "type": "boolean",

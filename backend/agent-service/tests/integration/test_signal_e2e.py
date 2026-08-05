@@ -59,7 +59,8 @@ def test_qfk_log_command_build():
     cmds2 = handler.build_commands(sig2)
     print("\n案例 40750 - 内核日志检查:")
     print(f"  命令: {cmds2[0]}")
-    assert "-p /sf/log/today" in cmds2[0]
+    assert "-p /sf/log" in cmds2[0]
+    assert "/today" not in cmds2[0]
     assert "kernel.log" in cmds2[0]
     print("  ✅ 命令构建正确")
 
@@ -80,7 +81,7 @@ def test_qfk_system_command_build():
     cmds1 = handler.build_commands(sig1)
     print("案例 27123 - lsof:")
     print(f"  命令: {cmds1[0]}")
-    assert cmds1[0] == "acli system lsof"
+    assert cmds1[0] == "acli --timeout 60 system lsof"
     print("  ✅ 命令构建正确")
 
     # 案例 27123: ps 检查进程
@@ -93,7 +94,7 @@ def test_qfk_system_command_build():
     cmds2 = handler.build_commands(sig2)
     print("\n案例 27123 - ps:")
     print(f"  命令: {cmds2[0]}")
-    assert cmds2[0] == "acli system ps auxf"
+    assert cmds2[0] == "acli --timeout 60 system ps auxf"
     print("  ✅ 命令构建正确")
 
     # 案例 40652: smartctl
@@ -106,7 +107,7 @@ def test_qfk_system_command_build():
     cmds3 = handler.build_commands(sig3)
     print("\n案例 40652 - smartctl:")
     print(f"  命令: {cmds3[0]}")
-    assert cmds3[0] == "acli system smartctl -a /dev/sda"
+    assert cmds3[0] == "acli --timeout 60 system smartctl -a /dev/sda"
     print("  ✅ 命令构建正确")
 
     # 案例 40680: lsblk
@@ -119,7 +120,7 @@ def test_qfk_system_command_build():
     cmds4 = handler.build_commands(sig4)
     print("\n案例 40680 - lsblk:")
     print(f"  命令: {cmds4[0]}")
-    assert cmds4[0] == "acli system lsblk"
+    assert cmds4[0] == "acli --timeout 60 system lsblk"
     print("  ✅ 命令构建正确")
 
 

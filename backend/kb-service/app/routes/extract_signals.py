@@ -945,7 +945,7 @@ def _normalize_derived_file_assertions(raw_signals: list[Any]) -> int:
 
 
 def _normalize_generated_timeouts(raw_signals: list[Any]) -> int:
-    """将 LLM 抽取结果中的缺省/历史缺省超时收敛到统一 120 秒。
+    """将 LLM 抽取结果中的缺省/历史缺省超时收敛到统一 60 秒。
 
     这是自动抽取的后处理，不会触碰专家手工保存的信号。模型把训练语料中的
     ``10``/``30`` 当作“默认值”写入时，它已不再是缺字段，运行时的默认值无法生效；

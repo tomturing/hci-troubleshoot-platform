@@ -616,7 +616,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
       "id": "sig_001",
       "role": "<must|should|exclude|context>",
       "acquire": {{"tool": "<acquire.tool，取自采集器目录>", "args": {{"...": "依据该 tool 的契约，见下方规则 6"}}}},
-      "match": {{"type": "<keyword|regex|state|threshold|delta|trend|exists>", "pattern": "<匹配式>", "mode": "or|and|not", "expected": true, "extract": {{"type": "text", "rows": {{"mode": "all"}}, "cardinality": "all", "source": "stdout"}}}},
+      "match": {{"type": "<keyword|regex|state|threshold|delta|trend|exists>", "pattern": "<匹配式>", "mode": "or|and", "expected": true, "extract": {{"type": "text", "rows": {{"mode": "all"}}, "cardinality": "all", "source": "stdout"}}}},
       "orchestrate": {{"phase": "<diagnostic|solution>", "action": "<可选>", "produces": [{{"name": "<VAR>", "path": "<取值路径>"}}], "requires": ["<VAR>"]}},
       "provenance": {{"category": "frontend|backend", "source_section": "title|problem_description|alert_info|steps_text", "source_refs": ["img:0/region:img_0:r_0"], "evidence": "<逐字引用输入中的证据句或截图可见文字>", "confidence": 0.9}},
       "review": {{"require_human_confirm": false, "notes": "<可选说明>"}}
@@ -641,8 +641,8 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
    - title/problem_description/alert_info 明确给出 HCI 平台告警名称或告警原文时，每个不同告警至少输出一个 qkv_alert Candidate；不得因为同篇已有 smartctl/qfk_log 等后台检查而省略。BMC/iBMC 外部事件日志除外。
    - qkv_task：必填 keyword；可选 is_failed/limit/timeout/instruction。（is_failed 仅属于 qkv_task，不属于 qkv_alert）
    - qkv_dialog：有对应任务/告警时优先 qkv_task/qkv_alert；仅有页面弹框时生成 qkv_dialog，keyword 必须取弹框原文或稳定片段，默认在当前主控 /sf/log/today 与 /sf/log/today/vt 检索，并在 orchestrate.produces 声明 END(end)、REQUEST_ID(request_id)、HOST(host)。禁止生成虚构的 acli dialog get；弹框文本不稳定或无法关联日志时标 needs_review。
-   - qfk_log：统一覆盖 /sf/log 下 whitebox、blackbox、vn-blackbox 与 pods；禁止生成 qfk_blackbox。常规日志必填 file（安全 basename，禁止目录分隔符和控制字符，扩展名不限；BMC_Event_Log 不是本机日志，应使用 qfk_hardware）。可选 source_family=auto|whitebox|blackbox|vn_blackbox|pod、path、parser、request_id、context_lines、time_window、include_archives/archive_precheck、host/timeout/instruction。/sf/data/local 不是日志族，仅允许携带 request_id 做辅助关联搜索。time_window 只能是 HCI 时区绝对时间或 {{{{ABSOLUTE_TIME}}}}，now/-1h 必须先解析。普通报错用 keyword/regex/state/exists；数值计数用 threshold；周期快照变化用 delta/trend 且必须提供 metric。产出变量模式必须用 resource_keyword 或 request_id 限制输出。无法从正文/截图确定 file 或现场来源属于 UI/BMC/NBU/外部存储时，不得伪造成 qfk_log。
-   - qfk_service：领域服务域为 asv(vt)/anet(vn)/asan(vs)/host；当前版本 `acli service --help` 已验证可执行组为 asv/anet/host，生成命令必须取运行时能力交集。resource_keyword 为服务名，container 为已探测组（默认 asv）；Signal 的 command 仅允许 status 等只读检查命令。不要把 `acli storage asan ...` 与 `acli service asan ...` 混同。
+   - qfk_log：统一覆盖 /sf/log 下 whitebox、blackbox、vn-blackbox 与 pods；禁止生成 qfk_blackbox。常规日志必填 file（安全 basename，禁止目录分隔符和控制字符，扩展名不限；BMC_Event_Log 不是本机日志，应使用 qfk_hardware）。可选 source_family=auto|whitebox|blackbox|vn_blackbox|pod、path、parser、request_id、context_lines、time_window、include_archives/archive_precheck、host/timeout/instruction。/sf/data/local 不是日志族，仅允许携带 request_id 做辅助关联搜索。time_window 只能是 HCI 时区绝对时间或 {{{{ABSOLUTE_TIME}}}}，now/-1h 必须先解析。普通报错用 keyword/regex/state/exists；数值计数用 threshold；周期快照变化用 delta/trend 且必须提供 metric。产出变量模式必须用非空 produces.extract.rows.include 或 request_id 限制输出；exclude 单独存在不构成有界查询。无法从正文/截图确定 file 或现场来源属于 UI/BMC/NBU/外部存储时，不得伪造成 qfk_log。
+   - qfk_service：领域服务域为 asv(vt)/anet(vn)/asan(vs)/host；当前版本 `acli service --help` 已验证可执行组为 asv/anet/host，生成命令必须取运行时能力交集。service 为服务名，container 为已探测组（默认 asv）；action 只允许只读 status。不要把 `acli storage asan ...` 与 `acli service asan ...` 混同。
    - qfk_system：command 只写基础子命令（如 lsof/ps），普通参数唯一写入 command_args 数组（如 ["-p","{{{{PID}}}}","-o","cmd="]）；可选 host（{{{{HOST}}}}）/timeout/instruction。qfk_system 禁止 resource_keyword，VM ID 必须放在 produces.extract.rows.include 的受控行筛选中，不能追加给 lsof。
    - qfk_vm/network/storage/hardware/platform：command（如 list/show/...，acli <namespace> <command>）；可选 host（{{{{HOST}}}}）/resource_keyword/timeout/instruction。
    - host 即原 v1 的 target.scope：采集目标主机/作用域，用 {{{{HOST}}}} 占位（变量池解析）或字面 cluster；不要再用嵌套 target 对象。
@@ -662,7 +662,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
    - grep -v grep 直接删除：平台只在内存筛选基础命令 stdout，不会启动 grep 进程。
    - 复杂 awk、sed、sort、聚合、正则歧义或未知管道不得猜测或改写执行语义；仍保留 Candidate 与 evidence，标 provenance.needs_review=true，由服务端验证。
    - Matcher 与产出变量都必须使用声明式 Extract：{{"name":"KVM_PID","type":"integer","extract":{{"type":"text","parser":"whitespace_table","rows":{{"mode":"keywords","include":["-id {{{{VM}}}}"],"exclude":[],"include_mode":"all","case_sensitive":true}},"columns":[{{"key":"PID","selector":{{"by":"index","index":2}},"value_mode":"integer"}}],"value_key":"PID","cardinality":"first","source":"stdout"}}}}；判定模式把同一 extract 放在 match.extract。requires 由 {{{{HOST}}}}/{{{{VM}}}} 占位符自动推导。
-   - 字段严格隔离：rows.include_mode 只允许 all/any，只用于多行关键字筛选；match.mode 只允许 or/and/not，只用于 Matcher 判定。绝不可把 any 或 all 写入 match.mode，也绝不可把 or、and、not 写入 rows.include_mode。
+   - 字段严格隔离：rows.scope 固定 same_record；rows.include_mode 与 rows.exclude_mode 各自只允许 all/any。include 与 exclude 分别计算，最终 selected=include_ok 且未触发 exclude；跨行分别出现的关键字不能满足 AND。match.mode 属于 Matcher 判定，只能写 or/and，绝不可把 any 或 all 写入 match.mode。
 13. 案例验证契约：每条诊断信号标 role。直接决定案例成立的必要事实→must；增强置信但非必要→should；成立即排除本案例→exclude；背景/处置→context。verification_contract 必须引用现有 signal id，must 至少一条；证据不足一律 inconclusive，禁止把 UNKNOWN/ERROR 当反证。
 14. 计数阈值：原文使用 `... | wc -l` 时，command 只保留基础列举命令，match 使用 `{{"type":"threshold","aggregation":"line_count","operator":">","value":100,"expected":true}}`；禁止把管道写进 command，也禁止把输出第一个数字误当行数。
 15. 外部变量：若 requires 引用了本案例内没有任何 signal.produces 的自定义变量（如 STORAGE_PATH、DEVICE），必须在 verification_contract.variables 中显式声明封闭类型 string/integer/number/boolean/array；变量未声明、类型不合法或现场未提供时不得假定值，裁决必须 inconclusive。
@@ -673,7 +673,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
    - 当标题、问题描述、任务详情或任务截图明确表达启动、创建、迁移、删除虚拟机失败时，必须先生成 qkv_task producer。qkv_task 是查询历史任务的只读采集；keyword 中的“启动/创建/迁移/删除”只是查询条件，绝不等于执行写动作。keyword 使用正文或截图中稳定的任务动作，is_failed=true，produces 至少声明 HOST 和 VM；后续 QFK 通过 requires 使用这些变量。
    - qfk_system 等 QFK producer 只允许产出至少被一个下游信号 requires 消费的变量。读取配置文件后直接判断字段存在、缺失或状态时，应生成带 match 的独立 matcher；禁止把配置文件全文产出为无人消费的变量。配置文件中代表不同诊断事实的字段应分别生成 matcher，不得用一个泛化 producer 替代。
    - 故障主机截图与正常参考截图同时出现时，只对故障目标机上可执行、可验证的事实生成 QFK。正常参考截图只用于确定预期或辅助证据，不得把正常机专有字面值强制生成为故障主机必须命中的远程检查。
-   - 所有 qkv_ 和 qfk_ 信号的 timeout 默认写为 120。没有明确、可审计的特殊耗时依据时，禁止使用 10、30 等历史默认值。
+   - 所有 qkv_ 和 qfk_ 信号的 timeout 默认写为 60。没有明确、可审计的特殊耗时依据时，禁止使用 10、30、120 等历史默认值。
    - evidence 同时引用多张截图或同时比较故障图与参考图时，source_refs 必须包含 evidence 实际使用的全部截图引用；禁止文字声称比较多图而只记录一张图。
    - 信息不足时标记 needs_review 并忠实保留 Candidate；不得为了凑数量凭空生成无证据、无下游消费者的 producer。
 20. 现场可执行性与 Matcher 真实性：
@@ -698,7 +698,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
     {{
       "id": "sig_002",
       "role": "must",
-      "acquire": {{"tool": "qfk_system", "args": {{"command": "lsof", "command_args": [], "host": "{{{{HOST}}}}", "timeout": 120, "instruction": "检查虚拟机镜像文件是否被其他进程占用"}}}},
+      "acquire": {{"tool": "qfk_system", "args": {{"command": "lsof", "command_args": [], "host": "{{{{HOST}}}}", "timeout": 60, "instruction": "检查虚拟机镜像文件是否被其他进程占用"}}}},
       "match": null,
       "orchestrate": {{"phase": "diagnostic", "produces": [{{"name": "PID", "type": "integer", "extract": {{"type": "text", "parser": "whitespace_table", "rows": {{"mode": "keywords", "include": ["{{{{VM}}}}"], "exclude": [], "include_mode": "all", "case_sensitive": true}}, "columns": [{{"key": "PID", "selector": {{"by": "index", "index": 2}}, "value_mode": "integer"}}], "value_key": "PID", "cardinality": "first", "source": "stdout"}}}}], "requires": ["VM", "HOST"]}},
       "provenance": {{"category": "backend", "source_section": "steps_text", "evidence": "检查该虚拟机镜像文件是否被其他进程占用", "confidence": 0.9}},
@@ -721,7 +721,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
   }}
 }}
 $TEMPLATE$,
-        '2.1',
+        '2.2',
         TRUE
     )
 ON CONFLICT (name) DO NOTHING;

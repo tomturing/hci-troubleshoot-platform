@@ -75,9 +75,9 @@ def _contains_illegal_command_chars(value: str) -> bool:
     return any(char in ILLEGAL_COMMAND_CHARS for char in without_placeholders)
 
 # ─── 公共参数：全局只定义一次 ───────────────────────────────────────────────────
-# 关键信号要覆盖跨节点/跨容器的正常 aCLI 耗时，120 秒是新建信号和未声明 timeout
-# 的统一运行时默认值。显式配置的历史信号保持原值，不在读取时被迁移或覆盖。
-DEFAULT_SIGNAL_TIMEOUT_SECONDS = 120
+# 60 秒是新建信号和未声明 timeout 的统一运行时默认值；显式配置的历史信号
+# 保持原值，不在读取时被迁移或覆盖。单一常量同时供 Schema、Agent 和页面预览使用。
+DEFAULT_SIGNAL_TIMEOUT_SECONDS = 60
 
 COMMON_ARGS: dict[str, dict[str, Any]] = {
     "timeout": {
@@ -229,7 +229,11 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {
                 "type": "string",
-                "description": "服务名选择器（acli service <container> <name>）；改名消歧",
+                "description": "历史兼容字段；读取时归一为 service，新配置不再写入",
+            },
+            "service": {
+                "type": "string",
+                "description": "服务名（acli service <container> <service> status）",
             },
             "container": {
                 "type": "string",
@@ -242,11 +246,18 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             },
             "command": {
                 "type": "string",
-                "description": "操作子命令（如 status/restart）",
+                "description": "历史兼容字段；读取时归一为 action",
+            },
+            "action": {
+                "type": "string",
+                "enum": ["status", "start", "stop", "restart"],
+                "default": "status",
+                "description": "服务动作；缺省 status。KBD 只读领域门禁另行禁止 start/stop/restart",
             },
         },
-        # 运行时会确定性映射为 BackendSignal.service。
-        "required": ["resource_keyword"],
+        # service/resource_keyword 的兼容二选一由 validate_acquire_args 与 Signal
+        # 语义校验完成，避免 required 把历史不可变 Revision 一次性打断。
+        "required": [],
     },
     "qfk_system": {
         "type": "object",
@@ -519,7 +530,9 @@ def validate_acquire_args(tool: str, args: Any) -> tuple[bool, str | None]:
         container = str(args.get("container") or "asv")
         if container not in VALID_SERVICE_CONTAINERS:
             return False, f"acquire.args.container 非法: {container}"
-
+        service = str(args.get("service") or args.get("resource_keyword") or "").strip()
+        if not service:
+            return False, "acquire.args 缺少必填字段: service（历史 resource_keyword 仍兼容）"
     if tool == "qfk_system":
         try:
             normalize_qfk_system_args(args)
@@ -527,7 +540,7 @@ def validate_acquire_args(tool: str, args: Any) -> tuple[bool, str | None]:
             return False, str(exc)
 
     if tool.startswith("qfk_"):
-        for field in ("command", "resource_keyword"):
+        for field in ("command", "resource_keyword", "service", "action"):
             value = args.get(field)
             if isinstance(value, str) and _contains_illegal_command_chars(value):
                 return False, f"acquire.args.{field} 包含命令注入类非法字符"

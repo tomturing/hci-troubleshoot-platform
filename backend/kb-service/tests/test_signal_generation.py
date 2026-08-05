@@ -428,7 +428,7 @@ def test_extract_response_preserves_proposal_revision_id_for_batch_audit():
     assert response.model_dump()["proposal_revision_id"] == 14
 
 
-def test_generated_qkv_qfk_timeouts_use_120_for_missing_and_historical_defaults():
+def test_generated_qkv_qfk_timeouts_use_60_for_missing_and_historical_defaults():
     signals = [
         {"acquire": {"tool": "qkv_task", "args": {"keyword": "启动虚拟机"}}},
         {"acquire": {"tool": "qfk_system", "args": {"command": "cat", "timeout": 10}}},
@@ -437,7 +437,7 @@ def test_generated_qkv_qfk_timeouts_use_120_for_missing_and_historical_defaults(
     ]
 
     assert _normalize_generated_timeouts(signals) == 3
-    assert [signal["acquire"]["args"]["timeout"] for signal in signals] == [120, 120, 120, 180]
+    assert [signal["acquire"]["args"]["timeout"] for signal in signals] == [60, 60, 60, 180]
 
 
 def test_prompt_catalog_reference_uses_current_catalog_as_knowledge_not_model_gate():
@@ -815,13 +815,14 @@ def test_kbd_read_only_match_signal_remains_accepted():
     assert [signal["id"] for signal in accepted] == ["sig_001"]
 
 
-def test_kbd_expert_save_gate_rejects_explicit_write_action():
+@pytest.mark.parametrize(("field", "value"), [("command", "restart"), ("action", "restart")])
+def test_kbd_expert_save_gate_rejects_explicit_write_action(field, value):
     document = {
         "schema_version": 2,
         "signals": [
             {
                 "id": "sig_001",
-                "acquire": {"tool": "qfk_service", "args": {"command": "restart"}},
+                "acquire": {"tool": "qfk_service", "args": {field: value}},
                 "orchestrate": {"phase": "diagnostic", "produces": [], "requires": []},
             }
         ],

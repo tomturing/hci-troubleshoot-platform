@@ -2,7 +2,7 @@
 status: active
 category: solution
 audience: developer
-last_updated: 2026-08-03
+last_updated: 2026-08-05
 owner: team
 ---
 
@@ -27,6 +27,7 @@ owner: team
 | 2026-08-03-KBD-Evidence单图确认输入与未确认图片保真修复方案.md | 2026-08-03 | 单图确认严格输入、未确认图片保真与异常 Evidence 拒绝 |
 | 2026-08-04-KBD人工复核标签事实模型纠偏方案.md | 2026-08-04 | 按现有复核要求显示无标签/需人工复核/已人工复核三态，专家保存事实由 Revision 派生 |
 | 2026-08-04-KBD不可绕过执行门禁与Fail-Closed兜底方案.md | 2026-08-04 | Candidate 三态之外的七项不可绕过执行门禁、专家权限边界与 Fail-Closed 兜底（待确认） |
+| 2026-08-05-KBD关键信号统一过滤取值与输出方案.md | 2026-08-05 | same_record 候选过滤、完整行/文本行列/JSON、AI 后置摘取与 Match/Produce 统一管道 |
 
 ---
 
@@ -51,4 +52,4 @@ owner: team
 
 ---
 
-*更新日期: 2026-08-03*
+*更新日期: 2026-08-05*

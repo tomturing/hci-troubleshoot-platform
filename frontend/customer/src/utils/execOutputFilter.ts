@@ -5,6 +5,7 @@ export interface ExecOutputFilter {
   include: string[]
   exclude: string[]
   include_mode: 'all' | 'any'
+  exclude_mode?: 'all' | 'any'
   case_sensitive: boolean
 }
 
@@ -100,7 +101,12 @@ export function lineMatchesExecFilter(line: string, filter: ExecOutputFilter): b
       ? includes.some(value => candidate.includes(value))
       : includes.every(value => candidate.includes(value))
   )
-  return includeOk && !excludes.some(value => candidate.includes(value))
+  const excludeHit = excludes.length > 0 && (
+    filter.exclude_mode === 'all'
+      ? excludes.every(value => candidate.includes(value))
+      : excludes.some(value => candidate.includes(value))
+  )
+  return includeOk && !excludeHit
 }
 
 /**

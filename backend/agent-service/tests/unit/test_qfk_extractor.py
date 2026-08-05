@@ -36,6 +36,32 @@ def test_declarative_extract_selects_multiple_rows_and_columns():
     assert result.selected_line_numbers == [2, 4]
 
 
+def test_include_and_exclude_relations_are_independent_on_the_same_record():
+    output = (
+        "检测到IP ip=192.168.100.1\n"
+        "发生冲突 ip=192.168.100.2\n"
+        "检测到IP 发生冲突 ip=192.168.100.55\n"
+        "检测到IP 发生冲突 测试数据 ip=192.168.100.99\n"
+        "检测到IP 发生冲突 测试数据 模拟冲突 ip=192.168.100.100\n"
+    )
+    base_rows = {
+        "mode": "keywords", "scope": "same_record",
+        "include": ["检测到IP", "冲突"], "include_mode": "all",
+        "exclude": ["测试数据", "模拟冲突"], "case_sensitive": True,
+    }
+    complete_lines = {
+        "type": "text", "rows": {**base_rows, "exclude_mode": "any"},
+        "cardinality": "all", "source": "stdout",
+    }
+
+    assert extract_value(output, complete_lines, "array") == ["检测到IP 发生冲突 ip=192.168.100.55"]
+    complete_lines["rows"]["exclude_mode"] = "all"
+    assert extract_value(output, complete_lines, "array") == [
+        "检测到IP 发生冲突 ip=192.168.100.55",
+        "检测到IP 发生冲突 测试数据 ip=192.168.100.99",
+    ]
+
+
 def test_row_numbers_have_explicit_data_non_empty_and_physical_bases():
     spec = _df_extract({"mode": "indices", "basis": "data", "indices": [3]})
     assert extract_output_values(DF_OUTPUT, spec).values == [35.0]

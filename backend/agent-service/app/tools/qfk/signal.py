@@ -79,6 +79,11 @@ class BackendSignal(BaseModel):
     instruction: str | None = Field(default=None, description="匹配说明（人类可读）")
     expected: bool = Field(default=True, description="预期是否命中；False 表示取反语义")
     matcher: dict[str, Any] | None = Field(default=None, description="完整结构化 Matcher；KBD v2 运行时使用")
+    filter_keywords: list[str] = Field(
+        default_factory=list,
+        exclude=True,
+        description="由 extract.rows.include 派生的运行时粗筛关键字；不属于持久化命令输入",
+    )
 
     # ─── 校验 ─────────────────────────────────────────────────────────────────
     @model_validator(mode="after")
@@ -110,6 +115,8 @@ class BackendSignal(BaseModel):
             )
         if self.namespace == "system" and self.formatter and self.formatter not in {"xml", "csv", "keyvalue", "json"}:
             raise ValueError("qfk_system formatter 必须是 xml/csv/keyvalue/json 之一")
+        if self.namespace == "service" and (self.action or "status").strip().lower() != "status":
+            raise ValueError("qfk_service 在 KBD 自动诊断中只允许只读 action=status")
         if self.namespace == "log":
             self.path_inferred = self.path is None
             if self.source_family not in LOG_SOURCE_FAMILIES:

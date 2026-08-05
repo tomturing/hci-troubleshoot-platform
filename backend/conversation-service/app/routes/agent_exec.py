@@ -121,6 +121,7 @@ class OutputFilterRequest(BaseModel):
     include: list[str] = Field(default_factory=list, max_length=8)
     exclude: list[str] = Field(default_factory=list, max_length=8)
     include_mode: Literal["all", "any"] = "all"
+    exclude_mode: Literal["all", "any"] = "any"
     case_sensitive: bool = True
 
     @model_validator(mode="after")

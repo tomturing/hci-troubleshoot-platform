@@ -189,6 +189,7 @@ type OutputFilter struct {
 	Include       []string `json:"include"`
 	Exclude       []string `json:"exclude"`
 	IncludeMode   string   `json:"include_mode"`
+	ExcludeMode   string   `json:"exclude_mode,omitempty"`
 	CaseSensitive bool     `json:"case_sensitive"`
 }
 
@@ -991,12 +992,23 @@ func lineMatchesOutputFilter(line string, filter OutputFilter) bool {
 	if !includeOK {
 		return false
 	}
+	excludeMode := filter.ExcludeMode
+	if excludeMode == "" {
+		excludeMode = "any"
+	}
+	excludeHit := len(excludes) > 0 && excludeMode == "all"
 	for _, value := range excludes {
-		if strings.Contains(candidate, value) {
-			return false
+		contains := strings.Contains(candidate, value)
+		if excludeMode == "any" && contains {
+			excludeHit = true
+			break
+		}
+		if excludeMode == "all" && !contains {
+			excludeHit = false
+			break
 		}
 	}
-	return true
+	return !excludeHit
 }
 
 // drainExecPipeFiltered 在 Bridge 本地逐行筛选，原始大输出不会进入 WebSocket 和浏览器。
@@ -1038,6 +1050,9 @@ func validateOutputFilters(filters []OutputFilter) error {
 		}
 		if filter.IncludeMode != "all" && filter.IncludeMode != "any" {
 			return fmt.Errorf("output_filters[%d].include_mode 只允许 all/any", index)
+		}
+		if filter.ExcludeMode != "" && filter.ExcludeMode != "all" && filter.ExcludeMode != "any" {
+			return fmt.Errorf("output_filters[%d].exclude_mode 只允许 all/any", index)
 		}
 		if len(filter.Include) > 8 || len(filter.Exclude) > 8 {
 			return fmt.Errorf("output_filters[%d] 的 include/exclude 最多各 8 项", index)

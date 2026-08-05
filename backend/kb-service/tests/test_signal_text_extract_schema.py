@@ -25,6 +25,30 @@ def _qfk_produce(produce):
     return {"schema_version": 2, "signals": [{"acquire": {"tool": "qfk_system", "args": {"command": "ps"}}, "match": None, "orchestrate": {"produces": [produce], "requires": []}}]}
 
 
+def _qfk_log_produce(rows):
+    return {
+        "schema_version": 2,
+        "signals": [{
+            "acquire": {"tool": "qfk_log", "args": {"file": "sfvt_vtpdaemon.log"}},
+            "match": None,
+            "orchestrate": {
+                "produces": [{
+                    "name": "DUP_IP",
+                    "type": "string",
+                    "extract": {
+                        "type": "text",
+                        "rows": rows,
+                        "cardinality": "all",
+                        "source": "stdout",
+                        "ai_extract": {"instruction": "提取其中的第一个 IP 地址"},
+                    },
+                }],
+                "requires": [],
+            },
+        }],
+    }
+
+
 def test_match_and_produces_reuse_the_same_value_extract_contract():
     extract = _text_extract(
         rows={"mode": "keywords", "include": ["{{MOUNT}}"], "exclude": [], "include_mode": "all", "case_sensitive": True},
@@ -135,6 +159,50 @@ def test_text_extract_allows_grounded_ai_extract_instruction():
     )
 
     validate_signals_json(document)
+
+
+def test_qfk_log_produce_accepts_bounded_complete_line_filter_for_kbd27736():
+    document = _qfk_log_produce({
+        "mode": "keywords",
+        "scope": "same_record",
+        "include": ["检测到IP", "冲突"],
+        "exclude": ["测试数据", "模拟冲突"],
+        "include_mode": "all",
+        "exclude_mode": "any",
+        "case_sensitive": True,
+    })
+
+    validate_signals_json(document)
+
+
+def test_qfk_log_produce_rejects_exclude_only_filter_as_unbounded():
+    document = _qfk_log_produce({
+        "mode": "keywords",
+        "include": [],
+        "exclude": ["测试数据"],
+        "include_mode": "all",
+        "exclude_mode": "any",
+        "case_sensitive": True,
+    })
+
+    with pytest.raises(ValidationError, match="仅排除关键字不能限制输出范围"):
+        validate_signals_json(document)
+
+
+def test_keyword_rows_reject_unknown_scope_and_exclude_relation():
+    invalid_scope = _qfk_log_produce({
+        "mode": "keywords", "scope": "whole_output", "include": ["冲突"], "exclude": [],
+        "include_mode": "all", "exclude_mode": "any", "case_sensitive": True,
+    })
+    invalid_exclude_mode = _qfk_log_produce({
+        "mode": "keywords", "scope": "same_record", "include": ["冲突"], "exclude": ["模拟"],
+        "include_mode": "all", "exclude_mode": "none", "case_sensitive": True,
+    })
+
+    with pytest.raises(ValidationError):
+        validate_signals_json(invalid_scope)
+    with pytest.raises(ValidationError):
+        validate_signals_json(invalid_exclude_mode)
 
 
 def test_multicolumn_scalar_requires_value_key_and_object_cardinality_is_closed():

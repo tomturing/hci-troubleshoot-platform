@@ -155,6 +155,13 @@ class LogKeywordHandler(BackendSignalHandler):
         if matcher_type and matcher_type not in LOG_MATCHER_TYPES:
             raise CommandBuildError(f"qfk_log 不支持 matcher.type={matcher_type}")
 
+        # 统一过滤事实持久化在 extract.rows.include；这里仅派生 aCLI OR 粗筛以缩小
+        # 返回量。AND/排除关系仍由 Bridge 与 Agent 按同一记录重新验证。
+        if signal.filter_keywords:
+            unique = sorted({str(item) for item in signal.filter_keywords if str(item)})
+            if unique:
+                return "|".join(re.escape(item) for item in unique), True, matcher_type or "producer"
+
         pattern = matcher.get("pattern")
         if matcher_type == "keyword":
             raw_items = pattern if isinstance(pattern, list) else [pattern] if pattern else signal.keyword
@@ -306,7 +313,9 @@ class ServiceHandler(BackendSignalHandler):
             raise CommandBuildError(f"非法服务容器: {container}（允许: {sorted(VALID_SERVICE_CONTAINERS)}）")
 
         action = (signal.action or "status").strip()
-        return [f"acli service {container} {shlex.quote(service)} {action}"]
+        if action.lower() != "status":
+            raise CommandBuildError("qfk_service 在 KBD 自动诊断中只允许只读 action=status")
+        return [f"acli service {container} {shlex.quote(service)} status"]
 
 
 class SystemHandler(BackendSignalHandler):

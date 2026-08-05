@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-08-05 | v3.65 | **QFK 统一过滤取值输出契约**：Agent 对文本候选行使用 `same_record` 语义，包含/排除分别支持 AND/OR；`qfk_log` 只从 `extract.rows.include` 派生 aCLI 粗筛，`qfk_service` 运行时仅允许 status。非零 exit code 无条件阻断 Matcher/变量写入，执行失败不再冒充业务 False。已增加 qfk_log/system/service/vm 四类从 Schema、Handler、Fake Executor 到 Match/变量池的完整契约矩阵。 | [KBD 关键信号统一过滤、取值与输出方案](../../solution/knowledge-base/events/2026-08-05-KBD关键信号统一过滤取值与输出方案.md) |
 | 2026-08-05 | v3.64 | **QFK 完整输出受控 AI 提取**：确定性 ValueExtract/Matcher 先选定真实候选行，AI 仅返回候选原文已有的字面量及物理引用行；服务端逐字回查，候选超限或调用/JSON/类型/溯源失败均 Fail Closed。Matcher evidence 与 produces 共用同一实现，produces 先全量验证再原子写变量池。 | [QFK 完整输出 AI 提取方案](../../solution/agent/events/2026-08-05-QFK完整输出AI提取方案.md) |
 | 2026-08-04 | v3.63 | **QFK 白盒日志定位与 AND 判定收敛**：`qfk_log` 按已解析 `END` 的月内日号定位白盒 `vt` 目录，`END` 未解析时显式回退 `/sf/log`；keyword AND 使用 OR 命令预筛并由后端对完整输出做最终 AND 判定，命令预览复用运行时规则。 | PR #672 |
 | 2026-08-04 | v3.62 | **KBD 配置文件/qfk_log 采集器门禁**：常见配置扩展名不再冒充日志；明确安全配置路径归一只读 cat，其他配置 Candidate 进入 `run_failed`，Agent 不执行错误默认日志路径。 | [KBD 关键信号 Candidate 三态门禁与批量自查方案](../../solution/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查方案.md) |

@@ -150,6 +150,79 @@ async def test_producer_mode_returns_complete_output_without_matcher(monkeypatch
     assert result.matched is True
     assert result.complete_outputs == {"stdout": output}
     assert "产出变量规则" in result.evidence
+    assert result.execution_status == "succeeded"
+    assert result.processing_status == "succeeded"
+    assert result.output_mode == "produce"
+    assert result.business_output_available is False
+
+
+@pytest.mark.asyncio
+async def test_command_failure_has_no_valid_business_false(monkeypatch):
+    class FakeExecutor:
+        _redis = SimpleNamespace()
+
+        async def execute(self, **_kwargs):
+            return ExecResult(
+                stdout="",
+                stderr="df: invalid option",
+                exit_code=2,
+                command="acli --timeout 60 system df",
+                node="172.28.25.4",
+                duration_ms=1,
+                truncated=False,
+                risk_level=1,
+            )
+
+    monkeypatch.setattr(executor_module, "_executor", FakeExecutor())
+    signal = BackendSignal(
+        namespace="system",
+        command="df",
+        matcher={
+            "type": "exists",
+            "expected": True,
+            "extract": {"type": "text", "rows": {"mode": "all"}, "cardinality": "all", "source": "stdout"},
+        },
+    )
+
+    result = await engine.qfk_exec(
+        signal,
+        conversation_id="command-failed",
+    )
+
+    assert result.matched is False  # 兼容字段，不能作为本次业务结果消费
+    assert result.execution_status == "failed"
+    assert result.processing_status == "not_started"
+    assert result.business_output_available is False
+    assert result.error and result.error.startswith("QFK_COMMAND_FAILED")
+
+
+@pytest.mark.asyncio
+async def test_producer_command_failure_preserves_output_mode_and_never_exposes_output(monkeypatch):
+    class FakeExecutor:
+        _redis = SimpleNamespace()
+
+        async def execute(self, **_kwargs):
+            return ExecResult(
+                stdout="partial value",
+                stderr="vm query failed",
+                exit_code=2,
+                command="acli vm list --formatter json",
+                node="172.28.25.4",
+                duration_ms=1,
+                truncated=False,
+                risk_level=1,
+            )
+
+    monkeypatch.setattr(executor_module, "_executor", FakeExecutor())
+    signal = BackendSignal(namespace="vm", command="list --formatter json", matcher=None)
+
+    result = await engine.qfk_exec(signal, conversation_id="producer-command-failed", execution_mode="produce")
+
+    assert result.output_mode == "produce"
+    assert result.execution_status == "failed"
+    assert result.processing_status == "not_started"
+    assert result.business_output_available is False
+    assert result.error and result.error.startswith("QFK_COMMAND_FAILED")
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,9 @@ _KBD_READ_ONLY_MIGRATION_PATH = (
 _SIGNAL_EXECUTABILITY_MIGRATION_PATH = (
     _REPOSITORY_ROOT / "database" / "data-migrations" / "021_enforce_signal_catalog_and_matcher_quality.sql"
 )
+_SIGNAL_PIPELINE_MIGRATION_PATH = (
+    _REPOSITORY_ROOT / "database" / "data-migrations" / "022_unify_kbd_signal_filter_extract_output.sql"
+)
 
 
 def _seed_template(prompt_name: str) -> str:
@@ -48,7 +51,8 @@ def test_signal_extract_prompt_only_teaches_declarative_text_extract_and_current
     assert '"type": "<keyword|regex|state|threshold|delta|trend|exists>"' in template
     assert "json_path" not in template
     assert "判定模式的 match 必须包含 extract" in template
-    assert "字段严格隔离：rows.include_mode" in template
+    assert "字段严格隔离：rows.scope 固定 same_record" in template
+    assert "rows.include_mode 与 rows.exclude_mode" in template
     assert "绝不可把 any 或 all 写入 match.mode" in template
     assert '"pattern": "ClwDRDBClient", "mode": "or", "expected": true, "extract"' in template
 
@@ -115,7 +119,22 @@ def test_seed_signal_prompt_contains_same_quality_boundaries():
     assert "任务生产者、QFK 消费关系、超时与多图证据" in template
     assert "必须先生成 qkv_task producer" in template
     assert "配置文件全文产出为无人消费的变量" in template
-    assert "timeout 默认写为 120" in template
+    assert "timeout 默认写为 60" in template
+    assert "produces.extract.rows.include 或 request_id" in template
+    assert "rows.exclude_mode" in template
+
+
+def test_signal_pipeline_prompt_migration_teaches_current_contract_without_template_placeholders():
+    migration = _SIGNAL_PIPELINE_MIGRATION_PATH.read_text(encoding="utf-8")
+    supplemental_rule = migration.split("|| $RULE$", 1)[1].split("$RULE$", 1)[0]
+
+    assert "补充规则 26：统一候选过滤、取值与输出" in supplemental_rule
+    assert "scope 固定 same_record" in supplemental_rule
+    assert "exclude_mode" in supplemental_rule
+    assert "service/action" in supplemental_rule
+    assert "timeout 使用 60 秒" in supplemental_rule
+    assert "expected=false/not" in supplemental_rule
+    assert StrictPromptLoader.get_template_placeholders(supplemental_rule) == set()
 
 
 def test_kbd_read_only_prompt_migration_replaces_old_solution_signal_guidance():

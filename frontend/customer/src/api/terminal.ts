@@ -119,6 +119,7 @@ export interface OutputFilterSpec {
   include: string[]
   exclude: string[]
   include_mode: 'all' | 'any'
+  exclude_mode?: 'all' | 'any'
   case_sensitive: boolean
 }
 

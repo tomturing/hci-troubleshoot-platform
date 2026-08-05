@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-08-03
+last_updated: 2026-08-05
 owner: team
 ---
 
@@ -26,6 +26,7 @@ owner: team
 | 2026-08-03-KBD-Evidence单图确认输入与未确认图片保真修复任务.md | 2026-08-03 | 严格 seq、未确认图片保真与异常 Evidence 回归任务 |
 | 2026-08-04-KBD人工复核标签事实模型纠偏任务.md | 2026-08-04 | 无标签/需人工复核/已人工复核三态与 Revision 派生实施任务 |
 | 2026-08-04-KBD不可绕过执行门禁与Fail-Closed兜底任务.md | 2026-08-04 | 七项不可绕过门禁、能力证据、运行与结论 Fail-Closed 的待确认实施任务 |
+| 2026-08-05-KBD关键信号统一过滤取值与输出任务.md | 2026-08-05 | 统一过滤取值输出、兼容迁移与 qfk_log/system/service/vm 四类完整验收矩阵 |
 
 ---
 
@@ -36,4 +37,4 @@ owner: team
 
 ---
 
-*更新日期: 2026-08-03*
+*更新日期: 2026-08-05*

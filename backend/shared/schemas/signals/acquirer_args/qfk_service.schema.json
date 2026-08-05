@@ -11,7 +11,11 @@
     },
     "resource_keyword": {
       "type": "string",
-      "description": "服务名选择器（acli service <container> <name>）；改名消歧"
+      "description": "历史兼容字段；读取时归一为 service，新配置不再写入"
+    },
+    "service": {
+      "type": "string",
+      "description": "服务名（acli service <container> <service> status）"
     },
     "container": {
       "type": "string",
@@ -25,16 +29,25 @@
     },
     "command": {
       "type": "string",
-      "description": "操作子命令（如 status/restart）"
+      "description": "历史兼容字段；读取时归一为 action"
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "status",
+        "start",
+        "stop",
+        "restart"
+      ],
+      "default": "status",
+      "description": "服务动作；缺省 status。KBD 只读领域门禁另行禁止 start/stop/restart"
     },
     "instruction": {
       "type": "string",
       "description": "信号语义说明（acli 调用的人类可读解释）"
     }
   },
-  "required": [
-    "resource_keyword"
-  ],
+  "required": [],
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://hci-troubleshoot/schemas/signals/acquirer_args/qfk_service.schema.json",
   "title": "acquire.args for qfk_service"

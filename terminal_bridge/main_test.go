@@ -58,6 +58,19 @@ func TestLineMatchesOutputFilterAnyCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestLineMatchesOutputFilterExcludeAll(t *testing.T) {
+	filter := OutputFilter{
+		Source: "stdout", Include: []string{"检测到IP", "冲突"}, IncludeMode: "all",
+		Exclude: []string{"测试数据", "模拟冲突"}, ExcludeMode: "all", CaseSensitive: true,
+	}
+	if !lineMatchesOutputFilter("检测到IP 发生冲突 测试数据\n", filter) {
+		t.Fatal("exclude=all 时只出现一个排除词不应排除")
+	}
+	if lineMatchesOutputFilter("检测到IP 发生冲突 测试数据 模拟冲突\n", filter) {
+		t.Fatal("exclude=all 时全部排除词同时出现必须排除")
+	}
+}
+
 func TestFiltersForSourceIgnoresEmptyAndOtherStream(t *testing.T) {
 	filters := []OutputFilter{{Source: "stdout", Include: []string{"VM"}}, {Source: "stderr", Include: []string{"error"}}, {Source: "stdout"}}
 	selected := filtersForSource(filters, "stdout")
@@ -74,6 +87,10 @@ func TestValidateOutputFilters(t *testing.T) {
 	invalid := []OutputFilter{{Source: "invalid", Include: []string{"VM"}, IncludeMode: "all"}}
 	if err := validateOutputFilters(invalid); err == nil {
 		t.Fatal("invalid source must be rejected")
+	}
+	invalidExcludeMode := []OutputFilter{{Source: "stdout", Include: []string{"VM"}, IncludeMode: "all", ExcludeMode: "none"}}
+	if err := validateOutputFilters(invalidExcludeMode); err == nil {
+		t.Fatal("invalid exclude_mode must be rejected")
 	}
 }
 

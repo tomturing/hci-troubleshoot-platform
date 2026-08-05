@@ -161,6 +161,9 @@ def signal_write_operation_command(signal: Any) -> str | None:
         return None
     args = acquire.get("args") or {}
     command = str(args.get("command") or "").strip().lower()
+    action = str(args.get("action") or "").strip().lower()
+    if action in WRITE_OPERATION_COMMANDS:
+        return action
     command_parts = [token for token in re.split(r"\s+", command) if token]
     executable = _command_executable(command)
     if executable in WRITE_OPERATION_COMMANDS:

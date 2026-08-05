@@ -4,13 +4,13 @@
  *
  * 用于 QFK 工具的 matcher 字段编辑。
  * 支持 7 种判定类型：
- *   - keyword: 关键字匹配（pattern, mode, expected）
- *   - regex: 正则表达式（pattern, expected）
- *   - state: 状态值匹配（pattern, expected）
- *   - threshold: 数值阈值（operator, value, expected）
+ *   - keyword: 关键字匹配（pattern, mode）
+ *   - regex: 正则表达式（pattern）
+ *   - state: 状态值匹配（pattern）
+ *   - threshold: 数值阈值（operator, value）
  *   - delta: 多样本首末差值（operator, value, minimum_samples）
  *   - trend: 多样本趋势（direction, value, minimum_samples）
- *   - exists: 存在性判定（expected）
+ *   - exists: 存在性判定
  *
  * 使用方式（v-model 双向绑定对象）：
  *   <MatcherEditor v-model="matcherData" />
@@ -122,14 +122,13 @@ const extractDefaultValueMode = computed(() => (
           <template #content>
             <div style="max-width: 400px; line-height: 1.6;">
               定义如何判定执行结果是否满足预期。
-              <br/><b>keyword</b> — 关键字匹配，支持多关键字（or/and/not 模式）。
+              <br/><b>keyword</b> — 关键字匹配，支持多关键字 AND/OR。
               <br/><b>regex</b> — 正则表达式匹配。
               <br/><b>state</b> — 匹配特定状态值（如 running、stopped）。
               <br/><b>threshold</b> — 数值阈值比较（支持 &gt; &gt;= &lt; &lt;= == !=）。
               <br/><b>delta</b> — 比较多个样本的末值减首值。
               <br/><b>trend</b> — 判断多个样本连续上升、下降或稳定。
               <br/><b>exists</b> — 检查输出是否非空。
-              <br/><b>expected</b> — 期望结果：true=期望匹配（异常判定），false=期望不匹配（健康判定）。
             </div>
           </template>
           <el-icon class="help-icon"><InfoFilled /></el-icon>
@@ -174,7 +173,6 @@ const extractDefaultValueMode = computed(() => (
           <el-radio-group v-model="matcher.mode">
             <el-radio-button value="or">任一匹配（OR）</el-radio-button>
             <el-radio-button value="and">全部匹配（AND）</el-radio-button>
-            <el-radio-button value="not">均不匹配（NOT）</el-radio-button>
           </el-radio-group>
         </el-form-item>
       </template>
@@ -265,19 +263,12 @@ const extractDefaultValueMode = computed(() => (
         </el-form-item>
       </template>
 
-      <!-- 公共：期望结果 -->
-      <el-form-item label="期望结果">
-        <el-switch
-          v-model="matcher.expected"
-          active-text="应命中（命中支持本案例）"
-          inactive-text="不应命中（未命中支持本案例）"
-          active-color="#f56c6c"
-          inactive-color="#67c23a"
-        />
-        <div class="field-hint">
-          {{ matcher.expected ? '采集结果命中上述条件时，这条证据成立。' : '采集结果未命中上述条件时，这条证据成立。' }}
-        </div>
-      </el-form-item>
+      <el-alert
+        v-if="matcher.expected === false || matcher.mode === 'not'"
+        type="warning"
+        :closable="false"
+        title="这是历史取反配置，平台继续兼容执行；新配置请改用明确的正向判定条件。"
+      />
     </el-form>
   </div>
 </template>

@@ -340,11 +340,15 @@ def _select_rows(refs: list[_LineRef], rows: dict[str, Any], header_ref: _LineRe
         include = _string_list(rows.get("include", []), "rows.include")
         exclude = _string_list(rows.get("exclude", []), "rows.exclude")
         include_mode = _include_mode(rows.get("include_mode", "all"))
+        exclude_mode = _exclude_mode(rows.get("exclude_mode", "any"))
+        scope = str(rows.get("scope") or "same_record")
+        if scope != "same_record":
+            raise QFKExtractionError("QFK_EXTRACT_INVALID_SPEC", "rows.scope 仅支持 same_record")
         case_sensitive = _boolean(rows.get("case_sensitive", True), "rows.case_sensitive")
         matched = [
             ref
             for ref in data_candidates
-            if _line_matches(ref.text, include, exclude, include_mode, case_sensitive)
+            if _line_matches(ref.text, include, exclude, include_mode, exclude_mode, case_sensitive)
         ]
     elif mode == "indices":
         basis = rows.get("basis")
@@ -459,6 +463,12 @@ def _include_mode(value: Any) -> str:
     return str(value)
 
 
+def _exclude_mode(value: Any) -> str:
+    if value not in {"all", "any"}:
+        raise QFKExtractionError("QFK_EXTRACT_INVALID_SPEC", "exclude_mode 仅支持 all/any")
+    return str(value)
+
+
 def _boolean(value: Any, field_name: str) -> bool:
     if not isinstance(value, bool):
         raise QFKExtractionError("QFK_EXTRACT_INVALID_SPEC", f"{field_name} 必须为布尔值")
@@ -483,13 +493,19 @@ def _line_matches(
     include: list[str],
     exclude: list[str],
     include_mode: str,
+    exclude_mode: str,
     case_sensitive: bool,
 ) -> bool:
     candidate = line if case_sensitive else line.casefold()
     includes = include if case_sensitive else [item.casefold() for item in include]
     excludes = exclude if case_sensitive else [item.casefold() for item in exclude]
     include_ok = not includes or (all(item in candidate for item in includes) if include_mode == "all" else any(item in candidate for item in includes))
-    return include_ok and not any(item in candidate for item in excludes)
+    exclude_hit = bool(excludes) and (
+        all(item in candidate for item in excludes)
+        if exclude_mode == "all"
+        else any(item in candidate for item in excludes)
+    )
+    return include_ok and not exclude_hit
 
 
 def _cast_scalar(value: str, value_type: str) -> Any:

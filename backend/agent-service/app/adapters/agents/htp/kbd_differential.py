@@ -1170,12 +1170,12 @@ class KBDDiagnostic:
             try:
                 resolver_variables = dict(env_context)
                 resolver_variables.update(self._variable_pool)
-                bsignal = self._signal_to_qfk(step, resolver_variables)
+                produces = ((signal or {}).get("orchestrate") or {}).get("produces") or []
+                bsignal = self._signal_to_qfk(step, resolver_variables, produces=produces)
                 if bsignal is None:
                     return None, "无法构建后端信号", None, None
                 from app.tools.qfk.engine import qfk_exec
 
-                produces = ((signal or {}).get("orchestrate") or {}).get("produces") or []
                 matcher = step.matcher or {}
                 matcher_extract = matcher.get("extract") if isinstance(matcher, dict) else None
                 required_output_sources = {
@@ -1215,6 +1215,7 @@ class KBDDiagnostic:
                                 "include": list(include),
                                 "exclude": list(exclude),
                                 "include_mode": str(structured_keywords.get("include_mode") or "all"),
+                                "exclude_mode": str(structured_keywords.get("exclude_mode") or "any"),
                                 "case_sensitive": structured_keywords.get("case_sensitive", True),
                             }
                         )
@@ -1537,6 +1538,8 @@ class KBDDiagnostic:
         self,
         step: KBDStep,
         variables: dict[str, Any] | None = None,
+        *,
+        produces: list[Any] | None = None,
     ) -> Any:
         """从消费者 KBDStep 构造 qfk/signal.BackendSignal（namespace 字符串路由）。"""
         from app.tools.qfk.signal import BackendSignal
@@ -1563,6 +1566,22 @@ class KBDDiagnostic:
         if matcher.get("type") == "keyword":
             p = matcher.get("pattern", "")
             keywords = [p] if isinstance(p, str) else list(p or [])
+
+        filter_keywords: list[str] = []
+        extract_specs = [matcher.get("extract")] if isinstance(matcher.get("extract"), dict) else []
+        extract_specs.extend(
+            item.get("extract")
+            for item in (produces or [])
+            if isinstance(item, dict) and isinstance(item.get("extract"), dict)
+        )
+        for extract_spec in extract_specs:
+            rows = (extract_spec or {}).get("rows") or {}
+            if rows.get("mode") != "keywords":
+                continue
+            for item in rows.get("include") or []:
+                literal = str(item).strip()
+                if literal and literal not in filter_keywords:
+                    filter_keywords.append(literal)
 
         # 容器默认值按 namespace 语义：qfk_service 为服务组(asv)。qfk_system
         # 未声明时由 aCLI 在 HOST-OS 默认执行，绝不默认把 acli 放进 asv-con。
@@ -1597,14 +1616,15 @@ class KBDDiagnostic:
             "include_archives": args.get("include_archives", False),
             "archive_precheck": args.get("archive_precheck"),
             "matcher": matcher or None,
+            "filter_keywords": filter_keywords,
         }
 
         # qfk_service 契约用 resource_keyword(服务名)/command(动作)，而运行时 BackendSignal
         # 用 service/action 字段。PR#611 删除 _coerce_legacy_fields 后该映射遗漏，导致
         # signal.service 恒为 None、ServiceHandler 抛 CommandBuildError。此处补回映射。
         if namespace == "service":
-            signal_data["service"] = args.get("resource_keyword")
-            signal_data["action"] = args.get("command") or "status"
+            signal_data["service"] = args.get("service") or args.get("resource_keyword")
+            signal_data["action"] = args.get("action") or args.get("command") or "status"
 
         try:
             return BackendSignal.from_dict(signal_data)

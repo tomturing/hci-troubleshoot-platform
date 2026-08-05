@@ -49,12 +49,14 @@ def test_agent_exec_request_accepts_safe_output_filter_and_timeout():
                 "include": ["4359974862144"],
                 "exclude": ["grep"],
                 "include_mode": "all",
+                "exclude_mode": "all",
                 "case_sensitive": True,
             }
         ],
     )
     assert request.timeout == 90
     assert request.output_filters[0].include == ["4359974862144"]
+    assert request.output_filters[0].exclude_mode == "all"
 
 
 @pytest.mark.parametrize(
@@ -64,6 +66,7 @@ def test_agent_exec_request_accepts_safe_output_filter_and_timeout():
         {"source": "stdout", "include": [""]},
         {"source": "combined", "include": ["VM"]},
         {"source": "stdout", "include": ["x" * 513]},
+        {"source": "stdout", "include": ["VM"], "exclude_mode": "none"},
     ],
 )
 def test_agent_exec_request_rejects_unsafe_or_empty_output_filter(output_filter):

@@ -1217,6 +1217,7 @@ function buildSignalForTool(tool: string, previous?: SignalV2): SignalV2 {
   // qfk_system 在宿主机执行时，持久化契约通过省略 container 表达；编辑器使用
   // host 作为显式的默认选项，便于专家把已选择的 aCLI 容器恢复为宿主机。
   if (tool === 'qfk_system') args.container = 'host'
+  if (tool === 'qfk_service') args.action = 'status'
   return {
     id: previous?.id || createSignalId(),
     role: previous?.role || 'should',
@@ -1255,8 +1256,8 @@ function setQfkSystemCommandText(args: Record<string, any>, value: string) {
 }
 
 function qfkSystemCommandPreview(args: Record<string, any>): string {
-  const timeoutRaw = Number(args.timeout || 120)
-  const timeout = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 120
+  const timeoutRaw = Number(args.timeout || 60)
+  const timeout = Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : 60
   const cluster = args.cluster ? ' --cluster' : ''
   const formatterValue = typeof args.formatter === 'string' ? args.formatter.trim() : ''
   const formatter = formatterValue ? ` --formatter ${formatterValue}` : ''
@@ -1553,6 +1554,12 @@ function startEditSignal(origIdx: number) {
   // 后端会把历史 container=host 归一为省略字段；进入编辑态时恢复为可见的
   // host 选项，避免空白占位与“无法取消已选容器”的歧义。
   if (sigTool(draft) === 'qfk_system') draft.acquire.args.container ??= 'host'
+  if (sigTool(draft) === 'qfk_service') {
+    draft.acquire.args.service ??= draft.acquire.args.resource_keyword
+    draft.acquire.args.action ??= draft.acquire.args.command || 'status'
+    delete draft.acquire.args.resource_keyword
+    delete draft.acquire.args.command
+  }
   // 所有 QKV 都是变量生产者，必须保持 match=null。旧逻辑在进入编辑态时补 keyword
   // matcher，会导致专家只改关键字也无法通过保存契约。
   if (!isBackendSig(draft)) {
@@ -3282,13 +3289,13 @@ onMounted(() => {
                   </template>
                   <template v-if="sigTool(item.sig) === 'qfk_service'">
                     <div class="signal-row"><span class="signal-k">容器</span><span class="signal-v">{{ sigArgs(item.sig).container || 'asv' }}</span></div>
-                    <div class="signal-row"><span class="signal-k">执行命令</span><span class="signal-v">{{ sigArgs(item.sig).command || sigOrch(item.sig).action || 'status' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">动作</span><span class="signal-v">{{ sigArgs(item.sig).action || sigArgs(item.sig).command || sigOrch(item.sig).action || 'status' }}</span></div>
                   </template>
                   <template v-if="['qfk_vm', 'qfk_network', 'qfk_storage', 'qfk_hardware', 'qfk_platform'].includes(sigTool(item.sig))">
                     <div class="signal-row"><span class="signal-k">执行命令</span><span class="signal-v code">{{ sigArgs(item.sig).command || '—' }}</span></div>
                   </template>
                   <div class="signal-row"><span class="signal-k">输入变量</span><span class="signal-v code">{{ (sigOrch(item.sig).requires || []).join('、') || '—' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">超时时间</span><span class="signal-v">{{ sigArgs(item.sig).timeout || 120 }}s</span></div>
+                  <div class="signal-row"><span class="signal-k">超时时间</span><span class="signal-v">{{ sigArgs(item.sig).timeout || 60 }}s</span></div>
                   <div class="signal-row"><span class="signal-k">执行模式</span><span class="signal-v">{{ qfkOutputMode(item.sig) === 'produces' ? '产出变量（采集命令结果）' : '匹配模式' }}</span></div>
                   <template v-if="qfkOutputMode(item.sig) === 'produces'">
                     <div v-for="(p, idx) in (sigOrch(item.sig).produces || [])" :key="`output-${idx}`" class="signal-row">
@@ -3321,7 +3328,7 @@ onMounted(() => {
                     </details>
                   </template>
                   <template v-if="sigTool(item.sig) === 'qfk_service'">
-                    <div class="signal-row"><span class="signal-k">服务</span><span class="signal-v code">{{ sigArgs(item.sig).resource_keyword || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">服务</span><span class="signal-v code">{{ sigArgs(item.sig).service || sigArgs(item.sig).resource_keyword || '—' }}</span></div>
                   </template>
                   <div class="signal-row command-preview-row">
                     <span class="signal-k">完整命令</span>
@@ -3388,14 +3395,12 @@ onMounted(() => {
                   </template>
                   <template v-if="sigTool(signalEditDraft) === 'qfk_service'">
                     <div class="signal-row"><span class="signal-k">容器</span><el-input v-model="signalEditDraft.acquire.args.container" size="small" placeholder="服务容器，如 asv" /></div>
-                    <div class="signal-row"><span class="signal-k">执行命令</span>
-                      <el-select v-model="signalEditDraft.acquire.args.command" size="small">
+                    <div class="signal-row"><span class="signal-k">动作</span>
+                      <el-select v-model="signalEditDraft.acquire.args.action" size="small">
                         <el-option label="status" value="status" />
-                        <el-option label="start" value="start" />
-                        <el-option label="stop" value="stop" />
-                        <el-option label="restart" value="restart" />
                       </el-select>
                     </div>
+                    <div class="field-hint">KBD 自动诊断只允许只读 status；start/stop/restart 不属于关键信号执行权限。</div>
                   </template>
                   <template v-if="['qfk_vm', 'qfk_network', 'qfk_storage', 'qfk_hardware', 'qfk_platform'].includes(sigTool(signalEditDraft))">
                     <div class="signal-row"><span class="signal-k">执行命令</span><el-input v-model="signalEditDraft.acquire.args.command" size="small" placeholder="子命令，如 list / show / get status" /></div>
@@ -3476,7 +3481,7 @@ onMounted(() => {
                         <el-button text type="primary" size="small" @click="signalEditDraft.orchestrate.produces = [...(signalEditDraft.orchestrate.produces || []), { name: '', type: 'string', extract: { type: 'text', rows: { mode: 'all' }, cardinality: 'exactly_one', source: 'stdout', value_mode: 'string' } }]">+ 添加变量</el-button>
                       </div>
                     </div>
-                    <div class="field-hint">变量和匹配模式使用同一份声明式取值：可选择完整输出、文本行列或 JSON 路径。列号从 1 开始，但不会执行 awk。</div>
+                    <div class="field-hint">变量和匹配模式使用同一份声明式取值：可选择完整行、文本行列或 JSON 路径。列号从 1 开始，但不会执行 awk。</div>
                   </template>
 
                   <!-- 其他工具特有字段 -->
@@ -3517,8 +3522,8 @@ onMounted(() => {
                     </details>
                   </template>
                   <template v-if="sigTool(signalEditDraft) === 'qfk_service'">
-                    <div class="signal-row"><span class="signal-k">服务</span><el-input v-model="signalEditDraft.acquire.args.resource_keyword" size="small" placeholder="服务名，如 asv、nginx、mgmt" /></div>
-                    <div class="field-hint">目标服务名；status 查询，start/stop/restart 等写操作仍需人工确认。</div>
+                    <div class="signal-row"><span class="signal-k">服务</span><el-input v-model="signalEditDraft.acquire.args.service" size="small" placeholder="服务名，如 asv、nginx、mgmt" /></div>
+                    <div class="field-hint">目标服务名；新配置保存为 service，历史 resource_keyword 会由后端兼容读取。</div>
                   </template>
                 </div>
               </div>

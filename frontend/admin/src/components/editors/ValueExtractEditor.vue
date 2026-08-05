@@ -15,19 +15,14 @@ const extract = computed({
 })
 const mode = computed(() => {
   if (extract.value.type === 'json') return 'json'
-  // ``columns`` 只是“文本行列”模式中的一个可选子配置：专家可以只按行筛选，
-  // 不选列。此前把是否存在 columns 当作模式标识，切到“文本行列”后会马上被
-  // 重新判成“完整输出”，因此按钮看似无法点击、配置区也不会展开。
-  const rows = extract.value.rows
+  // 不含列解析配置的 text extract 表示“完整行”：它可以配置候选关键字，
+  // 但不会截列。文本行列模式必须显式包含受控 parser/columns。
   const isTextSelection = Boolean(
     extract.value.columns?.length
     || extract.value.parser
     || extract.value.header
     || extract.value.value_key
     || extract.value.delimiter
-    || (rows && rows.mode && rows.mode !== 'all')
-    || extract.value.cardinality !== 'all'
-    || (extract.value.source && extract.value.source !== 'stdout'),
   )
   return isTextSelection ? 'text' : 'complete'
 })
@@ -39,6 +34,7 @@ function completeExtract(): Record<string, any> {
   }
 }
 function setMode(next: string) {
+  const aiExtract = extract.value.ai_extract
   if (next === 'json') {
     extract.value = {
       type: 'json', path: '', cardinality: 'exactly_one', source: 'stdout',
@@ -46,10 +42,16 @@ function setMode(next: string) {
     }
   } else if (next === 'text') {
     extract.value = {
-      type: 'text', rows: { mode: 'all' }, cardinality: 'exactly_one', source: 'stdout',
+      type: 'text',
+      rows: { mode: 'all' },
+      parser: 'whitespace_table',
+      columns: [{ key: 'VALUE', selector: { by: 'index', index: 1 }, value_mode: props.defaultValueMode }],
+      value_key: 'VALUE',
+      cardinality: 'exactly_one', source: 'stdout',
       value_mode: props.defaultValueMode,
     }
   } else extract.value = completeExtract()
+  if (next !== 'json' && aiExtract) extract.value = { ...extract.value, ai_extract: aiExtract }
 }
 function setField(key: string, value: any) {
   extract.value = { ...extract.value, [key]: value }
@@ -76,16 +78,17 @@ watch(() => props.modelValue, value => {
     <el-form label-position="left" label-width="96px" size="small">
       <el-form-item label="取值方式">
         <el-radio-group :model-value="mode" @change="setMode">
-          <el-radio-button value="complete">完整输出</el-radio-button>
+          <el-radio-button value="complete">完整行</el-radio-button>
           <el-radio-button value="text">文本行列</el-radio-button>
           <el-radio-button value="json">JSON 路径</el-radio-button>
         </el-radio-group>
       </el-form-item>
     </el-form>
     <TextExtractEditor
-      v-if="mode === 'text'"
+      v-if="mode === 'text' || mode === 'complete'"
       :model-value="extract"
       :default-value-mode="defaultValueMode"
+      :whole-line-only="mode === 'complete'"
       @update:model-value="setExtract"
     />
     <el-form v-else-if="mode === 'json'" label-position="left" label-width="96px" size="small">
@@ -101,9 +104,6 @@ watch(() => props.modelValue, value => {
       <el-form-item label="输出来源"><el-select :model-value="extract.source || 'stdout'" @change="(value: string) => setField('source', value)"><el-option label="stdout" value="stdout" /><el-option label="stderr" value="stderr" /></el-select></el-form-item>
       <div class="field-hint">只支持受控点号和数组下标，例如 <code>data[0].status</code>；不执行 jq、函数、过滤器或通配符。</div>
     </el-form>
-    <template v-else>
-      <el-alert title="完整输出仍通过统一 Extractor 产生值，不走历史全文旁路。" type="info" :closable="false" />
-    </template>
     <el-form v-if="mode !== 'json'" label-position="left" label-width="96px" size="small" class="ai-extract-form">
       <el-form-item label="AI 提取">
         <el-input

@@ -94,6 +94,7 @@ def compile_qfk_command_preview(raw_signal: dict[str, Any]) -> dict[str, Any]:
 
     pattern = matcher.get("pattern") if matcher.get("type") == "keyword" else None
     keywords = [pattern] if isinstance(pattern, str) and pattern else list(pattern or []) if isinstance(pattern, list) else []
+    filter_keywords = _extract_filter_keywords(raw_signal)
     data: dict[str, Any] = {
         "namespace": namespace,
         "keyword": keywords,
@@ -120,10 +121,11 @@ def compile_qfk_command_preview(raw_signal: dict[str, Any]) -> dict[str, Any]:
         "include_archives": args.get("include_archives", False),
         "archive_precheck": args.get("archive_precheck"),
         "matcher": matcher or None,
+        "filter_keywords": filter_keywords,
     }
     if namespace == "service":
-        data["service"] = args.get("resource_keyword")
-        data["action"] = args.get("command") or "status"
+        data["service"] = args.get("service") or args.get("resource_keyword")
+        data["action"] = args.get("action") or args.get("command") or "status"
 
     signal = BackendSignal.from_dict(data)
     return {
@@ -153,6 +155,32 @@ def _find_placeholders(value: Any) -> set[str]:
     if isinstance(value, list):
         return set().union(*(_find_placeholders(item) for item in value)) if value else set()
     return set()
+
+
+def _extract_filter_keywords(signal: dict[str, Any]) -> list[str]:
+    """从 Matcher/Produce 的唯一 Extract 事实派生日志命令粗筛，不新增持久化 keyword。"""
+
+    specs: list[Any] = []
+    matcher = signal.get("match")
+    if isinstance(matcher, dict):
+        specs.append(matcher.get("extract"))
+    orchestrate = signal.get("orchestrate")
+    if isinstance(orchestrate, dict):
+        specs.extend(
+            item.get("extract")
+            for item in orchestrate.get("produces") or []
+            if isinstance(item, dict)
+        )
+    result: list[str] = []
+    for spec in specs:
+        rows = spec.get("rows") if isinstance(spec, dict) else None
+        if not isinstance(rows, dict) or rows.get("mode") != "keywords":
+            continue
+        for value in rows.get("include") or []:
+            literal = str(value).strip()
+            if literal and literal not in result:
+                result.append(literal)
+    return result
 
 
 @router.get("/capabilities")
