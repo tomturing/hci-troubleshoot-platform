@@ -3404,12 +3404,21 @@ onMounted(() => {
                   </template>
                   <template v-if="sigTool(signalEditDraft) === 'qfk_service'">
                     <div class="signal-row"><span class="signal-k">容器</span><el-input v-model="signalEditDraft.acquire.args.container" size="small" placeholder="服务容器，如 asv" /></div>
+                    <div class="signal-row"><span class="signal-k">服务</span><el-input v-model="signalEditDraft.acquire.args.service" size="small" placeholder="服务名，如 asv、nginx、mgmt" /></div>
+                    <div class="field-hint">目标服务名；新配置保存为 service，历史 resource_keyword 会由后端兼容读取。</div>
                     <div class="signal-row"><span class="signal-k">动作</span>
                       <el-select v-model="signalEditDraft.acquire.args.action" size="small">
                         <el-option label="status" value="status" />
                       </el-select>
                     </div>
                     <div class="field-hint">KBD 自动诊断只允许只读 status；start/stop/restart 不属于关键信号执行权限。</div>
+                  </template>
+                  <template v-if="sigTool(signalEditDraft) === 'qfk_log'">
+                    <div class="signal-row"><span class="signal-k">时间</span><el-input v-model="signalEditDraft.acquire.args.time_window" size="small" placeholder="{{END}}（推荐）或 YYYY-MM-DD HH:MM:SS" /></div>
+                    <div class="field-hint">推荐引用上游 qkv_task/qkv_alert/qkv_dialog 产出的 <code v-pre>{{END}}</code>。Agent 保持绝对时间，再由 qfk_log 按日志族转换为所需日期格式。</div>
+                    <div class="signal-row"><span class="signal-k">文件</span><el-input v-model="signalEditDraft.acquire.args.file" size="small" placeholder="安全 basename，如 sfvt_vtpdaemon.log / LOG_ifconfig.txt" /></div>
+                    <div class="field-hint">只填 basename，禁止包含目录；扩展名不限。blackbox、whitebox 和其他 /sf/log 日志都使用 qfk_log。</div>
+                    <div class="signal-row"><span class="signal-k">上下文行</span><el-input-number v-model="signalEditDraft.acquire.args.context_lines" :min="0" :max="50" size="small" /></div>
                   </template>
                   <template v-if="['qfk_vm', 'qfk_network', 'qfk_storage', 'qfk_hardware', 'qfk_platform'].includes(sigTool(signalEditDraft))">
                     <div class="signal-row"><span class="signal-k">执行命令</span><el-input v-model="signalEditDraft.acquire.args.command" size="small" placeholder="子命令，如 list / show / get status" /></div>
@@ -3448,6 +3457,9 @@ onMounted(() => {
                   <div class="field-hint" v-pre>根据主机、命令参数、筛选条件中的 {{变量名}} 自动生成，只读展示。</div>
                   <div class="signal-row"><span class="signal-k">超时时间</span><el-input-number v-model="signalEditDraft.acquire.args.timeout" :min="1" :max="300" size="small" /> 秒</div>
                   <div class="field-hint">命令在 terminal bridge 上的最大实际执行时间，范围 1–300 秒；超时后桥会停止命令并返回 timeout。</div>
+                  <template v-if="sigTool(signalEditDraft) === 'qfk_log'">
+                    <div class="signal-row"><span class="signal-k">Request ID</span><el-input v-model="signalEditDraft.acquire.args.request_id" size="small" placeholder="可选，如 {{REQUEST_ID}}" /></div>
+                  </template>
                   <QfkProcessingEditor
                     :mode="qfkOutputMode(signalEditDraft)"
                     :match="signalEditDraft.match"
@@ -3462,12 +3474,6 @@ onMounted(() => {
 
                   <!-- 其他工具特有字段 -->
                   <template v-if="sigTool(signalEditDraft) === 'qfk_log'">
-                    <div class="signal-row"><span class="signal-k">文件</span><el-input v-model="signalEditDraft.acquire.args.file" size="small" placeholder="安全 basename，如 sfvt_vtpdaemon.log / LOG_ifconfig.txt" /></div>
-                    <div class="field-hint">只填 basename，禁止包含目录；扩展名不限。blackbox、whitebox 和其他 /sf/log 日志都使用 qfk_log。</div>
-                    <div class="signal-row"><span class="signal-k">时间</span><el-input v-model="signalEditDraft.acquire.args.time_window" size="small" placeholder="{{END}}（推荐）或 YYYY-MM-DD HH:MM:SS" /></div>
-                    <div class="field-hint">推荐引用上游 qkv_task/qkv_alert/qkv_dialog 产出的 <code v-pre>{{END}}</code>。Agent 保持绝对时间，再由 qfk_log 按日志族转换为所需日期格式。</div>
-                    <div class="signal-row"><span class="signal-k">Request ID</span><el-input v-model="signalEditDraft.acquire.args.request_id" size="small" placeholder="可选，如 {{REQUEST_ID}}" /></div>
-                    <div class="signal-row"><span class="signal-k">上下文行</span><el-input-number v-model="signalEditDraft.acquire.args.context_lines" :min="0" :max="50" size="small" /></div>
                     <details class="signal-advanced-details">
                       <summary>日志定位高级设置（通常无需修改）</summary>
                       <div class="field-hint">留空时按文件名和默认 /sf/log 范围自动定位。只有自动定位失败或案例明确指定特殊日志域时才设置。</div>
@@ -3496,10 +3502,6 @@ onMounted(() => {
                       <div v-if="signalEditDraft.acquire.args.include_archives" class="signal-row"><span class="signal-k">前置检查</span><el-select v-model="signalEditDraft.acquire.args.archive_precheck" size="small"><el-option label="已确认磁盘、日期和路径" value="verified" /></el-select></div>
                       <div v-if="signalEditDraft.acquire.args.include_archives" class="field-hint">普通 whitebox 历史日志由 END + aCLI 自动定位和解压；这里只控制显式 path 下的 .gz 搜索。</div>
                     </details>
-                  </template>
-                  <template v-if="sigTool(signalEditDraft) === 'qfk_service'">
-                    <div class="signal-row"><span class="signal-k">服务</span><el-input v-model="signalEditDraft.acquire.args.service" size="small" placeholder="服务名，如 asv、nginx、mgmt" /></div>
-                    <div class="field-hint">目标服务名；新配置保存为 service，历史 resource_keyword 会由后端兼容读取。</div>
                   </template>
                 </div>
               </div>
