@@ -134,6 +134,7 @@ def test_signal_pipeline_prompt_migration_teaches_current_contract_without_templ
     assert "service/action" in supplemental_rule
     assert "timeout 使用 60 秒" in supplemental_rule
     assert "expected=false/not" in supplemental_rule
+    assert "未加载 kbd_extract_signals_v2 Prompt，跳过空库契约断言" in migration
     assert StrictPromptLoader.get_template_placeholders(supplemental_rule) == set()
 
 

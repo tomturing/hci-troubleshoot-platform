@@ -42,6 +42,12 @@ BEGIN
         SELECT 1
         FROM system_prompt
         WHERE name = 'kbd_extract_signals_v2'
+    ) THEN
+        RAISE NOTICE '未加载 kbd_extract_signals_v2 Prompt，跳过空库契约断言';
+    ELSIF NOT EXISTS (
+        SELECT 1
+        FROM system_prompt
+        WHERE name = 'kbd_extract_signals_v2'
           AND version = '2.2'
           AND content_template LIKE '%补充规则 26：统一候选过滤、取值与输出%'
           AND content_template LIKE '%scope 固定 same_record%'
