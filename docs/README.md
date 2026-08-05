@@ -2,7 +2,7 @@
 status: active
 category: meta
 audience: all
-last_updated: 2026-08-04
+last_updated: 2026-08-05
 owner: team
 update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑达成）必须更新第一屏
 ---
@@ -71,6 +71,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | KBD 关键信号输入边界隔离 | ✅ 代码级完成：仅诊断章节截图的原子观察可进入 Prompt；根因/方案/未知章节图片与截图上下文 fail closed，Candidate 仅能引用本轮实际输入的图片区域，不要求正文 evidence 与图片 OCR 跨来源逐字相等；KBD27736 重抽仍须专家触发 | 2026-08-04 |
 | KBD 人工复核标签三态纠偏 | ✅ 代码与自动验证完成：普通 Signal 无标签；待复核 Signal 按专家是否保存显示黄/绿；详情 API 从现有 Revision 派生，不新增数据库状态 | 2026-08-04 |
 | KBD 关键信号统一过滤、取值与输出 | ✅ 代码与自动验证完成：same_record 包含/排除独立关系、完整行/文本行列/JSON、可选 AI、Match/Produce、qfk_log 有界保存与四类完整链路矩阵；真实 HCI replay 待部署后执行 | 2026-08-05 |
+| KBD 关键信号两步处理交互统一 | ✅ 代码与自动验证完成：匹配模式和每个产出变量统一为“处理单元 → 第一步取值 → 第二步判断/产出”；取值/判定关键字独立，交互与样式由共享组件保证一致 | 2026-08-05 |
 | hci-real/hci-sim 双轨与 100+ Agent 并发回归 | 🟡 KBD 27123 P0 Golden Agent E2E 已通过；real/sim diff、20 次稳定性与 100+ 容量尚未完成 | 2026-07-30 |
 
 **当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）；[KBD 专家信号修复与删除可用性](task/knowledge-base/events/2026-08-04-KBD专家信号修复与删除可用性任务.md) 已完成代码与第四批真实重抽，后续仍按 [Candidate 三态门禁批量任务](task/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查任务.md) 每批 5 篇推进。KBD27736 的输入边界泄漏已在代码层隔离：方案/根因侧图片和截图上下文不能再进入 Signal Prompt，但重抽仍须专家从 maintenance working 显式触发。Candidate 必须完整保留，只有服务端可按 write_signal/not_exists/run_failed 分流；catalog 命中不等同真实运行成功。真实执行、可信专家 Gold 与 100+ 并发仍按既有事实边界推进。

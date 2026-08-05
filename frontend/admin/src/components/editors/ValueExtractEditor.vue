@@ -6,7 +6,9 @@ import TextExtractEditor from './TextExtractEditor.vue'
 const props = withDefaults(defineProps<{
   modelValue?: Record<string, any>
   defaultValueMode?: string
-}>(), { defaultValueMode: 'string' })
+  embedded?: boolean
+  showTitle?: boolean
+}>(), { defaultValueMode: 'string', embedded: false, showTitle: true })
 const emit = defineEmits<{ 'update:modelValue': [value: Record<string, any>] }>()
 
 const extract = computed({
@@ -73,8 +75,8 @@ watch(() => props.modelValue, value => {
 </script>
 
 <template>
-  <div class="value-extract-editor">
-    <div class="extract-order-title">一、取值配置</div>
+  <div class="value-extract-editor" :class="{ embedded }">
+    <div v-if="showTitle" class="extract-order-title">第一步：取值</div>
     <el-form label-position="left" label-width="96px" size="small">
       <el-form-item label="取值方式">
         <el-radio-group :model-value="mode" @change="setMode">
@@ -123,6 +125,7 @@ watch(() => props.modelValue, value => {
 
 <style scoped>
 .value-extract-editor { width: 100%; padding: 12px; border: 1px solid var(--el-border-color-light); border-radius: 6px; background: var(--el-fill-color-blank); }
+.value-extract-editor.embedded { padding: 0; border: 0; border-radius: 0; background: transparent; }
 .extract-order-title { margin-bottom: 12px; font-weight: 600; color: var(--el-text-color-primary); }
 .field-hint { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.55; }
 .ai-extract-form { margin-top: 12px; }

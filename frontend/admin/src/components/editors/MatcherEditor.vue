@@ -21,10 +21,19 @@ import { InfoFilled } from '@element-plus/icons-vue'
 import ValueExtractEditor from './ValueExtractEditor.vue'
 import { formatKeywordInput, parseKeywordInput } from '../../utils/keywordInput'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   modelValue: Record<string, any>
   allowedTypes?: string[]
-}>()
+  embedded?: boolean
+  showExtract?: boolean
+  showHeader?: boolean
+  showStepTitle?: boolean
+}>(), {
+  embedded: false,
+  showExtract: true,
+  showHeader: true,
+  showStepTitle: true,
+})
 
 const emit = defineEmits<{
   'update:modelValue': [value: Record<string, any>]
@@ -113,8 +122,8 @@ const extractDefaultValueMode = computed(() => (
 </script>
 
 <template>
-  <div class="matcher-editor">
-    <div class="section-header">
+  <div class="matcher-editor" :class="{ embedded }">
+    <div v-if="showHeader" class="section-header">
       <div class="section-title">
         <el-icon class="title-icon"><InfoFilled /></el-icon>
         <span>判定器 (matcher)</span>
@@ -154,8 +163,12 @@ const extractDefaultValueMode = computed(() => (
         </el-select>
       </el-form-item>
 
-      <ValueExtractEditor v-model="matcher.extract" :default-value-mode="extractDefaultValueMode" />
-      <div class="predicate-order-title">二、判定配置</div>
+      <ValueExtractEditor
+        v-if="showExtract"
+        v-model="matcher.extract"
+        :default-value-mode="extractDefaultValueMode"
+      />
+      <div v-if="showStepTitle" class="predicate-order-title">第二步：判断</div>
 
       <!-- keyword 类型参数 -->
       <template v-if="matcherType === 'keyword'">
@@ -280,6 +293,14 @@ const extractDefaultValueMode = computed(() => (
   padding: 16px;
   background: #fafbfc;
   margin-top: 16px;
+}
+
+.matcher-editor.embedded {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  margin-top: 0;
 }
 
 .section-header {

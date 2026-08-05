@@ -6,7 +6,7 @@ import { FullScreen, Refresh } from '@element-plus/icons-vue'
 import { useCategories } from '../composables/useCategories'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { MatcherEditor, ValueExtractEditor } from '@/components/editors'
+import { QfkProcessingEditor } from '@/components/editors'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 类型定义
@@ -1531,7 +1531,7 @@ async function convertDraftPipeline() {
     syncDraftRequires()
     const removed = Array.isArray(body.removed_segments) && body.removed_segments.length
       ? `；已移除：${body.removed_segments.join('、')}` : ''
-    ElMessage.success(`已安全转换到“${target}”的声明式取值${removed}；转换编号：${body.conversion_id || '—'}`)
+    ElMessage.success(`已安全转换到“${target}”的第一步取值${removed}；转换编号：${body.conversion_id || '—'}`)
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '管道转换失败，请人工复核')
   } finally {
@@ -1610,6 +1610,15 @@ function setQfkOutputMode(mode: 'keyword' | 'produces') {
   // 匹配模式不应残留输出变量，否则服务端会拒绝二义信号。
   draft.orchestrate.produces = []
   draft.match = { type: 'keyword', pattern: '', mode: 'or', expected: true }
+}
+
+function setQfkMatch(match: Record<string, any>): void {
+  signalEditDraft.value.match = match
+}
+
+function setQfkProduces(produces: Array<Record<string, any>>): void {
+  signalEditDraft.value.orchestrate = signalEditDraft.value.orchestrate || {}
+  signalEditDraft.value.orchestrate.produces = produces
 }
 
 function cancelEditSignal() {
@@ -1871,7 +1880,7 @@ async function saveSignalEdit() {
       return
     }
     if (hasMatch && !signalEditDraft.value.match?.extract) {
-      ElMessage.error('匹配模式必须先配置声明式取值')
+      ElMessage.error('匹配模式必须先完成第一步取值配置')
       return
     }
     if (String(signalEditDraft.value.acquire?.args?.command || '').includes('|')) {
@@ -1885,7 +1894,7 @@ async function saveSignalEdit() {
           return
         }
         if (!item?.extract || !['text', 'json'].includes(String(item.extract.type))) {
-          ElMessage.error(`产出变量 ${item.name} 必须配置新版声明式取值`)
+          ElMessage.error(`处理单元 ${item.name} 必须完成第一步取值配置`)
           return
         }
       }
@@ -3439,50 +3448,17 @@ onMounted(() => {
                   <div class="field-hint" v-pre>根据主机、命令参数、筛选条件中的 {{变量名}} 自动生成，只读展示。</div>
                   <div class="signal-row"><span class="signal-k">超时时间</span><el-input-number v-model="signalEditDraft.acquire.args.timeout" :min="1" :max="300" size="small" /> 秒</div>
                   <div class="field-hint">命令在 terminal bridge 上的最大实际执行时间，范围 1–300 秒；超时后桥会停止命令并返回 timeout。</div>
-                  <div class="signal-row">
-                    <span class="signal-k">执行模式</span>
-                    <el-radio-group :model-value="qfkOutputMode(signalEditDraft)" size="small" @change="setQfkOutputMode">
-                      <el-radio-button label="keyword">匹配模式</el-radio-button>
-                      <el-radio-button label="produces">产出变量</el-radio-button>
-                    </el-radio-group>
-                  </div>
-                  <div class="field-hint">二选一：匹配模式用关键字、正则、状态、阈值等规则判断命令结果；产出变量模式把提取结果写入变量池，供后续信号使用。</div>
-                  <template v-if="qfkOutputMode(signalEditDraft) === 'keyword' && signalEditDraft.match">
-                    <MatcherEditor
-                      v-model="signalEditDraft.match"
-                      :allowed-types="sigTool(signalEditDraft) === 'qfk_log'
-                        ? ['keyword', 'regex', 'state', 'threshold', 'delta', 'trend', 'exists']
-                        : undefined"
-                    />
-                  </template>
-                  <template v-else-if="qfkOutputMode(signalEditDraft) === 'produces'">
-                    <div class="signal-row">
-                      <span class="signal-k">产出变量</span>
-                      <div class="produces-editor-mini">
-                        <div v-for="(p, idx) in (signalEditDraft.orchestrate.produces || [])" :key="idx" class="produce-item-mini output-extract-card">
-                          <div class="output-extract-grid">
-                            <label>变量名</label>
-                            <el-input v-model="p.name" size="small" placeholder="如 KVM_PID（必填）" />
-                            <label>变量类型</label>
-                            <el-select v-model="p.type" size="small">
-                              <el-option label="字符串" value="string" />
-                              <el-option label="整数" value="integer" />
-                              <el-option label="数字" value="number" />
-                              <el-option label="布尔值" value="boolean" />
-                            <el-option label="数组" value="array" />
-                            <el-option label="对象" value="object" />
-                            <el-option label="对象数组" value="array<object>" />
-                          </el-select>
-                            <label>声明式取值</label>
-                            <ValueExtractEditor v-model="p.extract" :default-value-mode="p.type || 'string'" />
-                          </div>
-                          <el-button text type="danger" size="small" @click="signalEditDraft.orchestrate.produces?.splice(idx, 1)">删除变量</el-button>
-                        </div>
-                        <el-button text type="primary" size="small" @click="signalEditDraft.orchestrate.produces = [...(signalEditDraft.orchestrate.produces || []), { name: '', type: 'string', extract: { type: 'text', rows: { mode: 'all' }, cardinality: 'exactly_one', source: 'stdout', value_mode: 'string' } }]">+ 添加变量</el-button>
-                      </div>
-                    </div>
-                    <div class="field-hint">变量和匹配模式使用同一份声明式取值：可选择完整行、文本行列或 JSON 路径。列号从 1 开始，但不会执行 awk。</div>
-                  </template>
+                  <QfkProcessingEditor
+                    :mode="qfkOutputMode(signalEditDraft)"
+                    :match="signalEditDraft.match"
+                    :produces="signalEditDraft.orchestrate.produces || []"
+                    :allowed-matcher-types="sigTool(signalEditDraft) === 'qfk_log'
+                      ? ['keyword', 'regex', 'state', 'threshold', 'delta', 'trend', 'exists']
+                      : undefined"
+                    @update:mode="setQfkOutputMode"
+                    @update:match="setQfkMatch"
+                    @update:produces="setQfkProduces"
+                  />
 
                   <!-- 其他工具特有字段 -->
                   <template v-if="sigTool(signalEditDraft) === 'qfk_log'">
@@ -4649,24 +4625,6 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-.output-extract-card {
-  align-items: flex-start;
-  padding: 10px;
-  border: 1px solid #dcdfe6;
-  border-radius: 6px;
-  background: #fff;
-}
-.output-extract-grid {
-  flex: 1;
-  display: grid;
-  grid-template-columns: 92px minmax(220px, 1fr);
-  align-items: start;
-  gap: 8px 10px;
-}
-.output-extract-grid > label {
-  color: #606266;
-  line-height: 28px;
 }
 .inline-controls,
 .variable-chips,
