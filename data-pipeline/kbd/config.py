@@ -89,6 +89,10 @@ class KbdSettings(BaseSettings):
         default="http://localhost:8004",
         description="kb-service 内部 API 地址",
     )
+    K8S_NAMESPACE: str = Field(
+        default="",
+        description="本地 port-forward 的目标命名空间；为空时按当前集群角色自动发现",
+    )
     INTERNAL_API_TOKEN: str = Field(
         default="hci-dev-internal-token",
         description="内部服务认证 Token（Bearer Token）",

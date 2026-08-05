@@ -236,6 +236,7 @@ schedulerService:
 kbService:
   enabled: true
   replicaCount: 1
+  checksumAnnotations: true
   image:
     repository: hci-kb-service
     tag: latest

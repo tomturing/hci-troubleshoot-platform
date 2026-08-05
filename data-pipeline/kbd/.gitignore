@@ -1,3 +1,4 @@
 # KB 数据处理缓存目录（运行时生成，不提交）
 /cache/
 *.pid
+.kb-service-portforward.lock

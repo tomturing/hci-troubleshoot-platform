@@ -1491,3 +1491,43 @@ ConfigMap 作为发布方式，正式修复必须构建不可变镜像，经 PR 
 **验收**：Pod Ready、Alloy target `up=1`、丢弃增量为 0、发送计数增长、唯一日志可在 Loki 查询到，五项必须同时满足。部署时还要核对 Chart 声明值已接管现场临时 patch；否则下一次 GitOps 收敛会恢复到错误规格。
 
 **参考案例**：2026-07-29 PR #632 真实端到端复验中，默认 `200m/128Mi` limit 下 Alloy CPU 顶满、指标 10 秒无响应且 Bridge 日志停止入 Loki；临时扩容至上述规格后控制面、指标和 Loki 写入恢复。
+
+---
+
+## D-022：自定义 Pod DNS 丢失 search domain，且进程探针掩盖内部依赖故障
+
+**触发场景**：Pod 使用 `dnsPolicy: None` 混合 kube-dns 与公网 DNS，但 `dnsConfig.searches` 未包含当前命名空间；同时 liveness、readiness、startup 都请求只返回进程存活的同一个端点。
+
+**症状**：
+
+- `postgres.<namespace>.svc.cluster.local` 能解析，但应用配置中的短服务名 `postgres` 报 `socket.gaierror: Name or service not known`；
+- 依赖数据库的列表接口、分类接口批量返回 500，纯内存能力接口仍为 200；
+- Pod 始终 `Ready 1/1`，ArgoCD Health 仍为 Healthy，形成假健康；
+- Helm 模板已删除 DNS override，但 live Deployment 仍可能保留其他字段管理器写入的历史 `dnsPolicy: None`。
+
+**第一性原理**：
+
+Kubernetes 的短服务名不是独立 DNS 记录。`postgres` 需要 resolver 依次拼接 `<namespace>.svc.cluster.local`、`svc.cluster.local`、`cluster.local`。`dnsPolicy: ClusterFirst` 由 kubelet自动注入这些搜索域；切到 `None` 后，操作者必须完整提供 nameserver、searches 与 ndots。只填 nameserver 能解析 FQDN，却无法补全短名。
+
+健康检查也有不同职责：liveness 只回答“进程是否需要重启”，readiness 回答“现在能否接收流量”，startup 保护慢启动。把三者都指向进程端点，会让数据库完全不可用的实例继续接收请求；把数据库塞进 liveness 又会在数据库故障时制造重启风暴。
+
+**修复与预防**：
+
+1. 只依赖普通集群 DNS 转发的内部服务显式使用 `dnsPolicy: ClusterFirst`，不要硬编码 dev/staging/prod；
+2. 确需绕过宿主 DNS 的工作负载使用统一 Helm helper，并动态生成 `<namespace>.svc.cluster.local` 三段 searches；
+3. liveness 使用纯进程端点，readiness 使用带短超时的数据库查询，startup 使用初始化完成端点；
+4. Helm 测试至少渲染 `hci-dev`、`hci-staging`、`hci-prod`，断言目标 namespace、DNS policy 和三级探针路径；
+5. 排查时同时验证短名、FQDN、外部域名和 EndpointSlice，不能以 Pod Ready 或单个 FQDN 成功代替整条链路；
+6. 对历史运行态漂移，必须让 desired manifest 显式声明关键字段，必要时先精确清理不受 GitOps 管理的字段。单纯从模板删除字段不保证三方合并会删除 live 值。
+
+**验收命令**：
+
+```bash
+kubectl exec -n <ns> deploy/kb-service -- getent hosts postgres
+kubectl exec -n <ns> deploy/kb-service -- getent hosts postgres.<ns>.svc.cluster.local
+kubectl get endpointslice -n <ns> -l kubernetes.io/service-name=postgres
+kubectl get deploy kb-service -n <ns> -o jsonpath='{.spec.template.spec.dnsPolicy}{"\n"}'
+kubectl get pod -n <ns> -l app.kubernetes.io/name=kb-service -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{"\n"}{end}'
+```
+
+**参考案例**：2026-08-06 staging 的 kb-service 使用 `dnsPolicy: None` 且缺少 searches，`postgres` 解析失败，KBD/SOP/分类管理接口 500；`/health` 仍返回 200。显式收敛 ClusterFirst 并拆分三级探针后，数据库不可达会从流量池摘除而不会触发重启风暴。

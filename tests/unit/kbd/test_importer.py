@@ -284,4 +284,114 @@ class TestImportBatch:
 
             result = await import_batch([], client=None)
 
-        assert result == {"created": 0, "skipped": 0, "overridden": 0, "error": 0}
+        assert result == {
+            "created": 0,
+            "skipped": 0,
+            "overridden": 0,
+            "error": 0,
+            "results": {},
+        }
+
+    @pytest.mark.asyncio
+    async def test_connectivity_failure_returns_per_id_errors(self):
+        """连接级失败必须一次性失败，并保留逐 ID 结果供 DAG 阻断下游。"""
+        with (
+            patch("kbd.importer.settings.INTERNAL_API_TOKEN", "test-token"),
+            patch("kbd.importer.ensure_kb_service_reachable", return_value=False),
+        ):
+            from kbd.importer import import_batch
+
+            result = await import_batch(["27582", "27079"])
+
+        assert result["error"] == 2
+        assert result["results"] == {"27582": "error", "27079": "error"}
+
+
+class TestPortForwardSafety:
+    """测试环境解析、目标验证与进程归属的 fail-closed 契约。"""
+
+    def test_resolves_argocd_staging_role_without_dev_fallback(self):
+        from kbd import importer
+
+        def fake_output(*args: str) -> str:
+            joined = " ".join(args)
+            if "config view" in joined:
+                return ""
+            if "namespace argocd" in joined:
+                return "staging"
+            raise AssertionError(f"不应执行其他 kubectl 命令: {joined}")
+
+        with (
+            patch.object(importer.settings, "K8S_NAMESPACE", ""),
+            patch.dict(os.environ, {}, clear=False),
+            patch.object(importer, "_kubectl_output", side_effect=fake_output),
+            patch.object(importer, "_namespace_has_service", side_effect=lambda ns: ns == "hci-staging"),
+        ):
+            os.environ.pop("KBD_K8S_NAMESPACE", None)
+            assert importer._resolve_k8s_namespace() == "hci-staging"
+
+    def test_explicit_invalid_namespace_never_falls_back(self):
+        from kbd import importer
+
+        with (
+            patch.dict(os.environ, {"KBD_K8S_NAMESPACE": "hci-prod"}),
+            patch.object(importer, "_namespace_has_service", return_value=False),
+        ):
+            with pytest.raises(importer.PortForwardError, match="禁止回退"):
+                importer._resolve_k8s_namespace()
+
+    def test_reused_pid_is_not_treated_as_owned(self):
+        from kbd import importer
+
+        metadata = {
+            "pid": 42,
+            "namespace": "hci-staging",
+            "local_port": 8004,
+            "command": importer._port_forward_command("hci-staging", 8004),
+            "process_identity": {"start_ticks": "100", "executable": "/usr/bin/kubectl"},
+        }
+
+        with patch.object(
+            importer,
+            "_process_identity",
+            return_value={"start_ticks": "101", "executable": "/usr/bin/python"},
+        ):
+            assert importer._process_matches_metadata(metadata) is False
+
+    def test_k3s_multicall_kubectl_is_treated_as_owned(self):
+        from kbd import importer
+
+        identity = {"start_ticks": "100", "executable": "/var/lib/k3s/bin/k3s"}
+        metadata = {
+            "pid": 42,
+            "namespace": "hci-staging",
+            "local_port": 8004,
+            "command": importer._port_forward_command("hci-staging", 8004),
+            "process_identity": identity,
+        }
+
+        with patch.object(importer, "_process_identity", return_value=identity):
+            assert importer._process_matches_metadata(metadata) is True
+
+    def test_endpoint_slice_requires_at_least_one_ready_address(self):
+        from kbd import importer
+
+        outputs = [
+            "service/kb-service",
+            json.dumps(
+                {
+                    "items": [
+                        {
+                            "endpoints": [
+                                {
+                                    "addresses": ["10.42.0.14"],
+                                    "conditions": {"ready": True},
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ),
+        ]
+        with patch.object(importer, "_kubectl_output", side_effect=outputs):
+            importer._validate_port_forward_target("hci-staging")

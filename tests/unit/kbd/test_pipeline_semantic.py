@@ -14,7 +14,9 @@ from __future__ import annotations
 import json
 import os
 import sys
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 # 将 data-pipeline/ 加入路径，使 `from kbd.xxx import ...` 可用
 _data_pipeline_root = os.path.abspath(
@@ -45,6 +47,61 @@ class TestPipelineStageDag:
         from kbd.pipeline import Stage, resolve_stages
 
         assert resolve_stages([Stage.AUDIT_LOG_SIGNALS]) == list(Stage)
+
+    @pytest.mark.asyncio
+    async def test_import_api_failure_is_not_hidden_by_historical_db_row(
+        self, monkeypatch, tmp_path
+    ):
+        """override 失败时旧 DB 行不能把本次 Import 标成完成或放行 Vision。"""
+        from kbd import pipeline
+
+        class FakePool:
+            async def fetchrow(self, *_args, **_kwargs):
+                return {"support_id": "27582"}
+
+            async def close(self):
+                return None
+
+        vision_inputs: list[list[str]] = []
+
+        async def fake_fetch(ids, *, force=False):
+            return {"success": len(ids), "failed": 0}
+
+        async def fake_import(ids, *_args, **_kwargs):
+            return {
+                "created": 0,
+                "overridden": 0,
+                "skipped": 0,
+                "error": len(ids),
+                "results": {support_id: "error" for support_id in ids},
+            }
+
+        async def fake_vision_ready(ids, _pool):
+            vision_inputs.append(list(ids))
+            return []
+
+        monkeypatch.setattr(pipeline.settings, "KBD_LOGS_DIR", tmp_path)
+        monkeypatch.setattr(pipeline, "_create_pool", AsyncMock(return_value=FakePool()))
+        monkeypatch.setattr(pipeline, "fetch_batch", fake_fetch)
+        monkeypatch.setattr(pipeline, "_is_fetched", lambda _support_id: True)
+        monkeypatch.setattr(pipeline, "import_batch", fake_import)
+        monkeypatch.setattr(pipeline, "_get_vision_ready_ids", fake_vision_ready)
+        monkeypatch.setattr(pipeline, "process_images_batch", AsyncMock(return_value={"done": 0, "failed": 0}))
+
+        stats, _ = await pipeline.run_pipeline(
+            ["27582"],
+            stages=[pipeline.Stage.VISION],
+            override=True,
+            override_status=["all"],
+            run_id="20260806_120000",
+        )
+
+        assert vision_inputs == [[]]
+        assert stats["pipeline"]["success"] is False
+        assert stats["pipeline"]["failed_steps"] == 1
+        progress = json.loads((tmp_path / "progress_20260806_120000.json").read_text())
+        assert progress["kbds"]["27582"]["import"] == "failed"
+        assert progress["kbds"]["27582"]["vision"] == "skipped"
 
 
 class TestSignalDocumentStatus:

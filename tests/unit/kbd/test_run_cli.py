@@ -14,6 +14,7 @@ from kbd.pipeline import Stage
 from kbd.run import (
     _cmd_audit_log_signals,
     _cmd_extract_signals,
+    _cmd_pipeline,
     _parse_stages,
     build_parser,
 )
@@ -32,6 +33,22 @@ def test_extract_signals_is_first_class_subcommand():
 
     assert args.command == "extract-signals"
     assert args.ids == "37150,41818"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_command_returns_nonzero_when_critical_stage_failed(monkeypatch):
+    from kbd import pipeline
+
+    async def fake_run_pipeline(*_args, **_kwargs):
+        return {
+            "import": {"error": 1},
+            "pipeline": {"success": False, "failed_steps": 1},
+        }, "20260806_120000"
+
+    monkeypatch.setattr(pipeline, "run_pipeline", fake_run_pipeline)
+    args = build_parser().parse_args(["pipeline", "--ids", "27582"])
+
+    assert await _cmd_pipeline(args, "20260806_120000") == 1
 
 
 @pytest.mark.asyncio

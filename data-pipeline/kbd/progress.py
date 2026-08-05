@@ -39,7 +39,14 @@ from .config import settings
 logger = logging.getLogger("kbd.progress")
 
 # 所有 stage 名称
-ALL_STAGES = ["fetch", "vision", "import", "classify"]
+ALL_STAGES = [
+    "fetch",
+    "import",
+    "vision",
+    "classify",
+    "extract_signals",
+    "audit_log_signals",
+]
 
 # 状态到统计字段的映射
 _STATUS_TO_STATS_KEY = {

@@ -176,7 +176,7 @@ def _get_kbd_ids(args: argparse.Namespace) -> list[str]:
         sys.exit(1)
 
 
-async def _cmd_pipeline(args: argparse.Namespace, run_id: str) -> None:
+async def _cmd_pipeline(args: argparse.Namespace, run_id: str) -> int:
     """执行完整流水线（或指定 stages）"""
     stages = _parse_stages(getattr(args, "stages", None))
 
@@ -219,6 +219,7 @@ async def _cmd_pipeline(args: argparse.Namespace, run_id: str) -> None:
     print("\n─── 流水线完成 ───")
     print(f"run_id: {actual_run_id}")
     print(json.dumps(stats, ensure_ascii=False, indent=2))
+    return 0 if stats.get("pipeline", {}).get("success", True) else 1
 
 
 async def _cmd_fetch(args: argparse.Namespace, run_id: str) -> None:
@@ -281,7 +282,7 @@ async def _cmd_vision(args: argparse.Namespace, run_id: str) -> None:
         await pool.close()
 
 
-async def _cmd_import(args: argparse.Namespace, run_id: str) -> None:
+async def _cmd_import(args: argparse.Namespace, run_id: str) -> int:
     """Stage 2：语义提取 + 原子入库（kbd_entry + kbd_image）
 
     新架构：仅检查 FETCH 完成即可入库；图片随 IMPORT 原子写入 kbd_image，
@@ -308,7 +309,7 @@ async def _cmd_import(args: argparse.Namespace, run_id: str) -> None:
 
     if not ready_ids:
         print("没有已准备好可导入的案例")
-        return
+        return 1
 
     # 解析 override_status 参数（逗号分隔的字符串 → list）
     override_status = None
@@ -326,6 +327,7 @@ async def _cmd_import(args: argparse.Namespace, run_id: str) -> None:
         )
         print(f"run_id: {run_id}")
         print(json.dumps(stats, ensure_ascii=False, indent=2))
+        return 1 if stats.get("error", 0) else 0
 
 
 async def _cmd_classify(args: argparse.Namespace, run_id: str) -> None:
