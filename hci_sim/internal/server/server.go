@@ -34,6 +34,8 @@ const (
 	exitFixtureNotFound = 127
 	exitOverloaded      = 75
 	exitInternal        = 70
+	exitTimeout         = 124
+	exitCancelled       = 125
 )
 
 var allowedEnv = map[string]struct{}{
@@ -42,20 +44,23 @@ var allowedEnv = map[string]struct{}{
 }
 
 type Config struct {
-	ListenAddress string
-	HostSigner    ssh.Signer
-	LeaseSecret   []byte
-	Router        *fixture.Router
-	Workers       int
-	QueueSize     int
-	Metrics       *metrics.Metrics
+	ListenAddress  string
+	HostSigner     ssh.Signer
+	LeaseSecret    []byte
+	Router         *fixture.Router
+	Workers        int
+	QueueSize      int
+	MaxOutputBytes int
+	LeaseIssuer    string
+	LeaseAudience  string
+	Metrics        *metrics.Metrics
 }
 
 type Server struct {
 	config     Config
 	sshConfig  *ssh.ServerConfig
 	tracker    *lease.Tracker
-	jobs       chan commandJob
+	jobs       chan *commandJob
 	workerWG   sync.WaitGroup
 	listenerMu sync.Mutex
 	listener   net.Listener
@@ -67,7 +72,20 @@ type commandJob struct {
 	claims  lease.Claims
 	env     map[string]string
 	command string
-	done    chan struct{}
+	mode    commandMode
+	done    chan commandOutcome
+}
+
+type commandMode uint8
+
+const (
+	commandModeExec commandMode = iota
+	commandModeShell
+)
+
+type commandOutcome struct {
+	exitCode  int
+	cancelled bool
 }
 
 type envRequest struct {
@@ -93,17 +111,23 @@ func New(config Config) (*Server, error) {
 	if config.QueueSize < 1 || config.QueueSize > 10000 {
 		return nil, errors.New("queue size 必须在 1-10000")
 	}
+	if config.MaxOutputBytes < 1 || config.MaxOutputBytes > 64*1024*1024 {
+		return nil, errors.New("Runtime 输出限制必须在 1-64MiB")
+	}
+	if config.LeaseIssuer == "" || config.LeaseAudience == "" {
+		return nil, errors.New("Lease issuer 和 audience 不能为空")
+	}
 	if config.Metrics == nil {
 		config.Metrics = &metrics.Metrics{}
 	}
 	s := &Server{
 		config:  config,
 		tracker: lease.NewTracker(),
-		jobs:    make(chan commandJob, config.QueueSize),
+		jobs:    make(chan *commandJob, config.QueueSize),
 	}
 	s.sshConfig = &ssh.ServerConfig{
 		PasswordCallback: func(meta ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
-			claims, err := lease.Validate(config.LeaseSecret, string(password), config.Router.ManifestHash(), time.Now())
+			claims, err := lease.Validate(config.LeaseSecret, string(password), config.Router.BundleDigest(), config.LeaseIssuer, config.LeaseAudience, time.Now())
 			if err != nil || meta.User() != "sim" {
 				config.Metrics.LeaseRejectTotal.Add(1)
 				logEvent("WARN", "lease.rejected", map[string]any{"remote": meta.RemoteAddr().String(), "reason": safeError(err)})
@@ -131,7 +155,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	s.listenerMu.Unlock()
 	logEvent("INFO", "server.started", map[string]any{
 		"address": s.config.ListenAddress, "workers": s.config.Workers,
-		"queue_size": s.config.QueueSize, "fixture_manifest_hash": s.config.Router.ManifestHash(),
+		"queue_size": s.config.QueueSize, "fixture_bundle_digest": s.config.Router.BundleDigest(),
 	})
 	go func() {
 		<-ctx.Done()
@@ -158,6 +182,12 @@ func (s *Server) Close() error {
 	return nil
 }
 
+// RevokeLease 供受信任的控制面在 Run 取消或安全事件时撤销 Capability。
+// 网络 API 不在 Runtime 数据面暴露，调用方必须经过控制面鉴权。
+func (s *Server) RevokeLease(jti string, until time.Time) {
+	s.tracker.Revoke(jti, until)
+}
+
 // Addr 返回实际监听地址，主要用于 P0 集成测试中的随机端口。
 func (s *Server) Addr() string {
 	s.listenerMu.Lock()
@@ -179,7 +209,7 @@ func (s *Server) handleConnection(parent context.Context, raw net.Conn) {
 	if err != nil {
 		return
 	}
-	release, err := s.tracker.AcquireSession(claims)
+	release, err := s.tracker.AcquireSession(claims, time.Now())
 	if err != nil {
 		logEvent("WARN", "lease.session_quota", baseFields(claims, map[string]any{"reason": err.Error()}))
 		return
@@ -234,7 +264,7 @@ func (s *Server) handleChannel(ctx context.Context, channel ssh.Channel, request
 				return
 			}
 			_ = request.Reply(true, nil)
-			s.submit(commandJob{ctx: ctx, channel: channel, claims: claims, env: cloneMap(env), command: payload.Command, done: make(chan struct{})})
+			s.submit(&commandJob{ctx: ctx, channel: channel, claims: claims, env: cloneMap(env), command: payload.Command, mode: commandModeExec, done: make(chan commandOutcome, 1)})
 			return
 		default:
 			_ = request.Reply(false, nil)
@@ -243,14 +273,26 @@ func (s *Server) handleChannel(ctx context.Context, channel ssh.Channel, request
 	_ = channel.Close()
 }
 
-func (s *Server) submit(job commandJob) {
+func (s *Server) submit(job *commandJob) commandOutcome {
 	select {
 	case s.jobs <- job:
 		s.config.Metrics.QueueDepth.Add(1)
-		<-job.done
+	case <-job.ctx.Done():
+		outcome := commandOutcome{exitCode: exitCancelled, cancelled: true}
+		s.respond(job, outcome, "sim_cancelled", "命令在入队前已取消")
+		return outcome
 	default:
 		s.config.Metrics.OverloadRejectsTotal.Add(1)
-		s.writeFailure(job.channel, exitOverloaded, "sim_overloaded", "hci-sim 执行队列已满")
+		outcome := commandOutcome{exitCode: exitOverloaded}
+		s.respond(job, outcome, "sim_overloaded", "hci-sim 执行队列已满")
+		return outcome
+	}
+	select {
+	case outcome := <-job.done:
+		return outcome
+	case <-job.ctx.Done():
+		// worker 会在开始执行前复检 ctx；这里不关闭 channel，避免同 worker 竞争写入。
+		return commandOutcome{exitCode: exitCancelled, cancelled: true}
 	}
 }
 
@@ -259,32 +301,53 @@ func (s *Server) worker(workerID int) {
 	for job := range s.jobs {
 		s.config.Metrics.QueueDepth.Add(-1)
 		s.config.Metrics.InflightCommands.Add(1)
-		s.execute(job, workerID)
+		outcome := s.execute(job, workerID)
 		s.config.Metrics.InflightCommands.Add(-1)
-		close(job.done)
+		job.done <- outcome
 	}
 }
 
-func (s *Server) execute(job commandJob, workerID int) {
-	defer job.channel.Close()
-	s.config.Metrics.CommandsTotal.Add(1)
-	if err := s.tracker.ConsumeCommand(job.claims); err != nil {
-		s.config.Metrics.CommandErrorsTotal.Add(1)
-		s.writeFailure(job.channel, exitPolicyDenied, "lease_quota_exceeded", err.Error())
-		return
+func (s *Server) execute(job *commandJob, workerID int) commandOutcome {
+	if err := job.ctx.Err(); err != nil {
+		outcome := commandOutcome{exitCode: exitCancelled, cancelled: true}
+		s.respond(job, outcome, "sim_cancelled", "命令已取消")
+		return outcome
 	}
-	result, err := s.config.Router.Match(job.command, job.claims.FixtureVariant)
+	s.config.Metrics.CommandsTotal.Add(1)
+	if err := s.tracker.AuthorizeCommand(job.claims, time.Now()); err != nil {
+		s.config.Metrics.CommandErrorsTotal.Add(1)
+		outcome := commandOutcome{exitCode: exitPolicyDenied}
+		s.respond(job, outcome, "lease_quota_exceeded", err.Error())
+		return outcome
+	}
+	result, err := s.config.Router.Match(job.command, job.claims.FixtureVariant, job.claims.VirtualNodeID, job.claims.Container)
 	if err != nil {
 		s.config.Metrics.CommandErrorsTotal.Add(1)
 		if err.Error() == "fixture_not_found" {
 			s.config.Metrics.FixtureMissesTotal.Add(1)
-			s.writeFailure(job.channel, exitFixtureNotFound, "fixture_not_found", "未发布的命令 fixture")
+			outcome := commandOutcome{exitCode: exitFixtureNotFound}
+			s.respond(job, outcome, "fixture_not_found", "未发布的命令 fixture")
+			return outcome
 		} else {
-			s.writeFailure(job.channel, exitPolicyDenied, "policy_denied", err.Error())
+			outcome := commandOutcome{exitCode: exitPolicyDenied}
+			s.respond(job, outcome, "policy_denied", err.Error())
+			return outcome
 		}
-		return
 	}
 	s.config.Metrics.FixtureHitsTotal.Add(1)
+	outputBytes := int64(len(result.Stdout) + len(result.Stderr))
+	if outputBytes > int64(s.config.Router.OutputLimit()) || (s.config.MaxOutputBytes > 0 && outputBytes > int64(s.config.MaxOutputBytes)) {
+		s.config.Metrics.CommandErrorsTotal.Add(1)
+		outcome := commandOutcome{exitCode: exitInternal}
+		s.respond(job, outcome, "sim_output_limit_exceeded", "fixture 输出超过 Runtime 限制")
+		return outcome
+	}
+	if err := s.tracker.ReserveOutput(job.claims, outputBytes, time.Now()); err != nil {
+		s.config.Metrics.CommandErrorsTotal.Add(1)
+		outcome := commandOutcome{exitCode: exitInternal}
+		s.respond(job, outcome, "sim_output_limit_exceeded", err.Error())
+		return outcome
+	}
 	spanCtx := telemetry.ContextFromEnv(job.env)
 	spanCtx, span := otel.Tracer("hci-sim").Start(spanCtx, "hci-sim.ssh.exec",
 		trace.WithSpanKind(trace.SpanKindServer),
@@ -295,7 +358,7 @@ func (s *Server) execute(job commandJob, workerID int) {
 			attribute.String("lease.id", job.claims.LeaseID),
 			attribute.String("fixture.id", result.FixtureID),
 			attribute.String("fixture.variant", job.claims.FixtureVariant),
-			attribute.String("fixture.manifest_hash", job.claims.FixtureManifestHash),
+			attribute.String("fixture.bundle_digest", job.claims.BundleDigest),
 			attribute.String("command.fingerprint", result.CommandFingerprint),
 			attribute.String("virtual_node.id", job.env["HTP_NODE_IP"]),
 			attribute.Int("worker.id", workerID),
@@ -308,20 +371,46 @@ func (s *Server) execute(job commandJob, workerID int) {
 		"fixture_id": result.FixtureID, "signal_id": result.SignalID,
 		"command_fingerprint": result.CommandFingerprint, "worker_id": workerID,
 	}))
-	if result.DelayMS > 0 {
+	if result.Fault.Type == fixture.FaultTimeout {
+		// 故障超时以确定性状态立即返回，绝不让 worker 被虚拟等待占满。
+		outcome := commandOutcome{exitCode: exitTimeout}
+		s.respond(job, outcome, "sim_timeout", "fixture 注入超时")
+		span.SetStatus(codes.Error, "timeout")
+		return outcome
+	}
+	if result.Fault.AfterMS > 0 {
+		timer := time.NewTimer(time.Duration(result.Fault.AfterMS) * time.Millisecond)
 		select {
-		case <-time.After(time.Duration(result.DelayMS) * time.Millisecond):
+		case <-timer.C:
 		case <-job.ctx.Done():
+			timer.Stop()
 			span.RecordError(job.ctx.Err())
 			span.SetStatus(codes.Error, "cancelled")
-			return
+			outcome := commandOutcome{exitCode: exitCancelled, cancelled: true}
+			s.respond(job, outcome, "sim_cancelled", "命令执行已取消")
+			return outcome
 		}
 	}
-	stdoutBytes, stdoutErr := writeChunks(spanCtx, job.channel, []byte(result.Stdout), result.ChunkBytes)
-	stderrBytes, stderrErr := writeChunks(spanCtx, job.channel.Stderr(), []byte(result.Stderr), result.ChunkBytes)
+	stdoutValue, stderrValue := []byte(result.Stdout), []byte(result.Stderr)
+	if result.Fault.Type == fixture.FaultTruncate && result.Fault.MaxBytes > 0 {
+		stdoutValue = truncate(stdoutValue, result.Fault.MaxBytes)
+		stderrValue = truncate(stderrValue, max(0, result.Fault.MaxBytes-len(stdoutValue)))
+	}
+	stdoutBytes, stdoutErr := writeChunks(spanCtx, job.channel, stdoutValue, result.ChunkBytes, result.ChunkIntervalMS)
+	stderrBytes, stderrErr := writeChunks(spanCtx, job.channel.Stderr(), stderrValue, result.ChunkBytes, result.ChunkIntervalMS)
 	s.config.Metrics.StdoutBytesTotal.Add(uint64(stdoutBytes))
 	s.config.Metrics.StderrBytesTotal.Add(uint64(stderrBytes))
 	exitCode := result.ExitCode
+	if result.Fault.Type == fixture.FaultPermission && exitCode == 0 {
+		exitCode = 13
+	}
+	if result.Fault.Type == fixture.FaultNonzeroExit && exitCode == 0 {
+		exitCode = 1
+	}
+	if result.Fault.Type == fixture.FaultDisconnect {
+		_ = job.channel.Close()
+		return commandOutcome{exitCode: exitInternal}
+	}
 	if stdoutErr != nil || stderrErr != nil {
 		exitCode = exitInternal
 		span.SetStatus(codes.Error, "stream_write_failed")
@@ -335,7 +424,11 @@ func (s *Server) execute(job commandJob, workerID int) {
 		attribute.Int64("exec.duration_ms", time.Since(start).Milliseconds()),
 		attribute.Int("stdout.bytes", stdoutBytes), attribute.Int("stderr.bytes", stderrBytes),
 	)
-	_, _ = job.channel.SendRequest("exit-status", false, ssh.Marshal(exitStatus{Status: uint32(exitCode)}))
+	outcome := commandOutcome{exitCode: exitCode}
+	if job.mode == commandModeExec {
+		_, _ = job.channel.SendRequest("exit-status", false, ssh.Marshal(exitStatus{Status: uint32(exitCode)}))
+		_ = job.channel.Close()
+	}
 	logEvent("INFO", "exec.done", baseFields(job.claims, map[string]any{
 		"trace_id": span.SpanContext().TraceID().String(), "exec_id": job.env["HTP_EXEC_ID"],
 		"fixture_id": result.FixtureID, "exit_code": exitCode,
@@ -343,12 +436,15 @@ func (s *Server) execute(job commandJob, workerID int) {
 		"stdout_sha256": contentHash(result.Stdout), "stderr_sha256": contentHash(result.Stderr),
 		"duration_ms": time.Since(start).Milliseconds(),
 	}))
+	return outcome
 }
 
-func (s *Server) writeFailure(channel ssh.Channel, code int, kind, message string) {
-	defer channel.Close()
-	_, _ = io.WriteString(channel.Stderr(), fmt.Sprintf("hci-sim: %s: %s\n", kind, message))
-	_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(exitStatus{Status: uint32(code)}))
+func (s *Server) respond(job *commandJob, outcome commandOutcome, kind, message string) {
+	_, _ = io.WriteString(job.channel.Stderr(), fmt.Sprintf("hci-sim: %s: %s\n", kind, message))
+	if job.mode == commandModeExec {
+		_, _ = job.channel.SendRequest("exit-status", false, ssh.Marshal(exitStatus{Status: uint32(outcome.exitCode)}))
+		_ = job.channel.Close()
+	}
 }
 
 var markerPattern = regexp.MustCompile(`(__HCI_DONE_[A-Za-z0-9_]+__)`)
@@ -369,30 +465,13 @@ func (s *Server) controlledShell(ctx context.Context, channel ssh.Channel, claim
 			return
 		}
 		command, marker := splitMarkerCommand(line)
-		exitCode := 0
-		stdout := ""
-		stderr := ""
-		if strings.HasPrefix(command, "command -v acli ") {
-			stdout = "__HCI_ACLI_OK__"
-		} else if err := s.tracker.ConsumeCommand(claims); err != nil {
-			exitCode, stderr = exitPolicyDenied, err.Error()
-		} else if result, err := s.config.Router.Match(command, claims.FixtureVariant); err != nil {
-			if err.Error() == "fixture_not_found" {
-				exitCode, stderr = exitFixtureNotFound, "hci-sim: fixture_not_found"
-			} else {
-				exitCode, stderr = exitPolicyDenied, "hci-sim: "+err.Error()
-			}
-		} else {
-			exitCode, stdout, stderr = result.ExitCode, result.Stdout, result.Stderr
-		}
-		if stdout != "" {
-			_, _ = io.WriteString(channel, strings.ReplaceAll(stdout, "\n", "\r\n"))
-		}
-		if stderr != "" {
-			_, _ = io.WriteString(channel, strings.ReplaceAll(stderr, "\n", "\r\n"))
-		}
+		// shell 与 exec 使用同一队列、租约复验、RouteKey 与输出配额；shell 仅负责 marker/prompt 协议。
+		outcome := s.submit(&commandJob{ctx: ctx, channel: channel, claims: claims, command: command, mode: commandModeShell, done: make(chan commandOutcome, 1)})
 		if marker != "" {
-			_, _ = fmt.Fprintf(channel, "\r\n%s:%d\r\n", marker, exitCode)
+			_, _ = fmt.Fprintf(channel, "\r\n%s:%d\r\n", marker, outcome.exitCode)
+		}
+		if outcome.cancelled {
+			return
 		}
 		select {
 		case <-ctx.Done():
@@ -412,7 +491,7 @@ func splitMarkerCommand(line string) (string, string) {
 	return line, ""
 }
 
-func writeChunks(ctx context.Context, writer io.Writer, value []byte, chunkSize int) (int, error) {
+func writeChunks(ctx context.Context, writer io.Writer, value []byte, chunkSize, intervalMS int) (int, error) {
 	if chunkSize <= 0 {
 		chunkSize = len(value)
 	}
@@ -436,6 +515,15 @@ func writeChunks(ctx context.Context, writer io.Writer, value []byte, chunkSize 
 			return written, err
 		}
 		value = value[current:]
+		if intervalMS > 0 && len(value) > 0 {
+			timer := time.NewTimer(time.Duration(intervalMS) * time.Millisecond)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return written, ctx.Err()
+			}
+		}
 	}
 	return written, nil
 }
@@ -463,12 +551,29 @@ func baseFields(claims lease.Claims, extra map[string]any) map[string]any {
 	fields := map[string]any{
 		"simulation": true, "execution_mode": claims.ExecutionMode, "simulation_backend": "hci-sim",
 		"lease_id": claims.LeaseID, "test_run_id": claims.TestRunID, "scenario_id": claims.ScenarioID,
-		"fixture_variant": claims.FixtureVariant, "fixture_manifest_hash": claims.FixtureManifestHash,
+		"fixture_variant": claims.FixtureVariant, "fixture_bundle_digest": claims.BundleDigest,
 	}
 	for key, value := range extra {
 		fields[key] = value
 	}
 	return fields
+}
+
+func truncate(value []byte, maxBytes int) []byte {
+	if maxBytes < 0 {
+		return nil
+	}
+	if len(value) <= maxBytes {
+		return value
+	}
+	return value[:maxBytes]
+}
+
+func max(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func logEvent(level, event string, fields map[string]any) {

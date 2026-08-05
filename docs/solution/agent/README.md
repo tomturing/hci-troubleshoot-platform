@@ -15,6 +15,7 @@ update_trigger: Agent 方案新增、重构或状态变更
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |---|---|---|---|
+| 2026-08-05 | v1.9 | 完成 hci-sim A～E 阶段化设计：收敛唯一源码、安全确定性 Runtime、Fixture Compiler/Registry、TestRun/Scheduler/Runner、产品级差分/Mutation/容量运营；当前均为 proposed，A 尚未实施。 | [阶段 A](events/2026-08-05-hci-sim阶段A目录收敛与基础门禁方案.md)～[阶段 E](events/2026-08-05-hci-sim阶段E产品级验证与规模化运营方案.md) |
 | 2026-08-05 | v1.8 | QFK 完整输出新增受控 AI 提取：确定性 Extract/Matcher 先行，AI 仅定位候选原文中的字面量并以物理行逐字回查；Matcher evidence 与 produces 变量池共用，失败关闭。 | [QFK 完整输出 AI 提取方案](events/2026-08-05-QFK完整输出AI提取方案.md) |
 | 2026-08-04 | v1.7 | 收敛 KBD27736 的图片来源门禁：仅四个诊断字段图片的原子可见内容进入 Signal Prompt，source ref 只校验是否属于本轮实际输入，不将正文 evidence 强制逐字匹配图片 OCR。 | [KBD关键信号图片来源门禁收敛修复方案](events/2026-08-04-KBD关键信号图片来源门禁收敛修复方案.md) |
 | 2026-07-31 | implementation_in_progress | 实施 QFK“取值先行、判定在后”的统一 ValueExtract：关键字/行号多行、表头/列号多列、JSON 路径、匹配模式/产出变量共用运行时和安全管道 Preview/Apply；旧单列 TextExtract、QFK `produces.path` 与旧全文 Matcher 不再保留。 | [QFK 声明式取值与匹配模式统一方案](events/2026-07-31-QFK取值先行与全模式安全管道统一方案.md) |
@@ -87,6 +88,18 @@ docs/solution/agent/
 └── pydantic-agent/                    ← pydantic-ai 框架分析（参考）
 ```
 
+## hci-sim A～E 设计导航
+
+> 当前状态：阶段化设计包已完成，实施尚未开始；阶段 A 未 Go，B～E 依次被前置阶段阻断。历史 KBD 27123 单轮 E2E 不等于本设计包已验收。
+
+| 阶段 | 设计焦点 | 方案 |
+|---|---|---|
+| A | 唯一 `hci_sim/` 源码、旧实现处置、基础 CI 门禁 | [目录收敛与基础门禁](events/2026-08-05-hci-sim阶段A目录收敛与基础门禁方案.md) |
+| B | Manifest v2、强 RouteKey、Lease/exec/shell/fault/output 安全内核 | [运行时安全与确定性加固](events/2026-08-05-hci-sim阶段B运行时安全与确定性加固方案.md) |
+| C | 不可变 KBD 输入、Fixture Compiler、Registry、审批和 stale | [Fixture 编译与注册控制面](events/2026-08-05-hci-sim阶段C-Fixture编译与注册控制面方案.md) |
+| D | TestRun API、Scheduler、Lease、缓存、真实 Bridge/Agent Runner | [Scenario 调度与通用 KBD 测试](events/2026-08-05-hci-sim阶段D-Scenario调度与通用KBD测试方案.md) |
+| E | real/sim 差分、Mutation、稳定性、容量、SLO 和运营 | [产品级验证与规模化运营](events/2026-08-05-hci-sim阶段E产品级验证与规模化运营方案.md) |
+
 ## 快速导航
 
 | 我要做什么 | 看哪个 |
@@ -104,7 +117,8 @@ docs/solution/agent/
 | 理解 S0 意图识别怎么路由 | [S0意图识别与Prompt解耦设计方案.md](02-架构设计/S0意图识别与Prompt解耦设计方案.md) |
 | 排查 Skill 调用失败问题 | [skill调用失效根因分析与改进方案.md](02-架构设计/skill调用失效根因分析与改进方案.md) |
 | 理解变量是怎么获取的 | [变量池获取策略架构深度分析.md](02-架构设计/变量池获取策略架构深度分析.md) |
-| 设计 KBD 驱动 hci-sim、real/sim 双轨校准和 100+ Agent 并发回归 | [Agent 并发测试与 KBD 驱动 HCI 仿真环境方案](Agent并发测试与KBD驱动HCI仿真环境方案.md) |
+| 实施或审查 hci-sim 当前阶段 | [A～E 设计导航](#hci-sim-ae-设计导航)（严格按 A→E） |
+| 查看 hci-sim 历史上位设计 | [Agent 并发测试与 KBD 驱动 HCI 仿真环境方案](Agent并发测试与KBD驱动HCI仿真环境方案.md) |
 | 理解 KBD 截图、关键信号与案例验证的目标架构 | [KBD 截图证据、关键信号与可执行诊断契约方案](events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) |
 | 设计 KBD 专家复核、模型/专家双轨版本、发布生命周期与 Capability 闭环 | [KBD 专家复核、版本治理与生产消费闭环方案](events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
 | 理解 SOP 决策树与滑动窗口 | [sop决策树与滑动窗口机制实效分析.md](02-架构设计/sop决策树与滑动窗口机制实效分析.md) |

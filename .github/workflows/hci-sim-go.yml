@@ -1,0 +1,82 @@
+name: hci-sim-runtime
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'hci_sim/**'
+      - 'terminal_bridge/**'
+      - 'deploy/helm/hci-sim/**'
+      - '.github/workflows/hci-sim-go.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'hci_sim/**'
+      - 'terminal_bridge/**'
+      - 'deploy/helm/hci-sim/**'
+      - '.github/workflows/hci-sim-go.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    name: hci-sim Go quality gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: hci_sim/go.mod
+          cache-dependency-path: hci_sim/go.sum
+      - name: format, test, race, vet and build
+        working-directory: hci_sim
+        run: |
+          test -z "$(gofmt -l .)"
+          go test ./...
+          go test -race ./...
+          go vet ./...
+          go build ./cmd/hci-sim
+          go build ./cmd/hci-sim-smoke
+
+  terminal-bridge:
+    name: terminal bridge simulation-auth gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: terminal_bridge/go.mod
+          cache-dependency-path: terminal_bridge/go.sum
+      - name: format, test and vet
+        working-directory: terminal_bridge
+        run: |
+          test -z "$(gofmt -l .)"
+          go test ./...
+          go test -race ./...
+          go vet ./...
+
+  manifest-and-helm:
+    name: published bundle and Helm gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: hci_sim/go.mod
+          cache-dependency-path: hci_sim/go.sum
+      - uses: azure/setup-helm@v4
+      - name: verify published manifest and deployment copy
+        run: |
+          cmp -s hci_sim/testdata/kbd-27123-fixture-manifest.json deploy/helm/hci-sim/files/kbd-27123-fixture-manifest.json
+          cd hci_sim
+          go run ./cmd/hci-sim manifest-digest --manifest testdata/kbd-27123-fixture-manifest.json > /tmp/hci-sim-digest
+          grep -F "$(cat /tmp/hci-sim-digest)" testdata/kbd-27123-fixture-manifest.json
+      - name: reject retired runtime markers
+        run: |
+          test ! -e hci-sim
+          ! rg -n 'HCI_BRIDGE_SIM_TARGETS|htp1\\.|FixtureManifestHash|command_pattern' hci_sim terminal_bridge
+      - name: lint and render Helm chart
+        run: |
+          helm lint deploy/helm/hci-sim
+          helm template hci-sim deploy/helm/hci-sim --namespace hci-sim-dev > /tmp/hci-sim-rendered.yaml

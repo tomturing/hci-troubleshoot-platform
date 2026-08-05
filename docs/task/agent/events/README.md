@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-04-06
+last_updated: 2026-08-05
 owner: team
 ---
 
@@ -15,8 +15,13 @@ owner: team
 ## 文档列表
 
 | 文件 | 日期 | 说明 |
-| [2026-08-04-KBD关键信号图片来源门禁收敛修复任务.md](2026-08-04-KBD关键信号图片来源门禁收敛修复任务.md) | 2026-08-04 | KBD 图片四字段输入白名单与 source ref 实际输入集合门禁收敛 |
 |------|------|------|
+| [2026-08-05-hci-sim阶段A目录收敛与基础门禁任务.md](2026-08-05-hci-sim阶段A目录收敛与基础门禁任务.md) | 2026-08-05 | 唯一源码、旧实现处置、README 和基础 CI；当前待启动 |
+| [2026-08-05-hci-sim阶段B运行时安全与确定性加固任务.md](2026-08-05-hci-sim阶段B运行时安全与确定性加固任务.md) | 2026-08-05 | Manifest/RouteKey/Lease/Dispatcher/Fault 安全内核；等待 A Go |
+| [2026-08-05-hci-sim阶段C-Fixture编译与注册控制面任务.md](2026-08-05-hci-sim阶段C-Fixture编译与注册控制面任务.md) | 2026-08-05 | Fixture Compiler、Registry、审批和 stale；等待 B Go |
+| [2026-08-05-hci-sim阶段D-Scenario调度与通用KBD测试任务.md](2026-08-05-hci-sim阶段D-Scenario调度与通用KBD测试任务.md) | 2026-08-05 | TestRun、Scheduler、Lease、Runner 和 1/10 并发；等待 C Go |
+| [2026-08-05-hci-sim阶段E产品级验证与规模化运营任务.md](2026-08-05-hci-sim阶段E产品级验证与规模化运营任务.md) | 2026-08-05 | 差分、Mutation、核心 KBD、稳定性、容量和运营；等待 D Go |
+| [2026-08-04-KBD关键信号图片来源门禁收敛修复任务.md](2026-08-04-KBD关键信号图片来源门禁收敛修复任务.md) | 2026-08-04 | KBD 图片四字段输入白名单与 source ref 实际输入集合门禁收敛 |
 | 2026-03-28-Task07-数据库迁移003-诊断状态字段与工具审计表.md | 2026-03-28 | 诊断状态字段与工具审计表迁移 |
 | 2026-03-28-Task08-诊断状态机-ConversationManagerPromptBuilder.md | 2026-03-28 | 诊断状态机实现 |
 | 2026-03-28-Task09-GLMClient-LLM专用适配器.md | 2026-03-28 | GLMClient LLM 专用适配器实现 |
@@ -38,4 +43,4 @@ owner: team
 
 ---
 
-*更新日期: 2026-08-04*
+*更新日期: 2026-08-05*

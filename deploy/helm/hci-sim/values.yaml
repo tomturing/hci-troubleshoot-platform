@@ -1,3 +1,4 @@
+# Lease v2 当前使用进程内的原子配额 Tracker，因此必须保持单副本；多副本属于阶段 C/D 的共享 Store 范围。
 replicaCount: 1
 
 image:
@@ -13,6 +14,9 @@ runtime:
   environment: dev
   workers: 8
   queueSize: 128
+  maxOutputBytes: 4096
+  leaseIssuer: hci-platform
+  leaseAudience: hci-sim
   fixtureVariant: positive-realistic
   existingSecret: hci-sim-credentials
   leaseKeySecretKey: lease-hmac-key

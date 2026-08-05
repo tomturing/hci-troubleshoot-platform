@@ -301,9 +301,10 @@ func TestSimulationLeaseCredentialDetection(t *testing.T) {
 		msg  InMessage
 		want bool
 	}{
-		{name: "signed token prefix", msg: InMessage{AuthType: "password", Password: "htp1.payload.signature"}, want: true},
-		{name: "explicit lease auth", msg: InMessage{AuthType: "lease", Password: "opaque"}, want: true},
-		{name: "explicit execution mode", msg: InMessage{ExecutionMode: "sim-ssh", Password: "opaque"}, want: true},
+		{name: "complete htp2 lease context", msg: InMessage{AuthType: "lease", ExecutionMode: "sim-ssh", Password: "htp2.payload.signature"}, want: true},
+		{name: "bare token is insufficient", msg: InMessage{AuthType: "password", Password: "htp2.payload.signature"}, want: false},
+		{name: "lease auth alone is insufficient", msg: InMessage{AuthType: "lease", Password: "opaque"}, want: false},
+		{name: "execution mode alone is insufficient", msg: InMessage{ExecutionMode: "sim-ssh", Password: "opaque"}, want: false},
 		{name: "real HCI password", msg: InMessage{AuthType: "password", Password: "ordinary"}, want: false},
 	}
 	for _, tt := range tests {
@@ -316,7 +317,7 @@ func TestSimulationLeaseCredentialDetection(t *testing.T) {
 }
 
 func TestBuildAuthMethodsAcceptsLease(t *testing.T) {
-	methods, err := buildAuthMethods(InMessage{AuthType: "lease", Password: "htp1.payload.signature"})
+	methods, err := buildAuthMethods(InMessage{AuthType: "lease", Password: "htp2.payload.signature"})
 	if err != nil {
 		t.Fatal(err)
 	}

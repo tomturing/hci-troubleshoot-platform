@@ -36,6 +36,12 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "manifest-digest" {
+		if err := runManifestDigest(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if err := runServer(); err != nil {
 		log.Fatal(err)
 	}
@@ -69,7 +75,8 @@ func runServer() error {
 	sshServer, err := server.New(server.Config{
 		ListenAddress: env("HCI_SIM_SSH_LISTEN", ":2222"), HostSigner: signer,
 		LeaseSecret: secret, Router: router, Workers: envInt("HCI_SIM_WORKERS", 8),
-		QueueSize: envInt("HCI_SIM_QUEUE_SIZE", 128), Metrics: prom,
+		QueueSize: envInt("HCI_SIM_QUEUE_SIZE", 128), MaxOutputBytes: envInt("HCI_SIM_MAX_OUTPUT_BYTES", router.OutputLimit()),
+		LeaseIssuer: env("HCI_SIM_LEASE_ISSUER", "hci-platform"), LeaseAudience: env("HCI_SIM_LEASE_AUDIENCE", "hci-sim"), Metrics: prom,
 	})
 	if err != nil {
 		return err
@@ -82,8 +89,8 @@ func runServer() error {
 	mux.HandleFunc("/status", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"service": "hci-sim", "version": version, "fixture_manifest_hash": router.ManifestHash(),
-			"kbd_support_id": router.KBD().SupportID, "kbd_revision": router.KBD().Revision,
+			"service": "hci-sim", "version": version, "fixture_manifest_hash": router.ManifestHash(), "bundle_digest": router.BundleDigest(),
+			"kbd_support_id": router.KBD().SupportID, "kbd_revision": router.KBD().Revision, "tool_contract_revision": router.Contracts().ToolRevision,
 		})
 	})
 	httpServer.Handler = mux
@@ -116,6 +123,8 @@ func runLease(args []string) error {
 	ttl := flags.Duration("ttl", 2*time.Hour, "租约有效期")
 	maxSessions := flags.Int("max-sessions", 64, "最大 SSH 会话数")
 	maxCommands := flags.Int("max-commands", 200, "最大命令数")
+	maxOutputBytes := flags.Int64("max-output-bytes", 0, "最大输出字节数（默认使用 Bundle 限制）")
+	container := flags.String("container", "host", "目标容器")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -127,23 +136,45 @@ func runLease(args []string) error {
 	if len(secret) < 32 {
 		return errors.New("HCI_SIM_LEASE_HMAC_KEY 至少需要 32 字节")
 	}
+	if *maxOutputBytes == 0 {
+		*maxOutputBytes = int64(router.OutputLimit())
+	}
 	now := time.Now().UTC()
 	if strings.TrimSpace(*testRunID) == "" {
 		*testRunID = "run-" + now.Format("20060102T150405Z")
 	}
 	leaseID := "lease-" + randomID()
 	token, err := lease.Sign(secret, lease.Claims{
-		LeaseID: leaseID, TestRunID: *testRunID, ScenarioID: *scenarioID,
-		FixtureManifestHash: router.ManifestHash(), FixtureVariant: *variant,
-		VirtualNodeID: *virtualNode, ExecutionMode: "sim-ssh",
-		IssuedAt: now.Unix(), ExpiresAt: now.Add(*ttl).Unix(),
-		MaxSessions: *maxSessions, MaxCommands: *maxCommands,
+		JTI: leaseID, LeaseID: leaseID, TestRunID: *testRunID, ScenarioID: *scenarioID,
+		SupportID: router.KBD().SupportID, KBDRevision: router.KBD().Revision, BundleDigest: router.BundleDigest(), FixtureVariant: *variant,
+		ToolContractRevision: router.Contracts().ToolRevision, PolicyRevision: router.Contracts().PolicyRevision,
+		VirtualNodeID: *virtualNode, Container: *container, ExecutionMode: "sim-ssh", Issuer: env("HCI_SIM_LEASE_ISSUER", "hci-platform"), Audience: env("HCI_SIM_LEASE_AUDIENCE", "hci-sim"),
+		IssuedAt: now.Unix(), NotBefore: now.Unix(), ExpiresAt: now.Add(*ttl).Unix(), RunDeadline: now.Add(*ttl).Unix(),
+		MaxSessions: *maxSessions, MaxCommands: *maxCommands, MaxOutputBytes: *maxOutputBytes,
 	})
 	if err != nil {
 		return err
 	}
 	// 该子命令只把 token 输出给调用方，服务端日志永不记录 token。
 	fmt.Println(token)
+	return nil
+}
+
+func runManifestDigest(args []string) error {
+	flags := flag.NewFlagSet("manifest-digest", flag.ContinueOnError)
+	path := flags.String("manifest", env("HCI_SIM_FIXTURE_MANIFEST", "/etc/hci-sim/fixture-manifest.json"), "Manifest 文件路径")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(*path)
+	if err != nil {
+		return err
+	}
+	digest, err := fixture.DigestFromJSON(raw)
+	if err != nil {
+		return err
+	}
+	fmt.Println(digest)
 	return nil
 }
 
