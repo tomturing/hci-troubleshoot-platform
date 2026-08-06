@@ -665,7 +665,11 @@ async function handleReclassify(entry: KbdEntry) {
     })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     const data = await resp.json()
-    ElMessage.success(`分类完成：${data.category_id}（置信度 ${data.confidence?.toFixed(2) || 'N/A'}）`)
+    ElMessage.success({
+      message: `分类完成：${data.category_id}（置信度 ${data.confidence?.toFixed(2) || 'N/A'}）`,
+      duration: 0,
+      showClose: true,
+    })
     // 刷新列表中的该条目
     const idx = entries.value.findIndex(e => e.id === entry.id)
     if (idx !== -1) {
@@ -680,7 +684,11 @@ async function handleReclassify(entry: KbdEntry) {
       detailEntry.value.ai_category_reason = data.reason
     }
   } catch (err: any) {
-    ElMessage.error(`重新分类失败：${err.message || '未知错误'}`)
+    ElMessage.error({
+      message: `重新分类失败：${err.message || '未知错误'}`,
+      duration: 0,
+      showClose: true,
+    })
   } finally {
     reclassifyLoading.value = null
   }
@@ -710,7 +718,11 @@ async function handleReanalyzeImages(entry: KbdEntry) {
     }
     const data = await resp.json()
     if (data.total === 0) {
-      ElMessage.warning(data.message || '该 KBD 无原始图片，无法重算识图')
+      ElMessage.warning({
+        message: data.message || '该 KBD 无原始图片，无法重算识图',
+        duration: 0,
+        showClose: true,
+      })
     } else {
       ElMessage.success({
         message: `识图完成：成功 ${data.done} 张，失败 ${data.failed} 张`,
