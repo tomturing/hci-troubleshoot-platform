@@ -386,12 +386,13 @@ def test_kbd_reextract_creates_fresh_proposal_and_clears_stale_draft_pointer(mon
         assert for_update is True
         return entry
 
-    async def fake_ensure_kbd_revision(_session, **kwargs):
+    async def fake_freeze_kbd_ai_proposal(_session, **kwargs):
         calls["revision"] = kwargs
+        kwargs["kbd"].working_revision_id = None
         return SimpleNamespace(id=14)
 
     monkeypatch.setattr(extract_signals, "require_mutable_kbd", fake_require_mutable_kbd)
-    monkeypatch.setattr(extract_signals, "ensure_kbd_revision", fake_ensure_kbd_revision)
+    monkeypatch.setattr(extract_signals, "freeze_kbd_ai_proposal", fake_freeze_kbd_ai_proposal)
 
     revision_id = asyncio.run(
         _persist_signals(
@@ -409,10 +410,8 @@ def test_kbd_reextract_creates_fresh_proposal_and_clears_stale_draft_pointer(mon
 
     assert revision_id == 14
     assert entry.working_revision_id is None
-    assert calls["revision"]["revision_type"] == "proposal"
-    assert calls["revision"]["actor_type"] == "llm"
-    assert calls["revision"]["parent_revision_id"] == 11
-    assert calls["revision"]["generation_metadata"]["origin"] == "signal_reextract"
+    assert calls["revision"]["generation_kind"] == "signals"
+    assert calls["revision"]["origin"] == "signal_reextract"
     assert calls["flushed"] is True
     assert calls["committed"] is True
 

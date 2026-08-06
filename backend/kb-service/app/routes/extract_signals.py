@@ -52,7 +52,7 @@ from shared.utils.prompt_loader import StrictPromptLoader
 from sqlalchemy import select, text
 
 from app.services.kbd_mutation_guard import PublishedKbdMutationError, require_mutable_kbd
-from app.services.kbd_revision_service import ensure_kbd_revision
+from app.services.kbd_revision_service import freeze_kbd_ai_proposal
 from app.services.safe_pipeline_converter import (
     SafePipelineConversionError,
     apply_safe_pipeline_to_signal,
@@ -1397,16 +1397,12 @@ async def _persist_signals(
             entry = await require_mutable_kbd(session, source_id, for_update=True)
             entry.signals_json = doc
             await session.flush()
-            proposal_revision = await ensure_kbd_revision(
+            proposal_revision = await freeze_kbd_ai_proposal(
                 session,
                 kbd=entry,
-                revision_type="proposal",
-                actor_type="llm",
-                parent_revision_id=entry.latest_proposal_revision_id,
-                generation_metadata={
-                    "origin": "signal_reextract",
-                    **(generation_metadata or {}),
-                },
+                generation_kind="signals",
+                origin="signal_reextract",
+                generation_metadata=generation_metadata,
                 validation_summary={
                     "status": "passed",
                     "signals_count": len(signals),
@@ -1414,8 +1410,6 @@ async def _persist_signals(
                 },
                 trace_id=get_current_trace_id(),
             )
-            if entry.status != "published":
-                entry.working_revision_id = None
             revision_id: int | None = proposal_revision.id
         else:
             await session.execute(

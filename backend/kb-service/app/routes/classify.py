@@ -14,9 +14,10 @@ POST /api/kb/classify
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -82,6 +83,11 @@ class ClassifyResponse(BaseModel):
     reason: str = Field(..., description="分类理由")
     top3: list[Top3Item] = Field(..., description="Top3 分类候选")
     needs_review: bool = Field(False, description="是否需要人工审核（置信度 < 0.5）")
+    generation_metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        exclude=True,
+        description="服务端持久化 Proposal 使用的模型、Prompt 与输入指纹，不对外重复暴露",
+    )
 
 
 # 分类 Prompt 名称（从 system_prompt 表热加载，支持 admin-ui 在线管理）
@@ -336,4 +342,19 @@ async def classify_case(
     llm_result = await call_llm(prompt)
 
     # 4. 解析响应
-    return parse_llm_response(llm_result, valid_codes)
+    response = parse_llm_response(llm_result, valid_codes)
+    input_payload = json.dumps(
+        {"title": title, "problem_desc": problem_desc},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    response.generation_metadata = {
+        "generation_kind": "classification",
+        "model_id": LLM_MODEL,
+        "prompt_name": _KBD_CLASSIFY_PROMPT_NAME,
+        "prompt_revision": hashlib.sha256(prompt_template.encode("utf-8")).hexdigest(),
+        "category_catalog_revision": hashlib.sha256(categories_text.encode("utf-8")).hexdigest(),
+        "input_hash": hashlib.sha256(input_payload.encode("utf-8")).hexdigest(),
+    }
+    return response

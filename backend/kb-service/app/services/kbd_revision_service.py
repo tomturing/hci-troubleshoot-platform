@@ -18,6 +18,7 @@ from app.models.kbd_revision import KbdRevision
 
 RevisionType = Literal["proposal", "expert"]
 ActorType = Literal["llm", "expert", "migration", "system"]
+GenerationKind = Literal["classification", "vision", "signals"]
 
 KBD_PAYLOAD_FIELDS = (
     "support_id",
@@ -496,6 +497,44 @@ async def ensure_kbd_revision_payload(
         kbd.working_revision_id = revision.id
     await session.flush()
     return revision
+
+
+async def freeze_kbd_ai_proposal(
+    session: AsyncSession,
+    *,
+    kbd: KbdEntry,
+    generation_kind: GenerationKind,
+    origin: str,
+    generation_metadata: dict[str, Any] | None = None,
+    validation_summary: dict[str, Any] | None = None,
+    trace_id: str | None = None,
+) -> KbdRevision:
+    """分类、识图与关键信号共用的 AI Proposal 追加写入口。
+
+    每一次生成都是可学习的事实，即使 payload 完全相同，也不能被 checksum 幂等
+    复用吞掉；旧 Expert working 保留为不可变历史，但不得跨新 Proposal 基线继续生效。
+    Expert 保存/发布继续调用同一 ensure_kbd_revision 核心，因此 Proposal 与 Expert
+    始终共享 payload、checksum、parent/baseline 和 head 维护规则。
+    """
+
+    proposal = await ensure_kbd_revision(
+        session,
+        kbd=kbd,
+        revision_type="proposal",
+        actor_type="llm",
+        parent_revision_id=kbd.latest_proposal_revision_id,
+        generation_metadata={
+            **(generation_metadata or {}),
+            "origin": origin,
+            "generation_kind": generation_kind,
+        },
+        validation_summary=validation_summary,
+        trace_id=trace_id,
+        reuse_existing=False,
+    )
+    kbd.working_revision_id = None
+    await session.flush()
+    return proposal
 
 
 def apply_kbd_revision_payload(kbd: KbdEntry, payload: dict[str, Any]) -> None:

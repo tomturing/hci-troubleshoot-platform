@@ -499,6 +499,13 @@ draft → published → archived
 
 自动 Pipeline 生产 draft Proposal；专家修改并验证；发布后 Agent 才消费稳定版本。日志审计通过不能自动触发 published。
 
+分类、全量/单图识别和关键信号抽取产生的每次 AI 结果，均由 kb-service 追加到同一
+`kbd_revision` Proposal 历史；Pipeline 不得绕过服务端直接更新分类结果。专家对分类、
+图片 Evidence、章节或 Signal 的保存继续形成同一 payload schema 的 Expert Revision，
+并显式绑定所审核的 Proposal。`evaluation-export` 据此输出 Proposal→Expert 字段级 Diff，
+用于按错误类型持续改进分类 Prompt、Vision Prompt、Signal Prompt、Schema 和工具能力；
+中间工作稿及未满足事实边界的数据不能直接当作 Expert Gold 或训练目标。
+
 ## 10. 专家复核交接清单
 
 自动链路完成后，专家至少确认：

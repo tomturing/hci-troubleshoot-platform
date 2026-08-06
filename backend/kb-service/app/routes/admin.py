@@ -65,6 +65,7 @@ from app.services.kbd_revision_service import (
     diff_revision_payloads,
     ensure_kbd_revision,
     ensure_kbd_revision_payload,
+    freeze_kbd_ai_proposal,
     is_evaluation_candidate,
     resolve_proposal_baseline,
     revision_metadata,
@@ -3630,12 +3631,36 @@ async def reclassify_kbd_entry(request: Request, kbd_id: int):
         logger.error(event="kbd_reclassify_failed", kbd_id=kbd_id, error=str(exc), trace_id=trace_id)
         raise HTTPException(status_code=500, detail=f"分类失败：{exc}")
 
-    # 3. 更新 kbd_entry 的 AI 分类字段
+    # 3. 更新兼容主记录，并用与关键信号、专家审核相同的 revision 服务冻结 AI Proposal。
+    #    分类结果不是只供页面展示的临时字段：它必须成为后续 Proposal→Expert Diff 的基线。
     async with _db_manager.async_session_factory() as session:
         entry = await _require_directly_mutable_kbd(session, kbd_id, for_update=True)
+        if (entry.title or "") != title or (entry.problem_description or "") != problem_desc:
+            raise HTTPException(status_code=409, detail="分类期间 KBD 输入已变化，请基于最新内容重试")
+        previous_ai_category_id = entry.ai_category_id
         entry.ai_category_id = response.category_id
         entry.ai_category_conf = response.confidence
         entry.ai_category_reason = response.reason
+        if not entry.category_id and previous_ai_category_id != response.category_id:
+            payload = {"signals_json": entry.signals_json}
+            _mark_payload_signal_generation_stale(payload)
+            entry.signals_json = payload["signals_json"]
+        await session.flush()
+        proposal_revision = await freeze_kbd_ai_proposal(
+            session,
+            kbd=entry,
+            generation_kind="classification",
+            origin="category_reclassify",
+            generation_metadata=response.generation_metadata,
+            validation_summary={
+                "status": "needs_review" if response.needs_review else "passed",
+                "category_id": response.category_id,
+                "confidence": response.confidence,
+                "needs_review": response.needs_review,
+                "top3": [item.model_dump() for item in response.top3],
+            },
+            trace_id=trace_id,
+        )
         await session.commit()
 
     logger.info(
@@ -3654,6 +3679,7 @@ async def reclassify_kbd_entry(request: Request, kbd_id: int):
         "reason": response.reason,
         "needs_review": response.needs_review,
         "top3": [item.model_dump() for item in response.top3],
+        "proposal_revision_id": proposal_revision.id,
     }
 
 
@@ -3765,6 +3791,7 @@ async def _reanalyze_kbd_images_sync(kbd_id: int, trace_id: str):
         "done": result["done"],
         "failed": result["failed"],
         "error": result.get("error"),
+        "proposal_revision_id": result.get("proposal_revision_id"),
         "message": result.get("message", "识图完成"),
     }
 
@@ -3914,6 +3941,7 @@ async def _reanalyze_single_image_sync(kbd_id: int, seq: int, trace_id: str):
         "full_text": result["full_text"],
         "description": result["description"],
         "desc": result["desc"],
+        "proposal_revision_id": result.get("proposal_revision_id"),
         "message": "识图完成",
     }
 

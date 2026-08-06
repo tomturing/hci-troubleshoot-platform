@@ -12,7 +12,8 @@ data-pipeline/kbd/pipeline.py — KBD 知识生产管道编排（API 调用版�
 
 变更（T2-02, T2-03）：
   - Stage 2: 不再直接写数据库，改为调用 `/api/kbd/ingest`
-  - Stage 4: 不再本地调用 LLM，改为调用 `/api/kb/classify`
+  - Stage 4: 不再本地调用 LLM/直写分类列，改为调用
+    `/api/admin/kbd/{id}/reclassify` 原子更新主记录并追加统一 Proposal revision
 
 变更（进度追踪 v1）：
   - 支持 run_id 参数（YYYYMMDD_HHMMSS 格式）
