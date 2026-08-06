@@ -2,7 +2,7 @@
 status: active
 category: meta
 audience: all
-last_updated: 2026-08-05
+last_updated: 2026-08-07
 owner: team
 update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑达成）必须更新第一屏
 ---
@@ -74,8 +74,9 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | KBD 关键信号两步处理交互统一 | ✅ 代码与自动验证完成：匹配模式和每个产出变量统一为“处理单元 → 第一步取值 → 第二步判断/产出”；取值/判定关键字独立，交互与样式由共享组件保证一致 | 2026-08-05 |
 | hci-real/hci-sim 双轨与 100+ Agent 并发回归 | 🟡 A/B Runtime 与 C–E 控制面代码级基础已实现；C1 已对 dev 126 条 KBD 完成只读 active snapshot/Tool Contract 基线；C3 已提供 27736/34164 的 synthetic 两步 dev 闭环脚本和 Custom UI lease 入口，但真实 Artifact/生产 CAS/Bridge E2E、20-repeat、真实校准与 100+ 并发仍未验证 | 2026-08-06 |
 | KBD 六阶段数据管道可靠性与可观测性 | 🟡 代码级完成：VISION/CLASSIFY 并行，EXTRACT 严格等待两者成功；状态、重试、中文 CLI 和 JSONL 排障日志已加固。真实 Provider 20 KBD 故障注入与 Redis 多副本 Job 持久化尚未验收，不得宣称批量生产稳定性已通过。 | 2026-08-06 |
+| CI 最小激活与快速门禁 | ✅ 已实施：hci-sim runtime/Bridge/Manifest 按变更分流；后端测试解除 Helm 无效等待；Schema 与 Lint 共用依赖；PR 不再构建 Windows exe。真实 Hosted Runner P50/P95 需后续采集。 | 2026-08-07 |
 
-**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）继续推进；hci-sim A/B 已通过 PR CI，C1/C2 事实边界见专项报告；C3 两步 synthetic dev 验收入口见[需求](requirement/events/2026-08-06-hci-sim阶段C3两步人工验收闭环需求.md)、[方案](solution/agent/events/2026-08-06-hci-sim阶段C3两步人工验收闭环方案.md)和[验证报告](verify/events/2026-08-06-hci-sim阶段C3两步人工验收闭环验证报告.md)。下一步须获得真实 Artifact 与对象存储授权，接入生产 PostgreSQL CAS/outbox；不得把 C3 synthetic 结果写成 realistic、真实 SSH、差分或 100+ 并发通过。
+**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）继续推进；CI 已按变更范围最小激活，详见 [CI 方案](solution/events/2026-08-07-CI最小激活与快速门禁方案.md) 与 [验证报告](verify/events/2026-08-07-CI最小激活与快速门禁验证报告.md)；hci-sim A/B 已通过 PR CI，C1/C2 事实边界见专项报告；C3 两步 synthetic dev 验收入口见[需求](requirement/events/2026-08-06-hci-sim阶段C3两步人工验收闭环需求.md)、[方案](solution/agent/events/2026-08-06-hci-sim阶段C3两步人工验收闭环方案.md)和[验证报告](verify/events/2026-08-06-hci-sim阶段C3两步人工验收闭环验证报告.md)。下一步须获得真实 Artifact 与对象存储授权，接入生产 PostgreSQL CAS/outbox；不得把 C3 synthetic 结果写成 realistic、真实 SSH、差分或 100+ 并发通过。
 
 ### 冷启动阅读路径
 

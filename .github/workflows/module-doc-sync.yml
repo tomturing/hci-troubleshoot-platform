@@ -23,6 +23,7 @@ jobs:
   module-doc-sync:
     name: 模块文档同步
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     permissions:
       pull-requests: write # 写 PR 评论标注缺失文档

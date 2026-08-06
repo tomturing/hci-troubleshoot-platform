@@ -27,6 +27,7 @@ jobs:
   naming-convention:
     name: 文档命名规范
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
 
     permissions:
