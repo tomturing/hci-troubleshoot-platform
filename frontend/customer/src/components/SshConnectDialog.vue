@@ -35,6 +35,8 @@ const sshForm = reactive({
   password: '',
   privateKey: '',
   passphrase: '',
+  executionMode: undefined as 'sim-ssh' | undefined,
+  testRunId: '',
 })
 const authType = ref<TerminalAuthType>('password')
 let autoCloseTimer: ReturnType<typeof setTimeout> | null = null
@@ -57,7 +59,7 @@ async function handleConnect() {
     ElMessage.warning('请填写用户名')
     return
   }
-  if (authType.value === 'password' && !sshForm.password) {
+  if ((authType.value === 'password' || authType.value === 'lease') && !sshForm.password) {
     ElMessage.warning('请填写密码')
     return
   }
@@ -78,6 +80,8 @@ async function handleConnect() {
       password: sshForm.password,
       privateKey: sshForm.privateKey,
       passphrase: sshForm.passphrase,
+      executionMode: authType.value === 'lease' ? 'sim-ssh' : undefined,
+      testRunId: authType.value === 'lease' ? sshForm.testRunId : undefined,
       caseId: chatStore.sshFlowDialogCaseId || 'terminal-only',
     })
 
@@ -227,6 +231,7 @@ onBeforeUnmount(() => {
       <SshFormSection
         :ssh-form="sshForm"
         :auth-type="authType"
+        :allow-lease="true"
         @update:ssh-form="Object.assign(sshForm, $event)"
         @update:auth-type="authType = $event"
       />

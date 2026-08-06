@@ -18,6 +18,10 @@ K3s 调试模式：Custom UI → /terminal-bridge → terminal_bridge Pod → SS
 
 生产/云端 Helm 默认关闭 Pod 模式，仍由客户 Windows 本地 Bridge 发起 SSH 流量。只有确认 K3s Pod 网络能直连目标 HCI 后台的 dev/local 环境才应启用集群模式。
 
+## hci-sim C3 仿真租约
+
+Custom UI 的“仿真租约”认证会发送 `auth_type=lease`、`execution_mode=sim-ssh`、`password=htp2.*` 和可选 `test_run_id`。Bridge 只透传 Lease，不解析或记录 token；只有完整上下文才会被标记为 simulation。开发验收由 `scripts/hci-sim/two-step-acceptance.sh <KBD_ID>` 生成连接字段，不能将普通密码或主机名当作仿真认证。
+
 ## Windows 构建
 
 安装 Go 1.26+，然后执行：
