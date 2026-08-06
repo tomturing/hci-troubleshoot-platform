@@ -18,6 +18,12 @@
 
 当前内存配额 Tracker 是单副本实现，因此 Helm `replicaCount` 必须为 `1`。共享 Store、Fixture 编译发布、TestRun 调度和规模验证属于后续阶段 C–E，不能据此基线推断已经支持自动化环境构建。
 
+## C3 两步人工验收
+
+dev 环境可使用仓库根目录的 `scripts/hci-sim/two-step-acceptance.sh <KBD_ID>`。脚本只接受已由 C1 Resolver 判定为 `ready_for_artifact_binding` 且在 synthetic 白名单中的 `27736`、`34164`，生成 `positive-minimal` Manifest、短时 htp2 Lease 并启动单副本容器。第二步在 Custom UI SSH 终端选择“仿真租约”，按脚本输出的 `.hci-sim-run/<KBD_ID>-<UTC时间>/connection.json` 填写字段，执行 `recommended_command`。
+
+输出明确为 synthetic signal-contract-only；没有获批 Artifact 时禁止使用 `positive-realistic` 或宣称真实 HCI/Artifact E2E。`27123` 等 capability gap 会在第一步失败且不产生 Lease。
+
 ## 本地验证
 
 宿主机不要求安装 Go；使用固定容器工具链：

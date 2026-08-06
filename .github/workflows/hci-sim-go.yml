@@ -15,14 +15,50 @@ on:
       - 'terminal_bridge/**'
       - 'deploy/helm/hci-sim/**'
       - '.github/workflows/hci-sim-go.yml'
+  # 允许发布前或故障复核时手动运行完整 hci-sim 质量门禁；不影响 PR 激活范围。
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: hci-sim-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  changes:
+    name: hci-sim 变更范围
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      runtime: ${{ steps.filter.outputs.runtime }}
+      bridge: ${{ steps.filter.outputs.bridge }}
+      manifest: ${{ steps.filter.outputs.manifest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            runtime:
+              - 'hci_sim/**'
+              - '.github/workflows/hci-sim-go.yml'
+            bridge:
+              - 'terminal_bridge/**'
+              - '.github/workflows/hci-sim-go.yml'
+            manifest:
+              - 'hci_sim/**'
+              - 'deploy/helm/hci-sim/**'
+              - '.github/workflows/hci-sim-go.yml'
+
   runtime:
     name: hci-sim Go quality gate
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.runtime == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -42,6 +78,9 @@ jobs:
   terminal-bridge:
     name: terminal bridge simulation-auth gate
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.bridge == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -59,6 +98,9 @@ jobs:
   manifest-and-helm:
     name: published bundle and Helm gate
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.manifest == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

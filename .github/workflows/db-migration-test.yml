@@ -28,6 +28,7 @@ jobs:
   db-schema-declarative-test:
     name: Atlas 声明式 Schema 验证
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     services:
       postgres:

@@ -2,7 +2,7 @@
 status: active
 category: verify
 audience: developer, tester
-last_updated: 2026-08-04
+last_updated: 2026-08-07
 owner: team
 ---
 
@@ -16,6 +16,8 @@ owner: team
 
 | 文件 | 日期 | 说明 |
 |------|------|------|
+| [2026-08-07-CI最小激活与快速门禁验证报告.md](2026-08-07-CI最小激活与快速门禁验证报告.md) | 2026-08-07 | workflow 语法、DAG、变更分流与本地等价命令验证；Hosted Runner P50/P95 待线上采集 |
+| [2026-08-06-hci-sim阶段C3两步人工验收闭环验证报告.md](2026-08-06-hci-sim阶段C3两步人工验收闭环验证报告.md) | 2026-08-06 | 27736/34164 synthetic Bundle → Custom UI lease → sim-ssh 两步闭环与 27123 fail-closed |
 | [2026-08-06-hci-sim阶段C1权威KBD解析与全量能力验证报告.md](2026-08-06-hci-sim阶段C1权威KBD解析与全量能力验证报告.md) | 2026-08-06 | in_progress：126 条 KBD 的 active snapshot/Tool Contract 只读能力基线，Artifact/E2E 未验证 |
 | [2026-08-06-hci-sim阶段C2获批Artifact与不可变BundleRegistry验证报告.md](2026-08-06-hci-sim阶段C2获批Artifact与不可变BundleRegistry验证报告.md) | 2026-08-06 | in_progress：Artifact Gate、扫描/双角色审批与对象完整性代码级验证，生产存储/CAS/E2E 未验证 |
 | [2026-08-06-hci-sim阶段C-E控制面代码级实施验证报告.md](2026-08-06-hci-sim阶段C-E控制面代码级实施验证报告.md) | 2026-08-06 | in_progress：C–E 控制面/差分/容量代码级闭环与真实环境阻断证据 |

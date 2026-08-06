@@ -18,13 +18,15 @@ concurrency:
 
 jobs:
   changes:
-    name: 检测变更范围
+    # 变更范围探测与 PR 文档门禁共用一次 checkout，避免两个 job 重复启动 runner。
+    # job 名称保持 docs-governance，兼容 main ruleset 的必需状态检查。
+    name: docs-governance
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
-      helm: ${{ steps.filter.outputs.helm }}
-      docs: ${{ steps.filter.outputs.docs }}
+      platform_helm: ${{ steps.filter.outputs.platform_helm }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,30 +38,21 @@ jobs:
             backend:
               - 'backend/**'
               - 'tests/**'
+              - 'scripts/ci/check_signal_schemas.py'
               - 'uv.lock'
               - 'pyproject.toml'
               - 'conftest.py'
             frontend:
               - 'frontend/**'
-            helm:
-              - 'deploy/helm/**'
-            docs:
-              - 'docs/**'
-              - 'README.md'
-              - 'AGENTS.md'
-              - 'CLAUDE.md'
-
-  docs-governance:
-    name: docs-governance
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+              # 该 exe 由 Build terminal_bridge 独立生成；二进制变更不需要重复跑
+              # pnpm 单测/构建，但仍会随 main 合并后的镜像构建发布。
+              - '!frontend/customer/public/downloads/terminal_bridge.exe'
+            platform_helm:
+              - 'deploy/helm/hci-platform/**'
 
       - name: 检查是否跳过文档门禁
         id: skip-check
+        if: github.event_name == 'pull_request'
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
@@ -81,7 +74,7 @@ jobs:
           echo "skip=false" >> $GITHUB_OUTPUT
 
       - name: 检查关键改动是否同步文档
-        if: steps.skip-check.outputs.skip != 'true'
+        if: github.event_name == 'pull_request' && steps.skip-check.outputs.skip != 'true'
         run: |
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
@@ -99,7 +92,7 @@ jobs:
           fi
 
           # 检查是否有除 .github/workflows/ 外的关键目录改动
-          CORE_CHANGES="$(echo "$CHANGED_FILES" | grep -E '^(backend/|frontend/|deploy/|scripts/|database/)' || true)"
+          CORE_CHANGES="$(echo "$CHANGED_FILES" | grep -E '^(backend/|frontend/|deploy/|scripts/|database/|hci_sim/|terminal_bridge/)' || true)"
 
           if [[ -n "$CORE_CHANGES" ]]; then
             if echo "$CHANGED_FILES" | grep -Eq '^(docs/|README\.md$|AGENTS\.md$|CLAUDE\.md$)'; then
@@ -128,6 +121,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [changes]
     if: |
       github.event_name == 'workflow_dispatch' ||
@@ -148,28 +142,6 @@ jobs:
 
       - name: Ruff 代码检查
         run: uv run ruff check backend/ tests/
-
-  schema-contract:
-    name: Signal Schema Contract (§6.1)
-    runs-on: ubuntu-latest
-    needs: [changes]
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: 安装 uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: "latest"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
-      - name: 安装依赖
-        run: uv sync --group dev
-
       - name: 信号 v2 JSON Schema 契约校验
         # §6.1 防回归：schema 自身合法 + fixtures 校验 + 漂移检测
         run: uv run python scripts/ci/check_signal_schemas.py
@@ -177,6 +149,7 @@ jobs:
   frontend-check:
     name: 前端检查（单元测试 + 构建）
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [changes]
     if: |
       github.event_name == 'workflow_dispatch' ||
@@ -336,11 +309,12 @@ jobs:
   helm-validate:
     name: Helm 模板校验
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [changes]
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'pull_request' && needs.changes.outputs.helm == 'true')
+      (github.event_name == 'pull_request' && needs.changes.outputs.platform_helm == 'true')
     steps:
       - uses: actions/checkout@v4
 
@@ -350,7 +324,9 @@ jobs:
       - name: Helm lint
         run: |
           helm lint deploy/helm/hci-platform
-          helm lint deploy/helm/hci-sim
+          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
+            helm lint deploy/helm/hci-sim
+          fi
 
       - name: Helm template 渲染检查
         run: |
@@ -358,11 +334,13 @@ jobs:
             -f deploy/helm/hci-platform/values.yaml \
             >/tmp/hci-platform-rendered.yaml
 
-          helm template hci-sim deploy/helm/hci-sim \
-            --namespace hci-sim-dev \
-            >/tmp/hci-sim-rendered.yaml
+          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
+            helm template hci-sim deploy/helm/hci-sim \
+              --namespace hci-sim-dev \
+              >/tmp/hci-sim-rendered.yaml
+          fi
 
-          if [ ! -s /tmp/hci-platform-rendered.yaml ] || [ ! -s /tmp/hci-sim-rendered.yaml ]; then
+          if [ ! -s /tmp/hci-platform-rendered.yaml ]; then
             echo "Helm 渲染结果为空"
             exit 1
           fi
@@ -401,7 +379,6 @@ jobs:
           name: helm-rendered
           path: |
             /tmp/hci-platform-rendered.yaml
-            /tmp/hci-sim-rendered.yaml
           retention-days: 1
   # check-claw-configs job 已删除（claw-configs 目录已移除）
   # check-db-migrations-sync job 已删除（Atlas 改造后不再需要 ConfigMap 同步检查）
@@ -410,13 +387,14 @@ jobs:
   probe-alignment:
     name: Layer-2A 探针路径对齐检查
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: [changes, helm-validate]
     if: |
       always() &&
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        (github.event_name == 'pull_request' && needs.changes.outputs.helm == 'true')
+        (github.event_name == 'pull_request' && needs.changes.outputs.platform_helm == 'true')
       ) &&
       needs.helm-validate.result != 'failure'
     steps:
@@ -465,23 +443,14 @@ jobs:
   unit-tests:
     name: unit-tests
     runs-on: ubuntu-latest
-    needs:
-      [
-        changes,
-        lint,
-        helm-validate,
-        probe-alignment,
-      ]
+    timeout-minutes: 30
+    needs: [changes]
     if: |
-      always() &&
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
-      ) &&
-      needs.lint.result != 'failure' &&
-      needs.helm-validate.result != 'failure' &&
-      needs.probe-alignment.result != 'failure'
+      )
     steps:
       - uses: actions/checkout@v4
 
@@ -540,18 +509,14 @@ jobs:
   integration-tests:
     name: integration-tests
     runs-on: ubuntu-latest
-    needs:
-      [changes, lint, helm-validate, probe-alignment]
+    timeout-minutes: 20
+    needs: [changes]
     if: |
-      always() &&
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
-      ) &&
-      needs.lint.result != 'failure' &&
-      needs.helm-validate.result != 'failure' &&
-      needs.probe-alignment.result != 'failure'
+      )
 
     services:
       redis:
@@ -590,18 +555,14 @@ jobs:
   security-tests:
     name: security-tests
     runs-on: ubuntu-latest
-    needs:
-      [changes, lint, helm-validate, probe-alignment]
+    timeout-minutes: 15
+    needs: [changes]
     if: |
-      always() &&
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
-      ) &&
-      needs.lint.result != 'failure' &&
-      needs.helm-validate.result != 'failure' &&
-      needs.probe-alignment.result != 'failure'
+      )
     steps:
       - uses: actions/checkout@v4
 

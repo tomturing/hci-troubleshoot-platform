@@ -350,7 +350,7 @@ export const useChatStore = defineStore('chat', () => {
     host: string
     port: number
     username: string
-    authType: 'password' | 'key'
+    authType: 'password' | 'key' | 'lease'
     caseId: string
   } | null>(null)
   const sshErrorMessage = ref('')
@@ -1571,11 +1571,13 @@ export const useChatStore = defineStore('chat', () => {
     host: string
     port: number
     username: string
-    authType: 'password' | 'key'
+    authType: 'password' | 'key' | 'lease'
     password?: string
     privateKey?: string
     passphrase?: string
     caseId: string
+    executionMode?: 'sim-ssh'
+    testRunId?: string
   }): Promise<void> {
     devLog('SSH', '开始连接', {
       host: config.host,
@@ -1659,6 +1661,8 @@ export const useChatStore = defineStore('chat', () => {
           private_key: config.privateKey,
           passphrase: config.passphrase,
           case_id: config.caseId,
+          execution_mode: config.executionMode,
+          test_run_id: config.testRunId,
         }))
       }
 

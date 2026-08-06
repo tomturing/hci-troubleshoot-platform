@@ -58,7 +58,7 @@ export function getBridgeExecWaitTimeoutMs(): number {
 
 export type BridgeStatus = 'checking' | 'running' | 'not_running'
 
-export type TerminalAuthType = 'password' | 'key'
+export type TerminalAuthType = 'password' | 'key' | 'lease'
 
 export interface SshConnectOptions {
   host: string
@@ -69,6 +69,8 @@ export interface SshConnectOptions {
   private_key?: string
   passphrase?: string
   case_id?: string
+  execution_mode?: 'sim-ssh'
+  test_run_id?: string
 }
 
 export interface TerminalWsMessage {
