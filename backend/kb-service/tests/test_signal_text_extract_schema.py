@@ -249,7 +249,52 @@ def test_qfk_log_unsupported_predicate_points_to_match_type():
     issue = humanize_signal_validation_error(exc_info.value, document["signals"])
     assert issue["signal_id"] == "sig_log_predicate"
     assert issue["field_path"] == "match.type"
-    assert "日志文件与判定方式不兼容" in issue["message"]
+    assert "当前日志源不能直接执行该数值判定" in issue["message"]
+
+
+def test_qfk_log_numeric_ai_extract_allows_delta_on_source_without_direct_delta():
+    document = {
+        "schema_version": 2,
+        "signals": [{
+            "id": "sig_log_delta_ai",
+            "acquire": {"tool": "qfk_log", "args": {"file": "sfvt_vtpdaemon.log"}},
+            "match": {
+                "type": "delta",
+                "operator": "==",
+                "value": 0,
+                "minimum_samples": 2,
+                "expected": True,
+                "extract": {
+                    **_text_extract(rows={"mode": "keywords", "include": ["Completed"], "exclude": []}),
+                    "ai_extract": {"instruction": "按出现顺序提取 completed 和 total 两个字节数"},
+                },
+            },
+            "orchestrate": {"produces": [], "requires": []},
+        }],
+    }
+
+    validate_signals_json(document)
+
+
+def test_qfk_produce_names_are_unique_case_insensitively():
+    document = {
+        "schema_version": 2,
+        "signals": [{
+            "id": "sig_duplicate_produce",
+            "acquire": {"tool": "qfk_system", "args": {"command": "ps"}},
+            "match": None,
+            "orchestrate": {
+                "produces": [
+                    {"name": "TOTAL", "type": "number", "extract": _text_extract(value_mode="number")},
+                    {"name": "total", "type": "number", "extract": _text_extract(value_mode="number")},
+                ],
+                "requires": [],
+            },
+        }],
+    }
+
+    with pytest.raises(ValidationError, match="产出变量名重复"):
+        validate_signals_json(document)
 
 
 def test_variable_dependency_error_targets_signal_that_declares_missing_input():

@@ -167,8 +167,16 @@ const extractDefaultValueMode = computed(() => (
         v-if="showExtract"
         v-model="matcher.extract"
         :default-value-mode="extractDefaultValueMode"
+        consumer-kind="matcher"
       />
       <div v-if="showStepTitle" class="predicate-order-title">第二步：判断</div>
+      <el-alert
+        v-if="['threshold', 'delta', 'trend'].includes(matcherType) && matcher.extract?.ai_extract?.instruction"
+        type="info"
+        :closable="false"
+        show-icon
+        title="已启用 AI 数值取值：候选行先由第一步确定；threshold 消费一个数，delta/trend 消费按日志顺序的数值数组；第二步仍只执行确定性判断。"
+      />
 
       <!-- keyword 类型参数 -->
       <template v-if="matcherType === 'keyword'">

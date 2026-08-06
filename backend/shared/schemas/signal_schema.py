@@ -184,14 +184,25 @@ def humanize_signal_validation_error(error: ValidationError, signals: list[Any])
         message = "日志文件不能为空；请填写日志文件 basename，例如 sfvt_vtpdaemon.log，不能填写目录。"
         code = "QFK_LOG_FILE_REQUIRED"
     elif "日志源" in raw_message and "不支持" in raw_message:
-        field_path = field_path or "acquire.args.file"
+        field_path = field_path or "match.type"
         field_label = _field_label(field_path)
-        message = (
-            f"当前日志文件与判定方式不兼容：{raw_message}；请在“第二步·判断”中改用允许的判定类型，"
-            "如果确实需要比较多次采样的变化量，请更换为支持 delta 的周期快照日志源，"
-            "并将取值数量配置为“全部”。"
-        )
+        if "AI 数值取值" in raw_message:
+            message = (
+                f"当前日志源不能直接执行该数值判定：{raw_message}；请在“第一步·取值”配置文本完整行/"
+                "行筛选和非空 AI 提取说明。delta、trend 必须让 AI 按日志出现顺序返回至少两个数值；"
+                "也可以改用目录中直接支持该判定的周期快照日志源。"
+            )
+        else:
+            message = (
+                f"当前日志文件与判定方式不兼容：{raw_message}；请在“第二步·判断”中改用允许的判定类型，"
+                "或者在第一步配置受控 AI 数值取值（仅 threshold/delta/trend），再由平台执行确定性比较。"
+            )
         code = "QFK_LOG_PREDICATE_UNSUPPORTED"
+    elif "产出变量名重复" in raw_message:
+        field_path = field_path or "orchestrate.produces"
+        field_label = _field_label(field_path)
+        message = f"同一信号的产出变量名称必须唯一：{raw_message}；请修改重复变量名，避免后一个值覆盖前一个值。"
+        code = "SIGNAL_PRODUCE_NAME_DUPLICATE"
     elif "产出变量采集必须" in raw_message:
         field_path = "orchestrate.produces"
         field_label = _field_label(field_path)
@@ -580,6 +591,21 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                 location=f"signals[{index}].orchestrate.produces[{produce_index}].extract",
                 consumer_type=str(produce.get("type") or "string"),
             )
+        produced_names: dict[str, int] = {}
+        for produce_index, produce in enumerate(produces):
+            if not isinstance(produce, dict):
+                continue
+            name = str(produce.get("name") or "").strip()
+            if not name:
+                continue
+            normalized_name = name.casefold()
+            if normalized_name in produced_names:
+                first_index = produced_names[normalized_name]
+                raise ValidationError(
+                    f"signals[{index}] 的产出变量名重复: {name}（与 produces[{first_index}] 大小写不敏感重复）",
+                    path=["signals", index, "orchestrate", "produces", produce_index, "name"],
+                )
+            produced_names[normalized_name] = produce_index
         if tool == "qfk_log":
             args = ((signal.get("acquire") or {}).get("args") or {})
             normalized_path = normalize_log_path(str(args.get("path"))) if args.get("path") else None
@@ -622,11 +648,25 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                             f"signals[{index}] 的 qfk_log 日志源不可解析: {exc}",
                             path=["signals", index, "acquire", "args", "file"],
                         ) from exc
-                if matcher_type not in source.get("predicates", []):
+                supports_direct_predicate = matcher_type in source.get("predicates", [])
+                numeric_ai_extract = (
+                    matcher_type in {"threshold", "delta", "trend"}
+                    and isinstance(matcher.get("extract"), dict)
+                    and isinstance((matcher.get("extract") or {}).get("ai_extract"), dict)
+                    and str(((matcher.get("extract") or {}).get("ai_extract") or {}).get("instruction") or "").strip()
+                    and not (
+                        matcher_type == "threshold"
+                        and str(matcher.get("aggregation") or "first_number")
+                        in {"line_count", "duration_seconds"}
+                    )
+                )
+                if not supports_direct_predicate and not numeric_ai_extract:
                     allowed_predicates = ", ".join(str(item) for item in source.get("predicates", []))
                     raise ValidationError(
                         f"signals[{index}] 的日志源 {source.get('source_id')} / parser={source.get('parser')} "
-                        f"不支持 {matcher_type} predicate；允许: {allowed_predicates}",
+                        f"不支持直接 {matcher_type} predicate；允许: {allowed_predicates}。"
+                        "如需先从候选行提取数值再判断，请配置非空 AI 数值取值说明；"
+                        "delta/trend 还必须返回按日志顺序排列的数值数组。",
                         path=["signals", index, "match", "type"],
                     )
             elif not (

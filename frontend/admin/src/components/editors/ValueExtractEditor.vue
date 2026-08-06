@@ -8,6 +8,7 @@ const props = withDefaults(defineProps<{
   defaultValueMode?: string
   embedded?: boolean
   showTitle?: boolean
+  consumerKind?: 'matcher' | 'produce'
 }>(), { defaultValueMode: 'string', embedded: false, showTitle: true })
 const emit = defineEmits<{ 'update:modelValue': [value: Record<string, any>] }>()
 
@@ -28,6 +29,7 @@ const mode = computed(() => {
   )
   return isTextSelection ? 'text' : 'complete'
 })
+const isNumericConsumer = computed(() => props.consumerKind === 'matcher' && ['number', 'integer'].includes(props.defaultValueMode))
 
 function completeExtract(): Record<string, any> {
   return {
@@ -118,7 +120,11 @@ watch(() => props.modelValue, value => {
           @input="setAiInstruction"
         />
       </el-form-item>
-      <div class="field-hint">可选。平台先按当前取值配置从完整输出确定候选行，再让 AI 从候选原文中提取值；AI 返回值和引用行必须可逐字回查，否则本次信号失败。Matcher 的命中结论仍由确定性规则决定。</div>
+      <div class="field-hint">
+        可选。平台先按当前取值配置从完整输出确定候选行，再让 AI 从候选原文中提取值；AI 返回值和引用行必须可逐字回查，否则本次信号失败。
+        <template v-if="isNumericConsumer">当前为数值判断：threshold 需要一个数；delta/trend 需要 AI 按日志出现顺序返回数值数组，第二步只做确定性比较。</template>
+        <template v-else>当前为文本判断/产出：AI 仅提供已溯源的取值证据，命中结论仍由确定性规则决定。</template>
+      </div>
     </el-form>
   </div>
 </template>
