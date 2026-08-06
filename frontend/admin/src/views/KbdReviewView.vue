@@ -2682,7 +2682,7 @@ onMounted(() => {
 
     <!-- 过滤栏 -->
     <el-card class="filter-card" shadow="never">
-      <el-row :gutter="16" align="middle">
+      <el-row :gutter="12" align="middle" class="filter-row">
         <el-col :span="4">
           <el-input
             v-model="supportIdFilter"
@@ -2776,7 +2776,14 @@ onMounted(() => {
           </el-option>
         </el-select>
       </div>
-      <el-table :data="entries" row-key="id" style="width: 100%" size="small" @sort-change="handleSortChange">
+      <el-table
+        :data="entries"
+        row-key="id"
+        style="width: 100%"
+        size="small"
+        class="kbd-table"
+        @sort-change="handleSortChange"
+      >
         <!-- 案例 ID -->
         <el-table-column label="案例 ID" width="100" prop="support_id" sortable="custom">
           <template #default="{ row }">
@@ -2787,14 +2794,14 @@ onMounted(() => {
         </el-table-column>
 
         <!-- 标题 -->
-        <el-table-column label="标题" min-width="280">
+        <el-table-column label="标题" min-width="320">
           <template #default="{ row }">
             <span class="entry-title">{{ row.title }}</span>
           </template>
         </el-table-column>
 
         <!-- AI 分类 -->
-        <el-table-column label="AI 分类" width="200" prop="ai_category_id" sortable="custom">
+        <el-table-column label="AI 分类" width="220" prop="ai_category_id" sortable="custom" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="category-tag">{{ row.ai_category_label || row.ai_category_id || '—' }}</span>
           </template>
@@ -3998,7 +4005,8 @@ onMounted(() => {
 
 <style scoped>
 .kbd-review {
-  padding: 20px;
+  min-width: 0;
+  padding: 16px;
 }
 
 /* 过滤栏搜索/重置按钮容器：flex 保持同行同高 */
@@ -4023,7 +4031,7 @@ onMounted(() => {
 }
 
 .page-header {
-  margin-bottom: 20px;
+  margin-bottom: 14px;
 }
 
 .page-title {
@@ -4036,20 +4044,44 @@ onMounted(() => {
   margin: 0;
   color: #666;
   font-size: 14px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .filter-card {
-  margin-bottom: 16px;
+  margin-bottom: 12px;
+}
+
+.filter-card :deep(.el-card__body) {
+  padding: 12px 14px;
+}
+
+.filter-row :deep(.el-col) {
+  min-width: 0;
+}
+
+.filter-row :deep(.el-input),
+.filter-row :deep(.el-select) {
+  width: 100%;
 }
 
 .total-info {
   text-align: right;
   color: #909399;
   font-size: 14px;
+  white-space: nowrap;
 }
 
 .category-nav {
-  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.category-nav :deep(.el-select) {
+  max-width: 100%;
 }
 
 .category-nav :deep(.el-select-dropdown__wrap) {
@@ -4058,6 +4090,30 @@ onMounted(() => {
 
 .table-card {
   min-height: 400px;
+}
+
+.table-card :deep(.el-card__body) {
+  padding: 12px 14px 10px;
+}
+
+.kbd-table :deep(.el-table__cell) {
+  padding: 6px 0;
+}
+
+.kbd-table :deep(.cell) {
+  min-width: 0;
+  padding: 0 8px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.kbd-table :deep(.el-table__header .cell) {
+  color: #606266;
+  font-weight: 600;
+}
+
+.kbd-table :deep(.el-tag) {
+  white-space: nowrap;
 }
 
 
@@ -4072,22 +4128,63 @@ onMounted(() => {
 }
 
 .entry-title {
+  display: block;
+  max-width: 100%;
   color: #303133;
-  line-height: 1.5;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .category-tag {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
   font-size: 12px;
   color: #909399;
   background: #f5f7fa;
   padding: 2px 6px;
   border-radius: 3px;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
 }
 
 .pagination-wrapper {
   display: flex;
   justify-content: flex-end;
-  margin-top: 16px;
+  margin-top: 12px;
+}
+
+@media (max-width: 1280px) {
+  .kbd-review {
+    padding: 12px;
+  }
+
+  .filter-card :deep(.el-card__body),
+  .table-card :deep(.el-card__body) {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .kbd-table :deep(.cell) {
+    padding-right: 6px;
+    padding-left: 6px;
+  }
+
+  .action-btn-group {
+    gap: 5px;
+  }
+}
+
+@media (max-width: 900px) {
+  .page-desc {
+    white-space: normal;
+  }
+
+  .filter-row :deep(.el-col) {
+    margin-bottom: 8px;
+  }
 }
 
 .section-block {
