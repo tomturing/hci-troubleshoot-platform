@@ -453,8 +453,10 @@ async def _cmd_cli(args: argparse.Namespace, run_id: str) -> int:
     options = _cli_options()
     print(f"本次将处理 {len(ids)} 个 KBD。截图识别成功与分类成功均为信号抽取的硬前置条件。")
     print("\n本次实际运行参数（后端 run_pipeline）：")
+    print("  参数             当前值       中文含义")
+    print("  " + "-" * 96)
     for key, value in options.items():
-        print(f"  {key:<16}= {value}")
+        print(f"  {key:<16}= {str(value):<11}  {_CLI_OPTION_DESCRIPTIONS[key]}")
     print("确认的意义：最后一次显式确认，防止在参数选定后误触发抓取、写库和 LLM 调用。")
     if not _prompt_yes_no("确认开始？", default=False):
         print("已取消，未执行任何处理。")
@@ -550,6 +552,30 @@ def _cli_options() -> dict[str, object]:
         "resume": resume,
         "failed_only": failed_only,
     }
+
+
+_CLI_OPTION_DESCRIPTIONS = {
+    "force_fetch": (
+        "是否忽略本地 cache，重新从 Support Portal 抓取原文和图片；"
+        "False=复用有效缓存，True=只重抓 Stage 1，不会自动覆盖数据库。"
+    ),
+    "override": (
+        "是否覆盖已经存在的 KBD 导入记录；False=保护性跳过已有记录，"
+        "True=允许 Stage 2 写入新的 Proposal。"
+    ),
+    "override_status": (
+        "允许覆盖的状态范围；None=后端默认仅 draft，['draft']=仅草稿，"
+        "['all']=包含 published，属于高风险覆盖。"
+    ),
+    "resume": (
+        "是否按数据库现状续跑；False=按本次输入执行各阶段，"
+        "True=跳过数据库已经完成的阶段，progress 文件只用于观察。"
+    ),
+    "failed_only": (
+        "是否只筛选 Fetch/Vision 自动识别出的失败或可重试案例；"
+        "False=处理全部输入 ID，True=用于故障重试，不会把普通成功案例重复送入 LLM。"
+    ),
+}
 
 
 async def _cmd_fetch(args: argparse.Namespace, run_id: str) -> None:
