@@ -21,3 +21,10 @@ def test_rate_limit_has_stable_error_code():
 
     assert result.code == "LLM_RATE_LIMITED"
     assert result.retryable is True
+
+
+def test_wrapped_vision_job_rate_limit_is_not_unclassified():
+    result = humanize_error(RuntimeError("Vision Job abc 失败：Provider 返回 429 Too Many Requests"))
+
+    assert result.code == "LLM_RATE_LIMITED"
+    assert result.retryable is True

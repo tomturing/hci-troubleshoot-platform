@@ -31,6 +31,12 @@ def humanize_error(exc: Exception) -> HumanError:
             return HumanError("SOURCE_AUTH_FAILED", "认证失败；请检查内部 Token 或访问权限。", False)
         return HumanError("KB_SERVICE_REQUEST_INVALID", f"kb-service 返回 {status} 请求错误。", False)
     text = str(exc).lower()
+    # Vision/Signal 异步 Job 会把 Provider HTTP 错误包装成 RuntimeError；
+    # 仍须从稳定的错误文本中恢复可操作的限流/服务端语义，不能退化为 PIPELINE_UNEXPECTED。
+    if "429" in text or "too many requests" in text or "限流" in text:
+        return HumanError("LLM_RATE_LIMITED", "LLM Provider 触发限流；请等待退避窗口后重试。", True)
+    if any(token in text for token in (" 500", " 502", " 503", " 504", "service unavailable", "服务端错误")):
+        return HumanError("KB_SERVICE_ERROR", "kb-service 或 Provider 返回暂态服务端错误。", True)
     if "json" in text:
         return HumanError("LLM_INVALID_JSON", "模型返回内容不是可用的结构化 JSON。", True)
     if "job" in text and ("不存在" in str(exc) or "重启" in str(exc)):
