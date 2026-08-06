@@ -367,6 +367,11 @@ SUPPORTED_TOOLS: list[str] = list(ACQUIRER_ARGS_SCHEMA.keys())
 FRONTEND_TOOLS: set[str] = {"qkv_alert", "qkv_task", "qkv_dialog"}
 BACKEND_TOOLS: set[str] = set(ACQUIRER_ARGS_SCHEMA) - FRONTEND_TOOLS
 
+# Stable error code for the most common LLM contract drift.  Keep QKV keyword
+# strict: the runtime builds one ``acli -k`` argument, while arrays belong to
+# QFK matcher/extract fields and have different AND/OR semantics.
+QKV_KEYWORD_TYPE_ERROR_CODE = "QKV_KEYWORD_MUST_BE_STRING"
+
 
 def get_args_schema(tool: str) -> dict[str, Any] | None:
     """返回某 acquirer 的 args schema（深拷贝，防止调用方篡改注册表）。"""
@@ -468,6 +473,12 @@ def validate_acquire_args(tool: str, args: Any) -> tuple[bool, str | None]:
         if k in props:
             expected = props[k].get("type")
             if expected and not _check_type(v, expected):
+                if tool in FRONTEND_TOOLS and k == "keyword" and expected == "string":
+                    return False, (
+                        f"{QKV_KEYWORD_TYPE_ERROR_CODE}: acquire.args.keyword 类型错误："
+                        "QKV 采集关键词必须是单个 string；多个关键词请拆成多条 qkv Candidate，"
+                        "数组仅允许用于 match.pattern 或 extract.rows.include/exclude"
+                    )
                 return False, f"acquire.args.{k} 类型错误：期望 {expected}，实际 {type(v).__name__}"
 
     # 与 Agent QFK Handler 同源的运行时语义门禁。结构合法并不代表命令一定可构建；
