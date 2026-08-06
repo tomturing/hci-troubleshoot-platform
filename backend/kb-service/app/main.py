@@ -14,6 +14,7 @@ from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from shared.database.postgres import DatabaseManager
 from shared.observability.logger import get_logger
+from shared.observability.metrics import HTTPMetricsMiddleware
 from shared.observability.otel import init_telemetry, instrument_app
 from shared.utils.exception_handlers import register_exception_handlers
 
@@ -52,7 +53,11 @@ async def lifespan(app: FastAPI):
         configure_mappers()
         logger.info("SQLAlchemy mappers 编译配置成功，动态资源模型检查通过")
     except Exception as exc:
-        logger.critical(f"SQLAlchemy mappers 编译失败，发现外键或元数据配置错误: {exc}", exc_info=True)
+        logger.critical(
+            event="sqlalchemy_mappers_compile_failed",
+            message="SQLAlchemy mappers 编译失败，发现外键或元数据配置错误",
+            error=exc,
+        )
         raise
 
     logger.info(
@@ -104,6 +109,7 @@ app = FastAPI(
 
 # 注入 OpenTelemetry 中间件
 instrument_app(app)
+app.add_middleware(HTTPMetricsMiddleware)
 
 # H-1: 注册全局业务异常处理器
 register_exception_handlers(app)

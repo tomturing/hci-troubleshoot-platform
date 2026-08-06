@@ -33,6 +33,12 @@ HTTP_REQUESTS_TOTAL = Counter(
     labelnames=["method", "status"],
 )
 
+KBD_SIGNAL_VALIDATION_TOTAL = Counter(
+    "hci_kbd_signal_validation_total",
+    "KBD 关键信号校验失败次数",
+    labelnames=["code", "operation"],
+)
+
 
 class HTTPMetricsMiddleware(BaseHTTPMiddleware):
     """HTTP 请求指标采集中间件

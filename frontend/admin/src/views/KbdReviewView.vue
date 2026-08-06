@@ -585,23 +585,36 @@ type SignalRequestError = Error & {
   signalId?: string
   fieldPath?: string
   issue?: Record<string, any>
+  code?: string
+  traceId?: string
+  requestId?: string
 }
 
-function buildSignalRequestError(responseBody: any, statusCode: number): SignalRequestError {
+function buildSignalRequestError(responseBody: any, statusCode: number, headers?: Headers): SignalRequestError {
   const detail = responseBody?.detail
-  const issue = detail && typeof detail === 'object' && !Array.isArray(detail) ? detail as Record<string, any> : undefined
+  const envelope = responseBody?.error && typeof responseBody.error === 'object' ? responseBody.error : undefined
+  const issue = detail && typeof detail === 'object' && !Array.isArray(detail)
+    ? detail as Record<string, any>
+    : envelope
   const message = typeof detail === 'string'
     ? detail
     : Array.isArray(detail)
       ? detail.map((item: any) => item?.msg || item?.message || JSON.stringify(item)).join('；')
       : String(issue?.message || `HTTP ${statusCode}`)
   const location = String(issue?.location || '').trim()
-  const error = new Error(location ? `${location}：${message}` : message) as SignalRequestError
+  const code = String(issue?.code || '').trim()
+  const traceId = headers?.get('X-Trace-Id') || headers?.get('x-trace-id') || ''
+  const requestId = headers?.get('X-Request-ID') || headers?.get('x-request-id') || ''
+  const diagnostics = [code && `错误码 ${code}`, (traceId || requestId) && `诊断编号 ${traceId || requestId}`].filter(Boolean).join('；')
+  const error = new Error(`${location ? `${location}：` : ''}${message}${diagnostics ? `（${diagnostics}）` : ''}`) as SignalRequestError
   if (issue) {
     error.issue = issue
     if (issue.signal_id) error.signalId = String(issue.signal_id)
     if (issue.field_path) error.fieldPath = String(issue.field_path)
   }
+  if (code) error.code = code
+  if (traceId) error.traceId = traceId
+  if (requestId) error.requestId = requestId
   return error
 }
 
@@ -1686,7 +1699,7 @@ async function persistSignalList(
   })
   const responseBody = await resp.json().catch(() => ({}))
   if (!resp.ok) {
-    throw buildSignalRequestError(responseBody, resp.status)
+    throw buildSignalRequestError(responseBody, resp.status, resp.headers)
   }
   applyMaintenanceResponse(detailEntry.value, responseBody)
   const newDoc: SignalsDoc = responseBody?.payload?.signals_json || responseBody?.signals_json || payload
@@ -1787,7 +1800,7 @@ async function submitDeleteSignal() {
       })
       const responseBody = await resp.json().catch(() => ({}))
       if (!resp.ok) {
-        throw buildSignalRequestError(responseBody, resp.status)
+        throw buildSignalRequestError(responseBody, resp.status, resp.headers)
       }
 
       const serverDoc = (responseBody?.payload?.signals_json || responseBody?.signals_json) as SignalsDoc

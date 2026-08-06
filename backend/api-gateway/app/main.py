@@ -19,6 +19,7 @@ from shared.database.redis import RedisManager
 from shared.observability.logger import get_logger
 from shared.observability.metrics import HTTPMetricsMiddleware
 from shared.observability.otel import init_telemetry, instrument_app
+from shared.utils.exception_handlers import register_exception_handlers
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
@@ -110,6 +111,7 @@ app = FastAPI(title="HCI Troubleshoot - API Gateway", description="API网关服�
 
 # 注入 OpenTelemetry 中间件到 app 实例（必须在 app 创建后调用）
 instrument_app(app)
+register_exception_handlers(app)
 
 # 中间件 — CORS 使用显式来源列表，避免 allow_origins=["*"] + allow_credentials=True 的 RFC 6454 违规
 app.add_middleware(TraceIDMiddleware)

@@ -29,6 +29,7 @@ from shared.dynamic_resource.publisher import DynamicResourcePublisher
 from shared.models.skill_definition import SkillDefinitionORM
 from shared.models.tool_definition import ToolDefinitionORM
 from shared.observability.logger import get_logger
+from shared.observability.metrics import KBD_SIGNAL_VALIDATION_TOTAL
 from shared.observability.otel import get_current_trace_id
 from shared.schemas.acquirer_args import normalize_qfk_system_args, validate_acquire_args
 from shared.schemas.capability_descriptor import capability_descriptor_document, get_capability_descriptor
@@ -218,10 +219,20 @@ def _humanize_signal_validation_error(error: jsonschema.ValidationError, signals
     return humanize_schema_validation_error(error, signals)
 
 
-def _raise_signal_validation_error(error: jsonschema.ValidationError, signals: list[Any]) -> None:
+def _raise_signal_validation_error(
+    error: jsonschema.ValidationError,
+    signals: list[Any],
+    *,
+    kbd_id: int | None = None,
+    operation: str = "signal_validation",
+) -> None:
     """统一把保存、删除和发布错误返回为前端可定位的结构化问题。"""
 
     issue = _humanize_signal_validation_error(error, signals)
+    KBD_SIGNAL_VALIDATION_TOTAL.labels(
+        code=str(issue.get("code") or "UNKNOWN"),
+        operation=operation,
+    ).inc()
     logger.warning(
         event="kbd_signal_validation_failed",
         code=issue.get("code"),
@@ -229,6 +240,8 @@ def _raise_signal_validation_error(error: jsonschema.ValidationError, signals: l
         field_path=issue.get("field_path"),
         location=issue.get("location"),
         validation_reason=issue.get("validation_reason") or error.message,
+        kbd_id=kbd_id,
+        operation=operation,
     )
     raise HTTPException(
         status_code=422,
@@ -236,7 +249,12 @@ def _raise_signal_validation_error(error: jsonschema.ValidationError, signals: l
     ) from error
 
 
-def _prepare_expert_draft_signals(raw: Any) -> dict[str, Any]:
+def _prepare_expert_draft_signals(
+    raw: Any,
+    *,
+    kbd_id: int | None = None,
+    operation: str = "signal_validation",
+) -> dict[str, Any]:
     """归约并校验专家工作稿，保存与按 ID 删除共用同一权威边界。"""
 
     document = copy.deepcopy(_load_signals_json(raw))
@@ -308,7 +326,7 @@ def _prepare_expert_draft_signals(raw: Any) -> dict[str, Any]:
     try:
         _validate_kbd_draft_signals_json(document)
     except jsonschema.ValidationError as exc:
-        _raise_signal_validation_error(exc, signals)
+        _raise_signal_validation_error(exc, signals, kbd_id=kbd_id, operation=operation)
     return document
 
 
@@ -3103,6 +3121,21 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
     """
     _check_auth(request)
 
+    payload_for_log = body.model_dump(exclude_none=True)
+    payload_bytes = json.dumps(payload_for_log, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    signal_document = body.signals_json if isinstance(body.signals_json, dict) else {}
+    signal_items = signal_document.get("signals") if isinstance(signal_document.get("signals"), list) else []
+    logger.info(
+        event="kbd_signal_update_started",
+        operation="update_kbd_entry",
+        kbd_id=kbd_id,
+        signal_count=len(signal_items) if signal_items else None,
+        signal_ids=[str(item.get("id")) for item in signal_items if isinstance(item, dict) and item.get("id")],
+        lock_version=body.lock_version,
+        payload_sha256=hashlib.sha256(payload_bytes).hexdigest(),
+        payload_size_bytes=len(payload_bytes),
+    )
+
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
     if body.signals_json is not None and body.delete_signal_id is not None:
@@ -3169,7 +3202,11 @@ async def update_kbd_entry(request: Request, kbd_id: int, body: KbdUpdateRequest
 
     if body.signals_json is not None:
         # 直接切 v2 列形态（RFC §7）：保存时统一归约为 v2 数组级对象
-        v2_doc = _prepare_expert_draft_signals(body.signals_json)
+        v2_doc = _prepare_expert_draft_signals(
+            body.signals_json,
+            kbd_id=kbd_id,
+            operation="update_kbd_entry",
+        )
         # 必须用 CAST(:signals_json AS jsonb)，不能写成 ":signals_json::jsonb"。
         # 后者中 ':signals_json' 紧跟 '::'，SQLAlchemy 命名绑定正则(负向预查 (?!:))
         # 不把它识别为绑定参数，会原样发给 Postgres 触发 'syntax error at or near ":"' (500)，
