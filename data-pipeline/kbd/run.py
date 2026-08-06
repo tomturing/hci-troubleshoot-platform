@@ -99,6 +99,14 @@ def _pad_display(text: str, width: int, *, align: str = "left") -> str:
     return text + " " * padding
 
 
+def _center_display(text: str, width: int) -> str:
+    """按终端显示列宽居中文本，而不是按 Python 字符数居中。"""
+
+    padding = max(0, width - _display_width(text))
+    left = padding // 2
+    return " " * left + text + " " * (padding - left)
+
+
 class _ConsoleFormatter(logging.Formatter):
     """人类可读终端格式：阶段标题整行突出，状态按严重性着色。"""
 
@@ -344,30 +352,6 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
     completed = pipeline.get("completed_ids", 0)
     enabled = _terminal_color_enabled()
 
-    print("\n" + "=" * 76)
-    print(_paint("KBD 流水线完成摘要", "bold", enabled=enabled))
-    print("=" * 76)
-    print(f"运行编号   : {run_id}")
-    print(
-        "总体结果   : "
-        + _paint("全部阶段完成", "green", enabled=enabled)
-        if success
-        else "总体结果   : " + _paint("部分完成，请查看失败/阻断项", "red", enabled=enabled)
-    )
-    print(f"KBD 完成数 : {completed}/{total}")
-    print("-" * 76)
-    print(
-        _pad_display("阶段", 16)
-        + _pad_display("状态", 12)
-        + _pad_display("完成", 8, align="right")
-        + _pad_display("失败", 8, align="right")
-        + _pad_display("跳过", 8, align="right")
-        + _pad_display("需复核", 8, align="right")
-        + _pad_display("前置阻断", 10, align="right")
-        + _pad_display("耗时", 12, align="right")
-    )
-    print("-" * 76)
-
     stage_rows = (
         ("fetch", "数据抓取"),
         ("import", "语义导入"),
@@ -376,6 +360,9 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
         ("extract", "关键信号抽取"),
         ("audit_log_signals", "日志信号审计"),
     )
+    headers = ("阶段", "状态", "完成", "失败", "跳过", "需复核", "前置阻断", "耗时")
+    aligns = ("left", "left", "right", "right", "right", "right", "right", "right")
+    summary_rows: list[tuple[list[str], str | None]] = []
     for stage_name, label in stage_rows:
         item = stats.get(stage_name)
         if not item:
@@ -403,22 +390,62 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
         elapsed = item.get("elapsed_s")
         elapsed_text = f"{elapsed:.1f}s" if isinstance(elapsed, (int, float)) else "-"
         if failed or blocked:
-            status = _paint("失败/阻断", "red", enabled=enabled)
+            status = "失败/阻断"
+            status_color = "red"
         elif needs_review or audit_issues:
-            status = _paint("需复核", "yellow", enabled=enabled)
+            status = "需复核"
+            status_color = "yellow"
         else:
-            status = _paint("完成", "green", enabled=enabled)
-        # 先按视觉宽度补齐，再包裹 ANSI，避免控制码参与列宽计算。
-        print(
-            _pad_display(label, 16)
-            + _paint(_pad_display(status, 12), "red" if failed or blocked else "yellow" if needs_review or audit_issues else "green", enabled=enabled)
-            + _pad_display(str(done), 8, align="right")
-            + _pad_display(str(failed), 8, align="right")
-            + _pad_display(str(skipped), 8, align="right")
-            + _pad_display(str(needs_review), 8, align="right")
-            + _pad_display(str(blocked), 10, align="right")
-            + _pad_display(elapsed_text, 12, align="right")
+            status = "完成"
+            status_color = "green"
+        summary_rows.append(
+            (
+                [
+                    label,
+                    status,
+                    str(done),
+                    str(failed),
+                    str(skipped),
+                    str(needs_review),
+                    str(blocked),
+                    elapsed_text,
+                ],
+                status_color,
+            )
         )
+
+    minimum_widths = (18, 14, 8, 8, 8, 8, 10, 12)
+    columns = [list(headers)] + [row for row, _color in summary_rows]
+    widths = [
+        max(minimum_widths[index], max(_display_width(row[index]) for row in columns) + 2)
+        for index in range(len(headers))
+    ]
+    table_width = sum(widths) + len(widths) + 1
+
+    def border(left: str, middle: str, right: str, fill: str = "─") -> str:
+        return left + middle.join(fill * width for width in widths) + right
+
+    def row_text(values: list[str], color: str | None = None) -> str:
+        cells = []
+        for index, value in enumerate(values):
+            cell = f" {_pad_display(value, widths[index] - 2, align=aligns[index])} "
+            cells.append(_paint(cell, color, enabled=enabled) if index == 1 and color else cell)
+        return "│" + "│".join(cells) + "│"
+
+    print("\n" + "=" * table_width)
+    print(_paint(_center_display("KBD 流水线完成摘要", table_width), "bold", enabled=enabled))
+    print("=" * table_width)
+    print(f"运行编号   : {run_id}")
+    result_text = "全部阶段完成" if success else "部分完成，请查看失败/阻断项"
+    result_color = "green" if success else "red"
+    print(f"总体结果   : {_paint(result_text, result_color, enabled=enabled)}")
+    print(f"KBD 完成数 : {completed}/{total}")
+    print(border("┌", "┬", "┐"))
+    print(row_text(list(headers)))
+    print(border("├", "┼", "┤"))
+    for values, color in summary_rows:
+        print(row_text(values, color))
+    print(border("└", "┴", "┘"))
 
     if stats.get("vision", {}).get("case_status_counts"):
         counts = stats["vision"]["case_status_counts"]

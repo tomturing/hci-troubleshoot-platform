@@ -43,6 +43,7 @@ import asyncio
 import json
 import logging
 import time
+import unicodedata
 from collections.abc import Iterable, Sequence
 from enum import IntEnum
 
@@ -67,10 +68,28 @@ from .progress import (
 logger = logging.getLogger("kbd.pipeline")
 
 
-def _stage_banner(stage: int, title: str) -> str:
-    """生成醒目的阶段分隔线；日志文件和终端保持同一可检索文本。"""
+_STAGE_BANNER_WIDTH = 88
 
-    return f"{'=' * 24}  Stage {stage}: {title}  {'=' * 24}"
+
+def _display_width(text: str) -> int:
+    """计算中英文混排的终端显示宽度。"""
+
+    return sum(2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1 for char in text)
+
+
+def _stage_banner(stage: int, title: str, *, width: int = _STAGE_BANNER_WIDTH) -> str:
+    """生成固定总宽度、标题居中的阶段分隔线。
+
+    日志终端通常按显示列宽渲染中文字符（一个中文字符占两列），不能直接用
+    ``len`` 或固定数量的左右 ``=``。这里先计算标题的显示宽度，再把剩余列
+    平分到两侧，保证所有 Stage 的首尾严格对齐。
+    """
+
+    label = f"  Stage {stage}: {title}  "
+    remaining = max(0, width - _display_width(label))
+    left = remaining // 2
+    right = remaining - left
+    return f"{'=' * left}{label}{'=' * right}"
 
 
 class Stage(IntEnum):

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 from kbd import runtime
-from kbd.pipeline import Stage
+from kbd.pipeline import Stage, _display_width, _stage_banner
 from kbd.run import (
     _cli_options,
     _cmd_audit_log_signals,
@@ -18,6 +18,7 @@ from kbd.run import (
     _cmd_extract_signals,
     _cmd_pipeline,
     _parse_stages,
+    _print_pipeline_summary,
     _prompt_choice,
     _prompt_yes_no,
     build_parser,
@@ -30,6 +31,17 @@ def test_pipeline_stage_parser_includes_extract_and_audit():
         Stage.AUDIT_LOG_SIGNALS,
     ]
     assert _parse_stages("5,6") == [Stage.EXTRACT_SIGNALS, Stage.AUDIT_LOG_SIGNALS]
+
+
+def test_stage_banners_have_the_same_display_width_and_aligned_edges():
+    banners = [
+        _stage_banner(1, "数据抓取"),
+        _stage_banner(2, "语义提取 + 原子入库"),
+        _stage_banner(5, "关键信号分级抽取"),
+    ]
+
+    assert len({_display_width(banner) for banner in banners}) == 1
+    assert all(banner.startswith("=") and banner.endswith("=") for banner in banners)
 
 
 def test_extract_signals_is_first_class_subcommand():
@@ -93,6 +105,36 @@ def test_prompt_choice_reprompts_until_a_numbered_option(monkeypatch):
         (("1", "one", "第一项"), ("2", "two", "第二项")),
         default="1",
     ) == "two"
+
+
+def test_pipeline_summary_table_has_consistent_visible_width(monkeypatch, capsys):
+    monkeypatch.setenv("NO_COLOR", "1")
+    _print_pipeline_summary(
+        "20260806_161016",
+        {
+            "pipeline": {"success": False, "total_ids": 4, "completed_ids": 0},
+            "fetch": {"done": 0, "failed": 0, "skipped": 4, "elapsed_s": 2.4},
+            "import": {"created": 4, "overridden": 0, "skipped": 0, "error": 0, "elapsed_s": 0.6},
+            "vision": {
+                "done": 0,
+                "failed": 4,
+                "case_status_counts": {"done": 0, "failed": 4, "needs_review": 0},
+                "elapsed_s": 64.3,
+            },
+            "classify": {"done": 0, "failed": 0, "skipped": 0, "elapsed_s": 0.0},
+            "extract": {"done": 0, "blocked_by_dependency": 4, "elapsed_s": 0.1},
+            "audit_log_signals": {"case_count": 0, "issue_counts": {}, "elapsed_s": 0.0},
+        },
+    )
+
+    lines = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith(("┌", "│", "├", "└"))
+    ]
+    assert lines
+    assert len({_display_width(line) for line in lines}) == 1
+    assert all(line.count("│") == 9 for line in lines if line.startswith("│"))
 
 
 @pytest.mark.asyncio
