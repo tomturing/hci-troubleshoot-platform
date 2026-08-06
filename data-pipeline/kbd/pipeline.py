@@ -64,11 +64,12 @@ from .progress import (
     save_progress,
     update_stage_status,
 )
+from .terminal_layout import TERMINAL_LAYOUT_WIDTH
 
 logger = logging.getLogger("kbd.pipeline")
 
 
-_STAGE_BANNER_WIDTH = 88
+_STAGE_BANNER_WIDTH = TERMINAL_LAYOUT_WIDTH
 
 
 def _display_width(text: str) -> int:

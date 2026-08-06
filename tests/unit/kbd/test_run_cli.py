@@ -25,6 +25,7 @@ from kbd.run import (
     _prompt_yes_no,
     build_parser,
 )
+from kbd.terminal_layout import TERMINAL_LAYOUT_WIDTH
 
 
 def test_pipeline_stage_parser_includes_extract_and_audit():
@@ -44,6 +45,7 @@ def test_stage_banners_have_the_same_display_width_and_aligned_edges():
     ]
 
     assert len({_display_width(banner) for banner in banners}) == 1
+    assert _display_width(banners[0]) == TERMINAL_LAYOUT_WIDTH
     assert all(banner.startswith("=") and banner.endswith("=") for banner in banners)
 
 
@@ -147,6 +149,7 @@ def test_pipeline_summary_table_has_consistent_visible_width(monkeypatch, capsys
     ]
     assert lines
     assert len({_display_width(line) for line in lines}) == 1
+    assert _display_width(lines[0]) == TERMINAL_LAYOUT_WIDTH
     assert all(line.count("│") == 9 for line in lines if line.startswith("│"))
 
 

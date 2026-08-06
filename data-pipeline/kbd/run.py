@@ -52,6 +52,7 @@ from .fetcher import read_ids_from_excel
 from .observability import install_trace_logging, new_trace_id, set_trace_id
 from .pipeline import Stage, run_from_excel
 from .runtime import require_shared_contracts
+from .terminal_layout import SUMMARY_COLUMN_WIDTHS, TERMINAL_LAYOUT_WIDTH
 
 # ─── 日志配置（终端 + 文件双输出）────────────────────────────────────────────────
 
@@ -415,13 +416,18 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
             )
         )
 
-    minimum_widths = (18, 14, 8, 8, 8, 8, 10, 12)
+    minimum_widths = SUMMARY_COLUMN_WIDTHS
     columns = [list(headers)] + [row for row, _color in summary_rows]
     widths = [
         max(minimum_widths[index], max(_display_width(row[index]) for row in columns) + 2)
         for index in range(len(headers))
     ]
     table_width = sum(widths) + len(widths) + 1
+    if table_width != TERMINAL_LAYOUT_WIDTH:
+        raise RuntimeError(
+            "终端布局宽度契约不一致：摘要宽度 "
+            f"{table_width} != Stage Banner 宽度 {TERMINAL_LAYOUT_WIDTH}"
+        )
 
     def border(left: str, middle: str, right: str, fill: str = "─") -> str:
         return left + middle.join(fill * width for width in widths) + right
