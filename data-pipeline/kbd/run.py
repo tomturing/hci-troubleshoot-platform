@@ -110,6 +110,7 @@ def _center_display(text: str, width: int) -> str:
 class _ConsoleFormatter(logging.Formatter):
     """人类可读终端格式：阶段标题整行突出，状态按严重性着色。"""
 
+    _STAGE_BANNER_RE = re.compile(r"^=+\s+Stage\s+\d+:\s+.+\s+=+$")
     _ERROR_WORDS = ("失败", "错误", "异常", "超时", "阻断", "PIPELINE_UNEXPECTED", "STATE_INCONSISTENT")
     _WARNING_WORDS = ("需复核", "warning", "重试", "跳过")
     _SUCCESS_WORDS = ("完成", "成功", "通过", "ready", "done", "全部完成")
@@ -122,7 +123,7 @@ class _ConsoleFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         message = record.getMessage()
         # 阶段 banner 不带长前缀，直接占一整行，便于快速定位阶段边界。
-        if message.startswith("========================"):
+        if self._STAGE_BANNER_RE.match(message):
             return _paint(message, "cyan")
 
         rendered = super().format(record)

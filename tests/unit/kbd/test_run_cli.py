@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from kbd.run import (
     _cmd_cli,
     _cmd_extract_signals,
     _cmd_pipeline,
+    _ConsoleFormatter,
     _parse_stages,
     _print_pipeline_summary,
     _prompt_choice,
@@ -38,10 +40,21 @@ def test_stage_banners_have_the_same_display_width_and_aligned_edges():
         _stage_banner(1, "数据抓取"),
         _stage_banner(2, "语义提取 + 原子入库"),
         _stage_banner(5, "关键信号分级抽取"),
+        _stage_banner(6, "qfk_log Proposal 只读契约审计"),
     ]
 
     assert len({_display_width(banner) for banner in banners}) == 1
     assert all(banner.startswith("=") and banner.endswith("=") for banner in banners)
+
+
+def test_long_stage_banner_is_rendered_as_a_standalone_line(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    banner = _stage_banner(6, "qfk_log Proposal 只读契约审计")
+    formatter = _ConsoleFormatter("%(levelname)s %(message)s")
+    rendered = formatter.format(logging.makeLogRecord({"levelname": "INFO", "msg": banner}))
+
+    assert rendered == banner
+    assert not rendered.startswith("INFO ")
 
 
 def test_extract_signals_is_first_class_subcommand():
