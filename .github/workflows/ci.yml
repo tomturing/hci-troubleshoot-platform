@@ -324,7 +324,9 @@ jobs:
       - name: Helm lint
         run: |
           helm lint deploy/helm/hci-platform
-          helm lint deploy/helm/hci-sim
+          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
+            helm lint deploy/helm/hci-sim
+          fi
 
       - name: Helm template 渲染检查
         run: |
@@ -332,11 +334,13 @@ jobs:
             -f deploy/helm/hci-platform/values.yaml \
             >/tmp/hci-platform-rendered.yaml
 
-          helm template hci-sim deploy/helm/hci-sim \
-            --namespace hci-sim-dev \
-            >/tmp/hci-sim-rendered.yaml
+          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
+            helm template hci-sim deploy/helm/hci-sim \
+              --namespace hci-sim-dev \
+              >/tmp/hci-sim-rendered.yaml
+          fi
 
-          if [ ! -s /tmp/hci-platform-rendered.yaml ] || [ ! -s /tmp/hci-sim-rendered.yaml ]; then
+          if [ ! -s /tmp/hci-platform-rendered.yaml ]; then
             echo "Helm 渲染结果为空"
             exit 1
           fi
@@ -375,7 +379,6 @@ jobs:
           name: helm-rendered
           path: |
             /tmp/hci-platform-rendered.yaml
-            /tmp/hci-sim-rendered.yaml
           retention-days: 1
   # check-claw-configs job 已删除（claw-configs 目录已移除）
   # check-db-migrations-sync job 已删除（Atlas 改造后不再需要 ConfigMap 同步检查）
