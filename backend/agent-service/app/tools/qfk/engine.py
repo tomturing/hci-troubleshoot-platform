@@ -13,7 +13,7 @@ from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 
 from app.tools.acli.executor import exec_result_observation
-from app.tools.qfk.ai_extractor import extract_ai_value, has_ai_extract
+from app.tools.qfk.ai_extractor import ai_value_type_for_matcher, extract_ai_value, has_ai_extract
 from app.tools.qfk.extractor import QFKExtractionError, get_complete_output
 from app.tools.qfk.handlers import HandlerRegistry
 from app.tools.qfk.matcher import evaluate_matcher
@@ -423,7 +423,70 @@ async def qfk_exec(
                     output_mode=execution_mode,
                 )
             matcher_input, excluded_probe_lines = _exclude_probe_self_observation(complete_outputs[source], commands)
-        matcher_result = evaluate_matcher(signal.matcher, matcher_input)
+        matcher_type = str(signal.matcher.get("type") or "")
+        ai_matcher_type = ai_value_type_for_matcher(matcher_type)
+        # 数值 Matcher 的 AI 提取属于第一步取值，必须先于 Matcher；关键字/正则等
+        # 仍保留“确定性命中后再做可选 AI 证据提取”的安全语义。
+        if (
+            ai_matcher_type
+            and has_ai_extract(matcher_extract)
+            and not (
+                matcher_type == "threshold"
+                and str(signal.matcher.get("aggregation") or "first_number")
+                in {"line_count", "duration_seconds"}
+            )
+        ):
+            try:
+                ai_result = await extract_ai_value(
+                    matcher_input,
+                    matcher_extract,
+                    ai_matcher_type,
+                    ai_client,
+                    matcher=signal.matcher,
+                    conversation_id=conversation_id,
+                    case_id=case_id or "",
+                )
+            except QFKExtractionError as exc:
+                return QFKResult(
+                    matched=False,
+                    namespace=signal.namespace,
+                    commands=commands,
+                    keywords=signal.keyword,
+                    match_mode=signal.match_mode,
+                    matched_keywords=[],
+                    evidence="",
+                    error=str(exc),
+                    exec_ids=exec_ids,
+                    raw_output=combined_output,
+                    complete_outputs=complete_outputs,
+                    output_mode=execution_mode,
+                )
+            precomputed_values = (
+                [float(ai_result.value)]
+                if ai_matcher_type == "number"
+                else [float(item) for item in ai_result.value]
+            )
+            precomputed_detail = {
+                "extract": {
+                    "status": "ok",
+                    "value_source": "ai_grounded",
+                    "ai_value": ai_result.value,
+                    "ai_raw_value": ai_result.raw_value,
+                    "evidence_line_numbers": ai_result.evidence_line_numbers,
+                    "evidence_lines": ai_result.evidence_lines,
+                    "candidate_count": ai_result.candidate_count,
+                }
+            }
+        else:
+            precomputed_values = None
+            precomputed_detail = None
+
+        matcher_result = evaluate_matcher(
+            signal.matcher,
+            matcher_input,
+            precomputed_values=precomputed_values,
+            precomputed_detail=precomputed_detail,
+        )
         if matcher_result.matched is None:
             return QFKResult(
                 matched=False,
@@ -442,10 +505,18 @@ async def qfk_exec(
         final_matched = bool(matcher_result.matched)
         matched_kws = list(matcher_result.detail.get("matched_keywords") or [])
         evidence = matcher_result.evidence
-        ai_value: Any | None = None
+        ai_value: Any | None = (
+            precomputed_detail.get("extract", {}).get("ai_value")
+            if precomputed_detail
+            else None
+        )
         # AI 只在确定性 Matcher 已真实命中时处理同一份完整候选日志。expected=False
         # 或 NOT 的“符合预期”不是正向日志命中，不允许借此凭空提取一个值。
-        if has_ai_extract(matcher_extract) and bool(matcher_result.detail.get("hit")):
+        if (
+            has_ai_extract(matcher_extract)
+            and bool(matcher_result.detail.get("hit"))
+            and precomputed_detail is None
+        ):
             try:
                 ai_result = await extract_ai_value(
                     matcher_input,
@@ -476,6 +547,13 @@ async def qfk_exec(
                 f"{evidence}\n【AI 提取】说明: {ai_result.instruction}\n"
                 f"候选行: {ai_result.candidate_count}；引用物理行: {ai_result.evidence_line_numbers}\n"
                 f"提取值: {ai_result.value!r}"
+            )
+        elif precomputed_detail:
+            ai_extract_detail = precomputed_detail["extract"]
+            evidence = (
+                f"{evidence}\n【AI 提取】候选行: {ai_extract_detail['candidate_count']}；"
+                f"引用物理行: {ai_extract_detail['evidence_line_numbers']}\n"
+                f"提取值: {ai_extract_detail['ai_value']!r}"
             )
         if signal.namespace == "log":
             evidence = (

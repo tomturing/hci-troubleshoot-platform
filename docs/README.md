@@ -72,7 +72,8 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | KBD 人工复核标签三态纠偏 | ✅ 代码与自动验证完成：普通 Signal 无标签；待复核 Signal 按专家是否保存显示黄/绿；详情 API 从现有 Revision 派生，不新增数据库状态 | 2026-08-04 |
 | KBD 关键信号统一过滤、取值与输出 | ✅ 代码与自动验证完成：same_record 包含/排除独立关系、完整行/文本行列/JSON、可选 AI、Match/Produce、qfk_log 有界保存与四类完整链路矩阵；真实 HCI replay 待部署后执行 | 2026-08-05 |
 | KBD 关键信号两步处理交互统一 | ✅ 代码与自动验证完成：匹配模式和每个产出变量统一为“处理单元 → 第一步取值 → 第二步判断/产出”；取值/判定关键字独立，交互与样式由共享组件保证一致 | 2026-08-05 |
-| hci-real/hci-sim 双轨与 100+ Agent 并发回归 | 🟡 A/B Runtime 与 C–E 控制面代码级基础已实现；C1 已对 dev 126 条 KBD 完成只读 active snapshot/Tool Contract 基线；C3 已提供 27736/34164 的 synthetic 两步 dev 闭环脚本和 Custom UI lease 入口，但真实 Artifact/生产 CAS/Bridge E2E、20-repeat、真实校准与 100+ 并发仍未验证 | 2026-08-06 |
+| QFK 数值 AI 取值、判断与产出统一 | ✅ 代码与自动验证完成，待 PR CI：数值 Matcher 先从确定性候选行取得经逐字回查的 AI 类型化数值，再执行 delta/trend/threshold；非数值 Matcher 保持后置证据提取，Produce 原子写入且同 Signal 变量名唯一 | 2026-08-07 |
+| hci-real/hci-sim 双轨与 100+ Agent 并发回归 | 🟡 A/B Runtime 与 C–E 控制面代码级基础已实现；C1 已对 dev 126 条 KBD 完成只读 active snapshot/Tool Contract 基线（2 条待 Artifact 绑定、4 条 Tool stale、120 条未发布），C2 已补 Artifact Gate、payload digest 和对象存储参考契约，C3 已提供 27736/34164 的 synthetic 两步 dev 闭环脚本和 Custom UI lease 入口；真实 Artifact/生产 CAS/Bridge E2E、20-repeat、真实校准与 100+ 并发仍未验证 | 2026-08-06 |
 | KBD 六阶段数据管道可靠性与可观测性 | 🟡 代码级完成：VISION/CLASSIFY 并行，EXTRACT 严格等待两者成功；状态、重试、中文 CLI 和 JSONL 排障日志已加固。真实 Provider 20 KBD 故障注入与 Redis 多副本 Job 持久化尚未验收，不得宣称批量生产稳定性已通过。 | 2026-08-06 |
 | CI 最小激活与快速门禁 | ✅ 已实施：hci-sim runtime/Bridge/Manifest 按变更分流；后端测试解除 Helm 无效等待；Schema 与 Lint 共用依赖；PR 不再构建 Windows exe。真实 Hosted Runner P50/P95 需后续采集。 | 2026-08-07 |
 

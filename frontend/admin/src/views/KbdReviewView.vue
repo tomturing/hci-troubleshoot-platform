@@ -581,6 +581,43 @@ async function focusSignalRequestError(error: unknown): Promise<void> {
   await focusSignal(signalId)
 }
 
+type SignalRequestError = Error & {
+  signalId?: string
+  fieldPath?: string
+  issue?: Record<string, any>
+  code?: string
+  traceId?: string
+  requestId?: string
+}
+
+function buildSignalRequestError(responseBody: any, statusCode: number, headers?: Headers): SignalRequestError {
+  const detail = responseBody?.detail
+  const envelope = responseBody?.error && typeof responseBody.error === 'object' ? responseBody.error : undefined
+  const issue = detail && typeof detail === 'object' && !Array.isArray(detail)
+    ? detail as Record<string, any>
+    : envelope
+  const message = typeof detail === 'string'
+    ? detail
+    : Array.isArray(detail)
+      ? detail.map((item: any) => item?.msg || item?.message || JSON.stringify(item)).join('；')
+      : String(issue?.message || `HTTP ${statusCode}`)
+  const location = String(issue?.location || '').trim()
+  const code = String(issue?.code || '').trim()
+  const traceId = headers?.get('X-Trace-Id') || headers?.get('x-trace-id') || ''
+  const requestId = headers?.get('X-Request-ID') || headers?.get('x-request-id') || ''
+  const diagnostics = [code && `错误码 ${code}`, (traceId || requestId) && `诊断编号 ${traceId || requestId}`].filter(Boolean).join('；')
+  const error = new Error(`${location ? `${location}：` : ''}${message}${diagnostics ? `（${diagnostics}）` : ''}`) as SignalRequestError
+  if (issue) {
+    error.issue = issue
+    if (issue.signal_id) error.signalId = String(issue.signal_id)
+    if (issue.field_path) error.fieldPath = String(issue.field_path)
+  }
+  if (code) error.code = code
+  if (traceId) error.traceId = traceId
+  if (requestId) error.requestId = requestId
+  return error
+}
+
 async function handleValidationAction(issue: CandidateValidation['issues'][number]) {
   const signalId = issue.action?.signal_id
   if (!signalId) {
@@ -1674,12 +1711,7 @@ async function persistSignalList(
   })
   const responseBody = await resp.json().catch(() => ({}))
   if (!resp.ok) {
-    const detail = responseBody?.detail
-    const message = typeof detail === 'string' ? detail : detail?.message || `HTTP ${resp.status}`
-    const location = typeof detail === 'object' ? String(detail?.location || '') : ''
-    const error = new Error(location ? `${location}：${message}` : message) as Error & { signalId?: string }
-    if (typeof detail === 'object' && detail?.signal_id) error.signalId = String(detail.signal_id)
-    throw error
+    throw buildSignalRequestError(responseBody, resp.status, resp.headers)
   }
   applyMaintenanceResponse(detailEntry.value, responseBody)
   const newDoc: SignalsDoc = responseBody?.payload?.signals_json || responseBody?.signals_json || payload
@@ -1780,12 +1812,7 @@ async function submitDeleteSignal() {
       })
       const responseBody = await resp.json().catch(() => ({}))
       if (!resp.ok) {
-        const detail = responseBody?.detail
-        const message = typeof detail === 'string' ? detail : detail?.message || `HTTP ${resp.status}`
-        const location = typeof detail === 'object' ? String(detail?.location || '') : ''
-        const error = new Error(location ? `${location}：${message}` : message) as Error & { signalId?: string }
-        if (typeof detail === 'object' && detail?.signal_id) error.signalId = String(detail.signal_id)
-        throw error
+        throw buildSignalRequestError(responseBody, resp.status, resp.headers)
       }
 
       const serverDoc = (responseBody?.payload?.signals_json || responseBody?.signals_json) as SignalsDoc
@@ -1830,6 +1857,7 @@ async function duplicateSignal(index: number) {
   try {
     await persistSignalList(list, '已复制关键信号')
   } catch (error) {
+    await focusSignalRequestError(error)
     ElMessage.error(error instanceof Error ? `复制失败：${error.message}` : '复制失败，请重试')
   } finally {
     signalSaveLoading.value = false
@@ -1845,6 +1873,7 @@ async function moveSignal(index: number, direction: -1 | 1) {
   try {
     await persistSignalList(list, '关键信号顺序已更新')
   } catch (error) {
+    await focusSignalRequestError(error)
     ElMessage.error(error instanceof Error ? `排序失败：${error.message}` : '排序失败，请重试')
   } finally {
     signalSaveLoading.value = false
@@ -1877,22 +1906,22 @@ async function saveSignalEdit() {
     const hasProduces = produces.some((item: any) => String(item?.name || '').trim())
     const hasMatch = Boolean(signalEditDraft.value.match)
     if (hasProduces === hasMatch) {
-      ElMessage.error('后端信号必须且只能选择“匹配模式”或“产出变量”之一')
+      ElMessage.error('执行结果处理配置冲突：请在“匹配模式”和“产出变量”中二选一，并删除另一种模式的配置')
       return
     }
     const matcherType = String(signalEditDraft.value.match?.type || '')
     if (hasMatch && ['keyword', 'regex', 'state'].includes(matcherType)
       && !String(signalEditDraft.value.match?.pattern || '').trim()) {
-      ElMessage.error('请填写用于判定命令结果的匹配内容')
+      ElMessage.error('第二步“判断”缺少匹配内容：请填写关键字、正则表达式或期望状态')
       return
     }
     if (hasMatch && ['threshold', 'delta', 'trend'].includes(matcherType)
       && signalEditDraft.value.match?.value === undefined) {
-      ElMessage.error('请填写数值判定的阈值')
+      ElMessage.error('第二步“判断”缺少数值阈值：请填写阈值后再保存')
       return
     }
     if (hasMatch && !signalEditDraft.value.match?.extract) {
-      ElMessage.error('匹配模式必须先完成第一步取值配置')
+      ElMessage.error('第一步“取值”尚未配置：请补全取值方式、行选择和结果数量后再保存')
       return
     }
     if (String(signalEditDraft.value.acquire?.args?.command || '').includes('|')) {

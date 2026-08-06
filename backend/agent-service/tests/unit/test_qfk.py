@@ -308,3 +308,68 @@ async def test_matcher_ai_extract_runs_only_after_deterministic_hit_and_records_
     assert result.matched is True
     assert result.ai_value == "192.168.100.55"
     assert "引用物理行: [2]" in result.evidence
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("matcher_type", "matcher_extra", "ai_value", "output", "expected"),
+    [
+        ("delta", {"operator": "==", "value": 0, "minimum_samples": 2}, [347688534016, 347688534016], "Completed 347688534016 of 347688534016 bytes\\n", True),
+        ("delta", {"operator": "==", "value": 0, "minimum_samples": 2}, [347688534016, 347688534017], "Completed 347688534016 of 347688534017 bytes\\n", False),
+        ("threshold", {"operator": ">=", "value": 347688534016}, 347688534016, "Completed 347688534016 bytes\\n", True),
+        ("trend", {"direction": "increasing", "value": 1, "minimum_samples": 3}, [1, 2, 3], "Samples 1 2 3\\n", True),
+    ],
+)
+async def test_numeric_matcher_consumes_grounded_ai_values_before_deterministic_judgement(
+    monkeypatch, matcher_type, matcher_extra, ai_value, output, expected
+):
+
+    class FakeExecutor:
+        _redis = SimpleNamespace()
+
+        async def execute(self, **_kwargs):
+            return ExecResult(
+                stdout=output,
+                stderr="",
+                exit_code=0,
+                command="acli --timeout 120 system ps",
+                node="172.28.25.4",
+                duration_ms=1,
+                truncated=False,
+                risk_level=1,
+                exec_id="qfk-numeric-ai",
+            )
+
+    class FakeAIClient:
+        async def invoke(self, **_kwargs):
+            return SimpleNamespace(content=json.dumps({"ok": True, "value": ai_value, "evidence_lines": [1]}))
+
+    monkeypatch.setattr(executor_module, "_executor", FakeExecutor())
+    signal = BackendSignal(
+        namespace="system",
+        command="ps",
+        matcher={
+            "type": matcher_type,
+            "expected": True,
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "all"},
+                "cardinality": "all",
+                "source": "stdout",
+                "ai_extract": {"instruction": "按日志出现顺序提取数值"},
+            },
+            **matcher_extra,
+        },
+    )
+
+    result = await engine.qfk_exec(
+        signal,
+        conversation_id="numeric-ai",
+        required_output_sources={"stdout"},
+        ai_client=FakeAIClient(),
+    )
+
+    assert result.error is None
+    assert result.matched is expected
+    assert result.ai_value == (float(ai_value) if matcher_type == "threshold" else [float(item) for item in ai_value])
+    assert "value_source=ai_grounded" in result.evidence or "AI 提取" in result.evidence

@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-08-07 | v3.68 | **QFK 取值—判断—产出公共契约**：数值 Matcher 先消费经逐字回查的 AI `number`/`array<number>`，非数值 Matcher 保持后置证据提取；Produce 与 Matcher 共用同一候选/AI 提取器并保持原子变量写入，Catalog 不支持的直接 predicate 仍 fail closed。 | [QFK 取值判断产出统一执行契约与 AI 数值提取方案](../../solution/events/2026-08-07-QFK取值判断产出统一执行契约与AI数值提取方案.md) |
 | 2026-08-06 | v3.68 | **QKV/QFK 关键词参数类型契约收敛**：Prompt v2.3 明确 QKV `acquire.args.keyword` 为单个 string，数组仅用于 QFK `match.pattern` 或 `extract.rows.include/exclude`；共享门禁新增 `QKV_KEYWORD_MUST_BE_STRING`，多任务动作拆成多条 Candidate。 | [QKV 关键词类型契约收敛方案](../../solution/knowledge-base/events/2026-08-06-KBD信号QKV关键词类型契约收敛方案.md) |
 | 2026-08-06 | v3.67 | **hci-sim C2 Artifact Registry 安全边界**：新增 Artifact metadata/scan/Expert+Security 双角色审批/revocation、Bundle payload digest 与 `version`、stale outbox。Compiler 不再信任调用方“已批准”声明，必须经 Registry 校验 ID/digest/status；真实 Artifact、OCI/S3、KMS、生产 PostgreSQL CAS/outbox worker 未接入，不得将参考内存实现视为环境验证。 | [C2 验证报告](../../verify/events/2026-08-06-hci-sim阶段C2获批Artifact与不可变BundleRegistry验证报告.md) |
 | 2026-08-06 | v3.66 | **hci-sim C–E 控制面契约**：新增 Agent Test Bundle/Run metadata Schema 与控制面参考内核。编译输入/Bundle/Lease/Run 按 digest 与 revision 冻结，审批/审计、stale、idempotency、差分/mutation/容量串线停止均 fail-closed；原始 Artifact 与 Lease 明文不入库。真实 Bridge/Agent Runner、持久 CAS 与环境验收仍待接入，不把代码级基础冒充生产验证。 | [C–E 控制面代码级实施验证报告](../../verify/events/2026-08-06-hci-sim阶段C-E控制面代码级实施验证报告.md) |

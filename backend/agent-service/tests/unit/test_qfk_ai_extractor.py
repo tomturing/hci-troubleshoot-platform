@@ -80,3 +80,26 @@ async def test_ai_extract_grounding_uses_raw_literal_before_number_normalization
     result = await extract_ai_value("磁盘使用率为 54%\n", spec, "number", client)
 
     assert result.value == 54.0
+
+
+@pytest.mark.asyncio
+async def test_ai_extract_array_number_preserves_order_and_raw_grounding():
+    client = _FakeAIClient({"ok": True, "value": [347688534016, 347688534016], "evidence_lines": [1]})
+    spec = {
+        "type": "text",
+        "rows": {"mode": "all"},
+        "cardinality": "all",
+        "source": "stdout",
+        "ai_extract": {"instruction": "按出现顺序提取 completed 和 total 两个字节数"},
+    }
+
+    result = await extract_ai_value(
+        "Completed 347688534016 of 347688534016 bytes\n",
+        spec,
+        "array<number>",
+        client,
+    )
+
+    assert result.value == [347688534016.0, 347688534016.0]
+    assert result.raw_value == [347688534016, 347688534016]
+    assert result.evidence_line_numbers == [1]

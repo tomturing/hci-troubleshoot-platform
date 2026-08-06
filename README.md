@@ -1,13 +1,18 @@
 # HCI 智能排障平台
 
-> 版本 **v2.21.0** · 2026-08-06
+> 版本 **v2.22.0** · 2026-08-07
 
 HCI 环境 AI 故障诊断平台。微服务架构 + S0-S6 六阶段诊断状态机 + 双轨知识检索（SOP + RAG）。
 
 ### v2.21.0 当前里程碑（2026-08-06）
 
+### v2.22.0 当前里程碑（2026-08-06）
+
+- **KBD 错误链路与日志可观测性整改**：Signal 校验错误返回稳定错误码/字段定位；网关记录下游非 2xx 并透传诊断 ID；共享异常处理、HTTP 指标、结构化日志和管理台错误协议统一。详见 [整改方案](docs/solution/events/2026-08-06-KBD关键信号错误链路与日志可观测性整改方案.md) 与 [整改任务](docs/task/events/2026-08-06-KBD关键信号错误链路与日志可观测性整改任务.md)。
+
 - **QKV/QFK 参数类型契约收敛**：`qkv_* .acquire.args.keyword` 严格为单个 string；多任务拆成多条 Candidate，数组仅用于 `match.pattern` 或 `extract.rows.include/exclude`。Prompt v2.3、迁移 023、稳定错误码和回归测试已同步。
 - **QFK 完整输出 AI 提取**：完整日志先经确定性行选择与 Matcher 命中，再由 AI 在候选原文中提取值；返回值和引用物理行逐字回查。Matcher 与产出变量共用该契约，任一步失败不产出 Signal 或变量。
+- **QFK 数值取值→判断统一**：threshold/delta/trend 在配置 AI numeric 时先从候选完整行取得经逐字回查的 `number`/`array<number>`，再执行确定性判断；Catalog 仍拒绝不支持的直接 predicate，Produce 保持原子写入且变量名唯一。
 - **KBD Proposal/Expert 学习闭环**：当前 AI Proposal 与专家工作稿通过显式 baseline 配对；专家修改按稳定关键信号计数，AI 重抽不再误记为人工修改。不可变历史继续用于模型回归、评估和运行追溯，中间工作稿不默认进入训练样本。
 - **关键信号抽取质量**：Prompt 和确定性后处理共同约束失败任务 `qkv_task`、QFK producer 下游消费、配置文件 matcher、多图证据和 120 秒默认超时；`qfk_system` 统一使用 `command + command_args`。
 - **当前阶段**：代码级修复与本地回归完成；PR 合并部署后需在 dev 对 KBD30880 重新抽取验收 `1 qkv_task + 2 qfk_system`，并观察 QKV 类型错误码。

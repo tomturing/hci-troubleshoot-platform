@@ -75,6 +75,9 @@ def _eval_keyword(kws: list[str], records: list[str], mode: str) -> _KeywordEval
 def evaluate_matcher(
     matcher: dict[str, Any] | None,
     text: str,
+    *,
+    precomputed_values: list[float] | None = None,
+    precomputed_detail: dict[str, Any] | None = None,
 ) -> MatcherResult:
     """对单条 Matcher 契约做确定性（非 LLM）布尔求值。
 
@@ -193,7 +196,12 @@ def evaluate_matcher(
             values: list[float] = []
         else:
             predicate_text = text
-            values, extraction_detail, extraction_error = _extract_match_values(text, matcher)
+            values, extraction_detail, extraction_error = _resolve_numeric_values(
+                text,
+                matcher,
+                precomputed_values=precomputed_values,
+                precomputed_detail=precomputed_detail,
+            )
         if extraction_error:
             return MatcherResult(
                 matched=None,
@@ -245,7 +253,12 @@ def evaluate_matcher(
         )
 
     if mtype == "delta":
-        values, extraction_detail, extraction_error = _extract_match_values(text, matcher)
+        values, extraction_detail, extraction_error = _resolve_numeric_values(
+            text,
+            matcher,
+            precomputed_values=precomputed_values,
+            precomputed_detail=precomputed_detail,
+        )
         if extraction_error:
             return MatcherResult(
                 matched=None,
@@ -290,7 +303,12 @@ def evaluate_matcher(
         )
 
     if mtype == "trend":
-        values, extraction_detail, extraction_error = _extract_match_values(text, matcher)
+        values, extraction_detail, extraction_error = _resolve_numeric_values(
+            text,
+            matcher,
+            precomputed_values=precomputed_values,
+            precomputed_detail=precomputed_detail,
+        )
         if extraction_error:
             return MatcherResult(
                 matched=None,
@@ -419,6 +437,30 @@ def _extract_match_values(
         return [], detail, "QFK_TYPE_CAST_FAILED: 文本取值结果不是数值"
     detail["extract"]["values"] = values
     return values, detail, None
+
+
+def _resolve_numeric_values(
+    text: str,
+    matcher: dict[str, Any],
+    *,
+    precomputed_values: list[float] | None = None,
+    precomputed_detail: dict[str, Any] | None = None,
+) -> tuple[list[float], dict[str, Any], str | None]:
+    """让数值 Matcher 统一消费确定性或已溯源的 AI 取值结果。"""
+
+    if precomputed_values is not None:
+        detail = dict(precomputed_detail or {})
+        extract_detail = dict(detail.get("extract") or {})
+        extract_detail.update(
+            {
+                "status": "ok",
+                "values": list(precomputed_values),
+                "value_source": "ai_grounded",
+            }
+        )
+        detail["extract"] = extract_detail
+        return list(precomputed_values), detail, None
+    return _extract_match_values(text, matcher)
 
 
 def _extract_duration_seconds(text: str) -> float | None:
