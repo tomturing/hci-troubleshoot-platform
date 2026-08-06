@@ -38,7 +38,10 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import re
 import sys
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -51,6 +54,81 @@ from .pipeline import Stage, run_from_excel
 from .runtime import require_shared_contracts
 
 # ─── 日志配置（终端 + 文件双输出）────────────────────────────────────────────────
+
+_ANSI_RESET = "\033[0m"
+_ANSI = {
+    "red": "\033[31m",
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "cyan": "\033[36m",
+    "gray": "\033[90m",
+    "bold": "\033[1m",
+}
+
+
+def _terminal_color_enabled() -> bool:
+    """遵循 NO_COLOR，并允许 KBD_COLOR=always 强制开启终端颜色。"""
+
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    if os.environ.get("KBD_COLOR", "auto").lower() == "always":
+        return True
+    if os.environ.get("KBD_COLOR", "auto").lower() == "never":
+        return False
+    return bool(getattr(sys.stderr, "isatty", lambda: False)())
+
+
+def _paint(text: str, color: str, *, enabled: bool | None = None) -> str:
+    if enabled is None:
+        enabled = _terminal_color_enabled()
+    if not enabled:
+        return text
+    return f"{_ANSI[color]}{text}{_ANSI_RESET}"
+
+
+def _display_width(text: str) -> int:
+    """计算中英文混排的终端显示宽度，避免中文表格列错位。"""
+
+    return sum(2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1 for char in text)
+
+
+def _pad_display(text: str, width: int, *, align: str = "left") -> str:
+    padding = max(0, width - _display_width(text))
+    if align == "right":
+        return " " * padding + text
+    return text + " " * padding
+
+
+class _ConsoleFormatter(logging.Formatter):
+    """人类可读终端格式：阶段标题整行突出，状态按严重性着色。"""
+
+    _ERROR_WORDS = ("失败", "错误", "异常", "超时", "阻断", "PIPELINE_UNEXPECTED", "STATE_INCONSISTENT")
+    _WARNING_WORDS = ("需复核", "warning", "重试", "跳过")
+    _SUCCESS_WORDS = ("完成", "成功", "通过", "ready", "done", "全部完成")
+
+    @staticmethod
+    def _has_positive_counter(message: str, names: tuple[str, ...]) -> bool:
+        pattern = r"(?:" + "|".join(re.escape(name) for name in names) + r")[\"']?\s*[:=]\s*[\"']?([1-9][0-9]*)"
+        return re.search(pattern, message, flags=re.IGNORECASE) is not None
+
+    def format(self, record: logging.LogRecord) -> str:
+        message = record.getMessage()
+        # 阶段 banner 不带长前缀，直接占一整行，便于快速定位阶段边界。
+        if message.startswith("========================"):
+            return _paint(message, "cyan")
+
+        rendered = super().format(record)
+        has_error_counter = self._has_positive_counter(
+            message, ("failed", "error", "blocked", "blocked_by_dependency")
+        )
+        has_warning_counter = self._has_positive_counter(message, ("needs_review", "warning"))
+        if record.levelno >= logging.ERROR or has_error_counter or any(word in message for word in self._ERROR_WORDS):
+            return _paint(rendered, "red")
+        if record.levelno >= logging.WARNING or has_warning_counter or any(word in message for word in self._WARNING_WORDS):
+            return _paint(rendered, "yellow")
+        if any(word in message for word in self._SUCCESS_WORDS):
+            return _paint(rendered, "green")
+        return rendered
 
 class _JsonLineFormatter(logging.Formatter):
     """排障用 JSONL：终端保持中文可读，详细日志可被脚本稳定检索。"""
@@ -105,11 +183,15 @@ def _setup_logging(run_id: str | None = None, *, verbose: bool = False) -> str:
         "%(asctime)s [%(levelname)s] %(name)s [tid=%(trace_id)s] — %(message)s",
         datefmt="%H:%M:%S",
     )
+    console_formatter = _ConsoleFormatter(
+        "%(asctime)s [%(levelname)s] %(name)s [tid=%(trace_id)s] — %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
     # StreamHandler（终端输出，INFO 级别）
     stream_handler = logging.StreamHandler()
     stream_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
-    stream_handler.setFormatter(formatter)
+    stream_handler.setFormatter(console_formatter)
     root_logger.addHandler(stream_handler)
 
     # FileHandler（文件持久化，DEBUG 级别更详细）
@@ -254,40 +336,107 @@ async def _cmd_pipeline(args: argparse.Namespace, run_id: str) -> int:
 
 
 def _print_pipeline_summary(run_id: str, stats: dict) -> None:
-    """面向操作者的终端摘要；完整细节在 JSONL 与 progress 文件中。"""
+    """面向操作者的对齐摘要；完整细节在 JSONL 与 progress 文件中。"""
+
     pipeline = stats.get("pipeline", {})
-    print("\n─── KBD 流水线完成摘要 ───")
-    print(f"运行编号：{run_id}")
-    print(f"结果：{'全部阶段完成' if pipeline.get('success') else '部分完成，请查看失败/阻断项'}")
-    print(f"完整完成 KBD：{pipeline.get('completed_ids', 0)}/{pipeline.get('total_ids', 0)}")
-    for stage_name, label in (
-        ("fetch", "抓取"), ("import", "导入"), ("vision", "截图识别"),
-        ("classify", "案例分类"), ("extract", "关键信号抽取"),
+    success = bool(pipeline.get("success"))
+    total = pipeline.get("total_ids", 0)
+    completed = pipeline.get("completed_ids", 0)
+    enabled = _terminal_color_enabled()
+
+    print("\n" + "=" * 76)
+    print(_paint("KBD 流水线完成摘要", "bold", enabled=enabled))
+    print("=" * 76)
+    print(f"运行编号   : {run_id}")
+    print(
+        "总体结果   : "
+        + _paint("全部阶段完成", "green", enabled=enabled)
+        if success
+        else "总体结果   : " + _paint("部分完成，请查看失败/阻断项", "red", enabled=enabled)
+    )
+    print(f"KBD 完成数 : {completed}/{total}")
+    print("-" * 76)
+    print(
+        _pad_display("阶段", 16)
+        + _pad_display("状态", 12)
+        + _pad_display("完成", 8, align="right")
+        + _pad_display("失败", 8, align="right")
+        + _pad_display("跳过", 8, align="right")
+        + _pad_display("需复核", 8, align="right")
+        + _pad_display("前置阻断", 10, align="right")
+        + _pad_display("耗时", 12, align="right")
+    )
+    print("-" * 76)
+
+    stage_rows = (
+        ("fetch", "数据抓取"),
+        ("import", "语义导入"),
+        ("vision", "截图识别"),
+        ("classify", "案例分类"),
+        ("extract", "关键信号抽取"),
         ("audit_log_signals", "日志信号审计"),
-    ):
+    )
+    for stage_name, label in stage_rows:
         item = stats.get(stage_name)
         if not item:
             continue
+        if stage_name == "import":
+            done = sum(int(item.get(key, 0) or 0) for key in ("created", "overridden"))
+            skipped = int(item.get("skipped", 0) or 0)
+            failed = int(item.get("error", item.get("failed", 0)) or 0)
+        elif stage_name == "audit_log_signals":
+            done = int(item.get("case_count", 0) or 0)
+            skipped = 0
+            failed = int(item.get("issue_counts", {}).get("BLOCKED_ACTIVE_SIGNAL", 0) or 0)
+        else:
+            done = int(item.get("done", 0) or 0)
+            failed = int(item.get("failed", 0) or 0)
+            skipped = int(item.get("skipped", 0) or 0)
+        audit_issues = 0
+        needs_review = int(item.get("needs_review", item.get("low_confidence", 0)) or 0)
+        if stage_name == "audit_log_signals":
+            needs_review = int(item.get("case_status_counts", {}).get("NEEDS_EXPERT_REVIEW", 0) or 0)
+            audit_issues = sum(int(value or 0) for value in item.get("issue_counts", {}).values())
+        if stage_name == "vision":
+            needs_review = int(item.get("case_status_counts", {}).get("needs_review", needs_review) or 0)
+        blocked = int(item.get("blocked_by_dependency", 0) or 0)
         elapsed = item.get("elapsed_s")
-        fields = []
-        for key, label_key in (("done", "完成"), ("failed", "技术失败"), ("needs_review", "需复核"), ("blocked_by_dependency", "前置阻断")):
-            if key in item:
-                fields.append(f"{label_key} {item[key]}")
-        if stage_name == "vision" and item.get("case_status_counts"):
-            fields.append("KBD状态 " + "/".join(f"{k}:{v}" for k, v in item["case_status_counts"].items()))
-        duration = f"，耗时 {elapsed:.1f}s" if isinstance(elapsed, (int, float)) else ""
-        print(f"- {label}：{'，'.join(fields) or '已执行'}{duration}")
-    if not pipeline.get("success"):
-        print("建议：使用 --resume 或 --failed-only 重试技术失败项；前置阻断项需先修复其上游阶段。")
-    print(f"排障日志：{settings.KBD_LOGS_DIR / f'kbd_{run_id}.jsonl'}")
+        elapsed_text = f"{elapsed:.1f}s" if isinstance(elapsed, (int, float)) else "-"
+        if failed or blocked:
+            status = _paint("失败/阻断", "red", enabled=enabled)
+        elif needs_review or audit_issues:
+            status = _paint("需复核", "yellow", enabled=enabled)
+        else:
+            status = _paint("完成", "green", enabled=enabled)
+        # 先按视觉宽度补齐，再包裹 ANSI，避免控制码参与列宽计算。
+        print(
+            _pad_display(label, 16)
+            + _paint(_pad_display(status, 12), "red" if failed or blocked else "yellow" if needs_review or audit_issues else "green", enabled=enabled)
+            + _pad_display(str(done), 8, align="right")
+            + _pad_display(str(failed), 8, align="right")
+            + _pad_display(str(skipped), 8, align="right")
+            + _pad_display(str(needs_review), 8, align="right")
+            + _pad_display(str(blocked), 10, align="right")
+            + _pad_display(elapsed_text, 12, align="right")
+        )
+
+    if stats.get("vision", {}).get("case_status_counts"):
+        counts = stats["vision"]["case_status_counts"]
+        print("\nVision KBD 状态：" + " / ".join(f"{key}={value}" for key, value in counts.items()))
+    if stats.get("audit_log_signals", {}).get("issue_counts"):
+        issues = stats["audit_log_signals"]["issue_counts"]
+        print("日志审计问题：" + " / ".join(f"{key}={value}" for key, value in issues.items()))
+    if not success:
+        print(_paint("建议：技术失败项使用 --resume 或 --failed-only 重试；前置阻断项必须先修复上游阶段。", "yellow", enabled=enabled))
+    print(f"排障日志   : {settings.KBD_LOGS_DIR / f'kbd_{run_id}.jsonl'}")
 
 
-async def _cmd_wizard(args: argparse.Namespace, run_id: str) -> int:
-    """中文交互向导；保留非交互 CLI 作为 CI/批处理唯一稳定接口。"""
+async def _cmd_cli(args: argparse.Namespace, run_id: str) -> int:
+    """交互式 CLI；Typical 保守运行，Custom 显式确认高风险参数。"""
     if not sys.stdin.isatty():
-        print("错误：wizard 需要交互终端；自动化请使用 pipeline --ids/--id-file --json。")
+        print("错误：cli 需要交互终端；自动化请使用 pipeline --ids/--id-file --json。")
         return 3
-    print("KBD 知识生产向导")
+    print("KBD 交互式 CLI")
     print("将执行：抓取 → 导入 →（截图识别与分类并行）→ 关键信号抽取 → 审计")
     print(f"目标 kb-service：{settings.KB_SERVICE_URL}")
     print(f"数据库：{'已配置' if settings.DATABASE_URL else '未配置'}")
@@ -300,14 +449,107 @@ async def _cmd_wizard(args: argparse.Namespace, run_id: str) -> int:
     if not ids:
         print("未输入有效案例 ID，已取消。")
         return 3
+
+    options = _cli_options()
     print(f"本次将处理 {len(ids)} 个 KBD。截图识别成功与分类成功均为信号抽取的硬前置条件。")
-    if input("确认开始？请输入 是：").strip() != "是":
+    print("\n本次实际运行参数（后端 run_pipeline）：")
+    for key, value in options.items():
+        print(f"  {key:<16}= {value}")
+    print("确认的意义：最后一次显式确认，防止在参数选定后误触发抓取、写库和 LLM 调用。")
+    if not _prompt_yes_no("确认开始？", default=False):
         print("已取消，未执行任何处理。")
         return 130
     from .pipeline import run_pipeline
-    stats, actual_run_id = await run_pipeline(ids, run_id=run_id)
+    stats, actual_run_id = await run_pipeline(ids, run_id=run_id, **options)
     _print_pipeline_summary(actual_run_id, stats)
     return 0 if stats.get("pipeline", {}).get("success", True) else 1
+
+
+def _prompt_yes_no(prompt: str, *, default: bool) -> bool:
+    """标准 yes/no 提示：支持 y/yes/n/no（大小写不敏感），空输入取默认值。"""
+
+    yes = {"y", "yes"}
+    no = {"n", "no"}
+    suffix = "[Y/n]" if default else "[y/N]"
+    while True:
+        value = input(f"{prompt} {suffix}: ").strip().lower()
+        if not value:
+            return default
+        if value in yes:
+            return True
+        if value in no:
+            return False
+        print("请输入 y/yes 或 n/no；直接回车采用默认值。")
+
+
+def _prompt_choice(prompt: str, choices: tuple[tuple[str, str, str], ...], *, default: str) -> str:
+    """标准编号选择：只接受列出的序号，空输入采用默认序号。"""
+
+    choice_map = {number: value for number, value, _label in choices}
+    while True:
+        print(prompt)
+        for number, _value, label in choices:
+            print(f"  {number}) {label}")
+        raw = input(f"请选择 [{default}]: ").strip()
+        selected = raw or default
+        if selected in choice_map:
+            return choice_map[selected]
+        valid = "/".join(choice_map)
+        print(f"请输入选项序号（{valid}）。")
+
+
+def _cli_options() -> dict[str, object]:
+    """收集交互 CLI 参数，返回可直接传入 run_pipeline 的参数字典。"""
+
+    mode = _prompt_choice(
+        "请选择运行模式：",
+        (
+            ("1", "typical", "默认 Typical（推荐）：保守运行，不强制抓取、不覆盖已有记录"),
+            ("2", "custom", "自定义 Custom：逐项确认运行参数"),
+        ),
+        default="1",
+    )
+    if mode == "typical":
+        options: dict[str, object] = {
+            "force_fetch": False,
+            "override": False,
+            "override_status": None,
+            "resume": False,
+            "failed_only": False,
+        }
+        print("已选择默认 Typical：不会强制重新抓取，也不会覆盖已有 KBD。")
+        return options
+    force_fetch = _prompt_yes_no("强制重新抓取已有缓存？", default=False)
+    override = _prompt_yes_no("覆盖已存在的 KBD？", default=False)
+    override_status: list[str] | None = None
+    if override:
+        scope = _prompt_choice(
+            "请选择覆盖范围：",
+            (
+                ("1", "draft", "仅 draft（推荐）"),
+                ("2", "all", "所有状态（包含 published，高风险）"),
+            ),
+            default="1",
+        )
+        if scope == "draft":
+            override_status = ["draft"]
+        else:
+            print("警告：所有状态包含 published，可能覆盖专家已审核内容。")
+            if not _prompt_yes_no("确认允许覆盖所有状态？", default=False):
+                override = False
+                override_status = None
+
+    resume = _prompt_yes_no("从数据库现状续跑并跳过已完成项？", default=False)
+    failed_only = _prompt_yes_no("仅处理抓取/Vision 失败项？", default=False)
+    if resume and failed_only:
+        print("提示：同时启用续跑和失败筛选时，将先筛选失败项，再按数据库状态跳过已完成项。")
+    return {
+        "force_fetch": force_fetch,
+        "override": override,
+        "override_status": override_status,
+        "resume": resume,
+        "failed_only": failed_only,
+    }
 
 
 async def _cmd_fetch(args: argparse.Namespace, run_id: str) -> None:
@@ -674,8 +916,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_pipeline.add_argument("--json", action="store_true", help="输出机器可读 JSON（供 CI/自动化使用）")
     p_pipeline.add_argument("--quiet", action="store_true", help="不输出中文终端摘要，仅保留日志文件")
 
-    # 中文交互向导：不隐式执行危险覆盖操作，输入与确认都必须来自 TTY。
-    sub.add_parser("wizard", help="中文交互式运行向导（适合人工批量导入）")
+    # 交互 CLI：不隐式执行危险覆盖操作，输入与确认都必须来自 TTY。
+    sub.add_parser("cli", help="交互式 KBD 生产 CLI（适合人工操作）")
 
     # 单独 stage 子命令
     for name, help_text in [
@@ -778,7 +1020,7 @@ def main() -> None:
 
     # 完整 pipeline 默认包含 Stage 6；在任何 fetch/import/LLM 调用前确认其
     # 唯一外部源码依赖可用，避免跑完前五阶段后才因 shared 导入失败。
-    requires_shared_contracts = args.command in {"audit-log-signals", "audit-signals", "audit", "wizard"}
+    requires_shared_contracts = args.command in {"audit-log-signals", "audit-signals", "audit", "cli"}
     if args.command == "pipeline":
         requires_shared_contracts = Stage.AUDIT_LOG_SIGNALS in _parse_stages(args.stages)
     if requires_shared_contracts:
@@ -789,7 +1031,7 @@ def main() -> None:
 
     cmd_map = {
         "pipeline":    _cmd_pipeline,
-        "wizard":      _cmd_wizard,
+        "cli":          _cmd_cli,
         "fetch":       _cmd_fetch,
         "vision":      _cmd_vision,
         "import":      _cmd_import,

@@ -67,6 +67,12 @@ from .progress import (
 logger = logging.getLogger("kbd.pipeline")
 
 
+def _stage_banner(stage: int, title: str) -> str:
+    """生成醒目的阶段分隔线；日志文件和终端保持同一可检索文本。"""
+
+    return f"{'=' * 24}  Stage {stage}: {title}  {'=' * 24}"
+
+
 class Stage(IntEnum):
     """流水线阶段枚举。
 
@@ -244,7 +250,7 @@ async def run_pipeline(
 
     try:
         if Stage.FETCH in stages:
-            logger.info("─── Stage 1: 数据抓取 ───")
+            logger.info(_stage_banner(1, "数据抓取"))
             fetch_ids = kbd_ids
             t0 = time.monotonic()
             stats = await fetch_batch(fetch_ids, force=force_fetch)
@@ -259,7 +265,7 @@ async def run_pipeline(
             save_progress(run_id, progress)
 
         if Stage.IMPORT in stages:
-            logger.info("─── Stage 2: 语义提取 + 原子入库 ───")
+            logger.info(_stage_banner(2, "语义提取 + 原子入库"))
             _mark_dependency_blocked(progress, "import", kbd_ids, active_ids)
             ready_ids = await _get_import_ready_ids(active_ids, pool)
             import_ids = ready_ids
@@ -296,7 +302,7 @@ async def run_pipeline(
         classified_ids: set[str] | None = None
 
         async def _run_vision_stage(input_ids: list[str]) -> set[str]:
-            logger.info("─── Stage 3: 图片语义化 ───")
+            logger.info(_stage_banner(3, "图片语义化"))
             _mark_dependency_blocked(progress, "vision", kbd_ids, input_ids)
             vision_ids = await _get_vision_ready_ids(input_ids, pool)
             started_at = time.monotonic()
@@ -334,7 +340,7 @@ async def run_pipeline(
             return completed
 
         async def _run_classify_stage(input_ids: list[str]) -> set[str]:
-            logger.info("─── Stage 4: AI 分类 ───")
+            logger.info(_stage_banner(4, "AI 分类"))
             _mark_dependency_blocked(progress, "classify", kbd_ids, input_ids)
             classify_rows = await pool.fetch(
                 """SELECT support_id FROM kbd_entry
@@ -382,7 +388,7 @@ async def run_pipeline(
             active_ids = sorted(vision_done_ids & classified_ids)
 
         if Stage.EXTRACT_SIGNALS in stages:
-            logger.info("─── Stage 5: 关键信号分级抽取 ───")
+            logger.info(_stage_banner(5, "关键信号分级抽取"))
             _mark_dependency_blocked(progress, "extract_signals", kbd_ids, active_ids)
             extract_input_ids = list(active_ids)
             # 仅处理已分类且 signals_json 为空的 draft 案例
@@ -425,7 +431,7 @@ async def run_pipeline(
             save_progress(run_id, progress)
 
         if Stage.AUDIT_LOG_SIGNALS in stages:
-            logger.info("─── Stage 6: qfk_log Proposal 只读契约审计 ───")
+            logger.info(_stage_banner(6, "qfk_log Proposal 只读契约审计"))
             _mark_dependency_blocked(progress, "audit_log_signals", kbd_ids, active_ids)
             # 延迟导入，避免只运行 fetch/import 等阶段时强制依赖 backend/shared。
             from .log_signal_audit import audit_rows, load_rows_from_db
