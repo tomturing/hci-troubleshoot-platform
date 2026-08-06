@@ -15,6 +15,8 @@ on:
       - 'terminal_bridge/**'
       - 'deploy/helm/hci-sim/**'
       - '.github/workflows/hci-sim-go.yml'
+  # 允许发布前或故障复核时手动运行完整 hci-sim 质量门禁；不影响 PR 激活范围。
+  workflow_dispatch:
 
 permissions:
   contents: read
