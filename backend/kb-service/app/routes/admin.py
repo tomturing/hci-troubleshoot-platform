@@ -187,23 +187,11 @@ def _humanize_signal_validation_error(error: jsonschema.ValidationError, signals
         return {
             "level": "error",
             "code": "NO_MUST_SIGNAL",
-            "location": "关键信号",
+            "location": "验证规则 / 必要证据",
+            "field_path": "verification_contract.evidence_policy.must",
             "message": "发布前请至少保留一条“必要证据”。",
             "action": {"type": "edit_signal_role"},
-        }
-    if "缺少稳定 id" in message or "signal id 重复" in message:
-        return {
-            "level": "error",
-            "code": "SIGNAL_ID_INVALID",
-            "location": "关键信号",
-            "message": "有一条关键信号的内部标识异常，请删除后重新新增该信号。",
-        }
-    if "输入变量没有上游产出" in message or "变量依赖存在环或不可达" in message:
-        return {
-            "level": "error",
-            "code": "SIGNAL_VARIABLE_DEPENDENCY_INVALID",
-            "location": "关键信号 / 输入变量",
-            "message": message,
+            "validation_reason": message,
         }
     if "处置动作不属于 KBD 关键信号" in message:
         index_match = re.search(r"signals\[(\d+)]", message)
@@ -233,9 +221,18 @@ def _humanize_signal_validation_error(error: jsonschema.ValidationError, signals
 def _raise_signal_validation_error(error: jsonschema.ValidationError, signals: list[Any]) -> None:
     """统一把保存、删除和发布错误返回为前端可定位的结构化问题。"""
 
+    issue = _humanize_signal_validation_error(error, signals)
+    logger.warning(
+        event="kbd_signal_validation_failed",
+        code=issue.get("code"),
+        signal_id=issue.get("signal_id"),
+        field_path=issue.get("field_path"),
+        location=issue.get("location"),
+        validation_reason=issue.get("validation_reason") or error.message,
+    )
     raise HTTPException(
         status_code=422,
-        detail=_humanize_signal_validation_error(error, signals),
+        detail=issue,
     ) from error
 
 
@@ -249,13 +246,23 @@ def _prepare_expert_draft_signals(raw: Any) -> dict[str, Any]:
     try:
         document = _normalize_qfk_system_command_args(document)
     except ValueError as exc:
+        validation_reason = str(exc)
+        logger.warning(
+            event="kbd_signal_validation_failed",
+            code="SIGNAL_ACQUIRE_ARGS_INVALID",
+            field_path="acquire.args",
+            location="关键信号 · 采集配置 / 采集参数",
+            validation_reason=validation_reason,
+        )
         raise HTTPException(
             status_code=422,
             detail={
                 "level": "error",
                 "code": "SIGNAL_ACQUIRE_ARGS_INVALID",
-                "location": "关键信号 / 采集参数",
-                "message": str(exc),
+                "location": "关键信号 · 采集配置 / 采集参数",
+                "field_path": "acquire.args",
+                "message": f"采集参数配置失败：{validation_reason}；请检查采集参数后再保存。",
+                "validation_reason": validation_reason,
             },
         ) from exc
     metadata = document.get("generation_metadata")
@@ -270,22 +277,33 @@ def _prepare_expert_draft_signals(raw: Any) -> dict[str, Any]:
         ok, error = validate_acquire_args(acquire.get("tool"), acquire.get("args", {}))
         if not ok:
             signal_id = str(signal.get("id") or "").strip()
+            validation_reason = str(error)
+            issue = {
+                "level": "error",
+                "code": "SIGNAL_ACQUIRE_ARGS_INVALID",
+                "location": f"关键信号 · {signal_id} · 采集配置 / 采集参数" if signal_id else "关键信号 · 采集配置 / 采集参数",
+                "field_path": "acquire.args",
+                "message": f"采集参数配置失败：{validation_reason}；请修改采集参数后再保存。",
+                "validation_reason": validation_reason,
+            }
+            if signal_id:
+                issue.update(
+                    {
+                        "signal_id": signal_id,
+                        "action": {"type": "edit_signal", "signal_id": signal_id, "focus": "acquire.args"},
+                    }
+                )
+            logger.warning(
+                event="kbd_signal_validation_failed",
+                code=issue["code"],
+                signal_id=signal_id or None,
+                field_path=issue["field_path"],
+                location=issue["location"],
+                validation_reason=validation_reason,
+            )
             raise HTTPException(
                 status_code=422,
-                detail={
-                    "level": "error",
-                    "code": "SIGNAL_ACQUIRE_ARGS_INVALID",
-                    "location": f"关键信号 · {signal_id} · 采集参数" if signal_id else "关键信号 / 采集参数",
-                    "message": str(error),
-                    **(
-                        {
-                            "signal_id": signal_id,
-                            "action": {"type": "edit_signal", "signal_id": signal_id, "focus": "acquire.args"},
-                        }
-                        if signal_id
-                        else {}
-                    ),
-                },
+                detail=issue,
             )
     try:
         _validate_kbd_draft_signals_json(document)
