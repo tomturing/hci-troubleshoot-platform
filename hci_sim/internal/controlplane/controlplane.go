@@ -6,6 +6,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -55,9 +56,8 @@ type Dependency struct {
 }
 
 type Artifact struct {
-	ID       string `json:"id"`
-	Digest   string `json:"digest"`
-	Approved bool   `json:"approved"`
+	ID     string `json:"id"`
+	Digest string `json:"digest"`
 }
 
 // CompileInput 在编译一开始被冻结；不接受 active 指针或任意 URL。
@@ -96,8 +96,8 @@ func (in CompileInput) validate() error {
 	}
 	seen := make(map[string]struct{}, len(in.Artifacts))
 	for _, artifact := range in.Artifacts {
-		if artifact.ID == "" || artifact.Digest == "" || !artifact.Approved {
-			return errors.New("capability_gap: artifact 必须有 digest 且经过批准")
+		if artifact.ID == "" || artifact.Digest == "" {
+			return errors.New("capability_gap: artifact 必须有不可变 id 和 digest")
 		}
 		if _, ok := seen[artifact.ID]; ok {
 			return fmt.Errorf("capability_gap: artifact %q 重复", artifact.ID)
@@ -129,6 +129,7 @@ type BundleRecord struct {
 	InputFingerprint string
 	Input            CompileInput
 	Manifest         []byte
+	Object           ObjectRef
 	Status           BundleStatus
 	Creator          string
 	Approvals        []Approval
@@ -166,10 +167,27 @@ type MemoryRegistry struct {
 	mu            sync.Mutex
 	byDigest      map[string]BundleRecord
 	byFingerprint map[string]string
+	artifactGate  ArtifactGate
+	objectStore   BundleObjectStore
 }
 
+// NewMemoryRegistry 使用拒绝 Artifact 的默认 Gate，避免调用方把请求载荷当成“已批准”的事实。
 func NewMemoryRegistry() *MemoryRegistry {
-	return &MemoryRegistry{byDigest: map[string]BundleRecord{}, byFingerprint: map[string]string{}}
+	return NewMemoryRegistryWithDependencies(nil, NewMemoryBundleObjectStore())
+}
+
+// NewMemoryRegistryWithDependencies 是生产适配器接入持久化 Artifact Gate 与对象存储前的
+// 确定性参考构造器。真实部署不得以 Memory 类型替代多副本 CAS 实现。
+func NewMemoryRegistryWithDependencies(artifactGate ArtifactGate, objectStore BundleObjectStore) *MemoryRegistry {
+	if objectStore == nil {
+		objectStore = NewMemoryBundleObjectStore()
+	}
+	return &MemoryRegistry{
+		byDigest:      map[string]BundleRecord{},
+		byFingerprint: map[string]string{},
+		artifactGate:  artifactGate,
+		objectStore:   objectStore,
+	}
 }
 
 func (r *MemoryRegistry) Compile(actor Actor, input CompileInput, manifest fixture.Manifest, now time.Time) (BundleRecord, error) {
@@ -186,6 +204,14 @@ func (r *MemoryRegistry) Compile(actor Actor, input CompileInput, manifest fixtu
 	if hasRealisticRoute(manifest) && len(input.Artifacts) == 0 {
 		return BundleRecord{}, errors.New("capability_gap: positive-realistic route 缺少批准 Artifact provenance")
 	}
+	if len(input.Artifacts) > 0 && r.artifactGate == nil {
+		return BundleRecord{}, errors.New("capability_gap: Artifact 审批 Registry 未配置")
+	}
+	for _, artifact := range input.Artifacts {
+		if err := r.artifactGate.VerifyApproved(artifact); err != nil {
+			return BundleRecord{}, fmt.Errorf("capability_gap: Artifact %s 不可绑定: %w", artifact.ID, err)
+		}
+	}
 	manifest.Bundle.Status = "published" // fixture loader 仅接受 published 数据面格式；Registry 状态单独管理。
 	manifest.Bundle.Digest = fixture.ComputeBundleDigest(manifest)
 	raw, err := json.Marshal(manifest)
@@ -198,17 +224,30 @@ func (r *MemoryRegistry) Compile(actor Actor, input CompileInput, manifest fixtu
 	if err := scan(raw); err != nil {
 		return BundleRecord{}, err
 	}
+	// Manifest 的 bundle digest 是排除自引用字段后的语义指纹；对象存储则必须校验实际
+	// 上传字节的 payload digest。二者不可混用，否则无法同时实现 Runtime 自校验与传输完整性。
+	object, err := r.objectStore.Prepare(raw, digestBytes(raw))
+	if err != nil {
+		return BundleRecord{}, err
+	}
+	if err := r.objectStore.Verify(object); err != nil {
+		r.objectStore.Abort(object)
+		return BundleRecord{}, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if existing, ok := r.byFingerprint[fingerprint]; ok {
 		record := r.byDigest[existing]
 		if string(record.Manifest) != string(raw) {
+			r.objectStore.Abort(object)
 			return BundleRecord{}, errors.New("compiler_nondeterministic_output: 相同冻结输入生成了不同 Bundle")
 		}
+		r.objectStore.Abort(object)
 		return record.clone(), nil
 	}
-	record := BundleRecord{Digest: manifest.Bundle.Digest, InputFingerprint: fingerprint, Input: input, Manifest: raw, Status: BundleDraft, Creator: actor.ID, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}
+	record := BundleRecord{Digest: manifest.Bundle.Digest, InputFingerprint: fingerprint, Input: input, Manifest: raw, Object: object, Status: BundleDraft, Creator: actor.ID, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}
 	if existing, ok := r.byDigest[record.Digest]; ok {
+		r.objectStore.Abort(object)
 		r.byFingerprint[fingerprint] = existing.Digest
 		return existing.clone(), nil
 	}
@@ -264,7 +303,22 @@ func (r *MemoryRegistry) Publish(actor Actor, digest string, now time.Time) (Bun
 	if actor.Role != RolePublisher || actor.ID == "" {
 		return BundleRecord{}, errors.New("forbidden: 仅 publisher 可发布")
 	}
-	return r.transition(digest, BundleApproved, BundlePublished, now)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	record, ok := r.byDigest[digest]
+	if !ok {
+		return BundleRecord{}, errors.New("bundle_not_found")
+	}
+	if record.Status != BundleApproved {
+		return BundleRecord{}, fmt.Errorf("invalid_transition: %s → %s", record.Status, BundlePublished)
+	}
+	published, err := r.objectStore.Commit(record.Object)
+	if err != nil {
+		return BundleRecord{}, err
+	}
+	record.Object, record.Status, record.UpdatedAt = published, BundlePublished, now.UTC()
+	r.byDigest[digest] = record
+	return record.clone(), nil
 }
 
 func (r *MemoryRegistry) MarkStale(actor Actor, changed Dependency, reason string, now time.Time) ([]BundleRecord, error) {
@@ -293,8 +347,19 @@ func (r *MemoryRegistry) GetPublished(digest string) (BundleRecord, error) {
 	if record.Status != BundlePublished {
 		return BundleRecord{}, fmt.Errorf("bundle_not_runnable: %s", record.Status)
 	}
-	if _, err := fixture.Parse(record.Manifest); err != nil {
+	raw, err := r.objectStore.ReadPublished(record.Object)
+	if err != nil {
+		return BundleRecord{}, err
+	}
+	if !bytes.Equal(raw, record.Manifest) || record.Object.Digest != digestBytes(raw) || record.Object.Size != int64(len(raw)) {
+		return BundleRecord{}, errors.New("bundle_integrity_failed: metadata 与对象 payload 不一致")
+	}
+	router, err := fixture.Parse(raw)
+	if err != nil {
 		return BundleRecord{}, fmt.Errorf("bundle_integrity_failed: %w", err)
+	}
+	if router.KBD().SupportID != record.Input.SupportID || router.KBD().Revision != record.Input.KBDRevision {
+		return BundleRecord{}, errors.New("bundle_integrity_failed: 对象与冻结输入不一致")
 	}
 	return record, nil
 }

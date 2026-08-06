@@ -17,6 +17,7 @@ owner: team
 | 文件 | 日期 | 说明 |
 |------|------|------|
 | [2026-08-06-hci-sim阶段C1权威KBD解析与全量能力验证任务.md](2026-08-06-hci-sim阶段C1权威KBD解析与全量能力验证任务.md) | 2026-08-06 | C1：只读 active KBD snapshot Resolver、126 条 capability report 与 C2 Artifact 前置 |
+| [2026-08-06-hci-sim阶段C2获批Artifact与不可变BundleRegistry任务.md](2026-08-06-hci-sim阶段C2获批Artifact与不可变BundleRegistry任务.md) | 2026-08-06 | C2：Artifact Gate、双角色审批、payload digest、参考对象存储、stale outbox 与生产接入待办 |
 | [2026-08-05-hci-sim阶段A目录收敛与基础门禁任务.md](2026-08-05-hci-sim阶段A目录收敛与基础门禁任务.md) | 2026-08-05 | 唯一源码、旧实现处置、README 和基础 CI；当前待启动 |
 | [2026-08-05-hci-sim阶段B运行时安全与确定性加固任务.md](2026-08-05-hci-sim阶段B运行时安全与确定性加固任务.md) | 2026-08-05 | Manifest/RouteKey/Lease/Dispatcher/Fault 安全内核；等待 A Go |
 | [2026-08-05-hci-sim阶段C-Fixture编译与注册控制面任务.md](2026-08-05-hci-sim阶段C-Fixture编译与注册控制面任务.md) | 2026-08-05 | Fixture Compiler、Registry、审批和 stale；等待 B Go |

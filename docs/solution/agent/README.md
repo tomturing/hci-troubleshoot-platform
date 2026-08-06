@@ -96,7 +96,7 @@ docs/solution/agent/
 |---|---|---|
 | A | 唯一 `hci_sim/` 源码、旧实现处置、基础 CI 门禁 | [目录收敛与基础门禁](events/2026-08-05-hci-sim阶段A目录收敛与基础门禁方案.md) |
 | B | Manifest v2、强 RouteKey、Lease/exec/shell/fault/output 安全内核 | [运行时安全与确定性加固](events/2026-08-05-hci-sim阶段B运行时安全与确定性加固方案.md) |
-| C | 不可变 KBD 输入、Fixture Compiler、Registry、审批和 stale | [Fixture 编译与注册控制面](events/2026-08-05-hci-sim阶段C-Fixture编译与注册控制面方案.md) |
+| C | 不可变 KBD 输入、Fixture Compiler、Registry、审批和 stale | [Fixture 编译与注册控制面](events/2026-08-05-hci-sim阶段C-Fixture编译与注册控制面方案.md) / [C2 Artifact Gate 与对象完整性](events/2026-08-06-hci-sim阶段C2获批Artifact与不可变BundleRegistry方案.md) |
 | D | TestRun API、Scheduler、Lease、缓存、真实 Bridge/Agent Runner | [Scenario 调度与通用 KBD 测试](events/2026-08-05-hci-sim阶段D-Scenario调度与通用KBD测试方案.md) |
 | E | real/sim 差分、Mutation、稳定性、容量、SLO 和运营 | [产品级验证与规模化运营](events/2026-08-05-hci-sim阶段E产品级验证与规模化运营方案.md) |
 

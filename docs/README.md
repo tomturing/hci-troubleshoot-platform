@@ -72,9 +72,9 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | KBD 人工复核标签三态纠偏 | ✅ 代码与自动验证完成：普通 Signal 无标签；待复核 Signal 按专家是否保存显示黄/绿；详情 API 从现有 Revision 派生，不新增数据库状态 | 2026-08-04 |
 | KBD 关键信号统一过滤、取值与输出 | ✅ 代码与自动验证完成：same_record 包含/排除独立关系、完整行/文本行列/JSON、可选 AI、Match/Produce、qfk_log 有界保存与四类完整链路矩阵；真实 HCI replay 待部署后执行 | 2026-08-05 |
 | KBD 关键信号两步处理交互统一 | ✅ 代码与自动验证完成：匹配模式和每个产出变量统一为“处理单元 → 第一步取值 → 第二步判断/产出”；取值/判定关键字独立，交互与样式由共享组件保证一致 | 2026-08-05 |
-| hci-real/hci-sim 双轨与 100+ Agent 并发回归 | 🟡 A/B Runtime 与 C–E 控制面代码级基础已实现；C1 已对 dev 126 条 KBD 完成只读 active snapshot/Tool Contract 基线（2 条待 Artifact 绑定、4 条 Tool stale、120 条未发布）；真实 Artifact/Bridge E2E、20-repeat、真实校准与 100+ 并发仍未验证 | 2026-08-06 |
+| hci-real/hci-sim 双轨与 100+ Agent 并发回归 | 🟡 A/B Runtime 与 C–E 控制面代码级基础已实现；C1 已对 dev 126 条 KBD 完成只读 active snapshot/Tool Contract 基线（2 条待 Artifact 绑定、4 条 Tool stale、120 条未发布）；C2 已补 Artifact Gate、payload digest 和对象存储参考契约，真实 Artifact/生产 CAS/Bridge E2E、20-repeat、真实校准与 100+ 并发仍未验证 | 2026-08-06 |
 
-**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）继续推进；hci-sim A/B 已通过 PR CI，C–E 的控制面代码级基础见[实施验证报告](verify/events/2026-08-06-hci-sim阶段C-E控制面代码级实施验证报告.md)，C1 的权威 KBD 读取和 126 条基线见[专项报告](verify/events/2026-08-06-hci-sim阶段C1权威KBD解析与全量能力验证报告.md)。下一步是 C2 的批准 Artifact、对象存储与持久 CAS；不得把 C1 的 `ready_for_artifact_binding` 写成已编译、真实 SSH、差分或 100+ 并发通过。[KBD 专家信号修复与删除可用性](task/knowledge-base/events/2026-08-04-KBD专家信号修复与删除可用性任务.md)已完成代码与第四批真实重抽，后续仍按 [Candidate 三态门禁批量任务](task/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查任务.md)每批 5 篇推进。真实执行、可信 Expert Gold 与 100+ 并发仍按既有事实边界推进。
+**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）继续推进；hci-sim A/B 已通过 PR CI，C–E 的控制面代码级基础见[实施验证报告](verify/events/2026-08-06-hci-sim阶段C-E控制面代码级实施验证报告.md)，C1 的权威 KBD 读取和 126 条基线见[专项报告](verify/events/2026-08-06-hci-sim阶段C1权威KBD解析与全量能力验证报告.md)，C2 的 Artifact Gate/对象完整性参考实现见[专项报告](verify/events/2026-08-06-hci-sim阶段C2获批Artifact与不可变BundleRegistry验证报告.md)。下一步须获得真实 Artifact 与对象存储授权，接入生产 PostgreSQL CAS/outbox；不得把 `ready_for_artifact_binding` 或 C2 内存测试写成已编译、真实 SSH、差分或 100+ 并发通过。[KBD 专家信号修复与删除可用性](task/knowledge-base/events/2026-08-04-KBD专家信号修复与删除可用性任务.md)已完成代码与第四批真实重抽，后续仍按 [Candidate 三态门禁批量任务](task/knowledge-base/events/2026-08-04-KBD关键信号Candidate三态门禁与批量自查任务.md)每批 5 篇推进。真实执行、可信 Expert Gold 与 100+ 并发仍按既有事实边界推进。
 
 ### 冷启动阅读路径
 

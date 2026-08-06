@@ -128,6 +128,8 @@ jobs:
             "agent_test_scenario" "agent_test_fixture_bundle"
             "agent_test_fixture_dependency" "agent_test_fixture_provenance"
             "agent_test_fixture_approval" "agent_test_fixture_audit"
+            "agent_test_artifact" "agent_test_artifact_scan" "agent_test_artifact_approval"
+            "agent_test_fixture_stale_outbox"
             "agent_test_run" "agent_test_run_attempt" "agent_test_run_event"
             "agent_test_run_result" "agent_test_runtime_instance"
           )

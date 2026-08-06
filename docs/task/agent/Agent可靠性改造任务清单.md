@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-08-05
+last_updated: 2026-08-06
 related_prs:
   - PR #474: invoke() 重试 + tool_calls 清理 + skill 可观测 + 报告模板简化 + solution 格式合并
 owner: team
@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-08-06 | v3.67 | **hci-sim C2 Artifact Registry 安全边界**：新增 Artifact metadata/scan/Expert+Security 双角色审批/revocation、Bundle payload digest 与 `version`、stale outbox。Compiler 不再信任调用方“已批准”声明，必须经 Registry 校验 ID/digest/status；真实 Artifact、OCI/S3、KMS、生产 PostgreSQL CAS/outbox worker 未接入，不得将参考内存实现视为环境验证。 | [C2 验证报告](../../verify/events/2026-08-06-hci-sim阶段C2获批Artifact与不可变BundleRegistry验证报告.md) |
 | 2026-08-06 | v3.66 | **hci-sim C–E 控制面契约**：新增 Agent Test Bundle/Run metadata Schema 与控制面参考内核。编译输入/Bundle/Lease/Run 按 digest 与 revision 冻结，审批/审计、stale、idempotency、差分/mutation/容量串线停止均 fail-closed；原始 Artifact 与 Lease 明文不入库。真实 Bridge/Agent Runner、持久 CAS 与环境验收仍待接入，不把代码级基础冒充生产验证。 | [C–E 控制面代码级实施验证报告](../../verify/events/2026-08-06-hci-sim阶段C-E控制面代码级实施验证报告.md) |
 | 2026-08-05 | v3.65 | **QFK 统一过滤取值输出契约**：Agent 对文本候选行使用 `same_record` 语义，包含/排除分别支持 AND/OR；`qfk_log` 只从 `extract.rows.include` 派生 aCLI 粗筛，`qfk_service` 运行时仅允许 status。非零 exit code 无条件阻断 Matcher/变量写入，执行失败不再冒充业务 False。已增加 qfk_log/system/service/vm 四类从 Schema、Handler、Fake Executor 到 Match/变量池的完整契约矩阵。 | [KBD 关键信号统一过滤、取值与输出方案](../../solution/knowledge-base/events/2026-08-05-KBD关键信号统一过滤取值与输出方案.md) |
 | 2026-08-05 | v3.64 | **QFK 完整输出受控 AI 提取**：确定性 ValueExtract/Matcher 先选定真实候选行，AI 仅返回候选原文已有的字面量及物理引用行；服务端逐字回查，候选超限或调用/JSON/类型/溯源失败均 Fail Closed。Matcher evidence 与 produces 共用同一实现，produces 先全量验证再原子写变量池。 | [QFK 完整输出 AI 提取方案](../../solution/agent/events/2026-08-05-QFK完整输出AI提取方案.md) |

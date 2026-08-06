@@ -2,7 +2,7 @@
 status: in_progress
 category: task
 audience: developer, tester, operator, expert, security
-last_updated: 2026-08-05
+last_updated: 2026-08-06
 owner: team
 ---
 
@@ -10,7 +10,7 @@ owner: team
 
 关联[阶段 C 需求](../../../requirement/events/2026-08-05-hci-sim阶段C-Fixture编译与注册控制面需求.md)、[阶段 C 方案](../../../solution/agent/events/2026-08-05-hci-sim阶段C-Fixture编译与注册控制面方案.md)和[阶段 C 验证](../../../verify/events/2026-08-05-hci-sim阶段C-Fixture编译与注册控制面验证方案.md)。
 
-> 当前事实：控制面代码级内核、Registry 生命周期、Atlas migration 与 desired schema 已实施；C1 已接入只读 active KBD snapshot Resolver，并对 126 条 KBD 完成 capability 基线（2 条待 Artifact 绑定、4 条 Tool stale、120 条未发布）。Artifact/对象存储/RBAC 和 Bundle 试点仍未完成，不能写为阶段 C 环境验收完成。见[C1 验证报告](../../../verify/events/2026-08-06-hci-sim阶段C1权威KBD解析与全量能力验证报告.md)。
+> 当前事实：控制面代码级内核、Registry 生命周期和 desired schema 已实施；C1 已接入只读 active KBD snapshot Resolver，并对 126 条 KBD 完成 capability 基线（2 条待 Artifact 绑定、4 条 Tool stale、120 条未发布）。C2 已补 Artifact metadata/scan/双角色 Gate、payload digest、参考对象存储与 stale outbox schema；真实 Artifact、OCI/S3、生产 PostgreSQL CAS/RBAC 和 Bundle 试点仍未完成，不能写为阶段 C 环境验收完成。见[C1 验证报告](../../../verify/events/2026-08-06-hci-sim阶段C1权威KBD解析与全量能力验证报告.md)和[C2 验证报告](../../../verify/events/2026-08-06-hci-sim阶段C2获批Artifact与不可变BundleRegistry验证报告.md)。
 
 ## 前置 Go/No-Go
 
@@ -24,7 +24,7 @@ owner: team
 | ID | 任务 | 主要影响 | 产物/证据 | 依赖 |
 |---|---|---|---|---|
 | T-SIM-C-01 | 定义 desired schema、索引、约束、RLS/RBAC 和 migration | PostgreSQL | migration/rollback review | B Go |
-| T-SIM-C-02 | 实现 support ID/revision/KBD/Tool/Policy/Artifact Resolver | control plane | C1 已完成只读 KBD/Tool/Policy snapshot 与 126 条 gap report；Artifact Resolver 待 C2 | 01 |
+| T-SIM-C-02 | 实现 support ID/revision/KBD/Tool/Policy/Artifact Resolver | control plane | C1 已完成只读 KBD/Tool/Policy snapshot 与 126 条 gap report；C2 已有 Artifact Gate 参考实现，生产 DB Resolver 待接入 | 01 |
 | T-SIM-C-03 | 定义输入指纹、编译作业幂等、outbox/audit | compiler metadata | 并发幂等测试 | 01–02 |
 | T-SIM-C-04 | 复用生产 Tool Compiler，构建 Signal/producer/consumer 图 | Agent/Compiler | graph/gap tests | 02 |
 | T-SIM-C-05 | 实现 Artifact observation 提取、参数化和 provenance | compiler/artifact | golden diff | 04 |
@@ -52,10 +52,10 @@ owner: team
 
 ## 数据库与存储任务
 
-- [ ] 创建 scenario、bundle、dependency、provenance、approval、audit desired schema。
-- [ ] 唯一约束覆盖 input fingerprint、bundle digest 和 lifecycle version。
-- [ ] metadata 与大对象分离，数据库不重复保存原始大输出。
-- [ ] 上传采用 prepare/commit，失败对象可回收，发布对象 versioned/immutable。
+- [x] 创建 scenario、bundle、dependency、provenance、approval、audit、Artifact/scan/outbox 的 desired schema（生产 DB Repository 待接入）。
+- [x] 唯一约束覆盖 input fingerprint、bundle digest、Artifact digest、审批角色/actor 和 lifecycle version（生产 CAS 待接入）。
+- [x] metadata 与大对象分离，数据库不重复保存原始大输出。
+- [x] 定义上传 prepare/verify/commit/abort，失败临时对象可回收，发布对象使用 content-addressed immutable key（参考实现）。
 - [ ] 下载验证服务端 URI、大小、schema、signature、digest 和状态。
 - [ ] migration 支持空库、已有库、重复执行和向前修复演练。
 

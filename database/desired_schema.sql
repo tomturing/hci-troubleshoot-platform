@@ -1619,6 +1619,58 @@ CREATE TABLE IF NOT EXISTS agent_test_scenario (
     CONSTRAINT ck_agent_test_scenario_status CHECK (status IN ('draft', 'validated', 'approved', 'published', 'stale', 'retired', 'gap'))
 );
 
+-- 获批 Artifact 的不可变 metadata。真实字节只保存在受控对象存储；source_ref_digest
+-- 和 redaction_digest 只记录可验证的来源/脱敏链，不能存入客户 URL、命令输出或身份正文。
+CREATE TABLE IF NOT EXISTS agent_test_artifact (
+    id varchar(128) PRIMARY KEY,
+    digest varchar(71) NOT NULL UNIQUE,
+    size_bytes bigint NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 67108864),
+    media_type varchar(128) NOT NULL,
+    schema_version varchar(64) NOT NULL,
+    source_type varchar(64) NOT NULL,
+    source_ref_digest varchar(71) NOT NULL,
+    redaction_digest varchar(71) NOT NULL,
+    collection_policy varchar(128) NOT NULL,
+    collector_id varchar(128) NOT NULL,
+    collected_at timestamptz NOT NULL,
+    status varchar(20) NOT NULL,
+    ingested_by varchar(128) NOT NULL,
+    trace_id varchar(64),
+    version integer NOT NULL DEFAULT 1 CHECK (version > 0),
+    revoke_reason varchar(128),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT ck_agent_test_artifact_status CHECK (status IN ('staged', 'scanned', 'approved', 'revoked'))
+);
+
+CREATE TABLE IF NOT EXISTS agent_test_artifact_scan (
+    id bigserial PRIMARY KEY,
+    artifact_id varchar(128) NOT NULL REFERENCES agent_test_artifact(id) ON DELETE RESTRICT,
+    scanner_revision varchar(128) NOT NULL,
+    secret_scan_passed boolean NOT NULL,
+    pii_scan_passed boolean NOT NULL,
+    license_scan_passed boolean NOT NULL,
+    schema_valid boolean NOT NULL,
+    trace_id varchar(64),
+    scanned_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT ck_agent_test_artifact_scan_passed CHECK (secret_scan_passed AND pii_scan_passed AND license_scan_passed AND schema_valid)
+);
+
+CREATE TABLE IF NOT EXISTS agent_test_artifact_approval (
+    id bigserial PRIMARY KEY,
+    artifact_id varchar(128) NOT NULL REFERENCES agent_test_artifact(id) ON DELETE RESTRICT,
+    actor_id varchar(128) NOT NULL,
+    actor_role varchar(32) NOT NULL,
+    decision varchar(16) NOT NULL,
+    comment text NOT NULL DEFAULT '',
+    trace_id varchar(64),
+    decided_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT ck_agent_test_artifact_approval_role CHECK (actor_role IN ('expert', 'security')),
+    CONSTRAINT ck_agent_test_artifact_approval_decision CHECK (decision IN ('approved', 'rejected')),
+    CONSTRAINT uq_agent_test_artifact_approval_role UNIQUE (artifact_id, actor_role),
+    CONSTRAINT uq_agent_test_artifact_approval_actor UNIQUE (artifact_id, actor_id)
+);
+
 CREATE TABLE IF NOT EXISTS agent_test_fixture_bundle (
     id uuid PRIMARY KEY,
     scenario_id uuid NOT NULL REFERENCES agent_test_scenario(id) ON DELETE RESTRICT,
@@ -1626,10 +1678,12 @@ CREATE TABLE IF NOT EXISTS agent_test_fixture_bundle (
     digest varchar(71) NOT NULL UNIQUE,
     schema_version varchar(16) NOT NULL,
     object_uri text NOT NULL,
+    object_digest varchar(71) NOT NULL,
     size_bytes bigint NOT NULL CHECK (size_bytes > 0 AND size_bytes <= 67108864),
     signature text,
     status varchar(20) NOT NULL,
     created_by varchar(128) NOT NULL,
+    version integer NOT NULL DEFAULT 1 CHECK (version > 0),
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT ck_agent_test_fixture_bundle_status CHECK (status IN ('draft', 'validated', 'approved', 'published', 'stale', 'retired')),
@@ -1677,6 +1731,25 @@ CREATE TABLE IF NOT EXISTS agent_test_fixture_audit (
     before_state jsonb,
     after_state jsonb,
     created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- 依赖变化产生的 stale 事件必须先持久化；异步消费者失败时由 reconciliation 重放，
+-- 不允许仅依赖内存通知而继续给旧 Bundle 创建 TestRun。
+CREATE TABLE IF NOT EXISTS agent_test_fixture_stale_outbox (
+    id bigserial PRIMARY KEY,
+    dependency_type varchar(32) NOT NULL,
+    dependency_id varchar(128) NOT NULL,
+    dependency_revision varchar(128) NOT NULL,
+    dependency_digest varchar(128) NOT NULL,
+    reason_code varchar(64) NOT NULL,
+    trace_id varchar(64),
+    status varchar(16) NOT NULL DEFAULT 'pending',
+    attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    available_at timestamptz NOT NULL DEFAULT now(),
+    processed_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT ck_agent_test_fixture_stale_outbox_status CHECK (status IN ('pending', 'processing', 'processed', 'failed')),
+    CONSTRAINT uq_agent_test_fixture_stale_outbox_dependency UNIQUE (dependency_type, dependency_id, dependency_revision, dependency_digest, reason_code)
 );
 
 CREATE TABLE IF NOT EXISTS agent_test_run (
@@ -1742,10 +1815,15 @@ CREATE TABLE IF NOT EXISTS agent_test_runtime_instance (
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_test_scenario_support_revision ON agent_test_scenario (support_id, kbd_revision, status);
+CREATE INDEX IF NOT EXISTS idx_agent_test_artifact_status ON agent_test_artifact (status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_test_artifact_scan_artifact ON agent_test_artifact_scan (artifact_id, scanned_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_test_fixture_bundle_runnable ON agent_test_fixture_bundle (scenario_id, status, digest) WHERE status = 'published';
 CREATE INDEX IF NOT EXISTS idx_agent_test_fixture_dependency_reverse ON agent_test_fixture_dependency (dependency_type, dependency_id, revision);
 CREATE INDEX IF NOT EXISTS idx_agent_test_fixture_audit_entity ON agent_test_fixture_audit (entity_type, entity_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_test_fixture_stale_outbox_pending ON agent_test_fixture_stale_outbox (available_at, id) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_agent_test_run_status_deadline ON agent_test_run (status, deadline_at);
 
 COMMENT ON TABLE agent_test_fixture_bundle IS 'hci-sim 已编译 Bundle 的不可变元数据；Runtime 只能读取 published 状态和受控对象 URI';
+COMMENT ON TABLE agent_test_artifact IS 'hci-sim Artifact 的不可变 metadata；不得保存原始客户字节、URL 或命令输出';
+COMMENT ON TABLE agent_test_fixture_stale_outbox IS 'Bundle 依赖变化的持久化 stale 事件；reconciliation 可安全重放';
 COMMENT ON TABLE agent_test_run IS '按 support ID 解析为精确 KBD revision、Scenario、Bundle digest 的逻辑 TestRun；不得存储 Lease 明文';
