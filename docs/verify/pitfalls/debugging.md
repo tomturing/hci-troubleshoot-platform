@@ -58,6 +58,16 @@ Kubernetes 会以 root:755 创建父目录 `/home/node/.openclaw/`，导致非 r
 
 **预防：** 回归测试必须同时断言图片级 done/failed、案例级 succeeded/warning/failed、下游 blocked_by_dependency 数量；日志中保留 support_id、seq、job_id、trace_id 和 error_code。任何阶段改变结果粒度时，都要显式定义聚合函数。
 
+## V-012：QKV acquire.keyword 不得复用 QFK 数组语义
+
+**症状：** Signal 抽取或保存门禁报错 `acquire.args.keyword 类型错误：期望 string，实际 list`；LLM 输出的 `qkv_task`/`qkv_alert` 中 `acquire.args.keyword` 为单元素或多元素数组。
+
+**根因：** Prompt 曾使用未限定字段路径的“keyword pattern 数组”“多关键字使用数组”等规则。模型把 QFK 的 `match.pattern` 或 `extract.rows.include/exclude` 数组语义错误迁移到 QKV `acquire.args.keyword`，而共享 Schema 正确要求 QKV 关键词是单个字符串。
+
+**修复：** 保持 `qkv_* .acquire.args.keyword` 严格为非空 `string`；Prompt v2.3 和存量迁移 023 明确参数类型矩阵。多个任务动作拆成多条 qkv Candidate；数组仅允许用于 `match.pattern` 或 `extract.rows.include/exclude`，不做单元素自动 unwrap 或多元素 join。
+
+**预防：** 维护 Prompt 合同测试、Schema 类型测试和迁移负向断言；对 `QKV_KEYWORD_MUST_BE_STRING` 错误码做日志/指标观测，部署后抽样检查实际 `system_prompt` 版本与 QKV 输出类型。
+
 ---
 
 ## 高频场景：工单创建 500 / `case.close_reason` 字段缺失（迁自 network-service-check.md）

@@ -15,7 +15,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 > 2. 再写入对应分类文件  
 > 3. 同一 commit/PR 提交，不允许分开提交  
 >
-> **下一个可用编号：V-012**（旧格式延续：PIT-042）
+> **下一个可用编号：V-013**（旧格式延续：PIT-042）
 
 ---
 
@@ -51,6 +51,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 | V-009 | python.md | Signal 图片输入必须按章节白名单且与 Candidate 溯源闭环 |
 | V-010 | python.md | 图片来源集合检查不得升级为正文 evidence 与 OCR 的跨来源逐字强绑定 |
 | V-011 | debugging.md | 图片级 LLM 统计不得直接当作 KBD 案例级完成状态 |
+| V-012 | debugging.md | QKV acquire.keyword 不得复用 QFK 数组语义 |
 | PIT-004 | python.md | Pydantic 验证 |
 | PIT-005 | frontend.md | pnpm workspace |
 | PIT-006 | dispatcher.md | 分布式锁 |
