@@ -186,7 +186,11 @@ def humanize_signal_validation_error(error: ValidationError, signals: list[Any])
     elif "日志源" in raw_message and "不支持" in raw_message:
         field_path = field_path or "acquire.args.file"
         field_label = _field_label(field_path)
-        message = f"当前日志文件与判定方式不兼容：{raw_message}；请更换日志文件/解析器，或改用该日志源支持的判定类型。"
+        message = (
+            f"当前日志文件与判定方式不兼容：{raw_message}；请在“第二步·判断”中改用允许的判定类型，"
+            "如果确实需要比较多次采样的变化量，请更换为支持 delta 的周期快照日志源，"
+            "并将取值数量配置为“全部”。"
+        )
         code = "QFK_LOG_PREDICATE_UNSUPPORTED"
     elif "产出变量采集必须" in raw_message:
         field_path = "orchestrate.produces"
@@ -619,9 +623,10 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                             path=["signals", index, "acquire", "args", "file"],
                         ) from exc
                 if matcher_type not in source.get("predicates", []):
+                    allowed_predicates = ", ".join(str(item) for item in source.get("predicates", []))
                     raise ValidationError(
                         f"signals[{index}] 的日志源 {source.get('source_id')} / parser={source.get('parser')} "
-                        f"不支持 {matcher_type} predicate",
+                        f"不支持 {matcher_type} predicate；允许: {allowed_predicates}",
                         path=["signals", index, "match", "type"],
                     )
             elif not (
