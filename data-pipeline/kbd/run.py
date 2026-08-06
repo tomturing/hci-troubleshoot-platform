@@ -52,7 +52,24 @@ from .runtime import require_shared_contracts
 
 # ─── 日志配置（终端 + 文件双输出）────────────────────────────────────────────────
 
-def _setup_logging(run_id: str | None = None) -> str:
+class _JsonLineFormatter(logging.Formatter):
+    """排障用 JSONL：终端保持中文可读，详细日志可被脚本稳定检索。"""
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload = {
+            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "trace_id": getattr(record, "trace_id", None),
+        }
+        for key in ("run_id", "support_id", "stage", "job_id", "error_code", "retryable"):
+            if hasattr(record, key):
+                payload[key] = getattr(record, key)
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _setup_logging(run_id: str | None = None, *, verbose: bool = False) -> str:
     """
     配置日志：终端输出 + 文件持久化。
 
@@ -74,6 +91,7 @@ def _setup_logging(run_id: str | None = None) -> str:
     settings.KBD_LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
     log_path = settings.KBD_LOGS_DIR / f"kbd_{run_id}.log"
+    jsonl_path = settings.KBD_LOGS_DIR / f"kbd_{run_id}.jsonl"
 
     # 配置 root logger，DEBUG 级别以允许 DEBUG 日志通过（Handler 会进一步过滤）
     root_logger = logging.getLogger()
@@ -90,7 +108,7 @@ def _setup_logging(run_id: str | None = None) -> str:
 
     # StreamHandler（终端输出，INFO 级别）
     stream_handler = logging.StreamHandler()
-    stream_handler.setLevel(logging.INFO)
+    stream_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
     stream_handler.setFormatter(formatter)
     root_logger.addHandler(stream_handler)
 
@@ -100,13 +118,25 @@ def _setup_logging(run_id: str | None = None) -> str:
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)
 
+    jsonl_handler = logging.FileHandler(jsonl_path, encoding="utf-8")
+    jsonl_handler.setLevel(logging.INFO)
+    jsonl_handler.setFormatter(_JsonLineFormatter())
+    root_logger.addHandler(jsonl_handler)
+
+    # httpcore 的连接字节级日志对操作者没有帮助，且会淹没真实失败原因。
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
     # 可观测性：先安装 trace_id 注入过滤器并生成根 trace_id，确保首行日志即带 trace_id
     install_trace_logging()
     trace_id = new_trace_id()
     set_trace_id(trace_id)
 
     logger = logging.getLogger("kbd.run")
-    logger.info("日志初始化完成 run_id=%s trace_id=%s log_path=%s", run_id, trace_id, log_path)
+    logger.info(
+        "日志初始化完成 run_id=%s trace_id=%s text_log=%s jsonl_log=%s",
+        run_id, trace_id, log_path, jsonl_path,
+    )
 
     return run_id
 
@@ -216,9 +246,67 @@ async def _cmd_pipeline(args: argparse.Namespace, run_id: str) -> int:
             failed_only=failed_only,
             run_id=run_id,
         )
-    print("\n─── 流水线完成 ───")
-    print(f"run_id: {actual_run_id}")
-    print(json.dumps(stats, ensure_ascii=False, indent=2))
+    if getattr(args, "json", False):
+        print(json.dumps({"run_id": actual_run_id, "stats": stats}, ensure_ascii=False, indent=2))
+    elif not getattr(args, "quiet", False):
+        _print_pipeline_summary(actual_run_id, stats)
+    return 0 if stats.get("pipeline", {}).get("success", True) else 1
+
+
+def _print_pipeline_summary(run_id: str, stats: dict) -> None:
+    """面向操作者的终端摘要；完整细节在 JSONL 与 progress 文件中。"""
+    pipeline = stats.get("pipeline", {})
+    print("\n─── KBD 流水线完成摘要 ───")
+    print(f"运行编号：{run_id}")
+    print(f"结果：{'全部阶段完成' if pipeline.get('success') else '部分完成，请查看失败/阻断项'}")
+    print(f"完整完成 KBD：{pipeline.get('completed_ids', 0)}/{pipeline.get('total_ids', 0)}")
+    for stage_name, label in (
+        ("fetch", "抓取"), ("import", "导入"), ("vision", "截图识别"),
+        ("classify", "案例分类"), ("extract", "关键信号抽取"),
+        ("audit_log_signals", "日志信号审计"),
+    ):
+        item = stats.get(stage_name)
+        if not item:
+            continue
+        elapsed = item.get("elapsed_s")
+        fields = []
+        for key, label_key in (("done", "完成"), ("failed", "技术失败"), ("needs_review", "需复核"), ("blocked_by_dependency", "前置阻断")):
+            if key in item:
+                fields.append(f"{label_key} {item[key]}")
+        if stage_name == "vision" and item.get("case_status_counts"):
+            fields.append("KBD状态 " + "/".join(f"{k}:{v}" for k, v in item["case_status_counts"].items()))
+        duration = f"，耗时 {elapsed:.1f}s" if isinstance(elapsed, (int, float)) else ""
+        print(f"- {label}：{'，'.join(fields) or '已执行'}{duration}")
+    if not pipeline.get("success"):
+        print("建议：使用 --resume 或 --failed-only 重试技术失败项；前置阻断项需先修复其上游阶段。")
+    print(f"排障日志：{settings.KBD_LOGS_DIR / f'kbd_{run_id}.jsonl'}")
+
+
+async def _cmd_wizard(args: argparse.Namespace, run_id: str) -> int:
+    """中文交互向导；保留非交互 CLI 作为 CI/批处理唯一稳定接口。"""
+    if not sys.stdin.isatty():
+        print("错误：wizard 需要交互终端；自动化请使用 pipeline --ids/--id-file --json。")
+        return 3
+    print("KBD 知识生产向导")
+    print("将执行：抓取 → 导入 →（截图识别与分类并行）→ 关键信号抽取 → 审计")
+    print(f"目标 kb-service：{settings.KB_SERVICE_URL}")
+    print(f"数据库：{'已配置' if settings.DATABASE_URL else '未配置'}")
+    print(f"内部 Token：{'已配置' if settings.INTERNAL_API_TOKEN else '未配置'}")
+    if not settings.INTERNAL_API_TOKEN:
+        print("错误：内部 Token 未配置，已停止。请先设置 INTERNAL_API_TOKEN。")
+        return 4
+    ids_text = input("请输入 KBD 案例 ID（逗号分隔）：").strip()
+    ids = _parse_ids(ids_text)
+    if not ids:
+        print("未输入有效案例 ID，已取消。")
+        return 3
+    print(f"本次将处理 {len(ids)} 个 KBD。截图识别成功与分类成功均为信号抽取的硬前置条件。")
+    if input("确认开始？请输入 是：").strip() != "是":
+        print("已取消，未执行任何处理。")
+        return 130
+    from .pipeline import run_pipeline
+    stats, actual_run_id = await run_pipeline(ids, run_id=run_id)
+    _print_pipeline_summary(actual_run_id, stats)
     return 0 if stats.get("pipeline", {}).get("success", True) else 1
 
 
@@ -533,6 +621,7 @@ def build_parser() -> argparse.ArgumentParser:
         group.add_argument("--ids", help="逗号分隔的案例 ID，如 34977,36179")
         group.add_argument("--id-file", help="每行一个 ID 的文本文件路径")
         p.add_argument("--limit", type=int, default=None, help="最多处理 N 条（测试用）")
+        p.add_argument("--verbose", action="store_true", help="终端显示详细调试日志（默认仅显示阶段事件）")
 
     # pipeline 子命令
     p_pipeline = sub.add_parser("pipeline", help="运行完整流水线（或指定 stages）")
@@ -582,6 +671,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="仅处理失败的案例（有 .failed 标记或识别为无文字）",
     )
+    p_pipeline.add_argument("--json", action="store_true", help="输出机器可读 JSON（供 CI/自动化使用）")
+    p_pipeline.add_argument("--quiet", action="store_true", help="不输出中文终端摘要，仅保留日志文件")
+
+    # 中文交互向导：不隐式执行危险覆盖操作，输入与确认都必须来自 TTY。
+    sub.add_parser("wizard", help="中文交互式运行向导（适合人工批量导入）")
 
     # 单独 stage 子命令
     for name, help_text in [
@@ -684,7 +778,7 @@ def main() -> None:
 
     # 完整 pipeline 默认包含 Stage 6；在任何 fetch/import/LLM 调用前确认其
     # 唯一外部源码依赖可用，避免跑完前五阶段后才因 shared 导入失败。
-    requires_shared_contracts = args.command in {"audit-log-signals", "audit-signals", "audit"}
+    requires_shared_contracts = args.command in {"audit-log-signals", "audit-signals", "audit", "wizard"}
     if args.command == "pipeline":
         requires_shared_contracts = Stage.AUDIT_LOG_SIGNALS in _parse_stages(args.stages)
     if requires_shared_contracts:
@@ -695,6 +789,7 @@ def main() -> None:
 
     cmd_map = {
         "pipeline":    _cmd_pipeline,
+        "wizard":      _cmd_wizard,
         "fetch":       _cmd_fetch,
         "vision":      _cmd_vision,
         "import":      _cmd_import,
@@ -718,10 +813,10 @@ def main() -> None:
         _cmd_config(args)
         return
 
-    # 初始化日志（双 Handler：终端 + 文件）
+    # 初始化日志（终端 + 文本文件 + JSONL 排障文件）
     # 如果有 --resume-run-id 参数，使用它；否则自动生成
     resume_run_id = getattr(args, "resume_run_id", None)
-    run_id = _setup_logging(resume_run_id)
+    run_id = _setup_logging(resume_run_id, verbose=getattr(args, "verbose", False))
 
     # 执行异步命令，传递 run_id
     exit_code = asyncio.run(cmd(args, run_id))

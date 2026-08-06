@@ -25,6 +25,8 @@ from shared.observability.logger import get_logger
 from shared.utils.prompt_loader import StrictPromptLoader
 from sqlalchemy import text
 
+from app.services.llm_runtime import call_with_llm_governance
+
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
 
@@ -42,6 +44,9 @@ LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = os.environ.get("CLASSIFY_MODEL", "kimi-k2.5")
 # 是否启用思维链（与 vision_processor.py 统一由 LLM_ENABLE_THINKING 控制，默认关闭）
 LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "false").lower() in ("1", "true", "yes", "on")
+LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "60"))
+# 分类输出很短；保留足够 JSON 余量，避免用 8192 token 拉长排队和超时窗口。
+CLASSIFY_MAX_TOKENS = int(os.environ.get("CLASSIFY_MAX_TOKENS", "2048"))
 
 # 分类置信度阈值
 CONFIDENCE_THRESHOLD = 0.5
@@ -157,22 +162,28 @@ async def call_llm(prompt: str) -> dict:
     client = AsyncOpenAI(
         api_key=LLM_API_KEY,
         base_url=LLM_BASE_URL,
+        timeout=LLM_TIMEOUT,
+        # 重试由共享治理器完成，避免 SDK 与业务层叠加放大请求。
+        max_retries=0,
     )
 
     try:
-        response = await client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=[
-                {"role": "system", "content": "你是 HCI 超融合平台的故障分类专家，输出严格遵循 JSON 格式。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,  # 确保输出确定性
-            max_tokens=8192,
-            response_format={"type": "json_object"},
-            extra_body={"enable_thinking": LLM_ENABLE_THINKING},
-        )
+        async def _call():
+            return await client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": "你是 HCI 超融合平台的故障分类专家，输出严格遵循 JSON 格式。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+                max_tokens=CLASSIFY_MAX_TOKENS,
+                response_format={"type": "json_object"},
+                extra_body={"enable_thinking": LLM_ENABLE_THINKING},
+            )
+
+        response = await call_with_llm_governance("classify", _call)
         content = (response.choices[0].message.content or "").strip()
-        logger.debug(f"LLM 响应: {content}")
+        logger.debug("classify LLM 响应长度=%d", len(content))
     except Exception as e:
         logger.error(f"LLM API 调用失败: {e}")
         raise HTTPException(status_code=503, detail=f"LLM API 调用失败: {e}")

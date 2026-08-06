@@ -20,12 +20,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from typing import Any
 
 import asyncpg
 import httpx
 
 from .config import settings
+from .error_catalog import humanize_error
 from .observability import traceparent
 
 logger = logging.getLogger("kbd.classifier")
@@ -66,7 +68,8 @@ async def _call_classify_api(
         **traceparent(),
     }
     # 带重试的请求
-    for attempt in range(settings.API_MAX_RETRIES):
+    max_attempts = max(1, settings.API_MAX_RETRIES)
+    for attempt in range(max_attempts):
         try:
             response = await client.post(
                 url,
@@ -76,10 +79,10 @@ async def _call_classify_api(
             response.raise_for_status()
             return response.json()
 
-        except httpx.TimeoutException:
-            if attempt == settings.API_MAX_RETRIES - 1:
+        except (httpx.TimeoutException, httpx.TransportError):
+            if attempt == max_attempts - 1:
                 raise
-            wait = 1.0 * (2 ** attempt)
+            wait = random.uniform(0.0, min(30.0, 2.0 ** attempt))
             logger.warning(
                 "分类 API 超时 kbd_entry_id=%s 等待 %.1fs 后重试",
                 kbd_entry_id, wait
@@ -87,20 +90,27 @@ async def _call_classify_api(
             await asyncio.sleep(wait)
 
         except httpx.HTTPStatusError as exc:
-            # 4xx 客户端错误不重试
-            if 400 <= exc.response.status_code < 500:
+            status_code = exc.response.status_code
+            # 429 是 Provider 暂态限流，必须遵守 Retry-After；其他 4xx 是调用错误。
+            if status_code == 429:
+                retry_after = exc.response.headers.get("Retry-After")
+                try:
+                    wait = max(0.0, float(retry_after)) if retry_after else random.uniform(0.0, 2.0 ** attempt)
+                except (TypeError, ValueError):
+                    wait = random.uniform(0.0, 2.0 ** attempt)
+            elif 400 <= status_code < 500:
                 logger.error(
                     "分类 API 客户端错误 status=%d kbd_entry_id=%s",
-                    exc.response.status_code, kbd_entry_id
+                    status_code, kbd_entry_id,
                 )
                 raise
-            # 5xx 服务端错误重试
-            if attempt == settings.API_MAX_RETRIES - 1:
+            else:
+                wait = random.uniform(0.0, min(30.0, 2.0 ** attempt))
+            if attempt == max_attempts - 1:
                 raise
-            wait = 1.0 * (2 ** attempt)
             logger.warning(
                 "分类 API 服务端错误 status=%d 等待 %.1fs 后重试",
-                exc.response.status_code, wait
+                status_code, wait
             )
             await asyncio.sleep(wait)
 
@@ -153,7 +163,17 @@ async def classify_case(
         }
 
     except Exception as exc:
-        logger.error("分类失败 case_id=%s 原因=%s", case_id, exc)
+        error = humanize_error(exc)
+        logger.error(
+            "分类失败 case_id=%s code=%s retryable=%s 原因=%s",
+            case_id, error.code, error.retryable, error.message,
+            extra={
+                "support_id": case_id,
+                "stage": "classify",
+                "error_code": error.code,
+                "retryable": error.retryable,
+            },
+        )
         return {"category_id": None, "confidence": 0.0, "reason": f"API调用失败: {exc}", "status": "failed"}
 async def classify_batch(
     case_ids: list[str],
@@ -172,11 +192,17 @@ async def classify_batch(
         raise RuntimeError("INTERNAL_API_TOKEN 未配置，无法调用 kb-service API")
 
     async with httpx.AsyncClient(timeout=settings.API_TIMEOUT) as client:
-        for idx, case_id in enumerate(case_ids, 1):
-            logger.info("[%d/%d] 分类案例 %s", idx, total, case_id)
+        sem = asyncio.Semaphore(getattr(settings, "CLASSIFY_CONCURRENCY", 2))
 
-            result = await classify_case(case_id, pool, client)
+        async def _run_one(idx: int, case_id: str) -> dict[str, object]:
+            async with sem:
+                logger.info("[%d/%d] 分类案例 %s", idx, total, case_id)
+                return await classify_case(case_id, pool, client)
 
+        results = await asyncio.gather(
+            *[_run_one(idx, case_id) for idx, case_id in enumerate(case_ids, 1)]
+        )
+        for result in results:
             status = result.get("status", "failed")
             if status == "done":
                 stats["done"] += 1

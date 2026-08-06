@@ -48,6 +48,16 @@ Kubernetes 会以 root:755 创建父目录 `/home/node/.openclaw/`，导致非 r
 - initContainer 执行 `mkdir -p + cp + chmod`，写入 emptyDir
 - 主容器从 emptyDir 读，进程拥有完整写权限
 
+## V-011：图片级 LLM 统计不得直接当作 KBD 案例级完成状态
+
+**症状：** Vision API 日志显示多张图片 `done`，但 Pipeline 进度把多数 KBD 标成失败，进而把分类和 Signal 抽取显示为“失败”。
+
+**根因：** Vision Job 的 `done/failed` 是图片级计数；案例是否完成还取决于 `images_json` 是否包含全部 seq、每个 `desc` 是否非空以及 Evidence 质量状态。若只用图片总数或只用一次 API 返回值投影案例状态，会把粒度不同的事实混在一起。
+
+**修复：** API 返回 `case_results` 和图片级统计；编排层以数据库 `images_json` 的逐图片聚合为 KBD 最终状态，并记录 `VISION_STATE_INCONSISTENT`。状态不一致必须进入排障队列，不能静默转为普通失败或成功。
+
+**预防：** 回归测试必须同时断言图片级 done/failed、案例级 succeeded/warning/failed、下游 blocked_by_dependency 数量；日志中保留 support_id、seq、job_id、trace_id 和 error_code。任何阶段改变结果粒度时，都要显式定义聚合函数。
+
 ---
 
 ## 高频场景：工单创建 500 / `case.close_reason` 字段缺失（迁自 network-service-check.md）

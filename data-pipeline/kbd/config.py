@@ -77,6 +77,8 @@ class KbdSettings(BaseSettings):
     VISION_CONCURRENCY: int = Field(default=3, ge=1, le=10)
     # 同时提交/轮询的关键信号抽取任务数
     EXTRACT_CONCURRENCY: int = Field(default=3, ge=1, le=10)
+    # 分类与 Vision 并行时的调用侧并发；真实 LLM 上限由 kb-service 统一资源池控制。
+    CLASSIFY_CONCURRENCY: int = Field(default=2, ge=1, le=10)
 
     # ── 管道行为 ──────────────────────────────────────────────────────────────
     # 最低图片文件大小（字节），小于此值视为无效图片（icon/占位图）

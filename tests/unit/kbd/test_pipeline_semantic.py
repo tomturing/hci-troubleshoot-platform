@@ -98,10 +98,21 @@ class TestPipelineStageDag:
 
         assert vision_inputs == [[]]
         assert stats["pipeline"]["success"] is False
-        assert stats["pipeline"]["failed_steps"] == 1
+        # Import 技术失败 + Vision 未执行的硬依赖阻断分别计数，不能把阻断吞成单一失败。
+        assert stats["pipeline"]["failed_steps"] == 2
         progress = json.loads((tmp_path / "progress_20260806_120000.json").read_text())
         assert progress["kbds"]["27582"]["import"] == "failed"
-        assert progress["kbds"]["27582"]["vision"] == "skipped"
+        assert progress["kbds"]["27582"]["vision"] == "blocked_by_dependency"
+
+    def test_vision_and_classify_fork_after_import_but_extract_joins_both(self):
+        from kbd.pipeline import STAGE_DEPENDENCIES, Stage, resolve_stages
+
+        assert STAGE_DEPENDENCIES[Stage.VISION] == (Stage.IMPORT,)
+        assert STAGE_DEPENDENCIES[Stage.CLASSIFY] == (Stage.IMPORT,)
+        assert set(STAGE_DEPENDENCIES[Stage.EXTRACT_SIGNALS]) == {Stage.VISION, Stage.CLASSIFY}
+        assert resolve_stages([Stage.EXTRACT_SIGNALS]) == [
+            Stage.FETCH, Stage.IMPORT, Stage.VISION, Stage.CLASSIFY, Stage.EXTRACT_SIGNALS,
+        ]
 
 
 class TestSignalDocumentStatus:

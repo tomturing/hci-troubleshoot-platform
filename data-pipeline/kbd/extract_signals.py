@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 
 import asyncpg
 import httpx
 
 from .config import settings
+from .error_catalog import humanize_error
 from .observability import get_trace_id, traceparent
 
 logger = logging.getLogger("kbd.extract_signals")
@@ -38,25 +40,34 @@ async def _call_extract_api(kbd_entry_id: int, client: httpx.AsyncClient) -> dic
     # 提交（超时短：仅需接收 202）
     timeout_submit = 30.0
     response = None
-    for attempt in range(settings.API_MAX_RETRIES):
+    max_attempts = max(1, settings.API_MAX_RETRIES)
+    for attempt in range(max_attempts):
         try:
             response = await client.post(url, headers=headers, timeout=timeout_submit)
             response.raise_for_status()
             break
-        except httpx.TimeoutException:
-            if attempt == settings.API_MAX_RETRIES - 1:
+        except (httpx.TimeoutException, httpx.TransportError):
+            if attempt == max_attempts - 1:
                 raise
-            wait = 2.0 * (2 ** attempt)
+            wait = random.uniform(0.0, min(30.0, 2.0 ** attempt))
             logger.warning("抽取 API 提交超时 kbd_entry_id=%d 等待 %.1fs 后重试", kbd_entry_id, wait)
             await asyncio.sleep(wait)
         except httpx.HTTPStatusError as exc:
-            if 400 <= exc.response.status_code < 500:
+            status_code = exc.response.status_code
+            if status_code == 429:
+                retry_after = exc.response.headers.get("Retry-After")
+                try:
+                    wait = float(retry_after) if retry_after else random.uniform(0.0, 2.0 ** attempt)
+                except (TypeError, ValueError):
+                    wait = random.uniform(0.0, 2.0 ** attempt)
+            elif 400 <= status_code < 500:
                 logger.error("抽取 API 客户端错误 status=%d kbd_entry_id=%d",
-                             exc.response.status_code, kbd_entry_id)
+                             status_code, kbd_entry_id)
                 raise
-            if attempt == settings.API_MAX_RETRIES - 1:
+            else:
+                wait = random.uniform(0.0, min(30.0, 2.0 ** attempt))
+            if attempt == max_attempts - 1:
                 raise
-            wait = 2.0 * (2 ** attempt)
             logger.warning("抽取 API 服务端错误 status=%d 等待 %.1fs 后重试",
                            exc.response.status_code, wait)
             await asyncio.sleep(wait)
@@ -197,7 +208,17 @@ async def extract_signals_batch(kbd_ids: list[str], pool: asyncpg.Pool | None = 
             else:
                 stats["failed"] += 1
         except Exception as exc:
-            logger.error("关键信号抽取失败 support_id=%s 原因=%s", support_id, exc)
+            error = humanize_error(exc)
+            logger.error(
+                "关键信号抽取失败 support_id=%s code=%s retryable=%s 原因=%s",
+                support_id, error.code, error.retryable, error.message,
+                extra={
+                    "support_id": support_id,
+                    "stage": "extract_signals",
+                    "error_code": error.code,
+                    "retryable": error.retryable,
+                },
+            )
             stats["failed"] += 1
 
     max_concurrent = getattr(settings, "EXTRACT_CONCURRENCY", 3)

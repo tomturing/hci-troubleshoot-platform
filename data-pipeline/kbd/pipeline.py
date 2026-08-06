@@ -39,6 +39,7 @@ data-pipeline/kbd/pipeline.py — KBD 知识生产管道编排（API 调用版�
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -70,7 +71,7 @@ class Stage(IntEnum):
     """流水线阶段枚举。
 
     新架构 DAG（有向无环，依赖单向）：
-      FETCH → IMPORT → VISION → CLASSIFY → EXTRACT_SIGNALS → AUDIT_LOG_SIGNALS
+      FETCH → IMPORT → {VISION ∥ CLASSIFY} → EXTRACT_SIGNALS → AUDIT_LOG_SIGNALS
     VISION 移到 IMPORT 之后（因为 VISION 需要 kbd_entry.id 和 kbd_image），
     IMPORT 原子写入 kbd_entry + kbd_image，消除循环依赖。
     """
@@ -84,13 +85,15 @@ class Stage(IntEnum):
 
 # ─── DAG 依赖声明（拓扑排序 P0-② 增强）─────────────────────────────────────────
 
-# Stage DAG：每个 stage 声明其所有前置依赖（直接前置，闭包由 resolve_stages 自动展开）
+# Stage DAG：每个 stage 声明其所有硬前置依赖（直接前置，闭包由 resolve_stages 自动展开）。
+# VISION 与 CLASSIFY 都只依赖 IMPORT；EXTRACT_SIGNALS 同时要求两者成功，图片证据
+# 是关键信号抽取的业务硬依赖，不能因“任务已结束但识图失败”而降级放行。
 STAGE_DEPENDENCIES: dict[Stage, tuple[Stage, ...]] = {
     Stage.FETCH: (),                                                  # 无前置
     Stage.IMPORT: (Stage.FETCH,),                                     # 需要 raw.json + 本地图片
     Stage.VISION: (Stage.IMPORT,),                                    # 需要 kbd_entry + kbd_image
-    Stage.CLASSIFY: (Stage.VISION,),                                  # 需要 content_md 含视觉描述（完整上下文分类更准）
-    Stage.EXTRACT_SIGNALS: (Stage.CLASSIFY,),                          # 需要 ai_category_id 作为领域上下文
+    Stage.CLASSIFY: (Stage.IMPORT,),                                  # 结构化文本字段已由 IMPORT 写入
+    Stage.EXTRACT_SIGNALS: (Stage.VISION, Stage.CLASSIFY),             # 图片证据 + 领域分类都是硬依赖
     Stage.AUDIT_LOG_SIGNALS: (Stage.EXTRACT_SIGNALS,),                 # 审计生产后的 signals_json
 }
 
@@ -105,7 +108,7 @@ def resolve_stages(requested: Iterable[Stage]) -> list[Stage]:
         requested: 用户传入的 stages（含去重）
 
     Returns:
-        按拓扑序（FETCH → IMPORT → VISION → CLASSIFY → EXTRACT → AUDIT）排列的全部 stage 列表，
+        按拓扑序（FETCH → IMPORT → VISION/CLASSIFY → EXTRACT → AUDIT）排列的全部 stage 列表，
         包含用户请求 + 全部传递依赖
     """
     requested_set = set(requested)
@@ -286,61 +289,97 @@ async def run_pipeline(
             all_stats["import"]["blocked_by_dependency"] = len(kbd_ids) - len(import_ids)
             save_progress(run_id, progress)
 
-        if Stage.VISION in stages:
+        # VISION 与 CLASSIFY 没有技术前置关系：都只读取 IMPORT 写入的结构化 KBD。
+        # 但它们会争用同一 Provider，因此后端的 LLM_GLOBAL_CONCURRENCY 才是唯一并发边界。
+        # EXTRACT_SIGNALS 则必须等待两者成功；图片包含关键诊断信息，禁止降级跳过。
+        vision_done_ids: set[str] | None = None
+        classified_ids: set[str] | None = None
+
+        async def _run_vision_stage(input_ids: list[str]) -> set[str]:
             logger.info("─── Stage 3: 图片语义化 ───")
-            _mark_dependency_blocked(progress, "vision", kbd_ids, active_ids)
-            # 新架构：VISION 在 IMPORT 之后，仅处理 kbd_entry + kbd_image 已就位的案例
-            vision_input_ids = list(active_ids)
-            vision_ids = await _get_vision_ready_ids(vision_input_ids, pool)
-
-            t0 = time.monotonic()
+            _mark_dependency_blocked(progress, "vision", kbd_ids, input_ids)
+            vision_ids = await _get_vision_ready_ids(input_ids, pool)
+            started_at = time.monotonic()
             stats = await process_images_batch(vision_ids, pool)
-            all_stats["vision"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
-            logger.info("Stage 3 完成 %s", all_stats["vision"])
+            all_stats["vision"] = {**stats, "elapsed_s": round(time.monotonic() - started_at, 1)}
 
-            # 更新进度（基于 DB images_json desc 完整性判据，详见 _db_vision_status）
-            vision_statuses: dict[str, str] = {}
-            for cid in vision_input_ids:
+            completed: set[str] = set()
+            status_counts: dict[str, int] = {"done": 0, "failed": 0, "needs_review": 0}
+            inconsistent_ids: list[str] = []
+            api_case_results = stats.get("case_results", {})
+            for cid in input_ids:
+                # DB 是 images_json 的最终事实源；同时记录 API 图片级统计与案例级状态
+                # 的矛盾，避免再次把“31 张图完成”显示成“9 个 KBD 不明失败”。
                 status = await _db_vision_status(pool, cid)
-                vision_statuses[cid] = status
+                api_status = (api_case_results.get(cid) or {}).get("status")
+                if api_status == "done" and status != "done":
+                    # API 图片级 Job 已报告成功而持久化结果不满足案例级契约：这是数据
+                    # 一致性故障，不允许静默转成普通 Vision 失败。
+                    inconsistent_ids.append(cid)
+                    logger.error(
+                        "Vision 状态不一致 support_id=%s api_status=%s db_status=%s",
+                        cid, api_status, status,
+                        extra={"support_id": cid, "stage": "vision", "error_code": "VISION_STATE_INCONSISTENT"},
+                    )
+                status_counts[status] = status_counts.get(status, 0) + 1
                 update_stage_status(progress, "vision", cid, status)
-            active_ids = [cid for cid in vision_input_ids if vision_statuses[cid] == "done"]
-            all_stats["vision"]["blocked_by_dependency"] = len(kbd_ids) - len(vision_input_ids)
-            save_progress(run_id, progress)
+                if status == "done":
+                    completed.add(cid)
+            all_stats["vision"].update(
+                case_status_counts=status_counts,
+                state_inconsistent_ids=inconsistent_ids,
+                blocked_by_dependency=len(kbd_ids) - len(input_ids),
+            )
+            logger.info("Stage 3 完成 %s", all_stats["vision"])
+            return completed
 
-        if Stage.CLASSIFY in stages:
+        async def _run_classify_stage(input_ids: list[str]) -> set[str]:
             logger.info("─── Stage 4: AI 分类 ───")
-            _mark_dependency_blocked(progress, "classify", kbd_ids, active_ids)
-            classify_input_ids = list(active_ids)
+            _mark_dependency_blocked(progress, "classify", kbd_ids, input_ids)
             classify_rows = await pool.fetch(
                 """SELECT support_id FROM kbd_entry
                    WHERE support_id = ANY($1)
                      AND status = 'draft'
                      AND (ai_category_id IS NULL OR ai_category_id = '')""",
-                classify_input_ids,
+                input_ids,
             )
-            classify_ids_all = [r["support_id"] for r in classify_rows]
-            classify_kbd_ids = classify_ids_all
+            classify_ids = [r["support_id"] for r in classify_rows]
+            started_at = time.monotonic()
+            stats = await classify_batch(classify_ids, pool)
+            all_stats["classify"] = {**stats, "elapsed_s": round(time.monotonic() - started_at, 1)}
 
-            t0 = time.monotonic()
-            stats = await classify_batch(classify_kbd_ids, pool)
-            all_stats["classify"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
-            logger.info("Stage 4 完成 %s", all_stats["classify"])
-
-            # 同时验证本次无需调用（已分类）的案例，保持完整的逐 ID 契约。
-            classified_ids: list[str] = []
-            for cid in classify_input_ids:
+            completed: set[str] = set()
+            for cid in input_ids:
                 row = await pool.fetchrow(
-                    """SELECT ai_category_id FROM kbd_entry WHERE support_id = $1""",
-                    cid,
+                    """SELECT ai_category_id FROM kbd_entry WHERE support_id = $1""", cid
                 )
                 status = "done" if row and row["ai_category_id"] else "failed"
                 update_stage_status(progress, "classify", cid, status)
                 if status == "done":
-                    classified_ids.append(cid)
-            active_ids = classified_ids
-            all_stats["classify"]["blocked_by_dependency"] = len(kbd_ids) - len(classify_input_ids)
+                    completed.add(cid)
+            all_stats["classify"]["blocked_by_dependency"] = len(kbd_ids) - len(input_ids)
+            logger.info("Stage 4 完成 %s", all_stats["classify"])
+            return completed
+
+        if Stage.VISION in stages and Stage.CLASSIFY in stages:
+            # 两个阶段的输入快照必须相同；禁止 Vision 的失败缩小分类覆盖面。
+            vision_done_ids, classified_ids = await asyncio.gather(
+                _run_vision_stage(list(active_ids)),
+                _run_classify_stage(list(active_ids)),
+            )
             save_progress(run_id, progress)
+        elif Stage.VISION in stages:
+            vision_done_ids = await _run_vision_stage(list(active_ids))
+            active_ids = list(vision_done_ids)
+            save_progress(run_id, progress)
+        elif Stage.CLASSIFY in stages:
+            classified_ids = await _run_classify_stage(list(active_ids))
+            active_ids = list(classified_ids)
+            save_progress(run_id, progress)
+
+        if vision_done_ids is not None and classified_ids is not None:
+            # EXTRACT 的硬依赖交集：不允许“分类已完成但截图失败”的 KBD 进入 LLM 抽取。
+            active_ids = sorted(vision_done_ids & classified_ids)
 
         if Stage.EXTRACT_SIGNALS in stages:
             logger.info("─── Stage 5: 关键信号分级抽取 ───")
@@ -425,11 +464,18 @@ async def run_pipeline(
             1
             for case in progress.get("kbds", {}).values()
             for stage_name in stage_names
-            if case.get(stage_name) in {"failed", "needs_review"}
+            if case.get(stage_name) in {"failed", "blocked_by_dependency"}
+        )
+        warning_steps = sum(
+            1
+            for case in progress.get("kbds", {}).values()
+            for stage_name in stage_names
+            if case.get(stage_name) in {"needs_review", "warning"}
         )
         all_stats["pipeline"] = {
             "success": failed_steps == 0,
             "failed_steps": failed_steps,
+            "warning_steps": warning_steps,
             "completed_ids": len(active_ids),
             "total_ids": len(kbd_ids),
         }
@@ -450,11 +496,11 @@ def _mark_dependency_blocked(
     requested_ids: list[str],
     active_ids: list[str],
 ) -> None:
-    """将前置失败导致未执行的案例明确记为 skipped，避免保留误导性的 pending。"""
+    """明确标记硬依赖阻断，绝不把“未执行”伪装为幂等跳过。"""
     active = set(active_ids)
     for support_id in requested_ids:
         if support_id not in active:
-            update_stage_status(progress, stage, support_id, "skipped")
+            update_stage_status(progress, stage, support_id, "blocked_by_dependency")
 
 
 async def _get_import_ready_ids(kbd_ids: list[str], pool: asyncpg.Pool) -> list[str]:

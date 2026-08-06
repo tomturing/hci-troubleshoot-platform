@@ -263,6 +263,9 @@ kbService:
   llmTimeoutSec: "60.0"
   # Vision LLM 全局并发数（全局信号量上限，注入为 VISION_GLOBAL_CONCURRENCY）
   visionGlobalConcurrency: "3"
+  # KBD 三类 LLM（VISION/CLASSIFY/EXTRACT）共用的进程级总并发上限。
+  # 必须不高于 Provider 实际并发配额；默认复用 Vision 上限，避免阶段并行后相互打爆限流。
+  llmGlobalConcurrency: "3"
   # 是否启用 LLM 思维链（注入为 LLM_ENABLE_THINKING，默认关闭）
   enableThinking: "false"
   # KBD 数据管道 Job 配置（符合 Twelve-Factor App 配置规范）

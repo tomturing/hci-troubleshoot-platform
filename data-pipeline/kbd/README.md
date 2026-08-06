@@ -24,21 +24,21 @@ KBD Pipeline 的目标不是把人类案例原文简单搬进数据库，而是�
 ## 2. 当前六阶段 DAG
 
 ```text
-Stage 1             Stage 2             Stage 3
-fetch        →      import       →      vision
-Portal/API          语义转换+原子入库     截图 Evidence
-cache/ID            kbd_entry/image      images_json
-                                               ↓
-Stage 6             Stage 5             Stage 4
-audit-log-signals ← extract-signals  ←   classify
-只读运行时契约审计    signals_json Proposal   分类 Proposal
+                    ┌→ vision ────────┐
+fetch → import ─────┤                  ├→ extract-signals → audit-log-signals
+                    └→ classify ──────┘
 ```
 
 实际拓扑顺序是：
 
 ```text
-FETCH → IMPORT → VISION → CLASSIFY → EXTRACT_SIGNALS → AUDIT_LOG_SIGNALS
+FETCH → IMPORT → {VISION ∥ CLASSIFY} → EXTRACT_SIGNALS → AUDIT_LOG_SIGNALS
 ```
+
+`VISION` 和 `CLASSIFY` 在 Import 成功后并行：两者没有技术依赖，分类使用结构化的
+`title/problem_description/alert_info`，不从展示用 `content_md` 反向解析。业务上截图是
+信号抽取的重要事实源，所以 `EXTRACT_SIGNALS` 对 **Vision 成功** 和 **分类成功** 都是硬依赖；
+识图失败、部分识图或需复核的 KBD 不会降级进入 Signal 抽取，而会明确显示为前置阻断。
 
 `pipeline --stages` 会自动补齐前置依赖。例如 `--stages audit-log-signals` 会展开成完整六阶段链路；如果只想审计数据库现状且绝不触发前置生产，请使用独立的 `audit-log-signals` 子命令。
 
@@ -47,8 +47,8 @@ FETCH → IMPORT → VISION → CLASSIFY → EXTRACT_SIGNALS → AUDIT_LOG_SIGNA
 | 1 `fetch` | support_id、Portal Cookie | `cache/{id}/raw.json`、原图 | 写本地缓存 |
 | 2 `import` | raw.json、原图 | `kbd_entry`、`kbd_image`，状态为 draft | 写 KB Service/DB |
 | 3 `vision` | `kbd_image`、图片上下文 | `images_json[].evidence/desc`、重建 `content_md` | 写 KB Service/DB |
-| 4 `classify` | 案例问题侧文本和视觉上下文 | `ai_category_*` | 写 DB/API |
-| 5 `extract-signals` | 已分类 KBD、截图 Evidence、文本 | Signal v2 `signals_json` Proposal | 写 KB Service/DB |
+| 4 `classify` | IMPORT 写入的结构化案例文本 | `ai_category_*` | 写 DB/API |
+| 5 `extract-signals` | Vision 成功、已分类 KBD、截图 Evidence、文本 | Signal v2 `signals_json` Proposal | 写 KB Service/DB |
 | 6 `audit-log-signals` | `signals_json` | qfk_log 只读审计报告 | 不写数据库 |
 
 ## 3. 代码与数据责任
@@ -101,6 +101,7 @@ cp data-pipeline/kbd/.env.example data-pipeline/kbd/.env
 | `KBD_CACHE_DIR` | fetch/import | 默认 `data-pipeline/kbd/cache` |
 | `KBD_LOGS_DIR` | 所有 CLI 命令 | 默认 `data-pipeline/kbd/logs` |
 | `VISION_CONCURRENCY` | vision | Vision 并发，受模型限流约束 |
+| `CLASSIFY_CONCURRENCY` | classify | Pipeline 分类 API 调用并发，默认 2 |
 | `EXTRACT_CONCURRENCY` | extract | Signal 抽取并发，默认 3 |
 
 `.env` 含 Cookie、Token 和数据库地址，禁止提交 Git。不要在工单、文档或测试输出中粘贴真实值。
@@ -133,6 +134,16 @@ uv run python -m data-pipeline.kbd.run --help
 ```bash
 uv run python -m data-pipeline.kbd.run pipeline --ids 37150
 ```
+
+人工批量操作可使用中文向导：
+
+```bash
+uv run python -m data-pipeline.kbd.run wizard
+```
+
+向导只在交互终端执行，并要求输入“是”确认；自动化/CI 请继续使用 `pipeline --json`。每次运行同时生成
+人类可读文本日志、`progress_<run_id>.json` 和可检索的 `kbd_<run_id>.jsonl`；后者包含 trace、KBD、阶段、
+Job 与错误码关联字段。
 
 批量指定 ID：
 

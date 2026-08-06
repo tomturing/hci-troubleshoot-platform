@@ -53,6 +53,7 @@ from sqlalchemy import select, text
 
 from app.services.kbd_mutation_guard import PublishedKbdMutationError, require_mutable_kbd
 from app.services.kbd_revision_service import freeze_kbd_ai_proposal
+from app.services.llm_runtime import call_with_llm_governance
 from app.services.safe_pipeline_converter import (
     SafePipelineConversionError,
     apply_safe_pipeline_to_signal,
@@ -83,6 +84,7 @@ LLM_MODEL = os.environ.get("EXTRACT_SIGNALS_MODEL", os.environ.get("CLASSIFY_MOD
 # 推理模型（glm-5.2 / deepseek-v4-flash）开启 thinking 时会先消耗大量 reasoning token，
 # 导致 json_object 正文被挤出 max_tokens 预算 —— 这正是「LLM 响应格式错误」的根因。）
 LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "false").lower() in ("1", "true", "yes", "on")
+LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "120"))
 
 # Prompt 名称（system_prompt 表热加载，admin-ui 可在线编辑）
 # 2026-07-23：升级为 kbd_extract_signals_v2 —— LLM 直接产出 v2 嵌套结构，
@@ -779,19 +781,28 @@ async def _call_llm(prompt: str) -> dict[str, Any]:
     if not LLM_API_KEY:
         raise HTTPException(status_code=503, detail="LLM_API_KEY 未配置")
 
-    client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
+    client = AsyncOpenAI(
+        api_key=LLM_API_KEY,
+        base_url=LLM_BASE_URL,
+        timeout=LLM_TIMEOUT,
+        # 重试由共享治理器负责，避免 SDK/路由双重重试。
+        max_retries=0,
+    )
     try:
-        response = await client.chat.completions.create(
-            model=LLM_MODEL,
-            messages=[
-                {"role": "system", "content": "你是 HCI 关键信号抽取专家，输出严格遵循 JSON 格式。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,
-            max_tokens=8192,
-            response_format={"type": "json_object"},
-            extra_body={"enable_thinking": LLM_ENABLE_THINKING},
-        )
+        async def _call():
+            return await client.chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": "你是 HCI 关键信号抽取专家，输出严格遵循 JSON 格式。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+                max_tokens=8192,
+                response_format={"type": "json_object"},
+                extra_body={"enable_thinking": LLM_ENABLE_THINKING},
+            )
+
+        response = await call_with_llm_governance("extract_signals", _call)
         content = (response.choices[0].message.content or "").strip()
         if not content:
             # 防御：模型在 max_tokens 内仅产出思维链、未给出 JSON 正文（finish_reason=length）

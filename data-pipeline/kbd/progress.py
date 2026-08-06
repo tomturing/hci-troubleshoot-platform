@@ -15,8 +15,8 @@ data-pipeline/kbd/progress.py — KBD Pipeline 进度追踪模块
   "total_ids": 100,
   "stages_run": ["fetch", "vision"],
   "stages": {
-    "fetch": {"completed_ids": [], "failed_ids": [], "skipped_ids": []},
-    "vision": {"completed_ids": [], "failed_ids": [], "skipped_ids": []}
+    "fetch": {"completed_ids": [], "failed_ids": [], "skipped_ids": [], "warning_ids": [], "blocked_ids": []},
+    "vision": {"completed_ids": [], "failed_ids": [], "skipped_ids": [], "warning_ids": [], "blocked_ids": []}
   },
   "kbds": {
     "15414": {"fetch": "done", "vision": "pending", "import": "pending", "classify": "pending"}
@@ -53,9 +53,14 @@ _STATUS_TO_STATS_KEY = {
     "done": "completed_ids",
     "failed": "failed_ids",
     "skipped": "skipped_ids",
+    "skipped_existing": "skipped_ids",
+    "not_applicable": "not_applicable_ids",
+    "blocked_by_dependency": "blocked_ids",
     "pending": None,  # pending 不计入统计
-    # 人工复核前不能进入“完成”统计；复用 failed_ids 保持 resume/failed-only 行为兼容。
-    "needs_review": "failed_ids",
+    "running": None,
+    # 质量风险与技术失败严格分开，终端摘要才能解释“跑完但需要人看”。
+    "needs_review": "warning_ids",
+    "warning": "warning_ids",
 }
 
 
@@ -102,7 +107,14 @@ def init_progress(run_id: str, kbd_ids: list[str], stages: list[str]) -> dict[st
         "total_ids": len(kbd_ids),
         "stages_run": stages,
         "stages": {
-            stage: {"completed_ids": [], "failed_ids": [], "skipped_ids": []}
+            stage: {
+                "completed_ids": [],
+                "failed_ids": [],
+                "skipped_ids": [],
+                "warning_ids": [],
+                "blocked_ids": [],
+                "not_applicable_ids": [],
+            }
             for stage in ALL_STAGES
         },
         "kbds": {
@@ -163,7 +175,7 @@ def update_stage_status(
     progress: dict[str, Any],
     stage: str,
     support_id: str,
-    status: str,  # "done" | "failed" | "needs_review" | "skipped" | "pending"
+    status: str,
 ) -> None:
     """
     更新单个案例在特定 stage 的状态。
@@ -186,7 +198,10 @@ def update_stage_status(
         if support_id not in id_list:
             id_list.append(support_id)
             # 从其他统计列表中移除（保持一致性）
-            for other_key in ["completed_ids", "failed_ids", "skipped_ids"]:
+            for other_key in [
+                "completed_ids", "failed_ids", "skipped_ids", "warning_ids",
+                "blocked_ids", "not_applicable_ids",
+            ]:
                 if (
                     other_key != stats_key
                     and other_key in stages_stats
@@ -228,7 +243,7 @@ def find_latest_progress_file() -> str | None:
 
 
 def get_completed_ids_for_stage(progress: dict[str, Any], stage: str) -> set[str]:
-    """获取某个 stage 已完成的案例 ID 集合（包含 done 和 skipped），返回 set 以支持 O(1) membership"""
+    """获取可安全复用的已完成案例（done/已有结果跳过），不包含依赖阻断。"""
     stages_stats = progress.get("stages", {}).get(stage, {})
     completed = stages_stats.get("completed_ids", [])
     skipped = stages_stats.get("skipped_ids", [])
@@ -243,4 +258,4 @@ def get_kbd_stage_status(progress: dict[str, Any], support_id: str, stage: str) 
 def is_kbd_done_for_stage(progress: dict[str, Any], support_id: str, stage: str) -> bool:
     """检查某个案例在特定 stage 是否已完成"""
     status = get_kbd_stage_status(progress, support_id, stage)
-    return status in ("done", "skipped")
+    return status in ("done", "skipped", "skipped_existing")

@@ -56,6 +56,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.kbd_entry import KbdEntry, KbdImage
 from app.services.kbd_mutation_guard import require_mutable_kbd
 from app.services.kbd_revision_service import freeze_kbd_ai_proposal
+from app.services.llm_runtime import get_llm_semaphore
 
 logger = get_logger("kb-service-vision-processor")
 
@@ -105,19 +106,13 @@ _LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "false").lower() in
 # 峰值 LLM 并发≈3×3，会把 DashScope QPM/并发上限打爆。
 # 改为「一处全局信号量」，无论同时跑多少个 kbd / 多少个 job，总 LLM 并发恒定 ≤ 该值。
 # 延迟到事件循环内创建，规避 asyncio 3.10+ 在循环外创建 Semaphore 的 DeprecationWarning。
-_VISION_GLOBAL_SEM: Any = None
-
-
-def _vision_global_concurrency() -> int:
-    # 默认复用 _VISION_CONCURRENCY，单一真相源；可用环境变量 VISION_GLOBAL_CONCURRENCY 覆盖。
-    return int(os.environ.get("VISION_GLOBAL_CONCURRENCY", str(_VISION_CONCURRENCY)))
-
-
 async def _get_vision_semaphore() -> asyncio.Semaphore:
-    global _VISION_GLOBAL_SEM
-    if _VISION_GLOBAL_SEM is None:
-        _VISION_GLOBAL_SEM = asyncio.Semaphore(_vision_global_concurrency())
-    return _VISION_GLOBAL_SEM
+    """兼容旧调用方，但实际使用全局 KBD LLM 资源池。
+
+    CLASSIFY/EXTRACT_SIGNALS 与 VISION 共用同一 Semaphore，避免阶段并行后
+    各自占满 Provider 配额。
+    """
+    return await get_llm_semaphore()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
