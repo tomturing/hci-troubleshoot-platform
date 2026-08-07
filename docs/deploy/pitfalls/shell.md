@@ -86,3 +86,19 @@ fi
 也可以使用会消费完整输入且显式管理退出码的 `awk`，但不要仅通过去掉 `pipefail` 隐藏其他真实失败。
 
 **预防检查**：审查启用 `pipefail` 的 Shell 时，搜索 `| grep -q`；如果左侧可能输出多行或持续流式输出，改成“先捕获、后匹配”。2026-07-27 dev K3s 镜像导入验收已据此修复 `scripts/ops/k3s-build.sh`。
+
+## D-023：main push 事件缺失导致镜像未晋级
+
+**触发场景**：PR 检查全部通过，ArgoCD 也显示 `Synced/Healthy`，但环境仍运行合并前镜像。
+
+**根因**：PR 检查只验证代码；镜像构建与环境仓库更新依赖 `main` 的 `push` 事件。如果 GitHub Actions 故障导致该事件没有生成 CI 运行，`hci-platform-env` 的 values 不会变化，ArgoCD 只会忠实部署旧 Desired State。
+
+**正确做法**：
+
+1. `workflow_dispatch` 默认只构建，不写环境仓库；
+2. 只有显式选择 `promote_target=dev|staging|both` 才允许晋级；
+3. 手动晋级必须从 `main` 分支触发，禁止 feature SHA 进入环境仓库；
+4. 晋级前后逐服务核验 `image.tag`，并将 source SHA、镜像 tag、环境仓库提交写入 Actions Summary；
+5. 发布成功后仍需核验 ArgoCD Desired/Live State、Pod 镜像 digest 和容器源码，不能只看 Job 绿色。
+
+**不要采用**：把所有 `workflow_dispatch` 都当作发布，或让 ArgoCD 直接追踪应用代码仓库。前者会误发布未合并代码，后者会破坏环境仓库的审批、回滚和审计边界。

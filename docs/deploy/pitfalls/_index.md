@@ -26,7 +26,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | 触发场景 | 读取文件 | 当前条目 |
 |---------|---------|---------|
 | 网络/502/503/超时/SSL/Clash TUN/LLM | [network-service-check.md](network-service-check.md) | §一~十一, PIT-039, PIT-046, D-008 |
-| 编写/审查 Shell/Makefile/CI 脚本 / GitHub Actions | [shell.md](shell.md) | PIT-001, PIT-002, D-012, D-016 |
+| 编写/审查 Shell/Makefile/CI 脚本 / GitHub Actions | [shell.md](shell.md) | PIT-001, PIT-002, D-012, D-016, D-023 |
 | K8s/K3s 镜像/Helm/网络/HostPath/DB 迁移/ArgoCD/日志采集器迁移 | [k8s.md](k8s.md) | PIT-014~019, PIT-021, PIT-022, PIT-024, PIT-034, PIT-037, PIT-038, PIT-043, PIT-044, PIT-045, D-001~D-022 |
 | ArgoCD 升级/多集群/PreSync SA/Redis EOF/PreSync Hook 镜像/失败 Hook 残留/db-seed Hook 失败 | [k8s.md](k8s.md) | D-001, D-002, D-003, D-004, D-005, D-011, D-014 |
 | Grafana 重定向/Ingress/iframe 白屏 | [grafana.md](grafana.md) | PIT-011, PIT-012, PIT-020, PIT-036 |
@@ -87,6 +87,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | **D-020** | k8s.md | 临时 ConfigMap subPath 覆盖镜像源码，造成新镜像、旧运行代码，必须通过不可变镜像和准入策略治理 |
 | **D-021** | k8s.md | Alloy Pod Ready 不等于日志采集和 Loki 写入健康，必须以指标、告警和唯一日志查询验收 |
 | **D-022** | k8s.md | `dnsPolicy: None` 缺少 search domain 会破坏集群短服务名；内部依赖使用 ClusterFirst，readiness 必须验证依赖 |
+| **D-023** | shell.md | main push 事件缺失时，PR 检查不会发布镜像；CI 必须提供默认不发布、仅 main 可执行的显式 workflow_dispatch 补偿入口，并核验环境仓库远端 tag |
 
 ---
 
