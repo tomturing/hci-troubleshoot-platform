@@ -17,11 +17,12 @@ jobs:
   release-please:
     name: release-please
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071
         id: release
         with:
           # 使用根目录 release-please-config.json
@@ -36,6 +37,7 @@ jobs:
   bypass-checks-for-release-pr:
     name: 发版 PR 状态检查旁路
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: release-please
     if: ${{ !needs.release-please.outputs.release_created }}
     steps:
@@ -65,6 +67,7 @@ jobs:
   tag-staging:
     name: 通知 staging 晋级
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created }}
     steps:

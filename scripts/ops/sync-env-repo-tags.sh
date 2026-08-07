@@ -66,16 +66,20 @@ update_service_tag() {
   mv "$tmp" "$file"
 }
 
-IFS=',' read -r -a services <<< "$SERVICES_CSV"
-for svc in "${services[@]}"; do
-  # 跳过来自独立仓库的服务，防止 tag 被 htp CI 错误覆盖
-  if echo ",${BLOCKED_SERVICES}," | grep -q ",${svc},"; then
-    echo "⚠️  跳过 ${svc}（在保护名单中，tag 来自独立仓库）"
-    continue
-  fi
-  echo "更新 ${svc}.image.tag -> ${IMAGE_TAG}"
-  update_service_tag "$VALUES_FILE" "$svc" "$IMAGE_TAG"
-done
+if [[ -n "$SERVICES_CSV" ]]; then
+  IFS=',' read -r -a services <<< "$SERVICES_CSV"
+  for svc in "${services[@]}"; do
+    # 跳过来自独立仓库的服务，防止 tag 被 htp CI 错误覆盖
+    if echo ",${BLOCKED_SERVICES}," | grep -q ",${svc},"; then
+      echo "⚠️  跳过 ${svc}（在保护名单中，tag 来自独立仓库）"
+      continue
+    fi
+    echo "更新 ${svc}.image.tag -> ${IMAGE_TAG}"
+    update_service_tag "$VALUES_FILE" "$svc" "$IMAGE_TAG"
+  done
+else
+  echo "本次没有业务服务镜像需要同步，仅处理 dbMigrate（如有）"
+fi
 
 # dbMigrate 使用嵌套结构（image.repository + image.tag），只需更新 tag 字段
 # 复用 update_service_tag，以 dbMigrate 为块键匹配

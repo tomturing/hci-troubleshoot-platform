@@ -52,13 +52,15 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
 
       # ── Step 1: 安装 Atlas CLI + 准备 dev 数据库 ─────────────────────────
       - name: 安装 Atlas CLI
         run: |
+          # 与 Dockerfile.migrations 中的 Atlas 版本对齐，避免 CI/发布语义漂移。
+          export ATLAS_VERSION="1.1.6"
           curl -sSf https://atlasgo.sh | sh -s -- -y
           atlas version
 

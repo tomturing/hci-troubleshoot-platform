@@ -77,8 +77,9 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | KBD 六阶段数据管道可靠性与可观测性 | 🟡 代码级完成：VISION/CLASSIFY 并行，EXTRACT 严格等待两者成功；状态、重试、中文 CLI 和 JSONL 排障日志已加固。真实 Provider 20 KBD 故障注入与 Redis 多副本 Job 持久化尚未验收，不得宣称批量生产稳定性已通过。 | 2026-08-06 |
 | CI 最小激活与快速门禁 | ✅ 已实施：hci-sim runtime/Bridge/Manifest 按变更分流；后端测试解除 Helm 无效等待；Schema 与 Lint 共用依赖；PR 不再构建 Windows exe。真实 Hosted Runner P50/P95 需后续采集。 | 2026-08-07 |
 | CI 发布链路手动补偿闭环 | ✅ 已实施：`workflow_dispatch` 通过 `promote_target` 显式选择 dev/staging/both；仅 main 可晋级；晋级前后逐服务核验环境仓库 tag，并在 Actions Summary 留存证据。 | 2026-08-07 |
+| CI 发布链路按影响范围收敛 | ✅ 已实施：main push 动态构建 Dockerfile 实际输入影响的镜像，db-migrate job 级跳过，环境仓库仅更新已构建服务；文档治理复用既有 runner，所有 job 有超时，第三方 action/tool 已固定，P50/P95 报告仅手动运行。 | 2026-08-07 |
 
-**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）继续推进；CI 已按变更范围最小激活，并具备 GitHub push 事件丢失后的手动补偿发布闭环，详见 [CI 发布补偿方案](deploy/events/2026-08-07-CI发布链路补偿闭环.md)、[发布指南](deploy/发布指南.md) 与 [验证报告](verify/events/2026-08-07-CI发布链路补偿闭环验证报告.md)；hci-sim A/B 已通过 PR CI，C1/C2 事实边界见专项报告；C3 两步 synthetic dev 验收入口见[需求](requirement/events/2026-08-06-hci-sim阶段C3两步人工验收闭环需求.md)、[方案](solution/agent/events/2026-08-06-hci-sim阶段C3两步人工验收闭环方案.md)和[验证报告](verify/events/2026-08-06-hci-sim阶段C3两步人工验收闭环验证报告.md)。下一步须获得真实 Artifact 与对象存储授权，接入生产 PostgreSQL CAS/outbox；不得把 C3 synthetic 结果写成 realistic、真实 SSH、差分或 100+ 并发通过。
+**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）继续推进；CI 已按变更范围最小激活，并具备 GitHub push 事件丢失后的手动补偿发布闭环，详见 [CI 发布补偿方案](deploy/events/2026-08-07-CI发布链路补偿闭环.md)、[发布指南](deploy/发布指南.md)、[按影响范围收敛方案](solution/events/2026-08-07-CI发布链路按影响范围收敛方案.md)及两份验证报告；首个合并后的 main push 应人工核对动态 matrix。hci-sim A/B 已通过 PR CI，C1/C2 事实边界见专项报告；C3 两步 synthetic dev 验收入口见[需求](requirement/events/2026-08-06-hci-sim阶段C3两步人工验收闭环需求.md)、[方案](solution/agent/events/2026-08-06-hci-sim阶段C3两步人工验收闭环方案.md)和[验证报告](verify/events/2026-08-06-hci-sim阶段C3两步人工验收闭环验证报告.md)。下一步须获得真实 Artifact 与对象存储授权，接入生产 PostgreSQL CAS/outbox；不得把 C3 synthetic 结果写成 realistic、真实 SSH、差分或 100+ 并发通过。
 
 ### 冷启动阅读路径
 

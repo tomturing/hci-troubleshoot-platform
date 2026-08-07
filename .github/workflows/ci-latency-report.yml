@@ -1,0 +1,37 @@
+name: CI 时延基线报告（手动）
+
+# 不在 PR/main push 上触发；仅在需要复盘 GitHub runner 排队与真实执行时间时运行。
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "最多统计的已完成 workflow run 数"
+        required: true
+        default: "200"
+        type: string
+
+permissions:
+  actions: read
+
+concurrency:
+  group: ci-latency-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: 生成 P50/P95 时延报告
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 拉取已完成 Actions 运行记录
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/actions/runs?status=completed&per_page=100" \
+            --jq '.workflow_runs' > /tmp/completed-runs.json
+          jq --argjson limit "${LIMIT}" '[.[][]] | .[:$limit]' /tmp/completed-runs.json > /tmp/ci-runs.json
+
+      - name: 计算 P50/P95
+        run: python3 scripts/ci/report_actions_latency.py < /tmp/ci-runs.json >> "$GITHUB_STEP_SUMMARY"
