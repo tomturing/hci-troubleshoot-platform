@@ -354,8 +354,25 @@ class GenericSubCommandHandler(BackendSignalHandler):
             raise CommandBuildError(f"{namespace} 必须在 command 中提供子命令")
         if _has_illegal_chars(command):
             raise CommandBuildError(f"命令包含非法字符（{namespace}）: {command}")
-
-        return [f"acli {namespace} {command}"]
+        # KBD/LLM 常将 aCLI 路径写成 acli.vm.config.get。领域 QFK 只接受自己的
+        # namespace；在这里结构化成 argv，避免点号字符串被原样交给 Shell。
+        if command.startswith("acli.") and " " not in command:
+            tokens = command.split(".")
+            if len(tokens) < 3 or tokens[1] != namespace:
+                raise CommandBuildError(f"{namespace} 命令路径与 qfk_{namespace} 不一致: {command}")
+            command_parts = tokens[2:]
+        else:
+            try:
+                command_parts = shlex.split(command)
+            except ValueError as exc:
+                raise CommandBuildError(f"{namespace} command 无法安全分词: {exc}") from exc
+        if not command_parts or any(_has_illegal_chars(item) for item in command_parts):
+            raise CommandBuildError(f"{namespace} command 包含非法 token")
+        extra_args = signal.command_args or []
+        if any(not isinstance(item, str) or not item or _has_illegal_chars(item) for item in extra_args):
+            raise CommandBuildError(f"{namespace} command_args 包含非法参数")
+        parts = ["acli", namespace, *[shlex.quote(item) for item in command_parts], *[shlex.quote(item) for item in extra_args]]
+        return [" ".join(parts)]
 
 
 # ─── 命名空间路由 ──────────────────────────────────────────────────────────────

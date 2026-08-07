@@ -2,7 +2,7 @@
 status: active
 category: architecture
 audience: engineer
-last_updated: 2026-08-04
+last_updated: 2026-08-07
 owner: team
 ---
 
@@ -1401,12 +1401,49 @@ flowchart LR
 
 工具生命周期统一使用同一个 `exec_id`：`tool_call` 的 `args/status=running` 与 `tool_result` 的 `result/status=success|failed` 在 conversation-service 串行持久化后再发给 UI。滚动发布期间兼容 `tool_args/tool_result/completed/error` 旧字段；SSE 结束仍为 running 时 UI 必须收敛为 failed，禁止永久显示“正在等待输出”。
 
+## 十三、关键信号统一解析运行时
+
+关键信号的抽取结果不能直接进入执行器。系统采用共享的 `Shared Resolution Runtime`，通过领域 Resolver 将 `SignalIntent` 编译为 `ResolutionPlan`，再在目标环境解析为已验证的 `ResolvedAcquisition`：
+
+```text
+SignalIntent → ResolutionPlan → ResolvedAcquisition → Executor
+```
+
+领域划分如下：
+
+```text
+LogResolver             qfk_log
+SystemResolver          qfk_system（Shell 上的 aCLI 系统命令）
+DomainResolver          qfk_vm/network/storage/hardware/platform
+ServiceResolver         qfk_service
+QkvResolver             qkv_alert/task/dialog
+VariableResolver        {{HOST}}/{{END}}/{{VM}}
+```
+
+`qfk_system` 保持独立，不与日志目标或服务解析混合；aCLI 领域类 QFK 共用命令框架但使用独立 domain Catalog。命令内部必须先保存为 token/argv，例如 `acli.vm.config.get` 编译为 `['acli', 'vm', 'config', 'get']`，最后一层才渲染命令文本。
+
+关键信号抽取、知识生产门禁和消费前校验继续保留，但三者复用同一 Runtime/Catalog：
+
+```text
+抽取：得到候选 Intent 与 evidence
+生产门禁：compile，验证 Schema、安全、Catalog、变量依赖和计划完整性
+消费前校验：resolve，验证当前 HOST/END/版本/路径/命令能力和候选唯一性
+Executor：只执行 verified 的 ResolvedAcquisition
+```
+
+解析规则由 Git 版本化 Catalog 提供，Python 维护算法和状态机，数据库只保存草稿、审核/发布版本、运行审计和反馈；未经编译发布的数据库草稿不能热改变执行语义。完整决策见 [关键信号统一解析运行时与 Resolver 分层方案](../events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md)。
+
+2026-08-07 已完成首个代码级纵向切片：Shared Resolution Runtime Registry、六个 Resolver、声明式 Runtime Catalog 和 QFK/QKV preflight 均已接入；真实 HCI 已校准 `vtpdaemon` 的 `/sf/log/D/vt`、gzip 轮转和 aCLI 1.0.0 能力。生产级 path-probe 硬门禁、tar.gz Handler 和不可变 resolution audit snapshot 仍在实施，不能表述为已完成全版本生产验收。验证见 [Runtime 代码与真实 HCI 能力测评](../../../verify/events/2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md)。
+
 ---
 
-## 十三、变更历史
+## 十四、变更历史
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-08-07 | v6.5 | 实施 Shared Resolution Runtime 第一阶段并完成 aCLI 在线 Catalog 与真实 HCI 代表性测评；明确 production path probe、tar.gz 和持久化 resolution audit 仍为后续门禁 | [Runtime 代码与真实 HCI 能力测评](../../../verify/events/2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md) |
+| 2026-08-07 | v6.4 | 收敛六个领域 Resolver 的正式名称与稳定 `resolver_id`：`LogResolver`/`SystemResolver`/`DomainResolver`/`ServiceResolver`/`QkvResolver`/`VariableResolver`，保持统一 Runtime 生命周期不变 | [统一解析运行时与 Resolver 分层方案](../events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
+| 2026-08-07 | v6.3 | 确定 Shared Resolution Runtime 与领域 Resolver 分层：`qfk_system` 独立，aCLI 领域 QFK 归入独立领域 Resolver；生产门禁与消费前校验复用同一编译/解析平台，Catalog Git 化、运行快照不可变 | [统一解析运行时与 Resolver 分层方案](../events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
 | 2026-08-04 | v6.2 | KBD 运行时复用共享只读边界，历史 solution/明确写动作 Signal 在调度前 fail closed；SOP 处置节点授权语义保持不变 | [KBD 关键信号只读边界方案](../../knowledge-base/events/2026-08-04-KBD关键信号只读边界方案.md) |
 | 2026-07-27 | v6.1 | 修正 KBD “不主动获取值”的过期描述；补充 QKV/QFK 现场 acquisition、变量池、边缘字面量筛选、256 KiB Fail Closed 与统一工具生命周期设计 | [KBD27123三信号执行闭环方案](../../events/2026-07-27-KBD27123三信号执行闭环方案.md) |
 | 2026-06-01 | v6.0 | 清理僵尸组件：删除 IntentAgent（@deprecated）和 DiagnosticAgent（零调用），更新 AgentRouter v4.3 架构（S0→TriageAgent, S1-S4→InvestigationAgent, S5→RemediationAgent） | — |

@@ -4,6 +4,45 @@
 > 关联文档：[agent设计.md](./agent设计.md) §十（目录结构）、[agent记忆设计.md](./agent记忆设计.md)
 > 最新事件方案：[ReAct 工具调用历史跨轮次持久化设计](events/2026-06-17-ReAct工具调用历史跨轮次持久化.md)
 
+## 2026-08-07 权威修订：关键信号统一解析运行时与 Resolver 分层
+
+关键信号不允许将 LLM/专家原始字符串直接送入执行器。统一生命周期为：
+
+```text
+SignalIntent → ResolutionPlan → ResolvedAcquisition → Executor
+```
+
+平台采用一个共享的 `Shared Resolution Runtime`，下挂领域 Resolver：
+
+```text
+LogResolver             qfk_log：日志文件、目录、日期、归档
+SystemResolver          qfk_system：Shell 上的 aCLI 系统命令
+DomainResolver          qfk_vm/network/storage/hardware/platform：aCLI 领域命令
+ServiceResolver         qfk_service：服务组、服务名、只读动作
+QkvResolver             qkv_alert/task/dialog：QKV 查询与输出契约
+VariableResolver        {{HOST}}/{{END}}/{{VM}}：变量来源、类型、依赖
+```
+
+`qfk_system` 保持独立，因为它解析的是 Shell 形式的 aCLI token、参数、执行域和目标版本能力；`qfk_vm/network/storage/hardware/platform` 共享 aCLI 领域命令框架，但使用各自的 domain Catalog。内部命令必须先表示为 token/argv，例如：
+
+```text
+acli.vm.config.get → ["acli", "vm", "config", "get"]
+```
+
+生产门禁和消费前校验继续保留，但不得各自维护近似规则：
+
+| 阶段 | 调用 | 责任 |
+|---|---|---|
+| 关键信号抽取 | `SignalIntent` | 提取语义、别名候选和逐字 evidence；不决定物理目标 |
+| 知识生产门禁 | `compile()` | Schema、安全、Catalog、变量依赖和解析计划完整性 |
+| qfk/qkv 消费前校验 | `resolve()` | 当前 HOST/END/目标版本/路径/命令能力的现场验证 |
+| Executor | `ResolvedAcquisition` | 只执行已验证的结构化输入 |
+| Matcher/Parser | 执行输出 | 解释内容和判定，不负责猜路径/命令 |
+
+规则源文件由 Git 版本化，Python 维护解析算法和状态机，数据库只保存草稿、审核/发布版本、运行审计和反馈；未经编译和发布的 DB 草稿不能热改变 executable semantics。完整决策见 [关键信号统一解析运行时与 Resolver 分层方案](../events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md)。
+
+实施状态（2026-08-07）：Runtime Registry、六个 Resolver、Git JSON Runtime Catalog 和 qfk/qkv preflight 已落地。`qfk_system` 不接受 `acli.vm.config.get` 越域执行；该输入必须由 `DomainResolver` 规范为 `acli vm config get`，并在当前 aCLI 版本要求 `--vm-id/-v`。完整代码与真实 HCI 测评见 [Shared Resolution Runtime 代码与真实 HCI 能力测评](../../../verify/events/2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md)。
+
 ---
 
 ## 2026-08-05 权威修订：QFK 完整输出上的受控 AI 提取

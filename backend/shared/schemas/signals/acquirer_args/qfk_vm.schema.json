@@ -9,6 +9,13 @@
       "type": "string",
       "description": "acli vm <command>（如 list/status/console）"
     },
+    "command_args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "结构化命令参数，例如 --vm-id {{VM}}"
+    },
     "host": {
       "type": "string",
       "description": "采集目标主机/作用域（如 {{HOST}}），特殊值 cluster 表示遍历集群"

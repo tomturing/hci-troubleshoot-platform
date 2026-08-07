@@ -298,6 +298,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
             "command": {"type": "string", "description": "acli vm <command>（如 list/status/console）"},
+            "command_args": {"type": "array", "items": {"type": "string"}, "description": "结构化命令参数，例如 --vm-id {{VM}}"},
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "虚拟机名选择器（可选）"},
         },
@@ -309,6 +310,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
             "command": {"type": "string", "description": "acli network <command>"},
+            "command_args": {"type": "array", "items": {"type": "string"}, "description": "结构化 aCLI 参数"},
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "网络资源名选择器（可选）"},
         },
@@ -320,6 +322,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
             "command": {"type": "string", "description": "acli storage <command>（如 asan disk list）"},
+            "command_args": {"type": "array", "items": {"type": "string"}, "description": "结构化 aCLI 参数"},
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "存储资源名选择器（可选）"},
         },
@@ -331,6 +334,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
             "command": {"type": "string", "description": "acli hardware <command>"},
+            "command_args": {"type": "array", "items": {"type": "string"}, "description": "结构化 aCLI 参数"},
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "硬件资源名选择器（可选）"},
         },
@@ -342,6 +346,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
             "command": {"type": "string", "description": "acli platform <command>"},
+            "command_args": {"type": "array", "items": {"type": "string"}, "description": "结构化 aCLI 参数"},
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "平台资源名选择器（可选）"},
         },

@@ -86,6 +86,31 @@ async def test_qkv_command_build():
 
 
 @pytest.mark.asyncio
+async def test_qkv_alias_fallback_runs_only_after_canonical_keyword_has_no_matches():
+    signal = FrontendSignal(query=FrontendQueryType.TASK, keyword="开启虚拟机", limit=5)
+    mock_executor = AsyncMock()
+    mock_executor.execute.side_effect = [
+        ExecResult(stdout='{"data": []}', stderr="", exit_code=0, command="", node="127.0.0.1", duration_ms=1, truncated=False, risk_level=1),
+        ExecResult(
+            stdout='{"data": [{"id": 7, "type": "启动虚拟机", "status": 2, "process": "完成"}]}',
+            stderr="", exit_code=0, command="", node="127.0.0.1", duration_ms=1, truncated=False, risk_level=1,
+        ),
+    ]
+
+    with patch("app.tools.acli.executor._executor", mock_executor):
+        result = await qkv_exec(signal, conversation_id="test")
+
+    assert result.success is True
+    assert result.resolution["evidence"]["action_id"] == "vm.power_on"
+    assert result.resolution["evidence"]["matched_keyword"] == "开启虚拟机"
+    assert result.resolution["evidence"]["keyword_status"] == "ALIAS_MATCH"
+    assert mock_executor.execute.await_count == 2
+    commands = [call.kwargs["args"]["command"] for call in mock_executor.execute.await_args_list]
+    assert commands[0] == "acli --formatter json task get -k '启动虚拟机' -l 5"
+    assert commands[1] == "acli --formatter json task get -k '开启虚拟机' -l 5"
+
+
+@pytest.mark.asyncio
 async def test_qkv_dialog_searches_master_logs_and_extracts_end_request_id_host():
     signal = FrontendSignal(
         query=FrontendQueryType.DIALOG,

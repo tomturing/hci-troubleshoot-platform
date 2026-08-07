@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "catalog_version": "2026-08-07.1",
+  "log_aliases": {
+    "vtpdaemon": "sfvt_vtpdaemon.log",
+    "vtpdeamon": "sfvt_vtpdaemon.log",
+    "vtpdaeamon": "sfvt_vtpdaemon.log",
+    "sfvt_vtpdeamon.log": "sfvt_vtpdaemon.log"
+  },
+  "domain_command_requirements": [
+    {
+      "domain": "vm",
+      "path": ["config", "get"],
+      "required_options": ["--vm-id", "-v"]
+    }
+  ],
+  "qkv_actions": [
+    {
+      "action_id": "vm.power_on",
+      "query": "task",
+      "canonical_keywords": ["启动虚拟机"],
+      "aliases": ["开启虚拟机", "开机虚拟机", "启动VM", "启动 vm"],
+      "negative_aliases": ["重启虚拟机", "恢复虚拟机"]
+    },
+    {
+      "action_id": "vm.power_off",
+      "query": "task",
+      "canonical_keywords": ["关闭虚拟机"],
+      "aliases": ["关机虚拟机", "停止虚拟机"],
+      "negative_aliases": ["重启虚拟机"]
+    },
+    {
+      "action_id": "vm.reboot",
+      "query": "task",
+      "canonical_keywords": ["重启虚拟机"],
+      "aliases": ["重新启动虚拟机", "重启VM"],
+      "negative_aliases": ["启动虚拟机", "开启虚拟机"]
+    },
+    {
+      "action_id": "system.backup_create",
+      "query": "task",
+      "canonical_keywords": ["系统备份"],
+      "aliases": ["创建系统备份", "备份系统"]
+    },
+    {
+      "action_id": "system.backup_merge",
+      "query": "task",
+      "canonical_keywords": ["合并系统备份"],
+      "aliases": ["合并备份", "合并系统备份数据"]
+    }
+  ]
+}

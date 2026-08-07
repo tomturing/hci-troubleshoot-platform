@@ -94,6 +94,11 @@ class BackendSignal(BaseModel):
         if self.namespace == "system" and self.container == "host":
             self.container = None
         if self.namespace == "system":
+            if isinstance(self.command, str) and self.command.strip().startswith("acli."):
+                raise ValueError(
+                    "qfk_system 只允许 acli system 的 Shell 子命令；"
+                    "acli.vm.config.get 应路由到 qfk_vm/DomainResolver，并规范为 acli vm config get"
+                )
             try:
                 normalized = normalize_qfk_system_args(
                     {

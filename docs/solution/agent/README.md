@@ -2,7 +2,7 @@
 status: active
 category: solution
 audience: all
-last_updated: 2026-08-05
+last_updated: 2026-08-07
 owner: team
 update_trigger: Agent 方案新增、重构或状态变更
 ---
@@ -15,6 +15,9 @@ update_trigger: Agent 方案新增、重构或状态变更
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |---|---|---|---|
+| 2026-08-07 | v1.12 | 实施统一解析运行时首个纵向切片并完成 aCLI 在线 Catalog 336/336 一致性和真实 HCI 代表性只读测评；保留生产 path-probe 硬门禁、tar.gz Handler 和不可变运行审计为进行中。 | [Runtime 代码与真实 HCI 能力测评](../../verify/events/2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md) |
+| 2026-08-07 | v1.11 | 收敛 Resolver 正式命名与稳定 `resolver_id`：`LogResolver`/`SystemResolver`/`DomainResolver`/`ServiceResolver`/`QkvResolver`/`VariableResolver`，保持共享 Runtime、生产门禁和消费前校验方案不变。 | [统一解析运行时与 Resolver 分层方案](events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
+| 2026-08-07 | v1.10 | 确定关键信号统一解析运行时：共享 Resolution Runtime + 领域 Resolver；`qfk_system` 独立于日志/服务，aCLI 领域 QFK 归入独立领域 Resolver；生产门禁与消费前校验复用同一解析平台，Catalog 规则 Git 化、运行快照不可变。 | [统一解析运行时与 Resolver 分层方案](events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
 | 2026-08-05 | v1.9 | 完成 hci-sim A～E 阶段化设计：收敛唯一源码、安全确定性 Runtime、Fixture Compiler/Registry、TestRun/Scheduler/Runner、产品级差分/Mutation/容量运营；当前均为 proposed，A 尚未实施。 | [阶段 A](events/2026-08-05-hci-sim阶段A目录收敛与基础门禁方案.md)～[阶段 E](events/2026-08-05-hci-sim阶段E产品级验证与规模化运营方案.md) |
 | 2026-08-05 | v1.8 | QFK 完整输出新增受控 AI 提取：确定性 Extract/Matcher 先行，AI 仅定位候选原文中的字面量并以物理行逐字回查；Matcher evidence 与 produces 变量池共用，失败关闭。 | [QFK 完整输出 AI 提取方案](events/2026-08-05-QFK完整输出AI提取方案.md) |
 | 2026-08-04 | v1.7 | 收敛 KBD27736 的图片来源门禁：仅四个诊断字段图片的原子可见内容进入 Signal Prompt，source ref 只校验是否属于本轮实际输入，不将正文 evidence 强制逐字匹配图片 OCR。 | [KBD关键信号图片来源门禁收敛修复方案](events/2026-08-04-KBD关键信号图片来源门禁收敛修复方案.md) |
@@ -109,6 +112,7 @@ docs/solution/agent/
 | 搭建 CI 测评门禁 | [agent-测评与GitOps方案.md](03-测评与GitOps/agent-测评与GitOps方案.md) |
 | 理解 Agent 整体架构 | [agent设计.md](02-架构设计/agent设计.md) |
 | 理解工具系统怎么工作 | [agent工具设计.md](02-架构设计/agent工具设计.md) |
+| 理解关键信号如何规范化、编译、现场解析和执行前验证 | [关键信号统一解析运行时与 Resolver 分层方案](events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
 | 核对 HCI 日志/配置/数据/容器与 aCLI 的真实契约 | [HCI底层目录日志容器与aCLI知识基线.md](02-架构设计/HCI底层目录日志容器与aCLI知识基线.md) |
 | 设计或审核 qfk_log、blackbox、日志 parser/predicate | [qfk_log统一日志采集解析与判定设计.md](02-架构设计/qfk_log统一日志采集解析与判定设计.md) |
 | 理解技能系统怎么工作 | [agent技能设计.md](02-架构设计/agent技能设计.md) |

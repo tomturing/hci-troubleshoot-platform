@@ -9,6 +9,13 @@
       "type": "string",
       "description": "acli storage <command>（如 asan disk list）"
     },
+    "command_args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "结构化 aCLI 参数"
+    },
     "host": {
       "type": "string",
       "description": "采集目标主机/作用域（如 {{HOST}}），特殊值 cluster 表示遍历集群"

@@ -5,6 +5,8 @@ QFK 后端信号谓词匹配引擎
 
 from __future__ import annotations
 
+import posixpath
+import shlex
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -17,9 +19,31 @@ from app.tools.qfk.ai_extractor import extract_ai_value, has_ai_extract
 from app.tools.qfk.extractor import QFKExtractionError, get_complete_output
 from app.tools.qfk.handlers import HandlerRegistry
 from app.tools.qfk.matcher import evaluate_matcher
+from app.tools.qfk.resolution import resolve_backend_signal
 from app.tools.qfk.signal import BackendSignal
 
 logger = get_logger("qfk-engine")
+
+
+def _expand_log_resolution_retries(commands: list[str], resolution: dict[str, Any]) -> list[str]:
+    """Expand only the LogResolver-emitted candidate directories."""
+
+    candidates = [str(item) for item in resolution.get("candidates_tried", [])]
+    directories = list(dict.fromkeys(posixpath.dirname(item) for item in candidates if "/" in item))
+    if len(directories) < 2:
+        return commands
+    expanded = list(commands)
+    for command in commands:
+        try:
+            tokens = shlex.split(command)
+            primary = tokens[tokens.index("-p") + 1]
+        except (ValueError, IndexError):
+            continue
+        if primary != directories[0]:
+            continue
+        for directory in directories[1:]:
+            expanded.append(command.replace(f"-p {primary}", f"-p {directory}", 1))
+    return list(dict.fromkeys(expanded))
 
 
 def _exclude_probe_self_observation(text: str, commands: list[str]) -> tuple[str, int]:
@@ -58,6 +82,7 @@ class QFKResult:
     processing_status: str = ""  # not_started / succeeded / failed
     output_mode: str = "match"  # match / produce
     business_output_available: bool = False
+    resolution: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """兼容既有构造点，同时保证执行失败不会冒充业务 False。"""
@@ -158,10 +183,37 @@ async def qfk_exec(
             error=f"QFK_EXECUTION_MODE_INVALID: 不支持的 QFK 执行模式 {execution_mode}",
         )
 
-    # 1. 寻找 handler 处理器并构建指令
+    # 1. 先走 Shared Resolution Runtime，再由既有 Handler 渲染最终 aCLI 文本。
+    # Runtime 不伪称未探测的文件存在；实际执行得到的 aCLI 结果仍是最终现场证据。
+    try:
+        acquisition = resolve_backend_signal(signal)
+        # Producer mode is a read-only discovery path: it may execute an
+        # unprobed Catalog candidate so the returned output can become probe
+        # evidence. Match/consume mode remains hard-gated on verified.
+        if not acquisition.verified and execution_mode != "produce":
+            code = "QFK_RESOLUTION_BLOCKED" if acquisition.status.value == "blocked" else "QFK_RESOLUTION_UNVERIFIED"
+            raise ValueError(f"{code}: " + ("; ".join(issue.message for issue in acquisition.issues) or "执行前未获得 verified acquisition"))
+        resolution = acquisition.model_dump(mode="json")
+    except Exception as e:
+        logger.warning(event="qfk_resolution_failed", namespace=signal.namespace, error=str(e))
+        return QFKResult(
+            matched=False,
+            namespace=signal.namespace,
+            commands=[],
+            keywords=signal.keyword,
+            match_mode=signal.match_mode,
+            matched_keywords=[],
+            evidence="",
+            error=f"QFK Shared Resolution Runtime 解析失败: {e}",
+            output_mode=execution_mode,
+        )
+
+    # 2. 寻找 handler 处理器并构建指令
     try:
         handler = HandlerRegistry.get(signal.namespace)
         commands = handler.build_commands(signal)
+        if signal.namespace == "log" and execution_mode == "match":
+            commands = _expand_log_resolution_retries(commands, resolution)
     except Exception as e:
         logger.warning(
             event="qfk_handler_setup_failed",
@@ -178,6 +230,7 @@ async def qfk_exec(
             evidence="",
             error=f"QFK 信号解析与命令构建失败: {e}",
             output_mode=execution_mode,
+            resolution=resolution,
         )
 
     logger.info(
@@ -190,7 +243,7 @@ async def qfk_exec(
         conversation_id=conversation_id,
     )
 
-    # 2. 复用底层 BridgeRelayExecutor 执行命令
+    # 3. 复用底层 BridgeRelayExecutor 执行命令
     from app.tools.acli.executor import _executor
 
     if _executor is None:
@@ -211,6 +264,7 @@ async def qfk_exec(
                 "确认 REDIS_URL / CONVERSATION_SERVICE_URL / INTERNAL_API_TOKEN 均已就绪后重启 agent-service。"
             ),
             output_mode=execution_mode,
+            resolution=resolution,
         )
 
     # 终端级失败哨兵：命令根本没在 HCI 主机上执行（会话缺失 / 桥未运行 / 超时）。
@@ -296,6 +350,7 @@ async def qfk_exec(
                     ),
                     exec_ids=exec_ids,
                     output_mode=execution_mode,
+                    resolution=resolution,
                 )
             results.append(exec_res)
             if exec_res.exec_id:
@@ -317,6 +372,7 @@ async def qfk_exec(
                 error=str(exec_err),
                 exec_ids=exec_ids,
                 output_mode=execution_mode,
+                resolution=resolution,
             )
 
     # 3. 非零退出是执行失败，与是否请求完整输出无关。任何调用方即使漏传
@@ -336,6 +392,7 @@ async def qfk_exec(
             exec_ids=exec_ids,
             raw_output=combined,
             output_mode=execution_mode,
+            resolution=resolution,
         )
 
     # 4. 产出变量必须使用完整物理流。展示摘要仍可截断；缓存缺失/超限时 Fail Closed。
@@ -362,6 +419,7 @@ async def qfk_exec(
                 exec_ids=exec_ids,
                 raw_output="\n".join(result.stdout or "" for result in results),
                 output_mode=execution_mode,
+                resolution=resolution,
             )
 
     # 5. producer 与 matcher 是不同执行语义。producer 的完整输出必须先返回给
@@ -384,6 +442,7 @@ async def qfk_exec(
                 raw_output=combined_output,
                 complete_outputs=complete_outputs,
                 output_mode=execution_mode,
+                resolution=resolution,
             )
         return QFKResult(
             matched=True,
@@ -398,6 +457,7 @@ async def qfk_exec(
             complete_outputs=complete_outputs,
             output_mode="produce",
             business_output_available=False,
+            resolution=resolution,
         )
 
     # 6. match 模式的所有 QFK 判定均依赖新版 matcher.extract。
@@ -421,6 +481,7 @@ async def qfk_exec(
                     raw_output=combined_output,
                     complete_outputs=complete_outputs,
                     output_mode=execution_mode,
+                    resolution=resolution,
                 )
             matcher_input, excluded_probe_lines = _exclude_probe_self_observation(complete_outputs[source], commands)
         matcher_result = evaluate_matcher(signal.matcher, matcher_input)
@@ -438,6 +499,7 @@ async def qfk_exec(
                 raw_output=combined_output,
                 complete_outputs=complete_outputs,
                 output_mode=execution_mode,
+                resolution=resolution,
             )
         final_matched = bool(matcher_result.matched)
         matched_kws = list(matcher_result.detail.get("matched_keywords") or [])
@@ -470,6 +532,7 @@ async def qfk_exec(
                     raw_output=combined_output,
                     complete_outputs=complete_outputs,
                     output_mode=execution_mode,
+                    resolution=resolution,
                 )
             ai_value = ai_result.value
             evidence = (
@@ -498,6 +561,7 @@ async def qfk_exec(
             raw_output=combined_output,
             complete_outputs=complete_outputs,
             output_mode=execution_mode,
+            resolution=resolution,
         )
 
     # 7. 最终布尔判定
@@ -525,4 +589,5 @@ async def qfk_exec(
         processing_status="succeeded",
         output_mode="match",
         business_output_available=True,
+        resolution=resolution,
     )

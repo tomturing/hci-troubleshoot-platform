@@ -2,7 +2,7 @@
 status: active
 category: verify
 audience: developer, tester
-last_updated: 2026-08-04
+last_updated: 2026-08-07
 owner: team
 ---
 
@@ -16,6 +16,7 @@ owner: team
 
 | 文件 | 日期 | 说明 |
 |------|------|------|
+| [2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md](2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md) | 2026-08-07 | Runtime 六领域 Resolver 代码级回归、aCLI 在线 Catalog 336/336、一致性及真实 HCI `/sf/log` 深度目录/SQLite `log_new.db` 只读测评；生产硬门禁/归档扩展仍 in_progress |
 | [2026-08-06-hci-sim阶段C-E控制面代码级实施验证报告.md](2026-08-06-hci-sim阶段C-E控制面代码级实施验证报告.md) | 2026-08-06 | in_progress：C–E 控制面/差分/容量代码级闭环与真实环境阻断证据 |
 | [2026-08-05-hci-sim阶段A-B代码级实施验证报告.md](2026-08-05-hci-sim阶段A-B代码级实施验证报告.md) | 2026-08-05 | in_progress：A/B 代码与本地门禁证据、明确未部署/未做容量验证的边界 |
 | [2026-08-05-hci-sim阶段A目录收敛与基础门禁验证方案.md](2026-08-05-hci-sim阶段A目录收敛与基础门禁验证方案.md) | 2026-08-05 | proposed：唯一源码、Go/race、Manifest/Helm、Bridge/真实 SSH 和反退化 CI 验收计划 |
@@ -47,4 +48,4 @@ owner: team
 
 ---
 
-*更新日期: 2026-08-05*
+*更新日期: 2026-08-07*

@@ -1,8 +1,8 @@
 # qfk_log 统一日志采集、解析与判定设计
 
 > 状态：已确认并进入实施
-> 版本：v1.1
-> 日期：2026-07-30
+> 版本：v1.4
+> 日期：2026-08-07
 > 适用范围：126 个 KBD 扩展验证集、KBD 自动生产、专家复核、HTP Agent 消费、工具管理
 > 核心决策：**不新增 `qfk_blackbox`；`/sf/log` 下 whitebox、blackbox、vn-blackbox 与其他日志统一由 `qfk_log` 处理。`/sf/data/local` 不是日志族，只保留为携带 `request_id` 的受限辅助关联域。**
 
@@ -793,3 +793,22 @@ include_archives=true 但未完成 archive_precheck
 5. 当某类 capability gap 出现频率和价值足够高时，再实现新的语义化能力。
 
 只有出现“需要独立部署、独立权限、独立版本协商或独立安全策略”的真实需求时，才升级为 Registry/新工具。blackbox 不满足这一条件，因此长期保持在 `qfk_log` 内。
+
+### 15.1 与 Shared Resolution Runtime 的衔接（2026-08-07）
+
+本设计中的 `qfk_log` 领域规则将接入 [Shared Resolution Runtime 与 Resolver 分层方案](../events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md)。这是一项待实施的架构衔接，不代表运行时代码已经完成。
+
+- `LogResolver` 负责本文件定义的日志目标语义：basename/关键字、`/sf/log` 目录族、`END` 日期目录、`vt` 与跨版本回退、归档 Handler，以及 `ResolvedLogTarget` 证据。
+- `qfk_log` 仍只负责日志目标领域；不会吸收 `qfk_system` 的 Shell/aCLI 命令规范化，也不会代替 `ServiceResolver`、`QkvResolver` 或 `VariableResolver`。
+- 生产门禁调用共享 Runtime 的 `compile()` 检查 Schema、Catalog、安全边界和变量依赖；工具执行前调用 `resolve()` 按当前 HOST/END、版本和能力探针确认唯一的绝对路径或安全回退。Executor 只接受 `ResolvedAcquisition`。
+- 现有 `backend/shared/schemas/log_source_catalog.py`、`acquirer_args.py` 与 qfk_log Handler/Matcher 是该 Resolver 的迁移来源；迁移期间保留兼容字段，但不得把原始 `path` 当作已验证的物理路径。
+
+实施状态：`LogResolver` 已实现 `vtpdaemon` 别名/错别字、完整 filename、`vt/filename` 相对路径、完整绝对文件路径、END 的 D/DD 候选、`today` 改写和 gzip 前置检查，并在当前 HCI 上确认 `/sf/log/today -> /sf/log/7`、`/sf/log/7/vt/sfvt_vtpdaemon.log` 与 `/sf/log/6/vt/sfvt_vtpdaemon.log.2.gz`。当前仍未实现 tar.gz member Handler 和“第一个 D/DD 候选失败后自动重试下一个”的执行闭环；详见 [Runtime 代码与真实 HCI 能力测评](../../../verify/events/2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md)。
+
+## 16. 变更历史
+
+| 日期 | 版本 | 变更摘要 | 关联方案 |
+|------|------|---------|---------|
+| 2026-08-07 | v1.4 | 实施 LogResolver 第一阶段，并以真实 HCI 验证 vtpdaemon 的 D/vt 路径和 `.gz` 轮转；tar.gz Handler、D/DD 自动 fallback 和 production path-probe 硬门禁仍进行中。 | [Runtime 代码与真实 HCI 能力测评](../../../verify/events/2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md) |
+| 2026-08-07 | v1.3 | 对齐共享运行时的正式命名：日志目标解析器统一称为 `LogResolver`，并固定 `resolver_id=log`；不改变 qfk_log 的日志领域职责和执行前校验边界。 | [关键信号统一解析运行时与 Resolver 分层方案](../events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
+| 2026-08-07 | v1.2 | 将 qfk_log 明确接入 Shared Resolution Runtime 的 `LogResolver`，定义 `compile()`/`resolve()` 与 Executor 的边界；保留 qfk_log 的日志目标领域职责，跨版本绝对路径和归档解析仍为待实施事项。 | [关键信号统一解析运行时与 Resolver 分层方案](../events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |

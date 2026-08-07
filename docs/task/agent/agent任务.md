@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-08-05
+last_updated: 2026-08-07
 owner: team
 update_trigger: Agent 层功能新增/重构/问题修复任务
 ---
@@ -15,6 +15,9 @@ update_trigger: Agent 层功能新增/重构/问题修复任务
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
+| 2026-08-07 | v2.12 | 实施 Shared Resolution Runtime 首个纵向切片：六领域 Resolver、声明式 Runtime Catalog、QFK/QKV preflight、argv/未知命令/只读门禁、Schema 与真实 HCI/aCLI 测评；生产 path-probe 硬门禁、tar.gz Handler 和不可变审计快照仍进行中。 | [关键信号统一解析运行时与 Resolver 分层任务](events/2026-08-07-关键信号统一解析运行时与Resolver分层任务.md) |
+| 2026-08-07 | v2.11 | 收敛实施任务中的 Resolver 正式名称和稳定 `resolver_id`：`log`、`system`、`domain`、`service`、`qkv`、`variable`。 | [关键信号统一解析运行时与 Resolver 分层任务](events/2026-08-07-关键信号统一解析运行时与Resolver分层任务.md) |
+| 2026-08-07 | v2.10 | 提出 Shared Resolution Runtime 与领域 Resolver 实施任务：`qfk_log`、独立 `qfk_system`、aCLI 领域 QFK、服务/QKV/变量解析共用 Catalog Compiler、能力探针和生产/消费统一校验；当前尚未实施运行时代码。 | [关键信号统一解析运行时与 Resolver 分层任务](events/2026-08-07-关键信号统一解析运行时与Resolver分层任务.md) |
 | 2026-08-05 | v2.9 | 完成 QFK 完整输出 AI 提取：确定性 Extract/Matcher 先行，AI 只能定位候选原文中的字面量并逐字回查；Matcher evidence 与 produces 共享实现，失败关闭且变量池原子写入。 | [QFK完整输出AI提取任务](events/2026-08-05-QFK完整输出AI提取任务.md) |
 | 2026-08-04 | v2.8 | 收敛 KBD27736 图片来源门禁：保留四个诊断字段图片白名单、自由上下文隔离和 source ref 实际输入集合检查；移除正文 evidence 与截图 OCR 的跨来源逐字强绑定，恢复后续运行语义门禁的真实拒绝原因。 | [KBD关键信号图片来源门禁收敛修复任务](events/2026-08-04-KBD关键信号图片来源门禁收敛修复任务.md) |
 | 2026-08-04 | v2.7 | 修复 KBD27736 截图 Evidence 输入边界泄漏：根因/方案图片、上下文及未知章节 fail closed；初版实现额外加入逐字 evidence 强校验，后由 v2.8 收敛。 | [KBD关键信号输入边界泄漏修复任务](events/2026-08-04-KBD关键信号输入边界泄漏修复任务.md) |
@@ -41,6 +44,7 @@ update_trigger: Agent 层功能新增/重构/问题修复任务
 
 | 状态 | 任务 | 创建日期 | 关联方案 |
 |------|------|---------|---------|
+| 进行中（首个代码级纵向切片和真实 HCI 代表性测评完成；生产硬门禁/归档/审计待补） | T-AGT-RESOLUTION-RUNTIME：Shared Resolution Runtime、领域 Resolver、Catalog Compiler、能力探针与生产/消费统一校验 | 2026-08-07 | [关键信号统一解析运行时与 Resolver 分层方案](../../solution/agent/events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
 | ✅ 完成（代码级；真实 HCI/模型服务回归待做） | T-AGT-QFK-AI-EXTRACT：完整输出/文本行列的受控 AI 字面量提取、引用行和值逐字回查、Matcher/produces 一致性与原子变量写入 | 2026-08-05 | [QFK 完整输出 AI 提取方案](../../solution/agent/events/2026-08-05-QFK完整输出AI提取方案.md) |
 | ✅ 完成（代码级；KBD27736 重抽仍须专家触发） | T-AGT-KBD-SIGNAL-IMAGE-REF-BOUNDARY：诊断截图白名单、截图上下文隔离与 source ref 实际输入集合检查；不要求正文 evidence 与图片 OCR 跨来源逐字相等 | 2026-08-04 | [KBD关键信号图片来源门禁收敛修复方案](../../solution/agent/events/2026-08-04-KBD关键信号图片来源门禁收敛修复方案.md) |
 | ✅ 完成（代码级；真实 HCI 回归待做） | T-AGT-QFK-EXEC：aCLI 系统执行域、Bridge 边界和统一 TextExtract | 2026-07-31 | [QFK 系统执行域与统一文本取值方案](../../solution/agent/events/2026-07-31-QFK系统执行域与统一文本取值方案.md) |
