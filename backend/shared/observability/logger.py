@@ -6,6 +6,7 @@ Structured Logging Utilities
 import json
 import logging
 import sys
+import traceback
 from datetime import UTC, datetime
 
 from .otel import get_current_span_id, get_current_trace_id
@@ -29,6 +30,33 @@ class StructuredLogger:
         # 阻止向 root logger 传播，避免日志被 LoggingInstrumentor 的 handler 重复输出
         self.logger.propagate = False
 
+    @staticmethod
+    def _coerce_call(
+        event: str,
+        args: tuple[object, ...],
+        message: object | None,
+        trace_id: object | None,
+    ) -> tuple[str, str | None, str | None]:
+        """兼容标准 logging 的 ``logger.info('x=%s', value)`` 调用。
+
+        业务日志应使用关键字字段，但历史代码中仍有标准 logging 风格调用。
+        如果不在这里归一，参数会错位写入 ``message``/``trace_id``，甚至让
+        日志调用本身抛出 TypeError，掩盖原始业务异常。
+        """
+
+        if not args:
+            return event, str(message) if message is not None else None, str(trace_id) if trace_id else None
+        if "%" in event:
+            try:
+                rendered = event % args
+            except (TypeError, ValueError):
+                rendered = " ".join([event, *(str(item) for item in args)])
+            return "legacy_log", rendered, str(trace_id) if trace_id else None
+        values = list(args)
+        rendered_message = message if message is not None else values.pop(0)
+        rendered_trace = trace_id if trace_id is not None and not values else (values.pop(0) if values else trace_id)
+        return event, str(rendered_message) if rendered_message is not None else None, str(rendered_trace) if rendered_trace else None
+
     def _format_log(
         self, level: str, event: str, message: str | None = None, trace_id: str | None = None, **kwargs
     ) -> str:
@@ -46,6 +74,7 @@ class StructuredLogger:
             str: JSON 格式的日志
         """
         log_data = {
+            "log_schema_version": 1,
             "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             "level": level,
             "service": self.service_name,
@@ -73,25 +102,29 @@ class StructuredLogger:
 
         return json.dumps(log_data, ensure_ascii=False, default=str)
 
-    def info(self, event: str, message: str | None = None, trace_id: str | None = None, **kwargs):
+    def info(self, event: str, *args, message: str | None = None, trace_id: str | None = None, **kwargs):
         """记录 INFO 级别日志"""
+        event, message, trace_id = self._coerce_call(event, args, message, trace_id)
         log_str = self._format_log("INFO", event, message, trace_id, **kwargs)
         self.logger.info(log_str)
 
-    def warning(self, event: str, message: str | None = None, trace_id: str | None = None, **kwargs):
+    def warning(self, event: str, *args, message: str | None = None, trace_id: str | None = None, **kwargs):
         """记录 WARNING 级别日志"""
+        event, message, trace_id = self._coerce_call(event, args, message, trace_id)
         log_str = self._format_log("WARNING", event, message, trace_id, **kwargs)
         self.logger.warning(log_str)
 
     def error(
         self,
         event: str,
+        *args,
         message: str | None = None,
         trace_id: str | None = None,
         error: Exception | None = None,
         **kwargs,
     ):
         """记录 ERROR 级别日志"""
+        event, message, trace_id = self._coerce_call(event, args, message, trace_id)
         if error:
             kwargs["error_type"] = type(error).__name__
             kwargs["error_message"] = str(error)
@@ -99,14 +132,16 @@ class StructuredLogger:
         log_str = self._format_log("ERROR", event, message, trace_id, **kwargs)
         self.logger.error(log_str)
 
-    def debug(self, event: str, message: str | None = None, trace_id: str | None = None, **kwargs):
+    def debug(self, event: str, *args, message: str | None = None, trace_id: str | None = None, **kwargs):
         """记录 DEBUG 级别日志"""
+        event, message, trace_id = self._coerce_call(event, args, message, trace_id)
         log_str = self._format_log("DEBUG", event, message, trace_id, **kwargs)
         self.logger.debug(log_str)
 
     def exception(
         self,
         event: str,
+        *args,
         message: str | None = None,
         trace_id: str | None = None,
         error: Exception | None = None,
@@ -119,6 +154,7 @@ class StructuredLogger:
         """
         import traceback
 
+        event, message, trace_id = self._coerce_call(event, args, message, trace_id)
         if error:
             kwargs["error_type"] = type(error).__name__
             kwargs["error_message"] = str(error)
@@ -130,6 +166,25 @@ class StructuredLogger:
 
         log_str = self._format_log("ERROR", event, message, trace_id, **kwargs)
         self.logger.error(log_str)
+
+    def critical(
+        self,
+        event: str,
+        *args,
+        message: str | None = None,
+        trace_id: str | None = None,
+        error: Exception | None = None,
+        **kwargs,
+    ):
+        """记录 CRITICAL 级别日志，并保证日志失败不会替换原始故障。"""
+
+        event, message, trace_id = self._coerce_call(event, args, message, trace_id)
+        if error:
+            kwargs["error_type"] = type(error).__name__
+            kwargs["error_message"] = str(error)
+            kwargs.setdefault("traceback", traceback.format_exc())
+        log_str = self._format_log("CRITICAL", event, message, trace_id, **kwargs)
+        self.logger.critical(log_str)
 
 
 # 日志实例缓存，避免重复创建

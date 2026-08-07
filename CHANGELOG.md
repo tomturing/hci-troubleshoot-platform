@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.23.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.22.0...v2.23.0) (2026-08-06)
+
+
+### ✨ 新功能
+
+* **hci-sim:** C3 两步人工验收闭环 ([#699](https://github.com/tomturing/hci-troubleshoot-platform/issues/699)) ([1954f0a](https://github.com/tomturing/hci-troubleshoot-platform/commit/1954f0a0f97c7f0be811f78b17b924a743c096f7))
+* **kbd:** replace wizard with cli and overhaul docs ([#693](https://github.com/tomturing/hci-troubleshoot-platform/issues/693)) ([d52aaba](https://github.com/tomturing/hci-troubleshoot-platform/commit/d52aabaea328938cdc21cf3953405b18b06d2dd6))
+* 完成 hci-sim C2 Artifact Registry 安全边界 ([#690](https://github.com/tomturing/hci-troubleshoot-platform/issues/690)) ([bc8fa20](https://github.com/tomturing/hci-troubleshoot-platform/commit/bc8fa2086855e1a9a764fe4f33a47a6f0947eabc))
+* 完成 hci-sim 阶段A和B安全运行时 ([#682](https://github.com/tomturing/hci-troubleshoot-platform/issues/682)) ([721419f](https://github.com/tomturing/hci-troubleshoot-platform/commit/721419f39df848c5a1d41dc550c913d376424bf2))
+* 完成 hci-sim 阶段C到E控制面基础 ([#687](https://github.com/tomturing/hci-troubleshoot-platform/issues/687)) ([bcc131f](https://github.com/tomturing/hci-troubleshoot-platform/commit/bcc131f273a986ba1fa42a4e63ac228f7825a0bd))
+* 接入 hci-sim 权威KBD解析与全量验证 ([#688](https://github.com/tomturing/hci-troubleshoot-platform/issues/688)) ([22b6943](https://github.com/tomturing/hci-troubleshoot-platform/commit/22b69436a6f23fcc7a1c6f113c0ca3a974320108))
+* 统一 KBD 分类识图与专家审核版本入库 ([#691](https://github.com/tomturing/hci-troubleshoot-platform/issues/691)) ([c29b4cb](https://github.com/tomturing/hci-troubleshoot-platform/commit/c29b4cb9fff9b9a345d88f2b8d123f2bc63a03cc))
+
+
+### 🐛 Bug 修复
+
+* **kbd:** 修复未识别图片占位符从正文及章节字段中擦除的问题 ([#683](https://github.com/tomturing/hci-troubleshoot-platform/issues/683)) ([a551d45](https://github.com/tomturing/hci-troubleshoot-platform/commit/a551d455ad390befb8e352878038ff02d3e7953b))
+* **kbd:** 收敛管道连接、DNS 与健康探针契约 ([#689](https://github.com/tomturing/hci-troubleshoot-platform/issues/689)) ([c509ebc](https://github.com/tomturing/hci-troubleshoot-platform/commit/c509ebc4905c4a9ac46e3014ddd3da54826782c6))
+* 统一 KBD LLM 操作结果提示为手动关闭 ([#696](https://github.com/tomturing/hci-troubleshoot-platform/issues/696)) ([7726261](https://github.com/tomturing/hci-troubleshoot-platform/commit/772626182416712bb83b1652fc15fc82637b5e9b))
+* 统一关键信号校验错误为可定位提示 ([#698](https://github.com/tomturing/hci-troubleshoot-platform/issues/698)) ([6addcf3](https://github.com/tomturing/hci-troubleshoot-platform/commit/6addcf341b9f31e2ffe2048b507cb2a38911e82e))
+
 ## [2.22.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.21.0...v2.22.0) (2026-08-05)
 
 

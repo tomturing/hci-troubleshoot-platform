@@ -77,6 +77,8 @@ class KbdSettings(BaseSettings):
     VISION_CONCURRENCY: int = Field(default=3, ge=1, le=10)
     # 同时提交/轮询的关键信号抽取任务数
     EXTRACT_CONCURRENCY: int = Field(default=3, ge=1, le=10)
+    # 分类与 Vision 并行时的调用侧并发；真实 LLM 上限由 kb-service 统一资源池控制。
+    CLASSIFY_CONCURRENCY: int = Field(default=2, ge=1, le=10)
 
     # ── 管道行为 ──────────────────────────────────────────────────────────────
     # 最低图片文件大小（字节），小于此值视为无效图片（icon/占位图）
@@ -88,6 +90,10 @@ class KbdSettings(BaseSettings):
     KB_SERVICE_URL: str = Field(
         default="http://localhost:8004",
         description="kb-service 内部 API 地址",
+    )
+    K8S_NAMESPACE: str = Field(
+        default="",
+        description="本地 port-forward 的目标命名空间；为空时按当前集群角色自动发现",
     )
     INTERNAL_API_TOKEN: str = Field(
         default="hci-dev-internal-token",

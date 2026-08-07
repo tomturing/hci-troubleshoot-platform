@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -10,13 +11,21 @@ from pathlib import Path
 
 import pytest
 from kbd import runtime
-from kbd.pipeline import Stage
+from kbd.pipeline import Stage, _display_width, _stage_banner
 from kbd.run import (
+    _cli_options,
     _cmd_audit_log_signals,
+    _cmd_cli,
     _cmd_extract_signals,
+    _cmd_pipeline,
+    _ConsoleFormatter,
     _parse_stages,
+    _print_pipeline_summary,
+    _prompt_choice,
+    _prompt_yes_no,
     build_parser,
 )
+from kbd.terminal_layout import TERMINAL_LAYOUT_WIDTH
 
 
 def test_pipeline_stage_parser_includes_extract_and_audit():
@@ -27,11 +36,172 @@ def test_pipeline_stage_parser_includes_extract_and_audit():
     assert _parse_stages("5,6") == [Stage.EXTRACT_SIGNALS, Stage.AUDIT_LOG_SIGNALS]
 
 
+def test_stage_banners_have_the_same_display_width_and_aligned_edges():
+    banners = [
+        _stage_banner(1, "数据抓取"),
+        _stage_banner(2, "语义提取 + 原子入库"),
+        _stage_banner(5, "关键信号分级抽取"),
+        _stage_banner(6, "qfk_log Proposal 只读契约审计"),
+    ]
+
+    assert len({_display_width(banner) for banner in banners}) == 1
+    assert _display_width(banners[0]) == TERMINAL_LAYOUT_WIDTH
+    assert all(banner.startswith("=") and banner.endswith("=") for banner in banners)
+
+
+def test_long_stage_banner_is_rendered_as_a_standalone_line(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    banner = _stage_banner(6, "qfk_log Proposal 只读契约审计")
+    formatter = _ConsoleFormatter("%(levelname)s %(message)s")
+    rendered = formatter.format(logging.makeLogRecord({"levelname": "INFO", "msg": banner}))
+
+    assert rendered == banner
+    assert not rendered.startswith("INFO ")
+
+
 def test_extract_signals_is_first_class_subcommand():
     args = build_parser().parse_args(["extract-signals", "--ids", "37150,41818"])
 
     assert args.command == "extract-signals"
     assert args.ids == "37150,41818"
+
+
+def test_wizard_command_is_removed():
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["wizard", "--help"])
+
+    assert exc_info.value.code == 2
+
+
+def test_prompt_yes_no_accepts_standard_answers_and_default(monkeypatch):
+    answers = iter(["y", "YES", "n", "NO", ""])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    assert _prompt_yes_no("确认", default=False) is True
+    assert _prompt_yes_no("确认", default=False) is True
+    assert _prompt_yes_no("确认", default=True) is False
+    assert _prompt_yes_no("确认", default=True) is False
+    assert _prompt_yes_no("确认", default=True) is True
+
+
+def test_cli_typical_uses_safe_pipeline_defaults(monkeypatch):
+    answers = iter([""])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    assert _cli_options() == {
+        "force_fetch": False,
+        "override": False,
+        "override_status": None,
+        "resume": False,
+        "failed_only": False,
+    }
+
+
+def test_cli_custom_uses_numbered_choices(monkeypatch):
+    # mode=2, force_fetch=no, override=yes, scope=1(draft), resume=yes, failed_only=no
+    answers = iter(["2", "n", "y", "1", "y", "n"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    assert _cli_options() == {
+        "force_fetch": False,
+        "override": True,
+        "override_status": ["draft"],
+        "resume": True,
+        "failed_only": False,
+    }
+
+
+def test_prompt_choice_reprompts_until_a_numbered_option(monkeypatch):
+    answers = iter(["label", "2"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    assert _prompt_choice(
+        "请选择：",
+        (("1", "one", "第一项"), ("2", "two", "第二项")),
+        default="1",
+    ) == "two"
+
+
+def test_pipeline_summary_table_has_consistent_visible_width(monkeypatch, capsys):
+    monkeypatch.setenv("NO_COLOR", "1")
+    _print_pipeline_summary(
+        "20260806_161016",
+        {
+            "pipeline": {"success": False, "total_ids": 4, "completed_ids": 0},
+            "fetch": {"done": 0, "failed": 0, "skipped": 4, "elapsed_s": 2.4},
+            "import": {"created": 4, "overridden": 0, "skipped": 0, "error": 0, "elapsed_s": 0.6},
+            "vision": {
+                "done": 0,
+                "failed": 4,
+                "case_status_counts": {"done": 0, "failed": 4, "needs_review": 0},
+                "elapsed_s": 64.3,
+            },
+            "classify": {"done": 0, "failed": 0, "skipped": 0, "elapsed_s": 0.0},
+            "extract": {"done": 0, "blocked_by_dependency": 4, "elapsed_s": 0.1},
+            "audit_log_signals": {"case_count": 0, "issue_counts": {}, "elapsed_s": 0.0},
+        },
+    )
+
+    lines = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith(("┌", "│", "├", "└"))
+    ]
+    assert lines
+    assert len({_display_width(line) for line in lines}) == 1
+    assert _display_width(lines[0]) == TERMINAL_LAYOUT_WIDTH
+    assert all(line.count("│") == 9 for line in lines if line.startswith("│"))
+
+
+@pytest.mark.asyncio
+async def test_cli_typical_passes_no_force_or_override_to_pipeline(monkeypatch):
+    from kbd import config, pipeline
+
+    class Tty:
+        @staticmethod
+        def isatty() -> bool:
+            return True
+
+    calls: dict[str, object] = {}
+
+    async def fake_run_pipeline(ids, **kwargs):
+        calls["ids"] = ids
+        calls.update(kwargs)
+        return {"pipeline": {"success": True, "completed_ids": 1, "total_ids": 1}}, "20260806_160000"
+
+    monkeypatch.setattr("kbd.run.sys.stdin", Tty())
+    monkeypatch.setattr(config.settings, "INTERNAL_API_TOKEN", "test-token")
+    monkeypatch.setattr(pipeline, "run_pipeline", fake_run_pipeline)
+    answers = iter(["37150", "", "y"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    args = build_parser().parse_args(["cli"])
+    assert await _cmd_cli(args, "20260806_160000") == 0
+    assert calls == {
+        "ids": ["37150"],
+        "run_id": "20260806_160000",
+        "force_fetch": False,
+        "override": False,
+        "override_status": None,
+        "resume": False,
+        "failed_only": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_pipeline_command_returns_nonzero_when_critical_stage_failed(monkeypatch):
+    from kbd import pipeline
+
+    async def fake_run_pipeline(*_args, **_kwargs):
+        return {
+            "import": {"error": 1},
+            "pipeline": {"success": False, "failed_steps": 1},
+        }, "20260806_120000"
+
+    monkeypatch.setattr(pipeline, "run_pipeline", fake_run_pipeline)
+    args = build_parser().parse_args(["pipeline", "--ids", "27582"])
+
+    assert await _cmd_pipeline(args, "20260806_120000") == 1
 
 
 @pytest.mark.asyncio

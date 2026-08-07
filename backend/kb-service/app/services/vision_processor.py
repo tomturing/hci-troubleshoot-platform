@@ -55,6 +55,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.kbd_entry import KbdEntry, KbdImage
 from app.services.kbd_mutation_guard import require_mutable_kbd
+from app.services.kbd_revision_service import freeze_kbd_ai_proposal
+from app.services.llm_runtime import get_llm_semaphore
 
 logger = get_logger("kb-service-vision-processor")
 
@@ -104,19 +106,13 @@ _LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "false").lower() in
 # 峰值 LLM 并发≈3×3，会把 DashScope QPM/并发上限打爆。
 # 改为「一处全局信号量」，无论同时跑多少个 kbd / 多少个 job，总 LLM 并发恒定 ≤ 该值。
 # 延迟到事件循环内创建，规避 asyncio 3.10+ 在循环外创建 Semaphore 的 DeprecationWarning。
-_VISION_GLOBAL_SEM: Any = None
-
-
-def _vision_global_concurrency() -> int:
-    # 默认复用 _VISION_CONCURRENCY，单一真相源；可用环境变量 VISION_GLOBAL_CONCURRENCY 覆盖。
-    return int(os.environ.get("VISION_GLOBAL_CONCURRENCY", str(_VISION_CONCURRENCY)))
-
-
 async def _get_vision_semaphore() -> asyncio.Semaphore:
-    global _VISION_GLOBAL_SEM
-    if _VISION_GLOBAL_SEM is None:
-        _VISION_GLOBAL_SEM = asyncio.Semaphore(_vision_global_concurrency())
-    return _VISION_GLOBAL_SEM
+    """兼容旧调用方，但实际使用全局 KBD LLM 资源池。
+
+    CLASSIFY/EXTRACT_SIGNALS 与 VISION 共用同一 Semaphore，避免阶段并行后
+    各自占满 Provider 配额。
+    """
+    return await get_llm_semaphore()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -295,6 +291,52 @@ def _mark_signal_generation_stale(kbd_entry: Any) -> None:
     metadata["status"] = "stale"
     document["generation_metadata"] = metadata
     kbd_entry.signals_json = document
+
+
+async def _freeze_vision_proposal(
+    db_session: AsyncSession,
+    *,
+    kbd_entry: KbdEntry,
+    prompt_template: str,
+    trace_id: str | None,
+    origin: str,
+    scope: dict[str, Any],
+    validation_summary: dict[str, Any],
+) -> int:
+    """用 KBD 统一 revision 服务冻结识图 Proposal。
+
+    分类、识图、关键信号和专家审核共享 kbd_revision 的完整 payload、checksum、
+    parent/baseline 与 head 维护规则。这里仅补充识图领域的模型/Prompt/输入指纹，
+    不创建第二套视觉版本表或审核状态。
+    """
+
+    image_hashes: list[str] = []
+    for item in kbd_entry.images_json or []:
+        if not isinstance(item, dict):
+            continue
+        evidence = item.get("evidence")
+        provenance = evidence.get("provenance") if isinstance(evidence, dict) else None
+        image_hashes.append(
+            str(provenance.get("image_sha256") or "") if isinstance(provenance, dict) else ""
+        )
+    image_hashes.sort()
+    await db_session.flush()
+    proposal_revision = await freeze_kbd_ai_proposal(
+        db_session,
+        kbd=kbd_entry,
+        generation_kind="vision",
+        origin=origin,
+        generation_metadata={
+            "model_id": _LLM_VISION_MODEL,
+            "prompt_name": _KBD_VISION_PROMPT_NAME,
+            "prompt_revision": hashlib.sha256(prompt_template.encode("utf-8")).hexdigest(),
+            "input_hash": hashlib.sha256("\n".join(image_hashes).encode("utf-8")).hexdigest(),
+            "scope": scope,
+        },
+        validation_summary=validation_summary,
+        trace_id=trace_id,
+    )
+    return int(proposal_revision.id)
 
 
 def _build_evidence_ir(
@@ -939,6 +981,7 @@ async def reanalyze_kbd_images(
     images_json.sort(key=lambda x: x["seq"])
 
     # 6. 写入阶段：再开启一个 short-lived session 写入数据库（重新查询并更新）
+    proposal_revision_id: int | None = None
     async with session_factory() as db_session:
         try:
             kbd_entry = await require_mutable_kbd(db_session, kbd_entry_id, for_update=True)
@@ -947,6 +990,20 @@ async def reanalyze_kbd_images(
             _mark_signal_generation_stale(kbd_entry)
             kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
             kbd_entry.sync_sections_from_content_md()
+            proposal_revision_id = await _freeze_vision_proposal(
+                db_session,
+                kbd_entry=kbd_entry,
+                prompt_template=prompt_template,
+                trace_id=_tid,
+                origin="vision_reanalyze",
+                scope={"mode": "all", "seqs": [item["seq"] for item in images_json]},
+                validation_summary={
+                    "status": "passed" if stats["failed"] == 0 else "needs_review",
+                    "total": len(image_items),
+                    "done": stats["done"],
+                    "failed": stats["failed"],
+                },
+            )
             await db_session.commit()
         except Exception as e:
             logger.warning(
@@ -964,6 +1021,20 @@ async def reanalyze_kbd_images(
                 _mark_signal_generation_stale(kbd_entry)
                 kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
                 kbd_entry.sync_sections_from_content_md()
+                proposal_revision_id = await _freeze_vision_proposal(
+                    db_session,
+                    kbd_entry=kbd_entry,
+                    prompt_template=prompt_template,
+                    trace_id=_tid,
+                    origin="vision_reanalyze",
+                    scope={"mode": "all", "seqs": [item["seq"] for item in images_json]},
+                    validation_summary={
+                        "status": "passed" if stats["failed"] == 0 else "needs_review",
+                        "total": len(image_items),
+                        "done": stats["done"],
+                        "failed": stats["failed"],
+                    },
+                )
                 await db_session.commit()
             except Exception as retry_err:
                 logger.error(
@@ -998,6 +1069,7 @@ async def reanalyze_kbd_images(
         "failed": stats["failed"],
         "success": stats["failed"] == 0,
         "images_json": images_json,
+        "proposal_revision_id": proposal_revision_id,
         # 透传真实失败原因（供 job_manager / 调用方诊断，避免只看到笼统的「Job 执行失败」）
         "error": "; ".join(errors) if errors else None,
     }
@@ -1158,6 +1230,7 @@ async def reanalyze_single_image(
     )
 
     # 4. 写入阶段：再开启一个 short-lived session 写入数据库（重新查询并更新，防止断线）
+    proposal_revision_id: int | None = None
     async with session_factory() as db_session:
         try:
             kbd_entry = await require_mutable_kbd(db_session, kbd_entry_id, for_update=True)
@@ -1191,6 +1264,26 @@ async def reanalyze_single_image(
             _mark_signal_generation_stale(kbd_entry)
             kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
             kbd_entry.sync_sections_from_content_md()
+            proposal_revision_id = await _freeze_vision_proposal(
+                db_session,
+                kbd_entry=kbd_entry,
+                prompt_template=prompt_template,
+                trace_id=_tid,
+                origin="vision_reanalyze_single",
+                scope={"mode": "single", "seqs": [seq]},
+                validation_summary={
+                    "status": (
+                        "needs_review"
+                        if evidence["quality"]["needs_review"]
+                        or evidence["quality"]["inference_needs_review"]
+                        else "passed"
+                    ),
+                    "total": 1,
+                    "done": 1,
+                    "failed": 0,
+                    "seq": seq,
+                },
+            )
             await db_session.commit()
         except Exception as e:
             logger.warning(
@@ -1230,6 +1323,26 @@ async def reanalyze_single_image(
                 _mark_signal_generation_stale(kbd_entry)
                 kbd_entry.content_md = kbd_entry.rebuild_content_md(old_images_json=old_images)
                 kbd_entry.sync_sections_from_content_md()
+                proposal_revision_id = await _freeze_vision_proposal(
+                    db_session,
+                    kbd_entry=kbd_entry,
+                    prompt_template=prompt_template,
+                    trace_id=_tid,
+                    origin="vision_reanalyze_single",
+                    scope={"mode": "single", "seqs": [seq]},
+                    validation_summary={
+                        "status": (
+                            "needs_review"
+                            if evidence["quality"]["needs_review"]
+                            or evidence["quality"]["inference_needs_review"]
+                            else "passed"
+                        ),
+                        "total": 1,
+                        "done": 1,
+                        "failed": 0,
+                        "seq": seq,
+                    },
+                )
                 await db_session.commit()
             except Exception as retry_err:
                 logger.error(
@@ -1257,4 +1370,5 @@ async def reanalyze_single_image(
         "description": description,
         "desc": desc,
         "images_json": images_json,
+        "proposal_revision_id": proposal_revision_id,
     }

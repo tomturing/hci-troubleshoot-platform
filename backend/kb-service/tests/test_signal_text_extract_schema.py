@@ -4,6 +4,7 @@ from shared.schemas.signal_output import derive_signal_requires
 from shared.schemas.signal_schema import (
     humanize_signal_validation_error,
     normalize_optional_matcher_nulls,
+    validate_publishable_signals_json,
     validate_signals_json,
 )
 
@@ -187,6 +188,173 @@ def test_qfk_log_produce_rejects_exclude_only_filter_as_unbounded():
 
     with pytest.raises(ValidationError, match="仅排除关键字不能限制输出范围"):
         validate_signals_json(document)
+
+
+def test_semantic_qfk_error_keeps_signal_id_and_editable_field_path():
+    document = {
+        "schema_version": 2,
+        "signals": [{
+            "id": "sig_kbd23821_log",
+            "acquire": {"tool": "qfk_log", "args": {"file": "sfvt_vtpdaemon.log"}},
+            # 同时提供 match 和 produces，复现 KBD23821 保存时最容易被吞掉的跨字段门禁。
+            "match": {
+                "type": "keyword",
+                "pattern": "Completed",
+                "expected": True,
+                "extract": _text_extract(rows={"mode": "all"}),
+            },
+            "orchestrate": {
+                "produces": [{"name": "END", "path": "end"}],
+                "requires": [],
+            },
+        }],
+    }
+
+    with pytest.raises(ValidationError) as exc_info:
+        validate_signals_json(document)
+
+    issue = humanize_signal_validation_error(exc_info.value, document["signals"])
+    assert issue["code"] == "QFK_OUTPUT_MODE_CONFLICT"
+    assert issue["signal_id"] == "sig_kbd23821_log"
+    assert issue["field_path"] == "match"
+    assert issue["action"] == {
+        "type": "edit_signal",
+        "signal_id": "sig_kbd23821_log",
+        "focus": "match",
+    }
+    assert "二选一" in issue["message"]
+
+
+def test_qfk_log_unsupported_predicate_points_to_match_type():
+    document = {
+        "schema_version": 2,
+        "signals": [{
+            "id": "sig_log_predicate",
+            "acquire": {"tool": "qfk_log", "args": {"file": "sfvt_vtpdaemon.log"}},
+            "match": {
+                "type": "delta",
+                "operator": ">",
+                "value": 1,
+                "minimum_samples": 2,
+                "expected": True,
+                "extract": _text_extract(rows={"mode": "all"}),
+            },
+            "orchestrate": {"produces": [], "requires": []},
+        }],
+    }
+
+    with pytest.raises(ValidationError) as exc_info:
+        validate_signals_json(document)
+
+    issue = humanize_signal_validation_error(exc_info.value, document["signals"])
+    assert issue["signal_id"] == "sig_log_predicate"
+    assert issue["field_path"] == "match.type"
+    assert "当前日志源不能直接执行该数值判定" in issue["message"]
+
+
+def test_qfk_log_numeric_ai_extract_allows_delta_on_source_without_direct_delta():
+    document = {
+        "schema_version": 2,
+        "signals": [{
+            "id": "sig_log_delta_ai",
+            "acquire": {"tool": "qfk_log", "args": {"file": "sfvt_vtpdaemon.log"}},
+            "match": {
+                "type": "delta",
+                "operator": "==",
+                "value": 0,
+                "minimum_samples": 2,
+                "expected": True,
+                "extract": {
+                    **_text_extract(rows={"mode": "keywords", "include": ["Completed"], "exclude": []}),
+                    "ai_extract": {"instruction": "按出现顺序提取 completed 和 total 两个字节数"},
+                },
+            },
+            "orchestrate": {"produces": [], "requires": []},
+        }],
+    }
+
+    validate_signals_json(document)
+
+
+def test_qfk_produce_names_are_unique_case_insensitively():
+    document = {
+        "schema_version": 2,
+        "signals": [{
+            "id": "sig_duplicate_produce",
+            "acquire": {"tool": "qfk_system", "args": {"command": "ps"}},
+            "match": None,
+            "orchestrate": {
+                "produces": [
+                    {"name": "TOTAL", "type": "number", "extract": _text_extract(value_mode="number")},
+                    {"name": "total", "type": "number", "extract": _text_extract(value_mode="number")},
+                ],
+                "requires": [],
+            },
+        }],
+    }
+
+    with pytest.raises(ValidationError, match="产出变量名重复"):
+        validate_signals_json(document)
+
+
+def test_variable_dependency_error_targets_signal_that_declares_missing_input():
+    document = {
+        "schema_version": 2,
+        "signals": [{
+            "id": "sig_missing_input",
+            "acquire": {"tool": "qfk_system", "args": {"command": "ps"}},
+            "match": {
+                "type": "exists",
+                "expected": True,
+                "extract": _text_extract(rows={"mode": "all"}),
+            },
+            "orchestrate": {"produces": [], "requires": ["NOT_DECLARED"]},
+        }],
+        "verification_contract": {
+            "schema_version": 1,
+            "variables": {},
+            "evidence_policy": {"must": ["sig_missing_input"], "should": [], "exclude": [], "context": []},
+        },
+    }
+
+    with pytest.raises(ValidationError) as exc_info:
+        validate_publishable_signals_json(document)
+
+    issue = humanize_signal_validation_error(exc_info.value, document["signals"])
+    assert issue["code"] == "SIGNAL_VARIABLE_DEPENDENCY_INVALID"
+    assert issue["signal_id"] == "sig_missing_input"
+    assert issue["field_path"] == "orchestrate.requires"
+    assert "NOT_DECLARED" in issue["message"]
+
+
+def test_unscoped_semantic_error_never_falls_back_to_vague_rule_message():
+    issue = humanize_signal_validation_error(
+        ValidationError("signals[0] 的自定义取值规则失败：列名 VALUE 不存在"),
+        [{"id": "sig_custom"}],
+    )
+
+    assert issue["signal_id"] == "sig_custom"
+    assert "列名 VALUE 不存在" in issue["message"]
+    assert "未满足当前关键信号规则" not in issue["message"]
+
+
+def test_signal_id_and_pipeline_errors_keep_precise_targets():
+    missing_id = _qfk_match({"type": "exists", "expected": True, "extract": _text_extract()})
+    with pytest.raises(ValidationError) as exc_info:
+        validate_publishable_signals_json(missing_id)
+    issue = humanize_signal_validation_error(exc_info.value, missing_id["signals"])
+    assert issue["code"] == "SIGNAL_ID_INVALID"
+    assert issue["field_path"] == "id"
+    assert "内部标识" in issue["message"]
+
+    pipeline = _qfk_match({"type": "exists", "expected": True, "extract": _text_extract()}, command="ps | grep java")
+    pipeline["signals"][0]["id"] = "sig_pipeline"
+    with pytest.raises(ValidationError) as exc_info:
+        validate_signals_json(pipeline)
+    issue = humanize_signal_validation_error(exc_info.value, pipeline["signals"])
+    assert issue["code"] == "SIGNAL_COMMAND_PIPELINE_UNSUPPORTED"
+    assert issue["signal_id"] == "sig_pipeline"
+    assert issue["field_path"] == "acquire.args.command"
 
 
 def test_keyword_rows_reject_unknown_scope_and_exclude_relation():

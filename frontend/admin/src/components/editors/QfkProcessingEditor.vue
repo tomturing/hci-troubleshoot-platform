@@ -127,6 +127,7 @@ function removeProduce(index: number): void {
         <ValueExtractEditor
           :model-value="matchValue.extract"
           :default-value-mode="['threshold', 'delta', 'trend'].includes(matchValue.type) ? 'number' : 'string'"
+          consumer-kind="matcher"
           embedded
           :show-title="false"
           @update:model-value="setMatchExtract"
@@ -168,6 +169,7 @@ function removeProduce(index: number): void {
           <ValueExtractEditor
             :model-value="produce.extract"
             :default-value-mode="produce.type || 'string'"
+            consumer-kind="produce"
             embedded
             :show-title="false"
             @update:model-value="(value: Record<string, any>) => updateProduce(index, { extract: value })"

@@ -15,17 +15,53 @@ on:
       - 'terminal_bridge/**'
       - 'deploy/helm/hci-sim/**'
       - '.github/workflows/hci-sim-go.yml'
+  # 允许发布前或故障复核时手动运行完整 hci-sim 质量门禁；不影响 PR 激活范围。
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: hci-sim-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  changes:
+    name: hci-sim 变更范围
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      runtime: ${{ steps.filter.outputs.runtime }}
+      bridge: ${{ steps.filter.outputs.bridge }}
+      manifest: ${{ steps.filter.outputs.manifest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad
+        id: filter
+        with:
+          filters: |
+            runtime:
+              - 'hci_sim/**'
+              - '.github/workflows/hci-sim-go.yml'
+            bridge:
+              - 'terminal_bridge/**'
+              - '.github/workflows/hci-sim-go.yml'
+            manifest:
+              - 'hci_sim/**'
+              - 'deploy/helm/hci-sim/**'
+              - '.github/workflows/hci-sim-go.yml'
+
   runtime:
     name: hci-sim Go quality gate
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.runtime == 'true'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version-file: hci_sim/go.mod
           cache-dependency-path: hci_sim/go.sum
@@ -42,9 +78,12 @@ jobs:
   terminal-bridge:
     name: terminal bridge simulation-auth gate
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.bridge == 'true'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version-file: terminal_bridge/go.mod
           cache-dependency-path: terminal_bridge/go.sum
@@ -59,13 +98,18 @@ jobs:
   manifest-and-helm:
     name: published bundle and Helm gate
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.manifest == 'true'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
         with:
           go-version-file: hci_sim/go.mod
           cache-dependency-path: hci_sim/go.sum
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4
+        with:
+          version: v3.17.3
       - name: verify published manifest and deployment copy
         run: |
           cmp -s hci_sim/testdata/kbd-27123-fixture-manifest.json deploy/helm/hci-sim/files/kbd-27123-fixture-manifest.json

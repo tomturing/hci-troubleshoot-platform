@@ -1,16 +1,53 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
+import pytest
 from app.services.kbd_revision_service import (
     KBD_PAYLOAD_FIELDS,
     build_kbd_revision_payload,
     derive_signal_review_facts,
     diff_revision_payloads,
+    freeze_kbd_ai_proposal,
     is_evaluation_candidate,
     payload_checksum,
     resolve_proposal_baseline,
     select_current_expert_pair,
     summarize_expert_signal_changes,
 )
+
+
+@pytest.mark.asyncio
+async def test_all_ai_generation_kinds_share_one_append_only_proposal_entrypoint():
+    session = AsyncMock()
+    kbd = SimpleNamespace(id=9, latest_proposal_revision_id=4, working_revision_id=6)
+    created = SimpleNamespace(id=7)
+
+    with patch(
+        "app.services.kbd_revision_service.ensure_kbd_revision",
+        AsyncMock(return_value=created),
+    ) as ensure:
+        result = await freeze_kbd_ai_proposal(
+            session,
+            kbd=kbd,
+            generation_kind="classification",
+            origin="category_reclassify",
+            generation_metadata={"model_id": "model-a"},
+            validation_summary={"status": "passed"},
+            trace_id="trace-ai",
+        )
+
+    assert result is created
+    assert kbd.working_revision_id is None
+    kwargs = ensure.await_args.kwargs
+    assert kwargs["revision_type"] == "proposal"
+    assert kwargs["actor_type"] == "llm"
+    assert kwargs["parent_revision_id"] == 4
+    assert kwargs["generation_metadata"] == {
+        "model_id": "model-a",
+        "origin": "category_reclassify",
+        "generation_kind": "classification",
+    }
+    assert kwargs["reuse_existing"] is False
 
 
 def _entry(**overrides):

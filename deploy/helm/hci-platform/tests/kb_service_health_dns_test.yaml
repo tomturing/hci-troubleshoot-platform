@@ -1,0 +1,48 @@
+suite: "kb-service DNS 与健康探针契约"
+templates:
+  - kb-service/deployment.yaml
+tests:
+  - it: "staging 必须显式使用 ClusterFirst 与三级探针"
+    set:
+      global.namespace: hci-staging
+      kbService.checksumAnnotations: false
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: hci-staging
+      - equal:
+          path: spec.template.spec.dnsPolicy
+          value: ClusterFirst
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /health/live
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /health/ready
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe.httpGet.path
+          value: /health/startup
+
+  - it: "dev 命名空间渲染不能被 staging 硬编码污染"
+    set:
+      global.namespace: hci-dev
+      kbService.checksumAnnotations: false
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: hci-dev
+      - equal:
+          path: spec.template.spec.dnsPolicy
+          value: ClusterFirst
+
+  - it: "prod 命名空间渲染不能被 staging 硬编码污染"
+    set:
+      global.namespace: hci-prod
+      kbService.checksumAnnotations: false
+    asserts:
+      - equal:
+          path: metadata.namespace
+          value: hci-prod
+      - equal:
+          path: spec.template.spec.dnsPolicy
+          value: ClusterFirst

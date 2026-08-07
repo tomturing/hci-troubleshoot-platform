@@ -14,6 +14,7 @@ from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from shared.database.postgres import DatabaseManager
 from shared.observability.logger import get_logger
+from shared.observability.metrics import HTTPMetricsMiddleware
 from shared.observability.otel import init_telemetry, instrument_app
 from shared.utils.exception_handlers import register_exception_handlers
 
@@ -23,6 +24,7 @@ from app.routes import (
     categories,
     classify,
     extract_signals,
+    hci_sim,
     health,
     hits,
     ingest,
@@ -51,7 +53,11 @@ async def lifespan(app: FastAPI):
         configure_mappers()
         logger.info("SQLAlchemy mappers 编译配置成功，动态资源模型检查通过")
     except Exception as exc:
-        logger.critical(f"SQLAlchemy mappers 编译失败，发现外键或元数据配置错误: {exc}", exc_info=True)
+        logger.critical(
+            event="sqlalchemy_mappers_compile_failed",
+            message="SQLAlchemy mappers 编译失败，发现外键或元数据配置错误",
+            error=exc,
+        )
         raise
 
     logger.info(
@@ -84,6 +90,7 @@ async def lifespan(app: FastAPI):
     sop_ingest.set_dependencies(database_manager)  # SOP 文档入库
     categories.set_dependencies(database_manager, embedding_service)  # 分类管理路由
     hits.set_dependencies(database_manager)  # 知识命中统计路由
+    hci_sim.set_dependencies(database_manager)  # hci-sim 控制面只读 KBD Resolver
 
     logger.info(event="service_started", message=f"{settings.SERVICE_NAME} ready")
 
@@ -102,6 +109,7 @@ app = FastAPI(
 
 # 注入 OpenTelemetry 中间件
 instrument_app(app)
+app.add_middleware(HTTPMetricsMiddleware)
 
 # H-1: 注册全局业务异常处理器
 register_exception_handlers(app)
@@ -121,6 +129,7 @@ app.include_router(sop_ingest.router)  # SOP 文档入库
 app.include_router(categories.router)  # 分类管理路由
 app.include_router(hits.sop_hit_router)  # SOP 命中统计路由
 app.include_router(hits.kbd_hit_router)  # KBD 命中统计路由
+app.include_router(hci_sim.router)  # hci-sim 不可变 KBD 快照与批量 capability report
 
 
 @app.get("/metrics")

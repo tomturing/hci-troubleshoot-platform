@@ -3,7 +3,7 @@ data-pipeline/kbd/classifier.py — AI 分类器（API 调用版）
 
 功能：
   对 kbd_entry 中 status='draft' 且 ai_category_id 为空的条目，
-  调用 kb-service API `/api/kb/classify` 进行分类。
+  调用 kb-service API `/api/admin/kbd/{id}/reclassify` 进行分类并统一落 Proposal revision。
 
 变更（T2-02）：
   - 废弃本地 LLM 调用和 category_baseline.yaml 直接读取
@@ -20,12 +20,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from typing import Any
 
 import asyncpg
 import httpx
 
 from .config import settings
+from .error_catalog import humanize_error
 from .observability import traceparent
 
 logger = logging.getLogger("kbd.classifier")
@@ -35,16 +37,14 @@ logger = logging.getLogger("kbd.classifier")
 
 
 async def _call_classify_api(
-    title: str,
-    problem_desc: str,
+    kbd_entry_id: int,
     client: httpx.AsyncClient,
 ) -> dict[str, Any]:
     """
     调用 kb-service 分类 API。
 
     Args:
-        title: 案例标题
-        problem_desc: 问题描述
+        kbd_entry_id: KBD 主键；服务端据此读取权威输入并原子落库
         client: httpx 异步客户端
 
     Returns:
@@ -60,55 +60,57 @@ async def _call_classify_api(
         httpx.HTTPStatusError: API 返回非 2xx 状态码
         httpx.TimeoutException: 请求超时
     """
-    url = f"{settings.KB_SERVICE_URL}/api/kb/classify"
+    url = f"{settings.KB_SERVICE_URL}/api/admin/kbd/{kbd_entry_id}/reclassify"
     headers = {
         "Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}",
         "Content-Type": "application/json",
         # 注入 W3C traceparent：与 kb-service 日志共享 trace_id（见 observability.py）。
         **traceparent(),
     }
-    payload = {
-        "title": title,
-        "problem_desc": problem_desc[:2000] if problem_desc else "",  # 截断防止超长
-    }
-
     # 带重试的请求
-    for attempt in range(settings.API_MAX_RETRIES):
+    max_attempts = max(1, settings.API_MAX_RETRIES)
+    for attempt in range(max_attempts):
         try:
             response = await client.post(
                 url,
                 headers=headers,
-                json=payload,
                 timeout=settings.API_TIMEOUT,
             )
             response.raise_for_status()
             return response.json()
 
-        except httpx.TimeoutException:
-            if attempt == settings.API_MAX_RETRIES - 1:
+        except (httpx.TimeoutException, httpx.TransportError):
+            if attempt == max_attempts - 1:
                 raise
-            wait = 1.0 * (2 ** attempt)
+            wait = random.uniform(0.0, min(30.0, 2.0 ** attempt))
             logger.warning(
-                "分类 API 超时 title=%s 等待 %.1fs 后重试",
-                title[:30], wait
+                "分类 API 超时 kbd_entry_id=%s 等待 %.1fs 后重试",
+                kbd_entry_id, wait
             )
             await asyncio.sleep(wait)
 
         except httpx.HTTPStatusError as exc:
-            # 4xx 客户端错误不重试
-            if 400 <= exc.response.status_code < 500:
+            status_code = exc.response.status_code
+            # 429 是 Provider 暂态限流，必须遵守 Retry-After；其他 4xx 是调用错误。
+            if status_code == 429:
+                retry_after = exc.response.headers.get("Retry-After")
+                try:
+                    wait = max(0.0, float(retry_after)) if retry_after else random.uniform(0.0, 2.0 ** attempt)
+                except (TypeError, ValueError):
+                    wait = random.uniform(0.0, 2.0 ** attempt)
+            elif 400 <= status_code < 500:
                 logger.error(
-                    "分类 API 客户端错误 status=%d title=%s",
-                    exc.response.status_code, title[:30]
+                    "分类 API 客户端错误 status=%d kbd_entry_id=%s",
+                    status_code, kbd_entry_id,
                 )
                 raise
-            # 5xx 服务端错误重试
-            if attempt == settings.API_MAX_RETRIES - 1:
+            else:
+                wait = random.uniform(0.0, min(30.0, 2.0 ** attempt))
+            if attempt == max_attempts - 1:
                 raise
-            wait = 1.0 * (2 ** attempt)
             logger.warning(
                 "分类 API 服务端错误 status=%d 等待 %.1fs 后重试",
-                exc.response.status_code, wait
+                status_code, wait
             )
             await asyncio.sleep(wait)
 
@@ -129,9 +131,9 @@ async def classify_case(
     Returns:
         {"category_id": "...", "confidence": 0.85, "reason": "...", "status": "done"/"failed"}
     """
-    # 从 kbd_entry 读取标题和内容
+    # 只读取稳定主键；标题和问题描述由 kb-service 在生成与落库时读取同一权威记录。
     row = await pool.fetchrow(
-        """SELECT title, content_md FROM kbd_entry
+        """SELECT id FROM kbd_entry
            WHERE support_id = $1 AND (ai_category_id IS NULL OR ai_category_id = '')""",
         case_id,
     )
@@ -139,29 +141,13 @@ async def classify_case(
         logger.debug("案例 %s 不存在或已分类，跳过", case_id)
         return {"category_id": None, "confidence": 0.0, "reason": "已分类或不存在", "status": "skipped"}
 
-    title = row["title"] or ""
-
-    # 从 content_md 提取问题描述（第一个 ## 问题描述 章节的内容）
-    problem_desc = _extract_problem_desc(row["content_md"] or "")
-
     try:
-        result = await _call_classify_api(title, problem_desc, client)
+        result = await _call_classify_api(int(row["id"]), client)
 
         category_id = result.get("category_id")
         confidence = float(result.get("confidence", 0.0))
         reason = str(result.get("reason") or "")
         needs_review = result.get("needs_review", False)
-
-        # 更新 kbd_entry
-        await pool.execute(
-            """UPDATE kbd_entry
-               SET ai_category_id=$1, ai_category_conf=$2, ai_category_reason=$3, updated_at=NOW()
-               WHERE support_id=$4""",
-            category_id,
-            confidence,
-            reason,
-            case_id,
-        )
 
         logger.debug(
             "分类完成 case_id=%s category=%s conf=%.2f needs_review=%s",
@@ -177,33 +163,18 @@ async def classify_case(
         }
 
     except Exception as exc:
-        logger.error("分类失败 case_id=%s 原因=%s", case_id, exc)
+        error = humanize_error(exc)
+        logger.error(
+            "分类失败 case_id=%s code=%s retryable=%s 原因=%s",
+            case_id, error.code, error.retryable, error.message,
+            extra={
+                "support_id": case_id,
+                "stage": "classify",
+                "error_code": error.code,
+                "retryable": error.retryable,
+            },
+        )
         return {"category_id": None, "confidence": 0.0, "reason": f"API调用失败: {exc}", "status": "failed"}
-
-
-def _extract_problem_desc(content_md: str) -> str:
-    """从 content_md 提取问题描述章节内容"""
-    if not content_md:
-        return ""
-
-    # 查找 "## 问题描述" 章节
-    lines = content_md.split("\n")
-    in_problem_section = False
-    problem_lines: list[str] = []
-
-    for line in lines:
-        if line.strip().startswith("## 问题描述"):
-            in_problem_section = True
-            continue
-        if in_problem_section:
-            # 遇到下一个 ## 标题则停止
-            if line.strip().startswith("## ") and not line.strip().startswith("## 问题描述"):
-                break
-            problem_lines.append(line)
-
-    return "\n".join(problem_lines).strip()[:800]
-
-
 async def classify_batch(
     case_ids: list[str],
     pool: asyncpg.Pool,
@@ -221,11 +192,17 @@ async def classify_batch(
         raise RuntimeError("INTERNAL_API_TOKEN 未配置，无法调用 kb-service API")
 
     async with httpx.AsyncClient(timeout=settings.API_TIMEOUT) as client:
-        for idx, case_id in enumerate(case_ids, 1):
-            logger.info("[%d/%d] 分类案例 %s", idx, total, case_id)
+        sem = asyncio.Semaphore(getattr(settings, "CLASSIFY_CONCURRENCY", 2))
 
-            result = await classify_case(case_id, pool, client)
+        async def _run_one(idx: int, case_id: str) -> dict[str, object]:
+            async with sem:
+                logger.info("[%d/%d] 分类案例 %s", idx, total, case_id)
+                return await classify_case(case_id, pool, client)
 
+        results = await asyncio.gather(
+            *[_run_one(idx, case_id) for idx, case_id in enumerate(case_ids, 1)]
+        )
+        for result in results:
             status = result.get("status", "failed")
             if status == "done":
                 stats["done"] += 1

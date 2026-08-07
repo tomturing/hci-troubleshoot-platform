@@ -2,7 +2,10 @@
 
 import io
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
+import pytest
 from app.routes.extract_signals import (
     _diagnostic_image_source_refs,
     _format_image_evidence,
@@ -13,6 +16,7 @@ from app.services.vision_processor import (
     _build_context_map_from_images_json,
     _build_evidence_ir,
     _compress_image_if_needed,
+    _freeze_vision_proposal,
     _parse_type,
     _prefer_task_detail_type,
     _prepare_vision_images,
@@ -106,6 +110,43 @@ def test_empty_vision_result_is_low_quality_and_requires_review():
     assert evidence["quality"]["needs_review"] is True
     assert evidence["quality"]["inference_status"] == "not_present"
     assert evidence["quality"]["inference_needs_review"] is False
+
+
+@pytest.mark.asyncio
+async def test_vision_generation_uses_shared_append_only_revision_path():
+    session = AsyncMock()
+    entry = SimpleNamespace(
+        id=9,
+        latest_proposal_revision_id=7,
+        working_revision_id=8,
+        images_json=[
+            {
+                "seq": 0,
+                "evidence": {"provenance": {"image_sha256": "a" * 64}},
+            }
+        ],
+    )
+    created = SimpleNamespace(id=10)
+
+    with patch(
+        "app.services.vision_processor.freeze_kbd_ai_proposal",
+        AsyncMock(return_value=created),
+    ) as ensure:
+        revision_id = await _freeze_vision_proposal(
+            session,
+            kbd_entry=entry,
+            prompt_template="vision {context}",
+            trace_id="trace-vision",
+            origin="vision_reanalyze_single",
+            scope={"mode": "single", "seqs": [0]},
+            validation_summary={"status": "needs_review"},
+        )
+
+    assert revision_id == 10
+    kwargs = ensure.await_args.kwargs
+    assert kwargs["generation_kind"] == "vision"
+    assert kwargs["origin"] == "vision_reanalyze_single"
+    assert kwargs["generation_metadata"]["scope"] == {"mode": "single", "seqs": [0]}
 
 
 def test_causal_description_is_flagged_without_promoting_it_to_fact():

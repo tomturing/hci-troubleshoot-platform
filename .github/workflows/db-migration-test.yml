@@ -28,6 +28,7 @@ jobs:
   db-schema-declarative-test:
     name: Atlas 声明式 Schema 验证
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     services:
       postgres:
@@ -51,13 +52,15 @@ jobs:
 
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
 
       # ── Step 1: 安装 Atlas CLI + 准备 dev 数据库 ─────────────────────────
       - name: 安装 Atlas CLI
         run: |
+          # 与 Dockerfile.migrations 中的 Atlas 版本对齐，避免 CI/发布语义漂移。
+          export ATLAS_VERSION="1.1.6"
           curl -sSf https://atlasgo.sh | sh -s -- -y
           atlas version
 
@@ -128,6 +131,8 @@ jobs:
             "agent_test_scenario" "agent_test_fixture_bundle"
             "agent_test_fixture_dependency" "agent_test_fixture_provenance"
             "agent_test_fixture_approval" "agent_test_fixture_audit"
+            "agent_test_artifact" "agent_test_artifact_scan" "agent_test_artifact_approval"
+            "agent_test_fixture_stale_outbox"
             "agent_test_run" "agent_test_run_attempt" "agent_test_run_event"
             "agent_test_run_result" "agent_test_runtime_instance"
           )

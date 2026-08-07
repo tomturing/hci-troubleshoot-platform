@@ -5,6 +5,7 @@ KB Routes - API Gateway Proxy
 """
 
 import json
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -275,10 +276,45 @@ async def _kbd_proxy(
         try:
             url = f"{KBD_SERVICE_URL}{path}"
             response = await client.request(method, url, json=payload, params=params, headers=headers)
+            if response.status_code >= 400:
+                try:
+                    body: Any = response.json()
+                except (ValueError, json.JSONDecodeError):
+                    body = {"raw_body": response.text[:500]}
+                detail = body.get("detail") if isinstance(body, dict) else body
+                error = body.get("error") if isinstance(body, dict) else None
+                logger.warning(
+                    event="kb_downstream_http_error",
+                    message="KBD 下游请求返回错误",
+                    method=method,
+                    path=path,
+                    status_code=response.status_code,
+                    downstream_code=(error or {}).get("code") if isinstance(error, dict) else (detail or {}).get("code") if isinstance(detail, dict) else None,
+                    detail=detail,
+                    kbd_id=path.strip("/").split("/")[0] if path.strip("/") else None,
+                    signal_id=(detail or {}).get("signal_id") if isinstance(detail, dict) else None,
+                    field_path=(detail or {}).get("field_path") if isinstance(detail, dict) else None,
+                    downstream_trace_id=response.headers.get("x-trace-id"),
+                    downstream_request_id=response.headers.get("x-request-id"),
+                )
             return response
         except httpx.RequestError as exc:
             logger.error(f"KB Service KBD 请求失败: {exc.request.url!r}")
             raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
+
+
+def _kbd_json_response(response: httpx.Response) -> JSONResponse:
+    """安全解析下游响应并透传诊断/重试头，避免网关吞掉错误上下文。"""
+    try:
+        content = response.json()
+    except (ValueError, json.JSONDecodeError):
+        content = {"detail": response.text[:2000], "code": "DOWNSTREAM_NON_JSON"}
+    headers = {
+        key: response.headers[key]
+        for key in ("x-trace-id", "x-request-id", "retry-after", "content-type")
+        if key in response.headers
+    }
+    return JSONResponse(content=content, status_code=response.status_code, headers=headers)
 
 
 @kbd_router.get("/pending")
@@ -373,7 +409,7 @@ async def kbd_revisions_proxy(kbd_id: int, request: Request):
     """代理 KBD Proposal/Expert 历史与当前 runtime active 元数据。"""
     headers = _internal_auth_headers()
     response = await _kbd_proxy("GET", f"/{kbd_id}/revisions", headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    return _kbd_json_response(response)
 
 
 @kbd_router.post("/{kbd_id}/validate")
@@ -381,7 +417,7 @@ async def kbd_validate_proxy(kbd_id: int, request: Request):
     """代理无副作用的 KBD working candidate Validation。"""
     headers = _internal_auth_headers()
     response = await _kbd_proxy("POST", f"/{kbd_id}/validate", headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    return _kbd_json_response(response)
 
 
 @kbd_router.get("/{kbd_id}")
@@ -389,7 +425,7 @@ async def kbd_get_proxy(kbd_id: int, request: Request):
     """代理获取单条 KBD 详情（含 content_md）→ kb-service"""
     headers = _internal_auth_headers()
     response = await _kbd_proxy("GET", f"/{kbd_id}", headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    return _kbd_json_response(response)
 
 
 @kbd_router.patch("/{kbd_id}/approve")
@@ -398,7 +434,7 @@ async def kbd_approve_proxy(kbd_id: int, request: Request):
     body = await request.json()
     headers = _internal_auth_headers()
     response = await _kbd_proxy("POST", f"/{kbd_id}/approve", payload=body, headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    return _kbd_json_response(response)
 
 
 @kbd_router.patch("/{kbd_id}/reject")
@@ -407,7 +443,7 @@ async def kbd_reject_proxy(kbd_id: int, request: Request):
     body = await request.json()
     headers = _internal_auth_headers()
     response = await _kbd_proxy("PATCH", f"/{kbd_id}/reject", payload=body, headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    return _kbd_json_response(response)
 
 
 @kbd_router.patch("/{kbd_id}")
@@ -416,7 +452,7 @@ async def kbd_update_proxy(kbd_id: int, request: Request):
     body = await request.json()
     headers = _internal_auth_headers()
     response = await _kbd_proxy("PATCH", f"/{kbd_id}", payload=body, headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    return _kbd_json_response(response)
 
 
 @kbd_router.post("/{kbd_id}/maintenance")
@@ -424,7 +460,7 @@ async def kbd_create_maintenance_proxy(kbd_id: int, request: Request):
     """创建已发布 KBD 的独立维护工作稿。"""
     headers = _internal_auth_headers()
     response = await _kbd_proxy("POST", f"/{kbd_id}/maintenance", headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    return _kbd_json_response(response)
 
 
 @kbd_router.patch("/{kbd_id}/maintenance")
@@ -433,7 +469,7 @@ async def kbd_update_maintenance_proxy(kbd_id: int, request: Request):
     body = await request.json()
     headers = _internal_auth_headers()
     response = await _kbd_proxy("PATCH", f"/{kbd_id}/maintenance", payload=body, headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    return _kbd_json_response(response)
 
 
 @kbd_router.delete("/{kbd_id}/maintenance")
@@ -441,7 +477,7 @@ async def kbd_discard_maintenance_proxy(kbd_id: int, request: Request):
     """放弃维护工作稿，Agent active 保持不变。"""
     headers = _internal_auth_headers()
     response = await _kbd_proxy("DELETE", f"/{kbd_id}/maintenance", headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    return _kbd_json_response(response)
 
 
 @kbd_router.post("/{kbd_id}/maintenance/publish")
@@ -456,7 +492,7 @@ async def kbd_publish_maintenance_proxy(kbd_id: int, request: Request):
         headers=headers,
         timeout=120.0,
     )
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    return _kbd_json_response(response)
 
 
 @kbd_router.post("/{kbd_id}/republish")
@@ -465,7 +501,7 @@ async def kbd_republish_proxy(kbd_id: int, request: Request):
     body = await request.json()
     headers = _internal_auth_headers()
     response = await _kbd_proxy("POST", f"/{kbd_id}/republish", payload=body, headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    return _kbd_json_response(response)
 
 
 @kbd_router.post("/{kbd_id}/revert-to-draft")
@@ -473,7 +509,7 @@ async def kbd_revert_to_draft_proxy(kbd_id: int, request: Request):
     """代理 KBD 退回草稿请求 → kb-service"""
     headers = _internal_auth_headers()
     response = await _kbd_proxy("POST", f"/{kbd_id}/revert-to-draft", headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    return _kbd_json_response(response)
 
 
 @kbd_router.post("/{kbd_id}/reclassify")
@@ -481,7 +517,7 @@ async def kbd_reclassify_proxy(kbd_id: int, request: Request):
     """代理 KBD 重新分类请求（用最新 Prompt 重算）-> kb-service"""
     headers = _internal_auth_headers()
     response = await _kbd_proxy("POST", f"/{kbd_id}/reclassify", headers=headers, timeout=120.0)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    return _kbd_json_response(response)
 
 
 @kbd_router.post("/{kbd_id}/reanalyze-images")
@@ -494,7 +530,7 @@ async def kbd_reanalyze_images_proxy(kbd_id: int, request: Request):
     headers = _internal_auth_headers()
     # 透传 query（如 ?sync=true 同步模式开关），否则 kb-service 收不到 sync 而走异步 202
     response = await _kbd_proxy("POST", f"/{kbd_id}/reanalyze-images", params=dict(request.query_params), headers=headers, timeout=30.0)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    return _kbd_json_response(response)
 
 
 @kbd_router.get("/{kbd_id}/reanalyze-images/status")
@@ -507,7 +543,7 @@ async def kbd_reanalyze_status_proxy(kbd_id: int, request: Request):
         headers=headers,
         timeout=15.0,
     )
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    return _kbd_json_response(response)
 
 
 @kbd_router.post("/{kbd_id}/reanalyze-image/{seq}")
@@ -524,7 +560,7 @@ async def kbd_reanalyze_single_image_proxy(kbd_id: int, seq: int, request: Reque
     headers = _internal_auth_headers()
     # 透传 query（如 ?sync=true 同步模式开关），否则 kb-service 收不到 sync 而走异步 202
     response = await _kbd_proxy("POST", f"/{kbd_id}/reanalyze-image/{seq}", params=dict(request.query_params), headers=headers, timeout=240.0)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    return _kbd_json_response(response)
 
 
 @kbd_router.post("/{kbd_id}/extract-signals")
@@ -540,7 +576,7 @@ async def kbd_extract_signals_proxy(kbd_id: int, request: Request):
     headers = _internal_auth_headers()
     # 透传 query（?sync=true 同步模式开关），否则 kb-service 收不到 sync 而走异步 202
     response = await _kbd_proxy("POST", f"/{kbd_id}/extract-signals", params=dict(request.query_params), headers=headers, timeout=240.0)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+    return _kbd_json_response(response)
 
 
 # ============ SOP 管理代理（前端使用 /api/v1/sop 前缀） ============

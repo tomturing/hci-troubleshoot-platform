@@ -18,10 +18,15 @@ on:
         required: false
         default: "apiGateway,caseService,conversationService,schedulerService,kbService,customerUI,adminUI,terminalBridge"
 
+concurrency:
+  group: env-repo-sync-${{ inputs.env_repo_name }}-${{ inputs.target_env }}
+  cancel-in-progress: false
+
 jobs:
   sync-env-repo:
     name: 同步环境仓库镜像标签
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: 校验输入参数
         run: |
@@ -31,10 +36,10 @@ jobs:
           fi
 
       - name: Checkout 应用仓库
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Checkout 环境仓库
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: ${{ inputs.env_repo_name }}
           token: ${{ secrets.ENV_REPO_PAT }}
@@ -49,7 +54,7 @@ jobs:
         run: bash scripts/ops/sync-env-repo-tags.sh
 
       - name: 创建环境仓库 PR
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c
         with:
           token: ${{ secrets.ENV_REPO_PAT }}
           path: env-repo

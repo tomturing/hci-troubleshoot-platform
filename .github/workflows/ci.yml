@@ -11,6 +11,16 @@ on:
         description: "手动触发原因"
         required: false
         default: "手动构建镜像"
+      promote_target:
+        description: "手动发布目标（仅 main 分支；both 按 dev → staging 顺序晋级）"
+        required: false
+        type: choice
+        options:
+          - none
+          - dev
+          - staging
+          - both
+        default: none
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -18,48 +28,69 @@ concurrency:
 
 jobs:
   changes:
-    name: 检测变更范围
+    # 变更范围探测与 PR 文档门禁共用一次 checkout，避免两个 job 重复启动 runner。
+    # job 名称保持 docs-governance，兼容 main ruleset 的必需状态检查。
+    name: docs-governance
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
-      helm: ${{ steps.filter.outputs.helm }}
+      platform_helm: ${{ steps.filter.outputs.platform_helm }}
       docs: ${{ steps.filter.outputs.docs }}
+      module_docs: ${{ steps.filter.outputs.module_docs }}
+      image_matrix: ${{ steps.image-plan.outputs.matrix || '[]' }}
+      has_images: ${{ steps.image-plan.outputs.has_images || 'false' }}
+      deploy_services: ${{ steps.image-plan.outputs.deploy_services || '' }}
+      has_deploy_services: ${{ steps.image-plan.outputs.has_deploy_services || 'false' }}
+      db_migrate: ${{ steps.image-plan.outputs.db_migrate || 'false' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad
         id: filter
         with:
           filters: |
             backend:
               - 'backend/**'
               - 'tests/**'
+              - 'scripts/ci/check_signal_schemas.py'
               - 'uv.lock'
               - 'pyproject.toml'
               - 'conftest.py'
             frontend:
               - 'frontend/**'
-            helm:
-              - 'deploy/helm/**'
+              # 该 exe 由 Build terminal_bridge 独立生成；二进制变更不需要重复跑
+              # pnpm 单测/构建，但仍会随 main 合并后的镜像构建发布。
+              - '!frontend/customer/public/downloads/terminal_bridge.exe'
+            platform_helm:
+              - 'deploy/helm/hci-platform/**'
             docs:
               - 'docs/**'
-              - 'README.md'
-              - 'AGENTS.md'
-              - 'CLAUDE.md'
+              - 'scripts/ci/check_docs_naming.py'
+            module_docs:
+              - 'backend/**'
+              - 'frontend/**'
+              - 'database/**'
+              - 'deploy/helm/**'
+              - 'docs/**'
+              - 'scripts/ci/check_module_doc_sync.py'
 
-  docs-governance:
-    name: docs-governance
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      # 发布镜像使用完整 Git diff 生成最小服务闭包。只在 main push/手动发布时
+      # 需要；PR 质量门禁仍只消费上面的 paths-filter 输出。
+      - name: 生成最小镜像构建计划
+        id: image-plan
+        if: github.event_name != 'pull_request'
+        env:
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci/resolve_image_build_plan.py
 
       - name: 检查是否跳过文档门禁
         id: skip-check
+        if: github.event_name == 'pull_request'
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
@@ -81,7 +112,7 @@ jobs:
           echo "skip=false" >> $GITHUB_OUTPUT
 
       - name: 检查关键改动是否同步文档
-        if: steps.skip-check.outputs.skip != 'true'
+        if: github.event_name == 'pull_request' && steps.skip-check.outputs.skip != 'true'
         run: |
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
@@ -99,7 +130,7 @@ jobs:
           fi
 
           # 检查是否有除 .github/workflows/ 外的关键目录改动
-          CORE_CHANGES="$(echo "$CHANGED_FILES" | grep -E '^(backend/|frontend/|deploy/|scripts/|database/)' || true)"
+          CORE_CHANGES="$(echo "$CHANGED_FILES" | grep -E '^(backend/|frontend/|deploy/|scripts/|database/|hci_sim/|terminal_bridge/)' || true)"
 
           if [[ -n "$CORE_CHANGES" ]]; then
             if echo "$CHANGED_FILES" | grep -Eq '^(docs/|README\.md$|AGENTS\.md$|CLAUDE\.md$)'; then
@@ -125,19 +156,41 @@ jobs:
             echo "pitfalls 条目与 _index.md 同步更新，门禁通过"
           fi
 
+      # 以下两项原先各占用一个独立 runner，且均为非阻断性治理提示。合并到
+      # 已必然启动的 docs-governance job 后，保留规则与旁路语义，不再重复 checkout。
+      - name: 文档命名规范（信息性）
+        if: github.event_name == 'pull_request' && steps.filter.outputs.docs == 'true'
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          NAMING_BYPASS: ${{ contains(github.event.pull_request.labels.*.name, 'naming-approved') && '1' || '0' }}
+        run: python3 scripts/ci/check_docs_naming.py
+
+      - name: 模块文档同步（信息性）
+        if: github.event_name == 'pull_request' && steps.filter.outputs.module_docs == 'true'
+        continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          DOC_SYNC_BYPASS: ${{ contains(github.event.pull_request.labels.*.name, 'doc-update-exempt') && '1' || '0' }}
+        run: python3 scripts/ci/check_module_doc_sync.py
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [changes]
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: 安装 uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39a
         with:
           version: "latest"
           enable-cache: true
@@ -148,28 +201,6 @@ jobs:
 
       - name: Ruff 代码检查
         run: uv run ruff check backend/ tests/
-
-  schema-contract:
-    name: Signal Schema Contract (§6.1)
-    runs-on: ubuntu-latest
-    needs: [changes]
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: 安装 uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: "latest"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
-      - name: 安装依赖
-        run: uv sync --group dev
-
       - name: 信号 v2 JSON Schema 契约校验
         # §6.1 防回归：schema 自身合法 + fixtures 校验 + 漂移检测
         run: uv run python scripts/ci/check_signal_schemas.py
@@ -177,21 +208,22 @@ jobs:
   frontend-check:
     name: 前端检查（单元测试 + 构建）
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [changes]
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: 安装 Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 20
 
       - name: 安装 pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
           version: 9
 
@@ -200,7 +232,7 @@ jobs:
         run: echo "dir=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
 
       - name: 缓存 pnpm store
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ${{ steps.pnpm-cache-dir.outputs.dir }}
           key: ${{ runner.os }}-pnpm-${{ hashFiles('frontend/pnpm-lock.yaml') }}
@@ -219,12 +251,13 @@ jobs:
   agent-reliability-regression:
     name: agent-reliability-regression
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
 
@@ -269,7 +302,7 @@ jobs:
 
       - name: 安装 uv
         if: steps.changes.outputs.should_run == 'true'
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39a
         with:
           version: "latest"
           enable-cache: true
@@ -295,14 +328,14 @@ jobs:
 
       - name: 上传 Agent 可靠性评测报告
         if: always() && steps.changes.outputs.should_run == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: agent-reliability-report
           path: evaluation/report.json
 
       - name: 评论 PR 可靠性评测结果
         if: always() && github.event_name == 'pull_request' && steps.changes.outputs.should_run == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
         with:
           script: |
             try {
@@ -336,21 +369,26 @@ jobs:
   helm-validate:
     name: Helm 模板校验
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs: [changes]
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'pull_request' && needs.changes.outputs.helm == 'true')
+      (github.event_name == 'pull_request' && needs.changes.outputs.platform_helm == 'true')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: 安装 Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4
+        with:
+          version: v3.17.3
 
       - name: Helm lint
         run: |
           helm lint deploy/helm/hci-platform
-          helm lint deploy/helm/hci-sim
+          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
+            helm lint deploy/helm/hci-sim
+          fi
 
       - name: Helm template 渲染检查
         run: |
@@ -358,18 +396,20 @@ jobs:
             -f deploy/helm/hci-platform/values.yaml \
             >/tmp/hci-platform-rendered.yaml
 
-          helm template hci-sim deploy/helm/hci-sim \
-            --namespace hci-sim-dev \
-            >/tmp/hci-sim-rendered.yaml
+          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
+            helm template hci-sim deploy/helm/hci-sim \
+              --namespace hci-sim-dev \
+              >/tmp/hci-sim-rendered.yaml
+          fi
 
-          if [ ! -s /tmp/hci-platform-rendered.yaml ] || [ ! -s /tmp/hci-sim-rendered.yaml ]; then
+          if [ ! -s /tmp/hci-platform-rendered.yaml ]; then
             echo "Helm 渲染结果为空"
             exit 1
           fi
 
       # E-2: helm-unittest — 覆盖关键配置渲染场景
       - name: 缓存 Helm 插件
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ~/.local/share/helm/plugins
           key: helm-unittest-v0.4.4
@@ -385,8 +425,11 @@ jobs:
             echo "helm-unittest 插件已从缓存恢复，跳过下载"
           else
             mkdir -p "${PLUGINS_DIR}/helm-unittest"
-            curl -sSL "https://github.com/helm-unittest/helm-unittest/releases/download/${HELM_UNITTEST_VERSION}/helm-unittest-linux-amd64-${HELM_UNITTEST_VERSION#v}.tgz" \
-              | tar xz -C "${PLUGINS_DIR}/helm-unittest"
+            ARCHIVE="/tmp/helm-unittest-linux-amd64-${HELM_UNITTEST_VERSION#v}.tgz"
+            curl -fsSL "https://github.com/helm-unittest/helm-unittest/releases/download/${HELM_UNITTEST_VERSION}/helm-unittest-linux-amd64-${HELM_UNITTEST_VERSION#v}.tgz" \
+              -o "${ARCHIVE}"
+            echo "d890849e16b3e35a2ed1ce5a9b8806539ca337a458e685bc1c3bbbe5e701566f  ${ARCHIVE}" | sha256sum -c -
+            tar xzf "${ARCHIVE}" -C "${PLUGINS_DIR}/helm-unittest"
           fi
           helm plugin list | grep unittest
 
@@ -396,12 +439,11 @@ jobs:
           echo "✅ Helm Unit Tests 通过"
 
       - name: 上传 Helm 渲染产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: helm-rendered
           path: |
             /tmp/hci-platform-rendered.yaml
-            /tmp/hci-sim-rendered.yaml
           retention-days: 1
   # check-claw-configs job 已删除（claw-configs 目录已移除）
   # check-db-migrations-sync job 已删除（Atlas 改造后不再需要 ConfigMap 同步检查）
@@ -410,23 +452,24 @@ jobs:
   probe-alignment:
     name: Layer-2A 探针路径对齐检查
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: [changes, helm-validate]
     if: |
       always() &&
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        (github.event_name == 'pull_request' && needs.changes.outputs.helm == 'true')
+        (github.event_name == 'pull_request' && needs.changes.outputs.platform_helm == 'true')
       ) &&
       needs.helm-validate.result != 'failure'
     steps:
       - name: 下载 Helm 渲染产物
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: helm-rendered
           path: /tmp
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: 检查探针路径对齐
         run: |
@@ -465,28 +508,19 @@ jobs:
   unit-tests:
     name: unit-tests
     runs-on: ubuntu-latest
-    needs:
-      [
-        changes,
-        lint,
-        helm-validate,
-        probe-alignment,
-      ]
+    timeout-minutes: 30
+    needs: [changes]
     if: |
-      always() &&
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
-      ) &&
-      needs.lint.result != 'failure' &&
-      needs.helm-validate.result != 'failure' &&
-      needs.probe-alignment.result != 'failure'
+      )
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: 安装 uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39a
         with:
           version: "latest"
           enable-cache: true
@@ -531,7 +565,7 @@ jobs:
             -m "not integration and not slow"
 
       - name: 上传覆盖率报告
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238
         if: always()
         with:
           file: ./coverage.xml
@@ -540,18 +574,14 @@ jobs:
   integration-tests:
     name: integration-tests
     runs-on: ubuntu-latest
-    needs:
-      [changes, lint, helm-validate, probe-alignment]
+    timeout-minutes: 20
+    needs: [changes]
     if: |
-      always() &&
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
-      ) &&
-      needs.lint.result != 'failure' &&
-      needs.helm-validate.result != 'failure' &&
-      needs.probe-alignment.result != 'failure'
+      )
 
     services:
       redis:
@@ -565,10 +595,10 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: 安装 uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39a
         with:
           version: "latest"
           enable-cache: true
@@ -590,23 +620,19 @@ jobs:
   security-tests:
     name: security-tests
     runs-on: ubuntu-latest
-    needs:
-      [changes, lint, helm-validate, probe-alignment]
+    timeout-minutes: 15
+    needs: [changes]
     if: |
-      always() &&
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
-      ) &&
-      needs.lint.result != 'failure' &&
-      needs.helm-validate.result != 'failure' &&
-      needs.probe-alignment.result != 'failure'
+      )
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: 安装 uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39a
         with:
           version: "latest"
           enable-cache: true
@@ -622,10 +648,11 @@ jobs:
   release-metadata:
     name: 发布元数据产物
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: [unit-tests, integration-tests, security-tests]
     if: always() && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && (needs.unit-tests.result == 'success') && (needs.integration-tests.result == 'success') && (needs.security-tests.result == 'success')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: 生成发布元数据
         run: |
@@ -646,7 +673,7 @@ jobs:
           EOF
 
       - name: 上传发布元数据
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: release-metadata
           path: release-metadata.json
@@ -658,10 +685,16 @@ jobs:
   prepare:
     name: 准备构建元数据
     runs-on: ubuntu-latest
-    needs: [unit-tests, integration-tests, security-tests]
+    timeout-minutes: 5
+    needs: [changes, unit-tests, integration-tests, security-tests]
     if: always() && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && (needs.unit-tests.result == 'success') && (needs.integration-tests.result == 'success') && (needs.security-tests.result == 'success')
     outputs:
       image_tag: ${{ steps.tag.outputs.tag }}
+      image_matrix: ${{ needs.changes.outputs.image_matrix }}
+      has_images: ${{ needs.changes.outputs.has_images }}
+      deploy_services: ${{ needs.changes.outputs.deploy_services }}
+      has_deploy_services: ${{ needs.changes.outputs.has_deploy_services }}
+      db_migrate: ${{ needs.changes.outputs.db_migrate }}
     steps:
       - name: 生成唯一镜像标签（日期-时间-sha7）
         id: tag
@@ -670,8 +703,9 @@ jobs:
   build-and-push:
     name: 构建并推送镜像（${{ matrix.service }}）
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: prepare
-    if: always() && needs.prepare.result == 'success' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
+    if: always() && needs.prepare.result == 'success' && needs.prepare.outputs.has_images == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
     permissions:
       contents: read
       packages: write
@@ -679,57 +713,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - service: api-gateway
-            context: .
-            dockerfile: backend/api-gateway/Dockerfile
-          - service: case-service
-            context: .
-            dockerfile: backend/case-service/Dockerfile
-          - service: conversation-service
-            context: .
-            dockerfile: backend/conversation-service/Dockerfile
-          - service: agent-service
-            context: .
-            dockerfile: backend/agent-service/Dockerfile
-          - service: eval-service
-            context: .
-            dockerfile: backend/eval-service/Dockerfile
-          - service: scheduler-service
-            context: .
-            dockerfile: backend/scheduler-service/Dockerfile
-          - service: kb-service
-            context: .
-            dockerfile: backend/kb-service/Dockerfile
-          - service: customer-ui
-            context: .
-            dockerfile: frontend/customer/Dockerfile
-          - service: admin-ui
-            context: .
-            dockerfile: frontend/admin/Dockerfile
-          - service: terminal-bridge
-            context: .
-            dockerfile: terminal_bridge/Dockerfile
-          - service: hci-sim
-            context: .
-            dockerfile: hci_sim/Dockerfile
-          # hci-openclaw 已从本 matrix 移出，由独立 workflow build-hci-openclaw.yml 管理
-          # （仅 workflow_dispatch 手动触发，固定版本 v2026.3.24，不阻断主流程）
+        include: ${{ fromJSON(needs.prepare.outputs.image_matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: 配置 Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
 
       - name: 登录 GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 构建并推送镜像
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -741,16 +740,17 @@ jobs:
             ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest
 
       - name: Trivy 镜像安全扫描（仅上报，不阻断）
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956
         with:
           image-ref: ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
           exit-code: "0"
           severity: HIGH,CRITICAL
+          version: v0.73.0
           format: sarif
           output: trivy-${{ matrix.service }}.sarif
 
       - name: 上传安全扫描结果（GitHub Security 标签页可见）
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@c4dd10e44af883a891fe31ced449bcb4a6728b9b
         if: always()
         continue-on-error: true
         with:
@@ -764,64 +764,31 @@ jobs:
   build-db-migrate:
     name: 构建 db-migrate 镜像（仅 schema 变更时）
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: prepare
     if: |
       always() && needs.prepare.result == 'success' &&
+      needs.prepare.outputs.db_migrate == 'true' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
     permissions:
       contents: read
       packages: write
       security-events: write
     outputs:
-      # 本次是否构建了 db-migrate 镜像（'true' / 'false'）
-      built: ${{ steps.check.outputs.changed }}
+      # 由 changes job 的完整 diff 决定；job 被跳过即表示无需 db-migrate。
+      built: ${{ needs.prepare.outputs.db_migrate }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          # fetch-depth: 0 确保能访问 github.event.before 对应的 commit
-          # 用于比较整个 push 范围（而非仅 HEAD^ 最后一个 commit）
-          fetch-depth: 0
-
-      - name: 检测 schema 相关文件是否变更
-        id: check
-        run: |
-          # workflow_dispatch 时强制构建
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-            echo "workflow_dispatch：强制构建 db-migrate"
-            exit 0
-          fi
-          # push 时比较完整 push 范围（before..sha）
-          # 避免仅比较 HEAD^ vs HEAD 导致 rebase/merge 多 commit 时漏检
-          BEFORE="${{ github.event.before }}"
-          AFTER="${{ github.sha }}"
-          CHANGED=$(git diff --name-only "${BEFORE}" "${AFTER}" -- \
-            database/desired_schema.sql \
-            database/desired_extras.sql \
-            'database/data-migrations/*.sql' \
-            Dockerfile.migrations \
-            scripts/db-migrate.sh \
-            scripts/migration-runner.sh)
-          if [[ -n "$CHANGED" ]]; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-            echo "检测到 schema 相关文件变更："
-            echo "$CHANGED"
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-            echo "无 schema 相关文件变更，跳过 db-migrate 构建"
-          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: 登录 GitHub Container Registry
-        if: steps.check.outputs.changed == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 构建并推送 db-migrate 镜像
-        if: steps.check.outputs.changed == 'true'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
         with:
           context: .
           file: Dockerfile.migrations
@@ -831,47 +798,77 @@ jobs:
             ghcr.io/${{ github.repository }}/db-migrate:latest
 
       - name: Trivy 镜像安全扫描（仅上报，不阻断）
-        if: steps.check.outputs.changed == 'true'
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956
         with:
           image-ref: ghcr.io/${{ github.repository }}/db-migrate:${{ needs.prepare.outputs.image_tag }}
           exit-code: "0"
           severity: HIGH,CRITICAL
+          version: v0.73.0
           format: sarif
           output: trivy-db-migrate.sarif
 
       - name: 上传安全扫描结果
-        uses: github/codeql-action/upload-sarif@v3
-        if: steps.check.outputs.changed == 'true'
+        uses: github/codeql-action/upload-sarif@c4dd10e44af883a891fe31ced449bcb4a6728b9b
         continue-on-error: true
         with:
           sarif_file: trivy-db-migrate.sarif
 
   auto-deploy-non-prod:
-    name: 自动晋级 dev/staging 环境
+    name: 晋级非生产环境
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [prepare, build-and-push, build-db-migrate]
+    # push main 自动晋级 dev → staging；workflow_dispatch 只有显式选择目标时才晋级。
+    # 手动发布仍须从 main 触发，避免把 feature 分支镜像写入环境仓库。
     # build-db-migrate 失败且本次确实应该构建（built==true）时阻止发布，避免传递一个实际没有推送的 tag
     if: |
       always() &&
       needs.prepare.result == 'success' &&
-      needs.build-and-push.result == 'success' &&
+      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
       (needs.build-db-migrate.result == 'success' || needs.build-db-migrate.outputs.built != 'true') &&
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main'
+      (needs.prepare.outputs.has_deploy_services == 'true' || needs.prepare.outputs.db_migrate == 'true') &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'workflow_dispatch' && inputs.promote_target != 'none')
+      )
     steps:
+      - name: 校验发布来源与目标
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref }}
+          PROMOTE_TARGET: ${{ inputs.promote_target }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" && "${REF_NAME}" != "refs/heads/main" ]]; then
+            echo "::error::手动晋级必须从 main 分支触发，当前 ref=${REF_NAME}"
+            exit 1
+          fi
+          if [[ "${EVENT_NAME}" == "push" ]]; then
+            echo "发布触发器：main push，目标环境：dev → staging"
+          else
+            echo "发布触发器：workflow_dispatch，目标环境：${PROMOTE_TARGET}"
+          fi
+
       - name: Checkout 应用仓库（获取 sync-env-repo-tags.sh）
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: 直接推送镜像标签到环境仓库（dev 优先，串行执行）
         env:
           ENV_REPO_PAT: ${{ secrets.ENV_REPO_PAT }}
+          EVENT_NAME: ${{ github.event_name }}
+          PROMOTE_TARGET: ${{ inputs.promote_target }}
+          IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+          DB_MIGRATE_BUILT: ${{ needs.build-db-migrate.outputs.built }}
+          SERVICES_CSV: ${{ needs.prepare.outputs.deploy_services }}
         run: |
+          set -euo pipefail
+          if [[ -z "${ENV_REPO_PAT:-}" ]]; then
+            echo "::error::未配置 ENV_REPO_PAT，无法写入 hci-platform-env"
+            exit 1
+          fi
+
           # 绕过 hci-platform-env workflow dispatch（私有仓库 Actions 分钟额度限制）
           # 改为在当前公开仓库（免费 Actions）中直接 clone → 调用脚本 → push
-          IMAGE_TAG="${{ needs.prepare.outputs.image_tag }}"
-          DB_MIGRATE_BUILT="${{ needs.build-db-migrate.outputs.built }}"
-
           if [[ "$DB_MIGRATE_BUILT" == "true" ]]; then
             echo "本次有 schema 变更，db-migrate tag：${IMAGE_TAG}"
             SKIP_DB_MIGRATE="false"
@@ -886,19 +883,82 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          for env in dev staging; do
+          if [[ "${EVENT_NAME}" == "push" ]]; then
+            ENVIRONMENTS=(dev staging)
+          else
+            case "${PROMOTE_TARGET}" in
+              dev) ENVIRONMENTS=(dev) ;;
+              staging) ENVIRONMENTS=(staging) ;;
+              both) ENVIRONMENTS=(dev staging) ;;
+              *)
+                echo "::error::无效的手动发布目标：${PROMOTE_TARGET}"
+                exit 1
+                ;;
+            esac
+          fi
+
+          for env in "${ENVIRONMENTS[@]}"; do
             echo "========== 更新 ${env} 环境 =========="
 
             # 调用统一的同步脚本（含 BLOCKED_SERVICES 保护，防止 opsAgent 等独立仓库 tag 被覆盖）
             ENV_REPO_PATH="$(pwd)" \
             TARGET_ENV="${env}" \
             IMAGE_TAG="${IMAGE_TAG}" \
+            SERVICES_CSV="${SERVICES_CSV}" \
             SKIP_DB_MIGRATE="${SKIP_DB_MIGRATE}" \
               bash "$GITHUB_WORKSPACE/scripts/ops/sync-env-repo-tags.sh"
 
             VALUES_FILE="environments/${env}/values.yaml"
+            verify_values_file() {
+              local file="$1"
+              local service actual
+              local services=()
+              if [[ -n "${SERVICES_CSV}" ]]; then
+                IFS=',' read -r -a services <<< "${SERVICES_CSV}"
+              fi
+
+              for service in "${services[@]}"; do
+                actual="$(awk -v key="${service}" '
+                  $0 ~ "^" key ":$" { in_block=1; next }
+                  in_block && $0 ~ /^[^[:space:]]/ { exit }
+                  in_block && $0 ~ /^[[:space:]]+tag:[[:space:]]*/ {
+                    value=$0
+                    sub(/^.*tag:[[:space:]]*/, "", value)
+                    gsub(/["[:space:]]/, "", value)
+                    print value
+                    exit
+                  }
+                ' "${file}")"
+                if [[ "${actual}" != "${IMAGE_TAG}" ]]; then
+                  echo "::error::${file} 的 ${service}.image.tag=${actual:-<missing>}，期望 ${IMAGE_TAG}"
+                  return 1
+                fi
+              done
+
+              if [[ "${SKIP_DB_MIGRATE}" != "true" ]]; then
+                actual="$(awk '
+                  /^dbMigrate:[[:space:]]*$/ { in_block=1; next }
+                  in_block && /^[^[:space:]]/ { exit }
+                  in_block && /^[[:space:]]+tag:[[:space:]]*/ {
+                    value=$0
+                    sub(/^.*tag:[[:space:]]*/, "", value)
+                    gsub(/["[:space:]]/, "", value)
+                    print value
+                    exit
+                  }
+                ' "${file}")"
+                if [[ "${actual}" != "${IMAGE_TAG}" ]]; then
+                  echo "::error::${file} 的 dbMigrate.image.tag=${actual:-<missing>}，期望 ${IMAGE_TAG}"
+                  return 1
+                fi
+              fi
+            }
+
+            # 先核验工作区，再提交，避免同步脚本漏更新时仍产生“成功”提交。
+            verify_values_file "${VALUES_FILE}"
             if git diff --quiet "${VALUES_FILE}"; then
-              echo "${env} 标签未变化，跳过提交"
+              echo "::error::${env} values.yaml 未发生镜像标签变更，拒绝宣称晋级成功（image_tag=${IMAGE_TAG}）"
+              exit 1
             else
               git add "${VALUES_FILE}"
               git commit -m "chore(${env}): 自动更新镜像标签为 ${IMAGE_TAG} [skip ci]"
@@ -918,7 +978,24 @@ jobs:
                 echo "❌ ${env} 环境标签推送失败：多次重试后仍无法完成 rebase/push"
                 exit 1
               fi
+
+              # 推送成功后从远端 main 重新读取 values，确认环境仓库确实保存了本次 tag。
+              git fetch origin main
+              REMOTE_VALUES="$(mktemp)"
+              trap 'rm -f "${REMOTE_VALUES}"' EXIT
+              git show "origin/main:${VALUES_FILE}" > "${REMOTE_VALUES}"
+              verify_values_file "${REMOTE_VALUES}"
+              echo "${env} 环境仓库已确认：$(git rev-parse origin/main)"
             fi
           done
 
-          echo "✅ dev/staging 环境同步完成（直接推送模式）"
+          {
+            echo "### 非生产环境晋级结果"
+            echo "- source_sha: \`${GITHUB_SHA}\`"
+            echo "- image_tag: \`${IMAGE_TAG}\`"
+            echo "- services: \`${SERVICES_CSV:-dbMigrate-only}\`"
+            echo "- target: \`${ENVIRONMENTS[*]}\`"
+            echo "- environment repository: \`tomturing/hci-platform-env\`"
+            echo "- ArgoCD 将根据环境仓库 main 自动同步；请在发布后执行 Pod 镜像与源码核验。"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          echo "✅ 非生产环境晋级完成：${ENVIRONMENTS[*]}（直接推送模式）"

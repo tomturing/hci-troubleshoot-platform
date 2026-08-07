@@ -27,6 +27,9 @@ _SIGNAL_EXECUTABILITY_MIGRATION_PATH = (
 _SIGNAL_PIPELINE_MIGRATION_PATH = (
     _REPOSITORY_ROOT / "database" / "data-migrations" / "022_unify_kbd_signal_filter_extract_output.sql"
 )
+_QKV_KEYWORD_MIGRATION_PATH = (
+    _REPOSITORY_ROOT / "database" / "data-migrations" / "023_align_qkv_keyword_type_contract.sql"
+)
 
 
 def _seed_template(prompt_name: str) -> str:
@@ -220,7 +223,32 @@ def test_seed_signal_prompt_contains_catalog_and_matcher_quality_boundaries():
     assert 'command="asan disk list"' in template
     assert "不得降级改写成 address、ip、error 等更宽泛关键词" in template
     assert "保留脱敏 pattern" in template
-    assert "keyword pattern 数组中的每一项都必须能从逐字 evidence" in template
+    assert "match.pattern 数组中的每一项都必须能从逐字 evidence" in template
+
+
+def test_seed_signal_prompt_separates_qkv_keyword_from_qfk_arrays():
+    template = _seed_template("kbd_extract_signals_v2")
+
+    assert "acquire.args.keyword 必须是单个非空 string" in template
+    assert "多个任务动作必须拆成多条 qkv Candidate" in template
+    assert "只有 match.pattern 可以是 string 或 string[]" in template
+    assert "只有 extract.rows.include/exclude 使用 string[]" in template
+    assert "keyword pattern 数组" not in template
+    assert "多关键字使用数组，页面按换行编辑" not in template
+
+
+def test_qkv_keyword_prompt_migration_separates_qkv_and_qfk_array_semantics():
+    migration = _QKV_KEYWORD_MIGRATION_PATH.read_text(encoding="utf-8")
+    appended_rules = migration.split("|| E'\\n\\n# 补充规则 27", 1)[1].split(
+        "version =", 1
+    )[0]
+
+    assert "acquire.args.keyword 必须是单个非空 string" in migration
+    assert "match.pattern 可以是 string 或 string[]" in migration
+    assert "extract.rows.include/exclude 使用 string[]" in migration
+    assert "keyword pattern 数组" not in appended_rules
+    assert "多个关键字使用数组，页面按换行编辑" not in appended_rules
+    assert StrictPromptLoader.get_template_placeholders(appended_rules) == set()
 
 
 def test_vision_prompt_gives_task_detail_modal_task_semantic_priority():

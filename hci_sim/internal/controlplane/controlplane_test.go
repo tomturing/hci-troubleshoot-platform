@@ -30,9 +30,40 @@ func compileInput() CompileInput {
 	return CompileInput{
 		SupportID: "27123", KBDRevision: 24, KBDChecksum: "sha256:kbd-27123", SignalsDigest: "sha256:signals",
 		ToolContractRevision: "tool-r24", PolicyRevision: "policy-r2", CompilerRevision: "git:test",
-		Artifacts:    []Artifact{{ID: "artifact-1", Digest: "sha256:artifact", Approved: true}},
+		Artifacts:    []Artifact{{ID: "artifact-1", Digest: "sha256:artifact"}},
 		Dependencies: []Dependency{{Type: "tool", ID: "acli", Revision: "r24", Digest: "sha256:tool"}},
 	}
+}
+
+func registryWithApprovedArtifact(t *testing.T, now time.Time) *MemoryRegistry {
+	t.Helper()
+	artifacts := NewMemoryArtifactRegistry()
+	metadata := ArtifactRecord{
+		ID:        "artifact-1",
+		Digest:    "sha256:artifact",
+		SizeBytes: 1024,
+		MediaType: "application/json",
+		Schema:    "hci-observation/v1",
+		Provenance: ArtifactProvenance{
+			SourceType: "authorized-readonly-collection", SourceRefDigest: "sha256:source", RedactionDigest: "sha256:redacted",
+			CollectorID: "collector", CollectedAt: now, CollectionPolicy: "policy:approved-v1",
+		},
+	}
+	if _, err := artifacts.Register(Actor{ID: "collector", Role: RoleCompiler}, metadata, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := artifacts.RecordScan(Actor{ID: "scanner", Role: RoleSecurity}, metadata.ID, ArtifactScanReport{
+		ScannerRevision: "scan-v1", SecretScanPassed: true, PIIScanPassed: true, LicenseScanPassed: true, SchemaValid: true,
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := artifacts.Approve(Actor{ID: "expert", Role: RoleExpert}, metadata.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := artifacts.Approve(Actor{ID: "security", Role: RoleSecurity}, metadata.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	return NewMemoryRegistryWithDependencies(artifacts, NewMemoryBundleObjectStore())
 }
 
 func publish(t *testing.T, registry *MemoryRegistry, now time.Time) BundleRecord {
@@ -65,7 +96,7 @@ func publish(t *testing.T, registry *MemoryRegistry, now time.Time) BundleRecord
 
 func TestRegistryLifecycleIntegrityAndStale(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	registry := NewMemoryRegistry()
+	registry := registryWithApprovedArtifact(t, now)
 	published := publish(t, registry, now)
 	if _, err := registry.GetPublished(published.Digest); err != nil {
 		t.Fatal(err)
@@ -81,7 +112,7 @@ func TestRegistryLifecycleIntegrityAndStale(t *testing.T) {
 
 func TestRegistryRejectsNonDeterministicCompilationAndSplitRoleBySameActor(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	registry := NewMemoryRegistry()
+	registry := registryWithApprovedArtifact(t, now)
 	draft, err := registry.Compile(Actor{ID: "compiler", Role: RoleCompiler}, compileInput(), fixtureManifest(), now)
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +146,7 @@ func (r *passingRunner) Run(_ context.Context, run TestRun, token string) (RunSt
 
 func TestRunIsPinnedIdempotentAndCapacityBounded(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	registry := NewMemoryRegistry()
+	registry := registryWithApprovedArtifact(t, now)
 	bundle := publish(t, registry, now)
 	store, err := NewRunStore(registry, []byte("0123456789abcdef0123456789abcdef"), "hci-platform", "hci-sim", 1)
 	if err != nil {

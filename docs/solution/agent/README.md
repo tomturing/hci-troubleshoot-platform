@@ -2,7 +2,7 @@
 status: active
 category: solution
 audience: all
-last_updated: 2026-08-07
+last_updated: 2026-08-05
 owner: team
 update_trigger: Agent 方案新增、重构或状态变更
 ---
@@ -99,7 +99,7 @@ docs/solution/agent/
 |---|---|---|
 | A | 唯一 `hci_sim/` 源码、旧实现处置、基础 CI 门禁 | [目录收敛与基础门禁](events/2026-08-05-hci-sim阶段A目录收敛与基础门禁方案.md) |
 | B | Manifest v2、强 RouteKey、Lease/exec/shell/fault/output 安全内核 | [运行时安全与确定性加固](events/2026-08-05-hci-sim阶段B运行时安全与确定性加固方案.md) |
-| C | 不可变 KBD 输入、Fixture Compiler、Registry、审批和 stale | [Fixture 编译与注册控制面](events/2026-08-05-hci-sim阶段C-Fixture编译与注册控制面方案.md) |
+| C | 不可变 KBD 输入、Fixture Compiler、Registry、审批和 stale | [Fixture 编译与注册控制面](events/2026-08-05-hci-sim阶段C-Fixture编译与注册控制面方案.md) / [C2 Artifact Gate 与对象完整性](events/2026-08-06-hci-sim阶段C2获批Artifact与不可变BundleRegistry方案.md) |
 | D | TestRun API、Scheduler、Lease、缓存、真实 Bridge/Agent Runner | [Scenario 调度与通用 KBD 测试](events/2026-08-05-hci-sim阶段D-Scenario调度与通用KBD测试方案.md) |
 | E | real/sim 差分、Mutation、稳定性、容量、SLO 和运营 | [产品级验证与规模化运营](events/2026-08-05-hci-sim阶段E产品级验证与规模化运营方案.md) |
 
@@ -112,9 +112,9 @@ docs/solution/agent/
 | 搭建 CI 测评门禁 | [agent-测评与GitOps方案.md](03-测评与GitOps/agent-测评与GitOps方案.md) |
 | 理解 Agent 整体架构 | [agent设计.md](02-架构设计/agent设计.md) |
 | 理解工具系统怎么工作 | [agent工具设计.md](02-架构设计/agent工具设计.md) |
-| 理解关键信号如何规范化、编译、现场解析和执行前验证 | [关键信号统一解析运行时与 Resolver 分层方案](events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
 | 核对 HCI 日志/配置/数据/容器与 aCLI 的真实契约 | [HCI底层目录日志容器与aCLI知识基线.md](02-架构设计/HCI底层目录日志容器与aCLI知识基线.md) |
 | 设计或审核 qfk_log、blackbox、日志 parser/predicate | [qfk_log统一日志采集解析与判定设计.md](02-架构设计/qfk_log统一日志采集解析与判定设计.md) |
+| 理解关键信号如何规范化、编译、现场解析和执行前验证 | [统一解析运行时与 Resolver 分层方案](events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
 | 理解技能系统怎么工作 | [agent技能设计.md](02-架构设计/agent技能设计.md) |
 | 理解记忆与变量池怎么工作 | [agent记忆设计.md](02-架构设计/agent记忆设计.md) |
 | 理解可靠性方案 | [排障Agent可靠性整体解决方案.md](02-架构设计/排障Agent可靠性整体解决方案.md) |

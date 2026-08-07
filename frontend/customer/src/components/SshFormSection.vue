@@ -16,9 +16,23 @@ const props = defineProps<{
     password: string
     privateKey: string
     passphrase: string
+    executionMode?: 'sim-ssh'
+    testRunId?: string
   }
   authType: TerminalAuthType
+  allowLease?: boolean
 }>()
+
+type SshFormValue = {
+  host: string
+  port: string
+  username: string
+  password: string
+  privateKey: string
+  passphrase: string
+  executionMode?: 'sim-ssh'
+  testRunId?: string
+}
 
 // Emit: 表单数据变更
 const emit = defineEmits<{
@@ -27,13 +41,15 @@ const emit = defineEmits<{
 }>()
 
 // 内部维护本地副本（避免直接修改 props）
-const localForm = ref({
+const localForm = ref<SshFormValue>({
   host: props.sshForm.host,
   port: props.sshForm.port,
   username: props.sshForm.username || 'admin',
   password: props.sshForm.password,
   privateKey: props.sshForm.privateKey,
   passphrase: props.sshForm.passphrase,
+  executionMode: props.sshForm.executionMode,
+  testRunId: props.sshForm.testRunId,
 })
 const localAuthType = ref<TerminalAuthType>(props.authType)
 
@@ -111,11 +127,12 @@ loadSavedSshConfig()
         <el-radio-group v-model="localAuthType" size="small">
           <el-radio-button value="password">密码认证</el-radio-button>
           <el-radio-button value="key">密钥认证</el-radio-button>
+          <el-radio-button v-if="allowLease" value="lease">仿真租约</el-radio-button>
         </el-radio-group>
       </div>
 
-      <!-- 密码认证 -->
-      <div v-if="localAuthType === 'password'" class="form-row">
+      <!-- 密码/仿真租约认证 -->
+      <div v-if="localAuthType === 'password' || localAuthType === 'lease'" class="form-row">
         <el-form-item label="密码" class="form-full">
           <el-input
             v-model="localForm.password"
@@ -128,8 +145,19 @@ loadSavedSshConfig()
         </el-form-item>
       </div>
 
+      <template v-if="localAuthType === 'lease'">
+        <el-alert type="info" :closable="false" class="lease-hint">
+          仿真环境仅接受控制面签发的 htp2 租约；请将第一步输出的 password 原样粘贴，不要加后缀。
+        </el-alert>
+        <div class="form-row">
+          <el-form-item label="TestRun ID（可选）" class="form-full">
+            <el-input v-model="localForm.testRunId" placeholder="run-..." />
+          </el-form-item>
+        </div>
+      </template>
+
       <!-- 密钥认证 -->
-      <div v-else class="form-row key-auth-section">
+      <div v-if="localAuthType === 'key'" class="form-row key-auth-section">
         <el-form-item label="私钥" class="form-full">
           <el-input
             v-model="localForm.privateKey"
@@ -200,5 +228,9 @@ loadSavedSshConfig()
   font-size: 12px;
   color: #909399;
   margin: 8px 0 0;
+}
+
+.lease-hint {
+  margin-bottom: 12px;
 }
 </style>

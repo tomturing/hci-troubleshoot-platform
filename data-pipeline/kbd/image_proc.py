@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from typing import Any
 
@@ -25,6 +26,7 @@ import asyncpg
 import httpx
 
 from .config import settings
+from .error_catalog import humanize_error
 from .observability import get_trace_id, traceparent
 
 logger = logging.getLogger("kbd.image_proc")
@@ -70,24 +72,33 @@ async def _call_reanalyze_api(
     # 提交（超时短：仅需接收 202）
     timeout_submit = 30.0
     response = None
-    for attempt in range(settings.API_MAX_RETRIES):
+    max_attempts = max(1, settings.API_MAX_RETRIES)
+    for attempt in range(max_attempts):
         try:
             response = await client.post(post_url, headers=headers, timeout=timeout_submit)
             response.raise_for_status()
             break
-        except httpx.TimeoutException:
-            if attempt == settings.API_MAX_RETRIES - 1:
+        except (httpx.TimeoutException, httpx.TransportError):
+            if attempt == max_attempts - 1:
                 raise
-            wait = 2.0 * (2 ** attempt)
+            wait = random.uniform(0.0, min(30.0, 2.0 ** attempt))
             logger.warning("识图提交超时 kbd_entry_id=%d 等待 %.1fs 后重试", kbd_entry_id, wait)
             await asyncio.sleep(wait)
         except httpx.HTTPStatusError as exc:
-            if 400 <= exc.response.status_code < 500:
+            status_code = exc.response.status_code
+            if status_code == 429:
+                retry_after = exc.response.headers.get("Retry-After")
+                try:
+                    wait = float(retry_after) if retry_after else random.uniform(0.0, 2.0 ** attempt)
+                except (TypeError, ValueError):
+                    wait = random.uniform(0.0, 2.0 ** attempt)
+            elif 400 <= status_code < 500:
                 logger.error("识图 API 客户端错误 status=%d kbd_entry_id=%d", exc.response.status_code, kbd_entry_id)
                 raise
-            if attempt == settings.API_MAX_RETRIES - 1:
+            else:
+                wait = random.uniform(0.0, min(30.0, 2.0 ** attempt))
+            if attempt == max_attempts - 1:
                 raise
-            wait = 2.0 * (2 ** attempt)
             logger.warning("识图 API 服务端错误 status=%d 等待 %.1fs 后重试", exc.response.status_code, wait)
             await asyncio.sleep(wait)
 
@@ -148,6 +159,7 @@ async def _poll_reanalyze_status(
                 return {
                     "success": True,
                     "kbd_id": kbd_entry_id,
+                    "job_id": job_id,
                     "total": data.get("total", 0),
                     "done": data.get("done", 0),
                     "failed": data.get("failed", 0),
@@ -184,7 +196,7 @@ async def _poll_reanalyze_status(
 # ─── 批量处理 ────────────────────────────────────────────────────────────────
 
 
-async def process_images_batch(kbd_ids: list[str], _pool: Any = None) -> dict[str, int]:
+async def process_images_batch(kbd_ids: list[str], _pool: Any = None) -> dict[str, Any]:
     """
     批量调用 kb-service API 重新识图。
 
@@ -206,7 +218,9 @@ async def process_images_batch(kbd_ids: list[str], _pool: Any = None) -> dict[st
         )
 
     try:
-        stats = {"done": 0, "failed": 0, "skipped": 0}
+        # done/failed 是图片级计数；case_results 是编排层必须使用的 KBD 级事实。
+        # 两者绝不能再混用，否则一张图的统计会错误投影为一个案例的状态。
+        stats: dict[str, Any] = {"done": 0, "failed": 0, "skipped": 0, "case_results": {}}
 
         async def _run_one(support_id: str) -> None:
             kbd_entry_id = await pool.fetchval(
@@ -215,6 +229,7 @@ async def process_images_batch(kbd_ids: list[str], _pool: Any = None) -> dict[st
             if kbd_entry_id is None:
                 logger.warning("support_id=%s 在 kbd_entry 表中不存在，跳过", support_id)
                 stats["skipped"] += 1
+                stats["case_results"][support_id] = {"status": "skipped", "reason": "KBD 不存在"}
                 return
             logger.info("重新识图 support_id=%s kbd_entry_id=%d", support_id, kbd_entry_id)
             try:
@@ -222,15 +237,39 @@ async def process_images_batch(kbd_ids: list[str], _pool: Any = None) -> dict[st
                 if result.get("success"):
                     stats["done"] += result.get("done", 0)
                     stats["failed"] += result.get("failed", 0)
+                    case_status = "done" if int(result.get("failed", 0)) == 0 else "failed"
+                    stats["case_results"][support_id] = {
+                        "status": case_status,
+                        "images_done": int(result.get("done", 0)),
+                        "images_failed": int(result.get("failed", 0)),
+                        "job_id": result.get("job_id"),
+                    }
                     logger.info(
                         "识图完成 support_id=%s done=%d failed=%d",
                         support_id, result.get("done", 0), result.get("failed", 0),
                     )
                 else:
                     stats["failed"] += 1
+                    stats["case_results"][support_id] = {
+                        "status": "failed",
+                        "reason": str(result.get("error") or "Vision Job 返回失败"),
+                    }
             except Exception as exc:
-                logger.error("识图失败 support_id=%s 原因=%s", support_id, exc)
+                error = humanize_error(exc)
+                logger.error(
+                    "识图失败 support_id=%s code=%s retryable=%s 原因=%s",
+                    support_id, error.code, error.retryable, error.message,
+                    extra={
+                        "support_id": support_id,
+                        "stage": "vision",
+                        "error_code": error.code,
+                        "retryable": error.retryable,
+                    },
+                )
                 stats["failed"] += 1
+                stats["case_results"][support_id] = {
+                    "status": "failed", "reason": error.message, "error_code": error.code,
+                }
 
         # P1-1 并发提交（Semaphore 控制，避免一次提交 100 个撑爆后端）
         max_concurrent = getattr(settings, "VISION_CONCURRENCY", 3)
@@ -244,8 +283,11 @@ async def process_images_batch(kbd_ids: list[str], _pool: Any = None) -> dict[st
             await asyncio.gather(*[_bounded(sid) for sid in kbd_ids])
 
         logger.info(
-            "批量识图完成 done=%d failed=%d skipped=%d",
-            stats["done"], stats["failed"], stats["skipped"],
+            "批量识图完成 images_done=%d images_failed=%d cases=%s skipped=%d",
+            stats["done"], stats["failed"],
+            {item["status"]: sum(1 for result in stats["case_results"].values() if result["status"] == item["status"])
+             for item in ({"status": "done"}, {"status": "failed"}, {"status": "skipped"})},
+            stats["skipped"],
         )
         return stats
     finally:

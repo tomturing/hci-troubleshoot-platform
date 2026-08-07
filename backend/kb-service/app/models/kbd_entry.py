@@ -297,7 +297,10 @@ class KbdEntry(Base):
                 seq = int(m.group(1))
                 desc = img_desc.get(seq, "")
                 if not desc:
-                    return ""  # 无对应描述则移除占位符
+                    # Vision 尚未识别（desc 为空）时，保留一个最简占位块而非删除。
+                    # 若直接返回 "" 会把 ![img:N] 从章节字段和 content_md 中永久抹除，
+                    # 导致后续 Vision 成功后 rebuild_content_md 也无法找回图片位置。
+                    return f"\n\n> **【截图 {seq}】**（待识图）\n\n"
                 lines = desc.strip().split("\n")
                 if lines[0].startswith("BACKGROUND:") or lines[0].startswith("TYPE:"):
                     # v2 格式：每行独立 ">" 行
@@ -358,6 +361,15 @@ class KbdEntry(Base):
         content_md = self.content_md or ""
 
         # 1. 结合 images_json，将 content_md 中的图片说明块还原回 ![img:seq] 占位符
+        # 1a. 还原"待识图"占位块（Vision 识别失败时由 _expand_placeholders 生成）
+        #     格式：> **【截图 N】**（待识图）
+        content_md = re.sub(
+            r"\n*\s*>\s*\*\*【截图\s*(\d+)】\*\*（待识图）\s*\n*",
+            lambda m: f"\n\n![img:{m.group(1)}]\n\n",
+            content_md,
+        )
+
+        # 1b. 结合 images_json，将已识别的图片说明块还原回 ![img:seq] 占位符
         for item in self.images_json or []:
             seq = item.get("seq")
             if seq is not None:

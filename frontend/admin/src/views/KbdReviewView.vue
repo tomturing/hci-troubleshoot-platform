@@ -581,6 +581,43 @@ async function focusSignalRequestError(error: unknown): Promise<void> {
   await focusSignal(signalId)
 }
 
+type SignalRequestError = Error & {
+  signalId?: string
+  fieldPath?: string
+  issue?: Record<string, any>
+  code?: string
+  traceId?: string
+  requestId?: string
+}
+
+function buildSignalRequestError(responseBody: any, statusCode: number, headers?: Headers): SignalRequestError {
+  const detail = responseBody?.detail
+  const envelope = responseBody?.error && typeof responseBody.error === 'object' ? responseBody.error : undefined
+  const issue = detail && typeof detail === 'object' && !Array.isArray(detail)
+    ? detail as Record<string, any>
+    : envelope
+  const message = typeof detail === 'string'
+    ? detail
+    : Array.isArray(detail)
+      ? detail.map((item: any) => item?.msg || item?.message || JSON.stringify(item)).join('；')
+      : String(issue?.message || `HTTP ${statusCode}`)
+  const location = String(issue?.location || '').trim()
+  const code = String(issue?.code || '').trim()
+  const traceId = headers?.get('X-Trace-Id') || headers?.get('x-trace-id') || ''
+  const requestId = headers?.get('X-Request-ID') || headers?.get('x-request-id') || ''
+  const diagnostics = [code && `错误码 ${code}`, (traceId || requestId) && `诊断编号 ${traceId || requestId}`].filter(Boolean).join('；')
+  const error = new Error(`${location ? `${location}：` : ''}${message}${diagnostics ? `（${diagnostics}）` : ''}`) as SignalRequestError
+  if (issue) {
+    error.issue = issue
+    if (issue.signal_id) error.signalId = String(issue.signal_id)
+    if (issue.field_path) error.fieldPath = String(issue.field_path)
+  }
+  if (code) error.code = code
+  if (traceId) error.traceId = traceId
+  if (requestId) error.requestId = requestId
+  return error
+}
+
 async function handleValidationAction(issue: CandidateValidation['issues'][number]) {
   const signalId = issue.action?.signal_id
   if (!signalId) {
@@ -665,7 +702,11 @@ async function handleReclassify(entry: KbdEntry) {
     })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     const data = await resp.json()
-    ElMessage.success(`分类完成：${data.category_id}（置信度 ${data.confidence?.toFixed(2) || 'N/A'}）`)
+    ElMessage.success({
+      message: `分类完成：${data.category_id}（置信度 ${data.confidence?.toFixed(2) || 'N/A'}）`,
+      duration: 0,
+      showClose: true,
+    })
     // 刷新列表中的该条目
     const idx = entries.value.findIndex(e => e.id === entry.id)
     if (idx !== -1) {
@@ -680,7 +721,11 @@ async function handleReclassify(entry: KbdEntry) {
       detailEntry.value.ai_category_reason = data.reason
     }
   } catch (err: any) {
-    ElMessage.error(`重新分类失败：${err.message || '未知错误'}`)
+    ElMessage.error({
+      message: `重新分类失败：${err.message || '未知错误'}`,
+      duration: 0,
+      showClose: true,
+    })
   } finally {
     reclassifyLoading.value = null
   }
@@ -710,7 +755,11 @@ async function handleReanalyzeImages(entry: KbdEntry) {
     }
     const data = await resp.json()
     if (data.total === 0) {
-      ElMessage.warning(data.message || '该 KBD 无原始图片，无法重算识图')
+      ElMessage.warning({
+        message: data.message || '该 KBD 无原始图片，无法重算识图',
+        duration: 0,
+        showClose: true,
+      })
     } else {
       ElMessage.success({
         message: `识图完成：成功 ${data.done} 张，失败 ${data.failed} 张`,
@@ -1662,12 +1711,7 @@ async function persistSignalList(
   })
   const responseBody = await resp.json().catch(() => ({}))
   if (!resp.ok) {
-    const detail = responseBody?.detail
-    const message = typeof detail === 'string' ? detail : detail?.message || `HTTP ${resp.status}`
-    const location = typeof detail === 'object' ? String(detail?.location || '') : ''
-    const error = new Error(location ? `${location}：${message}` : message) as Error & { signalId?: string }
-    if (typeof detail === 'object' && detail?.signal_id) error.signalId = String(detail.signal_id)
-    throw error
+    throw buildSignalRequestError(responseBody, resp.status, resp.headers)
   }
   applyMaintenanceResponse(detailEntry.value, responseBody)
   const newDoc: SignalsDoc = responseBody?.payload?.signals_json || responseBody?.signals_json || payload
@@ -1768,12 +1812,7 @@ async function submitDeleteSignal() {
       })
       const responseBody = await resp.json().catch(() => ({}))
       if (!resp.ok) {
-        const detail = responseBody?.detail
-        const message = typeof detail === 'string' ? detail : detail?.message || `HTTP ${resp.status}`
-        const location = typeof detail === 'object' ? String(detail?.location || '') : ''
-        const error = new Error(location ? `${location}：${message}` : message) as Error & { signalId?: string }
-        if (typeof detail === 'object' && detail?.signal_id) error.signalId = String(detail.signal_id)
-        throw error
+        throw buildSignalRequestError(responseBody, resp.status, resp.headers)
       }
 
       const serverDoc = (responseBody?.payload?.signals_json || responseBody?.signals_json) as SignalsDoc
@@ -1818,6 +1857,7 @@ async function duplicateSignal(index: number) {
   try {
     await persistSignalList(list, '已复制关键信号')
   } catch (error) {
+    await focusSignalRequestError(error)
     ElMessage.error(error instanceof Error ? `复制失败：${error.message}` : '复制失败，请重试')
   } finally {
     signalSaveLoading.value = false
@@ -1833,6 +1873,7 @@ async function moveSignal(index: number, direction: -1 | 1) {
   try {
     await persistSignalList(list, '关键信号顺序已更新')
   } catch (error) {
+    await focusSignalRequestError(error)
     ElMessage.error(error instanceof Error ? `排序失败：${error.message}` : '排序失败，请重试')
   } finally {
     signalSaveLoading.value = false
@@ -1865,22 +1906,22 @@ async function saveSignalEdit() {
     const hasProduces = produces.some((item: any) => String(item?.name || '').trim())
     const hasMatch = Boolean(signalEditDraft.value.match)
     if (hasProduces === hasMatch) {
-      ElMessage.error('后端信号必须且只能选择“匹配模式”或“产出变量”之一')
+      ElMessage.error('执行结果处理配置冲突：请在“匹配模式”和“产出变量”中二选一，并删除另一种模式的配置')
       return
     }
     const matcherType = String(signalEditDraft.value.match?.type || '')
     if (hasMatch && ['keyword', 'regex', 'state'].includes(matcherType)
       && !String(signalEditDraft.value.match?.pattern || '').trim()) {
-      ElMessage.error('请填写用于判定命令结果的匹配内容')
+      ElMessage.error('第二步“判断”缺少匹配内容：请填写关键字、正则表达式或期望状态')
       return
     }
     if (hasMatch && ['threshold', 'delta', 'trend'].includes(matcherType)
       && signalEditDraft.value.match?.value === undefined) {
-      ElMessage.error('请填写数值判定的阈值')
+      ElMessage.error('第二步“判断”缺少数值阈值：请填写阈值后再保存')
       return
     }
     if (hasMatch && !signalEditDraft.value.match?.extract) {
-      ElMessage.error('匹配模式必须先完成第一步取值配置')
+      ElMessage.error('第一步“取值”尚未配置：请补全取值方式、行选择和结果数量后再保存')
       return
     }
     if (String(signalEditDraft.value.acquire?.args?.command || '').includes('|')) {
@@ -2682,7 +2723,7 @@ onMounted(() => {
 
     <!-- 过滤栏 -->
     <el-card class="filter-card" shadow="never">
-      <el-row :gutter="16" align="middle">
+      <el-row :gutter="12" align="middle" class="filter-row">
         <el-col :span="4">
           <el-input
             v-model="supportIdFilter"
@@ -2776,7 +2817,14 @@ onMounted(() => {
           </el-option>
         </el-select>
       </div>
-      <el-table :data="entries" row-key="id" style="width: 100%" size="small" @sort-change="handleSortChange">
+      <el-table
+        :data="entries"
+        row-key="id"
+        style="width: 100%"
+        size="small"
+        class="kbd-table"
+        @sort-change="handleSortChange"
+      >
         <!-- 案例 ID -->
         <el-table-column label="案例 ID" width="100" prop="support_id" sortable="custom">
           <template #default="{ row }">
@@ -2787,14 +2835,14 @@ onMounted(() => {
         </el-table-column>
 
         <!-- 标题 -->
-        <el-table-column label="标题" min-width="280">
+        <el-table-column label="标题" min-width="320">
           <template #default="{ row }">
             <span class="entry-title">{{ row.title }}</span>
           </template>
         </el-table-column>
 
         <!-- AI 分类 -->
-        <el-table-column label="AI 分类" width="200" prop="ai_category_id" sortable="custom">
+        <el-table-column label="AI 分类" width="220" prop="ai_category_id" sortable="custom" show-overflow-tooltip>
           <template #default="{ row }">
             <span class="category-tag">{{ row.ai_category_label || row.ai_category_id || '—' }}</span>
           </template>
@@ -3998,7 +4046,8 @@ onMounted(() => {
 
 <style scoped>
 .kbd-review {
-  padding: 20px;
+  min-width: 0;
+  padding: 16px;
 }
 
 /* 过滤栏搜索/重置按钮容器：flex 保持同行同高 */
@@ -4023,7 +4072,7 @@ onMounted(() => {
 }
 
 .page-header {
-  margin-bottom: 20px;
+  margin-bottom: 14px;
 }
 
 .page-title {
@@ -4036,20 +4085,44 @@ onMounted(() => {
   margin: 0;
   color: #666;
   font-size: 14px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .filter-card {
-  margin-bottom: 16px;
+  margin-bottom: 12px;
+}
+
+.filter-card :deep(.el-card__body) {
+  padding: 12px 14px;
+}
+
+.filter-row :deep(.el-col) {
+  min-width: 0;
+}
+
+.filter-row :deep(.el-input),
+.filter-row :deep(.el-select) {
+  width: 100%;
 }
 
 .total-info {
   text-align: right;
   color: #909399;
   font-size: 14px;
+  white-space: nowrap;
 }
 
 .category-nav {
-  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.category-nav :deep(.el-select) {
+  max-width: 100%;
 }
 
 .category-nav :deep(.el-select-dropdown__wrap) {
@@ -4058,6 +4131,30 @@ onMounted(() => {
 
 .table-card {
   min-height: 400px;
+}
+
+.table-card :deep(.el-card__body) {
+  padding: 12px 14px 10px;
+}
+
+.kbd-table :deep(.el-table__cell) {
+  padding: 6px 0;
+}
+
+.kbd-table :deep(.cell) {
+  min-width: 0;
+  padding: 0 8px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.kbd-table :deep(.el-table__header .cell) {
+  color: #606266;
+  font-weight: 600;
+}
+
+.kbd-table :deep(.el-tag) {
+  white-space: nowrap;
 }
 
 
@@ -4072,22 +4169,63 @@ onMounted(() => {
 }
 
 .entry-title {
+  display: block;
+  max-width: 100%;
   color: #303133;
-  line-height: 1.5;
+  line-height: 1.45;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .category-tag {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
   font-size: 12px;
   color: #909399;
   background: #f5f7fa;
   padding: 2px 6px;
   border-radius: 3px;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
 }
 
 .pagination-wrapper {
   display: flex;
   justify-content: flex-end;
-  margin-top: 16px;
+  margin-top: 12px;
+}
+
+@media (max-width: 1280px) {
+  .kbd-review {
+    padding: 12px;
+  }
+
+  .filter-card :deep(.el-card__body),
+  .table-card :deep(.el-card__body) {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .kbd-table :deep(.cell) {
+    padding-right: 6px;
+    padding-left: 6px;
+  }
+
+  .action-btn-group {
+    gap: 5px;
+  }
+}
+
+@media (max-width: 900px) {
+  .page-desc {
+    white-space: normal;
+  }
+
+  .filter-row :deep(.el-col) {
+    margin-bottom: 8px;
+  }
 }
 
 .section-block {

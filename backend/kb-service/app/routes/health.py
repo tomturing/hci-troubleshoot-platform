@@ -2,10 +2,13 @@
 KB Service — 健康检查路由
 """
 
+import asyncio
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/health", tags=["health"])
+_READINESS_DB_TIMEOUT_SECONDS = 2.0
 
 
 @router.get("")
@@ -40,8 +43,9 @@ async def health_ready(request: Request):
         try:
             from sqlalchemy import text
 
-            async with db_manager.async_session_factory() as session:
-                await session.execute(text("SELECT 1"))
+            async with asyncio.timeout(_READINESS_DB_TIMEOUT_SECONDS):
+                async with db_manager.async_session_factory() as session:
+                    await session.execute(text("SELECT 1"))
             checks["database"] = "ok"
         except Exception:
             checks["database"] = "unavailable"

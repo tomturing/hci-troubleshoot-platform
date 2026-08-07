@@ -54,6 +54,39 @@ def test_unannotated_signal_add_gets_conservative_reason_code():
     assert metadata["change_summary"]["reason_counts"] == {"missing_signal": 1}
 
 
+def test_category_and_vision_expert_corrections_become_learning_labels():
+    before = {
+        "category_id": None,
+        "ai_category_id": "vm-001",
+        "images_json": [{"seq": 0, "desc": "AI 误读"}],
+        "payload_schema_version": 1,
+    }
+    after = {
+        "category_id": "storage-002",
+        "ai_category_id": "vm-001",
+        "images_json": [{"seq": 0, "desc": "专家确认的截图文字"}],
+        "payload_schema_version": 1,
+    }
+
+    metadata = build_review_metadata(
+        parent_payload=before,
+        payload=after,
+        identity_status="unavailable",
+        review_state="working",
+    )
+
+    assert metadata["change_summary"]["reason_counts"] == {
+        "screenshot_misread": 1,
+        "wrong_category": 1,
+    }
+    labelled_paths = {
+        item["path"]: item["reason_code"]
+        for item in metadata["change_summary"]["changes"]
+    }
+    assert labelled_paths["/category_id"] == "wrong_category"
+    assert labelled_paths["/images_json/0/desc"] == "screenshot_misread"
+
+
 def test_rejects_uncontrolled_reason_code_and_unstable_target():
     try:
         normalize_change_annotations([{"signal_id": "sig_1", "reason_code": "因为我觉得不对"}])

@@ -36,6 +36,8 @@ data:
   LLM_ENABLE_THINKING: {{ .Values.kbService.enableThinking | default "false" | quote }}
   # Vision LLM 全局并发数（全局信号量上限）。设为 1 即串行执行，避免打爆 DashScope QPM/并发上限。
   VISION_GLOBAL_CONCURRENCY: {{ .Values.kbService.visionGlobalConcurrency | default "3" | quote }}
+  # VISION/CLASSIFY/EXTRACT 共用 Provider 的总并发舱壁；阶段并行时这是唯一总量边界。
+  LLM_GLOBAL_CONCURRENCY: {{ .Values.kbService.llmGlobalConcurrency | default .Values.kbService.visionGlobalConcurrency | default "3" | quote }}
   # 可观测性
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.otelEndpoint | quote }}
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
