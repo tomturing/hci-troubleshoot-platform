@@ -14,7 +14,7 @@ from kbd import runtime
 from kbd.pipeline import Stage, _display_width, _stage_banner
 from kbd.run import (
     _cli_options,
-    _cmd_audit_log_signals,
+    _cmd_review_signals,
     _cmd_cli,
     _cmd_extract_signals,
     _cmd_pipeline,
@@ -28,20 +28,25 @@ from kbd.run import (
 from kbd.terminal_layout import TERMINAL_LAYOUT_WIDTH
 
 
-def test_pipeline_stage_parser_includes_extract_and_audit():
-    assert _parse_stages("extract-signals,audit-log-signals") == [
+def test_pipeline_stage_parser_includes_extract_and_review():
+    assert _parse_stages("extract-signals,review-signals") == [
         Stage.EXTRACT_SIGNALS,
-        Stage.AUDIT_LOG_SIGNALS,
+        Stage.REVIEW_SIGNALS,
     ]
-    assert _parse_stages("5,6") == [Stage.EXTRACT_SIGNALS, Stage.AUDIT_LOG_SIGNALS]
+    assert _parse_stages("5,6") == [Stage.EXTRACT_SIGNALS, Stage.REVIEW_SIGNALS]
+
+
+def test_numeric_stage_parser_uses_classify_as_stage_three_and_vision_as_stage_four():
+    assert _parse_stages("3,4") == [Stage.CLASSIFY, Stage.VISION]
 
 
 def test_stage_banners_have_the_same_display_width_and_aligned_edges():
     banners = [
         _stage_banner(1, "数据抓取"),
         _stage_banner(2, "语义提取 + 原子入库"),
+        _stage_banner(3, "AI 分类 + Stage 4: 图片语义化"),
         _stage_banner(5, "关键信号分级抽取"),
-        _stage_banner(6, "qfk_log Proposal 只读契约审计"),
+        _stage_banner(6, "Shared Runtime 全量 Signal 审查"),
     ]
 
     assert len({_display_width(banner) for banner in banners}) == 1
@@ -51,7 +56,7 @@ def test_stage_banners_have_the_same_display_width_and_aligned_edges():
 
 def test_long_stage_banner_is_rendered_as_a_standalone_line(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
-    banner = _stage_banner(6, "qfk_log Proposal 只读契约审计")
+    banner = _stage_banner(6, "Shared Runtime 全量 Signal 审查")
     formatter = _ConsoleFormatter("%(levelname)s %(message)s")
     rendered = formatter.format(logging.makeLogRecord({"levelname": "INFO", "msg": banner}))
 
@@ -138,7 +143,7 @@ def test_pipeline_summary_table_has_consistent_visible_width(monkeypatch, capsys
             },
             "classify": {"done": 0, "failed": 0, "skipped": 0, "elapsed_s": 0.0},
             "extract": {"done": 0, "blocked_by_dependency": 4, "elapsed_s": 0.1},
-            "audit_log_signals": {"case_count": 0, "issue_counts": {}, "elapsed_s": 0.0},
+            "review_signals": {"case_count": 0, "issue_counts": {}, "elapsed_s": 0.0},
         },
     )
 
@@ -151,6 +156,21 @@ def test_pipeline_summary_table_has_consistent_visible_width(monkeypatch, capsys
     assert len({_display_width(line) for line in lines}) == 1
     assert _display_width(lines[0]) == TERMINAL_LAYOUT_WIDTH
     assert all(line.count("│") == 9 for line in lines if line.startswith("│"))
+
+
+def test_pipeline_summary_lists_classification_before_vision(monkeypatch, capsys):
+    monkeypatch.setenv("NO_COLOR", "1")
+    _print_pipeline_summary(
+        "20260808_073018",
+        {
+            "pipeline": {"success": True, "total_ids": 1, "completed_ids": 1},
+            "vision": {"done": 4, "failed": 0, "elapsed_s": 25.1},
+            "classify": {"done": 1, "failed": 0, "elapsed_s": 8.6},
+        },
+    )
+
+    output = capsys.readouterr().out
+    assert output.index("案例分类") < output.index("截图识别")
 
 
 @pytest.mark.asyncio
@@ -243,25 +263,27 @@ async def test_extract_signals_protects_existing_or_unclassified_proposals(monke
     assert "status = 'draft'" in pool.sql
     assert "category_id" in pool.sql and "ai_category_id" in pool.sql
     assert "signals_json IS NULL" in pool.sql
+    assert "'{}'::jsonb" in pool.sql
+    assert "jsonb_array_length" in pool.sql
     assert pool.closed is True
 
 
-def test_audit_log_signals_requires_exactly_one_source():
+def test_review_signals_requires_exactly_one_source():
     parser = build_parser()
-    args = parser.parse_args(["audit-log-signals", "--all", "--output", "report.json"])
+    args = parser.parse_args(["review-signals", "--all", "--output", "report.json"])
 
-    assert args.command == "audit-log-signals"
+    assert args.command == "review-signals"
     assert args.all is True
     assert args.output == "report.json"
 
     with pytest.raises(SystemExit):
-        parser.parse_args(["audit-log-signals"])
+        parser.parse_args(["review-signals"])
     with pytest.raises(SystemExit):
-        parser.parse_args(["audit-log-signals", "--all", "--stdin"])
+        parser.parse_args(["review-signals", "--all", "--stdin"])
 
 
 @pytest.mark.asyncio
-async def test_audit_log_signals_reads_file_and_writes_report(tmp_path):
+async def test_review_signals_reads_file_and_writes_report(tmp_path):
     source = tmp_path / "signals.json"
     output = tmp_path / "report.json"
     source.write_text(
@@ -285,18 +307,19 @@ async def test_audit_log_signals_reads_file_and_writes_report(tmp_path):
         encoding="utf-8",
     )
     args = build_parser().parse_args(
-        ["audit-log-signals", "--file", str(source), "--output", str(output)]
+        ["review-signals", "--file", str(source), "--output", str(output)]
     )
 
-    exit_code = await _cmd_audit_log_signals(args, "20260730_120000")
+    exit_code = await _cmd_review_signals(args, "20260730_120000")
 
     assert exit_code == 0
     report = json.loads(output.read_text(encoding="utf-8"))
-    assert report["case_status_counts"] == {"PASS_LOG_CONTRACT": 1}
+    assert report["review_engine"] == "shared_resolution_runtime"
+    assert report["case_count"] == 1
 
 
 @pytest.mark.asyncio
-async def test_audit_log_signals_fail_on_blocked_is_opt_in(tmp_path):
+async def test_review_signals_fail_on_blocked_is_opt_in(tmp_path):
     source = tmp_path / "blocked.json"
     source.write_text(
         json.dumps(
@@ -318,13 +341,13 @@ async def test_audit_log_signals_fail_on_blocked_is_opt_in(tmp_path):
         encoding="utf-8",
     )
     parser = build_parser()
-    normal = parser.parse_args(["audit-log-signals", "--file", str(source)])
+    normal = parser.parse_args(["review-signals", "--file", str(source)])
     strict = parser.parse_args(
-        ["audit-log-signals", "--file", str(source), "--fail-on-blocked"]
+        ["review-signals", "--file", str(source), "--fail-on-blocked"]
     )
 
-    assert await _cmd_audit_log_signals(normal, "20260730_120000") == 0
-    assert await _cmd_audit_log_signals(strict, "20260730_120001") == 1
+    assert await _cmd_review_signals(normal, "20260730_120000") == 0
+    assert await _cmd_review_signals(strict, "20260730_120001") == 1
 
 
 def test_repository_module_entrypoint_bootstraps_shared_contract_without_pythonpath(tmp_path):
@@ -360,7 +383,7 @@ def test_repository_module_entrypoint_bootstraps_shared_contract_without_pythonp
             sys.executable,
             "-m",
             "data-pipeline.kbd.run",
-            "audit-log-signals",
+            "review-signals",
             "--file",
             str(source),
         ],
@@ -372,7 +395,7 @@ def test_repository_module_entrypoint_bootstraps_shared_contract_without_pythonp
     )
 
     assert result.returncode == 0, result.stderr
-    assert '"PASS_LOG_CONTRACT": 1' in result.stdout
+    assert '"review_engine": "shared_resolution_runtime"' in result.stdout
 
 
 def test_shared_contract_preflight_only_blocks_commands_that_need_stage_six(monkeypatch, tmp_path):

@@ -31,6 +31,7 @@ from shared.models.tool_definition import ToolDefinitionORM
 from shared.observability.logger import get_logger
 from shared.observability.metrics import KBD_SIGNAL_VALIDATION_TOTAL
 from shared.observability.otel import get_current_trace_id
+from shared.resolution.review import SignalReviewFeature, review_signal_document
 from shared.schemas.acquirer_args import normalize_qfk_system_args, validate_acquire_args
 from shared.schemas.capability_descriptor import capability_descriptor_document, get_capability_descriptor
 from shared.schemas.kbd_signal_safety import validate_kbd_read_only_signals_json
@@ -1152,12 +1153,12 @@ async def get_kbd_revisions(request: Request, kbd_id: int) -> dict[str, Any]:
     }
 
 
-@kbd_router.post("/{kbd_id}/validate")
-async def validate_kbd_candidate(request: Request, kbd_id: int) -> dict[str, Any]:
-    """对当前专家工作内容执行无副作用静态 Validation。
+@kbd_router.post("/{kbd_id}/review-signals")
+async def review_kbd_signals(request: Request, kbd_id: int) -> dict[str, Any]:
+    """对当前专家工作内容执行无副作用统一 Signal Review。
 
-    该接口不创建 runtime revision、不切 active。专家可处理问题放入 ``issues``；
-    Capability 部署探测属于平台状态，只放入 ``platform_status``，不冒充专家待办。
+    最低门禁来自 Shared Resolution Runtime，专家可处理的特有问题追加到 ``issues``；现场探针
+    尚未完成的 needs_probe 放入 ``platform_status``，不伪装成内容错误。
     """
 
     _check_auth(request)
@@ -1186,6 +1187,11 @@ async def validate_kbd_candidate(request: Request, kbd_id: int) -> dict[str, Any
     # 放入 platform_status，避免把不可处理的工程状态伪装成专家审核告警。
     issues: list[dict[str, Any]] = []
     platform_status: list[dict[str, Any]] = []
+    # This field retains its historical meaning: proof that the deployed
+    # capability/handler is available.  It is deliberately independent from
+    # Shared Runtime's static ``verified`` status (compile-only resolvers can be
+    # verified without a live host probe).
+    runtime_capability_verified = True
     for field, label in (
         ("title", "标题"),
         ("problem_description", "问题描述"),
@@ -1204,6 +1210,29 @@ async def validate_kbd_candidate(request: Request, kbd_id: int) -> dict[str, Any
 
     signals_doc = _load_signals_json(kbd.signals_json)
     signals = signals_doc.get("signals") if isinstance(signals_doc, dict) else []
+    shared_review = review_signal_document(
+        signals_doc,
+        feature=SignalReviewFeature.EXPERT,
+    )
+    for review_issue in shared_review.issues:
+        item = {
+            "level": review_issue.level,
+            "code": review_issue.code,
+            "location": review_issue.field or "关键信号",
+            "message": review_issue.message,
+            "signal_id": review_issue.signal_id,
+            "source": review_issue.source,
+        }
+        if review_issue.level == "error":
+            issues.append(item)
+        else:
+            platform_status.append(
+                {
+                    **item,
+                    "expert_action_required": False,
+                    "blocks_publish": False,
+                }
+            )
     if not signals:
         issues.append(
             {
@@ -1241,6 +1270,7 @@ async def validate_kbd_candidate(request: Request, kbd_id: int) -> dict[str, Any
             used_tools.add(tool)
             descriptor = get_capability_descriptor(tool)
             if descriptor is None:
+                runtime_capability_verified = False
                 issues.append(
                     {
                         "level": "error",
@@ -1250,6 +1280,7 @@ async def validate_kbd_candidate(request: Request, kbd_id: int) -> dict[str, Any
                     }
                 )
             elif descriptor["runtime_status"] != "available":
+                runtime_capability_verified = False
                 platform_status.append(
                     {
                         "code": "CAPABILITY_RUNTIME_UNVERIFIED",
@@ -1307,7 +1338,9 @@ async def validate_kbd_candidate(request: Request, kbd_id: int) -> dict[str, Any
         "lock_version": kbd.lock_version,
         "status": "error" if error_count else "warning" if warning_count else "ok",
         "publishable": error_count == 0,
-        "runtime_verified": not platform_status,
+        "runtime_verified": runtime_capability_verified,
+        "runtime_verification_required": bool(signals),
+        "signal_review": shared_review.model_dump(mode="json"),
         "error_count": error_count,
         "warning_count": warning_count,
         "issues": issues,
@@ -1485,10 +1518,26 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
                 status_code=422,
                 detail=f"KBD 条目 {kbd_id} 缺少关键信号（signals_json 为空），请先调用 /extract-signals 抽取后再审核",
             )
+        # 统一最低门禁：发布前先经过 Agent 最终执行使用的 Shared Resolution
+        # Runtime。后续发布级 Schema、专家角色和消费者覆盖规则只做加严。
+        publish_review = review_signal_document(
+            _signals_doc,
+            feature=SignalReviewFeature.PUBLISH,
+        )
+        if publish_review.blocked:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "SIGNAL_REVIEW_BLOCKED",
+                    "message": "关键信号未通过 Shared Resolution Runtime 发布审查",
+                    "review": publish_review.model_dump(mode="json"),
+                },
+            )
         try:
             _signals_doc = _prepare_expert_publish_signals(_signals_doc)
         except jsonschema.ValidationError as exc:
             _raise_signal_validation_error(exc, _signals_doc.get("signals") or [])
+        _raw_signals = _signals_doc.get("signals", [])
         # 门 1.5：至少含 1 条消费者(backend)信号，否则 CDD 无法执行差异消除（§9）
         # v2 原生判定：acquire.tool 以 qfk 开头 或 provenance.category==backend
         _has_consumer = any(

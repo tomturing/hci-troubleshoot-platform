@@ -219,16 +219,16 @@ BMC_Event_Log, msg06, sfvt_backup, Vm
 
 ### 3.6 新契约对当前 126 条 Proposal 的只读审计结果
 
-使用 `data-pipeline/kbd/log_signal_audit.py` 的领域审计能力和唯一入口 `python -m kbd.run audit-log-signals`，对 hci-dev 中 126 条 `signals_json` 做只读审计。审计器直接复用共享 `acquirer_args` 和日志源 Catalog，不修改 Proposal；统一 CLI 可从数据库、JSON 文件或 stdin 读取。旧 `scripts/verify` 审计脚本已删除，避免双入口和规则漂移。
+使用 `data-pipeline/kbd/signal_review.py` 的全量 Signal Review 能力和唯一入口 `python -m kbd.run review-signals`，对 hci-dev 中 `signals_json` 做只读审查。审查器直接调用 Shared Resolution Runtime，不修改 Proposal；统一 CLI 可从数据库、JSON 文件或 stdin 读取。
 
 截至 2026-07-30 的结果为：
 
 | 案例状态 | KBD 数 | 精确含义 |
 |---|---:|---|
-| `PASS_LOG_CONTRACT` | 34 | 至少有一条活动 `qfk_log`，且当前日志活动信号通过 Schema/Catalog 契约；不代表语义正确或现场复现通过 |
-| `BLOCKED_ACTIVE_SIGNAL` | 10 | 活动 Proposal 中存在缺 file、无效路径、BMC 误路由或非法字段，发布前必须修复 |
-| `NEEDS_EXPERT_REVIEW` | 12 | 活动日志信号可构建，但仍存在 17 条被生产门禁拒绝的日志候选，需要判断是漏信号还是非本机来源 |
-| `NO_ACTIVE_LOG_SIGNAL` | 70 | 当前 Proposal 没有活动 `qfk_log`；不代表原始案例没有日志语义；qkv_dialog 不再被误计为日志阻断 |
+| `PASS_SIGNAL_REVIEW` | — | 全部活动 Signal 通过 Shared Resolution Runtime 静态审查；不代表语义正确或现场复现通过 |
+| `BLOCKED_SIGNAL_REVIEW` | — | 活动 Proposal 中存在无法编译/解析的 Signal，发布前必须修复 |
+| `NEEDS_SIGNAL_REVIEW` | — | 活动 Signal 可构建，但仍有 needs_probe 或被生产门禁拒绝的候选 |
+| `NO_ACTIVE_SIGNAL` | — | 当前 Proposal 没有活动 Signal；不代表原始案例没有信号语义 |
 
 34 条当前日志契约通过案例：
 
@@ -779,8 +779,8 @@ include_archives=true 但未完成 archive_precheck
 | 工具说明/示例投影 | `database/seeds/01_tool_definitions.sql`、`03_qkv_qfk_tools.sql` |
 | 专家编辑 | `frontend/admin/src/views/KbdReviewView.vue` |
 | 工具能力展示 | `frontend/admin/src/views/ToolManageView.vue` |
-| KBD 日志只读审计领域实现 | `data-pipeline/kbd/log_signal_audit.py` |
-| KBD 生产/审计统一 CLI | `PYTHONPATH=data-pipeline:backend uv run python -m kbd.run audit-log-signals` |
+| KBD 全量 Signal Review 实现 | `data-pipeline/kbd/signal_review.py` |
+| KBD 生产/审查统一 CLI | `PYTHONPATH=data-pipeline:backend uv run python -m kbd.run review-signals` |
 
 ## 15. 后续演进
 

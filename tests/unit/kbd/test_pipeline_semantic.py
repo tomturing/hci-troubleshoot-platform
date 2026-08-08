@@ -43,10 +43,16 @@ class TestPipelineImportable:
 
 
 class TestPipelineStageDag:
-    def test_audit_stage_expands_complete_production_chain(self):
+    def test_stage_numbers_match_operator_facing_semantics(self):
+        from kbd.pipeline import Stage
+
+        assert Stage.CLASSIFY == 3
+        assert Stage.VISION == 4
+
+    def test_review_stage_expands_complete_production_chain(self):
         from kbd.pipeline import Stage, resolve_stages
 
-        assert resolve_stages([Stage.AUDIT_LOG_SIGNALS]) == list(Stage)
+        assert resolve_stages([Stage.REVIEW_SIGNALS]) == list(Stage)
 
     @pytest.mark.asyncio
     async def test_import_api_failure_is_not_hidden_by_historical_db_row(
@@ -111,7 +117,7 @@ class TestPipelineStageDag:
         assert STAGE_DEPENDENCIES[Stage.CLASSIFY] == (Stage.IMPORT,)
         assert set(STAGE_DEPENDENCIES[Stage.EXTRACT_SIGNALS]) == {Stage.VISION, Stage.CLASSIFY}
         assert resolve_stages([Stage.EXTRACT_SIGNALS]) == [
-            Stage.FETCH, Stage.IMPORT, Stage.VISION, Stage.CLASSIFY, Stage.EXTRACT_SIGNALS,
+            Stage.FETCH, Stage.IMPORT, Stage.CLASSIFY, Stage.VISION, Stage.EXTRACT_SIGNALS,
         ]
 
 

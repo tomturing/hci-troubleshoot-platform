@@ -21,7 +21,7 @@ data-pipeline/kbd/importer.py — KBD 条目入库（API 调用版）
   - 已有非 draft 状态（published/archived/rejected）→ API 返回已存在信息
 
 调用方：
-  - pipeline.py Stage 3（import）
+  - pipeline.py Stage 2（import）
   - CLI: python -m kbd.run import --ids xxx
 """
 from __future__ import annotations

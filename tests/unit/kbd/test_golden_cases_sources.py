@@ -59,11 +59,22 @@ def test_available_source_integrity_and_conversion(case, monkeypatch):
         pytest.skip(f"本 checkout 未提供 {support_id} 原始缓存；严格门禁会拒绝")
 
     images = _image_set(case_dir)
-    assert _sha256(raw_path) == case["raw_sha256"]
-    assert len(images) == case["image_count"]
-    assert _image_set_sha256(images) == case["image_set_sha256"]
-    assert not (case_dir / "fetch.failed").exists()
-    assert not list(case_dir.glob("img_*.failed"))
+    integrity_errors: list[str] = []
+    if _sha256(raw_path) != case["raw_sha256"]:
+        integrity_errors.append("raw_sha256 不匹配")
+    if len(images) != case["image_count"]:
+        integrity_errors.append("image_count 不匹配")
+    if _image_set_sha256(images) != case["image_set_sha256"]:
+        integrity_errors.append("image_set_sha256 不匹配")
+    if (case_dir / "fetch.failed").exists():
+        integrity_errors.append("存在 fetch.failed")
+    if list(case_dir.glob("img_*.failed")):
+        integrity_errors.append("存在图片下载失败标记")
+    if integrity_errors:
+        message = f"{support_id} 本地运行缓存不是 manifest 金标准：{'、'.join(integrity_errors)}"
+        if os.environ.get("KBD_GOLDEN_STRICT") == "1":
+            pytest.fail(message)
+        pytest.skip(message)
 
     monkeypatch.setattr("kbd.converter.settings.KBD_CACHE_DIR", CACHE_ROOT)
     converted = convert_kbd_structured(support_id)
@@ -113,6 +124,21 @@ def test_strict_case_source_annotation_and_review_gate():
         for item in MANIFEST["cases"]
         if not (CACHE_ROOT / item["support_id"] / "raw.json").exists()
     ]
+    invalid_sources = []
+    for item in MANIFEST["cases"]:
+        case_dir = CACHE_ROOT / item["support_id"]
+        raw_path = case_dir / "raw.json"
+        if not raw_path.exists():
+            continue
+        images = _image_set(case_dir)
+        if (
+            _sha256(raw_path) != item["raw_sha256"]
+            or len(images) != item["image_count"]
+            or _image_set_sha256(images) != item["image_set_sha256"]
+            or (case_dir / "fetch.failed").exists()
+            or list(case_dir.glob("img_*.failed"))
+        ):
+            invalid_sources.append(item["support_id"])
     missing_gold = [
         item["support_id"]
         for item in MANIFEST["cases"]
@@ -130,6 +156,8 @@ def test_strict_case_source_annotation_and_review_gate():
     blockers = []
     if missing_sources:
         blockers.append(f"缺少真实 raw.json: {missing_sources}")
+    if invalid_sources:
+        blockers.append(f"本地缓存不匹配 manifest 金标准: {invalid_sources}")
     if missing_gold:
         blockers.append(f"缺少专家 Gold 标注: {missing_gold}")
     if unapproved_gold:

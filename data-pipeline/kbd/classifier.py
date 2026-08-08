@@ -133,13 +133,29 @@ async def classify_case(
     """
     # 只读取稳定主键；标题和问题描述由 kb-service 在生成与落库时读取同一权威记录。
     row = await pool.fetchrow(
-        """SELECT id FROM kbd_entry
-           WHERE support_id = $1 AND (ai_category_id IS NULL OR ai_category_id = '')""",
+        """SELECT id, ai_category_id FROM kbd_entry
+           WHERE support_id = $1 AND status = 'draft'""",
         case_id,
     )
     if not row:
-        logger.debug("案例 %s 不存在或已分类，跳过", case_id)
+        logger.debug("案例 %s 不存在，跳过", case_id)
         return {"category_id": None, "confidence": 0.0, "reason": "已分类或不存在", "status": "skipped"}
+
+    # 幂等运行时，已有分类的案例已经满足 Stage 3 的最终状态，计入 done。
+    # 这样批量日志反映案例完成情况，而不是只反映本轮实际调用 API 的数量。
+    try:
+        existing_category_id = row["ai_category_id"]
+    except (KeyError, IndexError):
+        # 兼容只返回 id 的旧测试桩/连接层；此时按未分类处理。
+        existing_category_id = None
+    if existing_category_id:
+        return {
+            "category_id": existing_category_id,
+            "confidence": 1.0,
+            "reason": "已有分类，跳过重复调用",
+            "status": "done",
+            "already_classified": True,
+        }
 
     try:
         result = await _call_classify_api(int(row["id"]), client)

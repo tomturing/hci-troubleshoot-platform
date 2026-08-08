@@ -57,8 +57,7 @@ def require_shared_contracts() -> None:
             "请从项目根目录运行，或使用包含 backend/shared 的完整 checkout。"
         )
     try:
-        importlib.import_module("shared.schemas.acquirer_args")
-        importlib.import_module("shared.schemas.log_source_catalog")
+        importlib.import_module("shared.resolution.review")
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "KBD 日志审计依赖的 Agent 共享契约不可用："

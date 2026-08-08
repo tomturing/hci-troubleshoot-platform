@@ -245,6 +245,13 @@ def _log_definitions() -> tuple[Any, ...]:
 class SystemResolver:
     resolver_id = "system"
 
+    # ``cat`` is intentionally not an aCLI catalog command: KBD uses it only for
+    # deterministic read-only configuration-file inspection and the existing
+    # qfk_system contract validates the target path separately.  Treating it as
+    # an unknown catalog path here would make the Shared Runtime stricter than
+    # the execution contract and reject otherwise valid signals.
+    _SPECIAL_READONLY_COMMANDS = frozenset({"cat"})
+
     def compile(self, intent: SignalIntent) -> ResolutionPlan:
         args = dict(intent.args)
         raw = str(args.get("command") or "")
@@ -263,7 +270,9 @@ class SystemResolver:
         except (TypeError, ValueError) as exc:
             return _blocked(intent, [_issue("SYSTEM_COMMAND_INVALID", str(exc), field="command")])
         args["argv"] = [*parts, *command_args]
-        known = command_path_known(parts)
+        known = command_path_known(parts) or (
+            len(parts) == 3 and parts[:2] == ["acli", "system"] and parts[2] in self._SPECIAL_READONLY_COMMANDS
+        )
         if not known:
             return _blocked(
                 intent,

@@ -45,7 +45,7 @@ ALL_STAGES = [
     "vision",
     "classify",
     "extract_signals",
-    "audit_log_signals",
+    "review_signals",
 ]
 
 # 状态到统计字段的映射

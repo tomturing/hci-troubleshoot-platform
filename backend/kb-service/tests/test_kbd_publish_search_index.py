@@ -123,3 +123,69 @@ async def test_approve_clears_stale_embedding_when_provider_fails():
     assert response.embedding_generated is False
     assert published_entry.working_revision_id is None
     write_session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_approve_blocks_before_indexing_when_shared_runtime_blocks_signal():
+    source_row = {
+        "id": 8,
+        "title": "命令不可执行",
+        "content_md": "## 问题描述\n命令不可执行",
+        "content_raw": "内容",
+        "problem_description": "命令不可执行",
+        "alert_info": "异常",
+        "root_cause": "命令不存在",
+        "status": "draft",
+        "published_at": None,
+        "embedding": None,
+        "signals_json": {
+            "schema_version": 2,
+            "signals": [
+                {
+                    "id": "unknown-command",
+                    "acquire": {
+                        "tool": "qfk_system",
+                        "args": {"command": "definitely_not_a_real_acli_command"},
+                    },
+                    "match": {
+                        "type": "exists",
+                        "expected": True,
+                        "extract": {
+                            "type": "text",
+                            "rows": {"mode": "all"},
+                            "cardinality": "all",
+                            "source": "stdout",
+                        },
+                    },
+                    "provenance": {"category": "backend"},
+                }
+            ],
+        },
+        "category_id": "vm-001",
+        "ai_category_id": None,
+        "lock_version": 1,
+    }
+    read_session = SimpleNamespace(execute=AsyncMock(return_value=_MappingResult(source_row)))
+    db = SimpleNamespace(async_session_factory=lambda: _SessionContext(read_session))
+    embedding = SimpleNamespace(embed_single=AsyncMock())
+
+    with (
+        patch.object(admin, "_check_auth"),
+        patch.object(admin, "_db_manager", db),
+        patch.object(admin, "_embedding_service", embedding),
+    ):
+        with pytest.raises(admin.HTTPException) as exc_info:
+            await admin.approve_kbd_entry(
+                request=MagicMock(),
+                kbd_id=8,
+                body=admin.KbdApproveRequest(reviewer_id=1, lock_version=1),
+            )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["code"] == "SIGNAL_REVIEW_BLOCKED"
+    assert any(
+        issue["code"] == "SYSTEM_COMMAND_UNKNOWN"
+        for issue in exc_info.value.detail["review"]["issues"]
+    )
+    embedding.embed_single.assert_not_awaited()
+    read_session.execute.assert_awaited_once()

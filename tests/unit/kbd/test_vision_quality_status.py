@@ -1,7 +1,8 @@
+import json
 from unittest.mock import AsyncMock
 
 import pytest
-from kbd.pipeline import _db_failed_vision_ids, _vision_item_status
+from kbd.pipeline import _db_failed_vision_ids, _db_vision_status, _vision_item_status
 
 
 def test_legacy_nonempty_desc_remains_done():
@@ -32,6 +33,39 @@ def test_success_evidence_is_done():
         "evidence": {"quality": {"status": "success", "needs_review": False}},
     }
     assert _vision_item_status(item) == "done"
+
+
+@pytest.mark.asyncio
+async def test_db_vision_status_decodes_asyncpg_jsonb_string():
+    """asyncpg 默认返回 JSON 字符串，不能把字符串字符误判为 legacy 图片项。"""
+    images = [
+        {
+            "seq": seq,
+            "desc": f"TYPE: 终端截图\nDESCRIPTION: image {seq}",
+            "evidence": {"quality": {"status": "success", "needs_review": False}},
+        }
+        for seq in range(4)
+    ]
+    pool = AsyncMock()
+    pool.fetchrow.return_value = {
+        "kbd_id": 127,
+        "images_json": json.dumps(images, ensure_ascii=False),
+        "img_count": 4,
+    }
+
+    assert await _db_vision_status(pool, "23821") == "done"
+
+
+@pytest.mark.asyncio
+async def test_db_vision_status_rejects_invalid_jsonb_string():
+    pool = AsyncMock()
+    pool.fetchrow.return_value = {
+        "kbd_id": 127,
+        "images_json": "not-json",
+        "img_count": 4,
+    }
+
+    assert await _db_vision_status(pool, "23821") == "failed"
 
 
 @pytest.mark.asyncio

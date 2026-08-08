@@ -7,7 +7,7 @@ POST /api/kb/classify
   - 构建 Prompt 让 LLM 选择最匹配的 top3
   - 调用 LLM API（OpenAI-compatible）
   - 低置信度（< 0.5）标记 needs_review=true
-  - 调用方：KBD 生产流水线 Stage 4（AI 分类建议）
+  - 调用方：KBD 生产流水线 Stage 3（AI 分类建议）
   - 请求参数：title + problem_desc
 
 """

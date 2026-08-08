@@ -56,7 +56,7 @@ async def test_revert_to_draft_deactivates_existing_runtime_pointer_in_same_tran
 
 
 @pytest.mark.asyncio
-async def test_candidate_validation_is_side_effect_free_and_separates_contract_from_runtime_proof():
+async def test_signal_review_is_side_effect_free_and_separates_contract_from_runtime_proof():
     session = AsyncMock()
     session.get.return_value = SimpleNamespace(
         id=9,
@@ -84,12 +84,14 @@ async def test_candidate_validation_is_side_effect_free_and_separates_contract_f
     db = _db_with_session(session)
 
     with patch.object(admin_route, "_check_auth"), patch.object(admin_route, "_db_manager", db):
-        body = await admin_route.validate_kbd_candidate(MagicMock(), 9)
+        body = await admin_route.review_kbd_signals(MagicMock(), 9)
 
     assert body["publishable"] is True
     assert body["runtime_verified"] is False
     assert body["warning_count"] == 0
     assert body["issues"] == []
+    assert body["signal_review"]["feature"] == "expert"
+    assert body["signal_review"]["status"] == "passed"
     assert body["platform_status"][0]["code"] == "CAPABILITY_RUNTIME_UNVERIFIED"
     assert body["platform_status"][0]["expert_action_required"] is False
     session.commit.assert_not_awaited()

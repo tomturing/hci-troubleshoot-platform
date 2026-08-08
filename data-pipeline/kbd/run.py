@@ -15,7 +15,7 @@ data-pipeline/kbd/run.py — KBD 知识生产管道 CLI 入口（API 调用版�
   uv run python -m data-pipeline.kbd.run vision --ids 34977,36179
   uv run python -m data-pipeline.kbd.run classify --excel
   uv run python -m data-pipeline.kbd.run extract-signals --excel
-  uv run python -m data-pipeline.kbd.run audit-log-signals --all
+  uv run python -m data-pipeline.kbd.run review-signals --all
 
   # 从上次中断处继续（断点续传）
   uv run python -m data-pipeline.kbd.run pipeline --excel --resume
@@ -50,7 +50,7 @@ import httpx
 from .config import settings
 from .fetcher import read_ids_from_excel
 from .observability import install_trace_logging, new_trace_id, set_trace_id
-from .pipeline import Stage, run_from_excel
+from .pipeline import EMPTY_SIGNALS_JSON_PREDICATE, Stage, run_from_excel
 from .runtime import require_shared_contracts
 from .terminal_layout import SUMMARY_COLUMN_WIDTHS, TERMINAL_LAYOUT_WIDTH
 
@@ -251,17 +251,14 @@ def _parse_stages(stages_str: str | None) -> list[Stage]:
         "import": Stage.IMPORT,
         "vision": Stage.VISION,
         "classify": Stage.CLASSIFY,
-        "extract": Stage.EXTRACT_SIGNALS,
         "extract-signals": Stage.EXTRACT_SIGNALS,
-        "audit": Stage.AUDIT_LOG_SIGNALS,
-        "audit-signals": Stage.AUDIT_LOG_SIGNALS,
-        "audit-log-signals": Stage.AUDIT_LOG_SIGNALS,
+        "review-signals": Stage.REVIEW_SIGNALS,
         "1": Stage.FETCH,
         "2": Stage.IMPORT,
-        "3": Stage.VISION,
-        "4": Stage.CLASSIFY,
+        "3": Stage.CLASSIFY,
+        "4": Stage.VISION,
         "5": Stage.EXTRACT_SIGNALS,
-        "6": Stage.AUDIT_LOG_SIGNALS,
+        "6": Stage.REVIEW_SIGNALS,
     }
     result = []
     for s in stages_str.split(","):
@@ -269,7 +266,7 @@ def _parse_stages(stages_str: str | None) -> list[Stage]:
         if s not in stage_map:
             print(
                 f"未知 stage: {s}，合法值："
-                "fetch,import,vision,classify,extract-signals,audit-log-signals"
+                "fetch,import,vision,classify,extract-signals,review-signals"
             )
             sys.exit(1)
         result.append(stage_map[s])
@@ -357,10 +354,10 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
     stage_rows = (
         ("fetch", "数据抓取"),
         ("import", "语义导入"),
-        ("vision", "截图识别"),
         ("classify", "案例分类"),
+        ("vision", "截图识别"),
         ("extract", "关键信号抽取"),
-        ("audit_log_signals", "日志信号审计"),
+        ("review_signals", "统一信号审查"),
     )
     headers = ("阶段", "状态", "完成", "失败", "跳过", "需复核", "前置阻断", "耗时")
     aligns = ("left", "left", "right", "right", "right", "right", "right", "right")
@@ -373,19 +370,19 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
             done = sum(int(item.get(key, 0) or 0) for key in ("created", "overridden"))
             skipped = int(item.get("skipped", 0) or 0)
             failed = int(item.get("error", item.get("failed", 0)) or 0)
-        elif stage_name == "audit_log_signals":
+        elif stage_name == "review_signals":
             done = int(item.get("case_count", 0) or 0)
             skipped = 0
-            failed = int(item.get("issue_counts", {}).get("BLOCKED_ACTIVE_SIGNAL", 0) or 0)
+            failed = int(item.get("case_status_counts", {}).get("BLOCKED_SIGNAL_REVIEW", 0) or 0)
         else:
             done = int(item.get("done", 0) or 0)
             failed = int(item.get("failed", 0) or 0)
             skipped = int(item.get("skipped", 0) or 0)
-        audit_issues = 0
+        review_issues = 0
         needs_review = int(item.get("needs_review", item.get("low_confidence", 0)) or 0)
-        if stage_name == "audit_log_signals":
-            needs_review = int(item.get("case_status_counts", {}).get("NEEDS_EXPERT_REVIEW", 0) or 0)
-            audit_issues = sum(int(value or 0) for value in item.get("issue_counts", {}).values())
+        if stage_name == "review_signals":
+            needs_review = int(item.get("case_status_counts", {}).get("NEEDS_SIGNAL_REVIEW", 0) or 0)
+            review_issues = sum(int(value or 0) for value in item.get("issue_counts", {}).values())
         if stage_name == "vision":
             needs_review = int(item.get("case_status_counts", {}).get("needs_review", needs_review) or 0)
         blocked = int(item.get("blocked_by_dependency", 0) or 0)
@@ -394,7 +391,7 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
         if failed or blocked:
             status = "失败/阻断"
             status_color = "red"
-        elif needs_review or audit_issues:
+        elif needs_review or review_issues:
             status = "需复核"
             status_color = "yellow"
         else:
@@ -457,9 +454,9 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
     if stats.get("vision", {}).get("case_status_counts"):
         counts = stats["vision"]["case_status_counts"]
         print("\nVision KBD 状态：" + " / ".join(f"{key}={value}" for key, value in counts.items()))
-    if stats.get("audit_log_signals", {}).get("issue_counts"):
-        issues = stats["audit_log_signals"]["issue_counts"]
-        print("日志审计问题：" + " / ".join(f"{key}={value}" for key, value in issues.items()))
+    if stats.get("review_signals", {}).get("issue_counts"):
+        issues = stats["review_signals"]["issue_counts"]
+        print("统一信号审查问题：" + " / ".join(f"{key}={value}" for key, value in issues.items()))
     if not success:
         print(_paint("建议：技术失败项使用 --resume 或 --failed-only 重试；前置阻断项必须先修复上游阶段。", "yellow", enabled=enabled))
     print(f"排障日志   : {settings.KBD_LOGS_DIR / f'kbd_{run_id}.jsonl'}")
@@ -635,7 +632,7 @@ async def _cmd_fetch(args: argparse.Namespace, run_id: str) -> None:
 
 
 async def _cmd_vision(args: argparse.Namespace, run_id: str) -> None:
-    """Stage 3：图片语义化"""
+    """Stage 4：图片语义化"""
     import asyncpg
 
     from .image_proc import process_images_batch
@@ -721,7 +718,7 @@ async def _cmd_import(args: argparse.Namespace, run_id: str) -> int:
 
 
 async def _cmd_classify(args: argparse.Namespace, run_id: str) -> None:
-    """Stage 4：AI 分类（通过 API）"""
+    """Stage 3：AI 分类（通过 API）"""
     import asyncpg
 
     from .classifier import classify_batch
@@ -735,12 +732,12 @@ async def _cmd_classify(args: argparse.Namespace, run_id: str) -> None:
 
     pool = await asyncpg.create_pool(dsn=settings.asyncpg_database_url)
     try:
-        # 只处理已入库且未分类的
+        # 读取全部 draft 案例；分类器会把已有分类按幂等 done 计数，
+        # 只有未分类案例才实际调用 API。
         classify_ids = await pool.fetch(
             """SELECT support_id FROM kbd_entry
                WHERE support_id = ANY($1)
-                 AND status = 'draft'
-                 AND (ai_category_id IS NULL OR ai_category_id = '')""",
+                 AND status = 'draft'""",
             kbd_ids,
         )
         classify_kbd_ids = [r["support_id"] for r in classify_ids]
@@ -772,12 +769,12 @@ async def _cmd_extract_signals(args: argparse.Namespace, run_id: str) -> None:
     pool = await asyncpg.create_pool(dsn=settings.asyncpg_database_url)
     try:
         rows = await pool.fetch(
-            """SELECT support_id
+            f"""SELECT support_id
                FROM kbd_entry
                WHERE support_id = ANY($1)
                  AND status = 'draft'
                  AND (COALESCE(category_id, '') <> '' OR COALESCE(ai_category_id, '') <> '')
-                 AND (signals_json IS NULL OR signals_json = '[]'::jsonb)
+                 AND {EMPTY_SIGNALS_JSON_PREDICATE}
                ORDER BY support_id""",
             kbd_ids,
         )
@@ -801,15 +798,15 @@ async def _cmd_extract_signals(args: argparse.Namespace, run_id: str) -> None:
         await pool.close()
 
 
-async def _cmd_audit_log_signals(args: argparse.Namespace, run_id: str) -> int:
-    """Stage 6：从文件、stdin 或数据库只读审计 qfk_log Proposal。"""
+async def _cmd_review_signals(args: argparse.Namespace, run_id: str) -> int:
+    """Stage 6：从文件、stdin 或数据库审查全部 Signal。"""
 
-    from .log_signal_audit import (
-        audit_rows,
+    from .signal_review import (
         dump_report,
         load_rows,
         load_rows_file,
         load_rows_from_db,
+        review_rows,
     )
 
     if args.stdin:
@@ -830,9 +827,9 @@ async def _cmd_audit_log_signals(args: argparse.Namespace, run_id: str) -> int:
             await pool.close()
         source = "database:all" if args.all else "database:selected"
 
-    report = audit_rows(rows)
+    report = review_rows(rows)
     logger.info(
-        "Audit-log-signals 完成 source=%s cases=%d status=%s issues=%s run_id=%s",
+        "Review-signals 完成 source=%s cases=%d status=%s issues=%s run_id=%s",
         source,
         report["case_count"],
         report["case_status_counts"],
@@ -862,7 +859,7 @@ async def _cmd_audit_log_signals(args: argparse.Namespace, run_id: str) -> int:
     else:
         dump_report(report, sys.stdout)
 
-    blocked = int(report["case_status_counts"].get("BLOCKED_ACTIVE_SIGNAL", 0))
+    blocked = int(report["case_status_counts"].get("BLOCKED_SIGNAL_REVIEW", 0))
     return 1 if args.fail_on_blocked and blocked else 0
 
 
@@ -932,7 +929,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--stages",
         help=(
             "指定 stages（逗号分隔）：fetch,import,vision,classify,"
-            "extract-signals,audit-log-signals"
+            "extract-signals,review-signals"
         ),
     )
     # 抓取阶段参数
@@ -983,8 +980,8 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_text in [
         ("fetch",    "Stage 1：抓取 API + 下载图片"),
         ("import",   "Stage 2：语义转换 + 原子入库"),
-        ("vision",   "Stage 3：图片语义化（Vision LLM）"),
-        ("classify", "Stage 4：AI 分类（调用 kb-service API）"),
+        ("classify", "Stage 3：AI 分类（调用 kb-service API）"),
+        ("vision",   "Stage 4：图片语义化（Vision LLM）"),
     ]:
         p_sub = sub.add_parser(name, help=help_text)
         _add_common(p_sub)
@@ -1038,30 +1035,28 @@ def build_parser() -> argparse.ArgumentParser:
     # Stage 5：独立关键信号抽取。别名 extract 兼容既有 stage 口径。
     p_extract = sub.add_parser(
         "extract-signals",
-        aliases=["extract"],
         help="Stage 5：抽取关键信号 Proposal",
     )
     _add_common(p_extract)
 
-    # Stage 6：日志 Proposal 契约审计。输入源互斥，默认不因 Proposal 问题返回非零。
-    p_audit = sub.add_parser(
-        "audit-log-signals",
-        aliases=["audit-signals", "audit"],
-        help="Stage 6：只读审计 qfk_log Proposal 与运行时契约",
+    # Stage 6：Shared Resolution Runtime 全量 Signal 审查。
+    p_signal_review = sub.add_parser(
+        "review-signals",
+        help="Stage 6：基于 Shared Resolution Runtime 审查全部 Signal",
     )
-    audit_source = p_audit.add_mutually_exclusive_group(required=True)
-    audit_source.add_argument("--stdin", action="store_true", help="从标准输入读取 JSON 数组")
-    audit_source.add_argument("--file", help="从 UTF-8 JSON 文件读取数组")
-    audit_source.add_argument("--all", action="store_true", help="只读审计数据库全部 KBD")
-    audit_source.add_argument("--excel", action="store_true", help="按 Excel 中的案例 ID 查询数据库")
-    audit_source.add_argument("--ids", help="按逗号分隔的 support_id 查询数据库")
-    audit_source.add_argument("--id-file", help="按每行一个 support_id 的文件查询数据库")
-    p_audit.add_argument("--limit", type=int, default=None, help="限制 Excel/ID 文件输入数量")
-    p_audit.add_argument("--output", help="将完整 JSON 报告写入文件；终端仅打印摘要")
-    p_audit.add_argument(
+    review_source = p_signal_review.add_mutually_exclusive_group(required=True)
+    review_source.add_argument("--stdin", action="store_true", help="从标准输入读取 JSON 数组")
+    review_source.add_argument("--file", help="从 UTF-8 JSON 文件读取数组")
+    review_source.add_argument("--all", action="store_true", help="只读审查数据库全部 KBD")
+    review_source.add_argument("--excel", action="store_true", help="按 Excel 中的案例 ID 查询数据库")
+    review_source.add_argument("--ids", help="按逗号分隔的 support_id 查询数据库")
+    review_source.add_argument("--id-file", help="按每行一个 support_id 的文件查询数据库")
+    p_signal_review.add_argument("--limit", type=int, default=None, help="限制 Excel/ID 文件输入数量")
+    p_signal_review.add_argument("--output", help="将完整 JSON 报告写入文件；终端仅打印摘要")
+    p_signal_review.add_argument(
         "--fail-on-blocked",
         action="store_true",
-        help="存在 BLOCKED_ACTIVE_SIGNAL 时返回 1，供 CI 门禁使用",
+        help="存在 BLOCKED_SIGNAL_REVIEW 时返回 1，供 CI 门禁使用",
     )
 
     # review-list 子命令
@@ -1080,9 +1075,9 @@ def main() -> None:
 
     # 完整 pipeline 默认包含 Stage 6；在任何 fetch/import/LLM 调用前确认其
     # 唯一外部源码依赖可用，避免跑完前五阶段后才因 shared 导入失败。
-    requires_shared_contracts = args.command in {"audit-log-signals", "audit-signals", "audit", "cli"}
+    requires_shared_contracts = args.command in {"review-signals", "cli"}
     if args.command == "pipeline":
-        requires_shared_contracts = Stage.AUDIT_LOG_SIGNALS in _parse_stages(args.stages)
+        requires_shared_contracts = Stage.REVIEW_SIGNALS in _parse_stages(args.stages)
     if requires_shared_contracts:
         try:
             require_shared_contracts()
@@ -1097,10 +1092,7 @@ def main() -> None:
         "import":      _cmd_import,
         "classify":    _cmd_classify,
         "extract-signals": _cmd_extract_signals,
-        "extract":     _cmd_extract_signals,
-        "audit-log-signals": _cmd_audit_log_signals,
-        "audit-signals": _cmd_audit_log_signals,
-        "audit":       _cmd_audit_log_signals,
+        "review-signals": _cmd_review_signals,
         "review-list": _cmd_review_list,
         "config":      lambda a: (_cmd_config(a), None)[1],
     }

@@ -83,10 +83,17 @@ interface CapabilityDescriptor {
   args_schema: Record<string, any>
 }
 
-interface CandidateValidation {
+interface SignalReviewResponse {
   status: 'ok' | 'warning' | 'error'
   publishable: boolean
   runtime_verified: boolean
+  runtime_verification_required?: boolean
+  signal_review?: {
+    feature: string
+    status: 'passed' | 'needs_review' | 'blocked' | 'empty'
+    signal_count: number
+    runtime_status_counts: Record<string, number>
+  }
   error_count: number
   warning_count: number
   issues: Array<{
@@ -340,8 +347,8 @@ const imageSaveLoading = ref(false)
 const revisionState = ref<KbdRevisionState | null>(null)
 const revisionLoading = ref(false)
 const capabilityMap = ref<Record<string, CapabilityDescriptor>>({})
-const candidateValidation = ref<CandidateValidation | null>(null)
-const candidateValidationLoading = ref(false)
+const signalReview = ref<SignalReviewResponse | null>(null)
+const signalReviewLoading = ref(false)
 const focusedSignalId = ref<string | null>(null)
 const commandPreviews = ref<Record<string, CommandPreview | undefined>>({})
 const commandPreviewErrors = ref<Record<string, string | undefined>>({})
@@ -526,27 +533,27 @@ async function fetchRevisionState(kbdId: number) {
   }
 }
 
-async function validateCurrentCandidate(options: { silent?: boolean } = {}) {
+async function reviewCurrentSignals(options: { silent?: boolean } = {}) {
   if (!detailEntry.value) return
-  candidateValidationLoading.value = true
+  signalReviewLoading.value = true
   try {
-    const resp = await fetch(`/api/v1/kbd/${detailEntry.value.id}/validate`, {
+    const resp = await fetch(`/api/v1/kbd/${detailEntry.value.id}/review-signals`, {
       method: 'POST',
       headers: authHeader,
     })
     const body = await resp.json().catch(() => ({}))
     if (!resp.ok) throw new Error(typeof body?.detail === 'string' ? body.detail : `HTTP ${resp.status}`)
-    candidateValidation.value = body
+    signalReview.value = body
     if (!options.silent) {
-      if (body.status === 'ok') ElMessage.success('当前专家稿校验通过')
+      if (body.status === 'ok') ElMessage.success('当前专家稿信号审查通过')
       else if (body.status === 'warning') ElMessage.warning(`有 ${body.warning_count} 项内容需要专家确认`)
       else ElMessage.error(`发现 ${body.error_count} 个阻断问题，请按提示修复`)
     }
   } catch (error) {
-    candidateValidation.value = null
-    if (!options.silent) ElMessage.error(error instanceof Error ? error.message : '校验失败')
+    signalReview.value = null
+    if (!options.silent) ElMessage.error(error instanceof Error ? error.message : '信号审查失败')
   } finally {
-    candidateValidationLoading.value = false
+    signalReviewLoading.value = false
   }
 }
 
@@ -559,7 +566,7 @@ function signalLabel(signal: SignalV2, index: number): string {
   return `${sigTool(signal) || '未选择采集类型'} · ${instruction || `信号 ${index + 1}`}`
 }
 
-function validationIssueSignal(issue: CandidateValidation['issues'][number]): { signal: SignalV2; index: number } | null {
+function reviewIssueSignal(issue: SignalReviewResponse['issues'][number]): { signal: SignalV2; index: number } | null {
   const signalId = issue.action?.signal_id
   if (!signalId) return null
   const index = signalList.value.findIndex((signal) => String(signal.id) === String(signalId))
@@ -618,7 +625,7 @@ function buildSignalRequestError(responseBody: any, statusCode: number, headers?
   return error
 }
 
-async function handleValidationAction(issue: CandidateValidation['issues'][number]) {
+async function handleReviewAction(issue: SignalReviewResponse['issues'][number]) {
   const signalId = issue.action?.signal_id
   if (!signalId) {
     if (issue.action?.type === 'edit_signal_role' && signalList.value.length) {
@@ -894,7 +901,7 @@ async function handleReextractSignals(entry: KbdEntry) {
       // 使用重抽前的 history[0] Diff 误报为专家修改。
       await Promise.all([
         fetchRevisionState(entry.id),
-        validateCurrentCandidate({ silent: true }),
+        reviewCurrentSignals({ silent: true }),
       ])
     }
   } catch (err: any) {
@@ -916,7 +923,7 @@ async function openDetailDialog(entry: KbdEntry) {
   clearLocalSignals()
   cancelEditSignal()
   revisionState.value = null
-  candidateValidation.value = null
+  signalReview.value = null
   focusedSignalId.value = null
   commandPreviews.value = {}
   commandPreviewErrors.value = {}
@@ -935,7 +942,7 @@ async function openDetailDialog(entry: KbdEntry) {
       parsedSegments.value = parseContentMd(fresh.content_md || '')
       parsedImagesJson.value = parseImagesJson(fresh.images_json || [])
       associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
-      void validateCurrentCandidate({ silent: true })
+      void reviewCurrentSignals({ silent: true })
       return
     }
   } catch {
@@ -948,7 +955,7 @@ async function openDetailDialog(entry: KbdEntry) {
   parsedSegments.value = parseContentMd(entry.content_md || '')
   parsedImagesJson.value = parseImagesJson(entry.images_json || [])
   associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
-  void validateCurrentCandidate({ silent: true })
+  void reviewCurrentSignals({ silent: true })
 }
 
 async function refreshOpenedDetail(): Promise<void> {
@@ -963,7 +970,7 @@ async function refreshOpenedDetail(): Promise<void> {
   parsedImagesJson.value = parseImagesJson(fresh.images_json || [])
   associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
   await fetchRevisionState(fresh.id)
-  await validateCurrentCandidate({ silent: true })
+  await reviewCurrentSignals({ silent: true })
 }
 
 async function createMaintenanceWorking() {
@@ -1009,8 +1016,8 @@ async function publishMaintenanceWorking() {
   if (!detailEntry.value) return
   if (!(await ensureReviewerIdentity())) return
   try {
-    await validateCurrentCandidate()
-    if (!candidateValidation.value?.publishable) return
+    await reviewCurrentSignals()
+    if (!signalReview.value?.publishable) return
     await ElMessageBox.confirm(
       '确认发布当前维护工作稿？发布成功后 Agent 将原子切换到新版本；失败时继续使用旧版本。',
       '发布维护版',
@@ -1831,7 +1838,7 @@ async function submitDeleteSignal() {
       const entryIndex = entries.value.findIndex((entry) => entry.id === detailEntry.value!.id)
       if (entryIndex !== -1) entries.value[entryIndex].signals_json = serverDoc
       void fetchRevisionState(detailEntry.value.id)
-      await validateCurrentCandidate({ silent: true })
+      await reviewCurrentSignals({ silent: true })
       ElMessage.success('关键信号已删除')
     }
     editingSignalIndex.value = null
@@ -2479,7 +2486,7 @@ async function saveInlineEdit() {
     detailEntry.value.content_md = responseBody.payload?.content_md ?? newContent
     detailEntry.value.lock_version = responseBody?.lock_version ?? detailEntry.value.lock_version
     void fetchRevisionState(detailEntry.value.id)
-    void validateCurrentCandidate({ silent: true })
+    void reviewCurrentSignals({ silent: true })
     const idx = entries.value.findIndex((e) => e.id === detailEntry.value!.id)
     if (idx !== -1) entries.value[idx].content_md = newContent
     // 重新解析内容预览
@@ -2689,7 +2696,7 @@ async function saveImageEdit() {
     associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
     cancelEditImage()
     void fetchRevisionState(detailEntry.value.id)
-    void validateCurrentCandidate({ silent: true })
+    void reviewCurrentSignals({ silent: true })
     ElMessage.success('截图 Evidence 已按专家确认保存；既有关键信号已标记为过期，请重新抽取并复核')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '截图修订保存失败')
@@ -3033,8 +3040,8 @@ onMounted(() => {
               size="small"
               type="primary"
               plain
-              :loading="candidateValidationLoading"
-              @click="validateCurrentCandidate()"
+              :loading="signalReviewLoading"
+              @click="reviewCurrentSignals()"
             >检查当前内容</el-button>
           </div>
           <el-alert
@@ -3077,34 +3084,34 @@ onMounted(() => {
               当前专家稿相对 AI Proposal 修改 {{ expertSignalEditSummary.changed_signal_count }} 条关键信号。
             </template>
           </div>
-          <div v-if="candidateValidation" class="expert-validation-panel" :class="`is-${candidateValidation.status}`">
+          <div v-if="signalReview" class="expert-validation-panel" :class="`is-${signalReview.status}`">
             <div class="validation-summary">
-              <span class="validation-icon">{{ candidateValidation.status === 'error' ? '✕' : candidateValidation.status === 'warning' ? '!' : '✓' }}</span>
+              <span class="validation-icon">{{ signalReview.status === 'error' ? '✕' : signalReview.status === 'warning' ? '!' : '✓' }}</span>
               <div>
-                <strong>{{ candidateValidation.status === 'ok' ? '发布前静态检查已通过' : `有 ${candidateValidation.issues.length} 项需要专家处理` }}</strong>
+                <strong>{{ signalReview.status === 'ok' ? '发布前统一信号审查已通过' : `有 ${signalReview.issues.length} 项需要专家处理` }}</strong>
                 <div class="section-hint">这里检查内容与参数契约，只显示可通过编辑当前 KBD 解决的问题；真实现场执行验证仍由 Agent 测试链路负责，平台部署状态不会混入专家待办。</div>
               </div>
             </div>
-            <div v-for="issue in candidateValidation.issues" :key="`${issue.code}-${issue.location}`" class="validation-issue">
+            <div v-for="issue in signalReview.issues" :key="`${issue.code}-${issue.location}`" class="validation-issue">
               <div class="validation-issue-content">
                 <strong>{{ issue.message }}</strong>
                 <el-button
-                  v-if="validationIssueSignal(issue)"
+                  v-if="reviewIssueSignal(issue)"
                   class="validation-signal-link"
                   type="primary"
                   text
                   size="small"
-                  @click="handleValidationAction(issue)"
+                  @click="handleReviewAction(issue)"
                 >
-                  问题关键信号：{{ signalLabel(validationIssueSignal(issue)!.signal, validationIssueSignal(issue)!.index) }}（{{ validationIssueSignal(issue)!.signal.id }}）
+                  问题关键信号：{{ signalLabel(reviewIssueSignal(issue)!.signal, reviewIssueSignal(issue)!.index) }}（{{ reviewIssueSignal(issue)!.signal.id }}）
                 </el-button>
                 <code>{{ issue.location }}</code>
               </div>
               <el-button
-                v-if="validationIssueSignal(issue) || issue.action?.type === 'edit_signal_role'"
+                v-if="reviewIssueSignal(issue) || issue.action?.type === 'edit_signal_role'"
                 type="primary"
                 size="small"
-                @click="handleValidationAction(issue)"
+                @click="handleReviewAction(issue)"
               >定位并编辑</el-button>
             </div>
           </div>

@@ -32,3 +32,18 @@ async def test_pipeline_classification_calls_server_persistence_and_never_update
         "status": "done",
         "needs_review": False,
     }
+
+
+@pytest.mark.asyncio
+async def test_existing_classification_is_counted_as_done_without_api_call():
+    pool = MagicMock()
+    pool.fetchrow = AsyncMock(return_value={"id": 42, "ai_category_id": "vm-001"})
+    client = MagicMock()
+
+    with patch.object(classifier, "_call_classify_api", AsyncMock()) as call:
+        result = await classifier.classify_case("27123", pool, client)
+
+    call.assert_not_awaited()
+    assert result["status"] == "done"
+    assert result["category_id"] == "vm-001"
+    assert result["already_classified"] is True

@@ -412,11 +412,11 @@ async def kbd_revisions_proxy(kbd_id: int, request: Request):
     return _kbd_json_response(response)
 
 
-@kbd_router.post("/{kbd_id}/validate")
-async def kbd_validate_proxy(kbd_id: int, request: Request):
-    """代理无副作用的 KBD working candidate Validation。"""
+@kbd_router.post("/{kbd_id}/review-signals")
+async def kbd_review_signals_proxy(kbd_id: int, request: Request):
+    """代理无副作用的 KBD working candidate Signal Review。"""
     headers = _internal_auth_headers()
-    response = await _kbd_proxy("POST", f"/{kbd_id}/validate", headers=headers)
+    response = await _kbd_proxy("POST", f"/{kbd_id}/review-signals", headers=headers)
     return _kbd_json_response(response)
 
 

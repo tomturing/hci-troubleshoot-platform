@@ -16,6 +16,14 @@ from shared.resolution.models import (
     build_resolution_audit_snapshot,
 )
 from shared.resolution.probes import CapabilityProbe
+from shared.resolution.review import (
+    SignalReviewFeature,
+    SignalReviewIssue,
+    SignalReviewResult,
+    SignalReviewStatus,
+    SignalRuntimeReview,
+    review_signal_document,
+)
 from shared.resolution.runtime import SharedResolutionRuntime, get_resolution_runtime
 
 __all__ = [
@@ -32,4 +40,10 @@ __all__ = [
     "inspect_archive",
     "SharedResolutionRuntime",
     "get_resolution_runtime",
+    "SignalReviewFeature",
+    "SignalReviewIssue",
+    "SignalReviewResult",
+    "SignalReviewStatus",
+    "SignalRuntimeReview",
+    "review_signal_document",
 ]

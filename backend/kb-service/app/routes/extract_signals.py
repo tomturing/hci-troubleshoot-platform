@@ -30,6 +30,7 @@ from jsonschema import ValidationError
 from pydantic import BaseModel, Field
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
+from shared.resolution.review import SignalReviewFeature, review_signal_document
 from shared.schemas.acquirer_args import (
     DEFAULT_SIGNAL_TIMEOUT_SECONDS,
     SAFE_LOG_FILE_PATTERN,
@@ -1182,6 +1183,23 @@ def _validate_and_collect_signals(
                 reject(enriched, "run_failed", issue["message"])
                 logger.warning("extract_signals 信号被契约拒绝 source=%s reason=%s", source_id, exc.message)
                 continue
+            # 统一最低门禁：生产入口必须经过 Agent 最终执行所用的 Shared
+            # Resolution Runtime。KBD 特有的溯源、只读和证据规则在此之前执行，
+            # 但不得替代或弱化统一运行时审查。
+            runtime_review = review_signal_document(
+                {"schema_version": 2, "signals": [enriched]},
+                feature=SignalReviewFeature.LLM_GENERATION,
+            )
+            if runtime_review.blocked:
+                reason = "; ".join(issue.message for issue in runtime_review.issues)
+                reject(enriched, "run_failed", reason or "Shared Resolution Runtime 拒绝 Candidate")
+                logger.warning(
+                    "extract_signals 信号被统一运行时审查拒绝 source=%s signal_id=%s reason=%s",
+                    source_id,
+                    enriched.get("id"),
+                    reason,
+                )
+                continue
             validated.append(enriched)
         else:
             reject(s, "run_failed", str(err or "Candidate 未通过执行校验"))
@@ -1385,6 +1403,7 @@ async def _persist_signals(
     verification_contract: dict[str, Any] | None = None,
     generation_metadata: dict[str, Any] | None = None,
     rejected_candidates: list[dict[str, Any]] | None = None,
+    review_summary: dict[str, Any] | None = None,
 ) -> int | None:
     """通用写回：signals_json 列。table ∈ {'kbd_entry', 'sop_document'}。
 
@@ -1418,6 +1437,7 @@ async def _persist_signals(
                     "status": "passed",
                     "signals_count": len(signals),
                     "rejected_count": len(rejected_candidates or []),
+                    "signal_review": review_summary,
                 },
                 trace_id=get_current_trace_id(),
             )
@@ -1525,6 +1545,19 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
         prompt_template=prompt_template,
         model_id=LLM_MODEL,
     )
+    generation_review = review_signal_document(
+        _signals_to_v2(validated, verification_contract, generation_metadata, rejected),
+        feature=SignalReviewFeature.LLM_GENERATION,
+    )
+    if generation_review.blocked:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SIGNAL_REVIEW_BLOCKED",
+                "message": "LLM Proposal 未通过 Shared Resolution Runtime 审查",
+                "review": generation_review.model_dump(mode="json"),
+            },
+        )
 
     try:
         proposal_revision_id = await _persist_signals(
@@ -1535,6 +1568,7 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
             verification_contract,
             generation_metadata,
             rejected,
+            generation_review.model_dump(mode="json"),
         )
     except PublishedKbdMutationError as exc:
         raise HTTPException(
@@ -1558,6 +1592,7 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
         "verification_contract": verification_contract,
         "generation_metadata": generation_metadata,
         "proposal_revision_id": proposal_revision_id,
+        "signal_review": generation_review.model_dump(mode="json"),
     }
 
 
@@ -1663,6 +1698,7 @@ class ExtractSignalsResponse(BaseModel):
     signals: list[dict[str, Any]] = Field(default_factory=list)
     rejected: list[dict[str, Any]] = Field(default_factory=list)
     verification_contract: dict[str, Any] | None = None
+    signal_review: dict[str, Any] | None = None
 
 
 class SafePipelineRequest(BaseModel):

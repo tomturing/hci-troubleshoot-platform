@@ -1,6 +1,6 @@
 # KBD 知识生产管道使用手册
 
-本文是 Support 案例转 KBD Proposal 的权威操作手册。它以当前代码为准，覆盖环境准备、抓取、入库、截图识别、分类、关键信号抽取、日志信号审计、专家交接、重跑和故障处理。
+本文是 Support 案例转 KBD Proposal 的权威操作手册。它以当前代码为准，覆盖环境准备、抓取、入库、截图识别、分类、关键信号抽取、全量 Signal 审查、专家交接、重跑和故障处理。
 
 > 目录名在 Linux/macOS 上区分大小写，实际路径是 `data-pipeline/kbd/`（小写 `kbd`）。本文所有命令均从仓库根目录执行。
 
@@ -14,27 +14,27 @@ KBD Pipeline 的目标不是把人类案例原文简单搬进数据库，而是�
 2. 将案例转换为稳定的章节化知识，而不是依赖页面样式。
 3. 从截图中提取可观察事实，并把模型推断与事实分开。
 4. 生成分类和 `signals_json` Proposal，让 Agent 能获取、执行和判定案例中的隐性知识。
-5. 在专家复核前自动发现运行时不可执行的日志信号。
+5. 在专家复核和发布前，使用 Agent 最终执行所用的 Shared Resolution Runtime 审查全部 Signal。
 
 它不负责：
 
 - 代替专家确认故障语义和解决方案；
 - 自动批准或发布 KBD；
 - 在客户环境执行 qkv/qfk；
-- 用审计通过证明案例一定适用于客户现场。
+- 用 Signal Review 通过证明案例一定适用于客户现场。
 
 ## 2. 当前六阶段 DAG
 
 ```text
                     ┌→ vision ────────┐
-fetch → import ─────┤                  ├→ extract-signals → audit-log-signals
+fetch → import ─────┤                  ├→ extract-signals → review-signals
                     └→ classify ──────┘
 ```
 
 实际拓扑顺序是：
 
 ```text
-FETCH → IMPORT → {VISION ∥ CLASSIFY} → EXTRACT_SIGNALS → AUDIT_LOG_SIGNALS
+FETCH → IMPORT → {CLASSIFY ∥ VISION} → EXTRACT_SIGNALS → REVIEW_SIGNALS
 ```
 
 `VISION` 和 `CLASSIFY` 在 Import 成功后并行：两者没有技术依赖，分类使用结构化的
@@ -42,16 +42,16 @@ FETCH → IMPORT → {VISION ∥ CLASSIFY} → EXTRACT_SIGNALS → AUDIT_LOG_SIG
 信号抽取的重要事实源，所以 `EXTRACT_SIGNALS` 对 **Vision 成功** 和 **分类成功** 都是硬依赖；
 识图失败、部分识图或需复核的 KBD 不会降级进入 Signal 抽取，而会明确显示为前置阻断。
 
-`pipeline --stages` 会自动补齐前置依赖。例如 `--stages audit-log-signals` 会展开成完整六阶段链路；如果只想审计数据库现状且绝不触发前置生产，请使用独立的 `audit-log-signals` 子命令。
+`pipeline --stages` 会自动补齐前置依赖。例如 `--stages review-signals` 会展开成完整六阶段链路；如果只想审查数据库现状且绝不触发前置生产，请使用独立的 `review-signals` 子命令。
 
 | Stage | 输入 | 主要输出 | 是否写状态 |
 |---|---|---|---|
 | 1 `fetch` | support_id、Portal Cookie | `cache/{id}/raw.json`、原图 | 写本地缓存 |
 | 2 `import` | raw.json、原图 | `kbd_entry`、`kbd_image`，状态为 draft | 写 KB Service/DB |
-| 3 `vision` | `kbd_image`、图片上下文 | `images_json[].evidence/desc`、重建 `content_md` | 写 KB Service/DB |
-| 4 `classify` | IMPORT 写入的结构化案例文本 | `ai_category_*` | 写 DB/API |
+| 3 `classify` | IMPORT 写入的结构化案例文本 | `ai_category_*` | 写 DB/API |
+| 4 `vision` | `kbd_image`、图片上下文 | `images_json[].evidence/desc`、重建 `content_md` | 写 KB Service/DB |
 | 5 `extract-signals` | Vision 成功、已分类 KBD、截图 Evidence、文本 | Signal v2 `signals_json` Proposal | 写 KB Service/DB |
-| 6 `audit-log-signals` | `signals_json` | qfk_log 只读审计报告 | 不写数据库 |
+| 6 `review-signals` | `signals_json` | 全部 Signal 的 Shared Resolution Runtime 审查报告 | 不写数据库 |
 
 ## 3. 代码与数据责任
 
@@ -65,14 +65,14 @@ FETCH → IMPORT → {VISION ∥ CLASSIFY} → EXTRACT_SIGNALS → AUDIT_LOG_SIG
 | `image_proc.py` | 提交/轮询 Vision 任务，不在本地重复实现 LLM |
 | `classifier.py` | 批量分类调度 |
 | `extract_signals.py` | 提交/轮询关键信号抽取任务 |
-| `log_signal_audit.py` | qfk_log Schema/Catalog/parser/predicate 只读审计领域逻辑 |
+| `signal_review.py` | 全部 Signal 的 Shared Resolution Runtime 审查适配与报告 |
 | `config.py` | `.env` 和环境变量配置 |
 | `cache/` | 按 support_id 保存可追溯原始材料，不是权威发布数据 |
 | `logs/` | run 日志和 progress 可观测性文件，不是真相之源 |
 
 数据库是阶段完成状态的真相之源。`progress_*.json` 用于观察运行过程，不应被当作业务锁或发布状态。
 
-日志信号审计已完整迁入本目录：领域规则只能在 `log_signal_audit.py` 维护，CLI 只能通过 `kbd.run audit-log-signals` 调用。`scripts/verify` 不再保留同名脚本，避免形成双入口和规则漂移。
+全量 Signal 审查统一调用 `backend/shared/resolution/review.py`，其底层直接使用 PR704 Shared Resolution Runtime。Pipeline 只追加自己的 rejected-candidate 报告，不复制 Resolver 规则。CLI 唯一命令是 `kbd.run review-signals`，不保留旧入口。
 
 ## 4. 环境准备
 
@@ -106,7 +106,7 @@ cp data-pipeline/kbd/.env.example data-pipeline/kbd/.env
 |---|---|---|
 | `SANGFOR_COOKIE` | fetch | Support Portal 登录 Cookie；过期后需更新 |
 | `SANGFOR_API_BASE` | fetch | 默认 `https://support.sangfor.com.cn` |
-| `DATABASE_URL` | import 后各阶段、DB 审计 | asyncpg 可连接的 PostgreSQL DSN |
+| `DATABASE_URL` | import 后各阶段、DB Signal Review | asyncpg 可连接的 PostgreSQL DSN |
 | `KB_SERVICE_URL` | import、vision、extract | KB Service 地址 |
 | `INTERNAL_API_TOKEN` | import、vision、classify、extract | 与 KB Service 一致的内部 Token |
 | `EXCEL_FILE` | `--excel` | 第一列为案例 ID 的 Excel 路径 |
@@ -145,7 +145,7 @@ uv run python -m data-pipeline.kbd.run --help
 
 - 不要把完整 `pipeline` 的失败简单解释为所有图片识别失败；
 - 不要为了绕过阻断而直接批量执行 `extract-signals`；
-- 可以使用 `fetch`、`import`、`vision`、`classify` 和只读 `audit-log-signals` 做分阶段排障；
+- 可以使用 `fetch`、`import`、`vision`、`classify` 和只读 `review-signals` 做分阶段排障；
 - 修复后应重新执行“1 条冒烟 → 5 条验证 → 正常批量”的成功路径。
 
 ## 5. 快速开始
@@ -220,7 +220,7 @@ uv run python -m data-pipeline.kbd.run pipeline \
   --limit 10
 ```
 
-完整 Pipeline 默认包含 Stage 5 抽取和 Stage 6 日志契约审计。完成不等于发布；下一步是在 Admin UI 对原文、截图、分类、关键信号、排查步骤和解决方案做专家复核。
+完整 Pipeline 默认包含 Stage 5 抽取和 Stage 6 全量 Signal Review。完成不等于发布；下一步是在 Admin UI 对原文、截图、分类、关键信号、排查步骤和解决方案做专家复核。
 
 ### 5.1 推荐人工 SOP：一条案例到待审核 Proposal
 
@@ -248,9 +248,9 @@ ls -1t data-pipeline/kbd/logs/kbd_*.jsonl | head -1
 | Vision | KBD 状态 `done`，没有 `failed/needs_review` | 修复图片、Provider 或识别质量后重试 Vision |
 | Classify | 已存在 AI 分类或人工分类 | 核对分类失败原因，必要时在审核页补充 |
 | Extract | `done`，存在活动可执行 Signal | 查看 `needs_review` / `rejected_candidates`，不得把空结果当成功 |
-| Audit | 无 `BLOCKED_ACTIVE_SIGNAL` | 修复路径、parser、predicate 或明确 Capability Gap |
+| Signal Review | 无 `BLOCKED_SIGNAL_REVIEW` | 修复 Resolver、命令/日志 Catalog、参数或明确 Capability Gap |
 
-`PASS_LOG_CONTRACT` 仅表示活动日志 Signal 符合当前运行时契约，不表示故障语义、根因或解决方案已被专家确认。
+`PASS_SIGNAL_REVIEW` 仅表示活动 Signal 通过 Shared Resolution Runtime 的静态审查；`NEEDS_SIGNAL_REVIEW` 表示仍需现场 probe 或存在被拒候选。两者都不表示故障语义、根因或解决方案已被专家确认。
 
 ### 5.2 推荐批量 SOP：先小批量，再逐步放量
 
@@ -274,7 +274,7 @@ uv run python -m data-pipeline.kbd.run pipeline \
 各 Stage 的 failed、needs_review、blocked_by_dependency
 Vision 的图片数、KBD 状态数和耗时
 失败 KBD 的 support_id、job_id、error_code、是否可重试
-Stage 6 的 BLOCKED_ACTIVE_SIGNAL 与 NEEDS_EXPERT_REVIEW
+Stage 6 的 BLOCKED_SIGNAL_REVIEW 与 NEEDS_SIGNAL_REVIEW
 ```
 
 CI/自动化应使用 `--json`，并以 `pipeline.success`、`completed_ids`、`failed_steps` 和退出码判断是否通过；不得仅以命令是否发出 HTTP 请求判断成功。
@@ -289,7 +289,7 @@ CI/自动化应使用 `--json`，并以 `pipeline.success`、`completed_ids`、`
 | Vision 技术失败重试 | `vision --failed-only` | 先降低并发、确认 Provider/网络恢复，不做无界重试 |
 | 从中断处继续 | `pipeline --resume` | DB 是完成状态真相源，progress 文件不可手改 |
 | 重新抽取已有 Signal | 不使用默认批处理覆盖 | 应在 Admin 审核语境中比较 Proposal 与专家修改 |
-| 发布 KBD | Admin UI 专家审核后发布 | CLI 和日志审计都不能自动发布 |
+| 发布 KBD | Admin UI 专家审核后发布 | CLI 和 Signal Review 都不能自动发布 |
 
 ## 6. 输入选择
 
@@ -303,11 +303,11 @@ CI/自动化应使用 `--json`，并以 `pipeline.success`、`completed_ids`、`
 
 未提供来源时命令会明确报错，不会默认全量操作。
 
-`audit-log-signals` 额外支持：
+`review-signals` 额外支持：
 
 ```text
---all             数据库全量只读审计
---file FILE       审计已导出的 JSON 数组
+--all             数据库全量只读 Signal Review
+--file FILE       审查已导出的 JSON 数组
 --stdin           从标准输入读取 JSON 数组
 ```
 
@@ -372,7 +372,21 @@ uv run python -m data-pipeline.kbd.run import \
   --override-status all
 ```
 
-### 7.3 Stage 3：vision
+### 7.3 Stage 3：classify
+
+```bash
+uv run python -m data-pipeline.kbd.run classify --ids 37150
+```
+
+仅处理 draft 且尚无 AI 分类的条目，写入：
+
+- `ai_category_id`
+- `ai_category_conf`
+- `ai_category_reason`
+
+这些字段是 LLM Proposal。专家可在 Admin UI 修改最终分类；发布和 Agent 使用以审核后的稳定内容为准。
+
+### 7.4 Stage 4：vision
 
 ```bash
 uv run python -m data-pipeline.kbd.run vision --ids 37150
@@ -395,20 +409,6 @@ uv run python -m data-pipeline.kbd.run vision \
 ```
 
 `failed-only` 会重试空描述、缺 Evidence、`failed/partial/low_quality/needs_review` 等可重试状态。已成功抽取观察事实但仍需人判断的图片，不应被无限重跑来碰运气。
-
-### 7.4 Stage 4：classify
-
-```bash
-uv run python -m data-pipeline.kbd.run classify --ids 37150
-```
-
-仅处理 draft 且尚无 AI 分类的条目，写入：
-
-- `ai_category_id`
-- `ai_category_conf`
-- `ai_category_reason`
-
-这些字段是 LLM Proposal。专家可在 Admin UI 修改最终分类；发布和 Agent 使用以审核后的稳定内容为准。
 
 ### 7.5 Stage 5：extract-signals
 
@@ -469,47 +469,47 @@ uv run python -m data-pipeline.kbd.run pipeline \
 
 注意：Pipeline DAG 会自动补齐 Stage 1–4；独立 `extract-signals` 不补跑前置阶段，只处理数据库中已经准备好的条目。
 
-### 7.6 Stage 6：audit-log-signals
+### 7.6 Stage 6：review-signals
 
-这是日志关键信号的生产后质量检查，直接复用 Agent 运行时使用的：
+这是全部关键信号的生产后质量检查，直接复用 Agent 执行时使用的 Shared Resolution Runtime：
 
-- qfk_log acquire 参数 Schema；
-- HCI 日志源 Catalog；
-- 文件名/路径规范化；
-- parser 与 predicate 支持关系；
+- qfk/qkv acquire 参数 Schema；
+- 各领域 Resolver 和命令/日志 Catalog；
+- 文件名、路径和命令规范化；
+- parser、predicate 与只读能力约束；
 - producer 的有界返回约束。
 
 它不会写数据库、修复 Proposal 或发布 KBD。
 
-审计指定数据库案例：
+审查指定数据库案例：
 
 ```bash
-uv run python -m data-pipeline.kbd.run audit-log-signals \
+uv run python -m data-pipeline.kbd.run review-signals \
   --ids 37150,41818
 ```
 
-数据库全量审计并把完整报告归档：
+数据库全量审查并把完整报告归档：
 
 ```bash
-uv run python -m data-pipeline.kbd.run audit-log-signals \
+uv run python -m data-pipeline.kbd.run review-signals \
   --all \
-  --output /tmp/kbd-log-signal-audit.json
+  --output /tmp/kbd-signal-review.json
 ```
 
-审计文件输入：
+审查文件输入：
 
 ```bash
-uv run python -m data-pipeline.kbd.run audit-log-signals \
+uv run python -m data-pipeline.kbd.run review-signals \
   --file /tmp/kbd-signals.json \
-  --output /tmp/kbd-log-signal-audit.json
+  --output /tmp/kbd-signal-review.json
 ```
 
-审计 stdin：
+审查 stdin：
 
 ```bash
 kubectl exec -n hci-dev <postgres-pod> -- psql -U <user> -d <db> -Atc \
   "SELECT jsonb_agg(jsonb_build_object('support_id', support_id, 'signals_json', signals_json)) FROM kbd_entry" \
-  | uv run python -m data-pipeline.kbd.run audit-log-signals --stdin
+  | uv run python -m data-pipeline.kbd.run review-signals --stdin
 ```
 
 输入必须是 JSON 数组：
@@ -526,35 +526,34 @@ kubectl exec -n hci-dev <postgres-pod> -- psql -U <user> -d <db> -Atc \
 ]
 ```
 
-审计状态：
+Signal Review 状态：
 
 | 状态 | 精确含义 | 后续动作 |
 |---|---|---|
-| `PASS_LOG_CONTRACT` | 活动 qfk_log 能通过当前构建契约 | 继续做语义和现场可复现性复核 |
-| `BLOCKED_ACTIVE_SIGNAL` | 活动 Proposal 有不可执行日志信号 | 发布前修复或明确 Capability Gap |
-| `NEEDS_EXPERT_REVIEW` | 活动日志可构建，但有被门禁拒绝的日志候选 | 判断是漏信号还是外部/未支持数据源 |
-| `NO_ACTIVE_LOG_SIGNAL` | 当前无活动 qfk_log | 不代表原案例没有日志语义，需结合案例复核 |
+| `PASS_SIGNAL_REVIEW` | 全部活动 Signal 通过 Shared Resolution Runtime 静态审查 | 继续做语义和现场可复现性复核 |
+| `BLOCKED_SIGNAL_REVIEW` | 活动 Proposal 有无法编译/解析的 Signal | 发布前修复或明确 Capability Gap |
+| `NEEDS_SIGNAL_REVIEW` | 存在 needs_probe 警告或被门禁拒绝的候选 | 判断是漏信号、现场待探测还是未支持数据源 |
+| `NO_ACTIVE_SIGNAL` | 当前无活动 Signal | 不代表原案例没有信号语义，需结合案例复核 |
 
 常见 issue code：
 
 | code | 含义 |
 |---|---|
-| `MISSING_FILE` | qfk_log 未指定可解析文件 |
-| `INVALID_TIME_OR_PATH` | 时间窗口或路径不符合当前契约 |
-| `UNSUPPORTED_PREDICATE` | 日志 parser 不支持该 matcher 类型 |
-| `UNBOUNDED_PRODUCER` | 变量产出缺少关键字/request_id 边界，可能回传整文件 |
-| `CAPABILITY_GAP` | 数据源不属于当前 qfk_log 能力，例如外部 BMC 日志 |
-| `REJECTED_LOG_CANDIDATE` | 抽取候选被生产门禁拒绝，需专家判断 |
+| `LOG_FILE_REQUIRED` / `LOG_CATALOG_REJECTED` | qfk_log 文件、路径或日志源不符合 Runtime Catalog |
+| `SYSTEM_COMMAND_UNKNOWN` | qfk_system/domain 命令不在当前 aCLI Catalog |
+| `SIGNAL_ACQUIRE_ARGS_INVALID` | acquire 参数不符合共享 Signal 契约 |
+| `SIGNAL_RUNTIME_NOT_VERIFIED` | Agent 执行前要求 verified，但当前仍需现场探测 |
+| `REJECTED_SIGNAL_CANDIDATE` | 抽取候选被生产门禁拒绝，需专家判断 |
 
 默认情况下，发现 Proposal 问题仍返回 0，因为报告本身是专家复核清单。用于 CI 时显式开启严格门禁：
 
 ```bash
-uv run python -m data-pipeline.kbd.run audit-log-signals \
+uv run python -m data-pipeline.kbd.run review-signals \
   --file /tmp/kbd-signals.json \
   --fail-on-blocked
 ```
 
-只有存在 `BLOCKED_ACTIVE_SIGNAL` 才返回 1；JSON 解析失败、文件不可读等审计器自身错误会自然返回非零。
+只有存在 `BLOCKED_SIGNAL_REVIEW` 才返回 1；JSON 解析失败、文件不可读等审查器自身错误会自然返回非零。
 
 ## 8. Pipeline 的部分运行、续跑与覆盖
 
@@ -566,7 +565,7 @@ uv run python -m data-pipeline.kbd.run pipeline \
   --stages fetch,import,vision
 ```
 
-支持名称 `fetch,import,vision,classify,extract-signals,audit-log-signals`，也兼容数字 `1` 到 `6`。
+支持名称 `fetch,import,vision,classify,extract-signals,review-signals` 和数字 `1` 到 `6`。
 
 从数据库现状续跑：
 
@@ -630,7 +629,7 @@ draft → published → archived
   └──→ rejected
 ```
 
-自动 Pipeline 生产 draft Proposal；专家修改并验证；发布后 Agent 才消费稳定版本。日志审计通过不能自动触发 published。
+自动 Pipeline 生产 draft Proposal；专家修改并复核；发布后 Agent 才消费稳定版本。Signal Review 通过不能自动触发 published。
 
 分类、全量/单图识别和关键信号抽取产生的每次 AI 结果，均由 kb-service 追加到同一
 `kbd_revision` Proposal 历史；Pipeline 不得绕过服务端直接更新分类结果。专家对分类、
@@ -816,13 +815,13 @@ uv run python -m data-pipeline.kbd.run --help
 
 如果 `needs_review>0`，说明 LLM 流程完成但没有通过门禁的活动信号。查看 `rejected_candidates` 和 Admin 审核页，不要把空壳当完成。
 
-### 12.9 `NO_ACTIVE_LOG_SIGNAL` 是否代表没有问题
+### 12.9 `NO_ACTIVE_SIGNAL` 是否代表没有问题
 
-不代表。它只说明当前 Proposal 没有活动 qfk_log，可能是案例本来不依赖日志，也可能是信号覆盖不足，必须结合原案例判断。
+不代表。它只说明当前 Proposal 没有活动 Signal，可能是案例本来不依赖后端采集，也可能是抽取覆盖不足，必须结合原案例判断。
 
-### 12.10 审计通过是否可以自动发布
+### 12.10 Signal Review 通过是否可以自动发布
 
-不可以。`PASS_LOG_CONTRACT` 只证明当前日志信号能按运行时契约构建，不证明文件选对、关键字选对、阈值合理、故障已复现或解决方案正确。
+不可以。`PASS_SIGNAL_REVIEW` 只证明当前 Signal 能按 Shared Resolution Runtime 静态编译；不证明现场文件/命令存在、关键字选对、阈值合理、故障已复现或解决方案正确。Agent 执行阶段仍需 `require_verified=True` 的现场门禁。
 
 ## 13. 测试与变更要求
 
@@ -848,10 +847,10 @@ git diff --check
 uv run python -m data-pipeline.kbd.run --help
 uv run python -m data-pipeline.kbd.run pipeline --help
 uv run python -m data-pipeline.kbd.run extract-signals --help
-uv run python -m data-pipeline.kbd.run audit-log-signals --help
+uv run python -m data-pipeline.kbd.run review-signals --help
 ```
 
-修改任一 Stage 时，测试必须覆盖输入、前置条件、成功、失败、幂等/保护性跳过和输出统计。修改 Signal 或 qfk_log 契约时，生产端审计与 Agent 运行时必须复用同一 Schema/Catalog，禁止各自维护一份近似规则。
+修改任一 Stage 时，测试必须覆盖输入、前置条件、成功、失败、幂等/保护性跳过和输出统计。修改 Signal、qfk 或 qkv 契约时，四个审查入口与 Agent 执行必须复用同一 Shared Resolution Runtime、Schema 和 Catalog，禁止各自维护一份近似规则。
 
 ## 14. 相关设计文档
 
