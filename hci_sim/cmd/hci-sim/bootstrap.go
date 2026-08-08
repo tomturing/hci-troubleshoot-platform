@@ -48,6 +48,9 @@ type syntheticRoute struct {
 var syntheticCatalog = map[string]syntheticRoute{
 	"27736": {Keyword: "设置集群IP失败", Limit: "100"},
 	"34164": {Keyword: "新建虚拟机", Limit: "1"},
+	// KBD23821 的真实 published Signal 使用 qkv_task 关键词“迁移虚拟机”，
+	// 仅用于 positive-minimal 的信号契约验收，不代表真实迁移 Artifact。
+	"23821": {Keyword: "迁移虚拟机", Limit: "1"},
 }
 
 func runBootstrap(args []string) error {

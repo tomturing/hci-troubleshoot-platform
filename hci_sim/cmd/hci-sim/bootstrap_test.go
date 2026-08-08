@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"hci_sim/internal/fixture"
@@ -21,6 +22,23 @@ func TestBuildSyntheticManifestIsExactAndSynthetic(t *testing.T) {
 	manifest.Bundle.Digest = fixture.ComputeBundleDigest(manifest)
 	if _, err := fixture.Parse(mustJSON(t, manifest)); err != nil {
 		t.Fatalf("generated manifest must pass runtime validation: %v", err)
+	}
+}
+
+func TestKBD23821SyntheticRouteUsesPublishedTaskContract(t *testing.T) {
+	route, ok := syntheticCatalog["23821"]
+	if !ok {
+		t.Fatal("KBD23821 must be explicitly registered for synthetic acceptance")
+	}
+	if route.Keyword != "迁移虚拟机" || route.Limit != "1" {
+		t.Fatalf("unexpected KBD23821 route: %+v", route)
+	}
+	manifest := buildSyntheticManifest(&resolvedKbd{
+		SupportID: "23821", KBDRevision: 2, KBDChecksum: "a" + strings.Repeat("b", 63),
+		ToolContractRevision: "tool-r1", PolicyRevision: "policy-r1",
+	}, route, "SIM-HCI-NODE-01", "host")
+	if got := manifest.Routes[0].RouteKey.Argv; len(got) != 7 || got[0] != "qkv_task" || got[2] != "迁移虚拟机" || got[4] != "1" {
+		t.Fatalf("unexpected KBD23821 argv: %v", got)
 	}
 }
 
