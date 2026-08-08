@@ -14,10 +14,10 @@ from kbd import runtime
 from kbd.pipeline import Stage, _display_width, _stage_banner
 from kbd.run import (
     _cli_options,
-    _cmd_review_signals,
     _cmd_cli,
     _cmd_extract_signals,
     _cmd_pipeline,
+    _cmd_review_signals,
     _ConsoleFormatter,
     _parse_stages,
     _print_pipeline_summary,

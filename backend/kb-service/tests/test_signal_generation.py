@@ -22,6 +22,7 @@ from app.routes.extract_signals import (
     _validate_and_collect_signals,
 )
 from jsonschema import ValidationError
+from shared.resolution.review import SignalReviewFeature
 from shared.schemas.kbd_signal_safety import (
     signal_write_operation_command,
     validate_kbd_read_only_signals_json,
@@ -32,7 +33,6 @@ from shared.schemas.signal_generation import (
     staleness_reasons,
 )
 from shared.schemas.signal_schema import validate_signals_json
-from shared.resolution.review import SignalReviewFeature
 
 
 def test_generation_metadata_is_deterministic_and_schema_valid():

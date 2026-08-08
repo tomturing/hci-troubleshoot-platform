@@ -6,9 +6,9 @@ import io
 import json
 
 import pytest
-from shared.resolution.review import SignalReviewFeature, review_signal_document
 from kbd.run import build_parser
 from kbd.signal_review import load_rows, load_rows_from_db, review_rows
+from shared.resolution.review import SignalReviewFeature, review_signal_document
 
 
 def _text_extract() -> dict:
