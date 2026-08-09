@@ -20,7 +20,35 @@
 
 ## C3 两步人工验收
 
-dev 环境可使用仓库根目录的 `scripts/hci-sim/two-step-acceptance.sh <KBD_ID>`。脚本只接受已由 C1 Resolver 判定为 `ready_for_artifact_binding` 且在 synthetic 白名单中的 `23821`、`27736`、`34164`，生成 `positive-minimal` Manifest、短时 htp2 Lease 并启动单副本容器。第二步在 Custom UI SSH 终端选择“仿真租约”，按脚本输出的 `.hci-sim-run/<KBD_ID>-<UTC时间>/connection.json` 填写字段，执行 `recommended_command`。
+dev 环境可使用仓库根目录的 `scripts/hci-sim/two-step-acceptance.sh <KBD_ID>`。脚本只接受已由 C1 Resolver 判定为 `ready_for_artifact_binding` 且在 synthetic 白名单中的 `23821`、`27736`、`34164`，生成 `positive-minimal` Manifest、短时 htp2 Lease 并启动单副本容器。
+
+脚本默认优先使用 SSH `2222`、HTTP `18080`；如果其中一个端口已经被其他仿真实例占用，会自动为本次运行选择隔离端口，并把最终端口写入 `connection.json`。需要让端口占用直接失败时设置 `HCI_SIM_AUTO_PORTS=false`。同一个 KBD 的旧实例会在启动新 Lease 前自动停止，避免 Lease 与容器错配。
+
+脚本对同一 KBD 自动停止上一轮受管容器，预检 SSH/HTTP 端口，使用 dev 主机稳定 SSH host key，并在 `readyz` 未通过时失败退出；它不会把 Lease password 打印到终端。连接文件路径和脱敏字段会输出到屏幕，密码只能从本地 0600 文件读取。默认 Lease TTL 为 15 分钟，生成后应立即完成第二步。
+
+无工单的 Custom UI 初始状态可点击终端面板中的“仿真租约连接（dev）”直接打开仿真租约弹窗；不必先创建无 SSH 工单。选择“仿真租约”后可直接粘贴完整 `connection.json` 并点击“载入连接文件”，页面会校验 `support_id`、端口、`auth_type=lease`、`execution_mode=sim-ssh` 和 `expires_at`，自动填充连接字段及 `recommended_command`。已有工单仍可通过“连接 SSH”进入同一弹窗。Linux/K3s 联调时，Customer UI 的运行时配置必须指向 Linux Bridge（`/terminal-bridge` 或 `ws://<linux-host>:9999`），不能让远端浏览器默认回退到 Windows `localhost:9999`。
+
+Bridge 拓扑必须与浏览器所在机器一致：
+
+```text
+Linux 集群联调：浏览器 → ws://172.28.24.21:9999（Linux terminal_bridge）→ SSH 172.28.24.21:<connection.port>（hci-sim）
+Windows 桌面联调：浏览器（172.28.24.22）→ ws://localhost:9999（Windows terminal_bridge.exe）→ SSH 172.28.24.21:<connection.port>（hci-sim）
+```
+
+两种 Bridge 不要在同一个浏览器会话中混用。Windows 联调时应保持 Customer UI 的 `terminalBridgeUrl` 为空，让浏览器回退到 Windows 本机 `ws://localhost:9999`；Windows Bridge 的 SSH 目标始终填写 Lease 文件中的 `host`、`port`、`username` 和仿真租约 password，不要把 `localhost:9999` 当成 SSH 目标。
+
+若要用 Linux Bridge 做无浏览器三段链路验收，可设置 `HCI_SIM_CONNECTION_JSON` 运行 `cmd/hci-sim-smoke`；该模式会通过 WebSocket 连接 Bridge，再经 SSH 执行 `recommended_command`，不绕过 Bridge。
+
+示例（Linux/K3s dev）：
+
+```bash
+HCI_SIM_CONNECTION_JSON="$PWD/.hci-sim-run/<run>/connection.json" \
+HCI_SIM_BRIDGE_URL=ws://127.0.0.1:9999 \
+HCI_SIM_BRIDGE_ORIGIN=http://172.28.24.21 \
+go run ./cmd/hci-sim-smoke
+```
+
+通过时只输出 `support_id/test_run_id/exit_code` 等非敏感摘要；Lease password 始终只从本地文件读取，不写入输出。
 
 输出明确为 synthetic signal-contract-only；没有获批 Artifact 时禁止使用 `positive-realistic` 或宣称真实 HCI/Artifact E2E。`27123` 等 capability gap 会在第一步失败且不产生 Lease。
 

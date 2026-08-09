@@ -11,7 +11,7 @@
 import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useChatStore } from '@/stores/chat'
-import { checkBridgeBeforeOpen, createBridgeSocket, buildConnectMessage, type TerminalAuthType, type TerminalWsMessage, type SshConnectOptions } from '@/api/terminal'
+import { checkBridgeBeforeOpen, parseSimulationConnectionJson, type TerminalAuthType } from '@/api/terminal'
 import SshFormSection from './SshFormSection.vue'
 
 const chatStore = useChatStore()
@@ -39,7 +39,30 @@ const sshForm = reactive({
   testRunId: '',
 })
 const authType = ref<TerminalAuthType>('password')
+const connectionJsonText = ref('')
+const recommendedCommand = ref('')
 let autoCloseTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * 将 two-step-acceptance.sh 生成的 connection.json 一次性填入表单。
+ * JSON 只保存在组件内存中；不会写入 localStorage、日志或 API。
+ */
+function applyConnectionJson() {
+  try {
+    const connection = parseSimulationConnectionJson(connectionJsonText.value)
+    sshForm.host = connection.host
+    sshForm.port = String(connection.port)
+    sshForm.username = connection.username
+    sshForm.password = connection.password
+    sshForm.executionMode = 'sim-ssh'
+    sshForm.testRunId = connection.testRunId
+    authType.value = 'lease'
+    recommendedCommand.value = connection.recommendedCommand
+    ElMessage.success(`已载入 KBD ${connection.supportId} 的仿真租约`)
+  } catch (error: any) {
+    ElMessage.error(`connection.json 无法载入：${error?.message || 'JSON 格式错误'}`)
+  }
+}
 
 function clearAutoCloseTimer() {
   if (autoCloseTimer) {
@@ -92,6 +115,8 @@ async function handleConnect() {
       username: sshForm.username.trim(),
       lastSuccessAt: new Date().toISOString(),
     }))
+    connectionJsonText.value = ''
+    sshForm.password = ''
 
     viewState.value = 'success'
 
@@ -236,6 +261,21 @@ onBeforeUnmount(() => {
         @update:auth-type="authType = $event"
       />
 
+      <div v-if="authType === 'lease'" class="connection-json-import">
+        <el-form-item label="connection.json（可选，一次性填充）">
+          <el-input
+            v-model="connectionJsonText"
+            type="textarea"
+            :autosize="{ minRows: 3, maxRows: 7 }"
+            placeholder="粘贴第一步生成的 connection.json 内容"
+          />
+        </el-form-item>
+        <el-button size="small" @click="applyConnectionJson">载入连接文件</el-button>
+        <el-alert v-if="recommendedCommand" type="success" :closable="false" class="recommended-command">
+          连接后在终端执行：<code>{{ recommendedCommand }}</code>
+        </el-alert>
+      </div>
+
       <div class="dialog-actions">
         <el-button type="primary" @click="handleConnect">连接</el-button>
         <el-button @click="handleCancel">取消</el-button>
@@ -306,6 +346,19 @@ onBeforeUnmount(() => {
 /* ===== 表单 ===== */
 .form-section {
   padding: 8px 0;
+}
+
+.connection-json-import {
+  margin-top: 8px;
+  padding: 12px;
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  background: #fafafa;
+}
+
+.recommended-command {
+  margin-top: 12px;
+  overflow-wrap: anywhere;
 }
 
 /* ===== 进度 ===== */

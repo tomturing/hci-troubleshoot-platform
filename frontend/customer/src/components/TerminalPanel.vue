@@ -73,6 +73,19 @@ async function handleOpenSshDialog() {
   }
 }
 
+async function handleOpenSimulationSshDialog() {
+  // 状态 A 的 dev 验收入口：不创建工单、不触发真实 HCI 环境采集，
+  // 直接进入 SshConnectDialog，由控制面 Lease 约束 sim-ssh 路由。
+  checkingBridge.value = true
+  try {
+    const status = await checkBridgeBeforeOpen()
+    chatStore.sshConnectDialogBridgeStatus = status
+    chatStore.openSshFlowDialog(null, 'terminal-only')
+  } finally {
+    checkingBridge.value = false
+  }
+}
+
 
 
 const fullOutputText = ref('')
@@ -416,6 +429,15 @@ onBeforeUnmount(() => {
         @click="handleConnectAndCreate"
       >
         {{ checkingBridge ? '正在检测 Bridge...' : '🖥 连接 SSH 并创建工单' }}
+      </el-button>
+      <el-button
+        type="warning"
+        size="large"
+        :loading="checkingBridge"
+        class="btn-connect-ssh simulation-connect-btn"
+        @click="handleOpenSimulationSshDialog"
+      >
+        🧪 仿真租约连接（dev）
       </el-button>
       <p class="connect-hint">点击后检测 Bridge 并打开工单创建弹框</p>
     </div>

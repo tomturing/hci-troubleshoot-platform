@@ -129,6 +129,8 @@ func runBootstrap(args []string) error {
 	}
 	connection := map[string]any{
 		"test_run_id": testRunID, "scenario_id": scenarioID, "support_id": *supportID,
+		"issued_at": now.Format(time.RFC3339), "expires_at": expires.Format(time.RFC3339),
+		"ttl_seconds":  int64(expires.Sub(now).Seconds()),
 		"kbd_revision": resolved.KBDRevision, "variant": "positive-minimal", "execution_mode": "sim-ssh",
 		"bundle_digest": manifest.Bundle.Digest, "virtual_node_id": *node, "container": *container,
 		"connection": map[string]any{"host": *connectionHost, "port": *connectionPort, "username": "sim", "auth_type": "lease", "password": token, "execution_mode": "sim-ssh", "test_run_id": testRunID},

@@ -53,6 +53,10 @@ const localForm = ref<SshFormValue>({
 })
 const localAuthType = ref<TerminalAuthType>(props.authType)
 
+const SIMULATION_DEFAULT_HOST = '172.28.24.21'
+const SIMULATION_DEFAULT_PORT = '2222'
+const SIMULATION_DEFAULT_USERNAME = 'sim'
+
 // 监听 props 变化，同步到本地副本
 watch(() => props.sshForm, (val) => {
   localForm.value = { ...val }
@@ -66,7 +70,22 @@ watch(() => props.authType, (val) => {
 
 // 同步本地副本变更到父组件
 watch(localForm, (val) => emit('update:sshForm', { ...val }), { deep: true })
-watch(localAuthType, (val) => emit('update:authType', val))
+watch(localAuthType, (val) => {
+  emit('update:authType', val)
+  if (val !== 'lease') return
+
+  // 仿真租约不是普通 SSH：使用 hci-sim 的 SSH 默认值。
+  // connection.json 载入后会再以本轮实际 host/port 覆盖这些默认值。
+  if (localForm.value.executionMode !== 'sim-ssh') {
+    // 不复用普通 SSH 的密码或上一轮 TestRun，避免把错误凭据带入仿真租约。
+    localForm.value.password = ''
+    localForm.value.testRunId = ''
+    localForm.value.host = SIMULATION_DEFAULT_HOST
+    localForm.value.port = SIMULATION_DEFAULT_PORT
+    localForm.value.username = SIMULATION_DEFAULT_USERNAME
+    localForm.value.executionMode = 'sim-ssh'
+  }
+})
 
 // localStorage 自动填充提示
 const hasAutoFill = computed(() => localForm.value.host && localForm.value.username)
@@ -74,6 +93,11 @@ const hasAutoFill = computed(() => localForm.value.host && localForm.value.usern
 // 加载上次成功的 SSH 配置（不含密码）
 function loadSavedSshConfig() {
   try {
+    // 重试会重新挂载本组件，但父组件仍保留用户刚刚填写的表单。
+    // 只有表单确实为空时才读取历史普通 SSH 配置，不能覆盖本次输入。
+    if (localForm.value.host || localForm.value.password || localForm.value.testRunId || localForm.value.executionMode) {
+      return
+    }
     const saved = localStorage.getItem('hci_last_ssh_config')
     if (saved) {
       const config = JSON.parse(saved)
