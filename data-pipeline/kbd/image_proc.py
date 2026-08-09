@@ -196,13 +196,17 @@ async def _poll_reanalyze_status(
 # ─── 批量处理 ────────────────────────────────────────────────────────────────
 
 
-async def process_images_batch(kbd_ids: list[str], _pool: Any = None) -> dict[str, Any]:
+async def process_images_batch(
+    kbd_ids: list[str], _pool: Any = None, *, rework: bool = False
+) -> dict[str, Any]:
     """
     批量调用 kb-service API 重新识图。
 
     Args:
         kbd_ids: support_id 列表（如 ["26890", "26891", ...]）
         _pool: 兼容旧签名的 asyncpg 连接池（未使用，API 调用无需）
+        rework: 允许对已有成功识别结果再次调用 Vision API；当前 API 本身为重分析契约，
+            参数用于让编排层显式传递统一任务模式。
 
     Returns:
         {"done": N, "failed": N, "skipped": N}

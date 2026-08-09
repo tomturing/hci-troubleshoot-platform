@@ -75,6 +75,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | QFK 数值 AI 取值、判断与产出统一 | ✅ 代码与自动验证完成，待 PR CI：数值 Matcher 先从确定性候选行取得经逐字回查的 AI 类型化数值，再执行 delta/trend/threshold；非数值 Matcher 保持后置证据提取，Produce 原子写入且同 Signal 变量名唯一 | 2026-08-07 |
 | hci-real/hci-sim 双轨与 100+ Agent 并发回归 | 🟡 A/B Runtime 与 C–E 控制面代码级基础已实现；C1 已对 dev 126 条 KBD 完成只读 active snapshot/Tool Contract 基线（2 条待 Artifact 绑定、4 条 Tool stale、120 条未发布），C2 已补 Artifact Gate、payload digest 和对象存储参考契约，C3 已提供 27736/34164 的 synthetic 两步 dev 闭环脚本和 Custom UI lease 入口；真实 Artifact/生产 CAS/Bridge E2E、20-repeat、真实校准与 100+ 并发仍未验证 | 2026-08-06 |
 | KBD 六阶段数据管道可靠性与可观测性 | 🟡 代码级完成：VISION/CLASSIFY 并行，EXTRACT 严格等待两者成功；状态、重试、中文 CLI 和 JSONL 排障日志已加固。真实 Provider 20 KBD 故障注入与 Redis 多副本 Job 持久化尚未验收，不得宣称批量生产稳定性已通过。 | 2026-08-06 |
+| KBD 六阶段任务管理 CLI 参数模型重构 | 🟡 统一 `task` 入口、四种互斥生命周期模式、DAG 计划和不可变 manifest 已完成代码与自动测试；published maintenance、Vision 逐图状态和真实环境验收仍待完成 | 2026-08-09 |
 | CI 最小激活与快速门禁 | ✅ 已实施：hci-sim runtime/Bridge/Manifest 按变更分流；后端测试解除 Helm 无效等待；Schema 与 Lint 共用依赖；PR 不再构建 Windows exe。真实 Hosted Runner P50/P95 需后续采集。 | 2026-08-07 |
 | CI 发布链路手动补偿闭环 | ✅ 已实施：`workflow_dispatch` 通过 `promote_target` 显式选择 dev/staging/both；仅 main 可晋级；晋级前后逐服务核验环境仓库 tag，并在 Actions Summary 留存证据。 | 2026-08-07 |
 | CI 发布链路按影响范围收敛 | ✅ 已实施：main push 动态构建 Dockerfile 实际输入影响的镜像，db-migrate job 级跳过，环境仓库仅更新已构建服务；文档治理复用既有 runner，所有 job 有超时，第三方 action/tool 已固定，P50/P95 报告仅手动运行。 | 2026-08-07 |

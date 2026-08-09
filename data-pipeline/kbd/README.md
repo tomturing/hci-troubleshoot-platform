@@ -6,6 +6,24 @@
 
 上层目录和 `scripts` 的责任边界见 [Data Pipeline 总览](../README.md)。
 
+## 现行 CLI：统一任务管理模型（2026-08-09）
+
+旧的 `pipeline`、`cli` 入口以及 `--force-fetch`、`--force`、`--override`、
+`--override-status`、`--failed-only`、`--resume-run-id` 已删除，不再兼容。当前唯一生产
+任务入口是 `task`；六个 Stage 名称只是同一入口的便捷别名：
+
+```bash
+uv run python -m data-pipeline.kbd.run task --ids 29351 --stages vision
+```
+
+所有阶段共享同一组参数：`--excel` / `--ids` / `--id-file` / `--run-id`（任务范围）、
+`--stages`（默认 `all`）、`--resume`、`--failed`、`--rework[=draft,published]`。
+三种显式模式严格互斥：无模式参数选择“未执行 + 失败”，`--resume` 仅未执行，`--failed`
+仅失败，`--rework` 全部重做且默认只处理 draft。`--run-id` 只读取历史执行的不可变
+manifest，代表任务范围；本次运行仍生成独立 `execution_id`。指定阶段会按 DAG 自动补齐未满足
+的前置依赖，执行前日志会打印请求阶段、补齐阶段和每阶段选中任务数。published 重做只能
+创建 maintenance working revision，不能原地覆盖生效版本；Vision 还按图片 `seq` 记录子任务状态。
+
 ## 1. 目标与非目标
 
 KBD Pipeline 的目标不是把人类案例原文简单搬进数据库，而是建立一条可追溯的知识生产链：

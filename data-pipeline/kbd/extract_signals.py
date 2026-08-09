@@ -160,12 +160,15 @@ async def _poll_extract_status(
             await asyncio.sleep(retry_wait)
 
 
-async def extract_signals_batch(kbd_ids: list[str], pool: asyncpg.Pool | None = None) -> dict[str, int]:
+async def extract_signals_batch(
+    kbd_ids: list[str], pool: asyncpg.Pool | None = None, *, rework: bool = False
+) -> dict[str, int]:
     """批量关键信号抽取。
 
     Args:
         kbd_ids: support_id 列表
         pool: asyncpg 连接池（用于查 kbd_entry.id）
+        rework: 允许对已有 Signal Proposal 重新提交抽取；实际候选筛选由编排层完成。
 
     Returns:
         {"done": N, "failed": N, "skipped": N, "needs_review": N}

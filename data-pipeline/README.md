@@ -16,7 +16,9 @@
 
 判断逻辑很简单：如果一段代码理解 `signals_json`、KBD 阶段或日志信号质量，它属于 `data-pipeline/kbd`；如果它只是让 CI/运维调用这段能力，可以留在 `scripts`，但只能做薄封装。
 
-因此，全量 Signal Review 的唯一实现是 `kbd/signal_review.py`，唯一 CLI 入口是 `python -m data-pipeline.kbd.run review-signals`。它直接调用 `backend/shared/resolution/review.py`，仓库不保留第二套近似规则。
+因此，全量 Signal Review 的唯一实现是 `kbd/signal_review.py`，生产任务唯一 CLI 入口是
+`python -m data-pipeline.kbd.run task`（`review-signals` 是统一 Stage 6 便捷别名）。它直接调用
+`backend/shared/resolution/review.py`，仓库不保留第二套近似规则。
 
 ## 生产闭环
 
@@ -35,7 +37,7 @@ Support Portal
   → Agent 消费
 ```
 
-前六步可由 `python -m data-pipeline.kbd.run pipeline` 一次完成。专家复核是当前质量兜底，不被伪装成自动阶段；发布内容以专家确认后的稳定版本为准。
+前六步可由 `python -m data-pipeline.kbd.run task` 一次完成。专家复核是当前质量兜底，不被伪装成自动阶段；发布内容以专家确认后的稳定版本为准。
 
 ## 统一运行约定
 
@@ -47,7 +49,7 @@ uv run python -m data-pipeline.kbd.run --help
 
 Python 的模块加载器可以定位该源码目录；该入口已经由自动回归覆盖。兼容既有自动化时，`PYTHONPATH=data-pipeline:backend uv run python -m kbd.run` 仍可使用，但不是推荐的人工作业入口。
 
-对包含 Stage 6 的 `pipeline` 和独立 `review-signals`，CLI 会在任何抓取、入库、Vision 或 LLM 调用前预检共享契约。若 checkout 缺少 `backend/shared`，命令立即给出可处理错误，不会先执行前五阶段。
+对包含 Stage 6 的 `task` 和 Stage 6 便捷别名，CLI 会在任何抓取、入库、Vision 或 LLM 调用前预检共享契约。若 checkout 缺少 `backend/shared`，命令立即给出可处理错误，不会先执行前五阶段。
 
 安装依赖：
 
@@ -60,7 +62,7 @@ KBD 快速试跑：
 ```bash
 cp data-pipeline/kbd/.env.example data-pipeline/kbd/.env
 uv run python -m data-pipeline.kbd.run config
-uv run python -m data-pipeline.kbd.run pipeline --ids 37150
+uv run python -m data-pipeline.kbd.run task --ids 37150
 ```
 
 详细的环境变量、六阶段语义、关键信号抽取、Signal Review 报告和故障处理见 [KBD 使用手册](kbd/README.md)。
@@ -112,4 +114,4 @@ git diff --check
 3. 输入、输出、幂等、失败与人工边界的单元测试。
 4. 本 README 的入口说明和对应子管道的详细手册。
 
-最后更新：2026-07-31。
+最后更新：2026-08-09。

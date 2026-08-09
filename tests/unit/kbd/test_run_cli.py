@@ -14,9 +14,7 @@ from kbd import runtime
 from kbd.pipeline import Stage, _display_width, _stage_banner
 from kbd.run import (
     _cli_options,
-    _cmd_cli,
     _cmd_extract_signals,
-    _cmd_pipeline,
     _cmd_review_signals,
     _ConsoleFormatter,
     _parse_stages,
@@ -173,55 +171,13 @@ def test_pipeline_summary_lists_classification_before_vision(monkeypatch, capsys
     assert output.index("案例分类") < output.index("截图识别")
 
 
-@pytest.mark.asyncio
-async def test_cli_typical_passes_no_force_or_override_to_pipeline(monkeypatch):
-    from kbd import config, pipeline
-
-    class Tty:
-        @staticmethod
-        def isatty() -> bool:
-            return True
-
-    calls: dict[str, object] = {}
-
-    async def fake_run_pipeline(ids, **kwargs):
-        calls["ids"] = ids
-        calls.update(kwargs)
-        return {"pipeline": {"success": True, "completed_ids": 1, "total_ids": 1}}, "20260806_160000"
-
-    monkeypatch.setattr("kbd.run.sys.stdin", Tty())
-    monkeypatch.setattr(config.settings, "INTERNAL_API_TOKEN", "test-token")
-    monkeypatch.setattr(pipeline, "run_pipeline", fake_run_pipeline)
-    answers = iter(["37150", "", "y"])
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
-
-    args = build_parser().parse_args(["cli"])
-    assert await _cmd_cli(args, "20260806_160000") == 0
-    assert calls == {
-        "ids": ["37150"],
-        "run_id": "20260806_160000",
-        "force_fetch": False,
-        "override": False,
-        "override_status": None,
-        "resume": False,
-        "failed_only": False,
-    }
-
-
-@pytest.mark.asyncio
-async def test_pipeline_command_returns_nonzero_when_critical_stage_failed(monkeypatch):
-    from kbd import pipeline
-
-    async def fake_run_pipeline(*_args, **_kwargs):
-        return {
-            "import": {"error": 1},
-            "pipeline": {"success": False, "failed_steps": 1},
-        }, "20260806_120000"
-
-    monkeypatch.setattr(pipeline, "run_pipeline", fake_run_pipeline)
-    args = build_parser().parse_args(["pipeline", "--ids", "27582"])
-
-    assert await _cmd_pipeline(args, "20260806_120000") == 1
+def test_task_parser_exposes_single_lifecycle_mode():
+    parser = build_parser()
+    args = parser.parse_args(["task", "--ids", "27582", "--failed", "--stages", "vision"])
+    assert args.failed is True
+    assert args.stages == "vision"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["task", "--ids", "27582", "--resume", "--failed"])
 
 
 @pytest.mark.asyncio
@@ -268,22 +224,22 @@ async def test_extract_signals_protects_existing_or_unclassified_proposals(monke
     assert pool.closed is True
 
 
-def test_review_signals_requires_exactly_one_source():
+def test_review_input_requires_exactly_one_source():
     parser = build_parser()
-    args = parser.parse_args(["review-signals", "--all", "--output", "report.json"])
+    args = parser.parse_args(["review-input", "--stdin", "--output", "report.json"])
 
-    assert args.command == "review-signals"
-    assert args.all is True
+    assert args.command == "review-input"
+    assert args.stdin is True
     assert args.output == "report.json"
 
     with pytest.raises(SystemExit):
-        parser.parse_args(["review-signals"])
+        parser.parse_args(["review-input"])
     with pytest.raises(SystemExit):
-        parser.parse_args(["review-signals", "--all", "--stdin"])
+        parser.parse_args(["review-input", "--stdin", "--file", "x"])
 
 
 @pytest.mark.asyncio
-async def test_review_signals_reads_file_and_writes_report(tmp_path):
+async def test_review_input_reads_file_and_writes_report(tmp_path):
     source = tmp_path / "signals.json"
     output = tmp_path / "report.json"
     source.write_text(
@@ -307,7 +263,7 @@ async def test_review_signals_reads_file_and_writes_report(tmp_path):
         encoding="utf-8",
     )
     args = build_parser().parse_args(
-        ["review-signals", "--file", str(source), "--output", str(output)]
+        ["review-input", "--file", str(source), "--output", str(output)]
     )
 
     exit_code = await _cmd_review_signals(args, "20260730_120000")
@@ -319,7 +275,7 @@ async def test_review_signals_reads_file_and_writes_report(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_review_signals_fail_on_blocked_is_opt_in(tmp_path):
+async def test_review_input_fail_on_blocked_is_opt_in(tmp_path):
     source = tmp_path / "blocked.json"
     source.write_text(
         json.dumps(
@@ -341,9 +297,9 @@ async def test_review_signals_fail_on_blocked_is_opt_in(tmp_path):
         encoding="utf-8",
     )
     parser = build_parser()
-    normal = parser.parse_args(["review-signals", "--file", str(source)])
+    normal = parser.parse_args(["review-input", "--file", str(source)])
     strict = parser.parse_args(
-        ["review-signals", "--file", str(source), "--fail-on-blocked"]
+        ["review-input", "--file", str(source), "--fail-on-blocked"]
     )
 
     assert await _cmd_review_signals(normal, "20260730_120000") == 0
@@ -383,7 +339,7 @@ def test_repository_module_entrypoint_bootstraps_shared_contract_without_pythonp
             sys.executable,
             "-m",
             "data-pipeline.kbd.run",
-            "review-signals",
+            "review-input",
             "--file",
             str(source),
         ],

@@ -53,7 +53,7 @@ import httpx
 from .classifier import classify_batch
 from .config import settings
 from .extract_signals import extract_signals_batch
-from .fetcher import _is_fetched, fetch_batch, get_failed_fetch_ids, read_ids_from_excel
+from .fetcher import _is_fetched, fetch_batch, read_ids_from_excel
 from .image_proc import process_images_batch
 from .importer import import_batch
 from .progress import (
@@ -196,6 +196,9 @@ async def run_pipeline(
     resume_run_id: str | None = None,
     failed_only: bool = False,
     run_id: str | None = None,
+    task_ids_by_stage: dict[Stage, list[str]] | None = None,
+    task_mode: str = "legacy",
+    rework_statuses: list[str] | None = None,
 ) -> tuple[dict[str, dict], str]:
     """
     执行指定 stages 的完整流水线（按 DAG 拓扑序自动补齐前置依赖）。
@@ -211,6 +214,9 @@ async def run_pipeline(
         resume_run_id: 指定要恢复的 run_id（不传则自动查找最新的 progress 文件）
         failed_only: 仅处理失败的案例（有 .failed 标记或识别为无文字）
         run_id: 本次运行的 run_id（不传则自动生成）
+        task_ids_by_stage: 统一任务管理器为每个 Stage 选出的任务 ID。
+        task_mode: 任务模式（default/resume/failed/rework），仅用于日志和重做策略。
+        rework_statuses: 重做时允许的 KBD 状态；默认由 task 命令传入 draft。
 
     Returns:
         (各 stage 的统计结果, 实际使用的 run_id)
@@ -218,6 +224,19 @@ async def run_pipeline(
     if not kbd_ids:
         logger.warning("kbd_ids 为空，流水线退出")
         return {}, run_id or generate_run_id()
+
+    planned_ids = {
+        stage: set(ids)
+        for stage, ids in (task_ids_by_stage or {}).items()
+    }
+
+    def _planned(stage: Stage, ids: Iterable[str]) -> list[str]:
+        """返回统一任务计划允许本 Stage 执行的 ID。"""
+
+        if task_ids_by_stage is None:
+            return list(ids)
+        allowed = planned_ids.get(stage, set())
+        return [support_id for support_id in ids if support_id in allowed]
 
     if not settings.INTERNAL_API_TOKEN:
         raise RuntimeError("INTERNAL_API_TOKEN 未配置，无法调用 kb-service API")
@@ -252,26 +271,8 @@ async def run_pipeline(
     stage_names = [s.name.lower() for s in stages]
     progress = init_progress(run_id, kbd_ids, stage_names)
 
-    # ── 提前创建连接池（failed_only 和各 stage 都需要使用）──
+    # ── 提前创建连接池（各 stage 都需要使用）──
     pool = await _create_pool()
-
-    # ── 失败案例筛选 ──
-    if failed_only:
-        logger.info("Failed-only 模式：筛选失败案例")
-        failed_fetch = get_failed_fetch_ids(kbd_ids)
-        failed_vision = await _db_failed_vision_ids(kbd_ids, pool)
-        failed_ids = list(set(failed_fetch + failed_vision))
-        if not failed_ids:
-            logger.info("没有失败的案例需要处理")
-            finish_progress(progress)
-            await pool.close()
-            return {"failed_only": {"skipped": len(kbd_ids)}}, run_id
-        kbd_ids = failed_ids
-        logger.info("筛选出 %d 个失败案例（fetch=%d, vision=%d）",
-                    len(kbd_ids), len(failed_fetch), len(failed_vision))
-        # 重新初始化进度（针对筛选后的案例）
-        stage_names = [s.name.lower() for s in stages]
-        progress = init_progress(run_id, kbd_ids, stage_names)
 
     logger.info(
         "流水线启动 案例数=%d stages=%s run_id=%s resume=%s",
@@ -286,13 +287,52 @@ async def run_pipeline(
     # 只有本次运行中前置阶段成功的案例才能沿 DAG 向下游传播。
     # 不能再用数据库中的历史行替代本次 IMPORT 的执行结果。
     active_ids = list(kbd_ids)
+    rework = task_mode == "rework"
+
+    async def _existing_ready(stage: Stage, ids: Iterable[str]) -> list[str]:
+        """Return IDs whose persisted output satisfies a stage dependency."""
+        candidates = list(ids)
+        if stage is Stage.FETCH:
+            return [cid for cid in candidates if _is_fetched(cid)]
+        if stage is Stage.IMPORT:
+            ready: list[str] = []
+            for cid in candidates:
+                row = await pool.fetchrow(
+                    "SELECT id FROM kbd_entry WHERE support_id = $1", cid
+                )
+                if row:
+                    ready.append(cid)
+            return ready
+        if stage is Stage.CLASSIFY:
+            rows = await pool.fetch(
+                "SELECT support_id FROM kbd_entry WHERE support_id = ANY($1) AND COALESCE(ai_category_id, '') <> ''",
+                candidates,
+            )
+            return [str(row["support_id"]) for row in rows]
+        if stage is Stage.VISION:
+            ready: list[str] = []
+            for cid in candidates:
+                if await _db_vision_status(pool, cid) == "done":
+                    ready.append(cid)
+            return ready
+        if stage is Stage.EXTRACT_SIGNALS:
+            rows = await pool.fetch(
+                f"SELECT support_id, signals_json FROM kbd_entry WHERE support_id = ANY($1) AND {EMPTY_SIGNALS_JSON_PREDICATE} IS NOT TRUE",
+                candidates,
+            )
+            return [str(row["support_id"]) for row in rows if _signal_document_status(row["signals_json"]) == "done"]
+        return candidates
 
     try:
         if Stage.FETCH in stages:
             logger.info(_stage_banner(1, "数据抓取"))
-            fetch_ids = kbd_ids
+            fetch_ids = _planned(Stage.FETCH, kbd_ids)
             t0 = time.monotonic()
-            stats = await fetch_batch(fetch_ids, force=force_fetch)
+            stats = await fetch_batch(
+                fetch_ids,
+                force=force_fetch or rework,
+                retry_images=(task_mode != "resume"),
+            )
             all_stats["fetch"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
             logger.info("Stage 1 完成 %s", all_stats["fetch"])
 
@@ -300,18 +340,22 @@ async def run_pipeline(
             for cid in fetch_ids:
                 status = "done" if _is_fetched(cid) else "failed"
                 update_stage_status(progress, "fetch", cid, status)
-            active_ids = [cid for cid in fetch_ids if _is_fetched(cid)]
+            active_ids = await _existing_ready(Stage.FETCH, kbd_ids)
             save_progress(run_id, progress)
 
         if Stage.IMPORT in stages:
             logger.info(_stage_banner(2, "语义提取 + 原子入库"))
             _mark_dependency_blocked(progress, "import", kbd_ids, active_ids)
             ready_ids = await _get_import_ready_ids(active_ids, pool)
-            import_ids = ready_ids
+            import_ids = _planned(Stage.IMPORT, ready_ids)
 
             t0 = time.monotonic()
             stats = await import_batch(
-                import_ids, pool, override=override, override_status=override_status, client=http_client
+                import_ids,
+                pool,
+                override=override or rework,
+                override_status=override_status or (rework_statuses or ["draft"]),
+                client=http_client,
             )
             all_stats["import"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
             logger.info("Stage 2 完成 %s", all_stats["import"])
@@ -327,10 +371,17 @@ async def run_pipeline(
                     else "failed"
                 )
                 update_stage_status(progress, "import", cid, status)
-            active_ids = [
+            successful_current = {
                 cid for cid in import_ids
                 if import_results.get(cid) in successful_import_statuses
-            ]
+            }
+            # 已经成功的依赖可以作为 ready 继续向下游传播；本次选中但失败的
+            # Import 即使数据库残留旧行，也必须被阻断，不能被历史数据“救活”。
+            persisted_ready = await _existing_ready(
+                Stage.IMPORT,
+                [cid for cid in ready_ids if cid not in set(import_ids)],
+            )
+            active_ids = list(dict.fromkeys([*successful_current, *persisted_ready]))
             all_stats["import"]["blocked_by_dependency"] = len(kbd_ids) - len(import_ids)
             save_progress(run_id, progress)
 
@@ -342,9 +393,10 @@ async def run_pipeline(
 
         async def _run_vision_stage(input_ids: list[str]) -> set[str]:
             _mark_dependency_blocked(progress, "vision", kbd_ids, input_ids)
-            vision_ids = await _get_vision_ready_ids(input_ids, pool)
+            vision_candidates = await _get_vision_ready_ids(input_ids, pool)
+            vision_ids = _planned(Stage.VISION, vision_candidates)
             started_at = time.monotonic()
-            stats = await process_images_batch(vision_ids, pool)
+            stats = await process_images_batch(vision_ids, pool, rework=rework)
             all_stats["vision"] = {**stats, "elapsed_s": round(time.monotonic() - started_at, 1)}
 
             completed: set[str] = set()
@@ -366,27 +418,50 @@ async def run_pipeline(
                         extra={"support_id": cid, "stage": "vision", "error_code": "VISION_STATE_INCONSISTENT"},
                     )
                 status_counts[status] = status_counts.get(status, 0) + 1
-                update_stage_status(progress, "vision", cid, status)
+                if cid in vision_ids:
+                    update_stage_status(progress, "vision", cid, status)
                 if status == "done":
                     completed.add(cid)
             all_stats["vision"].update(
                 case_status_counts=status_counts,
                 state_inconsistent_ids=inconsistent_ids,
                 blocked_by_dependency=len(kbd_ids) - len(input_ids),
+                item_states={},
             )
+            for cid in vision_ids:
+                row = await pool.fetchrow(
+                    "SELECT images_json FROM kbd_entry WHERE support_id = $1", cid
+                )
+                images = row["images_json"] if row else []
+                if isinstance(images, str):
+                    try:
+                        images = json.loads(images)
+                    except json.JSONDecodeError:
+                        images = []
+                if isinstance(images, list):
+                    all_stats["vision"]["item_states"][cid] = {
+                        str(item.get("seq", index)): {
+                            "executed": True,
+                            "success": _vision_item_status(item) == "done",
+                            "rework": rework,
+                        }
+                        for index, item in enumerate(images)
+                        if isinstance(item, dict)
+                    }
             logger.info("Stage 4 完成 %s", all_stats["vision"])
-            return completed
+            # 未选中的案例沿用已持久化的成功结果，供下游依赖使用。
+            persisted = await _existing_ready(Stage.VISION, input_ids)
+            return set(persisted) | completed
 
         async def _run_classify_stage(input_ids: list[str]) -> set[str]:
             _mark_dependency_blocked(progress, "classify", kbd_ids, input_ids)
             started_at = time.monotonic()
-            # 传入全部依赖就绪案例；classify_case 会对已有分类做幂等 done 计数，
-            # 未分类案例才会真正调用 API。
-            stats = await classify_batch(input_ids, pool)
+            classify_ids = _planned(Stage.CLASSIFY, input_ids)
+            stats = await classify_batch(classify_ids, pool, rework=rework)
             all_stats["classify"] = {**stats, "elapsed_s": round(time.monotonic() - started_at, 1)}
 
             completed: set[str] = set()
-            for cid in input_ids:
+            for cid in classify_ids:
                 row = await pool.fetchrow(
                     """SELECT ai_category_id FROM kbd_entry WHERE support_id = $1""", cid
                 )
@@ -396,8 +471,10 @@ async def run_pipeline(
                     completed.add(cid)
             # 阶段统计按案例最终状态计数，而不是只统计本轮实际调用 API 的数量。
             # 这样幂等重跑时，数据库中已有分类的案例也会正确显示 done=1。
+            persisted = await _existing_ready(Stage.CLASSIFY, input_ids)
+            completed.update(persisted)
             all_stats["classify"]["done"] = len(completed)
-            all_stats["classify"]["failed"] = len(input_ids) - len(completed)
+            all_stats["classify"]["failed"] = len(classify_ids) - len(completed & set(classify_ids))
             all_stats["classify"]["blocked_by_dependency"] = len(kbd_ids) - len(input_ids)
             logger.info("Stage 3 完成 %s", all_stats["classify"])
             return completed
@@ -431,14 +508,18 @@ async def run_pipeline(
             logger.info(_stage_banner(5, "关键信号分级抽取"))
             _mark_dependency_blocked(progress, "extract_signals", kbd_ids, active_ids)
             extract_input_ids = list(active_ids)
-            # 仅处理已分类且 signals_json 为空的 draft 案例
+            # 正常/失败重试只抽取空文档；rework 显式允许重做已有 Proposal。
+            status_values = list(rework_statuses or ["draft"]) if rework else ["draft"]
+            status_predicate = "status = ANY($2)"
+            signal_predicate = "TRUE" if rework else EMPTY_SIGNALS_JSON_PREDICATE
             extract_rows = await pool.fetch(
                 f"""SELECT support_id FROM kbd_entry
                    WHERE support_id = ANY($1)
-                     AND status = 'draft'
+                     AND {status_predicate}
                      AND (COALESCE(category_id, '') <> '' OR COALESCE(ai_category_id, '') <> '')
-                     AND {EMPTY_SIGNALS_JSON_PREDICATE}""",
+                     AND {signal_predicate}""",
                 extract_input_ids,
+                status_values,
             )
             extract_ids_all = [r["support_id"] for r in extract_rows]
 
@@ -450,7 +531,7 @@ async def run_pipeline(
                 )
 
             # Resume 模式：跳过已完成的案例
-            extract_kbd_ids = extract_ids_all
+            extract_kbd_ids = _planned(Stage.EXTRACT_SIGNALS, extract_ids_all)
             if resume and progress:
                 completed_ids = get_completed_ids_for_stage(progress, "extract_signals")
                 extract_kbd_ids = [cid for cid in extract_ids_all if cid not in completed_ids]
@@ -459,7 +540,7 @@ async def run_pipeline(
                     logger.info("Resume 跳过 %d 个已完成的 extract 案例", skipped)
 
             t0 = time.monotonic()
-            stats = await extract_signals_batch(extract_kbd_ids, pool)
+            stats = await extract_signals_batch(extract_kbd_ids, pool, rework=rework)
             all_stats["extract"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
             logger.info("Stage 5 完成 %s", all_stats["extract"])
 

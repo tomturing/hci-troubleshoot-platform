@@ -124,6 +124,8 @@ async def classify_case(
     case_id: str,
     pool: asyncpg.Pool,
     client: httpx.AsyncClient,
+    *,
+    rework: bool = False,
 ) -> dict[str, object]:
     """
     对单个案例调用 kb-service API 分类。
@@ -148,7 +150,7 @@ async def classify_case(
     except (KeyError, IndexError):
         # 兼容只返回 id 的旧测试桩/连接层；此时按未分类处理。
         existing_category_id = None
-    if existing_category_id:
+    if existing_category_id and not rework:
         return {
             "category_id": existing_category_id,
             "confidence": 1.0,
@@ -194,6 +196,8 @@ async def classify_case(
 async def classify_batch(
     case_ids: list[str],
     pool: asyncpg.Pool,
+    *,
+    rework: bool = False,
 ) -> dict[str, int]:
     """
     批量对未分类的 kbd_entry 进行 AI 分类。
@@ -213,7 +217,7 @@ async def classify_batch(
         async def _run_one(idx: int, case_id: str) -> dict[str, object]:
             async with sem:
                 logger.info("[%d/%d] 分类案例 %s", idx, total, case_id)
-                return await classify_case(case_id, pool, client)
+                return await classify_case(case_id, pool, client, rework=rework)
 
         results = await asyncio.gather(
             *[_run_one(idx, case_id) for idx, case_id in enumerate(case_ids, 1)]

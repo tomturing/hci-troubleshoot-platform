@@ -70,7 +70,7 @@ class TestPipelineStageDag:
 
         vision_inputs: list[list[str]] = []
 
-        async def fake_fetch(ids, *, force=False):
+        async def fake_fetch(ids, *, force=False, retry_images=False):
             return {"success": len(ids), "failed": 0}
 
         async def fake_import(ids, *_args, **_kwargs):
