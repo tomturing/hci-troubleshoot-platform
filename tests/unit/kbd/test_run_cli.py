@@ -13,10 +13,12 @@ import pytest
 from kbd import runtime
 from kbd.pipeline import Stage, _display_width, _stage_banner
 from kbd.run import (
-    _cli_options,
+    _choose_history_run_id,
     _cmd_extract_signals,
     _cmd_review_signals,
+    _collect_interactive_task_args,
     _ConsoleFormatter,
+    _parse_interactive_rework_statuses,
     _parse_stages,
     _print_pipeline_summary,
     _prompt_choice,
@@ -87,31 +89,33 @@ def test_prompt_yes_no_accepts_standard_answers_and_default(monkeypatch):
     assert _prompt_yes_no("确认", default=True) is True
 
 
-def test_cli_typical_uses_safe_pipeline_defaults(monkeypatch):
-    answers = iter([""])
+def test_cli_interactive_model_has_four_statuses_and_default_mode(monkeypatch):
+    assert _parse_interactive_rework_statuses("") == "draft"
+    assert _parse_interactive_rework_statuses("1,2,4") == "draft,published,archived"
+    answers = iter(["1", "29351", "1", "1", ""])
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
-
-    assert _cli_options() == {
-        "force_fetch": False,
-        "override": False,
-        "override_status": None,
-        "resume": False,
-        "failed_only": False,
-    }
+    args = _collect_interactive_task_args()
+    assert args.ids == "29351"
+    assert args.stages == "all"
+    assert args.resume is False and args.failed is False and args.rework is None
 
 
-def test_cli_custom_uses_numbered_choices(monkeypatch):
-    # mode=2, force_fetch=no, override=yes, scope=1(draft), resume=yes, failed_only=no
-    answers = iter(["2", "n", "y", "1", "y", "n"])
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+def test_cli_parser_exposes_interactive_frontend():
+    args = build_parser().parse_args(["cli"])
+    assert args.command == "cli"
 
-    assert _cli_options() == {
-        "force_fetch": False,
-        "override": True,
-        "override_status": ["draft"],
-        "resume": True,
-        "failed_only": False,
-    }
+
+def test_cli_history_selector_uses_recent_manifest(monkeypatch, tmp_path):
+    from kbd import task_state
+
+    monkeypatch.setattr(task_state.settings, "KBD_LOGS_DIR", tmp_path)
+    task_state.save_execution_manifest({
+        "execution_id": "20260809_103000",
+        "requested_ids": ["29351"],
+        "mode": "failed",
+    })
+    monkeypatch.setattr("builtins.input", lambda _prompt: "1")
+    assert _choose_history_run_id() == "20260809_103000"
 
 
 def test_prompt_choice_reprompts_until_a_numbered_option(monkeypatch):

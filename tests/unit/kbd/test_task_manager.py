@@ -39,6 +39,9 @@ def test_modes_are_mutually_exclusive():
 def test_rework_status_defaults_and_validation():
     assert parse_rework_statuses(None) == ("draft",)
     assert parse_rework_statuses("draft,published,draft") == ("draft", "published")
+    assert parse_rework_statuses("draft,published,rejected,archived") == (
+        "draft", "published", "rejected", "archived"
+    )
     try:
         parse_rework_statuses("pending")
     except ValueError as exc:

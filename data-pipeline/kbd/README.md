@@ -8,18 +8,18 @@
 
 ## 现行 CLI：统一任务管理模型（2026-08-09）
 
-旧的 `pipeline`、`cli` 入口以及 `--force-fetch`、`--force`、`--override`、
+旧的 `pipeline` 入口以及 `--force-fetch`、`--force`、`--override`、
 `--override-status`、`--failed-only`、`--resume-run-id` 已删除，不再兼容。当前唯一生产
-任务入口是 `task`；六个 Stage 名称只是同一入口的便捷别名：
+任务入口是 `task`；`cli` 是同一任务入口的交互式前端，六个 Stage 名称是便捷别名：
 
 ```bash
 uv run python -m data-pipeline.kbd.run task --ids 29351 --stages vision
 ```
 
 所有阶段共享同一组参数：`--excel` / `--ids` / `--id-file` / `--run-id`（任务范围）、
-`--stages`（默认 `all`）、`--resume`、`--failed`、`--rework[=draft,published]`。
+`--stages`（默认 `all`）、`--resume`、`--failed`、`--rework[=STATUS_LIST]`。
 三种显式模式严格互斥：无模式参数选择“未执行 + 失败”，`--resume` 仅未执行，`--failed`
-仅失败，`--rework` 全部重做且默认只处理 draft。`--run-id` 只读取历史执行的不可变
+仅失败，`--rework` 全部重做且默认只处理 draft，支持 `draft,published,rejected,archived` 多选。`--run-id` 只读取历史执行的不可变
 manifest，代表任务范围；本次运行仍生成独立 `execution_id`。指定阶段会按 DAG 自动补齐未满足
 的前置依赖，执行前日志会打印请求阶段、补齐阶段和每阶段选中任务数。published 重做只能
 创建 maintenance working revision，不能原地覆盖生效版本；Vision 还按图片 `seq` 记录子任务状态。
@@ -60,7 +60,7 @@ FETCH → IMPORT → {CLASSIFY ∥ VISION} → EXTRACT_SIGNALS → REVIEW_SIGNAL
 信号抽取的重要事实源，所以 `EXTRACT_SIGNALS` 对 **Vision 成功** 和 **分类成功** 都是硬依赖；
 识图失败、部分识图或需复核的 KBD 不会降级进入 Signal 抽取，而会明确显示为前置阻断。
 
-`pipeline --stages` 会自动补齐前置依赖。例如 `--stages review-signals` 会展开成完整六阶段链路；如果只想审查数据库现状且绝不触发前置生产，请使用独立的 `review-signals` 子命令。
+`task --stages` 会自动补齐前置依赖。例如 `--stages review-signals` 会展开成完整六阶段链路；如果只想审查外部 JSON 且绝不创建 KBD 任务，请使用独立的 `review-input` 子命令。
 
 | Stage | 输入 | 主要输出 | 是否写状态 |
 |---|---|---|---|
@@ -171,7 +171,7 @@ uv run python -m data-pipeline.kbd.run --help
 对单条案例运行完整生产闭环：
 
 ```bash
-uv run python -m data-pipeline.kbd.run pipeline --ids 37150
+uv run python -m data-pipeline.kbd.run task --ids 37150
 ```
 
 人工批量操作可使用交互式 CLI：
@@ -180,46 +180,14 @@ uv run python -m data-pipeline.kbd.run pipeline --ids 37150
 uv run python -m data-pipeline.kbd.run cli
 ```
 
-CLI 只在交互终端执行。它提供两种模式：
+CLI 只在交互终端执行，交互顺序为：任务范围（手动 ID、历史 run-id、ID 文件、Excel，默认手动 ID）→阶段→执行模式→重做状态（仅 rework）→limit→任务计划预览→最终确认。它只收集统一 `task` 参数，不再询问 force、override 或 failed-only。
 
-- `Typical`（默认）：`force_fetch=False`、`override=False`、`override_status=None`、`resume=False`、`failed_only=False`。也就是不强制重新抓取、不覆盖已有 KBD、不覆盖 published、不筛选失败项。
-- `Custom`：逐项询问是否强制抓取、是否覆盖、覆盖 `draft` 还是全部状态、是否续跑、是否仅处理失败项；高风险的全状态覆盖会再次要求确认。
-
-确认提示的作用是最后一道写入和 LLM 调用保护：用户已经选定案例和运行参数后，必须再次明确授权才会真正调用 `run_pipeline`。它不是在“继续/退出”之外提供业务分支；模式选择承担参数选择，最终确认承担误操作保护。多选项只接受提示中列出的序号；简单 yes/no 提示支持 `y`、`yes`、`n`、`no`（大小写不敏感），直接回车采用当前提示的默认值。
-
-CLI 显示的“实际运行参数”就是传给后端编排函数的参数，不会隐式增加高风险选项。Typical 模式等价于：
-
-```text
-run_pipeline(ids, force_fetch=False, override=False,
-             override_status=None, resume=False, failed_only=False)
-```
-
-因此 Typical **不是**以下命令：
-
-```text
---override --override-status all --force-fetch
-```
-
-这三个参数只有用户在 Custom 模式中明确选择时才会开启，其中 `--override-status all` 会覆盖包括 `published` 在内的所有状态，属于高风险操作。自动化/CI 请继续使用 `pipeline --json`。`pipeline` 每次运行同时生成
-人类可读文本日志、`progress_<run_id>.json` 和可检索的 `kbd_<run_id>.jsonl`；后者包含 trace、KBD、阶段、
-Job 与错误码关联字段。单阶段命令也会生成文本日志和 JSONL；只有编排 `pipeline` 会生成该次运行的 progress 文件。
-
-CLI 的交互顺序固定且可预期：先输入逗号分隔的 KBD ID，再选择 `1) Typical` 或 `2) Custom`，Custom 模式随后逐项询问参数，最后显示实际参数并询问 `确认开始？ [y/N]`。多选项只输入编号；yes/no 只输入 `y/yes/n/no`，大小写不敏感；带默认值的提示直接回车即可接受默认值。例如直接连续回车会选择 Typical，并在最终确认处取消，不会产生任何写入或 LLM 调用。
-
-终端打印的参数含义如下；这里的值就是本次实际传给 `run_pipeline` 的值：
-
-| 参数 | `False` / `None` 的含义 | 开启或非空时的含义与风险 |
-|---|---|---|
-| `force_fetch` | 复用有效的本地缓存 | 忽略缓存，重新抓取 Portal 原文和图片；只影响 Stage 1，不会自动覆盖数据库 |
-| `override` | 已存在的 KBD 保护性跳过 | 允许 Stage 2 写入新的导入 Proposal；可能覆盖未审核的草稿修改 |
-| `override_status` | `None`：后端默认仅允许覆盖 `draft` | `['draft']` 只覆盖草稿；`['all']` 包含 `published`，必须明确授权 |
-| `resume` | 按本次输入执行各阶段判断 | 按数据库现状跳过已完成阶段；progress 文件只作观测，不是业务真相 |
-| `failed_only` | 处理全部输入 ID | 仅筛选 Fetch/Vision 自动识别出的失败或可重试案例，适合故障重试 |
+四种模式为：默认“未执行 + 失败”、`--resume`“仅未执行”、`--failed`“仅失败”、`--rework`“全部重做”。重做状态支持 `draft`、`published`、`rejected`、`archived`，可多选；published 只能进入 maintenance working revision。历史 run-id 从 `logs/task-manifests/` 最近任务列表选择，也可以手动输入。执行后的日志、JSONL 和 KBD 完成摘要与非交互入口完全相同。
 
 批量指定 ID：
 
 ```bash
-uv run python -m data-pipeline.kbd.run pipeline \
+uv run python -m data-pipeline.kbd.run task \
   --ids 37150,39436,41818
 ```
 
@@ -249,7 +217,7 @@ uv run python -m data-pipeline.kbd.run pipeline \
 uv run python -m data-pipeline.kbd.run config
 
 # 2. 对 1 条案例执行完整 DAG
-uv run python -m data-pipeline.kbd.run pipeline --ids 37150
+uv run python -m data-pipeline.kbd.run task --ids 37150
 
 # 3. 根据终端打印的 run_id 查看进度与可检索排障日志
 ls -1t data-pipeline/kbd/logs/progress_*.json | head -1
@@ -301,11 +269,13 @@ CI/自动化应使用 `--json`，并以 `pipeline.success`、`completed_ids`、`
 
 | 需求 | 推荐命令 | 风险与约束 |
 |---|---|---|
-| 源案例缓存失效/更新 | `fetch --force` | 只刷新本地缓存，不修改 DB |
-| 覆盖已有 draft 导入 | `import --override` | 会写新的 Proposal，先确认没有未审核的关键人工改动 |
-| 覆盖 published | `import --override --override-status all` | 高风险，必须先备份并明确获得授权 |
-| Vision 技术失败重试 | `vision --failed-only` | 先降低并发、确认 Provider/网络恢复，不做无界重试 |
-| 从中断处继续 | `pipeline --resume` | DB 是完成状态真相源，progress 文件不可手改 |
+| 正常补齐未完成和失败 | `task --ids 37150` | 默认模式；按每个 Stage 独立选择 |
+| 只跑未完成 | `task --ids 37150 --resume` | 不重试已失败任务 |
+| 只重试失败 | `task --ids 37150 --failed` | 不选择未执行任务 |
+| 重做 draft | `task --ids 37150 --rework` | 明确允许已成功任务再次调用 |
+| 重做多个状态 | `task --ids 37150 --rework=draft,published,rejected,archived` | published 使用 maintenance working revision |
+| Vision 技术失败重试 | `task --ids 37150 --stages vision --failed` | 先确认 Provider/网络恢复，不做无界重试 |
+| 从历史任务范围执行 | `task --run-id 20260809_103000 --failed` | run-id 读取不可变 manifest |
 | 重新抽取已有 Signal | 不使用默认批处理覆盖 | 应在 Admin 审核语境中比较 Proposal 与专家修改 |
 | 发布 KBD | Admin UI 专家审核后发布 | CLI 和 Signal Review 都不能自动发布 |
 
@@ -321,12 +291,13 @@ CI/自动化应使用 `--json`，并以 `pipeline.success`、`completed_ids`、`
 
 未提供来源时命令会明确报错，不会默认全量操作。
 
-`review-signals` 额外支持：
+独立的 `review-input` 支持：
 
 ```text
---all             数据库全量只读 Signal Review
 --file FILE       审查已导出的 JSON 数组
 --stdin           从标准输入读取 JSON 数组
+--output FILE     写出审查报告
+--fail-on-blocked BLOCKED 时返回 1
 ```
 
 ## 7. 六阶段详细语义
@@ -373,21 +344,20 @@ uv run python -m data-pipeline.kbd.run import --ids 37150
 
 Pipeline 不再依赖 `.desc.txt`，也不在本地独立拼装最终 `content_md`。
 
-覆盖 draft：
+重做 draft：
 
 ```bash
-uv run python -m data-pipeline.kbd.run import \
+uv run python -m data-pipeline.kbd.run task \
   --ids 37150 \
-  --override
+  --rework
 ```
 
-覆盖 published 风险更高，只有明确需要重建且已备份/理解专家修改影响时才使用：
+重做 published 必须进入 maintenance working revision，并重新经过专家审查：
 
 ```bash
-uv run python -m data-pipeline.kbd.run import \
+uv run python -m data-pipeline.kbd.run task \
   --ids 37150 \
-  --override \
-  --override-status all
+  --rework=draft,published
 ```
 
 ### 7.3 Stage 3：classify
@@ -423,10 +393,10 @@ Vision 从数据库 `kbd_image` 读取原图，结合章节和前后文，调用
 ```bash
 uv run python -m data-pipeline.kbd.run vision \
   --ids 37150 \
-  --failed-only
+  --failed
 ```
 
-`failed-only` 会重试空描述、缺 Evidence、`failed/partial/low_quality/needs_review` 等可重试状态。已成功抽取观察事实但仍需人判断的图片，不应被无限重跑来碰运气。
+`--failed` 会按 Vision 任务账本选择失败图片/案例。已成功抽取观察事实但仍需人判断的图片，不应被无限重跑来碰运气。
 
 ### 7.5 Stage 5：extract-signals
 
@@ -573,12 +543,12 @@ uv run python -m data-pipeline.kbd.run review-signals \
 
 只有存在 `BLOCKED_SIGNAL_REVIEW` 才返回 1；JSON 解析失败、文件不可读等审查器自身错误会自然返回非零。
 
-## 8. Pipeline 的部分运行、续跑与覆盖
+## 8. task 的部分运行、续跑与重做
 
 指定阶段：
 
 ```bash
-uv run python -m data-pipeline.kbd.run pipeline \
+uv run python -m data-pipeline.kbd.run task \
   --ids 37150 \
   --stages fetch,import,vision
 ```
@@ -588,31 +558,30 @@ uv run python -m data-pipeline.kbd.run pipeline \
 从数据库现状续跑：
 
 ```bash
-uv run python -m data-pipeline.kbd.run pipeline \
+uv run python -m data-pipeline.kbd.run task \
   --ids 37150 \
   --resume
 ```
 
-`--resume` 以数据库状态为阶段完成依据；progress 文件只是运行记录。`--resume-run-id` 用于沿用日志 run_id，不应改变业务正确性。
+`--resume` 以任务账本状态为选择依据；progress 文件只是运行记录。历史任务范围使用 `--run-id`，它读取不可变 manifest，不会沿用旧日志文件。
 
 仅处理自动识别出的抓取/Vision 失败案例：
 
 ```bash
-uv run python -m data-pipeline.kbd.run pipeline \
+uv run python -m data-pipeline.kbd.run task \
   --excel \
-  --failed-only
+  --failed
 ```
 
 强制重新抓取并覆盖允许状态的导入记录：
 
 ```bash
-uv run python -m data-pipeline.kbd.run pipeline \
+uv run python -m data-pipeline.kbd.run task \
   --ids 37150 \
-  --force-fetch \
-  --override
+  --rework
 ```
 
-不要把 `--force-fetch`、`--override` 和“重新抽取已有专家信号”混为一谈。前两者只控制源缓存和 Import；Stage 5 仍保护非空 `signals_json`。
+不要把 `--rework` 与默认补齐/失败重试混为一谈。`--rework` 明确表示即使任务成功也再次执行；状态范围可指定 `draft,published,rejected,archived`。
 
 ## 9. 数据模型和发布边界
 
@@ -717,7 +686,7 @@ ls -1t data-pipeline/kbd/logs/kbd_*.log | head -1
 env -u NO_COLOR KBD_COLOR=always uv run python -m data-pipeline.kbd.run cli
 
 # 关闭颜色（适用于 CI、重定向和纯文本终端）
-NO_COLOR=1 uv run python -m data-pipeline.kbd.run pipeline --ids 37150 --json
+NO_COLOR=1 uv run python -m data-pipeline.kbd.run task --ids 37150 --json
 ```
 
 ### 11.2 终端排版采用的最佳实践与失败根因
@@ -863,7 +832,8 @@ git diff --check
 
 ```bash
 uv run python -m data-pipeline.kbd.run --help
-uv run python -m data-pipeline.kbd.run pipeline --help
+uv run python -m data-pipeline.kbd.run task --help
+uv run python -m data-pipeline.kbd.run cli --help
 uv run python -m data-pipeline.kbd.run extract-signals --help
 uv run python -m data-pipeline.kbd.run review-signals --help
 ```

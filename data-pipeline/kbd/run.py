@@ -4,6 +4,7 @@ data-pipeline/kbd/run.py — KBD 知识生产管道 CLI 入口（API 调用版�
 统一任务入口（在项目根目录下）：
 
   uv run python -m data-pipeline.kbd.run task --ids 34977 --stages all
+  uv run python -m data-pipeline.kbd.run cli
   uv run python -m data-pipeline.kbd.run task --excel --stages vision --resume
   uv run python -m data-pipeline.kbd.run task --run-id 20260809_103000 --failed
 
@@ -39,6 +40,7 @@ from .progress import load_progress
 from .runtime import require_shared_contracts
 from .task_manager import (
     ALL_STAGE_NAMES,
+    REWORK_STATUS_NAMES,
     TaskMode,
     parse_rework_statuses,
     parse_stage_names,
@@ -309,7 +311,8 @@ def _get_task_ids(args: argparse.Namespace) -> list[str]:
         ids = [str(value) for value in manifest.get("requested_ids", [])]
         return ids[:limit] if limit is not None else ids
     if getattr(args, "excel", False):
-        ids = read_ids_from_excel()
+        excel_file = getattr(args, "excel_file", None)
+        ids = read_ids_from_excel(Path(excel_file)) if excel_file else read_ids_from_excel()
     elif getattr(args, "ids", None):
         raw_ids = [item.strip() for item in args.ids.split(",") if item.strip()]
         invalid = [item for item in raw_ids if not item.isdigit()]
@@ -592,9 +595,9 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
 
 
 async def _cmd_cli(args: argparse.Namespace, run_id: str) -> int:
-    """交互式 CLI；Typical 保守运行，Custom 显式确认高风险参数。"""
+    """交互式 CLI：只收集统一 task 参数，实际执行复用 ``_cmd_task``。"""
     if not sys.stdin.isatty():
-        print("错误：cli 需要交互终端；自动化请使用 pipeline --ids/--id-file --json。")
+        print("错误：cli 需要交互终端；自动化请使用 task --ids/--id-file --json。")
         return 3
     print("KBD 交互式 CLI")
     print("将执行：抓取 → 导入 →（截图识别与分类并行）→ 关键信号抽取 → 审计")
@@ -604,27 +607,23 @@ async def _cmd_cli(args: argparse.Namespace, run_id: str) -> int:
     if not settings.INTERNAL_API_TOKEN:
         print("错误：内部 Token 未配置，已停止。请先设置 INTERNAL_API_TOKEN。")
         return 4
-    ids_text = input("请输入 KBD 案例 ID（逗号分隔）：").strip()
-    ids = _parse_ids(ids_text)
-    if not ids:
-        print("未输入有效案例 ID，已取消。")
-        return 3
+    try:
+        task_args = _collect_interactive_task_args()
+        if Stage.REVIEW_SIGNALS in parse_stage_names(task_args.stages):
+            require_shared_contracts()
+        mode, stage_names, ids, task_plan = _build_task_plan(task_args)
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"参数错误：{exc}", file=sys.stderr)
+        return 2
 
-    options = _cli_options()
-    print(f"本次将处理 {len(ids)} 个 KBD。截图识别成功与分类成功均为信号抽取的硬前置条件。")
-    print("\n本次实际运行参数（后端 run_pipeline）：")
-    print("  参数             当前值       中文含义")
-    print("  " + "-" * 96)
-    for key, value in options.items():
-        print(f"  {key:<16}= {str(value):<11}  {_CLI_OPTION_DESCRIPTIONS[key]}")
-    print("确认的意义：最后一次显式确认，防止在参数选定后误触发抓取、写库和 LLM 调用。")
+    _print_interactive_plan(task_args, mode, stage_names, ids, task_plan)
+    if not any(task_plan.values()):
+        print("没有符合当前模式的任务，已结束。")
+        return 0
     if not _prompt_yes_no("确认开始？", default=False):
         print("已取消，未执行任何处理。")
         return 130
-    from .pipeline import run_pipeline
-    stats, actual_run_id = await run_pipeline(ids, run_id=run_id, **options)
-    _print_pipeline_summary(actual_run_id, stats)
-    return 0 if stats.get("pipeline", {}).get("success", True) else 1
+    return await _cmd_task(task_args, run_id)
 
 
 def _prompt_yes_no(prompt: str, *, default: bool) -> bool:
@@ -660,82 +659,138 @@ def _prompt_choice(prompt: str, choices: tuple[tuple[str, str, str], ...], *, de
         print(f"请输入选项序号（{valid}）。")
 
 
-def _cli_options() -> dict[str, object]:
-    """收集交互 CLI 参数，返回可直接传入 run_pipeline 的参数字典。"""
+def _collect_interactive_task_args() -> argparse.Namespace:
+    """按统一任务模型收集交互参数。"""
 
-    mode = _prompt_choice(
-        "请选择运行模式：",
+    source = _prompt_choice(
+        "请选择任务范围：",
         (
-            ("1", "typical", "默认 Typical（推荐）：保守运行，不强制抓取、不覆盖已有记录"),
-            ("2", "custom", "自定义 Custom：逐项确认运行参数"),
+            ("1", "ids", "手动输入案例 ID（最高频，推荐）"),
+            ("2", "run-id", "选择历史 run-id 任务范围"),
+            ("3", "id-file", "指定 ID 文件"),
+            ("4", "excel", "指定 Excel 文件"),
         ),
         default="1",
     )
-    if mode == "typical":
-        options: dict[str, object] = {
-            "force_fetch": False,
-            "override": False,
-            "override_status": None,
-            "resume": False,
-            "failed_only": False,
-        }
-        print("已选择默认 Typical：不会强制重新抓取，也不会覆盖已有 KBD。")
-        return options
-    force_fetch = _prompt_yes_no("强制重新抓取已有缓存？", default=False)
-    override = _prompt_yes_no("覆盖已存在的 KBD？", default=False)
-    override_status: list[str] | None = None
-    if override:
-        scope = _prompt_choice(
-            "请选择覆盖范围：",
-            (
-                ("1", "draft", "仅 draft（推荐）"),
-                ("2", "all", "所有状态（包含 published，高风险）"),
-            ),
-            default="1",
-        )
-        if scope == "draft":
-            override_status = ["draft"]
-        else:
-            print("警告：所有状态包含 published，可能覆盖专家已审核内容。")
-            if not _prompt_yes_no("确认允许覆盖所有状态？", default=False):
-                override = False
-                override_status = None
-
-    resume = _prompt_yes_no("从数据库现状续跑并跳过已完成项？", default=False)
-    failed_only = _prompt_yes_no("仅处理抓取/Vision 失败项？", default=False)
-    if resume and failed_only:
-        print("提示：同时启用续跑和失败筛选时，将先筛选失败项，再按数据库状态跳过已完成项。")
-    return {
-        "force_fetch": force_fetch,
-        "override": override,
-        "override_status": override_status,
-        "resume": resume,
-        "failed_only": failed_only,
+    values: dict[str, object] = {
+        "command": "task", "excel": False, "ids": None,
+        "id_file": None, "run_id": None,
     }
+    if source == "ids":
+        values["ids"] = input("请输入 KBD 案例 ID（逗号分隔）：").strip()
+    elif source == "run-id":
+        values["run_id"] = _choose_history_run_id()
+    elif source == "id-file":
+        values["id_file"] = input("请输入 ID 文件路径：").strip()
+    else:
+        values["excel"] = True
+        values["excel_file"] = input(
+            "请输入 Excel 文件路径（直接回车使用 EXCEL_FILE）："
+        ).strip() or None
+
+    stage_choice = _prompt_choice(
+        "请选择执行阶段：",
+        (("1", "all", "ALL：全部六个阶段"), ("2", "selected", "指定阶段")),
+        default="1",
+    )
+    if stage_choice == "all":
+        stages = "all"
+    else:
+        print(
+            "阶段：1 fetch  2 import  3 classify  4 vision "
+            "5 extract-signals  6 review-signals"
+        )
+        stages = input("请输入阶段编号或名称（逗号分隔）：").strip()
+
+    mode = _prompt_choice(
+        "请选择执行模式：",
+        (
+            ("1", "default", "默认：未执行 + 失败"),
+            ("2", "resume", "断点续跑：仅未执行"),
+            ("3", "failed", "失败重试：仅失败"),
+            ("4", "rework", "重做：不论完成/失败"),
+        ),
+        default="1",
+    )
+    values.update({
+        "stages": stages,
+        "resume": mode == "resume",
+        "failed": mode == "failed",
+        "rework": None,
+    })
+    if mode == "rework":
+        print("可选状态：1 draft  2 published  3 rejected  4 archived")
+        status_input = input(
+            "请输入状态编号或名称（逗号分隔，直接回车默认 draft）："
+        ).strip()
+        values["rework"] = _parse_interactive_rework_statuses(status_input)
+
+    limit_input = input("最多处理多少个案例？直接回车表示不限制：").strip()
+    if limit_input:
+        if not limit_input.isdigit() or int(limit_input) <= 0:
+            raise ValueError("--limit 必须是正整数")
+        values["limit"] = int(limit_input)
+    else:
+        values["limit"] = None
+    values.update({"json": False, "quiet": False, "verbose": False})
+    return argparse.Namespace(**values)
 
 
-_CLI_OPTION_DESCRIPTIONS = {
-    "force_fetch": (
-        "是否忽略本地 cache，重新从 Support Portal 抓取原文和图片；"
-        "False=复用有效缓存，True=只重抓 Stage 1，不会自动覆盖数据库。"
-    ),
-    "override": (
-        "是否覆盖已经存在的 KBD 导入记录；False=保护性跳过已有记录，"
-        "True=允许 Stage 2 写入新的 Proposal。"
-    ),
-    "override_status": (
-        "允许覆盖的状态范围；None=后端默认仅 draft，['draft']=仅草稿，"
-        "['all']=包含 published，属于高风险覆盖。"
-    ),
-    "resume": (
-        "是否按数据库现状续跑；False=按本次输入执行各阶段，"
-        "True=跳过数据库已经完成的阶段，progress 文件只用于观察。"
-    ),
-    "failed_only": (
-        "是否只筛选 Fetch/Vision 自动识别出的失败或可重试案例；"
-        "False=处理全部输入 ID，True=用于故障重试，不会把普通成功案例重复送入 LLM。"
-    ),
-}
+def _parse_interactive_rework_statuses(value: str) -> str:
+    if not value:
+        return "draft"
+    aliases = {str(index): name for index, name in enumerate(REWORK_STATUS_NAMES, 1)}
+    selected = [aliases.get(item.strip(), item.strip().lower()) for item in value.split(",")]
+    parsed = ",".join(dict.fromkeys(selected))
+    parse_rework_statuses(parsed)
+    return parsed
+
+
+def _choose_history_run_id() -> str:
+    manifests_dir = settings.KBD_LOGS_DIR / "task-manifests"
+    manifests = sorted(
+        manifests_dir.glob("*.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    if not manifests:
+        raise ValueError("当前没有可用的历史 run-id")
+    choices: list[tuple[str, str, str]] = []
+    for index, path in enumerate(manifests[:10], 1):
+        manifest = load_execution_manifest(path.stem) or {}
+        choices.append(
+            (
+                str(index),
+                path.stem,
+                f"{path.stem}：案例 {len(manifest.get('requested_ids', []))} 个，"
+                f"模式 {manifest.get('mode', '-')}",
+            )
+        )
+    choices.append(("m", "manual", "手动输入 run-id"))
+    selected = _prompt_choice("最近的历史任务：", tuple(choices), default="1")
+    if selected == "manual":
+        return input("请输入历史 run-id：").strip()
+    return selected
+
+
+def _print_interactive_plan(
+    args: argparse.Namespace,
+    mode: TaskMode,
+    stage_names: tuple[str, ...],
+    ids: list[str],
+    task_plan: dict[Stage, list[str]],
+) -> None:
+    requested = args.stages or getattr(args, "stage", None) or "all"
+    source = args.run_id or ("Excel" if args.excel else args.id_file or "手动输入")
+    print("\nKBD 任务执行计划")
+    print(f"任务来源：{source}")
+    print(f"案例数：{len(ids)}")
+    print(f"执行模式：{mode.value}")
+    print(f"用户请求阶段：{requested}")
+    print(f"最终执行阶段：{', '.join(stage_names)}")
+    print("阶段任务数：")
+    for stage, selected in task_plan.items():
+        print(f"  {stage_cli_name(stage):<18} {len(selected)}")
 
 
 async def _cmd_fetch(args: argparse.Namespace, run_id: str) -> None:
@@ -1082,6 +1137,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_task = sub.add_parser("task", help="统一 KBD 任务执行器（六个 Stage 共用同一套参数）")
     _add_task_command_options(p_task)
 
+    sub.add_parser("cli", help="统一 task 任务的交互式前端")
+
     # 每个 Stage 都是同一种任务，使用完全相同的生命周期参数。
     for name, help_text in [
         ("fetch", "Stage 1：抓取 API + 下载图片"),
@@ -1136,6 +1193,7 @@ def main() -> None:
 
     cmd_map = {
         "task": _cmd_task,
+        "cli": _cmd_cli,
         "fetch": _cmd_task,
         "import": _cmd_task,
         "classify": _cmd_task,

@@ -32,7 +32,9 @@ class TaskMode(StrEnum):
 
 
 ALL_STAGE_NAMES = tuple(stage.name.lower().replace("_", "-") for stage in Stage)
-REWORK_STATUS_NAMES = frozenset({"draft", "published"})
+# KBD 生命周期状态（与 kb-service KbdEntry.status 契约一致）。
+REWORK_STATUS_NAMES = ("draft", "published", "rejected", "archived")
+REWORK_STATUS_SET = frozenset(REWORK_STATUS_NAMES)
 
 
 @dataclass(frozen=True)
@@ -78,10 +80,10 @@ def parse_rework_statuses(value: str | None) -> tuple[str, ...]:
     if value is None or not value.strip():
         return ("draft",)
     statuses = tuple(dict.fromkeys(item.strip().lower() for item in value.split(",") if item.strip()))
-    invalid = sorted(set(statuses) - REWORK_STATUS_NAMES)
+    invalid = sorted(set(statuses) - REWORK_STATUS_SET)
     if invalid:
         raise ValueError(
-            f"--rework 状态非法: {', '.join(invalid)}；合法值：draft,published"
+            f"--rework 状态非法: {', '.join(invalid)}；合法值：{','.join(REWORK_STATUS_NAMES)}"
         )
     return statuses
 

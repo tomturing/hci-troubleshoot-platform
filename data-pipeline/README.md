@@ -94,7 +94,7 @@ PYTHONPATH=data-pipeline uv run python -m raw_to_sop \
 - `.env`、Cookie、Token、数据库口令不得提交 Git，也不得写入 README、测试夹具或日志。
 - 抓取缓存保留原始案例和图片，仅用于生产追溯；不要把真实缓存批量提交仓库。
 - `review-signals` 默认只读，不修改 Proposal。发现问题默认返回 0 并生成专家清单；只有显式使用 `--fail-on-blocked` 才作为 CI 门禁返回 1。
-- `pipeline --override --override-status all` 可能覆盖已发布内容，仅在明确理解影响时使用；日常生产优先处理 draft。
+- `task --rework=draft,published` 会为 published 任务进入 maintenance working revision，不能原地覆盖 active 版本；日常生产优先处理 draft。
 - LLM 输出是 Proposal，不是事实。截图推断、分类和关键信号都必须保留可追溯证据并经过发布门禁。
 
 ## 开发和验证
