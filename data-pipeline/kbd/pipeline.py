@@ -323,6 +323,19 @@ async def run_pipeline(
             return [str(row["support_id"]) for row in rows if _signal_document_status(row["signals_json"]) == "done"]
         return candidates
 
+    async def _status_scoped(stage: Stage, ids: Iterable[str]) -> list[str]:
+        """在已有 KBD 的阶段应用 rework 状态范围；Fetch 尚无 KBD 状态。"""
+        candidates = list(ids)
+        if not rework or stage is Stage.FETCH or not candidates:
+            return candidates
+        rows = await pool.fetch(
+            "SELECT support_id FROM kbd_entry WHERE support_id = ANY($1) AND status = ANY($2)",
+            candidates,
+            list(rework_statuses or ["draft"]),
+        )
+        allowed = {str(row["support_id"]) for row in rows}
+        return [cid for cid in candidates if cid in allowed]
+
     try:
         if Stage.FETCH in stages:
             logger.info(_stage_banner(1, "数据抓取"))
@@ -347,7 +360,7 @@ async def run_pipeline(
             logger.info(_stage_banner(2, "语义提取 + 原子入库"))
             _mark_dependency_blocked(progress, "import", kbd_ids, active_ids)
             ready_ids = await _get_import_ready_ids(active_ids, pool)
-            import_ids = _planned(Stage.IMPORT, ready_ids)
+            import_ids = _planned(Stage.IMPORT, await _status_scoped(Stage.IMPORT, ready_ids))
 
             t0 = time.monotonic()
             stats = await import_batch(
@@ -394,7 +407,7 @@ async def run_pipeline(
         async def _run_vision_stage(input_ids: list[str]) -> set[str]:
             _mark_dependency_blocked(progress, "vision", kbd_ids, input_ids)
             vision_candidates = await _get_vision_ready_ids(input_ids, pool)
-            vision_ids = _planned(Stage.VISION, vision_candidates)
+            vision_ids = _planned(Stage.VISION, await _status_scoped(Stage.VISION, vision_candidates))
             started_at = time.monotonic()
             stats = await process_images_batch(vision_ids, pool, rework=rework)
             all_stats["vision"] = {**stats, "elapsed_s": round(time.monotonic() - started_at, 1)}
@@ -456,7 +469,7 @@ async def run_pipeline(
         async def _run_classify_stage(input_ids: list[str]) -> set[str]:
             _mark_dependency_blocked(progress, "classify", kbd_ids, input_ids)
             started_at = time.monotonic()
-            classify_ids = _planned(Stage.CLASSIFY, input_ids)
+            classify_ids = _planned(Stage.CLASSIFY, await _status_scoped(Stage.CLASSIFY, input_ids))
             stats = await classify_batch(classify_ids, pool, rework=rework)
             all_stats["classify"] = {**stats, "elapsed_s": round(time.monotonic() - started_at, 1)}
 
