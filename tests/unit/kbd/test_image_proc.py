@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from kbd.image_proc import _poll_reanalyze_status
+from kbd.image_proc import _poll_reanalyze_status, process_images_batch
 
 
 def _status_response(payload: dict) -> httpx.Response:
@@ -56,3 +56,14 @@ async def test_poll_fails_after_bounded_consecutive_transport_errors(monkeypatch
         )
 
     assert client.get.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_empty_batch_is_reported_as_skipped_without_api_setup(caplog):
+    """空 Vision 计划应明确说明跳过，而不是打印识图完成 0/0。"""
+    with caplog.at_level("INFO", logger="kbd.image_proc"):
+        result = await process_images_batch([])
+
+    assert result == {"done": 0, "failed": 0, "skipped": 0, "case_results": {}}
+    assert "批量识图跳过" in caplog.text
+    assert "批量识图完成" not in caplog.text
