@@ -18,9 +18,9 @@ spec:
     helm:
       values: |
         image:
-          repository: ghcr.io/tomturing/hci-sim
-          # 发布流程必须覆盖为 sha256:<digest>，避免 latest/dev-local 漂移。
-          digest: ""
+          repository: ghcr.io/tomturing/hci-troubleshoot-platform/hci-sim
+          # 由 CI main 发布产物填充为 immutable manifest digest；禁止 tag/dev-local 漂移。
+          digest: "sha256:ff0732825a96db8858f03c8b6d574b57dd0dce1fe7c2e60153c6d7b5079cfd02"
         database:
           required: true
           existingSecret: hci-sim-runtime-credentials

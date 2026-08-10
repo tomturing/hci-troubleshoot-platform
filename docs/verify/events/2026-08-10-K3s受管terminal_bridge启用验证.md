@@ -189,10 +189,21 @@ block_reason:
 
 ## 已执行现场证据（2026-08-10）
 
+### P0 镜像发布与 GitOps 部署前置证据
+
+| 项目 | 结果 | 证据 |
+|---|---|---|
+| main 发布构建 | passed | CI run `31386141111` 的“构建并推送镜像（hci-sim）”成功；构建输入为 `hci_sim/Dockerfile`。 |
+| 发布镜像 | passed | `ghcr.io/tomturing/hci-troubleshoot-platform/hci-sim:20260810-1204-946af37`。 |
+| manifest digest | passed | `sha256:ff0732825a96db8858f03c8b6d574b57dd0dce1fe7c2e60153c6d7b5079cfd02`；CI buildx metadata 与镜像 tag 一致。 |
+| Argo source | in_progress | `hci-sim-dev` Application 将从旧的 `ghcr.io/tomturing/hci-sim:dev-local` 切换到上述 repository@digest；需等待 GitOps commit 同步后完成干净重建。 |
+
+上述 digest 是 OCI manifest list digest，部署时必须使用 `repository@sha256:...`，不能改写成 tag，也不能依赖节点已有的 `dev-local` 镜像。
+
 | 用例 | 结果 | 证据摘要 |
 |---|---|---|
-| Runtime 健康与数据库 | passed | `hci-sim-dev/hci-sim` 达到 `1/1`；`/status` 显示 `database_configured=true`、`database_name=hci_sim`，日志含固定 Bundle digest。 |
+| Runtime 健康与数据库 | passed（旧 dev-local 现场） | `hci-sim-dev/hci-sim` 达到 `1/1`；`/status` 显示 `database_configured=true`、`database_name=hci_sim`，日志含固定 Bundle digest。immutable digest 部署后需重复。 |
 | Gateway build/TestRun | passed（临时现场 patch） | 27123 的 Gateway build 返回 HTTP 200、`execution_mode=sim-ssh`、connection；TestRun 返回 HTTP 200，`test_run_id` 与 build 一致。 |
 | Bridge→Runtime SSH/exec | passed（临时 dev image） | `hci-sim-smoke` 五项全部通过：4 条正向/信号命令和 1 条未知命令的 fail-closed 127；Bridge 日志记录 SSH 认证成功和隔离 exec。 |
 
-边界：上述现场验证使用了未进入 Argo source 的本地 `dev-local-v2` 镜像和临时 NetworkPolicy patch；正式结论必须在 Helm/GitOps 修复合入、不可变 digest 部署后重跑。23821 因当前 Bundle 未加载，保持 `capability_gap`。
+边界：Gateway/Bridge 正向证据已经取得，但之前的运行面证据使用了未进入 Argo source 的本地 `dev-local-v2` 镜像和临时 NetworkPolicy patch；因此在本变更合入并完成 Argo digest 同步、删除旧 Pod 后，必须按本文件第 6～8 节重跑并保存脱敏日志。23821 因当前 Bundle 未加载，保持 `capability_gap`。
