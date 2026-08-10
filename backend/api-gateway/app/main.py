@@ -32,8 +32,8 @@ from app.routes import (
     conversations,
     environments,
     health,
-    simulations,
     kb,
+    simulations,
     terminal,
     websocket,
 )
