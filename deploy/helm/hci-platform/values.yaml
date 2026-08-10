@@ -508,6 +508,19 @@ dbMigrate:
     repository: "ghcr.io/tomturing/hci-troubleshoot-platform/db-migrate"
     tag: "latest"
 
+# ======================== hci-sim DB（独立控制面）===========================
+# 默认关闭，必须由环境仓库显式启用并提供两个独立密码。hci-sim 不得回退到
+# config.postgresDb；迁移 Job 只连接 hci_sim，平台服务继续连接 hci_troubleshoot。
+hciSimDatabase:
+  enabled: false
+  name: hci_sim
+  ownerRole: hci_sim_owner
+  migratorRole: hci_sim_migrator
+  runtimeRole: hci_sim_runtime
+  credentialsSecretName: hci-sim-db-credentials
+  migratorPassword: ""
+  runtimePassword: ""
+
 # ======================== DB Seed（ArgoCD PostSync / Helm post-upgrade）===
 # 自动加载 database/seeds/*.sql 到 PostgreSQL，确保 admin-ui 中工具/Prompt/技能页面有初始数据
 # 幂等：tool DO UPDATE（与代码对齐）；prompt/skill DO NOTHING（保护用户改动）

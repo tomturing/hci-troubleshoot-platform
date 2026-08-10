@@ -1,0 +1,88 @@
+{{- if .Values.hciSimDatabase.enabled }}
+# hci_sim 独立数据库初始化与迁移。该 Hook 不读取主库 desired_schema.sql。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hci-sim-db-migrate-{{ .Values.dbMigrate.image.tag | default "latest" | lower | replace "." "-" | replace "_" "-" | trunc 15 | trimSuffix "-" }}
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hci-sim-db-migrate
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookFailed
+    helm.sh/hook-weight: "-8"
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "hci.labels" . | nindent 8 }}
+        app.kubernetes.io/component: hci-sim-db-migrate
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: hci-sim-db-migrate
+          image: postgres:15-alpine
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              export PGHOST="$POSTGRES_HOST" PGPORT=5432 PGUSER="$POSTGRES_USER" PGPASSWORD="$POSTGRES_PASSWORD"
+              case "$OWNER_ROLE$MIGRATOR_ROLE$RUNTIME_ROLE" in (*[!A-Za-z0-9_]*) echo "role name must be alphanumeric" >&2; exit 1;; esac
+              # 角色名来自受版本控制的 values；密码先转义单引号，避免把 Secret 拼成 SQL。
+              esc_migrator_password=$(printf '%s' "$MIGRATOR_PASSWORD" | sed "s/'/''/g")
+              esc_runtime_password=$(printf '%s' "$RUNTIME_PASSWORD" | sed "s/'/''/g")
+              psql -d postgres -v ON_ERROR_STOP=1 -c "DO \\\$\\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='$OWNER_ROLE') THEN CREATE ROLE \"$OWNER_ROLE\" NOLOGIN; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='$MIGRATOR_ROLE') THEN CREATE ROLE \"$MIGRATOR_ROLE\" LOGIN PASSWORD '$esc_migrator_password'; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='$RUNTIME_ROLE') THEN CREATE ROLE \"$RUNTIME_ROLE\" LOGIN PASSWORD '$esc_runtime_password'; END IF; ALTER ROLE \"$MIGRATOR_ROLE\" PASSWORD '$esc_migrator_password'; ALTER ROLE \"$RUNTIME_ROLE\" PASSWORD '$esc_runtime_password'; END \\\$\\$;"
+              psql -d postgres -v ON_ERROR_STOP=1 -tc "SELECT 1 FROM pg_database WHERE datname='$SIM_DATABASE'" | grep -q 1 || psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$SIM_DATABASE\" OWNER \"$OWNER_ROLE\""
+              psql -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE \"$RUNTIME_ROLE\" LOGIN PASSWORD '$RUNTIME_PASSWORD'; REVOKE ALL ON DATABASE \"$SIM_DATABASE\" FROM PUBLIC; GRANT CONNECT ON DATABASE \"$SIM_DATABASE\" TO \"$MIGRATOR_ROLE\", \"$RUNTIME_ROLE\";"
+              psql -d "$SIM_DATABASE" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS control_plane AUTHORIZATION \"$MIGRATOR_ROLE\"; CREATE SCHEMA IF NOT EXISTS fixture AUTHORIZATION \"$MIGRATOR_ROLE\"; CREATE SCHEMA IF NOT EXISTS artifact AUTHORIZATION \"$MIGRATOR_ROLE\"; CREATE SCHEMA IF NOT EXISTS audit AUTHORIZATION \"$MIGRATOR_ROLE\";"
+              export PGUSER="$MIGRATOR_ROLE" PGPASSWORD="$MIGRATOR_PASSWORD"
+              psql -d "$SIM_DATABASE" -v ON_ERROR_STOP=1 -f /migrations/000001_control_plane.sql
+              psql -d "$SIM_DATABASE" -v ON_ERROR_STOP=1 -c "GRANT USAGE ON SCHEMA control_plane, fixture, artifact, audit TO \"$RUNTIME_ROLE\"; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA control_plane, fixture, artifact, audit TO \"$RUNTIME_ROLE\"; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA control_plane, fixture, artifact, audit TO \"$RUNTIME_ROLE\";"
+              echo "hci_sim database and grants are ready"
+          env:
+            - name: POSTGRES_HOST
+              value: {{ .Values.config.postgresHost | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.config.postgresUser | quote }}
+            - name: POSTGRES_PASSWORD
+              value: {{ .Values.secrets.postgresPassword | quote }}
+            - name: SIM_DATABASE
+              value: {{ .Values.hciSimDatabase.name | quote }}
+            - name: OWNER_ROLE
+              value: {{ .Values.hciSimDatabase.ownerRole | quote }}
+            - name: MIGRATOR_ROLE
+              value: {{ .Values.hciSimDatabase.migratorRole | quote }}
+            - name: RUNTIME_ROLE
+              value: {{ .Values.hciSimDatabase.runtimeRole | quote }}
+            - name: MIGRATOR_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.hciSimDatabase.credentialsSecretName }}
+                  key: MIGRATOR_PASSWORD
+            - name: RUNTIME_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.hciSimDatabase.credentialsSecretName }}
+                  key: RUNTIME_PASSWORD
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+      volumes:
+        - name: migrations
+          configMap:
+            name: hci-sim-db-migrations
+{{- end }}

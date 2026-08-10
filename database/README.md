@@ -85,7 +85,7 @@ CI 流程自动执行：
 
 ## 铁律
 
-1. **desired_schema.sql 是唯一权威** — 所有表结构以此为准，文档与代码以此校对
+1. **平台库 desired_schema.sql 是唯一权威** — `hci_troubleshoot` 表结构以此为准；`hci_sim` 只认 `hci-sim-migrations/`，两者不可交叉扫描
 2. **已提交的 Atlas 迁移文件永远不修改** — 如需修订，新建迁移文件
 3. **atlas.sum 禁止手动修改** — 由 `atlas migrate hash` 自动生成
 4. **migrations/ 目录只读归档** — 禁止新增 dbmate 文件
@@ -99,7 +99,9 @@ CI 流程自动执行：
 
 ## hci-sim 控制面 Schema（阶段 C/D）
 
-`agent_test_*` 表是 hci-sim 控制面 metadata：Scenario、不可变 Fixture Bundle、依赖、provenance、审批、审计、TestRun、Attempt、Event、Result 和 Runtime capability。它们只保存精确 revision、受控对象 URI、digest/哈希、状态与审计关联；**禁止**保存原始客户 Artifact、任意外部 URL 或可重放的 Lease 明文。真实 Artifact 进入具备审批、版本与保留策略的对象存储，Runtime 只能读取 `published` Bundle。
+`hci_sim` 数据库的控制面 metadata 按 `control_plane`、`fixture`、`artifact`、`audit` schema 管理：Scenario、不可变 Fixture Bundle、依赖、provenance、审批、审计、TestRun、Attempt、Event、Result 和 Runtime capability。它们只保存精确 revision、受控对象 URI、digest/哈希、状态与审计关联；**禁止**保存原始客户 Artifact、任意外部 URL 或可重放的 Lease 明文。真实 Artifact 进入具备审批、版本与保留策略的对象存储，Runtime 只能读取 `published` Bundle。
+
+当前主库中的 `public.agent_test_*` 是迁移前存量兼容源，复制脚本默认只 inventory；完成 copy/verify/switch 和观察窗口前不得 DROP。独立迁移入口为 `database/hci-sim-migrations/000001_control_plane.sql`，不由平台 Atlas Job 执行。
 
 > **历史说明**：`schema_migrations` 表为旧 dbmate 工具表（已废弃）。Atlas 使用 `atlas_schema_revisions` 表跟踪版本。
 

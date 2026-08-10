@@ -1,0 +1,13 @@
+{{- if .Values.hciSimDatabase.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hci-sim-db-migrations
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hci-sim-db-migrate
+data:
+  000001_control_plane.sql: |
+{{ .Files.Get "hci-sim-migrations/000001_control_plane.sql" | nindent 4 }}
+{{- end }}

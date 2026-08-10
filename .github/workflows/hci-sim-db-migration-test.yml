@@ -1,0 +1,55 @@
+name: hci-sim DB 隔离迁移验证
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "database/hci-sim-migrations/**"
+      - "scripts/db/hci-sim-copy.sh"
+      - "deploy/helm/hci-platform/templates/hci-sim-db-*.yaml"
+      - "deploy/helm/hci-platform/templates/hooks/hci-sim-db-migrate-job.yaml"
+      - "deploy/helm/hci-platform/values.yaml"
+  workflow_dispatch:
+
+concurrency:
+  group: hci-sim-db-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  migration:
+    name: hci_sim migration and permission boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: hci_admin
+          POSTGRES_PASSWORD: ci_admin_pass
+          POSTGRES_DB: hci_troubleshoot
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hci_admin -d hci_troubleshoot"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      PGHOST: localhost
+      PGPORT: 5432
+      PGUSER: hci_admin
+      PGPASSWORD: ci_admin_pass
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: 创建目标数据库和迁移角色
+        run: |
+          psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE hci_sim_migrator LOGIN PASSWORD 'mig_pass';"
+          psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE hci_sim_runtime LOGIN PASSWORD 'run_pass';"
+          psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE hci_sim OWNER hci_sim_migrator;"
+      - name: 执行独立迁移
+        run: psql -d hci_sim -v ON_ERROR_STOP=1 -f database/hci-sim-migrations/000001_control_plane.sql
+      - name: 校验模块表和主库边界
+        run: |
+          test "$(psql -d hci_sim -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema IN ('control_plane','fixture','artifact','audit')")" = 15
+          test "$(psql -d hci_troubleshoot -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE 'agent_test_%'")" = 0
+          psql -d hci_sim -v ON_ERROR_STOP=1 -c "REVOKE ALL ON DATABASE hci_sim FROM PUBLIC; GRANT CONNECT ON DATABASE hci_sim TO hci_sim_runtime;"
+          ! PGPASSWORD=run_pass psql -h localhost -U hci_sim_runtime -d hci_sim -c 'CREATE TABLE control_plane.must_fail(id int);'
+          echo 'hci_sim migration and DDL negative check: PASS'

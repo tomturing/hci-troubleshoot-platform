@@ -87,7 +87,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | 组别 | 需求 | 方案 | 任务 | 验证 |
 |---|---|---|---|---|
 | K3s 受管 terminal_bridge | [需求](requirement/events/2026-08-10-K3s受管terminal_bridge启用需求.md) | [方案](solution/events/2026-08-10-K3s受管terminal_bridge启用方案.md) | [任务](task/events/2026-08-10-K3s受管terminal_bridge启用任务.md) | [验证](verify/events/2026-08-10-K3s受管terminal_bridge启用验证.md) |
-| hci_sim 独立数据库 | [需求](requirement/events/2026-08-10-hci_sim独立数据库隔离需求.md) | [方案](solution/events/2026-08-10-hci_sim独立数据库隔离方案.md) | [任务](task/events/2026-08-10-hci_sim独立数据库隔离任务.md) | [验证](verify/events/2026-08-10-hci_sim独立数据库隔离验证.md) |
+| hci_sim 独立数据库（PR-A 迁移框架进行中；copy/switch/contract 待后续门禁） | [需求](requirement/events/2026-08-10-hci_sim独立数据库隔离需求.md) | [方案](solution/events/2026-08-10-hci_sim独立数据库隔离方案.md) | [任务](task/events/2026-08-10-hci_sim独立数据库隔离任务.md) | [验证](verify/events/2026-08-10-hci_sim独立数据库隔离验证.md) |
 | 仿真测试迁移与 Agent context | [需求](requirement/events/2026-08-10-仿真测试迁移与Agent上下文绑定需求.md) | [方案](solution/events/2026-08-10-仿真测试迁移与Agent上下文绑定方案.md) | [任务](task/events/2026-08-10-仿真测试迁移与Agent上下文绑定任务.md) | [验证](verify/events/2026-08-10-仿真测试迁移与Agent上下文绑定验证.md) |
 
 ### 冷启动阅读路径
