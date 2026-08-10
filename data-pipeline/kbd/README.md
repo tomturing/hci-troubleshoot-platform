@@ -19,7 +19,7 @@ uv run python -m data-pipeline.kbd.run task --ids 29351 --stages vision
 所有阶段共享同一组参数：`--excel` / `--ids` / `--id-file` / `--run-id`（任务范围）、
 `--stages`（默认 `all`）、`--resume`、`--failed`、`--rework[=STATUS_LIST]`。
 三种显式模式严格互斥：无模式参数选择“未执行 + 失败”，`--resume` 仅未执行，`--failed`
-仅失败，`--rework` 全部重做且默认只处理 draft，支持 `draft,published,rejected,archived` 多选。`--run-id` 只读取历史执行的不可变
+仅失败，`--rework` 重做用户显式指定的阶段且默认只处理 draft，支持 `draft,published,rejected,archived` 多选。自动补齐的前置阶段只有在未成功、会阻断目标阶段时才补做；已成功的前置阶段不会重做。`--run-id` 只读取历史执行的不可变
 manifest，代表任务范围；本次运行仍生成独立 `execution_id`。指定阶段会按 DAG 自动补齐未满足
 的前置依赖，执行前日志会打印请求阶段、补齐阶段和每阶段选中任务数。published 重做只能
 创建 maintenance working revision，不能原地覆盖生效版本；Vision 还按图片 `seq` 记录子任务状态。
@@ -182,7 +182,7 @@ uv run python -m data-pipeline.kbd.run cli
 
 CLI 只在交互终端执行，交互顺序为：任务范围（手动 ID、历史 run-id、ID 文件、Excel，默认手动 ID）→阶段→执行模式→重做状态（仅 rework）→limit→任务计划预览→最终确认。它只收集统一 `task` 参数，不再询问 force、override 或 failed-only。
 
-四种模式为：默认“未执行 + 失败”、`--resume`“仅未执行”、`--failed`“仅失败”、`--rework`“全部重做”。重做状态支持 `draft`、`published`、`rejected`、`archived`，可多选；published 只能进入 maintenance working revision。历史 run-id 从 `logs/task-manifests/` 最近任务列表选择，也可以手动输入。执行后的日志、JSONL 和 KBD 完成摘要与非交互入口完全相同。
+四种模式为：默认“未执行 + 失败”、`--resume`“仅未执行”、`--failed`“仅失败”、`--rework`“重做用户指定阶段”。重做状态支持 `draft`、`published`、`rejected`、`archived`，可多选；published 只能进入 maintenance working revision。选择具体阶段时，DAG 仍会解析前置阶段，但 rework 只将确实阻断目标阶段的未成功前置任务加入计划，并在 CLI 计划和日志中明确列出。历史 run-id 从 `logs/task-manifests/` 最近任务列表选择，也可以手动输入。执行后的日志、JSONL 和 KBD 完成摘要与非交互入口完全相同。
 
 批量指定 ID：
 
@@ -581,7 +581,7 @@ uv run python -m data-pipeline.kbd.run task \
   --rework
 ```
 
-不要把 `--rework` 与默认补齐/失败重试混为一谈。`--rework` 明确表示即使任务成功也再次执行；状态范围可指定 `draft,published,rejected,archived`。
+不要把 `--rework` 与默认补齐/失败重试混为一谈。`--rework` 明确表示用户指定阶段即使成功也再次执行；自动补齐的前置阶段只有在未成功且会阻断目标阶段时才重做。状态范围可指定 `draft,published,rejected,archived`。
 
 ## 9. 数据模型和发布边界
 

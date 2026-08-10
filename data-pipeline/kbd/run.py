@@ -42,10 +42,11 @@ from .task_manager import (
     ALL_STAGE_NAMES,
     REWORK_STATUS_NAMES,
     TaskMode,
+    parse_requested_stage_names,
     parse_rework_statuses,
     parse_stage_names,
     parse_task_mode,
-    select_task_ids,
+    select_task_plan,
     stage_cli_name,
 )
 from .task_state import (
@@ -345,6 +346,7 @@ def _build_task_plan(args: argparse.Namespace) -> tuple[TaskMode, tuple[str, ...
     if rework_requested:
         parse_rework_statuses(args.rework)
     stage_spec = getattr(args, "stages", None) or getattr(args, "stage", None)
+    requested_stages = parse_requested_stage_names(stage_spec)
     stages = parse_stage_names(stage_spec)
     ids = _get_task_ids(args)
     states = load_state()
@@ -352,10 +354,13 @@ def _build_task_plan(args: argparse.Namespace) -> tuple[TaskMode, tuple[str, ...
         manifest = load_execution_manifest(args.run_id)
         if manifest is None:
             raise ValueError(f"任务 run_id 不存在或没有不可变 manifest: {args.run_id}")
-    plan = {
-        stage: select_task_ids(ids, stage=stage, states=states, mode=mode)
-        for stage in stages
-    }
+    plan = select_task_plan(
+        ids,
+        requested_stages=requested_stages,
+        resolved_stages=stages,
+        states=states,
+        mode=mode,
+    )
     return mode, tuple(stage_cli_name(stage) for stage in stages), ids, plan
 
 
@@ -373,11 +378,17 @@ async def _cmd_task(args: argparse.Namespace, run_id: str) -> int:
 
     selected_count = sum(len(values) for values in task_plan.values())
     requested_stage_spec = getattr(args, "stages", None) or getattr(args, "stage", None) or "all"
+    requested_stage_set = set(parse_requested_stage_names(str(requested_stage_spec)))
     requested_stage_names = (
         [item.strip().lower() for item in str(requested_stage_spec).split(",") if item.strip()]
         if str(requested_stage_spec).strip().lower() not in {"", "all"}
         else list(stage_names)
     )
+    rework_dependency_tasks = {
+        stage_cli_name(stage): values
+        for stage, values in task_plan.items()
+        if mode is TaskMode.REWORK and stage not in requested_stage_set and values
+    }
     plan_payload = {
         "execution_id": run_id,
         "source_run_id": getattr(args, "run_id", None),
@@ -389,7 +400,24 @@ async def _cmd_task(args: argparse.Namespace, run_id: str) -> int:
             stage_cli_name(stage): values for stage, values in task_plan.items()
         },
     }
+    if mode is TaskMode.REWORK:
+        plan_payload["rework_policy"] = (
+            "用户指定阶段全部重做；前置阶段仅在未成功并会阻断目标阶段时补做"
+        )
+        plan_payload["rework_dependency_tasks"] = rework_dependency_tasks
     logger.info("任务计划 %s", plan_payload)
+    if mode is TaskMode.REWORK:
+        if rework_dependency_tasks:
+            logger.info(
+                "Rework 依赖补做：用户指定阶段=%s；因前置依赖未成功，补做=%s",
+                ",".join(requested_stage_names),
+                {stage: len(values) for stage, values in rework_dependency_tasks.items()},
+            )
+        else:
+            logger.info(
+                "Rework 依赖检查：用户指定阶段=%s；前置阶段均已成功，不补做前置阶段",
+                ",".join(requested_stage_names),
+            )
     try:
         save_execution_manifest(plan_payload)
     except ValueError as exc:
@@ -788,6 +816,22 @@ def _print_interactive_plan(
     print(f"执行模式：{mode.value}")
     print(f"用户请求阶段：{requested}")
     print(f"最终执行阶段：{', '.join(stage_names)}")
+    if mode is TaskMode.REWORK:
+        requested_stages = set(parse_requested_stage_names(str(requested)))
+        dependency_tasks = {
+            stage_cli_name(stage): selected
+            for stage, selected in task_plan.items()
+            if stage not in requested_stages and selected
+        }
+        print("重做规则：用户指定阶段全部重做；前置阶段仅在未成功且会阻断时补做")
+        if dependency_tasks:
+            details = "、".join(
+                f"{stage}({len(selected)}个)"
+                for stage, selected in dependency_tasks.items()
+            )
+            print(f"前置依赖补做：{details}")
+        else:
+            print("前置依赖补做：无（前置阶段已成功，不重做）")
     print("阶段任务数：")
     for stage, selected in task_plan.items():
         print(f"  {stage_cli_name(stage):<18} {len(selected)}")
@@ -1109,7 +1153,10 @@ def _add_task_scope(p: argparse.ArgumentParser, *, required: bool = False) -> No
         nargs="?",
         const="draft",
         metavar="STATUS_LIST",
-        help="重做任务；不论完成/失败，默认只处理 draft，可写 --rework=draft,published",
+        help=(
+            "重做用户指定阶段；前置阶段仅在未成功且会阻断时补做；"
+            "默认只处理 draft，可写 --rework=draft,published"
+        ),
     )
 
 

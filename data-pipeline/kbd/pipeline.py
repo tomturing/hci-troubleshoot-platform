@@ -395,7 +395,11 @@ async def run_pipeline(
                 [cid for cid in ready_ids if cid not in set(import_ids)],
             )
             active_ids = list(dict.fromkeys([*successful_current, *persisted_ready]))
-            all_stats["import"]["blocked_by_dependency"] = len(kbd_ids) - len(import_ids)
+            # ``import_ids`` 还会受到本次任务计划/生命周期模式限制；它为空
+            # 不代表依赖阻断。只有进度账本中明确标记为 blocked 的案例才计数。
+            all_stats["import"]["blocked_by_dependency"] = _blocked_count(
+                progress, "import"
+            )
             save_progress(run_id, progress)
 
         # VISION 与 CLASSIFY 没有技术前置关系：都只读取 IMPORT 写入的结构化 KBD。
@@ -462,7 +466,7 @@ async def run_pipeline(
             all_stats["vision"].update(
                 case_status_counts=status_counts,
                 state_inconsistent_ids=inconsistent_ids,
-                blocked_by_dependency=len(kbd_ids) - len(input_ids),
+                blocked_by_dependency=_blocked_count(progress, "vision"),
                 item_states={},
             )
             for cid in vision_ids:
@@ -512,7 +516,9 @@ async def run_pipeline(
             completed.update(persisted)
             all_stats["classify"]["done"] = len(completed)
             all_stats["classify"]["failed"] = len(classify_ids) - len(completed & set(classify_ids))
-            all_stats["classify"]["blocked_by_dependency"] = len(kbd_ids) - len(input_ids)
+            all_stats["classify"]["blocked_by_dependency"] = _blocked_count(
+                progress, "classify"
+            )
             logger.info("Stage 3 完成 %s", all_stats["classify"])
             return completed
 
@@ -592,7 +598,9 @@ async def run_pipeline(
                 if status == "done":
                     signal_ready_ids.append(cid)
             active_ids = signal_ready_ids
-            all_stats["extract"]["blocked_by_dependency"] = len(kbd_ids) - len(extract_input_ids)
+            all_stats["extract"]["blocked_by_dependency"] = _blocked_count(
+                progress, "extract_signals"
+            )
             save_progress(run_id, progress)
 
         if Stage.REVIEW_SIGNALS in stages:
@@ -672,6 +680,20 @@ def _mark_dependency_blocked(
     for support_id in requested_ids:
         if support_id not in active:
             update_stage_status(progress, stage, support_id, "blocked_by_dependency")
+
+
+def _blocked_count(progress: dict, stage: str) -> int:
+    """统计真正因前置依赖未满足而阻断的案例数。
+
+    未被本次任务计划选中，或复用了数据库中已有成功结果，都不属于依赖
+    阻断；只有 ``_mark_dependency_blocked`` 写入账本的状态才计入。
+    """
+
+    return sum(
+        1
+        for case in progress.get("kbds", {}).values()
+        if case.get(stage) == "blocked_by_dependency"
+    )
 
 
 async def _get_import_ready_ids(kbd_ids: list[str], pool: asyncpg.Pool) -> list[str]:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -20,11 +21,13 @@ from kbd.run import (
     _ConsoleFormatter,
     _parse_interactive_rework_statuses,
     _parse_stages,
+    _print_interactive_plan,
     _print_pipeline_summary,
     _prompt_choice,
     _prompt_yes_no,
     build_parser,
 )
+from kbd.task_manager import TaskMode
 from kbd.terminal_layout import TERMINAL_LAYOUT_WIDTH
 
 
@@ -173,6 +176,52 @@ def test_pipeline_summary_lists_classification_before_vision(monkeypatch, capsys
 
     output = capsys.readouterr().out
     assert output.index("案例分类") < output.index("截图识别")
+
+
+def test_pipeline_summary_does_not_mark_zero_work_import_as_blocked(monkeypatch, capsys):
+    monkeypatch.setenv("NO_COLOR", "1")
+    _print_pipeline_summary(
+        "20260810_143340",
+        {
+            "pipeline": {"success": True, "total_ids": 1, "completed_ids": 1},
+            "import": {
+                "created": 0,
+                "overridden": 0,
+                "skipped": 0,
+                "error": 0,
+                "blocked_by_dependency": 0,
+                "elapsed_s": 0.0,
+            },
+        },
+    )
+
+    output = capsys.readouterr().out
+    import_row = next(line for line in output.splitlines() if "语义导入" in line)
+    assert "完成" in import_row
+    assert "失败/阻断" not in import_row
+
+
+def test_interactive_rework_plan_explains_reused_dependencies(capsys):
+    args = argparse.Namespace(stages="5", run_id=None, excel=False, id_file=None)
+    task_plan = {
+        Stage.FETCH: [],
+        Stage.IMPORT: [],
+        Stage.CLASSIFY: [],
+        Stage.VISION: [],
+        Stage.EXTRACT_SIGNALS: ["27123"],
+    }
+
+    _print_interactive_plan(
+        args,
+        TaskMode.REWORK,
+        ("fetch", "import", "classify", "vision", "extract-signals"),
+        ["27123"],
+        task_plan,
+    )
+
+    output = capsys.readouterr().out
+    assert "重做规则：用户指定阶段全部重做；前置阶段仅在未成功且会阻断时补做" in output
+    assert "前置依赖补做：无（前置阶段已成功，不重做）" in output
 
 
 def test_task_parser_exposes_single_lifecycle_mode():

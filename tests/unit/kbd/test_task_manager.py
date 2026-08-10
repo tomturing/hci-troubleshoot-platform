@@ -2,10 +2,12 @@ from kbd.pipeline import Stage
 from kbd.task_manager import (
     TaskMode,
     TaskState,
+    parse_requested_stage_names,
     parse_rework_statuses,
     parse_stage_names,
     parse_task_mode,
     select_task_ids,
+    select_task_plan,
 )
 
 
@@ -60,3 +62,48 @@ def test_stage_selection_expands_dependencies_and_defaults_to_all():
         Stage.VISION,
         Stage.EXTRACT_SIGNALS,
     )
+
+
+def test_rework_only_reworks_requested_stage_when_dependencies_succeeded():
+    ids = ["27123"]
+    requested = parse_requested_stage_names("extract-signals")
+    resolved = parse_stage_names("extract-signals")
+    states = {
+        ("27123", stage): TaskState(executed=True, success=True)
+        for stage in resolved
+    }
+
+    plan = select_task_plan(
+        ids,
+        requested_stages=requested,
+        resolved_stages=resolved,
+        states=states,
+        mode=TaskMode.REWORK,
+    )
+
+    assert plan[Stage.EXTRACT_SIGNALS] == ids
+    assert all(not plan[stage] for stage in resolved if stage is not Stage.EXTRACT_SIGNALS)
+
+
+def test_rework_adds_only_blocking_dependency_chain():
+    ids = ["27123"]
+    requested = parse_requested_stage_names("extract-signals")
+    resolved = parse_stage_names("extract-signals")
+    states = {
+        ("27123", Stage.FETCH): TaskState(executed=True, success=True),
+        ("27123", Stage.IMPORT): TaskState(executed=True, success=True),
+        ("27123", Stage.CLASSIFY): TaskState(executed=True, success=True),
+        ("27123", Stage.VISION): TaskState(executed=True, success=False),
+    }
+
+    plan = select_task_plan(
+        ids,
+        requested_stages=requested,
+        resolved_stages=resolved,
+        states=states,
+        mode=TaskMode.REWORK,
+    )
+
+    assert plan[Stage.EXTRACT_SIGNALS] == ids
+    assert plan[Stage.VISION] == ids
+    assert all(not plan[stage] for stage in (Stage.FETCH, Stage.IMPORT, Stage.CLASSIFY))

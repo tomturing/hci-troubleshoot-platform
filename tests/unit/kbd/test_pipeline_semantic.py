@@ -120,6 +120,21 @@ class TestPipelineStageDag:
             Stage.FETCH, Stage.IMPORT, Stage.CLASSIFY, Stage.VISION, Stage.EXTRACT_SIGNALS,
         ]
 
+    def test_blocked_count_only_counts_explicit_dependency_blocks(self):
+        from kbd.pipeline import _blocked_count
+
+        progress = {
+            "kbds": {
+                # pending means the task was not selected in this run; it is not blocked.
+                "27123": {"import": "pending"},
+                "27124": {"import": "blocked_by_dependency"},
+                # A completed/persisted result is also not blocked.
+                "27125": {"import": "done"},
+            }
+        }
+
+        assert _blocked_count(progress, "import") == 1
+
 
 class TestSignalDocumentStatus:
     def test_requires_nonempty_signals_and_verification_contract(self):

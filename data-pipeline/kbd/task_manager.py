@@ -8,7 +8,8 @@ KBD CLI 是任务管理器，不再把 Fetch/Import 的实现细节暴露成不�
 * 默认：未执行 + 失败；
 * ``--resume``：未执行；
 * ``--failed``：失败；
-* ``--rework``：全部任务（可按 KBD 生命周期状态过滤）。
+* ``--rework``：用户指定阶段全部重做；前置阶段仅在未成功且会阻断时补做
+  （可按 KBD 生命周期状态过滤）。
 
 本模块只负责纯规划和状态选择；实际 Stage 的执行仍由 ``pipeline.py`` 负责。
 """
@@ -19,7 +20,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from .pipeline import Stage, resolve_stages
+from .pipeline import STAGE_DEPENDENCIES, Stage, resolve_stages
 
 
 class TaskMode(StrEnum):
@@ -88,8 +89,8 @@ def parse_rework_statuses(value: str | None) -> tuple[str, ...]:
     return statuses
 
 
-def parse_stage_names(value: str | None) -> tuple[Stage, ...]:
-    """解析阶段名称，默认返回全部阶段并按 DAG 拓扑序排列。"""
+def parse_requested_stage_names(value: str | None) -> tuple[Stage, ...]:
+    """解析用户显式指定的阶段，不展开前置依赖。"""
 
     if value is None or value.strip().lower() in {"", "all"}:
         return tuple(Stage)
@@ -107,7 +108,13 @@ def parse_stage_names(value: str | None) -> tuple[Stage, ...]:
             raise ValueError(f"未知 Stage: {raw_name.strip()}；合法值：{allowed}")
         if aliases[name] not in requested:
             requested.append(aliases[name])
-    return tuple(resolve_stages(requested))
+    return tuple(requested)
+
+
+def parse_stage_names(value: str | None) -> tuple[Stage, ...]:
+    """解析阶段名称，默认返回全部阶段并按 DAG 拓扑序排列。"""
+
+    return tuple(resolve_stages(parse_requested_stage_names(value)))
 
 
 def task_is_selected(state: TaskState, mode: TaskMode) -> bool:
@@ -143,6 +150,55 @@ def select_task_ids(
         if task_is_selected(states.get((support_id, stage), TaskState()), mode):
             selected.append(support_id)
     return selected
+
+
+def select_task_plan(
+    task_ids: Iterable[str],
+    *,
+    requested_stages: Iterable[Stage],
+    resolved_stages: Iterable[Stage],
+    states: dict[tuple[str, Stage], TaskState],
+    mode: TaskMode,
+) -> dict[Stage, list[str]]:
+    """生成阶段任务计划，并为 ``rework`` 按需补齐被阻断的前置任务。
+
+    ``rework`` 的语义是“重做用户指定的阶段”。自动补齐的前置阶段只有在
+    当前账本中尚未成功执行、确实会阻断目标阶段时才加入计划；已经成功的
+    前置阶段保持不动。这样只重做 Stage 5 时，不会无条件重做 Stage 1--4。
+    """
+
+    ids = list(task_ids)
+    requested = tuple(dict.fromkeys(requested_stages))
+    resolved = tuple(resolved_stages)
+    plan = {stage: [] for stage in resolved}
+
+    if mode is not TaskMode.REWORK:
+        return {
+            stage: select_task_ids(ids, stage=stage, states=states, mode=mode)
+            for stage in resolved
+        }
+
+    # 只有用户明确选择的阶段先进入 rework 计划；依赖阶段由下面的阻断传播
+    # 按案例逐级补齐。
+    for stage in requested:
+        if stage in plan:
+            plan[stage] = select_task_ids(ids, stage=stage, states=states, mode=mode)
+
+    for stage in reversed(resolved):
+        selected = plan[stage]
+        if not selected:
+            continue
+        for dependency in STAGE_DEPENDENCIES.get(stage, ()):
+            blocked_ids = [
+                support_id
+                for support_id in selected
+                if not states.get((support_id, dependency), TaskState()).success
+            ]
+            if not blocked_ids:
+                continue
+            plan[dependency] = list(dict.fromkeys([*plan[dependency], *blocked_ids]))
+
+    return plan
 
 
 def stage_cli_name(stage: Stage) -> str:
