@@ -28,6 +28,12 @@ tests:
       - notExists:
           path: spec.template.spec.containers[0].env[2].value
       - equal:
+          path: spec.template.spec.containers[0].env[9].name
+          value: PLATFORM_DATABASE
+      - equal:
+          path: spec.template.spec.containers[0].env[9].value
+          value: hci_troubleshoot
+      - equal:
           path: spec.template.spec.containers[0].env[7].valueFrom.secretKeyRef.name
           value: hci-sim-db-credentials
       - equal:
@@ -39,6 +45,15 @@ tests:
       - notMatchRegex:
           path: spec.template.spec.containers[0].args[0]
           pattern: "DO .*CREATE ROLE"
+      - matchRegex:
+          path: spec.template.spec.containers[0].args[0]
+          pattern: "GRANT CONNECT, CREATE ON DATABASE"
+      - matchRegex:
+          path: spec.template.spec.containers[0].args[0]
+          pattern: "REVOKE CREATE ON DATABASE"
+      - matchRegex:
+          path: spec.template.spec.containers[0].args[0]
+          pattern: "REVOKE CONNECT ON DATABASE.*FROM PUBLIC"
 
   - it: "迁移凭据以 wave -10 PreSync hook 提前创建"
     set:

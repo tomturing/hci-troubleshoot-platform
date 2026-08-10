@@ -55,10 +55,14 @@ spec:
               fi
               psql -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE \"$MIGRATOR_ROLE\" PASSWORD '$esc_migrator_password'; ALTER ROLE \"$RUNTIME_ROLE\" PASSWORD '$esc_runtime_password';"
               psql -d postgres -v ON_ERROR_STOP=1 -tc "SELECT 1 FROM pg_database WHERE datname='$SIM_DATABASE'" | grep -q 1 || psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$SIM_DATABASE\" OWNER \"$OWNER_ROLE\""
-              psql -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE \"$RUNTIME_ROLE\" LOGIN PASSWORD '$RUNTIME_PASSWORD'; REVOKE ALL ON DATABASE \"$SIM_DATABASE\" FROM PUBLIC; GRANT CONNECT ON DATABASE \"$SIM_DATABASE\" TO \"$MIGRATOR_ROLE\", \"$RUNTIME_ROLE\";"
-              psql -d "$SIM_DATABASE" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS control_plane AUTHORIZATION \"$MIGRATOR_ROLE\"; CREATE SCHEMA IF NOT EXISTS fixture AUTHORIZATION \"$MIGRATOR_ROLE\"; CREATE SCHEMA IF NOT EXISTS artifact AUTHORIZATION \"$MIGRATOR_ROLE\"; CREATE SCHEMA IF NOT EXISTS audit AUTHORIZATION \"$MIGRATOR_ROLE\";"
+              psql -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE \"$RUNTIME_ROLE\" LOGIN PASSWORD '$esc_runtime_password'; REVOKE ALL ON DATABASE \"$SIM_DATABASE\" FROM PUBLIC; GRANT CONNECT, CREATE ON DATABASE \"$SIM_DATABASE\" TO \"$MIGRATOR_ROLE\"; GRANT CONNECT ON DATABASE \"$SIM_DATABASE\" TO \"$RUNTIME_ROLE\";"
+              # 允许迁移器创建/接管 schema；这样 Job 在中途失败后重试仍可修复
+              # 由旧尝试创建的 schema，而不是卡在 permission denied。
+              psql -d "$SIM_DATABASE" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS control_plane AUTHORIZATION \"$MIGRATOR_ROLE\"; CREATE SCHEMA IF NOT EXISTS fixture AUTHORIZATION \"$MIGRATOR_ROLE\"; CREATE SCHEMA IF NOT EXISTS artifact AUTHORIZATION \"$MIGRATOR_ROLE\"; CREATE SCHEMA IF NOT EXISTS audit AUTHORIZATION \"$MIGRATOR_ROLE\"; ALTER SCHEMA control_plane OWNER TO \"$MIGRATOR_ROLE\"; ALTER SCHEMA fixture OWNER TO \"$MIGRATOR_ROLE\"; ALTER SCHEMA artifact OWNER TO \"$MIGRATOR_ROLE\"; ALTER SCHEMA audit OWNER TO \"$MIGRATOR_ROLE\";"
               export PGUSER="$MIGRATOR_ROLE" PGPASSWORD="$MIGRATOR_PASSWORD"
               psql -d "$SIM_DATABASE" -v ON_ERROR_STOP=1 -f /migrations/000001_control_plane.sql
+              export PGUSER="$POSTGRES_USER" PGPASSWORD="$POSTGRES_PASSWORD"
+              psql -d postgres -v ON_ERROR_STOP=1 -c "REVOKE CREATE ON DATABASE \"$SIM_DATABASE\" FROM \"$MIGRATOR_ROLE\"; REVOKE CONNECT ON DATABASE \"$PLATFORM_DATABASE\" FROM PUBLIC; REVOKE CONNECT ON DATABASE \"$PLATFORM_DATABASE\" FROM \"$RUNTIME_ROLE\"; GRANT CONNECT ON DATABASE \"$PLATFORM_DATABASE\" TO \"$POSTGRES_USER\";"
               psql -d "$SIM_DATABASE" -v ON_ERROR_STOP=1 -c "GRANT USAGE ON SCHEMA control_plane, fixture, artifact, audit TO \"$RUNTIME_ROLE\"; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA control_plane, fixture, artifact, audit TO \"$RUNTIME_ROLE\"; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA control_plane, fixture, artifact, audit TO \"$RUNTIME_ROLE\";"
               echo "hci_sim database and grants are ready"
           env:
@@ -89,6 +93,8 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.hciSimDatabase.credentialsSecretName }}
                   key: RUNTIME_PASSWORD
+            - name: PLATFORM_DATABASE
+              value: {{ .Values.config.postgresDb | quote }}
           volumeMounts:
             - name: migrations
               mountPath: /migrations
