@@ -1,6 +1,7 @@
 package lease
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -49,7 +50,17 @@ func TestSignValidateAndBundleBinding(t *testing.T) {
 	if _, err := Validate(testSecret, token, "sha256:bundle", "hci-platform", "hci-sim", now.Add(2*time.Hour)); err == nil {
 		t.Fatal("过期 Lease 必须 fail closed")
 	}
-	if _, err := Validate(testSecret, token[:len(token)-1]+"A", "sha256:bundle", "hci-platform", "hci-sim", now); err == nil {
+	// 不能只改 base64url 的最后一个字符：无填充编码的末尾低位可能被忽略，
+	// 从而仍解码为相同签名。修改签名段首字符可确定改变至少一个有效 bit。
+	signatureStart := strings.LastIndexByte(token, '.') + 1
+	tamperedByte := token[signatureStart]
+	if tamperedByte == 'A' {
+		tamperedByte = 'B'
+	} else {
+		tamperedByte = 'A'
+	}
+	tampered := token[:signatureStart] + string(tamperedByte) + token[signatureStart+1:]
+	if _, err := Validate(testSecret, tampered, "sha256:bundle", "hci-platform", "hci-sim", now); err == nil {
 		t.Fatal("篡改 Lease 必须 fail closed")
 	}
 }
