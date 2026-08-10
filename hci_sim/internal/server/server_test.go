@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,30 @@ import (
 
 	"golang.org/x/crypto/ssh"
 )
+
+type recordedEvent struct {
+	externalID string
+	eventType  string
+	digest     string
+}
+
+type memoryEventRecorder struct {
+	mu     sync.Mutex
+	events []recordedEvent
+}
+
+func (r *memoryEventRecorder) RecordEvent(_ context.Context, externalID string, _ int, eventType, payloadDigest, _ string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.events = append(r.events, recordedEvent{externalID: externalID, eventType: eventType, digest: payloadDigest})
+	return nil
+}
+
+func (r *memoryEventRecorder) snapshot() []recordedEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]recordedEvent(nil), r.events...)
+}
 
 func serverManifest(t *testing.T) []byte {
 	t.Helper()
@@ -62,7 +87,8 @@ func TestSSHExecUsesLeaseFixtureAndFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	secret := []byte("0123456789abcdef0123456789abcdef")
-	srv, err := New(Config{ListenAddress: "127.0.0.1:0", HostSigner: signer, LeaseSecret: secret, Router: router, Workers: 2, QueueSize: 4, MaxOutputBytes: 4096, LeaseIssuer: "hci-platform", LeaseAudience: "hci-sim", Metrics: &metrics.Metrics{}})
+	recorder := &memoryEventRecorder{}
+	srv, err := New(Config{ListenAddress: "127.0.0.1:0", HostSigner: signer, LeaseSecret: secret, Router: router, Workers: 2, QueueSize: 4, MaxOutputBytes: 4096, LeaseIssuer: "hci-platform", LeaseAudience: "hci-sim", Metrics: &metrics.Metrics{}, Recorder: recorder})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,6 +128,15 @@ func TestSSHExecUsesLeaseFixtureAndFailsClosed(t *testing.T) {
 	exitErr, ok := err.(*ssh.ExitError)
 	if !ok || exitErr.ExitStatus() != exitFixtureNotFound || !strings.Contains(string(output), "fixture_not_found") {
 		t.Fatalf("未知命令未 fail closed: output=%q err=%v", output, err)
+	}
+	events := recorder.snapshot()
+	if len(events) != 2 || events[0].externalID != "run-test" || events[0].eventType != "exec.done" || events[1].eventType != "fixture_not_found" {
+		t.Fatalf("unexpected persisted event metadata: %+v", events)
+	}
+	for _, event := range events {
+		if !strings.HasPrefix(event.digest, "sha256:") || len(event.digest) != 71 {
+			t.Fatalf("event payload is not a redacted digest: %+v", event)
+		}
 	}
 }
 

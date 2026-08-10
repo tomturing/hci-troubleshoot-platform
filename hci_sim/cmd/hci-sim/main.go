@@ -76,6 +76,10 @@ func runServer() error {
 			return err
 		}
 	}
+	var eventRecorder server.EventRecorder
+	if runRepository != nil {
+		eventRecorder = repositoryEventRecorder{repository: runRepository}
+	}
 	router, err := fixture.Load(env("HCI_SIM_FIXTURE_MANIFEST", "/etc/hci-sim/fixture-manifest.json"))
 	if err != nil {
 		return err
@@ -102,7 +106,7 @@ func runServer() error {
 		ListenAddress: env("HCI_SIM_SSH_LISTEN", ":2222"), HostSigner: signer,
 		LeaseSecret: secret, Router: router, Workers: envInt("HCI_SIM_WORKERS", 8),
 		QueueSize: envInt("HCI_SIM_QUEUE_SIZE", 128), MaxOutputBytes: envInt("HCI_SIM_MAX_OUTPUT_BYTES", router.OutputLimit()),
-		LeaseIssuer: env("HCI_SIM_LEASE_ISSUER", "hci-platform"), LeaseAudience: env("HCI_SIM_LEASE_AUDIENCE", "hci-sim"), Metrics: prom,
+		LeaseIssuer: env("HCI_SIM_LEASE_ISSUER", "hci-platform"), LeaseAudience: env("HCI_SIM_LEASE_AUDIENCE", "hci-sim"), Metrics: prom, Recorder: eventRecorder,
 	})
 	if err != nil {
 		return err
@@ -191,6 +195,10 @@ func runServer() error {
 				}
 				return
 			}
+			if _, persistErr := runRepository.AppendEvent(r.Context(), runID, 1, "lease.created", digestValue(map[string]any{"test_run_id": runID, "bundle_digest": router.BundleDigest()}), ""); persistErr != nil {
+				http.Error(w, "hci_sim event persistence unavailable", http.StatusServiceUnavailable)
+				return
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"test_run_id": runID, "support_id": request.KBDID, "bundle_digest": router.BundleDigest(), "synthetic": router.IsSynthetic(), "environment_context": map[string]any{"test_run_id": runID, "support_id": request.KBDID, "kbd_revision": router.KBD().Revision, "bundle_digest": router.BundleDigest(), "execution_mode": "sim-ssh", "virtual_node_id": "SIM-HCI-NODE-01", "container": "host"}, "connection": map[string]any{"host": env("HCI_SIM_SSH_HOST", "hci-sim.hci-sim-dev.svc"), "port": strings.TrimPrefix(env("HCI_SIM_SSH_LISTEN", ":2222"), ":"), "username": "sim", "auth_type": "lease", "password": token, "execution_mode": "sim-ssh", "test_run_id": runID}})
@@ -240,6 +248,10 @@ func runServer() error {
 				}
 			}
 			status, version = record.Status, record.Version
+			if _, eventErr := runRepository.AppendEvent(r.Context(), connectionRunID, 1, "test_run.created", digestValue(map[string]any{"title": request.Title, "description": request.Description}), ""); eventErr != nil {
+				http.Error(w, "hci_sim event persistence unavailable", http.StatusServiceUnavailable)
+				return
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"case_id": "sim-case-" + randomID(), "test_run_id": connectionRunID, "status": status, "version": version, "execution_mode": "sim-ssh"})
@@ -396,4 +408,13 @@ func jsonInt(value any) (int, bool) {
 		return 0, false
 	}
 	return int(floatValue), true
+}
+
+type repositoryEventRecorder struct {
+	repository *database.RunRepository
+}
+
+func (r repositoryEventRecorder) RecordEvent(ctx context.Context, externalID string, attemptNo int, eventType, payloadDigest, traceID string) error {
+	_, err := r.repository.AppendEvent(ctx, externalID, attemptNo, eventType, payloadDigest, traceID)
+	return err
 }

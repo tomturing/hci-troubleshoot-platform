@@ -85,6 +85,20 @@ CREATE TABLE IF NOT EXISTS control_plane.run_result (
     PRIMARY KEY (run_id, attempt_no)
 );
 
+CREATE TABLE IF NOT EXISTS control_plane.run_outbox (
+    id bigserial PRIMARY KEY,
+    run_id uuid NOT NULL REFERENCES control_plane.run(id) ON DELETE RESTRICT,
+    event_type varchar(64) NOT NULL,
+    payload_digest varchar(71) NOT NULL,
+    status varchar(16) NOT NULL DEFAULT 'pending',
+    attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    available_at timestamptz NOT NULL DEFAULT now(),
+    processed_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT run_outbox_status CHECK (status IN ('pending', 'processing', 'processed', 'failed')),
+    CONSTRAINT run_outbox_unique UNIQUE (run_id, event_type, payload_digest)
+);
+
 CREATE TABLE IF NOT EXISTS control_plane.runtime_instance (
     id varchar(128) PRIMARY KEY,
     shard varchar(128),
@@ -225,6 +239,7 @@ CREATE TABLE IF NOT EXISTS audit.entity_event (
 
 CREATE INDEX IF NOT EXISTS scenario_support_revision ON control_plane.scenario (support_id, kbd_revision, status);
 CREATE INDEX IF NOT EXISTS run_status_deadline ON control_plane.run (status, deadline_at);
+CREATE INDEX IF NOT EXISTS run_outbox_pending ON control_plane.run_outbox (available_at, id) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS bundle_runnable ON fixture.bundle (scenario_id, status, digest) WHERE status = 'published';
 CREATE INDEX IF NOT EXISTS dependency_reverse ON fixture.dependency (dependency_type, dependency_id, revision);
 CREATE INDEX IF NOT EXISTS stale_outbox_pending ON fixture.stale_outbox (available_at, id) WHERE status = 'pending';

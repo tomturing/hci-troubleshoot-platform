@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -89,5 +90,72 @@ func TestRunRepositoryPostgresIdempotencyAndCAS(t *testing.T) {
 	replayedLease, err := repository.RecordLease(ctx, leasedInput.ExternalID, leased.Version, 1, "runtime-test", "sha256:lease-jti-hash")
 	if err != nil || replayedLease.Status != "leased" {
 		t.Fatalf("idempotent lease replay failed: %+v %v", replayedLease, err)
+	}
+}
+
+func TestRunRepositoryPostgresEventResultAndOutbox(t *testing.T) {
+	rawURL := os.Getenv("HCI_SIM_TEST_DATABASE_URL")
+	if rawURL == "" {
+		t.Skip("HCI_SIM_TEST_DATABASE_URL is not configured")
+	}
+	target, err := Parse(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool, err := Open(ctx, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	repository, err := NewRunRepository(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	input := RunInput{
+		ExternalID: "run-event-" + suffix, SupportID: "27123", KBDRevision: 1,
+		Variant: "positive-realistic", BundleDigest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		ExecutionMode: "sim-ssh", IdempotencyKey: "event-idempotency-" + suffix,
+		RequestDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+		Deadline:      time.Now().UTC().Add(time.Hour), InputFingerprint: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+	}
+	created, err := repository.Create(ctx, input)
+	if err != nil {
+		t.Fatalf("create event run: %v", err)
+	}
+	leased, err := repository.RecordLease(ctx, input.ExternalID, created.Version, 1, "runtime-test", "sha256:1111111111111111111111111111111111111111111111111111111111111111")
+	if err != nil {
+		t.Fatalf("lease event run: %v", err)
+	}
+	seq, err := repository.AppendEvent(ctx, input.ExternalID, 1, "exec.done", "sha256:2222222222222222222222222222222222222222222222222222222222222222", "trace-test")
+	if err != nil || seq != 1 {
+		t.Fatalf("append event: seq=%d err=%v", seq, err)
+	}
+	replayedSeq, err := repository.AppendEvent(ctx, input.ExternalID, 1, "exec.done", "sha256:2222222222222222222222222222222222222222222222222222222222222222", "trace-test")
+	if err != nil || replayedSeq != seq {
+		t.Fatalf("event replay is not idempotent: seq=%d err=%v", replayedSeq, err)
+	}
+	passed, err := repository.RecordResult(ctx, input.ExternalID, 1, "oracle-v1", "passed", "object://reports/"+input.ExternalID, "sha256:3333333333333333333333333333333333333333333333333333333333333333")
+	if err != nil || passed.Status != "passed" || passed.Version != leased.Version+1 {
+		t.Fatalf("record result: %+v err=%v", passed, err)
+	}
+	replayedResult, err := repository.RecordResult(ctx, input.ExternalID, 1, "oracle-v1", "passed", "object://reports/"+input.ExternalID, "sha256:3333333333333333333333333333333333333333333333333333333333333333")
+	if err != nil || replayedResult.Status != "passed" {
+		t.Fatalf("result replay is not idempotent: %+v err=%v", replayedResult, err)
+	}
+	if _, err := repository.RecordResult(ctx, input.ExternalID, 1, "oracle-v1", "failed", "object://reports/"+input.ExternalID, "sha256:4444444444444444444444444444444444444444444444444444444444444444"); !errors.Is(err, ErrResultConflict) {
+		t.Fatalf("expected conflicting result rejection, got %v", err)
+	}
+	claimed, err := repository.ClaimOutbox(ctx)
+	if err != nil {
+		t.Fatalf("claim outbox: %v", err)
+	}
+	if claimed.RunExternalID != input.ExternalID || claimed.Attempts != 1 {
+		t.Fatalf("unexpected outbox claim: %+v", claimed)
+	}
+	if err := repository.CompleteOutbox(ctx, claimed.ID, true, time.Time{}); err != nil {
+		t.Fatalf("complete outbox: %v", err)
 	}
 }

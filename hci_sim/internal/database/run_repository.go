@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +15,7 @@ import (
 var (
 	ErrIdempotencyConflict = errors.New("idempotency_conflict")
 	ErrRunVersionConflict  = errors.New("run_version_conflict")
+	ErrResultConflict      = errors.New("run_result_conflict")
 )
 
 // RunInput 是控制面创建 TestRun 时被冻结的字段集合。Lease 明文、SSH 密码和
@@ -43,6 +45,15 @@ type RunRecord struct {
 	Status         string
 	Version        int
 	Deadline       time.Time
+}
+
+type OutboxRecord struct {
+	ID            int64
+	RunExternalID string
+	EventType     string
+	PayloadDigest string
+	Attempts      int
+	AvailableAt   time.Time
 }
 
 type RunRepository struct {
@@ -190,6 +201,185 @@ func (r *RunRepository) RecordLease(ctx context.Context, externalID string, expe
 	return record, nil
 }
 
+// AppendEvent writes an immutable event and its delivery outbox row in one
+// transaction. Sequence allocation is serialized by the Run row lock; retries
+// with the same payload are idempotent at the outbox boundary.
+func (r *RunRepository) AppendEvent(ctx context.Context, externalID string, attemptNo int, eventType, payloadDigest, traceID string) (int, error) {
+	if externalID == "" || attemptNo < 1 || eventType == "" || payloadDigest == "" {
+		return 0, errors.New("invalid run event")
+	}
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("begin hci_sim event transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var runID uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT id FROM control_plane.run WHERE external_id = $1 FOR UPDATE`, externalID).Scan(&runID); err != nil {
+		return 0, err
+	}
+	var seq int
+	existingErr := tx.QueryRow(ctx, `
+		SELECT seq FROM control_plane.run_event
+		WHERE run_id = $1 AND attempt_no = $2 AND event_type = $3 AND payload_digest = $4
+		ORDER BY seq LIMIT 1
+	`, runID, attemptNo, eventType, payloadDigest).Scan(&seq)
+	if existingErr == nil {
+		if err := tx.Commit(ctx); err != nil {
+			return 0, err
+		}
+		return seq, nil
+	}
+	if !errors.Is(existingErr, pgx.ErrNoRows) {
+		return 0, existingErr
+	}
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(MAX(seq), 0) + 1 FROM control_plane.run_event WHERE run_id = $1 AND attempt_no = $2`, runID, attemptNo).Scan(&seq); err != nil {
+		return 0, fmt.Errorf("allocate hci_sim event sequence: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO control_plane.run_event (run_id, attempt_no, seq, event_type, payload_digest, trace_id)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''))
+	`, runID, attemptNo, seq, eventType, payloadDigest, traceID); err != nil {
+		return 0, fmt.Errorf("insert hci_sim run event: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO control_plane.run_outbox (run_id, event_type, payload_digest)
+		VALUES ($1, $2, $3) ON CONFLICT (run_id, event_type, payload_digest) DO NOTHING
+	`, runID, eventType, payloadDigest); err != nil {
+		return 0, fmt.Errorf("enqueue hci_sim run event: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit hci_sim event transaction: %w", err)
+	}
+	return seq, nil
+}
+
+// RecordResult closes an Attempt and advances its Run atomically. A repeated
+// identical result is accepted; a conflicting result is rejected.
+func (r *RunRepository) RecordResult(ctx context.Context, externalID string, attemptNo int, oracleVersion, outcome, reportURI, reportDigest string) (RunRecord, error) {
+	if externalID == "" || attemptNo < 1 || oracleVersion == "" || reportURI == "" || reportDigest == "" {
+		return RunRecord{}, errors.New("invalid run result")
+	}
+	status := outcomeToRunStatus(outcome)
+	if status == "" || !strings.HasPrefix(reportURI, "object://") || strings.Contains(strings.ToLower(reportURI), "password") || strings.Contains(strings.ToLower(reportURI), "token") {
+		return RunRecord{}, errors.New("invalid or sensitive run result")
+	}
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return RunRecord{}, fmt.Errorf("begin hci_sim result transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var runID uuid.UUID
+	var currentStatus string
+	var version int
+	if err := tx.QueryRow(ctx, `SELECT id, status, version FROM control_plane.run WHERE external_id = $1 FOR UPDATE`, externalID).Scan(&runID, &currentStatus, &version); err != nil {
+		return RunRecord{}, err
+	}
+	var existingOutcome, existingDigest string
+	existingErr := tx.QueryRow(ctx, `SELECT outcome, report_digest FROM control_plane.run_result WHERE run_id = $1 AND attempt_no = $2`, runID, attemptNo).Scan(&existingOutcome, &existingDigest)
+	if existingErr == nil {
+		if existingOutcome != outcome || existingDigest != reportDigest {
+			return RunRecord{}, ErrResultConflict
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return RunRecord{}, err
+		}
+		return r.Get(ctx, externalID)
+	}
+	if !errors.Is(existingErr, pgx.ErrNoRows) {
+		return RunRecord{}, existingErr
+	}
+	var attemptExists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM control_plane.run_attempt WHERE run_id = $1 AND attempt_no = $2)`, runID, attemptNo).Scan(&attemptExists); err != nil || !attemptExists {
+		return RunRecord{}, errors.New("run_attempt_not_found")
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO control_plane.run_result (run_id, attempt_no, oracle_version, outcome, report_uri, report_digest)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`, runID, attemptNo, oracleVersion, outcome, reportURI, reportDigest); err != nil {
+		return RunRecord{}, fmt.Errorf("insert hci_sim run result: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE control_plane.run_attempt SET status = $1, ended_at = now()
+		WHERE run_id = $2 AND attempt_no = $3
+	`, status, runID, attemptNo); err != nil {
+		return RunRecord{}, fmt.Errorf("close hci_sim run attempt: %w", err)
+	}
+	record, err := scanRun(tx.QueryRow(ctx, `
+		UPDATE control_plane.run SET status = $1, version = version + 1, updated_at = now()
+		WHERE id = $2 AND status NOT IN ('passed', 'failed', 'inconclusive', 'cancelled', 'expired')
+		RETURNING external_id, support_id, kbd_revision, bundle_digest, variant,
+		          execution_mode, status, version, deadline_at, idempotency_key, request_digest
+	`, status, runID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		if currentStatus != status {
+			return RunRecord{}, ErrRunVersionConflict
+		}
+		record, err = scanRun(tx.QueryRow(ctx, `
+			SELECT external_id, support_id, kbd_revision, bundle_digest, variant,
+			       execution_mode, status, version, deadline_at, idempotency_key, request_digest
+			FROM control_plane.run WHERE id = $1
+		`, runID))
+	}
+	if err != nil {
+		return RunRecord{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO control_plane.run_outbox (run_id, event_type, payload_digest)
+		VALUES ($1, 'run.result', $2) ON CONFLICT (run_id, event_type, payload_digest) DO NOTHING
+	`, runID, reportDigest); err != nil {
+		return RunRecord{}, fmt.Errorf("enqueue hci_sim result: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return RunRecord{}, fmt.Errorf("commit hci_sim result transaction: %w", err)
+	}
+	return record, nil
+}
+
+// ClaimOutbox leases one pending delivery without blocking another reconciler.
+func (r *RunRepository) ClaimOutbox(ctx context.Context) (OutboxRecord, error) {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return OutboxRecord{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var record OutboxRecord
+	var runID uuid.UUID
+	row := tx.QueryRow(ctx, `
+		SELECT o.id, r.external_id, o.event_type, o.payload_digest, o.attempts, o.available_at, o.run_id
+		FROM control_plane.run_outbox o JOIN control_plane.run r ON r.id = o.run_id
+		WHERE o.status = 'pending' AND o.available_at <= now()
+		ORDER BY o.id FOR UPDATE SKIP LOCKED LIMIT 1
+	`)
+	if err := row.Scan(&record.ID, &record.RunExternalID, &record.EventType, &record.PayloadDigest, &record.Attempts, &record.AvailableAt, &runID); err != nil {
+		return OutboxRecord{}, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE control_plane.run_outbox SET status = 'processing', attempts = attempts + 1 WHERE id = $1`, record.ID); err != nil {
+		return OutboxRecord{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return OutboxRecord{}, err
+	}
+	record.Attempts++
+	return record, nil
+}
+
+func (r *RunRepository) CompleteOutbox(ctx context.Context, id int64, success bool, retryAt time.Time) error {
+	if id < 1 {
+		return errors.New("invalid outbox id")
+	}
+	status := "pending"
+	if success {
+		status = "processed"
+	}
+	_, err := r.pool.Exec(ctx, `
+		UPDATE control_plane.run_outbox
+		SET status = $1, available_at = CASE WHEN $2 THEN available_at ELSE $3 END,
+		    processed_at = CASE WHEN $2 THEN now() ELSE NULL END
+		WHERE id = $4 AND status = 'processing'
+	`, status, success, retryAt.UTC(), id)
+	return err
+}
+
 func (r *RunRepository) getByIdempotency(ctx context.Context, tx pgx.Tx, key string) (RunRecord, error) {
 	return scanRun(tx.QueryRow(ctx, `
 		SELECT external_id, support_id, kbd_revision, bundle_digest, variant,
@@ -217,4 +407,17 @@ func validateRunInput(input RunInput) error {
 		return errors.New("invalid hci_sim run input")
 	}
 	return nil
+}
+
+func outcomeToRunStatus(outcome string) string {
+	switch outcome {
+	case "passed", "positive":
+		return "passed"
+	case "failed", "negative":
+		return "failed"
+	case "inconclusive":
+		return "inconclusive"
+	default:
+		return ""
+	}
 }
