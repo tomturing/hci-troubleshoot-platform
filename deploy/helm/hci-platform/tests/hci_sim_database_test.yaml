@@ -33,6 +33,12 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].env[8].valueFrom.secretKeyRef.name
           value: hci-sim-db-credentials
+      - matchRegex:
+          path: spec.template.spec.containers[0].args[0]
+          pattern: "role_exists"
+      - notMatchRegex:
+          path: spec.template.spec.containers[0].args[0]
+          pattern: "DO .*CREATE ROLE"
 
   - it: "迁移凭据以 wave -10 PreSync hook 提前创建"
     set:

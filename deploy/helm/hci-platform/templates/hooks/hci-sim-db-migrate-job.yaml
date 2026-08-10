@@ -38,9 +38,22 @@ spec:
               export PGHOST="$POSTGRES_HOST" PGPORT=5432 PGUSER="$POSTGRES_USER" PGPASSWORD="$POSTGRES_PASSWORD"
               case "$OWNER_ROLE$MIGRATOR_ROLE$RUNTIME_ROLE" in (*[!A-Za-z0-9_]*) echo "role name must be alphanumeric" >&2; exit 1;; esac
               # 角色名来自受版本控制的 values；密码先转义单引号，避免把 Secret 拼成 SQL。
+              # CREATE ROLE 不能放入 DO 函数，必须先查询存在性，再执行独立 DDL。
               esc_migrator_password=$(printf '%s' "$MIGRATOR_PASSWORD" | sed "s/'/''/g")
               esc_runtime_password=$(printf '%s' "$RUNTIME_PASSWORD" | sed "s/'/''/g")
-              psql -d postgres -v ON_ERROR_STOP=1 -c "DO \\\$\\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='$OWNER_ROLE') THEN CREATE ROLE \"$OWNER_ROLE\" NOLOGIN; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='$MIGRATOR_ROLE') THEN CREATE ROLE \"$MIGRATOR_ROLE\" LOGIN PASSWORD '$esc_migrator_password'; END IF; IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='$RUNTIME_ROLE') THEN CREATE ROLE \"$RUNTIME_ROLE\" LOGIN PASSWORD '$esc_runtime_password'; END IF; ALTER ROLE \"$MIGRATOR_ROLE\" PASSWORD '$esc_migrator_password'; ALTER ROLE \"$RUNTIME_ROLE\" PASSWORD '$esc_runtime_password'; END \\\$\\$;"
+              role_exists() {
+                psql -d postgres -v ON_ERROR_STOP=1 -Atqc "SELECT 1 FROM pg_roles WHERE rolname='$1'" | grep -q '^1$'
+              }
+              if ! role_exists "$OWNER_ROLE"; then
+                psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE \"$OWNER_ROLE\" NOLOGIN"
+              fi
+              if ! role_exists "$MIGRATOR_ROLE"; then
+                psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE \"$MIGRATOR_ROLE\" LOGIN PASSWORD '$esc_migrator_password'"
+              fi
+              if ! role_exists "$RUNTIME_ROLE"; then
+                psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE \"$RUNTIME_ROLE\" LOGIN PASSWORD '$esc_runtime_password'"
+              fi
+              psql -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE \"$MIGRATOR_ROLE\" PASSWORD '$esc_migrator_password'; ALTER ROLE \"$RUNTIME_ROLE\" PASSWORD '$esc_runtime_password';"
               psql -d postgres -v ON_ERROR_STOP=1 -tc "SELECT 1 FROM pg_database WHERE datname='$SIM_DATABASE'" | grep -q 1 || psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$SIM_DATABASE\" OWNER \"$OWNER_ROLE\""
               psql -d postgres -v ON_ERROR_STOP=1 -c "ALTER ROLE \"$RUNTIME_ROLE\" LOGIN PASSWORD '$RUNTIME_PASSWORD'; REVOKE ALL ON DATABASE \"$SIM_DATABASE\" FROM PUBLIC; GRANT CONNECT ON DATABASE \"$SIM_DATABASE\" TO \"$MIGRATOR_ROLE\", \"$RUNTIME_ROLE\";"
               psql -d "$SIM_DATABASE" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS control_plane AUTHORIZATION \"$MIGRATOR_ROLE\"; CREATE SCHEMA IF NOT EXISTS fixture AUTHORIZATION \"$MIGRATOR_ROLE\"; CREATE SCHEMA IF NOT EXISTS artifact AUTHORIZATION \"$MIGRATOR_ROLE\"; CREATE SCHEMA IF NOT EXISTS audit AUTHORIZATION \"$MIGRATOR_ROLE\";"
