@@ -1,0 +1,54 @@
+{
+  "schema_version": "v1",
+  "bundle": {
+    "status": "published",
+    "digest": "sha256:3577785d2f43ba621e16d8e126e1f8bac47c2f979e4b2087c18d460f7d5d738a"
+  },
+  "kbd": {
+    "support_id": "23821",
+    "revision": 1,
+    "checksum": "sha256:synthetic-23821"
+  },
+  "contracts": {
+    "tool_revision": "synthetic-v1",
+    "policy_revision": "sim-safe-v1"
+  },
+  "variables": {
+    "SYNTHETIC": "true",
+    "FACTS_BOUNDARY": "signal-contract-only"
+  },
+  "limits": {
+    "max_routes": 1,
+    "max_output_bytes_per_command": 4096,
+    "max_bundle_bytes": 65536
+  },
+  "routes": [
+    {
+      "id": "synthetic-23821-sig-001",
+      "signal_id": "sig_001",
+      "variant": "positive-minimal",
+      "route_key": {
+        "tool": "qkv_task",
+        "acquisition_key": "qkv_task:--keyword",
+        "argv": [
+          "qkv_task",
+          "--keyword",
+          "迁移虚拟机",
+          "--limit",
+          "1",
+          "--is_failed",
+          "true"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "{\"synthetic\":true,\"support_id\":\"23821\",\"signal_id\":\"sig_001\",\"status\":\"failed\"}\n"
+      },
+      "fault": {
+        "type": "none"
+      }
+    }
+  ]
+}

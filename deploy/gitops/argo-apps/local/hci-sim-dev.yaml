@@ -1,0 +1,42 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-sim-dev
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: hci-platform
+    app.kubernetes.io/component: hci-sim
+  annotations:
+    # 由发布流水线替换为已签名镜像 digest；未替换前禁止同步。
+    hci-platform.dev/immutable-image-required: "true"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+    targetRevision: main
+    path: deploy/helm/hci-sim
+    helm:
+      values: |
+        image:
+          repository: ghcr.io/tomturing/hci-sim
+          # 发布流程必须覆盖为 sha256:<digest>，避免 latest/dev-local 漂移。
+          digest: ""
+        database:
+          required: true
+          existingSecret: hci-sim-runtime-credentials
+        runtime:
+          existingSecret: hci-sim-credentials
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hci-sim-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: hci-sim-credentials
+      jsonPointers: ["/data"]

@@ -105,6 +105,64 @@ func runServer() error {
 			"database_configured": databaseTarget.Configured, "database_name": databaseTarget.Database,
 		})
 	})
+	// 控制面最小 HTTP 契约。生产入口必须由 API Gateway/NetworkPolicy 保护，
+	// Runtime 只接受 immutable fixture，并且永不回退真实 HCI。
+	controlToken := strings.TrimSpace(os.Getenv("HCI_SIM_CONTROL_TOKEN"))
+	allowInsecureControlAPI := strings.EqualFold(strings.TrimSpace(os.Getenv("HCI_SIM_ALLOW_INSECURE_CONTROL_API")), "true")
+	controlAuthorized := func(r *http.Request) bool {
+		return (controlToken != "" && r.Header.Get("Authorization") == "Bearer "+controlToken) || (controlToken == "" && allowInsecureControlAPI)
+	}
+	mux.HandleFunc("/v1/simulations/build", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !controlAuthorized(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		var request struct {
+			KBDID string `json:"kbd_id"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&request); err != nil || strings.TrimSpace(request.KBDID) == "" {
+			http.Error(w, "kbd_id is required", http.StatusBadRequest)
+			return
+		}
+		if router.KBD().SupportID != strings.TrimSpace(request.KBDID) {
+			http.Error(w, "capability_gap: requested KBD is not the loaded immutable fixture", http.StatusConflict)
+			return
+		}
+		now := time.Now().UTC()
+		runID := fmt.Sprintf("run-%s-%s", request.KBDID, randomID())
+		expires := now.Add(15 * time.Minute)
+		claims := lease.Claims{JTI: runID + "-1", LeaseID: "lease-" + runID, TestRunID: runID, ScenarioID: "kbd-" + request.KBDID + "-positive-minimal", SupportID: request.KBDID, KBDRevision: router.KBD().Revision, BundleDigest: router.BundleDigest(), FixtureVariant: "positive-minimal", ToolContractRevision: router.Contracts().ToolRevision, PolicyRevision: router.Contracts().PolicyRevision, VirtualNodeID: "SIM-HCI-NODE-01", Container: "host", ExecutionMode: "sim-ssh", Issuer: env("HCI_SIM_LEASE_ISSUER", "hci-platform"), Audience: env("HCI_SIM_LEASE_AUDIENCE", "hci-sim"), IssuedAt: now.Unix(), NotBefore: now.Unix(), ExpiresAt: expires.Unix(), RunDeadline: expires.Unix(), MaxSessions: 4, MaxCommands: 200, MaxOutputBytes: int64(router.OutputLimit())}
+		token, err := lease.Sign(secret, claims)
+		if err != nil {
+			http.Error(w, "lease signing failed", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"test_run_id": runID, "support_id": request.KBDID, "bundle_digest": router.BundleDigest(), "synthetic": router.IsSynthetic(), "environment_context": map[string]any{"test_run_id": runID, "support_id": request.KBDID, "kbd_revision": router.KBD().Revision, "bundle_digest": router.BundleDigest(), "execution_mode": "sim-ssh", "virtual_node_id": "SIM-HCI-NODE-01", "container": "host"}, "connection": map[string]any{"host": env("HCI_SIM_SSH_HOST", "hci-sim.hci-sim-dev.svc"), "port": strings.TrimPrefix(env("HCI_SIM_SSH_LISTEN", ":2222"), ":"), "username": "sim", "auth_type": "lease", "password": token, "execution_mode": "sim-ssh", "test_run_id": runID}})
+	})
+	mux.HandleFunc("/v1/simulations/test-runs", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !controlAuthorized(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		var request struct {
+			KBDID              string         `json:"kbd_id"`
+			Title              string         `json:"title"`
+			Description        string         `json:"description"`
+			Connection         map[string]any `json:"connection"`
+			EnvironmentContext map[string]any `json:"environment_context"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32768)).Decode(&request); err != nil || strings.TrimSpace(request.KBDID) == "" || strings.TrimSpace(request.Title) == "" || strings.TrimSpace(request.Description) == "" {
+			http.Error(w, "kbd_id, title and description are required", http.StatusBadRequest)
+			return
+		}
+		if request.Connection["execution_mode"] != "sim-ssh" || request.EnvironmentContext["execution_mode"] != "sim-ssh" || request.Connection["test_run_id"] == nil || request.Connection["test_run_id"] != request.EnvironmentContext["test_run_id"] || request.EnvironmentContext["support_id"] != request.KBDID {
+			http.Error(w, "sim TestRun must be explicitly bound to sim-ssh context", http.StatusConflict)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"case_id": "sim-case-" + randomID(), "test_run_id": request.Connection["test_run_id"], "status": "created", "execution_mode": "sim-ssh"})
+	})
 	httpServer.Handler = mux
 	serverErrors := make(chan error, 2)
 	go func() {

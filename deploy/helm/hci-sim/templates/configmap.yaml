@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: hci-sim-fixture-kbd-27123
+  name: {{ .Values.fixture.configMapName }}
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "hci-sim.labels" . | nindent 4 }}
 data:
   fixture-manifest.json: |-
-{{ .Files.Get "files/kbd-27123-fixture-manifest.json" | indent 4 }}
+{{ .Files.Get .Values.fixture.manifestFile | indent 4 }}

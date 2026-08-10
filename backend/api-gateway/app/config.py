@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     SCHEDULER_SERVICE_URL: str = "http://scheduler-service:8003"
     KB_SERVICE_URL: str = "http://kb-service:8004"
     AGENT_SERVICE_URL: str = "http://agent-service:8005"
+    HCI_SIM_URL: str = "http://hci-sim.hci-sim-dev.svc:8080"
+    HCI_SIM_CONTROL_TOKEN: str = ""
 
     # 内部服务间 API 鉴权 Token
     INTERNAL_API_TOKEN: str = "hci-dev-internal-token"

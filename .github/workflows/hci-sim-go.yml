@@ -116,6 +116,12 @@ jobs:
           cd hci_sim
           go run ./cmd/hci-sim manifest-digest --manifest testdata/kbd-27123-fixture-manifest.json > /tmp/hci-sim-digest
           grep -F "$(cat /tmp/hci-sim-digest)" testdata/kbd-27123-fixture-manifest.json
+          # 23821 只作为显式 synthetic contract fixture 进入门禁；真实 Bundle
+          # 必须另有 approved Artifact provenance，不能由本文件冒充。
+          go run ./cmd/hci-sim manifest-digest --manifest ../deploy/helm/hci-sim/files/kbd-23821-synthetic-fixture-manifest.json > /tmp/hci-sim-23821-digest
+          grep -F "$(cat /tmp/hci-sim-23821-digest)" ../deploy/helm/hci-sim/files/kbd-23821-synthetic-fixture-manifest.json
+          grep -F '"support_id": "23821"' ../deploy/helm/hci-sim/files/kbd-23821-synthetic-fixture-manifest.json
+          grep -F '"SYNTHETIC": "true"' ../deploy/helm/hci-sim/files/kbd-23821-synthetic-fixture-manifest.json
       - name: reject retired runtime markers
         run: |
           test ! -e hci-sim
