@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS control_plane.scenario (
 
 CREATE TABLE IF NOT EXISTS control_plane.run (
     id uuid PRIMARY KEY,
+    -- 对外 TestRun ID 保留平台现有可追踪格式；内部 UUID 只用于关系完整性。
+    external_id varchar(128) NOT NULL UNIQUE,
     support_id varchar(20) NOT NULL,
     kbd_revision bigint NOT NULL,
     scenario_id uuid NOT NULL REFERENCES control_plane.scenario(id) ON DELETE RESTRICT,
@@ -40,6 +42,13 @@ CREATE TABLE IF NOT EXISTS control_plane.run (
     CONSTRAINT run_mode CHECK (execution_mode = 'sim-ssh'),
     CONSTRAINT run_status CHECK (status IN ('requested', 'preparing', 'leased', 'running', 'passed', 'failed', 'inconclusive', 'cancelled', 'expired'))
 );
+
+-- 兼容首版已创建但尚未写入生产数据的旧表；若未来已有行，先用内部 UUID
+-- 回填可追踪 ID，再建立 NOT NULL/唯一边界，禁止运行时回退内存状态。
+ALTER TABLE control_plane.run ADD COLUMN IF NOT EXISTS external_id varchar(128);
+UPDATE control_plane.run SET external_id = id::text WHERE external_id IS NULL;
+ALTER TABLE control_plane.run ALTER COLUMN external_id SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS run_external_id_unique ON control_plane.run (external_id);
 
 CREATE TABLE IF NOT EXISTS control_plane.run_attempt (
     id uuid PRIMARY KEY,

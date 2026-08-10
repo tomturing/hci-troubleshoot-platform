@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - "database/hci-sim-migrations/**"
+      - "hci_sim/internal/database/**"
+      - "hci_sim/go.mod"
+      - "hci_sim/go.sum"
       - "scripts/db/hci-sim-copy.sh"
       - "deploy/helm/hci-platform/templates/hci-sim-db-*.yaml"
       - "deploy/helm/hci-platform/templates/hooks/hci-sim-db-migrate-job.yaml"
@@ -39,6 +42,10 @@ jobs:
       PGPASSWORD: ci_admin_pass
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: hci_sim/go.mod
+          cache-dependency-path: hci_sim/go.sum
       - name: 创建目标数据库和迁移角色
         run: |
           psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE hci_sim_migrator LOGIN PASSWORD 'mig_pass';"
@@ -53,3 +60,10 @@ jobs:
           psql -d hci_sim -v ON_ERROR_STOP=1 -c "REVOKE ALL ON DATABASE hci_sim FROM PUBLIC; GRANT CONNECT ON DATABASE hci_sim TO hci_sim_runtime;"
           ! PGPASSWORD=run_pass psql -h localhost -U hci_sim_runtime -d hci_sim -c 'CREATE TABLE control_plane.must_fail(id int);'
           echo 'hci_sim migration and DDL negative check: PASS'
+      - name: 校验 Runtime DML、幂等和 CAS
+        env:
+          HCI_SIM_TEST_DATABASE_URL: postgresql://hci_sim_runtime:run_pass@localhost:5432/hci_sim
+        run: |
+          psql -d hci_sim -v ON_ERROR_STOP=1 -c "GRANT USAGE ON SCHEMA control_plane, fixture, artifact, audit TO hci_sim_runtime; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA control_plane, fixture, artifact, audit TO hci_sim_runtime; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA control_plane, fixture, artifact, audit TO hci_sim_runtime;"
+          cd hci_sim
+          go test ./internal/database -run TestRunRepositoryPostgresIdempotencyAndCAS -count=1

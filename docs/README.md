@@ -87,7 +87,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | 组别 | 当前状态 | 需求 | 方案 | 任务 | 验证 |
 |---|---|---|---|---|---|
 | K3s 受管 terminal_bridge | 🟡 immutable hci-sim digest 已发布并待 Argo 同步；正式 Bridge→Runtime E2E 待重跑 | [需求](requirement/events/2026-08-10-K3s受管terminal_bridge启用需求.md) | [方案](solution/events/2026-08-10-K3s受管terminal_bridge启用方案.md) | [任务](task/events/2026-08-10-K3s受管terminal_bridge启用任务.md) | [验证](verify/events/2026-08-10-K3s受管terminal_bridge启用验证.md) |
-| hci_sim 独立数据库 | 🟡 migration/schema/权限门禁已通过；应用 Repository、copy/switch/contract pending | [需求](requirement/events/2026-08-10-hci_sim独立数据库隔离需求.md) | [方案](solution/events/2026-08-10-hci_sim独立数据库隔离方案.md) | [任务](task/events/2026-08-10-hci_sim独立数据库隔离任务.md) | [验证](verify/events/2026-08-10-hci_sim独立数据库隔离验证.md) |
+| hci_sim 独立数据库 | 🟡 migration/schema/权限门禁通过；Scenario/Run/Attempt 已接入 Runtime build/TestRun/Lease，Event/Result/outbox、Artifact/Bundle Repository 和 copy/switch/contract 仍 pending | [需求](requirement/events/2026-08-10-hci_sim独立数据库隔离需求.md) | [方案](solution/events/2026-08-10-hci_sim独立数据库隔离方案.md) | [任务](task/events/2026-08-10-hci_sim独立数据库隔离任务.md) | [验证](verify/events/2026-08-10-hci_sim独立数据库隔离验证.md) |
 | 仿真测试迁移与 Agent context | 🟡 Admin UI/Gateway/Runtime 最小契约已合入；持久化 context、真实工单/Agent E2E pending | [需求](requirement/events/2026-08-10-仿真测试迁移与Agent上下文绑定需求.md) | [方案](solution/events/2026-08-10-仿真测试迁移与Agent上下文绑定方案.md) | [任务](task/events/2026-08-10-仿真测试迁移与Agent上下文绑定任务.md) | [验证](verify/events/2026-08-10-仿真测试迁移与Agent上下文绑定验证.md) |
 
 ### 冷启动阅读路径

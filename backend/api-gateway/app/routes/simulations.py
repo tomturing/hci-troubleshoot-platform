@@ -13,10 +13,12 @@ from app.config import settings
 router = APIRouter(prefix="/api/hci-sim", tags=["hci-sim"])
 
 
-async def _post(path: str, payload: dict) -> JSONResponse:
+async def _post(path: str, payload: dict, idempotency_key: str | None = None) -> JSONResponse:
     headers = {"Content-Type": "application/json"}
     if settings.HCI_SIM_CONTROL_TOKEN:
         headers["Authorization"] = f"Bearer {settings.HCI_SIM_CONTROL_TOKEN}"
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(f"{settings.HCI_SIM_URL.rstrip('/')}{path}", json=payload, headers=headers)
@@ -31,9 +33,9 @@ async def _post(path: str, payload: dict) -> JSONResponse:
 
 @router.post("/v1/simulations/build")
 async def build(request: Request) -> JSONResponse:
-    return await _post("/v1/simulations/build", await request.json())
+    return await _post("/v1/simulations/build", await request.json(), request.headers.get("Idempotency-Key"))
 
 
 @router.post("/v1/simulations/test-runs")
 async def create_test_run(request: Request) -> JSONResponse:
-    return await _post("/v1/simulations/test-runs", await request.json())
+    return await _post("/v1/simulations/test-runs", await request.json(), request.headers.get("Idempotency-Key"))

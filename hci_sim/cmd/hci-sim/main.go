@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -60,6 +61,20 @@ func runServer() error {
 	databaseTarget, err := database.FromEnvironment()
 	if err != nil {
 		return err
+	}
+	var runRepository *database.RunRepository
+	var databasePool interface{ Close() }
+	if databaseTarget.Configured {
+		pool, openErr := database.Open(ctx, databaseTarget)
+		if openErr != nil {
+			return openErr
+		}
+		databasePool = pool
+		defer databasePool.Close()
+		runRepository, err = database.NewRunRepository(pool)
+		if err != nil {
+			return err
+		}
 	}
 	router, err := fixture.Load(env("HCI_SIM_FIXTURE_MANIFEST", "/etc/hci-sim/fixture-manifest.json"))
 	if err != nil {
@@ -131,12 +146,51 @@ func runServer() error {
 		}
 		now := time.Now().UTC()
 		runID := fmt.Sprintf("run-%s-%s", request.KBDID, randomID())
+		idempotencyKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+		if idempotencyKey == "" {
+			idempotencyKey = "runtime-" + runID
+		}
+		if len(idempotencyKey) > 256 {
+			http.Error(w, "Idempotency-Key is too long", http.StatusBadRequest)
+			return
+		}
+		requestDigest := digestValue(map[string]any{"kbd_id": request.KBDID, "variant": fixtureVariant, "bundle_digest": router.BundleDigest()})
+		inputFingerprint := digestValue(map[string]any{"support_id": request.KBDID, "kbd_revision": router.KBD().Revision, "variant": fixtureVariant, "bundle_digest": router.BundleDigest()})
+		runVersion := 1
+		if runRepository != nil {
+			record, persistErr := runRepository.Create(r.Context(), database.RunInput{
+				ExternalID: runID, SupportID: request.KBDID, KBDRevision: router.KBD().Revision,
+				Variant: fixtureVariant, BundleDigest: router.BundleDigest(), ExecutionMode: "sim-ssh",
+				IdempotencyKey: idempotencyKey, RequestDigest: requestDigest, Deadline: now.Add(15 * time.Minute),
+				InputFingerprint: inputFingerprint,
+			})
+			if persistErr != nil {
+				if errors.Is(persistErr, database.ErrIdempotencyConflict) {
+					http.Error(w, persistErr.Error(), http.StatusConflict)
+				} else {
+					http.Error(w, "hci_sim persistence unavailable", http.StatusServiceUnavailable)
+				}
+				return
+			}
+			runID = record.ExternalID
+			runVersion = record.Version
+		}
 		expires := now.Add(15 * time.Minute)
 		claims := lease.Claims{JTI: runID + "-1", LeaseID: "lease-" + runID, TestRunID: runID, ScenarioID: "kbd-" + request.KBDID + "-" + fixtureVariant, SupportID: request.KBDID, KBDRevision: router.KBD().Revision, BundleDigest: router.BundleDigest(), FixtureVariant: fixtureVariant, ToolContractRevision: router.Contracts().ToolRevision, PolicyRevision: router.Contracts().PolicyRevision, VirtualNodeID: "SIM-HCI-NODE-01", Container: "host", ExecutionMode: "sim-ssh", Issuer: env("HCI_SIM_LEASE_ISSUER", "hci-platform"), Audience: env("HCI_SIM_LEASE_AUDIENCE", "hci-sim"), IssuedAt: now.Unix(), NotBefore: now.Unix(), ExpiresAt: expires.Unix(), RunDeadline: expires.Unix(), MaxSessions: 4, MaxCommands: 200, MaxOutputBytes: int64(router.OutputLimit())}
 		token, err := lease.Sign(secret, claims)
 		if err != nil {
 			http.Error(w, "lease signing failed", http.StatusInternalServerError)
 			return
+		}
+		if runRepository != nil {
+			if _, persistErr := runRepository.RecordLease(r.Context(), runID, runVersion, 1, env("HCI_SIM_RUNTIME_ID", "hci-sim"), digestValue(runID+"-1")); persistErr != nil {
+				if errors.Is(persistErr, database.ErrRunVersionConflict) {
+					http.Error(w, persistErr.Error(), http.StatusConflict)
+				} else {
+					http.Error(w, "hci_sim lease persistence unavailable", http.StatusServiceUnavailable)
+				}
+				return
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"test_run_id": runID, "support_id": request.KBDID, "bundle_digest": router.BundleDigest(), "synthetic": router.IsSynthetic(), "environment_context": map[string]any{"test_run_id": runID, "support_id": request.KBDID, "kbd_revision": router.KBD().Revision, "bundle_digest": router.BundleDigest(), "execution_mode": "sim-ssh", "virtual_node_id": "SIM-HCI-NODE-01", "container": "host"}, "connection": map[string]any{"host": env("HCI_SIM_SSH_HOST", "hci-sim.hci-sim-dev.svc"), "port": strings.TrimPrefix(env("HCI_SIM_SSH_LISTEN", ":2222"), ":"), "username": "sim", "auth_type": "lease", "password": token, "execution_mode": "sim-ssh", "test_run_id": runID}})
@@ -157,12 +211,38 @@ func runServer() error {
 			http.Error(w, "kbd_id, title and description are required", http.StatusBadRequest)
 			return
 		}
-		if request.Connection["execution_mode"] != "sim-ssh" || request.EnvironmentContext["execution_mode"] != "sim-ssh" || request.Connection["test_run_id"] == nil || request.Connection["test_run_id"] != request.EnvironmentContext["test_run_id"] || request.EnvironmentContext["support_id"] != request.KBDID {
+		connectionRunID, connectionRunOK := request.Connection["test_run_id"].(string)
+		contextRunID, contextRunOK := request.EnvironmentContext["test_run_id"].(string)
+		contextSupportID, supportOK := request.EnvironmentContext["support_id"].(string)
+		contextRevision, revisionOK := jsonInt(request.EnvironmentContext["kbd_revision"])
+		if request.Connection["execution_mode"] != "sim-ssh" || request.EnvironmentContext["execution_mode"] != "sim-ssh" || !connectionRunOK || !contextRunOK || !supportOK || !revisionOK || connectionRunID == "" || connectionRunID != contextRunID || contextSupportID != request.KBDID {
 			http.Error(w, "sim TestRun must be explicitly bound to sim-ssh context", http.StatusConflict)
 			return
 		}
+		status := "created"
+		version := 0
+		if runRepository != nil {
+			record, getErr := runRepository.Get(r.Context(), connectionRunID)
+			if getErr != nil {
+				http.Error(w, "test_run_not_found", http.StatusConflict)
+				return
+			}
+			if record.SupportID != request.KBDID || record.KBDRevision != contextRevision || record.ExecutionMode != "sim-ssh" || record.BundleDigest != fmt.Sprint(request.EnvironmentContext["bundle_digest"]) {
+				http.Error(w, "test_run_context_mismatch", http.StatusConflict)
+				return
+			}
+			if record.Status == "requested" {
+				if updated, updateErr := runRepository.UpdateStatusCAS(r.Context(), connectionRunID, record.Version, "preparing"); updateErr != nil {
+					http.Error(w, "test_run_state_conflict", http.StatusConflict)
+					return
+				} else {
+					record = updated
+				}
+			}
+			status, version = record.Status, record.Version
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"case_id": "sim-case-" + randomID(), "test_run_id": request.Connection["test_run_id"], "status": "created", "execution_mode": "sim-ssh"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"case_id": "sim-case-" + randomID(), "test_run_id": connectionRunID, "status": status, "version": version, "execution_mode": "sim-ssh"})
 	})
 	httpServer.Handler = mux
 	serverErrors := make(chan error, 2)
@@ -297,4 +377,23 @@ func randomID() string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return fmt.Sprintf("%x", buffer)
+}
+
+// digestValue 为控制面幂等和 Scenario 指纹提供稳定摘要；摘要中不包含
+// Lease、密码、私钥或原始 Artifact。
+func digestValue(value any) string {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return "sha256:invalid"
+	}
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+func jsonInt(value any) (int, bool) {
+	floatValue, ok := value.(float64)
+	if !ok || floatValue != float64(int(floatValue)) {
+		return 0, false
+	}
+	return int(floatValue), true
 }
