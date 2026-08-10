@@ -16,23 +16,9 @@ const props = defineProps<{
     password: string
     privateKey: string
     passphrase: string
-    executionMode?: 'sim-ssh'
-    testRunId?: string
   }
   authType: TerminalAuthType
-  allowLease?: boolean
 }>()
-
-type SshFormValue = {
-  host: string
-  port: string
-  username: string
-  password: string
-  privateKey: string
-  passphrase: string
-  executionMode?: 'sim-ssh'
-  testRunId?: string
-}
 
 // Emit: 表单数据变更
 const emit = defineEmits<{
@@ -41,21 +27,15 @@ const emit = defineEmits<{
 }>()
 
 // 内部维护本地副本（避免直接修改 props）
-const localForm = ref<SshFormValue>({
+const localForm = ref({
   host: props.sshForm.host,
   port: props.sshForm.port,
   username: props.sshForm.username || 'admin',
   password: props.sshForm.password,
   privateKey: props.sshForm.privateKey,
   passphrase: props.sshForm.passphrase,
-  executionMode: props.sshForm.executionMode,
-  testRunId: props.sshForm.testRunId,
 })
 const localAuthType = ref<TerminalAuthType>(props.authType)
-
-const SIMULATION_DEFAULT_HOST = '172.28.24.21'
-const SIMULATION_DEFAULT_PORT = '2222'
-const SIMULATION_DEFAULT_USERNAME = 'sim'
 
 // 监听 props 变化，同步到本地副本
 watch(() => props.sshForm, (val) => {
@@ -70,22 +50,7 @@ watch(() => props.authType, (val) => {
 
 // 同步本地副本变更到父组件
 watch(localForm, (val) => emit('update:sshForm', { ...val }), { deep: true })
-watch(localAuthType, (val) => {
-  emit('update:authType', val)
-  if (val !== 'lease') return
-
-  // 仿真租约不是普通 SSH：使用 hci-sim 的 SSH 默认值。
-  // connection.json 载入后会再以本轮实际 host/port 覆盖这些默认值。
-  if (localForm.value.executionMode !== 'sim-ssh') {
-    // 不复用普通 SSH 的密码或上一轮 TestRun，避免把错误凭据带入仿真租约。
-    localForm.value.password = ''
-    localForm.value.testRunId = ''
-    localForm.value.host = SIMULATION_DEFAULT_HOST
-    localForm.value.port = SIMULATION_DEFAULT_PORT
-    localForm.value.username = SIMULATION_DEFAULT_USERNAME
-    localForm.value.executionMode = 'sim-ssh'
-  }
-})
+watch(localAuthType, (val) => emit('update:authType', val))
 
 // localStorage 自动填充提示
 const hasAutoFill = computed(() => localForm.value.host && localForm.value.username)
@@ -93,11 +58,6 @@ const hasAutoFill = computed(() => localForm.value.host && localForm.value.usern
 // 加载上次成功的 SSH 配置（不含密码）
 function loadSavedSshConfig() {
   try {
-    // 重试会重新挂载本组件，但父组件仍保留用户刚刚填写的表单。
-    // 只有表单确实为空时才读取历史普通 SSH 配置，不能覆盖本次输入。
-    if (localForm.value.host || localForm.value.password || localForm.value.testRunId || localForm.value.executionMode) {
-      return
-    }
     const saved = localStorage.getItem('hci_last_ssh_config')
     if (saved) {
       const config = JSON.parse(saved)
@@ -151,12 +111,11 @@ loadSavedSshConfig()
         <el-radio-group v-model="localAuthType" size="small">
           <el-radio-button value="password">密码认证</el-radio-button>
           <el-radio-button value="key">密钥认证</el-radio-button>
-          <el-radio-button v-if="allowLease" value="lease">仿真租约</el-radio-button>
         </el-radio-group>
       </div>
 
-      <!-- 密码/仿真租约认证 -->
-      <div v-if="localAuthType === 'password' || localAuthType === 'lease'" class="form-row">
+      <!-- 密码认证 -->
+      <div v-if="localAuthType === 'password'" class="form-row">
         <el-form-item label="密码" class="form-full">
           <el-input
             v-model="localForm.password"
@@ -169,19 +128,8 @@ loadSavedSshConfig()
         </el-form-item>
       </div>
 
-      <template v-if="localAuthType === 'lease'">
-        <el-alert type="info" :closable="false" class="lease-hint">
-          仿真环境仅接受控制面签发的 htp2 租约；请将第一步输出的 password 原样粘贴，不要加后缀。
-        </el-alert>
-        <div class="form-row">
-          <el-form-item label="TestRun ID（可选）" class="form-full">
-            <el-input v-model="localForm.testRunId" placeholder="run-..." />
-          </el-form-item>
-        </div>
-      </template>
-
       <!-- 密钥认证 -->
-      <div v-if="localAuthType === 'key'" class="form-row key-auth-section">
+      <div v-else class="form-row key-auth-section">
         <el-form-item label="私钥" class="form-full">
           <el-input
             v-model="localForm.privateKey"
@@ -252,9 +200,5 @@ loadSavedSshConfig()
   font-size: 12px;
   color: #909399;
   margin: 8px 0 0;
-}
-
-.lease-hint {
-  margin-bottom: 12px;
 }
 </style>

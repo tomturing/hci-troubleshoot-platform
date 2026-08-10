@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { buildAgentExecProcessMessage, getBridgeExecWaitTimeoutMs, getBridgeUrl, parseSimulationConnectionJson } from '../terminal'
+import { buildAgentExecProcessMessage, getBridgeExecWaitTimeoutMs, getBridgeUrl } from '../terminal'
 
 describe('getBridgeUrl', () => {
   afterEach(() => {
@@ -79,34 +79,5 @@ describe('getBridgeUrl', () => {
 
     expect(message.timeout).toBe(120)
     expect(message.output_filters[0].include).toEqual(['4359974862144'])
-  })
-})
-
-describe('parseSimulationConnectionJson', () => {
-  const valid = JSON.stringify({
-    support_id: '23821',
-    expires_at: '2030-01-01T00:00:00Z',
-    recommended_command: 'qkv_task --limit 1',
-    connection: {
-      host: '172.28.24.21',
-      port: 22001,
-      username: 'sim',
-      auth_type: 'lease',
-      execution_mode: 'sim-ssh',
-      password: 'htp2.redacted-for-test',
-      test_run_id: 'run-test',
-    },
-  })
-
-  it('一次性提取仿真连接字段和推荐命令', () => {
-    expect(parseSimulationConnectionJson(valid, Date.parse('2029-01-01T00:00:00Z'))).toMatchObject({
-      supportId: '23821', host: '172.28.24.21', port: 22001, username: 'sim',
-      testRunId: 'run-test', recommendedCommand: 'qkv_task --limit 1',
-    })
-  })
-
-  it('拒绝过期 Lease 和非 sim-ssh 连接', () => {
-    expect(() => parseSimulationConnectionJson(valid, Date.parse('2030-01-02T00:00:00Z'))).toThrow('Lease 已过期')
-    expect(() => parseSimulationConnectionJson(valid.replace('"auth_type":"lease"', '"auth_type":"password"'))).toThrow('不是 hci-sim 仿真租约')
   })
 })

@@ -237,6 +237,7 @@ func (r *Router) BundleDigest() string { return r.manifest.Bundle.Digest }
 func (r *Router) KBD() KBDRef          { return r.manifest.KBD }
 func (r *Router) Contracts() Contracts { return r.manifest.Contracts }
 func (r *Router) OutputLimit() int     { return r.manifest.Limits.MaxOutputBytesPerCommand }
+func (r *Router) IsSynthetic() bool    { return r.manifest.Variables["SYNTHETIC"] == "true" }
 
 // Match 将受限 lexer 的 argv 和权威 Lease target 转为精确 RouteKey。
 func (r *Router) Match(command, variant, node, container string) (Result, error) {

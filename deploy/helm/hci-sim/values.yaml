@@ -3,7 +3,9 @@ replicaCount: 1
 
 image:
   repository: hci-sim
+  # 本地默认可运行；K3s overlay 必须提供 digest（不可变）。
   tag: dev-local
+  digest: ""
   pullPolicy: IfNotPresent
 
 service:
@@ -20,8 +22,23 @@ runtime:
   fixtureVariant: positive-realistic
   existingSecret: hci-sim-credentials
   leaseKeySecretKey: lease-hmac-key
+  controlTokenSecretKey: control-plane-token
+  allowInsecureControlAPI: false
+  sshHost: hci-sim.hci-sim-dev.svc
   hostKeySecretKey: ssh_host_key
   otlpEndpoint: http://tempo.hci-observability.svc:4318
+
+database:
+  # true 是 K3s 受管部署的默认值；本地单元测试可显式关闭。
+  required: true
+  existingSecret: hci-sim-runtime-credentials
+  urlSecretKey: HCI_SIM_DATABASE_URL
+
+fixture:
+  # 只能引用 chart 内置、经审查的 manifest；生产环境应由 Bundle Registry
+  # 生成 ConfigMap/对象存储，而不是从用户输入挂载任意文件。
+  manifestFile: files/kbd-27123-fixture-manifest.json
+  configMapName: hci-sim-fixture
 
 resources:
   requests:

@@ -29,7 +29,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: hci-sim
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ else }}:{{ .Values.image.tag }}{{ end }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -42,10 +42,21 @@ spec:
               value: {{ .Values.runtime.environment | quote }}
             - name: HCI_SIM_SSH_LISTEN
               value: ":{{ .Values.service.sshPort }}"
+            - name: HCI_SIM_SSH_HOST
+              value: {{ .Values.runtime.sshHost | quote }}
             - name: HCI_SIM_HTTP_LISTEN
               value: ":{{ .Values.service.httpPort }}"
             - name: HCI_SIM_FIXTURE_MANIFEST
               value: /etc/hci-sim/fixture-manifest.json
+            - name: HCI_SIM_DATABASE_REQUIRED
+              value: {{ .Values.database.required | quote }}
+            {{- if .Values.database.required }}
+            - name: HCI_SIM_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.urlSecretKey }}
+            {{- end }}
             - name: HCI_SIM_HOST_KEY_FILE
               value: /etc/hci-sim-secrets/ssh_host_key
             - name: HCI_SIM_WORKERS
@@ -63,6 +74,14 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.runtime.existingSecret }}
                   key: {{ .Values.runtime.leaseKeySecretKey }}
+            - name: HCI_SIM_CONTROL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.runtime.existingSecret }}
+                  key: {{ .Values.runtime.controlTokenSecretKey }}
+                  optional: true
+            - name: HCI_SIM_ALLOW_INSECURE_CONTROL_API
+              value: {{ .Values.runtime.allowInsecureControlAPI | quote }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.runtime.otlpEndpoint | quote }}
           ports:
@@ -104,7 +123,7 @@ spec:
       volumes:
         - name: fixture
           configMap:
-            name: hci-sim-fixture-kbd-27123
+            name: {{ .Values.fixture.configMapName }}
         - name: credentials
           secret:
             secretName: {{ .Values.runtime.existingSecret }}

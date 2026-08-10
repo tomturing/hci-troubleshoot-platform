@@ -58,7 +58,7 @@ export function getBridgeExecWaitTimeoutMs(): number {
 
 export type BridgeStatus = 'checking' | 'running' | 'not_running'
 
-export type TerminalAuthType = 'password' | 'key' | 'lease'
+export type TerminalAuthType = 'password' | 'key'
 
 export interface SshConnectOptions {
   host: string
@@ -69,58 +69,6 @@ export interface SshConnectOptions {
   private_key?: string
   passphrase?: string
   case_id?: string
-  execution_mode?: 'sim-ssh'
-  test_run_id?: string
-}
-
-export interface SimulationConnectionInput {
-  supportId: string
-  host: string
-  port: number
-  username: string
-  password: string
-  testRunId: string
-  recommendedCommand: string
-  expiresAt: string
-}
-
-/**
- * 解析 hci-sim bootstrap 生成的 connection.json。
- * 函数只返回内存对象；调用方不得持久化 password 或原始 JSON。
- */
-export function parseSimulationConnectionJson(raw: string, nowMs = Date.now()): SimulationConnectionInput {
-  let payload: any
-  try {
-    payload = JSON.parse(raw)
-  } catch {
-    throw new Error('JSON 格式错误')
-  }
-  const connection = payload?.connection
-  if (!connection || typeof connection !== 'object') throw new Error('缺少 connection 对象')
-  if (!payload.support_id || !connection.host || !connection.port || !connection.username || !connection.password) {
-    throw new Error('缺少 support_id、host、port、username 或 Lease password')
-  }
-  const port = Number(connection.port)
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('connection.port 无效')
-  if (connection.auth_type !== 'lease' || connection.execution_mode !== 'sim-ssh') {
-    throw new Error('该连接文件不是 hci-sim 仿真租约')
-  }
-  const expiresAt = String(payload.expires_at || '')
-  if (expiresAt) {
-    const expiryMs = new Date(expiresAt).getTime()
-    if (!Number.isFinite(expiryMs)) throw new Error('expires_at 格式无效')
-    if (expiryMs <= nowMs) throw new Error(`Lease 已过期（${expiresAt}），请重新运行第一步`)
-  }
-  return {
-    supportId: String(payload.support_id),
-    host: String(connection.host),
-    port,
-    username: String(connection.username),
-    password: String(connection.password),
-    testRunId: String(connection.test_run_id || ''),
-    recommendedCommand: typeof payload.recommended_command === 'string' ? payload.recommended_command : '',
-    expiresAt,
-  }
 }
 
 export interface TerminalWsMessage {

@@ -33,6 +33,7 @@ from app.routes import (
     environments,
     health,
     kb,
+    simulations,
     terminal,
     websocket,
 )
@@ -139,6 +140,7 @@ app.include_router(audit.router)
 app.include_router(health.router)
 app.include_router(capabilities.router)
 app.include_router(bridge_logs.router)
+app.include_router(simulations.router)
 
 
 @app.get("/metrics")
