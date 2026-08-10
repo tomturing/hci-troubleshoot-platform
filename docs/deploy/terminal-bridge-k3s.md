@@ -26,6 +26,8 @@ Custom UI ── 同源 /terminal-bridge ──> K3s terminal_bridge Pod ── 
 - cluster 模式默认只允许同源 Origin，禁止把服务暴露成任意网页可调用的内网 SSH 跳板。
 - 当前 SSH 会话保存在单进程内存，Deployment 只能使用一个副本。
 
+NetworkPolicy 的 DNS、hci-sim 与 Tempo 目标必须使用 Kubernetes `podSelector.matchLabels` 结构，不能把标签直接嵌套在 `podSelector` 下；Helm 单测会对这三个 selector 做结构和值断言，防止渲染后策略被 Kubernetes 解释为选择所有 Pod。
+
 ## 2. 运行时选择机制
 
 customer-ui 不再把 Bridge 地址永久写死为唯一值。nginx 在运行时生成 `/runtime-config.js`：

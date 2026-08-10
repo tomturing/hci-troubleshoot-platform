@@ -25,6 +25,12 @@ tests:
       - equal:
           path: spec.egress[1].ports[0].port
           value: 2222
+      - equal:
+          path: spec.egress[0].to[0].podSelector.matchLabels.k8s-app
+          value: kube-dns
+      - equal:
+          path: spec.egress[2].to[0].podSelector.matchLabels["app.kubernetes.io/name"]
+          value: tempo
 
   - it: "网络策略可显式关闭以支持迁移期诊断"
     set:
