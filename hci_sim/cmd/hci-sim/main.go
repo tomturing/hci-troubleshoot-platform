@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"hci_sim/internal/database"
 	"hci_sim/internal/fixture"
 	"hci_sim/internal/lease"
 	"hci_sim/internal/metrics"
@@ -56,6 +57,10 @@ func main() {
 func runServer() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	databaseTarget, err := database.FromEnvironment()
+	if err != nil {
+		return err
+	}
 	router, err := fixture.Load(env("HCI_SIM_FIXTURE_MANIFEST", "/etc/hci-sim/fixture-manifest.json"))
 	if err != nil {
 		return err
@@ -97,6 +102,7 @@ func runServer() error {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"service": "hci-sim", "version": version, "fixture_manifest_hash": router.ManifestHash(), "bundle_digest": router.BundleDigest(),
 			"kbd_support_id": router.KBD().SupportID, "kbd_revision": router.KBD().Revision, "tool_contract_revision": router.Contracts().ToolRevision,
+			"database_configured": databaseTarget.Configured, "database_name": databaseTarget.Database,
 		})
 	})
 	httpServer.Handler = mux
