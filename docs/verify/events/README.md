@@ -16,6 +16,7 @@ owner: team
 
 | 文件 | 日期 | 说明 |
 |------|------|------|
+| [2026-08-10-hci-sim三PR闭环验证.md](2026-08-10-hci-sim三PR闭环验证.md) | 2026-08-10 | 三个纵向 PR 的数据库、K3s、Bridge、UI、Agent、容量与安全退出证据矩阵 |
 | [2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md](2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md) | 2026-08-07 | Runtime 六领域 Resolver 代码级回归、aCLI 在线 Catalog 336/336、一致性及真实 HCI `/sf/log` 深度目录/SQLite `log_new.db` 只读测评；生产硬门禁/归档扩展仍 in_progress |
 | [2026-08-07-CI最小激活与快速门禁验证报告.md](2026-08-07-CI最小激活与快速门禁验证报告.md) | 2026-08-07 | workflow 语法、DAG、变更分流与本地等价命令验证；Hosted Runner P50/P95 待线上采集 |
 | [2026-08-06-hci-sim阶段C3两步人工验收闭环验证报告.md](2026-08-06-hci-sim阶段C3两步人工验收闭环验证报告.md) | 2026-08-06 | 27736/34164 synthetic Bundle → Custom UI lease → sim-ssh 两步闭环与 27123 fail-closed |

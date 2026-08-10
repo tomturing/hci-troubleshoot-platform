@@ -16,6 +16,7 @@ owner: team
 
 | 文件 | 日期 | 说明 |
 |------|------|------|
+| [2026-08-10-hci-sim三PR闭环任务.md](2026-08-10-hci-sim三PR闭环任务.md) | 2026-08-10 | PR1 基础运行面、PR2 控制面/Admin UI、PR3 产品级验证的唯一剩余任务基线 |
 | [2026-08-07-关键信号统一解析运行时与Resolver分层任务.md](2026-08-07-关键信号统一解析运行时与Resolver分层任务.md) | 2026-08-07 | Shared Resolution Runtime、`qfk_system` 独立边界、领域 Resolver、Catalog/生产消费统一校验；首个代码纵向切片与真实 HCI 代表性测评已完成，生产硬门禁仍 in_progress |
 | [2026-08-06-hci-sim阶段C3两步人工验收闭环任务.md](2026-08-06-hci-sim阶段C3两步人工验收闭环任务.md) | 2026-08-06 | C1 capability → synthetic positive-minimal Bundle → hci-sim → Custom UI 两步验收闭环 |
 | [2026-08-06-hci-sim阶段C1权威KBD解析与全量能力验证任务.md](2026-08-06-hci-sim阶段C1权威KBD解析与全量能力验证任务.md) | 2026-08-06 | C1：只读 active KBD snapshot Resolver、126 条 capability report 与 C2 Artifact 前置 |

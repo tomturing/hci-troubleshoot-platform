@@ -1,5 +1,15 @@
 # K8s / K3s / Helm 运维避坑
 
+## D-024：ArgoCD PreSync Hook 依赖普通资源不会提前创建
+
+**现象：** PreSync migration Job 长期 `ContainerCreating`，Pod 事件报 `FailedMount`，依赖的 Secret/ConfigMap 在 Application 资源树中显示 `Missing`。
+
+**根因：** ArgoCD 按 phase 执行资源。`PreSync` Hook 会先于普通 `Sync` 资源执行；把 Job 标成 PreSync、却把它依赖的 Secret/ConfigMap 保持普通资源，会形成隐式的阶段逆序。
+
+**正确设计：** 将所有启动依赖纳入同一 Hook 图并显式排序，例如 Secret `PreSync/-10`、ConfigMap `PreSync/-9`、Job `PreSync/-8`；Secret/ConfigMap 使用 `BeforeHookCreation` 保留成功后的资源供运行时使用，Job 失败策略包含 `HookFailed`。
+
+**验收：** 不只检查 Helm render；必须观察 Argo operation、Pod mount 事件和 Job 日志，确认依赖资源先于 Job 创建，且下一次同步可以替换旧 Hook。禁止用 `kubectl patch`/`kubectl edit` 作为长期修复。
+
 ## D-009：Helm chart 用 emptyDir 覆盖 `/etc/nginx/conf.d` 导致 nginx 启动无 server block
 
 > **触发场景（场景 A — 无 templates）：** admin-ui / customer-ui 等基于 `nginx:alpine` 的静态前端服务，Dockerfile 直接将 nginx.conf COPY 到 `conf.d/`（baked），但 Helm chart 错误地用 emptyDir 挂载 `/etc/nginx/conf.d`，清空了 baked 配置。Pod 反复 CrashLoopBackOff，80 端口 connection refused。
