@@ -152,6 +152,19 @@
         "hostKeyPolicy": {
           "type": "string",
           "enum": ["strict", "accept-new", "insecure"]
+        },
+        "networkPolicy": {
+          "type": "object",
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "ingressNamespace": {"type": "string", "minLength": 1},
+            "hciSimNamespace": {"type": "string", "minLength": 1},
+            "hciSimSshPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "observabilityNamespace": {"type": "string", "minLength": 1},
+            "dnsNamespace": {"type": "string", "minLength": 1},
+            "dnsSelector": {"type": "object", "minProperties": 1},
+            "tempoSelector": {"type": "object", "minProperties": 1}
+          }
         }
       }
     }

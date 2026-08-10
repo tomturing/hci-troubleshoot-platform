@@ -69,6 +69,27 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+阶段一 K3s terminal_bridge 防误配门禁。
+SSH 会话目前只保存在单 Pod 内存中；cluster 模式也不能以 wildcard Origin
+作为内网 SSH 跳板。把这两个不变量放在 Helm 渲染期检查，避免手工 patch
+或错误 values 进入集群后才暴露为运行时故障。
+*/}}
+{{- define "hci.terminalBridgeGuard" -}}
+{{- if .Values.terminalBridge.enabled -}}
+  {{- if ne (int .Values.terminalBridge.replicaCount) 1 -}}
+    {{- fail "terminalBridge.replicaCount 必须为 1：SSH/WebSocket session 当前保存在单进程内存中" -}}
+  {{- end -}}
+  {{- $origins := trim (default "" .Values.terminalBridge.allowedOrigins) -}}
+  {{- if eq $origins "" -}}
+    {{- fail "terminalBridge.enabled=true 时必须配置 terminalBridge.allowedOrigins" -}}
+  {{- end -}}
+  {{- if contains "*" $origins -}}
+    {{- fail "cluster terminal_bridge 禁止 wildcard Origin (*)；请使用 same-origin 或明确的 HTTPS Origin 白名单" -}}
+  {{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 命名空间
 */}}
 {{- define "hci.namespace" -}}

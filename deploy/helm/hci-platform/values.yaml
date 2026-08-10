@@ -313,6 +313,20 @@ terminalBridge:
   artifactCleanupSchedule: "17 3 * * *"
   otelEndpoint: "http://tempo.hci-observability.svc.cluster.local:4318"
   hostKeyPolicy: "accept-new"
+  # 集群模式的最小网络边界。Bridge 只从 Traefik 接收同源入口流量，
+  # 只向 DNS、hci-sim SSH 和 Tempo 发起出站连接；未显式配置时不允许
+  # 通过 NetworkPolicy 静默放行真实 HCI 网段。
+  networkPolicy:
+    enabled: true
+    ingressNamespace: traefik
+    hciSimNamespace: hci-sim-dev
+    hciSimSshPort: 2222
+    observabilityNamespace: hci-observability
+    dnsNamespace: kube-system
+    dnsSelector:
+      k8s-app: kube-dns
+    tempoSelector:
+      app.kubernetes.io/name: tempo
   persistence:
     enabled: true
     storageClass: local-path

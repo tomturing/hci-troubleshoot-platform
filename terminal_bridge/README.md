@@ -64,6 +64,11 @@ Helm 本地覆盖配置：
 terminalBridge:
   enabled: true
   allowedOrigins: "same-origin"
+  networkPolicy:
+    enabled: true
+    ingressNamespace: traefik
+    hciSimNamespace: hci-sim-dev
+    hciSimSshPort: 2222
 ```
 
 该配置应写入环境仓库 `environments/dev/values.yaml`，或本地双仓覆盖文件 `.local/values-dualrepo-local.yaml`。
@@ -75,6 +80,7 @@ terminalBridge:
 - 添加 Prometheus Pod 抓取注解；
 - 创建 `/terminal-bridge` 同源 Ingress 路由；
 - 向 customer-ui 注入运行时 Bridge URL，无需为 URL 变化重新构建前端；
+- 以 NetworkPolicy 限制入口为 Traefik，出口为 DNS、hci-sim SSH 和 Tempo；
 - 将临时回放日志写入受大小限制的 `emptyDir`。
 
 当前必须保持 `replicaCount: 1`。SSH 会话和 WebSocket 连接保存在进程内存中，多副本需要会话亲和或外部会话状态后才能支持。

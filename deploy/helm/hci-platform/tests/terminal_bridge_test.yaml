@@ -35,6 +35,9 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].env[1].value
           value: same-origin
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
 
   - it: "必须按非 root 安全基线运行"
     set:

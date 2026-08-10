@@ -37,9 +37,17 @@ customerUI:
 # dev 环境允许将 terminal_bridge 作为 Pod 运行，便于端到端可观测联调。
 terminalBridge:
   enabled: true
+  replicaCount: 1
+  allowedOrigins: "same-origin"
   image:
-    repository: hci-terminal-bridge
+    repository: terminal-bridge
     tag: "latest"
+  networkPolicy:
+    enabled: true
+    ingressNamespace: traefik
+    hciSimNamespace: hci-sim-dev
+    hciSimSshPort: 2222
+    observabilityNamespace: hci-observability
 
 adminUI:
   image:

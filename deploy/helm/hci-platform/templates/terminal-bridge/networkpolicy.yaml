@@ -1,0 +1,63 @@
+{{- if and .Values.terminalBridge.enabled .Values.terminalBridge.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: terminal-bridge-allow-required
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "terminal-bridge" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "terminal-bridge" "Release" .Release) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # 外部浏览器只经过 Traefik；不接受同命名空间 Pod 的旁路访问。
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.terminalBridge.networkPolicy.ingressNamespace | quote }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - protocol: TCP
+          port: {{ .Values.terminalBridge.port }}
+  egress:
+    # 集群 DNS（hci-sim 的 Service 解析与 SSH 连接依赖）。
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.terminalBridge.networkPolicy.dnsNamespace | quote }}
+          podSelector:
+            matchLabels:
+{{ toYaml .Values.terminalBridge.networkPolicy.dnsSelector | nindent 14 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # hci-sim SSH 是唯一默认的执行目标，不放行任意外部网段。
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.terminalBridge.networkPolicy.hciSimNamespace | quote }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: hci-sim
+      ports:
+        - protocol: TCP
+          port: {{ .Values.terminalBridge.networkPolicy.hciSimSshPort }}
+    # OTLP traces 不含密码、私钥或命令明文，只发送脱敏关联字段。
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.terminalBridge.networkPolicy.observabilityNamespace | quote }}
+          podSelector:
+{{ toYaml .Values.terminalBridge.networkPolicy.tempoSelector | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 4318
+{{- end }}

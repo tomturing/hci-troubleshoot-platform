@@ -1,0 +1,35 @@
+suite: "Terminal Bridge NetworkPolicy"
+templates:
+  - terminal-bridge/networkpolicy.yaml
+tests:
+  - it: "关闭 Bridge 时不渲染网络策略"
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: "启用后只允许 Traefik 入站和 hci-sim/DNS/Tempo 出站"
+    set:
+      terminalBridge.enabled: true
+    asserts:
+      - isKind:
+          of: NetworkPolicy
+      - equal:
+          path: spec.podSelector.matchLabels["app.kubernetes.io/name"]
+          value: terminal-bridge
+      - equal:
+          path: spec.ingress[0].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: traefik
+      - equal:
+          path: spec.egress[1].to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: hci-sim-dev
+      - equal:
+          path: spec.egress[1].ports[0].port
+          value: 2222
+
+  - it: "网络策略可显式关闭以支持迁移期诊断"
+    set:
+      terminalBridge.enabled: true
+      terminalBridge.networkPolicy.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

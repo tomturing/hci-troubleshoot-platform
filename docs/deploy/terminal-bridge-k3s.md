@@ -81,6 +81,12 @@ terminalBridge:
   enabled: true
   replicaCount: 1
   allowedOrigins: "same-origin"
+  networkPolicy:
+    enabled: true
+    ingressNamespace: traefik
+    hciSimNamespace: hci-sim-dev
+    hciSimSshPort: 2222
+    observabilityNamespace: hci-observability
   image:
     repository: hci-terminal-bridge
     tag: latest
@@ -112,6 +118,7 @@ helm template hci-platform deploy/helm/hci-platform \
 - `Service/terminal-bridge`
 - 主 Ingress 的 `/terminal-bridge` Prefix 路由
 - customer-ui 的 `TERMINAL_BRIDGE_URL=/terminal-bridge`
+- `terminal-bridge-allow-required` NetworkPolicy（只允许 Traefik 入站、DNS/hci-sim SSH/Tempo 出站）
 - Prometheus Pod scrape annotations
 - 日志与 SSH `known_hosts` 使用 PVC 持久化，单文件达到上限后滚动
 
@@ -137,7 +144,9 @@ Pod 和镜像均以 uid/gid 1000 非 root 用户运行，并继承 Chart 的以�
 - drop all capabilities
 - `seccompProfile: RuntimeDefault`
 
-Bridge 不需要 `hostNetwork`、`privileged` 或宿主机 socket。业务数据使用普通 PVC；它只需 Pod 出站 TCP 能力访问 HCI SSH 端口。
+Bridge 不需要 `hostNetwork`、`privileged`、ServiceAccount token 或宿主机 socket。阶段一默认只允许 Pod 出站到
+`hci-sim` 的 SSH Service（`hci-sim-dev:2222`）、集群 DNS 和 Tempo OTLP；不放行任意真实 HCI 网段。
+如果迁移期必须连接真实 HCI，必须在独立环境 values 中显式提供经过评审的 NetworkPolicy，不能临时关闭后遗留。
 
 ### 5.3 凭据与日志
 
@@ -148,7 +157,7 @@ SSH 密码/私钥只存在于浏览器到 Bridge 的 WebSocket 请求和当前�
 ### 6.1 健康与状态
 
 ```bash
-kubectl -n hci-troubleshoot get pod -l app.kubernetes.io/name=terminal-bridge
+kubectl -n hci-dev get pod -l app.kubernetes.io/name=terminal-bridge
 
 curl -s http://hci.local/terminal-bridge/health/live
 curl -s http://hci.local/terminal-bridge/health/ready
@@ -188,7 +197,7 @@ readiness 不主动探测 HCI，因为 Bridge 不应持有一套全局 SSH 凭�
 集群内部验证：
 
 ```bash
-kubectl -n hci-troubleshoot port-forward svc/terminal-bridge 9999:9999
+kubectl -n hci-dev port-forward svc/terminal-bridge 9999:9999
 curl -s http://127.0.0.1:9999/metrics | rg '^bridge_'
 ```
 
@@ -203,9 +212,9 @@ Pod stdout 保留一行一个结构化 JSON 事件，Grafana Alloy 使用 CRI pa
 ### 7.1 基础链路
 
 ```bash
-kubectl -n hci-troubleshoot get deploy,svc terminal-bridge
-kubectl -n hci-troubleshoot get endpoints terminal-bridge
-kubectl -n hci-troubleshoot logs deploy/terminal-bridge --tail=50
+kubectl -n hci-dev get deploy,svc terminal-bridge
+kubectl -n hci-dev get endpoints terminal-bridge
+kubectl -n hci-dev logs deploy/terminal-bridge --tail=50
 ```
 
 浏览器打开 customer-ui 后，在开发者工具执行：
