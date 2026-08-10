@@ -7,6 +7,13 @@ metadata:
   labels:
     {{- include "hci.labels" . | nindent 4 }}
     app.kubernetes.io/component: hci-sim-db-migrate
+  # This ConfigMap is consumed by the PreSync migration Job.  Keep it in the
+  # same ordered hook graph; ordinary resources are not applied before a
+  # PreSync hook and would otherwise leave the Job stuck in ContainerCreating.
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "-9"
 data:
   000001_control_plane.sql: |
 {{ .Files.Get "hci-sim-migrations/000001_control_plane.sql" | nindent 4 }}

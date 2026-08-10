@@ -12,6 +12,7 @@ metadata:
     argocd.argoproj.io/hook: PreSync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookFailed
     helm.sh/hook-weight: "-8"
+    argocd.argoproj.io/sync-wave: "-8"
 spec:
   backoffLimit: 0
   ttlSecondsAfterFinished: 3600

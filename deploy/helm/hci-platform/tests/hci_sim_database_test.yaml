@@ -33,3 +33,54 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].env[8].valueFrom.secretKeyRef.name
           value: hci-sim-db-credentials
+
+  - it: "迁移凭据以 wave -10 PreSync hook 提前创建"
+    set:
+      hciSimDatabase.enabled: true
+      hciSimDatabase.migratorPassword: "migration-test-secret"
+      hciSimDatabase.runtimePassword: "runtime-test-secret"
+    templates:
+      - hci-sim-db-credentials.yaml
+    asserts:
+      - isKind:
+          of: Secret
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/hook"]
+          value: PreSync
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/sync-wave"]
+          value: "-10"
+
+  - it: "迁移 SQL 以 wave -9 PreSync hook 提前创建"
+    set:
+      hciSimDatabase.enabled: true
+      hciSimDatabase.migratorPassword: "migration-test-secret"
+      hciSimDatabase.runtimePassword: "runtime-test-secret"
+    templates:
+      - hci-sim-db-migrations.yaml
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/hook"]
+          value: PreSync
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/sync-wave"]
+          value: "-9"
+
+  - it: "迁移 Job 在依赖之后以 wave -8 执行"
+    set:
+      hciSimDatabase.enabled: true
+      hciSimDatabase.migratorPassword: "migration-test-secret"
+      hciSimDatabase.runtimePassword: "runtime-test-secret"
+    templates:
+      - hooks/hci-sim-db-migrate-job.yaml
+    asserts:
+      - isKind:
+          of: Job
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/hook"]
+          value: PreSync
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/sync-wave"]
+          value: "-8"
