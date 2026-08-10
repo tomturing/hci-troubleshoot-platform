@@ -103,9 +103,15 @@ def _annotate_stage_scope(
         if result_count:
             stats["execution_status"] = "no_work"
             stats["execution_reason"] = "已有持久化结果或已满足幂等条件，无需重复调用"
+        elif candidates:
+            stats["execution_status"] = "no_work"
+            stats["execution_reason"] = (
+                f"本次范围内有 {len(candidates)} 个 KBD，但未命中本阶段执行条件"
+                "（已完成或被任务模式过滤）"
+            )
         else:
             stats["execution_status"] = "not_scheduled"
-            stats["execution_reason"] = "任务计划未选择案例（模式过滤或前置阶段未提供输入）"
+            stats["execution_reason"] = "没有可执行 KBD 候选（前置阶段未提供输入）"
     else:
         stats["execution_status"] = "executed"
     return stats
@@ -124,7 +130,7 @@ def _log_stage_result(stage_number: int, stats: dict) -> None:
         )
     elif status == "no_work":
         logger.info(
-            "Stage %d 无需执行：已有结果满足幂等条件 candidate=%d selected=0 reason=%s",
+            "Stage %d 无需执行：本次范围内有 %d 个 KBD，但本阶段没有待处理任务 reason=%s",
             stage_number,
             stats.get("candidate_cases", 0),
             stats.get("execution_reason", "-"),
