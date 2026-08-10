@@ -32,16 +32,17 @@ func TestRunRepositoryPostgresIdempotencyAndCAS(t *testing.T) {
 	now := time.Now().UTC()
 	suffix := fmt.Sprintf("%d", now.UnixNano())
 	input := RunInput{
-		ExternalID:       "run-integration-" + suffix,
-		SupportID:        "27123",
-		KBDRevision:      1,
-		Variant:          "positive-realistic",
-		BundleDigest:     "sha256:d7ddfb849cb1a3d0879af2a6887b0c77506632bfa7c8261cf656305d06e30bfa",
-		ExecutionMode:    "sim-ssh",
-		IdempotencyKey:   "integration-idempotency-" + suffix,
-		RequestDigest:    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		Deadline:         now.Add(time.Hour),
-		InputFingerprint: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		ExternalID:         "run-integration-" + suffix,
+		SupportID:          "27123",
+		KBDRevision:        1,
+		Variant:            "positive-realistic",
+		BundleDigest:       "sha256:d7ddfb849cb1a3d0879af2a6887b0c77506632bfa7c8261cf656305d06e30bfa",
+		ExecutionMode:      "sim-ssh",
+		IdempotencyKey:     "integration-idempotency-" + suffix,
+		RequestDigest:      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Deadline:           now.Add(time.Hour),
+		InputFingerprint:   "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		EnvironmentContext: map[string]any{"test_run_id": "run-integration-" + suffix, "support_id": "27123", "kbd_revision": 1, "bundle_digest": "sha256:d7ddfb849cb1a3d0879af2a6887b0c77506632bfa7c8261cf656305d06e30bfa", "execution_mode": "sim-ssh"},
 	}
 	created, err := repository.Create(ctx, input)
 	if err != nil {
@@ -120,6 +121,7 @@ func TestRunRepositoryPostgresEventResultAndOutbox(t *testing.T) {
 		ExecutionMode: "sim-ssh", IdempotencyKey: "event-idempotency-" + suffix,
 		RequestDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 		Deadline:      time.Now().UTC().Add(time.Hour), InputFingerprint: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+		EnvironmentContext: map[string]any{"test_run_id": "run-event-" + suffix, "support_id": "27123", "kbd_revision": 1, "bundle_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "execution_mode": "sim-ssh"},
 	}
 	created, err := repository.Create(ctx, input)
 	if err != nil {
@@ -157,5 +159,26 @@ func TestRunRepositoryPostgresEventResultAndOutbox(t *testing.T) {
 	}
 	if err := repository.CompleteOutbox(ctx, claimed.ID, true, time.Time{}); err != nil {
 		t.Fatalf("complete outbox: %v", err)
+	}
+	claimedRetry, err := repository.ClaimOutbox(ctx)
+	if err != nil {
+		t.Fatalf("claim retry outbox: %v", err)
+	}
+	if err := repository.CompleteOutbox(ctx, claimedRetry.ID, false, time.Now().UTC()); err != nil {
+		t.Fatalf("requeue outbox: %v", err)
+	}
+	claimedStuck, err := repository.ClaimOutbox(ctx)
+	if err != nil {
+		t.Fatalf("claim stuck outbox: %v", err)
+	}
+	if recovered, err := repository.RecoverProcessingOutbox(ctx, time.Now().UTC().Add(time.Second), 8); err != nil || recovered != 1 {
+		t.Fatalf("recover processing outbox: count=%d err=%v", recovered, err)
+	}
+	recoveredClaim, err := repository.ClaimOutbox(ctx)
+	if err != nil || recoveredClaim.ID != claimedStuck.ID {
+		t.Fatalf("reclaim recovered outbox: %+v %v", recoveredClaim, err)
+	}
+	if err := repository.CompleteOutbox(ctx, recoveredClaim.ID, true, time.Time{}); err != nil {
+		t.Fatalf("complete recovered outbox: %v", err)
 	}
 }

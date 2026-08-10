@@ -74,4 +74,14 @@ spec:
       ports:
         - port: 4318
           protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.apiGatewayNamespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: api-gateway
+      ports:
+        - port: {{ .Values.networkPolicy.apiGatewayPort }}
+          protocol: TCP
 {{- end }}

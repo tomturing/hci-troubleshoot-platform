@@ -6,6 +6,7 @@ on:
     paths:
       - "database/hci-sim-migrations/**"
       - "hci_sim/internal/database/**"
+      - "hci_sim/internal/reconciler/**"
       - "hci_sim/go.mod"
       - "hci_sim/go.sum"
       - "scripts/db/hci-sim-copy.sh"
@@ -66,4 +67,4 @@ jobs:
         run: |
           psql -d hci_sim -v ON_ERROR_STOP=1 -c "GRANT USAGE ON SCHEMA control_plane, fixture, artifact, audit TO hci_sim_runtime; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA control_plane, fixture, artifact, audit TO hci_sim_runtime; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA control_plane, fixture, artifact, audit TO hci_sim_runtime;"
           cd hci_sim
-          go test ./internal/database -run TestRunRepositoryPostgresIdempotencyAndCAS -count=1
+          go test ./internal/database ./internal/reconciler -count=1

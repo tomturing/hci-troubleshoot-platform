@@ -27,6 +27,10 @@ runtime:
   sshHost: hci-sim.hci-sim-dev.svc
   hostKeySecretKey: ssh_host_key
   otlpEndpoint: http://tempo.hci-observability.svc:4318
+  # 留空时 outbox 只做持久化和 processing 恢复，不会假标记 processed。
+  outboxWebhookURL: ""
+  outboxInterval: 2s
+  outboxMaxAttempts: 8
 
 database:
   # true 是 K3s 受管部署的默认值；本地单元测试可显式关闭。
@@ -53,6 +57,7 @@ networkPolicy:
   terminalBridgeNamespace: hci-dev
   # 控制面调用方必须显式放行；默认与受管 api-gateway 同 namespace。
   apiGatewayNamespace: hci-dev
+  apiGatewayPort: 8000
   observabilityNamespace: hci-observability
 
 resourceQuota:

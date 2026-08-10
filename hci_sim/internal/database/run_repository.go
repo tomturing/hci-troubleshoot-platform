@@ -2,6 +2,8 @@ package database
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -21,30 +23,32 @@ var (
 // RunInput 是控制面创建 TestRun 时被冻结的字段集合。Lease 明文、SSH 密码和
 // 原始 Artifact 不属于该结构，也不能进入数据库。
 type RunInput struct {
-	ExternalID       string
-	SupportID        string
-	KBDRevision      int
-	Variant          string
-	BundleDigest     string
-	ExecutionMode    string
-	IdempotencyKey   string
-	RequestDigest    string
-	Deadline         time.Time
-	InputFingerprint string
+	ExternalID         string
+	SupportID          string
+	KBDRevision        int
+	Variant            string
+	BundleDigest       string
+	ExecutionMode      string
+	IdempotencyKey     string
+	RequestDigest      string
+	Deadline           time.Time
+	InputFingerprint   string
+	EnvironmentContext map[string]any
 }
 
 type RunRecord struct {
-	ExternalID     string
-	SupportID      string
-	KBDRevision    int
-	BundleDigest   string
-	Variant        string
-	ExecutionMode  string
-	IdempotencyKey string
-	RequestDigest  string
-	Status         string
-	Version        int
-	Deadline       time.Time
+	ExternalID         string
+	SupportID          string
+	KBDRevision        int
+	BundleDigest       string
+	Variant            string
+	ExecutionMode      string
+	IdempotencyKey     string
+	RequestDigest      string
+	Status             string
+	Version            int
+	Deadline           time.Time
+	EnvironmentContext json.RawMessage
 }
 
 type OutboxRecord struct {
@@ -78,6 +82,10 @@ func (r *RunRepository) Create(ctx context.Context, input RunInput) (RunRecord, 
 		return RunRecord{}, fmt.Errorf("begin hci_sim run transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	environmentContext, err := json.Marshal(input.EnvironmentContext)
+	if err != nil {
+		return RunRecord{}, fmt.Errorf("encode hci_sim environment context: %w", err)
+	}
 
 	scenarioID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(input.InputFingerprint))
 	runID := uuid.New()
@@ -93,13 +101,13 @@ func (r *RunRepository) Create(ctx context.Context, input RunInput) (RunRecord, 
 	row := tx.QueryRow(ctx, `
 		INSERT INTO control_plane.run
 			(id, external_id, support_id, kbd_revision, scenario_id, bundle_digest,
-			 variant, execution_mode, status, idempotency_key, request_digest, deadline_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'requested', $9, $10, $11)
+			 variant, execution_mode, environment_context, status, idempotency_key, request_digest, deadline_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'requested', $10, $11, $12)
 		ON CONFLICT (idempotency_key) DO NOTHING
 		RETURNING external_id, support_id, kbd_revision, bundle_digest, variant,
-		          execution_mode, status, version, deadline_at, idempotency_key, request_digest
+		          execution_mode, status, version, deadline_at, idempotency_key, request_digest, environment_context
 	`, runID, input.ExternalID, input.SupportID, input.KBDRevision, scenarioID, input.BundleDigest,
-		input.Variant, input.ExecutionMode, input.IdempotencyKey, input.RequestDigest, input.Deadline.UTC())
+		input.Variant, input.ExecutionMode, environmentContext, input.IdempotencyKey, input.RequestDigest, input.Deadline.UTC())
 	record, scanErr := scanRun(row)
 	if scanErr != nil {
 		if !errors.Is(scanErr, pgx.ErrNoRows) {
@@ -125,7 +133,7 @@ func (r *RunRepository) Get(ctx context.Context, externalID string) (RunRecord, 
 	}
 	return scanRun(r.pool.QueryRow(ctx, `
 		SELECT external_id, support_id, kbd_revision, bundle_digest, variant,
-		       execution_mode, status, version, deadline_at, idempotency_key, request_digest
+		       execution_mode, status, version, deadline_at, idempotency_key, request_digest, environment_context
 		FROM control_plane.run WHERE external_id = $1
 	`, externalID))
 }
@@ -141,7 +149,7 @@ func (r *RunRepository) UpdateStatusCAS(ctx context.Context, externalID string, 
 		SET status = $1, version = version + 1, updated_at = now()
 		WHERE external_id = $2 AND version = $3
 		RETURNING external_id, support_id, kbd_revision, bundle_digest, variant,
-		          execution_mode, status, version, deadline_at, idempotency_key, request_digest
+		          execution_mode, status, version, deadline_at, idempotency_key, request_digest, environment_context
 	`, status, externalID, expectedVersion))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RunRecord{}, ErrRunVersionConflict
@@ -190,7 +198,7 @@ func (r *RunRepository) RecordLease(ctx context.Context, externalID string, expe
 		UPDATE control_plane.run SET status = 'leased', version = version + 1, updated_at = now()
 		WHERE id = $1 AND version = $2
 		RETURNING external_id, support_id, kbd_revision, bundle_digest, variant,
-		          execution_mode, status, version, deadline_at, idempotency_key, request_digest
+		          execution_mode, status, version, deadline_at, idempotency_key, request_digest, environment_context
 	`, runID, expectedVersion))
 	if err != nil {
 		return RunRecord{}, ErrRunVersionConflict
@@ -308,7 +316,7 @@ func (r *RunRepository) RecordResult(ctx context.Context, externalID string, att
 		UPDATE control_plane.run SET status = $1, version = version + 1, updated_at = now()
 		WHERE id = $2 AND status NOT IN ('passed', 'failed', 'inconclusive', 'cancelled', 'expired')
 		RETURNING external_id, support_id, kbd_revision, bundle_digest, variant,
-		          execution_mode, status, version, deadline_at, idempotency_key, request_digest
+		          execution_mode, status, version, deadline_at, idempotency_key, request_digest, environment_context
 	`, status, runID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		if currentStatus != status {
@@ -316,7 +324,7 @@ func (r *RunRepository) RecordResult(ctx context.Context, externalID string, att
 		}
 		record, err = scanRun(tx.QueryRow(ctx, `
 			SELECT external_id, support_id, kbd_revision, bundle_digest, variant,
-			       execution_mode, status, version, deadline_at, idempotency_key, request_digest
+			       execution_mode, status, version, deadline_at, idempotency_key, request_digest, environment_context
 			FROM control_plane.run WHERE id = $1
 		`, runID))
 	}
@@ -353,7 +361,7 @@ func (r *RunRepository) ClaimOutbox(ctx context.Context) (OutboxRecord, error) {
 	if err := row.Scan(&record.ID, &record.RunExternalID, &record.EventType, &record.PayloadDigest, &record.Attempts, &record.AvailableAt, &runID); err != nil {
 		return OutboxRecord{}, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE control_plane.run_outbox SET status = 'processing', attempts = attempts + 1 WHERE id = $1`, record.ID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE control_plane.run_outbox SET status = 'processing', attempts = attempts + 1, processing_at = now() WHERE id = $1`, record.ID); err != nil {
 		return OutboxRecord{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -374,16 +382,82 @@ func (r *RunRepository) CompleteOutbox(ctx context.Context, id int64, success bo
 	_, err := r.pool.Exec(ctx, `
 		UPDATE control_plane.run_outbox
 		SET status = $1, available_at = CASE WHEN $2 THEN available_at ELSE $3 END,
-		    processed_at = CASE WHEN $2 THEN now() ELSE NULL END
+		    processing_at = NULL, processed_at = CASE WHEN $2 THEN now() ELSE NULL END
 		WHERE id = $4 AND status = 'processing'
 	`, status, success, retryAt.UTC(), id)
 	return err
 }
 
+// RecoverProcessingOutbox returns abandoned processing records to pending. A
+// reconciler crash must not permanently strand an event; records over the
+// attempt budget are moved to failed for operator review.
+func (r *RunRepository) RecoverProcessingOutbox(ctx context.Context, olderThan time.Time, maxAttempts int) (int64, error) {
+	if maxAttempts < 1 {
+		return 0, errors.New("invalid outbox attempt budget")
+	}
+	result, err := r.pool.Exec(ctx, `
+		UPDATE control_plane.run_outbox
+		SET status = CASE WHEN attempts >= $2 THEN 'failed' ELSE 'pending' END,
+		    available_at = now(), processing_at = NULL
+		WHERE status = 'processing' AND COALESCE(processing_at, created_at) < $1
+	`, olderThan.UTC(), maxAttempts)
+	return result.RowsAffected(), err
+}
+
+// ExpireRuns is the restart/deadline safety net. It only touches non-terminal
+// runs and emits an outbox notification in the same transaction.
+func (r *RunRepository) ExpireRuns(ctx context.Context, now time.Time) (int64, error) {
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	rows, err := tx.Query(ctx, `
+		UPDATE control_plane.run
+		SET status = 'expired', version = version + 1, updated_at = now()
+		WHERE deadline_at <= $1 AND status IN ('requested', 'preparing', 'leased', 'running')
+		RETURNING id, external_id
+	`, now.UTC())
+	if err != nil {
+		return 0, err
+	}
+	type expiredRun struct {
+		id         uuid.UUID
+		externalID string
+	}
+	expired := make([]expiredRun, 0)
+	for rows.Next() {
+		var item expiredRun
+		if err := rows.Scan(&item.id, &item.externalID); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		expired = append(expired, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	for _, item := range expired {
+		digest := textDigest("run.expired:" + item.externalID)
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO control_plane.run_outbox (run_id, event_type, payload_digest)
+			VALUES ($1, 'run.expired', $2) ON CONFLICT DO NOTHING
+		`, item.id, digest); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return int64(len(expired)), nil
+}
+
 func (r *RunRepository) getByIdempotency(ctx context.Context, tx pgx.Tx, key string) (RunRecord, error) {
 	return scanRun(tx.QueryRow(ctx, `
 		SELECT external_id, support_id, kbd_revision, bundle_digest, variant,
-		       execution_mode, status, version, deadline_at, idempotency_key, request_digest
+		       execution_mode, status, version, deadline_at, idempotency_key, request_digest, environment_context
 		FROM control_plane.run WHERE idempotency_key = $1
 	`, key))
 }
@@ -398,12 +472,13 @@ func scanRun(row runScanner) (RunRecord, error) {
 		&record.ExternalID, &record.SupportID, &record.KBDRevision, &record.BundleDigest,
 		&record.Variant, &record.ExecutionMode, &record.Status, &record.Version,
 		&record.Deadline, &record.IdempotencyKey, &record.RequestDigest,
+		&record.EnvironmentContext,
 	)
 	return record, err
 }
 
 func validateRunInput(input RunInput) error {
-	if input.ExternalID == "" || input.SupportID == "" || input.KBDRevision < 1 || input.Variant == "" || input.BundleDigest == "" || input.ExecutionMode != "sim-ssh" || input.IdempotencyKey == "" || input.RequestDigest == "" || input.InputFingerprint == "" || input.Deadline.IsZero() {
+	if input.ExternalID == "" || input.SupportID == "" || input.KBDRevision < 1 || input.Variant == "" || input.BundleDigest == "" || input.ExecutionMode != "sim-ssh" || input.IdempotencyKey == "" || input.RequestDigest == "" || input.InputFingerprint == "" || input.Deadline.IsZero() || input.EnvironmentContext == nil {
 		return errors.New("invalid hci_sim run input")
 	}
 	return nil
@@ -420,4 +495,9 @@ func outcomeToRunStatus(outcome string) string {
 	default:
 		return ""
 	}
+}
+
+func textDigest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("sha256:%x", sum[:])
 }

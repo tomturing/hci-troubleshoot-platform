@@ -86,6 +86,12 @@ spec:
               value: {{ .Values.runtime.allowInsecureControlAPI | quote }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.runtime.otlpEndpoint | quote }}
+            - name: HCI_SIM_OUTBOX_WEBHOOK_URL
+              value: {{ .Values.runtime.outboxWebhookURL | quote }}
+            - name: HCI_SIM_OUTBOX_INTERVAL
+              value: {{ .Values.runtime.outboxInterval | quote }}
+            - name: HCI_SIM_OUTBOX_MAX_ATTEMPTS
+              value: {{ .Values.runtime.outboxMaxAttempts | quote }}
           ports:
             - name: ssh
               containerPort: {{ .Values.service.sshPort }}

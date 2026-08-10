@@ -39,3 +39,12 @@ async def build(request: Request) -> JSONResponse:
 @router.post("/v1/simulations/test-runs")
 async def create_test_run(request: Request) -> JSONResponse:
     return await _post("/v1/simulations/test-runs", await request.json(), request.headers.get("Idempotency-Key"))
+
+
+@router.post("/v1/simulations/test-runs/{test_run_id}/result")
+async def record_test_run_result(test_run_id: str, request: Request) -> JSONResponse:
+    return await _post(
+        f"/v1/simulations/test-runs/{test_run_id}/result",
+        await request.json(),
+        request.headers.get("Idempotency-Key"),
+    )

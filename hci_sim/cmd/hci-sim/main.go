@@ -22,6 +22,7 @@ import (
 	"hci_sim/internal/fixture"
 	"hci_sim/internal/lease"
 	"hci_sim/internal/metrics"
+	"hci_sim/internal/reconciler"
 	"hci_sim/internal/server"
 	"hci_sim/internal/telemetry"
 
@@ -122,6 +123,7 @@ func runServer() error {
 			"service": "hci-sim", "version": version, "fixture_manifest_hash": router.ManifestHash(), "bundle_digest": router.BundleDigest(),
 			"kbd_support_id": router.KBD().SupportID, "kbd_revision": router.KBD().Revision, "tool_contract_revision": router.Contracts().ToolRevision,
 			"database_configured": databaseTarget.Configured, "database_name": databaseTarget.Database,
+			"outbox_sink_configured": strings.TrimSpace(os.Getenv("HCI_SIM_OUTBOX_WEBHOOK_URL")) != "",
 		})
 	})
 	// 控制面最小 HTTP 契约。生产入口必须由 API Gateway/NetworkPolicy 保护，
@@ -166,7 +168,8 @@ func runServer() error {
 				ExternalID: runID, SupportID: request.KBDID, KBDRevision: router.KBD().Revision,
 				Variant: fixtureVariant, BundleDigest: router.BundleDigest(), ExecutionMode: "sim-ssh",
 				IdempotencyKey: idempotencyKey, RequestDigest: requestDigest, Deadline: now.Add(15 * time.Minute),
-				InputFingerprint: inputFingerprint,
+				InputFingerprint:   inputFingerprint,
+				EnvironmentContext: map[string]any{"test_run_id": runID, "support_id": request.KBDID, "kbd_revision": router.KBD().Revision, "bundle_digest": router.BundleDigest(), "execution_mode": "sim-ssh", "virtual_node_id": "SIM-HCI-NODE-01", "container": "host"},
 			})
 			if persistErr != nil {
 				if errors.Is(persistErr, database.ErrIdempotencyConflict) {
@@ -256,6 +259,58 @@ func runServer() error {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"case_id": "sim-case-" + randomID(), "test_run_id": connectionRunID, "status": status, "version": version, "execution_mode": "sim-ssh"})
 	})
+	mux.HandleFunc("/v1/simulations/test-runs/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !controlAuthorized(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		const suffix = "/result"
+		path := strings.TrimPrefix(r.URL.Path, "/v1/simulations/test-runs/")
+		if !strings.HasSuffix(path, suffix) || strings.TrimSuffix(path, suffix) == "" {
+			http.NotFound(w, r)
+			return
+		}
+		externalID := strings.TrimSuffix(path, suffix)
+		var request struct {
+			AttemptNo     int    `json:"attempt_no"`
+			OracleVersion string `json:"oracle_version"`
+			Outcome       string `json:"outcome"`
+			ReportURI     string `json:"report_uri"`
+			ReportDigest  string `json:"report_digest"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384)).Decode(&request); err != nil {
+			http.Error(w, "invalid result payload", http.StatusBadRequest)
+			return
+		}
+		if runRepository == nil {
+			http.Error(w, "hci_sim persistence is required", http.StatusServiceUnavailable)
+			return
+		}
+		record, resultErr := runRepository.RecordResult(r.Context(), externalID, request.AttemptNo, request.OracleVersion, request.Outcome, request.ReportURI, request.ReportDigest)
+		if resultErr != nil {
+			status := http.StatusConflict
+			if errors.Is(resultErr, database.ErrResultConflict) {
+				status = http.StatusConflict
+			} else if strings.Contains(resultErr.Error(), "invalid") {
+				status = http.StatusBadRequest
+			} else if strings.Contains(resultErr.Error(), "not_found") {
+				status = http.StatusConflict
+			} else {
+				status = http.StatusServiceUnavailable
+			}
+			http.Error(w, resultErr.Error(), status)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"test_run_id": record.ExternalID, "status": record.Status, "version": record.Version, "execution_mode": record.ExecutionMode})
+	})
+	if runRepository != nil {
+		go reconciler.Run(ctx, runRepository, reconciler.Config{
+			WebhookURL:  env("HCI_SIM_OUTBOX_WEBHOOK_URL", ""),
+			Interval:    envDuration("HCI_SIM_OUTBOX_INTERVAL", 2*time.Second),
+			MaxAttempts: envInt("HCI_SIM_OUTBOX_MAX_ATTEMPTS", 8),
+		})
+	}
 	httpServer.Handler = mux
 	serverErrors := make(chan error, 2)
 	go func() {
@@ -377,6 +432,14 @@ func simulationFixtureVariant() string {
 
 func envInt(name string, fallback int) int {
 	value, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	return value
+}
+
+func envDuration(name string, fallback time.Duration) time.Duration {
+	value, err := time.ParseDuration(strings.TrimSpace(os.Getenv(name)))
 	if err != nil || value <= 0 {
 		return fallback
 	}

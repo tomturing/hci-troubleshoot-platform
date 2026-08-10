@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS control_plane.run (
     bundle_digest varchar(71) NOT NULL,
     variant varchar(64) NOT NULL,
     execution_mode varchar(16) NOT NULL,
+    environment_context jsonb NOT NULL DEFAULT '{}'::jsonb,
     status varchar(20) NOT NULL,
     version integer NOT NULL DEFAULT 1 CHECK (version > 0),
     idempotency_key varchar(256) NOT NULL UNIQUE,
@@ -49,6 +50,7 @@ ALTER TABLE control_plane.run ADD COLUMN IF NOT EXISTS external_id varchar(128);
 UPDATE control_plane.run SET external_id = id::text WHERE external_id IS NULL;
 ALTER TABLE control_plane.run ALTER COLUMN external_id SET NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS run_external_id_unique ON control_plane.run (external_id);
+ALTER TABLE control_plane.run ADD COLUMN IF NOT EXISTS environment_context jsonb NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE TABLE IF NOT EXISTS control_plane.run_attempt (
     id uuid PRIMARY KEY,
@@ -93,11 +95,13 @@ CREATE TABLE IF NOT EXISTS control_plane.run_outbox (
     status varchar(16) NOT NULL DEFAULT 'pending',
     attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
     available_at timestamptz NOT NULL DEFAULT now(),
+    processing_at timestamptz,
     processed_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT run_outbox_status CHECK (status IN ('pending', 'processing', 'processed', 'failed')),
     CONSTRAINT run_outbox_unique UNIQUE (run_id, event_type, payload_digest)
 );
+ALTER TABLE control_plane.run_outbox ADD COLUMN IF NOT EXISTS processing_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS control_plane.runtime_instance (
     id varchar(128) PRIMARY KEY,
