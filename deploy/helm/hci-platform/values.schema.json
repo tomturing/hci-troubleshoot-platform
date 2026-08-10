@@ -94,6 +94,15 @@
         }
       }
     },
+    "customerUI": {
+      "type": "object",
+      "properties": {
+        "terminalBridgeUrl": {
+          "type": "string",
+          "description": "浏览器连接 terminal_bridge 的 WebSocket 地址；集群模式推荐 /terminal-bridge，外部 dev Bridge 可填写 ws://host:9999"
+        }
+      }
+    },
     "terminalBridge": {
       "type": "object",
       "properties": {

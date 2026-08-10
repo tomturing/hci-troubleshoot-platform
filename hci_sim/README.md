@@ -28,6 +28,8 @@ dev 环境可使用仓库根目录的 `scripts/hci-sim/two-step-acceptance.sh <K
 
 无工单的 Custom UI 初始状态可点击终端面板中的“仿真租约连接（dev）”直接打开仿真租约弹窗；不必先创建无 SSH 工单。选择“仿真租约”后可直接粘贴完整 `connection.json` 并点击“载入连接文件”，页面会校验 `support_id`、端口、`auth_type=lease`、`execution_mode=sim-ssh` 和 `expires_at`，自动填充连接字段及 `recommended_command`。已有工单仍可通过“连接 SSH”进入同一弹窗。Linux/K3s 联调时，Customer UI 的运行时配置必须指向 Linux Bridge（`/terminal-bridge` 或 `ws://<linux-host>:9999`），不能让远端浏览器默认回退到 Windows `localhost:9999`。
 
+如果页面的 `/runtime-config.js` 返回 `terminalBridgeUrl: ""`，浏览器会按桌面兼容逻辑连接浏览器所在机器的 `ws://localhost:9999`；这不等于 Linux 主机的 `172.28.24.21:9999`。Linux Bridge 没有对应 `WebSocket 请求` 日志时，优先修复 runtime-config/Helm/GitOps 路由，不要反复更换 Lease password。
+
 Bridge 拓扑必须与浏览器所在机器一致：
 
 ```text

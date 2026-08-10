@@ -1,0 +1,34 @@
+# Customer UI 到 terminal_bridge 地址选择回归测试
+suite: "Customer UI Bridge URL 配置测试"
+templates:
+  - customer-ui/deployment.yaml
+tests:
+  - it: "集群 Bridge 启用且无显式地址时使用同源路径"
+    set:
+      terminalBridge.enabled: true
+      customerUI.terminalBridgeUrl: ""
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[1].name
+          value: TERMINAL_BRIDGE_URL
+      - equal:
+          path: spec.template.spec.containers[0].env[1].value
+          value: /terminal-bridge
+
+  - it: "外部 Linux Bridge 地址优先于集群开关"
+    set:
+      terminalBridge.enabled: false
+      customerUI.terminalBridgeUrl: ws://172.28.24.21:9999
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[1].value
+          value: ws://172.28.24.21:9999
+
+  - it: "默认关闭时保持桌面 localhost 兼容模式"
+    set:
+      terminalBridge.enabled: false
+      customerUI.terminalBridgeUrl: ""
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[1].value
+          value: ""

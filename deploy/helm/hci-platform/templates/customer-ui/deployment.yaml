@@ -34,7 +34,9 @@ spec:
             - name: DNS_RESOLVER
               value: "10.43.0.10"
             - name: TERMINAL_BRIDGE_URL
-              {{- if .Values.terminalBridge.enabled }}
+              {{- if .Values.customerUI.terminalBridgeUrl }}
+              value: {{ .Values.customerUI.terminalBridgeUrl | quote }}
+              {{- else if .Values.terminalBridge.enabled }}
               value: "/terminal-bridge"
               {{- else }}
               value: ""

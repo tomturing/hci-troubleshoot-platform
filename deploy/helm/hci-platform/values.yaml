@@ -278,6 +278,9 @@ kbService:
 # ======================== Customer UI =======================================
 customerUI:
   replicaCount: 1
+  # 可显式指定浏览器到 Bridge 的 WebSocket 地址。为空时：terminalBridge.enabled=true 使用同源
+  # /terminal-bridge；否则保持桌面模式空配置并回退到浏览器所在机器的 localhost:9999。
+  terminalBridgeUrl: ""
   image:
     repository: hci-customer-ui
     tag: latest

@@ -33,6 +33,10 @@ command -v docker >/dev/null 2>&1 || { echo "缺少 docker" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo "缺少 curl" >&2; exit 1; }
 command -v openssl >/dev/null 2>&1 || { echo "缺少 openssl" >&2; exit 1; }
 command -v ssh-keygen >/dev/null 2>&1 || { echo "缺少 ssh-keygen" >&2; exit 1; }
+if [[ -z "${HCI_SIM_CAPABILITIES_URL:-}" ]] && ! command -v kubectl >/dev/null 2>&1; then
+  echo "未提供 HCI_SIM_CAPABILITIES_URL，且当前 PATH 找不到 kubectl；请安装 kubectl 或显式设置 capabilities URL。" >&2
+  exit 1
+fi
 
 mkdir -p "$RUN_DIR"
 chmod 700 "$RUN_DIR"
@@ -43,10 +47,10 @@ fi
 
 # 同一个 KBD 的验收入口只保留一个活动实例。这样不会出现“新 Lease 连接到旧容器”的错配。
 while IFS= read -r old_container; do
-  [[ -z "$old_container" ]] && continue
+  [[ "$old_container" == hci-sim-c3-${KBD_ID}-* ]] || continue
   echo "停止同一 KBD 的旧仿真容器：$old_container" >&2
   docker stop "$old_container" >/dev/null || true
-done < <(docker ps --format '{{.Names}}' | rg "^hci-sim-c3-${KBD_ID}-" || true)
+done < <(docker ps --format '{{.Names}}')
 
 port_is_open() {
   (exec 3<>"/dev/tcp/127.0.0.1/$1") >/dev/null 2>&1
@@ -110,7 +114,7 @@ chmod 600 "$RUN_DIR/ssh_host_key"
 
 # 在当前 dev 集群中自动接通 C1 内部 API；若调用者已提供 URL，则不触碰 Kubernetes。
 PF_PID=""
-if [[ -z "${HCI_SIM_CAPABILITIES_URL:-}" ]] && command -v kubectl >/dev/null 2>&1; then
+if [[ -z "${HCI_SIM_CAPABILITIES_URL:-}" ]]; then
   TOKEN="${INTERNAL_API_TOKEN:-}"
   if [[ -z "$TOKEN" ]]; then
     TOKEN="$(kubectl -n hci-dev exec deploy/kb-service -- printenv INTERNAL_API_TOKEN)"
@@ -118,10 +122,22 @@ if [[ -z "${HCI_SIM_CAPABILITIES_URL:-}" ]] && command -v kubectl >/dev/null 2>&
   kubectl -n hci-dev port-forward svc/kb-service "${CAP_PORT}:8004" >/tmp/hci-sim-c3-port-forward.log 2>&1 &
   PF_PID=$!
   trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
+  capabilities_ready=0
   for _ in {1..30}; do
-    curl -fsS "$CAP_URL/$KBD_ID" -H "Authorization: Bearer ${TOKEN}" >/dev/null 2>&1 && break
+    if curl -fsS "$CAP_URL/$KBD_ID" -H "Authorization: Bearer ${TOKEN}" >/dev/null 2>&1; then
+      capabilities_ready=1
+      break
+    fi
+    if ! kill -0 "$PF_PID" 2>/dev/null; then
+      echo "kubectl port-forward 已提前退出：$(sed -n '1p' /tmp/hci-sim-c3-port-forward.log 2>/dev/null || true)" >&2
+      break
+    fi
     sleep 0.2
   done
+  if [[ "$capabilities_ready" != 1 ]]; then
+    echo "C1 capabilities 在 6 秒内不可用：$CAP_URL/$KBD_ID" >&2
+    exit 1
+  fi
 fi
 
 if [[ ! -f "$ROOT_DIR/hci_sim/cmd/hci-sim/bootstrap.go" ]]; then
