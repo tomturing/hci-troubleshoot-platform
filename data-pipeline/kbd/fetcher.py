@@ -349,7 +349,7 @@ async def fetch_batch(
     stats: dict[str, int] = {"done": 0, "skipped": 0, "failed": 0}
     total = len(support_ids)
     if not support_ids:
-        logger.info("批量抓取未执行 cases=0 reason=任务计划未选择案例")
+        logger.debug("批量抓取无需调用：本阶段没有待处理 KBD")
         return stats
 
     for idx, support_id in enumerate(support_ids, 1):

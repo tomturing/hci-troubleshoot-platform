@@ -184,7 +184,7 @@ async def extract_signals_batch(
     """
     stats = {"done": 0, "failed": 0, "skipped": 0, "needs_review": 0}
     if not kbd_ids:
-        logger.info("批量关键信号抽取未执行 cases=0 reason=任务计划或前置依赖未提供案例")
+        logger.debug("批量关键信号抽取无需调用：本阶段没有待处理 KBD")
         return stats
 
     if not settings.INTERNAL_API_TOKEN:

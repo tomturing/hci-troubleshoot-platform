@@ -654,7 +654,7 @@ async def import_batch(
         raise RuntimeError("INTERNAL_API_TOKEN 未配置，无法调用 kb-service API")
 
     if not support_ids:
-        logger.info("批量导入未执行 cases=0 reason=任务计划未选择案例")
+        logger.debug("批量导入无需调用：本阶段没有待处理 KBD")
         return stats
 
     # 自动检测并启动 port-forward（k3s ClusterIP 服务本地访问需要）

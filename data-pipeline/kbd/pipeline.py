@@ -78,6 +78,7 @@ def _annotate_stage_scope(
     candidate_ids: Iterable[str],
     selected_ids: Iterable[str],
     blocked: int = 0,
+    no_work_reason: str = "已有结果",
 ) -> dict:
     """把“计划范围”和“实际结果”分开记录，避免全 0 被误读为成功。
 
@@ -102,10 +103,13 @@ def _annotate_stage_scope(
         )
         if result_count:
             stats["execution_status"] = "no_work"
-            stats["execution_reason"] = "已有持久化结果或已满足幂等条件，无需重复调用"
+            stats["execution_reason"] = "已有结果"
+        elif candidates:
+            stats["execution_status"] = "no_work"
+            stats["execution_reason"] = no_work_reason
         else:
             stats["execution_status"] = "not_scheduled"
-            stats["execution_reason"] = "任务计划未选择案例（模式过滤或前置阶段未提供输入）"
+            stats["execution_reason"] = "没有可执行 KBD 候选（前置阶段未提供输入）"
     else:
         stats["execution_status"] = "executed"
     return stats
@@ -124,9 +128,8 @@ def _log_stage_result(stage_number: int, stats: dict) -> None:
         )
     elif status == "no_work":
         logger.info(
-            "Stage %d 无需执行：已有结果满足幂等条件 candidate=%d selected=0 reason=%s",
+            "Stage %d 无需执行：%s",
             stage_number,
-            stats.get("candidate_cases", 0),
             stats.get("execution_reason", "-"),
         )
     elif status == "blocked":
@@ -378,6 +381,11 @@ async def run_pipeline(
     # 不能再用数据库中的历史行替代本次 IMPORT 的执行结果。
     active_ids = list(kbd_ids)
     rework = task_mode == "rework"
+    no_work_reason_by_mode = {
+        "resume": "当前断点续跑模式无需处理",
+        "failed": "当前失败重试模式无需处理",
+    }
+    no_work_reason = no_work_reason_by_mode.get(task_mode, "已有结果")
 
     async def _existing_ready(stage: Stage, ids: Iterable[str]) -> list[str]:
         """Return IDs whose persisted output satisfies a stage dependency."""
@@ -437,7 +445,10 @@ async def run_pipeline(
                 retry_images=(task_mode != "resume"),
             )
             all_stats["fetch"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
-            _annotate_stage_scope(all_stats["fetch"], candidate_ids=kbd_ids, selected_ids=fetch_ids)
+            _annotate_stage_scope(
+                all_stats["fetch"], candidate_ids=kbd_ids, selected_ids=fetch_ids,
+                no_work_reason=no_work_reason,
+            )
             _log_stage_result(1, all_stats["fetch"])
 
             # 更新进度
@@ -462,7 +473,10 @@ async def run_pipeline(
                 client=http_client,
             )
             all_stats["import"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
-            _annotate_stage_scope(all_stats["import"], candidate_ids=ready_ids, selected_ids=import_ids)
+            _annotate_stage_scope(
+                all_stats["import"], candidate_ids=ready_ids, selected_ids=import_ids,
+                no_work_reason=no_work_reason,
+            )
 
             # 本次 API 返回是 Import 阶段的唯一真相源。即使 DB 中有历史旧行，
             # 本次 override 失败也必须记为 failed，且不能进入下游。
@@ -495,6 +509,7 @@ async def run_pipeline(
             _annotate_stage_scope(
                 all_stats["import"], candidate_ids=ready_ids, selected_ids=import_ids,
                 blocked=all_stats["import"]["blocked_by_dependency"],
+                no_work_reason=no_work_reason,
             )
             _log_stage_result(2, all_stats["import"])
             save_progress(run_id, progress)
@@ -569,6 +584,7 @@ async def run_pipeline(
             _annotate_stage_scope(
                 all_stats["vision"], candidate_ids=input_ids, selected_ids=vision_ids,
                 blocked=all_stats["vision"]["blocked_by_dependency"],
+                no_work_reason=no_work_reason,
             )
             for cid in vision_ids:
                 row = await pool.fetchrow(
@@ -623,6 +639,7 @@ async def run_pipeline(
             _annotate_stage_scope(
                 all_stats["classify"], candidate_ids=input_ids, selected_ids=classify_ids,
                 blocked=all_stats["classify"]["blocked_by_dependency"],
+                no_work_reason=no_work_reason,
             )
             _log_stage_result(3, all_stats["classify"])
             return completed
@@ -692,6 +709,7 @@ async def run_pipeline(
             all_stats["extract"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
             _annotate_stage_scope(
                 all_stats["extract"], candidate_ids=extract_input_ids, selected_ids=extract_kbd_ids,
+                no_work_reason=no_work_reason,
             )
 
             signal_ready_ids: list[str] = []
@@ -711,6 +729,7 @@ async def run_pipeline(
             _annotate_stage_scope(
                 all_stats["extract"], candidate_ids=extract_input_ids, selected_ids=extract_kbd_ids,
                 blocked=all_stats["extract"]["blocked_by_dependency"],
+                no_work_reason=no_work_reason,
             )
             _log_stage_result(5, all_stats["extract"])
             save_progress(run_id, progress)
@@ -732,6 +751,7 @@ async def run_pipeline(
                 all_stats["review_signals"],
                 candidate_ids=active_ids,
                 selected_ids=[str(row["support_id"]) for row in rows],
+                no_work_reason=no_work_reason,
             )
             logger.info(
                 "Stage 6 完成 cases=%d status=%s issues=%s",

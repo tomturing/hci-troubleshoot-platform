@@ -656,6 +656,14 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
             f"{label}（候选 {candidate}，选中 {selected}）"
             for label, candidate, selected in unscheduled
         ))
+    no_work = [
+        (label, item.get("execution_reason", "本阶段没有待处理任务"))
+        for stage_name, label in stage_rows
+        if (item := stats.get(stage_name))
+        and item.get("execution_status") == "no_work"
+    ]
+    if no_work:
+        print("无需执行阶段：" + "；".join(f"{label}（{reason}）" for label, reason in no_work))
 
     if stats.get("vision", {}).get("case_status_counts"):
         counts = stats["vision"]["case_status_counts"]

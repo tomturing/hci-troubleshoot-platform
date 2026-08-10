@@ -209,7 +209,7 @@ async def classify_batch(
     total = len(case_ids)
 
     if not case_ids:
-        logger.info("批量分类未执行 cases=0 reason=任务计划未选择案例")
+        logger.debug("批量分类无需调用：本阶段没有待处理 KBD")
         return stats
 
     if not settings.INTERNAL_API_TOKEN:
