@@ -67,6 +67,36 @@ def test_long_stage_banner_is_rendered_as_a_standalone_line(monkeypatch):
     assert not rendered.startswith("INFO ")
 
 
+def test_pipeline_summary_title_uses_explicit_blue(monkeypatch, capsys):
+    monkeypatch.setenv("KBD_COLOR", "always")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    _print_pipeline_summary(
+        "20260810_195727",
+        {"pipeline": {"success": True, "total_ids": 1, "completed_ids": 1}},
+    )
+
+    assert "\033[94m" in capsys.readouterr().out
+
+
+def test_vision_case_status_is_near_overall_result_not_appended_last(monkeypatch, capsys):
+    monkeypatch.setenv("NO_COLOR", "1")
+    _print_pipeline_summary(
+        "20260810_195727",
+        {
+            "pipeline": {"success": True, "total_ids": 1, "completed_ids": 1},
+            "vision": {
+                "done": 1,
+                "failed": 0,
+                "case_status_counts": {"done": 1, "failed": 0, "needs_review": 0, "no_images": 0},
+            },
+        },
+    )
+
+    output = capsys.readouterr().out
+    assert output.index("总体结果") < output.index("Vision KBD 状态")
+    assert output.index("Vision KBD 状态") < output.index("┌")
+
+
 def test_info_plan_with_dependency_word_is_not_colored_as_error(monkeypatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("KBD_COLOR", "always")
