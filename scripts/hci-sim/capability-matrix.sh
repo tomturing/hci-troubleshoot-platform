@@ -10,7 +10,18 @@ command -v psql >/dev/null || { echo "psql is required" >&2; exit 127; }
 printf 'support_id\tkbd_status\tactive_revision\tbundle_status\tbundle_digest\tbuild_result\tssh_result\tagent_result\tcapability_gap\towner\tlast_verified\n'
 while IFS=$'\t' read -r support_id kbd_status active_revision; do
   [ -n "$support_id" ] || continue
-  bundle_row="$(psql "$HCI_SIM_DATABASE_URL" -AtF $'\t' -c "SELECT status, digest FROM control_plane.scenario s JOIN fixture.bundle b ON b.scenario_id=s.id WHERE s.support_id='${support_id//\'/\'\'}' AND s.kbd_revision=${active_revision:-0} ORDER BY b.revision DESC LIMIT 1" 2>/dev/null || true)"
+  # Bind database-derived values instead of interpolating them into SQL. The
+  # source is expected to be numeric, but imported malformed rows must not turn
+  # a read-only evidence tool into an injection primitive.
+  bundle_row="$(psql "$HCI_SIM_DATABASE_URL" -v support_id="$support_id" -v active_revision="${active_revision:-0}" -AtF $'\t' 2>/dev/null <<'SQL' || true
+SELECT status, digest
+FROM control_plane.scenario s
+JOIN fixture.bundle b ON b.scenario_id = s.id
+WHERE s.support_id = :'support_id' AND s.kbd_revision = :active_revision
+ORDER BY b.revision DESC
+LIMIT 1;
+SQL
+  )"
   bundle_status="${bundle_row%%$'\t'*}"
   bundle_digest="${bundle_row#*$'\t'}"
   if [ "$bundle_row" = "$bundle_status" ]; then bundle_digest=""; fi
