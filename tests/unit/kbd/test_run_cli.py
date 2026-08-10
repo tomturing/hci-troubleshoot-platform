@@ -75,7 +75,9 @@ def test_pipeline_summary_title_uses_explicit_blue(monkeypatch, capsys):
         {"pipeline": {"success": True, "total_ids": 1, "completed_ids": 1}},
     )
 
-    assert "\033[94m" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    blue_lines = [line for line in output.splitlines() if line.startswith("\033[94m")]
+    assert len(blue_lines) >= 3
 
 
 def test_vision_case_status_is_near_overall_result_not_appended_last(monkeypatch, capsys):

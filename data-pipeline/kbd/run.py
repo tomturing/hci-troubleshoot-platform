@@ -616,10 +616,12 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
             cells.append(_paint(cell, color, enabled=enabled) if index == 1 and color else cell)
         return "│" + "│".join(cells) + "│"
 
-    print("\n" + "=" * table_width)
-    # 摘要标题是终端导航锚点，使用明确的蓝色，不依赖终端对 bold 的主题映射。
+    # 摘要标题及其上下边框作为一个完整的视觉锚点使用明确亮蓝色，
+    # 不依赖终端对 bold 的主题映射。
+    summary_border = "=" * table_width
+    print("\n" + _paint(summary_border, "blue", enabled=enabled))
     print(_paint(_center_display("KBD 流水线完成摘要", table_width), "blue", enabled=enabled))
-    print("=" * table_width)
+    print(_paint(summary_border, "blue", enabled=enabled))
     print(f"运行编号   : {run_id}")
     print(f"关联 trace : {get_trace_id() or '-'}（用于串联 kb-service 服务端日志）")
     has_execution_scope = any(
