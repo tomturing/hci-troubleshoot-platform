@@ -122,8 +122,6 @@ class _ConsoleFormatter(logging.Formatter):
     """人类可读终端格式：阶段标题整行突出，状态按严重性着色。"""
 
     _STAGE_BANNER_RE = re.compile(r"^=+\s+Stage\s+\d+:\s+.+\s+=+$")
-    _ERROR_WORDS = ("失败", "错误", "异常", "超时", "阻断", "PIPELINE_UNEXPECTED", "STATE_INCONSISTENT")
-    _WARNING_WORDS = ("需复核", "warning", "重试", "跳过")
     _SUCCESS_WORDS = ("完成", "成功", "通过", "ready", "done", "全部完成")
 
     @staticmethod
@@ -142,9 +140,12 @@ class _ConsoleFormatter(logging.Formatter):
             message, ("failed", "error", "blocked", "blocked_by_dependency")
         )
         has_warning_counter = self._has_positive_counter(message, ("needs_review", "warning"))
-        if record.levelno >= logging.ERROR or has_error_counter or any(word in message for word in self._ERROR_WORDS):
+        # 颜色必须由日志级别或结构化计数决定，不能扫描任意中文词。比如
+        # “重做策略：前置阶段会阻断目标阶段”是正常的 INFO 计划说明，不能被
+        # 其中的“阻断”误判成错误。
+        if record.levelno >= logging.ERROR or has_error_counter:
             return _paint(rendered, "red")
-        if record.levelno >= logging.WARNING or has_warning_counter or any(word in message for word in self._WARNING_WORDS):
+        if record.levelno >= logging.WARNING or has_warning_counter:
             return _paint(rendered, "yellow")
         if any(word in message for word in self._SUCCESS_WORDS):
             return _paint(rendered, "green")

@@ -223,7 +223,7 @@ async def process_images_batch(
     # Vision 的统计是图片级的；空输入表示本轮没有任何可执行图片任务，
     # 不能再打印成“批量识图完成 0/0”，否则会让操作者误以为 API 已执行但没有产出。
     if not kbd_ids:
-        logger.info("批量识图跳过 cases=0 reason=无可执行图片案例")
+        logger.debug("批量识图无需调用：本阶段没有待处理 KBD")
         return {"done": 0, "failed": 0, "skipped": 0, "case_results": {}}
 
     if not settings.INTERNAL_API_TOKEN:

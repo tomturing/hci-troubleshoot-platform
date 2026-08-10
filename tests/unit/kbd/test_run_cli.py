@@ -67,6 +67,19 @@ def test_long_stage_banner_is_rendered_as_a_standalone_line(monkeypatch):
     assert not rendered.startswith("INFO ")
 
 
+def test_info_plan_with_dependency_word_is_not_colored_as_error(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("KBD_COLOR", "always")
+    formatter = _ConsoleFormatter("%(levelname)s %(message)s")
+    rendered = formatter.format(logging.makeLogRecord({
+        "levelname": "INFO",
+        "levelno": logging.INFO,
+        "msg": "重做策略：前置阶段未成功并会阻断目标阶段时补做",
+    }))
+
+    assert "\033[31m" not in rendered
+
+
 def test_extract_signals_is_first_class_subcommand():
     args = build_parser().parse_args(["extract-signals", "--ids", "37150,41818"])
 
