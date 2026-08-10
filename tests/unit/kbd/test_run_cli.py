@@ -67,6 +67,20 @@ def test_long_stage_banner_is_rendered_as_a_standalone_line(monkeypatch):
     assert not rendered.startswith("INFO ")
 
 
+def test_stage_banner_uses_the_same_blue_as_pipeline_summary(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("KBD_COLOR", "always")
+    banner = _stage_banner(1, "数据抓取")
+    formatter = _ConsoleFormatter("%(levelname)s %(message)s")
+    rendered = formatter.format(logging.makeLogRecord({
+        "levelname": "INFO",
+        "levelno": logging.INFO,
+        "msg": banner,
+    }))
+
+    assert rendered.startswith("\033[94m")
+
+
 def test_pipeline_summary_title_uses_explicit_blue(monkeypatch, capsys):
     monkeypatch.setenv("KBD_COLOR", "always")
     monkeypatch.delenv("NO_COLOR", raising=False)

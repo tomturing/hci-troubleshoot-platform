@@ -134,7 +134,8 @@ class _ConsoleFormatter(logging.Formatter):
         message = record.getMessage()
         # 阶段 banner 不带长前缀，直接占一整行，便于快速定位阶段边界。
         if self._STAGE_BANNER_RE.match(message):
-            return _paint(message, "cyan")
+            # Stage Banner 与完成摘要共享同一亮蓝色视觉语言。
+            return _paint(message, "blue")
 
         rendered = super().format(record)
         has_error_counter = self._has_positive_counter(
