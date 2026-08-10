@@ -1,8 +1,8 @@
 ---
-status: proposed
+status: in_progress
 category: verify
 audience: developer, tester, operator, security
-last_updated: 2026-08-05
+last_updated: 2026-08-10
 owner: team
 ---
 
@@ -89,6 +89,10 @@ network_evidence: []
 - stale/非法 Lease/任意输入/真实 fallback 零绕过。
 - Retry/Attempt、取消/过期、inconclusive 和报告语义符合版本化契约。
 - 产品、QA、Runtime/Bridge、Security、SRE 签署阶段 E Go。
+
+## 当前状态（2026-08-10）
+
+27123 最小 Gateway/TestRun/Bridge smoke 为 `passed`；持久化、幂等/CAS、重启恢复、并发和 23821 full fixture 为 `pending/capability_gap`，阶段 D 未签署。
 
 ## 失败分类与文档更新
 

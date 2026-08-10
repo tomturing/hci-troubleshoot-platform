@@ -2,7 +2,7 @@
 status: active
 category: meta
 audience: all
-last_updated: 2026-08-07
+last_updated: 2026-08-10
 owner: team
 update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑达成）必须更新第一屏
 ---
@@ -80,15 +80,15 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | CI 发布链路手动补偿闭环 | ✅ 已实施：`workflow_dispatch` 通过 `promote_target` 显式选择 dev/staging/both；仅 main 可晋级；晋级前后逐服务核验环境仓库 tag，并在 Actions Summary 留存证据。 | 2026-08-07 |
 | CI 发布链路按影响范围收敛 | ✅ 已实施：main push 动态构建 Dockerfile 实际输入影响的镜像，db-migrate job 级跳过，环境仓库仅更新已构建服务；文档治理复用既有 runner，所有 job 有超时，第三方 action/tool 已固定，P50/P95 报告仅手动运行。 | 2026-08-07 |
 
-**当前关注点**：P1 知识库重建（[task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md)）继续推进；CI 已按变更范围最小激活，并具备 GitHub push 事件丢失后的手动补偿发布闭环。hci-sim A/B 仅完成代码级门禁；K3s terminal_bridge 已部署并健康；`hci_sim` 数据库框架和 dev 开关已合入，但首次同步暴露 PreSync 依赖顺序缺陷，数据库实际迁移尚未完成；`hci-sim-dev` namespace、生产 Repository/TestRun/Runner、23821 真实 Bundle 和 Admin UI“仿真测试”均不存在。剩余工作已收敛为最多三个纵向 PR，见[三 PR 需求](requirement/events/2026-08-10-hci-sim三PR闭环需求.md)、[设计](solution/agent/events/2026-08-10-hci-sim三PR闭环方案.md)、[任务](task/agent/events/2026-08-10-hci-sim三PR闭环任务.md)和[验证](verify/events/2026-08-10-hci-sim三PR闭环验证.md)。不得把设计、synthetic 或健康探针表述为生产/真实 HCI E2E。
+**当前关注点（2026-08-10 收口核对）**：P1 知识库重建继续推进；CI 已按变更范围最小激活，并具备 GitHub push 事件丢失后的手动补偿发布闭环。hci-sim A/B 已达到代码级门禁，但真实 Bridge→Runtime 证据仍 pending；K3s terminal_bridge 已部署并健康；`hci_sim` 数据库迁移框架和权限边界已合入。当前 `hci-sim-dev` namespace、Service、NetworkPolicy 和 Deployment 已由 Argo 创建，但 Pod 曾因跨 namespace Secret 未注入而处于 `ContainerCreating`，不能把 Deployment 创建误报为运行面完成。生产 Repository/TestRun/Runner、23821 真实 Bundle 和阶段 E 产品级证据仍未完成。以[三 PR 需求](requirement/events/2026-08-10-hci-sim三PR闭环需求.md)、[设计](solution/agent/events/2026-08-10-hci-sim三PR闭环方案.md)、[任务](task/agent/events/2026-08-10-hci-sim三PR闭环任务.md)和[验证](verify/events/2026-08-10-hci-sim三PR闭环验证.md)为当前唯一状态汇总；不得把设计、synthetic 或健康探针表述为生产/真实 HCI E2E。
 
 ### 2026-08-10 三组 hci-sim 重构事件文档
 
-| 组别 | 需求 | 方案 | 任务 | 验证 |
-|---|---|---|---|---|
-| K3s 受管 terminal_bridge | [需求](requirement/events/2026-08-10-K3s受管terminal_bridge启用需求.md) | [方案](solution/events/2026-08-10-K3s受管terminal_bridge启用方案.md) | [任务](task/events/2026-08-10-K3s受管terminal_bridge启用任务.md) | [验证](verify/events/2026-08-10-K3s受管terminal_bridge启用验证.md) |
-| hci_sim 独立数据库（PR-A 迁移框架进行中；copy/switch/contract 待后续门禁） | [需求](requirement/events/2026-08-10-hci_sim独立数据库隔离需求.md) | [方案](solution/events/2026-08-10-hci_sim独立数据库隔离方案.md) | [任务](task/events/2026-08-10-hci_sim独立数据库隔离任务.md) | [验证](verify/events/2026-08-10-hci_sim独立数据库隔离验证.md) |
-| 仿真测试迁移与 Agent context | [需求](requirement/events/2026-08-10-仿真测试迁移与Agent上下文绑定需求.md) | [方案](solution/events/2026-08-10-仿真测试迁移与Agent上下文绑定方案.md) | [任务](task/events/2026-08-10-仿真测试迁移与Agent上下文绑定任务.md) | [验证](verify/events/2026-08-10-仿真测试迁移与Agent上下文绑定验证.md) |
+| 组别 | 当前状态 | 需求 | 方案 | 任务 | 验证 |
+|---|---|---|---|---|---|
+| K3s 受管 terminal_bridge | 🟡 Deployment/Service 已声明；hci-sim Pod/Bridge→Runtime E2E 证据 pending | [需求](requirement/events/2026-08-10-K3s受管terminal_bridge启用需求.md) | [方案](solution/events/2026-08-10-K3s受管terminal_bridge启用方案.md) | [任务](task/events/2026-08-10-K3s受管terminal_bridge启用任务.md) | [验证](verify/events/2026-08-10-K3s受管terminal_bridge启用验证.md) |
+| hci_sim 独立数据库 | 🟡 migration/schema/权限门禁已通过；应用 Repository、copy/switch/contract pending | [需求](requirement/events/2026-08-10-hci_sim独立数据库隔离需求.md) | [方案](solution/events/2026-08-10-hci_sim独立数据库隔离方案.md) | [任务](task/events/2026-08-10-hci_sim独立数据库隔离任务.md) | [验证](verify/events/2026-08-10-hci_sim独立数据库隔离验证.md) |
+| 仿真测试迁移与 Agent context | 🟡 Admin UI/Gateway/Runtime 最小契约已合入；持久化 context、真实工单/Agent E2E pending | [需求](requirement/events/2026-08-10-仿真测试迁移与Agent上下文绑定需求.md) | [方案](solution/events/2026-08-10-仿真测试迁移与Agent上下文绑定方案.md) | [任务](task/events/2026-08-10-仿真测试迁移与Agent上下文绑定任务.md) | [验证](verify/events/2026-08-10-仿真测试迁移与Agent上下文绑定验证.md) |
 
 ### 冷启动阅读路径
 

@@ -1,8 +1,8 @@
 ---
-status: proposed
+status: in_progress
 category: solution
 audience: architect, developer, tester, operator, expert, security
-last_updated: 2026-08-05
+last_updated: 2026-08-10
 owner: team
 ---
 
@@ -223,3 +223,7 @@ Fixture 的可信性必须先独立闭环。如果编译、执行和调度一次
 
 - [阶段 C 任务](../../../task/agent/events/2026-08-05-hci-sim阶段C-Fixture编译与注册控制面任务.md)
 - [阶段 C 验证](../../../verify/events/2026-08-05-hci-sim阶段C-Fixture编译与注册控制面验证方案.md)
+
+## 当前状态（2026-08-10）
+
+Manifest/Bundle digest 和 Resolver 参考实现已落地，synthetic 23821 仅用于开发契约。生产 CAS、签名/批准工作流、完整 Artifact 和 capability owner 仍未闭环。

@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: in_progress
 category: solution
 audience: architect, developer, operator, tester
 last_updated: 2026-08-10
@@ -271,3 +271,11 @@ hci-sim 提供 SSH 契约，不提供浏览器 WebSocket 安全代理。浏览�
 ## 13. 验收标准
 
 以 [K3s 受管 terminal_bridge 启用验证](../../verify/events/2026-08-10-K3s受管terminal_bridge启用验证.md) 为唯一验证清单；未提供同一 TestRun 的 Ingress、Bridge、hci-sim 和 Agent 分层证据时不得宣称端到端完成。
+
+## 当前实现状态（2026-08-10）
+
+- 代码/Helm/CI 已完成：K3s terminal_bridge 的 Deployment、Service、同源入口、单副本约束和到 hci-sim:2222 的 NetworkPolicy 已声明；hci-sim Runtime 的控制面入口已补充 api-gateway namespace 放行规则，Gateway 通过 Secret 注入控制 Token。
+- 现场证据：`hci-dev/terminal-bridge`、`hci-dev/api-gateway` 和 `hci-sim-dev/hci-sim` 均曾达到 Ready；Bridge 日志记录 SSH 认证成功，hci-sim 日志记录 `execution_mode=sim-ssh`、`simulation_backend=hci-sim` 和同一 `test_run_id`。27123 的五条 smoke 命令已通过。
+- pending：正式 immutable image digest、Argo 从干净节点重建、Ingress 浏览器入口和 Agent 结果落库仍需在 GitOps 变更合入后复验。
+- capability_gap：当前 Runtime 内置 Bundle 是 27123；23821 尚未加载为该 Pod 的 approved Bundle，不能宣称其现场 E2E。
+- 不允许的产品声明：Pod Ready 或手工 patch 不等于 GitOps/Bridge/Agent 产品闭环；不得把 Windows Bridge 或真实 HCI 作为当前仿真链路依赖。

@@ -1,8 +1,8 @@
 ---
-status: proposed
+status: in_progress
 category: verify
 audience: developer, tester, operator, expert, security
-last_updated: 2026-08-05
+last_updated: 2026-08-10
 owner: team
 ---
 
@@ -95,6 +95,10 @@ approvals: {kbd_expert: "", qa: "", security: "", operator: ""}
 - published Bundle 不可变、stale 最终一致、失败不覆盖已有发布。
 - 阶段 B Runtime compatibility 通过，Runtime 权限最小化。
 - KBD expert、QA、Security、DB/Operator 签署阶段 D Go。
+
+## 当前状态（2026-08-10）
+
+Manifest digest、synthetic bootstrap 和 capability 参考契约为 `passed`；生产 CAS/Registry、approved Artifact、批量 capability report 和迁移运行证据为 `pending/capability_gap`。
 
 ## 失败分类与文档更新
 

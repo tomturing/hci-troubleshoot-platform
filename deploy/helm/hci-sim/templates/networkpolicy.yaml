@@ -40,6 +40,17 @@ spec:
       ports:
         - port: {{ .Values.service.httpPort }}
           protocol: TCP
+    # Admin UI 不直接访问 Runtime；仅 api-gateway 可以调用 build/TestRun 控制面。
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.apiGatewayNamespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: api-gateway
+      ports:
+        - port: {{ .Values.service.httpPort }}
+          protocol: TCP
   egress:
     - to:
         - namespaceSelector:

@@ -1,8 +1,8 @@
 ---
-status: proposed
+status: approved
 category: requirement
 audience: product, architect, developer, tester, operator
-last_updated: 2026-08-05
+last_updated: 2026-08-10
 owner: team
 ---
 
@@ -150,3 +150,7 @@ Runner 负责：
 - [阶段 D 设计](../../solution/agent/events/2026-08-05-hci-sim阶段D-Scenario调度与通用KBD测试方案.md)
 - [阶段 D 任务](../../task/agent/events/2026-08-05-hci-sim阶段D-Scenario调度与通用KBD测试任务.md)
 - [阶段 D 验证](../../verify/events/2026-08-05-hci-sim阶段D-Scenario调度与通用KBD测试验证方案.md)
+
+## 当前状态（2026-08-10）
+
+阶段 D 的最小 build/TestRun HTTP 契约和 Runtime 内存 RunStore 已有代码；PostgreSQL Repository/CAS、Runner/Agent context 持久化、并发与重启恢复尚未完成，不能将单条 smoke 外推为通用 KBD 测试能力。

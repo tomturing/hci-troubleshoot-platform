@@ -1,8 +1,8 @@
 ---
-status: proposed
+status: in_progress
 category: solution
 audience: architect, developer, tester, operator, security
-last_updated: 2026-08-05
+last_updated: 2026-08-10
 owner: team
 ---
 
@@ -222,3 +222,7 @@ Fixture miss 或控制面故障时访问真实 HCI 会把安全边界和测试�
 
 - [阶段 D 任务](../../../task/agent/events/2026-08-05-hci-sim阶段D-Scenario调度与通用KBD测试任务.md)
 - [阶段 D 验证](../../../verify/events/2026-08-05-hci-sim阶段D-Scenario调度与通用KBD测试验证方案.md)
+
+## 当前状态（2026-08-10）
+
+Admin/Gateway/Runtime 的最小调度契约可运行；RunStore 仍是进程内参考实现，持久化 Runner、Agent context、幂等/CAS 和并发隔离尚未达到本方案的生产退出条件。

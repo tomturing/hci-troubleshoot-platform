@@ -107,6 +107,7 @@ func runServer() error {
 	})
 	// 控制面最小 HTTP 契约。生产入口必须由 API Gateway/NetworkPolicy 保护，
 	// Runtime 只接受 immutable fixture，并且永不回退真实 HCI。
+	fixtureVariant := simulationFixtureVariant()
 	controlToken := strings.TrimSpace(os.Getenv("HCI_SIM_CONTROL_TOKEN"))
 	allowInsecureControlAPI := strings.EqualFold(strings.TrimSpace(os.Getenv("HCI_SIM_ALLOW_INSECURE_CONTROL_API")), "true")
 	controlAuthorized := func(r *http.Request) bool {
@@ -131,7 +132,7 @@ func runServer() error {
 		now := time.Now().UTC()
 		runID := fmt.Sprintf("run-%s-%s", request.KBDID, randomID())
 		expires := now.Add(15 * time.Minute)
-		claims := lease.Claims{JTI: runID + "-1", LeaseID: "lease-" + runID, TestRunID: runID, ScenarioID: "kbd-" + request.KBDID + "-positive-minimal", SupportID: request.KBDID, KBDRevision: router.KBD().Revision, BundleDigest: router.BundleDigest(), FixtureVariant: "positive-minimal", ToolContractRevision: router.Contracts().ToolRevision, PolicyRevision: router.Contracts().PolicyRevision, VirtualNodeID: "SIM-HCI-NODE-01", Container: "host", ExecutionMode: "sim-ssh", Issuer: env("HCI_SIM_LEASE_ISSUER", "hci-platform"), Audience: env("HCI_SIM_LEASE_AUDIENCE", "hci-sim"), IssuedAt: now.Unix(), NotBefore: now.Unix(), ExpiresAt: expires.Unix(), RunDeadline: expires.Unix(), MaxSessions: 4, MaxCommands: 200, MaxOutputBytes: int64(router.OutputLimit())}
+		claims := lease.Claims{JTI: runID + "-1", LeaseID: "lease-" + runID, TestRunID: runID, ScenarioID: "kbd-" + request.KBDID + "-" + fixtureVariant, SupportID: request.KBDID, KBDRevision: router.KBD().Revision, BundleDigest: router.BundleDigest(), FixtureVariant: fixtureVariant, ToolContractRevision: router.Contracts().ToolRevision, PolicyRevision: router.Contracts().PolicyRevision, VirtualNodeID: "SIM-HCI-NODE-01", Container: "host", ExecutionMode: "sim-ssh", Issuer: env("HCI_SIM_LEASE_ISSUER", "hci-platform"), Audience: env("HCI_SIM_LEASE_AUDIENCE", "hci-sim"), IssuedAt: now.Unix(), NotBefore: now.Unix(), ExpiresAt: expires.Unix(), RunDeadline: expires.Unix(), MaxSessions: 4, MaxCommands: 200, MaxOutputBytes: int64(router.OutputLimit())}
 		token, err := lease.Sign(secret, claims)
 		if err != nil {
 			http.Error(w, "lease signing failed", http.StatusInternalServerError)
@@ -270,6 +271,16 @@ func env(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// simulationFixtureVariant keeps the local synthetic bootstrap default while
+// allowing a published Runtime Bundle to select its declared route variant.
+// Helm injects positive-realistic for the built-in 27123 Bundle.
+func simulationFixtureVariant() string {
+	if value := strings.TrimSpace(os.Getenv("HCI_SIM_FIXTURE_VARIANT")); value != "" {
+		return value
+	}
+	return "positive-minimal"
 }
 
 func envInt(name string, fallback int) int {

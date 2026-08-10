@@ -51,6 +51,8 @@ resources:
 networkPolicy:
   enabled: true
   terminalBridgeNamespace: hci-dev
+  # 控制面调用方必须显式放行；默认与受管 api-gateway 同 namespace。
+  apiGatewayNamespace: hci-dev
   observabilityNamespace: hci-observability
 
 resourceQuota:

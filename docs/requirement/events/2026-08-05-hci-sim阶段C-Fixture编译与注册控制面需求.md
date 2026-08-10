@@ -1,8 +1,8 @@
 ---
-status: proposed
+status: approved
 category: requirement
 audience: product, architect, developer, tester, operator, expert
-last_updated: 2026-08-05
+last_updated: 2026-08-10
 owner: team
 ---
 
@@ -133,3 +133,7 @@ draft → validated → approved → published → stale/retired
 - [阶段 C 设计](../../solution/agent/events/2026-08-05-hci-sim阶段C-Fixture编译与注册控制面方案.md)
 - [阶段 C 任务](../../task/agent/events/2026-08-05-hci-sim阶段C-Fixture编译与注册控制面任务.md)
 - [阶段 C 验证](../../verify/events/2026-08-05-hci-sim阶段C-Fixture编译与注册控制面验证方案.md)
+
+## 当前状态（2026-08-10）
+
+阶段 C 已有 Manifest v2、Bundle digest、Resolver/Capability 参考契约和 synthetic bootstrap；正式 Bundle Registry/CAS、126 KBD approved Artifact 和持久化控制面仍是 capability gap，保持 pending。

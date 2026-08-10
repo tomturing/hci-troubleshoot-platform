@@ -2,7 +2,7 @@
 status: in_progress
 category: task
 audience: developer, tester, operator, security
-last_updated: 2026-08-05
+last_updated: 2026-08-10
 owner: team
 ---
 
@@ -88,3 +88,7 @@ feature flag 只能关闭创建能力，不能绕过 Bundle、Lease、mode 或�
 - [ ] 1/10 并发无串线、泄漏、覆盖或隐式重试。
 - [ ] 无 sim→real fallback，安全/网络演练通过。
 - [ ] migration、API、运行手册、阶段 D 验证报告获签署，阶段 E 获得明确 Go。
+
+## 当前状态（2026-08-10）
+
+27123 的最小 build/TestRun/Bridge smoke 已通过；Repository、Runner、Agent context 和并发退出条件未通过，任务保持 `in_progress`。

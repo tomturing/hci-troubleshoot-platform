@@ -175,6 +175,12 @@ apiGateway:
     repository: hci-api-gateway
     tag: latest
   port: 8000
+  # hci-sim 控制面默认关闭，环境仓库必须显式启用并通过 Secret 注入 token。
+  hciSim:
+    enabled: false
+    url: http://hci-sim.hci-sim-dev.svc:8080
+    controlTokenSecretName: hci-sim-gateway-credentials
+    controlTokenSecretKey: control-plane-token
   resources:
     requests:
       cpu: "50m"

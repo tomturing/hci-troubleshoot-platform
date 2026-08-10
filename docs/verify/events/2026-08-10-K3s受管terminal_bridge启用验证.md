@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in_progress
 category: verify
 audience: tester, operator, reviewer, release
 last_updated: 2026-08-10
@@ -186,3 +186,13 @@ hci_sim:
 result: PASS | BLOCKED
 block_reason:
 ```
+
+## 已执行现场证据（2026-08-10）
+
+| 用例 | 结果 | 证据摘要 |
+|---|---|---|
+| Runtime 健康与数据库 | passed | `hci-sim-dev/hci-sim` 达到 `1/1`；`/status` 显示 `database_configured=true`、`database_name=hci_sim`，日志含固定 Bundle digest。 |
+| Gateway build/TestRun | passed（临时现场 patch） | 27123 的 Gateway build 返回 HTTP 200、`execution_mode=sim-ssh`、connection；TestRun 返回 HTTP 200，`test_run_id` 与 build 一致。 |
+| Bridge→Runtime SSH/exec | passed（临时 dev image） | `hci-sim-smoke` 五项全部通过：4 条正向/信号命令和 1 条未知命令的 fail-closed 127；Bridge 日志记录 SSH 认证成功和隔离 exec。 |
+
+边界：上述现场验证使用了未进入 Argo source 的本地 `dev-local-v2` 镜像和临时 NetworkPolicy patch；正式结论必须在 Helm/GitOps 修复合入、不可变 digest 部署后重跑。23821 因当前 Bundle 未加载，保持 `capability_gap`。

@@ -2,7 +2,7 @@
 status: in_progress
 category: task
 audience: developer, tester, operator, expert, security
-last_updated: 2026-08-06
+last_updated: 2026-08-10
 owner: team
 ---
 
@@ -95,3 +95,7 @@ owner: team
 - [ ] capability gap 结构化、可查询、有 owner，不伪造 Fixture。
 - [ ] desired schema、migration、API、运行手册和阶段 C 验证报告获签署。
 - [ ] 阶段 D 获得明确 Go。
+
+## 当前状态（2026-08-10）
+
+Manifest/Resolver/synthetic bootstrap 已完成参考实现；生产 Registry/CAS、approved Bundle 和 capability report 持久化尚未完成，任务保持 `in_progress`。
