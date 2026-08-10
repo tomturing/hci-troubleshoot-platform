@@ -53,7 +53,10 @@ spec:
             - name: POSTGRES_USER
               value: {{ .Values.config.postgresUser | quote }}
             - name: POSTGRES_PASSWORD
-              value: {{ .Values.secrets.postgresPassword | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: POSTGRES_PASSWORD
             - name: SIM_DATABASE
               value: {{ .Values.hciSimDatabase.name | quote }}
             - name: OWNER_ROLE

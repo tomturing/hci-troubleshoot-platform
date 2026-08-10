@@ -1,0 +1,35 @@
+suite: "hci_sim database isolation"
+templates:
+  - hci-sim-db-credentials.yaml
+  - hci-sim-db-migrations.yaml
+  - hooks/hci-sim-db-migrate-job.yaml
+tests:
+  - it: "默认不创建 hci_sim 数据库资源"
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: "启用后所有数据库密码都通过 Secret 引用注入"
+    set:
+      hciSimDatabase.enabled: true
+      hciSimDatabase.migratorPassword: "migration-test-secret"
+      hciSimDatabase.runtimePassword: "runtime-test-secret"
+    templates:
+      - hooks/hci-sim-db-migrate-job.yaml
+    asserts:
+      - isKind:
+          of: Job
+      - equal:
+          path: spec.template.spec.containers[0].env[2].valueFrom.secretKeyRef.name
+          value: hci-secrets
+      - equal:
+          path: spec.template.spec.containers[0].env[2].valueFrom.secretKeyRef.key
+          value: POSTGRES_PASSWORD
+      - notExists:
+          path: spec.template.spec.containers[0].env[2].value
+      - equal:
+          path: spec.template.spec.containers[0].env[7].valueFrom.secretKeyRef.name
+          value: hci-sim-db-credentials
+      - equal:
+          path: spec.template.spec.containers[0].env[8].valueFrom.secretKeyRef.name
+          value: hci-sim-db-credentials
