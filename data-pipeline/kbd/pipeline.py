@@ -71,6 +71,96 @@ logger = logging.getLogger("kbd.pipeline")
 
 _STAGE_BANNER_WIDTH = TERMINAL_LAYOUT_WIDTH
 
+
+def _annotate_stage_scope(
+    stats: dict,
+    *,
+    candidate_ids: Iterable[str],
+    selected_ids: Iterable[str],
+    blocked: int = 0,
+) -> dict:
+    """把“计划范围”和“实际结果”分开记录，避免全 0 被误读为成功。
+
+    ``done/failed/skipped`` 是业务结果计数；它们不能表达任务管理器是否
+    根本没有把案例交给该 Stage。CLI 因此额外输出候选数、选中数和未安排数。
+    """
+
+    candidates = list(candidate_ids)
+    selected = list(selected_ids)
+    stats["candidate_cases"] = len(candidates)
+    stats["selected_cases"] = len(selected)
+    stats["not_scheduled"] = max(0, len(candidates) - len(selected))
+    stats["blocked_by_dependency"] = int(stats.get("blocked_by_dependency", blocked) or blocked)
+    if not selected and stats["blocked_by_dependency"] > 0:
+        stats["execution_status"] = "blocked"
+        stats["execution_reason"] = "前置依赖未满足"
+    elif not selected and stats["blocked_by_dependency"] == 0:
+        # 已有持久化结果（尤其是幂等 Classify）是“无需执行”，而不是“未安排”。
+        result_count = sum(
+            int(stats.get(key, 0) or 0)
+            for key in ("done", "created", "overridden", "skipped", "case_count")
+        )
+        if result_count:
+            stats["execution_status"] = "no_work"
+            stats["execution_reason"] = "已有持久化结果或已满足幂等条件，无需重复调用"
+        else:
+            stats["execution_status"] = "not_scheduled"
+            stats["execution_reason"] = "任务计划未选择案例（模式过滤或前置阶段未提供输入）"
+    else:
+        stats["execution_status"] = "executed"
+    return stats
+
+
+def _log_stage_result(stage_number: int, stats: dict) -> None:
+    """以操作者可理解的语言记录阶段结论，而不是只倾倒一个字典。"""
+
+    status = stats.get("execution_status")
+    if status == "not_scheduled":
+        logger.info(
+            "Stage %d 未执行：任务计划未选择案例 candidate=%d selected=0 reason=%s",
+            stage_number,
+            stats.get("candidate_cases", 0),
+            stats.get("execution_reason", "-"),
+        )
+    elif status == "no_work":
+        logger.info(
+            "Stage %d 无需执行：已有结果满足幂等条件 candidate=%d selected=0 reason=%s",
+            stage_number,
+            stats.get("candidate_cases", 0),
+            stats.get("execution_reason", "-"),
+        )
+    elif status == "blocked":
+        logger.warning(
+            "Stage %d 未执行：前置依赖阻断 blocked=%d candidate=%d selected=0",
+            stage_number,
+            stats.get("blocked_by_dependency", 0),
+            stats.get("candidate_cases", 0),
+        )
+    else:
+        if stage_number == 2:
+            done = sum(int(stats.get(key, 0) or 0) for key in ("created", "overridden"))
+            failed = int(stats.get("error", 0) or 0)
+        elif stage_number == 6:
+            done = int(stats.get("case_count", 0) or 0)
+            failed = int(stats.get("case_status_counts", {}).get("BLOCKED_SIGNAL_REVIEW", 0) or 0)
+        else:
+            done = int(stats.get("done", 0) or 0)
+            failed = int(stats.get("failed", 0) or 0)
+        needs_review = int(stats.get("needs_review", 0) or 0)
+        if not needs_review:
+            needs_review = int(stats.get("case_status_counts", {}).get("needs_review", 0) or 0)
+        logger.info(
+            "Stage %d 完成：selected=%d done=%d failed=%d skipped=%d needs_review=%d blocked=%d elapsed=%ss",
+            stage_number,
+            stats.get("selected_cases", 0),
+            done,
+            failed,
+            stats.get("skipped", 0),
+            needs_review,
+            stats.get("blocked_by_dependency", 0),
+            stats.get("elapsed_s", "-"),
+        )
+
 # 空信号文档的兼容判据。
 # 正常 Import 应写入 []，但历史/不同版本的写入路径可能留下 {}，v2 文档也可能
 # 已经存在但 signals 为空。三种形态都表示“尚未生成 Proposal”，必须允许 Stage 5
@@ -347,7 +437,8 @@ async def run_pipeline(
                 retry_images=(task_mode != "resume"),
             )
             all_stats["fetch"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
-            logger.info("Stage 1 完成 %s", all_stats["fetch"])
+            _annotate_stage_scope(all_stats["fetch"], candidate_ids=kbd_ids, selected_ids=fetch_ids)
+            _log_stage_result(1, all_stats["fetch"])
 
             # 更新进度
             for cid in fetch_ids:
@@ -371,7 +462,7 @@ async def run_pipeline(
                 client=http_client,
             )
             all_stats["import"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
-            logger.info("Stage 2 完成 %s", all_stats["import"])
+            _annotate_stage_scope(all_stats["import"], candidate_ids=ready_ids, selected_ids=import_ids)
 
             # 本次 API 返回是 Import 阶段的唯一真相源。即使 DB 中有历史旧行，
             # 本次 override 失败也必须记为 failed，且不能进入下游。
@@ -400,6 +491,12 @@ async def run_pipeline(
             all_stats["import"]["blocked_by_dependency"] = _blocked_count(
                 progress, "import"
             )
+            # 依赖阻断是在批量调用后才能确定；刷新一次面向 CLI 的执行结论。
+            _annotate_stage_scope(
+                all_stats["import"], candidate_ids=ready_ids, selected_ids=import_ids,
+                blocked=all_stats["import"]["blocked_by_dependency"],
+            )
+            _log_stage_result(2, all_stats["import"])
             save_progress(run_id, progress)
 
         # VISION 与 CLASSIFY 没有技术前置关系：都只读取 IMPORT 写入的结构化 KBD。
@@ -469,6 +566,10 @@ async def run_pipeline(
                 blocked_by_dependency=_blocked_count(progress, "vision"),
                 item_states={},
             )
+            _annotate_stage_scope(
+                all_stats["vision"], candidate_ids=input_ids, selected_ids=vision_ids,
+                blocked=all_stats["vision"]["blocked_by_dependency"],
+            )
             for cid in vision_ids:
                 row = await pool.fetchrow(
                     "SELECT images_json FROM kbd_entry WHERE support_id = $1", cid
@@ -489,7 +590,7 @@ async def run_pipeline(
                         for index, item in enumerate(images)
                         if isinstance(item, dict)
                     }
-            logger.info("Stage 4 完成 %s", all_stats["vision"])
+            _log_stage_result(4, all_stats["vision"])
             # 未选中的案例沿用已持久化的成功结果，供下游依赖使用。
             persisted = await _existing_ready(Stage.VISION, input_ids)
             return set(persisted) | completed
@@ -519,7 +620,11 @@ async def run_pipeline(
             all_stats["classify"]["blocked_by_dependency"] = _blocked_count(
                 progress, "classify"
             )
-            logger.info("Stage 3 完成 %s", all_stats["classify"])
+            _annotate_stage_scope(
+                all_stats["classify"], candidate_ids=input_ids, selected_ids=classify_ids,
+                blocked=all_stats["classify"]["blocked_by_dependency"],
+            )
+            _log_stage_result(3, all_stats["classify"])
             return completed
 
         if Stage.VISION in stages and Stage.CLASSIFY in stages:
@@ -585,7 +690,9 @@ async def run_pipeline(
             t0 = time.monotonic()
             stats = await extract_signals_batch(extract_kbd_ids, pool, rework=rework)
             all_stats["extract"] = {**stats, "elapsed_s": round(time.monotonic() - t0, 1)}
-            logger.info("Stage 5 完成 %s", all_stats["extract"])
+            _annotate_stage_scope(
+                all_stats["extract"], candidate_ids=extract_input_ids, selected_ids=extract_kbd_ids,
+            )
 
             signal_ready_ids: list[str] = []
             for cid in extract_input_ids:
@@ -601,6 +708,11 @@ async def run_pipeline(
             all_stats["extract"]["blocked_by_dependency"] = _blocked_count(
                 progress, "extract_signals"
             )
+            _annotate_stage_scope(
+                all_stats["extract"], candidate_ids=extract_input_ids, selected_ids=extract_kbd_ids,
+                blocked=all_stats["extract"]["blocked_by_dependency"],
+            )
+            _log_stage_result(5, all_stats["extract"])
             save_progress(run_id, progress)
 
         if Stage.REVIEW_SIGNALS in stages:
@@ -616,6 +728,11 @@ async def run_pipeline(
                 **report,
                 "elapsed_s": round(time.monotonic() - t0, 1),
             }
+            _annotate_stage_scope(
+                all_stats["review_signals"],
+                candidate_ids=active_ids,
+                selected_ids=[str(row["support_id"]) for row in rows],
+            )
             logger.info(
                 "Stage 6 完成 cases=%d status=%s issues=%s",
                 report["case_count"],
@@ -665,7 +782,17 @@ async def run_pipeline(
         await pool.close()
         await http_client.aclose()
 
-    logger.info("流水线全部完成 run_id=%s %s", run_id, all_stats)
+    pipeline_result = all_stats.get("pipeline", {})
+    logger.info(
+        "流水线运行结束 run_id=%s success=%s completed=%d/%d failed_steps=%d warning_steps=%d",
+        run_id,
+        pipeline_result.get("success", False),
+        pipeline_result.get("completed_ids", 0),
+        pipeline_result.get("total_ids", len(kbd_ids)),
+        pipeline_result.get("failed_steps", 0),
+        pipeline_result.get("warning_steps", 0),
+    )
+    logger.debug("流水线详细统计 run_id=%s stats=%s", run_id, all_stats)
     return all_stats, run_id
 
 

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import httpx
-from kbd.error_catalog import humanize_error
+from kbd.error_catalog import JobFailureError, humanize_error
 
 
 def test_timeout_has_stable_chinese_retryable_error():
@@ -28,3 +28,24 @@ def test_wrapped_vision_job_rate_limit_is_not_unclassified():
 
     assert result.code == "LLM_RATE_LIMITED"
     assert result.retryable is True
+
+
+def test_job_failure_keeps_job_id_and_concrete_service_reason():
+    result = humanize_error(
+        JobFailureError("Vision", "093739b6b18f", "seq=0: VISION_API_KEY 未配置")
+    )
+
+    assert result.code == "VISION_JOB_FAILED"
+    assert "job_id=093739b6b18f" in result.message
+    assert "VISION_API_KEY 未配置" in result.message
+    assert result.detail == "seq=0: VISION_API_KEY 未配置"
+    assert result.action
+
+
+def test_unexpected_error_exposes_sanitized_reason_instead_of_vague_jsonl_hint():
+    result = humanize_error(ValueError("字段 image_items 不是数组 token=secret-value"))
+
+    assert result.code == "PIPELINE_UNEXPECTED"
+    assert "ValueError" in result.message
+    assert "image_items 不是数组" in result.message
+    assert "secret-value" not in result.message

@@ -34,7 +34,13 @@ import httpx
 
 from .config import settings
 from .fetcher import read_ids_from_excel
-from .observability import install_trace_logging, new_trace_id, set_trace_id
+from .observability import (
+    get_trace_id,
+    install_trace_logging,
+    new_trace_id,
+    set_run_id,
+    set_trace_id,
+)
 from .pipeline import EMPTY_SIGNALS_JSON_PREDICATE, Stage, run_from_excel
 from .progress import load_progress
 from .runtime import require_shared_contracts
@@ -154,8 +160,12 @@ class _JsonLineFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
             "trace_id": getattr(record, "trace_id", None),
+            "run_id": getattr(record, "run_id", None),
         }
-        for key in ("run_id", "support_id", "stage", "job_id", "error_code", "retryable"):
+        for key in (
+            "run_id", "support_id", "stage", "job_id", "error_code", "retryable",
+            "error_detail",
+        ):
             if hasattr(record, key):
                 payload[key] = getattr(record, key)
         return json.dumps(payload, ensure_ascii=False, default=str)
@@ -194,11 +204,11 @@ def _setup_logging(run_id: str | None = None, *, verbose: bool = False) -> str:
 
     # 日志格式（注入 trace_id，便于按 trace 串联 data-pipeline 与 kb-service 日志）
     formatter = logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(name)s [tid=%(trace_id)s] — %(message)s",
+        "%(asctime)s [%(levelname)s] %(name)s [run=%(run_id)s tid=%(trace_id)s] — %(message)s",
         datefmt="%H:%M:%S",
     )
     console_formatter = _ConsoleFormatter(
-        "%(asctime)s [%(levelname)s] %(name)s [tid=%(trace_id)s] — %(message)s",
+        "%(asctime)s [%(levelname)s] %(name)s [run=%(run_id)s tid=%(trace_id)s] — %(message)s",
         datefmt="%H:%M:%S",
     )
 
@@ -227,6 +237,7 @@ def _setup_logging(run_id: str | None = None, *, verbose: bool = False) -> str:
     install_trace_logging()
     trace_id = new_trace_id()
     set_trace_id(trace_id)
+    set_run_id(run_id)
 
     logger = logging.getLogger("kbd.run")
     logger.info(
@@ -548,7 +559,14 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
         blocked = int(item.get("blocked_by_dependency", 0) or 0)
         elapsed = item.get("elapsed_s")
         elapsed_text = f"{elapsed:.1f}s" if isinstance(elapsed, (int, float)) else "-"
-        if failed or blocked:
+        execution_status = item.get("execution_status")
+        if execution_status == "not_scheduled":
+            status = "未安排"
+            status_color = "gray"
+        elif execution_status == "no_work":
+            status = "无需执行"
+            status_color = "gray"
+        elif failed or blocked:
             status = "失败/阻断"
             status_color = "red"
         elif needs_review or review_issues:
@@ -600,8 +618,24 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
     print(_paint(_center_display("KBD 流水线完成摘要", table_width), "bold", enabled=enabled))
     print("=" * table_width)
     print(f"运行编号   : {run_id}")
-    result_text = "全部阶段完成" if success else "部分完成，请查看失败/阻断项"
-    result_color = "green" if success else "red"
+    print(f"关联 trace : {get_trace_id() or '-'}（用于串联 kb-service 服务端日志）")
+    has_execution_scope = any(
+        "selected_cases" in (stats.get(stage_name) or {})
+        for stage_name, _label in stage_rows
+    )
+    ran_any_stage = any(
+        int((stats.get(stage_name) or {}).get("selected_cases", 0) or 0) > 0
+        for stage_name, _label in stage_rows
+    )
+    if success and has_execution_scope and not ran_any_stage:
+        result_text = "无需执行（没有符合条件的任务）"
+        result_color = "gray"
+    elif success:
+        result_text = "全部阶段完成"
+        result_color = "green"
+    else:
+        result_text = "部分完成，请查看失败/阻断项"
+        result_color = "red"
     print(f"总体结果   : {_paint(result_text, result_color, enabled=enabled)}")
     print(f"KBD 完成数 : {completed}/{total}")
     print(border("┌", "┬", "┐"))
@@ -611,6 +645,18 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
         print(row_text(values, color))
     print(border("└", "┴", "┘"))
 
+    unscheduled = [
+        (label, int(item.get("candidate_cases", 0) or 0), int(item.get("selected_cases", 0) or 0))
+        for stage_name, label in stage_rows
+        if (item := stats.get(stage_name))
+        and item.get("execution_status") == "not_scheduled"
+    ]
+    if unscheduled:
+        print("未安排阶段：" + "；".join(
+            f"{label}（候选 {candidate}，选中 {selected}）"
+            for label, candidate, selected in unscheduled
+        ))
+
     if stats.get("vision", {}).get("case_status_counts"):
         counts = stats["vision"]["case_status_counts"]
         print("\nVision KBD 状态：" + " / ".join(f"{key}={value}" for key, value in counts.items()))
@@ -618,8 +664,17 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
         issues = stats["review_signals"]["issue_counts"]
         print("统一信号审查问题：" + " / ".join(f"{key}={value}" for key, value in issues.items()))
     if not success:
-        print(_paint("建议：技术失败项使用 --resume 或 --failed-only 重试；前置阻断项必须先修复上游阶段。", "yellow", enabled=enabled))
-    print(f"排障日志   : {settings.KBD_LOGS_DIR / f'kbd_{run_id}.jsonl'}")
+        print(_paint("建议：先按下方命令确认具体原因；前置阻断项必须先修复上游阶段。", "yellow", enabled=enabled))
+        print(
+            "失败重试   : uv run python -m data-pipeline.kbd.run task "
+            f"--run-id {run_id} --failed"
+        )
+    jsonl_path = settings.KBD_LOGS_DIR / f"kbd_{run_id}.jsonl"
+    text_path = settings.KBD_LOGS_DIR / f"kbd_{run_id}.log"
+    print(f"排障日志   : {jsonl_path}")
+    print(f"查看失败   : rg -n '\"level\": \"(ERROR|CRITICAL)\"' {jsonl_path}")
+    print(f"按案例检索 : rg -n '\"support_id\": \"<案例ID>\"' {jsonl_path}")
+    print(f"查看完整文本: less -N {text_path}")
 
 
 async def _cmd_cli(args: argparse.Namespace, run_id: str) -> int:

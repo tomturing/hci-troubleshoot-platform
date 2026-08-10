@@ -26,7 +26,7 @@ import asyncpg
 import httpx
 
 from .config import settings
-from .error_catalog import humanize_error
+from .error_catalog import JobFailureError, humanize_error
 from .observability import get_trace_id, traceparent
 
 logger = logging.getLogger("kbd.image_proc")
@@ -135,6 +135,7 @@ async def _poll_reanalyze_status(
     started_at = time.monotonic()
     poll_count = 0
     consecutive_transport_errors = 0
+    last_progress: tuple[object, object, object] | None = None
 
     while True:
         elapsed = time.monotonic() - started_at
@@ -150,11 +151,19 @@ async def _poll_reanalyze_status(
             data = resp.json()
             consecutive_transport_errors = 0
             status = data.get("status")
-            logger.info(
-                "识图轮询 job_id=%s kbd_entry_id=%d poll=%d status=%s done=%d/%d",
-                job_id, kbd_entry_id, poll_count, status,
-                data.get("done", 0), data.get("total", 0),
-            )
+            progress = (status, data.get("done", 0), data.get("total", 0))
+            if poll_count == 1 or progress != last_progress or status in {"done", "failed"}:
+                logger.info(
+                    "识图进度 job_id=%s kbd_entry_id=%d status=%s done=%d/%d elapsed=%.1fs",
+                    job_id, kbd_entry_id, status,
+                    data.get("done", 0), data.get("total", 0), elapsed,
+                )
+                last_progress = progress
+            else:
+                logger.debug(
+                    "识图轮询心跳 job_id=%s poll=%d status=%s done=%d/%d elapsed=%.1fs",
+                    job_id, poll_count, status, data.get("done", 0), data.get("total", 0), elapsed,
+                )
             if status == "done":
                 return {
                     "success": True,
@@ -166,8 +175,8 @@ async def _poll_reanalyze_status(
                     "message": "异步识图完成",
                 }
             if status == "failed":
-                err = data.get("error") or "Job 执行失败"
-                raise RuntimeError(f"Vision Job {job_id} 失败：{err}")
+                err = data.get("error") or "服务端未返回具体失败原因"
+                raise JobFailureError("Vision", str(job_id), str(err))
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 raise RuntimeError(f"Vision Job {job_id} 不存在（kb-service 可能已重启）") from exc
@@ -267,18 +276,36 @@ async def process_images_batch(
             except Exception as exc:
                 error = humanize_error(exc)
                 logger.error(
-                    "识图失败 support_id=%s code=%s retryable=%s 原因=%s",
+                    "识图失败 support_id=%s code=%s retryable=%s 原因=%s%s",
                     support_id, error.code, error.retryable, error.message,
+                    f" 建议={error.action}" if error.action else "",
                     extra={
                         "support_id": support_id,
                         "stage": "vision",
                         "error_code": error.code,
                         "retryable": error.retryable,
+                        "error_detail": error.detail,
+                        "job_id": getattr(exc, "job_id", None),
+                    },
+                )
+                logger.debug(
+                    "识图失败原始异常 support_id=%s type=%s",
+                    support_id, type(exc).__name__, exc_info=True,
+                    extra={
+                        "support_id": support_id,
+                        "stage": "vision",
+                        "job_id": getattr(exc, "job_id", None),
                     },
                 )
                 stats["failed"] += 1
                 stats["case_results"][support_id] = {
-                    "status": "failed", "reason": error.message, "error_code": error.code,
+                    "status": "failed",
+                    "reason": error.message,
+                    "error_code": error.code,
+                    "retryable": error.retryable,
+                    "detail": error.detail,
+                    "action": error.action,
+                    "job_id": getattr(exc, "job_id", None),
                 }
 
         # P1-1 并发提交（Semaphore 控制，避免一次提交 100 个撑爆后端）

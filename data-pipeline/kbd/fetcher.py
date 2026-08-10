@@ -348,6 +348,9 @@ async def fetch_batch(
     """
     stats: dict[str, int] = {"done": 0, "skipped": 0, "failed": 0}
     total = len(support_ids)
+    if not support_ids:
+        logger.info("批量抓取未执行 cases=0 reason=任务计划未选择案例")
+        return stats
 
     for idx, support_id in enumerate(support_ids, 1):
         logger.info("[%d/%d] 处理案例 %s", idx, total, support_id)

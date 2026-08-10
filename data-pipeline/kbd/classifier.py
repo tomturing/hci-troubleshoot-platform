@@ -208,6 +208,10 @@ async def classify_batch(
     stats = {"done": 0, "failed": 0, "low_confidence": 0, "skipped": 0}
     total = len(case_ids)
 
+    if not case_ids:
+        logger.info("批量分类未执行 cases=0 reason=任务计划未选择案例")
+        return stats
+
     if not settings.INTERNAL_API_TOKEN:
         raise RuntimeError("INTERNAL_API_TOKEN 未配置，无法调用 kb-service API")
 

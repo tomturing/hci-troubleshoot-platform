@@ -17,7 +17,7 @@ import asyncpg
 import httpx
 
 from .config import settings
-from .error_catalog import humanize_error
+from .error_catalog import JobFailureError, humanize_error
 from .observability import get_trace_id, traceparent
 
 logger = logging.getLogger("kbd.extract_signals")
@@ -105,6 +105,7 @@ async def _poll_extract_status(
     started_at = time.monotonic()
     poll_count = 0
     consecutive_transport_errors = 0
+    last_progress: tuple[object, object] | None = None
 
     while True:
         elapsed = time.monotonic() - started_at
@@ -120,10 +121,18 @@ async def _poll_extract_status(
             data = resp.json()
             consecutive_transport_errors = 0
             job_status = data.get("status")
-            logger.info(
-                "信号抽取轮询 job_id=%s kbd_entry_id=%d poll=%d status=%s",
-                job_id, kbd_entry_id, poll_count, job_status,
-            )
+            progress = (job_status, data.get("signals_count", data.get("done", 0)))
+            if poll_count == 1 or progress != last_progress or job_status in {"done", "failed"}:
+                logger.info(
+                    "信号抽取进度 job_id=%s kbd_entry_id=%d status=%s elapsed=%.1fs",
+                    job_id, kbd_entry_id, job_status, time.monotonic() - started_at,
+                )
+                last_progress = progress
+            else:
+                logger.debug(
+                    "信号抽取轮询心跳 job_id=%s poll=%d status=%s elapsed=%.1fs",
+                    job_id, poll_count, job_status, time.monotonic() - started_at,
+                )
             if job_status == "done":
                 result = data.get("result") or {}
                 return {
@@ -134,8 +143,8 @@ async def _poll_extract_status(
                     "message": "异步信号抽取完成",
                 }
             if job_status == "failed":
-                err = data.get("error") or "Job 执行失败"
-                raise RuntimeError(f"Signal Job {job_id} 失败：{err}")
+                err = data.get("error") or "服务端未返回具体失败原因"
+                raise JobFailureError("Signal", str(job_id), str(err))
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 raise RuntimeError(f"Signal Job {job_id} 不存在（kb-service 可能已重启）") from exc
@@ -173,6 +182,11 @@ async def extract_signals_batch(
     Returns:
         {"done": N, "failed": N, "skipped": N, "needs_review": N}
     """
+    stats = {"done": 0, "failed": 0, "skipped": 0, "needs_review": 0}
+    if not kbd_ids:
+        logger.info("批量关键信号抽取未执行 cases=0 reason=任务计划或前置依赖未提供案例")
+        return stats
+
     if not settings.INTERNAL_API_TOKEN:
         raise RuntimeError("INTERNAL_API_TOKEN 未配置，无法调用 kb-service API")
 
@@ -181,8 +195,6 @@ async def extract_signals_batch(
         pool = await asyncpg.create_pool(
             dsn=settings.asyncpg_database_url
         )
-
-    stats = {"done": 0, "failed": 0, "skipped": 0, "needs_review": 0}
 
     async def _run_one(support_id: str) -> None:
         kbd_entry_id = await pool.fetchval(
@@ -213,13 +225,25 @@ async def extract_signals_batch(
         except Exception as exc:
             error = humanize_error(exc)
             logger.error(
-                "关键信号抽取失败 support_id=%s code=%s retryable=%s 原因=%s",
+                "关键信号抽取失败 support_id=%s code=%s retryable=%s 原因=%s%s",
                 support_id, error.code, error.retryable, error.message,
+                f" 建议={error.action}" if error.action else "",
                 extra={
                     "support_id": support_id,
                     "stage": "extract_signals",
                     "error_code": error.code,
                     "retryable": error.retryable,
+                    "error_detail": error.detail,
+                    "job_id": getattr(exc, "job_id", None),
+                },
+            )
+            logger.debug(
+                "关键信号抽取失败原始异常 support_id=%s type=%s",
+                support_id, type(exc).__name__, exc_info=True,
+                extra={
+                    "support_id": support_id,
+                    "stage": "extract_signals",
+                    "job_id": getattr(exc, "job_id", None),
                 },
             )
             stats["failed"] += 1

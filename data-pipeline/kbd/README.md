@@ -648,6 +648,12 @@ draft → published → archived
 data-pipeline/kbd/logs/kbd_YYYYMMDD_HHMMSS.log
 ```
 
+以及适合 `rg`、脚本和归档的结构化事件流：
+
+```text
+data-pipeline/kbd/logs/kbd_YYYYMMDD_HHMMSS.jsonl
+```
+
 Pipeline 还生成：
 
 ```text
@@ -659,6 +665,31 @@ data-pipeline/kbd/logs/progress_YYYYMMDD_HHMMSS.json
 ```bash
 ls -1t data-pipeline/kbd/logs/kbd_*.log | head -1
 ```
+
+终端摘要中的阶段状态有明确语义：`完成` 表示本阶段确实选中了任务并得到结果，
+`未安排` 表示任务计划没有把案例交给该阶段（例如重做 Stage 5 时前置阶段已成功，
+或被生命周期模式过滤），不能把它理解为“执行了但结果为 0”。摘要还会显示候选数、
+选中数和前置阻断数；`done/failed/skipped` 只表示业务结果，不再承担“是否执行”的语义。
+
+失败时不要只看最后一行。CLI 会同时打印可复制的检索命令：
+
+```bash
+# 查看该次运行的所有 ERROR/CRITICAL（JSONL 每行都是一条结构化记录）
+rg -n '"level": "(ERROR|CRITICAL)"' data-pipeline/kbd/logs/kbd_<run_id>.jsonl
+
+# 查看某个案例的全部事件（包含 job_id、error_code、error_detail、retryable）
+rg -n '"support_id": "27123"' data-pipeline/kbd/logs/kbd_<run_id>.jsonl
+
+# 查看同一 run 的完整文本日志和 DEBUG 堆栈
+less -N data-pipeline/kbd/logs/kbd_<run_id>.log
+```
+
+每条文本/JSONL 记录都带 `run_id` 和 `trace_id`；调用 kb-service 的事件还带
+`support_id`、`stage`、`job_id`。因此服务端日志可直接用同一个 trace_id 查询，
+无需猜测应该去哪个文件。异步 Vision/Signal 任务失败时，CLI 优先展示服务端返回的
+具体原因和下一步建议；只有服务端没有返回原因时才会出现“未分类异常”。
+
+完整的字段、级别和状态语义契约见 [LOGGING.md](LOGGING.md)。
 
 不要用 progress 文件手工改业务状态，也不要把日志中的“HTTP 成功”解释成“有可执行信号”。Stage 5 的 `needs_review` 专门区分这两者。
 

@@ -67,3 +67,39 @@ async def test_empty_batch_is_reported_as_skipped_without_api_setup(caplog):
     assert result == {"done": 0, "failed": 0, "skipped": 0, "case_results": {}}
     assert "批量识图跳过" in caplog.text
     assert "批量识图完成" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_failed_job_preserves_job_id_and_service_reason(monkeypatch):
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get.return_value = _status_response({
+        "status": "failed",
+        "total": 3,
+        "done": 2,
+        "failed": 1,
+        "error": "seq=0: Provider 拒绝了图片格式",
+    })
+    monkeypatch.setattr("kbd.image_proc.asyncio.sleep", AsyncMock())
+
+    with pytest.raises(Exception) as exc_info:
+        await _poll_reanalyze_status(11, "job-readable", client, poll_interval=0.01)
+
+    assert getattr(exc_info.value, "job_id", None) == "job-readable"
+    assert "Provider 拒绝了图片格式" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_unchanged_poll_heartbeats_do_not_repeat_at_info(monkeypatch, caplog):
+    client = AsyncMock(spec=httpx.AsyncClient)
+    client.get.side_effect = [
+        _status_response({"status": "running", "total": 3, "done": 0, "failed": 0}),
+        _status_response({"status": "running", "total": 3, "done": 0, "failed": 0}),
+        _status_response({"status": "done", "total": 3, "done": 3, "failed": 0}),
+    ]
+    monkeypatch.setattr("kbd.image_proc.asyncio.sleep", AsyncMock())
+
+    with caplog.at_level("INFO", logger="kbd.image_proc"):
+        await _poll_reanalyze_status(11, "job-quiet", client, poll_interval=0.01)
+
+    progress_lines = [line for line in caplog.messages if "识图进度" in line]
+    assert len(progress_lines) == 2

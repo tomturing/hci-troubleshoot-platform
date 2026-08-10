@@ -201,6 +201,31 @@ def test_pipeline_summary_does_not_mark_zero_work_import_as_blocked(monkeypatch,
     assert "失败/阻断" not in import_row
 
 
+def test_pipeline_summary_marks_unselected_zero_work_as_not_scheduled(monkeypatch, capsys):
+    monkeypatch.setenv("NO_COLOR", "1")
+    _print_pipeline_summary(
+        "20260810_163351",
+        {
+            "pipeline": {"success": True, "total_ids": 1, "completed_ids": 1},
+            "fetch": {
+                "done": 0,
+                "failed": 0,
+                "skipped": 0,
+                "candidate_cases": 1,
+                "selected_cases": 0,
+                "execution_status": "not_scheduled",
+                "elapsed_s": 0.0,
+            },
+        },
+    )
+
+    output = capsys.readouterr().out
+    fetch_row = next(line for line in output.splitlines() if "数据抓取" in line)
+    assert "未安排" in fetch_row
+    assert "未安排阶段：数据抓取（候选 1，选中 0）" in output
+    assert "查看失败" in output and "按案例检索" in output and "查看完整文本" in output
+
+
 def test_interactive_rework_plan_explains_reused_dependencies(capsys):
     args = argparse.Namespace(stages="5", run_id=None, excel=False, id_file=None)
     task_plan = {

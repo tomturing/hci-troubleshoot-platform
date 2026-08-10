@@ -153,6 +153,10 @@ async def upload_images_batch(kbd_ids: list[str]) -> dict[str, int]:
     Returns:
         {"done": N, "failed": N, "skipped": N}
     """
+    if not kbd_ids:
+        logger.info("批量上传未执行 cases=0 reason=没有可上传案例")
+        return {"done": 0, "failed": 0, "skipped": 0}
+
     pool = await asyncpg.create_pool(
         dsn=settings.asyncpg_database_url
     )

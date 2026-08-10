@@ -25,6 +25,9 @@ import uuid
 _TRACE_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "kbd_trace_id", default=None
 )
+_RUN_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "kbd_run_id", default=None
+)
 
 
 def new_trace_id() -> str:
@@ -39,6 +42,18 @@ def get_trace_id() -> str | None:
 def set_trace_id(trace_id: str | None) -> None:
     """设置当前上下文的 trace_id（一次 run 调用一次即可贯穿全程）。"""
     _TRACE_ID.set(trace_id)
+
+
+def get_run_id() -> str | None:
+    """返回当前 CLI 运行编号。日志过滤器会把它注入每条记录。"""
+
+    return _RUN_ID.get()
+
+
+def set_run_id(run_id: str | None) -> None:
+    """设置当前 CLI 运行编号（一次 run 调用一次即可贯穿全程）。"""
+
+    _RUN_ID.set(run_id)
 
 
 def traceparent(trace_id: str | None = None) -> dict[str, str]:
@@ -61,6 +76,7 @@ class TraceIdFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         tid = get_trace_id()
         record.trace_id = tid or "-"
+        record.run_id = get_run_id() or "-"
         return True
 
 
