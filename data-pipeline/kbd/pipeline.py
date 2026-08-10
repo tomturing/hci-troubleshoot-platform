@@ -312,7 +312,7 @@ async def run_pipeline(
         if stage is Stage.VISION:
             ready: list[str] = []
             for cid in candidates:
-                if await _db_vision_status(pool, cid) == "done":
+                if await _db_vision_status(pool, cid) in {"done", "no_images"}:
                     ready.append(cid)
             return ready
         if stage is Stage.EXTRACT_SIGNALS:
@@ -411,9 +411,15 @@ async def run_pipeline(
             started_at = time.monotonic()
             stats = await process_images_batch(vision_ids, pool, rework=rework)
             all_stats["vision"] = {**stats, "elapsed_s": round(time.monotonic() - started_at, 1)}
+            stats.setdefault("case_results", {})
 
             completed: set[str] = set()
-            status_counts: dict[str, int] = {"done": 0, "failed": 0, "needs_review": 0}
+            status_counts: dict[str, int] = {
+                "done": 0,
+                "failed": 0,
+                "needs_review": 0,
+                "no_images": 0,
+            }
             inconsistent_ids: list[str] = []
             api_case_results = stats.get("case_results", {})
             for cid in input_ids:
@@ -432,8 +438,26 @@ async def run_pipeline(
                     )
                 status_counts[status] = status_counts.get(status, 0) + 1
                 if cid in vision_ids:
-                    update_stage_status(progress, "vision", cid, status)
-                if status == "done":
+                    # no_images 是 Vision 的观测细分，但对 DAG 来说是可继续的终态，
+                    # 因此进度账本仍记录 done，避免下次任务选择器重复调度它。
+                    update_stage_status(
+                        progress,
+                        "vision",
+                        cid,
+                        "done" if status == "no_images" else status,
+                    )
+                if status == "no_images":
+                    # 无图是合法的终态：允许下游继续，但在 Vision 统计中明确标记为跳过，
+                    # 不把它伪装成一次成功的图片识别。
+                    stats["skipped"] = int(stats.get("skipped", 0)) + 1
+                    # all_stats 是在 API 调用后做的浅拷贝，整数不会随 stats 自动同步。
+                    all_stats["vision"]["skipped"] = stats["skipped"]
+                    stats["case_results"][cid] = {
+                        "status": "skipped",
+                        "reason": "案例没有可识别图片",
+                    }
+                    completed.add(cid)
+                elif status == "done":
                     completed.add(cid)
             all_stats["vision"].update(
                 case_status_counts=status_counts,
@@ -774,7 +798,8 @@ async def _db_vision_status(pool: asyncpg.Pool, support_id: str) -> str:
 
     判据：
       - kbd_entry 不存在 → 'failed'（异常，前置 IMPORT 失败）
-      - images_json 为空 → 'failed'（无图片案例不应进入 VISION 阶段）
+      - kbd_image 数量为 0 → 'no_images'（合法终态，不调用 Vision）
+      - 有图片但 images_json 为空 → 'failed'
       - 存在 seq 但 desc 为空或 Evidence.status=failed → 'failed'
       - Evidence 标记 partial/low_quality/needs_review → 'needs_review'
       - 所有 seq 的结构化质量通过（legacy 数据则 desc 非空）→ 'done'
@@ -802,9 +827,10 @@ async def _db_vision_status(pool: asyncpg.Pool, support_id: str) -> str:
         except json.JSONDecodeError:
             return "failed"
     img_count = row["img_count"]
-    # 无图片案例默认 done（与旧行为一致）
+    # 无图片案例是合法终态：不需要调用 Vision，但必须与“图片识别成功”区分，
+    # 这样批量日志和案例级状态不会产生误导。
     if img_count == 0:
-        return "done"
+        return "no_images"
     if not isinstance(images_json, list) or not images_json:
         return "failed"
     # 兼容旧格式：images_json 可能含非 dict 元素（list[str] 等遗留数据）。

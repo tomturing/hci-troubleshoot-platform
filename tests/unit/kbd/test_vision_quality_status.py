@@ -69,6 +69,19 @@ async def test_db_vision_status_rejects_invalid_jsonb_string():
 
 
 @pytest.mark.asyncio
+async def test_db_vision_status_marks_no_image_case_explicitly():
+    """无图片案例可继续下游，但不能伪装成完成了一次图片识别。"""
+    pool = AsyncMock()
+    pool.fetchrow.return_value = {
+        "kbd_id": 127,
+        "images_json": [],
+        "img_count": 0,
+    }
+
+    assert await _db_vision_status(pool, "39637") == "no_images"
+
+
+@pytest.mark.asyncio
 async def test_failed_only_does_not_retry_success_that_only_needs_human_review():
     pool = AsyncMock()
     pool.fetch.return_value = [{"support_id": "retryable"}]
