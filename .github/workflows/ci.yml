@@ -758,6 +758,75 @@ jobs:
         with:
           sarif_file: trivy-${{ matrix.service }}.sarif
 
+  # hci-sim 不属于 hci-platform-env 的业务镜像矩阵；它由本仓库的
+  # Argo Application 直接消费。main 发布后必须验证 GitOps 文件已经通过
+  # PR 固定到同一 digest。main ruleset 禁止 GITHUB_TOKEN 直接写入 main，
+  # 所以这里 fail-closed，不用隐式绕过审查的自动 push。
+  verify-hci-sim-gitops:
+    name: 校验 hci-sim immutable GitOps digest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [prepare, build-and-push]
+    if: |
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.build-and-push.result == 'success' &&
+      contains(needs.prepare.outputs.image_matrix, '"service":"hci-sim"') &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'workflow_dispatch' && (inputs.promote_target == 'dev' || inputs.promote_target == 'both'))
+      )
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: 配置 Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - name: 登录 GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 解析并校验 manifest digest
+        id: digest
+        env:
+          IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY}/hci-sim:${IMAGE_TAG}"
+          digest="$(docker buildx imagetools inspect "${image}" --format '{{.Manifest.Digest}}')"
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::未取得合法 OCI manifest digest：${digest}"
+            exit 1
+          fi
+          echo "image=${image}" >> "${GITHUB_OUTPUT}"
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "hci-sim image=${image} digest=${digest}"
+
+      - name: 校验 dev Argo Application digest
+        env:
+          HCI_SIM_DIGEST: ${{ steps.digest.outputs.digest }}
+          HCI_SIM_REPOSITORY: ghcr.io/${{ github.repository }}/hci-sim
+        run: |
+          set -euo pipefail
+          app_file="deploy/gitops/argo-apps/local/hci-sim-dev.yaml"
+          grep -Fq "repository: ${HCI_SIM_REPOSITORY}" "${app_file}" || {
+            echo "::error::Argo Application repository 未固定为 ${HCI_SIM_REPOSITORY}"
+            exit 1
+          }
+          grep -Fq "digest: \"${HCI_SIM_DIGEST}\"" "${app_file}" || {
+            echo "::error::GitOps digest 漂移：请通过 PR 将 ${app_file} 固定为 ${HCI_SIM_REPOSITORY}@${HCI_SIM_DIGEST}"
+            exit 1
+          }
+          echo "✅ Argo Application 已通过 PR 固定到 ${HCI_SIM_REPOSITORY}@${HCI_SIM_DIGEST}"
+
   # ─────────────────────────────────────────────────────────────────────────
   # db-migrate 镜像单独构建（仅 schema/extras/Dockerfile/脚本变更时触发）
   # 与 build-and-push 并行，互不阻塞
