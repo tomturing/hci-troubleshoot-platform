@@ -17,8 +17,8 @@ import (
 const requiredDatabaseName = "hci_sim"
 
 type Target struct {
-	URL       string
-	Database  string
+	URL        string
+	Database   string
 	Configured bool
 }
 

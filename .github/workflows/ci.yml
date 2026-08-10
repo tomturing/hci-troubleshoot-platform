@@ -454,6 +454,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: [changes, helm-validate]
+    # 只有 Helm 渲染成功并上传产物时才运行；如果上游因变更范围被跳过，
+    # 本检查也必须跳过，不能下载一个不存在的 artifact 再制造假失败。
     if: |
       always() &&
       (
@@ -461,7 +463,7 @@ jobs:
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'pull_request' && needs.changes.outputs.platform_helm == 'true')
       ) &&
-      needs.helm-validate.result != 'failure'
+      needs.helm-validate.result == 'success'
     steps:
       - name: 下载 Helm 渲染产物
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093

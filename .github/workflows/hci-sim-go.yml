@@ -119,7 +119,8 @@ jobs:
       - name: reject retired runtime markers
         run: |
           test ! -e hci-sim
-          ! rg -n 'HCI_BRIDGE_SIM_TARGETS|htp1\\.|FixtureManifestHash|command_pattern' hci_sim terminal_bridge
+          # GitHub-hosted runner 不保证安装 ripgrep；使用 POSIX grep 保持门禁自包含。
+          ! grep -RInE --exclude-dir=.git 'HCI_BRIDGE_SIM_TARGETS|htp1\\.|FixtureManifestHash|command_pattern' hci_sim terminal_bridge
       - name: lint and render Helm chart
         run: |
           helm lint deploy/helm/hci-sim
