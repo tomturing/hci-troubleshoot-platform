@@ -13,18 +13,21 @@ from typing import Any
 def load_acli_catalog() -> tuple[dict[str, Any], ...]:
     """读取仓库内的 aCLI 快照；读取失败时返回空快照并由 Resolver 给出 warning。"""
 
-    catalog_path = (
-        Path(__file__).resolve().parents[2]
-        / "agent-service"
-        / "app"
-        / "tools"
-        / "acli"
-        / "catalog"
-        / "acli_command_catalog.json"
+    backend_root = Path(__file__).resolve().parents[2]
+    # 源码树为 backend/agent-service/app，Agent 镜像将 agent-service 复制到
+    # /app，因此对应 /app/app。候选路径必须显式且有限，禁止向上递归搜索。
+    candidates = (
+        backend_root / "agent-service" / "app" / "tools" / "acli" / "catalog" / "acli_command_catalog.json",
+        backend_root / "app" / "tools" / "acli" / "catalog" / "acli_command_catalog.json",
     )
-    try:
-        data = json.loads(catalog_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    data: Any = None
+    for catalog_path in candidates:
+        try:
+            data = json.loads(catalog_path.read_text(encoding="utf-8"))
+            break
+        except (OSError, ValueError):
+            continue
+    if data is None:
         return ()
     commands = data.get("commands") if isinstance(data, dict) else None
     if not isinstance(commands, list):
