@@ -6,7 +6,9 @@
 Runtime 生成无法追踪的伪工单号。
 """
 
+import contextlib
 import json
+
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -107,10 +109,8 @@ async def create_test_run(request: Request) -> JSONResponse:
         "/v1/simulations/test-runs", runtime_payload, request.headers.get("Idempotency-Key")
     )
     if runtime_response.status_code >= 400:
-        try:
+        with contextlib.suppress(HTTPException):
             await _case_request("PUT", f"/{case_id}/close", {"close_reason": "abandon"})
-        except HTTPException:
-            pass
         return runtime_response
 
     runtime_body = _json_response_body(runtime_response)
