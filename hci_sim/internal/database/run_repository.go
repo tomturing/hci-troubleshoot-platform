@@ -23,17 +23,21 @@ var (
 // RunInput 是控制面创建 TestRun 时被冻结的字段集合。Lease 明文、SSH 密码和
 // 原始 Artifact 不属于该结构，也不能进入数据库。
 type RunInput struct {
-	ExternalID         string
-	SupportID          string
-	KBDRevision        int
-	Variant            string
-	BundleDigest       string
-	ExecutionMode      string
-	IdempotencyKey     string
-	RequestDigest      string
-	Deadline           time.Time
-	InputFingerprint   string
-	EnvironmentContext map[string]any
+	ExternalID          string
+	SupportID           string
+	KBDRevision         int
+	Variant             string
+	BundleDigest        string
+	BundleSchemaVersion string
+	BundleObjectURI     string
+	BundleObjectDigest  string
+	BundleSizeBytes     int64
+	ExecutionMode       string
+	IdempotencyKey      string
+	RequestDigest       string
+	Deadline            time.Time
+	InputFingerprint    string
+	EnvironmentContext  map[string]any
 }
 
 type RunRecord struct {
@@ -106,6 +110,32 @@ func (r *RunRepository) Create(ctx context.Context, input RunInput) (RunRecord, 
 		ON CONFLICT (input_fingerprint) DO UPDATE SET updated_at = now()
 	`, scenarioID, input.SupportID, input.KBDRevision, input.Variant, input.InputFingerprint); err != nil {
 		return RunRecord{}, fmt.Errorf("upsert hci_sim scenario: %w", err)
+	}
+	bundleID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(input.BundleDigest))
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO fixture.bundle
+			(id, scenario_id, revision, digest, schema_version, object_uri,
+			 object_digest, size_bytes, status, created_by)
+		VALUES ($1, $2, 1, $3, $4, $5, $6, $7, 'published', 'hci-sim-runtime')
+		ON CONFLICT (digest) DO NOTHING
+	`, bundleID, scenarioID, input.BundleDigest, input.BundleSchemaVersion,
+		input.BundleObjectURI, input.BundleObjectDigest, input.BundleSizeBytes); err != nil {
+		return RunRecord{}, fmt.Errorf("register hci_sim fixture bundle: %w", err)
+	}
+	var bundleMatches bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM fixture.bundle
+			WHERE digest = $1 AND scenario_id = $2 AND schema_version = $3
+			  AND object_uri = $4 AND object_digest = $5 AND size_bytes = $6
+			  AND status = 'published'
+		)
+	`, input.BundleDigest, scenarioID, input.BundleSchemaVersion, input.BundleObjectURI,
+		input.BundleObjectDigest, input.BundleSizeBytes).Scan(&bundleMatches); err != nil {
+		return RunRecord{}, fmt.Errorf("verify hci_sim fixture bundle: %w", err)
+	}
+	if !bundleMatches {
+		return RunRecord{}, errors.New("hci_sim fixture bundle registration conflict")
 	}
 
 	row := tx.QueryRow(ctx, `
@@ -510,7 +540,7 @@ func scanRun(row runScanner) (RunRecord, error) {
 }
 
 func validateRunInput(input RunInput) error {
-	if input.ExternalID == "" || input.SupportID == "" || input.KBDRevision < 1 || input.Variant == "" || input.BundleDigest == "" || input.ExecutionMode != "sim-ssh" || input.IdempotencyKey == "" || input.RequestDigest == "" || input.InputFingerprint == "" || input.Deadline.IsZero() || input.EnvironmentContext == nil {
+	if input.ExternalID == "" || input.SupportID == "" || input.KBDRevision < 1 || input.Variant == "" || input.BundleDigest == "" || input.BundleSchemaVersion == "" || input.BundleObjectURI == "" || input.BundleObjectDigest == "" || input.BundleSizeBytes < 1 || input.ExecutionMode != "sim-ssh" || input.IdempotencyKey == "" || input.RequestDigest == "" || input.InputFingerprint == "" || input.Deadline.IsZero() || input.EnvironmentContext == nil {
 		return errors.New("invalid hci_sim run input")
 	}
 	return nil

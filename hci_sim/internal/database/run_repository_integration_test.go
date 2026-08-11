@@ -32,17 +32,21 @@ func TestRunRepositoryPostgresIdempotencyAndCAS(t *testing.T) {
 	now := time.Now().UTC()
 	suffix := fmt.Sprintf("%d", now.UnixNano())
 	input := RunInput{
-		ExternalID:         "run-integration-" + suffix,
-		SupportID:          "27123",
-		KBDRevision:        1,
-		Variant:            "positive-realistic",
-		BundleDigest:       "sha256:d7ddfb849cb1a3d0879af2a6887b0c77506632bfa7c8261cf656305d06e30bfa",
-		ExecutionMode:      "sim-ssh",
-		IdempotencyKey:     "integration-idempotency-" + suffix,
-		RequestDigest:      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		Deadline:           now.Add(time.Hour),
-		InputFingerprint:   "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		EnvironmentContext: map[string]any{"test_run_id": "run-integration-" + suffix, "support_id": "27123", "kbd_revision": 1, "bundle_digest": "sha256:d7ddfb849cb1a3d0879af2a6887b0c77506632bfa7c8261cf656305d06e30bfa", "execution_mode": "sim-ssh"},
+		ExternalID:          "run-integration-" + suffix,
+		SupportID:           "27123",
+		KBDRevision:         1,
+		Variant:             "positive-realistic",
+		BundleDigest:        "sha256:d7ddfb849cb1a3d0879af2a6887b0c77506632bfa7c8261cf656305d06e30bfa",
+		BundleSchemaVersion: "2.0",
+		BundleObjectURI:     "embedded://test/fixture-manifest.json",
+		BundleObjectDigest:  "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+		BundleSizeBytes:     1024,
+		ExecutionMode:       "sim-ssh",
+		IdempotencyKey:      "integration-idempotency-" + suffix,
+		RequestDigest:       "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Deadline:            now.Add(time.Hour),
+		InputFingerprint:    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		EnvironmentContext:  map[string]any{"test_run_id": "run-integration-" + suffix, "support_id": "27123", "kbd_revision": 1, "bundle_digest": "sha256:d7ddfb849cb1a3d0879af2a6887b0c77506632bfa7c8261cf656305d06e30bfa", "execution_mode": "sim-ssh"},
 	}
 	created, err := repository.Create(ctx, input)
 	if err != nil {
@@ -50,6 +54,10 @@ func TestRunRepositoryPostgresIdempotencyAndCAS(t *testing.T) {
 	}
 	if created.ExternalID != input.ExternalID || created.Status != "requested" || created.Version != 1 {
 		t.Fatalf("unexpected created run: %+v", created)
+	}
+	var bundleStatus string
+	if err := pool.QueryRow(ctx, `SELECT status FROM fixture.bundle WHERE digest = $1`, input.BundleDigest).Scan(&bundleStatus); err != nil || bundleStatus != "published" {
+		t.Fatalf("published bundle metadata was not registered atomically: status=%q err=%v", bundleStatus, err)
 	}
 	replayed, err := repository.Create(ctx, input)
 	if err != nil {
@@ -76,7 +84,6 @@ func TestRunRepositoryPostgresIdempotencyAndCAS(t *testing.T) {
 	leasedInput := input
 	leasedInput.ExternalID = input.ExternalID + "-lease"
 	leasedInput.IdempotencyKey = input.IdempotencyKey + "-lease"
-	leasedInput.InputFingerprint = input.InputFingerprint[:len(input.InputFingerprint)-1] + "c"
 	createdLeaseRun, err := repository.Create(ctx, leasedInput)
 	if err != nil {
 		t.Fatalf("create lease run: %v", err)
@@ -118,6 +125,8 @@ func TestRunRepositoryPostgresEventResultAndOutbox(t *testing.T) {
 	input := RunInput{
 		ExternalID: "run-event-" + suffix, SupportID: "27123", KBDRevision: 1,
 		Variant: "positive-realistic", BundleDigest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		BundleSchemaVersion: "2.0", BundleObjectURI: "embedded://test/event-fixture.json",
+		BundleObjectDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", BundleSizeBytes: 2048,
 		ExecutionMode: "sim-ssh", IdempotencyKey: "event-idempotency-" + suffix,
 		RequestDigest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 		Deadline:      time.Now().UTC().Add(time.Hour), InputFingerprint: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",

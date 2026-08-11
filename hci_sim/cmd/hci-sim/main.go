@@ -218,7 +218,9 @@ func runServer() error {
 		if runRepository != nil {
 			record, persistErr := runRepository.Create(r.Context(), database.RunInput{
 				ExternalID: runID, SupportID: request.KBDID, KBDRevision: router.KBD().Revision,
-				Variant: fixtureVariant, BundleDigest: router.BundleDigest(), ExecutionMode: "sim-ssh",
+				Variant: fixtureVariant, BundleDigest: router.BundleDigest(),
+				BundleSchemaVersion: router.SchemaVersion(), BundleObjectURI: "embedded://hci-sim/fixture-manifest.json",
+				BundleObjectDigest: router.ManifestHash(), BundleSizeBytes: router.ManifestSize(), ExecutionMode: "sim-ssh",
 				IdempotencyKey: idempotencyKey, RequestDigest: requestDigest, Deadline: now.Add(15 * time.Minute),
 				InputFingerprint:   inputFingerprint,
 				EnvironmentContext: environmentContext,

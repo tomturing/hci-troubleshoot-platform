@@ -39,6 +39,8 @@ func TestReconcilePostgresNoFalseSuccessAndWebhookAck(t *testing.T) {
 	input := database.RunInput{
 		ExternalID: "run-reconcile-" + suffix, SupportID: "27123", KBDRevision: 1,
 		Variant: "positive-realistic", BundleDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		BundleSchemaVersion: "2.0", BundleObjectURI: "embedded://test/reconcile-fixture.json",
+		BundleObjectDigest: "sha256:9999999999999999999999999999999999999999999999999999999999999999", BundleSizeBytes: 1024,
 		ExecutionMode: "sim-ssh", IdempotencyKey: "reconcile-" + suffix,
 		RequestDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		Deadline:      time.Now().UTC().Add(time.Hour), InputFingerprint: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
