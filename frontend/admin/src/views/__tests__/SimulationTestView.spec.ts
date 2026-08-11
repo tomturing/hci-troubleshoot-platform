@@ -157,6 +157,44 @@ describe('SimulationTestView 可恢复状态机', () => {
     expect(wrapper.text()).toContain('已闭环')
   })
 
+  it('呈现 S0 稳定分类选项并按 Customer UI 协议推进到 S1', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock
+      .mockResolvedValueOnce(response(capabilityBody))
+      .mockResolvedValueOnce(response(buildBody))
+      .mockResolvedValueOnce(response({ test_run_id: 'run-27123', case_id: 'Q2026081100002' }))
+      .mockResolvedValueOnce(response({ conversation_id: '00000000-0000-0000-0000-000000027124' }, 201))
+      .mockResolvedValueOnce(sse([
+        'data: {"content":"请确认分类"}\n\n',
+        'event: metadata\ndata: {"kind":"choice_options","requestId":"triage-27123","options":[{"optionId":"虚拟机-003","name":"虚拟机-003 虚拟机开机失败"},{"optionId":"__none__","name":"以上不是，重新描述"}]}\n\n',
+        'data: [DONE]\n\n',
+      ]))
+      .mockResolvedValueOnce(sse(['data: {"content":"已进入故障定位"}\n\n', 'data: [DONE]\n\n']))
+
+    const wrapper = mountView()
+    await build(wrapper)
+    await openAndCreateCase(wrapper)
+    sockets[0].onopen?.()
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'ssh_connected' }) })
+    await flushPromises()
+
+    const choice = wrapper.findAll('button').find((button) => button.text() === '虚拟机-003 虚拟机开机失败')
+    expect(choice).toBeTruthy()
+    await choice!.trigger('click')
+    await flushPromises()
+
+    const secondMessageCall = fetchMock.mock.calls.filter(([url]) => String(url).includes('/message'))[1]
+    const payload = JSON.parse(String((secondMessageCall[1] as RequestInit).body))
+    expect(payload.metadata).toMatchObject({
+      kind: 'intent_selection_response',
+      selectedOptionId: '虚拟机-003',
+      selectedCategoryCode: '虚拟机-003',
+      sourceRequestId: 'triage-27123',
+      execution_mode: 'sim-ssh',
+      test_run_id: 'run-27123',
+    })
+  })
+
   it('Result 失败后只重试 Result，不重复创建工单、WebSocket 或 Agent 执行', async () => {
     const fetchMock = vi.mocked(fetch)
     fetchMock

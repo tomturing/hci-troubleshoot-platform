@@ -213,6 +213,7 @@ func runServer() error {
 		}
 		requestDigest := digestValue(map[string]any{"kbd_id": request.KBDID, "variant": fixtureVariant, "bundle_digest": router.BundleDigest()})
 		inputFingerprint := digestValue(map[string]any{"support_id": request.KBDID, "kbd_revision": router.KBD().Revision, "variant": fixtureVariant, "bundle_digest": router.BundleDigest()})
+		environmentContext := simulationEnvironmentContext(router, runID, strings.TrimSpace(request.CaseID), fixtureVariant)
 		runVersion := 1
 		if runRepository != nil {
 			record, persistErr := runRepository.Create(r.Context(), database.RunInput{
@@ -220,7 +221,7 @@ func runServer() error {
 				Variant: fixtureVariant, BundleDigest: router.BundleDigest(), ExecutionMode: "sim-ssh",
 				IdempotencyKey: idempotencyKey, RequestDigest: requestDigest, Deadline: now.Add(15 * time.Minute),
 				InputFingerprint:   inputFingerprint,
-				EnvironmentContext: map[string]any{"test_run_id": runID, "case_id": strings.TrimSpace(request.CaseID), "support_id": request.KBDID, "kbd_revision": router.KBD().Revision, "bundle_digest": router.BundleDigest(), "execution_mode": "sim-ssh", "virtual_node_id": "SIM-HCI-NODE-01", "container": "host", "authority_scope": env("HCI_SIM_AUTHORITY_SCOPE", "runtime_fixture"), "active_revision": envInt("HCI_SIM_ACTIVE_REVISION", router.KBD().Revision)},
+				EnvironmentContext: environmentContext,
 			})
 			if persistErr != nil {
 				log.Printf("hci-sim run persistence failed: %v", persistErr)
@@ -258,7 +259,7 @@ func runServer() error {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		environmentContext := map[string]any{"test_run_id": runID, "case_id": strings.TrimSpace(request.CaseID), "support_id": request.KBDID, "kbd_revision": router.KBD().Revision, "bundle_digest": router.BundleDigest(), "execution_mode": "sim-ssh", "virtual_node_id": "SIM-HCI-NODE-01", "container": "host", "authority_scope": env("HCI_SIM_AUTHORITY_SCOPE", "runtime_fixture"), "active_revision": envInt("HCI_SIM_ACTIVE_REVISION", router.KBD().Revision)}
+		environmentContext = simulationEnvironmentContext(router, runID, strings.TrimSpace(request.CaseID), fixtureVariant)
 		_ = json.NewEncoder(w).Encode(map[string]any{"test_run_id": runID, "case_id": strings.TrimSpace(request.CaseID), "support_id": request.KBDID, "bundle_digest": router.BundleDigest(), "synthetic": router.IsSynthetic(), "environment_context": environmentContext, "connection": map[string]any{"host": env("HCI_SIM_SSH_HOST", "hci-sim.hci-sim-dev.svc"), "port": strings.TrimPrefix(env("HCI_SIM_SSH_LISTEN", ":2222"), ":"), "username": "sim", "auth_type": "lease", "password": token, "execution_mode": "sim-ssh", "test_run_id": runID}})
 	})
 	mux.HandleFunc("/v1/simulations/test-runs", func(w http.ResponseWriter, r *http.Request) {
@@ -325,12 +326,52 @@ func runServer() error {
 		_ = json.NewEncoder(w).Encode(map[string]any{"case_id": strings.TrimSpace(request.CaseID), "test_run_id": connectionRunID, "status": status, "version": version, "execution_mode": "sim-ssh"})
 	})
 	mux.HandleFunc("/v1/simulations/test-runs/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || !controlAuthorized(r) {
+		if !controlAuthorized(r) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		const suffix = "/result"
 		path := strings.TrimPrefix(r.URL.Path, "/v1/simulations/test-runs/")
+		const contextSuffix = "/context"
+		if r.Method == http.MethodGet && strings.HasSuffix(path, contextSuffix) {
+			externalID := strings.TrimSuffix(path, contextSuffix)
+			caseID := strings.TrimSpace(r.URL.Query().Get("case_id"))
+			if externalID == "" || caseID == "" || runRepository == nil {
+				http.Error(w, "test_run_id, case_id and hci_sim persistence are required", http.StatusBadRequest)
+				return
+			}
+			record, getErr := runRepository.Get(r.Context(), externalID)
+			if getErr != nil {
+				http.Error(w, "test_run_not_found", http.StatusNotFound)
+				return
+			}
+			var contextValue map[string]any
+			if json.Unmarshal(record.EnvironmentContext, &contextValue) != nil || contextValue == nil {
+				http.Error(w, "test_run_context_invalid", http.StatusConflict)
+				return
+			}
+			if record.ExecutionMode != "sim-ssh" || contextValue["execution_mode"] != "sim-ssh" || strings.TrimSpace(fmt.Sprint(contextValue["case_id"])) != caseID {
+				http.Error(w, "test_run_context_binding_mismatch", http.StatusConflict)
+				return
+			}
+			if time.Now().UTC().After(record.Deadline) || terminalRunStatus(record.Status) {
+				http.Error(w, "test_run_context_not_active", http.StatusConflict)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"test_run_id": record.ExternalID,
+				"case_id":     caseID,
+				"status":      record.Status,
+				"version":     record.Version,
+				"context":     contextValue,
+			})
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		const suffix = "/result"
 		if !strings.HasSuffix(path, suffix) || strings.TrimSuffix(path, suffix) == "" {
 			http.NotFound(w, r)
 			return
@@ -395,6 +436,43 @@ func runServer() error {
 	defer cancel()
 	_ = sshServer.Close()
 	return httpServer.Shutdown(shutdownCtx)
+}
+
+func simulationEnvironmentContext(router *fixture.Router, runID, caseID, variant string) map[string]any {
+	components := make([]string, 0)
+	for _, component := range strings.Split(env("HCI_SIM_COMPONENTS", "虚拟机"), ",") {
+		if value := strings.TrimSpace(component); value != "" {
+			components = append(components, value)
+		}
+	}
+	return map[string]any{
+		"simulation":      true,
+		"execution_mode":  "sim-ssh",
+		"test_run_id":     runID,
+		"case_id":         caseID,
+		"scenario_id":     "kbd-" + router.KBD().SupportID + "-" + variant,
+		"support_id":      router.KBD().SupportID,
+		"kbd_revision":    router.KBD().Revision,
+		"bundle_digest":   router.BundleDigest(),
+		"product":         env("HCI_SIM_PRODUCT", "HCI"),
+		"version":         env("HCI_SIM_PRODUCT_VERSION", "6.11.1_R1"),
+		"components":      components,
+		"topology":        []string{},
+		"virtual_node_id": "SIM-HCI-NODE-01",
+		"node_ip":         env("HCI_SIM_SSH_HOST", "hci-sim.hci-sim-dev.svc"),
+		"container":       "host",
+		"authority_scope": env("HCI_SIM_AUTHORITY_SCOPE", "runtime_fixture"),
+		"active_revision": envInt("HCI_SIM_ACTIVE_REVISION", router.KBD().Revision),
+	}
+}
+
+func terminalRunStatus(status string) bool {
+	switch status {
+	case "passed", "failed", "inconclusive", "cancelled", "expired":
+		return true
+	default:
+		return false
+	}
 }
 
 func runLease(args []string) error {

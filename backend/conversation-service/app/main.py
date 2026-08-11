@@ -33,6 +33,7 @@ from app.routes import (
 from app.routes import audit as audit_route
 from app.services.agent_client import AgentClient
 from app.services.environment_client import EnvironmentClient
+from app.services.simulation_context_client import SimulationContextClient
 from app.services.sse_pusher import SSEPusher
 
 # 在应用创建前初始化 OpenTelemetry
@@ -116,6 +117,17 @@ async def lifespan(app: FastAPI):
         base_url=settings.CASE_SERVICE_URL,
         timeout_sec=settings.ENVIRONMENT_CONTEXT_TIMEOUT_SEC,
     )
+    simulation_context_client = SimulationContextClient(
+        base_url=settings.HCI_SIM_URL,
+        # hci-sim and platform internal calls share the same managed Secret in
+        # current environments; the dedicated variable remains the override.
+        control_token=settings.HCI_SIM_CONTROL_TOKEN or settings.INTERNAL_API_TOKEN,
+        timeout_sec=settings.HCI_SIM_CONTEXT_TIMEOUT_SEC,
+    )
+    logger.info(
+        event="simulation_context_client_initialized",
+        message=f"Simulation context client initialized: {settings.HCI_SIM_URL or 'disabled'}",
+    )
     logger.info(
         event="environment_client_initialized",
         message=f"Environment client 已初始化，目标: {settings.CASE_SERVICE_URL}",
@@ -140,6 +152,7 @@ async def lifespan(app: FastAPI):
     app.state.scheduler_client = scheduler_client
     app.state.kb_client = kb_client
     app.state.environment_client = environment_client
+    app.state.simulation_context_client = simulation_context_client
     app.state.agent_client = agent_client
 
     # 注入路由依赖
@@ -150,6 +163,7 @@ async def lifespan(app: FastAPI):
         kb_client,
         environment_client,
         agent_client=agent_client,
+        sim_context_client=simulation_context_client,
     )
     evaluate.set_database_manager(database_manager)
     audit_route.set_audit_database_manager(database_manager)

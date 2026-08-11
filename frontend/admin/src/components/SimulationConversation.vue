@@ -21,6 +21,11 @@ interface ConversationMessage {
   status?: 'running' | 'passed' | 'failed' | 'blocked' | 'pending'
 }
 
+interface ChoiceOption {
+  optionId: string
+  name: string
+}
+
 const props = defineProps<{
   caseId: string
   testRunId: string
@@ -257,6 +262,18 @@ async function handleStreamEvent(type: string, data: string, assistant: Conversa
     return
   }
   if (type === 'error') throw new Error(String(event.message || 'Agent 返回错误'))
+  if (type === 'metadata') {
+    if (event.kind === 'choice_options' && Array.isArray(event.options)) {
+      addMessage({
+        role: 'assistant',
+        kind: 'interactive',
+        content: '请选择最符合当前现象的故障分类',
+        detail: event,
+        status: 'pending',
+      })
+    }
+    return
+  }
   if (type === 'agent_exec_command') {
     await executeAgentCommand(event)
     return
@@ -291,7 +308,35 @@ async function handleStreamEvent(type: string, data: string, assistant: Conversa
   }
 }
 
-async function sendMessage(content?: string) {
+function choiceOptions(message: ConversationMessage): ChoiceOption[] {
+  if (!Array.isArray(message.detail?.options)) return []
+  return message.detail.options.flatMap((value) => {
+    if (!value || typeof value !== 'object') return []
+    const option = value as Record<string, unknown>
+    const optionId = String(option.optionId || '').trim()
+    const name = String(option.name || '').trim()
+    return optionId && name ? [{ optionId, name }] : []
+  })
+}
+
+async function selectIntent(message: ConversationMessage, option: ChoiceOption) {
+  if (message.status !== 'pending' || streaming.value) return
+  const categoryMatch = option.name.match(/^([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+(.+)$/)
+  const isNone = option.optionId === '__none__'
+  const categoryCode = !isNone && !/^\d+$/.test(option.optionId) ? option.optionId : categoryMatch?.[1]
+  message.status = 'passed'
+  message.detail = { ...message.detail, selectedOptionId: option.optionId }
+  await sendMessage(option.name, {
+    kind: 'intent_selection_response',
+    selectedOptionId: option.optionId,
+    selectedCategoryCode: categoryCode,
+    selectedCategoryName: categoryMatch?.[2],
+    isNoneOfAbove: isNone,
+    sourceRequestId: message.detail?.requestId,
+  })
+}
+
+async function sendMessage(content?: string, metadata: Record<string, unknown> = {}) {
   const text = (content ?? input.value).trim()
   if (!text || !ready.value || streaming.value) return
   input.value = ''
@@ -307,7 +352,7 @@ async function sendMessage(content?: string) {
         role: 'user',
         content: text,
         assistant_type: 'htp-agent',
-        metadata: { execution_mode: 'sim-ssh', test_run_id: props.testRunId },
+        metadata: { ...metadata, execution_mode: 'sim-ssh', test_run_id: props.testRunId },
       }),
     })
     await consumeConversationStream(response, (event) => handleStreamEvent(event.type, event.data, assistant))
@@ -384,6 +429,18 @@ onBeforeUnmount(() => {
             </div>
             <div v-if="message.detail?.output" class="command-output">{{ message.detail.output }}</div>
           </div>
+          <div v-else-if="message.kind === 'interactive'" class="interactive-card">
+            <strong>{{ message.content }}</strong>
+            <div v-if="choiceOptions(message).length" class="choice-options">
+              <el-button
+                v-for="option in choiceOptions(message)"
+                :key="option.optionId"
+                :type="message.detail?.selectedOptionId === option.optionId ? 'primary' : 'default'"
+                :disabled="message.status !== 'pending' || streaming"
+                @click="selectIntent(message, option)"
+              >{{ option.name }}</el-button>
+            </div>
+          </div>
           <div v-else-if="message.kind === 'tool'" class="event-card">
             <strong>{{ message.content }}</strong><el-tag size="small" :type="message.status === 'failed' ? 'danger' : message.status === 'passed' ? 'success' : 'info'">{{ message.status }}</el-tag>
           </div>
@@ -411,6 +468,9 @@ onBeforeUnmount(() => {
 .markdown :deep(p:last-child) { margin-bottom: 0; }.markdown :deep(pre) { overflow: auto; padding: 10px; border-radius: 6px; background: #18212b; color: #e6edf3; }
 .command-card pre { margin: 8px 0; overflow: auto; padding: 10px; border-radius: 6px; background: #18212b; color: #e6edf3; }.card-caption { color: #606266; font-size: 12px; }.approval { margin-top: 10px; }.command-output { max-height: 180px; overflow: auto; white-space: pre-wrap; padding: 8px; background: #f5f7fa; font-family: monospace; font-size: 12px; }
 .event-card { display: flex; gap: 12px; align-items: center; }.thinking-card { color: #606266; font-size: 13px; }.status-failed { border-left: 3px solid #f56c6c; }.status-passed.kind-command { border-left: 3px solid #67c23a; }
+.interactive-card { display: grid; gap: 10px; padding: 12px; border: 1px solid #c6e2ff; border-radius: 6px; background: #ecf5ff; }
+.choice-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.choice-options .el-button { height: auto; min-height: 34px; margin-left: 0; white-space: normal; text-align: left; }
 .composer { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 12px; padding: 14px 18px; border-top: 1px solid #ebeef5; background: #fff; }
 @media (max-width: 760px) { .conversation-header { align-items: flex-start; gap: 8px; flex-direction: column; }.message-list { padding: 16px 10px; }.message-body { max-width: 88%; }.composer { grid-template-columns: 1fr; } }
 </style>

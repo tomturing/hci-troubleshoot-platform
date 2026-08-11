@@ -27,6 +27,7 @@ from ..repositories.sop_execution_repository import SopExecutionRepository
 from .agent_client import AgentClient
 from .conversation_manager import S0_NONE_OPTION_ID, ConversationManager
 from .environment_client import EnvironmentClient
+from .simulation_context_client import SimulationContextClient, SimulationContextError
 from .sse_queue import LogAuditService
 
 logger = get_logger("conversation-service")
@@ -170,6 +171,7 @@ class ConversationService:
         environment_client: EnvironmentClient | None = None,
         session_factory=None,
         agent_client: AgentClient | None = None,  # T1-6: agent-service HTTP 客户端
+        simulation_context_client: SimulationContextClient | None = None,
     ):
         self.repository = repository
         self.ai_registry = ai_registry
@@ -183,6 +185,7 @@ class ConversationService:
         self._conversation_manager = ConversationManager()
         # T1-6: agent-service 客户端（可选，None 时保持原有直接调用 ai_registry 的路径）
         self._agent_client: AgentClient | None = agent_client
+        self.simulation_context_client = simulation_context_client
 
     async def create_conversation(
         self,
@@ -426,7 +429,31 @@ class ConversationService:
 
             # 2.6 【修复】获取环境上下文信息（Segment 4 数据）
             context_info: dict | None = None
-            if current_stage in ("S0", "S1", "S2", "S3", "S4") and self.environment_client:
+            execution_mode = str((metadata or {}).get("execution_mode") or "").strip()
+            if current_stage in ("S0", "S1", "S2", "S3", "S4") and execution_mode == "sim-ssh":
+                test_run_id = str((metadata or {}).get("test_run_id") or "").strip()
+                if self.simulation_context_client is None:
+                    logger.error(
+                        event="simulation_context_client_missing",
+                        message="sim-ssh request blocked because the authoritative context client is unavailable",
+                        case_id=case_id,
+                        test_run_id=test_run_id,
+                    )
+                    yield "仿真上下文服务未配置，已阻止 Agent 启动。"
+                    return
+                try:
+                    context_info = await self.simulation_context_client.get_active_context(test_run_id, case_id)
+                except SimulationContextError as exc:
+                    logger.warning(
+                        event="simulation_context_load_failed",
+                        message="sim-ssh request blocked because TestRun context is unavailable or invalid",
+                        case_id=case_id,
+                        test_run_id=test_run_id,
+                        reason=str(exc),
+                    )
+                    yield f"仿真上下文校验失败（{exc}），已阻止 Agent 启动。"
+                    return
+            elif current_stage in ("S0", "S1", "S2", "S3", "S4") and self.environment_client:
                 if settings.USE_RAW_ENVIRONMENT_CONTEXT:
                     raw_envs = await self.environment_client.get_raw_environments(case_id)
                     if raw_envs:
