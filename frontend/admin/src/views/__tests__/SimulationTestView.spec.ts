@@ -5,21 +5,47 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import SimulationTestView from '../SimulationTestView.vue'
 
 function response(body: unknown, status = 200) {
-  return { ok: status >= 200 && status < 300, status, json: async () => body } as Response
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function sse(frames: string[]) {
+  const encoder = new TextEncoder()
+  return new Response(new ReadableStream({
+    start(controller) {
+      for (const frame of frames) controller.enqueue(encoder.encode(frame))
+      controller.close()
+    },
+  }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
 }
 
 type SocketHarness = {
+  readyState: number
   onopen: (() => void) | null
   onmessage: ((event: { data: string }) => void) | null
   sent: string[]
 }
 
-describe('SimulationTestView P0 状态机', () => {
+const capabilityBody = {
+  support_id: '27123', requested_revision: 24, runtime_revision: 1,
+  bundle_digest: 'sha256:test', bundle_status: 'published', authority_scope: 'dev_golden',
+  buildable: true, capability_gap: ['kbd_revision_mismatch'],
+}
+const buildBody = {
+  test_run_id: 'run-27123',
+  environment_context: { test_run_id: 'run-27123', support_id: '27123', kbd_revision: 1, case_id: '' },
+  connection: { host: 'hci-sim', port: 2222, username: 'sim', password: 'htp2.test', execution_mode: 'sim-ssh', test_run_id: 'run-27123' },
+}
+
+describe('SimulationTestView 可恢复状态机', () => {
   let sockets: SocketHarness[]
 
   beforeEach(() => {
     sockets = []
     localStorage.clear()
+    document.body.innerHTML = ''
     vi.restoreAllMocks()
     vi.stubGlobal('fetch', vi.fn())
     class TestWebSocket {
@@ -33,66 +59,159 @@ describe('SimulationTestView P0 状态机', () => {
       sent: string[] = []
       constructor() { sockets.push(this) }
       send(payload: string) { this.sent.push(payload) }
-      close() { this.onclose?.() }
+      close() { this.readyState = 3; this.onclose?.() }
     }
     vi.stubGlobal('WebSocket', TestWebSocket)
   })
 
-  it('环境构建成功后，开始测试会打开工单步骤而不是静默展开日志', async () => {
-    const fetchMock = vi.mocked(fetch)
-    fetchMock
-      .mockResolvedValueOnce(response({ support_id: '27123', requested_revision: 24, runtime_revision: 1, bundle_digest: 'sha256:test', bundle_status: 'published', authority_scope: 'dev_golden', buildable: true, capability_gap: ['kbd_revision_mismatch'] }))
-      .mockResolvedValueOnce(response({ test_run_id: 'run-27123', environment_context: { test_run_id: 'run-27123', support_id: '27123', kbd_revision: 1, case_id: '' }, connection: { host: 'hci-sim', port: 2222, username: 'sim', password: 'htp2.test', execution_mode: 'sim-ssh', test_run_id: 'run-27123' } }))
+  function mountView() {
+    return mount(SimulationTestView, {
+      attachTo: document.body,
+      global: { plugins: [ElementPlus] },
+    })
+  }
 
-    const wrapper = mount(SimulationTestView, { global: { plugins: [ElementPlus] } })
+  function clickDocumentButton(label: string) {
+    const button = Array.from(document.querySelectorAll('button')).find((item) => item.textContent?.trim() === label)
+    if (!button) throw new Error(`找不到按钮：${label}`)
+    ;(button as HTMLButtonElement).click()
+  }
+
+  function setDocumentInput(selector: string, value: string) {
+    const input = document.querySelector(selector) as HTMLInputElement | HTMLTextAreaElement | null
+    if (!input) throw new Error(`找不到输入框：${selector}`)
+    input.value = value
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+
+  async function build(wrapper: ReturnType<typeof mountView>) {
     await wrapper.get('input').setValue('27123')
-    const buttons = wrapper.findAll('button')
-    await buttons.find((button) => button.text() === '环境构建')?.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === '环境构建')!.trigger('click')
     await flushPromises()
-    await buttons.find((button) => button.text() === '开始测试')?.trigger('click')
+  }
+
+  async function openAndCreateCase(wrapper: ReturnType<typeof mountView>) {
+    clickDocumentButton('开始测试')
+    await flushPromises()
+    setDocumentInput('.case-form input', 'KBD 27123 仿真验证')
+    setDocumentInput('.case-form textarea', '请诊断启动虚拟机失败并验证关键信号')
+    clickDocumentButton('创建工单并进入测试')
+    await flushPromises()
+  }
+
+  it('以两个显式阶段呈现，并且开始测试只打开工单步骤', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock.mockResolvedValueOnce(response(capabilityBody)).mockResolvedValueOnce(response(buildBody))
+    const wrapper = mountView()
+    await build(wrapper)
+    clickDocumentButton('开始测试')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('创建仿真测试工单')
+    expect(wrapper.text()).toContain('环境构建')
+    expect(wrapper.text()).toContain('开始测试')
+    expect(document.body.textContent).toContain('创建工单并进入测试')
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/test-runs'))).toBe(false)
   })
 
   it('能力预检阻断时不发送环境构建请求，并展示结构化差距', async () => {
     const fetchMock = vi.mocked(fetch)
-    fetchMock.mockResolvedValueOnce(response({ support_id: '23821', requested_revision: 2, runtime_revision: 1, bundle_digest: '', bundle_status: 'missing', authority_scope: 'runtime_fixture', buildable: false, capability_gap: ['no_published_immutable_bundle'] }))
-    const wrapper = mount(SimulationTestView, { global: { plugins: [ElementPlus] } })
+    fetchMock.mockResolvedValueOnce(response({ ...capabilityBody, support_id: '23821', bundle_status: 'missing', buildable: false, capability_gap: ['no_published_immutable_bundle'] }))
+    const wrapper = mountView()
     await wrapper.get('input').setValue('23821')
-    await wrapper.findAll('button').find((button) => button.text() === '环境构建')?.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === '环境构建')!.trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('no_published_immutable_bundle')
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('exec_result 缺少数字 exit_code 时按协议违约失败，不兼容旧 Bridge', async () => {
+  it('非安全 HTTP 环境没有 crypto.subtle 时仍由 Gateway 完成 Result', async () => {
+    vi.stubGlobal('crypto', {})
     const fetchMock = vi.mocked(fetch)
     fetchMock
-      .mockResolvedValueOnce(response({ support_id: '27123', requested_revision: 24, runtime_revision: 1, bundle_digest: 'sha256:test', bundle_status: 'published', authority_scope: 'dev_golden', buildable: true, capability_gap: ['kbd_revision_mismatch'] }))
-      .mockResolvedValueOnce(response({ test_run_id: 'run-27123', environment_context: { test_run_id: 'run-27123', support_id: '27123', kbd_revision: 1, case_id: '' }, connection: { host: 'hci-sim', port: 2222, username: 'sim', password: 'htp2.test', execution_mode: 'sim-ssh', test_run_id: 'run-27123' } }))
+      .mockResolvedValueOnce(response(capabilityBody))
+      .mockResolvedValueOnce(response(buildBody))
       .mockResolvedValueOnce(response({ test_run_id: 'run-27123', case_id: 'Q2026081100001' }))
+      .mockResolvedValueOnce(response({ conversation_id: '00000000-0000-0000-0000-000000027123' }, 201))
+      .mockResolvedValueOnce(sse(['event: agent_exec_command\ndata: {"execId":"exec-1","command":"acli system lsof","riskLevel":1}\n\n', 'event: message\ndata: {"content":"诊断完成"}\n\n', 'data: [DONE]\n\n']))
+      .mockResolvedValueOnce(response({ status: 'accepted' }))
+      .mockResolvedValueOnce(response({ status: 'passed' }))
 
-    const wrapper = mount(SimulationTestView, { global: { plugins: [ElementPlus] } })
-    await wrapper.get('input').setValue('27123')
-    await wrapper.findAll('button').find((button) => button.text() === '环境构建')?.trigger('click')
-    await flushPromises()
-    await wrapper.findAll('button').find((button) => button.text() === '开始测试')?.trigger('click')
-    await flushPromises()
-    await wrapper.find('.case-form input').setValue('严格协议验证')
-    await wrapper.find('.case-form textarea').setValue('缺少退出码必须失败')
-    await wrapper.findAll('button').find((button) => button.text() === '连接 SSH 并创建工单')?.trigger('click')
-    await flushPromises()
-
+    const wrapper = mountView()
+    await build(wrapper)
+    await openAndCreateCase(wrapper)
     expect(sockets).toHaveLength(1)
     sockets[0].onopen?.()
+    const connect = JSON.parse(sockets[0].sent[0])
+    expect(connect.password).toBe('htp2.test')
     sockets[0].onmessage?.({ data: JSON.stringify({ type: 'ssh_connected' }) })
-    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'exec_result', case_id: 'Q2026081100001' }) })
+    await flushPromises()
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'exec_result', exec_id: 'exec-1', exit_code: 0, stdout: 'ok' }) })
+    await flushPromises()
+
+    const resultCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/test-runs/run-27123/result'))
+    expect(resultCall).toBeTruthy()
+    const resultPayload = JSON.parse(String((resultCall![1] as RequestInit).body))
+    expect(resultPayload.report_summary).toMatchObject({ case_id: 'Q2026081100001', agent_stream_completed: true })
+    expect(resultPayload).not.toHaveProperty('report_digest')
+    expect(wrapper.text()).toContain('已闭环')
+  })
+
+  it('Result 失败后只重试 Result，不重复创建工单、WebSocket 或 Agent 执行', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock
+      .mockResolvedValueOnce(response(capabilityBody))
+      .mockResolvedValueOnce(response(buildBody))
+      .mockResolvedValueOnce(response({ test_run_id: 'run-27123', case_id: 'Q2026081100001' }))
+      .mockResolvedValueOnce(response({ conversation_id: '00000000-0000-0000-0000-000000027123' }, 201))
+      .mockResolvedValueOnce(sse(['event: agent_exec_command\ndata: {"execId":"exec-1","command":"acli system lsof","riskLevel":1}\n\n', 'data: {"content":"完成"}\n\n']))
+      .mockResolvedValueOnce(response({ status: 'accepted' }))
+      .mockResolvedValueOnce(response({ detail: 'temporary unavailable' }, 503))
+      .mockResolvedValueOnce(response({ status: 'passed' }))
+
+    const wrapper = mountView()
+    await build(wrapper)
+    await openAndCreateCase(wrapper)
+    sockets[0].onopen?.()
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'ssh_connected' }) })
+    await flushPromises()
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'exec_result', exec_id: 'exec-1', exit_code: 0, stdout: 'ok' }) })
+    await flushPromises()
+    expect(wrapper.text()).toContain('结果待提交')
+
+    await wrapper.findAll('button').find((button) => button.text() === '重试提交结果')!.trigger('click')
+    await flushPromises()
+    expect(sockets).toHaveLength(1)
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/test-runs')).length).toBe(1)
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/result')).length).toBe(2)
+  })
+
+  it('Bridge 缺少整数 exit_code 时严格失败，且 Lease 清除后不发生空密码重连', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock
+      .mockResolvedValueOnce(response(capabilityBody))
+      .mockResolvedValueOnce(response(buildBody))
+      .mockResolvedValueOnce(response({ test_run_id: 'run-27123', case_id: 'Q2026081100001' }))
+      .mockResolvedValueOnce(response({ conversation_id: '00000000-0000-0000-0000-000000027123' }, 201))
+      .mockResolvedValueOnce(sse([
+        'event: agent_exec_command\ndata: {"execId":"exec-1","command":"acli system lsof","riskLevel":1}\n\n',
+      ]))
+
+    const wrapper = mountView()
+    await build(wrapper)
+    await openAndCreateCase(wrapper)
+    sockets[0].onopen?.()
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'ssh_connected' }) })
+    await flushPromises()
+    expect(sockets[0].sent.map((item) => JSON.parse(item)).some((item) => item.type === 'ssh_exec_process')).toBe(true)
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'exec_result', exec_id: 'exec-1', case_id: 'Q2026081100001' }) })
     await flushPromises()
 
     expect(wrapper.text()).toContain('terminal_bridge exec_result 缺少有效的整数 exit_code')
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/result'))).toBe(false)
+    expect(sockets).toHaveLength(1)
+    const connectMessages = sockets.flatMap((socket) => socket.sent.map((item) => JSON.parse(item))).filter((item) => item.type === 'ssh_connect')
+    expect(connectMessages).toHaveLength(1)
+    expect(connectMessages[0].password).toBe('htp2.test')
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/result'))).toBe(false)
   })
 })
