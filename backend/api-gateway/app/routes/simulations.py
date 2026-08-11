@@ -151,6 +151,7 @@ async def record_test_run_result(test_run_id: str, request: Request) -> JSONResp
         "command_count",
         "failed_command_count",
         "agent_stream_completed",
+        "outcome",
     }
     unknown_fields = sorted(set(report_summary) - allowed_fields)
     if unknown_fields:
@@ -178,6 +179,17 @@ async def record_test_run_result(test_run_id: str, request: Request) -> JSONResp
         raise HTTPException(status_code=400, detail="failed_command_count cannot exceed command_count")
     if report_summary["agent_stream_completed"] is not True:
         raise HTTPException(status_code=400, detail="report_summary.agent_stream_completed must be true")
+    outcome = report_summary["outcome"]
+    if outcome not in {"passed", "failed", "inconclusive"}:
+        raise HTTPException(status_code=400, detail="report_summary.outcome must be passed, failed, or inconclusive")
+    if payload.get("outcome") != outcome:
+        raise HTTPException(status_code=400, detail="result outcome must match report_summary.outcome")
+    if outcome == "passed" and (
+        report_summary["command_count"] < 1 or report_summary["failed_command_count"] != 0
+    ):
+        raise HTTPException(status_code=400, detail="passed result requires at least one successful command")
+    if outcome == "failed" and report_summary["failed_command_count"] < 1:
+        raise HTTPException(status_code=400, detail="failed result requires failed_command_count greater than zero")
     encoded_summary = json.dumps(
         report_summary,
         ensure_ascii=False,

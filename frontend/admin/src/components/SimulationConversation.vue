@@ -49,6 +49,7 @@ const messageList = ref<HTMLElement | null>(null)
 const socket = ref<WebSocket | null>(null)
 const commandCount = ref(0)
 const failedCommandCount = ref(0)
+const agentOutcome = ref<'passed' | 'failed' | 'inconclusive'>('passed')
 const completionEmitted = ref(false)
 const pendingApproval = ref<{ execId: string; resolve: (approved: boolean) => void } | null>(null)
 const execWaiters = new Map<string, { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void; timer: number }>()
@@ -209,6 +210,7 @@ async function executeAgentCommand(event: Record<string, unknown>) {
   if (riskLevel >= 3) {
     card.status = 'blocked'
     failedCommandCount.value += 1
+    agentOutcome.value = 'failed'
     await postExecResult(event, { output: '高危操作已自动阻止', exit_code: -1, error_type: 'policy_blocked' })
     return
   }
@@ -220,6 +222,7 @@ async function executeAgentCommand(event: Record<string, unknown>) {
     if (!approved) {
       card.status = 'blocked'
       failedCommandCount.value += 1
+      agentOutcome.value = 'failed'
       await postExecResult(event, { output: '用户拒绝执行', exit_code: -1, error_type: 'user_rejected' })
       return
     }
@@ -248,6 +251,7 @@ async function executeAgentCommand(event: Record<string, unknown>) {
   card.status = exitCode === 0 ? 'passed' : 'failed'
   card.detail = { ...card.detail, exitCode, output: String(result.output || result.stdout || '') }
   if (exitCode !== 0) failedCommandCount.value += 1
+  if (exitCode !== 0) agentOutcome.value = 'failed'
   await postExecResult(event, result)
 }
 
@@ -298,6 +302,9 @@ async function handleStreamEvent(type: string, data: string, assistant: Conversa
     return
   }
   if (type === 'interactive_request') {
+    if (event.kind === 'human_escalation' && agentOutcome.value !== 'failed') {
+      agentOutcome.value = 'inconclusive'
+    }
     addMessage({
       role: 'assistant',
       kind: 'interactive',
@@ -359,7 +366,7 @@ async function sendMessage(content?: string, metadata: Record<string, unknown> =
     assistant.status = 'passed'
     // 纯文本首轮（例如 S0 分类追问）不构成仿真执行证据。至少收到并完成一个
     // Agent 命令后才能关闭 TestRun，避免把“Agent 回复了一句话”误报为测试通过。
-    if (!completionEmitted.value && commandCount.value > 0) {
+    if (!completionEmitted.value && (commandCount.value > 0 || agentOutcome.value === 'inconclusive')) {
       completionEmitted.value = true
       emit('sessionReady', {
         case_id: props.caseId,
@@ -368,9 +375,11 @@ async function sendMessage(content?: string, metadata: Record<string, unknown> =
         command_count: commandCount.value,
         failed_command_count: failedCommandCount.value,
         agent_stream_completed: true,
+        outcome: agentOutcome.value,
       })
     }
   } catch (error) {
+    agentOutcome.value = 'failed'
     assistant.status = 'failed'
     assistant.content ||= error instanceof Error ? error.message : String(error)
     emit('fatal', assistant.content)

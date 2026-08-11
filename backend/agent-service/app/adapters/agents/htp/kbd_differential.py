@@ -876,6 +876,7 @@ class KBDDiagnostic:
                         s,
                         res,
                         node_ip=env_context.get("node_ip"),
+                        execution_mode=env_context.get("execution_mode"),
                         session_id=session_id,
                     )
                 else:
@@ -909,6 +910,7 @@ class KBDDiagnostic:
         host: Any,
         *,
         node_ip: str | None,
+        execution_mode: str | None = None,
         session_id: str,
     ) -> Any:
         """将 QKV 返回的节点名称/ID解析为 HCI 节点 IP。
@@ -925,6 +927,20 @@ class KBDDiagnostic:
             return host
         if host in self._host_ip_cache:
             return self._host_ip_cache[host]
+
+        # sim-ssh 的 node_ip 来自 hci-sim 权威 TestRun 上下文，通常是 K3s
+        # Service DNS 而非客户节点 IP。逻辑 HOST 只用于 Fixture 变量匹配；应
+        # 绑定到已认证的仿真端点，不能再套用真实 HCI 的 IP 发现流程。
+        if execution_mode == "sim-ssh" and isinstance(node_ip, str) and node_ip.strip():
+            endpoint = node_ip.strip()
+            self._host_ip_cache[host] = endpoint
+            logger.info(
+                event="kbd_sim_host_bound",
+                host=host,
+                endpoint=endpoint,
+                session_id=session_id,
+            )
+            return endpoint
 
         from app.tools.acli.executor import _executor
 
@@ -1006,6 +1022,7 @@ class KBDDiagnostic:
         values: list[dict[str, Any]],
         *,
         node_ip: str | None,
+        execution_mode: str | None = None,
         session_id: str,
     ) -> list[dict[str, Any]]:
         """归一化 QKV 结果中的 HOST，并返回用于变量池与报告的结果副本。"""
@@ -1020,6 +1037,7 @@ class KBDDiagnostic:
                     current[key] = await self._resolve_host_ip(
                         value,
                         node_ip=node_ip,
+                        execution_mode=execution_mode,
                         session_id=session_id,
                     )
             normalized.append(current)
@@ -1031,6 +1049,7 @@ class KBDDiagnostic:
         res: Any,
         *,
         node_ip: str | None = None,
+        execution_mode: str | None = None,
         session_id: str = "",
     ) -> None:
         """将 QKV 产出(produces)写入变量池：produces=[{name, path}] -> pool[name]=value。
@@ -1049,6 +1068,7 @@ class KBDDiagnostic:
         res.values = await self._normalize_qkv_values(
             res.values,
             node_ip=node_ip,
+            execution_mode=execution_mode,
             session_id=session_id or self._conversation_id or "",
         )
         first = res.values[0]
@@ -1138,12 +1158,14 @@ class KBDDiagnostic:
                         signal,
                         res,
                         node_ip=env_context.get("node_ip"),
+                        execution_mode=env_context.get("execution_mode"),
                         session_id=session_id,
                     )
                 else:
                     res.values = await self._normalize_qkv_values(
                         res.values,
                         node_ip=env_context.get("node_ip"),
+                        execution_mode=env_context.get("execution_mode"),
                         session_id=session_id,
                     )
                     self._fill_pool_from_qkv_on_step(step, res)
@@ -1225,9 +1247,10 @@ class KBDDiagnostic:
                     resolved_host = await self._resolve_host_ip(
                         bsignal.host,
                         node_ip=target_node_ip,
+                        execution_mode=env_context.get("execution_mode"),
                         session_id=session_id,
                     )
-                    if not self._is_ip_address(resolved_host):
+                    if env_context.get("execution_mode") != "sim-ssh" and not self._is_ip_address(resolved_host):
                         return (
                             None,
                             f"QFK_TARGET_HOST_UNRESOLVED: 无法把目标 HOST={bsignal.host} 解析为节点 IP，"

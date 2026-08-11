@@ -79,6 +79,7 @@ def test_simulation_result_digest_is_generated_from_canonical_summary():
         "command_count": 3,
         "failed_command_count": 0,
         "agent_stream_completed": True,
+        "outcome": "passed",
     }
     canonical = json.dumps(summary, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     expected_digest = f"sha256:{hashlib.sha256(canonical).hexdigest()}"
@@ -137,8 +138,52 @@ def test_simulation_result_rejects_invalid_summary_types():
                 "command_count": 1,
                 "failed_command_count": 2,
                 "agent_stream_completed": True,
+                "outcome": "failed",
             }
         },
     )
     assert response.status_code == 400
     assert response.json()["detail"] == "failed_command_count cannot exceed command_count"
+
+
+def test_simulation_result_rejects_false_positive_passed_outcome():
+    client = TestClient(app)
+    response = client.post(
+        "/api/hci-sim/v1/simulations/test-runs/run-27123/result",
+        json={
+            "outcome": "passed",
+            "report_summary": {
+                "case_id": "Q2026081100001",
+                "conversation_id": "conversation-27123",
+                "execution_mode": "sim-ssh",
+                "command_count": 0,
+                "failed_command_count": 0,
+                "agent_stream_completed": True,
+                "outcome": "passed",
+            },
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "passed result requires at least one successful command"
+
+
+def test_simulation_result_accepts_structured_inconclusive_without_commands():
+    client = TestClient(app)
+    runtime_response = JSONResponse({"status": "inconclusive"}, status_code=200)
+    with patch("app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)):
+        response = client.post(
+            "/api/hci-sim/v1/simulations/test-runs/run-27123/result",
+            json={
+                "outcome": "inconclusive",
+                "report_summary": {
+                    "case_id": "Q2026081100001",
+                    "conversation_id": "conversation-27123",
+                    "execution_mode": "sim-ssh",
+                    "command_count": 0,
+                    "failed_command_count": 0,
+                    "agent_stream_completed": True,
+                    "outcome": "inconclusive",
+                },
+            },
+        )
+    assert response.status_code == 200

@@ -29,9 +29,9 @@ type SocketHarness = {
 }
 
 const capabilityBody = {
-  support_id: '27123', requested_revision: 24, runtime_revision: 1,
+  support_id: '27123', requested_revision: 25, runtime_revision: 25,
   bundle_digest: 'sha256:test', bundle_status: 'published', authority_scope: 'dev_golden',
-  buildable: true, capability_gap: ['kbd_revision_mismatch'],
+  buildable: true, capability_gap: [],
 }
 const buildBody = {
   test_run_id: 'run-27123',
@@ -154,7 +154,36 @@ describe('SimulationTestView 可恢复状态机', () => {
     const resultPayload = JSON.parse(String((resultCall![1] as RequestInit).body))
     expect(resultPayload.report_summary).toMatchObject({ case_id: 'Q2026081100001', agent_stream_completed: true })
     expect(resultPayload).not.toHaveProperty('report_digest')
-    expect(wrapper.text()).toContain('已闭环')
+    expect(wrapper.text()).toContain('已通过')
+  })
+
+  it('结构化人工升级以 inconclusive 闭环，不能假报 passed', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock
+      .mockResolvedValueOnce(response(capabilityBody))
+      .mockResolvedValueOnce(response(buildBody))
+      .mockResolvedValueOnce(response({ test_run_id: 'run-27123', case_id: 'Q2026081100003' }))
+      .mockResolvedValueOnce(response({ conversation_id: '00000000-0000-0000-0000-000000027125' }, 201))
+      .mockResolvedValueOnce(sse([
+        'event: interactive_request\ndata: {"kind":"human_escalation","prompt":"自动诊断证据不足"}\n\n',
+        'data: [DONE]\n\n',
+      ]))
+      .mockResolvedValueOnce(response({ status: 'inconclusive' }))
+
+    const wrapper = mountView()
+    await build(wrapper)
+    await openAndCreateCase(wrapper)
+    sockets[0].onopen?.()
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'ssh_connected' }) })
+    await flushPromises()
+
+    const resultCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/test-runs/run-27123/result'))
+    expect(resultCall).toBeTruthy()
+    const resultPayload = JSON.parse(String((resultCall![1] as RequestInit).body))
+    expect(resultPayload.outcome).toBe('inconclusive')
+    expect(resultPayload.report_summary).toMatchObject({ outcome: 'inconclusive', command_count: 0 })
+    expect(wrapper.text()).toContain('证据不足')
+    expect(wrapper.text()).not.toContain('已通过')
   })
 
   it('呈现 S0 稳定分类选项并按 Customer UI 协议推进到 S1', async () => {

@@ -4,7 +4,7 @@ import { ElMessage } from 'element-plus'
 import SimulationConversation from '@/components/SimulationConversation.vue'
 
 type BuildState = 'idle' | 'building' | 'succeeded' | 'failed'
-type TestState = 'idle' | 'case_binding' | 'session_running' | 'execution_failed' | 'result_submitting' | 'result_pending' | 'passed'
+type TestState = 'idle' | 'case_binding' | 'session_running' | 'execution_failed' | 'result_submitting' | 'result_pending' | 'passed' | 'inconclusive'
 
 interface Capability {
   support_id: string
@@ -217,22 +217,26 @@ async function submitResult(summary?: Record<string, unknown>) {
   if (!pendingResultSummary.value || !testRunId.value) return
   testState.value = 'result_submitting'
   try {
+    const outcome = String(pendingResultSummary.value.outcome || '')
+    if (!['passed', 'failed', 'inconclusive'].includes(outcome)) throw new Error('Agent 结果缺少有效 outcome')
     const response = await fetch(`${endpoint}/v1/simulations/test-runs/${encodeURIComponent(testRunId.value)}/result`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `admin-result-${testRunId.value}` },
       body: JSON.stringify({
         attempt_no: 1,
         oracle_version: 'admin-agent-session-v1',
-        outcome: Number(pendingResultSummary.value.failed_command_count || 0) === 0 ? 'passed' : 'failed',
+        outcome,
         report_uri: `object://hci-sim/${testRunId.value}/agent-session`,
         report_summary: pendingResultSummary.value,
       }),
     })
     await readResponse(response)
-    testState.value = 'passed'
+    testState.value = outcome === 'passed' ? 'passed' : outcome === 'inconclusive' ? 'inconclusive' : 'execution_failed'
     pendingResultSummary.value = null
-    logs.value.push(`Agent 首轮会话与 Run Result 已闭环，工单 ${caseId.value}`)
-    ElMessage.success(`仿真测试已完成，工单 ${caseId.value}`)
+    logs.value.push(`Agent 会话与 Run Result 已闭环（${outcome}），工单 ${caseId.value}`)
+    if (outcome === 'passed') ElMessage.success(`仿真测试已通过，工单 ${caseId.value}`)
+    else if (outcome === 'inconclusive') ElMessage.warning(`仿真测试证据不足，工单 ${caseId.value}`)
+    else ElMessage.error(`仿真测试失败，工单 ${caseId.value}`)
   } catch (error) {
     testState.value = 'result_pending'
     const message = error instanceof Error ? error.message : String(error)
@@ -279,7 +283,7 @@ onMounted(() => { if (kbdId.value) logs.value = ['已恢复上次输入；Lease 
     </section>
 
     <section class="stage-card test-stage" :class="{ active: buildState === 'succeeded' }">
-      <div class="stage-heading"><span class="stage-number">2</span><div><h3>开始测试</h3><p>系统自动绑定工单并连接仿真 SSH；之后的输入、Agent 输出与工具调用均在同一会话中呈现。</p></div><el-tag v-if="testState === 'passed'" type="success">已闭环</el-tag><el-tag v-else-if="testState === 'result_pending'" type="warning">结果待提交</el-tag></div>
+      <div class="stage-heading"><span class="stage-number">2</span><div><h3>开始测试</h3><p>系统自动绑定工单并连接仿真 SSH；之后的输入、Agent 输出与工具调用均在同一会话中呈现。</p></div><el-tag v-if="testState === 'passed'" type="success">已通过</el-tag><el-tag v-else-if="testState === 'inconclusive'" type="warning">证据不足</el-tag><el-tag v-else-if="testState === 'execution_failed'" type="danger">测试失败</el-tag><el-tag v-else-if="testState === 'result_pending'" type="warning">结果待提交</el-tag></div>
 
       <div v-if="!conversationActive" class="test-entry">
         <el-empty v-if="buildState !== 'succeeded'" description="完成阶段一后即可开始测试" :image-size="80" />
