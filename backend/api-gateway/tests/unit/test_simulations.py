@@ -39,3 +39,28 @@ def test_simulation_test_run_binds_platform_case_before_runtime():
     assert runtime_payload["case_id"] == "Q2026081100001"
     assert runtime_payload["environment_context"]["case_id"] == "Q2026081100001"
 
+
+def test_simulation_test_run_retry_reuses_existing_case():
+    """重试同一 TestRun 不得创建第二个 Case 导致 Runtime 绑定冲突。"""
+    client = TestClient(app)
+    existing_case = JSONResponse({"case_id": "Q2026081100001", "status": "created"}, status_code=200)
+    runtime_response = JSONResponse({"test_run_id": "run-27123", "status": "leased"}, status_code=200)
+    with patch("app.routes.simulations._case_request", new=AsyncMock(return_value=existing_case)) as case_request, patch(
+        "app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)
+    ) as runtime_post:
+        response = client.post(
+            "/api/hci-sim/v1/simulations/test-runs",
+            json={
+                "kbd_id": "27123",
+                "case_id": "Q2026081100001",
+                "title": "KBD 27123 仿真验证",
+                "description": "重试三条确定性关键信号",
+                "connection": {"test_run_id": "run-27123"},
+                "environment_context": {"test_run_id": "run-27123"},
+            },
+        )
+
+    assert response.status_code == 200
+    case_request.assert_awaited_once_with("GET", "/Q2026081100001")
+    runtime_post.assert_awaited_once()
+    assert runtime_post.await_args.args[1]["case_id"] == "Q2026081100001"

@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -399,5 +400,15 @@ func TestRedactSensitiveText(t *testing.T) {
 	redacted := redactSensitiveText(`password=secret token: abc {"private_key":"sensitive"}`)
 	if strings.Contains(redacted, "secret") || strings.Contains(redacted, "sensitive") {
 		t.Fatalf("敏感信息未被脱敏: %s", redacted)
+	}
+}
+
+func TestExecResultAlwaysIncludesZeroExitCode(t *testing.T) {
+	payload, err := json.Marshal(OutMessage{Type: "exec_result", CaseID: "Q1", ExitCode: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(payload), `"exit_code":0`) {
+		t.Fatalf("exec_result must include zero exit_code: %s", payload)
 	}
 }

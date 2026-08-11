@@ -194,13 +194,15 @@ type OutputFilter struct {
 }
 
 type OutMessage struct {
-	Type            string `json:"type"`
-	CaseID          string `json:"case_id"`
-	Output          string `json:"output,omitempty"`
-	Message         string `json:"message,omitempty"`
-	Detail          string `json:"detail,omitempty"`
-	ExecID          string `json:"exec_id,omitempty"`   // 用于 exec_result
-	ExitCode        int    `json:"exit_code,omitempty"` // 用于 exec_result
+	Type    string `json:"type"`
+	CaseID  string `json:"case_id"`
+	Output  string `json:"output,omitempty"`
+	Message string `json:"message,omitempty"`
+	Detail  string `json:"detail,omitempty"`
+	ExecID  string `json:"exec_id,omitempty"` // 用于 exec_result
+	// exec_result 必须始终携带 exit_code；0 是成功值，不能因 omitempty 被省略，
+	// 否则浏览器会把缺失字段解析成 NaN，误判已成功的命令为失败。
+	ExitCode        int    `json:"exit_code"`           // 用于 exec_result
 	Stdout          string `json:"stdout,omitempty"`    // 双通道物理隔离输出 (Scheme B)
 	Stderr          string `json:"stderr,omitempty"`    // 双通道物理隔离输出 (Scheme B)
 	TraceID         string `json:"trace_id,omitempty"`  // 回显端到端 trace_id

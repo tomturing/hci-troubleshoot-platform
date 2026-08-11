@@ -36,12 +36,15 @@ async def _post(path: str, payload: dict, idempotency_key: str | None = None) ->
     return JSONResponse(content=body, status_code=response.status_code)
 
 
-async def _case_request(method: str, path: str, payload: dict) -> JSONResponse:
+async def _case_request(method: str, path: str, payload: dict | None = None) -> JSONResponse:
     """调用平台 Case Service，保留其结构化错误响应。"""
     url = f"{settings.CASE_SERVICE_URL.rstrip('/')}/api/cases{path}"
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.request(method, url, json=payload, headers={"Content-Type": "application/json"})
+            kwargs = {"headers": {"Content-Type": "application/json"}}
+            if payload is not None:
+                kwargs["json"] = payload
+            response = await client.request(method, url, **kwargs)
     except httpx.RequestError as exc:
         raise HTTPException(status_code=503, detail="case-service unavailable") from exc
     try:
@@ -81,15 +84,20 @@ async def create_test_run(request: Request) -> JSONResponse:
     if not title or not description:
         raise HTTPException(status_code=400, detail="title and description are required")
 
-    # 先创建真实平台工单，再把其 ID 交给 Runtime。Runtime 失败时做最佳努力
-    # 关闭，避免“工单已创建但仿真租约未建立”的不可追踪孤儿状态。
-    case_payload = {
-        "client_id": str(payload.get("client_id") or "hci-sim-admin").strip(),
-        "title": title,
-        "description": description,
-        "assistant_type": payload.get("assistant_type") or "htp-agent",
-    }
-    case_response = await _case_request("POST", "/", case_payload)
+    # 首次请求创建真实平台工单；重试请求如果带回既有 case_id，必须复用原工单，
+    # 不能先创建第二个 Case 再让 Runtime 拒绝跨 Case 绑定。
+    requested_case_id = str(payload.get("case_id") or "").strip()
+    created_case = not requested_case_id
+    if requested_case_id:
+        case_response = await _case_request("GET", f"/{requested_case_id}")
+    else:
+        case_payload = {
+            "client_id": str(payload.get("client_id") or "hci-sim-admin").strip(),
+            "title": title,
+            "description": description,
+            "assistant_type": payload.get("assistant_type") or "htp-agent",
+        }
+        case_response = await _case_request("POST", "/", case_payload)
     if case_response.status_code >= 400:
         return case_response
     case_body = _json_response_body(case_response)
@@ -109,8 +117,9 @@ async def create_test_run(request: Request) -> JSONResponse:
         "/v1/simulations/test-runs", runtime_payload, request.headers.get("Idempotency-Key")
     )
     if runtime_response.status_code >= 400:
-        with contextlib.suppress(HTTPException):
-            await _case_request("PUT", f"/{case_id}/close", {"close_reason": "abandon"})
+        if created_case:
+            with contextlib.suppress(HTTPException):
+                await _case_request("PUT", f"/{case_id}/close", {"close_reason": "abandon"})
         return runtime_response
 
     runtime_body = _json_response_body(runtime_response)
