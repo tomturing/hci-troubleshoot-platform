@@ -62,6 +62,12 @@ networkPolicy:
   apiGatewayNamespace: hci-dev
   apiGatewayPort: 8000
   observabilityNamespace: hci-observability
+  # Runtime 写入独立 hci_sim 数据库；只允许访问受管 PostgreSQL Pod，禁止
+  # 借助 namespace 级放行访问 hci-dev 中的其它工作负载。
+  databaseNamespace: hci-dev
+  databasePort: 5432
+  databasePodSelector:
+    app.kubernetes.io/name: postgres
 
 resourceQuota:
   requestsCpu: "2"

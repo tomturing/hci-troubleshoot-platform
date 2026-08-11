@@ -71,6 +71,16 @@ func NewRunRepository(pool *pgxpool.Pool) (*RunRepository, error) {
 	return &RunRepository{pool: pool}, nil
 }
 
+// Ping exposes the database health check to the HTTP readiness probe. A
+// Runtime with required persistence must not advertise Ready while it cannot
+// write its control-plane records.
+func (r *RunRepository) Ping(ctx context.Context) error {
+	if r == nil || r.pool == nil {
+		return errors.New("hci_sim database pool is required")
+	}
+	return r.pool.Ping(ctx)
+}
+
 // Create 幂等创建 Scenario + Run。相同 idempotency_key 且 request_digest 相同
 // 时返回原记录；同 key 不同请求显式拒绝，不能覆盖既有 TestRun。
 func (r *RunRepository) Create(ctx context.Context, input RunInput) (RunRecord, error) {

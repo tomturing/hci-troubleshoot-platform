@@ -115,7 +115,18 @@ func runServer() error {
 	httpServer := &http.Server{Addr: env("HCI_SIM_HTTP_LISTEN", ":8080"), ReadHeaderTimeout: 5 * time.Second}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ready\n")) })
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if runRepository != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			err := runRepository.Ping(ctx)
+			cancel()
+			if err != nil {
+				http.Error(w, "hci_sim persistence unavailable", http.StatusServiceUnavailable)
+				return
+			}
+		}
+		_, _ = w.Write([]byte("ready\n"))
+	})
 	mux.Handle("/metrics", prom.Handler())
 	mux.HandleFunc("/status", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -212,6 +223,7 @@ func runServer() error {
 				EnvironmentContext: map[string]any{"test_run_id": runID, "case_id": strings.TrimSpace(request.CaseID), "support_id": request.KBDID, "kbd_revision": router.KBD().Revision, "bundle_digest": router.BundleDigest(), "execution_mode": "sim-ssh", "virtual_node_id": "SIM-HCI-NODE-01", "container": "host", "authority_scope": env("HCI_SIM_AUTHORITY_SCOPE", "runtime_fixture"), "active_revision": envInt("HCI_SIM_ACTIVE_REVISION", router.KBD().Revision)},
 			})
 			if persistErr != nil {
+				log.Printf("hci-sim run persistence failed: %v", persistErr)
 				if errors.Is(persistErr, database.ErrIdempotencyConflict) {
 					http.Error(w, persistErr.Error(), http.StatusConflict)
 				} else {
@@ -231,6 +243,7 @@ func runServer() error {
 		}
 		if runRepository != nil {
 			if _, persistErr := runRepository.RecordLease(r.Context(), runID, runVersion, 1, env("HCI_SIM_RUNTIME_ID", "hci-sim"), digestValue(runID+"-1")); persistErr != nil {
+				log.Printf("hci-sim lease persistence failed: %v", persistErr)
 				if errors.Is(persistErr, database.ErrRunVersionConflict) {
 					http.Error(w, persistErr.Error(), http.StatusConflict)
 				} else {
@@ -239,6 +252,7 @@ func runServer() error {
 				return
 			}
 			if _, persistErr := runRepository.AppendEvent(r.Context(), runID, 1, "lease.created", digestValue(map[string]any{"test_run_id": runID, "bundle_digest": router.BundleDigest()}), ""); persistErr != nil {
+				log.Printf("hci-sim event persistence failed: %v", persistErr)
 				http.Error(w, "hci_sim event persistence unavailable", http.StatusServiceUnavailable)
 				return
 			}

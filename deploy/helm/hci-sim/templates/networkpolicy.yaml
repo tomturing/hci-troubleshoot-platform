@@ -84,4 +84,18 @@ spec:
       ports:
         - port: {{ .Values.networkPolicy.apiGatewayPort }}
           protocol: TCP
+    {{- if .Values.database.required }}
+    # Runtime 必须把 TestRun、Lease、Event 和 Result 持久化到独立 hci_sim
+    # 数据库；仅放行 PostgreSQL Pod 的 5432，不能放行整个 hci-dev namespace。
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ required "networkPolicy.databaseNamespace is required when database.required=true" .Values.networkPolicy.databaseNamespace }}
+          podSelector:
+            matchLabels:
+              {{- required "networkPolicy.databasePodSelector is required when database.required=true" .Values.networkPolicy.databasePodSelector | toYaml | nindent 14 }}
+      ports:
+        - port: {{ required "networkPolicy.databasePort is required when database.required=true" .Values.networkPolicy.databasePort }}
+          protocol: TCP
+    {{- end }}
 {{- end }}

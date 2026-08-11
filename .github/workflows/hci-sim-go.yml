@@ -131,3 +131,14 @@ jobs:
         run: |
           helm lint deploy/helm/hci-sim
           helm template hci-sim deploy/helm/hci-sim --namespace hci-sim-dev > /tmp/hci-sim-rendered.yaml
+          sed -n '/name: hci-sim-allow-required/,/^---$/p' /tmp/hci-sim-rendered.yaml > /tmp/hci-sim-network-policy.yaml
+          grep -F 'app.kubernetes.io/name: postgres' /tmp/hci-sim-network-policy.yaml
+          grep -F 'port: 5432' /tmp/hci-sim-network-policy.yaml
+          grep -F 'kubernetes.io/metadata.name: hci-dev' /tmp/hci-sim-network-policy.yaml
+          if helm template hci-sim deploy/helm/hci-sim --namespace hci-sim-dev \
+            --set database.required=true --set networkPolicy.databasePodSelector=null \
+            >/tmp/hci-sim-invalid-network-policy.yaml 2>/tmp/hci-sim-invalid-network-policy.err; then
+            echo 'database.required=true unexpectedly accepted an empty database Pod selector' >&2
+            exit 1
+          fi
+          grep -F 'networkPolicy.databasePodSelector is required' /tmp/hci-sim-invalid-network-policy.err
