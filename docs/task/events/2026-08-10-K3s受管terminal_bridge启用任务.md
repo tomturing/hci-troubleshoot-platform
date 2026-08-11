@@ -1,8 +1,8 @@
 ---
-status: in_progress
+status: implemented
 category: task
 audience: developer, operator, release, tester
-last_updated: 2026-08-10
+last_updated: 2026-08-11
 owner: team
 ---
 
@@ -89,8 +89,8 @@ planned → in_progress → blocked → done
 - 现行全量文档与 README 第一屏已更新；
 - 无遗留临时 patch、未关闭旧 Bridge 或未记录的回滚分支。
 
-## 当前执行状态（2026-08-10）
+## 最终执行状态（2026-08-11）
 
-- 已完成：运行态审计、Secret 缺失根因确认、Gateway Token/NetworkPolicy 修复设计，以及 27123 的 Gateway build、TestRun 和 Bridge→hci-sim SSH/exec smoke 现场验证。
-- 进行中：将控制 Token 的双 namespace provision、immutable digest 和 Argo sync 证据纳入环境仓库；清理本次验证产生的临时端口转发和本地镜像。
-- 阻断项：未完成上述 GitOps 供给前，不得勾选“所有任务完成”，也不得把手工现场 patch 作为交付物。
+- P0/P1 编码项完成：受管 Deployment/Service/Ingress、Secret、Origin/Lease、单副本、安全上下文、NetworkPolicy 和结构化执行事件均已落地。
+- 现场项完成：同源 WebSocket、真实 Case/Conversation、Agent 发起的 3 条命令、Result 回写和会话清理均已验证。
+- P2 多副本、容量与灾备测试仍保持未勾选；它们不阻断单副本受管 Bridge 投用，也不能被当前 E2E 结果冒充完成。

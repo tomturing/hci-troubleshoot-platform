@@ -79,16 +79,17 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | CI 最小激活与快速门禁 | ✅ 已实施：hci-sim runtime/Bridge/Manifest 按变更分流；后端测试解除 Helm 无效等待；Schema 与 Lint 共用依赖；PR 不再构建 Windows exe。真实 Hosted Runner P50/P95 需后续采集。 | 2026-08-07 |
 | CI 发布链路手动补偿闭环 | ✅ 已实施：`workflow_dispatch` 通过 `promote_target` 显式选择 dev/staging/both；仅 main 可晋级；晋级前后逐服务核验环境仓库 tag，并在 Actions Summary 留存证据。 | 2026-08-07 |
 | CI 发布链路按影响范围收敛 | ✅ 已实施：main push 动态构建 Dockerfile 实际输入影响的镜像，db-migrate job 级跳过，环境仓库仅更新已构建服务；文档治理复用既有 runner，所有 job 有超时，第三方 action/tool 已固定，P50/P95 报告仅手动运行。 | 2026-08-07 |
+| hci-sim KBD 27123 纵向样板与生产化差距审查 | 🟡 27123 revision 25 的 Admin→Agent→K3s Bridge→Runtime→Result 已通过；平台生产交付保持 BLOCKED，下一阶段转入 Bundle 工厂化 | 2026-08-11 |
 
-**当前关注点（2026-08-11 P0–P1 纵向修复）**：Admin UI“开始测试”已按需求进入显式工单状态机；新增 capability 预检、Gateway 真实 Case/TestRun 绑定和 K3s terminal_bridge→hci-sim 三信号 smoke 设计。现场发布前仍必须取得真实 `Q...` Case、hci_sim context、Bridge exec 和 Result 原始证据；dev_golden 27123 的 Fixture revision 1 与主库 active revision 24 的差异仍需明确展示，不能表述为 production approved。approved real 23821 Bundle、外部 Agent Service context 写库、126 KBD 全量运行及阶段 E 产品级容量/故障/SLO 原始证据仍是 capability_gap。以[P0–P1 需求](requirement/events/2026-08-11-hci-sim-P0-P1-27123全链路修复需求.md)、[设计](solution/events/2026-08-11-hci-sim-P0-P1-27123全链路修复方案.md)、[任务](task/events/2026-08-11-hci-sim-P0-P1-27123全链路修复任务.md)和[验证](verify/events/2026-08-11-hci-sim-P0-P1-27123全链路验证.md)为本次状态汇总。
+**当前关注点（2026-08-11）**：KBD 27123 revision 25 已完成真实 Chromium 下的 Admin→Case/Conversation→Agent→K3s terminal_bridge→hci-sim→Result 纵向闭环，并修复 Bundle 事实分叉、结果假阳性、容器 Catalog 缺失、命令契约漂移和 capability matrix 吞错。该结果只接受为纵向样板，hci-sim 面向终端用户的生产交付仍为 `BLOCKED`；下一阶段必须把新增 KBD 改造为无需代码/镜像/Helm/Argo 变更的 Bundle 工厂化发布。以[生产化差距与重构基线](solution/events/2026-08-11-hci-sim生产化差距审查与Bundle工厂化重构基线.md)、[P0–P1 需求](requirement/events/2026-08-11-hci-sim-P0-P1-27123全链路修复需求.md)、[设计](solution/events/2026-08-11-hci-sim-P0-P1-27123全链路修复方案.md)、[任务](task/events/2026-08-11-hci-sim-P0-P1-27123全链路修复任务.md)和[验证](verify/events/2026-08-11-hci-sim-P0-P1-27123全链路验证.md)为当前事实入口。
 
 ### 2026-08-10 三组 hci-sim 重构事件文档
 
 | 组别 | 当前状态 | 需求 | 方案 | 任务 | 验证 |
 |---|---|---|---|---|---|
-| K3s 受管 terminal_bridge | 🟡 immutable hci-sim digest 已发布并待 Argo 同步；正式 Bridge→Runtime E2E 待重跑 | [需求](requirement/events/2026-08-10-K3s受管terminal_bridge启用需求.md) | [方案](solution/events/2026-08-10-K3s受管terminal_bridge启用方案.md) | [任务](task/events/2026-08-10-K3s受管terminal_bridge启用任务.md) | [验证](verify/events/2026-08-10-K3s受管terminal_bridge启用验证.md) |
-| hci_sim 独立数据库 | 🟡 Scenario/Run/Attempt/Event/Result/outbox、processing 恢复和 opt-in reconciler 已接入；approved 23821 Bundle、Agent context 重启证据、Artifact/Bundle copy/switch/contract 仍 pending | [需求](requirement/events/2026-08-10-hci_sim独立数据库隔离需求.md) | [方案](solution/agent/events/2026-08-10-hci-sim三PR闭环方案.md) | [任务](task/agent/events/2026-08-10-hci-sim三PR闭环任务.md) | [验证](verify/events/2026-08-10-hci-sim三PR闭环验证.md) |
-| 仿真测试迁移与 Agent context | 🟡 Admin UI/Gateway/Runtime 最小契约已合入；持久化 context、真实工单/Agent E2E pending | [需求](requirement/events/2026-08-10-仿真测试迁移与Agent上下文绑定需求.md) | [方案](solution/events/2026-08-10-仿真测试迁移与Agent上下文绑定方案.md) | [任务](task/events/2026-08-10-仿真测试迁移与Agent上下文绑定任务.md) | [验证](verify/events/2026-08-10-仿真测试迁移与Agent上下文绑定验证.md) |
+| K3s 受管 terminal_bridge | ✅ 27123 Agent E2E 已通过受管单副本 Bridge；多副本/容量属于 P2 | [需求](requirement/events/2026-08-10-K3s受管terminal_bridge启用需求.md) | [方案](solution/events/2026-08-10-K3s受管terminal_bridge启用方案.md) | [任务](task/events/2026-08-10-K3s受管terminal_bridge启用任务.md) | [验证](verify/events/2026-08-10-K3s受管terminal_bridge启用验证.md) |
+| hci_sim 独立数据库 | 🟡 Run/Bundle/Result/outbox 与权限隔离已通过；主库 15 张空旧表 contract/drop 和恢复演练待独立完成 | [需求](requirement/events/2026-08-10-hci_sim独立数据库隔离需求.md) | [方案](solution/events/2026-08-10-hci_sim独立数据库隔离方案.md) | [任务](task/events/2026-08-10-hci_sim独立数据库隔离任务.md) | [验证](verify/events/2026-08-10-hci_sim独立数据库隔离验证.md) |
+| 仿真测试迁移与 Agent context | ✅ 27123 的持久化 context、真实 Case/Conversation、Agent 命令和 Result E2E 已通过；其他 KBD 按 Bundle gate 判定 | [需求](requirement/events/2026-08-10-仿真测试迁移与Agent上下文绑定需求.md) | [方案](solution/events/2026-08-10-仿真测试迁移与Agent上下文绑定方案.md) | [任务](task/events/2026-08-10-仿真测试迁移与Agent上下文绑定任务.md) | [验证](verify/events/2026-08-10-仿真测试迁移与Agent上下文绑定验证.md) |
 
 ### 冷启动阅读路径
 

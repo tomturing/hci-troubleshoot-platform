@@ -8,13 +8,21 @@ set -euo pipefail
 command -v psql >/dev/null || { echo "psql is required" >&2; exit 127; }
 
 printf 'support_id\tkbd_status\tactive_revision\tbundle_status\tbundle_digest\tbuild_result\tssh_result\tagent_result\tcapability_gap\towner\tlast_verified\n'
+kbd_rows="$(psql "$HCI_KBD_DATABASE_URL" -AtF $'\t' -c "
+  SELECT e.support_id, e.status,
+         COALESCE((SELECT active_revision::text FROM dynamic_resource_active a
+                   WHERE a.resource_type='kbd' AND a.resource_name IN (e.id::text, e.support_id)
+                   ORDER BY a.updated_at DESC LIMIT 1), '')
+  FROM kbd_entry e WHERE e.status='published' ORDER BY e.support_id
+")"
+
 while IFS=$'\t' read -r support_id kbd_status active_revision; do
   [ -n "$support_id" ] || continue
   # Bind database-derived values instead of interpolating them into SQL. The
   # source is expected to be numeric, but imported malformed rows must not turn
   # a read-only evidence tool into an injection primitive.
-  bundle_row="$(psql "$HCI_SIM_DATABASE_URL" -v support_id="$support_id" -v active_revision="${active_revision:-0}" -AtF $'\t' 2>/dev/null <<'SQL' || true
-SELECT status, digest
+  bundle_row="$(psql "$HCI_SIM_DATABASE_URL" -v support_id="$support_id" -v active_revision="${active_revision:-0}" -AtF $'\t' <<'SQL'
+SELECT b.status, b.digest
 FROM control_plane.scenario s
 JOIN fixture.bundle b ON b.scenario_id = s.id
 WHERE s.support_id = :'support_id' AND s.kbd_revision = :active_revision
@@ -31,10 +39,4 @@ SQL
   fi
   printf '%s\t%s\t%s\t%s\t%s\tpending\tpending\tpending\t%s\t\t\n' \
     "$support_id" "$kbd_status" "${active_revision:-}" "${bundle_status:-missing}" "$bundle_digest" "$gap"
-done < <(psql "$HCI_KBD_DATABASE_URL" -AtF $'\t' -c "
-  SELECT e.support_id, e.status,
-         COALESCE((SELECT active_revision::text FROM dynamic_resource_active a
-                   WHERE a.resource_type='kbd' AND a.resource_name IN (e.id::text, e.support_id)
-                   ORDER BY a.updated_at DESC LIMIT 1), '')
-  FROM kbd_entry e WHERE e.status='published' ORDER BY e.support_id
-")
+done <<<"$kbd_rows"

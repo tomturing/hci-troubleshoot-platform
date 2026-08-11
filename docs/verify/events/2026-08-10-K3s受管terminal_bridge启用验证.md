@@ -1,8 +1,8 @@
 ---
-status: in_progress
+status: passed
 category: verify
 audience: tester, operator, reviewer, release
-last_updated: 2026-08-10
+last_updated: 2026-08-11
 owner: team
 ---
 
@@ -207,3 +207,9 @@ block_reason:
 | Bridge→Runtime SSH/exec | passed（临时 dev image） | `hci-sim-smoke` 五项全部通过：4 条正向/信号命令和 1 条未知命令的 fail-closed 127；Bridge 日志记录 SSH 认证成功和隔离 exec。 |
 
 边界：Gateway/Bridge 正向证据已经取得，但之前的运行面证据使用了未进入 Argo source 的本地 `dev-local-v2` 镜像和临时 NetworkPolicy patch；因此在本变更合入并完成 Argo digest 同步、删除旧 Pod 后，必须按本文件第 6～8 节重跑并保存脱敏日志。23821 因当前 Bundle 未加载，保持 `capability_gap`。
+
+## 最终复验（2026-08-11）
+
+旧的临时证据已由 GitOps 受管链路复验替代。`hci-sim-dev` 为 Synced/Healthy，唯一 Runtime Pod 使用 digest `sha256:9307b597...`；浏览器建立 `ws://172.28.24.21/terminal-bridge`，Bridge 连接 K3s Service `hci-sim.hci-sim-dev.svc:2222`。Run `run-27123-2527ff1a376851c56e0b3e11` 的 3 个 Agent exec 在 Bridge/hci-sim 两端均 exit code 0，Case `Q2026081180588`、Conversation `217066bf-...` 和 trace `ac2de123...` 可关联，最终 Result 为 passed。
+
+结论：K3s 单副本受管 Bridge 的 27123 产品链路 `PASS`；23821/full matrix 与多副本容灾不在本结论内。

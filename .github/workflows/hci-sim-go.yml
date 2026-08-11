@@ -7,6 +7,7 @@ on:
       - 'hci_sim/**'
       - 'terminal_bridge/**'
       - 'deploy/helm/hci-sim/**'
+      - 'scripts/hci-sim/capability-matrix*.sh'
       - '.github/workflows/hci-sim-go.yml'
   push:
     branches: [main]
@@ -14,6 +15,7 @@ on:
       - 'hci_sim/**'
       - 'terminal_bridge/**'
       - 'deploy/helm/hci-sim/**'
+      - 'scripts/hci-sim/capability-matrix*.sh'
       - '.github/workflows/hci-sim-go.yml'
   # 允许发布前或故障复核时手动运行完整 hci-sim 质量门禁；不影响 PR 激活范围。
   workflow_dispatch:
@@ -51,6 +53,7 @@ jobs:
             manifest:
               - 'hci_sim/**'
               - 'deploy/helm/hci-sim/**'
+              - 'scripts/hci-sim/capability-matrix*.sh'
               - '.github/workflows/hci-sim-go.yml'
 
   runtime:
@@ -112,6 +115,7 @@ jobs:
           version: v3.17.3
       - name: verify published manifest and deployment copy
         run: |
+          scripts/hci-sim/capability-matrix-test.sh
           cmp -s hci_sim/testdata/kbd-27123-fixture-manifest.json deploy/helm/hci-sim/files/kbd-27123-fixture-manifest.json
           cd hci_sim
           go run ./cmd/hci-sim manifest-digest --manifest testdata/kbd-27123-fixture-manifest.json > /tmp/hci-sim-digest
