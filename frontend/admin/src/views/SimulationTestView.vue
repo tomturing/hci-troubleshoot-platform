@@ -233,14 +233,9 @@ async function runBridgeSmoke(info: ConnectionInfo, currentCaseId: string, curre
       }
       if (message.type === 'exec_result' && String(message.case_id || '') === currentCaseId) {
         if (timer) window.clearTimeout(timer)
-        // terminal_bridge 旧版本会因 JSON omitempty 省略成功值 0；兼容该
-        // wire format，同时拒绝真正非法的退出码，避免页面显示 exit=NaN。
-        const rawExitCode = message.exit_code
-        const exitCode = rawExitCode === undefined || rawExitCode === null || rawExitCode === ''
-          ? 0
-          : Number(rawExitCode)
-        if (!Number.isFinite(exitCode)) {
-          finish(new Error(`${commands[index]} 返回了非法退出码`))
+        const exitCode = message.exit_code
+        if (typeof exitCode !== 'number' || !Number.isInteger(exitCode)) {
+          finish(new Error('terminal_bridge exec_result 缺少有效的整数 exit_code'))
           return
         }
         const command = commands[index]
