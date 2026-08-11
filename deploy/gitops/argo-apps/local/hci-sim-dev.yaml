@@ -20,7 +20,7 @@ spec:
         image:
           repository: ghcr.io/tomturing/hci-troubleshoot-platform/hci-sim
           # 由 CI main 发布产物填充为 immutable manifest digest；禁止 tag/dev-local 漂移。
-          digest: "sha256:e7b2d6521b18895be640054a203644f6e2a02f4807d97d37ec612047547bbfb4"
+          digest: "sha256:cb074a847544fb68ca7555fc7b8ff074a0a982f901c3d33b93a37237c4b83ec4"
         database:
           required: true
           existingSecret: hci-sim-runtime-credentials
