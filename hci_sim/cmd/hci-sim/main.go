@@ -134,13 +134,49 @@ func runServer() error {
 	controlAuthorized := func(r *http.Request) bool {
 		return (controlToken != "" && r.Header.Get("Authorization") == "Bearer "+controlToken) || (controlToken == "" && allowInsecureControlAPI)
 	}
+	mux.HandleFunc("/v1/simulations/capabilities/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || !controlAuthorized(r) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		requestedID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/v1/simulations/capabilities/"))
+		if requestedID == "" || strings.ContainsAny(requestedID, "/?#") {
+			http.Error(w, "kbd_id is required", http.StatusBadRequest)
+			return
+		}
+		runtimeKBD := router.KBD()
+		runtimeRevision := runtimeKBD.Revision
+		authorityScope := env("HCI_SIM_AUTHORITY_SCOPE", "runtime_fixture")
+		activeRevision := envInt("HCI_SIM_ACTIVE_REVISION", runtimeRevision)
+		buildable := requestedID == runtimeKBD.SupportID && router.BundleDigest() != "" && authorityScope != "runtime_fixture" && !router.IsSynthetic()
+		gaps := make([]string, 0, 3)
+		if requestedID != runtimeKBD.SupportID {
+			gaps = append(gaps, "kbd_not_loaded")
+		}
+		if activeRevision != runtimeRevision {
+			gaps = append(gaps, "kbd_revision_mismatch")
+		}
+		if router.BundleDigest() == "" {
+			gaps = append(gaps, "bundle_digest_missing")
+		}
+		if router.IsSynthetic() {
+			gaps = append(gaps, "synthetic_fixture")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"support_id": requestedID, "requested_revision": activeRevision, "runtime_revision": runtimeRevision,
+			"bundle_digest": router.BundleDigest(), "bundle_status": "published", "authority_scope": authorityScope,
+			"synthetic": router.IsSynthetic(), "buildable": buildable, "capability_gap": gaps,
+		})
+	})
 	mux.HandleFunc("/v1/simulations/build", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || !controlAuthorized(r) {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		var request struct {
-			KBDID string `json:"kbd_id"`
+			KBDID  string `json:"kbd_id"`
+			CaseID string `json:"case_id"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&request); err != nil || strings.TrimSpace(request.KBDID) == "" {
 			http.Error(w, "kbd_id is required", http.StatusBadRequest)
@@ -148,6 +184,10 @@ func runServer() error {
 		}
 		if router.KBD().SupportID != strings.TrimSpace(request.KBDID) {
 			http.Error(w, "capability_gap: requested KBD is not the loaded immutable fixture", http.StatusConflict)
+			return
+		}
+		if env("HCI_SIM_AUTHORITY_SCOPE", "runtime_fixture") == "runtime_fixture" || router.IsSynthetic() {
+			http.Error(w, "capability_gap: Runtime fixture lacks an explicit non-synthetic authority scope", http.StatusConflict)
 			return
 		}
 		now := time.Now().UTC()
@@ -169,7 +209,7 @@ func runServer() error {
 				Variant: fixtureVariant, BundleDigest: router.BundleDigest(), ExecutionMode: "sim-ssh",
 				IdempotencyKey: idempotencyKey, RequestDigest: requestDigest, Deadline: now.Add(15 * time.Minute),
 				InputFingerprint:   inputFingerprint,
-				EnvironmentContext: map[string]any{"test_run_id": runID, "support_id": request.KBDID, "kbd_revision": router.KBD().Revision, "bundle_digest": router.BundleDigest(), "execution_mode": "sim-ssh", "virtual_node_id": "SIM-HCI-NODE-01", "container": "host"},
+				EnvironmentContext: map[string]any{"test_run_id": runID, "case_id": strings.TrimSpace(request.CaseID), "support_id": request.KBDID, "kbd_revision": router.KBD().Revision, "bundle_digest": router.BundleDigest(), "execution_mode": "sim-ssh", "virtual_node_id": "SIM-HCI-NODE-01", "container": "host", "authority_scope": env("HCI_SIM_AUTHORITY_SCOPE", "runtime_fixture"), "active_revision": envInt("HCI_SIM_ACTIVE_REVISION", router.KBD().Revision)},
 			})
 			if persistErr != nil {
 				if errors.Is(persistErr, database.ErrIdempotencyConflict) {
@@ -204,7 +244,8 @@ func runServer() error {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"test_run_id": runID, "support_id": request.KBDID, "bundle_digest": router.BundleDigest(), "synthetic": router.IsSynthetic(), "environment_context": map[string]any{"test_run_id": runID, "support_id": request.KBDID, "kbd_revision": router.KBD().Revision, "bundle_digest": router.BundleDigest(), "execution_mode": "sim-ssh", "virtual_node_id": "SIM-HCI-NODE-01", "container": "host"}, "connection": map[string]any{"host": env("HCI_SIM_SSH_HOST", "hci-sim.hci-sim-dev.svc"), "port": strings.TrimPrefix(env("HCI_SIM_SSH_LISTEN", ":2222"), ":"), "username": "sim", "auth_type": "lease", "password": token, "execution_mode": "sim-ssh", "test_run_id": runID}})
+		environmentContext := map[string]any{"test_run_id": runID, "case_id": strings.TrimSpace(request.CaseID), "support_id": request.KBDID, "kbd_revision": router.KBD().Revision, "bundle_digest": router.BundleDigest(), "execution_mode": "sim-ssh", "virtual_node_id": "SIM-HCI-NODE-01", "container": "host", "authority_scope": env("HCI_SIM_AUTHORITY_SCOPE", "runtime_fixture"), "active_revision": envInt("HCI_SIM_ACTIVE_REVISION", router.KBD().Revision)}
+		_ = json.NewEncoder(w).Encode(map[string]any{"test_run_id": runID, "case_id": strings.TrimSpace(request.CaseID), "support_id": request.KBDID, "bundle_digest": router.BundleDigest(), "synthetic": router.IsSynthetic(), "environment_context": environmentContext, "connection": map[string]any{"host": env("HCI_SIM_SSH_HOST", "hci-sim.hci-sim-dev.svc"), "port": strings.TrimPrefix(env("HCI_SIM_SSH_LISTEN", ":2222"), ":"), "username": "sim", "auth_type": "lease", "password": token, "execution_mode": "sim-ssh", "test_run_id": runID}})
 	})
 	mux.HandleFunc("/v1/simulations/test-runs", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || !controlAuthorized(r) {
@@ -213,20 +254,23 @@ func runServer() error {
 		}
 		var request struct {
 			KBDID              string         `json:"kbd_id"`
+			CaseID             string         `json:"case_id"`
 			Title              string         `json:"title"`
 			Description        string         `json:"description"`
 			Connection         map[string]any `json:"connection"`
 			EnvironmentContext map[string]any `json:"environment_context"`
 		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32768)).Decode(&request); err != nil || strings.TrimSpace(request.KBDID) == "" || strings.TrimSpace(request.Title) == "" || strings.TrimSpace(request.Description) == "" {
-			http.Error(w, "kbd_id, title and description are required", http.StatusBadRequest)
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32768)).Decode(&request); err != nil || strings.TrimSpace(request.KBDID) == "" || strings.TrimSpace(request.CaseID) == "" || strings.TrimSpace(request.Title) == "" || strings.TrimSpace(request.Description) == "" {
+			http.Error(w, "kbd_id, case_id, title and description are required", http.StatusBadRequest)
 			return
 		}
 		connectionRunID, connectionRunOK := request.Connection["test_run_id"].(string)
+		connectionCaseID, connectionCaseOK := request.Connection["case_id"].(string)
 		contextRunID, contextRunOK := request.EnvironmentContext["test_run_id"].(string)
 		contextSupportID, supportOK := request.EnvironmentContext["support_id"].(string)
+		contextCaseID, caseOK := request.EnvironmentContext["case_id"].(string)
 		contextRevision, revisionOK := jsonInt(request.EnvironmentContext["kbd_revision"])
-		if request.Connection["execution_mode"] != "sim-ssh" || request.EnvironmentContext["execution_mode"] != "sim-ssh" || !connectionRunOK || !contextRunOK || !supportOK || !revisionOK || connectionRunID == "" || connectionRunID != contextRunID || contextSupportID != request.KBDID {
+		if request.Connection["execution_mode"] != "sim-ssh" || request.EnvironmentContext["execution_mode"] != "sim-ssh" || !connectionRunOK || !connectionCaseOK || !contextRunOK || !supportOK || !caseOK || !revisionOK || connectionRunID == "" || connectionRunID != contextRunID || connectionCaseID != strings.TrimSpace(request.CaseID) || contextSupportID != request.KBDID || contextCaseID != strings.TrimSpace(request.CaseID) {
 			http.Error(w, "sim TestRun must be explicitly bound to sim-ssh context", http.StatusConflict)
 			return
 		}
@@ -241,6 +285,13 @@ func runServer() error {
 			if record.SupportID != request.KBDID || record.KBDRevision != contextRevision || record.ExecutionMode != "sim-ssh" || record.BundleDigest != fmt.Sprint(request.EnvironmentContext["bundle_digest"]) {
 				http.Error(w, "test_run_context_mismatch", http.StatusConflict)
 				return
+			}
+			if bindErr := runRepository.BindCase(r.Context(), connectionRunID, request.CaseID); bindErr != nil {
+				http.Error(w, "test_run_case_binding_conflict", http.StatusConflict)
+				return
+			}
+			if refreshed, refreshErr := runRepository.Get(r.Context(), connectionRunID); refreshErr == nil {
+				record = refreshed
 			}
 			if record.Status == "requested" {
 				if updated, updateErr := runRepository.UpdateStatusCAS(r.Context(), connectionRunID, record.Version, "preparing"); updateErr != nil {
@@ -257,7 +308,7 @@ func runServer() error {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"case_id": "sim-case-" + randomID(), "test_run_id": connectionRunID, "status": status, "version": version, "execution_mode": "sim-ssh"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"case_id": strings.TrimSpace(request.CaseID), "test_run_id": connectionRunID, "status": status, "version": version, "execution_mode": "sim-ssh"})
 	})
 	mux.HandleFunc("/v1/simulations/test-runs/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || !controlAuthorized(r) {

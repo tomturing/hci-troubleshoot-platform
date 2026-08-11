@@ -50,6 +50,10 @@ spec:
               value: /etc/hci-sim/fixture-manifest.json
             - name: HCI_SIM_FIXTURE_VARIANT
               value: {{ .Values.runtime.fixtureVariant | quote }}
+            - name: HCI_SIM_AUTHORITY_SCOPE
+              value: {{ .Values.runtime.authorityScope | quote }}
+            - name: HCI_SIM_ACTIVE_REVISION
+              value: {{ .Values.runtime.activeRevision | quote }}
             - name: HCI_SIM_DATABASE_REQUIRED
               value: {{ .Values.database.required | quote }}
             {{- if .Values.database.required }}

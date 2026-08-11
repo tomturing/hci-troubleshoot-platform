@@ -138,6 +138,28 @@ func (r *RunRepository) Get(ctx context.Context, externalID string) (RunRecord, 
 	`, externalID))
 }
 
+// BindCase 将平台真实工单 ID 写入不可变环境上下文。首次绑定和相同 ID 重试
+// 幂等；不同工单不能覆盖既有 TestRun，避免 Agent 环境串线。
+func (r *RunRepository) BindCase(ctx context.Context, externalID, caseID string) error {
+	if strings.TrimSpace(externalID) == "" || strings.TrimSpace(caseID) == "" {
+		return errors.New("invalid case binding")
+	}
+	result, err := r.pool.Exec(ctx, `
+		UPDATE control_plane.run
+		SET environment_context = jsonb_set(environment_context, '{case_id}', to_jsonb($2::text), true),
+		    version = version + 1, updated_at = now()
+		WHERE external_id = $1
+		  AND (NULLIF(environment_context->>'case_id', '') IS NULL OR environment_context->>'case_id' = $2)
+	`, externalID, strings.TrimSpace(caseID))
+	if err != nil {
+		return fmt.Errorf("bind hci_sim case: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return ErrRunVersionConflict
+	}
+	return nil
+}
+
 // UpdateStatusCAS 是所有状态变更的唯一入口；version 不匹配时返回并发冲突，
 // 不允许旧 Worker 覆盖新状态。
 func (r *RunRepository) UpdateStatusCAS(ctx context.Context, externalID string, expectedVersion int, status string) (RunRecord, error) {
