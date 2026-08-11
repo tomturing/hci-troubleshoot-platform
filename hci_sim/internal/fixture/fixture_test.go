@@ -37,6 +37,25 @@ func TestPublishedKBD27123BundleLoads(t *testing.T) {
 	}
 }
 
+func TestPublishedKBD27123BundleMatchesAgentSystemCommands(t *testing.T) {
+	router, err := Load(filepath.Join("..", "..", "testdata", "kbd-27123-fixture-manifest.json"))
+	if err != nil {
+		t.Fatalf("load published bundle: %v", err)
+	}
+	for _, command := range []string{
+		"acli --timeout 120 system lsof",
+		"acli --timeout 120 system ps -p 9527 -o cmd=",
+	} {
+		result, matchErr := router.Match(command, "positive-realistic", "SIM-HCI-NODE-01", "host")
+		if matchErr != nil {
+			t.Fatalf("current Agent command %q must match published bundle: %v", command, matchErr)
+		}
+		if result.ExitCode != 0 || result.SignalID == "" {
+			t.Fatalf("current Agent command %q returned invalid fixture result: %+v", command, result)
+		}
+	}
+}
+
 func route(id, variant string, argv []string) Route {
 	return Route{
 		ID: id, Variant: variant,
