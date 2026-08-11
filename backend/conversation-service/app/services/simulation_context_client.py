@@ -47,6 +47,13 @@ class SimulationContextClient:
                     headers={"Authorization": f"Bearer {self.control_token}"},
                 )
         except (httpx.TimeoutException, httpx.RequestError) as exc:
+            logger.warning(
+                event="simulation_context_request_failed",
+                message="hci-sim TestRun context request failed before receiving a response",
+                test_run_id=test_run_id,
+                case_id=case_id,
+                error_type=type(exc).__name__,
+            )
             raise SimulationContextError("SIM_CONTEXT_UNAVAILABLE") from exc
         if response.status_code != 200:
             logger.warning(

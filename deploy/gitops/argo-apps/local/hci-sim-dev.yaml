@@ -27,7 +27,7 @@ spec:
         runtime:
           existingSecret: hci-sim-credentials
           authorityScope: dev_golden
-          activeRevision: 24
+          activeRevision: 25
   destination:
     server: https://kubernetes.default.svc
     namespace: hci-sim-dev

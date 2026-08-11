@@ -22,7 +22,7 @@ runtime:
   fixtureVariant: positive-realistic
   # dev-golden 明确表示该运行时是受审查的开发黄金 Fixture；它不能冒充主库 active revision。
   authorityScope: runtime_fixture
-  activeRevision: 1
+  activeRevision: 25
   existingSecret: hci-sim-credentials
   leaseKeySecretKey: lease-hmac-key
   controlTokenSecretKey: control-plane-token
@@ -58,9 +58,11 @@ resources:
 networkPolicy:
   enabled: true
   terminalBridgeNamespace: hci-dev
-  # 控制面调用方必须显式放行；默认与受管 api-gateway 同 namespace。
+  # 控制面调用方必须显式放行；默认与受管服务同 namespace。
   apiGatewayNamespace: hci-dev
   apiGatewayPort: 8000
+  # sim-ssh 会话仅允许 conversation-service 读取权威 TestRun 上下文。
+  conversationServiceNamespace: hci-dev
   observabilityNamespace: hci-observability
   # Runtime 写入独立 hci_sim 数据库；只允许访问受管 PostgreSQL Pod，禁止
   # 借助 namespace 级放行访问 hci-dev 中的其它工作负载。

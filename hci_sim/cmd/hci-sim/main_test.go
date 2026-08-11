@@ -69,6 +69,16 @@ func TestSimulationEnvironmentContextCarriesAgentScopeAndBinding(t *testing.T) {
 	}
 }
 
+func TestSimulationBuildableRequiresExactActiveRevision(t *testing.T) {
+	kbd := fixture.KBDRef{SupportID: "27123", Revision: 25, Checksum: "sha256:kbd"}
+	if !simulationBuildable("27123", kbd, 25, "sha256:bundle", "dev_golden", false) {
+		t.Fatal("matching published runtime should be buildable")
+	}
+	if simulationBuildable("27123", kbd, 24, "sha256:bundle", "dev_golden", false) {
+		t.Fatal("stale runtime revision was marked buildable")
+	}
+}
+
 func TestTerminalRunStatus(t *testing.T) {
 	for _, status := range []string{"passed", "failed", "inconclusive", "cancelled", "expired"} {
 		if !terminalRunStatus(status) {

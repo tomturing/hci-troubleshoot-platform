@@ -159,7 +159,7 @@ func runServer() error {
 		runtimeRevision := runtimeKBD.Revision
 		authorityScope := env("HCI_SIM_AUTHORITY_SCOPE", "runtime_fixture")
 		activeRevision := envInt("HCI_SIM_ACTIVE_REVISION", runtimeRevision)
-		buildable := requestedID == runtimeKBD.SupportID && router.BundleDigest() != "" && authorityScope != "runtime_fixture" && !router.IsSynthetic()
+		buildable := simulationBuildable(requestedID, runtimeKBD, activeRevision, router.BundleDigest(), authorityScope, router.IsSynthetic())
 		gaps := make([]string, 0, 3)
 		if requestedID != runtimeKBD.SupportID {
 			gaps = append(gaps, "kbd_not_loaded")
@@ -464,6 +464,14 @@ func simulationEnvironmentContext(router *fixture.Router, runID, caseID, variant
 		"authority_scope": env("HCI_SIM_AUTHORITY_SCOPE", "runtime_fixture"),
 		"active_revision": envInt("HCI_SIM_ACTIVE_REVISION", router.KBD().Revision),
 	}
+}
+
+func simulationBuildable(requestedID string, runtimeKBD fixture.KBDRef, activeRevision int, bundleDigest, authorityScope string, synthetic bool) bool {
+	return requestedID == runtimeKBD.SupportID &&
+		activeRevision == runtimeKBD.Revision &&
+		bundleDigest != "" &&
+		authorityScope != "runtime_fixture" &&
+		!synthetic
 }
 
 func terminalRunStatus(status string) bool {

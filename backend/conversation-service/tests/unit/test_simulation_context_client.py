@@ -78,3 +78,18 @@ async def test_context_client_rejects_inactive_runtime_response():
 
     with pytest.raises(SimulationContextError, match="SIM_CONTEXT_REJECTED_409"):
         await client.get_active_context("run-27123", "Q27123")
+
+
+@pytest.mark.asyncio
+async def test_context_client_reports_transport_failure_as_unavailable():
+    async def handler(_request: httpx.Request):
+        raise httpx.ConnectError("blocked by network policy")
+
+    client = SimulationContextClient(
+        "http://hci-sim",
+        "context-token",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(SimulationContextError, match="SIM_CONTEXT_UNAVAILABLE"):
+        await client.get_active_context("run-27123", "Q27123")

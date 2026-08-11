@@ -1,8 +1,8 @@
 {
   "schema_version": "2.0",
-  "bundle": { "digest": "sha256:d7ddfb849cb1a3d0879af2a6887b0c77506632bfa7c8261cf656305d06e30bfa", "status": "published" },
-  "kbd": { "support_id": "27123", "revision": 1, "checksum": "fa2fd873affea6d22292ed88f9373a375782eff00d3ce03618118d81d8423e67" },
-  "contracts": { "tool_revision": "acli-r1", "policy_revision": "routekey-r2" },
+  "bundle": { "digest": "sha256:91f8e7f1413638401717fb43c2921e629596b7420f48d5c0edf6a03d72039d5a", "status": "published" },
+  "kbd": { "support_id": "27123", "revision": 25, "checksum": "sha256:91a5a67e4e9f62363b9a9b48a9533b601d7918c54f4e654d424bb4819c074329" },
+  "contracts": { "tool_revision": "cf416e14cccccf8b5427cf3ae9e6e4d69eb56566ef49260399ce9ac12bf27c44", "policy_revision": "01065eed83edb5dcdc203f57b78c1446cca0a37bd204ec2ec0849230a9b2e451" },
   "limits": { "max_routes": 32, "max_output_bytes_per_command": 4096, "max_bundle_bytes": 65536 },
   "variables": { "VM": "271230001", "HOST": "SIM-HCI-NODE-01", "NODE_ENDPOINT": "hci-sim.hci-sim-dev.svc", "PID": "9527", "END": "2026-07-30 10:00:12" },
   "routes": [
