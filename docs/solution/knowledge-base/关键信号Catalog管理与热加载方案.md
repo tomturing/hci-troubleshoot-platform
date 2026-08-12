@@ -31,10 +31,10 @@
 ## 3. Admin UI 管理页面与 REST API
 
 ### 3.1 后端 REST API
-- `GET /api/kb/catalogs`：获取可管理的 Catalog 列表与修改时间、记录条数；
-- `GET /api/kb/catalogs/{filename}`：获取指定 Catalog 的 JSON 文本与结构化对象；
-- `POST /api/kb/catalogs/{filename}/validate`：在线校验输入 JSON 的语法与规则格式；
-- `PUT /api/kb/catalogs/{filename}`：更新 Catalog 内容写回磁盘，即刻触发热重载。
+- `GET /api/kb/resolution-catalogs`：获取可管理的 Catalog 列表与修改时间、记录条数；
+- `GET /api/kb/resolution-catalogs/{filename}`：获取指定 Catalog 的 JSON 文本与结构化对象；
+- `POST /api/kb/resolution-catalogs/{filename}/validate`：在线校验输入 JSON 的语法与规则格式；
+- `PUT /api/kb/resolution-catalogs/{filename}`：更新 Catalog 内容写回磁盘，即刻触发热重载。
 
 ### 3.2 前端控制台 (Admin UI `/catalog`)
 - **路由位置**：挂载于“分类基线”正下方 (order 6.5，图标 `Collection`)。
