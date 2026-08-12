@@ -995,6 +995,7 @@ jobs:
                   in_block && $0 ~ /^[[:space:]]+tag:[[:space:]]*/ {
                     value=$0
                     sub(/^.*tag:[[:space:]]*/, "", value)
+                    sub(/#.*/, "", value)  # 剥除 YAML 行内注释（如 # RC-5: ...）
                     gsub(/["[:space:]]/, "", value)
                     print value
                     exit
@@ -1013,6 +1014,7 @@ jobs:
                   in_block && /^[[:space:]]+tag:[[:space:]]*/ {
                     value=$0
                     sub(/^.*tag:[[:space:]]*/, "", value)
+                    sub(/#.*/, "", value)  # 剥除 YAML 行内注释（如 # RC-5: ...）
                     gsub(/["[:space:]]/, "", value)
                     print value
                     exit
