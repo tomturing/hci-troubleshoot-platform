@@ -12,6 +12,7 @@ RUN uv pip compile pyproject.toml --no-annotate --no-header -q -o requirements.t
 
 COPY backend/shared /app/shared
 COPY backend/kb-service /app
+RUN chmod -R 777 /app/shared
 
 EXPOSE 8004
 

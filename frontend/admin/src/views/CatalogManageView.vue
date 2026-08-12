@@ -191,6 +191,31 @@ function syncStructureToCode() {
   validateCodeJsonSilent(jsonCodeText.value)
 }
 
+/** 结构化变动时自动提交保存写回配置文件 */
+async function saveStructureToBackend(customSuccessMsg?: string) {
+  syncStructureToCode()
+  if (!jsonSyntaxValid.value) {
+    ElMessage.error(`自动保存失败：当前 JSON 语法错误（${syntaxErrorMessage.value}）`)
+    return
+  }
+  saving.value = true
+  try {
+    const res = await updateCatalogContent(activeCatalogName.value, jsonCodeText.value)
+    ElMessage.success(customSuccessMsg || `已自动保存写入配置文件并完成热重载！`)
+    jsonCodeText.value = res.content_text
+    currentDetail.value = {
+      meta: res.meta,
+      content_text: res.content_text,
+      content_json: JSON.parse(res.content_text)
+    }
+    fetchCatalogList()
+  } catch (err: any) {
+    ElMessage.error(`保存失败: ${err.message}`)
+  } finally {
+    saving.value = false
+  }
+}
+
 function handleTabClick(tabName: string) {
   activeCatalogName.value = tabName
   loadCatalog(tabName)
@@ -257,7 +282,7 @@ async function handleValidateBtn() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 保存 & 导入导出
+// 手动保存 & 导入导出
 // ──────────────────────────────────────────────────────────────────────────────
 async function handleSaveCatalog() {
   validateCodeJsonSilent(jsonCodeText.value)
@@ -277,22 +302,11 @@ async function handleSaveCatalog() {
       }
     )
 
-    saving.value = true
-    const res = await updateCatalogContent(activeCatalogName.value, jsonCodeText.value)
-    ElMessage.success(res.message)
-    jsonCodeText.value = res.content_text
-    currentDetail.value = {
-      meta: res.meta,
-      content_text: res.content_text,
-      content_json: JSON.parse(res.content_text)
-    }
-    fetchCatalogList()
+    await saveStructureToBackend('保存成功！后端 Shared Resolution Runtime 已感知变更自动热加载生效')
   } catch (err: any) {
     if (err !== 'cancel') {
       ElMessage.error(`保存失败: ${err.message}`)
     }
-  } finally {
-    saving.value = false
   }
 }
 
@@ -314,14 +328,14 @@ function handleFileImport(uploadFile: any) {
   const file = uploadFile.raw
   if (!file) return
   const reader = new FileReader()
-  reader.onload = (e) => {
+  reader.onload = async (e) => {
     try {
       const text = e.target?.result as string
       const parsed = JSON.parse(text)
       jsonCodeText.value = JSON.stringify(parsed, null, 2)
       parseContentToStructure(activeCatalogName.value, parsed)
       validateCodeJsonSilent(jsonCodeText.value)
-      ElMessage.success(`成功导入本地文件 [${file.name}]，请核对后保存`)
+      await saveStructureToBackend(`成功导入文件 [${file.name}] 并保存写入配置文件！`)
     } catch (err: any) {
       ElMessage.error(`解析导入文件失败：不是合法 JSON - ${err.message}`)
     }
@@ -330,23 +344,24 @@ function handleFileImport(uploadFile: any) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 结构化项增删逻辑
+// 结构化项增删逻辑（全部直接发 API 保存生效）
 // ──────────────────────────────────────────────────────────────────────────────
-function handleAddAcliCommand() {
+async function handleAddAcliCommand() {
   if (!newCommandText.value.trim()) return
-  acliCommandsList.value.unshift({ command: newCommandText.value.trim() })
+  const cmd = newCommandText.value.trim()
+  acliCommandsList.value.unshift({ command: cmd })
   newCommandText.value = ''
   addCommandDialogVisible.value = false
-  syncStructureToCode()
-  ElMessage.success('已添加命令')
+  await saveStructureToBackend(`已添加命令 [${cmd}] 并写入配置文件热生效！`)
 }
 
-function removeAcliCommand(index: number) {
+async function removeAcliCommand(index: number) {
+  const removed = acliCommandsList.value[index]?.command
   acliCommandsList.value.splice(index, 1)
-  syncStructureToCode()
+  await saveStructureToBackend(`已删除命令 ${removed ? '[' + removed + ']' : ''} 并写入配置文件！`)
 }
 
-function handleAddAlias() {
+async function handleAddAlias() {
   if (!newAliasKey.value.trim() || !newAliasValue.value.trim()) return
   logAliasRows.value.unshift({
     key: newAliasKey.value.trim(),
@@ -355,16 +370,15 @@ function handleAddAlias() {
   newAliasKey.value = ''
   newAliasValue.value = ''
   addAliasDialogVisible.value = false
-  syncStructureToCode()
-  ElMessage.success('已添加 Log 别名')
+  await saveStructureToBackend('已添加 Log 别名并保存热生效！')
 }
 
-function removeLogAlias(index: number) {
+async function removeLogAlias(index: number) {
   logAliasRows.value.splice(index, 1)
-  syncStructureToCode()
+  await saveStructureToBackend('已删除 Log 别名并保存热生效！')
 }
 
-function handleAddDomainReq() {
+async function handleAddDomainReq() {
   const pathArr = newDomainForm.pathStr.trim().split(/\s+/)
   const optionsArr = newDomainForm.optionsStr.split(',').map(s => s.trim()).filter(Boolean)
   resolutionData.domain_command_requirements.unshift({
@@ -373,16 +387,15 @@ function handleAddDomainReq() {
     required_options: optionsArr
   })
   addDomainReqDialogVisible.value = false
-  syncStructureToCode()
-  ElMessage.success('已添加 Domain 参数契约')
+  await saveStructureToBackend('已添加 Domain 参数契约并保存热生效！')
 }
 
-function removeDomainReq(index: number) {
+async function removeDomainReq(index: number) {
   resolutionData.domain_command_requirements.splice(index, 1)
-  syncStructureToCode()
+  await saveStructureToBackend('已删除 Domain 参数契约并保存热生效！')
 }
 
-function handleAddQkvAction() {
+async function handleAddQkvAction() {
   const canonicalArr = newQkvForm.canonical_keywords.split(',').map(s => s.trim()).filter(Boolean)
   const aliasArr = newQkvForm.aliases.split(',').map(s => s.trim()).filter(Boolean)
   const negArr = newQkvForm.negative_aliases.split(',').map(s => s.trim()).filter(Boolean)
@@ -395,13 +408,12 @@ function handleAddQkvAction() {
     negative_aliases: negArr.length ? negArr : undefined
   })
   addQkvDialogVisible.value = false
-  syncStructureToCode()
-  ElMessage.success('已添加 QKV Action 映射')
+  await saveStructureToBackend('已添加 QKV Action 映射并保存热生效！')
 }
 
-function removeQkvAction(index: number) {
+async function removeQkvAction(index: number) {
   resolutionData.qkv_actions.splice(index, 1)
-  syncStructureToCode()
+  await saveStructureToBackend('已删除 QKV Action 映射并保存热生效！')
 }
 
 onMounted(async () => {
@@ -421,7 +433,7 @@ onMounted(async () => {
             <h2>Catalog 基线与关键信号规则</h2>
           </div>
           <p class="header-desc">
-            统一管理 Shared Resolution Runtime 的命令快照与审查目录。支持结构化卡片与 JSON 代码模式在线编辑，保存写回即刻通过文件 mtime **免重启自动热加载生效**。
+            统一管理 Shared Resolution Runtime 的命令快照与审查目录。支持结构化卡片与 JSON 代码模式在线编辑，添加/修改/删除动作将**自动写入配置文件并即刻热加载生效**。
           </p>
         </div>
         <div class="header-actions">
@@ -511,8 +523,8 @@ onMounted(async () => {
                   <el-input
                     v-model="row.description"
                     size="small"
-                    placeholder="可选说明"
-                    @change="syncStructureToCode"
+                    placeholder="可选说明 (修改自动保存)"
+                    @change="() => saveStructureToBackend('修改描述已保存')"
                   />
                 </template>
               </el-table-column>
@@ -553,12 +565,12 @@ onMounted(async () => {
             <el-table :data="logAliasRows" size="small" stripe style="width: 100%">
               <el-table-column label="原始/误写名称 (Alias Key)" min-width="250">
                 <template #default="{ row }">
-                  <el-input v-model="row.key" size="small" @change="syncStructureToCode" />
+                  <el-input v-model="row.key" size="small" @change="() => saveStructureToBackend('更新 Log 别名已保存')" />
                 </template>
               </el-table-column>
               <el-table-column label="标准日志文件名 (Canonical Value)" min-width="250">
                 <template #default="{ row }">
-                  <el-input v-model="row.value" size="small" @change="syncStructureToCode" />
+                  <el-input v-model="row.value" size="small" @change="() => saveStructureToBackend('更新 Log 别名已保存')" />
                 </template>
               </el-table-column>
               <el-table-column label="操作" width="80" align="center">
@@ -706,7 +718,7 @@ onMounted(async () => {
       </el-form>
       <template #footer>
         <el-button @click="addCommandDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleAddAcliCommand">确定添加</el-button>
+        <el-button type="primary" :loading="saving" @click="handleAddAcliCommand">确定添加并保存生效</el-button>
       </template>
     </el-dialog>
 
@@ -722,7 +734,7 @@ onMounted(async () => {
       </el-form>
       <template #footer>
         <el-button @click="addAliasDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleAddAlias">确定添加</el-button>
+        <el-button type="primary" :loading="saving" @click="handleAddAlias">确定添加并保存生效</el-button>
       </template>
     </el-dialog>
 
@@ -741,7 +753,7 @@ onMounted(async () => {
       </el-form>
       <template #footer>
         <el-button @click="addDomainReqDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleAddDomainReq">确定添加</el-button>
+        <el-button type="primary" :loading="saving" @click="handleAddDomainReq">确定添加并保存生效</el-button>
       </template>
     </el-dialog>
 
@@ -766,7 +778,7 @@ onMounted(async () => {
       </el-form>
       <template #footer>
         <el-button @click="addQkvDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleAddQkvAction">确定添加</el-button>
+        <el-button type="primary" :loading="saving" @click="handleAddQkvAction">确定添加并保存生效</el-button>
       </template>
     </el-dialog>
 

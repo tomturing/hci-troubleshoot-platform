@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -189,6 +190,10 @@ async def update_catalog(filename: str, body: CatalogSaveRequest) -> dict[str, A
     path: Path = cfg["path"]
 
     try:
+        if path.exists():
+            with contextlib.suppress(Exception):
+                path.chmod(0o666)
+
         # 统一以 2 空格美化格式写入磁盘，保持 JSON 排版整洁
         formatted_json = json.dumps(json.loads(body.content), ensure_ascii=False, indent=2) + "\n"
         path.write_text(formatted_json, encoding="utf-8")
