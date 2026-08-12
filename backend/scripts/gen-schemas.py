@@ -182,6 +182,9 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     # 与 produces[].extract 引用同一份 valueExtract；取值层与
                     # Predicate 正交，不执行自由 grep/awk/jq。
                     "extract": {"$ref": "#/definitions/valueExtract"},
+                    # 指标名引用（如 CPU 使用率、内存占用），供 kb-service 校验时
+                    # 按 metric 维度做可执行性判定，避免触发 additionalProperties 拒绝。
+                    "metric": {"type": "string"},
                     "minimum_samples": {"type": "integer", "minimum": 2, "maximum": 10000},
                     "direction": {"type": "string", "enum": ["increasing", "decreasing", "stable"]},
                 },
