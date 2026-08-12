@@ -318,6 +318,11 @@ class InvestigationAgent(BaseAgent):
         # 保留预取事实的结构化值（task_logs/alert_logs 等）；QKV 可直接消费已有现场事实，
         # 避免为了重复获取同一份数据再次依赖浏览器终端桥。
         env_ctx: dict[str, Any] = dict(env_context or {})
+        env_ctx.setdefault("product", "HCI")
+        if "components" not in env_ctx and category_id:
+            comp_prefix = category_id.split("-")[0]
+            if comp_prefix:
+                env_ctx["components"] = [comp_prefix]
         self._kbd_diag = KBDDiagnostic(
             ai_registry=self._ai_registry,
             tool_executor=self._tool_executor,

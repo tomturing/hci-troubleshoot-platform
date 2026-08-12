@@ -1,0 +1,617 @@
+{
+  "schema_version": "2.0",
+  "bundle": {
+    "digest": "sha256:54fc5486e7dccbbc92f83183029513b908010c39c587781f78ad32c27bea2ad4",
+    "status": "published"
+  },
+  "kbd": {
+    "support_id": "27123",
+    "revision": 25,
+    "checksum": "sha256:91a5a67e4e9f62363b9a9b48a9533b601d7918c54f4e654d424bb4819c074329"
+  },
+  "contracts": {
+    "tool_revision": "cf416e14cccccf8b5427cf3ae9e6e4d69eb56566ef49260399ce9ac12bf27c44",
+    "policy_revision": "01065eed83edb5dcdc203f57b78c1446cca0a37bd204ec2ec0849230a9b2e451"
+  },
+  "limits": {
+    "max_routes": 64,
+    "max_output_bytes_per_command": 4096,
+    "max_bundle_bytes": 131072
+  },
+  "variables": {
+    "VM": "271230001",
+    "HOST": "SIM-HCI-NODE-01",
+    "NODE_ENDPOINT": "hci-sim.hci-sim-dev.svc",
+    "PID": "9527",
+    "END": "2026-07-30 10:00:12"
+  },
+  "routes": [
+    {
+      "id": "shell-acli",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "command",
+        "acquisition_key": "command:-v",
+        "argv": [
+          "command",
+          "-v",
+          "acli"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "__HCI_ACLI_OK__\n"
+      },
+      "stream": {},
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "env-platform-info",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:platform",
+        "argv": [
+          "acli",
+          "platform",
+          "info",
+          "get"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "{\"data\":{\"name\":\"HCI-SIM-27123\",\"version\":\"6.11.1_R1\",\"node_count\":1}}\n"
+      },
+      "stream": {
+        "chunk_bytes": 64
+      },
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "env-alert-list",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:--formatter",
+        "argv": [
+          "acli",
+          "--formatter",
+          "json",
+          "alert",
+          "list"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "{\"data\":[]}\n"
+      },
+      "stream": {},
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "env-task-list",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:--formatter",
+        "argv": [
+          "acli",
+          "--formatter",
+          "json",
+          "task",
+          "list"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "{\"data\":[{\"type\":\"启动虚拟机\",\"process\":\"失败\",\"status\":3,\"target\":\"SIM-VM-27123\",\"vm\":\"{{VM}}\",\"host\":\"{{HOST}}\",\"end\":\"{{END}}\"}]}\n"
+      },
+      "stream": {
+        "chunk_bytes": 80
+      },
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "sig-001-task-positive",
+      "signal_id": "sig_001",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:--formatter",
+        "argv": [
+          "acli",
+          "--formatter",
+          "json",
+          "task",
+          "get",
+          "-k",
+          "启动虚拟机",
+          "-s",
+          "failed",
+          "-l",
+          "1"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "{\"data\":[{\"alert_type\":\"启动虚拟机\",\"description\":\"启动虚拟机（SIM-VM-27123）失败，错误信息：虚拟机镜像忙，正在执行其他操作！\\n\",\"end\":\"{{END}}\",\"host\":\"{{HOST}}\",\"hostname\":\"{{HOST}}\",\"object_name\":\"SIM-VM-27123\",\"process\":\"失败\",\"status\":3,\"target\":\"SIM-VM-27123\",\"type\":\"启动虚拟机\",\"vm\":\"{{VM}}\"}]}\n"
+      },
+      "stream": {
+        "chunk_bytes": 96
+      },
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "resolve-platform-node-positive",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:--formatter",
+        "argv": [
+          "acli",
+          "--formatter",
+          "json",
+          "platform",
+          "node",
+          "list"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "{\"data\":[{\"alert\":\"0\",\"controller\":1,\"id\":\"sim-node-27123\",\"ip\":\"{{NODE_ENDPOINT}}\",\"master\":1,\"name\":\"{{HOST}}\",\"status\":1}]}\n"
+      },
+      "stream": {
+        "chunk_bytes": 64
+      },
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "sig-002-lsof-positive",
+      "signal_id": "sig_002",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:--timeout",
+        "argv": [
+          "acli",
+          "--timeout",
+          "120",
+          "system",
+          "lsof"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "flock       {{PID}}           root    3uW     REG               8,96  128886833152               770051 /sf/data/sim-cluster/images/sim-node/{{VM}}.vm/vm-disk-2.qcow2\nsleep       9528           root    3u      REG               8,96  128886833152               770051 /sf/data/sim-cluster/images/sim-node/{{VM}}.vm/vm-disk-2.qcow2\n",
+        "stderr": "lsof: no pwd entry for UID 65535\nlsof: no pwd entry for UID 65535\n"
+      },
+      "stream": {
+        "chunk_bytes": 128
+      },
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "sig-003-ps-positive",
+      "signal_id": "sig_003",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:--timeout",
+        "argv": [
+          "acli",
+          "--timeout",
+          "120",
+          "system",
+          "ps",
+          "-p",
+          "9527",
+          "-o",
+          "cmd="
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "flock -x /sf/data/sim-cluster/images/sim-node/{{VM}}.vm/vm-disk-2.qcow2 sleep 9999999\n"
+      },
+      "stream": {
+        "chunk_bytes": 48
+      },
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "sig-001-task-negative",
+      "signal_id": "sig_001",
+      "variant": "negative",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:--formatter",
+        "argv": [
+          "acli",
+          "--formatter",
+          "json",
+          "task",
+          "get",
+          "-k",
+          "启动虚拟机",
+          "-s",
+          "failed",
+          "-l",
+          "1"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "{\"data\":[]}\n"
+      },
+      "stream": {},
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "sig-002-lsof-negative",
+      "signal_id": "sig_002",
+      "variant": "negative",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:--timeout",
+        "argv": [
+          "acli",
+          "--timeout",
+          "120",
+          "system",
+          "lsof"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "systemd 100 root cwd DIR 8,1 4096 /\n"
+      },
+      "stream": {},
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "sig-002-lsof-near-miss",
+      "signal_id": "sig_002",
+      "variant": "near-miss",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:--timeout",
+        "argv": [
+          "acli",
+          "--timeout",
+          "120",
+          "system",
+          "lsof"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "flock 9527 root 3uW REG 8,96 128886833152 770051 /sf/data/sim-cluster/images/sim-node/OTHER-VM.vm/vm-disk-2.qcow2\n"
+      },
+      "stream": {},
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "sig-002-lsof-permission",
+      "signal_id": "sig_002",
+      "variant": "permission",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:--timeout",
+        "argv": [
+          "acli",
+          "--timeout",
+          "120",
+          "system",
+          "lsof"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 13,
+        "stderr": "permission denied: acli --timeout 120 system lsof\n"
+      },
+      "stream": {},
+      "fault": {
+        "type": "permission"
+      }
+    },
+    {
+      "id": "sig-002-lsof-timeout",
+      "signal_id": "sig_002",
+      "variant": "timeout",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:--timeout",
+        "argv": [
+          "acli",
+          "--timeout",
+          "120",
+          "system",
+          "lsof"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0
+      },
+      "stream": {},
+      "fault": {
+        "type": "timeout",
+        "after_ms": 180000
+      }
+    },
+    {
+      "id": "shell-acli-23821",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "command",
+        "acquisition_key": "command:-v",
+        "argv": [
+          "command",
+          "-v",
+          "acli"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "__HCI_ACLI_OK__\n"
+      },
+      "stream": {},
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "env-platform-info-23821",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:platform",
+        "argv": [
+          "acli",
+          "platform",
+          "info",
+          "get"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "{\"data\":{\"name\":\"HCI-SIM-23821\",\"version\":\"6.9.0\",\"node_count\":1}}\n"
+      },
+      "stream": {
+        "chunk_bytes": 64
+      },
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "env-alert-list-23821",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:--formatter",
+        "argv": [
+          "acli",
+          "--formatter",
+          "json",
+          "alert",
+          "list"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "{\"data\":[]}\n"
+      },
+      "stream": {},
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "env-task-list-23821",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:--formatter",
+        "argv": [
+          "acli",
+          "--formatter",
+          "json",
+          "task",
+          "list"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "{\"data\":[{\"type\":\"迁移虚拟机\",\"process\":\"失败\",\"status\":3,\"target\":\"SIM-VM-23821\",\"vm\":\"{{VM}}\",\"host\":\"{{HOST}}\",\"end\":\"{{END}}\"}]}\n"
+      },
+      "stream": {
+        "chunk_bytes": 80
+      },
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "resolve-platform-node-positive-23821",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:--formatter",
+        "argv": [
+          "acli",
+          "--formatter",
+          "json",
+          "platform",
+          "node",
+          "list"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "{\"data\":[{\"alert\":\"0\",\"controller\":1,\"id\":\"sim-node-23821\",\"ip\":\"{{NODE_ENDPOINT}}\",\"master\":1,\"name\":\"{{HOST}}\",\"status\":1}]}\n"
+      },
+      "stream": {
+        "chunk_bytes": 64
+      },
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "sig-001-task-positive-23821",
+      "signal_id": "sig_001",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:--formatter",
+        "argv": [
+          "acli",
+          "--formatter",
+          "json",
+          "task",
+          "get",
+          "-k",
+          "迁移虚拟机",
+          "-s",
+          "failed",
+          "-l",
+          "1"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "{\"data\":[{\"alert_type\":\"迁移虚拟机\",\"description\":\"迁移虚拟机失败，错误信息：操作被阻止！\\n\",\"end\":\"{{END}}\",\"host\":\"{{HOST}}\",\"hostname\":\"{{HOST}}\",\"object_name\":\"SIM-VM-238210001\",\"process\":\"失败\",\"status\":3,\"target\":\"SIM-VM-238210001\",\"type\":\"迁移虚拟机\",\"vm\":\"{{VM}}\"}]}\n"
+      },
+      "stream": {
+        "chunk_bytes": 96
+      },
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "sig-002-vtpdaemon-log-positive",
+      "signal_id": "sig_002",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:log",
+        "argv": [
+          "acli",
+          "log",
+          "get",
+          "-E",
+          "-k",
+          "info\\ block-jobs|Completed",
+          "-f",
+          "sfvt_vtpdaemon.log",
+          "-p",
+          "/sf/log/30",
+          "-t",
+          "{{END}}"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "QemuMonitor: 3511119749747, $VAR1 = { 'execute' => 'human-monitor-command', 'arguments' => { 'command-line' => 'info block-jobs' } }; OUT: $VAR1 = 'Type mirror, device drive-virtio0: Completed 347688534016 of 347688534016 bytes'\n"
+      },
+      "stream": {},
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "sig-003-qmpcmd-positive",
+      "signal_id": "expert_1786499837113_brbf6r6fivk",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:--timeout",
+        "argv": [
+          "acli",
+          "--timeout",
+          "60",
+          "--container",
+          "asv-con",
+          "system",
+          "qmpcmd",
+          "{{VM}}",
+          "info",
+          "block-jobs"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "(qemu) info block-jobs\nType mirror, device drive-virtio0: Completed 361069346816 of 361069346816 bytes, speed limit 1310720000 bytes/s\n"
+      },
+      "stream": {},
+      "fault": {
+        "type": "none"
+      }
+    }
+  ]
+}
