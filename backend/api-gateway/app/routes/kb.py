@@ -257,6 +257,44 @@ async def category_export_proxy(request: Request):
             raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
 
 
+# ============ Resolution Catalogs 代理（admin 前端使用 /api/kb/catalogs 前缀） ============
+catalogs_router = APIRouter(prefix="/api/kb/catalogs", tags=["kb-catalogs"])
+
+
+@catalogs_router.get("")
+async def list_catalogs_proxy(request: Request):
+    """代理获取 Catalog 列表请求 → kb-service"""
+    headers = _internal_auth_headers()
+    resp = await proxy_request("GET", "/resolution-catalogs", headers=headers)
+    return JSONResponse(content=resp.json(), status_code=resp.status_code)
+
+
+@catalogs_router.get("/{filename}")
+async def get_catalog_proxy(filename: str, request: Request):
+    """代理获取指定 Catalog 内容请求 → kb-service"""
+    headers = _internal_auth_headers()
+    resp = await proxy_request("GET", f"/resolution-catalogs/{filename}", headers=headers)
+    return JSONResponse(content=resp.json(), status_code=resp.status_code)
+
+
+@catalogs_router.post("/{filename}/validate")
+async def validate_catalog_proxy(filename: str, request: Request):
+    """代理校验 Catalog 内容请求 → kb-service"""
+    headers = _internal_auth_headers()
+    body = await request.json()
+    resp = await proxy_request("POST", f"/resolution-catalogs/{filename}/validate", payload=body, headers=headers)
+    return JSONResponse(content=resp.json(), status_code=resp.status_code)
+
+
+@catalogs_router.put("/{filename}")
+async def update_catalog_proxy(filename: str, request: Request):
+    """代理更新 Catalog 内容请求 → kb-service"""
+    headers = _internal_auth_headers()
+    body = await request.json()
+    resp = await proxy_request("PUT", f"/resolution-catalogs/{filename}", payload=body, headers=headers)
+    return JSONResponse(content=resp.json(), status_code=resp.status_code)
+
+
 # ============ KBD 审核代理（前端使用 /api/v1/kbd 前缀） ============
 
 KBD_SERVICE_URL = f"{settings.KB_SERVICE_URL}/api/admin/kbd"

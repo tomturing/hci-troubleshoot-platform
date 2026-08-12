@@ -30,6 +30,7 @@ from app.routes import (
     ingest,
     kbd_search,
     playbooks,
+    resolution_catalogs,
     route,
     sop_ingest,
 )
@@ -127,6 +128,7 @@ app.include_router(classify.router)
 app.include_router(extract_signals.router)  # 关键信号分级抽取
 app.include_router(sop_ingest.router)  # SOP 文档入库
 app.include_router(categories.router)  # 分类管理路由
+app.include_router(resolution_catalogs.router)  # Shared Resolution Catalogs 管理路由
 app.include_router(hits.sop_hit_router)  # SOP 命中统计路由
 app.include_router(hits.kbd_hit_router)  # KBD 命中统计路由
 app.include_router(hci_sim.router)  # hci-sim 不可变 KBD 快照与批量 capability report
