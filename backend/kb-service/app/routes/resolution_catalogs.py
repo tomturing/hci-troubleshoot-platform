@@ -22,7 +22,7 @@ from shared.resolution.catalog import (
 )
 
 logger = get_logger("kb-service-resolution-catalogs")
-router = APIRouter(prefix="/resolution-catalogs", tags=["resolution-catalogs"])
+router = APIRouter(prefix="/api/kb/resolution-catalogs", tags=["resolution-catalogs"])
 
 # 允许访问与管理的配置文件集合
 _ALLOWED_CATALOGS: dict[str, dict[str, Any]] = {
