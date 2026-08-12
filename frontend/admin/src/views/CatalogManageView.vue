@@ -282,7 +282,7 @@ async function handleValidateBtn() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 手动保存 & 导入导出
+// 代码模式手动保存 & 导入导出
 // ──────────────────────────────────────────────────────────────────────────────
 async function handleSaveCatalog() {
   validateCodeJsonSilent(jsonCodeText.value)
@@ -344,7 +344,7 @@ function handleFileImport(uploadFile: any) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// 结构化项增删逻辑（全部直接发 API 保存生效）
+// 结构化项增删逻辑（含二次弹框确认防误触）
 // ──────────────────────────────────────────────────────────────────────────────
 async function handleAddAcliCommand() {
   if (!newCommandText.value.trim()) return
@@ -356,9 +356,21 @@ async function handleAddAcliCommand() {
 }
 
 async function removeAcliCommand(index: number) {
-  const removed = acliCommandsList.value[index]?.command
-  acliCommandsList.value.splice(index, 1)
-  await saveStructureToBackend(`已删除命令 ${removed ? '[' + removed + ']' : ''} 并写入配置文件！`)
+  const row = acliCommandsList.value[index]
+  if (!row) return
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除 aCLI 命令 [${row.command}] 吗？`,
+      '确认删除',
+      {
+        confirmButtonText: '确定删除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    acliCommandsList.value.splice(index, 1)
+    await saveStructureToBackend(`已删除命令 [${row.command}] 并写入配置文件！`)
+  } catch (_) {}
 }
 
 async function handleAddAlias() {
@@ -374,8 +386,20 @@ async function handleAddAlias() {
 }
 
 async function removeLogAlias(index: number) {
-  logAliasRows.value.splice(index, 1)
-  await saveStructureToBackend('已删除 Log 别名并保存热生效！')
+  const row = logAliasRows.value[index]
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除 Log 别名 [${row?.key || '此项'}] 吗？`,
+      '确认删除',
+      {
+        confirmButtonText: '确定删除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    logAliasRows.value.splice(index, 1)
+    await saveStructureToBackend('已删除 Log 别名并保存热生效！')
+  } catch (_) {}
 }
 
 async function handleAddDomainReq() {
@@ -391,8 +415,20 @@ async function handleAddDomainReq() {
 }
 
 async function removeDomainReq(index: number) {
-  resolutionData.domain_command_requirements.splice(index, 1)
-  await saveStructureToBackend('已删除 Domain 参数契约并保存热生效！')
+  const row = resolutionData.domain_command_requirements[index]
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除 Domain [${row?.domain}] 命令契约配置吗？`,
+      '确认删除',
+      {
+        confirmButtonText: '确定删除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    resolutionData.domain_command_requirements.splice(index, 1)
+    await saveStructureToBackend('已删除 Domain 参数契约并保存热生效！')
+  } catch (_) {}
 }
 
 async function handleAddQkvAction() {
@@ -412,8 +448,20 @@ async function handleAddQkvAction() {
 }
 
 async function removeQkvAction(index: number) {
-  resolutionData.qkv_actions.splice(index, 1)
-  await saveStructureToBackend('已删除 QKV Action 映射并保存热生效！')
+  const row = resolutionData.qkv_actions[index]
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除 QKV Action [${row?.action_id}] 映射配置吗？`,
+      '确认删除',
+      {
+        confirmButtonText: '确定删除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    resolutionData.qkv_actions.splice(index, 1)
+    await saveStructureToBackend('已删除 QKV Action 映射并保存热生效！')
+  } catch (_) {}
 }
 
 onMounted(async () => {
@@ -433,7 +481,7 @@ onMounted(async () => {
             <h2>Catalog 基线与关键信号规则</h2>
           </div>
           <p class="header-desc">
-            统一管理 Shared Resolution Runtime 的命令快照与审查目录。支持结构化卡片与 JSON 代码模式在线编辑，添加/修改/删除动作将**自动写入配置文件并即刻热加载生效**。
+            统一管理 Shared Resolution Runtime 的命令快照与审查目录。支持结构化卡片与 JSON 代码模式在线编辑，结构化添加与删除动作将**自动写回配置文件并实时热重载**。
           </p>
         </div>
         <div class="header-actions">
@@ -447,7 +495,14 @@ onMounted(async () => {
             <el-button :icon="Upload">导入 JSON</el-button>
           </el-upload>
           <el-button :icon="Download" @click="exportCatalogJson">导出 JSON</el-button>
-          <el-button type="primary" :icon="Check" :loading="saving" @click="handleSaveCatalog">
+          <!-- 仅在 JSON 源码编辑器模式下展示【保存并热生效】提交按钮 -->
+          <el-button
+            v-if="viewMode === 'code'"
+            type="primary"
+            :icon="Check"
+            :loading="saving"
+            @click="handleSaveCatalog"
+          >
             保存并热生效
           </el-button>
         </div>
