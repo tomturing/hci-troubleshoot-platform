@@ -20,6 +20,9 @@ runtime:
   leaseIssuer: hci-platform
   leaseAudience: hci-sim
   fixtureVariant: positive-realistic
+  # dev-golden 明确表示该运行时是受审查的开发黄金 Fixture；它不能冒充主库 active revision。
+  authorityScope: runtime_fixture
+  activeRevision: 25
   existingSecret: hci-sim-credentials
   leaseKeySecretKey: lease-hmac-key
   controlTokenSecretKey: control-plane-token
@@ -27,6 +30,10 @@ runtime:
   sshHost: hci-sim.hci-sim-dev.svc
   hostKeySecretKey: ssh_host_key
   otlpEndpoint: http://tempo.hci-observability.svc:4318
+  # 留空时 outbox 只做持久化和 processing 恢复，不会假标记 processed。
+  outboxWebhookURL: ""
+  outboxInterval: 2s
+  outboxMaxAttempts: 8
 
 database:
   # true 是 K3s 受管部署的默认值；本地单元测试可显式关闭。
@@ -51,9 +58,18 @@ resources:
 networkPolicy:
   enabled: true
   terminalBridgeNamespace: hci-dev
-  # 控制面调用方必须显式放行；默认与受管 api-gateway 同 namespace。
+  # 控制面调用方必须显式放行；默认与受管服务同 namespace。
   apiGatewayNamespace: hci-dev
+  apiGatewayPort: 8000
+  # sim-ssh 会话仅允许 conversation-service 读取权威 TestRun 上下文。
+  conversationServiceNamespace: hci-dev
   observabilityNamespace: hci-observability
+  # Runtime 写入独立 hci_sim 数据库；只允许访问受管 PostgreSQL Pod，禁止
+  # 借助 namespace 级放行访问 hci-dev 中的其它工作负载。
+  databaseNamespace: hci-dev
+  databasePort: 5432
+  databasePodSelector:
+    app.kubernetes.io/name: postgres
 
 resourceQuota:
   requestsCpu: "2"

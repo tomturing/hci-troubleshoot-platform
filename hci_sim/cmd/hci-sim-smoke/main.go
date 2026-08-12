@@ -88,8 +88,8 @@ func main() {
 	tests := []commandCase{
 		{name: "sig_001", command: "acli --formatter json task get -k '启动虚拟机' -s failed -l 1", want: `"vm":"271230001"`, wantExit: 0},
 		{name: "resolve_node", command: "acli --formatter json platform node list", want: `"ip":"hci-sim.hci-sim-dev.svc"`, wantExit: 0},
-		{name: "sig_002", command: "acli system lsof", nodeIP: "hci-sim.hci-sim-dev.svc", include: "271230001", want: "flock       9527", wantExit: 0},
-		{name: "sig_003", command: "acli system ps -p 9527 -o cmd=", nodeIP: "hci-sim.hci-sim-dev.svc", include: "271230001", want: "sleep 9999999", wantExit: 0},
+		{name: "sig_002", command: "acli --timeout 120 system lsof", nodeIP: "hci-sim.hci-sim-dev.svc", include: "271230001", want: "flock       9527", wantExit: 0},
+		{name: "sig_003", command: "acli --timeout 120 system ps -p 9527 -o cmd=", nodeIP: "hci-sim.hci-sim-dev.svc", include: "271230001", want: "sleep 9999999", wantExit: 0},
 		{name: "unknown", command: "uname -a", wantExit: 127, wantStderr: "fixture_not_found"},
 	}
 	for index, test := range tests {

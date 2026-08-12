@@ -13,6 +13,21 @@ def _diag() -> KBDDiagnostic:
     return KBDDiagnostic(MagicMock(), MagicMock())
 
 
+@pytest.mark.asyncio
+async def test_sim_ssh_binds_logical_host_to_authoritative_managed_endpoint():
+    diag = _diag()
+
+    endpoint = await diag._resolve_host_ip(
+        "SIM-HCI-NODE-01",
+        node_ip="hci-sim.hci-sim-dev.svc",
+        execution_mode="sim-ssh",
+        session_id="simulation-session",
+    )
+
+    assert endpoint == "hci-sim.hci-sim-dev.svc"
+    assert diag._host_ip_cache["SIM-HCI-NODE-01"] == endpoint
+
+
 def test_runtime_blocks_historical_solution_and_write_signals_but_not_read_only_checks():
     assert _signal_requires_human(
         {

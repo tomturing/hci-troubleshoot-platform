@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shlex
@@ -31,6 +30,10 @@ __all__ = [
 
 CATALOG_PATH = Path(__file__).with_name("catalog") / "acli_command_catalog.json"
 _BASH_FORBIDDEN_PREFIX_RE = re.compile(r"(^|\s)(docker\s+exec|kubectl\s+exec|nsenter)\b", re.IGNORECASE)
+
+# aCLI catalog 的权威来源和热加载由 shared.resolution.catalog 统一负责。
+# 本模块只保留路径常量供回归测试和文档用途，运行时加载不再独立维护。
+from shared.resolution.catalog import load_acli_catalog as _load_acli_catalog  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -94,23 +97,25 @@ def _tokenize(command: str) -> list[str]:
         return []
 
 
-def _load_catalog_commands() -> set[str]:
-    with CATALOG_PATH.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-    commands = data.get("commands") or []
-    result: set[str] = set()
-    for item in commands:
+def _get_acli_catalog_commands() -> frozenset[str]:
+    """从 shared.resolution.catalog 获取热加载的命令集合（每次反映最新 JSON）。"""
+    catalog = _load_acli_catalog()
+    commands: set[str] = set()
+    for item in catalog:
         if isinstance(item, dict) and item.get("command"):
-            result.add(_normalize_spaces(str(item["command"])))
-        elif isinstance(item, str):
-            result.add(_normalize_spaces(item))
-    return result
+            commands.add(_normalize_spaces(str(item["command"])))
+    return frozenset(commands)
 
 
 @lru_cache(maxsize=1)
 def get_acli_catalog_commands() -> frozenset[str]:
-    """读取本地 aCLI catalog 快照。"""
-    return frozenset(_load_catalog_commands())
+    """读取本地 aCLI catalog 快照。
+
+    .. deprecated::
+        请直接使用 :func:`shared.resolution.catalog.load_acli_catalog` 获取热加载数据。
+        本函数保留是为了兼容现有调用方，内部已委托给统一实现。
+    """
+    return _get_acli_catalog_commands()
 
 
 def _strip_global_options(tokens: list[str]) -> list[str]:
@@ -155,7 +160,7 @@ def is_acli_command_in_catalog(command: str) -> bool:
     path_tokens = _strip_global_options(tokens)
     if _normalize_spaces(" ".join(path_tokens)) == "acli acli command list":
         return True
-    return _catalog_matches(path_tokens, get_acli_catalog_commands())
+    return _catalog_matches(path_tokens, _get_acli_catalog_commands())
 
 
 def get_allowed_bash_containers(tool_def: Any | None) -> set[str]:

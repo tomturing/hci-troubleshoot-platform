@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     ENVIRONMENT_CONTEXT_TIMEOUT_SEC: float = 5.0
     USE_RAW_ENVIRONMENT_CONTEXT: bool = True
 
+    # hci-sim authoritative TestRun context. sim-ssh requests must use this
+    # source and must never fall back to customer environment rows.
+    HCI_SIM_URL: str = "http://hci-sim.hci-sim-dev.svc:8080"
+    HCI_SIM_CONTROL_TOKEN: str = ""
+    HCI_SIM_CONTEXT_TIMEOUT_SEC: float = 5.0
+
     # 多助手注册表（可选覆盖）
     # JSON 格式：
     # {

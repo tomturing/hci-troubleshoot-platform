@@ -24,12 +24,15 @@ CREATE TABLE IF NOT EXISTS control_plane.scenario (
 
 CREATE TABLE IF NOT EXISTS control_plane.run (
     id uuid PRIMARY KEY,
+    -- 对外 TestRun ID 保留平台现有可追踪格式；内部 UUID 只用于关系完整性。
+    external_id varchar(128) NOT NULL UNIQUE,
     support_id varchar(20) NOT NULL,
     kbd_revision bigint NOT NULL,
     scenario_id uuid NOT NULL REFERENCES control_plane.scenario(id) ON DELETE RESTRICT,
     bundle_digest varchar(71) NOT NULL,
     variant varchar(64) NOT NULL,
     execution_mode varchar(16) NOT NULL,
+    environment_context jsonb NOT NULL DEFAULT '{}'::jsonb,
     status varchar(20) NOT NULL,
     version integer NOT NULL DEFAULT 1 CHECK (version > 0),
     idempotency_key varchar(256) NOT NULL UNIQUE,
@@ -40,6 +43,14 @@ CREATE TABLE IF NOT EXISTS control_plane.run (
     CONSTRAINT run_mode CHECK (execution_mode = 'sim-ssh'),
     CONSTRAINT run_status CHECK (status IN ('requested', 'preparing', 'leased', 'running', 'passed', 'failed', 'inconclusive', 'cancelled', 'expired'))
 );
+
+-- 兼容首版已创建但尚未写入生产数据的旧表；若未来已有行，先用内部 UUID
+-- 回填可追踪 ID，再建立 NOT NULL/唯一边界，禁止运行时回退内存状态。
+ALTER TABLE control_plane.run ADD COLUMN IF NOT EXISTS external_id varchar(128);
+UPDATE control_plane.run SET external_id = id::text WHERE external_id IS NULL;
+ALTER TABLE control_plane.run ALTER COLUMN external_id SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS run_external_id_unique ON control_plane.run (external_id);
+ALTER TABLE control_plane.run ADD COLUMN IF NOT EXISTS environment_context jsonb NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE TABLE IF NOT EXISTS control_plane.run_attempt (
     id uuid PRIMARY KEY,
@@ -75,6 +86,22 @@ CREATE TABLE IF NOT EXISTS control_plane.run_result (
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (run_id, attempt_no)
 );
+
+CREATE TABLE IF NOT EXISTS control_plane.run_outbox (
+    id bigserial PRIMARY KEY,
+    run_id uuid NOT NULL REFERENCES control_plane.run(id) ON DELETE RESTRICT,
+    event_type varchar(64) NOT NULL,
+    payload_digest varchar(71) NOT NULL,
+    status varchar(16) NOT NULL DEFAULT 'pending',
+    attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    available_at timestamptz NOT NULL DEFAULT now(),
+    processing_at timestamptz,
+    processed_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT run_outbox_status CHECK (status IN ('pending', 'processing', 'processed', 'failed')),
+    CONSTRAINT run_outbox_unique UNIQUE (run_id, event_type, payload_digest)
+);
+ALTER TABLE control_plane.run_outbox ADD COLUMN IF NOT EXISTS processing_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS control_plane.runtime_instance (
     id varchar(128) PRIMARY KEY,
@@ -216,6 +243,7 @@ CREATE TABLE IF NOT EXISTS audit.entity_event (
 
 CREATE INDEX IF NOT EXISTS scenario_support_revision ON control_plane.scenario (support_id, kbd_revision, status);
 CREATE INDEX IF NOT EXISTS run_status_deadline ON control_plane.run (status, deadline_at);
+CREATE INDEX IF NOT EXISTS run_outbox_pending ON control_plane.run_outbox (available_at, id) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS bundle_runnable ON fixture.bundle (scenario_id, status, digest) WHERE status = 'published';
 CREATE INDEX IF NOT EXISTS dependency_reverse ON fixture.dependency (dependency_type, dependency_id, revision);
 CREATE INDEX IF NOT EXISTS stale_outbox_pending ON fixture.stale_outbox (available_at, id) WHERE status = 'pending';

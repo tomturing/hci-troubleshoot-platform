@@ -113,6 +113,7 @@ type Result struct {
 type Router struct {
 	manifest     Manifest
 	manifestHash string
+	manifestSize int64
 	index        map[string]Route
 }
 
@@ -154,7 +155,7 @@ func Parse(raw []byte) (*Router, error) {
 		index[key] = route
 	}
 	sum := sha256.Sum256(raw)
-	return &Router{manifest: manifest, manifestHash: fmt.Sprintf("sha256:%x", sum[:]), index: index}, nil
+	return &Router{manifest: manifest, manifestHash: fmt.Sprintf("sha256:%x", sum[:]), manifestSize: int64(len(raw)), index: index}, nil
 }
 
 func ensureEOF(decoder *json.Decoder) error {
@@ -232,12 +233,14 @@ func validateRoute(route Route, outputLimit int) error {
 	return nil
 }
 
-func (r *Router) ManifestHash() string { return r.manifestHash }
-func (r *Router) BundleDigest() string { return r.manifest.Bundle.Digest }
-func (r *Router) KBD() KBDRef          { return r.manifest.KBD }
-func (r *Router) Contracts() Contracts { return r.manifest.Contracts }
-func (r *Router) OutputLimit() int     { return r.manifest.Limits.MaxOutputBytesPerCommand }
-func (r *Router) IsSynthetic() bool    { return r.manifest.Variables["SYNTHETIC"] == "true" }
+func (r *Router) ManifestHash() string  { return r.manifestHash }
+func (r *Router) ManifestSize() int64   { return r.manifestSize }
+func (r *Router) SchemaVersion() string { return r.manifest.SchemaVersion }
+func (r *Router) BundleDigest() string  { return r.manifest.Bundle.Digest }
+func (r *Router) KBD() KBDRef           { return r.manifest.KBD }
+func (r *Router) Contracts() Contracts  { return r.manifest.Contracts }
+func (r *Router) OutputLimit() int      { return r.manifest.Limits.MaxOutputBytesPerCommand }
+func (r *Router) IsSynthetic() bool     { return r.manifest.Variables["SYNTHETIC"] == "true" }
 
 // Match 将受限 lexer 的 argv 和权威 Lease target 转为精确 RouteKey。
 func (r *Router) Match(command, variant, node, container string) (Result, error) {

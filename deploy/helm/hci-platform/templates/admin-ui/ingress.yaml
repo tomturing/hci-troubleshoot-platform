@@ -32,6 +32,16 @@ spec:
                 name: api-gateway
                 port:
                   number: {{ .Values.apiGateway.port }}
+          {{- if .Values.terminalBridge.enabled }}
+          # Admin 独立入口启用时也必须能访问同源 K3s terminal_bridge。
+          - path: /terminal-bridge
+            pathType: Prefix
+            backend:
+              service:
+                name: terminal-bridge
+                port:
+                  number: {{ .Values.terminalBridge.port }}
+          {{- end }}
           # WebSocket 路径
           - path: /ws
             pathType: Prefix
@@ -60,6 +70,16 @@ spec:
                 name: api-gateway
                 port:
                   number: {{ .Values.apiGateway.port }}
+          {{- if .Values.terminalBridge.enabled }}
+          # Admin 独立入口启用时也必须能访问同源 K3s terminal_bridge。
+          - path: /terminal-bridge
+            pathType: Prefix
+            backend:
+              service:
+                name: terminal-bridge
+                port:
+                  number: {{ .Values.terminalBridge.port }}
+          {{- end }}
           # WebSocket 路径
           - path: /ws
             pathType: Prefix

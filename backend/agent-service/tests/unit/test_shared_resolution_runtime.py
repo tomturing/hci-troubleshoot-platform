@@ -1,4 +1,5 @@
 from shared.resolution import ResolutionStatus, SignalIntent, build_resolution_audit_snapshot, get_resolution_runtime
+from shared.resolution.catalog import command_path_known, load_acli_catalog
 
 
 def test_log_resolver_corrects_typo_and_expands_single_or_double_day_directory():
@@ -70,6 +71,11 @@ def test_system_resolver_fails_closed_for_unknown_command_path():
     )
     assert plan.status is ResolutionStatus.BLOCKED
     assert plan.issues[0].code == "SYSTEM_COMMAND_UNKNOWN"
+
+
+def test_shared_resolution_loads_acli_catalog_and_accepts_ps_path():
+    assert load_acli_catalog()
+    assert command_path_known(["acli", "system", "ps", "-p", "9527", "-o", "cmd="])
 
 
 def test_domain_resolver_keeps_domain_boundary_and_catalog_warning():

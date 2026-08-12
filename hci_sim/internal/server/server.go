@@ -54,6 +54,14 @@ type Config struct {
 	LeaseIssuer    string
 	LeaseAudience  string
 	Metrics        *metrics.Metrics
+	Recorder       EventRecorder
+}
+
+// EventRecorder is deliberately narrower than the database Repository. The
+// SSH data plane records only redacted event digests; Run Result is finalized
+// by the control-plane runner after oracle evaluation.
+type EventRecorder interface {
+	RecordEvent(context.Context, string, int, string, string, string) error
 }
 
 type Server struct {
@@ -436,14 +444,27 @@ func (s *Server) execute(job *commandJob, workerID int) commandOutcome {
 		"stdout_sha256": contentHash(result.Stdout), "stderr_sha256": contentHash(result.Stderr),
 		"duration_ms": time.Since(start).Milliseconds(),
 	}))
+	s.recordEvent(job, "exec.done", fmt.Sprintf("%s:%d:%d:%d", result.FixtureID, exitCode, stdoutBytes, stderrBytes), span.SpanContext().TraceID().String())
 	return outcome
 }
 
 func (s *Server) respond(job *commandJob, outcome commandOutcome, kind, message string) {
+	s.recordEvent(job, kind, fmt.Sprintf("%d:%s", outcome.exitCode, message), "")
 	_, _ = io.WriteString(job.channel.Stderr(), fmt.Sprintf("hci-sim: %s: %s\n", kind, message))
 	if job.mode == commandModeExec {
 		_, _ = job.channel.SendRequest("exit-status", false, ssh.Marshal(exitStatus{Status: uint32(outcome.exitCode)}))
 		_ = job.channel.Close()
+	}
+}
+
+func (s *Server) recordEvent(job *commandJob, eventType, value, traceID string) {
+	if s.config.Recorder == nil || job == nil || job.claims.TestRunID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.config.Recorder.RecordEvent(ctx, job.claims.TestRunID, 1, eventType, "sha256:"+contentHash(value), traceID); err != nil {
+		logEvent("WARN", "run.event_persist_failed", baseFields(job.claims, map[string]any{"event_type": eventType, "reason": safeError(err)}))
 	}
 }
 

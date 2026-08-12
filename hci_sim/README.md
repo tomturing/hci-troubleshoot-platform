@@ -14,9 +14,11 @@
 
 `internal/controlplane` 实现了不在 SSH 数据面运行的阶段 C–E 业务内核：冻结编译输入与 Bundle 生命周期、双角色审批和 stale；按精确 Bundle 创建的 TestRun、短时 Run Lease 与容量预留；差分、mutation、稳定性和容量阶梯证据模型。`MemoryRegistry` 只用于确定性单元测试，绝不能部署为多副本生产存储。
 
-生产接入仍必须提供 PostgreSQL CAS/审计、不可变对象存储、权威 KBD/Tool/Artifact Resolver 和走 Customer UI/Terminal Bridge 协议的 `Runner`。没有这些依赖或受控真实 HCI 校准环境时，系统只能声明“代码级基础已就绪”，不能声明已支持任意 KBD 自动构建环境或完成产品级验证。
+生产接入已提供 hci_sim 专用 PostgreSQL CAS、Event/Result/outbox 和受控对象 URI 边界；`Runner` 仍必须提供权威 KBD/Tool/Artifact Resolver、Oracle 结果和受控 Customer UI/Terminal Bridge 协议。没有 approved Artifact 或真实 HCI 校准环境时，系统只能声明“代码级基础已就绪”，不能声明已支持任意 KBD 自动构建环境或完成产品级验证。
 
 当前内存配额 Tracker 是单副本实现，因此 Helm `replicaCount` 必须为 `1`。共享 Store、Fixture 编译发布、TestRun 调度和规模验证属于后续阶段 C–E，不能据此基线推断已经支持自动化环境构建。
+
+Runtime 配置了 `HCI_SIM_OUTBOX_WEBHOOK_URL` 后会启动 durable outbox reconciler；没有配置下游 URL 时只恢复过期 processing 记录，不会把任何事件标记为 `processed`。最终 Run 结论必须通过 `/v1/simulations/test-runs/{id}/result` 由 Runner/Oracle 提交。
 
 ## C3 两步人工验收
 

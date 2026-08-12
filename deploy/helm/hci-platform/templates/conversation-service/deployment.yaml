@@ -81,6 +81,18 @@ spec:
               value: {{ add .Values.terminalBridge.execTimeoutSeconds 60 | quote }}
             - name: BRIDGE_ARTIFACT_RETENTION_DAYS
               value: {{ .Values.terminalBridge.artifactRetentionDays | quote }}
+            {{- if .Values.apiGateway.hciSim.enabled }}
+            # sim-ssh Agent requests read their authoritative TestRun context
+            # directly from hci-sim and never fall back to customer environments.
+            - name: HCI_SIM_URL
+              value: {{ .Values.apiGateway.hciSim.url | quote }}
+            - name: HCI_SIM_CONTROL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.apiGateway.hciSim.controlTokenSecretName }}
+                  key: {{ .Values.apiGateway.hciSim.controlTokenSecretKey }}
+                  optional: false
+            {{- end }}
           # J-2: 三级探针分级健康检查，避免 AI 健康检查导致超时
           livenessProbe:
             httpGet:

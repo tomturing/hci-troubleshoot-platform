@@ -2,24 +2,23 @@
 SOP 发布阶段工具契约校验。
 
 该模块只做知识库发布前的静态质量检查，不执行命令、不访问外部服务。
-规则语义与 agent-service 的工具语义校验保持一致，但实现放在 kb-service 内，
-避免微服务镜像之间产生运行时 import 耦合。
+规则语义与 agent-service 的工具语义校验保持一致。
+
+aCLI catalog 由 shared.resolution.catalog 统一加载和热加载，本模块将不再维护独立副本。
 """
 
 from __future__ import annotations
 
-import json
 import re
 import shlex
-from functools import lru_cache
-from pathlib import Path
+
+from shared.resolution.catalog import load_acli_catalog as _load_acli_catalog
 
 from app.schemas.sop_template import SOPNode, ValidationIssue
 from app.services.sop_command_intent import ALLOWED_SOP_BASH_CONTAINERS, normalize_sop_command
 
 ALLOWED_BASH_CONTAINERS = ALLOWED_SOP_BASH_CONTAINERS
 _BASH_FORBIDDEN_PREFIX_RE = re.compile(r"(^|\s)(docker\s+exec|kubectl\s+exec|nsenter)\b", re.IGNORECASE)
-_ACLI_CATALOG_PATH = Path(__file__).resolve().parent / "catalog" / "acli_command_catalog.json"
 
 # aCLI catalog 目前只记录命令路径，不记录 argv schema。这里只维护已经由回归
 # 证实的最小调用契约；它描述命令本身，不绑定 KBD/support_id。
@@ -39,15 +38,11 @@ def _tokenize(command: str) -> list[str]:
         return []
 
 
-@lru_cache(maxsize=1)
 def get_acli_catalog_commands() -> frozenset[str]:
-    """返回当前代码随附的 aCLI catalog 命令集合。"""
-
-    with _ACLI_CATALOG_PATH.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-
+    """返回热加载的 aCLI catalog 命令集合（反映最新 JSON）。"""
+    catalog = _load_acli_catalog()
     commands: set[str] = set()
-    for item in data.get("commands") or []:
+    for item in catalog:
         if isinstance(item, dict) and item.get("command"):
             commands.add(_normalize_spaces(str(item["command"])))
         elif isinstance(item, str):

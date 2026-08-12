@@ -40,7 +40,7 @@ spec:
       ports:
         - port: {{ .Values.service.httpPort }}
           protocol: TCP
-    # Admin UI 不直接访问 Runtime；仅 api-gateway 可以调用 build/TestRun 控制面。
+    # Admin UI 不直接访问 Runtime；api-gateway 调用 build/TestRun 控制面。
     - from:
         - namespaceSelector:
             matchLabels:
@@ -48,6 +48,18 @@ spec:
           podSelector:
             matchLabels:
               app.kubernetes.io/name: api-gateway
+      ports:
+        - port: {{ .Values.service.httpPort }}
+          protocol: TCP
+    # conversation-service 只读 TestRun 上下文。限定 namespace、Pod label 和
+    # HTTP 端口，不能借此访问 SSH 端口或放行 hci-dev 中的其它工作负载。
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ required "networkPolicy.conversationServiceNamespace is required" .Values.networkPolicy.conversationServiceNamespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: conversation-service
       ports:
         - port: {{ .Values.service.httpPort }}
           protocol: TCP
@@ -74,4 +86,28 @@ spec:
       ports:
         - port: 4318
           protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.apiGatewayNamespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: api-gateway
+      ports:
+        - port: {{ .Values.networkPolicy.apiGatewayPort }}
+          protocol: TCP
+    {{- if .Values.database.required }}
+    # Runtime 必须把 TestRun、Lease、Event 和 Result 持久化到独立 hci_sim
+    # 数据库；仅放行 PostgreSQL Pod 的 5432，不能放行整个 hci-dev namespace。
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ required "networkPolicy.databaseNamespace is required when database.required=true" .Values.networkPolicy.databaseNamespace }}
+          podSelector:
+            matchLabels:
+              {{- required "networkPolicy.databasePodSelector is required when database.required=true" .Values.networkPolicy.databasePodSelector | toYaml | nindent 14 }}
+      ports:
+        - port: {{ required "networkPolicy.databasePort is required when database.required=true" .Values.networkPolicy.databasePort }}
+          protocol: TCP
+    {{- end }}
 {{- end }}

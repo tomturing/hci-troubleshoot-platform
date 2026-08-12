@@ -20,6 +20,7 @@ from ..repositories.conversation_repo import ConversationRepository
 from ..services.agent_client import AgentClient
 from ..services.conversation_service import ConversationService
 from ..services.environment_client import EnvironmentClient
+from ..services.simulation_context_client import SimulationContextClient
 from .evaluate import require_admin_token
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
@@ -32,6 +33,7 @@ scheduler_client: SchedulerClient | None = None
 kb_client: KBClient | None = None
 environment_client: EnvironmentClient | None = None
 agent_client: AgentClient | None = None  # [PR-B] agent-service HTTP 客户端
+simulation_context_client: SimulationContextClient | None = None
 
 
 def set_dependencies(
@@ -41,13 +43,15 @@ def set_dependencies(
     kb: KBClient | None = None,
     env_client: EnvironmentClient | None = None,
     agent_client: AgentClient | None = None,  # [PR-B] agent-service 客户端
+    sim_context_client: SimulationContextClient | None = None,
 ):
-    global database_manager, ai_registry, scheduler_client, kb_client, environment_client
+    global database_manager, ai_registry, scheduler_client, kb_client, environment_client, simulation_context_client
     database_manager = db
     ai_registry = registry
     scheduler_client = scheduler
     kb_client = kb
     environment_client = env_client
+    simulation_context_client = sim_context_client
     # 修复：agent_client 参数名与模块级变量同名导致 global 声明失效，需用 globals() 显式赋值
     globals()["agent_client"] = agent_client
 
@@ -70,6 +74,7 @@ async def get_conversation_service(request: Request) -> ConversationService:
             environment_client,
             database_manager.async_session_factory,
             agent_client=agent_client_from_state,
+            simulation_context_client=simulation_context_client,
         )
 
 

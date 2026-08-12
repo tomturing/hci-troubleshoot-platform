@@ -18,13 +18,13 @@ const router = createRouter({
       path: '/observability',
       name: 'Observability',
       component: () => import('@/views/ObservabilityView.vue'),
-      meta: { title: '可观测性', icon: 'Monitor', order: 2 },
+      meta: { title: '可观测性', icon: 'DataAnalysis', order: 2 },
     },
     {
       path: '/simulation',
       name: 'SimulationTest',
       component: () => import('@/views/SimulationTestView.vue'),
-      meta: { title: '仿真测试', icon: 'Monitor', order: 3 },
+      meta: { title: '仿真测试', icon: 'VideoPlay', order: 3 },
     },
     {
       path: '/clients',
@@ -49,6 +49,12 @@ const router = createRouter({
       name: 'CategoryManage',
       component: () => import('@/views/CategoryManageView.vue'),
       meta: { title: '分类基线', icon: 'Histogram', order: 6 },
+    },
+    {
+      path: '/catalog',
+      name: 'CatalogManage',
+      component: () => import('@/views/CatalogManageView.vue'),
+      meta: { title: 'Catalog基线', icon: 'Collection', order: 6.5 },
     },
     {
       path: '/knowledge/kbd-review',

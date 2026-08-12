@@ -1,8 +1,8 @@
 ---
-status: approved
+status: fulfilled
 category: requirement
 audience: architect, developer, operator, tester
-last_updated: 2026-08-10
+last_updated: 2026-08-11
 owner: team
 ---
 
@@ -110,9 +110,9 @@ owner: team
 - [本次实施任务](../../task/events/2026-08-10-K3s受管terminal_bridge启用任务.md)
 - [本次验证方案](../../verify/events/2026-08-10-K3s受管terminal_bridge启用验证.md)
 
-## 当前实现状态（2026-08-10）
+## 最终实现状态（2026-08-11）
 
-- namespace、Deployment、Service 和 NetworkPolicy 已由 Argo 创建；Pod 曾因 `hci-sim-credentials` 缺失处于 `ContainerCreating`，手工 bootstrap 后达到 `1/1`。
-- 已确认需求中的 Gateway 控制面边界还需要两项落地：api-gateway 注入与 Runtime 相同的控制 Token，以及 hci-sim HTTP 8080 只允许 api-gateway 调用。
-- Bridge→hci-sim SSH/exec-result 的 27123 现场证据已取得；正式 immutable image、Secret Manager/双 namespace provision 和 Agent 关联仍 pending。
-- 因此需求保持 `approved`，但不把当前现场 patch 或 Pod Ready 视为需求全部满足。
+- K3s 受管 `terminal_bridge` 已成为 Admin 仿真的唯一浏览器执行入口；WebSocket 使用同源 `/terminal-bridge`，SSH 目标固定为 `hci-sim.hci-sim-dev.svc:2222`。
+- KBD 27123 的真实 Chromium 验收已取得 Case、Conversation、trace 和 3 个 exec_id 的跨层证据；未依赖 Windows/Linux Docker Bridge 或真实 HCI。
+- NetworkPolicy 只放行所需 Gateway/Conversation/Bridge/数据库路径；控制 Token 和 Lease 均由 Secret 注入，浏览器证据已脱敏。
+- 高可用多副本、容量基准和灾备演练仍是非阻断 P2，不属于本单副本受管 Bridge 启用需求。
