@@ -429,6 +429,9 @@
             "decreasing",
             "stable"
           ]
+        },
+        "metric": {
+          "type": "string"
         }
       },
       "allOf": [
