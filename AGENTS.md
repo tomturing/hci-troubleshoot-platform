@@ -22,6 +22,9 @@
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
 - 当前版本：v2.16.0（以 `pyproject.toml` 为准）
+- **Admin UI 侧边栏菜单图标缺失修复**：
+  - **根因**：`App.vue` 侧边栏菜单使用字符串 `:is="item.icon"`（如 `"Setting"`）进行动态组件渲染。在 Vite 路由代码分割模式下，未在静态依赖树中声明 `Setting` 组件的页面在首屏无法解析该动态图标，导致用户在未进入包含该图标组件的页面前图标显示为空白。
+  - **修复**：在 `App.vue` 中建立静态 Component Icon 字典 `menuIconMap`，显式导入所有侧边栏所需 Element Plus 图标，配合 `getMenuIcon` Helper 函数实现首屏静态打包与同步稳定渲染。
 - **KBD 关键信号保存 SQL 语法错误修复**（PR #599）：
   - 修复 `backend/kb-service/app/routes/admin.py` 中 `signals_json` PATCH 更新 SQL 的拼接，将 `:signals_json::jsonb` 替换为标准 `CAST(:signals_json AS jsonb)` 语法，解决 SQLAlchemy `text()` 冒号解析歧义导致的 500 语法错误。
 - **Admin UI 内网隔离方案**（2026-07-01）：

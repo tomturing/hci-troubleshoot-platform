@@ -1,8 +1,49 @@
 <script setup lang="ts">
+import type { Component } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import {
+  Odometer,
+  Monitor,
+  VideoPlay,
+  User,
+  Tickets,
+  Histogram,
+  Document,
+  Notebook,
+  Setting,
+  Briefcase,
+  Cpu,
+  Folder,
+  Collection,
+} from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute()
+
+/** 侧边栏图标静态组件字典，解决 Vite 代码分割导致的动态 `:is="string"` 无法渲染图标的问题 */
+const menuIconMap: Record<string, Component> = {
+  Odometer,
+  Monitor,
+  VideoPlay,
+  User,
+  Tickets,
+  Histogram,
+  Document,
+  Notebook,
+  Setting,
+  Briefcase,
+  Cpu,
+  Folder,
+  Collection,
+}
+
+/** 获取侧边栏图标组件：优先使用静态映射字典，未匹配时回退到原字符串 */
+const getMenuIcon = (iconName: unknown): Component | string => {
+  if (typeof iconName === 'string' && menuIconMap[iconName]) {
+    return menuIconMap[iconName]
+  }
+  return (iconName as string) || ''
+}
 
 /** 获取路由排序值：缺失或非法时排到最后，并输出告警日志 */
 const getRouteOrder = (routeRecord: ReturnType<typeof router.getRoutes>[number]) => {
@@ -42,7 +83,7 @@ const menuItems = router.getRoutes()
         active-text-color="#409eff"
       >
         <el-menu-item v-for="item in menuItems" :key="item.path" :index="item.path">
-          <el-icon><component :is="item.icon" /></el-icon>
+          <el-icon><component :is="getMenuIcon(item.icon)" /></el-icon>
           <span>{{ item.title }}</span>
         </el-menu-item>
       </el-menu>
