@@ -7,11 +7,11 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Body, status
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from shared.observability.logger import get_logger
 from shared.resolution.catalog import (
@@ -54,7 +54,7 @@ def _get_catalog_meta(name: str, config: dict[str, Any]) -> dict[str, Any]:
         try:
             stat = path.stat()
             size_bytes = stat.st_size
-            mtime_iso = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+            mtime_iso = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
         except OSError:
             pass
 
@@ -208,7 +208,7 @@ async def update_catalog(filename: str, body: CatalogSaveRequest) -> dict[str, A
     if filename == "acli_command_catalog.json":
         reloaded_count = len(load_acli_catalog())
     else:
-        res = load_resolution_catalog()
+        load_resolution_catalog()
         reloaded_count = val_res.get("item_count", 0)
 
     meta = _get_catalog_meta(filename, cfg)

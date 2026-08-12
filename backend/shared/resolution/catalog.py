@@ -21,7 +21,7 @@ RESOLUTION_CATALOG_PATH: Path = _CATALOGS_DIR / "resolution_catalog.json"
 _T = TypeVar("_T")
 
 
-class _HotCatalog(Generic[_T]):
+class _HotCatalog(Generic[_T]):  # noqa: UP046
     """对单个 JSON 文件的 mtime 感知热加载缓存（进程级单例，线程安全）。
 
     Parameters

@@ -12,14 +12,13 @@ from __future__ import annotations
 import re
 import shlex
 
+from shared.resolution.catalog import load_acli_catalog as _load_acli_catalog
+
 from app.schemas.sop_template import SOPNode, ValidationIssue
 from app.services.sop_command_intent import ALLOWED_SOP_BASH_CONTAINERS, normalize_sop_command
 
 ALLOWED_BASH_CONTAINERS = ALLOWED_SOP_BASH_CONTAINERS
 _BASH_FORBIDDEN_PREFIX_RE = re.compile(r"(^|\s)(docker\s+exec|kubectl\s+exec|nsenter)\b", re.IGNORECASE)
-
-# aCLI catalog 的权威来源和热加载由 shared.resolution.catalog 统一负责。
-from shared.resolution.catalog import load_acli_catalog as _load_acli_catalog
 
 # aCLI catalog 目前只记录命令路径，不记录 argv schema。这里只维护已经由回归
 # 证实的最小调用契约；它描述命令本身，不绑定 KBD/support_id。
