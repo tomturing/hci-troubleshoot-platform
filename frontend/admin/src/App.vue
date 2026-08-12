@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import type { Component } from 'vue'
+import { markRaw, type Component } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import {
   Odometer,
   Monitor,
+  DataAnalysis,
   VideoPlay,
   User,
   Tickets,
@@ -11,6 +12,7 @@ import {
   Document,
   Notebook,
   Setting,
+  Tools,
   Briefcase,
   Cpu,
   Folder,
@@ -20,24 +22,26 @@ import {
 const router = useRouter()
 const route = useRoute()
 
-/** 侧边栏图标静态组件字典，解决 Vite 代码分割导致的动态 `:is="string"` 无法渲染图标的问题 */
+/** 侧边栏图标静态组件字典：使用 markRaw 消除响应式开销，确保 Vue 动态组件 :is 稳定性 */
 const menuIconMap: Record<string, Component> = {
-  Odometer,
-  Monitor,
-  VideoPlay,
-  User,
-  Tickets,
-  Histogram,
-  Document,
-  Notebook,
-  Setting,
-  Briefcase,
-  Cpu,
-  Folder,
-  Collection,
+  Odometer: markRaw(Odometer),
+  Monitor: markRaw(Monitor),
+  DataAnalysis: markRaw(DataAnalysis),
+  VideoPlay: markRaw(VideoPlay),
+  User: markRaw(User),
+  Tickets: markRaw(Tickets),
+  Histogram: markRaw(Histogram),
+  Document: markRaw(Document),
+  Notebook: markRaw(Notebook),
+  Setting: markRaw(Setting),
+  Tools: markRaw(Tools),
+  Briefcase: markRaw(Briefcase),
+  Cpu: markRaw(Cpu),
+  Folder: markRaw(Folder),
+  Collection: markRaw(Collection),
 }
 
-/** 获取侧边栏图标组件：优先使用静态映射字典，未匹配时回退到原字符串 */
+/** 获取侧边栏图标组件：优先使用静态 markRaw 字典，未匹配时回退到原字符串 */
 const getMenuIcon = (iconName: unknown): Component | string => {
   if (typeof iconName === 'string' && menuIconMap[iconName]) {
     return menuIconMap[iconName]

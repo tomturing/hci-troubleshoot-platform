@@ -11,9 +11,12 @@ app.use(createPinia())
 app.use(router)
 app.use(ElementPlus)
 
-// 注册所有图标
+// 注册所有图标（同时绑定原始 Key 及小写容错）
 for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
   app.component(key, component)
+  if (key.toLowerCase() !== key) {
+    app.component(key.toLowerCase(), component)
+  }
 }
 
 app.mount('#app')
