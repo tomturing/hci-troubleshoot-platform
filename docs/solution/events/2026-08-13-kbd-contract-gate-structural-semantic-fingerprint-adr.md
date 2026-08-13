@@ -4,10 +4,10 @@ category: solution
 audience: backend, architect, ai-agent
 last_updated: 2026-08-13
 owner: team
-related_pr: 待创建（治本实现阶段）
+related_pr: PR #755（校验器驱动最优解，已落地）
 ---
 
-# ADR: KBD 自动执行契约门禁——结构/语义指纹分级判定
+# ADR: KBD 自动执行契约门禁——校验器驱动方案
 
 > 本文档为**架构决策记录（ADR）**，记录"契约门禁全有或全无"根因的治本方案设计与决策依据。
 > 事件完成后冻结，永久保留，不再修改。
@@ -71,126 +71,100 @@ commit `01580431`（#745）在 `signal.v2.schema.json` 的 `match.properties` �
 
 ---
 
-## 二、决策：结构/语义指纹分级门禁
+## 二、决策：校验器驱动方案（最优解）
 
-### 2.1 核心思想
+### 2.1 第一性原理推导
 
-将"能否执行"的判定，从**单一字节哈希全等**，拆分为两个正交维度：
+```
+executable 的唯一物理定义 = validate(old_signals, current_schema) 的 pass/fail
+```
 
-| 维度 | 决定什么 | 旧 KBD 违反的后果 |
+一切判定都应从这个单一事实出发，不需要任何中间代理层。
+
+### 2.2 方案演进：为何放弃两级指纹
+
+PR #755 初版采用"结构/语义指纹分级判定"：`structural_fingerprint` + `semantic_fingerprint`。
+
+对抗性审查发现两个致命缺陷：
+
+**REDUNDANCY-1（双重校验）**：`_execution_issues` 顶层无条件跑 `validate_publishable_signals_json`（第1次），`_evaluate_contract_revision` 内当 `stored_struct != cur_struct` 时再跑一次（第2次）。Breaking 场景产生两条重复错误信息，且性能无优化（因为顶层就已无条件跑）。
+
+**BUG-2（soft_stale 指标过计数）**：`soft_stale.inc()` 不受外部 `issues` 是否为空的约束，已有其他阻断问题的 KBD 仍被误计入 `soft_stale`，指标语义失真。
+
+**两级指纹的设计意图**（用廉价指纹判断是否需要跑校验器）在顶层无条件校验的架构下归零：校验器已跑，指纹比较仅是额外的 CPU + 复杂 $ref 递归展开，带来 ~220 行代码、3 个已知缺陷、零性能收益。
+
+### 2.3 最优解：三层职责分离
+
+```
+层1 - Gating（唯一真相源，决定 executable）
+      schema_valid = validate(signals, current_schema)  → 一次调用，结果复用
+
+层2 - Change Detection（变化感知）
+      stored_tool_contract_revision != current          → 字节哈希，"有东西变了"
+
+层3 - Observability（基于前两层结果分发）
+      变了 + schema_valid + 无其他 issues → soft_stale（兼容漂移）
+      变了 + !schema_valid               → hard_break（破坏性变更，issues 已有原因）
+```
+
+### 2.4 实现（`_execution_issues`）
+
+```python
+# Layer 1：唯一真相源
+schema_valid = True
+try:
+    validate_publishable_signals_json(validation_document)
+except Exception as exc:
+    schema_valid = False
+    schema_issue = str(getattr(exc, "message", exc))
+
+# ... signal 级别诊断（不变）...
+
+# Layer 2 + 3：变化感知 + 可观测性分发
+if isinstance(publish_validation, dict) and publish_validation:
+    if publish_validation.get("status") != "passed":
+        issues.append("专家发布校验状态无效，必须重新发布")
+    else:
+        stored_rev = publish_validation.get("tool_contract_revision")
+        if stored_rev != current_tool_contract_revision():
+            if not schema_valid:
+                KBD_CONTRACT_HARD_BREAK_TOTAL.labels(...).inc()  # 仅埋点，不重复报错
+            elif not issues:
+                KBD_CONTRACT_SOFT_STALE_TOTAL.labels(...).inc()  # 无其他问题时才计数
+```
+
+**对 #745 的推演**：23821 缺 `metric` 字段，但 `metric` 非 required，用新 schema 校验通过
+→ `schema_valid = True` + `stored_rev != current_rev` + `not issues`
+→ `soft_stale.inc()` + `executable = True`。兼容变更不再误杀。
+
+### 2.5 与 PR #755 初版的对比
+
+| 维度 | PR #755 初版（两级指纹） | 最优解（校验器驱动） |
 |---|---|---|
-| **结构约束** | 字段存在性、`type`、`required`、`enum`/`const` 取值、`additionalProperties` 开关 | 校验失败 → 真 breaking，必须重发 |
-| **语义约束** | `description` 变化、默认值变化、`enum` 成员增删、聚合含义变化 | 结构仍合法，结果可能漂移 → 兼容但需警觉 |
-
-### 2.2 指纹算法（精确可落地）
-
-#### 结构指纹 `structural_fingerprint`
-
-对每个 schema 文件，提取与"能否解析"强相关的子结构，归一化后哈希：
-
-```python
-def _structural_repr(schema: dict) -> dict:
-    return {
-        "required": sorted(schema.get("required", [])),
-        "properties": {
-            k: {
-                "type": _norm_type(v.get("type")),        # 类型（归一化 oneOf/anyOf 为集合）
-                "enum": sorted(v.get("enum", [])),         # 枚举取值（强约束）
-                "const": v.get("const"),                  # 常量约束
-                "additionalProperties": v.get("additionalProperties"),
-            }
-            for k, v in (schema.get("properties") or {}).items()
-        },
-        # if/then 内的 required 变更同样是结构破坏性（如 match.type=threshold 要求 value/operator）
-        "conditional_required": _extract_if_then_required(schema),
-    }
-```
-
-> **关键**：`_structural_repr` 必须**递归**进入所有 `$ref` / `allOf` / `oneOf` / `if-then` 子树，
-> 不可只看顶层 `properties`。
-
-#### 语义指纹 `semantic_fingerprint`
-
-在结构指纹基础上，额外纳入不改变解析但影响语义的项：
-
-```python
-def _semantic_repr(schema: dict) -> dict:
-    return {
-        **_structural_repr(schema),
-        "descriptions": _collect_descriptions(schema),   # 所有 description 文本
-        "defaults": _collect_defaults(schema),           # 所有 default 值
-        # enum 成员的增删作为语义漂移信号（见 2.4 规则）
-    }
-```
-
-#### 版本自动推断（在 `gen-schemas.py` 生成期完成）
-
-`gen-schemas.py` 是单一来源、幂等生成器（固定顺序 + `ensure_ascii=False` + `indent=2`），
-适合在生成时对比上一次提交的 schema 自动推断版本号：
-
-```python
-def infer_contract_version(old: dict, new: dict) -> tuple[int, int]:
-    if _structural_repr(old) != _structural_repr(new):
-        return (old_major + 1, 0)          # breaking：结构破坏性
-    if _semantic_repr(old) != _semantic_repr(new):
-        return (old_major, old_minor + 1)  # compatible：仅语义漂移
-    return (old_major, old_minor)
-```
-
-版本写入 `signal.v2.schema.json` 的 `$comment` 或独立 `contract_version.json`，
-供 `current_contract_version()` 暴露（保留原 `current_tool_contract_revision` 作为"是否变动"探测用）。
-
-### 2.3 门禁改造（`_execution_issues`）
-
-```python
-cur_struct = current_structural_fingerprint()      # lru_cache 快路径
-cur_semantic = current_semantic_fingerprint()
-pv = publish_validation or {}
-stored_struct = pv.get("structural_revision")
-stored_semantic = pv.get("semantic_revision")
-
-if pv and pv.get("status") == "passed":
-    if stored_struct != cur_struct:
-        # 结构变了：实跑当前 schema 校验旧 signals
-        if not _validate_signals_against_current(signals):
-            issues.append("契约结构破坏性变更，信号无法在新契约下执行，必须重新发布")  # 真阻断
-        # 校验通过 => 兼容演进，放行
-    elif stored_semantic != cur_semantic:
-        emit_soft_stale(support_id, category)        # 放行 + 可观测，不阻断
-```
-
-**对 #745 的推演**：23821 缺 `metric` 字段，但 `match` 为 `additionalProperties:False` 且 `metric`
-非 required，用新 schema 校验通过 → `stored_struct == cur_struct` → 走 `elif` → `soft_stale` 告警 →
-**`executable=True`，仅观测**。兼容变更不再误杀。
-
-### 2.4 `enum` 变更规则（对抗性审查细化）
-
-| 变更 | 分类 | 门禁行为 |
-|---|---|---|
-| `enum` 成员**只增不减** | 兼容（minor） | 放行 + `soft_stale` |
-| `enum` 成员**删除** / `const` 改变 | 破坏性（major） | 结构指纹变 → 实跑校验，失败则阻断 |
-| `not` / `if-then` 内枚举变更 | 破坏性（major） | 同上 |
-
-### 2.5 算法版本化
-
-指纹算法本身升级（如开始递归）会改变所有存量快照的 `structural_revision`，导致误判"全员 breaking"。
-引入 `FP_ALGO_VERSION` 写入快照；当 `stored_fp_algo != cur_algo` 时，触发一次性全量重算
-（重新生成 schema + 存量 KBD 批量刷新快照），而非误判过期。
+| 新增代码量 | ~220 行（指纹计算全套） | ~10 行差量 |
+| 校验器调用次数 | 2 次（REDUNDANCY-1） | **1 次** |
+| EDGE-1（关键词盲区） | 存在（被顶层兜底，结构模糊） | **不存在**（校验器完备覆盖） |
+| BUG-2（soft_stale 过计数） | 存在 | **不存在** |
+| 错误信息重复 | 存在（breaking 场景两条） | **不存在** |
+| 递归 $ref 解析 | 需要 | **不需要** |
+| FP_ALGO_VERSION | 需要 | **不需要** |
+| 旧快照向下兼容 | ✅ | ✅（tool_contract_revision 原本就在） |
+| 可观测性完备性 | 关键词不完备 | 校验器完备（包含 minimum/pattern/format） |
 
 ### 2.6 可观测性（遵循全局可观测性规则）
 
-新增 Prometheus 指标：
+Prometheus 指标（保留）：
 
-- `KBD_CONTRACT_SOFT_STALE_TOTAL{support_id, category}` —— 兼容演进但语义漂移；
-- `KBD_CONTRACT_HARD_BREAK_TOTAL{support_id, category}` —— 真 breaking，阻断。
+- `KBD_CONTRACT_SOFT_STALE_TOTAL{support_id, category}` —— 兼容演进但字节哈希变化（仅在无其他 issues 时计数）；
+- `KBD_CONTRACT_HARD_BREAK_TOTAL{support_id, category}` —— 真 breaking，旧信号校验失败。
 
 结构化日志携带 `trace_id`，链路追踪到分类查询入口。
 
 ### 2.7 存量止血（符合 024 数据迁移铁律）
 
 024 迁移注释明确：契约 hash 过期**禁止在 SQL 写死 hash**，必须由 KBD 走 maintenance 工作稿重新发布刷新盖章。
-治本 PR 合入后，对"结构校验通过"的 7 条 KBD 经 maintenance 工作稿批量刷新
-`structural_revision` / `semantic_revision` 到当前值（仍走重新发布，非 SQL 直写语义值），消除 `soft_stale` 噪音。
+治本 PR 合入后，存量 7 条 KBD 经 maintenance 工作稿批量重新发布，刷新 `tool_contract_revision` 到当前值。
+由于这些 KBD 均为向后兼容变更（#745 新增可选字段），重发期间暂时走 `soft_stale` 路径（`executable=True`，不阻断）。
 
 ---
 
@@ -199,36 +173,42 @@ if pv and pv.get("status") == "passed":
 ### 方案 X1：每次 schema 改动后批量重发所有 KBD
 
 - **拒绝理由**：仅把当前 hash 写回快照，下次任何 schema 改动又会 100% 过期。是"掩耳盗铃"，
-  未触及"门禁用错判据"的根因。且依赖人工/批处理及时性，与 CI 持续合入节奏天然脱钩，必再发型故障。
+  未触及"门禁用错判据"的根因。
 
 ### 方案 X2：直接移除契约门禁（完全不做版本校验）
 
-- **拒绝理由**：契约门禁保护的是"旧 KBD 的 signals 在当前代码下能正确执行"。若真发生破坏性 schema 变更
-  （如删除 `acquire.tool` 字段），无门禁会让旧 KBD 在运行时崩溃或产生错误结论，比拦截更危险。
-  门禁应"精准"而非"取消"。
+- **拒绝理由**：若真发生破坏性 schema 变更（如删除 `acquire.tool` 字段），无门禁会让旧 KBD
+  在运行时崩溃或产生错误结论。门禁应"精准"而非"取消"。
 
 ### 方案 X3：仅用整体 hash + 向后兼容豁免清单（白名单）
 
-- **拒绝理由**：豁免清单需人工维护，且无法表达对"破坏性 vs 兼容"的自动区分；清单遗漏即失效，
-  且与环境漂移耦合。不如从指纹语义层面自动区分。
+- **拒绝理由**：豁免清单需人工维护，且无法表达对"破坏性 vs 兼容"的自动区分；清单遗漏即失效。
 
-### 方案 X4：本 ADR 方案（结构/语义指纹分级 + 版本自动推断 + 实跑校验兜底）
+### 方案 X4：结构/语义指纹分级判定（PR #755 初版）
+
+- **拒绝理由**：在顶层无条件校验的架构下，指纹比较退化为纯开销（REDUNDANCY-1）。
+  且关键词手工枚举（不含 minimum/maximum/pattern/format）存在覆盖盲区（EDGE-1），
+  尽管被顶层兜底，但形成了语义模糊的两套判断路径。
+
+### 方案 X5：本 ADR 方案（校验器驱动 + tool_contract_revision 变化探测）
 
 - **采纳理由**：
-  1. 用"语义兼容性"替代"字节全等"，精准放行 #745 这类兼容变更；
-  2. 对真 breaking 仍保留硬阻断 + 实跑校验兜底，安全性不降级；
-  3. 版本号由 `gen-schemas.py` 自动推断，符合现有单一来源、幂等生成范式，零人工维护；
-  4. 完整可观测（`soft_stale` / `hard_break` 指标 + `trace_id`），故障可定位；
-  5. 符合 024 铁律（存量刷新走重新发布，不 SQL 写死）。
+  1. `validate_publishable_signals_json` 是已有的完备校验器，覆盖所有约束关键词；
+  2. 单次调用结果全程复用，消除双重校验（REDUNDANCY-1）；
+  3. `soft_stale` 仅在无其他问题时计数，指标语义精确，消除 BUG-2；
+  4. 删除 220 行递归指纹代码，用 10 行差量替代，代码量减半；
+  5. 保留 `tool_contract_revision` 向后兼容，存量 KBD 无需迁移快照格式；
+  6. 完整可观测（`soft_stale` / `hard_break` 指标 + `trace_id`），故障可定位；
+  7. 符合 024 铁律（存量刷新走重新发布，不 SQL 写死）。
 
 ---
 
-## 四、落地路径（分阶段，降低风险）
+## 四、落地路径
 
 | 阶段 | 内容 | 涉及目录（触发文档门禁） |
 |---|---|---|
-| P0 | 拆结构/语义指纹 + `gen-schemas.py` 版本自动推断 + `_execution_issues` 分级门禁 + 新指标 | `backend/shared/schemas/`、`backend/kb-service/app/routes/`、`backend/scripts/` + `docs/` |
-| P1 | 补单测（兼容放行 / breaking 阻断 / 语义漂移 soft_stale），接 `test_playbooks.py` 范式 | `backend/kb-service/tests/` |
+| P0 | 校验器驱动门禁 + 移除两级指纹代码 + `certify` 不再写入结构/语义指纹字段 + 新指标（PR #755） | `backend/shared/schemas/`、`backend/kb-service/app/routes/` + `docs/` |
+| P1 | 补单测（兼容放行 / breaking 阻断 / soft_stale 精确计数），接 `test_playbooks.py` 范式 | `backend/kb-service/tests/` |
 | P2 | 存量 7 条 KBD 经 maintenance 工作稿批量刷新快照 | 数据迁移 + `docs/` |
 | P3 | 同步更新契约演进规范与 `AGENTS.md` | `docs/` |
 

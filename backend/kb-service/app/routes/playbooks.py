@@ -17,12 +17,7 @@ from shared.observability.metrics import (
     KBD_CONTRACT_SOFT_STALE_TOTAL,
 )
 from shared.observability.otel import get_current_trace_id
-from shared.schemas.signal_generation import (
-    FP_ALGO_VERSION,
-    current_semantic_fingerprint,
-    current_structural_fingerprint,
-    current_tool_contract_revision,
-)
+from shared.schemas.signal_generation import current_tool_contract_revision
 from shared.schemas.signal_schema import validate_publishable_signals_json
 from sqlalchemy import select
 
@@ -53,16 +48,29 @@ def _execution_issues(
     support_id: str | None = None,
     category_id: str | None = None,
 ) -> list[str]:
-    """返回自动执行硬门禁问题；知识条目本身不会因此从清单消失。"""
+    """返回自动执行硬门禁问题；知识条目本身不会因此从清单消失。
+
+    设计原则（校验器驱动，见 ADR 2026-08-13）：
+    - validate_publishable_signals_json 是唯一真相源，只调用一次，结果全程复用。
+    - tool_contract_revision 字节哈希作为粗粒度变化探测（是否有任何 schema 变动）。
+    - schema 变了且校验通过 → 兼容演进（soft_stale 观测，不阻断）；
+      schema 变了且校验失败 → 破坏性变更（hard_break 阻断，issues 里已有具体原因）。
+    """
     issues: list[str] = []
-    schema_issue: str | None = None
     validation_document = document or {"schema_version": 2, "signals": signals}
+
+    # ── Layer 1：唯一真相源，一次校验，结果向下传递 ──────────────────────────────
+    schema_valid = True
+    schema_issue: str | None = None
     try:
         validate_publishable_signals_json(validation_document)
     except Exception as exc:
+        schema_valid = False
         # jsonschema.ValidationError 的 str(exc) 会附带整段 Schema 与实例，既不利于
         # API 消费，也可能产生数 KB 的重复错误；message 才是可操作的门禁原因。
         schema_issue = str(getattr(exc, "message", exc))
+
+    # ── signal 级别诊断（signal_id / acquire.tool / QFK 模式互斥）────────────────
     seen_ids: set[str] = set()
     for index, signal in enumerate(signals, start=1):
         signal_id = str(signal.get("id") or signal.get("signal_id") or "").strip()
@@ -96,26 +104,40 @@ def _execution_issues(
             issues.append(
                 f"{signal_id or f'signal[{index}]'} 必须且只能配置确定性 matcher 或有效产出变量"
             )
+
     # match/produces 互斥已经由上面的带 signal_id 诊断表达，不重复返回 Schema
     # 的 signals[index] 版本；其他 Schema 问题（字段缺失、类型错误、非法枚举等）
     # 仍作为第一条硬门禁问题返回。
     if schema_issue and not (
-        "必须且只能配置“关键字判定(match)”或“产出变量(orchestrate.produces)”之一" in schema_issue
+        "“关键字判定(match)”或“产出变量(orchestrate.produces)”之一" in schema_issue
         or "是产出变量信号，必须配置 orchestrate.produces 且 match 必须为 null" in schema_issue
     ):
         issues.insert(0, f"signals_json 契约校验失败: {schema_issue}")
+
+    # ── Layer 2 + 3：变化感知 + 可观测性分发（复用顶层校验结果，不重复调用校验器）──
     publish_validation = validation_document.get("publish_validation") or {}
     generation = validation_document.get("generation_metadata") or {}
     if isinstance(publish_validation, dict) and publish_validation:
         if publish_validation.get("status") != "passed":
             issues.append("专家发布校验状态无效，必须重新发布")
-        _evaluate_contract_revision(
-            stored_validation=publish_validation,
-            validation_document=validation_document,
-            support_id=support_id,
-            category_id=category_id,
-            issues=issues,
-        )
+        else:
+            stored_rev = publish_validation.get("tool_contract_revision")
+            cur_rev = current_tool_contract_revision()
+            if stored_rev != cur_rev:
+                # schema 有变动：依据顶层校验结果（单一真相源）分发可观测性指标。
+                # 不重复调用校验器——顶层已跑，schema_valid 即为最终判定。
+                if not schema_valid:
+                    # 版本变了且旧信号无法通过新 schema 校验 → 破坏性变更。
+                    # issues 里顶层已有具体的校验失败原因，此处仅埋点不重复报错。
+                    KBD_CONTRACT_HARD_BREAK_TOTAL.labels(
+                        support_id=support_id or "unknown", category=category_id or "unknown"
+                    ).inc()
+                elif not issues:
+                    # 版本变了但旧信号仍合法且无其他问题 → 纯兼容漂移（如新增可选属性）。
+                    # 仅在 KBD 无任何其他阻断问题时计数，保证指标语义精确。
+                    KBD_CONTRACT_SOFT_STALE_TOTAL.labels(
+                        support_id=support_id or "unknown", category=category_id or "unknown"
+                    ).inc()
     elif isinstance(generation, dict) and generation:
         if generation.get("status") == "stale":
             issues.append("Signal/Contract 生成输入已变化，必须重新抽取或完成人工复核")
@@ -124,63 +146,6 @@ def _execution_issues(
     if not signals:
         issues.append("未配置关键信号")
     return issues
-
-
-def _evaluate_contract_revision(
-    stored_validation: dict[str, Any],
-    validation_document: dict[str, Any],
-    support_id: str | None,
-    category_id: str | None,
-    issues: list[str],
-) -> None:
-    """契约门禁分级判定（结构/语义指纹，见 ADR 2026-08-13-kbd-contract-gate-structural-semantic-fingerprint）。
-
-    - 新契约快照（含 structural_revision / semantic_revision / fp_algo_version）：
-      结构指纹不等且旧信号无法在新契约下执行 => 真 breaking（硬阻断）；
-      结构指纹相等、语义指纹不等 => 兼容演进（放行 + soft_stale 观测，不阻断）；
-      fp_algo_version 不等（指纹算法升级）=> 走一次性全量重算提示（soft_stale，不阻断）。
-    - 旧契约快照（仅 tool_contract_revision）：回退为原字节哈希全等比对，行为与原门禁一致，
-      待 maintenance 重新发布刷新为新分级快照后自然迁移（见 024 迁移铁律）。
-    """
-    cur_struct = current_structural_fingerprint()
-    cur_sem = current_semantic_fingerprint()
-
-    stored_struct = stored_validation.get("structural_revision")
-    stored_sem = stored_validation.get("semantic_revision")
-    stored_fp_algo = stored_validation.get("fp_algo_version")
-    old_style = stored_struct is None and stored_sem is None
-
-    if old_style:
-        # 旧快照回退路径：与原门禁语义一致（字节哈希全等），不恶化、不提前放行。
-        if stored_validation.get("tool_contract_revision") != current_tool_contract_revision():
-            issues.append("专家发布时使用的工具契约版本已过期，必须重新发布")
-        return
-
-    # 指纹算法版本升级：结构/语义指纹定义已变，旧快照不可直接比较，提示重发刷新（不阻断）。
-    if stored_fp_algo != FP_ALGO_VERSION:
-        KBD_CONTRACT_SOFT_STALE_TOTAL.labels(
-            support_id=support_id or "unknown", category=category_id or "unknown"
-        ).inc()
-        return
-
-    if stored_struct != cur_struct:
-        # 结构变了：用当前 Schema 实跑校验旧 signals，失败才真阻断（破坏性变更兜底）。
-        # validation_document 携带旧 KBD 的 signals，jsonschema 用当前加载的 schema 校验其合法性。
-        try:
-            validate_publishable_signals_json(validation_document)
-        except Exception:
-            KBD_CONTRACT_HARD_BREAK_TOTAL.labels(
-                support_id=support_id or "unknown", category=category_id or "unknown"
-            ).inc()
-            issues.append("专家发布时使用的工具契约结构已破坏性变更，旧信号无法在新契约下执行，必须重新发布")
-        # 校验通过 => 兼容演进（如仅新增可选属性），放行。
-        return
-
-    if stored_sem != cur_sem:
-        # 结构兼容、语义漂移：放行 + 可观测，提示建议重发但不阻断。
-        KBD_CONTRACT_SOFT_STALE_TOTAL.labels(
-            support_id=support_id or "unknown", category=category_id or "unknown"
-        ).inc()
 
 
 @router.get("/categories/{category_id}/playbooks")
