@@ -247,6 +247,16 @@ kbService:
     repository: hci-kb-service
     tag: latest
   port: 8004
+  # Catalog 基线持久化：页面新增/修改的 Catalog 基线（acli_command_catalog.json / resolution_catalog.json）
+  # 默认写入容器可写层，pod 重建后回滚到镜像层导致修改丢失。
+  # 开启后挂载 PVC，initContainer 首次从镜像拷贝基线（仅缺失时拷贝，保护已有修改），
+  # 之后页面修改持久化到 PVC，pod 重建后保留。
+  # 关闭（enabled: false）则回退为镜像内只读基线（兼容旧行为，但页面修改不持久）。
+  persistence:
+    enabled: true
+    # 留空使用集群默认 StorageClass；如需 RWX（多副本）需指定支持 ReadWriteMany 的 storageClass。
+    storageClass: ""
+    size: 1Gi
   resources:
     requests:
       cpu: "100m"

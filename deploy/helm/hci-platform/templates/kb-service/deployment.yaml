@@ -29,6 +29,39 @@ spec:
       # 显式声明 ClusterFirst，使 GitOps 能覆盖历史 dnsPolicy:None 漂移。
       # kb-service 依赖集群内短服务名 postgres，不应绕过 CoreDNS。
       dnsPolicy: ClusterFirst
+      # 基线持久化：首次启动从镜像拷贝 Catalog 基线到 PVC（仅缺失时拷贝，保护页面已有修改），
+      # 之后主容器挂载 PVC，页面新增/修改的基线在 pod 重建后保留，不再回滚到镜像层。
+      {{- if .Values.kbService.persistence.enabled }}
+      initContainers:
+        - name: init-catalog-baseline
+          image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.kbService.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              SRC=/app/shared/resolution/catalogs
+              DST=/data/catalogs
+              echo "init-catalog-baseline: 校验镜像基线目录"
+              ls -l "$SRC" || { echo "init-catalog-baseline: 镜像基线目录缺失，终止"; exit 1; }
+              for f in "$SRC"/*; do
+                [ -e "$f" ] || continue
+                name=$(basename "$f")
+                if [ ! -f "$DST/$name" ]; then
+                  echo "init-catalog-baseline: 拷贝缺失基线 $name 到 PVC"
+                  cp -p "$f" "$DST/$name"
+                else
+                  echo "init-catalog-baseline: 跳过已存在基线 $name（保留页面修改）"
+                fi
+              done
+              echo "init-catalog-baseline: 完成，PVC 当前内容:"
+              ls -l "$DST"
+          volumeMounts:
+            - name: catalog-persist
+              mountPath: /data/catalogs
+      {{- end }}
       containers:
         - name: kb-service
           image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.kbService.image) }}
@@ -51,6 +84,14 @@ spec:
               value: {{ printf "postgresql+asyncpg://%s:%s@%s:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
             - name: GITOPS_FORCE_RESET
               value: "2026-07-09-v2"
+            {{- if .Values.kbService.persistence.enabled }}
+            # 基线持久化：通过环境变量将 Catalog 读取路径指向持久卷（/data/catalogs），
+            # 使页面新增/修改的基线在 pod 重建后保留，避免回滚到镜像层。
+            - name: ACLI_CATALOG_PATH
+              value: /data/catalogs/acli_command_catalog.json
+            - name: RESOLUTION_CATALOG_PATH
+              value: /data/catalogs/resolution_catalog.json
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /health/live
@@ -76,4 +117,17 @@ spec:
             failureThreshold: 30
           resources:
             {{- toYaml .Values.kbService.resources | nindent 12 }}
+          {{- if .Values.kbService.persistence.enabled }}
+          volumeMounts:
+            - name: catalog-persist
+              # 挂载到非受保护路径 /data/catalogs（运行时代码完整性防护禁止覆盖 /app/shared/）。
+              # 后端通过 ACLI_CATALOG_PATH / RESOLUTION_CATALOG_PATH 环境变量读取此持久化目录。
+              mountPath: /data/catalogs
+          {{- end }}
+      {{- if .Values.kbService.persistence.enabled }}
+      volumes:
+        - name: catalog-persist
+          persistentVolumeClaim:
+            claimName: kb-service-catalog-data
+      {{- end }}
 {{- end }}
