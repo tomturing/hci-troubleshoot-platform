@@ -7,8 +7,8 @@
 #   3. atlas schema apply（最终声明式差量收敛）
 #   4. psql 应用触发器（需要表已存在，幂等：DROP TRIGGER IF EXISTS + CREATE TRIGGER）
 #
-# 前置条件（由 K8s initContainer 确保，脚本不重复处理）：
-#   - 目标库已安装 vector/pgcrypto/uuid-ossp/pg_trgm extensions
+# 前置条件：
+#   - 数据库用户拥有安装 vector/pgcrypto/uuid-ossp/pg_trgm extensions 的权限
 #   - atlas_dev 数据库已就绪
 #
 # 环境变量（由 Helm Job 注入）：
@@ -19,6 +19,16 @@ set -e
 
 echo "====== HCI DB 声明式迁移 ======"
 echo "目标数据库: 已配置（连接串已脱敏）"
+
+# 目标库的类型与函数扩展是 desired_schema.sql 的硬依赖。迁移入口自行确保，
+# 避免 Docker Compose、Helm 和 CI 对扩展初始化顺序产生隐式差异。
+echo ">>> 确保目标数据库扩展对象"
+psql -v ON_ERROR_STOP=1 "$DATABASE_URL" <<'SQL'
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+SQL
 
 # Atlas 在规范化文件 Schema 时会清理 dev 数据库的 public schema。pgvector 等扩展
 # 记录可能仍存在，但 vector 类型/函数已随 schema 被删除；下一次 apply 前必须重建。
