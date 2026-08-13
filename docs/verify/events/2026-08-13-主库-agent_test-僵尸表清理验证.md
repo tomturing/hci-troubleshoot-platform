@@ -74,10 +74,13 @@ agent_test_run_event, agent_test_run_result, agent_test_runtime_instance
 **第一性原理根因**：`frontend-check` job 的触发条件为 `needs.changes.outputs.frontend == 'true'`（ci.yml 第 216 行），而 `changes` job 的 `paths-filter` 中 `frontend` 过滤器（第 62-66 行）字面只匹配 `frontend/**`，不含 `database/**`/`docs/**`。PR diff 无 `frontend/**` 文件时该输出应为 `false`，实测却为 `true`——属 `paths-filter` 输出误判（glob 边界模糊或 outputs 串扰），非预期行为。
 
 **对抗性审查修复**（方案 C，从定义层 + 使用层双加固）：
-1. **定义层**：给 `frontend` 过滤器显式追加负向约束（`!backend/**`、`!database/**`、`!docs/**`、`!deploy/**`、`!scripts/**`、`!.github/**`），消除 glob 边界模糊导致的潜在误判。
-2. **使用层（根除）**：在 `frontend-check` job 内部第一步插入独立的 `dorny/paths-filter` 二次校验（仅判定 `frontend/**`），并在其后加 `短路非前端改动 PR` step——当 PR 事件下二次校验 `frontend != 'true'` 时直接 `exit 0` 跳过。该短路使 job 不再单纯依赖 `paths-filter` outputs，即使 `changes` job 输出误判，前端检查也不会对纯数据库/文档 PR 空跑。
 
-**验收**：后续纯 `database/**` / `docs/**` PR 的 `前端检查` 应表现为 `skipped`（二次校验短路）而非 `Successful`，消除每次约 55s 的无效 runner 开销。
+> **第一轮修正（已被推翻）**：曾试图在 `frontend-check` 内用 `dorny/paths-filter` 做二次校验。实测 CI 后仍 `Successful`（49s）——根因是 `dorny/paths-filter@0e4a8c6` 在 `pull_request` 事件下对 `frontend/**` 的判定本身误判为 `true`，二次校验用同版本同源 action 必然同错，属对抗性审查盲区。
+
+1. **定义层**：给 `frontend` 过滤器显式追加负向约束（`!backend/**`、`!database/**`、`!docs/**`、`!deploy/**`、`!scripts/**`、`!.github/**`），消除 glob 边界模糊导致的潜在误判（保留，作为纵深防御）。
+2. **使用层（根除，确定性方案）**：在 `frontend-check` job 内第一步改为原生 `git diff --name-only ${base} ${head}` 列出 PR 改动文件，直接 `grep -qE '^frontend/'` 判定。不匹配则 `exit 0` 短路。该判定不依赖任何 glob action，从根上消除 `paths-filter` 误判，纯数据库/文档 PR 的前端检查必然短路（job 秒级结束并标绿 `Successful`，而非空跑 49s）。
+
+**验收**：后续纯 `database/**` / `docs/**` PR 的 `前端检查` 应表现为「秒级结束 + Successful」（git 短路 `exit 0`），而非耗时约 49s 的真实 pnpm 构建。
 
 ## 4. 验证
 

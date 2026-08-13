@@ -224,25 +224,27 @@ jobs:
       (github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-
-      # 二次校验：独立于 changes job 的 paths-filter 输出，直接判定本 PR 是否
-      # 真有 frontend/** 改动。防御性根除 paths-filter _outputs 串扰/误判导致
-      # 纯数据库/文档 PR 被误触发前端单测+构建（见 PR #747 实测误触发）。
-      - name: 前端改动二次校验
-        id: fe-filter
-        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad
-        if: github.event_name == 'pull_request'
         with:
-          filters: |
-            frontend:
-              - 'frontend/**'
-              - '!frontend/customer/public/downloads/terminal_bridge.exe'
+          fetch-depth: 0
 
+      # 确定性短路：直接用 git diff 列出 PR 改动文件，grep 是否真有 frontend/
+      # 改动。不依赖 dorny/paths-filter（实测该 action 在 PR 事件下对 frontend/**
+      # 误判为 true，会导致纯数据库/文档 PR 被误触发前端单测+构建，见 PR #747）。
       - name: 短路非前端改动 PR
-        if: github.event_name == 'pull_request' && steps.fe-filter.outputs.frontend != 'true'
+        if: github.event_name == 'pull_request'
         run: |
-          echo "::notice::本 PR 未改动 frontend/**，跳过前端检查"
-          exit 0
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          echo "diff 范围: ${BASE}...${HEAD}"
+          CHANGED="$(git diff --name-only "${BASE}" "${HEAD}" || true)"
+          echo "改动文件:"
+          echo "${CHANGED}"
+          if echo "${CHANGED}" | grep -qE '^frontend/'; then
+            echo "::notice::检测到 frontend/ 改动，继续前端检查"
+          else
+            echo "::notice::未检测到 frontend/ 改动，跳过前端检查"
+            exit 0
+          fi
 
       - name: 安装 Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
