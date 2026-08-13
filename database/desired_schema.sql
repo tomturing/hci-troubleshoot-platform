@@ -306,10 +306,15 @@ CREATE TABLE IF NOT EXISTS collection_profile_definition (
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT collection_profile_definition_pkey PRIMARY KEY (profile_id),
-    CONSTRAINT ck_collection_profile_definition_managed_by CHECK (managed_by IN ('manual', 'kbd_sync')),
+    CONSTRAINT ck_collection_profile_definition_managed_by
+        CHECK ((managed_by)::text = ANY ((ARRAY['manual'::varchar, 'kbd_sync'::varchar])::text[])),
     CONSTRAINT ck_collection_profile_definition_lock_version CHECK (lock_version >= 1),
     CONSTRAINT ck_collection_profile_definition_review_status
-        CHECK (review_status IN ('draft', 'approved', 'rejected'))
+        CHECK (
+            (review_status)::text = ANY (
+                (ARRAY['draft'::varchar, 'approved'::varchar, 'rejected'::varchar])::text[]
+            )
+        )
 );
 
 COMMENT ON TABLE collection_profile_definition IS
@@ -484,7 +489,8 @@ CREATE TABLE IF NOT EXISTS collector_definition (
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT collector_definition_pkey PRIMARY KEY (collector_id),
-    CONSTRAINT ck_collector_definition_managed_by CHECK (managed_by IN ('manual', 'kbd_sync')),
+    CONSTRAINT ck_collector_definition_managed_by
+        CHECK ((managed_by)::text = ANY ((ARRAY['manual'::varchar, 'kbd_sync'::varchar])::text[])),
     CONSTRAINT ck_collector_definition_lock_version CHECK (lock_version >= 1),
     CONSTRAINT ck_collector_definition_timeout CHECK (timeout_seconds BETWEEN 1 AND 3600),
     CONSTRAINT ck_collector_definition_output_size CHECK (max_output_mb > 0 AND max_output_mb <= 4),
@@ -667,9 +673,25 @@ CREATE TABLE IF NOT EXISTS diagnosis_upload_session (
         FOREIGN KEY (collector_artifact_id) REFERENCES collector_artifact (artifact_id) ON DELETE RESTRICT,
     CONSTRAINT uq_diagnosis_upload_tenant_idempotency UNIQUE (tenant_id, idempotency_key),
     CONSTRAINT ck_diagnosis_upload_bundle_type
-        CHECK (bundle_type IN ('initial', 'supplement', 'verification')),
+        CHECK (
+            (bundle_type)::text = ANY (
+                (ARRAY['initial'::varchar, 'supplement'::varchar, 'verification'::varchar])::text[]
+            )
+        ),
     CONSTRAINT ck_diagnosis_upload_status
-        CHECK (status IN ('initiated', 'uploading', 'completing', 'completed', 'aborted', 'expired', 'failed')),
+        CHECK (
+            (status)::text = ANY (
+                (ARRAY[
+                    'initiated'::varchar,
+                    'uploading'::varchar,
+                    'completing'::varchar,
+                    'completed'::varchar,
+                    'aborted'::varchar,
+                    'expired'::varchar,
+                    'failed'::varchar
+                ])::text[]
+            )
+        ),
     -- 存量审计行可能来自旧版 2 GiB 契约；新请求由 API/运行时统一限制为 512 MiB。
     CONSTRAINT ck_diagnosis_upload_size CHECK (total_size_bytes > 0 AND total_size_bytes <= 2147483648),
     CONSTRAINT ck_diagnosis_upload_parts CHECK (part_count BETWEEN 1 AND 10000)
@@ -684,7 +706,8 @@ COMMENT ON COLUMN diagnosis_upload_session.trace_id IS '创建上传会话的 W3
 CREATE INDEX IF NOT EXISTS idx_diagnosis_upload_session_tenant_session
     ON diagnosis_upload_session (tenant_id, session_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_diagnosis_upload_session_expiry
-    ON diagnosis_upload_session (expires_at) WHERE status IN ('initiated', 'uploading');
+    ON diagnosis_upload_session (expires_at)
+    WHERE ((status)::text = ANY ((ARRAY['initiated'::varchar, 'uploading'::varchar])::text[]));
 CREATE INDEX IF NOT EXISTS idx_diagnosis_upload_session_trace_id
     ON diagnosis_upload_session (trace_id);
 
@@ -734,14 +757,34 @@ CREATE TABLE IF NOT EXISTS diagnostic_evidence_bundle (
     CONSTRAINT uq_diagnostic_evidence_bundle_business
         UNIQUE (tenant_id, session_id, bundle_type, sha256),
     CONSTRAINT ck_diagnostic_evidence_bundle_type
-        CHECK (bundle_type IN ('initial', 'supplement', 'verification')),
+        CHECK (
+            (bundle_type)::text = ANY (
+                (ARRAY['initial'::varchar, 'supplement'::varchar, 'verification'::varchar])::text[]
+            )
+        ),
     CONSTRAINT ck_diagnostic_evidence_bundle_status
-        CHECK (processing_status IN (
-            'uploaded', 'quarantined', 'scanning', 'extracting', 'assessing',
-            'ready', 'rejected', 'failed', 'deletion_pending', 'deleted'
-        )),
+        CHECK (
+            (processing_status)::text = ANY (
+                (ARRAY[
+                    'uploaded'::varchar,
+                    'quarantined'::varchar,
+                    'scanning'::varchar,
+                    'extracting'::varchar,
+                    'assessing'::varchar,
+                    'ready'::varchar,
+                    'rejected'::varchar,
+                    'failed'::varchar,
+                    'deletion_pending'::varchar,
+                    'deleted'::varchar
+                ])::text[]
+            )
+        ),
     CONSTRAINT ck_diagnostic_evidence_bundle_security_review
-        CHECK (security_review_status IN ('open', 'acknowledged', 'cleared')),
+        CHECK (
+            (security_review_status)::text = ANY (
+                (ARRAY['open'::varchar, 'acknowledged'::varchar, 'cleared'::varchar])::text[]
+            )
+        ),
     CONSTRAINT ck_diagnostic_evidence_bundle_version CHECK (version >= 1)
 );
 
@@ -789,7 +832,11 @@ CREATE TABLE IF NOT EXISTS diagnosis_processing_job (
         FOREIGN KEY (bundle_id) REFERENCES diagnostic_evidence_bundle (bundle_id) ON DELETE CASCADE,
     CONSTRAINT uq_diagnosis_processing_job_bundle_type UNIQUE (bundle_id, job_type),
     CONSTRAINT ck_diagnosis_processing_job_status
-        CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),
+        CHECK (
+            (status)::text = ANY (
+                (ARRAY['pending'::varchar, 'running'::varchar, 'succeeded'::varchar, 'failed'::varchar])::text[]
+            )
+        ),
     CONSTRAINT ck_diagnosis_processing_job_attempts CHECK (attempts >= 0 AND max_attempts BETWEEN 1 AND 10)
 );
 
@@ -838,11 +885,22 @@ CREATE TABLE IF NOT EXISTS evidence_item (
     CONSTRAINT fk_evidence_item_plan_item_id
         FOREIGN KEY (collection_plan_item_id) REFERENCES collection_plan_item (item_id) ON DELETE RESTRICT,
     CONSTRAINT uq_evidence_item_bundle_source UNIQUE (bundle_id, source_path),
-    CONSTRAINT ck_evidence_item_status CHECK (evidence_status IN (
-        'available', 'missing', 'collection_failed', 'out_of_time_range',
-        'not_applicable', 'skipped_by_user', 'unreadable'
-    )),
-    CONSTRAINT ck_evidence_item_quality CHECK (quality IN ('high', 'medium', 'low'))
+    CONSTRAINT ck_evidence_item_status
+        CHECK (
+            (evidence_status)::text = ANY (
+                (ARRAY[
+                    'available'::varchar,
+                    'missing'::varchar,
+                    'collection_failed'::varchar,
+                    'out_of_time_range'::varchar,
+                    'not_applicable'::varchar,
+                    'skipped_by_user'::varchar,
+                    'unreadable'::varchar
+                ])::text[]
+            )
+        ),
+    CONSTRAINT ck_evidence_item_quality
+        CHECK ((quality)::text = ANY ((ARRAY['high'::varchar, 'medium'::varchar, 'low'::varchar])::text[]))
 );
 
 COMMENT ON TABLE evidence_item IS 'Evidence Item（不可变证据项）；新包只追加记录，不覆盖历史证据';
@@ -882,9 +940,18 @@ CREATE TABLE IF NOT EXISTS offline_signal_collector_mapping (
     CONSTRAINT offline_signal_collector_mapping_pkey PRIMARY KEY (mapping_id),
     CONSTRAINT fk_offline_signal_collector_mapping_collector_id
         FOREIGN KEY (collector_id) REFERENCES collector_definition (collector_id) ON DELETE RESTRICT,
-    CONSTRAINT ck_offline_signal_collector_mapping_query_type CHECK (
-        query_type IN ('log', 'json', 'command_output', 'metric', 'evidence_status')
-    ),
+    CONSTRAINT ck_offline_signal_collector_mapping_query_type
+        CHECK (
+            (query_type)::text = ANY (
+                (ARRAY[
+                    'log'::varchar,
+                    'json'::varchar,
+                    'command_output'::varchar,
+                    'metric'::varchar,
+                    'evidence_status'::varchar
+                ])::text[]
+            )
+        ),
     CONSTRAINT ck_offline_signal_collector_mapping_priority CHECK (priority BETWEEN 0 AND 10000),
     CONSTRAINT ck_offline_signal_collector_mapping_lock_version CHECK (lock_version >= 1),
     CONSTRAINT ck_offline_signal_collector_mapping_exact_source CHECK (
@@ -991,10 +1058,22 @@ CREATE TABLE IF NOT EXISTS offline_resource_sync_batch (
         kbd_change_count >= 0 AND tool_change_count >= 0 AND collector_change_count >= 0
         AND profile_change_count >= 0 AND mapping_change_count >= 0
     ),
-    CONSTRAINT ck_offline_resource_sync_batch_mode CHECK (sync_mode IN ('incremental', 'full')),
-    CONSTRAINT ck_offline_resource_sync_batch_status CHECK (
-        status IN ('candidate', 'published', 'rejected', 'failed', 'rolled_back', 'rollback_failed', 'superseded')
-    )
+    CONSTRAINT ck_offline_resource_sync_batch_mode
+        CHECK ((sync_mode)::text = ANY ((ARRAY['incremental'::varchar, 'full'::varchar])::text[])),
+    CONSTRAINT ck_offline_resource_sync_batch_status
+        CHECK (
+            (status)::text = ANY (
+                (ARRAY[
+                    'candidate'::varchar,
+                    'published'::varchar,
+                    'rejected'::varchar,
+                    'failed'::varchar,
+                    'rolled_back'::varchar,
+                    'rollback_failed'::varchar,
+                    'superseded'::varchar
+                ])::text[]
+            )
+        )
 );
 
 COMMENT ON TABLE offline_resource_sync_batch IS
@@ -1040,15 +1119,30 @@ CREATE TABLE IF NOT EXISTS offline_resource_sync_change (
     CONSTRAINT fk_offline_resource_sync_change_batch
         FOREIGN KEY (batch_id) REFERENCES offline_resource_sync_batch (batch_id) ON DELETE CASCADE,
     CONSTRAINT uq_offline_resource_sync_change_resource UNIQUE (batch_id, resource_type, resource_name),
-    CONSTRAINT ck_offline_resource_sync_change_type CHECK (
-        resource_type IN ('collector', 'collection_profile', 'signal_mapping')
-    ),
-    CONSTRAINT ck_offline_resource_sync_change_action CHECK (
-        change_type IN ('create', 'update', 'disable', 'noop')
-    ),
-    CONSTRAINT ck_offline_resource_sync_change_status CHECK (
-        status IN ('candidate', 'published', 'failed', 'rolled_back', 'skipped')
-    )
+    CONSTRAINT ck_offline_resource_sync_change_type
+        CHECK (
+            (resource_type)::text = ANY (
+                (ARRAY['collector'::varchar, 'collection_profile'::varchar, 'signal_mapping'::varchar])::text[]
+            )
+        ),
+    CONSTRAINT ck_offline_resource_sync_change_action
+        CHECK (
+            (change_type)::text = ANY (
+                (ARRAY['create'::varchar, 'update'::varchar, 'disable'::varchar, 'noop'::varchar])::text[]
+            )
+        ),
+    CONSTRAINT ck_offline_resource_sync_change_status
+        CHECK (
+            (status)::text = ANY (
+                (ARRAY[
+                    'candidate'::varchar,
+                    'published'::varchar,
+                    'failed'::varchar,
+                    'rolled_back'::varchar,
+                    'skipped'::varchar
+                ])::text[]
+            )
+        )
 );
 
 COMMENT ON TABLE offline_resource_sync_change IS
@@ -1078,12 +1172,18 @@ CREATE TABLE IF NOT EXISTS offline_resource_sync_event (
         FOREIGN KEY (batch_id) REFERENCES offline_resource_sync_batch (batch_id) ON DELETE RESTRICT,
     CONSTRAINT uq_offline_resource_sync_event_sequence UNIQUE (batch_id, event_sequence),
     CONSTRAINT ck_offline_resource_sync_event_sequence CHECK (event_sequence >= 1),
-    CONSTRAINT ck_offline_resource_sync_event_action CHECK (
-        action IN ('preview', 'publish', 'reject', 'rollback')
-    ),
-    CONSTRAINT ck_offline_resource_sync_event_result CHECK (
-        result IN ('started', 'succeeded', 'failed')
-    )
+    CONSTRAINT ck_offline_resource_sync_event_action
+        CHECK (
+            (action)::text = ANY (
+                (ARRAY['preview'::varchar, 'publish'::varchar, 'reject'::varchar, 'rollback'::varchar])::text[]
+            )
+        ),
+    CONSTRAINT ck_offline_resource_sync_event_result
+        CHECK (
+            (result)::text = ANY (
+                (ARRAY['started'::varchar, 'succeeded'::varchar, 'failed'::varchar])::text[]
+            )
+        )
 );
 
 COMMENT ON TABLE offline_resource_sync_event IS
@@ -1161,7 +1261,8 @@ CREATE TABLE IF NOT EXISTS diagnosis_run (
         FOREIGN KEY (assessment_id) REFERENCES evidence_assessment (assessment_id) ON DELETE RESTRICT,
     CONSTRAINT uq_diagnosis_run_session_sequence UNIQUE (session_id, run_sequence),
     CONSTRAINT uq_diagnosis_run_session_manifest UNIQUE (session_id, run_manifest_sha256),
-    CONSTRAINT ck_diagnosis_run_status CHECK (status IN ('running', 'completed', 'failed')),
+    CONSTRAINT ck_diagnosis_run_status
+        CHECK ((status)::text = ANY ((ARRAY['running'::varchar, 'completed'::varchar, 'failed'::varchar])::text[])),
     CONSTRAINT ck_diagnosis_run_sequence CHECK (run_sequence BETWEEN 1 AND 2)
 );
 
@@ -1188,7 +1289,8 @@ CREATE TABLE IF NOT EXISTS signal_evaluation (
     CONSTRAINT fk_signal_evaluation_run_id
         FOREIGN KEY (run_id) REFERENCES diagnosis_run (run_id) ON DELETE CASCADE,
     CONSTRAINT uq_signal_evaluation_run_signal UNIQUE (run_id, signal_id),
-    CONSTRAINT ck_signal_evaluation_state CHECK (state IN ('MATCHED', 'NOT_MATCHED', 'UNKNOWN'))
+    CONSTRAINT ck_signal_evaluation_state
+        CHECK ((state)::text = ANY ((ARRAY['MATCHED'::varchar, 'NOT_MATCHED'::varchar, 'UNKNOWN'::varchar])::text[]))
 );
 
 COMMENT ON TABLE signal_evaluation IS 'Signal Evaluation（信号评估）；缺失、失败和不可读证据只能产生 UNKNOWN';
@@ -1243,7 +1345,12 @@ CREATE TABLE IF NOT EXISTS supplement_plan (
     CONSTRAINT fk_supplement_plan_run_id
         FOREIGN KEY (run_id) REFERENCES diagnosis_run (run_id) ON DELETE RESTRICT,
     CONSTRAINT uq_supplement_plan_session UNIQUE (session_id),
-    CONSTRAINT ck_supplement_plan_status CHECK (status IN ('ready', 'collecting', 'completed', 'cancelled'))
+    CONSTRAINT ck_supplement_plan_status
+        CHECK (
+            (status)::text = ANY (
+                (ARRAY['ready'::varchar, 'collecting'::varchar, 'completed'::varchar, 'cancelled'::varchar])::text[]
+            )
+        )
 );
 
 COMMENT ON TABLE supplement_plan IS 'Supplement Plan（补充采集计划），P0 每个诊断会话最多一条';
@@ -1285,10 +1392,30 @@ CREATE TABLE IF NOT EXISTS diagnosis_report (
     CONSTRAINT uq_diagnosis_report_run UNIQUE (run_id),
     CONSTRAINT uq_diagnosis_report_session_sequence UNIQUE (session_id, report_sequence),
     CONSTRAINT ck_diagnosis_report_level
-        CHECK (diagnosis_level IN ('Confirmed', 'Probable', 'Suspected', 'Insufficient', 'Conflicted')),
-    CONSTRAINT ck_diagnosis_report_status CHECK (publish_status IN (
-        'draft', 'review_pending', 'engineer_confirmed', 'customer_published', 'rejected', 'superseded'
-    )),
+        CHECK (
+            (diagnosis_level)::text = ANY (
+                (ARRAY[
+                    'Confirmed'::varchar,
+                    'Probable'::varchar,
+                    'Suspected'::varchar,
+                    'Insufficient'::varchar,
+                    'Conflicted'::varchar
+                ])::text[]
+            )
+        ),
+    CONSTRAINT ck_diagnosis_report_status
+        CHECK (
+            (publish_status)::text = ANY (
+                (ARRAY[
+                    'draft'::varchar,
+                    'review_pending'::varchar,
+                    'engineer_confirmed'::varchar,
+                    'customer_published'::varchar,
+                    'rejected'::varchar,
+                    'superseded'::varchar
+                ])::text[]
+            )
+        ),
     CONSTRAINT ck_diagnosis_report_confidence CHECK (confidence BETWEEN 0 AND 1),
     CONSTRAINT ck_diagnosis_report_version CHECK (version >= 1)
 );
@@ -1335,7 +1462,8 @@ CREATE TABLE IF NOT EXISTS diagnosis_legal_hold_audit (
     CONSTRAINT diagnosis_legal_hold_audit_pkey PRIMARY KEY (audit_id),
     CONSTRAINT fk_diagnosis_legal_hold_audit_session_id
         FOREIGN KEY (session_id) REFERENCES diagnosis_session (session_id) ON DELETE CASCADE,
-    CONSTRAINT ck_diagnosis_legal_hold_audit_action CHECK (action IN ('applied', 'released'))
+    CONSTRAINT ck_diagnosis_legal_hold_audit_action
+        CHECK ((action)::text = ANY ((ARRAY['applied'::varchar, 'released'::varchar])::text[]))
 );
 
 COMMENT ON TABLE diagnosis_legal_hold_audit IS
@@ -1365,7 +1493,11 @@ CREATE TABLE IF NOT EXISTS diagnosis_deletion_job (
         FOREIGN KEY (session_id) REFERENCES diagnosis_session (session_id) ON DELETE CASCADE,
     CONSTRAINT uq_diagnosis_deletion_job_session UNIQUE (session_id),
     CONSTRAINT ck_diagnosis_deletion_job_status
-        CHECK (status IN ('deletion_pending', 'deleted', 'deletion_failed'))
+        CHECK (
+            (status)::text = ANY (
+                (ARRAY['deletion_pending'::varchar, 'deleted'::varchar, 'deletion_failed'::varchar])::text[]
+            )
+        )
 );
 
 COMMENT ON TABLE diagnosis_deletion_job IS '删除原始包、结构化证据、缓存和临时副本的异步审计任务；Legal Hold 时禁止创建';
@@ -1393,7 +1525,7 @@ CREATE TABLE IF NOT EXISTS diagnosis_management_audit (
     CONSTRAINT fk_diagnosis_management_audit_session_id
         FOREIGN KEY (session_id) REFERENCES diagnosis_session (session_id) ON DELETE SET NULL,
     CONSTRAINT ck_diagnosis_management_audit_result
-        CHECK (result IN ('success', 'denied', 'failed'))
+        CHECK ((result)::text = ANY ((ARRAY['success'::varchar, 'denied'::varchar, 'failed'::varchar])::text[]))
 );
 
 COMMENT ON TABLE diagnosis_management_audit IS
@@ -2359,12 +2491,31 @@ CREATE TABLE IF NOT EXISTS kbd_batch_job (
     CONSTRAINT fk_kbd_batch_job_retry_of
         FOREIGN KEY (retry_of_batch_id) REFERENCES kbd_batch_job (batch_id) ON DELETE RESTRICT,
     CONSTRAINT uq_kbd_batch_job_retry_of UNIQUE (retry_of_batch_id),
-    CONSTRAINT ck_kbd_batch_job_type CHECK (
-        job_type IN ('reanalyze_images', 'reclassify', 'extract_signals', 'approve', 'reject')
-    ),
-    CONSTRAINT ck_kbd_batch_job_status CHECK (
-        status IN ('pending', 'running', 'completed', 'partial_failed', 'failed', 'interrupted')
-    ),
+    CONSTRAINT ck_kbd_batch_job_type
+        CHECK (
+            (job_type)::text = ANY (
+                (ARRAY[
+                    'reanalyze_images'::varchar,
+                    'reclassify'::varchar,
+                    'extract_signals'::varchar,
+                    'approve'::varchar,
+                    'reject'::varchar
+                ])::text[]
+            )
+        ),
+    CONSTRAINT ck_kbd_batch_job_status
+        CHECK (
+            (status)::text = ANY (
+                (ARRAY[
+                    'pending'::varchar,
+                    'running'::varchar,
+                    'completed'::varchar,
+                    'partial_failed'::varchar,
+                    'failed'::varchar,
+                    'interrupted'::varchar
+                ])::text[]
+            )
+        ),
     CONSTRAINT ck_kbd_batch_job_requested_ids CHECK (jsonb_typeof(requested_kbd_ids) = 'array'),
     CONSTRAINT ck_kbd_batch_job_request_json CHECK (jsonb_typeof(request_json) = 'object'),
     CONSTRAINT ck_kbd_batch_job_counts CHECK (
@@ -2431,9 +2582,18 @@ CREATE TABLE IF NOT EXISTS kbd_batch_job_item (
         FOREIGN KEY (batch_id) REFERENCES kbd_batch_job (batch_id) ON DELETE CASCADE,
     CONSTRAINT fk_kbd_batch_job_item_kbd_id
         FOREIGN KEY (kbd_id) REFERENCES kbd_entry (id) ON DELETE RESTRICT,
-    CONSTRAINT ck_kbd_batch_job_item_status CHECK (
-        status IN ('pending', 'running', 'succeeded', 'failed', 'interrupted')
-    ),
+    CONSTRAINT ck_kbd_batch_job_item_status
+        CHECK (
+            (status)::text = ANY (
+                (ARRAY[
+                    'pending'::varchar,
+                    'running'::varchar,
+                    'succeeded'::varchar,
+                    'failed'::varchar,
+                    'interrupted'::varchar
+                ])::text[]
+            )
+        ),
     CONSTRAINT ck_kbd_batch_job_item_work_counts CHECK (
         work_total_count >= 0
         AND work_completed_count >= 0

@@ -686,6 +686,8 @@ jobs:
       - name: 准备诊断样例 PostgreSQL
         run: |
           cp .env.example .env
+          docker network inspect hci-troubleshoot-platform_default >/dev/null 2>&1 \
+            || docker network create hci-troubleshoot-platform_default
           docker compose --env-file .env.example -f deploy/docker/docker-compose.yml up -d postgres
           make db-sync
 

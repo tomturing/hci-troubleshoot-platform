@@ -239,11 +239,21 @@ DO $$ BEGIN
       ON kbd_batch_job (retry_of_batch_id) WHERE retry_of_batch_id IS NOT NULL;
     ALTER TABLE kbd_batch_job DROP CONSTRAINT IF EXISTS ck_kbd_batch_job_status;
     ALTER TABLE kbd_batch_job ADD CONSTRAINT ck_kbd_batch_job_status CHECK (
-      status IN ('pending', 'running', 'completed', 'partial_failed', 'failed', 'interrupted')
+      (status)::text = ANY (
+        (ARRAY[
+          'pending'::varchar, 'running'::varchar, 'completed'::varchar,
+          'partial_failed'::varchar, 'failed'::varchar, 'interrupted'::varchar
+        ])::text[]
+      )
     );
     ALTER TABLE kbd_batch_job DROP CONSTRAINT IF EXISTS ck_kbd_batch_job_type;
     ALTER TABLE kbd_batch_job ADD CONSTRAINT ck_kbd_batch_job_type CHECK (
-      job_type IN ('reanalyze_images', 'reclassify', 'extract_signals', 'approve', 'reject')
+      (job_type)::text = ANY (
+        (ARRAY[
+          'reanalyze_images'::varchar, 'reclassify'::varchar, 'extract_signals'::varchar,
+          'approve'::varchar, 'reject'::varchar
+        ])::text[]
+      )
     );
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_kbd_batch_job_request_json') THEN
       ALTER TABLE kbd_batch_job ADD CONSTRAINT ck_kbd_batch_job_request_json
@@ -275,7 +285,12 @@ DO $$ BEGIN
       ADD COLUMN IF NOT EXISTS work_failed_count integer NOT NULL DEFAULT 0;
     ALTER TABLE kbd_batch_job_item DROP CONSTRAINT IF EXISTS ck_kbd_batch_job_item_status;
     ALTER TABLE kbd_batch_job_item ADD CONSTRAINT ck_kbd_batch_job_item_status CHECK (
-      status IN ('pending', 'running', 'succeeded', 'failed', 'interrupted')
+      (status)::text = ANY (
+        (ARRAY[
+          'pending'::varchar, 'running'::varchar, 'succeeded'::varchar,
+          'failed'::varchar, 'interrupted'::varchar
+        ])::text[]
+      )
     );
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_kbd_batch_job_item_work_counts') THEN
       ALTER TABLE kbd_batch_job_item ADD CONSTRAINT ck_kbd_batch_job_item_work_counts CHECK (
