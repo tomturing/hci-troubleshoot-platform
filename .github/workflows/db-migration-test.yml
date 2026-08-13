@@ -59,9 +59,12 @@ jobs:
       # ── Step 1: 安装 Atlas CLI + 准备 dev 数据库 ─────────────────────────
       - name: 安装 Atlas CLI
         run: |
-          # 与 Dockerfile.migrations 中的 Atlas 版本对齐，避免 CI/发布语义漂移。
-          export ATLAS_VERSION="1.1.6"
-          curl -sSf https://atlasgo.sh | sh -s -- -y
+          # 与 Dockerfile.migrations 多阶段构建同源对齐（arigaio/atlas:1.1.6-community），
+          # 直接抽取镜像内 /atlas 二进制，避免依赖 atlasgo.sh 分发（该渠道已下架 1.1.6 CLI）。
+          ATLAS_IMAGE="arigaio/atlas:1.1.6-community"
+          docker create --name atlas-extract "$ATLAS_IMAGE" /dev/null
+          docker cp atlas-extract:/atlas /usr/local/bin/atlas
+          docker rm -f atlas-extract
           atlas version
 
       - name: 准备 Atlas dev 数据库
