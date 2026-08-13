@@ -1617,7 +1617,7 @@ CREATE TABLE IF NOT EXISTS agent_test_scenario (
     capability_gap jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT ck_agent_test_scenario_status CHECK (status IN ('draft', 'validated', 'approved', 'published', 'stale', 'retired', 'gap'))
+    CONSTRAINT ck_agent_test_scenario_status CHECK ((status)::text = ANY ((ARRAY['draft'::character varying, 'validated'::character varying, 'approved'::character varying, 'published'::character varying, 'stale'::character varying, 'retired'::character varying, 'gap'::character varying])::text[]))
 );
 
 -- 获批 Artifact 的不可变 metadata。真实字节只保存在受控对象存储；source_ref_digest
@@ -1641,7 +1641,7 @@ CREATE TABLE IF NOT EXISTS agent_test_artifact (
     revoke_reason varchar(128),
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT ck_agent_test_artifact_status CHECK (status IN ('staged', 'scanned', 'approved', 'revoked'))
+    CONSTRAINT ck_agent_test_artifact_status CHECK ((status)::text = ANY ((ARRAY['staged'::character varying, 'scanned'::character varying, 'approved'::character varying, 'revoked'::character varying])::text[]))
 );
 
 CREATE TABLE IF NOT EXISTS agent_test_artifact_scan (
@@ -1666,8 +1666,8 @@ CREATE TABLE IF NOT EXISTS agent_test_artifact_approval (
     comment text NOT NULL DEFAULT '',
     trace_id varchar(64),
     decided_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT ck_agent_test_artifact_approval_role CHECK (actor_role IN ('expert', 'security')),
-    CONSTRAINT ck_agent_test_artifact_approval_decision CHECK (decision IN ('approved', 'rejected')),
+    CONSTRAINT ck_agent_test_artifact_approval_role CHECK ((actor_role)::text = ANY ((ARRAY['expert'::character varying, 'security'::character varying])::text[])),
+    CONSTRAINT ck_agent_test_artifact_approval_decision CHECK ((decision)::text = ANY ((ARRAY['approved'::character varying, 'rejected'::character varying])::text[])),
     CONSTRAINT uq_agent_test_artifact_approval_role UNIQUE (artifact_id, actor_role),
     CONSTRAINT uq_agent_test_artifact_approval_actor UNIQUE (artifact_id, actor_id)
 );
@@ -1687,7 +1687,7 @@ CREATE TABLE IF NOT EXISTS agent_test_fixture_bundle (
     version integer NOT NULL DEFAULT 1 CHECK (version > 0),
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT ck_agent_test_fixture_bundle_status CHECK (status IN ('draft', 'validated', 'approved', 'published', 'stale', 'retired')),
+    CONSTRAINT ck_agent_test_fixture_bundle_status CHECK ((status)::text = ANY ((ARRAY['draft'::character varying, 'validated'::character varying, 'approved'::character varying, 'published'::character varying, 'stale'::character varying, 'retired'::character varying])::text[])),
     CONSTRAINT uq_agent_test_fixture_bundle_revision UNIQUE (scenario_id, revision)
 );
 
@@ -1718,7 +1718,7 @@ CREATE TABLE IF NOT EXISTS agent_test_fixture_approval (
     decision varchar(16) NOT NULL,
     comment text NOT NULL DEFAULT '',
     decided_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT ck_agent_test_fixture_approval_decision CHECK (decision IN ('approved', 'rejected')),
+    CONSTRAINT ck_agent_test_fixture_approval_decision CHECK ((decision)::text = ANY ((ARRAY['approved'::character varying, 'rejected'::character varying])::text[])),
     CONSTRAINT uq_agent_test_fixture_approval_role UNIQUE (bundle_id, stage, actor_role)
 );
 
@@ -1749,7 +1749,7 @@ CREATE TABLE IF NOT EXISTS agent_test_fixture_stale_outbox (
     available_at timestamptz NOT NULL DEFAULT now(),
     processed_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT ck_agent_test_fixture_stale_outbox_status CHECK (status IN ('pending', 'processing', 'processed', 'failed')),
+    CONSTRAINT ck_agent_test_fixture_stale_outbox_status CHECK ((status)::text = ANY ((ARRAY['pending'::character varying, 'processing'::character varying, 'processed'::character varying, 'failed'::character varying])::text[])),
     CONSTRAINT uq_agent_test_fixture_stale_outbox_dependency UNIQUE (dependency_type, dependency_id, dependency_revision, dependency_digest, reason_code)
 );
 
@@ -1768,7 +1768,7 @@ CREATE TABLE IF NOT EXISTS agent_test_run (
     deadline_at timestamptz NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT ck_agent_test_run_status CHECK (status IN ('requested', 'preparing', 'leased', 'running', 'passed', 'failed', 'inconclusive', 'cancelled', 'expired'))
+    CONSTRAINT ck_agent_test_run_status CHECK ((status)::text = ANY ((ARRAY['requested'::character varying, 'preparing'::character varying, 'leased'::character varying, 'running'::character varying, 'passed'::character varying, 'failed'::character varying, 'inconclusive'::character varying, 'cancelled'::character varying, 'expired'::character varying])::text[]))
 );
 
 CREATE TABLE IF NOT EXISTS agent_test_run_attempt (
@@ -1812,7 +1812,8 @@ CREATE TABLE IF NOT EXISTS agent_test_runtime_instance (
     schema_versions jsonb NOT NULL,
     capacity integer NOT NULL CHECK (capacity > 0),
     heartbeat_at timestamptz NOT NULL,
-    status varchar(20) NOT NULL CHECK (status IN ('ready', 'draining', 'unavailable'))
+    status varchar(20) NOT NULL,
+    CONSTRAINT agent_test_runtime_instance_status_check CHECK ((status)::text = ANY ((ARRAY['ready'::character varying, 'draining'::character varying, 'unavailable'::character varying])::text[]))
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_test_scenario_support_revision ON agent_test_scenario (support_id, kbd_revision, status);
