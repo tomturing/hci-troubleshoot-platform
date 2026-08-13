@@ -22,13 +22,15 @@ Runtime 配置了 `HCI_SIM_OUTBOX_WEBHOOK_URL` 后会启动 durable outbox recon
 
 ## C3 两步人工验收
 
-dev 环境可使用仓库根目录的 `scripts/hci-sim/two-step-acceptance.sh <KBD_ID>`。脚本只接受已由 C1 Resolver 判定为 `ready_for_artifact_binding` 且在 synthetic 白名单中的 `23821`、`27736`、`34164`，生成 `positive-minimal` Manifest、短时 htp2 Lease 并启动单副本容器。
+dev 环境可使用仓库根目录的 `scripts/hci-sim/two-step-acceptance.sh <KBD_SUPPORT_ID>`。C1 Resolver 从已发布 KBD Snapshot（快照）的 Signal（信号）和当前 Tool Registry（工具注册表）修订生成 `synthetic_routes`（合成路由），不按 KBD ID 维护白名单。每条路由把 `tool_revision` 和 `tool_checksum` 写入 Bundle（制品包）摘要；只要至少一条 Signal 能在无现场变量的情况下确定编译，即可生成 `positive-minimal` Manifest（清单）、短时 htp2 Lease（租约）并启动单副本容器；没有安全可编译路由时返回 Capability Gap（能力缺口）。
+
+仓库中的 `kbd-27123-fixture-manifest.json` 只是 Golden E2E（黄金端到端测试）的默认夹具。Helm 通过 `fixture.manifestFile` 选择夹具，运行时代码、资源名和 Lease（租约）默认场景都不依赖该 KBD。
 
 脚本默认优先使用 SSH `2222`、HTTP `18080`；如果其中一个端口已经被其他仿真实例占用，会自动为本次运行选择隔离端口，并把最终端口写入 `connection.json`。需要让端口占用直接失败时设置 `HCI_SIM_AUTO_PORTS=false`。同一个 KBD 的旧实例会在启动新 Lease 前自动停止，避免 Lease 与容器错配。
 
 脚本对同一 KBD 自动停止上一轮受管容器，预检 SSH/HTTP 端口，使用 dev 主机稳定 SSH host key，并在 `readyz` 未通过时失败退出；它不会把 Lease password 打印到终端。连接文件路径和脱敏字段会输出到屏幕，密码只能从本地 0600 文件读取。默认 Lease TTL 为 15 分钟，生成后应立即完成第二步。
 
-无工单的 Custom UI 初始状态可点击终端面板中的“仿真租约连接（dev）”直接打开仿真租约弹窗；不必先创建无 SSH 工单。选择“仿真租约”后可直接粘贴完整 `connection.json` 并点击“载入连接文件”，页面会校验 `support_id`、端口、`auth_type=lease`、`execution_mode=sim-ssh` 和 `expires_at`，自动填充连接字段及 `recommended_command`。已有工单仍可通过“连接 SSH”进入同一弹窗。Linux/K3s 联调时，Customer UI 的运行时配置必须指向 Linux Bridge（`/terminal-bridge` 或 `ws://<linux-host>:9999`），不能让远端浏览器默认回退到 Windows `localhost:9999`。
+无工单的 Custom UI 初始状态可点击终端面板中的“仿真租约连接（dev）”直接打开仿真租约弹窗；不必先创建无 SSH 工单。选择“仿真租约”后可直接粘贴完整 `connection.json` 并点击“载入连接文件”，页面会校验 `support_id`、端口、`auth_type=lease`、`execution_mode=sim-ssh` 和 `expires_at`，自动填充连接字段及首条 `recommended_command`。完整可验收命令保存在 `recommended_commands`；已有工单仍可通过“连接 SSH”进入同一弹窗。Linux/K3s 联调时，Customer UI 的运行时配置必须指向 Linux Bridge（`/terminal-bridge` 或 `ws://<linux-host>:9999`），不能让远端浏览器默认回退到 Windows `localhost:9999`。
 
 如果页面的 `/runtime-config.js` 返回 `terminalBridgeUrl: ""`，浏览器会按桌面兼容逻辑连接浏览器所在机器的 `ws://localhost:9999`；这不等于 Linux 主机的 `172.28.24.21:9999`。Linux Bridge 没有对应 `WebSocket 请求` 日志时，优先修复 runtime-config/Helm/GitOps 路由，不要反复更换 Lease password。
 
@@ -54,7 +56,15 @@ go run ./cmd/hci-sim-smoke
 
 通过时只输出 `support_id/test_run_id/exit_code` 等非敏感摘要；Lease password 始终只从本地文件读取，不写入输出。
 
-输出明确为 synthetic signal-contract-only；没有获批 Artifact 时禁止使用 `positive-realistic` 或宣称真实 HCI/Artifact E2E。`27123` 等 capability gap 会在第一步失败且不产生 Lease。
+输出明确为 synthetic signal-contract-only；没有获批 Artifact 时禁止使用 `positive-realistic` 或宣称真实 HCI/Artifact E2E。不满足已发布快照、Tool 修订或安全可编译路由门禁的 KBD 会在第一步返回 capability gap，且不产生 Lease。
+
+## Diagnosis Sample Lab（诊断样例实验室）
+
+五篇 `diagnosis-signal-matrix-v1` KBD 的长期手测和自动回归统一使用仓库根目录的 `make diagnosis-lab-*` 命令。实验室支持同一场景多实例并存、六种 Variant（场景变体）、稳定 SSH Host Key（主机密钥）、短时 Lease（租约）、Terminal Bridge（终端桥）在线 smoke（冒烟测试）以及无网络 Go Collector（采集器）执行。
+
+它与本节的 C3 两步验收没有运行时冲突：两者复用同一 `hci-sim` 二进制和 Capability Resolver（能力解析器），但使用不同容器标签、实例目录和生命周期规则。新增样例能力应进入 Diagnosis Sample Lab；`two-step-acceptance.sh` 保留为任意已发布 KBD 的通用最小验收入口。
+
+完整说明见 [Diagnosis Sample Lab（诊断样例实验室）设计与使用说明](../docs/solution/agent/Diagnosis-Sample-Lab诊断样例实验室设计与使用说明.md)。
 
 ## 本地验证
 

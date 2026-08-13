@@ -55,14 +55,18 @@ def test_log_archive_requires_explicit_precheck():
     assert plan.issues[0].code == "LOG_ARCHIVE_PRECHECK_REQUIRED"
 
 
-def test_system_resolver_normalizes_dotted_command_to_argv():
+def test_domain_resolver_normalizes_dotted_command_to_argv():
     runtime = get_resolution_runtime()
     plan, resolved = runtime.compile_and_resolve(
-        SignalIntent(resolver_id="system", tool="qfk_system", args={"command": "acli.vm.config.get"})
+        SignalIntent(
+            resolver_id="domain",
+            tool="qfk_vm",
+            args={"command": "acli.vm.config.get", "command_args": ["--vm-id", "123"], "domain": "vm"},
+        )
     )
-    assert plan.canonical_args["argv"] == ["acli", "vm", "config", "get"]
-    assert resolved.argv == ["acli", "vm", "config", "get"]
-    assert resolved.command == "acli vm config get"
+    assert plan.canonical_args["argv"] == ["acli", "vm", "config", "get", "--vm-id", "123"]
+    assert resolved.argv == ["acli", "vm", "config", "get", "--vm-id", "123"]
+    assert resolved.command == "acli vm config get --vm-id 123"
 
 
 def test_system_resolver_fails_closed_for_unknown_command_path():

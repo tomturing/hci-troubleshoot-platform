@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "catalog_version": "2026-08-07.1",
+  "catalog_version": "2026-08-13.1",
   "log_aliases": {
     "vtpdaemon": "sfvt_vtpdaemon.log",
     "vtpdeamon": "sfvt_vtpdaemon.log",
@@ -12,6 +12,13 @@
       "domain": "vm",
       "path": ["config", "get"],
       "required_options": ["--vm-id", "-v"]
+    }
+  ],
+  "domain_command_versions": [
+    {
+      "domain": "vm",
+      "path": ["status", "get"],
+      "supported_product_versions": [">=6.12.0"]
     }
   ],
   "qkv_actions": [

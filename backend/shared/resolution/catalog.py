@@ -91,6 +91,7 @@ class _HotCatalog(Generic[_T]):  # noqa: UP046
 
 # ── acli_command_catalog.json ──────────────────────────────────────────────────
 
+
 def _parse_acli_catalog(raw: Any) -> tuple[dict[str, Any], ...] | None:
     commands = raw.get("commands") if isinstance(raw, dict) else None
     if not isinstance(commands, list):
@@ -112,6 +113,7 @@ def load_acli_catalog() -> tuple[dict[str, Any], ...]:
 
 # ── resolution_catalog.json ───────────────────────────────────────────────────
 
+
 def _parse_resolution_catalog(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
@@ -130,8 +132,6 @@ def load_resolution_catalog() -> dict[str, Any]:
     return _resolution_hot.load()
 
 
-
-
 def catalog_command_paths() -> frozenset[tuple[str, ...]]:
     paths: set[tuple[str, ...]] = set()
     for item in load_acli_catalog():
@@ -145,7 +145,9 @@ def command_path_known(tokens: list[str]) -> bool:
     """Catalog 采用前缀匹配：命令后的资源名和参数不影响命令路径判断。"""
 
     path = tuple(tokens[1:] if tokens and tokens[0] == "acli" else tokens)
-    return any(len(path) >= len(candidate) and path[: len(candidate)] == candidate for candidate in catalog_command_paths())
+    return any(
+        len(path) >= len(candidate) and path[: len(candidate)] == candidate for candidate in catalog_command_paths()
+    )
 
 
 def resolution_catalog_version() -> str:
@@ -169,6 +171,28 @@ def domain_command_requirements(domain: str, command_tokens: list[str]) -> list[
             required = row.get("required_options")
             return [str(item) for item in required] if isinstance(required, list) else []
     return []
+
+
+def domain_command_supported_versions(domain: str, command_tokens: list[str]) -> list[str]:
+    """返回命令级产品版本约束；优先采用最长命令路径的声明。"""
+
+    rows = load_resolution_catalog().get("domain_command_versions")
+    if not isinstance(rows, list):
+        return []
+    matches: list[tuple[int, list[str]]] = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("domain") != domain:
+            continue
+        path = row.get("path")
+        versions = row.get("supported_product_versions")
+        if (
+            isinstance(path, list)
+            and command_tokens[: len(path)] == path
+            and isinstance(versions, list)
+            and all(str(item).strip() for item in versions)
+        ):
+            matches.append((len(path), [str(item).strip() for item in versions]))
+    return max(matches, key=lambda item: item[0])[1] if matches else []
 
 
 def normalize_qkv_keyword(value: str | None) -> str:
@@ -210,6 +234,8 @@ def resolve_qkv_action(keyword: str | None, query: str) -> dict[str, Any] | None
                 "canonical_keyword": str(canonical[0]) if canonical else str(keyword),
                 "keyword_candidates": list(dict.fromkeys([*(canonical or [str(keyword)]), *aliases])),
                 "negative_aliases": [str(item) for item in row.get("negative_aliases", [])],
-                "matched_as": "canonical" if normalized in {normalize_qkv_keyword(item) for item in canonical} else "alias",
+                "matched_as": "canonical"
+                if normalized in {normalize_qkv_keyword(item) for item in canonical}
+                else "alias",
             }
     return None

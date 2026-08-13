@@ -10,9 +10,10 @@ services:
       dockerfile: Dockerfile.migrations
     container_name: hci-db-migrate
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgres://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot?sslmode=disable}
+      # 迁移工具必须使用 libpq URL，禁止复用后端服务的 postgresql+asyncpg:// DATABASE_URL。
+      DATABASE_URL: ${MIGRATION_DATABASE_URL:-postgres://${POSTGRES_USER:-hci_admin}:${POSTGRES_PASSWORD:-dev_password_123}@postgres:5432/${POSTGRES_DB:-hci_troubleshoot}?sslmode=disable}
       # DEV_URL：Atlas 规范化 SQL 所需的空数据库（与 Helm initContainer 一致：独立 atlas_dev 数据库）
-      DEV_URL: ${DEV_URL:-postgres://hci_admin:dev_password_123@postgres:5432/atlas_dev?sslmode=disable}
+      DEV_URL: ${MIGRATION_DEV_URL:-postgres://${POSTGRES_USER:-hci_admin}:${POSTGRES_PASSWORD:-dev_password_123}@postgres:5432/atlas_dev?sslmode=disable}
     # 覆盖 ENTRYPOINT：与 Helm initContainer + PreSync/PostSync 逻辑一致
     entrypoint: ["sh", "-c"]
     command:
@@ -101,12 +102,16 @@ services:
       SCHEDULER_SERVICE_URL: ${SCHEDULER_SERVICE_URL:-http://scheduler-service:8003}
       KB_SERVICE_URL: ${KB_SERVICE_URL:-http://kb-service:8004}
       AGENT_SERVICE_URL: ${AGENT_SERVICE_URL:-http://agent-service:8005}
+      DIAGNOSIS_SERVICE_URL: ${DIAGNOSIS_SERVICE_URL:-http://diagnosis-service:8008}
+      DIAGNOSIS_IDENTITY_MODE: ${DIAGNOSIS_IDENTITY_MODE:-internal}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:3002}
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      diagnosis-service:
         condition: service_healthy
     volumes:
       - ../../backend/api-gateway:/app
@@ -138,6 +143,92 @@ services:
       - ../../backend/case-service:/app
       - ../../backend/shared:/app/shared
     command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+    networks:
+      - hci-troubleshoot-platform_default
+
+  diagnosis-service:
+    build:
+      context: ../..
+      dockerfile: backend/diagnosis-service/Dockerfile
+    container_name: hci-diagnosis-service
+    environment:
+      PYTHONPATH: /app
+      SERVICE_PORT: 8008
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
+      IDENTITY_MODE: ${DIAGNOSIS_IDENTITY_MODE:-internal}
+      OIDC_PUBLIC_KEY_PEM_B64: ${OIDC_PUBLIC_KEY_PEM_B64:-}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:-}
+      # 公开的确定性开发密钥仅用于本地闭环；生产 Helm 必须通过独立 Secret 注入真实密钥。
+      COLLECTOR_SIGNING_PRIVATE_KEY_B64: ${COLLECTOR_SIGNING_PRIVATE_KEY_B64:-eIykAEAZ0PyOgbBAkK+pPj2nQAvqAsnOz0qrdFD7FjQ=}
+      COLLECTOR_SIGNING_KEY_ID: ${COLLECTOR_SIGNING_KEY_ID:-local-dev-collector-signing-v1}
+      DIAGNOSIS_ENCRYPTION_PRIVATE_KEY_B64: ${DIAGNOSIS_ENCRYPTION_PRIVATE_KEY_B64:-}
+      DIAGNOSIS_ENCRYPTION_KEY_ID: ${DIAGNOSIS_ENCRYPTION_KEY_ID:-}
+      DIAGNOSIS_OBJECT_STORAGE_ROOT: /var/lib/hci-diagnosis
+      # 返回相对地址，浏览器从 Customer/Admin UI 同源上传，Nginx 再直达诊断服务数据面。
+      DIAGNOSIS_DIRECT_UPLOAD_BASE_URL: ${DIAGNOSIS_DIRECT_UPLOAD_BASE_URL:-/}
+      DIAGNOSIS_ALLOWED_ORIGINS: ${DIAGNOSIS_ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:3002}
+      DIAGNOSIS_OBJECT_STORAGE_MODE: local
+      DIAGNOSIS_ENABLE_AUTOMATIC_SUPPLEMENT: ${DIAGNOSIS_ENABLE_AUTOMATIC_SUPPLEMENT:-false}
+      DIAGNOSIS_WORKER_METRICS_PORT: 9108
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-server:3000}
+      LANGFUSE_CAPTURE_CONTENT: ${LANGFUSE_CAPTURE_CONTENT:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../../backend/diagnosis-service:/app
+      - ../../backend/shared:/app/shared
+      - diagnosis_data:/var/lib/hci-diagnosis
+    ports:
+      - "18008:8008"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8008/health/ready')",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8008 --reload
+    networks:
+      - hci-troubleshoot-platform_default
+
+  diagnosis-worker:
+    build:
+      context: ../..
+      dockerfile: backend/diagnosis-service/Dockerfile
+    container_name: hci-diagnosis-worker
+    environment:
+      PYTHONPATH: /app
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
+      DIAGNOSIS_ENCRYPTION_PRIVATE_KEY_B64: ${DIAGNOSIS_ENCRYPTION_PRIVATE_KEY_B64:-}
+      DIAGNOSIS_ENCRYPTION_KEY_ID: ${DIAGNOSIS_ENCRYPTION_KEY_ID:-}
+      DIAGNOSIS_OBJECT_STORAGE_ROOT: /var/lib/hci-diagnosis
+      DIAGNOSIS_OBJECT_STORAGE_MODE: local
+      DIAGNOSIS_ENABLE_AUTOMATIC_SUPPLEMENT: ${DIAGNOSIS_ENABLE_AUTOMATIC_SUPPLEMENT:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      diagnosis-service:
+        condition: service_healthy
+    volumes:
+      - ../../backend/diagnosis-service:/app
+      - ../../backend/shared:/app/shared
+      - diagnosis_data:/var/lib/hci-diagnosis
+    tmpfs:
+      # 解密后的明文只进入临时内存文件系统，容器停止即消失。
+      - /var/lib/hci-diagnosis/work:size=2147483648,mode=0700
+    command: python -m app.worker
+    restart: unless-stopped
     networks:
       - hci-troubleshoot-platform_default
 
@@ -227,7 +318,27 @@ services:
       VISION_MODEL: ${VISION_MODEL:-}
       LLM_VISION_BASE_URL: ${LLM_VISION_BASE_URL:-}
       LLM_VISION_API_KEY: ${LLM_VISION_API_KEY:-}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-120.0}
+      LLM_ENABLE_THINKING: ${LLM_ENABLE_THINKING:-false}
+      VISION_MAX_TOKENS: ${VISION_MAX_TOKENS:-1536}
+      VISION_LLM_MAX_ATTEMPTS: ${VISION_LLM_MAX_ATTEMPTS:-2}
+      VISION_GLOBAL_CONCURRENCY: ${VISION_GLOBAL_CONCURRENCY:-3}
+      LLM_GLOBAL_CONCURRENCY: ${LLM_GLOBAL_CONCURRENCY:-3}
       CLASSIFY_MODEL: ${CLASSIFY_MODEL:-}
+      CLASSIFY_BASE_URL: ${CLASSIFY_BASE_URL:-}
+      CLASSIFY_API_KEY: ${CLASSIFY_API_KEY:-}
+      CLASSIFY_MAX_TOKENS: ${CLASSIFY_MAX_TOKENS:-2048}
+      EXTRACT_SIGNALS_MODEL: ${EXTRACT_SIGNALS_MODEL:-}
+      EXTRACT_SIGNALS_BASE_URL: ${EXTRACT_SIGNALS_BASE_URL:-}
+      EXTRACT_SIGNALS_API_KEY: ${EXTRACT_SIGNALS_API_KEY:-}
+      EXTRACT_SIGNALS_MAX_TOKENS: ${EXTRACT_SIGNALS_MAX_TOKENS:-16384}
+      EXTRACT_SIGNALS_FORMAT_MAX_ATTEMPTS: ${EXTRACT_SIGNALS_FORMAT_MAX_ATTEMPTS:-2}
+      KBD_BATCH_STALE_AFTER_SECONDS: ${KBD_BATCH_STALE_AFTER_SECONDS:-600}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-http://langfuse-server:3000}
+      LANGFUSE_CAPTURE_CONTENT: ${LANGFUSE_CAPTURE_CONTENT:-true}
+      LANGFUSE_CAPTURE_EXTRACT_SIGNALS_CONTENT: ${LANGFUSE_CAPTURE_EXTRACT_SIGNALS_CONTENT:-true}
     ports:
       - "18004:8004"
     extra_hosts:
@@ -302,6 +413,11 @@ services:
     environment:
       - DNS_RESOLVER=127.0.0.11
       - TERMINAL_BRIDGE_URL=${TERMINAL_BRIDGE_URL:-}
+      - TERMINAL_BRIDGE_EXEC_TIMEOUT_SECONDS=${TERMINAL_BRIDGE_EXEC_TIMEOUT_SECONDS:-120}
+      # 本地客户入口由 Nginx 服务端注入开发身份，禁止把内部令牌打包进浏览器静态资源。
+      - CUSTOMER_API_AUTHORIZATION=Bearer ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
+      - CUSTOMER_API_TENANT_ID=${DIAGNOSIS_DEV_TENANT_ID:-local-admin}
+      - CUSTOMER_API_ACTOR_ID=${DIAGNOSIS_DEV_CUSTOMER_ACTOR_ID:-customer-ui}
     build:
       context: ../..
       dockerfile: frontend/customer/Dockerfile
@@ -316,6 +432,10 @@ services:
   admin-ui:
     environment:
       - DNS_RESOLVER=127.0.0.11
+      # 本地管理入口由 Nginx 服务端注入开发身份，禁止把内部令牌打包进浏览器静态资源。
+      - ADMIN_API_AUTHORIZATION=Bearer ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
+      - ADMIN_API_TENANT_ID=${DIAGNOSIS_DEV_TENANT_ID:-local-admin}
+      - ADMIN_API_ACTOR_ID=${DIAGNOSIS_DEV_ACTOR_ID:-admin-ui}
     build:
       context: ../..
       dockerfile: frontend/admin/Dockerfile
@@ -330,6 +450,7 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  diagnosis_data:
 
 networks:
   hci-troubleshoot-platform_default:

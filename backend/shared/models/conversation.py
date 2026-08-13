@@ -7,10 +7,11 @@ Conversation Model - 对话会话表
 import uuid
 from datetime import UTC, datetime
 
-from shared.database.postgres import Base
-from shared.models.base import TraceableMixin
 from sqlalchemy import BigInteger, Column, DateTime, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
+
+from shared.database.postgres import Base
+from shared.models.base import TraceableMixin
 
 
 class Conversation(Base, TraceableMixin):

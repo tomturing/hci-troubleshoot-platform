@@ -354,6 +354,14 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
     },
 }
 
+# aCLI 的 formatter 是全局参数，适用于所有领域命令，并且必须位于 namespace 前。
+for _domain_tool in ("qfk_vm", "qfk_network", "qfk_storage", "qfk_hardware", "qfk_platform"):
+    ACQUIRER_ARGS_SCHEMA[_domain_tool]["properties"]["formatter"] = {
+        "type": "string",
+        "enum": ["xml", "csv", "keyvalue", "json"],
+        "description": "可选的 acli --formatter 输出格式；Resolver 会把它放在领域 namespace 之前",
+    }
+
 # ─── 注入公共可选字段：instruction（信号语义说明）──────────────────────────────
 # 真实数据里 instruction 常置于 acquire.args，为使 v2 的 acquire.args 能容纳真实数据
 # （validate_acquire_args 与 JSON Schema 均 additionalProperties:false），在此单一来源处

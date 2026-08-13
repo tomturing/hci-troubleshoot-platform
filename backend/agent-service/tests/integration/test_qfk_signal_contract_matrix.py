@@ -8,9 +8,9 @@ from unittest.mock import MagicMock
 
 import pytest
 from app.adapters.agents.htp.kbd_differential import KBDDiagnostic
-from app.adapters.agents.htp.kbd_model import KBDStep
 from app.tools.acli import executor as executor_module
 from app.tools.acli.executor import ExecResult
+from shared.cdd.kbd_model import KBDStep
 from shared.schemas.kbd_signal_safety import validate_kbd_read_only_signals_json
 from shared.schemas.signal_schema import validate_signals_json
 

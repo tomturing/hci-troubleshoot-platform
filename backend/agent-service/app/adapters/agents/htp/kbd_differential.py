@@ -15,13 +15,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any
 
-from shared.clients import AIAssistantRegistry
-from shared.observability.logger import get_logger
-from shared.observability.otel import get_current_trace_id
-from shared.schemas.acquirer_args import DEFAULT_SIGNAL_TIMEOUT_SECONDS
-from shared.schemas.kbd_signal_safety import kbd_signal_read_only_violation
-
-from app.adapters.agents.htp.cdd import (
+from shared.cdd import (
     ActiveDiagnosticScheduler,
     CandidateState,
     ConclusionLevel,
@@ -31,8 +25,14 @@ from app.adapters.agents.htp.cdd import (
     compile_signal_plan,
     decide_conclusion,
 )
-from app.adapters.agents.htp.cdd.candidate_reducer import initial_assessments, reduce_candidates
-from app.adapters.agents.htp.kbd_model import KBD, KBDStep, _acquire_tool, _signal_category
+from shared.cdd.candidate_reducer import initial_assessments, reduce_candidates
+from shared.cdd.kbd_model import KBD, KBDStep, _acquire_tool, _signal_category
+from shared.clients import AIAssistantRegistry
+from shared.observability.logger import get_logger
+from shared.observability.otel import get_current_trace_id
+from shared.schemas.acquirer_args import DEFAULT_SIGNAL_TIMEOUT_SECONDS
+from shared.schemas.kbd_signal_safety import kbd_signal_read_only_violation
+
 from app.core.utils import smart_truncate
 from app.domain.agent_port import (
     AgentEvent,
@@ -41,6 +41,83 @@ from app.domain.agent_port import (
 )
 
 logger = get_logger("kbd-differential")
+
+
+def _tool_contract_checker(tool: str, signal: dict[str, Any]) -> str | None:
+    """在线编译校验：用 BackendSignal + build_acli_command 校验 QFK 信号的可执行性。
+
+    此函数注入到 shared/cdd/plan_compiler.compile_signal_plan 的
+    tool_contract_checker 回调中，保持与移动前的行为一致。
+    """
+    import re
+
+    from shared.schemas.acquirer_args import DEFAULT_SIGNAL_TIMEOUT_SECONDS
+
+    from app.tools.qfk.handlers import build_acli_command
+    from app.tools.qfk.signal import BackendSignal
+
+    if not tool.startswith("qfk_"):
+        return None
+    namespace = tool.removeprefix("qfk_")
+    args = (signal.get("acquire") or {}).get("args") or {}
+    sample_values = {
+        "PID": "1", "HOST": "127.0.0.1", "VM": "golden-vm",
+        "DEVICE": "/dev/sda", "STORAGE_PATH": "/sf/data/golden",
+        "END": "2026-07-30 10:00:00", "REQUEST_ID": "a5ed4ad9340ce338ba1ac71d13ffcfb9",
+    }
+
+    def resolve_sample(value: Any, field_name: str = "") -> Any:
+        if isinstance(value, str):
+            if field_name == "file" and re.fullmatch(r"\{\{[A-Z][A-Z0-9_]*\}\}", value):
+                return "sample.log"
+            return re.sub(
+                r"\{\{([A-Z][A-Z0-9_]*)\}\}",
+                lambda match: sample_values.get(match.group(1), "value"),
+                value,
+            )
+        if isinstance(value, dict):
+            return {key: resolve_sample(item, key) for key, item in value.items()}
+        if isinstance(value, list):
+            return [resolve_sample(item) for item in value]
+        return value
+
+    compiled_args = resolve_sample(args)
+    matcher = signal.get("match") or {}
+    pattern = matcher.get("pattern") if matcher.get("type") == "keyword" else None
+    keywords = (
+        [pattern] if isinstance(pattern, str) and pattern
+        else list(pattern or []) if isinstance(pattern, list) else []
+    )
+    data: dict[str, Any] = {
+        "namespace": namespace,
+        "host": compiled_args.get("host"),
+        "timeout": compiled_args.get("timeout", DEFAULT_SIGNAL_TIMEOUT_SECONDS),
+        "container": compiled_args.get("container"),
+        "command": compiled_args.get("command"),
+        "resource_keyword": compiled_args.get("resource_keyword"),
+        "file": compiled_args.get("file"),
+        "path": compiled_args.get("path"),
+        "time_window": compiled_args.get("time_window"),
+        "source_family": compiled_args.get("source_family", "auto"),
+        "parser": compiled_args.get("parser"),
+        "request_id": compiled_args.get("request_id"),
+        "context_lines": compiled_args.get("context_lines", 0),
+        "include_archives": compiled_args.get("include_archives", False),
+        "archive_precheck": compiled_args.get("archive_precheck"),
+        "matcher": matcher or None,
+        "keyword": keywords,
+        "match_mode": {"any": "or", "all": "and"}.get(str(matcher.get("mode") or "or"), str(matcher.get("mode") or "or")),
+        "expected": bool(matcher.get("expected", True)),
+    }
+    if namespace == "service":
+        data["service"] = compiled_args.get("service") or compiled_args.get("resource_keyword")
+        data["action"] = compiled_args.get("action") or compiled_args.get("command") or "status"
+    try:
+        build_acli_command(BackendSignal.model_validate(data))
+    except Exception as exc:
+        return f"runtime command compile failed: {exc}"
+    return None
+
 
 # ADR-2 占位符：运行期解析统一认 {{NAME}}。大小写处理分两层（纵深防御，彻底消除脆弱性）：
 #   1) 抽取/校验层强制模板占位符为大写（extract_signals.validate_placeholder_case，
@@ -201,7 +278,7 @@ class KBDDiagnostic:
             return
 
         ordered = sorted(candidates, key=lambda k: (k.support_id or str(k.id), str(k.id)))
-        plan = compile_signal_plan(ordered, snapshot_id=snapshot_id)
+        plan = compile_signal_plan(ordered, snapshot_id=snapshot_id, tool_contract_checker=_tool_contract_checker)
         assessments = initial_assessments(plan)
         scope_results = apply_scope_results(plan, assessments, env_context)
         scheduler = ActiveDiagnosticScheduler(plan)
@@ -836,7 +913,7 @@ class KBDDiagnostic:
         确保 KBD 差异诊断与 QFK 引擎使用同一套求值逻辑、证据链与 or/and/not 语义，
         消除此前两份 keyword 实现可能漂移的隐患。
         """
-        from app.tools.qfk.matcher import evaluate_matcher
+        from shared.signals.matcher import evaluate_matcher
 
         return evaluate_matcher(matcher, actual_output).matched
 
@@ -1340,7 +1417,7 @@ class KBDDiagnostic:
         每个变量都必须声明新版 extract。所有产出只读取完整物理流，取值失败时
         显式报错；所有变量先完成取值后才会原子写入变量池。
         """
-        from app.tools.qfk.extractor import QFKExtractionError, extract_value
+        from shared.signals.extractor import QFKExtractionError, extract_value
 
         # 兼容直接调用该私有辅助的既有测试/扩展；真实 QFK 路径始终传完整物理流字典。
         if isinstance(complete_outputs, str):
@@ -1387,8 +1464,9 @@ class KBDDiagnostic:
     ) -> tuple[dict[str, Any], str | None]:
         """统一执行 QFK 产出变量的 AI 提取，并在原子写池前完成溯源校验。"""
 
+        from shared.signals.extractor import QFKExtractionError
+
         from app.tools.qfk.ai_extractor import extract_ai_value, has_ai_extract
-        from app.tools.qfk.extractor import QFKExtractionError
 
         if isinstance(complete_outputs, str):
             complete_outputs = {"stdout": complete_outputs}

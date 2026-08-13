@@ -47,6 +47,18 @@ agentService:
 kbService:
   image:
     tag: "2026.03.02-1"
+diagnosisService:
+  enabled: true
+  identityMode: "oidc"
+  oidcIssuer: "https://id.example.com"
+  oidcAudience: "hci-diagnosis"
+  # 推荐使用身份提供方的 HTTPS JWKS 地址自动轮换验签公钥；配置后无需下方固定 PEM。
+  oidcJwksUrl: "https://id.example.com/.well-known/jwks.json"
+  # 默认同源上传；如改为独立对象存储域名，需同步配置 allowedOrigins。
+  directUploadBaseUrl: "/"
+  allowedOrigins: "https://customer.example.com,https://admin.example.com"
+  image:
+    tag: "2026.03.02-1"
 evalService:
   image:
     tag: "2026.03.02-1"
@@ -54,6 +66,12 @@ evalService:
 secrets:
   postgresPassword: "<replace-strong-password>"
   llmApiKey: "<replace-llm-api-key>"
+  collectorSigningPrivateKeyB64: "<replace-ed25519-private-key-base64>"
+  collectorSigningKeyId: "<replace-collector-signing-key-id>"
+  diagnosisEncryptionPrivateKeyB64: "<replace-rsa-3072-private-key-pem-base64>"
+  diagnosisEncryptionKeyId: "<replace-diagnosis-encryption-key-id>"
+  # 仅在未配置 diagnosisService.oidcJwksUrl 时填写固定公钥。
+  oidcPublicKeyPemB64: ""
   grafanaAdminPassword: "<replace-grafana-password>"
 
 config:

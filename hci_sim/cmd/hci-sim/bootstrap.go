@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -30,27 +31,48 @@ type capabilityResponse struct {
 }
 
 type resolvedKbd struct {
-	SupportID            string `json:"support_id"`
-	KBDRevision          int    `json:"kbd_revision"`
-	KBDChecksum          string `json:"kbd_checksum"`
-	SignalsDigest        string `json:"signals_digest"`
-	ToolContractRevision string `json:"tool_contract_revision"`
-	PolicyRevision       string `json:"policy_revision"`
+	SupportID            string           `json:"support_id"`
+	KBDRevision          int              `json:"kbd_revision"`
+	KBDChecksum          string           `json:"kbd_checksum"`
+	SignalsDigest        string           `json:"signals_digest"`
+	ToolContractRevision string           `json:"tool_contract_revision"`
+	PolicyRevision       string           `json:"policy_revision"`
+	Metadata             map[string]any   `json:"metadata"`
+	VerificationContract map[string]any   `json:"verification_contract"`
+	SyntheticRoutes      []syntheticRoute `json:"synthetic_routes"`
 }
 
 type syntheticRoute struct {
-	Keyword string
-	Limit   string
+	SignalID          string           `json:"signal_id"`
+	Tool              string           `json:"tool"`
+	Argv              []string         `json:"argv"`
+	ToolRevision      int              `json:"tool_revision"`
+	ToolChecksum      string           `json:"tool_checksum"`
+	RequiredVariables []string         `json:"required_variables"`
+	Role              string           `json:"role"`
+	Matcher           map[string]any   `json:"matcher"`
+	Produces          []map[string]any `json:"produces"`
 }
 
-// syntheticCatalog 是故意很小的白名单。扩大范围必须以 Signal schema、命令契约和
-// 独立验证为依据，不能根据 support_id 猜测客户环境。
-var syntheticCatalog = map[string]syntheticRoute{
-	"27736": {Keyword: "设置集群IP失败", Limit: "100"},
-	"34164": {Keyword: "新建虚拟机", Limit: "1"},
-	// KBD23821 的真实 published Signal 使用 qkv_task 关键词“迁移虚拟机”，
-	// 仅用于 positive-minimal 的信号契约验收，不代表真实迁移 Artifact。
-	"23821": {Keyword: "迁移虚拟机", Limit: "1"},
+type scenarioProfile struct {
+	SchemaVersion string                         `json:"schema_version"`
+	SampleSuite   string                         `json:"sample_suite"`
+	Variables     map[string]string              `json:"variables"`
+	Cases         map[string]scenarioCaseProfile `json:"cases"`
+}
+
+type scenarioCaseProfile struct {
+	Title              string                    `json:"title"`
+	FaultDescription   string                    `json:"fault_description"`
+	ProductVersion     string                    `json:"product_version"`
+	Variables          map[string]string         `json:"variables"`
+	Signals            map[string]scenarioSignal `json:"signals"`
+	ExpectedConclusion string                    `json:"expected_conclusion"`
+}
+
+type scenarioSignal struct {
+	PositiveOutput string `json:"positive_output"`
+	NegativeOutput string `json:"negative_output"`
 }
 
 func runBootstrap(args []string) error {
@@ -63,6 +85,8 @@ func runBootstrap(args []string) error {
 	connectionPort := flags.Int("connection-port", 2222, "Custom UI SSH 端口")
 	node := flags.String("virtual-node", "SIM-HCI-NODE-01", "虚拟节点 ID")
 	container := flags.String("container", "host", "目标容器")
+	profilePath := flags.String("scenario-profile", "", "测试专用场景画像 JSON（不包含命令）")
+	variant := flags.String("variant", "positive", "场景变体：positive/negative/missing-evidence/command-failed/timeout/version-incompatible")
 	secret := flags.String("lease-key", env("HCI_SIM_LEASE_HMAC_KEY", ""), "Lease HMAC key（至少 32 字节）")
 	issuer := flags.String("lease-issuer", env("HCI_SIM_LEASE_ISSUER", "hci-platform"), "Lease issuer")
 	audience := flags.String("lease-audience", env("HCI_SIM_LEASE_AUDIENCE", "hci-sim"), "Lease audience")
@@ -72,10 +96,6 @@ func runBootstrap(args []string) error {
 	}
 	if strings.TrimSpace(*supportID) == "" {
 		return errors.New("必须指定 --kbd-id")
-	}
-	catalog, ok := syntheticCatalog[strings.TrimSpace(*supportID)]
-	if !ok {
-		return fmt.Errorf("SYNTHETIC_ROUTE_UNSUPPORTED: KBD %s 不在 positive-minimal 白名单中", *supportID)
 	}
 	if len([]byte(*secret)) < 32 {
 		return errors.New("--lease-key 或 HCI_SIM_LEASE_HMAC_KEY 至少需要 32 字节")
@@ -92,10 +112,17 @@ func runBootstrap(args []string) error {
 	}
 	resolved := capability.Resolved
 	if resolved.SupportID != *supportID || resolved.KBDRevision < 1 || strings.TrimSpace(resolved.KBDChecksum) == "" || strings.TrimSpace(resolved.SignalsDigest) == "" ||
-		strings.TrimSpace(resolved.ToolContractRevision) == "" || strings.TrimSpace(resolved.PolicyRevision) == "" {
+		strings.TrimSpace(resolved.ToolContractRevision) == "" || strings.TrimSpace(resolved.PolicyRevision) == "" || len(resolved.SyntheticRoutes) == 0 {
 		return fmt.Errorf("capability_gap: C1 resolved 输入与请求 KBD %s 不一致或不完整", *supportID)
 	}
-	manifest := buildSyntheticManifest(resolved, catalog, *node, *container)
+	profile, err := loadScenarioProfile(*profilePath, resolved)
+	if err != nil {
+		return err
+	}
+	manifest, err := buildScenarioManifest(resolved, profile, *node, *container, *variant)
+	if err != nil {
+		return err
+	}
 	manifest.Bundle.Digest = fixture.ComputeBundleDigest(manifest)
 	raw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -106,12 +133,12 @@ func runBootstrap(args []string) error {
 	}
 	now := time.Now().UTC().Truncate(time.Second)
 	testRunID := fmt.Sprintf("run-%s-%d", *supportID, now.Unix())
-	scenarioID := fmt.Sprintf("kbd-%s-positive-minimal", *supportID)
+	scenarioID := fmt.Sprintf("kbd-%s-%s", *supportID, *variant)
 	expires := now.Add(*ttl)
 	claims := lease.Claims{
 		JTI: testRunID + "-1", LeaseID: "lease-" + testRunID, TestRunID: testRunID, ScenarioID: scenarioID,
 		SupportID: *supportID, KBDRevision: resolved.KBDRevision, BundleDigest: manifest.Bundle.Digest,
-		FixtureVariant: "positive-minimal", ToolContractRevision: resolved.ToolContractRevision, PolicyRevision: resolved.PolicyRevision,
+		FixtureVariant: *variant, ToolContractRevision: resolved.ToolContractRevision, PolicyRevision: resolved.PolicyRevision,
 		VirtualNodeID: *node, Container: *container, ExecutionMode: "sim-ssh", Issuer: *issuer, Audience: *audience,
 		IssuedAt: now.Unix(), NotBefore: now.Unix(), ExpiresAt: expires.Unix(), RunDeadline: expires.Unix(),
 		MaxSessions: 4, MaxCommands: 200, MaxOutputBytes: int64(manifest.Limits.MaxOutputBytesPerCommand),
@@ -127,15 +154,31 @@ func runBootstrap(args []string) error {
 	if err := os.WriteFile(manifestPath, raw, 0600); err != nil {
 		return err
 	}
+	recommendedCommands := make([]string, 0, len(manifest.Routes))
+	for _, route := range manifest.Routes {
+		recommendedCommands = append(recommendedCommands, shellDisplay(route.RouteKey.Argv))
+	}
+	recommendedCommand := ""
+	if len(recommendedCommands) > 0 {
+		recommendedCommand = recommendedCommands[0]
+	}
 	connection := map[string]any{
 		"test_run_id": testRunID, "scenario_id": scenarioID, "support_id": *supportID,
 		"issued_at": now.Format(time.RFC3339), "expires_at": expires.Format(time.RFC3339),
 		"ttl_seconds":  int64(expires.Sub(now).Seconds()),
-		"kbd_revision": resolved.KBDRevision, "variant": "positive-minimal", "execution_mode": "sim-ssh",
+		"kbd_revision": resolved.KBDRevision, "variant": *variant, "execution_mode": "sim-ssh",
 		"bundle_digest": manifest.Bundle.Digest, "virtual_node_id": *node, "container": *container,
 		"connection": map[string]any{"host": *connectionHost, "port": *connectionPort, "username": "sim", "auth_type": "lease", "password": token, "execution_mode": "sim-ssh", "test_run_id": testRunID},
-		"synthetic":  true, "not_real_artifact": true, "facts_boundary": "仅验证 Signal 合约与 sim-ssh 路由；不代表真实 Artifact/真实 HCI E2E。",
-		"manifest_path": manifestPath, "recommended_command": fmt.Sprintf("qkv_task --keyword %q --limit %s --is_failed true", catalog.Keyword, catalog.Limit),
+		"synthetic":  true, "not_real_artifact": true, "facts_boundary": "验证已发布 KBD/Tool 派生的在线 SSH 与离线本机采集契约；合成输出不代表真实 HCI 数据。",
+		"manifest_path": manifestPath, "recommended_command": recommendedCommand, "recommended_commands": recommendedCommands,
+	}
+	if profile != nil {
+		if caseProfile, ok := profile.Cases[resolved.SupportID]; ok {
+			connection["scenario"] = map[string]any{
+				"title": caseProfile.Title, "fault_description": caseProfile.FaultDescription,
+				"product_version": caseProfile.ProductVersion, "expected_conclusion": caseProfile.ExpectedConclusion,
+			}
+		}
 	}
 	connectionRaw, err := json.MarshalIndent(connection, "", "  ")
 	if err != nil {
@@ -174,15 +217,172 @@ func fetchCapability(baseURL, token, supportID string) (capabilityResponse, erro
 	return result, nil
 }
 
-func buildSyntheticManifest(resolved *resolvedKbd, route syntheticRoute, node, container string) fixture.Manifest {
-	argv := []string{"qkv_task", "--keyword", route.Keyword, "--limit", route.Limit, "--is_failed", "true"}
+func buildSyntheticManifest(resolved *resolvedKbd, node, container string) (fixture.Manifest, error) {
+	return buildScenarioManifest(resolved, nil, node, container, "positive-minimal")
+}
+
+func loadScenarioProfile(path string, resolved *resolvedKbd) (*scenarioProfile, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取场景画像失败: %w", err)
+	}
+	var profile scenarioProfile
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&profile); err != nil {
+		return nil, fmt.Errorf("场景画像无效: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, errors.New("场景画像包含多余 JSON 内容")
+	}
+	if profile.SchemaVersion != "1.0" || profile.SampleSuite == "" {
+		return nil, errors.New("场景画像缺少 schema_version=1.0 或 sample_suite")
+	}
+	if expected := strings.TrimSpace(fmt.Sprint(resolved.Metadata["sample_suite"])); expected != "" && expected != profile.SampleSuite {
+		return nil, fmt.Errorf("场景画像 sample_suite=%s 与 KBD metadata=%s 不一致", profile.SampleSuite, expected)
+	}
+	caseProfile, ok := profile.Cases[resolved.SupportID]
+	if !ok {
+		return nil, fmt.Errorf("场景画像未定义已发布 KBD %s", resolved.SupportID)
+	}
+	routeSignals := make(map[string]bool, len(resolved.SyntheticRoutes))
+	for _, route := range resolved.SyntheticRoutes {
+		routeSignals[route.SignalID] = true
+		if _, ok := caseProfile.Signals[route.SignalID]; !ok {
+			return nil, fmt.Errorf("场景画像缺少 Signal %s 的输出", route.SignalID)
+		}
+	}
+	for signalID := range caseProfile.Signals {
+		if !routeSignals[signalID] {
+			return nil, fmt.Errorf("场景画像包含已发布 KBD 不存在的 Signal %s", signalID)
+		}
+	}
+	return &profile, nil
+}
+
+func buildScenarioManifest(resolved *resolvedKbd, profile *scenarioProfile, node, container, selectedVariant string) (fixture.Manifest, error) {
+	allowedVariants := map[string]bool{"positive-minimal": true, "positive": true, "negative": true, "missing-evidence": true, "command-failed": true, "timeout": true, "version-incompatible": true}
+	if !allowedVariants[selectedVariant] {
+		return fixture.Manifest{}, fmt.Errorf("不支持的场景变体: %s", selectedVariant)
+	}
+	variables := map[string]string{"SYNTHETIC": "true", "FACTS_BOUNDARY": "signal-contract-only", "SIGNALS_DIGEST": resolved.SignalsDigest}
+	var caseProfile scenarioCaseProfile
+	if profile != nil {
+		for key, value := range profile.Variables {
+			variables[key] = value
+		}
+		caseProfile = profile.Cases[resolved.SupportID]
+		for key, value := range caseProfile.Variables {
+			variables[key] = value
+		}
+	}
+	routes := make([]fixture.Route, 0, len(resolved.SyntheticRoutes))
+	seen := make(map[string]struct{}, len(resolved.SyntheticRoutes))
+	for index, route := range resolved.SyntheticRoutes {
+		if strings.TrimSpace(route.SignalID) == "" || strings.TrimSpace(route.Tool) == "" || route.ToolRevision < 1 || strings.TrimSpace(route.ToolChecksum) == "" {
+			return fixture.Manifest{}, fmt.Errorf("capability_gap: synthetic route %d 缺少 Signal 或 Tool 修订事实", index)
+		}
+		renderedArgv := make([]string, len(route.Argv))
+		for argvIndex, value := range route.Argv {
+			renderedArgv[argvIndex] = renderProfileVariables(value, variables)
+			if strings.Contains(renderedArgv[argvIndex], "{{") || strings.Contains(renderedArgv[argvIndex], "}}") {
+				return fixture.Manifest{}, fmt.Errorf("capability_gap: Signal %s 缺少场景变量: %s", route.SignalID, value)
+			}
+		}
+		argv, err := fixture.NormalizeArgv(renderedArgv)
+		if err != nil {
+			return fixture.Manifest{}, fmt.Errorf("capability_gap: Signal %s argv 无效: %w", route.SignalID, err)
+		}
+		if len(argv) == 0 || argv[0] != "acli" {
+			return fixture.Manifest{}, fmt.Errorf("capability_gap: Signal %s 不是受控 aCLI 只读路由", route.SignalID)
+		}
+		key := strings.Join(argv, "\x1f")
+		if _, exists := seen[key]; exists {
+			return fixture.Manifest{}, fmt.Errorf("capability_gap: Signal %s 与其他 Signal 生成了重复 RouteKey", route.SignalID)
+		}
+		seen[key] = struct{}{}
+		acquisitionKey := argv[0]
+		if len(argv) > 1 {
+			acquisitionKey += ":" + argv[1]
+		}
+		result := fixture.ResultDef{ExitCode: 0, Stdout: fmt.Sprintf(
+			"{\"synthetic\":true,\"support_id\":%q,\"signal_id\":%q,\"status\":\"matched\",\"records\":[{\"synthetic_record\":true}]}\n",
+			resolved.SupportID, route.SignalID,
+		)}
+		fault := fixture.FaultDef{Type: fixture.FaultNone}
+		if profile != nil {
+			signalOutput := caseProfile.Signals[route.SignalID]
+			result.Stdout = renderProfileVariables(signalOutput.PositiveOutput, variables)
+			switch selectedVariant {
+			case "negative":
+				result.Stdout = renderProfileVariables(signalOutput.NegativeOutput, variables)
+			case "missing-evidence":
+				if route.Role == "must" {
+					result.Stdout = ""
+				}
+			case "command-failed":
+				result.ExitCode = 1
+				result.Stdout = ""
+				result.Stderr = "synthetic command failed\n"
+				fault.Type = fixture.FaultNonzeroExit
+			case "timeout":
+				result.Stdout = ""
+				fault.Type = fixture.FaultTimeout
+			case "version-incompatible":
+				result.ExitCode = 1
+				result.Stdout = ""
+				result.Stderr = "当前命令不支持场景产品版本 " + caseProfile.ProductVersion + "\n"
+				fault.Type = fixture.FaultNonzeroExit
+			}
+			if strings.Contains(result.Stdout, "{{") || strings.Contains(result.Stdout, "}}") ||
+				strings.Contains(result.Stderr, "{{") || strings.Contains(result.Stderr, "}}") {
+				return fixture.Manifest{}, fmt.Errorf("capability_gap: Signal %s 的场景输出缺少变量", route.SignalID)
+			}
+		}
+		routes = append(routes, fixture.Route{
+			ID:           fmt.Sprintf("synthetic-%s-%03d", resolved.SupportID, index+1),
+			SignalID:     route.SignalID,
+			ToolRevision: route.ToolRevision,
+			ToolChecksum: route.ToolChecksum,
+			Variant:      selectedVariant,
+			RouteKey:     fixture.RouteKey{Tool: argv[0], AcquisitionKey: acquisitionKey, Argv: argv, Node: node, Container: container},
+			Result:       result,
+			Fault:        fault,
+		})
+	}
 	return fixture.Manifest{
 		SchemaVersion: fixture.SchemaVersion,
 		Bundle:        fixture.BundleRef{Status: "published"},
 		KBD:           fixture.KBDRef{SupportID: resolved.SupportID, Revision: resolved.KBDRevision, Checksum: "sha256:" + strings.TrimPrefix(resolved.KBDChecksum, "sha256:")},
 		Contracts:     fixture.Contracts{ToolRevision: resolved.ToolContractRevision, PolicyRevision: resolved.PolicyRevision},
-		Variables:     map[string]string{"SYNTHETIC": "true", "FACTS_BOUNDARY": "signal-contract-only", "SIGNALS_DIGEST": resolved.SignalsDigest},
-		Limits:        fixture.Limits{MaxRoutes: 1, MaxOutputBytesPerCommand: 4096, MaxBundleBytes: 65536},
-		Routes:        []fixture.Route{{ID: "synthetic-" + resolved.SupportID + "-sig-001", SignalID: "sig_001", Variant: "positive-minimal", RouteKey: fixture.RouteKey{Tool: "qkv_task", AcquisitionKey: "qkv_task:--keyword", Argv: argv, Node: node, Container: container}, Result: fixture.ResultDef{ExitCode: 0, Stdout: fmt.Sprintf("{\"synthetic\":true,\"support_id\":%q,\"signal_id\":\"sig_001\",\"status\":\"failed\",\"keyword\":%q,\"records\":[{\"synthetic_record\":true}]}\n", resolved.SupportID, route.Keyword)}, Fault: fixture.FaultDef{Type: fixture.FaultNone}}},
+		Variables:     variables,
+		Limits:        fixture.Limits{MaxRoutes: len(routes), MaxOutputBytesPerCommand: 4096, MaxBundleBytes: 65536},
+		Routes:        routes,
+	}, nil
+}
+
+func renderProfileVariables(value string, variables map[string]string) string {
+	keys := make([]string, 0, len(variables))
+	for key := range variables {
+		keys = append(keys, key)
 	}
+	for _, key := range keys {
+		value = strings.ReplaceAll(value, "{{"+key+"}}", variables[key])
+	}
+	return value
+}
+
+func shellDisplay(argv []string) string {
+	parts := make([]string, 0, len(argv))
+	for _, value := range argv {
+		if value != "" && !strings.ContainsAny(value, " \t'\"") {
+			parts = append(parts, value)
+			continue
+		}
+		parts = append(parts, "'"+strings.ReplaceAll(value, "'", "'\\''")+"'")
+	}
+	return strings.Join(parts, " ")
 }

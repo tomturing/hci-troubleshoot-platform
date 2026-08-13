@@ -86,7 +86,7 @@ jobs:
           echo "✅ hci_test 和 atlas_dev 扩展安装完成"
 
       # ── Step 2: 声明式 Schema 全量应用 ───────────────────────────────────
-      # 与 db-migrate.sh 完全相同的三步流程（函数 → Atlas apply → 触发器）
+      # 空库先由 Atlas 建表，再执行数据迁移和触发器；与 db-migrate.sh 的冷启动结果一致。
       - name: 全量迁移（函数 → Atlas → 触发器）
         run: |
           echo ">>> Step 2a: 应用函数"

@@ -58,8 +58,10 @@ jobs:
           filters: |
             backend:
               - 'backend/**'
+              - 'database/**'
               - 'tests/**'
               - 'scripts/ci/check_signal_schemas.py'
+              - 'Makefile'
               - 'uv.lock'
               - 'pyproject.toml'
               - 'conftest.py'
@@ -429,6 +431,13 @@ jobs:
         run: |
           helm template hci-platform deploy/helm/hci-platform \
             -f deploy/helm/hci-platform/values.yaml \
+            --set diagnosisService.enabled=true \
+            --set-string diagnosisService.directUploadBaseUrl=http://diagnosis-service:8008 \
+            --set-string diagnosisService.allowedOrigins=http://customer-ui \
+            --set-string secrets.collectorSigningPrivateKeyB64=Y2ktb25seS1ub3QtYS1yZWFsLWtleQ== \
+            --set-string secrets.collectorSigningKeyId=ci-template-check \
+            --set-string secrets.diagnosisEncryptionPrivateKeyB64=Y2ktb25seS1ub3QtYS1yZWFsLWtleQ== \
+            --set-string secrets.diagnosisEncryptionKeyId=ci-template-check \
             >/tmp/hci-platform-rendered.yaml
 
           if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
@@ -556,6 +565,14 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+          cache-dependency-path: |
+            backend/diagnosis-service/offline-collector/go.mod
+            hci_sim/go.mod
+
       - name: 安装 uv
         uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39a
         with:
@@ -594,12 +611,34 @@ jobs:
             -x -q \
             --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
             -m "not integration and not slow"
+          uv run pytest backend/diagnosis-service/tests/unit/ \
+            -x -q \
+            --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
+            -m "not integration and not slow"
           # 最后一批：合并所有覆盖率后统一检查基线（≥60%），避免分批检查造成误报
           uv run pytest backend/scheduler-service/tests/unit/ \
             -x -q \
             --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
             --cov-fail-under=60 \
             -m "not integration and not slow"
+
+      - name: 验证在线/离线诊断 KBD 样例闭环
+        run: make diagnosis-sample-preflight
+
+      - name: 验证 Diagnosis Sample Lab（诊断样例实验室）Go Runtime
+        working-directory: hci_sim
+        run: |
+          go test ./...
+          go vet ./...
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -o /tmp/hci-sim-diagnosis-lab ./cmd/hci-sim
+
+      - name: 运行离线采集 Go 运行时测试
+        working-directory: backend/diagnosis-service/offline-collector
+        run: |
+          go test ./...
+          go vet ./...
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags="-s -w -buildid=" -o /tmp/hci-collect-linux-amd64 .
+          test "$(sha256sum /tmp/hci-collect-linux-amd64 | cut -d' ' -f1)" = "$(sha256sum ../resources/bin/hci-collect-linux-amd64 | cut -d' ' -f1)"
 
       - name: 上传覆盖率报告
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238
@@ -643,6 +682,17 @@ jobs:
 
       - name: 安装依赖
         run: uv sync --group dev
+
+      - name: 准备诊断样例 PostgreSQL
+        run: |
+          cp .env.example .env
+          docker network inspect hci-troubleshoot-platform_default >/dev/null 2>&1 \
+            || docker network create hci-troubleshoot-platform_default
+          docker compose --env-file .env.example -f deploy/docker/docker-compose.yml up -d postgres
+          make db-sync
+
+      - name: 验证五篇 KBD 数据库闭环
+        run: make diagnosis-sample-postgres-preflight
 
       - name: 运行集成测试
         env:

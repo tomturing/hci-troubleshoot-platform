@@ -62,8 +62,16 @@ def traceparent(trace_id: str | None = None) -> dict[str, str]:
     kb-service 的 FastAPIInstrumentor 会自动提取该头并沿用同一 trace_id，
     使服务端日志与本端日志共享 trace_id，实现跨进程串联。
     """
+    try:
+        from shared.observability.otel import get_current_traceparent
+
+        current = get_current_traceparent()
+        if current:
+            return {"traceparent": current}
+    except ImportError:
+        pass
     tid = trace_id or get_trace_id() or new_trace_id()
-    span_id = uuid.uuid4().hex[:16]  # 本次出站调用的本地 span_id
+    span_id = uuid.uuid4().hex[:16]  # 未启用 OTel SDK 时的兼容父 Span 身份
     return {"traceparent": f"00-{tid}-{span_id}-01"}
 
 

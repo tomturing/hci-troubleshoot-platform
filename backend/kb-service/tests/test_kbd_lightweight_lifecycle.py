@@ -35,24 +35,137 @@ async def test_published_entry_patch_is_blocked_before_unreviewed_content_can_re
 
 
 @pytest.mark.asyncio
-async def test_revert_to_draft_deactivates_existing_runtime_pointer_in_same_transaction():
+async def test_revert_to_draft_publishes_tombstone_in_same_transaction():
     session = AsyncMock()
-    select_result = MagicMock()
-    select_result.mappings.return_value.first.return_value = {"id": 9, "status": "published"}
-    update_result = MagicMock()
-    delete_result = MagicMock()
-    delete_result.rowcount = 1
-    session.execute.side_effect = [select_result, update_result, delete_result]
+    entry = SimpleNamespace(id=9, status="published", lock_version=3)
+    session.get.return_value = entry
     db = _db_with_session(session)
+    tombstone = AsyncMock(return_value={"revision": 2, "status": "disabled"})
 
-    with patch.object(admin_route, "_check_auth"), patch.object(admin_route, "_db_manager", db):
+    with (
+        patch.object(admin_route, "_check_auth"),
+        patch.object(admin_route, "_db_manager", db),
+        patch.object(admin_route, "_publish_kbd_tombstone", tombstone),
+    ):
         response = await admin_route.revert_kbd_to_draft(MagicMock(), 9)
 
     assert response["active_deactivated"] is True
-    delete_sql = str(session.execute.call_args_list[2].args[0])
-    assert "DELETE FROM dynamic_resource_active" in delete_sql
-    assert session.execute.call_args_list[2].args[1] == {"resource_name": "9"}
+    assert response["resource_revision"]["revision"] == 2
+    assert entry.status == "draft"
+    assert entry.lock_version == 4
+    tombstone.assert_awaited_once()
+    assert tombstone.await_args.kwargs["lifecycle_status"] == "draft"
     session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_archive_published_kbd_publishes_disabled_tombstone():
+    session = AsyncMock()
+    entry = SimpleNamespace(id=9, status="published", lock_version=4)
+    session.get.return_value = entry
+    db = _db_with_session(session)
+    tombstone = AsyncMock(return_value={"revision": 3, "status": "disabled"})
+
+    with (
+        patch.object(admin_route, "_check_auth"),
+        patch.object(admin_route, "_db_manager", db),
+        patch.object(admin_route, "_publish_kbd_tombstone", tombstone),
+    ):
+        response = await admin_route.archive_kbd_entry(MagicMock(), 9)
+
+    assert response["status"] == "archived"
+    assert entry.status == "archived"
+    assert entry.lock_version == 5
+    tombstone.assert_awaited_once()
+    assert tombstone.await_args.kwargs["lifecycle_status"] == "archived"
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_kbd_tombstone_is_append_only_and_removes_active_pointer():
+    session = AsyncMock()
+    entry = SimpleNamespace(
+        id=9,
+        support_id="37150",
+        title="虚拟机启动失败",
+        category_id="vm",
+        problem_description="启动失败",
+        alert_info="",
+        steps_text="检查日志",
+        signals_json={"schema_version": 2, "signals": [{"id": "s1"}]},
+        content_md="正文",
+        content_raw="正文",
+        images_json=[],
+        root_cause="服务异常",
+        solution="恢复服务",
+        operational_impact="",
+        is_temporary="否",
+        recommendations="",
+        status="draft",
+        published_at=None,
+        entry_metadata={"offline_scenario": "vm_start_failed"},
+    )
+    snapshot = SimpleNamespace(
+        resource_type="kbd",
+        resource_name="9",
+        revision=2,
+        version="1.0",
+        checksum="checksum-2",
+    )
+    publisher = MagicMock()
+    publisher.ensure_published = AsyncMock(return_value=snapshot)
+
+    with patch.object(admin_route, "DynamicResourcePublisher", return_value=publisher):
+        result = await admin_route._publish_kbd_tombstone(
+            session,
+            entry,
+            lifecycle_status="draft",
+            trace_id="trace-tombstone",
+        )
+
+    assert result["revision"] == 2
+    payload = publisher.ensure_published.await_args.kwargs
+    assert payload["status"] == "disabled"
+    assert payload["contract"]["lifecycle"] == {"state": "draft", "tombstone": True}
+    assert payload["contract"]["metadata"]["offline_scenario"] == "vm_start_failed"
+    delete_sql = str(session.execute.await_args.args[0])
+    assert "DELETE FROM dynamic_resource_active" in delete_sql
+    assert session.execute.await_args.args[1] == {"resource_name": "9"}
+
+
+@pytest.mark.asyncio
+async def test_explicit_republish_has_new_lifecycle_event_identity():
+    """相同正文重新发布也必须越过 tombstone 后的增量 Watermark。"""
+
+    session = AsyncMock()
+    entry = SimpleNamespace(id=9)
+    session.execute.return_value.scalar_one_or_none.return_value = entry
+    snapshot = SimpleNamespace(
+        resource_type="kbd",
+        resource_name="9",
+        revision=4,
+        version="1.0",
+        checksum="checksum-4",
+    )
+    publisher = MagicMock()
+    publisher.ensure_published = AsyncMock(return_value=snapshot)
+
+    with (
+        patch.object(admin_route, "kbd_resource_payload", return_value={"contract": {"metadata": {}}}),
+        patch.object(admin_route, "DynamicResourcePublisher", return_value=publisher),
+    ):
+        result = await admin_route._publish_kbd_revision(
+            session,
+            9,
+            "trace-republish",
+            lifecycle_event_id=42,
+        )
+
+    assert result["revision"] == 4
+    assert publisher.ensure_published.await_args.kwargs["contract"]["lifecycle"] == {
+        "state": "published",
+        "event_id": 42,
+    }
 
 
 @pytest.mark.asyncio

@@ -192,6 +192,19 @@ def update_stage_status(
         logger.debug("状态更新 kbd=%s stage=%s status=%s（不计入统计）", support_id, stage, status)
         return
 
+    try:
+        from shared.observability.metrics import KBD_WORKFLOW_ITEMS_TOTAL
+
+        KBD_WORKFLOW_ITEMS_TOTAL.labels(
+            workflow="kbd_pipeline",
+            stage=stage,
+            status=status,
+            error_code=("dependency_blocked" if status == "blocked_by_dependency" else "none"),
+        ).inc()
+    except ImportError:
+        # data-pipeline 允许在未挂载 backend/shared 的独立抓取环境运行。
+        pass
+
     stages_stats = progress.get("stages", {}).get(stage, {})
     if stats_key in stages_stats:
         id_list = stages_stats[stats_key]

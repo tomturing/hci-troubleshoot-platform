@@ -1,7 +1,7 @@
 """
 动态资源运行时模型。
 
-五类资源（KBD/SOP/Tool/Skill/Prompt）共享 revision、active 指针和使用审计，
+KBD/SOP/Tool/Skill/Prompt/Collection Profile 等动态资源共享 revision、active 指针和使用审计，
 业务表仍作为管理页面事实源，本表负责运行时不可变快照和追踪。
 """
 

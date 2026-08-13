@@ -311,6 +311,12 @@ function syncFormToJson() {
 
 // 监听表单数据变化，同步到 JSON
 watch([producesData, matcherData], syncFormToJson, { deep: true })
+watch(
+  () => formModel.value.category,
+  (category) => {
+    if (category === 'qkv' || category === 'qfk') formModel.value.risk_level = 1
+  },
+)
 
 const validationStatusText = computed(() => {
   if (!validationResult.value) return ''
@@ -596,13 +602,13 @@ async function submitForm() {
   }
 }
 
-// 删除工具定义
+// 停用工具定义，保留不可变修订和下游依赖审计链
 async function handleDelete(row: ToolDefinition) {
   ElMessageBox.confirm(
-    `确认删除工具定义 "${row.display_name}" (${row.tool_name}) 吗？此操作无法撤销。`,
-    '高危警示',
+    `确认停用工具 "${row.display_name}" (${row.tool_name}) 吗？系统会保留历史修订，并在下次 KBD 同步中重算受影响的 Collector（采集器）。`,
+    '停用 Tool（工具）',
     {
-      confirmButtonText: '极其确认',
+      confirmButtonText: '确认停用',
       cancelButtonText: '取消',
       type: 'warning',
       confirmButtonClass: 'el-button--danger'
@@ -614,11 +620,11 @@ async function handleDelete(row: ToolDefinition) {
         headers: authHeader
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      ElMessage.success('工具定义已成功删除')
+      ElMessage.success('工具已停用，不可变修订已保留')
       fetchTools()
     } catch (e) {
-      console.error('删除工具定义失败:', e)
-      ElMessage.error('删除失败')
+      console.error('停用工具定义失败:', e)
+      ElMessage.error('停用失败')
     }
   }).catch(() => {})
 }
@@ -759,7 +765,7 @@ onMounted(() => {
         <el-table-column label="操作" width="180" fixed="right" align="center">
           <template #default="{ row }">
             <el-button type="primary" size="small" text :icon="Edit" @click="openEditDialog(row)">编辑</el-button>
-            <el-button type="danger" size="small" text :icon="Delete" @click="handleDelete(row)">删除</el-button>
+            <el-button v-if="row.is_active" type="danger" size="small" text :icon="Delete" @click="handleDelete(row)">停用</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -801,7 +807,7 @@ onMounted(() => {
               <el-input v-model="formModel.display_name" placeholder="例如: 查询虚拟机列表" />
             </el-form-item>
             <el-form-item label="执行分类" required>
-              <el-select v-model="formModel.category" style="width:100%">
+              <el-select v-model="formModel.category" style="width:100%" :disabled="isEdit">
                 <el-option label="ACLI 节点执行 (acli)" value="acli" />
                 <el-option label="SCP 平台 API (scp)" value="scp" />
                 <el-option label="SOP 导航引擎 (sop)" value="sop" />
@@ -812,8 +818,8 @@ onMounted(() => {
             <el-form-item label="风险等级">
               <el-radio-group v-model="formModel.risk_level" style="width:100%">
                 <el-radio-button :value="1">只读 (1)</el-radio-button>
-                <el-radio-button :value="2">写操作 (2)</el-radio-button>
-                <el-radio-button :value="3">高危 (3)</el-radio-button>
+                <el-radio-button :value="2" :disabled="formModel.category === 'qkv' || formModel.category === 'qfk'">写操作 (2)</el-radio-button>
+                <el-radio-button :value="3" :disabled="formModel.category === 'qkv' || formModel.category === 'qfk'">高危 (3)</el-radio-button>
               </el-radio-group>
             </el-form-item>
             <el-form-item label="接口版本">
@@ -823,7 +829,7 @@ onMounted(() => {
               <el-switch v-model="formModel.is_active" active-text="启用" inactive-text="下线" />
             </el-form-item>
             <el-form-item label="使用命令模板">
-              <el-input v-model="formModel.usage_template" placeholder="例如: acli --formatter json vm list (ACLI 插件可填，其余可为空)" />
+              <el-input v-model="formModel.usage_template" placeholder="QKV/QFK 必填；例如: acli --formatter json task get -k {{keyword}}" />
             </el-form-item>
           </el-col>
 

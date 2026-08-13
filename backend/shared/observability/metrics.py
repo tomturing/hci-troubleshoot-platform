@@ -39,6 +39,50 @@ KBD_SIGNAL_VALIDATION_TOTAL = Counter(
     labelnames=["code", "operation"],
 )
 
+KBD_WORKFLOW_ITEMS_TOTAL = Counter(
+    "hci_kbd_workflow_items_total",
+    "KBD 工作流逐项执行结果",
+    labelnames=["workflow", "stage", "status", "error_code"],
+)
+
+KBD_WORKFLOW_DURATION_SECONDS = Histogram(
+    "hci_kbd_workflow_duration_seconds",
+    "KBD 工作流阶段耗时（秒）",
+    labelnames=["workflow", "stage"],
+    buckets=[0.1, 0.5, 1.0, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, 900.0, float("inf")],
+)
+
+KBD_LLM_REQUESTS_TOTAL = Counter(
+    "hci_kbd_llm_requests_total",
+    "KBD LLM 请求次数",
+    labelnames=["operation", "model", "status", "finish_reason"],
+)
+
+KBD_LLM_TOKENS_TOTAL = Counter(
+    "hci_kbd_llm_tokens_total",
+    "KBD LLM Token 用量",
+    labelnames=["operation", "model", "type"],
+)
+
+OFFLINE_RESOURCE_SYNC_TOTAL = Counter(
+    "hci_offline_resource_sync_total",
+    "离线资源同步检测次数",
+    labelnames=["mode", "status"],
+)
+
+OFFLINE_RESOURCE_SYNC_CHANGES_TOTAL = Counter(
+    "hci_offline_resource_sync_changes_total",
+    "离线资源同步差异数量",
+    labelnames=["mode", "resource_type", "change_type"],
+)
+
+OFFLINE_RESOURCE_SYNC_DURATION_SECONDS = Histogram(
+    "hci_offline_resource_sync_duration_seconds",
+    "离线资源同步阶段耗时（秒）",
+    labelnames=["mode", "phase"],
+    buckets=[0.05, 0.1, 0.5, 1.0, 2.5, 5.0, 15.0, 30.0, 60.0, 300.0, float("inf")],
+)
+
 # Catalog 基线在线保存成功次数（按 filename / status 区分）
 CATALOG_SAVE_TOTAL = Counter(
     "hci_catalog_save_total",

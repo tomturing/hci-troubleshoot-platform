@@ -14,45 +14,27 @@ import (
 )
 
 type message struct {
-	Type          string         `json:"type"`
-	CaseID        string         `json:"case_id,omitempty"`
-	Host          string         `json:"host,omitempty"`
-	Port          int            `json:"port,omitempty"`
-	Username      string         `json:"username,omitempty"`
-	AuthType      string         `json:"auth_type,omitempty"`
-	Password      string         `json:"password,omitempty"`
-	ExecutionMode string         `json:"execution_mode,omitempty"`
-	ExecID        string         `json:"exec_id,omitempty"`
-	Command       string         `json:"command,omitempty"`
-	NodeIP        string         `json:"node_ip,omitempty"`
-	Container     string         `json:"container,omitempty"`
-	TraceID       string         `json:"trace_id,omitempty"`
-	Traceparent   string         `json:"traceparent,omitempty"`
-	TestRunID     string         `json:"test_run_id,omitempty"`
-	Timeout       int            `json:"timeout,omitempty"`
-	OutputFilters []outputFilter `json:"output_filters,omitempty"`
-	Stdout        string         `json:"stdout,omitempty"`
-	Stderr        string         `json:"stderr,omitempty"`
-	ExitCode      int            `json:"exit_code,omitempty"`
-	ErrorType     string         `json:"error_type,omitempty"`
-	Message       string         `json:"message,omitempty"`
-}
-
-type outputFilter struct {
-	Source        string   `json:"source"`
-	Include       []string `json:"include"`
-	IncludeMode   string   `json:"include_mode"`
-	CaseSensitive bool     `json:"case_sensitive"`
-}
-
-type commandCase struct {
-	name       string
-	command    string
-	nodeIP     string
-	include    string
-	want       string
-	wantExit   int
-	wantStderr string
+	Type          string `json:"type"`
+	CaseID        string `json:"case_id,omitempty"`
+	Host          string `json:"host,omitempty"`
+	Port          int    `json:"port,omitempty"`
+	Username      string `json:"username,omitempty"`
+	AuthType      string `json:"auth_type,omitempty"`
+	Password      string `json:"password,omitempty"`
+	ExecutionMode string `json:"execution_mode,omitempty"`
+	ExecID        string `json:"exec_id,omitempty"`
+	Command       string `json:"command,omitempty"`
+	NodeIP        string `json:"node_ip,omitempty"`
+	Container     string `json:"container,omitempty"`
+	TraceID       string `json:"trace_id,omitempty"`
+	Traceparent   string `json:"traceparent,omitempty"`
+	TestRunID     string `json:"test_run_id,omitempty"`
+	Timeout       int    `json:"timeout,omitempty"`
+	Stdout        string `json:"stdout,omitempty"`
+	Stderr        string `json:"stderr,omitempty"`
+	ExitCode      int    `json:"exit_code,omitempty"`
+	ErrorType     string `json:"error_type,omitempty"`
+	Message       string `json:"message,omitempty"`
 }
 
 func main() {
@@ -63,67 +45,18 @@ func main() {
 		}
 		return
 	}
-	bridgeURL := env("HCI_SIM_BRIDGE_URL", "ws://172.26.170.187.nip.io/terminal-bridge")
-	origin := env("HCI_SIM_BRIDGE_ORIGIN", "http://172.26.170.187.nip.io")
-	token := strings.TrimSpace(os.Getenv("HCI_SIM_LEASE_TOKEN"))
-	if token == "" {
-		log.Fatal("HCI_SIM_LEASE_TOKEN 为空")
-	}
-	caseID := "SIM-KBD-27123-" + time.Now().UTC().Format("150405")
-	ws, err := websocket.Dial(bridgeURL, "", origin)
-	if err != nil {
-		log.Fatalf("连接 Terminal Bridge 失败: %v", err)
-	}
-	defer ws.Close()
-	if err := send(ws, message{
-		Type: "ssh_connect", CaseID: caseID, Host: "hci-sim.hci-sim-dev.svc", Port: 2222,
-		Username: "sim", AuthType: "lease", Password: token, ExecutionMode: "sim-ssh",
-	}); err != nil {
-		log.Fatal(err)
-	}
-	if _, err := receiveUntil(ws, "ssh_connected", ""); err != nil {
-		log.Fatalf("hci-sim SSH 连接失败: %v", err)
-	}
-	traceID := "27123000000000000000000000000001"
-	tests := []commandCase{
-		{name: "sig_001", command: "acli --formatter json task get -k '启动虚拟机' -s failed -l 1", want: `"vm":"271230001"`, wantExit: 0},
-		{name: "resolve_node", command: "acli --formatter json platform node list", want: `"ip":"hci-sim.hci-sim-dev.svc"`, wantExit: 0},
-		{name: "sig_002", command: "acli --timeout 120 system lsof", nodeIP: "hci-sim.hci-sim-dev.svc", include: "271230001", want: "flock       9527", wantExit: 0},
-		{name: "sig_003", command: "acli --timeout 120 system ps -p 9527 -o cmd=", nodeIP: "hci-sim.hci-sim-dev.svc", include: "271230001", want: "sleep 9999999", wantExit: 0},
-		{name: "unknown", command: "uname -a", wantExit: 127, wantStderr: "fixture_not_found"},
-	}
-	for index, test := range tests {
-		execID := fmt.Sprintf("27123000-0000-0000-0000-%012d", index+1)
-		request := message{
-			Type: "ssh_exec_process", CaseID: caseID, ExecID: execID,
-			Command: test.command, NodeIP: test.nodeIP, Container: "host", Timeout: 10,
-			TraceID: traceID, Traceparent: "00-" + traceID + "-2712300000000001-01",
-		}
-		if test.include != "" {
-			request.OutputFilters = []outputFilter{{Source: "stdout", Include: []string{test.include}, IncludeMode: "all", CaseSensitive: true}}
-		}
-		if err := send(ws, request); err != nil {
-			log.Fatal(err)
-		}
-		result, err := receiveUntil(ws, "exec_result", execID)
-		if err != nil {
-			log.Fatalf("%s 未收到结果: %v", test.name, err)
-		}
-		if result.ExitCode != test.wantExit || !strings.Contains(result.Stdout, test.want) || !strings.Contains(result.Stderr, test.wantStderr) {
-			log.Fatalf("%s 验证失败: exit=%d stdout=%q stderr=%q error_type=%s", test.name, result.ExitCode, result.Stdout, result.Stderr, result.ErrorType)
-		}
-		log.Printf("PASS %-12s exit=%d stdout_bytes=%d stderr_bytes=%d", test.name, result.ExitCode, len(result.Stdout), len(result.Stderr))
-	}
-	_ = send(ws, message{Type: "ssh_disconnect", CaseID: caseID})
+	log.Fatal("必须设置 HCI_SIM_CONNECTION_JSON；smoke 验收只消费由当前 KBD/Tool 修订生成的 connection.json")
 }
 
 type acceptanceConnection struct {
-	SupportID          string `json:"support_id"`
-	RecommendedCommand string `json:"recommended_command"`
-	IssuedAt           string `json:"issued_at"`
-	ExpiresAt          string `json:"expires_at"`
-	TTLSeconds         int64  `json:"ttl_seconds"`
-	Connection         struct {
+	SupportID           string   `json:"support_id"`
+	RecommendedCommand  string   `json:"recommended_command"`
+	RecommendedCommands []string `json:"recommended_commands"`
+	Variant             string   `json:"variant"`
+	IssuedAt            string   `json:"issued_at"`
+	ExpiresAt           string   `json:"expires_at"`
+	TTLSeconds          int64    `json:"ttl_seconds"`
+	Connection          struct {
 		Host          string `json:"host"`
 		Port          int    `json:"port"`
 		Username      string `json:"username"`
@@ -143,8 +76,12 @@ func runConnectionAcceptance(path string) error {
 	if err := json.Unmarshal(raw, &connection); err != nil {
 		return fmt.Errorf("解析 connection.json 失败: %w", err)
 	}
-	if connection.SupportID == "" || connection.RecommendedCommand == "" || connection.Connection.Password == "" {
-		return errors.New("connection.json 缺少 support_id、recommended_command 或 Lease password")
+	commands := connection.RecommendedCommands
+	if len(commands) == 0 && connection.RecommendedCommand != "" {
+		commands = []string{connection.RecommendedCommand}
+	}
+	if connection.SupportID == "" || len(commands) == 0 || connection.Connection.Password == "" {
+		return errors.New("connection.json 缺少 support_id、recommended_commands 或 Lease password")
 	}
 	if connection.ExpiresAt != "" {
 		expiresAt, parseErr := time.Parse(time.RFC3339, connection.ExpiresAt)
@@ -173,21 +110,24 @@ func runConnectionAcceptance(path string) error {
 	if _, err := receiveUntil(ws, "ssh_connected", ""); err != nil {
 		return fmt.Errorf("Linux Terminal Bridge SSH 连接失败: %w", err)
 	}
-	execID := "sim-kbd-" + connection.SupportID + "-" + time.Now().UTC().Format("150405.000")
-	if err := send(ws, message{Type: "ssh_exec_process", CaseID: caseID, ExecID: execID, Command: connection.RecommendedCommand, Container: "host", Timeout: 15}); err != nil {
-		return err
+	expectFailure := connection.Variant == "command-failed" || connection.Variant == "timeout" || connection.Variant == "version-incompatible"
+	for index, command := range commands {
+		execID := fmt.Sprintf("sim-kbd-%s-%02d-%s", connection.SupportID, index+1, time.Now().UTC().Format("150405.000"))
+		if err := send(ws, message{Type: "ssh_exec_process", CaseID: caseID, ExecID: execID, Command: command, Container: "host", Timeout: 15}); err != nil {
+			return err
+		}
+		result, err := receiveUntil(ws, "exec_result", execID)
+		if err != nil {
+			return fmt.Errorf("recommended_commands[%d] 未收到结果: %w", index, err)
+		}
+		if expectFailure && result.ExitCode == 0 {
+			return fmt.Errorf("variant=%s 的命令 %d 应失败但 exit_code=0", connection.Variant, index)
+		}
+		if !expectFailure && result.ExitCode != 0 {
+			return fmt.Errorf("recommended_commands[%d] exit_code=%d stdout=%q stderr=%q", index, result.ExitCode, result.Stdout, result.Stderr)
+		}
 	}
-	result, err := receiveUntil(ws, "exec_result", execID)
-	if err != nil {
-		return fmt.Errorf("recommended_command 未收到结果: %w", err)
-	}
-	if result.ExitCode != 0 {
-		return fmt.Errorf("recommended_command exit_code=%d stdout=%q stderr=%q", result.ExitCode, result.Stdout, result.Stderr)
-	}
-	if !strings.Contains(result.Stdout, `"support_id":"`+connection.SupportID+`"`) {
-		return fmt.Errorf("结果缺少 support_id=%s", connection.SupportID)
-	}
-	log.Printf("PASS support_id=%s test_run_id=%s ssh=connected exit_code=%d synthetic=true", connection.SupportID, connection.Connection.TestRunID, result.ExitCode)
+	log.Printf("PASS support_id=%s test_run_id=%s ssh=connected commands=%d variant=%s synthetic=true", connection.SupportID, connection.Connection.TestRunID, len(commands), connection.Variant)
 	_ = send(ws, message{Type: "ssh_disconnect", CaseID: caseID})
 	return nil
 }

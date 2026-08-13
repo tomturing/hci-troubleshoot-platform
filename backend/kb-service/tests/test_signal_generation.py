@@ -2,7 +2,7 @@
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from app.routes import extract_signals
@@ -10,6 +10,8 @@ from app.routes.extract_signals import (
     ExtractSignalsResponse,
     _acquirer_catalog_prompt_text,
     _build_verification_contract,
+    _call_llm,
+    _decode_llm_json_object,
     _matcher_quality_violation,
     _normalize_config_file_read,
     _normalize_generated_timeouts,
@@ -17,6 +19,7 @@ from app.routes.extract_signals import (
     _qfk_catalog_violation,
     _qfk_command_capability_violation,
     _qfk_invocation_violation,
+    _resolve_extract_model,
     _signals_to_v2,
     _unconsumed_qfk_producer_reasons,
     _validate_and_collect_signals,
@@ -54,6 +57,80 @@ def test_generation_metadata_is_deterministic_and_schema_valid():
     validate_signals_json(document)
 
 
+def test_extract_model_ignores_empty_dedicated_setting(monkeypatch):
+    monkeypatch.setenv("EXTRACT_SIGNALS_MODEL", "")
+    monkeypatch.setenv("CLASSIFY_MODEL", "deepseek-v4-pro")
+    monkeypatch.setenv("LLM_DEFAULT_MODEL", "deepseek-v4-flash")
+
+    assert _resolve_extract_model() == "deepseek-v4-pro"
+
+
+def test_extract_json_decoder_accepts_complete_markdown_fence():
+    assert _decode_llm_json_object("```json\n{\"candidates\": []}\n```") == {"candidates": []}
+
+
+@pytest.mark.asyncio
+async def test_extract_llm_retries_malformed_json_with_correction(monkeypatch):
+    malformed = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{\"candidates\":[{\"pattern\":\"a\"b\"}]}'), finish_reason="stop")]
+    )
+    valid = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{\"candidates\":[]}'), finish_reason="stop")]
+    )
+    create = AsyncMock(side_effect=[malformed, valid])
+    client = MagicMock(chat=MagicMock(completions=MagicMock(create=create)))
+    monkeypatch.setenv("EXTRACT_SIGNALS_FORMAT_MAX_ATTEMPTS", "2")
+
+    async def invoke(_operation, call):
+        return await call()
+
+    with (
+        patch("openai.AsyncOpenAI", return_value=client),
+        patch.object(extract_signals, "_EXTRACT_API_KEY", "test-key"),
+        patch.object(extract_signals, "call_with_llm_governance", side_effect=invoke),
+    ):
+        result = await _call_llm("抽取信号")
+
+    assert result == {"candidates": []}
+    assert create.await_count == 2
+    retry_messages = create.await_args_list[1].kwargs["messages"]
+    assert "上一轮响应不是合法 JSON" in retry_messages[-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_extract_llm_does_not_repeat_same_strategy_after_length_truncation(monkeypatch):
+    truncated = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content='{"candidates":[{"id":"sig_001"'),
+                finish_reason="length",
+            )
+        ],
+        usage=SimpleNamespace(prompt_tokens=100, completion_tokens=200, total_tokens=300),
+    )
+    create = AsyncMock(return_value=truncated)
+    client = MagicMock(chat=MagicMock(completions=MagicMock(create=create)))
+    monkeypatch.setenv("EXTRACT_SIGNALS_FORMAT_MAX_ATTEMPTS", "2")
+
+    async def invoke(_operation, call):
+        return await call()
+
+    with (
+        patch("openai.AsyncOpenAI", return_value=client),
+        patch.object(extract_signals, "_EXTRACT_API_KEY", "test-key"),
+        patch.object(extract_signals, "call_with_llm_governance", side_effect=invoke),
+        patch.object(extract_signals, "observe_llm_generation") as observe,
+    ):
+        observe.return_value.__enter__.return_value = None
+        with pytest.raises(Exception) as exc_info:
+            await _call_llm("抽取信号")
+
+    assert create.await_count == 1
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.detail["code"] == "OUTPUT_TRUNCATED"
+    assert exc_info.value.detail["finish_reason"] == "length"
+
+
 def test_rejected_candidates_are_persisted_for_expert_audit():
     document = _signals_to_v2(
         [],
@@ -86,6 +163,88 @@ def test_rejected_candidate_reason_code_is_optional_for_historical_snapshots():
 
     validate_signals_json(document)
     assert "reason_code" not in document["rejected_candidates"][0]
+
+
+def test_simple_matcher_missing_extract_is_normalized_to_full_stdout():
+    candidate = {
+        "id": "sig_001",
+        "acquire": {
+            "tool": "qfk_platform",
+            "args": {"command": "version get", "instruction": "获取 HCI 平台版本"},
+        },
+        "match": {
+            "type": "keyword",
+            "pattern": "6.11.1_R1",
+            "mode": "or",
+            "expected": True,
+        },
+        "orchestrate": {"phase": "diagnostic", "produces": [], "requires": []},
+        "provenance": {
+            "category": "backend",
+            "evidence": "HCI 平台从 6.10.0 升级至 6.11.1_R1",
+            "confidence": 0.9,
+            "source_section": "problem_description",
+        },
+        "review": {"notes": "", "require_human_confirm": False},
+    }
+
+    accepted, rejected = _validate_and_collect_signals(
+        [candidate], "kbd:39643", enforce_kbd_read_only=True
+    )
+
+    assert rejected == []
+    assert accepted[0]["match"]["extract"] == {
+        "type": "text",
+        "rows": {"mode": "all"},
+        "cardinality": "all",
+        "source": "stdout",
+    }
+
+
+def test_line_count_threshold_missing_extract_is_normalized_to_full_stdout():
+    candidate = {
+        "id": "sig_002",
+        "role": "should",
+        "acquire": {
+            "tool": "qfk_platform",
+            "args": {
+                "command": "node list",
+                "host": "{{TARGET}}",
+                "timeout": 60,
+                "instruction": "确认目标集群的物理主机数量",
+            },
+        },
+        "match": {
+            "type": "threshold",
+            "aggregation": "line_count",
+            "operator": "==",
+            "value": 2,
+            "expected": True,
+        },
+        "orchestrate": {"phase": "diagnostic", "produces": [], "requires": ["TARGET"]},
+        "provenance": {
+            "category": "backend",
+            "evidence": "确认目标集群的物理主机数量。主机列表显示仅2台主机。",
+            "confidence": 0.9,
+            "source_section": "steps_text",
+        },
+        "review": {"notes": "目标集群标识需人工确认", "require_human_confirm": True},
+    }
+
+    accepted, rejected = _validate_and_collect_signals(
+        [candidate],
+        "kbd:43487",
+        external_variables={"TARGET"},
+        enforce_kbd_read_only=True,
+    )
+
+    assert rejected == []
+    assert accepted[0]["match"]["extract"] == {
+        "type": "text",
+        "rows": {"mode": "all"},
+        "cardinality": "all",
+        "source": "stdout",
+    }
 
 
 def test_kbd_candidate_gate_uses_three_stable_reason_codes_and_keeps_good_signal():
