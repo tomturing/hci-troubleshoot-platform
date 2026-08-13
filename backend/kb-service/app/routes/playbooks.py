@@ -12,8 +12,17 @@ from shared.dynamic_resource.adapters import kbd_resource_payload, sop_resource_
 from shared.dynamic_resource.loader import snapshot_revision_metadata
 from shared.dynamic_resource.publisher import DynamicResourcePublisher
 from shared.observability.logger import get_logger
+from shared.observability.metrics import (
+    KBD_CONTRACT_HARD_BREAK_TOTAL,
+    KBD_CONTRACT_SOFT_STALE_TOTAL,
+)
 from shared.observability.otel import get_current_trace_id
-from shared.schemas.signal_generation import current_tool_contract_revision
+from shared.schemas.signal_generation import (
+    FP_ALGO_VERSION,
+    current_semantic_fingerprint,
+    current_structural_fingerprint,
+    current_tool_contract_revision,
+)
 from shared.schemas.signal_schema import validate_publishable_signals_json
 from sqlalchemy import select
 
@@ -41,6 +50,8 @@ def _signals(entry: KbdEntry) -> list[dict[str, Any]]:
 def _execution_issues(
     signals: list[dict[str, Any]],
     document: dict[str, Any] | None = None,
+    support_id: str | None = None,
+    category_id: str | None = None,
 ) -> list[str]:
     """返回自动执行硬门禁问题；知识条目本身不会因此从清单消失。"""
     issues: list[str] = []
@@ -98,8 +109,13 @@ def _execution_issues(
     if isinstance(publish_validation, dict) and publish_validation:
         if publish_validation.get("status") != "passed":
             issues.append("专家发布校验状态无效，必须重新发布")
-        if publish_validation.get("tool_contract_revision") != current_tool_contract_revision():
-            issues.append("专家发布时使用的工具契约版本已过期，必须重新发布")
+        _evaluate_contract_revision(
+            stored_validation=publish_validation,
+            validation_document=validation_document,
+            support_id=support_id,
+            category_id=category_id,
+            issues=issues,
+        )
     elif isinstance(generation, dict) and generation:
         if generation.get("status") == "stale":
             issues.append("Signal/Contract 生成输入已变化，必须重新抽取或完成人工复核")
@@ -108,6 +124,63 @@ def _execution_issues(
     if not signals:
         issues.append("未配置关键信号")
     return issues
+
+
+def _evaluate_contract_revision(
+    stored_validation: dict[str, Any],
+    validation_document: dict[str, Any],
+    support_id: str | None,
+    category_id: str | None,
+    issues: list[str],
+) -> None:
+    """契约门禁分级判定（结构/语义指纹，见 ADR 2026-08-13-kbd-contract-gate-structural-semantic-fingerprint）。
+
+    - 新契约快照（含 structural_revision / semantic_revision / fp_algo_version）：
+      结构指纹不等且旧信号无法在新契约下执行 => 真 breaking（硬阻断）；
+      结构指纹相等、语义指纹不等 => 兼容演进（放行 + soft_stale 观测，不阻断）；
+      fp_algo_version 不等（指纹算法升级）=> 走一次性全量重算提示（soft_stale，不阻断）。
+    - 旧契约快照（仅 tool_contract_revision）：回退为原字节哈希全等比对，行为与原门禁一致，
+      待 maintenance 重新发布刷新为新分级快照后自然迁移（见 024 迁移铁律）。
+    """
+    cur_struct = current_structural_fingerprint()
+    cur_sem = current_semantic_fingerprint()
+
+    stored_struct = stored_validation.get("structural_revision")
+    stored_sem = stored_validation.get("semantic_revision")
+    stored_fp_algo = stored_validation.get("fp_algo_version")
+    old_style = stored_struct is None and stored_sem is None
+
+    if old_style:
+        # 旧快照回退路径：与原门禁语义一致（字节哈希全等），不恶化、不提前放行。
+        if stored_validation.get("tool_contract_revision") != current_tool_contract_revision():
+            issues.append("专家发布时使用的工具契约版本已过期，必须重新发布")
+        return
+
+    # 指纹算法版本升级：结构/语义指纹定义已变，旧快照不可直接比较，提示重发刷新（不阻断）。
+    if stored_fp_algo != FP_ALGO_VERSION:
+        KBD_CONTRACT_SOFT_STALE_TOTAL.labels(
+            support_id=support_id or "unknown", category=category_id or "unknown"
+        ).inc()
+        return
+
+    if stored_struct != cur_struct:
+        # 结构变了：用当前 Schema 实跑校验旧 signals，失败才真阻断（破坏性变更兜底）。
+        # validation_document 携带旧 KBD 的 signals，jsonschema 用当前加载的 schema 校验其合法性。
+        try:
+            validate_publishable_signals_json(validation_document)
+        except Exception:
+            KBD_CONTRACT_HARD_BREAK_TOTAL.labels(
+                support_id=support_id or "unknown", category=category_id or "unknown"
+            ).inc()
+            issues.append("专家发布时使用的工具契约结构已破坏性变更，旧信号无法在新契约下执行，必须重新发布")
+        # 校验通过 => 兼容演进（如仅新增可选属性），放行。
+        return
+
+    if stored_sem != cur_sem:
+        # 结构兼容、语义漂移：放行 + 可观测，提示建议重发但不阻断。
+        KBD_CONTRACT_SOFT_STALE_TOTAL.labels(
+            support_id=support_id or "unknown", category=category_id or "unknown"
+        ).inc()
 
 
 @router.get("/categories/{category_id}/playbooks")
@@ -163,7 +236,12 @@ async def get_category_playbooks(
             verification_contract = raw_signal_doc.get("verification_contract") or {}
             generation_metadata = raw_signal_doc.get("generation_metadata") or {}
             publish_validation = raw_signal_doc.get("publish_validation") or {}
-            issues = _execution_issues(signals, raw_signal_doc)
+            issues = _execution_issues(
+                signals,
+                raw_signal_doc,
+                support_id=kbd.support_id,
+                category_id=kbd.category_id,
+            )
             snapshot = await DynamicResourcePublisher(session).ensure_published(
                 **kbd_resource_payload(kbd), trace_id=trace_id
             )

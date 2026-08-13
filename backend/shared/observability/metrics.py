@@ -53,6 +53,20 @@ CATALOG_SAVE_ERRORS = Counter(
     labelnames=["filename", "error_type"],
 )
 
+# 契约门禁：结构兼容性演进（旧契约结构指纹不等但旧信号仍可通过当前 schema 校验）-> 放行 + 观测，不阻断。
+KBD_CONTRACT_SOFT_STALE_TOTAL = Counter(
+    "hci_kbd_contract_soft_stale_total",
+    "KBD 契约语义漂移（结构兼容、可继续执行）次数，提示建议重新发布但不阻断",
+    labelnames=["support_id", "category"],
+)
+
+# 契约门禁：结构破坏性变更（结构指纹不等且旧信号无法在新契约下执行）-> 真阻断。
+KBD_CONTRACT_HARD_BREAK_TOTAL = Counter(
+    "hci_kbd_contract_hard_break_total",
+    "KBD 契约结构性破坏（旧信号无法在新契约下执行，必须重新发布）次数",
+    labelnames=["support_id", "category"],
+)
+
 
 class HTTPMetricsMiddleware(BaseHTTPMiddleware):
     """HTTP 请求指标采集中间件

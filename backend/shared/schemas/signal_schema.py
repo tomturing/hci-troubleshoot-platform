@@ -23,7 +23,12 @@ from shared.schemas.log_source_catalog import (
     normalize_log_path,
     resolve_log_source,
 )
-from shared.schemas.signal_generation import current_tool_contract_revision
+from shared.schemas.signal_generation import (
+    FP_ALGO_VERSION,
+    current_semantic_fingerprint,
+    current_structural_fingerprint,
+    current_tool_contract_revision,
+)
 
 _SIGNALS_DIR = Path(__file__).resolve().parent / "signals"
 
@@ -377,6 +382,10 @@ def certify_publishable_signals_json(raw: Any) -> dict[str, Any]:
         "status": "passed",
         "tool_contract_revision": current_tool_contract_revision(),
         "validator": "expert_publish_gate",
+        # 结构/语义指纹分级门禁（见 docs/solution/events/2026-08-13-kbd-contract-gate-structural-semantic-fingerprint-adr.md）
+        "structural_revision": current_structural_fingerprint(),
+        "semantic_revision": current_semantic_fingerprint(),
+        "fp_algo_version": FP_ALGO_VERSION,
     }
     for signal in certified.get("signals") or []:
         if not isinstance(signal, dict):

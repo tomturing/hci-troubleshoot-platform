@@ -253,3 +253,108 @@ def test_signal_unknown_extra_property_still_rejected():
         assert "bogus_field" in str(getattr(exc, "message", exc))
     else:
         raise AssertionError("未定义的 match 字段未被 additionalProperties 拒绝")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 契约门禁分级判定（结构/语义指纹，见 ADR 2026-08-13-kbd-contract-gate-structural-semantic-fingerprint）
+# ─────────────────────────────────────────────────────────────────────────────
+
+from shared.schemas.signal_generation import (
+    FP_ALGO_VERSION,
+    current_semantic_fingerprint,
+    current_structural_fingerprint,
+    current_tool_contract_revision,
+)
+
+
+def _contract_doc(structural: str, semantic: str, fp_algo: int = FP_ALGO_VERSION) -> dict:
+    """构造一个通过内部信号校验的合法 qfk 信号文档（确定性 matcher）。"""
+    return {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "s1",
+                "acquire": {"tool": "qfk_vm", "args": {"command": "echo"}},
+                "match": {"type": "keyword", "pattern": "x"},
+                "orchestrate": {"produces": []},
+            }
+        ],
+        "publish_validation": {
+            "schema_version": 1,
+            "status": "passed",
+            "tool_contract_revision": current_tool_contract_revision(),
+            "validator": "expert_publish_gate",
+            "structural_revision": structural,
+            "semantic_revision": semantic,
+            "fp_algo_version": fp_algo,
+        },
+    }
+
+
+def _exec(doc: dict) -> list[str]:
+    return playbooks._execution_issues(doc["signals"], doc, support_id="X", category_id="虚拟机-015")
+
+
+def test_contract_new_snapshot_executable():
+    """新快照指纹全匹配 -> 可执行，无契约 issue。"""
+    cs, sem = current_structural_fingerprint(), current_semantic_fingerprint()
+    with patch.object(playbooks, "validate_publishable_signals_json", lambda d: None):
+        issues = _exec(_contract_doc(cs, sem))
+    assert not any("契约" in i or "重新发布" in i for i in issues)
+
+
+def test_contract_semantic_drift_soft_stale():
+    """结构兼容、语义漂移 -> 放行（不阻断），仅观测。"""
+    cs, sem = current_structural_fingerprint(), current_semantic_fingerprint()
+    with patch.object(playbooks, "validate_publishable_signals_json", lambda d: None):
+        issues = _exec(_contract_doc(cs, "0" * 64))
+    assert not issues  # 结构相等，仅语义漂移，仍可执行
+
+
+def test_contract_struct_change_compatible_passes():
+    """结构不等但旧信号仍能通过当前 schema 校验（如新增可选属性）-> 放行。"""
+    sem = current_semantic_fingerprint()
+    with patch.object(playbooks, "validate_publishable_signals_json", lambda d: None):
+        issues = _exec(_contract_doc("0" * 64, sem))
+    assert not issues
+
+
+def test_contract_struct_change_breaking_hard_break():
+    """结构不等且旧信号无法在新契约下执行 -> 真阻断（hard_break）。"""
+    sem = current_semantic_fingerprint()
+    with patch.object(
+        playbooks, "validate_publishable_signals_json", side_effect=Exception("schema mismatch")
+    ):
+        issues = _exec(_contract_doc("0" * 64, sem))
+    assert any("破坏性变更" in i for i in issues)
+
+
+def test_contract_fp_algo_mismatch_soft_stale():
+    """指纹算法版本不符 -> 不阻断（提示全量重算刷新）。"""
+    cs, sem = current_structural_fingerprint(), current_semantic_fingerprint()
+    with patch.object(playbooks, "validate_publishable_signals_json", lambda d: None):
+        issues = _exec(_contract_doc(cs, sem, fp_algo=FP_ALGO_VERSION + 1))
+    assert not issues
+
+
+def test_contract_legacy_snapshot_fallback_stale():
+    """旧快照（仅 tool_contract_revision 且 hash 不等）-> 回退原门禁过期。"""
+    doc = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "s1",
+                "acquire": {"tool": "qfk_vm", "args": {"command": "echo"}},
+                "match": {"type": "keyword", "pattern": "x"},
+                "orchestrate": {"produces": []},
+            }
+        ],
+        "publish_validation": {
+            "schema_version": 1,
+            "status": "passed",
+            "tool_contract_revision": "0" * 64,
+            "validator": "expert_publish_gate",
+        },
+    }
+    issues = playbooks._execution_issues(doc["signals"], doc, support_id="23821", category_id="虚拟机-015")
+    assert any("工具契约版本已过期" in i for i in issues)
