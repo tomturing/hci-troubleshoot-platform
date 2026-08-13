@@ -12,14 +12,16 @@ on:
         required: false
         default: "手动构建镜像"
       promote_target:
-        description: "手动发布目标（仅 main 分支；both 按 dev → staging 顺序晋级）"
+        description: "手动发布目标（仅 main 分支；both=dev→staging，all=dev→staging→prod，含 db-migrate 镜像自动同步）"
         required: false
         type: choice
         options:
           - none
           - dev
           - staging
+          - prod
           - both
+          - all
         default: none
 
 concurrency:
@@ -993,7 +995,9 @@ jobs:
             case "${PROMOTE_TARGET}" in
               dev) ENVIRONMENTS=(dev) ;;
               staging) ENVIRONMENTS=(staging) ;;
+              prod) ENVIRONMENTS=(prod) ;;
               both) ENVIRONMENTS=(dev staging) ;;
+              all) ENVIRONMENTS=(dev staging prod) ;;
               *)
                 echo "::error::无效的手动发布目标：${PROMOTE_TARGET}"
                 exit 1
