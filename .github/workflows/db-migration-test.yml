@@ -132,6 +132,14 @@ jobs:
             "kbd_image" "sop_execution" "skill_definition"
             "migration_history" "terminal_operation" "prompt_slot"
             "fact" "claim_evidence_link"
+          )
+          DEPRECATED_TABLES=(
+            "kb_chunk" "kb_document" "kb_sop_node" "kb_synonym"
+            "raw_cases" "knowledge_atoms" "prompt_audit" "sop_chunk"
+            # hci-sim 已迁至独立库（database/hci-sim-migrations/000001_control_plane.sql，
+            # 以 control_plane/fixture/artifact/audit schema 重建等价表），主库 agent_test_*
+            # 为迁移遗留孤儿表，backend 零引用，已从 desired_schema.sql 删除并由
+            # atlas-migrations/20260813000000_drop_orphan_agent_test_tables.sql 清理。
             "agent_test_scenario" "agent_test_fixture_bundle"
             "agent_test_fixture_dependency" "agent_test_fixture_provenance"
             "agent_test_fixture_approval" "agent_test_fixture_audit"
@@ -139,10 +147,6 @@ jobs:
             "agent_test_fixture_stale_outbox"
             "agent_test_run" "agent_test_run_attempt" "agent_test_run_event"
             "agent_test_run_result" "agent_test_runtime_instance"
-          )
-          DEPRECATED_TABLES=(
-            "kb_chunk" "kb_document" "kb_sop_node" "kb_synonym"
-            "raw_cases" "knowledge_atoms" "prompt_audit" "sop_chunk"
           )
 
           MISSING=0

@@ -58,6 +58,15 @@ agent_test_run_event, agent_test_run_result, agent_test_runtime_instance
 ### 3.2 `database/atlas-migrations/20260813000000_drop_orphan_agent_test_tables.sql`（新增）
 幂等 `DROP TABLE IF EXISTS ... CASCADE`，列出全部 15 张表。在本架构下作为变更审计记录（CI/生产均不执行 `atlas migrate`，但保留以满足可追溯性）。
 
+### 3.3 `.github/workflows/db-migration-test.yml` Step 3「Schema 完整性检查」同步调整
+删除主库 `agent_test_*` 后，Step 3 的 `EXPECTED_TABLES` 仍把 15 张 `agent_test_*` 列为必存在表，会导致 CI 报「15 项异常」直接失败。按第一性原理：这些表已迁出主库（等价定义在独立库 `hci-sim-migrations` 中以 `control_plane/fixture/artifact/audit` schema 存在），主库不再需要它们，**不应**再作为主库期望表。
+
+调整内容：
+- 从 `EXPECTED_TABLES` 移除 15 张 `agent_test_*`。
+- 将 15 张 `agent_test_*` 加入 `DEPRECATED_TABLES`，使 CI 反向验证「主库不再存在」——与 `kb_chunk`/`raw_cases` 等废弃表同口径。
+
+此改动使 PR #747 的「删表 + 校验收敛」形成闭环，CI 才能通过。
+
 ## 4. 验证
 
 - `desired_schema.sql` 删除后 `agent_test_` 残留计数 = 0（已确认）。
