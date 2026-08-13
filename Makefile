@@ -1,7 +1,11 @@
 # HCI智能排障平台 - Makefile
 # 依赖管理: uv (https://docs.astral.sh/uv/)
 
-.PHONY: help install dev-up dev-down db-sync diagnosis-dev-keys diagnosis-sample-preflight diagnosis-sample-postgres-preflight diagnosis-lab-list diagnosis-lab-check diagnosis-lab-sync diagnosis-lab-up diagnosis-lab-status diagnosis-lab-connection diagnosis-lab-renew diagnosis-lab-online-smoke diagnosis-lab-offline-run diagnosis-lab-reset diagnosis-lab-down diagnosis-sample-e2e test lint clean quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill local-deploy local-deploy-import gen-schemas schema-check build-offline-collector test-offline-collector
+.PHONY: help install compose-check dev-up dev-down db-sync diagnosis-dev-keys diagnosis-sample-preflight diagnosis-sample-postgres-preflight diagnosis-lab-list diagnosis-lab-check diagnosis-lab-sync diagnosis-lab-up diagnosis-lab-status diagnosis-lab-connection diagnosis-lab-renew diagnosis-lab-online-smoke diagnosis-lab-offline-run diagnosis-lab-reset diagnosis-lab-down diagnosis-sample-e2e test lint clean quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill local-deploy local-deploy-import gen-schemas schema-check build-offline-collector test-offline-collector
+
+# Docker Compose v2 是 Docker 官方当前发行形态，也是 GitHub Runner 提供的命令。
+# 仍可通过 `make COMPOSE=docker-compose ...` 兼容仅安装 v1 的旧环境。
+COMPOSE ?= docker compose
 
 help:
 	@echo "HCI智能排障平台 - 可用命令:"
@@ -53,20 +57,26 @@ install:
 	@echo "安装前端依赖..."
 	cd frontend && pnpm install
 
-dev-up: diagnosis-dev-keys diagnosis-sample-preflight
+compose-check:
+	@$(COMPOSE) version >/dev/null || { \
+		echo "Docker Compose 不可用，请安装 Compose v2（docker compose）或设置 COMPOSE=docker-compose"; \
+		exit 1; \
+	}
+
+dev-up: compose-check diagnosis-dev-keys diagnosis-sample-preflight
 	@echo "Starting PostgreSQL & Redis..."
-	docker-compose --env-file .env -f deploy/docker/docker-compose.yml up -d postgres redis
+	$(COMPOSE) --env-file .env -f deploy/docker/docker-compose.yml up -d postgres redis
 	@echo "Waiting for PostgreSQL to be ready..."
-	@until docker-compose -f deploy/docker/docker-compose.yml exec -T postgres pg_isready -U $${POSTGRES_USER:-hci_admin}; do sleep 1; done
+	@until $(COMPOSE) -f deploy/docker/docker-compose.yml exec -T postgres pg_isready -U $${POSTGRES_USER:-hci_admin}; do sleep 1; done
 	@echo "Running database migrations..."
-	docker-compose --env-file .env -f deploy/docker/docker-compose.yml up --force-recreate db-migrate
+	$(COMPOSE) --env-file .env -f deploy/docker/docker-compose.yml up --force-recreate db-migrate
 	@test "$$(docker inspect hci-db-migrate --format '{{.State.ExitCode}}')" = "0" || { \
 		echo "Database migration failed; inspect logs with: docker logs hci-db-migrate"; \
 		exit 1; \
 	}
 	$(MAKE) diagnosis-sample-postgres-preflight
 	@echo "Starting all services..."
-	docker-compose --env-file .env -f deploy/docker/docker-compose.yml up -d
+	$(COMPOSE) --env-file .env -f deploy/docker/docker-compose.yml up -d
 	@echo ""
 	@echo "服务已启动:"
 	@echo "  - API Gateway: http://localhost:8000"
@@ -138,19 +148,19 @@ diagnosis-lab-down:
 diagnosis-sample-e2e: diagnosis-dev-keys diagnosis-sample-preflight diagnosis-sample-postgres-preflight
 	@echo "静态与 PostgreSQL 生命周期回归通过。运行层 E2E 请在平台/Terminal Bridge 启动后按需执行 diagnosis-lab-up、online-smoke 和 offline-run。"
 
-db-sync:
+db-sync: compose-check
 	@echo "Running database schema migration..."
-	@until docker-compose -f deploy/docker/docker-compose.yml exec -T postgres pg_isready -U $${POSTGRES_USER:-hci_admin}; do sleep 1; done
-	docker-compose --env-file .env -f deploy/docker/docker-compose.yml up --force-recreate db-migrate
+	@until $(COMPOSE) -f deploy/docker/docker-compose.yml exec -T postgres pg_isready -U $${POSTGRES_USER:-hci_admin}; do sleep 1; done
+	$(COMPOSE) --env-file .env -f deploy/docker/docker-compose.yml up --force-recreate db-migrate
 	@test "$$(docker inspect hci-db-migrate --format '{{.State.ExitCode}}')" = "0" || { \
 		echo "Database migration failed; inspect logs with: docker logs hci-db-migrate"; \
 		exit 1; \
 	}
 	@echo "Migration complete."
 
-dev-down:
+dev-down: compose-check
 	@echo "停止开发环境..."
-	docker-compose --env-file .env -f deploy/docker/docker-compose.yml down
+	$(COMPOSE) --env-file .env -f deploy/docker/docker-compose.yml down
 
 test:
 	@echo "运行测试 (按服务隔离，避免 app/ 命名空间冲突)..."
