@@ -49,3 +49,22 @@
 
 仿真环境重跑虚拟机-015 场景，三信号 `sig_001/sig_002/expert_*` 均 SATISFIED，
 KBD 23821 判定 DEFINITIVE。
+
+## 构建链路修复（部署门禁）
+
+重建 agent-service 镜像后新 Pod 启动即 `PermissionError: [Errno 13] Permission denied:
+'/app/app/main.py'`，CrashLoopBackOff。
+
+- **根因**：`backend/agent-service/Dockerfile` 用 `COPY backend/agent-service /app`
+  直接复制源码，保留宿主机文件 mode。宿主机 `main.py` 为 `-rw-------`（600），
+  运行时 securityContext `runAsUser:1000, runAsNonRoot:true` 的非 root 用户无法读取
+  600 文件 → uvicorn 在 `import_from_string` 阶段崩溃。
+- **修复**：Dockerfile 在 COPY 后增加 `RUN chmod -R u+rwX,g+rX,o+rX /app`，
+  使构建产物权限确定、不依赖宿主机 umask，与运行时非 root 用户解耦。
+- **连带修复**：`scripts/ops/local-deploy.sh` 的 `sync-env-repo-tags.sh` 误将
+  `dbMigrate.tag` 同步成业务镜像 tag（该镜像未构建 → PreSync hook ImagePullBackOff
+  → ArgoCD 永久卡在 hook）。已回退 env repo `dbMigrate.tag` 至已存在的
+  `20260813-0244-e444a40`，并清理卡住的旧 Job（移除 ArgoCD `hook-finalizer`）。
+- **部署顺序经验**：ArgoCD PreSync hook（db-migrate Job）失败时，需同时删除 Job 的
+  `argocd.argoproj.io/hook-finalizer` finalizer 才能真正解除，否则 `operation:null`
+  与 `refresh=hard` 都无法推进。
