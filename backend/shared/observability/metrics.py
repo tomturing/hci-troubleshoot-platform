@@ -83,6 +83,20 @@ OFFLINE_RESOURCE_SYNC_DURATION_SECONDS = Histogram(
     buckets=[0.05, 0.1, 0.5, 1.0, 2.5, 5.0, 15.0, 30.0, 60.0, 300.0, float("inf")],
 )
 
+# Catalog 基线在线保存成功次数（按 filename / status 区分）
+CATALOG_SAVE_TOTAL = Counter(
+    "hci_catalog_save_total",
+    "Resolution Catalog 基线在线保存次数",
+    labelnames=["filename", "status"],  # status: success | error
+)
+
+# Catalog 基线写磁盘失败次数（持久化/权限/IO 异常）
+CATALOG_SAVE_ERRORS = Counter(
+    "hci_catalog_save_errors_total",
+    "Resolution Catalog 基线写回失败次数（PV 未挂载或 IO 异常时上升）",
+    labelnames=["filename", "error_type"],
+)
+
 
 class HTTPMetricsMiddleware(BaseHTTPMiddleware):
     """HTTP 请求指标采集中间件
