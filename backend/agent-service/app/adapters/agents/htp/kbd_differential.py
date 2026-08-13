@@ -452,11 +452,25 @@ class KBDDiagnostic:
                 "candidate_states": {kbd_id: item.state.value for kbd_id, item in assessments.items()},
             },
         )
+        # 可观测性：候选未确认时报告必须说明原因（契约过期/编译错误/scope 拦截），
+        # 否则「无可执行证据」会把数据问题与契约问题都吞成同一文案，无法现场定位。
+        exclusion_reasons: dict[str, list[str]] = {}
+        for kbd in ordered:
+            if kbd.id in decision.supported_ids:
+                continue
+            reasons: list[str] = []
+            reasons.extend(plan.compile_errors.get(kbd.id) or [])
+            assessment = assessments.get(kbd.id)
+            if assessment is not None:
+                reasons.extend(assessment.reasons)
+            if reasons:
+                exclusion_reasons[str(kbd.id)] = reasons
         report = await self._generate_report(
             supported if definitive else [],
             steps_executed,
             evaluated_kbds=ordered,
             user_id=user_id,
+            exclusion_reasons=exclusion_reasons,
         )
         if decision.level is ConclusionLevel.PARTIAL:
             supported_refs = ", ".join(
@@ -1665,6 +1679,7 @@ class KBDDiagnostic:
         steps_executed: list[StepResult],
         evaluated_kbds: list[KBD] | None = None,
         user_id: str = "",
+        exclusion_reasons: dict[str, list[str]] | None = None,
     ) -> str:
         """生成诊断报告：仅返回命中 KBD 的 root_cause / solution 原始文本 + 现场证据 + 标题超链接。
 
@@ -1675,6 +1690,7 @@ class KBDDiagnostic:
             matched_kbds,
             steps_executed,
             evaluated_kbds=evaluated_kbds,
+            exclusion_reasons=exclusion_reasons,
         )
 
     @staticmethod
@@ -1683,6 +1699,7 @@ class KBDDiagnostic:
         steps_executed: list[StepResult],
         evaluated_kbds: list[KBD] | None = None,
         kbd_detail_url: str = KBD_DETAIL_URL_TEMPLATE,
+        exclusion_reasons: dict[str, list[str]] | None = None,
     ) -> str:
         """构建诊断报告：根因/方案原文 + 证据 + KBD 标题可点击超链接。"""
         if not matched_kbds:
@@ -1690,7 +1707,9 @@ class KBDDiagnostic:
             for kbd in evaluated_kbds or []:
                 support_id = kbd.support_id or kbd.id
                 url = kbd_detail_url.format(id=kbd.id, support_id=support_id)
-                candidate_links.append(f"- [参考案例 {support_id} - {kbd.name}]({url})（未确认）")
+                reasons = (exclusion_reasons or {}).get(str(kbd.id)) or []
+                suffix = f"（未确认：{'；'.join(reasons)}）" if reasons else "（未确认）"
+                candidate_links.append(f"- [参考案例 {support_id} - {kbd.name}]({url}){suffix}")
             evidence = [
                 KBDDiagnostic._format_step_evidence(step, index) for index, step in enumerate(steps_executed, start=1)
             ]
