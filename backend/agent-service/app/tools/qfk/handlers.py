@@ -181,6 +181,21 @@ class LogKeywordHandler(BackendSignalHandler):
         elif matcher_type in {"threshold", "delta", "trend"}:
             metric = matcher.get("metric") or signal.resource_keyword
             if not isinstance(metric, str) or not metric:
+                # 对齐 2026-08-07 契约：数值 Matcher 配置了 ai_extract.instruction 时，
+                # 走 "AI 类型化取值" 通道，数值比较由 AI 完成，命令只需用 filter_keywords/keyword
+                # 作为日志粗筛 pattern，不再强制要求 metric 字段。
+                extract = matcher.get("extract") if isinstance(matcher, dict) else None
+                ai_instruction = ""
+                if isinstance(extract, dict):
+                    ai_extract = extract.get("ai_extract")
+                    if isinstance(ai_extract, dict):
+                        ai_instruction = str(ai_extract.get("instruction") or "")
+                if ai_instruction:
+                    ai_filter = signal.filter_keywords or signal.keyword
+                    if ai_filter:
+                        unique = sorted({str(item) for item in ai_filter if str(item)})
+                        if unique:
+                            return "|".join(re.escape(item) for item in unique), True, matcher_type
                 raise CommandBuildError(f"qfk_log {matcher_type} matcher 必须提供 metric")
             return re.escape(metric), True, matcher_type
         elif matcher_type == "exists":
