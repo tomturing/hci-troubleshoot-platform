@@ -73,16 +73,26 @@ async def test_five_samples_batch_approve_and_publish_immutable_revisions():
     try:
         admin.set_dependencies(database)
         async with database.async_session_factory() as session:
+            # 冷启动 CI 只加载服务运行必需的 SQL seed，不会预先导入由 KBD
+            # pipeline 管理的分类树。回归用分类必须跟随外层事务创建并回滚，
+            # 不能把“环境中恰好已有 kb_category”作为五篇样例闭环的隐式前提。
+            category_id = f"TEST-DIAG-{uuid4().hex[:12]}"
             category_id = (
                 await session.execute(
                     text(
                         """
-                        SELECT code FROM kb_category
-                        WHERE code IS NOT NULL AND is_active = true
-                        ORDER BY level DESC, code
-                        LIMIT 1
+                        INSERT INTO kb_category (
+                            code, name, domain, path_labels, level,
+                            source, version, is_active
+                        ) VALUES (
+                            :category_id, '诊断样例回归分类', '测试',
+                            CAST('["诊断样例回归分类"]' AS jsonb), 1,
+                            'integration_test', '1.0', true
+                        )
+                        RETURNING code
                         """
-                    )
+                    ),
+                    {"category_id": category_id},
                 )
             ).scalar_one()
             inserted: dict[int, str] = {}
