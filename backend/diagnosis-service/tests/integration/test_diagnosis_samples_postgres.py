@@ -132,23 +132,37 @@ async def test_five_samples_full_sync_publish_resources_and_reach_supported_diag
         await session.execute(text("DELETE FROM offline_resource_sync_change"))
         await session.execute(text("DELETE FROM offline_resource_sync_batch"))
         await session.execute(text("DELETE FROM offline_resource_sync_state"))
-        categories = list(
-            (
-                await session.execute(
-                    text(
-                        """
-                        SELECT code FROM kb_category
-                        WHERE code IS NOT NULL AND is_active = true
-                        ORDER BY level DESC, code
-                        LIMIT 5
-                        """
+        # 分类树由 KBD pipeline 独立导入，冷启动数据库不会预置业务分类。
+        # 本回归在外层事务内创建五个独立场景分类，以验证每篇样例均生成 Profile；
+        # finally 回滚后不会污染开发库或改变分类生命周期。
+        categories: list[str] = []
+        category_suffix = uuid4().hex[:8]
+        for index in range(5):
+            category_id = f"TEST-DIAG-{index + 1}-{category_suffix}"
+            categories.append(
+                (
+                    await session.execute(
+                        text(
+                            """
+                            INSERT INTO kb_category (
+                                code, name, domain, path_labels, level,
+                                source, version, is_active
+                            ) VALUES (
+                                :category_id, :name, '测试',
+                                CAST(:path_labels AS jsonb), 1,
+                                'integration_test', '1.0', true
+                            )
+                            RETURNING code
+                            """
+                        ),
+                        {
+                            "category_id": category_id,
+                            "name": f"诊断样例回归分类 {index + 1}",
+                            "path_labels": json.dumps([f"诊断样例回归分类 {index + 1}"], ensure_ascii=False),
+                        },
                     )
-                )
+                ).scalar_one()
             )
-            .scalars()
-            .all()
-        )
-        assert len(categories) == 5
 
         inserted: dict[int, dict] = {}
         for (source_support_id, raw_document), category_id in zip(sorted(documents.items()), categories, strict=True):
