@@ -65,6 +65,7 @@ jobs:
           docker create --name atlas-extract "$ATLAS_IMAGE" /dev/null
           docker cp atlas-extract:/atlas /usr/local/bin/atlas
           docker rm -f atlas-extract
+          chmod +x /usr/local/bin/atlas
           atlas version
 
       - name: 准备 Atlas dev 数据库
