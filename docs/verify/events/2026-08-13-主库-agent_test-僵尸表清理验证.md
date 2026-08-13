@@ -75,12 +75,17 @@ agent_test_run_event, agent_test_run_result, agent_test_runtime_instance
 
 **对抗性审查修复**（方案 C，从定义层 + 使用层双加固）：
 
-> **第一轮修正（已被推翻）**：曾试图在 `frontend-check` 内用 `dorny/paths-filter` 做二次校验。实测 CI 后仍 `Successful`（49s）——根因是 `dorny/paths-filter@0e4a8c6` 在 `pull_request` 事件下对 `frontend/**` 的判定本身误判为 `true`，二次校验用同版本同源 action 必然同错，属对抗性审查盲区。
+> **前两轮修正（均被推翻）**：
+> 1. 第一轮在 `frontend-check` 内用 `dorny/paths-filter` 二次校验——同源 action 同 bug，仍误触发。
+> 2. 第二轮在 `frontend-check` 内用 `git diff` + `grep` + `exit 0`——实测 CI 日志确认短路 step 正确输出「未检测到 frontend/ 改动，跳过前端检查」并执行了 `exit 0`，但**后续 step（setup-node/pnpm/test/build）照常跑了 58s**。根因：GitHub Actions 的 step 是独立进程，`run:` 内的 `exit 0` 仅结束当前 step，**不终止整个 job**。这是混淆「shell 退出」与「job 短路」语义的对抗性审查盲区。
 
-1. **定义层**：给 `frontend` 过滤器显式追加负向约束（`!backend/**`、`!database/**`、`!docs/**`、`!deploy/**`、`!scripts/**`、`!.github/**`），消除 glob 边界模糊导致的潜在误判（保留，作为纵深防御）。
-2. **使用层（根除，确定性方案）**：在 `frontend-check` job 内第一步改为原生 `git diff --name-only ${base} ${head}` 列出 PR 改动文件，直接 `grep -qE '^frontend/'` 判定。不匹配则 `exit 0` 短路。该判定不依赖任何 glob action，从根上消除 `paths-filter` 误判，纯数据库/文档 PR 的前端检查必然短路（job 秒级结束并标绿 `Successful`，而非空跑 49s）。
+**第一性原理正确修复**（第三轮，已落地）：触发权的唯一正确位置是 **job 级 `if`**（不是 step 内 `exit 0`）。
 
-**验收**：后续纯 `database/**` / `docs/**` PR 的 `前端检查` 应表现为「秒级结束 + Successful」（git 短路 `exit 0`），而非耗时约 49s 的真实 pnpm 构建。
+1. **定义层（纵深防御，保留）**：`frontend` 过滤器显式追加负向约束（`!backend/**`、`!database/**`、`!docs/**`、`!deploy/**`、`!scripts/**`、`!.github/**`）。
+2. **使用层（根除，上移到 job 级 `if`）**：在 `changes` job（job 名 `docs-governance`）中 `dorny/paths-filter` 之后新增 `确定性前端改动判定` step（`id: fe-real`），用原生 `git diff --name-only ${base} ${head}` 列出 PR 真实改动文件并 `grep -qE '^frontend/'`，将结果写入 `GITHUB_OUTPUT`（true/false）。`changes` job 的 `outputs.frontend` 改为取 `steps.fe-real.outputs.frontend`。`frontend-check` 的 job 级 `if` 已依赖 `needs.changes.outputs.frontend`，当该值为 `false` 时**整个 job 被 `if` 跳过（显示 `Skipped`）**，彻底不再空跑。
+   - fork/异常场景（无 base/head sha）fallback 到 `dorny/paths-filter` 结果（宁可多跑一次前端检查，也不漏跑真前端改动）。
+
+**验收**：后续纯 `database/**` / `docs/**` PR 的 `前端检查` 应表现为 **`Skipped`**（job 级 `if` 跳过），而非 `Successful` 或空跑约 49s；真实改了 `frontend/` 的 PR 仍应 `Successful`（不矫枉过正）。
 
 ## 4. 验证
 
