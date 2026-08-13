@@ -151,7 +151,8 @@ CREATE TABLE IF NOT EXISTS "case" (
     confirmed_at timestamptz,
     resolved_at timestamptz,
     closed_at timestamptz,
-    close_reason varchar(20) CHECK (close_reason IN ('user_command','timeout','abandon','admin_close')),
+    close_reason varchar(20),
+    CONSTRAINT case_close_reason_check CHECK ((close_reason)::text = ANY ((ARRAY['user_command'::character varying, 'timeout'::character varying, 'abandon'::character varying, 'admin_close'::character varying])::text[])),
     trace_id varchar(64),
     CONSTRAINT fk_case_user_id FOREIGN KEY (user_id) REFERENCES "user" (user_id) ON DELETE CASCADE,
     CONSTRAINT fk_case_customer_id FOREIGN KEY (customer_id) REFERENCES customer (customer_id) ON DELETE SET NULL,
@@ -326,7 +327,7 @@ CREATE TABLE IF NOT EXISTS conversation (
     resolved_kbd_entry_id bigint,
     CONSTRAINT fk_conversation_case_id FOREIGN KEY (case_id) REFERENCES "case" (case_id) ON DELETE CASCADE,
     -- D-006: 防止非法阶段值写入（状态机只允许 S0-S6）
-    CONSTRAINT chk_conversation_diagnostic_stage CHECK (diagnostic_stage IN ('S0','S1','S2','S3','S4','S5','S6')),
+    CONSTRAINT chk_conversation_diagnostic_stage CHECK ((diagnostic_stage)::text = ANY ((ARRAY['S0'::character varying, 'S1'::character varying, 'S2'::character varying, 'S3'::character varying, 'S4'::character varying, 'S5'::character varying, 'S6'::character varying])::text[])),
     CONSTRAINT conversation_pkey PRIMARY KEY (conversation_id)
 );
 
@@ -464,7 +465,7 @@ CREATE TABLE IF NOT EXISTS diagnostic_item (
     CONSTRAINT uq_diagnostic_item_conv_type_seq UNIQUE (conversation_id, "type", seq),
     -- D-006: 数据有效性约束
     CONSTRAINT chk_diagnostic_item_probability CHECK (probability IS NULL OR (probability >= 0 AND probability <= 1)),
-    CONSTRAINT chk_diagnostic_item_stage CHECK (stage IN ('S2','S3','S4','S5')),
+    CONSTRAINT chk_diagnostic_item_stage CHECK ((stage)::text = ANY ((ARRAY['S2'::character varying, 'S3'::character varying, 'S4'::character varying, 'S5'::character varying])::text[])),
     CONSTRAINT diagnostic_item_pkey PRIMARY KEY (id)
 );
 
@@ -757,7 +758,7 @@ CREATE TABLE IF NOT EXISTS dynamic_resource_usage_audit (
     metadata_json jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT dynamic_resource_usage_audit_pkey PRIMARY KEY (id),
-    CONSTRAINT dynamic_resource_usage_status_check CHECK (status IN ('retrieved', 'success', 'failed'))
+    CONSTRAINT dynamic_resource_usage_status_check CHECK ((status)::text = ANY ((ARRAY['retrieved'::character varying, 'success'::character varying, 'failed'::character varying])::text[]))
 );
 
 COMMENT ON TABLE dynamic_resource_usage_audit IS '动态资源使用审计表 — 追踪 Agent 每次使用的资源 revision';
@@ -1146,8 +1147,8 @@ CREATE TABLE IF NOT EXISTS kbd_revision (
     CONSTRAINT fk_kbd_revision_parent_revision_id FOREIGN KEY (parent_revision_id) REFERENCES kbd_revision (id) ON DELETE RESTRICT,
     CONSTRAINT fk_kbd_revision_baseline_proposal_revision_id FOREIGN KEY (baseline_proposal_revision_id) REFERENCES kbd_revision (id) ON DELETE RESTRICT,
     CONSTRAINT chk_kbd_revision_revision_no CHECK (revision_no > 0),
-    CONSTRAINT chk_kbd_revision_type CHECK (revision_type IN ('proposal', 'expert')),
-    CONSTRAINT chk_kbd_revision_actor_type CHECK (actor_type IN ('llm', 'expert', 'migration', 'system')),
+    CONSTRAINT chk_kbd_revision_type CHECK ((revision_type)::text = ANY ((ARRAY['proposal'::character varying, 'expert'::character varying])::text[])),
+    CONSTRAINT chk_kbd_revision_actor_type CHECK ((actor_type)::text = ANY ((ARRAY['llm'::character varying, 'expert'::character varying, 'migration'::character varying, 'system'::character varying])::text[])),
     CONSTRAINT uq_kbd_revision_no UNIQUE (kbd_entry_id, revision_no)
 );
 
@@ -1326,7 +1327,7 @@ CREATE TABLE IF NOT EXISTS sop_execution (
     CONSTRAINT uq_sop_execution_conversation
         UNIQUE (conversation_id),
     CONSTRAINT chk_sop_execution_status
-        CHECK (status IN ('active', 'completed', 'interrupted', 'aborted')),
+        CHECK ((status)::text = ANY ((ARRAY['active'::character varying, 'completed'::character varying, 'interrupted'::character varying, 'aborted'::character varying])::text[])),
     CONSTRAINT sop_execution_pkey PRIMARY KEY (id)
 );
 
