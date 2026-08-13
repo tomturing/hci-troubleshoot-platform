@@ -417,6 +417,9 @@
         "extract": {
           "$ref": "#/definitions/valueExtract"
         },
+        "metric": {
+          "type": "string"
+        },
         "minimum_samples": {
           "type": "integer",
           "minimum": 2,

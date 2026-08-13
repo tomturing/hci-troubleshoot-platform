@@ -199,3 +199,57 @@ def test_current_expert_publish_stamp_overrides_old_generation_contract_revision
     }
 
     assert playbooks._execution_issues(signals, document) == []
+
+
+def _threshold_match_with_metric() -> dict:
+    """带 match.metric 的确定性阈值判定信号（qfk 工具、无产出变量）。"""
+    return {
+        "id": "sig_metric_001",
+        "acquire": {"tool": "qfk_hardware", "args": {"command": "free"}},
+        "match": {
+            "type": "threshold",
+            "expected": True,
+            "metric": "used_memory_ratio",
+            "value": 0.9,
+            "operator": ">=",
+            "extract": _text_extract(),
+        },
+    }
+
+
+def test_signal_match_metric_is_allowed_by_schema():
+    """回归：match.metric 已被 signal.v2.schema.json 放行，带 metric 的确定性
+    matcher 不应再触发 additionalProperties 拒绝盲区。"""
+    from shared.schemas.signal_schema import validate_publishable_signals_json
+
+    document = {"schema_version": 2, "signals": [_threshold_match_with_metric()]}
+    # 不抛异常即通过；此前会在契约校验阶段报
+    # 'Additional properties are not allowed ('metric' was unexpected)'。
+    validate_publishable_signals_json(document)
+
+
+def test_signal_match_metric_keeps_executable():
+    """闭环：带 match.metric 的确定性 matcher 经过契约校验后 executable=True
+    （_execution_issues 为空），kb-service 不会再把可执行的 metric 信号误判为
+    executable=False。"""
+    issues = playbooks._execution_issues([_threshold_match_with_metric()])
+    assert issues == []
+
+
+def test_signal_unknown_extra_property_still_rejected():
+    """防御：additionalProperties 约束未被整体关闭，未定义的字段仍被拒绝，
+    证明 metric 是精准放行而非放开整段 match。"""
+    from shared.schemas.signal_schema import validate_publishable_signals_json
+
+    bad_signal = _threshold_match_with_metric()
+    bad_signal["match"] = {
+        **bad_signal["match"],
+        "bogus_field": "should be rejected",
+    }
+    document = {"schema_version": 2, "signals": [bad_signal]}
+    try:
+        validate_publishable_signals_json(document)
+    except Exception as exc:
+        assert "bogus_field" in str(getattr(exc, "message", exc))
+    else:
+        raise AssertionError("未定义的 match 字段未被 additionalProperties 拒绝")

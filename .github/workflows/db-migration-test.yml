@@ -59,9 +59,13 @@ jobs:
       # ── Step 1: 安装 Atlas CLI + 准备 dev 数据库 ─────────────────────────
       - name: 安装 Atlas CLI
         run: |
-          # 与 Dockerfile.migrations 中的 Atlas 版本对齐，避免 CI/发布语义漂移。
-          export ATLAS_VERSION="1.1.6"
-          curl -sSf https://atlasgo.sh | sh -s -- -y
+          # 与 Dockerfile.migrations 多阶段构建同源对齐（arigaio/atlas:1.1.6-community），
+          # 直接抽取镜像内 /atlas 二进制，避免依赖 atlasgo.sh 分发（该渠道已下架 1.1.6 CLI）。
+          ATLAS_IMAGE="arigaio/atlas:1.1.6-community"
+          docker create --name atlas-extract "$ATLAS_IMAGE" /dev/null
+          docker cp atlas-extract:/atlas /usr/local/bin/atlas
+          docker rm -f atlas-extract
+          chmod +x /usr/local/bin/atlas
           atlas version
 
       - name: 准备 Atlas dev 数据库
@@ -128,6 +132,14 @@ jobs:
             "kbd_image" "sop_execution" "skill_definition"
             "migration_history" "terminal_operation" "prompt_slot"
             "fact" "claim_evidence_link"
+          )
+          DEPRECATED_TABLES=(
+            "kb_chunk" "kb_document" "kb_sop_node" "kb_synonym"
+            "raw_cases" "knowledge_atoms" "prompt_audit" "sop_chunk"
+            # hci-sim 已迁至独立库（database/hci-sim-migrations/000001_control_plane.sql，
+            # 以 control_plane/fixture/artifact/audit schema 重建等价表），主库 agent_test_*
+            # 为迁移遗留孤儿表，backend 零引用，已从 desired_schema.sql 删除并由
+            # atlas-migrations/20260813000000_drop_orphan_agent_test_tables.sql 清理。
             "agent_test_scenario" "agent_test_fixture_bundle"
             "agent_test_fixture_dependency" "agent_test_fixture_provenance"
             "agent_test_fixture_approval" "agent_test_fixture_audit"
@@ -135,10 +147,6 @@ jobs:
             "agent_test_fixture_stale_outbox"
             "agent_test_run" "agent_test_run_attempt" "agent_test_run_event"
             "agent_test_run_result" "agent_test_runtime_instance"
-          )
-          DEPRECATED_TABLES=(
-            "kb_chunk" "kb_document" "kb_sop_node" "kb_synonym"
-            "raw_cases" "knowledge_atoms" "prompt_audit" "sop_chunk"
           )
 
           MISSING=0

@@ -16,7 +16,13 @@ set -euo pipefail
 ENV_REPO_PATH="${ENV_REPO_PATH:-}"
 TARGET_ENV="${TARGET_ENV:-dev}"
 IMAGE_TAG="${IMAGE_TAG:-}"
-SERVICES_CSV="${SERVICES_CSV:-apiGateway,caseService,conversationService,schedulerService,kbService,customerUI,adminUI,terminalBridge,agentService,evalService}"
+# 默认空（fail-safe）：禁止无差别推进全量业务服务 tag。
+# 必须由调用方显式传入本次实际构建的服务列表（来自 CI 的 deploy_services），
+# 否则脚本只更新 dbMigrate 等独立镜像，绝不触碰业务服务 tag。
+# 背景：纯 DB/文档/CI 配置改动不会重建业务镜像，若把业务服务 tag
+# 推进到该 commit 的 sha 标签，而 ghcr 上该标签镜像不存在，会导致
+# ArgoCD 新 Pod ImagePullBackOff、应用永久 Progressing（见 2026-08-13 卡死事件）。
+SERVICES_CSV="${SERVICES_CSV:-}"
 # 镜像仓库前缀（与 values.yaml 中的 global.imageRegistry 一致）
 IMAGE_REGISTRY="${IMAGE_REGISTRY:-ghcr.io/tomturing/hci-troubleshoot-platform}"
 # 设为 true 时跳过 dbMigrate.image 更新（本次无 schema 变更）
@@ -37,6 +43,21 @@ fi
 if [[ -z "$IMAGE_TAG" ]]; then
   echo "IMAGE_TAG 未设置"
   exit 1
+fi
+
+# fail-safe：未显式给出业务服务清单时，绝不更新任何业务服务 tag。
+# 调用方（CI / env-repo-sync）必须传入本次实际构建的服务列表；
+# 纯 DB / 文档 / CI 配置改动对应的 has_deploy_services=false，应传空或不传，
+# 由 SKIP_BUSINESS_TAGS=true 显式确认“本次无业务镜像需同步”。
+if [[ -z "$SERVICES_CSV" ]]; then
+  if [[ "${SKIP_BUSINESS_TAGS:-false}" != "true" ]]; then
+    echo "错误：SERVICES_CSV 为空，但未设置 SKIP_BUSINESS_TAGS=true。" >&2
+    echo "这表明本次同步没有明确“要更新的业务服务清单”，为避免无差别" >&2
+    echo "推进全量业务 tag（会导致 ghcr 缺失镜像 → ArgoCD 卡死），已中止。" >&2
+    echo "若确属纯 DB/文档/配置改动（无业务镜像构建），请显式传入 SKIP_BUSINESS_TAGS=true。" >&2
+    exit 1
+  fi
+  echo "SERVICES_CSV 为空且 SKIP_BUSINESS_TAGS=true：跳过全部业务服务 tag 更新。"
 fi
 
 VALUES_FILE="${ENV_REPO_PATH}/environments/${TARGET_ENV}/values.yaml"

@@ -14,9 +14,13 @@ on:
         description: "镜像标签"
         required: true
       services_csv:
-        description: "服务列表（逗号分隔）"
+        description: "本次实际构建的业务服务列表（逗号分隔，须与 ghcr 已存在镜像一致）。纯 DB/文档/配置改动请留空并勾选 skip_business_tags"
         required: false
-        default: "apiGateway,caseService,conversationService,schedulerService,kbService,customerUI,adminUI,terminalBridge"
+        default: ""
+      skip_business_tags:
+        description: "true=本次无业务镜像构建（如纯 DB/文档改动），跳过全部业务服务 tag 更新，仅同步 dbMigrate 等独立镜像"
+        required: false
+        default: "false"
 
 concurrency:
   group: env-repo-sync-${{ inputs.env_repo_name }}-${{ inputs.target_env }}
@@ -32,6 +36,14 @@ jobs:
         run: |
           if [[ -z "${{ inputs.env_repo_name }}" ]]; then
             echo "env_repo_name 不能为空，格式应为 owner/repo"
+            exit 1
+          fi
+          # fail-safe：未给出业务服务清单时，必须显式声明 skip_business_tags，
+          # 防止无差别把全量业务 tag 推进到 ghcr 不存在的镜像（导致 ArgoCD 卡死）。
+          if [[ -z "${{ inputs.services_csv }}" && "${{ inputs.skip_business_tags }}" != "true" ]]; then
+            echo "错误：services_csv 为空但 skip_business_tags != true。" >&2
+            echo "纯 DB/文档/配置改动请勾选 skip_business_tags=true；" >&2
+            echo "有业务镜像构建请通过 services_csv 传入实际构建的服务列表。" >&2
             exit 1
           fi
 
@@ -51,6 +63,7 @@ jobs:
           TARGET_ENV: ${{ inputs.target_env }}
           IMAGE_TAG: ${{ inputs.image_tag }}
           SERVICES_CSV: ${{ inputs.services_csv }}
+          SKIP_BUSINESS_TAGS: ${{ inputs.skip_business_tags }}
         run: bash scripts/ops/sync-env-repo-tags.sh
 
       - name: 创建环境仓库 PR

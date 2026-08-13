@@ -35,7 +35,9 @@ jobs:
     timeout-minutes: 5
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
-      frontend: ${{ steps.filter.outputs.frontend }}
+      # frontend 改用 fe-real step 的确定性 git diff 判定（见下方注释），
+      # 不再直接依赖 dorny/paths-filter（其在 PR 事件下对 frontend/** 误判为 true）。
+      frontend: ${{ steps.fe-real.outputs.frontend }}
       platform_helm: ${{ steps.filter.outputs.platform_helm }}
       docs: ${{ steps.filter.outputs.docs }}
       module_docs: ${{ steps.filter.outputs.module_docs }}
@@ -64,6 +66,14 @@ jobs:
               # 该 exe 由 Build terminal_bridge 独立生成；二进制变更不需要重复跑
               # pnpm 单测/构建，但仍会随 main 合并后的镜像构建发布。
               - '!frontend/customer/public/downloads/terminal_bridge.exe'
+              # 显式负向约束：防御性排除非前端目录，消除 glob 边界模糊导致的
+              # 误判（PR #747 纯数据库 PR 曾误触发前端检查）。
+              - '!backend/**'
+              - '!database/**'
+              - '!docs/**'
+              - '!deploy/**'
+              - '!scripts/**'
+              - '!.github/**'
             platform_helm:
               - 'deploy/helm/hci-platform/**'
             docs:
@@ -76,6 +86,29 @@ jobs:
               - 'deploy/helm/**'
               - 'docs/**'
               - 'scripts/ci/check_module_doc_sync.py'
+
+      # 确定性前端改动判定（覆盖 dorny/paths-filter 的 frontend 输出）。
+      # 根因：dorny/paths-filter@0e4a8c6 在 pull_request 事件下对 frontend/**
+      # 误判为 true（PR #747 纯数据库 PR 被误触发前端检查，实测 49s 空跑）。
+      # 用原生 git diff 直接列出 PR 真实改动文件并 grep '^frontend/'，零外部
+      # action 依赖，不可能误判。fork/异常场景（无 base/head sha）fallback 到
+      # paths-filter 结果（宁可多跑一次前端检查，也不漏跑）。
+      - name: 确定性前端改动判定
+        id: fe-real
+        if: github.event_name == 'pull_request'
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          if [ -z "$BASE" ] || [ -z "$HEAD" ]; then
+            echo "frontend=${{ steps.filter.outputs.frontend }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED="$(git diff --name-only "$BASE" "$HEAD" || true)"
+          if echo "$CHANGED" | grep -qE '^frontend/'; then
+            echo "frontend=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "frontend=false" >> "$GITHUB_OUTPUT"
+          fi
 
       # 发布镜像使用完整 Git diff 生成最小服务闭包。只在 main push/手动发布时
       # 需要；PR 质量门禁仍只消费上面的 paths-filter 输出。

@@ -204,3 +204,37 @@ def test_kbd27123_lsof_pid_then_ps_uses_canonical_argv_and_precise_process_ident
     assert ps.command == "ps"
     assert ps.command_args == ["-p", "{{PID}}", "-o", "cmd="]
     assert SystemHandler().build_commands(ps) == ["acli --timeout 60 system ps -p '{{PID}}' -o cmd="]
+
+
+def test_diagnostic_report_shows_exclusion_reasons_for_unconfirmed_candidates():
+    """候选被排除时报告必须携带原因（契约过期/编译错误/scope 拦截），
+    否则「无可执行证据」会把数据与契约问题吞成同一文案，现场无法定位。"""
+    from app.adapters.agents.htp.kbd_model import KBD
+
+    kbd = KBD(id="127", support_id="23821", name="[HCI] 690虚拟机迁移存储位置，一直卡在9%")
+    report = KBDDiagnostic._build_diagnostic_report(
+        [],
+        [],
+        evaluated_kbds=[kbd],
+        exclusion_reasons={
+            "127": [
+                "expert publish tool contract revision is stale",
+                "scope UNKNOWN: missing environment.version",
+            ]
+        },
+    )
+
+    assert "参考案例 23821" in report
+    assert "（未确认：expert publish tool contract revision is stale；scope UNKNOWN: missing environment.version）" in report
+    assert "无可执行证据" in report
+
+
+def test_diagnostic_report_keeps_legacy_suffix_without_exclusion_reasons():
+    """未提供排除原因时保持原「（未确认）」文案，向后兼容。"""
+    from app.adapters.agents.htp.kbd_model import KBD
+
+    kbd = KBD(id="127", support_id="23821", name="x")
+    report = KBDDiagnostic._build_diagnostic_report([], [], evaluated_kbds=[kbd])
+
+    assert "（未确认）" in report
+    assert "（未确认：" not in report
