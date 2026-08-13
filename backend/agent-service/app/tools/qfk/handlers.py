@@ -273,9 +273,20 @@ class LogKeywordHandler(BackendSignalHandler):
 
         selector, use_extended, matcher_type = self._matcher_selector(signal)
         if matcher_type in LOG_MATCHER_TYPES and matcher_type not in source["predicates"]:
-            raise CommandBuildError(
-                f"日志源 {source['source_id']} 的 parser={source['parser']} 不支持 {matcher_type} predicate"
-            )
+            # 对齐 2026-08-07 QFK 取值执行契约：数值 Matcher（threshold/delta/trend）在配置了
+            # ai_extract.instruction 时，允许走 "AI 类型化取值 → 确定性判断" 通道，日志源
+            # catalog 无需直接支持该 predicate；未配置 AI 提取时仍按 catalog 单一事实源 fail closed。
+            numeric_matcher = matcher_type in {"threshold", "delta", "trend"}
+            extract = (signal.matcher or {}).get("extract") if isinstance(signal.matcher, dict) else None
+            ai_instruction = ""
+            if isinstance(extract, dict):
+                ai_extract = extract.get("ai_extract")
+                if isinstance(ai_extract, dict):
+                    ai_instruction = str(ai_extract.get("instruction") or "")
+            if not (numeric_matcher and ai_instruction):
+                raise CommandBuildError(
+                    f"日志源 {source['source_id']} 的 parser={source['parser']} 不支持 {matcher_type} predicate"
+                )
 
         parts = ["acli", "log", "get"]
         if selector is not None:
