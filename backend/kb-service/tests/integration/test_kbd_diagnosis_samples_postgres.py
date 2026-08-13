@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 from app.routes import admin
 from app.services.hci_sim_resolver import HciSimKbdResolver
+from shared.dynamic_resource.publisher import DynamicResourcePublisher
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
@@ -41,6 +42,52 @@ def _documents() -> dict[str, dict]:
         json.loads(payload) for payload in re.findall(r"\$signals\$\s*(\{.*?\})\s*\$signals\$::jsonb", sql, re.DOTALL)
     ]
     return {document["verification_contract"]["case_id"]: document for document in documents}
+
+
+async def _reconcile_tool_snapshots(session: AsyncSession, tool_names: list[str]) -> None:
+    """把样例引用的 Tool Registry 事实冻结为 hci-sim 可消费的修订。"""
+
+    rows = (
+        (
+            await session.execute(
+                text(
+                    """
+                    SELECT tool_name, display_name, category, description, usage_template,
+                           parameters_schema, examples, risk_level, is_active, version
+                    FROM tool_definition
+                    WHERE tool_name = ANY(:tool_names)
+                    ORDER BY tool_name
+                    """
+                ),
+                {"tool_names": tool_names},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    assert {row["tool_name"] for row in rows} == set(tool_names)
+    publisher = DynamicResourcePublisher(session)
+    for row in rows:
+        await publisher.ensure_published(
+            resource_type="tool",
+            resource_name=row["tool_name"],
+            version=str(row["version"] or "1.0"),
+            content={
+                "tool_name": row["tool_name"],
+                "display_name": row["display_name"],
+                "category": row["category"],
+                "description": row["description"],
+                "usage_template": row["usage_template"],
+                "examples": row["examples"] or [],
+                "is_active": bool(row["is_active"]),
+            },
+            contract={
+                "parameters_schema": row["parameters_schema"] or {},
+                "risk_level": int(row["risk_level"] or 1),
+            },
+            status="published" if row["is_active"] else "disabled",
+            trace_id="diagnosis-sample-tool-reconcile",
+        )
 
 
 class _TransactionDatabase:
@@ -95,6 +142,14 @@ async def test_five_samples_batch_approve_and_publish_immutable_revisions():
                     {"category_id": category_id},
                 )
             ).scalar_one()
+            tool_names = sorted(
+                {
+                    signal["acquire"]["tool"]
+                    for document in documents.values()
+                    for signal in document["signals"]
+                }
+            )
+            await _reconcile_tool_snapshots(session, tool_names)
             inserted: dict[int, str] = {}
             for support_id, document in sorted(documents.items()):
                 kbd_id = (
