@@ -68,3 +68,42 @@ KBD 23821 判定 DEFINITIVE。
 - **部署顺序经验**：ArgoCD PreSync hook（db-migrate Job）失败时，需同时删除 Job 的
   `argocd.argoproj.io/hook-finalizer` finalizer 才能真正解除，否则 `operation:null`
   与 `refresh=hard` 都无法推进。
+
+## 二次复发根因：第三层 AI 通道豁免取错 filter 源字段（#749 部署后仍报 metric 错误）
+
+PR #749 合入并部署后，实际诊断仍报
+`sig_002: runtime command compile failed: qfk_log delta matcher 必须提供 metric`，
+与修复前现象一致。第一性原理复盘如下：
+
+### 根因（对抗性审查揭示）
+#749 的第三层豁免逻辑在 `handlers.py` 的 `_matcher_selector` 中，
+delta matcher 缺 `metric` 时取
+`ai_filter = signal.filter_keywords or signal.keyword`
+作为 AI 通道的粗筛关键字。但 **`signal.filter_keywords` 是派生字段**，
+在诊断运行时（kbd_differential 构造 BackendSignal）该派生链为空；
+而 sig_002 的关键字事实真正存放在
+`match.extract.rows.include = ["info block-jobs","Completed"]`。
+取错字段 → `ai_filter` 为空 → 豁免分支不进入 → 仍抛 `CommandBuildError`。
+
+现场复现（`build_acli_command` 单测）：
+- `BackendSignal(filter_keywords=[])` → `FAIL: qfk_log delta matcher 必须提供 metric`
+- `BackendSignal(filter_keywords=["info block-jobs","Completed"])` → `OK`
+
+### 修复
+`_matcher_selector` 的 AI 通道豁免**直接从权威字段
+`matcher.extract.rows.include` 取关键字**（而非派生字段 `signal.filter_keywords`），
+仅在 include 为空时回退到 `signal.filter_keywords/keyword`。
+这样无论 filter_keywords 派生是否成功，AI 通道都能拿到粗筛关键字。
+
+### 复现验证
+```python
+# filter_keywords 为空（复现运行环境现状）
+BackendSignal(filter_keywords=[]).build_acli_command()
+# -> OK: acli log get -E -k 'Completed|info\ block\-jobs' -f sfvt_vtpdaemon.log ...
+```
+
+### 关于 `expert publish tool contract revision is stale`
+经运行容器（kb-service）实测 `current_tool_contract_revision()` = `cf416e14...`，
+与 DB `publish_validation.tool_contract_revision` 完全一致，**该 stale 判断在运行环境为假**；
+用户诊断输出中的 stale 属历史快照或他处缓存，非 23821 当前阻塞项，无需重新发布刷新盖章。
+
