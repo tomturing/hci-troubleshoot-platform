@@ -719,7 +719,7 @@ aCLI 命令列表以官方文档为来源，运行时使用本地快照：
 
 - 官方入口：`http://acli.sangfor.com.cn:6888/commandList`
 - 首页 `acli --help` 已声明 `--container` 仅对 `system` 下命令生效，枚举值与 `bash_exec.container` 一致
-- 本地快照建议路径：`backend/agent-service/app/tools/acli/catalog/acli_command_catalog.json`
+- 唯一权威快照路径：`backend/shared/resolution/catalogs/acli_command_catalog.json`
 - 同步脚本建议路径：`scripts/tools/sync_acli_catalog.py`
 
 校验策略：

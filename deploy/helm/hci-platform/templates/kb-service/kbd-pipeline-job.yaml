@@ -24,15 +24,23 @@ spec:
         - name: kbd-pipeline
           image: {{ .Values.kbService.pipelineJob.image | default (include "hci.image" (dict "global" .Values.global "image" .Values.kbService.image)) | quote }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy | default "IfNotPresent" }}
-          command: ["python", "-m", "kbd.run", "pipeline", "--excel"]
+          command: ["python", "-m", "kbd.run", "task", "--excel"]
           envFrom:
             - configMapRef:
                 name: hci-common-config
             - secretRef:
                 name: hci-secrets
           env:
+            - name: KBD_OTEL_ENABLED
+              value: "true"
             - name: DATABASE_URL
               value: {{ printf "postgresql://%s:%s@%s:5432/%s" .Values.config.postgresUser .Values.secrets.postgresPassword .Values.config.postgresHost .Values.config.postgresDb | quote }}
+            {{- if and .Values.langfuse .Values.langfuse.enabled }}
+            - name: LANGFUSE_HOST
+              value: {{ .Values.langfuse.host | quote }}
+            - name: LANGFUSE_CAPTURE_CONTENT
+              value: {{ .Values.langfuse.captureContent | quote }}
+            {{- end }}
           volumeMounts:
             - name: kbd-cache
               mountPath: /app/data-pipeline/kbd/cache

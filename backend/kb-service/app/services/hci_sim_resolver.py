@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import shlex
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
 from shared.models.dynamic_resource import DynamicResourceActive, DynamicResourceRevision
+from shared.resolution.models import ResolutionStatus
+from shared.resolution.review import SignalReviewFeature, review_signal_document
 from shared.schemas.hci_sim_policy import current_hci_sim_policy_revision
 from shared.schemas.signal_generation import current_tool_contract_revision
 from sqlalchemy import and_, select
@@ -61,6 +65,9 @@ class ResolvedKbdInput:
     tool_contract_revision: str
     policy_revision: str
     source_trace_id: str | None
+    metadata: dict[str, Any]
+    verification_contract: dict[str, Any]
+    synthetic_routes: tuple[SyntheticRouteInput, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -72,6 +79,37 @@ class ResolvedKbdInput:
             "tool_contract_revision": self.tool_contract_revision,
             "policy_revision": self.policy_revision,
             "source_trace_id": self.source_trace_id,
+            "metadata": self.metadata,
+            "verification_contract": self.verification_contract,
+            "synthetic_routes": [route.to_dict() for route in self.synthetic_routes],
+        }
+
+
+@dataclass(frozen=True)
+class SyntheticRouteInput:
+    """由已发布 Signal 和 Tool 修订确定的最小模拟路由输入。"""
+
+    signal_id: str
+    tool: str
+    argv: tuple[str, ...]
+    tool_revision: int
+    tool_checksum: str
+    required_variables: tuple[str, ...] = ()
+    role: str = "context"
+    matcher: dict[str, Any] | None = None
+    produces: tuple[dict[str, Any], ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "signal_id": self.signal_id,
+            "tool": self.tool,
+            "argv": list(self.argv),
+            "tool_revision": self.tool_revision,
+            "tool_checksum": self.tool_checksum,
+            "required_variables": list(self.required_variables),
+            "role": self.role,
+            "matcher": self.matcher,
+            "produces": list(self.produces),
         }
 
 
@@ -81,6 +119,7 @@ class KbdResolution:
 
     support_id: str
     status: str
+    metadata: dict[str, Any] = field(default_factory=dict)
     resolved: ResolvedKbdInput | None = None
     gaps: tuple[CapabilityGap, ...] = ()
 
@@ -88,6 +127,7 @@ class KbdResolution:
         return {
             "support_id": self.support_id,
             "status": self.status,
+            "metadata": self.metadata,
             "resolved": self.resolved.to_dict() if self.resolved is not None else None,
             "capability_gaps": [gap.to_dict() for gap in self.gaps],
         }
@@ -127,15 +167,22 @@ class HciSimKbdResolver:
                 gaps=(CapabilityGap("KBD_NOT_FOUND", "support_id 不存在"),),
             )
         snapshots = await self._active_snapshots(session)
-        return self.resolve_entry(entry, snapshots.get(str(entry.id)))
+        tool_snapshots = await self._active_tool_snapshots(session)
+        return self.resolve_entry(entry, snapshots.get(str(entry.id)), tool_snapshots)
 
     async def resolve_all(self, session: AsyncSession) -> KbdResolutionReport:
         entries_result = await session.execute(select(KbdEntry).order_by(KbdEntry.support_id))
         snapshots = await self._active_snapshots(session)
-        results = tuple(self.resolve_entry(entry, snapshots.get(str(entry.id))) for entry in entries_result.scalars())
+        tool_snapshots = await self._active_tool_snapshots(session)
+        results = tuple(
+            self.resolve_entry(entry, snapshots.get(str(entry.id)), tool_snapshots)
+            for entry in entries_result.scalars()
+        )
         return KbdResolutionReport(results)
 
-    async def _active_snapshots(self, session: AsyncSession) -> dict[str, tuple[DynamicResourceActive, DynamicResourceRevision]]:
+    async def _active_snapshots(
+        self, session: AsyncSession
+    ) -> dict[str, tuple[DynamicResourceActive, DynamicResourceRevision]]:
         rows = await session.execute(
             select(DynamicResourceActive, DynamicResourceRevision)
             .join(
@@ -150,20 +197,47 @@ class HciSimKbdResolver:
         )
         return {str(active.resource_name): (active, revision) for active, revision in rows.all()}
 
+    async def _active_tool_snapshots(
+        self, session: AsyncSession
+    ) -> dict[str, tuple[DynamicResourceActive, DynamicResourceRevision]]:
+        """读取 Tool Registry（工具注册表）当前不可变修订。"""
+
+        rows = await session.execute(
+            select(DynamicResourceActive, DynamicResourceRevision)
+            .join(
+                DynamicResourceRevision,
+                and_(
+                    DynamicResourceRevision.resource_type == DynamicResourceActive.resource_type,
+                    DynamicResourceRevision.resource_name == DynamicResourceActive.resource_name,
+                    DynamicResourceRevision.revision == DynamicResourceActive.active_revision,
+                ),
+            )
+            .where(DynamicResourceActive.resource_type == "tool")
+        )
+        return {str(active.resource_name): (active, revision) for active, revision in rows.all()}
+
     def resolve_entry(
         self,
         entry: KbdEntry | Any,
         active_snapshot: tuple[DynamicResourceActive, DynamicResourceRevision] | None,
+        tool_snapshots: dict[str, tuple[DynamicResourceActive, DynamicResourceRevision]] | None = None,
     ) -> KbdResolution:
         """解析 ORM 行或测试替身；只要有一个强制事实缺失就 fail closed。"""
 
         support_id = str(getattr(entry, "support_id", "") or "")
+        entry_metadata = (
+            dict(getattr(entry, "entry_metadata", {}) or {})
+            if isinstance(getattr(entry, "entry_metadata", {}), dict)
+            else {}
+        )
         gaps: list[CapabilityGap] = []
         if getattr(entry, "status", None) != "published":
             gaps.append(CapabilityGap("KBD_NOT_PUBLISHED", "KBD 未处于 published 状态"))
         if active_snapshot is None:
             gaps.append(CapabilityGap("KBD_ACTIVE_SNAPSHOT_MISSING", "不存在对应的 active 不可变 KBD 快照"))
-            return KbdResolution(support_id=support_id, status="capability_gap", gaps=tuple(gaps))
+            return KbdResolution(
+                support_id=support_id, status="capability_gap", metadata=entry_metadata, gaps=tuple(gaps)
+            )
 
         active, snapshot = active_snapshot
         if snapshot.status != "published":
@@ -177,7 +251,9 @@ class HciSimKbdResolver:
         signals_document = content.get("signals_json")
         if not isinstance(signals_document, dict):
             gaps.append(CapabilityGap("SIGNALS_DOCUMENT_INVALID", "active 快照没有 v2 Signal 文档"))
-            return KbdResolution(support_id=support_id, status="capability_gap", gaps=tuple(gaps))
+            return KbdResolution(
+                support_id=support_id, status="capability_gap", metadata=entry_metadata, gaps=tuple(gaps)
+            )
         signals = signals_document.get("signals")
         if not isinstance(signals, list) or not signals:
             gaps.append(CapabilityGap("SIGNALS_MISSING", "active KBD 快照没有可编译 Signal"))
@@ -191,8 +267,23 @@ class HciSimKbdResolver:
         elif tool_revision != current_tool_contract_revision():
             gaps.append(CapabilityGap("TOOL_CONTRACT_STALE", "Signal 使用的 Tool Contract 已不是当前 revision"))
 
+        synthetic_routes: tuple[SyntheticRouteInput, ...] = ()
+        if isinstance(signals, list) and signals:
+            synthetic_routes, route_gaps = self._resolve_synthetic_routes(signals_document, tool_snapshots or {})
+            gaps.extend(route_gaps)
+
+        snapshot_metadata = dict(
+            (
+                getattr(snapshot, "contract_json", {})
+                if isinstance(getattr(snapshot, "contract_json", {}), dict)
+                else {}
+            ).get("metadata")
+            or entry_metadata
+        )
         if gaps:
-            return KbdResolution(support_id=support_id, status="capability_gap", gaps=tuple(gaps))
+            return KbdResolution(
+                support_id=support_id, status="capability_gap", metadata=snapshot_metadata, gaps=tuple(gaps)
+            )
         resolved = ResolvedKbdInput(
             support_id=support_id,
             kbd_id=int(entry.id),
@@ -202,5 +293,94 @@ class HciSimKbdResolver:
             tool_contract_revision=tool_revision,
             policy_revision=current_hci_sim_policy_revision(),
             source_trace_id=snapshot.trace_id,
+            metadata=snapshot_metadata,
+            verification_contract=dict(signals_document.get("verification_contract") or {}),
+            synthetic_routes=synthetic_routes,
         )
-        return KbdResolution(support_id=support_id, status="ready_for_artifact_binding", resolved=resolved)
+        return KbdResolution(
+            support_id=support_id,
+            status="ready_for_artifact_binding",
+            metadata=snapshot_metadata,
+            resolved=resolved,
+        )
+
+    @staticmethod
+    def _resolve_synthetic_routes(
+        signals_document: dict[str, Any],
+        tool_snapshots: dict[str, tuple[DynamicResourceActive, DynamicResourceRevision]],
+    ) -> tuple[tuple[SyntheticRouteInput, ...], list[CapabilityGap]]:
+        """从当前 Signal Runtime 与 Tool Registry 生成路由，不识别具体 KBD。"""
+
+        review = review_signal_document(signals_document, feature=SignalReviewFeature.PUBLISH)
+        gaps: list[CapabilityGap] = []
+        routes: list[SyntheticRouteInput] = []
+        unresolved_signal_ids: list[str] = []
+        signals = signals_document.get("signals") or []
+        reviews = {item.signal_index: item for item in review.signals}
+        for index, signal in enumerate(signals):
+            if not isinstance(signal, dict):
+                continue
+            signal_id = str(signal.get("id") or f"signals[{index}]")
+            acquire = signal.get("acquire") if isinstance(signal.get("acquire"), dict) else {}
+            orchestrate = signal.get("orchestrate") if isinstance(signal.get("orchestrate"), dict) else {}
+            tool = str(acquire.get("tool") or "").strip()
+            tool_snapshot = tool_snapshots.get(tool)
+            if tool_snapshot is None:
+                gaps.append(CapabilityGap("TOOL_ACTIVE_SNAPSHOT_MISSING", f"Tool {tool} 没有 active 不可变修订"))
+                continue
+            active, revision = tool_snapshot
+            content = revision.content_json if isinstance(revision.content_json, dict) else {}
+            if (
+                revision.status != "published"
+                or not bool(content.get("is_active"))
+                or _digest(active.checksum) != _digest(revision.checksum)
+            ):
+                gaps.append(
+                    CapabilityGap("TOOL_ACTIVE_SNAPSHOT_INVALID", f"Tool {tool} 当前修订未发布、已停用或校验不一致")
+                )
+                continue
+            runtime = reviews.get(index)
+            if runtime is None or runtime.status is ResolutionStatus.BLOCKED or not runtime.command:
+                unresolved_signal_ids.append(signal_id)
+                continue
+            try:
+                argv = tuple(shlex.split(runtime.command))
+            except ValueError as exc:
+                unresolved_signal_ids.append(f"{signal_id}（命令无法分词：{exc}）")
+                continue
+            if not argv:
+                unresolved_signal_ids.append(signal_id)
+                continue
+            required_variables = tuple(
+                sorted(
+                    {
+                        variable
+                        for item in argv
+                        for variable in re.findall(r"\{\{([A-Z][A-Z0-9_]*)\}\}", item)
+                    }
+                )
+            )
+            routes.append(
+                SyntheticRouteInput(
+                    signal_id=signal_id,
+                    tool=tool,
+                    argv=argv,
+                    tool_revision=int(revision.revision),
+                    tool_checksum=_digest(revision.checksum),
+                    required_variables=required_variables,
+                    role=str(signal.get("role") or "context"),
+                    matcher=dict(signal.get("match") or {}) or None,
+                    produces=tuple(
+                        dict(item) for item in (orchestrate.get("produces") or []) if isinstance(item, dict)
+                    ),
+                )
+            )
+        if not routes and not gaps:
+            detail = "、".join(unresolved_signal_ids[:5])
+            gaps.append(
+                CapabilityGap(
+                    "SYNTHETIC_ROUTE_UNRESOLVED",
+                    f"当前没有可确定编译的 Signal 模拟路由{f'：{detail}' if detail else ''}",
+                )
+            )
+        return tuple(routes), gaps

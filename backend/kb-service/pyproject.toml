@@ -22,6 +22,7 @@ dependencies = [
     "opentelemetry-instrumentation-httpx",
     "opentelemetry-instrumentation-sqlalchemy",
     "opentelemetry-instrumentation-logging",
+    "langfuse>=3.0,<4.0",
     "prometheus-client==0.20.0",
     "python-docx>=1.2.0",
     "pyyaml>=6.0.0",

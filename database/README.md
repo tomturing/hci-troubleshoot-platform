@@ -109,7 +109,7 @@ CI 流程自动执行：
 
 ## 业务种子数据说明（Seeds）
 
-业务种子数据存放在 `database/seeds/` 目录中，用于在 Admin UI 中初始化工具管理、Prompt管理和技能管理页面。通过 Helm 部署时，`db-seed-job` 会作为 PostSync Hook 在数据库迁移完成后自动加载这些 SQL 文件。
+业务种子数据存放在 `database/seeds/` 目录中，用于在 Admin UI 中初始化工具管理、Prompt管理和技能管理页面，并提供显式标记的诊断测试 KBD 草稿。通过 Helm 部署时，`db-seed-job` 会作为 PostSync Hook 在数据库迁移完成后自动加载这些 SQL 文件。
 
 ### 1. 幂等性与覆盖策略
 
@@ -120,6 +120,7 @@ CI 流程自动执行：
 | `01_tool_definitions.sql` | `tool_definition` | `ON CONFLICT (tool_name) DO UPDATE` | **会被强行覆盖**。工具定义参数与后端 Python 代码严格绑定，必须强制保持一致。 |
 | `02_system_prompts.sql` | `system_prompt` | `ON CONFLICT (name) DO NOTHING` | **不会覆盖已有修改**。保护用户在界面微调或自定义的 Prompt 不被冲掉。 |
 | `03_skill_definitions.sql` | `skill_definition` | `ON CONFLICT (name) DO NOTHING` | **不会覆盖已有修改**。保护用户自定义技能规则不被重置。 |
+| `04_kbd_diagnosis_samples.sql` | `kbd_entry` | 仅升级同样例集且仍为 `draft` 的旧版本 | **只创建待审核草稿，不覆盖已发布、已拒绝或人工维护后的生命周期状态**。样例通过 `metadata.sample_suite` 检索，人工发布后才进入在线诊断，并在 KBD 同步后进入离线诊断。 |
 
 ### 2. 手动全量强制更新方法
 
@@ -136,6 +137,13 @@ CI 流程自动执行：
    kubectl exec -i -n hci-dev postgres-0 -- psql -U hci_admin -d hci_troubleshoot < database/seeds/02_system_prompts.sql
    kubectl exec -i -n hci-dev postgres-0 -- psql -U hci_admin -d hci_troubleshoot < database/seeds/03_skill_definitions.sql
    ```
+
+### 3. 诊断 KBD 样例集使用方式
+
+`04_kbd_diagnosis_samples.sql` 默认创建 5 篇 `draft`（待审核）KBD，样例集标识为
+`diagnosis-signal-matrix-v1`。在 KBD 列表的“样例集标识”中输入该值即可筛出全部样例。
+审核发布后的样例会直接用于在线诊断；执行一次离线诊断“KBD 同步与版本”的增量检测并审核派生资源后，
+同一批样例即可用于离线诊断。再次加载 Seed 不会覆盖已经人工编辑或发布的样例。
 
 ---
 

@@ -12,6 +12,7 @@ KB Client - 知识库服务客户端
 """
 
 import httpx
+
 from shared.observability.logger import get_logger
 from shared.utils.internal_http import InternalHTTPClient
 

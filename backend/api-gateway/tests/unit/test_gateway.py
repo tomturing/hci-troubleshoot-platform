@@ -72,7 +72,6 @@ class TestGateway(unittest.TestCase):
         args, _ = mock_client.request.call_args
         self.assertIn("/api/cases/123", args[1])
 
-
     @patch("app.routes.kb._internal_auth_headers")
     @patch("app.routes.kb.httpx.AsyncClient")
     def test_reanalyze_single_image_proxy_forwards_query(self, mock_client_cls, mock_auth):
@@ -121,6 +120,119 @@ class TestGateway(unittest.TestCase):
         args, kwargs = mock_client.request.call_args
         self.assertIn("/api/admin/kbd/1/reanalyze-images", args[1])
         self.assertEqual(kwargs.get("params"), {"sync": "true"})
+
+    @patch("app.routes.kb._internal_auth_headers")
+    @patch("app.routes.kb.httpx.AsyncClient")
+    def test_kbd_batch_jobs_proxy_forwards_query(self, mock_client_cls, mock_auth):
+        """批量任务列表代理必须命中静态 batch 路由并透传分页参数。"""
+
+        mock_auth.return_value = {"Authorization": "Bearer test"}
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"jobs": []}
+        mock_client.request.return_value = mock_response
+
+        response = self.client.get("/api/v1/kbd/batch/jobs?limit=5")
+
+        self.assertEqual(response.status_code, 200)
+        args, kwargs = mock_client.request.call_args
+        self.assertEqual(args[0], "GET")
+        self.assertIn("/api/admin/kbd/batch/jobs", args[1])
+        self.assertEqual(kwargs.get("params"), {"limit": "5"})
+
+    @patch("app.routes.kb._internal_auth_headers")
+    @patch("app.routes.kb.httpx.AsyncClient")
+    def test_kbd_batch_job_detail_proxy_is_not_captured_by_kbd_id(self, mock_client_cls, mock_auth):
+        """批量任务详情不能被 /{kbd_id} 动态路由误解析。"""
+
+        mock_auth.return_value = {"Authorization": "Bearer test"}
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"batch_id": "00000000-0000-0000-0000-000000000001", "items": []}
+        mock_client.request.return_value = mock_response
+
+        response = self.client.get("/api/v1/kbd/batch/jobs/00000000-0000-0000-0000-000000000001")
+
+        self.assertEqual(response.status_code, 200)
+        args, _ = mock_client.request.call_args
+        self.assertIn("/api/admin/kbd/batch/jobs/00000000-0000-0000-0000-000000000001", args[1])
+
+    @patch("app.routes.kb._internal_auth_headers")
+    @patch("app.routes.kb.httpx.AsyncClient")
+    def test_kbd_batch_job_retry_proxy_uses_static_batch_route(self, mock_client_cls, mock_auth):
+        """重试入口必须透传到来源批次，不能被 KBD ID 动态路由捕获。"""
+
+        mock_auth.return_value = {"Authorization": "Bearer test"}
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "batch_id": "00000000-0000-0000-0000-000000000002",
+            "total": 3,
+        }
+        mock_client.request.return_value = mock_response
+
+        response = self.client.post("/api/v1/kbd/batch/jobs/00000000-0000-0000-0000-000000000001/retry")
+
+        self.assertEqual(response.status_code, 200)
+        args, _ = mock_client.request.call_args
+        self.assertEqual(args[0], "POST")
+        self.assertIn(
+            "/api/admin/kbd/batch/jobs/00000000-0000-0000-0000-000000000001/retry",
+            args[1],
+        )
+
+    @patch("app.routes.kb._internal_auth_headers")
+    @patch("app.routes.kb.httpx.AsyncClient")
+    def test_kbd_batch_approve_proxy_forwards_body(self, mock_client_cls, mock_auth):
+        """批量通过必须使用静态路由并原样透传审核快照。"""
+
+        mock_auth.return_value = {"Authorization": "Bearer test"}
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+        mock_response = MagicMock(status_code=200)
+        mock_response.json.return_value = {"batch_id": "batch-approve", "total": 2}
+        mock_client.request.return_value = mock_response
+        payload = {
+            "kbd_ids": [1, 2],
+            "reviewer_id": 7,
+            "review_note": None,
+            "entries": {"1": {"lock_version": 3, "category_id": "虚拟机-017"}},
+        }
+
+        response = self.client.post("/api/v1/kbd/batch/approve", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        args, kwargs = mock_client.request.call_args
+        self.assertEqual(args[0], "POST")
+        self.assertIn("/api/admin/kbd/batch/approve", args[1])
+        self.assertEqual(kwargs.get("json"), payload)
+
+    @patch("app.routes.kb._internal_auth_headers")
+    @patch("app.routes.kb.httpx.AsyncClient")
+    def test_kbd_batch_reject_proxy_forwards_body(self, mock_client_cls, mock_auth):
+        """批量拒绝必须透传审核人和不可为空的统一原因。"""
+
+        mock_auth.return_value = {"Authorization": "Bearer test"}
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+        mock_response = MagicMock(status_code=200)
+        mock_response.json.return_value = {"batch_id": "batch-reject", "total": 2}
+        mock_client.request.return_value = mock_response
+        payload = {"kbd_ids": [1, 2], "reviewer_id": 8, "review_note": "证据不足"}
+
+        response = self.client.post("/api/v1/kbd/batch/reject", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+        args, kwargs = mock_client.request.call_args
+        self.assertEqual(args[0], "POST")
+        self.assertIn("/api/admin/kbd/batch/reject", args[1])
+        self.assertEqual(kwargs.get("json"), payload)
 
     @patch("app.routes.kb._internal_auth_headers")
     @patch("app.routes.kb.httpx.AsyncClient")

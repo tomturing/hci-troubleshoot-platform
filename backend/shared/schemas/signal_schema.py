@@ -16,7 +16,8 @@ from typing import Any
 from jsonschema import Draft7Validator, ValidationError
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT7
-from shared.schemas.acquirer_args import validate_acquire_args
+
+from shared.schemas.acquirer_args import FRONTEND_TOOLS, validate_acquire_args
 from shared.schemas.log_source_catalog import (
     LOG_MATCHER_TYPES,
     REQUEST_ARTIFACT_ROOT,
@@ -146,8 +147,11 @@ def humanize_signal_validation_error(error: ValidationError, signals: list[Any])
         if exact:
             return exact
         return next(
-            (label for key, label in sorted(_SIGNAL_FIELD_LABELS.items(), key=lambda item: len(item[0]), reverse=True)
-             if path_value.startswith(f"{key}.")),
+            (
+                label
+                for key, label in sorted(_SIGNAL_FIELD_LABELS.items(), key=lambda item: len(item[0]), reverse=True)
+                if path_value.startswith(f"{key}.")
+            ),
             "关键信号",
         )
 
@@ -156,7 +160,12 @@ def humanize_signal_validation_error(error: ValidationError, signals: list[Any])
     matcher = signal.get("match") if signal and isinstance(signal.get("match"), dict) else {}
     matcher_type = str(matcher.get("type") or "")
     code: str
-    if "缺少稳定 id" in raw_message:
+    if "至少需要 1 条生产者信号" in raw_message:
+        field_path = "signals"
+        field_label = "生产者信号"
+        message = "发布前请至少新增一条生产者信号，说明 Agent 如何通过任务、告警或弹框发现该故障。"
+        code = "KBD_PRODUCER_SIGNAL_MISSING"
+    elif "缺少稳定 id" in raw_message:
         field_path = "id"
         field_label = _field_label(field_path)
         message = "关键信号缺少内部标识；请删除该信号后重新新增，或补充唯一的 Signal ID。"
@@ -171,7 +180,9 @@ def humanize_signal_validation_error(error: ValidationError, signals: list[Any])
     elif "必须且只能配置" in raw_message and "match" in raw_message and "produces" in raw_message:
         field_path = "match"
         field_label = _field_label(field_path)
-        message = "QFK 输出模式冲突：匹配模式和产出变量必须二选一；请在“执行结果处理”中选择一种模式，并删除另一种模式的配置。"
+        message = (
+            "QFK 输出模式冲突：匹配模式和产出变量必须二选一；请在“执行结果处理”中选择一种模式，并删除另一种模式的配置。"
+        )
         code = "QFK_OUTPUT_MODE_CONFLICT"
     elif "必须配置新版 extract" in raw_message:
         field_path = field_path or "match.extract"
@@ -222,7 +233,9 @@ def humanize_signal_validation_error(error: ValidationError, signals: list[Any])
     elif "verification_contract" in raw_message:
         field_path = "verification_contract.evidence_policy"
         field_label = _field_label(field_path)
-        message = f"验证规则引用不一致：{raw_message}；请在证据作用列表中移除不存在的 Signal ID，或重新为信号分配证据作用。"
+        message = (
+            f"验证规则引用不一致：{raw_message}；请在证据作用列表中移除不存在的 Signal ID，或重新为信号分配证据作用。"
+        )
         code = "SIGNAL_VERIFICATION_CONTRACT_INVALID"
     elif "command 禁止保存 shell 管道" in raw_message:
         field_path = "acquire.args.command"
@@ -358,6 +371,22 @@ def validate_publishable_signals_json(raw: Any) -> None:
     _validate_variable_dependency_graph(raw)
 
 
+def validate_kbd_publishable_signals_json(raw: Any) -> None:
+    """KBD 发布门禁：通用 Signal 契约之外必须具备故障入口生产者。"""
+
+    validate_publishable_signals_json(raw)
+    signals = raw.get("signals") if isinstance(raw, dict) else None
+    has_producer = any(
+        isinstance(signal, dict) and str((signal.get("acquire") or {}).get("tool") or "") in FRONTEND_TOOLS
+        for signal in signals or []
+    )
+    if not has_producer:
+        raise ValidationError(
+            "KBD 发布至少需要 1 条生产者信号（qkv_task、qkv_alert 或 qkv_dialog），用于描述 Agent 如何发现故障并建立诊断上下文",
+            path=["signals"],
+        )
+
+
 def certify_publishable_signals_json(raw: Any) -> dict[str, Any]:
     """用当前代码契约校验并生成发布盖章，不覆盖 LLM 原始生成元数据。
 
@@ -402,11 +431,7 @@ def _validate_variable_dependency_graph(raw: dict[str, Any]) -> None:
     """发布前验证 diagnostic 变量链可达，避免 Admin 成功而 Agent 编译失败。"""
 
     contract = raw.get("verification_contract") or {}
-    declared_external = {
-        str(name).strip().upper()
-        for name in (contract.get("variables") or {})
-        if str(name).strip()
-    }
+    declared_external = {str(name).strip().upper() for name in (contract.get("variables") or {}) if str(name).strip()}
     nodes: list[tuple[str, set[str], set[str]]] = []
     for index, signal in enumerate(raw.get("signals") or [], start=1):
         if not isinstance(signal, dict):
@@ -415,11 +440,7 @@ def _validate_variable_dependency_graph(raw: dict[str, Any]) -> None:
         if str(orchestrate.get("phase") or "diagnostic") == "solution":
             continue
         signal_id = str(signal.get("id") or f"signal_{index:03d}")
-        requires = {
-            str(name).strip().upper()
-            for name in (orchestrate.get("requires") or [])
-            if str(name).strip()
-        }
+        requires = {str(name).strip().upper() for name in (orchestrate.get("requires") or []) if str(name).strip()}
         produces = {
             str(item.get("name") if isinstance(item, dict) else item).strip().upper()
             for item in (orchestrate.get("produces") or [])
@@ -431,9 +452,7 @@ def _validate_variable_dependency_graph(raw: dict[str, Any]) -> None:
     if not contract:
         # 无 Verification Contract 的历史数据兼容运行时 env_context；首次专家保存
         # 会补全 Contract，之后即进入严格外部变量声明。
-        declared_external.update(
-            name for _, requires, _ in nodes for name in requires if name not in all_produced
-        )
+        declared_external.update(name for _, requires, _ in nodes for name in requires if name not in all_produced)
     undeclared = {
         name
         for _, requires, _ in nodes
@@ -493,11 +512,7 @@ def _validate_verification_contract(raw: Any, *, require_must: bool) -> None:
     if not isinstance(raw, dict) or not isinstance(raw.get("verification_contract"), dict):
         return
     signals = raw.get("signals") or []
-    known_ids = {
-        str(signal.get("id"))
-        for signal in signals
-        if isinstance(signal, dict) and signal.get("id")
-    }
+    known_ids = {str(signal.get("id")) for signal in signals if isinstance(signal, dict) and signal.get("id")}
     policy = raw["verification_contract"].get("evidence_policy") or {}
     assigned: dict[str, str] = {}
     for role in ("must", "should", "exclude", "context"):
@@ -532,12 +547,11 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
     for index, signal in enumerate(raw.get("signals") or []):
         if not isinstance(signal, dict):
             continue
-        tool = ((signal.get("acquire") or {}).get("tool") or "")
-        produces = ((signal.get("orchestrate") or {}).get("produces") or [])
+        tool = (signal.get("acquire") or {}).get("tool") or ""
+        produces = (signal.get("orchestrate") or {}).get("produces") or []
         matcher = signal.get("match")
         has_produces = any(
-            isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"].strip()
-            for item in produces
+            isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"].strip() for item in produces
         )
         if isinstance(tool, str) and tool.startswith("qkv_"):
             if isinstance(matcher, dict) or not has_produces:
@@ -607,13 +621,12 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                 )
             produced_names[normalized_name] = produce_index
         if tool == "qfk_log":
-            args = ((signal.get("acquire") or {}).get("args") or {})
+            args = (signal.get("acquire") or {}).get("args") or {}
             normalized_path = normalize_log_path(str(args.get("path"))) if args.get("path") else None
             is_request_artifact = bool(
                 normalized_path
                 and (
-                    normalized_path == REQUEST_ARTIFACT_ROOT
-                    or normalized_path.startswith(f"{REQUEST_ARTIFACT_ROOT}/")
+                    normalized_path == REQUEST_ARTIFACT_ROOT or normalized_path.startswith(f"{REQUEST_ARTIFACT_ROOT}/")
                 )
             )
             if not is_request_artifact and not str(args.get("file") or "").strip():
@@ -625,8 +638,7 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                 matcher_type = str(matcher.get("type") or "")
                 if matcher_type not in LOG_MATCHER_TYPES:
                     raise ValidationError(
-                        f"signals[{index}] 的 qfk_log matcher.type={matcher_type} 不受支持；"
-                        f"允许: {LOG_MATCHER_TYPES}",
+                        f"signals[{index}] 的 qfk_log matcher.type={matcher_type} 不受支持；允许: {LOG_MATCHER_TYPES}",
                         path=["signals", index, "match", "type"],
                     )
                 if is_request_artifact:
@@ -656,8 +668,7 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                     and str(((matcher.get("extract") or {}).get("ai_extract") or {}).get("instruction") or "").strip()
                     and not (
                         matcher_type == "threshold"
-                        and str(matcher.get("aggregation") or "first_number")
-                        in {"line_count", "duration_seconds"}
+                        and str(matcher.get("aggregation") or "first_number") in {"line_count", "duration_seconds"}
                     )
                 )
                 if not supports_direct_predicate and not numeric_ai_extract:

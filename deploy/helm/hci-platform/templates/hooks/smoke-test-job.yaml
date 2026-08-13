@@ -49,6 +49,9 @@ spec:
                 conversation-service:8002
                 scheduler-service:8003
                 kb-service:8004
+                {{ if .Values.diagnosisService.enabled }}
+                diagnosis-service:{{ .Values.diagnosisService.port }}
+                {{ end }}
               "
               RETRIES=12   # 每次间隔 10s，最多等 120s
               SLEEP=10

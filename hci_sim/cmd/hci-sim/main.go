@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -33,6 +34,9 @@ var version = "dev"
 
 func main() {
 	log.SetFlags(0)
+	if filepath.Base(os.Args[0]) == "acli" {
+		os.Exit(runLocalACLI(os.Args[1:]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "lease" {
 		if err := runLease(os.Args[2:]); err != nil {
 			log.Fatal(err)
@@ -51,9 +55,102 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "offline-manifest" {
+		if err := runOfflineManifest(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if err := runServer(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func runLocalACLI(args []string) int {
+	router, err := fixture.Load(env("HCI_SIM_FIXTURE_MANIFEST", "/etc/hci-sim/fixture-manifest.json"))
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "hci-sim local adapter:", err)
+		return 126
+	}
+	argv := append([]string{"acli"}, args...)
+	result, err := router.MatchArgv(
+		argv,
+		env("HCI_SIM_FIXTURE_VARIANT", "positive"),
+		env("HCI_SIM_VIRTUAL_NODE_ID", "SIM-HCI-NODE-01"),
+		env("HCI_SIM_CONTAINER", "host"),
+	)
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "hci-sim local adapter:", err)
+		return 127
+	}
+	exitCode := result.ExitCode
+	stdoutValue, stderrValue := result.Stdout, result.Stderr
+	switch result.Fault.Type {
+	case fixture.FaultTimeout:
+		exitCode = 124
+		stderrValue = "hci-sim: synthetic timeout\n"
+	case fixture.FaultPermission:
+		if exitCode == 0 {
+			exitCode = 13
+		}
+	case fixture.FaultNonzeroExit:
+		if exitCode == 0 {
+			exitCode = 1
+		}
+	case fixture.FaultTruncate:
+		if result.Fault.MaxBytes > 0 {
+			stdoutValue = truncateString(stdoutValue, result.Fault.MaxBytes)
+			remaining := result.Fault.MaxBytes - len(stdoutValue)
+			if remaining < 0 {
+				remaining = 0
+			}
+			stderrValue = truncateString(stderrValue, remaining)
+		}
+	case fixture.FaultDisconnect:
+		exitCode = 255
+		stdoutValue = ""
+		stderrValue = "hci-sim: synthetic disconnect\n"
+	}
+	_, _ = os.Stdout.WriteString(stdoutValue)
+	_, _ = os.Stderr.WriteString(stderrValue)
+	appendLocalAudit(router, result, exitCode, stdoutValue, stderrValue)
+	return exitCode
+}
+
+func truncateString(value string, size int) string {
+	if size < 1 {
+		return ""
+	}
+	if len(value) <= size {
+		return value
+	}
+	return value[:size]
+}
+
+func appendLocalAudit(router *fixture.Router, result fixture.Result, exitCode int, stdoutValue, stderrValue string) {
+	path := strings.TrimSpace(os.Getenv("HCI_SIM_AUDIT_FILE"))
+	if path == "" {
+		return
+	}
+	row := map[string]any{
+		"timestamp": time.Now().UTC().Format(time.RFC3339Nano), "event": "local.exec.done",
+		"lab_run_id": os.Getenv("HCI_SIM_LAB_RUN_ID"), "support_id": router.KBD().SupportID,
+		"kbd_revision": router.KBD().Revision, "bundle_digest": router.BundleDigest(),
+		"variant": os.Getenv("HCI_SIM_FIXTURE_VARIANT"), "fixture_id": result.FixtureID,
+		"signal_id": result.SignalID, "command_fingerprint": result.CommandFingerprint,
+		"exit_code": exitCode, "stdout_bytes": len(stdoutValue), "stderr_bytes": len(stderrValue),
+		"stdout_sha256": digestValue(stdoutValue), "stderr_sha256": digestValue(stderrValue),
+	}
+	raw, err := json.Marshal(row)
+	if err != nil {
+		return
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+	_, _ = file.Write(append(raw, '\n'))
 }
 
 func runServer() error {
@@ -487,7 +584,7 @@ func terminalRunStatus(status string) bool {
 
 func runLease(args []string) error {
 	flags := flag.NewFlagSet("lease", flag.ContinueOnError)
-	scenarioID := flags.String("scenario", "kbd-27123", "场景 ID")
+	scenarioID := flags.String("scenario", "", "场景 ID（默认由 Bundle 的 KBD support_id 生成）")
 	testRunID := flags.String("test-run", "", "测试运行 ID")
 	variant := flags.String("variant", "positive-realistic", "fixture variant")
 	virtualNode := flags.String("virtual-node", "SIM-HCI-NODE-01", "虚拟节点")
@@ -513,6 +610,9 @@ func runLease(args []string) error {
 	now := time.Now().UTC()
 	if strings.TrimSpace(*testRunID) == "" {
 		*testRunID = "run-" + now.Format("20060102T150405Z")
+	}
+	if strings.TrimSpace(*scenarioID) == "" {
+		*scenarioID = "kbd-" + router.KBD().SupportID
 	}
 	leaseID := "lease-" + randomID()
 	token, err := lease.Sign(secret, lease.Claims{

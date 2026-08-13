@@ -3,7 +3,7 @@
 -- Version : 20260730
 -- Issue   : T-TOOL-QKV-QFK-001
 -- 说明    : 插入 11 条工具定义记录（QKV 3个 + QFK 8个）
--- 幂等键  : tool_name（ON CONFLICT DO UPDATE）
+-- 幂等键  : tool_name（ON CONFLICT DO NOTHING，禁止覆盖管理员治理结果）
 --
 -- 统一定义（display_name 标准命名，勿擅自修改以免造成误解）：
 --   qkv_alert    - 前端信号-告警查询
@@ -77,16 +77,7 @@ INSERT INTO tool_definition (
     '[{"keyword": "磁盘被拔出", "limit": 50, "produces": [{"name": "HOST", "path": "host|hostname"}, {"name": "DISK_SN", "path": "target|object_name"}]}]',
     1,
     true
-) ON CONFLICT (tool_name) DO UPDATE SET
-    display_name = EXCLUDED.display_name,
-    category = EXCLUDED.category,
-    description = EXCLUDED.description,
-    usage_template = EXCLUDED.usage_template,
-    parameters_schema = EXCLUDED.parameters_schema,
-    examples = EXCLUDED.examples,
-    risk_level = EXCLUDED.risk_level,
-    is_active = EXCLUDED.is_active,
-    updated_at = NOW();
+) ON CONFLICT (tool_name) DO NOTHING;
 
 -- QKV.task: 前端信号-任务查询
 INSERT INTO tool_definition (
@@ -145,16 +136,7 @@ INSERT INTO tool_definition (
     '[{"keyword": "虚拟机镜像忙", "is_failed": true, "limit": 20, "produces": [{"name": "VM_ID", "path": "vm|object_id"}, {"name": "HOST", "path": "host|hostname"}]}]',
     1,
     true
-) ON CONFLICT (tool_name) DO UPDATE SET
-    display_name = EXCLUDED.display_name,
-    category = EXCLUDED.category,
-    description = EXCLUDED.description,
-    usage_template = EXCLUDED.usage_template,
-    parameters_schema = EXCLUDED.parameters_schema,
-    examples = EXCLUDED.examples,
-    risk_level = EXCLUDED.risk_level,
-    is_active = EXCLUDED.is_active,
-    updated_at = NOW();
+) ON CONFLICT (tool_name) DO NOTHING;
 
 -- QKV.dialog: 前端信号-弹框查询
 INSERT INTO tool_definition (
@@ -204,16 +186,7 @@ INSERT INTO tool_definition (
     '[{"keyword":"编辑显卡核心失败","paths":["/sf/log/today","/sf/log/today/vt"],"context_lines":2,"produces":[{"name":"END","path":"end"},{"name":"REQUEST_ID","path":"request_id"},{"name":"HOST","path":"host"}]}]',
     1,
     true
-) ON CONFLICT (tool_name) DO UPDATE SET
-    display_name = EXCLUDED.display_name,
-    category = EXCLUDED.category,
-    description = EXCLUDED.description,
-    usage_template = EXCLUDED.usage_template,
-    parameters_schema = EXCLUDED.parameters_schema,
-    examples = EXCLUDED.examples,
-    risk_level = EXCLUDED.risk_level,
-    is_active = EXCLUDED.is_active,
-    updated_at = NOW();
+) ON CONFLICT (tool_name) DO NOTHING;
 
 -- ─── QFK 后端信号（消费者）─────────────────────────────────────
 
@@ -230,6 +203,21 @@ INSERT INTO tool_definition (
     '{
         "type": "object",
         "properties": {
+            "timeout": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 300,
+                "default": 60,
+                "description": "采集/执行超时（秒，1-300）"
+            },
+            "host": {
+                "type": "string",
+                "description": "采集目标主机/作用域（如 {{HOST}}），由运行时目标节点解析"
+            },
+            "instruction": {
+                "type": "string",
+                "description": "信号语义说明（不直接拼入执行命令）"
+            },
             "file": {
                 "type": "string",
                 "description": "安全日志 basename，如 sfvt_vtpdaemon.log、LOG_ifconfig.txt、messages"
@@ -297,16 +285,7 @@ INSERT INTO tool_definition (
     '[{"file":"sfvt_vtpdaemon.log","source_family":"auto","matcher":{"type":"keyword","pattern":"Connection reset by peer","mode":"or","expected":true}},{"file":"LOG_ethtool_statistic.txt","source_family":"vn_blackbox","matcher":{"type":"delta","metric":"rx_missed_errors","operator":">","value":0,"minimum_samples":2,"expected":true}}]',
     1,
     true
-) ON CONFLICT (tool_name) DO UPDATE SET
-    display_name = EXCLUDED.display_name,
-    category = EXCLUDED.category,
-    description = EXCLUDED.description,
-    usage_template = EXCLUDED.usage_template,
-    parameters_schema = EXCLUDED.parameters_schema,
-    examples = EXCLUDED.examples,
-    risk_level = EXCLUDED.risk_level,
-    is_active = EXCLUDED.is_active,
-    updated_at = NOW();
+) ON CONFLICT (tool_name) DO NOTHING;
 
 -- QFK.service: 后端信号-服务检查和操作
 INSERT INTO tool_definition (
@@ -367,16 +346,7 @@ INSERT INTO tool_definition (
     '[{"container": "asv", "resource_keyword": "redis", "command": "status", "matcher": {"type": "state", "pattern": "running", "expected": true}}]',
     1,
     true
-) ON CONFLICT (tool_name) DO UPDATE SET
-    display_name = EXCLUDED.display_name,
-    category = EXCLUDED.category,
-    description = EXCLUDED.description,
-    usage_template = EXCLUDED.usage_template,
-    parameters_schema = EXCLUDED.parameters_schema,
-    examples = EXCLUDED.examples,
-    risk_level = EXCLUDED.risk_level,
-    is_active = EXCLUDED.is_active,
-    updated_at = NOW();
+) ON CONFLICT (tool_name) DO NOTHING;
 
 -- QFK.system: 后端信号-系统检查和操作
 INSERT INTO tool_definition (
@@ -452,16 +422,7 @@ INSERT INTO tool_definition (
     ]',
     1,
     true
-) ON CONFLICT (tool_name) DO UPDATE SET
-    display_name = EXCLUDED.display_name,
-    category = EXCLUDED.category,
-    description = EXCLUDED.description,
-    usage_template = EXCLUDED.usage_template,
-    parameters_schema = EXCLUDED.parameters_schema,
-    examples = EXCLUDED.examples,
-    risk_level = EXCLUDED.risk_level,
-    is_active = EXCLUDED.is_active,
-    updated_at = NOW();
+) ON CONFLICT (tool_name) DO NOTHING;
 
 -- QFK.vm: 后端信号-虚拟机相关操作
 INSERT INTO tool_definition (
@@ -514,16 +475,7 @@ INSERT INTO tool_definition (
     '[{"command": "list", "matcher": {"type": "exists", "expected": true}}]',
     1,
     true
-) ON CONFLICT (tool_name) DO UPDATE SET
-    display_name = EXCLUDED.display_name,
-    category = EXCLUDED.category,
-    description = EXCLUDED.description,
-    usage_template = EXCLUDED.usage_template,
-    parameters_schema = EXCLUDED.parameters_schema,
-    examples = EXCLUDED.examples,
-    risk_level = EXCLUDED.risk_level,
-    is_active = EXCLUDED.is_active,
-    updated_at = NOW();
+) ON CONFLICT (tool_name) DO NOTHING;
 
 -- QFK.network: 后端信号-网络相关操作
 INSERT INTO tool_definition (
@@ -560,16 +512,7 @@ INSERT INTO tool_definition (
     '[{"command": "ping 192.168.1.1", "matcher": {"type": "keyword", "pattern": "bytes from", "expected": true}}]',
     1,
     true
-) ON CONFLICT (tool_name) DO UPDATE SET
-    display_name = EXCLUDED.display_name,
-    category = EXCLUDED.category,
-    description = EXCLUDED.description,
-    usage_template = EXCLUDED.usage_template,
-    parameters_schema = EXCLUDED.parameters_schema,
-    examples = EXCLUDED.examples,
-    risk_level = EXCLUDED.risk_level,
-    is_active = EXCLUDED.is_active,
-    updated_at = NOW();
+) ON CONFLICT (tool_name) DO NOTHING;
 
 -- QFK.storage: 后端信号-存储相关操作
 INSERT INTO tool_definition (
@@ -606,16 +549,7 @@ INSERT INTO tool_definition (
     '[{"command": "asan disk list", "matcher": {"type": "keyword", "pattern": ["数据同步", "数据平衡"], "mode": "or", "expected": true}}]',
     1,
     true
-) ON CONFLICT (tool_name) DO UPDATE SET
-    display_name = EXCLUDED.display_name,
-    category = EXCLUDED.category,
-    description = EXCLUDED.description,
-    usage_template = EXCLUDED.usage_template,
-    parameters_schema = EXCLUDED.parameters_schema,
-    examples = EXCLUDED.examples,
-    risk_level = EXCLUDED.risk_level,
-    is_active = EXCLUDED.is_active,
-    updated_at = NOW();
+) ON CONFLICT (tool_name) DO NOTHING;
 
 -- QFK.hardware: 后端信号-硬件相关操作
 INSERT INTO tool_definition (
@@ -649,16 +583,7 @@ INSERT INTO tool_definition (
     '[{"command": "sensor list", "matcher": {"type": "exists", "expected": true}}]',
     1,
     true
-) ON CONFLICT (tool_name) DO UPDATE SET
-    display_name = EXCLUDED.display_name,
-    category = EXCLUDED.category,
-    description = EXCLUDED.description,
-    usage_template = EXCLUDED.usage_template,
-    parameters_schema = EXCLUDED.parameters_schema,
-    examples = EXCLUDED.examples,
-    risk_level = EXCLUDED.risk_level,
-    is_active = EXCLUDED.is_active,
-    updated_at = NOW();
+) ON CONFLICT (tool_name) DO NOTHING;
 
 -- QFK.platform: 后端信号-平台相关操作
 INSERT INTO tool_definition (
@@ -692,13 +617,31 @@ INSERT INTO tool_definition (
     '[{"command": "cluster status", "matcher": {"type": "state", "pattern": "healthy", "expected": true}}]',
     1,
     true
-) ON CONFLICT (tool_name) DO UPDATE SET
-    display_name = EXCLUDED.display_name,
-    category = EXCLUDED.category,
-    description = EXCLUDED.description,
-    usage_template = EXCLUDED.usage_template,
-    parameters_schema = EXCLUDED.parameters_schema,
-    examples = EXCLUDED.examples,
-    risk_level = EXCLUDED.risk_level,
-    is_active = EXCLUDED.is_active,
-    updated_at = NOW();
+) ON CONFLICT (tool_name) DO NOTHING;
+
+-- 存量环境和全新环境统一以共享采集契约支持的 QFK 参数作为 Tool Registry 可读投影。
+-- 这里仅补齐参数；已有枚举和风险边界继续保留。存量数据库由 027 数据迁移执行相同对齐，
+-- 随后服务启动对账会产生新的不可变 Tool Revision。
+WITH qfk_contract_patches(tool_name, properties_patch, required_patch) AS (
+    VALUES
+        ('qfk_log', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"host":{"type":"string"},"instruction":{"type":"string"}}'::jsonb, NULL::jsonb),
+        ('qfk_service', '{"service":{"type":"string"},"action":{"type":"string","enum":["status","start","stop","restart"],"default":"status"}}'::jsonb, '[]'::jsonb),
+        ('qfk_system', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"cluster":{"type":"boolean","default":false},"formatter":{"type":"string","enum":["xml","csv","keyvalue","json"]},"container":{"type":"string","enum":["asv-con","vn-con","vn-agent","vs-cp-manager"]}}'::jsonb, NULL::jsonb),
+        ('qfk_vm', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"}}'::jsonb, NULL::jsonb),
+        ('qfk_network', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"}}'::jsonb, NULL::jsonb),
+        ('qfk_storage', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"}}'::jsonb, NULL::jsonb),
+        ('qfk_hardware', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"}}'::jsonb, NULL::jsonb),
+        ('qfk_platform', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"}}'::jsonb, NULL::jsonb)
+)
+UPDATE tool_definition AS tool
+SET parameters_schema = CASE
+        WHEN patch.required_patch IS NULL THEN jsonb_set(tool.parameters_schema, '{properties}', tool.parameters_schema->'properties' || patch.properties_patch, true)
+        ELSE jsonb_set(jsonb_set(tool.parameters_schema, '{properties}', tool.parameters_schema->'properties' || patch.properties_patch, true), '{required}', patch.required_patch, true)
+    END,
+    updated_at = CURRENT_TIMESTAMP
+FROM qfk_contract_patches AS patch
+WHERE tool.tool_name = patch.tool_name
+  AND (
+      NOT COALESCE(tool.parameters_schema->'properties', '{}'::jsonb) @> patch.properties_patch
+      OR (patch.required_patch IS NOT NULL AND tool.parameters_schema->'required' IS DISTINCT FROM patch.required_patch)
+  );

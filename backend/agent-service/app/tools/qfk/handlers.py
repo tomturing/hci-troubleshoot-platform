@@ -22,6 +22,7 @@ QFK 信号处理器
 import re
 import shlex
 
+from shared.resolution.log_selector import build_log_selector
 from shared.schemas.acquirer_args import SAFE_LOG_FILE_PATTERN, VALID_SERVICE_CONTAINERS
 from shared.schemas.log_source_catalog import (
     LOG_MATCHER_TYPES,
@@ -149,75 +150,16 @@ class LogKeywordHandler(BackendSignalHandler):
     @staticmethod
     def _matcher_selector(signal: BackendSignal) -> tuple[str | None, bool, str]:
         """返回 ``(selector, extended_regex, matcher_type)``。"""
-
-        matcher = signal.matcher or {}
-        matcher_type = str(matcher.get("type") or ("keyword" if signal.keyword else ""))
-        if matcher_type and matcher_type not in LOG_MATCHER_TYPES:
-            raise CommandBuildError(f"qfk_log 不支持 matcher.type={matcher_type}")
-
-        # 统一过滤事实持久化在 extract.rows.include；这里仅派生 aCLI OR 粗筛以缩小
-        # 返回量。AND/排除关系仍由 Bridge 与 Agent 按同一记录重新验证。
-        if signal.filter_keywords:
-            unique = sorted({str(item) for item in signal.filter_keywords if str(item)})
-            if unique:
-                return "|".join(re.escape(item) for item in unique), True, matcher_type or "producer"
-
-        pattern = matcher.get("pattern")
-        if matcher_type == "keyword":
-            raw_items = pattern if isinstance(pattern, list) else [pattern] if pattern else signal.keyword
-            unique = sorted({str(item) for item in raw_items if str(item)})
-            if unique:
-                return "|".join(re.escape(item) for item in unique), True, matcher_type
-        elif matcher_type == "regex":
-            if not isinstance(pattern, str) or not pattern:
-                raise CommandBuildError("qfk_log regex matcher 必须提供非空 pattern")
-            if len(pattern) > 2048 or "\n" in pattern or "\r" in pattern:
-                raise CommandBuildError("qfk_log regex pattern 过长或包含换行")
-            return pattern, True, matcher_type
-        elif matcher_type == "state":
-            if not isinstance(pattern, str) or not pattern:
-                raise CommandBuildError("qfk_log state matcher 必须提供非空 pattern")
-            return re.escape(pattern), True, matcher_type
-        elif matcher_type in {"threshold", "delta", "trend"}:
-            metric = matcher.get("metric") or signal.resource_keyword
-            if not isinstance(metric, str) or not metric:
-                # 对齐 2026-08-07 契约：数值 Matcher 配置了 ai_extract.instruction 时，
-                # 走 "AI 类型化取值" 通道，数值比较由 AI 完成，命令只需用 filter_keywords/keyword
-                # 作为日志粗筛 pattern，不再强制要求 metric 字段。
-                extract = matcher.get("extract") if isinstance(matcher, dict) else None
-                ai_instruction = ""
-                if isinstance(extract, dict):
-                    ai_extract = extract.get("ai_extract")
-                    if isinstance(ai_extract, dict):
-                        ai_instruction = str(ai_extract.get("instruction") or "")
-                if ai_instruction:
-                    # 关键字事实的权威来源是 matcher.extract.rows.include（如
-                    # {"mode":"keywords","include":["info block-jobs","Completed"]}），
-                    # 不应依赖 signal.filter_keywords 这个派生字段（派生链在部分调用
-                    # 路径下为空，会导致本应豁免的信号仍被拦截）。优先从 include
-                    # 取，回退到 signal.filter_keywords/keyword，保证 AI 通道总能拿到粗筛关键字。
-                    rows = extract.get("rows") if isinstance(extract, dict) else None
-                    include = rows.get("include") if isinstance(rows, dict) else None
-                    ai_filter = list(include) if isinstance(include, (list, tuple)) else []
-                    if not ai_filter:
-                        ai_filter = signal.filter_keywords or signal.keyword
-                    if ai_filter:
-                        unique = sorted({str(item) for item in ai_filter if str(item)})
-                        if unique:
-                            return "|".join(re.escape(item) for item in unique), True, matcher_type
-                raise CommandBuildError(f"qfk_log {matcher_type} matcher 必须提供 metric")
-            return re.escape(metric), True, matcher_type
-        elif matcher_type == "exists":
-            return ".", True, matcher_type
-
-        # 产出变量信号没有 matcher 时，必须有 request_id 或受控行选择器，禁止整文件回传。
-        if signal.resource_keyword:
-            return re.escape(signal.resource_keyword), True, matcher_type or "producer"
-        if signal.request_id:
-            return None, False, matcher_type or "producer"
-        if signal.keyword:
-            raise CommandBuildError("关键字全部为空：至少需要一个非空关键字")
-        raise CommandBuildError("qfk_log 必须提供关键字 matcher、resource_keyword 或 request_id 以限制日志输出")
+        try:
+            return build_log_selector(
+                matcher=signal.matcher,
+                keywords=signal.keyword,
+                filter_keywords=signal.filter_keywords,
+                resource_keyword=signal.resource_keyword,
+                request_id=signal.request_id,
+            )
+        except ValueError as exc:
+            raise CommandBuildError(str(exc)) from exc
 
     @staticmethod
     def _inferred_whitebox_path(source: dict[str, object], absolute_time: str | None) -> str:
@@ -406,7 +348,12 @@ class GenericSubCommandHandler(BackendSignalHandler):
         extra_args = signal.command_args or []
         if any(not isinstance(item, str) or not item or _has_illegal_chars(item) for item in extra_args):
             raise CommandBuildError(f"{namespace} command_args 包含非法参数")
-        parts = ["acli", namespace, *[shlex.quote(item) for item in command_parts], *[shlex.quote(item) for item in extra_args]]
+        parts = [
+            "acli",
+            namespace,
+            *[shlex.quote(item) for item in command_parts],
+            *[shlex.quote(item) for item in extra_args],
+        ]
         return [" ".join(parts)]
 
 

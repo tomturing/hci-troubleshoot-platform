@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from shared.models.dynamic_resource import DynamicResourceActive, DynamicResourceRevision
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from shared.models.dynamic_resource import DynamicResourceActive, DynamicResourceRevision
 
 from .loader import DynamicResourceLoader
 from .models import ResourceSnapshot

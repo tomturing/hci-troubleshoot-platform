@@ -22,11 +22,11 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
+from shared.cdd.kbd_model import KBD
 from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
 
 from app.adapters.agents.htp.investigation_agent import InvestigationAgent  # T-AGT-11：S1-S4
-from app.adapters.agents.htp.kbd_model import KBD
 from app.adapters.agents.htp.remediation_agent import RemediationAgent
 from app.adapters.agents.htp.triage_agent import TriageAgent  # T-AGT-10：S0
 from app.adapters.agents.ops.ops_agent_adapter import OpsAgentAdapter

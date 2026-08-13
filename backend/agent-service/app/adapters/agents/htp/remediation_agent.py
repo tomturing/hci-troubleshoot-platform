@@ -18,10 +18,10 @@ import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from shared.cdd.kbd_model import KBD
 from shared.clients import AIAssistantRegistry, DiagnosticItemClient, KBClient
 from shared.observability.logger import get_logger
 
-from app.adapters.agents.htp.kbd_model import KBD
 from app.adapters.agents.htp.react_engine import ReactEngine
 from app.domain.agent_port import (
     AgentEvent,

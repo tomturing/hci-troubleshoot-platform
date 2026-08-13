@@ -327,7 +327,11 @@ async def _kbd_proxy(
                     method=method,
                     path=path,
                     status_code=response.status_code,
-                    downstream_code=(error or {}).get("code") if isinstance(error, dict) else (detail or {}).get("code") if isinstance(detail, dict) else None,
+                    downstream_code=(error or {}).get("code")
+                    if isinstance(error, dict)
+                    else (detail or {}).get("code")
+                    if isinstance(detail, dict)
+                    else None,
                     detail=detail,
                     kbd_id=path.strip("/").split("/")[0] if path.strip("/") else None,
                     signal_id=(detail or {}).get("signal_id") if isinstance(detail, dict) else None,
@@ -442,6 +446,86 @@ async def kbd_command_preview_proxy(request: Request):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+# 批量操作路由必须在 /{kbd_id}/... 之前定义，否则 "batch" 会被解析为 kbd_id
+@kbd_router.post("/batch/reanalyze-images")
+async def kbd_batch_reanalyze_images_proxy(request: Request):
+    """批量重新识图 → kb-service"""
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", "/batch/reanalyze-images", payload=body, headers=headers, timeout=600.0)
+    return _kbd_json_response(response)
+
+
+@kbd_router.post("/batch/reclassify")
+async def kbd_batch_reclassify_proxy(request: Request):
+    """批量重新分类 → kb-service"""
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", "/batch/reclassify", payload=body, headers=headers, timeout=300.0)
+    return _kbd_json_response(response)
+
+
+@kbd_router.post("/batch/extract-signals")
+async def kbd_batch_extract_signals_proxy(request: Request):
+    """批量抽取信号 → kb-service"""
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", "/batch/extract-signals", payload=body, headers=headers, timeout=600.0)
+    return _kbd_json_response(response)
+
+
+@kbd_router.post("/batch/approve")
+async def kbd_batch_approve_proxy(request: Request):
+    """批量审核通过 → kb-service。"""
+
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", "/batch/approve", payload=body, headers=headers, timeout=600.0)
+    return _kbd_json_response(response)
+
+
+@kbd_router.post("/batch/reject")
+async def kbd_batch_reject_proxy(request: Request):
+    """批量审核拒绝 → kb-service。"""
+
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", "/batch/reject", payload=body, headers=headers, timeout=300.0)
+    return _kbd_json_response(response)
+
+
+@kbd_router.get("/batch/jobs")
+async def kbd_batch_jobs_proxy(request: Request):
+    """查询最近 KBD 批量任务及实时进度 → kb-service。"""
+
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy(
+        "GET",
+        "/batch/jobs",
+        params=dict(request.query_params),
+        headers=headers,
+    )
+    return _kbd_json_response(response)
+
+
+@kbd_router.get("/batch/jobs/{batch_id}")
+async def kbd_batch_job_detail_proxy(batch_id: str, request: Request):
+    """查询 KBD 批量任务逐条结果 → kb-service。"""
+
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("GET", f"/batch/jobs/{batch_id}", headers=headers)
+    return _kbd_json_response(response)
+
+
+@kbd_router.post("/batch/jobs/{batch_id}/retry")
+async def kbd_batch_job_retry_proxy(batch_id: str, request: Request):
+    """重试 KBD 批量任务中的失败和中断条目 → kb-service。"""
+
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", f"/batch/jobs/{batch_id}/retry", headers=headers)
+    return _kbd_json_response(response)
+
+
 @kbd_router.get("/{kbd_id}/revisions")
 async def kbd_revisions_proxy(kbd_id: int, request: Request):
     """代理 KBD Proposal/Expert 历史与当前 runtime active 元数据。"""
@@ -550,6 +634,22 @@ async def kbd_revert_to_draft_proxy(kbd_id: int, request: Request):
     return _kbd_json_response(response)
 
 
+@kbd_router.post("/{kbd_id}/archive")
+async def kbd_archive_proxy(kbd_id: int, request: Request):
+    """代理 KBD 归档/停用请求 → kb-service。"""
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", f"/{kbd_id}/archive", headers=headers)
+    return _kbd_json_response(response)
+
+
+@kbd_router.post("/{kbd_id}/disable", include_in_schema=False)
+async def kbd_disable_proxy(kbd_id: int, request: Request):
+    """兼容“停用”语义，内部统一归档 KBD。"""
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", f"/{kbd_id}/disable", headers=headers)
+    return _kbd_json_response(response)
+
+
 @kbd_router.post("/{kbd_id}/reclassify")
 async def kbd_reclassify_proxy(kbd_id: int, request: Request):
     """代理 KBD 重新分类请求（用最新 Prompt 重算）-> kb-service"""
@@ -567,7 +667,9 @@ async def kbd_reanalyze_images_proxy(kbd_id: int, request: Request):
     """
     headers = _internal_auth_headers()
     # 透传 query（如 ?sync=true 同步模式开关），否则 kb-service 收不到 sync 而走异步 202
-    response = await _kbd_proxy("POST", f"/{kbd_id}/reanalyze-images", params=dict(request.query_params), headers=headers, timeout=30.0)
+    response = await _kbd_proxy(
+        "POST", f"/{kbd_id}/reanalyze-images", params=dict(request.query_params), headers=headers, timeout=30.0
+    )
     return _kbd_json_response(response)
 
 
@@ -576,7 +678,8 @@ async def kbd_reanalyze_status_proxy(kbd_id: int, request: Request):
     """代理 KBD 异步识图状态查询 -> kb-service"""
     headers = _internal_auth_headers()
     response = await _kbd_proxy(
-        "GET", f"/{kbd_id}/reanalyze-images/status",
+        "GET",
+        f"/{kbd_id}/reanalyze-images/status",
         params=dict(request.query_params),
         headers=headers,
         timeout=15.0,
@@ -597,7 +700,9 @@ async def kbd_reanalyze_single_image_proxy(kbd_id: int, seq: int, request: Reque
     """
     headers = _internal_auth_headers()
     # 透传 query（如 ?sync=true 同步模式开关），否则 kb-service 收不到 sync 而走异步 202
-    response = await _kbd_proxy("POST", f"/{kbd_id}/reanalyze-image/{seq}", params=dict(request.query_params), headers=headers, timeout=240.0)
+    response = await _kbd_proxy(
+        "POST", f"/{kbd_id}/reanalyze-image/{seq}", params=dict(request.query_params), headers=headers, timeout=240.0
+    )
     return _kbd_json_response(response)
 
 
@@ -613,7 +718,9 @@ async def kbd_extract_signals_proxy(kbd_id: int, request: Request):
     """
     headers = _internal_auth_headers()
     # 透传 query（?sync=true 同步模式开关），否则 kb-service 收不到 sync 而走异步 202
-    response = await _kbd_proxy("POST", f"/{kbd_id}/extract-signals", params=dict(request.query_params), headers=headers, timeout=240.0)
+    response = await _kbd_proxy(
+        "POST", f"/{kbd_id}/extract-signals", params=dict(request.query_params), headers=headers, timeout=240.0
+    )
     return _kbd_json_response(response)
 
 

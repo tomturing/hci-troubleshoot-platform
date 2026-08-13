@@ -8,7 +8,7 @@ WORKDIR /app
 # 安装依赖（使用 uv pip，pyproject.toml 为唯一依赖声明源）
 COPY backend/agent-service/pyproject.toml .
 RUN uv pip compile pyproject.toml --no-annotate --no-header -q -o requirements.txt \
-    && uv pip install --system --no-cache -r requirements.txt
+    && uv pip install --system --no-cache --index-url https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt
 
 COPY backend/shared /app/shared
 COPY backend/agent-service /app

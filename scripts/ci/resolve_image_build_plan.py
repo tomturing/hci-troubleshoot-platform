@@ -23,13 +23,13 @@ import subprocess
 import sys
 from collections.abc import Iterable
 
-
 BACKEND_SERVICES = (
     ("api-gateway", "backend/api-gateway/Dockerfile", "apiGateway"),
     ("case-service", "backend/case-service/Dockerfile", "caseService"),
     ("conversation-service", "backend/conversation-service/Dockerfile", "conversationService"),
     ("agent-service", "backend/agent-service/Dockerfile", "agentService"),
     ("eval-service", "backend/eval-service/Dockerfile", "evalService"),
+    ("diagnosis-service", "backend/diagnosis-service/Dockerfile", "diagnosisService"),
     ("scheduler-service", "backend/scheduler-service/Dockerfile", "schedulerService"),
     ("kb-service", "backend/kb-service/Dockerfile", "kbService"),
 )

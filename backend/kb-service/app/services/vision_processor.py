@@ -42,12 +42,14 @@ import hashlib
 import io
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
 from openai import APIConnectionError, APITimeoutError, AsyncOpenAI
+from shared.observability.langfuse import observe_llm_generation, update_observation
 from shared.observability.logger import get_logger
+from shared.observability.metrics import KBD_LLM_REQUESTS_TOTAL, KBD_LLM_TOKENS_TOTAL
 from shared.observability.otel import get_current_trace_id
 from shared.utils.prompt_loader import StrictPromptLoader
 from sqlalchemy import select
@@ -59,6 +61,11 @@ from app.services.kbd_revision_service import freeze_kbd_ai_proposal
 from app.services.llm_runtime import get_llm_semaphore
 
 logger = get_logger("kb-service-vision-processor")
+
+
+class VisionEmptyResultError(RuntimeError):
+    """Vision 模型连续返回无法形成证据的空结果。"""
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 常量配置
@@ -93,7 +100,7 @@ _LLM_VISION_BASE_URL = (os.environ.get("LLM_VISION_BASE_URL") or os.environ.get(
 _LLM_VISION_API_KEY = os.environ.get("LLM_VISION_API_KEY") or os.environ.get("LLM_API_KEY", "")
 # 优先读取 VISION_MODEL，若未配置，则回退到已验证可用的 kimi-k2.5（支持多模态识图）
 _LLM_VISION_MODEL = os.environ.get("VISION_MODEL", "kimi-k2.5")
-_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "30.0"))
+_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "120.0"))
 _VISION_MAX_TOKENS = int(os.environ.get("VISION_MAX_TOKENS", "1536"))
 # 是否启用 LLM 思维链（thinking）。默认关闭：kimi-k2.5 / glm-5 等模型开启 thinking 时
 # 会在正式回答前生成大量隐藏思考 token，使 Vision 调用延迟飙升并突破 LLM_TIMEOUT。
@@ -535,6 +542,8 @@ async def _vision_analyze(
     context: str,
     prompt_template: str,
     trace_id: str | None = None,
+    kbd_entry_id: int | None = None,
+    image_seq: int | None = None,
 ) -> tuple[str, str, list[str], str]:
     """
     Vision LLM 单次调用，输出 TYPE + BACKGROUND + FULL_TEXT + DESCRIPTION。
@@ -572,28 +581,86 @@ async def _vision_analyze(
     # ── 带退避的重试（P-优化：解决限流/超时导致的批量必挂）──
     # 针对 429 限流、5xx、超时进行指数退避重试，并尊重响应头 Retry-After；
     # 鉴权/参数类错误（4xx 非 429）不重试，立即抛出以免浪费配额。
-    max_attempts = int(os.environ.get("VISION_LLM_MAX_ATTEMPTS", "4"))
+    max_attempts = max(1, int(os.environ.get("VISION_LLM_MAX_ATTEMPTS", "2")))
     last_exc: Exception | None = None
     raw = ""
     for attempt in range(1, max_attempts + 1):
         try:
-            response = await client.chat.completions.create(
+            with observe_llm_generation(
+                operation="vision",
                 model=_LLM_VISION_MODEL,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        *image_parts,
-                    ],
-                }],
-            max_tokens=_VISION_MAX_TOKENS,
-            temperature=0.0,
-            timeout=_LLM_TIMEOUT,
-            extra_body={"enable_thinking": _LLM_ENABLE_THINKING},
-        )
-            raw = (response.choices[0].message.content or "").strip()
-            tokens = response.usage.total_tokens if response.usage else 0
-            logger.debug("Vision LLM 响应 tokens=%d", tokens)
+                input={
+                    "prompt": prompt,
+                    "image_count": len(prepared_images),
+                    "image_bytes": sum(len(prepared_data) for prepared_data, _, _ in prepared_images),
+                },
+                metadata={
+                    "attempt": attempt,
+                    "trace_id": trace_id or "",
+                    "image_count": len(prepared_images),
+                    "kbd_id": kbd_entry_id,
+                    "image_seq": image_seq,
+                    "prompt_name": _KBD_VISION_PROMPT_NAME,
+                    "prompt_revision": hashlib.sha256(prompt_template.encode("utf-8")).hexdigest(),
+                },
+                model_parameters={
+                    "temperature": 0.0,
+                    "max_tokens": _VISION_MAX_TOKENS,
+                    "enable_thinking": _LLM_ENABLE_THINKING,
+                },
+            ) as observation:
+                response = await client.chat.completions.create(
+                    model=_LLM_VISION_MODEL,
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            *image_parts,
+                        ],
+                    }],
+                    max_tokens=_VISION_MAX_TOKENS,
+                    temperature=0.0,
+                    timeout=_LLM_TIMEOUT,
+                    extra_body={"enable_thinking": _LLM_ENABLE_THINKING},
+                )
+                message = response.choices[0].message
+                raw = (message.content or "").strip()
+                if not raw:
+                    # 部分 Ollama/OpenAI 兼容模型把最终文本放在扩展字段中。
+                    model_extra = getattr(message, "model_extra", None) or {}
+                    raw = str(
+                        getattr(message, "reasoning_content", None)
+                        or model_extra.get("reasoning_content")
+                        or ""
+                    ).strip()
+                finish_reason = str(getattr(response.choices[0], "finish_reason", None) or "unknown")
+                usage = getattr(response, "usage", None)
+                prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+                completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+                tokens = int(getattr(usage, "total_tokens", 0) or 0)
+                KBD_LLM_REQUESTS_TOTAL.labels(
+                    operation="vision",
+                    model=_LLM_VISION_MODEL,
+                    status="success" if raw and finish_reason != "length" else "error",
+                    finish_reason=finish_reason,
+                ).inc()
+                for token_type, value in (("input", prompt_tokens), ("output", completion_tokens), ("total", tokens)):
+                    if value:
+                        KBD_LLM_TOKENS_TOTAL.labels(
+                            operation="vision", model=_LLM_VISION_MODEL, type=token_type
+                        ).inc(value)
+                update_observation(
+                    observation,
+                    output={"content": raw},
+                    metadata={"finish_reason": finish_reason, "response_chars": len(raw), "attempt": attempt},
+                    usage_details={"input": prompt_tokens, "output": completion_tokens, "total": tokens},
+                    level="ERROR" if not raw or finish_reason == "length" else None,
+                    status_message="识图结果为空或被截断" if not raw or finish_reason == "length" else None,
+                )
+                if finish_reason == "length":
+                    raise VisionEmptyResultError("Vision 模型输出达到长度上限，结果不完整")
+                logger.debug("Vision LLM 响应 tokens=%d", tokens)
+            last_exc = None
             break  # 成功，跳出重试
         except Exception as exc:
             last_exc = exc
@@ -603,6 +670,13 @@ async def _vision_analyze(
             is_timeout = isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError, APITimeoutError, APIConnectionError))
             # 非限流/非服务端/非超时的错误（如 401 鉴权失败）不重试
             if not (is_rate_limit or is_server or is_timeout):
+                if not isinstance(exc, VisionEmptyResultError):
+                    KBD_LLM_REQUESTS_TOTAL.labels(
+                        operation="vision",
+                        model=_LLM_VISION_MODEL,
+                        status="error",
+                        finish_reason="transport_error",
+                    ).inc()
                 logger.exception(
                     event="vision_llm_error_unretriable",
                     message=_fmt_vision_err(exc),
@@ -610,6 +684,12 @@ async def _vision_analyze(
                 )
                 raise
             if attempt == max_attempts:
+                KBD_LLM_REQUESTS_TOTAL.labels(
+                    operation="vision",
+                    model=_LLM_VISION_MODEL,
+                    status="error",
+                    finish_reason="transport_error",
+                ).inc()
                 logger.exception(
                     event="vision_llm_error_gave_up",
                     message=f"已重试 {max_attempts} 次后放弃: {_fmt_vision_err(exc)}",
@@ -625,7 +705,10 @@ async def _vision_analyze(
             wait = retry_after if retry_after else min(2.0 * (2 ** (attempt - 1)), 30.0)
             logger.warning(
                 event="vision_llm_retry",
-                message=f"第 {attempt}/{max_attempts} 次调用失败（status={status_code}），{wait:.1f}s 后重试",
+                message=(
+                    f"第 {attempt}/{max_attempts} 次调用失败（{type(exc).__name__}，status={status_code}）："
+                    f"{_fmt_vision_err(exc)[:300]}；{wait:.1f}s 后重试"
+                ),
                 trace_id=trace_id,
             )
             await asyncio.sleep(wait)
@@ -636,6 +719,16 @@ async def _vision_analyze(
     background = _parse_background(raw)
     full_text = _parse_full_text(raw)
     description = _parse_description(raw)
+    if not full_text and not description:
+        full_text = _parse_unstructured_ocr_text(raw)
+        if full_text:
+            logger.info(
+                event="vision_unstructured_ocr_fallback",
+                message="模型未返回约定分区，已将非结构化 OCR 文本作为可见文字保存",
+                raw_length=len(raw),
+                line_count=len(full_text),
+                trace_id=trace_id,
+            )
     screenshot_type = _prefer_task_detail_type(screenshot_type, full_text)
 
     return screenshot_type, background, full_text, description
@@ -678,6 +771,52 @@ def _parse_full_text(raw: str) -> list[str]:
                 lines.append(content)
 
     return lines
+
+
+def _parse_unstructured_ocr_text(raw: str) -> list[str]:
+    """兼容只返回纯 OCR/Markdown 文本、不遵循分区协议的专用 OCR 模型。
+
+    该回退只接受完全不含约定分区头的响应，避免把 ``TYPE`` 等控制字段误当成
+    截图可见文字。文本只作为 observed text（可见文字）保存，不生成语义推断。
+    """
+
+    normalized = raw.strip()
+    if not normalized or re.search(r"(?:^|\n)\s*(?:TYPE|BACKGROUND|FULL_TEXT|DESCRIPTION)\s*:", normalized):
+        return []
+    normalized = re.sub(r"<\|[^>]+\|>", "", normalized)
+    normalized = re.sub(r"^```(?:markdown|text)?\s*|\s*```$", "", normalized, flags=re.IGNORECASE)
+    lines: list[str] = []
+    for source_line in normalized.splitlines():
+        line = source_line.strip()
+        line = re.sub(r"^(?:[-*+]\s+|\d+[.)]\s+)", "", line).strip()
+        if not line or line in {"（无文字）", "(无文字)", "无文字"}:
+            continue
+        lines.append(line[:1000])
+        if len(lines) >= 200:
+            break
+    return lines
+
+
+def _require_nonempty_vision_result(full_text: list[str], description: str) -> None:
+    """禁止把连续空响应记为识图成功并覆盖既有证据。"""
+
+    if not full_text and not description:
+        raise VisionEmptyResultError("Vision 模型连续返回空结果或不受支持的输出格式")
+
+
+async def _emit_progress(
+    on_progress: Callable[[int, int, int], Awaitable[None] | None] | None,
+    done: int,
+    failed: int,
+    total: int,
+) -> None:
+    """兼容同步与异步进度回调，确保图片级进度已经落库再继续。"""
+
+    if on_progress is None:
+        return
+    result = on_progress(done, failed, total)
+    if result is not None:
+        await result
 
 
 def _prefer_task_detail_type(screenshot_type: str, full_text: list[str]) -> str:
@@ -740,7 +879,7 @@ def _format_desc(screenshot_type: str, background: str, full_text: list[str], de
 async def reanalyze_kbd_images(
     kbd_entry_id: int,
     session_factory: Callable[[], AsyncSession],
-    on_progress: Callable[[int, int, int], None] | None = None,
+    on_progress: Callable[[int, int, int], Awaitable[None] | None] | None = None,
     trace_id: str | None = None,
 ) -> dict[str, Any]:
     """重新识图单个 KBD 条目的所有图片。
@@ -852,7 +991,8 @@ async def reanalyze_kbd_images(
         api_key=_LLM_VISION_API_KEY,
         base_url=_LLM_VISION_BASE_URL,
         timeout=_LLM_TIMEOUT,
-        max_retries=1,
+        # 重试统一由 _vision_analyze 治理，避免 SDK 与业务层重试次数相乘。
+        max_retries=0,
     )
 
     # 4. 并发处理所有图片（不占有任何 DB 连接）
@@ -883,9 +1023,11 @@ async def reanalyze_kbd_images(
                     context,
                     prompt_template,
                     trace_id=_tid,
+                    kbd_entry_id=kbd_entry_id,
+                    image_seq=seq,
                 )
 
-                # 空结果重试一次
+                # 空结果只额外重试一次；连续为空必须失败，不能生成“无文字/无描述”的假成功。
                 if not full_text and not description:
                     logger.warning(
                         event="vision_empty_result_retry",
@@ -899,7 +1041,10 @@ async def reanalyze_kbd_images(
                         context,
                         prompt_template,
                         trace_id=_tid,
+                        kbd_entry_id=kbd_entry_id,
+                        image_seq=seq,
                     )
+                _require_nonempty_vision_result(full_text, description)
 
                 desc = _format_desc(screenshot_type, background, full_text, description)
                 evidence = _build_evidence_ir(
@@ -932,13 +1077,11 @@ async def reanalyze_kbd_images(
                     screenshot_type=screenshot_type,
                     trace_id=_tid,
                 )
-                if on_progress is not None:
-                    on_progress(stats["done"], stats["failed"], len(image_items))
+                await _emit_progress(on_progress, stats["done"], stats["failed"], len(image_items))
             except Exception as exc:
                 stats["failed"] += 1
                 errors.append(f"seq={seq}: {exc}")
-                # P2-2 修复：失败图片保留占位条目（desc 为空），既不失图、也不误报已完成；
-                # 其 desc 为空会被 _db_vision_status 判为 failed，从而进入重试而非永久丢失。
+                # 失败图片只放入本次内存结果用于诊断；整条 KBD 不会写回，避免覆盖既有证据。
                 async with images_json_lock:
                     images_json.append({
                         "seq": seq,
@@ -966,8 +1109,7 @@ async def reanalyze_kbd_images(
                     error=str(exc),
                     trace_id=_tid,
                 )
-                if on_progress is not None:
-                    on_progress(stats["done"], stats["failed"], len(image_items))
+                await _emit_progress(on_progress, stats["done"], stats["failed"], len(image_items))
 
     logger.info(
         event="vision_reanalyze_start",
@@ -975,10 +1117,33 @@ async def reanalyze_kbd_images(
         image_count=len(image_items),
         trace_id=_tid,
     )
+    await _emit_progress(on_progress, 0, 0, len(image_items))
     await asyncio.gather(*[_process_one(img) for img in image_items])
 
     # 5. 按 seq 排序
     images_json.sort(key=lambda x: x["seq"])
+
+    # 全量重识图采用原子写回：只要任一图片失败，本轮所有结果都不覆盖既有证据。
+    if stats["failed"] > 0:
+        logger.warning(
+            event="vision_reanalyze_not_committed",
+            message="存在识图失败，本轮结果未写回，原有图片证据保持不变",
+            kbd_entry_id=kbd_entry_id,
+            total=len(image_items),
+            done=stats["done"],
+            failed=stats["failed"],
+            trace_id=_tid,
+        )
+        return {
+            "kbd_entry_id": kbd_entry_id,
+            "total": len(image_items),
+            "done": stats["done"],
+            "failed": stats["failed"],
+            "success": False,
+            "images_json": existing_images_json,
+            "proposal_revision_id": None,
+            "error": "; ".join(errors) if errors else "存在识图失败，本轮结果未写回",
+        }
 
     # 6. 写入阶段：再开启一个 short-lived session 写入数据库（重新查询并更新）
     proposal_revision_id: int | None = None
@@ -1185,7 +1350,8 @@ async def reanalyze_single_image(
         api_key=_LLM_VISION_API_KEY,
         base_url=_LLM_VISION_BASE_URL,
         timeout=_LLM_TIMEOUT,
-        max_retries=1,
+        # 重试统一由 _vision_analyze 治理，避免 SDK 与业务层重试次数相乘。
+        max_retries=0,
     )
 
     # 调用 Vision LLM
@@ -1196,6 +1362,8 @@ async def reanalyze_single_image(
         context,
         prompt_template,
         trace_id=_tid,
+        kbd_entry_id=kbd_entry_id,
+        image_seq=seq,
     )
 
     # 空结果重试一次
@@ -1213,7 +1381,10 @@ async def reanalyze_single_image(
             context,
             prompt_template,
             trace_id=_tid,
+            kbd_entry_id=kbd_entry_id,
+            image_seq=seq,
         )
+    _require_nonempty_vision_result(full_text, description)
 
     # 3. 组装 desc
     desc = _format_desc(screenshot_type, background, full_text, description)
