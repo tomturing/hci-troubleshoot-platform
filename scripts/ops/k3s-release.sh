@@ -19,7 +19,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
-# 默认发布集合。terminalBridge 是仅 dev/local 启用的可选服务，必须显式选择，避免生产默认发布改变 SSH 拓扑。
+# 默认发布集合。terminalBridge 和 diagnosisService 均为默认关闭的可选服务，必须显式选择。
 ALL_SERVICES="apiGateway,caseService,conversationService,schedulerService,kbService,customerUI,adminUI,openclaw"
 
 ENVIRONMENT="prod"
@@ -68,8 +68,8 @@ options:
   -h, --help                     显示帮助
 
 服务键可选值:
-  all（默认核心服务，不含 terminalBridge）
-  apiGateway, caseService, conversationService, schedulerService, kbService,
+  all（默认核心服务，不含 terminalBridge、diagnosisService）
+  apiGateway, caseService, conversationService, schedulerService, kbService, diagnosisService,
   customerUI, adminUI, terminalBridge, openclaw
 
 示例:
@@ -186,7 +186,7 @@ validate_services() {
   for svc in "${SELECTED_SERVICES[@]}"; do
     case "$svc" in
       apiGateway|caseService|conversationService|schedulerService|\
-      kbService|customerUI|adminUI|terminalBridge|openclaw) ;;
+      kbService|diagnosisService|customerUI|adminUI|terminalBridge|openclaw) ;;
       *) error "未知服务键: $svc，可选值请查看 --help"; exit 1 ;;
     esac
   done
@@ -355,6 +355,7 @@ service_key_to_deploy_name() {
     conversationService) echo "conversation-service" ;;
     schedulerService)    echo "scheduler-service" ;;
     kbService)           echo "kb-service" ;;
+    diagnosisService)    echo "diagnosis-service" ;;
     customerUI)          echo "customer-ui" ;;
     adminUI)             echo "admin-ui" ;;
     terminalBridge)      echo "terminal-bridge" ;;
@@ -370,6 +371,7 @@ service_key_to_repository() {
     conversationService) echo "hci-conversation-service" ;;
     schedulerService)    echo "hci-scheduler-service" ;;
     kbService)           echo "hci-kb-service" ;;
+    diagnosisService)    echo "hci-diagnosis-service" ;;
     customerUI)          echo "hci-customer-ui" ;;
     adminUI)             echo "hci-admin-ui" ;;
     terminalBridge)      echo "hci-terminal-bridge" ;;

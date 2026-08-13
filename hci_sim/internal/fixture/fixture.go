@@ -60,13 +60,15 @@ type Limits struct {
 }
 
 type Route struct {
-	ID       string    `json:"id"`
-	SignalID string    `json:"signal_id,omitempty"`
-	Variant  string    `json:"variant"`
-	RouteKey RouteKey  `json:"route_key"`
-	Result   ResultDef `json:"result"`
-	Stream   StreamDef `json:"stream"`
-	Fault    FaultDef  `json:"fault"`
+	ID           string    `json:"id"`
+	SignalID     string    `json:"signal_id,omitempty"`
+	ToolRevision int       `json:"tool_revision,omitempty"`
+	ToolChecksum string    `json:"tool_checksum,omitempty"`
+	Variant      string    `json:"variant"`
+	RouteKey     RouteKey  `json:"route_key"`
+	Result       ResultDef `json:"result"`
+	Stream       StreamDef `json:"stream"`
+	Fault        FaultDef  `json:"fault"`
 }
 
 // RouteKey 不允许打分、部分匹配或顺序依赖；所有字段共同决定唯一 Fixture。
@@ -208,6 +210,9 @@ func validateRoute(route Route, outputLimit int) error {
 	}
 	if route.RouteKey.Tool == "" || route.RouteKey.AcquisitionKey == "" || route.RouteKey.Node == "" || route.RouteKey.Container == "" || len(route.RouteKey.Argv) == 0 {
 		return fmt.Errorf("fixture route %s 缺少完整 RouteKey", route.ID)
+	}
+	if (route.ToolRevision == 0) != (route.ToolChecksum == "") || route.ToolRevision < 0 {
+		return fmt.Errorf("fixture route %s 的 Tool 修订与校验和必须同时提供", route.ID)
 	}
 	normalized, err := NormalizeArgv(route.RouteKey.Argv)
 	if err != nil {

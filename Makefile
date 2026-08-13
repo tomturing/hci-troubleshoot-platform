@@ -1,7 +1,7 @@
 # HCI智能排障平台 - Makefile
 # 依赖管理: uv (https://docs.astral.sh/uv/)
 
-.PHONY: help install dev-up dev-down db-sync test lint clean quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill local-deploy local-deploy-import gen-schemas schema-check
+.PHONY: help install dev-up dev-down db-sync diagnosis-dev-keys diagnosis-sample-preflight diagnosis-sample-postgres-preflight test lint clean quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill local-deploy local-deploy-import gen-schemas schema-check build-offline-collector test-offline-collector
 
 help:
 	@echo "HCI智能排障平台 - 可用命令:"
@@ -10,6 +10,9 @@ help:
 	@echo "  make install        - 安装所有依赖 (uv sync + pnpm install)"
 	@echo "  make dev-up         - 启动开发环境(Docker Compose)"
 	@echo "  make dev-down       - 停止开发环境"
+	@echo "  make diagnosis-dev-keys - 生成/校验本地离线诊断 RSA-3072 加密密钥"
+	@echo "  make diagnosis-sample-preflight - 启动前验证 5 篇在线/离线诊断 KBD 样例"
+	@echo "  make diagnosis-sample-postgres-preflight - 数据迁移后、服务启动前验证 5 篇 KBD 数据库闭环"
 	@echo "  make test           - 运行测试 (uv run pytest)"
 	@echo "  make lint           - 代码检查 (uv run ruff)"
 	@echo "  make clean          - 清理临时文件"
@@ -38,6 +41,8 @@ help:
 	@echo "  信号数据模型契约（RFC §6.1）:"
 	@echo "  make gen-schemas    - 从 ACQUIRER_ARGS_SCHEMA 导出 v2 JSON Schema 契约文件"
 	@echo "  make schema-check   - CI 契约校验：schema 合法 + fixtures + 漂移检测"
+	@echo "  make build-offline-collector - 构建 Linux x86_64 静态离线采集运行时"
+	@echo "  make test-offline-collector  - 运行 Go 离线采集运行时测试"
 
 install:
 	@echo "安装Python依赖 (uv sync)..."
@@ -45,13 +50,18 @@ install:
 	@echo "安装前端依赖..."
 	cd frontend && pnpm install
 
-dev-up:
+dev-up: diagnosis-dev-keys diagnosis-sample-preflight
 	@echo "Starting PostgreSQL & Redis..."
 	docker-compose --env-file .env -f deploy/docker/docker-compose.yml up -d postgres redis
 	@echo "Waiting for PostgreSQL to be ready..."
 	@until docker-compose -f deploy/docker/docker-compose.yml exec -T postgres pg_isready -U $${POSTGRES_USER:-hci_admin}; do sleep 1; done
 	@echo "Running database migrations..."
 	docker-compose --env-file .env -f deploy/docker/docker-compose.yml up --force-recreate db-migrate
+	@test "$$(docker inspect hci-db-migrate --format '{{.State.ExitCode}}')" = "0" || { \
+		echo "Database migration failed; inspect logs with: docker logs hci-db-migrate"; \
+		exit 1; \
+	}
+	$(MAKE) diagnosis-sample-postgres-preflight
 	@echo "Starting all services..."
 	docker-compose --env-file .env -f deploy/docker/docker-compose.yml up -d
 	@echo ""
@@ -62,10 +72,29 @@ dev-up:
 	@echo "  - Scheduler Service: http://localhost:8003"
 	@echo "  - Admin UI: http://localhost:3002"
 
+diagnosis-dev-keys:
+	@echo "检查本地离线诊断加密密钥..."
+	UV_CACHE_DIR=$${TMPDIR:-/tmp}/hci-uv-cache uv run --frozen python scripts/dev/ensure-diagnosis-dev-keys.py --env-file .env
+
+diagnosis-sample-preflight:
+	@echo "验证 5 篇 KBD 样例的发布、在线 Agent 与离线同步/诊断契约..."
+	PYTHONPATH=backend/kb-service:backend .venv/bin/pytest -q backend/kb-service/tests/test_kbd_diagnosis_sample_seed.py
+	PYTHONPATH=backend/agent-service:backend .venv/bin/pytest -q backend/agent-service/tests/unit/test_diagnosis_sample_contracts.py
+	PYTHONPATH=backend/diagnosis-service:backend .venv/bin/pytest -q backend/diagnosis-service/tests/unit/test_diagnosis_sample_contracts.py
+
+diagnosis-sample-postgres-preflight:
+	@echo "在 PostgreSQL 事务中验证 5 篇 KBD 的批量发布、离线同步、资源生成与诊断（结束后回滚）..."
+	RUN_KB_POSTGRES_INTEGRATION=1 TEST_DATABASE_URL=$${DIAGNOSIS_PREFLIGHT_DATABASE_URL:-postgresql+asyncpg://$${POSTGRES_USER:-hci_admin}:$${POSTGRES_PASSWORD:-dev_password_123}@localhost:15432/$${POSTGRES_DB:-hci_troubleshoot}} PYTHONPATH=backend/kb-service:backend .venv/bin/pytest -q backend/kb-service/tests/integration/test_kbd_diagnosis_samples_postgres.py
+	RUN_DIAGNOSIS_POSTGRES_INTEGRATION=1 TEST_DATABASE_URL=$${DIAGNOSIS_PREFLIGHT_DATABASE_URL:-postgresql+asyncpg://$${POSTGRES_USER:-hci_admin}:$${POSTGRES_PASSWORD:-dev_password_123}@localhost:15432/$${POSTGRES_DB:-hci_troubleshoot}} PYTHONPATH=backend/diagnosis-service:backend .venv/bin/pytest -q backend/diagnosis-service/tests/integration/test_diagnosis_samples_postgres.py
+
 db-sync:
 	@echo "Running database schema migration..."
 	@until docker-compose -f deploy/docker/docker-compose.yml exec -T postgres pg_isready -U $${POSTGRES_USER:-hci_admin}; do sleep 1; done
 	docker-compose --env-file .env -f deploy/docker/docker-compose.yml up --force-recreate db-migrate
+	@test "$$(docker inspect hci-db-migrate --format '{{.State.ExitCode}}')" = "0" || { \
+		echo "Database migration failed; inspect logs with: docker logs hci-db-migrate"; \
+		exit 1; \
+	}
 	@echo "Migration complete."
 
 dev-down:
@@ -80,6 +109,8 @@ test:
 	uv run pytest backend/conversation-service/tests/ -q
 	uv run pytest backend/scheduler-service/tests/ -q
 	uv run pytest backend/kb-service/tests/ -q
+	uv run pytest backend/diagnosis-service/tests/unit/ -q
+	$(MAKE) test-offline-collector
 	@echo "全部测试完成 ✓"
 
 lint:
@@ -155,3 +186,12 @@ schema-check:
 	@echo "运行信号 v2 JSON Schema 契约校验..."
 	python scripts/ci/check_signal_schemas.py
 
+build-offline-collector:
+	@echo "构建 Linux x86_64 静态离线采集运行时..."
+	cd backend/diagnosis-service/offline-collector && \
+		CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags="-s -w -buildid=" \
+		-o ../resources/bin/hci-collect-linux-amd64 .
+
+test-offline-collector:
+	@echo "运行 Go 离线采集运行时测试..."
+	cd backend/diagnosis-service/offline-collector && go test ./...

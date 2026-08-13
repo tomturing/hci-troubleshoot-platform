@@ -13,12 +13,13 @@ from typing import Any
 from shared.observability.langfuse import observe_tool
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
+from shared.signals.extractor import QFKExtractionError
+from shared.signals.matcher import evaluate_matcher
 
 from app.tools.acli.executor import exec_result_observation
 from app.tools.qfk.ai_extractor import ai_value_type_for_matcher, extract_ai_value, has_ai_extract
-from app.tools.qfk.extractor import QFKExtractionError, get_complete_output
+from app.tools.qfk.extractor import get_complete_output
 from app.tools.qfk.handlers import HandlerRegistry
-from app.tools.qfk.matcher import evaluate_matcher
 from app.tools.qfk.resolution import resolve_backend_signal
 from app.tools.qfk.signal import BackendSignal
 
@@ -187,12 +188,14 @@ async def qfk_exec(
     # Runtime 不伪称未探测的文件存在；实际执行得到的 aCLI 结果仍是最终现场证据。
     try:
         acquisition = resolve_backend_signal(signal)
-        # Producer mode is a read-only discovery path: it may execute an
-        # unprobed Catalog candidate so the returned output can become probe
-        # evidence. Match/consume mode remains hard-gated on verified.
-        if not acquisition.verified and execution_mode != "produce":
-            code = "QFK_RESOLUTION_BLOCKED" if acquisition.status.value == "blocked" else "QFK_RESOLUTION_UNVERIFIED"
-            raise ValueError(f"{code}: " + ("; ".join(issue.message for issue in acquisition.issues) or "执行前未获得 verified acquisition"))
+        # needs_probe 仅表示 Catalog 路径尚未在目标主机证明存在。它仍是受控只读
+        # 候选，允许交给 Bridge 执行，并以真实 exit code/stdout 作为现场探针证据；
+        # blocked 才是禁止执行的静态契约错误。日志候选路径会在下方有界展开。
+        if acquisition.status.value == "blocked":
+            raise ValueError(
+                "QFK_RESOLUTION_BLOCKED: "
+                + ("; ".join(issue.message for issue in acquisition.issues) or "采集契约被 Shared Runtime 阻断")
+            )
         resolution = acquisition.model_dump(mode="json")
     except Exception as e:
         logger.warning(event="qfk_resolution_failed", namespace=signal.namespace, error=str(e))
@@ -493,8 +496,7 @@ async def qfk_exec(
             and has_ai_extract(matcher_extract)
             and not (
                 matcher_type == "threshold"
-                and str(signal.matcher.get("aggregation") or "first_number")
-                in {"line_count", "duration_seconds"}
+                and str(signal.matcher.get("aggregation") or "first_number") in {"line_count", "duration_seconds"}
             )
         ):
             try:
@@ -523,9 +525,7 @@ async def qfk_exec(
                     output_mode=execution_mode,
                 )
             precomputed_values = (
-                [float(ai_result.value)]
-                if ai_matcher_type == "number"
-                else [float(item) for item in ai_result.value]
+                [float(ai_result.value)] if ai_matcher_type == "number" else [float(item) for item in ai_result.value]
             )
             precomputed_detail = {
                 "extract": {
@@ -567,18 +567,10 @@ async def qfk_exec(
         final_matched = bool(matcher_result.matched)
         matched_kws = list(matcher_result.detail.get("matched_keywords") or [])
         evidence = matcher_result.evidence
-        ai_value: Any | None = (
-            precomputed_detail.get("extract", {}).get("ai_value")
-            if precomputed_detail
-            else None
-        )
+        ai_value: Any | None = precomputed_detail.get("extract", {}).get("ai_value") if precomputed_detail else None
         # AI 只在确定性 Matcher 已真实命中时处理同一份完整候选日志。expected=False
         # 或 NOT 的“符合预期”不是正向日志命中，不允许借此凭空提取一个值。
-        if (
-            has_ai_extract(matcher_extract)
-            and bool(matcher_result.detail.get("hit"))
-            and precomputed_detail is None
-        ):
+        if has_ai_extract(matcher_extract) and bool(matcher_result.detail.get("hit")) and precomputed_detail is None:
             try:
                 ai_result = await extract_ai_value(
                     matcher_input,

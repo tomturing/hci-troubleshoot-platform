@@ -487,7 +487,7 @@ func terminalRunStatus(status string) bool {
 
 func runLease(args []string) error {
 	flags := flag.NewFlagSet("lease", flag.ContinueOnError)
-	scenarioID := flags.String("scenario", "kbd-27123", "场景 ID")
+	scenarioID := flags.String("scenario", "", "场景 ID（默认由 Bundle 的 KBD support_id 生成）")
 	testRunID := flags.String("test-run", "", "测试运行 ID")
 	variant := flags.String("variant", "positive-realistic", "fixture variant")
 	virtualNode := flags.String("virtual-node", "SIM-HCI-NODE-01", "虚拟节点")
@@ -513,6 +513,9 @@ func runLease(args []string) error {
 	now := time.Now().UTC()
 	if strings.TrimSpace(*testRunID) == "" {
 		*testRunID = "run-" + now.Format("20060102T150405Z")
+	}
+	if strings.TrimSpace(*scenarioID) == "" {
+		*scenarioID = "kbd-" + router.KBD().SupportID
 	}
 	leaseID := "lease-" + randomID()
 	token, err := lease.Sign(secret, lease.Claims{

@@ -18,10 +18,7 @@ from pathlib import Path
 
 SOURCE_URL = "http://acli.sangfor.com.cn:6888/commandList"
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CATALOG_PATHS = (
-    REPO_ROOT / "backend/agent-service/app/tools/acli/catalog/acli_command_catalog.json",
-    REPO_ROOT / "backend/kb-service/app/services/catalog/acli_command_catalog.json",
-)
+CATALOG_PATH = REPO_ROOT / "backend/shared/resolution/catalogs/acli_command_catalog.json"
 
 
 def _strip_tags(value: str) -> str:
@@ -66,10 +63,9 @@ def main() -> int:
         "commands": commands,
     }
 
-    for catalog_path in CATALOG_PATHS:
-        catalog_path.parent.mkdir(parents=True, exist_ok=True)
-        catalog_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        print(f"已写入 {catalog_path}，命令数：{len(commands)}")
+    CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CATALOG_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"已写入 {CATALOG_PATH}，命令数：{len(commands)}")
     return 0
 
 

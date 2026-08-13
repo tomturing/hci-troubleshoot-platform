@@ -72,11 +72,15 @@ def test_stage_banner_uses_the_same_blue_as_pipeline_summary(monkeypatch):
     monkeypatch.setenv("KBD_COLOR", "always")
     banner = _stage_banner(1, "数据抓取")
     formatter = _ConsoleFormatter("%(levelname)s %(message)s")
-    rendered = formatter.format(logging.makeLogRecord({
-        "levelname": "INFO",
-        "levelno": logging.INFO,
-        "msg": banner,
-    }))
+    rendered = formatter.format(
+        logging.makeLogRecord(
+            {
+                "levelname": "INFO",
+                "levelno": logging.INFO,
+                "msg": banner,
+            }
+        )
+    )
 
     assert rendered.startswith("\033[94m")
 
@@ -117,11 +121,15 @@ def test_info_plan_with_dependency_word_is_not_colored_as_error(monkeypatch):
     monkeypatch.delenv("NO_COLOR", raising=False)
     monkeypatch.setenv("KBD_COLOR", "always")
     formatter = _ConsoleFormatter("%(levelname)s %(message)s")
-    rendered = formatter.format(logging.makeLogRecord({
-        "levelname": "INFO",
-        "levelno": logging.INFO,
-        "msg": "重做策略：前置阶段未成功并会阻断目标阶段时补做",
-    }))
+    rendered = formatter.format(
+        logging.makeLogRecord(
+            {
+                "levelname": "INFO",
+                "levelno": logging.INFO,
+                "msg": "重做策略：前置阶段未成功并会阻断目标阶段时补做",
+            }
+        )
+    )
 
     assert "\033[31m" not in rendered
 
@@ -138,6 +146,34 @@ def test_wizard_command_is_removed():
         build_parser().parse_args(["wizard", "--help"])
 
     assert exc_info.value.code == 2
+
+
+def test_removed_pipeline_command_prints_task_migration_hint(monkeypatch, capsys):
+    from kbd.run import main
+
+    monkeypatch.setattr(sys, "argv", ["python -m data-pipeline.kbd.run", "pipeline", "--ids", "43487"])
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 2
+    error = capsys.readouterr().err
+    assert "pipeline 子命令已移除" in error
+    assert "task --ids 43487" in error
+
+
+def test_removed_pipeline_command_preserves_original_arguments(monkeypatch, capsys):
+    from kbd.run import main
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["python -m data-pipeline.kbd.run", "pipeline", "--ids", "39741,39643", "--json"],
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 2
+    assert "task --ids 39741,39643 --json" in capsys.readouterr().err
 
 
 def test_prompt_yes_no_accepts_standard_answers_and_default(monkeypatch):
@@ -171,11 +207,13 @@ def test_cli_history_selector_uses_recent_manifest(monkeypatch, tmp_path):
     from kbd import task_state
 
     monkeypatch.setattr(task_state.settings, "KBD_LOGS_DIR", tmp_path)
-    task_state.save_execution_manifest({
-        "execution_id": "20260809_103000",
-        "requested_ids": ["29351"],
-        "mode": "failed",
-    })
+    task_state.save_execution_manifest(
+        {
+            "execution_id": "20260809_103000",
+            "requested_ids": ["29351"],
+            "mode": "failed",
+        }
+    )
     monkeypatch.setattr("builtins.input", lambda _prompt: "1")
     assert _choose_history_run_id() == "20260809_103000"
 
@@ -184,11 +222,14 @@ def test_prompt_choice_reprompts_until_a_numbered_option(monkeypatch):
     answers = iter(["label", "2"])
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
 
-    assert _prompt_choice(
-        "请选择：",
-        (("1", "one", "第一项"), ("2", "two", "第二项")),
-        default="1",
-    ) == "two"
+    assert (
+        _prompt_choice(
+            "请选择：",
+            (("1", "one", "第一项"), ("2", "two", "第二项")),
+            default="1",
+        )
+        == "two"
+    )
 
 
 def test_pipeline_summary_table_has_consistent_visible_width(monkeypatch, capsys):
@@ -211,11 +252,7 @@ def test_pipeline_summary_table_has_consistent_visible_width(monkeypatch, capsys
         },
     )
 
-    lines = [
-        line
-        for line in capsys.readouterr().out.splitlines()
-        if line.startswith(("┌", "│", "├", "└"))
-    ]
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith(("┌", "│", "├", "└"))]
     assert lines
     assert len({_display_width(line) for line in lines}) == 1
     assert _display_width(lines[0]) == TERMINAL_LAYOUT_WIDTH
@@ -258,6 +295,27 @@ def test_pipeline_summary_does_not_mark_zero_work_import_as_blocked(monkeypatch,
     import_row = next(line for line in output.splitlines() if "语义导入" in line)
     assert "完成" in import_row
     assert "失败/阻断" not in import_row
+
+
+def test_pipeline_summary_does_not_call_warning_result_all_completed(monkeypatch, capsys):
+    monkeypatch.setenv("NO_COLOR", "1")
+    _print_pipeline_summary(
+        "20260812_163200",
+        {
+            "pipeline": {"success": True, "warning_steps": 1, "total_ids": 1, "completed_ids": 1},
+            "review_signals": {
+                "case_count": 1,
+                "case_status_counts": {"NEEDS_SIGNAL_REVIEW": 1},
+                "issue_counts": {"REJECTED_SIGNAL_CANDIDATE": 1},
+            },
+        },
+    )
+
+    output = capsys.readouterr().out
+    review_row = next(line for line in output.splitlines() if "统一信号审查" in line)
+    assert "需复核" in review_row
+    assert "处理完成，但有 1 项需要人工复核" in output
+    assert "总体结果   : 全部阶段完成" not in output
 
 
 def test_pipeline_summary_marks_unselected_zero_work_as_not_scheduled(monkeypatch, capsys):
@@ -399,9 +457,7 @@ async def test_review_input_reads_file_and_writes_report(tmp_path):
         ),
         encoding="utf-8",
     )
-    args = build_parser().parse_args(
-        ["review-input", "--file", str(source), "--output", str(output)]
-    )
+    args = build_parser().parse_args(["review-input", "--file", str(source), "--output", str(output)])
 
     exit_code = await _cmd_review_signals(args, "20260730_120000")
 
@@ -435,9 +491,7 @@ async def test_review_input_fail_on_blocked_is_opt_in(tmp_path):
     )
     parser = build_parser()
     normal = parser.parse_args(["review-input", "--file", str(source)])
-    strict = parser.parse_args(
-        ["review-input", "--file", str(source), "--fail-on-blocked"]
-    )
+    strict = parser.parse_args(["review-input", "--file", str(source), "--fail-on-blocked"])
 
     assert await _cmd_review_signals(normal, "20260730_120000") == 0
     assert await _cmd_review_signals(strict, "20260730_120001") == 1

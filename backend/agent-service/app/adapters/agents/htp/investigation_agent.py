@@ -30,7 +30,7 @@ from shared.clients import AIAssistantRegistry, DiagnosticItemClient, KBClient
 from shared.observability.logger import get_logger
 
 from app.adapters.agents.htp.kbd_differential import KBDDiagnostic
-from app.adapters.agents.htp.kbd_model import KBD, kbd_from_dict
+from shared.cdd.kbd_model import KBD, kbd_from_dict
 from app.adapters.agents.htp.react_engine import ReactEngine
 from app.adapters.agents.htp.sop_tools import (
     ConversationSopClient,

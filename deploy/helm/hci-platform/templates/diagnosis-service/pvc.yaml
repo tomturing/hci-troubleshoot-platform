@@ -1,0 +1,18 @@
+{{- if .Values.diagnosisService.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: diagnosis-data
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "diagnosis-service" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.diagnosisService.persistence.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.diagnosisService.persistence.size | quote }}
+{{- end }}

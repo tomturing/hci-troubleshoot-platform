@@ -93,11 +93,48 @@ async def lifespan(app: FastAPI):
     hits.set_dependencies(database_manager)  # 知识命中统计路由
     hci_sim.set_dependencies(database_manager)  # hci-sim 控制面只读 KBD Resolver
 
+    # 服务异常退出时进程内批量执行器会消失；启动后收敛超过安全窗口的遗留任务，
+    # 保留既有结果，并把未完成条目标为可重试中断，避免管理页永久显示“处理中”。
+    try:
+        reconciliation = await admin.reconcile_interrupted_batch_jobs(reason="service_restart")
+        if reconciliation["jobs"]:
+            logger.warning(
+                event="kbd_batch_jobs_reconciled_on_startup",
+                message="服务启动时已收敛遗留 KBD 批量任务",
+                reconciled_jobs=reconciliation["jobs"],
+                interrupted_items=reconciliation["items"],
+            )
+    except Exception as exc:
+        # 状态修复失败不应阻断知识库主服务启动；页面查询还会再次尝试收敛。
+        logger.exception(
+            event="kbd_batch_jobs_reconcile_failed",
+            message="服务启动时收敛遗留 KBD 批量任务失败",
+            error=str(exc),
+        )
+
     logger.info(event="service_started", message=f"{settings.SERVICE_NAME} ready")
 
     yield
 
     logger.info(event="service_stopping", message=f"Stopping {settings.SERVICE_NAME}")
+    try:
+        reconciliation = await admin.reconcile_interrupted_batch_jobs(
+            reason="service_shutdown",
+            stale_after_seconds=0,
+        )
+        if reconciliation["jobs"]:
+            logger.warning(
+                event="kbd_batch_jobs_reconciled_on_shutdown",
+                message="服务停止时已收敛未完成的 KBD 批量任务",
+                reconciled_jobs=reconciliation["jobs"],
+                interrupted_items=reconciliation["items"],
+            )
+    except Exception as exc:
+        logger.exception(
+            event="kbd_batch_jobs_shutdown_reconcile_failed",
+            message="服务停止时收敛 KBD 批量任务失败",
+            error=str(exc),
+        )
     await database_manager.close()
 
 

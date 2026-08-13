@@ -1,6 +1,6 @@
 {{- if .Values.dbSeed.enabled }}
 # 种子数据 ConfigMap — 由 db-seed-job 挂载执行
-# 三个种子文件由 Helm chart 在打包时通过 .Files.Glob 注入，
+# 种子文件由 Helm chart 在打包时通过 .Files.Glob 注入，
 # 与 database/seeds/*.sql 保持同步（修改源文件后重新 helm upgrade 即可生效）。
 apiVersion: v1
 kind: ConfigMap

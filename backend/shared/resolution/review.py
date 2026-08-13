@@ -18,10 +18,11 @@ from typing import Any
 
 from jsonschema import ValidationError
 from pydantic import BaseModel, ConfigDict, Field
+
 from shared.resolution.models import ResolutionStatus, SignalIntent
 from shared.resolution.runtime import SharedResolutionRuntime, get_resolution_runtime
 from shared.schemas.acquirer_args import validate_acquire_args
-from shared.schemas.signal_schema import validate_signals_json
+from shared.schemas.signal_schema import validate_kbd_publishable_signals_json, validate_signals_json
 
 
 class SignalReviewFeature(StrEnum):
@@ -183,8 +184,17 @@ def review_signal_document(
         )
 
     try:
-        validate_signals_json(document)
+        if feature is SignalReviewFeature.PUBLISH:
+            validate_kbd_publishable_signals_json(document)
+        else:
+            validate_signals_json(document)
     except ValidationError as exc:
+        validation_message = str(exc.message or exc)
+        issue_code = (
+            "KBD_PRODUCER_SIGNAL_MISSING"
+            if "至少需要 1 条生产者信号" in validation_message
+            else "SIGNAL_SCHEMA_INVALID"
+        )
         path = list(exc.absolute_path)
         signal_index = path[1] if len(path) >= 2 and path[0] == "signals" and isinstance(path[1], int) else None
         signal = (
@@ -195,8 +205,8 @@ def review_signal_document(
         field = ".".join(str(part) for part in path[2:]) if signal_index is not None else None
         issues.append(
             _review_issue(
-                "SIGNAL_SCHEMA_INVALID",
-                str(exc.message or exc),
+                issue_code,
+                validation_message,
                 source="shared_signal_schema",
                 signal_id=str(signal.get("id") or f"signals[{signal_index}]") if signal is not None else None,
                 signal_index=signal_index,
@@ -208,11 +218,7 @@ def review_signal_document(
         schema_invalid_indexes = set()
 
     for index, signal in enumerate(signals):
-        signal_id = (
-            str(signal.get("id") or f"signals[{index}]")
-            if isinstance(signal, dict)
-            else f"signals[{index}]"
-        )
+        signal_id = str(signal.get("id") or f"signals[{index}]") if isinstance(signal, dict) else f"signals[{index}]"
         per_signal: list[SignalReviewIssue] = []
         if not isinstance(signal, dict):
             issue = _review_issue(
@@ -329,9 +335,7 @@ def review_signal_document(
         # the per-signal status as well as the aggregate issue list; otherwise
         # reports would misleadingly count an invalid signal as ``verified``.
         effective_status = (
-            ResolutionStatus.BLOCKED
-            if not args_ok or index in schema_invalid_indexes
-            else acquisition.status
+            ResolutionStatus.BLOCKED if not args_ok or index in schema_invalid_indexes else acquisition.status
         )
         signal_reviews.append(
             SignalRuntimeReview(

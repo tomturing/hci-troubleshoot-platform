@@ -18,6 +18,7 @@ POST /api/admin/sop/{sop_id}/extract-signals
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -28,7 +29,9 @@ from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from jsonschema import ValidationError
 from pydantic import BaseModel, Field
+from shared.observability.langfuse import observe_llm_generation, update_observation
 from shared.observability.logger import get_logger
+from shared.observability.metrics import KBD_LLM_REQUESTS_TOTAL, KBD_LLM_TOKENS_TOTAL
 from shared.observability.otel import get_current_trace_id
 from shared.resolution.review import SignalReviewFeature, review_signal_document
 from shared.schemas.acquirer_args import (
@@ -79,13 +82,28 @@ _db_manager: DatabaseManager | None = None
 # LLM 配置（与 classify.py 同源 LLM_* 命名）
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").rstrip("/")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
-# 抽取可用更强模型；未配置则回退到分类模型
-LLM_MODEL = os.environ.get("EXTRACT_SIGNALS_MODEL", os.environ.get("CLASSIFY_MODEL", "qwen3.7-plus"))
+_EXTRACT_BASE_URL = (os.environ.get("EXTRACT_SIGNALS_BASE_URL") or LLM_BASE_URL).rstrip("/")
+_EXTRACT_API_KEY = os.environ.get("EXTRACT_SIGNALS_API_KEY") or LLM_API_KEY
+
+
+def _resolve_extract_model() -> str:
+    """按专用模型、分类模型、平台默认模型依次回退，并忽略已注入的空字符串。"""
+
+    for env_name in ("EXTRACT_SIGNALS_MODEL", "CLASSIFY_MODEL", "LLM_DEFAULT_MODEL"):
+        value = str(os.environ.get(env_name) or "").strip()
+        if value:
+            return value
+    return "deepseek-v4-flash"
+
+
+# 抽取可用更强模型；未配置或被 Compose 注入空值时回退到分类/平台默认模型。
+LLM_MODEL = _resolve_extract_model()
 # 是否启用思维链（与 classify.py / vision_processor.py 统一由 LLM_ENABLE_THINKING 控制，默认关闭。
 # 推理模型（glm-5.2 / deepseek-v4-flash）开启 thinking 时会先消耗大量 reasoning token，
 # 导致 json_object 正文被挤出 max_tokens 预算 —— 这正是「LLM 响应格式错误」的根因。）
 LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "false").lower() in ("1", "true", "yes", "on")
 LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "120"))
+EXTRACT_SIGNALS_MAX_TOKENS = max(2048, int(os.environ.get("EXTRACT_SIGNALS_MAX_TOKENS", "16384")))
 
 # Prompt 名称（system_prompt 表热加载，admin-ui 可在线编辑）
 # 2026-07-23：升级为 kbd_extract_signals_v2 —— LLM 直接产出 v2 嵌套结构，
@@ -613,6 +631,34 @@ def _validate_signal(
     return True, None
 
 
+def _normalize_simple_match_extract(signal: dict[str, Any]) -> bool:
+    """为整段 stdout 的简单 Matcher 和行数阈值补齐等价取值配置。
+
+    keyword/regex/state 只需要在命令标准输出中做文本判定时，模型偶尔会遗漏
+    ``match.extract``。该默认值不筛行、不选列、不改变匹配范围，因此可以由平台
+    确定性补齐。threshold + line_count 同样只统计完整 stdout 的行数，可安全补齐；
+    其他 threshold/delta/trend 数值判定仍必须由模型明确声明取值方式。
+    """
+
+    matcher = signal.get("match")
+    if not isinstance(matcher, dict) or isinstance(matcher.get("extract"), dict):
+        return False
+    simple_text_matcher = matcher.get("type") in {"keyword", "regex", "state"}
+    full_stdout_line_count = (
+        matcher.get("type") == "threshold"
+        and matcher.get("aggregation") == "line_count"
+    )
+    if not simple_text_matcher and not full_stdout_line_count:
+        return False
+    matcher["extract"] = {
+        "type": "text",
+        "rows": {"mode": "all"},
+        "cardinality": "all",
+        "source": "stdout",
+    }
+    return True
+
+
 def _qfk_catalog_violation(tool: str, args: dict[str, Any]) -> str | None:
     """把 Proposal 编译为运行时同形命令，并以 aCLI catalog 做存在性门禁。"""
 
@@ -767,63 +813,223 @@ def _image_provenance_violation(
     return None
 
 
-async def _call_llm(prompt: str) -> dict[str, Any]:
+def _decode_llm_json_object(content: str) -> dict[str, Any]:
+    """解析模型 JSON，并兼容完整响应被 Markdown 代码块包裹的情况。"""
+
+    normalized = content.strip().lstrip("\ufeff")
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", normalized, flags=re.IGNORECASE | re.DOTALL)
+    if fenced:
+        normalized = fenced.group(1).strip()
+    payload = json.loads(normalized)
+    if not isinstance(payload, dict):
+        raise ValueError("LLM 顶层响应必须是 JSON 对象")
+    return payload
+
+
+async def _call_llm(prompt: str, *, prompt_revision: str = "") -> dict[str, Any]:
     """调用 LLM API（json_object 模式），返回解析后的 dict。
 
     2026-07-23 修复：原 max_tokens=2000 对推理模型（glm-5.2 / deepseek-v4-flash）不足——
     思维链 reasoning_content 会先耗尽 token 预算，使 message.content 为空、
     json.loads("") 报「LLM 响应格式错误」。现统一：
       1) 对齐 classify.py / vision_processor.py，显式关闭思维链（enable_thinking=false）；
-      2) max_tokens 提升至 8192，为长 KBD 文档 / 长输出预留余量；
+      2) max_tokens 独立配置，默认为 16384，为长 KBD 文档 / 长输出预留余量；
       3) 对空 content 做显式防御，避免把「被 token 截断」暴露成模糊的 JSON 解析失败。
     """
     from openai import AsyncOpenAI
 
-    if not LLM_API_KEY:
+    if not _EXTRACT_API_KEY:
         raise HTTPException(status_code=503, detail="LLM_API_KEY 未配置")
 
     client = AsyncOpenAI(
-        api_key=LLM_API_KEY,
-        base_url=LLM_BASE_URL,
+        api_key=_EXTRACT_API_KEY,
+        base_url=_EXTRACT_BASE_URL,
         timeout=LLM_TIMEOUT,
         # 重试由共享治理器负责，避免 SDK/路由双重重试。
         max_retries=0,
     )
-    try:
-        async def _call():
+    format_attempts = min(3, max(1, int(os.environ.get("EXTRACT_SIGNALS_FORMAT_MAX_ATTEMPTS", "2"))))
+    last_format_error = ""
+    last_error_code = "MALFORMED_JSON"
+    for format_attempt in range(1, format_attempts + 1):
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是 HCI 关键信号抽取专家。只输出可被标准 json.loads 严格解析的 JSON 对象；"
+                    "不得使用注释、尾随逗号或 Markdown；字符串内部的双引号和反斜杠必须按 JSON 规则转义。"
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+        if format_attempt > 1:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "上一轮响应不是合法 JSON。请重新生成完整结果，不要复用错误片段；"
+                        "逐项检查所有 command、pattern、evidence 字符串中的双引号和反斜杠转义；"
+                        "只保留输入中有直接诊断证据的 Candidate，省略重复说明，使用紧凑 JSON。"
+                    ),
+                }
+            )
+
+        async def _call(current_messages: list[dict[str, str]] = messages):
             return await client.chat.completions.create(
                 model=LLM_MODEL,
-                messages=[
-                    {"role": "system", "content": "你是 HCI 关键信号抽取专家，输出严格遵循 JSON 格式。"},
-                    {"role": "user", "content": prompt},
-                ],
+                messages=current_messages,
                 temperature=0.0,
-                max_tokens=8192,
+                max_tokens=EXTRACT_SIGNALS_MAX_TOKENS,
                 response_format={"type": "json_object"},
                 extra_body={"enable_thinking": LLM_ENABLE_THINKING},
             )
 
-        response = await call_with_llm_governance("extract_signals", _call)
-        content = (response.choices[0].message.content or "").strip()
+        try:
+            with observe_llm_generation(
+                operation="extract_signals",
+                model=LLM_MODEL,
+                input={"messages": messages},
+                metadata={
+                    "prompt_name": _EXTRACT_PROMPT_NAME,
+                    "prompt_revision": prompt_revision,
+                    "format_attempt": format_attempt,
+                    "format_max_attempts": format_attempts,
+                },
+                model_parameters={
+                    "temperature": 0.0,
+                    "max_tokens": EXTRACT_SIGNALS_MAX_TOKENS,
+                    "enable_thinking": LLM_ENABLE_THINKING,
+                    "response_format": "json_object",
+                },
+            ) as observation:
+                response = await call_with_llm_governance("extract_signals", _call)
+                content = (response.choices[0].message.content or "").strip()
+                finish_reason = str(getattr(response.choices[0], "finish_reason", None) or "unknown")
+                usage = getattr(response, "usage", None)
+                prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+                completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+                total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+                truncated = finish_reason == "length"
+                parsed_payload: dict[str, Any] | None = None
+                parse_error: json.JSONDecodeError | ValueError | None = None
+                if content and not truncated:
+                    try:
+                        parsed_payload = _decode_llm_json_object(content)
+                    except (json.JSONDecodeError, ValueError) as exc:
+                        parse_error = exc
+                KBD_LLM_REQUESTS_TOTAL.labels(
+                    operation="extract_signals",
+                    model=LLM_MODEL,
+                    status="error" if truncated or not content or parse_error is not None else "success",
+                    finish_reason=finish_reason,
+                ).inc()
+                for token_type, value in (
+                    ("input", prompt_tokens),
+                    ("output", completion_tokens),
+                    ("total", total_tokens),
+                ):
+                    if value:
+                        KBD_LLM_TOKENS_TOTAL.labels(
+                            operation="extract_signals", model=LLM_MODEL, type=token_type
+                        ).inc(value)
+                update_observation(
+                    observation,
+                    output={"content": content},
+                    metadata={
+                        "finish_reason": finish_reason,
+                        "response_chars": len(content),
+                        "format_attempt": format_attempt,
+                    },
+                    usage_details={"input": prompt_tokens, "output": completion_tokens, "total": total_tokens},
+                    level="ERROR" if truncated or not content or parse_error is not None else None,
+                    status_message=(
+                        "信号抽取结果被截断"
+                        if truncated
+                        else ("信号抽取结果为空" if not content else (str(parse_error) if parse_error else None))
+                    ),
+                )
+        except Exception as exc:
+            KBD_LLM_REQUESTS_TOTAL.labels(
+                operation="extract_signals",
+                model=LLM_MODEL,
+                status="error",
+                finish_reason="transport_error",
+            ).inc()
+            logger.error("extract_signals LLM 调用失败: %s", exc)
+            raise HTTPException(status_code=503, detail=f"LLM API 调用失败: {exc}") from exc
+
+        if finish_reason == "length":
+            last_error_code = "OUTPUT_TRUNCATED"
+            last_format_error = (
+                f"模型输出达到长度上限（finish_reason=length，response_chars={len(content)}，"
+                f"max_tokens={EXTRACT_SIGNALS_MAX_TOKENS}）"
+            )
+            # 相同输入、模型与预算下重新生成完整 v2 JSON 会稳定复现截断；
+            # 不再浪费第二个长调用，由批次错误分类和后续分段抽取负责恢复。
+            break
+        if parsed_payload is not None:
+            return parsed_payload
         if not content:
-            # 防御：模型在 max_tokens 内仅产出思维链、未给出 JSON 正文（finish_reason=length）
-            finish_reason = getattr(response.choices[0], "finish_reason", None)
-            logger.error(
-                "extract_signals LLM 未返回 JSON 正文: finish_reason=%s model=%s",
-                finish_reason,
-                LLM_MODEL,
-            )
-            raise HTTPException(
-                status_code=502,
-                detail=f"LLM 未返回有效 JSON 内容（finish_reason={finish_reason}，可能因思维链耗尽 token 预算）",
-            )
-        return json.loads(content)
-    except json.JSONDecodeError as e:
-        logger.error("extract_signals LLM 响应 JSON 解析失败: %s", e)
-        raise HTTPException(status_code=500, detail="LLM 响应格式错误") from e
-    except Exception as e:
-        logger.error("extract_signals LLM 调用失败: %s", e)
-        raise HTTPException(status_code=503, detail=f"LLM API 调用失败: {e}") from e
+            last_error_code = "EMPTY_LLM_RESPONSE"
+            last_format_error = f"模型返回空内容（finish_reason={finish_reason}）"
+        else:
+            if parse_error is not None:
+                exc = parse_error
+                last_error_code = (
+                    "TRUNCATED_JSON"
+                    if isinstance(exc, json.JSONDecodeError) and "Unterminated string" in str(exc)
+                    else "MALFORMED_JSON"
+                )
+                last_format_error = str(exc)
+                error_line = exc.lineno if isinstance(exc, json.JSONDecodeError) else None
+                error_column = exc.colno if isinstance(exc, json.JSONDecodeError) else None
+                logger.warning(
+                    event="extract_signals_json_format_retry",
+                    message="信号抽取模型返回非合法 JSON，将使用纠错指令重新生成",
+                    model=LLM_MODEL,
+                    format_attempt=format_attempt,
+                    format_max_attempts=format_attempts,
+                    response_length=len(content),
+                    error_line=error_line,
+                    error_column=error_column,
+                    error=str(exc),
+                )
+
+        if format_attempt < format_attempts:
+            continue
+        logger.error(
+            event="extract_signals_json_format_gave_up",
+            message="信号抽取模型连续返回非合法 JSON",
+            model=LLM_MODEL,
+            format_attempts=format_attempts,
+            error=last_format_error,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": last_error_code,
+                "message": f"LLM 信号抽取结果不完整：{last_format_error}",
+                "retryable": True,
+                "finish_reason": finish_reason,
+                "model": LLM_MODEL,
+                "max_tokens": EXTRACT_SIGNALS_MAX_TOKENS,
+                "format_attempts": format_attempt,
+            },
+        )
+
+    # OUTPUT_TRUNCATED 会提前 break，不做同策略重试；在循环外返回同一结构化错误。
+    raise HTTPException(
+        status_code=502,
+        detail={
+            "code": last_error_code,
+            "message": f"LLM 信号抽取结果不完整：{last_format_error}",
+            "retryable": True,
+            "finish_reason": finish_reason,
+            "model": LLM_MODEL,
+            "max_tokens": EXTRACT_SIGNALS_MAX_TOKENS,
+            "format_attempts": format_attempt,
+        },
+    )
 
 
 def _normalize_contract_variables(proposed: Any) -> dict[str, dict[str, str]]:
@@ -1054,6 +1260,7 @@ def _validate_and_collect_signals(
     for signal in raw_signals:
         if isinstance(signal, dict):
             _normalize_config_file_read(signal)
+            _normalize_simple_match_extract(signal)
     _normalize_derived_file_assertions(raw_signals)
     _normalize_generated_timeouts(raw_signals)
 
@@ -1520,7 +1727,8 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
         image_evidence=image_evidence_text,
     )
 
-    llm_result = await _call_llm(prompt)
+    prompt_revision = hashlib.sha256(prompt_template.encode("utf-8")).hexdigest()
+    llm_result = await _call_llm(prompt, prompt_revision=prompt_revision)
     raw_signals = llm_result.get("candidates")
     if raw_signals is None:
         raw_signals = llm_result.get("signals", [])
@@ -1655,7 +1863,8 @@ async def extract_signals_for_sop(db_manager: DatabaseManager, sop_id: int) -> d
         image_evidence="[]",
     )
 
-    llm_result = await _call_llm(prompt)
+    prompt_revision = hashlib.sha256(prompt_template.encode("utf-8")).hexdigest()
+    llm_result = await _call_llm(prompt, prompt_revision=prompt_revision)
     raw_signals = llm_result.get("candidates")
     if raw_signals is None:
         raw_signals = llm_result.get("signals", [])

@@ -30,27 +30,21 @@ type capabilityResponse struct {
 }
 
 type resolvedKbd struct {
-	SupportID            string `json:"support_id"`
-	KBDRevision          int    `json:"kbd_revision"`
-	KBDChecksum          string `json:"kbd_checksum"`
-	SignalsDigest        string `json:"signals_digest"`
-	ToolContractRevision string `json:"tool_contract_revision"`
-	PolicyRevision       string `json:"policy_revision"`
+	SupportID            string           `json:"support_id"`
+	KBDRevision          int              `json:"kbd_revision"`
+	KBDChecksum          string           `json:"kbd_checksum"`
+	SignalsDigest        string           `json:"signals_digest"`
+	ToolContractRevision string           `json:"tool_contract_revision"`
+	PolicyRevision       string           `json:"policy_revision"`
+	SyntheticRoutes      []syntheticRoute `json:"synthetic_routes"`
 }
 
 type syntheticRoute struct {
-	Keyword string
-	Limit   string
-}
-
-// syntheticCatalog 是故意很小的白名单。扩大范围必须以 Signal schema、命令契约和
-// 独立验证为依据，不能根据 support_id 猜测客户环境。
-var syntheticCatalog = map[string]syntheticRoute{
-	"27736": {Keyword: "设置集群IP失败", Limit: "100"},
-	"34164": {Keyword: "新建虚拟机", Limit: "1"},
-	// KBD23821 的真实 published Signal 使用 qkv_task 关键词“迁移虚拟机”，
-	// 仅用于 positive-minimal 的信号契约验收，不代表真实迁移 Artifact。
-	"23821": {Keyword: "迁移虚拟机", Limit: "1"},
+	SignalID     string   `json:"signal_id"`
+	Tool         string   `json:"tool"`
+	Argv         []string `json:"argv"`
+	ToolRevision int      `json:"tool_revision"`
+	ToolChecksum string   `json:"tool_checksum"`
 }
 
 func runBootstrap(args []string) error {
@@ -73,10 +67,6 @@ func runBootstrap(args []string) error {
 	if strings.TrimSpace(*supportID) == "" {
 		return errors.New("必须指定 --kbd-id")
 	}
-	catalog, ok := syntheticCatalog[strings.TrimSpace(*supportID)]
-	if !ok {
-		return fmt.Errorf("SYNTHETIC_ROUTE_UNSUPPORTED: KBD %s 不在 positive-minimal 白名单中", *supportID)
-	}
 	if len([]byte(*secret)) < 32 {
 		return errors.New("--lease-key 或 HCI_SIM_LEASE_HMAC_KEY 至少需要 32 字节")
 	}
@@ -92,10 +82,13 @@ func runBootstrap(args []string) error {
 	}
 	resolved := capability.Resolved
 	if resolved.SupportID != *supportID || resolved.KBDRevision < 1 || strings.TrimSpace(resolved.KBDChecksum) == "" || strings.TrimSpace(resolved.SignalsDigest) == "" ||
-		strings.TrimSpace(resolved.ToolContractRevision) == "" || strings.TrimSpace(resolved.PolicyRevision) == "" {
+		strings.TrimSpace(resolved.ToolContractRevision) == "" || strings.TrimSpace(resolved.PolicyRevision) == "" || len(resolved.SyntheticRoutes) == 0 {
 		return fmt.Errorf("capability_gap: C1 resolved 输入与请求 KBD %s 不一致或不完整", *supportID)
 	}
-	manifest := buildSyntheticManifest(resolved, catalog, *node, *container)
+	manifest, err := buildSyntheticManifest(resolved, *node, *container)
+	if err != nil {
+		return err
+	}
 	manifest.Bundle.Digest = fixture.ComputeBundleDigest(manifest)
 	raw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -127,6 +120,14 @@ func runBootstrap(args []string) error {
 	if err := os.WriteFile(manifestPath, raw, 0600); err != nil {
 		return err
 	}
+	recommendedCommands := make([]string, 0, len(resolved.SyntheticRoutes))
+	for _, route := range resolved.SyntheticRoutes {
+		recommendedCommands = append(recommendedCommands, shellDisplay(route.Argv))
+	}
+	recommendedCommand := ""
+	if len(recommendedCommands) > 0 {
+		recommendedCommand = recommendedCommands[0]
+	}
 	connection := map[string]any{
 		"test_run_id": testRunID, "scenario_id": scenarioID, "support_id": *supportID,
 		"issued_at": now.Format(time.RFC3339), "expires_at": expires.Format(time.RFC3339),
@@ -135,7 +136,7 @@ func runBootstrap(args []string) error {
 		"bundle_digest": manifest.Bundle.Digest, "virtual_node_id": *node, "container": *container,
 		"connection": map[string]any{"host": *connectionHost, "port": *connectionPort, "username": "sim", "auth_type": "lease", "password": token, "execution_mode": "sim-ssh", "test_run_id": testRunID},
 		"synthetic":  true, "not_real_artifact": true, "facts_boundary": "仅验证 Signal 合约与 sim-ssh 路由；不代表真实 Artifact/真实 HCI E2E。",
-		"manifest_path": manifestPath, "recommended_command": fmt.Sprintf("qkv_task --keyword %q --limit %s --is_failed true", catalog.Keyword, catalog.Limit),
+		"manifest_path": manifestPath, "recommended_command": recommendedCommand, "recommended_commands": recommendedCommands,
 	}
 	connectionRaw, err := json.MarshalIndent(connection, "", "  ")
 	if err != nil {
@@ -174,15 +175,62 @@ func fetchCapability(baseURL, token, supportID string) (capabilityResponse, erro
 	return result, nil
 }
 
-func buildSyntheticManifest(resolved *resolvedKbd, route syntheticRoute, node, container string) fixture.Manifest {
-	argv := []string{"qkv_task", "--keyword", route.Keyword, "--limit", route.Limit, "--is_failed", "true"}
+func buildSyntheticManifest(resolved *resolvedKbd, node, container string) (fixture.Manifest, error) {
+	routes := make([]fixture.Route, 0, len(resolved.SyntheticRoutes))
+	seen := make(map[string]struct{}, len(resolved.SyntheticRoutes))
+	for index, route := range resolved.SyntheticRoutes {
+		if strings.TrimSpace(route.SignalID) == "" || strings.TrimSpace(route.Tool) == "" || route.ToolRevision < 1 || strings.TrimSpace(route.ToolChecksum) == "" {
+			return fixture.Manifest{}, fmt.Errorf("capability_gap: synthetic route %d 缺少 Signal 或 Tool 修订事实", index)
+		}
+		argv, err := fixture.NormalizeArgv(route.Argv)
+		if err != nil {
+			return fixture.Manifest{}, fmt.Errorf("capability_gap: Signal %s argv 无效: %w", route.SignalID, err)
+		}
+		if len(argv) == 0 || argv[0] != "acli" {
+			return fixture.Manifest{}, fmt.Errorf("capability_gap: Signal %s 不是受控 aCLI 只读路由", route.SignalID)
+		}
+		key := strings.Join(argv, "\x1f")
+		if _, exists := seen[key]; exists {
+			return fixture.Manifest{}, fmt.Errorf("capability_gap: Signal %s 与其他 Signal 生成了重复 RouteKey", route.SignalID)
+		}
+		seen[key] = struct{}{}
+		acquisitionKey := argv[0]
+		if len(argv) > 1 {
+			acquisitionKey += ":" + argv[1]
+		}
+		routes = append(routes, fixture.Route{
+			ID:           fmt.Sprintf("synthetic-%s-%03d", resolved.SupportID, index+1),
+			SignalID:     route.SignalID,
+			ToolRevision: route.ToolRevision,
+			ToolChecksum: route.ToolChecksum,
+			Variant:      "positive-minimal",
+			RouteKey:     fixture.RouteKey{Tool: argv[0], AcquisitionKey: acquisitionKey, Argv: argv, Node: node, Container: container},
+			Result: fixture.ResultDef{ExitCode: 0, Stdout: fmt.Sprintf(
+				"{\"synthetic\":true,\"support_id\":%q,\"signal_id\":%q,\"status\":\"matched\",\"records\":[{\"synthetic_record\":true}]}\n",
+				resolved.SupportID, route.SignalID,
+			)},
+			Fault: fixture.FaultDef{Type: fixture.FaultNone},
+		})
+	}
 	return fixture.Manifest{
 		SchemaVersion: fixture.SchemaVersion,
 		Bundle:        fixture.BundleRef{Status: "published"},
 		KBD:           fixture.KBDRef{SupportID: resolved.SupportID, Revision: resolved.KBDRevision, Checksum: "sha256:" + strings.TrimPrefix(resolved.KBDChecksum, "sha256:")},
 		Contracts:     fixture.Contracts{ToolRevision: resolved.ToolContractRevision, PolicyRevision: resolved.PolicyRevision},
 		Variables:     map[string]string{"SYNTHETIC": "true", "FACTS_BOUNDARY": "signal-contract-only", "SIGNALS_DIGEST": resolved.SignalsDigest},
-		Limits:        fixture.Limits{MaxRoutes: 1, MaxOutputBytesPerCommand: 4096, MaxBundleBytes: 65536},
-		Routes:        []fixture.Route{{ID: "synthetic-" + resolved.SupportID + "-sig-001", SignalID: "sig_001", Variant: "positive-minimal", RouteKey: fixture.RouteKey{Tool: "qkv_task", AcquisitionKey: "qkv_task:--keyword", Argv: argv, Node: node, Container: container}, Result: fixture.ResultDef{ExitCode: 0, Stdout: fmt.Sprintf("{\"synthetic\":true,\"support_id\":%q,\"signal_id\":\"sig_001\",\"status\":\"failed\",\"keyword\":%q,\"records\":[{\"synthetic_record\":true}]}\n", resolved.SupportID, route.Keyword)}, Fault: fixture.FaultDef{Type: fixture.FaultNone}}},
+		Limits:        fixture.Limits{MaxRoutes: len(routes), MaxOutputBytesPerCommand: 4096, MaxBundleBytes: 65536},
+		Routes:        routes,
+	}, nil
+}
+
+func shellDisplay(argv []string) string {
+	parts := make([]string, 0, len(argv))
+	for _, value := range argv {
+		if value != "" && !strings.ContainsAny(value, " \t'\"") {
+			parts = append(parts, value)
+			continue
+		}
+		parts = append(parts, "'"+strings.ReplaceAll(value, "'", "'\\''")+"'")
 	}
+	return strings.Join(parts, " ")
 }

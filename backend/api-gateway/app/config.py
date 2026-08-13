@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     AGENT_SERVICE_URL: str = "http://agent-service:8005"
     HCI_SIM_URL: str = "http://hci-sim.hci-sim-dev.svc:8080"
     HCI_SIM_CONTROL_TOKEN: str = ""
+    DIAGNOSIS_SERVICE_URL: str = "http://diagnosis-service:8008"
+    DIAGNOSIS_IDENTITY_MODE: str = "internal"
 
     # 内部服务间 API 鉴权 Token
     INTERNAL_API_TOKEN: str = "hci-dev-internal-token"

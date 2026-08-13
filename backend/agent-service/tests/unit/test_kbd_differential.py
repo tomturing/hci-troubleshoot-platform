@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from app.adapters.agents.htp.cdd import SignalOutcome
+from shared.cdd import SignalOutcome
 from app.adapters.agents.htp.kbd_differential import KBDDiagnostic, StepResult, _signal_requires_human
 from app.tools.qfk.handlers import SystemHandler
 from app.tools.qfk.signal import BackendSignal

@@ -1,0 +1,377 @@
+-- ============================================================
+-- Seed 数据：tool_definition 表（Agent 工具体系 v2.0）
+-- Version : 20260528
+-- Issue   : T-TOOL-10
+-- 说明    : 插入工具定义记录；2026-07-16 删除 6 个低频工具（acli_plugin_asys / acli_plugin_netdoctor / acli_plugin_vm_start / acli_plugin_vm_suspend / get_cluster_detail / get_vm_list），详见 docs/solution/agent/02-架构设计/工具命名规范统一与工具集精简决策.md
+-- 幂等键  : tool_name（ON CONFLICT DO UPDATE）
+-- ============================================================
+
+-- ─── SCP 工具（4个，云端直接调用 SCP REST API）────────────────────────────
+-- ─── 前置信息查询工具（4个，通过 bridge relay 执行 acli 命令）─────────────
+
+INSERT INTO tool_definition (
+    tool_name, display_name, category, description,
+    usage_template, parameters_schema, risk_level, is_active
+) VALUES (
+    'get_active_alerts',
+    '查询活跃告警',
+    'acli',
+    '查询 HCI 平台当前活跃告警列表（通过 acli --formatter json alert list）。不需要任何参数。',
+    'acli --formatter json alert list',
+    '{
+        "type": "object",
+        "properties": {
+            "node_ip": {
+                "type": "string",
+                "description": "目标节点 IP（可选）"
+            }
+        },
+        "required": []
+    }',
+    1,
+    true
+) ON CONFLICT (tool_name) DO UPDATE SET
+    display_name = EXCLUDED.display_name,
+    category = EXCLUDED.category,
+    description = EXCLUDED.description,
+    usage_template = EXCLUDED.usage_template,
+    parameters_schema = EXCLUDED.parameters_schema,
+    risk_level = EXCLUDED.risk_level,
+    is_active = EXCLUDED.is_active,
+    updated_at = NOW();
+
+INSERT INTO tool_definition (
+    tool_name, display_name, category, description,
+    usage_template, parameters_schema, risk_level, is_active
+) VALUES (
+    'get_failed_tasks',
+    '查询失败任务',
+    'acli',
+    '查询 HCI 平台操作任务。主要过滤获取失败任务，支持通过关键字、错误码、VM ID、时间、主机等过滤查询。必选状态参数已固定为 failed。',
+    'acli --formatter json task get -s failed [[-k {keyword}]] [[-c {code}]] [[-v {vm_id}]] [[-t {time}]] [[-H {host}]] [[-u {upid}]] [[-l {limit}]]',
+    '{
+        "type": "object",
+        "properties": {
+            "keyword": {
+                "type": "string",
+                "description": "搜索行为、主机、对象和描述，例如：登录"
+            },
+            "code": {
+                "type": "string",
+                "description": "错误码，例如：0x01002BB5"
+            },
+            "vm_id": {
+                "type": "string",
+                "description": "虚拟机 ID，例如：123240430216"
+            },
+            "time": {
+                "type": "string",
+                "description": "指定时间，格式：''YYYY-MM-DD HH:MM:SS'' 或 ''YYYY-MM-DD HH''"
+            },
+            "host": {
+                "type": "string",
+                "description": "指定主机，例如：host-005056b234ca"
+            },
+            "upid": {
+                "type": "string",
+                "description": "异步任务 UPID"
+            },
+            "limit": {
+                "type": "integer",
+                "description": "指定展示记录的数目，默认值 50",
+                "default": 50
+            },
+            "node_ip": {
+                "type": "string",
+                "description": "目标节点 IP（可选）"
+            }
+        },
+        "required": []
+    }',
+    1,
+    true
+) ON CONFLICT (tool_name) DO UPDATE SET
+    display_name = EXCLUDED.display_name,
+    category = EXCLUDED.category,
+    description = EXCLUDED.description,
+    usage_template = EXCLUDED.usage_template,
+    parameters_schema = EXCLUDED.parameters_schema,
+    risk_level = EXCLUDED.risk_level,
+    is_active = EXCLUDED.is_active,
+    updated_at = NOW();
+
+-- ─── acli 工具（6个，通过 bridge relay 中转执行）──────────────────────────
+
+-- acli_exec：通用命令执行器（主力工具）
+INSERT INTO tool_definition (
+    tool_name, display_name, category, description,
+    parameters_schema, risk_level, is_active
+) VALUES (
+    'acli_exec',
+    '执行 acli 命令',
+    'acli',
+    '在 HCI 节点执行 acli 命令（深圳桑福 HCI 平台专有 CLI，命令格式：acli [全局参数] {命名空间}+ {命令} [命令参数]）。
+
+可用全局参数：
+  --formatter          用于命令的格式化参数。枚举值：xml、csv、keyvalue、json（注：必须紧跟 acli 后面，例如 acli --formatter json vm list）
+  --cluster            用于遍历集群主机执行 acli 命令
+  --timeout            用于设置命令的超时时间（秒）
+  --force              强制模式：忽略交互确认，直接执行操作
+
+可用命名空间：
+  vm        虚拟机：list / config get / status get / start / shutdown / disk list/check 等
+  storage   存储：asan volume list / asan disk list / fc host list 等（注：不可省略 asan 等二级命名空间，例如 storage asan disk list 是正确的，而 storage disk list 是错误的）
+  network   网络：nic list/up/down / bond list / anet vrouter list 等
+  system    系统：top / free / df / ps / netstat / ping / iostat 等
+  service   服务：<subsystem> <service> start/stop/restart/status
+  alert     告警：get / list
+  task      任务：get / list
+  log       日志：get（-k/-i/-t/-f/-c/-E/-p/-g；-t 仅绝对时间，路径仅 /sf/log 或 /sf/data/local）
+  platform  平台：node list / version get / info get
+  hardware  硬件：cpu info / gpu config list
+  plugins   诊断插件：vm_start / vm_suspend / netdoctor / asys / performance_tools
+
+使用约定与纠错逻辑：
+  1. 不确定命令时，先执行 acli {namespace} --help 探索
+  2. 不确定参数时，先执行 acli {namespace} {cmd} --help
+  3. 优先在 acli 后面紧跟全局参数 --formatter json 获得结构化输出。格式：acli --formatter json <命名空间> <命令>
+     注意：全局参数（如 --formatter json）绝对不能放在子命令的末尾（例如：acli vm list --formatter json 是错误的，会报无效参数错误；正确为 acli --formatter json vm list）。
+  4. 纠错技巧：若执行 acli 命令报错 “未知的命令或者命名空间”（例如 acli storage disk list），这说明缺少了某个层级的命名空间或命令拼写错误。此时，可以通过减少末尾的一个参数/子命令（例如缩短为 acli storage）去执行，即可获取上一级命名空间的帮助信息以及该级别下所有可用的子命名空间与命令列表。
+  5. 兜底方案：通过执行 acli acli command list 获取当前 acli 支持的命令。命令不在平台 Catalog 时，开发/验证环境必须人工确认，生产环境可配置直接拒绝；不能把未知命令默认当作只读。
+  6. 集群级操作使用 --cluster 参数。
+  7. 根据执行结果（成功/错误）判断下一步（ReAct 自探索）
+
+⚠️ 命令行生成重要约束（必须严格遵守）：
+  - 【禁用 Python】：目标 HCI 物理宿主机为极简裁剪内核，【没有安装 python / python3】。严禁生成任何带有 python/python3 关键字的管道过滤命令，否则会报错 Command Not Found。
+  - 【输出截断】：平台会对命令的 stdout 强行执行 4000 字符的智能截断。为了防止大输出（如 storage asan disk list 等列表命令）的核心诊断信息被截断丢失，【必须】使用管道在节点端过滤后再返回。
+  - 【JSON 过滤】：JSON 格式大输出过滤必须优先使用 jq 工具。例：acli --formatter json storage asan disk list | jq ''.data.disks[] | select(.host_name == "目标节点名" and .disk_name == "1号盘")''
+  - 【文本与日志】：对于长文本/日志，使用 grep -B10 -A10 进行上下文关键字过滤。',
+    '{
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "完整 acli 命令，必须以 ''acli'' 开头，例如 ''acli --formatter json vm list''"
+            },
+            "node_ip": {
+                "type": "string",
+                "description": "目标节点 IP（可选），不填时从 context_variables 中读取 node_ip"
+            },
+            "reason": {
+                "type": "string",
+                "description": "执行该命令的诊断原因（审计必填）"
+            }
+        },
+        "required": ["command", "reason"]
+    }',
+    1,
+    true
+) ON CONFLICT (tool_name) DO UPDATE SET
+    display_name = EXCLUDED.display_name,
+    category = EXCLUDED.category,
+    description = EXCLUDED.description,
+    parameters_schema = EXCLUDED.parameters_schema,
+    risk_level = EXCLUDED.risk_level,
+    is_active = EXCLUDED.is_active,
+    updated_at = NOW();
+
+-- bash_exec：通用 Linux Bash 执行工具（补充通道）
+INSERT INTO tool_definition (
+    tool_name, display_name, category, description,
+    parameters_schema, risk_level, is_active
+) VALUES (
+    'bash_exec',
+    '执行 Bash 命令',
+    'acli',
+    '在 HCI 节点执行通用 Linux Bash 命令并返回输出。
+优先使用 acli_exec；仅当 acli 无法满足时使用本工具（如分析特定日志文件、检查底层进程、读取内核参数等）。
+注意：必须显式指定 container；container=host 表示在物理机上直接执行；禁止执行 acli 命令（请使用 acli_exec）；执行路径限于 /sf/、/var/log/、/etc/（只读）等安全目录。
+
+⚠️ 命令行生成重要约束（必须严格遵守）：
+  - 【禁用 Python】：当 container=host（在物理宿主机直接执行）时，目标宿主机为极简裁剪内核，【没有安装 python / python3】。严禁生成任何含有 python/python3 关键字的管道过滤命令，否则报错 Command Not Found。
+  - 【输出截断】：平台会对命令的 stdout 强行执行 4000 字符的智能截断。建议使用管道进行节点端数据过滤后再返回（推荐使用 jq/grep）。',
+    '{
+        "type": "object",
+        "properties": {
+            "container": {
+                "type": "string",
+                "enum": ["host", "asv-con", "vn-con", "vn-agent", "vs-cp-manager"],
+                "description": "执行边界，必须显式指定；host 表示在物理机上直接执行"
+            },
+            "command": {
+                "type": "string",
+                "description": "执行的 Bash 命令，例如 ''grep ERROR /sf/log/vtpdaemon.log | tail -50''；container=host 时在物理机执行，其他值在目标容器内执行；禁止包含 docker exec/kubectl exec/nsenter/acli 前缀"
+            },
+            "node_ip": {
+                "type": "string",
+                "description": "目标节点 IP（可选）"
+            },
+            "reason": {
+                "type": "string",
+                "description": "执行该命令的诊断原因（审计必填）"
+            }
+        },
+        "required": ["container", "command", "reason"],
+        "additionalProperties": false
+    }',
+    1,
+    true
+) ON CONFLICT (tool_name) DO UPDATE SET
+    display_name = EXCLUDED.display_name,
+    category = EXCLUDED.category,
+    description = EXCLUDED.description,
+    parameters_schema = EXCLUDED.parameters_schema,
+    risk_level = EXCLUDED.risk_level,
+    is_active = EXCLUDED.is_active,
+    updated_at = NOW();
+
+-- acli 插件诊断工具（原 4 个低频工具 acli_plugin_vm_start / acli_plugin_vm_suspend / acli_plugin_netdoctor / acli_plugin_asys 已于 2026-07-16 删除，详见 docs/solution/agent/02-架构设计/工具命名规范统一与工具集精简决策.md）
+
+
+
+
+
+
+
+
+
+-- ─── SOP 导航工具（3个，本地执行，无 SSH）──────────────────────────────
+
+INSERT INTO tool_definition (
+    tool_name, display_name, category, description,
+    parameters_schema, risk_level, is_active
+) VALUES (
+    'get_sop_node',
+    '获取 SOP 节点',
+    'sop',
+    '获取 SOP 决策树指定节点的内容。返回节点标题、判断方法、执行命令和子节点列表。用于 SOP 排障流程的分步导航，避免一次性注入完整 SOP 文档。注意：node_id 格式为 ''n-1''、''n-1-2'' 等，从根节点 ''n-1'' 开始。重要：此工具仅在 SOP 命中后可用，由系统自动注入 sop_document_id。',
+    '{
+        "type": "object",
+        "properties": {
+            "node_id": {
+                "type": "string",
+                "description": "节点 ID，如 ''n-1''（根节点）、''n-1-2''（二级节点）"
+            },
+            "sop_document_id": {
+                "type": "integer",
+                "description": "SOP 文档 ID（由系统自动注入，无需填写）",
+                "default": 0
+            }
+        },
+        "required": ["node_id"]
+    }',
+    1,
+    true
+) ON CONFLICT (tool_name) DO UPDATE SET
+    display_name = EXCLUDED.display_name,
+    category = EXCLUDED.category,
+    description = EXCLUDED.description,
+    parameters_schema = EXCLUDED.parameters_schema,
+    risk_level = EXCLUDED.risk_level,
+    is_active = EXCLUDED.is_active,
+    updated_at = NOW();
+
+INSERT INTO tool_definition (
+    tool_name, display_name, category, description,
+    parameters_schema, risk_level, is_active
+) VALUES (
+    'sop_advance',
+    '推进 SOP 决策树',
+    'sop',
+    '推进 SOP 决策树到指定子节点。记录推理路径，更新当前节点位置，若到达叶节点则标记 SOP 执行完成。重要：target_node_id 必须是当前节点的子节点（通过 get_sop_node 获取 children 列表）。此工具仅在 SOP 命中后可用，由系统自动注入 conversation_id 和 sop_document_id。',
+    '{
+        "type": "object",
+        "properties": {
+            "target_node_id": {
+                "type": "string",
+                "description": "目标子节点 ID，必须是当前节点的子节点"
+            },
+            "reasoning": {
+                "type": "string",
+                "description": "推进理由（解释为何选择此分支，写入执行日志）"
+            },
+            "node_type": {
+                "type": "string",
+                "description": "目标节点类型（branch/diagnosis/solution，可选）"
+            },
+            "conversation_id": {
+                "type": "string",
+                "description": "会话 ID（由系统自动注入，无需填写）",
+                "default": ""
+            },
+            "sop_document_id": {
+                "type": "integer",
+                "description": "SOP 文档 ID（由系统自动注入，无需填写）",
+                "default": 0
+            }
+        },
+        "required": ["target_node_id", "reasoning"]
+    }',
+    1,
+    true
+) ON CONFLICT (tool_name) DO UPDATE SET
+    display_name = EXCLUDED.display_name,
+    category = EXCLUDED.category,
+    description = EXCLUDED.description,
+    parameters_schema = EXCLUDED.parameters_schema,
+    risk_level = EXCLUDED.risk_level,
+    is_active = EXCLUDED.is_active,
+    updated_at = NOW();
+
+INSERT INTO tool_definition (
+    tool_name, display_name, category, description,
+    parameters_schema, risk_level, is_active
+) VALUES (
+    'sop_request_variable',
+    '请求 SOP 变量',
+    'sop',
+    '请求获取 SOP 执行所需的变量值（Just-In-Time 懒加载）。当 SOP 步骤需要某变量（如 vm_name、node_ip）且该变量尚未填充时调用。系统会根据变量的 acquisition_strategy 决定获取方式：user_input（向用户询问输入）/ user_confirm（展示候选值让用户确认）/ tool（自动调用指定工具获取）/ env_context（从环境上下文直接取值，无需调用此工具）。此工具仅在 SOP 命中后可用，由系统自动注入 conversation_id 和 sop_document_id。',
+    '{
+        "type": "object",
+        "properties": {
+            "variable_name": {
+                "type": "string",
+                "description": "需要获取的变量名（如 vm_name、node_ip、disk_id）"
+            },
+            "reason": {
+                "type": "string",
+                "description": "为什么需要此变量（用于向用户解释，可选）"
+            },
+            "conversation_id": {
+                "type": "string",
+                "description": "会话 ID（由系统自动注入，无需填写）",
+                "default": ""
+            },
+            "sop_document_id": {
+                "type": "integer",
+                "description": "SOP 文档 ID（由系统自动注入，无需填写）",
+                "default": 0
+            }
+        },
+        "required": ["variable_name"]
+    }',
+    1,
+    true
+) ON CONFLICT (tool_name) DO UPDATE SET
+    display_name = EXCLUDED.display_name,
+    category = EXCLUDED.category,
+    description = EXCLUDED.description,
+    parameters_schema = EXCLUDED.parameters_schema,
+    risk_level = EXCLUDED.risk_level,
+    is_active = EXCLUDED.is_active,
+    updated_at = NOW();
+
+-- ============================================================
+-- 说明：
+-- 1. 共 13 条工具定义：SCP 4个 / acli 6个 / SOP 3个
+-- 2. 幂等键为 tool_name（ON CONFLICT DO UPDATE），支持重复执行
+-- 3. risk_level 说明：
+--    - 1 = 只读查询（auto），自动执行
+--    - 2 = 写操作需确认（confirm），需用户确认后执行
+--    - 3 = 高危拦截（block），直接拒绝
+--    注意：acli_exec/bash_exec 的 risk_level=1 为静态兜底值，运行时 RiskClassifier 动态覆盖
+-- 4. category 说明：
+--    - scp：SCP 平台 REST API（云端直接调用）
+--    - acli：HCI 节点执行（通过 bridge relay 中转）
+--    - sop：SOP 导航工具（本地执行，无 SSH）
+-- ============================================================

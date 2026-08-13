@@ -12,14 +12,18 @@ from app.routes.extract_signals import (
     _validate_and_collect_signals,
 )
 from app.services.vision_processor import (
+    VisionEmptyResultError,
     _assess_inference,
     _build_context_map_from_images_json,
     _build_evidence_ir,
     _compress_image_if_needed,
     _freeze_vision_proposal,
     _parse_type,
+    _parse_unstructured_ocr_text,
     _prefer_task_detail_type,
     _prepare_vision_images,
+    _require_nonempty_vision_result,
+    _vision_analyze,
 )
 from PIL import Image
 
@@ -39,6 +43,17 @@ def test_context_comes_from_persisted_image_metadata():
 
 def test_dialog_is_a_first_class_screenshot_type():
     assert _parse_type("TYPE: 弹框截图\nBACKGROUND: 白色") == "弹框截图"
+
+
+def test_plain_ocr_model_output_is_kept_as_observed_text():
+    raw = "```markdown\n虚拟机启动失败\n错误码：E1001\n```"
+
+    assert _parse_unstructured_ocr_text(raw) == ["虚拟机启动失败", "错误码：E1001"]
+
+
+def test_empty_or_structured_empty_output_is_rejected():
+    with pytest.raises(VisionEmptyResultError):
+        _require_nonempty_vision_result([], "")
 
 
 def test_task_detail_modal_is_not_downgraded_to_dialog():
@@ -183,6 +198,42 @@ def test_small_png_is_not_lossily_reencoded():
 
     assert processed is original
     assert mime_type == "image/png"
+
+
+@pytest.mark.asyncio
+async def test_vision_retry_success_does_not_raise_stale_error():
+    """首次超时、第二次成功时，不得再次抛出首次异常。"""
+
+    import httpx
+
+    image = Image.new("RGB", (2, 2), "white")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=(
+            "TYPE: 告警截图\nBACKGROUND: 白色\nFULL_TEXT:\n- 磁盘告警\nDESCRIPTION:\n磁盘告警截图"
+        )))],
+        usage=None,
+    )
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=AsyncMock(side_effect=[httpx.ReadTimeout("request timed out"), response])
+            )
+        )
+    )
+
+    with patch("app.services.vision_processor.asyncio.sleep", AsyncMock()):
+        result = await _vision_analyze(
+            client,
+            buffer.getvalue(),
+            "image/png",
+            "磁盘异常",
+            "{context}",
+            trace_id="trace-retry-success",
+        )
+
+    assert result == ("告警截图", "白色", ["磁盘告警"], "磁盘告警截图")
 
 
 def test_tall_text_image_is_split_with_overlap_and_source_coordinates():
