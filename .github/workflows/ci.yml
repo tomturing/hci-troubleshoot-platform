@@ -64,6 +64,14 @@ jobs:
               # 该 exe 由 Build terminal_bridge 独立生成；二进制变更不需要重复跑
               # pnpm 单测/构建，但仍会随 main 合并后的镜像构建发布。
               - '!frontend/customer/public/downloads/terminal_bridge.exe'
+              # 显式负向约束：防御性排除非前端目录，消除 glob 边界模糊导致的
+              # 误判（PR #747 纯数据库 PR 曾误触发前端检查）。
+              - '!backend/**'
+              - '!database/**'
+              - '!docs/**'
+              - '!deploy/**'
+              - '!scripts/**'
+              - '!.github/**'
             platform_helm:
               - 'deploy/helm/hci-platform/**'
             docs:
@@ -216,6 +224,25 @@ jobs:
       (github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      # 二次校验：独立于 changes job 的 paths-filter 输出，直接判定本 PR 是否
+      # 真有 frontend/** 改动。防御性根除 paths-filter _outputs 串扰/误判导致
+      # 纯数据库/文档 PR 被误触发前端单测+构建（见 PR #747 实测误触发）。
+      - name: 前端改动二次校验
+        id: fe-filter
+        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            frontend:
+              - 'frontend/**'
+              - '!frontend/customer/public/downloads/terminal_bridge.exe'
+
+      - name: 短路非前端改动 PR
+        if: github.event_name == 'pull_request' && steps.fe-filter.outputs.frontend != 'true'
+        run: |
+          echo "::notice::本 PR 未改动 frontend/**，跳过前端检查"
+          exit 0
 
       - name: 安装 Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -995,7 +1022,6 @@ jobs:
                   in_block && $0 ~ /^[[:space:]]+tag:[[:space:]]*/ {
                     value=$0
                     sub(/^.*tag:[[:space:]]*/, "", value)
-                    sub(/#.*/, "", value)  # 剥除 YAML 行内注释（如 # RC-5: ...）
                     gsub(/["[:space:]]/, "", value)
                     print value
                     exit
@@ -1014,7 +1040,6 @@ jobs:
                   in_block && /^[[:space:]]+tag:[[:space:]]*/ {
                     value=$0
                     sub(/^.*tag:[[:space:]]*/, "", value)
-                    sub(/#.*/, "", value)  # 剥除 YAML 行内注释（如 # RC-5: ...）
                     gsub(/["[:space:]]/, "", value)
                     print value
                     exit

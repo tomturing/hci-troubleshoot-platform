@@ -67,6 +67,18 @@ agent_test_run_event, agent_test_run_result, agent_test_runtime_instance
 
 此改动使 PR #747 的「删表 + 校验收敛」形成闭环，CI 才能通过。
 
+### 3.4 `.github/workflows/ci.yml` paths-filter 加固（前端检查误触发根治）
+
+**问题现象**：PR #747 仅改动 `database/**` + `docs/**` + `.github/workflows/db-migration-test.yml`（GitHub 侧 `gh pr view 747 --json files` 确认无任何 `frontend/**` 文件），但 `CI / 前端检查（单元测试 + 构建）` 仍 `Successful`（真跑了 `pnpm install + test + build`，耗时约 55s）。
+
+**第一性原理根因**：`frontend-check` job 的触发条件为 `needs.changes.outputs.frontend == 'true'`（ci.yml 第 216 行），而 `changes` job 的 `paths-filter` 中 `frontend` 过滤器（第 62-66 行）字面只匹配 `frontend/**`，不含 `database/**`/`docs/**`。PR diff 无 `frontend/**` 文件时该输出应为 `false`，实测却为 `true`——属 `paths-filter` 输出误判（glob 边界模糊或 outputs 串扰），非预期行为。
+
+**对抗性审查修复**（方案 C，从定义层 + 使用层双加固）：
+1. **定义层**：给 `frontend` 过滤器显式追加负向约束（`!backend/**`、`!database/**`、`!docs/**`、`!deploy/**`、`!scripts/**`、`!.github/**`），消除 glob 边界模糊导致的潜在误判。
+2. **使用层（根除）**：在 `frontend-check` job 内部第一步插入独立的 `dorny/paths-filter` 二次校验（仅判定 `frontend/**`），并在其后加 `短路非前端改动 PR` step——当 PR 事件下二次校验 `frontend != 'true'` 时直接 `exit 0` 跳过。该短路使 job 不再单纯依赖 `paths-filter` outputs，即使 `changes` job 输出误判，前端检查也不会对纯数据库/文档 PR 空跑。
+
+**验收**：后续纯 `database/**` / `docs/**` PR 的 `前端检查` 应表现为 `skipped`（二次校验短路）而非 `Successful`，消除每次约 55s 的无效 runner 开销。
+
 ## 4. 验证
 
 - `desired_schema.sql` 删除后 `agent_test_` 残留计数 = 0（已确认）。
