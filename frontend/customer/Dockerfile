@@ -35,7 +35,9 @@ ENV TERMINAL_BRIDGE_URL="" \
     TERMINAL_BRIDGE_EXEC_TIMEOUT_SECONDS=120 \
     CUSTOMER_API_AUTHORIZATION=\$http_authorization \
     CUSTOMER_API_TENANT_ID=\$http_x_tenant_id \
-    CUSTOMER_API_ACTOR_ID=\$http_x_actor_id
+    CUSTOMER_API_ACTOR_ID=\$http_x_actor_id \
+    API_GATEWAY_UPSTREAM=http://api-gateway:8000 \
+    DIAGNOSIS_SERVICE_UPSTREAM=http://diagnosis-service:8008
 
 COPY --from=build /app/customer/dist /usr/share/nginx/html
 COPY frontend/customer/nginx.conf /etc/nginx/templates/default.conf.template

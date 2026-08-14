@@ -32,6 +32,7 @@ tests:
       diagnosisService.identityMode: "internal"
       diagnosisService.internalIdentity.tenantId: "staging-tenant"
       diagnosisService.internalIdentity.customerActorId: "staging-customer-ui"
+      global.namespace: "hci-staging"
     asserts:
       - contains:
           path: spec.template.spec.containers[0].env
@@ -51,6 +52,16 @@ tests:
           content:
             name: CUSTOMER_API_ACTOR_ID
             value: staging-customer-ui
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: API_GATEWAY_UPSTREAM
+            value: http://api-gateway.hci-staging.svc.cluster.local:8000
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DIAGNOSIS_SERVICE_UPSTREAM
+            value: http://diagnosis-service.hci-staging.svc.cluster.local:8008
       - isNotNull:
           path: spec.template.metadata.annotations["checksum/diagnosis-internal-auth"]
 
@@ -61,6 +72,7 @@ tests:
       diagnosisService.identityMode: "internal"
       diagnosisService.internalIdentity.tenantId: "staging-tenant"
       diagnosisService.internalIdentity.adminActorId: "staging-admin-ui"
+      global.namespace: "hci-staging"
     asserts:
       - contains:
           path: spec.template.spec.containers[0].env
@@ -80,6 +92,16 @@ tests:
           content:
             name: ADMIN_API_ACTOR_ID
             value: staging-admin-ui
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: API_GATEWAY_UPSTREAM
+            value: http://api-gateway.hci-staging.svc.cluster.local:8000
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DIAGNOSIS_SERVICE_UPSTREAM
+            value: http://diagnosis-service.hci-staging.svc.cluster.local:8008
       - isNotNull:
           path: spec.template.metadata.annotations["checksum/diagnosis-internal-auth"]
 

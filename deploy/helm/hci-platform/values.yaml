@@ -5,6 +5,8 @@
 # ======================== 全局配置 ==========================================
 global:
   namespace: hci-troubleshoot
+  # Kubernetes DNS 集群域；UI Nginx 动态解析内部 Service 时必须使用完整 FQDN。
+  clusterDomain: cluster.local
 
   # ⚠️  路由模式 — 必须与 DNS 环境匹配，改错会导致所有服务 404
   # --------------------------------------------------------------------

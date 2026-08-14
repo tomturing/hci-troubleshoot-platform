@@ -37,6 +37,11 @@ spec:
           env:
             - name: DNS_RESOLVER
               value: "10.43.0.10"
+            # Nginx 动态 resolver 不应用 Pod DNS search 后缀，必须使用完整 Service FQDN。
+            - name: API_GATEWAY_UPSTREAM
+              value: "http://api-gateway.{{ include "hci.namespace" . }}.svc.{{ .Values.global.clusterDomain }}:{{ .Values.apiGateway.port }}"
+            - name: DIAGNOSIS_SERVICE_UPSTREAM
+              value: "http://diagnosis-service.{{ include "hci.namespace" . }}.svc.{{ .Values.global.clusterDomain }}:{{ .Values.diagnosisService.port }}"
             - name: TERMINAL_BRIDGE_URL
               {{- if .Values.customerUI.terminalBridgeUrl }}
               value: {{ .Values.customerUI.terminalBridgeUrl | quote }}
