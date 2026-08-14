@@ -181,18 +181,16 @@ def compile_signal_plan(
         verification_policy = verification_policies[kbd.id]
         generation = kbd.generation_metadata or {}
         publish_validation = kbd.publish_validation or {}
-        if kbd.verification_contract and publish_validation:
-            if publish_validation.get("status") != "passed":
-                errors.setdefault(kbd.id, []).append("expert publish validation status is invalid")
+        if kbd.verification_contract and publish_validation and publish_validation.get("status") != "passed":
+            errors.setdefault(kbd.id, []).append("expert publish validation status is invalid")
             # 对齐 #755 校验器驱动门禁 ADR：
             # tool_contract_revision 字节哈希仅作粗粒度变化探测，不再据此阻断执行。
             # Signal 是否可执行的语义门禁（Breaking Change 检测）由 Gate-1
             # playbooks.py 的 validate_publishable_signals_json 统一负责；
             # agent 在 investigation_agent.py 消费 executable=true/false 过滤后
             # 才将 KBD 投递到此处，无需在执行层重复字节哈希比对（REDUNDANCY-2）。
-        elif kbd.verification_contract and generation:
-            if generation.get("status") == "stale":
-                errors.setdefault(kbd.id, []).append("signal generation metadata is stale")
+        elif kbd.verification_contract and generation and generation.get("status") == "stale":
+            errors.setdefault(kbd.id, []).append("signal generation metadata is stale")
             # 同上：generation.tool_contract_revision 偏移由 Gate-1 顶层校验处置，
             # plan_compiler 不重复字节哈希比对。
         seen_signal_ids: set[str] = set()
