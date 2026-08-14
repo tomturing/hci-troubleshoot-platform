@@ -116,7 +116,7 @@
 
 | 工作流 | 作用 |
 |---|---|
-| `.github/workflows/hci-sim-go.yml` | Go 质量门禁：`gofmt`/`go test`/`go test -race`/`go vet`/`go build`；`manifest-and-helm` 校验已发布 bundle digest 一致、拒绝退役 marker（`HCI_BRIDGE_SIM_TARGETS`/`htp1.`/`command_pattern` 等）、Helm lint/template 并校验 NetworkPolicy 必填项。 |
+| `.github/workflows/hci-sim-go.yml` | Go 质量门禁：`gofmt`/`go test`/`go test -race`/`go vet`/`go build`；`manifest-and-helm` 校验已发布 bundle digest 一致、拒绝已退役的运行时 marker、Helm lint/template 并校验 NetworkPolicy 必填项。 |
 | `.github/workflows/hci-sim-db-migration-test.yml` | 隔离 PG 跑迁移校验 16 表，反向校验主库无 `agent_test_*` 表，验证 `hci_sim_runtime` 角色不能建表（DDL 负向检查），再跑 `internal/database` + `internal/reconciler` 的 CAS/幂等测试。 |
 
 ---
