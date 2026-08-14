@@ -420,7 +420,8 @@ def test_compiler_rejects_stale_generation_or_tool_contract_revision():
     stale = compile_signal_plan([candidate])
 
     assert "generation metadata is stale" in " ".join(stale.compile_errors[candidate.id])
-    assert "tool contract revision is stale" in " ".join(stale.compile_errors[candidate.id])
+    # 对齐 #755 ADR：tool_contract_revision 字节哈希由 Gate-1 (playbooks.py) 顶层校验处置，
+    # plan_compiler 不再追加 "tool contract revision is stale" 硬阻断错误。
 
 
 def test_compiler_accepts_current_expert_publish_stamp_without_overwriting_generation_origin():
