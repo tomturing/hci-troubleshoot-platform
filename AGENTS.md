@@ -183,6 +183,10 @@
   - docker-compose.yml：移除暴露端口、统一网络配置
   - Helm agent-service deployment：新增 LANGFUSE_SECRET_KEY / PUBLIC_KEY / HOST 环境变量
   - kb-service admin.py：.md 文件导入同 .docx 生成 docx_hash 支持幂等去重
+- **KBD 审核页面批量操作功能**（PR #753）：
+  - 支持批量选择 KBD 条目进行操作：重新识图、重新分类、抽取信号、批量通过、批量拒绝
+  - 批量任务进度实时展示，支持查看逐条执行结果和失败原因
+  - 失败任务可一键重试未成功记录
 - **KBD 审核页面 Tab 分类展示与置信度筛选**：
   - 分类统计接口：`GET /api/admin/kbd/pending/stats` 关联 `kb_category` 返回分类名称+数量
   - 前端用下拉框按分类过滤，每分类独立分页；支持置信度范围筛选（高/中/低）

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+// KBD 知识条目管理页面 - 支持批量操作（重新识图、重新分类、抽取信号、通过、拒绝）
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type TableColumnCtx, type TableInstance } from 'element-plus'
