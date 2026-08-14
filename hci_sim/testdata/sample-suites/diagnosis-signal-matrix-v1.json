@@ -1,0 +1,129 @@
+{
+  "schema_version": "1.0",
+  "sample_suite": "diagnosis-signal-matrix-v1",
+  "variables": {
+    "HOST": "SIM-HCI-NODE-01",
+    "END": "2026-08-12T10:05:00Z",
+    "REQUEST_ID": "REQ-SAMPLE-20260812",
+    "ALERT_ID": "ALERT-SAMPLE-20260812"
+  },
+  "cases": {
+    "SAMPLE-SIG-VM": {
+      "title": "虚拟机状态异常与任务变量链",
+      "fault_description": "启动虚拟机失败，请检查失败任务、虚拟机状态和虚拟机清单。",
+      "product_version": "6.12.0",
+      "variables": {"VM_ID": "90010001"},
+      "expected_conclusion": "虚拟机状态异常样例得到完整证据并命中 KBD。",
+      "signals": {
+        "vm_task_context": {
+          "positive_output": "{\"data\":[{\"type\":\"启动虚拟机\",\"status\":\"failed\",\"host\":\"{{HOST}}\",\"vm\":{{VM_ID}},\"end\":\"{{END}}\"}]}\n",
+          "negative_output": "{\"data\":[]}\n"
+        },
+        "vm_status_must": {
+          "positive_output": "{\"data\":[{\"id\":{{VM_ID}},\"name\":\"sample-vm\",\"status\":\"error\",\"host\":\"{{HOST}}\"}]}\n",
+          "negative_output": "{\"data\":[]}\n"
+        },
+        "vm_list_context": {
+          "positive_output": "{\"data\":[{\"id\":{{VM_ID}},\"name\":\"sample-vm\",\"status\":\"error\"}]}\n",
+          "negative_output": "{\"data\":[]}\n"
+        }
+      }
+    },
+    "SAMPLE-SIG-CORE": {
+      "title": "告警、服务与系统容量联合检查",
+      "fault_description": "服务不可用且日志分区容量偏高，请检查告警、服务状态和 /sf/log 容量。",
+      "product_version": "6.12.0",
+      "variables": {"SERVICE": "asv-manager"},
+      "expected_conclusion": "服务与日志分区联合异常样例得到完整证据并命中 KBD。",
+      "signals": {
+        "core_alert_context": {
+          "positive_output": "{\"data\":[{\"id\":\"{{ALERT_ID}}\",\"type\":\"服务不可用\",\"host\":\"{{HOST}}\",\"service\":\"asv-manager\",\"end\":\"{{END}}\"}]}\n",
+          "negative_output": "{\"data\":[]}\n"
+        },
+        "core_service_must": {
+          "positive_output": "running\n",
+          "negative_output": "stopped\n"
+        },
+        "core_disk_threshold": {
+          "positive_output": "Filesystem 1024-blocks Used Available Use% Mounted-on\n/dev/sample 100000 83000 17000 83% /sf/log\n",
+          "negative_output": "Filesystem 1024-blocks Used Available Use% Mounted-on\n/dev/sample 100000 20000 80000 20% /sf/log\n"
+        }
+      }
+    },
+    "SAMPLE-SIG-LOG": {
+      "title": "弹框请求链与日志多判定模式",
+      "fault_description": "出现网络处理失败弹框，请按 Request ID 检查丢包计数器和错误日志。",
+      "product_version": "6.12.0",
+      "variables": {},
+      "expected_conclusion": "日志关键字、差值与趋势证据完整并命中 KBD。",
+      "signals": {
+        "log_dialog_context": {
+          "positive_output": "网络处理失败 request_id={{REQUEST_ID}} host={{HOST}} end={{END}}\n",
+          "negative_output": "no matching dialog\n"
+        },
+        "log_keyword_must": {
+          "positive_output": "request_id={{REQUEST_ID}} drop=120 error=link_down\n",
+          "negative_output": "request_id={{REQUEST_ID}} state=healthy\n"
+        },
+        "log_delta_should": {
+          "positive_output": "Metric Value\nrx_dropped 0\nrx_dropped 120\n",
+          "negative_output": "Metric Value\nrx_dropped 0\nrx_dropped 1\n"
+        },
+        "log_trend_should": {
+          "positive_output": "Metric Value\ntx_dropped 1\ntx_dropped 3\ntx_dropped 8\n",
+          "negative_output": "Metric Value\ntx_dropped 8\ntx_dropped 3\ntx_dropped 1\n"
+        },
+        "log_lines_context": {
+          "positive_output": "request_id={{REQUEST_ID}} error=link_down\nrequest_id={{REQUEST_ID}} error=packet_drop\n",
+          "negative_output": "request_id={{REQUEST_ID}} state=healthy\n"
+        }
+      }
+    },
+    "SAMPLE-SIG-NET-STO": {
+      "title": "网络正则与存储差值检查",
+      "fault_description": "网络链路状态异常并伴随存储 I/O 波动，请检查网卡和存储卷指标。",
+      "product_version": "6.12.0",
+      "variables": {},
+      "expected_conclusion": "网络正则与存储差值证据完整并命中 KBD。",
+      "signals": {
+        "network_storage_alert_context": {
+          "positive_output": "{\"data\":[{\"id\":\"{{ALERT_ID}}\",\"type\":\"网络链路状态异常告警\",\"alert_type\":\"network\",\"host\":\"{{HOST}}\",\"end\":\"{{END}}\"}]}\n",
+          "negative_output": "{\"data\":[]}\n"
+        },
+        "network_regex_must": {
+          "positive_output": "eth0    link up\neth1    link down\n",
+          "negative_output": "eth0    link down\n"
+        },
+        "storage_delta_should": {
+          "positive_output": "Volume IOPS\nsample-volume 10\nsample-volume 240\n",
+          "negative_output": "Volume IOPS\nsample-volume 10\nsample-volume 20\n"
+        }
+      }
+    },
+    "SAMPLE-SIG-HW-PLT": {
+      "title": "硬件趋势与平台信息采集",
+      "fault_description": "硬件温度异常，请检查 GPU 温度趋势和平台版本信息。",
+      "product_version": "6.12.0",
+      "variables": {},
+      "expected_conclusion": "硬件趋势命中且平台排除项未命中，KBD 获得支持。",
+      "signals": {
+        "hardware_alert_context": {
+          "positive_output": "{\"data\":[{\"id\":\"{{ALERT_ID}}\",\"type\":\"硬件温度异常告警\",\"hardware_type\":\"gpu\",\"host\":\"{{HOST}}\",\"end\":\"{{END}}\"}]}\n",
+          "negative_output": "{\"data\":[]}\n"
+        },
+        "hardware_trend_must": {
+          "positive_output": "Metric Value\ngpu_temperature 40\ngpu_temperature 45\ngpu_temperature 52\n",
+          "negative_output": "Metric Value\ngpu_temperature 52\ngpu_temperature 45\ngpu_temperature 40\n"
+        },
+        "platform_unsupported_exclude": {
+          "positive_output": "version=6.12.0\nsupport_status=supported\n",
+          "negative_output": "support_status=unsupported\nversion=5.0.0\n"
+        },
+        "platform_info_context": {
+          "positive_output": "{\"data\":{\"name\":\"HCI-SIM\",\"version\":\"6.12.0\",\"node_count\":1}}\n",
+          "negative_output": "{\"data\":{}}\n"
+        }
+      }
+    }
+  }
+}

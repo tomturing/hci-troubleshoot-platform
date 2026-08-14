@@ -6,13 +6,13 @@ import json
 from pathlib import Path
 
 import pytest
-from app.adapters.agents.htp.cdd import (
+from shared.cdd import (
     SignalEvaluation,
     SignalOutcome,
     compile_signal_plan,
     replay_evaluations,
 )
-from app.adapters.agents.htp.kbd_model import KBD
+from shared.cdd.kbd_model import KBD
 from shared.schemas.signal_schema import validate_signals_json
 
 REPO_ROOT = Path(__file__).resolve().parents[4]

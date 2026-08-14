@@ -9,8 +9,8 @@
 -- ============================================================
 -- HCI 智能排障平台数据库 Schema
 -- 完整的数据库表结构定义，包含所有表、字段、索引、外键的详细注释。v6.2 设计修正：恢复 diagnostic_item 表（conversation 子实体，与 message/tool_result 同构）；移除 conversation.hypothesis/react_state（JSONB blob 反模式）
--- Version : 6.2
--- Updated : 2026-04-04
+-- Version : 6.6
+-- Updated : 2026-07-29
 -- ============================================================
 
 -- 数据库类型: PostgreSQL 15
@@ -34,6 +34,23 @@
 -- 自定义 ENUM 类型
 -- ============================================================
 CREATE TYPE case_status AS ENUM ('created', 'confirmed', 'in_progress', 'resolved', 'closed', 'cancelled');
+
+CREATE TYPE diagnosis_session_status AS ENUM (
+    'created',
+    'plan_ready',
+    'collecting',
+    'uploading',
+    'assessing',
+    'diagnosing',
+    'supplement_required',
+    'review_pending',
+    'published',
+    'closed',
+    'failed',
+    'cancelled',
+    'deletion_pending',
+    'deleted'
+);
 
 CREATE TYPE message_role AS ENUM ('user', 'assistant', 'system', 'command', 'tool_call', 'tool_result');
 -- tool_call: AI 发起的工具调用请求（含 tool_calls JSON）
@@ -198,6 +215,1331 @@ CREATE INDEX IF NOT EXISTS idx_case_client_status ON "case" (client_id, status);
 CREATE INDEX IF NOT EXISTS idx_case_assistant_type ON "case" (assistant_type);
 -- 客户维度工单查询
 CREATE INDEX IF NOT EXISTS idx_case_customer_id ON "case" (customer_id) WHERE customer_id IS NOT NULL;
+
+-- ------------------------------------------------------------
+-- 表: diagnosis_session  [模块: diagnosis-service]
+-- 说明: 离线诊断会话根实体 — 关联工单、租户、故障上下文和诊断生命周期
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS diagnosis_session (
+    session_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    case_id varchar(20) NOT NULL,
+    tenant_id varchar(128) NOT NULL,
+    created_by varchar(128) NOT NULL,
+    assigned_to varchar(128),
+    product_line varchar(32) NOT NULL DEFAULT 'HCI',
+    selected_scenario varchar(100) NOT NULL,
+    selected_category varchar(100),
+    resolved_category varchar(100),
+    incident_start_time timestamptz NOT NULL,
+    incident_end_time timestamptz NOT NULL,
+    incident_timezone varchar(64) NOT NULL,
+    affected_objects jsonb NOT NULL DEFAULT '[]'::jsonb,
+    impact_scope varchar(64) NOT NULL,
+    incident_status varchar(32) NOT NULL,
+    recent_change_description text,
+    experimental boolean NOT NULL DEFAULT false,
+    status diagnosis_session_status NOT NULL DEFAULT 'created',
+    resume_status diagnosis_session_status,
+    supplement_count integer NOT NULL DEFAULT 0,
+    legal_hold boolean NOT NULL DEFAULT false,
+    version integer NOT NULL DEFAULT 1,
+    idempotency_key varchar(128) NOT NULL,
+    request_hash varchar(64) NOT NULL,
+    failure_code varchar(64),
+    failure_message text,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT diagnosis_session_pkey PRIMARY KEY (session_id),
+    CONSTRAINT fk_diagnosis_session_case_id
+        FOREIGN KEY (case_id) REFERENCES "case" (case_id) ON DELETE RESTRICT,
+    CONSTRAINT uq_diagnosis_session_tenant_idempotency
+        UNIQUE (tenant_id, idempotency_key),
+    CONSTRAINT ck_diagnosis_session_version CHECK (version >= 1),
+    CONSTRAINT ck_diagnosis_session_supplement_count CHECK (supplement_count BETWEEN 0 AND 1),
+    CONSTRAINT ck_diagnosis_session_incident_window CHECK (incident_end_time >= incident_start_time)
+);
+
+COMMENT ON TABLE diagnosis_session IS '离线诊断会话根实体，保存租户、工单、故障上下文、状态机和幂等信息';
+COMMENT ON COLUMN diagnosis_session.session_id IS '诊断会话 UUID';
+COMMENT ON COLUMN diagnosis_session.case_id IS '关联工单号，删除工单前必须先处理诊断会话';
+COMMENT ON COLUMN diagnosis_session.tenant_id IS '由已验证内部调用方或正式身份提供方给出的租户标识，不接受浏览器直接伪造';
+COMMENT ON COLUMN diagnosis_session.created_by IS '由已验证内部调用方或正式身份提供方给出的操作者标识';
+COMMENT ON COLUMN diagnosis_session.assigned_to IS '当前负责离线诊断审核和处置的工程师标识';
+COMMENT ON COLUMN diagnosis_session.selected_scenario IS '用户选择的产品化故障场景';
+COMMENT ON COLUMN diagnosis_session.selected_category IS '初始 KBD 分类，可由场景映射生成';
+COMMENT ON COLUMN diagnosis_session.resolved_category IS '诊断完成后归属的 KBD 分类，仅由诊断过程写入';
+COMMENT ON COLUMN diagnosis_session.affected_objects IS '受影响对象快照，仅保存标识和必要展示字段';
+COMMENT ON COLUMN diagnosis_session.status IS '诊断会话当前状态';
+COMMENT ON COLUMN diagnosis_session.resume_status IS '进入 failed 前的状态，重试时只能恢复到该状态';
+COMMENT ON COLUMN diagnosis_session.supplement_count IS '自动补充采集次数，P0 最大为 1';
+COMMENT ON COLUMN diagnosis_session.legal_hold IS '会话级 Legal Hold（法务保全）；新上传 Bundle 自动继承';
+COMMENT ON COLUMN diagnosis_session.version IS '乐观锁版本号，每次状态或业务变更递增';
+COMMENT ON COLUMN diagnosis_session.idempotency_key IS '租户范围内的创建请求幂等键';
+COMMENT ON COLUMN diagnosis_session.request_hash IS '创建请求规范化后的 SHA-256，用于检测幂等键复用冲突';
+COMMENT ON COLUMN diagnosis_session.trace_id IS '创建会话的 W3C Trace ID';
+
+CREATE INDEX IF NOT EXISTS idx_diagnosis_session_tenant_case
+    ON diagnosis_session (tenant_id, case_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_diagnosis_session_tenant_status
+    ON diagnosis_session (tenant_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_diagnosis_session_trace_id
+    ON diagnosis_session (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: collection_profile_definition  [模块: diagnosis-service]
+-- 说明: Collection Profile 当前事实源，审批后发布不可变动态资源修订版本
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS collection_profile_definition (
+    profile_id varchar(128) NOT NULL,
+    profile_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    managed_by varchar(32) NOT NULL DEFAULT 'manual',
+    generation_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+    semantic_version varchar(64) NOT NULL,
+    review_status varchar(16) NOT NULL DEFAULT 'draft',
+    is_enabled boolean NOT NULL DEFAULT false,
+    approved_by varchar(128),
+    approved_at timestamptz,
+    rejection_reason text,
+    lock_version integer NOT NULL DEFAULT 1,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT collection_profile_definition_pkey PRIMARY KEY (profile_id),
+    CONSTRAINT ck_collection_profile_definition_managed_by
+        CHECK ((managed_by)::text = ANY ((ARRAY['manual'::varchar, 'kbd_sync'::varchar])::text[])),
+    CONSTRAINT ck_collection_profile_definition_lock_version CHECK (lock_version >= 1),
+    CONSTRAINT ck_collection_profile_definition_review_status
+        CHECK (
+            (review_status)::text = ANY (
+                (ARRAY['draft'::varchar, 'approved'::varchar, 'rejected'::varchar])::text[]
+            )
+        )
+);
+
+COMMENT ON TABLE collection_profile_definition IS
+    'Collection Profile（采集画像）事实源，维护草稿、审批、禁用和乐观锁状态';
+COMMENT ON COLUMN collection_profile_definition.profile_json IS
+    '当前可编辑画像定义；批准时发布到 dynamic_resource_revision 不可变修订版本';
+COMMENT ON COLUMN collection_profile_definition.managed_by IS 'manual=人工治理；kbd_sync=只能由 KBD 同步批次治理';
+COMMENT ON COLUMN collection_profile_definition.generation_metadata IS '同步生成时冻结的 Tool/KBD 来源修订信息';
+COMMENT ON COLUMN collection_profile_definition.review_status IS '审批状态：draft/approved/rejected';
+COMMENT ON COLUMN collection_profile_definition.lock_version IS 'If-Match 乐观锁版本';
+COMMENT ON COLUMN collection_profile_definition.trace_id IS '最近一次定义或审批变更的 W3C Trace ID';
+
+CREATE INDEX IF NOT EXISTS idx_collection_profile_definition_review
+    ON collection_profile_definition (review_status, is_enabled, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_collection_profile_definition_trace_id
+    ON collection_profile_definition (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: collection_plan  [模块: diagnosis-service]
+-- 说明: 采集画像按诊断会话上下文展开后的不可变采集计划
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS collection_plan (
+    plan_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    session_id uuid NOT NULL,
+    tenant_id varchar(128) NOT NULL,
+    created_by varchar(128) NOT NULL,
+    plan_sequence integer NOT NULL DEFAULT 0,
+    plan_revision integer NOT NULL DEFAULT 1,
+    profile_name varchar(128) NOT NULL,
+    profile_revision integer NOT NULL,
+    profile_version varchar(64) NOT NULL,
+    profile_checksum varchar(128) NOT NULL,
+    product_version varchar(64) NOT NULL,
+    kbd_ruleset_snapshot jsonb NOT NULL DEFAULT '[]'::jsonb,
+    kbd_ruleset_checksum varchar(64) NOT NULL DEFAULT '',
+    context_snapshot jsonb NOT NULL DEFAULT '{}'::jsonb,
+    required_permissions jsonb NOT NULL DEFAULT '[]'::jsonb,
+    sensitive_data_types jsonb NOT NULL DEFAULT '[]'::jsonb,
+    unresolved_variables jsonb NOT NULL DEFAULT '[]'::jsonb,
+    estimated_size_mb numeric(12,2) NOT NULL DEFAULT 0,
+    estimated_duration_seconds integer NOT NULL DEFAULT 0,
+    status varchar(16) NOT NULL DEFAULT 'ready',
+    idempotency_key varchar(128) NOT NULL,
+    request_hash varchar(64) NOT NULL,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT collection_plan_pkey PRIMARY KEY (plan_id),
+    CONSTRAINT fk_collection_plan_session_id
+        FOREIGN KEY (session_id) REFERENCES diagnosis_session (session_id) ON DELETE CASCADE,
+    CONSTRAINT uq_collection_plan_tenant_idempotency UNIQUE (tenant_id, idempotency_key),
+    CONSTRAINT uq_collection_plan_session_sequence_revision UNIQUE (session_id, plan_sequence, plan_revision),
+    CONSTRAINT ck_collection_plan_sequence CHECK (plan_sequence BETWEEN 0 AND 1),
+    CONSTRAINT ck_collection_plan_revision CHECK (plan_revision >= 1),
+    CONSTRAINT ck_collection_plan_estimated_size CHECK (estimated_size_mb >= 0),
+    CONSTRAINT ck_collection_plan_estimated_duration CHECK (estimated_duration_seconds >= 0),
+    CONSTRAINT ck_collection_plan_status
+        CHECK ((status)::text = ANY ((ARRAY['ready'::varchar, 'superseded'::varchar])::text[]))
+);
+
+COMMENT ON TABLE collection_plan IS '由 Collection Profile（采集画像）和诊断上下文确定性展开的不可变采集计划';
+COMMENT ON COLUMN collection_plan.plan_sequence IS '采集轮次：0=初始采集，1=P0 唯一一次补充采集';
+COMMENT ON COLUMN collection_plan.plan_revision IS '同一采集轮次的计划修订号；重生成时递增，旧计划进入 superseded';
+COMMENT ON COLUMN collection_plan.profile_revision IS '生成计划时使用的 collection_profile 动态资源修订版本';
+COMMENT ON COLUMN collection_plan.profile_checksum IS '生成计划时使用的画像内容校验和';
+COMMENT ON COLUMN collection_plan.context_snapshot IS '条件采集判断所用上下文快照';
+COMMENT ON COLUMN collection_plan.kbd_ruleset_snapshot IS '生成计划时冻结的 KBD 修订版本、哈希和证据要求摘要';
+COMMENT ON COLUMN collection_plan.kbd_ruleset_checksum IS 'KBD 规则集快照稳定 SHA-256，用于识别计划是否过时';
+COMMENT ON COLUMN collection_plan.required_permissions IS '执行全部采集项所需权限并集';
+COMMENT ON COLUMN collection_plan.sensitive_data_types IS '可能采集的敏感数据类型并集';
+COMMENT ON COLUMN collection_plan.unresolved_variables IS '生成计划时尚未解析的变量';
+COMMENT ON COLUMN collection_plan.trace_id IS '计划生成请求的 W3C Trace ID';
+
+CREATE INDEX IF NOT EXISTS idx_collection_plan_tenant_session
+    ON collection_plan (tenant_id, session_id, plan_sequence, plan_revision DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_collection_plan_ready_sequence
+    ON collection_plan (session_id, plan_sequence) WHERE status = 'ready';
+CREATE INDEX IF NOT EXISTS idx_collection_plan_trace_id
+    ON collection_plan (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: collection_plan_item  [模块: diagnosis-service]
+-- 说明: 采集计划中已展开目标和绝对时间窗的执行项
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS collection_plan_item (
+    item_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    plan_id uuid NOT NULL,
+    sequence integer NOT NULL,
+    collector_id varchar(128) NOT NULL,
+    collector_revision integer,
+    collector_version varchar(64),
+    collector_checksum varchar(128),
+    display_name varchar(255) NOT NULL,
+    required_level varchar(32) NOT NULL,
+    activation_state varchar(16) NOT NULL DEFAULT 'active',
+    target jsonb NOT NULL DEFAULT '{}'::jsonb,
+    time_window jsonb NOT NULL DEFAULT '{}'::jsonb,
+    collector_parameters jsonb NOT NULL DEFAULT '{}'::jsonb,
+    condition_snapshot jsonb,
+    reason text NOT NULL,
+    expected_size_mb numeric(12,2) NOT NULL DEFAULT 0,
+    timeout_seconds integer NOT NULL,
+    required_permissions jsonb NOT NULL DEFAULT '[]'::jsonb,
+    sensitive_data_types jsonb NOT NULL DEFAULT '[]'::jsonb,
+    trace_id varchar(64) NOT NULL,
+    CONSTRAINT collection_plan_item_pkey PRIMARY KEY (item_id),
+    CONSTRAINT fk_collection_plan_item_plan_id
+        FOREIGN KEY (plan_id) REFERENCES collection_plan (plan_id) ON DELETE CASCADE,
+    CONSTRAINT uq_collection_plan_item_sequence UNIQUE (plan_id, sequence),
+    CONSTRAINT ck_collection_plan_item_sequence CHECK (sequence >= 1),
+    CONSTRAINT ck_collection_plan_item_expected_size CHECK (expected_size_mb >= 0),
+    CONSTRAINT ck_collection_plan_item_timeout CHECK (timeout_seconds BETWEEN 1 AND 86400),
+    CONSTRAINT ck_collection_plan_item_required_level
+        CHECK (
+            (required_level)::text = ANY (
+                (ARRAY[
+                    'mandatory'::varchar,
+                    'recommended'::varchar,
+                    'conditional'::varchar,
+                    'deep_dive'::varchar
+                ])::text[]
+            )
+        ),
+    CONSTRAINT ck_collection_plan_item_activation_state
+        CHECK ((activation_state)::text = ANY ((ARRAY['active'::varchar, 'deferred'::varchar])::text[]))
+);
+
+COMMENT ON TABLE collection_plan_item IS 'Collection Plan（采集计划）执行项，保存 Collector、目标、时间窗和安全声明';
+COMMENT ON COLUMN collection_plan_item.collector_id IS 'Collector（采集器）稳定标识';
+COMMENT ON COLUMN collection_plan_item.collector_revision IS '计划生成时冻结的 Collector 不可变修订版本';
+COMMENT ON COLUMN collection_plan_item.collector_checksum IS '计划生成时冻结的 Collector 内容校验和';
+COMMENT ON COLUMN collection_plan_item.required_level IS '必要性：mandatory/recommended/conditional/deep_dive';
+COMMENT ON COLUMN collection_plan_item.activation_state IS '执行状态：active=进入当前采集器，deferred=保留为一次补采候选';
+COMMENT ON COLUMN collection_plan_item.target IS '已展开采集目标；缺失节点时保存 source_node 变量占位符';
+COMMENT ON COLUMN collection_plan_item.time_window IS '基于故障窗口计算出的绝对采集时间范围';
+COMMENT ON COLUMN collection_plan_item.collector_parameters IS '由已发布采集画像固化的 Collector 参数快照；制品生成时优先于临时请求参数，防止采集语义漂移';
+COMMENT ON COLUMN collection_plan_item.condition_snapshot IS 'conditional 采集项的受控条件快照';
+COMMENT ON COLUMN collection_plan_item.trace_id IS '计划生成请求的 W3C Trace ID';
+
+CREATE INDEX IF NOT EXISTS idx_collection_plan_item_plan_sequence
+    ON collection_plan_item (plan_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_collection_plan_item_trace_id
+    ON collection_plan_item (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: collector_definition  [模块: diagnosis-service]
+-- 说明: 安全 Collector 当前事实源，审批后发布到动态资源不可变 revision
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS collector_definition (
+    collector_id varchar(128) NOT NULL,
+    display_name varchar(255) NOT NULL,
+    description text NOT NULL,
+    platform varchar(32) NOT NULL,
+    executor varchar(32) NOT NULL,
+    command_template text NOT NULL,
+    parameter_schema jsonb NOT NULL DEFAULT '{}'::jsonb,
+    risk_level varchar(32) NOT NULL DEFAULT 'read_only',
+    timeout_seconds integer NOT NULL,
+    max_output_mb numeric(10,2) NOT NULL,
+    supported_product_versions jsonb NOT NULL DEFAULT '[]'::jsonb,
+    output_contract jsonb NOT NULL DEFAULT '{}'::jsonb,
+    managed_by varchar(32) NOT NULL DEFAULT 'manual',
+    generation_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+    semantic_version varchar(64) NOT NULL,
+    review_status varchar(16) NOT NULL DEFAULT 'draft',
+    is_enabled boolean NOT NULL DEFAULT false,
+    approved_by varchar(128),
+    approved_at timestamptz,
+    rejection_reason text,
+    lock_version integer NOT NULL DEFAULT 1,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT collector_definition_pkey PRIMARY KEY (collector_id),
+    CONSTRAINT ck_collector_definition_managed_by
+        CHECK ((managed_by)::text = ANY ((ARRAY['manual'::varchar, 'kbd_sync'::varchar])::text[])),
+    CONSTRAINT ck_collector_definition_lock_version CHECK (lock_version >= 1),
+    CONSTRAINT ck_collector_definition_timeout CHECK (timeout_seconds BETWEEN 1 AND 3600),
+    CONSTRAINT ck_collector_definition_output_size CHECK (max_output_mb > 0 AND max_output_mb <= 4),
+    CONSTRAINT ck_collector_definition_platform
+        CHECK ((platform)::text = ANY ((ARRAY['linux'::varchar, 'hci_api'::varchar, 'manual'::varchar])::text[])),
+    CONSTRAINT ck_collector_definition_executor
+        CHECK ((executor)::text = ANY ((ARRAY['shell'::varchar, 'http'::varchar, 'manual'::varchar])::text[])),
+    CONSTRAINT ck_collector_definition_risk CHECK (risk_level = 'read_only'),
+    CONSTRAINT ck_collector_definition_review_status
+        CHECK (
+            (review_status)::text = ANY (
+                (ARRAY['draft'::varchar, 'approved'::varchar, 'rejected'::varchar])::text[]
+            )
+        )
+);
+
+COMMENT ON TABLE collector_definition IS 'Collector Registry（采集器注册表）事实源，维护草稿、审批、禁用和乐观锁状态';
+COMMENT ON COLUMN collector_definition.collector_id IS 'Collector（采集器）稳定标识，与 Collection Plan 引用一致';
+COMMENT ON COLUMN collector_definition.command_template IS '固定命令模板；参数占位符必须独占命令 token';
+COMMENT ON COLUMN collector_definition.parameter_schema IS 'Collector 参数 JSON Schema，必须禁止 additionalProperties';
+COMMENT ON COLUMN collector_definition.risk_level IS 'P0 固定为 read_only（只读）';
+COMMENT ON COLUMN collector_definition.output_contract IS '输出 schema_id、media_type 和 output_path';
+COMMENT ON COLUMN collector_definition.managed_by IS 'manual=人工治理；kbd_sync=只能由 KBD 同步批次治理';
+COMMENT ON COLUMN collector_definition.generation_metadata IS '同步生成时冻结的 Tool/KBD 来源修订信息';
+COMMENT ON COLUMN collector_definition.review_status IS '审批状态：draft/approved/rejected';
+COMMENT ON COLUMN collector_definition.lock_version IS 'If-Match 乐观锁版本';
+COMMENT ON COLUMN collector_definition.trace_id IS '最近一次定义或审批变更的 W3C Trace ID';
+
+CREATE INDEX IF NOT EXISTS idx_collector_definition_review
+    ON collector_definition (review_status, is_enabled, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_collector_definition_trace_id
+    ON collector_definition (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: collector_artifact  [模块: diagnosis-service]
+-- 说明: 按采集计划和目标节点实时生成的已签名结构化采集器制品
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS collector_artifact (
+    artifact_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    session_id uuid NOT NULL,
+    collection_plan_id uuid NOT NULL,
+    tenant_id varchar(128) NOT NULL,
+    created_by varchar(128) NOT NULL,
+    target_key varchar(255) NOT NULL DEFAULT 'all',
+    artifact_type varchar(32) NOT NULL DEFAULT 'structured_collector',
+    schema_version varchar(32) NOT NULL DEFAULT '1.2',
+    file_name varchar(255) NOT NULL,
+    content_text text NOT NULL,
+    artifact_sha256 varchar(64) NOT NULL,
+    signature_algorithm varchar(32) NOT NULL,
+    signature_base64 text NOT NULL,
+    signing_key_id varchar(128) NOT NULL,
+    public_key_base64 text NOT NULL,
+    public_key_fingerprint varchar(64) NOT NULL,
+    signed_at timestamptz NOT NULL,
+    expires_at timestamptz NOT NULL,
+    manifest_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    status varchar(16) NOT NULL DEFAULT 'ready',
+    revoked_at timestamptz,
+    revoked_by varchar(128),
+    revocation_reason varchar(500),
+    revoked_trace_id varchar(64),
+    idempotency_key varchar(128) NOT NULL,
+    request_hash varchar(64) NOT NULL,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT collector_artifact_pkey PRIMARY KEY (artifact_id),
+    CONSTRAINT fk_collector_artifact_session_id
+        FOREIGN KEY (session_id) REFERENCES diagnosis_session (session_id) ON DELETE CASCADE,
+    CONSTRAINT fk_collector_artifact_plan_id
+        FOREIGN KEY (collection_plan_id) REFERENCES collection_plan (plan_id) ON DELETE RESTRICT,
+    CONSTRAINT uq_collector_artifact_tenant_idempotency UNIQUE (tenant_id, idempotency_key),
+    CONSTRAINT uq_collector_artifact_plan_target UNIQUE (collection_plan_id, target_key),
+    CONSTRAINT ck_collector_artifact_status
+        CHECK ((status)::text = ANY ((ARRAY['ready'::varchar, 'expired'::varchar, 'revoked'::varchar])::text[])),
+    CONSTRAINT ck_collector_artifact_expiry CHECK (expires_at > signed_at),
+    CONSTRAINT ck_collector_artifact_revocation_reason
+        CHECK (revocation_reason IS NULL OR revocation_reason ~ '^[a-z][a-z0-9_]{0,63}$')
+);
+
+COMMENT ON TABLE collector_artifact IS 'Collector Artifact（采集器制品）元数据和结构化执行清单，使用 Ed25519 分离式签名';
+COMMENT ON COLUMN collector_artifact.target_key IS '多节点场景的目标节点；all 表示单节点或全局制品';
+COMMENT ON COLUMN collector_artifact.content_text IS '不可变结构化执行清单 JSON，后续对象存储接入后可迁移为对象引用';
+COMMENT ON COLUMN collector_artifact.artifact_sha256 IS '制品原始字节 SHA-256';
+COMMENT ON COLUMN collector_artifact.signature_base64 IS 'Ed25519 Detached Signature（分离式签名）Base64';
+COMMENT ON COLUMN collector_artifact.public_key_base64 IS 'Ed25519 原始公钥 Base64，须结合可信第二通道核对指纹';
+COMMENT ON COLUMN collector_artifact.public_key_fingerprint IS 'Ed25519 原始公钥 SHA-256 指纹';
+COMMENT ON COLUMN collector_artifact.manifest_json IS '计划、画像、Collector revision 和签名元数据快照';
+COMMENT ON COLUMN collector_artifact.revoked_at IS '平台撤销制品的时间；写入后进入签名吊销清单';
+COMMENT ON COLUMN collector_artifact.revoked_by IS '执行撤销的可信操作者标识';
+COMMENT ON COLUMN collector_artifact.revocation_reason IS '机器可读撤销原因码，不包含客户敏感数据';
+COMMENT ON COLUMN collector_artifact.revoked_trace_id IS '撤销操作的 W3C Trace ID';
+COMMENT ON COLUMN collector_artifact.trace_id IS '制品生成请求的 W3C Trace ID';
+
+CREATE INDEX IF NOT EXISTS idx_collector_artifact_tenant_session
+    ON collector_artifact (tenant_id, session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_collector_artifact_expires_at
+    ON collector_artifact (expires_at) WHERE status = 'ready';
+CREATE INDEX IF NOT EXISTS idx_collector_artifact_tenant_revoked
+    ON collector_artifact (tenant_id, revoked_at, artifact_id) WHERE status = 'revoked';
+CREATE INDEX IF NOT EXISTS idx_collector_artifact_trace_id
+    ON collector_artifact (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: collector_artifact_item  [模块: diagnosis-service]
+-- 说明: 制品内每个计划项解析到的 Collector 不可变修订版本
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS collector_artifact_item (
+    item_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    artifact_id uuid NOT NULL,
+    plan_item_id uuid NOT NULL,
+    sequence integer NOT NULL,
+    collector_id varchar(128) NOT NULL,
+    collector_revision integer NOT NULL,
+    collector_checksum varchar(128) NOT NULL,
+    rendered_command text NOT NULL,
+    output_contract jsonb NOT NULL DEFAULT '{}'::jsonb,
+    timeout_seconds integer NOT NULL,
+    max_output_bytes integer NOT NULL,
+    trace_id varchar(64) NOT NULL,
+    CONSTRAINT collector_artifact_item_pkey PRIMARY KEY (item_id),
+    CONSTRAINT fk_collector_artifact_item_artifact_id
+        FOREIGN KEY (artifact_id) REFERENCES collector_artifact (artifact_id) ON DELETE CASCADE,
+    CONSTRAINT fk_collector_artifact_item_plan_item_id
+        FOREIGN KEY (plan_item_id) REFERENCES collection_plan_item (item_id) ON DELETE RESTRICT,
+    CONSTRAINT uq_collector_artifact_item_sequence UNIQUE (artifact_id, sequence),
+    CONSTRAINT ck_collector_artifact_item_sequence CHECK (sequence >= 1)
+);
+
+COMMENT ON TABLE collector_artifact_item IS 'Collector Artifact 中计划项、Collector revision、命令和输出契约的审计快照';
+COMMENT ON COLUMN collector_artifact_item.collector_revision IS '生成制品时使用的 Collector 动态资源修订版本';
+COMMENT ON COLUMN collector_artifact_item.rendered_command IS '通过参数 Schema 校验并 Shell 转义后的最终只读命令';
+COMMENT ON COLUMN collector_artifact_item.trace_id IS '制品生成请求的 W3C Trace ID';
+
+CREATE INDEX IF NOT EXISTS idx_collector_artifact_item_artifact_sequence
+    ON collector_artifact_item (artifact_id, sequence);
+CREATE INDEX IF NOT EXISTS idx_collector_artifact_item_plan_item
+    ON collector_artifact_item (plan_item_id);
+CREATE INDEX IF NOT EXISTS idx_collector_artifact_item_trace_id
+    ON collector_artifact_item (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: diagnosis_upload_session  [模块: diagnosis-service]
+-- 说明: 诊断证据包分片直传会话；控制面只签发地址和确认结果，不转发大文件
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS diagnosis_upload_session (
+    upload_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    session_id uuid NOT NULL,
+    tenant_id varchar(128) NOT NULL,
+    created_by varchar(128) NOT NULL,
+    source_ip inet,
+    bundle_type varchar(16) NOT NULL,
+    parent_bundle_id uuid,
+    collection_plan_id uuid NOT NULL,
+    collector_artifact_id uuid NOT NULL,
+    file_name varchar(255) NOT NULL,
+    media_type varchar(100) NOT NULL,
+    total_size_bytes bigint NOT NULL,
+    expected_sha256 varchar(64) NOT NULL,
+    chunk_size_bytes integer NOT NULL,
+    part_count integer NOT NULL,
+    uploaded_parts jsonb NOT NULL DEFAULT '{}'::jsonb,
+    object_key text NOT NULL,
+    upload_token_hash varchar(64) NOT NULL,
+    status varchar(16) NOT NULL DEFAULT 'initiated',
+    expires_at timestamptz NOT NULL,
+    completed_at timestamptz,
+    idempotency_key varchar(128) NOT NULL,
+    request_hash varchar(64) NOT NULL,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT diagnosis_upload_session_pkey PRIMARY KEY (upload_id),
+    CONSTRAINT fk_diagnosis_upload_session_session_id
+        FOREIGN KEY (session_id) REFERENCES diagnosis_session (session_id) ON DELETE CASCADE,
+    CONSTRAINT fk_diagnosis_upload_session_plan_id
+        FOREIGN KEY (collection_plan_id) REFERENCES collection_plan (plan_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_diagnosis_upload_session_artifact_id
+        FOREIGN KEY (collector_artifact_id) REFERENCES collector_artifact (artifact_id) ON DELETE RESTRICT,
+    CONSTRAINT uq_diagnosis_upload_tenant_idempotency UNIQUE (tenant_id, idempotency_key),
+    CONSTRAINT ck_diagnosis_upload_bundle_type
+        CHECK (
+            (bundle_type)::text = ANY (
+                (ARRAY['initial'::varchar, 'supplement'::varchar, 'verification'::varchar])::text[]
+            )
+        ),
+    CONSTRAINT ck_diagnosis_upload_status
+        CHECK (
+            (status)::text = ANY (
+                (ARRAY[
+                    'initiated'::varchar,
+                    'uploading'::varchar,
+                    'completing'::varchar,
+                    'completed'::varchar,
+                    'aborted'::varchar,
+                    'expired'::varchar,
+                    'failed'::varchar
+                ])::text[]
+            )
+        ),
+    -- 存量审计行可能来自旧版 2 GiB 契约；新请求由 API/运行时统一限制为 512 MiB。
+    CONSTRAINT ck_diagnosis_upload_size CHECK (total_size_bytes > 0 AND total_size_bytes <= 2147483648),
+    CONSTRAINT ck_diagnosis_upload_parts CHECK (part_count BETWEEN 1 AND 10000)
+);
+
+COMMENT ON TABLE diagnosis_upload_session IS 'Upload Session（上传会话），支持诊断证据包分片直传、续传、幂等完成和过期清理';
+COMMENT ON COLUMN diagnosis_upload_session.upload_token_hash IS '直传令牌仅保存 SHA-256，明文只在创建响应返回一次';
+COMMENT ON COLUMN diagnosis_upload_session.uploaded_parts IS '已确认分片号到 size/sha256 的映射，不保存分片正文';
+COMMENT ON COLUMN diagnosis_upload_session.object_key IS '对象存储隔离区键，不是可公开访问 URL';
+COMMENT ON COLUMN diagnosis_upload_session.trace_id IS '创建上传会话的 W3C Trace ID';
+
+CREATE INDEX IF NOT EXISTS idx_diagnosis_upload_session_tenant_session
+    ON diagnosis_upload_session (tenant_id, session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_diagnosis_upload_session_expiry
+    ON diagnosis_upload_session (expires_at)
+    WHERE ((status)::text = ANY ((ARRAY['initiated'::varchar, 'uploading'::varchar])::text[]));
+CREATE INDEX IF NOT EXISTS idx_diagnosis_upload_session_trace_id
+    ON diagnosis_upload_session (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: diagnostic_evidence_bundle  [模块: diagnosis-service]
+-- 说明: 原始诊断证据包及隔离处理结果
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS diagnostic_evidence_bundle (
+    bundle_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    session_id uuid NOT NULL,
+    upload_id uuid NOT NULL,
+    tenant_id varchar(128) NOT NULL,
+    uploaded_by varchar(128) NOT NULL,
+    bundle_type varchar(16) NOT NULL,
+    parent_bundle_id uuid,
+    collection_plan_id uuid NOT NULL,
+    collector_artifact_id uuid NOT NULL,
+    object_key text NOT NULL,
+    size_bytes bigint NOT NULL,
+    sha256 varchar(64) NOT NULL,
+    schema_version varchar(32),
+    manifest_json jsonb,
+    encryption_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+    processing_status varchar(16) NOT NULL DEFAULT 'uploaded',
+    security_results jsonb NOT NULL DEFAULT '{}'::jsonb,
+    security_review_status varchar(16) NOT NULL DEFAULT 'open',
+    security_reviewed_by varchar(128),
+    security_reviewed_at timestamptz,
+    security_review_note text,
+    failure_code varchar(64),
+    failure_message text,
+    retention_until timestamptz NOT NULL,
+    legal_hold boolean NOT NULL DEFAULT false,
+    deleted_at timestamptz,
+    version integer NOT NULL DEFAULT 1,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT diagnostic_evidence_bundle_pkey PRIMARY KEY (bundle_id),
+    CONSTRAINT fk_diagnostic_evidence_bundle_session_id
+        FOREIGN KEY (session_id) REFERENCES diagnosis_session (session_id) ON DELETE CASCADE,
+    CONSTRAINT fk_diagnostic_evidence_bundle_upload_id
+        FOREIGN KEY (upload_id) REFERENCES diagnosis_upload_session (upload_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_diagnostic_evidence_bundle_parent_id
+        FOREIGN KEY (parent_bundle_id) REFERENCES diagnostic_evidence_bundle (bundle_id) ON DELETE RESTRICT,
+    CONSTRAINT uq_diagnostic_evidence_bundle_upload UNIQUE (upload_id),
+    CONSTRAINT uq_diagnostic_evidence_bundle_business
+        UNIQUE (tenant_id, session_id, bundle_type, sha256),
+    CONSTRAINT ck_diagnostic_evidence_bundle_type
+        CHECK (
+            (bundle_type)::text = ANY (
+                (ARRAY['initial'::varchar, 'supplement'::varchar, 'verification'::varchar])::text[]
+            )
+        ),
+    CONSTRAINT ck_diagnostic_evidence_bundle_status
+        CHECK (
+            (processing_status)::text = ANY (
+                (ARRAY[
+                    'uploaded'::varchar,
+                    'quarantined'::varchar,
+                    'scanning'::varchar,
+                    'extracting'::varchar,
+                    'assessing'::varchar,
+                    'ready'::varchar,
+                    'rejected'::varchar,
+                    'failed'::varchar,
+                    'deletion_pending'::varchar,
+                    'deleted'::varchar
+                ])::text[]
+            )
+        ),
+    CONSTRAINT ck_diagnostic_evidence_bundle_security_review
+        CHECK (
+            (security_review_status)::text = ANY (
+                (ARRAY['open'::varchar, 'acknowledged'::varchar, 'cleared'::varchar])::text[]
+            )
+        ),
+    CONSTRAINT ck_diagnostic_evidence_bundle_version CHECK (version >= 1)
+);
+
+COMMENT ON TABLE diagnostic_evidence_bundle IS 'Diagnostic Evidence Bundle（诊断证据包）权威记录，原始正文保存在对象存储';
+COMMENT ON COLUMN diagnostic_evidence_bundle.manifest_json IS '通过安全校验后的 manifest.json，不信任上传请求中的副本';
+COMMENT ON COLUMN diagnostic_evidence_bundle.security_results IS 'magic、路径、符号链接、恶意文件、数量、大小和哈希校验明细';
+COMMENT ON COLUMN diagnostic_evidence_bundle.security_review_status IS '拒绝包安全事件的管理处置状态：待处理、已确认、已清除';
+COMMENT ON COLUMN diagnostic_evidence_bundle.encryption_metadata IS 'AES-256-GCM 信封加密算法、KMS key_id 和密钥封装元数据，不保存明文数据密钥';
+COMMENT ON COLUMN diagnostic_evidence_bundle.trace_id IS '完成上传请求及异步处理关联的 W3C Trace ID';
+
+CREATE INDEX IF NOT EXISTS idx_diagnostic_evidence_bundle_tenant_session
+    ON diagnostic_evidence_bundle (tenant_id, session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_diagnostic_evidence_bundle_processing
+    ON diagnostic_evidence_bundle (processing_status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_diagnostic_evidence_bundle_retention
+    ON diagnostic_evidence_bundle (retention_until) WHERE legal_hold = false AND deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_diagnostic_evidence_bundle_trace_id
+    ON diagnostic_evidence_bundle (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: diagnosis_processing_job  [模块: diagnosis-worker]
+-- 说明: 隔离 Worker 持久化任务，支持崩溃恢复和入口幂等
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS diagnosis_processing_job (
+    task_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    tenant_id varchar(128) NOT NULL,
+    session_id uuid NOT NULL,
+    bundle_id uuid NOT NULL,
+    job_type varchar(32) NOT NULL DEFAULT 'process_bundle',
+    status varchar(16) NOT NULL DEFAULT 'pending',
+    attempts integer NOT NULL DEFAULT 0,
+    max_attempts integer NOT NULL DEFAULT 3,
+    locked_by varchar(128),
+    locked_at timestamptz,
+    available_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    failure_code varchar(64),
+    failure_message text,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT diagnosis_processing_job_pkey PRIMARY KEY (task_id),
+    CONSTRAINT fk_diagnosis_processing_job_session_id
+        FOREIGN KEY (session_id) REFERENCES diagnosis_session (session_id) ON DELETE CASCADE,
+    CONSTRAINT fk_diagnosis_processing_job_bundle_id
+        FOREIGN KEY (bundle_id) REFERENCES diagnostic_evidence_bundle (bundle_id) ON DELETE CASCADE,
+    CONSTRAINT uq_diagnosis_processing_job_bundle_type UNIQUE (bundle_id, job_type),
+    CONSTRAINT ck_diagnosis_processing_job_status
+        CHECK (
+            (status)::text = ANY (
+                (ARRAY['pending'::varchar, 'running'::varchar, 'succeeded'::varchar, 'failed'::varchar])::text[]
+            )
+        ),
+    CONSTRAINT ck_diagnosis_processing_job_attempts CHECK (attempts >= 0 AND max_attempts BETWEEN 1 AND 10)
+);
+
+COMMENT ON TABLE diagnosis_processing_job IS 'Diagnosis Worker（诊断工作进程）任务表，使用 SKIP LOCKED 领取并恢复超时任务';
+COMMENT ON COLUMN diagnosis_processing_job.locked_at IS 'running 超时后由 recover_stuck_tasks 恢复为 pending';
+COMMENT ON COLUMN diagnosis_processing_job.trace_id IS '跨控制面和异步任务传播的 W3C Trace ID';
+
+CREATE INDEX IF NOT EXISTS idx_diagnosis_processing_job_dispatch
+    ON diagnosis_processing_job (status, available_at, created_at);
+CREATE INDEX IF NOT EXISTS idx_diagnosis_processing_job_trace_id
+    ON diagnosis_processing_job (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: evidence_item  [模块: diagnosis-service]
+-- 说明: 只追加、不可变的标准化证据项
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS evidence_item (
+    evidence_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    tenant_id varchar(128) NOT NULL,
+    session_id uuid NOT NULL,
+    bundle_id uuid NOT NULL,
+    collection_plan_item_id uuid,
+    collector_id varchar(128) NOT NULL,
+    source_path text NOT NULL,
+    source_object jsonb NOT NULL DEFAULT '{}'::jsonb,
+    evidence_status varchar(32) NOT NULL,
+    media_type varchar(100) NOT NULL,
+    sensitivity varchar(32) NOT NULL DEFAULT 'internal',
+    collected_start timestamptz,
+    collected_end timestamptz,
+    source_timezone varchar(64),
+    clock_offset_ms integer NOT NULL DEFAULT 0,
+    size_bytes bigint NOT NULL,
+    sha256 varchar(64) NOT NULL,
+    object_ref text NOT NULL,
+    structured_data jsonb,
+    quality varchar(16) NOT NULL DEFAULT 'medium',
+    failure_reason text,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT evidence_item_pkey PRIMARY KEY (evidence_id),
+    CONSTRAINT fk_evidence_item_session_id
+        FOREIGN KEY (session_id) REFERENCES diagnosis_session (session_id) ON DELETE CASCADE,
+    CONSTRAINT fk_evidence_item_bundle_id
+        FOREIGN KEY (bundle_id) REFERENCES diagnostic_evidence_bundle (bundle_id) ON DELETE CASCADE,
+    CONSTRAINT fk_evidence_item_plan_item_id
+        FOREIGN KEY (collection_plan_item_id) REFERENCES collection_plan_item (item_id) ON DELETE RESTRICT,
+    CONSTRAINT uq_evidence_item_bundle_source UNIQUE (bundle_id, source_path),
+    CONSTRAINT ck_evidence_item_status
+        CHECK (
+            (evidence_status)::text = ANY (
+                (ARRAY[
+                    'available'::varchar,
+                    'missing'::varchar,
+                    'collection_failed'::varchar,
+                    'out_of_time_range'::varchar,
+                    'not_applicable'::varchar,
+                    'skipped_by_user'::varchar,
+                    'unreadable'::varchar
+                ])::text[]
+            )
+        ),
+    CONSTRAINT ck_evidence_item_quality
+        CHECK ((quality)::text = ANY ((ARRAY['high'::varchar, 'medium'::varchar, 'low'::varchar])::text[]))
+);
+
+COMMENT ON TABLE evidence_item IS 'Evidence Item（不可变证据项）；新包只追加记录，不覆盖历史证据';
+COMMENT ON COLUMN evidence_item.object_ref IS '对象存储键与包内路径引用，不是公开下载地址';
+COMMENT ON COLUMN evidence_item.structured_data IS '有界结构化结果或文本预览，不保存全量大日志';
+COMMENT ON COLUMN evidence_item.trace_id IS '标准化任务的 W3C Trace ID';
+
+CREATE INDEX IF NOT EXISTS idx_evidence_item_tenant_session
+    ON evidence_item (tenant_id, session_id, collector_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_evidence_item_bundle
+    ON evidence_item (bundle_id, source_path);
+CREATE INDEX IF NOT EXISTS idx_evidence_item_trace_id
+    ON evidence_item (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: offline_signal_collector_mapping  [模块: diagnosis-service]
+-- 说明: 将 KBD 在线 acquire.tool 映射为离线 Collector
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS offline_signal_collector_mapping (
+    mapping_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    source_kbd_id bigint,
+    source_kbd_revision integer,
+    source_signal_id varchar(128),
+    execution_contract_checksum varchar(64),
+    acquire_tool varchar(64) NOT NULL,
+    category_scope varchar(100) NOT NULL DEFAULT '*',
+    command_scope varchar(128) NOT NULL DEFAULT '*',
+    collector_id varchar(128) NOT NULL,
+    query_type varchar(32) NOT NULL DEFAULT 'command_output',
+    field_mapping jsonb NOT NULL DEFAULT '{}'::jsonb,
+    priority integer NOT NULL DEFAULT 100,
+    is_enabled boolean NOT NULL DEFAULT true,
+    lock_version integer NOT NULL DEFAULT 1,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT offline_signal_collector_mapping_pkey PRIMARY KEY (mapping_id),
+    CONSTRAINT fk_offline_signal_collector_mapping_collector_id
+        FOREIGN KEY (collector_id) REFERENCES collector_definition (collector_id) ON DELETE RESTRICT,
+    CONSTRAINT ck_offline_signal_collector_mapping_query_type
+        CHECK (
+            (query_type)::text = ANY (
+                (ARRAY[
+                    'log'::varchar,
+                    'json'::varchar,
+                    'command_output'::varchar,
+                    'metric'::varchar,
+                    'evidence_status'::varchar
+                ])::text[]
+            )
+        ),
+    CONSTRAINT ck_offline_signal_collector_mapping_priority CHECK (priority BETWEEN 0 AND 10000),
+    CONSTRAINT ck_offline_signal_collector_mapping_lock_version CHECK (lock_version >= 1),
+    CONSTRAINT ck_offline_signal_collector_mapping_exact_source CHECK (
+        (source_kbd_id IS NULL AND source_kbd_revision IS NULL
+         AND source_signal_id IS NULL AND execution_contract_checksum IS NULL)
+        OR
+        (source_kbd_id > 0 AND source_kbd_revision > 0
+         AND source_signal_id IS NOT NULL
+         AND execution_contract_checksum ~ '^[0-9a-f]{64}$')
+    )
+);
+
+COMMENT ON TABLE offline_signal_collector_mapping IS
+    'Offline Signal Mapping（离线信号映射），将精确 KBD Revision + Signal ID 映射为只读 Collector';
+COMMENT ON COLUMN offline_signal_collector_mapping.source_kbd_id IS
+    '来源 KBD 资源标识；为空表示只保留审计兼容、不得进入新计划的历史模糊映射';
+COMMENT ON COLUMN offline_signal_collector_mapping.source_kbd_revision IS '来源 KBD 动态资源修订';
+COMMENT ON COLUMN offline_signal_collector_mapping.source_signal_id IS '来源 KBD 修订内的稳定 Signal ID';
+COMMENT ON COLUMN offline_signal_collector_mapping.execution_contract_checksum IS
+    'Shared Acquisition Compiler（共享采集编译器）输出执行语义的 SHA-256';
+COMMENT ON COLUMN offline_signal_collector_mapping.category_scope IS
+    '分类代码或 *；精确分类优先于通配配置';
+COMMENT ON COLUMN offline_signal_collector_mapping.command_scope IS
+    'acquire.args.command 或 *；精确命令优先于通配配置';
+COMMENT ON COLUMN offline_signal_collector_mapping.field_mapping IS
+    '在线字段到离线结构化证据字段的声明式映射，不允许脚本表达式';
+COMMENT ON COLUMN offline_signal_collector_mapping.trace_id IS '配置变更的 W3C Trace ID';
+
+CREATE INDEX IF NOT EXISTS idx_offline_signal_mapping_lookup
+    ON offline_signal_collector_mapping (
+        source_kbd_id, source_kbd_revision, source_signal_id, is_enabled, priority, collector_id
+    );
+CREATE UNIQUE INDEX IF NOT EXISTS uq_offline_signal_mapping_exact_source_collector
+    ON offline_signal_collector_mapping (
+        source_kbd_id, source_kbd_revision, source_signal_id,
+        execution_contract_checksum, collector_id
+    )
+    WHERE source_kbd_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_offline_signal_mapping_trace_id
+    ON offline_signal_collector_mapping (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: offline_resource_sync_state  [模块: diagnosis-service]
+-- 说明: KBD 到 Collector/Profile 增量同步的唯一游标
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS offline_resource_sync_state (
+    state_key varchar(32) NOT NULL DEFAULT 'kbd',
+    last_kbd_revision_id bigint NOT NULL DEFAULT 0,
+    last_tool_revision_id bigint NOT NULL DEFAULT 0,
+    last_batch_id uuid,
+    lock_version integer NOT NULL DEFAULT 1,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    trace_id varchar(64) NOT NULL,
+    CONSTRAINT offline_resource_sync_state_pkey PRIMARY KEY (state_key),
+    CONSTRAINT ck_offline_resource_sync_state_cursor CHECK (
+        last_kbd_revision_id >= 0 AND last_tool_revision_id >= 0
+    ),
+    CONSTRAINT ck_offline_resource_sync_state_lock_version CHECK (lock_version >= 1)
+);
+
+COMMENT ON TABLE offline_resource_sync_state IS
+    'Offline Resource Sync（离线资源同步）增量游标；发布批次成功后推进，回滚最新批次时恢复';
+COMMENT ON COLUMN offline_resource_sync_state.last_kbd_revision_id IS
+    '已成功同步的最大 KBD dynamic_resource_revision.id，禁止使用时间戳充当游标';
+COMMENT ON COLUMN offline_resource_sync_state.last_tool_revision_id IS
+    '已成功同步的最大 Tool dynamic_resource_revision.id；工具模板变更同样触发增量同步';
+
+-- ------------------------------------------------------------
+-- 表: offline_resource_sync_batch  [模块: diagnosis-service]
+-- 说明: 一次 KBD 增量预检、发布或回滚的可追溯批次
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS offline_resource_sync_batch (
+    batch_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    base_cursor bigint NOT NULL,
+    target_cursor bigint NOT NULL,
+    base_tool_cursor bigint NOT NULL DEFAULT 0,
+    target_tool_cursor bigint NOT NULL DEFAULT 0,
+    sync_mode varchar(16) NOT NULL DEFAULT 'incremental',
+    status varchar(24) NOT NULL DEFAULT 'candidate',
+    requested_by varchar(128) NOT NULL,
+    approved_by varchar(128),
+    rollback_by varchar(128),
+    approval_reason text,
+    rollback_reason text,
+    kbd_change_count integer NOT NULL DEFAULT 0,
+    tool_change_count integer NOT NULL DEFAULT 0,
+    collector_change_count integer NOT NULL DEFAULT 0,
+    profile_change_count integer NOT NULL DEFAULT 0,
+    mapping_change_count integer NOT NULL DEFAULT 0,
+    summary_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    validation_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+    error_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    published_at timestamptz,
+    rolled_back_at timestamptz,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT offline_resource_sync_batch_pkey PRIMARY KEY (batch_id),
+    CONSTRAINT ck_offline_resource_sync_batch_cursor CHECK (
+        base_cursor >= 0 AND target_cursor >= base_cursor
+        AND base_tool_cursor >= 0 AND target_tool_cursor >= base_tool_cursor
+    ),
+    CONSTRAINT ck_offline_resource_sync_batch_counts CHECK (
+        kbd_change_count >= 0 AND tool_change_count >= 0 AND collector_change_count >= 0
+        AND profile_change_count >= 0 AND mapping_change_count >= 0
+    ),
+    CONSTRAINT ck_offline_resource_sync_batch_mode
+        CHECK ((sync_mode)::text = ANY ((ARRAY['incremental'::varchar, 'full'::varchar])::text[])),
+    CONSTRAINT ck_offline_resource_sync_batch_status
+        CHECK (
+            (status)::text = ANY (
+                (ARRAY[
+                    'candidate'::varchar,
+                    'published'::varchar,
+                    'rejected'::varchar,
+                    'failed'::varchar,
+                    'rolled_back'::varchar,
+                    'rollback_failed'::varchar,
+                    'superseded'::varchar
+                ])::text[]
+            )
+        )
+);
+
+COMMENT ON TABLE offline_resource_sync_batch IS
+    'KBD 驱动 Collector/Profile 同步批次；保存输入游标、差异摘要、校验、发布和回滚结果';
+COMMENT ON COLUMN offline_resource_sync_batch.validation_json IS
+    '同步候选安全校验与覆盖率校验结果；失败项同样永久保留';
+COMMENT ON COLUMN offline_resource_sync_batch.error_json IS
+    '预检、发布或回滚失败的结构化错误摘要，不保存密钥或客户证据正文';
+
+CREATE INDEX IF NOT EXISTS idx_offline_resource_sync_batch_created
+    ON offline_resource_sync_batch (created_at DESC, batch_id DESC);
+CREATE INDEX IF NOT EXISTS idx_offline_resource_sync_batch_status
+    ON offline_resource_sync_batch (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_offline_resource_sync_batch_trace
+    ON offline_resource_sync_batch (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: offline_resource_sync_change  [模块: diagnosis-service]
+-- 说明: 同步批次内每项资源的前后版本和候选差异
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS offline_resource_sync_change (
+    change_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    batch_id uuid NOT NULL,
+    resource_type varchar(32) NOT NULL,
+    resource_name varchar(128) NOT NULL,
+    change_type varchar(16) NOT NULL,
+    status varchar(20) NOT NULL DEFAULT 'candidate',
+    source_kbd_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+    source_kbd_revisions jsonb NOT NULL DEFAULT '[]'::jsonb,
+    source_tool_revisions jsonb NOT NULL DEFAULT '[]'::jsonb,
+    before_revision integer,
+    after_revision integer,
+    before_governance_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    candidate_governance_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    before_json jsonb,
+    candidate_json jsonb,
+    after_json jsonb,
+    validation_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT offline_resource_sync_change_pkey PRIMARY KEY (change_id),
+    CONSTRAINT fk_offline_resource_sync_change_batch
+        FOREIGN KEY (batch_id) REFERENCES offline_resource_sync_batch (batch_id) ON DELETE CASCADE,
+    CONSTRAINT uq_offline_resource_sync_change_resource UNIQUE (batch_id, resource_type, resource_name),
+    CONSTRAINT ck_offline_resource_sync_change_type
+        CHECK (
+            (resource_type)::text = ANY (
+                (ARRAY['collector'::varchar, 'collection_profile'::varchar, 'signal_mapping'::varchar])::text[]
+            )
+        ),
+    CONSTRAINT ck_offline_resource_sync_change_action
+        CHECK (
+            (change_type)::text = ANY (
+                (ARRAY['create'::varchar, 'update'::varchar, 'disable'::varchar, 'noop'::varchar])::text[]
+            )
+        ),
+    CONSTRAINT ck_offline_resource_sync_change_status
+        CHECK (
+            (status)::text = ANY (
+                (ARRAY[
+                    'candidate'::varchar,
+                    'published'::varchar,
+                    'failed'::varchar,
+                    'rolled_back'::varchar,
+                    'skipped'::varchar
+                ])::text[]
+            )
+        )
+);
+
+COMMENT ON TABLE offline_resource_sync_change IS
+    '同步批次资源差异；before/candidate/after 快照用于审核、问题定位和确定性回滚';
+COMMENT ON COLUMN offline_resource_sync_change.before_governance_json IS
+    '变更前的 managed_by/generation_metadata 治理快照，确保回滚不只恢复 active revision';
+
+CREATE INDEX IF NOT EXISTS idx_offline_resource_sync_change_batch
+    ON offline_resource_sync_change (batch_id, resource_type, resource_name);
+
+-- ------------------------------------------------------------
+-- 表: offline_resource_sync_event  [模块: diagnosis-service]
+-- 说明: 每次同步相关动作与结果的追加式审计日志
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS offline_resource_sync_event (
+    event_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    batch_id uuid NOT NULL,
+    event_sequence integer NOT NULL,
+    action varchar(32) NOT NULL,
+    result varchar(16) NOT NULL,
+    actor_id varchar(128) NOT NULL,
+    details_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT offline_resource_sync_event_pkey PRIMARY KEY (event_id),
+    CONSTRAINT fk_offline_resource_sync_event_batch
+        FOREIGN KEY (batch_id) REFERENCES offline_resource_sync_batch (batch_id) ON DELETE RESTRICT,
+    CONSTRAINT uq_offline_resource_sync_event_sequence UNIQUE (batch_id, event_sequence),
+    CONSTRAINT ck_offline_resource_sync_event_sequence CHECK (event_sequence >= 1),
+    CONSTRAINT ck_offline_resource_sync_event_action
+        CHECK (
+            (action)::text = ANY (
+                (ARRAY['preview'::varchar, 'publish'::varchar, 'reject'::varchar, 'rollback'::varchar])::text[]
+            )
+        ),
+    CONSTRAINT ck_offline_resource_sync_event_result
+        CHECK (
+            (result)::text = ANY (
+                (ARRAY['started'::varchar, 'succeeded'::varchar, 'failed'::varchar])::text[]
+            )
+        )
+);
+
+COMMENT ON TABLE offline_resource_sync_event IS
+    '追加式同步审计事件；每次预检、发布、拒绝和回滚的开始及结果均留痕，禁止更新或删除';
+
+CREATE INDEX IF NOT EXISTS idx_offline_resource_sync_event_batch
+    ON offline_resource_sync_event (batch_id, event_sequence);
+CREATE INDEX IF NOT EXISTS idx_offline_resource_sync_event_trace
+    ON offline_resource_sync_event (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: evidence_assessment  [模块: diagnosis-service]
+-- 说明: 版本化完整性和充分性评估
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS evidence_assessment (
+    assessment_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    tenant_id varchar(128) NOT NULL,
+    session_id uuid NOT NULL,
+    bundle_ids jsonb NOT NULL,
+    profile_snapshot jsonb NOT NULL,
+    input_hash varchar(64) NOT NULL,
+    algorithm_version varchar(32) NOT NULL,
+    completeness_score integer NOT NULL,
+    mandatory_total integer NOT NULL,
+    mandatory_available integer NOT NULL,
+    missing_evidence jsonb NOT NULL DEFAULT '[]'::jsonb,
+    diagnosable_scope jsonb NOT NULL DEFAULT '[]'::jsonb,
+    non_diagnosable_scope jsonb NOT NULL DEFAULT '[]'::jsonb,
+    ready_for_diagnosis boolean NOT NULL,
+    calculation_details jsonb NOT NULL DEFAULT '{}'::jsonb,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT evidence_assessment_pkey PRIMARY KEY (assessment_id),
+    CONSTRAINT fk_evidence_assessment_session_id
+        FOREIGN KEY (session_id) REFERENCES diagnosis_session (session_id) ON DELETE CASCADE,
+    CONSTRAINT uq_evidence_assessment_session_input UNIQUE (session_id, input_hash),
+    CONSTRAINT ck_evidence_assessment_score CHECK (completeness_score BETWEEN 0 AND 100),
+    CONSTRAINT ck_evidence_assessment_mandatory CHECK (
+        mandatory_total >= 0 AND mandatory_available BETWEEN 0 AND mandatory_total
+    )
+);
+
+COMMENT ON TABLE evidence_assessment IS 'Evidence Assessment（证据评估），保存 Bundle 集合、画像、算法版本和逐项计算明细';
+CREATE INDEX IF NOT EXISTS idx_evidence_assessment_tenant_session
+    ON evidence_assessment (tenant_id, session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_evidence_assessment_trace_id
+    ON evidence_assessment (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: diagnosis_run / signal_evaluation / diagnosis_candidate
+-- 说明: 每次初始包或补采包合并后产生不可变诊断运行和判定明细
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS diagnosis_run (
+    run_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    tenant_id varchar(128) NOT NULL,
+    session_id uuid NOT NULL,
+    assessment_id uuid NOT NULL,
+    run_sequence integer NOT NULL,
+    status varchar(16) NOT NULL DEFAULT 'running',
+    selected_category varchar(100),
+    resolved_category varchar(100),
+    run_manifest jsonb NOT NULL,
+    run_manifest_sha256 varchar(64) NOT NULL,
+    conclusion_policy_version varchar(32) NOT NULL,
+    matcher_version varchar(32) NOT NULL,
+    agent_version varchar(32) NOT NULL,
+    model_version varchar(64),
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at timestamptz,
+    CONSTRAINT diagnosis_run_pkey PRIMARY KEY (run_id),
+    CONSTRAINT fk_diagnosis_run_session_id
+        FOREIGN KEY (session_id) REFERENCES diagnosis_session (session_id) ON DELETE CASCADE,
+    CONSTRAINT fk_diagnosis_run_assessment_id
+        FOREIGN KEY (assessment_id) REFERENCES evidence_assessment (assessment_id) ON DELETE RESTRICT,
+    CONSTRAINT uq_diagnosis_run_session_sequence UNIQUE (session_id, run_sequence),
+    CONSTRAINT uq_diagnosis_run_session_manifest UNIQUE (session_id, run_manifest_sha256),
+    CONSTRAINT ck_diagnosis_run_status
+        CHECK ((status)::text = ANY ((ARRAY['running'::varchar, 'completed'::varchar, 'failed'::varchar])::text[])),
+    CONSTRAINT ck_diagnosis_run_sequence CHECK (run_sequence BETWEEN 1 AND 2)
+);
+
+COMMENT ON TABLE diagnosis_run IS 'Diagnosis Run（诊断运行），每次分析保存不可变 Run Manifest（运行清单）';
+COMMENT ON COLUMN diagnosis_run.run_manifest IS 'Profile、Plan、Collector、Bundle、KBD、matcher、Agent、模型和报告策略快照';
+CREATE INDEX IF NOT EXISTS idx_diagnosis_run_tenant_session
+    ON diagnosis_run (tenant_id, session_id, run_sequence DESC);
+CREATE INDEX IF NOT EXISTS idx_diagnosis_run_trace_id
+    ON diagnosis_run (trace_id);
+
+CREATE TABLE IF NOT EXISTS signal_evaluation (
+    evaluation_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    run_id uuid NOT NULL,
+    signal_id varchar(255) NOT NULL,
+    state varchar(16) NOT NULL,
+    reason text NOT NULL,
+    required_for_conclusion boolean NOT NULL DEFAULT false,
+    evidence_status varchar(32) NOT NULL,
+    evidence_refs jsonb NOT NULL DEFAULT '[]'::jsonb,
+    matcher_snapshot jsonb,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT signal_evaluation_pkey PRIMARY KEY (evaluation_id),
+    CONSTRAINT fk_signal_evaluation_run_id
+        FOREIGN KEY (run_id) REFERENCES diagnosis_run (run_id) ON DELETE CASCADE,
+    CONSTRAINT uq_signal_evaluation_run_signal UNIQUE (run_id, signal_id),
+    CONSTRAINT ck_signal_evaluation_state
+        CHECK ((state)::text = ANY ((ARRAY['MATCHED'::varchar, 'NOT_MATCHED'::varchar, 'UNKNOWN'::varchar])::text[]))
+);
+
+COMMENT ON TABLE signal_evaluation IS 'Signal Evaluation（信号评估）；缺失、失败和不可读证据只能产生 UNKNOWN';
+CREATE INDEX IF NOT EXISTS idx_signal_evaluation_run
+    ON signal_evaluation (run_id, state);
+
+CREATE TABLE IF NOT EXISTS diagnosis_candidate (
+    candidate_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    run_id uuid NOT NULL,
+    kbd_id bigint,
+    support_id varchar(20),
+    title text NOT NULL,
+    category_id varchar(32),
+    score numeric(7,6) NOT NULL,
+    matched_count integer NOT NULL DEFAULT 0,
+    not_matched_count integer NOT NULL DEFAULT 0,
+    unknown_count integer NOT NULL DEFAULT 0,
+    signal_coverage numeric(7,6) NOT NULL DEFAULT 0,
+    kbd_snapshot jsonb NOT NULL,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT diagnosis_candidate_pkey PRIMARY KEY (candidate_id),
+    CONSTRAINT fk_diagnosis_candidate_run_id
+        FOREIGN KEY (run_id) REFERENCES diagnosis_run (run_id) ON DELETE CASCADE,
+    CONSTRAINT uq_diagnosis_candidate_run_kbd UNIQUE (run_id, kbd_id),
+    CONSTRAINT ck_diagnosis_candidate_score CHECK (score BETWEEN 0 AND 1)
+);
+
+COMMENT ON TABLE diagnosis_candidate IS 'KBD 候选快照，按 Signal 覆盖、UNKNOWN 比例、版本和对象范围排序';
+CREATE INDEX IF NOT EXISTS idx_diagnosis_candidate_run_score
+    ON diagnosis_candidate (run_id, score DESC);
+
+-- ------------------------------------------------------------
+-- 表: supplement_plan / diagnosis_report / diagnosis_report_revision
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS supplement_plan (
+    supplement_plan_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    tenant_id varchar(128) NOT NULL,
+    session_id uuid NOT NULL,
+    run_id uuid NOT NULL,
+    reason text NOT NULL,
+    collection_items jsonb NOT NULL,
+    expected_size_mb numeric(12,2) NOT NULL DEFAULT 0,
+    expected_duration_minutes integer NOT NULL DEFAULT 0,
+    status varchar(16) NOT NULL DEFAULT 'ready',
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT supplement_plan_pkey PRIMARY KEY (supplement_plan_id),
+    CONSTRAINT fk_supplement_plan_session_id
+        FOREIGN KEY (session_id) REFERENCES diagnosis_session (session_id) ON DELETE CASCADE,
+    CONSTRAINT fk_supplement_plan_run_id
+        FOREIGN KEY (run_id) REFERENCES diagnosis_run (run_id) ON DELETE RESTRICT,
+    CONSTRAINT uq_supplement_plan_session UNIQUE (session_id),
+    CONSTRAINT ck_supplement_plan_status
+        CHECK (
+            (status)::text = ANY (
+                (ARRAY['ready'::varchar, 'collecting'::varchar, 'completed'::varchar, 'cancelled'::varchar])::text[]
+            )
+        )
+);
+
+COMMENT ON TABLE supplement_plan IS 'Supplement Plan（补充采集计划），P0 每个诊断会话最多一条';
+
+CREATE TABLE IF NOT EXISTS diagnosis_report (
+    report_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    tenant_id varchar(128) NOT NULL,
+    session_id uuid NOT NULL,
+    run_id uuid NOT NULL,
+    report_sequence integer NOT NULL,
+    diagnosis_level varchar(16) NOT NULL,
+    summary text NOT NULL,
+    resolved_domain varchar(100),
+    primary_hypothesis text,
+    confidence numeric(5,4) NOT NULL,
+    supporting_evidence jsonb NOT NULL DEFAULT '[]'::jsonb,
+    counter_evidence jsonb NOT NULL DEFAULT '[]'::jsonb,
+    excluded_causes jsonb NOT NULL DEFAULT '[]'::jsonb,
+    missing_evidence jsonb NOT NULL DEFAULT '[]'::jsonb,
+    recommended_recovery jsonb NOT NULL DEFAULT '[]'::jsonb,
+    risk_and_rollback jsonb NOT NULL DEFAULT '[]'::jsonb,
+    root_cause_validation jsonb NOT NULL DEFAULT '[]'::jsonb,
+    supplement_plan_id uuid,
+    matched_kbds jsonb NOT NULL DEFAULT '[]'::jsonb,
+    publish_status varchar(24) NOT NULL DEFAULT 'draft',
+    conclusion_policy_version varchar(32) NOT NULL,
+    report_schema_version varchar(32) NOT NULL,
+    version integer NOT NULL DEFAULT 1,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT diagnosis_report_pkey PRIMARY KEY (report_id),
+    CONSTRAINT fk_diagnosis_report_session_id
+        FOREIGN KEY (session_id) REFERENCES diagnosis_session (session_id) ON DELETE CASCADE,
+    CONSTRAINT fk_diagnosis_report_run_id
+        FOREIGN KEY (run_id) REFERENCES diagnosis_run (run_id) ON DELETE RESTRICT,
+    CONSTRAINT fk_diagnosis_report_supplement_plan_id
+        FOREIGN KEY (supplement_plan_id) REFERENCES supplement_plan (supplement_plan_id) ON DELETE SET NULL,
+    CONSTRAINT uq_diagnosis_report_run UNIQUE (run_id),
+    CONSTRAINT uq_diagnosis_report_session_sequence UNIQUE (session_id, report_sequence),
+    CONSTRAINT ck_diagnosis_report_level
+        CHECK (
+            (diagnosis_level)::text = ANY (
+                (ARRAY[
+                    'Confirmed'::varchar,
+                    'Probable'::varchar,
+                    'Suspected'::varchar,
+                    'Insufficient'::varchar,
+                    'Conflicted'::varchar
+                ])::text[]
+            )
+        ),
+    CONSTRAINT ck_diagnosis_report_status
+        CHECK (
+            (publish_status)::text = ANY (
+                (ARRAY[
+                    'draft'::varchar,
+                    'review_pending'::varchar,
+                    'engineer_confirmed'::varchar,
+                    'customer_published'::varchar,
+                    'rejected'::varchar,
+                    'superseded'::varchar
+                ])::text[]
+            )
+        ),
+    CONSTRAINT ck_diagnosis_report_confidence CHECK (confidence BETWEEN 0 AND 1),
+    CONSTRAINT ck_diagnosis_report_version CHECK (version >= 1)
+);
+
+COMMENT ON TABLE diagnosis_report IS 'Diagnosis Report（诊断报告），每次 Run 只追加新版本，默认 draft';
+COMMENT ON COLUMN diagnosis_report.supporting_evidence IS '必须引用 Evidence Item（不可变证据项）的 evidence_ref';
+CREATE INDEX IF NOT EXISTS idx_diagnosis_report_tenant_session
+    ON diagnosis_report (tenant_id, session_id, report_sequence DESC);
+CREATE INDEX IF NOT EXISTS idx_diagnosis_report_publish_status
+    ON diagnosis_report (publish_status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS diagnosis_report_revision (
+    revision_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    report_id uuid NOT NULL,
+    action varchar(32) NOT NULL,
+    actor_id varchar(128) NOT NULL,
+    actor_roles jsonb NOT NULL,
+    reason text NOT NULL,
+    before_snapshot jsonb NOT NULL,
+    after_snapshot jsonb NOT NULL,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT diagnosis_report_revision_pkey PRIMARY KEY (revision_id),
+    CONSTRAINT fk_diagnosis_report_revision_report_id
+        FOREIGN KEY (report_id) REFERENCES diagnosis_report (report_id) ON DELETE CASCADE
+);
+
+COMMENT ON TABLE diagnosis_report_revision IS '报告审核、编辑、发布和驳回的不可变审计记录，保存修改前后快照及原因';
+CREATE INDEX IF NOT EXISTS idx_diagnosis_report_revision_report
+    ON diagnosis_report_revision (report_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_diagnosis_report_revision_trace_id
+    ON diagnosis_report_revision (trace_id);
+
+CREATE TABLE IF NOT EXISTS diagnosis_legal_hold_audit (
+    audit_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    tenant_id varchar(128) NOT NULL,
+    session_id uuid NOT NULL,
+    action varchar(16) NOT NULL,
+    actor_id varchar(128) NOT NULL,
+    reason text NOT NULL,
+    affected_bundle_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT diagnosis_legal_hold_audit_pkey PRIMARY KEY (audit_id),
+    CONSTRAINT fk_diagnosis_legal_hold_audit_session_id
+        FOREIGN KEY (session_id) REFERENCES diagnosis_session (session_id) ON DELETE CASCADE,
+    CONSTRAINT ck_diagnosis_legal_hold_audit_action
+        CHECK ((action)::text = ANY ((ARRAY['applied'::varchar, 'released'::varchar])::text[]))
+);
+
+COMMENT ON TABLE diagnosis_legal_hold_audit IS
+    'Legal Hold（法务保全）不可变审计；解除人不得与最近一次设置人相同';
+CREATE INDEX IF NOT EXISTS idx_diagnosis_legal_hold_audit_session
+    ON diagnosis_legal_hold_audit (tenant_id, session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_diagnosis_legal_hold_audit_trace_id
+    ON diagnosis_legal_hold_audit (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: diagnosis_deletion_job  [模块: diagnosis-worker]
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS diagnosis_deletion_job (
+    deletion_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    tenant_id varchar(128) NOT NULL,
+    session_id uuid NOT NULL,
+    requested_by varchar(128) NOT NULL,
+    status varchar(24) NOT NULL DEFAULT 'deletion_pending',
+    attempts integer NOT NULL DEFAULT 0,
+    deletion_results jsonb NOT NULL DEFAULT '{}'::jsonb,
+    failure_message text,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT diagnosis_deletion_job_pkey PRIMARY KEY (deletion_id),
+    CONSTRAINT fk_diagnosis_deletion_job_session_id
+        FOREIGN KEY (session_id) REFERENCES diagnosis_session (session_id) ON DELETE CASCADE,
+    CONSTRAINT uq_diagnosis_deletion_job_session UNIQUE (session_id),
+    CONSTRAINT ck_diagnosis_deletion_job_status
+        CHECK (
+            (status)::text = ANY (
+                (ARRAY['deletion_pending'::varchar, 'deleted'::varchar, 'deletion_failed'::varchar])::text[]
+            )
+        )
+);
+
+COMMENT ON TABLE diagnosis_deletion_job IS '删除原始包、结构化证据、缓存和临时副本的异步审计任务；Legal Hold 时禁止创建';
+CREATE INDEX IF NOT EXISTS idx_diagnosis_deletion_job_status
+    ON diagnosis_deletion_job (status, updated_at);
+
+-- ------------------------------------------------------------
+-- 表: diagnosis_management_audit  [模块: diagnosis-service]
+-- 说明: 管理端跨会话读取与处置操作的不可变访问审计
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS diagnosis_management_audit (
+    audit_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    tenant_id varchar(128) NOT NULL,
+    actor_id varchar(128) NOT NULL,
+    actor_roles jsonb NOT NULL DEFAULT '[]'::jsonb,
+    action varchar(64) NOT NULL,
+    resource_type varchar(64) NOT NULL,
+    resource_id varchar(128),
+    session_id uuid,
+    result varchar(16) NOT NULL DEFAULT 'success',
+    details jsonb NOT NULL DEFAULT '{}'::jsonb,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT diagnosis_management_audit_pkey PRIMARY KEY (audit_id),
+    CONSTRAINT fk_diagnosis_management_audit_session_id
+        FOREIGN KEY (session_id) REFERENCES diagnosis_session (session_id) ON DELETE SET NULL,
+    CONSTRAINT ck_diagnosis_management_audit_result
+        CHECK ((result)::text = ANY ((ARRAY['success'::varchar, 'denied'::varchar, 'failed'::varchar])::text[]))
+);
+
+COMMENT ON TABLE diagnosis_management_audit IS
+    'Diagnosis Management（诊断管理）跨会话读取、转派、重试、终止和安全处置的不可变访问审计';
+COMMENT ON COLUMN diagnosis_management_audit.actor_roles IS '执行动作时可信身份中的角色快照';
+COMMENT ON COLUMN diagnosis_management_audit.details IS '不含证据正文和凭据的有界操作上下文';
+COMMENT ON COLUMN diagnosis_management_audit.trace_id IS '管理访问请求的 W3C Trace ID';
+
+CREATE INDEX IF NOT EXISTS idx_diagnosis_management_audit_tenant_time
+    ON diagnosis_management_audit (tenant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_diagnosis_management_audit_session
+    ON diagnosis_management_audit (session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_diagnosis_management_audit_trace
+    ON diagnosis_management_audit (trace_id);
 
 
 -- ------------------------------------------------------------
@@ -679,7 +2021,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_system_prompt_id ON audit_log (system_p
 
 -- ------------------------------------------------------------
 -- 表: dynamic_resource_revision  [模块: shared]
--- 说明: 五大动态资源不可变 revision 快照，覆盖 KBD/SOP/Tool/Skill/Prompt
+-- 说明: 动态资源不可变 revision 快照，覆盖 KBD/SOP/Tool/Skill/Prompt/Collection Profile/Collector
 -- 用途: 发布或启用动态资源时生成运行时快照，Agent 执行时按 revision 审计，避免管理表被编辑后历史执行不可追溯
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS dynamic_resource_revision (
@@ -701,8 +2043,8 @@ CREATE TABLE IF NOT EXISTS dynamic_resource_revision (
     CONSTRAINT uq_dynamic_resource_checksum UNIQUE (resource_type, resource_name, checksum)
 );
 
-COMMENT ON TABLE dynamic_resource_revision IS '动态资源不可变 revision 快照表 — KBD/SOP/Tool/Skill/Prompt 共享运行时版本模型';
-COMMENT ON COLUMN dynamic_resource_revision.resource_type IS '资源类型：kbd/sop/tool/skill/prompt/prompt_slot';
+COMMENT ON TABLE dynamic_resource_revision IS '动态资源不可变 revision 快照表 — KBD/SOP/Tool/Skill/Prompt/Collection Profile/Collector 共享运行时版本模型';
+COMMENT ON COLUMN dynamic_resource_revision.resource_type IS '资源类型：kbd/sop/tool/skill/prompt/prompt_slot/collection_profile/collector';
 COMMENT ON COLUMN dynamic_resource_revision.resource_name IS '资源唯一名称，如 tool_name、skill_name、prompt name、sop id';
 COMMENT ON COLUMN dynamic_resource_revision.revision IS '同一资源内单调递增 revision';
 COMMENT ON COLUMN dynamic_resource_revision.content_json IS '资源内容快照，来自业务事实源表';
@@ -1119,6 +2461,163 @@ CREATE INDEX IF NOT EXISTS idx_kbd_entry_embedding ON kbd_entry
 -- P2-2: 补全 updated_at 触发器（schema 注释中要求由触发器维护，但原先缺失）
 
 COMMENT ON COLUMN kbd_entry.hit_count IS '命中计数：有多少个唯一 case_id 的 conversation.resolved_kbd_entry_id = 此条目。物化列，写入 conversation.resolved_kbd_entry_id 时原子 +1（case 级去重）。校验 SQL：SELECT COUNT(DISTINCT case_id) FROM conversation WHERE resolved_kbd_entry_id = id';
+
+-- ------------------------------------------------------------
+-- 表: kbd_batch_job  [模块: kb-service]
+-- 说明: KBD 批量识图、分类和信号抽取任务
+-- 用途: 持久化批量任务进度和汇总结果，页面刷新后仍可查询
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS kbd_batch_job (
+    batch_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    job_type varchar(32) NOT NULL,
+    status varchar(24) NOT NULL DEFAULT 'pending',
+    requested_kbd_ids jsonb NOT NULL,
+    request_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    total_count integer NOT NULL,
+    completed_count integer NOT NULL DEFAULT 0,
+    succeeded_count integer NOT NULL DEFAULT 0,
+    failed_count integer NOT NULL DEFAULT 0,
+    interrupted_count integer NOT NULL DEFAULT 0,
+    work_total_count integer NOT NULL DEFAULT 0,
+    work_completed_count integer NOT NULL DEFAULT 0,
+    work_failed_count integer NOT NULL DEFAULT 0,
+    retry_of_batch_id uuid,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at timestamptz,
+    completed_at timestamptz,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT kbd_batch_job_pkey PRIMARY KEY (batch_id),
+    CONSTRAINT fk_kbd_batch_job_retry_of
+        FOREIGN KEY (retry_of_batch_id) REFERENCES kbd_batch_job (batch_id) ON DELETE RESTRICT,
+    CONSTRAINT uq_kbd_batch_job_retry_of UNIQUE (retry_of_batch_id),
+    CONSTRAINT ck_kbd_batch_job_type
+        CHECK (
+            (job_type)::text = ANY (
+                (ARRAY[
+                    'reanalyze_images'::varchar,
+                    'reclassify'::varchar,
+                    'extract_signals'::varchar,
+                    'approve'::varchar,
+                    'reject'::varchar
+                ])::text[]
+            )
+        ),
+    CONSTRAINT ck_kbd_batch_job_status
+        CHECK (
+            (status)::text = ANY (
+                (ARRAY[
+                    'pending'::varchar,
+                    'running'::varchar,
+                    'completed'::varchar,
+                    'partial_failed'::varchar,
+                    'failed'::varchar,
+                    'interrupted'::varchar
+                ])::text[]
+            )
+        ),
+    CONSTRAINT ck_kbd_batch_job_requested_ids CHECK (jsonb_typeof(requested_kbd_ids) = 'array'),
+    CONSTRAINT ck_kbd_batch_job_request_json CHECK (jsonb_typeof(request_json) = 'object'),
+    CONSTRAINT ck_kbd_batch_job_counts CHECK (
+        total_count > 0
+        AND completed_count >= 0
+        AND succeeded_count >= 0
+        AND failed_count >= 0
+        AND interrupted_count >= 0
+        AND completed_count = succeeded_count + failed_count + interrupted_count
+        AND completed_count <= total_count
+    ),
+    CONSTRAINT ck_kbd_batch_job_work_counts CHECK (
+        work_total_count >= 0
+        AND work_completed_count >= 0
+        AND work_failed_count >= 0
+        AND work_completed_count <= work_total_count
+        AND work_failed_count <= work_completed_count
+    )
+);
+
+COMMENT ON TABLE kbd_batch_job IS 'KBD 后台批量任务；保存进度、汇总结果和链路标识，支持刷新后追踪';
+COMMENT ON COLUMN kbd_batch_job.job_type IS '任务类型：reanalyze_images（重新识图）/reclassify（重新分类）/extract_signals（重新抽取信号）/approve（审核通过）/reject（审核拒绝）';
+COMMENT ON COLUMN kbd_batch_job.request_json IS '批量请求不可变快照；保存审核人、备注和提交时版本等恢复执行所需上下文';
+COMMENT ON COLUMN kbd_batch_job.status IS '任务状态：pending/running/completed/partial_failed/failed/interrupted';
+COMMENT ON COLUMN kbd_batch_job.interrupted_count IS '因服务或执行器中断而未完成、可重新提交的 KBD 数量';
+COMMENT ON COLUMN kbd_batch_job.retry_of_batch_id IS '本批次重试来源；每个批次最多派生一个直接重试批次，后续失败可继续形成重试链';
+COMMENT ON COLUMN kbd_batch_job.requested_kbd_ids IS '提交时的 KBD ID 有序快照，用于审计本次任务范围';
+COMMENT ON COLUMN kbd_batch_job.work_total_count IS '细粒度工作总数；识图任务表示图片数，其他任务表示 KBD 数';
+COMMENT ON COLUMN kbd_batch_job.work_completed_count IS '已完成的细粒度工作数，用于展示图片级实时进度';
+COMMENT ON COLUMN kbd_batch_job.work_failed_count IS '失败的细粒度工作数';
+COMMENT ON COLUMN kbd_batch_job.trace_id IS '提交批量任务时的 W3C 链路标识';
+
+CREATE INDEX IF NOT EXISTS idx_kbd_batch_job_created
+    ON kbd_batch_job (created_at DESC, batch_id DESC);
+CREATE INDEX IF NOT EXISTS idx_kbd_batch_job_status
+    ON kbd_batch_job (status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_kbd_batch_job_trace_id
+    ON kbd_batch_job (trace_id);
+CREATE INDEX IF NOT EXISTS idx_kbd_batch_job_retry_of
+    ON kbd_batch_job (retry_of_batch_id) WHERE retry_of_batch_id IS NOT NULL;
+
+-- ------------------------------------------------------------
+-- 表: kbd_batch_job_item  [模块: kb-service]
+-- 说明: KBD 批量任务逐条执行结果
+-- 用途: 展示每条 KBD 的成功状态或结构化失败原因，避免审核人员逐条打开确认
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS kbd_batch_job_item (
+    item_id bigserial NOT NULL,
+    batch_id uuid NOT NULL,
+    kbd_id bigint NOT NULL,
+    status varchar(16) NOT NULL DEFAULT 'pending',
+    result_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    error_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    work_total_count integer NOT NULL DEFAULT 0,
+    work_completed_count integer NOT NULL DEFAULT 0,
+    work_failed_count integer NOT NULL DEFAULT 0,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at timestamptz,
+    completed_at timestamptz,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT kbd_batch_job_item_pkey PRIMARY KEY (item_id),
+    CONSTRAINT fk_kbd_batch_job_item_batch_id
+        FOREIGN KEY (batch_id) REFERENCES kbd_batch_job (batch_id) ON DELETE CASCADE,
+    CONSTRAINT fk_kbd_batch_job_item_kbd_id
+        FOREIGN KEY (kbd_id) REFERENCES kbd_entry (id) ON DELETE RESTRICT,
+    CONSTRAINT ck_kbd_batch_job_item_status
+        CHECK (
+            (status)::text = ANY (
+                (ARRAY[
+                    'pending'::varchar,
+                    'running'::varchar,
+                    'succeeded'::varchar,
+                    'failed'::varchar,
+                    'interrupted'::varchar
+                ])::text[]
+            )
+        ),
+    CONSTRAINT ck_kbd_batch_job_item_work_counts CHECK (
+        work_total_count >= 0
+        AND work_completed_count >= 0
+        AND work_failed_count >= 0
+        AND work_completed_count <= work_total_count
+        AND work_failed_count <= work_completed_count
+    ),
+    CONSTRAINT uq_kbd_batch_job_item UNIQUE (batch_id, kbd_id)
+);
+
+COMMENT ON TABLE kbd_batch_job_item IS 'KBD 批量任务逐条结果；保留成功摘要、失败原因和执行时间';
+COMMENT ON COLUMN kbd_batch_job_item.result_json IS '成功结果摘要，不保存图片原文等大体积内容';
+COMMENT ON COLUMN kbd_batch_job_item.error_json IS '失败状态码与可展示原因，不保存密钥或敏感响应正文';
+COMMENT ON COLUMN kbd_batch_job_item.work_total_count IS '该 KBD 的细粒度工作总数；识图任务表示图片数';
+COMMENT ON COLUMN kbd_batch_job_item.work_completed_count IS '该 KBD 已完成的细粒度工作数';
+COMMENT ON COLUMN kbd_batch_job_item.work_failed_count IS '该 KBD 失败的细粒度工作数';
+COMMENT ON COLUMN kbd_batch_job_item.trace_id IS '继承所属批量任务的 W3C 链路标识';
+
+CREATE INDEX IF NOT EXISTS idx_kbd_batch_job_item_batch_status
+    ON kbd_batch_job_item (batch_id, status, item_id);
+CREATE INDEX IF NOT EXISTS idx_kbd_batch_job_item_kbd
+    ON kbd_batch_job_item (kbd_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_kbd_batch_job_item_trace_id
+    ON kbd_batch_job_item (trace_id);
 
 -- ------------------------------------------------------------
 -- 表: kbd_revision  [模块: kb-service]

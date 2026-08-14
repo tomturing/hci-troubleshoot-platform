@@ -29,6 +29,11 @@ kbService:
     repository: hci-kb-service
     tag: "latest"
 
+diagnosisService:
+  image:
+    repository: hci-diagnosis-service
+    tag: "latest"
+
 customerUI:
   image:
     repository: hci-customer-ui

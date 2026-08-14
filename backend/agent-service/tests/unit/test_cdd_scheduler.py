@@ -1,7 +1,7 @@
 """Active CDD scheduler and conclusion-gate invariants."""
 
 import pytest
-from app.adapters.agents.htp.cdd import (
+from shared.cdd import (
     ActiveDiagnosticScheduler,
     CandidateState,
     CaseVerdict,
@@ -15,8 +15,8 @@ from app.adapters.agents.htp.cdd import (
     decide_conclusion,
     replay_evaluations,
 )
-from app.adapters.agents.htp.cdd.candidate_reducer import initial_assessments, reduce_candidates
-from app.adapters.agents.htp.kbd_model import KBD
+from shared.cdd.candidate_reducer import initial_assessments, reduce_candidates
+from shared.cdd.kbd_model import KBD
 from shared.schemas.signal_generation import build_signal_generation_metadata, current_tool_contract_revision
 
 

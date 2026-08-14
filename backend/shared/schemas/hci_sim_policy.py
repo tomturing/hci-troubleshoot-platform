@@ -21,6 +21,8 @@ def hci_sim_policy_contract() -> dict[str, Any]:
         "execution_mode": "sim-ssh",
         "bundle_read_status": "published",
         "route_match": "exact_route_key",
+        "synthetic_route_source": "published_kbd_signal+shared_resolution_runtime+active_tool_revision",
+        "route_tool_binding": ["tool_revision", "tool_checksum"],
         "real_hci_fallback": False,
         "lease_binding": [
             "test_run_id",

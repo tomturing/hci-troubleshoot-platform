@@ -107,6 +107,92 @@ DO $$ BEGIN
 END $$;
 
 DO $$ BEGIN
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='diagnosis_session') THEN
+    DROP TRIGGER IF EXISTS update_diagnosis_session_updated_at ON diagnosis_session;
+    CREATE TRIGGER update_diagnosis_session_updated_at
+        BEFORE UPDATE ON diagnosis_session
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='collection_plan') THEN
+    DROP TRIGGER IF EXISTS update_collection_plan_updated_at ON collection_plan;
+    CREATE TRIGGER update_collection_plan_updated_at
+        BEFORE UPDATE ON collection_plan
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='collection_profile_definition') THEN
+    DROP TRIGGER IF EXISTS update_collection_profile_definition_updated_at ON collection_profile_definition;
+    CREATE TRIGGER update_collection_profile_definition_updated_at
+        BEFORE UPDATE ON collection_profile_definition
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='collector_definition') THEN
+    DROP TRIGGER IF EXISTS update_collector_definition_updated_at ON collector_definition;
+    CREATE TRIGGER update_collector_definition_updated_at
+        BEFORE UPDATE ON collector_definition
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='collector_artifact') THEN
+    DROP TRIGGER IF EXISTS update_collector_artifact_updated_at ON collector_artifact;
+    CREATE TRIGGER update_collector_artifact_updated_at
+        BEFORE UPDATE ON collector_artifact
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='diagnosis_upload_session') THEN
+    DROP TRIGGER IF EXISTS update_diagnosis_upload_session_updated_at ON diagnosis_upload_session;
+    CREATE TRIGGER update_diagnosis_upload_session_updated_at
+        BEFORE UPDATE ON diagnosis_upload_session
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='diagnostic_evidence_bundle') THEN
+    DROP TRIGGER IF EXISTS update_diagnostic_evidence_bundle_updated_at ON diagnostic_evidence_bundle;
+    CREATE TRIGGER update_diagnostic_evidence_bundle_updated_at
+        BEFORE UPDATE ON diagnostic_evidence_bundle
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='diagnosis_processing_job') THEN
+    DROP TRIGGER IF EXISTS update_diagnosis_processing_job_updated_at ON diagnosis_processing_job;
+    CREATE TRIGGER update_diagnosis_processing_job_updated_at
+        BEFORE UPDATE ON diagnosis_processing_job
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='offline_signal_collector_mapping') THEN
+    DROP TRIGGER IF EXISTS update_offline_signal_mapping_updated_at ON offline_signal_collector_mapping;
+    CREATE TRIGGER update_offline_signal_mapping_updated_at
+        BEFORE UPDATE ON offline_signal_collector_mapping
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='supplement_plan') THEN
+    DROP TRIGGER IF EXISTS update_supplement_plan_updated_at ON supplement_plan;
+    CREATE TRIGGER update_supplement_plan_updated_at
+        BEFORE UPDATE ON supplement_plan
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='diagnosis_report') THEN
+    DROP TRIGGER IF EXISTS update_diagnosis_report_updated_at ON diagnosis_report;
+    CREATE TRIGGER update_diagnosis_report_updated_at
+        BEFORE UPDATE ON diagnosis_report
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='diagnosis_deletion_job') THEN
+    DROP TRIGGER IF EXISTS update_diagnosis_deletion_job_updated_at ON diagnosis_deletion_job;
+    CREATE TRIGGER update_diagnosis_deletion_job_updated_at
+        BEFORE UPDATE ON diagnosis_deletion_job
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+END $$;
+
+DO $$ BEGIN
   IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='message') THEN
     DROP TRIGGER IF EXISTS update_conversation_message_count ON message;
     CREATE TRIGGER update_conversation_message_count
@@ -130,6 +216,128 @@ DO $$ BEGIN
     CREATE TRIGGER update_kbd_entry_updated_at
         BEFORE UPDATE ON kbd_entry
         FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+END $$;
+
+DO $$ BEGIN
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='kbd_batch_job') THEN
+    ALTER TABLE kbd_batch_job
+      ADD COLUMN IF NOT EXISTS work_total_count integer NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS work_completed_count integer NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS work_failed_count integer NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS interrupted_count integer NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS retry_of_batch_id uuid,
+      ADD COLUMN IF NOT EXISTS request_json jsonb NOT NULL DEFAULT '{}'::jsonb;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_kbd_batch_job_retry_of') THEN
+      ALTER TABLE kbd_batch_job ADD CONSTRAINT fk_kbd_batch_job_retry_of
+        FOREIGN KEY (retry_of_batch_id) REFERENCES kbd_batch_job (batch_id) ON DELETE RESTRICT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_kbd_batch_job_retry_of') THEN
+      ALTER TABLE kbd_batch_job ADD CONSTRAINT uq_kbd_batch_job_retry_of UNIQUE (retry_of_batch_id);
+    END IF;
+    CREATE INDEX IF NOT EXISTS idx_kbd_batch_job_retry_of
+      ON kbd_batch_job (retry_of_batch_id) WHERE retry_of_batch_id IS NOT NULL;
+    ALTER TABLE kbd_batch_job DROP CONSTRAINT IF EXISTS ck_kbd_batch_job_status;
+    ALTER TABLE kbd_batch_job ADD CONSTRAINT ck_kbd_batch_job_status CHECK (
+      (status)::text = ANY (
+        (ARRAY[
+          'pending'::varchar, 'running'::varchar, 'completed'::varchar,
+          'partial_failed'::varchar, 'failed'::varchar, 'interrupted'::varchar
+        ])::text[]
+      )
+    );
+    ALTER TABLE kbd_batch_job DROP CONSTRAINT IF EXISTS ck_kbd_batch_job_type;
+    ALTER TABLE kbd_batch_job ADD CONSTRAINT ck_kbd_batch_job_type CHECK (
+      (job_type)::text = ANY (
+        (ARRAY[
+          'reanalyze_images'::varchar, 'reclassify'::varchar, 'extract_signals'::varchar,
+          'approve'::varchar, 'reject'::varchar
+        ])::text[]
+      )
+    );
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_kbd_batch_job_request_json') THEN
+      ALTER TABLE kbd_batch_job ADD CONSTRAINT ck_kbd_batch_job_request_json
+        CHECK (jsonb_typeof(request_json) = 'object');
+    END IF;
+    ALTER TABLE kbd_batch_job DROP CONSTRAINT IF EXISTS ck_kbd_batch_job_counts;
+    ALTER TABLE kbd_batch_job ADD CONSTRAINT ck_kbd_batch_job_counts CHECK (
+      total_count > 0 AND completed_count >= 0 AND succeeded_count >= 0
+      AND failed_count >= 0 AND interrupted_count >= 0
+      AND completed_count = succeeded_count + failed_count + interrupted_count
+      AND completed_count <= total_count
+    );
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_kbd_batch_job_work_counts') THEN
+      ALTER TABLE kbd_batch_job ADD CONSTRAINT ck_kbd_batch_job_work_counts CHECK (
+        work_total_count >= 0 AND work_completed_count >= 0 AND work_failed_count >= 0
+        AND work_completed_count <= work_total_count AND work_failed_count <= work_completed_count
+      );
+    END IF;
+    DROP TRIGGER IF EXISTS update_kbd_batch_job_updated_at ON kbd_batch_job;
+    CREATE TRIGGER update_kbd_batch_job_updated_at
+        BEFORE UPDATE ON kbd_batch_job
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='kbd_batch_job_item') THEN
+    ALTER TABLE kbd_batch_job_item
+      ADD COLUMN IF NOT EXISTS work_total_count integer NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS work_completed_count integer NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS work_failed_count integer NOT NULL DEFAULT 0;
+    ALTER TABLE kbd_batch_job_item DROP CONSTRAINT IF EXISTS ck_kbd_batch_job_item_status;
+    ALTER TABLE kbd_batch_job_item ADD CONSTRAINT ck_kbd_batch_job_item_status CHECK (
+      (status)::text = ANY (
+        (ARRAY[
+          'pending'::varchar, 'running'::varchar, 'succeeded'::varchar,
+          'failed'::varchar, 'interrupted'::varchar
+        ])::text[]
+      )
+    );
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_kbd_batch_job_item_work_counts') THEN
+      ALTER TABLE kbd_batch_job_item ADD CONSTRAINT ck_kbd_batch_job_item_work_counts CHECK (
+        work_total_count >= 0 AND work_completed_count >= 0 AND work_failed_count >= 0
+        AND work_completed_count <= work_total_count AND work_failed_count <= work_completed_count
+      );
+    END IF;
+    DROP TRIGGER IF EXISTS update_kbd_batch_job_item_updated_at ON kbd_batch_job_item;
+    CREATE TRIGGER update_kbd_batch_job_item_updated_at
+        BEFORE UPDATE ON kbd_batch_job_item
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+    -- 兼容早期修复版本：曾把进程中断暂记为 failed。根据稳定错误码无损拆回 interrupted，
+    -- 业务失败计数与中断计数从此独立，重复执行不会改变已经迁移的数据。
+    UPDATE kbd_batch_job_item AS i
+    SET status = 'interrupted',
+        work_total_count = CASE WHEN j.job_type = 'reanalyze_images' THEN i.work_total_count ELSE 0 END,
+        work_completed_count = CASE WHEN j.job_type = 'reanalyze_images' THEN i.work_completed_count ELSE 0 END,
+        work_failed_count = CASE WHEN j.job_type = 'reanalyze_images' THEN i.work_failed_count ELSE 0 END
+    FROM kbd_batch_job AS j
+    WHERE i.batch_id = j.batch_id
+      AND i.status IN ('failed', 'interrupted')
+      AND i.error_json->>'code' = 'BATCH_PROCESS_INTERRUPTED';
+
+    UPDATE kbd_batch_job AS j
+    SET completed_count = summary.succeeded + summary.failed + summary.interrupted,
+        succeeded_count = summary.succeeded,
+        failed_count = summary.failed,
+        interrupted_count = summary.interrupted,
+        work_total_count = summary.work_total,
+        work_completed_count = summary.work_completed,
+        work_failed_count = summary.work_failed,
+        status = 'interrupted',
+        completed_at = COALESCE(j.completed_at, CURRENT_TIMESTAMP)
+    FROM (
+      SELECT batch_id,
+             COUNT(*) FILTER (WHERE status = 'succeeded')::integer AS succeeded,
+             COUNT(*) FILTER (WHERE status = 'failed')::integer AS failed,
+             COUNT(*) FILTER (WHERE status = 'interrupted')::integer AS interrupted,
+             COALESCE(SUM(work_total_count), 0)::integer AS work_total,
+             COALESCE(SUM(work_completed_count), 0)::integer AS work_completed,
+             COALESCE(SUM(work_failed_count), 0)::integer AS work_failed
+      FROM kbd_batch_job_item
+      GROUP BY batch_id
+    ) AS summary
+    WHERE j.batch_id = summary.batch_id
+      AND summary.interrupted > 0;
   END IF;
 END $$;
 

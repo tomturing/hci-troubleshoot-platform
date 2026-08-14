@@ -45,6 +45,65 @@ def test_validate_usage_template_placeholder():
     assert result["validation_issues"][0]["code"] == "USAGE_TEMPLATE_PLACEHOLDER_MISSING"
 
 
+def test_validate_mustache_template_and_nested_parameter_path():
+    """Tool 模板校验必须识别 Mustache 条件段和嵌套字段。"""
+
+    result = validate_tool_payload(
+        {
+            "tool_name": "qfk_log",
+            "usage_template": ("acli log get -k {{keyword}} {{#if target.resource}}-f {{target.resource}}{{/if}}"),
+            "parameters_schema": {
+                "type": "object",
+                "properties": {
+                    "keyword": {"type": "string"},
+                    "target": {
+                        "type": "object",
+                        "properties": {"resource": {"type": "string"}},
+                    },
+                },
+            },
+        }
+    )
+
+    assert result == {"status": "ok", "validation_issues": []}
+
+
+def test_validate_mustache_template_rejects_undeclared_nested_path():
+    """Mustache 嵌套占位符不得绕过参数模式校验。"""
+
+    result = validate_tool_payload(
+        {
+            "tool_name": "qfk_log",
+            "usage_template": "acli log get {{#if target.path}}-p {{target.path}}{{/if}}",
+            "parameters_schema": {
+                "type": "object",
+                "properties": {"target": {"type": "object", "properties": {}}},
+            },
+        }
+    )
+
+    assert result["status"] == "error"
+    assert {issue["code"] for issue in result["validation_issues"]} == {"USAGE_TEMPLATE_PLACEHOLDER_MISSING"}
+
+
+def test_qkv_qfk_tool_allows_empty_display_template_but_requires_read_only_risk():
+    """QKV/QFK 命令由 Resolver 生成；usage_template 仅作展示，风险门禁仍生效。"""
+
+    result = validate_tool_payload(
+        {
+            "tool_name": "qfk_system",
+            "category": "qfk",
+            "usage_template": "",
+            "parameters_schema": {"type": "object", "properties": {}},
+            "risk_level": 3,
+        }
+    )
+
+    assert {issue["code"] for issue in result["validation_issues"]} == {
+        "SIGNAL_TOOL_MUST_BE_READ_ONLY",
+    }
+
+
 def test_validate_valid_bash_exec():
     result = validate_tool_payload(
         {

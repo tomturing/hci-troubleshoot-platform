@@ -73,6 +73,7 @@ deploy/env/secrets.env
 
 # hci-sim dev 验收的稳定 SSH host key（仅本机使用，不提交）
 .hci-sim-state/
+.hci-sim-run/
 
 # GitOps 本地密钥文件（仅本机使用，不提交）
 deploy/gitops/local/*.yaml
@@ -115,3 +116,4 @@ Redis_*.yml
 SPT源数据*.xlsx
 案例*.xlsx
 【案例治理】*.xlsx
+scripts/kbd/

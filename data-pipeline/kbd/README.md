@@ -194,14 +194,14 @@ uv run python -m data-pipeline.kbd.run task \
 从文本文件读取，每行一个 support_id：
 
 ```bash
-uv run python -m data-pipeline.kbd.run pipeline \
+uv run python -m data-pipeline.kbd.run task \
   --id-file /path/to/kbd_ids.txt
 ```
 
 从配置的 Excel 读取并先试跑 10 条：
 
 ```bash
-uv run python -m data-pipeline.kbd.run pipeline \
+uv run python -m data-pipeline.kbd.run task \
   --excel \
   --limit 10
 ```
@@ -210,7 +210,7 @@ uv run python -m data-pipeline.kbd.run pipeline \
 
 ### 5.1 推荐人工 SOP：一条案例到待审核 Proposal
 
-适合知识运营、支持专家或研发人工处理单条/少量案例。除非明确需要重建历史内容，不要增加 `--force-fetch` 或 `--override`。
+适合知识运营、支持专家或研发人工处理单条/少量案例。需要重建历史内容时使用统一的 `--rework` 模式，不再使用已删除的 `--force-fetch` 或 `--override`。
 
 ```bash
 # 1. 检查当前环境，输出会遮蔽敏感配置
@@ -242,12 +242,12 @@ ls -1t data-pipeline/kbd/logs/kbd_*.jsonl | head -1
 
 ```bash
 # 5 条验证：推荐的第一批量级
-uv run python -m data-pipeline.kbd.run pipeline \
+uv run python -m data-pipeline.kbd.run task \
   --id-file /path/to/kbd_ids.txt \
   --json
 
 # Excel 来源先限制 10 条；观察 Provider、失败率和总耗时后再扩大
-uv run python -m data-pipeline.kbd.run pipeline \
+uv run python -m data-pipeline.kbd.run task \
   --excel \
   --limit 10 \
   --json
@@ -318,15 +318,15 @@ data-pipeline/kbd/cache/37150/
 └── 下载/锁相关标记
 ```
 
-默认存在有效 `raw.json` 时跳过。需要重新获取源案例时显式使用：
+默认存在有效 `raw.json` 时跳过。需要重新获取源案例时使用统一重做模式：
 
 ```bash
 uv run python -m data-pipeline.kbd.run fetch \
   --ids 37150 \
-  --force
+  --rework
 ```
 
-`--force` 只影响抓取缓存，不会自动覆盖数据库内容。
+`fetch --rework` 会重新抓取源案例；它只重做 Fetch Stage（抓取阶段），不会自动覆盖数据库中的 KBD。
 
 ### 7.2 Stage 2：import
 
@@ -450,7 +450,7 @@ kb-service
 也可以在 Pipeline 中显式运行到抽取：
 
 ```bash
-uv run python -m data-pipeline.kbd.run pipeline \
+uv run python -m data-pipeline.kbd.run task \
   --ids 37150 \
   --stages extract-signals
 ```
@@ -824,7 +824,7 @@ uv run python -m data-pipeline.kbd.run --help
 
 ### 12.6 Vision 429 或超时
 
-降低 `VISION_CONCURRENCY`，等待配额恢复后使用 `vision --failed-only`。不要靠无界重试提高“成功率”。
+降低 `VISION_CONCURRENCY`，等待配额恢复后使用 `vision --failed`。不要靠无界重试提高“成功率”。
 
 ### 12.7 `extract-signals` 显示没有可抽取案例
 

@@ -15,6 +15,7 @@ data:
   CASE_SERVICE_URL: "http://case-service:{{ .Values.caseService.port }}"
   CONVERSATION_SERVICE_URL: "http://conversation-service:{{ .Values.conversationService.port }}"
   SCHEDULER_SERVICE_URL: "http://scheduler-service:{{ .Values.schedulerService.port }}"
+  DIAGNOSIS_SERVICE_URL: {{ .Values.config.diagnosisServiceUrl | default "http://diagnosis-service:8008" | quote }}
   # LLM 配置（从顶级 llm.* 配置读取，assistantRegistryJson 由模板自动生成）
   LLM_BASE_URL: {{ .Values.llm.baseUrl | quote }}
   # 多模态专属 Vision 独立端点，默认为空时自动回退到 llm.baseUrl
@@ -23,14 +24,18 @@ data:
   AI_COMPLETIONS_PATH: {{ .Values.llm.apiCompletionsPath | quote }}
   # KBD 分类与识图模型（可按环境覆盖，均已验证支持多模态）
   CLASSIFY_MODEL: {{ .Values.kbService.classifyModel | default "kimi-k2.5" | quote }}
+  CLASSIFY_MAX_TOKENS: {{ .Values.kbService.classifyMaxTokens | default "2048" | quote }}
   VISION_MODEL: {{ .Values.kbService.visionModel | default "kimi-k2.5" | quote }}
+  EXTRACT_SIGNALS_MODEL: {{ .Values.kbService.extractSignalsModel | default .Values.kbService.classifyModel | default "kimi-k2.5" | quote }}
   # KBD Embedding 模型（向量召回使用，与 LLM_DEFAULT_MODEL 解耦，避免 chat 模型与 embedding 模型混用）
   # values.yaml kbService.llmEmbeddingModel 默认 "embedding-3"，按实际 LLM 网关支持的模型名覆盖
   LLM_EMBEDDING_MODEL: {{ .Values.kbService.llmEmbeddingModel | default "embedding-3" | quote }}
   KBD_MIN_SIMILARITY: {{ .Values.kbService.minSimilarity | default 0.3 | quote }}
   # Vision LLM 单次调用超时（秒）。默认 60s；生产环境请按 LLM 服务 SLA 调整。
-  # 注意：SDK max_retries=2，实际最大等待时间 = LLM_TIMEOUT × 3
+  # SDK 内部重试关闭，由业务层统一治理，避免重试次数相乘
   LLM_TIMEOUT: {{ .Values.kbService.llmTimeoutSec | default "60.0" | quote }}
+  # Vision 业务层总尝试次数（包含首次调用）；SDK 内部不再额外重试。
+  VISION_LLM_MAX_ATTEMPTS: {{ .Values.kbService.visionMaxAttempts | default "2" | quote }}
   # 是否启用 LLM 思维链（thinking）。默认关闭；开启时隐藏思考 token 会大幅拉长 Vision 调用延迟。
   # 单一开关同时作用于 vision_processor（识图）与 classify（分类）两个 LLM 调用点。
   LLM_ENABLE_THINKING: {{ .Values.kbService.enableThinking | default "false" | quote }}
@@ -38,6 +43,9 @@ data:
   VISION_GLOBAL_CONCURRENCY: {{ .Values.kbService.visionGlobalConcurrency | default "3" | quote }}
   # VISION/CLASSIFY/EXTRACT 共用 Provider 的总并发舱壁；阶段并行时这是唯一总量边界。
   LLM_GLOBAL_CONCURRENCY: {{ .Values.kbService.llmGlobalConcurrency | default .Values.kbService.visionGlobalConcurrency | default "3" | quote }}
+  KBD_BATCH_STALE_AFTER_SECONDS: {{ .Values.kbService.batchStaleAfterSeconds | default "600" | quote }}
+  EXTRACT_SIGNALS_MAX_TOKENS: {{ .Values.kbService.extractSignalsMaxTokens | default "16384" | quote }}
+  EXTRACT_SIGNALS_FORMAT_MAX_ATTEMPTS: {{ .Values.kbService.extractSignalsFormatMaxAttempts | default "2" | quote }}
   # 可观测性
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.otelEndpoint | quote }}
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}

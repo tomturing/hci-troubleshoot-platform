@@ -79,6 +79,16 @@ spec:
       {{- end }}
       http:
         paths:
+          {{- if .Values.diagnosisService.enabled }}
+          # 证据分片数据面保持客户域名同源，但绕过 API Gateway 直达诊断服务。
+          - path: /api/direct/diagnosis-uploads
+            pathType: Prefix
+            backend:
+              service:
+                name: diagnosis-service
+                port:
+                  number: {{ .Values.diagnosisService.port }}
+          {{- end }}
           # 后端 API
           - path: /api
             pathType: Prefix

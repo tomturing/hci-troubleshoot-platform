@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from app.adapters.agents.htp.cdd.replay_manifest import build_kbd_replay_manifest
+from shared.cdd.replay_manifest import build_kbd_replay_manifest
 
 
 def test_replay_manifest_only_references_terminal_artifact_and_never_embeds_output():

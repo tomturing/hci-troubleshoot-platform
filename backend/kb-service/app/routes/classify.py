@@ -21,7 +21,9 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
+from shared.observability.langfuse import observe_llm_generation, update_observation
 from shared.observability.logger import get_logger
+from shared.observability.metrics import KBD_LLM_REQUESTS_TOTAL, KBD_LLM_TOKENS_TOTAL
 from shared.utils.prompt_loader import StrictPromptLoader
 from sqlalchemy import text
 
@@ -40,8 +42,21 @@ _db_manager: DatabaseManager | None = None
 # LLM 配置（从环境变量读取，统一使用 LLM_* 命名，与 ConfigMap hci-common-config 保持一致）
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").rstrip("/")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
-# 优先读取 CLASSIFY_MODEL，若未配置，则回退到已验证可用的 kimi-k2.5
-LLM_MODEL = os.environ.get("CLASSIFY_MODEL", "kimi-k2.5")
+_CLASSIFY_BASE_URL = (os.environ.get("CLASSIFY_BASE_URL") or LLM_BASE_URL).rstrip("/")
+_CLASSIFY_API_KEY = os.environ.get("CLASSIFY_API_KEY") or LLM_API_KEY
+
+
+def _resolve_classify_model() -> str:
+    """优先使用分类专用模型，并忽略容器配置注入的空字符串。"""
+
+    return (
+        str(os.environ.get("CLASSIFY_MODEL") or "").strip()
+        or str(os.environ.get("LLM_DEFAULT_MODEL") or "").strip()
+        or "kimi-k2.5"
+    )
+
+
+LLM_MODEL = _resolve_classify_model()
 # 是否启用思维链（与 vision_processor.py 统一由 LLM_ENABLE_THINKING 控制，默认关闭）
 LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "false").lower() in ("1", "true", "yes", "on")
 LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "60"))
@@ -152,16 +167,16 @@ def build_categories_text(categories: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def call_llm(prompt: str) -> dict:
+async def call_llm(prompt: str, *, prompt_revision: str = "") -> dict:
     """调用 LLM API（使用统一的 LLM_* 配置）"""
     from openai import AsyncOpenAI
 
-    if not LLM_API_KEY:
+    if not _CLASSIFY_API_KEY:
         raise HTTPException(status_code=503, detail="LLM_API_KEY 未配置")
 
     client = AsyncOpenAI(
-        api_key=LLM_API_KEY,
-        base_url=LLM_BASE_URL,
+        api_key=_CLASSIFY_API_KEY,
+        base_url=_CLASSIFY_BASE_URL,
         timeout=LLM_TIMEOUT,
         # 重试由共享治理器完成，避免 SDK 与业务层叠加放大请求。
         max_retries=0,
@@ -181,18 +196,75 @@ async def call_llm(prompt: str) -> dict:
                 extra_body={"enable_thinking": LLM_ENABLE_THINKING},
             )
 
-        response = await call_with_llm_governance("classify", _call)
-        content = (response.choices[0].message.content or "").strip()
-        logger.debug("classify LLM 响应长度=%d", len(content))
+        with observe_llm_generation(
+            operation="classify",
+            model=LLM_MODEL,
+            input={"prompt": prompt},
+            metadata={"prompt_name": _KBD_CLASSIFY_PROMPT_NAME, "prompt_revision": prompt_revision},
+            model_parameters={
+                "temperature": 0.0,
+                "max_tokens": CLASSIFY_MAX_TOKENS,
+                "enable_thinking": LLM_ENABLE_THINKING,
+            },
+        ) as observation:
+            response = await call_with_llm_governance("classify", _call)
+            content = (response.choices[0].message.content or "").strip()
+            finish_reason = str(getattr(response.choices[0], "finish_reason", None) or "unknown")
+            usage = getattr(response, "usage", None)
+            prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+            completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+            total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+            parse_error: json.JSONDecodeError | None = None
+            parsed_payload: dict[str, Any] | None = None
+            if content and finish_reason != "length":
+                try:
+                    candidate = json.loads(content)
+                    if isinstance(candidate, dict):
+                        parsed_payload = candidate
+                    else:
+                        parse_error = json.JSONDecodeError("顶层响应不是 JSON 对象", content, 0)
+                except json.JSONDecodeError as exc:
+                    parse_error = exc
+            KBD_LLM_REQUESTS_TOTAL.labels(
+                operation="classify",
+                model=LLM_MODEL,
+                status="success" if parsed_payload is not None else "error",
+                finish_reason=finish_reason,
+            ).inc()
+            for token_type, value in (
+                ("input", prompt_tokens),
+                ("output", completion_tokens),
+                ("total", total_tokens),
+            ):
+                if value:
+                    KBD_LLM_TOKENS_TOTAL.labels(operation="classify", model=LLM_MODEL, type=token_type).inc(value)
+            update_observation(
+                observation,
+                output={"content": content},
+                metadata={"finish_reason": finish_reason, "response_chars": len(content)},
+                usage_details={"input": prompt_tokens, "output": completion_tokens, "total": total_tokens},
+                level="ERROR" if parsed_payload is None else None,
+                status_message=(
+                    "分类结果被截断"
+                    if finish_reason == "length"
+                    else (str(parse_error) if parse_error else ("分类结果为空" if not content else None))
+                ),
+            )
+            logger.debug("classify LLM 响应长度=%d", len(content))
     except Exception as e:
+        KBD_LLM_REQUESTS_TOTAL.labels(
+            operation="classify",
+            model=LLM_MODEL,
+            status="error",
+            finish_reason="transport_error",
+        ).inc()
         logger.error(f"LLM API 调用失败: {e}")
         raise HTTPException(status_code=503, detail=f"LLM API 调用失败: {e}")
 
     # 防御：推理模型（glm-5.2 / deepseek-v4-flash）开启思维链时会先耗尽 token 预算，
     # 导致 message.content 为空、json.loads("") 报「LLM 响应格式错误」。
     # 该分支在 try 之外，避免被上方 except Exception 吞掉后误报 503。
-    if not content:
-        finish_reason = getattr(response.choices[0], "finish_reason", None)
+    if not content or finish_reason == "length":
         logger.error(
             "classify LLM 未返回 JSON 正文: finish_reason=%s model=%s",
             finish_reason,
@@ -200,10 +272,12 @@ async def call_llm(prompt: str) -> dict:
         )
         raise HTTPException(
             status_code=502,
-            detail=f"LLM 未返回有效 JSON 内容（finish_reason={finish_reason}，可能因思维链耗尽 token 预算）",
+            detail=f"LLM 未返回完整 JSON 内容（finish_reason={finish_reason}）",
         )
 
     try:
+        if parsed_payload is not None:
+            return parsed_payload
         return json.loads(content)
     except json.JSONDecodeError as e:
         logger.error(f"LLM 响应 JSON 解析失败: {e}")
@@ -342,6 +416,7 @@ async def classify_case(
             ["count", "categories_text", "title", "problem_desc"],
             consumer="kb-service.classify",
         )
+    prompt_revision = hashlib.sha256(prompt_template.encode("utf-8")).hexdigest()
     prompt = prompt_template.format(
         count=len(categories),
         categories_text=categories_text,
@@ -350,7 +425,7 @@ async def classify_case(
     )
 
     # 3. 调用 LLM
-    llm_result = await call_llm(prompt)
+    llm_result = await call_llm(prompt, prompt_revision=prompt_revision)
 
     # 4. 解析响应
     response = parse_llm_response(llm_result, valid_codes)
@@ -364,7 +439,7 @@ async def classify_case(
         "generation_kind": "classification",
         "model_id": LLM_MODEL,
         "prompt_name": _KBD_CLASSIFY_PROMPT_NAME,
-        "prompt_revision": hashlib.sha256(prompt_template.encode("utf-8")).hexdigest(),
+        "prompt_revision": prompt_revision,
         "category_catalog_revision": hashlib.sha256(categories_text.encode("utf-8")).hexdigest(),
         "input_hash": hashlib.sha256(input_payload.encode("utf-8")).hexdigest(),
     }

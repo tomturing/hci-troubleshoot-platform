@@ -18,6 +18,7 @@ import {
   type ExecOutputFilter,
 } from '@/utils/execOutputFilter'
 import { normalizeToolEvent } from '@/utils/toolEvent'
+import { navigateToOfflineDiagnosis } from '@/utils/offlineDiagnosis'
 
 // 开发环境专用日志（生产环境自动禁用）
 const isDev = import.meta.env.DEV
@@ -690,7 +691,6 @@ export const useChatStore = defineStore('chat', () => {
 
   async function confirmCreateCase(template: CaseTemplate) {
     showCaseTemplate.value = false
-    addUserMessage(pendingUserMessage.value)
     isLoading.value = true
     try {
       const res = await caseApi.create({
@@ -699,13 +699,8 @@ export const useChatStore = defineStore('chat', () => {
         description: template.description,
         assistant_type: selectedAssistant.value || undefined,
       })
-      currentCase.value = res.data
-      addSystemMessage(`工单 ${res.data.case_id} 已创建，AI 正在识别故障类型，请稍候…`)
-      // 无 SSH 流程也尝试加载历史环境数据（fire-and-forget）
-      collectEnvironmentData(res.data.case_id).catch(() => { })
-
-      await createConversation()
-      await streamAIResponse(pendingUserMessage.value)
+      completeOfflineCaseCreation(res.data)
+      navigateToOfflineDiagnosis(res.data.case_id)
     } catch (e: any) {
       addSystemMessage(`创建工单失败: ${e.response?.data?.detail || e.message}`)
     } finally {
@@ -1484,26 +1479,32 @@ export const useChatStore = defineStore('chat', () => {
     sshFlowDialogVisible.value = true
   }
 
-  /** 关闭统一 SSH 弹框（create-case 模式下回退到普通对话流程） */
-  async function closeSshFlowDialog() {
+  /** 关闭统一 SSH 弹框（create-case 模式下进入离线诊断） */
+  function closeSshFlowDialog() {
     const caseId = sshFlowDialogCaseId.value
     const mode = sshFlowDialogMode.value
-    const assistantType = sshFlowDialogAssistantType.value
 
     sshFlowDialogVisible.value = false
 
-    // create-case 模式下用户取消/无 SSH → 回退到普通对话流程，避免工单卡死
+    // create-case 模式下用户取消 SSH，不得把待发送内容转交 Agent，直接进入离线诊断。
     if (mode === 'create-case' && caseId && currentCase.value?.case_id === caseId) {
-      const userMessage = pendingUserMessage.value || currentCase.value.description || ''
-      if (userMessage && !conversationId.value) {
-        devLog('SSH-FLOW-DIALOG', '用户取消 SSH，回退到普通对话流程', { caseId })
-        try {
-          await completeCaseCreationFlow(caseId, userMessage, assistantType)
-        } catch (e: any) {
-          addSystemMessage(`创建对话失败: ${e.message || '未知错误'}`)
-        }
-      }
+      devLog('SSH-FLOW-DIALOG', '用户取消 SSH，进入离线诊断', { caseId })
+      completeOfflineCaseCreation(currentCase.value)
+      navigateToOfflineDiagnosis(caseId)
     }
+  }
+
+  /**
+   * 完成无 SSH 工单创建并切换到离线诊断。
+   * 该路径只建立工单上下文，不创建 Conversation（对话）或向 Agent（智能体）发送首条消息。
+   */
+  function completeOfflineCaseCreation(caseItem: CaseResponse) {
+    currentCase.value = caseItem
+    conversationId.value = null
+    showCaseTemplate.value = false
+    sshFlowDialogVisible.value = false
+    isLoading.value = false
+    pendingUserMessage.value = ''
   }
 
   /**
@@ -2075,7 +2076,7 @@ export const useChatStore = defineStore('chat', () => {
 
   /**
    * 共享流程：创建工单 + 确认 + 建对话 + 首条消息发送
-   * 被 confirmCreateCase 和 SSH 流程共用
+   * 仅供有 SSH 或用户明确选择在线诊断的流程使用
    */
   async function completeCaseCreationFlow(caseId: string, userMessage: string, assistantType?: string) {
     showCaseTemplate.value = false
@@ -2666,7 +2667,6 @@ export const useChatStore = defineStore('chat', () => {
   /** 无 SSH 创建工单 */
   async function createCaseWithoutSSH(template: CaseTemplate, assistantType?: string) {
     showCaseTemplate.value = false
-    addUserMessage(pendingUserMessage.value)
     isLoading.value = true
     try {
       const res = await caseApi.create({
@@ -2675,11 +2675,8 @@ export const useChatStore = defineStore('chat', () => {
         description: template.description,
         assistant_type: assistantType || selectedAssistant.value || undefined,
       })
-      currentCase.value = res.data
-      addSystemMessage(`工单 ${res.data.case_id} 已创建，AI 正在识别故障类型，请稍候…`)
-
-      await createConversation()
-      await streamAIResponse(pendingUserMessage.value)
+      completeOfflineCaseCreation(res.data)
+      navigateToOfflineDiagnosis(res.data.case_id)
     } catch (e: any) {
       addSystemMessage(`创建工单失败: ${e.response?.data?.detail || e.message}`)
     } finally {
@@ -2789,6 +2786,7 @@ export const useChatStore = defineStore('chat', () => {
     submitEnvironmentData,
     submitCollectedData,
     completeCaseCreationFlow,
+    completeOfflineCaseCreation,
     // SSH 连接状态（创建工单时）
     sshCreationPhase,
     sshCreationError,

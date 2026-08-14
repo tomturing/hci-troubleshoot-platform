@@ -664,7 +664,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
    - Matcher 与产出变量都必须使用声明式 Extract：{{"name":"KVM_PID","type":"integer","extract":{{"type":"text","parser":"whitespace_table","rows":{{"mode":"keywords","include":["-id {{{{VM}}}}"],"exclude":[],"include_mode":"all","case_sensitive":true}},"columns":[{{"key":"PID","selector":{{"by":"index","index":2}},"value_mode":"integer"}}],"value_key":"PID","cardinality":"first","source":"stdout"}}}}；判定模式把同一 extract 放在 match.extract。requires 由 {{{{HOST}}}}/{{{{VM}}}} 占位符自动推导。
    - 字段严格隔离：rows.scope 固定 same_record；rows.include_mode 与 rows.exclude_mode 各自只允许 all/any。include 与 exclude 分别计算，最终 selected=include_ok 且未触发 exclude；跨行分别出现的关键字不能满足 AND。match.mode 属于 Matcher 判定，只能写 or/and，绝不可把 any 或 all 写入 match.mode。
 13. 案例验证契约：每条诊断信号标 role。直接决定案例成立的必要事实→must；增强置信但非必要→should；成立即排除本案例→exclude；背景/处置→context。verification_contract 必须引用现有 signal id，must 至少一条；证据不足一律 inconclusive，禁止把 UNKNOWN/ERROR 当反证。
-14. 计数阈值：原文使用 `... | wc -l` 时，command 只保留基础列举命令，match 使用 `{{"type":"threshold","aggregation":"line_count","operator":">","value":100,"expected":true}}`；禁止把管道写进 command，也禁止把输出第一个数字误当行数。
+14. 计数阈值：原文使用 `... | wc -l` 时，command 只保留基础列举命令，match 使用 `{{"type":"threshold","aggregation":"line_count","operator":">","value":100,"expected":true,"extract":{{"type":"text","rows":{{"mode":"all"}},"cardinality":"all","source":"stdout"}}}}`；禁止把管道写进 command，也禁止把输出第一个数字误当行数。
 15. 外部变量：若 requires 引用了本案例内没有任何 signal.produces 的自定义变量（如 STORAGE_PATH、DEVICE），必须在 verification_contract.variables 中显式声明封闭类型 string/integer/number/boolean/array；变量未声明、类型不合法或现场未提供时不得假定值，裁决必须 inconclusive。
 16. 结构字段知识：frontend（qkv_*）应使用 match=null 且 produces 至少一项；backend 的 match 与 produces 应严格二选一。每个 match.extract 与 produces[].extract 都应使用 JSON extract 或声明式 text extract。text extract 应有 rows；取整行时不配置 columns，取一列或多列时配置 parser、columns[] 与 value_key。不要自造取值字段；证据构成候选但当前无法可靠表达时仍输出最接近原意的 Candidate 并标 needs_review，由服务端归入 run_failed，而不是静默丢失。
 17. Matcher 封闭约束：keyword/regex/state 必须有非空 pattern；threshold 必须有数值 value 和 operator，aggregation 只能是 first_number/last_number/line_count/duration_seconds/max/min/sum；delta 必须有 metric/value/operator；trend 必须有 metric/direction，可选 value 表示最小步长。需要读取 JSON 字段时必须在 match.extract 或 produces[].extract 使用 type=json 与 path；再用 state、threshold 或 exists 判定取值。blackbox 行通常以时间戳开头，阈值/差值/趋势必须用 metric 定位字段，禁止把日期数字误当计数器。
@@ -722,7 +722,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
   }}
 }}
 $TEMPLATE$,
-        '2.3',
+        '2.4',
         TRUE
     )
 ON CONFLICT (name) DO NOTHING;

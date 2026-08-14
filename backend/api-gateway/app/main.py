@@ -30,6 +30,7 @@ from app.routes import (
     capabilities,
     cases,
     conversations,
+    diagnosis,
     environments,
     health,
     kb,
@@ -142,6 +143,7 @@ app.include_router(health.router)
 app.include_router(capabilities.router)
 app.include_router(bridge_logs.router)
 app.include_router(simulations.router)
+app.include_router(diagnosis.router)
 
 
 @app.get("/metrics")

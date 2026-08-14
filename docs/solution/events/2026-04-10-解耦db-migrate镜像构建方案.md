@@ -2,7 +2,7 @@
 status: active
 category: solution
 audience: developer
-last_updated: 2026-04-10
+last_updated: 2026-08-13
 owner: team
 ---
 
@@ -149,3 +149,42 @@ fi
 - [ ] 含 DB 改动 PR（修改 `desired_schema.sql`）：合并后 db-migrate tag 更新，Job 正常执行
 - [ ] `workflow_dispatch` 手动触发：可强制构建并传递 db-migrate tag
 - [ ] env repo values.yaml 应用服务 tag 和 db-migrate tag 独立更新，互不影响
+
+---
+
+## 补充：prod 环境纳入 db-migrate 自动同步（2026-08-13）
+
+### 问题
+
+原 `auto-deploy-non-prod` job 的 `ENVIRONMENTS` 循环仅覆盖 `dev` / `staging`，
+`promote_target` 的 `both` 选项也只包含 `dev staging`。这导致：
+
+- dev/staging 的 `dbMigrate.tag` 随 schema 变更（PR #747 机制）自动前进；
+- **prod 的 `dbMigrate.tag` 永远不会被 CI 自动更新**，长期停滞在首次手动设定的旧镜像。
+
+后果：若 prod 环境重建或首次部署，db-migrate 镜像停留在旧版本，
+`024` 及之后的迁移不会执行（见 KBD 23821 修复后复盘）。
+
+### 修复（ci.yml）
+
+1. `promote_target` 选项新增 `prod` 与 `all`；
+2. `case` 分支新增：
+   - `prod) ENVIRONMENTS=(prod) ;;`
+   - `all) ENVIRONMENTS=(dev staging prod) ;;`
+3. main push 自动晋级仍保持 `dev → staging`（生产不自动晋级，符合受控原则）；
+4. prod 仅在 `workflow_dispatch` 显式选择 `prod` / `all` 时受控晋级，
+   并由既有 `verify_values_file` 校验 `dbMigrate.tag` 已正确写入。
+
+### 设计原则
+
+- **生产受控**：prod 不随 main push 自动晋级，必须经人工 `workflow_dispatch` 触发；
+- **同步一致**：`SKIP_DB_MIGRATE=false` 时，所有目标环境（含 prod）的 `dbMigrate.tag`
+  与 `migration_history` 强一致，避免环境间迁移版本漂移；
+- **幂等安全**：db-migrate Job 对已执行迁移自动跳过，`UPDATE...WHERE` 类语句幂等，重跑安全。
+
+### 验收标准（新增）
+
+- [ ] `workflow_dispatch` 选 `prod`：仅 prod 的 `dbMigrate.tag` 更新并 push env repo；
+- [ ] `workflow_dispatch` 选 `all`：dev/staging/prod 三套 `dbMigrate.tag` 全部更新；
+- [ ] main push 自动晋级仍只覆盖 `dev` / `staging`，prod 不受影响；
+- [ ] prod 的 `migration_history` 在新迁移合并后能随受控发布自动补齐。

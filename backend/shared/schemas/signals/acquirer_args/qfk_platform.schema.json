@@ -24,6 +24,16 @@
       "type": "string",
       "description": "平台资源名选择器（可选）"
     },
+    "formatter": {
+      "type": "string",
+      "enum": [
+        "xml",
+        "csv",
+        "keyvalue",
+        "json"
+      ],
+      "description": "可选的 acli --formatter 输出格式；Resolver 会把它放在领域 namespace 之前"
+    },
     "instruction": {
       "type": "string",
       "description": "信号语义说明（acli 调用的人类可读解释）"

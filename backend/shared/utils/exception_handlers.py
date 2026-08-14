@@ -14,6 +14,7 @@ import traceback
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from shared.observability.logger import get_logger
@@ -90,7 +91,9 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def request_validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
         context = _request_context(request)
-        errors = exc.errors()
+        # Pydantic model_validator 会把原始 ValueError 放进 ctx.error。直接交给
+        # JSONResponse 会再次抛出 TypeError，把本应清晰的 422 参数错误伪装成 500。
+        errors = jsonable_encoder(exc.errors(), custom_encoder={Exception: str})
         logger.warning(
             event="request_validation_failed",
             code="REQUEST_VALIDATION_ERROR",

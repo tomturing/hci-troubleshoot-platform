@@ -13,23 +13,32 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import inspect
 import io
 import json
+import os
 import re
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any
+from uuid import UUID, uuid4
 
 import jsonschema
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, StrictInt
+from pydantic import BaseModel, Field, StrictInt, model_validator
 from shared.dynamic_resource.adapters import kbd_resource_payload, sop_resource_payload
 from shared.dynamic_resource.loader import snapshot_revision_metadata
 from shared.dynamic_resource.publisher import DynamicResourcePublisher
 from shared.models.skill_definition import SkillDefinitionORM
 from shared.models.tool_definition import ToolDefinitionORM
+from shared.observability.langfuse import observe_workflow, update_observation
 from shared.observability.logger import get_logger
-from shared.observability.metrics import KBD_SIGNAL_VALIDATION_TOTAL
+from shared.observability.metrics import (
+    KBD_SIGNAL_VALIDATION_TOTAL,
+    KBD_WORKFLOW_DURATION_SECONDS,
+    KBD_WORKFLOW_ITEMS_TOTAL,
+)
 from shared.observability.otel import get_current_trace_id
 from shared.resolution.review import SignalReviewFeature, review_signal_document
 from shared.schemas.acquirer_args import normalize_qfk_system_args, validate_acquire_args
@@ -40,7 +49,7 @@ from shared.schemas.signal_schema import (
     certify_publishable_signals_json,
     normalize_optional_matcher_nulls,
     validate_draft_signals_json,
-    validate_publishable_signals_json,
+    validate_kbd_publishable_signals_json,
 )
 from shared.schemas.signal_schema import (
     humanize_signal_validation_error as humanize_schema_validation_error,
@@ -160,6 +169,7 @@ def _prepare_expert_publish_signals(raw: Any) -> dict[str, Any]:
     normalize_optional_matcher_nulls(normalized)
     canonical, _ = reconcile_verification_contract(normalized)
     validate_kbd_read_only_signals_json(canonical)
+    validate_kbd_publishable_signals_json(canonical)
     return certify_publishable_signals_json(canonical)
 
 
@@ -174,7 +184,7 @@ def _validate_kbd_publishable_signals_json(raw: Any) -> None:
     """KBD 发布预检：先给出处置边界原因，再校验通用发布契约。"""
 
     validate_kbd_read_only_signals_json(raw)
-    validate_publishable_signals_json(raw)
+    validate_kbd_publishable_signals_json(raw)
 
 
 def _humanize_signal_validation_error(error: jsonschema.ValidationError, signals: list[Any]) -> dict[str, Any]:
@@ -185,6 +195,16 @@ def _humanize_signal_validation_error(error: jsonschema.ValidationError, signals
     """
 
     message = error.message
+    if "至少需要 1 条生产者信号" in message:
+        return {
+            "level": "error",
+            "code": "KBD_PRODUCER_SIGNAL_MISSING",
+            "location": "生产者信号",
+            "field_path": "signals",
+            "message": "发布前请至少新增一条生产者信号，说明 Agent 如何通过任务、告警或弹框发现该故障。",
+            "action": {"type": "add_signal", "kind": "producer"},
+            "validation_reason": message,
+        }
     if "至少需要 1 条必要信号" in message:
         return {
             "level": "error",
@@ -300,7 +320,9 @@ def _prepare_expert_draft_signals(
             issue = {
                 "level": "error",
                 "code": "SIGNAL_ACQUIRE_ARGS_INVALID",
-                "location": f"关键信号 · {signal_id} · 采集配置 / 采集参数" if signal_id else "关键信号 · 采集配置 / 采集参数",
+                "location": f"关键信号 · {signal_id} · 采集配置 / 采集参数"
+                if signal_id
+                else "关键信号 · 采集配置 / 采集参数",
                 "field_path": "acquire.args",
                 "message": f"采集参数配置失败：{validation_reason}；请修改采集参数后再保存。",
                 "validation_reason": validation_reason,
@@ -349,9 +371,7 @@ def _delete_signal_from_document(raw: Any, signal_id: str) -> dict[str, Any]:
             },
         )
     document["signals"] = [
-        signal
-        for signal in signals
-        if not (isinstance(signal, dict) and str(signal.get("id") or "") == normalized_id)
+        signal for signal in signals if not (isinstance(signal, dict) and str(signal.get("id") or "") == normalized_id)
     ]
     return _prepare_expert_draft_signals(document)
 
@@ -491,9 +511,7 @@ async def export_kbd_evaluation_data(request: Request, limit: int = 200) -> dict
     bounded_limit = min(max(limit, 1), 1000)
     async with _db_manager.async_session_factory() as session:
         revision_result = await session.execute(
-            select(KbdRevision)
-            .order_by(KbdRevision.kbd_entry_id, KbdRevision.revision_no)
-            .limit(bounded_limit * 8)
+            select(KbdRevision).order_by(KbdRevision.kbd_entry_id, KbdRevision.revision_no).limit(bounded_limit * 8)
         )
         revisions = list(revision_result.scalars().all())
         audit_result = await session.execute(
@@ -662,7 +680,13 @@ async def _require_directly_mutable_kbd(session, kbd_id: int, *, for_update: boo
         ) from exc
 
 
-async def _publish_kbd_revision(session, kbd_id: int, trace_id: str | None) -> dict | None:
+async def _publish_kbd_revision(
+    session,
+    kbd_id: int,
+    trace_id: str | None,
+    *,
+    lifecycle_event_id: int | None = None,
+) -> dict | None:
     """将 KBD 条目发布为动态资源 revision。"""
     from app.models.kbd_entry import KbdEntry
 
@@ -670,7 +694,51 @@ async def _publish_kbd_revision(session, kbd_id: int, trace_id: str | None) -> d
     kbd = result.scalar_one_or_none()
     if kbd is None:
         return None
-    snapshot = await DynamicResourcePublisher(session).ensure_published(**kbd_resource_payload(kbd), trace_id=trace_id)
+    payload = kbd_resource_payload(kbd)
+    if lifecycle_event_id is not None:
+        payload["contract"] = {
+            **dict(payload.get("contract") or {}),
+            # 仅显式发布/重新发布流程写入生命周期事件身份；搜索读路径仍保持 checksum 幂等，
+            # 不会因为普通检索重复制造动态资源修订。
+            "lifecycle": {"state": "published", "event_id": lifecycle_event_id},
+        }
+    snapshot = await DynamicResourcePublisher(session).ensure_published(**payload, trace_id=trace_id)
+    return snapshot_revision_metadata(snapshot)
+
+
+async def _publish_kbd_tombstone(
+    session,
+    kbd: KbdEntry,
+    *,
+    lifecycle_status: str,
+    trace_id: str | None,
+) -> dict[str, Any]:
+    """追加 KBD 停用墓碑修订，并移除运行时 active 指针。
+
+    墓碑保留上一发布快照的场景元数据，使 KBD 同步可以按增量修订定位并清理其派生的
+    Collector、Signal Mapping 和 Collection Profile；active 指针删除后在线 Agent 不会
+    把 disabled 修订当作可用知识。
+    """
+
+    payload = kbd_resource_payload(kbd)
+    payload["status"] = "disabled"
+    payload["contract"] = {
+        **dict(payload.get("contract") or {}),
+        "lifecycle": {
+            "state": lifecycle_status,
+            "tombstone": True,
+        },
+    }
+    snapshot = await DynamicResourcePublisher(session).ensure_published(**payload, trace_id=trace_id)
+    await session.execute(
+        text(
+            """
+            DELETE FROM dynamic_resource_active
+            WHERE resource_type = 'kbd' AND resource_name = :resource_name
+            """
+        ),
+        {"resource_name": str(kbd.id)},
+    )
     return snapshot_revision_metadata(snapshot)
 
 
@@ -697,9 +765,7 @@ async def _freeze_approved_expert_revision(
         )
     else:
         proposal_revision = await session.get(KbdRevision, kbd.latest_proposal_revision_id)
-    parent_revision_id = kbd.working_revision_id or (
-        proposal_revision.id if proposal_revision is not None else None
-    )
+    parent_revision_id = kbd.working_revision_id or (proposal_revision.id if proposal_revision is not None else None)
     parent_revision = await session.get(KbdRevision, parent_revision_id) if parent_revision_id else None
     review_metadata = build_review_metadata(
         parent_payload=getattr(parent_revision, "payload_json", None) if parent_revision is not None else {},
@@ -808,12 +874,13 @@ async def list_kbd_entries(
     category_id: str | None = None,
     support_id: str | None = None,
     title_keyword: str | None = None,
+    sample_suite: str | None = None,
     min_confidence: float | None = None,
     max_confidence: float | None = None,
     sort_by: str = "updated_at",
     sort_order: str = "desc",
 ):
-    """查询 KBD 条目列表（分页 + 状态/分类/案例ID/标题/置信度过滤 + 排序）
+    """查询 KBD 条目列表（分页 + 状态/分类/案例ID/标题/样例集/置信度过滤 + 排序）
 
     Args:
         page: 页码（从 1 开始）
@@ -822,6 +889,7 @@ async def list_kbd_entries(
         category_id: 按 AI 分类 ID 过滤（可选）
         support_id: 按案例 ID 精准匹配（可选）
         title_keyword: 按标题关键字模糊搜索（可选）
+        sample_suite: 按 metadata.sample_suite 样例集标识精准匹配（可选）
         min_confidence: 最低置信度（可选，0-1）
         max_confidence: 最高置信度（可选，0-1）
         sort_by: 排序字段（support_id/ai_category_conf/status/updated_at/created_at）
@@ -831,7 +899,16 @@ async def list_kbd_entries(
         { entries: [...], total, page, page_size }
     """
     # 排序字段白名单（防 SQL 注入）
-    valid_sort_columns = {"support_id", "ai_category_id", "ai_category_conf", "status", "updated_at", "created_at"}
+    valid_sort_columns = {
+        "support_id",
+        "ai_category_id",
+        "ai_category_conf",
+        "status",
+        "updated_at",
+        "created_at",
+        "image_count",
+        "signal_count",
+    }
     sort_column = sort_by if sort_by in valid_sort_columns else "updated_at"
     sort_dir = "DESC" if sort_order.lower() == "desc" else "ASC"
     _check_auth(request)
@@ -852,6 +929,7 @@ async def list_kbd_entries(
         category_id=category_id,
         support_id=support_id,
         title_keyword=title_keyword,
+        sample_suite=sample_suite,
     )
 
     async with _db_manager.async_session_factory() as session:
@@ -879,6 +957,11 @@ async def list_kbd_entries(
             where_clauses.append("title ILIKE :title_keyword")
             params["title_keyword"] = f"%{title_keyword}%"
 
+        # 测试样例使用显式 metadata 属性检索，禁止依赖标题前缀或具体 KBD ID。
+        if sample_suite:
+            where_clauses.append("metadata->>'sample_suite' = :sample_suite")
+            params["sample_suite"] = sample_suite
+
         # 按置信度范围过滤
         if min_confidence is not None:
             where_clauses.append("ai_category_conf >= :min_confidence")
@@ -904,8 +987,14 @@ async def list_kbd_entries(
                    e.metadata, e.category_id, e.ai_category_id,
                    e.ai_category_conf, e.ai_category_reason,
                    e.status, e.reviewer_id, e.review_note,
-                   e.hit_count, e.created_at, e.updated_at,
-                   c.name AS ai_category_name
+                   e.hit_count, e.lock_version, e.created_at, e.updated_at,
+                   c.name AS ai_category_name,
+                   COALESCE(jsonb_array_length(e.images_json), 0) AS image_count,
+                   COALESCE(jsonb_array_length(
+                     CASE WHEN jsonb_typeof(e.signals_json) = 'object'
+                          THEN e.signals_json->'signals'
+                          ELSE '[]'::jsonb END
+                   ), 0) AS signal_count
             FROM kbd_entry e
             LEFT JOIN kb_category c ON c.code = e.ai_category_id
             {where_sql}
@@ -933,6 +1022,8 @@ async def list_kbd_entries(
             "content_md": row["content_md"] or "",
             "content_raw": row["content_raw"] or "",
             "images_json": row["images_json"] or [],
+            "image_count": row["image_count"] or 0,
+            "signal_count": row["signal_count"] or 0,
             "metadata": row["metadata"] or {},
             "category_id": row["category_id"],
             "ai_category_id": row["ai_category_id"],
@@ -944,6 +1035,9 @@ async def list_kbd_entries(
             "status": row["status"],
             "reviewer_id": row["reviewer_id"],
             "review_note": row["review_note"],
+            # 批量发布是异步操作，列表页必须携带读取时版本作为提交快照，防止排队期间
+            # 发生并发编辑后仍静默发布旧内容。
+            "lock_version": row["lock_version"],
             "hit_count": row.get("hit_count", 0),
             "created_at": row["created_at"].isoformat() if row["created_at"] else None,
             "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
@@ -964,6 +1058,1153 @@ async def list_kbd_entries(
 # ─────────────────────────────────────────────────────────────────────────────
 # KBD 条目单条详情接口
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 批量操作 API
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class BatchOperationRequest(BaseModel):
+    kbd_ids: list[int] = Field(..., min_length=1, max_length=100, description="KBD ID 列表（1-100）")
+
+
+class BatchApproveRequest(BatchOperationRequest):
+    """批量审核通过请求；逐条版本用于并发编辑保护。"""
+
+    reviewer_id: int = Field(..., ge=1, description="审核人 ID")
+    review_note: str | None = Field(None, max_length=500, description="统一审核备注（可选）")
+    entries: dict[str, dict[str, Any]] = Field(default_factory=dict, description="提交时的分类和版本快照")
+
+    @model_validator(mode="after")
+    def validate_entry_snapshots(self) -> BatchApproveRequest:
+        """异步发布必须锁定提交时版本，不能在排队期间静默发布已被修改的内容。"""
+
+        missing_snapshots: list[int] = []
+        invalid_versions: list[int] = []
+        for kbd_id in dict.fromkeys(self.kbd_ids):
+            snapshot = self.entries.get(str(kbd_id))
+            if not isinstance(snapshot, dict):
+                missing_snapshots.append(kbd_id)
+                continue
+            lock_version = snapshot.get("lock_version")
+            if not isinstance(lock_version, int) or isinstance(lock_version, bool) or lock_version < 0:
+                invalid_versions.append(kbd_id)
+        if missing_snapshots:
+            raise ValueError(f"缺少 KBD 提交快照：{missing_snapshots}")
+        if invalid_versions:
+            raise ValueError(f"KBD lock_version 无效：{invalid_versions}")
+        return self
+
+
+class BatchRejectRequest(BatchOperationRequest):
+    """批量审核拒绝请求。"""
+
+    reviewer_id: int = Field(..., ge=1, description="审核人 ID")
+    review_note: str = Field(..., min_length=1, max_length=500, description="统一拒绝原因")
+
+
+class BatchAcceptedResponse(BaseModel):
+    batch_id: UUID
+    job_type: str
+    status: str
+    total: int
+    message: str
+    trace_id: str = ""
+
+
+_BATCH_PROCESSORS: dict[str, Any] = {}
+
+
+def _batch_status_from_counts(succeeded: int, failed: int, interrupted: int = 0) -> str:
+    """根据最终逐条结果生成批量任务终态。"""
+
+    if interrupted > 0:
+        return "interrupted"
+    if failed == 0:
+        return "completed"
+    if succeeded == 0:
+        return "failed"
+    return "partial_failed"
+
+
+def _batch_interruption_error(reason: str) -> dict[str, Any]:
+    """生成可展示、可筛选的批量任务中断原因。"""
+
+    reason_label = {
+        "service_shutdown": "知识库服务停止或重启",
+        "service_restart": "知识库服务曾停止或重启",
+        "worker_crashed": "批量任务执行器异常退出",
+        "stale_timeout": "服务中断后任务长时间没有进度更新",
+    }.get(reason, "批量任务执行进程中断")
+    return {
+        "status": 503,
+        "code": "BATCH_PROCESS_INTERRUPTED",
+        "message": f"{reason_label}，本条任务未完成；请重新提交失败条目",
+        "retryable": True,
+        "interruption_reason": reason,
+    }
+
+
+def _batch_row_to_dict(row: Any) -> dict[str, Any]:
+    """把数据库批量任务行转换为稳定的 API 响应。"""
+
+    return {
+        "batch_id": str(row["batch_id"]),
+        "job_type": row["job_type"],
+        "status": row["status"],
+        "requested_kbd_ids": row.get("requested_kbd_ids") or [],
+        "request_json": row.get("request_json") or {},
+        "total_count": row["total_count"],
+        "completed_count": row["completed_count"],
+        "succeeded_count": row["succeeded_count"],
+        "failed_count": row["failed_count"],
+        "interrupted_count": row.get("interrupted_count") or 0,
+        # 这里表示“允许管理员手工重试”的数量；error_json.retryable 只控制自动重试。
+        "retryable_count": row.get("retryable_count") or 0,
+        "retry_of_batch_id": str(row["retry_of_batch_id"]) if row.get("retry_of_batch_id") else None,
+        "retried_by_batch_id": str(row["retried_by_batch_id"]) if row.get("retried_by_batch_id") else None,
+        "work_total_count": row.get("work_total_count") or 0,
+        "work_completed_count": row.get("work_completed_count") or 0,
+        "work_failed_count": row.get("work_failed_count") or 0,
+        "trace_id": row["trace_id"],
+        "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
+        "started_at": row["started_at"].isoformat() if row.get("started_at") else None,
+        "completed_at": row["completed_at"].isoformat() if row.get("completed_at") else None,
+        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+    }
+
+
+def _batch_item_row_to_dict(row: Any) -> dict[str, Any]:
+    """把数据库批量任务明细行转换为前端可直接展示的结构。"""
+
+    error_json = row.get("error_json") or {}
+    error_detail = error_json.get("message")
+    if isinstance(error_detail, dict):
+        error_message = str(error_detail.get("message") or error_detail.get("detail") or error_detail)
+        error_code = str(error_detail.get("code") or error_json.get("code") or "")
+    elif isinstance(error_detail, list):
+        error_message = "；".join(
+            str(item.get("msg") or item.get("message") or item) if isinstance(item, dict) else str(item)
+            for item in error_detail
+        )
+        error_code = str(error_json.get("code") or "")
+    else:
+        error_message = str(error_detail or "")
+        error_code = str(error_json.get("code") or "")
+
+    return {
+        "item_id": row["item_id"],
+        "kbd_id": row["kbd_id"],
+        "support_id": row.get("support_id"),
+        "title": row.get("title") or "",
+        # 批次状态是不可变的历史执行事实；KBD 状态和版本是点击详情/编辑时的当前快照。
+        "kbd_status": row.get("kbd_status"),
+        "lock_version": row.get("lock_version"),
+        "status": row["status"],
+        "result_json": row.get("result_json") or {},
+        "error_json": error_json,
+        "error_code": error_code or None,
+        "error_message": error_message or None,
+        "error_retryable": bool(error_json.get("retryable", False)),
+        "work_total_count": row.get("work_total_count") or 0,
+        "work_completed_count": row.get("work_completed_count") or 0,
+        "work_failed_count": row.get("work_failed_count") or 0,
+        "trace_id": row["trace_id"],
+        "started_at": row["started_at"].isoformat() if row.get("started_at") else None,
+        "completed_at": row["completed_at"].isoformat() if row.get("completed_at") else None,
+        "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+    }
+
+
+async def _create_batch_job(
+    kbd_ids: list[int],
+    job_type: str,
+    trace_id: str,
+    *,
+    retry_of_batch_id: UUID | None = None,
+    request_json: dict[str, Any] | None = None,
+) -> UUID:
+    """先持久化任务与全部明细，再允许后台处理开始。"""
+
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    unique_ids = list(dict.fromkeys(kbd_ids))
+    async with _db_manager.async_session_factory() as session:
+        existing_result = await session.execute(
+            text("SELECT id FROM kbd_entry WHERE id = ANY(CAST(:kbd_ids AS bigint[]))"),
+            {"kbd_ids": unique_ids},
+        )
+        existing_ids = {row[0] for row in existing_result.all()}
+        missing_ids = [kbd_id for kbd_id in unique_ids if kbd_id not in existing_ids]
+        if missing_ids:
+            raise HTTPException(
+                status_code=404,
+                detail={"message": "部分 KBD 条目不存在", "kbd_ids": missing_ids},
+            )
+
+        job_result = await session.execute(
+            text("""
+                INSERT INTO kbd_batch_job (
+                    job_type, requested_kbd_ids, request_json, total_count, retry_of_batch_id, trace_id
+                ) VALUES (
+                    :job_type, CAST(:requested_kbd_ids AS jsonb), CAST(:request_json AS jsonb), :total_count,
+                    CAST(:retry_of_batch_id AS uuid), :trace_id
+                )
+                RETURNING batch_id
+            """),
+            {
+                "job_type": job_type,
+                "requested_kbd_ids": json.dumps(unique_ids),
+                "request_json": json.dumps(request_json or {}, ensure_ascii=False),
+                "total_count": len(unique_ids),
+                "retry_of_batch_id": str(retry_of_batch_id) if retry_of_batch_id else None,
+                "trace_id": trace_id,
+            },
+        )
+        batch_id = job_result.scalar_one()
+        await session.execute(
+            text("""
+                INSERT INTO kbd_batch_job_item (batch_id, kbd_id, trace_id)
+                VALUES (CAST(:batch_id AS uuid), :kbd_id, :trace_id)
+            """),
+            [{"batch_id": str(batch_id), "kbd_id": kbd_id, "trace_id": trace_id} for kbd_id in unique_ids],
+        )
+        await session.commit()
+    return batch_id
+
+
+async def _submit_batch_job(
+    *,
+    kbd_ids: list[int],
+    job_type: str,
+    processor: Any,
+    trace_id: str,
+    background_tasks: BackgroundTasks,
+    request_json: dict[str, Any] | None = None,
+) -> BatchAcceptedResponse:
+    """创建可追踪任务并在响应发送后启动后台执行。"""
+
+    unique_ids = list(dict.fromkeys(kbd_ids))
+    batch_id = await _create_batch_job(unique_ids, job_type, trace_id, request_json=request_json)
+    background_tasks.add_task(_run_batch_job, batch_id, processor, trace_id)
+    return BatchAcceptedResponse(
+        batch_id=batch_id,
+        job_type=job_type,
+        status="pending",
+        total=len(unique_ids),
+        message=f"已提交 {len(unique_ids)} 条，可在批量任务区查看实时进度和结果",
+        trace_id=trace_id,
+    )
+
+
+@kbd_router.post("/batch/jobs/{batch_id}/retry", response_model=BatchAcceptedResponse)
+async def retry_batch_job(
+    request: Request,
+    batch_id: UUID,
+    background_tasks: BackgroundTasks,
+):
+    """只重试原批次中业务失败或执行中断的条目，并创建独立可追溯批次。"""
+
+    _check_auth(request)
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+    await reconcile_interrupted_batch_jobs(batch_id=batch_id)
+    trace_id = get_current_trace_id() or uuid4().hex
+
+    async with _db_manager.async_session_factory() as session:
+        source_result = await session.execute(
+            text("""
+                SELECT job_type, status, request_json
+                FROM kbd_batch_job
+                WHERE batch_id = CAST(:batch_id AS uuid)
+                FOR UPDATE
+            """),
+            {"batch_id": str(batch_id)},
+        )
+        source = source_result.mappings().first()
+        if source is None:
+            raise HTTPException(status_code=404, detail="批量任务不存在")
+        if source["status"] in {"pending", "running"}:
+            raise HTTPException(status_code=409, detail="批量任务仍在处理中，不能重试")
+
+        existing_retry = await session.execute(
+            text("SELECT batch_id FROM kbd_batch_job WHERE retry_of_batch_id = CAST(:batch_id AS uuid)"),
+            {"batch_id": str(batch_id)},
+        )
+        retried_by = existing_retry.scalar_one_or_none()
+        if retried_by is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={"message": "该批次已创建重试任务", "retry_batch_id": str(retried_by)},
+            )
+
+        failed_result = await session.execute(
+            text("""
+                SELECT kbd_id
+                FROM kbd_batch_job_item
+                WHERE batch_id = CAST(:batch_id AS uuid)
+                  AND status IN ('failed', 'interrupted')
+                ORDER BY item_id
+            """),
+            {"batch_id": str(batch_id)},
+        )
+        retry_kbd_ids = [row[0] for row in failed_result.all()]
+        if not retry_kbd_ids:
+            raise HTTPException(status_code=409, detail="该批次没有可手工重试的失败或中断条目")
+
+    processor = _BATCH_PROCESSORS[source["job_type"]]
+    try:
+        retry_batch_id = await _create_batch_job(
+            retry_kbd_ids,
+            source["job_type"],
+            trace_id,
+            retry_of_batch_id=batch_id,
+            request_json=dict(source.get("request_json") or {}),
+        )
+    except Exception as exc:
+        # 唯一约束兜住并发双击；返回稳定冲突语义，而不是暴露数据库异常。
+        if "uq_kbd_batch_job_retry_of" in str(exc):
+            raise HTTPException(status_code=409, detail="该批次已创建重试任务") from exc
+        raise
+    background_tasks.add_task(_run_batch_job, retry_batch_id, processor, trace_id)
+    logger.info(
+        event="kbd_batch_job_retry_submitted",
+        source_batch_id=str(batch_id),
+        retry_batch_id=str(retry_batch_id),
+        retry_count=len(retry_kbd_ids),
+        job_type=source["job_type"],
+        trace_id=trace_id,
+    )
+    return BatchAcceptedResponse(
+        batch_id=retry_batch_id,
+        job_type=source["job_type"],
+        status="pending",
+        total=len(retry_kbd_ids),
+        message=f"已创建重试批次，仅处理原批次中 {len(retry_kbd_ids)} 条未成功记录",
+        trace_id=trace_id,
+    )
+
+
+@kbd_router.post("/batch/reanalyze-images", response_model=BatchAcceptedResponse)
+async def batch_reanalyze_images(
+    request: Request,
+    body: BatchOperationRequest,
+    background_tasks: BackgroundTasks,
+):
+    """批量重新识图（异步处理，返回可持久查询的任务编号）。"""
+    _check_auth(request)
+    trace_id = get_current_trace_id() or uuid4().hex
+    logger.info(event="kbd_batch_reanalyze_images_start", count=len(body.kbd_ids), trace_id=trace_id)
+    return await _submit_batch_job(
+        kbd_ids=body.kbd_ids,
+        job_type="reanalyze_images",
+        processor=_reanalyze_images_one,
+        trace_id=trace_id,
+        background_tasks=background_tasks,
+    )
+
+
+@kbd_router.post("/batch/reclassify", response_model=BatchAcceptedResponse)
+async def batch_reclassify(
+    request: Request,
+    body: BatchOperationRequest,
+    background_tasks: BackgroundTasks,
+):
+    """批量重新分类（异步处理，返回可持久查询的任务编号）。"""
+    _check_auth(request)
+    trace_id = get_current_trace_id() or uuid4().hex
+    logger.info(event="kbd_batch_reclassify_start", count=len(body.kbd_ids), trace_id=trace_id)
+    return await _submit_batch_job(
+        kbd_ids=body.kbd_ids,
+        job_type="reclassify",
+        processor=_reclassify_one,
+        trace_id=trace_id,
+        background_tasks=background_tasks,
+    )
+
+
+@kbd_router.post("/batch/extract-signals", response_model=BatchAcceptedResponse)
+async def batch_extract_signals(
+    request: Request,
+    body: BatchOperationRequest,
+    background_tasks: BackgroundTasks,
+):
+    """批量重新抽取信号（异步处理，返回可持久查询的任务编号）。"""
+    _check_auth(request)
+    trace_id = get_current_trace_id() or uuid4().hex
+    logger.info(event="kbd_batch_extract_signals_start", count=len(body.kbd_ids), trace_id=trace_id)
+    return await _submit_batch_job(
+        kbd_ids=body.kbd_ids,
+        job_type="extract_signals",
+        processor=_extract_signals_one,
+        trace_id=trace_id,
+        background_tasks=background_tasks,
+    )
+
+
+@kbd_router.post("/batch/approve", response_model=BatchAcceptedResponse)
+async def batch_approve(
+    request: Request,
+    body: BatchApproveRequest,
+    background_tasks: BackgroundTasks,
+):
+    """批量审核通过；逐条执行完整发布门禁并保留独立结果。"""
+
+    _check_auth(request)
+    trace_id = get_current_trace_id() or uuid4().hex
+    request_json = {
+        "reviewer_id": body.reviewer_id,
+        "review_note": body.review_note,
+        "entries": body.entries,
+    }
+    logger.info(event="kbd_batch_approve_start", count=len(body.kbd_ids), trace_id=trace_id)
+    return await _submit_batch_job(
+        kbd_ids=body.kbd_ids,
+        job_type="approve",
+        processor=_approve_one,
+        trace_id=trace_id,
+        background_tasks=background_tasks,
+        request_json=request_json,
+    )
+
+
+@kbd_router.post("/batch/reject", response_model=BatchAcceptedResponse)
+async def batch_reject(
+    request: Request,
+    body: BatchRejectRequest,
+    background_tasks: BackgroundTasks,
+):
+    """批量审核拒绝；统一拒绝原因随批次不可变保存。"""
+
+    _check_auth(request)
+    trace_id = get_current_trace_id() or uuid4().hex
+    request_json = {"reviewer_id": body.reviewer_id, "review_note": body.review_note}
+    logger.info(event="kbd_batch_reject_start", count=len(body.kbd_ids), trace_id=trace_id)
+    return await _submit_batch_job(
+        kbd_ids=body.kbd_ids,
+        job_type="reject",
+        processor=_reject_one,
+        trace_id=trace_id,
+        background_tasks=background_tasks,
+        request_json=request_json,
+    )
+
+
+@kbd_router.get("/batch/jobs")
+async def list_batch_jobs(
+    request: Request,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=50)] = 10,
+    job_type: str | None = None,
+):
+    """分页查询全部类型的批量任务；页面刷新后也能恢复进度。"""
+
+    _check_auth(request)
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+    allowed_job_types = {"reanalyze_images", "reclassify", "extract_signals", "approve", "reject"}
+    if job_type and job_type not in allowed_job_types:
+        raise HTTPException(status_code=422, detail={"message": "不支持的批量任务类型", "job_type": job_type})
+    # 页面轮询同时收敛超时残留任务，异常退出后无需等到下次部署。
+    await reconcile_interrupted_batch_jobs()
+    where_sql = "WHERE j.job_type = :job_type" if job_type else ""
+    params: dict[str, Any] = {
+        "limit": page_size,
+        "offset": (page - 1) * page_size,
+    }
+    if job_type:
+        params["job_type"] = job_type
+    async with _db_manager.async_session_factory() as session:
+        total_result = await session.execute(
+            text(f"SELECT COUNT(*) FROM kbd_batch_job AS j {where_sql}"),  # noqa: S608
+            params,
+        )
+        total = int(total_result.scalar() or 0)
+        result = await session.execute(
+            text(f"""
+                SELECT j.batch_id, j.job_type, j.status, j.requested_kbd_ids, j.request_json,
+                       j.total_count, j.completed_count, j.succeeded_count, j.failed_count,
+                       j.interrupted_count, j.retry_of_batch_id,
+                       retry.batch_id AS retried_by_batch_id,
+                       j.work_total_count, j.work_completed_count, j.work_failed_count,
+                       (SELECT COUNT(*) FROM kbd_batch_job_item AS retryable_item
+                        WHERE retryable_item.batch_id = j.batch_id
+                          AND retryable_item.status IN ('failed', 'interrupted')) AS retryable_count,
+                       j.trace_id, j.created_at, j.started_at, j.completed_at, j.updated_at
+                FROM kbd_batch_job AS j
+                LEFT JOIN kbd_batch_job AS retry ON retry.retry_of_batch_id = j.batch_id
+                {where_sql}
+                ORDER BY j.created_at DESC, j.batch_id DESC
+                LIMIT :limit OFFSET :offset
+            """),  # noqa: S608
+            params,
+        )
+        jobs = [_batch_row_to_dict(row) for row in result.mappings().all()]
+    return {"jobs": jobs, "total": total, "page": page, "page_size": page_size}
+
+
+@kbd_router.get("/batch/jobs/{batch_id}")
+async def get_batch_job(request: Request, batch_id: UUID):
+    """查询一个批量任务的汇总和逐条执行结果。"""
+
+    _check_auth(request)
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+    await reconcile_interrupted_batch_jobs(batch_id=batch_id)
+    async with _db_manager.async_session_factory() as session:
+        job_result = await session.execute(
+            text("""
+                SELECT j.batch_id, j.job_type, j.status, j.requested_kbd_ids, j.request_json,
+                       j.total_count, j.completed_count, j.succeeded_count, j.failed_count,
+                       j.interrupted_count, j.retry_of_batch_id,
+                       retry.batch_id AS retried_by_batch_id,
+                       j.work_total_count, j.work_completed_count, j.work_failed_count,
+                       (SELECT COUNT(*) FROM kbd_batch_job_item AS retryable_item
+                        WHERE retryable_item.batch_id = j.batch_id
+                          AND retryable_item.status IN ('failed', 'interrupted')) AS retryable_count,
+                       j.trace_id, j.created_at, j.started_at, j.completed_at, j.updated_at
+                FROM kbd_batch_job AS j
+                LEFT JOIN kbd_batch_job AS retry ON retry.retry_of_batch_id = j.batch_id
+                WHERE j.batch_id = CAST(:batch_id AS uuid)
+            """),
+            {"batch_id": str(batch_id)},
+        )
+        job_row = job_result.mappings().first()
+        if job_row is None:
+            raise HTTPException(status_code=404, detail="批量任务不存在")
+        item_result = await session.execute(
+            text("""
+                SELECT i.item_id, i.kbd_id, e.support_id, e.title,
+                       e.status AS kbd_status, e.lock_version, i.status,
+                       i.result_json, i.error_json, i.trace_id,
+                       i.work_total_count, i.work_completed_count, i.work_failed_count,
+                       i.started_at, i.completed_at, i.updated_at
+                FROM kbd_batch_job_item AS i
+                JOIN kbd_entry AS e ON e.id = i.kbd_id
+                WHERE i.batch_id = CAST(:batch_id AS uuid)
+                ORDER BY i.item_id
+            """),
+            {"batch_id": str(batch_id)},
+        )
+        job = _batch_row_to_dict(job_row)
+        job["items"] = [_batch_item_row_to_dict(row) for row in item_result.mappings().all()]
+    return job
+
+
+async def _refresh_batch_job_counts(session: Any, batch_id: UUID) -> None:
+    """从明细重新汇总批次计数，避免并发执行时累加丢失或重复。"""
+
+    await session.execute(
+        text("""
+            UPDATE kbd_batch_job AS j
+            SET completed_count = summary.succeeded + summary.failed + summary.interrupted,
+                succeeded_count = summary.succeeded,
+                failed_count = summary.failed,
+                interrupted_count = summary.interrupted,
+                work_total_count = summary.work_total,
+                work_completed_count = summary.work_completed,
+                work_failed_count = summary.work_failed
+            FROM (
+                SELECT
+                    COUNT(*) FILTER (WHERE status = 'succeeded')::integer AS succeeded,
+                    COUNT(*) FILTER (WHERE status = 'failed')::integer AS failed,
+                    COUNT(*) FILTER (WHERE status = 'interrupted')::integer AS interrupted,
+                    COALESCE(SUM(work_total_count), 0)::integer AS work_total,
+                    COALESCE(SUM(work_completed_count), 0)::integer AS work_completed,
+                    COALESCE(SUM(work_failed_count), 0)::integer AS work_failed
+                FROM kbd_batch_job_item
+                WHERE batch_id = CAST(:batch_id AS uuid)
+            ) AS summary
+            WHERE j.batch_id = CAST(:batch_id AS uuid)
+        """),
+        {"batch_id": str(batch_id)},
+    )
+
+
+def _batch_stale_after_seconds() -> int:
+    """返回残留任务判定窗口，避免滚动发布时误伤仍由旧副本执行的任务。"""
+
+    try:
+        return max(60, int(os.environ.get("KBD_BATCH_STALE_AFTER_SECONDS", "600")))
+    except ValueError:
+        return 600
+
+
+async def reconcile_interrupted_batch_jobs(
+    reason: str = "stale_timeout",
+    *,
+    stale_after_seconds: int | None = None,
+    batch_id: UUID | None = None,
+) -> dict[str, int]:
+    """把上一个服务进程遗留的批量任务收敛到可审计终态。
+
+    批量任务当前由单副本 kb-service 的进程内后台执行器承载。服务生命周期重新开始时，
+    数据库中仍为 pending/running 的明细已不可能由原执行器继续完成。将它们明确记为
+    可重试中断，保留已经完成的成功/失败结果，避免页面永久显示“处理中”。
+    """
+
+    if _db_manager is None:
+        return {"jobs": 0, "items": 0}
+
+    stale_seconds = _batch_stale_after_seconds() if stale_after_seconds is None else max(0, stale_after_seconds)
+    error_json = json.dumps(_batch_interruption_error(reason), ensure_ascii=False)
+    reconciled_jobs = 0
+    reconciled_items = 0
+    async with _db_manager.async_session_factory() as session:
+        active_result = await session.execute(
+            text("""
+                SELECT batch_id, trace_id
+                FROM kbd_batch_job
+                WHERE status IN ('pending', 'running')
+                  AND updated_at <= CURRENT_TIMESTAMP - make_interval(secs => :stale_seconds)
+                  AND (CAST(:batch_id AS uuid) IS NULL OR batch_id = CAST(:batch_id AS uuid))
+                ORDER BY created_at, batch_id
+                FOR UPDATE
+            """),
+            {
+                "stale_seconds": stale_seconds,
+                "batch_id": str(batch_id) if batch_id is not None else None,
+            },
+        )
+        active_jobs = active_result.mappings().all()
+        for job in active_jobs:
+            batch_id = job["batch_id"]
+            item_result = await session.execute(
+                text("""
+                    UPDATE kbd_batch_job_item
+                    SET status = 'interrupted', result_json = '{}'::jsonb,
+                        error_json = CAST(:error_json AS jsonb),
+                        completed_at = CURRENT_TIMESTAMP
+                    WHERE batch_id = CAST(:batch_id AS uuid)
+                      AND status IN ('pending', 'running')
+                    RETURNING item_id
+                """),
+                {"batch_id": str(batch_id), "error_json": error_json},
+            )
+            interrupted_items = len(item_result.all())
+            await _refresh_batch_job_counts(session, batch_id)
+            count_result = await session.execute(
+                text("""
+                    SELECT succeeded_count, failed_count, interrupted_count
+                    FROM kbd_batch_job
+                    WHERE batch_id = CAST(:batch_id AS uuid)
+                """),
+                {"batch_id": str(batch_id)},
+            )
+            counts = count_result.mappings().one()
+            final_status = _batch_status_from_counts(
+                int(counts["succeeded_count"] or 0),
+                int(counts["failed_count"] or 0),
+                int(counts["interrupted_count"] or 0),
+            )
+            await session.execute(
+                text("""
+                    UPDATE kbd_batch_job
+                    SET status = :status, completed_at = CURRENT_TIMESTAMP
+                    WHERE batch_id = CAST(:batch_id AS uuid)
+                """),
+                {"batch_id": str(batch_id), "status": final_status},
+            )
+            reconciled_jobs += 1
+            reconciled_items += interrupted_items
+            logger.warning(
+                event="kbd_batch_job_interrupted_reconciled",
+                message="遗留批量任务已收敛为终态，未完成条目可重新提交",
+                batch_id=str(batch_id),
+                interrupted_items=interrupted_items,
+                status=final_status,
+                interruption_reason=reason,
+                trace_id=job["trace_id"],
+            )
+        await session.commit()
+    return {"jobs": reconciled_jobs, "items": reconciled_items}
+
+
+async def _record_batch_item_progress(
+    batch_id: UUID,
+    kbd_id: int,
+    done: int,
+    failed: int,
+    total: int,
+) -> None:
+    """持久化图片级进度；使用单调计数抵御并发回调乱序。"""
+
+    if _db_manager is None:
+        return
+    completed = min(max(done + failed, 0), max(total, 0))
+    failed = min(max(failed, 0), completed)
+    async with _db_manager.async_session_factory() as session:
+        await session.execute(
+            text("""
+                UPDATE kbd_batch_job_item
+                SET work_total_count = GREATEST(work_total_count, :total),
+                    work_completed_count = GREATEST(work_completed_count, :completed),
+                    work_failed_count = GREATEST(work_failed_count, :failed)
+                WHERE batch_id = CAST(:batch_id AS uuid) AND kbd_id = :kbd_id
+                  AND status IN ('pending', 'running')
+            """),
+            {
+                "batch_id": str(batch_id),
+                "kbd_id": kbd_id,
+                "total": max(total, 0),
+                "completed": completed,
+                "failed": failed,
+            },
+        )
+        await _refresh_batch_job_counts(session, batch_id)
+        await session.commit()
+
+
+async def _run_batch_job_heartbeat(batch_id: UUID, stopped: asyncio.Event) -> None:
+    """定期刷新活跃批次时间戳，让残留检测能区分慢任务与失去执行进程的任务。"""
+
+    if _db_manager is None:
+        return
+    interval_seconds = max(5, min(30, _batch_stale_after_seconds() // 3))
+    while not stopped.is_set():
+        try:
+            await asyncio.wait_for(stopped.wait(), timeout=interval_seconds)
+            continue
+        except TimeoutError:
+            pass
+        async with _db_manager.async_session_factory() as session:
+            await session.execute(
+                text("""
+                    UPDATE kbd_batch_job
+                    SET updated_at = CURRENT_TIMESTAMP
+                    WHERE batch_id = CAST(:batch_id AS uuid) AND status = 'running'
+                """),
+                {"batch_id": str(batch_id)},
+            )
+            await session.commit()
+
+
+async def _run_batch_job(
+    batch_id: UUID,
+    processor: Any,
+    trace_id: str,
+) -> None:
+    """执行批量任务，并在每条结束后立即持久化进度。"""
+
+    if _db_manager is None:
+        logger.error(event="kbd_batch_job_database_unavailable", batch_id=str(batch_id), trace_id=trace_id)
+        return
+
+    async with _db_manager.async_session_factory() as session:
+        job_result = await session.execute(
+            text("""
+                SELECT job_type, request_json
+                FROM kbd_batch_job
+                WHERE batch_id = CAST(:batch_id AS uuid)
+            """),
+            {"batch_id": str(batch_id)},
+        )
+        job = job_result.mappings().one()
+        request_context = dict(job.get("request_json") or {})
+        item_result = await session.execute(
+            text("""
+                SELECT kbd_id FROM kbd_batch_job_item
+                WHERE batch_id = CAST(:batch_id AS uuid) ORDER BY item_id
+            """),
+            {"batch_id": str(batch_id)},
+        )
+        kbd_ids = [row[0] for row in item_result.all()]
+        await session.execute(
+            text("""
+                UPDATE kbd_batch_job
+                SET status = 'running', started_at = COALESCE(started_at, CURRENT_TIMESTAMP)
+                WHERE batch_id = CAST(:batch_id AS uuid) AND status = 'pending'
+            """),
+            {"batch_id": str(batch_id)},
+        )
+        await session.commit()
+
+    async def process_one(kbd_id: int) -> None:
+        async with _db_manager.async_session_factory() as session:
+            claimed_result = await session.execute(
+                text("""
+                    UPDATE kbd_batch_job_item
+                    SET status = 'running', started_at = COALESCE(started_at, CURRENT_TIMESTAMP)
+                    WHERE batch_id = CAST(:batch_id AS uuid) AND kbd_id = :kbd_id
+                      AND status = 'pending'
+                    RETURNING item_id
+                """),
+                {"batch_id": str(batch_id), "kbd_id": kbd_id},
+            )
+            claimed = claimed_result.scalar_one_or_none() is not None
+            await session.commit()
+        if not claimed:
+            return
+
+        item_started_at = time.monotonic()
+        try:
+
+            async def progress_callback(done: int, failed: int, total: int) -> None:
+                await _record_batch_item_progress(batch_id, kbd_id, done, failed, total)
+
+            with observe_workflow(
+                name=f"kbd.{processor.__name__.removeprefix('_').removesuffix('_one')}",
+                input={"kbd_id": kbd_id},
+                metadata={"batch_id": str(batch_id), "kbd_id": kbd_id, "job_type": processor.__name__},
+                session_id=str(batch_id),
+                trace_id=trace_id,
+            ) as observation:
+                if "request_context" in inspect.signature(processor).parameters:
+                    result = await processor(
+                        kbd_id,
+                        progress_callback,
+                        trace_id,
+                        request_context=request_context,
+                    )
+                else:
+                    # 保留测试和扩展处理器的三参数兼容契约。
+                    result = await processor(kbd_id, progress_callback, trace_id)
+                update_observation(observation, output=result or {}, metadata={"status": "succeeded"})
+            result = result or {}
+            KBD_WORKFLOW_ITEMS_TOTAL.labels(
+                workflow="kbd_batch",
+                stage=processor.__name__,
+                status="succeeded",
+                error_code="none",
+            ).inc()
+            work_total = max(int(result.get("total") or 0), 1)
+            work_failed = min(max(int(result.get("failed") or 0), 0), work_total)
+            async with _db_manager.async_session_factory() as session:
+                await session.execute(
+                    text("""
+                        UPDATE kbd_batch_job_item
+                        SET status = 'succeeded', result_json = CAST(:result_json AS jsonb),
+                            error_json = '{}'::jsonb, completed_at = CURRENT_TIMESTAMP,
+                            work_total_count = GREATEST(work_total_count, :work_total),
+                            work_completed_count = GREATEST(work_total_count, :work_total),
+                            work_failed_count = :work_failed
+                        WHERE batch_id = CAST(:batch_id AS uuid) AND kbd_id = :kbd_id
+                          AND status = 'running'
+                    """),
+                    {
+                        "batch_id": str(batch_id),
+                        "kbd_id": kbd_id,
+                        "result_json": json.dumps(result or {}, ensure_ascii=False, default=str),
+                        "work_total": work_total,
+                        "work_failed": work_failed,
+                    },
+                )
+                await _refresh_batch_job_counts(session, batch_id)
+                await session.commit()
+        except HTTPException as exc:
+            detail = exc.detail
+            error_code = str(detail.get("code") or "HTTP_ERROR") if isinstance(detail, dict) else "HTTP_ERROR"
+            error = {
+                "status": exc.status_code,
+                "message": detail,
+                "code": error_code,
+                "retryable": bool(detail.get("retryable", True)) if isinstance(detail, dict) else True,
+            }
+            KBD_WORKFLOW_ITEMS_TOTAL.labels(
+                workflow="kbd_batch",
+                stage=processor.__name__,
+                status="failed",
+                error_code=error_code,
+            ).inc()
+            await _record_batch_item_failure(batch_id, kbd_id, error)
+        except Exception as exc:
+            logger.exception(
+                event="kbd_batch_job_item_failed",
+                batch_id=str(batch_id),
+                kbd_id=kbd_id,
+                error=str(exc),
+                trace_id=trace_id,
+            )
+            KBD_WORKFLOW_ITEMS_TOTAL.labels(
+                workflow="kbd_batch",
+                stage=processor.__name__,
+                status="failed",
+                error_code=type(exc).__name__,
+            ).inc()
+            await _record_batch_item_failure(
+                batch_id,
+                kbd_id,
+                {"status": 500, "message": str(exc), "code": type(exc).__name__},
+            )
+        finally:
+            KBD_WORKFLOW_DURATION_SECONDS.labels(workflow="kbd_batch", stage=processor.__name__).observe(
+                time.monotonic() - item_started_at
+            )
+
+    # 发布需要生成 Embedding 并冻结修订，限制并发避免压垮模型与数据库连接池。
+    semaphore = asyncio.Semaphore(3 if job["job_type"] == "approve" else 8)
+
+    async def limited(kbd_id: int) -> None:
+        async with semaphore:
+            await process_one(kbd_id)
+
+    heartbeat_stopped = asyncio.Event()
+    heartbeat_task = asyncio.create_task(_run_batch_job_heartbeat(batch_id, heartbeat_stopped))
+    try:
+        await asyncio.gather(*[limited(kid) for kid in kbd_ids])
+    finally:
+        heartbeat_stopped.set()
+        await heartbeat_task
+
+    async with _db_manager.async_session_factory() as session:
+        count_result = await session.execute(
+            text("""
+                SELECT
+                    COUNT(*) FILTER (WHERE status = 'succeeded') AS succeeded,
+                    COUNT(*) FILTER (WHERE status = 'failed') AS failed,
+                    COUNT(*) FILTER (WHERE status = 'interrupted') AS interrupted
+                FROM kbd_batch_job_item
+                WHERE batch_id = CAST(:batch_id AS uuid)
+            """),
+            {"batch_id": str(batch_id)},
+        )
+        counts = count_result.mappings().one()
+        succeeded = int(counts["succeeded"] or 0)
+        failed = int(counts["failed"] or 0)
+        interrupted = int(counts["interrupted"] or 0)
+        final_status = _batch_status_from_counts(succeeded, failed, interrupted)
+        await session.execute(
+            text("""
+                UPDATE kbd_batch_job
+                SET status = :status, completed_at = CURRENT_TIMESTAMP,
+                    completed_count = :completed_count,
+                    succeeded_count = :succeeded_count,
+                    failed_count = :failed_count,
+                    interrupted_count = :interrupted_count
+                WHERE batch_id = CAST(:batch_id AS uuid)
+                  AND status IN ('pending', 'running')
+            """),
+            {
+                "batch_id": str(batch_id),
+                "status": final_status,
+                "completed_count": succeeded + failed + interrupted,
+                "succeeded_count": succeeded,
+                "failed_count": failed,
+                "interrupted_count": interrupted,
+            },
+        )
+        await _refresh_batch_job_counts(session, batch_id)
+        await session.commit()
+    logger.info(
+        event="kbd_batch_job_completed",
+        batch_id=str(batch_id),
+        total=len(kbd_ids),
+        succeeded=succeeded,
+        failed=failed,
+        interrupted=interrupted,
+        status=final_status,
+        trace_id=trace_id,
+    )
+
+
+async def _record_batch_item_failure(batch_id: UUID, kbd_id: int, error: dict[str, Any]) -> None:
+    """原子记录单条失败和任务汇总进度。"""
+
+    if _db_manager is None:
+        return
+    async with _db_manager.async_session_factory() as session:
+        await session.execute(
+            text("""
+                UPDATE kbd_batch_job_item
+                SET status = 'failed', error_json = CAST(:error_json AS jsonb),
+                    result_json = '{}'::jsonb, completed_at = CURRENT_TIMESTAMP,
+                    work_failed_count = CASE
+                        WHEN work_total_count = 0 THEN 1
+                        ELSE work_failed_count + GREATEST(work_total_count - work_completed_count, 0)
+                    END,
+                    work_completed_count = CASE
+                        WHEN work_total_count = 0 THEN 1 ELSE work_total_count
+                    END,
+                    work_total_count = GREATEST(work_total_count, 1)
+                WHERE batch_id = CAST(:batch_id AS uuid) AND kbd_id = :kbd_id
+                  AND status = 'running'
+            """),
+            {
+                "batch_id": str(batch_id),
+                "kbd_id": kbd_id,
+                "error_json": json.dumps(error, ensure_ascii=False, default=str),
+            },
+        )
+        await _refresh_batch_job_counts(session, batch_id)
+        await session.commit()
+
+
+async def _reclassify_one(kbd_id: int, _on_progress: Any = None, _trace_id: str | None = None) -> dict[str, Any]:
+    """单条重新分类（复用已有逻辑）。"""
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+    async with _db_manager.async_session_factory() as session:
+        entry = await _require_directly_mutable_kbd(session, kbd_id)
+        title = entry.title or ""
+        problem_desc = entry.problem_description or ""
+    if not title:
+        raise HTTPException(status_code=400, detail="KBD 条目缺少标题，无法分类")
+    from app.routes.classify import classify_case
+
+    response = await classify_case(_db_manager, title, problem_desc)
+    async with _db_manager.async_session_factory() as session:
+        entry = await _require_directly_mutable_kbd(session, kbd_id, for_update=True)
+        entry.ai_category_id = response.category_id
+        entry.ai_category_conf = response.confidence
+        entry.ai_category_reason = response.reason
+        if not entry.category_id:
+            payload = {"signals_json": entry.signals_json}
+            _mark_payload_signal_generation_stale(payload)
+            entry.signals_json = payload["signals_json"]
+        await session.flush()
+        from app.services.kbd_revision_service import freeze_kbd_ai_proposal
+
+        await freeze_kbd_ai_proposal(
+            session,
+            kbd=entry,
+            generation_kind="classification",
+            origin="batch_reclassify",
+        )
+        await session.commit()
+    return {
+        "category_id": response.category_id,
+        "confidence": response.confidence,
+        "reason": response.reason,
+    }
+
+
+async def _reanalyze_images_one(kbd_id: int, on_progress: Any = None, trace_id: str | None = None) -> dict[str, Any]:
+    """单条重新识图（复用已有逻辑）。"""
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+    from app.services.vision_processor import reanalyze_kbd_images
+
+    async with _db_manager.async_session_factory() as session:
+        entry = await _require_directly_mutable_kbd(session, kbd_id)
+        if not (entry.images_json or []):
+            raise HTTPException(status_code=400, detail="KBD 条目无图片")
+    result = await reanalyze_kbd_images(
+        kbd_id,
+        _db_manager.async_session_factory,
+        on_progress=on_progress,
+        trace_id=trace_id,
+    )
+    if not result.get("success", False):
+        raise HTTPException(
+            status_code=502,
+            detail=result.get("error") or f"识图未完全成功：失败 {result.get('failed', 0)} 张",
+        )
+    return {
+        "total": result.get("total", 0),
+        "done": result.get("done", 0),
+        "failed": result.get("failed", 0),
+        "proposal_revision_id": result.get("proposal_revision_id"),
+    }
+
+
+async def _extract_signals_one(kbd_id: int, _on_progress: Any = None, _trace_id: str | None = None) -> dict[str, Any]:
+    """单条信号重新抽取（复用已有逻辑）。"""
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+    from app.routes.extract_signals import extract_signals_for_kbd
+
+    result = await extract_signals_for_kbd(_db_manager, kbd_id)
+    signals_count = int(result.get("signals_count", 0) or 0)
+    rejected_count = int(result.get("rejected_count", 0) or 0)
+    if signals_count == 0:
+        rejected_candidates = list(result.get("rejected") or [])
+        reason_summary = "；".join(
+            f"{str(item.get('reason_code') or 'unknown')}：{str(item.get('reason') or '未提供原因')}"
+            for item in rejected_candidates[:3]
+            if isinstance(item, dict)
+        )
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SIGNAL_ALL_REJECTED" if rejected_count else "SIGNAL_EMPTY_RESULT",
+                "message": (
+                    f"信号抽取已完成，但没有可供 Agent 使用的有效 Signal；"
+                    f"Rejected Candidate（被拒绝候选）共 {rejected_count} 条，请人工复核"
+                    + (f"：{reason_summary}" if reason_summary else "")
+                ),
+                "retryable": False,
+                "proposal_revision_id": result.get("proposal_revision_id"),
+                "rejected_count": rejected_count,
+                "rejected_candidates": rejected_candidates,
+            },
+        )
+    return {
+        "signals_count": signals_count,
+        "rejected_count": rejected_count,
+        "proposal_revision_id": result.get("proposal_revision_id"),
+    }
+
+
+def _internal_batch_request(path: str) -> Request:
+    """构造只供进程内复用审核路由的内部认证请求。"""
+
+    from app.config import settings
+
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": path,
+            "headers": [(b"authorization", f"Bearer {settings.INTERNAL_API_TOKEN}".encode())],
+        }
+    )
+
+
+async def _approve_one(
+    kbd_id: int,
+    _on_progress: Any = None,
+    _trace_id: str | None = None,
+    *,
+    request_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """逐条复用单条审核通过门禁、Embedding 和发布修订逻辑。"""
+
+    context = request_context or {}
+    entry_context = (context.get("entries") or {}).get(str(kbd_id)) or {}
+    response = await approve_kbd_entry(
+        _internal_batch_request(f"/api/admin/kbd/{kbd_id}/approve"),
+        kbd_id,
+        KbdApproveRequest(
+            reviewer_id=int(context.get("reviewer_id") or 0),
+            review_note=context.get("review_note") or None,
+            category_id=entry_context.get("category_id") or None,
+            lock_version=entry_context.get("lock_version"),
+        ),
+    )
+    return response.model_dump(mode="json")
+
+
+async def _reject_one(
+    kbd_id: int,
+    _on_progress: Any = None,
+    _trace_id: str | None = None,
+    *,
+    request_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """逐条复用单条拒绝状态门禁和审核记录逻辑。"""
+
+    context = request_context or {}
+    return await reject_kbd_entry(
+        _internal_batch_request(f"/api/admin/kbd/{kbd_id}/reject"),
+        kbd_id,
+        KbdRejectRequest(
+            reviewer_id=int(context.get("reviewer_id") or 0),
+            review_note=str(context.get("review_note") or ""),
+        ),
+    )
+
+
+_BATCH_PROCESSORS.update(
+    {
+        "reanalyze_images": _reanalyze_images_one,
+        "reclassify": _reclassify_one,
+        "extract_signals": _extract_signals_one,
+        "approve": _approve_one,
+        "reject": _reject_one,
+    }
+)
 
 
 @kbd_router.get("/{kbd_id}")
@@ -1014,9 +2255,7 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
             ):
                 working_payload = working_revision.payload_json
         history_result = await session.execute(
-            select(KbdRevision)
-            .where(KbdRevision.kbd_entry_id == kbd_id)
-            .order_by(KbdRevision.revision_no.desc())
+            select(KbdRevision).where(KbdRevision.kbd_entry_id == kbd_id).order_by(KbdRevision.revision_no.desc())
         )
         revision_history = list(history_result.scalars().all())
 
@@ -1086,9 +2325,7 @@ async def get_kbd_revisions(request: Request, kbd_id: int) -> dict[str, Any]:
             raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
 
         history_result = await session.execute(
-            select(KbdRevision)
-            .where(KbdRevision.kbd_entry_id == kbd_id)
-            .order_by(KbdRevision.revision_no.desc())
+            select(KbdRevision).where(KbdRevision.kbd_entry_id == kbd_id).order_by(KbdRevision.revision_no.desc())
         )
         history = list(history_result.scalars().all())
         revision_by_id = {item.id: item for item in history}
@@ -1121,7 +2358,9 @@ async def get_kbd_revisions(request: Request, kbd_id: int) -> dict[str, Any]:
         "expert_signal_edit_summary": summarize_expert_signal_changes(
             proposal_baseline.payload_json if proposal_baseline is not None else {},
             current_expert.payload_json if current_expert is not None else None,
-            proposal_revision_id=proposal_baseline.id if proposal_baseline is not None else entry.latest_proposal_revision_id,
+            proposal_revision_id=proposal_baseline.id
+            if proposal_baseline is not None
+            else entry.latest_proposal_revision_id,
             expert_revision_id=current_expert.id if current_expert is not None else None,
         ),
         "history": [
@@ -1407,8 +2646,8 @@ class KbdApproveRequest(BaseModel):
     review_note: str | None = Field(None, max_length=500, description="审核备注（可选）")
     category_id: str | None = Field(
         None,
-        description='人工确认的分类 code（可选，如“虚拟机-017”）。来自审核详情弹窗的“确认分类”下拉框，'
-        '发布时优先于 AI 自动分类写入 category_id，用于校正分类、避免孤儿 KBD',
+        description="人工确认的分类 code（可选，如“虚拟机-017”）。来自审核详情弹窗的“确认分类”下拉框，"
+        "发布时优先于 AI 自动分类写入 category_id，用于校正分类、避免孤儿 KBD",
     )
     lock_version: int | None = Field(None, ge=0, description="可选专家工作稿版本；不匹配时返回 409")
 
@@ -1695,7 +2934,12 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
             review_note=body.review_note,
             trace_id=get_current_trace_id(),
         )
-        resource_revision = await _publish_kbd_revision(session, kbd_id, get_current_trace_id())
+        resource_revision = await _publish_kbd_revision(
+            session,
+            kbd_id,
+            get_current_trace_id(),
+            lifecycle_event_id=int(expert_revision.id),
+        )
         published_entry = await session.get(KbdEntry, kbd_id)
         if published_entry is not None:
             published_entry.working_revision_id = None
@@ -3145,7 +4389,12 @@ async def publish_kbd_maintenance_working(
             trace_id=get_current_trace_id(),
             reuse_existing=False,
         )
-        resource_revision = await _publish_kbd_revision(session, kbd_id, get_current_trace_id())
+        resource_revision = await _publish_kbd_revision(
+            session,
+            kbd_id,
+            get_current_trace_id(),
+            lifecycle_event_id=int(approved_revision.id),
+        )
         kbd.working_revision_id = None
         await session.commit()
 
@@ -3639,7 +4888,12 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
             review_note=body.review_note,
             trace_id=get_current_trace_id(),
         )
-        resource_revision = await _publish_kbd_revision(session, kbd_id, get_current_trace_id())
+        resource_revision = await _publish_kbd_revision(
+            session,
+            kbd_id,
+            get_current_trace_id(),
+            lifecycle_event_id=int(expert_revision.id),
+        )
         published_entry = await session.get(KbdEntry, kbd_id)
         if published_entry is not None:
             published_entry.working_revision_id = None
@@ -3659,39 +4913,79 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
 
 @kbd_router.post("/{kbd_id}/revert-to-draft")
 async def revert_kbd_to_draft(request: Request, kbd_id: int):
-    """将已发布/已拒绝的 KBD 条目退回待审核状态"""
+    """将 KBD 退回待审核；已发布条目同时追加停用墓碑修订。"""
     _check_auth(request)
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
 
     logger.info(event="kbd_revert_to_draft_request", kbd_id=kbd_id)
     async with _db_manager.async_session_factory() as session:
-        result = await session.execute(text("SELECT id, status FROM kbd_entry WHERE id = :id"), {"id": kbd_id})
-        row = result.mappings().first()
-        if not row:
+        kbd = await session.get(KbdEntry, kbd_id, with_for_update=True)
+        if kbd is None:
             raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
-        if row["status"] == "draft":
+        if kbd.status == "draft":
             raise HTTPException(status_code=400, detail="当前已是待审核状态，无需操作")
-
-        await session.execute(
-            text("UPDATE kbd_entry SET status = 'draft', updated_at = NOW() WHERE id = :id"),
-            {"id": kbd_id},
-        )
-        deactivated = await session.execute(
-            text(
-                "DELETE FROM dynamic_resource_active "
-                "WHERE resource_type = 'kbd' AND resource_name = :resource_name"
-            ),
-            {"resource_name": str(kbd_id)},
-        )
+        previous_status = str(kbd.status)
+        kbd.status = "draft"
+        kbd.lock_version += 1
+        resource_revision = None
+        if previous_status == "published":
+            resource_revision = await _publish_kbd_tombstone(
+                session,
+                kbd,
+                lifecycle_status="draft",
+                trace_id=get_current_trace_id(),
+            )
         await session.commit()
 
-    logger.info(event="kbd_reverted_to_draft", kbd_id=kbd_id)
+    logger.info(
+        event="kbd_reverted_to_draft",
+        kbd_id=kbd_id,
+        previous_status=previous_status,
+        resource_revision=resource_revision,
+    )
     return {
         "success": True,
         "kbd_id": kbd_id,
         "status": "draft",
-        "active_deactivated": bool(deactivated.rowcount),
+        "active_deactivated": resource_revision is not None,
+        "resource_revision": resource_revision,
+    }
+
+
+@kbd_router.post("/{kbd_id}/archive")
+@kbd_router.post("/{kbd_id}/disable", include_in_schema=False)
+async def archive_kbd_entry(request: Request, kbd_id: int):
+    """归档/停用已发布 KBD，并追加不可变 disabled tombstone 修订。"""
+
+    _check_auth(request)
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    logger.info(event="kbd_archive_request", kbd_id=kbd_id)
+    async with _db_manager.async_session_factory() as session:
+        kbd = await session.get(KbdEntry, kbd_id, with_for_update=True)
+        if kbd is None:
+            raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
+        if kbd.status != "published":
+            raise HTTPException(status_code=409, detail="只有已发布 KBD 可以归档或停用")
+        kbd.status = "archived"
+        kbd.lock_version += 1
+        resource_revision = await _publish_kbd_tombstone(
+            session,
+            kbd,
+            lifecycle_status="archived",
+            trace_id=get_current_trace_id(),
+        )
+        await session.commit()
+
+    logger.info(event="kbd_archived", kbd_id=kbd_id, resource_revision=resource_revision)
+    return {
+        "success": True,
+        "kbd_id": kbd_id,
+        "status": "archived",
+        "active_deactivated": True,
+        "resource_revision": resource_revision,
     }
 
 

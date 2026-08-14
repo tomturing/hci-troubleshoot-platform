@@ -2,6 +2,7 @@ import copy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import jsonschema
 import pytest
 from app.models.kbd_entry import KbdEntry
 from app.models.kbd_revision import KbdRevision
@@ -97,7 +98,7 @@ def _payload() -> dict:
                     },
                     "orchestrate": {"produces": [], "requires": ["END"]},
                     "provenance": {"category": "backend"},
-                }
+                },
             ],
             "generation_metadata": {
                 "schema_version": 1,
@@ -366,9 +367,7 @@ def test_kbd30880_exists_matcher_null_pattern_is_canonicalized_on_save():
         "type": "exists",
         "pattern": None,
     }
-    signals = original["signals_json"] | {
-        "signals": [original["signals_json"]["signals"][0], exists_signal]
-    }
+    signals = original["signals_json"] | {"signals": [original["signals_json"]["signals"][0], exists_signal]}
 
     patched = _patch_maintenance_payload(original, KbdUpdateRequest(signals_json=signals))
 
@@ -388,9 +387,7 @@ def test_kbd30880_restored_or_duplicated_signal_legacy_provenance_flags_do_not_b
         "expert_restored": True,
         "needs_review": True,
     }
-    signals = original["signals_json"] | {
-        "signals": [*original["signals_json"]["signals"], restored]
-    }
+    signals = original["signals_json"] | {"signals": [*original["signals_json"]["signals"], restored]}
 
     patched = _patch_maintenance_payload(original, KbdUpdateRequest(signals_json=signals))
     provenance = patched["signals_json"]["signals"][-1]["provenance"]
@@ -445,6 +442,25 @@ def test_expert_can_save_working_draft_without_must_and_gets_actionable_issue():
             "action": "将一条可执行关键信号的“证据作用”改为“必要证据”，或新增一条必要证据。",
         }
     ]
+
+
+def test_publish_without_producer_has_actionable_admin_issue():
+    consumer_only = _payload()["signals_json"] | {
+        "signals": [_payload()["signals_json"]["signals"][1]],
+    }
+    consumer_only["verification_contract"] = {
+        "schema_version": 1,
+        "variables": {"END": {"type": "string", "description": "外部时间"}},
+        "evidence_policy": {"must": ["log_failure"], "should": [], "exclude": [], "context": []},
+    }
+
+    with pytest.raises(jsonschema.ValidationError) as exc_info:
+        admin._prepare_expert_publish_signals(consumer_only)
+
+    issue = admin._humanize_signal_validation_error(exc_info.value, consumer_only["signals"])
+    assert issue["code"] == "KBD_PRODUCER_SIGNAL_MISSING"
+    assert issue["location"] == "生产者信号"
+    assert issue["action"] == {"type": "add_signal", "kind": "producer"}
 
 
 def test_reconcile_contract_moves_signal_when_expert_changes_role():
@@ -691,9 +707,10 @@ async def test_maintenance_publish_applies_payload_before_atomic_runtime_switch(
         created_at=None,
     )
 
-    async def publish_after_payload_applied(session, kbd_id, trace_id):
+    async def publish_after_payload_applied(session, kbd_id, trace_id, *, lifecycle_event_id=None):
         assert session is write_session
         assert kbd_id == 9
+        assert lifecycle_event_id == approved.id
         assert entry.title == "已复核维护版"
         assert entry.working_revision_id == 23
         validation = entry.signals_json["publish_validation"]

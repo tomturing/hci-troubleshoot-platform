@@ -1,6 +1,6 @@
 {{- if .Values.dbMigrate.enabled }}
 # DB Schema 同步 Job — ArgoCD PreSync Hook
-# 每次 ArgoCD Sync 前执行，入口脚本 db-migrate.sh 按顺序完成三步迁移
+# 每次 ArgoCD Sync 前执行；入口脚本在空库先引导 Schema，再完成数据迁移和最终声明式收敛
 #
 # 工作模式：声明式（Atlas schema apply）+ 幂等（psql 函数/触发器）
 #   1. psql → desired_extras.sql（函数，幂等：CREATE OR REPLACE FUNCTION）

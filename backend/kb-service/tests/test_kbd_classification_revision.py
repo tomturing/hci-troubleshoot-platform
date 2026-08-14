@@ -19,6 +19,13 @@ class _SessionContext:
         return False
 
 
+def test_classify_model_ignores_empty_dedicated_setting(monkeypatch):
+    monkeypatch.setenv("CLASSIFY_MODEL", "")
+    monkeypatch.setenv("LLM_DEFAULT_MODEL", "deepseek-v4-flash")
+
+    assert classify._resolve_classify_model() == "deepseek-v4-flash"
+
+
 @pytest.mark.asyncio
 async def test_classify_case_builds_model_prompt_catalog_and_input_fingerprints():
     session = AsyncMock()

@@ -16,6 +16,7 @@
 import { ref, reactive, watch, computed, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useChatStore } from '@/stores/chat'
+import { navigateToOfflineDiagnosis } from '@/utils/offlineDiagnosis'
 import { checkBridgeBeforeOpen } from '@/api/terminal'
 import {
   createBridgeSocket,
@@ -519,13 +520,9 @@ async function handleNoSSHCreate() {
     currentStep.value = 3
     addLog('success', `工单已创建: ${createdCaseId.value}（无环境数据）`)
 
-    // 直接完成流程
-    chatStore.completeCaseCreationFlow(
-      createdCaseId.value,
-      chatStore.pendingUserMessage || caseForm.description,
-      caseForm.assistantType || chatStore.selectedAssistant,
-    )
-    chatStore.showCaseTemplate = false
+    // 无 SSH 路径不创建对话、不向 Agent 发送首条消息，直接打开离线诊断。
+    chatStore.completeOfflineCaseCreation(caseRes.data)
+    navigateToOfflineDiagnosis(caseRes.data.case_id)
 
   } catch (e: any) {
     errorMessage.value = e.message || '创建工单失败'

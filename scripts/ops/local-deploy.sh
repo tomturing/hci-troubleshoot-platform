@@ -93,6 +93,7 @@ ALL_SERVICES=(
   "terminal-bridge:terminalBridge:.:terminal_bridge/Dockerfile"
   "agent-service:agentService:.:backend/agent-service/Dockerfile"
   "eval-service:evalService:.:backend/eval-service/Dockerfile"
+  "diagnosis-service:diagnosisService:.:backend/diagnosis-service/Dockerfile"
 )
 
 # ── 解析 SERVICES 过滤器 ─────────────────────────────────────────────────────
@@ -115,7 +116,7 @@ done
 
 if [[ "${#WORK_SERVICES[@]}" -eq 0 ]]; then
   error "SERVICES=${SERVICES_FILTER} 没有匹配到任何服务"
-  error "合法服务名: api-gateway, case-service, conversation-service, scheduler-service, kb-service, customer-ui, admin-ui, terminal-bridge, agent-service, eval-service"
+  error "合法服务名: api-gateway, case-service, conversation-service, scheduler-service, kb-service, customer-ui, admin-ui, terminal-bridge, agent-service, eval-service, diagnosis-service"
   exit 1
 fi
 

@@ -10,7 +10,7 @@ from shared.database.postgres import DatabaseManager
 from shared.dynamic_resource.adapters import tool_resource_payload
 from shared.dynamic_resource.publisher import DynamicResourcePublisher
 from shared.observability.logger import get_logger
-from sqlalchemy import case, delete, literal, select
+from sqlalchemy import case, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.tool_definition import ToolDefinition
@@ -39,6 +39,8 @@ _QKV_QFK_RANK = {name: i for i, name in enumerate(QKV_QFK_DISPLAY_ORDER)}
 # 首字符小写字母，仅允许小写字母/数字/下划线，长度 1–64，禁止点号(.)与大写字母。
 # 依据：tool_name 首要身份是 LLM function-calling 的 name 字段，须满足 OpenAI/Anthropic/Gemini 字符集约束。
 TOOL_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+MUSTACHE_CONDITION_PATTERN = re.compile(r"\{\{#if\s+([A-Za-z0-9_.]+)\}\}|\{\{/if\}\}")
+MUSTACHE_FIELD_PATTERN = re.compile(r"\{\{\s*([A-Za-z0-9_.]+)\s*\}\}")
 
 # 由 main.py 注入数据库管理器
 database_manager: DatabaseManager | None = None
@@ -50,27 +52,82 @@ def set_tool_database_manager(db: DatabaseManager) -> None:
     database_manager = db
 
 
+async def reconcile_tool_resource_revisions(db_manager: DatabaseManager) -> int:
+    """将首次部署的 Tool 事实表幂等对账为不可变修订。"""
+
+    published_count = 0
+    async for db in db_manager.get_session():
+        tools = (await db.execute(select(ToolDefinition).order_by(ToolDefinition.tool_name))).scalars().all()
+        publisher = DynamicResourcePublisher(db)
+        for tool in tools:
+            await publisher.ensure_published(
+                **tool_resource_payload(tool),
+                trace_id="tool-registry-startup-reconcile",
+            )
+            published_count += 1
+    return published_count
+
+
 def _make_issue(level: str, location: str, message: str, code: str) -> dict[str, str]:
     return {"level": level, "location": location, "message": message, "code": code}
+
+
+def _schema_has_path(schema: dict[str, Any], field_path: str) -> bool:
+    """判断 Tool 参数模式是否声明了占位符路径。"""
+
+    current = schema
+    for segment in field_path.split("."):
+        properties = current.get("properties") if isinstance(current, dict) else None
+        if not isinstance(properties, dict) or segment not in properties:
+            return False
+        current = properties[segment]
+    return True
+
+
+def _template_placeholder_paths(template: str) -> set[str]:
+    """同时解析 Mustache（双花括号）与 Formatter（单花括号）占位符。"""
+
+    import string
+
+    placeholders = set(MUSTACHE_FIELD_PATTERN.findall(template))
+    placeholders.update(match.group(1) for match in MUSTACHE_CONDITION_PATTERN.finditer(template) if match.group(1))
+    normalized = MUSTACHE_CONDITION_PATTERN.sub("", template)
+    normalized = MUSTACHE_FIELD_PATTERN.sub("", normalized)
+    placeholders.update(
+        field_name
+        for _literal, field_name, _format_spec, _conversion in string.Formatter().parse(normalized)
+        if field_name
+    )
+    return placeholders
 
 
 def validate_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """校验工具定义契约，供保存前和独立校验接口复用。"""
     issues: list[dict[str, str]] = []
     tool_name = payload.get("tool_name")
+    category = payload.get("category")
     schema = payload.get("parameters_schema") or {}
     usage_template = payload.get("usage_template") or ""
+    risk_level = int(payload.get("risk_level", 1))
 
     # 命名规范校验（治本：固化 snake_case 规则，禁止点号/大写，防止约定漂移）
-    if tool_name is not None and (
-        not isinstance(tool_name, str) or not TOOL_NAME_PATTERN.fullmatch(tool_name)
-    ):
+    if tool_name is not None and (not isinstance(tool_name, str) or not TOOL_NAME_PATTERN.fullmatch(tool_name)):
         issues.append(
             _make_issue(
                 "error",
                 "tool_name",
                 "tool_name 必须以小写字母开头，仅含小写字母、数字、下划线，长度 1-64，且禁止点号(.)与大写字母",
                 "TOOL_NAME_INVALID_FORMAT",
+            )
+        )
+
+    if category in {"qkv", "qfk"} and risk_level != 1:
+        issues.append(
+            _make_issue(
+                "error",
+                "risk_level",
+                "QKV/QFK 工具会被在线与离线采集复用，必须保持只读风险等级 1",
+                "SIGNAL_TOOL_MUST_BE_READ_ONLY",
             )
         )
 
@@ -147,12 +204,10 @@ def validate_tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 )
 
     if usage_template:
-        import string
-
         try:
-            placeholders = {f for _, f, _, _ in string.Formatter().parse(usage_template) if f is not None}
+            placeholders = _template_placeholder_paths(usage_template)
             for placeholder in placeholders:
-                if placeholder not in (properties or {}):
+                if not _schema_has_path(schema, placeholder):
                     issues.append(
                         _make_issue(
                             "error",
@@ -216,6 +271,7 @@ async def validate_existing_tool(tool_id: int, db: AsyncSession = Depends(get_db
             "tool_name": t.tool_name,
             "parameters_schema": t.parameters_schema,
             "usage_template": t.usage_template,
+            "risk_level": t.risk_level,
         }
     )
 
@@ -344,19 +400,25 @@ async def update_tool(tool_id: int, payload: dict[str, Any], db: AsyncSession = 
 
     merged_payload = {
         "tool_name": payload.get("tool_name", t.tool_name),
+        "category": payload.get("category", t.category),
         "parameters_schema": payload.get("parameters_schema", t.parameters_schema),
         "usage_template": payload.get("usage_template", t.usage_template),
+        "risk_level": payload.get("risk_level", t.risk_level),
     }
     _raise_if_invalid_tool_payload(merged_payload)
 
     tool_name = payload.get("tool_name")
     if tool_name and tool_name != t.tool_name:
-        # 重名校验
-        check_stmt = select(ToolDefinition).where(ToolDefinition.tool_name == tool_name)
-        check_res = await db.execute(check_stmt)
-        if check_res.scalar_one_or_none():
-            raise HTTPException(status_code=400, detail=f"工具名 '{tool_name}' 已存在")
-        t.tool_name = tool_name
+        raise HTTPException(
+            status_code=409,
+            detail="tool_name 是 Tool 不可变身份，不能重命名；请新建工具并停用旧工具",
+        )
+    category = payload.get("category")
+    if category and category != t.category:
+        raise HTTPException(
+            status_code=409,
+            detail="category 决定 Tool 执行与同步边界，不能直接迁移；请新建工具并停用旧工具",
+        )
 
     if "display_name" in payload:
         t.display_name = payload["display_name"]
@@ -391,14 +453,24 @@ async def update_tool(tool_id: int, payload: dict[str, Any], db: AsyncSession = 
     return {"status": "success", "resource_revision": resource_revision}
 
 
-@router.delete("/{tool_id}", summary="删除工具定义")
+@router.delete("/{tool_id}", summary="停用工具定义（保留历史修订）")
 async def delete_tool(tool_id: int, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
-    """删除一条已有的工具定义记录"""
-    stmt = delete(ToolDefinition).where(ToolDefinition.id == tool_id)
-    result = await db.execute(stmt)
-    await db.commit()
-    if result.rowcount == 0:
-        raise HTTPException(status_code=404, detail="工具定义不存在")
+    """停用工具并发布 disabled 修订，保留 KBD/Collector 依赖审计链。"""
 
-    logger.info(event="tool_deleted", tool_id=tool_id, message="删除了工具定义")
-    return {"status": "success"}
+    result = await db.execute(select(ToolDefinition).where(ToolDefinition.id == tool_id).with_for_update())
+    tool = result.scalar_one_or_none()
+    if tool is None:
+        raise HTTPException(status_code=404, detail="工具定义不存在")
+    tool.is_active = False
+    await db.flush()
+    resource_revision = await _publish_tool_resource(db, tool)
+    await db.commit()
+
+    logger.info(
+        event="tool_disabled",
+        tool_name=tool.tool_name,
+        tool_id=tool_id,
+        resource_revision=resource_revision,
+        message="停用了工具定义并保留不可变修订",
+    )
+    return {"status": "success", "resource_revision": resource_revision}
