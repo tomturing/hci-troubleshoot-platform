@@ -100,6 +100,8 @@ _LLM_VISION_BASE_URL = (os.environ.get("LLM_VISION_BASE_URL") or os.environ.get(
 _LLM_VISION_API_KEY = os.environ.get("LLM_VISION_API_KEY") or os.environ.get("LLM_API_KEY", "")
 # 优先读取 VISION_MODEL，若未配置，则回退到已验证可用的 kimi-k2.5（支持多模态识图）
 _LLM_VISION_MODEL = os.environ.get("VISION_MODEL", "kimi-k2.5")
+# Vision 专用超时（秒），未配置时回退到通用 LLM_TIMEOUT
+_LLM_VISION_TIMEOUT = float(os.environ.get("LLM_VISION_TIMEOUT") or os.environ.get("LLM_TIMEOUT", "120.0"))
 _LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "120.0"))
 _VISION_MAX_TOKENS = int(os.environ.get("VISION_MAX_TOKENS", "1536"))
 # 是否启用 LLM 思维链（thinking）。默认关闭：kimi-k2.5 / glm-5 等模型开启 thinking 时
@@ -620,7 +622,7 @@ async def _vision_analyze(
                     }],
                     max_tokens=_VISION_MAX_TOKENS,
                     temperature=0.0,
-                    timeout=_LLM_TIMEOUT,
+                    timeout=_LLM_VISION_TIMEOUT,
                     extra_body={"enable_thinking": _LLM_ENABLE_THINKING},
                 )
                 message = response.choices[0].message
@@ -990,7 +992,7 @@ async def reanalyze_kbd_images(
     client = AsyncOpenAI(
         api_key=_LLM_VISION_API_KEY,
         base_url=_LLM_VISION_BASE_URL,
-        timeout=_LLM_TIMEOUT,
+        timeout=_LLM_VISION_TIMEOUT,
         # 重试统一由 _vision_analyze 治理，避免 SDK 与业务层重试次数相乘。
         max_retries=0,
     )
@@ -1349,7 +1351,7 @@ async def reanalyze_single_image(
     client = AsyncOpenAI(
         api_key=_LLM_VISION_API_KEY,
         base_url=_LLM_VISION_BASE_URL,
-        timeout=_LLM_TIMEOUT,
+        timeout=_LLM_VISION_TIMEOUT,
         # 重试统一由 _vision_analyze 治理，避免 SDK 与业务层重试次数相乘。
         max_retries=0,
     )

@@ -276,9 +276,16 @@ kbService:
   # 信号抽取应显式选择擅长结构化长 JSON 的模型；留空时回退到 classifyModel。
   extractSignalsModel: ""
   classifyMaxTokens: "2048"
-  # Vision LLM 单次调用超时（秒），注入为 LLM_TIMEOUT 环境变量
-  # SDK 内部重试已关闭；建议值：60（云端模型）/ 120-300（本地大模型）
-  llmTimeoutSec: "60.0"
+  # Vision LLM 单次调用超时（秒），注入为 LLM_VISION_TIMEOUT 环境变量
+  # 注意：data-pipeline 提交超时（180s）需大于此值，预留重试和启动时间
+  # SDK max_retries=2，实际最大等待时间 = llmVisionTimeoutSec × 3
+  llmVisionTimeoutSec: "120.0"
+  # Classify LLM 单次调用超时（秒），注入为 LLM_CLASSIFY_TIMEOUT 环境变量
+  # 注意：data-pipeline API_TIMEOUT（90s）需大于此值，避免上游成功但客户端超时
+  # SDK max_retries=2，实际最大等待时间 = llmClassifyTimeoutSec × 3
+  llmClassifyTimeoutSec: "120.0"
+  # 通用 LLM 超时（秒），作为默认回退值（注入为 LLM_TIMEOUT 环境变量）
+  llmTimeoutSec: "120.0"
   # Vision 业务层总尝试次数（包含首次调用），避免 SDK 与业务重试相乘
   visionMaxAttempts: "2"
   # Vision LLM 全局并发数（全局信号量上限，注入为 VISION_GLOBAL_CONCURRENCY）

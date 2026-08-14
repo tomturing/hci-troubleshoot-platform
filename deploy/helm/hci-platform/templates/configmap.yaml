@@ -31,9 +31,14 @@ data:
   # values.yaml kbService.llmEmbeddingModel 默认 "embedding-3"，按实际 LLM 网关支持的模型名覆盖
   LLM_EMBEDDING_MODEL: {{ .Values.kbService.llmEmbeddingModel | default "embedding-3" | quote }}
   KBD_MIN_SIMILARITY: {{ .Values.kbService.minSimilarity | default 0.3 | quote }}
-  # Vision LLM 单次调用超时（秒）。默认 60s；生产环境请按 LLM 服务 SLA 调整。
-  # SDK 内部重试关闭，由业务层统一治理，避免重试次数相乘
-  LLM_TIMEOUT: {{ .Values.kbService.llmTimeoutSec | default "60.0" | quote }}
+  # Vision LLM 单次调用超时（秒）。默认 120s；生产环境请按 LLM 服务 SLA 调整。
+  # 注意：SDK max_retries=2，实际最大等待时间 = LLM_VISION_TIMEOUT × 3
+  LLM_VISION_TIMEOUT: {{ .Values.kbService.llmVisionTimeoutSec | default "120.0" | quote }}
+  # Classify LLM 单次调用超时（秒）。默认 120s；需小于 data-pipeline API_TIMEOUT（90s）以预留重试时间。
+  # 注意：SDK max_retries=2，实际最大等待时间 = LLM_CLASSIFY_TIMEOUT × 3
+  LLM_CLASSIFY_TIMEOUT: {{ .Values.kbService.llmClassifyTimeoutSec | default "120.0" | quote }}
+  # 通用 LLM 超时（秒）。作为默认回退值，优先使用上述专用超时配置。
+  LLM_TIMEOUT: {{ .Values.kbService.llmTimeoutSec | default "120.0" | quote }}
   # Vision 业务层总尝试次数（包含首次调用）；SDK 内部不再额外重试。
   VISION_LLM_MAX_ATTEMPTS: {{ .Values.kbService.visionMaxAttempts | default "2" | quote }}
   # 是否启用 LLM 思维链（thinking）。默认关闭；开启时隐藏思考 token 会大幅拉长 Vision 调用延迟。

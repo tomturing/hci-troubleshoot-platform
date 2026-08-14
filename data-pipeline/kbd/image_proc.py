@@ -69,8 +69,8 @@ async def _call_reanalyze_api(
 
     logger.info("提交重新识图 kbd_entry_id=%d trace_id=%s", kbd_entry_id, get_trace_id())
 
-    # 提交（超时短：仅需接收 202）
-    timeout_submit = 30.0
+    # 提交（超时需覆盖 kb-service 启动 Vision Job 的时间，避免客户端过早超时）
+    timeout_submit = 180.0
     response = None
     max_attempts = max(1, settings.API_MAX_RETRIES)
     for attempt in range(max_attempts):

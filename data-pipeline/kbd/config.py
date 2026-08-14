@@ -99,8 +99,8 @@ class KbdSettings(BaseSettings):
         default="hci-dev-internal-token",
         description="内部服务认证 Token（Bearer Token）",
     )
-    # API 请求超时（秒）
-    API_TIMEOUT: float = Field(default=30.0)
+    # API 请求超时（秒）——需大于 kb-service 的 LLM_TIMEOUT（60s），避免上游成功但客户端超时
+    API_TIMEOUT: float = Field(default=90.0)
     # API 最大重试次数
     API_MAX_RETRIES: int = Field(default=3)
 
