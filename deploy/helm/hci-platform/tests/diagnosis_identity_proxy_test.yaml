@@ -1,0 +1,110 @@
+suite: "Diagnosis Service 同源身份代理测试"
+templates:
+  - secret.yaml
+  - configmap.yaml
+  - customer-ui/deployment.yaml
+  - admin-ui/deployment.yaml
+tests:
+  - it: "Secret 派生服务端 Bearer Header"
+    template: secret.yaml
+    set:
+      diagnosisService.enabled: true
+      diagnosisService.identityMode: "internal"
+      secrets.internalApiToken: "test-internal-token"
+    asserts:
+      - equal:
+          path: stringData.INTERNAL_API_AUTHORIZATION
+          value: "Bearer test-internal-token"
+
+  - it: "Gateway 身份模式显式跟随 Diagnosis Service"
+    template: configmap.yaml
+    set:
+      diagnosisService.identityMode: "oidc"
+    asserts:
+      - equal:
+          path: data.DIAGNOSIS_IDENTITY_MODE
+          value: "oidc"
+
+  - it: "internal 模式为 Customer UI 注入服务端身份"
+    template: customer-ui/deployment.yaml
+    set:
+      diagnosisService.enabled: true
+      diagnosisService.identityMode: "internal"
+      diagnosisService.internalIdentity.tenantId: "staging-tenant"
+      diagnosisService.internalIdentity.customerActorId: "staging-customer-ui"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CUSTOMER_API_AUTHORIZATION
+            valueFrom:
+              secretKeyRef:
+                name: hci-secrets
+                key: INTERNAL_API_AUTHORIZATION
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CUSTOMER_API_TENANT_ID
+            value: staging-tenant
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CUSTOMER_API_ACTOR_ID
+            value: staging-customer-ui
+      - isNotNull:
+          path: spec.template.metadata.annotations["checksum/diagnosis-internal-auth"]
+
+  - it: "internal 模式为 Admin UI 注入服务端身份"
+    template: admin-ui/deployment.yaml
+    set:
+      diagnosisService.enabled: true
+      diagnosisService.identityMode: "internal"
+      diagnosisService.internalIdentity.tenantId: "staging-tenant"
+      diagnosisService.internalIdentity.adminActorId: "staging-admin-ui"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ADMIN_API_AUTHORIZATION
+            valueFrom:
+              secretKeyRef:
+                name: hci-secrets
+                key: INTERNAL_API_AUTHORIZATION
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ADMIN_API_TENANT_ID
+            value: staging-tenant
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ADMIN_API_ACTOR_ID
+            value: staging-admin-ui
+      - isNotNull:
+          path: spec.template.metadata.annotations["checksum/diagnosis-internal-auth"]
+
+  - it: "OIDC 模式不覆盖 Customer UI 浏览器身份"
+    template: customer-ui/deployment.yaml
+    set:
+      diagnosisService.enabled: true
+      diagnosisService.identityMode: "oidc"
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: CUSTOMER_API_AUTHORIZATION
+      - isNull:
+          path: spec.template.metadata.annotations
+
+  - it: "OIDC 模式不覆盖 Admin UI 浏览器身份"
+    template: admin-ui/deployment.yaml
+    set:
+      diagnosisService.enabled: true
+      diagnosisService.identityMode: "oidc"
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ADMIN_API_AUTHORIZATION
+      - isNull:
+          path: spec.template.metadata.annotations

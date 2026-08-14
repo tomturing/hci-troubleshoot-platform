@@ -13,6 +13,10 @@ spec:
       {{- include "hci.selectorLabels" (dict "name" "admin-ui" "Release" .Release) | nindent 6 }}
   template:
     metadata:
+      {{- if and .Values.diagnosisService.enabled (eq .Values.diagnosisService.identityMode "internal") }}
+      annotations:
+        checksum/diagnosis-internal-auth: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+      {{- end }}
       labels:
         {{- include "hci.podLabels" (dict "name" "admin-ui" "Release" .Release "Chart" .Chart) | nindent 8 }}
     spec:
@@ -33,6 +37,17 @@ spec:
           env:
             - name: DNS_RESOLVER
               value: "10.43.0.10"
+            {{- if and .Values.diagnosisService.enabled (eq .Values.diagnosisService.identityMode "internal") }}
+            - name: ADMIN_API_AUTHORIZATION
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: INTERNAL_API_AUTHORIZATION
+            - name: ADMIN_API_TENANT_ID
+              value: {{ required "diagnosisService internal 模式必须配置 diagnosisService.internalIdentity.tenantId" .Values.diagnosisService.internalIdentity.tenantId | quote }}
+            - name: ADMIN_API_ACTOR_ID
+              value: {{ required "diagnosisService internal 模式必须配置 diagnosisService.internalIdentity.adminActorId" .Values.diagnosisService.internalIdentity.adminActorId | quote }}
+            {{- end }}
           ports:
             - containerPort: {{ .Values.adminUI.port }}
               protocol: TCP
@@ -57,4 +72,3 @@ spec:
             periodSeconds: 10
           resources:
             {{- toYaml .Values.adminUI.resources | nindent 12 }}
-

@@ -320,6 +320,12 @@ diagnosisService:
     tag: latest
   port: 8008
   identityMode: "internal"
+  # internal 模式由 Customer/Admin Nginx 在服务端注入统一内部身份；令牌只从 hci-secrets 读取。
+  # 同一环境共用 tenant_id 以保证客户工作台与管理台看到同一批诊断资源，actor_id 用于审计区分。
+  internalIdentity:
+    tenantId: "hci-platform"
+    customerActorId: "customer-ui"
+    adminActorId: "admin-ui"
   oidcIssuer: ""
   oidcAudience: ""
   oidcJwksUrl: ""

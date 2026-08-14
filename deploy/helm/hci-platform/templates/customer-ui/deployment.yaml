@@ -13,6 +13,10 @@ spec:
       {{- include "hci.selectorLabels" (dict "name" "customer-ui" "Release" .Release) | nindent 6 }}
   template:
     metadata:
+      {{- if and .Values.diagnosisService.enabled (eq .Values.diagnosisService.identityMode "internal") }}
+      annotations:
+        checksum/diagnosis-internal-auth: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+      {{- end }}
       labels:
         {{- include "hci.podLabels" (dict "name" "customer-ui" "Release" .Release "Chart" .Chart) | nindent 8 }}
     spec:
@@ -43,6 +47,17 @@ spec:
               {{- end }}
             - name: TERMINAL_BRIDGE_EXEC_TIMEOUT_SECONDS
               value: {{ .Values.terminalBridge.execTimeoutSeconds | quote }}
+            {{- if and .Values.diagnosisService.enabled (eq .Values.diagnosisService.identityMode "internal") }}
+            - name: CUSTOMER_API_AUTHORIZATION
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: INTERNAL_API_AUTHORIZATION
+            - name: CUSTOMER_API_TENANT_ID
+              value: {{ required "diagnosisService internal 模式必须配置 diagnosisService.internalIdentity.tenantId" .Values.diagnosisService.internalIdentity.tenantId | quote }}
+            - name: CUSTOMER_API_ACTOR_ID
+              value: {{ required "diagnosisService internal 模式必须配置 diagnosisService.internalIdentity.customerActorId" .Values.diagnosisService.internalIdentity.customerActorId | quote }}
+            {{- end }}
           ports:
             - containerPort: {{ .Values.customerUI.port }}
               protocol: TCP
