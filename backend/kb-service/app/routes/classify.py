@@ -42,9 +42,10 @@ LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").rstrip("/")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 # 优先读取 CLASSIFY_MODEL，若未配置，则回退到已验证可用的 kimi-k2.5
 LLM_MODEL = os.environ.get("CLASSIFY_MODEL", "kimi-k2.5")
+# Classify 专用超时（秒），未配置时回退到通用 LLM_TIMEOUT
+LLM_TIMEOUT = float(os.environ.get("LLM_CLASSIFY_TIMEOUT") or os.environ.get("LLM_TIMEOUT", "120.0"))
 # 是否启用思维链（与 vision_processor.py 统一由 LLM_ENABLE_THINKING 控制，默认关闭）
 LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "false").lower() in ("1", "true", "yes", "on")
-LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "60"))
 # 分类输出很短；保留足够 JSON 余量，避免用 8192 token 拉长排队和超时窗口。
 CLASSIFY_MAX_TOKENS = int(os.environ.get("CLASSIFY_MAX_TOKENS", "2048"))
 

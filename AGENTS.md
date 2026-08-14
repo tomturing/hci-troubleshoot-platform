@@ -22,6 +22,13 @@
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
 - 当前版本：v2.16.0（以 `pyproject.toml` 为准）
+- **KBD 分类与识图 LLM 超时配置优化**：
+  - **根因**：data-pipeline 的 API_TIMEOUT（30s）小于 kb-service 的 LLM_TIMEOUT（60s），导致 LLM 在 30-60s 完成时客户端超时判定失败。识图提交超时也存在类似风险。
+  - **修复**：
+    - data-pipeline `API_TIMEOUT` 提升至 90s，`timeout_submit`（识图提交）提升至 180s
+    - kb-service 新增独立超时配置：`LLM_CLASSIFY_TIMEOUT`（120s）和 `LLM_VISION_TIMEOUT`（120s）
+    - Helm Chart 新增 `llmClassifyTimeoutSec` 和 `llmVisionTimeoutSec` 参数
+  - **效果**：90s > 120s（Classify），180s > 120s（Vision），预留充足余量，避免上游成功但客户端超时
 - **Admin UI 侧边栏菜单图标缺失深度修复**：
   - **根因**：`App.vue` 侧边栏菜单使用字符串 `:is="item.icon"` 动态渲染组件，由于未在 `App.vue` 中显式导入 `Setting` 图标，在 Vite 代码分割模式下未访问对应 View 前该组件未被打包与全局解析。此外，Vue 3 动态组件 `:is` 接收普通 Component 定义对象存入 reactive/ref 响应式上下文时会被包装为 Proxy，可能导致渲染挂载失效。
   - **修复**：在 `App.vue` 中建立静态 Component Icon 字典 `menuIconMap`，使用 `markRaw()` 包裹所有 Element Plus 图标（含 `Setting`, `Tools`, `DataAnalysis` 等），并在 `main.ts` 中补充全小写 key 全局注册容错，消除 Vue 动态响应式开销并确保首屏 stable 挂载。

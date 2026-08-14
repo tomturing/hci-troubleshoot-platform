@@ -263,10 +263,16 @@ kbService:
   # 两者均已在 DashScope 端点验证可用且支持多模态
   classifyModel: "kimi-k2.5"
   visionModel: "kimi-k2.5"
-  # Vision LLM 单次调用超时（秒），注入为 LLM_TIMEOUT 环境变量
-  # SDK max_retries=2，实际最大等待时间 = llmTimeoutSec × 3
-  # 建议值：30（dev） / 45（staging） / 60（prod）
-  llmTimeoutSec: "60.0"
+  # Vision LLM 单次调用超时（秒），注入为 LLM_VISION_TIMEOUT 环境变量
+  # 注意：data-pipeline 提交超时（180s）需大于此值，预留重试和启动时间
+  # SDK max_retries=2，实际最大等待时间 = llmVisionTimeoutSec × 3
+  llmVisionTimeoutSec: "120.0"
+  # Classify LLM 单次调用超时（秒），注入为 LLM_CLASSIFY_TIMEOUT 环境变量
+  # 注意：data-pipeline API_TIMEOUT（90s）需大于此值，避免上游成功但客户端超时
+  # SDK max_retries=2，实际最大等待时间 = llmClassifyTimeoutSec × 3
+  llmClassifyTimeoutSec: "120.0"
+  # 通用 LLM 超时（秒），作为默认回退值（注入为 LLM_TIMEOUT 环境变量）
+  llmTimeoutSec: "120.0"
   # Vision LLM 全局并发数（全局信号量上限，注入为 VISION_GLOBAL_CONCURRENCY）
   visionGlobalConcurrency: "3"
   # KBD 三类 LLM（VISION/CLASSIFY/EXTRACT）共用的进程级总并发上限。
