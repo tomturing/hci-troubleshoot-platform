@@ -19,7 +19,6 @@ from shared.models.dynamic_resource import DynamicResourceActive, DynamicResourc
 from shared.resolution.models import ResolutionStatus
 from shared.resolution.review import SignalReviewFeature, review_signal_document
 from shared.schemas.hci_sim_policy import current_hci_sim_policy_revision
-from shared.schemas.signal_generation import current_tool_contract_revision
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
