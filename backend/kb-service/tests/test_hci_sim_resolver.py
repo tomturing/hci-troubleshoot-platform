@@ -134,11 +134,16 @@ def test_resolver_fails_closed_for_missing_active_snapshot_and_unpublished_kbd()
     assert "KBD_NOT_PUBLISHED" in [gap.code for gap in unpublished.gaps]
 
 
-def test_resolver_rejects_stale_tool_contract_and_tampered_snapshot_identity():
-    stale = HciSimKbdResolver().resolve_entry(_entry(), _snapshot(tool_revision="old-contract"), _tool_snapshots())
-    assert stale.status == "capability_gap"
-    assert "TOOL_CONTRACT_STALE" in [gap.code for gap in stale.gaps]
-    assert stale.to_dict()["metadata"]["sample_suite"] == "diagnosis-signal-matrix-v1"
+def test_resolver_allows_stale_tool_contract_per_validator_driven_gate_and_rejects_tampered_identity():
+    """对齐 #755 校验器驱动门禁：tool_contract_revision 字节哈希仅作变化探测，不据此阻断。
+    旧信号能否在新契约下执行由 playbooks 路由的顶层 validate_publishable_signals_json 判定。
+    """
+    # 用有效的 64 位 hex 值（与当前 hash 不同）模拟 stale 契约
+    stale_hash = "0" * 64
+    stale = HciSimKbdResolver().resolve_entry(_entry(), _snapshot(tool_revision=stale_hash), _tool_snapshots())
+    assert stale.status == "ready_for_artifact_binding"
+    assert not stale.gaps  # 无阻断，tool_revision 仅追溯用
+    assert stale.resolved.tool_contract_revision == stale_hash
 
     tampered = HciSimKbdResolver().resolve_entry(_entry(), _snapshot(support_id="other"), _tool_snapshots())
     assert tampered.status == "capability_gap"

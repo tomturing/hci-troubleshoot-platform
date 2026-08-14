@@ -19,7 +19,6 @@ from shared.models.dynamic_resource import DynamicResourceActive, DynamicResourc
 from shared.resolution.models import ResolutionStatus
 from shared.resolution.review import SignalReviewFeature, review_signal_document
 from shared.schemas.hci_sim_policy import current_hci_sim_policy_revision
-from shared.schemas.signal_generation import current_tool_contract_revision
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -264,8 +263,10 @@ class HciSimKbdResolver:
         tool_revision = str((publish_validation or {}).get("tool_contract_revision") or "")
         if not tool_revision:
             gaps.append(CapabilityGap("TOOL_CONTRACT_REVISION_MISSING", "Signal 发布记录缺少 Tool Contract revision"))
-        elif tool_revision != current_tool_contract_revision():
-            gaps.append(CapabilityGap("TOOL_CONTRACT_STALE", "Signal 使用的 Tool Contract 已不是当前 revision"))
+        # 对齐 #755 校验器驱动门禁：tool_contract_revision 字节哈希仅作粗粒度变化探测，
+        # 不再据此阻断 sim 绑定。旧信号能否在新契约下执行由 playbooks 路由的顶层
+        # validate_publishable_signals_json 判定（agent 选 KBD 前已过滤 executable=False）。
+        # 此处保留 tool_revision 供 ResolvedKbdInput 追溯，staleness 仅观测不阻断。
 
         synthetic_routes: tuple[SyntheticRouteInput, ...] = ()
         if isinstance(signals, list) and signals:
