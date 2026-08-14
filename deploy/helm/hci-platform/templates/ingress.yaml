@@ -89,14 +89,21 @@ spec:
                 port:
                   number: {{ .Values.diagnosisService.port }}
           {{- end }}
-          # 后端 API
+          # internal 离线诊断必须先经过 Customer UI Nginx 注入服务端身份；
+          # 其他模式保持直达 API Gateway，避免无必要的代理跳转。
           - path: /api
             pathType: Prefix
             backend:
               service:
+                {{- if and .Values.diagnosisService.enabled (eq .Values.diagnosisService.identityMode "internal") }}
+                name: customer-ui
+                port:
+                  number: {{ .Values.customerUI.port }}
+                {{- else }}
                 name: api-gateway
                 port:
                   number: {{ .Values.apiGateway.port }}
+                {{- end }}
           # WebSocket
           - path: /ws
             pathType: Prefix
