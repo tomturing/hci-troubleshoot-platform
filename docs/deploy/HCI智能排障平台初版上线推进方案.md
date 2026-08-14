@@ -68,7 +68,7 @@ owner: product-and-engineering
 | SLO、告警和保留策略 | 上线后无法及时发现或追溯问题 | SLO、告警路由、值班、Loki/Tempo/证据保留与容量预警就绪 |
 | 灰度与紧急开关 | 故障时只能整体回滚，影响面过大 | 支持按环境、租户、模式和场景停用，且完成演练 |
 
-> 当前事实边界详见[离线诊断模式里程碑](../solution/agent/离线诊断模式里程碑_V2.1.md)、[KBD 27123 P0 端到端验证](../verify/events/2026-07-30-KBD27123-hci-sim-P0端到端验证.md)和[Terminal Bridge K3s 说明](terminal-bridge-k3s.md)。
+> 当前事实边界详见[离线诊断模式里程碑](../solution/agent/离线诊断模式里程碑_V2.1.md)、[KBD 27123 P0 端到端验证](../verify/hci-sim/events/KBD27123-hci-sim-P0端到端验证.md)和[Terminal Bridge K3s 说明](terminal-bridge-k3s.md)。
 
 ## 3. 总体上线阶段
 
@@ -516,4 +516,4 @@ TODO：AI要加入到组织分工中
 - [生产环境部署指南](部署指南.md)
 - [Terminal Bridge K3s 测试部署说明](terminal-bridge-k3s.md)
 - [离线诊断模式里程碑](../solution/agent/离线诊断模式里程碑_V2.1.md)
-- [产品级验证与规模化运营验证方案](../verify/events/2026-08-05-hci-sim阶段E产品级验证与规模化运营验证方案.md)
+- [产品级验证与规模化运营验证方案](../verify/hci-sim/events/hci-sim阶段E产品级验证与规模化运营验证方案.md)

@@ -53,6 +53,6 @@ update_trigger: Agent 层功能新增/重构/问题修复任务
 | ✅ 完成（代码级） | T-AGT-KBD-PUBLISH：发布盖章 freshness、END 标准变量、替代 QKV 优先级和 df 阈值解析 | 2026-07-31 | [KBD 发布消费一致性方案](../../solution/agent/events/2026-07-31-KBD发布消费一致性与专家审核易用性方案.md) |
 | 进行中（静态审核与维护发布闭环已完成；可信身份、真实 replay、评估数据闭环待实施；0/126 专家 Gold） | [KBD 专家复核、版本治理与生产消费闭环](./events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) | 2026-07-29 | [完整方案](../../solution/agent/events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
 | 进行中（126/126 来源完成；4 条工程 Contract fixture 仅 Decision Replay；0/126 专家 Gold） | [KBD 截图证据与可执行诊断契约](./events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) | 2026-07-28 | [系统级方案](../../solution/agent/events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) |
-| ✅ 已完成 | KBD 27123 三信号执行闭环与 39 MB 大输出边缘筛选 | 2026-07-27 | [KBD27123三信号执行闭环方案](../../solution/events/2026-07-27-KBD27123三信号执行闭环方案.md) |
+| ✅ 已完成 | KBD 27123 三信号执行闭环与 39 MB 大输出边缘筛选 | 2026-07-27 | [KBD27123三信号执行闭环方案](../../solution/hci-sim/events/KBD27123三信号执行闭环方案.md) |
 | 进行中 | [Agent 可靠性改造（4 阶段）](./Agent可靠性改造任务清单.md) | 2026-06-08 | [Agent 可靠性三方案对比分析](../../solution/agent/02-架构设计/Agent可靠性三方案对比分析.md) |
 | ✅ 已完成 | Skill 调用失效修复（PR #475）：变量门禁盲区 + preferred_next_steps 引导 + 系统提示词规范 | 2026-06-20 | [skill调用失效根因分析与改进方案](../../solution/agent/02-架构设计/skill调用失效根因分析与改进方案.md) |

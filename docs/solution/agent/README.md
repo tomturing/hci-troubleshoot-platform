@@ -18,14 +18,14 @@ update_trigger: Agent 方案新增、重构或状态变更
 | 2026-08-07 | v1.12 | 实施统一解析运行时首个纵向切片并完成 aCLI 在线 Catalog 336/336 一致性和真实 HCI 代表性只读测评；保留生产 path-probe 硬门禁、tar.gz Handler 和不可变运行审计为进行中。 | [Runtime 代码与真实 HCI 能力测评](../../verify/events/2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md) |
 | 2026-08-07 | v1.11 | 收敛 Resolver 正式命名与稳定 `resolver_id`：`LogResolver`/`SystemResolver`/`DomainResolver`/`ServiceResolver`/`QkvResolver`/`VariableResolver`，保持共享 Runtime、生产门禁和消费前校验方案不变。 | [统一解析运行时与 Resolver 分层方案](events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
 | 2026-08-07 | v1.10 | 确定关键信号统一解析运行时：共享 Resolution Runtime + 领域 Resolver；`qfk_system` 独立于日志/服务，aCLI 领域 QFK 归入独立领域 Resolver；生产门禁与消费前校验复用同一解析平台，Catalog 规则 Git 化、运行快照不可变。 | [统一解析运行时与 Resolver 分层方案](events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
-| 2026-08-05 | v1.9 | 完成 hci-sim A～E 阶段化设计：收敛唯一源码、安全确定性 Runtime、Fixture Compiler/Registry、TestRun/Scheduler/Runner、产品级差分/Mutation/容量运营；当前均为 proposed，A 尚未实施。 | [阶段 A](events/2026-08-05-hci-sim阶段A目录收敛与基础门禁方案.md)～[阶段 E](events/2026-08-05-hci-sim阶段E产品级验证与规模化运营方案.md) |
+| 2026-08-05 | v1.9 | 完成 hci-sim A～E 阶段化设计：收敛唯一源码、安全确定性 Runtime、Fixture Compiler/Registry、TestRun/Scheduler/Runner、产品级差分/Mutation/容量运营；当前均为 proposed，A 尚未实施。 | [阶段 A](../hci-sim/events/2026-08-05-hci-sim阶段A目录收敛与基础门禁方案.md)～[阶段 E](../hci-sim/events/2026-08-05-hci-sim阶段E产品级验证与规模化运营方案.md) |
 | 2026-08-05 | v1.8 | QFK 完整输出新增受控 AI 提取：确定性 Extract/Matcher 先行，AI 仅定位候选原文中的字面量并以物理行逐字回查；Matcher evidence 与 produces 变量池共用，失败关闭。 | [QFK 完整输出 AI 提取方案](events/2026-08-05-QFK完整输出AI提取方案.md) |
 | 2026-08-04 | v1.7 | 收敛 KBD27736 的图片来源门禁：仅四个诊断字段图片的原子可见内容进入 Signal Prompt，source ref 只校验是否属于本轮实际输入，不将正文 evidence 强制逐字匹配图片 OCR。 | [KBD关键信号图片来源门禁收敛修复方案](events/2026-08-04-KBD关键信号图片来源门禁收敛修复方案.md) |
 | 2026-07-31 | implementation_in_progress | 实施 QFK“取值先行、判定在后”的统一 ValueExtract：关键字/行号多行、表头/列号多列、JSON 路径、匹配模式/产出变量共用运行时和安全管道 Preview/Apply；旧单列 TextExtract、QFK `produces.path` 与旧全文 Matcher 不再保留。 | [QFK 声明式取值与匹配模式统一方案](events/2026-07-31-QFK取值先行与全模式安全管道统一方案.md) |
 | 2026-07-31 | v1.6 | 启动 KBD 正式专家复核并将最小 Replay manifest 写入运行审计：只保存不可变 revision、计划/环境/参数哈希和 Terminal Bridge artifact 查找键；明确 `replayable=false`，不把引用冒充为完整回放。 | [KBD 最小回放证据契约与正式专家复核启动方案](events/2026-07-31-KBD最小回放证据契约与正式专家复核启动方案.md) |
 | 2026-07-31 | v1.5 | 完成 KBD 专家监督与运行效果最小数据闭环：原因码/删除原因、精确 KBD runtime revision、CDD 编译与逐 Signal outcome、Capability Gap/metrics/评估导出；可信身份与 Replay/Gold/Challenger 仍保持未完成边界 | [KBD 专家监督与运行效果数据闭环方案](events/2026-07-31-KBD专家监督与运行效果数据闭环方案.md) |
 | 2026-07-30 | v1.4 | 完成 KBD 专家主路径信息分层、独立维护工作稿和 Agent Capability Runtime Discovery；明确静态 Validation、未认证审核身份与真实 Expert Gold/replay 的边界 | [KBD 专家复核与全生命周期闭环方案](events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
-| 2026-07-30 | v1.3 | 补齐 hci-real/hci-sim 双轨、Go SSH 容器运行时、K3s 独立部署与 100+ Scenario 并发设计导航 | [HCI 真实环境与 hci-sim 双轨运行时设计](events/2026-07-30-HCI真实环境与hci-sim双轨运行时设计.md) |
+| 2026-07-30 | v1.3 | 补齐 hci-real/hci-sim 双轨、Go SSH 容器运行时、K3s 独立部署与 100+ Scenario 并发设计导航 | [HCI 真实环境与 hci-sim 双轨运行时设计](../hci-sim/events/2026-07-30-HCI真实环境与hci-sim双轨运行时设计.md) |
 | 2026-07-29 | v1.2 | 新增 HCI 6.11.1_R1 + aCLI 1.0.0 实机知识基线，明确日志、配置、数据、补丁、容器、aCLI 与 QKV/QFK 的事实边界和待确认演进 | [HCI 底层目录、日志、容器与 aCLI 知识基线](02-架构设计/HCI底层目录日志容器与aCLI知识基线.md) |
 | 2026-07-29 | v1.1 | 新增 KBD 专家复核、不可变版本、Capability Registry 与全生命周期闭环方案导航 | [KBD 专家复核与全生命周期闭环方案](events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
 
@@ -94,14 +94,15 @@ docs/solution/agent/
 ## hci-sim A～E 设计导航
 
 > 当前状态：阶段化设计包已完成，实施尚未开始；阶段 A 未 Go，B～E 依次被前置阶段阻断。历史 KBD 27123 单轮 E2E 不等于本设计包已验收。
+> 完整导航见 [solution/hci-sim/README.md](../hci-sim/README.md)。
 
 | 阶段 | 设计焦点 | 方案 |
 |---|---|---|
-| A | 唯一 `hci_sim/` 源码、旧实现处置、基础 CI 门禁 | [目录收敛与基础门禁](events/2026-08-05-hci-sim阶段A目录收敛与基础门禁方案.md) |
-| B | Manifest v2、强 RouteKey、Lease/exec/shell/fault/output 安全内核 | [运行时安全与确定性加固](events/2026-08-05-hci-sim阶段B运行时安全与确定性加固方案.md) |
-| C | 不可变 KBD 输入、Fixture Compiler、Registry、审批和 stale | [Fixture 编译与注册控制面](events/2026-08-05-hci-sim阶段C-Fixture编译与注册控制面方案.md) / [C2 Artifact Gate 与对象完整性](events/2026-08-06-hci-sim阶段C2获批Artifact与不可变BundleRegistry方案.md) |
-| D | TestRun API、Scheduler、Lease、缓存、真实 Bridge/Agent Runner | [Scenario 调度与通用 KBD 测试](events/2026-08-05-hci-sim阶段D-Scenario调度与通用KBD测试方案.md) |
-| E | real/sim 差分、Mutation、稳定性、容量、SLO 和运营 | [产品级验证与规模化运营](events/2026-08-05-hci-sim阶段E产品级验证与规模化运营方案.md) |
+| A | 唯一 `hci_sim/` 源码、旧实现处置、基础 CI 门禁 | [目录收敛与基础门禁](../hci-sim/events/2026-08-05-hci-sim阶段A目录收敛与基础门禁方案.md) |
+| B | Manifest v2、强 RouteKey、Lease/exec/shell/fault/output 安全内核 | [运行时安全与确定性加固](../hci-sim/events/2026-08-05-hci-sim阶段B运行时安全与确定性加固方案.md) |
+| C | 不可变 KBD 输入、Fixture Compiler、Registry、审批和 stale | [Fixture 编译与注册控制面](../hci-sim/events/2026-08-05-hci-sim阶段C-Fixture编译与注册控制面方案.md) / [C2 Artifact Gate 与对象完整性](../hci-sim/events/2026-08-06-hci-sim阶段C2获批Artifact与不可变BundleRegistry方案.md) |
+| D | TestRun API、Scheduler、Lease、缓存、真实 Bridge/Agent Runner | [Scenario 调度与通用 KBD 测试](../hci-sim/events/2026-08-05-hci-sim阶段D-Scenario调度与通用KBD测试方案.md) |
+| E | real/sim 差分、Mutation、稳定性、容量、SLO 和运营 | [产品级验证与规模化运营](../hci-sim/events/2026-08-05-hci-sim阶段E产品级验证与规模化运营方案.md) |
 
 ## 快速导航
 
