@@ -69,34 +69,89 @@ fi
 update_service_tag() {
   local file="$1"
   local service_key="$2"
-  local tag="$3"
+  local repository="$3"
+  local tag="$4"
   local tmp
 
   tmp="$(mktemp)"
-  awk -v key="$service_key" -v tag="$tag" '
-    BEGIN { in_block=0 }
+  if ! awk -v key="$service_key" -v repository="$repository" -v tag="$tag" '
+    BEGIN { in_block=0; in_image=0; found=0; updated=0 }
     {
-      if ($0 ~ "^" key ":$") { in_block=1; print; next }
-      if (in_block && $0 ~ /^[A-Za-z0-9_]+:$/ && $0 !~ /^image:$/) { in_block=0 }
-      if (in_block && $0 ~ /^[[:space:]]+tag:[[:space:]]*"[^"]*"/) {
-        sub(/tag:[[:space:]]*"[^"]*"/, "tag: \"" tag "\"")
+      if ($0 ~ "^" key ":[[:space:]]*$") {
+        found=1
+        in_block=1
+        in_image=0
+        print
+        next
+      }
+      if (in_block && $0 ~ /^[^[:space:]#]/) {
+        in_block=0
+        in_image=0
+      }
+      if (in_block && $0 ~ /^  image:[[:space:]]*$/) {
+        in_image=1
+      } else if (in_image && $0 ~ /^  [^[:space:]]/) {
+        in_image=0
+      }
+      if (in_image && $0 ~ /^    tag:[[:space:]]*/) {
+        print "    tag: \"" tag "\""
+        updated=1
+        next
       }
       print
     }
-  ' "$file" > "$tmp"
+    END {
+      if (!found) {
+        if (NR > 0) print ""
+        print key ":"
+        print "  image:"
+        print "    repository: " repository
+        print "    tag: \"" tag "\""
+      } else if (!updated) {
+        exit 42
+      }
+    }
+  ' "$file" > "$tmp"; then
+    rm -f "$tmp"
+    echo "错误：${service_key} 已存在，但缺少可更新的 image.tag" >&2
+    return 1
+  fi
   mv "$tmp" "$file"
+}
+
+service_repository() {
+  case "$1" in
+    apiGateway) echo "api-gateway" ;;
+    caseService) echo "case-service" ;;
+    conversationService) echo "conversation-service" ;;
+    agentService) echo "agent-service" ;;
+    evalService) echo "eval-service" ;;
+    diagnosisService) echo "diagnosis-service" ;;
+    schedulerService) echo "scheduler-service" ;;
+    kbService) echo "kb-service" ;;
+    customerUI) echo "customer-ui" ;;
+    adminUI) echo "admin-ui" ;;
+    terminalBridge) echo "terminal-bridge" ;;
+    dbMigrate) echo "db-migrate" ;;
+    *)
+      echo "错误：未知服务 key：$1" >&2
+      return 1
+      ;;
+  esac
 }
 
 if [[ -n "$SERVICES_CSV" ]]; then
   IFS=',' read -r -a services <<< "$SERVICES_CSV"
   for svc in "${services[@]}"; do
+    repository=""
     # 跳过来自独立仓库的服务，防止 tag 被 htp CI 错误覆盖
     if echo ",${BLOCKED_SERVICES}," | grep -q ",${svc},"; then
       echo "⚠️  跳过 ${svc}（在保护名单中，tag 来自独立仓库）"
       continue
     fi
+    repository="$(service_repository "$svc")"
     echo "更新 ${svc}.image.tag -> ${IMAGE_TAG}"
-    update_service_tag "$VALUES_FILE" "$svc" "$IMAGE_TAG"
+    update_service_tag "$VALUES_FILE" "$svc" "$repository" "$IMAGE_TAG"
   done
 else
   echo "本次没有业务服务镜像需要同步，仅处理 dbMigrate（如有）"
@@ -107,7 +162,7 @@ fi
 update_db_migrate_tag() {
   local file="$1"
   local tag="$2"
-  update_service_tag "$file" "dbMigrate" "$tag"
+  update_service_tag "$file" "dbMigrate" "db-migrate" "$tag"
 }
 
 if [[ "${SKIP_DB_MIGRATE}" == "true" ]]; then

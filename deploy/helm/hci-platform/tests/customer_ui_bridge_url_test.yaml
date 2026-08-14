@@ -8,27 +8,30 @@ tests:
       terminalBridge.enabled: true
       customerUI.terminalBridgeUrl: ""
     asserts:
-      - equal:
-          path: spec.template.spec.containers[0].env[1].name
-          value: TERMINAL_BRIDGE_URL
-      - equal:
-          path: spec.template.spec.containers[0].env[1].value
-          value: /terminal-bridge
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TERMINAL_BRIDGE_URL
+            value: /terminal-bridge
 
   - it: "外部 Linux Bridge 地址优先于集群开关"
     set:
       terminalBridge.enabled: false
       customerUI.terminalBridgeUrl: ws://172.28.24.21:9999
     asserts:
-      - equal:
-          path: spec.template.spec.containers[0].env[1].value
-          value: ws://172.28.24.21:9999
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TERMINAL_BRIDGE_URL
+            value: ws://172.28.24.21:9999
 
   - it: "默认关闭时保持桌面 localhost 兼容模式"
     set:
       terminalBridge.enabled: false
       customerUI.terminalBridgeUrl: ""
     asserts:
-      - equal:
-          path: spec.template.spec.containers[0].env[1].value
-          value: ""
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TERMINAL_BRIDGE_URL
+            value: ""

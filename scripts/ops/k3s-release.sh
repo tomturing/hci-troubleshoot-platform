@@ -371,7 +371,7 @@ service_key_to_repository() {
     conversationService) echo "hci-conversation-service" ;;
     schedulerService)    echo "hci-scheduler-service" ;;
     kbService)           echo "hci-kb-service" ;;
-    diagnosisService)    echo "hci-diagnosis-service" ;;
+    diagnosisService)    echo "diagnosis-service" ;;
     customerUI)          echo "hci-customer-ui" ;;
     adminUI)             echo "hci-admin-ui" ;;
     terminalBridge)      echo "hci-terminal-bridge" ;;

@@ -34,14 +34,20 @@ spec:
                 port:
                   number: {{ .Values.diagnosisService.port }}
           {{- end }}
-          # Admin UI API 路径
+          # internal 离线诊断必须先经过 Admin UI Nginx 注入服务端身份。
           - path: /api
             pathType: Prefix
             backend:
               service:
+                {{- if and .Values.diagnosisService.enabled (eq .Values.diagnosisService.identityMode "internal") }}
+                name: admin-ui
+                port:
+                  number: {{ .Values.adminUI.port }}
+                {{- else }}
                 name: api-gateway
                 port:
                   number: {{ .Values.apiGateway.port }}
+                {{- end }}
           {{- if .Values.terminalBridge.enabled }}
           # Admin 独立入口启用时也必须能访问同源 K3s terminal_bridge。
           - path: /terminal-bridge
@@ -82,14 +88,20 @@ spec:
                 port:
                   number: {{ .Values.diagnosisService.port }}
           {{- end }}
-          # Admin UI API 路径
+          # internal 离线诊断必须先经过 Admin UI Nginx 注入服务端身份。
           - path: /api
             pathType: Prefix
             backend:
               service:
+                {{- if and .Values.diagnosisService.enabled (eq .Values.diagnosisService.identityMode "internal") }}
+                name: admin-ui
+                port:
+                  number: {{ .Values.adminUI.port }}
+                {{- else }}
                 name: api-gateway
                 port:
                   number: {{ .Values.apiGateway.port }}
+                {{- end }}
           {{- if .Values.terminalBridge.enabled }}
           # Admin 独立入口启用时也必须能访问同源 K3s terminal_bridge。
           - path: /terminal-bridge

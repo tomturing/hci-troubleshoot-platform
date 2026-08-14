@@ -5,6 +5,8 @@
 # ======================== 全局配置 ==========================================
 global:
   namespace: hci-troubleshoot
+  # Kubernetes DNS 集群域；UI Nginx 动态解析内部 Service 时必须使用完整 FQDN。
+  clusterDomain: cluster.local
 
   # ⚠️  路由模式 — 必须与 DNS 环境匹配，改错会导致所有服务 404
   # --------------------------------------------------------------------
@@ -311,12 +313,21 @@ kbService:
 diagnosisService:
   # 默认关闭，配置正式身份和 Collector 签名密钥后再按环境启用。
   enabled: false
+  # 非空时引用由 KMS/External Secrets/运维流程预置的 Secret，Chart 不再渲染私钥。
+  # Secret 必须包含 COLLECTOR_SIGNING_* 与 DIAGNOSIS_ENCRYPTION_* 四个键。
+  existingCredentialsSecret: ""
   replicaCount: 1
   image:
-    repository: hci-diagnosis-service
+    repository: diagnosis-service
     tag: latest
   port: 8008
   identityMode: "internal"
+  # internal 模式由 Customer/Admin Nginx 在服务端注入统一内部身份；令牌只从 hci-secrets 读取。
+  # 同一环境共用 tenant_id 以保证客户工作台与管理台看到同一批诊断资源，actor_id 用于审计区分。
+  internalIdentity:
+    tenantId: "hci-platform"
+    customerActorId: "customer-ui"
+    adminActorId: "admin-ui"
   oidcIssuer: ""
   oidcAudience: ""
   oidcJwksUrl: ""

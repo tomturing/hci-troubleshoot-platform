@@ -1,5 +1,31 @@
 # K8s / K3s / Helm 运维避坑
 
+## D-025：Nginx 动态 resolver 不使用 Pod DNS search 后缀
+
+**现象：** Ingress 将 `/api` 转发到 Customer/Admin UI Nginx 后，前端页面仍能打开，但所有 API（包括 KBD 管理与离线诊断）同时返回 `502 Bad Gateway`；响应头显示 502 来自 Nginx，而不是 API Gateway。
+
+**根因：** 使用变量形式的 `proxy_pass` 时，Nginx 通过显式 `resolver` 动态解析上游。该解析器不会应用 Pod `/etc/resolv.conf` 中的 namespace 搜索后缀，因此 `http://api-gateway:8000` 这样的短服务名无法按 `api-gateway.<namespace>.svc.cluster.local` 解析。Ingress 直达 API Gateway 时不会经过这段配置，所以问题可能长期潜伏，直到路由切到 UI Nginx 才集中暴露。
+
+**正确设计：** Nginx 模板通过环境变量接收上游地址；Docker Compose 使用短服务名，Kubernetes Deployment 注入完整 Service FQDN，并将集群域设为可配置值。
+
+```yaml
+env:
+  - name: API_GATEWAY_UPSTREAM
+    value: "http://api-gateway.<namespace>.svc.<cluster-domain>:8000"
+```
+
+```nginx
+resolver ${DNS_RESOLVER} valid=30s;
+set $upstream ${API_GATEWAY_UPSTREAM};
+proxy_pass $upstream;
+```
+
+**验收：**
+
+1. 使用真实环境 values 渲染 Helm，确认 Customer/Admin UI 均得到 namespace 完整 FQDN。
+2. 对 envsubst 后的 Nginx 配置运行 `nginx -t`。
+3. 从外部入口分别验证页面和 `/api`；页面 200 不能代表 API 代理链健康。
+
 ## D-024：ArgoCD PreSync Hook 依赖普通资源不会提前创建
 
 **现象：** PreSync migration Job 长期 `ContainerCreating`，Pod 事件报 `FailedMount`，依赖的 Secret/ConfigMap 在 Application 资源树中显示 `Missing`。

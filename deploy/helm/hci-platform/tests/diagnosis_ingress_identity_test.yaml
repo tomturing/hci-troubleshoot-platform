@@ -1,0 +1,87 @@
+suite: "Diagnosis Service Ingress 身份链测试"
+templates:
+  - ingress.yaml
+  - admin-ui/ingress.yaml
+tests:
+  - it: "internal 模式下 Customer API 先经过 Customer UI Nginx"
+    template: ingress.yaml
+    set:
+      global.routingMode: "path"
+      ingress.enabled: true
+      diagnosisService.enabled: true
+      diagnosisService.identityMode: "internal"
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          value: /api/direct/diagnosis-uploads
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.name
+          value: diagnosis-service
+      - equal:
+          path: spec.rules[0].http.paths[1].path
+          value: /api
+      - equal:
+          path: spec.rules[0].http.paths[1].backend.service.name
+          value: customer-ui
+
+  - it: "OIDC 模式下 Customer API 保持直达 Gateway"
+    template: ingress.yaml
+    set:
+      global.routingMode: "path"
+      ingress.enabled: true
+      diagnosisService.enabled: true
+      diagnosisService.identityMode: "oidc"
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[1].path
+          value: /api
+      - equal:
+          path: spec.rules[0].http.paths[1].backend.service.name
+          value: api-gateway
+
+  - it: "internal 模式下有 Host 的 Admin API 先经过 Admin UI Nginx"
+    template: admin-ui/ingress.yaml
+    set:
+      ingress.enabled: true
+      adminUI.ingress.enabled: true
+      adminUI.ingress.host: "admin.staging.example.com"
+      diagnosisService.enabled: true
+      diagnosisService.identityMode: "internal"
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.name
+          value: diagnosis-service
+      - equal:
+          path: spec.rules[0].http.paths[1].path
+          value: /api
+      - equal:
+          path: spec.rules[0].http.paths[1].backend.service.name
+          value: admin-ui
+
+  - it: "internal 模式下无 Host 的 Admin API 先经过 Admin UI Nginx"
+    template: admin-ui/ingress.yaml
+    set:
+      ingress.enabled: true
+      adminUI.ingress.enabled: true
+      adminUI.ingress.host: ""
+      diagnosisService.enabled: true
+      diagnosisService.identityMode: "internal"
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[1].path
+          value: /api
+      - equal:
+          path: spec.rules[0].http.paths[1].backend.service.name
+          value: admin-ui
+
+  - it: "OIDC 模式下 Admin API 保持直达 Gateway"
+    template: admin-ui/ingress.yaml
+    set:
+      ingress.enabled: true
+      adminUI.ingress.enabled: true
+      diagnosisService.enabled: true
+      diagnosisService.identityMode: "oidc"
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[1].backend.service.name
+          value: api-gateway

@@ -49,12 +49,12 @@ spec:
             - name: COLLECTOR_SIGNING_PRIVATE_KEY_B64
               valueFrom:
                 secretKeyRef:
-                  name: diagnosis-service-signing
+                  name: {{ include "hci.diagnosisCredentialsSecretName" . | quote }}
                   key: COLLECTOR_SIGNING_PRIVATE_KEY_B64
             - name: COLLECTOR_SIGNING_KEY_ID
               valueFrom:
                 secretKeyRef:
-                  name: diagnosis-service-signing
+                  name: {{ include "hci.diagnosisCredentialsSecretName" . | quote }}
                   key: COLLECTOR_SIGNING_KEY_ID
             - name: IDENTITY_MODE
               value: {{ .Values.diagnosisService.identityMode | quote }}
@@ -67,18 +67,18 @@ spec:
             - name: OIDC_PUBLIC_KEY_PEM_B64
               valueFrom:
                 secretKeyRef:
-                  name: diagnosis-service-signing
+                  name: {{ include "hci.diagnosisCredentialsSecretName" . | quote }}
                   key: OIDC_PUBLIC_KEY_PEM_B64
                   optional: true
             - name: DIAGNOSIS_ENCRYPTION_PRIVATE_KEY_B64
               valueFrom:
                 secretKeyRef:
-                  name: diagnosis-service-signing
+                  name: {{ include "hci.diagnosisCredentialsSecretName" . | quote }}
                   key: DIAGNOSIS_ENCRYPTION_PRIVATE_KEY_B64
             - name: DIAGNOSIS_ENCRYPTION_KEY_ID
               valueFrom:
                 secretKeyRef:
-                  name: diagnosis-service-signing
+                  name: {{ include "hci.diagnosisCredentialsSecretName" . | quote }}
                   key: DIAGNOSIS_ENCRYPTION_KEY_ID
             - name: DIAGNOSIS_OBJECT_STORAGE_ROOT
               value: "/var/lib/hci-diagnosis"

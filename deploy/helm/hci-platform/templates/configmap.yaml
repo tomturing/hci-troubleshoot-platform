@@ -16,6 +16,8 @@ data:
   CONVERSATION_SERVICE_URL: "http://conversation-service:{{ .Values.conversationService.port }}"
   SCHEDULER_SERVICE_URL: "http://scheduler-service:{{ .Values.schedulerService.port }}"
   DIAGNOSIS_SERVICE_URL: {{ .Values.config.diagnosisServiceUrl | default "http://diagnosis-service:8008" | quote }}
+  # Gateway 与 Diagnosis Service 必须使用相同身份模式，避免一侧校验内部 Token、另一侧校验 OIDC。
+  DIAGNOSIS_IDENTITY_MODE: {{ .Values.diagnosisService.identityMode | quote }}
   # LLM 配置（从顶级 llm.* 配置读取，assistantRegistryJson 由模板自动生成）
   LLM_BASE_URL: {{ .Values.llm.baseUrl | quote }}
   # 多模态专属 Vision 独立端点，默认为空时自动回退到 llm.baseUrl

@@ -117,7 +117,7 @@ declare -a IMAGES=(
   "hci-scheduler-service      ${PROJECT_ROOT}               backend/scheduler-service/Dockerfile"
   "hci-kb-service             ${PROJECT_ROOT}               backend/kb-service/Dockerfile"
   "hci-agent-service          ${PROJECT_ROOT}               backend/agent-service/Dockerfile"
-  "hci-diagnosis-service      ${PROJECT_ROOT}               backend/diagnosis-service/Dockerfile"
+  "diagnosis-service          ${PROJECT_ROOT}               backend/diagnosis-service/Dockerfile"
   "hci-customer-ui            ${PROJECT_ROOT}               frontend/customer/Dockerfile"
   "hci-admin-ui               ${PROJECT_ROOT}               frontend/admin/Dockerfile"
   "hci-terminal-bridge        ${PROJECT_ROOT}               terminal_bridge/Dockerfile"

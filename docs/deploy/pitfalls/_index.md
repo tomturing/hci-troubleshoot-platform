@@ -15,7 +15,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 > 2. 再写入对应分类 file
 > 3. 同一 commit/PR 提交，不允许分开提交
 >
-> **下一个可用编号：D-023**（旧格式延续：PIT-050）
+> **下一个可用编号：D-026**（旧格式延续：PIT-050）
 
 ---
 
@@ -89,6 +89,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | **D-022** | k8s.md | `dnsPolicy: None` 缺少 search domain 会破坏集群短服务名；内部依赖使用 ClusterFirst，readiness 必须验证依赖 |
 | **D-023** | shell.md | main push 事件缺失时，PR 检查不会发布镜像；CI 必须提供默认不发布、仅 main 可执行的显式 workflow_dispatch 补偿入口，并核验环境仓库远端 tag |
 | **D-024** | k8s.md | ArgoCD PreSync Hook 依赖普通资源不会提前创建；Secret/ConfigMap 必须加入有序 Hook wave |
+| **D-025** | k8s.md | Nginx 动态 resolver 不使用 Pod DNS search 后缀；K8s Service 上游必须使用完整 FQDN |
 
 ---
 

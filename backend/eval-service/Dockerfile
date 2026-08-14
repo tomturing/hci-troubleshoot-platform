@@ -6,7 +6,7 @@ WORKDIR /app
 
 COPY backend/eval-service/pyproject.toml .
 RUN uv pip compile pyproject.toml --no-annotate --no-header -q -o requirements.txt \
-    && uv pip install --system --no-cache --index-url https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt
+    && uv pip install --system --no-cache -r requirements.txt
 
 COPY backend/shared /app/shared
 COPY backend/eval-service /app
