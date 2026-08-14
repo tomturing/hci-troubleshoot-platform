@@ -1,98 +1,198 @@
-# hci_sim
+# hci_sim · 现行全量设计说明
 
-`hci_sim/` 是 HCI 模拟 SSH Runtime 的唯一正式源码目录；产品、镜像和 Helm release 名保持 `hci-sim`，但仓库中不再保留第二套 `hci-sim/` Go Spike，避免实现和安全边界漂移。
+> 版本：2026-08-14 全量修订（整合 `docs/solution/hci-sim`、`docs/task/hci-sim`、`docs/verify/hci-sim` 全部事件文档）
+> 适用范围：`hci_sim/` 源码目录及其关联的控制面、数据库、部署与验收链路
+> 详细阶段设计见 [`docs/solution/hci-sim/`](docs/solution/hci-sim/README.md)；任务见 [`docs/task/hci-sim/`](docs/task/hci-sim/README.md)；验证见 [`docs/verify/hci-sim/`](docs/verify/hci-sim/README.md)
 
-## 阶段 A/B 基线
+---
 
-- 仅加载带有 `bundle.digest` 的已发布 Manifest v2；加载时拒绝未知字段、摘要漂移、非规范 argv 和歧义 RouteKey。
-- 每个命令精确绑定 `variant + tool + acquisition_key + argv + virtual_node_id + container`，没有正则、通配符、评分路由或默认 fixture。
-- SSH 仅接受 `htp2` 租约；租约签名、issuer、audience、Bundle、KBD、工具/策略版本、目标、时效及会话/命令/输出配额均受校验。
-- `exec` 与交互 shell 共用有界 worker 队列、每命令授权和 fail-closed 路由；原始命令和 token 不进入日志。
-- Terminal Bridge 只能通过完整的 `auth_type=lease`、`execution_mode=sim-ssh`、`htp2.*` 认证上下文标记模拟执行，绝不根据 host 名猜测。
+## 1. 它是什么（第一性原理定位）
 
-## C–E 控制面基础
+`hci_sim` 是 HCI 仿真 SSH Runtime 的**唯一正式源码目录**。产品、镜像、Helm release 名保持 `hci-sim`，但仓库不再保留第二套 `hci-sim/` Go Spike，避免实现和安全边界漂移。
 
-`internal/controlplane` 实现了不在 SSH 数据面运行的阶段 C–E 业务内核：冻结编译输入与 Bundle 生命周期、双角色审批和 stale；按精确 Bundle 创建的 TestRun、短时 Run Lease 与容量预留；差分、mutation、稳定性和容量阶梯证据模型。`MemoryRegistry` 只用于确定性单元测试，绝不能部署为多副本生产存储。
+**本质**：一个被管制的仿真内核——只接受带 HMAC 签名租约的 SSH 连接，命令必须精确匹配已发布的 Fixture Bundle，否则 fail-closed 拒绝。用于在**不可触碰真实生产客户环境**的前提下，对 KBD（知识库）修复命令做端到端验证。
 
-生产接入已提供 hci_sim 专用 PostgreSQL CAS、Event/Result/outbox 和受控对象 URI 边界；`Runner` 仍必须提供权威 KBD/Tool/Artifact Resolver、Oracle 结果和受控 Customer UI/Terminal Bridge 协议。没有 approved Artifact 或真实 HCI 校准环境时，系统只能声明“代码级基础已就绪”，不能声明已支持任意 KBD 自动构建环境或完成产品级验证。
+**为什么需要**：真实 KBD 修复命令直接在生产跑风险极高，但又要证明「这条 KBD 给的命令在真实节点上确实能跑通、exit_code 正确」。解法不是测试环境，而是强隔离、确定性、带租约鉴权的仿真 Runtime。
 
-当前内存配额 Tracker 是单副本实现，因此 Helm `replicaCount` 必须为 `1`。共享 Store、Fixture 编译发布、TestRun 调度和规模验证属于后续阶段 C–E，不能据此基线推断已经支持自动化环境构建。
+---
 
-Runtime 配置了 `HCI_SIM_OUTBOX_WEBHOOK_URL` 后会启动 durable outbox reconciler；没有配置下游 URL 时只恢复过期 processing 记录，不会把任何事件标记为 `processed`。最终 Run 结论必须通过 `/v1/simulations/test-runs/{id}/result` 由 Runner/Oracle 提交。
+## 2. 代码层
 
-## C3 两步人工验收
+源码结构：`hci_sim/`（`internal/` 核心，`cmd/` 入口），无 `pkg/`。
 
-dev 环境可使用仓库根目录的 `scripts/hci-sim/two-step-acceptance.sh <KBD_SUPPORT_ID>`。C1 Resolver 从已发布 KBD Snapshot（快照）的 Signal（信号）和当前 Tool Registry（工具注册表）修订生成 `synthetic_routes`（合成路由），不按 KBD ID 维护白名单。每条路由把 `tool_revision` 和 `tool_checksum` 写入 Bundle（制品包）摘要；只要至少一条 Signal 能在无现场变量的情况下确定编译，即可生成 `positive-minimal` Manifest（清单）、短时 htp2 Lease（租约）并启动单副本容器；没有安全可编译路由时返回 Capability Gap（能力缺口）。
+### 2.1 程序入口（`cmd/`）
 
-仓库中的 `kbd-27123-fixture-manifest.json` 只是 Golden E2E（黄金端到端测试）的默认夹具。Helm 通过 `fixture.manifestFile` 选择夹具，运行时代码、资源名和 Lease（租约）默认场景都不依赖该 KBD。
+| 程序 | 文件 | 作用 |
+|---|---|---|
+| `hci-sim` | `cmd/hci-sim/main.go` + `bootstrap.go` + `offline_manifest.go` | 主服务。子命令：`serve`（默认，SSH:2222 + HTTP:18080 + `readyz`）、`lease`（签发 htp2 租约 token）、`manifest-digest`（写入/校验 bundle `sha256:` 摘要）、`bootstrap`（控制面初始化）。 |
+| `hci-sim-smoke` | `cmd/hci-sim-smoke/main.go` | 冒烟测试。经真实 Terminal Bridge WebSocket→SSH 链路执行 `recommended_command`，只输出 `support_id/test_run_id/exit_code` 摘要。 |
 
-脚本默认优先使用 SSH `2222`、HTTP `18080`；如果其中一个端口已经被其他仿真实例占用，会自动为本次运行选择隔离端口，并把最终端口写入 `connection.json`。需要让端口占用直接失败时设置 `HCI_SIM_AUTO_PORTS=false`。同一个 KBD 的旧实例会在启动新 Lease 前自动停止，避免 Lease 与容器错配。
+### 2.2 核心包（`internal/`）
 
-脚本对同一 KBD 自动停止上一轮受管容器，预检 SSH/HTTP 端口，使用 dev 主机稳定 SSH host key，并在 `readyz` 未通过时失败退出；它不会把 Lease password 打印到终端。连接文件路径和脱敏字段会输出到屏幕，密码只能从本地 0600 文件读取。默认 Lease TTL 为 15 分钟，生成后应立即完成第二步。
+| 模块 | 职责 |
+|---|---|
+| `controlplane/` | 阶段 C–E 业务内核：Bundle 生命周期状态机（draft→validated→approved→published→stale/retired）、双角色审批、TestRun、Run Lease、差分/mutation/稳定性/容量证据模型。 |
+| `database/` | PostgreSQL 访问层（`RunRepository`）：scenario/run/run_attempt/run_event/run_result/run_outbox 的 CRUD、CAS 幂等、过期、outbox claim/complete。 |
+| `fixture/` | 加载已发布 Manifest v2，按精确 RouteKey 确定性路由；Fault 模型（none/nonzero_exit/permission/timeout/disconnect/truncate）。 |
+| `lease/` | htp2 Capability 租约签发、每命令复验、单副本配额；HMAC 签名，Claims 绑定 Run/Bundle/Target。 |
+| `server/` | SSH + HTTP 服务面；exec/交互 shell 共用有界 worker 队列、授权、fail-closed 路由、观测。 |
+| `reconciler/` | Runtime 侧 durable outbox 投递循环；无下游 URL 时只恢复过期 processing，不标 processed。 |
+| `metrics/` | OpenTelemetry 指标。 |
+| `telemetry/` | OpenTelemetry trace 初始化/导出（OTLP HTTP）。 |
 
-无工单的 Custom UI 初始状态可点击终端面板中的“仿真租约连接（dev）”直接打开仿真租约弹窗；不必先创建无 SSH 工单。选择“仿真租约”后可直接粘贴完整 `connection.json` 并点击“载入连接文件”，页面会校验 `support_id`、端口、`auth_type=lease`、`execution_mode=sim-ssh` 和 `expires_at`，自动填充连接字段及首条 `recommended_command`。完整可验收命令保存在 `recommended_commands`；已有工单仍可通过“连接 SSH”进入同一弹窗。Linux/K3s 联调时，Customer UI 的运行时配置必须指向 Linux Bridge（`/terminal-bridge` 或 `ws://<linux-host>:9999`），不能让远端浏览器默认回退到 Windows `localhost:9999`。
+**依赖方向**：`controlplane` 依赖 `fixture`/`lease`；`reconciler`/`server` 依赖 `database`。
 
-如果页面的 `/runtime-config.js` 返回 `terminalBridgeUrl: ""`，浏览器会按桌面兼容逻辑连接浏览器所在机器的 `ws://localhost:9999`；这不等于 Linux 主机的 `172.28.24.21:9999`。Linux Bridge 没有对应 `WebSocket 请求` 日志时，优先修复 runtime-config/Helm/GitOps 路由，不要反复更换 Lease password。
+### 2.3 运行时安全基线（阶段 A/B）
 
-Bridge 拓扑必须与浏览器所在机器一致：
+- 仅加载带 `bundle.digest` 的已发布 Manifest v2；拒绝未知字段、摘要漂移、非规范 argv、歧义 RouteKey。
+- 每个命令精确绑定 `variant + tool + acquisition_key + argv + virtual_node_id + container`，无正则/通配符/评分路由/默认 fixture。
+- SSH 仅接受 `htp2` 租约；签名、issuer、audience、Bundle/KBD/工具策略版本、目标、时效及会话/命令/输出配额均受校验。
+- `exec` 与交互 shell 共用有界 worker 队列、每命令授权、fail-closed 路由；原始命令与 token 不进日志。
+- Terminal Bridge 仅通过完整 `auth_type=lease` + `execution_mode=sim-ssh` + `htp2.*` 标记模拟执行，绝不按 host 名猜测回退真实 HCI。
+
+---
+
+## 3. 数据库层（独立库 `hci_sim`，16 张表 / 4 schema）
+
+迁移目录：`database/hci-sim-migrations/000001_control_plane.sql`（**独立库**，绝不被主库 Atlas Job 读取）。
+
+### 3.1 四个领域 schema
+
+| schema | 责任 | 表（共 16） |
+|---|---|---|
+| `control_plane` | 仿真运行控制面 | `scenario`、`run`、`run_attempt`、`run_event`、`run_result`、`run_outbox`、`runtime_instance` |
+| `fixture` | 已编译夹具 Bundle 与审批 | `bundle`、`dependency`、`provenance`、`approval`、`stale_outbox` |
+| `artifact` | 准入制品与安全扫描 | `metadata`、`scan`、`approval` |
+| `audit` | 审计 | `entity_event` |
+
+### 3.2 关键设计不变量
+
+1. 跨库只存 `support_id` / KBD revision / checksum / digest，**不建跨库外键**；
+2. 原始 Artifact、Lease 明文**不进 PostgreSQL**（对象存储保存不可变内容）；
+3. 状态/枚举全用 `CHECK` 约束强制，运行时不能回退内存态；
+4. 所有表带 `trace_id` 字段，满足调用链可追踪；
+5. 应用只接受 `HCI_SIM_DATABASE_URL`（或等效拆分字段），**禁止 fallback 到 `DATABASE_URL`**；缺少配置即启动 fail-closed。
+
+### 3.3 独立数据库落地状态（2026-08-11）
+
+| 项 | 状态 |
+|---|---|
+| 独立 migration / 四领域 schema / migrator+runtime 角色 / Secret / `HCI_SIM_DATABASE_REQUIRED=true` | ✅ 已落地 |
+| PostgreSQL Repository 取代内存控制面（idempotency/CAS、Event/Result/outbox 同事务） | ✅ 已落地 |
+| 最终 Run `run-27123-...` 只出现在 `hci_sim`，revision 25/digest 与 Runtime 一致 | ✅ PASS |
+| 权限负向（runtime 连主库失败、不能 DDL） | ✅ PASS |
+| 主库 15 张空 `agent_test_*` 旧表 contract/drop 与备份恢复演练 | ⏳ BLOCKED（独立破坏性发布，仍是剩余项） |
+
+> 详细门禁见 [`docs/verify/hci-sim/events/...独立数据库隔离验证.md`](docs/verify/hci-sim/events/2026-08-10-hci_sim独立数据库隔离验证.md)。
+
+---
+
+## 4. 部署与脚本
+
+### 4.1 Helm（`deploy/helm/hci-sim/`）
+
+- `deployment.yaml` / `service.yaml`：部署与 SSH/HTTP 服务暴露。
+- `networkpolicy.yaml`：强制只允许来自 `postgres` / `conversation-service` 命名空间的 5432 访问（CI 校验空值直接失败）。
+- `pdb.yaml` / `resourcequota.yaml`：可用性与资源配额。
+- `files/*-fixture-manifest.json`：随附夹具清单，Helm 版必须与 `testdata` 字节一致（CI `cmp -s` 校验）。
+- **`replicaCount` 必须为 `1`**：内存配额 Tracker 是单副本实现。
+
+### 4.2 脚本（`scripts/hci-sim/`）
+
+| 脚本 | 用途 |
+|---|---|
+| `two-step-acceptance.sh` | C3 两步人工验收（通用最小入口），生成 15 分钟 Lease，**不打印密码** |
+| `capability-matrix.sh` / `capability-matrix-test.sh` | 能力矩阵生成与 CI 门禁校验 |
+| `stage-e-matrix.sh` | 阶段 E 规模化验证矩阵 |
+| `diagnosis-lab.py` | 诊断样例实验室（五篇 KBD 手测+自动回归统一入口） |
+
+### 4.3 DB 工具
+
+- `scripts/db/hci-sim-copy.sh`：库间拷贝（生产 autosync），默认 fail-closed 只生成 inventory，`HCI_SIM_ALLOW_COPY=1` 才复制，永不自动删源表。
+
+---
+
+## 5. CI/CD 门禁
+
+| 工作流 | 作用 |
+|---|---|
+| `.github/workflows/hci-sim-go.yml` | Go 质量门禁：`gofmt`/`go test`/`go test -race`/`go vet`/`go build`；`manifest-and-helm` 校验已发布 bundle digest 一致、拒绝退役 marker（`HCI_BRIDGE_SIM_TARGETS`/`htp1.`/`command_pattern` 等）、Helm lint/template 并校验 NetworkPolicy 必填项。 |
+| `.github/workflows/hci-sim-db-migration-test.yml` | 隔离 PG 跑迁移校验 16 表，反向校验主库无 `agent_test_*` 表，验证 `hci_sim_runtime` 角色不能建表（DDL 负向检查），再跑 `internal/database` + `internal/reconciler` 的 CAS/幂等测试。 |
+
+---
+
+## 6. 端到端链路与验收入口（现行最新）
+
+### 6.1 纵向闭环（已验证：KBD 27123 revision 25）
 
 ```text
-Linux 集群联调：浏览器 → ws://172.28.24.21:9999（Linux terminal_bridge）→ SSH 172.28.24.21:<connection.port>（hci-sim）
-Windows 桌面联调：浏览器（172.28.24.22）→ ws://localhost:9999（Windows terminal_bridge.exe）→ SSH 172.28.24.21:<connection.port>（hci-sim）
+Admin UI 环境构建
+  → API Gateway（注入 Runtime Token）
+  → hci_sim Scenario + published Bundle + Run
+  → 真实 Case / Conversation
+  → Agent 权威 sim-ssh context（不再执行前端固定 smoke）
+  → K3s terminal_bridge（同源 /terminal-bridge，auth_type=lease, execution_mode=sim-ssh）
+  → K3s hci-sim（SSH :2222，exact RouteKey）
+  → Agent 发起 task / lsof / ps
+  → passed Result
 ```
 
-两种 Bridge 不要在同一个浏览器会话中混用。Windows 联调时应保持 Customer UI 的 `terminalBridgeUrl` 为空，让浏览器回退到 Windows 本机 `ws://localhost:9999`；Windows Bridge 的 SSH 目标始终填写 Lease 文件中的 `host`、`port`、`username` 和仿真租约 password，不要把 `localhost:9999` 当成 SSH 目标。
+### 6.2 用户验收入口（**已迁移至 admin-ui**，旧 Customer UI 仿真租约表单已废弃）
 
-若要用 Linux Bridge 做无浏览器三段链路验收，可设置 `HCI_SIM_CONNECTION_JSON` 运行 `cmd/hci-sim-smoke`；该模式会通过 WebSocket 连接 Bridge，再经 SSH 执行 `recommended_command`，不绕过 Bridge。
+- 入口组件：`frontend/admin/src/components/SimulationConversation.vue`。
+- 组件自动 `createConversation()` + `connectBridge()`，经受管 `terminal_bridge`（WebSocket `/terminal-bridge` → SSH:2222）连接，**不再需手动粘贴 `connection.json`**。
+- Lease 由 admin-ui 自动填充（页面 SSH 标签显示「已连接」）。
+- Agent 产出 `recommended_command` 以命令卡片呈现：risk=1 自动跑、risk=2 需点「允许执行」、risk=3 自动阻止。
+- 结果在会话流直接可见：命令卡片 `passed`/`failed`/`blocked`；会话级 `agentOutcome` 为 `passed`/`failed`/`inconclusive`；`exit_code !== 0` 自动判 `failed`。
 
-示例（Linux/K3s dev）：
+> ⚠️ 旧版 `hci_sim/README.md` 与部分任务文档曾描述「Customer UI 终端面板 → 仿真租约连接（dev）」流程，该形态已被 admin-ui 取代，本文为现行权威描述。
 
-```bash
-HCI_SIM_CONNECTION_JSON="$PWD/.hci-sim-run/<run>/connection.json" \
-HCI_SIM_BRIDGE_URL=ws://127.0.0.1:9999 \
-HCI_SIM_BRIDGE_ORIGIN=http://172.28.24.21 \
-go run ./cmd/hci-sim-smoke
-```
+---
 
-通过时只输出 `support_id/test_run_id/exit_code` 等非敏感摘要；Lease password 始终只从本地文件读取，不写入输出。
+## 7. 当前状态与边界（对抗性审查结论）
 
-输出明确为 synthetic signal-contract-only；没有获批 Artifact 时禁止使用 `positive-realistic` 或宣称真实 HCI/Artifact E2E。不满足已发布快照、Tool 修订或安全可编译路由门禁的 KBD 会在第一步返回 capability gap，且不产生 Lease。
+### 7.1 已证明
 
-## Diagnosis Sample Lab（诊断样例实验室）
+- KBD 27123 revision 25 真实纵向样板：PASS（不依赖 Custom UI、Windows/Linux Docker Bridge 或真实 HCI）。
+- 仿真运行控制面（Runtime/Bridge/Manifest）代码级基础已实现；C1 对 dev 126 条 KBD 完成只读快照基线。
 
-五篇 `diagnosis-signal-matrix-v1` KBD 的长期手测和自动回归统一使用仓库根目录的 `make diagnosis-lab-*` 命令。实验室支持同一场景多实例并存、六种 Variant（场景变体）、稳定 SSH Host Key（主机密钥）、短时 Lease（租约）、Terminal Bridge（终端桥）在线 smoke（冒烟测试）以及无网络 Go Collector（采集器）执行。
+### 7.2 BLOCKED（面向终端用户的生产交付）
 
-它与本节的 C3 两步验收没有运行时冲突：两者复用同一 `hci-sim` 二进制和 Capability Resolver（能力解析器），但使用不同容器标签、实例目录和生命周期规则。新增样例能力应进入 Diagnosis Sample Lab；`two-step-acceptance.sh` 保留为任意已发布 KBD 的通用最小验收入口。
+以下前提未满足即不可宣称产品级验证：
 
-完整说明见 [Diagnosis Sample Lab（诊断样例实验室）设计与使用说明](../docs/solution/agent/Diagnosis-Sample-Lab诊断样例实验室设计与使用说明.md)。
+1. 无 approved Artifact（artifact.approval 双角色审批通过）；
+2. 无真实校准环境与生产 CAS / Bridge E2E；
+3. 20-repeat、100+ 并发、真实 Capability Matrix 未验证；
+4. 主库 15 张空旧表 contract/drop 未完成。
 
-## 本地验证
+> 决策：接受 27123 作为纵向基线与回归 gold case；**不接受「27123 通过」等价于「hci-sim 可生产交付」**。
 
-宿主机不要求安装 Go；使用固定容器工具链：
+### 7.3 下一阶段目标：Bundle 工厂化
 
-```bash
-docker run --rm --user "$(id -u):$(id -g)" \
-  -e GOCACHE=/tmp/go-build-cache -e GOPATH=/tmp/go \
-  -v "$PWD:/src" -w /src/hci_sim golang:1.24-alpine \
-  sh -lc 'mkdir -p /tmp/go-build-cache /tmp/go && /usr/local/go/bin/gofmt -l . && /usr/local/go/bin/go test ./... && /usr/local/go/bin/go test -race ./... && /usr/local/go/bin/go vet ./... && /usr/local/go/bin/go build ./cmd/hci-sim && /usr/local/go/bin/go build ./cmd/hci-sim-smoke'
-```
+把新增 KBD 从「修改并发布应用」改为「编译并发布不可变 Bundle」：
 
-为发布前写入 Manifest digest：
+- 唯一 Bundle Registry：数据库存 metadata，对象存储存不可变内容，Runtime 按 digest 加载；
+- 统一 Bundle Compiler：校验 revision/Signal/Route/Catalog/argv/timeout/输出/变体/digest/provenance/审批；
+- 服务端收敛 Build/Bundle 注册/调度/Lease/Case 绑定/Result 关闭；
+- 新增 KBD 禁止修改 Agent/hci-sim 代码、Dockerfile、Helm、Argo、服务镜像 digest。
 
-```bash
-go run ./cmd/hci-sim manifest-digest --manifest testdata/kbd-27123-fixture-manifest.json
-```
+**生产放行标准**（全部满足前保持 BLOCKED）：新 KBD 无需代码/镜像/Helm/Argo 变更；Bundle 仅一个权威 digest；≥3 个差异化 KBD 三变体自动 E2E 通过；capability matrix 可自动执行且错误不吞没；干净集群部署/重复运行/重启/回滚不依赖人工 patch；失败可定位到 KBD/Bundle/Agent/Bridge/Runtime/Result 层。
 
-将命令输出的 `sha256:` 值写入 `bundle.digest` 后，再加载/部署；Helm 随附的 Manifest 必须与测试样本字节一致。
+---
 
-## KBD 27123 范围
+## 8. 文档导航（整理后）
 
-随附 bundle 明确绑定 `support_id=27123`、revision、checksum 和 `SIM-HCI-NODE-01/host`。签发租约示例：
+| 维度 | 入口 |
+|---|---|
+| 设计（全量 + 阶段 A–E 事件） | [`docs/solution/hci-sim/`](docs/solution/hci-sim/README.md) |
+| 任务（全量 + 阶段 A–E 事件） | [`docs/task/hci-sim/`](docs/task/hci-sim/README.md) |
+| 验证（全量分析 + 阶段 A–E 事件） | [`docs/verify/hci-sim/`](docs/verify/hci-sim/README.md) |
+| 需求 | [`docs/requirement/hci-sim/events/`](docs/requirement/hci-sim/events/) |
 
-```bash
-HCI_SIM_FIXTURE_MANIFEST=testdata/kbd-27123-fixture-manifest.json \
-HCI_SIM_LEASE_HMAC_KEY='至少32字节的开发密钥xxxxxxxxxxxxxxxx' \
-go run ./cmd/hci-sim lease --test-run run-local --virtual-node SIM-HCI-NODE-01
-```
+### 关键事件文档索引
 
-该命令只输出 token 给调用方；不要写入终端历史、日志、工单或配置库。
+- 生产化差距与 Bundle 工厂化重构基线（BLOCKED 定义）：`docs/solution/hci-sim/events/2026-08-11-hci-sim生产化差距审查与Bundle工厂化重构基线.md`
+- P0–P1 27123 全链路修复（implemented）：`docs/solution/hci-sim/events/2026-08-11-hci-sim-P0-P1-27123全链路修复方案.md`
+- 独立数据库隔离（in-progress）：`docs/solution/hci-sim/events/2026-08-10-hci_sim独立数据库隔离方案.md`
+- 阶段 C3 两步人工验收闭环：`docs/solution/hci-sim/events/2026-08-06-hci-sim阶段C3两步人工验收闭环方案.md`
+- 双轨运行时设计（real/sim）：`docs/solution/hci-sim/events/2026-07-30-HCI真实环境与hci-sim双轨运行时设计.md`
