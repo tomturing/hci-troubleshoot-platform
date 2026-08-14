@@ -311,6 +311,9 @@ kbService:
 diagnosisService:
   # 默认关闭，配置正式身份和 Collector 签名密钥后再按环境启用。
   enabled: false
+  # 非空时引用由 KMS/External Secrets/运维流程预置的 Secret，Chart 不再渲染私钥。
+  # Secret 必须包含 COLLECTOR_SIGNING_* 与 DIAGNOSIS_ENCRYPTION_* 四个键。
+  existingCredentialsSecret: ""
   replicaCount: 1
   image:
     repository: diagnosis-service

@@ -69,6 +69,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+Diagnosis Service（诊断服务）凭据 Secret 名称。
+默认由 Chart 创建专用 Secret；受管环境可引用预置 Secret，避免私钥进入 values 仓库。
+*/}}
+{{- define "hci.diagnosisCredentialsSecretName" -}}
+{{- default "diagnosis-service-signing" .Values.diagnosisService.existingCredentialsSecret -}}
+{{- end }}
+
+{{/*
 阶段一 K3s terminal_bridge 防误配门禁。
 SSH 会话目前只保存在单 Pod 内存中；cluster 模式也不能以 wildcard Origin
 作为内网 SSH 跳板。把这两个不变量放在 Helm 渲染期检查，避免手工 patch

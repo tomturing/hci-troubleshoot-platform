@@ -49,6 +49,8 @@ kbService:
     tag: "2026.03.02-1"
 diagnosisService:
   enabled: true
+  # 推荐由 KMS/External Secrets/运维流程预置；配置后下方四项私钥 values 可留空。
+  existingCredentialsSecret: "diagnosis-service-signing"
   identityMode: "oidc"
   oidcIssuer: "https://id.example.com"
   oidcAudience: "hci-diagnosis"

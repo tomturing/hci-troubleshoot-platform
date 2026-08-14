@@ -31,7 +31,7 @@ kbService:
 
 diagnosisService:
   image:
-    repository: hci-diagnosis-service
+    repository: diagnosis-service
     tag: "latest"
 
 customerUI:
