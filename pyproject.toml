@@ -79,6 +79,7 @@ testpaths = [
     "backend/agent-service/tests",
     "backend/case-service/tests",
     "backend/conversation-service/tests",
+    "backend/diagnosis-service/tests",
     "backend/scheduler-service/tests",
 ]
 python_files = "test_*.py"

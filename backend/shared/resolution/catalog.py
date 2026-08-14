@@ -2,11 +2,19 @@
 
 ``catalogs/`` 目录下的所有 JSON 文件均由 :class:`_HotCatalog` 统一管理：
 每次调用检查文件 mtime，变更后自动重载缓存，**无需重启服务**。
+
+路径解析规则（支持基线持久化）：
+- 默认从镜像内置目录 ``backend/shared/resolution/catalogs/`` 读取（只读、随镜像发布）。
+- 若环境变量 ``ACLI_CATALOG_PATH`` / ``RESOLUTION_CATALOG_PATH`` 已设置，则以其为权威路径。
+  部署侧将 Catalog 目录挂载到持久卷（如 ``/data/catalogs``）并通过环境变量指向该卷，
+  可使页面新增/修改的基线在 pod 重建后保留，避免回滚到镜像层（见 D-015/D-020 运行时代码完整性防护：
+  持久卷不得挂载到受保护的 ``/app/shared/`` 代码目录）。
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 from pathlib import Path
@@ -14,9 +22,26 @@ from typing import Any, Generic, TypeVar
 
 _CATALOGS_DIR: Path = Path(__file__).with_name("catalogs")
 
-# 唯一权威路径：禁止在其他位置维护副本。
-ACLI_CATALOG_PATH: Path = _CATALOGS_DIR / "acli_command_catalog.json"
-RESOLUTION_CATALOG_PATH: Path = _CATALOGS_DIR / "resolution_catalog.json"
+
+def _resolve_catalog_path(filename: str) -> Path:
+    """解析单个 Catalog 文件权威路径。
+
+    环境变量优先（持久化卷场景），否则回退到镜像内置目录（兼容旧部署）。
+    """
+    env_map = {
+        "acli_command_catalog.json": "ACLI_CATALOG_PATH",
+        "resolution_catalog.json": "RESOLUTION_CATALOG_PATH",
+    }
+    env_key = env_map.get(filename)
+    env_val = env_key and os.environ.get(env_key)
+    if env_val:
+        return Path(env_val)
+    return _CATALOGS_DIR / filename
+
+
+# 默认权威路径：镜像内置目录；部署可通过环境变量覆盖为持久卷路径。
+ACLI_CATALOG_PATH: Path = _resolve_catalog_path("acli_command_catalog.json")
+RESOLUTION_CATALOG_PATH: Path = _resolve_catalog_path("resolution_catalog.json")
 
 _T = TypeVar("_T")
 
@@ -66,6 +91,7 @@ class _HotCatalog(Generic[_T]):  # noqa: UP046
 
 # ── acli_command_catalog.json ──────────────────────────────────────────────────
 
+
 def _parse_acli_catalog(raw: Any) -> tuple[dict[str, Any], ...] | None:
     commands = raw.get("commands") if isinstance(raw, dict) else None
     if not isinstance(commands, list):
@@ -87,6 +113,7 @@ def load_acli_catalog() -> tuple[dict[str, Any], ...]:
 
 # ── resolution_catalog.json ───────────────────────────────────────────────────
 
+
 def _parse_resolution_catalog(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
@@ -105,8 +132,6 @@ def load_resolution_catalog() -> dict[str, Any]:
     return _resolution_hot.load()
 
 
-
-
 def catalog_command_paths() -> frozenset[tuple[str, ...]]:
     paths: set[tuple[str, ...]] = set()
     for item in load_acli_catalog():
@@ -120,7 +145,9 @@ def command_path_known(tokens: list[str]) -> bool:
     """Catalog 采用前缀匹配：命令后的资源名和参数不影响命令路径判断。"""
 
     path = tuple(tokens[1:] if tokens and tokens[0] == "acli" else tokens)
-    return any(len(path) >= len(candidate) and path[: len(candidate)] == candidate for candidate in catalog_command_paths())
+    return any(
+        len(path) >= len(candidate) and path[: len(candidate)] == candidate for candidate in catalog_command_paths()
+    )
 
 
 def resolution_catalog_version() -> str:
@@ -144,6 +171,28 @@ def domain_command_requirements(domain: str, command_tokens: list[str]) -> list[
             required = row.get("required_options")
             return [str(item) for item in required] if isinstance(required, list) else []
     return []
+
+
+def domain_command_supported_versions(domain: str, command_tokens: list[str]) -> list[str]:
+    """返回命令级产品版本约束；优先采用最长命令路径的声明。"""
+
+    rows = load_resolution_catalog().get("domain_command_versions")
+    if not isinstance(rows, list):
+        return []
+    matches: list[tuple[int, list[str]]] = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("domain") != domain:
+            continue
+        path = row.get("path")
+        versions = row.get("supported_product_versions")
+        if (
+            isinstance(path, list)
+            and command_tokens[: len(path)] == path
+            and isinstance(versions, list)
+            and all(str(item).strip() for item in versions)
+        ):
+            matches.append((len(path), [str(item).strip() for item in versions]))
+    return max(matches, key=lambda item: item[0])[1] if matches else []
 
 
 def normalize_qkv_keyword(value: str | None) -> str:
@@ -185,6 +234,8 @@ def resolve_qkv_action(keyword: str | None, query: str) -> dict[str, Any] | None
                 "canonical_keyword": str(canonical[0]) if canonical else str(keyword),
                 "keyword_candidates": list(dict.fromkeys([*(canonical or [str(keyword)]), *aliases])),
                 "negative_aliases": [str(item) for item in row.get("negative_aliases", [])],
-                "matched_as": "canonical" if normalized in {normalize_qkv_keyword(item) for item in canonical} else "alias",
+                "matched_as": "canonical"
+                if normalized in {normalize_qkv_keyword(item) for item in canonical}
+                else "alias",
             }
     return None

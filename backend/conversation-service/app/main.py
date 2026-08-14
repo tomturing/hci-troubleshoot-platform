@@ -6,6 +6,7 @@ Conversation Service - 主应用 (v2.0 多类型AI助手)
 - [PR-B] agent-service 拆分：移除本地 AgentRouter，改用 AgentClient HTTP 委托
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response
@@ -64,6 +65,24 @@ async def lifespan(app: FastAPI):
 
     # 初始化数据库
     database_manager = DatabaseManager(settings.DATABASE_URL)
+    try:
+        reconciled_tool_count = await asyncio.wait_for(
+            tool_definition.reconcile_tool_resource_revisions(database_manager),
+            timeout=15,
+        )
+        logger.info(
+            event="tool_resource_revisions_reconciled",
+            message=f"Tool Registry 不可变修订对账完成: {reconciled_tool_count} 条",
+        )
+    except Exception as exc:
+        # Tool 修订对账服务于离线资源治理，失败时不得阻断在线对话、SSE 和
+        # terminal_bridge 命令回传；后续保存 Tool 或服务重启仍会再次幂等对账。
+        logger.error(
+            event="tool_resource_revisions_reconcile_failed",
+            message="Tool Registry 不可变修订对账失败，在线诊断继续启动",
+            error=str(exc),
+            exc_info=True,
+        )
 
     # 初始化 Redis（用于 agent_exec 状态管理）
     redis_manager = RedisManager(settings.REDIS_URL)

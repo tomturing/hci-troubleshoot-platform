@@ -1194,6 +1194,18 @@
         "validator": {
           "type": "string",
           "const": "expert_publish_gate"
+        },
+        "structural_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "semantic_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "fp_algo_version": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     },

@@ -24,6 +24,14 @@ import { setActivePinia, createPinia } from 'pinia'
 import { nextTick } from 'vue'
 import type { AssistantInfo } from '@hci/shared'
 
+const offlineDiagnosisMocks = vi.hoisted(() => ({
+  navigateToOfflineDiagnosis: vi.fn(),
+}))
+
+vi.mock('@/utils/offlineDiagnosis', () => ({
+  navigateToOfflineDiagnosis: offlineDiagnosisMocks.navigateToOfflineDiagnosis,
+}))
+
 // ── 模块 mock（需要在 @/stores/chat 和 CaseCreateDialog.vue 加载前生效）────
 vi.mock('@hci/shared', () => ({
   createApiClient: () => ({
@@ -197,6 +205,47 @@ describe('CaseCreateDialog — Bug 2 组件级测试', () => {
     await nextTick()
     // showCaseTemplate watch 再次同步（值未变）→ 仍是 ops-agent
     expect(setupState.caseForm.assistantType).toBe('ops-agent')
+
+    wrapper.unmount()
+  })
+
+  it('无 SSH 创建工单后不发送消息给 Agent，并默认打开离线诊断', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+
+    const { useChatStore } = await import('@/stores/chat')
+    const store = useChatStore()
+    store.assistants = [makeAssistant('ops-agent', true, true)]
+    store.selectedAssistant = 'ops-agent'
+    store.showCaseTemplate = true
+    store.caseTemplate = { title: '离线节点故障', description: '客户现场无法提供 SSH' }
+    store.pendingUserMessage = '客户现场无法提供 SSH'
+
+    const onlineFlowSpy = vi.spyOn(store, 'completeCaseCreationFlow')
+    const offlineFlowSpy = vi.spyOn(store, 'completeOfflineCaseCreation')
+    const CaseCreateDialog = (await import('@/components/CaseCreateDialog.vue')).default
+    const wrapper = shallowMount(CaseCreateDialog, {
+      props: { bridgeStatus: 'not-running' },
+      global: { plugins: [pinia] },
+    })
+    await nextTick()
+
+    const setupState = (wrapper.getCurrentComponent() as any).setupState
+    setupState.caseForm.title = '离线节点故障'
+    setupState.caseForm.description = '客户现场无法提供 SSH'
+    setupState.caseForm.assistantType = 'ops-agent'
+
+    await setupState.handleNoSSHCreate()
+    await nextTick()
+
+    expect(onlineFlowSpy).not.toHaveBeenCalled()
+    expect(offlineFlowSpy).toHaveBeenCalledOnce()
+    expect(store.currentCase?.case_id).toBe('case-dialog-1')
+    expect(store.conversationId).toBeNull()
+    expect(store.pendingUserMessage).toBe('')
+    expect(store.showCaseTemplate).toBe(false)
+    expect(offlineDiagnosisMocks.navigateToOfflineDiagnosis).toHaveBeenCalledWith('case-dialog-1')
+    expect(store.messages.some(message => message.role === 'user')).toBe(false)
 
     wrapper.unmount()
   })

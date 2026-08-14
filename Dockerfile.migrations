@@ -1,8 +1,9 @@
 # db-migrate 迁移镜像（多阶段构建）
 # 工作方式（声明式 + 幂等）：
+#   0. 全新空库先由 Atlas 创建数据迁移依赖表；存量库跳过本阶段
 #   1. migration-runner 执行数据迁移（data-migrations/）— 幂等，版本化管理
 #   2. psql 应用函数（desired_extras.sql）— CREATE OR REPLACE，幂等
-#   3. atlas schema apply（desired_schema.sql）— 声明式差量同步表结构
+#   3. atlas schema apply（desired_schema.sql）— 最终声明式差量收敛
 #   4. psql 应用触发器（desired_extras.sql）— DROP+CREATE，幂等
 #
 # 文件职责：

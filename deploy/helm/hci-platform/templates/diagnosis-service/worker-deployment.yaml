@@ -1,0 +1,104 @@
+{{- if .Values.diagnosisService.enabled }}
+{{- if and (eq .Values.diagnosisService.objectStorageMode "local") (or (ne (int .Values.diagnosisService.replicaCount) 1) (ne (int .Values.diagnosisService.worker.replicaCount) 1)) }}
+{{- fail "diagnosisService.objectStorageMode=local 时 diagnosis service 和 worker 必须保持单副本" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: diagnosis-worker
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "diagnosis-worker" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  replicas: {{ .Values.diagnosisService.worker.replicaCount }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "diagnosis-worker" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hci.podLabels" (dict "name" "diagnosis-worker" "Release" .Release "Chart" .Chart) | nindent 8 }}
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/diagnosis-service/secret.yaml") . | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.diagnosisService.worker.metricsPort | quote }}
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "diagnosis-worker") | nindent 6 }}
+      {{- if eq .Values.diagnosisService.objectStorageMode "local" }}
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: diagnosis-service
+              topologyKey: kubernetes.io/hostname
+      {{- end }}
+      containers:
+        - name: diagnosis-worker
+          image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.diagnosisService.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
+          command: ["python", "-m", "app.worker"]
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.diagnosisService.worker.metricsPort }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: hci-common-config
+            - secretRef:
+                name: hci-secrets
+          env:
+            - name: SERVICE_NAME
+              value: "diagnosis-worker"
+            - name: DATABASE_URL
+              value: {{ printf "postgresql+asyncpg://%s:%s@%s:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+            - name: DIAGNOSIS_ENCRYPTION_PRIVATE_KEY_B64
+              valueFrom:
+                secretKeyRef:
+                  name: diagnosis-service-signing
+                  key: DIAGNOSIS_ENCRYPTION_PRIVATE_KEY_B64
+            - name: DIAGNOSIS_ENCRYPTION_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: diagnosis-service-signing
+                  key: DIAGNOSIS_ENCRYPTION_KEY_ID
+            - name: DIAGNOSIS_OBJECT_STORAGE_ROOT
+              value: "/var/lib/hci-diagnosis"
+            - name: DIAGNOSIS_OBJECT_STORAGE_MODE
+              value: {{ .Values.diagnosisService.objectStorageMode | quote }}
+            - name: DIAGNOSIS_ENABLE_AUTOMATIC_SUPPLEMENT
+              value: {{ .Values.diagnosisService.automaticSupplementEnabled | quote }}
+            - name: DIAGNOSIS_WORKER_POLL_SECONDS
+              value: {{ .Values.diagnosisService.worker.pollSeconds | quote }}
+            - name: DIAGNOSIS_WORKER_STALE_SECONDS
+              value: {{ .Values.diagnosisService.worker.staleSeconds | quote }}
+            - name: DIAGNOSIS_WORKER_METRICS_PORT
+              value: {{ .Values.diagnosisService.worker.metricsPort | quote }}
+          livenessProbe:
+            tcpSocket:
+              port: metrics
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            tcpSocket:
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.diagnosisService.worker.resources | nindent 12 }}
+          volumeMounts:
+            - name: diagnosis-data
+              mountPath: /var/lib/hci-diagnosis
+            - name: diagnosis-work
+              mountPath: /var/lib/hci-diagnosis/work
+      volumes:
+        - name: diagnosis-data
+          persistentVolumeClaim:
+            claimName: diagnosis-data
+        - name: diagnosis-work
+          emptyDir:
+            sizeLimit: 2Gi
+{{- end }}

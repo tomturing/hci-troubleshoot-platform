@@ -7,8 +7,8 @@ umask 077
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 KBD_ID="${1:-}"
-if [[ ! "$KBD_ID" =~ ^[0-9]+$ ]]; then
-  echo "用法: $0 <KBD_ID>" >&2
+if [[ ! "$KBD_ID" =~ ^[A-Za-z0-9_.-]{1,64}$ ]]; then
+  echo "用法: $0 <KBD_SUPPORT_ID>（仅允许字母、数字、点、下划线和连字符）" >&2
   exit 2
 fi
 
@@ -188,7 +188,7 @@ if [[ "$ready" != 1 ]]; then
 fi
 
 echo "环境已启动：$CONTAINER"
-echo "[2/2] Custom UI → SSH 终端：打开 connection.json，选择‘仿真租约’，按字段连接后执行 recommended_command。"
+echo "[2/2] Custom UI → SSH 终端：打开 connection.json，选择‘仿真租约’，按字段连接后执行 recommended_commands 中需要验收的命令。"
 echo "连接文件（Lease 为一次性敏感能力，不在终端打印）：$RUN_DIR/connection.json"
 python3 - "$RUN_DIR/connection.json" <<'PY'
 import json, sys
@@ -205,6 +205,7 @@ print(json.dumps({
     "execution_mode": connection.get("execution_mode"),
     "expires_at": data.get("expires_at"),
     "recommended_command": data.get("recommended_command"),
+    "recommended_commands": data.get("recommended_commands", []),
     "password": "<REDACTED>",
 }, ensure_ascii=False, indent=2))
 PY

@@ -20,10 +20,15 @@ v3 架构要点：
 
 from __future__ import annotations
 
+import contextvars
+import hashlib
+import json
 import os
+import re
+import secrets
 import time
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from typing import Any
 
 from shared.observability.logger import get_logger
@@ -32,6 +37,14 @@ logger = get_logger(__name__)
 
 _langfuse_client: Any = None
 _langfuse_checked: bool = False
+_current_workflow_observation: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "langfuse_workflow_observation",
+    default=None,
+)
+_current_content_capture: contextvars.ContextVar[bool | None] = contextvars.ContextVar(
+    "langfuse_content_capture",
+    default=None,
+)
 
 
 def get_langfuse():
@@ -58,46 +71,27 @@ def get_langfuse():
         return None
 
     try:
-        from langfuse import get_client
+        from langfuse import Langfuse
+        from opentelemetry.sdk.resources import SERVICE_NAME, Resource
+        from opentelemetry.sdk.trace import TracerProvider
 
-        _langfuse_client = get_client()
-
-        # Langfuse v3 的 get_client() 会创建 TracerProvider 并注册
-        # LangfuseSpanProcessor（继承 BatchSpanProcessor，内含 OTLP HTTP exporter
-        # 指向 {LANGFUSE_HOST}/api/public/otel/v1/traces）。
-        # 若 langfuse-server 不可达，会持续报 Connection refused。
-        # 我们的 OTel span 由 otel.py 独立发往 Tempo，不需要 Langfuse 转发。
-        # 此处遍历 tracer provider 的 span processors，关停 Langfuse 注入的 exporter。
-        try:
-            from opentelemetry import trace as otel_trace
-
-            provider = otel_trace.get_tracer_provider()
-            active_sp = getattr(provider, "_active_span_processor", None)
-            if active_sp:
-                for sp in list(getattr(active_sp, "_span_processors", [])):
-                    if type(sp).__name__ == "LangfuseSpanProcessor":
-                        active_sp._span_processors.remove(sp)
-                        sp.shutdown()
-                        logger.info(event="langfuse_otel_exporter_removed")
-        except Exception:
-            pass
-
-        # Langfuse v3 SDK 的 get_client() 会自动安装 httpx OTel instrumentation，
-        # 导致所有 HTTP 调用产生 span 并进入 Langfuse trace（96%+ 噪音）。
-        # 卸载后重新绑定到 otel.py 的私有 provider（发往 Tempo），
-        # 确保 Langfuse trace 只有 agent 层 observation，OTel 分布式追踪不受影响。
-        try:
-            from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
-            from shared.observability.otel import get_otel_provider
-
-            HTTPXClientInstrumentor().uninstrument()
-            otel_provider = get_otel_provider()
-            if otel_provider:
-                HTTPXClientInstrumentor().instrument(tracer_provider=otel_provider)
-        except ImportError:
-            pass
-        except Exception as e:
-            logger.warning(event="langfuse_httpx_rebind_error", error=str(e))
+        # Langfuse 与 Tempo 使用各自的 TracerProvider。Langfuse 只接收显式创建的
+        # workflow/generation/tool observation；HTTPX、SQLAlchemy 等基础设施 Span
+        # 继续由 otel.py 的私有 Provider 发往 Tempo，避免 Langfuse 出现大量噪声。
+        langfuse_provider = TracerProvider(
+            resource=Resource.create({SERVICE_NAME: os.environ.get("SERVICE_NAME", "hci-platform")})
+        )
+        _langfuse_client = Langfuse(
+            public_key=public_key,
+            secret_key=secret_key,
+            host=os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com"),
+            tracer_provider=langfuse_provider,
+            blocked_instrumentation_scopes=[
+                "opentelemetry.instrumentation.httpx",
+                "opentelemetry.instrumentation.sqlalchemy",
+                "opentelemetry.instrumentation.fastapi",
+            ],
+        )
 
         logger.info(
             event="langfuse_initialized",
@@ -110,6 +104,258 @@ def get_langfuse():
     except Exception as e:
         logger.error(event="langfuse_init_error", error=str(e))
         return None
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    """读取布尔环境变量。"""
+
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def _capture_content_for_operation(operation: str) -> bool:
+    """按业务类型决定是否记录正文；专用配置优先于全局配置。"""
+
+    operation_key = re.sub(r"[^A-Z0-9]+", "_", operation.upper()).strip("_")
+    dedicated_name = f"LANGFUSE_CAPTURE_{operation_key}_CONTENT"
+    if dedicated_name in os.environ:
+        return _env_bool(dedicated_name)
+    return _env_bool("LANGFUSE_CAPTURE_CONTENT", default=True)
+
+
+def _content_summary(value: Any, *, capture_content: bool | None = None) -> Any:
+    """生成默认脱敏观测内容；显式开启后才发送正文。"""
+
+    from shared.observability.redaction import redact_observation_value
+
+    redacted = redact_observation_value(value)
+    if capture_content is None:
+        capture_content = _env_bool("LANGFUSE_CAPTURE_CONTENT", default=True)
+    if capture_content:
+        return redacted
+    try:
+        serialized = json.dumps(redacted, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        serialized = str(redacted)
+    return {
+        "content_redacted": True,
+        "content_chars": len(serialized),
+        "content_sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+    }
+
+
+def _current_otel_trace_context() -> dict[str, str] | None:
+    """把当前 Tempo Span 身份用于 Langfuse Trace 关联，不共享 Exporter。"""
+
+    try:
+        from shared.observability.otel import get_current_span_id, get_current_trace_id
+
+        trace_id = get_current_trace_id()
+        span_id = get_current_span_id()
+        if len(trace_id) == 32:
+            context = {"trace_id": trace_id}
+            if len(span_id) == 16:
+                context["parent_span_id"] = span_id
+            return context
+    except Exception:
+        pass
+    return None
+
+
+def _start_explicit_observation(
+    *,
+    name: str,
+    as_type: str,
+    input: Any = None,
+    metadata: dict[str, Any] | None = None,
+    model: str | None = None,
+    model_parameters: dict[str, Any] | None = None,
+    trace_id: str = "",
+    capture_content: bool | None = None,
+) -> Any:
+    """在当前业务 observation 下创建显式子节点，避免污染全局 OTel 上下文。"""
+
+    lf = get_langfuse()
+    if lf is None:
+        return None
+    kwargs: dict[str, Any] = {
+        "as_type": as_type,
+        "name": name,
+        "input": _content_summary(input, capture_content=capture_content),
+        "metadata": metadata or {},
+    }
+    if model:
+        kwargs["model"] = model
+    if model_parameters:
+        kwargs["model_parameters"] = model_parameters
+    parent = _current_workflow_observation.get()
+    if parent is not None:
+        return parent.start_observation(**kwargs)
+    trace_context = _current_otel_trace_context()
+    if trace_context is None and len(trace_id) == 32:
+        trace_context = {"trace_id": trace_id}
+    if trace_context:
+        kwargs["trace_context"] = trace_context
+    return lf.start_observation(**kwargs)
+
+
+@contextmanager
+def observe_workflow(
+    *,
+    name: str,
+    input: Any = None,
+    metadata: dict[str, Any] | None = None,
+    session_id: str = "",
+    user_id: str = "system",
+    trace_id: str = "",
+) -> Generator[Any, None, None]:
+    """观测一次 KBD/离线诊断业务步骤；未配置 Langfuse 时安全降级。"""
+
+    from contextlib import nullcontext
+
+    try:
+        from opentelemetry import trace as otel_trace
+        from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, TraceState, set_span_in_context
+
+        from shared.observability.otel import get_otel_provider
+
+        provider = get_otel_provider()
+        parent_context = None
+        current_context = otel_trace.get_current_span().get_span_context()
+        if (
+            provider is not None
+            and not current_context.is_valid
+            and len(trace_id) == 32
+        ):
+            try:
+                explicit_trace_id = int(trace_id, 16)
+            except ValueError:
+                explicit_trace_id = 0
+            if explicit_trace_id:
+                # 后台任务脱离原请求 Context 后，使用持久化 trace_id 构造远程父上下文，
+                # 让日志、Tempo、Langfuse 和批次审计仍能以同一 Trace ID 互查。
+                parent_span_context = SpanContext(
+                    trace_id=explicit_trace_id,
+                    span_id=secrets.randbits(64) or 1,
+                    is_remote=True,
+                    trace_flags=TraceFlags(TraceFlags.SAMPLED),
+                    trace_state=TraceState(),
+                )
+                parent_context = set_span_in_context(NonRecordingSpan(parent_span_context))
+        otel_context = (
+            provider.get_tracer("hci.business-workflow").start_as_current_span(name, context=parent_context)
+            if provider is not None
+            else nullcontext()
+        )
+    except Exception:
+        otel_context = nullcontext()
+
+    with otel_context:
+        try:
+            observation = _start_explicit_observation(
+                name=name,
+                as_type="span",
+                input=input,
+                metadata=metadata,
+                trace_id=trace_id,
+            )
+        except Exception as exc:
+            logger.warning(event="langfuse_workflow_start_error", workflow=name, error=str(exc))
+            observation = None
+        if observation is None:
+            yield None
+            return
+
+        token = _current_workflow_observation.set(observation)
+        try:
+            try:
+                observation.update_trace(user_id=user_id or "system", session_id=session_id or name)
+            except Exception as exc:
+                logger.warning(event="langfuse_trace_update_error", workflow=name, error=str(exc))
+            yield observation
+        except Exception as exc:
+            with suppress(Exception):
+                observation.update(level="ERROR", status_message=str(exc)[:1000])
+            raise
+        finally:
+            _current_workflow_observation.reset(token)
+            try:
+                observation.end()
+            except Exception as exc:
+                logger.warning(event="langfuse_workflow_end_error", workflow=name, error=str(exc))
+
+
+@contextmanager
+def observe_llm_generation(
+    *,
+    operation: str,
+    model: str,
+    input: Any,
+    metadata: dict[str, Any] | None = None,
+    model_parameters: dict[str, Any] | None = None,
+) -> Generator[Any, None, None]:
+    """观测一次独立 LLM 尝试；格式重试和网络重试不得覆盖前一轮。"""
+
+    capture_content = _capture_content_for_operation(operation)
+    try:
+        observation = _start_explicit_observation(
+            name=f"llm.{operation}",
+            as_type="generation",
+            input=input,
+            metadata=metadata,
+            model=model,
+            model_parameters=model_parameters,
+            capture_content=capture_content,
+        )
+    except Exception as exc:
+        logger.warning(event="langfuse_generation_start_error", operation=operation, error=str(exc))
+        observation = None
+    capture_token = _current_content_capture.set(capture_content)
+    try:
+        yield observation
+    except Exception as exc:
+        if observation is not None:
+            with suppress(Exception):
+                observation.update(level="ERROR", status_message=str(exc)[:1000])
+        raise
+    finally:
+        _current_content_capture.reset(capture_token)
+        if observation is not None:
+            try:
+                observation.end()
+            except Exception as exc:
+                logger.warning(event="langfuse_generation_end_error", operation=operation, error=str(exc))
+
+
+def update_observation(
+    observation: Any,
+    *,
+    output: Any = None,
+    metadata: dict[str, Any] | None = None,
+    usage_details: dict[str, int] | None = None,
+    level: str | None = None,
+    status_message: str | None = None,
+) -> None:
+    """以统一脱敏策略结束前更新 observation。"""
+
+    if observation is None:
+        return
+    try:
+        kwargs: dict[str, Any] = {
+            "output": _content_summary(output, capture_content=_current_content_capture.get()),
+            "metadata": metadata or {},
+        }
+        if usage_details:
+            kwargs["usage_details"] = usage_details
+        if level:
+            kwargs["level"] = level
+        if status_message:
+            kwargs["status_message"] = status_message[:1000]
+        observation.update(**kwargs)
+    except Exception as exc:
+        logger.warning(event="langfuse_observation_update_error", error=str(exc))
 
 
 async def observe_invoke(

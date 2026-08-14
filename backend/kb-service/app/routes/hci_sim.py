@@ -31,14 +31,36 @@ def _check_internal_auth(request: Request) -> None:
 
 
 @router.get("/capabilities")
-async def list_hci_sim_capabilities(request: Request) -> dict:
+async def list_hci_sim_capabilities(request: Request, sample_suite: str | None = None) -> dict:
     """批量验证全部 KBD 的 C 阶段解析前置条件，不执行编译或写数据库。"""
 
     _check_internal_auth(request)
     if _db_manager is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="数据库依赖未初始化")
     async with _db_manager.async_session_factory() as session:
-        return (await _resolver.resolve_all(session)).to_dict()
+        report = (await _resolver.resolve_all(session)).to_dict()
+    if sample_suite:
+        results = [
+            item
+            for item in report["results"]
+            if (item.get("metadata") or {}).get("sample_suite") == sample_suite
+        ]
+        readiness_counts: dict[str, int] = {}
+        gap_counts: dict[str, int] = {}
+        for item in results:
+            readiness = str(item["status"])
+            readiness_counts[readiness] = readiness_counts.get(readiness, 0) + 1
+            for gap in item.get("capability_gaps") or []:
+                code = str(gap.get("code") or "UNKNOWN")
+                gap_counts[code] = gap_counts.get(code, 0) + 1
+        report.update(
+            total=len(results),
+            status_counts=dict(sorted(readiness_counts.items())),
+            gap_counts=dict(sorted(gap_counts.items())),
+            results=results,
+            sample_suite=sample_suite,
+        )
+    return report
 
 
 @router.get("/capabilities/{support_id}")

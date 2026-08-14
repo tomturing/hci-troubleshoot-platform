@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, type TableColumnCtx, type TableInstance } from 'element-plus'
 import { FullScreen, Refresh } from '@element-plus/icons-vue'
 import { useCategories } from '../composables/useCategories'
 import { marked } from 'marked'
@@ -19,6 +19,13 @@ interface KbdMetadata {
   sangfor_created_at?: string | null
   create_admin_id?: string | null
   update_admin_id?: string | null
+  is_test_sample?: boolean
+  sample_suite?: string | null
+  sample_suite_label?: string | null
+  sample_purpose?: string | null
+  domain_hint?: string | null
+  signal_tools?: string[]
+  seed_version?: number
 }
 
 interface KbdEntry {
@@ -114,6 +121,60 @@ interface CommandPreview {
   notice?: string
 }
 
+type KbdBatchJobStatus = 'pending' | 'running' | 'completed' | 'partial_failed' | 'failed' | 'interrupted'
+type KbdBatchItemStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'interrupted'
+
+interface KbdBatchJobItem {
+  item_id: number
+  kbd_id: number
+  support_id: string | null
+  title: string
+  kbd_status: string | null
+  lock_version: number | null
+  status: KbdBatchItemStatus
+  result_json: Record<string, unknown>
+  error_json: Record<string, unknown>
+  error_code: string | null
+  error_message: string | null
+  error_retryable: boolean
+  work_total_count: number
+  work_completed_count: number
+  work_failed_count: number
+  trace_id: string
+  started_at: string | null
+  completed_at: string | null
+  updated_at: string | null
+}
+
+interface KbdBatchJob {
+  batch_id: string
+  job_type: 'reanalyze_images' | 'reclassify' | 'extract_signals' | 'approve' | 'reject'
+  status: KbdBatchJobStatus
+  requested_kbd_ids: number[]
+  request_json?: {
+    reviewer_id?: number
+    review_note?: string | null
+    entries?: Record<string, { category_id?: string | null; lock_version?: number }>
+  }
+  total_count: number
+  completed_count: number
+  succeeded_count: number
+  failed_count: number
+  interrupted_count: number
+  retryable_count: number
+  retry_of_batch_id: string | null
+  retried_by_batch_id: string | null
+  work_total_count: number
+  work_completed_count: number
+  work_failed_count: number
+  trace_id: string
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  updated_at: string | null
+  items?: KbdBatchJobItem[]
+}
+
 // ============ 关键信号 v2 数据模型（RFC §7 前端原生读 v2 对象化，2026-07-22） ============
 // GET 边界直接返回 v2 文档，前端不再归一/适配，直接基于该结构渲染与编辑；
 // 回写时仍发回完整 v2 文档（{schema_version, signals}），后端 update_kbd_entry 幂等归约。
@@ -144,6 +205,18 @@ interface ChangeAnnotation {
   signal_id?: string
   reason_code: string
   note?: string
+}
+
+interface KbdCollectionImpact {
+  offline_ready: boolean
+  requirements: Array<Record<string, any>>
+  matched_mappings: Array<Record<string, any>>
+  missing_mappings: Array<Record<string, any>>
+  affected_profiles: Array<Record<string, any>>
+  affected_plans: Array<Record<string, any>>
+  affected_artifacts: Array<Record<string, any>>
+  blockers: Array<Record<string, any>>
+  change_policy: Record<string, string>
 }
 
 // 图片描述项（images_json 数组元素）
@@ -240,9 +313,64 @@ const STATUS_MAP: Record<string, string> = {
 function statusLabel(s: string) { return STATUS_MAP[s] || s }
 const supportIdFilter = ref('')
 const titleKeywordFilter = ref('')
+const sampleSuiteFilter = ref('')
 const confidenceFilter = ref('')
 const sortBy = ref('updated_at')
 const sortOrder = ref('desc')
+const selectedEntries = ref<KbdEntry[]>([])
+
+// ──────────────────────────────────────────────────────────────────────────────
+// KBD 列表列宽拖拽调整与持久化
+// el-table 开启 border 后由 Element Plus 原生支持拖拽列宽（触发 header-dragend 事件），
+// 这里补充跨刷新持久化，避免用户每次进入页面都重新调整。
+// ──────────────────────────────────────────────────────────────────────────────
+const KBD_COLUMN_WIDTH_STORAGE_KEY = 'kbd-list-column-widths'
+const kbdTableRef = ref<TableInstance>()
+
+/** Element Plus 未公开 setColumnWidth API，通过窄化类型读取内部列配置来恢复列宽。 */
+interface KbdTableStoreAccess {
+  store: { states: { columns: TableColumnCtx<unknown>[] } }
+}
+
+function persistKbdColumnWidth(newWidth: number, column: TableColumnCtx<unknown>): void {
+  if (!column.label) return
+  let widths: Record<string, number> = {}
+  try {
+    widths = JSON.parse(localStorage.getItem(KBD_COLUMN_WIDTH_STORAGE_KEY) || '{}')
+  } catch {
+    widths = {}
+  }
+  widths[String(column.label)] = newWidth
+  try {
+    localStorage.setItem(KBD_COLUMN_WIDTH_STORAGE_KEY, JSON.stringify(widths))
+  } catch {
+    // 存储不可用（隐私模式等）时忽略持久化，拖拽本身仍在当前会话内生效
+  }
+}
+
+function restoreKbdColumnWidths(): void {
+  let saved: Record<string, number>
+  try {
+    saved = JSON.parse(localStorage.getItem(KBD_COLUMN_WIDTH_STORAGE_KEY) || '{}')
+  } catch {
+    return
+  }
+  if (!saved || typeof saved !== 'object') return
+  const table = kbdTableRef.value
+  if (!table) return
+  const columns = (table as unknown as KbdTableStoreAccess).store.states.columns
+  for (const column of columns) {
+    const width = Number(saved[String(column.label || '')])
+    if (!column.label || !Number.isFinite(width) || width < 24) continue
+    column.width = width
+    column.realWidth = width
+  }
+  table.doLayout()
+}
+
+function handleHeaderDragEnd(newWidth: number, _oldWidth: number, column: TableColumnCtx<unknown>): void {
+  persistKbdColumnWidth(newWidth, column)
+}
 
 function handleSortChange({ prop, order }: { prop: string; order: string | null }) {
   sortBy.value = prop || 'updated_at'
@@ -302,6 +430,8 @@ const canEditCurrent = computed(() =>
 )
 const reviewNote = ref('')
 const editableCategoryId = ref('')
+const collectionImpact = ref<KbdCollectionImpact | null>(null)
+const collectionImpactLoading = ref(false)
 
 // 详情弹窗 — 内容内联编辑
 const editingContent = ref(false)
@@ -406,6 +536,26 @@ const editLoading = ref(false)
 // ──────────────────────────────────────────────────────────────────────────────
 const internalToken = import.meta.env.VITE_INTERNAL_API_TOKEN || 'hci-dev-internal-token'
 const authHeader = { Authorization: `Bearer ${internalToken}` }
+const diagnosisHeader = {
+  ...authHeader,
+  'X-Tenant-ID': import.meta.env.VITE_DIAGNOSIS_TENANT_ID || 'default',
+  'X-Actor-ID': import.meta.env.VITE_DIAGNOSIS_ACTOR_ID || 'admin-ui',
+}
+
+async function loadCollectionImpact(kbdId: number): Promise<KbdCollectionImpact | null> {
+  collectionImpactLoading.value = true
+  try {
+    const resp = await fetch(`/api/internal/kbd-collection-impact/${kbdId}`, { headers: diagnosisHeader })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    collectionImpact.value = await resp.json()
+    return collectionImpact.value
+  } catch {
+    collectionImpact.value = null
+    return null
+  } finally {
+    collectionImpactLoading.value = false
+  }
+}
 
 function kbdEditEndpoint(entry: KbdEntry): string {
   return entry.maintenance_working
@@ -446,6 +596,9 @@ async function fetchPending() {
     if (titleKeywordFilter.value) {
       params.append('title_keyword', titleKeywordFilter.value)
     }
+    if (sampleSuiteFilter.value) {
+      params.append('sample_suite', sampleSuiteFilter.value)
+    }
     if (confidenceFilter.value) {
       const [minStr, maxStr] = confidenceFilter.value.split(',')
       if (minStr) params.append('min_confidence', minStr)
@@ -474,8 +627,14 @@ async function fetchPending() {
 async function handleApprove(entry: KbdEntry) {
   if (!(await ensureReviewerIdentity())) return
   try {
+    const impact = await loadCollectionImpact(entry.id)
+    const offlineNotice = !impact
+      ? '\n\n离线采集影响暂时无法读取；KBD 发布不受影响，发布后请在离线诊断管理页同步 KBD。'
+      : impact.offline_ready
+        ? '\n\n当前离线采集映射完整；发布后仍需执行增量同步以记录本次 KBD 修订。'
+        : `\n\n发现 ${impact.blockers.length} 项离线采集差异；KBD 可以先发布，随后需在离线诊断管理页同步并审核候选资源。`
     await ElMessageBox.confirm(
-      `确认通过此 KBD 条目？\n\n「${entry.title}」`,
+      `确认通过此 KBD 条目？\n\n「${entry.title}」${offlineNotice}`,
       '审核通过',
       { confirmButtonText: '确认发布', cancelButtonText: '取消', type: 'success' },
     )
@@ -915,7 +1074,495 @@ async function handleReextractSignals(entry: KbdEntry) {
   }
 }
 
-async function openDetailDialog(entry: KbdEntry) {
+const batchReclassifyLoading = ref(false)
+const batchExtractLoading = ref(false)
+const batchReanalyzeLoading = ref(false)
+const batchApproveLoading = ref(false)
+const batchRejectLoading = ref(false)
+const batchJobs = ref<KbdBatchJob[]>([])
+const batchJobsLoading = ref(false)
+const batchJobsPage = ref(1)
+const batchJobsPageSize = ref(10)
+const batchJobsTotal = ref(0)
+const batchJobTypeFilter = ref<KbdBatchJob['job_type'] | ''>('')
+const batchJobDetail = ref<KbdBatchJob | null>(null)
+const batchJobDetailVisible = ref(false)
+const batchJobDetailLoading = ref(false)
+const batchRetryLoadingId = ref<string | null>(null)
+const batchItemActionLoadingId = ref<number | null>(null)
+const submittedBatchIds = new Set<string>()
+let batchPollTimer: number | undefined
+
+function batchJobTypeLabel(jobType: KbdBatchJob['job_type']): string {
+  return {
+    reanalyze_images: '批量识图',
+    reclassify: '批量重新分类',
+    extract_signals: '批量抽取信号',
+    approve: '批量通过',
+    reject: '批量拒绝',
+  }[jobType]
+}
+
+function batchJobStatusLabel(status: KbdBatchJobStatus): string {
+  return {
+    pending: '等待处理',
+    running: '处理中',
+    completed: '已完成',
+    partial_failed: '部分失败',
+    failed: '失败',
+    interrupted: '已中断',
+  }[status]
+}
+
+function batchJobStatusTag(status: KbdBatchJobStatus): 'info' | 'primary' | 'success' | 'warning' | 'danger' {
+  if (status === 'running') return 'primary'
+  if (status === 'completed') return 'success'
+  if (status === 'partial_failed') return 'warning'
+  if (status === 'interrupted') return 'warning'
+  if (status === 'failed') return 'danger'
+  return 'info'
+}
+
+function batchItemStatusLabel(status: KbdBatchItemStatus): string {
+  return {
+    pending: '等待处理',
+    running: '处理中',
+    succeeded: '成功',
+    failed: '失败',
+    interrupted: '已中断',
+  }[status]
+}
+
+function batchProgress(job: KbdBatchJob): number {
+  if (job.total_count <= 0) return 0
+  // 批次工作量只能在 KBD 开始执行后逐步发现，不能用动态工作量小计作为整批分母，
+  // 否则“当前已发现 40/40、整批 KBD 40/87”会被错误显示成 100%。
+  // 中断表示条目已收敛但未实际完成处理，因此不计入进度百分比。
+  const processedCount = job.succeeded_count + job.failed_count
+  return Math.min(100, Math.max(0, Math.round(processedCount * 100 / job.total_count)))
+}
+
+function batchProgressLabel(job: KbdBatchJob): string {
+  const processedCount = job.succeeded_count + job.failed_count
+  const kbdProgress = `已处理 KBD ${processedCount}/${job.total_count}`
+  const interruption = job.interrupted_count > 0 ? ` · 中断 ${job.interrupted_count}` : ''
+  // 重新识图保留图片处理量作为辅助信息，但不展示尚未覆盖待处理 KBD 的动态分母。
+  if (job.job_type === 'reanalyze_images' && job.work_completed_count > 0) {
+    return `已处理图片 ${job.work_completed_count} 张 · ${kbdProgress}${interruption}`
+  }
+  return `${kbdProgress}${interruption}`
+}
+
+function batchItemProgress(item: KbdBatchJobItem): string {
+  if (item.work_total_count <= 0) return item.status === 'pending' ? '等待统计' : '—'
+  return `${item.work_completed_count}/${item.work_total_count}`
+}
+
+function canRetryBatch(job: KbdBatchJob): boolean {
+  return job.status !== 'pending'
+    && job.status !== 'running'
+    && job.retryable_count > 0
+    && !job.retried_by_batch_id
+}
+
+async function retryUnsuccessfulBatch(job: KbdBatchJob) {
+  const retryCount = job.retryable_count
+  try {
+    await ElMessageBox.confirm(
+      `将创建一个新批次，手工重试 ${retryCount} 条失败或中断记录。业务校验失败可能再次调用模型，请确认相关规则、Prompt 或代码已经修正；原批次保持不变。是否继续？`,
+      '重试未成功记录',
+      { confirmButtonText: '创建重试批次', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch { return }
+
+  batchRetryLoadingId.value = job.batch_id
+  try {
+    const resp = await fetch(`/api/v1/kbd/batch/jobs/${job.batch_id}/retry`, {
+      method: 'POST',
+      headers: authHeader,
+    })
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) throw new Error(data.detail?.message || data.detail || `HTTP ${resp.status}`)
+    ElMessage.success(data.message || `已创建 ${retryCount} 条记录的重试批次`)
+    rememberSubmittedBatch(data)
+    if (batchJobDetailVisible.value) await loadBatchJobDetail(job.batch_id, true)
+  } catch (err: any) {
+    ElMessage.error({ message: `创建重试批次失败：${err.message || '未知错误'}`, duration: 0, showClose: true })
+  } finally {
+    batchRetryLoadingId.value = null
+  }
+}
+
+function batchErrorMessage(item: KbdBatchJobItem): string {
+  if (item.error_message) return item.error_message
+  const message = item.error_json?.message
+  if (typeof message === 'string') return message
+  if (message && typeof message === 'object') {
+    const nested = (message as Record<string, unknown>).message
+    if (typeof nested === 'string') return nested
+  }
+  return message ? JSON.stringify(message) : '—'
+}
+
+function batchErrorCode(item: KbdBatchJobItem): string {
+  if (item.error_code) return item.error_code
+  const message = item.error_json?.message
+  if (message && typeof message === 'object') {
+    const nested = (message as Record<string, unknown>).code
+    if (typeof nested === 'string') return nested
+  }
+  const code = item.error_json?.code
+  return typeof code === 'string' ? code : ''
+}
+
+function batchErrorDetail(item: KbdBatchJobItem): Record<string, unknown> | null {
+  if (!item.error_json || Object.keys(item.error_json).length === 0) return null
+  return item.error_json
+}
+
+async function loadBatchItemKbd(item: KbdBatchJobItem): Promise<KbdEntry | null> {
+  batchItemActionLoadingId.value = item.item_id
+  try {
+    const resp = await fetch(`/api/v1/kbd/${item.kbd_id}`, { headers: authHeader })
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) throw new Error(data.detail?.message || data.detail || `HTTP ${resp.status}`)
+    return data as KbdEntry
+  } catch (err: any) {
+    ElMessage.error({ message: `加载 KBD 失败：${err.message || '未知错误'}`, duration: 0, showClose: true })
+    return null
+  } finally {
+    batchItemActionLoadingId.value = null
+  }
+}
+
+async function openBatchItemDetail(item: KbdBatchJobItem) {
+  const entry = await loadBatchItemKbd(item)
+  if (!entry) return
+  batchJobDetailVisible.value = false
+  await openDetailDialog(entry, true)
+}
+
+async function editBatchItem(item: KbdBatchJobItem) {
+  const entry = await loadBatchItemKbd(item)
+  if (!entry) return
+  batchJobDetailVisible.value = false
+  openEditDialog(entry)
+}
+
+function batchRejectedCandidates(item: KbdBatchJobItem): Array<Record<string, any>> {
+  const message = item.error_json?.message
+  if (!message || typeof message !== 'object') return []
+  const rejected = (message as Record<string, any>).rejected_candidates
+  return Array.isArray(rejected) ? rejected : []
+}
+
+function batchResultSummary(item: KbdBatchJobItem): string {
+  const result = item.result_json || {}
+  if ('done' in result || 'failed' in result) {
+    return `成功识别 ${Number(result.done || 0)} 张，失败 ${Number(result.failed || 0)} 张`
+  }
+  if ('category_id' in result) {
+    const confidence = typeof result.confidence === 'number' ? `（${Math.round(result.confidence * 100)}%）` : ''
+    return `分类为 ${String(result.category_id || '未分类')}${confidence}`
+  }
+  if ('signals_count' in result) {
+    return `抽取 ${Number(result.signals_count || 0)} 条，拒绝 ${Number(result.rejected_count || 0)} 条`
+  }
+  if (result.status === 'published') return '审核通过并发布'
+  if (result.status === 'rejected') return '审核拒绝'
+  return item.status === 'succeeded' ? '处理成功' : '—'
+}
+
+function clearBatchPollTimer() {
+  if (batchPollTimer !== undefined) {
+    window.clearTimeout(batchPollTimer)
+    batchPollTimer = undefined
+  }
+}
+
+function scheduleBatchPolling() {
+  clearBatchPollTimer()
+  if (batchJobs.value.some(job => job.status === 'pending' || job.status === 'running')) {
+    batchPollTimer = window.setTimeout(() => void loadBatchJobs(), 3000)
+  }
+}
+
+async function loadBatchJobDetail(batchId: string, silent = false) {
+  if (!silent) batchJobDetailLoading.value = true
+  try {
+    const resp = await fetch(`/api/v1/kbd/batch/jobs/${batchId}`, { headers: authHeader })
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`)
+    batchJobDetail.value = data
+  } catch (err: any) {
+    if (!silent) ElMessage.error(`加载任务详情失败：${err.message || '未知错误'}`)
+  } finally {
+    if (!silent) batchJobDetailLoading.value = false
+  }
+}
+
+async function openBatchJobDetail(job: KbdBatchJob) {
+  batchJobDetailVisible.value = true
+  batchJobDetail.value = job
+  await loadBatchJobDetail(job.batch_id)
+}
+
+async function loadBatchJobs() {
+  batchJobsLoading.value = true
+  let loaded = false
+  try {
+    const params = new URLSearchParams({
+      page: String(batchJobsPage.value),
+      page_size: String(batchJobsPageSize.value),
+    })
+    if (batchJobTypeFilter.value) params.set('job_type', batchJobTypeFilter.value)
+    const resp = await fetch(`/api/v1/kbd/batch/jobs?${params}`, { headers: authHeader })
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) throw new Error(data.detail || `HTTP ${resp.status}`)
+    batchJobs.value = data.jobs || []
+    batchJobsTotal.value = Number(data.total || 0)
+    loaded = true
+
+    for (const job of batchJobs.value) {
+      if (!submittedBatchIds.has(job.batch_id)) continue
+      if (job.status === 'pending' || job.status === 'running') continue
+      submittedBatchIds.delete(job.batch_id)
+      const summary = `${batchJobTypeLabel(job.job_type)}完成：成功 ${job.succeeded_count} 条，失败 ${job.failed_count} 条，中断 ${job.interrupted_count || 0} 条`
+      if (job.failed_count > 0 || job.interrupted_count > 0) {
+        ElMessage.warning({ message: summary, duration: 0, showClose: true })
+      } else {
+        ElMessage.success(summary)
+      }
+      void fetchPending()
+    }
+
+    if (
+      batchJobDetailVisible.value
+      && batchJobDetail.value
+      && batchJobs.value.some(job => job.batch_id === batchJobDetail.value?.batch_id)
+    ) {
+      void loadBatchJobDetail(batchJobDetail.value.batch_id, true)
+    }
+  } catch (err: any) {
+    clearBatchPollTimer()
+    ElMessage.error(`加载批量任务失败：${err.message || '未知错误'}`)
+  } finally {
+    batchJobsLoading.value = false
+    if (loaded) scheduleBatchPolling()
+  }
+}
+
+function rememberSubmittedBatch(data: any) {
+  if (typeof data.batch_id === 'string') submittedBatchIds.add(data.batch_id)
+  // 新任务无论类型都应立即出现在任务区，避免被当前筛选或历史页隐藏。
+  batchJobTypeFilter.value = ''
+  batchJobsPage.value = 1
+  void loadBatchJobs()
+}
+
+function changeBatchJobTypeFilter() {
+  batchJobsPage.value = 1
+  void loadBatchJobs()
+}
+
+function changeBatchJobsPage(page: number) {
+  batchJobsPage.value = page
+  void loadBatchJobs()
+}
+
+async function handleBatchReanalyzeImages() {
+  if (selectedEntries.value.length === 0) return
+  try {
+    await ElMessageBox.confirm(
+      `确认对已选的 ${selectedEntries.value.length} 条 KBD 重新识图？`,
+      '批量识图',
+      { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch { return }
+  batchReanalyzeLoading.value = true
+  try {
+    const ids = selectedEntries.value.map(e => e.id)
+    const resp = await fetch('/api/v1/kbd/batch/reanalyze-images', {
+      method: 'POST',
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kbd_ids: ids }),
+    })
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) throw new Error(data.detail?.message || data.detail || `HTTP ${resp.status}`)
+    ElMessage.success({
+      message: data.message || `已提交 ${data.total} 条，可在批量任务区查看进度`,
+    })
+    rememberSubmittedBatch(data)
+    selectedEntries.value = []
+  } catch (err: any) {
+    ElMessage.error({ message: `批量识图失败：${err.message}`, duration: 0, showClose: true })
+  } finally {
+    batchReanalyzeLoading.value = false
+  }
+}
+
+async function handleBatchReclassify() {
+  if (selectedEntries.value.length === 0) return
+  try {
+    await ElMessageBox.confirm(
+      `确认对已选的 ${selectedEntries.value.length} 条 KBD 重新分类？`,
+      '批量重新分类',
+      { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch { return }
+  batchReclassifyLoading.value = true
+  try {
+    const ids = selectedEntries.value.map(e => e.id)
+    const resp = await fetch('/api/v1/kbd/batch/reclassify', {
+      method: 'POST',
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kbd_ids: ids }),
+    })
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) throw new Error(data.detail?.message || data.detail || `HTTP ${resp.status}`)
+    ElMessage.success({
+      message: data.message || `已提交 ${data.total} 条，可在批量任务区查看进度`,
+    })
+    rememberSubmittedBatch(data)
+    selectedEntries.value = []
+  } catch (err: any) {
+    ElMessage.error({ message: `批量分类失败：${err.message}`, duration: 0, showClose: true })
+  } finally {
+    batchReclassifyLoading.value = false
+  }
+}
+
+async function handleBatchExtractSignals() {
+  if (selectedEntries.value.length === 0) return
+  try {
+    await ElMessageBox.confirm(
+      `确认对已选的 ${selectedEntries.value.length} 条 KBD 重新抽取信号？`,
+      '批量抽取信号',
+      { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch { return }
+  batchExtractLoading.value = true
+  try {
+    const ids = selectedEntries.value.map(e => e.id)
+    const resp = await fetch('/api/v1/kbd/batch/extract-signals', {
+      method: 'POST',
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kbd_ids: ids }),
+    })
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) throw new Error(data.detail?.message || data.detail || `HTTP ${resp.status}`)
+    ElMessage.success({
+      message: data.message || `已提交 ${data.total} 条，可在批量任务区查看进度`,
+    })
+    rememberSubmittedBatch(data)
+    selectedEntries.value = []
+  } catch (err: any) {
+    ElMessage.error({ message: `批量抽取失败：${err.message}`, duration: 0, showClose: true })
+  } finally {
+    batchExtractLoading.value = false
+  }
+}
+
+async function handleBatchApprove() {
+  if (selectedEntries.value.length === 0) return
+  const reviewerId = await ensureReviewerIdentity()
+  if (!reviewerId) return
+  const nonDraft = selectedEntries.value.filter(entry => entry.status !== 'draft')
+  if (nonDraft.length > 0) {
+    ElMessage.warning(`批量通过只适用于待审核 KBD；当前有 ${nonDraft.length} 条不是待审核状态`)
+    return
+  }
+  const missingVersions = selectedEntries.value.filter(entry => !Number.isInteger(entry.lock_version))
+  if (missingVersions.length > 0) {
+    ElMessage.error({
+      message: `有 ${missingVersions.length} 条 KBD 缺少版本快照，请刷新列表后重新选择`,
+      duration: 0,
+      showClose: true,
+    })
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认批量通过并发布已选的 ${selectedEntries.value.length} 条 KBD？系统会逐条执行信号、分类、运行时和版本并发门禁；不合格条目会单独失败。`,
+      '批量通过',
+      { confirmButtonText: '确认发布', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch { return }
+  batchApproveLoading.value = true
+  try {
+    const entriesSnapshot = Object.fromEntries(selectedEntries.value.map(entry => [String(entry.id), {
+      lock_version: entry.lock_version,
+      category_id: entry.category_id || entry.ai_category_id || null,
+    }]))
+    const resp = await fetch('/api/v1/kbd/batch/approve', {
+      method: 'POST',
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kbd_ids: selectedEntries.value.map(entry => entry.id),
+        reviewer_id: reviewerId,
+        review_note: null,
+        entries: entriesSnapshot,
+      }),
+    })
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) throw new Error(data.detail?.message || data.detail || `HTTP ${resp.status}`)
+    ElMessage.success(data.message || `已提交 ${data.total} 条批量通过任务`)
+    rememberSubmittedBatch(data)
+    selectedEntries.value = []
+  } catch (err: any) {
+    ElMessage.error({ message: `批量通过失败：${err.message || '未知错误'}`, duration: 0, showClose: true })
+  } finally {
+    batchApproveLoading.value = false
+  }
+}
+
+async function handleBatchReject() {
+  if (selectedEntries.value.length === 0) return
+  const reviewerId = await ensureReviewerIdentity()
+  if (!reviewerId) return
+  const nonDraft = selectedEntries.value.filter(entry => entry.status !== 'draft')
+  if (nonDraft.length > 0) {
+    ElMessage.warning(`批量拒绝只适用于待审核 KBD；当前有 ${nonDraft.length} 条不是待审核状态`)
+    return
+  }
+  let reason = ''
+  try {
+    const result = await ElMessageBox.prompt(
+      `将以同一个原因拒绝已选的 ${selectedEntries.value.length} 条 KBD。请输入明确、可执行的拒绝原因：`,
+      '批量拒绝',
+      {
+        confirmButtonText: '确认拒绝',
+        cancelButtonText: '取消',
+        inputType: 'textarea',
+        inputValidator: value => String(value || '').trim() ? true : '拒绝原因不能为空',
+      },
+    )
+    reason = String(result.value || '').trim()
+  } catch { return }
+  batchRejectLoading.value = true
+  try {
+    const resp = await fetch('/api/v1/kbd/batch/reject', {
+      method: 'POST',
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kbd_ids: selectedEntries.value.map(entry => entry.id),
+        reviewer_id: reviewerId,
+        review_note: reason,
+      }),
+    })
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) throw new Error(data.detail?.message || data.detail || `HTTP ${resp.status}`)
+    ElMessage.success(data.message || `已提交 ${data.total} 条批量拒绝任务`)
+    rememberSubmittedBatch(data)
+    selectedEntries.value = []
+  } catch (err: any) {
+    ElMessage.error({ message: `批量拒绝失败：${err.message || '未知错误'}`, duration: 0, showClose: true })
+  } finally {
+    batchRejectLoading.value = false
+  }
+}
+
+async function openDetailDialog(entry: KbdEntry, useProvidedEntry = false) {
   detailFullscreen.value = false
   detailDialogVisible.value = true
   editingContent.value = false
@@ -930,23 +1577,18 @@ async function openDetailDialog(entry: KbdEntry) {
   commandPreviewLoading.value = {}
   expandedCommandPreviews.value = {}
   void fetchRevisionState(entry.id)
-  // 拉取完整详情（确保含 signals_json）
-  try {
-    const resp = await fetch(`/api/v1/kbd/${entry.id}`, { headers: authHeader })
-    if (resp.ok) {
-      const fresh = await resp.json()
-      detailEntry.value = fresh
-      reviewNote.value = fresh.review_note || ''
-      editableCategoryId.value = fresh.category_id || fresh.ai_category_id || ''
-      inlineContent.value = fresh.content_md || ''
-      parsedSegments.value = parseContentMd(fresh.content_md || '')
-      parsedImagesJson.value = parseImagesJson(fresh.images_json || [])
-      associateSegmentsWithSeq(parsedSegments.value, parsedImagesJson.value)
-      void reviewCurrentSignals({ silent: true })
-      return
+  collectionImpact.value = null
+  void loadCollectionImpact(entry.id)
+  // 批次入口已加载当前详情时直接复用；普通列表入口仍重新读取，防止使用旧分页快照。
+  if (!useProvidedEntry) {
+    try {
+      const resp = await fetch(`/api/v1/kbd/${entry.id}`, { headers: authHeader })
+      if (resp.ok) {
+        entry = await resp.json()
+      }
+    } catch {
+      // 回退到列表项
     }
-  } catch {
-    // 回退到列表项
   }
   detailEntry.value = entry
   reviewNote.value = entry.review_note || ''
@@ -1050,6 +1692,32 @@ async function publishMaintenanceWorking() {
 // v2 原生读取辅助：直接从 v2 结构各段取值，不拍平/不更名。
 function sigTool(sig: SignalV2): string { return sig.acquire?.tool || '' }
 function sigArgs(sig: SignalV2): Record<string, any> { return sig.acquire?.args || {} }
+
+function producerSignalCount(row: KbdEntry): number {
+  const signals = (row.signals_json as any)?.signals
+  if (!Array.isArray(signals)) return 0
+  return signals.filter((s: any) => sigTool(s).startsWith('qkv')).length
+}
+function consumerSignalCount(row: KbdEntry): number {
+  const signals = (row.signals_json as any)?.signals
+  if (!Array.isArray(signals)) return 0
+  return signals.filter((s: any) => sigTool(s).startsWith('qfk')).length
+}
+
+function imageTotal(row: KbdEntry): number {
+  const imgs = row.images_json as any[]
+  return Array.isArray(imgs) ? imgs.length : 0
+}
+function imageOcrOk(row: KbdEntry): number {
+  const imgs = row.images_json as any[]
+  if (!Array.isArray(imgs)) return 0
+  return imgs.filter((img: any) => {
+    if (img?.desc) return true
+    const regions = img?.evidence?.regions
+    if (Array.isArray(regions) && regions.some((r: any) => r?.text_lines?.length > 0)) return true
+    return false
+  }).length
+}
 function sigMatch(sig: SignalV2): Record<string, any> { return sig.match || {} }
 function sigOrch(sig: SignalV2): Record<string, any> { return sig.orchestrate || {} }
 function sigProvenance(sig: SignalV2): Record<string, any> { return sig.provenance || {} }
@@ -1989,6 +2657,7 @@ function resetFilters() {
   statusFilter.value = ''
   supportIdFilter.value = ''
   titleKeywordFilter.value = ''
+  sampleSuiteFilter.value = ''
   confidenceFilter.value = ''
   activeCategory.value = '__all__'
   catPage.value = 1
@@ -2066,6 +2735,32 @@ async function handleRevertToDraft(entry: KbdEntry) {
     const msg = (e as { message?: string })?.message || ''
     if (msg === 'cancel') return
     ElMessage.error(msg || '操作失败')
+  }
+}
+
+async function handleArchive(entry: KbdEntry) {
+  try {
+    await ElMessageBox.confirm(
+      `确认归档并停用「${entry.title}」？\n\n系统会保留不可变历史修订；下一次 KBD 增量同步将清理其派生的采集资源。`,
+      '归档并停用 KBD',
+      { confirmButtonText: '确认归档', cancelButtonText: '取消', type: 'warning' },
+    )
+    const resp = await fetch(`/api/v1/kbd/${entry.id}/archive`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+    })
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`
+      try { const errBody = await resp.json(); if (errBody.detail) detail = typeof errBody.detail === 'string' ? errBody.detail : JSON.stringify(errBody.detail) } catch { /* */ }
+      throw new Error(detail)
+    }
+    ElMessage.success('已归档；请执行 KBD 增量同步发布下游清理')
+    detailDialogVisible.value = false
+    await fetchPending()
+  } catch (e: unknown) {
+    const msg = (e as { message?: string })?.message || ''
+    if (msg === 'cancel') return
+    ElMessage.error(msg || '归档失败')
   }
 }
 
@@ -2530,8 +3225,20 @@ function metaLabel(key: keyof KbdMetadata): string {
     sangfor_created_at: '官方创建时间',
     create_admin_id: '创建工程师 ID',
     update_admin_id: '更新工程师 ID',
+    sample_suite: '样例集标识',
+    sample_suite_label: '样例集名称',
+    sample_purpose: '样例用途',
+    domain_hint: '技术域提示',
+    signal_tools: '覆盖信号类型',
+    seed_version: '样例版本',
   }
   return map[key] || key
+}
+
+function metaValue(value: unknown): string {
+  if (Array.isArray(value)) return value.join('、')
+  if (typeof value === 'boolean') return value ? '是' : '否'
+  return String(value ?? '')
 }
 
 // 解析 images_json 图片描述
@@ -2709,13 +3416,20 @@ const metaKeys: (keyof KbdMetadata)[] = [
   'sangfor_main_module', 'sangfor_sub_module', 'suite_version',
   'sangfor_updated_at', 'sangfor_created_at',
   'create_admin_id', 'update_admin_id',
+  'sample_suite', 'sample_suite_label', 'sample_purpose',
+  'domain_hint', 'signal_tools', 'seed_version',
 ]
 
 onMounted(() => {
   fetchPending()
   fetchCategories()
   fetchCapabilities()
+  void loadBatchJobs()
+  // 表格列注册完成后恢复用户上次拖拽的列宽
+  void nextTick(restoreKbdColumnWidths)
 })
+
+onUnmounted(() => clearBatchPollTimer())
 </script>
 
 <template>
@@ -2731,7 +3445,7 @@ onMounted(() => {
     <!-- 过滤栏 -->
     <el-card class="filter-card" shadow="never">
       <el-row :gutter="12" align="middle" class="filter-row">
-        <el-col :span="4">
+        <el-col :span="3">
           <el-input
             v-model="supportIdFilter"
             placeholder="按案例 ID 精准搜索"
@@ -2740,10 +3454,19 @@ onMounted(() => {
             @keyup.enter="fetchPending"
           />
         </el-col>
-        <el-col :span="5">
+        <el-col :span="4">
           <el-input
             v-model="titleKeywordFilter"
             placeholder="按标题关键字搜索"
+            clearable
+            @clear="fetchPending"
+            @keyup.enter="fetchPending"
+          />
+        </el-col>
+        <el-col :span="3">
+          <el-input
+            v-model="sampleSuiteFilter"
+            placeholder="按样例集标识检索"
             clearable
             @clear="fetchPending"
             @keyup.enter="fetchPending"
@@ -2793,10 +3516,99 @@ onMounted(() => {
             <el-button @click="resetFilters">重置</el-button>
           </div>
         </el-col>
-        <el-col :span="4" class="total-info">
+        <el-col :span="3" class="total-info">
           <span>共 <strong>{{ total }}</strong> 条</span>
         </el-col>
       </el-row>
+    </el-card>
+
+    <!-- 批量任务：进度和逐条结果持久化，页面刷新后仍可查看。 -->
+    <el-card v-if="batchJobs.length > 0" shadow="never" class="batch-jobs-card">
+      <template #header>
+        <div class="batch-jobs-header">
+          <div>
+            <strong>批量任务</strong>
+            <span class="batch-jobs-hint">全部任务可追溯；失败原因和 KBD 查看/编辑入口位于详情中</span>
+          </div>
+          <div class="batch-jobs-actions">
+            <el-select
+              v-model="batchJobTypeFilter"
+              size="small"
+              style="width: 150px"
+              @change="changeBatchJobTypeFilter"
+            >
+              <el-option label="全部任务类型" value="" />
+              <el-option label="批量识图" value="reanalyze_images" />
+              <el-option label="批量重新分类" value="reclassify" />
+              <el-option label="批量抽取信号" value="extract_signals" />
+              <el-option label="批量通过" value="approve" />
+              <el-option label="批量拒绝" value="reject" />
+            </el-select>
+            <el-button size="small" :icon="Refresh" :loading="batchJobsLoading" @click="loadBatchJobs">
+              刷新
+            </el-button>
+          </div>
+        </div>
+      </template>
+      <el-table :data="batchJobs" size="small" row-key="batch_id" class="batch-jobs-table">
+        <el-table-column label="任务" min-width="130">
+          <template #default="{ row }">
+            {{ batchJobTypeLabel(row.job_type) }}
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag :type="batchJobStatusTag(row.status)" size="small">
+              {{ batchJobStatusLabel(row.status) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="进度" min-width="230">
+          <template #default="{ row }">
+            <div class="batch-progress-cell">
+              <el-progress
+                :percentage="batchProgress(row)"
+                :status="row.status === 'completed' ? 'success' : row.status === 'failed' ? 'exception' : undefined"
+              />
+              <span>{{ batchProgressLabel(row) }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="结果" min-width="150">
+          <template #default="{ row }">
+            <span class="batch-success-count">成功 {{ row.succeeded_count }}</span>
+            <span :class="['batch-failed-count', { active: row.failed_count > 0 }]">失败 {{ row.failed_count }}</span>
+            <span v-if="row.interrupted_count > 0" class="batch-interrupted-count">中断 {{ row.interrupted_count }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="提交时间" width="180">
+          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="190" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="openBatchJobDetail(row)">详情</el-button>
+            <el-button
+              v-if="canRetryBatch(row)"
+              link
+              type="warning"
+              :loading="batchRetryLoadingId === row.batch_id"
+              @click="retryUnsuccessfulBatch(row)"
+            >重试未成功</el-button>
+            <el-tag v-else-if="row.retried_by_batch_id" size="small" type="info">已创建重试</el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-pagination
+        v-if="batchJobsTotal > batchJobsPageSize"
+        class="batch-jobs-pagination"
+        small
+        background
+        layout="total, prev, pager, next"
+        :total="batchJobsTotal"
+        :page-size="batchJobsPageSize"
+        :current-page="batchJobsPage"
+        @current-change="changeBatchJobsPage"
+      />
     </el-card>
 
     <!-- 列表：按 AI 分类 Tab 分组 -->
@@ -2824,18 +3636,35 @@ onMounted(() => {
           </el-option>
         </el-select>
       </div>
+      <!-- 批量操作工具栏 -->
+      <div v-if="selectedEntries.length > 0" class="batch-toolbar">
+        <span class="batch-info">已选 <strong>{{ selectedEntries.length }}</strong> 条</span>
+        <el-button type="success" size="small" :loading="batchReanalyzeLoading" @click="handleBatchReanalyzeImages">批量识图</el-button>
+        <el-button type="warning" size="small" :loading="batchReclassifyLoading" @click="handleBatchReclassify">批量重新分类</el-button>
+        <el-button type="primary" size="small" :loading="batchExtractLoading" @click="handleBatchExtractSignals">批量抽取信号</el-button>
+        <el-button type="success" size="small" :loading="batchApproveLoading" @click="handleBatchApprove">批量通过</el-button>
+        <el-button type="danger" size="small" :loading="batchRejectLoading" @click="handleBatchReject">批量拒绝</el-button>
+        <el-button size="small" @click="selectedEntries = []">取消选择</el-button>
+      </div>
       <el-table
         :data="entries"
         row-key="id"
         style="width: 100%"
         size="small"
+        border
+        allow-drag-last-column
+        ref="kbdTableRef"
         class="kbd-table"
         @sort-change="handleSortChange"
+        @selection-change="(rows: KbdEntry[]) => selectedEntries = rows"
+        @header-dragend="handleHeaderDragEnd"
       >
+        <el-table-column type="selection" width="40" />
         <!-- 案例 ID -->
         <el-table-column label="案例 ID" width="100" prop="support_id" sortable="custom">
           <template #default="{ row }">
-            <a :href="makeSupportUrl(row.support_id)" target="_blank" rel="noopener noreferrer" class="support-link">
+            <span v-if="row.metadata?.is_test_sample">{{ row.support_id }}</span>
+            <a v-else :href="makeSupportUrl(row.support_id)" target="_blank" rel="noopener noreferrer" class="support-link">
               {{ row.support_id }}
             </a>
           </template>
@@ -2845,6 +3674,13 @@ onMounted(() => {
         <el-table-column label="标题" min-width="320">
           <template #default="{ row }">
             <span class="entry-title">{{ row.title }}</span>
+            <el-tag
+              v-if="row.metadata?.sample_suite"
+              size="small"
+              type="info"
+              style="margin-left: 8px"
+              :title="row.metadata.sample_suite"
+            >{{ row.metadata.sample_suite_label || row.metadata.sample_suite }}</el-tag>
           </template>
         </el-table-column>
 
@@ -2887,6 +3723,27 @@ onMounted(() => {
           <template #default="{ row }">{{ formatDate(row.updated_at) }}</template>
         </el-table-column>
 
+        <!-- 图片数 -->
+        <el-table-column label="图片" width="80" align="center" prop="image_count" sortable="custom">
+          <template #default="{ row }">
+            <span>{{ imageTotal(row) }}</span>
+            <span v-if="imageOcrOk(row) < imageTotal(row)" style="color: var(--el-color-warning); margin-left: 2px">
+              ({{ imageOcrOk(row) }})
+            </span>
+          </template>
+        </el-table-column>
+        <!-- 生产者信号数 -->
+        <el-table-column label="生产者信号" width="90" align="center" prop="signal_count" sortable="custom">
+          <template #default="{ row }">
+            <span class="signal-count-producer">{{ producerSignalCount(row) }}</span>
+          </template>
+        </el-table-column>
+        <!-- 消费者信号数 -->
+        <el-table-column label="消费者信号" width="90" align="center" prop="signal_count" sortable="custom">
+          <template #default="{ row }">
+            <span class="signal-count-consumer">{{ consumerSignalCount(row) }}</span>
+          </template>
+        </el-table-column>
         <!-- 操作 -->
         <el-table-column label="操作" width="260" fixed="right">
           <template #default="{ row }">
@@ -2899,6 +3756,10 @@ onMounted(() => {
             </template>
             <template v-else-if="row.status === 'rejected'">
               <el-button type="warning" size="small" text @click="handleRepublish(row)">重新发布</el-button>
+              <el-button type="info" size="small" text @click="handleRevertToDraft(row)">退回草稿</el-button>
+            </template>
+            <template v-else-if="row.status === 'published'">
+              <el-button type="warning" size="small" text @click="handleArchive(row)">归档</el-button>
               <el-button type="info" size="small" text @click="handleRevertToDraft(row)">退回草稿</el-button>
             </template>
             <template v-else>
@@ -3123,7 +3984,7 @@ onMounted(() => {
           <el-descriptions :column="3" border size="small">
             <template v-for="key in metaKeys" :key="key">
               <el-descriptions-item v-if="detailEntry.metadata[key]" :label="metaLabel(key)">
-                {{ detailEntry.metadata[key] }}
+                {{ metaValue(detailEntry.metadata[key]) }}
               </el-descriptions-item>
             </template>
           </el-descriptions>
@@ -3890,6 +4751,41 @@ onMounted(() => {
           </div>
         </div>
 
+        <!-- 离线采集影响 -->
+        <div class="section-block" v-loading="collectionImpactLoading">
+          <h4 class="section-title">Offline Collection Impact（离线采集影响）</h4>
+          <el-alert
+            v-if="collectionImpact"
+            :type="collectionImpact.offline_ready ? 'success' : 'warning'"
+            :title="collectionImpact.offline_ready
+              ? '离线采集依赖完整；发布后按最终分类执行增量同步'
+              : '离线采集依赖尚未生成或不完整；KBD 仍可发布，发布后需执行增量同步并审核候选资源'"
+            :closable="false"
+          />
+          <el-alert
+            title="在线诊断与离线诊断共用 KBD 最终分类作为问题场景；KBD 一经发布即自动进入离线资源同步范围，无需配置离线专属开关。"
+            type="info"
+            :closable="false"
+            style="margin-top: 12px"
+          />
+          <el-descriptions v-if="collectionImpact" :column="4" border size="small" style="margin-top: 12px">
+            <el-descriptions-item label="采集需求">{{ collectionImpact.requirements.length }}</el-descriptions-item>
+            <el-descriptions-item label="有效映射">{{ collectionImpact.matched_mappings.length }}</el-descriptions-item>
+            <el-descriptions-item label="影响画像">{{ collectionImpact.affected_profiles.length }}</el-descriptions-item>
+            <el-descriptions-item label="历史计划/制品">{{ collectionImpact.affected_plans.length }} / {{ collectionImpact.affected_artifacts.length }}</el-descriptions-item>
+          </el-descriptions>
+          <el-table v-if="collectionImpact?.missing_mappings.length" :data="collectionImpact.missing_mappings" border size="small" style="margin-top: 12px">
+            <el-table-column prop="signal_id" label="Signal ID（信号标识）" min-width="150" />
+            <el-table-column prop="acquire_tool" label="Acquire Tool（采集工具）" min-width="160" />
+            <el-table-column prop="command" label="命令/关键字" min-width="220" />
+          </el-table>
+          <el-collapse v-if="collectionImpact" style="margin-top: 12px">
+            <el-collapse-item title="生命周期联动规则">
+              <p v-for="(value, key) in collectionImpact.change_policy" :key="key"><strong>{{ key }}：</strong>{{ value }}</p>
+            </el-collapse-item>
+          </el-collapse>
+        </div>
+
         <!-- 审核备注 -->
         <div class="section-block">
           <h4 class="section-title">审核备注</h4>
@@ -3928,6 +4824,153 @@ onMounted(() => {
         <template v-else-if="detailEntry">
           <el-button type="info" @click="handleRevertToDraft(detailEntry)">退回草稿</el-button>
         </template>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="batchJobDetailVisible"
+      width="88%"
+      title="批量任务详情"
+      :close-on-click-modal="false"
+    >
+      <div v-loading="batchJobDetailLoading">
+        <el-descriptions v-if="batchJobDetail" :column="4" border size="small" class="batch-detail-summary">
+          <el-descriptions-item label="任务">{{ batchJobTypeLabel(batchJobDetail.job_type) }}</el-descriptions-item>
+          <el-descriptions-item label="状态">
+            <el-tag :type="batchJobStatusTag(batchJobDetail.status)" size="small">
+              {{ batchJobStatusLabel(batchJobDetail.status) }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="进度">
+            {{ batchProgressLabel(batchJobDetail) }}
+          </el-descriptions-item>
+          <el-descriptions-item label="结果">
+            成功 {{ batchJobDetail.succeeded_count }}，失败 {{ batchJobDetail.failed_count }}，中断 {{ batchJobDetail.interrupted_count || 0 }}
+          </el-descriptions-item>
+          <el-descriptions-item label="提交时间">{{ formatDate(batchJobDetail.created_at) }}</el-descriptions-item>
+          <el-descriptions-item label="完成时间">{{ formatDate(batchJobDetail.completed_at) }}</el-descriptions-item>
+          <el-descriptions-item label="Batch ID（批次编号）" :span="2">
+            <code>{{ batchJobDetail.batch_id }}</code>
+          </el-descriptions-item>
+          <el-descriptions-item v-if="batchJobDetail.retry_of_batch_id" label="来源批次" :span="2">
+            <code>{{ batchJobDetail.retry_of_batch_id }}</code>
+          </el-descriptions-item>
+          <el-descriptions-item v-if="batchJobDetail.retried_by_batch_id" label="重试批次" :span="2">
+            <code>{{ batchJobDetail.retried_by_batch_id }}</code>
+          </el-descriptions-item>
+          <el-descriptions-item
+            v-if="batchJobDetail.request_json?.reviewer_id"
+            label="审核人 ID"
+          >
+            #{{ batchJobDetail.request_json.reviewer_id }}
+          </el-descriptions-item>
+          <el-descriptions-item
+            v-if="batchJobDetail.request_json?.review_note"
+            :label="batchJobDetail.job_type === 'reject' ? '统一拒绝原因' : '审核备注'"
+            :span="3"
+          >
+            {{ batchJobDetail.request_json.review_note }}
+          </el-descriptions-item>
+        </el-descriptions>
+
+        <el-table
+          v-if="batchJobDetail?.items"
+          :data="batchJobDetail.items"
+          size="small"
+          row-key="item_id"
+          max-height="520"
+        >
+          <el-table-column prop="support_id" label="案例 ID" width="110" />
+          <el-table-column prop="title" label="标题" min-width="260" show-overflow-tooltip />
+          <el-table-column label="任务结果" width="90">
+            <template #default="{ row }">
+              <el-tag
+                :type="row.status === 'succeeded' ? 'success' : row.status === 'failed' ? 'danger' : row.status === 'interrupted' ? 'warning' : 'info'"
+                size="small"
+              >
+                {{ batchItemStatusLabel(row.status) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="KBD 当前状态" width="110">
+            <template #default="{ row }">
+              <el-tag
+                v-if="row.kbd_status"
+                :type="row.kbd_status === 'published' ? 'success' : row.kbd_status === 'rejected' ? 'danger' : row.kbd_status === 'archived' ? 'info' : 'warning'"
+                size="small"
+                effect="plain"
+              >{{ statusLabel(row.kbd_status) }}</el-tag>
+              <span v-else>—</span>
+            </template>
+          </el-table-column>
+          <el-table-column :label="batchJobDetail?.job_type === 'reanalyze_images' ? '图片进度' : '工作进度'" width="100">
+            <template #default="{ row }">{{ batchItemProgress(row) }}</template>
+          </el-table-column>
+          <el-table-column label="处理结果" min-width="210">
+            <template #default="{ row }">{{ batchResultSummary(row) }}</template>
+          </el-table-column>
+          <el-table-column label="失败原因" min-width="260">
+            <template #default="{ row }">
+              <div v-if="row.status === 'failed' || row.status === 'interrupted'" class="batch-error-summary">
+                <el-tag v-if="batchErrorCode(row)" type="danger" size="small" effect="plain">
+                  {{ batchErrorCode(row) }}
+                </el-tag>
+                <span :class="{ 'batch-error-text': row.status === 'failed', 'batch-interrupted-text': row.status === 'interrupted' }">
+                  {{ batchErrorMessage(row) }}
+                </span>
+                <el-collapse v-if="batchErrorDetail(row)" class="batch-error-detail">
+                  <el-collapse-item title="查看完整错误详情" :name="`batch-error-${row.item_id}`">
+                    <pre class="code rejected-candidate-json">{{ JSON.stringify(batchErrorDetail(row), null, 2) }}</pre>
+                  </el-collapse-item>
+                </el-collapse>
+              </div>
+              <span v-else>—</span>
+              <el-collapse v-if="batchRejectedCandidates(row).length > 0" class="batch-rejected-candidates">
+                <el-collapse-item
+                  v-for="(candidate, index) in batchRejectedCandidates(row)"
+                  :key="`batch-rejected-${row.item_id}-${index}`"
+                  :title="`被拒候选 ${index + 1} · ${rejectedCandidatePresentation(candidate.reason_code).label}`"
+                  :name="`batch-rejected-${row.item_id}-${index}`"
+                >
+                  <strong>{{ candidate.reason || '未提供拒绝原因' }}</strong>
+                  <div class="field-hint">{{ rejectedCandidatePresentation(candidate.reason_code).guidance }}</div>
+                  <pre class="code rejected-candidate-json">{{ JSON.stringify(candidate.signal || candidate.candidate, null, 2) }}</pre>
+                </el-collapse-item>
+              </el-collapse>
+            </template>
+          </el-table-column>
+          <el-table-column label="完成时间" width="180">
+            <template #default="{ row }">{{ formatDate(row.completed_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="130" fixed="right">
+            <template #default="{ row }">
+              <el-button
+                link
+                type="primary"
+                :loading="batchItemActionLoadingId === row.item_id"
+                @click="openBatchItemDetail(row)"
+              >查看</el-button>
+              <el-button
+                link
+                type="primary"
+                :loading="batchItemActionLoadingId === row.item_id"
+                @click="editBatchItem(row)"
+              >编辑</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <template #footer>
+        <el-button :loading="batchJobDetailLoading" @click="batchJobDetail && loadBatchJobDetail(batchJobDetail.batch_id)">
+          刷新
+        </el-button>
+        <el-button
+          v-if="batchJobDetail && canRetryBatch(batchJobDetail)"
+          type="warning"
+          :loading="batchRetryLoadingId === batchJobDetail.batch_id"
+          @click="retryUnsuccessfulBatch(batchJobDetail)"
+        >重试未成功记录</el-button>
+        <el-button type="primary" @click="batchJobDetailVisible = false">关闭</el-button>
       </template>
     </el-dialog>
 
@@ -4077,6 +5120,111 @@ onMounted(() => {
 .action-btn-group :deep(.el-button + .el-button) {
   margin-left: 0;
 }
+
+.batch-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: var(--el-color-primary-light-9);
+  border-radius: 6px;
+  flex-wrap: wrap;
+}
+.batch-toolbar .batch-info {
+  font-size: 13px;
+  color: var(--el-color-primary);
+  margin-right: 8px;
+}
+
+.batch-jobs-card {
+  margin-bottom: 12px;
+}
+
+.batch-jobs-card :deep(.el-card__header) {
+  padding: 10px 14px;
+}
+
+.batch-jobs-card :deep(.el-card__body) {
+  padding: 0 14px 10px;
+}
+
+.batch-jobs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.batch-jobs-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.batch-jobs-pagination {
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.batch-error-summary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.batch-error-detail {
+  width: 100%;
+}
+
+.batch-jobs-hint {
+  margin-left: 12px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  font-weight: normal;
+}
+
+.batch-progress-cell {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.batch-success-count {
+  color: var(--el-color-success);
+  margin-right: 12px;
+}
+
+.batch-failed-count {
+  color: var(--el-text-color-secondary);
+}
+
+.batch-failed-count.active,
+.batch-error-text {
+  color: var(--el-color-danger);
+}
+
+.batch-interrupted-count {
+  color: var(--el-color-warning);
+  margin-left: 12px;
+}
+
+.batch-interrupted-text {
+  color: var(--el-color-warning);
+}
+
+.batch-detail-summary {
+  margin-bottom: 14px;
+}
+
+.batch-detail-summary code {
+  word-break: break-all;
+}
+
+.signal-count-producer { color: var(--el-color-warning); font-weight: 600; }
+.signal-count-consumer { color: var(--el-color-primary); font-weight: 600; }
 
 .page-header {
   margin-bottom: 14px;

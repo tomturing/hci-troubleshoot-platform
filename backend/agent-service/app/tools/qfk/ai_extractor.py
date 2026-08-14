@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from app.tools.qfk.extractor import ExtractionResult, QFKExtractionError, extract_output_values
+from shared.signals.extractor import ExtractionResult, QFKExtractionError, extract_output_values
 
 MAX_AI_EXTRACT_INPUT_BYTES = 64 * 1024
 MAX_AI_EXTRACT_LINES = 200

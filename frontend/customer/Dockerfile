@@ -28,6 +28,15 @@ RUN pnpm --filter customer exec vite build
 
 # 生产镜像 - Nginx 静态服务
 FROM nginx:alpine
+
+# Nginx 官方 entrypoint 只替换进程环境中已存在的变量。提供安全默认值，
+# 避免直接 docker run 或某个部署清单漏配时，占位符残留并被 Nginx 当成未知变量。
+ENV TERMINAL_BRIDGE_URL="" \
+    TERMINAL_BRIDGE_EXEC_TIMEOUT_SECONDS=120 \
+    CUSTOMER_API_AUTHORIZATION=\$http_authorization \
+    CUSTOMER_API_TENANT_ID=\$http_x_tenant_id \
+    CUSTOMER_API_ACTOR_ID=\$http_x_actor_id
+
 COPY --from=build /app/customer/dist /usr/share/nginx/html
 COPY frontend/customer/nginx.conf /etc/nginx/templates/default.conf.template
 EXPOSE 80

@@ -47,6 +47,20 @@ async def test_approve_clears_stale_embedding_when_provider_fails():
             "schema_version": 2,
             "signals": [
                 {
+                    "id": "sig_task_failure",
+                    "role": "must",
+                    "acquire": {
+                        "tool": "qkv_task",
+                        "args": {"keyword": "虚拟机启动失败"},
+                    },
+                    "match": None,
+                    "orchestrate": {
+                        "produces": [{"name": "VM", "path": "vm"}],
+                        "requires": [],
+                    },
+                    "provenance": {"category": "frontend"},
+                },
+                {
                     "id": "sig_001",
                     "acquire": {"tool": "qfk_system", "args": {"command": "ps"}},
                     "match": {

@@ -1,0 +1,142 @@
+{{- if .Values.diagnosisService.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: diagnosis-service
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "diagnosis-service" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  replicas: {{ .Values.diagnosisService.replicaCount }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "diagnosis-service" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hci.podLabels" (dict "name" "diagnosis-service" "Release" .Release "Chart" .Chart) | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        checksum/signing-secret: {{ include (print $.Template.BasePath "/diagnosis-service/secret.yaml") . | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.diagnosisService.port | quote }}
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "diagnosis-service") | nindent 6 }}
+      containers:
+        - name: diagnosis-service
+          image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.diagnosisService.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
+          ports:
+            - containerPort: {{ .Values.diagnosisService.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: hci-common-config
+            - secretRef:
+                name: hci-secrets
+          env:
+            - name: SERVICE_NAME
+              value: "diagnosis-service"
+            - name: SERVICE_PORT
+              value: {{ .Values.diagnosisService.port | quote }}
+            - name: DATABASE_URL
+              # urlquery 对密码做 URL 编码（PIT-022）
+              value: {{ printf "postgresql+asyncpg://%s:%s@%s:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+            - name: COLLECTOR_SIGNING_PRIVATE_KEY_B64
+              valueFrom:
+                secretKeyRef:
+                  name: diagnosis-service-signing
+                  key: COLLECTOR_SIGNING_PRIVATE_KEY_B64
+            - name: COLLECTOR_SIGNING_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: diagnosis-service-signing
+                  key: COLLECTOR_SIGNING_KEY_ID
+            - name: IDENTITY_MODE
+              value: {{ .Values.diagnosisService.identityMode | quote }}
+            - name: OIDC_ISSUER
+              value: {{ .Values.diagnosisService.oidcIssuer | quote }}
+            - name: OIDC_AUDIENCE
+              value: {{ .Values.diagnosisService.oidcAudience | quote }}
+            - name: OIDC_JWKS_URL
+              value: {{ .Values.diagnosisService.oidcJwksUrl | quote }}
+            - name: OIDC_PUBLIC_KEY_PEM_B64
+              valueFrom:
+                secretKeyRef:
+                  name: diagnosis-service-signing
+                  key: OIDC_PUBLIC_KEY_PEM_B64
+                  optional: true
+            - name: DIAGNOSIS_ENCRYPTION_PRIVATE_KEY_B64
+              valueFrom:
+                secretKeyRef:
+                  name: diagnosis-service-signing
+                  key: DIAGNOSIS_ENCRYPTION_PRIVATE_KEY_B64
+            - name: DIAGNOSIS_ENCRYPTION_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: diagnosis-service-signing
+                  key: DIAGNOSIS_ENCRYPTION_KEY_ID
+            - name: DIAGNOSIS_OBJECT_STORAGE_ROOT
+              value: "/var/lib/hci-diagnosis"
+            - name: DIAGNOSIS_OBJECT_STORAGE_MODE
+              value: {{ .Values.diagnosisService.objectStorageMode | quote }}
+            - name: DIAGNOSIS_ENABLE_AUTOMATIC_SUPPLEMENT
+              value: {{ .Values.diagnosisService.automaticSupplementEnabled | quote }}
+            - name: DIAGNOSIS_DIRECT_UPLOAD_BASE_URL
+              value: {{ required "diagnosisService.enabled=true 时必须配置 diagnosisService.directUploadBaseUrl" .Values.diagnosisService.directUploadBaseUrl | quote }}
+            - name: DIAGNOSIS_ALLOWED_ORIGINS
+              value: {{ required "diagnosisService.enabled=true 时必须配置 diagnosisService.allowedOrigins" .Values.diagnosisService.allowedOrigins | quote }}
+            {{- if and .Values.langfuse .Values.langfuse.enabled }}
+            - name: LANGFUSE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: LANGFUSE_SECRET_KEY
+            - name: LANGFUSE_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: LANGFUSE_PUBLIC_KEY
+            - name: LANGFUSE_HOST
+              value: {{ .Values.langfuse.host | quote }}
+            - name: LANGFUSE_CAPTURE_CONTENT
+              value: {{ .Values.langfuse.captureContent | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: {{ .Values.diagnosisService.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: {{ .Values.diagnosisService.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /health/startup
+              port: {{ .Values.diagnosisService.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          resources:
+            {{- toYaml .Values.diagnosisService.resources | nindent 12 }}
+          volumeMounts:
+            - name: diagnosis-data
+              mountPath: /var/lib/hci-diagnosis
+      volumes:
+        - name: diagnosis-data
+          persistentVolumeClaim:
+            claimName: diagnosis-data
+{{- end }}

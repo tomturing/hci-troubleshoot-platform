@@ -35,6 +35,11 @@ kbService:
     repository: kb-service
     tag: "latest"
 
+diagnosisService:
+  image:
+    repository: diagnosis-service
+    tag: "latest"
+
 customerUI:
   image:
     repository: customer-ui

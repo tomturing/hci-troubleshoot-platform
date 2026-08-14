@@ -6,6 +6,7 @@ import asyncio
 
 import httpx
 from app.config import settings
+
 from shared.observability.logger import get_logger
 
 logger = get_logger("scheduler-client")

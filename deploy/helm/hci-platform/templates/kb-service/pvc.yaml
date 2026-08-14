@@ -1,0 +1,22 @@
+{{- if .Values.kbService.enabled }}
+{{- if .Values.kbService.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kb-service-catalog-data
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "kb-service" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  # 默认 ReadWriteOnce：kb-service 单副本即可满足页面编辑持久化。
+  # 若未来扩多副本，需将 accessModes 改为 ReadWriteMany 并指定支持 RWX 的 storageClass。
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.kbService.persistence.storageClass }}
+  storageClassName: {{ .Values.kbService.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.kbService.persistence.size | quote }}
+{{- end }}
+{{- end }}

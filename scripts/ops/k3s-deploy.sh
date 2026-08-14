@@ -118,6 +118,7 @@ _build_image_tag_args() {
     "--set" "conversationService.image.tag=${image_tag}"
     "--set" "schedulerService.image.tag=${image_tag}"
     "--set" "kbService.image.tag=${image_tag}"
+    "--set" "diagnosisService.image.tag=${image_tag}"
     "--set" "customerUI.image.tag=${image_tag}"
     "--set" "adminUI.image.tag=${image_tag}"
     "--set" "terminalBridge.image.tag=${image_tag}"

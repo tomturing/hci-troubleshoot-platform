@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from app.adapters.agents.htp.kbd_differential import KBDDiagnostic
-from app.adapters.agents.htp.kbd_model import KBD
+from shared.cdd.kbd_model import KBD
 from shared.clients.diagnostic_item_client import DiagnosticItemClient
 
 # ─── 测试数据构造 ───────────────────────────────────────────────────────

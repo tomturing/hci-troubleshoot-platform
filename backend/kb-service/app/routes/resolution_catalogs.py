@@ -15,6 +15,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from shared.observability.logger import get_logger
+from shared.observability.metrics import CATALOG_SAVE_ERRORS, CATALOG_SAVE_TOTAL
+from shared.observability.trace_id import get_trace_id
 from shared.resolution.catalog import (
     ACLI_CATALOG_PATH,
     RESOLUTION_CATALOG_PATH,
@@ -188,6 +190,7 @@ async def update_catalog(filename: str, body: CatalogSaveRequest) -> dict[str, A
 
     cfg = _ALLOWED_CATALOGS[filename]
     path: Path = cfg["path"]
+    trace_id = get_trace_id()
 
     try:
         if path.exists():
@@ -202,8 +205,21 @@ async def update_catalog(filename: str, body: CatalogSaveRequest) -> dict[str, A
             filename=filename,
             path=str(path),
             size=len(formatted_json),
+            trace_id=trace_id,
         )
+        CATALOG_SAVE_TOTAL.labels(filename=filename, status="success").inc()
     except Exception as exc:
+        # 持久化异常（PV 未挂载/IO 错误）需上报指标，便于发现基线回滚类故障
+        error_type = type(exc).__name__
+        CATALOG_SAVE_ERRORS.labels(filename=filename, error_type=error_type).inc()
+        logger.error(
+            event="catalog_save_failed",
+            filename=filename,
+            path=str(path),
+            error_type=error_type,
+            error=str(exc),
+            trace_id=trace_id,
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"写入 Catalog 文件失败: {exc}",

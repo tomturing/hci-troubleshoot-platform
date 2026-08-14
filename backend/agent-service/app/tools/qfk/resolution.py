@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from shared.resolution import ResolvedAcquisition, SignalIntent, build_resolution_audit_snapshot, get_resolution_runtime
+from shared.resolution.log_selector import build_log_selector
 
 from app.tools.qfk.signal import BackendSignal
 
@@ -22,7 +23,9 @@ def resolve_backend_signal(
     由调用方在可用时提供；未提供时会返回 ``needs_probe`` warning，不会伪称物理文件存在。
     """
 
-    resolver_id = "domain" if signal.namespace in {"vm", "network", "storage", "hardware", "platform"} else signal.namespace
+    resolver_id = (
+        "domain" if signal.namespace in {"vm", "network", "storage", "hardware", "platform"} else signal.namespace
+    )
     args = {
         "command": signal.command,
         "command_args": signal.command_args,
@@ -38,10 +41,29 @@ def resolve_backend_signal(
         "source_family": signal.source_family,
         "parser": signal.parser,
         "request_id": signal.request_id,
+        "context_lines": signal.context_lines,
         "include_archives": signal.include_archives,
+        "archive_precheck": signal.archive_precheck,
+        "cluster": signal.cluster,
+        "formatter": signal.formatter,
         "query": signal.namespace if signal.namespace in {"alert", "task", "dialog"} else None,
         "domain": signal.namespace,
     }
+    if signal.namespace == "log":
+        selector, extended_regex, matcher_type = build_log_selector(
+            matcher=signal.matcher,
+            keywords=signal.keyword,
+            filter_keywords=signal.filter_keywords,
+            resource_keyword=signal.resource_keyword,
+            request_id=signal.request_id,
+        )
+        args.update(
+            {
+                "keyword": selector,
+                "extended_regex": extended_regex,
+                "matcher_type": matcher_type,
+            }
+        )
     args = {key: value for key, value in args.items() if value not in (None, "", [], False)}
     runtime = get_resolution_runtime()
     plan = runtime.compile(SignalIntent(resolver_id=resolver_id, tool=f"qfk_{signal.namespace}", args=args))
@@ -49,4 +71,6 @@ def resolve_backend_signal(
     # Keep a deterministic immutable snapshot alongside the QFK result until the
     # shared audit persistence table is available.
     snapshot = build_resolution_audit_snapshot(plan, acquisition)
-    return acquisition.model_copy(update={"evidence": {**acquisition.evidence, "audit_snapshot": snapshot.model_dump(mode="json")}})
+    return acquisition.model_copy(
+        update={"evidence": {**acquisition.evidence, "audit_snapshot": snapshot.model_dump(mode="json")}}
+    )

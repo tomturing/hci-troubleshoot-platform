@@ -17,6 +17,7 @@ import uuid
 from typing import Any
 
 import httpx
+
 from shared.observability.logger import get_logger
 from shared.utils.internal_http import InternalHTTPClient
 

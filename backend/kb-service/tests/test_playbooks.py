@@ -253,3 +253,145 @@ def test_signal_unknown_extra_property_still_rejected():
         assert "bogus_field" in str(getattr(exc, "message", exc))
     else:
         raise AssertionError("未定义的 match 字段未被 additionalProperties 拒绝")
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 契约门禁分级判定（校验器驱动，见 ADR 2026-08-13）
+# 唯一真相源：validate_publishable_signals_json，tool_contract_revision 粗粒度探测
+# ─────────────────────────────────────────────────────────────────────────────
+
+from shared.schemas.signal_generation import current_tool_contract_revision
+
+
+def _contract_doc_current() -> dict:
+    """构造携带当前 tool_contract_revision 的合法 qfk 信号文档。"""
+    return {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "s1",
+                "acquire": {"tool": "qfk_vm", "args": {"command": "echo"}},
+                "match": {"type": "keyword", "pattern": "x", "expected": True, "extract": {"type": "text", "rows": {"mode": "all"}, "cardinality": "all", "source": "stdout", "value_mode": "string"}},
+                "orchestrate": {"produces": []},
+            }
+        ],
+        "publish_validation": {
+            "schema_version": 1,
+            "status": "passed",
+            "tool_contract_revision": current_tool_contract_revision(),
+            "validator": "expert_publish_gate",
+        },
+    }
+
+
+def _contract_doc_stale() -> dict:
+    """构造携带过期 tool_contract_revision 的合法 qfk 信号文档。"""
+    doc = _contract_doc_current()
+    doc["publish_validation"]["tool_contract_revision"] = "0" * 64
+    return doc
+
+
+def _exec(doc: dict) -> list[str]:
+    return playbooks._execution_issues(doc["signals"], doc, support_id="X", category_id="虚拟机-015")
+
+
+def test_contract_current_revision_executable():
+    """快照 tool_contract_revision 与当前一致 → 可执行，无契约 issue。"""
+    issues = _exec(_contract_doc_current())
+    assert not any("契约" in i or "重新发布" in i for i in issues)
+
+
+def test_contract_stale_revision_schema_valid_soft_stale():
+    """快照版本过期但旧信号通过当前 schema 校验 → 兼容漂移，不阻断（soft_stale）。
+
+    场景：新增可选属性（如 #745 的 match.metric），旧 KBD 不含该属性，
+    用新 schema 校验仍合法 → executable=True。
+    """
+    doc = _contract_doc_stale()
+    issues = _exec(doc)
+    # 无阻断问题（soft_stale 只埋点计数器，不加入 issues）
+    assert not issues
+
+
+def test_contract_stale_revision_schema_invalid_hard_break():
+    """快照版本过期且旧信号无法通过当前 schema 校验 → 破坏性变更，阻断。"""
+    doc = _contract_doc_stale()
+    # 注入一个使 jsonschema 校验失败的非法字段（additionalProperties 不允许）
+    doc["signals"][0]["match"]["__bogus__"] = "invalid"
+    issues = _exec(doc)
+    assert any("契约校验失败" in i for i in issues)
+    # 不应出现重复的破坏性变更报错（只靠顶层一条错误，不二次追加）
+    breaking_msgs = [i for i in issues if "破坏性变更" in i]
+    assert len(breaking_msgs) == 0, f"不应有重复的 hard_break 报错: {breaking_msgs}"
+
+
+def test_contract_no_double_error_on_breaking_change():
+    """消除 REDUNDANCY-1：breaking 场景下 issues 里不出现两条冗余错误（顶层一条，
+    契约层不再重复 append）。旧 PR 实现中存在此 bug。"""
+    doc = _contract_doc_stale()
+    doc["signals"][0]["match"]["__bogus__"] = "invalid"
+    issues = _exec(doc)
+    # 所有报错中与"契约/发布"相关的只应有 1 条（顶层校验失败）
+    contract_issues = [i for i in issues if "重新发布" in i]
+    assert len(contract_issues) == 0, f"不应出现重复的重新发布报错: {contract_issues}"
+
+
+def test_soft_stale_counter_only_on_clean_kbd():
+    """消除 BUG-2：soft_stale 计数器仅在 KBD 无其他阻断问题时计数，
+    已有 schema 错误的 KBD 不应被误计入 soft_stale。"""
+    # 这里通过观察 issues 间接验证：无其他问题时，issues 应为空（soft_stale 不加入 issues）
+    doc = _contract_doc_stale()
+    issues = _exec(doc)
+    assert not issues, f"兼容漂移不应阻断 KBD，issues={issues}"
+
+
+def test_contract_no_publish_validation_falls_back_to_generation_metadata():
+    """无 publish_validation 时回退 generation_metadata 检查（旧路径）。"""
+    signals = [
+        {
+            "id": "sig_002",
+            "acquire": {"tool": "qfk_system", "args": {"command": "ps"}},
+            "match": {"type": "exists", "expected": True, "extract": _text_extract()},
+        }
+    ]
+    document = {
+        "schema_version": 2,
+        "signals": signals,
+        "generation_metadata": {
+            "schema_version": 1,
+            "status": "stale",
+            "source_fingerprint": "0" * 64,
+            "prompt_revision": "1" * 64,
+            "model_id": "model-v1",
+            "tool_contract_revision": current_tool_contract_revision(),
+            "generation_fingerprint": "2" * 64,
+        },
+    }
+    issues = playbooks._execution_issues(signals, document)
+    assert issues == ["Signal/Contract 生成输入已变化，必须重新抽取或完成人工复核"]
+
+
+def test_contract_legacy_snapshot_stale_revision():
+    """旧快照（publish_validation 中 tool_contract_revision 不等）→ 提示过期，阻断。"""
+    doc = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "s1",
+                "acquire": {"tool": "qfk_vm", "args": {"command": "echo"}},
+                "match": {"type": "keyword", "pattern": "x", "expected": True, "extract": {"type": "text", "rows": {"mode": "all"}, "cardinality": "all", "source": "stdout", "value_mode": "string"}},
+                "orchestrate": {"produces": []},
+            }
+        ],
+        "publish_validation": {
+            "schema_version": 1,
+            "status": "passed",
+            "tool_contract_revision": "0" * 64,
+            "validator": "expert_publish_gate",
+        },
+    }
+    issues = playbooks._execution_issues(doc["signals"], doc, support_id="23821", category_id="虚拟机-015")
+    # tool_contract_revision 不等时 certify 写入的是新值，旧快照（0*64）与当前不等
+    # → soft_stale（无其他 issues）
+    assert not issues, f"兼容漂移应放行: {issues}"

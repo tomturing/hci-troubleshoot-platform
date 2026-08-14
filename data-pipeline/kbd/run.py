@@ -17,6 +17,7 @@ data-pipeline/kbd/run.py — KBD 知识生产管道 CLI 入口（API 调用版�
   # 查看配置
   uv run python -m data-pipeline.kbd.run config
 """
+
 from __future__ import annotations
 
 import argparse
@@ -25,6 +26,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import sys
 import unicodedata
 from datetime import datetime
@@ -138,9 +140,7 @@ class _ConsoleFormatter(logging.Formatter):
             return _paint(message, "blue")
 
         rendered = super().format(record)
-        has_error_counter = self._has_positive_counter(
-            message, ("failed", "error", "blocked", "blocked_by_dependency")
-        )
+        has_error_counter = self._has_positive_counter(message, ("failed", "error", "blocked", "blocked_by_dependency"))
         has_warning_counter = self._has_positive_counter(message, ("needs_review", "warning"))
         # 颜色必须由日志级别或结构化计数决定，不能扫描任意中文词。比如
         # “重做策略：前置阶段会阻断目标阶段”是正常的 INFO 计划说明，不能被
@@ -152,6 +152,7 @@ class _ConsoleFormatter(logging.Formatter):
         if any(word in message for word in self._SUCCESS_WORDS):
             return _paint(rendered, "green")
         return rendered
+
 
 class _JsonLineFormatter(logging.Formatter):
     """排障用 JSONL：终端保持中文可读，详细日志可被脚本稳定检索。"""
@@ -166,7 +167,12 @@ class _JsonLineFormatter(logging.Formatter):
             "run_id": getattr(record, "run_id", None),
         }
         for key in (
-            "run_id", "support_id", "stage", "job_id", "error_code", "retryable",
+            "run_id",
+            "support_id",
+            "stage",
+            "job_id",
+            "error_code",
+            "retryable",
             "error_detail",
         ):
             if hasattr(record, key):
@@ -189,6 +195,7 @@ def _setup_logging(run_id: str | None = None, *, verbose: bool = False) -> str:
 
     # 安全校验：run_id必须符合 YYYYMMDD_HHMMSS 格式，防止路径穿越
     import re
+
     if not re.match(r"^\d{8}_\d{6}$", run_id):
         raise ValueError(f"run_id 格式非法: {run_id}，必须为 YYYYMMDD_HHMMSS 格式")
 
@@ -241,11 +248,24 @@ def _setup_logging(run_id: str | None = None, *, verbose: bool = False) -> str:
     trace_id = new_trace_id()
     set_trace_id(trace_id)
     set_run_id(run_id)
+    # 本地 .env 的 tempo 是 Docker 网络服务名，宿主机 CLI 默认不可达。只有部署或操作者
+    # 明确开启时才导出 Tempo Span；W3C trace_id 日志与跨服务 traceparent 始终保留。
+    if os.getenv("KBD_OTEL_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            from shared.observability.otel import init_telemetry
+
+            init_telemetry("kbd-pipeline")
+        except ImportError:
+            # 抓取脚本仍允许在不挂载 backend/shared 的轻量环境独立运行。
+            pass
 
     logger = logging.getLogger("kbd.run")
     logger.info(
         "日志初始化完成 run_id=%s trace_id=%s text_log=%s jsonl_log=%s",
-        run_id, trace_id, log_path, jsonl_path,
+        run_id,
+        trace_id,
+        log_path,
+        jsonl_path,
     )
 
     return run_id
@@ -282,10 +302,7 @@ def _parse_stages(stages_str: str | None) -> list[Stage]:
     for s in stages_str.split(","):
         s = s.strip().lower()
         if s not in stage_map:
-            print(
-                f"未知 stage: {s}，合法值："
-                "fetch,import,vision,classify,extract-signals,review-signals"
-            )
+            print(f"未知 stage: {s}，合法值：fetch,import,vision,classify,extract-signals,review-signals")
             sys.exit(1)
         result.append(stage_map[s])
     return result
@@ -385,7 +402,9 @@ async def _cmd_task(args: argparse.Namespace, run_id: str) -> int:
         mode, stage_names, ids, task_plan = _build_task_plan(args)
         stage_spec = getattr(args, "stages", None) or getattr(args, "stage", None)
         stages = tuple(parse_stage_names(stage_spec))
-        rework_statuses = parse_rework_statuses(getattr(args, "rework", None)) if mode is TaskMode.REWORK else ("draft",)
+        rework_statuses = (
+            parse_rework_statuses(getattr(args, "rework", None)) if mode is TaskMode.REWORK else ("draft",)
+        )
     except (OSError, ValueError) as exc:
         print(f"参数错误：{exc}", file=sys.stderr)
         return 2
@@ -410,14 +429,10 @@ async def _cmd_task(args: argparse.Namespace, run_id: str) -> int:
         "requested_ids": ids,
         "requested_stages": requested_stage_names,
         "resolved_stages": list(stage_names),
-        "selected_tasks": {
-            stage_cli_name(stage): values for stage, values in task_plan.items()
-        },
+        "selected_tasks": {stage_cli_name(stage): values for stage, values in task_plan.items()},
     }
     if mode is TaskMode.REWORK:
-        plan_payload["rework_policy"] = (
-            "用户指定阶段全部重做；前置阶段仅在未成功并会阻断目标阶段时补做"
-        )
+        plan_payload["rework_policy"] = "用户指定阶段全部重做；前置阶段仅在未成功并会阻断目标阶段时补做"
         plan_payload["rework_dependency_tasks"] = rework_dependency_tasks
     logger.info("任务计划 %s", plan_payload)
     if mode is TaskMode.REWORK:
@@ -498,6 +513,7 @@ async def _cmd_pipeline(args: argparse.Namespace, run_id: str) -> int:
     else:
         kbd_ids = _get_kbd_ids(args)
         from .pipeline import run_pipeline
+
         stats, actual_run_id = await run_pipeline(
             kbd_ids,
             stages=stages,
@@ -603,8 +619,7 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
     table_width = sum(widths) + len(widths) + 1
     if table_width != TERMINAL_LAYOUT_WIDTH:
         raise RuntimeError(
-            "终端布局宽度契约不一致：摘要宽度 "
-            f"{table_width} != Stage Banner 宽度 {TERMINAL_LAYOUT_WIDTH}"
+            f"终端布局宽度契约不一致：摘要宽度 {table_width} != Stage Banner 宽度 {TERMINAL_LAYOUT_WIDTH}"
         )
 
     def border(left: str, middle: str, right: str, fill: str = "─") -> str:
@@ -625,23 +640,23 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
     print(_paint(summary_border, "blue", enabled=enabled))
     print(f"运行编号   : {run_id}")
     print(f"关联 trace : {get_trace_id() or '-'}（用于串联 kb-service 服务端日志）")
-    has_execution_scope = any(
-        "selected_cases" in (stats.get(stage_name) or {})
-        for stage_name, _label in stage_rows
-    )
+    has_execution_scope = any("selected_cases" in (stats.get(stage_name) or {}) for stage_name, _label in stage_rows)
     ran_any_stage = any(
-        int((stats.get(stage_name) or {}).get("selected_cases", 0) or 0) > 0
-        for stage_name, _label in stage_rows
+        int((stats.get(stage_name) or {}).get("selected_cases", 0) or 0) > 0 for stage_name, _label in stage_rows
     )
-    if success and has_execution_scope and not ran_any_stage:
-        result_text = "无需执行（没有符合条件的任务）"
-        result_color = "gray"
-    elif success:
-        result_text = "全部阶段完成"
-        result_color = "green"
-    else:
+    warning_steps = int(pipeline.get("warning_steps", 0) or 0)
+    if not success:
         result_text = "部分完成，请查看失败/阻断项"
         result_color = "red"
+    elif warning_steps:
+        result_text = f"处理完成，但有 {warning_steps} 项需要人工复核"
+        result_color = "yellow"
+    elif has_execution_scope and not ran_any_stage:
+        result_text = "无需执行（没有符合条件的任务）"
+        result_color = "gray"
+    else:
+        result_text = "全部阶段完成"
+        result_color = "green"
     print(f"总体结果   : {_paint(result_text, result_color, enabled=enabled)}")
     print(f"KBD 完成数 : {completed}/{total}")
     vision_counts = stats.get("vision", {}).get("case_status_counts")
@@ -659,19 +674,17 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
     unscheduled = [
         (label, int(item.get("candidate_cases", 0) or 0), int(item.get("selected_cases", 0) or 0))
         for stage_name, label in stage_rows
-        if (item := stats.get(stage_name))
-        and item.get("execution_status") == "not_scheduled"
+        if (item := stats.get(stage_name)) and item.get("execution_status") == "not_scheduled"
     ]
     if unscheduled:
-        print("未安排阶段：" + "；".join(
-            f"{label}（候选 {candidate}，选中 {selected}）"
-            for label, candidate, selected in unscheduled
-        ))
+        print(
+            "未安排阶段："
+            + "；".join(f"{label}（候选 {candidate}，选中 {selected}）" for label, candidate, selected in unscheduled)
+        )
     no_work = [
         (label, item.get("execution_reason", "本阶段没有待处理任务"))
         for stage_name, label in stage_rows
-        if (item := stats.get(stage_name))
-        and item.get("execution_status") == "no_work"
+        if (item := stats.get(stage_name)) and item.get("execution_status") == "no_work"
     ]
     if no_work:
         print("无需执行阶段：" + "；".join(f"{label}（{reason}）" for label, reason in no_work))
@@ -681,15 +694,12 @@ def _print_pipeline_summary(run_id: str, stats: dict) -> None:
         print("统一信号审查问题：" + " / ".join(f"{key}={value}" for key, value in issues.items()))
     if not success:
         print(_paint("建议：先按下方命令确认具体原因；前置阻断项必须先修复上游阶段。", "yellow", enabled=enabled))
-        print(
-            "失败重试   : uv run python -m data-pipeline.kbd.run task "
-            f"--run-id {run_id} --failed"
-        )
+        print(f"失败重试   : uv run python -m data-pipeline.kbd.run task --run-id {run_id} --failed")
     jsonl_path = settings.KBD_LOGS_DIR / f"kbd_{run_id}.jsonl"
     text_path = settings.KBD_LOGS_DIR / f"kbd_{run_id}.log"
     print(f"排障日志   : {jsonl_path}")
-    print(f"查看失败   : rg -n '\"level\": \"(ERROR|CRITICAL)\"' {jsonl_path}")
-    print(f"按案例检索 : rg -n '\"support_id\": \"<案例ID>\"' {jsonl_path}")
+    print(f'查看失败   : rg -n \'"level": "(ERROR|CRITICAL)"\' {jsonl_path}')
+    print(f'按案例检索 : rg -n \'"support_id": "<案例ID>"\' {jsonl_path}')
     print(f"查看完整文本: less -N {text_path}")
 
 
@@ -772,8 +782,11 @@ def _collect_interactive_task_args() -> argparse.Namespace:
         default="1",
     )
     values: dict[str, object] = {
-        "command": "task", "excel": False, "ids": None,
-        "id_file": None, "run_id": None,
+        "command": "task",
+        "excel": False,
+        "ids": None,
+        "id_file": None,
+        "run_id": None,
     }
     if source == "ids":
         values["ids"] = input("请输入 KBD 案例 ID（逗号分隔）：").strip()
@@ -783,9 +796,7 @@ def _collect_interactive_task_args() -> argparse.Namespace:
         values["id_file"] = input("请输入 ID 文件路径：").strip()
     else:
         values["excel"] = True
-        values["excel_file"] = input(
-            "请输入 Excel 文件路径（直接回车使用 EXCEL_FILE）："
-        ).strip() or None
+        values["excel_file"] = input("请输入 Excel 文件路径（直接回车使用 EXCEL_FILE）：").strip() or None
 
     stage_choice = _prompt_choice(
         "请选择执行阶段：",
@@ -795,10 +806,7 @@ def _collect_interactive_task_args() -> argparse.Namespace:
     if stage_choice == "all":
         stages = "all"
     else:
-        print(
-            "阶段：1 fetch  2 import  3 classify  4 vision "
-            "5 extract-signals  6 review-signals"
-        )
+        print("阶段：1 fetch  2 import  3 classify  4 vision 5 extract-signals  6 review-signals")
         stages = input("请输入阶段编号或名称（逗号分隔）：").strip()
 
     mode = _prompt_choice(
@@ -811,17 +819,17 @@ def _collect_interactive_task_args() -> argparse.Namespace:
         ),
         default="1",
     )
-    values.update({
-        "stages": stages,
-        "resume": mode == "resume",
-        "failed": mode == "failed",
-        "rework": None,
-    })
+    values.update(
+        {
+            "stages": stages,
+            "resume": mode == "resume",
+            "failed": mode == "failed",
+            "rework": None,
+        }
+    )
     if mode == "rework":
         print("可选状态：1 draft  2 published  3 rejected  4 archived")
-        status_input = input(
-            "请输入状态编号或名称（逗号分隔，直接回车默认 draft）："
-        ).strip()
+        status_input = input("请输入状态编号或名称（逗号分隔，直接回车默认 draft）：").strip()
         values["rework"] = _parse_interactive_rework_statuses(status_input)
 
     limit_input = input("最多处理多少个案例？直接回车表示不限制：").strip()
@@ -861,8 +869,7 @@ def _choose_history_run_id() -> str:
             (
                 str(index),
                 path.stem,
-                f"{path.stem}：案例 {len(manifest.get('requested_ids', []))} 个，"
-                f"模式 {manifest.get('mode', '-')}",
+                f"{path.stem}：案例 {len(manifest.get('requested_ids', []))} 个，模式 {manifest.get('mode', '-')}",
             )
         )
     choices.append(("m", "manual", "手动输入 run-id"))
@@ -896,10 +903,7 @@ def _print_interactive_plan(
         }
         print("重做规则：用户指定阶段全部重做；前置阶段仅在未成功且会阻断时补做")
         if dependency_tasks:
-            details = "、".join(
-                f"{stage}({len(selected)}个)"
-                for stage, selected in dependency_tasks.items()
-            )
+            details = "、".join(f"{stage}({len(selected)}个)" for stage, selected in dependency_tasks.items())
             print(f"前置依赖补做：{details}")
         else:
             print("前置依赖补做：无（前置阶段已成功，不重做）")
@@ -918,6 +922,7 @@ async def _cmd_fetch(args: argparse.Namespace, run_id: str) -> None:
     failed_only = getattr(args, "failed_only", False)
     if failed_only:
         from .fetcher import get_failed_fetch_ids
+
         logger.info("--failed-only 模式：筛选 Fetch 失败案例")
         kbd_ids = get_failed_fetch_ids(kbd_ids)
         if not kbd_ids:
@@ -953,6 +958,7 @@ async def _cmd_vision(args: argparse.Namespace, run_id: str) -> None:
 
         # 检查已抓取的案例
         from .fetcher import _is_fetched
+
         ready_ids = [cid for cid in kbd_ids if _is_fetched(cid)]
 
         if not ready_ids:
@@ -1205,6 +1211,7 @@ def _cmd_config(_args: argparse.Namespace) -> None:
 
 # ─── 参数解析 ────────────────────────────────────────────────────────────────
 
+
 def _add_task_scope(p: argparse.ArgumentParser, *, required: bool = False) -> None:
     """所有任务 Stage 共用的输入范围和生命周期参数。"""
 
@@ -1224,10 +1231,7 @@ def _add_task_scope(p: argparse.ArgumentParser, *, required: bool = False) -> No
         nargs="?",
         const="draft",
         metavar="STATUS_LIST",
-        help=(
-            "重做用户指定阶段；前置阶段仅在未成功且会阻断时补做；"
-            "默认只处理 draft，可写 --rework=draft,published"
-        ),
+        help=("重做用户指定阶段；前置阶段仅在未成功且会阻断时补做；默认只处理 draft，可写 --rework=draft,published"),
     )
 
 
@@ -1236,10 +1240,7 @@ def _add_task_command_options(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--stages",
         default=None,
-        help=(
-            "目标阶段（逗号分隔），默认 all；合法值："
-            + ",".join(ALL_STAGE_NAMES)
-        ),
+        help=("目标阶段（逗号分隔），默认 all；合法值：" + ",".join(ALL_STAGE_NAMES)),
     )
     p.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     p.add_argument("--quiet", action="store_true", help="只保留日志，不输出终端摘要")
@@ -1291,6 +1292,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "pipeline":
+        replacement = "uv run python -m data-pipeline.kbd.run task"
+        if len(sys.argv) > 2:
+            replacement += " " + " ".join(shlex.quote(arg) for arg in sys.argv[2:])
+        print(
+            f"错误：pipeline 子命令已移除，请改用统一任务入口 task；例如：\n  {replacement}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
     parser = build_parser()
     args = parser.parse_args()
 

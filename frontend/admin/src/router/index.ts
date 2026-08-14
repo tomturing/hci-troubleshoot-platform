@@ -86,6 +86,12 @@ const router = createRouter({
       component: () => import('@/views/PromptManageView.vue'),
       meta: { title: 'Prompt管理', icon: 'Cpu', order: 11 },
     },
+    {
+      path: '/offline-diagnosis',
+      name: 'OfflineDiagnosis',
+      component: () => import('@/views/OfflineDiagnosisView.vue'),
+      meta: { title: '离线诊断', icon: 'FirstAidKit', order: 11 },
+    },
   ],
 })
 
