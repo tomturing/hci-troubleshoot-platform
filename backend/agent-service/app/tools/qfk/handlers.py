@@ -191,7 +191,16 @@ class LogKeywordHandler(BackendSignalHandler):
                     if isinstance(ai_extract, dict):
                         ai_instruction = str(ai_extract.get("instruction") or "")
                 if ai_instruction:
-                    ai_filter = signal.filter_keywords or signal.keyword
+                    # 关键字事实的权威来源是 matcher.extract.rows.include（如
+                    # {"mode":"keywords","include":["info block-jobs","Completed"]}），
+                    # 不应依赖 signal.filter_keywords 这个派生字段（派生链在部分调用
+                    # 路径下为空，会导致本应豁免的信号仍被拦截）。优先从 include
+                    # 取，回退到 signal.filter_keywords/keyword，保证 AI 通道总能拿到粗筛关键字。
+                    rows = extract.get("rows") if isinstance(extract, dict) else None
+                    include = rows.get("include") if isinstance(rows, dict) else None
+                    ai_filter = list(include) if isinstance(include, (list, tuple)) else []
+                    if not ai_filter:
+                        ai_filter = signal.filter_keywords or signal.keyword
                     if ai_filter:
                         unique = sorted({str(item) for item in ai_filter if str(item)})
                         if unique:
