@@ -107,3 +107,39 @@ BackendSignal(filter_keywords=[]).build_acli_command()
 与 DB `publish_validation.tool_contract_revision` 完全一致，**该 stale 判断在运行环境为假**；
 用户诊断输出中的 stale 属历史快照或他处缓存，非 23821 当前阻塞项，无需重新发布刷新盖章。
 
+## 方案 A 根治：catalog 直接补齐 vtpdaemon 的 delta/trend predicates（2026-08-14）
+
+### 问题确认（用户对抗性审查）
+- 仿真测试日志的步骤编号与真实 KBD 顺序不一致。真实 KBD 23821 顺序为：
+  - 第 2 步 = 检查 **vtpdaemon 日志**中块作业状态输出，matcher `type: delta`
+    （delta==0 判定迁移完成）→ **仍 BLOCKED**；
+  - 第 3 步 = 在 **vt 容器**内 `acli system qmpcmd {{VM}} info block-jobs`
+    （用户已加入运行态 catalog）→ 已修复。
+- 第 2 步 BLOCKED 的**第一性原理根因**：`log_source_catalog.py` 中 `vtpdaemon` 的
+  `predicates` 硬编码为 `("keyword","regex","state","threshold","exists")`，
+  **缺 `delta`/`trend`**；而同类周期采样/白盒日志源（如 `vn_ethtool_statistics`、
+  `process_snapshot`、`host_blackbox`）的 predicates 均含 `delta`/`trend`。
+  vtpdaemon 的块迁移作业进度是周期采样数值（已迁移字节/总字节），天然需要 delta/trend 判定。
+
+### 修复（代码层单一事实源）
+`backend/shared/schemas/log_source_catalog.py` 的 `vtpdaemon` 条目：
+```python
+predicates=("keyword", "regex", "state", "threshold", "delta", "trend", "exists"),
+```
+- resolver 层 `resolvers.py:194` 的 fail closed 判定
+  `matcher_type not in source["predicates"]` 不再触发，delta 成为 catalog 一等公民；
+- `log_selector.py:53` 与 `matcher.py:7` 已原生支持 `delta`/`trend`，parser=`timestamped_lines`
+  下由 AI 从有界日志行提取类型化数值，无需额外 parser 改造；
+- 与 2026-08-13 handler 豁免路线**互补不冲突**：catalog 补齐后，即使未配置
+  `ai_extract.instruction`，delta 也能走确定性判定通道，比依赖 AI 配置的豁免更彻底。
+
+### 范围界定（对抗性审查）
+- 本次**只改 vtpdaemon**，不改 `qemu_vm`（同为 `timestamped_lines` 白盒，predicates 也缺 delta）。
+  原因：KBD 23821 第 3 步已用 `acli system qmpcmd` 直接查 Qemu 块作业，不经 `qemu_vm`
+  日志源 predicate；qemu_vm 的 delta 缺口不在本次故障链路内，避免越界改动。如后续其他
+  KBD 确需对 `sfvt_qemu_*.log` 做 delta 判定，再单独评估补齐。
+
+### 测试影响
+`backend/kb-service/tests/test_log_source_catalog.py` 对 vtpdaemon 仅断言
+`family/path/date_subpath/parser`，未断言 predicates 具体集合，本改动不引入回归。
+

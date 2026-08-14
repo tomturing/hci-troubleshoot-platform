@@ -161,8 +161,8 @@ LOG_SOURCE_CATALOG: tuple[LogSourceDefinition, ...] = (
         # END 已解析时由 qfk_log 按月内日号定位 /sf/log/<D 或 DD>/vt。
         default_path=LOG_ROOT,
         parser="timestamped_lines",
-        predicates=("keyword", "regex", "state", "threshold", "exists"),
-        description="vtpdaemon 白盒日志；END 可用时位于 /sf/log/<D或DD>/vt，未提供 END 时回退 /sf/log",
+        predicates=("keyword", "regex", "state", "threshold", "delta", "trend", "exists"),
+        description="vtpdaemon 白盒日志；块迁移作业进度为周期采样数值，需 delta/trend 判定，END 可用时位于 /sf/log/<D或DD>/vt，未提供 END 时回退 /sf/log",
         date_subpath="vt",
     ),
     LogSourceDefinition(
