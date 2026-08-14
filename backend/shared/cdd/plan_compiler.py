@@ -9,7 +9,6 @@ from typing import Any
 
 from shared.cdd.kbd_model import KBD, _acquire_tool
 from shared.schemas.acquirer_args import SUPPORTED_TOOLS, validate_acquire_args
-from shared.schemas.signal_generation import current_tool_contract_revision
 
 from .models import Acquisition, CaseVerificationPolicy, EvidenceRole, SignalPlan, SignalRef
 
@@ -185,13 +184,17 @@ def compile_signal_plan(
         if kbd.verification_contract and publish_validation:
             if publish_validation.get("status") != "passed":
                 errors.setdefault(kbd.id, []).append("expert publish validation status is invalid")
-            if publish_validation.get("tool_contract_revision") != current_tool_contract_revision():
-                errors.setdefault(kbd.id, []).append("expert publish tool contract revision is stale")
+            # 对齐 #755 校验器驱动门禁 ADR：
+            # tool_contract_revision 字节哈希仅作粗粒度变化探测，不再据此阻断执行。
+            # Signal 是否可执行的语义门禁（Breaking Change 检测）由 Gate-1
+            # playbooks.py 的 validate_publishable_signals_json 统一负责；
+            # agent 在 investigation_agent.py 消费 executable=true/false 过滤后
+            # 才将 KBD 投递到此处，无需在执行层重复字节哈希比对（REDUNDANCY-2）。
         elif kbd.verification_contract and generation:
             if generation.get("status") == "stale":
                 errors.setdefault(kbd.id, []).append("signal generation metadata is stale")
-            if generation.get("tool_contract_revision") != current_tool_contract_revision():
-                errors.setdefault(kbd.id, []).append("signal tool contract revision is stale")
+            # 同上：generation.tool_contract_revision 偏移由 Gate-1 顶层校验处置，
+            # plan_compiler 不重复字节哈希比对。
         seen_signal_ids: set[str] = set()
         for index, signal in enumerate(kbd.signals, start=1):
             signal_id = str(signal.get("id") or signal.get("signal_id") or f"signal_{index:03d}")
