@@ -81,14 +81,14 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | CI 发布链路按影响范围收敛 | ✅ 已实施：main push 动态构建 Dockerfile 实际输入影响的镜像，db-migrate job 级跳过，环境仓库仅更新已构建服务；文档治理复用既有 runner，所有 job 有超时，第三方 action/tool 已固定，P50/P95 报告仅手动运行。 | 2026-08-07 |
 | hci-sim KBD 27123 纵向样板与生产化差距审查 | 🟡 27123 revision 25 的 Admin→Agent→K3s Bridge→Runtime→Result 已通过；平台生产交付保持 BLOCKED，下一阶段转入 Bundle 工厂化 | 2026-08-11 |
 
-**当前关注点（2026-08-11）**：KBD 27123 revision 25 已完成真实 Chromium 下的 Admin→Case/Conversation→Agent→K3s terminal_bridge→hci-sim→Result 纵向闭环，并修复 Bundle 事实分叉、结果假阳性、容器 Catalog 缺失、命令契约漂移和 capability matrix 吞错。该结果只接受为纵向样板，hci-sim 面向终端用户的生产交付仍为 `BLOCKED`；下一阶段必须把新增 KBD 改造为无需代码/镜像/Helm/Argo 变更的 Bundle 工厂化发布。以[生产化差距与重构基线](solution/events/2026-08-11-hci-sim生产化差距审查与Bundle工厂化重构基线.md)、[P0–P1 需求](requirement/events/2026-08-11-hci-sim-P0-P1-27123全链路修复需求.md)、[设计](solution/events/2026-08-11-hci-sim-P0-P1-27123全链路修复方案.md)、[任务](task/events/2026-08-11-hci-sim-P0-P1-27123全链路修复任务.md)和[验证](verify/events/2026-08-11-hci-sim-P0-P1-27123全链路验证.md)为当前事实入口。
+**当前关注点（2026-08-11）**：KBD 27123 revision 25 已完成真实 Chromium 下的 Admin→Case/Conversation→Agent→K3s terminal_bridge→hci-sim→Result 纵向闭环，并修复 Bundle 事实分叉、结果假阳性、容器 Catalog 缺失、命令契约漂移和 capability matrix 吞错。该结果只接受为纵向样板，hci-sim 面向终端用户的生产交付仍为 `BLOCKED`；下一阶段必须把新增 KBD 改造为无需代码/镜像/Helm/Argo 变更的 Bundle 工厂化发布。以[生产化差距与重构基线](solution/hci-sim/events/2026-08-11-hci-sim生产化差距审查与Bundle工厂化重构基线.md)、[P0–P1 需求](requirement/hci-sim/events/hci-sim-P0-P1-27123全链路修复需求.md)、[设计](solution/hci-sim/events/2026-08-11-hci-sim-P0-P1-27123全链路修复方案.md)、[任务](task/hci-sim/events/2026-08-11-hci-sim-P0-P1-27123全链路修复任务.md)和[验证](verify/hci-sim/events/2026-08-11-hci-sim-P0-P1-27123全链路验证.md)为当前事实入口。
 
 ### 2026-08-10 三组 hci-sim 重构事件文档
 
 | 组别 | 当前状态 | 需求 | 方案 | 任务 | 验证 |
 |---|---|---|---|---|---|
 | K3s 受管 terminal_bridge | ✅ 27123 Agent E2E 已通过受管单副本 Bridge；多副本/容量属于 P2 | [需求](requirement/events/2026-08-10-K3s受管terminal_bridge启用需求.md) | [方案](solution/events/2026-08-10-K3s受管terminal_bridge启用方案.md) | [任务](task/events/2026-08-10-K3s受管terminal_bridge启用任务.md) | [验证](verify/events/2026-08-10-K3s受管terminal_bridge启用验证.md) |
-| hci_sim 独立数据库 | 🟡 Run/Bundle/Result/outbox 与权限隔离已通过；主库 15 张空旧表 contract/drop 和恢复演练待独立完成 | [需求](requirement/events/2026-08-10-hci_sim独立数据库隔离需求.md) | [方案](solution/events/2026-08-10-hci_sim独立数据库隔离方案.md) | [任务](task/events/2026-08-10-hci_sim独立数据库隔离任务.md) | [验证](verify/events/2026-08-10-hci_sim独立数据库隔离验证.md) |
+| hci_sim 独立数据库 | 🟡 Run/Bundle/Result/outbox 与权限隔离已通过；主库 15 张空旧表 contract/drop 和恢复演练待独立完成 | [需求](requirement/hci-sim/events/hci_sim独立数据库隔离需求.md) | [方案](solution/hci-sim/events/2026-08-10-hci_sim独立数据库隔离方案.md) | [任务](task/hci-sim/events/2026-08-10-hci_sim独立数据库隔离任务.md) | [验证](verify/hci-sim/events/2026-08-10-hci_sim独立数据库隔离验证.md) |
 | 仿真测试迁移与 Agent context | ✅ 27123 的持久化 context、真实 Case/Conversation、Agent 命令和 Result E2E 已通过；其他 KBD 按 Bundle gate 判定 | [需求](requirement/events/2026-08-10-仿真测试迁移与Agent上下文绑定需求.md) | [方案](solution/events/2026-08-10-仿真测试迁移与Agent上下文绑定方案.md) | [任务](task/events/2026-08-10-仿真测试迁移与Agent上下文绑定任务.md) | [验证](verify/events/2026-08-10-仿真测试迁移与Agent上下文绑定验证.md) |
 
 ### 冷启动阅读路径
@@ -116,7 +116,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | 分支文档 | 说明 | 对应架构组件 |
 |---------|------|----------|
 | [solution/agent/02-架构设计/agent设计.md](solution/agent/02-架构设计/agent设计.md) | AI 助手架构、Pod 池调度、AI协议设计 |
-| [solution/agent/README.md](solution/agent/README.md#hci-sim-ae-设计导航) | hci-sim A～E 目标架构、严格依赖和当前 proposed 状态 |
+| [solution/hci-sim/README.md](solution/hci-sim/README.md) | hci-sim A～E 目标架构、严格依赖和当前 proposed 状态 |
 | [solution/knowledge-base/知识库设计.md](solution/knowledge-base/知识库设计.md) | RAG 摄入 + 检索流水线、KBD + SOP 两轨 |
 | [solution/custom-ui/客户端设计.md](solution/custom-ui/客户端设计.md) | WebSocket 生命周期、UI 状态机、aClient 采集 |
 | [solution/case/工单设计.md](solution/case/工单设计.md) | 工单生命周期、Case 状态机、评分触发 |
@@ -151,7 +151,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | [task/case/工单任务.md](task/case/工单任务.md) | 工单模块任务 |
 | [task/conversation/对话任务.md](task/conversation/对话任务.md) | 对话模块任务 |
 | [task/agent/agent任务.md](task/agent/agent任务.md) | AI 助手层任务 |
-| [task/agent/events/2026-08-05-hci-sim阶段A目录收敛与基础门禁任务.md](task/agent/events/2026-08-05-hci-sim阶段A目录收敛与基础门禁任务.md) | hci-sim 当前实施入口；B～E 依次受前置门禁阻断 |
+| [task/hci-sim/README.md](task/hci-sim/README.md) | hci-sim 当前实施入口；B～E 依次受前置门禁阻断 |
 | [task/knowledge-base/知识库任务.md](task/knowledge-base/知识库任务.md) | 知识库 RAG 任务（当前重点） |
 | [task/custom-ui/客户端任务.md](task/custom-ui/客户端任务.md) | 客户端任务 |
 | [task/events/](task/events/) | 历史任务事件记录 |
