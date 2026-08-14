@@ -313,7 +313,7 @@ diagnosisService:
   enabled: false
   replicaCount: 1
   image:
-    repository: hci-diagnosis-service
+    repository: diagnosis-service
     tag: latest
   port: 8008
   identityMode: "internal"
