@@ -36,6 +36,14 @@ spec:
             - |
               set -eu
               export PGHOST="$POSTGRES_HOST" PGPORT=5432 PGUSER="$POSTGRES_USER" PGPASSWORD="$POSTGRES_PASSWORD"
+              # 前置校验：迁移 SQL 必须随 ConfigMap 挂载且非空。
+              # 早期因 PreSync hook 与 ConfigMap 应用时序竞态，Pod 会永久卡在
+              # ContainerCreating 导致 ArgoCD 死锁。此处显式失败（非静默跳过），
+              # 配合 hook-delete-policy: HookFailed 让 ArgoCD 删除并自愈重试。
+              if [ ! -s /migrations/000001_control_plane.sql ]; then
+                echo "FATAL: 迁移 SQL 未挂载或为空（ConfigMap 可能尚未就绪），放弃本次执行以触发 HookFailed 自愈" >&2
+                exit 1
+              fi
               case "$OWNER_ROLE$MIGRATOR_ROLE$RUNTIME_ROLE" in (*[!A-Za-z0-9_]*) echo "role name must be alphanumeric" >&2; exit 1;; esac
               # 角色名来自受版本控制的 values；密码先转义单引号，避免把 Secret 拼成 SQL。
               # CREATE ROLE 不能放入 DO 函数，必须先查询存在性，再执行独立 DDL。
@@ -108,4 +116,8 @@ spec:
         - name: migrations
           configMap:
             name: hci-sim-db-migrations
+            # 设为 optional：ArgoCD PreSync 阶段若因时序未就绪，Pod 不会卡在
+            # ContainerCreating 永久死锁；改由下方启动脚本前置校验显式失败，
+            # 触发 HookFailed 删除策略，让 ArgoCD 可自愈重试而非永远等待。
+            optional: true
 {{- end }}
