@@ -117,6 +117,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 |---------|------|----------|
 | [solution/agent/02-架构设计/agent设计.md](solution/agent/02-架构设计/agent设计.md) | AI 助手架构、Pod 池调度、AI协议设计 |
 | [solution/hci-sim/README.md](solution/hci-sim/README.md) | hci-sim A～E 目标架构、严格依赖和当前 proposed 状态 |
+| [hci_sim/README.md](../hci_sim/README.md) | hci-sim 现行全量源码设计说明（代码/数据库/部署/CI/验收入口） |
 | [solution/knowledge-base/知识库设计.md](solution/knowledge-base/知识库设计.md) | RAG 摄入 + 检索流水线、KBD + SOP 两轨 |
 | [solution/custom-ui/客户端设计.md](solution/custom-ui/客户端设计.md) | WebSocket 生命周期、UI 状态机、aClient 采集 |
 | [solution/case/工单设计.md](solution/case/工单设计.md) | 工单生命周期、Case 状态机、评分触发 |
