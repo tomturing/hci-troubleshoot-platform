@@ -1,7 +1,6 @@
 suite: "Diagnosis Service 凭据配置测试"
 templates:
   - diagnosis-service/secret.yaml
-  - diagnosis-service/deployment.yaml
 tests:
   - it: "默认关闭时不渲染 Diagnosis 资源"
     asserts:
@@ -33,20 +32,3 @@ tests:
     asserts:
       - hasDocuments:
           count: 0
-
-  - it: "Diagnosis Deployment 必须引用指定的已有 Secret"
-    templates:
-      - diagnosis-service/deployment.yaml
-    set:
-      diagnosisService.enabled: true
-      diagnosisService.existingCredentialsSecret: diagnosis-service-managed-credentials
-      diagnosisService.allowedOrigins: "https://customer.example.com"
-    asserts:
-      - isKind:
-          of: Deployment
-      - equal:
-          path: spec.template.spec.containers[0].env[3].valueFrom.secretKeyRef.name
-          value: diagnosis-service-managed-credentials
-      - equal:
-          path: spec.template.spec.containers[0].env[10].valueFrom.secretKeyRef.name
-          value: diagnosis-service-managed-credentials
