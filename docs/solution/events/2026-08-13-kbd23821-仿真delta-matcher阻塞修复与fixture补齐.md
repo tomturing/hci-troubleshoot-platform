@@ -140,6 +140,13 @@ predicates=("keyword", "regex", "state", "threshold", "delta", "trend", "exists"
   KBD 确需对 `sfvt_qemu_*.log` 做 delta 判定，再单独评估补齐。
 
 ### 测试影响
-`backend/kb-service/tests/test_log_source_catalog.py` 对 vtpdaemon 仅断言
-`family/path/date_subpath/parser`，未断言 predicates 具体集合，本改动不引入回归。
+- `backend/kb-service/tests/test_log_source_catalog.py` 对 vtpdaemon 仅断言
+  `family/path/date_subpath/parser`，未断言 predicates 具体集合，本改动不引入回归。
+- `test_signal_text_extract_schema.py::test_qfk_log_unsupported_predicate_points_to_match_type`
+  原用例用 `sfvt_vtpdaemon.log` + delta 且**期望被拒绝**；方案 A 后 vtpdaemon 直接支持
+  delta，该用例前提失效。已将其 source 改为 `sfvt_qemu_vm.log`（仍不支持 delta 的对照源），
+  **保留**“unsupported predicate 应报错并指向 match.type”的测试意图。
+- `test_qfk_log_numeric_ai_extract_allows_delta_on_source_without_direct_delta`
+  （vtpdaemon + delta + ai_extract.instruction，期望通过）不受影响，且因 catalog 直接支持
+  delta 更稳健。
 

@@ -300,7 +300,9 @@ def test_qfk_log_unsupported_predicate_points_to_match_type():
         "signals": [
             {
                 "id": "sig_log_predicate",
-                "acquire": {"tool": "qfk_log", "args": {"file": "sfvt_vtpdaemon.log"}},
+                # 用 qemu_vm 作为“仍不支持 delta”的对照源（vtpdaemon 已在方案 A 补齐 delta）；
+                # 该测试仅验证：当 source 的 predicates 确实不含某数值谓词时，校验器应拒绝并指向 match.type
+                "acquire": {"tool": "qfk_log", "args": {"file": "sfvt_qemu_vm.log"}},
                 "match": {
                     "type": "delta",
                     "operator": ">",
