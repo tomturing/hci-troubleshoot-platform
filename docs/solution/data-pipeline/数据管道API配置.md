@@ -10,6 +10,7 @@
 
 ```bash
 # LLM API 配置（OpenAI-compatible）
+# 安全提示：禁止在文档中硬编码真实密钥。请通过环境变量注入，并在密钥泄露后立即到阿里云百炼控制台轮换。
 API_KEY=${DASHSCOPE_API_KEY}
 BASE_URL=https://coding.dashscope.aliyuncs.com/v1
 

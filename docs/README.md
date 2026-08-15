@@ -134,6 +134,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | [deploy/发布指南.md](deploy/发布指南.md) | 发布流程 + ArgoCD 接入 + 回滚 SOP |
 | [deploy/部署管理规范.md](deploy/部署管理规范.md) | 脚本分类体系、配置分层、密钥管理规则 |
 | [deploy/pitfalls/_index.md](deploy/pitfalls/_index.md) | 部署类避坑路由索引（AI Agent 必读） |
+| [deploy/user-guide/](deploy/user-guide/) | 终端用户使用手册（在线诊断 / 离线诊断） |
 
 ### 验证与测试
 

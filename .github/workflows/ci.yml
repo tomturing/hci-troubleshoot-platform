@@ -214,6 +214,31 @@ jobs:
           DOC_SYNC_BYPASS: ${{ contains(github.event.pull_request.labels.*.name, 'doc-update-exempt') && '1' || '0' }}
         run: python3 scripts/ci/check_module_doc_sync.py
 
+      # ── 文档腐化硬门禁（docs rot gate）──
+      # 第一性原理：文档只有"准确反映现状且引用有效"才有价值，失效引用与密钥泄露
+      # 是腐化的硬证据，必须阻断合并。
+      # 分级策略：
+      #   - C6 密钥泄露：永远阻断（安全红线，不区分存量/增量）
+      #   - C1/C2/C3 失效引用：仅阻断本次 PR 引入的新问题（--changed-only），存量只警告
+      # 对抗性审查：存量问题不阻断，避免现有 PR 永远无法合并导致治理卡死。
+      - name: 文档腐化硬门禁（失效引用+密钥泄露）
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 scripts/ci/check_docs_rot.py --changed-only
+          ROT_EXIT=$?
+          # 密钥泄露（C6）已在脚本内强制退出 1；此处仅传播失效引用的阻断结果
+          exit $ROT_EXIT
+
+      - name: 文档腐化存量报告（信息性，不阻断）
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: |
+          echo "::warning::存量文档腐化扫描（仅报告，不影响合并）："
+          python3 scripts/ci/check_docs_rot.py --only C1,C2,C3,C6 || true
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

@@ -1,12 +1,10 @@
 # HCI 智能排障平台
 
-> 版本 **v2.22.0** · 2026-08-07
+> 版本 **v2.23.0**（以 `pyproject.toml` 为准）· 2026-08-07
 
 HCI 环境 AI 故障诊断平台。微服务架构 + S0-S6 六阶段诊断状态机 + 双轨知识检索（SOP + RAG）。
 
-### v2.21.0 当前里程碑（2026-08-06）
-
-### v2.22.0 当前里程碑（2026-08-06）
+### v2.23.0 当前里程碑（2026-08-06）
 
 - **KBD 错误链路与日志可观测性整改**：Signal 校验错误返回稳定错误码/字段定位；网关记录下游非 2xx 并透传诊断 ID；共享异常处理、HTTP 指标、结构化日志和管理台错误协议统一。详见 [整改方案](docs/solution/events/2026-08-06-KBD关键信号错误链路与日志可观测性整改方案.md) 与 [整改任务](docs/task/events/2026-08-06-KBD关键信号错误链路与日志可观测性整改任务.md)。
 
@@ -70,7 +68,7 @@ AI 层（Pod Pool）：
 
 可观测性：
   Tempo ← OTLP ← 各服务 OTel SDK
-  Loki  ← Promtail ← Container stdout（含 TTFT 首 Token 延迟）
+  Loki  ← Grafana Alloy ← Container stdout（含 TTFT 首 Token 延迟）
   Grafana → Trace↔Log 双向钻取 · AlertManager 告警（4 组 10 条）
   Langfuse → LLM 运行指标监测与 Prompt 执行追踪
 ```
@@ -261,7 +259,7 @@ hci-troubleshoot-platform/
 | AI | OpenClaw Gateway :18789 · Z.AI GLM |
 | 基础设施 | Docker Compose（开发）/ K3s + Helm + ArgoCD（生产）|
 | 镜像仓库 | ghcr.io（GitHub Container Registry）|
-| 可观测性 | OpenTelemetry · Tempo · Loki · Promtail · Grafana |
+| 可观测性 | OpenTelemetry · Tempo · Loki · Grafana Alloy · Grafana |
 | CI/CD | GitHub Actions · release-please |
 
 ---

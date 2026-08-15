@@ -1,7 +1,7 @@
 # HCI 智能排障平台 — 项目规范
 
 > **本文件是所有 AI Agent（Claude Code / Codex CLI / Gemini CLI / Antigravity IDE）的项目层规范文件。**
-> `./CLAUDE.md` 是本文件的符号链接，确保 Claude Code / Antigravity IDE 读到相同内容。
+> `./CLAUDE.md` 是引用本文件的薄壳（内容为 `@./AGENTS.md`），确保 Claude Code / Antigravity IDE 读到相同内容。本文件是规范的唯一事实源。
 > `./CLAUDE.local.md` 存放个人本地配置（不提交 git）。
 > 全局编码规范见 `~/.claude/CLAUDE.md`，全局避坑指南见 `~/.claude/pitfalls/`。
 
@@ -21,7 +21,7 @@
 **HCI 智能排障平台** — AI 驱动的超融合基础设施运维故障诊断系统。
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
-- 当前版本：v2.16.0（以 `pyproject.toml` 为准）
+- 当前版本：以 `pyproject.toml` 中的 `version` 字段为准（请勿在此硬编码版本号，避免与 pyproject 漂移；CI `check_docs_rot.py` 的 C7 检查会校验一致性）
 - **KBD 分类与识图 LLM 超时配置优化**：
   - **根因**：data-pipeline 的 API_TIMEOUT（30s）小于 kb-service 的 LLM_TIMEOUT（60s），导致 LLM 在 30-60s 完成时客户端超时判定失败。识图提交超时也存在类似风险。
   - **修复**：
