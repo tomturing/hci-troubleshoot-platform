@@ -10,7 +10,7 @@
 
 ```bash
 # LLM API 配置（OpenAI-compatible）
-API_KEY=sk-sp-d887dc675b9c4412a939832754c69432
+API_KEY=${DASHSCOPE_API_KEY}
 BASE_URL=https://coding.dashscope.aliyuncs.com/v1
 
 # 模型配置
@@ -125,7 +125,7 @@ print('CLASSIFY_MODEL:', settings.CLASSIFY_MODEL)
 
 输出：
 ```
-API_KEY: sk-sp-d887dc675b9c44...
+API_KEY: ${DASHSCOPE_API_KEY}
 BASE_URL: https://coding.dashscope.aliyuncs.com/v1
 VISION_MODEL: qwen3.7-plus
 CLASSIFY_MODEL: qwen3.7-plus

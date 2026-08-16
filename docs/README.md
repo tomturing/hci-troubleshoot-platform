@@ -170,4 +170,10 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 
 文档更新规则详见 [文档管理规范.md](文档管理规范.md)。
 
-历史归档见 [archive/README.md](archive/README.md)。
+### 特殊文档类（非工作循环）
+
+| 文档类 | 说明 | 入口 |
+|--------|------|------|
+| 终端普通用户使用手册 | 面向非开发者的操作结果视角文档 | [user-guide/](user-guide/) |
+| 接口契约 | 机器可读的 OpenAPI / Protobuf 契约源文件 | [contracts/](contracts/) |
+| 历史归档 | 已完成、冻结、不再演进的历史文档（只读） | [archive/README.md](archive/README.md) |
