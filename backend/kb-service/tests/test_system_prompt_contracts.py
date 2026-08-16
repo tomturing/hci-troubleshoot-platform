@@ -30,6 +30,12 @@ _SIGNAL_PIPELINE_MIGRATION_PATH = (
 _QKV_KEYWORD_MIGRATION_PATH = (
     _REPOSITORY_ROOT / "database" / "data-migrations" / "023_align_qkv_keyword_type_contract.sql"
 )
+_LINE_COUNT_MIGRATION_PATH = (
+    _REPOSITORY_ROOT / "database" / "data-migrations" / "026_align_line_count_extract_contract.sql"
+)
+_LINE_COUNT_ESCAPE_MIGRATION_PATH = (
+    _REPOSITORY_ROOT / "database" / "data-migrations" / "028_escape_line_count_extract_prompt_literal.sql"
+)
 
 
 def _seed_template(prompt_name: str) -> str:
@@ -249,6 +255,24 @@ def test_qkv_keyword_prompt_migration_separates_qkv_and_qfk_array_semantics():
     assert "keyword pattern 数组" not in appended_rules
     assert "多个关键字使用数组，页面按换行编辑" not in appended_rules
     assert StrictPromptLoader.get_template_placeholders(appended_rules) == set()
+
+
+def test_line_count_forward_migration_restores_prompt_placeholder_contract():
+    template = _seed_template("kbd_extract_signals_v2")
+    line_count_migration = _LINE_COUNT_MIGRATION_PATH.read_text(encoding="utf-8")
+    appended_rule = line_count_migration.split("|| $RULE$", 1)[1].split("$RULE$,", 1)[0]
+    broken_template = template + appended_rule
+
+    escape_migration = _LINE_COUNT_ESCAPE_MIGRATION_PATH.read_text(encoding="utf-8")
+    unsafe_literal = escape_migration.split("$UNSAFE$", 1)[1].split("$UNSAFE$", 1)[0]
+    safe_literal = escape_migration.split("$SAFE$", 1)[1].split("$SAFE$", 1)[0]
+    repaired_template = broken_template.replace(unsafe_literal, safe_literal)
+
+    expected_placeholders = StrictPromptLoader.get_template_placeholders(template)
+    assert StrictPromptLoader.get_template_placeholders(broken_template) != expected_placeholders
+    assert unsafe_literal not in repaired_template
+    assert safe_literal in repaired_template
+    assert StrictPromptLoader.get_template_placeholders(repaired_template) == expected_placeholders
 
 
 def test_vision_prompt_gives_task_detail_modal_task_semantic_priority():
