@@ -56,6 +56,25 @@ func TestPublishedKBD27123BundleMatchesAgentSystemCommands(t *testing.T) {
 	}
 }
 
+func TestPublishedKBD23821BundleMatchesAgentLogCommand(t *testing.T) {
+	router, err := Load(filepath.Join("..", "..", "..", "deploy", "helm", "hci-sim", "files", "kbd-23821-fixture-manifest.json"))
+	if err != nil {
+		t.Fatalf("加载 KBD23821 发布 bundle 失败: %v", err)
+	}
+	legacyCommand := "acli log get -E -k 'Completed|info\\ block-jobs' -f sfvt_vtpdaemon.log -p /sf/log/18/vt -t '2023-09-18 17:19:07'"
+	if _, err := router.Match(legacyCommand, "positive-realistic", "SIM-HCI-NODE-01", "host"); err == nil {
+		t.Fatal("旧日志命令缺少连字符转义，不得命中精确路由")
+	}
+	command := "acli log get -E -k 'Completed|info\\ block\\-jobs' -f sfvt_vtpdaemon.log -p /sf/log/18/vt -t '2023-09-18 17:19:07'"
+	result, err := router.Match(command, "positive-realistic", "SIM-HCI-NODE-01", "host")
+	if err != nil {
+		t.Fatalf("Agent 当前日志命令必须命中 KBD23821 发布 bundle: %v", err)
+	}
+	if result.ExitCode != 0 || result.FixtureID != "sig-002-qfk-log-delta-23821" {
+		t.Fatalf("KBD23821 日志 fixture 返回无效结果: %+v", result)
+	}
+}
+
 func route(id, variant string, argv []string) Route {
 	return Route{
 		ID: id, Variant: variant,
