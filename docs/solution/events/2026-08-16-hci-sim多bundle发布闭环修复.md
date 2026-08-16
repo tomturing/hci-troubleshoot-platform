@@ -46,4 +46,4 @@ KBD23821 的 fixture 修复合并后，ArgoCD 已同步 Git revision，但运行
 
 ## 5. 部署注意事项
 
-当前 dev 环境存在已删除宿主文件对应的 `hostPath` 二进制覆盖。新镜像发布并固定 immutable digest 前不得直接重启；部署新版本时必须先移除 `binary-override` volume/volumeMount，再验证 `/status` 和 `/v1/simulations/capabilities/23821` 返回 `sha256:c1976465fa8b1fe5226e684c04be7b2415c4578785cbf1adb07793f3e74965af`。
+当前 dev 环境存在已删除宿主文件对应的 `hostPath` 二进制覆盖。正式候选镜像已由受控 CI 发布为 `sha256:6b608c44c80d6af70f8c625e2ecde1ba5b2e434d26eccc3642e61f9f1283e215`；部署新版本时必须由 ArgoCD 移除 `binary-override` volume/volumeMount，再验证 `/status` 和 `/v1/simulations/capabilities/23821` 返回 `sha256:c1976465fa8b1fe5226e684c04be7b2415c4578785cbf1adb07793f3e74965af`。
