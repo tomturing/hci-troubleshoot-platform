@@ -722,7 +722,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
   }}
 }}
 $TEMPLATE$,
-        '2.4',
+        '2.5',
         TRUE
     )
 ON CONFLICT (name) DO NOTHING;
