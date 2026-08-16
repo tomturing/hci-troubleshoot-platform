@@ -10,7 +10,7 @@
  *   - threshold: 数值阈值（operator, value）
  *   - delta: 多样本首末差值（operator, value, minimum_samples）
  *   - trend: 多样本趋势（direction, value, minimum_samples）
- *   - exists: 存在性判定
+ *   - exists: 存在性判定（筛选结果是否存在）
  *
  * 使用方式（v-model 双向绑定对象）：
  *   <MatcherEditor v-model="matcherData" />
@@ -49,7 +49,10 @@ const matcherType = computed({
   set: (type: string) => {
     // Predicate 切换只重置判定字段；已经确认的 Extract 必须保留。
     const existingExtract = matcher.value.extract
-    const newMatcher: Record<string, any> = { type, expected: true }
+    const newMatcher: Record<string, any> = {
+      type,
+      expected: matcher.value.expected !== false,
+    }
     if (type === 'keyword') {
       newMatcher.pattern = ''
       newMatcher.mode = 'or'
@@ -74,6 +77,14 @@ const matcherType = computed({
       value_mode: numeric ? 'number' : 'string',
     }
     matcher.value = newMatcher
+  },
+})
+
+// expected 属于第二步的最终布尔判定；未配置历史值时按开启处理。
+const expectedResult = computed({
+  get: () => matcher.value.expected !== false,
+  set: (value: boolean) => {
+    matcher.value = { ...matcher.value, expected: Boolean(value) }
   },
 })
 
@@ -110,7 +121,7 @@ const allMatcherTypeOptions = [
   { label: '数值阈值（比较数字）', value: 'threshold', desc: '数值比较判定' },
   { label: '首末差值（比较变化量）', value: 'delta', desc: '周期日志计数器差值' },
   { label: '变化趋势（连续变化）', value: 'trend', desc: '周期日志连续趋势' },
-  { label: '存在性判定（是否有输出）', value: 'exists', desc: '检查输出是否非空' },
+  { label: '存在性判定', value: 'exists', desc: '检查筛选结果是否存在' },
 ]
 const matcherTypeOptions = computed(() => {
   if (!props.allowedTypes?.length) return allMatcherTypeOptions
@@ -137,7 +148,8 @@ const extractDefaultValueMode = computed(() => (
               <br/><b>threshold</b> — 数值阈值比较（支持 &gt; &gt;= &lt; &lt;= == !=）。
               <br/><b>delta</b> — 比较多个样本的末值减首值。
               <br/><b>trend</b> — 判断多个样本连续上升、下降或稳定。
-              <br/><b>exists</b> — 检查输出是否非空。
+              <br/><b>exists</b> — 检查第一步筛选结果是否存在。
+              <br/><b>期望判断结果</b> — 开启表示第二步条件应为 True，关闭表示第二步条件应为 False。
             </div>
           </template>
           <el-icon class="help-icon"><InfoFilled /></el-icon>
@@ -280,15 +292,26 @@ const extractDefaultValueMode = computed(() => (
       <!-- exists 类型：无额外参数 -->
       <template v-else-if="matcherType === 'exists'">
         <el-form-item label="说明">
-          <el-tag type="info" effect="plain">检查输出是否非空</el-tag>
+          <el-tag type="info" effect="plain">检查第一步筛选结果是否存在</el-tag>
         </el-form-item>
       </template>
+
+      <el-form-item label="期望判断结果">
+        <el-switch
+          v-model="expectedResult"
+          inline-prompt
+          active-text="满足"
+          inactive-text="不满足"
+          aria-label="期望判断结果"
+        />
+        <span class="field-hint expected-hint">开启：第二步判断结果应为 True；关闭：第二步判断结果应为 False。</span>
+      </el-form-item>
 
       <el-alert
         v-if="matcher.expected === false || matcher.mode === 'not'"
         type="warning"
         :closable="false"
-        title="这是历史取反配置，平台继续兼容执行；新配置请改用明确的正向判定条件。"
+        title="已设置为期望判断结果 False：只有第二步条件不成立时，该信号才满足。命令执行失败或超时不会进入判断。"
       />
     </el-form>
   </div>

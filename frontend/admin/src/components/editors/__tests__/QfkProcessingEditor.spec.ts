@@ -1,4 +1,4 @@
-import { shallowMount } from '@vue/test-utils'
+import { mount, shallowMount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
 import { describe, expect, it } from 'vitest'
 
@@ -31,6 +31,13 @@ function matchProps() {
 function mountEditor(props: InstanceType<typeof QfkProcessingEditor>['$props']) {
   return shallowMount(QfkProcessingEditor, {
     props,
+    global: { plugins: [ElementPlus] },
+  })
+}
+
+function mountMatcher(match: Record<string, any>) {
+  return mount(MatcherEditor, {
+    props: { modelValue: match },
     global: { plugins: [ElementPlus] },
   })
 }
@@ -77,6 +84,22 @@ describe('QfkProcessingEditor 两步处理交互', () => {
     expect(predicateUpdate.extract.rows.include).toEqual(['检测到IP'])
   })
 
+  it('第二步提供期望判断结果开关，并默认开启', async () => {
+    const wrapper = mountMatcher(matchProps().match)
+    const expectedSwitch = wrapper.findComponent({ name: 'ElSwitch' })
+
+    expect(expectedSwitch.exists()).toBe(true)
+    expect(expectedSwitch.props('modelValue')).toBe(true)
+
+    const matcherVm = wrapper.vm as unknown as { expectedResult: boolean }
+    matcherVm.expectedResult = false
+    await wrapper.vm.$nextTick()
+
+    const update = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as Record<string, any>
+    expect(update.expected).toBe(false)
+    expect(update.extract).toEqual(textExtract)
+  })
+
   it('产出模式为每个变量创建独立处理单元，步骤标题统一为“第二步：产出”', () => {
     const produces = [
       { name: 'DUP_IP', type: 'string', extract: textExtract },
@@ -86,6 +109,7 @@ describe('QfkProcessingEditor 两步处理交互', () => {
 
     expect(wrapper.findAll('.processing-unit')).toHaveLength(2)
     expect(wrapper.findAllComponents(ValueExtractEditor)).toHaveLength(2)
+    expect(wrapper.findComponent(MatcherEditor).exists()).toBe(false)
     expect(wrapper.text().match(/第一步：取值/g)).toHaveLength(2)
     expect(wrapper.text().match(/第二步：产出/g)).toHaveLength(2)
     expect(wrapper.text()).not.toContain('变量处理单元')
