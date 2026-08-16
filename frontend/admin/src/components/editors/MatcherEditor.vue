@@ -149,7 +149,7 @@ const extractDefaultValueMode = computed(() => (
               <br/><b>delta</b> — 比较多个样本的末值减首值。
               <br/><b>trend</b> — 判断多个样本连续上升、下降或稳定。
               <br/><b>exists</b> — 检查第一步筛选结果是否存在。
-              <br/><b>期望判断结果</b> — 开启表示第二步条件应为 True，关闭表示第二步条件应为 False。
+              <br/><b>期望</b> — 开启表示第二步条件应为 True，关闭表示第二步条件应为 False。
             </div>
           </template>
           <el-icon class="help-icon"><InfoFilled /></el-icon>
@@ -296,13 +296,13 @@ const extractDefaultValueMode = computed(() => (
         </el-form-item>
       </template>
 
-      <el-form-item label="期望判断结果">
+      <el-form-item label="期望">
         <el-switch
           v-model="expectedResult"
           inline-prompt
           active-text="满足"
           inactive-text="不满足"
-          aria-label="期望判断结果"
+          aria-label="期望"
         />
         <span class="field-hint expected-hint">开启：第二步判断结果应为 True；关闭：第二步判断结果应为 False。</span>
       </el-form-item>
@@ -311,7 +311,7 @@ const extractDefaultValueMode = computed(() => (
         v-if="matcher.expected === false || matcher.mode === 'not'"
         type="warning"
         :closable="false"
-        title="已设置为期望判断结果 False：只有第二步条件不成立时，该信号才满足。命令执行失败或超时不会进入判断。"
+        title="已设置为期望 False：只有第二步条件不成立时，该信号才满足。命令执行失败或超时不会进入判断。"
       />
     </el-form>
   </div>

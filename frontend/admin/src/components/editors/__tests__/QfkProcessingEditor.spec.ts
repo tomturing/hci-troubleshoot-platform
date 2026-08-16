@@ -84,7 +84,7 @@ describe('QfkProcessingEditor 两步处理交互', () => {
     expect(predicateUpdate.extract.rows.include).toEqual(['检测到IP'])
   })
 
-  it('第二步提供期望判断结果开关，并默认开启', async () => {
+  it('第二步提供期望开关，并默认开启', async () => {
     const wrapper = mountMatcher(matchProps().match)
     const expectedSwitch = wrapper.findComponent({ name: 'ElSwitch' })
 
