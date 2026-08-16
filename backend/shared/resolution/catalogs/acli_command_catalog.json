@@ -1173,6 +1173,10 @@
       "summary": "ps命令"
     },
     {
+      "command": "acli system qmpcmd",
+      "summary": "查询 Qemu Monitor 只读状态"
+    },
+    {
       "command": "acli system realethtool",
       "summary": "realethtool命令"
     },

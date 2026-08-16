@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -197,9 +199,26 @@ async def update_catalog(filename: str, body: CatalogSaveRequest) -> dict[str, A
             with contextlib.suppress(Exception):
                 path.chmod(0o666)
 
-        # 统一以 2 空格美化格式写入磁盘，保持 JSON 排版整洁
+        # 在同一目录落盘后原子替换，避免其他服务的 mtime 热加载读到半截 JSON。
         formatted_json = json.dumps(json.loads(body.content), ensure_ascii=False, indent=2) + "\n"
-        path.write_text(formatted_json, encoding="utf-8")
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_file:
+            temporary_file.write(formatted_json)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+            temporary_path = Path(temporary_file.name)
+        try:
+            temporary_path.chmod(0o664)
+            os.replace(temporary_path, path)
+        except Exception:
+            temporary_path.unlink(missing_ok=True)
+            raise
         logger.info(
             event="catalog_saved_and_hot_reloaded",
             filename=filename,
@@ -235,7 +254,7 @@ async def update_catalog(filename: str, body: CatalogSaveRequest) -> dict[str, A
     meta = _get_catalog_meta(filename, cfg)
     return {
         "success": True,
-        "message": f"保存成功！后端的 Shared Resolution Runtime 已自动感知 mtime 变更并热加载生效 (当前记录: {reloaded_count})",
+        "message": f"保存成功！共享此 Catalog 路径的 Shared Resolution Runtime 将在下次读取时按 mtime 热加载 (当前记录: {reloaded_count})",
         "meta": meta,
         "content_text": formatted_json,
     }

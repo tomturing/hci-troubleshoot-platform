@@ -77,9 +77,10 @@ def test_system_resolver_fails_closed_for_unknown_command_path():
     assert plan.issues[0].code == "SYSTEM_COMMAND_UNKNOWN"
 
 
-def test_shared_resolution_loads_acli_catalog_and_accepts_ps_path():
+def test_shared_resolution_loads_acli_catalog_and_accepts_readonly_system_paths():
     assert load_acli_catalog()
     assert command_path_known(["acli", "system", "ps", "-p", "9527", "-o", "cmd="])
+    assert command_path_known(["acli", "system", "qmpcmd", "271230001", "info", "block-jobs"])
 
 
 def test_domain_resolver_keeps_domain_boundary_and_catalog_warning():

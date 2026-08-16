@@ -1,0 +1,53 @@
+suite: "agent-service 共享 Catalog 基线契约"
+templates:
+  - agent-service/deployment.yaml
+  - configmap.yaml
+  - secret.yaml
+tests:
+  - it: "启用 kb Catalog 持久化时 agent 必须只读共享同一 PVC"
+    template: agent-service/deployment.yaml
+    set:
+      kbService.enabled: true
+      kbService.persistence.enabled: true
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ACLI_CATALOG_PATH
+            value: /data/catalogs/acli_command_catalog.json
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: RESOLUTION_CATALOG_PATH
+            value: /data/catalogs/resolution_catalog.json
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: catalog-persist
+            mountPath: /data/catalogs
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: catalog-persist
+            persistentVolumeClaim:
+              claimName: kb-service-catalog-data
+
+  - it: "禁用 kb Catalog 持久化时 agent 不得引用共享 PVC"
+    template: agent-service/deployment.yaml
+    set:
+      kbService.enabled: true
+      kbService.persistence.enabled: false
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: ACLI_CATALOG_PATH
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: RESOLUTION_CATALOG_PATH
+      - notExists:
+          path: spec.template.spec.containers[0].volumeMounts
+      - notExists:
+          path: spec.template.spec.volumes
