@@ -431,6 +431,9 @@ const selectedInteractiveOptionId = computed<string | null>(() => {
 
 const interactiveSubmitting = ref(false)
 const interactiveFreeText = ref('')
+const pendingInteractiveNoneChoice = ref<{ optionId: string; optionName: string } | null>(null)
+const interactiveNoneSymptomText = ref('')
+const submittedInteractiveIntentOptionId = ref<string | null>(null)
 
 /** 点击选项提交 */
 async function handleInteractiveOption(optionId: string, optionName: string) {
@@ -442,17 +445,23 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
   if (ev.kind === 'intent_selection') {
     const optionIndex = ev.options.findIndex(option => option.optionId === optionId)
     const label = CIRCLED_DIGITS[optionIndex] || optionId
+    if (optionId === '__none__') {
+      pendingInteractiveNoneChoice.value = { optionId, optionName }
+      interactiveNoneSymptomText.value = ''
+      return
+    }
     const categoryMatch = optionName.match(/^([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+(.+)$/)
-    const categoryCode = optionId !== '__none__' && !/^\d+$/.test(optionId)
+    const categoryCode = !/^\d+$/.test(optionId)
       ? optionId
       : categoryMatch?.[1]
 
+    submittedInteractiveIntentOptionId.value = optionId
     await chatStore.sendMessage(label, {
       kind: 'intent_selection_response',
       selectedOptionId: optionId,
       selectedCategoryCode: categoryCode,
       selectedCategoryName: categoryMatch?.[2],
-      isNoneOfAbove: optionId === '__none__',
+      isNoneOfAbove: false,
       sourceMessageId: props.message.id,
       sourceRequestId: ev.requestId,
     })
@@ -542,6 +551,32 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
   } finally {
     interactiveSubmitting.value = false
   }
+}
+
+function cancelInteractiveNoneInput() {
+  pendingInteractiveNoneChoice.value = null
+  interactiveNoneSymptomText.value = ''
+}
+
+async function submitInteractiveNoneInput() {
+  const ev = interactiveEvent.value
+  const choice = pendingInteractiveNoneChoice.value
+  const text = interactiveNoneSymptomText.value.trim()
+  if (!ev || ev.kind !== 'intent_selection' || !choice || !text || interactiveSubmitting.value || interactiveSubmitted.value) return
+
+  const optionIndex = ev.options.findIndex(option => option.optionId === choice.optionId)
+  const label = CIRCLED_DIGITS[optionIndex] || choice.optionId
+  pendingInteractiveNoneChoice.value = null
+  interactiveNoneSymptomText.value = ''
+  submittedInteractiveIntentOptionId.value = choice.optionId
+  await chatStore.sendMessage(`${label} ${text}`, {
+    kind: 'intent_selection_response',
+    selectedOptionId: choice.optionId,
+    isNoneOfAbove: true,
+    freeText: text,
+    sourceMessageId: props.message.id,
+    sourceRequestId: ev.requestId,
+  })
 }
 
 /** 提交自由文本 */
@@ -1200,11 +1235,31 @@ async function handleToolCallReject() {
             <InteractiveOptions
               v-if="interactiveEvent.options?.length"
               :options="interactiveEvent.options"
-              :selected-option-id="selectedInteractiveOptionId"
-              :force-disabled="interactiveSubmitted"
+              :selected-option-id="selectedInteractiveOptionId || submittedInteractiveIntentOptionId"
+              :force-disabled="interactiveSubmitted || !!pendingInteractiveNoneChoice || !!submittedInteractiveIntentOptionId"
               :submitting="interactiveSubmitting"
               @select="handleInteractiveOption"
             />
+
+            <div v-if="pendingInteractiveNoneChoice && !interactiveSubmitted" class="ir-free-input">
+              <span class="ir-label">请补充具体症状</span>
+              <el-input
+                v-model="interactiveNoneSymptomText"
+                type="textarea"
+                :rows="2"
+                placeholder="请输入具体症状描述..."
+                autofocus
+              />
+              <div class="ir-none-actions">
+                <el-button size="small" @click="cancelInteractiveNoneInput">取消</el-button>
+                <el-button
+                  size="small"
+                  type="primary"
+                  :disabled="!interactiveNoneSymptomText.trim() || interactiveSubmitting"
+                  @click="submitInteractiveNoneInput"
+                >提交</el-button>
+              </div>
+            </div>
 
             <!-- 自由文本输入 -->
             <div v-if="interactiveEvent.customInput && !interactiveSubmitted" class="ir-free-input">
@@ -1972,6 +2027,13 @@ async function handleToolCallReject() {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.ir-none-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .mt-2 {

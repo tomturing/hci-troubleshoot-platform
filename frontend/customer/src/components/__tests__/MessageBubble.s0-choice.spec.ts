@@ -49,6 +49,39 @@ async function mountBubble(options: Record<string, unknown>[]) {
   })
 }
 
+async function mountInteractiveBubble(options: Record<string, unknown>[]) {
+  const MessageBubble = (await import('@/components/MessageBubble.vue')).default
+  return shallowMount(MessageBubble, {
+    props: {
+      message: {
+        id: 'assistant-interactive-s0-1',
+        role: 'assistant' as const,
+        content: '请确认故障分类',
+        timestamp: new Date('2026-08-16T12:00:00+08:00'),
+        metadata: {
+          kind: 'interactive_request',
+          event: {
+            requestId: 'triage-interactive-s0-1',
+            acpSessionId: 'conv-s0-1',
+            kind: 'intent_selection',
+            title: '请确认故障分类',
+            prompt: '请选择最匹配当前故障的分类',
+            options,
+            customInput: false,
+            metadata: {},
+          },
+        },
+      },
+    },
+    global: {
+      stubs: {
+        CommandBlock: true,
+        InteractiveOptions: true,
+      },
+    },
+  })
+}
+
 describe('MessageBubble S0 稳定分类身份', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -129,6 +162,37 @@ describe('MessageBubble S0 稳定分类身份', () => {
         selectedOptionId: '__none__',
         isNoneOfAbove: true,
         freeText: '虚拟机可以开机，但是网络不通',
+      }),
+    )
+    wrapper.unmount()
+  })
+
+  it('兼容 interactive_request 的以上都不是必须先填写症状', async () => {
+    const wrapper = await mountInteractiveBubble([
+      { optionId: '虚拟机-003', name: '虚拟机-003 虚拟机开机失败' },
+      { optionId: '__none__', name: '以上都不是（请补充症状描述）' },
+    ])
+    const setup = (wrapper.getCurrentComponent() as any).setupState
+
+    await setup.handleInteractiveOption('__none__', '以上都不是（请补充症状描述）')
+
+    expect(mockSendMessage).not.toHaveBeenCalled()
+    expect(setup.pendingInteractiveNoneChoice).toEqual({
+      optionId: '__none__',
+      optionName: '以上都不是（请补充症状描述）',
+    })
+
+    setup.interactiveNoneSymptomText = '虚拟机迁移时任务报错且一直重试'
+    await setup.submitInteractiveNoneInput()
+
+    expect(setup.submittedInteractiveIntentOptionId).toBe('__none__')
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      '② 虚拟机迁移时任务报错且一直重试',
+      expect.objectContaining({
+        selectedOptionId: '__none__',
+        isNoneOfAbove: true,
+        freeText: '虚拟机迁移时任务报错且一直重试',
+        sourceRequestId: 'triage-interactive-s0-1',
       }),
     )
     wrapper.unmount()

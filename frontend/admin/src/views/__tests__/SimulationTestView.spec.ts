@@ -224,6 +224,51 @@ describe('SimulationTestView 可恢复状态机', () => {
     })
   })
 
+  it('S0 的以上都不是必须补充症状后才提交', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock
+      .mockResolvedValueOnce(response(capabilityBody))
+      .mockResolvedValueOnce(response(buildBody))
+      .mockResolvedValueOnce(response({ test_run_id: 'run-27123', case_id: 'Q2026081100004' }))
+      .mockResolvedValueOnce(response({ conversation_id: '00000000-0000-0000-0000-000000027126' }, 201))
+      .mockResolvedValueOnce(sse([
+        'event: metadata\ndata: {"kind":"choice_options","requestId":"triage-27124","options":[{"optionId":"虚拟机-003","name":"虚拟机-003 虚拟机开机失败"},{"optionId":"__none__","name":"以上都不是（请补充症状描述）"}]}\n\n',
+        'data: [DONE]\n\n',
+      ]))
+      .mockResolvedValueOnce(sse(['data: {"content":"请提供更多信息"}\n\n', 'data: [DONE]\n\n']))
+
+    const wrapper = mountView()
+    await build(wrapper)
+    await openAndCreateCase(wrapper)
+    sockets[0].onopen?.()
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'ssh_connected' }) })
+    await flushPromises()
+
+    const noneChoice = wrapper.findAll('button').find((button) => button.text() === '以上都不是（请补充症状描述）')
+    expect(noneChoice).toBeTruthy()
+    await noneChoice!.trigger('click')
+    await flushPromises()
+
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/message'))).toHaveLength(1)
+    const symptomInput = wrapper.get('textarea[placeholder="请输入具体症状描述..."]')
+    await symptomInput.setValue('虚拟机可以开机，但迁移任务持续失败')
+    await wrapper.findAll('button').find((button) => button.text() === '提交')!.trigger('click')
+    await flushPromises()
+
+    const secondMessageCall = fetchMock.mock.calls.filter(([url]) => String(url).includes('/message'))[1]
+    const payload = JSON.parse(String((secondMessageCall[1] as RequestInit).body))
+    expect(payload.content).toBe('以上都不是（请补充症状描述） 虚拟机可以开机，但迁移任务持续失败')
+    expect(payload.metadata).toMatchObject({
+      kind: 'intent_selection_response',
+      selectedOptionId: '__none__',
+      isNoneOfAbove: true,
+      freeText: '虚拟机可以开机，但迁移任务持续失败',
+      sourceRequestId: 'triage-27124',
+      execution_mode: 'sim-ssh',
+      test_run_id: 'run-27123',
+    })
+  })
+
   it('Result 失败后只重试 Result，不重复创建工单、WebSocket 或 Agent 执行', async () => {
     const fetchMock = vi.mocked(fetch)
     fetchMock
