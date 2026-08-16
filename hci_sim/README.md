@@ -32,7 +32,7 @@
 |---|---|
 | `controlplane/` | 阶段 C–E 业务内核：Bundle 生命周期状态机（draft→validated→approved→published→stale/retired）、双角色审批、TestRun、Run Lease、差分/mutation/稳定性/容量证据模型。 |
 | `database/` | PostgreSQL 访问层（`RunRepository`）：scenario/run/run_attempt/run_event/run_result/run_outbox 的 CRUD、CAS 幂等、过期、outbox claim/complete。 |
-| `fixture/` | 加载已发布 Manifest v2，按精确 RouteKey 确定性路由；Fault 模型（none/nonzero_exit/permission/timeout/disconnect/truncate）。 |
+| `fixture/` | 从 GitOps 只读发布集合加载多个已发布 Manifest v2，按租约 `support_id` 选择 Bundle，再按精确 RouteKey 确定性路由；Fault 模型（none/nonzero_exit/permission/timeout/disconnect/truncate）。 |
 | `lease/` | `htp2` 前缀 Capability 租约签发、每命令复验、单副本配额；HMAC 签名，Claims 绑定 Run/Bundle/Target。 |
 | `server/` | SSH + HTTP 服务面；exec/交互 shell 共用有界 worker 队列、授权、fail-closed 路由、观测。 |
 | `reconciler/` | Runtime 侧 durable outbox 投递循环；无下游 URL 时只恢复过期 processing，不标 processed。 |
@@ -44,8 +44,10 @@
 ### 2.3 运行时安全基线
 
 - 仅加载带 `bundle.digest` 的已发布 Manifest v2；拒绝未知字段、摘要漂移、非规范 argv、歧义 RouteKey。
+- `HCI_SIM_REQUIRED_BUNDLES` 必须与实际加载集合完全一致；缺失、夹带或 digest 漂移都会阻止 Runtime 启动。
+- 数据库启用时，Runtime 在监听端口前原子同步全部 Bundle Registry 元数据；新 digest 激活、旧 digest 失效和审计共用唯一 `trace_id`，任一步失败都会阻止启动。
 - 每个命令精确绑定 `variant + tool + acquisition_key + argv + virtual_node_id + container`，无正则/通配符/评分路由/默认 fixture。
-- SSH 仅接受 `htp2` 租约；签名、issuer、audience、Bundle/KBD/工具策略版本、目标、时效及会话/命令/输出配额均受校验。
+- SSH 仅接受 `htp2` 租约；签名、issuer、audience、`support_id + Bundle digest + KBD/工具/策略版本`、目标、时效及会话/命令/输出配额均受校验。
 - `exec` 与交互 shell 共用有界 worker 队列、每命令授权、fail-closed 路由；原始命令与 token 不进日志。
 - Terminal Bridge 仅通过 `auth_type=lease` + `execution_mode=sim-ssh` 模拟执行，绝不按 host 名猜测回退真实 HCI。
 
@@ -81,7 +83,7 @@
 - `templates/deployment.yaml` / `templates/service.yaml`：部署与 SSH/HTTP 服务暴露。
 - `templates/networkpolicy.yaml`：限制入站来源命名空间，仅允许 `terminalBridgeNamespace` / `observabilityNamespace` / `apiGatewayNamespace` / `conversationServiceNamespace` 四个命名空间访问（CI 校验必填项缺失即失败）。
 - `templates/pdb.yaml` / `templates/resourcequota.yaml`：可用性与资源配额。
-- `files/*-fixture-manifest.json`：随附夹具清单，Helm 版必须与 `testdata` 字节一致（CI `cmp -s` 校验）。
+- `files/*-fixture-manifest.json`：随附夹具清单；`fixture.manifestFiles` 是唯一 GitOps 发布集合，Helm 将其渲染为只读 ConfigMap，并把集合 digest 写入 Pod 模板触发滚动更新。
 - `values.yaml` 中 `replicaCount` 为 `1`：内存配额 Tracker 是单副本实现。
 
 ### 4.2 脚本（`scripts/hci-sim/`）

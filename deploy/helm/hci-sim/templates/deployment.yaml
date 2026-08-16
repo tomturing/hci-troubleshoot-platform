@@ -18,6 +18,7 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/path: /metrics
         prometheus.io/port: {{ .Values.service.httpPort | quote }}
+        checksum/fixture-bundles: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -46,8 +47,17 @@ spec:
               value: {{ .Values.runtime.sshHost | quote }}
             - name: HCI_SIM_HTTP_LISTEN
               value: ":{{ .Values.service.httpPort }}"
-            - name: HCI_SIM_FIXTURE_MANIFEST
-              value: /etc/hci-sim/fixture-manifest.json
+            - name: HCI_SIM_FIXTURE_DIR
+              value: /etc/hci-sim/bundles
+            - name: HCI_SIM_DEFAULT_SUPPORT_ID
+              value: {{ .Values.fixture.defaultSupportID | quote }}
+            - name: HCI_SIM_REQUIRED_BUNDLES
+              {{- $requiredBundles := dict }}
+              {{- range .Values.fixture.manifestFiles }}
+              {{- $manifest := mustFromJson ($.Files.Get .) }}
+              {{- $_ := set $requiredBundles (required "fixture manifest 缺少 kbd.support_id" $manifest.kbd.support_id) (required "fixture manifest 缺少 bundle.digest" $manifest.bundle.digest) }}
+              {{- end }}
+              value: {{ $requiredBundles | toJson | quote }}
             - name: HCI_SIM_FIXTURE_VARIANT
               value: {{ .Values.runtime.fixtureVariant | quote }}
             - name: HCI_SIM_AUTHORITY_SCOPE
@@ -125,7 +135,7 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - name: fixture
-              mountPath: /etc/hci-sim
+              mountPath: /etc/hci-sim/bundles
               readOnly: true
             - name: credentials
               mountPath: /etc/hci-sim-secrets
