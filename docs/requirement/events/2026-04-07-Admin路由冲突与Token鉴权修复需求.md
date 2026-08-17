@@ -17,7 +17,7 @@ PR #115 修复了管理台三个页面的 API 路由问题并已合并部署，�
 | 页面 | 现象 | 根因 |
 |------|------|------|
 | 分类基线 | 无数据 | `classify.py` 的 `GET /api/kb/categories` 先注册→遮蔽 `categories.py` 同路径端点，返回 `{"categories": [...]}` 而非前端期望的 `{"domains": {...}}` |
-| KBD 审核 | 401 报错 | 前端 `VITE_INTERNAL_API_TOKEN` 未注入，回退到 `hci-dev-internal-token`；K8s 实际 token 为 `dev-internalapi-api-token-2026` |
+| KBD 审核 | 401 报错 | 前端 `VITE_INTERNAL_API_TOKEN` 未注入，回退到 `hci-dev-internal-token`；K8s 实际 token 为 `${INTERNAL_API_TOKEN}` |
 
 ## 验收标准
 

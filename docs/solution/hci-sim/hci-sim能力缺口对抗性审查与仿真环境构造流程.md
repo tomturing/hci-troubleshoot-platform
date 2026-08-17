@@ -14,6 +14,14 @@ owner: team
 > - 配套浏览器版流程图（Mermaid 渲染，含全景流程图 / 组件图 / 构建时序图三张，颜色区分 自动 / 人工 / 未实现，需联网加载 Mermaid CDN）：本文档同目录 [`sim-env-construction-flow.html`](sim-env-construction-flow.html)。
 > - 勘误预告：原文图 2 中 conversation-service 回取权威 context 的接口路径存在一处笔误，归档时已按源码更正，详见[附录 B · 勘误](#附录-b-勘误新增)。
 
+> **增补（2026-08-17 · 基线更新，只增不改）**
+>
+> PR #779（2026-08-17 09:13 合并，配套设计 [events/2026-08-16-hci-sim多bundle发布闭环修复.md](../events/2026-08-16-hci-sim多bundle发布闭环修复.md)）引入 `hci_sim/internal/fixture/pool.go` BundlePool：**Runtime 已支持一份部署加载多个 KBD 的 Bundle**（`values.yaml` 的 `fixture.manifestFiles` 列表，当前装载 27123+23821；`HCI_SIM_REQUIRED_BUNDLES` 启动声明式校验；build/capabilities/SSH exec 均按 kbd_id 从池中路由）。因此本文以下表述中的"单 manifest"架构前提自该合并起部分失效，阅读时请对应更新：
+> - 第一部分"`hci_sim` 的架构决定了一个硬约束：Runtime 只加载一份不可变 manifest"→ 现为"加载一组经声明式校验的不可变 manifest（每 support_id 唯一 digest）"；
+> - 入口 3 的闸门一"请求的 KBD 必须等于已加载 manifest 的 KBD"→ 现为"必须在已加载 Bundle 池内"（不在池内仍 409 `kbd_not_loaded`）；
+> - Q1 结论"换一个 KBD ≈ 一次应用发布"、图 1 环节 3"单 KBD 世界"、图 2/图 3 相应描述 → 多 KBD 共部署已支持，但**人工流程本身未变**（manifest 仍手写入 git + Argo + 全量滚动重启；authority_scope 仍全局闸门；P0 缺口清单不受影响，其中"多 KBD Runtime 能力"一项已由 #779 部分达成）。
+> - 规模化影响（1000 KBD 场景的 ConfigMap 1MiB 上限、全量重启、单副本等新约束）与细化分析见 [events/2026-08-17-hci-sim环节细化与规模化构造及Bundle工厂双模式分析.md](events/2026-08-17-hci-sim环节细化与规模化构造及Bundle工厂双模式分析.md)。
+
 ---
 
 # 第一部分 · 能力缺口对抗性审查（2026-08-16）
@@ -53,7 +61,7 @@ owner: team
 - 闸门二：`HCI_SIM_AUTHORITY_SCOPE` 不得为默认值 `runtime_fixture` 且 manifest 非 synthetic（`main.go:297`）。**对抗性发现：Helm 默认值恰恰是 `runtime_fixture`（`values.yaml:24`），即按默认部署 build 永远 409。** dev 环境能跑通 KBD-27123 纵向样板，靠的是运维把该变量手工覆盖为 `dev_golden`（见验证记录 `docs/verify/hci-sim/events/2026-08-11-hci-sim-P0-P1-27123全链路验证.md:58`）--这道“安全闸门”目前靠运维不乱改 env 来维持，不是工程化保证；
 - 闸门三：revision 匹配。`HCI_SIM_ACTIVE_REVISION` 与 manifest revision 不一致报 `kbd_revision_mismatch`--P0-P1 验证记录里真实出现过 requested=24 vs runtime=1 的漂移现场（同文件 :58），还出现过 GitOps digest 滞后导致 capabilities 404（同文件 §0）。
 
-**结论：** “指定任意 KBD ID 自动出环境” = 不支持。当前等价于“换一个 KBD 需要重走一次应用发布”（手写 manifest JSON 进 git + 改 Helm values + Argo 更新 image digest）--生产化差距审查文档的原话就是“新 KBD 仍接近一次应用发布……人工步骤过多且无法原子化”（`docs/solution/hci-sim/events/2026-08-11-…生产化差距审查与Bundle工厂化重构基线.md:70`）。另有细节约束：`support_id` 数据库上限 varchar(20)，capabilities 接口拒绝含 `/?#` 的 ID。
+**结论：** “指定任意 KBD ID 自动出环境” = 不支持。当前等价于”换一个 KBD 需要重走一次应用发布”（手写 manifest JSON 进 git + 改 Helm values + Argo 更新 image digest）--生产化差距审查文档的原话就是”新 KBD 仍接近一次应用发布……人工步骤过多且无法原子化”（`docs/solution/hci-sim/events/2026-08-11-hci-sim生产化差距审查与Bundle工厂化重构基线.md:70`）。另有细节约束：`support_id` 数据库上限 varchar(20)，capabilities 接口拒绝含 `/?#` 的 ID。
 
 ## 三、Q2：逐层数据的“自动生成”真实状态
 
@@ -66,7 +74,7 @@ owner: team
 - 5 篇 SAMPLE-SIG-* 样例 KBD 的 seed 种入与 CI 契约校验（`database/seeds/04_kbd_diagnosis_samples.sql` + `scripts/hci-sim/diagnosis-lab.py` 的 contract-smoke）。
 
 **未自动化（缺口本体）：**
-1. **KBD 自身的生产**：seed 明确“只创建 draft KBD，不自动审核、不自动发布”（seed 文件头）。实测漏斗：dev 126 条 KBD，仅 6 条 published、**2 条 ready_for_artifact_binding**、4 条 TOOL_CONTRACT_STALE、120 条未发布（`docs/verify/hci-sim/events/2026-08-06-…C1权威KBD解析与全量能力验证报告.md:22-32`）--上游供给是空转的。
+1. **KBD 自身的生产**：seed 明确”只创建 draft KBD，不自动审核、不自动发布”（seed 文件头）。实测漏斗：dev 126 条 KBD，仅 6 条 published、**2 条 ready_for_artifact_binding**、4 条 TOOL_CONTRACT_STALE、120 条未发布（`docs/verify/hci-sim/events/2026-08-06-hci-sim阶段C1权威KBD解析与全量能力验证报告.md:22-32`）--上游供给是空转的。
 2. **真实口径的 Bundle 数据（最大缺口）**：positive-realistic 要求绑定获批 Artifact（采集->脱敏->secret/PII/license/schema 四重扫描->expert+security 双角色审批）。C2 的生产 Registry、OCI/S3/KMS、PostgreSQL Repository **全部未落地**（C2 任务文档“后续阻断项”全未勾）。
 3. **837 行控制面内核是死代码**：`internal/controlplane` 的 Bundle 状态机、双角色审批、TestRun、差分/mutation 内核，`main.go` 的 import 里根本没有它，全仓无非测试引用--生产链路用的是 main.go 手写 handler + 简化版判定（`simulationBuildable`，`main.go:568`）。“看起来有审批系统”与“有审批系统”是两回事。
 4. **样例输出来自人工**：每信号的正/负输出是人工编写入库的画像 JSON（`hci_sim/testdata/sample-suites/diagnosis-signal-matrix-v1.json`），不是生成的。

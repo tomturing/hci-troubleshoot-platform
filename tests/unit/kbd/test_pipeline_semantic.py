@@ -14,14 +14,13 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 # 将 data-pipeline/ 加入路径，使 `from kbd.xxx import ...` 可用
-_data_pipeline_root = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..", "data-pipeline")
-)
+_data_pipeline_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "data-pipeline"))
 if _data_pipeline_root not in sys.path:
     sys.path.insert(0, _data_pipeline_root)
 
@@ -32,6 +31,7 @@ _FAKE_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAM
 
 
 # ─── #1 防护：pipeline 可被 import（无 ImportError） ─────────────────────────
+
 
 class TestPipelineImportable:
     def test_import_pipeline_no_import_error(self):
@@ -55,9 +55,7 @@ class TestPipelineStageDag:
         assert resolve_stages([Stage.REVIEW_SIGNALS]) == list(Stage)
 
     @pytest.mark.asyncio
-    async def test_import_api_failure_is_not_hidden_by_historical_db_row(
-        self, monkeypatch, tmp_path
-    ):
+    async def test_import_api_failure_is_not_hidden_by_historical_db_row(self, monkeypatch, tmp_path):
         """override 失败时旧 DB 行不能把本次 Import 标成完成或放行 Vision。"""
         from kbd import pipeline
 
@@ -117,7 +115,11 @@ class TestPipelineStageDag:
         assert STAGE_DEPENDENCIES[Stage.CLASSIFY] == (Stage.IMPORT,)
         assert set(STAGE_DEPENDENCIES[Stage.EXTRACT_SIGNALS]) == {Stage.VISION, Stage.CLASSIFY}
         assert resolve_stages([Stage.EXTRACT_SIGNALS]) == [
-            Stage.FETCH, Stage.IMPORT, Stage.CLASSIFY, Stage.VISION, Stage.EXTRACT_SIGNALS,
+            Stage.FETCH,
+            Stage.IMPORT,
+            Stage.CLASSIFY,
+            Stage.VISION,
+            Stage.EXTRACT_SIGNALS,
         ]
 
     def test_blocked_count_only_counts_explicit_dependency_blocks(self):
@@ -144,14 +146,20 @@ class TestSignalDocumentStatus:
         assert _signal_document_status("not-json") == "failed"
         assert _signal_document_status({"schema_version": 2, "signals": []}) == "needs_review"
         assert _signal_document_status({"schema_version": 2, "signals": [{}]}) == "needs_review"
-        assert _signal_document_status({
-            "schema_version": 2,
-            "signals": [{"id": "s1"}],
-            "verification_contract": {"schema_version": 1},
-        }) == "done"
+        assert (
+            _signal_document_status(
+                {
+                    "schema_version": 2,
+                    "signals": [{"id": "s1"}],
+                    "verification_contract": {"schema_version": 1},
+                }
+            )
+            == "done"
+        )
 
 
 # ─── #12 语义统一核心 _html_to_semantic_text ───────────────────────────────
+
 
 class TestHtmlToSemanticText:
     def setup_method(self):
@@ -178,11 +186,39 @@ class TestHtmlToSemanticText:
         assert "- 登录主机" in out
         assert "- 查看网口状态" in out
 
+    def test_ordered_list_preserves_start_and_value(self):
+        html = '<ol start="3"><li>第三步</li><li value="8">第八步</li><li>第九步</li></ol>'
+        out = self.fn(html, {})
+
+        assert "3. 第三步" in out
+        assert "8. 第八步" in out
+        assert "9. 第九步" in out
+
+    def test_list_keeps_code_and_image_in_dom_order(self):
+        html = f"""
+        <ol><li><p>检查日志</p><ul><li>判断依据：<pre>错误日志</pre></li></ul>
+        <p><img src="{_IMG_ABS}" /></p></li><li>下一步</li></ol>
+        """
+        out = self.fn(html, {_IMG_ABS: {"seq": 0}})
+
+        assert out.index("1. 检查日志") < out.index("错误日志")
+        assert out.index("错误日志") < out.index("![img:0]") < out.index("2. 下一步")
+
+    def test_code_fence_is_longer_than_payload_backticks(self):
+        out = self.fn('<pre class="language-bash">echo ```inside```</pre>', {})
+
+        assert "````bash" in out
+        assert "echo ```inside```" in out
+
+    def test_image_nested_in_pre_is_preserved_outside_fence(self):
+        html = f'<pre>错误信息<br/><img src="{_IMG_ABS}"/></pre>'
+
+        out = self.fn(html, {_IMG_ABS: {"seq": 0}})
+
+        assert out.index("```text") < out.index("错误信息") < out.rindex("```") < out.index("![img:0]")
+
     def test_table_rendered_as_kv(self):
-        html = (
-            "<table><tr><td>字段A</td><td>值1</td></tr>"
-            "<tr><td>字段B</td><td>值2</td></tr></table>"
-        )
+        html = "<table><tr><td>字段A</td><td>值1</td></tr><tr><td>字段B</td><td>值2</td></tr></table>"
         out = self.fn(html, {})
         assert "- 字段A: 值1" in out
         assert "- 字段B: 值2" in out
@@ -193,12 +229,21 @@ class TestHtmlToSemanticText:
         out = self.fn(html, image_map)
         assert "![img:0]" in out
 
+    def test_inline_wrapped_image_is_recorded_in_structure_order(self):
+        html = f'<p>见图<a href="/detail"><span><img src="{_IMG_ABS}" /></span></a></p>'
+        image_map = {_IMG_ABS: {"seq": 0, "desc": ""}}
+
+        out = self.fn(html, image_map)
+
+        assert "![img:0]" in out
+
     def test_empty_html_returns_empty(self):
         assert self.fn("", {}) == ""
         assert self.fn("   ", {}) == ""
 
 
 # ─── #12 convert_kbd_structured：结构化 + content_md 恒 None ─────────────────
+
 
 class TestConvertKbdStructured:
     def _write_raw(self, tmp_path, content_html):
@@ -210,9 +255,7 @@ class TestConvertKbdStructured:
             "content": content_html,
             "mainModuleNames": "网络问题",
         }
-        (case_dir / "raw.json").write_text(
-            json.dumps(rows, ensure_ascii=False), encoding="utf-8"
-        )
+        (case_dir / "raw.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
         return "36156"
 
     def test_returns_structured_with_content_md_none_and_images(self, tmp_path):
@@ -222,8 +265,11 @@ class TestConvertKbdStructured:
 
         fake_map = {_IMG_ABS: {"seq": 0, "desc": ""}}
 
-        with patch.object(converter, "_build_image_seq_map", return_value=fake_map), patch.object(
-            converter, "_load_image_base64", return_value={"mime_type": "image/png", "data_base64": _FAKE_B64}
+        with (
+            patch.object(converter, "_build_image_seq_map", return_value=fake_map),
+            patch.object(
+                converter, "_load_image_base64", return_value={"mime_type": "image/png", "data_base64": _FAKE_B64}
+            ),
         ):
             converter.settings.KBD_CACHE_DIR = tmp_path
             result = converter.convert_kbd_structured(support_id)
@@ -270,8 +316,61 @@ class TestConvertKbdStructured:
           <div contenteditable="true">有解决方案</div></div>
         """
         support_id = self._write_raw(tmp_path, broken_html)
-        with patch.object(converter, "_build_image_seq_map", return_value={}), patch.object(
-            converter, "_load_image_base64", return_value=None
+        with (
+            patch.object(converter, "_build_image_seq_map", return_value={}),
+            patch.object(converter, "_load_image_base64", return_value=None),
         ):
             converter.settings.KBD_CACHE_DIR = tmp_path
             assert converter.convert_kbd_structured(support_id) is None
+
+    def test_kbd32866_golden_preserves_code_order_images_and_numbering(self, tmp_path):
+        from kbd import converter
+
+        fixture = Path(__file__).resolve().parents[2] / "fixtures" / "kbd" / "32866_semantic.html"
+        case_dir = tmp_path / "32866"
+        case_dir.mkdir(parents=True)
+        (case_dir / "raw.json").write_text(
+            json.dumps({"id": 32866, "name": "KBD32866 回归", "content": fixture.read_text(encoding="utf-8")}),
+            encoding="utf-8",
+        )
+        with patch.object(
+            converter,
+            "_load_image_base64",
+            return_value={"mime_type": "image/png", "data_base64": _FAKE_B64},
+        ):
+            converter.settings.KBD_CACHE_DIR = tmp_path
+            result = converter.convert_kbd_structured("32866")
+
+        assert result is not None
+        assert result["conversion_integrity"]["valid"] is True
+        assert sum(section["source_pre_count"] for section in result["conversion_integrity"]["sections"].values()) == 13
+        steps = result["steps_text"]
+        assert all(f"{number}. " in steps for number in range(1, 5))
+        assert steps.index("exec of nerdctl failed") < steps.index("![img:2]") < steps.index("3. 检查远端")
+        assert steps.index("lost connection") < steps.index("![img:3]") < steps.index("4. 检查函数")
+        solution = result["solution"]
+        assert all(f"{number}. " in solution for number in range(1, 7))
+        assert solution.index("sub check_remote_host_is_docker") < solution.index("![img:4]")
+        assert solution.index("![img:4]") < solution.index("5. 保存文件")
+
+    def test_integrity_failure_blocks_conversion_and_writes_evidence(self, tmp_path, monkeypatch):
+        from kbd import converter
+
+        support_id = self._write_raw(tmp_path, MINIMAL_9_SECTION_HTML)
+        original_render = converter._semantic_render
+
+        def broken_render(html, image_map):
+            rendered = original_render(html, image_map)
+            if "登录对应主机查看网口状态" in html:
+                rendered.integrity.errors.append("注入的顺序错误")
+            return rendered
+
+        monkeypatch.setattr(converter, "_semantic_render", broken_render)
+        monkeypatch.setattr(converter.settings, "KBD_CACHE_DIR", tmp_path)
+        with pytest.raises(converter.SemanticIntegrityError, match="注入的顺序错误"):
+            converter.convert_kbd_structured(support_id)
+
+        evidence = json.loads((tmp_path / support_id / "integrity.json").read_text(encoding="utf-8"))
+        assert evidence["support_id"] == support_id
+        assert evidence["source_sha256"]
+        assert any(not section["valid"] for section in evidence["sections"].values())

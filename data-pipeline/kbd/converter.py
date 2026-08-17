@@ -15,21 +15,39 @@ data-pipeline/kbd/converter.py — 文件缓存 → 结构化字段
   - 图片视觉描述（desc）初始留空，由 VISION 阶段（reanalyze）填充到 images_json
   - 不再依赖本地 img_N.desc.txt 文件（该 legacy 机制已于 2026-07 彻底移除）
 """
+
 from __future__ import annotations
 
 import base64
+import contextlib
+import hashlib
 import json
 import logging
 import re
 import time
+from dataclasses import asdict, dataclass
+from dataclasses import field as dataclass_field
 from typing import Any
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup, Tag
+from prometheus_client import Counter
 
 from .config import settings
+from .observability import get_trace_id
 
 logger = logging.getLogger("kbd.converter")
+
+_SEMANTIC_CONVERSIONS = Counter(
+    "kbd_semantic_conversion_total",
+    "KBD HTML 语义转换次数",
+    ("status",),
+)
+_SEMANTIC_INTEGRITY_FAILURES = Counter(
+    "kbd_semantic_integrity_failure_total",
+    "KBD HTML 语义转换完整性失败次数",
+    ("kind",),
+)
 
 # ─── 五字段规整模板（+ 4 个辅助字段） ────────────────────────────────────────
 # KBD 案例统一规整为五个标准字段（必填三 + 可选二）：
@@ -56,36 +74,30 @@ logger = logging.getLogger("kbd.converter")
 # 后缀变体（em-dash U+2014、HTML entity &mdash;）由 _DASH_SUFFIX_RE 归一化处理
 _FIELD_CONFIG: list[tuple[str, bool, list[str]]] = [
     # 五字段规整模板（必填三 + 可选二）
-    ("问题描述",         True,  ["*问题描述", "问题描述"]),
-    ("告警信息",         False, ["告警信息"]),
-    ("有效排查步骤",     True,  ["有效排查步骤", "处理过程"]),
-    ("根因",             False, ["根因"]),
-    ("解决方案",         True,  ["*解决方案", "解决方案"]),
+    ("问题描述", True, ["*问题描述", "问题描述"]),
+    ("告警信息", False, ["告警信息"]),
+    ("有效排查步骤", True, ["有效排查步骤", "处理过程"]),
+    ("根因", False, ["根因"]),
+    ("解决方案", True, ["*解决方案", "解决方案"]),
     # 辅助字段（非必填，供结构化入库使用）
-    ("操作影响范围",     False, ["操作影响范围"]),
+    ("操作影响范围", False, ["操作影响范围"]),
     ("是否是临时解决方案", False, ["是否是临时解决方案"]),
-    ("建议与总结",       False, ["建议与总结"]),
-    ("排查内容",         False, ["排查内容"]),
+    ("建议与总结", False, ["建议与总结"]),
+    ("排查内容", False, ["排查内容"]),
 ]
 
 # 派生视图（保持向后兼容，元组格式：(主别名, 标准字段名, 是否必填)）
-_SECTIONS: list[tuple[str, str, bool]] = [
-    (aliases[0], field, required) for field, required, aliases in _FIELD_CONFIG
-]
+_SECTIONS: list[tuple[str, str, bool]] = [(aliases[0], field, required) for field, required, aliases in _FIELD_CONFIG]
 
 # 必填五字段
-_MANDATORY_TITLES: frozenset[str] = frozenset(
-    md_title for _, md_title, required in _SECTIONS if required
-)
+_MANDATORY_TITLES: frozenset[str] = frozenset(md_title for _, md_title, required in _SECTIONS if required)
 
 # 预编译正则：剥离末尾的 em-dash(U+2014) / en-dash(U+2013) / ASCII hyphen(U+002D)
 # BeautifulSoup 已将 &mdash;&mdash; HTML entity 自动解码为 em-dash，无需单独处理
-_DASH_SUFFIX_RE = re.compile(r'[\u2014\u2013\-]+$')
+_DASH_SUFFIX_RE = re.compile(r"[\u2014\u2013\-]+$")
 
 # 别名 -> 标准字段 的快速映射
-_ALIAS_TO_FIELD: dict[str, str] = {
-    alias: field for field, _, aliases in _FIELD_CONFIG for alias in aliases
-}
+_ALIAS_TO_FIELD: dict[str, str] = {alias: field for field, _, aliases in _FIELD_CONFIG for alias in aliases}
 
 _IMAGE_PLACEHOLDER_RE = re.compile(r"!\[img:(\d+)\]")
 _IMAGE_CONTEXT_BEFORE_CHARS = 800
@@ -119,13 +131,14 @@ def _extract_image_context(section_text: str, seq: int) -> tuple[str, str]:
     if pos < 0:
         return "", ""
 
-    before = section_text[max(0, pos - _IMAGE_CONTEXT_BEFORE_CHARS):pos]
+    before = section_text[max(0, pos - _IMAGE_CONTEXT_BEFORE_CHARS) : pos]
     after_start = pos + len(marker)
-    after = section_text[after_start:after_start + _IMAGE_CONTEXT_AFTER_CHARS]
+    after = section_text[after_start : after_start + _IMAGE_CONTEXT_AFTER_CHARS]
     return _normalize_image_context(before), _normalize_image_context(after)
 
 
 # ─── HTML → Markdown 转换器 ──────────────────────────────────────────────────
+
 
 def _build_image_seq_map(content_html: str) -> dict[str, dict]:
     """
@@ -225,14 +238,15 @@ def _parse_sections(content_html: str) -> dict[str, str]:
             if last_matched_field is not None:
                 content_divs = mce_div.find_all("div", recursive=False)
                 if content_divs:
-                    result[last_matched_field] = (
-                        result.get(last_matched_field, "") + "".join(str(d) for d in content_divs)
+                    result[last_matched_field] = result.get(last_matched_field, "") + "".join(
+                        str(d) for d in content_divs
                     )
 
     return result
 
 
 # ─── 异常队列写入 ────────────────────────────────────────────────────────────
+
 
 def _write_abnormal(support_id: str, title: str, missing: list[str]) -> None:
     """将缺少必填 section 的案例写入 abnormal.json"""
@@ -249,8 +263,29 @@ def _write_abnormal(support_id: str, title: str, missing: list[str]) -> None:
     )
     logger.warning(
         "案例 %s 缺少必填 section %s，已写入 abnormal.json",
-        support_id, missing,
+        support_id,
+        missing,
     )
+
+
+def _write_integrity_failure(
+    support_id: str,
+    source_sha256: str,
+    section_reports: dict[str, SemanticIntegrityReport],
+) -> None:
+    """原子写入转换完整性失败证据，供异常扫描和人工复核使用。"""
+
+    target = settings.KBD_CACHE_DIR / support_id / "integrity.json"
+    temporary = target.with_suffix(".json.tmp")
+    payload = {
+        "support_id": support_id,
+        "source_sha256": source_sha256,
+        "trace_id": get_trace_id() or "",
+        "sections": {name: report.as_dict() for name, report in section_reports.items()},
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(target)
 
 
 # ─── 主入口 ──────────────────────────────────────────────────────────────────
@@ -269,14 +304,14 @@ def _is_empty_content(html: str) -> bool:
 
 # Markdown 章节标题 → KbdIngestRequest 字段名映射
 _MD_TITLE_TO_FIELD: dict[str, str] = {
-    "问题描述":         "problem_description",
-    "告警信息":         "alert_info",
-    "有效排查步骤":     "steps_text",
-    "根因":             "root_cause",
-    "解决方案":         "solution",
-    "操作影响范围":     "operational_impact",
+    "问题描述": "problem_description",
+    "告警信息": "alert_info",
+    "有效排查步骤": "steps_text",
+    "根因": "root_cause",
+    "解决方案": "solution",
+    "操作影响范围": "operational_impact",
     "是否是临时解决方案": "is_temporary",
-    "建议与总结":       "recommendations",
+    "建议与总结": "recommendations",
     # "排查内容" 不映射到独立字段，但会并入 steps_text（见下方注释）
 }
 
@@ -315,147 +350,390 @@ def _load_image_base64(support_id: str, seq: int) -> dict[str, str] | None:
     return None
 
 
-# 块级容器标签集合（_walk 递归遍历）
-_BLOCK_TAGS: frozenset[str] = frozenset({
-    "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article",
-    "blockquote", "main", "header", "footer", "figure", "details",
-    "dl", "dd", "dt", "html", "body",
-})
-# 结构块标签集合（_inline_text 跳过，由 _walk 专门处理）
+# 块级容器必须按子节点原始顺序递归，不能先抽取行内内容再补结构块。
+_BLOCK_TAGS: frozenset[str] = frozenset(
+    {
+        "p",
+        "div",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "section",
+        "article",
+        "blockquote",
+        "main",
+        "header",
+        "footer",
+        "figure",
+        "figcaption",
+        "details",
+        "summary",
+        "dl",
+        "dd",
+        "dt",
+        "html",
+        "body",
+    }
+)
 _STRUCTURE_TAGS: frozenset[str] = frozenset({"ul", "ol", "table", "pre"})
+_IGNORED_TAGS: frozenset[str] = frozenset({"script", "style", "input", "meta", "link"})
 
 
-def _html_to_semantic_text(html: str, image_map: dict[str, dict]) -> str:
-    """HTML -> 语义化统一文本（新原则：只取语义，丢装饰样式）。
+@dataclass
+class SemanticIntegrityReport:
+    """记录源 HTML 与语义输出之间不可丢失的结构事实。"""
 
-    输出格式（跨案例高一致性）：
-      - 段落/标题 -> 纯文本行，块间空行分隔
-      - 列表（ul/ol）-> `- item`，嵌套层级用 2 空格缩进
-      - 表格 -> `- 单元格1: 单元格2` 键值列表（单列则直接列项）
-      - 图片 -> `![img:N]` 占位符（N 为 image_map 中的全局 seq）
-      - 丢弃 script/style/input/a 及颜色/字体/对齐等装饰样式
+    source_pre_hashes: list[str] = dataclass_field(default_factory=list)
+    rendered_pre_hashes: list[str] = dataclass_field(default_factory=list)
+    source_image_seqs: list[int] = dataclass_field(default_factory=list)
+    rendered_image_seqs: list[int] = dataclass_field(default_factory=list)
+    source_ordered_items: list[int] = dataclass_field(default_factory=list)
+    rendered_ordered_items: list[int] = dataclass_field(default_factory=list)
+    source_structure_events: list[str] = dataclass_field(default_factory=list)
+    rendered_structure_events: list[str] = dataclass_field(default_factory=list)
+    errors: list[str] = dataclass_field(default_factory=list)
 
-    与 _html_to_md_with_placeholder 的区别：
-      后者用 markdownify 忠实保留原文样式（旧路径/单文档导入用，有测试覆盖）；
-      本函数为 pipeline 入库路径做语义归一化，content_md 交由后端
-      rebuild_content_md 统一渲染，保证样式高一致。
-    """
+    @property
+    def valid(self) -> bool:
+        return not self.errors
+
+    def as_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload.update(
+            {
+                "valid": self.valid,
+                "source_pre_count": len(self.source_pre_hashes),
+                "rendered_pre_count": len(self.rendered_pre_hashes),
+                "source_image_count": len(self.source_image_seqs),
+                "rendered_image_count": len(self.rendered_image_seqs),
+                "source_ordered_item_count": sum(self.source_ordered_items),
+                "rendered_ordered_item_count": sum(self.rendered_ordered_items),
+            }
+        )
+        return payload
+
+
+@dataclass
+class SemanticRenderResult:
+    text: str
+    integrity: SemanticIntegrityReport
+
+
+class SemanticIntegrityError(ValueError):
+    """源 HTML 的代码、图片或有序列表语义未被完整保留。"""
+
+    def __init__(self, report: SemanticIntegrityReport):
+        self.report = report
+        super().__init__("；".join(report.errors))
+
+
+def _normalize_code_payload(tag: Tag) -> str:
+    return tag.get_text("", strip=False).replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _payload_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _code_language(tag: Tag) -> str:
+    classes = [str(item) for item in (tag.get("class") or [])]
+    code = tag.find("code", recursive=False)
+    if code is not None:
+        classes.extend(str(item) for item in (code.get("class") or []))
+    for class_name in classes:
+        match = re.fullmatch(r"(?:language|lang)-([A-Za-z0-9_+.-]+)", class_name)
+        if match:
+            return match.group(1)
+    return "text"
+
+
+def _semantic_render(html: str, image_map: dict[str, dict]) -> SemanticRenderResult:
+    """按 DOM 顺序生成语义 Markdown，并返回可写库前验证的结构报告。"""
+
     if not html or not html.strip():
-        return ""
+        return SemanticRenderResult("", SemanticIntegrityReport())
 
     soup = BeautifulSoup(html, "lxml")
     out: list[str] = []
+    report = SemanticIntegrityReport()
 
     def _abs(src: str) -> str:
         return urljoin(settings.SANGFOR_API_BASE, src)
 
-    def _img_placeholder(img_tag: Tag) -> str:
+    def _image_seq(img_tag: Tag) -> int | None:
         src = img_tag.get("src") or img_tag.get("data-src") or ""
         if not src or src.startswith("data:"):
-            return ""
+            return None
         entry = image_map.get(_abs(src))
-        return f"![img:{entry['seq']}]" if entry is not None else ""
+        return int(entry["seq"]) if entry is not None else None
+
+    report.source_pre_hashes = [_payload_hash(_normalize_code_payload(tag)) for tag in soup.find_all("pre")]
+    report.source_image_seqs = [seq for tag in soup.find_all("img") if (seq := _image_seq(tag)) is not None]
+    report.source_ordered_items = [len(tag.find_all("li", recursive=False)) for tag in soup.find_all("ol")]
+    for tag in soup.find_all(["ol", "pre", "img"]):
+        if tag.name == "ol":
+            report.source_structure_events.append(f"ol:{len(tag.find_all('li', recursive=False))}")
+        elif tag.name == "pre":
+            report.source_structure_events.append(f"pre:{_payload_hash(_normalize_code_payload(tag))}")
+        else:
+            seq = _image_seq(tag)
+            if seq is not None:
+                report.source_structure_events.append(f"img:{seq}")
+
+    def _append(line: str = "") -> None:
+        if line or not out or out[-1] != "":
+            out.append(line.rstrip())
 
     def _inline_text(node: Tag) -> str:
-        """提取节点行内文本 + 图片占位符（跳过结构块子节点）。"""
         parts: list[str] = []
         for sub in node.children:
             if isinstance(sub, str):
-                t = sub.strip()
-                if t:
-                    parts.append(t)
-            elif isinstance(sub, Tag):
-                if sub.name == "img":
-                    ph = _img_placeholder(sub)
-                    if ph:
-                        parts.append(ph)
-                elif sub.name in ("script", "style") or sub.name in _STRUCTURE_TAGS:
-                    continue
-                else:
-                    t = _inline_text(sub)
-                    if t:
-                        parts.append(t)
-        return " ".join(parts)
+                text = re.sub(r"\s+", " ", sub).strip()
+                if text:
+                    parts.append(text)
+                continue
+            if not isinstance(sub, Tag) or sub.name in _IGNORED_TAGS:
+                continue
+            if sub.name == "br":
+                parts.append("\n")
+                continue
+            if sub.name == "img":
+                seq = _image_seq(sub)
+                if seq is not None:
+                    parts.append(f"![img:{seq}]")
+                    report.rendered_image_seqs.append(seq)
+                    report.rendered_structure_events.append(f"img:{seq}")
+                continue
+            if sub.name in _STRUCTURE_TAGS or sub.name in _BLOCK_TAGS:
+                continue
+            text = _inline_text(sub)
+            if text:
+                parts.append(text)
+        text = " ".join(parts)
+        return re.sub(r" *\n *", "\n", text).strip()
 
-    def _walk(node: Any, indent: int = 0) -> None:
-        prefix = "  " * indent
+    def _render_code(tag: Tag, prefix: str) -> None:
+        payload = _normalize_code_payload(tag)
+        longest = max((len(match.group(0)) for match in re.finditer(r"`+", payload)), default=0)
+        fence = "`" * max(3, longest + 1)
+        payload_digest = _payload_hash(payload)
+        report.rendered_pre_hashes.append(payload_digest)
+        report.rendered_structure_events.append(f"pre:{payload_digest}")
+        _append()
+        _append(f"{prefix}{fence}{_code_language(tag)}")
+        for line in payload.split("\n"):
+            _append(f"{prefix}{line}")
+        _append(f"{prefix}{fence}")
+        _append()
+        # Support 偶尔把截图嵌入 pre；图片不是代码载荷，必须在围栏外保留锚点。
+        for image in tag.find_all("img"):
+            _render_image(image, prefix)
+
+    def _render_table(tag: Tag, prefix: str) -> None:
+        _append()
+        for row in tag.find_all("tr"):
+            cells = [re.sub(r"\s+", " ", cell.get_text(" ", strip=True)) for cell in row.find_all(["td", "th"])]
+            cells = [cell for cell in cells if cell]
+            if len(cells) == 1:
+                _append(f"{prefix}- {cells[0]}")
+            elif cells:
+                _append(f"{prefix}- {cells[0]}: {' '.join(cells[1:])}")
+        _append()
+
+    def _render_image(tag: Tag, prefix: str) -> None:
+        seq = _image_seq(tag)
+        if seq is None:
+            return
+        report.rendered_image_seqs.append(seq)
+        report.rendered_structure_events.append(f"img:{seq}")
+        _append()
+        _append(f"{prefix}![img:{seq}]")
+        _append()
+
+    def _render_container(node: Any, prefix: str = "") -> None:
+        inline_parts: list[str] = []
+
+        def _flush_inline() -> None:
+            if not inline_parts:
+                return
+            text = " ".join(inline_parts).strip()
+            inline_parts.clear()
+            if text:
+                for line in text.splitlines():
+                    _append(f"{prefix}{line}")
+
         for child in node.children:
             if isinstance(child, str):
-                t = child.strip()
-                if t:
-                    out.append(f"{prefix}{t}")
+                text = re.sub(r"\s+", " ", child).strip()
+                if text:
+                    inline_parts.append(text)
                 continue
-            if not isinstance(child, Tag):
+            if not isinstance(child, Tag) or child.name in _IGNORED_TAGS:
                 continue
             name = child.name
-            if name in ("script", "style", "input", "a", "br", "meta", "link"):
-                continue
-            if name == "img":
-                ph = _img_placeholder(child)
-                if ph:
-                    out.append(f"{prefix}{ph}")
-                continue
-            if name in ("ul", "ol"):
-                if out and out[-1] != "":
-                    out.append("")
-                _walk(child, indent)
-                out.append("")
-                continue
-            if name == "li":
-                # 找直接子节点 ul/ol + 嵌套在单层 div 内的 ul/ol
-                # 修复：<li><p>标题</p><div><ul><li>子内容</li></ul></div></li> 中
-                # 被 div 包裹的 ul 无法被 recursive=False 找到而丢弃
-                sublists = child.find_all(["ul", "ol"], recursive=False)
-                for div in child.find_all("div", recursive=False):
-                    sublists.extend(div.find_all(["ul", "ol"], recursive=False))
-                item_text = _inline_text(child)
-                out.append(f"{prefix}- {item_text}".rstrip())
-                for sl in sublists:
-                    _walk(sl, indent + 1)
-                continue
-            if name == "table":
-                if out and out[-1] != "":
-                    out.append("")
-                for tr in child.find_all("tr"):
-                    cells = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
-                    cells = [c for c in cells if c]
-                    if not cells:
-                        continue
-                    if len(cells) == 1:
-                        out.append(f"{prefix}- {cells[0]}")
-                    else:
-                        out.append(f"{prefix}- {cells[0]}: {' '.join(cells[1:])}")
-                out.append("")
-                continue
-            if name == "pre":
-                # 代码块：保留换行，每行加缩进（不压平）
-                if out and out[-1] != "":
-                    out.append("")
-                for line in child.get_text().splitlines():
-                    out.append(f"{prefix}{line}")
-                out.append("")
-                continue
-            if name in _BLOCK_TAGS:
-                has_block = child.find(_BLOCK_TAGS | _STRUCTURE_TAGS)
-                if has_block:
-                    _walk(child, indent)
+            if name == "br":
+                _flush_inline()
+            elif name == "img":
+                _flush_inline()
+                _render_image(child, prefix)
+            elif name in ("ul", "ol"):
+                _flush_inline()
+                _render_list(child, prefix)
+            elif name == "pre":
+                _flush_inline()
+                _render_code(child, prefix)
+            elif name == "table":
+                _flush_inline()
+                _render_table(child, prefix)
+            elif name in _BLOCK_TAGS:
+                _flush_inline()
+                if child.find(_BLOCK_TAGS | _STRUCTURE_TAGS | {"img"}):
+                    _render_container(child, prefix)
                 else:
                     text = _inline_text(child)
                     if text:
-                        out.append(f"{prefix}{text}")
+                        for line in text.splitlines():
+                            _append(f"{prefix}{line}")
+            else:
+                text = _inline_text(child)
+                if text:
+                    inline_parts.append(text)
+        _flush_inline()
+
+    def _render_list_item(item: Tag, marker: str, indent: str) -> None:
+        first_prefix = f"{indent}{marker}"
+        continuation = f"{indent}{' ' * len(marker)}"
+        first_content = True
+        inline_parts: list[str] = []
+
+        def _line_prefix() -> str:
+            nonlocal first_content
+            if first_content:
+                first_content = False
+                return first_prefix
+            return continuation
+
+        def _flush_inline() -> None:
+            if not inline_parts:
+                return
+            text = " ".join(inline_parts).strip()
+            inline_parts.clear()
+            if not text:
+                return
+            for line in text.splitlines():
+                _append(f"{_line_prefix()}{line}")
+
+        for child in item.children:
+            if isinstance(child, str):
+                text = re.sub(r"\s+", " ", child).strip()
+                if text:
+                    inline_parts.append(text)
                 continue
-            # 其他行内标签：取行内文本
-            text = _inline_text(child)
-            if text:
-                out.append(f"{prefix}{text}")
+            if not isinstance(child, Tag) or child.name in _IGNORED_TAGS:
+                continue
+            name = child.name
+            if name == "br":
+                _flush_inline()
+            elif name == "img":
+                _flush_inline()
+                _render_image(child, _line_prefix())
+            elif name in ("ul", "ol"):
+                _flush_inline()
+                if first_content:
+                    _append(first_prefix.rstrip())
+                    first_content = False
+                _render_list(child, continuation)
+            elif name == "pre":
+                _flush_inline()
+                _render_code(child, _line_prefix())
+            elif name == "table":
+                _flush_inline()
+                _render_table(child, _line_prefix())
+            elif name in _BLOCK_TAGS:
+                _flush_inline()
+                if child.find(_BLOCK_TAGS | _STRUCTURE_TAGS | {"img"}):
+                    before = len(out)
+                    _render_container(child, continuation if not first_content else "")
+                    if len(out) > before and first_content:
+                        first_line = out[before].lstrip()
+                        out[before] = f"{first_prefix}{first_line}"
+                        first_content = False
+                else:
+                    text = _inline_text(child)
+                    if text:
+                        for line in text.splitlines():
+                            _append(f"{_line_prefix()}{line}")
+            else:
+                text = _inline_text(child)
+                if text:
+                    inline_parts.append(text)
+        _flush_inline()
+        if first_content:
+            _append(first_prefix.rstrip())
 
-    _walk(soup)
+    def _render_list(tag: Tag, indent: str) -> None:
+        _append()
+        items = tag.find_all("li", recursive=False)
+        ordered = tag.name == "ol"
+        if ordered:
+            report.rendered_ordered_items.append(len(items))
+            report.rendered_structure_events.append(f"ol:{len(items)}")
+        try:
+            current = int(tag.get("start", 1))
+        except (TypeError, ValueError):
+            current = 1
+        for item in items:
+            if ordered:
+                with contextlib.suppress(TypeError, ValueError):
+                    current = int(item.get("value", current))
+                marker = f"{current}. "
+                current += 1
+            else:
+                marker = "- "
+            _render_list_item(item, marker, indent)
+        _append()
+
+    _render_container(soup)
     result = "\n".join(out)
-    result = re.sub(r'\n{3,}', '\n\n', result)
-    return result.strip()
+    result = re.sub(r"\n{3,}", "\n\n", result).strip()
+
+    checks = (
+        ("code_block", report.source_pre_hashes, report.rendered_pre_hashes, "代码块内容或顺序不一致"),
+        ("image_anchor", report.source_image_seqs, report.rendered_image_seqs, "图片锚点数量或顺序不一致"),
+        ("ordered_list", report.source_ordered_items, report.rendered_ordered_items, "有序列表项数量或层级不一致"),
+        (
+            "structure_order",
+            report.source_structure_events,
+            report.rendered_structure_events,
+            "代码块、图片锚点和有序列表的相对顺序不一致",
+        ),
+    )
+    for kind, source, rendered, message in checks:
+        if source != rendered:
+            report.errors.append(message)
+            _SEMANTIC_INTEGRITY_FAILURES.labels(kind=kind).inc()
+    _SEMANTIC_CONVERSIONS.labels(status="success" if report.valid else "failed").inc()
+    return SemanticRenderResult(result, report)
 
 
-def convert_kbd_structured(support_id: str) -> dict[str, Any] | None:
+def _html_to_semantic_text(html: str, image_map: dict[str, dict]) -> str:
+    """HTML 转语义 Markdown；结构不完整时拒绝返回可写库结果。"""
+
+    result = _semantic_render(html, image_map)
+    if not result.integrity.valid:
+        raise SemanticIntegrityError(result.integrity)
+    return result.text
+
+
+def convert_kbd_structured(
+    support_id: str,
+    *,
+    include_image_data: bool = True,
+    strict_integrity: bool = True,
+) -> dict[str, Any] | None:
     """
     转换案例，返回结构化字段字典（供 importer.py 调用 /api/kb/kbd/ingest 使用）。
 
@@ -507,9 +785,7 @@ def convert_kbd_structured(support_id: str) -> dict[str, Any] | None:
 
     # 必填验证
     missing = [
-        md_title
-        for _, md_title, required in _SECTIONS
-        if required and _is_empty_content(sections.get(md_title, ""))
+        md_title for _, md_title, required in _SECTIONS if required and _is_empty_content(sections.get(md_title, ""))
     ]
     if missing:
         _write_abnormal(support_id, title, missing)
@@ -519,30 +795,46 @@ def convert_kbd_structured(support_id: str) -> dict[str, Any] | None:
     # 章节字段含 ![img:N] 占位符；content_md 不在此生成，交由后端
     # rebuild_content_md 统一渲染（样式高一致）。
     section_texts: dict[str, str] = {}
+    integrity_reports: dict[str, SemanticIntegrityReport] = {}
+    source_sha256 = _payload_hash(content_html)
 
     for _, md_title, _ in _SECTIONS:
         section_html = sections.get(md_title, "")
         if _is_empty_content(section_html):
             section_texts[md_title] = ""
         else:
-            section_texts[md_title] = _html_to_semantic_text(section_html, image_map).strip()
+            rendered = _semantic_render(section_html, image_map)
+            section_texts[md_title] = rendered.text.strip()
+            integrity_reports[md_title] = rendered.integrity
+
+    failed_reports = {name: report for name, report in integrity_reports.items() if not report.valid}
+    if failed_reports:
+        _write_integrity_failure(support_id, source_sha256, failed_reports)
+        logger.error(
+            "案例 %s 语义转换完整性失败 trace_id=%s sections=%s errors=%s",
+            support_id,
+            get_trace_id() or "-",
+            sorted(failed_reports),
+            {name: report.errors for name, report in failed_reports.items()},
+        )
+        combined = SemanticIntegrityReport(
+            errors=[f"{name}: {error}" for name, report in failed_reports.items() for error in report.errors]
+        )
+        if strict_integrity:
+            raise SemanticIntegrityError(combined)
 
     # ── 构建 8 大章节字段（含占位符） ───────────────────────────────────────
-    structured_fields: dict[str, str] = {
-        field: "" for field in _MD_TITLE_TO_FIELD.values()
-    }
+    structured_fields: dict[str, str] = {field: "" for field in _MD_TITLE_TO_FIELD.values()}
     for md_title, field in _MD_TITLE_TO_FIELD.items():
         structured_fields[field] = section_texts.get(md_title, "")
 
     # "排查内容" 并入 steps_text（若有内容）
     chacha_html = sections.get("排查内容", "")
     if not _is_empty_content(chacha_html):
-        chacha_text = _html_to_semantic_text(chacha_html, image_map).strip()
+        chacha_text = section_texts.get("排查内容", "").strip()
         if chacha_text:
             existing = structured_fields["steps_text"]
-            structured_fields["steps_text"] = (
-                existing + "\n\n---\n\n" + chacha_text if existing else chacha_text
-            )
+            structured_fields["steps_text"] = existing + "\n\n---\n\n" + chacha_text if existing else chacha_text
             section_texts["排查内容"] = chacha_text
 
     # ── 构建 images_json + images（图片封装） ──────────────────────────────
@@ -569,23 +861,29 @@ def convert_kbd_structured(support_id: str) -> dict[str, Any] | None:
         section = seq_to_section.get(seq, "steps_text")
         context_before, context_after = seq_to_context.get(seq, ("", ""))
         # desc 初始为空，由 VISION 阶段（reanalyze）填充
-        images_json.append({
-            "seq": seq,
-            "section": section,
-            "context_before": context_before,
-            "context_after": context_after,
-            "desc": "",
-        })
+        images_json.append(
+            {
+                "seq": seq,
+                "section": section,
+                "context_before": context_before,
+                "context_after": context_after,
+                "desc": "",
+            }
+        )
+        if not include_image_data:
+            continue
         img_b64 = _load_image_base64(support_id, seq)
         if img_b64 is None:
             logger.warning("案例 %s 图片 img_%d 文件缺失，跳过该图入库", support_id, seq)
             continue
-        images.append({
-            "seq": seq,
-            "section": section,
-            "mime_type": img_b64["mime_type"],
-            "data_base64": img_b64["data_base64"],
-        })
+        images.append(
+            {
+                "seq": seq,
+                "section": section,
+                "mime_type": img_b64["mime_type"],
+                "data_base64": img_b64["data_base64"],
+            }
+        )
     images_json.sort(key=lambda x: x["seq"])
     images.sort(key=lambda x: x["seq"])
 
@@ -595,6 +893,7 @@ def convert_kbd_structured(support_id: str) -> dict[str, Any] | None:
         return None
 
     from .fetcher import _extract_metadata
+
     return {
         "support_id": support_id,
         "title": title,
@@ -607,6 +906,11 @@ def convert_kbd_structured(support_id: str) -> dict[str, Any] | None:
         "images_json": images_json,
         # 图片二进制（base64），IMPORT 阶段原子写入 kbd_image 表
         "images": images,
+        "conversion_integrity": {
+            "source_sha256": source_sha256,
+            "valid": not failed_reports,
+            "sections": {name: report.as_dict() for name, report in integrity_reports.items()},
+        },
         # content_md 不传：由后端 rebuild_content_md 统一渲染（样式高一致）
         "content_md": None,
     }

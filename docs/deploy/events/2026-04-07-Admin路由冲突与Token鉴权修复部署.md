@@ -10,7 +10,7 @@
 
 - PR 合并到 main 分支
 - K8s 集群 `hci-dev` 命名空间可访问
-- `INTERNAL_API_TOKEN` Secret 已存在（当前值 `dev-internalapi-api-token-2026`，无需变更）
+- `INTERNAL_API_TOKEN` Secret 已存在（当前值 `${INTERNAL_API_TOKEN}`，无需变更）
 
 ## 部署步骤
 
