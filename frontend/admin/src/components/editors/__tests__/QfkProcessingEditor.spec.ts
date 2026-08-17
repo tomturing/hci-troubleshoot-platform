@@ -100,6 +100,25 @@ describe('QfkProcessingEditor 两步处理交互', () => {
     expect(update.extract).toEqual(textExtract)
   })
 
+  it('取值和判断关键字输入按回车后保留编辑中的换行', async () => {
+    const extractWrapper = mount(ValueExtractEditor, {
+      props: { modelValue: textExtract },
+      global: { plugins: [ElementPlus] },
+    })
+    await extractWrapper.findAllComponents({ name: 'ElInput' })[0].vm.$emit('input', '检测到IP\n')
+    await extractWrapper.setProps({
+      modelValue: { ...textExtract, rows: { ...textExtract.rows, include: ['检测到IP'] } },
+    })
+    await extractWrapper.vm.$nextTick()
+    expect((extractWrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('检测到IP\n')
+
+    const matcherWrapper = mountMatcher({ type: 'keyword', pattern: '', mode: 'or', expected: true })
+    await (matcherWrapper.vm as any).updateKeywordPatterns('虚拟机开机失败\n')
+    await matcherWrapper.setProps({ modelValue: { type: 'keyword', pattern: '虚拟机开机失败', mode: 'or', expected: true } })
+    await matcherWrapper.vm.$nextTick()
+    expect((matcherWrapper.findAll('textarea')[1].element as HTMLTextAreaElement).value).toBe('虚拟机开机失败\n')
+  })
+
   it('产出模式为每个变量创建独立处理单元，步骤标题统一为“第二步：产出”', () => {
     const produces = [
       { name: 'DUP_IP', type: 'string', extract: textExtract },
