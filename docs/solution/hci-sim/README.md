@@ -27,6 +27,7 @@
 - [P0–P1 27123 全链路修复方案](events/2026-08-11-hci-sim-P0-P1-27123全链路修复方案.md)
 - [生产化差距审查与 Bundle 工厂化重构基线](events/2026-08-11-hci-sim生产化差距审查与Bundle工厂化重构基线.md)
 - [HCI 真实环境与 hci-sim 双轨运行时设计](events/2026-07-30-HCI真实环境与hci-sim双轨运行时设计.md)
+- [能力缺口对抗性审查与仿真环境构造流程全景](hci-sim能力缺口对抗性审查与仿真环境构造流程.md)（2026-08-17，含配套浏览器版流程图 [sim-env-construction-flow.html](sim-env-construction-flow.html)）
 
 ## 快速导航
 
@@ -34,5 +35,6 @@
 |-----------|--------|
 | 实施或审查当前阶段 | 上表（严格按 A→E） |
 | 看用户视角（喂 KBD / 拿 Lease / 在哪验收 / 结果过没过） | [hci-sim 设计（全量）](hci-sim设计.md) |
+| 看能力缺口与优先级 / 仿真环境构造全流程图 | [能力缺口对抗性审查与仿真环境构造流程全景](hci-sim能力缺口对抗性审查与仿真环境构造流程.md) |
 | 看验证证据 | [verify/hci-sim/README.md](../verify/hci-sim/README.md) |
 | 看任务排期 | [task/hci-sim/README.md](../task/hci-sim/README.md) |
