@@ -314,7 +314,7 @@ jobs:
     name: agent-reliability-regression
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       pull-requests: write
@@ -354,7 +354,7 @@ jobs:
           echo "本次改动文件:"
           echo "$CHANGED_FILES"
 
-          WATCHED_REGEX='^(backend/agent-service/app/adapters/agents/htp/(react_engine|investigation_agent|tool_registry)\.py|backend/agent-service/app/services/hallucination_detector\.py|backend/shared/utils/prompt_loader\.py|database/seeds/(02_system_prompts|tool_definition_v2)\.sql|evaluation/(golden_tickets\.json|replay_runner\.py))$'
+          WATCHED_REGEX='^(backend/agent-service/app/adapters/agents/htp/(react_engine|investigation_agent|tool_registry|kbd_differential)\.py|backend/agent-service/app/tools/(qfk|qkv)/.*\.py|backend/agent-service/app/services/hallucination_detector\.py|backend/kb-service/app/(routes/(classify|extract_signals)|services/vision_processor)\.py|backend/shared/(signals|cdd)/.*\.py|backend/shared/utils/prompt_loader\.py|database/seeds/(02_system_prompts|tool_definition_v2)\.sql|evaluation/(golden_tickets\.json|replay_runner\.py))$'
           if echo "$CHANGED_FILES" | grep -Eq "$WATCHED_REGEX"; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
           else
@@ -851,11 +851,11 @@ jobs:
             ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
             ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest
 
-      - name: Trivy 镜像安全扫描（仅上报，不阻断）
+      - name: Trivy 镜像安全扫描（HIGH/CRITICAL 阻断）
         uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956
         with:
           image-ref: ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
-          exit-code: "0"
+          exit-code: "1"
           severity: HIGH,CRITICAL
           version: v0.73.0
           format: sarif
@@ -978,11 +978,11 @@ jobs:
             ghcr.io/${{ github.repository }}/db-migrate:${{ needs.prepare.outputs.image_tag }}
             ghcr.io/${{ github.repository }}/db-migrate:latest
 
-      - name: Trivy 镜像安全扫描（仅上报，不阻断）
+      - name: Trivy 镜像安全扫描（HIGH/CRITICAL 阻断）
         uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956
         with:
           image-ref: ghcr.io/${{ github.repository }}/db-migrate:${{ needs.prepare.outputs.image_tag }}
-          exit-code: "0"
+          exit-code: "1"
           severity: HIGH,CRITICAL
           version: v0.73.0
           format: sarif
@@ -990,6 +990,7 @@ jobs:
 
       - name: 上传安全扫描结果
         uses: github/codeql-action/upload-sarif@c4dd10e44af883a891fe31ced449bcb4a6728b9b
+        if: always()
         continue-on-error: true
         with:
           sarif_file: trivy-db-migrate.sarif

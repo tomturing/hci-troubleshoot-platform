@@ -3,13 +3,95 @@ Structured Logging Utilities
 结构化日志工具
 """
 
+import hashlib
 import json
 import logging
+import re
 import sys
 import traceback
 from datetime import UTC, datetime
+from typing import Any
 
 from .otel import get_current_span_id, get_current_trace_id
+
+_RESERVED_FIELDS = {
+    "log_schema_version",
+    "timestamp",
+    "level",
+    "service",
+    "event",
+    "message",
+    "trace_id",
+    "custom_trace_id",
+    "span_id",
+}
+_SENSITIVE_KEYS = {
+    "authorization",
+    "api_key",
+    "apikey",
+    "access_token",
+    "refresh_token",
+    "internal_api_token",
+    "password",
+    "passwd",
+    "secret",
+    "secret_key",
+    "credential",
+    "credentials",
+    "cookie",
+    "set_cookie",
+}
+_DEFAULT_STRING_LIMIT = 4096
+_TRACEBACK_STRING_LIMIT = 16000
+_MAX_SANITIZE_DEPTH = 8
+_INLINE_SECRET_PATTERNS = (
+    re.compile(r"(?i)\bBearer\s+[^\s,;]+"),
+    re.compile(
+        r"(?i)([\"']?(?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|"
+        r"internal[_-]?api[_-]?token|password|passwd|secret(?:[_-]?key)?|credential|cookie)"
+        r"[\"']?\s*[:=]\s*[\"']?)([^\"'\s,;}\]]+)"
+    ),
+    re.compile(r"(?i)(://[^:/\s]+:)([^@\s]+)(@)"),
+)
+
+
+def _is_sensitive_key(key: str) -> bool:
+    normalized = key.casefold().replace("-", "_")
+    return normalized in _SENSITIVE_KEYS or normalized.endswith(
+        ("_password", "_passwd", "_secret", "_secret_key", "_api_key", "_access_token", "_refresh_token")
+    )
+
+
+def _sanitize_string(value: str, *, limit: int) -> str:
+    sanitized = _INLINE_SECRET_PATTERNS[0].sub("Bearer [REDACTED]", value)
+    sanitized = _INLINE_SECRET_PATTERNS[1].sub(r"\1[REDACTED]", sanitized)
+    sanitized = _INLINE_SECRET_PATTERNS[2].sub(r"\1[REDACTED]\3", sanitized)
+    if len(sanitized) <= limit:
+        return sanitized
+    digest = hashlib.sha256(sanitized.encode("utf-8", errors="replace")).hexdigest()
+    return f"{sanitized[:limit]}...[TRUNCATED original_chars={len(sanitized)} sha256={digest}]"
+
+
+def _sanitize_log_value(key: str, value: Any, *, depth: int = 0) -> Any:
+    """递归净化日志字段，日志安全失败时也不得泄露原始对象。"""
+
+    if _is_sensitive_key(key):
+        return "[REDACTED]"
+    if depth >= _MAX_SANITIZE_DEPTH:
+        return "[MAX_DEPTH]"
+    if isinstance(value, dict):
+        return {
+            str(item_key): _sanitize_log_value(str(item_key), item_value, depth=depth + 1)
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_sanitize_log_value(key, item, depth=depth + 1) for item in value]
+    if isinstance(value, str):
+        limit = _TRACEBACK_STRING_LIMIT if key == "traceback" else _DEFAULT_STRING_LIMIT
+        return _sanitize_string(value, limit=limit)
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return _sanitize_string(str(value), limit=_DEFAULT_STRING_LIMIT)
 
 
 class StructuredLogger:
@@ -97,10 +179,19 @@ class StructuredLogger:
         if otel_span_id:
             log_data["span_id"] = otel_span_id
 
-        # 添加额外字段
-        log_data.update(kwargs)
+        # 日志信封字段只能由 logger 生成，业务字段不得覆盖事件、服务或调用链。
+        conflicts = sorted(_RESERVED_FIELDS.intersection(kwargs))
+        for key, value in kwargs.items():
+            if key not in _RESERVED_FIELDS:
+                log_data[key] = value
+        if conflicts:
+            log_data["reserved_field_conflicts"] = conflicts
 
-        return json.dumps(log_data, ensure_ascii=False, default=str)
+        sanitized = {
+            key: _sanitize_log_value(key, value)
+            for key, value in log_data.items()
+        }
+        return json.dumps(sanitized, ensure_ascii=False, default=str)
 
     def info(self, event: str, *args, message: str | None = None, trace_id: str | None = None, **kwargs):
         """记录 INFO 级别日志"""

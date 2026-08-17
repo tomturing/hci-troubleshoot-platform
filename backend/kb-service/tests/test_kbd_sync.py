@@ -147,7 +147,7 @@ async def test_update_kbd_entry_api_sync_sections():
         id=123,
         latest_proposal_revision_id=None,
         working_revision_id=None,
-        lock_version=0,
+        lock_version=1,
         status="draft",
         entry_metadata={},
         **kbd_payload,
@@ -160,7 +160,7 @@ async def test_update_kbd_entry_api_sync_sections():
     mock_update_row.mappings.return_value.first.return_value = {
         "id": 123,
         "status": "draft",
-        "lock_version": 1,
+        "lock_version": 2,
     }
 
     mock_session.execute.side_effect = [status_row, image_row, kbd_row, mock_update_row]
