@@ -26,7 +26,8 @@ SELECT b.status, b.digest
 FROM control_plane.scenario s
 JOIN fixture.bundle b ON b.scenario_id = s.id
 WHERE s.support_id = :'support_id' AND s.kbd_revision = :active_revision
-ORDER BY b.revision DESC
+  AND s.status = 'published' AND b.status = 'published'
+ORDER BY b.updated_at DESC, b.revision DESC
 LIMIT 1;
 SQL
   )"

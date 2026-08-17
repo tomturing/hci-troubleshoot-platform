@@ -19,6 +19,8 @@ fi
 [ "$url" = "sim://test" ] || exit 64
 query="$(cat)"
 grep -Fq 'SELECT b.status, b.digest' <<<"$query"
+grep -Fq "b.status = 'published'" <<<"$query"
+grep -Fq 'ORDER BY b.updated_at DESC, b.revision DESC' <<<"$query"
 if [ "${SIM_QUERY_FAIL:-0}" = "1" ]; then
   printf 'simulated SQL failure\n' >&2
   exit 42

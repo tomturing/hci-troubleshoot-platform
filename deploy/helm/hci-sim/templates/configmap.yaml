@@ -6,5 +6,7 @@ metadata:
   labels:
     {{- include "hci-sim.labels" . | nindent 4 }}
 data:
-  fixture-manifest.json: |-
-{{ .Files.Get .Values.fixture.manifestFile | indent 4 }}
+  {{- range .Values.fixture.manifestFiles }}
+  {{ base . }}: |-
+{{ $.Files.Get . | indent 4 }}
+  {{- end }}

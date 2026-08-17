@@ -153,9 +153,47 @@ func appendLocalAudit(router *fixture.Router, result fixture.Result, exitCode in
 	_, _ = file.Write(append(raw, '\n'))
 }
 
+func loadRuntimeBundlePool() (*fixture.BundlePool, *fixture.Router, error) {
+	var (
+		pool *fixture.BundlePool
+		err  error
+	)
+	if dir := strings.TrimSpace(os.Getenv("HCI_SIM_FIXTURE_DIR")); dir != "" {
+		pool, err = fixture.LoadBundlePoolDir(dir)
+	} else {
+		var router *fixture.Router
+		router, err = fixture.Load(env("HCI_SIM_FIXTURE_MANIFEST", "/etc/hci-sim/fixture-manifest.json"))
+		if err == nil {
+			pool, err = fixture.NewBundlePool(router)
+		}
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	if required := strings.TrimSpace(os.Getenv("HCI_SIM_REQUIRED_BUNDLES")); required != "" {
+		if err := pool.ValidateRequired(required); err != nil {
+			return nil, nil, fmt.Errorf("fixture 发布声明校验失败: %w", err)
+		}
+	}
+	defaultSupportID := strings.TrimSpace(os.Getenv("HCI_SIM_DEFAULT_SUPPORT_ID"))
+	if defaultSupportID == "" {
+		defaultSupportID = pool.SupportIDs()[0]
+	}
+	defaultRouter := pool.Get(defaultSupportID)
+	if defaultRouter == nil {
+		return nil, nil, fmt.Errorf("默认 fixture support_id %s 未加载", defaultSupportID)
+	}
+	return pool, defaultRouter, nil
+}
+
 func runServer() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	bundlePool, defaultRouter, err := loadRuntimeBundlePool()
+	if err != nil {
+		return err
+	}
+	fixtureVariant := simulationFixtureVariant()
 	databaseTarget, err := database.FromEnvironment()
 	if err != nil {
 		return err
@@ -173,14 +211,18 @@ func runServer() error {
 		if err != nil {
 			return err
 		}
+		traceID, traceErr := newTraceID()
+		if traceErr != nil {
+			return fmt.Errorf("生成 Bundle 发布调用链失败: %w", traceErr)
+		}
+		if syncErr := runRepository.SyncPublishedBundles(ctx, publishedBundleInputs(bundlePool, fixtureVariant), "gitops-runtime", traceID); syncErr != nil {
+			return fmt.Errorf("同步 Runtime Bundle Registry 失败 trace_id=%s: %w", traceID, syncErr)
+		}
+		log.Printf("hci-sim bundle registry synced trace_id=%s bundle_count=%d support_ids=%s", traceID, bundlePool.Size(), strings.Join(bundlePool.SupportIDs(), ","))
 	}
 	var eventRecorder server.EventRecorder
 	if runRepository != nil {
 		eventRecorder = repositoryEventRecorder{repository: runRepository}
-	}
-	router, err := fixture.Load(env("HCI_SIM_FIXTURE_MANIFEST", "/etc/hci-sim/fixture-manifest.json"))
-	if err != nil {
-		return err
 	}
 	secret := []byte(strings.TrimSpace(os.Getenv("HCI_SIM_LEASE_HMAC_KEY")))
 	if len(secret) < 32 {
@@ -202,8 +244,8 @@ func runServer() error {
 	prom := &metrics.Metrics{}
 	sshServer, err := server.New(server.Config{
 		ListenAddress: env("HCI_SIM_SSH_LISTEN", ":2222"), HostSigner: signer,
-		LeaseSecret: secret, Router: router, Workers: envInt("HCI_SIM_WORKERS", 8),
-		QueueSize: envInt("HCI_SIM_QUEUE_SIZE", 128), MaxOutputBytes: envInt("HCI_SIM_MAX_OUTPUT_BYTES", router.OutputLimit()),
+		LeaseSecret: secret, Pool: bundlePool, Workers: envInt("HCI_SIM_WORKERS", 8),
+		QueueSize: envInt("HCI_SIM_QUEUE_SIZE", 128), MaxOutputBytes: envInt("HCI_SIM_MAX_OUTPUT_BYTES", bundlePool.MaxOutputLimit()),
 		LeaseIssuer: env("HCI_SIM_LEASE_ISSUER", "hci-platform"), LeaseAudience: env("HCI_SIM_LEASE_AUDIENCE", "hci-sim"), Metrics: prom, Recorder: eventRecorder,
 	})
 	if err != nil {
@@ -228,15 +270,15 @@ func runServer() error {
 	mux.HandleFunc("/status", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"service": "hci-sim", "version": version, "fixture_manifest_hash": router.ManifestHash(), "bundle_digest": router.BundleDigest(),
-			"kbd_support_id": router.KBD().SupportID, "kbd_revision": router.KBD().Revision, "tool_contract_revision": router.Contracts().ToolRevision,
+			"service": "hci-sim", "version": version, "fixture_manifest_hash": defaultRouter.ManifestHash(), "bundle_digest": defaultRouter.BundleDigest(),
+			"kbd_support_id": defaultRouter.KBD().SupportID, "kbd_revision": defaultRouter.KBD().Revision, "tool_contract_revision": defaultRouter.Contracts().ToolRevision,
+			"bundle_count": bundlePool.Size(), "loaded_support_ids": bundlePool.SupportIDs(), "bundles": bundlePool.Bundles(),
 			"database_configured": databaseTarget.Configured, "database_name": databaseTarget.Database,
 			"outbox_sink_configured": strings.TrimSpace(os.Getenv("HCI_SIM_OUTBOX_WEBHOOK_URL")) != "",
 		})
 	})
 	// 控制面最小 HTTP 契约。生产入口必须由 API Gateway/NetworkPolicy 保护，
 	// Runtime 只接受 immutable fixture，并且永不回退真实 HCI。
-	fixtureVariant := simulationFixtureVariant()
 	controlToken := strings.TrimSpace(os.Getenv("HCI_SIM_CONTROL_TOKEN"))
 	allowInsecureControlAPI := strings.EqualFold(strings.TrimSpace(os.Getenv("HCI_SIM_ALLOW_INSECURE_CONTROL_API")), "true")
 	controlAuthorized := func(r *http.Request) bool {
@@ -250,6 +292,15 @@ func runServer() error {
 		requestedID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/v1/simulations/capabilities/"))
 		if requestedID == "" || strings.ContainsAny(requestedID, "/?#") {
 			http.Error(w, "kbd_id is required", http.StatusBadRequest)
+			return
+		}
+		router := bundlePool.Get(requestedID)
+		if router == nil {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"support_id": requestedID, "buildable": false,
+				"capability_gap": []string{"kbd_not_loaded", "bundle_digest_missing"},
+			})
 			return
 		}
 		runtimeKBD := router.KBD()
@@ -290,7 +341,8 @@ func runServer() error {
 			http.Error(w, "kbd_id is required", http.StatusBadRequest)
 			return
 		}
-		if router.KBD().SupportID != strings.TrimSpace(request.KBDID) {
+		router := bundlePool.Get(strings.TrimSpace(request.KBDID))
+		if router == nil {
 			http.Error(w, "capability_gap: requested KBD is not the loaded immutable fixture", http.StatusConflict)
 			return
 		}
@@ -316,7 +368,7 @@ func runServer() error {
 			record, persistErr := runRepository.Create(r.Context(), database.RunInput{
 				ExternalID: runID, SupportID: request.KBDID, KBDRevision: router.KBD().Revision,
 				Variant: fixtureVariant, BundleDigest: router.BundleDigest(),
-				BundleSchemaVersion: router.SchemaVersion(), BundleObjectURI: "embedded://hci-sim/fixture-manifest.json",
+				BundleSchemaVersion: router.SchemaVersion(), BundleObjectURI: bundleObjectURI(router.KBD().SupportID),
 				BundleObjectDigest: router.ManifestHash(), BundleSizeBytes: router.ManifestSize(), ExecutionMode: "sim-ssh",
 				IdempotencyKey: idempotencyKey, RequestDigest: requestDigest, Deadline: now.Add(15 * time.Minute),
 				InputFingerprint:   inputFingerprint,
@@ -565,6 +617,28 @@ func simulationEnvironmentContext(router *fixture.Router, runID, caseID, variant
 	}
 }
 
+func publishedBundleInputs(pool *fixture.BundlePool, variant string) []database.PublishedBundleInput {
+	inputs := make([]database.PublishedBundleInput, 0, pool.Size())
+	for _, supportID := range pool.SupportIDs() {
+		router := pool.Get(supportID)
+		inputs = append(inputs, database.PublishedBundleInput{
+			SupportID: supportID, KBDRevision: router.KBD().Revision, Variant: variant,
+			Digest: router.BundleDigest(), SchemaVersion: router.SchemaVersion(),
+			ObjectURI: bundleObjectURI(supportID), ObjectDigest: router.ManifestHash(),
+			SizeBytes: router.ManifestSize(),
+			InputFingerprint: digestValue(map[string]any{
+				"support_id": supportID, "kbd_revision": router.KBD().Revision,
+				"variant": variant, "bundle_digest": router.BundleDigest(),
+			}),
+		})
+	}
+	return inputs
+}
+
+func bundleObjectURI(supportID string) string {
+	return fmt.Sprintf("configmap://hci-sim-fixture/kbd-%s-fixture-manifest.json", supportID)
+}
+
 func simulationBuildable(requestedID string, runtimeKBD fixture.KBDRef, activeRevision int, bundleDigest, authorityScope string, synthetic bool) bool {
 	return requestedID == runtimeKBD.SupportID &&
 		activeRevision == runtimeKBD.Revision &&
@@ -705,6 +779,14 @@ func randomID() string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return fmt.Sprintf("%x", buffer)
+}
+
+func newTraceID() (string, error) {
+	buffer := make([]byte, 16)
+	if _, err := rand.Read(buffer); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", buffer), nil
 }
 
 // digestValue 为控制面幂等和 Scenario 指纹提供稳定摘要；摘要中不包含

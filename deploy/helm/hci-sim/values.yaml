@@ -42,9 +42,12 @@ database:
   urlSecretKey: HCI_SIM_DATABASE_URL
 
 fixture:
-  # 只能引用 chart 内置、经审查的 manifest；生产环境应由 Bundle Registry
-  # 生成 ConfigMap/对象存储，而不是从用户输入挂载任意文件。
-  manifestFile: files/kbd-27123-fixture-manifest.json
+  # GitOps 发布集合只接受 chart 内置、经 PR 审查且 digest 固定的 manifest。
+  # 每次集合或内容变化都会改变 Pod checksum 并触发失败关闭的滚动更新。
+  defaultSupportID: "27123"
+  manifestFiles:
+    - files/kbd-27123-fixture-manifest.json
+    - files/kbd-23821-fixture-manifest.json
   configMapName: hci-sim-fixture
 
 resources:

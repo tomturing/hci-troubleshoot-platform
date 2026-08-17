@@ -2,12 +2,88 @@ package database
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
 	"testing"
 	"time"
 )
+
+func integrationDigest(value string) string {
+	return fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(value)))
+}
+
+func TestRunRepositorySyncPublishedBundles(t *testing.T) {
+	rawURL := os.Getenv("HCI_SIM_TEST_DATABASE_URL")
+	if rawURL == "" {
+		t.Skip("HCI_SIM_TEST_DATABASE_URL is not configured")
+	}
+	target, err := Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse test database URL: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool, err := Open(ctx, target)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	defer pool.Close()
+	repository, err := NewRunRepository(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	suffix := fmt.Sprintf("%016x", uint64(time.Now().UnixNano()))
+	supportID := "sync" + suffix
+	first := PublishedBundleInput{
+		SupportID: supportID, KBDRevision: 1, Variant: "positive-realistic",
+		Digest: integrationDigest(suffix + "-bundle-a"), SchemaVersion: "2.0",
+		ObjectURI:    "configmap://hci-sim-fixture/kbd-" + supportID + "-fixture-manifest.json",
+		ObjectDigest: integrationDigest(suffix + "-object-a"), SizeBytes: 1024,
+		InputFingerprint: integrationDigest(suffix + "-fingerprint-a"),
+	}
+	second := first
+	second.Digest = integrationDigest(suffix + "-bundle-b")
+	second.ObjectDigest = integrationDigest(suffix + "-object-b")
+	second.SizeBytes = 2048
+	second.InputFingerprint = integrationDigest(suffix + "-fingerprint-b")
+	if err := repository.SyncPublishedBundles(ctx, []PublishedBundleInput{first}, "integration-test", "trace-"+suffix+"-a"); err != nil {
+		t.Fatalf("publish first bundle: %v", err)
+	}
+	secondTraceID := "trace-" + suffix + "-b"
+	if err := repository.SyncPublishedBundles(ctx, []PublishedBundleInput{second}, "integration-test", secondTraceID); err != nil {
+		t.Fatalf("publish replacement bundle: %v", err)
+	}
+	var firstStatus, secondStatus string
+	if err := pool.QueryRow(ctx, `SELECT status FROM fixture.bundle WHERE digest = $1`, first.Digest).Scan(&firstStatus); err != nil {
+		t.Fatalf("query first bundle: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT status FROM fixture.bundle WHERE digest = $1`, second.Digest).Scan(&secondStatus); err != nil {
+		t.Fatalf("query second bundle: %v", err)
+	}
+	if firstStatus != "stale" || secondStatus != "published" {
+		t.Fatalf("unexpected replacement states: first=%q second=%q", firstStatus, secondStatus)
+	}
+	var tracedEvents int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit.entity_event WHERE trace_id = $1`, secondTraceID).Scan(&tracedEvents); err != nil || tracedEvents != 3 {
+		t.Fatalf("replacement audit events = %d, want 3: %v", tracedEvents, err)
+	}
+	replayTraceID := "trace-" + suffix + "-replay"
+	if err := repository.SyncPublishedBundles(ctx, []PublishedBundleInput{second}, "integration-test", replayTraceID); err != nil {
+		t.Fatalf("idempotent bundle replay: %v", err)
+	}
+	var replayEvents int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit.entity_event WHERE trace_id = $1`, replayTraceID).Scan(&replayEvents); err != nil || replayEvents != 0 {
+		t.Fatalf("idempotent replay audit events = %d, want 0: %v", replayEvents, err)
+	}
+	crossSupport := second
+	crossSupport.SupportID = "x" + suffix
+	crossSupport.InputFingerprint = integrationDigest(suffix + "-cross-support")
+	if err := repository.SyncPublishedBundles(ctx, []PublishedBundleInput{crossSupport}, "integration-test", "trace-"+suffix+"-cross"); err == nil {
+		t.Fatal("same digest was accepted for another support_id")
+	}
+}
 
 func TestRunRepositoryPostgresIdempotencyAndCAS(t *testing.T) {
 	rawURL := os.Getenv("HCI_SIM_TEST_DATABASE_URL")
