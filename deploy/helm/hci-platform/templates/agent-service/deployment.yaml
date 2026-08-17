@@ -60,6 +60,13 @@ spec:
             - name: DATABASE_URL
               # 使用 Helm 渲染时 urlquery 对密码做 URL 编码，防止密码含 @ / : # 等特殊字符导致解析错误（PIT-022）
               value: {{ printf "postgresql+asyncpg://%s:%s@%s:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+            {{- if and .Values.kbService.enabled .Values.kbService.persistence.enabled }}
+            # 与 kb-service 共享页面维护的 Catalog 基线。agent 只读挂载，由 mtime 热加载。
+            - name: ACLI_CATALOG_PATH
+              value: /data/catalogs/acli_command_catalog.json
+            - name: RESOLUTION_CATALOG_PATH
+              value: /data/catalogs/resolution_catalog.json
+            {{- end }}
             # GLM 模型配置
             - name: GLM_MODEL
               value: {{ .Values.agentService.glmModel | default "glm-5" | quote }}
@@ -141,3 +148,15 @@ spec:
             failureThreshold: 30
           resources:
             {{- toYaml .Values.agentService.resources | nindent 12 }}
+          {{- if and .Values.kbService.enabled .Values.kbService.persistence.enabled }}
+          volumeMounts:
+            - name: catalog-persist
+              mountPath: /data/catalogs
+              readOnly: true
+          {{- end }}
+      {{- if and .Values.kbService.enabled .Values.kbService.persistence.enabled }}
+      volumes:
+        - name: catalog-persist
+          persistentVolumeClaim:
+            claimName: kb-service-catalog-data
+      {{- end }}

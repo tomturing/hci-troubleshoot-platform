@@ -79,6 +79,37 @@ func TestSimulationBuildableRequiresExactActiveRevision(t *testing.T) {
 	}
 }
 
+func TestPublishedBundleInputsAreStableAndComplete(t *testing.T) {
+	pool, err := fixture.LoadBundlePool(
+		filepath.Join("..", "..", "testdata", "kbd-27123-fixture-manifest.json"),
+		filepath.Join("..", "..", "..", "deploy", "helm", "hci-sim", "files", "kbd-23821-fixture-manifest.json"),
+	)
+	if err != nil {
+		t.Fatalf("load bundle pool: %v", err)
+	}
+	inputs := publishedBundleInputs(pool, "positive-realistic")
+	if len(inputs) != 2 || inputs[0].SupportID != "23821" || inputs[1].SupportID != "27123" {
+		t.Fatalf("published inputs are not stably sorted: %+v", inputs)
+	}
+	for _, input := range inputs {
+		router := pool.Get(input.SupportID)
+		if input.Digest != router.BundleDigest() || input.ObjectDigest != router.ManifestHash() || input.SizeBytes != router.ManifestSize() {
+			t.Fatalf("published input does not preserve bundle identity: %+v", input)
+		}
+		wantURI := "configmap://hci-sim-fixture/kbd-" + input.SupportID + "-fixture-manifest.json"
+		if input.ObjectURI != wantURI {
+			t.Fatalf("object URI = %q, want %q", input.ObjectURI, wantURI)
+		}
+		wantFingerprint := digestValue(map[string]any{
+			"support_id": input.SupportID, "kbd_revision": input.KBDRevision,
+			"variant": input.Variant, "bundle_digest": input.Digest,
+		})
+		if input.InputFingerprint != wantFingerprint {
+			t.Fatalf("input fingerprint = %q, want %q", input.InputFingerprint, wantFingerprint)
+		}
+	}
+}
+
 func TestTerminalRunStatus(t *testing.T) {
 	for _, status := range []string{"passed", "failed", "inconclusive", "cancelled", "expired"} {
 		if !terminalRunStatus(status) {

@@ -34,10 +34,15 @@ def test_threshold_delta_and_trend_use_explicit_numeric_column():
     output = "Filesystem Use%\n/root 35%\n/sf/log 83%\n"
     threshold = evaluate_matcher({"type": "threshold", "aggregation": "max", "operator": ">=", "value": 80, "expected": True, "extract": extract}, output)
     assert threshold.matched is True
+    above_threshold_expected_false = evaluate_matcher({"type": "threshold", "aggregation": "max", "operator": ">=", "value": 80, "expected": False, "extract": extract}, output)
+    assert above_threshold_expected_false.matched is False
     delta = evaluate_matcher({"type": "delta", "operator": ">", "value": 40, "expected": True, "extract": extract}, output)
     assert delta.matched is True
     trend = evaluate_matcher({"type": "trend", "direction": "increasing", "value": 1, "minimum_samples": 2, "expected": True, "extract": extract}, output)
     assert trend.matched is True
+
+    below_threshold_expected_false = evaluate_matcher({"type": "threshold", "aggregation": "max", "operator": ">", "value": 100, "expected": False, "extract": {"type": "text", "rows": {"mode": "all"}, "cardinality": "all", "source": "stdout", "value_mode": "number"}}, "99\n")
+    assert below_threshold_expected_false.matched is True
 
 
 def test_json_path_is_an_extract_option_not_a_matcher_type():

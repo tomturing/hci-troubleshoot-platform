@@ -124,6 +124,7 @@ def test_update_catalog_success_and_hot_reload(client: TestClient, tmp_path: Pat
         "log_aliases": {"test_alias": "sfvt_test.log"}
     }
     fake_catalog_path.write_text(json.dumps(initial_content), encoding="utf-8")
+    initial_inode = fake_catalog_path.stat().st_ino
 
     # Monkeypatch 路径配置
     from app.routes import resolution_catalogs
@@ -153,6 +154,8 @@ def test_update_catalog_success_and_hot_reload(client: TestClient, tmp_path: Pat
     written_text = fake_catalog_path.read_text(encoding="utf-8")
     assert "2.0.0" in written_text
     assert "sfvt_new.log" in written_text
+    assert fake_catalog_path.stat().st_ino != initial_inode
+    assert not list(tmp_path.glob(".resolution_catalog.json.*.tmp"))
 
 
 def test_update_catalog_validation_failure_blocks_save(client: TestClient) -> None:

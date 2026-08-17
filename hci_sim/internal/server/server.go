@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,6 +48,7 @@ type Config struct {
 	ListenAddress  string
 	HostSigner     ssh.Signer
 	LeaseSecret    []byte
+	Pool           *fixture.BundlePool
 	Router         *fixture.Router
 	Workers        int
 	QueueSize      int
@@ -72,6 +74,28 @@ type Server struct {
 	workerWG   sync.WaitGroup
 	listenerMu sync.Mutex
 	listener   net.Listener
+}
+
+func routerForSupport(config Config, supportID string) *fixture.Router {
+	if config.Pool != nil {
+		return config.Pool.Get(supportID)
+	}
+	if config.Router != nil && config.Router.KBD().SupportID == supportID {
+		return config.Router
+	}
+	return nil
+}
+
+func routerMatchesClaims(router *fixture.Router, claims lease.Claims) bool {
+	if router == nil || router.KBD().Revision != claims.KBDRevision {
+		return false
+	}
+	constantEqual := func(left, right string) bool {
+		return subtle.ConstantTimeCompare([]byte(left), []byte(right)) == 1
+	}
+	return constantEqual(router.BundleDigest(), claims.BundleDigest) &&
+		constantEqual(router.Contracts().ToolRevision, claims.ToolContractRevision) &&
+		constantEqual(router.Contracts().PolicyRevision, claims.PolicyRevision)
 }
 
 type commandJob struct {
@@ -110,7 +134,7 @@ type exitStatus struct {
 }
 
 func New(config Config) (*Server, error) {
-	if config.ListenAddress == "" || config.HostSigner == nil || len(config.LeaseSecret) < 32 || config.Router == nil {
+	if config.ListenAddress == "" || config.HostSigner == nil || len(config.LeaseSecret) < 32 || (config.Pool == nil && config.Router == nil) {
 		return nil, errors.New("hci-sim server 配置不完整")
 	}
 	if config.Workers < 1 || config.Workers > 256 {
@@ -135,10 +159,15 @@ func New(config Config) (*Server, error) {
 	}
 	s.sshConfig = &ssh.ServerConfig{
 		PasswordCallback: func(meta ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
-			claims, err := lease.Validate(config.LeaseSecret, string(password), config.Router.BundleDigest(), config.LeaseIssuer, config.LeaseAudience, time.Now())
-			if err != nil || meta.User() != "sim" {
+			claims, err := lease.Validate(config.LeaseSecret, string(password), "", config.LeaseIssuer, config.LeaseAudience, time.Now())
+			router := routerForSupport(config, claims.SupportID)
+			if err != nil || meta.User() != "sim" || !routerMatchesClaims(router, claims) {
 				config.Metrics.LeaseRejectTotal.Add(1)
-				logEvent("WARN", "lease.rejected", map[string]any{"remote": meta.RemoteAddr().String(), "reason": safeError(err)})
+				reason := safeError(err)
+				if err == nil {
+					reason = "lease_bundle_contract_mismatch"
+				}
+				logEvent("WARN", "lease.rejected", map[string]any{"remote": meta.RemoteAddr().String(), "reason": reason})
 				return nil, errors.New("场景租约认证失败")
 			}
 			encoded, _ := json.Marshal(claims)
@@ -161,9 +190,15 @@ func (s *Server) Serve(ctx context.Context) error {
 	s.listenerMu.Lock()
 	s.listener = listener
 	s.listenerMu.Unlock()
+	bundles := []fixture.BundleInfo{}
+	if s.config.Pool != nil {
+		bundles = s.config.Pool.Bundles()
+	} else if s.config.Router != nil {
+		bundles = append(bundles, fixture.BundleInfo{SupportID: s.config.Router.KBD().SupportID, KBDRevision: s.config.Router.KBD().Revision, BundleDigest: s.config.Router.BundleDigest()})
+	}
 	logEvent("INFO", "server.started", map[string]any{
 		"address": s.config.ListenAddress, "workers": s.config.Workers,
-		"queue_size": s.config.QueueSize, "fixture_bundle_digest": s.config.Router.BundleDigest(),
+		"queue_size": s.config.QueueSize, "fixture_bundles": bundles, "fixture_bundle_count": len(bundles),
 	})
 	go func() {
 		<-ctx.Done()
@@ -328,7 +363,15 @@ func (s *Server) execute(job *commandJob, workerID int) commandOutcome {
 		s.respond(job, outcome, "lease_quota_exceeded", err.Error())
 		return outcome
 	}
-	result, err := s.config.Router.Match(job.command, job.claims.FixtureVariant, job.claims.VirtualNodeID, job.claims.Container)
+	router := routerForSupport(s.config, job.claims.SupportID)
+	if !routerMatchesClaims(router, job.claims) {
+		s.config.Metrics.CommandErrorsTotal.Add(1)
+		s.config.Metrics.FixtureMissesTotal.Add(1)
+		outcome := commandOutcome{exitCode: exitFixtureNotFound}
+		s.respond(job, outcome, "fixture_not_found", "租约绑定的 Fixture Bundle 不可用")
+		return outcome
+	}
+	result, err := router.Match(job.command, job.claims.FixtureVariant, job.claims.VirtualNodeID, job.claims.Container)
 	if err != nil {
 		s.config.Metrics.CommandErrorsTotal.Add(1)
 		if err.Error() == "fixture_not_found" {
@@ -344,7 +387,7 @@ func (s *Server) execute(job *commandJob, workerID int) commandOutcome {
 	}
 	s.config.Metrics.FixtureHitsTotal.Add(1)
 	outputBytes := int64(len(result.Stdout) + len(result.Stderr))
-	if outputBytes > int64(s.config.Router.OutputLimit()) || (s.config.MaxOutputBytes > 0 && outputBytes > int64(s.config.MaxOutputBytes)) {
+	if outputBytes > int64(router.OutputLimit()) || (s.config.MaxOutputBytes > 0 && outputBytes > int64(s.config.MaxOutputBytes)) {
 		s.config.Metrics.CommandErrorsTotal.Add(1)
 		outcome := commandOutcome{exitCode: exitInternal}
 		s.respond(job, outcome, "sim_output_limit_exceeded", "fixture 输出超过 Runtime 限制")
@@ -473,7 +516,7 @@ var markerPattern = regexp.MustCompile(`(__HCI_DONE_[A-Za-z0-9_]+__)`)
 // controlledShell 只服务 Browser 初始连接和环境采集，不执行系统 shell。
 func (s *Server) controlledShell(ctx context.Context, channel ssh.Channel, claims lease.Claims) {
 	defer channel.Close()
-	_, _ = io.WriteString(channel, fmt.Sprintf("HCI-SIM KBD %s / scenario %s\r\nsim@hci-sim$ ", s.config.Router.KBD().SupportID, claims.ScenarioID))
+	_, _ = io.WriteString(channel, fmt.Sprintf("HCI-SIM KBD %s / scenario %s\r\nsim@hci-sim$ ", claims.SupportID, claims.ScenarioID))
 	scanner := bufio.NewScanner(channel)
 	scanner.Buffer(make([]byte, 4096), 256*1024)
 	for scanner.Scan() {

@@ -126,6 +126,8 @@ jobs:
           grep -F "$(cat /tmp/hci-sim-23821-digest)" ../deploy/helm/hci-sim/files/kbd-23821-synthetic-fixture-manifest.json
           grep -F '"support_id": "23821"' ../deploy/helm/hci-sim/files/kbd-23821-synthetic-fixture-manifest.json
           grep -F '"SYNTHETIC": "true"' ../deploy/helm/hci-sim/files/kbd-23821-synthetic-fixture-manifest.json
+          go run ./cmd/hci-sim manifest-digest --manifest ../deploy/helm/hci-sim/files/kbd-23821-fixture-manifest.json > /tmp/hci-sim-23821-published-digest
+          grep -F "$(cat /tmp/hci-sim-23821-published-digest)" ../deploy/helm/hci-sim/files/kbd-23821-fixture-manifest.json
       - name: reject retired runtime markers
         run: |
           test ! -e hci-sim
@@ -135,6 +137,10 @@ jobs:
         run: |
           helm lint deploy/helm/hci-sim
           helm template hci-sim deploy/helm/hci-sim --namespace hci-sim-dev > /tmp/hci-sim-rendered.yaml
+          grep -F 'checksum/fixture-bundles:' /tmp/hci-sim-rendered.yaml
+          grep -F 'HCI_SIM_REQUIRED_BUNDLES' /tmp/hci-sim-rendered.yaml
+          grep -F 'sha256:c1976465fa8b1fe5226e684c04be7b2415c4578785cbf1adb07793f3e74965af' /tmp/hci-sim-rendered.yaml
+          grep -F 'sha256:c3bc5ad3c5d45aaa275e5e26acf1aa8e88ea7d632c13edafa5d67e8ffe4c77c7' /tmp/hci-sim-rendered.yaml
           sed -n '/name: hci-sim-allow-required/,/^---$/p' /tmp/hci-sim-rendered.yaml > /tmp/hci-sim-network-policy.yaml
           grep -F 'app.kubernetes.io/name: postgres' /tmp/hci-sim-network-policy.yaml
           grep -F 'app.kubernetes.io/name: conversation-service' /tmp/hci-sim-network-policy.yaml

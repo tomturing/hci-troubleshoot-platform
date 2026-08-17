@@ -66,11 +66,31 @@ func serverManifest(t *testing.T) []byte {
 func testClaims(router *fixture.Router, now time.Time) lease.Claims {
 	return lease.Claims{
 		JTI: "jti-test", LeaseID: "lease-test", TestRunID: "run-test", ScenarioID: "scenario-27123",
-		SupportID: "27123", KBDRevision: 24, BundleDigest: router.BundleDigest(), FixtureVariant: "positive-realistic",
-		ToolContractRevision: "tool-r24", PolicyRevision: "policy-r2", VirtualNodeID: "SIM-NODE", Container: "host",
+		SupportID: router.KBD().SupportID, KBDRevision: router.KBD().Revision, BundleDigest: router.BundleDigest(), FixtureVariant: "positive-realistic",
+		ToolContractRevision: router.Contracts().ToolRevision, PolicyRevision: router.Contracts().PolicyRevision, VirtualNodeID: "SIM-NODE", Container: "host",
 		ExecutionMode: "sim-ssh", Issuer: "hci-platform", Audience: "hci-sim", IssuedAt: now.Unix(), NotBefore: now.Unix(),
 		ExpiresAt: now.Add(time.Hour).Unix(), RunDeadline: now.Add(time.Hour).Unix(), MaxSessions: 8, MaxCommands: 8, MaxOutputBytes: 4096,
 	}
+}
+
+func serverRouterFor(t *testing.T, supportID, stdout string) *fixture.Router {
+	t.Helper()
+	var manifest fixture.Manifest
+	if err := json.Unmarshal(serverManifest(t), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest.KBD.SupportID = supportID
+	manifest.Routes[0].Result.Stdout = stdout
+	manifest.Bundle.Digest = fixture.ComputeBundleDigest(manifest)
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := fixture.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return router
 }
 
 func TestSSHExecUsesLeaseFixtureAndFailsClosed(t *testing.T) {
@@ -161,5 +181,56 @@ func TestServerRejectsLeaseAfterExpiryOrRevocation(t *testing.T) {
 	srv.tracker.Revoke(claims.JTI, time.Now().Add(time.Hour))
 	if err := srv.tracker.AuthorizeCommand(claims, time.Now()); err == nil {
 		t.Fatal("revoke 后每命令复验必须拒绝")
+	}
+}
+
+func TestBundlePoolBindsLeaseToExactKBDContracts(t *testing.T) {
+	router27123 := serverRouterFor(t, "27123", "bundle=27123\n")
+	router23821 := serverRouterFor(t, "23821", "bundle=23821\n")
+	pool, err := fixture.NewBundlePool(router27123, router23821)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, privateKey, _ := ed25519.GenerateKey(rand.Reader)
+	signer, _ := ssh.NewSignerFromKey(privateKey)
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	srv, err := New(Config{ListenAddress: "127.0.0.1:0", HostSigner: signer, LeaseSecret: secret, Pool: pool, Workers: 1, QueueSize: 2, MaxOutputBytes: 4096, LeaseIssuer: "hci-platform", LeaseAudience: "hci-sim", Metrics: &metrics.Metrics{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = srv.Serve(ctx) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for srv.Addr() == "" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	claims := testClaims(router23821, time.Now())
+	token, err := lease.Sign(secret, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := ssh.Dial("tcp", srv.Addr(), &ssh.ClientConfig{User: "sim", Auth: []ssh.AuthMethod{ssh.Password(token)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := client.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := session.CombinedOutput("acli --formatter=json task get -k '启动虚拟机' -s failed -l 1")
+	_ = client.Close()
+	if err != nil || string(output) != "bundle=23821\n" {
+		t.Fatalf("23821 租约未路由到对应 Bundle: output=%q err=%v", output, err)
+	}
+
+	claims.BundleDigest = router27123.BundleDigest()
+	attackToken, err := lease.Sign(secret, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ssh.Dial("tcp", srv.Addr(), &ssh.ClientConfig{User: "sim", Auth: []ssh.AuthMethod{ssh.Password(attackToken)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 2 * time.Second}); err == nil {
+		t.Fatal("support_id 与 digest 交叉绑定的合法签名租约未被拒绝")
 	}
 }

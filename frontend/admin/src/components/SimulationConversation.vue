@@ -26,6 +26,11 @@ interface ChoiceOption {
   name: string
 }
 
+interface PendingNoneIntent {
+  messageId: string
+  option: ChoiceOption
+}
+
 const props = defineProps<{
   caseId: string
   testRunId: string
@@ -53,6 +58,8 @@ const agentOutcome = ref<'passed' | 'failed' | 'inconclusive'>('passed')
 const completionEmitted = ref(false)
 const pendingApproval = ref<{ execId: string; resolve: (approved: boolean) => void } | null>(null)
 const execWaiters = new Map<string, { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void; timer: number }>()
+const pendingNoneIntent = ref<PendingNoneIntent | null>(null)
+const noneSymptomText = ref('')
 
 const ready = computed(() => bridgeState.value === 'connected' && !!conversationId.value)
 
@@ -330,6 +337,11 @@ async function selectIntent(message: ConversationMessage, option: ChoiceOption) 
   if (message.status !== 'pending' || streaming.value) return
   const categoryMatch = option.name.match(/^([\u4e00-\u9fa5A-Za-z0-9-]+-\d+)\s+(.+)$/)
   const isNone = option.optionId === '__none__'
+  if (isNone) {
+    pendingNoneIntent.value = { messageId: message.id, option }
+    noneSymptomText.value = ''
+    return
+  }
   const categoryCode = !isNone && !/^\d+$/.test(option.optionId) ? option.optionId : categoryMatch?.[1]
   message.status = 'passed'
   message.detail = { ...message.detail, selectedOptionId: option.optionId }
@@ -339,6 +351,29 @@ async function selectIntent(message: ConversationMessage, option: ChoiceOption) 
     selectedCategoryCode: categoryCode,
     selectedCategoryName: categoryMatch?.[2],
     isNoneOfAbove: isNone,
+    sourceRequestId: message.detail?.requestId,
+  })
+}
+
+function cancelNoneIntent() {
+  pendingNoneIntent.value = null
+  noneSymptomText.value = ''
+}
+
+async function submitNoneIntent(message: ConversationMessage) {
+  const pending = pendingNoneIntent.value
+  const symptom = noneSymptomText.value.trim()
+  if (!pending || pending.messageId !== message.id || !symptom || message.status !== 'pending' || streaming.value) return
+
+  message.status = 'passed'
+  message.detail = { ...message.detail, selectedOptionId: pending.option.optionId }
+  pendingNoneIntent.value = null
+  noneSymptomText.value = ''
+  await sendMessage(`${pending.option.name} ${symptom}`, {
+    kind: 'intent_selection_response',
+    selectedOptionId: pending.option.optionId,
+    isNoneOfAbove: true,
+    freeText: symptom,
     sourceRequestId: message.detail?.requestId,
   })
 }
@@ -445,9 +480,23 @@ onBeforeUnmount(() => {
                 v-for="option in choiceOptions(message)"
                 :key="option.optionId"
                 :type="message.detail?.selectedOptionId === option.optionId ? 'primary' : 'default'"
-                :disabled="message.status !== 'pending' || streaming"
+                :disabled="message.status !== 'pending' || streaming || pendingNoneIntent?.messageId === message.id"
                 @click="selectIntent(message, option)"
               >{{ option.name }}</el-button>
+            </div>
+            <div v-if="pendingNoneIntent?.messageId === message.id" class="none-symptom-input">
+              <span>请补充具体症状</span>
+              <el-input
+                v-model="noneSymptomText"
+                type="textarea"
+                :rows="2"
+                placeholder="请输入具体症状描述..."
+                autofocus
+              />
+              <div class="none-symptom-actions">
+                <el-button size="small" @click="cancelNoneIntent">取消</el-button>
+                <el-button size="small" type="primary" :disabled="!noneSymptomText.trim() || streaming" @click="submitNoneIntent(message)">提交</el-button>
+              </div>
             </div>
           </div>
           <div v-else-if="message.kind === 'tool'" class="event-card">
@@ -480,6 +529,8 @@ onBeforeUnmount(() => {
 .interactive-card { display: grid; gap: 10px; padding: 12px; border: 1px solid #c6e2ff; border-radius: 6px; background: #ecf5ff; }
 .choice-options { display: flex; flex-wrap: wrap; gap: 8px; }
 .choice-options .el-button { height: auto; min-height: 34px; margin-left: 0; white-space: normal; text-align: left; }
+.none-symptom-input { display: grid; gap: 8px; color: #303133; font-size: 13px; }
+.none-symptom-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .composer { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 12px; padding: 14px 18px; border-top: 1px solid #ebeef5; background: #fff; }
 @media (max-width: 760px) { .conversation-header { align-items: flex-start; gap: 8px; flex-direction: column; }.message-list { padding: 16px 10px; }.message-body { max-width: 88%; }.composer { grid-template-columns: 1fr; } }
 </style>

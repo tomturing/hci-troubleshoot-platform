@@ -55,6 +55,19 @@ type RunRecord struct {
 	EnvironmentContext json.RawMessage
 }
 
+// PublishedBundleInput 是 GitOps 发布集合写入 Registry 元数据所需的冻结字段。
+type PublishedBundleInput struct {
+	SupportID        string
+	KBDRevision      int
+	Variant          string
+	Digest           string
+	SchemaVersion    string
+	ObjectURI        string
+	ObjectDigest     string
+	SizeBytes        int64
+	InputFingerprint string
+}
+
 type OutboxRecord struct {
 	ID            int64
 	RunExternalID string
@@ -116,22 +129,23 @@ func (r *RunRepository) Create(ctx context.Context, input RunInput) (RunRecord, 
 		INSERT INTO fixture.bundle
 			(id, scenario_id, revision, digest, schema_version, object_uri,
 			 object_digest, size_bytes, status, created_by)
-		VALUES ($1, $2, 1, $3, $4, $5, $6, $7, 'published', 'hci-sim-runtime')
+		VALUES ($1, $2, $8, $3, $4, $5, $6, $7, 'published', 'hci-sim-runtime')
 		ON CONFLICT (digest) DO NOTHING
 	`, bundleID, scenarioID, input.BundleDigest, input.BundleSchemaVersion,
-		input.BundleObjectURI, input.BundleObjectDigest, input.BundleSizeBytes); err != nil {
+		input.BundleObjectURI, input.BundleObjectDigest, input.BundleSizeBytes, input.KBDRevision); err != nil {
 		return RunRecord{}, fmt.Errorf("register hci_sim fixture bundle: %w", err)
 	}
 	var bundleMatches bool
 	if err := tx.QueryRow(ctx, `
 		SELECT EXISTS (
-			SELECT 1 FROM fixture.bundle
-			WHERE digest = $1 AND scenario_id = $2 AND schema_version = $3
-			  AND object_uri = $4 AND object_digest = $5 AND size_bytes = $6
-			  AND status = 'published'
+			SELECT 1 FROM fixture.bundle b
+			JOIN control_plane.scenario s ON s.id = b.scenario_id
+			WHERE b.digest = $1 AND b.schema_version = $2 AND b.status = 'published'
+			  AND s.support_id = $3 AND s.kbd_revision = $4
+			  AND s.variant = $5 AND s.input_fingerprint = $6
 		)
-	`, input.BundleDigest, scenarioID, input.BundleSchemaVersion, input.BundleObjectURI,
-		input.BundleObjectDigest, input.BundleSizeBytes).Scan(&bundleMatches); err != nil {
+	`, input.BundleDigest, input.BundleSchemaVersion, input.SupportID, input.KBDRevision,
+		input.Variant, input.InputFingerprint).Scan(&bundleMatches); err != nil {
 		return RunRecord{}, fmt.Errorf("verify hci_sim fixture bundle: %w", err)
 	}
 	if !bundleMatches {
@@ -165,6 +179,153 @@ func (r *RunRepository) Create(ctx context.Context, input RunInput) (RunRecord, 
 		return RunRecord{}, fmt.Errorf("commit hci_sim run: %w", err)
 	}
 	return record, nil
+}
+
+// SyncPublishedBundles 原子激活已通过 Runtime 完整校验的 GitOps 发布集合。
+// canonical digest 是内容身份；URI、原始 JSON 字节格式不参与同一 Bundle 的冲突判断。
+func (r *RunRepository) SyncPublishedBundles(ctx context.Context, bundles []PublishedBundleInput, actorID, traceID string) error {
+	if r == nil || r.pool == nil || len(bundles) == 0 || strings.TrimSpace(actorID) == "" || strings.TrimSpace(traceID) == "" || len(traceID) > 64 {
+		return errors.New("invalid published bundle sync input")
+	}
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin published bundle sync: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	seen := make(map[string]struct{}, len(bundles))
+	for _, bundle := range bundles {
+		if bundle.SupportID == "" || bundle.KBDRevision < 1 || bundle.Variant == "" || bundle.Digest == "" || bundle.SchemaVersion == "" || bundle.ObjectURI == "" || bundle.ObjectDigest == "" || bundle.SizeBytes < 1 || bundle.InputFingerprint == "" {
+			return errors.New("published bundle sync contains incomplete bundle")
+		}
+		if _, exists := seen[bundle.SupportID]; exists {
+			return fmt.Errorf("published bundle sync contains duplicate support_id %s", bundle.SupportID)
+		}
+		seen[bundle.SupportID] = struct{}{}
+		scenarioID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(bundle.InputFingerprint))
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO control_plane.scenario
+				(id, support_id, kbd_revision, variant, input_fingerprint, status)
+			VALUES ($1, $2, $3, $4, $5, 'published')
+			ON CONFLICT (input_fingerprint) DO UPDATE
+			SET status = 'published', updated_at = now()
+		`, scenarioID, bundle.SupportID, bundle.KBDRevision, bundle.Variant, bundle.InputFingerprint); err != nil {
+			return fmt.Errorf("upsert published bundle scenario: %w", err)
+		}
+		bundleID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(bundle.Digest))
+		inserted, err := tx.Exec(ctx, `
+			INSERT INTO fixture.bundle
+				(id, scenario_id, revision, digest, schema_version, object_uri,
+				 object_digest, size_bytes, status, created_by)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'published', $9)
+			ON CONFLICT (digest) DO NOTHING
+		`, bundleID, scenarioID, bundle.KBDRevision, bundle.Digest, bundle.SchemaVersion,
+			bundle.ObjectURI, bundle.ObjectDigest, bundle.SizeBytes, actorID)
+		if err != nil {
+			return fmt.Errorf("insert published bundle: %w", err)
+		}
+		var bundleMatches bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM fixture.bundle b
+				JOIN control_plane.scenario s ON s.id = b.scenario_id
+				WHERE b.digest = $1 AND b.schema_version = $2
+				  AND s.support_id = $3 AND s.kbd_revision = $4
+				  AND s.variant = $5 AND s.input_fingerprint = $6
+			)
+		`, bundle.Digest, bundle.SchemaVersion, bundle.SupportID, bundle.KBDRevision,
+			bundle.Variant, bundle.InputFingerprint).Scan(&bundleMatches); err != nil {
+			return fmt.Errorf("verify published bundle immutable identity: %w", err)
+		}
+		if !bundleMatches {
+			return fmt.Errorf("published bundle immutable identity conflict: digest=%s", bundle.Digest)
+		}
+		reactivated, err := tx.Exec(ctx, `
+			UPDATE fixture.bundle SET status = 'published', version = version + 1, updated_at = now()
+			WHERE digest = $1 AND status <> 'published'
+		`, bundle.Digest)
+		if err != nil {
+			return fmt.Errorf("reactivate published bundle: %w", err)
+		}
+		rows, err := tx.Query(ctx, `
+			UPDATE fixture.bundle b SET status = 'stale', version = b.version + 1, updated_at = now()
+			FROM control_plane.scenario s
+			WHERE b.scenario_id = s.id AND s.support_id = $1
+			  AND b.digest <> $2 AND b.status = 'published'
+			RETURNING b.id, b.scenario_id, b.digest
+		`, bundle.SupportID, bundle.Digest)
+		if err != nil {
+			return fmt.Errorf("mark previous bundle stale: %w", err)
+		}
+		type staleBundle struct {
+			id         uuid.UUID
+			scenarioID uuid.UUID
+			digest     string
+		}
+		staleBundles := make([]staleBundle, 0)
+		for rows.Next() {
+			var staleID uuid.UUID
+			var staleScenarioID uuid.UUID
+			var staleDigest string
+			if err := rows.Scan(&staleID, &staleScenarioID, &staleDigest); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan stale bundle: %w", err)
+			}
+			staleBundles = append(staleBundles, staleBundle{id: staleID, scenarioID: staleScenarioID, digest: staleDigest})
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("iterate stale bundles: %w", err)
+		}
+		rows.Close()
+		for _, stale := range staleBundles {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO audit.entity_event
+					(entity_type, entity_id, action, actor_id, trace_id, before_state, after_state)
+				VALUES ('fixture_bundle', $1, 'bundle.stale', $2, $3,
+				        jsonb_build_object('status', 'published', 'digest', $4::text),
+				        jsonb_build_object('status', 'stale', 'digest', $4::text))
+			`, stale.id, actorID, traceID, stale.digest); err != nil {
+				return fmt.Errorf("audit stale bundle: %w", err)
+			}
+			staledScenario, err := tx.Exec(ctx, `
+				UPDATE control_plane.scenario s
+				SET status = 'stale', updated_at = now()
+				WHERE s.id = $1 AND s.status = 'published'
+				  AND NOT EXISTS (
+					SELECT 1 FROM fixture.bundle b
+					WHERE b.scenario_id = s.id AND b.status = 'published'
+				  )
+			`, stale.scenarioID)
+			if err != nil {
+				return fmt.Errorf("mark previous scenario stale: %w", err)
+			}
+			if staledScenario.RowsAffected() == 1 {
+				if _, err := tx.Exec(ctx, `
+					INSERT INTO audit.entity_event
+						(entity_type, entity_id, action, actor_id, trace_id, before_state, after_state)
+					VALUES ('scenario', $1, 'scenario.stale', $2, $3,
+					        jsonb_build_object('status', 'published'),
+					        jsonb_build_object('status', 'stale'))
+				`, stale.scenarioID, actorID, traceID); err != nil {
+					return fmt.Errorf("audit stale scenario: %w", err)
+				}
+			}
+		}
+		if inserted.RowsAffected() == 1 || reactivated.RowsAffected() == 1 {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO audit.entity_event
+					(entity_type, entity_id, action, actor_id, trace_id, after_state)
+				VALUES ('fixture_bundle', $1, 'bundle.published', $2, $3,
+				        jsonb_build_object('status', 'published', 'digest', $4::text, 'support_id', $5::text))
+			`, bundleID, actorID, traceID, bundle.Digest, bundle.SupportID); err != nil {
+				return fmt.Errorf("audit published bundle: %w", err)
+			}
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit published bundle sync: %w", err)
+	}
+	return nil
 }
 
 func (r *RunRepository) Get(ctx context.Context, externalID string) (RunRecord, error) {

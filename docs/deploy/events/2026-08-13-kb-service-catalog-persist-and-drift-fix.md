@@ -40,6 +40,9 @@ agent-service 已升级到含 #745 的镜像，而 kb-service 镜像停留在 #7
 - `backend/shared/resolution/catalog.py` 支持环境变量覆盖路径：
   `ACLI_CATALOG_PATH` / `RESOLUTION_CATALOG_PATH` 设置时作为权威路径，否则回退镜像内置目录。
 - kb-service deployment 在 `persistence.enabled` 时注入上述两个环境变量指向 `/data/catalogs`。
+- agent-service 是 Shared Resolution Runtime 的实际执行者，必须以只读方式挂载同一 PVC，并注入相同的两个环境变量；否则页面接口与 QFK Runtime 会读取不同的 Catalog 副本，页面保存无法热生效到诊断执行。
+- Catalog 保存使用同目录临时文件加原子替换，确保共享挂载上的读者只能看到旧完整 JSON 或新完整 JSON，不能因 mtime 热加载读到半截文件。
+- `acli system qmpcmd` 已同步回 Git 内置 Catalog，保证 PVC 首次初始化、新环境部署和当前页面热修使用相同的命令基线。
 - `values.yaml` 新增 `kbService.persistence`（默认 `enabled: true`）。
 
 ### 3.2 版本漂移修复（触发 kb-service 重建）
@@ -56,6 +59,7 @@ agent-service 已升级到含 #745 的镜像，而 kb-service 镜像停留在 #7
 ## 4. 验证
 
 - `helm template` 渲染确认 PVC、initContainer、主容器挂载与 env 正确，且挂载点不在 `/app/shared/`。
+- Helm 单测覆盖 agent-service 在启用持久化时使用只读共享 PVC、关闭持久化时不引用该 PVC；kb-service 路由单测覆盖原子替换后无临时文件残留。
 - `pytest scripts/ci/test_resolve_image_build_plan.py` 通过（含 shared→全部后端服务的断言）。
 
 ## 5. 已知权衡
