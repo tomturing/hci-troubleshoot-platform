@@ -1,4 +1,4 @@
-h1:6BfeWeRQWA358aZ+7lCf7OEQqioMBff+RPVjA0rh5yc=
+h1:YGAs/cZPhaqd04hmyGLFSWJMxZx51YhO+Ki6bd4Hv4U=
 20260525000000_kbd_structured_sections.sql h1:HK5p3/VudQhI6ZupzyZ3PEt00fqqLt5ExEovpDym/jc=
 20260526000000_create_sop_execution.sql h1:qAmFaHEbjh9R4eRIjcMM4QLx6wPw/LCDwvPoxBRXHlQ=
 20260526100000_add_variable_schema_to_sop_document.sql h1:tJjimwpXh/VwAAP1zWChXMgkuzjiK8WV+W55JO7BY/w=
@@ -27,3 +27,6 @@ h1:6BfeWeRQWA358aZ+7lCf7OEQqioMBff+RPVjA0rh5yc=
 20260803000000_qfk_system_command_model.sql h1:wKDCF1VoCdLQbOkF1/7CwYaodVsorRSlpUWEKmwDgSo=
 20260803000001_add_kbd_revision_proposal_baseline.sql h1:q34ds3xXetY15+ryEb7wmC4OoI0kFr0WnCC3vFYSjnw=
 20260806000000_add_agent_test_control_plane.sql h1:f8FPRCulVQDOiI/Ey5lxjw/WzCzAkMCMXM1L6cwi970=
+20260806000001_add_agent_test_artifact_registry.sql h1:LCsM0yHwfm2WVZusoxijXbz/pbSUuVL96vUyYKRiyb4=
+20260813000000_drop_orphan_agent_test_tables.sql h1:aM2vWHVOeVkDnNQcNBe/bxU4Orn+NieyuCv3C4vW188=
+20260817000000_fix_p0p1_schema_defects.sql h1:6QymEyDrjo+AW0a03Ld0/AF6oACMvd7ByVK9l2j2MEY=
