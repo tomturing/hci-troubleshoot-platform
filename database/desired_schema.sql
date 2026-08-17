@@ -199,8 +199,7 @@ COMMENT ON COLUMN "case".trace_id IS '创建工单的请求 trace ID';
 -- 索引: case
 -- 用户工单查询
 CREATE INDEX IF NOT EXISTS idx_case_user_id ON "case" (user_id);
--- 客户端工单查询
-CREATE INDEX IF NOT EXISTS idx_case_client_id ON "case" (client_id);
+-- O-R01: idx_case_client_id 已移除（被复合索引 idx_case_client_status(client_id,status) 完全覆盖）
 -- 状态过滤
 CREATE INDEX IF NOT EXISTS idx_case_status ON "case" (status);
 -- 时间排序
@@ -1769,7 +1768,7 @@ COMMENT ON COLUMN message.tool_call_id IS 'role=tool_result 时填写，关联 r
 -- 会话消息查询
 CREATE INDEX IF NOT EXISTS idx_message_conversation_id ON message (conversation_id);
 -- 工单消息查询
-CREATE INDEX IF NOT EXISTS idx_message_case_id ON message (case_id);
+-- O-R02: idx_message_case_id 已移除（被复合索引 idx_message_case_created(case_id,created_at) 完全覆盖）
 -- 时间排序
 CREATE INDEX IF NOT EXISTS idx_message_created_at ON message (created_at DESC);
 -- 角色过滤
@@ -1849,11 +1848,16 @@ CREATE TABLE IF NOT EXISTS "authorization" (
     auth_id varchar(36) NOT NULL,
     exec_id varchar(36) NOT NULL,
     actor varchar(100) NOT NULL,
-    decision varchar(20) NOT NULL, -- approve/deny
+    decision varchar(20) NOT NULL,
     tool_input_hash varchar(64) NOT NULL,
     expires_at timestamptz,
     created_at timestamptz DEFAULT now(),
-    CONSTRAINT authorization_pkey PRIMARY KEY (auth_id)
+    -- P0-2 修复：补充缺失的安全审计字段
+    trace_id varchar(64),               -- 授权请求的 W3C traceparent，安全审计必须可追溯
+    updated_at timestamptz DEFAULT now(), -- 授权状态变更时间
+    CONSTRAINT authorization_pkey PRIMARY KEY (auth_id),
+    -- P0-2 修复：decision 只允许 approve/deny，防止非法值写入
+    CONSTRAINT chk_authorization_decision CHECK ((decision)::text = ANY ((ARRAY['approve'::character varying, 'deny'::character varying])::text[]))
 );
 
 COMMENT ON TABLE "authorization" IS '高危操作人工授权审计表 — 记录每次高危工具调用的人工确认结果';
@@ -1864,6 +1868,12 @@ COMMENT ON COLUMN "authorization".decision IS '授权决策：approve=批准执�
 COMMENT ON COLUMN "authorization".tool_input_hash IS '被授权工具调用输入参数的哈希值，防篡改校验';
 COMMENT ON COLUMN "authorization".expires_at IS '授权过期时间，超期未执行则失效';
 COMMENT ON COLUMN "authorization".created_at IS '授权创建时间';
+COMMENT ON COLUMN "authorization".trace_id IS 'P0-2 修复：授权创建请求的 W3C traceparent；高危授权必须可追溯到发起方';
+COMMENT ON COLUMN "authorization".updated_at IS 'P0-2 修复：授权记录最后更新时间';
+
+-- 索引：authorization
+CREATE INDEX IF NOT EXISTS idx_authorization_exec_id ON "authorization" (exec_id);
+CREATE INDEX IF NOT EXISTS idx_authorization_trace_id ON "authorization" (trace_id) WHERE trace_id IS NOT NULL;
 
 -- ------------------------------------------------------------
 -- 表: tool_result  [模块: conversation-service]
@@ -2323,7 +2333,8 @@ CREATE INDEX IF NOT EXISTS idx_kb_category_parent ON kb_category (parent_id);
 -- 层级过滤
 CREATE INDEX IF NOT EXISTS idx_kb_category_level ON kb_category (level);
 -- 关键词检索
-CREATE INDEX IF NOT EXISTS idx_kb_category_keywords ON kb_category USING GIN (keywords);
+-- O-R03: idx_kb_category_keywords 已移除（keywords 字段已废弃，GIN 索引是纯写入开销）
+-- keywords 字段本身保留用于历史数据兼容
 -- D-002: 向量相似度检索索引（S0 意图识别阶段语义匹配）
 -- IVFFlat lists=100：适合 ~200 个分类节点；当数据量超过 10000 时切换 HNSW
 -- ⚠️  注意：IVFFlat 索引需在数据量 > 1000 行且执行 ANALYZE 后才能正常发挥效果。
@@ -2389,7 +2400,7 @@ CREATE TABLE IF NOT EXISTS kbd_entry (
     -- 轻治理版本指针：历史 payload 存在 kbd_revision；本表继续作为主记录和兼容查询入口
     latest_proposal_revision_id bigint,
     working_revision_id bigint,
-    lock_version integer NOT NULL DEFAULT 0,
+    lock_version integer NOT NULL DEFAULT 1,  -- P1-1 修复：从 1 开始，与 collection_profile_definition 等乐观锁一致
     CONSTRAINT fk_kbd_entry_category_id FOREIGN KEY (category_id) REFERENCES kb_category (code) ON DELETE NO ACTION,
     CONSTRAINT kbd_entry_pkey PRIMARY KEY (id)
 );
@@ -3029,7 +3040,9 @@ CREATE TABLE IF NOT EXISTS fact (
     collected_at timestamptz,
     trace_id varchar(64),
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT fact_pkey PRIMARY KEY (id)
+    CONSTRAINT fact_pkey PRIMARY KEY (id),
+    -- P0-3 修复：添加 case 外键约束，防止证据链孤岛（工单删除时级联清理事实）
+    CONSTRAINT fk_fact_case_id FOREIGN KEY (case_id) REFERENCES "case" (case_id) ON DELETE CASCADE
 );
 
 COMMENT ON TABLE fact IS '事实表 — 存储大模型诊断推理过程中采集到的客观事实数据 (T4-3)';
@@ -3065,6 +3078,8 @@ CREATE TABLE IF NOT EXISTS claim_evidence_link (
     confidence numeric(4,3) NOT NULL DEFAULT 1.000,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_claim_evidence_link_fact_id FOREIGN KEY (fact_id) REFERENCES fact (id) ON DELETE CASCADE,
+    -- P0-4 修复：添加 case 外键约束，防止证据链悬空（工单删除时级联清理）
+    CONSTRAINT fk_claim_evidence_link_case_id FOREIGN KEY (case_id) REFERENCES "case" (case_id) ON DELETE CASCADE,
     CONSTRAINT claim_evidence_link_pkey PRIMARY KEY (id)
 );
 

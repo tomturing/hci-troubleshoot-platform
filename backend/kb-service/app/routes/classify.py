@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from typing import TYPE_CHECKING, Any
 
@@ -251,7 +252,14 @@ async def call_llm(prompt: str, *, prompt_revision: str = "") -> dict:
                     else (str(parse_error) if parse_error else ("分类结果为空" if not content else None))
                 ),
             )
-            logger.debug("classify LLM 响应长度=%d", len(content))
+            logger.info(
+                event="classify_llm_response",
+                model=LLM_MODEL,
+                finish_reason=finish_reason,
+                response_chars=len(content),
+                response_sha256=hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest(),
+                parsed=parsed_payload is not None,
+            )
     except Exception as e:
         KBD_LLM_REQUESTS_TOTAL.labels(
             operation="classify",
@@ -259,7 +267,13 @@ async def call_llm(prompt: str, *, prompt_revision: str = "") -> dict:
             status="error",
             finish_reason="transport_error",
         ).inc()
-        logger.error(f"LLM API 调用失败: {e}")
+        logger.exception(
+            event="classify_llm_failed",
+            error=e,
+            error_code="CLASSIFY_LLM_TRANSPORT_FAILED",
+            model=LLM_MODEL,
+            prompt_revision=prompt_revision,
+        )
         raise HTTPException(status_code=503, detail=f"LLM API 调用失败: {e}")
 
     # 防御：推理模型（glm-5.2 / deepseek-v4-flash）开启思维链时会先耗尽 token 预算，
@@ -267,9 +281,12 @@ async def call_llm(prompt: str, *, prompt_revision: str = "") -> dict:
     # 该分支在 try 之外，避免被上方 except Exception 吞掉后误报 503。
     if not content or finish_reason == "length":
         logger.error(
-            "classify LLM 未返回 JSON 正文: finish_reason=%s model=%s",
-            finish_reason,
-            LLM_MODEL,
+            event="classify_llm_incomplete",
+            error_code="CLASSIFY_LLM_INCOMPLETE",
+            finish_reason=finish_reason,
+            model=LLM_MODEL,
+            response_chars=len(content),
+            response_sha256=hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest(),
         )
         raise HTTPException(
             status_code=502,
@@ -281,8 +298,13 @@ async def call_llm(prompt: str, *, prompt_revision: str = "") -> dict:
             return parsed_payload
         return json.loads(content)
     except json.JSONDecodeError as e:
-        logger.error(f"LLM 响应 JSON 解析失败: {e}")
-        raise HTTPException(status_code=500, detail="LLM 响应格式错误")
+        logger.error(
+            event="classify_llm_json_invalid",
+            error_code="CLASSIFY_LLM_JSON_INVALID",
+            error=str(e),
+            model=LLM_MODEL,
+        )
+        raise HTTPException(status_code=502, detail="LLM 响应格式错误") from e
 
 
 def validate_category_id(category_id: str, valid_codes: set[str]) -> bool:
@@ -294,27 +316,65 @@ def parse_llm_response(llm_result: dict, valid_codes: set[str]) -> ClassifyRespo
     """解析 LLM 响应并构建 ClassifyResponse"""
     top3_raw = llm_result.get("top3", [])
 
-    if not top3_raw:
-        raise HTTPException(status_code=500, detail="LLM 未返回 top3 分类")
+    if not isinstance(top3_raw, list) or not top3_raw:
+        logger.error(
+            event="classify_response_rejected",
+            error_code=("CLASSIFY_TOP3_MISSING" if not top3_raw else "CLASSIFY_TOP3_INVALID_TYPE"),
+            candidate_count=(len(top3_raw) if isinstance(top3_raw, list) else None),
+            candidate_type=type(top3_raw).__name__,
+            valid_category_count=len(valid_codes),
+        )
+        raise HTTPException(status_code=502, detail="LLM 未返回合法的 top3 分类数组")
 
-    # 校验并过滤非法分类
-    top3_items = []
+    # 校验、去重并按置信度降序排列。模型输出不是事实来源，所有候选非法时必须
+    # fail closed，不能构造一个数据库不存在的“未分类-000”继续落库。
+    top3_items: list[Top3Item] = []
+    reasons: dict[str, str] = {}
+    invalid_count = 0
     for item in top3_raw:
-        category_id = item.get("category_id", "")
-        if validate_category_id(category_id, valid_codes):
-            top3_items.append(
-                Top3Item(
-                    category_id=category_id,
-                    label=item.get("label", ""),
-                    score=min(1.0, max(0.0, item.get("score", 0.0))),
-                )
+        if not isinstance(item, dict):
+            invalid_count += 1
+            continue
+        category_id = str(item.get("category_id") or "")
+        try:
+            raw_score = float(item.get("score", 0.0))
+        except (TypeError, ValueError):
+            invalid_count += 1
+            logger.warning(event="classify_candidate_invalid_score", category_id=category_id)
+            continue
+        if not math.isfinite(raw_score) or not validate_category_id(category_id, valid_codes):
+            invalid_count += 1
+            logger.warning(
+                event="classify_candidate_invalid",
+                category_id=category_id,
+                score_is_finite=math.isfinite(raw_score),
+                category_exists=validate_category_id(category_id, valid_codes),
             )
-        else:
-            logger.warning(f"LLM 返回非法分类编码: {category_id}")
+            continue
+        candidate = Top3Item(
+            category_id=category_id,
+            label=str(item.get("label") or ""),
+            score=min(1.0, max(0.0, raw_score)),
+        )
+        existing = next((entry for entry in top3_items if entry.category_id == category_id), None)
+        if existing is None:
+            top3_items.append(candidate)
+            reasons[category_id] = str(item.get("reason") or "")
+        elif candidate.score > existing.score:
+            top3_items[top3_items.index(existing)] = candidate
+            reasons[category_id] = str(item.get("reason") or "")
 
-    # 如果所有分类都被过滤，返回默认响应
+    top3_items.sort(key=lambda item: item.score, reverse=True)
+    top3_items = top3_items[:3]
     if not top3_items:
-        top3_items = [Top3Item(category_id="未分类-000", label="未分类", score=0.1)]
+        logger.error(
+            event="classify_response_rejected",
+            error_code="CLASSIFY_NO_VALID_CANDIDATE",
+            candidate_count=len(top3_raw),
+            invalid_count=invalid_count,
+            valid_category_count=len(valid_codes),
+        )
+        raise HTTPException(status_code=502, detail="LLM 未返回任何合法分类候选，已拒绝写入")
 
     # 取最高置信度作为推荐分类
     top1 = top3_items[0]
@@ -322,7 +382,17 @@ def parse_llm_response(llm_result: dict, valid_codes: set[str]) -> ClassifyRespo
     needs_review = confidence < CONFIDENCE_THRESHOLD
 
     # 合并所有理由（取第一项的理由）
-    reason = top3_raw[0].get("reason", "") if top3_raw else ""
+    reason = reasons.get(top1.category_id, "")
+
+    logger.info(
+        event="classify_response_accepted",
+        category_id=top1.category_id,
+        candidate_count=len(top3_raw),
+        valid_candidate_count=len(top3_items),
+        invalid_count=invalid_count,
+        confidence=confidence,
+        needs_review=needs_review,
+    )
 
     return ClassifyResponse(
         category_id=top1.category_id,

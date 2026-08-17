@@ -1,0 +1,64 @@
+<div class="mceNonEditable"><input value="*问题描述" />
+  <div><p>镜像分发失败。</p></div>
+</div>
+<div class="mceNonEditable"><input value="告警信息" />
+  <div>
+    <pre class="language-markup">告警一</pre>
+    <pre class="language-markup">告警二</pre>
+    <pre class="language-markup">告警三</pre>
+    <pre class="language-markup">告警四</pre>
+    <pre class="language-markup">告警五</pre>
+    <p><img src="/_static/32866-0.png" /></p>
+    <p><img src="/_static/32866-1.png" /></p>
+  </div>
+</div>
+<div class="mceNonEditable"><input value="有效排查步骤" />
+  <div>
+    <ol>
+      <li><p>确认任务失败。</p><ul><li>命令/路径：打开任务详情。</li></ul></li>
+      <li>
+        <p>检查 nerdctl 执行失败。</p>
+        <ul>
+          <li>命令/路径：查看日志。</li>
+          <li>判断依据：<pre class="language-markup">die_log: open3: exec of nerdctl failed
+[check_remote_host_is_docker] [remote host has no docker!]</pre></li>
+        </ul>
+        <p><img src="/_static/32866-2.png" /></p>
+      </li>
+      <li>
+        <p>检查远端拷贝失败。</p>
+        <ul>
+          <li>命令/路径：<pre class="language-bash">grep -nE "sfscp|command not found" logfile</pre></li>
+          <li>判断依据：<pre class="language-markup">[run_cmd(/sf/bin/sfscp ...)] [failed]
+command not found ... lost connection</pre></li>
+        </ul>
+        <p><img src="/_static/32866-3.png" /></p>
+      </li>
+      <li>
+        <p>检查函数调用路径。</p>
+        <ul><li>命令/路径：<pre class="language-bash">grep -n "check_remote_host_is_docker" ImageManager.pm</pre></li></ul>
+      </li>
+    </ol>
+  </div>
+</div>
+<div class="mceNonEditable"><input value="根因" />
+  <div><p>运行环境缺少 nerdctl 路径。</p></div>
+</div>
+<div class="mceNonEditable"><input value="*解决方案" />
+  <div>
+    <ol>
+      <li>进入容器。<pre class="language-bash">container_exec -n asv-c</pre></li>
+      <li>备份文件。<pre class="language-bash">cp -a ImageManager.pm ImageManager.pm.bak</pre></li>
+      <li>编辑文件。<pre class="language-bash">vi ImageManager.pm</pre></li>
+      <li>修改函数。<pre class="language-perl">sub check_remote_host_is_docker {
+    my $cmd = ["/usr/local//sf/container/bin/nerdctl"];
+}</pre><p><img src="/_static/32866-4.png" /></p></li>
+      <li>保存文件。</li>
+      <li>重新执行镜像分发。</li>
+    </ol>
+  </div>
+</div>
+<div class="mceNonEditable"><input value="操作影响范围" /><div><p>影响镜像分发。</p></div></div>
+<div class="mceNonEditable"><input value="是否是临时解决方案" /><div><p>是。</p></div></div>
+<div class="mceNonEditable"><input value="建议与总结" /><div><p>升级正式补丁。</p></div></div>
+<div class="mceNonEditable"><input value="排查内容" /><div><p>复查日志。</p></div></div>

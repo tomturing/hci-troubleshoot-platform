@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>hci-sim 仿真测试环境完整构造流程图</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  body { font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif; background: #0f172a; color: #e2e8f0; margin: 24px; }
+  h1 { font-size: 22px; } h2 { font-size: 18px; margin-top: 40px; border-bottom: 1px solid #334155; padding-bottom: 6px; }
+  .legend span { display: inline-block; margin-right: 18px; padding: 2px 10px; border-radius: 4px; color: #fff; font-size: 13px; }
+  .auto { background: #166534; } .manual { background: #92400e; } .missing { background: #7f1d1d; } .store { background: #1e3a8a; }
+  .mermaid { background: #fff; border-radius: 8px; padding: 12px; margin: 16px 0; }
+  .note { color: #94a3b8; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>hci-sim 仿真测试环境 · 完整构造流程（基于 2026-08-16 代码现状）</h1>
+<div class="legend">
+  <span class="auto">● 自动（已实现）</span>
+  <span class="manual">◐ 人工闸门 / 手工步骤</span>
+  <span class="missing">✖ 未实现（P0 缺口）</span>
+  <span class="store">🗄 数据落点</span>
+</div>
+<p class="note">数据来源：hci_sim/ 源码、backend/api-gateway、kb-service、docs/{solution,task,verify}/hci-sim、2026-08-11 P0-P1 全链路验证记录。需联网加载 Mermaid CDN。配套文档：<a href="hci-sim能力缺口对抗性审查与仿真环境构造流程.md" style="color:#60a5fa">hci-sim能力缺口对抗性审查与仿真环境构造流程.md</a>（含勘误记录：本图接口路径已按源码更正为 /v1/simulations/test-runs/{test_run_id}/context 与 /result）。</p>
+
+<h2>图 1 · 全景流程（环节 0–7，从 KBD 生产到结果证据）</h2>
+<div class="mermaid">
+flowchart TD
+    classDef auto fill:#166534,stroke:#22c55e,color:#fff
+    classDef manual fill:#92400e,stroke:#f59e0b,color:#fff
+    classDef missing fill:#7f1d1d,stroke:#ef4444,color:#fff
+    classDef store fill:#1e3a8a,stroke:#60a5fa,color:#fff
+
+    subgraph P0["环节 0 · 上游权威输入（KBD 生产）"]
+        direction TB
+        K1["① KBD 原始文档<br/>data-pipeline/kbd fetcher"]:::auto --> K2["② LLM 信号抽取<br/>extract_signals -> Signal v2 草案"]:::auto
+        K2 --> K3{"③ 人工审核 + 发布<br/>draft -> published"}:::manual
+        K3 --> G0["滞留为 draft<br/>dev 现状：126 条中 120 条未发布<br/>4 条 TOOL_CONTRACT_STALE"]:::manual
+        K3 -->|published| K4["dynamic_resource_active<br/>不可变快照 revision N"]:::auto
+        K5["Tool Registry<br/>active 修订"]:::auto -.校验每个 Signal 的工具.- K2
+    end
+
+    K4 --> C1{"环节 1 · C1 Capability 解析<br/>kb-service HciSimKbdResolver<br/>只读 active 快照，绝不推进编辑态"}:::auto
+    C1 -->|缺任一事实| CG["结构化 capability_gap：<br/>KBD_NOT_PUBLISHED / SIGNALS_MISSING /<br/>TOOL_ACTIVE_SNAPSHOT_MISSING / …<br/>fail-closed，流程终止"]:::auto
+    C1 -->|ready_for_artifact_binding<br/>dev 现状仅 2 条| B0{"环节 2 · Fixture Bundle 生产"}
+
+    subgraph P2["环节 2 · 两条路径"]
+        direction TB
+        B0 --> BA["路径 A · synthetic【已实现】<br/>bootstrap --kbd-id 编译<br/>SYNTHETIC=true，7 种变体<br/>仅供 C3 本地验收 / aCLI 适配器"]:::auto
+        B0 --> BB["路径 B · positive-realistic【P0 缺口】<br/>真实 Artifact->脱敏->四重扫描-><br/>Expert+Security 双角色审批->Compiler->Bundle Registry<br/>现状：controlplane 837 行为内存参考实现，未接线"]:::missing
+        BB --> BC["现实替代 · 手工路径<br/>手写 kbd-*.json 入 deploy/helm/hci-sim/files/<br/>values.yaml manifestFile + Argo 更新 image digest<br/>『新 KBD ≈ 一次应用发布』"]:::manual
+    end
+
+    BA --> R0
+    BC --> R0["环节 3 · Runtime 部署与加载（hci-sim-dev 单副本 pod）<br/>HCI_SIM_FIXTURE_MANIFEST -> fixture.Parse：<br/>digest / 未知字段 / RouteKey 歧义校验 -> Router（单 KBD 世界）<br/>Lease HMAC key ≥32B · host key Secret · 独立库 fail-closed"]:::auto
+
+    R0 --> U1["环节 4 · Admin UI「仿真测试」面板输入 KBD ID<br/>GET capabilities/{kbd_id}（api-gateway 注入控制面 token）"]:::auto
+    U1 --> U2{"POST /v1/simulations/build 三道闸门<br/>① kbd_id == 已加载 manifest 的 KBD？<br/>② authority_scope ≠ runtime_fixture 且非 synthetic？<br/>③ active revision 与 manifest revision 一致？"}:::auto
+    U2 -->|任一不过| U2G["409 + capability_gap[]<br/>注意：Helm 默认 authorityScope=runtime_fixture<br/>本身即阻断 build；dev 靠手工覆盖 dev_golden 放行"]:::auto
+    U2 -->|全过| U3["同事务持久化 + 签约：<br/>scenario（UUID=SHA1(input_fingerprint)）+ fixture.bundle + run（幂等键）<br/>lease.Sign：htp2，15min，绑定 Run/Bundle/KBD/node/container"]:::auto
+    U3 --> U4[("PostgreSQL 独立库 hci_sim<br/>16 表 / 4 schema")]:::store
+    U3 --> U5["响应：test_run_id + connection{host,port,username=sim,lease token}<br/>+ environment_context（simulation/execution_mode=sim-ssh/…）"]:::auto
+
+    U5 --> T1["环节 5 · TestRun 绑定平台上下文<br/>用户填写 title / description（唯一必填人工字段）"]:::manual
+    T1 --> T2["api-gateway 先创建真实 Case（Q…；重试带 case_id 复用）<br/>-> Runtime 校验 sim-ssh 显式绑定 -> BindCase（不可变）<br/>-> status CAS：requested -> preparing"]:::auto
+    T2 --> T3["前端创建 Conversation（?case_id=…）<br/>conversation-service 回取 Runtime 权威 context<br/>-> Agent 获得 sim-ssh 权威上下文"]:::auto
+
+    T3 --> E1["环节 6 · 执行（真实闭环）<br/>前端 connectBridge -> WebSocket /terminal-bridge<br/>-> SSH :2222（auth_type=lease, execution_mode=sim-ssh）"]:::auto
+    E1 --> E2["Agent 诊断 -> recommended_command 命令卡片<br/>risk=1 自动执行 · risk=2 人工点「允许执行」 · risk=3 自动阻止"]:::manual
+    E2 --> E3["每条命令：lease 复验 -> Lex（禁 shell 操作符）<br/>-> NormalizeArgv -> RouteKey 精确匹配（未命中->fixture_not_found）<br/>-> 确定性 Result + fault（none/nonzero/permission/timeout/disconnect/truncate）"]:::auto
+    E3 --> E4[("run_event（带 trace_id）")]:::store
+    E3 --> E5["命令卡片 passed / failed<br/>会话级 agentOutcome（exit_code≠0 -> failed）"]:::auto
+
+    E5 --> Z1["环节 7 · 结果与证据<br/>POST result（api-gateway 规范化 report_summary 并计算 report_digest）<br/>-> run_result（CAS 幂等）-> run_outbox -> reconciler 投递 webhook"]:::auto
+    Z1 --> Z2[("control_plane.run / run_result / run_event<br/>+ capability-matrix.sh CI 门禁")]:::store
+</div>
+
+<h2>图 2 · 服务组件与数据流（构建后的运行时拓扑）</h2>
+<div class="mermaid">
+flowchart LR
+    classDef svc fill:#1e3a8a,stroke:#60a5fa,color:#fff
+    classDef sim fill:#166534,stroke:#22c55e,color:#fff
+    classDef store fill:#334155,stroke:#94a3b8,color:#fff
+
+    UI["Admin UI<br/>SimulationConversation.vue"]:::svc -->|"/api/hci-sim/*（注入控制面 token）"| GW["api-gateway"]:::svc
+    GW -->|"/v1/simulations/capabilities · build · test-runs · result"| RT["hci-sim Runtime<br/>HTTP 控制面"]:::sim
+    GW -->|"POST /api/cases（建/复用真实工单）"| CS["case-service"]:::svc
+    UI -->|"POST /api/conversations?case_id"| CV["conversation-service"]:::svc
+    CV -->|"GET /v1/simulations/test-runs/{test_run_id}/context（权威 context）"| RT
+    CV --> AG["Agent<br/>sim-ssh 权威 context"]:::svc
+    UI -->|"WebSocket /terminal-bridge"| BR["terminal_bridge（K3s）<br/>不解析 lease，只透传"]:::svc
+    BR -->|"SSH :2222 username=sim password=lease"| SSH["hci-sim Runtime<br/>SSH 数据面 · Router 精确路由"]:::sim
+    RT --> DB[("PostgreSQL 独立库 hci_sim<br/>16 表 4 schema")]:::store
+    SSH --> DB
+    RT -->|"reconciler: run_outbox -> webhook"| EXT["下游消费方"]:::store
+    RT -.->|"bootstrap --kbd-id（C1 快照）"| KB["kb-service<br/>C1 Capability 解析"]:::svc
+    KB --> MAIN[("主库：KBD / Signal / Tool Registry")]:::store
+    AG --> BR
+</div>
+
+<h2>图 3 · 环境构建时序（环节 4–7 的交互细节）</h2>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant UI as Admin UI
+    participant GW as api-gateway
+    participant CS as case-service
+    participant CV as conversation-service
+    participant RT as hci-sim Runtime
+    participant DB as hci_sim 库
+    participant BR as terminal_bridge
+    participant AG as Agent
+
+    Note over UI,RT: 环节 4 · 环境构建（build）
+    UI->>GW: GET /api/hci-sim/v1/simulations/capabilities/{kbd_id}
+    GW->>RT: GET（Bearer 控制面 token）
+    RT-->>UI: buildable + capability_gap[]
+    UI->>GW: POST /api/hci-sim/v1/simulations/build {kbd_id}
+    GW->>RT: POST（透传 Idempotency-Key）
+    Note over RT: 三道闸门：KBD 匹配 / authority_scope / revision
+    RT->>DB: 同事务 upsert scenario + bundle + create run
+    Note over RT: lease.Sign（htp2，15min，MaxSessions=4 / MaxCommands=200）
+    RT->>DB: RecordLease + AppendEvent(lease.created)
+    RT-->>UI: test_run_id + connection + environment_context
+
+    Note over UI,AG: 环节 5 · TestRun 绑定平台上下文
+    UI->>GW: POST /api/hci-sim/v1/simulations/test-runs {title, description}（人工填写）
+    GW->>CS: POST /api/cases（重试带 case_id 复用）
+    CS-->>GW: case_id（Q…）
+    GW->>RT: POST /v1/simulations/test-runs（case_id 绑定）
+    RT->>DB: BindCase（不可变）+ CAS requested->preparing + 事件
+    UI->>CV: POST /api/conversations?case_id=…
+    CV->>RT: GET /v1/simulations/test-runs/{test_run_id}/context（回取权威 context）
+    CV-->>AG: sim-ssh 权威 context
+
+    Note over UI,AG: 环节 6 · 执行（真实闭环）
+    UI->>BR: WebSocket /terminal-bridge
+    BR->>RT: SSH :2222（auth_type=lease）
+    loop 每条 recommended_command
+        AG->>BR: 命令卡片执行（risk=2 需点「允许执行」）
+        BR->>RT: exec
+        Note over RT: lease 复验 -> Lex/NormalizeArgv -> RouteKey 精确匹配 -> 确定性 Result
+        RT->>DB: AppendEvent（exec 事件，trace_id）
+        RT-->>UI: 命令卡片 passed/failed
+    end
+    AG-->>UI: agentOutcome（exit_code≠0 -> failed）
+
+    Note over UI,DB: 环节 7 · 结果与证据
+    UI->>GW: POST /api/hci-sim/v1/simulations/test-runs/{test_run_id}/result（report_summary）
+    Note over GW: 规范化 report_summary 并计算 report_digest
+    GW->>RT: POST result（digest）
+    RT->>DB: RecordResult（CAS）-> run_outbox
+    DB-->>RT: reconciler 投递 webhook
+</div>
+</body>
+</html>

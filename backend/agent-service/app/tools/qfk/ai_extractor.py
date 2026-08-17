@@ -8,12 +8,17 @@ AI 只能从确定性 Extract 已选择的完整物理行中摘取已有字面�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
+from shared.observability.logger import get_logger
 from shared.signals.extractor import ExtractionResult, QFKExtractionError, extract_output_values
+
+logger = get_logger("qfk-ai-extractor")
 
 MAX_AI_EXTRACT_INPUT_BYTES = 64 * 1024
 MAX_AI_EXTRACT_LINES = 200
@@ -29,6 +34,8 @@ class AIExtractionResult:
     evidence_lines: list[str]
     candidate_count: int
     instruction: str
+    response_hash: str | None = None
+    response_chars: int = 0
 
 
 def has_ai_extract(spec: Any) -> bool:
@@ -195,7 +202,7 @@ def _assert_grounded(raw_value: Any, evidence_lines: list[str]) -> None:
             )
 
 
-async def extract_ai_value(
+async def _extract_ai_value_impl(
     output: str,
     spec: dict[str, Any],
     value_type: str,
@@ -272,6 +279,7 @@ async def extract_ai_value(
     raw_value = payload.get("value")
     value = _cast_grounded_value(raw_value, value_type)
     _assert_grounded(raw_value, evidence_lines)
+    raw_response = str(getattr(response, "content", "") or "")
     return AIExtractionResult(
         value=value,
         raw_value=payload.get("value"),
@@ -279,4 +287,74 @@ async def extract_ai_value(
         evidence_lines=evidence_lines,
         candidate_count=len(lines),
         instruction=instruction,
+        response_hash=hashlib.sha256(raw_response.encode("utf-8", errors="replace")).hexdigest(),
+        response_chars=len(raw_response),
     )
+
+
+async def extract_ai_value(
+    output: str,
+    spec: dict[str, Any],
+    value_type: str,
+    ai_client: Any,
+    *,
+    matcher: dict[str, Any] | None = None,
+    conversation_id: str = "",
+    case_id: str = "",
+) -> AIExtractionResult:
+    """带结构化审计事件的 AI 提取入口。"""
+
+    started = time.perf_counter()
+    matcher_type = matcher.get("type") if isinstance(matcher, dict) else None
+    common_fields = {
+        "conversation_id": conversation_id or None,
+        "case_id": case_id or None,
+        "value_type": value_type,
+        "matcher_type": matcher_type,
+        "output_bytes": len(output.encode("utf-8", errors="replace")),
+    }
+    logger.info(event="qfk_ai_extract_started", **common_fields)
+    try:
+        result = await _extract_ai_value_impl(
+            output,
+            spec,
+            value_type,
+            ai_client,
+            matcher=matcher,
+            conversation_id=conversation_id,
+            case_id=case_id,
+        )
+    except QFKExtractionError as exc:
+        duration = time.perf_counter() - started
+        logger.warning(
+            event="qfk_ai_extract_failed",
+            error_code=exc.code,
+            error_message=str(exc),
+            duration_ms=round(duration * 1000, 3),
+            **common_fields,
+        )
+        raise
+    except Exception as exc:
+        duration = time.perf_counter() - started
+        logger.exception(
+            event="qfk_ai_extract_failed",
+            error=exc,
+            error_code="QFK_AI_EXTRACT_UNHANDLED",
+            duration_ms=round(duration * 1000, 3),
+            **common_fields,
+        )
+        raise
+
+    duration = time.perf_counter() - started
+    logger.info(
+        event="qfk_ai_extract_finished",
+        status="succeeded",
+        candidate_count=result.candidate_count,
+        evidence_line_numbers=result.evidence_line_numbers,
+        evidence_line_count=len(result.evidence_lines),
+        response_chars=result.response_chars,
+        response_hash=result.response_hash,
+        duration_ms=round(duration * 1000, 3),
+        **common_fields,
+    )
+    return result
