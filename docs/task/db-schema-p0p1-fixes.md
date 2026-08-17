@@ -58,7 +58,9 @@
 |------|--------|--------|
 | `lock_version DEFAULT` | `0` | `1`（与 `collection_profile_definition` 等一致） |
 | `lock_version CHECK` | 无 | `CHECK (lock_version >= 1)` |
+| `ORM Model 默认值` | `default=0` | `default=1` (`backend/kb-service/app/models/kbd_entry.py`) |
 | 存量数据 | `lock_version = 0` 的记录 | `UPDATE SET lock_version = 1 WHERE lock_version = 0` |
+| 集成测试对齐 | 硬编码 `lock_version=0` | 同步更新为 `1` (`test_kbd_diagnosis_samples_postgres.py`、`test_kbd_sync.py`) |
 
 ---
 

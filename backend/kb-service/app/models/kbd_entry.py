@@ -211,7 +211,7 @@ class KbdEntry(Base):
     # 历史 payload 存入 append-only kbd_revision；本表继续是 Admin/检索兼容主记录。
     latest_proposal_revision_id = Column(BigInteger, nullable=True)
     working_revision_id = Column(BigInteger, nullable=True)
-    lock_version = Column(Integer, nullable=False, default=0)
+    lock_version = Column(Integer, nullable=False, default=1)  # P1-1 修复：从 1 开始，与数据库 DEFAULT 1 对齐
 
     # ── 时间戳 ───────────────────────────────────────────────────────────────
     created_at = Column(

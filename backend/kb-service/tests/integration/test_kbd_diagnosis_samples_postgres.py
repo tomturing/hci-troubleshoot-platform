@@ -199,7 +199,7 @@ async def test_five_samples_batch_approve_and_publish_immutable_revisions():
         request_snapshot = {
             "reviewer_id": 95394,
             "review_note": "五篇在线/离线诊断样例自动回归",
-            "entries": {str(kbd_id): {"lock_version": 0, "category_id": category_id} for kbd_id in inserted},
+            "entries": {str(kbd_id): {"lock_version": 1, "category_id": category_id} for kbd_id in inserted},
         }
         batch_id = await admin._create_batch_job(
             list(inserted),
