@@ -5,13 +5,17 @@ QFK 后端信号谓词匹配引擎
 
 from __future__ import annotations
 
+import hashlib
 import posixpath
+import re
 import shlex
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from shared.observability.langfuse import observe_tool
 from shared.observability.logger import get_logger
+from shared.observability.metrics import QFK_EXECUTION_DURATION_SECONDS, QFK_EXECUTIONS_TOTAL
 from shared.observability.otel import get_current_trace_id
 from shared.signals.extractor import QFKExtractionError
 from shared.signals.matcher import evaluate_matcher
@@ -76,6 +80,7 @@ class QFKResult:
     evidence: str  # 诊断评估执行的完整证据链（由 handler 生成）
     error: str | None = None  # 异常报错信息描述
     exec_ids: list[str] = field(default_factory=list)  # 追踪流流水号记录
+    artifact_ids: list[str] = field(default_factory=list)  # 完整输出产物标识
     raw_output: str = ""  # 未混入 matcher 目标文本的现场原始输出
     complete_outputs: dict[str, str] = field(default_factory=dict)  # 产出变量使用的完整物理流
     ai_value: Any | None = None  # 命中后由受控 AI 从完整候选日志提取的值
@@ -84,6 +89,7 @@ class QFKResult:
     output_mode: str = "match"  # match / produce
     business_output_available: bool = False
     resolution: dict[str, Any] = field(default_factory=dict)
+    evidence_line_numbers: list[int] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """兼容既有构造点，同时保证执行失败不会冒充业务 False。"""
@@ -145,7 +151,7 @@ def qfk_load(signal_json: dict[str, Any] | str) -> BackendSignal:
     return BackendSignal.from_dict(signal_json)
 
 
-async def qfk_exec(
+async def _qfk_exec_impl(
     signal: BackendSignal,
     *,
     conversation_id: str,
@@ -199,6 +205,7 @@ async def qfk_exec(
         resolution = acquisition.model_dump(mode="json")
     except Exception as e:
         logger.warning(event="qfk_resolution_failed", namespace=signal.namespace, error=str(e))
+        resolution_error_code = "QFK_RESOLUTION_BLOCKED" if "QFK_RESOLUTION_BLOCKED" in str(e) else "QFK_RESOLUTION_FAILED"
         return QFKResult(
             matched=False,
             namespace=signal.namespace,
@@ -207,7 +214,7 @@ async def qfk_exec(
             match_mode=signal.match_mode,
             matched_keywords=[],
             evidence="",
-            error=f"QFK Shared Resolution Runtime 解析失败: {e}",
+            error=f"{resolution_error_code}: Shared Resolution Runtime 解析失败: {e}",
             output_mode=execution_mode,
         )
 
@@ -231,7 +238,7 @@ async def qfk_exec(
             match_mode=signal.match_mode,
             matched_keywords=[],
             evidence="",
-            error=f"QFK 信号解析与命令构建失败: {e}",
+            error=f"QFK_HANDLER_SETUP_FAILED: QFK 信号解析与命令构建失败: {e}",
             output_mode=execution_mode,
             resolution=resolution,
         )
@@ -239,8 +246,10 @@ async def qfk_exec(
     logger.info(
         event="qfk_engine_executing",
         namespace=signal.namespace,
-        commands=commands,
-        keywords=signal.keyword,
+        command_count=len(commands),
+        commands_sha256=_sha256_text("\n".join(commands)),
+        keyword_count=len(signal.keyword),
+        keywords_sha256=_sha256_text("\n".join(signal.keyword)),
         match_mode=signal.match_mode,
         node_ip=node_ip,
         conversation_id=conversation_id,
@@ -262,7 +271,8 @@ async def qfk_exec(
             matched_keywords=[],
             evidence="",
             error=(
-                "诊断服务端 BridgeRelayExecutor 全局实例未注入（agent-service 启动流程未完成 set_executor 注册），"
+                "QFK_EXECUTOR_UNAVAILABLE: 诊断服务端 BridgeRelayExecutor 全局实例未注入"
+                "（agent-service 启动流程未完成 set_executor 注册），"
                 "并非终端桥未启动。请检查 agent-service 启动日志（bridge_relay_executor_registered 事件），"
                 "确认 REDIS_URL / CONVERSATION_SERVICE_URL / INTERNAL_API_TOKEN 均已就绪后重启 agent-service。"
             ),
@@ -284,6 +294,7 @@ async def qfk_exec(
 
     results = []
     exec_ids = []
+    artifact_ids = []
     for cmd in commands:
         try:
             tool_args = {
@@ -317,6 +328,10 @@ async def qfk_exec(
                 )
                 if observation:
                     observation.update(output=exec_result_observation(exec_res))
+            if exec_res.exec_id:
+                exec_ids.append(exec_res.exec_id)
+            if exec_res.artifact_id:
+                artifact_ids.append(exec_res.artifact_id)
             # 让命令"在桥上跑过但未真正落到主机"的失败显式化：不进入 evaluate，直接判失败。
             combined = f"{exec_res.stdout or ''}\n{exec_res.stderr or ''}"
             is_terminal_failure = (exec_res.exit_code not in (0, None)) and any(
@@ -337,7 +352,8 @@ async def qfk_exec(
                         if not case_id
                         else "case_id 已携带仍 session_missing：SSH 会话未建立或已断开"
                     ),
-                    preview=combined[:200],
+                    output_bytes=len(combined.encode("utf-8", errors="replace")),
+                    output_sha256=_sha256_text(combined),
                 )
                 return QFKResult(
                     matched=False,
@@ -348,21 +364,21 @@ async def qfk_exec(
                     matched_keywords=[],
                     evidence=f"命令未在 HCI 主机执行（终端桥返回失败）: {combined.strip()[:500]}",
                     error=(
-                        "命令执行失败：终端会话缺失或桥未运行，未获得真实主机输出，"
+                        "QFK_TERMINAL_FAILURE: 命令执行失败：终端会话缺失或桥未运行，未获得真实主机输出，"
                         "无法判定信号。请先通过 Custom-UI 建立 SSH 连接（ssh_connect）后再触发诊断。"
                     ),
                     exec_ids=exec_ids,
+                    artifact_ids=artifact_ids,
                     output_mode=execution_mode,
                     resolution=resolution,
                 )
             results.append(exec_res)
-            if exec_res.exec_id:
-                exec_ids.append(exec_res.exec_id)
         except Exception as exec_err:
             logger.error(
                 event="qfk_bridge_execution_exception",
-                command=cmd,
-                error=str(exec_err),
+                command_chars=len(cmd),
+                command_sha256=_sha256_text(cmd),
+                error=f"QFK_BRIDGE_EXECUTION_FAILED: {exec_err}",
             )
             return QFKResult(
                 matched=False,
@@ -372,8 +388,9 @@ async def qfk_exec(
                 match_mode=signal.match_mode,
                 matched_keywords=[],
                 evidence=f"在通过 Bridge 执行命令 [{cmd}] 时抛出底层异常: {exec_err}",
-                error=str(exec_err),
+                error=f"QFK_BRIDGE_EXECUTION_FAILED: {exec_err}",
                 exec_ids=exec_ids,
+                artifact_ids=artifact_ids,
                 output_mode=execution_mode,
                 resolution=resolution,
             )
@@ -393,6 +410,7 @@ async def qfk_exec(
             evidence=combined[:800],
             error=f"QFK_COMMAND_FAILED: 命令退出码为 {failed.exit_code}，不执行判定或变量写入",
             exec_ids=exec_ids,
+            artifact_ids=artifact_ids,
             raw_output=combined,
             output_mode=execution_mode,
             resolution=resolution,
@@ -420,6 +438,7 @@ async def qfk_exec(
                 evidence="",
                 error=str(exc),
                 exec_ids=exec_ids,
+                artifact_ids=artifact_ids,
                 raw_output="\n".join(result.stdout or "" for result in results),
                 output_mode=execution_mode,
                 resolution=resolution,
@@ -442,6 +461,7 @@ async def qfk_exec(
                 evidence="",
                 error="QFK_PRODUCER_MATCH_CONFLICT: 产出变量模式不得同时配置 matcher",
                 exec_ids=exec_ids,
+                artifact_ids=artifact_ids,
                 raw_output=combined_output,
                 complete_outputs=complete_outputs,
                 output_mode=execution_mode,
@@ -456,6 +476,7 @@ async def qfk_exec(
             matched_keywords=[],
             evidence="QFK 命令执行成功，完整输出已交由产出变量规则处理",
             exec_ids=exec_ids,
+            artifact_ids=artifact_ids,
             raw_output=combined_output,
             complete_outputs=complete_outputs,
             output_mode="produce",
@@ -465,6 +486,7 @@ async def qfk_exec(
 
     # 6. match 模式的所有 QFK 判定均依赖新版 matcher.extract。
     evaluated_output, excluded_probe_lines = _exclude_probe_self_observation(combined_output, commands)
+    evidence_line_numbers: list[int] = []
     if signal.matcher:
         matcher_input = evaluated_output
         matcher_extract = signal.matcher.get("extract")
@@ -481,6 +503,7 @@ async def qfk_exec(
                     evidence="",
                     error=f"QFK_EXTRACT_INVALID_SPEC: 未取得完整 {source} 输出",
                     exec_ids=exec_ids,
+                    artifact_ids=artifact_ids,
                     raw_output=combined_output,
                     complete_outputs=complete_outputs,
                     output_mode=execution_mode,
@@ -509,6 +532,7 @@ async def qfk_exec(
                     conversation_id=conversation_id,
                     case_id=case_id or "",
                 )
+                evidence_line_numbers = ai_result.evidence_line_numbers
             except QFKExtractionError as exc:
                 return QFKResult(
                     matched=False,
@@ -520,9 +544,11 @@ async def qfk_exec(
                     evidence="",
                     error=str(exc),
                     exec_ids=exec_ids,
+                    artifact_ids=artifact_ids,
                     raw_output=combined_output,
                     complete_outputs=complete_outputs,
                     output_mode=execution_mode,
+                    resolution=resolution,
                 )
             precomputed_values = (
                 [float(ai_result.value)] if ai_matcher_type == "number" else [float(item) for item in ai_result.value]
@@ -559,6 +585,7 @@ async def qfk_exec(
                 evidence=matcher_result.evidence,
                 error="QFK_MATCHER_INCONCLUSIVE: 现场输出不足以完成确定性判定",
                 exec_ids=exec_ids,
+                artifact_ids=artifact_ids,
                 raw_output=combined_output,
                 complete_outputs=complete_outputs,
                 output_mode=execution_mode,
@@ -581,6 +608,7 @@ async def qfk_exec(
                     conversation_id=conversation_id,
                     case_id=case_id or "",
                 )
+                evidence_line_numbers = ai_result.evidence_line_numbers
             except QFKExtractionError as exc:
                 return QFKResult(
                     matched=False,
@@ -592,6 +620,7 @@ async def qfk_exec(
                     evidence=evidence,
                     error=str(exc),
                     exec_ids=exec_ids,
+                    artifact_ids=artifact_ids,
                     raw_output=combined_output,
                     complete_outputs=complete_outputs,
                     output_mode=execution_mode,
@@ -616,7 +645,6 @@ async def qfk_exec(
                 f"path={signal.path or '(acli default)'}, self_observation_excluded={excluded_probe_lines}\n"
                 f"{evidence}"
             )
-        matched = bool(matcher_result.detail.get("hit", final_matched))
     else:
         return QFKResult(
             matched=False,
@@ -628,20 +656,12 @@ async def qfk_exec(
             evidence="",
             error="QFK_MATCHER_MISSING: QFK 判定必须配置新版 match.extract",
             exec_ids=exec_ids,
+            artifact_ids=artifact_ids,
             raw_output=combined_output,
             complete_outputs=complete_outputs,
             output_mode=execution_mode,
             resolution=resolution,
         )
-
-    # 7. 最终布尔判定
-    logger.info(
-        event="qfk_engine_finished",
-        namespace=signal.namespace,
-        raw_matched=matched,
-        final_matched=final_matched,
-        matched_keywords=matched_kws,
-    )
 
     return QFKResult(
         matched=final_matched,
@@ -652,6 +672,7 @@ async def qfk_exec(
         matched_keywords=matched_kws,
         evidence=evidence,
         exec_ids=exec_ids,
+        artifact_ids=artifact_ids,
         raw_output=combined_output,
         complete_outputs=complete_outputs,
         ai_value=ai_value,
@@ -660,4 +681,150 @@ async def qfk_exec(
         output_mode="match",
         business_output_available=True,
         resolution=resolution,
+        evidence_line_numbers=evidence_line_numbers,
     )
+
+
+def _qfk_error_code(error: str | None) -> str:
+    """从受控错误前缀提取低基数错误码。"""
+
+    if not error:
+        return "NONE"
+    matched = re.search(r"\bQFK_[A-Z0-9_]+\b", error)
+    return matched.group(0)[:80] if matched else "QFK_UNCLASSIFIED"
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _record_qfk_metrics(*, namespace: str, mode: str, status: str, error_code: str, duration: float) -> None:
+    """指标不可用时只降级日志，不能替换真实诊断结果。"""
+
+    metric_mode = mode if mode in {"match", "produce"} else "invalid"
+    try:
+        QFK_EXECUTIONS_TOTAL.labels(
+            namespace=namespace,
+            mode=metric_mode,
+            status=status,
+            error_code=error_code,
+        ).inc()
+        QFK_EXECUTION_DURATION_SECONDS.labels(
+            namespace=namespace,
+            mode=metric_mode,
+            status=status,
+        ).observe(duration)
+    except Exception as exc:
+        logger.warning(
+            event="qfk_metrics_record_failed",
+            error_code="QFK_METRICS_RECORD_FAILED",
+            error=str(exc),
+            namespace=namespace,
+            execution_mode=metric_mode,
+            status=status,
+        )
+
+
+async def qfk_exec(
+    signal: BackendSignal,
+    *,
+    conversation_id: str,
+    node_ip: str | None = None,
+    case_id: str | None = None,
+    signal_id: str | None = None,
+    exec_id: str | None = None,
+    required_output_sources: set[str] | None = None,
+    output_filters: list[dict[str, Any]] | None = None,
+    execution_mode: str = "match",
+    ai_client: Any | None = None,
+) -> QFKResult:
+    """执行 QFK，并保证每次调用都有可关联且唯一的终态日志与指标。"""
+
+    started = time.perf_counter()
+    matcher = signal.matcher if isinstance(signal.matcher, dict) else {}
+    common_fields = {
+        "namespace": signal.namespace,
+        "execution_mode": execution_mode,
+        "conversation_id": conversation_id,
+        "case_id": case_id or None,
+        "signal_id": signal_id or None,
+        "requested_exec_id": exec_id or None,
+        "node_ip": node_ip,
+        "matcher_type": matcher.get("type"),
+        "expected": matcher.get("expected", True) if matcher else None,
+        "matcher_operator": matcher.get("operator"),
+        "matcher_value": matcher.get("value"),
+        "required_output_sources": sorted(required_output_sources or set()),
+    }
+    logger.info(event="qfk_engine_started", **common_fields)
+    try:
+        result = await _qfk_exec_impl(
+            signal,
+            conversation_id=conversation_id,
+            node_ip=node_ip,
+            case_id=case_id,
+            exec_id=exec_id,
+            required_output_sources=required_output_sources,
+            output_filters=output_filters,
+            execution_mode=execution_mode,
+            ai_client=ai_client,
+        )
+    except Exception as exc:
+        duration = time.perf_counter() - started
+        status = "exception"
+        error_code = "QFK_UNHANDLED_EXCEPTION"
+        _record_qfk_metrics(
+            namespace=signal.namespace,
+            mode=execution_mode,
+            status=status,
+            error_code=error_code,
+            duration=duration,
+        )
+        logger.exception(
+            event="qfk_engine_failed",
+            error=exc,
+            error_code=error_code,
+            duration_ms=round(duration * 1000, 3),
+            **common_fields,
+        )
+        raise
+
+    duration = time.perf_counter() - started
+    error_code = _qfk_error_code(result.error)
+    if not result.error:
+        status = "succeeded"
+    elif result.execution_status != "succeeded":
+        status = result.execution_status or "failed"
+    else:
+        status = "processing_failed"
+    _record_qfk_metrics(
+        namespace=signal.namespace,
+        mode=execution_mode,
+        status=status,
+        error_code=error_code,
+        duration=duration,
+    )
+    resolution_status = result.resolution.get("status") if isinstance(result.resolution, dict) else None
+    logger.info(
+        event="qfk_engine_finished",
+        status=status,
+        error_code=error_code,
+        execution_status=result.execution_status,
+        processing_status=result.processing_status,
+        final_matched=result.matched if not result.error else None,
+        business_output_available=result.business_output_available,
+        exec_ids=result.exec_ids,
+        artifact_ids=result.artifact_ids,
+        command_count=len(result.commands),
+        commands_sha256=_sha256_text("\n".join(result.commands)),
+        output_bytes=len(result.raw_output.encode("utf-8", errors="replace")),
+        output_sha256=_sha256_text(result.raw_output),
+        matched_keyword_count=len(result.matched_keywords),
+        matched_keywords_sha256=_sha256_text("\n".join(result.matched_keywords)),
+        evidence_line_numbers=result.evidence_line_numbers,
+        ai_value_type=type(result.ai_value).__name__ if result.ai_value is not None else None,
+        resolution_status=resolution_status,
+        duration_ms=round(duration * 1000, 3),
+        **common_fields,
+    )
+    return result

@@ -1,5 +1,6 @@
 import json
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from app.tools.acli import executor as executor_module
@@ -55,6 +56,58 @@ def test_matcher_without_extract_fails_closed():
     result = evaluate_matcher({"type": "threshold", "operator": ">", "value": 1, "expected": True}, "value=2")
     assert result.matched is None
     assert "extract" in result.detail["error"]
+
+
+@pytest.mark.asyncio
+async def test_qfk_wrapper_emits_one_terminal_event_for_early_return(monkeypatch):
+    audit_logger = MagicMock()
+    monkeypatch.setattr(engine, "logger", audit_logger)
+    monkeypatch.setattr(executor_module, "_executor", None)
+    signal = BackendSignal(namespace="system", command="df", matcher=None)
+
+    result = await engine.qfk_exec(
+        signal,
+        conversation_id="conv-observe",
+        case_id="case-observe",
+        signal_id="sig-observe",
+        execution_mode="produce",
+    )
+
+    assert result.error is not None
+    events = [call.kwargs.get("event") for call in audit_logger.info.call_args_list]
+    assert events.count("qfk_engine_started") == 1
+    assert events.count("qfk_engine_finished") == 1
+    assert "qfk_engine_failed" not in events
+    finished = next(call.kwargs for call in audit_logger.info.call_args_list if call.kwargs.get("event") == "qfk_engine_finished")
+    assert finished["case_id"] == "case-observe"
+    assert finished["signal_id"] == "sig-observe"
+    assert finished["final_matched"] is None
+
+
+@pytest.mark.asyncio
+async def test_qfk_bridge_exception_keeps_stable_error_code(monkeypatch):
+    audit_logger = MagicMock()
+
+    class FailingExecutor:
+        _redis = SimpleNamespace()
+
+        async def execute(self, **_kwargs):
+            raise RuntimeError("bridge unavailable")
+
+    monkeypatch.setattr(engine, "logger", audit_logger)
+    monkeypatch.setattr(executor_module, "_executor", FailingExecutor())
+    signal = BackendSignal(namespace="system", command="df", matcher=None)
+
+    result = await engine.qfk_exec(
+        signal,
+        conversation_id="conv-bridge-failed",
+        execution_mode="produce",
+    )
+
+    assert result.error == "QFK_BRIDGE_EXECUTION_FAILED: bridge unavailable"
+    finished = next(call.kwargs for call in audit_logger.info.call_args_list if call.kwargs.get("event") == "qfk_engine_finished")
+    assert finished["error_code"] == "QFK_BRIDGE_EXECUTION_FAILED"
+    assert finished["status"] == "failed"
 
 
 def test_whitebox_vt_uses_end_day_directory_and_and_remains_a_backend_predicate():

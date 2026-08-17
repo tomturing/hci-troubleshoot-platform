@@ -826,7 +826,13 @@ def _decode_llm_json_object(content: str) -> dict[str, Any]:
     return payload
 
 
-async def _call_llm(prompt: str, *, prompt_revision: str = "") -> dict[str, Any]:
+async def _call_llm(
+    prompt: str,
+    *,
+    prompt_revision: str = "",
+    source_type: str = "unknown",
+    source_id: int | None = None,
+) -> dict[str, Any]:
     """调用 LLM API（json_object 模式），返回解析后的 dict。
 
     2026-07-23 修复：原 max_tokens=2000 对推理模型（glm-5.2 / deepseek-v4-flash）不足——
@@ -948,6 +954,26 @@ async def _call_llm(prompt: str, *, prompt_revision: str = "") -> dict[str, Any]
                         else ("信号抽取结果为空" if not content else (str(parse_error) if parse_error else None))
                     ),
                 )
+                raw_candidates = (
+                    parsed_payload.get("candidates") or parsed_payload.get("signals")
+                    if parsed_payload is not None
+                    else None
+                )
+                logger.info(
+                    event="extract_signals_llm_response",
+                    trace_id=get_current_trace_id(),
+                    source_type=source_type,
+                    source_id=source_id,
+                    model=LLM_MODEL,
+                    prompt_revision=prompt_revision,
+                    format_attempt=format_attempt,
+                    finish_reason=finish_reason,
+                    response_chars=len(content),
+                    response_sha256=hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest(),
+                    parsed=parsed_payload is not None,
+                    candidate_count=len(raw_candidates) if isinstance(raw_candidates, list) else None,
+                    total_tokens=total_tokens,
+                )
         except Exception as exc:
             KBD_LLM_REQUESTS_TOTAL.labels(
                 operation="extract_signals",
@@ -955,7 +981,17 @@ async def _call_llm(prompt: str, *, prompt_revision: str = "") -> dict[str, Any]
                 status="error",
                 finish_reason="transport_error",
             ).inc()
-            logger.error("extract_signals LLM 调用失败: %s", exc)
+            logger.exception(
+                event="extract_signals_llm_failed",
+                error=exc,
+                error_code="EXTRACT_SIGNALS_LLM_TRANSPORT_FAILED",
+                trace_id=get_current_trace_id(),
+                source_type=source_type,
+                source_id=source_id,
+                model=LLM_MODEL,
+                prompt_revision=prompt_revision,
+                format_attempt=format_attempt,
+            )
             raise HTTPException(status_code=503, detail=f"LLM API 调用失败: {exc}") from exc
 
         if finish_reason == "length":
@@ -1728,7 +1764,12 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
     )
 
     prompt_revision = hashlib.sha256(prompt_template.encode("utf-8")).hexdigest()
-    llm_result = await _call_llm(prompt, prompt_revision=prompt_revision)
+    llm_result = await _call_llm(
+        prompt,
+        prompt_revision=prompt_revision,
+        source_type="kbd",
+        source_id=kbd_id,
+    )
     raw_signals = llm_result.get("candidates")
     if raw_signals is None:
         raw_signals = llm_result.get("signals", [])
@@ -1789,6 +1830,8 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
         total=len(raw_signals),
         validated=len(validated),
         rejected=len(rejected),
+        prompt_revision=prompt_revision,
+        trace_id=get_current_trace_id(),
     )
     return {
         "success": True,
@@ -1864,7 +1907,12 @@ async def extract_signals_for_sop(db_manager: DatabaseManager, sop_id: int) -> d
     )
 
     prompt_revision = hashlib.sha256(prompt_template.encode("utf-8")).hexdigest()
-    llm_result = await _call_llm(prompt, prompt_revision=prompt_revision)
+    llm_result = await _call_llm(
+        prompt,
+        prompt_revision=prompt_revision,
+        source_type="sop",
+        source_id=sop_id,
+    )
     raw_signals = llm_result.get("candidates")
     if raw_signals is None:
         raw_signals = llm_result.get("signals", [])
@@ -1886,6 +1934,8 @@ async def extract_signals_for_sop(db_manager: DatabaseManager, sop_id: int) -> d
         total=len(raw_signals),
         validated=len(validated),
         rejected=len(rejected),
+        prompt_revision=prompt_revision,
+        trace_id=get_current_trace_id(),
     )
     return {
         "success": True,

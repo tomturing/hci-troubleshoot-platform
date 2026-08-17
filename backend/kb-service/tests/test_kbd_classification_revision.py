@@ -26,6 +26,48 @@ def test_classify_model_ignores_empty_dedicated_setting(monkeypatch):
     assert classify._resolve_classify_model() == "deepseek-v4-flash"
 
 
+def test_parse_llm_response_sorts_deduplicates_and_uses_winner_reason():
+    result = classify.parse_llm_response(
+        {
+            "top3": [
+                {"category_id": "vm-002", "label": "状态异常", "score": 0.4, "reason": "次选"},
+                {"category_id": "vm-001", "label": "启动失败", "score": 0.9, "reason": "最高分理由"},
+                {"category_id": "vm-001", "label": "重复低分", "score": 0.2, "reason": "重复项"},
+            ]
+        },
+        {"vm-001", "vm-002"},
+    )
+
+    assert result.category_id == "vm-001"
+    assert result.confidence == 0.9
+    assert result.reason == "最高分理由"
+    assert [item.category_id for item in result.top3] == ["vm-001", "vm-002"]
+
+
+def test_parse_llm_response_rejects_when_all_candidates_are_invalid():
+    with pytest.raises(classify.HTTPException) as exc_info:
+        classify.parse_llm_response(
+            {
+                "top3": [
+                    {"category_id": "not-exists", "label": "伪造分类", "score": 0.9},
+                    {"category_id": "vm-001", "label": "非法分数", "score": "NaN"},
+                ]
+            },
+            {"vm-001"},
+        )
+
+    assert exc_info.value.status_code == 502
+    assert "合法分类候选" in exc_info.value.detail
+
+
+def test_parse_llm_response_rejects_non_array_top3():
+    with pytest.raises(classify.HTTPException) as exc_info:
+        classify.parse_llm_response({"top3": 3}, {"vm-001"})
+
+    assert exc_info.value.status_code == 502
+    assert "top3 分类数组" in exc_info.value.detail
+
+
 @pytest.mark.asyncio
 async def test_classify_case_builds_model_prompt_catalog_and_input_fingerprints():
     session = AsyncMock()
