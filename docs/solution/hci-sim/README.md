@@ -28,6 +28,7 @@
 - [生产化差距审查与 Bundle 工厂化重构基线](events/2026-08-11-hci-sim生产化差距审查与Bundle工厂化重构基线.md)
 - [HCI 真实环境与 hci-sim 双轨运行时设计](events/2026-07-30-HCI真实环境与hci-sim双轨运行时设计.md)
 - [能力缺口对抗性审查与仿真环境构造流程全景](hci-sim能力缺口对抗性审查与仿真环境构造流程.md)（2026-08-17，含配套浏览器版流程图 [sim-env-construction-flow.html](sim-env-construction-flow.html)）
+- [环节细化、规模化构造与 Bundle 工厂双模式分析](events/2026-08-17-hci-sim环节细化与规模化构造及Bundle工厂双模式分析.md)（2026-08-17，C1/C2 环节细化、1000 KBD 规模化、专家审核闭环、synthetic/realistic 关系判定与 #779 多 Bundle 池基线更新）
 
 ## 快速导航
 
