@@ -1857,7 +1857,7 @@ CREATE TABLE IF NOT EXISTS "authorization" (
     updated_at timestamptz DEFAULT now(), -- 授权状态变更时间
     CONSTRAINT authorization_pkey PRIMARY KEY (auth_id),
     -- P0-2 修复：decision 只允许 approve/deny，防止非法值写入
-    CONSTRAINT chk_authorization_decision CHECK (decision IN ('approve', 'deny'))
+    CONSTRAINT chk_authorization_decision CHECK ((decision)::text = ANY ((ARRAY['approve'::character varying, 'deny'::character varying])::text[]))
 );
 
 COMMENT ON TABLE "authorization" IS '高危操作人工授权审计表 — 记录每次高危工具调用的人工确认结果';
