@@ -830,9 +830,28 @@ class KBDDiagnostic:
             return SignalOutcome.UNKNOWN
         try:
             evaluated = self._evaluate_matcher(matcher, raw_output)
-        except Exception:
+        except Exception as exc:
+            logger.exception(
+                event="matcher_evaluation_failed",
+                error=exc,
+                error_code="KBD_MATCHER_EVALUATION_FAILED",
+                signal_id=signal.get("id") or signal.get("signal_id"),
+                conversation_id=self._conversation_id,
+                case_id=self._case_id,
+                matcher_type=matcher.get("type"),
+                expected=matcher.get("expected", True),
+            )
             return SignalOutcome.UNKNOWN
         if evaluated is None:
+            logger.info(
+                event="matcher_evaluation_inconclusive",
+                error_code="KBD_MATCHER_INCONCLUSIVE",
+                signal_id=signal.get("id") or signal.get("signal_id"),
+                conversation_id=self._conversation_id,
+                case_id=self._case_id,
+                matcher_type=matcher.get("type"),
+                expected=matcher.get("expected", True),
+            )
             return SignalOutcome.UNKNOWN
         return SignalOutcome.SATISFIED if evaluated else SignalOutcome.CONTRADICTED
 
@@ -1358,6 +1377,7 @@ class KBDDiagnostic:
                     # 上方 fail closed，绝不静默回退当前节点造成跨主机误查。
                     node_ip=target_node_ip,
                     case_id=self._case_id,  # 透传工单 ID，确保 terminal_bridge 能路由到正确的 SSH 会话
+                    signal_id=str((signal or {}).get("id") or "") or None,
                     exec_id=exec_id,
                     required_output_sources=required_output_sources,
                     output_filters=output_filters,

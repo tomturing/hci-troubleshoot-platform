@@ -42,6 +42,7 @@ import hashlib
 import io
 import os
 import re
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -386,14 +387,16 @@ def _build_evidence_ir(
     inferences = [description] if description else []
 
     inferred_mime = "image/png" if image_data.startswith(b"\x89PNG") else "image/jpeg"
+    prepared_images = _prepare_vision_images(image_data, inferred_mime)
     transforms = [
         {
             "tile_id": f"tile_{index}",
             "bbox_source": list(bbox) if bbox is not None else None,
+            "mime_type": prepared_mime,
+            "bytes": len(prepared_data),
+            "sha256": hashlib.sha256(prepared_data).hexdigest(),
         }
-        for index, (_, _, bbox) in enumerate(
-            _prepare_vision_images(image_data, inferred_mime)
-        )
+        for index, (prepared_data, prepared_mime, bbox) in enumerate(prepared_images)
     ]
 
     return {
@@ -424,7 +427,8 @@ def _build_evidence_ir(
         },
         "provenance": {
             "image_sha256": hashlib.sha256(image_data).hexdigest(),
-            "ocr_model": None,
+            "ocr_model": _LLM_VISION_MODEL,
+            "ocr_mode": "vision_llm",
             "vision_model": _LLM_VISION_MODEL,
             "prompt_revision": hashlib.sha256(prompt_template.encode("utf-8")).hexdigest()[:16],
             "transform": "tiled" if len(transforms) > 1 else "original-or-lossless-resize",
@@ -554,6 +558,7 @@ async def _vision_analyze(
         (type, background, full_text_lines, description)
         失败时返回 ("其他截图", "其他", [], "")
     """
+    started = time.perf_counter()
     prepared_images = _prepare_vision_images(image_data, mime_type)
     image_parts = [
         {
@@ -659,6 +664,21 @@ async def _vision_analyze(
                     level="ERROR" if not raw or finish_reason == "length" else None,
                     status_message="识图结果为空或被截断" if not raw or finish_reason == "length" else None,
                 )
+                logger.info(
+                    event="vision_llm_response",
+                    trace_id=trace_id,
+                    kbd_entry_id=kbd_entry_id,
+                    image_seq=image_seq,
+                    model=_LLM_VISION_MODEL,
+                    attempt=attempt,
+                    finish_reason=finish_reason,
+                    response_chars=len(raw),
+                    response_sha256=hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest(),
+                    image_sha256=hashlib.sha256(image_data).hexdigest(),
+                    prepared_image_count=len(prepared_images),
+                    prepared_image_bytes=sum(len(item[0]) for item in prepared_images),
+                    total_tokens=tokens,
+                )
                 if finish_reason == "length":
                     raise VisionEmptyResultError("Vision 模型输出达到长度上限，结果不完整")
                 logger.debug("Vision LLM 响应 tokens=%d", tokens)
@@ -732,6 +752,19 @@ async def _vision_analyze(
                 trace_id=trace_id,
             )
     screenshot_type = _prefer_task_detail_type(screenshot_type, full_text)
+
+    logger.info(
+        event="vision_llm_parsed",
+        trace_id=trace_id,
+        kbd_entry_id=kbd_entry_id,
+        image_seq=image_seq,
+        model=_LLM_VISION_MODEL,
+        screenshot_type=screenshot_type,
+        ocr_line_count=len(full_text),
+        ocr_chars=sum(len(line) for line in full_text),
+        description_chars=len(description),
+        duration_ms=round((time.perf_counter() - started) * 1000, 3),
+    )
 
     return screenshot_type, background, full_text, description
 
@@ -1077,6 +1110,14 @@ async def reanalyze_kbd_images(
                     kbd_entry_id=kbd_entry_id,
                     seq=seq,
                     screenshot_type=screenshot_type,
+                    evidence_status=evidence["quality"]["status"],
+                    needs_review=evidence["quality"]["needs_review"],
+                    inference_status=evidence["quality"]["inference_status"],
+                    inference_needs_review=evidence["quality"]["inference_needs_review"],
+                    ocr_line_count=len(full_text),
+                    ocr_chars=sum(len(line) for line in full_text),
+                    image_sha256=evidence["provenance"]["image_sha256"],
+                    prompt_revision=evidence["provenance"]["prompt_revision"],
                     trace_id=_tid,
                 )
                 await _emit_progress(on_progress, stats["done"], stats["failed"], len(image_items))
@@ -1104,11 +1145,12 @@ async def reanalyze_kbd_images(
                             status="failed",
                         ),
                     })
-                logger.error(
+                logger.exception(
                     event="vision_image_failed",
                     kbd_entry_id=kbd_entry_id,
                     seq=seq,
-                    error=str(exc),
+                    error=exc,
+                    error_code="VISION_IMAGE_PROCESSING_FAILED",
                     trace_id=_tid,
                 )
                 await _emit_progress(on_progress, stats["done"], stats["failed"], len(image_items))
@@ -1532,6 +1574,15 @@ async def reanalyze_single_image(
         seq=seq,
         screenshot_type=screenshot_type,
         background=background,
+        evidence_status=evidence["quality"]["status"],
+        needs_review=evidence["quality"]["needs_review"],
+        inference_status=evidence["quality"]["inference_status"],
+        inference_needs_review=evidence["quality"]["inference_needs_review"],
+        ocr_line_count=len(full_text),
+        ocr_chars=sum(len(line) for line in full_text),
+        image_sha256=evidence["provenance"]["image_sha256"],
+        prompt_revision=evidence["provenance"]["prompt_revision"],
+        trace_id=_tid,
     )
 
     return {

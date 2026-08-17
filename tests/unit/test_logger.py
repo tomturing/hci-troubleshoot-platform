@@ -59,6 +59,67 @@ class TestStructuredLogger:
                     # 检查 logger.error 是否被调用
                     # 由于实现细节，只验证方法执行成功
 
+    def test_sensitive_fields_are_redacted_recursively(self, logger):
+        """敏感键即使嵌套在列表和字典中也不会写入日志。"""
+        with patch("backend.shared.observability.logger.get_current_trace_id", return_value=""):
+            with patch("backend.shared.observability.logger.get_current_span_id", return_value=""):
+                log_data = json.loads(
+                    logger._format_log(
+                        "INFO",
+                        "secret_test",
+                        payload={"password": "plain", "nested": [{"api-key": "key-value"}]},
+                    )
+                )
+
+        assert log_data["payload"]["password"] == "[REDACTED]"
+        assert log_data["payload"]["nested"][0]["api-key"] == "[REDACTED]"
+        assert "plain" not in json.dumps(log_data)
+        assert "key-value" not in json.dumps(log_data)
+
+    def test_inline_credentials_are_redacted(self, logger):
+        """自由文本中的常见令牌、密码参数和 URL 凭据也会被净化。"""
+        message = (
+            "Authorization: Bearer abc.def password=hunter2 "
+            "url=https://root:secret@example.test api_key='key123'"
+        )
+        log_data = json.loads(logger._format_log("ERROR", "credential_test", message=message))
+
+        rendered = log_data["message"]
+        assert "abc.def" not in rendered
+        assert "hunter2" not in rendered
+        assert "root:secret" not in rendered
+        assert "key123" not in rendered
+        assert rendered.count("[REDACTED]") >= 4
+
+    def test_long_fields_are_bounded_with_hash(self, logger):
+        """超长现场输出保留前缀、原长度和摘要，不无限放大日志。"""
+        log_data = json.loads(logger._format_log("INFO", "large_output", output="x" * 5000))
+
+        assert log_data["output"].startswith("x" * 100)
+        assert "[TRUNCATED original_chars=5000 sha256=" in log_data["output"]
+        assert len(log_data["output"]) < 4300
+
+    def test_reserved_fields_cannot_override_log_envelope(self, logger):
+        """业务参数不能伪造事件名、服务名或调用链字段。"""
+        with patch("backend.shared.observability.logger.get_current_trace_id", return_value="otel-trace"):
+            with patch("backend.shared.observability.logger.get_current_span_id", return_value="otel-span"):
+                log_data = json.loads(
+                    logger._format_log(
+                        "INFO",
+                        "real_event",
+                        trace_id="custom-trace",
+                        service="forged-service",
+                        span_id="forged-span",
+                    )
+                )
+
+        assert log_data["service"] == "test-service"
+        assert log_data["event"] == "real_event"
+        assert log_data["trace_id"] == "otel-trace"
+        assert log_data["custom_trace_id"] == "custom-trace"
+        assert log_data["span_id"] == "otel-span"
+        assert log_data["reserved_field_conflicts"] == ["service", "span_id"]
+
 
 class TestGetLogger:
     """get_logger 测试"""
