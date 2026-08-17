@@ -1,13 +1,22 @@
 <script setup lang="ts">
 // KBD 知识条目管理页面 - 支持批量操作（重新识图、重新分类、抽取信号、通过、拒绝）
-import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox, type TableColumnCtx, type TableInstance } from 'element-plus'
-import { FullScreen, Refresh } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox, type TableColumnCtx, type TableInstance, type UploadFile } from 'element-plus'
+import { FullScreen, Refresh, Upload } from '@element-plus/icons-vue'
 import { useCategories } from '../composables/useCategories'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { QfkProcessingEditor } from '@/components/editors'
+import type { SignalV2, SignalsDoc, ChangeAnnotation } from '@/utils/kbdSignalTypes'
+import {
+  assignImportedSignalIds,
+  buildImportAnnotations,
+  countImportIdRegenerations,
+  parseImportedSignalsJson,
+  serializeSignalForExport,
+  type ImportParseSuccess,
+} from '@/utils/signalImport'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 类型定义
@@ -176,37 +185,8 @@ interface KbdBatchJob {
   items?: KbdBatchJobItem[]
 }
 
-// ============ 关键信号 v2 数据模型（RFC §7 前端原生读 v2 对象化，2026-07-22） ============
-// GET 边界直接返回 v2 文档，前端不再归一/适配，直接基于该结构渲染与编辑；
-// 回写时仍发回完整 v2 文档（{schema_version, signals}），后端 update_kbd_entry 幂等归约。
-interface SignalV2 {
-  id?: number | string
-  role?: 'must' | 'should' | 'exclude' | 'context'
-  acquire: { tool: string; args: Record<string, any> }
-  match: { type?: string; pattern?: string | string[]; mode?: string; expected?: boolean; value?: number; [key: string]: any } | null
-  orchestrate: Record<string, any>
-  provenance?: Record<string, any>
-  review?: { require_human_confirm?: boolean }
-}
-interface SignalsDoc {
-  schema_version: number
-  signals: SignalV2[]
-  rejected_candidates?: Array<{
-    candidate: unknown
-    reason_code?: 'write_signal' | 'not_exists' | 'run_failed'
-    reason: string
-  }>
-  verification_contract?: Record<string, any>
-  generation_metadata?: Record<string, any>
-  publish_validation?: Record<string, any>
-}
-
-interface ChangeAnnotation {
-  path?: string
-  signal_id?: string
-  reason_code: string
-  note?: string
-}
+// ============ 关键信号 v2 数据模型 ============
+// SignalV2 / SignalsDoc / ChangeAnnotation 已抽至 @/utils/kbdSignalTypes（供信号 JSON 导入/导出复用）。
 
 interface KbdCollectionImpact {
   offline_ready: boolean
@@ -2424,6 +2404,118 @@ const deleteSignalReason = ref<string>('redundant_signal')
 const deleteSignalNote = ref<string>('')
 const deleteSignalDialogVisible = ref(false)
 
+// ============ 关键信号 JSON 导入/导出（2026-08-17） ============
+// 导入为“仅追加”语义：不覆盖/删除现有信号，ID 冲突自动重新生成，
+// 导入信号统一打 provenance.needs_review，交由 Signal Review 复核。
+const importSignalsDialogVisible = ref(false)
+const importSignalsText = ref('')
+const importSignalsFileName = ref('')
+const importSignalsErrors = ref<string[]>([])
+const importSignalsPreview = ref<ImportParseSuccess | null>(null)
+const importSignalsRegenCount = ref(0)
+const importSignalsReason = ref<string>('missing_signal')
+const importSignalsNote = ref('')
+
+// 文本变化即作废预览，避免“预览旧内容、提交新内容”的不一致
+watch(importSignalsText, () => {
+  importSignalsPreview.value = null
+  importSignalsErrors.value = []
+})
+
+function currentSignalIds(): Set<string> {
+  return new Set(signalList.value.map((item) => String(item.id ?? '')).filter(Boolean))
+}
+
+function openImportSignalsDialog() {
+  importSignalsText.value = ''
+  importSignalsFileName.value = ''
+  importSignalsErrors.value = []
+  importSignalsPreview.value = null
+  importSignalsRegenCount.value = 0
+  importSignalsReason.value = 'missing_signal'
+  importSignalsNote.value = ''
+  importSignalsDialogVisible.value = true
+}
+
+function handleImportFileChange(uploadFile: UploadFile) {
+  const raw = uploadFile?.raw
+  if (!raw) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    importSignalsText.value = String(reader.result ?? '')
+    importSignalsFileName.value = uploadFile.name || ''
+    runImportParse()
+  }
+  reader.onerror = () => {
+    ElMessage.error({ message: '文件读取失败，请手动粘贴 JSON 内容', duration: 0, showClose: true })
+  }
+  reader.readAsText(raw)
+}
+
+function runImportParse(): boolean {
+  importSignalsErrors.value = []
+  const result = parseImportedSignalsJson(importSignalsText.value)
+  if (result.ok === false) {
+    importSignalsPreview.value = null
+    importSignalsRegenCount.value = 0
+    importSignalsErrors.value = [result.error]
+    return false
+  }
+  importSignalsPreview.value = result
+  importSignalsRegenCount.value = countImportIdRegenerations(result.signals, currentSignalIds())
+  return true
+}
+
+async function submitImportSignals() {
+  if (!detailEntry.value) return
+  // 提交前重新解析：文本可能在预览后被修改
+  if (!runImportParse()) return
+  const preview = importSignalsPreview.value
+  if (!preview) return
+  signalSaveLoading.value = true
+  try {
+    // 基线与复制/移动一致：signalList 已含暂存编辑与本地草稿，会一并提交
+    const base = signalList.value.map(cloneSignal)
+    const { signals: imported } = assignImportedSignalIds(
+      preview.signals.map(cloneSignal),
+      currentSignalIds(),
+      createSignalId,
+    )
+    const annotations = buildImportAnnotations(imported, importSignalsReason.value, importSignalsNote.value)
+    await persistSignalList([...base, ...imported], `已导入 ${imported.length} 条关键信号`, annotations)
+    importSignalsDialogVisible.value = false
+  } catch (error) {
+    // 422/409 时弹窗不关、文本保留，供修改后重试；422 文案较长需细读，常驻提示
+    await focusSignalRequestError(error)
+    const message = error instanceof Error ? error.message : '导入失败，请重试'
+    importSignalsErrors.value = [...importSignalsErrors.value, message]
+    ElMessage.error({ message: `导入失败：${message}`, duration: 0, showClose: true })
+  } finally {
+    signalSaveLoading.value = false
+  }
+}
+
+async function copySignalJson(signal: SignalV2) {
+  // 只读操作，不受 canEditCurrent 限制；导出剥离 provenance/review 审核态字段
+  const text = serializeSignalForExport(signal)
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('信号 JSON 已复制，可粘贴到其他 KBD 或文档')
+  } catch {
+    // clipboard 不可用（非 secure context/权限拒绝）时降级为 execCommand
+    const helper = document.createElement('textarea')
+    helper.value = text
+    helper.style.position = 'fixed'
+    helper.style.opacity = '0'
+    document.body.appendChild(helper)
+    helper.select()
+    const copied = document.execCommand('copy')
+    document.body.removeChild(helper)
+    if (copied) ElMessage.success('信号 JSON 已复制，可粘贴到其他 KBD 或文档')
+    else ElMessage.error({ message: '复制失败，请在信号编辑中手动复制 JSON 内容', duration: 0, showClose: true })
+  }
+}
+
 function deleteSignal(index: number) {
   if (!detailEntry.value) return
   const signal = signalList.value[index]
@@ -4015,6 +4107,15 @@ onUnmounted(() => clearBatchPollTimer())
                 </template>
               </el-dropdown>
               <el-button
+                size="small"
+                :icon="Upload"
+                :disabled="!canEditCurrent"
+                title="粘贴或上传信号 JSON，仅追加到当前信号列表"
+                @click="openImportSignalsDialog"
+              >
+                导入信号
+              </el-button>
+              <el-button
                 v-if="detailEntry.status !== 'published'"
                 type="warning"
                 size="small"
@@ -4118,6 +4219,7 @@ onUnmounted(() => clearBatchPollTimer())
                   <el-button text size="small" :disabled="!canEditCurrent || item.origIdx === 0" @click="moveSignal(item.origIdx, -1)">上移</el-button>
                   <el-button text size="small" :disabled="!canEditCurrent || item.origIdx === signalList.length - 1" @click="moveSignal(item.origIdx, 1)">下移</el-button>
                   <el-button text size="small" :disabled="!canEditCurrent" @click="duplicateSignal(item.origIdx)">复制</el-button>
+                  <el-button text size="small" title="复制该信号的 JSON，可粘贴到其他 KBD 导入" @click="copySignalJson(item.sig)">复制 JSON</el-button>
                   <el-button text type="danger" size="small" :disabled="!canEditCurrent" @click="deleteSignal(item.origIdx)">删除</el-button>
                   <el-button v-if="editingSignalIndex !== item.origIdx" text type="primary" size="small" :disabled="!canEditCurrent" @click="startEditSignal(item.origIdx)">编辑</el-button>
                   <template v-else>
@@ -4193,6 +4295,7 @@ onUnmounted(() => clearBatchPollTimer())
                   <el-button text size="small" :disabled="!canEditCurrent || item.origIdx === 0" @click="moveSignal(item.origIdx, -1)">上移</el-button>
                   <el-button text size="small" :disabled="!canEditCurrent || item.origIdx === signalList.length - 1" @click="moveSignal(item.origIdx, 1)">下移</el-button>
                   <el-button text size="small" :disabled="!canEditCurrent" @click="duplicateSignal(item.origIdx)">复制</el-button>
+                  <el-button text size="small" title="复制该信号的 JSON，可粘贴到其他 KBD 导入" @click="copySignalJson(item.sig)">复制 JSON</el-button>
                   <el-button text type="danger" size="small" :disabled="!canEditCurrent" @click="deleteSignal(item.origIdx)">删除</el-button>
                   <el-button v-if="editingSignalIndex !== item.origIdx" text type="primary" size="small" :disabled="!canEditCurrent" @click="startEditSignal(item.origIdx)">编辑</el-button>
                   <template v-else>
@@ -5025,6 +5128,77 @@ onUnmounted(() => clearBatchPollTimer())
       <template #footer>
         <el-button @click="deleteSignalDialogVisible = false">取消</el-button>
         <el-button type="danger" :loading="signalSaveLoading" @click="submitDeleteSignal">确认删除</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 关键信号 JSON 导入（2026-08-17）：仅追加语义，导入信号统一 needs_review 待复核 -->
+    <el-dialog v-model="importSignalsDialogVisible" title="导入关键信号（JSON）" width="720px" :close-on-click-modal="false">
+      <el-alert type="info" :closable="false" style="margin-bottom: 12px;">
+        <template #title>
+          导入为“仅追加”：不会覆盖或删除现有信号；ID 冲突会自动改用新 ID。导入的信号统一标记“待复核”（needs_review），需经 Signal Review 确认。已有暂存修改或未保存的新信号草稿会一并保存。
+        </template>
+      </el-alert>
+      <el-form label-position="top">
+        <el-form-item label="选择文件（可选）">
+          <el-upload action="#" :auto-upload="false" :show-file-list="false" accept=".json" :on-change="handleImportFileChange">
+            <el-button size="small" :icon="Upload">选择 .json 文件</el-button>
+          </el-upload>
+          <span v-if="importSignalsFileName" style="margin-left: 8px; color: var(--el-text-color-secondary); font-size: 12px;">{{ importSignalsFileName }}</span>
+        </el-form-item>
+        <el-form-item label="JSON 内容">
+          <el-input
+            v-model="importSignalsText"
+            type="textarea"
+            :rows="12"
+            placeholder="支持三种形态：单条信号对象（含 acquire）；信号数组；完整信号文档（含 signals 数组，其验证规则/元数据会被丢弃并由页面按证据作用重建）"
+          />
+        </el-form-item>
+        <el-form-item v-if="importSignalsPreview" label="解析结果">
+          <el-tag size="small" type="success">
+            {{ importSignalsPreview.signals.length }} 条信号 ·
+            {{ importSignalsPreview.shape === 'doc' ? '完整文档' : importSignalsPreview.shape === 'array' ? '信号数组' : '单条信号' }}
+          </el-tag>
+          <el-tag v-if="importSignalsRegenCount > 0" size="small" type="warning" style="margin-left: 8px;">
+            {{ importSignalsRegenCount }} 条 ID 将自动重新生成
+          </el-tag>
+          <el-tag v-if="importSignalsPreview.roleFixedCount > 0" size="small" type="info" style="margin-left: 8px;">
+            {{ importSignalsPreview.roleFixedCount }} 条证据作用归一为必要证据
+          </el-tag>
+          <el-tag v-if="importSignalsPreview.droppedDocFields.length > 0" size="small" type="info" style="margin-left: 8px;">
+            丢弃文档字段：{{ importSignalsPreview.droppedDocFields.join('、') }}
+          </el-tag>
+          <el-tag v-if="importSignalsPreview.strippedFields.length > 0" size="small" type="warning" style="margin-left: 8px;">
+            剥离不支持字段：{{ importSignalsPreview.strippedFields.map((item) => `第 ${item.index + 1} 条 ${item.keys.join('/')}`).join('；') }}
+          </el-tag>
+        </el-form-item>
+        <el-alert
+          v-for="(error, index) in importSignalsErrors"
+          :key="index"
+          :title="error"
+          type="error"
+          :closable="false"
+          style="margin-bottom: 8px;"
+        />
+        <el-form-item label="变更原因" required>
+          <el-select v-model="importSignalsReason" placeholder="请选择变更原因" style="width: 100%">
+            <el-option v-for="item in changeReasonOptions" :key="item[0]" :label="item[1]" :value="item[0]" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="补充说明（可选）">
+          <el-input
+            v-model="importSignalsNote"
+            type="textarea"
+            :rows="2"
+            maxlength="500"
+            show-word-limit
+            placeholder="例如：从 KBD XXXX 迁移存储网络丢包信号模式"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="importSignalsDialogVisible = false">取消</el-button>
+        <el-button @click="runImportParse">解析检查</el-button>
+        <el-button type="primary" :loading="signalSaveLoading" @click="submitImportSignals">确认导入</el-button>
       </template>
     </el-dialog>
 
