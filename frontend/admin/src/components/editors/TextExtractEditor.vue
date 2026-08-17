@@ -1,7 +1,11 @@
 <script setup lang="ts">
 /** QFK 声明式文本取值编辑器：行选择与列选择正交。 */
-import { computed, watch } from 'vue'
-import { formatKeywordInput, parseKeywordInput } from '../../utils/keywordInput'
+import { computed, reactive, watch } from 'vue'
+import {
+  formatKeywordDraft,
+  keywordListsEqualInput,
+  parseKeywordInput,
+} from '../../utils/keywordInput'
 
 const props = withDefaults(defineProps<{
   modelValue?: Record<string, any>
@@ -18,6 +22,14 @@ const extract = computed({
 const rows = computed(() => extract.value.rows || { mode: 'all' })
 const columns = computed(() => Array.isArray(extract.value.columns) ? extract.value.columns : [])
 const columnMode = computed(() => columns.value.length ? 'columns' : 'whole')
+const keywordInputs = reactive<Record<'include' | 'exclude', string>>({ include: '', exclude: '' })
+
+function syncKeywordInput(key: 'include' | 'exclude', value: unknown) {
+  if (!keywordListsEqualInput(keywordInputs[key], value)) keywordInputs[key] = formatKeywordDraft(value)
+}
+
+watch(() => rows.value.include, value => syncKeywordInput('include', value), { immediate: true })
+watch(() => rows.value.exclude, value => syncKeywordInput('exclude', value), { immediate: true })
 
 function setExtract(value: Record<string, any>) {
   extract.value = { ...value, type: 'text' }
@@ -41,6 +53,7 @@ function setStringList(target: Record<string, any>, key: string, value: string) 
   setExtract({ ...extract.value })
 }
 function setKeywordList(key: 'include' | 'exclude', value: string) {
+  keywordInputs[key] = value
   setRowsField(key, parseKeywordInput(value))
 }
 function setRowMode(mode: string) {
@@ -150,10 +163,10 @@ watch(() => props.modelValue, value => {
       </el-form-item>
       <template v-if="rows.mode === 'keywords'">
         <el-form-item label="包含关键字">
-          <el-input :model-value="formatKeywordInput(rows.include)" type="textarea" :rows="3" placeholder="每行一个关键字" @input="(value: string) => setKeywordList('include', value)" />
+          <el-input :model-value="keywordInputs.include" type="textarea" :rows="3" placeholder="每行一个关键字" @input="(value: string) => setKeywordList('include', value)" />
         </el-form-item>
         <el-form-item label="排除关键字">
-          <el-input :model-value="formatKeywordInput(rows.exclude)" type="textarea" :rows="3" placeholder="每行一个关键字" @input="(value: string) => setKeywordList('exclude', value)" />
+          <el-input :model-value="keywordInputs.exclude" type="textarea" :rows="3" placeholder="每行一个关键字" @input="(value: string) => setKeywordList('exclude', value)" />
         </el-form-item>
         <el-form-item label="包含关系">
           <el-select :model-value="rows.include_mode || 'all'" @change="(value: string) => setRowsField('include_mode', value)">

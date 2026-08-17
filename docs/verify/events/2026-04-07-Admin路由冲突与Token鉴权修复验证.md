@@ -15,7 +15,7 @@
 ```bash
 # 通过网关调用（需使用有效 token）
 curl -s http://hci.local/api/kb/categories \
-  -H "Authorization: Bearer dev-internalapi-api-token-2026" | jq '.domains | keys'
+  -H "Authorization: Bearer ${INTERNAL_API_TOKEN}" | jq '.domains | keys'
 ```
 
 **预期结果**：返回 JSON 包含 `domains` 键（字典类型），内含分组后的分类数据。
@@ -29,7 +29,7 @@ curl -s http://hci.local/api/kb/categories \
 ```bash
 curl -s -o /dev/null -w "%{http_code}" \
   http://hci.local/api/admin/kbd/entries \
-  -H "Authorization: Bearer dev-internalapi-api-token-2026"
+  -H "Authorization: Bearer ${INTERNAL_API_TOKEN}"
 ```
 
 **预期结果**：HTTP 200
@@ -42,7 +42,7 @@ curl -s -o /dev/null -w "%{http_code}" \
 
 ```bash
 curl -s -X POST http://hci.local/api/kb/classify \
-  -H "Authorization: Bearer dev-internalapi-api-token-2026" \
+  -H "Authorization: Bearer ${INTERNAL_API_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{"text": "测试文本", "top_k": 3}' | jq '.status'
 ```
@@ -55,7 +55,7 @@ curl -s -X POST http://hci.local/api/kb/classify \
 
 ```bash
 curl -s -X POST http://hci.local/api/kb/classify/intent \
-  -H "Authorization: Bearer dev-internalapi-api-token-2026" \
+  -H "Authorization: Bearer ${INTERNAL_API_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{"messages": [{"role": "user", "content": "网络不通"}]}' | jq '.intent'
 ```
