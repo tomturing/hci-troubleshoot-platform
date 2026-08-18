@@ -896,11 +896,20 @@ jobs:
           sarif_file: trivy-${{ matrix.service }}.sarif
 
   # hci-sim 不属于 hci-platform-env 的业务镜像矩阵；它由本仓库的
-  # Argo Application 直接消费。main 发布后必须验证 GitOps 文件已经通过
-  # PR 固定到同一 digest。main ruleset 禁止 GITHUB_TOKEN 直接写入 main，
-  # 所以这里 fail-closed，不用隐式绕过审查的自动 push。
-  verify-hci-sim-gitops:
-    name: 校验 hci-sim immutable GitOps digest
+  # Argo Application 直接消费。main 发布后必须把 GitOps 文件固定到同一
+  # 不可变 digest（GitOps「清单即真相」纪律，不可退化为可变 tag）。
+  #
+  # 设计（第一性原理 + 对抗性审查）：
+  #   1. digest 不可变是硬约束，不可放弃 → 仍固定 @sha256:。
+  #   2. main ruleset 禁止 GITHUB_TOKEN 直接写 main → 不能隐式自动 push。
+  #   3. 人类当 digest 搬运工会违反「机器该干的事别让人干」→ 由 CI 自动开
+  #      PR（Renovate/Dependabot 式 digest 自动修复范式），保留人工 review
+  #      合并这一 fail-closed 审查环节。
+  #   4. 幂等：已存在同 digest 的 open PR 时复用，不重复开 PR。
+  #   5. 门禁语义从「硬失败」改为「自动修复 + 软提示」：漂移时 CI 自动开 PR
+  #      并 success 结束（在 summary 醒目给出 PR 链接），不再阻断整轮 run。
+  pin-hci-sim-gitops:
+    name: 自动钉入 hci-sim immutable GitOps digest（人工审合并）
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [prepare, build-and-push]
@@ -914,12 +923,17 @@ jobs:
         (github.event_name == 'workflow_dispatch' && (inputs.promote_target == 'dev' || inputs.promote_target == 'both'))
       )
     permissions:
-      contents: read
+      contents: write
       packages: read
+      pull-requests: write
+    outputs:
+      drift_pr_url: ${{ steps.pin.outputs.pr_url }}
+      pinned: ${{ steps.pin.outputs.pinned }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 配置 Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
@@ -947,22 +961,94 @@ jobs:
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
           echo "hci-sim image=${image} digest=${digest}"
 
-      - name: 校验 dev Argo Application digest
+      - name: 检测漂移并自动钉入（开 PR）
+        id: pin
         env:
           HCI_SIM_DIGEST: ${{ steps.digest.outputs.digest }}
           HCI_SIM_REPOSITORY: ghcr.io/${{ github.repository }}/hci-sim
+          APP_FILE: deploy/gitops/argo-apps/local/hci-sim-dev.yaml
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          app_file="deploy/gitops/argo-apps/local/hci-sim-dev.yaml"
-          grep -Fq "repository: ${HCI_SIM_REPOSITORY}" "${app_file}" || {
+          echo "pinned=false" >> "${GITHUB_OUTPUT}"
+          echo "pr_url=" >> "${GITHUB_OUTPUT}"
+
+          # 仓库声明与 digest 锚点校验
+          grep -Fq "repository: ${HCI_SIM_REPOSITORY}" "${APP_FILE}" || {
             echo "::error::Argo Application repository 未固定为 ${HCI_SIM_REPOSITORY}"
             exit 1
           }
-          grep -Fq "digest: \"${HCI_SIM_DIGEST}\"" "${app_file}" || {
-            echo "::error::GitOps digest 漂移：请通过 PR 将 ${app_file} 固定为 ${HCI_SIM_REPOSITORY}@${HCI_SIM_DIGEST}"
+
+          # 无漂移：manifest 已固定到本次构建 digest，无需任何操作
+          if grep -Fq "digest: \"${HCI_SIM_DIGEST}\"" "${APP_FILE}"; then
+            echo "✅ ${APP_FILE} 已固定到 ${HCI_SIM_REPOSITORY}@${HCI_SIM_DIGEST}，无漂移"
+            exit 0
+          fi
+
+          echo "::warning::检测到 GitOps digest 漂移，CI 将自动开 PR 钉入 ${HCI_SIM_REPOSITORY}@${HCI_SIM_DIGEST}"
+
+          # 幂等：已存在同 digest 的 open PR 则复用，不重复开
+          existing="$(gh pr list --state open --search "${HCI_SIM_DIGEST} in:title" --json url --jq '.[0].url' || true)"
+          if [[ -n "${existing}" ]]; then
+            echo "🔁 已存在钉入该 digest 的 open PR：${existing}，跳过重复开 PR"
+            echo "pinned=true" >> "${GITHUB_OUTPUT}"
+            echo "pr_url=${existing}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          # 确定性分支名，便于并发/重跑时复用同一 PR
+          branch="ci/pin-hci-sim-digest-${HCI_SIM_DIGEST#sha256:}"
+          short_sha="$(git rev-parse --short HEAD)"
+
+          # 改写 manifest 中的 digest 锚点（保留 repository 行不变）
+          sed -i -E "s|^([[:space:]]*)digest: \"sha256:[0-9a-f]{64}\"$|\1digest: \"${HCI_SIM_DIGEST}\"|" "${APP_FILE}"
+          grep -Fq "digest: \"${HCI_SIM_DIGEST}\"" "${APP_FILE}" || {
+            echo "::error::digest 替换失败，未写入 ${HCI_SIM_DIGEST}"
             exit 1
           }
-          echo "✅ Argo Application 已通过 PR 固定到 ${HCI_SIM_REPOSITORY}@${HCI_SIM_DIGEST}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "${branch}"
+          git add "${APP_FILE}"
+          git commit -m "ci(hci-sim): 自动钉入 immutable digest ${HCI_SIM_DIGEST}
+
+          [env:dev:sf][agent:codebuddy]"
+          git push --force-with-lease origin "${branch}"
+
+          pr_url="$(gh pr create \
+            --head "${branch}" \
+            --base main \
+            --title "ci(hci-sim): 钉入 immutable digest ${HCI_SIM_DIGEST}" \
+            --label "env:dev:sf" --label "agent:codebuddy" \
+            --body "## 自动钉入 hci-sim 不可变 digest
+
+          检测到 main 发布的 hci-sim 镜像 digest 漂移，本 PR 由 CI 自动生成以固定 GitOps manifest。
+
+          - 镜像：\`${HCI_SIM_REPOSITORY}\`
+          - 新 digest：\`${HCI_SIM_DIGEST}\`
+          - 文件：\`${APP_FILE}\`
+
+          > 合并后 ArgoCD 才会同步新 digest。main ruleset 禁止 token 直写，故保留人工 review 合并（fail-closed 审查）。
+
+          [env:dev:sf][agent:codebuddy]")"
+
+          echo "✅ 已自动开 PR：${pr_url}（请 review 并合并以生效）"
+          echo "pinned=true" >> "${GITHUB_OUTPUT}"
+          echo "pr_url=${pr_url}" >> "${GITHUB_OUTPUT}"
+
+      - name: 汇总提示
+        if: steps.pin.outputs.pinned == 'true'
+        env:
+          PR_URL: ${{ steps.pin.outputs.pr_url }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### hci-sim digest 自动钉入结果"
+            echo "- 状态：已自动开 PR（待人工合并）"
+            echo "- PR：${PR_URL}"
+            echo "- 说明：digest 不可变纪律保留；合并后 ArgoCD 才同步新镜像。"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   # ─────────────────────────────────────────────────────────────────────────
   # db-migrate 镜像单独构建（仅 schema/extras/Dockerfile/脚本变更时触发）
