@@ -43,23 +43,27 @@ jobs:
                   # GITHUB_TOKEN 只能推送已存在的包，无法创建新包
                   password: ${{ secrets.GHCR_PAT }}
 
-            - name: 构建并推送镜像
+            - name: 构建待扫描镜像
+              id: build
               uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
               with:
                   context: _ext_openclaw
-                  push: true
-                  # 仅打 latest tag，不带业务服务的 timestamp tag
+                  load: true
+                  push: false
                   tags: |
-                      ghcr.io/${{ github.repository }}/hci-openclaw:${{ inputs.openclaw_ref }}
-                      ghcr.io/${{ github.repository }}/hci-openclaw:latest
+                      local/hci-openclaw:${{ inputs.openclaw_ref }}
+                      local/hci-openclaw:latest
 
             - name: Trivy 镜像安全扫描（仅上报，不阻断）
+              id: scan
               uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956
               continue-on-error: true
               with:
-                  image-ref: ghcr.io/${{ github.repository }}/hci-openclaw:${{ inputs.openclaw_ref }}
+                  image-ref: local/hci-openclaw:${{ inputs.openclaw_ref }}
                   exit-code: "0"
                   severity: HIGH,CRITICAL
+                  ignore-unfixed: true
+                  scanners: vuln
                   version: v0.73.0
                   format: sarif
                   output: trivy-hci-openclaw.sarif
@@ -70,3 +74,25 @@ jobs:
               continue-on-error: true
               with:
                   sarif_file: trivy-hci-openclaw.sarif
+
+            - name: 推送已扫描镜像
+              id: push
+              if: always() && steps.build.outcome == 'success'
+              run: |
+                  set -euo pipefail
+                  target_image="ghcr.io/${GITHUB_REPOSITORY}/hci-openclaw"
+                  docker tag "local/hci-openclaw:${{ inputs.openclaw_ref }}" "${target_image}:${{ inputs.openclaw_ref }}"
+                  docker tag local/hci-openclaw:latest "${target_image}:latest"
+                  docker push "${target_image}:${{ inputs.openclaw_ref }}"
+                  docker push "${target_image}:latest"
+
+            - name: 镜像发布审计摘要
+              if: always()
+              run: |
+                  {
+                    echo "### hci-openclaw 镜像发布审计"
+                    echo "- source_ref: \`${{ inputs.openclaw_ref }}\`"
+                    echo "- scan: \`${{ steps.scan.outcome }}\`"
+                    echo "- push: \`${{ steps.push.outcome }}\`"
+                    echo "- run_id: \`${GITHUB_RUN_ID}\`"
+                  } >> "${GITHUB_STEP_SUMMARY}"
