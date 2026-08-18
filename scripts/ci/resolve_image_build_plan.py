@@ -94,25 +94,25 @@ def changed_files_between(base: str, head: str) -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
-def reconciliation_services(raw_baselines: str, current_sha: str) -> set[str]:
+def reconciliation_services(raw_baselines: str, current_sha: str, fallback_sha: str) -> set[str]:
     """识别被全局基线掩盖、但尚未形成持久发布意图的服务。
 
-    每个服务分别与其最后一次发布基线比较。缺少服务基线时宁可重建该服务，
-    不能把未知状态当作已发布；已有基线时只有实际构建输入变化才允许重建。
+    每个服务分别与其最后一次发布基线比较。缺少服务基线时使用全局发布基线
+    （或 event.before）作为保守比较起点；只有实际构建输入变化才允许补偿，
+    避免首轮只发布单个服务后，所有未知服务在下一次无关 push 中被全量重建。
     """
     try:
         baselines = json.loads(raw_baselines or "{}")
     except json.JSONDecodeError as error:
         raise ValueError("服务发布基线不是合法 JSON") from error
-    if not isinstance(baselines, dict) or not SHA_RE.fullmatch(current_sha):
+    if not isinstance(baselines, dict) or not SHA_RE.fullmatch(current_sha) or not SHA_RE.fullmatch(fallback_sha):
         raise ValueError("服务发布基线或当前 SHA 非法")
 
     missing: set[str] = set()
     for service in SERVICE_NAMES:
         base = baselines.get(service)
         if not isinstance(base, str) or not SHA_RE.fullmatch(base):
-            missing.add(service)
-            continue
+            base = fallback_sha
         if base == current_sha:
             continue
         paths = changed_files_between(base, current_sha)
@@ -201,6 +201,7 @@ def main() -> int:
             recovered = reconciliation_services(
                 os.environ.get("GITHUB_SERVICE_RELEASE_BASELINES", ""),
                 os.environ.get("GITHUB_SHA", ""),
+                os.environ.get("GITHUB_RELEASE_BASE_SHA") or os.environ.get("GITHUB_EVENT_BEFORE", ""),
             )
         except (OSError, subprocess.CalledProcessError, ValueError) as error:
             print(f"无法生成服务级发布补偿计划：{error}", file=sys.stderr)
