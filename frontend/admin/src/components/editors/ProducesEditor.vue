@@ -41,6 +41,18 @@ function removeItem(idx: number) {
   produces.value = produces.value.filter((_, i) => i !== idx)
 }
 
+function updateName(idx: number, value: string) {
+  produces.value = produces.value.map((item, index) => (
+    index === idx ? { ...item, name: value.toUpperCase() } : item
+  ))
+}
+
+function updatePath(idx: number, value: string) {
+  produces.value = produces.value.map((item, index) => (
+    index === idx ? { ...item, path: value.toLowerCase() } : item
+  ))
+}
+
 /** 在 path 字段中追加一个容错路径 */
 function addFallbackPath(item: { name: string; path: string }) {
   if (item.path.trim()) {
@@ -77,9 +89,10 @@ function addFallbackPath(item: { name: string; path: string }) {
       <el-row :gutter="12" align="middle">
         <el-col :span="8">
           <el-input
-            v-model="item.name"
+            :model-value="item.name"
             placeholder="变量名（如 HOST）"
             spellcheck="false"
+            @update:model-value="(value: string) => updateName(idx, value)"
           >
             <template #prefix>
               <span class="input-prefix">NAME</span>
@@ -88,9 +101,10 @@ function addFallbackPath(item: { name: string; path: string }) {
         </el-col>
         <el-col :span="13">
           <el-input
-            v-model="item.path"
+            :model-value="item.path"
             placeholder="JSON Path（支持 | 分隔多路径容错）"
             spellcheck="false"
+            @update:model-value="(value: string) => updatePath(idx, value)"
           >
             <template #prefix>
               <span class="input-prefix">PATH</span>

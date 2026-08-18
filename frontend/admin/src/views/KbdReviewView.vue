@@ -11,6 +11,7 @@ import { QfkProcessingEditor } from '@/components/editors'
 import type { SignalV2, SignalsDoc, ChangeAnnotation } from '@/utils/kbdSignalTypes'
 import {
   buildProduceVariableCatalog,
+  findProduceVariable,
   type ProduceVariableOption,
 } from '@/utils/produceVariables'
 import {
@@ -691,8 +692,16 @@ function produceVariableOptions(toolName: string, currentName = ''): Array<Produ
 
 function updateProduceVariableName(index: number, value?: string): void {
   const produces = signalEditDraft.value.orchestrate.produces || []
-  if (!produces[index]) return
-  produces[index].name = value || ''
+  const produce = produces[index]
+  if (!produce) return
+  const name = value || ''
+  if (!name) {
+    produces[index] = { ...produce, name: '', path: '' }
+    return
+  }
+  const option = findProduceVariable(produceVariableCatalog.value, sigTool(signalEditDraft.value), name)
+  // 目录项是“变量名 → JSON 路径”的不可拆分映射，选择后必须同步写入两字段。
+  produces[index] = option ? { ...produce, name: option.name, path: option.path } : { ...produce, name }
 }
 
 async function fetchRevisionState(kbdId: number) {
@@ -4353,7 +4362,7 @@ onUnmounted(() => clearBatchPollTimer())
                             :disabled="option.legacy"
                           />
                         </el-select>
-                        <el-input v-model="p.path" size="small" placeholder="JSON路径" style="flex: 1" />
+                        <el-input v-model="p.path" size="small" placeholder="选择变量后自动填入 JSON 路径" style="flex: 1" />
                         <el-button text type="danger" size="small" @click="signalEditDraft.orchestrate.produces?.splice(idx, 1)">删除</el-button>
                       </div>
                       <el-button text type="primary" size="small" @click="signalEditDraft.orchestrate.produces = [...(signalEditDraft.orchestrate.produces || []), { name: '', path: '' }]">+ 添加变量</el-button>
