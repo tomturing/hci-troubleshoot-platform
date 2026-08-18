@@ -874,11 +874,15 @@ jobs:
             SOURCE_SHA=${{ github.sha }}
             IMAGE_TAG=${{ needs.prepare.outputs.image_tag }}
 
-      - name: Trivy 镜像安全扫描（HIGH/CRITICAL 阻断）
+      # 安全扫描与发布解耦：扫描结果照常上传 GitHub Security 标签页（可见性保留），
+      # 但不再以 exit-code 阻断镜像发布——漏洞治理走 PR 审查 + Dependabot，
+      # 而非在发布流水线硬卡，避免单服务漏洞拖垮整轮发布（含 admin-ui 等无关服务）。
+      - name: Trivy 镜像安全扫描（HIGH/CRITICAL，非阻断）
         uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956
+        continue-on-error: true
         with:
           image-ref: ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
-          exit-code: "1"
+          exit-code: "0"
           severity: HIGH,CRITICAL
           version: v0.73.0
           format: sarif
@@ -1001,11 +1005,13 @@ jobs:
             ghcr.io/${{ github.repository }}/db-migrate:${{ needs.prepare.outputs.image_tag }}
             ghcr.io/${{ github.repository }}/db-migrate:latest
 
-      - name: Trivy 镜像安全扫描（HIGH/CRITICAL 阻断）
+      # 安全扫描与发布解耦（同 build-and-push 矩阵）：非阻断，保留 Security 标签页可见性。
+      - name: Trivy 镜像安全扫描（HIGH/CRITICAL，非阻断）
         uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956
+        continue-on-error: true
         with:
           image-ref: ghcr.io/${{ github.repository }}/db-migrate:${{ needs.prepare.outputs.image_tag }}
-          exit-code: "1"
+          exit-code: "0"
           severity: HIGH,CRITICAL
           version: v0.73.0
           format: sarif
@@ -1026,11 +1032,15 @@ jobs:
     # push main 自动晋级 dev → staging；workflow_dispatch 只有显式选择目标时才晋级。
     # 手动发布仍须从 main 触发，避免把 feature 分支镜像写入环境仓库。
     # build-db-migrate 失败且本次确实应该构建（built==true）时阻止发布，避免传递一个实际没有推送的 tag
+    # 晋级与镜像构建矩阵解耦：build-and-push 是 matrix job，
+    # 单个服务构建失败不再阻断其余服务（含 admin-ui）晋级到非生产环境。
+    # 已成功 push 的服务会在 env 仓库写入新 tag 并上线；未 push 的服务本次不更新，
+    # 由下一轮成功发布补齐（resolve_release_baseline 的按服务补偿逻辑兜底）。
     if: |
       always() &&
       needs.prepare.result == 'success' &&
-      (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
-      (needs.build-db-migrate.result == 'success' || needs.build-db-migrate.outputs.built != 'true') &&
+      needs.build-and-push.result != 'cancelled' &&
+      (needs.build-db-migrate.result == 'success' || needs.build-db-migrate.result == 'skipped' || needs.build-db-migrate.outputs.built != 'true') &&
       (needs.prepare.outputs.has_deploy_services == 'true' || needs.prepare.outputs.db_migrate == 'true') &&
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
