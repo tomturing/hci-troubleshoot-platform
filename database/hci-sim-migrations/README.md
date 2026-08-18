@@ -1,6 +1,6 @@
 # hci_sim migrations
 
-该目录是 `hci_sim` 数据库的唯一 schema 入口，与 `database/atlas-migrations/`（`hci_troubleshoot`）相互独立。迁移 Job 必须显式接收 `HCI_SIM_DATABASE_URL`，禁止回退到平台 `DATABASE_URL`。
+该目录是 `hci_sim` 数据库的唯一 schema 入口，与 `database/atlas-migrations/`（`hci_troubleshoot`）相互独立。迁移 Job 必须显式接收 `HCI_SIM_DATABASE_URL`，禁止回退到平台 `DATABASE_URL`。Helm PreSync 会自动打包该目录下全部 `*.sql` 文件，并按文件名顺序逐个幂等执行；新增迁移只需放入本目录并通过 CI 的渲染校验，禁止再在 Helm 模板或 Job 中手工维护单文件清单。
 
 当前迁移按领域创建 `control_plane`、`fixture`、`artifact`、`audit` 四个 schema。跨数据库引用只保存 `support_id`、KBD revision/checksum 与 digest，不建立外键。
 
