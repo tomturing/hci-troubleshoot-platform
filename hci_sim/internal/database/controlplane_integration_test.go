@@ -31,7 +31,8 @@ func TestArtifactRepositoryFullLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	suffix := fmt.Sprintf("%08x", uint32(time.Now().UnixNano()&0xffffffff))
+	// 使用纳秒时间戳确保唯一性，支持并发测试
+	suffix := fmt.Sprintf("%016x", uint64(time.Now().UnixNano()))
 	now := time.Now().UTC()
 	record := controlplane.ArtifactRecord{
 		ID:        "art-" + suffix,

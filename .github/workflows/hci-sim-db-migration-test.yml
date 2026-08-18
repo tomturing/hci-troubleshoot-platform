@@ -53,7 +53,10 @@ jobs:
           psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE hci_sim_runtime LOGIN PASSWORD 'run_pass';"
           psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE hci_sim OWNER hci_sim_migrator;"
       - name: 执行独立迁移
-        run: psql -d hci_sim -v ON_ERROR_STOP=1 -f database/hci-sim-migrations/000001_control_plane.sql
+        run: |
+          psql -d hci_sim -v ON_ERROR_STOP=1 -f database/hci-sim-migrations/000001_control_plane.sql
+          psql -d hci_sim -v ON_ERROR_STOP=1 -f database/hci-sim-migrations/000002_fix_p0p1_defects.sql
+          psql -d hci_sim -v ON_ERROR_STOP=1 -f database/hci-sim-migrations/000003_controlplane_bundle_lifecycle.sql
       - name: 校验模块表和主库边界
         run: |
           test "$(psql -d hci_sim -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema IN ('control_plane','fixture','artifact','audit')")" = 16
