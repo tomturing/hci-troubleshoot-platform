@@ -66,6 +66,10 @@ spec:
               value: {{ .Values.runtime.activeRevision | quote }}
             - name: HCI_SIM_DATABASE_REQUIRED
               value: {{ .Values.database.required | quote }}
+            - name: HCI_SIM_CONTROLPLANE_REGISTRY
+              value: {{ .Values.controlplane.registry | quote }}
+            - name: HCI_SIM_BUNDLE_OBJECT_DIR
+              value: {{ .Values.controlplane.objectStore.mountPath | quote }}
             {{- if .Values.database.required }}
             - name: HCI_SIM_DATABASE_URL
               valueFrom:
@@ -142,6 +146,8 @@ spec:
               readOnly: true
             - name: tmp
               mountPath: /tmp
+            - name: bundle-object-store
+              mountPath: {{ .Values.controlplane.objectStore.mountPath | quote }}
       volumes:
         - name: fixture
           configMap:
@@ -156,6 +162,9 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi
+        - name: bundle-object-store
+          persistentVolumeClaim:
+            claimName: {{ .Values.controlplane.objectStore.existingClaim | default (printf "%s-bundle-objects" .Release.Name) }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

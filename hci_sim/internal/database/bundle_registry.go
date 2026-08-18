@@ -140,6 +140,33 @@ func (r *BundleRegistry) Compile(actor controlplane.Actor, input controlplane.Co
 	}, nil
 }
 
+// ReviseDraft 将专家修改固化为新 Draft，而不是覆盖既有对象或已发布 Bundle。
+func (r *BundleRegistry) ReviseDraft(actor controlplane.Actor, parentDigest string, manifest fixture.Manifest, reason string, now time.Time) (controlplane.BundleRecord, error) {
+	if actor.Role != controlplane.RoleExpert || actor.ID == "" {
+		return controlplane.BundleRecord{}, errors.New("forbidden: 仅 expert 可修订 Draft")
+	}
+	parent, err := r.Get(parentDigest)
+	if err != nil {
+		return controlplane.BundleRecord{}, err
+	}
+	if parent.Status != controlplane.BundleDraft && parent.Status != controlplane.BundleValidated {
+		return controlplane.BundleRecord{}, fmt.Errorf("invalid_transition: %s 不能修订", parent.Status)
+	}
+	if reason == "" {
+		return controlplane.BundleRecord{}, errors.New("draft_edit_reason_required")
+	}
+	manifest.Bundle.Status = "published"
+	manifest.Bundle.Digest = fixture.ComputeBundleDigest(manifest)
+	if manifest.Bundle.Digest == parent.Digest {
+		return controlplane.BundleRecord{}, errors.New("draft_edit_no_changes")
+	}
+	input := parent.Input
+	input.ParentBundleDigest = parent.Digest
+	input.DraftRevision++
+	input.EditReason = reason
+	return r.Compile(controlplane.Actor{ID: actor.ID, Role: controlplane.RoleCompiler}, input, manifest, now)
+}
+
 func (r *BundleRegistry) Validate(actor controlplane.Actor, digest string, report controlplane.ValidationReport, now time.Time) (controlplane.BundleRecord, error) {
 	if actor.Role != controlplane.RoleCompiler || actor.ID == "" {
 		return controlplane.BundleRecord{}, errors.New("forbidden: 仅 compiler 身份可验证 draft")
@@ -160,7 +187,7 @@ func (r *BundleRegistry) Validate(actor controlplane.Actor, digest string, repor
 	if updated.RowsAffected() != 1 {
 		return controlplane.BundleRecord{}, fmt.Errorf("invalid_transition: %s", currentBundleStatus(tx, ctx, digest))
 	}
-	if err := r.insertApproval(ctx, tx, digest, "validate", actor.ID, now); err != nil {
+	if err := r.insertApproval(ctx, tx, digest, "validate", actor.ID, actor.Role, now); err != nil {
 		return controlplane.BundleRecord{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -193,7 +220,33 @@ func (r *BundleRegistry) Approve(actor controlplane.Actor, digest string, now ti
 	if actor.ID == creator {
 		return controlplane.BundleRecord{}, errors.New("forbidden: compiler 不得自审")
 	}
-	if err := r.insertApproval(ctx, tx, digest, "approve", actor.ID, now); err != nil {
+	var existingActorRole string
+	err = tx.QueryRow(ctx, `
+		SELECT actor_role FROM fixture.approval
+		WHERE bundle_id = (SELECT id FROM fixture.bundle WHERE digest = $1)
+		  AND stage = 'approve' AND decision = 'approved' AND actor_id = $2
+		ORDER BY decided_at DESC, id DESC LIMIT 1
+	`, digest, actor.ID).Scan(&existingActorRole)
+	if err == nil {
+		return controlplane.BundleRecord{}, errors.New("forbidden: 同一审批人不得同时满足多角色审批")
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return controlplane.BundleRecord{}, err
+	}
+	var existingRoleActor string
+	err = tx.QueryRow(ctx, `
+		SELECT actor_id FROM fixture.approval
+		WHERE bundle_id = (SELECT id FROM fixture.bundle WHERE digest = $1)
+		  AND stage = 'approve' AND decision = 'approved' AND actor_role = $2
+		ORDER BY decided_at DESC, id DESC LIMIT 1
+	`, digest, string(actor.Role)).Scan(&existingRoleActor)
+	if err == nil {
+		return controlplane.BundleRecord{}, fmt.Errorf("conflict: %s Bundle 审批已存在", actor.Role)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return controlplane.BundleRecord{}, err
+	}
+	if err := r.insertApproval(ctx, tx, digest, "approve", actor.ID, actor.Role, now); err != nil {
 		return controlplane.BundleRecord{}, err
 	}
 	if _, err := tx.Exec(ctx, `
@@ -235,7 +288,7 @@ func (r *BundleRegistry) Publish(actor controlplane.Actor, digest string, now ti
 		digest, published.Key, published.Digest, published.Size, now.UTC()); err != nil {
 		return controlplane.BundleRecord{}, err
 	}
-	if err := r.insertApproval(ctx, tx, digest, "publish", actor.ID, now); err != nil {
+	if err := r.insertApproval(ctx, tx, digest, "publish", actor.ID, actor.Role, now); err != nil {
 		return controlplane.BundleRecord{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -312,43 +365,50 @@ func (r *BundleRegistry) GetPublished(digest string) (controlplane.BundleRecord,
 
 func (r *BundleRegistry) ResolvePublished(supportID, variant, node, container string) (controlplane.BundleRecord, error) {
 	ctx := context.Background()
-	row := r.pool.QueryRow(ctx, `
-		SELECT b.digest, b.input_fingerprint, b.compile_input, b.object_uri, b.object_digest, b.size_bytes, b.status, b.created_by, b.stale_reason, b.created_at, b.updated_at
+	rows, err := r.pool.Query(ctx, `
+		SELECT b.digest
 		FROM fixture.bundle b
 		JOIN control_plane.scenario s ON s.id = b.scenario_id
-		WHERE s.support_id = $1 AND b.status = 'published'
-		ORDER BY b.created_at DESC
-		LIMIT 1
+		WHERE s.support_id = $1 AND b.status = 'published' AND b.compile_input IS NOT NULL
+		ORDER BY b.created_at DESC, b.digest
 	`, supportID)
-	var record controlplane.BundleRecord
-	var inputJSON []byte
-	var staleReason *string
-	if err := row.Scan(&record.Digest, &record.InputFingerprint, &inputJSON, &record.Object.Key, &record.Object.Digest, &record.Object.Size, &record.Status, &record.Creator, &staleReason, &record.CreatedAt, &record.UpdatedAt); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return controlplane.BundleRecord{}, errors.New("bundle_resolution_missing")
-		}
-		return controlplane.BundleRecord{}, err
-	}
-	if staleReason != nil {
-		record.StaleReason = *staleReason
-	}
-	if err := json.Unmarshal(inputJSON, &record.Input); err != nil {
-		return controlplane.BundleRecord{}, fmt.Errorf("bundle_input_corrupt: %w", err)
-	}
-	raw, err := r.objectStore.ReadPublished(record.Object)
 	if err != nil {
 		return controlplane.BundleRecord{}, err
 	}
-	router, err := fixture.Parse(raw)
-	if err != nil {
-		return controlplane.BundleRecord{}, err
-	}
-	for _, route := range router.Routes() {
-		if route.Variant == variant && route.RouteKey.Node == node && route.RouteKey.Container == container {
-			return record, nil
+	defer rows.Close()
+	var selected *controlplane.BundleRecord
+	for rows.Next() {
+		var digest string
+		if err := rows.Scan(&digest); err != nil {
+			return controlplane.BundleRecord{}, err
+		}
+		record, err := r.GetPublished(digest)
+		if err != nil {
+			return controlplane.BundleRecord{}, err
+		}
+		router, err := fixture.Parse(record.Manifest)
+		if err != nil {
+			return controlplane.BundleRecord{}, err
+		}
+		for _, route := range router.Routes() {
+			if route.Variant != variant || route.RouteKey.Node != node || route.RouteKey.Container != container {
+				continue
+			}
+			if selected != nil && selected.Digest != record.Digest {
+				return controlplane.BundleRecord{}, errors.New("bundle_resolution_ambiguous")
+			}
+			copy := record
+			selected = &copy
+			break
 		}
 	}
-	return controlplane.BundleRecord{}, errors.New("bundle_resolution_missing")
+	if err := rows.Err(); err != nil {
+		return controlplane.BundleRecord{}, err
+	}
+	if selected == nil {
+		return controlplane.BundleRecord{}, errors.New("bundle_resolution_missing")
+	}
+	return *selected, nil
 }
 
 func (r *BundleRegistry) Get(digest string) (controlplane.BundleRecord, error) {
@@ -361,7 +421,47 @@ func (r *BundleRegistry) Get(digest string) (controlplane.BundleRecord, error) {
 		       ), '[]'::jsonb)
 		FROM fixture.bundle b WHERE b.digest = $1
 	`, digest)
-	return scanBundle(row)
+	record, err := scanBundle(row)
+	if err != nil {
+		return controlplane.BundleRecord{}, err
+	}
+	raw, err := r.objectStore.Read(record.Object)
+	if err != nil {
+		return controlplane.BundleRecord{}, err
+	}
+	if record.Object.Digest != digestBytes(raw) || record.Object.Size != int64(len(raw)) {
+		return controlplane.BundleRecord{}, errors.New("bundle_integrity_failed: metadata 与对象 payload 不一致")
+	}
+	record.Manifest = raw
+	return record, nil
+}
+
+func (r *BundleRegistry) List(supportID string) ([]controlplane.BundleRecord, error) {
+	ctx := context.Background()
+	rows, err := r.pool.Query(ctx, `
+		SELECT b.digest
+		FROM fixture.bundle b
+		JOIN control_plane.scenario s ON s.id = b.scenario_id
+		WHERE ($1 = '' OR s.support_id = $1) AND b.compile_input IS NOT NULL
+		ORDER BY b.updated_at DESC, b.digest
+	`, supportID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	records := make([]controlplane.BundleRecord, 0)
+	for rows.Next() {
+		var digest string
+		if err := rows.Scan(&digest); err != nil {
+			return nil, err
+		}
+		record, err := r.Get(digest)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
 }
 
 func scanBundle(row pgx.Row) (controlplane.BundleRecord, error) {
@@ -399,12 +499,12 @@ func scanBundle(row pgx.Row) (controlplane.BundleRecord, error) {
 	return record, nil
 }
 
-func (r *BundleRegistry) insertApproval(ctx context.Context, tx pgx.Tx, digest, stage, actorID string, now time.Time) error {
+func (r *BundleRegistry) insertApproval(ctx context.Context, tx pgx.Tx, digest, stage, actorID string, actorRole controlplane.Role, now time.Time) error {
 	var bundleID uuid.UUID
 	if err := tx.QueryRow(ctx, `SELECT id FROM fixture.bundle WHERE digest = $1`, digest).Scan(&bundleID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO fixture.approval (bundle_id, stage, actor_id, actor_role, decision) VALUES ($1, $2, $3, $4, 'approved')`, bundleID, stage, actorID, "publisher"); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO fixture.approval (bundle_id, stage, actor_id, actor_role, decision, decided_at) VALUES ($1, $2, $3, $4, 'approved', $5)`, bundleID, stage, actorID, string(actorRole), now.UTC()); err != nil {
 		return err
 	}
 	return nil

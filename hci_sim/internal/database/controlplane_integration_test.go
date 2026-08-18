@@ -165,6 +165,9 @@ func TestBundleRegistryCompileAndLifecycle(t *testing.T) {
 	if approved1.Status != controlplane.BundleValidated {
 		t.Fatalf("expected still validated before security, got %s", approved1.Status)
 	}
+	if _, err := bundleRepo.Approve(controlplane.Actor{ID: "expert-test", Role: controlplane.RoleSecurity}, drafted.Digest, now); err == nil {
+		t.Fatal("same actor must not satisfy expert and security approval")
+	}
 	approved2, err := bundleRepo.Approve(controlplane.Actor{ID: "security-test", Role: controlplane.RoleSecurity}, drafted.Digest, now)
 	if err != nil {
 		t.Fatalf("security approve: %v", err)

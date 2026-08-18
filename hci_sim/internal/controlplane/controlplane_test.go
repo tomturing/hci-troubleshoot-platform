@@ -35,6 +35,21 @@ func compileInput() CompileInput {
 	}
 }
 
+func TestCompileInputFingerprintDoesNotMutateCaller(t *testing.T) {
+	input := compileInput()
+	input.Artifacts = []Artifact{{ID: "z", Digest: "sha256:z"}, {ID: "a", Digest: "sha256:a"}}
+	input.Dependencies = []Dependency{
+		{Type: "tool", ID: "z", Revision: "1", Digest: "sha256:z"},
+		{Type: "kbd", ID: "a", Revision: "1", Digest: "sha256:a"},
+	}
+	if _, err := input.Fingerprint(); err != nil {
+		t.Fatal(err)
+	}
+	if input.Artifacts[0].ID != "z" || input.Dependencies[0].Type != "tool" {
+		t.Fatalf("Fingerprint 不得修改调用方顺序: %+v %+v", input.Artifacts, input.Dependencies)
+	}
+}
+
 func registryWithApprovedArtifact(t *testing.T, now time.Time) *MemoryRegistry {
 	t.Helper()
 	artifacts := NewMemoryArtifactRegistry()
@@ -131,6 +146,100 @@ func TestRegistryRejectsNonDeterministicCompilationAndSplitRoleBySameActor(t *te
 	}
 	if _, err := registry.Approve(Actor{ID: "reviewer", Role: RoleSecurity}, draft.Digest, now); err == nil {
 		t.Fatal("one person must not satisfy both mandatory approval roles")
+	}
+}
+
+func TestExpertEditCreatesImmutableDraftRevisionAndPreventsSelfApproval(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	registry := registryWithApprovedArtifact(t, now)
+	parent, err := registry.Compile(Actor{ID: "compiler", Role: RoleCompiler}, compileInput(), fixtureManifest(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	editedManifest := fixtureManifest()
+	editedManifest.Routes[0].Result.Stdout = "flock 9527\nexpert corrected evidence\n"
+	edited, err := registry.ReviseDraft(
+		Actor{ID: "expert-editor", Role: RoleExpert},
+		parent.Digest,
+		editedManifest,
+		"修正真实采集输出中的关键进程证据",
+		now.Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edited.Status != BundleDraft || edited.Digest == parent.Digest || edited.Input.ParentBundleDigest != parent.Digest || edited.Input.DraftRevision != 1 {
+		t.Fatalf("edited draft=%+v", edited)
+	}
+	if original, err := registry.Get(parent.Digest); err != nil || original.Digest != parent.Digest {
+		t.Fatalf("父 Draft 必须保持可追溯: %+v %v", original, err)
+	}
+	if _, err := registry.Validate(Actor{ID: "compiler", Role: RoleCompiler}, edited.Digest, ValidationReport{MutationDetected: true, SecretScanPassed: true, IndependentProof: true}, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Approve(Actor{ID: "expert-editor", Role: RoleExpert}, edited.Digest, now.Add(3*time.Minute)); err == nil {
+		t.Fatal("Draft 修改者不得自审同一 revision")
+	}
+}
+
+func TestKBDContractFlowCollectionFourScansDualReviewDraftEditAndPublish(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	artifacts := NewMemoryArtifactRegistry()
+	metadata := ArtifactRecord{
+		ID: "artifact-kbd-27123", Digest: "sha256:artifact-kbd-27123", SizeBytes: 2048,
+		MediaType: "application/json", Schema: "hci-observation/v1", TraceID: "trace-kbd-27123-flow",
+		Provenance: ArtifactProvenance{
+			SourceType: "authorized-readonly-collection", SourceRefDigest: "sha256:source-kbd-27123",
+			RedactionDigest: "sha256:redacted-kbd-27123", CollectorID: "collector-kbd-27123",
+			CollectedAt: now, CollectionPolicy: "collection-policy-v1",
+		},
+	}
+	registered, err := artifacts.Register(Actor{ID: "collector-service", Role: RoleCompiler}, metadata, now)
+	if err != nil || registered.Status != ArtifactStaged {
+		t.Fatalf("collection register=%+v err=%v", registered, err)
+	}
+	scanned, err := artifacts.RecordScan(Actor{ID: "scanner-service", Role: RoleSecurity}, metadata.ID, ArtifactScanReport{
+		ScannerRevision: "scanner-contract-v1", SecretScanPassed: true, PIIScanPassed: true, LicenseScanPassed: true, SchemaValid: true,
+	}, now.Add(time.Minute))
+	if err != nil || scanned.Status != ArtifactScanned {
+		t.Fatalf("four scans=%+v err=%v", scanned, err)
+	}
+	if _, err := artifacts.Approve(Actor{ID: "artifact-expert", Role: RoleExpert}, metadata.ID, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	approvedArtifact, err := artifacts.Approve(Actor{ID: "artifact-security", Role: RoleSecurity}, metadata.ID, now.Add(3*time.Minute))
+	if err != nil || approvedArtifact.Status != ArtifactApproved {
+		t.Fatalf("artifact dual review=%+v err=%v", approvedArtifact, err)
+	}
+
+	registry := NewMemoryRegistryWithDependencies(artifacts, NewMemoryBundleObjectStore())
+	input := compileInput()
+	input.Artifacts = []Artifact{{ID: metadata.ID, Digest: metadata.Digest}}
+	draft, err := registry.Compile(Actor{ID: "compiler-service", Role: RoleCompiler}, input, fixtureManifest(), now.Add(4*time.Minute))
+	if err != nil || draft.Status != BundleDraft {
+		t.Fatalf("compile draft=%+v err=%v", draft, err)
+	}
+	editedManifest := fixtureManifest()
+	editedManifest.Routes[0].Result.Stdout = "flock 9527\nexpert verified\n"
+	edited, err := registry.ReviseDraft(Actor{ID: "bundle-editor", Role: RoleExpert}, draft.Digest, editedManifest, "补充专家确认的进程证据", now.Add(5*time.Minute))
+	if err != nil || edited.Status != BundleDraft {
+		t.Fatalf("expert draft=%+v err=%v", edited, err)
+	}
+	if _, err := registry.Validate(Actor{ID: "compiler-service", Role: RoleCompiler}, edited.Digest, ValidationReport{MutationDetected: true, SecretScanPassed: true, IndependentProof: true}, now.Add(6*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Approve(Actor{ID: "bundle-expert", Role: RoleExpert}, edited.Digest, now.Add(7*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Approve(Actor{ID: "bundle-security", Role: RoleSecurity}, edited.Digest, now.Add(8*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	published, err := registry.Publish(Actor{ID: "publisher-service", Role: RolePublisher}, edited.Digest, now.Add(9*time.Minute))
+	if err != nil || published.Status != BundlePublished {
+		t.Fatalf("publish=%+v err=%v", published, err)
+	}
+	if _, err := registry.GetPublished(published.Digest); err != nil {
+		t.Fatalf("published bundle integrity: %v", err)
 	}
 }
 

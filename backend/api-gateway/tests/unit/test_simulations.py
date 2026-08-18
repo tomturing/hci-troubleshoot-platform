@@ -6,6 +6,7 @@ import os
 import sys
 from unittest.mock import AsyncMock, patch
 
+import httpx
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
@@ -14,6 +15,63 @@ if _svc not in sys.path:
     sys.path.insert(0, _svc)
 
 from app.main import app
+
+
+def test_bundle_factory_reads_c1_and_injects_compiler_identity():
+    client = TestClient(app)
+    capability = {
+        "support_id": "27123",
+        "status": "ready_for_artifact_binding",
+        "resolved": {
+            "support_id": "27123",
+            "kbd_revision": 25,
+            "kbd_checksum": "sha256:kbd",
+            "signals_digest": "sha256:signals",
+            "tool_contract_revision": "tool-r25",
+            "policy_revision": "policy-r1",
+            "synthetic_routes": [{"signal_id": "sig-1", "tool": "qfk_system", "argv": ["acli", "system", "ps"]}],
+        },
+    }
+    runtime_response = JSONResponse({"bundle": {"digest": "sha256:bundle", "status": "draft"}}, status_code=201)
+    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=httpx.Response(200, json=capability))) as c1_get, patch(
+        "app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)
+    ) as runtime_post:
+        response = client.post("/api/hci-sim/v1/control-plane/bundles", json={"support_id": "27123"})
+
+    assert response.status_code == 201
+    assert "/api/kb/hci-sim/capabilities/27123" in c1_get.await_args.args[0]
+    assert runtime_post.await_args.kwargs["actor_role"] == "compiler"
+    assert len(runtime_post.await_args.kwargs["trace_id"]) == 32
+    assert runtime_post.await_args.args[1]["resolved"]["kbd_revision"] == 25
+
+
+def test_bundle_factory_rejects_c1_gap_without_compiling():
+    client = TestClient(app)
+    capability = {"support_id": "27123", "status": "capability_gap", "capability_gaps": [{"code": "KBD_NOT_PUBLISHED"}]}
+    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=httpx.Response(200, json=capability))), patch(
+        "app.routes.simulations._post", new=AsyncMock()
+    ) as runtime_post:
+        response = client.post("/api/hci-sim/v1/control-plane/bundles", json={"support_id": "27123"})
+
+    assert response.status_code == 409
+    runtime_post.assert_not_awaited()
+
+
+def test_bundle_factory_actions_use_server_mapped_split_roles():
+    client = TestClient(app)
+    runtime_response = JSONResponse({"bundle": {"digest": "sha256:bundle", "status": "validated"}}, status_code=200)
+    with patch("app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)) as runtime_post:
+        assert client.post(
+            "/api/hci-sim/v1/control-plane/bundles/sha256:bundle/revise",
+            json={"manifest": {}, "reason": "专家修订"},
+        ).status_code == 200
+        assert runtime_post.await_args.kwargs["actor_role"] == "expert"
+        assert runtime_post.await_args.kwargs["actor_purpose"] == "edit"
+        assert client.post("/api/hci-sim/v1/control-plane/bundles/sha256:bundle/approve-expert").status_code == 200
+        assert runtime_post.await_args.kwargs["actor_role"] == "expert"
+        assert "actor_purpose" not in runtime_post.await_args.kwargs
+        assert client.post("/api/hci-sim/v1/control-plane/bundles/sha256:bundle/approve-security").status_code == 200
+        assert runtime_post.await_args.kwargs["actor_role"] == "security"
 
 
 def test_simulation_test_run_binds_platform_case_before_runtime():

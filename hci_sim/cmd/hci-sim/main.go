@@ -208,6 +208,11 @@ func runServer() error {
 	var runRepository *database.RunRepository
 	var databasePool interface{ Close() }
 	var controlplaneRegistry controlplane.Registry
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("HCI_SIM_CONTROLPLANE_REGISTRY")), "memory") {
+		artifactRegistry := controlplane.NewMemoryArtifactRegistry()
+		controlplaneRegistry = controlplane.NewMemoryRegistryWithDependencies(artifactRegistry, controlplane.NewMemoryBundleObjectStore())
+		log.Printf("hci-sim controlplane registry initialized (memory; development only)")
+	}
 	if databaseTarget.Configured {
 		pool, openErr := database.Open(ctx, databaseTarget)
 		if openErr != nil {
@@ -232,7 +237,11 @@ func runServer() error {
 			if artifactErr != nil {
 				return fmt.Errorf("构造 PG ArtifactRegistry 失败: %w", artifactErr)
 			}
-			controlplaneRegistry, err = database.NewBundleRegistry(pool, artifactRepo, controlplane.NewMemoryBundleObjectStore())
+			objectStore, objectStoreErr := controlplane.NewFileBundleObjectStore(env("HCI_SIM_BUNDLE_OBJECT_DIR", "/var/lib/hci-sim/bundles"))
+			if objectStoreErr != nil {
+				return fmt.Errorf("构造 Bundle 持久化对象存储失败: %w", objectStoreErr)
+			}
+			controlplaneRegistry, err = database.NewBundleRegistry(pool, artifactRepo, objectStore)
 			if err != nil {
 				return fmt.Errorf("构造 PG BundleRegistry 失败: %w", err)
 			}
@@ -307,6 +316,7 @@ func runServer() error {
 	controlAuthorized := func(r *http.Request) bool {
 		return (controlToken != "" && r.Header.Get("Authorization") == "Bearer "+controlToken) || (controlToken == "" && allowInsecureControlAPI)
 	}
+	registerControlPlaneAPI(mux, controlplaneRegistry, controlToken, allowInsecureControlAPI)
 	mux.HandleFunc("/v1/simulations/capabilities/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || !controlAuthorized(r) {
 			http.Error(w, "forbidden", http.StatusForbidden)

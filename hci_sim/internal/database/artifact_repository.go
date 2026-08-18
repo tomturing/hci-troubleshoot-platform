@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -41,25 +42,29 @@ func (r *ArtifactRepository) Register(actor controlplane.Actor, record controlpl
 	if err := validateArtifactProvenance(record); err != nil {
 		return controlplane.ArtifactRecord{}, err
 	}
-	tag := fmt.Sprintf("%s|%s", record.MediaType, record.Schema)
 	row := r.pool.QueryRow(ctx, `
 		INSERT INTO artifact.metadata
 			(id, digest, size_bytes, media_type, schema_version, source_type, source_ref_digest,
 			 redaction_digest, collection_policy, collector_id, collected_at, status, ingested_by, trace_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'staged', $12, NULLIF($13, ''))
 		ON CONFLICT (id) DO NOTHING
-	`, record.ID, record.Digest, record.SizeBytes, record.MediaType, tag, record.Provenance.SourceType,
+	`, record.ID, record.Digest, record.SizeBytes, record.MediaType, record.Schema, record.Provenance.SourceType,
 		record.Provenance.SourceRefDigest, record.Provenance.RedactionDigest, record.Provenance.CollectionPolicy,
 		record.Provenance.CollectorID, record.Provenance.CollectedAt.UTC(), actor.ID, record.TraceID)
 	if err := row.Scan(); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return controlplane.ArtifactRecord{}, fmt.Errorf("artifact_register_failed: %w", err)
 	}
-	// schema_version 列承载 media|schema 复合标签以保留两个字段；冲突校验须比对原值。
 	stored, err := r.Get(record.ID)
 	if err != nil {
 		return controlplane.ArtifactRecord{}, err
 	}
-	if stored.Digest != record.Digest || stored.MediaType != record.MediaType || stored.Schema != record.Schema || stored.Provenance != record.Provenance {
+	// 比较 Provenance 关键字段，排除时间精度差异（CollectedAt 在 PG 中精度为微秒）
+	provenanceMatch := stored.Provenance.SourceType == record.Provenance.SourceType &&
+		stored.Provenance.SourceRefDigest == record.Provenance.SourceRefDigest &&
+		stored.Provenance.RedactionDigest == record.Provenance.RedactionDigest &&
+		stored.Provenance.CollectorID == record.Provenance.CollectorID &&
+		stored.Provenance.CollectionPolicy == record.Provenance.CollectionPolicy
+	if stored.Digest != record.Digest || stored.MediaType != record.MediaType || stored.Schema != record.Schema || !provenanceMatch {
 		return controlplane.ArtifactRecord{}, errors.New("artifact_id_conflict")
 	}
 	if stored.Status == controlplane.ArtifactRevoked {
@@ -235,6 +240,10 @@ func scanArtifact(row pgx.Row) (controlplane.ArtifactRecord, error) {
 		return controlplane.ArtifactRecord{}, err
 	}
 	record.Schema = tag
+	// 兼容 PR788 早期适配器写入的 "media_type|schema" 复合值；新记录只写 schema。
+	if prefix := record.MediaType + "|"; strings.HasPrefix(record.Schema, prefix) {
+		record.Schema = strings.TrimPrefix(record.Schema, prefix)
+	}
 	if len(scanRaw) > 0 {
 		var scan controlplane.ArtifactScanReport
 		if err := json.Unmarshal(scanRaw, &scan); err == nil {

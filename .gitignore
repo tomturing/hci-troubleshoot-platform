@@ -117,3 +117,7 @@ SPT源数据*.xlsx
 案例*.xlsx
 【案例治理】*.xlsx
 scripts/kbd/
+
+# Go 测试/构建产物不得进入源码仓库
+hci_sim/*.test
+hci_sim/database.test

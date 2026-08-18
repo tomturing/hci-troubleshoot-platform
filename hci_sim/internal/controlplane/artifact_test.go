@@ -125,3 +125,37 @@ func TestBundleObjectStoreCommitsOnlyVerifiedContentAddressedBytes(t *testing.T)
 		t.Fatalf("published payload must be readable and integrity-checked: %q %v", loaded, err)
 	}
 }
+
+func TestFileBundleObjectStoreSurvivesRestart(t *testing.T) {
+	root := t.TempDir()
+	raw := []byte(`{"schema_version":"2.0"}`)
+	digest := digestBytes(raw)
+	store, err := NewFileBundleObjectStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged, err := store.Prepare(raw, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parallel, err := store.Prepare(raw, digest)
+	if err != nil || parallel.Key == staged.Key {
+		t.Fatalf("并发 Prepare 必须使用独立 staging key: first=%+v parallel=%+v err=%v", staged, parallel, err)
+	}
+	store.Abort(parallel)
+	if err := store.Verify(staged); err != nil {
+		t.Fatalf("另一个事务 Abort 不得删除当前 staging 对象: %v", err)
+	}
+	published, err := store.Commit(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewFileBundleObjectStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := restarted.ReadPublished(published)
+	if err != nil || string(got) != string(raw) {
+		t.Fatalf("restart read=%q err=%v", got, err)
+	}
+}

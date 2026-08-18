@@ -41,6 +41,15 @@ database:
   existingSecret: hci-sim-runtime-credentials
   urlSecretKey: HCI_SIM_DATABASE_URL
 
+controlplane:
+  registry: postgres
+  objectStore:
+    mountPath: /var/lib/hci-sim/bundles
+    existingClaim: ""
+    storageClass: local-path-retain
+    accessMode: ReadWriteOnce
+    size: 2Gi
+
 fixture:
   # GitOps 发布集合只接受 chart 内置、经 PR 审查且 digest 固定的 manifest。
   # 每次集合或内容变化都会改变 Pod checksum 并触发失败关闭的滚动更新。

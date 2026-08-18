@@ -55,6 +55,16 @@ spec:
                   name: {{ .Values.apiGateway.hciSim.controlTokenSecretName }}
                   key: {{ .Values.apiGateway.hciSim.controlTokenSecretKey }}
                   optional: false
+            - name: HCI_SIM_COMPILER_ACTOR_ID
+              value: {{ .Values.apiGateway.hciSim.compilerActorId | quote }}
+            - name: HCI_SIM_EXPERT_EDITOR_ACTOR_ID
+              value: {{ .Values.apiGateway.hciSim.expertEditorActorId | quote }}
+            - name: HCI_SIM_EXPERT_REVIEWER_ACTOR_ID
+              value: {{ .Values.apiGateway.hciSim.expertReviewerActorId | quote }}
+            - name: HCI_SIM_SECURITY_ACTOR_ID
+              value: {{ .Values.apiGateway.hciSim.securityActorId | quote }}
+            - name: HCI_SIM_PUBLISHER_ACTOR_ID
+              value: {{ .Values.apiGateway.hciSim.publisherActorId | quote }}
             {{- end }}
           livenessProbe:
             httpGet:

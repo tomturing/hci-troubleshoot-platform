@@ -9,6 +9,8 @@ Runtime 生成无法追踪的伪工单号。
 import contextlib
 import hashlib
 import json
+import re
+import uuid
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -19,12 +21,48 @@ from app.config import settings
 router = APIRouter(prefix="/api/hci-sim", tags=["hci-sim"])
 
 
-async def _post(path: str, payload: dict, idempotency_key: str | None = None) -> JSONResponse:
+def _trace_id(request: Request) -> str:
+    """为一次 Gateway→C1→hci-sim 调用生成稳定且不含用户数据的调用链 ID。"""
+
+    incoming = request.headers.get("X-Trace-ID", "").strip()
+    if re.fullmatch(r"[a-zA-Z0-9._:-]{8,64}", incoming):
+        return incoming
+    return uuid.uuid4().hex
+
+
+def _actor_id(role: str, purpose: str | None = None) -> str:
+    actors = {
+        "compiler": settings.HCI_SIM_COMPILER_ACTOR_ID,
+        "expert": (
+            settings.HCI_SIM_EXPERT_EDITOR_ACTOR_ID
+            if purpose == "edit"
+            else settings.HCI_SIM_EXPERT_REVIEWER_ACTOR_ID
+        ),
+        "security": settings.HCI_SIM_SECURITY_ACTOR_ID,
+        "publisher": settings.HCI_SIM_PUBLISHER_ACTOR_ID,
+    }
+    return actors[role]
+
+
+async def _post(
+    path: str,
+    payload: dict,
+    idempotency_key: str | None = None,
+    *,
+    actor_role: str | None = None,
+    actor_purpose: str | None = None,
+    trace_id: str | None = None,
+) -> JSONResponse:
     headers = {"Content-Type": "application/json"}
     if settings.HCI_SIM_CONTROL_TOKEN:
         headers["Authorization"] = f"Bearer {settings.HCI_SIM_CONTROL_TOKEN}"
     if idempotency_key:
         headers["Idempotency-Key"] = idempotency_key
+    if actor_role:
+        headers["X-HCI-Sim-Actor-ID"] = _actor_id(actor_role, actor_purpose)
+        headers["X-HCI-Sim-Actor-Role"] = actor_role
+    if trace_id:
+        headers["X-Trace-ID"] = trace_id
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(f"{settings.HCI_SIM_URL.rstrip('/')}{path}", json=payload, headers=headers)
@@ -67,6 +105,112 @@ def _json_response_body(response: JSONResponse) -> dict:
 @router.post("/v1/simulations/build")
 async def build(request: Request) -> JSONResponse:
     return await _post("/v1/simulations/build", await request.json(), request.headers.get("Idempotency-Key"))
+
+
+@router.get("/v1/control-plane/bundles")
+async def list_bundles(request: Request, support_id: str | None = None) -> JSONResponse:
+    suffix = ""
+    if support_id:
+        if not re.fullmatch(r"\d{1,20}", support_id):
+            raise HTTPException(status_code=400, detail="support_id must be 1-20 digits")
+        suffix = f"?support_id={support_id}"
+    return await _get(f"/v1/control-plane/bundles{suffix}", trace_id=_trace_id(request))
+
+
+@router.get("/v1/control-plane/bundles/{bundle_digest}")
+async def get_bundle(bundle_digest: str, request: Request) -> JSONResponse:
+    return await _get(f"/v1/control-plane/bundles/{bundle_digest}", trace_id=_trace_id(request))
+
+
+@router.post("/v1/control-plane/bundles")
+async def create_bundle_draft(request: Request) -> JSONResponse:
+    """读取 C1 权威快照并创建 synthetic Draft；不接受浏览器提交 KBD revision。"""
+
+    body = await request.json()
+    support_id = str(body.get("support_id", "")).strip() if isinstance(body, dict) else ""
+    if not re.fullmatch(r"\d{1,20}", support_id):
+        raise HTTPException(status_code=400, detail="support_id must be 1-20 digits")
+    trace_id = _trace_id(request)
+    headers = {
+        "Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}",
+        "X-Trace-ID": trace_id,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            capability_response = await client.get(
+                f"{settings.KB_SERVICE_URL.rstrip('/')}/api/kb/hci-sim/capabilities/{support_id}",
+                headers=headers,
+            )
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail="kb-service C1 resolver unavailable") from exc
+    try:
+        capability = capability_response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="C1 resolver returned invalid JSON") from exc
+    if capability_response.status_code >= 400:
+        return JSONResponse(content=capability, status_code=capability_response.status_code)
+    if capability.get("status") != "ready_for_artifact_binding" or not isinstance(capability.get("resolved"), dict):
+        return JSONResponse(
+            content={
+                "detail": "capability_gap: KBD is not ready_for_artifact_binding",
+                "capability": capability,
+                "trace_id": trace_id,
+            },
+            status_code=409,
+        )
+    payload = {
+        "resolved": capability["resolved"],
+        "node": str(body.get("node") or "SIM-HCI-NODE-01"),
+        "container": str(body.get("container") or "host"),
+        "compiler_revision": "bundle-factory-v1",
+    }
+    return await _post(
+        "/v1/control-plane/bundles",
+        payload,
+        request.headers.get("Idempotency-Key"),
+        actor_role="compiler",
+        trace_id=trace_id,
+    )
+
+
+@router.post("/v1/control-plane/bundles/{bundle_digest}/revise")
+async def revise_bundle_draft(bundle_digest: str, request: Request) -> JSONResponse:
+    return await _post(
+        f"/v1/control-plane/bundles/{bundle_digest}/revise",
+        await request.json(),
+        actor_role="expert",
+        actor_purpose="edit",
+        trace_id=_trace_id(request),
+    )
+
+
+async def _bundle_action(bundle_digest: str, action: str, role: str, request: Request) -> JSONResponse:
+    return await _post(
+        f"/v1/control-plane/bundles/{bundle_digest}/{action}",
+        {},
+        actor_role=role,
+        trace_id=_trace_id(request),
+    )
+
+
+@router.post("/v1/control-plane/bundles/{bundle_digest}/validate")
+async def validate_bundle(bundle_digest: str, request: Request) -> JSONResponse:
+    return await _bundle_action(bundle_digest, "validate", "compiler", request)
+
+
+@router.post("/v1/control-plane/bundles/{bundle_digest}/approve-expert")
+async def approve_bundle_expert(bundle_digest: str, request: Request) -> JSONResponse:
+    return await _bundle_action(bundle_digest, "approve-expert", "expert", request)
+
+
+@router.post("/v1/control-plane/bundles/{bundle_digest}/approve-security")
+async def approve_bundle_security(bundle_digest: str, request: Request) -> JSONResponse:
+    return await _bundle_action(bundle_digest, "approve-security", "security", request)
+
+
+@router.post("/v1/control-plane/bundles/{bundle_digest}/publish")
+async def publish_bundle(bundle_digest: str, request: Request) -> JSONResponse:
+    return await _bundle_action(bundle_digest, "publish", "publisher", request)
 
 
 @router.get("/v1/simulations/capabilities/{kbd_id}")
@@ -206,11 +350,13 @@ async def record_test_run_result(test_run_id: str, request: Request) -> JSONResp
     )
 
 
-async def _get(path: str) -> JSONResponse:
+async def _get(path: str, *, trace_id: str | None = None) -> JSONResponse:
     """执行带控制面 Token 的 Runtime GET 请求。"""
     headers = {}
     if settings.HCI_SIM_CONTROL_TOKEN:
         headers["Authorization"] = f"Bearer {settings.HCI_SIM_CONTROL_TOKEN}"
+    if trace_id:
+        headers["X-Trace-ID"] = trace_id
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(f"{settings.HCI_SIM_URL.rstrip('/')}{path}", headers=headers)

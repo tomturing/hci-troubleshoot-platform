@@ -17,6 +17,7 @@ import {
   Cpu,
   Folder,
   Collection,
+  Box,
 } from '@element-plus/icons-vue'
 
 const router = useRouter()
@@ -39,6 +40,7 @@ const menuIconMap: Record<string, Component> = {
   Cpu: markRaw(Cpu),
   Folder: markRaw(Folder),
   Collection: markRaw(Collection),
+  Box: markRaw(Box),
 }
 
 /** 获取侧边栏图标组件：优先使用静态 markRaw 字典，未匹配时回退到原字符串 */
