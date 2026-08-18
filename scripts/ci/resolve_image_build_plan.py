@@ -72,9 +72,9 @@ def changed_files() -> list[str]:
         base = os.environ.get("GITHUB_BASE_SHA", "")
         head = os.environ.get("GITHUB_HEAD_SHA", "")
     else:
-        # 主干发布优先使用最近一次成功镜像发布基线。没有该输出时再退回
-        # event.before，兼容手动调用和旧 workflow 运行。
-        base = os.environ.get("GITHUB_RELEASE_BASE_SHA") or os.environ.get("GITHUB_EVENT_BEFORE", "")
+        # 当前 push 只处理相邻提交。历史漏发由下方服务级基线分别补偿；若这里
+        # 再使用全局基线，promotion 清单会跨过已发布源码并重复触发镜像构建。
+        base = os.environ.get("GITHUB_EVENT_BEFORE", "")
         head = os.environ.get("GITHUB_SHA", "")
 
     if not base or not head or base == "0" * 40:
@@ -126,6 +126,11 @@ def add_service(selected: set[str], service: str) -> None:
     selected.add(service)
 
 
+def has_db_migrate_changes(paths: Iterable[str]) -> bool:
+    """数据库迁移没有独立服务基线，继续从全局发布基线补偿漏发。"""
+    return any(any(is_under(path, watched) for watched in DB_MIGRATE_PATHS) for path in paths)
+
+
 def select_services(paths: Iterable[str], *, force_all: bool) -> tuple[set[str], bool]:
     """按 Dockerfile COPY 边界计算服务闭包，并返回 (services, db_migrate)。"""
     selected: set[str] = set()
@@ -135,7 +140,7 @@ def select_services(paths: Iterable[str], *, force_all: bool) -> tuple[set[str],
         return {service for service, _, _ in ALL_SERVICES}, True
 
     for path in paths:
-        if any(is_under(path, watched) for watched in DB_MIGRATE_PATHS):
+        if has_db_migrate_changes((path,)):
             db_migrate = True
 
         # Dockerfile 明确 COPY backend/shared 到每个后端镜像；根 pyproject/uv.lock
@@ -198,10 +203,17 @@ def main() -> int:
     selected, db_migrate = select_services(paths, force_all=force_all)
     if event_name == "push":
         try:
+            current_sha = os.environ.get("GITHUB_SHA", "")
+            release_base = os.environ.get("GITHUB_RELEASE_BASE_SHA") or os.environ.get("GITHUB_EVENT_BEFORE", "")
+            if not SHA_RE.fullmatch(current_sha) or not SHA_RE.fullmatch(release_base):
+                raise ValueError("全局发布基线或当前 SHA 非法")
+            # 服务镜像使用各自基线恢复；只有尚无独立基线的 db-migrate 需要
+            # 继续检查全局发布区间，避免已完成的 hci-sim 源码被重复选中。
+            db_migrate = db_migrate or has_db_migrate_changes(changed_files_between(release_base, current_sha))
             recovered = reconciliation_services(
                 os.environ.get("GITHUB_SERVICE_RELEASE_BASELINES", ""),
-                os.environ.get("GITHUB_SHA", ""),
-                os.environ.get("GITHUB_RELEASE_BASE_SHA") or os.environ.get("GITHUB_EVENT_BEFORE", ""),
+                current_sha,
+                release_base,
             )
         except (OSError, subprocess.CalledProcessError, ValueError) as error:
             print(f"无法生成服务级发布补偿计划：{error}", file=sys.stderr)
