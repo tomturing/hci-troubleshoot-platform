@@ -99,6 +99,28 @@ func TestRouterSeparatesVariantsAndRendersVariables(t *testing.T) {
 	}
 }
 
+func TestParseRejectsUndeclaredOutputTemplate(t *testing.T) {
+	manifest := Manifest{
+		SchemaVersion: SchemaVersion,
+		Bundle:        BundleRef{Status: "published"},
+		KBD:           KBDRef{SupportID: "27123", Revision: 25, Checksum: "sha256:kbd"},
+		Contracts:     Contracts{ToolRevision: "tool", PolicyRevision: "policy"},
+		Variables:     map[string]string{"HOST": "SIM-NODE"},
+		Limits:        Limits{MaxRoutes: 1, MaxOutputBytesPerCommand: 4096, MaxBundleBytes: 65536},
+		Routes: []Route{{ID: "unknown-template", Variant: "positive-realistic", RouteKey: RouteKey{
+			Tool: "acli", AcquisitionKey: "acli:system", Argv: []string{"acli", "system", "ps"}, Node: "SIM-NODE", Container: "host",
+		}, Result: ResultDef{Stdout: "host={{HOST}} vm={{VM}}"}, Fault: FaultDef{Type: FaultNone}}},
+	}
+	manifest.Bundle.Digest = ComputeBundleDigest(manifest)
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(raw); err == nil || !strings.Contains(err.Error(), "未声明模板") {
+		t.Fatalf("未声明输出模板未被拒绝: %v", err)
+	}
+}
+
 func TestRouterRejectsAmbiguousRoutes(t *testing.T) {
 	argv := []string{"acli", "system", "lsof"}
 	_, err := Parse(testManifest(t, []Route{route("one", "positive-realistic", argv), route("two", "positive-realistic", argv)}))

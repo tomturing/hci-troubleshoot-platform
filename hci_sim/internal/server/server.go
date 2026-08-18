@@ -76,18 +76,18 @@ type Server struct {
 	listener   net.Listener
 }
 
-func routerForSupport(config Config, supportID string) *fixture.Router {
+func routerForClaims(config Config, claims lease.Claims) *fixture.Router {
 	if config.Pool != nil {
-		return config.Pool.Get(supportID)
+		return config.Pool.GetByDigest(claims.BundleDigest)
 	}
-	if config.Router != nil && config.Router.KBD().SupportID == supportID {
+	if config.Router != nil && config.Router.BundleDigest() == claims.BundleDigest {
 		return config.Router
 	}
 	return nil
 }
 
 func routerMatchesClaims(router *fixture.Router, claims lease.Claims) bool {
-	if router == nil || router.KBD().Revision != claims.KBDRevision {
+	if router == nil || router.KBD().SupportID != claims.SupportID || router.KBD().Revision != claims.KBDRevision {
 		return false
 	}
 	constantEqual := func(left, right string) bool {
@@ -160,7 +160,7 @@ func New(config Config) (*Server, error) {
 	s.sshConfig = &ssh.ServerConfig{
 		PasswordCallback: func(meta ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
 			claims, err := lease.Validate(config.LeaseSecret, string(password), "", config.LeaseIssuer, config.LeaseAudience, time.Now())
-			router := routerForSupport(config, claims.SupportID)
+			router := routerForClaims(config, claims)
 			if err != nil || meta.User() != "sim" || !routerMatchesClaims(router, claims) {
 				config.Metrics.LeaseRejectTotal.Add(1)
 				reason := safeError(err)
@@ -363,7 +363,7 @@ func (s *Server) execute(job *commandJob, workerID int) commandOutcome {
 		s.respond(job, outcome, "lease_quota_exceeded", err.Error())
 		return outcome
 	}
-	router := routerForSupport(s.config, job.claims.SupportID)
+	router := routerForClaims(s.config, job.claims)
 	if !routerMatchesClaims(router, job.claims) {
 		s.config.Metrics.CommandErrorsTotal.Add(1)
 		s.config.Metrics.FixtureMissesTotal.Add(1)

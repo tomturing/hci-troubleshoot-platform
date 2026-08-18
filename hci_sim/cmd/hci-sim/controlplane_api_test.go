@@ -11,6 +11,7 @@ import (
 )
 
 func TestBundleFactoryAPICompileReviseDualApproveAndPublish(t *testing.T) {
+	t.Setenv("HCI_SIM_ALLOW_SYNTHETIC_PUBLISH", "false")
 	registry := controlplane.NewMemoryRegistryWithDependencies(controlplane.NewMemoryArtifactRegistry(), controlplane.NewMemoryBundleObjectStore())
 	mux := http.NewServeMux()
 	registerControlPlaneAPI(mux, registry, "test-control-token", false)
@@ -48,8 +49,11 @@ func TestBundleFactoryAPICompileReviseDualApproveAndPublish(t *testing.T) {
 	if approved["bundle"].(map[string]any)["status"] != string(controlplane.BundleApproved) {
 		t.Fatalf("dual approval did not approve bundle: %+v", approved)
 	}
+	bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+childDigest+"/publish", map[string]any{}, "publisher", "publisher-service", http.StatusConflict)
+	t.Setenv("HCI_SIM_ALLOW_SYNTHETIC_PUBLISH", "true")
 	published := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+childDigest+"/publish", map[string]any{}, "publisher", "publisher-service", http.StatusOK)
-	if published["bundle"].(map[string]any)["status"] != string(controlplane.BundlePublished) || published["runtime_activation"] != "pending_gitops_sync" {
+	activation := published["runtime_activation"].(map[string]any)
+	if published["bundle"].(map[string]any)["status"] != string(controlplane.BundlePublished) || activation["status"] != "pending_gitops_sync" {
 		t.Fatalf("published response=%+v", published)
 	}
 }

@@ -44,8 +44,9 @@
 ### 2.3 运行时安全基线
 
 - 仅加载带 `bundle.digest` 的已发布 Manifest v2；拒绝未知字段、摘要漂移、非规范 argv、歧义 RouteKey。
-- `HCI_SIM_REQUIRED_BUNDLES` 必须与实际加载集合完全一致；缺失、夹带或 digest 漂移都会阻止 Runtime 启动。
-- 数据库启用时，Runtime 在监听端口前原子同步全部 Bundle Registry 元数据；新 digest 激活、旧 digest 失效和审计共用唯一 `trace_id`，任一步失败都会阻止启动。
+- `HCI_SIM_REQUIRED_BUNDLES` 必须与实际加载集合完全一致；缺失、夹带或 digest 漂移都会阻止 Runtime 启动。KBD revision 属于 Bundle 身份，按 active Bundle 读取，不使用全局 `HCI_SIM_ACTIVE_REVISION`。
+- 数据库启用时，Runtime 在监听端口前原子同步全部 Bundle Registry 元数据，并恢复 `fixture.bundle_activation` 中已确认指针；Bundle Factory 发布通过对象存储 + durable active pointer + ACK 原子热切换，旧 Lease 继续固定旧 digest，新 Run 使用新 digest，失败保留旧版本并可回滚。
+- synthetic Bundle 默认不能发布到 Runtime；只有显式开发环境开关 `HCI_SIM_ALLOW_SYNTHETIC_PUBLISH=true` 才允许契约测试使用，正式发布必须绑定 realistic Artifact/provenance。
 - 每个命令精确绑定 `variant + tool + acquisition_key + argv + virtual_node_id + container`，无正则/通配符/评分路由/默认 fixture。
 - SSH 仅接受 `htp2` 租约；签名、issuer、audience、`support_id + Bundle digest + KBD/工具/策略版本`、目标、时效及会话/命令/输出配额均受校验。
 - `exec` 与交互 shell 共用有界 worker 队列、每命令授权、fail-closed 路由；原始命令与 token 不进日志。
@@ -53,16 +54,16 @@
 
 ---
 
-## 3. 数据库层（独立库 `hci_sim`，16 张表 / 4 schema）
+## 3. 数据库层（独立库 `hci_sim`，17 张表 / 4 schema）
 
 迁移目录：`database/hci-sim-migrations/000001_control_plane.sql`（**独立库**，绝不被主库 Atlas Job 读取）。
 
 ### 3.1 四个领域 schema
 
-| schema | 责任 | 表（共 16） |
+| schema | 责任 | 表（共 17） |
 |---|---|---|
 | `control_plane` | 仿真运行控制面 | `scenario`、`run`、`run_attempt`、`run_event`、`run_result`、`run_outbox`、`runtime_instance` |
-| `fixture` | 已编译夹具 Bundle 与审批 | `bundle`、`dependency`、`provenance`、`approval`、`stale_outbox` |
+| `fixture` | 已编译夹具 Bundle、审批与激活指针 | `bundle`、`dependency`、`provenance`、`approval`、`stale_outbox`、`bundle_activation` |
 | `artifact` | 准入制品与安全扫描 | `metadata`、`scan`、`approval` |
 | `audit` | 审计 | `entity_event` |
 
@@ -83,8 +84,12 @@
 - `templates/deployment.yaml` / `templates/service.yaml`：部署与 SSH/HTTP 服务暴露。
 - `templates/networkpolicy.yaml`：限制入站来源命名空间，仅允许 `terminalBridgeNamespace` / `observabilityNamespace` / `apiGatewayNamespace` / `conversationServiceNamespace` 四个命名空间访问（CI 校验必填项缺失即失败）。
 - `templates/pdb.yaml` / `templates/resourcequota.yaml`：可用性与资源配额。
-- `files/*-fixture-manifest.json`：随附夹具清单；`fixture.manifestFiles` 是唯一 GitOps 发布集合，Helm 将其渲染为只读 ConfigMap，并把集合 digest 写入 Pod 模板触发滚动更新。
+- `files/*-fixture-manifest.json`：随附夹具清单；`fixture.manifestFiles` 是启动基线集合，Helm 将其渲染为只读 ConfigMap，并把集合 digest 写入 Pod 模板触发滚动更新；Bundle Factory 发布不再等待 GitOps/滚动重启。
 - `values.yaml` 中 `replicaCount` 为 `1`：内存配额 Tracker 是单副本实现。
+
+### 4.1.1 Bundle 发布与 GitOps 边界
+
+GitOps 适合管理镜像、Helm、NetworkPolicy、信任根和启动基线，不适合高频 Bundle 内容发布：每次变更都要提交、构建、Argo 同步和滚动重启，且 ConfigMap 有体积上限。Bundle Factory 使用不可变对象存储和 PostgreSQL `fixture.bundle_activation` 指针：Publish 后 Runtime 校验对象/digest/语义，原子替换 active Router 并写 ACK；失败保留旧版本，旧 Lease 仍按原 digest 执行，Rollback 只移动 active pointer。这样发布周期由分钟级 GitOps 变为秒级热激活，同时仍保留 GitOps 作为可审计基础设施和 bootstrap 回滚基线。
 
 ### 4.2 脚本（`scripts/hci-sim/`）
 
@@ -107,7 +112,7 @@
 | 工作流 | 作用 |
 |---|---|
 | `.github/workflows/hci-sim-go.yml` | Go 质量门禁：`gofmt`/`go test`/`go test -race`/`go vet`/`go build`；`published bundle and Helm gate` 校验已发布 bundle digest 一致、拒绝已退役的运行时 marker、Helm lint/template 并校验 NetworkPolicy 必填项。 |
-| `.github/workflows/hci-sim-db-migration-test.yml` | 隔离 PG 跑迁移校验 16 表，反向校验主库无 `agent_test_*` 表，验证 `hci_sim_runtime` 角色不能建表（DDL 负向检查），再跑 `internal/database` + `internal/reconciler` 的 CAS/幂等测试。 |
+| `.github/workflows/hci-sim-db-migration-test.yml` | 隔离 PG 跑迁移校验 17 张期望表，反向校验主库无 `agent_test_*` 表，验证 `hci_sim_runtime` 角色不能建表（DDL 负向检查），再跑 `internal/database` + `internal/reconciler` 的 CAS/幂等测试。 |
 
 ---
 
