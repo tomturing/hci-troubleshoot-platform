@@ -2,13 +2,14 @@ package database
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"testing"
 	"time"
 
 	"hci_sim/internal/controlplane"
 	"hci_sim/internal/fixture"
+
+	"github.com/google/uuid"
 )
 
 func TestArtifactRepositoryFullLifecycle(t *testing.T) {
@@ -31,19 +32,19 @@ func TestArtifactRepositoryFullLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 使用纳秒时间戳确保唯一性，支持并发测试
-	suffix := fmt.Sprintf("%016x", uint64(time.Now().UnixNano()))
+	// 使用 UUID 确保唯一性，避免并发测试冲突
+	testID := uuid.New().String()[:8]
 	now := time.Now().UTC()
 	record := controlplane.ArtifactRecord{
-		ID:        "art-" + suffix,
-		Digest:    integrationDigest("artifact-" + suffix),
+		ID:        "art-" + testID,
+		Digest:    integrationDigest("artifact-" + testID),
 		SizeBytes: 1024,
 		MediaType: "application/json",
 		Schema:    "v1",
 		Provenance: controlplane.ArtifactProvenance{
 			SourceType:       "controlled_collect",
-			SourceRefDigest:  integrationDigest("source-" + suffix),
-			RedactionDigest:  integrationDigest("redact-" + suffix),
+			SourceRefDigest:  integrationDigest("source-" + testID),
+			RedactionDigest:  integrationDigest("redact-" + testID),
 			CollectorID:      "collector-test",
 			CollectedAt:      now,
 			CollectionPolicy: "test-policy",
@@ -114,14 +115,14 @@ func TestBundleRegistryCompileAndLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// support_id 限制为 20 字符，使用 8 位 hex suffix
-	suffix := fmt.Sprintf("%08x", uint32(time.Now().UnixNano()&0xffffffff))
+	// support_id 限制为 20 字符，使用 8 位 UUID prefix
+	testID := uuid.New().String()[:8]
 	now := time.Now().UTC()
 	input := controlplane.CompileInput{
-		SupportID:            "t" + suffix,
+		SupportID:            "t" + testID,
 		KBDRevision:          1,
-		KBDChecksum:          integrationDigest("kbd-checksum-" + suffix),
-		SignalsDigest:        integrationDigest("signals-" + suffix),
+		KBDChecksum:          integrationDigest("kbd-" + testID),
+		SignalsDigest:        integrationDigest("signals-" + testID),
 		ToolContractRevision: "tool-r1",
 		PolicyRevision:       "policy-r1",
 		CompilerRevision:     "compiler-v1",

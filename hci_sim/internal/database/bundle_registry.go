@@ -181,7 +181,7 @@ func (r *BundleRegistry) Approve(actor controlplane.Actor, digest string, now ti
 	defer func() { _ = tx.Rollback(ctx) }()
 	var status string
 	var creator string
-	if err := tx.QueryRow(ctx, `SELECT status, created_by FROM fixture.bundle b JOIN control_plane.scenario s ON s.id = b.scenario_id WHERE b.digest = $1 FOR UPDATE`, digest).Scan(&status, &creator); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT b.status, b.created_by FROM fixture.bundle b JOIN control_plane.scenario s ON s.id = b.scenario_id WHERE b.digest = $1 FOR UPDATE`, digest).Scan(&status, &creator); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return controlplane.BundleRecord{}, errors.New("bundle_not_found")
 		}
