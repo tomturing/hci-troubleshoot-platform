@@ -12,6 +12,7 @@ from app.routes.extract_signals import (
     _validate_and_collect_signals,
 )
 from app.services.vision_processor import (
+    _VISION_MAX_TOKENS,
     VisionEmptyResultError,
     _assess_inference,
     _build_context_map_from_images_json,
@@ -234,6 +235,32 @@ async def test_vision_retry_success_does_not_raise_stale_error():
         )
 
     assert result == ("告警截图", "白色", ["磁盘告警"], "磁盘告警截图")
+
+
+@pytest.mark.asyncio
+async def test_vision_length_finish_reason_keeps_incomplete_result_rejected():
+    """输出预算应覆盖长截图，同时截断响应仍不得落库为成功。"""
+
+    image = Image.new("RGB", (2, 2), "white")
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(content="TYPE: 日志截图\nBACKGROUND: 黑色\nFULL_TEXT:\n- 部分日志"),
+            finish_reason="length",
+        )],
+        usage=None,
+    )
+    create = AsyncMock(return_value=response)
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+
+    with pytest.raises(VisionEmptyResultError, match="输出达到长度上限"):
+        await _vision_analyze(client, buffer.getvalue(), "image/png", "", "{context}")
+
+    assert _VISION_MAX_TOKENS >= 8192
+    assert create.await_args.kwargs["max_tokens"] == _VISION_MAX_TOKENS
 
 
 def test_tall_text_image_is_split_with_overlap_and_source_coordinates():

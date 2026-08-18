@@ -104,7 +104,9 @@ _LLM_VISION_MODEL = os.environ.get("VISION_MODEL", "kimi-k2.5")
 # Vision 专用超时（秒），未配置时回退到通用 LLM_TIMEOUT
 _LLM_VISION_TIMEOUT = float(os.environ.get("LLM_VISION_TIMEOUT") or os.environ.get("LLM_TIMEOUT", "120.0"))
 _LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "120.0"))
-_VISION_MAX_TOKENS = int(os.environ.get("VISION_MAX_TOKENS", "1536"))
+# 长文本截图（终端/日志/配置页）需要完整照录；1536 会在 FULL_TEXT 尚未结束时被截断。
+# 通过环境变量保留按模型上下文窗口调节的能力，默认值与 Helm/Compose 保持一致。
+_VISION_MAX_TOKENS = int(os.environ.get("VISION_MAX_TOKENS", "8192"))
 # 是否启用 LLM 思维链（thinking）。默认关闭：kimi-k2.5 / glm-5 等模型开启 thinking 时
 # 会在正式回答前生成大量隐藏思考 token，使 Vision 调用延迟飙升并突破 LLM_TIMEOUT。
 # 统一由 LLM_ENABLE_THINKING 环境变量开关控制（与 classify.py 保持一致，单一真相源）。
