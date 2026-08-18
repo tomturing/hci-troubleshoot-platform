@@ -32,8 +32,15 @@ def _select(paths, *, force_all=False):
 def test_shared_change_rebuilds_all_backend_services():
     """backend/shared/ 下任意改动必须包含全部后端服务（含 kb-service）。"""
     selected = _select(["backend/shared/schemas/signal_generation.py"])
-    backend_keys = {"api-gateway", "case-service", "conversation-service",
-                    "agent-service", "eval-service", "scheduler-service", "kb-service"}
+    backend_keys = {
+        "api-gateway",
+        "case-service",
+        "conversation-service",
+        "agent-service",
+        "eval-service",
+        "scheduler-service",
+        "kb-service",
+    }
     assert backend_keys <= selected, f"shared 变更漏推后端服务: {selected}"
 
 
@@ -104,3 +111,16 @@ def test_reconciliation_fails_closed_for_missing_service_baseline(monkeypatch):
     baselines = {service: "b" * 40 for service in module.SERVICE_NAMES if service != "hci-sim"}
     monkeypatch.setattr(module, "changed_files_between", lambda _base, _head: [])
     assert module.reconciliation_services(json.dumps(baselines), current) == {"hci-sim"}
+
+
+def test_reconciliation_does_not_rebuild_hci_sim_for_unrelated_change(monkeypatch):
+    """已有晋级请求基线后，无关 main 合并不得再次构建 hci-sim。"""
+    module = _load_module()
+    current = "c" * 40
+    baselines = {service: "b" * 40 for service in module.SERVICE_NAMES}
+    monkeypatch.setattr(
+        module,
+        "changed_files_between",
+        lambda _base, _head: ["docs/deploy/发布指南.md"],
+    )
+    assert module.reconciliation_services(json.dumps(baselines), current) == set()
