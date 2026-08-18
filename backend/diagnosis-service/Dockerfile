@@ -1,4 +1,4 @@
-FROM golang:1.26.5-alpine AS offline-collector-build
+FROM golang:1.26.6-alpine AS offline-collector-build
 
 WORKDIR /src
 COPY backend/diagnosis-service/offline-collector/ ./
@@ -7,6 +7,11 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false \
     -o /out/hci-collect-linux-amd64 .
 
 FROM python:3.12-slim
+
+# 基础镜像可能晚于 Debian 安全仓库发布；构建时吸收已发布的安全修复。
+RUN apt-get update \
+    && apt-get upgrade -y \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
