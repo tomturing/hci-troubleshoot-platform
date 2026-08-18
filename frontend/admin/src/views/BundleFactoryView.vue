@@ -77,7 +77,7 @@ const currentStep = computed(() => selected.value ? Math.max(0, statusOrder.inde
 const expertApproved = computed(() => selected.value?.approvals?.some((item) => item.role === 'expert') ?? false)
 const securityApproved = computed(() => selected.value?.approvals?.some((item) => item.role === 'security') ?? false)
 const canRevise = computed(() => selected.value?.status === 'draft' || selected.value?.status === 'validated')
-const shortDigest = (digest: string) => digest ? `${digest.slice(0, 15)}…${digest.slice(-8)}` : '-'
+const shortDigest = (digest: string) => digest ? (digest.length > 24 ? `${digest.slice(0, 15)}…${digest.slice(-8)}` : digest) : '-'
 
 function statusType(status: BundleStatus) {
   return ({ draft: 'info', validated: 'warning', approved: 'success', published: 'success', stale: 'danger', retired: 'info' } as const)[status]
@@ -263,14 +263,14 @@ onMounted(() => loadBundles())
 
         <el-descriptions :column="3" border size="small" class="facts">
           <el-descriptions-item label="KBD revision">{{ selected.kbd_revision }}</el-descriptions-item>
-          <el-descriptions-item label="Draft revision">{{ selected.draft_revision || 0 }}</el-descriptions-item>
-          <el-descriptions-item label="创建者">{{ selected.creator }}</el-descriptions-item>
-          <el-descriptions-item label="KBD checksum"><code>{{ shortDigest(selected.kbd_checksum) }}</code></el-descriptions-item>
-          <el-descriptions-item label="Signals digest"><code>{{ shortDigest(selected.signals_digest) }}</code></el-descriptions-item>
           <el-descriptions-item label="Input fingerprint"><code>{{ shortDigest(selected.input_fingerprint) }}</code></el-descriptions-item>
-          <el-descriptions-item label="Tool contract">{{ selected.tool_contract_revision }}</el-descriptions-item>
-          <el-descriptions-item label="Policy">{{ selected.policy_revision }}</el-descriptions-item>
+          <el-descriptions-item label="创建者">{{ selected.creator }}</el-descriptions-item>
+          <el-descriptions-item label="Draft revision">{{ selected.draft_revision || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="KBD checksum"><code>{{ shortDigest(selected.kbd_checksum) }}</code></el-descriptions-item>
+          <el-descriptions-item label="Tool contract"><code>{{ shortDigest(selected.tool_contract_revision) }}</code></el-descriptions-item>
           <el-descriptions-item label="Routes">{{ selected.manifest?.routes?.length || 0 }}</el-descriptions-item>
+          <el-descriptions-item label="Signals digest"><code>{{ shortDigest(selected.signals_digest) }}</code></el-descriptions-item>
+          <el-descriptions-item label="Policy"><code>{{ shortDigest(selected.policy_revision) }}</code></el-descriptions-item>
         </el-descriptions>
 
         <el-tabs v-model="activeTab" class="detail-tabs">
@@ -335,6 +335,9 @@ onMounted(() => loadBundles())
 .detail-header > div:first-child > code { display: block; max-width: 640px; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; }
 .lifecycle { margin: 22px 0; padding: 12px 0; border-top: 1px solid #ebeef5; border-bottom: 1px solid #ebeef5; }
 .facts { margin-top: 14px; }
+.facts :deep(table) { table-layout: fixed; width: 100%; }
+.facts :deep(.el-descriptions__cell) { min-width: 0; word-break: break-all; }
+.facts :deep(.el-descriptions__content) { overflow: hidden; text-overflow: ellipsis; }
 .detail-tabs { margin-top: 16px; }
 .muted { margin-top: 3px; color: #909399; font-size: 12px; }
 code,pre,.mono-input :deep(textarea) { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0; }
