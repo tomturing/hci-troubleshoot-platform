@@ -16,10 +16,14 @@
  *   <MatcherEditor v-model="matcherData" />
  */
 
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { InfoFilled } from '@element-plus/icons-vue'
 import ValueExtractEditor from './ValueExtractEditor.vue'
-import { formatKeywordInput, parseKeywordInput } from '../../utils/keywordInput'
+import {
+  formatKeywordDraft,
+  keywordListsEqualInput,
+  parseKeywordInput,
+} from '../../utils/keywordInput'
 
 const props = withDefaults(defineProps<{
   modelValue: Record<string, any>
@@ -88,21 +92,21 @@ const expectedResult = computed({
   },
 })
 
-// keyword 模式的 pattern（支持数组，每行一个字面量输入）
-const keywordPatternsStr = computed({
-  get: () => {
-    const p = matcher.value.pattern
-    if (Array.isArray(p)) return formatKeywordInput(p)
-    return p || ''
-  },
-  set: (val: string) => {
-    const patterns = parseKeywordInput(val)
-    matcher.value = {
-      ...matcher.value,
-      pattern: patterns.length > 1 ? patterns : patterns[0] || '',
-    }
-  },
-})
+// textarea 必须保留编辑态原文；模型值仍按语义列表保存，避免回车被即时 trim 掉。
+const keywordPatternsInput = ref('')
+function updateKeywordPatterns(value: string) {
+  keywordPatternsInput.value = value
+  const patterns = parseKeywordInput(value)
+  matcher.value = {
+    ...matcher.value,
+    pattern: patterns.length > 1 ? patterns : patterns[0] || '',
+  }
+}
+watch(() => matcher.value.pattern, (pattern) => {
+  if (!keywordListsEqualInput(keywordPatternsInput.value, pattern)) {
+    keywordPatternsInput.value = formatKeywordDraft(pattern)
+  }
+}, { immediate: true })
 
 // 阈值运算符选项
 const operatorOptions = [
@@ -194,11 +198,12 @@ const extractDefaultValueMode = computed(() => (
       <template v-if="matcherType === 'keyword'">
         <el-form-item label="关键字">
           <el-input
-            v-model="keywordPatternsStr"
+            :model-value="keywordPatternsInput"
             type="textarea"
             :rows="3"
             placeholder="每行一个关键字"
             spellcheck="false"
+            @input="updateKeywordPatterns"
           />
           <div class="field-hint">每行一个字面量；中英文逗号属于关键字内容。多个关键字时，下方组合关系决定匹配逻辑</div>
         </el-form-item>

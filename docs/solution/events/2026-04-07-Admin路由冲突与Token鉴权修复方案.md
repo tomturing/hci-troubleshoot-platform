@@ -26,7 +26,7 @@ classify.py 的 `GET /categories` 返回 `{"categories": [...], "total": N}`（�
 
 ### 问题 2：Token 不匹配
 
-前端 `VITE_INTERNAL_API_TOKEN` 是构建时环境变量，admin-ui Dockerfile 未注入 → JS 回退到硬编码 `hci-dev-internal-token`。K8s Secret 实际值为 `dev-internalapi-api-token-2026`。
+前端 `VITE_INTERNAL_API_TOKEN` 是构建时环境变量，admin-ui Dockerfile 未注入 → JS 回退到硬编码 `hci-dev-internal-token`。K8s Secret 实际值为 `${INTERNAL_API_TOKEN}`。
 
 **架构层面**：浏览器不应持有内部服务 token。网关代理应使用自身凭证调用下游。
 
