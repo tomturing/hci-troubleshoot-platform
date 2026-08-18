@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Edit, Delete, FullScreen } from '@element-plus/icons-vue'
 import { ProducesEditor, MatcherEditor } from '@/components/editors'
+import { extractProduceVariablesFromSchema } from '@/utils/produceVariables'
 
 interface ToolDefinition {
   id: number
@@ -207,14 +208,7 @@ const isSignalTool = computed(() => ['qkv', 'qfk'].includes(formModel.value.cate
 // 从 JSON Schema 解析 produces 字段（QKV 专用）
 function parseProducesFromSchema(schemaStr: string): Array<{ name: string; path: string }> {
   try {
-    const schema = JSON.parse(schemaStr)
-    const produces = schema?.properties?.produces?.default || schema?.produces || []
-    if (Array.isArray(produces)) {
-      return produces.map((p: any) => ({
-        name: p?.name || '',
-        path: p?.path || '',
-      }))
-    }
+    return extractProduceVariablesFromSchema(JSON.parse(schemaStr))
   } catch {}
   return []
 }
@@ -268,7 +262,7 @@ function syncFormToJson() {
     const schema = JSON.parse(formModel.value.parameters_schema_str || '{}')
     
     // QKV: 更新 produces.default
-    if (formModel.value.category === 'qkv' && producesData.value.length > 0) {
+    if (formModel.value.category === 'qkv') {
       if (!schema.properties) schema.properties = {}
       if (!schema.properties.produces) {
         schema.properties.produces = {
