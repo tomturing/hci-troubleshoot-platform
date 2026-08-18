@@ -70,6 +70,14 @@ check_value() {
   fi
 }
 
+check_admin_ui_bundle_route() {
+  local html asset
+  html="$(curl -sf -H "Host: ${INGRESS_HOST}" "${INGRESS_BASE}/admin/")" || return 1
+  asset="$(printf "%s" "$html" | sed -n 's#.*src="\(/admin/assets/[^" ]*\.js\)".*#\1#p')"
+  [[ -n "$asset" ]] || return 1
+  curl -sf -H "Host: ${INGRESS_HOST}" "${INGRESS_BASE}${asset}" | grep -q "simulation/bundle-factory"
+}
+
 check_model_cfg() {
   local desc="$1"
   local actual="$2"
@@ -209,6 +217,11 @@ check "customer-ui: ${INGRESS_HOST}/" \
 
 check "admin-ui: ${INGRESS_HOST}/admin/" \
   curl -sf -o /dev/null -H "Host: ${INGRESS_HOST}" "${INGRESS_BASE}/admin/"
+
+# 不能只验证 SPA HTML 返回 200：旧镜像同样会返回入口页。Bundle 工厂路由
+# 是 admin-ui 发布版本的最小内容探针，缺失即表示静态资源未随本次发布更新。
+check "admin-ui: Bundle 工厂路由已进入静态资源" \
+  check_admin_ui_bundle_route
 
 # api-gateway /health 端点不带 /api 前缀，通过 Ingress 测路由可达性
 # 业务端点需要参数会返回 422（路由正常），只要不是 5xx/连接失败即为成功

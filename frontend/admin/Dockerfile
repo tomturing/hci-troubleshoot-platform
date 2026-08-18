@@ -22,7 +22,13 @@ RUN pnpm config set onlyBuiltDependencies[0] esbuild \
 COPY frontend/shared/ shared/
 COPY frontend/admin/ admin/
 
+ARG SOURCE_SHA=unknown
+ARG IMAGE_TAG=unknown
+RUN mkdir -p admin/public \
+    && printf '{"source_sha":"%s","image_tag":"%s"}\n' "$SOURCE_SHA" "$IMAGE_TAG" > admin/public/build-info.json
 RUN pnpm --filter admin build
+RUN test -s admin/dist/build-info.json \
+    && grep -q 'simulation/bundle-factory' admin/dist/assets/*.js
 
 # 生产镜像 - Nginx 静态服务
 FROM nginx:alpine
