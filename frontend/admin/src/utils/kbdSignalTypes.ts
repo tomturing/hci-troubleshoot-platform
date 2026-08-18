@@ -7,7 +7,7 @@ export interface SignalV2 {
   id?: number | string
   role?: 'must' | 'should' | 'exclude' | 'context'
   acquire: { tool: string; args: Record<string, any> }
-  match: { type?: string; pattern?: string | string[]; mode?: string; expected?: boolean; value?: number; [key: string]: any } | null
+  match: { type?: string; pattern?: string | string[]; mode?: string; expected?: boolean; value?: number | string; [key: string]: any } | null
   orchestrate: Record<string, any>
   provenance?: Record<string, any>
   review?: { require_human_confirm?: boolean }

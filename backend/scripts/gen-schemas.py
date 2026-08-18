@@ -170,7 +170,17 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     },
                     "mode": {"type": "string", "enum": ["or", "and", "not"]},
                     "expected": {"type": "boolean"},
-                    "value": {"type": ["number", "integer"]},
+                    # 数值字段既可以是固定数字，也可以是执行前解析的变量占位符。
+                    # 占位符必须是完整值，禁止把任意文本带入运行时比较器。
+                    "value": {
+                        "anyOf": [
+                            {"type": ["number", "integer"]},
+                            {
+                                "type": "string",
+                                "pattern": r"^\{\{[A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*\}\}$",
+                            },
+                        ]
+                    },
                     "operator": {"type": "string", "enum": [">", ">=", "<", "<=", "==", "=", "!="]},
                     "aggregation": {
                         "type": "string",

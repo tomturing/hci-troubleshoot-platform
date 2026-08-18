@@ -179,6 +179,22 @@ def test_state_matching_is_exact_after_json_extract():
     assert diag._evaluate_matcher(matcher, '{"status":"running-extra"}') is False
 
 
+def test_numeric_matcher_threshold_resolves_variable_before_comparison():
+    diag = _diag()
+    matcher = {
+        "type": "threshold",
+        "operator": ">",
+        "value": "{{THRESHOLD}}",
+        "expected": True,
+        "extract": {"type": "text", "rows": {"mode": "all"}, "cardinality": "first", "value_mode": "number"},
+    }
+
+    resolved = diag._resolve_template_value(matcher, {"THRESHOLD": 80})
+    assert resolved["value"] == "80"
+    assert diag._evaluate_matcher(resolved, "81\n") is True
+    assert diag._evaluate_matcher(diag._resolve_template_value(matcher, {}), "81\n") is None
+
+
 def test_kbd27123_lsof_pid_then_ps_uses_canonical_argv_and_precise_process_identity():
     diag = _diag()
     produces = [{

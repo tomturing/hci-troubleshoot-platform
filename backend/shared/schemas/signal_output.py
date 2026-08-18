@@ -29,7 +29,8 @@ def derive_signal_requires(signal: dict[str, Any]) -> list[str]:
                 collect(item)
 
     collect(acquire.get("args") or {})
-    collect((signal.get("match") or {}).get("extract") or {})
+    # Matcher 的数值阈值同样可能引用上游变量，不能只扫描第一步取值配置。
+    collect(signal.get("match") or {})
     for produce in ((signal.get("orchestrate") or {}).get("produces") or []):
         if isinstance(produce, dict):
             collect(produce.get("extract") or {})

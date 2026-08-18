@@ -106,6 +106,22 @@ def test_match_and_produces_reuse_the_same_value_extract_contract():
     validate_signals_json(_qfk_produce({"name": "USE_PERCENT", "type": "number", "extract": extract}))
 
 
+def test_numeric_matcher_threshold_accepts_canonical_variable_reference():
+    extract = _text_extract(value_mode="number")
+    matcher = {"type": "threshold", "operator": ">", "value": "{{THRESHOLD}}", "expected": True, "extract": extract}
+
+    validate_signals_json(_qfk_match(matcher))
+    assert derive_signal_requires({"acquire": {"tool": "qfk_system", "args": {}}, "match": matcher}) == ["THRESHOLD"]
+
+
+def test_numeric_matcher_rejects_arbitrary_string_threshold():
+    extract = _text_extract(value_mode="number")
+    matcher = {"type": "threshold", "operator": ">", "value": "80ms", "expected": True, "extract": extract}
+
+    with pytest.raises(ValidationError):
+        validate_signals_json(_qfk_match(matcher))
+
+
 def test_matcher_extract_is_required_and_json_path_is_not_a_matcher_type():
     with pytest.raises(ValidationError, match="extract"):
         validate_signals_json(_qfk_match({"type": "exists", "expected": True}))

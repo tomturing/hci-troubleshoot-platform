@@ -2168,7 +2168,7 @@ function deriveSignalRequires(sig: SignalV2): string[] {
   const found = new Set<string>()
   const collect = (value: any) => {
     if (typeof value === 'string') {
-      for (const match of value.matchAll(/\{\{([A-Z][A-Z0-9_]*)(?:\.[A-Z0-9_]+)*\}\}/g)) found.add(match[1])
+      for (const match of value.matchAll(/\{\{([A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*)\}\}/g)) found.add(match[1])
     } else if (Array.isArray(value)) {
       value.forEach(collect)
     } else if (value && typeof value === 'object') {
@@ -2176,7 +2176,8 @@ function deriveSignalRequires(sig: SignalV2): string[] {
     }
   }
   collect(sig.acquire?.args || {})
-  collect(sig.match?.extract || {})
+  // 数值 Matcher 的阈值可以引用变量，必须纳入自动生成的输入变量契约。
+  collect(sig.match || {})
   for (const produce of sig.orchestrate?.produces || []) collect(produce?.extract || {})
   return [...found].sort()
 }
