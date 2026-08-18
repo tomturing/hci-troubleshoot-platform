@@ -101,16 +101,36 @@ def test_reconciliation_rebuilds_only_service_with_unreleased_change(monkeypatch
         return []
 
     monkeypatch.setattr(module, "changed_files_between", fake_diff)
-    assert module.reconciliation_services(json.dumps(baselines), current) == {"api-gateway"}
+    assert module.reconciliation_services(json.dumps(baselines), current, "b" * 40) == {"api-gateway"}
 
 
-def test_reconciliation_fails_closed_for_missing_service_baseline(monkeypatch):
-    """从未确认发布过的服务不得被全局成功基线静默跳过。"""
+def test_reconciliation_uses_fallback_for_missing_service_baseline(monkeypatch):
+    """缺少服务基线时，仅比较全局基线后的实际变更，不能无条件全量重建。"""
     module = _load_module()
     current = "c" * 40
     baselines = {service: "b" * 40 for service in module.SERVICE_NAMES if service != "hci-sim"}
-    monkeypatch.setattr(module, "changed_files_between", lambda _base, _head: [])
-    assert module.reconciliation_services(json.dumps(baselines), current) == {"hci-sim"}
+    calls = []
+
+    def fake_diff(base, _head):
+        calls.append(base)
+        return ["hci_sim/cmd/hci-sim/main.go"] if base == "a" * 40 else []
+
+    monkeypatch.setattr(module, "changed_files_between", fake_diff)
+    assert module.reconciliation_services(json.dumps(baselines), current, "a" * 40) == {"hci-sim"}
+    assert "a" * 40 in calls
+
+
+def test_reconciliation_does_not_rebuild_unknown_service_for_unrelated_change(monkeypatch):
+    """首轮只发布 hci-sim 后，无关 main 合并不得触发未知服务补偿。"""
+    module = _load_module()
+    current = "c" * 40
+    baselines = {"hci-sim": "b" * 40}
+    monkeypatch.setattr(
+        module,
+        "changed_files_between",
+        lambda _base, _head: ["terminal_bridge/cmd/terminal-bridge/main.go"],
+    )
+    assert module.reconciliation_services(json.dumps(baselines), current, "b" * 40) == {"terminal-bridge"}
 
 
 def test_reconciliation_does_not_rebuild_hci_sim_for_unrelated_change(monkeypatch):
@@ -123,4 +143,4 @@ def test_reconciliation_does_not_rebuild_hci_sim_for_unrelated_change(monkeypatc
         "changed_files_between",
         lambda _base, _head: ["docs/deploy/发布指南.md"],
     )
-    assert module.reconciliation_services(json.dumps(baselines), current) == set()
+    assert module.reconciliation_services(json.dumps(baselines), current, "b" * 40) == set()
