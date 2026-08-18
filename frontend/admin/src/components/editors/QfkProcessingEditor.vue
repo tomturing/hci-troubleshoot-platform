@@ -5,7 +5,7 @@
  * 匹配模式和产出变量统一使用“第一步：取值 → 第二步：判断/产出”的处理单元。
  * 每个产出变量拥有独立的取值配置，避免多个变量错误共享同一个提取结果。
  */
-import { computed } from 'vue'
+import { computed, toRaw } from 'vue'
 import { Delete, InfoFilled, Plus } from '@element-plus/icons-vue'
 
 import MatcherEditor from './MatcherEditor.vue'
@@ -28,6 +28,19 @@ const emit = defineEmits<{
 
 const matchValue = computed(() => props.match || defaultMatch())
 const producesValue = computed(() => props.produces || [])
+
+// 编辑态身份只用于 Vue 渲染，不写入产出变量契约，避免字段编辑触发节点重建。
+const produceKeys = new WeakMap<object, number>()
+let nextProduceKey = 0
+
+function getProduceKey(produce: Record<string, any>): number {
+  const rawProduce = toRaw(produce)
+  const existingKey = produceKeys.get(rawProduce)
+  if (existingKey !== undefined) return existingKey
+  const key = nextProduceKey++
+  produceKeys.set(rawProduce, key)
+  return key
+}
 
 function defaultExtract(valueMode = 'string'): Record<string, any> {
   return {
@@ -66,13 +79,20 @@ function setMatchExtract(value: Record<string, any>): void {
 }
 
 function updateProduce(index: number, patch: Record<string, any>): void {
-  emit('update:produces', producesValue.value.map((item, itemIndex) => (
-    itemIndex === index ? { ...item, ...patch } : item
-  )))
+  const next = producesValue.value.map((item, itemIndex) => {
+    if (itemIndex !== index) return item
+    const updated = { ...item, ...patch }
+    const key = getProduceKey(item)
+    produceKeys.set(toRaw(updated), key)
+    return updated
+  })
+  emit('update:produces', next)
 }
 
 function addProduce(): void {
-  emit('update:produces', [...producesValue.value, defaultProduce()])
+  const produce = defaultProduce()
+  getProduceKey(produce)
+  emit('update:produces', [...producesValue.value, produce])
 }
 
 function removeProduce(index: number): void {
@@ -156,7 +176,7 @@ function removeProduce(index: number): void {
     <template v-else>
       <div
         v-for="(produce, index) in producesValue"
-        :key="`${produce.name || 'new'}-${index}`"
+        :key="getProduceKey(produce)"
         class="processing-unit"
         data-output-mode="produces"
       >
