@@ -57,8 +57,8 @@ def test_force_all_selects_everything():
     assert "terminal-bridge" in selected
 
 
-def test_push_uses_successful_release_baseline(monkeypatch):
-    """主干空 diff push 也必须从最近成功镜像发布继续计算。"""
+def test_push_uses_event_before_for_current_changes(monkeypatch):
+    """当前 push 只看相邻提交，历史漏发交给服务级基线补偿。"""
     module = _load_module()
     monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
     monkeypatch.setenv("GITHUB_RELEASE_BASE_SHA", "a" * 40)
@@ -76,7 +76,7 @@ def test_push_uses_successful_release_baseline(monkeypatch):
 
     monkeypatch.setattr(module.subprocess, "run", fake_run)
     assert module.changed_files() == ["frontend/admin/src/router/index.ts"]
-    assert captured["command"][3] == "a" * 40
+    assert captured["command"][3] == "b" * 40
 
 
 def test_manual_dispatch_uses_force_all_without_event_before(monkeypatch):
@@ -144,3 +144,40 @@ def test_reconciliation_does_not_rebuild_hci_sim_for_unrelated_change(monkeypatc
         lambda _base, _head: ["docs/deploy/发布指南.md"],
     )
     assert module.reconciliation_services(json.dumps(baselines), current, "b" * 40) == set()
+
+
+def test_promotion_push_does_not_rebuild_released_hci_sim(monkeypatch, tmp_path):
+    """promotion 是制品消费者，不能跨过已发布源码反向触发新制品。"""
+    module = _load_module()
+    release_base = "a" * 40
+    event_before = "b" * 40
+    current = "c" * 40
+    promotion_file = "deploy/gitops/argo-apps/local/hci-sim-dev.yaml"
+    baselines = {service: event_before for service in module.SERVICE_NAMES}
+    output = tmp_path / "outputs"
+
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.setenv("GITHUB_RELEASE_BASE_SHA", release_base)
+    monkeypatch.setenv("GITHUB_EVENT_BEFORE", event_before)
+    monkeypatch.setenv("GITHUB_SHA", current)
+    monkeypatch.setenv("GITHUB_SERVICE_RELEASE_BASELINES", json.dumps(baselines))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+
+    class Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    def fake_run(command, **_kwargs):
+        base = command[3]
+        if base == release_base:
+            return Result(f"hci_sim/internal/telemetry/telemetry.go\n{promotion_file}\n")
+        assert base == event_before
+        return Result(f"{promotion_file}\n")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    assert module.main() == 0
+
+    outputs = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
+    assert json.loads(outputs["matrix"]) == []
+    assert outputs["has_images"] == "false"
+    assert outputs["db_migrate"] == "false"
