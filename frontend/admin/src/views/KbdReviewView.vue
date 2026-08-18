@@ -1996,7 +1996,11 @@ function onSignalToolChange(tool: string) {
 }
 
 function supportsQfkFormatter(tool: string): boolean {
-  return qfkFormatterTools.has(tool)
+  return qfkTools.has(tool)
+}
+
+function supportsQfkSafePipeline(tool: string): boolean {
+  return qfkTools.has(tool)
 }
 
 function qfkFormatterValue(args: Record<string, any>): string {
@@ -2010,6 +2014,17 @@ function toggleQfkFormatter(args: Record<string, any>, formatter: string): void 
     return
   }
   args.formatter = formatter
+}
+
+function qfkCommandText(signal: SignalV2): string {
+  const args = sigArgs(signal)
+  return sigTool(signal) === 'qfk_system'
+    ? qfkSystemCommandText(args)
+    : String(args.command || '')
+}
+
+function qfkCommandHasPipeline(signal: SignalV2): boolean {
+  return qfkCommandText(signal).includes('|')
 }
 
 function qfkSystemCommandText(args: Record<string, any>): string {
@@ -2254,7 +2269,7 @@ function syncDraftRequires() {
 
 async function convertDraftPipeline() {
   const draft = signalEditDraft.value
-  const command = String(draft.acquire?.args?.command || '')
+  const command = qfkCommandText(draft)
   if (!command.includes('|')) return
   const outputMode = qfkOutputMode(draft)
   pipelineConvertLoading.value = true
@@ -2758,7 +2773,7 @@ async function saveSignalEdit() {
       ElMessage.error('第一步“取值”尚未配置：请补全取值方式、行选择和结果数量后再保存')
       return
     }
-    if (String(signalEditDraft.value.acquire?.args?.command || '').includes('|')) {
+    if (qfkCommandHasPipeline(signalEditDraft.value)) {
       ElMessage.error('执行命令不能保存 Shell 管道，请先点击“安全转换管道”')
       return
     }
@@ -2783,7 +2798,7 @@ async function saveSignalEdit() {
     const list = signalList.value.map(cloneSignal)
     const pipeSignals = list
       .map((signal, index) => ({ signal, index }))
-      .filter(({ signal }) => isBackendSig(signal) && String(signal.acquire?.args?.command || '').includes('|'))
+      .filter(({ signal }) => isBackendSig(signal) && qfkCommandHasPipeline(signal))
     if (pipeSignals.length) {
       const targets = pipeSignals.map(({ signal, index }) => {
         const id = String(signal.id || `sig_${index + 1}`)
@@ -3586,7 +3601,7 @@ const qfkFormatterOptions = [
   { value: 'xml', label: 'xml' },
 ] as const
 
-const qfkFormatterTools = new Set([
+const qfkTools = new Set([
   'qfk_system',
   'qfk_vm',
   'qfk_network',
@@ -4413,7 +4428,6 @@ onUnmounted(() => clearBatchPollTimer())
                   <template v-if="sigTool(item.sig) === 'qfk_system'">
                     <div class="signal-row"><span class="signal-k">容器</span><span class="signal-v">{{ sigArgs(item.sig).container || 'host' }}</span></div>
                     <div v-if="sigArgs(item.sig).cluster" class="signal-row"><span class="signal-k">集群执行</span><span class="signal-v">是（acli --cluster）</span></div>
-                    <el-alert v-if="String(sigArgs(item.sig).command || '').includes('|')" title="历史命令含 Shell 管道，必须编辑并清理后才能统一保存" type="warning" :closable="false" show-icon />
                   </template>
                   <div v-if="supportsQfkFormatter(sigTool(item.sig))" class="signal-row">
                     <span class="signal-k">输出格式</span>
@@ -4426,6 +4440,7 @@ onUnmounted(() => clearBatchPollTimer())
                   <template v-if="['qfk_vm', 'qfk_network', 'qfk_storage', 'qfk_hardware', 'qfk_platform'].includes(sigTool(item.sig))">
                     <div class="signal-row"><span class="signal-k">执行命令</span><span class="signal-v code">{{ sigArgs(item.sig).command || '—' }}</span></div>
                   </template>
+                  <el-alert v-if="supportsQfkSafePipeline(sigTool(item.sig)) && qfkCommandHasPipeline(item.sig)" title="历史命令含 Shell 管道，必须编辑并清理后才能统一保存" type="warning" :closable="false" show-icon />
                   <div class="signal-row"><span class="signal-k">输入变量</span><span class="signal-v code">{{ (sigOrch(item.sig).requires || []).join('、') || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">超时时间</span><span class="signal-v">{{ sigArgs(item.sig).timeout || 60 }}s</span></div>
                   <div class="signal-row"><span class="signal-k">执行模式</span><span class="signal-v">{{ qfkOutputMode(item.sig) === 'produces' ? '产出变量（采集命令结果）' : '匹配模式' }}</span></div>
@@ -4515,13 +4530,6 @@ onUnmounted(() => clearBatchPollTimer())
                     <div class="field-hint"><code>host</code> 表示不添加 <code>acli --container</code>；其他选项会作为 aCLI 容器参数。Terminal Bridge 始终在目标主机上启动 aCLI。</div>
                     <div class="signal-row"><span class="signal-k">集群执行</span><el-switch v-model="signalEditDraft.acquire.args.cluster" active-text="添加 acli --cluster" /></div>
                     <div class="signal-row"><span class="signal-k">执行命令</span><el-input :model-value="qfkSystemCommandText(signalEditDraft.acquire.args)" size="small" placeholder="如 ps -p {{PID}} -o cmd=（不含 acli system）" @input="(value: string) => setQfkSystemCommandText(signalEditDraft.acquire.args, value)" /></div>
-                    <div v-if="String(signalEditDraft.acquire.args.command || '').includes('|')" class="signal-row pipeline-warning">
-                      <span class="signal-k"></span>
-                      <div class="signal-v">
-                        <el-alert title="检测到 Shell 管道，不能直接保存" type="warning" :closable="false" show-icon />
-                        <el-button type="primary" size="small" :loading="pipelineConvertLoading" @click="convertDraftPipeline">安全转换管道</el-button>
-                      </div>
-                    </div>
                     <div class="field-hint">最终命令：<code>{{ qfkSystemCommandPreview(signalEditDraft.acquire.args) }}</code>。保存时系统会把命令安全规范化为基础命令和 argv；grep/awk/cut 的安全子集改用下方“文本取值”，不执行 Shell 管道。</div>
                   </template>
                   <template v-if="sigTool(signalEditDraft) === 'qfk_service'">
@@ -4546,6 +4554,13 @@ onUnmounted(() => clearBatchPollTimer())
                     <div class="signal-row"><span class="signal-k">执行命令</span><el-input v-model="signalEditDraft.acquire.args.command" size="small" placeholder="子命令，如 list / show / get status" /></div>
                     <div class="field-hint">acli 之后的子命令（如 list、show、get status）；命名空间由工具名（qfk_vm 等）隐含，勿含 acli 前缀</div>
                   </template>
+                  <div v-if="supportsQfkSafePipeline(sigTool(signalEditDraft)) && qfkCommandHasPipeline(signalEditDraft)" class="signal-row pipeline-warning">
+                    <span class="signal-k"></span>
+                    <div class="signal-v">
+                      <el-alert title="检测到 Shell 管道，不能直接保存" type="warning" :closable="false" show-icon />
+                      <el-button type="primary" size="small" :loading="pipelineConvertLoading" @click="convertDraftPipeline">安全转换管道</el-button>
+                    </div>
+                  </div>
                   <div v-if="supportsQfkFormatter(sigTool(signalEditDraft))" class="signal-row qfk-formatter-row">
                     <span class="signal-k">输出格式</span>
                     <div class="signal-v qfk-formatter-control">

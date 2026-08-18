@@ -29,6 +29,19 @@ class SafePipelineConversion:
     conversion_id: str = ""
 
 
+# 六类 QFK 共用同一套声明式文本提取与安全管道转换契约。
+SAFE_PIPELINE_QFK_TOOLS = frozenset(
+    {
+        "qfk_system",
+        "qfk_vm",
+        "qfk_network",
+        "qfk_storage",
+        "qfk_hardware",
+        "qfk_platform",
+    }
+)
+
+
 def convert_safe_pipeline(raw_command: str) -> SafePipelineConversion:
     """把白名单管道转换为声明式行列 Extract，不执行输入。"""
 
@@ -150,10 +163,10 @@ def apply_safe_pipeline_to_signal(signal: dict[str, Any]) -> bool:
     command = str(args.get("command") or "")
     if "|" not in command:
         return False
-    if tool != "qfk_system":
+    if tool not in SAFE_PIPELINE_QFK_TOOLS:
         raise SafePipelineConversionError(
             "QFK_PIPELINE_UNSUPPORTED_TOOL",
-            "当前仅 qfk_system 支持安全管道转换",
+            "当前仅六类 QFK 支持安全管道转换：qfk_system/qfk_vm/qfk_network/qfk_storage/qfk_hardware/qfk_platform",
         )
     matcher = signal.get("match")
     produces = (signal.get("orchestrate") or {}).get("produces") or []
