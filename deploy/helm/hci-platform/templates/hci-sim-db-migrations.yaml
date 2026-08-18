@@ -15,6 +15,8 @@ metadata:
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
     argocd.argoproj.io/sync-wave: "-9"
 data:
-  000001_control_plane.sql: |
-{{ .Files.Get "hci-sim-migrations/000001_control_plane.sql" | nindent 4 }}
+  {{- range $path, $_ := .Files.Glob "hci-sim-migrations/*.sql" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | nindent 4 }}
+  {{- end }}
 {{- end }}
