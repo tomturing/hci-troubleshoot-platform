@@ -100,6 +100,8 @@ spec:
                   optional: true
             - name: HCI_SIM_ALLOW_INSECURE_CONTROL_API
               value: {{ .Values.runtime.allowInsecureControlAPI | quote }}
+            - name: HCI_SIM_ALLOW_SYNTHETIC_PUBLISH
+              value: {{ .Values.runtime.allowSyntheticPublish | quote }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.runtime.otlpEndpoint | quote }}
             - name: HCI_SIM_OUTBOX_WEBHOOK_URL

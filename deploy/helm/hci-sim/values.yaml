@@ -14,6 +14,8 @@ service:
 
 runtime:
   environment: dev
+  # synthetic Bundle 发布开关：仅 dev 契约测试环境允许显式置 true；正式环境必须保持 false。
+  allowSyntheticPublish: false
   workers: 8
   queueSize: 128
   maxOutputBytes: 4096
