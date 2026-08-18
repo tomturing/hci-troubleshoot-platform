@@ -379,7 +379,7 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     },
                     "cardinality": {
                         "type": "string",
-                        "enum": ["exactly_one", "first", "last", "all"],
+                        "enum": ["exactly_one", "first", "last", "all", "count"],
                         "default": "exactly_one",
                     },
                     "source": {
@@ -416,6 +416,26 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                             "required": ["parser"],
                         },
                         "then": {"required": ["delimiter"]},
+                    },
+                    {
+                        # count 是对行筛选结果的投影；header/delimiter 可定义数据行边界，
+                        # 但不得混入列解析或 AI 二次取值。
+                        "if": {
+                            "properties": {"cardinality": {"const": "count"}},
+                            "required": ["cardinality"],
+                        },
+                        "then": {
+                            "required": ["value_mode"],
+                            "properties": {"value_mode": {"const": "integer"}},
+                            "not": {
+                                "anyOf": [
+                                    {"required": ["parser"]},
+                                    {"required": ["columns"]},
+                                    {"required": ["value_key"]},
+                                    {"required": ["ai_extract"]},
+                                ]
+                            },
+                        },
                     },
                 ],
             },

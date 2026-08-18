@@ -128,6 +128,7 @@ function removeProduce(index: number): void {
           :model-value="matchValue.extract"
           :default-value-mode="['threshold', 'delta', 'trend'].includes(matchValue.type) ? 'number' : 'string'"
           consumer-kind="matcher"
+          :allow-row-count="matchValue.type === 'threshold'"
           embedded
           :show-title="false"
           @update:model-value="setMatchExtract"
@@ -170,6 +171,7 @@ function removeProduce(index: number): void {
             :model-value="produce.extract"
             :default-value-mode="produce.type || 'string'"
             consumer-kind="produce"
+            :allow-row-count="['integer', 'number'].includes(produce.type || 'string')"
             embedded
             :show-title="false"
             @update:model-value="(value: Record<string, any>) => updateProduce(index, { extract: value })"

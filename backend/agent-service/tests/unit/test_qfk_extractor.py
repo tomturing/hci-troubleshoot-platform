@@ -69,6 +69,60 @@ def test_row_numbers_have_explicit_data_non_empty_and_physical_bases():
     assert extract_value(DF_OUTPUT, rows_only) == "tmpfs       512M   22M   491M    5%  /run"
 
 
+def test_count_cardinality_counts_selected_rows_and_keeps_auditable_evidence():
+    spec = {
+        "type": "text",
+        "rows": {"mode": "keywords", "include": ["tmpfs"], "exclude": ["/run/lock"], "include_mode": "all", "exclude_mode": "any"},
+        "cardinality": "count",
+        "source": "stdout",
+        "value_mode": "integer",
+    }
+
+    result = extract_output_values(DF_OUTPUT, spec, "integer")
+
+    assert result.values == [1]
+    assert result.value_type == "integer"
+    assert result.matched_lines == ["tmpfs       512M   22M   491M    5%  /run"]
+    assert result.selected_lines == result.matched_lines
+    assert result.matched_line_numbers == [2]
+    assert result.selected_line_numbers == [2]
+    assert extract_value(DF_OUTPUT, spec, "integer") == 1
+
+
+def test_count_cardinality_supports_header_scoped_data_rows():
+    spec = {
+        "type": "text",
+        "header": {"mode": "contains", "required": ["Filesystem", "Use%"]},
+        "rows": {"mode": "indices", "basis": "data", "indices": [1, 3]},
+        "cardinality": "count",
+        "source": "stdout",
+        "value_mode": "integer",
+    }
+
+    result = extract_output_values(DF_OUTPUT, spec, "integer")
+
+    assert result.values == [2]
+    assert result.selected_line_numbers == [2, 4]
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"type": "text", "rows": {"mode": "all"}, "cardinality": "count", "value_mode": "number"},
+        {
+            "type": "text",
+            "rows": {"mode": "all"},
+            "cardinality": "count",
+            "value_mode": "integer",
+            "columns": [{"key": "VALUE"}],
+        },
+    ],
+)
+def test_count_cardinality_rejects_non_row_count_configuration(spec):
+    with pytest.raises(QFKExtractionError, match="统计行数"):
+        extract_output_values("one\ntwo\n", spec, "integer")
+
+
 def test_header_aliases_are_explicit_and_capacity_units_do_not_silently_cast():
     spec = _df_extract({"mode": "indices", "basis": "data", "indices": [3]})
     spec["columns"][0]["selector"] = {"by": "header", "name": "Uesed", "aliases": []}

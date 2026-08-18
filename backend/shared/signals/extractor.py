@@ -80,6 +80,8 @@ def extract_value(output: str, spec: dict[str, Any], value_type: str = "string")
     result = extract_output_values(output, spec, value_type)
     normalized_type = str(value_type or "string").lower()
     cardinality = spec.get("cardinality", "exactly_one")
+    if cardinality == "count":
+        return result.values[0]
     if normalized_type == "array<object>":
         return result.records or result.values
     if normalized_type == "object":
@@ -103,6 +105,16 @@ def _extract_structured_text_values(output: str, spec: dict[str, Any], value_typ
     rows = spec.get("rows")
     if not isinstance(rows, dict):
         raise QFKExtractionError("QFK_EXTRACT_INVALID_SPEC", "结构化文本取值必须配置 rows")
+    cardinality = str(spec.get("cardinality") or "exactly_one")
+    if cardinality == "count":
+        if str(spec.get("value_mode") or "") != "integer":
+            raise QFKExtractionError("QFK_EXTRACT_INVALID_SPEC", "统计行数必须配置 value_mode=integer")
+        incompatible = [key for key in ("parser", "columns", "value_key", "ai_extract") if key in spec]
+        if incompatible:
+            raise QFKExtractionError(
+                "QFK_EXTRACT_INVALID_SPEC",
+                f"统计行数不能同时配置 {', '.join(incompatible)}；它只统计行选择结果",
+            )
     if columns is not None and (
         spec.get("parser") not in {"whitespace_table", "delimited_table"}
         or not isinstance(columns, list)
@@ -112,7 +124,7 @@ def _extract_structured_text_values(output: str, spec: dict[str, Any], value_typ
     delimiter = spec.get("delimiter", "whitespace")
     if spec.get("parser") == "delimited_table" and (not isinstance(delimiter, str) or len(delimiter) != 1):
         raise QFKExtractionError("QFK_EXTRACT_INVALID_SPEC", "delimited_table 必须配置单字符 delimiter")
-    if columns is None and any(key in spec for key in ("parser", "header", "value_key")):
+    if columns is None and any(key in spec for key in ("parser", "header", "value_key")) and cardinality != "count":
         raise QFKExtractionError("QFK_EXTRACT_INVALID_SPEC", "整行结构化取值只能配置 rows")
 
     lines = output.splitlines()
@@ -122,6 +134,10 @@ def _extract_structured_text_values(output: str, spec: dict[str, Any], value_typ
     header_ref, header_fields = _resolve_header(refs, spec.get("header"), delimiter)
     refs = _assign_data_indices(refs, header_ref)
     matched_refs = _select_rows(refs, rows, header_ref)
+    if cardinality == "count":
+        # 统计的是筛选后的行集合；命中原文及物理行号仍完整保留在证据结果中。
+        count = len(matched_refs)
+        return _result_from_lines(matched_refs, matched_refs, [count], [count], "integer")
     selected_refs = _select_cardinality(matched_refs, spec)
     if columns is None:
         raw_values = [ref.text.strip() for ref in selected_refs]

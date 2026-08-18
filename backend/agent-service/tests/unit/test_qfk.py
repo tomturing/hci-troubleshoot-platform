@@ -46,6 +46,30 @@ def test_threshold_delta_and_trend_use_explicit_numeric_column():
     assert below_threshold_expected_false.matched is True
 
 
+def test_threshold_consumes_count_cardinality_with_selected_line_evidence():
+    matcher = {
+        "type": "threshold",
+        "aggregation": "first_number",
+        "operator": ">=",
+        "value": 2,
+        "expected": True,
+        "extract": {
+            "type": "text",
+            "rows": {"mode": "keywords", "include": ["failed"], "exclude": [], "include_mode": "all"},
+            "cardinality": "count",
+            "source": "stdout",
+            "value_mode": "integer",
+        },
+    }
+
+    result = evaluate_matcher(matcher, "failed task A\nready task B\nfailed task C\n")
+
+    assert result.matched is True
+    assert result.detail["value"] == 2.0
+    assert result.detail["extract"]["values"] == [2]
+    assert result.detail["extract"]["selected_line_numbers"] == [1, 3]
+
+
 def test_json_path_is_an_extract_option_not_a_matcher_type():
     matcher = {"type": "state", "pattern": "healthy", "expected": True, "extract": {"type": "json", "path": "data[0].status", "cardinality": "exactly_one", "source": "stdout", "value_mode": "string"}}
     assert evaluate_matcher(matcher, '{"data":[{"status":"healthy"}]}').matched is True

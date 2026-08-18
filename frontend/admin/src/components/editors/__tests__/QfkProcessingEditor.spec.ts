@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import MatcherEditor from '../MatcherEditor.vue'
 import QfkProcessingEditor from '../QfkProcessingEditor.vue'
+import TextExtractEditor from '../TextExtractEditor.vue'
 import ValueExtractEditor from '../ValueExtractEditor.vue'
 
 const textExtract = {
@@ -128,6 +129,38 @@ describe('QfkProcessingEditor 两步处理交互', () => {
     expect(update.value).toBe(0)
   })
 
+  it('统计行数只在允许的数值消费者中展示，并固定为整数行选择配置', async () => {
+    const extractWrapper = mount(ValueExtractEditor, {
+      props: {
+        modelValue: {
+          ...textExtract,
+          parser: 'whitespace_table',
+          columns: [{ key: 'VALUE', selector: { by: 'index', index: 1 } }],
+          ai_extract: { instruction: '提取数字' },
+        },
+        allowRowCount: true,
+      },
+      global: { plugins: [ElementPlus] },
+    })
+    const textEditor = extractWrapper.getComponent(TextExtractEditor)
+
+    expect(textEditor.props('allowRowCount')).toBe(true)
+    ;(textEditor.vm as unknown as { setCardinality: (value: string) => void }).setCardinality('count')
+    await extractWrapper.vm.$nextTick()
+
+    const update = extractWrapper.emitted('update:modelValue')?.at(-1)?.[0] as Record<string, any>
+    expect(update).toMatchObject({ cardinality: 'count', value_mode: 'integer', rows: textExtract.rows })
+    expect(update).not.toHaveProperty('parser')
+    expect(update).not.toHaveProperty('columns')
+    expect(update).not.toHaveProperty('ai_extract')
+
+    const unsupportedWrapper = mount(ValueExtractEditor, {
+      props: { modelValue: textExtract, allowRowCount: false },
+      global: { plugins: [ElementPlus] },
+    })
+    expect(unsupportedWrapper.getComponent(TextExtractEditor).props('allowRowCount')).toBe(false)
+  })
+
   it('取值和判断关键字输入按回车后保留编辑中的换行', async () => {
     const extractWrapper = mount(ValueExtractEditor, {
       props: { modelValue: textExtract },
@@ -161,6 +194,25 @@ describe('QfkProcessingEditor 两步处理交互', () => {
     expect(wrapper.text().match(/第二步：产出/g)).toHaveLength(2)
     expect(wrapper.text()).not.toContain('变量处理单元')
     expect(wrapper.text()).not.toContain('声明式取值')
+  })
+
+  it('处理单元仅向阈值和数值变量开放统计行数', () => {
+    const threshold = mountEditor({ ...matchProps(), match: numericMatch() })
+    expect(threshold.getComponent(ValueExtractEditor).props('allowRowCount')).toBe(true)
+
+    const keyword = mountEditor(matchProps())
+    expect(keyword.getComponent(ValueExtractEditor).props('allowRowCount')).toBe(false)
+
+    const produces = mountEditor({
+      mode: 'produces',
+      match: null,
+      produces: [
+        { name: 'TEXT', type: 'string', extract: textExtract },
+        { name: 'COUNT', type: 'integer', extract: textExtract },
+      ],
+    })
+    expect(produces.findAllComponents(ValueExtractEditor)[0].props('allowRowCount')).toBe(false)
+    expect(produces.findAllComponents(ValueExtractEditor)[1].props('allowRowCount')).toBe(true)
   })
 
   it('更新一个变量的取值时只替换对应处理单元，不污染其他变量', async () => {
