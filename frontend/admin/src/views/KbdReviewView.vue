@@ -10,6 +10,10 @@ import DOMPurify from 'dompurify'
 import { QfkProcessingEditor } from '@/components/editors'
 import type { SignalV2, SignalsDoc, ChangeAnnotation } from '@/utils/kbdSignalTypes'
 import {
+  buildProduceVariableCatalog,
+  type ProduceVariableOption,
+} from '@/utils/produceVariables'
+import {
   assignImportedSignalIds,
   buildImportAnnotations,
   countImportIdRegenerations,
@@ -458,6 +462,8 @@ const imageSaveLoading = ref(false)
 const revisionState = ref<KbdRevisionState | null>(null)
 const revisionLoading = ref(false)
 const capabilityMap = ref<Record<string, CapabilityDescriptor>>({})
+const produceVariableCatalog = ref<Record<string, ProduceVariableOption[]>>({})
+const produceVariableCatalogReady = ref(false)
 const signalReview = ref<SignalReviewResponse | null>(null)
 const signalReviewLoading = ref(false)
 const focusedSignalId = ref<string | null>(null)
@@ -658,6 +664,35 @@ async function fetchCapabilities() {
   } catch {
     capabilityMap.value = {}
   }
+}
+
+/** 加载工具管理维护的 QKV 产出变量目录，供生产者信号编辑时选择。 */
+async function fetchProduceVariableCatalog() {
+  try {
+    const resp = await fetch('/api/v1/tools', { headers: authHeader })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const tools = await resp.json()
+    produceVariableCatalog.value = buildProduceVariableCatalog(Array.isArray(tools) ? tools : [])
+  } catch (error) {
+    // 目录加载失败不阻断 KBD 编辑；历史值仍可保留并提交，避免管理接口短暂不可用时丢稿。
+    console.warn('加载产出变量目录失败:', error)
+    produceVariableCatalog.value = {}
+  } finally {
+    produceVariableCatalogReady.value = true
+  }
+}
+
+function produceVariableOptions(toolName: string, currentName = ''): Array<ProduceVariableOption & { legacy?: boolean }> {
+  const options = produceVariableCatalog.value[toolName] || []
+  if (!currentName || options.some((option) => option.name === currentName)) return options
+  // 工具管理删除目录项后，旧 KBD 仍需可回显和保存；新建项不会自动生成历史选项。
+  return [{ name: currentName, path: '', legacy: true }, ...options]
+}
+
+function updateProduceVariableName(index: number, value?: string): void {
+  const produces = signalEditDraft.value.orchestrate.produces || []
+  if (!produces[index]) return
+  produces[index].name = value || ''
 }
 
 async function fetchRevisionState(kbdId: number) {
@@ -1885,6 +1920,10 @@ function schemaDefaultArgs(tool: string): Record<string, any> {
 }
 
 function defaultProduces(tool: string): Array<Record<string, any>> {
+  if (produceVariableCatalogReady.value) {
+    return (produceVariableCatalog.value[tool] || []).map((option) => ({ ...option }))
+  }
+  // 首次加载目录前保留原有默认值，避免用户在接口返回前新建信号时出现空白编辑器。
   if (tool === 'qkv_dialog') {
     return [
       { name: 'END', path: 'end' },
@@ -3518,6 +3557,7 @@ onMounted(() => {
   fetchPending()
   fetchCategories()
   fetchCapabilities()
+  fetchProduceVariableCatalog()
   void loadBatchJobs()
   // 表格列注册完成后恢复用户上次拖拽的列宽
   void nextTick(restoreKbdColumnWidths)
@@ -4262,7 +4302,24 @@ onUnmounted(() => clearBatchPollTimer())
                     <span class="signal-k">产出变量</span>
                     <div class="produces-editor-mini">
                       <div v-for="(p, idx) in (signalEditDraft.orchestrate.produces || [])" :key="idx" class="produce-item-mini">
-                        <el-input v-model="p.name" size="small" placeholder="变量名" style="width: 120px" />
+                        <el-select
+                          :model-value="p.name"
+                          size="small"
+                          filterable
+                          clearable
+                          placeholder="选择变量"
+                          style="width: 180px"
+                          no-data-text="请先在工具管理的产出变量中维护选项"
+                          @change="(value?: string) => updateProduceVariableName(idx, value)"
+                        >
+                          <el-option
+                            v-for="option in produceVariableOptions(sigTool(signalEditDraft), p.name)"
+                            :key="`${option.legacy ? 'legacy-' : ''}${option.name}`"
+                            :label="option.legacy ? `${option.name}（历史值）` : option.name"
+                            :value="option.name"
+                            :disabled="option.legacy"
+                          />
+                        </el-select>
                         <el-input v-model="p.path" size="small" placeholder="JSON路径" style="flex: 1" />
                         <el-button text type="danger" size="small" @click="signalEditDraft.orchestrate.produces?.splice(idx, 1)">删除</el-button>
                       </div>
