@@ -12,7 +12,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
 )
 
 func Init(ctx context.Context) (func(context.Context) error, error) {
@@ -32,7 +32,7 @@ func Init(ctx context.Context) (func(context.Context) error, error) {
 	res, err := resource.Merge(resource.Default(), resource.NewWithAttributes(
 		semconv.SchemaURL,
 		semconv.ServiceName("hci-sim"),
-		semconv.DeploymentEnvironment(strings.TrimSpace(os.Getenv("HCI_SIM_ENVIRONMENT"))),
+		semconv.DeploymentEnvironmentName(strings.TrimSpace(os.Getenv("HCI_SIM_ENVIRONMENT"))),
 	))
 	if err != nil {
 		return nil, err

@@ -76,11 +76,17 @@ jobs:
               exit 1
             }
           done
+          # 迁移 SQL 是 PreSync Hook；普通触发器必须存在且不能是 Hook，
+          # 否则 migration-only 提交会被 ArgoCD 判定为 Synced 而不启动同步。
+          grep -Fq 'name: hci-sim-db-migration-trigger' /tmp/hci-platform-rendered.yaml
+          grep -Fq 'ordinary-sync-trigger: "true"' /tmp/hci-platform-rendered.yaml
           grep -Fq 'for migration in /migrations/*.sql; do' /tmp/hci-platform-rendered.yaml
           ! grep -Fq '/migrations/000001_control_plane.sql' /tmp/hci-platform-rendered.yaml
       - name: 校验模块表和主库边界
         run: |
-          test "$(psql -d hci_sim -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema IN ('control_plane','fixture','artifact','audit')")" = 16
+          expected_tables='artifact.approval artifact.metadata artifact.scan audit.entity_event control_plane.run control_plane.run_attempt control_plane.run_event control_plane.run_outbox control_plane.run_result control_plane.runtime_instance control_plane.scenario fixture.approval fixture.bundle fixture.bundle_activation fixture.dependency fixture.provenance fixture.stale_outbox'
+          actual_tables="$(psql -d hci_sim -Atc "SELECT table_schema || '.' || table_name FROM information_schema.tables WHERE table_schema IN ('control_plane','fixture','artifact','audit') AND table_type = 'BASE TABLE' ORDER BY 1" | tr '\n' ' ' | sed 's/[[:space:]]\+$//')"
+          test "$actual_tables" = "$expected_tables"
           test "$(psql -d hci_troubleshoot -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE 'agent_test_%'")" = 0
           psql -d hci_sim -v ON_ERROR_STOP=1 -c "REVOKE ALL ON DATABASE hci_sim FROM PUBLIC; GRANT CONNECT ON DATABASE hci_sim TO hci_sim_runtime;"
           ! PGPASSWORD=run_pass psql -h localhost -U hci_sim_runtime -d hci_sim -c 'CREATE TABLE control_plane.must_fail(id int);'
@@ -91,4 +97,6 @@ jobs:
         run: |
           psql -d hci_sim -v ON_ERROR_STOP=1 -c "GRANT USAGE ON SCHEMA control_plane, fixture, artifact, audit TO hci_sim_runtime; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA control_plane, fixture, artifact, audit TO hci_sim_runtime; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA control_plane, fixture, artifact, audit TO hci_sim_runtime;"
           cd hci_sim
-          go test ./internal/database ./internal/reconciler -count=1
+          # 两个集成测试包共享同一个临时 PostgreSQL outbox；必须串行，避免一个包
+          # 抢占另一个包刚写入的 SKIP LOCKED 消息而产生非确定性失败。
+          go test -p 1 ./internal/database ./internal/reconciler -count=1

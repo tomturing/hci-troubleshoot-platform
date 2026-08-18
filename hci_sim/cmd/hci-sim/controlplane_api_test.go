@@ -11,6 +11,7 @@ import (
 )
 
 func TestBundleFactoryAPICompileReviseDualApproveAndPublish(t *testing.T) {
+	t.Setenv("HCI_SIM_ALLOW_SYNTHETIC_PUBLISH", "false")
 	registry := controlplane.NewMemoryRegistryWithDependencies(controlplane.NewMemoryArtifactRegistry(), controlplane.NewMemoryBundleObjectStore())
 	mux := http.NewServeMux()
 	registerControlPlaneAPI(mux, registry, "test-control-token", false)
@@ -48,9 +49,39 @@ func TestBundleFactoryAPICompileReviseDualApproveAndPublish(t *testing.T) {
 	if approved["bundle"].(map[string]any)["status"] != string(controlplane.BundleApproved) {
 		t.Fatalf("dual approval did not approve bundle: %+v", approved)
 	}
+	bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+childDigest+"/publish", map[string]any{}, "publisher", "publisher-service", http.StatusConflict)
+	t.Setenv("HCI_SIM_ALLOW_SYNTHETIC_PUBLISH", "true")
 	published := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+childDigest+"/publish", map[string]any{}, "publisher", "publisher-service", http.StatusOK)
-	if published["bundle"].(map[string]any)["status"] != string(controlplane.BundlePublished) || published["runtime_activation"] != "pending_gitops_sync" {
+	activation := published["runtime_activation"].(map[string]any)
+	if published["bundle"].(map[string]any)["status"] != string(controlplane.BundlePublished) || activation["status"] != "pending_gitops_sync" {
 		t.Fatalf("published response=%+v", published)
+	}
+}
+
+func TestBundleFactoryAPICompilesKBDWithProducedSceneVariable(t *testing.T) {
+	registry := controlplane.NewMemoryRegistryWithDependencies(controlplane.NewMemoryArtifactRegistry(), controlplane.NewMemoryBundleObjectStore())
+	mux := http.NewServeMux()
+	registerControlPlaneAPI(mux, registry, "test-control-token", false)
+	compiled := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix, map[string]any{
+		"resolved": map[string]any{
+			"support_id": "40061", "kbd_revision": 1, "kbd_checksum": "sha256:kbd-40061",
+			"signals_digest": "sha256:signals-40061", "tool_contract_revision": "tool-r1", "policy_revision": "policy-r1",
+			"synthetic_routes": []map[string]any{{
+				"signal_id": "sig_003", "tool": "qfk_log",
+				"argv":               []string{"acli", "log", "get", "-t", "{{END}}", "-H", "{{HOST}}"},
+				"required_variables": []string{"END", "HOST"}, "tool_revision": 1, "tool_checksum": "sha256:tool",
+			}},
+		},
+	}, "compiler", "compiler-service", http.StatusCreated)
+	manifest := compiled["bundle"].(map[string]any)["manifest"].(map[string]any)
+	variables := manifest["variables"].(map[string]any)
+	if variables["END"] != "2026-01-01 00:00:00" || variables["HOST"] != "SIM-HCI-NODE-01" {
+		t.Fatalf("synthetic variables=%v", variables)
+	}
+	route := manifest["routes"].([]any)[0].(map[string]any)
+	argv := route["route_key"].(map[string]any)["argv"].([]any)
+	if argv[4] != "2026-01-01 00:00:00" || argv[6] != "SIM-HCI-NODE-01" {
+		t.Fatalf("rendered argv=%v", argv)
 	}
 }
 

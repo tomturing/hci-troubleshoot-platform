@@ -9,12 +9,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
 )
 
 const SchemaVersion = "2.0"
+
+var unresolvedTemplatePattern = regexp.MustCompile(`\{\{[A-Z][A-Z0-9_]*\}\}`)
 
 const (
 	FaultNone        = "none"
@@ -197,14 +200,14 @@ func validateManifest(raw []byte, manifest *Manifest) error {
 		return fmt.Errorf("fixture bundle digest 不匹配: got=%s", got)
 	}
 	for _, route := range manifest.Routes {
-		if err := validateRoute(route, manifest.Limits.MaxOutputBytesPerCommand); err != nil {
+		if err := validateRoute(route, manifest.Variables, manifest.Limits.MaxOutputBytesPerCommand); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateRoute(route Route, outputLimit int) error {
+func validateRoute(route Route, variables map[string]string, outputLimit int) error {
 	if route.ID == "" || route.Variant == "" {
 		return errors.New("fixture route 缺少 id 或 variant")
 	}
@@ -223,6 +226,14 @@ func validateRoute(route Route, outputLimit int) error {
 	}
 	if len(route.Result.Stdout)+len(route.Result.Stderr) > outputLimit {
 		return fmt.Errorf("fixture route %s 输出超过 bundle 限制", route.ID)
+	}
+	for _, output := range []string{route.Result.Stdout, route.Result.Stderr} {
+		for _, match := range unresolvedTemplatePattern.FindAllStringSubmatch(output, -1) {
+			name := strings.TrimSuffix(strings.TrimPrefix(match[0], "{{"), "}}")
+			if _, ok := variables[name]; !ok {
+				return fmt.Errorf("fixture route %s result 包含未声明模板 %s", route.ID, name)
+			}
+		}
 	}
 	if route.Stream.ChunkBytes < 0 || route.Stream.ChunkBytes > 1024*1024 || route.Stream.ChunkIntervalMS < 0 || route.Stream.ChunkIntervalMS > 60000 {
 		return fmt.Errorf("fixture route %s stream 配置越界", route.ID)
@@ -246,6 +257,40 @@ func (r *Router) KBD() KBDRef           { return r.manifest.KBD }
 func (r *Router) Contracts() Contracts  { return r.manifest.Contracts }
 func (r *Router) OutputLimit() int      { return r.manifest.Limits.MaxOutputBytesPerCommand }
 func (r *Router) IsSynthetic() bool     { return r.manifest.Variables["SYNTHETIC"] == "true" }
+func (r *Router) HasVariant(variant string) bool {
+	if r == nil || strings.TrimSpace(variant) == "" {
+		return false
+	}
+	for _, route := range r.manifest.Routes {
+		if route.Variant == variant {
+			return true
+		}
+	}
+	return false
+}
+
+// DefaultVariant 返回确定性的首选变体：优先 realistic，其次按字典序选择。
+func (r *Router) DefaultVariant() string {
+	if r == nil {
+		return ""
+	}
+	variants := make(map[string]struct{})
+	for _, route := range r.manifest.Routes {
+		variants[route.Variant] = struct{}{}
+	}
+	if _, ok := variants["positive-realistic"]; ok {
+		return "positive-realistic"
+	}
+	values := make([]string, 0, len(variants))
+	for variant := range variants {
+		values = append(values, variant)
+	}
+	sort.Strings(values)
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
 func (r *Router) Routes() []Route {
 	routes := make([]Route, len(r.manifest.Routes))
 	copy(routes, r.manifest.Routes)

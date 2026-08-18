@@ -31,7 +31,7 @@
 | `reconciler/` | Runtime 侧 durable outbox 投递循环 |
 | `metrics/` / `telemetry/` | OpenTelemetry 指标与 trace 导出 |
 
-## 3. 数据库层（独立库 `hci_sim`，16 张表 / 4 schema）
+## 3. 数据库层（独立库 `hci_sim`，17 张表 / 4 schema）
 
 - `control_plane`：scenario / run / run_attempt / run_event / run_result / run_outbox / runtime_instance
 - `fixture`：bundle / dependency / provenance / approval / stale_outbox
@@ -48,12 +48,12 @@
 ## 5. CI 门禁
 
 - `hci-sim-go.yml`：gofmt/test/race/vet/build + manifest-and-helm（digest 一致性、拒绝退役 marker、NetworkPolicy 必填）。
-- `hci-sim-db-migration-test.yml`：隔离 PG 跑迁移校验 16 表，反向校验主库无 agent_test_*，DDL 负向检查。
+- `hci-sim-db-migration-test.yml`：隔离 PG 跑迁移校验 17 张期望表，反向校验主库无 agent_test_*，DDL 负向检查。
 
 ## 6. 用户视角（与平台机制边界）
 
 用户关注：喂哪个 KBD、Lease 有效性窗口与来源文件、在 admin-ui 仿真会话面板验收、看命令卡片 passed/failed 与 output。
-平台黑盒：server/fixture/lease 执行内核、controlplane 状态机、16 张表 CRUD、迁移与 CI、Helm 编排、trace_id/idempotency_key。
+平台黑盒：server/fixture/lease 执行内核、controlplane 状态机、17 张表 CRUD、迁移与 CI、Helm 编排、trace_id/idempotency_key。
 
 ## 7. 当前状态与边界
 

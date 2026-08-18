@@ -68,6 +68,25 @@ type PublishedBundleInput struct {
 	InputFingerprint string
 }
 
+// BundleActivationRecord 是 Runtime 热激活指针的持久化确认状态。
+// Manifest 内容和 digest 身份仍由 fixture.bundle/object store 管理。
+type BundleActivationRecord struct {
+	SupportID      string
+	DesiredDigest  string
+	ActiveDigest   string
+	PreviousDigest string
+	Generation     int64
+	Status         string
+	RequestedBy    string
+	RuntimeID      string
+	TraceID        string
+	FailureCode    string
+	FailureMessage string
+	RequestedAt    time.Time
+	AcknowledgedAt *time.Time
+	UpdatedAt      time.Time
+}
+
 type OutboxRecord struct {
 	ID            int64
 	RunExternalID string
@@ -96,6 +115,159 @@ func (r *RunRepository) Ping(ctx context.Context) error {
 		return errors.New("hci_sim database pool is required")
 	}
 	return r.pool.Ping(ctx)
+}
+
+// RequestBundleActivation 将已发布 Bundle 写入 durable desired pointer。
+// Runtime 只有在校验并原子切换内存 Router 后才能调用 AckBundleActivation。
+func (r *RunRepository) RequestBundleActivation(ctx context.Context, supportID, digest, actorID, runtimeID, traceID string) (BundleActivationRecord, error) {
+	if r == nil || r.pool == nil || strings.TrimSpace(supportID) == "" || strings.TrimSpace(digest) == "" || strings.TrimSpace(actorID) == "" || strings.TrimSpace(runtimeID) == "" || strings.TrimSpace(traceID) == "" {
+		return BundleActivationRecord{}, errors.New("invalid bundle activation request")
+	}
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return BundleActivationRecord{}, fmt.Errorf("begin bundle activation request: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var bundleID uuid.UUID
+	var bundleStatus, bundleSupport string
+	if err := tx.QueryRow(ctx, `
+		SELECT b.id, b.status, s.support_id
+		FROM fixture.bundle b JOIN control_plane.scenario s ON s.id = b.scenario_id
+		WHERE b.digest = $1
+	`, digest).Scan(&bundleID, &bundleStatus, &bundleSupport); err != nil {
+		return BundleActivationRecord{}, err
+	}
+	if bundleStatus != "published" || bundleSupport != supportID {
+		return BundleActivationRecord{}, fmt.Errorf("bundle_activation_requires_published_bundle: %s", digest)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO fixture.bundle_activation
+			(support_id, desired_digest, active_digest, previous_digest, generation, status, requested_by, runtime_id, trace_id, requested_at, updated_at)
+		VALUES ($1, $2, NULL, NULL, 1, 'pending', $3, $4, $5, now(), now())
+		ON CONFLICT (support_id) DO UPDATE SET
+			previous_digest = CASE
+				WHEN fixture.bundle_activation.active_digest IS DISTINCT FROM EXCLUDED.desired_digest
+				THEN fixture.bundle_activation.active_digest
+				ELSE fixture.bundle_activation.previous_digest
+			END,
+			desired_digest = EXCLUDED.desired_digest,
+			generation = fixture.bundle_activation.generation + CASE WHEN fixture.bundle_activation.desired_digest = EXCLUDED.desired_digest THEN 0 ELSE 1 END,
+			status = 'pending', requested_by = EXCLUDED.requested_by, runtime_id = EXCLUDED.runtime_id,
+			trace_id = EXCLUDED.trace_id, failure_code = '', failure_message = '', acknowledged_at = NULL, updated_at = now()
+	`, supportID, digest, actorID, runtimeID, traceID); err != nil {
+		return BundleActivationRecord{}, fmt.Errorf("upsert bundle activation pointer: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return BundleActivationRecord{}, fmt.Errorf("commit bundle activation request: %w", err)
+	}
+	return r.GetBundleActivation(ctx, supportID)
+}
+
+// AckBundleActivation 在 Runtime 完成对象、digest、语义和内存切换校验后确认 active。
+func (r *RunRepository) AckBundleActivation(ctx context.Context, supportID, digest, runtimeID, traceID string) (BundleActivationRecord, error) {
+	if r == nil || r.pool == nil || strings.TrimSpace(supportID) == "" || strings.TrimSpace(digest) == "" || strings.TrimSpace(runtimeID) == "" || strings.TrimSpace(traceID) == "" {
+		return BundleActivationRecord{}, errors.New("invalid bundle activation acknowledgement")
+	}
+	now := time.Now().UTC()
+	updated, err := r.pool.Exec(ctx, `
+		UPDATE fixture.bundle_activation
+		SET active_digest = desired_digest, status = 'active', runtime_id = $3,
+			trace_id = $4, failure_code = '', failure_message = '', acknowledged_at = $5, updated_at = $5
+		WHERE support_id = $1 AND desired_digest = $2 AND status = 'pending'
+	`, supportID, digest, runtimeID, traceID, now)
+	if err != nil {
+		return BundleActivationRecord{}, fmt.Errorf("ack bundle activation: %w", err)
+	}
+	if updated.RowsAffected() != 1 {
+		return BundleActivationRecord{}, errors.New("bundle_activation_ack_conflict")
+	}
+	return r.GetBundleActivation(ctx, supportID)
+}
+
+// FailBundleActivation 保留旧 active digest，并记录可重试的失败原因。
+func (r *RunRepository) FailBundleActivation(ctx context.Context, supportID, digest, runtimeID, traceID, code, message string) error {
+	if r == nil || r.pool == nil || strings.TrimSpace(supportID) == "" || strings.TrimSpace(digest) == "" || strings.TrimSpace(runtimeID) == "" || strings.TrimSpace(traceID) == "" || strings.TrimSpace(code) == "" {
+		return errors.New("invalid bundle activation failure")
+	}
+	_, err := r.pool.Exec(ctx, `
+		UPDATE fixture.bundle_activation
+		SET status = 'failed', runtime_id = $3, trace_id = $4, failure_code = $5,
+			failure_message = LEFT($6, 512), updated_at = now()
+		WHERE support_id = $1 AND desired_digest = $2 AND status = 'pending'
+	`, supportID, digest, runtimeID, traceID, code, message)
+	if err != nil {
+		return fmt.Errorf("record bundle activation failure: %w", err)
+	}
+	return nil
+}
+
+func (r *RunRepository) GetBundleActivation(ctx context.Context, supportID string) (BundleActivationRecord, error) {
+	return scanBundleActivation(r.pool.QueryRow(ctx, `
+		SELECT support_id, desired_digest, COALESCE(active_digest, ''), COALESCE(previous_digest, ''), generation,
+		       status, requested_by, runtime_id, trace_id, failure_code, failure_message,
+		       requested_at, acknowledged_at, updated_at
+		FROM fixture.bundle_activation WHERE support_id = $1
+	`, supportID))
+}
+
+func (r *RunRepository) ListActiveBundleActivations(ctx context.Context) ([]BundleActivationRecord, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT support_id, desired_digest, COALESCE(active_digest, ''), COALESCE(previous_digest, ''), generation,
+		       status, requested_by, runtime_id, trace_id, failure_code, failure_message,
+		       requested_at, acknowledged_at, updated_at
+		FROM fixture.bundle_activation WHERE status = 'active' ORDER BY support_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]BundleActivationRecord, 0)
+	for rows.Next() {
+		record, scanErr := scanBundleActivation(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		result = append(result, record)
+	}
+	return result, rows.Err()
+}
+
+// ListPendingBundleActivations 返回尚未得到 Runtime ACK 的期望指针，供启动恢复和后台重试使用。
+func (r *RunRepository) ListPendingBundleActivations(ctx context.Context) ([]BundleActivationRecord, error) {
+	if r == nil || r.pool == nil {
+		return nil, errors.New("hci_sim database pool is required")
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT support_id, desired_digest, COALESCE(active_digest, ''), COALESCE(previous_digest, ''), generation,
+		       status, requested_by, runtime_id, trace_id, failure_code, failure_message,
+		       requested_at, acknowledged_at, updated_at
+		FROM fixture.bundle_activation WHERE status IN ('pending', 'failed') ORDER BY support_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]BundleActivationRecord, 0)
+	for rows.Next() {
+		record, scanErr := scanBundleActivation(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		result = append(result, record)
+	}
+	return result, rows.Err()
+}
+
+type bundleActivationScanner interface{ Scan(...any) error }
+
+func scanBundleActivation(row bundleActivationScanner) (BundleActivationRecord, error) {
+	var record BundleActivationRecord
+	if err := row.Scan(&record.SupportID, &record.DesiredDigest, &record.ActiveDigest, &record.PreviousDigest, &record.Generation,
+		&record.Status, &record.RequestedBy, &record.RuntimeID, &record.TraceID, &record.FailureCode, &record.FailureMessage,
+		&record.RequestedAt, &record.AcknowledgedAt, &record.UpdatedAt); err != nil {
+		return BundleActivationRecord{}, err
+	}
+	return record, nil
 }
 
 // Create 幂等创建 Scenario + Run。相同 idempotency_key 且 request_digest 相同
@@ -241,7 +413,7 @@ func (r *RunRepository) SyncPublishedBundles(ctx context.Context, bundles []Publ
 		}
 		reactivated, err := tx.Exec(ctx, `
 			UPDATE fixture.bundle SET status = 'published', version = version + 1, updated_at = now()
-			WHERE digest = $1 AND status <> 'published'
+			WHERE digest = $1 AND compile_input IS NULL AND status <> 'published'
 		`, bundle.Digest)
 		if err != nil {
 			return fmt.Errorf("reactivate published bundle: %w", err)
@@ -250,7 +422,7 @@ func (r *RunRepository) SyncPublishedBundles(ctx context.Context, bundles []Publ
 			UPDATE fixture.bundle b SET status = 'stale', version = b.version + 1, updated_at = now()
 			FROM control_plane.scenario s
 			WHERE b.scenario_id = s.id AND s.support_id = $1
-			  AND b.digest <> $2 AND b.status = 'published'
+			  AND b.digest <> $2 AND b.status = 'published' AND b.compile_input IS NULL
 			RETURNING b.id, b.scenario_id, b.digest
 		`, bundle.SupportID, bundle.Digest)
 		if err != nil {

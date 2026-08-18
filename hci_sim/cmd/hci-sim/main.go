@@ -208,6 +208,7 @@ func runServer() error {
 	var runRepository *database.RunRepository
 	var databasePool interface{ Close() }
 	var controlplaneRegistry controlplane.Registry
+	var runtimeActivator *runtimeBundleActivator
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("HCI_SIM_CONTROLPLANE_REGISTRY")), "memory") {
 		artifactRegistry := controlplane.NewMemoryArtifactRegistry()
 		controlplaneRegistry = controlplane.NewMemoryRegistryWithDependencies(artifactRegistry, controlplane.NewMemoryBundleObjectStore())
@@ -251,6 +252,16 @@ func runServer() error {
 			// TODO(T3): 接入 Bundle API 后替换为实际健康检查
 			log.Printf("hci-sim controlplane registry ready (postgres)")
 		}
+	}
+	if controlplaneRegistry != nil {
+		runtimeActivator = newRuntimeBundleActivator(bundlePool, controlplaneRegistry, runRepository, env("HCI_SIM_RUNTIME_ID", "hci-sim"))
+		if err := runtimeActivator.RestoreActive(ctx); err != nil {
+			return err
+		}
+		if err := runtimeActivator.ReconcilePending(ctx); err != nil {
+			return fmt.Errorf("恢复 pending Bundle 激活失败: %w", err)
+		}
+		go runtimeBundleActivationLoop(ctx, runtimeActivator)
 	}
 	var eventRecorder server.EventRecorder
 	if runRepository != nil {
@@ -301,9 +312,13 @@ func runServer() error {
 	mux.Handle("/metrics", prom.Handler())
 	mux.HandleFunc("/status", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		activeDefault := bundlePool.Get(env("HCI_SIM_DEFAULT_SUPPORT_ID", defaultRouter.KBD().SupportID))
+		if activeDefault == nil {
+			activeDefault = defaultRouter
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"service": "hci-sim", "version": version, "fixture_manifest_hash": defaultRouter.ManifestHash(), "bundle_digest": defaultRouter.BundleDigest(),
-			"kbd_support_id": defaultRouter.KBD().SupportID, "kbd_revision": defaultRouter.KBD().Revision, "tool_contract_revision": defaultRouter.Contracts().ToolRevision,
+			"service": "hci-sim", "version": version, "fixture_manifest_hash": activeDefault.ManifestHash(), "bundle_digest": activeDefault.BundleDigest(),
+			"kbd_support_id": activeDefault.KBD().SupportID, "kbd_revision": activeDefault.KBD().Revision, "tool_contract_revision": activeDefault.Contracts().ToolRevision,
 			"bundle_count": bundlePool.Size(), "loaded_support_ids": bundlePool.SupportIDs(), "bundles": bundlePool.Bundles(),
 			"database_configured": databaseTarget.Configured, "database_name": databaseTarget.Database,
 			"outbox_sink_configured": strings.TrimSpace(os.Getenv("HCI_SIM_OUTBOX_WEBHOOK_URL")) != "",
@@ -316,7 +331,7 @@ func runServer() error {
 	controlAuthorized := func(r *http.Request) bool {
 		return (controlToken != "" && r.Header.Get("Authorization") == "Bearer "+controlToken) || (controlToken == "" && allowInsecureControlAPI)
 	}
-	registerControlPlaneAPI(mux, controlplaneRegistry, controlToken, allowInsecureControlAPI)
+	registerControlPlaneAPI(mux, controlplaneRegistry, controlToken, allowInsecureControlAPI, runtimeActivator)
 	mux.HandleFunc("/v1/simulations/capabilities/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || !controlAuthorized(r) {
 			http.Error(w, "forbidden", http.StatusForbidden)
@@ -339,7 +354,8 @@ func runServer() error {
 		runtimeKBD := router.KBD()
 		runtimeRevision := runtimeKBD.Revision
 		authorityScope := env("HCI_SIM_AUTHORITY_SCOPE", "runtime_fixture")
-		activeRevision := envInt("HCI_SIM_ACTIVE_REVISION", runtimeRevision)
+		// revision 属于当前 active Bundle 的不可变身份，不能由 Runtime 全局环境变量覆盖。
+		activeRevision := runtimeRevision
 		buildable := simulationBuildable(requestedID, runtimeKBD, activeRevision, router.BundleDigest(), authorityScope, router.IsSynthetic())
 		gaps := make([]string, 0, 3)
 		if requestedID != runtimeKBD.SupportID {
@@ -393,14 +409,19 @@ func runServer() error {
 			http.Error(w, "Idempotency-Key is too long", http.StatusBadRequest)
 			return
 		}
-		requestDigest := digestValue(map[string]any{"kbd_id": request.KBDID, "variant": fixtureVariant, "bundle_digest": router.BundleDigest()})
-		inputFingerprint := digestValue(map[string]any{"support_id": request.KBDID, "kbd_revision": router.KBD().Revision, "variant": fixtureVariant, "bundle_digest": router.BundleDigest()})
-		environmentContext := simulationEnvironmentContext(router, runID, strings.TrimSpace(request.CaseID), fixtureVariant)
+		activeVariant := bundlePool.ActiveVariant(request.KBDID, fixtureVariant)
+		if activeVariant == "" {
+			http.Error(w, "capability_gap: active Bundle 没有可用 variant", http.StatusConflict)
+			return
+		}
+		requestDigest := digestValue(map[string]any{"kbd_id": request.KBDID, "variant": activeVariant, "bundle_digest": router.BundleDigest()})
+		inputFingerprint := digestValue(map[string]any{"support_id": request.KBDID, "kbd_revision": router.KBD().Revision, "variant": activeVariant, "bundle_digest": router.BundleDigest()})
+		environmentContext := simulationEnvironmentContext(router, runID, strings.TrimSpace(request.CaseID), activeVariant)
 		runVersion := 1
 		if runRepository != nil {
 			record, persistErr := runRepository.Create(r.Context(), database.RunInput{
 				ExternalID: runID, SupportID: request.KBDID, KBDRevision: router.KBD().Revision,
-				Variant: fixtureVariant, BundleDigest: router.BundleDigest(),
+				Variant: activeVariant, BundleDigest: router.BundleDigest(),
 				BundleSchemaVersion: router.SchemaVersion(), BundleObjectURI: bundleObjectURI(router.KBD().SupportID),
 				BundleObjectDigest: router.ManifestHash(), BundleSizeBytes: router.ManifestSize(), ExecutionMode: "sim-ssh",
 				IdempotencyKey: idempotencyKey, RequestDigest: requestDigest, Deadline: now.Add(15 * time.Minute),
@@ -420,7 +441,7 @@ func runServer() error {
 			runVersion = record.Version
 		}
 		expires := now.Add(15 * time.Minute)
-		claims := lease.Claims{JTI: runID + "-1", LeaseID: "lease-" + runID, TestRunID: runID, ScenarioID: "kbd-" + request.KBDID + "-" + fixtureVariant, SupportID: request.KBDID, KBDRevision: router.KBD().Revision, BundleDigest: router.BundleDigest(), FixtureVariant: fixtureVariant, ToolContractRevision: router.Contracts().ToolRevision, PolicyRevision: router.Contracts().PolicyRevision, VirtualNodeID: "SIM-HCI-NODE-01", Container: "host", ExecutionMode: "sim-ssh", Issuer: env("HCI_SIM_LEASE_ISSUER", "hci-platform"), Audience: env("HCI_SIM_LEASE_AUDIENCE", "hci-sim"), IssuedAt: now.Unix(), NotBefore: now.Unix(), ExpiresAt: expires.Unix(), RunDeadline: expires.Unix(), MaxSessions: 4, MaxCommands: 200, MaxOutputBytes: int64(router.OutputLimit())}
+		claims := lease.Claims{JTI: runID + "-1", LeaseID: "lease-" + runID, TestRunID: runID, ScenarioID: "kbd-" + request.KBDID + "-" + activeVariant, SupportID: request.KBDID, KBDRevision: router.KBD().Revision, BundleDigest: router.BundleDigest(), FixtureVariant: activeVariant, ToolContractRevision: router.Contracts().ToolRevision, PolicyRevision: router.Contracts().PolicyRevision, VirtualNodeID: "SIM-HCI-NODE-01", Container: "host", ExecutionMode: "sim-ssh", Issuer: env("HCI_SIM_LEASE_ISSUER", "hci-platform"), Audience: env("HCI_SIM_LEASE_AUDIENCE", "hci-sim"), IssuedAt: now.Unix(), NotBefore: now.Unix(), ExpiresAt: expires.Unix(), RunDeadline: expires.Unix(), MaxSessions: 4, MaxCommands: 200, MaxOutputBytes: int64(router.OutputLimit())}
 		token, err := lease.Sign(secret, claims)
 		if err != nil {
 			http.Error(w, "lease signing failed", http.StatusInternalServerError)
@@ -443,7 +464,7 @@ func runServer() error {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		environmentContext = simulationEnvironmentContext(router, runID, strings.TrimSpace(request.CaseID), fixtureVariant)
+		environmentContext = simulationEnvironmentContext(router, runID, strings.TrimSpace(request.CaseID), activeVariant)
 		_ = json.NewEncoder(w).Encode(map[string]any{"test_run_id": runID, "case_id": strings.TrimSpace(request.CaseID), "support_id": request.KBDID, "bundle_digest": router.BundleDigest(), "synthetic": router.IsSynthetic(), "environment_context": environmentContext, "connection": map[string]any{"host": env("HCI_SIM_SSH_HOST", "hci-sim.hci-sim-dev.svc"), "port": strings.TrimPrefix(env("HCI_SIM_SSH_LISTEN", ":2222"), ":"), "username": "sim", "auth_type": "lease", "password": token, "execution_mode": "sim-ssh", "test_run_id": runID}})
 	})
 	mux.HandleFunc("/v1/simulations/test-runs", func(w http.ResponseWriter, r *http.Request) {
@@ -622,6 +643,29 @@ func runServer() error {
 	return httpServer.Shutdown(shutdownCtx)
 }
 
+// runtimeBundleActivationLoop 以低频重试 durable pointer，发布请求无需等待 GitOps
+// 滚动重启；短暂故障恢复后仍能得到明确的 Runtime ACK。
+func runtimeBundleActivationLoop(ctx context.Context, activator *runtimeBundleActivator) {
+	interval := time.Duration(envInt("HCI_SIM_ACTIVATION_RETRY_SECONDS", 15)) * time.Second
+	if interval < time.Second {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			retryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			if err := activator.ReconcilePending(retryCtx); err != nil {
+				log.Printf("hci-sim bundle activation reconcile failed error=%v", err)
+			}
+			cancel()
+		}
+	}
+}
+
 func simulationEnvironmentContext(router *fixture.Router, runID, caseID, variant string) map[string]any {
 	components := make([]string, 0)
 	for _, component := range strings.Split(env("HCI_SIM_COMPONENTS", "虚拟机"), ",") {
@@ -646,7 +690,7 @@ func simulationEnvironmentContext(router *fixture.Router, runID, caseID, variant
 		"node_ip":         env("HCI_SIM_SSH_HOST", "hci-sim.hci-sim-dev.svc"),
 		"container":       "host",
 		"authority_scope": env("HCI_SIM_AUTHORITY_SCOPE", "runtime_fixture"),
-		"active_revision": envInt("HCI_SIM_ACTIVE_REVISION", router.KBD().Revision),
+		"active_revision": router.KBD().Revision,
 	}
 }
 
@@ -654,8 +698,12 @@ func publishedBundleInputs(pool *fixture.BundlePool, variant string) []database.
 	inputs := make([]database.PublishedBundleInput, 0, pool.Size())
 	for _, supportID := range pool.SupportIDs() {
 		router := pool.Get(supportID)
+		activeVariant := variant
+		if !router.HasVariant(activeVariant) {
+			activeVariant = router.DefaultVariant()
+		}
 		inputs = append(inputs, database.PublishedBundleInput{
-			SupportID: supportID, KBDRevision: router.KBD().Revision, Variant: variant,
+			SupportID: supportID, KBDRevision: router.KBD().Revision, Variant: activeVariant,
 			Digest: router.BundleDigest(), SchemaVersion: router.SchemaVersion(),
 			ObjectURI: bundleObjectURI(supportID), ObjectDigest: router.ManifestHash(),
 			SizeBytes: router.ManifestSize(),

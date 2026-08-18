@@ -933,31 +933,35 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 构建并推送镜像
+      - name: 构建待扫描镜像
+        id: build
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
-          push: true
+          load: true
+          push: false
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
           tags: |
-            ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
-            ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest
+            local/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
+            local/${{ matrix.service }}:latest
           build-args: |
             SOURCE_SHA=${{ github.sha }}
             IMAGE_TAG=${{ needs.prepare.outputs.image_tag }}
 
-      # 安全扫描与发布解耦：扫描结果照常上传 GitHub Security 标签页（可见性保留），
-      # 但不再以 exit-code 阻断镜像发布——漏洞治理走 PR 审查 + Dependabot，
-      # 而非在发布流水线硬卡，避免单服务漏洞拖垮整轮发布（含 admin-ui 等无关服务）。
+      # 扫描只提供安全信号，不得成为 GHCR 发布的单点故障；正式标签必须在
+      # 构建成功后才能推送。扫描使用本地镜像，避免先发布后扫描的不可追溯窗口。
       - name: Trivy 镜像安全扫描（HIGH/CRITICAL，非阻断）
+        id: scan
         uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956
         continue-on-error: true
         with:
-          image-ref: ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
+          image-ref: local/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
           exit-code: "0"
           severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          scanners: vuln
           version: v0.73.0
           format: sarif
           output: trivy-${{ matrix.service }}.sarif
@@ -968,6 +972,32 @@ jobs:
         continue-on-error: true
         with:
           sarif_file: trivy-${{ matrix.service }}.sarif
+
+      - name: 推送已扫描镜像
+        id: push
+        if: always() && steps.build.outcome == 'success'
+        run: |
+          set -euo pipefail
+          source_image="local/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}"
+          target_image="ghcr.io/${GITHUB_REPOSITORY}/${{ matrix.service }}"
+          docker tag "${source_image}" "${target_image}:${{ needs.prepare.outputs.image_tag }}"
+          docker tag "local/${{ matrix.service }}:latest" "${target_image}:latest"
+          docker push "${target_image}:${{ needs.prepare.outputs.image_tag }}"
+          docker push "${target_image}:latest"
+          echo "已推送镜像：${target_image}:${{ needs.prepare.outputs.image_tag }}"
+
+      - name: 镜像发布审计摘要
+        if: always()
+        run: |
+          {
+            echo "### 镜像发布审计"
+            echo "- service: \`${{ matrix.service }}\`"
+            echo "- source_sha: \`${GITHUB_SHA}\`"
+            echo "- image_tag: \`${{ needs.prepare.outputs.image_tag }}\`"
+            echo "- scan: \`${{ steps.scan.outcome }}\`"
+            echo "- push: \`${{ steps.push.outcome }}\`"
+            echo "- run_id: \`${GITHUB_RUN_ID}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   # hci-sim 暂未迁入 hci-platform-env，由本仓库 Argo Application 直接消费。
   # 只有构建输入变化才允许生成新制品；晋级请求按 service+environment 唯一，
@@ -1186,24 +1216,32 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 构建并推送 db-migrate 镜像
+      - name: 构建待扫描 db-migrate 镜像
+        id: build
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
         with:
           context: .
           file: Dockerfile.migrations
-          push: true
+          load: true
+          push: false
+          cache-from: type=gha,scope=db-migrate
+          cache-to: type=gha,mode=max,scope=db-migrate
           tags: |
-            ghcr.io/${{ github.repository }}/db-migrate:${{ needs.prepare.outputs.image_tag }}
-            ghcr.io/${{ github.repository }}/db-migrate:latest
+            local/db-migrate:${{ needs.prepare.outputs.image_tag }}
+            local/db-migrate:latest
 
-      # 安全扫描与发布解耦（同 build-and-push 矩阵）：非阻断，保留 Security 标签页可见性。
+      # OS 层扫描只提供安全信号，不能阻断构建成功镜像的发布。
       - name: Trivy 镜像安全扫描（HIGH/CRITICAL，非阻断）
+        id: scan
         uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956
         continue-on-error: true
         with:
-          image-ref: ghcr.io/${{ github.repository }}/db-migrate:${{ needs.prepare.outputs.image_tag }}
+          image-ref: local/db-migrate:${{ needs.prepare.outputs.image_tag }}
           exit-code: "0"
           severity: HIGH,CRITICAL
+          vuln-type: os
+          ignore-unfixed: true
+          scanners: vuln
           version: v0.73.0
           format: sarif
           output: trivy-db-migrate.sarif
@@ -1214,6 +1252,51 @@ jobs:
         continue-on-error: true
         with:
           sarif_file: trivy-db-migrate.sarif
+
+      - name: Trivy db-migrate Atlas/library 扫描（信息性）
+        uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956
+        if: always()
+        continue-on-error: true
+        with:
+          image-ref: local/db-migrate:${{ needs.prepare.outputs.image_tag }}
+          exit-code: "0"
+          severity: HIGH,CRITICAL
+          vuln-type: library
+          ignore-unfixed: true
+          scanners: vuln
+          version: v0.73.0
+          format: sarif
+          output: trivy-db-migrate-library.sarif
+
+      - name: 上传 db-migrate Atlas/library 扫描结果
+        uses: github/codeql-action/upload-sarif@c4dd10e44af883a891fe31ced449bcb4a6728b9b
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: trivy-db-migrate-library.sarif
+
+      - name: 推送已扫描 db-migrate 镜像
+        id: push
+        if: always() && steps.build.outcome == 'success'
+        run: |
+          set -euo pipefail
+          target_image="ghcr.io/${GITHUB_REPOSITORY}/db-migrate"
+          docker tag "local/db-migrate:${{ needs.prepare.outputs.image_tag }}" "${target_image}:${{ needs.prepare.outputs.image_tag }}"
+          docker tag local/db-migrate:latest "${target_image}:latest"
+          docker push "${target_image}:${{ needs.prepare.outputs.image_tag }}"
+          docker push "${target_image}:latest"
+
+      - name: db-migrate 发布审计摘要
+        if: always()
+        run: |
+          {
+            echo "### db-migrate 镜像发布审计"
+            echo "- source_sha: \`${GITHUB_SHA}\`"
+            echo "- image_tag: \`${{ needs.prepare.outputs.image_tag }}\`"
+            echo "- scan: \`${{ steps.scan.outcome }}\`"
+            echo "- push: \`${{ steps.push.outcome }}\`"
+            echo "- run_id: \`${GITHUB_RUN_ID}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   auto-deploy-non-prod:
     name: 晋级非生产环境

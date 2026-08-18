@@ -59,7 +59,7 @@ owner: team
 **入口 3：`POST /v1/simulations/build`（`main.go:293-299`）--三道闸门，全都要过。**
 - 闸门一：请求的 KBD 必须等于已加载 manifest 的 KBD，否则 409 `requested KBD is not the loaded immutable fixture`；
 - 闸门二：`HCI_SIM_AUTHORITY_SCOPE` 不得为默认值 `runtime_fixture` 且 manifest 非 synthetic（`main.go:297`）。**对抗性发现：Helm 默认值恰恰是 `runtime_fixture`（`values.yaml:24`），即按默认部署 build 永远 409。** dev 环境能跑通 KBD-27123 纵向样板，靠的是运维把该变量手工覆盖为 `dev_golden`（见验证记录 `docs/verify/hci-sim/events/2026-08-11-hci-sim-P0-P1-27123全链路验证.md:58`）--这道“安全闸门”目前靠运维不乱改 env 来维持，不是工程化保证；
-- 闸门三：revision 匹配。`HCI_SIM_ACTIVE_REVISION` 与 manifest revision 不一致报 `kbd_revision_mismatch`--P0-P1 验证记录里真实出现过 requested=24 vs runtime=1 的漂移现场（同文件 :58），还出现过 GitOps digest 滞后导致 capabilities 404（同文件 §0）。
+- 闸门三：revision 匹配。历史实现曾用全局 `HCI_SIM_ACTIVE_REVISION`，会造成多 KBD 漂移；现已改为直接比较 active Bundle 自身 revision，禁止全局环境变量覆盖。P0-P1 验证记录里真实出现过 requested=24 vs runtime=1 的漂移现场（同文件 :58），还出现过 GitOps digest 滞后导致 capabilities 404（同文件 §0）。
 
 **结论：** “指定任意 KBD ID 自动出环境” = 不支持。当前等价于”换一个 KBD 需要重走一次应用发布”（手写 manifest JSON 进 git + 改 Helm values + Argo 更新 image digest）--生产化差距审查文档的原话就是”新 KBD 仍接近一次应用发布……人工步骤过多且无法原子化”（`docs/solution/hci-sim/events/2026-08-11-hci-sim生产化差距审查与Bundle工厂化重构基线.md:70`）。另有细节约束：`support_id` 数据库上限 varchar(20)，capabilities 接口拒绝含 `/?#` 的 ID。
 

@@ -48,6 +48,44 @@ func TestBuildSyntheticManifestAcceptsAnyPublishedKBDContract(t *testing.T) {
 	}
 }
 
+func TestBuildSyntheticManifestProvidesDeterministicSceneVariables(t *testing.T) {
+	manifest, err := buildSyntheticManifest(&resolvedKbd{
+		SupportID: "40061", KBDRevision: 1, KBDChecksum: strings.Repeat("a", 64),
+		SignalsDigest: "sha256:signals", ToolContractRevision: "tool-r1", PolicyRevision: "policy-r1",
+		SyntheticRoutes: []syntheticRoute{{
+			SignalID: "sig_003", Tool: "qfk_log", Argv: []string{"acli", "log", "get", "-t", "{{END}}", "-H", "{{HOST}}"},
+			RequiredVariables: []string{"END", "HOST"}, ToolRevision: 1, ToolChecksum: "sha256:tool",
+		}},
+	}, "SIM-HCI-NODE-01", "host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manifest.Variables["END"]; got != "2026-01-01 00:00:00" {
+		t.Fatalf("unexpected deterministic END: %q", got)
+	}
+	if got := manifest.Variables["HOST"]; got != "SIM-HCI-NODE-01" {
+		t.Fatalf("unexpected synthetic HOST: %q", got)
+	}
+	argv := manifest.Routes[0].RouteKey.Argv
+	if argv[4] != "2026-01-01 00:00:00" || argv[6] != "SIM-HCI-NODE-01" {
+		t.Fatalf("scene variables were not rendered: %v", argv)
+	}
+}
+
+func TestBuildSyntheticManifestRejectsUnknownSceneVariableProvider(t *testing.T) {
+	_, err := buildSyntheticManifest(&resolvedKbd{
+		SupportID: "unknown-variable", KBDRevision: 1, KBDChecksum: strings.Repeat("a", 64),
+		SignalsDigest: "sha256:signals", ToolContractRevision: "tool-r1", PolicyRevision: "policy-r1",
+		SyntheticRoutes: []syntheticRoute{{
+			SignalID: "sig_unknown", Tool: "qfk_log", Argv: []string{"acli", "log", "get", "-t", "{{CUSTOM_WINDOW}}"},
+			RequiredVariables: []string{"CUSTOM_WINDOW"}, ToolRevision: 1, ToolChecksum: "sha256:tool",
+		}},
+	}, "SIM-HCI-NODE-01", "host")
+	if err == nil || !strings.Contains(err.Error(), "缺少场景变量") || !strings.Contains(err.Error(), "CUSTOM_WINDOW") {
+		t.Fatalf("expected unknown scene variable gap, got %v", err)
+	}
+}
+
 func TestBuildSyntheticManifestRejectsUncontrolledCommand(t *testing.T) {
 	_, err := buildSyntheticManifest(&resolvedKbd{
 		SupportID: "dynamic", KBDRevision: 1, KBDChecksum: strings.Repeat("a", 64),
