@@ -9,10 +9,7 @@ tool_contract_revision stale 故障。
 from __future__ import annotations
 
 import importlib.util
-import os
 from pathlib import Path
-
-import pytest
 
 _SCRIPT = Path(__file__).resolve().parent / "resolve_image_build_plan.py"
 
@@ -50,3 +47,33 @@ def test_force_all_selects_everything():
     assert "kb-service" in selected
     assert "agent-service" in selected
     assert "terminal-bridge" in selected
+
+
+def test_push_uses_successful_release_baseline(monkeypatch):
+    """主干空 diff push 也必须从最近成功镜像发布继续计算。"""
+    module = _load_module()
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.setenv("GITHUB_RELEASE_BASE_SHA", "a" * 40)
+    monkeypatch.setenv("GITHUB_EVENT_BEFORE", "b" * 40)
+    monkeypatch.setenv("GITHUB_SHA", "c" * 40)
+
+    captured = {}
+
+    class Result:
+        stdout = "frontend/admin/src/router/index.ts\n"
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return Result()
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    assert module.changed_files() == ["frontend/admin/src/router/index.ts"]
+    assert captured["command"][3] == "a" * 40
+
+
+def test_manual_dispatch_uses_force_all_without_event_before(monkeypatch):
+    """手动发布没有 event.before 时仍应进入全量构建路径。"""
+    module = _load_module()
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+    monkeypatch.delenv("GITHUB_EVENT_BEFORE", raising=False)
+    assert module.changed_files() == []

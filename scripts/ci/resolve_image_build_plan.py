@@ -69,7 +69,11 @@ def changed_files() -> list[str]:
         base = os.environ.get("GITHUB_BASE_SHA", "")
         head = os.environ.get("GITHUB_HEAD_SHA", "")
     else:
-        base = os.environ.get("GITHUB_EVENT_BEFORE", "")
+        # 主干发布优先使用最近一次成功镜像发布基线。没有该输出时再退回
+        # event.before，兼容手动调用和旧 workflow 运行。
+        base = os.environ.get("GITHUB_RELEASE_BASE_SHA") or os.environ.get(
+            "GITHUB_EVENT_BEFORE", ""
+        )
         head = os.environ.get("GITHUB_SHA", "")
 
     if not base or not head or base == "0" * 40:

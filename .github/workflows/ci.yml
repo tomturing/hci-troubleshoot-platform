@@ -26,7 +26,9 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # PR 检查可以取消旧运行；main 发布不能取消，否则后续空 diff push
+  # 可能吞掉上一轮尚未完成的镜像构建与环境晋级。
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
@@ -35,6 +37,9 @@ jobs:
     name: docs-governance
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       # frontend 改用 fe-real step 的确定性 git diff 判定（见下方注释），
@@ -114,6 +119,19 @@ jobs:
             echo "frontend=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # 主干发布不能只比较相邻两个 commit：上一轮发布可能在镜像构建阶段被
+      # 后续 main push 取消，随后到达的空 diff push 会把尚未发布的改动误判为无需构建。
+      # 这里寻找最近一次真正成功构建过业务镜像的 CI run 作为发布基线。
+      - name: 解析最近成功镜像发布基线
+        id: release-baseline
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          CURRENT_SHA: ${{ github.sha }}
+          EVENT_BEFORE: ${{ github.event.before }}
+        run: python3 scripts/ci/resolve_release_baseline.py
+
       # 发布镜像使用完整 Git diff 生成最小服务闭包。只在 main push/手动发布时
       # 需要；PR 质量门禁仍只消费上面的 paths-filter 输出。
       - name: 生成最小镜像构建计划
@@ -121,6 +139,7 @@ jobs:
         if: github.event_name != 'pull_request'
         env:
           GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          GITHUB_RELEASE_BASE_SHA: ${{ steps.release-baseline.outputs.base_sha }}
           GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci/resolve_image_build_plan.py
@@ -850,6 +869,9 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.image_tag }}
             ghcr.io/${{ github.repository }}/${{ matrix.service }}:latest
+          build-args: |
+            SOURCE_SHA=${{ github.sha }}
+            IMAGE_TAG=${{ needs.prepare.outputs.image_tag }}
 
       - name: Trivy 镜像安全扫描（HIGH/CRITICAL 阻断）
         uses: aquasecurity/trivy-action@2736533278103862a861f4a35ebac3e97854d956
