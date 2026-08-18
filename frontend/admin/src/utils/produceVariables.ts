@@ -17,21 +17,37 @@ export interface ProduceVariableToolLike {
   parameters_schema?: unknown
 }
 
-export function extractProduceVariablesFromSchema(schema: unknown): ProduceVariableOption[] {
+/**
+ * 为可视化编辑器读取产出变量草稿，保留尚未填写名称或路径的行。
+ *
+ * 编辑态的空行是用户正在输入的有效状态，不能复用目录解析的过滤规则。
+ */
+export function parseProduceVariableDraftsFromSchema(schema: unknown): ProduceVariableOption[] {
   if (!schema || typeof schema !== 'object') return []
   const record = schema as Record<string, any>
   const properties = record.properties && typeof record.properties === 'object' ? record.properties : null
   const produces = properties?.produces?.default ?? record.produces
   if (!Array.isArray(produces)) return []
 
+  return produces
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+    .map((item) => ({
+      name: String(item.name ?? ''),
+      path: String(item.path ?? ''),
+    }))
+}
+
+/** 读取已保存变量目录，仅保留可供下游引用的具名变量。 */
+export function extractProduceVariablesFromSchema(schema: unknown): ProduceVariableOption[] {
+  const drafts = parseProduceVariableDraftsFromSchema(schema)
+
   const seen = new Set<string>()
   const options: ProduceVariableOption[] = []
-  for (const item of produces) {
-    if (!item || typeof item !== 'object') continue
-    const name = String(item.name ?? '').trim()
+  for (const item of drafts) {
+    const name = item.name.trim()
     if (!name || seen.has(name)) continue
     seen.add(name)
-    options.push({ name, path: String(item.path ?? '').trim() })
+    options.push({ name, path: item.path.trim() })
   }
   return options
 }

@@ -4,7 +4,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search, Edit, Delete, FullScreen } from '@element-plus/icons-vue'
 import { ProducesEditor, MatcherEditor } from '@/components/editors'
-import { extractProduceVariablesFromSchema } from '@/utils/produceVariables'
+import { parseProduceVariableDraftsFromSchema } from '@/utils/produceVariables'
 
 interface ToolDefinition {
   id: number
@@ -208,7 +208,7 @@ const isSignalTool = computed(() => ['qkv', 'qfk'].includes(formModel.value.cate
 // 从 JSON Schema 解析 produces 字段（QKV 专用）
 function parseProducesFromSchema(schemaStr: string): Array<{ name: string; path: string }> {
   try {
-    return extractProduceVariablesFromSchema(JSON.parse(schemaStr))
+    return parseProduceVariableDraftsFromSchema(JSON.parse(schemaStr))
   } catch {}
   return []
 }

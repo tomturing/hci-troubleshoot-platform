@@ -5,7 +5,32 @@ import {
   buildProduceVariableCatalog,
   extractProduceVariablesFromSchema,
   findProduceVariable,
+  parseProduceVariableDraftsFromSchema,
 } from '../produceVariables'
+
+describe('parseProduceVariableDraftsFromSchema', () => {
+  it('保留编辑中的空草稿，避免双向同步清除新增行', () => {
+    expect(parseProduceVariableDraftsFromSchema({
+      properties: {
+        produces: {
+          default: [
+            { name: 'HOST', path: 'host' },
+            { name: '', path: '' },
+          ],
+        },
+      },
+    })).toEqual([
+      { name: 'HOST', path: 'host' },
+      { name: '', path: '' },
+    ])
+  })
+
+  it('跳过无效条目并兼容旧版顶层 produces', () => {
+    expect(parseProduceVariableDraftsFromSchema({
+      produces: [{ name: '', path: '' }, null, 'invalid'],
+    })).toEqual([{ name: '', path: '' }])
+  })
+})
 
 describe('extractProduceVariablesFromSchema', () => {
   it('从标准 Schema 的 produces.default 读取变量并保留路径', () => {
