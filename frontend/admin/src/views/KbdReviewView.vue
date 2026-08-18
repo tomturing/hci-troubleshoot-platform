@@ -1986,6 +1986,23 @@ function onSignalToolChange(tool: string) {
   if (tool.startsWith('qfk')) syncDraftRequires()
 }
 
+function supportsQfkFormatter(tool: string): boolean {
+  return qfkFormatterTools.has(tool)
+}
+
+function qfkFormatterValue(args: Record<string, any>): string {
+  const formatter = typeof args.formatter === 'string' ? args.formatter : ''
+  return qfkFormatterOptions.some((option) => option.value === formatter) ? formatter : ''
+}
+
+function toggleQfkFormatter(args: Record<string, any>, formatter: string): void {
+  if (qfkFormatterValue(args) === formatter) {
+    delete args.formatter
+    return
+  }
+  args.formatter = formatter
+}
+
 function qfkSystemCommandText(args: Record<string, any>): string {
   return [args.command, ...(Array.isArray(args.command_args) ? args.command_args : [])]
     .filter((item) => typeof item === 'string' && item.trim())
@@ -3553,6 +3570,22 @@ const metaKeys: (keyof KbdMetadata)[] = [
   'domain_hint', 'signal_tools', 'seed_version',
 ]
 
+const qfkFormatterOptions = [
+  { value: 'json', label: 'json' },
+  { value: 'keyvalue', label: 'keyvalue' },
+  { value: 'csv', label: 'csv' },
+  { value: 'xml', label: 'xml' },
+] as const
+
+const qfkFormatterTools = new Set([
+  'qfk_system',
+  'qfk_vm',
+  'qfk_network',
+  'qfk_storage',
+  'qfk_hardware',
+  'qfk_platform',
+])
+
 onMounted(() => {
   fetchPending()
   fetchCategories()
@@ -4371,9 +4404,12 @@ onUnmounted(() => clearBatchPollTimer())
                   <template v-if="sigTool(item.sig) === 'qfk_system'">
                     <div class="signal-row"><span class="signal-k">容器</span><span class="signal-v">{{ sigArgs(item.sig).container || 'host' }}</span></div>
                     <div v-if="sigArgs(item.sig).cluster" class="signal-row"><span class="signal-k">集群执行</span><span class="signal-v">是（acli --cluster）</span></div>
-                    <div v-if="sigArgs(item.sig).formatter" class="signal-row"><span class="signal-k">输出格式</span><span class="signal-v code">{{ sigArgs(item.sig).formatter }}</span></div>
                     <el-alert v-if="String(sigArgs(item.sig).command || '').includes('|')" title="历史命令含 Shell 管道，必须编辑并清理后才能统一保存" type="warning" :closable="false" show-icon />
                   </template>
+                  <div v-if="supportsQfkFormatter(sigTool(item.sig))" class="signal-row">
+                    <span class="signal-k">输出格式</span>
+                    <span class="signal-v code">{{ qfkFormatterValue(sigArgs(item.sig)) || '默认文本' }}</span>
+                  </div>
                   <template v-if="sigTool(item.sig) === 'qfk_service'">
                     <div class="signal-row"><span class="signal-k">容器</span><span class="signal-v">{{ sigArgs(item.sig).container || 'asv' }}</span></div>
                     <div class="signal-row"><span class="signal-k">动作</span><span class="signal-v">{{ sigArgs(item.sig).action || sigArgs(item.sig).command || sigOrch(item.sig).action || 'status' }}</span></div>
@@ -4469,7 +4505,6 @@ onUnmounted(() => clearBatchPollTimer())
                     </div>
                     <div class="field-hint"><code>host</code> 表示不添加 <code>acli --container</code>；其他选项会作为 aCLI 容器参数。Terminal Bridge 始终在目标主机上启动 aCLI。</div>
                     <div class="signal-row"><span class="signal-k">集群执行</span><el-switch v-model="signalEditDraft.acquire.args.cluster" active-text="添加 acli --cluster" /></div>
-                    <div class="signal-row"><span class="signal-k">输出格式</span><el-select v-model="signalEditDraft.acquire.args.formatter" size="small" clearable placeholder="默认文本"><el-option label="json" value="json" /><el-option label="keyvalue" value="keyvalue" /><el-option label="csv" value="csv" /><el-option label="xml" value="xml" /></el-select></div>
                     <div class="signal-row"><span class="signal-k">执行命令</span><el-input :model-value="qfkSystemCommandText(signalEditDraft.acquire.args)" size="small" placeholder="如 ps -p {{PID}} -o cmd=（不含 acli system）" @input="(value: string) => setQfkSystemCommandText(signalEditDraft.acquire.args, value)" /></div>
                     <div v-if="String(signalEditDraft.acquire.args.command || '').includes('|')" class="signal-row pipeline-warning">
                       <span class="signal-k"></span>
@@ -4502,6 +4537,24 @@ onUnmounted(() => clearBatchPollTimer())
                     <div class="signal-row"><span class="signal-k">执行命令</span><el-input v-model="signalEditDraft.acquire.args.command" size="small" placeholder="子命令，如 list / show / get status" /></div>
                     <div class="field-hint">acli 之后的子命令（如 list、show、get status）；命名空间由工具名（qfk_vm 等）隐含，勿含 acli 前缀</div>
                   </template>
+                  <div v-if="supportsQfkFormatter(sigTool(signalEditDraft))" class="signal-row qfk-formatter-row">
+                    <span class="signal-k">输出格式</span>
+                    <div class="signal-v qfk-formatter-control">
+                      <div class="qfk-formatter-options" role="radiogroup" aria-label="输出格式">
+                        <el-button
+                          v-for="option in qfkFormatterOptions"
+                          :key="option.value"
+                          class="qfk-formatter-option"
+                          size="small"
+                          :type="qfkFormatterValue(signalEditDraft.acquire.args) === option.value ? 'primary' : 'default'"
+                          :plain="qfkFormatterValue(signalEditDraft.acquire.args) !== option.value"
+                          :aria-pressed="qfkFormatterValue(signalEditDraft.acquire.args) === option.value"
+                          @click="toggleQfkFormatter(signalEditDraft.acquire.args, option.value)"
+                        >{{ option.label }}</el-button>
+                      </div>
+                      <span v-if="!qfkFormatterValue(signalEditDraft.acquire.args)" class="qfk-formatter-default">默认文本</span>
+                    </div>
+                  </div>
 
                   <div class="signal-row command-preview-row">
                     <span class="signal-k">完整命令</span>
@@ -6158,6 +6211,27 @@ onUnmounted(() => clearBatchPollTimer())
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.qfk-formatter-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.qfk-formatter-options {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.qfk-formatter-option {
+  min-width: 72px;
+  margin-left: 0 !important;
+  border-radius: 3px;
+}
+.qfk-formatter-default {
+  color: #909399;
+  font-size: 12px;
 }
 .inline-controls,
 .variable-chips,
