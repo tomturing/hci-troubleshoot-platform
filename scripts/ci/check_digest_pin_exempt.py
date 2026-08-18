@@ -1,8 +1,7 @@
-"""判断单个 ArgoCD Application 清单文件是否仅发生 digest 锚点钉入（可豁免文档门禁）。
+"""判断 ArgoCD Application 是否仅发生已文档化的镜像晋级元数据更新。
 
-背景：自动钉 digest 动作（Renovate 式）会修改 deploy/gitops/argo-apps/** 下的
-`digest: "sha256:..."` 行。这类改动已在 docs/deploy/发布指南.md 文档化，属于幂等发布动作，
-不要求每个钉入 PR 内重复同步 docs。因此 docs-governance 需对「仅 digest 行变化」的文件豁免。
+promotion PR 只允许同时更新不可变 digest 和对应源码 revision。这类变更已在
+docs/deploy/发布指南.md 文档化，不要求每个晋级 PR 重复同步 docs。
 
 关键陷阱（历史 bug）：git diff 输出为 `-<缩进空格>digest: "sha256:..."`，减号后跟缩进空格。
 若正则写成 `^[-+]?digest:` 会匹配失败（减号后不是 digest 而是空格），导致 digest 行无法被
@@ -15,27 +14,43 @@ import re
 import subprocess
 import sys
 
-# 匹配「-」或「+」开头、后跟任意空白、再跟 digest: "sha256:..." 的行（含缩进）。
-_DIGEST_LINE = re.compile(r'^[-+][\s]*digest: "sha256:')
+# 仅豁免两个精确字段，其他 annotation 或镜像字段仍必须触发文档门禁。
+_PROMOTION_LINE = re.compile(
+    r'^[-+][\s]*(?:digest: "sha256:[0-9a-f]{64}"|hci-platform\.dev/image-source-revision: "(?:[0-9a-f]{40}|unverified-legacy)")$'
+)
+_DIGEST_LINE = re.compile(r'^[-+][\s]*digest: "sha256:[0-9a-f]{64}"$')
+_SOURCE_LINE = re.compile(r'^[-+][\s]*hci-platform\.dev/image-source-revision: "(?:[0-9a-f]{40}|unverified-legacy)"$')
 
 
-def _non_digest_diff_lines(diff_body: str) -> list[str]:
-    """返回 diff 中除 digest 锚点行与文件头(+++|---)之外的所有 +/- 行。"""
+def _non_promotion_diff_lines(diff_body: str) -> list[str]:
+    """返回 diff 中除受控晋级字段与文件头之外的所有 +/- 行。"""
     out: list[str] = []
     for line in diff_body.splitlines():
         if not line.startswith(("+", "-")):
             continue
         if line.startswith(("+++", "---")):
             continue
-        if _DIGEST_LINE.match(line):
+        if _PROMOTION_LINE.match(line):
             continue
         out.append(line)
     return out
 
 
 def is_digest_pin_only(diff_body: str) -> bool:
-    """若文件的 diff 除 digest 锚点变化外无其他改动，返回 True（可豁免）。"""
-    return len(_non_digest_diff_lines(diff_body)) == 0
+    """只有 digest/source revision 成对原子更新时才允许豁免。"""
+    changed = [
+        line for line in diff_body.splitlines() if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+    ]
+    if _non_promotion_diff_lines(diff_body):
+        return False
+    digest_lines = [line for line in changed if _DIGEST_LINE.match(line)]
+    source_lines = [line for line in changed if _SOURCE_LINE.match(line)]
+    return (
+        len(digest_lines) == 2
+        and len(source_lines) == 2
+        and {line[0] for line in digest_lines} == {"-", "+"}
+        and {line[0] for line in source_lines} == {"-", "+"}
+    )
 
 
 def diff_for_file(base_sha: str, head_sha: str, file_path: str) -> str:
@@ -56,9 +71,9 @@ def main(argv: list[str]) -> int:
     base_sha, head_sha, file_path = argv[1], argv[2], argv[3]
     diff_body = diff_for_file(base_sha, head_sha, file_path)
     if is_digest_pin_only(diff_body):
-        print(f"豁免（已文档化的 digest 锚点钉入）：{file_path}")
+        print(f"豁免（已文档化的镜像晋级元数据）：{file_path}")
         return 0
-    print(f"非纯 digest 钉入，需同步文档：{file_path}", file=sys.stderr)
+    print(f"非纯镜像晋级元数据更新，需同步文档：{file_path}", file=sys.stderr)
     return 1
 
 

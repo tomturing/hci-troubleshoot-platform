@@ -95,6 +95,53 @@ jobs:
               - 'deploy/helm/**'
               - 'docs/**'
               - 'scripts/ci/check_module_doc_sync.py'
+            release_ci:
+              - '.github/workflows/ci.yml'
+              - 'scripts/ci/resolve_release_baseline.py'
+              - 'scripts/ci/resolve_image_build_plan.py'
+              - 'scripts/ci/check_digest_pin_exempt.py'
+              - 'scripts/ci/update_hci_sim_promotion.py'
+              - 'scripts/ci/test_resolve_release_baseline.py'
+              - 'scripts/ci/test_resolve_image_build_plan.py'
+              - 'scripts/ci/test_check_digest_pin_exempt.py'
+              - 'scripts/ci/test_update_hci_sim_promotion.py'
+              - 'hci_sim/Dockerfile'
+              - 'deploy/gitops/argo-apps/local/hci-sim-dev.yaml'
+
+      - name: 安装 uv（发布协议回归）
+        if: steps.filter.outputs.release_ci == 'true'
+        uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39a
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: 验证镜像构建与晋级协议
+        if: steps.filter.outputs.release_ci == 'true'
+        run: |
+          uvx ruff check \
+            scripts/ci/resolve_release_baseline.py \
+            scripts/ci/resolve_image_build_plan.py \
+            scripts/ci/check_digest_pin_exempt.py \
+            scripts/ci/update_hci_sim_promotion.py \
+            scripts/ci/test_resolve_release_baseline.py \
+            scripts/ci/test_resolve_image_build_plan.py \
+            scripts/ci/test_check_digest_pin_exempt.py \
+            scripts/ci/test_update_hci_sim_promotion.py
+          uvx ruff format --check \
+            scripts/ci/resolve_release_baseline.py \
+            scripts/ci/resolve_image_build_plan.py \
+            scripts/ci/check_digest_pin_exempt.py \
+            scripts/ci/update_hci_sim_promotion.py \
+            scripts/ci/test_resolve_release_baseline.py \
+            scripts/ci/test_resolve_image_build_plan.py \
+            scripts/ci/test_check_digest_pin_exempt.py \
+            scripts/ci/test_update_hci_sim_promotion.py
+          uv run --no-project --with pytest --with pytest-xdist pytest \
+            scripts/ci/test_resolve_release_baseline.py \
+            scripts/ci/test_resolve_image_build_plan.py \
+            scripts/ci/test_check_digest_pin_exempt.py \
+            scripts/ci/test_update_hci_sim_promotion.py \
+            -q
 
       # 确定性前端改动判定（覆盖 dorny/paths-filter 的 frontend 输出）。
       # 根因：dorny/paths-filter@0e4a8c6 在 pull_request 事件下对 frontend/**
@@ -189,17 +236,16 @@ jobs:
           # 检查是否有除 .github/workflows/ 外的关键目录改动
           CORE_CHANGES="$(echo "$CHANGED_FILES" | grep -E '^(backend/|frontend/|deploy/|scripts/|database/|hci_sim/|terminal_bridge/)' || true)"
 
-          # 豁免：ArgoCD Application 的 digest 锚点自动钉入（Renovate 式发布动作）。
-          # 该动作本身已在 docs/deploy/发布指南.md v1.14 文档化，不属于未文档化的行为变更；
-          # 若 PR 仅改动 deploy/gitops/argo-apps/** 下的 digest: 行（repository 不变），
-          # 视为已文档化的幂等发布动作，不要求本 PR 内重复同步 docs。
+          # 豁免：ArgoCD Application 已文档化的镜像晋级元数据更新。
+          # 若 PR 仅同步 digest 与 image-source-revision（repository 不变），
+          # 不要求每个 promotion PR 重复修改 docs；其他字段仍保持 fail-closed。
           if [[ -n "$CORE_CHANGES" ]]; then
             REMAINING_CORE="$CORE_CHANGES"
             while IFS= read -r f; do
               [[ -z "$f" ]] && continue
               case "$f" in
                 deploy/gitops/argo-apps/*)
-                  # 调用可单测脚本判定是否为纯 digest 钉入（含缩进的正则陷阱已在该脚本内修复）。
+                  # 调用可单测脚本判定是否只更新受控晋级字段。
                   if python scripts/ci/check_digest_pin_exempt.py "$BASE_SHA" "$HEAD_SHA" "$f"; then
                     REMAINING_CORE="$(echo "$REMAINING_CORE" | grep -vF "$f" || true)"
                   fi
@@ -923,40 +969,38 @@ jobs:
         with:
           sarif_file: trivy-${{ matrix.service }}.sarif
 
-  # hci-sim 不属于 hci-platform-env 的业务镜像矩阵；它由本仓库的
-  # Argo Application 直接消费。main 发布后必须把 GitOps 文件固定到同一
-  # 不可变 digest（GitOps「清单即真相」纪律，不可退化为可变 tag）。
+  # hci-sim 暂未迁入 hci-platform-env，由本仓库 Argo Application 直接消费。
+  # 只有构建输入变化才允许生成新制品；晋级请求按 service+environment 唯一，
+  # 后续构建更新同一个 PR，禁止按 digest 堆积或允许旧候选乱序合并。
   #
   # 设计（第一性原理 + 对抗性审查）：
   #   1. digest 不可变是硬约束，不可放弃 → 仍固定 @sha256:。
   #   2. main ruleset 禁止 GITHUB_TOKEN 直接写 main → 不能隐式自动 push。
-  #   3. 人类当 digest 搬运工会违反「机器该干的事别让人干」→ 由 CI 自动开
-  #      PR（Renovate/Dependabot 式 digest 自动修复范式），保留人工 review
-  #      合并这一 fail-closed 审查环节。
-  #   4. 幂等：已存在同 digest 的 open PR 时复用，不重复开 PR。
-  #   5. 门禁语义从「硬失败」改为「自动修复 + 软提示」：漂移时 CI 自动开 PR
-  #      并 success 结束（在 summary 醒目给出 PR 链接），不再阻断整轮 run。
-  pin-hci-sim-gitops:
-    name: 自动钉入 hci-sim immutable GitOps digest（人工审合并）
+  #   3. digest 必须能反查 source SHA → 镜像 OCI label 与 GitOps annotation 双重绑定。
+  #   4. 晋级请求不是部署完成证明 → 本 job 只持久化 promotion，ArgoCD 另行验收。
+  #   5. 幂等键是 hci-sim+dev，而不是 digest → 固定分支/PR，新的候选取代旧候选。
+  promote-hci-sim-dev:
+    # Jobs API 依赖此稳定机器名记录服务构建基线，禁止按展示文案随意改名。
+    name: hci-sim-promotion-request
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: [prepare, build-and-push]
     if: |
       always() &&
       needs.prepare.result == 'success' &&
-      needs.build-and-push.result == 'success' &&
+      needs.build-and-push.result != 'cancelled' &&
       contains(needs.prepare.outputs.image_matrix, '"service":"hci-sim"') &&
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        (github.event_name == 'workflow_dispatch' && (inputs.promote_target == 'dev' || inputs.promote_target == 'both'))
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && (inputs.promote_target == 'dev' || inputs.promote_target == 'both'))
       )
     permissions:
       contents: write
       packages: read
       pull-requests: write
     outputs:
-      drift_pr_url: ${{ steps.pin.outputs.pr_url }}
-      pinned: ${{ steps.pin.outputs.pinned }}
+      promotion_pr_url: ${{ steps.promote.outputs.pr_url }}
+      promotion_recorded: ${{ steps.promote.outputs.promotion_recorded }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -977,105 +1021,138 @@ jobs:
         id: digest
         env:
           IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          image="ghcr.io/${GITHUB_REPOSITORY}/hci-sim:${IMAGE_TAG}"
-          digest="$(docker buildx imagetools inspect "${image}" --format '{{.Manifest.Digest}}')"
+          repository="ghcr.io/${GITHUB_REPOSITORY}/hci-sim"
+          tagged_image="${repository}:${IMAGE_TAG}"
+          digest="$(docker buildx imagetools inspect "${tagged_image}" --format '{{.Manifest.Digest}}')"
           if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "::error::未取得合法 OCI manifest digest：${digest}"
             exit 1
           fi
-          echo "image=${image}" >> "${GITHUB_OUTPUT}"
+          immutable_image="${repository}@${digest}"
+          # tag 只用于发现 digest；拉取与身份校验必须绑定同一个不可变引用，消除 TOCTOU 窗口。
+          docker pull "${immutable_image}" >/dev/null
+          actual_source_sha="$(docker image inspect "${immutable_image}" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          if [[ "${actual_source_sha}" != "${EXPECTED_SOURCE_SHA}" ]]; then
+            echo "::error::镜像源码 revision 不匹配：expected=${EXPECTED_SOURCE_SHA} actual=${actual_source_sha}"
+            exit 1
+          fi
+          echo "image=${immutable_image}" >> "${GITHUB_OUTPUT}"
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
-          echo "hci-sim image=${image} digest=${digest}"
+          echo "source_sha=${actual_source_sha}" >> "${GITHUB_OUTPUT}"
+          echo "hci-sim image=${immutable_image} source_sha=${actual_source_sha}"
 
-      - name: 检测漂移并自动钉入（开 PR）
-        id: pin
+      - name: 创建或更新唯一 dev promotion PR
+        id: promote
         env:
           HCI_SIM_DIGEST: ${{ steps.digest.outputs.digest }}
           HCI_SIM_REPOSITORY: ghcr.io/${{ github.repository }}/hci-sim
+          HCI_SIM_SOURCE_SHA: ${{ steps.digest.outputs.source_sha }}
+          IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
           APP_FILE: deploy/gitops/argo-apps/local/hci-sim-dev.yaml
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          echo "pinned=false" >> "${GITHUB_OUTPUT}"
+          echo "promotion_recorded=false" >> "${GITHUB_OUTPUT}"
           echo "pr_url=" >> "${GITHUB_OUTPUT}"
 
-          # 仓库声明与 digest 锚点校验
+          # 仓库声明与不可变制品锚点校验
           grep -Fq "repository: ${HCI_SIM_REPOSITORY}" "${APP_FILE}" || {
             echo "::error::Argo Application repository 未固定为 ${HCI_SIM_REPOSITORY}"
             exit 1
           }
 
-          # 无漂移：manifest 已固定到本次构建 digest，无需任何操作
-          if grep -Fq "digest: \"${HCI_SIM_DIGEST}\"" "${APP_FILE}"; then
-            echo "✅ ${APP_FILE} 已固定到 ${HCI_SIM_REPOSITORY}@${HCI_SIM_DIGEST}，无漂移"
+          # digest 与来源都一致才算无漂移，禁止只对随机 SHA 做无来源晋级。
+          if grep -Fq "digest: \"${HCI_SIM_DIGEST}\"" "${APP_FILE}" && \
+             grep -Fq "hci-platform.dev/image-source-revision: \"${HCI_SIM_SOURCE_SHA}\"" "${APP_FILE}"; then
+            echo "${APP_FILE} 已固定到 ${HCI_SIM_REPOSITORY}@${HCI_SIM_DIGEST} source=${HCI_SIM_SOURCE_SHA}"
             exit 0
           fi
 
-          echo "::warning::检测到 GitOps digest 漂移，CI 将自动开 PR 钉入 ${HCI_SIM_REPOSITORY}@${HCI_SIM_DIGEST}"
-
-          # 幂等：已存在同 digest 的 open PR 则复用，不重复开
-          existing="$(gh pr list --state open --search "${HCI_SIM_DIGEST} in:title" --json url --jq '.[0].url' || true)"
-          if [[ -n "${existing}" ]]; then
-            echo "🔁 已存在钉入该 digest 的 open PR：${existing}，跳过重复开 PR"
-            echo "pinned=true" >> "${GITHUB_OUTPUT}"
-            echo "pr_url=${existing}" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-
-          # 确定性分支名，便于并发/重跑时复用同一 PR
-          branch="ci/pin-hci-sim-digest-${HCI_SIM_DIGEST#sha256:}"
-          short_sha="$(git rev-parse --short HEAD)"
-
-          # 改写 manifest 中的 digest 锚点（保留 repository 行不变）
-          sed -i -E "s|^([[:space:]]*)digest: \"sha256:[0-9a-f]{64}\"$|\1digest: \"${HCI_SIM_DIGEST}\"|" "${APP_FILE}"
-          grep -Fq "digest: \"${HCI_SIM_DIGEST}\"" "${APP_FILE}" || {
-            echo "::error::digest 替换失败，未写入 ${HCI_SIM_DIGEST}"
-            exit 1
-          }
+          branch="ci/promote-hci-sim-dev"
+          git fetch origin "refs/heads/${branch}:refs/remotes/origin/${branch}" || true
+          git checkout -B "${branch}" "${GITHUB_SHA}"
+          python3 scripts/ci/update_hci_sim_promotion.py \
+            --file "${APP_FILE}" \
+            --digest "${HCI_SIM_DIGEST}" \
+            --source-sha "${HCI_SIM_SOURCE_SHA}"
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -B "${branch}"
           git add "${APP_FILE}"
-          git commit -m "ci(hci-sim): 自动钉入 immutable digest ${HCI_SIM_DIGEST}
+          git commit -m "ci(hci-sim): 晋级 dev 制品 ${HCI_SIM_DIGEST}
 
           [env:dev:sf][agent:codebuddy]"
-          git push --force-with-lease origin "${branch}"
+          git push --force-with-lease origin "HEAD:refs/heads/${branch}"
 
-          pr_url="$(gh pr create \
-            --head "${branch}" \
-            --base main \
-            --title "ci(hci-sim): 钉入 immutable digest ${HCI_SIM_DIGEST}" \
-            --label "env:dev:sf" --label "agent:codebuddy" \
-            --body "## 自动钉入 hci-sim 不可变 digest
+          body="$(cat <<EOF
+          ## hci-sim dev 制品晋级
 
-          检测到 main 发布的 hci-sim 镜像 digest 漂移，本 PR 由 CI 自动生成以固定 GitOps manifest。
+          本 PR 只记录已经构建完成的不可变制品，不代表 ArgoCD 已部署完成。
 
-          - 镜像：\`${HCI_SIM_REPOSITORY}\`
-          - 新 digest：\`${HCI_SIM_DIGEST}\`
-          - 文件：\`${APP_FILE}\`
+          - 源码提交：\`${HCI_SIM_SOURCE_SHA}\`
+          - 镜像标签：\`${IMAGE_TAG}\`
+          - 镜像：\`${HCI_SIM_REPOSITORY}@${HCI_SIM_DIGEST}\`
+          - GitOps 文件：\`${APP_FILE}\`
 
-          > 合并后 ArgoCD 才会同步新 digest。main ruleset 禁止 token 直写，故保留人工 review 合并（fail-closed 审查）。
+          后续构建会更新本 PR，旧候选不得乱序合并；合并后仍需验证 ArgoCD Desired/Live digest。
 
-          [env:dev:sf][agent:codebuddy]")"
+          [env:dev:sf][agent:codebuddy]
+          EOF
+          )"
 
-          echo "✅ 已自动开 PR：${pr_url}（请 review 并合并以生效）"
-          echo "pinned=true" >> "${GITHUB_OUTPUT}"
+          mapfile -t existing_prs < <(
+            gh pr list --state open --head "${branch}" --base main --json url --jq '.[].url'
+          )
+          if (( ${#existing_prs[@]} > 1 )); then
+            echo "::error::发现多个 hci-sim dev promotion PR，拒绝选择不确定候选"
+            exit 1
+          elif (( ${#existing_prs[@]} == 1 )); then
+            pr_url="${existing_prs[0]}"
+            gh pr edit "${pr_url}" \
+              --title "ci(hci-sim): 晋级 dev 制品 ${HCI_SIM_DIGEST}" \
+              --body "${body}" \
+              --add-label "env:dev:sf" --add-label "agent:codebuddy"
+          else
+            pr_url="$(gh pr create \
+              --head "${branch}" \
+              --base main \
+              --title "ci(hci-sim): 晋级 dev 制品 ${HCI_SIM_DIGEST}" \
+              --label "env:dev:sf" --label "agent:codebuddy" \
+              --body "${body}")"
+          fi
+
+          # 清理旧实现按 digest 生成的候选，防止人工误合并旧制品。
+          legacy_prs="$(
+            gh pr list --state open --json number,headRefName \
+              --jq '.[] | select(.headRefName | startswith("ci/pin-hci-sim-digest-")) | .number'
+          )"
+          while IFS= read -r legacy_pr; do
+            [[ -z "${legacy_pr}" ]] && continue
+            gh pr close "${legacy_pr}" --comment "已由唯一 promotion PR ${pr_url} 取代，关闭旧 digest 候选以防乱序合并。"
+          done <<< "${legacy_prs}"
+
+          echo "已记录 hci-sim dev promotion：${pr_url}"
+          echo "promotion_recorded=true" >> "${GITHUB_OUTPUT}"
           echo "pr_url=${pr_url}" >> "${GITHUB_OUTPUT}"
 
       - name: 汇总提示
-        if: steps.pin.outputs.pinned == 'true'
+        if: steps.promote.outputs.promotion_recorded == 'true'
         env:
-          PR_URL: ${{ steps.pin.outputs.pr_url }}
+          PR_URL: ${{ steps.promote.outputs.pr_url }}
+          SOURCE_SHA: ${{ steps.digest.outputs.source_sha }}
+          IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
         run: |
           set -euo pipefail
           {
-            echo "### hci-sim digest 自动钉入结果"
-            echo "- 状态：已自动开 PR（待人工合并）"
+            echo "### hci-sim dev promotion 结果"
+            echo "- 状态：晋级请求已持久化（不代表部署完成）"
+            echo "- source SHA：${SOURCE_SHA}"
+            echo "- image digest：${IMAGE_DIGEST}"
             echo "- PR：${PR_URL}"
-            echo "- 说明：digest 不可变纪律保留；合并后 ArgoCD 才同步新镜像。"
+            echo "- 后续：合并后核验 ArgoCD Desired/Live digest 与 Pod revision。"
           } >> "${GITHUB_STEP_SUMMARY}"
 
   # ─────────────────────────────────────────────────────────────────────────

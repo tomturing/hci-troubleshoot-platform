@@ -7,8 +7,9 @@ metadata:
     app.kubernetes.io/part-of: hci-platform
     app.kubernetes.io/component: hci-sim
   annotations:
-    # 由发布流水线替换为已签名镜像 digest；未替换前禁止同步。
+    # 新 promotion 会同时更新源码 revision 与不可变 digest；旧制品来源无法反推时显式保留 legacy 状态。
     hci-platform.dev/immutable-image-required: "true"
+    hci-platform.dev/image-source-revision: "unverified-legacy"
 spec:
   project: default
   source:

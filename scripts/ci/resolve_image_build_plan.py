@@ -74,9 +74,7 @@ def changed_files() -> list[str]:
     else:
         # 主干发布优先使用最近一次成功镜像发布基线。没有该输出时再退回
         # event.before，兼容手动调用和旧 workflow 运行。
-        base = os.environ.get("GITHUB_RELEASE_BASE_SHA") or os.environ.get(
-            "GITHUB_EVENT_BEFORE", ""
-        )
+        base = os.environ.get("GITHUB_RELEASE_BASE_SHA") or os.environ.get("GITHUB_EVENT_BEFORE", "")
         head = os.environ.get("GITHUB_SHA", "")
 
     if not base or not head or base == "0" * 40:
@@ -97,10 +95,10 @@ def changed_files_between(base: str, head: str) -> list[str]:
 
 
 def reconciliation_services(raw_baselines: str, current_sha: str) -> set[str]:
-    """识别被全局基线掩盖、但尚未成功发布的服务。
+    """识别被全局基线掩盖、但尚未形成持久发布意图的服务。
 
-    每个服务分别与其最后一次成功发布的源码提交比较。缺少服务基线时宁可
-    重建该服务，不能把未知状态当作已发布。
+    每个服务分别与其最后一次发布基线比较。缺少服务基线时宁可重建该服务，
+    不能把未知状态当作已发布；已有基线时只有实际构建输入变化才允许重建。
     """
     try:
         baselines = json.loads(raw_baselines or "{}")
@@ -150,15 +148,12 @@ def select_services(paths: Iterable[str], *, force_all: bool) -> tuple[set[str],
             continue
 
         # pnpm 工作区/共享包会被两个 UI Dockerfile COPY。
-        if (
-            is_under(path, "frontend/shared/")
-            or path in {
-                "frontend/package.json",
-                "frontend/pnpm-lock.yaml",
-                "frontend/pnpm-workspace.yaml",
-                "frontend/.npmrc",
-            }
-        ):
+        if is_under(path, "frontend/shared/") or path in {
+            "frontend/package.json",
+            "frontend/pnpm-lock.yaml",
+            "frontend/pnpm-workspace.yaml",
+            "frontend/.npmrc",
+        }:
             selected.update(service for service, _, _ in FRONTEND_SERVICES)
             continue
 
@@ -215,10 +210,7 @@ def main() -> int:
             selected.update(recovered)
     by_name = {service: (dockerfile, deploy_key) for service, dockerfile, deploy_key in ALL_SERVICES}
     ordered = [service for service, _, _ in ALL_SERVICES if service in selected]
-    matrix = [
-        {"service": service, "context": ".", "dockerfile": by_name[service][0]}
-        for service in ordered
-    ]
+    matrix = [{"service": service, "context": ".", "dockerfile": by_name[service][0]} for service in ordered]
     deploy_services = [by_name[service][1] for service in ordered if by_name[service][1]]
 
     print("发布构建计划：")
