@@ -31,10 +31,10 @@ func TestArtifactRepositoryFullLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	suffix := fmt.Sprintf("%016x", uint64(time.Now().UnixNano()))
+	suffix := fmt.Sprintf("%08x", uint32(time.Now().UnixNano()&0xffffffff))
 	now := time.Now().UTC()
 	record := controlplane.ArtifactRecord{
-		ID:        "test-" + suffix,
+		ID:        "art-" + suffix,
 		Digest:    integrationDigest("artifact-" + suffix),
 		SizeBytes: 1024,
 		MediaType: "application/json",
@@ -113,10 +113,11 @@ func TestBundleRegistryCompileAndLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	// support_id 限制为 20 字符，使用 8 位 hex suffix
+	suffix := fmt.Sprintf("%08x", uint32(time.Now().UnixNano()&0xffffffff))
 	now := time.Now().UTC()
 	input := controlplane.CompileInput{
-		SupportID:            "bundle-test-" + suffix,
+		SupportID:            "t" + suffix,
 		KBDRevision:          1,
 		KBDChecksum:          integrationDigest("kbd-checksum-" + suffix),
 		SignalsDigest:        integrationDigest("signals-" + suffix),
