@@ -476,10 +476,6 @@ func (s *Server) execute(job *commandJob, workerID int) commandOutcome {
 		attribute.Int("stdout.bytes", stdoutBytes), attribute.Int("stderr.bytes", stderrBytes),
 	)
 	outcome := commandOutcome{exitCode: exitCode}
-	if job.mode == commandModeExec {
-		_, _ = job.channel.SendRequest("exit-status", false, ssh.Marshal(exitStatus{Status: uint32(exitCode)}))
-		_ = job.channel.Close()
-	}
 	logEvent("INFO", "exec.done", baseFields(job.claims, map[string]any{
 		"trace_id": span.SpanContext().TraceID().String(), "exec_id": job.env["HTP_EXEC_ID"],
 		"fixture_id": result.FixtureID, "exit_code": exitCode,
@@ -488,6 +484,12 @@ func (s *Server) execute(job *commandJob, workerID int) commandOutcome {
 		"duration_ms": time.Since(start).Milliseconds(),
 	}))
 	s.recordEvent(job, "exec.done", fmt.Sprintf("%s:%d:%d:%d", result.FixtureID, exitCode, stdoutBytes, stderrBytes), span.SpanContext().TraceID().String())
+	// 客户端看到命令完成前先持久化审计事件，避免并发 worker 让后续命令的
+	// fixture_not_found 事件反超前一条命令的 exec.done。
+	if job.mode == commandModeExec {
+		_, _ = job.channel.SendRequest("exit-status", false, ssh.Marshal(exitStatus{Status: uint32(exitCode)}))
+		_ = job.channel.Close()
+	}
 	return outcome
 }
 
