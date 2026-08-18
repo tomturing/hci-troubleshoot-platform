@@ -134,6 +134,26 @@ const matcherTypeOptions = computed(() => {
 const extractDefaultValueMode = computed(() => (
   ['threshold', 'delta', 'trend'].includes(matcherType.value) ? 'number' : 'string'
 ))
+
+const numericValueMode = computed<'constant' | 'variable'>(() => {
+  const value = matcher.value.value
+  return typeof value === 'string' && /^\{\{[A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*\}\}$/.test(value)
+    ? 'variable'
+    : 'constant'
+})
+
+function setNumericValueMode(mode: 'constant' | 'variable'): void {
+  const current = matcher.value.value
+  if (mode === 'variable') {
+    if (numericValueMode.value !== 'variable') {
+      matcher.value = { ...matcher.value, value: '{{THRESHOLD}}' }
+    }
+    return
+  }
+  if (typeof current === 'string' && /^\{\{.*\}\}$/.test(current)) {
+    matcher.value = { ...matcher.value, value: 0 }
+  }
+}
 </script>
 
 <template>
@@ -262,13 +282,22 @@ const extractDefaultValueMode = computed(() => (
           </el-select>
         </el-form-item>
         <el-form-item label="阈值">
-          <el-input-number
-            v-model="matcher.value"
-            :precision="2"
-            :step="1"
-            style="width: 100%;"
-            placeholder="输入数值阈值"
-          />
+          <div class="numeric-target">
+            <el-radio-group :model-value="numericValueMode" size="small" @change="setNumericValueMode">
+              <el-radio-button value="constant">固定数值</el-radio-button>
+              <el-radio-button value="variable">变量</el-radio-button>
+            </el-radio-group>
+            <el-input-number
+              v-if="numericValueMode === 'constant'"
+              v-model="matcher.value"
+              :precision="2"
+              :step="1"
+              style="width: 100%;"
+              placeholder="输入数值阈值"
+            />
+            <el-input v-else v-model="matcher.value" style="width: 100%;" placeholder="{{THRESHOLD}}" />
+            <div class="field-hint">变量必须填写完整占位符，例如 <code v-pre>{{THRESHOLD}}</code>；执行前从变量池解析为数字，缺失或非数字会停止判定。</div>
+          </div>
         </el-form-item>
       </template>
 
@@ -278,7 +307,16 @@ const extractDefaultValueMode = computed(() => (
             <el-option v-for="opt in operatorOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="差值阈值"><el-input-number v-model="matcher.value" :precision="2" style="width: 100%;" /></el-form-item>
+        <el-form-item label="差值阈值">
+          <div class="numeric-target">
+            <el-radio-group :model-value="numericValueMode" size="small" @change="setNumericValueMode">
+              <el-radio-button value="constant">固定数值</el-radio-button>
+              <el-radio-button value="variable">变量</el-radio-button>
+            </el-radio-group>
+            <el-input-number v-if="numericValueMode === 'constant'" v-model="matcher.value" :precision="2" style="width: 100%;" />
+            <el-input v-else v-model="matcher.value" style="width: 100%;" placeholder="{{DELTA_THRESHOLD}}" />
+          </div>
+        </el-form-item>
         <el-form-item label="最少样本"><el-input-number v-model="matcher.minimum_samples" :min="2" :max="10000" style="width: 100%;" /></el-form-item>
       </template>
 
@@ -290,7 +328,16 @@ const extractDefaultValueMode = computed(() => (
             <el-option label="保持稳定" value="stable" />
           </el-select>
         </el-form-item>
-        <el-form-item label="最小步长"><el-input-number v-model="matcher.value" :precision="2" :min="0" style="width: 100%;" /></el-form-item>
+        <el-form-item label="最小步长">
+          <div class="numeric-target">
+            <el-radio-group :model-value="numericValueMode" size="small" @change="setNumericValueMode">
+              <el-radio-button value="constant">固定数值</el-radio-button>
+              <el-radio-button value="variable">变量</el-radio-button>
+            </el-radio-group>
+            <el-input-number v-if="numericValueMode === 'constant'" v-model="matcher.value" :precision="2" :min="0" style="width: 100%;" />
+            <el-input v-else v-model="matcher.value" style="width: 100%;" placeholder="{{MIN_STEP}}" />
+          </div>
+        </el-form-item>
         <el-form-item label="最少样本"><el-input-number v-model="matcher.minimum_samples" :min="3" :max="10000" style="width: 100%;" /></el-form-item>
       </template>
 
@@ -388,5 +435,12 @@ const extractDefaultValueMode = computed(() => (
   font-size: 12px;
   color: #909399;
   margin-top: 4px;
+}
+
+.numeric-target {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
 }
 </style>

@@ -25,9 +25,9 @@ from shared.schemas.log_source_catalog import (
     resolve_log_source,
 )
 from shared.schemas.signal_generation import current_tool_contract_revision
+from shared.schemas.signal_output import derive_signal_requires
 
 _SIGNALS_DIR = Path(__file__).resolve().parent / "signals"
-
 _MATCHER_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     "keyword": frozenset({"pattern"}),
     "regex": frozenset({"pattern"}),
@@ -441,6 +441,9 @@ def _validate_variable_dependency_graph(raw: dict[str, Any]) -> None:
             continue
         signal_id = str(signal.get("id") or f"signal_{index:03d}")
         requires = {str(name).strip().upper() for name in (orchestrate.get("requires") or []) if str(name).strip()}
+        # 用同一套占位符扫描覆盖 acquire、extract、matcher.value 和 produces.extract。
+        # 这样即使前端未同步只读 requires，发布门禁也不会漏掉阈值变量依赖。
+        requires.update(str(name).strip().upper() for name in derive_signal_requires(signal) if str(name).strip())
         produces = {
             str(item.get("name") if isinstance(item, dict) else item).strip().upper()
             for item in (orchestrate.get("produces") or [])
