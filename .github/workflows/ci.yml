@@ -199,11 +199,9 @@ jobs:
               [[ -z "$f" ]] && continue
               case "$f" in
                 deploy/gitops/argo-apps/*)
-                  diff_body="$(git -c core.quotepath=false diff "$BASE_SHA" "$HEAD_SHA" -- "$f" || true)"
-                  only_digest="$(echo "$diff_body" | grep -E '^[-+]' | grep -vE '^[-+]?digest: "sha256:' | grep -vE '^(\+\+\+|---)' || true)"
-                  if [[ -z "$only_digest" ]]; then
+                  # 调用可单测脚本判定是否为纯 digest 钉入（含缩进的正则陷阱已在该脚本内修复）。
+                  if python scripts/ci/check_digest_pin_exempt.py "$BASE_SHA" "$HEAD_SHA" "$f"; then
                     REMAINING_CORE="$(echo "$REMAINING_CORE" | grep -vF "$f" || true)"
-                    echo "豁免（已文档化的 digest 锚点钉入）：$f"
                   fi
                   ;;
               esac
