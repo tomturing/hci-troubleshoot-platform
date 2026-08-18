@@ -76,6 +76,10 @@ jobs:
               exit 1
             }
           done
+          # 迁移 SQL 是 PreSync Hook；普通触发器必须存在且不能是 Hook，
+          # 否则 migration-only 提交会被 ArgoCD 判定为 Synced 而不启动同步。
+          grep -Fq 'name: hci-sim-db-migration-trigger' /tmp/hci-platform-rendered.yaml
+          grep -Fq 'ordinary-sync-trigger: "true"' /tmp/hci-platform-rendered.yaml
           grep -Fq 'for migration in /migrations/*.sql; do' /tmp/hci-platform-rendered.yaml
           ! grep -Fq '/migrations/000001_control_plane.sql' /tmp/hci-platform-rendered.yaml
       - name: 校验模块表和主库边界
