@@ -29,6 +29,8 @@ spec:
           existingSecret: hci-sim-credentials
           authorityScope: dev_golden
           activeRevision: 25
+          # dev 契约测试需要发布 synthetic Bundle；正式环境（staging/prod）禁止开启。
+          allowSyntheticPublish: true
   destination:
     server: https://kubernetes.default.svc
     namespace: hci-sim-dev
