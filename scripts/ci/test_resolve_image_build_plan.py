@@ -9,6 +9,7 @@ tool_contract_revision stale 故障。
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 _SCRIPT = Path(__file__).resolve().parent / "resolve_image_build_plan.py"
@@ -77,3 +78,29 @@ def test_manual_dispatch_uses_force_all_without_event_before(monkeypatch):
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
     monkeypatch.delenv("GITHUB_EVENT_BEFORE", raising=False)
     assert module.changed_files() == []
+
+
+def test_reconciliation_rebuilds_only_service_with_unreleased_change(monkeypatch):
+    """admin-ui 成功发布不能掩盖 api-gateway 的历史未发布变更。"""
+    module = _load_module()
+    current = "c" * 40
+    baselines = {service: "b" * 40 for service in module.SERVICE_NAMES}
+    baselines["api-gateway"] = "a" * 40
+
+    def fake_diff(base, head):
+        assert head == current
+        if base == "a" * 40:
+            return ["backend/api-gateway/app/routes/simulations.py"]
+        return []
+
+    monkeypatch.setattr(module, "changed_files_between", fake_diff)
+    assert module.reconciliation_services(json.dumps(baselines), current) == {"api-gateway"}
+
+
+def test_reconciliation_fails_closed_for_missing_service_baseline(monkeypatch):
+    """从未确认发布过的服务不得被全局成功基线静默跳过。"""
+    module = _load_module()
+    current = "c" * 40
+    baselines = {service: "b" * 40 for service in module.SERVICE_NAMES if service != "hci-sim"}
+    monkeypatch.setattr(module, "changed_files_between", lambda _base, _head: [])
+    assert module.reconciliation_services(json.dumps(baselines), current) == {"hci-sim"}

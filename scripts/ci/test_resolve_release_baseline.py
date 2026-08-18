@@ -55,3 +55,23 @@ def test_release_requires_build_and_promotion_success():
         {"name": "构建并推送镜像（admin-ui）", "conclusion": "success"},
         {"name": "晋级非生产环境", "conclusion": "failure"},
     ])
+
+
+def test_service_release_requires_its_own_build_and_promotion():
+    module = _load_module()
+    jobs = [
+        {"name": "构建并推送镜像（admin-ui）", "conclusion": "success"},
+        {"name": "晋级非生产环境", "conclusion": "success"},
+    ]
+    assert module.successful_service_releases(jobs) == {"admin-ui"}
+
+
+def test_hci_sim_requires_immutable_gitops_verification():
+    module = _load_module()
+    jobs = [
+        {"name": "构建并推送镜像（hci-sim）", "conclusion": "success"},
+        {"name": "晋级非生产环境", "conclusion": "success"},
+    ]
+    assert module.successful_service_releases(jobs) == set()
+    jobs.append({"name": "校验 hci-sim immutable GitOps digest", "conclusion": "success"})
+    assert module.successful_service_releases(jobs) == {"hci-sim"}

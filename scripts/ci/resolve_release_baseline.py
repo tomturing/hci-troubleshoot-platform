@@ -17,6 +17,22 @@ from collections.abc import Iterable
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 IMAGE_JOB_PREFIX = "构建并推送镜像（"
+PROMOTION_JOB_NAME = "晋级非生产环境"
+HCI_SIM_VERIFY_JOB_NAME = "校验 hci-sim immutable GitOps digest"
+SERVICE_NAMES = (
+    "api-gateway",
+    "case-service",
+    "conversation-service",
+    "agent-service",
+    "eval-service",
+    "diagnosis-service",
+    "scheduler-service",
+    "kb-service",
+    "customer-ui",
+    "admin-ui",
+    "terminal-bridge",
+    "hci-sim",
+)
 
 
 def select_baseline(
@@ -53,6 +69,33 @@ def is_successful_release(jobs: object) -> bool:
         for job in jobs
     )
     return has_image_build and has_promotion
+
+
+def successful_service_releases(jobs: object) -> set[str]:
+    """返回本次运行中确实完成发布闭环的服务。
+
+    不能以“任意镜像成功”推断全部服务均已发布：矩阵通常只构建本次变更
+    服务。hci-sim 不写入环境仓库，必须额外通过 immutable GitOps digest 校验。
+    """
+    if not isinstance(jobs, list):
+        return set()
+    names = {
+        str(job.get("name", "")): str(job.get("conclusion", ""))
+        for job in jobs
+        if isinstance(job, dict)
+    }
+    promoted = names.get(PROMOTION_JOB_NAME) == "success"
+    hci_sim_verified = names.get(HCI_SIM_VERIFY_JOB_NAME) == "success"
+    released = set()
+    for service in SERVICE_NAMES:
+        if names.get(f"{IMAGE_JOB_PREFIX}{service}）") != "success":
+            continue
+        if service == "hci-sim":
+            if hci_sim_verified:
+                released.add(service)
+        elif promoted:
+            released.add(service)
+    return released
 
 
 def gh_json(endpoint: str) -> dict[str, object]:
@@ -94,6 +137,7 @@ def main() -> int:
         raise ValueError("GitHub API 缺少 workflow_runs")
 
     successful_release_heads: set[str] = set()
+    service_baselines: dict[str, str] = {}
     for run in runs:
         if not isinstance(run, dict) or str(run.get("head_sha", "")) == current_sha:
             continue
@@ -104,7 +148,10 @@ def main() -> int:
         jobs = jobs_payload.get("jobs", [])
         if is_successful_release(jobs):
             successful_release_heads.add(str(run.get("head_sha", "")))
-            # API 返回按时间倒序；找到第一个完整成功发布即可停止历史扫描。
+        for service in successful_service_releases(jobs):
+            service_baselines.setdefault(service, str(run.get("head_sha", "")))
+        # API 返回按时间倒序；所有服务都已有基线后无需继续请求 Jobs API。
+        if len(service_baselines) == len(SERVICE_NAMES):
             break
 
     baseline_sha, source = select_baseline(
@@ -119,6 +166,7 @@ def main() -> int:
     print(f"发布基线：{baseline_sha}（{source}）")
     write_output("base_sha", baseline_sha)
     write_output("source", source)
+    write_output("service_baselines", json.dumps(service_baselines, separators=(",", ":")))
     return 0
 
 
