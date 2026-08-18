@@ -45,3 +45,12 @@ export function buildProduceVariableCatalog(tools: ProduceVariableToolLike[]): R
   }
   return catalog
 }
+
+/** 从指定 QKV 工具目录中精确取得变量与 JSON 路径的绑定。 */
+export function findProduceVariable(
+  catalog: Record<string, ProduceVariableOption[]>,
+  toolName: string,
+  name: string,
+): ProduceVariableOption | undefined {
+  return catalog[toolName]?.find((option) => option.name === name)
+}
