@@ -8,14 +8,14 @@ from app.services.safe_pipeline_converter import (
 
 
 def test_safe_pipeline_allowlist_covers_all_qfk_tools():
-    assert SAFE_PIPELINE_QFK_TOOLS == {
+    assert {
         "qfk_system",
         "qfk_vm",
         "qfk_network",
         "qfk_storage",
         "qfk_hardware",
         "qfk_platform",
-    }
+    } == SAFE_PIPELINE_QFK_TOOLS
 
 
 @pytest.mark.parametrize("tool", sorted(SAFE_PIPELINE_QFK_TOOLS - {"qfk_system"}))
