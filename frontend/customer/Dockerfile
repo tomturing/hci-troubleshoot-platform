@@ -29,6 +29,9 @@ RUN pnpm --filter customer exec vite build
 # 生产镜像 - Nginx 静态服务
 FROM nginx:alpine
 
+# 吸收 Alpine 安全仓库中已发布的基础包修复。
+RUN apk upgrade --no-cache
+
 # Nginx 官方 entrypoint 只替换进程环境中已存在的变量。提供安全默认值，
 # 避免直接 docker run 或某个部署清单漏配时，占位符残留并被 Nginx 当成未知变量。
 ENV TERMINAL_BRIDGE_URL="" \
