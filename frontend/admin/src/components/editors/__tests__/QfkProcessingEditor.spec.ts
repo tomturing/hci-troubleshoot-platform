@@ -251,6 +251,46 @@ describe('QfkProcessingEditor 两步处理交互', () => {
     })
   })
 
+  it('编辑产出变量名后保留同一个输入节点并可继续输入', async () => {
+    const produces = [{ name: '', type: 'string', extract: textExtract }]
+    const wrapper = mount(QfkProcessingEditor, {
+      props: { mode: 'produces', match: null, produces },
+      global: { plugins: [ElementPlus] },
+    })
+    const nameInput = wrapper.findAll('.processing-step')[1].find('.el-form-item').find('input')
+    expect(nameInput.exists()).toBe(true)
+    nameInput.element.focus()
+
+    await nameInput.setValue('N')
+    const updatedProduces = wrapper.emitted('update:produces')?.at(-1)?.[0] as Array<Record<string, any>>
+    await wrapper.setProps({ produces: updatedProduces })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.findAll('.processing-step')[1].find('.el-form-item').find('input').element).toBe(nameInput.element)
+
+    await nameInput.setValue('N2')
+    const continuedUpdate = wrapper.emitted('update:produces')?.at(-1)?.[0] as Array<Record<string, any>>
+    expect(continuedUpdate[0].name).toBe('N2')
+  })
+
+  it('删除前置产出单元后保留其余单元的渲染身份', async () => {
+    const produces = [
+      { name: 'FIRST', type: 'string', extract: textExtract },
+      { name: 'SECOND', type: 'string', extract: textExtract },
+    ]
+    const wrapper = mount(QfkProcessingEditor, {
+      props: { mode: 'produces', match: null, produces },
+      global: { plugins: [ElementPlus] },
+    })
+    const secondInput = wrapper.findAll('.processing-step')[3].find('.el-form-item').find('input')
+    await wrapper.findAll('.processing-unit')[0].get('.el-button').trigger('click')
+    const updatedProduces = wrapper.emitted('update:produces')?.at(-1)?.[0] as Array<Record<string, any>>
+    await wrapper.setProps({ produces: updatedProduces })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.findAll('.processing-step')[1].find('.el-form-item').find('input').element).toBe(secondInput.element)
+  }, 15000)
+
   it('模式切换只发出结构化意图，由父级统一维护互斥契约', () => {
     const wrapper = mountEditor(matchProps())
 
