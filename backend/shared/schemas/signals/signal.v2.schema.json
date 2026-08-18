@@ -384,9 +384,17 @@
           "type": "boolean"
         },
         "value": {
-          "type": [
-            "number",
-            "integer"
+          "anyOf": [
+            {
+              "type": [
+                "number",
+                "integer"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\{\\{[A-Z][A-Z0-9_]*(?:\\.[A-Z0-9_]+)*\\}\\}$"
+            }
           ]
         },
         "operator": {

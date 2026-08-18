@@ -42,6 +42,17 @@ function mountMatcher(match: Record<string, any>) {
   })
 }
 
+function numericMatch(value: number | string = 80) {
+  return {
+    type: 'threshold',
+    aggregation: 'first_number',
+    operator: '>',
+    value,
+    expected: true,
+    extract: { ...textExtract, value_mode: 'number' },
+  }
+}
+
 describe('QfkProcessingEditor 两步处理交互', () => {
   it('匹配模式按“处理单元 → 第一步取值 → 第二步判断”呈现，并复用统一取值组件', () => {
     const wrapper = mountEditor(matchProps())
@@ -98,6 +109,23 @@ describe('QfkProcessingEditor 两步处理交互', () => {
     const update = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as Record<string, any>
     expect(update.expected).toBe(false)
     expect(update.extract).toEqual(textExtract)
+  })
+
+  it('数值阈值支持切换为变量占位符，并可切回固定数值', async () => {
+    const wrapper = mountMatcher(numericMatch())
+    const matcherVm = wrapper.vm as unknown as { setNumericValueMode: (mode: 'constant' | 'variable') => void }
+
+    matcherVm.setNumericValueMode('variable')
+    await wrapper.vm.$nextTick()
+    let update = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as Record<string, any>
+    expect(update.value).toBe('{{THRESHOLD}}')
+    expect(wrapper.text()).toContain('变量')
+
+    await wrapper.setProps({ modelValue: update })
+    matcherVm.setNumericValueMode('constant')
+    await wrapper.vm.$nextTick()
+    update = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as Record<string, any>
+    expect(update.value).toBe(0)
   })
 
   it('取值和判断关键字输入按回车后保留编辑中的换行', async () => {
