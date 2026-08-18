@@ -1,9 +1,47 @@
 import pytest
 from app.services.safe_pipeline_converter import (
+    SAFE_PIPELINE_QFK_TOOLS,
     SafePipelineConversionError,
     apply_safe_pipeline_to_signal,
     convert_safe_pipeline,
 )
+
+
+def test_safe_pipeline_allowlist_covers_all_qfk_tools():
+    assert SAFE_PIPELINE_QFK_TOOLS == {
+        "qfk_system",
+        "qfk_vm",
+        "qfk_network",
+        "qfk_storage",
+        "qfk_hardware",
+        "qfk_platform",
+    }
+
+
+@pytest.mark.parametrize("tool", sorted(SAFE_PIPELINE_QFK_TOOLS - {"qfk_system"}))
+def test_apply_converter_supports_non_system_qfk_tools(tool):
+    signal = {
+        "acquire": {"tool": tool, "args": {"command": "list | grep -F ready"}},
+        "match": {"type": "keyword", "pattern": "ready", "expected": True},
+        "orchestrate": {"produces": []},
+    }
+
+    assert apply_safe_pipeline_to_signal(signal) is True
+    assert signal["acquire"]["args"]["command"] == "list"
+    assert signal["match"]["extract"]["rows"]["include"] == ["ready"]
+
+
+def test_apply_converter_rejects_non_qfk_tool():
+    signal = {
+        "acquire": {"tool": "qkv_task", "args": {"command": "list | grep -F ready"}},
+        "match": None,
+        "orchestrate": {"produces": [{"name": "TASK", "type": "string"}]},
+    }
+
+    with pytest.raises(SafePipelineConversionError) as exc:
+        apply_safe_pipeline_to_signal(signal)
+
+    assert exc.value.code == "QFK_PIPELINE_UNSUPPORTED_TOOL"
 
 
 def test_converts_real_ps_grep_awk_command():
