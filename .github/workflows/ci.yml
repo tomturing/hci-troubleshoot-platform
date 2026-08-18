@@ -647,6 +647,14 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
+      - name: 缓存 uv 虚拟环境
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .venv
+          key: ${{ runner.os }}-uv-venv-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-uv-venv-
+
       - name: 安装依赖
         run: uv sync --group dev
 
@@ -695,14 +703,14 @@ jobs:
       - name: 验证 Diagnosis Sample Lab（诊断样例实验室）Go Runtime
         working-directory: hci_sim
         run: |
-          go test ./...
+          go test -p 4 ./...
           go vet ./...
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -o /tmp/hci-sim-diagnosis-lab ./cmd/hci-sim
 
       - name: 运行离线采集 Go 运行时测试
         working-directory: backend/diagnosis-service/offline-collector
         run: |
-          go test ./...
+          go test -p 4 ./...
           go vet ./...
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags="-s -w -buildid=" -o /tmp/hci-collect-linux-amd64 .
           test "$(sha256sum /tmp/hci-collect-linux-amd64 | cut -d' ' -f1)" = "$(sha256sum ../resources/bin/hci-collect-linux-amd64 | cut -d' ' -f1)"
