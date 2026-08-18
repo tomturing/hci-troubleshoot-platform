@@ -40,8 +40,16 @@ spec:
               # 早期因 PreSync hook 与 ConfigMap 应用时序竞态，Pod 会永久卡在
               # ContainerCreating 导致 ArgoCD 死锁。此处显式失败（非静默跳过），
               # 配合 hook-delete-policy: HookFailed 让 ArgoCD 删除并自愈重试。
-              if [ ! -s /migrations/000001_control_plane.sql ]; then
-                echo "FATAL: 迁移 SQL 未挂载或为空（ConfigMap 可能尚未就绪），放弃本次执行以触发 HookFailed 自愈" >&2
+              migration_count=0
+              for migration in /migrations/*.sql; do
+                if [ ! -s "$migration" ]; then
+                  echo "FATAL: 迁移 SQL 未挂载或为空：$migration（ConfigMap 可能尚未就绪），放弃本次执行以触发 HookFailed 自愈" >&2
+                  exit 1
+                fi
+                migration_count=$((migration_count + 1))
+              done
+              if [ "$migration_count" -eq 0 ]; then
+                echo "FATAL: 未挂载任何 hci-sim 迁移 SQL，放弃本次执行以触发 HookFailed 自愈" >&2
                 exit 1
               fi
               case "$OWNER_ROLE$MIGRATOR_ROLE$RUNTIME_ROLE" in (*[!A-Za-z0-9_]*) echo "role name must be alphanumeric" >&2; exit 1;; esac
@@ -68,7 +76,12 @@ spec:
               # 由旧尝试创建的 schema，而不是卡在 permission denied。
               psql -d "$SIM_DATABASE" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS control_plane AUTHORIZATION \"$MIGRATOR_ROLE\"; CREATE SCHEMA IF NOT EXISTS fixture AUTHORIZATION \"$MIGRATOR_ROLE\"; CREATE SCHEMA IF NOT EXISTS artifact AUTHORIZATION \"$MIGRATOR_ROLE\"; CREATE SCHEMA IF NOT EXISTS audit AUTHORIZATION \"$MIGRATOR_ROLE\"; ALTER SCHEMA control_plane OWNER TO \"$MIGRATOR_ROLE\"; ALTER SCHEMA fixture OWNER TO \"$MIGRATOR_ROLE\"; ALTER SCHEMA artifact OWNER TO \"$MIGRATOR_ROLE\"; ALTER SCHEMA audit OWNER TO \"$MIGRATOR_ROLE\";"
               export PGUSER="$MIGRATOR_ROLE" PGPASSWORD="$MIGRATOR_PASSWORD"
-              psql -d "$SIM_DATABASE" -v ON_ERROR_STOP=1 -f /migrations/000001_control_plane.sql
+              # shell glob 按文件名排序，保证 000001 -> 000002 -> ... 顺序执行；
+              # 每个迁移必须幂等，Job 重试不会重复破坏既有数据。
+              for migration in /migrations/*.sql; do
+                echo "执行 hci-sim 迁移：$(basename "$migration")"
+                psql -d "$SIM_DATABASE" -v ON_ERROR_STOP=1 -f "$migration"
+              done
               export PGUSER="$POSTGRES_USER" PGPASSWORD="$POSTGRES_PASSWORD"
               psql -d postgres -v ON_ERROR_STOP=1 -c "REVOKE CREATE ON DATABASE \"$SIM_DATABASE\" FROM \"$MIGRATOR_ROLE\"; REVOKE CONNECT ON DATABASE \"$PLATFORM_DATABASE\" FROM PUBLIC; REVOKE CONNECT ON DATABASE \"$PLATFORM_DATABASE\" FROM \"$RUNTIME_ROLE\"; GRANT CONNECT ON DATABASE \"$PLATFORM_DATABASE\" TO \"$POSTGRES_USER\";"
               psql -d "$SIM_DATABASE" -v ON_ERROR_STOP=1 -c "GRANT USAGE ON SCHEMA control_plane, fixture, artifact, audit TO \"$RUNTIME_ROLE\"; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA control_plane, fixture, artifact, audit TO \"$RUNTIME_ROLE\"; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA control_plane, fixture, artifact, audit TO \"$RUNTIME_ROLE\";"

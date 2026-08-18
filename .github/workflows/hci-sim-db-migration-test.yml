@@ -47,6 +47,9 @@ jobs:
         with:
           go-version-file: hci_sim/go.mod
           cache-dependency-path: hci_sim/go.sum
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4
+        with:
+          version: v3.17.3
       - name: 创建目标数据库和迁移角色
         run: |
           psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE hci_sim_migrator LOGIN PASSWORD 'mig_pass';"
@@ -54,9 +57,27 @@ jobs:
           psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE hci_sim OWNER hci_sim_migrator;"
       - name: 执行独立迁移
         run: |
-          psql -d hci_sim -v ON_ERROR_STOP=1 -f database/hci-sim-migrations/000001_control_plane.sql
-          psql -d hci_sim -v ON_ERROR_STOP=1 -f database/hci-sim-migrations/000002_fix_p0p1_defects.sql
-          psql -d hci_sim -v ON_ERROR_STOP=1 -f database/hci-sim-migrations/000003_controlplane_bundle_lifecycle.sql
+          for migration in database/hci-sim-migrations/*.sql; do
+            echo "执行迁移：$migration"
+            psql -d hci_sim -v ON_ERROR_STOP=1 -f "$migration"
+          done
+      - name: 验证 Helm 迁移包与执行入口一致
+        run: |
+          helm template hci-platform deploy/helm/hci-platform \
+            --namespace hci-dev \
+            --set hciSimDatabase.enabled=true \
+            --set hciSimDatabase.migratorPassword=mig_pass \
+            --set hciSimDatabase.runtimePassword=run_pass \
+            > /tmp/hci-platform-rendered.yaml
+          for migration in database/hci-sim-migrations/*.sql; do
+            name="$(basename "$migration")"
+            grep -Fq "  ${name}: |" /tmp/hci-platform-rendered.yaml || {
+              echo "未将迁移 ${name} 打包进 hci-sim-db-migrations ConfigMap" >&2
+              exit 1
+            }
+          done
+          grep -Fq 'for migration in /migrations/*.sql; do' /tmp/hci-platform-rendered.yaml
+          ! grep -Fq '/migrations/000001_control_plane.sql' /tmp/hci-platform-rendered.yaml
       - name: 校验模块表和主库边界
         run: |
           test "$(psql -d hci_sim -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema IN ('control_plane','fixture','artifact','audit')")" = 16

@@ -88,6 +88,12 @@ tests:
       - equal:
           path: metadata.annotations["argocd.argoproj.io/sync-wave"]
           value: "-9"
+      - exists:
+          path: data["000001_control_plane.sql"]
+      - exists:
+          path: data["000002_fix_p0p1_defects.sql"]
+      - exists:
+          path: data["000003_controlplane_bundle_lifecycle.sql"]
 
   - it: "迁移 Job 在依赖之后以 wave -8 执行"
     set:
