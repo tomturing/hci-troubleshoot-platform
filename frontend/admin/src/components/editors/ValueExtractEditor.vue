@@ -9,7 +9,8 @@ const props = withDefaults(defineProps<{
   embedded?: boolean
   showTitle?: boolean
   consumerKind?: 'matcher' | 'produce'
-}>(), { defaultValueMode: 'string', embedded: false, showTitle: true })
+  allowRowCount?: boolean
+}>(), { defaultValueMode: 'string', embedded: false, showTitle: true, allowRowCount: false })
 const emit = defineEmits<{ 'update:modelValue': [value: Record<string, any>] }>()
 
 const extract = computed({
@@ -93,6 +94,7 @@ watch(() => props.modelValue, value => {
       :model-value="extract"
       :default-value-mode="defaultValueMode"
       :whole-line-only="mode === 'complete'"
+      :allow-row-count="allowRowCount"
       @update:model-value="setExtract"
     />
     <el-form v-else-if="mode === 'json'" label-position="left" label-width="96px" size="small">

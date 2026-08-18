@@ -597,6 +597,17 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                 location=f"signals[{index}].match.extract",
                 consumer_type="matcher",
             )
+            if str((matcher.get("extract") or {}).get("cardinality") or "") == "count":
+                if matcher.get("type") != "threshold":
+                    raise ValidationError(
+                        f"signals[{index}].match 的 cardinality=count 只能用于 threshold 数值阈值判断",
+                        path=["signals", index, "match", "extract", "cardinality"],
+                    )
+                if str(matcher.get("aggregation") or "first_number") == "line_count":
+                    raise ValidationError(
+                        f"signals[{index}].match 已在第一步统计行数，不能再使用 aggregation=line_count",
+                        path=["signals", index, "match", "aggregation"],
+                    )
         for produce_index, produce in enumerate(produces):
             if not isinstance(produce, dict) or not isinstance(produce.get("extract"), dict):
                 raise ValidationError(
@@ -747,6 +758,19 @@ def _validate_value_extract(
         raise _error(f"{location} 使用 basis=data 时必须配置 header", ".header")
     if rows.get("mode") == "keywords" and str(rows.get("scope") or "same_record") != "same_record":
         raise _error(f"{location}.rows.scope 仅支持 same_record", ".rows.scope")
+    cardinality = str(extract.get("cardinality") or "exactly_one")
+    if cardinality == "count":
+        if consumer_type not in {"matcher", "integer", "number"}:
+            raise _error(f"{location} 的统计行数只能用于数值阈值判断或 integer/number 变量", ".cardinality")
+        if str(extract.get("value_mode") or "") != "integer":
+            raise _error(f"{location} 的统计行数必须使用 value_mode=integer", ".value_mode")
+        incompatible = [key for key in ("parser", "columns", "value_key", "ai_extract") if key in extract]
+        if incompatible:
+            raise _error(
+                f"{location} 的统计行数不能同时配置 {', '.join(incompatible)}；它只统计行选择结果",
+                f".{incompatible[0]}",
+            )
+        return
     if not isinstance(columns, list):
         if consumer_type in {"object", "array<object>"}:
             raise _error(f"{location} 的复合变量必须配置结构化 columns", ".columns")
@@ -772,7 +796,6 @@ def _validate_value_extract(
         if isinstance(row_range, dict) and int(row_range.get("start") or 0) > int(row_range.get("end") or 0):
             raise _error(f"{location}.rows.ranges 的 start 不能大于 end", ".rows.ranges")
 
-    cardinality = str(extract.get("cardinality") or "exactly_one")
     if consumer_type == "object" and cardinality == "all":
         raise _error(f"{location} 的 object 产出不能使用 cardinality=all", ".cardinality")
     if consumer_type == "array<object>" and cardinality != "all":

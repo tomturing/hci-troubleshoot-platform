@@ -853,7 +853,8 @@
             "exactly_one",
             "first",
             "last",
-            "all"
+            "all",
+            "count"
           ],
           "default": "exactly_one"
         },
@@ -933,6 +934,52 @@
             "required": [
               "delimiter"
             ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "cardinality": {
+                "const": "count"
+              }
+            },
+            "required": [
+              "cardinality"
+            ]
+          },
+          "then": {
+            "required": [
+              "value_mode"
+            ],
+            "properties": {
+              "value_mode": {
+                "const": "integer"
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "parser"
+                  ]
+                },
+                {
+                  "required": [
+                    "columns"
+                  ]
+                },
+                {
+                  "required": [
+                    "value_key"
+                  ]
+                },
+                {
+                  "required": [
+                    "ai_extract"
+                  ]
+                }
+              ]
+            }
           }
         }
       ]

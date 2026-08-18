@@ -122,6 +122,68 @@ def test_numeric_matcher_rejects_arbitrary_string_threshold():
         validate_signals_json(_qfk_match(matcher))
 
 
+def _count_extract():
+    return {
+        "type": "text",
+        "rows": {"mode": "keywords", "include": ["failed"], "exclude": [], "include_mode": "all"},
+        "cardinality": "count",
+        "source": "stdout",
+        "value_mode": "integer",
+    }
+
+
+def test_count_cardinality_is_a_numeric_row_selection_projection():
+    validate_signals_json(
+        _qfk_match(
+            {"type": "threshold", "operator": ">=", "value": 2, "expected": True, "extract": _count_extract()}
+        )
+    )
+    validate_signals_json(_qfk_produce({"name": "FAILED_COUNT", "type": "integer", "extract": _count_extract()}))
+    validate_signals_json(_qfk_produce({"name": "FAILED_COUNT", "type": "number", "extract": _count_extract()}))
+    validate_signals_json(
+        _qfk_produce(
+            {
+                "name": "DATA_ROW_COUNT",
+                "type": "integer",
+                "extract": {
+                    **_count_extract(),
+                    "header": {"mode": "contains", "required": ["Filesystem", "Use%"]},
+                    "rows": {"mode": "indices", "basis": "data", "indices": [1]},
+                },
+            }
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        _qfk_match({"type": "exists", "expected": True, "extract": _count_extract()}),
+        _qfk_match(
+            {
+                "type": "threshold",
+                "aggregation": "line_count",
+                "operator": ">=",
+                "value": 2,
+                "expected": True,
+                "extract": _count_extract(),
+            }
+        ),
+        _qfk_produce({"name": "FAILED_COUNT", "type": "string", "extract": _count_extract()}),
+        _qfk_produce(
+            {
+                "name": "FAILED_COUNT",
+                "type": "integer",
+                "extract": {**_count_extract(), "columns": [{"key": "VALUE", "selector": {"by": "index", "index": 1}}]},
+            }
+        ),
+    ],
+)
+def test_count_cardinality_rejects_incompatible_consumers_or_transforms(document):
+    with pytest.raises(ValidationError):
+        validate_signals_json(document)
+
+
 def test_matcher_extract_is_required_and_json_path_is_not_a_matcher_type():
     with pytest.raises(ValidationError, match="extract"):
         validate_signals_json(_qfk_match({"type": "exists", "expected": True}))

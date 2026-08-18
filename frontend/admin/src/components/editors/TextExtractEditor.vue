@@ -11,7 +11,8 @@ const props = withDefaults(defineProps<{
   modelValue?: Record<string, any>
   defaultValueMode?: string
   wholeLineOnly?: boolean
-}>(), { defaultValueMode: 'string', wholeLineOnly: false })
+  allowRowCount?: boolean
+}>(), { defaultValueMode: 'string', wholeLineOnly: false, allowRowCount: false })
 
 const emit = defineEmits<{ 'update:modelValue': [value: Record<string, any>] }>()
 
@@ -22,6 +23,7 @@ const extract = computed({
 const rows = computed(() => extract.value.rows || { mode: 'all' })
 const columns = computed(() => Array.isArray(extract.value.columns) ? extract.value.columns : [])
 const columnMode = computed(() => columns.value.length ? 'columns' : 'whole')
+const cardinality = computed(() => extract.value.cardinality || 'exactly_one')
 const keywordInputs = reactive<Record<'include' | 'exclude', string>>({ include: '', exclude: '' })
 
 function syncKeywordInput(key: 'include' | 'exclude', value: unknown) {
@@ -36,6 +38,16 @@ function setExtract(value: Record<string, any>) {
 }
 function setField(key: string, value: any) {
   setExtract({ ...extract.value, [key]: value })
+}
+function setCardinality(value: string) {
+  if (value !== 'count') {
+    setField('cardinality', value)
+    return
+  }
+  // 行数是筛选结果的整数投影；表头仍可定义数据行边界，列解析和 AI 配置必须清理。
+  const next = { ...extract.value, cardinality: 'count', value_mode: 'integer' }
+  for (const key of ['parser', 'columns', 'value_key', 'ai_extract']) delete next[key]
+  setExtract(next)
 }
 function removeField(key: string) {
   const value = { ...extract.value }
@@ -239,15 +251,16 @@ watch(() => props.modelValue, value => {
       </template>
 
       <el-form-item label="结果数量">
-        <el-select :model-value="extract.cardinality || 'exactly_one'" @change="(value: string) => setField('cardinality', value)">
+        <el-select :model-value="cardinality" @change="setCardinality">
           <el-option label="必须唯一" value="exactly_one" /><el-option label="第一行" value="first" /><el-option label="最后一行" value="last" /><el-option label="全部行" value="all" />
+          <el-option v-if="allowRowCount || cardinality === 'count'" label="统计行数" value="count" :disabled="!allowRowCount" />
         </el-select>
       </el-form-item>
       <el-form-item label="输出来源">
         <el-select :model-value="extract.source || 'stdout'" @change="(value: string) => setField('source', value)"><el-option label="stdout" value="stdout" /><el-option label="stderr" value="stderr" /></el-select>
       </el-form-item>
     </el-form>
-    <div class="field-hint">{{ wholeLineOnly ? '关键字只负责筛选候选记录，结果保留完整一行，不截取列。' : '关键字/行号负责选行，表头/列号负责选列；行列提取完成后才进入 Matcher 或变量写入。所有行号、列号均从 1 开始。' }}</div>
+    <div class="field-hint">{{ cardinality === 'count' ? '统计行数只计算“行选择”命中的记录数，输出整数；命中行和物理行号会保留在证据中。' : (wholeLineOnly ? '关键字只负责筛选候选记录，结果保留完整一行，不截取列。' : '关键字/行号负责选行，表头/列号负责选列；行列提取完成后才进入 Matcher 或变量写入。所有行号、列号均从 1 开始。') }}</div>
   </div>
 </template>
 
