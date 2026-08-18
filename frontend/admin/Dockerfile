@@ -33,6 +33,9 @@ RUN test -s admin/dist/build-info.json \
 # 生产镜像 - Nginx 静态服务
 FROM nginx:alpine
 
+# 吸收 Alpine 安全仓库中已发布的基础包修复。
+RUN apk upgrade --no-cache
+
 # 默认保持原始浏览器身份头；Docker Compose（本地容器编排）可在服务端覆盖为开发身份。
 # 值中的 Nginx 变量经过 envsubst 单次替换后保留给 Nginx 请求阶段解析。
 ENV ADMIN_API_AUTHORIZATION=\$http_authorization \
