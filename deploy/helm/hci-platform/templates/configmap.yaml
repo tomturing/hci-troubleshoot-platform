@@ -28,6 +28,8 @@ data:
   CLASSIFY_MODEL: {{ .Values.kbService.classifyModel | default "kimi-k2.5" | quote }}
   CLASSIFY_MAX_TOKENS: {{ .Values.kbService.classifyMaxTokens | default "2048" | quote }}
   VISION_MODEL: {{ .Values.kbService.visionModel | default "kimi-k2.5" | quote }}
+  # 长文本截图需要足够预算完成 FULL_TEXT；可按模型上下文窗口覆盖。
+  VISION_MAX_TOKENS: {{ .Values.kbService.visionMaxTokens | default "8192" | quote }}
   EXTRACT_SIGNALS_MODEL: {{ .Values.kbService.extractSignalsModel | default .Values.kbService.classifyModel | default "kimi-k2.5" | quote }}
   # KBD Embedding 模型（向量召回使用，与 LLM_DEFAULT_MODEL 解耦，避免 chat 模型与 embedding 模型混用）
   # values.yaml kbService.llmEmbeddingModel 默认 "embedding-3"，按实际 LLM 网关支持的模型名覆盖
