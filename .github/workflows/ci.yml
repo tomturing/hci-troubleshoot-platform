@@ -189,6 +189,28 @@ jobs:
           # 检查是否有除 .github/workflows/ 外的关键目录改动
           CORE_CHANGES="$(echo "$CHANGED_FILES" | grep -E '^(backend/|frontend/|deploy/|scripts/|database/|hci_sim/|terminal_bridge/)' || true)"
 
+          # 豁免：ArgoCD Application 的 digest 锚点自动钉入（Renovate 式发布动作）。
+          # 该动作本身已在 docs/deploy/发布指南.md v1.14 文档化，不属于未文档化的行为变更；
+          # 若 PR 仅改动 deploy/gitops/argo-apps/** 下的 digest: 行（repository 不变），
+          # 视为已文档化的幂等发布动作，不要求本 PR 内重复同步 docs。
+          if [[ -n "$CORE_CHANGES" ]]; then
+            REMAINING_CORE="$CORE_CHANGES"
+            while IFS= read -r f; do
+              [[ -z "$f" ]] && continue
+              case "$f" in
+                deploy/gitops/argo-apps/*)
+                  diff_body="$(git -c core.quotepath=false diff "$BASE_SHA" "$HEAD_SHA" -- "$f" || true)"
+                  only_digest="$(echo "$diff_body" | grep -E '^[-+]' | grep -vE '^[-+]?digest: "sha256:' | grep -vE '^(\+\+\+|---)' || true)"
+                  if [[ -z "$only_digest" ]]; then
+                    REMAINING_CORE="$(echo "$REMAINING_CORE" | grep -vF "$f" || true)"
+                    echo "豁免（已文档化的 digest 锚点钉入）：$f"
+                  fi
+                  ;;
+              esac
+            done <<< "$CORE_CHANGES"
+            CORE_CHANGES="$REMAINING_CORE"
+          fi
+
           if [[ -n "$CORE_CHANGES" ]]; then
             if echo "$CHANGED_FILES" | grep -Eq '^(docs/|README\.md$|AGENTS\.md$|CLAUDE\.md$)'; then
               echo "检测到关键改动且已同步文档，门禁通过"
@@ -200,7 +222,7 @@ jobs:
             exit 1
           fi
 
-          echo "未检测到关键目录改动（workflow 配置变更无需文档同步），门禁通过"
+          echo "未检测到关键目录改动（workflow 配置变更或已文档化的 digest 钉入无需文档同步），门禁通过"
 
           # 检查 pitfalls 条目文件改动是否同步更新了 _index.md（编号注册表）
           PITFALL_ENTRY=$(echo "$CHANGED_FILES" | grep -E '^docs/pitfalls/[^_]' || true)
