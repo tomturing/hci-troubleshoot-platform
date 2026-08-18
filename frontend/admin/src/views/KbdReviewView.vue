@@ -4327,7 +4327,7 @@ onUnmounted(() => clearBatchPollTimer())
                   <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" type="textarea" :rows="2" placeholder="信号说明，如 镜像文件占用检查" /></div>
                   <div class="field-hint">信号语义说明：用自然语言描述这个采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
                   <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据（必须满足）" value="must" /><el-option label="增强证据（按门槛满足）" value="should" /><el-option label="排除证据（出现即排除）" value="exclude" /><el-option label="上下文证据（执行但不参与结论）" value="context" /></el-select></div>
-                  <div class="signal-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" @change="onSignalToolChange"><el-option label="任务 qkv_task" value="qkv_task" /><el-option label="告警 qkv_alert" value="qkv_alert" /><el-option label="弹框 qkv_dialog" value="qkv_dialog" /></el-select><span class="signal-nature">{{ qkvNatureLabel(sigTool(signalEditDraft)) }}</span></div>
+                  <div class="signal-row signal-type-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" @change="onSignalToolChange"><el-option label="任务 qkv_task" value="qkv_task" /><el-option label="告警 qkv_alert" value="qkv_alert" /><el-option label="弹框 qkv_dialog" value="qkv_dialog" /></el-select><span class="signal-nature">{{ qkvNatureLabel(sigTool(signalEditDraft)) }}</span></div>
                   <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.acquire.args.keyword" size="small" :placeholder="qkvKeywordPlaceholder(sigTool(signalEditDraft))" /></div>
                   <div v-if="sigTool(signalEditDraft) === 'qkv_alert'" class="field-hint">告警型关键字（acli alert get -k）：取自「分类基线 · 告警型故障」（标签以「告警」结尾），如 虚拟机CPU或内存占用过高告警、主机网口丢包告警、序列号过期告警。多个用逗号分隔</div>
                   <div v-else-if="sigTool(signalEditDraft) === 'qkv_task'" class="field-hint">任务失败型关键字（acli task get -k）：取自「分类基线 · 任务失败型故障」，如 虚拟机开机失败、虚拟机快照失败、虚拟机scmt迁移失败。多个用逗号分隔</div>
@@ -6287,6 +6287,31 @@ onUnmounted(() => clearBatchPollTimer())
   font-size: 12px;
   color: #909399;
   margin-left: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.signal-type-row :deep(.el-select) {
+  width: min(360px, 100%);
+  flex: 0 1 360px;
+  min-width: 240px;
+}
+
+@media (max-width: 760px) {
+  .signal-type-row {
+    flex-wrap: wrap;
+  }
+
+  .signal-type-row :deep(.el-select) {
+    flex-basis: min(360px, calc(100% - 94px));
+  }
+
+  .signal-type-row .signal-nature {
+    flex-basis: 100%;
+    margin-left: 94px;
+    white-space: normal;
+  }
 }
 
 /* 关键字 × 分类基线 软校验命中时高亮为告警色 */

@@ -1,77 +1,11 @@
 <script setup lang="ts">
-import { markRaw, type Component } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import {
-  Odometer,
-  Monitor,
-  DataAnalysis,
-  VideoPlay,
-  User,
-  Tickets,
-  Histogram,
-  Document,
-  Notebook,
-  Setting,
-  Tools,
-  Briefcase,
-  Cpu,
-  Folder,
-  Collection,
-  Box,
-} from '@element-plus/icons-vue'
+import { buildMenuItems, resolveMenuIcon } from './utils/adminMenu'
 
 const router = useRouter()
 const route = useRoute()
 
-/** 侧边栏图标静态组件字典：使用 markRaw 消除响应式开销，确保 Vue 动态组件 :is 稳定性 */
-const menuIconMap: Record<string, Component> = {
-  Odometer: markRaw(Odometer),
-  Monitor: markRaw(Monitor),
-  DataAnalysis: markRaw(DataAnalysis),
-  VideoPlay: markRaw(VideoPlay),
-  User: markRaw(User),
-  Tickets: markRaw(Tickets),
-  Histogram: markRaw(Histogram),
-  Document: markRaw(Document),
-  Notebook: markRaw(Notebook),
-  Setting: markRaw(Setting),
-  Tools: markRaw(Tools),
-  Briefcase: markRaw(Briefcase),
-  Cpu: markRaw(Cpu),
-  Folder: markRaw(Folder),
-  Collection: markRaw(Collection),
-  Box: markRaw(Box),
-}
-
-/** 获取侧边栏图标组件：优先使用静态 markRaw 字典，未匹配时回退到原字符串 */
-const getMenuIcon = (iconName: unknown): Component | string => {
-  if (typeof iconName === 'string' && menuIconMap[iconName]) {
-    return menuIconMap[iconName]
-  }
-  return (iconName as string) || ''
-}
-
-/** 获取路由排序值：缺失或非法时排到最后，并输出告警日志 */
-const getRouteOrder = (routeRecord: ReturnType<typeof router.getRoutes>[number]) => {
-  const rawOrder = routeRecord.meta?.order
-
-  if (typeof rawOrder === 'number' && Number.isFinite(rawOrder)) {
-    return rawOrder
-  }
-
-  console.warn(`[菜单路由排序] 路由 ${routeRecord.path} 的 meta.order 缺失或不是合法数字，已按末尾排序处理`)
-  return Number.MAX_SAFE_INTEGER
-}
-
-/** 侧边栏菜单项（按 order 字段排序） */
-const menuItems = router.getRoutes()
-  .filter((r) => r.meta?.icon && !r.meta?.hidden)
-  .sort((a, b) => getRouteOrder(a) - getRouteOrder(b))
-  .map((r) => ({
-    path: r.path,
-    title: r.meta?.title as string,
-    icon: r.meta?.icon as string,
-  }))
+const menuItems = buildMenuItems(router.getRoutes())
 </script>
 
 <template>
@@ -89,7 +23,7 @@ const menuItems = router.getRoutes()
         active-text-color="#409eff"
       >
         <el-menu-item v-for="item in menuItems" :key="item.path" :index="item.path">
-          <el-icon><component :is="getMenuIcon(item.icon)" /></el-icon>
+          <el-icon><component :is="resolveMenuIcon(item.icon)" /></el-icon>
           <span>{{ item.title }}</span>
         </el-menu-item>
       </el-menu>
