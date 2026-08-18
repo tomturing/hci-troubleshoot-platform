@@ -18,8 +18,13 @@ import (
 )
 
 const controlPlanePrefix = "/v1/control-plane/bundles"
+const controlPlaneActivationPrefix = "/v1/control-plane/activations"
 
-func registerControlPlaneAPI(mux *http.ServeMux, registry controlplane.Registry, controlToken string, allowInsecure bool) {
+func registerControlPlaneAPI(mux *http.ServeMux, registry controlplane.Registry, controlToken string, allowInsecure bool, activators ...*runtimeBundleActivator) {
+	var activator *runtimeBundleActivator
+	if len(activators) > 0 {
+		activator = activators[0]
+	}
 	mux.HandleFunc(controlPlanePrefix, func(w http.ResponseWriter, r *http.Request) {
 		if !controlPlaneAuthorized(r, controlToken, allowInsecure) {
 			http.Error(w, "forbidden", http.StatusForbidden)
@@ -29,7 +34,7 @@ func registerControlPlaneAPI(mux *http.ServeMux, registry controlplane.Registry,
 			http.Error(w, "controlplane registry unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		handleBundleFactory(w, r, registry)
+		handleBundleFactory(w, r, registry, activator)
 	})
 	mux.HandleFunc(controlPlanePrefix+"/", func(w http.ResponseWriter, r *http.Request) {
 		if !controlPlaneAuthorized(r, controlToken, allowInsecure) {
@@ -40,11 +45,50 @@ func registerControlPlaneAPI(mux *http.ServeMux, registry controlplane.Registry,
 			http.Error(w, "controlplane registry unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		handleBundleFactory(w, r, registry)
+		handleBundleFactory(w, r, registry, activator)
+	})
+	mux.HandleFunc(controlPlaneActivationPrefix+"/", func(w http.ResponseWriter, r *http.Request) {
+		if !controlPlaneAuthorized(r, controlToken, allowInsecure) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if registry == nil {
+			http.Error(w, "controlplane registry unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, controlPlaneActivationPrefix), "/"), "/")
+		if len(parts) == 1 && r.Method == http.MethodGet {
+			if activator == nil || activator.repository == nil {
+				http.Error(w, "runtime activation persistence unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			supportID, err := url.PathUnescape(parts[0])
+			if err != nil || strings.TrimSpace(supportID) == "" {
+				http.Error(w, "support_id invalid", http.StatusBadRequest)
+				return
+			}
+			record, getErr := activator.repository.GetBundleActivation(r.Context(), supportID)
+			if getErr != nil {
+				writeControlPlaneError(w, getErr)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"runtime_activation": record, "trace_id": requestTraceID(r)})
+			return
+		}
+		if len(parts) != 2 || parts[1] != "rollback" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		supportID, err := url.PathUnescape(parts[0])
+		if err != nil || strings.TrimSpace(supportID) == "" {
+			http.Error(w, "support_id invalid", http.StatusBadRequest)
+			return
+		}
+		handleBundleRollback(w, r, activator, supportID)
 	})
 }
 
-func handleBundleFactory(w http.ResponseWriter, r *http.Request, registry controlplane.Registry) {
+func handleBundleFactory(w http.ResponseWriter, r *http.Request, registry controlplane.Registry, activator *runtimeBundleActivator) {
 	suffix := strings.TrimPrefix(r.URL.Path, controlPlanePrefix)
 	if suffix == "" || suffix == "/" {
 		if r.Method == http.MethodGet {
@@ -113,15 +157,69 @@ func handleBundleFactory(w http.ResponseWriter, r *http.Request, registry contro
 			writeControlPlaneError(w, actorErr)
 			return
 		}
+		candidate, getErr := registry.Get(digest)
+		if getErr != nil {
+			writeControlPlaneError(w, getErr)
+			return
+		}
+		candidateRouter, parseErr := fixture.Parse(candidate.Manifest)
+		if parseErr != nil {
+			writeControlPlaneError(w, fmt.Errorf("发布前 manifest 校验失败: %w", parseErr))
+			return
+		}
+		if candidateRouter.IsSynthetic() && !syntheticPublishAllowed() {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"detail":         "synthetic Bundle 仅允许显式开发开关发布，不能进入 Runtime 正式激活路径",
+				"capability_gap": "synthetic_bundle_publish_disabled", "trace_id": requestTraceID(r),
+			})
+			return
+		}
 		record, transitionErr := registry.Publish(actor, digest, time.Now().UTC())
 		if transitionErr != nil {
 			writeControlPlaneError(w, transitionErr)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"bundle": bundleView(record), "runtime_activation": "pending_gitops_sync", "trace_id": requestTraceID(r)})
+		activation := map[string]any{"status": "pending_gitops_sync"}
+		status := http.StatusOK
+		if activator != nil {
+			result, activationErr := activator.ActivateBundle(r.Context(), record.Input.SupportID, record.Digest, requestTraceID(r))
+			activation = activationJSON(result)
+			if activationErr != nil {
+				status = http.StatusAccepted
+			}
+		}
+		writeJSON(w, status, map[string]any{"bundle": bundleView(record), "runtime_activation": activation, "trace_id": requestTraceID(r)})
+	case "rollback":
+		supportID := strings.TrimSpace(r.URL.Query().Get("support_id"))
+		if supportID == "" {
+			http.Error(w, "support_id is required", http.StatusBadRequest)
+			return
+		}
+		handleBundleRollback(w, r, activator, supportID)
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func handleBundleRollback(w http.ResponseWriter, r *http.Request, activator *runtimeBundleActivator, supportID string) {
+	if activator == nil {
+		http.Error(w, "runtime activator unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if _, actorErr := requestActor(r, controlplane.RolePublisher); actorErr != nil {
+		writeControlPlaneError(w, actorErr)
+		return
+	}
+	result, rollbackErr := activator.RollbackBundle(r.Context(), supportID, requestTraceID(r))
+	if rollbackErr != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"detail": rollbackErr.Error(), "runtime_activation": activationJSON(result), "trace_id": requestTraceID(r)})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"runtime_activation": activationJSON(result), "trace_id": requestTraceID(r)})
+}
+
+func syntheticPublishAllowed() bool {
+	return strings.EqualFold(strings.TrimSpace(env("HCI_SIM_ALLOW_SYNTHETIC_PUBLISH", "false")), "true")
 }
 
 func compileSynthetic(w http.ResponseWriter, r *http.Request, registry controlplane.Registry) {

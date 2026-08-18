@@ -78,3 +78,30 @@ func TestBundlePoolFailsClosedOnDuplicateOrDigestDrift(t *testing.T) {
 		t.Fatal("夹带未加载 Bundle 的发布声明未被拒绝")
 	}
 }
+
+func TestBundlePoolHotActivationPinsOldDigestForExistingLease(t *testing.T) {
+	oldRaw := poolManifest(t, "23821", 25)
+	old, err := Parse(oldRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRaw := poolManifest(t, "23821", 26)
+	newRouter, err := Parse(newRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := NewBundlePool(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous, err := pool.Activate(newRouter)
+	if err != nil || previous == nil || previous.BundleDigest() != old.BundleDigest() {
+		t.Fatalf("hot activation previous=%v err=%v", previous, err)
+	}
+	if pool.Get("23821").BundleDigest() != newRouter.BundleDigest() {
+		t.Fatal("active pointer 未切换到新 Bundle")
+	}
+	if pool.GetByDigest(old.BundleDigest()) == nil || pool.GetByDigest(old.BundleDigest()).KBD().Revision != 25 {
+		t.Fatal("旧 Bundle 未保留，存量 Lease 无法按 digest 执行")
+	}
+}

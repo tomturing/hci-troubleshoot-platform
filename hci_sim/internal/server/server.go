@@ -76,18 +76,18 @@ type Server struct {
 	listener   net.Listener
 }
 
-func routerForSupport(config Config, supportID string) *fixture.Router {
+func routerForClaims(config Config, claims lease.Claims) *fixture.Router {
 	if config.Pool != nil {
-		return config.Pool.Get(supportID)
+		return config.Pool.GetByDigest(claims.BundleDigest)
 	}
-	if config.Router != nil && config.Router.KBD().SupportID == supportID {
+	if config.Router != nil && config.Router.BundleDigest() == claims.BundleDigest {
 		return config.Router
 	}
 	return nil
 }
 
 func routerMatchesClaims(router *fixture.Router, claims lease.Claims) bool {
-	if router == nil || router.KBD().Revision != claims.KBDRevision {
+	if router == nil || router.KBD().SupportID != claims.SupportID || router.KBD().Revision != claims.KBDRevision {
 		return false
 	}
 	constantEqual := func(left, right string) bool {
@@ -160,7 +160,7 @@ func New(config Config) (*Server, error) {
 	s.sshConfig = &ssh.ServerConfig{
 		PasswordCallback: func(meta ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
 			claims, err := lease.Validate(config.LeaseSecret, string(password), "", config.LeaseIssuer, config.LeaseAudience, time.Now())
-			router := routerForSupport(config, claims.SupportID)
+			router := routerForClaims(config, claims)
 			if err != nil || meta.User() != "sim" || !routerMatchesClaims(router, claims) {
 				config.Metrics.LeaseRejectTotal.Add(1)
 				reason := safeError(err)
@@ -363,7 +363,7 @@ func (s *Server) execute(job *commandJob, workerID int) commandOutcome {
 		s.respond(job, outcome, "lease_quota_exceeded", err.Error())
 		return outcome
 	}
-	router := routerForSupport(s.config, job.claims.SupportID)
+	router := routerForClaims(s.config, job.claims)
 	if !routerMatchesClaims(router, job.claims) {
 		s.config.Metrics.CommandErrorsTotal.Add(1)
 		s.config.Metrics.FixtureMissesTotal.Add(1)
@@ -476,10 +476,6 @@ func (s *Server) execute(job *commandJob, workerID int) commandOutcome {
 		attribute.Int("stdout.bytes", stdoutBytes), attribute.Int("stderr.bytes", stderrBytes),
 	)
 	outcome := commandOutcome{exitCode: exitCode}
-	if job.mode == commandModeExec {
-		_, _ = job.channel.SendRequest("exit-status", false, ssh.Marshal(exitStatus{Status: uint32(exitCode)}))
-		_ = job.channel.Close()
-	}
 	logEvent("INFO", "exec.done", baseFields(job.claims, map[string]any{
 		"trace_id": span.SpanContext().TraceID().String(), "exec_id": job.env["HTP_EXEC_ID"],
 		"fixture_id": result.FixtureID, "exit_code": exitCode,
@@ -488,6 +484,12 @@ func (s *Server) execute(job *commandJob, workerID int) commandOutcome {
 		"duration_ms": time.Since(start).Milliseconds(),
 	}))
 	s.recordEvent(job, "exec.done", fmt.Sprintf("%s:%d:%d:%d", result.FixtureID, exitCode, stdoutBytes, stderrBytes), span.SpanContext().TraceID().String())
+	// 客户端看到命令完成前先持久化审计事件，避免并发 worker 让后续命令的
+	// fixture_not_found 事件反超前一条命令的 exec.done。
+	if job.mode == commandModeExec {
+		_, _ = job.channel.SendRequest("exit-status", false, ssh.Marshal(exitStatus{Status: uint32(exitCode)}))
+		_ = job.channel.Close()
+	}
 	return outcome
 }
 
