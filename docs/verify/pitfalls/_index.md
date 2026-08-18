@@ -52,6 +52,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 | V-010 | python.md | 图片来源集合检查不得升级为正文 evidence 与 OCR 的跨来源逐字强绑定 |
 | V-011 | debugging.md | 图片级 LLM 统计不得直接当作 KBD 案例级完成状态 |
 | V-012 | debugging.md | QKV acquire.keyword 不得复用 QFK 数组语义 |
+| V-013 | frontend.md | 可编辑列表 key 不得依赖正在编辑的字段 |
 | PIT-004 | python.md | Pydantic 验证 |
 | PIT-005 | frontend.md | pnpm workspace |
 | PIT-006 | dispatcher.md | 分布式锁 |
