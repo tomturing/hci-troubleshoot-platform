@@ -140,6 +140,7 @@ jobs:
         env:
           GITHUB_EVENT_BEFORE: ${{ github.event.before }}
           GITHUB_RELEASE_BASE_SHA: ${{ steps.release-baseline.outputs.base_sha }}
+          GITHUB_SERVICE_RELEASE_BASELINES: ${{ steps.release-baseline.outputs.service_baselines }}
           GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci/resolve_image_build_plan.py

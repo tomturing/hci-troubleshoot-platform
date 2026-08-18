@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Iterable
@@ -43,6 +44,8 @@ OTHER_SERVICES = (
     ("hci-sim", "hci_sim/Dockerfile", None),
 )
 ALL_SERVICES = BACKEND_SERVICES + FRONTEND_SERVICES + OTHER_SERVICES
+SERVICE_NAMES = tuple(service for service, _, _ in ALL_SERVICES)
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 DB_MIGRATE_PATHS = (
     "database/desired_schema.sql",
@@ -79,6 +82,11 @@ def changed_files() -> list[str]:
     if not base or not head or base == "0" * 40:
         raise ValueError("事件缺少可比较的 base/head SHA；请使用 workflow_dispatch 执行全量发布复核")
 
+    return changed_files_between(base, head)
+
+
+def changed_files_between(base: str, head: str) -> list[str]:
+    """返回两个已知提交之间的变更文件。"""
     result = subprocess.run(
         ["git", "diff", "--name-only", base, head],
         check=True,
@@ -86,6 +94,34 @@ def changed_files() -> list[str]:
         text=True,
     )
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def reconciliation_services(raw_baselines: str, current_sha: str) -> set[str]:
+    """识别被全局基线掩盖、但尚未成功发布的服务。
+
+    每个服务分别与其最后一次成功发布的源码提交比较。缺少服务基线时宁可
+    重建该服务，不能把未知状态当作已发布。
+    """
+    try:
+        baselines = json.loads(raw_baselines or "{}")
+    except json.JSONDecodeError as error:
+        raise ValueError("服务发布基线不是合法 JSON") from error
+    if not isinstance(baselines, dict) or not SHA_RE.fullmatch(current_sha):
+        raise ValueError("服务发布基线或当前 SHA 非法")
+
+    missing: set[str] = set()
+    for service in SERVICE_NAMES:
+        base = baselines.get(service)
+        if not isinstance(base, str) or not SHA_RE.fullmatch(base):
+            missing.add(service)
+            continue
+        if base == current_sha:
+            continue
+        paths = changed_files_between(base, current_sha)
+        affected, _ = select_services(paths, force_all=False)
+        if service in affected:
+            missing.add(service)
+    return missing
 
 
 def add_service(selected: set[str], service: str) -> None:
@@ -165,6 +201,18 @@ def main() -> int:
         return 1
 
     selected, db_migrate = select_services(paths, force_all=force_all)
+    if event_name == "push":
+        try:
+            recovered = reconciliation_services(
+                os.environ.get("GITHUB_SERVICE_RELEASE_BASELINES", ""),
+                os.environ.get("GITHUB_SHA", ""),
+            )
+        except (OSError, subprocess.CalledProcessError, ValueError) as error:
+            print(f"无法生成服务级发布补偿计划：{error}", file=sys.stderr)
+            return 1
+        if recovered:
+            print(f"  补偿服务: {', '.join(sorted(recovered))}")
+            selected.update(recovered)
     by_name = {service: (dockerfile, deploy_key) for service, dockerfile, deploy_key in ALL_SERVICES}
     ordered = [service for service, _, _ in ALL_SERVICES if service in selected]
     matrix = [
