@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"hci_sim/internal/controlplane"
 	"hci_sim/internal/database"
 	"hci_sim/internal/fixture"
 	"hci_sim/internal/lease"
@@ -57,6 +58,12 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "offline-manifest" {
 		if err := runOfflineManifest(os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "compile-batch" {
+		if err := runCompileBatch(os.Args[2:]); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -200,6 +207,7 @@ func runServer() error {
 	}
 	var runRepository *database.RunRepository
 	var databasePool interface{ Close() }
+	var controlplaneRegistry controlplane.Registry
 	if databaseTarget.Configured {
 		pool, openErr := database.Open(ctx, databaseTarget)
 		if openErr != nil {
@@ -219,6 +227,21 @@ func runServer() error {
 			return fmt.Errorf("同步 Runtime Bundle Registry 失败 trace_id=%s: %w", traceID, syncErr)
 		}
 		log.Printf("hci-sim bundle registry synced trace_id=%s bundle_count=%d support_ids=%s", traceID, bundlePool.Size(), strings.Join(bundlePool.SupportIDs(), ","))
+		if os.Getenv("HCI_SIM_CONTROLPLANE_REGISTRY") == "postgres" {
+			artifactRepo, artifactErr := database.NewArtifactRepository(pool)
+			if artifactErr != nil {
+				return fmt.Errorf("构造 PG ArtifactRegistry 失败: %w", artifactErr)
+			}
+			controlplaneRegistry, err = database.NewBundleRegistry(pool, artifactRepo, controlplane.NewMemoryBundleObjectStore())
+			if err != nil {
+				return fmt.Errorf("构造 PG BundleRegistry 失败: %w", err)
+			}
+			log.Printf("hci-sim controlplane registry initialized (postgres) pool_size=%d", bundlePool.Size())
+		}
+		if controlplaneRegistry != nil {
+			// TODO(T3): 接入 Bundle API 后替换为实际健康检查
+			log.Printf("hci-sim controlplane registry ready (postgres)")
+		}
 	}
 	var eventRecorder server.EventRecorder
 	if runRepository != nil {
