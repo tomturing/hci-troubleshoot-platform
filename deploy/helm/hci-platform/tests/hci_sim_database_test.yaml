@@ -1,6 +1,7 @@
 suite: "hci_sim database isolation"
 templates:
   - hci-sim-db-credentials.yaml
+  - hci-sim-db-migration-trigger.yaml
   - hci-sim-db-migrations.yaml
   - hooks/hci-sim-db-migrate-job.yaml
 tests:
@@ -94,6 +95,30 @@ tests:
           path: data["000002_fix_p0p1_defects.sql"]
       - exists:
           path: data["000003_controlplane_bundle_lifecycle.sql"]
+      - exists:
+          path: data["000004_bundle_activation.sql"]
+
+  - it: "普通迁移触发器暴露稳定 digest，驱动 migration-only 自动同步"
+    set:
+      hciSimDatabase.enabled: true
+      hciSimDatabase.migratorPassword: "migration-test-secret"
+      hciSimDatabase.runtimePassword: "runtime-test-secret"
+    templates:
+      - hci-sim-db-migration-trigger.yaml
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - notExists:
+          path: metadata.annotations["argocd.argoproj.io/hook"]
+      - equal:
+          path: metadata.labels["hci-platform.dev/ordinary-sync-trigger"]
+          value: "true"
+      - matchRegex:
+          path: data.migration_revision
+          pattern: "^[a-f0-9]{64}$"
+      - equal:
+          path: data.migration_file_count
+          value: "4"
 
   - it: "迁移 Job 在依赖之后以 wave -8 执行"
     set:

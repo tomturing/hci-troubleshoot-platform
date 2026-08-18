@@ -1,0 +1,22 @@
+{{- if .Values.hciSimDatabase.enabled }}
+{{- $migrationPayload := "" }}
+{{- $migrationFiles := .Files.Glob "hci-sim-migrations/*.sql" }}
+{{- range $path, $_ := $migrationFiles }}
+{{- $migrationPayload = printf "%s%s\n%s\n" $migrationPayload $path ($.Files.Get $path) }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hci-sim-db-migration-trigger
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: hci-sim-db-migrate
+    hci-platform.dev/ordinary-sync-trigger: "true"
+  annotations:
+    # 该普通资源把迁移内容变化显式暴露给 ArgoCD；PreSync Hook 只负责执行顺序。
+    hci-platform.dev/migration-trigger: "true"
+data:
+  migration_revision: {{ sha256sum $migrationPayload | quote }}
+  migration_file_count: {{ len $migrationFiles | quote }}
+{{- end }}
