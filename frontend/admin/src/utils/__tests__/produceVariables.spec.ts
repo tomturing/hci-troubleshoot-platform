@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildProduceVariableCatalog,
   extractProduceVariablesFromSchema,
+  findProduceVariable,
 } from '../produceVariables'
 
 describe('extractProduceVariablesFromSchema', () => {
@@ -64,5 +65,20 @@ describe('buildProduceVariableCatalog', () => {
     ])
 
     expect(catalog).toEqual({ qkv_task: [{ name: 'VM', path: 'vm' }] })
+  })
+})
+
+describe('findProduceVariable', () => {
+  it('按当前 QKV 工具精确返回变量与 JSON 路径的绑定', () => {
+    const catalog = {
+      qkv_task: [{ name: 'ERRCODE_TRACING', path: 'errcode_tracing' }],
+      qkv_alert: [{ name: 'ERRCODE_TRACING', path: 'alert_error_code' }],
+    }
+
+    expect(findProduceVariable(catalog, 'qkv_task', 'ERRCODE_TRACING')).toEqual({
+      name: 'ERRCODE_TRACING',
+      path: 'errcode_tracing',
+    })
+    expect(findProduceVariable(catalog, 'qkv_alert', 'MISSING')).toBeUndefined()
   })
 })
