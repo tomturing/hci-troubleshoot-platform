@@ -249,7 +249,9 @@ func TestRunRepositoryPostgresEventResultAndOutbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claim retry outbox: %v", err)
 	}
-	if err := repository.CompleteOutbox(ctx, claimedRetry.ID, false, time.Now().UTC()); err != nil {
+	// 使用明确的过去时间，避免客户端与 PostgreSQL 时钟/事务时间差导致
+	// 刚重排的消息在下一次 Claim 时尚未满足 available_at <= now()。
+	if err := repository.CompleteOutbox(ctx, claimedRetry.ID, false, time.Now().UTC().Add(-time.Second)); err != nil {
 		t.Fatalf("requeue outbox: %v", err)
 	}
 	claimedStuck, err := repository.ClaimOutbox(ctx)
