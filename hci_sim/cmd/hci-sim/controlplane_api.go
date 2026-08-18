@@ -163,6 +163,7 @@ func compileSynthetic(w http.ResponseWriter, r *http.Request, registry controlpl
 	}
 	manifest, err := buildSyntheticManifest(request.Resolved, request.Node, request.Container)
 	if err != nil {
+		log.Printf("bundle_factory compile_failed trace_id=%s support_id=%s stage=manifest error=%v", requestTraceID(r), request.Resolved.SupportID, err)
 		writeControlPlaneError(w, err)
 		return
 	}
@@ -173,6 +174,7 @@ func compileSynthetic(w http.ResponseWriter, r *http.Request, registry controlpl
 		Dependencies: dependencies,
 	}, manifest, time.Now().UTC())
 	if err != nil {
+		log.Printf("bundle_factory compile_failed trace_id=%s support_id=%s stage=registry error=%v", requestTraceID(r), request.Resolved.SupportID, err)
 		writeControlPlaneError(w, err)
 		return
 	}

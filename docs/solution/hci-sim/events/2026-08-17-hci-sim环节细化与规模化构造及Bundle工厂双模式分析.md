@@ -8,6 +8,18 @@ owner: team
 
 # hci-sim 环节细化、规模化构造与双模式 Bundle 工厂分析
 
+## 2026-08-18 修复：Synthetic Draft 场景变量门禁
+
+Bundle 工厂的 `positive-minimal` 编译路径现在会读取 C1 Resolver 返回的
+`required_variables`，为受控的 Synthetic 变量提供稳定值，并把这些值写入 manifest
+的 `variables` 后参与 Bundle digest 计算。`HOST` 使用虚拟节点，`END` 使用固定时间点，
+`VM`、`REQUEST_ID` 等使用 support_id 派生值；它们只表示仿真输入，不是客户环境事实。
+
+变量名没有内置提供器且没有由场景画像显式提供时，编译仍返回
+`capability_gap`，禁止猜测。这修复了 KBD `40061` 的 `{{END}}` 在 C1 已合法解析、
+但 Bundle 工厂因未注入场景变量而返回 409 的问题。专家仍可在 Draft 创建后修订
+manifest；场景画像路径继续支持显式覆盖这些默认值。
+
 > **编者按（2026-08-17）**
 > - 本文档归档自 2026-08-17 的三轮深化分析：①环节 1（C1 Capability 解析）与环节 2（Fixture Bundle 生产）的细化说明；②"1000 个已发布 KBD 如何快速构造仿真环境"与"测试不通过/专家审核编辑走哪个环节"；③realistic Bundle 工厂设计及其与 synthetic 批量编译的关系判定。
 > - **基线更新（重要）**：PR #779（2026-08-17 09:13 合并，配套设计 [`docs/solution/events/2026-08-16-hci-sim多bundle发布闭环修复.md`](../../events/2026-08-16-hci-sim多bundle发布闭环修复.md)）引入 `hci_sim/internal/fixture/pool.go` BundlePool，**Runtime 已支持一份部署加载多个 KBD 的 Bundle**（当前 `values.yaml` 装载 27123 + 23821）。此前评审中"单 manifest 单 KBD 世界"的表述自本合并起部分失效；本文所有分析以 #779 之后代码为准。

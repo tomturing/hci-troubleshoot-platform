@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -281,6 +283,13 @@ func buildScenarioManifest(resolved *resolvedKbd, profile *scenarioProfile, node
 			variables[key] = value
 		}
 	}
+	// 场景画像是显式的专家输入，缺值继续严格阻断；Bundle 工厂的无画像路径
+	// 才使用受控默认值，避免把画像配置错误悄悄掩盖掉。
+	if profile == nil {
+		if err := provideSyntheticVariables(resolved, variables, node, container); err != nil {
+			return fixture.Manifest{}, err
+		}
+	}
 	routes := make([]fixture.Route, 0, len(resolved.SyntheticRoutes))
 	seen := make(map[string]struct{}, len(resolved.SyntheticRoutes))
 	for index, route := range resolved.SyntheticRoutes {
@@ -366,11 +375,68 @@ func buildScenarioManifest(resolved *resolvedKbd, profile *scenarioProfile, node
 	}, nil
 }
 
+var syntheticVariablePattern = regexp.MustCompile(`\{\{([A-Z][A-Z0-9_]*)\}\}`)
+
+// provideSyntheticVariables 为 positive-minimal Bundle 补齐可审计的场景值。
+// 这些值只用于合成仿真，不代表真实 HCI 事实；未知变量必须继续阻断编译。
+func provideSyntheticVariables(resolved *resolvedKbd, variables map[string]string, node, container string) error {
+	for _, route := range resolved.SyntheticRoutes {
+		names := append([]string{}, route.RequiredVariables...)
+		for _, arg := range route.Argv {
+			for _, match := range syntheticVariablePattern.FindAllStringSubmatch(arg, -1) {
+				names = append(names, match[1])
+			}
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			if _, ok := variables[name]; ok {
+				continue
+			}
+			value, ok := defaultSyntheticVariable(name, resolved.SupportID, node, container)
+			if !ok {
+				return fmt.Errorf("capability_gap: Signal %s 缺少场景变量: {{%s}}（没有可审计的 Synthetic 提供器）", route.SignalID, name)
+			}
+			variables[name] = value
+		}
+	}
+	return nil
+}
+
+func defaultSyntheticVariable(name, supportID, node, container string) (string, bool) {
+	switch name {
+	case "HOST", "NODE", "NODE_ID", "NODE_NAME":
+		return node, true
+	case "CONTAINER":
+		return container, true
+	case "END":
+		return "2026-01-01 00:00:00", true
+	case "START":
+		return "2025-12-31 23:00:00", true
+	case "VM", "VM_ID":
+		return "SIM-VM-" + supportID, true
+	case "PID":
+		return "9527", true
+	case "REQUEST_ID":
+		return "SIM-REQUEST-" + supportID, true
+	case "ALERT_ID":
+		return "SIM-ALERT-" + supportID, true
+	case "SERVICE":
+		return "sim-service", true
+	case "PRODUCT_VERSION":
+		return "6.12.0", true
+	case "NODE_ENDPOINT":
+		return "hci-sim", true
+	default:
+		return "", false
+	}
+}
+
 func renderProfileVariables(value string, variables map[string]string) string {
 	keys := make([]string, 0, len(variables))
 	for key := range variables {
 		keys = append(keys, key)
 	}
+	sort.Strings(keys)
 	for _, key := range keys {
 		value = strings.ReplaceAll(value, "{{"+key+"}}", variables[key])
 	}
