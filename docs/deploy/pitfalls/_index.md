@@ -15,7 +15,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 > 2. 再写入对应分类 file
 > 3. 同一 commit/PR 提交，不允许分开提交
 >
-> **下一个可用编号：D-026**（旧格式延续：PIT-050）
+> **下一个可用编号：D-027**（旧格式延续：PIT-050）
 
 ---
 
@@ -26,7 +26,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | 触发场景 | 读取文件 | 当前条目 |
 |---------|---------|---------|
 | 网络/502/503/超时/SSL/Clash TUN/LLM | [network-service-check.md](network-service-check.md) | §一~十一, PIT-039, PIT-046, D-008 |
-| 编写/审查 Shell/Makefile/CI 脚本 / GitHub Actions | [shell.md](shell.md) | PIT-001, PIT-002, D-012, D-016, D-023 |
+| 编写/审查 Shell/Makefile/CI 脚本 / GitHub Actions | [shell.md](shell.md) | PIT-001, PIT-002, D-012, D-016, D-023, D-026 |
 | K8s/K3s 镜像/Helm/网络/HostPath/DB 迁移/ArgoCD/日志采集器迁移 | [k8s.md](k8s.md) | PIT-014~019, PIT-021, PIT-022, PIT-024, PIT-034, PIT-037, PIT-038, PIT-043, PIT-044, PIT-045, D-001~D-022 |
 | ArgoCD 升级/多集群/PreSync SA/Redis EOF/PreSync Hook 镜像/失败 Hook 残留/db-seed Hook 失败 | [k8s.md](k8s.md) | D-001, D-002, D-003, D-004, D-005, D-011, D-014 |
 | Grafana 重定向/Ingress/iframe 白屏 | [grafana.md](grafana.md) | PIT-011, PIT-012, PIT-020, PIT-036 |
@@ -90,6 +90,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | **D-023** | shell.md | main push 事件缺失时，PR 检查不会发布镜像；CI 必须提供默认不发布、仅 main 可执行的显式 workflow_dispatch 补偿入口，并核验环境仓库远端 tag |
 | **D-024** | k8s.md | ArgoCD PreSync Hook 依赖普通资源不会提前创建；Secret/ConfigMap 必须加入有序 Hook wave |
 | **D-025** | k8s.md | Nginx 动态 resolver 不使用 Pod DNS search 后缀；K8s Service 上游必须使用完整 FQDN |
+| **D-026** | shell.md | 发布基线依赖可变 Actions 展示名导致服务永久缺失、每次 main push 补偿重建并产生 promotion PR 风暴 |
 
 ---
 

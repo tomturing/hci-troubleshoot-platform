@@ -21,14 +21,26 @@ def _load():
     return module
 
 
-def test_indented_digest_pin_only_is_exempt():
-    """仅有带缩进的 digest 行变化 → 应豁免。"""
+def test_digest_without_source_revision_is_not_exempt():
+    """只改 digest 会丢失来源绑定，不再允许豁免。"""
     mod = _load()
     diff = (
         "--- a/deploy/gitops/argo-apps/local/hci-sim-dev.yaml\n"
         "+++ b/deploy/gitops/argo-apps/local/hci-sim-dev.yaml\n"
         "@@ -10,7 +10,7 @@ spec:\n"
-        '           repository: ghcr.io/tomturing/hci-sim\n'
+        "           repository: ghcr.io/tomturing/hci-sim\n"
+        '-          digest: "sha256:2419c2f8aef6f7b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7"\n'
+        '+          digest: "sha256:503b905bd869953412d2f3db3ef3ca2ae447feac6209f8b4d1d0187413cc4d5b"\n'
+    )
+    assert mod.is_digest_pin_only(diff) is False
+
+
+def test_digest_and_source_revision_promotion_is_exempt():
+    """digest 与精确源码 revision 同步变化属于已文档化晋级动作。"""
+    mod = _load()
+    diff = (
+        '-    hci-platform.dev/image-source-revision: "unverified-legacy"\n'
+        '+    hci-platform.dev/image-source-revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n'
         '-          digest: "sha256:2419c2f8aef6f7b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7"\n'
         '+          digest: "sha256:503b905bd869953412d2f3db3ef3ca2ae447feac6209f8b4d1d0187413cc4d5b"\n'
     )
@@ -50,15 +62,22 @@ def test_repository_change_is_not_exempt():
 def test_added_non_digest_field_is_not_exempt():
     """除 digest 外新增了其他字段 → 不可豁免。"""
     mod = _load()
+    diff = '-          digest: "sha256:2419c2f8"\n+          digest: "sha256:503b905b"\n+          newField: true\n'
+    assert mod.is_digest_pin_only(diff) is False
+
+
+def test_unrelated_annotation_is_not_exempt():
+    """不得把任意 Application annotation 伪装成晋级元数据绕过文档门禁。"""
+    mod = _load()
     diff = (
-        '-          digest: "sha256:2419c2f8"\n'
-        '+          digest: "sha256:503b905b"\n'
-        '+          newField: true\n'
+        '-    hci-platform.dev/image-source-revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n'
+        '+    hci-platform.dev/image-source-revision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"\n'
+        '+    dangerous.example/bypass: "true"\n'
     )
     assert mod.is_digest_pin_only(diff) is False
 
 
-def test_empty_diff_is_exempt():
-    """空 diff → 视为纯 digest（无改动）。"""
+def test_empty_diff_fails_closed():
+    """diff 读取失败或空输入不能伪装成合法 promotion。"""
     mod = _load()
-    assert mod.is_digest_pin_only("") is True
+    assert mod.is_digest_pin_only("") is False

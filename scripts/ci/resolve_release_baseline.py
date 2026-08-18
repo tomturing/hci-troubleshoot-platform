@@ -18,7 +18,8 @@ from collections.abc import Iterable
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 IMAGE_JOB_PREFIX = "构建并推送镜像（"
 PROMOTION_JOB_NAME = "晋级非生产环境"
-HCI_SIM_VERIFY_JOB_NAME = "校验 hci-sim immutable GitOps digest"
+# Jobs API 只能返回展示名，因此这里使用稳定的机器名，禁止随文案改名。
+HCI_SIM_PROMOTION_JOB_NAME = "hci-sim-promotion-request"
 SERVICE_NAMES = (
     "api-gateway",
     "case-service",
@@ -71,27 +72,24 @@ def is_successful_release(jobs: object) -> bool:
     return has_image_build and has_promotion
 
 
-def successful_service_releases(jobs: object) -> set[str]:
-    """返回本次运行中确实完成发布闭环的服务。
+def successful_service_baselines(jobs: object) -> set[str]:
+    """返回本次运行中已经形成持久发布意图的服务基线。
 
     不能以“任意镜像成功”推断全部服务均已发布：矩阵通常只构建本次变更
-    服务。hci-sim 不写入环境仓库，必须额外通过 immutable GitOps digest 校验。
+    服务。普通服务必须完成环境仓库晋级；hci-sim 必须成功创建或更新唯一的
+    GitOps promotion PR。这里记录的是后续构建差异的基线，不冒充 ArgoCD 已部署证明。
     """
     if not isinstance(jobs, list):
         return set()
-    names = {
-        str(job.get("name", "")): str(job.get("conclusion", ""))
-        for job in jobs
-        if isinstance(job, dict)
-    }
+    names = {str(job.get("name", "")): str(job.get("conclusion", "")) for job in jobs if isinstance(job, dict)}
     promoted = names.get(PROMOTION_JOB_NAME) == "success"
-    hci_sim_verified = names.get(HCI_SIM_VERIFY_JOB_NAME) == "success"
+    hci_sim_promotion_recorded = names.get(HCI_SIM_PROMOTION_JOB_NAME) == "success"
     released = set()
     for service in SERVICE_NAMES:
         if names.get(f"{IMAGE_JOB_PREFIX}{service}）") != "success":
             continue
         if service == "hci-sim":
-            if hci_sim_verified:
+            if hci_sim_promotion_recorded:
                 released.add(service)
         elif promoted:
             released.add(service)
@@ -129,8 +127,10 @@ def main() -> int:
         print("缺少合法 EVENT_BEFORE，无法建立发布基线", file=sys.stderr)
         return 1
 
+    # 服务级矩阵允许部分成功：其他服务失败时，已构建并持久化晋级请求的服务
+    # 仍可成为自身基线。因此查询全部 completed run，再按 job 结果分别判定。
     runs_payload = gh_json(
-        f"repos/{repository}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=50"
+        f"repos/{repository}/actions/workflows/ci.yml/runs?branch=main&event=push&status=completed&per_page=50"
     )
     runs = runs_payload.get("workflow_runs", [])
     if not isinstance(runs, list):
@@ -142,13 +142,13 @@ def main() -> int:
         if not isinstance(run, dict) or str(run.get("head_sha", "")) == current_sha:
             continue
         run_id = run.get("id")
-        if not run_id or str(run.get("conclusion", "")) != "success":
+        if not run_id:
             continue
         jobs_payload = gh_json(f"repos/{repository}/actions/runs/{run_id}/jobs?per_page=100")
         jobs = jobs_payload.get("jobs", [])
         if is_successful_release(jobs):
             successful_release_heads.add(str(run.get("head_sha", "")))
-        for service in successful_service_releases(jobs):
+        for service in successful_service_baselines(jobs):
             service_baselines.setdefault(service, str(run.get("head_sha", "")))
         # API 返回按时间倒序；所有服务都已有基线后无需继续请求 Jobs API。
         if len(service_baselines) == len(SERVICE_NAMES):
