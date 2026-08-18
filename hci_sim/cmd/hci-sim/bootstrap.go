@@ -32,11 +32,13 @@ type capabilityResponse struct {
 
 type resolvedKbd struct {
 	SupportID            string           `json:"support_id"`
+	KBDID                int              `json:"kbd_id"`
 	KBDRevision          int              `json:"kbd_revision"`
 	KBDChecksum          string           `json:"kbd_checksum"`
 	SignalsDigest        string           `json:"signals_digest"`
 	ToolContractRevision string           `json:"tool_contract_revision"`
 	PolicyRevision       string           `json:"policy_revision"`
+	SourceTraceID        *string          `json:"source_trace_id"`
 	Metadata             map[string]any   `json:"metadata"`
 	VerificationContract map[string]any   `json:"verification_contract"`
 	SyntheticRoutes      []syntheticRoute `json:"synthetic_routes"`

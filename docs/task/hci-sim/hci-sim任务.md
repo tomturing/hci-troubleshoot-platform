@@ -30,6 +30,9 @@ hci-sim 当前只能声明「代码级基础就绪」，以下前提未满足即
 - [ ] 主库 15 张空旧表 contract/drop 与恢复演练独立完成（独立数据库事件遗留项）。
 - [ ] 20-repeat 稳定性与 100+ 并发容量验证补证。
 
+> 执行排期见 [events/2026-08-17-hci-sim规模化重点任务T1-T4分解.md](events/2026-08-17-hci-sim规模化重点任务T1-T4分解.md)：
+> T1 synthetic 批量编译（进行中）-> T2 controlplane 接线（进行中）-> T3 realistic 冷启动（待认领，组织门控）-> T4 规模化验证（待认领）。
+
 ## 5. 用户操作任务（验收入口）
 
 - 在 admin-ui 开仿真会话（对应 KBD 的 caseId）。

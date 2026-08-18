@@ -131,7 +131,7 @@ COMMENT ON TABLE fixture.approval
        'H-P0-4 修复：移除阻止重审的唯一约束，允许同一角色多次审批（如先 rejected 后重审 approved）。'
        '当前有效决策通过 ORDER BY decided_at DESC LIMIT 1 获取。';
 
-COMMENT ON INDEX idx_fixture_approval_latest
+COMMENT ON INDEX fixture.idx_fixture_approval_latest
     IS 'H-P0-4: 按 bundle+stage+role 查最新审批记录，替代原 UNIQUE 约束';
 
 

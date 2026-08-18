@@ -1,0 +1,18 @@
+{{- if not .Values.controlplane.objectStore.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ printf "%s-bundle-objects" .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hci-sim.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.controlplane.objectStore.accessMode }}
+  {{- with .Values.controlplane.objectStore.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.controlplane.objectStore.size }}
+{{- end }}

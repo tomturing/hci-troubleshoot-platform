@@ -254,8 +254,22 @@ type BundleObjectStore interface {
 	Prepare([]byte, string) (ObjectRef, error)
 	Verify(ObjectRef) error
 	Commit(ObjectRef) (ObjectRef, error)
+	Read(ObjectRef) ([]byte, error)
 	ReadPublished(ObjectRef) ([]byte, error)
 	Abort(ObjectRef)
+}
+
+func (s *MemoryBundleObjectStore) Read(ref ObjectRef) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	raw, ok := s.staged[ref.Key]
+	if !ok {
+		raw, ok = s.published[ref.Key]
+	}
+	if !ok || ref.Size != int64(len(raw)) || ref.Digest != digestBytes(raw) {
+		return nil, errors.New("bundle_read_integrity_failed")
+	}
+	return append([]byte(nil), raw...), nil
 }
 
 // MemoryBundleObjectStore 只用于测试 prepare/verify/commit 的失败语义，非生产对象存储实现。

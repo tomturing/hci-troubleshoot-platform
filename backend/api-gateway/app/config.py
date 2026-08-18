@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     AGENT_SERVICE_URL: str = "http://agent-service:8005"
     HCI_SIM_URL: str = "http://hci-sim.hci-sim-dev.svc:8080"
     HCI_SIM_CONTROL_TOKEN: str = ""
+    HCI_SIM_COMPILER_ACTOR_ID: str = "bundle-factory-compiler"
+    HCI_SIM_EXPERT_EDITOR_ACTOR_ID: str = "bundle-factory-expert-editor"
+    HCI_SIM_EXPERT_REVIEWER_ACTOR_ID: str = "bundle-factory-expert-reviewer"
+    HCI_SIM_SECURITY_ACTOR_ID: str = "bundle-factory-security"
+    HCI_SIM_PUBLISHER_ACTOR_ID: str = "bundle-factory-publisher"
     DIAGNOSIS_SERVICE_URL: str = "http://diagnosis-service:8008"
     DIAGNOSIS_IDENTITY_MODE: str = "internal"
 

@@ -71,6 +71,9 @@ type CompileInput struct {
 	CompilerRevision     string       `json:"compiler_revision"`
 	Artifacts            []Artifact   `json:"artifacts"`
 	Dependencies         []Dependency `json:"dependencies"`
+	ParentBundleDigest   string       `json:"parent_bundle_digest,omitempty"`
+	DraftRevision        int          `json:"draft_revision,omitempty"`
+	EditReason           string       `json:"edit_reason,omitempty"`
 }
 
 func (in CompileInput) Fingerprint() (string, error) {
@@ -78,6 +81,8 @@ func (in CompileInput) Fingerprint() (string, error) {
 		return "", err
 	}
 	copy := in
+	copy.Artifacts = append([]Artifact(nil), in.Artifacts...)
+	copy.Dependencies = append([]Dependency(nil), in.Dependencies...)
 	sort.Slice(copy.Artifacts, func(i, j int) bool { return copy.Artifacts[i].ID < copy.Artifacts[j].ID })
 	sort.Slice(copy.Dependencies, func(i, j int) bool {
 		return copy.Dependencies[i].Type+copy.Dependencies[i].ID < copy.Dependencies[j].Type+copy.Dependencies[j].ID
@@ -93,6 +98,9 @@ func (in CompileInput) Fingerprint() (string, error) {
 func (in CompileInput) validate() error {
 	if in.SupportID == "" || in.KBDRevision < 1 || in.KBDChecksum == "" || in.SignalsDigest == "" || in.ToolContractRevision == "" || in.PolicyRevision == "" || in.CompilerRevision == "" {
 		return errors.New("capability_gap: immutable KBD、Signal、Tool、Policy 或 Compiler 输入缺失")
+	}
+	if in.DraftRevision < 0 || (in.DraftRevision > 0 && (in.ParentBundleDigest == "" || strings.TrimSpace(in.EditReason) == "")) {
+		return errors.New("capability_gap: Draft 修订必须绑定父 Bundle digest 和修改原因")
 	}
 	seen := make(map[string]struct{}, len(in.Artifacts))
 	for _, artifact := range in.Artifacts {
@@ -147,6 +155,7 @@ func (record BundleRecord) clone() BundleRecord {
 // Registry 是控制面的最小存储契约；生产适配器应以 DB 事务保证状态转换和唯一键。
 type Registry interface {
 	Compile(Actor, CompileInput, fixture.Manifest, time.Time) (BundleRecord, error)
+	ReviseDraft(Actor, string, fixture.Manifest, string, time.Time) (BundleRecord, error)
 	Validate(Actor, string, ValidationReport, time.Time) (BundleRecord, error)
 	Approve(Actor, string, time.Time) (BundleRecord, error)
 	Publish(Actor, string, time.Time) (BundleRecord, error)
@@ -154,6 +163,7 @@ type Registry interface {
 	GetPublished(string) (BundleRecord, error)
 	ResolvePublished(supportID, variant, node, container string) (BundleRecord, error)
 	Get(string) (BundleRecord, error)
+	List(string) ([]BundleRecord, error)
 }
 
 type ValidationReport struct {
@@ -254,6 +264,34 @@ func (r *MemoryRegistry) Compile(actor Actor, input CompileInput, manifest fixtu
 	r.byDigest[record.Digest] = record
 	r.byFingerprint[fingerprint] = record.Digest
 	return record.clone(), nil
+}
+
+// ReviseDraft 由专家基于现有 draft/validated Bundle 生成新的不可变 Draft。
+// 修改者成为新 Draft 的创建者，因此不能再为该 revision 完成专家审批。
+func (r *MemoryRegistry) ReviseDraft(actor Actor, parentDigest string, manifest fixture.Manifest, reason string, now time.Time) (BundleRecord, error) {
+	if actor.Role != RoleExpert || actor.ID == "" {
+		return BundleRecord{}, errors.New("forbidden: 仅 expert 可修订 Draft")
+	}
+	parent, err := r.Get(parentDigest)
+	if err != nil {
+		return BundleRecord{}, err
+	}
+	if parent.Status != BundleDraft && parent.Status != BundleValidated {
+		return BundleRecord{}, fmt.Errorf("invalid_transition: %s 不能修订", parent.Status)
+	}
+	if strings.TrimSpace(reason) == "" {
+		return BundleRecord{}, errors.New("draft_edit_reason_required")
+	}
+	manifest.Bundle.Status = "published"
+	manifest.Bundle.Digest = fixture.ComputeBundleDigest(manifest)
+	if manifest.Bundle.Digest == parent.Digest {
+		return BundleRecord{}, errors.New("draft_edit_no_changes")
+	}
+	input := parent.Input
+	input.ParentBundleDigest = parent.Digest
+	input.DraftRevision++
+	input.EditReason = strings.TrimSpace(reason)
+	return r.Compile(Actor{ID: actor.ID, Role: RoleCompiler}, input, manifest, now)
 }
 
 func (r *MemoryRegistry) Validate(actor Actor, digest string, report ValidationReport, now time.Time) (BundleRecord, error) {
@@ -403,6 +441,24 @@ func (r *MemoryRegistry) Get(digest string) (BundleRecord, error) {
 		return BundleRecord{}, errors.New("bundle_not_found")
 	}
 	return record.clone(), nil
+}
+
+func (r *MemoryRegistry) List(supportID string) ([]BundleRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	records := make([]BundleRecord, 0)
+	for _, record := range r.byDigest {
+		if supportID == "" || record.Input.SupportID == supportID {
+			records = append(records, record.clone())
+		}
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].UpdatedAt.Equal(records[j].UpdatedAt) {
+			return records[i].Digest < records[j].Digest
+		}
+		return records[i].UpdatedAt.After(records[j].UpdatedAt)
+	})
+	return records, nil
 }
 
 func (r *MemoryRegistry) transition(digest string, from, to BundleStatus, now time.Time) (BundleRecord, error) {

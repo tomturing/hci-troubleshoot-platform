@@ -23,7 +23,7 @@
 
 | 程序 | 文件 | 作用 |
 |---|---|---|
-| `hci-sim` | `cmd/hci-sim/main.go` + `bootstrap.go` + `offline_manifest.go` | 主服务。子命令：`serve`（默认，SSH:2222 + HTTP:18080 + `readyz`）、`lease`（签发 `htp2` 前缀的租约 token）、`manifest-digest`（写入/校验 bundle `sha256:` 摘要）、`bootstrap`（控制面初始化）。 |
+| `hci-sim` | `cmd/hci-sim/main.go` + `bootstrap.go` + `offline_manifest.go` + `compile_batch.go` | 主服务。子命令：`serve`（默认，SSH:2222 + HTTP:18080 + `readyz`）、`lease`（签发 `htp2` 前缀的租约 token）、`manifest-digest`（写入/校验 bundle `sha256:` 摘要）、`bootstrap`（控制面初始化）、`compile-batch`（从 C1 快照批量编译全部 ready KBD 的 synthetic manifest）。 |
 | `hci-sim-smoke` | `cmd/hci-sim-smoke/main.go` | 冒烟测试。经真实 Terminal Bridge WebSocket→SSH 链路执行 `recommended_command`，只输出 `support_id/test_run_id/exit_code` 摘要。 |
 
 ### 2.2 核心包（`internal/`）
@@ -94,6 +94,7 @@
 | `capability-matrix.sh` / `capability-matrix-test.sh` | 能力矩阵生成与 CI 门禁校验 |
 | `stage-e-matrix.sh` | 阶段 E 规模化验证矩阵 |
 | `diagnosis-lab.py` | 诊断样例实验室（五篇 KBD 手测+自动回归统一入口） |
+| `synthetic-batch-compile.py` | T1 批量编译管道：调 `compile-batch` 从 C1 权威快照一键产出全部 ready KBD 的 synthetic manifest，复制进 Helm files（realistic 优先保护）并可选同步 `values.yaml`；GitOps PR 门禁不变 |
 
 ### 4.3 DB 工具
 

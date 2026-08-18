@@ -27,6 +27,12 @@ const router = createRouter({
       meta: { title: '仿真测试', icon: 'VideoPlay', order: 3 },
     },
     {
+      path: '/simulation/bundle-factory',
+      name: 'BundleFactory',
+      component: () => import('@/views/BundleFactoryView.vue'),
+      meta: { title: 'Bundle工厂', icon: 'Box', order: 3.5 },
+    },
+    {
       path: '/clients',
       name: 'Clients',
       component: () => import('@/views/ClientListView.vue'),
