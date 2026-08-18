@@ -1,10 +1,12 @@
 """校验镜像发布顺序，防止回归为 push-before-scan。"""
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).parents[2]
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
 OPENCLAW_WORKFLOW = ROOT / ".github/workflows/build-hci-openclaw.yml"
+TRIVY_ACTION_SHA = "2736533278103862a861f4a35ebac3e97854d956"
 
 
 def _block(text: str, start_marker: str, end_marker: str) -> str:
@@ -48,3 +50,12 @@ def test_openclaw_scans_before_push() -> None:
     assert build < scan < push
     assert "image-ref: local/hci-openclaw:" in text
     assert "if: always() && steps.build.outcome == 'success'" in text
+
+
+def test_trivy_actions_use_complete_immutable_sha() -> None:
+    """被条件跳过的扫描路径也必须使用可解析的完整 action SHA。"""
+    workflow_text = "\n".join(path.read_text(encoding="utf-8") for path in (WORKFLOW, OPENCLAW_WORKFLOW))
+    refs = re.findall(r"aquasecurity/trivy-action@([0-9a-f]+)", workflow_text)
+    assert len(refs) == 4
+    assert set(refs) == {TRIVY_ACTION_SHA}
+    assert all(len(ref) == 40 for ref in refs)
