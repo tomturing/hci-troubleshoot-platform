@@ -56,7 +56,7 @@ describe('BundleFactoryView', () => {
     const reason = document.querySelector('input[placeholder="说明证据或仿真设定的修正依据"]') as HTMLInputElement
     reason.value = '修正专家复核后的进程输出'
     reason.dispatchEvent(new Event('input', { bubbles: true }))
-    const stdout = document.querySelector('.editor-body tbody textarea') as HTMLTextAreaElement
+    const stdout = document.querySelector('.route-editor textarea') as HTMLTextAreaElement
     stdout.value = 'corrected\n'
     stdout.dispatchEvent(new Event('input', { bubbles: true }))
     const save = Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.trim() === '生成新 Draft') as HTMLButtonElement
@@ -68,6 +68,23 @@ describe('BundleFactoryView', () => {
     const payload = JSON.parse(String((reviseCall![1] as RequestInit).body))
     expect(payload.reason).toBe('修正专家复核后的进程输出')
     expect(payload.manifest.routes[0].result.stdout).toBe('corrected\n')
+    wrapper.unmount()
+  })
+
+  it('修订表单按 Route 展示输出与固定宽度的 Exit、Fault 控制区', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(response({ bundles: [draft] })).mockResolvedValueOnce(response({ bundle: draft }))
+    const wrapper = mount(BundleFactoryView, { attachTo: document.body, global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    await wrapper.find('tbody tr').trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find((button) => button.text() === '编辑 Draft')!.trigger('click')
+    await flushPromises()
+
+    expect(document.querySelectorAll('.route-editor')).toHaveLength(1)
+    expect(document.querySelector('.route-command')?.textContent).toContain('acli system ps')
+    expect(document.querySelector('.route-controls')?.textContent).toContain('Exit')
+    expect(document.querySelector('.route-controls')?.textContent).toContain('Fault')
+    expect(document.querySelectorAll('.route-editor textarea')).toHaveLength(2)
     wrapper.unmount()
   })
 
