@@ -208,6 +208,41 @@ func TestPublishedBundleCanBeForkedAsNewDraftWithoutMutatingActiveVersion(t *tes
 	}
 }
 
+func TestRetireKeepsBundleReadableButHidesItFromDefaultList(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	registry := registryWithApprovedArtifact(t, now)
+	draft, err := registry.Compile(Actor{ID: "compiler", Role: RoleCompiler}, compileInput(), fixtureManifest(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired, err := registry.Retire(Actor{ID: "expert", Role: RoleExpert}, draft.Digest, now.Add(time.Minute))
+	if err != nil || retired.Status != BundleRetired {
+		t.Fatalf("retire=%+v err=%v", retired, err)
+	}
+	if record, err := registry.Get(draft.Digest); err != nil || record.Status != BundleRetired {
+		t.Fatalf("归档后仍必须可按 digest 追溯: %+v %v", record, err)
+	}
+	listed, err := registry.List(draft.Input.SupportID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 0 {
+		t.Fatalf("归档 Bundle 不应出现在默认列表: %+v", listed)
+	}
+	if _, err := registry.Retire(Actor{ID: "expert", Role: RoleExpert}, draft.Digest, now.Add(2*time.Minute)); err == nil {
+		t.Fatal("已归档 Bundle 不得重复归档")
+	}
+}
+
+func TestRetireRejectsPublishedBundle(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	registry := registryWithApprovedArtifact(t, now)
+	published := publish(t, registry, now)
+	if _, err := registry.Retire(Actor{ID: "expert", Role: RoleExpert}, published.Digest, now.Add(time.Minute)); err == nil {
+		t.Fatal("已发布 Bundle 不得通过删除入口归档")
+	}
+}
+
 func TestKBDContractFlowCollectionFourScansDualReviewDraftEditAndPublish(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	artifacts := NewMemoryArtifactRegistry()

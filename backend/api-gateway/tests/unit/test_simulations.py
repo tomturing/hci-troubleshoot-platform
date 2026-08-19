@@ -87,6 +87,20 @@ def test_internal_fast_publish_and_digest_activation_use_expert_identity():
         assert runtime_post.await_args.kwargs["actor_role"] == "expert"
 
 
+def test_bundle_retirement_uses_expert_identity_and_trace_id():
+    """归档请求只能经 Gateway 固定为专家身份，且必须传递调用链。"""
+    client = TestClient(app)
+    runtime_response = JSONResponse({"bundle": {"digest": "sha256:bundle", "status": "retired"}}, status_code=200)
+    with patch("app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)) as runtime_post:
+        response = client.post("/api/hci-sim/v1/control-plane/bundles/sha256:bundle/retire")
+
+    assert response.status_code == 200
+    assert runtime_post.await_args.args[0] == "/v1/control-plane/bundles/sha256:bundle/retire"
+    assert runtime_post.await_args.args[1] == {}
+    assert runtime_post.await_args.kwargs["actor_role"] == "expert"
+    assert len(runtime_post.await_args.kwargs["trace_id"]) == 32
+
+
 def test_bundle_rollback_uses_server_mapped_publisher_identity():
     """浏览器只能请求回退，不得决定 Runtime 的控制面身份。"""
     client = TestClient(app)

@@ -155,6 +155,22 @@ func handleBundleFactory(w http.ResponseWriter, r *http.Request, registry contro
 		return
 	}
 	switch parts[1] {
+	case "retire":
+		actor, actorErr := requestActor(r, controlplane.RoleExpert)
+		if actorErr != nil {
+			writeControlPlaneError(w, actorErr)
+			return
+		}
+		record, retireErr := registry.Retire(actor, digest, time.Now().UTC())
+		if retireErr != nil {
+			writeControlPlaneError(w, retireErr)
+			return
+		}
+		if activator != nil && activator.metrics != nil {
+			activator.metrics.BundleRetirementsTotal.Add(1)
+		}
+		log.Printf("bundle_factory retire trace_id=%s digest=%s actor_id=%s", requestTraceID(r), record.Digest, actor.ID)
+		writeJSON(w, http.StatusOK, map[string]any{"bundle": bundleView(record), "trace_id": requestTraceID(r)})
 	case "revise":
 		reviseDraft(w, r, registry, digest)
 	case "validate":

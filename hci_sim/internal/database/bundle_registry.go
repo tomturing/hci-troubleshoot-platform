@@ -167,6 +167,48 @@ func (r *BundleRegistry) ReviseDraft(actor controlplane.Actor, parentDigest stri
 	return r.Compile(controlplane.Actor{ID: actor.ID, Role: controlplane.RoleCompiler}, input, manifest, now)
 }
 
+// Retire 将 Draft 或 Stale Bundle 标记为 retired。对象、审批和运行引用保持不变；
+// 同时拒绝任何仍被 Runtime activation 指针使用的 Bundle。
+func (r *BundleRegistry) Retire(actor controlplane.Actor, digest string, now time.Time) (controlplane.BundleRecord, error) {
+	if actor.Role != controlplane.RoleExpert || actor.ID == "" {
+		return controlplane.BundleRecord{}, errors.New("forbidden: 仅 expert 可归档 Bundle")
+	}
+	ctx := context.Background()
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return controlplane.BundleRecord{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	updated, err := tx.Exec(ctx, `
+		UPDATE fixture.bundle SET status = 'retired', version = version + 1, updated_at = $2
+		WHERE digest = $1 AND status IN ('draft', 'stale')
+		  AND NOT EXISTS (
+			SELECT 1 FROM fixture.bundle_activation
+			WHERE desired_digest = $1 OR active_digest = $1 OR previous_digest = $1
+		  )
+	`, digest, now.UTC())
+	if err != nil {
+		return controlplane.BundleRecord{}, err
+	}
+	if updated.RowsAffected() != 1 {
+		var status string
+		if err := tx.QueryRow(ctx, `SELECT status FROM fixture.bundle WHERE digest = $1`, digest).Scan(&status); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return controlplane.BundleRecord{}, errors.New("bundle_not_found")
+			}
+			return controlplane.BundleRecord{}, err
+		}
+		if status == "draft" || status == "stale" {
+			return controlplane.BundleRecord{}, errors.New("bundle_retire_blocked_by_runtime_activation")
+		}
+		return controlplane.BundleRecord{}, fmt.Errorf("invalid_transition: %s 不能归档", status)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return controlplane.BundleRecord{}, err
+	}
+	return r.Get(digest)
+}
+
 func (r *BundleRegistry) Validate(actor controlplane.Actor, digest string, report controlplane.ValidationReport, now time.Time) (controlplane.BundleRecord, error) {
 	if actor.Role != controlplane.RoleCompiler || actor.ID == "" {
 		return controlplane.BundleRecord{}, errors.New("forbidden: 仅 compiler 身份可验证 draft")
@@ -490,7 +532,7 @@ func (r *BundleRegistry) List(supportID string) ([]controlplane.BundleRecord, er
 		SELECT b.digest
 		FROM fixture.bundle b
 		JOIN control_plane.scenario s ON s.id = b.scenario_id
-		WHERE ($1 = '' OR s.support_id = $1) AND b.compile_input IS NOT NULL
+		WHERE ($1 = '' OR s.support_id = $1) AND b.compile_input IS NOT NULL AND b.status <> 'retired'
 		ORDER BY b.updated_at DESC, b.digest
 	`, supportID)
 	if err != nil {
