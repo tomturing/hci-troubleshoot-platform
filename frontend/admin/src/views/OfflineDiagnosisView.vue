@@ -33,11 +33,26 @@ import {
 
 const client = createApiClient('/api')
 // 正式环境由同源身份层注入短期访问令牌，构建产物不得携带内部服务令牌。
-const developmentToken = import.meta.env.DEV
-  ? import.meta.env.VITE_DIAGNOSIS_TOKEN || import.meta.env.VITE_INTERNAL_API_TOKEN || ''
-  : ''
+// 开发环境从构建期环境变量惰性读取，避免 token 在模块加载时一次性固化。
+const getDevelopmentToken = (): string => {
+  if (!import.meta.env.DEV) return ''
+  return (
+    (import.meta.env.VITE_DIAGNOSIS_TOKEN as string | undefined) ||
+    (import.meta.env.VITE_INTERNAL_API_TOKEN as string | undefined) ||
+    ''
+  )
+}
 const usesSameOriginIdentity = import.meta.env.PROD
-const getIdentityToken = () => developmentToken || window.__HCI_AUTH__?.getAccessToken?.()
+const getIdentityToken = (): string | undefined => {
+  const token = getDevelopmentToken() || window.__HCI_AUTH__?.getAccessToken?.()
+  const source = getDevelopmentToken() ? 'dev-env' : window.__HCI_AUTH__ ? 'same-origin' : 'none'
+  console.info('[offline-diagnosis][auth] 解析身份令牌', {
+    hasToken: Boolean(token),
+    source,
+    traceId: (window as any).__TRACE_ID__ || crypto.randomUUID(),
+  })
+  return token
+}
 const tenantId = import.meta.env.VITE_DIAGNOSIS_TENANT_ID || undefined
 const actorId = import.meta.env.VITE_DIAGNOSIS_ACTOR_ID || 'admin-ui'
 const api = createOfflineDiagnosisApi(client, { token: getIdentityToken, tenantId, actorId })
