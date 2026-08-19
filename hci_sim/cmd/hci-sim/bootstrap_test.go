@@ -72,6 +72,28 @@ func TestBuildSyntheticManifestProvidesDeterministicSceneVariables(t *testing.T)
 	}
 }
 
+func TestBuildSyntheticManifestRendersVariablesFromKbdDerivedOutput(t *testing.T) {
+	manifest, err := buildSyntheticManifest(&resolvedKbd{
+		SupportID: "23821", KBDRevision: 1, KBDChecksum: strings.Repeat("a", 64),
+		SignalsDigest: "sha256:signals", ToolContractRevision: "tool-r1", PolicyRevision: "policy-r1",
+		SyntheticRoutes: []syntheticRoute{{
+			SignalID: "sig_001", Tool: "qkv_task", Argv: []string{"acli", "task", "get"},
+			ToolRevision: 1, ToolChecksum: "sha256:tool",
+			SampleOutput: `{"data":[{"vm":"{{VM}}","host":"{{HOST}}","end":"{{END}}"}]}` + "\n",
+		}},
+	}, "SIM-HCI-NODE-01", "host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(manifest.Routes[0].Result.Stdout, "{{") {
+		t.Fatalf("KBD 派生 stdout 中的变量未渲染: %q", manifest.Routes[0].Result.Stdout)
+	}
+	if !strings.Contains(manifest.Routes[0].Result.Stdout, "SIM-VM-23821") ||
+		!strings.Contains(manifest.Routes[0].Result.Stdout, "SIM-HCI-NODE-01") {
+		t.Fatalf("KBD 派生 stdout 未使用受控场景变量: %q", manifest.Routes[0].Result.Stdout)
+	}
+}
+
 func TestBuildSyntheticManifestRejectsUnknownSceneVariableProvider(t *testing.T) {
 	_, err := buildSyntheticManifest(&resolvedKbd{
 		SupportID: "unknown-variable", KBDRevision: 1, KBDChecksum: strings.Repeat("a", 64),

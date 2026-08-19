@@ -486,6 +486,11 @@ func provideSyntheticVariables(resolved *resolvedKbd, variables map[string]strin
 				names = append(names, match[1])
 			}
 		}
+		// C1 生成的 KBD 派生 stdout 同样是 Bundle 契约的一部分。只扫描 argv 会让
+		// 命令无需变量、但输出包含 {{VM}} 等变量的 Draft 在最终校验时无故失败。
+		for _, match := range syntheticVariablePattern.FindAllStringSubmatch(route.SampleOutput, -1) {
+			names = append(names, match[1])
+		}
 		sort.Strings(names)
 		for _, name := range names {
 			if _, ok := variables[name]; ok {
