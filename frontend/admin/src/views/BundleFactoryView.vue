@@ -324,7 +324,7 @@ onMounted(() => loadBundles())
 
       <section v-if="selected" class="bundle-detail">
         <div class="detail-header">
-          <div><div class="title-line"><h3>KBD {{ selected.support_id }}</h3><el-tag :type="statusType(selected.status)">{{ selected.status }}</el-tag></div><code>{{ selected.digest }}</code></div>
+          <div class="bundle-heading"><div class="title-line"><h3>KBD {{ selected.support_id }}</h3><el-tag :type="statusType(selected.status)">{{ selected.status }}</el-tag></div><code :title="selected.digest">{{ selected.digest }}</code></div>
           <div class="actions">
             <el-button v-if="canRevise" :icon="EditPen" @click="openEditor">{{ selected.status === 'published' ? '基于此版本创建 Draft' : '编辑 Draft' }}</el-button>
             <el-button v-if="canRetire" type="danger" :icon="Delete" :loading="actionLoading" @click="retireSelected">删除（归档）</el-button>
@@ -386,20 +386,30 @@ onMounted(() => loadBundles())
       <section v-else class="empty-detail"><el-empty description="选择 Bundle 或生成 Draft" /></section>
     </div>
 
-    <el-dialog v-model="editVisible" title="修订 Draft" width="92%" top="4vh" :close-on-click-modal="false">
+    <el-dialog v-model="editVisible" title="修订 Draft" class="bundle-editor-dialog" top="3vh" :close-on-click-modal="false">
       <div v-if="editManifest" class="editor-body">
         <el-form label-width="110px">
           <el-form-item label="修改原因" required><el-input v-model="editReason" maxlength="500" show-word-limit placeholder="说明证据或仿真设定的修正依据" /></el-form-item>
           <el-form-item label="Variables"><el-input v-model="variablesJSON" type="textarea" :rows="5" class="mono-input" /></el-form-item>
         </el-form>
-        <el-table :data="editManifest.routes" row-key="id" border max-height="55vh">
-          <el-table-column prop="signal_id" label="Signal" min-width="140" fixed />
-          <el-table-column label="命令（只读）" min-width="260"><template #default="{ row }"><code>{{ row.route_key.argv.join(' ') }}</code></template></el-table-column>
-          <el-table-column label="stdout" min-width="300"><template #default="{ row }"><el-input v-model="row.result.stdout" type="textarea" :rows="4" class="mono-input" /></template></el-table-column>
-          <el-table-column label="stderr" min-width="240"><template #default="{ row }"><el-input v-model="row.result.stderr" type="textarea" :rows="4" class="mono-input" /></template></el-table-column>
-          <el-table-column label="Exit" width="100"><template #default="{ row }"><el-input-number v-model="row.result.exit_code" :min="0" :max="255" controls-position="right" /></template></el-table-column>
-          <el-table-column label="Fault" width="180"><template #default="{ row }"><el-select v-model="row.fault.type"><el-option v-for="fault in ['none','timeout','permission','nonzero_exit','truncate','disconnect']" :key="fault" :label="fault" :value="fault" /></el-select></template></el-table-column>
-        </el-table>
+        <section class="route-editor-list" aria-label="Route 返回结果编辑">
+          <article v-for="row in editManifest.routes" :key="row.id" class="route-editor">
+            <div class="route-editor-heading">
+              <div><span class="field-label">Signal</span><strong>{{ row.signal_id }}</strong></div>
+              <div><span class="field-label">Variant</span><span>{{ row.variant }}</span></div>
+              <div><span class="field-label">目标</span><span>{{ row.route_key.node }} / {{ row.route_key.container }}</span></div>
+            </div>
+            <div class="route-command"><span class="field-label">命令（只读）</span><code>{{ row.route_key.argv.join(' ') }}</code></div>
+            <div class="route-response-grid">
+              <label><span class="field-label">stdout</span><el-input v-model="row.result.stdout" type="textarea" :rows="4" resize="vertical" class="mono-input" /></label>
+              <label><span class="field-label">stderr</span><el-input v-model="row.result.stderr" type="textarea" :rows="4" resize="vertical" class="mono-input" /></label>
+            </div>
+            <div class="route-controls">
+              <label><span class="field-label">Exit</span><el-input-number v-model="row.result.exit_code" :min="0" :max="255" controls-position="right" /></label>
+              <label><span class="field-label">Fault</span><el-select v-model="row.fault.type"><el-option v-for="fault in ['none','timeout','permission','nonzero_exit','truncate','disconnect']" :key="fault" :label="fault" :value="fault" /></el-select></label>
+            </div>
+          </article>
+        </section>
       </div>
       <template #footer><el-button @click="editVisible = false">取消</el-button><el-button type="primary" :loading="actionLoading" @click="saveRevision">生成新 Draft</el-button></template>
     </el-dialog>
@@ -415,10 +425,13 @@ onMounted(() => loadBundles())
 .factory-layout { display: grid; grid-template-columns: minmax(340px, 29%) minmax(0, 1fr); min-height: calc(100vh - 156px); border: 1px solid #dcdfe6; border-radius: 6px; background: #fff; overflow: hidden; }
 .bundle-list { min-width: 0; border-right: 1px solid #dcdfe6; }
 .toolbar { padding: 12px; border-bottom: 1px solid #ebeef5; }
-.bundle-detail { min-width: 0; padding: 18px; overflow: auto; }
-.detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.bundle-detail { min-width: 0; padding: 18px; overflow-y: auto; overflow-x: hidden; }
+.detail-header { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 12px 16px; }
 .detail-header h3 { margin: 0; font-size: 19px; letter-spacing: 0; }
-.detail-header > div:first-child > code { display: block; max-width: 640px; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; }
+.bundle-heading { flex: 1 1 300px; min-width: 0; }
+.bundle-heading > code { display: block; margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.actions { flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; }
+.actions :deep(.el-button) { margin-left: 0; }
 .lifecycle { margin: 22px 0; padding: 12px 0; border-top: 1px solid #ebeef5; border-bottom: 1px solid #ebeef5; }
 .facts { margin-top: 14px; }
 .facts :deep(table) { table-layout: fixed; width: 100%; }
@@ -432,5 +445,19 @@ code,pre,.mono-input :deep(textarea) { font-family: ui-monospace, SFMono-Regular
 .output-grid pre,.json-view { max-height: 420px; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid #dcdfe6; border-radius: 4px; background: #f7f8fa; }
 .empty-detail { display: grid; place-items: center; min-height: 520px; }
 .editor-body { min-width: 0; }
-@media (max-width: 980px) { .page-header { align-items: stretch; flex-direction: column; }.create-bar { width: 100%; }.factory-layout { grid-template-columns: 1fr; }.bundle-list { border-right: 0; border-bottom: 1px solid #dcdfe6; }.bundle-list :deep(.el-table) { height: 320px !important; }.detail-header { flex-direction: column; }.output-grid { grid-template-columns: 1fr; } }
+.route-editor-list { display: grid; gap: 12px; max-height: min(52vh, 620px); overflow-y: auto; padding-right: 4px; }
+.route-editor { display: grid; gap: 12px; padding: 14px; border: 1px solid #dcdfe6; border-radius: 6px; background: #fff; }
+.route-editor-heading { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) minmax(190px, 1.3fr); gap: 12px; }
+.route-editor-heading > div,.route-command,.route-response-grid > label,.route-controls > label { display: grid; min-width: 0; gap: 5px; }
+.field-label { color: #909399; font-size: 12px; font-weight: 600; }
+.route-command { padding: 10px 12px; border-radius: 4px; background: #f7f8fa; }
+.route-command code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.route-response-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.route-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.route-controls > label:first-child { width: 132px; }
+.route-controls > label:last-child { width: min(240px, 100%); }
+.route-controls :deep(.el-input-number),.route-controls :deep(.el-select) { width: 100%; }
+:deep(.bundle-editor-dialog) { width: min(96vw, 1480px); margin-bottom: 3vh; }
+:deep(.bundle-editor-dialog .el-dialog__body) { max-height: calc(100vh - 166px); overflow-y: auto; }
+@media (max-width: 980px) { .page-header { align-items: stretch; flex-direction: column; }.create-bar { width: 100%; }.factory-layout { grid-template-columns: 1fr; }.bundle-list { border-right: 0; border-bottom: 1px solid #dcdfe6; }.bundle-list :deep(.el-table) { height: 320px !important; }.detail-header { flex-direction: column; }.actions { justify-content: flex-start; }.output-grid,.route-response-grid,.route-editor-heading { grid-template-columns: 1fr; } }
 </style>
