@@ -3,7 +3,7 @@
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type TableColumnCtx, type TableInstance, type UploadFile } from 'element-plus'
-import { FullScreen, Refresh, Upload } from '@element-plus/icons-vue'
+import { FullScreen, InfoFilled, Refresh, Upload } from '@element-plus/icons-vue'
 import { useCategories } from '../composables/useCategories'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -1754,6 +1754,138 @@ function keywordMatchModeLabel(sig: SignalV2): string {
   }
   return mode.toUpperCase()
 }
+function sigExtract(sig: SignalV2): Record<string, any> {
+  return sig.match?.extract || {}
+}
+
+function isJsonExtract(extract?: Record<string, any>): boolean {
+  return extract?.type === 'json'
+}
+
+function isTextSelectionExtract(extract?: Record<string, any>): boolean {
+  if (!extract) return false
+  return Boolean(
+    extract.columns?.length
+    || extract.parser
+    || extract.header
+    || extract.value_key
+    || extract.delimiter,
+  )
+}
+
+function formatExtractTypeLabel(extract?: Record<string, any>): string {
+  if (!extract || !extract.type) return '完整行'
+  if (extract.type === 'json') return 'JSON 路径'
+  return isTextSelectionExtract(extract) ? '文本行列' : '完整行'
+}
+
+function formatCardinalityLabel(cardinality?: string): string {
+  const map: Record<string, string> = {
+    exactly_one: '必须唯一 (exactly_one)',
+    first: '第一项 (first)',
+    last: '最后一项 (last)',
+    all: '全部项 (all)',
+    count: '行数/数量 (count)',
+  }
+  return map[cardinality || ''] || (cardinality || '必须唯一')
+}
+
+function formatValueModeLabel(mode?: string): string {
+  const map: Record<string, string> = {
+    string: '文本 (string)',
+    integer: '整数 (integer)',
+    number: '数字 (number)',
+    boolean: '布尔值 (boolean)',
+    array: '数组 (array)',
+    object: '对象 (object)',
+    'array<object>': '对象数组 (array<object>)',
+  }
+  return map[mode || ''] || (mode || '文本')
+}
+
+function formatRowSelectionSummary(rows?: Record<string, any>): string {
+  if (!rows || rows.mode === 'all') return '全部行'
+  if (rows.mode === 'keywords') {
+    const includes = Array.isArray(rows.include) ? rows.include.filter(Boolean) : []
+    const excludes = Array.isArray(rows.exclude) ? rows.exclude.filter(Boolean) : []
+    const parts: string[] = []
+    if (includes.length) {
+      parts.push(`包含 [${includes.join(' / ')}]（${rows.include_mode === 'all' ? '全部匹配' : '任一匹配'}）`)
+    }
+    if (excludes.length) {
+      parts.push(`排除 [${excludes.join(' / ')}]`)
+    }
+    return parts.length ? parts.join('；') : '全部行'
+  }
+  if (rows.mode === 'indices') {
+    const indices = Array.isArray(rows.indices) ? rows.indices : []
+    const ranges = Array.isArray(rows.ranges) ? rows.ranges.map((r: any) => `${r.start}-${r.end}`) : []
+    const items = [...indices.map(String), ...ranges]
+    return items.length ? `指定行：${items.join(', ')}` : '指定行'
+  }
+  return '全部行'
+}
+
+function formatColumnSelectionSummary(extract?: Record<string, any>): string {
+  if (!extract) return '整行'
+  const parserMap: Record<string, string> = {
+    whitespace_table: '空格分隔表格',
+    csv: '逗号分隔 (CSV)',
+    tsv: '制表符分隔 (TSV)',
+    custom_delimiter: `自定义分隔符 [${extract.delimiter || ''}]`,
+  }
+  const parserName = parserMap[extract.parser || ''] || extract.parser || '表格解析'
+  const cols = Array.isArray(extract.columns) ? extract.columns : []
+  if (cols.length) {
+    const colLabels = cols.map((c: any) => {
+      const idx = c.selector?.by === 'index' ? `第 ${c.selector.index} 列` : (c.selector?.name || c.key || '')
+      return idx
+    }).filter(Boolean)
+    return `${parserName}（已选 ${colLabels.join('、')}）`
+  }
+  return parserName
+}
+
+function formatMatcherTypeLabel(type?: string): string {
+  const map: Record<string, string> = {
+    keyword: '关键字匹配 (keyword)',
+    regex: '正则表达式 (regex)',
+    state: '状态值匹配 (state)',
+    threshold: '数值阈值 (threshold)',
+    delta: '差值计算 (delta)',
+    trend: '趋势判断 (trend)',
+    exists: '存在性判定 (exists)',
+  }
+  return map[type || ''] || (type || '关键字匹配')
+}
+
+function getMatcherPatterns(match?: Record<string, any>): string[] {
+  if (!match) return []
+  const pattern = match.pattern
+  if (Array.isArray(pattern)) return pattern.filter(Boolean)
+  if (typeof pattern === 'string' && pattern.trim()) return [pattern]
+  return []
+}
+
+function formatComparisonCondition(match?: Record<string, any>): string {
+  if (!match) return '—'
+  const op = match.operator || match.direction || '=='
+  const val = match.value !== undefined ? match.value : ''
+  return `${op} ${val}`.trim() || '—'
+}
+
+function formatAggregationLabel(agg?: string): string {
+  const map: Record<string, string> = {
+    first_number: '首次出现的数值',
+    last_number: '最后出现的数值',
+    max: '最大值',
+    min: '最小值',
+    sum: '求和',
+    avg: '平均值',
+  }
+  return map[agg || ''] || (agg || '首次出现的数值')
+}
+
 function inferredQfkLogPathLabel(sig: SignalV2): string {
   const args = sigArgs(sig)
   const file = String(args.file || '')
@@ -4329,7 +4461,18 @@ onUnmounted(() => clearBatchPollTimer())
                 <div v-if="editingSignalIndex !== item.origIdx">
                   <div class="signal-row"><span class="signal-k">说明</span><span class="signal-v">{{ sigArgs(item.sig).instruction || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">关键字</span><span class="signal-v">{{ sigArgs(item.sig).keyword || '—' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">产出变量</span><span class="signal-v">{{ (sigOrch(item.sig).produces || []).map((p: any) => p.name).join('、') || '—' }}</span></div>
+                  <div class="signal-row">
+                    <span class="signal-k">产出变量</span>
+                    <div class="signal-v">
+                      <div v-if="(sigOrch(item.sig).produces || []).length" class="produces-preview-list">
+                        <div v-for="(p, pIdx) in sigOrch(item.sig).produces" :key="pIdx" class="produce-preview-chip">
+                          <span class="produce-name">{{ p.name }}</span>
+                          <span v-if="p.path" class="produce-path" title="取值路径"><code>{{ p.path }}</code></span>
+                        </div>
+                      </div>
+                      <span v-else class="text-muted">—</span>
+                    </div>
+                  </div>
                   <!-- 来源证据固定在信号卡片最后：它是只读溯源，不应打断专家对可执行字段的阅读。 -->
                   <details class="signal-evidence-details">
                     <summary>来源证据（默认收起，不参与编辑）</summary>
@@ -4442,24 +4585,217 @@ onUnmounted(() => clearBatchPollTimer())
                   <el-alert v-if="supportsQfkSafePipeline(sigTool(item.sig)) && qfkCommandHasPipeline(item.sig)" title="历史命令含 Shell 管道，必须编辑并清理后才能统一保存" type="warning" :closable="false" show-icon />
                   <div class="signal-row"><span class="signal-k">输入变量</span><span class="signal-v code">{{ (sigOrch(item.sig).requires || []).join('、') || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">超时时间</span><span class="signal-v">{{ sigArgs(item.sig).timeout || 60 }}s</span></div>
-                  <div class="signal-row"><span class="signal-k">执行模式</span><span class="signal-v">{{ qfkOutputMode(item.sig) === 'produces' ? '产出变量（采集命令结果）' : '匹配模式' }}</span></div>
-                  <template v-if="qfkOutputMode(item.sig) === 'produces'">
-                    <div v-for="(p, idx) in (sigOrch(item.sig).produces || [])" :key="`output-${idx}`" class="signal-row">
-                      <span class="signal-k">{{ idx === 0 ? '产出变量' : '' }}</span>
-                      <span class="signal-v code">
-                        {{ p.name || '—' }}（{{ p.type || 'string' }} / {{ p.extract?.type === 'json' ? 'JSON 路径' : '声明式文本' }}）
-                        · {{ p.extract?.type === 'json' ? (p.extract.path || '根节点') : (p.extract?.columns?.length ? `已选 ${p.extract.columns.length} 列` : '整行') }}
-                      </span>
+                  <!-- 执行结果处理（两步流程：① 先取值 → ② 再判断/产出） -->
+                  <div v-if="qfkOutputMode(item.sig) === 'produces'" class="signal-processing-preview" data-output-mode="produces">
+                    <div class="processing-preview-head">
+                      <div class="processing-preview-title">
+                        <el-icon class="title-icon"><InfoFilled /></el-icon>
+                        <span>执行结果处理</span>
+                      </div>
+                      <el-tag size="small" effect="plain" type="success">产出变量模式</el-tag>
                     </div>
-                  </template>
-                  <template v-else>
-                    <div class="signal-row"><span class="signal-k">判定类型</span><span class="signal-v code">{{ sigMatch(item.sig).type || '—' }}</span></div>
-                    <div v-if="sigMatch(item.sig).pattern" class="signal-row"><span class="signal-k">匹配内容</span><span class="signal-v">{{ Array.isArray(sigMatch(item.sig).pattern) ? sigMatch(item.sig).pattern.join(' / ') : sigMatch(item.sig).pattern }}</span></div>
-                    <div v-if="sigMatch(item.sig).metric" class="signal-row"><span class="signal-k">指标字段</span><span class="signal-v code">{{ sigMatch(item.sig).metric }}</span></div>
-                    <div v-if="sigMatch(item.sig).value !== undefined" class="signal-row"><span class="signal-k">比较条件</span><span class="signal-v">{{ sigMatch(item.sig).operator || sigMatch(item.sig).direction || '' }} {{ sigMatch(item.sig).value }}</span></div>
-                    <div class="signal-row"><span class="signal-k">期望</span><span class="signal-v">{{ sigMatch(item.sig).expected === true ? '存在' : sigMatch(item.sig).expected === false ? '不存在' : '—' }}</span></div>
-                    <div v-if="sigMatch(item.sig).type === 'keyword'" class="signal-row"><span class="signal-k">组合关系</span><span class="signal-v">{{ keywordMatchModeLabel(item.sig) }}</span></div>
-                  </template>
+
+                    <div v-if="(sigOrch(item.sig).produces || []).length" class="produces-units-list">
+                      <div v-for="(p, pIdx) in sigOrch(item.sig).produces" :key="pIdx" class="produce-unit-card">
+                        <div class="produce-unit-header">
+                          <span class="produce-unit-title">处理单元 {{ pIdx + 1 }}</span>
+                          <el-tag size="small" type="success" effect="dark">{{ p.name || '未命名变量' }}</el-tag>
+                        </div>
+
+                        <!-- 第一步：取值 -->
+                        <div class="processing-preview-step">
+                          <div class="step-badge-row">
+                            <span class="stage-number">1</span>
+                            <strong class="step-title">第一步：取值</strong>
+                            <small class="step-subtitle">从 {{ p.extract?.source || 'stdout' }} 取得供产出使用的数据</small>
+                          </div>
+                          <div class="step-details-grid">
+                            <div class="preview-item">
+                              <span class="preview-k">取值方式</span>
+                              <span class="preview-v"><el-tag size="small" effect="light">{{ formatExtractTypeLabel(p.extract) }}</el-tag></span>
+                            </div>
+                            <div v-if="isJsonExtract(p.extract)" class="preview-item">
+                              <span class="preview-k">JSON 路径</span>
+                              <span class="preview-v code">{{ p.extract?.path || '根节点' }}</span>
+                            </div>
+                            <template v-else>
+                              <div class="preview-item">
+                                <span class="preview-k">行选择</span>
+                                <span class="preview-v">{{ formatRowSelectionSummary(p.extract?.rows) }}</span>
+                              </div>
+                              <div v-if="isTextSelectionExtract(p.extract)" class="preview-item">
+                                <span class="preview-k">列解析</span>
+                                <span class="preview-v">{{ formatColumnSelectionSummary(p.extract) }}</span>
+                              </div>
+                            </template>
+                            <div class="preview-item">
+                              <span class="preview-k">结果数量</span>
+                              <span class="preview-v">{{ formatCardinalityLabel(p.extract?.cardinality) }}</span>
+                            </div>
+                            <div class="preview-item">
+                              <span class="preview-k">取值类型</span>
+                              <span class="preview-v">{{ formatValueModeLabel(p.extract?.value_mode || p.type) }}</span>
+                            </div>
+                            <div v-if="p.extract?.ai_extract?.instruction" class="preview-item full-width">
+                              <span class="preview-k">AI 提取</span>
+                              <span class="preview-v ai-instruction"><code>{{ p.extract.ai_extract.instruction }}</code></span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div class="step-connector-icon" aria-hidden="true">↓</div>
+
+                        <!-- 第二步：产出 -->
+                        <div class="processing-preview-step">
+                          <div class="step-badge-row">
+                            <span class="stage-number">2</span>
+                            <strong class="step-title">第二步：产出</strong>
+                            <small class="step-subtitle">校验结果数量和类型后写入变量池</small>
+                          </div>
+                          <div class="step-details-grid">
+                            <div class="preview-item">
+                              <span class="preview-k">变量名</span>
+                              <span class="preview-v"><strong class="highlight-var">{{ p.name || '—' }}</strong></span>
+                            </div>
+                            <div class="preview-item">
+                              <span class="preview-k">变量类型</span>
+                              <span class="preview-v"><el-tag size="small" effect="plain">{{ p.type || 'string' }}</el-tag></span>
+                            </div>
+                            <div class="preview-item full-width">
+                              <span class="preview-k">变量值</span>
+                              <span class="preview-v text-muted">使用第一步取值结果写入变量池</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <el-empty v-else description="未配置产出处理单元" :image-size="40" />
+                  </div>
+
+                  <!-- 匹配模式（keyword） -->
+                  <div v-else class="signal-processing-preview" data-output-mode="keyword">
+                    <div class="processing-preview-head">
+                      <div class="processing-preview-title">
+                        <el-icon class="title-icon"><InfoFilled /></el-icon>
+                        <span>执行结果处理</span>
+                      </div>
+                      <el-tag size="small" effect="plain" type="primary">匹配模式</el-tag>
+                    </div>
+
+                    <!-- 第一步：取值 -->
+                    <div class="processing-preview-step">
+                      <div class="step-badge-row">
+                        <span class="stage-number">1</span>
+                        <strong class="step-title">第一步：取值</strong>
+                        <small class="step-subtitle">从 {{ sigExtract(item.sig).source || 'stdout' }} 取得供判断使用的数据</small>
+                      </div>
+                      <div class="step-details-grid">
+                        <div class="preview-item">
+                          <span class="preview-k">取值方式</span>
+                          <span class="preview-v"><el-tag size="small" effect="light">{{ formatExtractTypeLabel(sigExtract(item.sig)) }}</el-tag></span>
+                        </div>
+                        <div v-if="isJsonExtract(sigExtract(item.sig))" class="preview-item">
+                          <span class="preview-k">JSON 路径</span>
+                          <span class="preview-v code">{{ sigExtract(item.sig).path || '根节点' }}</span>
+                        </div>
+                        <template v-else>
+                          <div class="preview-item">
+                            <span class="preview-k">行选择</span>
+                            <span class="preview-v">{{ formatRowSelectionSummary(sigExtract(item.sig).rows) }}</span>
+                          </div>
+                          <div v-if="isTextSelectionExtract(sigExtract(item.sig))" class="preview-item">
+                            <span class="preview-k">列解析</span>
+                            <span class="preview-v">{{ formatColumnSelectionSummary(sigExtract(item.sig)) }}</span>
+                          </div>
+                        </template>
+                        <div class="preview-item">
+                          <span class="preview-k">结果数量</span>
+                          <span class="preview-v">{{ formatCardinalityLabel(sigExtract(item.sig).cardinality) }}</span>
+                        </div>
+                        <div class="preview-item">
+                          <span class="preview-k">取值类型</span>
+                          <span class="preview-v">{{ formatValueModeLabel(sigExtract(item.sig).value_mode) }}</span>
+                        </div>
+                        <div v-if="sigExtract(item.sig).ai_extract?.instruction" class="preview-item full-width">
+                          <span class="preview-k">AI 提取</span>
+                          <span class="preview-v ai-instruction"><code>{{ sigExtract(item.sig).ai_extract.instruction }}</code></span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="step-connector-icon" aria-hidden="true">↓</div>
+
+                    <!-- 第二步：判断 -->
+                    <div class="processing-preview-step">
+                      <div class="step-badge-row">
+                        <span class="stage-number">2</span>
+                        <strong class="step-title">第二步：判断</strong>
+                        <small class="step-subtitle">只对第一步取得的值执行规则</small>
+                      </div>
+                      <div class="step-details-grid">
+                        <div class="preview-item">
+                          <span class="preview-k">判定类型</span>
+                          <span class="preview-v"><el-tag size="small" effect="light" type="warning">{{ formatMatcherTypeLabel(sigMatch(item.sig).type) }}</el-tag></span>
+                        </div>
+                        <div class="preview-item">
+                          <span class="preview-k">期望结论</span>
+                          <span class="preview-v">
+                            <el-tag size="small" :type="sigMatch(item.sig).expected !== false ? 'success' : 'danger'">
+                              {{ sigMatch(item.sig).expected !== false ? '存在 / 满足 (True)' : '不存在 / 不满足 (False)' }}
+                            </el-tag>
+                          </span>
+                        </div>
+                        <!-- 关键字 / 正则 / 状态模式 -->
+                        <template v-if="['keyword', 'regex', 'state'].includes(sigMatch(item.sig).type || 'keyword')">
+                          <div v-if="sigMatch(item.sig).type === 'keyword'" class="preview-item">
+                            <span class="preview-k">组合关系</span>
+                            <span class="preview-v">{{ keywordMatchModeLabel(item.sig) }}</span>
+                          </div>
+                          <div class="preview-item full-width">
+                            <span class="preview-k">匹配内容</span>
+                            <div class="preview-v pattern-container">
+                              <template v-if="getMatcherPatterns(sigMatch(item.sig)).length">
+                                <span v-for="(p, pIdx) in getMatcherPatterns(sigMatch(item.sig))" :key="pIdx" class="pattern-badge">
+                                  <code>{{ p }}</code>
+                                </span>
+                              </template>
+                              <span v-else class="text-muted">（未配置匹配内容）</span>
+                            </div>
+                          </div>
+                        </template>
+                        <!-- 数值阈值 / 差值 / 趋势模式 -->
+                        <template v-else-if="['threshold', 'delta', 'trend'].includes(sigMatch(item.sig).type)">
+                          <div class="preview-item">
+                            <span class="preview-k">比较条件</span>
+                            <span class="preview-v code">{{ formatComparisonCondition(sigMatch(item.sig)) }}</span>
+                          </div>
+                          <div v-if="sigMatch(item.sig).metric" class="preview-item">
+                            <span class="preview-k">指标字段</span>
+                            <span class="preview-v code">{{ sigMatch(item.sig).metric }}</span>
+                          </div>
+                          <div v-if="sigMatch(item.sig).type === 'threshold' && sigMatch(item.sig).aggregation" class="preview-item">
+                            <span class="preview-k">聚合方式</span>
+                            <span class="preview-v">{{ formatAggregationLabel(sigMatch(item.sig).aggregation) }}</span>
+                          </div>
+                          <div v-if="['delta', 'trend'].includes(sigMatch(item.sig).type)" class="preview-item">
+                            <span class="preview-k">最小样本数</span>
+                            <span class="preview-v">{{ sigMatch(item.sig).minimum_samples || (sigMatch(item.sig).type === 'delta' ? 2 : 3) }}</span>
+                          </div>
+                          <div v-if="sigMatch(item.sig).type === 'trend'" class="preview-item">
+                            <span class="preview-k">趋势方向</span>
+                            <span class="preview-v">{{ sigMatch(item.sig).direction === 'increasing' ? '单调递增' : sigMatch(item.sig).direction === 'decreasing' ? '单调递减' : sigMatch(item.sig).direction }}</span>
+                          </div>
+                        </template>
+                        <!-- 存在性判定 exists -->
+                        <template v-else-if="sigMatch(item.sig).type === 'exists'">
+                          <div class="preview-item full-width">
+                            <span class="preview-k">判定逻辑</span>
+                            <span class="preview-v">判断第一步提取结果中是否有匹配记录</span>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
+                  </div>
 
                   <!-- 其他工具特有字段 -->
                   <div v-if="sigTool(item.sig) === 'qfk_system'" class="signal-row"><span class="signal-k">命令字段</span><span class="signal-v code">{{ qfkSystemCommandText(sigArgs(item.sig)) || '—' }}</span></div>
@@ -6221,6 +6557,196 @@ onUnmounted(() => clearBatchPollTimer())
 }
 .field-hint.command-preview-notice {
   margin: 6px 0 0;
+}
+
+/* 产出变量预览胶囊 */
+.produces-preview-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.produce-preview-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.produce-preview-chip .produce-name {
+  font-weight: 600;
+  color: #0f172a;
+}
+.produce-preview-chip .produce-path {
+  color: #2563eb;
+  font-size: 11px;
+}
+.produce-preview-chip .produce-path code {
+  background: #e0e7ff;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+/* 执行结果两步处理流式卡片（阅览态） */
+.signal-processing-preview {
+  margin: 8px 0;
+  padding: 10px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+.processing-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e2e8f0;
+}
+.processing-preview-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+}
+.processing-preview-title .title-icon {
+  color: #3b82f6;
+  font-size: 15px;
+}
+.processing-preview-step {
+  padding: 8px 10px;
+  background: #ffffff;
+  border: 1px solid #edf2f7;
+  border-radius: 6px;
+}
+.step-badge-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.step-badge-row .stage-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #3b82f6;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.step-badge-row .step-title {
+  font-size: 12.5px;
+  color: #0f172a;
+}
+.step-badge-row .step-subtitle {
+  font-size: 11px;
+  color: #64748b;
+  margin-left: 2px;
+}
+.step-details-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 6px 14px;
+}
+.preview-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  min-width: 0;
+}
+.preview-item.full-width {
+  grid-column: 1 / -1;
+}
+.preview-k {
+  color: #64748b;
+  font-weight: 500;
+  flex-shrink: 0;
+  min-width: 56px;
+}
+.preview-v {
+  color: #1e293b;
+  word-break: break-all;
+  min-width: 0;
+}
+.preview-v.code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  background: #f1f5f9;
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: #0f172a;
+}
+.preview-v.ai-instruction code {
+  display: block;
+  padding: 4px 8px;
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 4px;
+  color: #475569;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.step-connector-icon {
+  text-align: center;
+  color: #3b82f6;
+  font-weight: 700;
+  font-size: 13px;
+  line-height: 18px;
+  margin: 2px 0;
+  user-select: none;
+}
+.pattern-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pattern-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 3px;
+  font-size: 11.5px;
+  color: #0f172a;
+}
+.highlight-var {
+  color: #16a34a;
+  font-weight: 700;
+}
+
+/* 产出变量单元列表 */
+.produces-units-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.produce-unit-card {
+  padding: 8px 10px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+.produce-unit-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px dashed #e2e8f0;
+}
+.produce-unit-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
 }
 
 /* 产出变量迷你编辑器 */
