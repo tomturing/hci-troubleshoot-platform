@@ -219,6 +219,12 @@ async def fast_publish_bundle(bundle_digest: str, request: Request) -> JSONRespo
     return await _bundle_action(bundle_digest, "fast-publish", "expert", request)
 
 
+@router.post("/v1/control-plane/bundles/{bundle_digest}/retire")
+async def retire_bundle(bundle_digest: str, request: Request) -> JSONResponse:
+    """归档专家不再使用的 Draft 或 Stale Bundle，保留历史记录供追溯。"""
+    return await _bundle_action(bundle_digest, "retire", "expert", request)
+
+
 @router.post("/v1/control-plane/activations/{support_id}/activate")
 async def activate_bundle(support_id: str, request: Request) -> JSONResponse:
     """在多个已发布 Bundle 之间按 digest 秒级切换，身份由 Gateway 固定为内部专家。"""

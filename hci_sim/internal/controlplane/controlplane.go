@@ -160,6 +160,7 @@ type Registry interface {
 	Approve(Actor, string, time.Time) (BundleRecord, error)
 	Publish(Actor, string, time.Time) (BundleRecord, error)
 	PublishInternalFast(Actor, string, time.Time) (BundleRecord, error)
+	Retire(Actor, string, time.Time) (BundleRecord, error)
 	MarkStale(Actor, Dependency, string, time.Time) ([]BundleRecord, error)
 	GetPublished(string) (BundleRecord, error)
 	ResolvePublished(supportID, variant, node, container string) (BundleRecord, error)
@@ -385,6 +386,27 @@ func (r *MemoryRegistry) PublishInternalFast(actor Actor, digest string, now tim
 	return record.clone(), nil
 }
 
+// Retire 将不再需要的 Draft 或 Stale Bundle 从默认工作视图中归档。
+// 它不删除不可变对象，也不改变已经绑定该 digest 的 Run 或 Lease。
+func (r *MemoryRegistry) Retire(actor Actor, digest string, now time.Time) (BundleRecord, error) {
+	if actor.Role != RoleExpert || actor.ID == "" {
+		return BundleRecord{}, errors.New("forbidden: 仅 expert 可归档 Bundle")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	record, ok := r.byDigest[digest]
+	if !ok {
+		return BundleRecord{}, errors.New("bundle_not_found")
+	}
+	if record.Status != BundleDraft && record.Status != BundleStale {
+		return BundleRecord{}, fmt.Errorf("invalid_transition: %s 不能归档", record.Status)
+	}
+	record.Status = BundleRetired
+	record.UpdatedAt = now.UTC()
+	r.byDigest[digest] = record
+	return record.clone(), nil
+}
+
 func (r *MemoryRegistry) MarkStale(actor Actor, changed Dependency, reason string, now time.Time) ([]BundleRecord, error) {
 	if actor.ID == "" || (actor.Role != RoleCompiler && actor.Role != RoleSecurity) || reason == "" {
 		return nil, errors.New("forbidden: 仅受信任控制面可标记 stale")
@@ -474,7 +496,7 @@ func (r *MemoryRegistry) List(supportID string) ([]BundleRecord, error) {
 	defer r.mu.Unlock()
 	records := make([]BundleRecord, 0)
 	for _, record := range r.byDigest {
-		if supportID == "" || record.Input.SupportID == supportID {
+		if record.Status != BundleRetired && (supportID == "" || record.Input.SupportID == supportID) {
 			records = append(records, record.clone())
 		}
 	}

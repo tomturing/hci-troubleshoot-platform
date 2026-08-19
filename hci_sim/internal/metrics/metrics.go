@@ -24,6 +24,7 @@ type Metrics struct {
 	BundleActivationsTotal        atomic.Uint64
 	BundleActivationFailuresTotal atomic.Uint64
 	BundleFastPublishesTotal      atomic.Uint64
+	BundleRetirementsTotal        atomic.Uint64
 }
 
 func (m *Metrics) Handler() http.Handler {
@@ -45,6 +46,7 @@ func (m *Metrics) Handler() http.Handler {
 		counter(&b, "hci_sim_bundle_activations_total", m.BundleActivationsTotal.Load())
 		counter(&b, "hci_sim_bundle_activation_failures_total", m.BundleActivationFailuresTotal.Load())
 		counter(&b, "hci_sim_bundle_fast_publishes_total", m.BundleFastPublishesTotal.Load())
+		counter(&b, "hci_sim_bundle_retirements_total", m.BundleRetirementsTotal.Load())
 		_, _ = w.Write([]byte(b.String()))
 	})
 }
