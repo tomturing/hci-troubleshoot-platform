@@ -124,6 +124,16 @@ def test_hci_sim_promotion_job_name_matches_workflow_contract():
     assert f"    name: {module.HCI_SIM_PROMOTION_JOB_NAME}" in job_block
 
 
+def test_hci_sim_promotion_pr_uses_owner_pat_and_fail_closed_actor_check():
+    """自动晋级 PR 必须来自仓库 owner，不能退回 bot token 或隐式信任。"""
+    workflow = _WORKFLOW.read_text(encoding="utf-8")
+    assert "token: ${{ secrets.ENV_REPO_PAT }}" in workflow
+    assert "GH_TOKEN: ${{ secrets.ENV_REPO_PAT }}" in workflow
+    assert "automation_actor=\"$(gh api user --jq '.login')\"" in workflow
+    assert 'expected_actor="${GITHUB_REPOSITORY_OWNER}"' in workflow
+    assert '"${automation_actor}" != "${expected_actor}"' in workflow
+
+
 def test_partial_workflow_failure_still_records_hci_sim_service_baseline(monkeypatch):
     """无关矩阵失败不能抹掉已经持久化的 hci-sim 晋级请求。"""
     module = _load_module()
