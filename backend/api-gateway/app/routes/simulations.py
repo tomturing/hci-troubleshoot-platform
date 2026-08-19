@@ -232,6 +232,19 @@ async def activate_bundle(support_id: str, request: Request) -> JSONResponse:
     )
 
 
+@router.post("/v1/control-plane/activations/{support_id}/rollback")
+async def rollback_bundle(support_id: str, request: Request) -> JSONResponse:
+    """回退到 Runtime 保存的上一已发布 Bundle，身份由 Gateway 固定为发布者。"""
+    if not re.fullmatch(r"\d{1,20}", support_id):
+        raise HTTPException(status_code=400, detail="support_id must be 1-20 digits")
+    return await _post(
+        f"/v1/control-plane/activations/{support_id}/rollback",
+        {},
+        actor_role="publisher",
+        trace_id=_trace_id(request),
+    )
+
+
 @router.get("/v1/control-plane/activations/{support_id}")
 async def get_activation(support_id: str, request: Request) -> JSONResponse:
     """返回 Runtime durable activation pointer，供 UI 展示真实 active/pending 状态。"""

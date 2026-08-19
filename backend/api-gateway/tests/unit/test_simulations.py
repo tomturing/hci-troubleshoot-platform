@@ -87,6 +87,29 @@ def test_internal_fast_publish_and_digest_activation_use_expert_identity():
         assert runtime_post.await_args.kwargs["actor_role"] == "expert"
 
 
+def test_bundle_rollback_uses_server_mapped_publisher_identity():
+    """浏览器只能请求回退，不得决定 Runtime 的控制面身份。"""
+    client = TestClient(app)
+    runtime_response = JSONResponse({"runtime_activation": {"status": "active"}}, status_code=200)
+    with patch("app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)) as runtime_post:
+        response = client.post("/api/hci-sim/v1/control-plane/activations/27123/rollback")
+
+    assert response.status_code == 200
+    assert runtime_post.await_args.args[0] == "/v1/control-plane/activations/27123/rollback"
+    assert runtime_post.await_args.args[1] == {}
+    assert runtime_post.await_args.kwargs["actor_role"] == "publisher"
+    assert len(runtime_post.await_args.kwargs["trace_id"]) == 32
+
+
+def test_bundle_rollback_rejects_invalid_support_id():
+    client = TestClient(app)
+    with patch("app.routes.simulations._post", new=AsyncMock()) as runtime_post:
+        response = client.post("/api/hci-sim/v1/control-plane/activations/not-a-kbd/rollback")
+
+    assert response.status_code == 400
+    runtime_post.assert_not_awaited()
+
+
 def test_simulation_test_run_binds_platform_case_before_runtime():
     client = TestClient(app)
     case_response = JSONResponse({"case_id": "Q2026081100001", "status": "created"}, status_code=201)
