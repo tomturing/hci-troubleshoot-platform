@@ -147,6 +147,27 @@ func TestBundleRegistryCompileAndLifecycle(t *testing.T) {
 	if drafted.Status != controlplane.BundleDraft {
 		t.Fatalf("expected draft, got %s", drafted.Status)
 	}
+	retireInput := input
+	retireInput.KBDRevision = 2
+	retireInput.KBDChecksum = integrationDigest("kbd-retire-" + testID)
+	retireManifest := manifest
+	retireManifest.KBD.Revision = retireInput.KBDRevision
+	retireManifest.KBD.Checksum = retireInput.KBDChecksum
+	retireCandidate, err := bundleRepo.Compile(controlplane.Actor{ID: "compiler-test", Role: controlplane.RoleCompiler}, retireInput, retireManifest, now)
+	if err != nil {
+		t.Fatalf("compile retire candidate: %v", err)
+	}
+	retired, err := bundleRepo.Retire(controlplane.Actor{ID: "expert-test", Role: controlplane.RoleExpert}, retireCandidate.Digest, now)
+	if err != nil || retired.Status != controlplane.BundleRetired {
+		t.Fatalf("retire draft: record=%+v err=%v", retired, err)
+	}
+	if gotRetired, err := bundleRepo.Get(retireCandidate.Digest); err != nil || gotRetired.Status != controlplane.BundleRetired {
+		t.Fatalf("retired bundle must remain readable: record=%+v err=%v", gotRetired, err)
+	}
+	listed, err := bundleRepo.List(input.SupportID)
+	if err != nil || len(listed) != 1 || listed[0].Digest != drafted.Digest {
+		t.Fatalf("retired bundle must be hidden from default list: bundles=%+v err=%v", listed, err)
+	}
 	validated, err := bundleRepo.Validate(controlplane.Actor{ID: "compiler-test", Role: controlplane.RoleCompiler}, drafted.Digest, controlplane.ValidationReport{MutationDetected: true, SecretScanPassed: true, IndependentProof: true}, now)
 	if err != nil {
 		t.Fatalf("validate: %v", err)

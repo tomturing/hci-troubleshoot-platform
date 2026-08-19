@@ -94,6 +94,31 @@ func TestBundleFactoryAPICompilesKBDWithProducedSceneVariable(t *testing.T) {
 	}
 }
 
+func TestBundleFactoryAPIRetiresDraftWithoutPhysicalDeletion(t *testing.T) {
+	registry := controlplane.NewMemoryRegistryWithDependencies(controlplane.NewMemoryArtifactRegistry(), controlplane.NewMemoryBundleObjectStore())
+	mux := http.NewServeMux()
+	registerControlPlaneAPI(mux, registry, "test-control-token", false)
+	compiled := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix, map[string]any{"resolved": map[string]any{
+		"support_id": "40062", "kbd_revision": 1, "kbd_checksum": "sha256:kbd-40062",
+		"signals_digest": "sha256:signals-40062", "tool_contract_revision": "tool-r1", "policy_revision": "policy-r1",
+		"synthetic_routes": []map[string]any{{
+			"signal_id": "sig_004", "tool": "qfk_log", "argv": []string{"acli", "log", "get"},
+			"tool_revision": 1, "tool_checksum": "sha256:tool",
+		}},
+	}}, "compiler", "compiler-service", http.StatusCreated)
+	digest := compiled["bundle"].(map[string]any)["digest"].(string)
+	bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+digest+"/retire", map[string]any{}, "expert", "expert-editor", http.StatusOK)
+	record := bundleFactoryRequest(t, mux, http.MethodGet, controlPlanePrefix+"/"+digest, nil, "expert", "expert-editor", http.StatusOK)
+	if record["bundle"].(map[string]any)["status"] != string(controlplane.BundleRetired) {
+		t.Fatalf("retired record=%+v", record)
+	}
+	listed := bundleFactoryRequest(t, mux, http.MethodGet, controlPlanePrefix+"?support_id=40062", nil, "expert", "expert-editor", http.StatusOK)
+	if bundles := listed["bundles"].([]any); len(bundles) != 0 {
+		t.Fatalf("retired bundle must not be listed: %+v", bundles)
+	}
+	bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+digest+"/retire", map[string]any{}, "compiler", "compiler-service", http.StatusForbidden)
+}
+
 func bundleFactoryRequest(t *testing.T, handler http.Handler, method, path string, body any, role, actorID string, wantStatus int) map[string]any {
 	t.Helper()
 	raw, err := json.Marshal(body)

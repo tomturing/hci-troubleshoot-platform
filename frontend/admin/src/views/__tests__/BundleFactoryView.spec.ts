@@ -86,4 +86,16 @@ describe('BundleFactoryView', () => {
     expect(wrapper.text()).toContain('基于此版本创建 Draft')
     expect(wrapper.findAll('.lifecycle .el-step__head.is-success')).toHaveLength(4)
   })
+
+  it('仅对可归档的 stale Bundle 显示删除（归档）入口', async () => {
+    const stale = { ...draft, status: 'stale' as const, stale_reason: 'tool contract changed' }
+    vi.mocked(fetch).mockResolvedValueOnce(response({ bundles: [stale] })).mockResolvedValueOnce(response({ bundle: stale }))
+    const wrapper = mount(BundleFactoryView, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    await wrapper.find('tbody tr').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('删除（归档）')
+    expect(wrapper.text()).not.toContain('编辑 Draft')
+  })
 })

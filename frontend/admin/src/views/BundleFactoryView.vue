@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, EditPen, Plus, Refresh, Upload, Switch } from '@element-plus/icons-vue'
+import { Check, Delete, EditPen, Plus, Refresh, Upload, Switch } from '@element-plus/icons-vue'
 
 type BundleStatus = 'draft' | 'validated' | 'approved' | 'published' | 'stale' | 'retired'
 
@@ -78,6 +78,7 @@ const currentStep = computed(() => selected.value ? lifecycleStep[selected.value
 const expertApproved = computed(() => selected.value?.approvals?.some((item) => item.role === 'expert') ?? false)
 const securityApproved = computed(() => selected.value?.approvals?.some((item) => item.role === 'security') ?? false)
 const canRevise = computed(() => selected.value?.status === 'draft' || selected.value?.status === 'validated' || selected.value?.status === 'published')
+const canRetire = computed(() => selected.value?.status === 'draft' || selected.value?.status === 'stale')
 const shortDigest = (digest: string) => digest ? (digest.length > 24 ? `${digest.slice(0, 15)}…${digest.slice(-8)}` : digest) : '-'
 
 function statusType(status: BundleStatus) {
@@ -266,6 +267,32 @@ async function activateSelected() {
   }
 }
 
+async function retireSelected() {
+  if (!selected.value || !canRetire.value) return
+  try {
+    await ElMessageBox.confirm(
+      `确认删除（归档）Bundle：${shortDigest(selected.value.digest)}？\n\n此操作只会从默认列表隐藏该 Draft 或 Stale Bundle；不可变对象、审批和既有测试记录将被保留。`,
+      '删除 Bundle（归档）',
+      { confirmButtonText: '确认删除', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  actionLoading.value = true
+  try {
+    await request(`/v1/control-plane/bundles/${encodeURIComponent(selected.value.digest)}/retire`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    })
+    selected.value = null
+    await loadBundles()
+    ElMessage.success('Bundle 已删除（归档）')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    actionLoading.value = false
+  }
+}
+
 onMounted(() => loadBundles())
 </script>
 
@@ -300,6 +327,7 @@ onMounted(() => loadBundles())
           <div><div class="title-line"><h3>KBD {{ selected.support_id }}</h3><el-tag :type="statusType(selected.status)">{{ selected.status }}</el-tag></div><code>{{ selected.digest }}</code></div>
           <div class="actions">
             <el-button v-if="canRevise" :icon="EditPen" @click="openEditor">{{ selected.status === 'published' ? '基于此版本创建 Draft' : '编辑 Draft' }}</el-button>
+            <el-button v-if="canRetire" type="danger" :icon="Delete" :loading="actionLoading" @click="retireSelected">删除（归档）</el-button>
             <el-button v-if="selected.status === 'draft' || selected.status === 'validated'" type="success" :icon="Upload" :loading="actionLoading" @click="fastPublish">自动校验并发布</el-button>
             <el-button v-if="selected.status === 'draft'" type="primary" :icon="Check" :loading="actionLoading" @click="transition('validate')">校验</el-button>
             <template v-if="selected.status === 'validated'">
