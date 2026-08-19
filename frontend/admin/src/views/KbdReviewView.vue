@@ -2916,8 +2916,8 @@ async function handleArchive(entry: KbdEntry) {
   try {
     await ElMessageBox.confirm(
       `确认归档并停用「${entry.title}」？\n\n系统会保留不可变历史修订；下一次 KBD 增量同步将清理其派生的采集资源。`,
-      '归档并停用 KBD',
-      { confirmButtonText: '确认归档', cancelButtonText: '取消', type: 'warning' },
+      '删除 KBD（归档）',
+      { confirmButtonText: '确认删除', cancelButtonText: '取消', type: 'warning' },
     )
     const resp = await fetch(`/api/v1/kbd/${entry.id}/archive`, {
       method: 'POST',
@@ -2928,7 +2928,7 @@ async function handleArchive(entry: KbdEntry) {
       try { const errBody = await resp.json(); if (errBody.detail) detail = typeof errBody.detail === 'string' ? errBody.detail : JSON.stringify(errBody.detail) } catch { /* */ }
       throw new Error(detail)
     }
-    ElMessage.success('已归档；请执行 KBD 增量同步发布下游清理')
+    ElMessage.success('已删除（归档）；请执行 KBD 增量同步发布下游清理')
     detailDialogVisible.value = false
     await fetchPending()
   } catch (e: unknown) {
@@ -3950,7 +3950,7 @@ onUnmounted(() => clearBatchPollTimer())
               <el-button type="info" size="small" text @click="handleRevertToDraft(row)">退回草稿</el-button>
             </template>
             <template v-else-if="row.status === 'published'">
-              <el-button type="warning" size="small" text @click="handleArchive(row)">归档</el-button>
+              <el-button type="danger" size="small" text @click="handleArchive(row)">删除（归档）</el-button>
               <el-button type="info" size="small" text @click="handleRevertToDraft(row)">退回草稿</el-button>
             </template>
             <template v-else>

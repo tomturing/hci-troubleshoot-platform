@@ -70,4 +70,20 @@ describe('BundleFactoryView', () => {
     expect(payload.manifest.routes[0].result.stdout).toBe('corrected\n')
     wrapper.unmount()
   })
+
+  it('已发布 Bundle 显示 Runtime 激活结果、完成全部生命周期并可派生 Draft', async () => {
+    const published = { ...draft, status: 'published' as const }
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(response({ bundles: [published] }))
+      .mockResolvedValueOnce(response({ bundle: published }))
+      .mockResolvedValueOnce(response({ runtime_activation: { Status: 'active', ActiveDigest: published.digest } }))
+    const wrapper = mount(BundleFactoryView, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    await wrapper.find('tbody tr').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Runtime 激活：active · sha256:bundle')
+    expect(wrapper.text()).toContain('基于此版本创建 Draft')
+    expect(wrapper.findAll('.lifecycle .el-step__head.is-success')).toHaveLength(4)
+  })
 })

@@ -56,6 +56,15 @@ func TestBundleFactoryAPICompileReviseDualApproveAndPublish(t *testing.T) {
 	if published["bundle"].(map[string]any)["status"] != string(controlplane.BundlePublished) || activation["status"] != "pending" {
 		t.Fatalf("published response=%+v", published)
 	}
+	publishedBundle := published["bundle"].(map[string]any)
+	publishedManifest := publishedBundle["manifest"].(map[string]any)
+	publishedManifest["routes"].([]any)[0].(map[string]any)["result"].(map[string]any)["stdout"] = "expert revised published fixture\n"
+	forked := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+childDigest+"/revise", map[string]any{
+		"manifest": publishedManifest, "reason": "基于已发布版本修正 stdout",
+	}, "expert", "published-editor", http.StatusCreated)
+	if forked["bundle"].(map[string]any)["status"] != string(controlplane.BundleDraft) || forked["bundle"].(map[string]any)["parent_bundle_digest"] != childDigest {
+		t.Fatalf("published fork=%+v", forked)
+	}
 }
 
 func TestBundleFactoryAPICompilesKBDWithProducedSceneVariable(t *testing.T) {
