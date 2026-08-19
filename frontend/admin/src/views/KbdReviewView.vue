@@ -9,6 +9,7 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { QfkProcessingEditor } from '@/components/editors'
 import type { SignalV2, SignalsDoc, ChangeAnnotation } from '@/utils/kbdSignalTypes'
+import { generateUUID } from '@hci/shared'
 import {
   buildProduceVariableCatalog,
   findProduceVariable,
@@ -1913,9 +1914,7 @@ function signalStableId(signal: SignalV2, index: number): string {
 }
 
 function createSignalId(): string {
-  const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto
-    ? crypto.randomUUID().replace(/-/g, '').slice(0, 12)
-    : Math.random().toString(36).slice(2, 14)
+  const random = generateUUID().replace(/-/g, '').slice(0, 12)
   return `expert_${Date.now()}_${random}`
 }
 
