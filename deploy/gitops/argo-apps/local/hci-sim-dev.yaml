@@ -9,7 +9,7 @@ metadata:
   annotations:
     # 新 promotion 会同时更新源码 revision 与不可变 digest；旧制品来源无法反推时显式保留 legacy 状态。
     hci-platform.dev/immutable-image-required: "true"
-    hci-platform.dev/image-source-revision: "5b018cbd44e8771d5f28ae4de79635d42bd370c0"
+    hci-platform.dev/image-source-revision: "8f41098f492935555ecf1fe430dc04808f35c02d"
 spec:
   project: default
   source:
@@ -21,7 +21,7 @@ spec:
         image:
           repository: ghcr.io/tomturing/hci-troubleshoot-platform/hci-sim
           # 由 CI main 发布产物填充为 immutable manifest digest；禁止 tag/dev-local 漂移。
-          digest: "sha256:7730d719fb5b3fe512e0b2091932611a068d617c55142e0910693003dd8734b7"
+          digest: "sha256:d43ebd5a8632c6f56e8cf2d80d4612304f196c7ed04642d559fa5d26f42bae70"
         database:
           required: true
           existingSecret: hci-sim-runtime-credentials
