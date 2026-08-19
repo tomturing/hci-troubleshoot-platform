@@ -267,7 +267,7 @@ func (r *MemoryRegistry) Compile(actor Actor, input CompileInput, manifest fixtu
 	return record.clone(), nil
 }
 
-// ReviseDraft 由专家基于现有 draft/validated Bundle 生成新的不可变 Draft。
+// ReviseDraft 由专家基于现有 draft/validated/published Bundle 生成新的不可变 Draft。
 // 修改者成为新 Draft 的创建者，因此不能再为该 revision 完成专家审批。
 func (r *MemoryRegistry) ReviseDraft(actor Actor, parentDigest string, manifest fixture.Manifest, reason string, now time.Time) (BundleRecord, error) {
 	if actor.Role != RoleExpert || actor.ID == "" {
@@ -277,7 +277,7 @@ func (r *MemoryRegistry) ReviseDraft(actor Actor, parentDigest string, manifest 
 	if err != nil {
 		return BundleRecord{}, err
 	}
-	if parent.Status != BundleDraft && parent.Status != BundleValidated {
+	if parent.Status != BundleDraft && parent.Status != BundleValidated && parent.Status != BundlePublished {
 		return BundleRecord{}, fmt.Errorf("invalid_transition: %s 不能修订", parent.Status)
 	}
 	if strings.TrimSpace(reason) == "" {

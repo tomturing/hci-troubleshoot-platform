@@ -149,7 +149,7 @@ func (r *BundleRegistry) ReviseDraft(actor controlplane.Actor, parentDigest stri
 	if err != nil {
 		return controlplane.BundleRecord{}, err
 	}
-	if parent.Status != controlplane.BundleDraft && parent.Status != controlplane.BundleValidated {
+	if parent.Status != controlplane.BundleDraft && parent.Status != controlplane.BundleValidated && parent.Status != controlplane.BundlePublished {
 		return controlplane.BundleRecord{}, fmt.Errorf("invalid_transition: %s 不能修订", parent.Status)
 	}
 	if reason == "" {

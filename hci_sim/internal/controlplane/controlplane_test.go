@@ -182,6 +182,32 @@ func TestExpertEditCreatesImmutableDraftRevisionAndPreventsSelfApproval(t *testi
 	}
 }
 
+func TestPublishedBundleCanBeForkedAsNewDraftWithoutMutatingActiveVersion(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	registry := registryWithApprovedArtifact(t, now)
+	published := publish(t, registry, now)
+
+	editedManifest := fixtureManifest()
+	editedManifest.Routes[0].Result.Stdout = "flock 9527\nexpert revised published fixture\n"
+	child, err := registry.ReviseDraft(
+		Actor{ID: "expert-editor", Role: RoleExpert},
+		published.Digest,
+		editedManifest,
+		"基于已发布版本补充进程输出",
+		now.Add(time.Minute),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.Status != BundleDraft || child.Digest == published.Digest || child.Input.ParentBundleDigest != published.Digest || child.Input.DraftRevision != published.Input.DraftRevision+1 {
+		t.Fatalf("published child=%+v", child)
+	}
+	parent, err := registry.Get(published.Digest)
+	if err != nil || parent.Status != BundlePublished {
+		t.Fatalf("已发布父版本必须保持不可变且可运行: %+v %v", parent, err)
+	}
+}
+
 func TestKBDContractFlowCollectionFourScansDualReviewDraftEditAndPublish(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	artifacts := NewMemoryArtifactRegistry()

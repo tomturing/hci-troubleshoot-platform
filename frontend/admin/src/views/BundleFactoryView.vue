@@ -73,11 +73,11 @@ const variablesJSON = ref('{}')
 const activationStatus = ref('not_requested')
 const activationDigest = ref('')
 
-const statusOrder: BundleStatus[] = ['draft', 'validated', 'approved', 'published']
-const currentStep = computed(() => selected.value ? Math.max(0, statusOrder.indexOf(selected.value.status)) : 0)
+const lifecycleStep: Partial<Record<BundleStatus, number>> = { draft: 0, validated: 1, approved: 2, published: 4 }
+const currentStep = computed(() => selected.value ? lifecycleStep[selected.value.status] ?? 0 : 0)
 const expertApproved = computed(() => selected.value?.approvals?.some((item) => item.role === 'expert') ?? false)
 const securityApproved = computed(() => selected.value?.approvals?.some((item) => item.role === 'security') ?? false)
-const canRevise = computed(() => selected.value?.status === 'draft' || selected.value?.status === 'validated')
+const canRevise = computed(() => selected.value?.status === 'draft' || selected.value?.status === 'validated' || selected.value?.status === 'published')
 const shortDigest = (digest: string) => digest ? (digest.length > 24 ? `${digest.slice(0, 15)}…${digest.slice(-8)}` : digest) : '-'
 
 function statusType(status: BundleStatus) {
@@ -127,7 +127,7 @@ async function selectBundle(bundle: BundleRecord) {
       try {
         const activation = await request(`/v1/control-plane/activations/${encodeURIComponent(selected.value.support_id)}`)
         const runtime = activation.runtime_activation as Record<string, unknown> | undefined
-        activationStatus.value = String(runtime?.status || 'unknown')
+        activationStatus.value = String(runtime?.status || runtime?.Status || 'unknown')
         activationDigest.value = String(runtime?.active_digest || runtime?.ActiveDigest || '')
       } catch {
         activationStatus.value = 'unknown'
@@ -299,7 +299,7 @@ onMounted(() => loadBundles())
         <div class="detail-header">
           <div><div class="title-line"><h3>KBD {{ selected.support_id }}</h3><el-tag :type="statusType(selected.status)">{{ selected.status }}</el-tag></div><code>{{ selected.digest }}</code></div>
           <div class="actions">
-            <el-button v-if="canRevise" :icon="EditPen" @click="openEditor">编辑 Draft</el-button>
+            <el-button v-if="canRevise" :icon="EditPen" @click="openEditor">{{ selected.status === 'published' ? '基于此版本创建 Draft' : '编辑 Draft' }}</el-button>
             <el-button v-if="selected.status === 'draft' || selected.status === 'validated'" type="success" :icon="Upload" :loading="actionLoading" @click="fastPublish">自动校验并发布</el-button>
             <el-button v-if="selected.status === 'draft'" type="primary" :icon="Check" :loading="actionLoading" @click="transition('validate')">校验</el-button>
             <template v-if="selected.status === 'validated'">
