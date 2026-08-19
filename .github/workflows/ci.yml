@@ -1035,7 +1035,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # 晋级 job 只在 main push/显式 main workflow_dispatch 上运行。
+          # 使用仓库 owner 的 PAT 创建 promotion PR，避免 github-actions[bot]
+          # 被 first_time_contributors 审批策略误判为外部首次贡献者。
+          # 普通 pull_request 仍使用默认 GITHUB_TOKEN，不改变外部代码执行边界。
+          token: ${{ secrets.ENV_REPO_PAT }}
 
       - name: 配置 Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
@@ -1082,9 +1086,18 @@ jobs:
           HCI_SIM_SOURCE_SHA: ${{ steps.digest.outputs.source_sha }}
           IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
           APP_FILE: deploy/gitops/argo-apps/local/hci-sim-dev.yaml
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # gh pr create/edit 必须使用与 checkout/push 相同的 owner PAT，
+          # 否则 PR 作者仍会是 github-actions[bot]，继续触发审批门禁。
+          GH_TOKEN: ${{ secrets.ENV_REPO_PAT }}
         run: |
           set -euo pipefail
+          automation_actor="$(gh api user --jq '.login')"
+          expected_actor="${GITHUB_REPOSITORY_OWNER}"
+          if [[ "${automation_actor}" != "${expected_actor}" ]]; then
+            echo "::error::ENV_REPO_PAT 必须属于仓库 owner：expected=${expected_actor} actual=${automation_actor}"
+            exit 1
+          fi
+          echo "promotion PR automation actor=${automation_actor}（仓库 owner，可信来源）"
           echo "promotion_recorded=false" >> "${GITHUB_OUTPUT}"
           echo "pr_url=" >> "${GITHUB_OUTPUT}"
 
