@@ -159,6 +159,7 @@ type Registry interface {
 	Validate(Actor, string, ValidationReport, time.Time) (BundleRecord, error)
 	Approve(Actor, string, time.Time) (BundleRecord, error)
 	Publish(Actor, string, time.Time) (BundleRecord, error)
+	PublishInternalFast(Actor, string, time.Time) (BundleRecord, error)
 	MarkStale(Actor, Dependency, string, time.Time) ([]BundleRecord, error)
 	GetPublished(string) (BundleRecord, error)
 	ResolvePublished(supportID, variant, node, container string) (BundleRecord, error)
@@ -355,6 +356,31 @@ func (r *MemoryRegistry) Publish(actor Actor, digest string, now time.Time) (Bun
 		return BundleRecord{}, err
 	}
 	record.Object, record.Status, record.UpdatedAt = published, BundlePublished, now.UTC()
+	r.byDigest[digest] = record
+	return record.clone(), nil
+}
+
+// PublishInternalFast 面向内部专家，将自动校验、专家确认和对象发布合并成一次原子状态决策。
+// Manifest 在 Compile/Revise 时已经完成 schema、路由冲突、secret scan 和对象完整性校验。
+func (r *MemoryRegistry) PublishInternalFast(actor Actor, digest string, now time.Time) (BundleRecord, error) {
+	if actor.Role != RoleExpert || actor.ID == "" {
+		return BundleRecord{}, errors.New("forbidden: Internal Fast Path 仅允许已认证专家发布")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	record, ok := r.byDigest[digest]
+	if !ok {
+		return BundleRecord{}, errors.New("bundle_not_found")
+	}
+	if record.Status != BundleDraft && record.Status != BundleValidated {
+		return BundleRecord{}, fmt.Errorf("invalid_transition: %s → %s", record.Status, BundlePublished)
+	}
+	published, err := r.objectStore.Commit(record.Object)
+	if err != nil {
+		return BundleRecord{}, err
+	}
+	record.Object, record.Status, record.UpdatedAt = published, BundlePublished, now.UTC()
+	record.Approvals = append(record.Approvals, Approval{ActorID: actor.ID, Role: RoleExpert, At: now.UTC()})
 	r.byDigest[digest] = record
 	return record.clone(), nil
 }

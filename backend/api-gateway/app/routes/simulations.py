@@ -213,6 +213,33 @@ async def publish_bundle(bundle_digest: str, request: Request) -> JSONResponse:
     return await _bundle_action(bundle_digest, "publish", "publisher", request)
 
 
+@router.post("/v1/control-plane/bundles/{bundle_digest}/fast-publish")
+async def fast_publish_bundle(bundle_digest: str, request: Request) -> JSONResponse:
+    """Internal Fast Path：由已认证专家一次完成自动校验、发布和 Runtime 激活。"""
+    return await _bundle_action(bundle_digest, "fast-publish", "expert", request)
+
+
+@router.post("/v1/control-plane/activations/{support_id}/activate")
+async def activate_bundle(support_id: str, request: Request) -> JSONResponse:
+    """在多个已发布 Bundle 之间按 digest 秒级切换，身份由 Gateway 固定为内部专家。"""
+    if not re.fullmatch(r"\d{1,20}", support_id):
+        raise HTTPException(status_code=400, detail="support_id must be 1-20 digits")
+    return await _post(
+        f"/v1/control-plane/activations/{support_id}/activate",
+        await request.json(),
+        actor_role="expert",
+        trace_id=_trace_id(request),
+    )
+
+
+@router.get("/v1/control-plane/activations/{support_id}")
+async def get_activation(support_id: str, request: Request) -> JSONResponse:
+    """返回 Runtime durable activation pointer，供 UI 展示真实 active/pending 状态。"""
+    if not re.fullmatch(r"\d{1,20}", support_id):
+        raise HTTPException(status_code=400, detail="support_id must be 1-20 digits")
+    return await _get(f"/v1/control-plane/activations/{support_id}", trace_id=_trace_id(request))
+
+
 @router.get("/v1/simulations/capabilities/{kbd_id}")
 async def capability(kbd_id: str) -> JSONResponse:
     """代理 Runtime capability 预检，供 Admin UI 在构建前展示可审计原因。"""

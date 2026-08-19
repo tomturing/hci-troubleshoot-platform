@@ -200,6 +200,7 @@ func runServer() error {
 	if err != nil {
 		return err
 	}
+	prom := &metrics.Metrics{}
 	fixtureVariant := simulationFixtureVariant()
 	databaseTarget, err := database.FromEnvironment()
 	if err != nil {
@@ -254,7 +255,7 @@ func runServer() error {
 		}
 	}
 	if controlplaneRegistry != nil {
-		runtimeActivator = newRuntimeBundleActivator(bundlePool, controlplaneRegistry, runRepository, env("HCI_SIM_RUNTIME_ID", "hci-sim"))
+		runtimeActivator = newRuntimeBundleActivator(bundlePool, controlplaneRegistry, runRepository, env("HCI_SIM_RUNTIME_ID", "hci-sim"), prom)
 		if err := runtimeActivator.RestoreActive(ctx); err != nil {
 			return err
 		}
@@ -284,7 +285,6 @@ func runServer() error {
 		defer cancel()
 		_ = shutdownTrace(shutdownCtx)
 	}()
-	prom := &metrics.Metrics{}
 	sshServer, err := server.New(server.Config{
 		ListenAddress: env("HCI_SIM_SSH_LISTEN", ":2222"), HostSigner: signer,
 		LeaseSecret: secret, Pool: bundlePool, Workers: envInt("HCI_SIM_WORKERS", 8),
@@ -356,8 +356,10 @@ func runServer() error {
 		authorityScope := env("HCI_SIM_AUTHORITY_SCOPE", "runtime_fixture")
 		// revision 属于当前 active Bundle 的不可变身份，不能由 Runtime 全局环境变量覆盖。
 		activeRevision := runtimeRevision
-		buildable := simulationBuildable(requestedID, runtimeKBD, activeRevision, router.BundleDigest(), authorityScope, router.IsSynthetic())
+		profile := releaseProfile()
+		buildable := simulationBuildable(requestedID, runtimeKBD, activeRevision, router.BundleDigest(), authorityScope, router.IsSynthetic(), profile)
 		gaps := make([]string, 0, 3)
+		warnings := make([]string, 0, 1)
 		if requestedID != runtimeKBD.SupportID {
 			gaps = append(gaps, "kbd_not_loaded")
 		}
@@ -367,14 +369,17 @@ func runServer() error {
 		if router.BundleDigest() == "" {
 			gaps = append(gaps, "bundle_digest_missing")
 		}
-		if router.IsSynthetic() {
+		if router.IsSynthetic() && profile == "high_assurance" {
 			gaps = append(gaps, "synthetic_fixture")
+		} else if router.IsSynthetic() {
+			warnings = append(warnings, "not_real_artifact_replay")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"support_id": requestedID, "requested_revision": activeRevision, "runtime_revision": runtimeRevision,
 			"bundle_digest": router.BundleDigest(), "bundle_status": "published", "authority_scope": authorityScope,
-			"synthetic": router.IsSynthetic(), "buildable": buildable, "capability_gap": gaps,
+			"synthetic": router.IsSynthetic(), "fixture_class": fixtureClass(router), "release_profile": profile,
+			"buildable": buildable, "capability_gap": gaps, "capability_warnings": warnings,
 		})
 	})
 	mux.HandleFunc("/v1/simulations/build", func(w http.ResponseWriter, r *http.Request) {
@@ -395,8 +400,12 @@ func runServer() error {
 			http.Error(w, "capability_gap: requested KBD is not the loaded immutable fixture", http.StatusConflict)
 			return
 		}
-		if env("HCI_SIM_AUTHORITY_SCOPE", "runtime_fixture") == "runtime_fixture" || router.IsSynthetic() {
-			http.Error(w, "capability_gap: Runtime fixture lacks an explicit non-synthetic authority scope", http.StatusConflict)
+		if env("HCI_SIM_AUTHORITY_SCOPE", "runtime_fixture") == "runtime_fixture" {
+			http.Error(w, "capability_gap: Runtime fixture lacks an explicit authority scope", http.StatusConflict)
+			return
+		}
+		if router.IsSynthetic() && releaseProfile() == "high_assurance" {
+			http.Error(w, "capability_gap: high_assurance profile rejects synthetic fixture", http.StatusConflict)
 			return
 		}
 		now := time.Now().UTC()
@@ -465,7 +474,7 @@ func runServer() error {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		environmentContext = simulationEnvironmentContext(router, runID, strings.TrimSpace(request.CaseID), activeVariant)
-		_ = json.NewEncoder(w).Encode(map[string]any{"test_run_id": runID, "case_id": strings.TrimSpace(request.CaseID), "support_id": request.KBDID, "bundle_digest": router.BundleDigest(), "synthetic": router.IsSynthetic(), "environment_context": environmentContext, "connection": map[string]any{"host": env("HCI_SIM_SSH_HOST", "hci-sim.hci-sim-dev.svc"), "port": strings.TrimPrefix(env("HCI_SIM_SSH_LISTEN", ":2222"), ":"), "username": "sim", "auth_type": "lease", "password": token, "execution_mode": "sim-ssh", "test_run_id": runID}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"test_run_id": runID, "case_id": strings.TrimSpace(request.CaseID), "support_id": request.KBDID, "bundle_digest": router.BundleDigest(), "synthetic": router.IsSynthetic(), "fixture_class": fixtureClass(router), "release_profile": releaseProfile(), "environment_context": environmentContext, "connection": map[string]any{"host": env("HCI_SIM_SSH_HOST", "hci-sim.hci-sim-dev.svc"), "port": strings.TrimPrefix(env("HCI_SIM_SSH_LISTEN", ":2222"), ":"), "username": "sim", "auth_type": "lease", "password": token, "execution_mode": "sim-ssh", "test_run_id": runID}})
 	})
 	mux.HandleFunc("/v1/simulations/test-runs", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || !controlAuthorized(r) {
@@ -720,12 +729,19 @@ func bundleObjectURI(supportID string) string {
 	return fmt.Sprintf("configmap://hci-sim-fixture/kbd-%s-fixture-manifest.json", supportID)
 }
 
-func simulationBuildable(requestedID string, runtimeKBD fixture.KBDRef, activeRevision int, bundleDigest, authorityScope string, synthetic bool) bool {
+func simulationBuildable(requestedID string, runtimeKBD fixture.KBDRef, activeRevision int, bundleDigest, authorityScope string, synthetic bool, profile string) bool {
 	return requestedID == runtimeKBD.SupportID &&
 		activeRevision == runtimeKBD.Revision &&
 		bundleDigest != "" &&
 		authorityScope != "runtime_fixture" &&
-		!synthetic
+		(!synthetic || profile == "internal_fast")
+}
+
+func fixtureClass(router *fixture.Router) string {
+	if router != nil && router.IsSynthetic() {
+		return "kbd_derived"
+	}
+	return "artifact_replay"
 }
 
 func terminalRunStatus(status string) bool {

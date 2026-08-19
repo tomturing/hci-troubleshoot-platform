@@ -62,6 +62,8 @@ spec:
               value: {{ .Values.runtime.fixtureVariant | quote }}
             - name: HCI_SIM_AUTHORITY_SCOPE
               value: {{ .Values.runtime.authorityScope | quote }}
+            - name: HCI_SIM_RELEASE_PROFILE
+              value: {{ .Values.runtime.releaseProfile | default "internal_fast" | quote }}
             - name: HCI_SIM_DATABASE_REQUIRED
               value: {{ .Values.database.required | quote }}
             - name: HCI_SIM_CONTROLPLANE_REGISTRY

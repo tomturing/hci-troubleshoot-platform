@@ -22,8 +22,10 @@ runtime:
   leaseIssuer: hci-platform
   leaseAudience: hci-sim
   fixtureVariant: positive-realistic
-  # dev-golden 明确表示该运行时是受审查的开发黄金 Fixture；revision 始终来自 active Bundle。
-  authorityScope: runtime_fixture
+  # internal_fast 面向内部专家；high_assurance 要求真实 Artifact provenance。
+  releaseProfile: internal_fast
+  # internal_fast 使用显式 dev_golden 权威范围；runtime_fixture 仅用于未配置策略的旧基线。
+  authorityScope: dev_golden
   existingSecret: hci-sim-credentials
   leaseKeySecretKey: lease-hmac-key
   controlTokenSecretKey: control-plane-token

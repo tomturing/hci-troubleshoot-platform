@@ -97,6 +97,8 @@ class SyntheticRouteInput:
     role: str = "context"
     matcher: dict[str, Any] | None = None
     produces: tuple[dict[str, Any], ...] = ()
+    sample_output: str = ""
+    sample_source: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -109,6 +111,8 @@ class SyntheticRouteInput:
             "role": self.role,
             "matcher": self.matcher,
             "produces": list(self.produces),
+            "sample_output": self.sample_output,
+            "sample_source": self.sample_source,
         }
 
 
@@ -374,6 +378,8 @@ class HciSimKbdResolver:
                     produces=tuple(
                         dict(item) for item in (orchestrate.get("produces") or []) if isinstance(item, dict)
                     ),
+                    sample_output=_derive_sample_output(signal, tool, signal_id, runtime.command),
+                    sample_source=_sample_output_source(signal, tool),
                 )
             )
         if not routes and not gaps:
@@ -385,3 +391,112 @@ class HciSimKbdResolver:
                 )
             )
         return tuple(routes), gaps
+
+
+def _sample_output_source(signal: dict[str, Any], tool: str) -> str:
+    """标记 stdout 的事实来源，供 Bundle 工厂和测试报告展示质量边界。"""
+
+    provenance = signal.get("provenance") if isinstance(signal.get("provenance"), dict) else {}
+    if isinstance(provenance.get("evidence"), str) and provenance["evidence"].strip():
+        return "kbd_provenance_evidence"
+    if tool.startswith("qkv_"):
+        return "kbd_signal_contract"
+    return "kbd_matcher_contract"
+
+
+def _derive_sample_output(signal: dict[str, Any], tool: str, signal_id: str, command: str) -> str:
+    """从已发布 KBD 事实生成可消费的 stdout，禁止回退到通用占位 JSON。
+
+    QFK 的 provenance evidence 通常就是现场命令回显，直接复用并按 matcher 补齐样本；
+    QKV 没有现场回显时，依据 acquire/produces 生成工具契约可解析的 JSON。结果仍是
+    KBD-derived fixture，不宣称是真实设备回放。
+    """
+
+    provenance = signal.get("provenance") if isinstance(signal.get("provenance"), dict) else {}
+    evidence = str(provenance.get("evidence") or "").strip()
+    acquire = signal.get("acquire") if isinstance(signal.get("acquire"), dict) else {}
+    args = acquire.get("args") if isinstance(acquire.get("args"), dict) else {}
+    matcher = signal.get("match") if isinstance(signal.get("match"), dict) else {}
+    orchestrate = signal.get("orchestrate") if isinstance(signal.get("orchestrate"), dict) else {}
+    produces = [item for item in (orchestrate.get("produces") or []) if isinstance(item, dict)]
+
+    if evidence and not tool.startswith("qkv_"):
+        output = evidence + ("\n" if not evidence.endswith("\n") else "")
+    elif tool.startswith("qkv_"):
+        record: dict[str, Any] = {}
+        keyword = str(args.get("keyword") or args.get("alert_type") or "").strip()
+        instruction = str(args.get("instruction") or "").strip()
+        if keyword:
+            record["type"] = keyword
+            if tool == "qkv_alert":
+                record["alert_type"] = keyword
+        record["status"] = "failed" if bool(args.get("is_failed")) else "matched"
+        if instruction:
+            record["description"] = instruction
+        if evidence:
+            record["evidence"] = evidence
+        for item in produces:
+            name = str(item.get("name") or "").strip().upper()
+            if not name:
+                continue
+            record[str(item.get("path") or name.lower())] = _sample_variable(name)
+        pattern = str(matcher.get("pattern") or "").strip()
+        if matcher.get("type") == "keyword" and bool(matcher.get("expected", True)) and pattern:
+            record["evidence"] = pattern
+        output = json.dumps({"data": [record]}, ensure_ascii=False, separators=(",", ":")) + "\n"
+    else:
+        output = _derive_matcher_output(matcher, signal_id, command)
+
+    expected = matcher.get("expected")
+    pattern = str(matcher.get("pattern") or "").strip()
+    if matcher.get("type") == "keyword" and pattern:
+        if expected is False and pattern in output:
+            output = f"signal_id={signal_id}\nno matching evidence\n"
+        elif expected is not False and pattern not in output:
+            output += pattern + "\n"
+    if matcher.get("type") == "exists" and expected is False:
+        includes = matcher.get("extract", {}).get("rows", {}).get("include", []) if isinstance(matcher.get("extract"), dict) else []
+        if any(str(value) in output for value in includes):
+            output = f"signal_id={signal_id}\nno matching evidence\n"
+    if matcher.get("type") == "delta":
+        minimum = max(int(matcher.get("minimum_samples") or 2), 2)
+        rows = [line for line in output.splitlines() if line.strip()]
+        if rows and len(rows) < minimum:
+            output = "\n".join(rows * minimum) + "\n"
+    return output
+
+
+def _sample_variable(name: str) -> str:
+    """返回由 Go 编译器统一渲染的稳定变量，不把未知现场事实伪装成真实值。"""
+
+    if name in {"VM", "VM_ID"}:
+        return "{{VM}}"
+    if name in {"HOST", "NODE", "NODE_ID", "NODE_NAME"}:
+        return "{{HOST}}"
+    if name == "END":
+        return "{{END}}"
+    if name == "START":
+        return "{{START}}"
+    if name == "PID":
+        return "{{PID}}"
+    if name == "REQUEST_ID":
+        return "{{REQUEST_ID}}"
+    return "SIM-" + name.lower()
+
+
+def _derive_matcher_output(matcher: dict[str, Any], signal_id: str, command: str) -> str:
+    """没有 provenance 时，用 matcher/命令契约生成最小可判定输出。"""
+
+    matcher_type = str(matcher.get("type") or "").strip()
+    if matcher_type == "keyword":
+        pattern = str(matcher.get("pattern") or "matched").strip()
+        return pattern + "\n"
+    if matcher_type == "threshold":
+        value = matcher.get("value", 1)
+        return f"{value}\n"
+    if matcher_type == "delta":
+        value = matcher.get("value", 0)
+        return f"{value}\n{value}\n"
+    if matcher_type == "exists":
+        return ("no matching evidence\n" if matcher.get("expected") is False else f"signal_id={signal_id}\nmatched\n")
+    return f"signal_id={signal_id}\ncommand={command}\nstatus=matched\n"

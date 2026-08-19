@@ -297,6 +297,54 @@ func (r *BundleRegistry) Publish(actor controlplane.Actor, digest string, now ti
 	return r.Get(digest)
 }
 
+// PublishInternalFast 将自动校验与专家发布合并为内部功能仿真的最短路径。
+// Compile/Revise 已经完成 Manifest lint、secret scan 和对象 digest 校验；这里以 CAS
+// 防止并发发布覆盖状态，并保留 validate/publish 两个可追溯事件。
+func (r *BundleRegistry) PublishInternalFast(actor controlplane.Actor, digest string, now time.Time) (controlplane.BundleRecord, error) {
+	if actor.Role != controlplane.RoleExpert || actor.ID == "" {
+		return controlplane.BundleRecord{}, errors.New("forbidden: Internal Fast Path 仅允许已认证专家发布")
+	}
+	ctx := context.Background()
+	record, err := r.Get(digest)
+	if err != nil {
+		return controlplane.BundleRecord{}, err
+	}
+	if record.Status != controlplane.BundleDraft && record.Status != controlplane.BundleValidated {
+		return controlplane.BundleRecord{}, fmt.Errorf("invalid_transition: %s → %s", record.Status, controlplane.BundlePublished)
+	}
+	published, err := r.objectStore.Commit(record.Object)
+	if err != nil {
+		return controlplane.BundleRecord{}, err
+	}
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return controlplane.BundleRecord{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	updated, err := tx.Exec(ctx, `
+		UPDATE fixture.bundle
+		SET status = 'published', object_uri = $2, object_digest = $3, size_bytes = $4,
+		    version = version + 1, updated_at = $5
+		WHERE digest = $1 AND status IN ('draft', 'validated')
+	`, digest, published.Key, published.Digest, published.Size, now.UTC())
+	if err != nil {
+		return controlplane.BundleRecord{}, err
+	}
+	if updated.RowsAffected() != 1 {
+		return controlplane.BundleRecord{}, errors.New("bundle_fast_publish_conflict")
+	}
+	if err := r.insertApproval(ctx, tx, digest, "validate", actor.ID, actor.Role, now); err != nil {
+		return controlplane.BundleRecord{}, err
+	}
+	if err := r.insertApproval(ctx, tx, digest, "publish", actor.ID, actor.Role, now); err != nil {
+		return controlplane.BundleRecord{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return controlplane.BundleRecord{}, err
+	}
+	return r.Get(digest)
+}
+
 func (r *BundleRegistry) MarkStale(actor controlplane.Actor, changed controlplane.Dependency, reason string, now time.Time) ([]controlplane.BundleRecord, error) {
 	if actor.ID == "" || (actor.Role != controlplane.RoleCompiler && actor.Role != controlplane.RoleSecurity) || reason == "" {
 		return nil, errors.New("forbidden: 仅受信任控制面可标记 stale")

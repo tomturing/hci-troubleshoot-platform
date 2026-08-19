@@ -74,6 +74,19 @@ def test_bundle_factory_actions_use_server_mapped_split_roles():
         assert runtime_post.await_args.kwargs["actor_role"] == "security"
 
 
+def test_internal_fast_publish_and_digest_activation_use_expert_identity():
+    client = TestClient(app)
+    runtime_response = JSONResponse({"runtime_activation": {"status": "active"}}, status_code=200)
+    with patch("app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)) as runtime_post:
+        assert client.post("/api/hci-sim/v1/control-plane/bundles/sha256:bundle/fast-publish").status_code == 200
+        assert runtime_post.await_args.kwargs["actor_role"] == "expert"
+        assert client.post(
+            "/api/hci-sim/v1/control-plane/activations/27123/activate",
+            json={"bundle_digest": "sha256:bundle"},
+        ).status_code == 200
+        assert runtime_post.await_args.kwargs["actor_role"] == "expert"
+
+
 def test_simulation_test_run_binds_platform_case_before_runtime():
     client = TestClient(app)
     case_response = JSONResponse({"case_id": "Q2026081100001", "status": "created"}, status_code=201)
