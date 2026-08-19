@@ -1147,17 +1147,30 @@ jobs:
           )"
 
           mapfile -t existing_prs < <(
-            gh pr list --state open --head "${branch}" --base main --json url --jq '.[].url'
+            gh pr list --state open --head "${branch}" --base main --json url,author \
+              --jq '.[] | [.url, .author.login] | @tsv'
           )
           if (( ${#existing_prs[@]} > 1 )); then
             echo "::error::发现多个 hci-sim dev promotion PR，拒绝选择不确定候选"
             exit 1
           elif (( ${#existing_prs[@]} == 1 )); then
-            pr_url="${existing_prs[0]}"
-            gh pr edit "${pr_url}" \
-              --title "ci(hci-sim): 晋级 dev 制品 ${HCI_SIM_DIGEST}" \
-              --body "${body}" \
-              --add-label "env:dev:sf" --add-label "agent:codebuddy"
+            IFS=$'\t' read -r pr_url pr_author <<< "${existing_prs[0]}"
+            if [[ "${pr_author}" != "${expected_actor}" ]]; then
+              # PR 作者不可变；旧 bot-authored 候选必须关闭并由 owner PAT 重建，
+              # 不能仅 push 新 commit 后误以为已进入可信来源。
+              gh pr close "${pr_url}" --comment "自动晋级来源已迁移到仓库 owner；关闭旧 bot-authored 候选并重建。"
+              pr_url="$(gh pr create \
+                --head "${branch}" \
+                --base main \
+                --title "ci(hci-sim): 晋级 dev 制品 ${HCI_SIM_DIGEST}" \
+                --label "env:dev:sf" --label "agent:codebuddy" \
+                --body "${body}")"
+            else
+              gh pr edit "${pr_url}" \
+                --title "ci(hci-sim): 晋级 dev 制品 ${HCI_SIM_DIGEST}" \
+                --body "${body}" \
+                --add-label "env:dev:sf" --add-label "agent:codebuddy"
+            fi
           else
             pr_url="$(gh pr create \
               --head "${branch}" \

@@ -132,6 +132,9 @@ def test_hci_sim_promotion_pr_uses_owner_pat_and_fail_closed_actor_check():
     assert "automation_actor=\"$(gh api user --jq '.login')\"" in workflow
     assert 'expected_actor="${GITHUB_REPOSITORY_OWNER}"' in workflow
     assert '"${automation_actor}" != "${expected_actor}"' in workflow
+    assert "--json url,author" in workflow
+    assert 'gh pr close "${pr_url}"' in workflow
+    assert "旧 bot-authored 候选" in workflow
 
 
 def test_partial_workflow_failure_still_records_hci_sim_service_baseline(monkeypatch):
