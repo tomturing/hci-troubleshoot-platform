@@ -423,18 +423,37 @@ func runServer() error {
 			http.Error(w, "capability_gap: active Bundle 没有可用 variant", http.StatusConflict)
 			return
 		}
+		bundleMetadata := runtimeBundleMetadata{
+			InputFingerprint: digestValue(map[string]any{"support_id": request.KBDID, "kbd_revision": router.KBD().Revision, "variant": activeVariant, "bundle_digest": router.BundleDigest()}),
+			SchemaVersion:    router.SchemaVersion(),
+			ObjectURI:        bundleObjectURI(router.KBD().SupportID),
+			ObjectDigest:     router.ManifestHash(),
+			SizeBytes:        router.ManifestSize(),
+		}
+		if controlplaneRegistry != nil && runRepository != nil {
+			var metadataErr error
+			var record controlplane.BundleRecord
+			record, metadataErr = controlplaneRegistry.GetPublished(router.BundleDigest())
+			if metadataErr == nil {
+				bundleMetadata, metadataErr = runtimeBundleMetadataFromRecord(router, record)
+			}
+			if metadataErr != nil {
+				log.Printf("hci-sim active Bundle metadata resolve failed trace_id=%s support_id=%s digest=%s error=%v", requestTraceID(r), request.KBDID, router.BundleDigest(), metadataErr)
+				http.Error(w, "hci_sim active Bundle metadata unavailable", http.StatusServiceUnavailable)
+				return
+			}
+		}
 		requestDigest := digestValue(map[string]any{"kbd_id": request.KBDID, "variant": activeVariant, "bundle_digest": router.BundleDigest()})
-		inputFingerprint := digestValue(map[string]any{"support_id": request.KBDID, "kbd_revision": router.KBD().Revision, "variant": activeVariant, "bundle_digest": router.BundleDigest()})
 		environmentContext := simulationEnvironmentContext(router, runID, strings.TrimSpace(request.CaseID), activeVariant)
 		runVersion := 1
 		if runRepository != nil {
 			record, persistErr := runRepository.Create(r.Context(), database.RunInput{
 				ExternalID: runID, SupportID: request.KBDID, KBDRevision: router.KBD().Revision,
 				Variant: activeVariant, BundleDigest: router.BundleDigest(),
-				BundleSchemaVersion: router.SchemaVersion(), BundleObjectURI: bundleObjectURI(router.KBD().SupportID),
-				BundleObjectDigest: router.ManifestHash(), BundleSizeBytes: router.ManifestSize(), ExecutionMode: "sim-ssh",
+				BundleSchemaVersion: bundleMetadata.SchemaVersion, BundleObjectURI: bundleMetadata.ObjectURI,
+				BundleObjectDigest: bundleMetadata.ObjectDigest, BundleSizeBytes: bundleMetadata.SizeBytes, ExecutionMode: "sim-ssh",
 				IdempotencyKey: idempotencyKey, RequestDigest: requestDigest, Deadline: now.Add(15 * time.Minute),
-				InputFingerprint:   inputFingerprint,
+				InputFingerprint:   bundleMetadata.InputFingerprint,
 				EnvironmentContext: environmentContext,
 			})
 			if persistErr != nil {
@@ -907,6 +926,40 @@ func jsonInt(value any) (int, bool) {
 
 type repositoryEventRecorder struct {
 	repository *database.RunRepository
+}
+
+// runtimeBundleMetadata 是 Build 持久化 Run 时使用的 Bundle 冻结身份。
+// digest 只标识内容；场景指纹、对象引用和 schema 必须来自同一个 Registry 记录，
+// 不能由请求参数或 Helm 基线重新拼接，否则会把同一 Bundle 注册成不同场景。
+type runtimeBundleMetadata struct {
+	InputFingerprint string
+	SchemaVersion    string
+	ObjectURI        string
+	ObjectDigest     string
+	SizeBytes        int64
+}
+
+func runtimeBundleMetadataFromRecord(router *fixture.Router, record controlplane.BundleRecord) (runtimeBundleMetadata, error) {
+	if router == nil {
+		return runtimeBundleMetadata{}, errors.New("active Bundle Router 不能为空")
+	}
+	if record.Digest != router.BundleDigest() || record.Input.SupportID != router.KBD().SupportID || record.Input.KBDRevision != router.KBD().Revision {
+		return runtimeBundleMetadata{}, fmt.Errorf("active Bundle Registry 元数据与 Router 不一致: digest=%s support_id=%s", router.BundleDigest(), router.KBD().SupportID)
+	}
+	metadata := runtimeBundleMetadata{
+		InputFingerprint: strings.TrimSpace(record.InputFingerprint),
+		SchemaVersion:    router.SchemaVersion(),
+		ObjectURI:        strings.TrimSpace(record.Object.Key),
+		ObjectDigest:     strings.TrimSpace(record.Object.Digest),
+		SizeBytes:        record.Object.Size,
+	}
+	if metadata.InputFingerprint == "" || metadata.ObjectURI == "" || metadata.ObjectDigest == "" || metadata.SizeBytes < 1 {
+		return runtimeBundleMetadata{}, fmt.Errorf("active Bundle Registry 元数据不完整: digest=%s", router.BundleDigest())
+	}
+	if metadata.ObjectDigest != router.ManifestHash() || metadata.SizeBytes != router.ManifestSize() {
+		return runtimeBundleMetadata{}, fmt.Errorf("active Bundle 对象完整性不一致: digest=%s", router.BundleDigest())
+	}
+	return metadata, nil
 }
 
 func (r repositoryEventRecorder) RecordEvent(ctx context.Context, externalID string, attemptNo int, eventType, payloadDigest, traceID string) error {
