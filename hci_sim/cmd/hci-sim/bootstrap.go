@@ -56,6 +56,8 @@ type syntheticRoute struct {
 	Role              string           `json:"role"`
 	Matcher           map[string]any   `json:"matcher"`
 	Produces          []map[string]any `json:"produces"`
+	SampleOutput      string           `json:"sample_output"`
+	SampleSource      string           `json:"sample_source"`
 }
 
 type scenarioProfile struct {
@@ -319,10 +321,11 @@ func buildScenarioManifest(resolved *resolvedKbd, profile *scenarioProfile, node
 		if len(argv) > 1 {
 			acquisitionKey += ":" + argv[1]
 		}
-		result := fixture.ResultDef{ExitCode: 0, Stdout: fmt.Sprintf(
-			"{\"synthetic\":true,\"support_id\":%q,\"signal_id\":%q,\"status\":\"matched\",\"records\":[{\"synthetic_record\":true}]}\n",
-			resolved.SupportID, route.SignalID,
-		)}
+		sampleOutput, sampleErr := deriveRouteSampleOutput(route, resolved.SupportID, variables)
+		if sampleErr != nil {
+			return fixture.Manifest{}, sampleErr
+		}
+		result := fixture.ResultDef{ExitCode: 0, Stdout: sampleOutput}
 		fault := fixture.FaultDef{Type: fixture.FaultNone}
 		if profile != nil {
 			signalOutput := caseProfile.Signals[route.SignalID]
@@ -353,6 +356,13 @@ func buildScenarioManifest(resolved *resolvedKbd, profile *scenarioProfile, node
 				return fixture.Manifest{}, fmt.Errorf("capability_gap: Signal %s 的场景输出缺少变量", route.SignalID)
 			}
 		}
+		if strings.Contains(result.Stdout, "{{") || strings.Contains(result.Stdout, "}}") ||
+			strings.Contains(result.Stderr, "{{") || strings.Contains(result.Stderr, "}}") {
+			return fixture.Manifest{}, fmt.Errorf("capability_gap: Signal %s 的 stdout/stderr 缺少场景变量", route.SignalID)
+		}
+		if result.ExitCode == 0 && fault.Type == fixture.FaultNone && strings.TrimSpace(result.Stdout) == "" && selectedVariant != "missing-evidence" {
+			return fixture.Manifest{}, fmt.Errorf("capability_gap: Signal %s 没有可消费的 stdout", route.SignalID)
+		}
 		routes = append(routes, fixture.Route{
 			ID:           fmt.Sprintf("synthetic-%s-%03d", resolved.SupportID, index+1),
 			SignalID:     route.SignalID,
@@ -373,6 +383,95 @@ func buildScenarioManifest(resolved *resolvedKbd, profile *scenarioProfile, node
 		Limits:        fixture.Limits{MaxRoutes: len(routes), MaxOutputBytesPerCommand: 4096, MaxBundleBytes: 65536},
 		Routes:        routes,
 	}, nil
+}
+
+// deriveRouteSampleOutput 优先使用 C1 从 KBD provenance/matcher 派生的输出。
+// 旧版 capability 没有 sample_output 时仍生成契约型文本，但不再返回 synthetic_record 占位 JSON。
+func deriveRouteSampleOutput(route syntheticRoute, supportID string, variables map[string]string) (string, error) {
+	if strings.TrimSpace(route.SampleOutput) != "" {
+		return renderProfileVariables(route.SampleOutput, variables), nil
+	}
+	if len(route.Matcher) > 0 {
+		switch matcherType := strings.TrimSpace(fmt.Sprint(route.Matcher["type"])); matcherType {
+		case "keyword":
+			pattern := strings.TrimSpace(fmt.Sprint(route.Matcher["pattern"]))
+			if pattern == "" {
+				pattern = "matched"
+			}
+			if expected, ok := route.Matcher["expected"].(bool); ok && !expected {
+				return fmt.Sprintf("signal_id=%s\nno matching evidence\n", route.SignalID), nil
+			}
+			return pattern + "\n", nil
+		case "exists":
+			if expected, ok := route.Matcher["expected"].(bool); ok && !expected {
+				return "no matching evidence\n", nil
+			}
+			return fmt.Sprintf("signal_id=%s\nmatched\n", route.SignalID), nil
+		case "delta":
+			value := fmt.Sprint(route.Matcher["value"])
+			if value == "<nil>" || value == "" {
+				value = "0"
+			}
+			return value + "\n" + value + "\n", nil
+		case "threshold":
+			value := fmt.Sprint(route.Matcher["value"])
+			if value == "<nil>" || value == "" {
+				value = "1"
+			}
+			return value + "\n", nil
+		}
+	}
+	if strings.HasPrefix(route.Tool, "qkv_") {
+		keyword := ""
+		for index, value := range route.Argv {
+			if (value == "-k" || value == "--keyword") && index+1 < len(route.Argv) {
+				keyword = route.Argv[index+1]
+				break
+			}
+		}
+		record := map[string]any{"status": "matched"}
+		if keyword != "" {
+			record["type"] = keyword
+		}
+		if len(route.Produces) > 0 {
+			for _, produced := range route.Produces {
+				name := strings.ToUpper(strings.TrimSpace(fmt.Sprint(produced["name"])))
+				if name == "" {
+					continue
+				}
+				key := strings.TrimSpace(fmt.Sprint(produced["path"]))
+				if key == "" {
+					key = strings.ToLower(name)
+				}
+				record[key] = syntheticVariableValue(name, supportID)
+			}
+		}
+		raw, err := json.Marshal(map[string]any{"data": []any{record}})
+		if err != nil {
+			return "", fmt.Errorf("Signal %s stdout 生成失败: %w", route.SignalID, err)
+		}
+		return string(raw) + "\n", nil
+	}
+	return renderProfileVariables(fmt.Sprintf("signal_id=%s\ncommand=%s\nstatus=matched\n", route.SignalID, shellDisplay(route.Argv)), variables), nil
+}
+
+func syntheticVariableValue(name, supportID string) string {
+	switch name {
+	case "VM", "VM_ID":
+		return "SIM-VM-" + supportID
+	case "HOST", "NODE", "NODE_ID", "NODE_NAME":
+		return "SIM-HCI-NODE-01"
+	case "END":
+		return "2026-01-01 00:00:00"
+	case "START":
+		return "2025-12-31 23:00:00"
+	case "PID":
+		return "9527"
+	case "REQUEST_ID":
+		return "SIM-REQUEST-" + supportID
+	default:
+		return "SIM-" + strings.ToLower(name)
+	}
 }
 
 var syntheticVariablePattern = regexp.MustCompile(`\{\{([A-Z][A-Z0-9_]*)\}\}`)

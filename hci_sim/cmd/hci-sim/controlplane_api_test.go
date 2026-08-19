@@ -53,7 +53,7 @@ func TestBundleFactoryAPICompileReviseDualApproveAndPublish(t *testing.T) {
 	t.Setenv("HCI_SIM_ALLOW_SYNTHETIC_PUBLISH", "true")
 	published := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+childDigest+"/publish", map[string]any{}, "publisher", "publisher-service", http.StatusOK)
 	activation := published["runtime_activation"].(map[string]any)
-	if published["bundle"].(map[string]any)["status"] != string(controlplane.BundlePublished) || activation["status"] != "pending_gitops_sync" {
+	if published["bundle"].(map[string]any)["status"] != string(controlplane.BundlePublished) || activation["status"] != "pending" {
 		t.Fatalf("published response=%+v", published)
 	}
 }

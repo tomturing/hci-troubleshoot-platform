@@ -124,6 +124,19 @@ def test_resolver_preserves_runtime_placeholders_for_lab_compiler():
     assert "{{ALERT_TYPE}}" in route.argv
 
 
+def test_resolver_derives_consumable_stdout_from_kbd_evidence():
+    active, revision = _snapshot()
+    revision.content_json["signals_json"]["signals"][0]["provenance"] = {
+        "evidence": "QemuMonitor: Completed 10 of 10 bytes",
+    }
+    resolution = HciSimKbdResolver().resolve_entry(_entry(), (active, revision), _tool_snapshots())
+
+    assert resolution.status == "ready_for_artifact_binding"
+    route = resolution.resolved.synthetic_routes[0]
+    assert '"evidence":"QemuMonitor: Completed 10 of 10 bytes"' in route.sample_output
+    assert route.sample_source == "kbd_provenance_evidence"
+
+
 def test_resolver_fails_closed_for_missing_active_snapshot_and_unpublished_kbd():
     missing_snapshot = HciSimKbdResolver().resolve_entry(_entry(), None)
     assert missing_snapshot.status == "capability_gap"

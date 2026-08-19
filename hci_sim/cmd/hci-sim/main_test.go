@@ -71,11 +71,21 @@ func TestSimulationEnvironmentContextCarriesAgentScopeAndBinding(t *testing.T) {
 
 func TestSimulationBuildableRequiresExactActiveRevision(t *testing.T) {
 	kbd := fixture.KBDRef{SupportID: "27123", Revision: 25, Checksum: "sha256:kbd"}
-	if !simulationBuildable("27123", kbd, 25, "sha256:bundle", "dev_golden", false) {
+	if !simulationBuildable("27123", kbd, 25, "sha256:bundle", "dev_golden", false, "internal_fast") {
 		t.Fatal("matching published runtime should be buildable")
 	}
-	if simulationBuildable("27123", kbd, 24, "sha256:bundle", "dev_golden", false) {
+	if simulationBuildable("27123", kbd, 24, "sha256:bundle", "dev_golden", false, "internal_fast") {
 		t.Fatal("stale runtime revision was marked buildable")
+	}
+}
+
+func TestSimulationBuildableAllowsKBDDerivedFixtureOnlyInInternalFastPath(t *testing.T) {
+	kbd := fixture.KBDRef{SupportID: "27123", Revision: 25}
+	if !simulationBuildable("27123", kbd, 25, "sha256:bundle", "dev_golden", true, "internal_fast") {
+		t.Fatal("internal_fast must allow KBD-derived fixtures")
+	}
+	if simulationBuildable("27123", kbd, 25, "sha256:bundle", "dev_golden", true, "high_assurance") {
+		t.Fatal("high_assurance must reject synthetic fixtures")
 	}
 }
 

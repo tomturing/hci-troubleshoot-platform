@@ -57,14 +57,18 @@ func registerControlPlaneAPI(mux *http.ServeMux, registry controlplane.Registry,
 			return
 		}
 		parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, controlPlaneActivationPrefix), "/"), "/")
+		var supportID string
+		var err error
+		if len(parts) > 0 {
+			supportID, err = url.PathUnescape(parts[0])
+		}
+		if err != nil || strings.TrimSpace(supportID) == "" {
+			http.Error(w, "support_id invalid", http.StatusBadRequest)
+			return
+		}
 		if len(parts) == 1 && r.Method == http.MethodGet {
 			if activator == nil || activator.repository == nil {
 				http.Error(w, "runtime activation persistence unavailable", http.StatusServiceUnavailable)
-				return
-			}
-			supportID, err := url.PathUnescape(parts[0])
-			if err != nil || strings.TrimSpace(supportID) == "" {
-				http.Error(w, "support_id invalid", http.StatusBadRequest)
 				return
 			}
 			record, getErr := activator.repository.GetBundleActivation(r.Context(), supportID)
@@ -75,13 +79,32 @@ func registerControlPlaneAPI(mux *http.ServeMux, registry controlplane.Registry,
 			writeJSON(w, http.StatusOK, map[string]any{"runtime_activation": record, "trace_id": requestTraceID(r)})
 			return
 		}
-		if len(parts) != 2 || parts[1] != "rollback" || r.Method != http.MethodPost {
-			http.NotFound(w, r)
+		if len(parts) == 2 && parts[1] == "activate" && r.Method == http.MethodPost {
+			if activator == nil {
+				http.Error(w, "runtime activator unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			if _, actorErr := requestActor(r, controlplane.RoleExpert); actorErr != nil {
+				writeControlPlaneError(w, actorErr)
+				return
+			}
+			var request struct {
+				Digest string `json:"bundle_digest"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&request); err != nil || strings.TrimSpace(request.Digest) == "" {
+				http.Error(w, "bundle_digest is required", http.StatusBadRequest)
+				return
+			}
+			result, activationErr := activator.ActivateBundle(r.Context(), supportID, strings.TrimSpace(request.Digest), requestTraceID(r))
+			if activationErr != nil {
+				writeJSON(w, http.StatusConflict, map[string]any{"detail": activationErr.Error(), "runtime_activation": activationJSON(result), "trace_id": requestTraceID(r)})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"runtime_activation": activationJSON(result), "trace_id": requestTraceID(r)})
 			return
 		}
-		supportID, err := url.PathUnescape(parts[0])
-		if err != nil || strings.TrimSpace(supportID) == "" {
-			http.Error(w, "support_id invalid", http.StatusBadRequest)
+		if len(parts) != 2 || parts[1] != "rollback" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
 			return
 		}
 		handleBundleRollback(w, r, activator, supportID)
@@ -179,7 +202,7 @@ func handleBundleFactory(w http.ResponseWriter, r *http.Request, registry contro
 			writeControlPlaneError(w, transitionErr)
 			return
 		}
-		activation := map[string]any{"status": "pending_gitops_sync"}
+		activation := map[string]any{"status": "pending"}
 		status := http.StatusOK
 		if activator != nil {
 			result, activationErr := activator.ActivateBundle(r.Context(), record.Input.SupportID, record.Digest, requestTraceID(r))
@@ -189,6 +212,55 @@ func handleBundleFactory(w http.ResponseWriter, r *http.Request, registry contro
 			}
 		}
 		writeJSON(w, status, map[string]any{"bundle": bundleView(record), "runtime_activation": activation, "trace_id": requestTraceID(r)})
+	case "fast-publish":
+		if releaseProfile() != "internal_fast" {
+			writeJSON(w, http.StatusConflict, map[string]any{"detail": "Internal Fast Path 未启用", "capability_gap": "internal_fast_disabled", "trace_id": requestTraceID(r)})
+			return
+		}
+		actor, actorErr := requestActor(r, controlplane.RoleExpert)
+		if actorErr != nil {
+			writeControlPlaneError(w, actorErr)
+			return
+		}
+		candidate, getErr := registry.Get(digest)
+		if getErr != nil {
+			writeControlPlaneError(w, getErr)
+			return
+		}
+		candidateRouter, parseErr := fixture.Parse(candidate.Manifest)
+		if parseErr != nil {
+			writeControlPlaneError(w, fmt.Errorf("发布前 manifest 校验失败: %w", parseErr))
+			return
+		}
+		if releaseProfile() == "high_assurance" && candidateRouter.IsSynthetic() {
+			writeJSON(w, http.StatusConflict, map[string]any{"detail": "high_assurance profile 拒绝 synthetic Bundle", "capability_gap": "synthetic_bundle_publish_disabled", "trace_id": requestTraceID(r)})
+			return
+		}
+		record, publishErr := registry.PublishInternalFast(actor, digest, time.Now().UTC())
+		if publishErr != nil {
+			writeControlPlaneError(w, publishErr)
+			return
+		}
+		if activator != nil && activator.metrics != nil {
+			activator.metrics.BundleFastPublishesTotal.Add(1)
+		}
+		activation := map[string]any{"status": "pending"}
+		status := http.StatusOK
+		if activator == nil {
+			activation = map[string]any{"status": "failed", "failure_code": "runtime_activator_unavailable"}
+			status = http.StatusAccepted
+		} else {
+			result, activationErr := activator.ActivateBundle(r.Context(), record.Input.SupportID, record.Digest, requestTraceID(r))
+			activation = activationJSON(result)
+			if activationErr != nil {
+				status = http.StatusAccepted
+			}
+		}
+		log.Printf("bundle_factory fast_publish trace_id=%s support_id=%s digest=%s actor_id=%s activation=%v", requestTraceID(r), record.Input.SupportID, record.Digest, actor.ID, activation["status"])
+		writeJSON(w, status, map[string]any{
+			"bundle": recordViewWithProfile(record), "release_profile": releaseProfile(),
+			"validation_mode": "automatic_contract_and_smoke", "runtime_activation": activation, "trace_id": requestTraceID(r),
+		})
 	case "rollback":
 		supportID := strings.TrimSpace(r.URL.Query().Get("support_id"))
 		if supportID == "" {
@@ -220,6 +292,14 @@ func handleBundleRollback(w http.ResponseWriter, r *http.Request, activator *run
 
 func syntheticPublishAllowed() bool {
 	return strings.EqualFold(strings.TrimSpace(env("HCI_SIM_ALLOW_SYNTHETIC_PUBLISH", "false")), "true")
+}
+
+func releaseProfile() string {
+	profile := strings.ToLower(strings.TrimSpace(env("HCI_SIM_RELEASE_PROFILE", "internal_fast")))
+	if profile != "high_assurance" {
+		return "internal_fast"
+	}
+	return profile
 }
 
 func compileSynthetic(w http.ResponseWriter, r *http.Request, registry controlplane.Registry) {
@@ -352,6 +432,12 @@ func bundleView(record controlplane.BundleRecord) map[string]any {
 		"creator": record.Creator, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt,
 		"stale_reason": record.StaleReason, "approvals": record.Approvals, "manifest": manifest,
 	}
+}
+
+func recordViewWithProfile(record controlplane.BundleRecord) map[string]any {
+	view := bundleView(record)
+	view["release_profile"] = releaseProfile()
+	return view
 }
 
 func writeControlPlaneError(w http.ResponseWriter, err error) {

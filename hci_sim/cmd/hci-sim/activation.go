@@ -12,6 +12,7 @@ import (
 	"hci_sim/internal/controlplane"
 	"hci_sim/internal/database"
 	"hci_sim/internal/fixture"
+	"hci_sim/internal/metrics"
 )
 
 // activationResult 是 Publish -> Runtime 的明确 ACK，不把“对象已发布”冒充“Runtime 已生效”。
@@ -34,15 +35,23 @@ type runtimeBundleActivator struct {
 	registry   controlplane.Registry
 	repository *database.RunRepository
 	runtimeID  string
+	metrics    *metrics.Metrics
 }
 
-func newRuntimeBundleActivator(pool *fixture.BundlePool, registry controlplane.Registry, repository *database.RunRepository, runtimeID string) *runtimeBundleActivator {
-	return &runtimeBundleActivator{pool: pool, registry: registry, repository: repository, runtimeID: strings.TrimSpace(runtimeID)}
+func newRuntimeBundleActivator(pool *fixture.BundlePool, registry controlplane.Registry, repository *database.RunRepository, runtimeID string, observability ...*metrics.Metrics) *runtimeBundleActivator {
+	var prom *metrics.Metrics
+	if len(observability) > 0 {
+		prom = observability[0]
+	}
+	return &runtimeBundleActivator{pool: pool, registry: registry, repository: repository, runtimeID: strings.TrimSpace(runtimeID), metrics: prom}
 }
 
 func (a *runtimeBundleActivator) ActivateBundle(ctx context.Context, supportID, digest, traceID string) (activationResult, error) {
 	if a == nil || a.pool == nil || a.registry == nil {
 		return activationResult{}, errors.New("runtime bundle activator unavailable")
+	}
+	if a.metrics != nil {
+		a.metrics.BundleActivationsTotal.Add(1)
 	}
 	supportID, digest, traceID = strings.TrimSpace(supportID), strings.TrimSpace(digest), strings.TrimSpace(traceID)
 	if supportID == "" || digest == "" || traceID == "" {
@@ -50,6 +59,9 @@ func (a *runtimeBundleActivator) ActivateBundle(ctx context.Context, supportID, 
 	}
 	record, err := a.registry.GetPublished(digest)
 	if err != nil {
+		if a.metrics != nil {
+			a.metrics.BundleActivationFailuresTotal.Add(1)
+		}
 		return activationResult{}, fmt.Errorf("读取已发布 Bundle 失败: %w", err)
 	}
 	if record.Input.SupportID != supportID {
@@ -74,6 +86,9 @@ func (a *runtimeBundleActivator) ActivateBundle(ctx context.Context, supportID, 
 		}
 	}
 	if _, err := a.pool.Activate(router); err != nil {
+		if a.metrics != nil {
+			a.metrics.BundleActivationFailuresTotal.Add(1)
+		}
 		if a.repository != nil {
 			_ = a.repository.FailBundleActivation(ctx, supportID, digest, a.runtimeID, traceID, "memory_swap_failed", err.Error())
 		}

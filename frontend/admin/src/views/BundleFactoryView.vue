@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, EditPen, Plus, Refresh, Upload } from '@element-plus/icons-vue'
+import { Check, EditPen, Plus, Refresh, Upload, Switch } from '@element-plus/icons-vue'
 
 type BundleStatus = 'draft' | 'validated' | 'approved' | 'published' | 'stale' | 'retired'
 
@@ -71,6 +71,7 @@ const editManifest = ref<BundleManifest | null>(null)
 const editReason = ref('')
 const variablesJSON = ref('{}')
 const activationStatus = ref('not_requested')
+const activationDigest = ref('')
 
 const statusOrder: BundleStatus[] = ['draft', 'validated', 'approved', 'published']
 const currentStep = computed(() => selected.value ? Math.max(0, statusOrder.indexOf(selected.value.status)) : 0)
@@ -120,7 +121,18 @@ async function selectBundle(bundle: BundleRecord) {
   try {
     const body = await request(`/v1/control-plane/bundles/${encodeURIComponent(bundle.digest)}`)
     selected.value = body.bundle as BundleRecord
-    activationStatus.value = selected.value.status === 'published' ? 'pending_gitops_sync' : 'not_requested'
+    activationStatus.value = selected.value.status === 'published' ? 'loading' : 'not_requested'
+    activationDigest.value = ''
+    if (selected.value.status === 'published') {
+      try {
+        const activation = await request(`/v1/control-plane/activations/${encodeURIComponent(selected.value.support_id)}`)
+        const runtime = activation.runtime_activation as Record<string, unknown> | undefined
+        activationStatus.value = String(runtime?.status || 'unknown')
+        activationDigest.value = String(runtime?.active_digest || runtime?.ActiveDigest || '')
+      } catch {
+        activationStatus.value = 'unknown'
+      }
+    }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error))
   } finally {
@@ -211,6 +223,49 @@ async function transition(action: 'validate' | 'approve-expert' | 'approve-secur
   }
 }
 
+async function fastPublish() {
+  if (!selected.value || !['draft', 'validated'].includes(selected.value.status)) return
+  try {
+    await ElMessageBox.confirm(`自动校验并发布：${shortDigest(selected.value.digest)}`, 'Internal Fast Path', { type: 'warning' })
+  } catch {
+    return
+  }
+  actionLoading.value = true
+  try {
+    const body = await request(`/v1/control-plane/bundles/${encodeURIComponent(selected.value.digest)}/fast-publish`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    })
+    const updated = body.bundle as BundleRecord
+    const activation = body.runtime_activation as Record<string, unknown> | undefined
+    activationStatus.value = String(activation?.status || 'pending')
+    activationDigest.value = String(activation?.digest || activation?.bundle_digest || '')
+    await loadBundles(updated.digest)
+    ElMessage.success(activationStatus.value === 'active' ? '已发布并热激活' : '已发布，等待 Runtime 激活')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    actionLoading.value = false
+  }
+}
+
+async function activateSelected() {
+  if (!selected.value?.digest || selected.value.status !== 'published') return
+  actionLoading.value = true
+  try {
+    const body = await request(`/v1/control-plane/activations/${encodeURIComponent(selected.value.support_id)}/activate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bundle_digest: selected.value.digest }),
+    })
+    const activation = body.runtime_activation as Record<string, unknown> | undefined
+    activationStatus.value = String(activation?.status || 'unknown')
+    activationDigest.value = String(activation?.digest || activation?.bundle_digest || '')
+    ElMessage.success('Runtime 已切换到所选 Bundle')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    actionLoading.value = false
+  }
+}
+
 onMounted(() => loadBundles())
 </script>
 
@@ -245,6 +300,7 @@ onMounted(() => loadBundles())
           <div><div class="title-line"><h3>KBD {{ selected.support_id }}</h3><el-tag :type="statusType(selected.status)">{{ selected.status }}</el-tag></div><code>{{ selected.digest }}</code></div>
           <div class="actions">
             <el-button v-if="canRevise" :icon="EditPen" @click="openEditor">编辑 Draft</el-button>
+            <el-button v-if="selected.status === 'draft' || selected.status === 'validated'" type="success" :icon="Upload" :loading="actionLoading" @click="fastPublish">自动校验并发布</el-button>
             <el-button v-if="selected.status === 'draft'" type="primary" :icon="Check" :loading="actionLoading" @click="transition('validate')">校验</el-button>
             <template v-if="selected.status === 'validated'">
               <el-button type="primary" :disabled="expertApproved" @click="transition('approve-expert')">专家审批</el-button>
@@ -258,7 +314,9 @@ onMounted(() => loadBundles())
           <el-step title="Draft" /><el-step title="已校验" /><el-step title="双审完成" /><el-step title="已发布" />
         </el-steps>
 
-        <el-alert v-if="selected.status === 'published'" :closable="false" type="warning" show-icon :title="`Runtime 激活：${activationStatus}`" />
+        <el-alert v-if="selected.status === 'published'" :closable="false" :type="activationStatus === 'active' ? 'success' : 'warning'" show-icon :title="`Runtime 激活：${activationStatus}${activationDigest ? ` · ${shortDigest(activationDigest)}` : ''}`">
+          <template #default><el-button v-if="activationStatus !== 'active' || activationDigest !== selected.digest" size="small" :icon="Switch" @click="activateSelected">切换到此 Bundle</el-button></template>
+        </el-alert>
         <el-alert v-else-if="selected.stale_reason" :closable="false" type="error" show-icon :title="selected.stale_reason" />
 
         <el-descriptions :column="3" border size="small" class="facts">
