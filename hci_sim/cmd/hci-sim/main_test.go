@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"hci_sim/internal/controlplane"
 	"hci_sim/internal/fixture"
 )
 
@@ -117,6 +118,42 @@ func TestPublishedBundleInputsAreStableAndComplete(t *testing.T) {
 		if input.InputFingerprint != wantFingerprint {
 			t.Fatalf("input fingerprint = %q, want %q", input.InputFingerprint, wantFingerprint)
 		}
+	}
+}
+
+func TestRuntimeBundleMetadataUsesFrozenRegistryIdentity(t *testing.T) {
+	router, err := fixture.Load(filepath.Join("..", "..", "testdata", "kbd-27123-fixture-manifest.json"))
+	if err != nil {
+		t.Fatalf("load fixture: %v", err)
+	}
+	record := controlplane.BundleRecord{
+		Digest:           router.BundleDigest(),
+		InputFingerprint: "sha256:compiled-input-fingerprint",
+		Input:            controlplane.CompileInput{SupportID: router.KBD().SupportID, KBDRevision: router.KBD().Revision},
+		Object:           controlplane.ObjectRef{Key: "bundle-object/27123", Digest: router.ManifestHash(), Size: router.ManifestSize()},
+	}
+	metadata, err := runtimeBundleMetadataFromRecord(router, record)
+	if err != nil {
+		t.Fatalf("resolve metadata: %v", err)
+	}
+	if metadata.InputFingerprint != record.InputFingerprint || metadata.ObjectURI != record.Object.Key || metadata.ObjectDigest != router.ManifestHash() || metadata.SizeBytes != router.ManifestSize() {
+		t.Fatalf("metadata did not preserve registry identity: %+v", metadata)
+	}
+}
+
+func TestRuntimeBundleMetadataRejectsDigestConflict(t *testing.T) {
+	router, err := fixture.Load(filepath.Join("..", "..", "testdata", "kbd-27123-fixture-manifest.json"))
+	if err != nil {
+		t.Fatalf("load fixture: %v", err)
+	}
+	_, err = runtimeBundleMetadataFromRecord(router, controlplane.BundleRecord{
+		Digest:           "sha256:other",
+		InputFingerprint: "sha256:compiled-input-fingerprint",
+		Input:            controlplane.CompileInput{SupportID: router.KBD().SupportID, KBDRevision: router.KBD().Revision},
+		Object:           controlplane.ObjectRef{Key: "bundle-object/27123", Digest: router.ManifestHash(), Size: router.ManifestSize()},
+	})
+	if err == nil {
+		t.Fatal("digest conflict must be rejected")
 	}
 }
 
