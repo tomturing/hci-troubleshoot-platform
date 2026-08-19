@@ -604,10 +604,20 @@ def _validate_signal(
     except ValueError as e:
         return False, str(e)
 
+    # effective_key 唯一性：同一信号的 produces 中运行时 key 不得重复
+    effective_keys_seen: set[str] = set()
     for p in produces:
-        name = p.get("name", "")
+        name = str(p.get("name", ""))
         if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
             return False, f"produces 变量名非全大写: {name}"
+        alias = str(p.get("alias") or "").strip()
+        if alias and not re.fullmatch(r"[A-Z][A-Z0-9_]*", alias):
+            return False, f"produces alias 格式非法（须全大写字母/数字/下划线）: {alias}"
+        effective_key = alias if alias else name
+        if effective_key in effective_keys_seen:
+            return False, f"同一信号的 produces effective_key 重复: {effective_key}（请使用 alias 区分）"
+        if effective_key:
+            effective_keys_seen.add(effective_key)
     for r in requires:
         if r not in available_vars:
             return False, f"requires 变量不在 schema 内: {r}"
@@ -1305,9 +1315,13 @@ def _validate_and_collect_signals(
         if isinstance(s, dict):
             orch = s.get("orchestrate") or {}
             for p in orch.get("produces") or []:
-                name = p.get("name", "")
+                name = str(p.get("name", ""))
+                alias = str(p.get("alias") or "").strip()
+                # effective_key：alias 非空时优先，否则 name；两者均加入合法变量名集合
                 if re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
                     available_vars.add(name)
+                if alias and re.fullmatch(r"[A-Z][A-Z0-9_]*", alias):
+                    available_vars.add(alias)
 
     validated: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []

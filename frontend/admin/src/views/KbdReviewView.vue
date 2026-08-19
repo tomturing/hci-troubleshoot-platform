@@ -12,6 +12,7 @@ import type { SignalV2, SignalsDoc, ChangeAnnotation } from '@/utils/kbdSignalTy
 import { generateUUID } from '@hci/shared'
 import {
   buildProduceVariableCatalog,
+  effectiveProduceKey,
   findProduceVariable,
   type ProduceVariableOption,
 } from '@/utils/produceVariables'
@@ -697,12 +698,24 @@ function updateProduceVariableName(index: number, value?: string): void {
   if (!produce) return
   const name = value || ''
   if (!name) {
-    produces[index] = { ...produce, name: '', path: '' }
+    // 清空变量名时同步清空路径与别名，避免悬空映射
+    produces[index] = { ...produce, name: '', path: '', alias: '' }
     return
   }
   const option = findProduceVariable(produceVariableCatalog.value, sigTool(signalEditDraft.value), name)
-  // 目录项是“变量名 → JSON 路径”的不可拆分映射，选择后必须同步写入两字段。
+  // 目录项是“变量名 → JSON 路径”的不可拆分映射，选择后必须同步写入两字段；alias 保持不动。
   produces[index] = option ? { ...produce, name: option.name, path: option.path } : { ...produce, name }
+}
+
+/** 规范化 alias 输入：强制大写，仅允许 [A-Z][A-Z0-9_]* 字符。 */
+function normalizeAlias(raw: string): string {
+  return raw.toUpperCase().replace(/[^A-Z0-9_]/g, '')
+}
+
+function updateProduceAlias(index: number, raw: string): void {
+  const produces = signalEditDraft.value.orchestrate.produces || []
+  if (!produces[index]) return
+  produces[index] = { ...produces[index], alias: normalizeAlias(raw) }
 }
 
 async function fetchRevisionState(kbdId: number) {
@@ -4466,7 +4479,15 @@ onUnmounted(() => clearBatchPollTimer())
                     <div class="signal-v">
                       <div v-if="(sigOrch(item.sig).produces || []).length" class="produces-preview-list">
                         <div v-for="(p, pIdx) in sigOrch(item.sig).produces" :key="pIdx" class="produce-preview-chip">
-                          <span class="produce-name">{{ p.name }}</span>
+                          <!-- alias 存在时：显示 alias（→name），强调运行时 effective key；否则只显示 name -->
+                          <span class="produce-name" :title="p.alias ? `变量名：${p.name}，运行时 key：${effectiveProduceKey(p)}` : undefined">
+                            <template v-if="p.alias">
+                              <span class="produce-alias-key">{{ effectiveProduceKey(p) }}</span>
+                              <span class="produce-alias-arrow">→</span>
+                              <span class="produce-catalog-name">{{ p.name }}</span>
+                            </template>
+                            <template v-else>{{ p.name }}</template>
+                          </span>
                           <span v-if="p.path" class="produce-path" title="取值路径"><code>{{ p.path }}</code></span>
                         </div>
                       </div>
@@ -4520,12 +4541,20 @@ onUnmounted(() => clearBatchPollTimer())
                           />
                         </el-select>
                         <el-input v-model="p.path" size="small" placeholder="选择变量后自动填入 JSON 路径" style="flex: 1" />
+                        <!-- alias：KBD 级局部别名，留空则运行时沿用 name；同一信号多个 produces 须各不相同 -->
+                        <el-input
+                          :model-value="p.alias || ''"
+                          size="small"
+                          style="width: 120px"
+                          :placeholder="p.name ? `留空用 ${p.name}` : '别名（可选）'"
+                          @input="(v: string) => updateProduceAlias(idx, v)"
+                        />
                         <el-button text type="danger" size="small" @click="signalEditDraft.orchestrate.produces?.splice(idx, 1)">删除</el-button>
                       </div>
-                      <el-button text type="primary" size="small" @click="signalEditDraft.orchestrate.produces = [...(signalEditDraft.orchestrate.produces || []), { name: '', path: '' }]">+ 添加变量</el-button>
+                      <el-button text type="primary" size="small" @click="signalEditDraft.orchestrate.produces = [...(signalEditDraft.orchestrate.produces || []), { name: '', path: '', alias: '' }]">+ 添加变量</el-button>
                     </div>
                   </div>
-                  <div class="field-hint" v-pre>抽取后写入变量池的变量名(name)与取值路径(path)，供下游消费者信号（QFK）通过 {{变量名}} 引用</div>
+                  <div class="field-hint" v-pre>抽取后写入变量池的变量名(name)与取值路径(path)，供下游消费者信号（QFK）通过 {{变量名}} 引用；同一 KBD 两个信号产出同名变量时，填「别名」区分（如 END1/END2），别名即实际变量 key</div>
                 </div>
               </div>
             </div>
@@ -6564,6 +6593,20 @@ onUnmounted(() => clearBatchPollTimer())
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+/* alias 有效 key 显示样式 */
+.produce-alias-key {
+  font-weight: 700;
+  color: #2563eb;
+}
+.produce-alias-arrow {
+  margin: 0 3px;
+  color: #94a3b8;
+  font-size: 11px;
+}
+.produce-catalog-name {
+  color: #64748b;
+  font-size: 11px;
 }
 .produce-preview-chip {
   display: inline-flex;
