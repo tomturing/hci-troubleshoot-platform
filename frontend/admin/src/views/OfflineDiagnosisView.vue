@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   createApiClient,
   createOfflineDiagnosisApi,
+  generateUUID,
   type CollectionProfileSnapshot,
   type CollectionPlan,
   type CollectorArtifact,
@@ -49,7 +50,7 @@ const getIdentityToken = (): string | undefined => {
   console.info('[offline-diagnosis][auth] 解析身份令牌', {
     hasToken: Boolean(token),
     source,
-    traceId: (window as any).__TRACE_ID__ || crypto.randomUUID(),
+    traceId: (window as any).__TRACE_ID__ || generateUUID(),
   })
   return token
 }
@@ -833,7 +834,7 @@ async function disableCollector(item: CollectorDefinition) {
 
 function openNewMapping() {
   Object.assign(mappingForm, {
-    mapping_id: crypto.randomUUID(),
+    mapping_id: generateUUID(),
     source_kbd_id: undefined,
     source_kbd_revision: undefined,
     source_signal_id: '',

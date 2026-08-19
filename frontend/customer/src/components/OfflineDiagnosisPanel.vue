@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   createApiClient,
   createOfflineDiagnosisApi,
+  generateUUID,
   type CollectionPlan,
   type CollectorArtifact,
   type CollectorArtifactItem,
@@ -39,7 +40,7 @@ const getIdentityToken = (): string | undefined => {
   console.info('[offline-diagnosis][auth] 解析身份令牌', {
     hasToken: Boolean(token),
     source,
-    traceId: (window as any).__TRACE_ID__ || crypto.randomUUID(),
+    traceId: (window as any).__TRACE_ID__ || generateUUID(),
   })
   return token
 }
@@ -170,7 +171,7 @@ function stableRequestKey(kind: string, payload: unknown): string {
       // 损坏的本地恢复信息直接覆盖，不影响服务端事实源。
     }
   }
-  const key = crypto.randomUUID()
+  const key = generateUUID()
   sessionStorage.setItem(storageKey, JSON.stringify({ payload: serialized, key }))
   return key
 }
