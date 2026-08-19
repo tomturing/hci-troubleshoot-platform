@@ -107,3 +107,36 @@ describe('findProduceVariable', () => {
     expect(findProduceVariable(catalog, 'qkv_alert', 'MISSING')).toBeUndefined()
   })
 })
+
+// ── alias / effectiveProduceKey 相关测试 ────────────────────────────────────
+import { effectiveProduceKey, parseProduceVariableDraftsFromSchema as parseDrafts } from '../produceVariables'
+
+describe('effectiveProduceKey', () => {
+  it('alias 非空时返回 alias', () => {
+    expect(effectiveProduceKey({ name: 'END', alias: 'END1' })).toBe('END1')
+    expect(effectiveProduceKey({ name: 'END', alias: '  END2  ' })).toBe('END2')
+  })
+
+  it('alias 为空或 undefined 时回退到 name', () => {
+    expect(effectiveProduceKey({ name: 'END', alias: '' })).toBe('END')
+    expect(effectiveProduceKey({ name: 'HOST' })).toBe('HOST')
+  })
+})
+
+describe('parseProduceVariableDraftsFromSchema 透传 alias', () => {
+  it('alias 字段存在时正确透传', () => {
+    const result = parseDrafts({
+      properties: {
+        produces: {
+          default: [
+            { name: 'END', path: 'end', alias: 'END1' },
+            { name: 'END', path: 'end' },
+          ],
+        },
+      },
+    })
+    expect(result[0]).toEqual({ name: 'END', path: 'end', alias: 'END1' })
+    // alias 字段缺失时为 undefined，保持向下兼容
+    expect(result[1].alias).toBeUndefined()
+  })
+})

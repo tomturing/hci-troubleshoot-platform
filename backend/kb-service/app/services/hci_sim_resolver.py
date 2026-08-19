@@ -439,7 +439,10 @@ def _derive_sample_output(signal: dict[str, Any], tool: str, signal_id: str, com
             name = str(item.get("name") or "").strip().upper()
             if not name:
                 continue
-            record[str(item.get("path") or name.lower())] = _sample_variable(name)
+            # alias 存在时用 alias 作为运行时 key，保持与 effectiveProduceKey() 逻辑一致
+            alias = str(item.get("alias") or "").strip().upper()
+            effective_key = alias if alias else name
+            record[str(item.get("path") or name.lower())] = _sample_variable(effective_key)
         pattern = str(matcher.get("pattern") or "").strip()
         if matcher.get("type") == "keyword" and bool(matcher.get("expected", True)) and pattern:
             record["evidence"] = pattern

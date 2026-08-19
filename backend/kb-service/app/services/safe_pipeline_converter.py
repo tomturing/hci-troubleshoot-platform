@@ -42,6 +42,16 @@ SAFE_PIPELINE_QFK_TOOLS = frozenset(
 )
 
 
+def _effective_produce_name(produce: dict) -> str:
+    """计算 produce 条目的运行时有效变量 key（单一真相源）。
+
+    alias 非空时优先使用 alias，否则回退到 name。
+    与前端 effectiveProduceKey() 保持完全相同的逻辑。
+    """
+    alias = str(produce.get("alias") or "").strip()
+    return alias if alias else str(produce.get("name") or "")
+
+
 def convert_safe_pipeline(raw_command: str) -> SafePipelineConversion:
     """把白名单管道转换为声明式行列 Extract，不执行输入。"""
 
