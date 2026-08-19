@@ -8,6 +8,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func integrationDigest(value string) string {
@@ -174,6 +176,77 @@ func TestRunRepositoryPostgresIdempotencyAndCAS(t *testing.T) {
 	replayedLease, err := repository.RecordLease(ctx, leasedInput.ExternalID, leased.Version, 1, "runtime-test", "sha256:lease-jti-hash")
 	if err != nil || replayedLease.Status != "leased" {
 		t.Fatalf("idempotent lease replay failed: %+v %v", replayedLease, err)
+	}
+}
+
+func TestRunRepositoryCreateReusesControlPlaneScenarioID(t *testing.T) {
+	rawURL := os.Getenv("HCI_SIM_TEST_DATABASE_URL")
+	if rawURL == "" {
+		t.Skip("HCI_SIM_TEST_DATABASE_URL is not configured")
+	}
+	target, err := Parse(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool, err := Open(ctx, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	repository, err := NewRunRepository(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	suffix := fmt.Sprintf("%016x", uint64(time.Now().UnixNano()))
+	fingerprint := integrationDigest(suffix + "-compiled-input")
+	bundleDigest := integrationDigest(suffix + "-bundle")
+	objectDigest := integrationDigest(suffix + "-object")
+	// Bundle Registry 使用 controlplane 前缀派生 Scenario ID。该数据已经存在时，
+	// Run 必须复用它，不能按 Runtime 的旧规则重新派生另一个 ID。
+	registryScenarioID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("controlplane:"+fingerprint))
+	bundleID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(bundleDigest))
+	supportID := "sc" + suffix[:12]
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO control_plane.scenario
+			(id, support_id, kbd_revision, variant, input_fingerprint, status)
+		VALUES ($1, $2, 1, 'positive-minimal', $3, 'published')
+	`, registryScenarioID, supportID, fingerprint); err != nil {
+		t.Fatalf("insert controlplane scenario: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO fixture.bundle
+			(id, scenario_id, revision, digest, schema_version, object_uri,
+			 object_digest, size_bytes, status, created_by, input_fingerprint, compile_input)
+		VALUES ($1, $2, 1, $3, '2.0', $4, $5, 1024, 'published', 'compiler-test', $6, '{}'::jsonb)
+	`, bundleID, registryScenarioID, bundleDigest, "object://bundle/"+suffix, objectDigest, fingerprint); err != nil {
+		t.Fatalf("insert published controlplane bundle: %v", err)
+	}
+	input := RunInput{
+		ExternalID: "run-scenario-identity-" + suffix, SupportID: supportID, KBDRevision: 1,
+		Variant: "positive-minimal", BundleDigest: bundleDigest, BundleSchemaVersion: "2.0",
+		BundleObjectURI: "object://bundle/" + suffix, BundleObjectDigest: objectDigest, BundleSizeBytes: 1024,
+		ExecutionMode: "sim-ssh", IdempotencyKey: "scenario-identity-" + suffix,
+		RequestDigest: integrationDigest(suffix + "-request"), InputFingerprint: fingerprint,
+		Deadline:           time.Now().UTC().Add(time.Hour),
+		EnvironmentContext: map[string]any{"test_run_id": "run-scenario-identity-" + suffix, "support_id": supportID, "kbd_revision": 1, "bundle_digest": bundleDigest, "execution_mode": "sim-ssh"},
+	}
+	created, err := repository.Create(ctx, input)
+	if err != nil {
+		t.Fatalf("create run using published controlplane Bundle: %v", err)
+	}
+	var persistedScenarioID uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT scenario_id FROM control_plane.run WHERE external_id = $1`, created.ExternalID).Scan(&persistedScenarioID); err != nil {
+		t.Fatalf("query persisted run Scenario ID: %v", err)
+	}
+	if persistedScenarioID != registryScenarioID {
+		t.Fatalf("run scenario_id = %s, want Registry Scenario ID %s", persistedScenarioID, registryScenarioID)
+	}
+	var scenarioCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM control_plane.scenario WHERE input_fingerprint = $1`, fingerprint).Scan(&scenarioCount); err != nil || scenarioCount != 1 {
+		t.Fatalf("compiled input created duplicate scenarios: count=%d err=%v", scenarioCount, err)
 	}
 }
 

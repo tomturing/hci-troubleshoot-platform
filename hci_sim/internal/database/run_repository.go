@@ -286,16 +286,21 @@ func (r *RunRepository) Create(ctx context.Context, input RunInput) (RunRecord, 
 		return RunRecord{}, fmt.Errorf("encode hci_sim environment context: %w", err)
 	}
 
-	scenarioID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(input.InputFingerprint))
-	runID := uuid.New()
-	if _, err := tx.Exec(ctx, `
+	// Scenario 的 authoritative ID 由数据库中 input_fingerprint 的唯一约束确定。
+	// Bundle Registry 早期使用过不同的 UUID 派生命名空间；不能在 Run 路径再次
+	// 推导 ID，否则相同冻结输入会引用不存在的 Scenario 并触发外键失败。
+	var scenarioID uuid.UUID
+	if err := tx.QueryRow(ctx, `
 		INSERT INTO control_plane.scenario
 			(id, support_id, kbd_revision, variant, input_fingerprint, status)
 		VALUES ($1, $2, $3, $4, $5, 'published')
 		ON CONFLICT (input_fingerprint) DO UPDATE SET updated_at = now()
-	`, scenarioID, input.SupportID, input.KBDRevision, input.Variant, input.InputFingerprint); err != nil {
+		RETURNING id
+	`, uuid.NewSHA1(uuid.NameSpaceURL, []byte(input.InputFingerprint)), input.SupportID, input.KBDRevision,
+		input.Variant, input.InputFingerprint).Scan(&scenarioID); err != nil {
 		return RunRecord{}, fmt.Errorf("upsert hci_sim scenario: %w", err)
 	}
+	runID := uuid.New()
 	bundleID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(input.BundleDigest))
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO fixture.bundle
