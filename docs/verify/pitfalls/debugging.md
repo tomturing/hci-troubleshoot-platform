@@ -125,12 +125,12 @@ PY
 **修复：** 由调用方显式传入 `execution_mode="produce" | "match"`。producer 成功时返回受输出上限保护的完整结果给 `produces` 提取；仅 match 模式要求 matcher。调用链必须在 producer 成功后执行变量池填充，并将“命令执行”“结果处理/变量提取”“下游依赖”作为独立状态记录和展示。
 
 **预防：** 为完整链路建立端到端测试：执行 `qfk_system lsof`、按 VM 字面量筛选、从第 2 列提取 PID、再执行 `ps -p {{PID}} -o cmd=`。测试同时断言实际 PID、变量池内容、下游调度和各阶段状态；不能只覆盖 `_fill_pool_from_qfk()` 等局部辅助函数。保存/发布校验必须把 producer 与 matcher 作为互斥的、均可执行的模式验证。
-## V-014：仿真 TestRun authority 未绑定 KBD 候选
+## V-014：仿真场景标签不得充当 KBD 候选答案
 
-**症状：** 仿真 TestRun 已绑定 KBD27123 且全部信号通过，报告却为 `PARTIAL`，并列出 KBD30880 未确认；30880 的命令因 fixture 不存在返回 `ERROR`。
+**症状：** 分类全量 CDD 因某篇非目标 KBD 的命令没有 fixture 而输出 `PARTIAL`；修复时读取 TestRun 的 `support_id/kbd_revision`，只保留目标 KBD，于是单篇信号通过后直接得到 `DEFINITIVE`。
 
-**根因：** hci-sim context 已提供 `support_id/kbd_revision`，但 Agent 仍把分类内全部可执行 KBD 交给 CDD。结论门禁正确地把 `SUPPORTED + INCONCLUSIVE` 收敛为 `PARTIAL`，问题在候选边界丢失 authority。
+**根因：** 混淆了两种身份：TestRun 的目标 KBD 标识“hci-sim 要模拟哪种故障现场”，S0 分类快照标识“Agent 必须验证哪些诊断假设”。用前者筛选后者会泄漏标准答案，CDD 的区分能力、其他候选排除和 Conclusion Gate 都被绕过。
 
-**修复：** `sim-ssh` 只接受 `support_id + resource_revision` 唯一匹配的 KBD；缺失、失配或重复 fail-closed 并升级人工。真实环境继续使用分类全量候选。
+**修复：** 真实与仿真始终加载同一个 S0 分类完整可执行 KBD 集合；`sim-ssh` 只能切换 acquisition provider。Bundle 编译和发布必须覆盖分类 SignalPlan 可能执行的 RouteKey，并为非目标候选提供可审查的反证现场数据。`fixture_not_found/ERROR` 仍然 fail closed，绝不能改判为 `CONTRADICTED`。
 
-**预防：** 为 TestRun authority、KBD snapshot、CDD plan 和 conclusion 建立链路测试；监控 `agent_sim_kbd_authority_binding_total`，日志保留 trace/case/run/support/revision/snapshot；禁止用 `ERROR` 当作候选排除。
+**预防：** 回归测试必须断言 real/sim 的 candidate IDs 完全相同，并通过至少两篇同分类 KBD 的端到端用例证明目标 KBD `SUPPORTED`、其他 KBD 由真实 Matcher 得到 `REJECTED`。Bundle freshness 在 TestRun 创建前检查；版本过期阻止使用旧仿真数据，但不得在 Agent S1 阶段把 revision 当作候选过滤条件。

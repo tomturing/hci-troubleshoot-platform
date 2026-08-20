@@ -1442,7 +1442,7 @@ Executor：只执行 verified 的 ResolvedAcquisition
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
 | 2026-08-07 | v6.5 | 实施 Shared Resolution Runtime 第一阶段并完成 aCLI 在线 Catalog 与真实 HCI 代表性测评；明确 production path probe、tar.gz 和持久化 resolution audit 仍为后续门禁 | [Runtime 代码与真实 HCI 能力测评](../../../verify/events/2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md) |
-| 2026-08-20 | v6.6 | 按当前 CDD 校正 KBD 候选与调度说明；仿真 `sim-ssh` TestRun 按权威 `support_id + resource_revision` 唯一绑定 KBD，绑定失配 fail-closed | [仿真 KBD 权威候选绑定与 CDD 调度方案](../events/2026-08-20-仿真KBD权威候选绑定与CDD调度方案.md) |
+| 2026-08-20 | v6.6 | 按当前 CDD 校正 KBD 候选与调度说明；明确真实与仿真都以 S0 分类完整候选为诊断边界，`sim-ssh` 只替换现场数据采集提供方 | [仿真诊断等价性与 CDD 全候选修正方案](../events/2026-08-20-仿真诊断等价性与CDD全候选修正方案.md) |
 | 2026-08-07 | v6.4 | 收敛六个领域 Resolver 的正式名称与稳定 `resolver_id`：`LogResolver`/`SystemResolver`/`DomainResolver`/`ServiceResolver`/`QkvResolver`/`VariableResolver`，保持统一 Runtime 生命周期不变 | [统一解析运行时与 Resolver 分层方案](../events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
 | 2026-08-07 | v6.3 | 确定 Shared Resolution Runtime 与领域 Resolver 分层：`qfk_system` 独立，aCLI 领域 QFK 归入独立领域 Resolver；生产门禁与消费前校验复用同一编译/解析平台，Catalog Git 化、运行快照不可变 | [统一解析运行时与 Resolver 分层方案](../events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
 | 2026-08-04 | v6.2 | KBD 运行时复用共享只读边界，历史 solution/明确写动作 Signal 在调度前 fail closed；SOP 处置节点授权语义保持不变 | [KBD 关键信号只读边界方案](../../knowledge-base/events/2026-08-04-KBD关键信号只读边界方案.md) |

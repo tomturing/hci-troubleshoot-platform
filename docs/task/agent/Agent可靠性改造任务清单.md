@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-08-07
+last_updated: 2026-08-20
 related_prs:
   - PR #474: invoke() 重试 + tool_calls 清理 + skill 可观测 + 报告模板简化 + solution 格式合并
 owner: team
@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-08-20 | v3.71 | **恢复仿真与真实环境的 CDD 诊断等价性**：S0 分类后，real/sim 均加载分类内全部已发布且可执行 KBD，并复用相同的 CDD 归约和 Conclusion Gate；仿真唯一替换点是 acquisition provider，由 hci-sim Bundle 返回模拟现场数据。删除 TestRun `support_id/kbd_revision` 对候选集的答案绑定及其错误拦截，禁止测试答案泄漏。分类完整采集面和 Bundle freshness 属于 hci-sim 数据契约，不能用候选过滤、ERROR 降级或放宽 Gate 掩盖。 | [仿真诊断等价性与CDD全候选修正任务](events/2026-08-20-仿真诊断等价性与CDD全候选修正任务.md) |
 | 2026-08-07 | v3.70 | **Shared Resolution Runtime 首个纵向切片**：新增 Log/System/Domain/Service/Qkv/Variable 六类 Resolver、Git Catalog、QFK/QKV verified gate 与 resolution audit snapshot。QKV keyword 使用 canonical-first、审核 alias 与有界 fallback；日志候选目录 retry 和只读归档检查已接入。生产 path probe、SQLite handler、通用 executor gate、tar.zst 与跨版本 replay 继续列为未完成项。 | [统一解析运行时与 Resolver 分层任务](events/2026-08-07-关键信号统一解析运行时与Resolver分层任务.md) |
 | 2026-08-07 | v3.68 | **QFK 取值—判断—产出公共契约**：数值 Matcher 先消费经逐字回查的 AI `number`/`array<number>`，非数值 Matcher 保持后置证据提取；Produce 与 Matcher 共用同一候选/AI 提取器并保持原子变量写入，Catalog 不支持的直接 predicate 仍 fail closed。 | [QFK 取值判断产出统一执行契约与 AI 数值提取方案](../../solution/events/2026-08-07-QFK取值判断产出统一执行契约与AI数值提取方案.md) |
 | 2026-08-06 | v3.68 | **QKV/QFK 关键词参数类型契约收敛**：Prompt v2.3 明确 QKV `acquire.args.keyword` 为单个 string，数组仅用于 QFK `match.pattern` 或 `extract.rows.include/exclude`；共享门禁新增 `QKV_KEYWORD_MUST_BE_STRING`，多任务动作拆成多条 Candidate。 | [QKV 关键词类型契约收敛方案](../../solution/knowledge-base/events/2026-08-06-KBD信号QKV关键词类型契约收敛方案.md) |
