@@ -97,18 +97,19 @@ cat /sf/cfg/gpu_info.ini 2>/dev/null || true
 
 ### 4.1 BackendSignal 新增字段
 
+### 4.1 BackendSignal 新增字段与自动推导
+
 **文件**：`backend/agent-service/app/tools/qfk/signal.py`
 
 ```python
-nonzero_exit_as_negative: bool = Field(
-    default=False,
-    description=(
-        "只读探针容错模式：当命令以非零退出码结束时，将其视为否定证据（matched=False）"
-        "而非系统执行故障（QFK_COMMAND_FAILED）。"
-        "引擎仍会检查终端故障哨兵，确保命令真实落到主机后才允许放行。"
-        "警告：有副作用的写命令（rm/kill/sed -i 等）严禁使用此选项。"
-    ),
+POSIX_READONLY_PROBE_COMMANDS = frozenset(
+    {"cat", "grep", "egrep", "pgrep", "test", "ls", "which", "find", "head", "tail"}
 )
+
+# 自动推导逻辑（Zero-Config 零配置）：
+# 凡是纯只读命令（cat/grep/pgrep等）且为正向预期（expected=True），
+# 默认自动开启 nonzero_exit_as_negative，使存量与增量 KBD 探针在对象不存在时
+# 均能正确作为否定证据（matched=False）流转，无需人工逐条配置。
 ```
 
 ### 4.2 QFK 引擎容错路径（engine.py）
@@ -125,19 +126,10 @@ exit_code != 0
                   → 自然产出 matched=False（否定证据）
 ```
 
-### 4.3 KBD 案例 30880 信号声明
+### 4.3 KBD 案例 30880 信号行为
 
-```json
-{
-  "namespace": "system",
-  "command": "cat",
-  "command_args": ["/sf/cfg/gpu_info.ini"],
-  "keyword": ["gpu_type"],
-  "match_mode": "or",
-  "instruction": "检查GPU配置文件中是否存在gpu_type字段",
-  "nonzero_exit_as_negative": true
-}
-```
+- **默认零配置**：案例 30880 的 `cat /sf/cfg/gpu_info.ini` 信号自动被识别为只读探针，自动生效容错，无需修改存量 JSON。
+- **显式覆盖（可选）**：若需显式声明，可在 JSON 中配置 `"nonzero_exit_as_negative": true`。
 
 ---
 
