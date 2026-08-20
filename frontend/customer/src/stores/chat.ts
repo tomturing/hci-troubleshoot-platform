@@ -391,15 +391,23 @@ export const useChatStore = defineStore('chat', () => {
   } | null>(null)
 
   // T-TOOL-18：待确认的命令执行请求（agent_exec_command SSE 事件，risk=2）
+  // 修复 Q2026082095867：补充执行下发所需的全部字段，确保 confirmAgentExec 可复用 risk=1 路径
   const pendingExecConfirm = ref<{
     execId: string
     command: string
     reason: string
     riskLevel: 1 | 2 | 3
-    nodeIp: string
+    nodeIp: string | null
     caseId: string
-    convId: string  // conversation ID（用于 POST 结果）
-    timestamp: number  // 创建时间戳（用于倒计时）
+    convId: string        // conversation ID（用于 POST 结果）
+    timestamp: number     // 创建时间戳（用于倒计时）
+    // 以下字段供 confirmAgentExec 执行时透传给 terminal_bridge
+    container: string | null
+    traceId: string | null
+    traceparent: string | null
+    toolCallId: string | null
+    timeoutSeconds: number
+    outputFilters: OutputFilterSpec[]
   } | null>(null)
 
   // T-E7: ops-agent 交互请求（interactive_request SSE 事件）
@@ -1005,10 +1013,17 @@ export const useChatStore = defineStore('chat', () => {
                   command,
                   reason,
                   riskLevel,
-                  nodeIp,
+                  nodeIp: nodeIp ?? null,
                   caseId,
                   convId,
                   timestamp: Date.now(),
+                  // 补充执行下发所需字段（修复 Q2026082095867）
+                  container: container ?? null,
+                  traceId: traceId ?? null,
+                  traceparent: traceparent ?? null,
+                  toolCallId: toolCallId ?? null,
+                  timeoutSeconds: timeoutSeconds,
+                  outputFilters: Array.isArray(outputFilters) ? outputFilters as OutputFilterSpec[] : [],
                 }
                 devLog('agent_exec_command', 'risk=2 等待用户确认', { execId, command, nodeIp })
               } catch (e) {
@@ -1069,6 +1084,75 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  /**
+   * 用户确认 risk=2 命令后，通过 terminal_bridge 执行命令。
+   *
+   * 修复 Q2026082095867：handleExecConfirmApprove 原为 TODO 空实现，
+   * 用户点击"确认执行"后命令从未发送到 bridge，导致 blpop 超时触发 QFK_TERMINAL_FAILURE。
+   * 本函数对齐 risk=1 自动执行路径（chat.ts L948-L979），补全缺失的执行下发逻辑。
+   *
+   * @param execId 要确认执行的命令 ID
+   */
+  async function confirmAgentExec(execId: string): Promise<void> {
+    const pending = pendingExecConfirm.value
+    if (!pending || pending.execId !== execId) return
+
+    // 清空确认状态（防止重复提交）
+    pendingExecConfirm.value = null
+
+    // 检查 SSH 连接状态
+    if (sshConnectionState.value !== 'connected' || !sshWebSocket.value) {
+      devLog('confirmAgentExec', 'SSH 未连接，无法执行', { execId })
+      postExecResult(
+        pending.convId, execId, 'SSH 未连接', -1, 'ssh_not_connected',
+        undefined, undefined, { errorType: 'ssh_not_connected' },
+      ).catch((e) => console.warn('[confirmAgentExec] postExecResult 失败:', e))
+      resumeOpsAgentStream()
+      return
+    }
+
+    // 准备输出过滤器和缓冲区（与 risk=1 路径对齐）
+    execOutputFilters.set(execId, pending.outputFilters ?? [])
+    execBuffers.set(execId, createExecOutputBuffer())
+
+    // 等待 bridge 执行结果（bridge 超时 + 5 秒宽限）
+    const waitResult = waitForExecResult(execId, (pending.timeoutSeconds + 5) * 1000)
+
+    // 通过 terminal_bridge WebSocket 发送命令（隔离执行通道 ssh_exec_process）
+    const wsMsg = buildAgentExecProcessMessage(
+      pending.caseId,
+      execId,
+      pending.command,
+      pending.nodeIp,
+      pending.container,
+      pending.traceId,
+      pending.traceparent,
+      pending.convId,
+      pending.toolCallId,
+      pending.timeoutSeconds,
+      pending.outputFilters,
+    )
+    sshWebSocket.value.send(wsMsg)
+    devLog('confirmAgentExec', '命令已发送到 Bridge', { execId, nodeIp: pending.nodeIp, container: pending.container })
+
+    // 结果回传与流程继续
+    await waitResult
+      .then((result) => {
+        devLog('confirmAgentExec', '执行完成', { execId, exitCode: result.exitCode })
+        return postExecResult(
+          pending.convId, execId, result.output, result.exitCode,
+          undefined, result.stdout, result.stderr, result,
+        )
+      })
+      .catch(() => {
+        devLog('confirmAgentExec', '执行超时', { execId })
+        return postExecResult(
+          pending.convId, execId, 'timeout', -1, 'timeout',
+          undefined, undefined, { timedOut: true, errorType: 'browser_wait_timeout' },
+        )
+      })
+      .finally(() => resumeOpsAgentStream())
+  }
 
   /**
    * 重新消费 ops-agent 续写事件流（不提交新 prompt）。
@@ -1612,7 +1696,8 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       function markConnected() {
-        if (settled || sshWebSocket.value !== socket || socket.readyState !== WebSocket.OPEN) return
+        const isOpen = socket.readyState === 1 || (typeof WebSocket !== 'undefined' && socket.readyState === WebSocket.OPEN)
+        if (settled || !sshWebSocket.value || !isOpen) return
         settled = true
         clearStabilityTimer()
         sshConnectionState.value = 'connected'
@@ -1689,6 +1774,7 @@ export const useChatStore = defineStore('chat', () => {
         } else if (msg.type === 'ssh_output' && msg.output) {
           sshOutputBuffer.value += msg.output
           if (sshConnectionState.value === 'connecting') {
+            clearStabilityTimer()
             markConnected()
           }
           // 如果有消费者，触发输出事件
@@ -2772,6 +2858,7 @@ export const useChatStore = defineStore('chat', () => {
     // T-TOOL-18: 命令执行确认卡片
     pendingExecConfirm,
     clearExecConfirm: () => { pendingExecConfirm.value = null },
+    confirmAgentExec,
     resumeOpsAgentStream,
     initialize,
     sendMessage,
