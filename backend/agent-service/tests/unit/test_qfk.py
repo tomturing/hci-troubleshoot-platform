@@ -573,10 +573,11 @@ async def test_nonzero_exit_as_negative_with_terminal_sentinel_still_fails(monke
 
 
 @pytest.mark.asyncio
-async def test_default_behavior_nonzero_exit_still_fails_without_flag(monkeypatch):
-    """向后兼容验证：
-    未声明 nonzero_exit_as_negative（默认 False）时，
-    exit=1 仍然触发 QFK_COMMAND_FAILED，原有行为不变。
+async def test_auto_inference_enables_nonzero_as_negative_for_readonly_cat(monkeypatch):
+    """零配置自动推导验证：
+    存量 KBD 信号未声明 nonzero_exit_as_negative 时，由于 command="cat" 属于只读白名单，
+    模型校验器自动推导 nonzero_exit_as_negative=True，
+    在文件不存在 exit=1 时自动得到 matched=False 否定结论，彻底杜绝存量案例门禁死锁。
     """
 
     class FakeExecutor:
@@ -592,10 +593,15 @@ async def test_default_behavior_nonzero_exit_still_fails_without_flag(monkeypatc
                 duration_ms=53,
                 truncated=False,
                 risk_level=1,
-                exec_id="qfk-nonzero-test-003",
+                exec_id="qfk-nonzero-test-auto",
             )
 
+    async def fake_complete_output(_result, _redis, *, source):
+        return ""
+
     monkeypatch.setattr(executor_module, "_executor", FakeExecutor())
+    monkeypatch.setattr(engine, "get_complete_output", fake_complete_output)
+    # 模拟存量信号：完全不传 nonzero_exit_as_negative
     signal = BackendSignal(
         namespace="system",
         command="cat",
@@ -608,13 +614,19 @@ async def test_default_behavior_nonzero_exit_still_fails_without_flag(monkeypatc
             "expected": True,
             "extract": {"type": "text", "rows": {"mode": "all"}, "cardinality": "all", "source": "stdout"},
         },
-        # nonzero_exit_as_negative 默认为 False，不传
     )
 
-    result = await engine.qfk_exec(signal, conversation_id="test-nonzero-003")
+    # 验证自动推导已生效
+    assert signal.nonzero_exit_as_negative is True
 
-    # 向后兼容：默认行为不变
-    assert result.error is not None
-    assert result.error.startswith("QFK_COMMAND_FAILED")
-    assert result.execution_status == "failed"
+    result = await engine.qfk_exec(
+        signal,
+        conversation_id="test-nonzero-auto",
+        required_output_sources={"stdout"},
+    )
+
+    assert result.error is None
+    assert result.matched is False
+    assert result.execution_status == "succeeded"
+    assert result.business_output_available is True
 
