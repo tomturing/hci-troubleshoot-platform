@@ -545,7 +545,11 @@ class KBDDiagnostic:
         report = await self._generate_report(
             supported if definitive else [],
             steps_executed,
-            evaluated_kbds=ordered,
+            evaluated_kbds=(
+                ordered
+                if definitive
+                else [kbd for kbd in ordered if kbd.id not in decision.supported_ids]
+            ),
             user_id=user_id,
             exclusion_reasons=exclusion_reasons,
         )
@@ -557,6 +561,7 @@ class KBDDiagnostic:
                 "### 诊断结论：部分证据成立，暂不能定论\n\n"
                 f"参考案例 {supported_refs} 的必需关键信号均已满足，但分类内仍有未决或不可执行 KBD；"
                 "这些候选仍可能成立，因此 Conclusion Gate 禁止输出根因、解决方案或进入 S4。\n\n"
+                + self._build_partial_supported_summary(supported, steps_executed)
                 + report.replace(
                     "没有任何 KBD 的全部必需关键信号均已满足",
                     "已有 KBD 的必要证据均已满足，但候选全集尚未完成排除",
@@ -1835,6 +1840,33 @@ class KBDDiagnostic:
                 f"**现场证据（关键信号确认）**：\n" + ("\n".join(evidence) if evidence else "- 无")
             )
         return "\n\n".join(blocks)
+
+    @staticmethod
+    def _build_partial_supported_summary(
+        supported_kbds: list[KBD],
+        steps_executed: list[StepResult],
+    ) -> str:
+        """PARTIAL 时展示已命中参考案例，但不泄露根因和解决方案。
+
+        Conclusion Gate 只禁止未闭合结论进入 S4；它不应抹掉已经满足全部必要信号的
+        候选事实。该摘要与 definitive 报告故意分开，避免 PARTIAL 路径误用根因模板。
+        """
+        if not supported_kbds:
+            return ""
+        blocks: list[str] = ["**已命中参考案例（结论尚未闭合）**："]
+        for kbd in supported_kbds:
+            support_id = kbd.support_id or kbd.id
+            evidence = [
+                KBDDiagnostic._format_step_evidence(step, index)
+                for index, step in enumerate(
+                    (step for step in steps_executed if step.kbd_id == kbd.id),
+                    start=1,
+                )
+            ]
+            blocks.append(f"- **参考案例 {support_id} - {kbd.name}**：必需关键信号已全部命中。")
+            if evidence:
+                blocks.append("  - 现场证据：\n" + "\n".join(f"    {line}" for item in evidence for line in item.splitlines()))
+        return "\n".join(blocks) + "\n\n"
 
     @staticmethod
     def _format_step_evidence(step: StepResult, index: int = 1) -> str:
