@@ -5,6 +5,11 @@
     "timeout": {
       "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/common_args.schema.json#/properties/timeout"
     },
+    "nonzero_exit_as_negative": {
+      "type": "boolean",
+      "default": false,
+      "description": "只读探针容错模式：当命令以非零退出码结束时，将其视为否定证据（matched=False）而非系统执行故障（QFK_COMMAND_FAILED）。"
+    },
     "command": {
       "type": "string",
       "description": "acli system 的基础子命令（如 lsof/ps/df/lsblk/iostat/smartctl）；不得含参数、acli 前缀或 shell 管道"

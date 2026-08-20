@@ -2386,8 +2386,70 @@ const signalEditDraft = ref<SignalV2>({
   match: { type: 'keyword', pattern: '', mode: 'or', expected: true },
   orchestrate: {},
 })
+const signalEditMode = ref<'form' | 'json'>('form')
+const signalJsonDraft = ref('')
+const signalJsonError = ref<string | null>(null)
 const signalSaveLoading = ref(false)
 const pipelineConvertLoading = ref(false)
+
+function onSignalEditModeChange(mode: string | number | boolean | undefined) {
+  const targetMode = mode === 'json' ? 'json' : 'form'
+  signalEditMode.value = targetMode
+  if (targetMode === 'json') {
+    if (isBackendSig(signalEditDraft.value)) syncDraftRequires()
+    signalJsonDraft.value = JSON.stringify(signalEditDraft.value, null, 2)
+    signalJsonError.value = null
+  } else {
+    tryApplySignalJson(false)
+  }
+}
+
+function tryApplySignalJson(showErrorToast = true): boolean {
+  const raw = signalJsonDraft.value.trim()
+  if (!raw) {
+    signalJsonError.value = 'JSON 内容不能为空'
+    if (showErrorToast) ElMessage.error('JSON 内容不能为空')
+    return false
+  }
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('根节点必须是 JSON 对象')
+    }
+    if (!parsed.acquire || typeof parsed.acquire !== 'object' || !parsed.acquire.tool) {
+      throw new Error('缺少必需的 acquire.tool 字段')
+    }
+    parsed.acquire.args = parsed.acquire.args || {}
+    parsed.orchestrate = parsed.orchestrate || {}
+    signalEditDraft.value = parsed
+    signalJsonError.value = null
+    return true
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'JSON 格式非法'
+    signalJsonError.value = `JSON 解析错误: ${msg}`
+    if (showErrorToast) ElMessage.error(`JSON 解析错误: ${msg}`)
+    return false
+  }
+}
+
+function formatSignalJson() {
+  try {
+    const parsed = JSON.parse(signalJsonDraft.value)
+    signalJsonDraft.value = JSON.stringify(parsed, null, 2)
+    signalJsonError.value = null
+    ElMessage.success('JSON 格式化完成')
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'JSON 语法错误'
+    signalJsonError.value = `格式化失败: ${msg}`
+    ElMessage.error(`格式化失败: ${msg}`)
+  }
+}
+
+function resetSignalJson() {
+  signalJsonDraft.value = JSON.stringify(signalEditDraft.value, null, 2)
+  signalJsonError.value = null
+  ElMessage.info('已重置为当前表单草稿')
+}
 
 function stageCurrentSignalEdit() {
   if (editingSignalIndex.value === null) return
@@ -2487,6 +2549,9 @@ function startEditSignal(origIdx: number) {
   const sig = signalList.value[origIdx]
   if (!sig) return
   editingSignalIndex.value = origIdx
+  signalEditMode.value = 'form'
+  signalJsonDraft.value = ''
+  signalJsonError.value = null
   const draft = cloneSignal(sig)
   // 确保嵌套对象存在，便于 v-model 直接绑定 v2 字段路径
   draft.acquire = draft.acquire || { tool: '', args: {} }
@@ -2573,6 +2638,9 @@ function cancelEditSignal() {
     discardStagedSignalEdit(String(signalEditDraft.value.id))
   }
   editingSignalIndex.value = null
+  signalEditMode.value = 'form'
+  signalJsonDraft.value = ''
+  signalJsonError.value = null
   signalEditDraft.value = {
     acquire: { tool: '', args: {} },
     match: { type: 'keyword', pattern: '', mode: 'or', expected: true },
@@ -2904,6 +2972,9 @@ function restoreRejectedCandidate(candidate: unknown) {
 
 async function saveSignalEdit() {
   if (editingSignalIndex.value === null || !detailEntry.value) return
+  if (signalEditMode.value === 'json') {
+    if (!tryApplySignalJson(true)) return
+  }
   if (isBackendSig(signalEditDraft.value)) {
     const produces = signalEditDraft.value.orchestrate?.produces || []
     const hasProduces = produces.some((item: any) => String(item?.name || '').trim())
@@ -4512,59 +4583,96 @@ onUnmounted(() => clearBatchPollTimer())
                   </details>
                 </div>
                 <div v-else>
-                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" type="textarea" :rows="2" placeholder="信号说明，如 镜像文件占用检查" /></div>
-                  <div class="field-hint">信号语义说明：用自然语言描述这个采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
-                  <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据（必须满足）" value="must" /><el-option label="增强证据（按门槛满足）" value="should" /><el-option label="排除证据（出现即排除）" value="exclude" /><el-option label="上下文证据（执行但不参与结论）" value="context" /></el-select></div>
-                  <div class="signal-row signal-type-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" @change="onSignalToolChange"><el-option label="任务 qkv_task" value="qkv_task" /><el-option label="告警 qkv_alert" value="qkv_alert" /><el-option label="弹框 qkv_dialog" value="qkv_dialog" /></el-select><span class="signal-nature">{{ qkvNatureLabel(sigTool(signalEditDraft)) }}</span></div>
-                  <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.acquire.args.keyword" size="small" :placeholder="qkvKeywordPlaceholder(sigTool(signalEditDraft))" /></div>
-                  <div v-if="sigTool(signalEditDraft) === 'qkv_alert'" class="field-hint">告警型关键字（acli alert get -k）：取自「分类基线 · 告警型故障」（标签以「告警」结尾），如 虚拟机CPU或内存占用过高告警、主机网口丢包告警、序列号过期告警。多个用逗号分隔</div>
-                  <div v-else-if="sigTool(signalEditDraft) === 'qkv_task'" class="field-hint">任务失败型关键字（acli task get -k）：取自「分类基线 · 任务失败型故障」，如 虚拟机开机失败、虚拟机快照失败、虚拟机scmt迁移失败。多个用逗号分隔</div>
-                  <div v-else-if="sigTool(signalEditDraft) === 'qkv_dialog'" class="field-hint">无任务/告警承载的页面弹框原文或稳定片段。运行时在当前主控 /sf/log/today 与 /sf/log/today/vt 检索，并提取 END、REQUEST_ID、HOST；若存在对应失败任务，应优先使用 qkv_task。</div>
-                  <div v-else class="field-hint">前端采集匹配关键字（acli &lt;task|dialog|alert&gt; get -k）：取自「分类基线」标签。多个用逗号分隔</div>
-                  <template v-if="sigTool(signalEditDraft) === 'qkv_dialog'">
-                    <div class="signal-row"><span class="signal-k">搜索目录</span><span class="signal-v code">/sf/log/today、/sf/log/today/vt（固定）</span></div>
-                    <div class="signal-row"><span class="signal-k">上下文行</span><el-input-number v-model="signalEditDraft.acquire.args.context_lines" :min="0" :max="10" size="small" /></div>
-                    <div class="field-hint">qkv_dialog 不执行虚构的 acli dialog get；两个固定目录用于兼容不同版本的 aCLI 目录搜索深度。</div>
-                  </template>
-                  <div class="field-hint keyword-check" :class="{ 'is-warn': qkvKeywordMismatch(signalEditDraft) }">校验规则：关键字须与本案例「分类基线」标签语义一致——任务失败型（…失败/卡住/异常/不达预期）用 qkv_task/qkv_dialog；告警型（…告警）用 qkv_alert。类型选错会导致 acli 查不到记录、信号恒为假<template v-if="qkvKeywordMismatch(signalEditDraft)"> ⚠ 当前「{{ sigTool(signalEditDraft) }} + 该关键字」疑似类型不匹配，请复核</template></div>
-                  <!-- 产出变量编辑（v2 orchestrate.produces） -->
-                  <div class="signal-row">
-                    <span class="signal-k">产出变量</span>
-                    <div class="produces-editor-mini">
-                      <div v-for="(p, idx) in (signalEditDraft.orchestrate.produces || [])" :key="idx" class="produce-item-mini">
-                        <el-select
-                          :model-value="p.name"
-                          size="small"
-                          filterable
-                          clearable
-                          placeholder="选择变量"
-                          style="width: 180px"
-                          no-data-text="请先在工具管理的产出变量中维护选项"
-                          @change="(value?: string) => updateProduceVariableName(idx, value)"
-                        >
-                          <el-option
-                            v-for="option in produceVariableOptions(sigTool(signalEditDraft), p.name)"
-                            :key="`${option.legacy ? 'legacy-' : ''}${option.name}`"
-                            :label="option.legacy ? `${option.name}（历史值）` : option.name"
-                            :value="option.name"
-                            :disabled="option.legacy"
-                          />
-                        </el-select>
-                        <el-input v-model="p.path" size="small" placeholder="选择变量后自动填入 JSON 路径" style="flex: 1" />
-                        <!-- alias：KBD 级局部别名，留空则运行时沿用 name；同一信号多个 produces 须各不相同 -->
-                        <el-input
-                          :model-value="p.alias || ''"
-                          size="small"
-                          style="width: 120px"
-                          :placeholder="p.name ? `留空用 ${p.name}` : '别名（可选）'"
-                          @input="(v: string) => updateProduceAlias(idx, v)"
-                        />
-                        <el-button text type="danger" size="small" @click="signalEditDraft.orchestrate.produces?.splice(idx, 1)">删除</el-button>
-                      </div>
-                      <el-button text type="primary" size="small" @click="signalEditDraft.orchestrate.produces = [...(signalEditDraft.orchestrate.produces || []), { name: '', path: '', alias: '' }]">+ 添加变量</el-button>
+                  <div class="signal-edit-mode-bar">
+                    <el-radio-group :model-value="signalEditMode" size="small" @change="onSignalEditModeChange">
+                      <el-radio-button value="form">表单编辑</el-radio-button>
+                      <el-radio-button value="json">JSON 显式编辑</el-radio-button>
+                    </el-radio-group>
+                    <div v-if="signalEditMode === 'json'" class="json-actions">
+                      <el-button size="small" text type="primary" @click="formatSignalJson">格式化 JSON</el-button>
+                      <el-button size="small" text @click="resetSignalJson">重置为表单</el-button>
                     </div>
                   </div>
-                  <div class="field-hint" v-pre>抽取后写入变量池的变量名(name)与取值路径(path)，供下游消费者信号（QFK）通过 {{变量名}} 引用；同一 KBD 两个信号产出同名变量时，填「别名」区分（如 END1/END2），别名即实际变量 key</div>
+
+                  <template v-if="signalEditMode === 'json'">
+                    <div class="signal-json-container">
+                      <el-input
+                        v-model="signalJsonDraft"
+                        type="textarea"
+                        :rows="16"
+                        spellcheck="false"
+                        class="signal-json-textarea"
+                        placeholder="在此直接编辑单条信号的 JSON 结构..."
+                        @input="signalJsonError = null"
+                      />
+                      <el-alert
+                        v-if="signalJsonError"
+                        :title="signalJsonError"
+                        type="error"
+                        :closable="false"
+                        show-icon
+                        class="signal-json-error-alert"
+                      />
+                      <div class="field-hint">
+                        JSON 显式编辑模式：可直接定义 acquire（工具与参数）、orchestrate（变量生产/依赖）、role 等完整契约。
+                      </div>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" type="textarea" :rows="2" placeholder="信号说明，如 镜像文件占用检查" /></div>
+                    <div class="field-hint">信号语义说明：用自然语言描述这个采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
+                    <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据（必须满足）" value="must" /><el-option label="增强证据（按门槛满足）" value="should" /><el-option label="排除证据（出现即排除）" value="exclude" /><el-option label="上下文证据（执行但不参与结论）" value="context" /></el-select></div>
+                    <div class="signal-row signal-type-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" @change="onSignalToolChange"><el-option label="任务 qkv_task" value="qkv_task" /><el-option label="告警 qkv_alert" value="qkv_alert" /><el-option label="弹框 qkv_dialog" value="qkv_dialog" /></el-select><span class="signal-nature">{{ qkvNatureLabel(sigTool(signalEditDraft)) }}</span></div>
+                    <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.acquire.args.keyword" size="small" :placeholder="qkvKeywordPlaceholder(sigTool(signalEditDraft))" /></div>
+                    <div v-if="sigTool(signalEditDraft) === 'qkv_alert'" class="field-hint">告警型关键字（acli alert get -k）：取自「分类基线 · 告警型故障」（标签以「告警」结尾），如 虚拟机CPU或内存占用过高告警、主机网口丢包告警、序列号过期告警。多个用逗号分隔</div>
+                    <div v-else-if="sigTool(signalEditDraft) === 'qkv_task'" class="field-hint">任务失败型关键字（acli task get -k）：取自「分类基线 · 任务失败型故障」，如 虚拟机开机失败、虚拟机快照失败、虚拟机scmt迁移失败。多个用逗号分隔</div>
+                    <div v-else-if="sigTool(signalEditDraft) === 'qkv_dialog'" class="field-hint">无任务/告警承载的页面弹框原文或稳定片段。运行时在当前主控 /sf/log/today 与 /sf/log/today/vt 检索，并提取 END、REQUEST_ID、HOST；若存在对应失败任务，应优先使用 qkv_task。</div>
+                    <div v-else class="field-hint">前端采集匹配关键字（acli &lt;task|dialog|alert&gt; get -k）：取自「分类基线」标签。多个用逗号分隔</div>
+                    <template v-if="sigTool(signalEditDraft) === 'qkv_dialog'">
+                      <div class="signal-row"><span class="signal-k">搜索目录</span><span class="signal-v code">/sf/log/today、/sf/log/today/vt（固定）</span></div>
+                      <div class="signal-row"><span class="signal-k">上下文行</span><el-input-number v-model="signalEditDraft.acquire.args.context_lines" :min="0" :max="10" size="small" /></div>
+                      <div class="field-hint">qkv_dialog 不执行虚构的 acli dialog get；两个固定目录用于兼容不同版本的 aCLI 目录搜索深度。</div>
+                    </template>
+                    <div class="field-hint keyword-check" :class="{ 'is-warn': qkvKeywordMismatch(signalEditDraft) }">校验规则：关键字须与本案例「分类基线」标签语义一致——任务失败型（…失败/卡住/异常/不达预期）用 qkv_task/qkv_dialog；告警型（…告警）用 qkv_alert。类型选错会导致 acli 查不到记录、信号恒为假<template v-if="qkvKeywordMismatch(signalEditDraft)"> ⚠ 当前「{{ sigTool(signalEditDraft) }} + 该关键字」疑似类型不匹配，请复核</template></div>
+                    <!-- 产出变量编辑（v2 orchestrate.produces） -->
+                    <div class="signal-row">
+                      <span class="signal-k">产出变量</span>
+                      <div class="produces-editor-mini">
+                        <div v-for="(p, idx) in (signalEditDraft.orchestrate.produces || [])" :key="idx" class="produce-item-mini">
+                          <el-select
+                            :model-value="p.name"
+                            size="small"
+                            filterable
+                            clearable
+                            placeholder="选择变量"
+                            style="width: 180px"
+                            no-data-text="请先在工具管理的产出变量中维护选项"
+                            @change="(value?: string) => updateProduceVariableName(idx, value)"
+                          >
+                            <el-option
+                              v-for="option in produceVariableOptions(sigTool(signalEditDraft), p.name)"
+                              :key="`${option.legacy ? 'legacy-' : ''}${option.name}`"
+                              :label="option.legacy ? `${option.name}（历史值）` : option.name"
+                              :value="option.name"
+                              :disabled="option.legacy"
+                            />
+                          </el-select>
+                          <el-input v-model="p.path" size="small" placeholder="选择变量后自动填入 JSON 路径" style="flex: 1" />
+                          <!-- alias：KBD 级局部别名，留空则运行时沿用 name；同一信号多个 produces 须各不相同 -->
+                          <el-input
+                            :model-value="p.alias || ''"
+                            size="small"
+                            style="width: 120px"
+                            :placeholder="p.name ? `留空用 ${p.name}` : '别名（可选）'"
+                            @input="(v: string) => updateProduceAlias(idx, v)"
+                          />
+                          <el-button text type="danger" size="small" @click="signalEditDraft.orchestrate.produces?.splice(idx, 1)">删除</el-button>
+                        </div>
+                        <el-button text type="primary" size="small" @click="signalEditDraft.orchestrate.produces = [...(signalEditDraft.orchestrate.produces || []), { name: '', path: '', alias: '' }]">+ 添加变量</el-button>
+                      </div>
+                    </div>
+                    <div class="field-hint" v-pre>抽取后写入变量池的变量名(name)与取值路径(path)，供下游消费者信号（QFK）通过 {{变量名}} 引用；同一 KBD 两个信号产出同名变量时，填「别名」区分（如 END1/END2），别名即实际变量 key</div>
+                  </template>
                 </div>
               </div>
             </div>
@@ -4883,13 +4991,49 @@ onUnmounted(() => clearBatchPollTimer())
 
                 <!-- 编辑模式 -->
                 <div v-else>
-                  <!-- 共有字段 -->
-                  <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" placeholder="信号说明，如 镜像文件占用检查" /></div>
-                  <div class="field-hint">信号语义说明：用自然语言描述这个检查/采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
-                  <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据（必须满足）" value="must" /><el-option label="增强证据（按门槛满足）" value="should" /><el-option label="排除证据（出现即排除）" value="exclude" /><el-option label="上下文证据（执行但不参与结论）" value="context" /></el-select></div>
-                  <div class="signal-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" filterable @change="onSignalToolChange"><el-option label="日志检查 qfk_log" value="qfk_log" /><el-option label="系统 qfk_system" value="qfk_system" /><el-option label="服务 qfk_service" value="qfk_service" /><el-option label="虚拟机 qfk_vm" value="qfk_vm" /><el-option label="网络 qfk_network" value="qfk_network" /><el-option label="存储 qfk_storage" value="qfk_storage" /><el-option label="硬件 qfk_hardware" value="qfk_hardware" /><el-option label="平台 qfk_platform" value="qfk_platform" /></el-select></div>
-                  <div class="signal-row"><span class="signal-k">主机</span><el-input v-model="signalEditDraft.acquire.args.host" size="small" placeholder="{{HOST}} 或固定主机名/IP" /></div>
-                  <div class="field-hint" v-pre>Terminal Bridge 通过此主机选择 SSH 会话；它不是 aCLI 参数。要遍历集群，请在下方启用“集群执行”。</div>
+                  <div class="signal-edit-mode-bar">
+                    <el-radio-group :model-value="signalEditMode" size="small" @change="onSignalEditModeChange">
+                      <el-radio-button value="form">表单编辑</el-radio-button>
+                      <el-radio-button value="json">JSON 显式编辑</el-radio-button>
+                    </el-radio-group>
+                    <div v-if="signalEditMode === 'json'" class="json-actions">
+                      <el-button size="small" text type="primary" @click="formatSignalJson">格式化 JSON</el-button>
+                      <el-button size="small" text @click="resetSignalJson">重置为表单</el-button>
+                    </div>
+                  </div>
+
+                  <template v-if="signalEditMode === 'json'">
+                    <div class="signal-json-container">
+                      <el-input
+                        v-model="signalJsonDraft"
+                        type="textarea"
+                        :rows="18"
+                        spellcheck="false"
+                        class="signal-json-textarea"
+                        placeholder="在此直接编辑单条 QFK 信号的 JSON 结构..."
+                        @input="signalJsonError = null"
+                      />
+                      <el-alert
+                        v-if="signalJsonError"
+                        :title="signalJsonError"
+                        type="error"
+                        :closable="false"
+                        show-icon
+                        class="signal-json-error-alert"
+                      />
+                      <div class="field-hint">
+                        JSON 显式编辑模式：可直接定义 acquire（工具、命令、参数及只读否定容错）、match（判定器）、orchestrate（变量生产/依赖）、role 等完整契约。
+                      </div>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <!-- 共有字段 -->
+                    <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" placeholder="信号说明，如 镜像文件占用检查" /></div>
+                    <div class="field-hint">信号语义说明：用自然语言描述这个检查/采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
+                    <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据（必须满足）" value="must" /><el-option label="增强证据（按门槛满足）" value="should" /><el-option label="排除证据（出现即排除）" value="exclude" /><el-option label="上下文证据（执行但不参与结论）" value="context" /></el-select></div>
+                    <div class="signal-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" filterable @change="onSignalToolChange"><el-option label="日志检查 qfk_log" value="qfk_log" /><el-option label="系统 qfk_system" value="qfk_system" /><el-option label="服务 qfk_service" value="qfk_service" /><el-option label="虚拟机 qfk_vm" value="qfk_vm" /><el-option label="网络 qfk_network" value="qfk_network" /><el-option label="存储 qfk_storage" value="qfk_storage" /><el-option label="硬件 qfk_hardware" value="qfk_hardware" /><el-option label="平台 qfk_platform" value="qfk_platform" /></el-select></div>
+                    <div class="signal-row"><span class="signal-k">主机</span><el-input v-model="signalEditDraft.acquire.args.host" size="small" placeholder="{{HOST}} 或固定主机名/IP" /></div>
+                    <div class="field-hint" v-pre>Terminal Bridge 通过此主机选择 SSH 会话；它不是 aCLI 参数。要遍历集群，请在下方启用“集群执行”。</div>
                   <!-- 容器与执行命令：位于输入/输出契约之前，先明确命令在哪里、执行什么。 -->
                   <template v-if="sigTool(signalEditDraft) === 'qfk_system'">
                     <div class="signal-row"><span class="signal-k">容器</span>
@@ -4986,6 +5130,19 @@ onUnmounted(() => clearBatchPollTimer())
                   <div class="field-hint" v-pre>根据主机、命令参数、筛选条件中的 {{变量名}} 自动生成，只读展示。</div>
                   <div class="signal-row"><span class="signal-k">超时时间</span><el-input-number v-model="signalEditDraft.acquire.args.timeout" :min="1" :max="300" size="small" /> 秒</div>
                   <div class="field-hint">命令在 terminal bridge 上的最大实际执行时间，范围 1–300 秒；超时后桥会停止命令并返回 timeout。</div>
+                  <div v-if="sigTool(signalEditDraft).startsWith('qfk_')" class="signal-row">
+                    <span class="signal-k">只读否定容错</span>
+                    <div class="signal-v">
+                      <el-switch
+                        v-model="signalEditDraft.acquire.args.nonzero_exit_as_negative"
+                        active-text="开启（非0退出视为未命中）"
+                        inactive-text="关闭（非0退出报错）"
+                      />
+                    </div>
+                  </div>
+                  <div v-if="sigTool(signalEditDraft).startsWith('qfk_')" class="field-hint">
+                    开启后，当 cat/grep 等只读命令因探测对象不存在返回非零退出码（如 exit 1）时，视为否定证据（未命中排除候选），避免门禁误死锁；默认由只读白名单自动推导。
+                  </div>
                   <template v-if="sigTool(signalEditDraft) === 'qfk_log'">
                     <div class="signal-row"><span class="signal-k">Request ID</span><el-input v-model="signalEditDraft.acquire.args.request_id" size="small" placeholder="可选，如 {{REQUEST_ID}}" /></div>
                   </template>
@@ -5031,6 +5188,7 @@ onUnmounted(() => clearBatchPollTimer())
                       <div v-if="signalEditDraft.acquire.args.include_archives" class="signal-row"><span class="signal-k">前置检查</span><el-select v-model="signalEditDraft.acquire.args.archive_precheck" size="small"><el-option label="已确认磁盘、日期和路径" value="verified" /></el-select></div>
                       <div v-if="signalEditDraft.acquire.args.include_archives" class="field-hint">普通 whitebox 历史日志由 END + aCLI 自动定位和解压；这里只控制显式 path 下的 .gz 搜索。</div>
                     </details>
+                  </template>
                   </template>
                 </div>
               </div>
@@ -5782,6 +5940,38 @@ onUnmounted(() => clearBatchPollTimer())
 .kbd-review {
   min-width: 0;
   padding: 16px;
+}
+
+.signal-edit-mode-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.json-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.signal-json-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.signal-json-textarea :deep(textarea) {
+  font-family: Menlo, Monaco, Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  background-color: var(--el-fill-color-light);
+}
+
+.signal-json-error-alert {
+  margin-top: 4px;
 }
 
 /* 过滤栏搜索/重置按钮容器：flex 保持同行同高 */

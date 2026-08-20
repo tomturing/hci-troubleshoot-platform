@@ -87,6 +87,14 @@ COMMON_ARGS: dict[str, dict[str, Any]] = {
         "default": DEFAULT_SIGNAL_TIMEOUT_SECONDS,
         "description": "采集/执行超时（秒，1-300）；QKV/QFK 通用",
     },
+    "nonzero_exit_as_negative": {
+        "type": "boolean",
+        "default": False,
+        "description": (
+            "只读探针容错模式：当命令以非零退出码结束时，将其视为否定证据（matched=False）"
+            "而非系统执行故障（QFK_COMMAND_FAILED）。"
+        ),
+    },
 }
 
 # ─── 采集目标定位的扁平维度（v2 拍平的 target 字段）────────────────────────────
@@ -171,6 +179,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
         "additionalProperties": False,
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
+            "nonzero_exit_as_negative": COMMON_ARGS["nonzero_exit_as_negative"],
             # QFK 资源/主题选择器（改名消歧，非匹配关键词）
             "resource_keyword": {
                 "type": "string",
@@ -226,6 +235,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
         "additionalProperties": False,
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
+            "nonzero_exit_as_negative": COMMON_ARGS["nonzero_exit_as_negative"],
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {
                 "type": "string",
@@ -264,6 +274,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
         "additionalProperties": False,
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
+            "nonzero_exit_as_negative": COMMON_ARGS["nonzero_exit_as_negative"],
             "command": {
                 "type": "string",
                 "description": "acli system 的基础子命令（如 lsof/ps/df/lsblk/iostat/smartctl）；不得含参数、acli 前缀或 shell 管道",
@@ -297,6 +308,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
         "additionalProperties": False,
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
+            "nonzero_exit_as_negative": COMMON_ARGS["nonzero_exit_as_negative"],
             "command": {"type": "string", "description": "acli vm <command>（如 list/status/console）"},
             "command_args": {"type": "array", "items": {"type": "string"}, "description": "结构化命令参数，例如 --vm-id {{VM}}"},
             "host": _TARGET_DIMENSIONS["host"],
@@ -309,6 +321,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
         "additionalProperties": False,
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
+            "nonzero_exit_as_negative": COMMON_ARGS["nonzero_exit_as_negative"],
             "command": {"type": "string", "description": "acli network <command>"},
             "command_args": {"type": "array", "items": {"type": "string"}, "description": "结构化 aCLI 参数"},
             "host": _TARGET_DIMENSIONS["host"],
@@ -321,6 +334,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
         "additionalProperties": False,
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
+            "nonzero_exit_as_negative": COMMON_ARGS["nonzero_exit_as_negative"],
             "command": {"type": "string", "description": "acli storage <command>（如 asan disk list）"},
             "command_args": {"type": "array", "items": {"type": "string"}, "description": "结构化 aCLI 参数"},
             "host": _TARGET_DIMENSIONS["host"],
@@ -333,6 +347,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
         "additionalProperties": False,
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
+            "nonzero_exit_as_negative": COMMON_ARGS["nonzero_exit_as_negative"],
             "command": {"type": "string", "description": "acli hardware <command>"},
             "command_args": {"type": "array", "items": {"type": "string"}, "description": "结构化 aCLI 参数"},
             "host": _TARGET_DIMENSIONS["host"],
@@ -345,6 +360,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
         "additionalProperties": False,
         "properties": {
             "timeout": COMMON_ARGS["timeout"],
+            "nonzero_exit_as_negative": COMMON_ARGS["nonzero_exit_as_negative"],
             "command": {"type": "string", "description": "acli platform <command>"},
             "command_args": {"type": "array", "items": {"type": "string"}, "description": "结构化 aCLI 参数"},
             "host": _TARGET_DIMENSIONS["host"],
