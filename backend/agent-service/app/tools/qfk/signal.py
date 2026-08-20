@@ -84,6 +84,17 @@ class BackendSignal(BaseModel):
         exclude=True,
         description="由 extract.rows.include 派生的运行时粗筛关键字；不属于持久化命令输入",
     )
+    nonzero_exit_as_negative: bool = Field(
+        default=False,
+        description=(
+            "只读探针容错模式：当命令以非零退出码结束时，将其视为否定证据（matched=False）"
+            "而非系统执行故障（QFK_COMMAND_FAILED）。"
+            "适用于 POSIX 只读命令（cat/grep/pgrep/ls 等）在探测对象（文件/进程/服务）"
+            "不存在时必然返回 exit 1 的场景。"
+            "引擎仍会检查终端故障哨兵，确保命令真实落到主机后才允许放行。"
+            "警告：有副作用的写命令（rm/kill/sed -i 等）严禁使用此选项。"
+        ),
+    )
 
     # ─── 校验 ─────────────────────────────────────────────────────────────────
     @model_validator(mode="after")
