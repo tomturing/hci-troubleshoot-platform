@@ -455,3 +455,166 @@ async def test_numeric_matcher_consumes_grounded_ai_values_before_deterministic_
     assert result.matched is expected
     assert result.ai_value == (float(ai_value) if matcher_type == "threshold" else [float(item) for item in ai_value])
     assert "value_source=ai_grounded" in result.evidence or "AI 提取" in result.evidence
+
+
+# ─── nonzero_exit_as_negative 只读探针容错模式 ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_nonzero_exit_as_negative_file_not_found_becomes_matched_false(monkeypatch):
+    """只读探针容错核心用例：
+    非 GPU 主机上 cat /sf/cfg/gpu_info.ini 返回 exit=1，
+    声明 nonzero_exit_as_negative=True 时，应得到 matched=False（否定证据）
+    而非 QFK_COMMAND_FAILED（执行异常），从而允许 KBD 门禁正常放行同分类主案例。
+    """
+
+    class FakeExecutor:
+        _redis = SimpleNamespace()
+
+        async def execute(self, **_kwargs):
+            return ExecResult(
+                stdout="",
+                stderr="cat: /sf/cfg/gpu_info.ini: No such file or directory",
+                exit_code=1,
+                command="acli --timeout 60 system cat /sf/cfg/gpu_info.ini",
+                node="172.28.25.4",
+                duration_ms=53,
+                truncated=False,
+                risk_level=1,
+                exec_id="qfk-nonzero-test-001",
+            )
+
+    async def fake_complete_output(_result, _redis, *, source):
+        return ""
+
+    monkeypatch.setattr(executor_module, "_executor", FakeExecutor())
+    monkeypatch.setattr(engine, "get_complete_output", fake_complete_output)
+    signal = BackendSignal(
+        namespace="system",
+        command="cat",
+        command_args=["/sf/cfg/gpu_info.ini"],
+        instruction="检查GPU配置文件中是否存在gpu_type字段",
+        matcher={
+            "type": "keyword",
+            "pattern": "gpu_type",
+            "mode": "or",
+            "expected": True,
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "all"},
+                "cardinality": "all",
+                "source": "stdout",
+            },
+        },
+        nonzero_exit_as_negative=True,
+    )
+
+    result = await engine.qfk_exec(
+        signal,
+        conversation_id="test-nonzero-001",
+        required_output_sources={"stdout"},
+    )
+
+    # 核心断言：不是 QFK_COMMAND_FAILED，而是正常的业务否定结论
+    assert result.error is None, f"不应产生 error，但收到: {result.error}"
+    assert result.matched is False
+    assert result.execution_status == "succeeded"
+    assert result.processing_status == "succeeded"
+    assert result.business_output_available is True
+
+
+@pytest.mark.asyncio
+async def test_nonzero_exit_as_negative_with_terminal_sentinel_still_fails(monkeypatch):
+    """二次安全门验证：
+    即便声明了 nonzero_exit_as_negative=True，
+    若 stderr 包含终端故障哨兵（如"SSH 会话不存在"），
+    应仍然报告 QFK_TERMINAL_FAILURE，不被容错模式绕过。
+    """
+
+    class FakeExecutor:
+        _redis = SimpleNamespace()
+
+        async def execute(self, **_kwargs):
+            return ExecResult(
+                stdout="",
+                stderr="SSH 会话不存在，需先 ssh_connect",
+                exit_code=1,
+                command="acli --timeout 60 system cat /sf/cfg/gpu_info.ini",
+                node="172.28.25.4",
+                duration_ms=5,
+                truncated=False,
+                risk_level=1,
+                exec_id="qfk-nonzero-test-002",
+            )
+
+    monkeypatch.setattr(executor_module, "_executor", FakeExecutor())
+    signal = BackendSignal(
+        namespace="system",
+        command="cat",
+        command_args=["/sf/cfg/gpu_info.ini"],
+        instruction="检查GPU配置文件中是否存在gpu_type字段",
+        matcher={
+            "type": "keyword",
+            "pattern": "gpu_type",
+            "mode": "or",
+            "expected": True,
+            "extract": {"type": "text", "rows": {"mode": "all"}, "cardinality": "all", "source": "stdout"},
+        },
+        nonzero_exit_as_negative=True,
+    )
+
+    result = await engine.qfk_exec(signal, conversation_id="test-nonzero-002")
+
+    # 二次安全门：哨兵存在，容错模式不起作用，仍然拦截为终端故障
+    assert result.error is not None
+    assert result.error.startswith("QFK_TERMINAL_FAILURE")
+    assert result.execution_status == "failed"
+    assert result.business_output_available is False
+
+
+@pytest.mark.asyncio
+async def test_default_behavior_nonzero_exit_still_fails_without_flag(monkeypatch):
+    """向后兼容验证：
+    未声明 nonzero_exit_as_negative（默认 False）时，
+    exit=1 仍然触发 QFK_COMMAND_FAILED，原有行为不变。
+    """
+
+    class FakeExecutor:
+        _redis = SimpleNamespace()
+
+        async def execute(self, **_kwargs):
+            return ExecResult(
+                stdout="",
+                stderr="cat: /sf/cfg/gpu_info.ini: No such file or directory",
+                exit_code=1,
+                command="acli --timeout 60 system cat /sf/cfg/gpu_info.ini",
+                node="172.28.25.4",
+                duration_ms=53,
+                truncated=False,
+                risk_level=1,
+                exec_id="qfk-nonzero-test-003",
+            )
+
+    monkeypatch.setattr(executor_module, "_executor", FakeExecutor())
+    signal = BackendSignal(
+        namespace="system",
+        command="cat",
+        command_args=["/sf/cfg/gpu_info.ini"],
+        instruction="检查GPU配置文件中是否存在gpu_type字段",
+        matcher={
+            "type": "keyword",
+            "pattern": "gpu_type",
+            "mode": "or",
+            "expected": True,
+            "extract": {"type": "text", "rows": {"mode": "all"}, "cardinality": "all", "source": "stdout"},
+        },
+        # nonzero_exit_as_negative 默认为 False，不传
+    )
+
+    result = await engine.qfk_exec(signal, conversation_id="test-nonzero-003")
+
+    # 向后兼容：默认行为不变
+    assert result.error is not None
+    assert result.error.startswith("QFK_COMMAND_FAILED")
+    assert result.execution_status == "failed"
+
