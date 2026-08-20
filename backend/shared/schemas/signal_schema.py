@@ -444,11 +444,17 @@ def _validate_variable_dependency_graph(raw: dict[str, Any]) -> None:
         # 用同一套占位符扫描覆盖 acquire、extract、matcher.value 和 produces.extract。
         # 这样即使前端未同步只读 requires，发布门禁也不会漏掉阈值变量依赖。
         requires.update(str(name).strip().upper() for name in derive_signal_requires(signal) if str(name).strip())
-        produces = {
-            str(item.get("name") if isinstance(item, dict) else item).strip().upper()
-            for item in (orchestrate.get("produces") or [])
-            if str(item.get("name") if isinstance(item, dict) else item).strip()
-        }
+        produces = set()
+        for item in (orchestrate.get("produces") or []):
+            if isinstance(item, dict):
+                alias = str(item.get("alias") or "").strip().upper()
+                name = str(item.get("name") or "").strip().upper()
+                if alias:
+                    produces.add(alias)
+                if name:
+                    produces.add(name)
+            elif str(item).strip():
+                produces.add(str(item).strip().upper())
         nodes.append((signal_id, requires, produces))
 
     all_produced = {name for _, _, produces in nodes for name in produces}
