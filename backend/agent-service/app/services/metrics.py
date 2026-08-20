@@ -75,6 +75,14 @@ AGENT_VERIFICATION_BLOCKED_TOTAL = Counter(
     "agent_verification_blocked_total", "Total number of premature agent closures blocked by verification gate"
 )
 
+# hci-sim TestRun 绑定的 KBD 是仿真执行的唯一权威对象。该指标只使用稳定、低基数的
+# 结果标签，具体工单和调用链由结构化日志与 trace 关联，避免 Prometheus 基数膨胀。
+AGENT_SIM_KBD_AUTHORITY_BINDING_TOTAL = Counter(
+    "agent_sim_kbd_authority_binding_total",
+    "Total authoritative hci-sim KBD candidate binding decisions",
+    labelnames=["result"],
+)
+
 # ─── 5. 信息置信度统计 ─────────────────────────────────────────────────────
 
 # 推理假设置信度（实时 Gauge）

@@ -57,6 +57,61 @@ MAX_SOP_CHARS = 8000
 # SOP 根节点 ID（默认）
 DEFAULT_ROOT_NODE_ID = "n-1"
 
+
+def _resource_revision(kbd: dict[str, Any]) -> int | None:
+    """读取 KBD 动态资源 revision；非正整数一律视为不可用于仿真绑定。"""
+    value = (kbd.get("resource_revision") or {}).get("revision")
+    if isinstance(value, bool):
+        return None
+    try:
+        revision = int(value)
+    except (TypeError, ValueError):
+        return None
+    return revision if revision > 0 else None
+
+
+def _select_kbd_candidates(
+    raw_cases: list[dict[str, Any]],
+    *,
+    execution_mode: str,
+    env_context: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any], str | None]:
+    """按运行模式选择 KBD 候选，仿真路径只接受 TestRun 的权威绑定。"""
+    if execution_mode != "sim-ssh":
+        return raw_cases, {"mode": "category_complete"}, None
+
+    support_id = str(env_context.get("support_id") or "").strip()
+    revision = env_context.get("kbd_revision")
+    context_mode = str(env_context.get("execution_mode") or "").strip()
+    if (
+        not support_id
+        or isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or revision < 1
+        or context_mode != "sim-ssh"
+        or env_context.get("simulation") is not True
+    ):
+        return [], {}, "SIM_KBD_AUTHORITY_CONTEXT_INVALID"
+
+    matches = [
+        item
+        for item in raw_cases
+        if str(item.get("support_id") or "").strip() == support_id
+        and _resource_revision(item) == revision
+    ]
+    if len(matches) != 1:
+        return [], {}, "SIM_KBD_AUTHORITY_CANDIDATE_MISMATCH"
+    return (
+        matches,
+        {
+            "mode": "sim_authoritative",
+            "support_id": support_id,
+            "kbd_revision": revision,
+            "resource_revision": _resource_revision(matches[0]),
+        },
+        None,
+    )
+
 # S0 控制符模式：菜单选项编号 / 单字确认词
 _RETRIEVAL_CONTROL_RE = re.compile(
     r"^[\u2460-\u2468\d]+$"  # ①②③④⑤⑥⑦⑧⑨ 或纯数字
@@ -195,6 +250,7 @@ class InvestigationAgent(BaseAgent):
         sop_results = []
         raw_cases: list[dict[str, Any]] = []
         snapshot_id = ""
+        env_ctx: dict[str, Any] = dict(env_context or {})
 
         # T-AGT-23: 如果存在活跃的 SOP 恢复上下文，直接使用已有的 SOP 路由，不再重新计算路由，防止输入内容变化导致路由漂移
         if sop_resume_context and sop_resume_context.get("sop_document_id"):
@@ -224,6 +280,11 @@ class InvestigationAgent(BaseAgent):
                     session_id=session_id,
                 )
 
+        # sim-ssh 的 TestRun 权威对象是 KBD，不允许恢复上下文中的 SOP 绕过绑定门禁。
+        if execution_mode == "sim-ssh" and track == "sop":
+            track = ""
+            sop_results = []
+
         if not track:
             inventory = await self._kb_client.get_category_playbooks(category_id=category_id)
             if inventory is None:
@@ -237,8 +298,51 @@ class InvestigationAgent(BaseAgent):
             snapshot_id = str(inventory.get("snapshot_id") or "")
             sop_results = list(inventory.get("sops") or [])
             all_kbds = list(inventory.get("kbds") or [])
-            raw_cases = [kbd for kbd in all_kbds if kbd.get("executable") is True]
-            track = "sop" if sop_results else "kbd" if all_kbds else "human_escalation"
+            category_raw_cases = [kbd for kbd in all_kbds if kbd.get("executable") is True]
+            raw_cases, candidate_binding, binding_error = _select_kbd_candidates(
+                category_raw_cases,
+                execution_mode=execution_mode,
+                env_context=env_ctx,
+            )
+            if binding_error:
+                from app.services.metrics import AGENT_SIM_KBD_AUTHORITY_BINDING_TOTAL
+
+                AGENT_SIM_KBD_AUTHORITY_BINDING_TOTAL.labels(result="rejected").inc()
+                logger.error(
+                    event="sim_kbd_authority_binding_rejected",
+                    message="仿真 TestRun 权威 KBD 未能唯一匹配当前分类快照，已阻止诊断",
+                    reason=binding_error,
+                    category_id=category_id,
+                    session_id=session_id,
+                    case_id=case_id,
+                    support_id=str(env_ctx.get("support_id") or ""),
+                    kbd_revision=env_ctx.get("kbd_revision"),
+                    available_kbd_count=len(category_raw_cases),
+                )
+                reason = "仿真 TestRun 的权威 KBD 与当前已发布快照不一致"
+                yield AgentTextChunk(content=f"{reason}（{binding_error}），已请求人工支持。")
+                yield AgentEscalation(
+                    reason=binding_error,
+                    context={
+                        "category_id": category_id,
+                        "snapshot_id": snapshot_id,
+                        "session_id": session_id,
+                        "case_id": case_id,
+                        "support_id": env_ctx.get("support_id"),
+                        "kbd_revision": env_ctx.get("kbd_revision"),
+                    },
+                )
+                return
+            if execution_mode == "sim-ssh":
+                from app.services.metrics import AGENT_SIM_KBD_AUTHORITY_BINDING_TOTAL
+
+                AGENT_SIM_KBD_AUTHORITY_BINDING_TOTAL.labels(result="bound").inc()
+                # TestRun 绑定的是可执行 KBD revision，不能被同分类 SOP 改写执行对象。
+                sop_results = []
+                track = "kbd"
+            else:
+                candidate_binding = {"mode": "category_complete"}
+                track = "sop" if sop_results else "kbd" if all_kbds else "human_escalation"
             yield AgentStageUpdate(
                 stage="knowledge_snapshot",
                 metadata={
@@ -247,6 +351,7 @@ class InvestigationAgent(BaseAgent):
                     "sop_count": len(sop_results),
                     "kbd_count": len(all_kbds),
                     "executable_kbd_count": len(raw_cases),
+                    "candidate_binding": candidate_binding,
                 },
             )
 
@@ -287,7 +392,7 @@ class InvestigationAgent(BaseAgent):
                 yield event
             return
 
-        # 3. 无 SOP 时直接对分类内完整的可执行 KBD 集合进行证据诊断。
+        # 3. 无 SOP 时直接对分类内完整可执行 KBD 集合，或仿真权威 KBD，进行证据诊断。
         if not raw_cases:
             reason = (
                 f"分类 {category_id} 下没有已发布 KBD"
@@ -317,7 +422,6 @@ class InvestigationAgent(BaseAgent):
         # 4. 执行 KBD 差异诊断
         # 保留预取事实的结构化值（task_logs/alert_logs 等）；QKV 可直接消费已有现场事实，
         # 避免为了重复获取同一份数据再次依赖浏览器终端桥。
-        env_ctx: dict[str, Any] = dict(env_context or {})
         env_ctx.setdefault("product", "HCI")
         if "components" not in env_ctx and category_id:
             comp_prefix = category_id.split("-")[0]
