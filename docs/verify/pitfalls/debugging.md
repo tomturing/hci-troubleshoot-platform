@@ -125,3 +125,12 @@ PY
 **修复：** 由调用方显式传入 `execution_mode="produce" | "match"`。producer 成功时返回受输出上限保护的完整结果给 `produces` 提取；仅 match 模式要求 matcher。调用链必须在 producer 成功后执行变量池填充，并将“命令执行”“结果处理/变量提取”“下游依赖”作为独立状态记录和展示。
 
 **预防：** 为完整链路建立端到端测试：执行 `qfk_system lsof`、按 VM 字面量筛选、从第 2 列提取 PID、再执行 `ps -p {{PID}} -o cmd=`。测试同时断言实际 PID、变量池内容、下游调度和各阶段状态；不能只覆盖 `_fill_pool_from_qfk()` 等局部辅助函数。保存/发布校验必须把 producer 与 matcher 作为互斥的、均可执行的模式验证。
+## V-014：仿真 TestRun authority 未绑定 KBD 候选
+
+**症状：** 仿真 TestRun 已绑定 KBD27123 且全部信号通过，报告却为 `PARTIAL`，并列出 KBD30880 未确认；30880 的命令因 fixture 不存在返回 `ERROR`。
+
+**根因：** hci-sim context 已提供 `support_id/kbd_revision`，但 Agent 仍把分类内全部可执行 KBD 交给 CDD。结论门禁正确地把 `SUPPORTED + INCONCLUSIVE` 收敛为 `PARTIAL`，问题在候选边界丢失 authority。
+
+**修复：** `sim-ssh` 只接受 `support_id + resource_revision` 唯一匹配的 KBD；缺失、失配或重复 fail-closed 并升级人工。真实环境继续使用分类全量候选。
+
+**预防：** 为 TestRun authority、KBD snapshot、CDD plan 和 conclusion 建立链路测试；监控 `agent_sim_kbd_authority_binding_total`，日志保留 trace/case/run/support/revision/snapshot；禁止用 `ERROR` 当作候选排除。

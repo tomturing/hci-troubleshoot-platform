@@ -10,7 +10,11 @@ InvestigationAgent 单元测试
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from app.adapters.agents.htp.investigation_agent import MAX_SOP_CHARS, InvestigationAgent
+from app.adapters.agents.htp.investigation_agent import (
+    MAX_SOP_CHARS,
+    InvestigationAgent,
+    _select_kbd_candidates,
+)
 from app.domain.agent_port import AgentEscalation, AgentStageUpdate, AgentTextChunk
 
 
@@ -68,6 +72,68 @@ def _make_kbd_diag_mock(stage_s4=True):
 
     mock.diagnose = fake_diagnose
     return mock
+
+
+class TestSimulationKbdAuthorityBinding:
+    """仿真 TestRun 必须绑定唯一 support_id 与动态资源 revision。"""
+
+    def test_sim_ssh_selects_only_authoritative_kbd(self):
+        candidates, binding, error = _select_kbd_candidates(
+            [
+                {"support_id": "27123", "resource_revision": {"revision": 25}},
+                {"support_id": "30880", "resource_revision": {"revision": 31}},
+            ],
+            execution_mode="sim-ssh",
+            env_context={
+                "execution_mode": "sim-ssh",
+                "simulation": True,
+                "support_id": "27123",
+                "kbd_revision": 25,
+            },
+        )
+
+        assert error is None
+        assert [item["support_id"] for item in candidates] == ["27123"]
+        assert binding == {
+            "mode": "sim_authoritative",
+            "support_id": "27123",
+            "kbd_revision": 25,
+            "resource_revision": 25,
+        }
+
+    @pytest.mark.parametrize(
+        ("env_context", "expected_error"),
+        [
+            ({"execution_mode": "sim-ssh", "simulation": True, "support_id": "27123"}, "SIM_KBD_AUTHORITY_CONTEXT_INVALID"),
+            ({"execution_mode": "sim-ssh", "simulation": True, "support_id": "27123", "kbd_revision": 24}, "SIM_KBD_AUTHORITY_CANDIDATE_MISMATCH"),
+        ],
+    )
+    def test_sim_ssh_never_falls_back_to_category_candidates(self, env_context, expected_error):
+        candidates, binding, error = _select_kbd_candidates(
+            [{"support_id": "27123", "resource_revision": {"revision": 25}}],
+            execution_mode="sim-ssh",
+            env_context=env_context,
+        )
+
+        assert candidates == []
+        assert binding == {}
+        assert error == expected_error
+
+    def test_real_environment_keeps_complete_category_candidates(self):
+        source = [
+            {"support_id": "27123", "resource_revision": {"revision": 25}},
+            {"support_id": "30880", "resource_revision": {"revision": 31}},
+        ]
+
+        candidates, binding, error = _select_kbd_candidates(
+            source,
+            execution_mode="safe-only",
+            env_context={},
+        )
+
+        assert candidates == source
+        assert binding == {"mode": "category_complete"}
+        assert error is None
 
 
 class TestInvestigationAgentRouting:
