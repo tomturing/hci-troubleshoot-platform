@@ -44,7 +44,7 @@ owner: team
 
 1. Helm 提供 `terminalBridge.enabled`、镜像、监听端口、Origin、超时、输出上限、known_hosts 和持久化配置。
 2. `terminalBridge.enabled=true` 时必须创建 Deployment、Service、探针、日志卷和必要的网络策略。
-3. Customer UI 默认收到同源 `/terminal-bridge`，显式 `customerUI.terminalBridgeUrl` 仍可覆盖，用于迁移回滚和受控联调。
+3. Admin UI 默认收到同源 `/terminal-bridge`（集群中的 terminal-bridge Pod），用于仿真测试。Customer UI 始终使用 `ws://localhost:9999`（Windows 本地 Bridge），用于真实客户环境。
 4. Ingress/Traefik 必须正确转发 WebSocket Upgrade、长连接和错误状态，不得把 WebSocket 降级为普通 HTTP。
 5. Bridge 必须以 cluster 模式运行，禁止依赖宿主机 Docker socket、`hostNetwork`、特权容器或任意 shell 旁路。
 6. Bridge 必须能够把 SSH Lease 的 `host/port/test_run_id/scenario_id` 原样、非敏感地关联到 hci-sim；Lease password、私钥和 HMAC key 不得进入日志、指标标签或 K8s 资源。

@@ -42,11 +42,11 @@ spec:
               value: "http://api-gateway.{{ include "hci.namespace" . }}.svc.{{ .Values.global.clusterDomain }}:{{ .Values.apiGateway.port }}"
             - name: DIAGNOSIS_SERVICE_UPSTREAM
               value: "http://diagnosis-service.{{ include "hci.namespace" . }}.svc.{{ .Values.global.clusterDomain }}:{{ .Values.diagnosisService.port }}"
+            # Customer UI 默认使用 Windows 本地 Bridge（ws://localhost:9999）
+            # 可通过 customerUI.terminalBridgeUrl 覆盖（例如 Linux Docker Bridge）
             - name: TERMINAL_BRIDGE_URL
               {{- if .Values.customerUI.terminalBridgeUrl }}
               value: {{ .Values.customerUI.terminalBridgeUrl | quote }}
-              {{- else if .Values.terminalBridge.enabled }}
-              value: "/terminal-bridge"
               {{- else }}
               value: ""
               {{- end }}
