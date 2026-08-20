@@ -247,6 +247,11 @@ INSERT INTO tool_definition (
                 "type": "string",
                 "description": "无 matcher 的变量产出模式所需受控行选择器"
             },
+            "nonzero_exit_as_negative": {
+                "type": "boolean",
+                "default": false,
+                "description": "只读命令非零退出码作为否定证据（未命中）"
+            },
             "matcher": {
                 "type": "object",
                 "description": "日志判定器；计数器使用 threshold/delta/trend + metric",
@@ -320,6 +325,11 @@ INSERT INTO tool_definition (
             },
             "timeout": {"type": "integer", "minimum": 1, "maximum": 300, "default": 10},
             "instruction": {"type": "string", "description": "信号语义说明"},
+            "nonzero_exit_as_negative": {
+                "type": "boolean",
+                "default": false,
+                "description": "只读命令非零退出码作为否定证据（未命中）"
+            },
             "matcher": {
                 "type": "object",
                 "description": "判定器配置，通常使用 state 类型检查 running 状态",
@@ -624,14 +634,14 @@ INSERT INTO tool_definition (
 -- 随后服务启动对账会产生新的不可变 Tool Revision。
 WITH qfk_contract_patches(tool_name, properties_patch, required_patch) AS (
     VALUES
-        ('qfk_log', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"host":{"type":"string"},"instruction":{"type":"string"}}'::jsonb, NULL::jsonb),
-        ('qfk_service', '{"service":{"type":"string"},"action":{"type":"string","enum":["status","start","stop","restart"],"default":"status"}}'::jsonb, '[]'::jsonb),
-        ('qfk_system', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"cluster":{"type":"boolean","default":false},"formatter":{"type":"string","enum":["xml","csv","keyvalue","json"]},"container":{"type":"string","enum":["asv-con","vn-con","vn-agent","vs-cp-manager"]}}'::jsonb, NULL::jsonb),
-        ('qfk_vm', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"}}'::jsonb, NULL::jsonb),
-        ('qfk_network', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"}}'::jsonb, NULL::jsonb),
-        ('qfk_storage', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"}}'::jsonb, NULL::jsonb),
-        ('qfk_hardware', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"}}'::jsonb, NULL::jsonb),
-        ('qfk_platform', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"}}'::jsonb, NULL::jsonb)
+        ('qfk_log', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"host":{"type":"string"},"instruction":{"type":"string"},"nonzero_exit_as_negative":{"type":"boolean","default":false,"description":"只读命令非零退出码作为否定证据（未命中）"}}'::jsonb, NULL::jsonb),
+        ('qfk_service', '{"service":{"type":"string"},"action":{"type":"string","enum":["status","start","stop","restart"],"default":"status"},"nonzero_exit_as_negative":{"type":"boolean","default":false,"description":"只读命令非零退出码作为否定证据（未命中）"}}'::jsonb, '[]'::jsonb),
+        ('qfk_system', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"cluster":{"type":"boolean","default":false},"formatter":{"type":"string","enum":["xml","csv","keyvalue","json"]},"container":{"type":"string","enum":["asv-con","vn-con","vn-agent","vs-cp-manager"]},"nonzero_exit_as_negative":{"type":"boolean","default":false,"description":"只读命令非零退出码作为否定证据（未命中）"}}'::jsonb, NULL::jsonb),
+        ('qfk_vm', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"},"nonzero_exit_as_negative":{"type":"boolean","default":false,"description":"只读命令非零退出码作为否定证据（未命中）"}}'::jsonb, NULL::jsonb),
+        ('qfk_network', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"},"nonzero_exit_as_negative":{"type":"boolean","default":false,"description":"只读命令非零退出码作为否定证据（未命中）"}}'::jsonb, NULL::jsonb),
+        ('qfk_storage', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"},"nonzero_exit_as_negative":{"type":"boolean","default":false,"description":"只读命令非零退出码作为否定证据（未命中）"}}'::jsonb, NULL::jsonb),
+        ('qfk_hardware', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"},"nonzero_exit_as_negative":{"type":"boolean","default":false,"description":"只读命令非零退出码作为否定证据（未命中）"}}'::jsonb, NULL::jsonb),
+        ('qfk_platform', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"},"nonzero_exit_as_negative":{"type":"boolean","default":false,"description":"只读命令非零退出码作为否定证据（未命中）"}}'::jsonb, NULL::jsonb)
 )
 UPDATE tool_definition AS tool
 SET parameters_schema = CASE
