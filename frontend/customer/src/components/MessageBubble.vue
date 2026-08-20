@@ -722,17 +722,15 @@ async function handleExecConfirmApprove() {
       timestamp: new Date(),
       metadata: { kind: 'exec_confirmed', execId: ev.execId, caseId: ev.caseId },
     })
-    chatStore.clearExecConfirm()
 
-    // TODO: 通过 terminal_bridge 执行命令（T-TOOL-04）
-    // 目前仅记录用户确认，实际执行由 chat.ts 中的 SSE 监听处理
-
-    // 触发 AI 继续处理（模拟 resume）
-    chatStore.resumeOpsAgentStream()
+    // 修复 Q2026082095867：原为 TODO 空实现，命令从未发送到 bridge。
+    // 改为调用 confirmAgentExec，对齐 risk=1 自动执行路径（chat.ts ssh_exec_process）。
+    await chatStore.confirmAgentExec(ev.execId)
   } finally {
     execConfirmSubmitting.value = false
   }
 }
+
 
 /** 用户拒绝执行 */
 async function handleExecConfirmReject() {
