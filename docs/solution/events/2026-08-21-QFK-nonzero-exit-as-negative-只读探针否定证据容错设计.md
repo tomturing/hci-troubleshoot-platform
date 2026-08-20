@@ -177,7 +177,20 @@ exit_code != 0
 
 ---
 
-## 八、关联文档
+## 八、全链路生态支持与闭环
+
+### 8.1 Admin UI 专家维护入口
+在 Admin UI 控制台 **「KBD 评审与维护」**（`KbdReviewView.vue`）的关键信号编辑抽屉中，已新增 **「只读否定容错（nonzero_exit_as_negative）」** 可视化 Switch 开关：
+- 专家可在此直接开启或关闭否定容错；
+- 默认情况下系统按只读命令白名单自动推导，专家可随时在此完成显式覆盖。
+
+### 8.2 AI 信号抽取端（kb-service）Prompt 升级
+在 `kbd_extract_signals_v2` 提示词模板中已补充规则说明：
+- 指引大模型在从案例正文提取只读探针（如 `cat` / `grep` / `pgrep` 等）时，显式输出 `"nonzero_exit_as_negative": true`，完成从生成到执行的全链路契约闭环。
+
+---
+
+## 九、关联文档
 
 - [KBD 主动诊断信号设计](../../solution/knowledge-base/KBD主动诊断信号设计.md)
 - [命令确认执行下发 terminal_bridge 修复验证](./2026-08-21-Q2026082095867-命令确认执行下发terminal_bridge修复验证.md)

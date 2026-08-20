@@ -4986,6 +4986,19 @@ onUnmounted(() => clearBatchPollTimer())
                   <div class="field-hint" v-pre>根据主机、命令参数、筛选条件中的 {{变量名}} 自动生成，只读展示。</div>
                   <div class="signal-row"><span class="signal-k">超时时间</span><el-input-number v-model="signalEditDraft.acquire.args.timeout" :min="1" :max="300" size="small" /> 秒</div>
                   <div class="field-hint">命令在 terminal bridge 上的最大实际执行时间，范围 1–300 秒；超时后桥会停止命令并返回 timeout。</div>
+                  <div v-if="sigTool(signalEditDraft).startsWith('qfk_')" class="signal-row">
+                    <span class="signal-k">只读否定容错</span>
+                    <div class="signal-v">
+                      <el-switch
+                        v-model="signalEditDraft.acquire.args.nonzero_exit_as_negative"
+                        active-text="开启（非0退出视为未命中）"
+                        inactive-text="关闭（非0退出报错）"
+                      />
+                    </div>
+                  </div>
+                  <div v-if="sigTool(signalEditDraft).startsWith('qfk_')" class="field-hint">
+                    开启后，当 cat/grep 等只读命令因探测对象不存在返回非零退出码（如 exit 1）时，视为否定证据（未命中排除候选），避免门禁误死锁；默认由只读白名单自动推导。
+                  </div>
                   <template v-if="sigTool(signalEditDraft) === 'qfk_log'">
                     <div class="signal-row"><span class="signal-k">Request ID</span><el-input v-model="signalEditDraft.acquire.args.request_id" size="small" placeholder="可选，如 {{REQUEST_ID}}" /></div>
                   </template>
