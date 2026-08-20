@@ -10,11 +10,7 @@ InvestigationAgent 单元测试
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from app.adapters.agents.htp.investigation_agent import (
-    MAX_SOP_CHARS,
-    InvestigationAgent,
-    _select_kbd_candidates,
-)
+from app.adapters.agents.htp.investigation_agent import MAX_SOP_CHARS, InvestigationAgent
 from app.domain.agent_port import AgentEscalation, AgentStageUpdate, AgentTextChunk
 
 
@@ -74,70 +70,80 @@ def _make_kbd_diag_mock(stage_s4=True):
     return mock
 
 
-class TestSimulationKbdAuthorityBinding:
-    """仿真 TestRun 必须绑定唯一 support_id 与动态资源 revision。"""
-
-    def test_sim_ssh_selects_only_authoritative_kbd(self):
-        candidates, binding, error = _select_kbd_candidates(
-            [
-                {"support_id": "27123", "resource_revision": {"revision": 25}},
-                {"support_id": "30880", "resource_revision": {"revision": 31}},
-            ],
-            execution_mode="sim-ssh",
-            env_context={
-                "execution_mode": "sim-ssh",
-                "simulation": True,
-                "support_id": "27123",
-                "kbd_revision": 25,
-            },
-        )
-
-        assert error is None
-        assert [item["support_id"] for item in candidates] == ["27123"]
-        assert binding == {
-            "mode": "sim_authoritative",
-            "support_id": "27123",
-            "kbd_revision": 25,
-            "resource_revision": 25,
-        }
-
-    @pytest.mark.parametrize(
-        ("env_context", "expected_error"),
-        [
-            ({"execution_mode": "sim-ssh", "simulation": True, "support_id": "27123"}, "SIM_KBD_AUTHORITY_CONTEXT_INVALID"),
-            ({"execution_mode": "sim-ssh", "simulation": True, "support_id": "27123", "kbd_revision": 24}, "SIM_KBD_AUTHORITY_CANDIDATE_MISMATCH"),
-        ],
-    )
-    def test_sim_ssh_never_falls_back_to_category_candidates(self, env_context, expected_error):
-        candidates, binding, error = _select_kbd_candidates(
-            [{"support_id": "27123", "resource_revision": {"revision": 25}}],
-            execution_mode="sim-ssh",
-            env_context=env_context,
-        )
-
-        assert candidates == []
-        assert binding == {}
-        assert error == expected_error
-
-    def test_real_environment_keeps_complete_category_candidates(self):
-        source = [
-            {"support_id": "27123", "resource_revision": {"revision": 25}},
-            {"support_id": "30880", "resource_revision": {"revision": 31}},
-        ]
-
-        candidates, binding, error = _select_kbd_candidates(
-            source,
-            execution_mode="safe-only",
-            env_context={},
-        )
-
-        assert candidates == source
-        assert binding == {"mode": "category_complete"}
-        assert error is None
-
-
 class TestInvestigationAgentRouting:
     """process()：路由模式判断"""
+
+    @pytest.mark.asyncio
+    async def test_real_and_sim_modes_keep_identical_category_candidates(self, monkeypatch):
+        """仿真只切换采集提供方，TestRun 身份不得泄漏为 KBD 候选答案。"""
+        captured_candidates: list[list[str]] = []
+
+        class FakeKBDDiagnostic:
+            def __init__(self, **kwargs):
+                self._result = None
+
+            async def diagnose(self, *, candidates, **kwargs):
+                captured_candidates.append([candidate.support_id for candidate in candidates])
+                yield AgentStageUpdate(stage="kbd_diag_complete", metadata={})
+
+            def get_result(self):
+                return self._result
+
+        monkeypatch.setattr(
+            "app.adapters.agents.htp.investigation_agent.KBDDiagnostic",
+            FakeKBDDiagnostic,
+        )
+        cases = [
+            {"id": "1", "support_id": "27123", "name": "镜像忙", "category_id": "虚拟机-003"},
+            {"id": "18", "support_id": "30880", "name": "GPU 配置异常", "category_id": "虚拟机-003"},
+        ]
+        snapshot_events: list[AgentStageUpdate] = []
+
+        for execution_mode, env_context in (
+            ("safe-only", {}),
+            (
+                "sim-ssh",
+                {
+                    "execution_mode": "sim-ssh",
+                    "simulation": True,
+                    "support_id": "27123",
+                    # 故意与分类当前 revision 不一致：它只能描述仿真数据版本，不能筛选候选。
+                    "kbd_revision": 25,
+                },
+            ),
+        ):
+            agent = InvestigationAgent(
+                ai_registry=_make_registry_mock_with_stream([]),
+                kb_client=_make_kb_client(cases=cases),
+                tool_executor=MagicMock(),
+            )
+            events = [
+                event
+                async for event in agent.process(
+                    session_id=f"test-{execution_mode}",
+                    messages=[{"role": "user", "content": "虚拟机无法启动"}],
+                    category_id="虚拟机-003",
+                    env_context=env_context,
+                    execution_mode=execution_mode,
+                )
+            ]
+            snapshot_events.append(
+                next(
+                    event
+                    for event in events
+                    if isinstance(event, AgentStageUpdate) and event.stage == "knowledge_snapshot"
+                )
+            )
+
+        assert captured_candidates == [["27123", "30880"], ["27123", "30880"]]
+        assert [event.metadata["candidate_scope"]["mode"] for event in snapshot_events] == [
+            "category_complete",
+            "category_complete",
+        ]
+        assert [event.metadata["candidate_scope"]["acquisition_provider"] for event in snapshot_events] == [
+            "real_environment",
+            "hci-sim",
+        ]
 
     @pytest.mark.asyncio
     async def test_routes_to_sop_mode_when_sop_track(self):

@@ -81,7 +81,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | CI 发布链路按影响范围收敛 | ✅ 已实施：main push 动态构建 Dockerfile 实际输入影响的镜像，db-migrate job 级跳过，环境仓库仅更新已构建服务；文档治理复用既有 runner，所有 job 有超时，第三方 action/tool 已固定，P50/P95 报告仅手动运行。 | 2026-08-07 |
 | hci-sim KBD 27123 纵向样板与生产化差距审查 | 🟡 27123 revision 25 的 Admin→Agent→K3s Bridge→Runtime→Result 已通过；平台生产交付保持 BLOCKED，下一阶段转入 Bundle 工厂化 | 2026-08-11 |
 
-**当前关注点（2026-08-20）**：KBD CDD 已按当前 main 校正为“分类全量候选 + 主动 acquisition 调度 + 确定性证据门禁”，不使用 KBD 向量 `top_k`、早停到 2 篇或最高频采集器筛选；仿真 `sim-ssh` TestRun 另按权威 `support_id + resource_revision` 唯一绑定 KBD。Q2026082002685 的 27123 全信号通过但误报 `PARTIAL` 已定位为 authority 未传入候选集，并完成代码、回归测试和事件归档。以[仿真 KBD 权威候选绑定与 CDD 调度方案](solution/agent/events/2026-08-20-仿真KBD权威候选绑定与CDD调度方案.md)、[任务](task/agent/events/2026-08-20-仿真KBD权威候选绑定与CDD调度任务.md)和[验证](verify/events/2026-08-20-Q2026082002685仿真KBD候选绑定验证.md)为当前事实入口。
+**当前关注点（2026-08-20）**：KBD CDD 使用“分类完整候选 + 主动 acquisition 调度 + 确定性证据门禁”，不使用 KBD 向量 `top_k`、早停到 2 篇或最高频采集器筛选。真实与仿真必须保持诊断等价：`sim-ssh` 只把现场采集切换到 hci-sim Bundle，TestRun 的目标 KBD/revision 不能成为候选答案。Q2026082002685 的 `PARTIAL` 来自 27123 Bundle 未覆盖同分类 30880 所需 acquisition；PR #857 通过单 KBD 过滤绕开缺口，已按[仿真诊断等价性与 CDD 全候选修正方案](solution/agent/events/2026-08-20-仿真诊断等价性与CDD全候选修正方案.md)、[任务](task/agent/events/2026-08-20-仿真诊断等价性与CDD全候选修正任务.md)和[验证复盘](verify/events/2026-08-20-Q2026082002685仿真CDD全候选问题复盘.md)纠正。
 
 ### 2026-08-10 三组 hci-sim 重构事件文档
 

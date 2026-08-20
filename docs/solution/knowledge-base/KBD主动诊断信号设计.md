@@ -12,7 +12,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |---|---|---|---|
-| 2026-08-20 | v1.1 | 按当前 main 校正 KBD 候选、采集调度和结论门禁；明确仿真 TestRun 以 `support_id + resource_revision` 唯一绑定 KBD，修正历史 top_k/早停/采集器频次描述 | [仿真 KBD 权威候选绑定与 CDD 调度方案](../agent/events/2026-08-20-仿真KBD权威候选绑定与CDD调度方案.md) |
+| 2026-08-20 | v1.1 | 按当前 main 校正 KBD 候选、采集调度和结论门禁；明确真实与仿真使用相同分类完整候选，修正历史 top_k/早停/采集器频次描述 | [仿真诊断等价性与 CDD 全候选修正方案](../agent/events/2026-08-20-仿真诊断等价性与CDD全候选修正方案.md) |
 
 ## 1. 决策摘要
 
@@ -36,7 +36,7 @@ owner: team
   -> DEFINITIVE 才进入 S4
 ```
 
-分类、候选 KBD 和 Signal 不是同一个概念：S0 只确认“范围”，CDD 才验证“具体哪篇案例”。真实环境按分类全量候选运行；hci-sim 的单 KBD TestRun 则按 TestRun authority 运行单篇回放，两种作用域必须显式区分。
+分类、候选 KBD 和 Signal 不是同一个概念：S0 只确认“范围”，CDD 才验证“具体哪篇案例”。真实环境与 hci-sim 都必须按分类全量候选运行；TestRun 的 `support_id/revision/bundle_digest` 只标识要模拟的故障场景和数据版本，不得作为 CDD 的答案输入。
 
 S0 已确认故障分类后，S1 必须把该分类的版本化 KnowledgeSnapshot 作为候选全集，不能再用用户的模糊原话调用 `/api/kb/route`、embedding、FTS 或 top-K 筛掉候选。进入 CDD 后，系统不让模型生成命令、判断信号或撰写根因，而是执行以下确定性流水线：
 
