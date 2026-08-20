@@ -197,7 +197,7 @@ WITH sample_rows (
           }
         }
         $signals$::jsonb,
-        ARRAY['qkv_task', 'qfk_vm']::text[]
+        '["qkv_task", "qfk_vm"]'::jsonb
     ),
     (
         'SAMPLE-SIG-CORE',
