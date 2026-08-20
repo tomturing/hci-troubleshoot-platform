@@ -42,6 +42,9 @@ spec:
               value: "http://api-gateway.{{ include "hci.namespace" . }}.svc.{{ .Values.global.clusterDomain }}:{{ .Values.apiGateway.port }}"
             - name: DIAGNOSIS_SERVICE_UPSTREAM
               value: "http://diagnosis-service.{{ include "hci.namespace" . }}.svc.{{ .Values.global.clusterDomain }}:{{ .Values.diagnosisService.port }}"
+            # Admin UI 始终使用集群中的 terminal-bridge Pod（仿真测试）
+            - name: TERMINAL_BRIDGE_URL
+              value: "/terminal-bridge"
             {{- if and .Values.diagnosisService.enabled (eq .Values.diagnosisService.identityMode "internal") }}
             - name: ADMIN_API_AUTHORIZATION
               valueFrom:
