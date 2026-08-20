@@ -230,6 +230,11 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                             "required": ["name"],
                             "properties": {
                                 "name": {"type": "string"},
+                                "alias": {
+                                    "type": "string",
+                                    "pattern": "^[A-Z][A-Z0-9_]*$",
+                                    "description": "KBD 级局部变量名别名，可选；留空时运行时沿用 name",
+                                },
                                 "type": {
                                     "type": "string",
                                     "enum": [
