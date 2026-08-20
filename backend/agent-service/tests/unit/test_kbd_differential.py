@@ -254,3 +254,33 @@ def test_diagnostic_report_keeps_legacy_suffix_without_exclusion_reasons():
 
     assert "（未确认）" in report
     assert "（未确认：" not in report
+
+
+def test_partial_report_keeps_supported_reference_case_without_root_cause():
+    """一篇 KBD 已命中、另一篇未决时，必须展示命中案例但不能输出根因。"""
+    from app.adapters.agents.htp.kbd_model import KBD
+
+    kbd = KBD(
+        id="1",
+        support_id="27123",
+        name="虚拟机镜像忙",
+        root_cause="镜像被其他进程占用",
+        solution="结束占用进程",
+    )
+    step = StepResult(
+        tool_name="qkv_task",
+        tool_args={"instruction": "获取虚拟机开机失败任务详情"},
+        raw_output='{"data": [{"type": "启动虚拟机", "status": "failed"}]}',
+        error=None,
+        kbd_id="1",
+        signal_id="sig_001",
+        outcome=SignalOutcome.SATISFIED,
+    )
+
+    report = KBDDiagnostic._build_partial_supported_summary([kbd], [step])
+
+    assert "已命中参考案例" in report
+    assert "参考案例 27123 - 虚拟机镜像忙" in report
+    assert "必需关键信号已全部命中" in report
+    assert "镜像被其他进程占用" not in report
+    assert "结束占用进程" not in report
