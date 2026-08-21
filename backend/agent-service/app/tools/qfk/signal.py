@@ -35,6 +35,11 @@ from shared.schemas.log_source_catalog import (
     validate_absolute_log_time,
 )
 
+# ─── 只读探测命令白名单（用于自动推导否定容错模式） ─────────────────────────
+POSIX_READONLY_PROBE_COMMANDS = frozenset(
+    {"cat", "grep", "egrep", "pgrep", "test", "ls", "which", "find", "head", "tail"}
+)
+
 # ─── 有效匹配模式 ──────────────────────────────────────────────────────────────
 VALID_MATCH_MODES = {"or", "and", "not"}
 
@@ -83,6 +88,17 @@ class BackendSignal(BaseModel):
         default_factory=list,
         exclude=True,
         description="由 extract.rows.include 派生的运行时粗筛关键字；不属于持久化命令输入",
+    )
+    nonzero_exit_as_negative: bool = Field(
+        default=False,
+        description=(
+            "只读探针容错模式：当命令以非零退出码结束时，将其视为否定证据（matched=False）"
+            "而非系统执行故障（QFK_COMMAND_FAILED）。"
+            "适用于 POSIX 只读命令（cat/grep/pgrep/ls 等）在探测对象（文件/进程/服务）"
+            "不存在时必然返回 exit 1 的场景。"
+            "引擎仍会检查终端故障哨兵，确保命令真实落到主机后才允许放行。"
+            "警告：有副作用的写命令（rm/kill/sed -i 等）严禁使用此选项。"
+        ),
     )
 
     # ─── 校验 ─────────────────────────────────────────────────────────────────
@@ -169,6 +185,21 @@ class BackendSignal(BaseModel):
                 raise ValueError("qfk_log 搜索归档前必须设置 archive_precheck=verified")
             if self.archive_precheck and not self.include_archives:
                 raise ValueError("archive_precheck 只能与 include_archives=true 同时使用")
+
+        # ─── 自动推导只读探针的否定容错模式（Zero-Config 零配置） ─────────────────
+        # 凡是纯只读命令（cat/grep/pgrep等）且为正向预期（expected=True），
+        # 默认自动开启 nonzero_exit_as_negative，使存量与增量 KBD 探针在对象不存在时
+        # 均能正确作为否定证据（matched=False）流转，无需人工逐条配置。
+        if (
+            not self.nonzero_exit_as_negative
+            and self.expected
+            and (
+                (self.namespace == "system" and self.command in POSIX_READONLY_PROBE_COMMANDS)
+                or self.namespace in {"log", "service"}
+            )
+        ):
+            self.nonzero_exit_as_negative = True
+
         return self
 
     # ─── 工具方法 ─────────────────────────────────────────────────────────────
