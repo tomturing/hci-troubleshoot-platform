@@ -326,4 +326,47 @@ describe('SimulationTestView 可恢复状态机', () => {
     expect(connectMessages[0].password).toBe('htp2.test')
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/result'))).toBe(false)
   })
+
+  it('命令执行返回非零退出码（排障探测）但会话正常完成时判定为通过', async () => {
+    const fetchMock = vi.mocked(fetch)
+    fetchMock
+      .mockResolvedValueOnce(response(capabilityBody))
+      .mockResolvedValueOnce(response(buildBody))
+      .mockResolvedValueOnce(response({ test_run_id: 'run-27123', case_id: 'Q2026082166014' }))
+      .mockResolvedValueOnce(response({ conversation_id: '00000000-0000-0000-0000-000000027123' }, 201))
+      .mockResolvedValueOnce(sse([
+        'event: agent_exec_command\ndata: {"execId":"exec-probe","command":"acli --timeout 120 system cat /sf/cfg/gpu_info.ini","riskLevel":1}\n\n',
+        'event: message\ndata: {"content":"已确认无独立显卡配置文件，定位到虚拟机未复位故障，排障完成。"}\n\n',
+        'data: [DONE]\n\n',
+      ]))
+      .mockResolvedValueOnce(response({ status: 'accepted' }))
+      .mockResolvedValueOnce(response({ status: 'passed' }))
+
+    const wrapper = mountView()
+    await build(wrapper)
+    await openAndCreateCase(wrapper)
+    expect(sockets).toHaveLength(1)
+    sockets[0].onopen?.()
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'ssh_connected' }) })
+    await flushPromises()
+
+    // 模拟探测命令返回非 0 退出码（例如 1 或 127）
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'exec_result', exec_id: 'exec-probe', exit_code: 1, stderr: 'cat: /sf/cfg/gpu_info.ini: No such file or directory' }) })
+    await flushPromises()
+
+    const resultCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/test-runs/run-27123/result'))
+    expect(resultCall).toBeTruthy()
+    const resultPayload = JSON.parse(String((resultCall![1] as RequestInit).body))
+    expect(resultPayload.outcome).toBe('passed')
+    expect(resultPayload.report_summary).toMatchObject({
+      case_id: 'Q2026082166014',
+      agent_stream_completed: true,
+      outcome: 'passed',
+      command_count: 1,
+      failed_command_count: 1,
+    })
+    expect(wrapper.text()).toContain('已通过')
+    expect(wrapper.text()).not.toContain('仿真测试失败')
+  })
 })
+
