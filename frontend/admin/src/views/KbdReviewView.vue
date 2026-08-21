@@ -5136,7 +5136,6 @@ onUnmounted(() => clearBatchPollTimer())
                       <el-switch
                         v-model="signalEditDraft.acquire.args.nonzero_exit_as_negative"
                         active-text="开启（非0退出视为未命中）"
-                        inactive-text="关闭（非0退出报错）"
                       />
                     </div>
                   </div>
