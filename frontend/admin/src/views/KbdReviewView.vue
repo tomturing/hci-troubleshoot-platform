@@ -4732,6 +4732,50 @@ onUnmounted(() => clearBatchPollTimer())
                   <el-alert v-if="supportsQfkSafePipeline(sigTool(item.sig)) && qfkCommandHasPipeline(item.sig)" title="历史命令含 Shell 管道，必须编辑并清理后才能统一保存" type="warning" :closable="false" show-icon />
                   <div class="signal-row"><span class="signal-k">输入变量</span><span class="signal-v code">{{ (sigOrch(item.sig).requires || []).join('、') || '—' }}</span></div>
                   <div class="signal-row"><span class="signal-k">超时时间</span><span class="signal-v">{{ sigArgs(item.sig).timeout || 60 }}s</span></div>
+                  <!-- 其他工具特有字段 -->
+                  <div v-if="sigTool(item.sig) === 'qfk_system'" class="signal-row"><span class="signal-k">命令字段</span><span class="signal-v code">{{ qfkSystemCommandText(sigArgs(item.sig)) || '—' }}</span></div>
+                  <template v-if="sigTool(item.sig) === 'qfk_log'">
+                    <div class="signal-row"><span class="signal-k">文件</span><span class="signal-v code">{{ sigArgs(item.sig).file || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">时间</span><span class="signal-v">{{ sigArgs(item.sig).time_window || '—' }}</span></div>
+                    <details class="signal-advanced-details">
+                      <summary>日志定位高级设置</summary>
+                      <div class="signal-row"><span class="signal-k">日志族</span><span class="signal-v">{{ sigArgs(item.sig).source_family || 'auto（按文件/路径推断）' }}</span></div>
+                      <div class="signal-row"><span class="signal-k">路径</span><span class="signal-v code">{{ sigArgs(item.sig).path || inferredQfkLogPathLabel(item.sig) }}</span></div>
+                      <div class="signal-row"><span class="signal-k">解析器</span><span class="signal-v code">{{ sigArgs(item.sig).parser || '自动选择' }}</span></div>
+                    </details>
+                  </template>
+                  <template v-if="sigTool(item.sig) === 'qfk_service'">
+                    <div class="signal-row"><span class="signal-k">服务</span><span class="signal-v code">{{ sigArgs(item.sig).service || sigArgs(item.sig).resource_keyword || '—' }}</span></div>
+                  </template>
+                  <div class="signal-row command-preview-row">
+                    <span class="signal-k">完整命令</span>
+                    <div class="signal-v">
+                      <el-button text type="primary" size="small" :loading="commandPreviewLoading[commandPreviewKey(item.sig, item.origIdx)]" @click="toggleCommandPreview(item.sig, item.origIdx)">
+                        {{ hasCommandPreview(item.sig, item.origIdx) ? '收起完整命令' : '查看完整 HCI 执行命令' }}
+                      </el-button>
+                      <div v-if="hasCommandPreview(item.sig, item.origIdx)" class="command-preview-panel">
+                        <template v-if="commandPreviews[commandPreviewKey(item.sig, item.origIdx)]">
+                          <code>{{ commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.command }}</code>
+                          <div class="command-preview-meta">
+                            <span>SSH 目标主机：{{ commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.host || '由运行时上下文决定' }}</span>
+                            <span v-if="commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.variables?.length">执行前替换变量：{{ commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.variables!.join('、') }}</span>
+                            <el-button text type="primary" size="small" @click="copyCommandPreview(item.sig, item.origIdx)">复制命令</el-button>
+                          </div>
+                          <div class="field-hint command-preview-notice">{{ commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.notice }}</div>
+                        </template>
+                        <el-alert v-else-if="commandPreviewErrors[commandPreviewKey(item.sig, item.origIdx)]" type="warning" :closable="false" show-icon :title="`无法编译完整命令：${commandPreviewErrors[commandPreviewKey(item.sig, item.origIdx)]}`">
+                          <el-button text type="primary" size="small" @click="loadCommandPreview(item.sig, item.origIdx, true)">重新编译</el-button>
+                        </el-alert>
+                      </div>
+                    </div>
+                  </div>
+                  <!-- 来源证据只用于追溯 LLM/原案例依据；固定放在卡片末尾，默认不展开。 -->
+                  <details class="signal-evidence-details">
+                    <summary>来源证据（默认收起，不参与编辑）</summary>
+                    <div class="signal-row"><span class="signal-k">证据来源</span><span class="signal-v code">{{ sigSourceRefs(item.sig).join('、') || sigProvenance(item.sig).source_section || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">证据原文</span><span class="signal-v">{{ sigProvenance(item.sig).evidence || '—' }}</span></div>
+                  </details>
+
                   <!-- 执行结果处理（两步流程：① 先取值 → ② 再判断/产出） -->
                   <div v-if="qfkOutputMode(item.sig) === 'produces'" class="signal-processing-preview" data-output-mode="produces">
                     <div class="processing-preview-head">
@@ -4943,50 +4987,6 @@ onUnmounted(() => clearBatchPollTimer())
                       </div>
                     </div>
                   </div>
-
-                  <!-- 其他工具特有字段 -->
-                  <div v-if="sigTool(item.sig) === 'qfk_system'" class="signal-row"><span class="signal-k">命令字段</span><span class="signal-v code">{{ qfkSystemCommandText(sigArgs(item.sig)) || '—' }}</span></div>
-                  <template v-if="sigTool(item.sig) === 'qfk_log'">
-                    <div class="signal-row"><span class="signal-k">文件</span><span class="signal-v code">{{ sigArgs(item.sig).file || '—' }}</span></div>
-                    <div class="signal-row"><span class="signal-k">时间</span><span class="signal-v">{{ sigArgs(item.sig).time_window || '—' }}</span></div>
-                    <details class="signal-advanced-details">
-                      <summary>日志定位高级设置</summary>
-                      <div class="signal-row"><span class="signal-k">日志族</span><span class="signal-v">{{ sigArgs(item.sig).source_family || 'auto（按文件/路径推断）' }}</span></div>
-                      <div class="signal-row"><span class="signal-k">路径</span><span class="signal-v code">{{ sigArgs(item.sig).path || inferredQfkLogPathLabel(item.sig) }}</span></div>
-                      <div class="signal-row"><span class="signal-k">解析器</span><span class="signal-v code">{{ sigArgs(item.sig).parser || '自动选择' }}</span></div>
-                    </details>
-                  </template>
-                  <template v-if="sigTool(item.sig) === 'qfk_service'">
-                    <div class="signal-row"><span class="signal-k">服务</span><span class="signal-v code">{{ sigArgs(item.sig).service || sigArgs(item.sig).resource_keyword || '—' }}</span></div>
-                  </template>
-                  <div class="signal-row command-preview-row">
-                    <span class="signal-k">完整命令</span>
-                    <div class="signal-v">
-                      <el-button text type="primary" size="small" :loading="commandPreviewLoading[commandPreviewKey(item.sig, item.origIdx)]" @click="toggleCommandPreview(item.sig, item.origIdx)">
-                        {{ hasCommandPreview(item.sig, item.origIdx) ? '收起完整命令' : '查看完整 HCI 执行命令' }}
-                      </el-button>
-                      <div v-if="hasCommandPreview(item.sig, item.origIdx)" class="command-preview-panel">
-                        <template v-if="commandPreviews[commandPreviewKey(item.sig, item.origIdx)]">
-                          <code>{{ commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.command }}</code>
-                          <div class="command-preview-meta">
-                            <span>SSH 目标主机：{{ commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.host || '由运行时上下文决定' }}</span>
-                            <span v-if="commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.variables?.length">执行前替换变量：{{ commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.variables!.join('、') }}</span>
-                            <el-button text type="primary" size="small" @click="copyCommandPreview(item.sig, item.origIdx)">复制命令</el-button>
-                          </div>
-                          <div class="field-hint command-preview-notice">{{ commandPreviews[commandPreviewKey(item.sig, item.origIdx)]!.notice }}</div>
-                        </template>
-                        <el-alert v-else-if="commandPreviewErrors[commandPreviewKey(item.sig, item.origIdx)]" type="warning" :closable="false" show-icon :title="`无法编译完整命令：${commandPreviewErrors[commandPreviewKey(item.sig, item.origIdx)]}`">
-                          <el-button text type="primary" size="small" @click="loadCommandPreview(item.sig, item.origIdx, true)">重新编译</el-button>
-                        </el-alert>
-                      </div>
-                    </div>
-                  </div>
-                  <!-- 来源证据只用于追溯 LLM/原案例依据；固定放在卡片末尾，默认不展开。 -->
-                  <details class="signal-evidence-details">
-                    <summary>来源证据（默认收起，不参与编辑）</summary>
-                    <div class="signal-row"><span class="signal-k">证据来源</span><span class="signal-v code">{{ sigSourceRefs(item.sig).join('、') || sigProvenance(item.sig).source_section || '—' }}</span></div>
-                    <div class="signal-row"><span class="signal-k">证据原文</span><span class="signal-v">{{ sigProvenance(item.sig).evidence || '—' }}</span></div>
-                  </details>
                 </div>
 
                 <!-- 编辑模式 -->
