@@ -5131,7 +5131,7 @@ onUnmounted(() => clearBatchPollTimer())
                   <div class="signal-row"><span class="signal-k">超时时间</span><el-input-number v-model="signalEditDraft.acquire.args.timeout" :min="1" :max="300" size="small" /> 秒</div>
                   <div class="field-hint">命令在 terminal bridge 上的最大实际执行时间，范围 1–300 秒；超时后桥会停止命令并返回 timeout。</div>
                   <div v-if="sigTool(signalEditDraft).startsWith('qfk_')" class="signal-row">
-                    <span class="signal-k">只读否定容错</span>
+                    <span class="signal-k">只读容错</span>
                     <div class="signal-v">
                       <el-switch
                         v-model="signalEditDraft.acquire.args.nonzero_exit_as_negative"
