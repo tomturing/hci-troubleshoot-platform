@@ -5046,7 +5046,7 @@ onUnmounted(() => clearBatchPollTimer())
                       </el-select>
                     </div>
                     <div class="field-hint"><code>host</code> 表示不添加 <code>acli --container</code>；其他选项会作为 aCLI 容器参数。Terminal Bridge 始终在目标主机上启动 aCLI。</div>
-                    <div class="signal-row"><span class="signal-k">集群执行</span><el-switch v-model="signalEditDraft.acquire.args.cluster" active-text="添加 acli --cluster" /></div>
+                    <div class="signal-row"><span class="signal-k">集群执行</span><el-switch v-model="signalEditDraft.acquire.args.cluster" size="small" active-text="添加 acli --cluster" /></div>
                     <div class="signal-row"><span class="signal-k">执行命令</span><el-input :model-value="qfkSystemCommandText(signalEditDraft.acquire.args)" size="small" placeholder="如 ps -p {{PID}} -o cmd=（不含 acli system）" @input="(value: string) => setQfkSystemCommandText(signalEditDraft.acquire.args, value)" /></div>
                     <div class="field-hint">最终命令：<code>{{ qfkSystemCommandPreview(signalEditDraft.acquire.args) }}</code>。保存时系统会把命令安全规范化为基础命令和 argv；grep/awk/cut 的安全子集改用下方“文本取值”，不执行 Shell 管道。</div>
                   </template>
@@ -5135,6 +5135,7 @@ onUnmounted(() => clearBatchPollTimer())
                     <div class="signal-v">
                       <el-switch
                         v-model="signalEditDraft.acquire.args.nonzero_exit_as_negative"
+                        size="small"
                         active-text="开启（非0退出视为未命中）"
                       />
                     </div>
@@ -6731,19 +6732,29 @@ onUnmounted(() => clearBatchPollTimer())
 }
 .signal-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 10px;
   padding: 3px 0;
   font-size: 13px;
 }
+.signal-row.is-multiline,
+.command-preview-row {
+  align-items: flex-start;
+}
 .signal-k {
   flex: 0 0 84px;
+  width: 84px;
   color: #909399;
+  line-height: 24px;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
 }
 .signal-v {
   flex: 1;
   color: #303133;
   word-break: break-all;
+  line-height: 24px;
 }
 .signal-v.code {
   font-family: monospace;
