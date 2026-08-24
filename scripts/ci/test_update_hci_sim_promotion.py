@@ -43,6 +43,18 @@ def test_updates_digest_and_source_revision_together():
     assert "unverified-legacy" not in updated
 
 
+def test_updates_staging_application_anchor():
+    module = _load_module()
+    staging = Path(__file__).parents[2] / "deploy/gitops/argo-apps/cloud/hci-sim-staging.yaml"
+    updated = module.update_manifest(
+        staging.read_text(encoding="utf-8"),
+        digest="sha256:" + "b" * 64,
+        source_sha="c" * 40,
+    )
+    assert 'digest: "sha256:' + "b" * 64 + '"' in updated
+    assert 'hci-platform.dev/image-source-revision: "' + "c" * 40 + '"' in updated
+
+
 @pytest.mark.parametrize(
     ("digest", "source_sha"),
     [
