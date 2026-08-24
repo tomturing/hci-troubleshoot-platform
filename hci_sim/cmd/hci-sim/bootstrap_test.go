@@ -103,8 +103,52 @@ func TestBuildSyntheticManifestRejectsUnknownSceneVariableProvider(t *testing.T)
 			RequiredVariables: []string{"CUSTOM_WINDOW"}, ToolRevision: 1, ToolChecksum: "sha256:tool",
 		}},
 	}, "SIM-HCI-NODE-01", "host")
-	if err == nil || !strings.Contains(err.Error(), "缺少场景变量") || !strings.Contains(err.Error(), "CUSTOM_WINDOW") {
+	if err == nil || !strings.Contains(err.Error(), "未在已发布 KBD Contract 或 Producer 中声明") || !strings.Contains(err.Error(), "CUSTOM_WINDOW") {
 		t.Fatalf("expected unknown scene variable gap, got %v", err)
+	}
+}
+
+func TestBuildSyntheticManifestUsesPublishedContractForCustomVariable(t *testing.T) {
+	manifest, err := buildSyntheticManifest(&resolvedKbd{
+		SupportID: "18906", KBDRevision: 1, KBDChecksum: strings.Repeat("a", 64),
+		SignalsDigest: "sha256:signals", ToolContractRevision: "tool-r1", PolicyRevision: "policy-r1",
+		VerificationContract: map[string]any{
+			"variables": map[string]any{"VM_DISK_ID": map[string]any{"type": "string"}},
+		},
+		SyntheticRoutes: []syntheticRoute{{
+			SignalID: "expert_1787040047488_900be1862f6d", Tool: "qfk_vm",
+			Argv:              []string{"acli", "vm", "disk", "get", "{{VM_DISK_ID}}"},
+			RequiredVariables: []string{"VM_DISK_ID"}, ToolRevision: 1, ToolChecksum: "sha256:tool",
+		}},
+	}, "SIM-HCI-NODE-01", "host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manifest.Variables["VM_DISK_ID"]; got != "SIM-vm-disk-id-18906" {
+		t.Fatalf("unexpected declared variable binding: %q", got)
+	}
+	if got := manifest.Routes[0].RouteKey.Argv[4]; got != manifest.Variables["VM_DISK_ID"] {
+		t.Fatalf("argv did not use declared binding: %q", got)
+	}
+}
+
+func TestBuildSyntheticManifestUsesPublishedProducerForCustomVariable(t *testing.T) {
+	manifest, err := buildSyntheticManifest(&resolvedKbd{
+		SupportID: "producer-case", KBDRevision: 1, KBDChecksum: strings.Repeat("b", 64),
+		SignalsDigest: "sha256:signals", ToolContractRevision: "tool-r1", PolicyRevision: "policy-r1",
+		SyntheticRoutes: []syntheticRoute{
+			{SignalID: "producer", Tool: "qkv_task", Argv: []string{"acli", "task", "get"},
+				ToolRevision: 1, ToolChecksum: "sha256:tool",
+				Produces: []map[string]any{{"name": "VM_DISK_ID", "type": "string"}}},
+			{SignalID: "consumer", Tool: "qfk_vm", Argv: []string{"acli", "vm", "disk", "get", "{{VM_DISK_ID}}"},
+				RequiredVariables: []string{"VM_DISK_ID"}, ToolRevision: 1, ToolChecksum: "sha256:tool"},
+		},
+	}, "SIM-HCI-NODE-01", "host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manifest.Routes[1].RouteKey.Argv[4]; got != "SIM-vm-disk-id-producer-case" {
+		t.Fatalf("producer binding was not used: %q", got)
 	}
 }
 
