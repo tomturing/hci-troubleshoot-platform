@@ -21,6 +21,11 @@
 **HCI 智能排障平台** — AI 驱动的超融合基础设施运维故障诊断系统。
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
+- **QFK 日志关键字粗筛下推与 RouteKey 细粒度判重**：
+  - **根因**：同一 KBD 下针对同一日志文件匹配不同特征行时，由于 `build_log_selector` 与 `review_signal_document` 编译期未将 `match.extract.rows.include` 下推为 `acli log get -k` 正则粗筛参数，导致多个不同判定逻辑的 Signal 退化为完全相同的无 `-k` 命令行，在 Bundle 编译器和离线模拟器中触发 `重复 RouteKey` 报错。
+  - **修复**：
+    - 在 `build_log_selector` 中支持从 `matcher.extract.rows.include` 自动提取关键词并编译为 `-E -k "k1|k2"`，并在 `exists` 模式下优先下推关键词粗筛。
+    - 在 `review_signal_document` 编译期提取 `match` 与 `produces` 的 `rows.include`，注入 `qfk_log` 的 `keyword` 和 `extended_regex`，确保不同 Signal 生成精确的专属采集指令。
 - **KBD 关键信号阅览与预览呈现完整性优化**：
   - **根因**：KBD 审查页面在非编辑态（阅览/预览模式）下，仅平铺展示基础参数，缺失了取值（`ValueExtract`，包括完整行/行列解析/JSON路径/行列选择/数量/AI提取等）与判断规则（`Matcher` / `Produces`，包括多 pattern 排版、比较条件、样本数、趋势方向、产出变量路径等）的完整结构，导致专家每次必须点击“编辑”才能获取全量判定细节。
   - **修复**：
