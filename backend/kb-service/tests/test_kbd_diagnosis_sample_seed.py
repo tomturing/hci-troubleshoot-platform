@@ -48,7 +48,10 @@ def test_sample_documents_cover_every_signal_tool_and_every_registered_argument(
     documents = _sample_documents()
     assert documents
 
-    observed_args = {tool: set() for tool in ACQUIRER_ARGS_SCHEMA}
+    # qfk_var 是变量池纯处理器，不属于 aCLI 诊断采集样例；其契约由
+    # test_qfk_var_contract 与运行时专项测试覆盖，不要求旧 SQL 样例伪造命令输出。
+    sampled_tools = set(ACQUIRER_ARGS_SCHEMA) - {"qfk_var"}
+    observed_args = {tool: set() for tool in sampled_tools}
     observed_tools: set[str] = set()
     for document in documents:
         for signal in document["signals"]:
@@ -56,10 +59,12 @@ def test_sample_documents_cover_every_signal_tool_and_every_registered_argument(
             observed_tools.add(tool)
             observed_args[tool].update(signal["acquire"]["args"])
 
-    assert observed_tools == set(ACQUIRER_ARGS_SCHEMA)
+    assert observed_tools == sampled_tools
     assert observed_tools & FRONTEND_TOOLS == FRONTEND_TOOLS
-    assert observed_tools & BACKEND_TOOLS == BACKEND_TOOLS
+    assert observed_tools & (BACKEND_TOOLS - {"qfk_var"}) == (BACKEND_TOOLS - {"qfk_var"})
     for tool, schema in ACQUIRER_ARGS_SCHEMA.items():
+        if tool == "qfk_var":
+            continue
         assert set(schema["properties"]) <= observed_args[tool], f"{tool} 缺少参数覆盖"
 
 
