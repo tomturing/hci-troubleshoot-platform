@@ -19,6 +19,7 @@ from typing import Any
 from jsonschema import ValidationError
 from pydantic import BaseModel, ConfigDict, Field
 
+from shared.resolution.log_selector import build_log_selector
 from shared.resolution.models import ResolutionStatus, SignalIntent
 from shared.resolution.runtime import SharedResolutionRuntime, get_resolution_runtime
 from shared.schemas.acquirer_args import validate_acquire_args
@@ -114,6 +115,36 @@ def _intent(tool: str, args: dict[str, Any], signal: dict[str, Any]) -> SignalIn
         canonical_args["query"] = tool.removeprefix("qkv_")
     elif resolver_id == "domain":
         canonical_args["domain"] = tool.removeprefix("qfk_")
+    elif resolver_id == "log":
+        matcher = signal.get("match") if isinstance(signal.get("match"), dict) else None
+        matcher_rows = ((matcher or {}).get("extract") or {}).get("rows") or {}
+        filter_keywords = [str(value) for value in matcher_rows.get("include") or [] if str(value)]
+        orchestrate = signal.get("orchestrate") if isinstance(signal.get("orchestrate"), dict) else {}
+        produces = orchestrate.get("produces") if isinstance(orchestrate.get("produces"), list) else []
+        for produce in produces:
+            if isinstance(produce, dict):
+                p_rows = (produce.get("extract") or {}).get("rows") or {}
+                filter_keywords.extend(str(value) for value in p_rows.get("include") or [] if str(value))
+        keywords = canonical_args.get("keyword")
+        if isinstance(keywords, str):
+            keywords = [keywords]
+        elif not isinstance(keywords, list):
+            keywords = []
+        try:
+            selector, extended_regex, matcher_type = build_log_selector(
+                matcher=matcher,
+                keywords=keywords,
+                filter_keywords=filter_keywords,
+                resource_keyword=canonical_args.get("resource_keyword"),
+                request_id=canonical_args.get("request_id"),
+            )
+            if selector and not canonical_args.get("keyword"):
+                canonical_args["keyword"] = selector
+                canonical_args["extended_regex"] = extended_regex
+            if matcher_type and not canonical_args.get("matcher_type"):
+                canonical_args["matcher_type"] = matcher_type
+        except Exception:
+            pass
     provenance = signal.get("provenance") if isinstance(signal.get("provenance"), dict) else {}
     evidence = str(provenance.get("evidence") or "").strip()
     return SignalIntent(

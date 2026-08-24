@@ -134,9 +134,7 @@ def _count_extract():
 
 def test_count_cardinality_is_a_numeric_row_selection_projection():
     validate_signals_json(
-        _qfk_match(
-            {"type": "threshold", "operator": ">=", "value": 2, "expected": True, "extract": _count_extract()}
-        )
+        _qfk_match({"type": "threshold", "operator": ">=", "value": 2, "expected": True, "extract": _count_extract()})
     )
     validate_signals_json(_qfk_produce({"name": "FAILED_COUNT", "type": "integer", "extract": _count_extract()}))
     validate_signals_json(_qfk_produce({"name": "FAILED_COUNT", "type": "number", "extract": _count_extract()}))
@@ -633,3 +631,67 @@ def test_data_basis_and_header_column_selection_require_a_header():
                 }
             )
         )
+
+
+def test_qfk_log_signals_with_different_includes_compile_to_distinct_commands():
+    """两个 qfk_log 信号即使基础参数相同，包含不同的 rows.include 时应编译为携带不同 -k 的指令。"""
+    from shared.resolution.review import SignalReviewFeature, review_signal_document
+
+    document = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "sig_task",
+                "role": "must",
+                "acquire": {"tool": "qkv_task", "args": {"keyword": "清理失败", "instruction": "查询任务"}},
+                "match": None,
+                "orchestrate": {
+                    "phase": "diagnostic",
+                    "produces": [{"name": "VM", "path": "task.vm_id"}],
+                },
+            },
+            {
+                "id": "sig_a",
+                "role": "must",
+                "acquire": {"tool": "qfk_log", "args": {"file": "sfvt_vtpdaemon.log", "host": "{{HOST}}"}},
+                "match": {
+                    "type": "exists",
+                    "expected": True,
+                    "extract": {
+                        "type": "text",
+                        "rows": {
+                            "mode": "keywords",
+                            "scope": "same_record",
+                            "include": ["Get {{VM}} from vmlist or conf failed"],
+                        },
+                    },
+                },
+            },
+            {
+                "id": "sig_b",
+                "role": "must",
+                "acquire": {"tool": "qfk_log", "args": {"file": "sfvt_vtpdaemon.log", "host": "{{HOST}}"}},
+                "match": {
+                    "type": "exists",
+                    "expected": True,
+                    "extract": {
+                        "type": "text",
+                        "rows": {
+                            "mode": "keywords",
+                            "scope": "same_record",
+                            "include": ["file is not exists, can't open file"],
+                        },
+                    },
+                },
+            },
+        ],
+    }
+
+    result = review_signal_document(document, feature=SignalReviewFeature.PUBLISH)
+    assert not result.blocked
+    assert len(result.signals) == 3
+    cmd_a = result.signals[1].command
+    cmd_b = result.signals[2].command
+    assert "-k" in cmd_a and "Get" in cmd_a
+    assert "-k" in cmd_b and "file" in cmd_b
+    assert cmd_a != cmd_b

@@ -42,3 +42,39 @@ def test_numeric_ai_extract_falls_back_to_runtime_keywords_but_never_unbounded()
                 "extract": {"ai_extract": {"instruction": "提取数值"}},
             }
         )
+
+
+def test_exists_matcher_with_persisted_row_include_pushes_down_selector():
+    """exists 模式下如果包含持久化 rows.include，应下推为转义的正则粗筛。"""
+
+    selector, extended, resolved_type = build_log_selector(
+        matcher={
+            "type": "exists",
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "keywords", "include": ["Get {{VM}} from vmlist", "can't open file"]},
+            },
+        }
+    )
+
+    assert selector == "Get\\ \\{\\{VM\\}\\}\\ from\\ vmlist|can't\\ open\\ file"
+    assert extended is True
+    assert resolved_type == "exists"
+
+
+def test_exists_matcher_without_include_falls_back_to_dot():
+    """exists 模式下若无任何 include 或 filter_keywords，保持回退为 . 匹配。"""
+
+    selector, extended, resolved_type = build_log_selector(
+        matcher={
+            "type": "exists",
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "all"},
+            },
+        }
+    )
+
+    assert selector == "."
+    assert extended is True
+    assert resolved_type == "exists"
