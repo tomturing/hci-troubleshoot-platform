@@ -24,7 +24,10 @@ def build_log_selector(
 
     matcher = matcher or {}
     keywords = keywords or []
-    filter_keywords = filter_keywords or []
+    extract = matcher.get("extract") if isinstance(matcher, dict) else None
+    matcher_rows = (extract.get("rows") or {}) if isinstance(extract, dict) else {}
+    matcher_includes = [str(item) for item in matcher_rows.get("include") or [] if str(item)]
+    filter_keywords = list(filter_keywords or []) + matcher_includes
     matcher_type = str(matcher.get("type") or ("keyword" if keywords else ""))
     if matcher_type and matcher_type not in LOG_MATCHER_TYPES:
         raise ValueError(f"qfk_log 不支持 matcher.type={matcher_type}")
