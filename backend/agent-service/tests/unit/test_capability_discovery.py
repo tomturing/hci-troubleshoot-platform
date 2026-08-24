@@ -23,7 +23,7 @@ def test_runtime_discovery_reports_all_registered_handlers_as_degraded_without_e
     document = capability_routes.runtime_capability_document()
     capabilities = {item["capability_id"]: item for item in document["capabilities"]}
 
-    assert document["count"] == 13
+    assert document["count"] == 14
     assert set(capabilities) == {
         "qkv_alert",
         "qkv_task",
@@ -31,11 +31,20 @@ def test_runtime_discovery_reports_all_registered_handlers_as_degraded_without_e
         "qkv_vm_console",
         "qkv_effect",
         *(f"qfk_{namespace}" for namespace in HandlerRegistry.supported_namespaces()),
+        "qfk_var",
     }
     assert all(item["implemented"] for item in capabilities.values())
     assert all(item["validator_ready"] for item in capabilities.values())
-    assert all(item["runtime_status"] == "degraded" for item in capabilities.values())
-    assert all(not item["usable"] for item in capabilities.values())
+    assert all(
+        item["runtime_status"] == "degraded"
+        for capability_id, item in capabilities.items()
+        if capability_id != "qfk_var"
+    )
+    assert all(
+        not item["usable"]
+        for capability_id, item in capabilities.items()
+        if capability_id != "qfk_var"
+    )
     # 条件型生产者的降级原因是各自策略门禁，而非执行桥缺失。
     vm_console = capabilities["qkv_vm_console"]
     assert vm_console["conditional_producer"] is True
@@ -49,8 +58,11 @@ def test_runtime_discovery_reports_all_registered_handlers_as_degraded_without_e
     assert all(
         "Executor 尚未注入" in item["reason"]
         for capability_id, item in capabilities.items()
-        if capability_id not in {"qkv_vm_console", "qkv_effect"}
+        if capability_id not in {"qkv_vm_console", "qkv_effect", "qfk_var"}
     )
+    assert capabilities["qfk_var"]["runtime_status"] == "available"
+    assert capabilities["qfk_var"]["usable"] is True
+    assert capabilities["qfk_var"]["reason"] is None
 
 
 def test_runtime_discovery_reports_available_only_after_executor_is_injected(monkeypatch):

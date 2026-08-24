@@ -173,9 +173,7 @@ def humanize_signal_validation_error(error: ValidationError, signals: list[Any])
     elif "控制台截图信号需要可信的 HOST 与 VM_ID 来源" in raw_message:
         field_path = "signals"
         field_label = "条件型生产者"
-        message = (
-            "控制台截图信号需要可信的 HOST 与 VM_ID 来源；请增加上游生产者、平台对象查询或受控用户输入。"
-        )
+        message = "控制台截图信号需要可信的 HOST 与 VM_ID 来源；请增加上游生产者、平台对象查询或受控用户输入。"
         code = "KBD_CONDITIONAL_PRODUCER_TARGET_MISSING"
     elif "效果验证信号需要可信的期望来源" in raw_message:
         field_path = "acquire.args"
@@ -416,16 +414,12 @@ def validate_kbd_publishable_signals_json(raw: Any) -> None:
     validate_publishable_signals_json(raw)
     signals = raw.get("signals") if isinstance(raw, dict) else None
     tools = [
-        str((signal.get("acquire") or {}).get("tool") or "")
-        for signal in signals or []
-        if isinstance(signal, dict)
+        str((signal.get("acquire") or {}).get("tool") or "") for signal in signals or [] if isinstance(signal, dict)
     ]
     if any(tool == "qkv_effect" for tool in tools):
         _validate_effect_producer_sources(raw)
         other_producers = [
-            tool
-            for tool in tools
-            if tool in FRONTEND_TOOLS or (tool in CONDITIONAL_PRODUCERS and tool != "qkv_effect")
+            tool for tool in tools if tool in FRONTEND_TOOLS or (tool in CONDITIONAL_PRODUCERS and tool != "qkv_effect")
         ]
         if not other_producers:
             raise ValidationError(
@@ -539,9 +533,7 @@ def certify_publishable_signals_json(raw: Any) -> dict[str, Any]:
     return certified
 
 
-def _collect_variable_sources(raw: dict[str, Any]) -> tuple[
-    list[tuple[str, set[str], set[str]]], set[str], set[str]
-]:
+def _collect_variable_sources(raw: dict[str, Any]) -> tuple[list[tuple[str, set[str], set[str]]], set[str], set[str]]:
     """收集诊断信号的变量节点、全部产出变量与外部声明变量（严格口径）。
 
     返回 ``(nodes, all_produced, declared_external)``：
@@ -566,7 +558,7 @@ def _collect_variable_sources(raw: dict[str, Any]) -> tuple[
         # 这样即使前端未同步只读 requires，发布门禁也不会漏掉阈值变量依赖。
         requires.update(str(name).strip().upper() for name in derive_signal_requires(signal) if str(name).strip())
         produces = set()
-        for item in (orchestrate.get("produces") or []):
+        for item in orchestrate.get("produces") or []:
             if isinstance(item, dict):
                 alias = str(item.get("alias") or "").strip().upper()
                 name = str(item.get("name") or "").strip().upper()
@@ -708,6 +700,41 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                 )
             continue
         if not isinstance(tool, str) or not tool.startswith("qfk_"):
+            continue
+        if tool == "qfk_var":
+            args = (signal.get("acquire") or {}).get("args") or {}
+            mode = str(args.get("mode") or "")
+            if mode == "assert":
+                if has_produces or matcher is not None:
+                    raise ValidationError(
+                        f"signals[{index}] 的 qfk_var assert 不配置 match 或 produces；判断规则位于 acquire.args",
+                        path=["signals", index, "acquire", "args", "mode"],
+                    )
+            elif mode == "derive":
+                if isinstance(matcher, dict) or len(produces) != 1 or not has_produces:
+                    raise ValidationError(
+                        f"signals[{index}] 的 qfk_var derive 必须 match=null 且 produces 恰好一个",
+                        path=["signals", index, "orchestrate", "produces"],
+                    )
+                produce = produces[0]
+                if isinstance(produce, dict) and produce.get("extract") is not None:
+                    raise ValidationError(
+                        f"signals[{index}] 的 qfk_var 结果直接写入 produces[0]，不得再配置 extract",
+                        path=["signals", index, "orchestrate", "produces", 0, "extract"],
+                    )
+                target_type = str(args.get("value_type") or "")
+                produce_type = str(produce.get("type") or "") if isinstance(produce, dict) else ""
+                compatible_types = {
+                    "percentage": "number",
+                    "quantity": "object",
+                    "array<string>": "array",
+                }
+                expected_produce_type = compatible_types.get(target_type, target_type)
+                if produce_type and expected_produce_type and produce_type != expected_produce_type:
+                    raise ValidationError(
+                        f"signals[{index}] 的 qfk_var 输出类型不一致: value_type={target_type}, produces.type={produce_type}",
+                        path=["signals", index, "orchestrate", "produces", 0, "type"],
+                    )
             continue
         command = str(((signal.get("acquire") or {}).get("args") or {}).get("command") or "")
         if "|" in command:

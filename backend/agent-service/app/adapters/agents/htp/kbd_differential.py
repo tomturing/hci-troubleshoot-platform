@@ -10,6 +10,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import time
 import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
@@ -29,6 +30,7 @@ from shared.cdd.candidate_reducer import initial_assessments, reduce_candidates
 from shared.cdd.kbd_model import KBD, KBDStep, _acquire_tool, _signal_category
 from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
+from shared.observability.metrics import QFK_VAR_EXECUTION_DURATION_SECONDS, QFK_VAR_EXECUTIONS_TOTAL
 from shared.observability.otel import get_current_trace_id
 from shared.schemas.acquirer_args import DEFAULT_SIGNAL_TIMEOUT_SECONDS
 from shared.schemas.kbd_signal_safety import kbd_signal_read_only_violation
@@ -56,14 +58,18 @@ def _tool_contract_checker(tool: str, signal: dict[str, Any]) -> str | None:
     from app.tools.qfk.handlers import build_acli_command
     from app.tools.qfk.signal import BackendSignal
 
-    if not tool.startswith("qfk_"):
+    if not tool.startswith("qfk_") or tool == "qfk_var":
         return None
     namespace = tool.removeprefix("qfk_")
     args = (signal.get("acquire") or {}).get("args") or {}
     sample_values = {
-        "PID": "1", "HOST": "127.0.0.1", "VM": "golden-vm",
-        "DEVICE": "/dev/sda", "STORAGE_PATH": "/sf/data/golden",
-        "END": "2026-07-30 10:00:00", "REQUEST_ID": "a5ed4ad9340ce338ba1ac71d13ffcfb9",
+        "PID": "1",
+        "HOST": "127.0.0.1",
+        "VM": "golden-vm",
+        "DEVICE": "/dev/sda",
+        "STORAGE_PATH": "/sf/data/golden",
+        "END": "2026-07-30 10:00:00",
+        "REQUEST_ID": "a5ed4ad9340ce338ba1ac71d13ffcfb9",
     }
 
     def resolve_sample(value: Any, field_name: str = "") -> Any:
@@ -85,8 +91,7 @@ def _tool_contract_checker(tool: str, signal: dict[str, Any]) -> str | None:
     matcher = signal.get("match") or {}
     pattern = matcher.get("pattern") if matcher.get("type") == "keyword" else None
     keywords = (
-        [pattern] if isinstance(pattern, str) and pattern
-        else list(pattern or []) if isinstance(pattern, list) else []
+        [pattern] if isinstance(pattern, str) and pattern else list(pattern or []) if isinstance(pattern, list) else []
     )
     data: dict[str, Any] = {
         "namespace": namespace,
@@ -106,7 +111,9 @@ def _tool_contract_checker(tool: str, signal: dict[str, Any]) -> str | None:
         "archive_precheck": compiled_args.get("archive_precheck"),
         "matcher": matcher or None,
         "keyword": keywords,
-        "match_mode": {"any": "or", "all": "and"}.get(str(matcher.get("mode") or "or"), str(matcher.get("mode") or "or")),
+        "match_mode": {"any": "or", "all": "and"}.get(
+            str(matcher.get("mode") or "or"), str(matcher.get("mode") or "or")
+        ),
         "expected": bool(matcher.get("expected", True)),
     }
     if namespace == "service":
@@ -317,10 +324,7 @@ class KBDDiagnostic:
                 "snapshot_id": snapshot_id,
                 "plan_id": plan.plan_id,
                 "acquisition_count": len(plan.acquisitions),
-                "scope_states": {
-                    kbd_id: result.state.value
-                    for kbd_id, result in scope_results.items()
-                },
+                "scope_states": {kbd_id: result.state.value for kbd_id, result in scope_results.items()},
             },
         )
 
@@ -546,9 +550,7 @@ class KBDDiagnostic:
             supported if definitive else [],
             steps_executed,
             evaluated_kbds=(
-                ordered
-                if definitive
-                else [kbd for kbd in ordered if kbd.id not in decision.supported_ids]
+                ordered if definitive else [kbd for kbd in ordered if kbd.id not in decision.supported_ids]
             ),
             user_id=user_id,
             exclusion_reasons=exclusion_reasons,
@@ -818,11 +820,22 @@ class KBDDiagnostic:
         pre_matched: bool | None,
     ) -> SignalOutcome:
         if error:
+            if error.startswith(("QFK_VAR_NO_STABLE_BOUNDARY:", "QFK_VAR_CARDINALITY_MISMATCH:")):
+                return SignalOutcome.UNKNOWN
+            if error.startswith(("QFK_VAR_BLOCKED:", "QFK_VAR_REQUIRES_MISMATCH:")):
+                return SignalOutcome.BLOCKED
+            if (
+                _acquire_tool(signal) == "qfk_var"
+                and str(((signal.get("acquire") or {}).get("args") or {}).get("on_error") or "error") == "unknown"
+            ):
+                return SignalOutcome.UNKNOWN
             return SignalOutcome.ERROR
         if raw_output is None:
             return SignalOutcome.UNKNOWN
         matcher = signal.get("match")
         if matcher is None:
+            if _acquire_tool(signal) == "qfk_var" and pre_matched is not None:
+                return SignalOutcome.SATISFIED if pre_matched else SignalOutcome.CONTRADICTED
             if _signal_category(signal) == "frontend":
                 return SignalOutcome.SATISFIED if pre_matched is True else SignalOutcome.UNKNOWN
             produces = (signal.get("orchestrate") or {}).get("produces") or []
@@ -1059,8 +1072,12 @@ class KBDDiagnostic:
         result = await run_vm_console_signal(
             resolved_signal,
             {
-                "HOST": str(merged_context.get("HOST") or merged_context.get("host") or resolved_args.get("host") or ""),
-                "VM_ID": str(merged_context.get("VM_ID") or merged_context.get("vm_id") or resolved_args.get("vm_id") or ""),
+                "HOST": str(
+                    merged_context.get("HOST") or merged_context.get("host") or resolved_args.get("host") or ""
+                ),
+                "VM_ID": str(
+                    merged_context.get("VM_ID") or merged_context.get("vm_id") or resolved_args.get("vm_id") or ""
+                ),
                 "node_ip": str(env_context.get("node_ip") or ""),
             },
             conversation_id=self._conversation_id or session_id,
@@ -1434,7 +1451,9 @@ class KBDDiagnostic:
                 # 条件型视觉生产者专用路径：固定截图操作 + 受控制品通道 + 视觉提取。
                 try:
                     res = await self._run_vm_console_producer(
-                        signal if signal is not None else {"acquire": {"tool": step.tool_name, "args": step.tool_args_template}},
+                        signal
+                        if signal is not None
+                        else {"acquire": {"tool": step.tool_name, "args": step.tool_args_template}},
                         env_context,
                         session_id,
                         exec_id=exec_id,
@@ -1522,6 +1541,16 @@ class KBDDiagnostic:
                 resolver_variables = dict(env_context)
                 resolver_variables.update(self._variable_pool)
                 produces = ((signal or {}).get("orchestrate") or {}).get("produces") or []
+                if acquirer == "qfk_var":
+                    return await self._execute_qfk_var(
+                        signal
+                        or {
+                            "acquire": {"tool": acquirer, "args": step.tool_args_template},
+                            "orchestrate": {"produces": produces},
+                        },
+                        resolver_variables,
+                        session_id=session_id,
+                    )
                 bsignal = self._signal_to_qfk(step, resolver_variables, produces=produces)
                 if bsignal is None:
                     return None, "无法构建后端信号", None, None
@@ -1644,6 +1673,234 @@ class KBDDiagnostic:
         except Exception as exc:
             return None, str(exc), None, None
 
+    async def _execute_qfk_var(
+        self,
+        signal: dict[str, Any],
+        variables: dict[str, Any],
+        *,
+        session_id: str,
+    ) -> tuple[str | None, str | None, bool | None, Any | None]:
+        """执行纯变量 qfk_var，不构建命令、不读取整个变量池。"""
+
+        import hashlib
+
+        started_at = time.perf_counter()
+        metric_operation = str(((signal.get("acquire") or {}).get("args") or {}).get("operation") or "unknown")
+        metric_mode = str(((signal.get("acquire") or {}).get("args") or {}).get("mode") or "unknown")
+
+        def record_metric(status: str, error_code: str = "") -> None:
+            # 标签只来自白名单/稳定错误码，避免现场值造成 Prometheus 高基数。
+            safe_status = status if status in {"succeeded", "unknown", "ambiguous", "blocked", "error"} else "error"
+            safe_code = error_code.split(":", 1)[0][:64] if error_code else ""
+            QFK_VAR_EXECUTIONS_TOTAL.labels(metric_operation[:32], metric_mode[:16], safe_status, safe_code).inc()
+            QFK_VAR_EXECUTION_DURATION_SECONDS.labels(metric_operation[:32], metric_mode[:16], safe_status).observe(
+                time.perf_counter() - started_at
+            )
+
+        from shared.signals.variable_processor import execute_operation
+
+        acquire = signal.get("acquire") or {}
+        args_template = acquire.get("args") or {}
+        declared_requires = {
+            str(item).strip().lower()
+            for item in ((signal.get("orchestrate") or {}).get("requires") or [])
+            if str(item).strip()
+        }
+        referenced = {
+            name.lower()
+            for name in re.findall(r"\{\{([A-Za-z][A-Za-z0-9_.]*)\}\}", json.dumps(args_template, ensure_ascii=False))
+        }
+        if referenced != declared_requires:
+            missing = sorted(referenced - declared_requires)
+            unused = sorted(declared_requires - referenced)
+            record_metric("error", "QFK_VAR_REQUIRES_MISMATCH")
+            return (
+                None,
+                f"QFK_VAR_REQUIRES_MISMATCH: 占位符与 requires 不一致，缺少声明={missing}，未引用声明={unused}",
+                None,
+                None,
+            )
+        available = {str(key).lower(): value for key, value in variables.items()}
+        absent = sorted(name for name in declared_requires if name not in available)
+        if absent:
+            record_metric("blocked", "QFK_VAR_BLOCKED")
+            return None, f"QFK_VAR_BLOCKED: requires 未就绪: {', '.join(absent)}", None, None
+        snapshot = {name: available[name] for name in sorted(declared_requires)}
+        resolved_args = self._resolve_template_value(args_template, snapshot)
+        snapshot_hash = hashlib.sha256(
+            json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        logger.info(
+            event="qfk_var_started",
+            trace_id=get_current_trace_id() or None,
+            conversation_id=self._conversation_id or session_id,
+            signal_id=str(signal.get("id") or ""),
+            operation=resolved_args.get("operation"),
+            mode=resolved_args.get("mode"),
+            requires=sorted(declared_requires),
+            input_snapshot_sha256=snapshot_hash,
+        )
+        result = execute_operation(resolved_args)
+        fallback = resolved_args.get("fallback")
+        if (
+            result.status == "unknown"
+            and result.fallback_reason == "no_stable_boundary"
+            and isinstance(fallback, dict)
+            and fallback.get("type") == "ai_extract"
+        ):
+            result, error = await self._execute_qfk_var_ai_fallback(
+                resolved_args,
+                fallback,
+                session_id=session_id,
+            )
+            if error:
+                record_metric("error", "QFK_VAR_AI_FALLBACK_FAILED")
+                return None, error, None, None
+
+        evidence = json.dumps(
+            {
+                "status": result.status,
+                "operation": resolved_args.get("operation"),
+                "target_variable": resolved_args.get("target_variable"),
+                "evidence": result.evidence,
+                "raw_values": result.raw_values,
+                "input_snapshot_sha256": snapshot_hash,
+            },
+            ensure_ascii=False,
+        )
+        if result.status != "succeeded":
+            code = result.error_code or "QFK_VAR_UNKNOWN"
+            record_metric(result.status, code)
+            error = f"{code}: {result.error or result.status}"
+            logger.warning(
+                event="qfk_var_finished",
+                trace_id=get_current_trace_id() or None,
+                conversation_id=self._conversation_id or session_id,
+                signal_id=str(signal.get("id") or ""),
+                operation=resolved_args.get("operation"),
+                status=result.status,
+                error_code=code,
+                input_snapshot_sha256=snapshot_hash,
+            )
+            # on_error=unknown 将契约/类型错误降级为 UNKNOWN，但仍不写入变量池；
+            # 默认 error 保留执行失败语义。两者都不允许伪造 false 或空值。
+            if str(resolved_args.get("on_error") or "error") == "unknown":
+                return evidence, error, None, None
+            return evidence, error, None, None
+
+        mode = str(resolved_args.get("mode") or "")
+        if mode == "derive":
+            produces = (signal.get("orchestrate") or {}).get("produces") or []
+            if len(produces) != 1 or not isinstance(produces[0], dict):
+                record_metric("error", "QFK_VAR_PRODUCES_INVALID")
+                return evidence, "QFK_VAR_PRODUCES_INVALID: derive 必须且只能声明一个输出变量", None, None
+            output_name = str(produces[0].get("name") or "").strip()
+            if not output_name:
+                record_metric("error", "QFK_VAR_PRODUCES_INVALID")
+                return evidence, "QFK_VAR_PRODUCES_INVALID: 输出变量名不能为空", None, None
+            configured_type = str(produces[0].get("type") or "")
+            expected_type = {
+                "percentage": "number",
+                "quantity": "object",
+                "array<string>": "array",
+            }.get(str(resolved_args.get("value_type") or ""), str(resolved_args.get("value_type") or ""))
+            if configured_type and expected_type and configured_type != expected_type:
+                record_metric("error", "QFK_VAR_TYPE_MISMATCH")
+                return (
+                    evidence,
+                    f"QFK_VAR_TYPE_MISMATCH: 输出变量类型 {configured_type} 与处理类型 {expected_type} 不一致",
+                    None,
+                    None,
+                )
+            key = output_name.lower()
+            if key in self._variable_pool and self._variable_pool[key] != result.value:
+                record_metric("error", "QFK_VAR_CONFLICT")
+                return evidence, f"QFK_VAR_CONFLICT: 输出变量 {output_name} 已存在不同值", None, None
+            self._set_pool_var(output_name, result.value)
+            matched = True
+        else:
+            matched = bool(result.matched if result.matched is not None else result.value)
+        logger.info(
+            event="qfk_var_finished",
+            trace_id=get_current_trace_id() or None,
+            conversation_id=self._conversation_id or session_id,
+            signal_id=str(signal.get("id") or ""),
+            operation=resolved_args.get("operation"),
+            status="succeeded",
+            error_code="",
+            input_snapshot_sha256=snapshot_hash,
+        )
+        record_metric("succeeded")
+        return evidence, None, matched, None
+
+    async def _execute_qfk_var_ai_fallback(
+        self,
+        args: dict[str, Any],
+        fallback: dict[str, Any],
+        *,
+        session_id: str,
+    ) -> tuple[Any, str | None]:
+        """第四层只在无稳定边界时调用现有受控 AI 提取器。"""
+
+        from shared.signals.extractor import QFKExtractionError
+        from shared.signals.variable_processor import VariableProcessResult, normalize_value
+
+        from app.tools.qfk.ai_extractor import extract_ai_value
+
+        input_text = args.get("input")
+        if not isinstance(input_text, str):
+            return None, "QFK_VAR_TYPE_MISMATCH: AI 兜底输入必须是字符串"
+        spec = {
+            "type": "text",
+            "rows": {"mode": "all"},
+            "cardinality": "exactly_one",
+            "ai_extract": {"instruction": fallback.get("instruction")},
+        }
+        target_type = str(args.get("value_type") or "string")
+        ai_value_type = {
+            "percentage": "number",
+            "quantity": "string",
+        }.get(target_type, target_type)
+        try:
+            extracted = await extract_ai_value(
+                input_text,
+                spec,
+                ai_value_type,
+                self._ai_registry.get_client(self._assistant_type),
+                conversation_id=self._conversation_id or session_id,
+                case_id=self._case_id or "",
+            )
+            raw_value = extracted.raw_value
+            # 受控 AI 对 percentage 以 number 返回；补回语义单位后再进入统一归一化。
+            if target_type == "percentage" and isinstance(raw_value, (int, float)) and not isinstance(raw_value, bool):
+                raw_value = f"{raw_value}%"
+            if (
+                target_type == "quantity"
+                and isinstance(raw_value, str)
+                and not re.search(r"[A-Za-z]+\s*$", raw_value.strip())
+            ):
+                return None, "QFK_VAR_AI_FALLBACK_FAILED: quantity 结果缺少单位"
+            normalized = normalize_value(raw_value, target_type)
+        except QFKExtractionError as exc:
+            return None, f"QFK_VAR_AI_FALLBACK_FAILED: {exc}"
+        except ValueError as exc:
+            return None, f"QFK_VAR_AI_FALLBACK_FAILED: {exc}"
+        return (
+            VariableProcessResult(
+                status="succeeded",
+                value=normalized,
+                raw_values=[str(extracted.raw_value)],
+                evidence=[
+                    {
+                        "raw_value": extracted.raw_value,
+                        "evidence_lines": extracted.evidence_line_numbers,
+                        "source": "ai_fallback",
+                    }
+                ],
+            ),
+            None,
+        )
+
     def _fill_pool_from_qfk(
         self,
         produces: list[Any],
@@ -1749,6 +2006,13 @@ class KBDDiagnostic:
     def _resolve_template_value(cls, value: Any, variable_pool: dict[str, Any]) -> Any:
         """递归渲染 extract 中 include/exclude 等位置的 ``{{VAR}}``。"""
         if isinstance(value, str):
+            # 完整占位符保留原始类型（数字、对象、数组），嵌入更长字符串时才转成文本。
+            match = re.fullmatch(r"\{\{([A-Za-z0-9_.]+)\}\}", value.strip())
+            if match:
+                name = match.group(1).lower()
+                lower_pool = {str(key).lower(): item for key, item in variable_pool.items()}
+                if name in lower_pool:
+                    return lower_pool[name]
             return cls._resolve_args({"value": value}, variable_pool=variable_pool)["value"]
         if isinstance(value, list):
             return [cls._resolve_template_value(item, variable_pool) for item in value]
@@ -2095,7 +2359,9 @@ class KBDDiagnostic:
             ]
             blocks.append(f"- **参考案例 {support_id} - {kbd.name}**：必需关键信号已全部命中。")
             if evidence:
-                blocks.append("  - 现场证据：\n" + "\n".join(f"    {line}" for item in evidence for line in item.splitlines()))
+                blocks.append(
+                    "  - 现场证据：\n" + "\n".join(f"    {line}" for item in evidence for line in item.splitlines())
+                )
         return "\n".join(blocks) + "\n\n"
 
     @staticmethod

@@ -2183,6 +2183,16 @@ function buildSignalForTool(tool: string, previous?: SignalV2): SignalV2 {
     args.timeout = 60
     delete args.keyword
   }
+  if (tool === 'qfk_var') {
+    args.schema_version = 1
+    args.mode = 'derive'
+    args.operation = 'feature_extract'
+    args.input = '{{DESCRIPTION}}'
+    args.target_variable = 'vm_name'
+    args.value_type = 'string'
+    args.cardinality = 'exactly_one'
+    delete args.instruction
+  }
   // qfk_system 在宿主机执行时，持久化契约通过省略 container 表达；编辑器使用
   // host 作为显式的默认选项，便于专家把已选择的 aCLI 容器恢复为宿主机。
   if (tool === 'qfk_system') args.container = 'host'
@@ -2191,12 +2201,12 @@ function buildSignalForTool(tool: string, previous?: SignalV2): SignalV2 {
     id: previous?.id || createSignalId(),
     role: previous?.role || 'should',
     acquire: { tool, args },
-    match: producer ? null : { type: 'keyword', pattern: '', mode: 'or', expected: true },
+    match: producer || tool === 'qfk_var' ? null : { type: 'keyword', pattern: '', mode: 'or', expected: true },
     orchestrate: {
       // qkv_effect 是 remediation phase 的只读观察信号；其余信号默认 diagnostic。
       phase: previous?.orchestrate?.phase || (tool === 'qkv_effect' ? 'remediation' : 'diagnostic'),
-      produces: producer ? defaultProduces(tool) : [],
-      requires: tool === 'qkv_vm_console' ? ['HOST', 'VM_ID'] : tool === 'qkv_effect' ? ['HOST'] : [],
+      produces: tool === 'qfk_var' && args.mode === 'derive' ? [{ name: 'DERIVED_VALUE', type: 'string' }] : producer ? defaultProduces(tool) : [],
+      requires: tool === 'qkv_vm_console' ? ['HOST', 'VM_ID'] : tool === 'qkv_effect' ? ['HOST'] : tool === 'qfk_var' ? [] : [],
     },
     provenance: {
       ...(previous?.provenance || {}),
@@ -2210,6 +2220,53 @@ function buildSignalForTool(tool: string, previous?: SignalV2): SignalV2 {
 function onSignalToolChange(tool: string) {
   signalEditDraft.value = buildSignalForTool(tool, signalEditDraft.value)
   if (tool.startsWith('qfk')) syncDraftRequires()
+}
+
+function onQfkVarModeChange(mode: string): void {
+  if (!signalEditDraft.value || sigTool(signalEditDraft.value) !== 'qfk_var') return
+  signalEditDraft.value.match = null
+  signalEditDraft.value.orchestrate = signalEditDraft.value.orchestrate || {}
+  if (mode === 'assert') {
+    // assert 只允许 compare/exists；切换模式时同步切到合法默认操作，避免
+    // 表单暂时生成 mode=assert + feature_extract 的不可发布组合。
+    if (!['compare', 'exists'].includes(String(signalEditDraft.value.acquire.args.operation || ''))) {
+      signalEditDraft.value.acquire.args.operation = 'compare'
+    }
+    signalEditDraft.value.orchestrate.produces = []
+  } else if (!Array.isArray(signalEditDraft.value.orchestrate.produces) || signalEditDraft.value.orchestrate.produces.length === 0) {
+    if (signalEditDraft.value.acquire.args.operation === 'exists') signalEditDraft.value.acquire.args.operation = 'feature_extract'
+    signalEditDraft.value.orchestrate.produces = [{ name: 'DERIVED_VALUE', type: 'string' }]
+  }
+  syncDraftRequires()
+}
+
+function onQfkVarOperationChange(operation: string): void {
+  if (!signalEditDraft.value || sigTool(signalEditDraft.value) !== 'qfk_var') return
+  const args = signalEditDraft.value.acquire.args
+  if (operation === 'feature_extract') {
+    args.target_variable ||= 'vm_name'
+    args.value_type ||= 'string'
+    args.cardinality ||= 'exactly_one'
+  } else {
+    delete args.target_variable
+    delete args.cardinality
+  }
+  syncDraftRequires()
+}
+
+function onQfkVarTargetChange(target: string): void {
+  if (!signalEditDraft.value || sigTool(signalEditDraft.value) !== 'qfk_var') return
+  const typeMap: Record<string, string> = {
+    'percent.current': 'percentage',
+    'percent.threshold': 'percentage',
+    'memory.used': 'quantity',
+    'memory.threshold': 'quantity',
+    'memory.remaining': 'quantity',
+    change_pair: 'object',
+  }
+  signalEditDraft.value.acquire.args.value_type = typeMap[target] || 'string'
+  const produces = signalEditDraft.value.orchestrate?.produces || []
+  if (signalEditDraft.value.acquire.args.mode === 'derive' && produces.length === 1) produces[0].type = signalEditDraft.value.acquire.args.value_type
 }
 
 function supportsQfkFormatter(tool: string): boolean {
@@ -4501,6 +4558,7 @@ onUnmounted(() => clearBatchPollTimer())
                     <el-dropdown-item command="qfk_storage">存储检查 qfk_storage</el-dropdown-item>
                     <el-dropdown-item command="qfk_hardware">硬件检查 qfk_hardware</el-dropdown-item>
                     <el-dropdown-item command="qfk_platform">平台检查 qfk_platform</el-dropdown-item>
+                    <el-dropdown-item command="qfk_var">变量处理 qfk_var</el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
               </el-dropdown>
@@ -4815,8 +4873,13 @@ onUnmounted(() => clearBatchPollTimer())
                 <!-- 展示模式 -->
                 <div v-if="editingSignalIndex !== item.origIdx">
                   <!-- 共有字段 -->
-                  <div class="signal-row"><span class="signal-k">说明</span><span class="signal-v">{{ sigArgs(item.sig).instruction || '—' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">主机</span><span class="signal-v code">{{ sigArgs(item.sig).host || '—' }}</span></div>
+                  <div v-if="sigTool(item.sig) !== 'qfk_var'" class="signal-row"><span class="signal-k">说明</span><span class="signal-v">{{ sigArgs(item.sig).instruction || '—' }}</span></div>
+                  <div v-if="sigTool(item.sig) !== 'qfk_var'" class="signal-row"><span class="signal-k">主机</span><span class="signal-v code">{{ sigArgs(item.sig).host || '—' }}</span></div>
+                  <template v-if="sigTool(item.sig) === 'qfk_var'">
+                    <div class="signal-row"><span class="signal-k">处理模式</span><span class="signal-v">{{ sigArgs(item.sig).mode || '—' }} / {{ sigArgs(item.sig).operation || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">输入模板</span><span class="signal-v code">{{ sigArgs(item.sig).input || sigArgs(item.sig).left || '—' }}</span></div>
+                    <div class="signal-row"><span class="signal-k">目标变量</span><span class="signal-v code">{{ sigArgs(item.sig).target_variable || (sigOrch(item.sig).produces || []).map((p) => p.name).join('、') || '—' }}</span></div>
+                  </template>
                   <template v-if="sigTool(item.sig) === 'qfk_system'">
                     <div class="signal-row"><span class="signal-k">容器</span><span class="signal-v">{{ sigArgs(item.sig).container || 'host' }}</span></div>
                     <div v-if="sigArgs(item.sig).cluster" class="signal-row"><span class="signal-k">集群执行</span><span class="signal-v">是（acli --cluster）</span></div>
@@ -4850,7 +4913,7 @@ onUnmounted(() => clearBatchPollTimer())
                   <template v-if="sigTool(item.sig) === 'qfk_service'">
                     <div class="signal-row"><span class="signal-k">服务</span><span class="signal-v code">{{ sigArgs(item.sig).service || sigArgs(item.sig).resource_keyword || '—' }}</span></div>
                   </template>
-                  <div class="signal-row command-preview-row">
+                  <div v-if="sigTool(item.sig) !== 'qfk_var'" class="signal-row command-preview-row">
                     <span class="signal-k">完整命令</span>
                     <div class="signal-v">
                       <el-button text type="primary" size="small" :loading="commandPreviewLoading[commandPreviewKey(item.sig, item.origIdx)]" @click="toggleCommandPreview(item.sig, item.origIdx)">
@@ -5134,9 +5197,27 @@ onUnmounted(() => clearBatchPollTimer())
                     <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" placeholder="信号说明，如 镜像文件占用检查" /></div>
                     <div class="field-hint">信号语义说明：用自然语言描述这个检查/采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
                     <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据（必须满足）" value="must" /><el-option label="增强证据（按门槛满足）" value="should" /><el-option label="排除证据（出现即排除）" value="exclude" /><el-option label="上下文证据（执行但不参与结论）" value="context" /></el-select></div>
-                    <div class="signal-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" filterable @change="onSignalToolChange"><el-option label="日志检查 qfk_log" value="qfk_log" /><el-option label="系统 qfk_system" value="qfk_system" /><el-option label="服务 qfk_service" value="qfk_service" /><el-option label="虚拟机 qfk_vm" value="qfk_vm" /><el-option label="网络 qfk_network" value="qfk_network" /><el-option label="存储 qfk_storage" value="qfk_storage" /><el-option label="硬件 qfk_hardware" value="qfk_hardware" /><el-option label="平台 qfk_platform" value="qfk_platform" /></el-select></div>
-                    <div class="signal-row"><span class="signal-k">主机</span><el-input v-model="signalEditDraft.acquire.args.host" size="small" placeholder="{{HOST}} 或固定主机名/IP" /></div>
-                    <div class="field-hint" v-pre>Terminal Bridge 通过此主机选择 SSH 会话；它不是 aCLI 参数。要遍历集群，请在下方启用“集群执行”。</div>
+                    <div class="signal-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" filterable @change="onSignalToolChange"><el-option label="日志检查 qfk_log" value="qfk_log" /><el-option label="系统 qfk_system" value="qfk_system" /><el-option label="服务 qfk_service" value="qfk_service" /><el-option label="虚拟机 qfk_vm" value="qfk_vm" /><el-option label="网络 qfk_network" value="qfk_network" /><el-option label="存储 qfk_storage" value="qfk_storage" /><el-option label="硬件 qfk_hardware" value="qfk_hardware" /><el-option label="平台 qfk_platform" value="qfk_platform" /><el-option label="变量处理 qfk_var" value="qfk_var" /></el-select></div>
+                    <template v-if="sigTool(signalEditDraft) === 'qfk_var'">
+                      <div class="signal-row"><span class="signal-k">模式</span><el-select v-model="signalEditDraft.acquire.args.mode" size="small" @change="onQfkVarModeChange"><el-option label="派生新变量 derive" value="derive" /><el-option label="判断 assert" value="assert" /></el-select></div>
+                      <div class="signal-row"><span class="signal-k">操作</span><el-select v-model="signalEditDraft.acquire.args.operation" size="small" @change="onQfkVarOperationChange"><el-option label="特征提取 feature_extract" value="feature_extract" /><el-option label="字段 field" value="field" /><el-option label="JSON 路径 json_path" value="json_path" /><el-option label="类型转换 cast" value="cast" /><el-option label="字符串处理 string" value="string" /><el-option label="比较 compare" value="compare" /><el-option label="存在性 exists" value="exists" /></el-select></div>
+                      <div class="signal-row"><span class="signal-k">输入模板</span><el-input v-model="signalEditDraft.acquire.args.input" size="small" placeholder="{{DESCRIPTION}} 或 {{RECORD}}" /></div>
+                      <template v-if="signalEditDraft.acquire.args.operation === 'feature_extract'">
+                        <div class="signal-row"><span class="signal-k">目标变量</span><el-select v-model="signalEditDraft.acquire.args.target_variable" size="small" filterable @change="onQfkVarTargetChange"><el-option v-for="target in ['vm_name','host','storage_name','disk_name','interface_name','percent.current','percent.threshold','memory.used','memory.threshold','memory.remaining','error_code','source_host','destination_host','change_pair']" :key="target" :label="target" :value="target" /></el-select></div>
+                        <div class="signal-row"><span class="signal-k">基数</span><el-select v-model="signalEditDraft.acquire.args.cardinality" size="small"><el-option label="必须唯一 exactly_one" value="exactly_one" /><el-option label="零个或多个 zero_or_more" value="zero_or_more" /></el-select></div>
+                      </template>
+                      <template v-if="signalEditDraft.acquire.args.operation === 'compare'">
+                        <div class="signal-row"><span class="signal-k">左值</span><el-input v-model="signalEditDraft.acquire.args.left" size="small" placeholder="{{PERCENT_CURRENT}} 或 91%" /></div>
+                        <div class="signal-row"><span class="signal-k">运算符</span><el-select v-model="signalEditDraft.acquire.args.operator" size="small"><el-option v-for="operator in ['>','>=','<','<=','==','!=']" :key="operator" :label="operator" :value="operator" /></el-select></div>
+                        <div class="signal-row"><span class="signal-k">右值</span><el-input v-model="signalEditDraft.acquire.args.right" size="small" placeholder="90%" /></div>
+                        <div class="signal-row"><span class="signal-k">值类型</span><el-select v-model="signalEditDraft.acquire.args.value_type" size="small"><el-option label="percentage" value="percentage" /><el-option label="number" value="number" /><el-option label="quantity" value="quantity" /><el-option label="string" value="string" /></el-select></div>
+                      </template>
+                      <div class="field-hint">qfk_var 只读取下方“变量依赖”中显式声明的变量，不生成命令；assert 不写池，derive 只原子写入一个输出变量。</div>
+                    </template>
+                    <template v-if="sigTool(signalEditDraft) !== 'qfk_var'">
+                      <div class="signal-row"><span class="signal-k">主机</span><el-input v-model="signalEditDraft.acquire.args.host" size="small" placeholder="{{HOST}} 或固定主机名/IP" /></div>
+                      <div class="field-hint" v-pre>Terminal Bridge 通过此主机选择 SSH 会话；它不是 aCLI 参数。要遍历集群，请在下方启用“集群执行”。</div>
+                    </template>
                   <!-- 容器与执行命令：位于输入/输出契约之前，先明确命令在哪里、执行什么。 -->
                   <template v-if="sigTool(signalEditDraft) === 'qfk_system'">
                     <div class="signal-row"><span class="signal-k">容器</span>
