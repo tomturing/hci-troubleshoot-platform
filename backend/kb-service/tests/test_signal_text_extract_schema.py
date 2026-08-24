@@ -484,6 +484,31 @@ def test_variable_dependency_error_targets_signal_that_declares_missing_input():
     assert "NOT_DECLARED" in issue["message"]
 
 
+def test_variable_name_format_is_independent_from_external_variable_catalog():
+    """合法的大写变量可以由 Verification Contract 声明，不受默认目录限制。"""
+    document = _qfk_match(
+        {"type": "exists", "expected": True, "extract": _text_extract()},
+    )
+    document["signals"][0]["orchestrate"] = {
+        "produces": [],
+        "requires": ["VM_DISK_ID"],
+    }
+    document["verification_contract"] = {
+        "schema_version": 1,
+        "variables": {"VM_DISK_ID": {"type": "string"}},
+        "evidence_policy": {
+            "must": [document["signals"][0].get("id", "sig_001")],
+            "should": [],
+            "exclude": [],
+            "context": [],
+        },
+    }
+    document["signals"][0]["id"] = "sig_disk"
+    document["verification_contract"]["evidence_policy"]["must"] = ["sig_disk"]
+
+    validate_publishable_signals_json(document)
+
+
 def test_kbd_publish_gate_rejects_consumer_only_document_with_external_variables():
     """外部变量可满足依赖，但不能替代描述故障入口的 QKV 生产者。"""
 
