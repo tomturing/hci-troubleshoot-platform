@@ -58,9 +58,7 @@ def test_signal_extract_prompt_only_teaches_declarative_text_extract_and_current
     assert '"mode": "any"' not in template
     assert '"mode": "or"' in template
     assert '"type": "<keyword|regex|state|threshold|delta|trend|exists>"' in template
-    # qfk_var 的纯变量处理契约允许 json_path；它不属于普通 QFK Matcher 类型。
-    assert "qfk_var" in template
-    assert "json_path" in template
+    assert "json_path" not in template
     assert "判定模式的 match 必须包含 extract" in template
     assert "字段严格隔离：rows.scope 固定 same_record" in template
     assert "rows.include_mode 与 rows.exclude_mode" in template

@@ -295,21 +295,6 @@ def review_signal_document(
             issues.append(issue)
 
         resolver_id = _resolver_id(tool)
-        if tool == "qfk_var":
-            # qfk_var 是变量池内核，不生成现场命令；共享 acquirer/signal schema
-            # 已完成其静态契约校验，审查阶段只记录可编译状态。
-            signal_reviews.append(
-                SignalRuntimeReview(
-                    signal_id=signal_id,
-                    signal_index=index,
-                    tool=tool,
-                    resolver_id="variable_processor",
-                    status=ResolutionStatus.COMPILED if args_ok else ResolutionStatus.BLOCKED,
-                    catalog_version="qfk-var-v1",
-                    issues=per_signal,
-                )
-            )
-            continue
         if resolver_id is None:
             issue = _review_issue(
                 "SIGNAL_RESOLVER_MISSING",

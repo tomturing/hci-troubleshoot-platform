@@ -46,21 +46,15 @@ def runtime_capability_document() -> dict:
     bridge_ready = executor_module._executor is not None
     # QKV 工具清单从共享契约集合派生（防硬编码漏改）：直接生产者 + 条件型生产者。
     qkv_tools = tuple(sorted(FRONTEND_TOOLS)) + tuple(sorted(CONDITIONAL_PRODUCERS))
-    qfk_tools = (*tuple(f"qfk_{namespace}" for namespace in HandlerRegistry.supported_namespaces()), "qfk_var")
+    qfk_tools = tuple(f"qfk_{namespace}" for namespace in HandlerRegistry.supported_namespaces())
     capabilities = []
     for capability_id in (*qkv_tools, *qfk_tools):
         producer = capability_id.startswith("qkv_")
         conditional = capability_id in CONDITIONAL_PRODUCERS
         is_effect = capability_id == "qkv_effect"
-        is_variable_processor = capability_id == "qfk_var"
-        handler_ready = (
-            producer
-            or is_variable_processor
-            or capability_id.removeprefix("qfk_") in HandlerRegistry.supported_namespaces()
-        )
+        handler_ready = producer or capability_id.removeprefix("qfk_") in HandlerRegistry.supported_namespaces()
         validator_ready = FrontendSignal is not None if producer else BackendSignal is not None
-        executor_ready = True if is_variable_processor else bridge_ready
-        usable = handler_ready and validator_ready and executor_ready
+        usable = handler_ready and validator_ready and bridge_ready
         reason = None if usable else "Terminal Bridge Executor 尚未注入，参数可校验但暂不可执行"
         if conditional and is_effect:
             # 条件型效果验证生产者：执行层受 EFFECT_VERIFICATION_ENABLED 策略门禁控制。
@@ -80,7 +74,7 @@ def runtime_capability_document() -> dict:
                 "implemented": handler_ready,
                 "deployed": True,
                 "validator_ready": validator_ready,
-                "executor_ready": executor_ready,
+                "executor_ready": bridge_ready,
                 "usable": usable,
                 "runtime_status": "available" if usable else "degraded",
                 "reason": reason,
@@ -114,13 +108,6 @@ def compile_qfk_command_preview(raw_signal: dict[str, Any]) -> dict[str, Any]:
     if not tool.startswith("qfk_") or tool == "qfk_":
         raise ValueError("仅支持预览 QFK 消费者信号")
     namespace = tool.removeprefix("qfk_")
-    if tool == "qfk_var":
-        return {
-            "tool": tool,
-            "commands": [],
-            "execution": "variable_pool",
-            "message": "qfk_var 是纯变量处理器，不生成或执行 aCLI 命令",
-        }
     if namespace not in HandlerRegistry.supported_namespaces():
         raise ValueError(f"未声明的 QFK 采集类型: {tool}")
 
@@ -132,16 +119,13 @@ def compile_qfk_command_preview(raw_signal: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("signal.match 必须是对象或 null")
 
     pattern = matcher.get("pattern") if matcher.get("type") == "keyword" else None
-    keywords = (
-        [pattern] if isinstance(pattern, str) and pattern else list(pattern or []) if isinstance(pattern, list) else []
-    )
+    keywords = [pattern] if isinstance(pattern, str) and pattern else list(pattern or []) if isinstance(pattern, list) else []
     filter_keywords = _extract_filter_keywords(raw_signal)
     data: dict[str, Any] = {
         "namespace": namespace,
         "keyword": keywords,
         "match_mode": {"any": "or", "all": "and"}.get(
-            str(matcher.get("mode") or "or").lower(),
-            str(matcher.get("mode") or "or").lower(),
+            str(matcher.get("mode") or "or").lower(), str(matcher.get("mode") or "or").lower(),
         ),
         "expected": bool(matcher.get("expected", True)),
         "instruction": args.get("instruction"),
@@ -174,7 +158,13 @@ def compile_qfk_command_preview(raw_signal: dict[str, Any]) -> dict[str, Any]:
         "tool": tool,
         "command": build_acli_command(signal),
         "host": signal.host,
-        "variables": sorted({item for value in (args, matcher) for item in _find_placeholders(value)}),
+        "variables": sorted(
+            {
+                item
+                for value in (args, matcher)
+                for item in _find_placeholders(value)
+            }
+        ),
         "notice": "这是由当前 Agent Handler 编译的只读命令模板；变量会在执行前替换，host 仅用于选择 SSH 目标主机。",
     }
 
@@ -202,7 +192,11 @@ def _extract_filter_keywords(signal: dict[str, Any]) -> list[str]:
         specs.append(matcher.get("extract"))
     orchestrate = signal.get("orchestrate")
     if isinstance(orchestrate, dict):
-        specs.extend(item.get("extract") for item in orchestrate.get("produces") or [] if isinstance(item, dict))
+        specs.extend(
+            item.get("extract")
+            for item in orchestrate.get("produces") or []
+            if isinstance(item, dict)
+        )
     result: list[str] = []
     for spec in specs:
         rows = spec.get("rows") if isinstance(spec, dict) else None

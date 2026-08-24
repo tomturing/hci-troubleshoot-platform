@@ -1,8 +1,8 @@
 -- ============================================================
 -- Seed 数据：QKV/QFK 关键信号工具定义
--- Version : 20260824
+-- Version : 20260820
 -- Issue   : T-TOOL-QKV-QFK-001
--- 说明    : 插入 14 条工具定义记录（QKV 3个直接生产者 + 2个条件型生产者[视觉/效果验证] + QFK 8个 + qfk_var）
+-- 说明    : 插入 13 条工具定义记录（QKV 3个直接生产者 + 2个条件型生产者[视觉/效果验证] + QFK 8个）
 -- 幂等键  : tool_name（ON CONFLICT DO NOTHING，禁止覆盖管理员治理结果）
 --
 -- 统一定义（display_name 标准命名，勿擅自修改以免造成误解）：
@@ -19,7 +19,6 @@
 --   qfk_storage  - 后端信号-存储相关操作
 --   qfk_hardware - 后端信号-硬件相关操作
 --   qfk_platform - 后端信号-平台相关操作
---   qfk_var      - 变量池确定性转换/抽取
 -- ============================================================
 
 -- ─── QKV 前端信号（生产者）─────────────────────────────────────
@@ -78,25 +77,6 @@ INSERT INTO tool_definition (
         "additionalProperties": false
     }',
     '[{"keyword": "磁盘被拔出", "limit": 50, "produces": [{"name": "HOST", "path": "host|hostname"}, {"name": "DISK_SN", "path": "target|object_name"}]}]',
-    1,
-    true
-) ON CONFLICT (tool_name) DO NOTHING;
-
--- qfk_var：纯变量处理器，不执行 aCLI，不读取未声明变量。
-INSERT INTO tool_definition (
-    tool_name, display_name, category, description,
-    usage_template, parameters_schema, examples, risk_level, is_active
-) VALUES (
-    'qfk_var',
-    '后端信号-变量处理器',
-    'qfk',
-    '对变量池中显式 requires 的输入执行固定四层流水线：确定性变量提取、变量命名和归一化、类型和基数校验、受控 AI 兜底；assert 只判断，derive 原子产出一个新变量。',
-    'qfk_var {{operation}}',
-    '{
-        "type": "object",
-        "description": "参数以 shared ACQUIRER_ARGS_SCHEMA 为唯一可执行契约；qfk_var 不生成命令"
-    }',
-    '[{"mode":"derive","operation":"feature_extract","input":"{{DESCRIPTION}}","target_variable":"vm_name","value_type":"string","cardinality":"exactly_one"}]',
     1,
     true
 ) ON CONFLICT (tool_name) DO NOTHING;
