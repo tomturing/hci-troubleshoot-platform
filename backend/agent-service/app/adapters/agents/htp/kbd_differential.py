@@ -1726,7 +1726,9 @@ class KBDDiagnostic:
             record_metric("blocked", "QFK_VAR_BLOCKED")
             return None, f"QFK_VAR_BLOCKED: requires 未就绪: {', '.join(absent)}", None, None
         snapshot = {name: available[name] for name in sorted(declared_requires)}
-        resolved_args = self._resolve_template_value(args_template, snapshot)
+        # qfk_var 的完整占位符必须保留变量池原始类型（例如数字 80），否则
+        # compare/JSON path 会被通用命令模板解析器统一转成字符串，破坏类型契约。
+        resolved_args = self._resolve_qfk_var_template_value(args_template, snapshot)
         snapshot_hash = hashlib.sha256(
             json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()
@@ -2006,7 +2008,26 @@ class KBDDiagnostic:
     def _resolve_template_value(cls, value: Any, variable_pool: dict[str, Any]) -> Any:
         """递归渲染 extract 中 include/exclude 等位置的 ``{{VAR}}``。"""
         if isinstance(value, str):
-            # 完整占位符保留原始类型（数字、对象、数组），嵌入更长字符串时才转成文本。
+            # 通用命令/Matcher 模板保持历史语义：完整占位符也转成文本。qfk_var
+            # 需要原始类型时使用下方专用解析器，避免改变既有 QFK 行为。
+            match = re.fullmatch(r"\{\{([A-Za-z0-9_.]+)\}\}", value.strip())
+            if match:
+                name = match.group(1).lower()
+                lower_pool = {str(key).lower(): item for key, item in variable_pool.items()}
+                if name in lower_pool:
+                    return str(lower_pool[name])
+            return cls._resolve_args({"value": value}, variable_pool=variable_pool)["value"]
+        if isinstance(value, list):
+            return [cls._resolve_template_value(item, variable_pool) for item in value]
+        if isinstance(value, dict):
+            return {key: cls._resolve_template_value(item, variable_pool) for key, item in value.items()}
+        return value
+
+    @classmethod
+    def _resolve_qfk_var_template_value(cls, value: Any, variable_pool: dict[str, Any]) -> Any:
+        """解析 qfk_var 模板并保留完整占位符的原始类型。"""
+
+        if isinstance(value, str):
             match = re.fullmatch(r"\{\{([A-Za-z0-9_.]+)\}\}", value.strip())
             if match:
                 name = match.group(1).lower()
@@ -2015,9 +2036,9 @@ class KBDDiagnostic:
                     return lower_pool[name]
             return cls._resolve_args({"value": value}, variable_pool=variable_pool)["value"]
         if isinstance(value, list):
-            return [cls._resolve_template_value(item, variable_pool) for item in value]
+            return [cls._resolve_qfk_var_template_value(item, variable_pool) for item in value]
         if isinstance(value, dict):
-            return {key: cls._resolve_template_value(item, variable_pool) for key, item in value.items()}
+            return {key: cls._resolve_qfk_var_template_value(item, variable_pool) for key, item in value.items()}
         return value
 
     @staticmethod
