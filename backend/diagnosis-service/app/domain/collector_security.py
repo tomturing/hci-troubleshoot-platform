@@ -238,3 +238,74 @@ def validate_manual_guide(guide: str, parameter_schema: dict[str, Any]) -> None:
             http_status=422,
         )
     validate_collector_contract("manual-attachment", parameter_schema)
+
+
+VM_CONSOLE_FIXED_OPERATION_MARKER = "vm_console_capture://fixed-operation"
+
+
+def validate_vm_console_capture_contract(command_template: str, parameter_schema: dict[str, Any]) -> None:
+    """vm_console_capture 专用执行器的安全契约（设计文档 §3.4/§9.3）。
+
+    与通用只读命令白名单的根本差异：该执行器不渲染任何命令模板——截图与唤醒
+    是 Go 采集器内置的固定操作（screendump / sendkey down），KBD、运营页面和
+    LLM 都不能写入任意 vtpsh 命令、宿主机路径或按键。因此这里只校验固定操作
+    标识与参数 Schema 的受限形态，绝不调用 validate_collector_contract 的
+    通用命令解析路径。
+    """
+
+    if command_template != VM_CONSOLE_FIXED_OPERATION_MARKER:
+        raise DiagnosisError(
+            code="UNSAFE_VM_CONSOLE_CONTRACT",
+            message="vm_console_capture 执行器只接受固定操作标识，禁止自定义命令模板",
+            http_status=422,
+        )
+    if parameter_schema.get("type") != "object":
+        raise DiagnosisError(
+            code="INVALID_PARAMETER_SCHEMA",
+            message="parameter_schema.type 必须为 object",
+            http_status=422,
+        )
+    if parameter_schema.get("additionalProperties") is not False:
+        raise DiagnosisError(
+            code="INVALID_PARAMETER_SCHEMA",
+            message="parameter_schema 必须显式禁止 additionalProperties",
+            http_status=422,
+        )
+    properties = parameter_schema.get("properties", {})
+    if not isinstance(properties, dict):
+        raise DiagnosisError(
+            code="INVALID_PARAMETER_SCHEMA",
+            message="parameter_schema.properties 必须为对象",
+            http_status=422,
+        )
+    # 仅允许受限目标参数；command/path/key/monitor_command 等自由字段一律拒绝。
+    allowed_fields = {"host", "vm_id", "capture_mode", "timeout", "instruction"}
+    unknown = sorted(set(properties) - allowed_fields)
+    if unknown:
+        raise DiagnosisError(
+            code="UNSAFE_VM_CONSOLE_CONTRACT",
+            message=f"vm_console_capture 参数仅允许 {sorted(allowed_fields)}，检测到: {', '.join(unknown)}",
+            http_status=422,
+        )
+    vm_id_schema = properties.get("vm_id") or {}
+    if vm_id_schema.get("pattern") != "^[0-9]{1,20}$":
+        raise DiagnosisError(
+            code="UNSAFE_VM_CONSOLE_CONTRACT",
+            message="vm_console_capture.vm_id 必须约束为精确数值 VMID（pattern=^[0-9]{1,20}$）",
+            http_status=422,
+        )
+    capture_mode_schema = properties.get("capture_mode") or {}
+    if capture_mode_schema and capture_mode_schema.get("enum") != ["baseline_then_optional_wake"]:
+        raise DiagnosisError(
+            code="UNSAFE_VM_CONSOLE_CONTRACT",
+            message="vm_console_capture.capture_mode 仅允许 baseline_then_optional_wake",
+            http_status=422,
+        )
+    try:
+        Draft202012Validator.check_schema(parameter_schema)
+    except Exception as exc:
+        raise DiagnosisError(
+            code="INVALID_PARAMETER_SCHEMA",
+            message="parameter_schema 不是合法 JSON Schema",
+            http_status=422,
+        ) from exc

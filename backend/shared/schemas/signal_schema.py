@@ -17,7 +17,12 @@ from jsonschema import Draft7Validator, ValidationError
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT7
 
-from shared.schemas.acquirer_args import FRONTEND_TOOLS, validate_acquire_args
+from shared.schemas.acquirer_args import (
+    CONDITIONAL_PRODUCERS,
+    FRONTEND_TOOLS,
+    VM_CONSOLE_REQUIRED_TARGET_VARS,
+    validate_acquire_args,
+)
 from shared.schemas.log_source_catalog import (
     LOG_MATCHER_TYPES,
     REQUEST_ARTIFACT_ROOT,
@@ -165,6 +170,29 @@ def humanize_signal_validation_error(error: ValidationError, signals: list[Any])
         field_label = "生产者信号"
         message = "发布前请至少新增一条生产者信号，说明 Agent 如何通过任务、告警或弹框发现该故障。"
         code = "KBD_PRODUCER_SIGNAL_MISSING"
+    elif "控制台截图信号需要可信的 HOST 与 VM_ID 来源" in raw_message:
+        field_path = "signals"
+        field_label = "条件型生产者"
+        message = (
+            "控制台截图信号需要可信的 HOST 与 VM_ID 来源；请增加上游生产者、平台对象查询或受控用户输入。"
+        )
+        code = "KBD_CONDITIONAL_PRODUCER_TARGET_MISSING"
+    elif "效果验证信号需要可信的期望来源" in raw_message:
+        field_path = "acquire.args"
+        field_label = "效果验证 / 期望来源"
+        message = (
+            "效果验证信号需要可信的期望来源；请在上游生产者产出、验证规则外部变量声明或受控用户表单中"
+            "补齐期望锚点引用的变量。"
+        )
+        code = "EFFECT_EXPECTATION_SOURCE_MISSING"
+    elif "不能作为 KBD 的唯一生产者" in raw_message:
+        field_path = "signals"
+        field_label = "效果验证 / 生产者门禁"
+        message = (
+            "效果验证信号（qkv_effect）不能作为 KBD 的唯一生产者；请至少保留一条直接生产者"
+            "（告警/任务/弹框）或条件型视觉生产者，用于建立诊断观测入口。"
+        )
+        code = "EFFECT_SOLE_PRODUCER_FORBIDDEN"
     elif "缺少稳定 id" in raw_message:
         field_path = "id"
         field_label = _field_label(field_path)
@@ -372,19 +400,103 @@ def validate_publishable_signals_json(raw: Any) -> None:
 
 
 def validate_kbd_publishable_signals_json(raw: Any) -> None:
-    """KBD 发布门禁：通用 Signal 契约之外必须具备故障入口生产者。"""
+    """KBD 发布门禁：通用 Signal 契约之外必须具备故障入口生产者。
+
+    生产者分两类（对齐《虚拟机控制台视觉生产者信号设计与需求》§4.3 与
+    《效果验证生产者信号设计与需求》§4.3）：
+    1. 直接生产者（FRONTEND_TOOLS：qkv_alert/qkv_task/qkv_dialog）——无条件满足；
+    2. 条件生产者（CONDITIONAL_PRODUCERS）：
+       - qkv_vm_console——只有 HOST、VM_ID 均可通过同一 KBD 的已声明变量来源
+         （上游 produces 或 verification_contract 外部变量声明）取得时才可参与；
+       - qkv_effect——期望锚点引用的变量来源必须可达（同一口径），且不得作为
+         KBD 唯一生产者：效果验证是对动作效果的复核，必须与至少一个直接生产者
+         或条件型视觉生产者共存，否则 KBD 没有诊断观测入口。
+    """
 
     validate_publishable_signals_json(raw)
     signals = raw.get("signals") if isinstance(raw, dict) else None
-    has_producer = any(
-        isinstance(signal, dict) and str((signal.get("acquire") or {}).get("tool") or "") in FRONTEND_TOOLS
+    tools = [
+        str((signal.get("acquire") or {}).get("tool") or "")
         for signal in signals or []
-    )
-    if not has_producer:
+        if isinstance(signal, dict)
+    ]
+    if any(tool == "qkv_effect" for tool in tools):
+        _validate_effect_producer_sources(raw)
+        other_producers = [
+            tool
+            for tool in tools
+            if tool in FRONTEND_TOOLS or (tool in CONDITIONAL_PRODUCERS and tool != "qkv_effect")
+        ]
+        if not other_producers:
+            raise ValidationError(
+                "效果验证信号（qkv_effect）不能作为 KBD 的唯一生产者；它复核动作效果，"
+                "必须与至少一个直接生产者（qkv_alert/qkv_task/qkv_dialog）或条件型视觉生产者"
+                "（qkv_vm_console）共存，用于建立诊断观测入口",
+                path=["signals"],
+            )
+    if any(tool in FRONTEND_TOOLS for tool in tools):
+        return
+    if any(tool in CONDITIONAL_PRODUCERS and tool != "qkv_effect" for tool in tools):
+        _nodes, all_produced, declared_external = _collect_variable_sources(raw)
+        available_sources = all_produced | declared_external
+        if VM_CONSOLE_REQUIRED_TARGET_VARS.issubset(available_sources):
+            return
         raise ValidationError(
-            "KBD 发布至少需要 1 条生产者信号（qkv_task、qkv_alert 或 qkv_dialog），用于描述 Agent 如何发现故障并建立诊断上下文",
+            "控制台截图信号需要可信的 HOST 与 VM_ID 来源；请增加上游生产者、平台对象查询或受控用户输入。"
+            f"（当前缺失：{', '.join(sorted(VM_CONSOLE_REQUIRED_TARGET_VARS - available_sources))}）",
             path=["signals"],
         )
+    raise ValidationError(
+        "KBD 发布至少需要 1 条生产者信号（qkv_task、qkv_alert、qkv_dialog，"
+        "或具备可信变量来源的条件型生产者 qkv_vm_console），用于描述 Agent 如何发现故障并建立诊断上下文；"
+        "qkv_effect 仅用于效果复核，不能单独作为生产者",
+        path=["signals"],
+    )
+
+
+def _collect_placeholder_names(value: Any) -> set[str]:
+    """递归收集嵌套结构中的 ``{{VAR}}`` 占位符变量名（大写，与依赖图同口径）。"""
+
+    names: set[str] = set()
+    if isinstance(value, str):
+        names.update(name.upper() for name in re.findall(r"\{\{([A-Z][A-Z0-9_]*)(?:\.[A-Z0-9_]*)*\}\}", value))
+    elif isinstance(value, dict):
+        for item in value.values():
+            names.update(_collect_placeholder_names(item))
+    elif isinstance(value, list):
+        for item in value:
+            names.update(_collect_placeholder_names(item))
+    return names
+
+
+def _validate_effect_producer_sources(raw: dict[str, Any]) -> None:
+    """效果验证门禁：期望锚点引用的变量必须来源可达（严格口径）。
+
+    口径与 qkv_vm_console 的 HOST/VM_ID 门禁一致：只看同一 KBD 的上游 produces
+    与 verification_contract.variables 外部声明，不启用无 Contract 历史数据的
+    兼容兜底。期望锚点的占位符来自 acquire.args 嵌套扫描（derive_signal_requires
+    已覆盖 qkv_effect），这里单独给出可执行的错误文案。
+    """
+
+    _nodes, all_produced, declared_external = _collect_variable_sources(raw)
+    available_sources = all_produced | declared_external
+    for index, signal in enumerate(raw.get("signals") or []):
+        if not isinstance(signal, dict):
+            continue
+        tool = str((signal.get("acquire") or {}).get("tool") or "")
+        if tool != "qkv_effect":
+            continue
+        # 仅统计本信号自身期望锚点引用的变量（从 requires 中还原占位符来源不现实，
+        # 直接重扫 acquire.args 占位符，与 derive_signal_requires 同源正则口径）。
+        referenced = _collect_placeholder_names((signal.get("acquire") or {}).get("args") or {})
+        missing = referenced - available_sources
+        if missing:
+            raise ValidationError(
+                "效果验证信号需要可信的期望来源；请在上游生产者产出、verification_contract.variables "
+                "外部声明或受控用户表单中补齐期望锚点引用的变量。"
+                f"（当前缺失：{', '.join(sorted(missing))}）",
+                path=["signals", index, "acquire", "args"],
+            )
 
 
 def certify_publishable_signals_json(raw: Any) -> dict[str, Any]:
@@ -427,8 +539,17 @@ def certify_publishable_signals_json(raw: Any) -> dict[str, Any]:
     return certified
 
 
-def _validate_variable_dependency_graph(raw: dict[str, Any]) -> None:
-    """发布前验证 diagnostic 变量链可达，避免 Admin 成功而 Agent 编译失败。"""
+def _collect_variable_sources(raw: dict[str, Any]) -> tuple[
+    list[tuple[str, set[str], set[str]]], set[str], set[str]
+]:
+    """收集诊断信号的变量节点、全部产出变量与外部声明变量（严格口径）。
+
+    返回 ``(nodes, all_produced, declared_external)``：
+    - nodes：(signal_id, requires, produces)，跳过 solution 阶段信号；
+    - all_produced：所有 diagnostic 信号 produces 的并集；
+    - declared_external：verification_contract.variables 的显式外部声明，
+      **不含**无 Contract 历史数据的兼容兜底（条件生产者门禁必须严格口径）。
+    """
 
     contract = raw.get("verification_contract") or {}
     declared_external = {str(name).strip().upper() for name in (contract.get("variables") or {}) if str(name).strip()}
@@ -458,6 +579,14 @@ def _validate_variable_dependency_graph(raw: dict[str, Any]) -> None:
         nodes.append((signal_id, requires, produces))
 
     all_produced = {name for _, _, produces in nodes for name in produces}
+    return nodes, all_produced, declared_external
+
+
+def _validate_variable_dependency_graph(raw: dict[str, Any]) -> None:
+    """发布前验证 diagnostic 变量链可达，避免 Admin 成功而 Agent 编译失败。"""
+
+    contract = raw.get("verification_contract") or {}
+    nodes, all_produced, declared_external = _collect_variable_sources(raw)
     if not contract:
         # 无 Verification Contract 的历史数据兼容运行时 env_context；首次专家保存
         # 会补全 Contract，之后即进入严格外部变量声明。

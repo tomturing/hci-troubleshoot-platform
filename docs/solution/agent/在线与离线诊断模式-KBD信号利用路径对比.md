@@ -19,6 +19,11 @@
 | `qkv_alert` | 告警查询 | `acli --formatter json alert get -k {keyword} -l {limit}` | `instruction`、`keyword`、`limit`、`produces` |
 | `qkv_task` | 任务查询 | `acli --formatter json task get -k {keyword} [-s failed] -l {limit}` | `instruction`、`keyword`、`limit`、`is_failed`、`produces` |
 | `qkv_dialog` | 弹框日志 | `acli log get -k {keyword} -p {path} -c {context_lines}` | `instruction`、`keyword`、`paths`、`context_lines`、`produces` |
+| `qkv_vm_console` | 控制台截图（条件型视觉生产者） | 无 acli 命令：代码固定 `vtpsh` screendump 操作（在线 Bridge / 离线 Go 执行器内置） | `host`、`vm_id`、`capture_mode`、`timeout`(1-60)、`produces`（VM_CONSOLE_*） |
+
+> `qkv_vm_console` 与三种直接生产者的差异：必须先具备可信 `HOST` 与 `VM_ID` 才可执行；
+> 截图阶段近似只读，近黑唤醒（sendkey down）属受控 Guest 交互，运行时必须人工确认。
+> 详见《虚拟机控制台视觉生产者信号设计与需求》。
 
 **消费者信号（QFK 后端信号）**——执行 acli 命令查询节点状态，通过 matcher 判定真伪：
 
@@ -671,6 +676,7 @@ class AcquisitionProvider(Protocol):
 | `qkv_alert` | `qkv/engine.py:qkv_exec()` | JSON 查询型 | `json` | `evidence_item` (commands/) | Collector 已生成，Provider 待适配 |
 | `qkv_task` | `qkv/engine.py:qkv_exec()` | JSON 查询型 | `json` | `evidence_item` (commands/) | Collector 已生成，Provider 待适配 |
 | `qkv_dialog` | `qkv/engine.py:qkv_exec()` | 日志查询型 | `log` | `evidence_item` (logs/) | Collector 已生成（is_log=True），Provider 待适配 |
+| `qkv_vm_console` | `tools/vm_console/adapter.py`（专用适配器，不走 qkv_exec） | 专用 `vm_console_capture` 执行器（非 command_template） | `json` | `evidence_item` (captures/ PPM + 派生视觉观察) | 在线/离线均已实现；执行层默认关闭（`VM_CONSOLE_CAPTURE_ENABLED`），待平台确认项闭环后启用 |
 
 ### QFK 消费者信号
 

@@ -14,6 +14,7 @@ from app.domain.collector_security import (
     validate_collector_contract,
     validate_hci_api_contract,
     validate_manual_guide,
+    validate_vm_console_capture_contract,
 )
 from app.errors import DiagnosisError
 from app.models.collector_definition import CollectorDefinition
@@ -321,6 +322,8 @@ class CollectorDefinitionService:
             validate_collector_contract(command.command_template, command.parameter_schema)
         elif command.executor == "http":
             validate_hci_api_contract(command.command_template, command.parameter_schema)
+        elif command.executor == "vm_console_capture":
+            validate_vm_console_capture_contract(command.command_template, command.parameter_schema)
         else:
             validate_manual_guide(command.command_template, command.parameter_schema)
 

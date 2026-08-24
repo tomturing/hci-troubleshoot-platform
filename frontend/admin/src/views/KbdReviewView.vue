@@ -1732,6 +1732,26 @@ async function publishMaintenanceWorking() {
 function sigTool(sig: SignalV2): string { return sig.acquire?.tool || '' }
 function sigArgs(sig: SignalV2): Record<string, any> { return sig.acquire?.args || {} }
 
+/** qkv_vm_console 目标变量（HOST/VM_ID）来源分析（§3.1/§4.3）。 */
+function vmConsoleTargetSources(): Array<{ variable: string; source: string; ok: boolean }> {
+  const doc = detailEntry.value?.signals_json as SignalsDoc | undefined
+  const declared = new Set(
+    Object.keys(doc?.verification_contract?.variables || {}).map((name) => name.toUpperCase()),
+  )
+  const producers: Record<string, string> = {}
+  for (const sig of signalList.value) {
+    for (const produce of sig.orchestrate?.produces || []) {
+      const name = String((produce as Record<string, unknown>)?.name || '').toUpperCase()
+      if (name && !producers[name]) producers[name] = String(sig.id || '未命名信号')
+    }
+  }
+  return ['HOST', 'VM_ID'].map((variable) => {
+    if (producers[variable]) return { variable, source: `上游生产者 ${producers[variable]} 产出`, ok: true }
+    if (declared.has(variable)) return { variable, source: '外部声明（验证规则 variables）', ok: true }
+    return { variable, source: '未声明来源——发布门禁将阻断，请补充上游生产者或外部变量声明', ok: false }
+  })
+}
+
 function producerSignalCount(row: KbdEntry): number {
   const signals = (row.signals_json as any)?.signals
   if (!Array.isArray(signals)) return 0
@@ -2107,6 +2127,21 @@ function defaultProduces(tool: string): Array<Record<string, any>> {
       { name: 'END', path: 'end' },
     ]
   }
+  if (tool === 'qkv_vm_console') {
+    return [
+      { name: 'VM_CONSOLE_STATE', path: 'display_state' },
+      { name: 'VM_CONSOLE_SUMMARY', path: 'summary' },
+      { name: 'VM_CONSOLE_CONFIDENCE', path: 'confidence' },
+      { name: 'VM_CONSOLE_ARTIFACT_ID', path: 'artifact_id' },
+    ]
+  }
+  if (tool === 'qkv_effect') {
+    return [
+      { name: 'EFFECT_STATUS', path: 'verdict' },
+      { name: 'EFFECT_CHECKED_AT', path: 'checked_at' },
+      { name: 'EFFECT_EVIDENCE', path: 'evidence_ref' },
+    ]
+  }
   return []
 }
 
@@ -2121,6 +2156,33 @@ function buildSignalForTool(tool: string, previous?: SignalV2): SignalV2 {
     args.paths = ['/sf/log/today', '/sf/log/today/vt']
     args.context_lines ??= 2
   }
+  // qkv_vm_console：条件型生产者。目标只允许 {{HOST}}/{{VM_ID}} 占位符或
+  // 受控字面量；编辑器不提供命令/路径/按键等自由字段。
+  if (tool === 'qkv_vm_console') {
+    args.host = typeof oldArgs.host === 'string' && oldArgs.host ? oldArgs.host : '{{HOST}}'
+    args.vm_id = typeof oldArgs.vm_id === 'string' && oldArgs.vm_id ? oldArgs.vm_id : '{{VM_ID}}'
+    args.capture_mode = 'baseline_then_optional_wake'
+    args.timeout = 60
+    delete args.keyword
+  }
+  // qkv_effect：条件型效果验证生产者。期望锚点必须是结构化契约数据：
+  // 封闭观测通道 + 封闭 matcher + 受限窗口；编辑器不提供自由文本判定字段。
+  if (tool === 'qkv_effect') {
+    args.usage = oldArgs.usage === 'symptom_confirm' ? 'symptom_confirm' : 'remediation_verify'
+    args.expectation =
+      typeof oldArgs.expectation === 'object' && oldArgs.expectation !== null
+        ? oldArgs.expectation
+        : {
+            observation: { tool: 'qkv_alert', args: { keyword: '' } },
+            matcher: { type: 'exists', expected: false, extract: { type: 'text', rows: { mode: 'all' } } },
+            settle_seconds: 120,
+            window_seconds: 900,
+            max_recheck: 2,
+          }
+    args.host = typeof oldArgs.host === 'string' && oldArgs.host ? oldArgs.host : '{{HOST}}'
+    args.timeout = 60
+    delete args.keyword
+  }
   // qfk_system 在宿主机执行时，持久化契约通过省略 container 表达；编辑器使用
   // host 作为显式的默认选项，便于专家把已选择的 aCLI 容器恢复为宿主机。
   if (tool === 'qfk_system') args.container = 'host'
@@ -2131,9 +2193,10 @@ function buildSignalForTool(tool: string, previous?: SignalV2): SignalV2 {
     acquire: { tool, args },
     match: producer ? null : { type: 'keyword', pattern: '', mode: 'or', expected: true },
     orchestrate: {
-      phase: previous?.orchestrate?.phase || 'diagnostic',
+      // qkv_effect 是 remediation phase 的只读观察信号；其余信号默认 diagnostic。
+      phase: previous?.orchestrate?.phase || (tool === 'qkv_effect' ? 'remediation' : 'diagnostic'),
       produces: producer ? defaultProduces(tool) : [],
-      requires: [],
+      requires: tool === 'qkv_vm_console' ? ['HOST', 'VM_ID'] : tool === 'qkv_effect' ? ['HOST'] : [],
     },
     provenance: {
       ...(previous?.provenance || {}),
@@ -2358,7 +2421,17 @@ async function saveMinimumShouldRule() {
 function qkvNatureLabel(tool: string): string {
   if (tool === 'qkv_alert') return '（告警型故障 · 分类基线）'
   if (tool === 'qkv_task' || tool === 'qkv_dialog') return '（任务失败型故障 · 分类基线）'
+  if (tool === 'qkv_vm_console') return '（条件型实时视觉生产者 · Guest 内部现象）'
+  if (tool === 'qkv_effect') return '（条件型效果验证生产者 · 动作成功 ≠ 效果达成）'
   return ''
+}
+function effectExpectationSummary(expectation: any): string {
+  if (!expectation || typeof expectation !== 'object') return '—'
+  const obsTool = expectation?.observation?.tool || '?'
+  const matcherType = expectation?.matcher?.type || '?'
+  const expected = expectation?.matcher?.expected === false ? '应消失' : '应出现'
+  const window = `${expectation?.settle_seconds ?? 120}s 稳定 / ${expectation?.window_seconds ?? 900}s 窗口 / ${expectation?.max_recheck ?? 2} 次复核`
+  return `${obsTool} 观测 · ${matcherType} 判定（${expected}） · ${window}`
 }
 function qkvKeywordPlaceholder(tool: string): string {
   if (tool === 'qkv_alert') return '告警型关键字，如 虚拟机CPU或内存占用过高告警、序列号过期告警'
@@ -4418,6 +4491,8 @@ onUnmounted(() => clearBatchPollTimer())
                     <el-dropdown-item command="qkv_task">任务信号 qkv_task</el-dropdown-item>
                     <el-dropdown-item command="qkv_alert">告警信号 qkv_alert</el-dropdown-item>
                     <el-dropdown-item command="qkv_dialog">弹框信号 qkv_dialog</el-dropdown-item>
+                    <el-dropdown-item command="qkv_vm_console">控制台截图 qkv_vm_console（条件型）</el-dropdown-item>
+                    <el-dropdown-item command="qkv_effect">效果验证 qkv_effect（条件型）</el-dropdown-item>
                     <el-dropdown-item divided command="qfk_log">日志检查 qfk_log</el-dropdown-item>
                     <el-dropdown-item command="qfk_system">系统检查 qfk_system</el-dropdown-item>
                     <el-dropdown-item command="qfk_service">服务检查 qfk_service</el-dropdown-item>
@@ -4554,7 +4629,9 @@ onUnmounted(() => clearBatchPollTimer())
               <div class="signal-card-body">
                 <div v-if="editingSignalIndex !== item.origIdx">
                   <div class="signal-row"><span class="signal-k">说明</span><span class="signal-v">{{ sigArgs(item.sig).instruction || '—' }}</span></div>
-                  <div class="signal-row"><span class="signal-k">关键字</span><span class="signal-v">{{ sigArgs(item.sig).keyword || '—' }}</span></div>
+                  <div v-if="sigTool(item.sig) === 'qkv_vm_console'" class="signal-row"><span class="signal-k">目标对象</span><span class="signal-v code">{{ sigArgs(item.sig).host || '—' }} / VM {{ sigArgs(item.sig).vm_id || '—' }}</span></div>
+                  <div v-else-if="sigTool(item.sig) === 'qkv_effect'" class="signal-row"><span class="signal-k">期望锚点</span><span class="signal-v code">{{ effectExpectationSummary(sigArgs(item.sig).expectation) }}</span></div>
+                  <div v-else class="signal-row"><span class="signal-k">关键字</span><span class="signal-v">{{ sigArgs(item.sig).keyword || '—' }}</span></div>
                   <div class="signal-row">
                     <span class="signal-k">产出变量</span>
                     <div class="signal-v">
@@ -4622,18 +4699,44 @@ onUnmounted(() => clearBatchPollTimer())
                     <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" type="textarea" :rows="2" placeholder="信号说明，如 镜像文件占用检查" /></div>
                     <div class="field-hint">信号语义说明：用自然语言描述这个采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
                     <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据（必须满足）" value="must" /><el-option label="增强证据（按门槛满足）" value="should" /><el-option label="排除证据（出现即排除）" value="exclude" /><el-option label="上下文证据（执行但不参与结论）" value="context" /></el-select></div>
-                    <div class="signal-row signal-type-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" @change="onSignalToolChange"><el-option label="任务 qkv_task" value="qkv_task" /><el-option label="告警 qkv_alert" value="qkv_alert" /><el-option label="弹框 qkv_dialog" value="qkv_dialog" /></el-select><span class="signal-nature">{{ qkvNatureLabel(sigTool(signalEditDraft)) }}</span></div>
-                    <div class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.acquire.args.keyword" size="small" :placeholder="qkvKeywordPlaceholder(sigTool(signalEditDraft))" /></div>
+                    <div class="signal-row signal-type-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" @change="onSignalToolChange"><el-option label="任务 qkv_task" value="qkv_task" /><el-option label="告警 qkv_alert" value="qkv_alert" /><el-option label="弹框 qkv_dialog" value="qkv_dialog" /><el-option label="控制台截图 qkv_vm_console" value="qkv_vm_console" /><el-option label="效果验证 qkv_effect" value="qkv_effect" /></el-select><span class="signal-nature">{{ qkvNatureLabel(sigTool(signalEditDraft)) }}</span></div>
+                    <template v-if="sigTool(signalEditDraft) === 'qkv_vm_console'">
+                      <div class="signal-row"><span class="signal-k">宿主机</span><el-input v-model="signalEditDraft.acquire.args.host" size="small" placeholder="{{HOST}} 或 Inventory 规范化节点标识" /></div>
+                      <div class="signal-row"><span class="signal-k">虚拟机 ID</span><el-input v-model="signalEditDraft.acquire.args.vm_id" size="small" placeholder="{{VM_ID}} 或精确数值 VMID" /></div>
+                      <div class="signal-row"><span class="signal-k">采集模式</span><span class="signal-v code">baseline_then_optional_wake（固定）</span></div>
+                      <div class="signal-row"><span class="signal-k">目标变量来源</span>
+                        <div>
+                          <div v-for="item in vmConsoleTargetSources()" :key="item.variable" style="margin-bottom: 2px">
+                            <el-tag :type="item.ok ? 'success' : 'danger'" size="small">{{ item.variable }}</el-tag>
+                            <span style="margin-left: 6px; font-size: 12px" :style="{ color: item.ok ? 'var(--el-text-color-secondary)' : 'var(--el-color-danger)' }">{{ item.source }}</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="field-hint">条件型实时视觉生产者：必须先具备可信 HOST 与 VM_ID（在验证规则的外部变量中声明，或由上游生产者产出）。截图为代码固定操作；近黑唤醒（sendkey down）属受控交互，运行时必须用户确认。编辑器不提供命令、路径或按键字段。</div>
+                    </template>
+                    <template v-else-if="sigTool(signalEditDraft) === 'qkv_effect'">
+                      <div class="signal-row"><span class="signal-k">使用模式</span><el-select v-model="signalEditDraft.acquire.args.usage" size="small"><el-option label="修复后复核" value="remediation_verify" /><el-option label="S1 症状确认" value="symptom_confirm" /></el-select></div>
+                      <div class="signal-row"><span class="signal-k">观测通道</span><el-select v-model="signalEditDraft.acquire.args.expectation.observation.tool" size="small"><el-option label="告警再查询 qkv_alert" value="qkv_alert" /><el-option label="任务再查询 qkv_task" value="qkv_task" /><el-option label="弹框再查询 qkv_dialog" value="qkv_dialog" /><el-option label="控制台画面 qkv_vm_console" value="qkv_vm_console" /></el-select></div>
+                      <div class="signal-row"><span class="signal-k">观测关键字</span><el-input v-model="signalEditDraft.acquire.args.expectation.observation.args.keyword" size="small" placeholder="观测原语查询关键字，如 内存不足" /></div>
+                      <div class="signal-row"><span class="signal-k">判定方式</span><el-select v-model="signalEditDraft.acquire.args.expectation.matcher.type" size="small"><el-option label="存在性 exists" value="exists" /><el-option label="关键字 keyword" value="keyword" /><el-option label="正则 regex" value="regex" /><el-option label="状态 state" value="state" /><el-option label="数值阈值 threshold" value="threshold" /><el-option label="差值 delta" value="delta" /><el-option label="趋势 trend" value="trend" /></el-select></div>
+                      <div class="signal-row"><span class="signal-k">期望方向</span><el-select v-model="signalEditDraft.acquire.args.expectation.matcher.expected" size="small"><el-option label="应出现（expected=true）" :value="true" /><el-option label="应消失（expected=false，负证据）" :value="false" /></el-select></div>
+                      <div class="signal-row"><span class="signal-k">稳定窗口（秒）</span><el-input-number v-model="signalEditDraft.acquire.args.expectation.settle_seconds" :min="0" :max="3600" size="small" /></div>
+                      <div class="signal-row"><span class="signal-k">复核窗口（秒）</span><el-input-number v-model="signalEditDraft.acquire.args.expectation.window_seconds" :min="60" :max="86400" size="small" /></div>
+                      <div class="signal-row"><span class="signal-k">复核次数</span><el-input-number v-model="signalEditDraft.acquire.args.expectation.max_recheck" :min="0" :max="5" size="small" /></div>
+                      <div class="signal-row"><span class="signal-k">目标宿主机</span><el-input v-model="signalEditDraft.acquire.args.host" size="small" placeholder="{{HOST}} 或 Inventory 规范化节点标识" /></div>
+                      <div class="field-hint">条件型效果验证生产者：期望必须是结构化契约数据（封闭观测通道 + 封闭 matcher + 受限窗口），观测委派已批准的只读原语。三态判定 achieved/not_achieved/inconclusive 由平台合成，观察不足禁止坍缩为已恢复；不得作为 KBD 唯一生产者。编辑器不提供自由文本判定、命令或脚本字段。</div>
+                    </template>
+                    <div v-else class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.acquire.args.keyword" size="small" :placeholder="qkvKeywordPlaceholder(sigTool(signalEditDraft))" /></div>
                     <div v-if="sigTool(signalEditDraft) === 'qkv_alert'" class="field-hint">告警型关键字（acli alert get -k）：取自「分类基线 · 告警型故障」（标签以「告警」结尾），如 虚拟机CPU或内存占用过高告警、主机网口丢包告警、序列号过期告警。多个用逗号分隔</div>
                     <div v-else-if="sigTool(signalEditDraft) === 'qkv_task'" class="field-hint">任务失败型关键字（acli task get -k）：取自「分类基线 · 任务失败型故障」，如 虚拟机开机失败、虚拟机快照失败、虚拟机scmt迁移失败。多个用逗号分隔</div>
                     <div v-else-if="sigTool(signalEditDraft) === 'qkv_dialog'" class="field-hint">无任务/告警承载的页面弹框原文或稳定片段。运行时在当前主控 /sf/log/today 与 /sf/log/today/vt 检索，并提取 END、REQUEST_ID、HOST；若存在对应失败任务，应优先使用 qkv_task。</div>
-                    <div v-else class="field-hint">前端采集匹配关键字（acli &lt;task|dialog|alert&gt; get -k）：取自「分类基线」标签。多个用逗号分隔</div>
+                    <div v-else-if="sigTool(signalEditDraft) !== 'qkv_vm_console' && sigTool(signalEditDraft) !== 'qkv_effect'" class="field-hint">前端采集匹配关键字（acli &lt;task|dialog|alert&gt; get -k）：取自「分类基线」标签。多个用逗号分隔</div>
                     <template v-if="sigTool(signalEditDraft) === 'qkv_dialog'">
                       <div class="signal-row"><span class="signal-k">搜索目录</span><span class="signal-v code">/sf/log/today、/sf/log/today/vt（固定）</span></div>
                       <div class="signal-row"><span class="signal-k">上下文行</span><el-input-number v-model="signalEditDraft.acquire.args.context_lines" :min="0" :max="10" size="small" /></div>
                       <div class="field-hint">qkv_dialog 不执行虚构的 acli dialog get；两个固定目录用于兼容不同版本的 aCLI 目录搜索深度。</div>
                     </template>
-                    <div class="field-hint keyword-check" :class="{ 'is-warn': qkvKeywordMismatch(signalEditDraft) }">校验规则：关键字须与本案例「分类基线」标签语义一致——任务失败型（…失败/卡住/异常/不达预期）用 qkv_task/qkv_dialog；告警型（…告警）用 qkv_alert。类型选错会导致 acli 查不到记录、信号恒为假<template v-if="qkvKeywordMismatch(signalEditDraft)"> ⚠ 当前「{{ sigTool(signalEditDraft) }} + 该关键字」疑似类型不匹配，请复核</template></div>
+                    <div v-if="sigTool(signalEditDraft) !== 'qkv_vm_console' && sigTool(signalEditDraft) !== 'qkv_effect'" class="field-hint keyword-check" :class="{ 'is-warn': qkvKeywordMismatch(signalEditDraft) }">校验规则：关键字须与本案例「分类基线」标签语义一致——任务失败型（…失败/卡住/异常/不达预期）用 qkv_task/qkv_dialog；告警型（…告警）用 qkv_alert。类型选错会导致 acli 查不到记录、信号恒为假<template v-if="qkvKeywordMismatch(signalEditDraft)"> ⚠ 当前「{{ sigTool(signalEditDraft) }} + 该关键字」疑似类型不匹配，请复核</template></div>
                     <!-- 产出变量编辑（v2 orchestrate.produces） -->
                     <div class="signal-row">
                       <span class="signal-k">产出变量</span>

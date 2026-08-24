@@ -25,11 +25,13 @@ from app.routes import (
     bridge_logs,
     conversations,
     diagnostic_item,
+    effect_verification,
     evaluate,
     skill_definition,
     sop_execution,
     system_prompt,
     tool_definition,
+    vm_console,
 )
 from app.routes import audit as audit_route
 from app.services.agent_client import AgentClient
@@ -190,9 +192,22 @@ async def lifespan(app: FastAPI):
     diagnostic_item.set_dependencies(database_manager)
     agent_exec.set_dependencies(database_manager, redis_manager)  # T-TOOL-05, T-TOOL-06
     bridge_logs.set_dependencies(database_manager)  # OBS-TERMINAL-BRIDGE-001 日志回采
+    vm_console.set_dependencies(database_manager, redis_manager)  # qkv_vm_console 在线通道
+    effect_verification.set_dependencies(database_manager)  # qkv_effect 结果卡与判定时间线
+    # 进程级共享 Redis（服务层交互决定回传使用，如近黑唤醒确认）。
+    from shared.database.redis import set_shared_redis
+
+    set_shared_redis(redis_manager)
     tool_definition.set_tool_database_manager(database_manager)
     system_prompt.set_prompt_database_manager(database_manager)
     skill_definition.set_skill_database_manager(database_manager)
+
+    # 进程重启回收：把悬挂的效果验证（非终态）降级为 inconclusive（fail-closed，
+    # 禁止静默通过）；表不存在的全新 DB 场景由路由层容错。
+    try:
+        await effect_verification.reclaim_orphaned_verifications(database_manager)
+    except Exception as exc:
+        logger.warning(event="effect_verification_reclaim_skipped", error=str(exc))
 
     yield
 
@@ -228,6 +243,8 @@ app.include_router(sop_execution.router)
 app.include_router(diagnostic_item.router)
 app.include_router(agent_exec.router)  # T-TOOL-05, T-TOOL-06
 app.include_router(bridge_logs.router)  # OBS-TERMINAL-BRIDGE-001 日志回采
+app.include_router(vm_console.router)  # qkv_vm_console 在线截图/制品/唤醒确认通道
+app.include_router(effect_verification.router)  # qkv_effect 结果卡与判定时间线
 app.include_router(tool_definition.router)
 app.include_router(system_prompt.router)
 app.include_router(skill_definition.router)

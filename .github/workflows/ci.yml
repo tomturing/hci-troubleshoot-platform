@@ -950,6 +950,9 @@ jobs:
           build-args: |
             SOURCE_SHA=${{ github.sha }}
             IMAGE_TAG=${{ needs.prepare.outputs.image_tag }}
+            # GitHub 托管 Runner（海外）：镜像源脚本走官方源（deploy/docker/base/setup-mirror.sh），
+            # mirrors.aliyun.com 从海外访问高延迟且偶发限流，仅本地开发（国内网络）使用。
+            MIRROR_MODE=off
 
       # 扫描只提供安全信号，不得成为 GHCR 发布的单点故障；正式标签必须在
       # 构建成功后才能推送。扫描使用本地镜像，避免先发布后扫描的不可追溯窗口。

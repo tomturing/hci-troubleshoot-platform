@@ -60,6 +60,15 @@ func collectorFailureReason(outputDir, itemID string, exitCode *int) string {
 		return reason
 	}
 	message := string(content)
+	// vm_console_capture 执行器的失败原因使用固定 "vm_console_<原因>:" 前缀写入 stderr，
+	// 此处原样提取为 collection_items[].failure_reason（沿用现有失败记录方式）。
+	firstLine := strings.SplitN(strings.TrimSpace(message), "\n", 2)[0]
+	if strings.HasPrefix(firstLine, "vm_console_") {
+		if index := strings.Index(firstLine, ":"); index > len("vm_console_") {
+			return strings.TrimSpace(firstLine[:index])
+		}
+		return strings.TrimSpace(firstLine)
+	}
 	if strings.Contains(message, "当前命令仅支持") && strings.Contains(message, "版本") {
 		return "collector_product_version_unsupported"
 	}
@@ -70,6 +79,12 @@ func collectorFailureReason(outputDir, itemID string, exitCode *int) string {
 }
 
 func fileManifest(root, relative, mediaType string) (evidenceFile, error) {
+	return fileManifestWithSensitivity(root, relative, mediaType, "internal")
+}
+
+// fileManifestWithSensitivity 生成证据文件清单条目；敏感级别由调用方按数据类型指定。
+// vm 控制台截图可能包含账号、业务数据或个人信息，必须按 confidential 声明。
+func fileManifestWithSensitivity(root, relative, mediaType, sensitivity string) (evidenceFile, error) {
 	path, cleaned, err := resolveEvidenceFile(root, relative)
 	if err != nil {
 		return evidenceFile{}, err
@@ -80,7 +95,7 @@ func fileManifest(root, relative, mediaType string) (evidenceFile, error) {
 	}
 	return evidenceFile{
 		Path: filepath.ToSlash(cleaned), OriginalName: filepath.Base(cleaned), MediaType: mediaType,
-		Sensitivity: "internal", SizeBytes: size, SHA256: hash,
+		Sensitivity: sensitivity, SizeBytes: size, SHA256: hash,
 	}, nil
 }
 
@@ -126,6 +141,7 @@ func buildEvidenceManifest(options packageOptions, artifact *artifactManifest, c
 		files := make([]evidenceFile, 0, 2)
 		status := "failed"
 		var failureReason *string
+		var vmConsole *evidenceVmConsoleManifest
 		if row.Status == "awaiting_manual_attachment" {
 			relative, err := safeRelativePath(item.OutputContract.OutputPath)
 			if err != nil {
@@ -140,6 +156,21 @@ func buildEvidenceManifest(options packageOptions, artifact *artifactManifest, c
 				status = "success"
 			} else {
 				status = "skipped_by_user"
+			}
+		} else if item.Executor == executorVmConsoleCapture {
+			// vm_console_capture：证据位于 captures/<collection-item-id>/，
+			// 逐项声明 path/media_type/sensitivity/size_bytes/sha256（HCIEB2 加密链路不变）。
+			if row.ExitCode != nil && *row.ExitCode == 0 {
+				captureFiles, details, err := vmConsoleCaptureEvidence(options.outputDir, row.ItemID)
+				if err != nil {
+					return nil, err
+				}
+				files = append(files, captureFiles...)
+				vmConsole = details
+				status = "success"
+			} else {
+				reason := collectorFailureReason(options.outputDir, row.ItemID, row.ExitCode)
+				failureReason = &reason
 			}
 		} else {
 			for _, stream := range []string{"stdout", "stderr"} {
@@ -166,7 +197,7 @@ func buildEvidenceManifest(options packageOptions, artifact *artifactManifest, c
 		items = append(items, evidenceCollectionItem{
 			CollectorID: row.CollectorID, Status: status, Source: options.source, SourceTimezone: options.timezone,
 			ClockOffsetMS: options.clockOffsetMS, TimeCoverage: &evidenceTimeCoverage{Start: item.TimeWindow.StartTime, End: item.TimeWindow.EndTime},
-			Files: files, ExitCode: row.ExitCode, FailureReason: failureReason,
+			Files: files, ExitCode: row.ExitCode, FailureReason: failureReason, VmConsole: vmConsole,
 		})
 	}
 	bundleID, err := newUUID()
@@ -187,6 +218,57 @@ func buildEvidenceManifest(options packageOptions, artifact *artifactManifest, c
 		IncidentWindow: caseData.IncidentWindow, Targets: caseData.Targets, CollectionItems: items,
 		Encryption: map[string]string{"algorithm": "AES-256-GCM", "key_id": artifact.BundleEncryption.KeyID, "key_wrap_algorithm": "RSA-OAEP-SHA256"},
 	}, nil
+}
+
+// vmConsoleCaptureEvidence 收集 captures/<itemID>/ 下的证据文件与审计详情：
+// baseline.ppm、可选 recapture-after-wake.ppm（media_type=image/x-portable-pixmap）
+// 与 capture-result.json（media_type=application/json），逐项声明 size_bytes/sha256，
+// 敏感级别统一为 confidential（控制台截图可能包含账号、业务数据或个人信息）。
+func vmConsoleCaptureEvidence(outputDir, itemID string) ([]evidenceFile, *evidenceVmConsoleManifest, error) {
+	relativeDir := filepath.Join("captures", itemID)
+	files := make([]evidenceFile, 0, 3)
+	appendFile := func(relative, mediaType string) error {
+		if info, err := os.Lstat(filepath.Join(outputDir, relative)); err != nil || !info.Mode().IsRegular() {
+			return nil
+		}
+		file, err := fileManifestWithSensitivity(outputDir, relative, mediaType, "confidential")
+		if err != nil {
+			return err
+		}
+		files = append(files, file)
+		return nil
+	}
+	if err := appendFile(filepath.Join(relativeDir, "baseline.ppm"), "image/x-portable-pixmap"); err != nil {
+		return nil, nil, err
+	}
+	if err := appendFile(filepath.Join(relativeDir, "recapture-after-wake.ppm"), "image/x-portable-pixmap"); err != nil {
+		return nil, nil, err
+	}
+	if err := appendFile(filepath.Join(relativeDir, "capture-result.json"), "application/json"); err != nil {
+		return nil, nil, err
+	}
+	content, err := os.ReadFile(filepath.Join(outputDir, relativeDir, "capture-result.json"))
+	if err != nil {
+		return nil, nil, fmt.Errorf("无法读取虚拟机控制台采集结果 %s：%w", itemID, err)
+	}
+	var result vmConsoleCaptureResult
+	if err := json.Unmarshal(content, &result); err != nil {
+		return nil, nil, fmt.Errorf("虚拟机控制台采集结果不是合法 JSON：%w", err)
+	}
+	details := &evidenceVmConsoleManifest{
+		Executor:           result.Executor,
+		OperationVersion:   result.OperationVersion,
+		CaptureMode:        result.CaptureMode,
+		HostNodeID:         result.HostNodeID,
+		VMID:               result.VMID,
+		WakeDecision:       result.WakeDecision,
+		WakeResult:         result.WakeResult,
+		NearBlack:          result.Quality.NearBlack,
+		NearBlackAlgorithm: result.Quality.AlgorithmRevision,
+		QualityMetrics:     result.Quality.Metrics,
+		RecaptureGenerated: result.Recapture != nil,
+	}
+	return files, details, nil
 }
 
 func addTarFile(archive *tar.Writer, path, name string) error {
@@ -482,7 +564,13 @@ func cleanupPlaintext(outputDir string, manifest *evidenceManifest) int {
 			removed++
 		}
 	}
-	for _, directory := range []string{"commands", "manual-guides", "attachments"} {
+	// captures/<item-id>/ 子目录内文件已随清单声明清理；os.Remove 仅在目录为空时生效，
+	// 不会误删未声明内容。
+	captureItemDirs, _ := filepath.Glob(filepath.Join(outputDir, "captures", "*"))
+	for _, directory := range captureItemDirs {
+		_ = os.Remove(directory)
+	}
+	for _, directory := range []string{"commands", "manual-guides", "attachments", "captures"} {
 		_ = os.Remove(filepath.Join(outputDir, directory))
 	}
 	return removed

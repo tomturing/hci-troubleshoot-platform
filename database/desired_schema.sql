@@ -492,12 +492,20 @@ CREATE TABLE IF NOT EXISTS collector_definition (
         CHECK ((managed_by)::text = ANY ((ARRAY['manual'::varchar, 'kbd_sync'::varchar])::text[])),
     CONSTRAINT ck_collector_definition_lock_version CHECK (lock_version >= 1),
     CONSTRAINT ck_collector_definition_timeout CHECK (timeout_seconds BETWEEN 1 AND 3600),
-    CONSTRAINT ck_collector_definition_output_size CHECK (max_output_mb > 0 AND max_output_mb <= 4),
+    -- vm_console_capture 专用执行器允许最高 16MB 控制台截图；其余执行器保持 ≤4MB。
+    CONSTRAINT ck_collector_definition_output_size CHECK (
+        (executor = 'vm_console_capture' AND max_output_mb > 0 AND max_output_mb <= 16)
+        OR (executor <> 'vm_console_capture' AND max_output_mb > 0 AND max_output_mb <= 4)
+    ),
     CONSTRAINT ck_collector_definition_platform
         CHECK ((platform)::text = ANY ((ARRAY['linux'::varchar, 'hci_api'::varchar, 'manual'::varchar])::text[])),
     CONSTRAINT ck_collector_definition_executor
-        CHECK ((executor)::text = ANY ((ARRAY['shell'::varchar, 'http'::varchar, 'manual'::varchar])::text[])),
-    CONSTRAINT ck_collector_definition_risk CHECK (risk_level = 'read_only'),
+        CHECK ((executor)::text = ANY ((ARRAY['shell'::varchar, 'http'::varchar, 'manual'::varchar, 'vm_console_capture'::varchar])::text[])),
+    -- controlled_interaction（受控 Guest 交互：近黑唤醒 sendkey down）仅限 vm_console_capture。
+    CONSTRAINT ck_collector_definition_risk CHECK (
+        risk_level = 'read_only'
+        OR (risk_level = 'controlled_interaction' AND executor = 'vm_console_capture')
+    ),
     CONSTRAINT ck_collector_definition_review_status
         CHECK (
             (review_status)::text = ANY (
@@ -510,7 +518,7 @@ COMMENT ON TABLE collector_definition IS 'Collector Registry（采集器注册�
 COMMENT ON COLUMN collector_definition.collector_id IS 'Collector（采集器）稳定标识，与 Collection Plan 引用一致';
 COMMENT ON COLUMN collector_definition.command_template IS '固定命令模板；参数占位符必须独占命令 token';
 COMMENT ON COLUMN collector_definition.parameter_schema IS 'Collector 参数 JSON Schema，必须禁止 additionalProperties';
-COMMENT ON COLUMN collector_definition.risk_level IS 'P0 固定为 read_only（只读）';
+COMMENT ON COLUMN collector_definition.risk_level IS 'read_only（只读）；controlled_interaction 仅限 vm_console_capture 执行器（近黑唤醒 sendkey down 属受控 Guest 交互，须运行时人工确认）';
 COMMENT ON COLUMN collector_definition.output_contract IS '输出 schema_id、media_type 和 output_path';
 COMMENT ON COLUMN collector_definition.managed_by IS 'manual=人工治理；kbd_sync=只能由 KBD 同步批次治理';
 COMMENT ON COLUMN collector_definition.generation_metadata IS '同步生成时冻结的 Tool/KBD 来源修订信息';
@@ -1814,7 +1822,7 @@ COMMENT ON TABLE diagnostic_item IS '诊断条目表 — conversation 的子实�
 COMMENT ON COLUMN diagnostic_item.id IS '诊断条目主键，全局唯一';
 COMMENT ON COLUMN diagnostic_item.conversation_id IS '关联会话，ON DELETE CASCADE';
 COMMENT ON COLUMN diagnostic_item.stage IS '生成阶段：S2=假设生成 / S3=验证步骤 / S4=根因分析 / S5=解决方案';
-COMMENT ON COLUMN diagnostic_item."type" IS '条目类型：hypothesis（根因假设，S2）/ verification_step（验证步骤，S3）/ root_cause（根因结论，S4）/ solution（解决方案，S5）';
+COMMENT ON COLUMN diagnostic_item."type" IS '条目类型：hypothesis（根因假设，S2）/ verification_step（验证步骤，S3）/ root_cause（根因结论，S4）/ solution（解决方案，S5）/ effect_verification（S5 修复动作效果复核）';
 COMMENT ON COLUMN diagnostic_item.seq IS '同会话同类型内的排序序号（从 1 开始）。hypothesis 按概率降序排列；verification_step 按执行顺序排列';
 COMMENT ON COLUMN diagnostic_item.content IS '结构化内容，按 type 不同格式不同：hypothesis: {description, probability, evidence_needed}；verification_step: {action, expected_result, tool_hint}；root_cause: {description, confidence, evidence}；solution: {steps[], commands[]}';
 COMMENT ON COLUMN diagnostic_item.probability IS '假设概率（0.0-1.0），仅 type=hypothesis 使用；NULL 表示不适用';
@@ -3021,6 +3029,260 @@ CREATE TABLE IF NOT EXISTS bridge_execution_artifacts (
 CREATE INDEX IF NOT EXISTS idx_bridge_artifacts_trace_id ON bridge_execution_artifacts (trace_id) WHERE trace_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_bridge_artifacts_case_created ON bridge_execution_artifacts (case_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bridge_artifacts_expires_at ON bridge_execution_artifacts (expires_at) WHERE expires_at IS NOT NULL;
+
+-- ------------------------------------------------------------
+-- 表: vm_console_capture  [模块: conversation-service]
+-- 说明: 虚拟机控制台截图（qkv_vm_console）不可变记录。设计文档 §10.1：
+--       覆盖目标验证快照、基线/重截图制品、质量指标、唤醒决定与确认人、
+--       视觉结构化结果、状态机与错误码；审计事件以 append-only 方式另记。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS vm_console_capture (
+    capture_id uuid PRIMARY KEY,
+    tenant_id varchar(64),
+    case_id varchar(32) NOT NULL,
+    diagnosis_run_id varchar(64),
+    conversation_id uuid,
+    signal_id varchar(128),
+    -- online=terminal_bridge 受控通道；offline=签名 Go 采集器证据包
+    mode varchar(16) NOT NULL DEFAULT 'online',
+    host_node_id varchar(128) NOT NULL,
+    vm_id varchar(32) NOT NULL,
+    -- Inventory 目标验证快照（节点标识、VMID 归属、验证时间与版本）
+    target_verification jsonb NOT NULL DEFAULT '{}'::jsonb,
+    source_kbd_id varchar(64),
+    source_kbd_revision varchar(64),
+    tool_catalog_revision varchar(128),
+    adapter_version varchar(64),
+    -- 状态机（§5.4）：created → inventory_verified → baseline_capturing →
+    -- baseline_captured → quality_checked → baseline_uploaded/bundle_* →
+    -- vision_analyzing → completed；唤醒分支 wake_confirmation_pending →
+    -- wake_declined | waking → recapturing；任意阶段 → failed/expired/cancelled
+    status varchar(32) NOT NULL DEFAULT 'created',
+    error_code varchar(64),
+    error_summary text,
+    baseline_artifact_id uuid,
+    recapture_artifact_id uuid,
+    -- 最终有效制品（基线或重截图之一）
+    effective_artifact_id uuid,
+    -- 近黑质量指标与算法修订版本（near-black-vN）
+    quality_metrics jsonb NOT NULL DEFAULT '{}'::jsonb,
+    -- wake_decision 五值：not_needed/confirmed/declined/non_interactive/timed_out
+    wake_state varchar(32) NOT NULL DEFAULT 'not_needed',
+    wake_token_hash varchar(64),
+    wake_confirmed_by varchar(128),
+    wake_confirmed_at timestamptz,
+    wake_executed_at timestamptz,
+    wake_result varchar(32),
+    -- 视觉结构化观察（VmConsoleObservation 固定 Schema）
+    vision_result jsonb,
+    vision_model_revision varchar(64),
+    vision_prompt_revision varchar(64),
+    vision_vocabulary_revision varchar(64),
+    vision_confidence numeric(4,3),
+    trace_id varchar(64) NOT NULL,
+    exec_id varchar(64),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    completed_at timestamptz,
+    expires_at timestamptz,
+    CONSTRAINT ck_vm_console_capture_mode
+        CHECK ((mode)::text = ANY ((ARRAY['online'::varchar, 'offline'::varchar])::text[])),
+    CONSTRAINT ck_vm_console_capture_wake_state CHECK (
+        (wake_state)::text = ANY (
+            (ARRAY['not_needed'::varchar, 'confirmation_pending'::varchar, 'confirmed'::varchar,
+                   'declined'::varchar, 'non_interactive'::varchar, 'timed_out'::varchar,
+                   'failed'::varchar])::text[]
+        )
+    ),
+    -- 每个 case_id + vm_id + diagnosis_run_id 最多一次截图会话（含最多一次唤醒）
+    CONSTRAINT uq_vmc_one_wake_per_run UNIQUE (case_id, vm_id, diagnosis_run_id)
+);
+
+COMMENT ON TABLE vm_console_capture IS '虚拟机控制台截图（qkv_vm_console）不可变记录：目标验证、制品、质量指标、唤醒决定、视觉结果与状态机';
+COMMENT ON COLUMN vm_console_capture.capture_id IS '服务端生成的截图会话 UUID，不使用 VMID 作为文件名';
+COMMENT ON COLUMN vm_console_capture.target_verification IS 'Inventory 校验快照；执行前必须验证 HOST 归属与 VMID 精确匹配';
+COMMENT ON COLUMN vm_console_capture.wake_token_hash IS '一次性唤醒确认令牌的 SHA-256；消费后置 NULL 防重放';
+COMMENT ON COLUMN vm_console_capture.trace_id IS 'W3C Trace ID（全链路追踪）';
+
+CREATE INDEX IF NOT EXISTS idx_vm_console_capture_case ON vm_console_capture (case_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_vm_console_capture_trace_id ON vm_console_capture (trace_id);
+CREATE INDEX IF NOT EXISTS idx_vm_console_capture_status ON vm_console_capture (status);
+CREATE INDEX IF NOT EXISTS idx_vm_console_capture_expires_at ON vm_console_capture (expires_at) WHERE expires_at IS NOT NULL;
+
+-- ------------------------------------------------------------
+-- 表: vm_console_capture_artifact  [模块: conversation-service]
+-- 说明: 控制台截图二进制制品登记（原始 PPM 与派生 PNG）。原图不写入
+--       Langfuse；访问须鉴权并记审计。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS vm_console_capture_artifact (
+    artifact_id uuid PRIMARY KEY,
+    capture_id uuid NOT NULL REFERENCES vm_console_capture (capture_id) ON DELETE CASCADE,
+    -- ppm=宿主机原始截图；png=平台侧隔离派生件
+    kind varchar(8) NOT NULL,
+    sha256 varchar(64) NOT NULL,
+    media_type varchar(64) NOT NULL,
+    size_bytes bigint NOT NULL,
+    width integer,
+    height integer,
+    -- 对象存储引用（租户隔离、静态加密、短时签名访问）
+    storage_ref text NOT NULL,
+    sensitivity varchar(32) NOT NULL DEFAULT 'confidential',
+    -- online=Bridge 直传；offline_bundle=验包后自证据包提取
+    source varchar(16) NOT NULL DEFAULT 'online',
+    bundle_id uuid,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz,
+    -- 原图读取审计（§6.2：查看原图必须单独记审计）
+    last_read_at timestamptz,
+    last_read_by varchar(128),
+    CONSTRAINT ck_vm_console_artifact_kind CHECK ((kind)::text = ANY ((ARRAY['ppm'::varchar, 'png'::varchar])::text[])),
+    CONSTRAINT ck_vm_console_artifact_source
+        CHECK ((source)::text = ANY ((ARRAY['online'::varchar, 'offline_bundle'::varchar])::text[]))
+);
+
+COMMENT ON TABLE vm_console_capture_artifact IS '控制台截图制品登记：SHA-256、媒体类型、存储引用与敏感级别；查看原图必须单独记审计';
+
+CREATE INDEX IF NOT EXISTS idx_vm_console_artifact_capture ON vm_console_capture_artifact (capture_id);
+CREATE INDEX IF NOT EXISTS idx_vm_console_artifact_sha256 ON vm_console_capture_artifact (sha256);
+
+-- ------------------------------------------------------------
+-- 表: vm_console_audit_event  [模块: conversation-service]
+-- 说明: 控制台截图 append-only 审计事件流（设计文档 §10.1）：
+--       请求/目标校验/基线截图/上传/质量判定/确认请求/确认拒绝/唤醒/重截/
+--       识图/查看制品/删除过期各节点留痕；detail 只存哈希与元数据，禁原图。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS vm_console_audit_event (
+    event_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    capture_id uuid REFERENCES vm_console_capture (capture_id) ON DELETE CASCADE,
+    tenant_id varchar(64),
+    case_id varchar(32),
+    conversation_id uuid,
+    mode varchar(16) NOT NULL DEFAULT 'online',
+    event_type varchar(48) NOT NULL,
+    actor varchar(128),
+    detail jsonb NOT NULL DEFAULT '{}'::jsonb,
+    trace_id varchar(64),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT ck_vm_console_audit_event_type CHECK (
+        (event_type)::text = ANY (
+            (ARRAY['requested'::varchar, 'target_verified'::varchar, 'target_rejected'::varchar,
+                   'baseline_capturing'::varchar, 'baseline_captured'::varchar, 'upload_completed'::varchar,
+                   'quality_checked'::varchar, 'wake_confirm_requested'::varchar, 'wake_confirmed'::varchar,
+                   'wake_declined'::varchar, 'wake_timed_out'::varchar, 'waking'::varchar,
+                   'recaptured'::varchar, 'vision_completed'::varchar, 'artifact_read'::varchar,
+                   'failed'::varchar, 'deleted'::varchar, 'expired'::varchar])::text[]
+        )
+    ),
+    CONSTRAINT ck_vm_console_audit_mode
+        CHECK ((mode)::text = ANY ((ARRAY['online'::varchar, 'offline'::varchar])::text[]))
+);
+
+COMMENT ON TABLE vm_console_audit_event IS '虚拟机控制台截图 append-only 审计事件流；只追加不更新，detail 禁止原图字节';
+
+CREATE INDEX IF NOT EXISTS idx_vm_console_audit_capture ON vm_console_audit_event (capture_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_vm_console_audit_case ON vm_console_audit_event (case_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_vm_console_audit_type ON vm_console_audit_event (event_type);
+
+-- ------------------------------------------------------------
+-- 表: effect_verification  [模块: conversation-service]
+-- 说明: 效果验证（qkv_effect，条件型效果验证生产者）会话记录。设计文档 §10.1：
+--       冻结期望快照、三态判定（achieved/not_achieved/inconclusive）、复核调度
+--       锚点与状态机。next_check_at 是调度持久化锚点，进程重启后恢复扫描。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS effect_verification (
+    verification_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id varchar(64),
+    case_id varchar(32) NOT NULL,
+    conversation_id uuid,
+    diagnosis_run_id varchar(64),
+    signal_id varchar(128),
+    -- remediation_verify=修复后复核（默认）；symptom_confirm=S1 症状确认
+    usage varchar(32) NOT NULL DEFAULT 'remediation_verify',
+    -- 被复核动作的关联键（工具执行 exec_id）
+    action_exec_id varchar(64),
+    source_kbd_id varchar(64),
+    source_kbd_revision varchar(64),
+    tool_catalog_revision varchar(128),
+    -- 编译期冻结的期望锚点（观测通道 + 封闭 matcher + 时序窗口）；只读回放
+    expectation_snapshot jsonb NOT NULL,
+    -- 目标变量解析快照（HOST 等）与验证时间
+    target_verification jsonb NOT NULL DEFAULT '{}'::jsonb,
+    -- 状态机（设计文档 §5.4）：created → expectation_resolved → settle_pending →
+    -- observing → verdict_* | recheck_scheduled → … → window_expired →
+    -- verdict_inconclusive；任意阶段 → failed/cancelled
+    status varchar(32) NOT NULL DEFAULT 'created',
+    -- 三态判定词表（effect-verdict-v1）
+    verdict varchar(32),
+    verdict_vocabulary_revision varchar(64) NOT NULL DEFAULT 'effect-verdict-v1',
+    recheck_count integer NOT NULL DEFAULT 0,
+    -- 复核调度持久化锚点
+    next_check_at timestamptz,
+    error_code varchar(64),
+    error_summary text,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    completed_at timestamptz,
+    CONSTRAINT ck_effect_verification_usage CHECK (
+        (usage)::text = ANY ((ARRAY['remediation_verify'::varchar, 'symptom_confirm'::varchar])::text[])
+    ),
+    CONSTRAINT ck_effect_verification_verdict CHECK (
+        verdict IS NULL
+        OR (verdict)::text = ANY ((ARRAY['achieved'::varchar, 'not_achieved'::varchar, 'inconclusive'::varchar])::text[])
+    )
+);
+
+COMMENT ON TABLE effect_verification IS '效果验证（qkv_effect）会话记录：冻结期望快照、三态判定、复核调度锚点与状态机';
+COMMENT ON COLUMN effect_verification.expectation_snapshot IS '编译期冻结的期望锚点；运行时只读回放，禁止随 KBD 修订篡改';
+COMMENT ON COLUMN effect_verification.next_check_at IS '复核调度持久化锚点；进程重启后由 lifespan 扫描恢复';
+COMMENT ON COLUMN effect_verification.trace_id IS 'W3C Trace ID（全链路追踪）';
+
+CREATE INDEX IF NOT EXISTS idx_effect_verification_case ON effect_verification (case_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_effect_verification_conversation ON effect_verification (conversation_id);
+CREATE INDEX IF NOT EXISTS idx_effect_verification_schedule
+    ON effect_verification (next_check_at)
+    WHERE (status)::text <> ALL (
+        (ARRAY['verdict_achieved'::varchar, 'verdict_not_achieved'::varchar, 'verdict_inconclusive'::varchar, 'failed'::varchar, 'cancelled'::varchar])::text[]
+    );
+CREATE INDEX IF NOT EXISTS idx_effect_verification_trace_id ON effect_verification (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: effect_verification_check  [模块: conversation-service]
+-- 说明: 效果验证每次观测判定记录（append-only 时间线）。观测失败、负证据不足、
+--       窗口耗尽不能被压缩为同一种“验证失败”。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS effect_verification_check (
+    check_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    verification_id uuid NOT NULL REFERENCES effect_verification (verification_id) ON DELETE CASCADE,
+    check_seq integer NOT NULL,
+    checked_at timestamptz NOT NULL DEFAULT now(),
+    -- scheduler=复核调度触发；manual=人工复核
+    trigger_source varchar(16) NOT NULL DEFAULT 'scheduler',
+    -- valid=观测有效；error=观测失败/通道不可用；insufficient=负证据观测域有效性不足
+    observation_status varchar(32) NOT NULL,
+    observation_summary text,
+    -- evaluate_matcher 的人类可读证据串（期望/命中/最终判定）
+    matcher_evidence text,
+    check_verdict varchar(32),
+    error_code varchar(64),
+    trace_id varchar(64),
+    CONSTRAINT uq_effect_check_seq UNIQUE (verification_id, check_seq),
+    CONSTRAINT ck_effect_check_trigger CHECK (
+        (trigger_source)::text = ANY ((ARRAY['scheduler'::varchar, 'manual'::varchar])::text[])
+    ),
+    CONSTRAINT ck_effect_check_observation CHECK (
+        (observation_status)::text = ANY ((ARRAY['valid'::varchar, 'error'::varchar, 'insufficient'::varchar])::text[])
+    ),
+    CONSTRAINT ck_effect_check_verdict CHECK (
+        check_verdict IS NULL
+        OR (check_verdict)::text = ANY ((ARRAY['achieved'::varchar, 'not_achieved'::varchar, 'inconclusive'::varchar])::text[])
+    )
+);
+
+COMMENT ON TABLE effect_verification_check IS '效果验证每次观测判定记录（append-only 时间线）；与 effect_verification 一对多';
+
+CREATE INDEX IF NOT EXISTS idx_effect_check_verification ON effect_verification_check (verification_id, check_seq);
 
 -- ------------------------------------------------------------
 -- 表: fact  [模块: agent-service]

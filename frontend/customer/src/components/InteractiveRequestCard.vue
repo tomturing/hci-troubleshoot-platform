@@ -135,6 +135,13 @@ export interface InteractiveRequestEvent {
   execId?: string
   inputHash?: string
   expiresAt?: string
+  // vm_console_wake_confirm 专用字段
+  captureId?: string
+  wakeToken?: string
+  message?: string
+  hostNodeId?: string
+  vmId?: string
+  timeoutSeconds?: number
 }
 
 const props = defineProps<{

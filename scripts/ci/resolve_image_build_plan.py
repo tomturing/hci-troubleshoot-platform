@@ -152,6 +152,12 @@ def select_services(paths: Iterable[str], *, force_all: bool) -> tuple[set[str],
             selected.update(service for service, _, _ in BACKEND_SERVICES)
             continue
 
+        # 共享镜像源脚本（deploy/docker/base/setup-mirror.sh）被全部后端
+        # Dockerfile COPY，其变更与 backend/shared 同级：必须扩散到全部后端服务。
+        if is_under(path, "deploy/docker/base/"):
+            selected.update(service for service, _, _ in BACKEND_SERVICES)
+            continue
+
         # pnpm 工作区/共享包会被两个 UI Dockerfile COPY。
         if is_under(path, "frontend/shared/") or path in {
             "frontend/package.json",

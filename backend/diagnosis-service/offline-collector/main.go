@@ -30,6 +30,7 @@ type cliOptions struct {
 	parentBundleID string
 	cleanup        bool
 	yes            bool
+	nonInteractive bool
 }
 
 func parseOptions(arguments []string) (*cliOptions, error) {
@@ -49,6 +50,8 @@ func parseOptions(arguments []string) (*cliOptions, error) {
 	flags.StringVar(&options.parentBundleID, "parent-bundle-id", "", "补采证据包父包 ID")
 	flags.BoolVar(&options.cleanup, "cleanup-plaintext", false, "加密成功后清理清单声明的明文")
 	flags.BoolVar(&options.yes, "yes", false, "跳过采集范围人工确认")
+	flags.BoolVar(&options.nonInteractive, "non-interactive", false,
+		"非交互模式：虚拟机控制台截图近黑时不提示唤醒确认，保留基线截图（绝不发送按键）。该参数不能用于自动同意唤醒")
 	if err := flags.Parse(arguments); err != nil {
 		return nil, &runnerError{code: exitUsage, message: err.Error()}
 	}
@@ -110,7 +113,7 @@ func run(arguments []string) error {
 	if err != nil {
 		return &runnerError{code: exitCollection, message: err.Error()}
 	}
-	if err := runCollection(execution, outputDir); err != nil {
+	if err := runCollection(execution, outputDir, options.nonInteractive); err != nil {
 		return &runnerError{code: exitCollection, message: err.Error()}
 	}
 	rows, stats, err := loadExecutionRows(outputDir)

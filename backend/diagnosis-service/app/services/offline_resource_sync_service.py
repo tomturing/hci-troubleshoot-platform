@@ -31,6 +31,7 @@ from app.domain.collector_security import (
     validate_collector_contract,
     validate_hci_api_contract,
     validate_manual_guide,
+    validate_vm_console_capture_contract,
 )
 from app.errors import DiagnosisError
 from app.schemas.collection_profile import CollectionProfileDefinition
@@ -134,6 +135,11 @@ def extract_requirements(kbd: dict[str, Any]) -> list[dict[str, Any]]:
         acquire = signal.get("acquire") or {}
         tool = normalize_acquirer(str(acquire.get("tool") or signal.get("acquirer") or ""))
         if not tool:
+            continue
+        if tool == "qkv_effect":
+            # 效果验证是在线编排的复核信号（settle/recheck），客户侧采集器不执行
+            # 任何动作；期望快照保留在 signals_json 中供验包后追溯判定（P2），
+            # 不生成离线采集需求（设计文档 §9.2/§9.3）。
             continue
         args = acquire.get("args") or signal.get("acquirer_args") or {}
         matcher = signal.get("match") or signal.get("matcher") or {}
@@ -263,11 +269,98 @@ def _parameter_schema(parameters: dict[str, Any], tool_schema: dict[str, Any]) -
     }
 
 
+def _build_vm_console_capture_candidate(
+    requirement: dict[str, Any], tool: dict[str, Any], *, version: str
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """qkv_vm_console 专用采集项候选（设计文档 §3.4/§9.3）。
+
+    与通用 command_template 路径的根本差异：不生成命令模板——截图/唤醒是 Go
+    采集器内置的固定操作。候选只冻结 executor、受控交互风险级别、资源上限与
+    参数契约；具体 host/vm_id 在制品签发时由 Collection Plan 目标节点冻结进
+    签名 Capture Intent。
+    """
+
+    from shared.resolution.catalog import resolution_catalog_version
+    from shared.schemas.acquirer_args import validate_acquire_args
+
+    args = dict(requirement.get("args") or {})
+    ok, error = validate_acquire_args("qkv_vm_console", args)
+    if not ok:
+        raise ValueError(f"qkv_vm_console 采集参数非法: {error}")
+
+    capture_mode = str(args.get("capture_mode") or "baseline_then_optional_wake")
+    timeout_seconds = max(1, min(int(args.get("timeout") or 60), 60))
+    execution_contract_payload = {
+        "tool": "qkv_vm_console",
+        "tool_revision": tool["revision"],
+        "tool_checksum": tool["checksum"],
+        "executor": "vm_console_capture",
+        "operation_version": "v1",
+        "capture_mode": capture_mode,
+        "timeout_seconds": timeout_seconds,
+        "max_capture_bytes": 16 * 1024 * 1024,
+        "resolution_catalog_version": resolution_catalog_version(),
+    }
+    execution_contract_checksum = hashlib.sha256(
+        json.dumps(execution_contract_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    fingerprint = execution_contract_checksum[:12]
+    collector_id = f"kbd_qkv_vm_console_{fingerprint}"
+    candidate = {
+        "collector_id": collector_id,
+        "display_name": f"{tool['display_name']}（KBD 同步）",
+        "description": (
+            f"由已发布 Tool qkv_vm_console 修订 {tool['revision']} 生成的专用视觉采集项；"
+            "固定 screendump 操作，近黑唤醒须本地人工确认"
+        ),
+        "platform": "linux",
+        "executor": "vm_console_capture",
+        # 非命令模板：固定操作标识，Go 采集器按 executor 分支执行内置操作。
+        "command_template": "vm_console_capture://fixed-operation",
+        "parameter_schema": {
+            "type": "object",
+            "properties": {
+                "host": {"type": "string", "minLength": 1},
+                "vm_id": {"type": "string", "pattern": "^[0-9]{1,20}$"},
+                "capture_mode": {"type": "string", "enum": ["baseline_then_optional_wake"]},
+                "timeout": {"type": "integer", "minimum": 1, "maximum": 60},
+            },
+            "required": ["host", "vm_id"],
+            "additionalProperties": False,
+        },
+        "risk_level": "controlled_interaction",
+        "timeout_seconds": timeout_seconds,
+        "max_output_mb": 16,
+        "supported_product_versions": ["6.*", "7.*", "8.*"],
+        "output_contract": {
+            "schema_id": f"hci.offline.{collector_id}.v1",
+            "media_type": "image/x-portable-pixmap",
+            "output_path": f"captures/{collector_id}/",
+        },
+        "version": version,
+        "managed_by": "kbd_sync",
+        "generation_metadata": {
+            "tool_name": "qkv_vm_console",
+            "tool_revision": tool["revision"],
+            "tool_version": tool["version"],
+            "tool_checksum": tool["checksum"],
+            "resolution_catalog_version": resolution_catalog_version(),
+            "resolution_status": "verified",
+            "supported_product_versions": ["6.*", "7.*", "8.*"],
+            "execution_contract_checksum": execution_contract_checksum,
+        },
+    }
+    # 目标参数在制品签发期冻结；候选层不绑定具体节点。
+    return candidate, {}, "json"
+
+
 def build_tool_collector_candidate(
     requirement: dict[str, Any], tool: dict[str, Any], *, version: str
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     """由 KBD 信号和已发布 Tool 修订唯一确定 Collector 候选。"""
 
+    if requirement.get("tool") == "qkv_vm_console":
+        return _build_vm_console_capture_candidate(requirement, tool, version=version)
     _assert_read_only_requirement(requirement, tool)
     _validate_tool_bindings(
         dict(requirement.get("args") or {}),
@@ -932,6 +1025,8 @@ class OfflineResourceSyncService:
                     validate_collector_contract(command.command_template, command.parameter_schema)
                 elif command.executor == "http":
                     validate_hci_api_contract(command.command_template, command.parameter_schema)
+                elif command.executor == "vm_console_capture":
+                    validate_vm_console_capture_contract(command.command_template, command.parameter_schema)
                 else:
                     validate_manual_guide(command.command_template, command.parameter_schema)
             except ValueError as exc:

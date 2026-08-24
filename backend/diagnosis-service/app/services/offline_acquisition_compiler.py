@@ -235,3 +235,171 @@ def compile_signal_acquisition(
         resolution_snapshot=snapshot.model_dump(mode="json"),
         supported_product_versions=supported_product_versions,
     )
+
+
+# ─── qkv_vm_console 专用采集项编译（绝不产出 command_template）────────────
+
+
+class CompiledVmConsoleCapture(BaseModel):
+    """虚拟机控制台截图的离线采集编译结果（结构化 Capture Intent）。
+
+    与 CompiledSignalAcquisition 的根本差异：没有 command_template/argv——
+    截图与唤醒是 Go 采集器内置的固定操作，KBD/运营页面/LLM 均不能写入任意
+    vtpsh 命令、路径或按键（设计文档 §3.4/§9.3）。
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tool: str = "qkv_vm_console"
+    executor: str = "vm_console_capture"
+    operation_version: str = "v1"
+    capture_mode: str = "baseline_then_prompt_if_near_black"
+    host_node_id: str
+    vm_id: str
+    timeout_seconds: int = Field(ge=1, le=60)
+    max_capture_bytes: int = Field(default=16 * 1024 * 1024, le=16 * 1024 * 1024)
+    catalog_version: str
+    resolution_snapshot: dict[str, Any]
+    supported_product_versions: list[str] = Field(default_factory=lambda: ["6.*", "7.*", "8.*"])
+
+
+def compile_vm_console_capture_intent(
+    *,
+    args: dict[str, Any],
+    target_node_id: str | None = None,
+) -> CompiledVmConsoleCapture:
+    """把 qkv_vm_console 信号编译为签名制品专用的 vm_console_capture 采集项。
+
+    host/vm_id 必须是已解析的安全字面量（离线会话创建时由工单上下文、受控用户
+    输入或平台对象查询确定并写入 Collection Plan）；占位符未解析时 fail-closed，
+    绝不降级为可复制的 vtpsh 文本。
+    """
+
+    from shared.resolution.vm_console import VM_CONSOLE_RESOLVER_ID, VM_CONSOLE_TOOL
+    from shared.schemas.acquirer_args import (
+        VM_CONSOLE_HOST_LITERAL_PATTERN,
+        VM_CONSOLE_HOST_PLACEHOLDER,
+        VM_CONSOLE_VM_ID_LITERAL_PATTERN,
+        VM_CONSOLE_VM_ID_PLACEHOLDER,
+    )
+
+    host = str(args.get("host") or target_node_id or "").strip()
+    vm_id = str(args.get("vm_id") or "").strip()
+    if not host or host == VM_CONSOLE_HOST_PLACEHOLDER:
+        raise ValueError("qkv_vm_console 离线采集项缺少已验证目标节点（host 未解析）")
+    if not vm_id or vm_id == VM_CONSOLE_VM_ID_PLACEHOLDER:
+        raise ValueError("qkv_vm_console 离线采集项缺少已验证 VMID（vm_id 未解析）")
+    if not VM_CONSOLE_HOST_LITERAL_PATTERN.fullmatch(host):
+        raise ValueError(f"qkv_vm_console.host 不是安全节点标识: {host}")
+    if not VM_CONSOLE_VM_ID_LITERAL_PATTERN.fullmatch(vm_id):
+        raise ValueError(f"qkv_vm_console.vm_id 不是精确数值 VMID: {vm_id}")
+
+    capture_mode = str(args.get("capture_mode") or "baseline_then_optional_wake")
+    if capture_mode != "baseline_then_optional_wake":
+        raise ValueError(f"qkv_vm_console.capture_mode 非法: {capture_mode}")
+    timeout = max(1, min(int(args.get("timeout") or 60), 60))
+
+    runtime = get_resolution_runtime()
+    plan, acquisition = runtime.compile_and_resolve(
+        SignalIntent(
+            resolver_id=VM_CONSOLE_RESOLVER_ID,
+            tool=VM_CONSOLE_TOOL,
+            args={"host": host, "vm_id": vm_id, "capture_mode": capture_mode, "timeout": timeout},
+            source="kbd_sync",
+        )
+    )
+    if acquisition.status is ResolutionStatus.BLOCKED:
+        message = "；".join(issue.message for issue in acquisition.issues) or "控制台截图意图编译失败"
+        raise ValueError(message)
+
+    snapshot = build_resolution_audit_snapshot(plan, acquisition)
+    return CompiledVmConsoleCapture(
+        host_node_id=host,
+        vm_id=vm_id,
+        timeout_seconds=timeout,
+        catalog_version=acquisition.catalog_version,
+        resolution_snapshot=snapshot.model_dump(mode="json"),
+    )
+
+
+# ─── qkv_effect 专用期望声明编译（绝不产出 command_template）──────────────
+
+
+class CompiledEffectExpectation(BaseModel):
+    """效果验证信号的离线编译结果（冻结的期望声明项）。
+
+    与 CompiledSignalAcquisition 的根本差异：没有 command_template/argv——
+    效果验证是在线编排的复核（settle/recheck），离线侧仅冻结期望快照供验包后
+    追溯判定（P2）；客户侧采集器**不执行任何动作**（设计文档 §9.2/§9.3）。
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tool: str = "qkv_effect"
+    executor: str = "effect_expectation"
+    operation_version: str = "v1"
+    usage: str = "remediation_verify"
+    host_node_id: str | None = None
+    expectation: dict[str, Any]
+    timeout_seconds: int = Field(ge=1, le=60)
+    catalog_version: str
+    resolution_snapshot: dict[str, Any]
+    supported_product_versions: list[str] = Field(default_factory=lambda: ["6.*", "7.*", "8.*"])
+
+
+def compile_effect_verification_intent(
+    *,
+    args: dict[str, Any],
+    target_node_id: str | None = None,
+) -> CompiledEffectExpectation:
+    """把 qkv_effect 信号编译为冻结的期望声明项（供离线追溯判定，无客户侧执行）。
+
+    host 若声明则必须是已解析的安全字面量；占位符未解析时降级为无目标绑定
+    （期望声明不依赖节点即可冻结），绝不产出任何可执行命令。
+    """
+
+    from shared.resolution.effect import EFFECT_RESOLVER_ID, EFFECT_TOOL
+    from shared.schemas.acquirer_args import (
+        VM_CONSOLE_HOST_LITERAL_PATTERN,
+        VM_CONSOLE_HOST_PLACEHOLDER,
+        validate_acquire_args,
+    )
+
+    ok, error = validate_acquire_args(EFFECT_TOOL, args)
+    if not ok:
+        raise ValueError(f"qkv_effect 期望声明参数非法: {error}")
+
+    host = str(args.get("host") or target_node_id or "").strip() or None
+    if host == VM_CONSOLE_HOST_PLACEHOLDER:
+        host = None  # 目标未解析：期望声明仍可冻结，追溯判定期按缺目标处理
+    if host is not None and not VM_CONSOLE_HOST_LITERAL_PATTERN.fullmatch(host):
+        raise ValueError(f"qkv_effect.host 不是安全节点标识: {host}")
+    timeout = max(1, min(int(args.get("timeout") or 60), 60))
+
+    compile_args = dict(args)
+    if host:
+        compile_args["host"] = host
+    else:
+        compile_args.pop("host", None)
+    runtime = get_resolution_runtime()
+    plan, acquisition = runtime.compile_and_resolve(
+        SignalIntent(
+            resolver_id=EFFECT_RESOLVER_ID,
+            tool=EFFECT_TOOL,
+            args=compile_args,
+            source="kbd_sync",
+        )
+    )
+    if acquisition.status is ResolutionStatus.BLOCKED:
+        message = "；".join(issue.message for issue in acquisition.issues) or "效果验证意图编译失败"
+        raise ValueError(message)
+
+    snapshot = build_resolution_audit_snapshot(plan, acquisition)
+    return CompiledEffectExpectation(
+        usage=str(args.get("usage") or "remediation_verify"),
+        host_node_id=host,
+        expectation=dict(args.get("expectation") or {}),
+        timeout_seconds=timeout,
+        catalog_version=acquisition.catalog_version,
+        resolution_snapshot=snapshot.model_dump(mode="json"),
+    )

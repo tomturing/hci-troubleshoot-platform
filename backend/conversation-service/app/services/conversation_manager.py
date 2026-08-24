@@ -367,23 +367,34 @@ class ConversationManager:
         """
         return s0_candidate_rounds >= S0_MAX_CANDIDATE_ROUNDS
 
-    def build_pending_resolution(self) -> dict:
+    def build_pending_resolution(self, effect_evidence: list | None = None) -> dict:
         """
         构造 S6 完成后的等待快照（写入 conversation.pending_resolution）。
 
         格式符合 schema_design.json 规范：
           {"stage": "S6", "sent_at": "...", "options": ["A", "B", "C"]}
 
+        S6 证据化（效果验证生产者信号设计 §3.5）：若会话内存在 qkv_effect 效果
+        验证判定，附 effect_evidence 列表（verdict/usage/signal_id 等），供三选项
+        界面展示证据——achieved 预填不代选、not_achieved 建议回退重诊断、
+        inconclusive 如实说明观察不足。
+
         调用时机：AI 在 S6 阶段完成 VM 验证后，向用户推送三选项 SSE 事件时同步写入 DB。
+
+        Args:
+            effect_evidence: 效果验证判定证据列表（可为空）
 
         Returns:
             dict: pending_resolution JSONB 快照
         """
-        return {
+        snapshot: dict = {
             "stage": "S6",
             "sent_at": datetime.now(UTC).isoformat(),
             "options": ["A", "B", "C"],
         }
+        if effect_evidence:
+            snapshot["effect_evidence"] = list(effect_evidence)
+        return snapshot
 
     def handle_resolution_choice(
         self,

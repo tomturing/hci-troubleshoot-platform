@@ -17,6 +17,12 @@ class FrontendQueryType(StrEnum):
     ALERT = "alert"  # 告警信息
     TASK = "task"  # 操作任务
     DIALOG = "dialog"  # 对话/弹框日志
+    # 条件型实时视觉生产者：虚拟机控制台截图。执行走专用适配器
+    # （app/tools/vm_console/），绝不落入自由文本 qkv_exec 路径。
+    VM_CONSOLE = "vm_console"
+    # 条件型效果验证生产者：期望 × 观测的三态判定。执行走专用适配器
+    # （app/tools/effect/），绝不落入自由文本 qkv_exec 路径。
+    EFFECT = "effect"
 
 
 # ─── 关键词清洗后缀映射 ───────────────────────────────────────────────────────
@@ -69,8 +75,8 @@ class FrontendSignal(BaseModel):
     前端信号模型（QKV 加载处理）
     """
 
-    query: FrontendQueryType = Field(..., description="Q: 查什么，告警/任务/弹框")
-    keyword: str = Field(..., description="K: 匹配关键字")
+    query: FrontendQueryType = Field(..., description="Q: 查什么，告警/任务/弹框/控制台截图")
+    keyword: str = Field(default="", description="K: 匹配关键字（vm_console 不使用）")
     is_failed: bool = Field(default=False, description="是否只查失败任务 (仅在 query 为 task 时生效)")
     limit: int = Field(default=100, description="最大返回数据量限制")
     paths: list[str] = Field(
@@ -82,6 +88,20 @@ class FrontendSignal(BaseModel):
         default_factory=list,
         description="产出变量规格：[{name: 'HOST', path: 'host'}, ...]，为空时 parser 走硬编码兜底",
     )
+    # ── qkv_vm_console 专用目标参数（其余 query 类型不使用）──
+    host: str | None = Field(default=None, description="vm_console/effect 目标宿主机（{{HOST}} 或规范化节点标识）")
+    vm_id: str | None = Field(default=None, description="vm_console 目标 VMID（{{VM_ID}} 或精确数值）")
+    capture_mode: str = Field(
+        default="baseline_then_optional_wake",
+        description="vm_console 固定采集模式",
+    )
+    # ── qkv_effect 专用期望锚点（其余 query 类型不使用）──
+    usage: str = Field(default="remediation_verify", description="effect 使用模式（修复后复核/症状确认）")
+    expectation: dict[str, Any] | None = Field(
+        default=None,
+        description="effect 结构化期望锚点：observation + matcher + settle/window/max_recheck",
+    )
+    timeout: int = Field(default=60, ge=1, le=300, description="采集超时；vm_console/effect 运行期另行约束 1-60")
 
     @model_validator(mode="after")
     def _validate_dialog_scope(self) -> FrontendSignal:
@@ -91,6 +111,36 @@ class FrontendSignal(BaseModel):
                 raise ValueError("qkv_dialog.paths 必须包含 1-2 个不重复的固定日志目录")
             if any(path not in allowed for path in self.paths):
                 raise ValueError("qkv_dialog.paths 只允许 /sf/log/today 与 /sf/log/today/vt")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_vm_console_targets(self) -> FrontendSignal:
+        """vm_console 必须显式携带 HOST/VM_ID 目标；其他 query 类型不受影响。"""
+        if self.query == FrontendQueryType.VM_CONSOLE:
+            if not str(self.host or "").strip():
+                raise ValueError("qkv_vm_console 必须提供 host（{{HOST}} 或规范化节点标识）")
+            if not str(self.vm_id or "").strip():
+                raise ValueError("qkv_vm_console 必须提供 vm_id（{{VM_ID}} 或精确数值 VMID）")
+            if self.capture_mode != "baseline_then_optional_wake":
+                raise ValueError("qkv_vm_console.capture_mode 仅支持 baseline_then_optional_wake")
+            if not 1 <= self.timeout <= 60:
+                raise ValueError("qkv_vm_console.timeout 必须在 1-60（快速失败型采集）")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_effect_expectation(self) -> FrontendSignal:
+        """effect 必须显式携带结构化期望锚点；其他 query 类型不受影响。"""
+        if self.query == FrontendQueryType.EFFECT:
+            if not isinstance(self.expectation, dict) or not self.expectation:
+                raise ValueError("qkv_effect 必须提供结构化期望锚点 expectation")
+            if not isinstance(self.expectation.get("observation"), dict):
+                raise ValueError("qkv_effect.expectation.observation 必填（封闭观测通道引用）")
+            if not isinstance(self.expectation.get("matcher"), dict):
+                raise ValueError("qkv_effect.expectation.matcher 必填（封闭判定规则）")
+            if self.usage not in ("remediation_verify", "symptom_confirm"):
+                raise ValueError("qkv_effect.usage 仅支持 remediation_verify/symptom_confirm")
+            if not 1 <= self.timeout <= 60:
+                raise ValueError("qkv_effect.timeout 必须在 1-60（单次观测快速失败）")
         return self
 
     @classmethod
@@ -104,7 +154,13 @@ class FrontendSignal(BaseModel):
             a = data["acquire"]
             args = a.get("args", {}) or {}
             tool = a.get("tool", "")
-            qmap = {"qkv_alert": "alert", "qkv_task": "task", "qkv_dialog": "dialog"}
+            qmap = {
+                "qkv_alert": "alert",
+                "qkv_task": "task",
+                "qkv_dialog": "dialog",
+                "qkv_vm_console": "vm_console",
+                "qkv_effect": "effect",
+            }
             data = {
                 "query": qmap.get(tool, "task"),
                 "keyword": args.get("keyword", ""),
@@ -113,6 +169,12 @@ class FrontendSignal(BaseModel):
                 "paths": args.get("paths", ["/sf/log/today", "/sf/log/today/vt"]),
                 "context_lines": args.get("context_lines", 2),
                 "produces": (data.get("orchestrate") or {}).get("produces", []),
+                "host": args.get("host"),
+                "vm_id": args.get("vm_id"),
+                "capture_mode": args.get("capture_mode", "baseline_then_optional_wake"),
+                "usage": args.get("usage", "remediation_verify"),
+                "expectation": args.get("expectation"),
+                "timeout": args.get("timeout", 60),
             }
         # 自动清洗关键词和检测状态
         keyword = data.get("keyword", "")

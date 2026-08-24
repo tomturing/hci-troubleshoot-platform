@@ -14,6 +14,7 @@ import pytest
 from app.routes import admin
 from app.services.hci_sim_resolver import HciSimKbdResolver
 from shared.dynamic_resource.publisher import DynamicResourcePublisher
+from shared.schemas.acquirer_args import CONDITIONAL_PRODUCERS
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
@@ -330,7 +331,14 @@ async def test_five_samples_batch_approve_and_publish_immutable_revisions():
             assert all(item.status == "ready_for_artifact_binding" for item in sample_results.values())
             for source_support_id, result in sample_results.items():
                 assert result.resolved is not None
-                expected = {signal["id"] for signal in documents[source_support_id]["signals"]}
+                # 条件型生产者（qkv_vm_console/qkv_effect）编译为不可变 Intent 且刻意不产出
+                # 命令字符串，因此不进入 synthetic_routes（其 argv 必须为 acli 命令）；
+                # 在线由专用适配器、离线由专用编译入口消费 Intent，路由断言仅覆盖直接生产者。
+                expected = {
+                    signal["id"]
+                    for signal in documents[source_support_id]["signals"]
+                    if (signal.get("acquire") or {}).get("tool") not in CONDITIONAL_PRODUCERS
+                }
                 actual = {route.signal_id for route in result.resolved.synthetic_routes}
                 assert actual == expected, (source_support_id, actual, expected)
     finally:

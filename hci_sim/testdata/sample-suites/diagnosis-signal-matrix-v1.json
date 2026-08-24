@@ -26,6 +26,14 @@
         "vm_list_context": {
           "positive_output": "{\"data\":[{\"id\":{{VM_ID}},\"name\":\"sample-vm\",\"status\":\"error\"}]}\n",
           "negative_output": "{\"data\":[]}\n"
+        },
+        "vm_console_visual": {
+          "positive_output": "{\"display_state\":\"normal\",\"summary\":\"控制台画面正常，未发现黑屏、内核恐慌或启动卡住\",\"confidence\":0.95,\"artifact_id\":\"sim-vmconsole-0001\"}\n",
+          "negative_output": "{\"display_state\":\"black_screen\",\"summary\":\"控制台全黑，疑似 Guest 图形输出丢失\",\"confidence\":0.9,\"artifact_id\":\"sim-vmconsole-0002\"}\n"
+        },
+        "vm_effect_verify": {
+          "positive_output": "{\"verdict\":\"achieved\",\"checked_at\":\"2026-08-12T10:06:00Z\",\"evidence_ref\":\"sim-effect-0001\"}\n",
+          "negative_output": "{\"verdict\":\"not_achieved\",\"checked_at\":\"2026-08-12T10:06:00Z\",\"evidence_ref\":\"sim-effect-0002\"}\n"
         }
       }
     },

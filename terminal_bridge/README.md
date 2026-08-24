@@ -97,6 +97,8 @@ terminalBridge:
 | `--allowed-origins` | `HCI_BRIDGE_ALLOWED_ORIGINS` | 逗号分隔 Origin；支持 `*`、`same-origin` |
 | — | `HCI_BRIDGE_LOG_DIR` | 本地回放日志目录 |
 | — | `HCI_BRIDGE_LOG_MAX_BYTES` | 单个 `bridge.log` 最大字节数，默认 64 MiB |
+| — | `PLATFORM_ARTIFACT_URL` | 虚拟机控制台截图 PPM 直传的制品服务基址（conversation-service）；**未配置时 `capture_baseline` fail-closed 返回 `artifact_upload_disabled`，不降级 base64 over WS** |
+| — | `PLATFORM_INTERNAL_API_TOKEN` | PPM 直传的内部 Bearer Token（`INTERNAL_API_TOKEN` 对端校验） |
 
 示例：
 
@@ -132,6 +134,7 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | `ssh_inject_command` | `command, case_id` | 注入命令但不回车 |
 | `ssh_exec_command` | `command, exec_id, case_id, trace_id?` | PTY marker 通道执行 |
 | `ssh_exec_process` | `command, exec_id, case_id, node_ip?, container?, trace_id?` | 独立 SSH Session 执行 |
+| `vm_console_op` | `operation, capture_id, host_node_id, vm_id, exec_id, case_id, node_ip, timeout?, trace_id?` | 虚拟机控制台截图固定操作（无自由文本 command）；`operation` 仅 `capture_baseline` / `wake_down_key`，入口严格校验，非法输入 fail-closed |
 | `resume` | `case_id` | 重放近期结构化日志 |
 | `ssh_disconnect` | `case_id, node_ip?` | 断开会话 |
 
@@ -142,6 +145,21 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | `ssh_connected` / `ssh_disconnected` / `ssh_error` | SSH 会话生命周期 |
 | `ssh_output` | 交互终端输出流 |
 | `exec_stdout` / `exec_stderr` / `exec_result` | Agent 命令执行生命周期和最终结果 |
+| `vm_console_result` | 虚拟机控制台固定操作元数据结果（`capture_id`、`operation`、`exit_code`、`sha256`、`size_bytes`、`upload_status`、`error_type`、`duration_ms`、`timed_out`）；只含元数据，PPM 原图经 HTTP 直传制品服务 |
 | `bridge_log` | 带 `case_id`、`trace_id`、节点和事件标签的结构化回采日志 |
+
+### 虚拟机控制台截图通道（`vm_console_op`）
+
+设计依据 `docs/solution/agent/虚拟机控制台视觉生产者信号设计与需求.md` §3.2/§3.3/§5.2/§6.1：
+
+- 只执行代码常量表构造的固定操作：基线截图 `screendump`、固定唤醒 `sendkey down`、
+  `test -f` 有界轮询探测（≤10 次、间隔 1s）、`base64 -w0` 读取（有界捕获 16MiB，Go 本地解码并计算 SHA-256）、无条件 `rm -f` 清理（失败附加 `cleanup_failed` 标记，不阻断结果）。
+- 执行走独立 SSH 连接（与 `ssh_exec_process` 同款隔离通道），不经过 PTY marker 通道；
+  宿主机直连，不做容器包装。
+- `capture_baseline` 成功后原始 PPM 经 `POST {PLATFORM_ARTIFACT_URL}/internal/vm-console/artifacts/{capture_id}?kind=ppm&case_id=...&mode=online`
+  直传（Bearer `PLATFORM_INTERNAL_API_TOKEN`、`X-Capture-Sha256` 完整性头，独立超时 60s），WS 只回元数据。
+- 未配置 `PLATFORM_ARTIFACT_URL` → fail-closed `artifact_upload_disabled`；上传失败 → `upload_failed`（保留 sha256/size 元数据）。
+- 校验拒绝：未知 `operation` → `operation_invalid`；`host_node_id`（`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`）、
+  `vm_id`（纯数字 ≤20 位）、`capture_id`（UUID）任一非法或缺失关键字段 → `target_invalid`，均不执行任何命令。
 
 详细部署与端到端验证见 [K3s 部署指南](../docs/deploy/terminal-bridge-k3s.md)。

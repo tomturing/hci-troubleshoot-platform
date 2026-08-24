@@ -108,6 +108,8 @@
             "qkv_alert",
             "qkv_task",
             "qkv_dialog",
+            "qkv_vm_console",
+            "qkv_effect",
             "qfk_log",
             "qfk_service",
             "qfk_system",
@@ -176,6 +178,44 @@
             "properties": {
               "args": {
                 "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qkv_dialog.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "qkv_vm_console"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qkv_vm_console.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "qkv_effect"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qkv_effect.schema.json"
               }
             }
           }

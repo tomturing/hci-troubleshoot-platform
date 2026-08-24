@@ -168,6 +168,11 @@
   - 清理误提交的 `.kb-service-portforward.pid` 与 Word 临时所有者文件，并在 `data-pipeline/kbd/.gitignore` 中新增 `*.pid` 过滤规则。
 - **部署策略优化**：
   - 恢复 staging 自动化部署和自动同步，GitHub 提交 PR 合并至 main 后将自动同步镜像 tag 至 staging 环境，确保 schema 更新及时覆盖，同时保持 prod 环境为手动同步。
+- **共享镜像源脚本（deploy/docker/base/setup-mirror.sh，禁止在各服务 Dockerfile 单独配镜像源）**：
+  - 全部 8 个后端服务 Dockerfile 统一 `COPY` 并调用 `setup-mirror.sh`：apt 阿里镜像（deb + security 双 URI，deb822 格式必须同时替换）、uv/PyPI 阿里索引（`/etc/uv/uv.toml` + `/etc/pip.conf`）、Debian 安全升级均集中维护在该脚本一处。
+  - 镜像源按构建环境开关（`MIRROR_MODE` build ARG）：本地默认 `on` 走阿里镜像（国内网络零配置）；CI 构建传入 `off` 走官方源——GitHub 托管 Runner 在海外，mirrors.aliyun.com 从海外访问高延迟且偶发限流。
+  - **为何不用统一基础镜像**：实测 docker compose 的 `build`/`up --build` 均不保证跨服务构建顺序（无 depends_on 排序），统一基础镜像会使冷机首次 `up --build` 因 FROM 镜像尚未构建而随机失败；共享脚本方案各服务镜像自包含，冷构建确定性成功。
+  - `resolve_image_build_plan.py` 将 `deploy/docker/base/` 变更视为与 `backend/shared/` 同级的全后端扩散输入。
 - **db-seed PostSync Hook UNIQUE 约束修复**（hotfix/db-seed-system-prompt-unique-constraint）：
   - `desired_schema.sql` 补齐 `system_prompt.name` 字段的 `CONSTRAINT system_prompt_name_key UNIQUE (name)` 声明，使 `ON CONFLICT (name)` 种子 SQL 可正常执行。
   - `desired_extras.sql` 新增幂等 `DO $$` 块，存量环境（未包含该约束的旧部署）在下次 ArgoCD deploy 时自动补齐约束，无需人工干预。
@@ -245,6 +250,23 @@
   - dev 工单 `Q2026073088434` 已完成 Customer UI Headless Runner → Agent/CDD → Bridge → hci-sim → Artifact/Evaluation/Conclusion；三段信号 PASS，S4 definitive，同一 Trace 覆盖 7 个服务。
   - 当前仅代表 KBD 27123 单场景 Golden E2E；Windows desktop Bridge、real/sim differential、20 次稳定性和 100+ 并发仍未验收。
 - **信息质量检查跳过 SOP 模式**：SOP 命中时 quality check 不再拦截
+- **qkv_vm_console 虚拟机控制台视觉生产者信号落地**（2026-08-20，P0 双线）：
+  - 新增第 4 种 QKV 生产者——**条件型实时视觉生产者**：可信获得 `HOST`/`VM_ID` 后以代码固定的 QEMU Monitor 操作采集控制台截图（screendump），补齐告警/任务/弹框观察不到的 Guest OS 内部现象（黑屏、蓝屏、Kernel Panic、启动卡住）。设计文档：`docs/solution/agent/虚拟机控制台视觉生产者信号设计与需求.md`。
+  - **契约层**：`CONDITIONAL_PRODUCERS` 独立集合（**不在** `FRONTEND_TOOLS`，避免获得直接生产者语义）；发布门禁要求 HOST/VM_ID 来自上游 produces 或 verification_contract 外部声明；`qkv_vm_console.schema.json` timeout 独立 1-60s（gen-schemas 按相等性判断是否 $ref common_args）；`VmConsoleResolver` 只编译不可变 Capture Intent（`capture_baseline`/`wake_down_key` 两种 operation，绝不产出命令字符串）；新表 `vm_console_capture` / `vm_console_capture_artifact`（迁移 030，含每运行一次唤醒的唯一约束）。
+  - **在线**：terminal_bridge `vm_console_op` 固定操作（Go 常量表构造 vtpsh，入参二次校验，未知 operation fail-closed）；PPM 经 HTTP 直传 conversation-service 制品端点（SHA-256 校验 + 确定性近黑质量检测），WS 只回元数据，未配置 `PLATFORM_ARTIFACT_URL` 时 `artifact_upload_disabled` 不降级 base64；agent-service `app/tools/vm_console/` 专用适配器（Inventory 校验、一次性唤醒令牌原子消费、§8 错误码全集），KBD 差异诊断遇 `qkv_vm_console` 路由到专用适配器，`_signal_to_qkv` 显式拒绝其进入自由文本 qkv_exec。
+  - **离线**：`compile_vm_console_capture_intent` 专用编译入口（绝不产出 command_template）；Collector 候选 `executor=vm_console_capture`、`risk_level=controlled_interaction`（仅限该执行器）、16MB 上限；Go 采集器内置执行器（本机身份校验、TTY 唤醒确认——非交互/超时/拒绝一律 `wake_declined` 且无"自动同意"参数、nearblack 与 Python 常量同源、captures/ 打包 capture-result.json）；验包后派生 PNG + Vision 观察写入派生 evidence_item（原包零回写）。
+  - **策略门禁**：`VM_CONSOLE_CAPTURE_ENABLED`（默认 false，agent 执行/capabilities/离线制品签发三处读取）、`VM_CONSOLE_VISION_ALLOWED`（默认 false，关闭时 `VISION_UNAVAILABLE_BY_POLICY` 保留图片不绕过）。§12 平台确认项（vtpsh RBAC、screendump 行为、sendkey 语义等）闭环前不得开启执行层。
+  - **运营闭环**：Python 侧 Prometheus 指标全集（§10.2，mode 区分在线/离线）；Admin「控制台截图审计」页（脱敏摘要查询，原图访问走授权端点并记 `last_read_at/by` 审计）；Customer 完成态结果卡（画面状态/摘要/置信度/唤醒标记/复核提示/授权缩略图/失败可行动原因）；Helm 开关默认关闭（`terminalBridge.vmConsoleArtifactUploadEnabled` 控制 Bridge 直传注入）。
+  - **审计/回放/验收**：`vm_console_audit_event` append-only 事件表（迁移 031）覆盖全链路节点并有 Admin 事件流抽屉；回放 Fixture 五态确定性回放；PNG 派生隔离进程执行（spawn + 资源上限）；在线编排进程内 E2E 与离线编译-渲染契约测试全绿，hci_sim 固定操作形态仿真。
+
+- **qkv_effect 效果验证生产者信号落地**（2026-08-20，P0+P1）：
+  - 新增第 5 种 QKV 生产者——**条件型效果验证生产者**：把“预期效果”从 Prompt 隐性语义升级为契约数据，捕获告警/任务/弹框/画面均无法表达的“执行成功但未达预期效果”现象，产出三态判定变量 `EFFECT_STATUS`（`achieved`/`not_achieved`/`inconclusive`，观察不足禁止坍缩）。设计文档：`docs/solution/agent/效果验证生产者信号设计与需求.md`。
+  - **契约层**：`CONDITIONAL_PRODUCERS` 增加 `qkv_effect`（**不在** `FRONTEND_TOOLS`）；期望锚点 = 封闭观测通道（qkv_alert/task/dialog/vm_console 再查询）+ 7 类封闭 matcher（复用 `evaluate_matcher`，不新增自由文本判定）+ 受限窗口（settle 0-3600s / window 60-86400s / recheck 0-5）；发布门禁要求期望变量来源可达（`EFFECT_EXPECTATION_SOURCE_MISSING`）且 **qkv_effect 不得作为 KBD 唯一生产者**（`EFFECT_SOLE_PRODUCER_FORBIDDEN`）；`EffectVerificationResolver` 只编译不可变 Verification Intent（绝不产出命令字符串）；新表 `effect_verification` / `effect_verification_check`（迁移 032，check_seq 唯一约束 + 调度部分索引）。
+  - **在线**：agent-service `app/tools/effect/` 专用适配器（settle 等待 → 观测委派 → 三态合成 → 有限复核），观测空结果编码为空串 + exists 负证据确定性补齐（观测原语已自证有效时 `QFK_OUTPUT_EMPTY` 不再不可定值）；KBD 差异诊断遇 `qkv_effect` 路由到专用适配器，`_signal_to_qkv` 显式拒绝其进入自由文本 qkv_exec；判定落 `diagnostic_item` type=`effect_verification`（stage=S5）供 S6 证据化与重诊断还原；结果卡经 `/internal/conversations/{id}/effect-result` 推送（message + SSE）。
+  - **S6 证据化**：`send_s6_resolution_options` 附 `effect_evidence`（achieved 预填不代选 / not_achieved 建议回退重诊断 / inconclusive 如实说明）；conversation-service lifespan 启动回收非终态悬挂记录为 `inconclusive` + `ORPHANED_BY_RESTART`（fail-closed，禁止静默通过）。
+  - **离线**：`compile_effect_verification_intent` 专用编译入口（冻结期望声明项，绝不产出 command_template，客户侧零执行）；`extract_requirements` 跳过 qkv_effect 不生成采集需求；验包后追溯判定为 P2。
+  - **策略门禁**：`EFFECT_VERIFICATION_ENABLED`（默认 false，agent 执行/capabilities 读取；离线签发随 P2 追溯判定接入）。§12 平台确认项（效果潜伏期经验值、告警清除权威性、任务回执口径等）闭环前不得开启执行层。
+  - **配套**：SOPNode 新增可选 `success_criteria`（期望在知识层的落点，向后兼容）；样例种子新增 `vm_effect_verify` 信号（seed_version 5）；Admin 审核页第 13 种信号（结构化期望表单）；Customer 效果复核结果卡（三态 tag + 可行动提示）；Helm `agentService.effectVerificationEnabled` 默认关闭。
 
 - **agent-service Langfuse Helm 条件判断修复**（PR #491，v1.49）：
   - **根因**：`deploy/helm/hci-platform/templates/agent-service/deployment.yaml` 中 Langfuse env 块的条件判断为 `{{- if .Values.langfuse }}`，仅检查 map 是否存在，未检查 `enabled` 标志。dev 环境 base values `langfuse: { enabled: false }` 使 map 存在但 enabled 为 false，模板仍渲染 `LANGFUSE_SECRET_KEY` 的 `secretKeyRef`，而 `hci-secrets` 中无此 key，导致 agent-service Pod `CreateContainerConfigError`。

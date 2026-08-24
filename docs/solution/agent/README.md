@@ -2,7 +2,7 @@
 status: active
 category: solution
 audience: all
-last_updated: 2026-08-05
+last_updated: 2026-08-20
 owner: team
 update_trigger: Agent 方案新增、重构或状态变更
 ---
@@ -15,6 +15,8 @@ update_trigger: Agent 方案新增、重构或状态变更
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |---|---|---|---|
+| 2026-08-20 | v1.14 | 《KB与信号高依赖的局限性分析与改进方向》升级 V1.1：新增第五章「信号生产成本分析与降本方向」，回应"写信号像写伪代码"痛点——单条 40~100 行/20+ 字段/无复用/无自助 dry-run 的成本分解，及 P0 自助 dry-run 与输出锚定 pattern 生成等降本提案。 | - |
+| 2026-08-20 | v1.13 | 新增《KB与信号高依赖的局限性分析与改进方向》架构分析讨论稿：经代码核实的 KB-first + fail-closed 能力边界调研，提出知识回流、未命中率度量、advisory 探索层等改进方向（均未采纳，待评审）。 | - |
 | 2026-08-07 | v1.12 | 实施统一解析运行时首个纵向切片并完成 aCLI 在线 Catalog 336/336 一致性和真实 HCI 代表性只读测评；保留生产 path-probe 硬门禁、tar.gz Handler 和不可变运行审计为进行中。 | [Runtime 代码与真实 HCI 能力测评](../../verify/events/2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md) |
 | 2026-08-07 | v1.11 | 收敛 Resolver 正式命名与稳定 `resolver_id`：`LogResolver`/`SystemResolver`/`DomainResolver`/`ServiceResolver`/`QkvResolver`/`VariableResolver`，保持共享 Runtime、生产门禁和消费前校验方案不变。 | [统一解析运行时与 Resolver 分层方案](events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
 | 2026-08-07 | v1.10 | 确定关键信号统一解析运行时：共享 Resolution Runtime + 领域 Resolver；`qfk_system` 独立于日志/服务，aCLI 领域 QFK 归入独立领域 Resolver；生产门禁与消费前校验复用同一解析平台，Catalog 规则 Git 化、运行快照不可变。 | [统一解析运行时与 Resolver 分层方案](events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
@@ -78,6 +80,7 @@ docs/solution/agent/
 │   ├── SSH终端代理(terminal_bridge)架构分析与演进方案.md Terminal Bridge
 │   ├── acli插件工具命令模板机制重新设计方案.md ACLI 模板
 │   ├── 大脑可选-集成重设计方案.md        AI 大脑选择
+│   ├── KB与信号高依赖的局限性分析与改进方向.md KB/信号依赖局限分析（讨论稿）
 │   ├── 案例差异诊断协议.md              案例诊断
 │   ├── 关键信号抽取问题分析与修复方案.md KBD 信号抽取历史问题
 │   ├── 智能体单步交互与单步命令执行控制方案.md 单步控制
