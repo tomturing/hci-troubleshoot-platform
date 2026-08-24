@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from shared.resolution.effect import EffectVerificationResolver
 from shared.resolution.models import ResolutionPlan, ResolvedAcquisition, SignalIntent
 from shared.resolution.resolvers import (
     DomainResolver,
@@ -14,13 +15,14 @@ from shared.resolution.resolvers import (
     SystemResolver,
     VariableResolver,
 )
+from shared.resolution.vm_console import VmConsoleResolver
 
 
 class SharedResolutionRuntime:
     """一个平台、多个领域 Resolver；Registry 是唯一路由入口。"""
 
     def __init__(self, resolvers: list[Resolver] | None = None) -> None:
-        self._resolvers = {item.resolver_id: item for item in (resolvers or [LogResolver(), SystemResolver(), DomainResolver(), ServiceResolver(), QkvResolver(), VariableResolver()])}
+        self._resolvers = {item.resolver_id: item for item in (resolvers or [LogResolver(), SystemResolver(), DomainResolver(), ServiceResolver(), QkvResolver(), VariableResolver(), VmConsoleResolver(), EffectVerificationResolver()])}
 
     def get(self, resolver_id: str) -> Resolver:
         try:

@@ -720,3 +720,123 @@ def test_qfk_log_signals_with_different_includes_compile_to_distinct_commands():
     assert "-k" in cmd_a and "Get" in cmd_a
     assert "-k" in cmd_b and "file" in cmd_b
     assert cmd_a != cmd_b
+
+
+# ─── qkv_vm_console 条件型生产者发布门禁 ───────────────────────────────
+
+
+def _vm_console_document(*, external_variables: dict | None):
+    """构造 Guest 内部问题 KBD：唯一生产者为 qkv_vm_console。"""
+
+    contract: dict = {
+        "schema_version": 1,
+        "evidence_policy": {"must": ["s_vm_console_kernel_panic"], "should": [], "exclude": [], "context": []},
+    }
+    if external_variables is not None:
+        contract["variables"] = external_variables
+    return {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "s_vm_console_kernel_panic",
+                "role": "must",
+                "acquire": {
+                    "tool": "qkv_vm_console",
+                    "args": {
+                        "host": "{{HOST}}",
+                        "vm_id": "{{VM_ID}}",
+                        "capture_mode": "baseline_then_optional_wake",
+                        "timeout": 60,
+                        "instruction": "采集虚拟机控制台画面，确认是否存在内核恐慌或启动失败现象",
+                    },
+                },
+                "match": None,
+                "orchestrate": {
+                    "requires": ["HOST", "VM_ID"],
+                    "produces": [
+                        {"name": "VM_CONSOLE_STATE", "path": "display_state"},
+                        {"name": "VM_CONSOLE_SUMMARY", "path": "summary"},
+                        {"name": "VM_CONSOLE_CONFIDENCE", "path": "confidence"},
+                        {"name": "VM_CONSOLE_ARTIFACT_ID", "path": "artifact_id"},
+                    ],
+                },
+                "provenance": {
+                    "category": "frontend",
+                    "method": "controlled_vm_console_capture",
+                    "confidence": 0.8,
+                    "risk": 0.4,
+                    "needs_review": True,
+                    "evidence": "受控虚拟机控制台截图与结构化视觉观察",
+                },
+                "review": {"require_human_confirm": False, "notes": "近黑后的 sendkey down 必须在运行时单独确认"},
+            }
+        ],
+        "verification_contract": contract,
+    }
+
+
+def test_vm_console_only_kbd_is_publishable_with_declared_external_targets():
+    document = _vm_console_document(
+        external_variables={"HOST": {"type": "string"}, "VM_ID": {"type": "string"}}
+    )
+
+    validate_kbd_publishable_signals_json(document)
+
+
+def test_vm_console_only_kbd_is_publishable_with_upstream_producers():
+    document = _vm_console_document(external_variables=None)
+    document["signals"].insert(
+        0,
+        {
+            "id": "s_task_producer",
+            "role": "should",
+            "acquire": {"tool": "qkv_task", "args": {"keyword": "虚拟机内核恐慌"}},
+            "match": None,
+            "orchestrate": {
+                "produces": [{"name": "HOST", "path": "host"}, {"name": "VM_ID", "path": "vm"}],
+            },
+            "provenance": {
+                "category": "frontend",
+                "method": "task_query",
+                "confidence": 0.8,
+                "risk": 0.2,
+                "needs_review": False,
+                "evidence": "失败任务定位宿主机与 VMID",
+            },
+            "review": {"require_human_confirm": False, "notes": ""},
+        },
+    )
+
+    validate_kbd_publishable_signals_json(document)
+
+
+def test_vm_console_only_kbd_without_target_sources_is_blocked():
+    document = _vm_console_document(external_variables={})
+
+    with pytest.raises(ValidationError) as exc_info:
+        validate_kbd_publishable_signals_json(document)
+
+    # HOST/VM_ID 无来源时，变量依赖门禁或条件生产者门禁必须阻断。
+    message = str(exc_info.value.message)
+    assert "HOST" in message and "VM_ID" in message
+
+
+def test_vm_console_free_form_fields_are_rejected_by_schema():
+    document = _vm_console_document(
+        external_variables={"HOST": {"type": "string"}, "VM_ID": {"type": "string"}}
+    )
+    document["signals"][0]["acquire"]["args"]["monitor_command"] = "screendump /tmp/x.ppm"
+
+    with pytest.raises(ValidationError):
+        validate_signals_json(document)
+
+
+def test_vm_console_review_passes_with_external_targets():
+    document = _vm_console_document(
+        external_variables={"HOST": {"type": "string"}, "VM_ID": {"type": "string"}}
+    )
+
+    review = review_signal_document(document, feature=SignalReviewFeature.PUBLISH)
+    # 占位符目标在发布期无变量上下文，resolver 报 needs_probe 属预期保留项，
+    # 但不能阻断发布审查。
+    assert review.status is not SignalReviewStatus.BLOCKED

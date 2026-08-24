@@ -142,6 +142,20 @@ DO $$ BEGIN
         FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
   END IF;
 
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='vm_console_capture') THEN
+    DROP TRIGGER IF EXISTS update_vm_console_capture_updated_at ON vm_console_capture;
+    CREATE TRIGGER update_vm_console_capture_updated_at
+        BEFORE UPDATE ON vm_console_capture
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+
+  IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='effect_verification') THEN
+    DROP TRIGGER IF EXISTS update_effect_verification_updated_at ON effect_verification;
+    CREATE TRIGGER update_effect_verification_updated_at
+        BEFORE UPDATE ON effect_verification
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+  END IF;
+
   IF EXISTS (SELECT FROM pg_tables WHERE schemaname='public' AND tablename='diagnosis_upload_session') THEN
     DROP TRIGGER IF EXISTS update_diagnosis_upload_session_updated_at ON diagnosis_upload_session;
     CREATE TRIGGER update_diagnosis_upload_session_updated_at

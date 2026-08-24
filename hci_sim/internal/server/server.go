@@ -363,6 +363,11 @@ func (s *Server) execute(job *commandJob, workerID int) commandOutcome {
 		s.respond(job, outcome, "lease_quota_exceeded", err.Error())
 		return outcome
 	}
+	// 虚拟机控制台固定操作仿真：capture 路径携带动态 capture_id，无法发布为
+	// 静态 Fixture；此处按精确形态确定性仿真，未匹配命令继续走严格 Fixture 路由。
+	if stdout, exitCode, matched := simulateVMConsoleCommand(job.command, job.claims); matched {
+		return s.executeVMConsole(job, stdout, exitCode, workerID)
+	}
 	router := routerForClaims(s.config, job.claims)
 	if !routerMatchesClaims(router, job.claims) {
 		s.config.Metrics.CommandErrorsTotal.Add(1)

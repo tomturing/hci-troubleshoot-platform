@@ -345,6 +345,9 @@ diagnosisService:
   objectStorageMode: "local"
   # 精简 P0 证据不足时转人工审核；P1 自动补采需显式开启。
   automaticSupplementEnabled: false
+  # qkv_vm_console 离线路径：专用采集制品签发与视觉派生的策略开关（默认关闭）
+  vmConsoleCaptureEnabled: "false"
+  vmConsoleVisionAllowed: "false"
   persistence:
     size: "20Gi"
     storageClassName: ""
@@ -403,6 +406,9 @@ terminalBridge:
   execTimeoutSeconds: 120
   execMaxOutputBytes: 4194304
   artifactRetentionDays: 30
+  # qkv_vm_console：开启后注入 PLATFORM_ARTIFACT_URL/PLATFORM_INTERNAL_API_TOKEN，
+  # Bridge 将截图 PPM 直传 conversation-service；未开启时截图操作 fail-closed。
+  vmConsoleArtifactUploadEnabled: false
   artifactCleanupSchedule: "17 3 * * *"
   otelEndpoint: "http://tempo.hci-observability.svc.cluster.local:4318"
   hostKeyPolicy: "accept-new"
@@ -670,6 +676,12 @@ agentService:
   confirmTimeoutSec: "120"
   # 本地 aCLI Catalog 未知命令：confirm=允许进入人工确认；deny=执行前拒绝（生产推荐）
   acliUnknownCommandPolicy: "confirm"
+  # qkv_vm_console（条件型视觉生产者）执行层开关：§12 平台确认项闭环前保持 false
+  vmConsoleCaptureEnabled: "false"
+  vmConsoleVisionAllowed: "false"
+  # qkv_effect（条件型效果验证生产者）执行层开关：设计文档 §12 平台确认项闭环前保持
+  # false；契约与发布不受开关影响，仅执行层读取。
+  effectVerificationEnabled: "false"
   resources:
     requests:
       cpu: "100m"

@@ -25,6 +25,17 @@ from shared.resolution.review import (
     review_signal_document,
 )
 from shared.resolution.runtime import SharedResolutionRuntime, get_resolution_runtime
+from shared.resolution.vm_console import (
+    VM_CONSOLE_ARTIFACT_POLICY,
+    VM_CONSOLE_CAPTURE_MODE,
+    VM_CONSOLE_OPERATIONS,
+    VM_CONSOLE_RESOLVER_ID,
+    VM_CONSOLE_TOOL,
+    VmConsoleCaptureIntent,
+    VmConsoleResolver,
+    build_wake_intent,
+    capture_intent_from,
+)
 
 __all__ = [
     "ResolutionIssue",
@@ -46,4 +57,13 @@ __all__ = [
     "SignalReviewStatus",
     "SignalRuntimeReview",
     "review_signal_document",
+    "VM_CONSOLE_ARTIFACT_POLICY",
+    "VM_CONSOLE_CAPTURE_MODE",
+    "VM_CONSOLE_OPERATIONS",
+    "VM_CONSOLE_RESOLVER_ID",
+    "VM_CONSOLE_TOOL",
+    "VmConsoleCaptureIntent",
+    "VmConsoleResolver",
+    "build_wake_intent",
+    "capture_intent_from",
 ]

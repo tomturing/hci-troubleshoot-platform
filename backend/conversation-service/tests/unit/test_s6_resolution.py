@@ -238,6 +238,32 @@ class TestConstraints:
         assert "X" not in r2["options"]
 
 
+# ─── S6 证据化：效果验证判定快照 ──────────────────────────────────────────────
+
+
+class TestEffectEvidenceSnapshot:
+    """S6 快照可附效果验证证据（qkv_effect 三态判定），无证据时向后兼容。"""
+
+    def test_snapshot_without_effect_evidence_is_backward_compatible(self, manager: ConversationManager):
+        snapshot = manager.build_pending_resolution()
+        assert snapshot["stage"] == "S6"
+        assert snapshot["options"] == ["A", "B", "C"]
+        assert "effect_evidence" not in snapshot
+
+    def test_snapshot_includes_effect_evidence(self, manager: ConversationManager):
+        evidence = [
+            {"signal_id": "s_effect_mem", "verdict": "not_achieved", "usage": "remediation_verify"},
+        ]
+        snapshot = manager.build_pending_resolution(evidence)
+        assert snapshot["effect_evidence"] == evidence
+
+    def test_snapshot_does_not_share_reference_with_input(self, manager: ConversationManager):
+        evidence = [{"signal_id": "s1", "verdict": "achieved"}]
+        snapshot = manager.build_pending_resolution(evidence)
+        evidence.append({"signal_id": "s2", "verdict": "inconclusive"})
+        assert len(snapshot["effect_evidence"]) == 1
+
+
 # ─── 与原有状态转换逻辑的回归测试 ─────────────────────────────────────────────
 
 

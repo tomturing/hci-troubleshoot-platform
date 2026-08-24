@@ -448,10 +448,15 @@ class CollectorArtifactService:
                     http_status=409,
                     details={"collector_id": plan_item.collector_id, "revision": snapshot.revision},
                 ) from exc
-            if definition.risk_level != "read_only":
+            # controlled_interaction（近黑唤醒 sendkey down 属受控 Guest 交互）
+            # 仅限 vm_console_capture 专用执行器；其余 Collector 仍必须只读。
+            if definition.risk_level != "read_only" and not (
+                definition.risk_level == "controlled_interaction"
+                and definition.executor == "vm_console_capture"
+            ):
                 raise DiagnosisError(
                     code="COLLECTOR_RISK_NOT_ALLOWED",
-                    message="P0 只允许只读 Collector",
+                    message="P0 只允许只读 Collector（controlled_interaction 仅限 vm_console_capture）",
                     http_status=409,
                     details={"collector_id": plan_item.collector_id},
                 )
@@ -484,7 +489,11 @@ class CollectorArtifactService:
                 "window_end": time_window.get("end_time"),
             }
             values = {key: value for key, value in values.items() if value is not None}
-            if definition.executor == "shell":
+            if definition.executor == "vm_console_capture":
+                execution_spec, rendered_command = self._render_vm_console_capture_spec(
+                    definition, values, target
+                )
+            elif definition.executor == "shell":
                 argv, rendered_command = render_collector_command(
                     definition.command_template,
                     dict(definition.parameter_schema or {}),
@@ -519,6 +528,63 @@ class CollectorArtifactService:
                 }
             )
         return resolved
+
+    @staticmethod
+    def _render_vm_console_capture_spec(definition, values: dict, target: dict) -> tuple[dict, str]:
+        """渲染 vm_console_capture 执行项的结构化 Capture Intent（设计文档 §3.4）。
+
+        与 command executor 的差异：不渲染命令模板——host/vm_id 冻结进签名
+        意图，Go 采集器按固定操作执行；缺少已验证目标时 fail-closed，绝不
+        降级为可复制的 vtpsh 文本。
+        """
+
+        import os as _os
+
+        from app.services.offline_acquisition_compiler import compile_vm_console_capture_intent
+
+        if _os.environ.get("VM_CONSOLE_CAPTURE_ENABLED", "false").lower() not in ("1", "true", "yes", "on"):
+            raise DiagnosisError(
+                code="VM_CONSOLE_DISABLED_BY_POLICY",
+                message="虚拟机控制台采集未启用（VM_CONSOLE_CAPTURE_ENABLED=false），拒绝签发制品",
+                http_status=409,
+                details={"collector_id": definition.collector_id},
+            )
+
+        # 仅已解析的具体节点（type=node）可作为目标；type=variable 表示 Collection
+        # Plan 尚未绑定节点（source_node 占位），此时 fail-closed。
+        target_id = target.get("id") if (target or {}).get("type") == "node" else None
+        host = str(values.get("host") or target_id or "").strip()
+        vm_id = str(values.get("vm_id") or "").strip()
+        if not host or not vm_id:
+            raise DiagnosisError(
+                code="VM_CONSOLE_TARGET_MISSING",
+                message="控制台截图采集项缺少已验证目标节点或 VMID；请在 Collection Plan 中明确目标",
+                http_status=409,
+                details={"collector_id": definition.collector_id},
+            )
+
+        compiled = compile_vm_console_capture_intent(
+            args={
+                "host": host,
+                "vm_id": vm_id,
+                "capture_mode": str(values.get("capture_mode") or "baseline_then_optional_wake"),
+                "timeout": int(values.get("timeout") or definition.timeout_seconds or 60),
+            },
+            target_node_id=host,
+        )
+        execution_spec = {
+            "executor": "vm_console_capture",
+            "operation_version": compiled.operation_version,
+            "capture_mode": compiled.capture_mode,
+            "host_node_id": compiled.host_node_id,
+            "vm_id": compiled.vm_id,
+            "timeout_seconds": compiled.timeout_seconds,
+            "max_capture_bytes": compiled.max_capture_bytes,
+            "artifact_policy": "vm_console_v1",
+            "catalog_revision": compiled.catalog_version,
+        }
+        rendered_command = f"vm_console_capture://{compiled.host_node_id}/{compiled.vm_id}"
+        return execution_spec, rendered_command
 
     @staticmethod
     def _select_items(plan_items: list, requested_target_node: str | None) -> tuple[list, str]:

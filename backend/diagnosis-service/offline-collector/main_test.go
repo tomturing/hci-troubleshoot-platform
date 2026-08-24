@@ -194,7 +194,7 @@ func TestVerifyBundleRejectsTamperedCase(t *testing.T) {
 func TestStructuredCollectorExecutesArgvDirectly(t *testing.T) {
 	fixture := buildFixture(t)
 	outputDirectory := filepath.Join(fixture.directory, "direct-output")
-	if err := runCollection(fixture.execution, outputDirectory); err != nil {
+	if err := runCollection(fixture.execution, outputDirectory, false); err != nil {
 		t.Fatal(err)
 	}
 	rows, stats, err := loadExecutionRows(outputDirectory)

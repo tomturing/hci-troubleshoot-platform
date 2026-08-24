@@ -86,6 +86,12 @@ spec:
               value: {{ .Values.diagnosisService.objectStorageMode | quote }}
             - name: DIAGNOSIS_ENABLE_AUTOMATIC_SUPPLEMENT
               value: {{ .Values.diagnosisService.automaticSupplementEnabled | quote }}
+            # qkv_vm_console 离线路径策略门禁：制品签发与视觉派生默认关闭，
+            # 待设计文档 §12 平台确认项闭环后启用。
+            - name: VM_CONSOLE_CAPTURE_ENABLED
+              value: {{ .Values.diagnosisService.vmConsoleCaptureEnabled | default false | quote }}
+            - name: VM_CONSOLE_VISION_ALLOWED
+              value: {{ .Values.diagnosisService.vmConsoleVisionAllowed | default false | quote }}
             - name: DIAGNOSIS_DIRECT_UPLOAD_BASE_URL
               value: {{ required "diagnosisService.enabled=true 时必须配置 diagnosisService.directUploadBaseUrl" .Values.diagnosisService.directUploadBaseUrl | quote }}
             - name: DIAGNOSIS_ALLOWED_ORIGINS

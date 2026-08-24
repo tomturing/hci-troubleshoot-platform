@@ -12,6 +12,51 @@ const props = defineProps<{ message: ChatMessage }>()
 
 const chatStore = useChatStore()
 
+// ─── qkv_vm_console 结果卡辅助 ─────────────────────────────────────────
+const vmConsoleThumbnails = ref<Record<string, string>>({})
+
+/** 授权加载截图缩略图（会话鉴权 + 服务端审计），不暴露公网固定 URL。 */
+function loadVmConsoleThumbnail(artifactId: string) {
+  if (!artifactId || vmConsoleThumbnails.value[artifactId] !== undefined) return
+  vmConsoleThumbnails.value[artifactId] = ''
+  const convId = chatStore.conversationId
+  if (!convId) return
+  fetch(`/api/conversations/${convId}/vm-console-artifacts/${artifactId}`, {
+    headers: { Authorization: `Bearer ${localStorage.getItem('clientSessionToken') || 'client-session-placeholder-token'}` },
+  })
+    .then(async (resp) => {
+      if (!resp.ok) return
+      const blob = await resp.blob()
+      vmConsoleThumbnails.value[artifactId] = URL.createObjectURL(blob)
+    })
+    .catch(() => { /* 缩略图加载失败不影响结果卡元数据展示 */ })
+}
+
+function vmConsoleThumbnail(artifactId: string): string {
+  if (!artifactId) return ''
+  if (!(artifactId in vmConsoleThumbnails.value)) loadVmConsoleThumbnail(artifactId)
+  return vmConsoleThumbnails.value[artifactId] || ''
+}
+
+function vmConsoleStateTagType(state: string): 'success' | 'warning' | 'danger' | 'info' {
+  if (state === 'desktop' || state === 'login_prompt') return 'success'
+  if (state === 'kernel_panic' || state === 'bsod' || state === 'black_screen') return 'danger'
+  if (state === 'booting' || state === 'installer_error' || state === 'application_error') return 'warning'
+  return 'info'
+}
+
+/** qkv_effect 三态判定词表（effect-verdict-v1）：禁止向两侧坍缩的展示口径。 */
+function effectVerdictTagType(verdict: string): 'success' | 'warning' | 'danger' | 'info' {
+  if (verdict === 'achieved') return 'success'
+  if (verdict === 'not_achieved') return 'danger'
+  return 'warning' // inconclusive：观察不足，不是失败也不是成功
+}
+function effectVerdictLabel(verdict: string): string {
+  if (verdict === 'achieved') return '已达预期'
+  if (verdict === 'not_achieved') return '未达预期'
+  return '观察不足'
+}
+
 const isUser = computed(() => props.message.role === 'user')
 const isSystem = computed(() => props.message.role === 'system')
 const isAssistant = computed(() => props.message.role === 'assistant')
@@ -405,6 +450,13 @@ const interactiveEvent = computed(() => {
     execId?: string
     inputHash?: string
     expiresAt?: string
+    // vm_console_wake_confirm 专用字段
+    captureId?: string
+    wakeToken?: string
+    message?: string
+    hostNodeId?: string
+    vmId?: string
+    timeoutSeconds?: number
   } | null
 })
 
@@ -465,6 +517,46 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
       sourceMessageId: props.message.id,
       sourceRequestId: ev.requestId,
     })
+    return
+  }
+
+  if (ev.kind === 'vm_console_wake_confirm') {
+    // 虚拟机控制台近黑唤醒确认（sendkey down 是受控 Guest 交互，不是只读操作）。
+    // 确认/拒绝都回传；超时由服务端按拒绝处理并继续基线识图。
+    const confirmed = optionId === 'confirm'
+    interactiveSubmitting.value = true
+    try {
+      const convId = chatStore.conversationId
+      if (!convId) return
+      const resp = await fetch(`/api/conversations/${convId}/interactive-response`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'vm_console_wake_confirm',
+          request_id: ev.requestId || `vm-console-wake-${ev.captureId || Date.now()}`,
+          acp_session_id: ev.acpSessionId || convId,
+          outcome: { confirmed },
+          metadata: {
+            capture_id: ev.captureId || (ev.metadata?.capture_id as string | undefined),
+            wake_token: ev.wakeToken || (ev.metadata?.wake_token as string | undefined),
+          },
+        }),
+      })
+      if (resp.ok) {
+        chatStore.clearInteractiveRequest()
+        chatStore.messages.push({
+          id: `ir-resp-${Date.now()}`,
+          role: 'user',
+          content: confirmed ? '[控制台唤醒] 确认发送方向键并重新截图' : '[控制台唤醒] 拒绝唤醒，继续分析当前截图',
+          timestamp: new Date(),
+          metadata: { kind: 'interactive_response', selectedOptionId: optionId },
+        })
+      } else {
+        console.warn('[interactive] 唤醒确认提交失败:', resp.status)
+      }
+    } finally {
+      interactiveSubmitting.value = false
+    }
     return
   }
 
@@ -1011,6 +1103,65 @@ async function handleToolCallReject() {
           <!-- tool_call 气泡：不渲染普通 content，下方有专用区域 -->
           <template v-if="message.metadata?.kind === 'tool_call'" />
 
+          <!-- qkv_vm_console 结果卡：截图采集状态与视觉观察（不渲染普通 content） -->
+          <template v-else-if="message.metadata?.kind === 'vm_console_result_card'">
+            <div class="vm-console-card">
+              <div class="vm-console-card-title">🖥️ 控制台截图观察</div>
+              <template v-if="message.metadata?.phase === 'completed'">
+                <div class="vm-console-row">
+                  <span class="vm-console-label">画面状态</span>
+                  <el-tag :type="vmConsoleStateTagType(String(message.metadata?.displayState || 'unknown'))" size="small">
+                    {{ message.metadata?.displayState || 'unknown' }}
+                  </el-tag>
+                  <span class="vm-console-muted">置信度 {{ message.metadata?.confidence ?? '—' }}</span>
+                  <el-tag v-if="message.metadata?.wakeExecuted" type="warning" size="small">唤醒重截</el-tag>
+                </div>
+                <div v-if="message.metadata?.summary" class="vm-console-summary">
+                  {{ message.metadata?.summary }}
+                </div>
+                <div v-if="message.metadata?.needsHumanReview" class="vm-console-review-hint">
+                  ⚠ 视觉观察置信度不足或存在冲突，已标记人工复核；该观察不能单独作为根因结论。
+                </div>
+                <div v-if="message.metadata?.errorCode" class="vm-console-error">
+                  截图流程异常：{{ message.metadata?.errorCode }}
+                </div>
+                <img
+                  v-if="vmConsoleThumbnail(String(message.metadata?.artifactId || ''))"
+                  :src="vmConsoleThumbnail(String(message.metadata?.artifactId || ''))"
+                  class="vm-console-thumbnail"
+                  alt="控制台截图缩略图"
+                />
+              </template>
+              <template v-else>
+                <div class="vm-console-row">
+                  <el-tag type="info" size="small">{{ message.metadata?.nearBlack ? '基线截图接近黑屏' : '基线截图已采集' }}</el-tag>
+                  <span class="vm-console-muted">等待视觉分析…</span>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          <!-- qkv_effect 结果卡：效果验证三态判定（achieved/not_achieved/inconclusive） -->
+          <template v-else-if="message.metadata?.kind === 'effect_result_card'">
+            <div class="vm-console-card">
+              <div class="vm-console-card-title">🎯 操作效果复核</div>
+              <div class="vm-console-row">
+                <span class="vm-console-label">复核判定</span>
+                <el-tag :type="effectVerdictTagType(String(message.metadata?.verdict || 'inconclusive'))" size="small">
+                  {{ effectVerdictLabel(String(message.metadata?.verdict || 'inconclusive')) }}
+                </el-tag>
+                <span class="vm-console-muted">复核 {{ message.metadata?.checkCount ?? 1 }} 次</span>
+              </div>
+              <div v-if="String(message.metadata?.verdict) === 'not_achieved'" class="vm-console-review-hint">
+                ⚠ 操作已执行但未达到预期效果：已生成显式事实，建议返回重新诊断定位原因。
+              </div>
+              <div v-else-if="String(message.metadata?.verdict) === 'inconclusive'" class="vm-console-review-hint">
+                ⚠ 观察不足以确认效果（{{ message.metadata?.errorCode || '窗口耗尽或观测不可用' }}）：请人工核实，平台不代为断言。
+              </div>
+              <div v-else class="vm-console-summary">复核窗口内观测到预期状态已达成；是否关闭工单仍由您确认。</div>
+            </div>
+          </template>
+
           <!-- 阶段1：Thinking 状态（流式中且内容为空） -->
           <template v-else-if="message.isStreaming && !message.content">
             <div class="thinking-indicator">
@@ -1181,6 +1332,41 @@ async function handleToolCallReject() {
             </div>
             <div v-else class="variable-confirmed-status">
               <el-tag type="success" size="small">已确认并提交</el-tag>
+            </div>
+          </template>
+
+          <!-- Branch: vm_console_wake_confirm（控制台近黑唤醒确认卡） -->
+          <template v-else-if="interactiveEvent.kind === 'vm_console_wake_confirm'">
+            <div class="interactive-title">🖥️ 控制台截图接近黑屏</div>
+            <div class="ir-field">
+              <p class="ir-question">
+                {{ interactiveEvent.message || '首张控制台截图接近黑屏。是否向虚拟机发送一次"向下方向键"尝试唤醒后重新截图？此操作可能改变虚拟机当前界面的焦点或选择，但不会发送任意命令。' }}
+              </p>
+            </div>
+            <div v-if="interactiveEvent.metadata?.host_node_id || interactiveEvent.hostNodeId" class="ir-field">
+              <span class="ir-label">目标对象</span>
+              <code class="ir-route">
+                {{ interactiveEvent.hostNodeId || interactiveEvent.metadata?.host_node_id }} / VM {{ interactiveEvent.vmId || interactiveEvent.metadata?.vm_id }}
+              </code>
+            </div>
+            <div v-if="!interactiveSubmitted" class="ir-options-wrapper" style="display:flex;gap:8px;margin-top:8px;">
+              <el-button
+                type="primary"
+                :loading="interactiveSubmitting"
+                :disabled="interactiveSubmitting"
+                @click="handleInteractiveOption('confirm', '确认唤醒并重截')"
+              >
+                发送方向键并重新截图
+              </el-button>
+              <el-button
+                :disabled="interactiveSubmitting"
+                @click="handleInteractiveOption('decline', '拒绝唤醒')"
+              >
+                拒绝（继续分析当前截图）
+              </el-button>
+            </div>
+            <div v-else class="variable-confirmed-status">
+              <el-tag type="success" size="small">已提交决定</el-tag>
             </div>
           </template>
 
@@ -1502,6 +1688,48 @@ async function handleToolCallReject() {
 </template>
 
 <style scoped>
+.vm-console-card {
+  padding: 8px 0;
+}
+.vm-console-card-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.vm-console-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.vm-console-label {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+.vm-console-muted {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+.vm-console-summary {
+  font-size: 13px;
+  margin: 4px 0;
+}
+.vm-console-review-hint {
+  font-size: 12px;
+  color: var(--el-color-warning);
+  margin: 4px 0;
+}
+.vm-console-error {
+  font-size: 12px;
+  color: var(--el-color-danger);
+  margin: 4px 0;
+}
+.vm-console-thumbnail {
+  max-width: 320px;
+  max-height: 200px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 4px;
+  margin-top: 6px;
+}
 .message-bubble {
   display: flex;
   gap: 10px;

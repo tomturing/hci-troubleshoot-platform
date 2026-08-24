@@ -47,6 +47,7 @@ from app.config import settings
 from app.routes.agent import router as agent_router_route
 from app.routes.agent import set_agent_router, set_confirm_service
 from app.routes.capabilities import router as capabilities_router
+from app.routes.vm_console import router as vm_console_router
 
 if TYPE_CHECKING:
     from app.adapters.clients.acli_client import AcliClient
@@ -86,6 +87,8 @@ async def lifespan(app: FastAPI):
 
     # ── 数据库连接（用于工具注册表加载）──────────────────────────────────────────────
     db_manager = DatabaseManager(settings.DATABASE_URL)
+    # 暴露给内部路由（如 /internal/vm-console）使用的会话工厂。
+    app.state.db_session_factory = db_manager.async_session_factory
 
     # ── AI 助手注册表 ──────────────────────────────────────────────────────────
     from app.services.prompt_audit import PromptAuditService
@@ -642,6 +645,7 @@ register_exception_handlers(app)
 # 路由挂载
 app.include_router(agent_router_route)
 app.include_router(capabilities_router)
+app.include_router(vm_console_router)
 
 
 @app.get("/health/live")

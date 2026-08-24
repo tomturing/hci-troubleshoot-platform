@@ -44,6 +44,21 @@ def test_shared_change_rebuilds_all_backend_services():
     assert backend_keys <= selected, f"shared 变更漏推后端服务: {selected}"
 
 
+def test_mirror_setup_script_change_rebuilds_all_backend_services():
+    """共享镜像源脚本（deploy/docker/base/setup-mirror.sh）被全部后端 Dockerfile COPY，必须全量重建。"""
+    selected = _select(["deploy/docker/base/setup-mirror.sh"])
+    backend_keys = {
+        "api-gateway",
+        "case-service",
+        "conversation-service",
+        "agent-service",
+        "eval-service",
+        "scheduler-service",
+        "kb-service",
+    }
+    assert backend_keys <= selected, f"镜像源脚本变更漏推后端服务: {selected}"
+
+
 def test_kb_service_catalog_change_triggers_kb_service_rebuild():
     """kb-service 自身代码改动必须触发 kb-service 重建。"""
     selected = _select(["backend/kb-service/app/routes/resolution_catalogs.py"])

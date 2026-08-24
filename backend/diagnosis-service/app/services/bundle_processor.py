@@ -1,5 +1,6 @@
 """隔离 Worker 的证据包安全处理与标准化流水线。"""
 
+import hashlib
 import json
 import uuid
 from datetime import UTC, datetime
@@ -100,6 +101,7 @@ class BundleProcessor:
             await self._set_bundle_status(bundle["bundle_id"], "assessing")
             await self._session.commit()
             await self._persist_evidence(bundle, extracted)
+            await self._derive_vm_console_observations(bundle, extracted)
             await self._session.execute(
                 text(
                     """
@@ -305,6 +307,85 @@ class BundleProcessor:
                     sha256="0" * 64,
                     structured={"status": collected.status, "failure_reason": collected.failure_reason},
                     status=STATUS_MAP[collected.status],
+                )
+                await self._session.commit()
+
+    async def _derive_vm_console_observations(self, bundle: dict[str, Any], extracted) -> None:
+        """验包后把 captures/ 的 PPM 派生为视觉观察 Evidence Item（§3.4/§9.2）。
+
+        派生产物属于平台侧证据：以原始证据包、文件路径和 SHA-256 建立不可变
+        关联，原始证据包零回写；同一图片可重放不同模型/提示词版本。
+        """
+
+        from app.services.vm_console_vision_worker import (
+            extract_observation_from_ppm,
+            observation_to_structured_data,
+        )
+
+        plan_items_result = await self._session.execute(
+            text(
+                """
+                SELECT item_id, collector_id, target
+                FROM collection_plan_item
+                WHERE plan_id = :plan_id
+                ORDER BY sequence
+                """
+            ),
+            {"plan_id": bundle["collection_plan_id"]},
+        )
+        plan_items = [dict(row) for row in plan_items_result.mappings().all()]
+        by_collector: dict[str, list[dict[str, Any]]] = {}
+        for item in plan_items:
+            by_collector.setdefault(item["collector_id"], []).append(item)
+
+        for collected in extracted.manifest.collection_items:
+            details = getattr(collected, "vm_console", None)
+            if details is None or not collected.files:
+                continue
+            candidates = by_collector.get(collected.collector_id, [])
+            plan_item = next(
+                (item for item in candidates if _source_matches_manifest(item["target"] or {}, collected.source)),
+                candidates[0] if len(candidates) == 1 else None,
+            )
+            if plan_item is None:
+                continue
+            for file in collected.files:
+                if not file.path.endswith(".ppm"):
+                    continue
+                ppm_path = extracted.work_dir.joinpath(*Path(file.path).parts)
+                if not ppm_path.is_file():
+                    continue
+                artifact_ref = f"{bundle['bundle_id']}#{file.path}"
+                try:
+                    ppm_bytes = ppm_path.read_bytes()
+                    observation = await extract_observation_from_ppm(
+                        ppm_bytes, artifact_ref=artifact_ref, trace_id=bundle.get("trace_id")
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "vm_console_derive_skipped", path=file.path, error=str(exc), bundle_id=bundle["bundle_id"]
+                    )
+                    continue
+                structured = observation_to_structured_data(
+                    observation,
+                    source_sha256=file.sha256,
+                    bundle_id=str(bundle["bundle_id"]),
+                    source_path=file.path,
+                )
+                derived_path = f"derived/{collected.collector_id}/{Path(file.path).name}.observation.json"
+                payload_bytes = json.dumps(structured, ensure_ascii=False).encode()
+                await self._insert_evidence(
+                    bundle=bundle,
+                    plan_item=plan_item,
+                    collected=collected,
+                    source_object={"id": collected.source, "source_node": collected.source},
+                    source_path=derived_path,
+                    media_type="application/json",
+                    sensitivity="confidential",
+                    size_bytes=len(payload_bytes),
+                    sha256=hashlib.sha256(payload_bytes).hexdigest(),
+                    structured=structured,
+                    status="available",
                 )
                 await self._session.commit()
 

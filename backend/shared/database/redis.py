@@ -4,6 +4,24 @@ Redis连接管理
 
 import redis.asyncio as redis
 
+# 进程级共享实例注册（由各服务 lifespan 注入）。服务层代码（如
+# ConversationService 的交互决定回传）通过 get_shared_redis() 访问，
+# 避免把 RedisManager 逐层穿透注入。未注入时返回 None，调用方 fail-closed。
+_SHARED_REDIS: "RedisManager | None" = None
+
+
+def set_shared_redis(manager: "RedisManager | None") -> None:
+    """注册进程级共享 RedisManager（lifespan 启动时调用一次）。"""
+
+    global _SHARED_REDIS
+    _SHARED_REDIS = manager
+
+
+def get_shared_redis() -> "RedisManager | None":
+    """获取进程级共享 RedisManager；未注入返回 None。"""
+
+    return _SHARED_REDIS
+
 
 class RedisManager:
     """Redis管理器"""

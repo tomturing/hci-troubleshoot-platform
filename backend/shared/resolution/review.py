@@ -93,6 +93,12 @@ def _signals_document(raw: Any) -> dict[str, Any]:
 
 
 def _resolver_id(tool: str) -> str | None:
+    # 条件型生产者必须在 qkv_ 前缀分支之前特判：它们编译的是不可变意图
+    # （Capture Intent / Verification Intent），而不是 acli 查询命令。
+    if tool == "qkv_vm_console":
+        return "vm_console"
+    if tool == "qkv_effect":
+        return "effect"
     if tool.startswith("qkv_"):
         return "qkv"
     if tool == "qfk_log":
@@ -221,11 +227,14 @@ def review_signal_document(
             validate_signals_json(document)
     except ValidationError as exc:
         validation_message = str(exc.message or exc)
-        issue_code = (
-            "KBD_PRODUCER_SIGNAL_MISSING"
-            if "至少需要 1 条生产者信号" in validation_message
-            else "SIGNAL_SCHEMA_INVALID"
-        )
+        if "至少需要 1 条生产者信号" in validation_message:
+            issue_code = "KBD_PRODUCER_SIGNAL_MISSING"
+        elif "不能作为 KBD 的唯一生产者" in validation_message:
+            issue_code = "EFFECT_SOLE_PRODUCER_FORBIDDEN"
+        elif "效果验证信号需要可信的期望来源" in validation_message:
+            issue_code = "EFFECT_EXPECTATION_SOURCE_MISSING"
+        else:
+            issue_code = "SIGNAL_SCHEMA_INVALID"
         path = list(exc.absolute_path)
         signal_index = path[1] if len(path) >= 2 and path[0] == "signals" and isinstance(path[1], int) else None
         signal = (

@@ -61,6 +61,17 @@ spec:
               value: {{ .Values.terminalBridge.hostKeyPolicy | quote }}
             - name: HCI_BRIDGE_KNOWN_HOSTS_FILE
               value: "/var/lib/terminal-bridge/known_hosts"
+            # qkv_vm_console：PPM 制品直传目标（conversation-service 内部端点）与鉴权。
+            # 未配置时 Bridge 对截图操作 fail-closed（artifact_upload_disabled）。
+            {{- if .Values.terminalBridge.vmConsoleArtifactUploadEnabled }}
+            - name: PLATFORM_ARTIFACT_URL
+              value: {{ printf "http://conversation-service:%s" (.Values.conversationService.port | toString) | quote }}
+            - name: PLATFORM_INTERNAL_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: INTERNAL_API_TOKEN
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.terminalBridge.port }}

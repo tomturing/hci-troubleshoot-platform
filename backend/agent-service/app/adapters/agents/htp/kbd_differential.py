@@ -970,6 +970,16 @@ class KBDDiagnostic:
 
         for s in producers:
             try:
+                # 条件型视觉生产者：专用适配器（固定操作/受控制品/唤醒确认），
+                # 绝不落入自由文本 qkv_exec 路径。
+                if _acquire_tool(s) == "qkv_vm_console":
+                    await self._run_vm_console_producer(s, env_context, session_id)
+                    continue
+                # 条件型效果验证生产者：专用适配器（settle/recheck 编排 + 三态判定），
+                # 绝不落入自由文本 qkv_exec 路径。
+                if _acquire_tool(s) == "qkv_effect":
+                    await self._run_effect_producer(s, env_context, session_id)
+                    continue
                 fsignal = self._signal_to_qkv(s, env_context)
                 if fsignal is None:
                     logger.warning(
@@ -1008,6 +1018,189 @@ class KBDDiagnostic:
                     error=str(exc),
                     session_id=session_id,
                 )
+
+    async def _run_vm_console_producer(
+        self,
+        signal: dict[str, Any],
+        env_context: dict[str, str],
+        session_id: str,
+        *,
+        exec_id: str | None = None,
+    ) -> Any:
+        """qkv_vm_console 专用执行路径（在线）。
+
+        与自由文本 QKV 的差异：
+        - 先解析 {{HOST}}/{{VM_ID}} 占位符（env_context ∪ 变量池），未解析即
+          TARGET_CONTEXT_MISSING fail-closed；
+        - 执行走 app/tools/vm_console 适配器（固定操作、Inventory 校验、受控制品、
+          近黑唤醒确认、视觉提取），绝不拼接命令字符串；
+        - 成功后按 produces 把 VM_CONSOLE_* 写入变量池，供 QFK 与验证契约消费。
+        """
+        from app.tools.vm_console.adapter import run_vm_console_signal
+
+        if self._db_session_factory is None:
+            logger.warning(
+                event="vm_console_producer_skip",
+                reason="db_session_factory 不可用",
+                session_id=session_id,
+            )
+            return None
+
+        resolved_args = self._resolve_args(
+            (signal.get("acquire") or {}).get("args") or {}, env_context, self._variable_pool
+        )
+        resolved_signal = {
+            **signal,
+            "acquire": {"tool": "qkv_vm_console", "args": resolved_args},
+        }
+        merged_context = dict(env_context)
+        merged_context.update(self._variable_pool)
+
+        result = await run_vm_console_signal(
+            resolved_signal,
+            {
+                "HOST": str(merged_context.get("HOST") or merged_context.get("host") or resolved_args.get("host") or ""),
+                "VM_ID": str(merged_context.get("VM_ID") or merged_context.get("vm_id") or resolved_args.get("vm_id") or ""),
+                "node_ip": str(env_context.get("node_ip") or ""),
+            },
+            conversation_id=self._conversation_id or session_id,
+            case_id=self._case_id or "",
+            session_id=session_id,
+            exec_id=exec_id,
+            db_session_factory=self._db_session_factory,
+            scp_client=None,
+            user_id=None,
+        )
+
+        if result.success:
+            # 复用 QKV 变量池填充：values key 为 produces name 的小写形态。
+            await self._fill_pool_from_qkv(
+                resolved_signal,
+                result,
+                node_ip=env_context.get("node_ip"),
+                execution_mode=env_context.get("execution_mode"),
+                session_id=session_id,
+            )
+            logger.info(
+                event="vm_console_producer_success",
+                capture_id=result.capture_id,
+                values_count=len(result.values),
+                session_id=session_id,
+            )
+        else:
+            logger.warning(
+                event="vm_console_producer_failed",
+                error_code=result.error_code,
+                error=result.error,
+                session_id=session_id,
+            )
+        return result
+
+    async def _run_effect_producer(
+        self,
+        signal: dict[str, Any],
+        env_context: dict[str, str],
+        session_id: str,
+        *,
+        exec_id: str | None = None,
+    ) -> Any:
+        """qkv_effect 专用执行路径（在线）。
+
+        与自由文本 QKV 的差异：
+        - 先解析期望锚点内占位符（env_context ∪ 变量池），未解析即 fail-closed；
+        - 执行走 app/tools/effect 适配器（稳定窗口 + 有限复核 + 封闭 matcher 三态
+          判定），绝不拼接命令字符串；
+        - 成功后按 produces 把 EFFECT_* 写入变量池，并把判定落为 S5 效果复核
+          证据条目（diagnostic_item type=effect_verification），供 S6 证据化与
+          not_achieved 时的重诊断上下文还原。
+        """
+        from app.tools.effect.adapter import run_effect_verification_signal
+
+        if self._db_session_factory is None:
+            logger.warning(
+                event="effect_producer_skip",
+                reason="db_session_factory 不可用",
+                session_id=session_id,
+            )
+            return None
+
+        resolved_args = self._resolve_args(
+            (signal.get("acquire") or {}).get("args") or {}, env_context, self._variable_pool
+        )
+        resolved_signal = {
+            **signal,
+            "acquire": {"tool": "qkv_effect", "args": resolved_args},
+        }
+        merged_context = dict(env_context)
+        merged_context.update(self._variable_pool)
+        adapter_env = {
+            key: str(value) for key, value in merged_context.items() if isinstance(value, (str, int, float, bool))
+        }
+        adapter_env["node_ip"] = str(env_context.get("node_ip") or "")
+
+        result = await run_effect_verification_signal(
+            resolved_signal,
+            adapter_env,
+            conversation_id=self._conversation_id or session_id,
+            case_id=self._case_id or "",
+            session_id=session_id,
+            exec_id=exec_id,
+            db_session_factory=self._db_session_factory,
+        )
+
+        if result.success:
+            # 复用 QKV 变量池填充：values key 为 produces name 的小写形态。
+            await self._fill_pool_from_qkv(
+                resolved_signal,
+                result,
+                node_ip=env_context.get("node_ip"),
+                execution_mode=env_context.get("execution_mode"),
+                session_id=session_id,
+            )
+            verdict = str((result.resolution or {}).get("verdict") or "inconclusive")
+            # S5 效果复核证据条目：not_achieved 是重诊断的显式触发事实，
+            # inconclusive 保持 pending 供 S6 人工裁决。
+            if self._diagnostic_item_client and self._conversation_id:
+                try:
+                    self._effect_item_seq = getattr(self, "_effect_item_seq", 0) + 1
+                    await self._diagnostic_item_client.create_item(
+                        conversation_id=uuid.UUID(self._conversation_id),
+                        stage="S5",
+                        type="effect_verification",
+                        seq=self._effect_item_seq,
+                        content={
+                            "signal_id": str(signal.get("id") or ""),
+                            "verification_id": result.verification_id,
+                            "usage": str(resolved_args.get("usage") or "remediation_verify"),
+                            "verdict": verdict,
+                            "check_count": (result.resolution or {}).get("check_count"),
+                            "error_code": (result.resolution or {}).get("error_code"),
+                        },
+                        status=(
+                            "confirmed"
+                            if verdict == "achieved"
+                            else "rejected"
+                            if verdict == "not_achieved"
+                            else "pending"
+                        ),
+                    )
+                except Exception as exc:
+                    logger.warning(event="effect_producer_item_failed", error=str(exc), session_id=session_id)
+            logger.info(
+                event="effect_producer_success",
+                verification_id=result.verification_id,
+                verdict=verdict,
+                values_count=len(result.values),
+                session_id=session_id,
+            )
+        else:
+            logger.warning(
+                event="effect_producer_failed",
+                error_code=result.error_code,
+                error=result.error,
+                session_id=session_id,
+            )
+        return result
 
     @staticmethod
     def _is_ip_address(value: Any) -> bool:
@@ -1191,6 +1384,7 @@ class KBDDiagnostic:
         # 上下文，故标准变量采用 task > alert > dialog 的确定性优先级，与执行顺序无关。
         producer_priority = {
             "qkv_task": 30,
+            "qkv_effect": 25,
             "qkv_alert": 20,
             "qkv_dialog": 10,
         }.get(_acquire_tool(signal), 0)
@@ -1236,6 +1430,26 @@ class KBDDiagnostic:
             # KBD 确定性诊断必须执行信号声明的 QKV acquisition，不能用会话预取的
             # task_logs/alerts 静默替代。预取上下文用于 S0 分类；KBD 证据必须具有
             # 独立 exec_id、实际命令和现场返回值，才能审计并避免陈旧/截断数据误命中。
+            if acquirer == "qkv_vm_console":
+                # 条件型视觉生产者专用路径：固定截图操作 + 受控制品通道 + 视觉提取。
+                try:
+                    res = await self._run_vm_console_producer(
+                        signal if signal is not None else {"acquire": {"tool": step.tool_name, "args": step.tool_args_template}},
+                        env_context,
+                        session_id,
+                        exec_id=exec_id,
+                    )
+                    if res is None or not res.success:
+                        return None, (res.error if res else "无法构建控制台截图信号"), None, None
+                    return res.to_observation(), None, bool(res.values), None
+                except Exception as exc:
+                    logger.error(
+                        event="signal_exec_exception",
+                        acquirer=acquirer,
+                        error=str(exc),
+                        session_id=session_id,
+                    )
+                    return None, str(exc), None, None
             try:
                 signal_context = dict(env_context)
                 signal_context.update(self._variable_pool)
@@ -1629,6 +1843,22 @@ class KBDDiagnostic:
 
         acquire = signal.get("acquire") or {}
         acquirer = acquire.get("tool", "")
+        # 条件型视觉生产者绝不落入自由文本 qkv_exec 路径；它只能由
+        # _run_vm_console_producer 的专用适配器执行（固定操作 + 受控制品通道）。
+        if acquirer == "qkv_vm_console":
+            logger.warning(
+                event="vm_console_free_text_path_blocked",
+                reason="qkv_vm_console 不允许走自由文本 QKV 执行路径",
+            )
+            return None
+        # 条件型效果验证生产者绝不落入自由文本 qkv_exec 路径；它只能由
+        # _run_effect_producer 的专用适配器执行（settle/recheck 编排 + 三态判定）。
+        if acquirer == "qkv_effect":
+            logger.warning(
+                event="effect_free_text_path_blocked",
+                reason="qkv_effect 不允许走自由文本 QKV 执行路径",
+            )
+            return None
         parts = acquirer.split("_", 1)
         if len(parts) != 2 or parts[0] != "qkv":
             return None

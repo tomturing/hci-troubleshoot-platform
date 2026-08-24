@@ -692,6 +692,8 @@ docker build --network host -t <image>:<tag> -f <Dockerfile> <context>
 
 **适用范围：** npm/pip/apt/gem 等任何在 Clash TUN 宿主机上执行的 `docker build` + 包管理器网络请求。
 
+**补充（2026-08-24）**：后端镜像的 apt/PyPI 国内镜像配置已集中到共享脚本 `deploy/docker/base/setup-mirror.sh`（各服务 Dockerfile 统一 COPY 调用，禁止再各自写入 apt 镜像 sed）；国内直连网络下普通构建无需 `--network host` 也能走阿里镜像，Clash TUN 场景仍须按本条目加 `--network host`。CI（GitHub 托管 Runner，海外）构建时传 `MIRROR_MODE=off` 使用官方源。
+
 **参见：** `frontend.md` PIT-028（完整根因分析）；`network-service-check.md` §二（Clash TUN 全景诊断）
 
 ---

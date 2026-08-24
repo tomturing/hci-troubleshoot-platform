@@ -200,6 +200,64 @@ def _extract_from_dialog_log(stdout_text: str) -> list[dict[str, Any]]:
     ]
 
 
+def _extract_from_vm_console_observation(
+    observation_json: str, produces: list[dict[str, str]] | None
+) -> list[dict[str, Any]]:
+    """解析视觉观察 JSON 为 VM_CONSOLE_* 变量。
+
+    输入是专用适配器/Vision Extractor 产出的 VmConsoleObservation 固定 Schema
+    （而非命令 stdout）；低置信度或不可用观察同样原样落变量池，由下游 QFK 与
+    案例验证契约组合判定，不能在此处解释为"没有故障"。
+    """
+
+    try:
+        observation = json.loads(observation_json)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(observation, dict):
+        return []
+
+    if produces:
+        return _extract_by_produces([observation], produces)
+
+    # 硬编码兜底：与设计文档 §4.2 的固定四项产出变量对齐。
+    extracted = {
+        "vm_console_state": observation.get("display_state") or "unknown",
+        "vm_console_summary": observation.get("summary") or "",
+        "vm_console_confidence": observation.get("confidence", 0.0),
+        "vm_console_artifact_id": observation.get("artifact_id") or "",
+    }
+    return [extracted] if any(extracted.values()) else []
+
+
+def _extract_from_effect_verdict(
+    verdict_json: str, produces: list[dict[str, str]] | None
+) -> list[dict[str, Any]]:
+    """解析效果验证判定 JSON 为 EFFECT_* 变量。
+
+    输入是专用适配器产出的三态判定结果（而非命令 stdout）。inconclusive 同样
+    原样落变量池——观察不足就是观察不足，禁止在此处向 achieved/not_achieved 坍缩。
+    """
+
+    try:
+        verdict = json.loads(verdict_json)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(verdict, dict):
+        return []
+
+    if produces:
+        return _extract_by_produces([verdict], produces)
+
+    # 硬编码兜底：与设计文档 §4.2 的固定三项产出变量对齐。
+    extracted = {
+        "effect_status": verdict.get("verdict") or "inconclusive",
+        "effect_checked_at": verdict.get("checked_at") or "",
+        "effect_evidence": verdict.get("evidence_ref") or "",
+    }
+    return [extracted] if any(extracted.values()) else []
+
+
 def parse_frontend_value(
     query_type: FrontendQueryType,
     stdout_text: str,
@@ -224,7 +282,17 @@ def parse_frontend_value(
     if query_type == FrontendQueryType.DIALOG:
         return _extract_from_dialog_log(stdout_text)
 
-    # 2. 告警（alert）与任务（task）：反序列化 JSON 进行精细抽取
+    # 2. 虚拟机控制台截图（vm_console）：输入不是命令 stdout，而是专用适配器
+    #    回传的结构化视觉观察 JSON（VmConsoleObservation 固定 Schema）。
+    if query_type == FrontendQueryType.VM_CONSOLE:
+        return _extract_from_vm_console_observation(stdout_text, produces)
+
+    # 3. 效果验证（effect）：输入不是命令 stdout，而是专用适配器回传的
+    #    三态判定 JSON（verdict/checked_at/evidence_ref）。
+    if query_type == FrontendQueryType.EFFECT:
+        return _extract_from_effect_verdict(stdout_text, produces)
+
+    # 3. 告警（alert）与任务（task）：反序列化 JSON 进行精细抽取
     try:
         raw_data = json.loads(stdout_text)
     except json.JSONDecodeError:

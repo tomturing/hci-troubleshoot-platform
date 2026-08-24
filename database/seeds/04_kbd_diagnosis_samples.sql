@@ -5,7 +5,8 @@
 -- 设计约束：
 --   1. 只创建 draft KBD，不自动审核、不自动发布、不生成离线派生资源；
 --   2. 通过 metadata.sample_suite 检索，不允许业务代码判断具体 KBD ID；
---   3. 覆盖 3 类 QKV、8 类 QFK、7 类 Matcher 以及当前 Signal v2 字段；
+--   3. 覆盖 3 类直接 QKV + 2 类条件型生产者（视觉/效果验证）、8 类 QFK、
+--      7 类 Matcher 以及当前 Signal v2 字段；
 --   4. 只使用 Tool Registry/Shared Resolution Runtime 已声明的只读命令；
 --   5. 已发布样例不覆盖；仅升级仍为 draft 的旧版样例，修复测试契约后可重新审核。
 -- ============================================================
@@ -74,6 +75,90 @@ WITH sample_rows (
                 "source_refs": ["kbd:steps_text"]
               },
               "review": {"require_human_confirm": false, "notes": "审核时确认现场任务关键字。"}
+            },
+            {
+              "id": "vm_console_visual",
+              "role": "should",
+              "acquire": {
+                "tool": "qkv_vm_console",
+                "args": {
+                  "host": "{{HOST}}",
+                  "vm_id": "{{VM_ID}}",
+                  "capture_mode": "baseline_then_optional_wake",
+                  "timeout": 60,
+                  "instruction": "采集虚拟机控制台画面，确认 Guest 内部是否存在黑屏、内核恐慌或启动失败现象"
+                }
+              },
+              "match": null,
+              "orchestrate": {
+                "phase": "diagnostic",
+                "requires": ["HOST", "VM_ID"],
+                "produces": [
+                  {"name": "VM_CONSOLE_STATE", "type": "string", "path": "display_state"},
+                  {"name": "VM_CONSOLE_SUMMARY", "type": "string", "path": "summary"},
+                  {"name": "VM_CONSOLE_CONFIDENCE", "type": "number", "path": "confidence"},
+                  {"name": "VM_CONSOLE_ARTIFACT_ID", "type": "string", "path": "artifact_id"}
+                ]
+              },
+              "provenance": {
+                "category": "frontend",
+                "method": "controlled_vm_console_capture",
+                "source_section": "steps_text",
+                "confidence": 0.8,
+                "risk": 0.4,
+                "needs_review": false,
+                "evidence": "条件型实时视觉生产者：HOST/VM_ID 来自上游失败任务；近黑唤醒须运行时人工确认。",
+                "source_refs": ["kbd:steps_text"]
+              },
+              "review": {"require_human_confirm": false, "notes": "截图本身不需确认；sendkey down 唤醒必须运行时单独确认。"}
+            },
+            {
+              "id": "vm_effect_verify",
+              "role": "should",
+              "acquire": {
+                "tool": "qkv_effect",
+                "args": {
+                  "usage": "remediation_verify",
+                  "expectation": {
+                    "observation": {
+                      "tool": "qkv_task",
+                      "args": {"keyword": "启动虚拟机", "is_failed": true}
+                    },
+                    "matcher": {
+                      "type": "exists",
+                      "expected": false,
+                      "extract": {"type": "text", "rows": {"mode": "all"}}
+                    },
+                    "settle_seconds": 120,
+                    "window_seconds": 900,
+                    "max_recheck": 3
+                  },
+                  "host": "{{HOST}}",
+                  "timeout": 60,
+                  "instruction": "复核恢复动作完成后，虚拟机启动失败任务是否在窗口内不再出现"
+                }
+              },
+              "match": null,
+              "orchestrate": {
+                "phase": "remediation",
+                "requires": ["HOST"],
+                "produces": [
+                  {"name": "EFFECT_STATUS", "type": "string", "path": "verdict"},
+                  {"name": "EFFECT_CHECKED_AT", "type": "string", "path": "checked_at"},
+                  {"name": "EFFECT_EVIDENCE", "type": "string", "path": "evidence_ref"}
+                ]
+              },
+              "provenance": {
+                "category": "frontend",
+                "method": "effect_verification",
+                "source_section": "steps_text",
+                "confidence": 0.8,
+                "risk": 0.1,
+                "needs_review": false,
+                "evidence": "条件型效果验证生产者：观测委派 qkv_task 只读原语，判定规则为封闭 matcher，HOST 来自上游失败任务。",
+                "source_refs": ["kbd:steps_text"]
+              },
+              "review": {"require_human_confirm": false, "notes": "纯只读观测判定，不向环境写入任何变更。"}
             },
             {
               "id": "vm_status_must",
@@ -188,7 +273,7 @@ WITH sample_rows (
             },
             "evidence_policy": {
               "must": ["vm_status_must"],
-              "should": ["vm_task_context"],
+              "should": ["vm_task_context", "vm_effect_verify"],
               "exclude": [],
               "context": ["vm_list_context"],
               "minimum_should": 0,
@@ -197,7 +282,7 @@ WITH sample_rows (
           }
         }
         $signals$::jsonb,
-        '["qkv_task", "qfk_vm"]'::jsonb
+        '["qkv_task", "qkv_vm_console", "qkv_effect", "qfk_vm"]'::jsonb
     ),
     (
         'SAMPLE-SIG-CORE',
@@ -989,7 +1074,7 @@ SELECT
         'sample_purpose', 'online_offline_diagnosis',
         'domain_hint', domain_hint,
         'signal_tools', sample_tools,
-        'seed_version', 4
+        'seed_version', 5
     ),
     NULL,
     suggested_category_id,
@@ -1021,4 +1106,4 @@ ON CONFLICT (support_id) DO UPDATE SET
     ai_category_reason = EXCLUDED.ai_category_reason
 WHERE kbd_entry.status = 'draft'
   AND kbd_entry.metadata ->> 'sample_suite' = 'diagnosis-signal-matrix-v1'
-  AND COALESCE((kbd_entry.metadata ->> 'seed_version')::integer, 0) < 4;
+  AND COALESCE((kbd_entry.metadata ->> 'seed_version')::integer, 0) < 5;

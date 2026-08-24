@@ -64,8 +64,12 @@ def build_common_args(mod: object) -> dict:
 
 def build_tool_schema(mod: object, tool: str, schema: dict) -> dict:
     s = deepcopy(schema)
-    # timeout 改为引用 common_args，消除重复定义（§6.1）
-    if "timeout" in s.get("properties", {}):
+    # timeout 改为引用 common_args，消除重复定义（§6.1）。
+    # 仅当与 COMMON_ARGS.timeout 完全一致时才替换为 $ref：个别工具（如
+    # qkv_vm_console，1-60 秒快速失败型采集）可有意偏离公共定义并保持内联，
+    # 此时语义差异必须在 per-tool schema 中可见，不能被 common_args 掩盖。
+    timeout = s.get("properties", {}).get("timeout")
+    if timeout is not None and timeout == mod.COMMON_ARGS["timeout"]:  # type: ignore[attr-defined]
         s["properties"]["timeout"] = {
             "$ref": f"{BASE}/acquirer_args/common_args.schema.json#/properties/timeout"
         }

@@ -8,7 +8,7 @@ import json
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from shared.observability.logger import get_logger
 from shared.utils.exceptions import ErrorCode
 
@@ -184,6 +184,39 @@ async def submit_exec_result(conversation_id: str, request: Request):
 
     response = await proxy_request("POST", f"/{conversation_id}/exec-result", payload=payload, headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@router.post("/{conversation_id}/vm-console-result")
+async def submit_vm_console_result(conversation_id: str, request: Request):
+    """回传虚拟机控制台截图元数据结果（qkv_vm_console；不含图片字节）。"""
+    payload = await _read_json_body_limited(request, MAX_EXEC_RESULT_BODY_BYTES)
+    headers = {}
+    auth = request.headers.get("Authorization")
+    if auth:
+        headers["Authorization"] = auth
+    else:
+        # 兜底注入 MVP 阶段临时 Token，绕过下游会话鉴权（对齐 exec-result）
+        headers["Authorization"] = "Bearer client-session-placeholder-token"
+    if traceparent := request.headers.get("traceparent"):
+        headers["traceparent"] = traceparent
+
+    response = await proxy_request("POST", f"/{conversation_id}/vm-console-result", payload=payload, headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@router.get("/{conversation_id}/vm-console-artifacts/{artifact_id}")
+async def download_vm_console_artifact(conversation_id: str, artifact_id: str, request: Request):
+    """授权下载控制台截图制品（会话鉴权在 conversation-service 完成并记审计）。"""
+    headers = {}
+    if auth := request.headers.get("Authorization"):
+        headers["Authorization"] = auth
+    else:
+        headers["Authorization"] = "Bearer client-session-placeholder-token"
+    response = await proxy_request(
+        "GET", f"/{conversation_id}/vm-console-artifacts/{artifact_id}", headers=headers
+    )
+    media_type = response.headers.get("content-type", "application/octet-stream")
+    return Response(content=response.content, status_code=response.status_code, media_type=media_type)
 
 
 @router.get("/{conversation_id}/resume-stream")

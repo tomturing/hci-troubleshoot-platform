@@ -99,6 +99,16 @@ spec:
               value: {{ .Values.agentService.acliUnknownCommandPolicy | default "confirm" | quote }}
             - name: AGENT_EXEC_RESULT_TIMEOUT_SECONDS
               value: {{ add .Values.terminalBridge.execTimeoutSeconds 30 | quote }}
+            # qkv_vm_console 执行层策略门禁（设计文档 §12 平台确认项闭环前保持 false；
+            # 契约与发布不受开关影响）。VISION_ALLOWED 控制是否允许派生图发往视觉模型。
+            - name: VM_CONSOLE_CAPTURE_ENABLED
+              value: {{ .Values.agentService.vmConsoleCaptureEnabled | default false | quote }}
+            - name: VM_CONSOLE_VISION_ALLOWED
+              value: {{ .Values.agentService.vmConsoleVisionAllowed | default false | quote }}
+            # qkv_effect 执行层策略门禁（效果验证生产者信号设计 §12 平台确认项闭环前
+            # 保持 false；契约与发布不受开关影响）。
+            - name: EFFECT_VERIFICATION_ENABLED
+              value: {{ .Values.agentService.effectVerificationEnabled | default false | quote }}
             # Langfuse 可观测性（v3 SDK）
             {{- if and .Values.langfuse .Values.langfuse.enabled }}
             - name: LANGFUSE_SECRET_KEY

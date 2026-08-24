@@ -128,6 +128,11 @@ ACQUIRER_CATALOG: dict[str, str] = {
     "qkv_alert": "前端信号-告警查询：acli alert get，产出 host/vm/target/alert_type/end 等",
     "qkv_task": "前端信号-任务查询：acli task get，产出 status/host/vm/errcode_tracing/request_id 等",
     "qkv_dialog": "弹框复合取值：在当前主控 today 与 today/vt 日志检索弹框文本，产出 END/REQUEST_ID/HOST",
+    "qkv_vm_console": (
+        "条件型实时视觉生产者：采集虚拟机控制台截图并产出 VM_CONSOLE_* 视觉观察变量；"
+        "仅适用于 Guest 内部现象（黑屏/蓝屏/Kernel Panic/启动卡住）且 HOST/VM_ID 可信可得；"
+        "args 仅 host/vm_id/capture_mode/timeout，不接受命令、路径或按键字段"
+    ),
     "qfk_log": (
         "统一日志判定：/sf/log 下 whitebox/blackbox/vn-blackbox/pod 均由 acli log get 获取；"
         "/sf/data/local 仅允许 request_id 辅助关联，"
@@ -146,6 +151,8 @@ ACQUIRER_CATALOG: dict[str, str] = {
 DEFAULT_VARIABLE_SCHEMA: list[str] = [
     "HOST",
     "VM",
+    # qkv_vm_console 目标变量（与 VM 同义但为新信号规范名，二者不自动互通）
+    "VM_ID",
     "NODE_IP",
     "TARGET",
     "END",
