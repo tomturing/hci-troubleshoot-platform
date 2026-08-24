@@ -46,6 +46,31 @@ type resolvedKbd struct {
 	SyntheticRoutes      []syntheticRoute `json:"synthetic_routes"`
 }
 
+// declaredVariableNames 返回 KBD 发布契约声明的外部变量。变量名只在发布门禁
+// 中做格式校验；这里仅消费已经发布的声明，不维护第二套变量名称白名单。
+func (r *resolvedKbd) declaredVariableNames() map[string]struct{} {
+	result := make(map[string]struct{})
+	variables, ok := r.VerificationContract["variables"].(map[string]any)
+	if ok {
+		for name := range variables {
+			if syntheticVariablePattern.MatchString("{{" + name + "}}") {
+				result[name] = struct{}{}
+			}
+		}
+	}
+	for _, route := range r.SyntheticRoutes {
+		for _, produced := range route.Produces {
+			for _, key := range []string{"name", "alias"} {
+				name, ok := produced[key].(string)
+				if ok && syntheticVariablePattern.MatchString("{{"+name+"}}") {
+					result[name] = struct{}{}
+				}
+			}
+		}
+	}
+	return result
+}
+
 type syntheticRoute struct {
 	SignalID          string           `json:"signal_id"`
 	Tool              string           `json:"tool"`
@@ -498,12 +523,30 @@ func provideSyntheticVariables(resolved *resolvedKbd, variables map[string]strin
 			}
 			value, ok := defaultSyntheticVariable(name, resolved.SupportID, node, container)
 			if !ok {
-				return fmt.Errorf("capability_gap: Signal %s 缺少场景变量: {{%s}}（没有可审计的 Synthetic 提供器）", route.SignalID, name)
+				if _, declared := resolved.declaredVariableNames()[name]; declared {
+					value, ok = declaredSyntheticVariable(name, resolved.SupportID)
+				}
+			}
+			if !ok {
+				if _, declared := resolved.declaredVariableNames()[name]; declared {
+					return fmt.Errorf("capability_gap: Signal %s 的变量 {{%s}} 已声明但当前 Synthetic Scenario 未绑定", route.SignalID, name)
+				}
+				return fmt.Errorf("capability_gap: Signal %s 使用了未在已发布 KBD Contract 或 Producer 中声明的变量: {{%s}}", route.SignalID, name)
 			}
 			variables[name] = value
 		}
 	}
 	return nil
+}
+
+// declaredSyntheticVariable 为已发布 Contract 声明但没有内置语义的变量生成
+// 确定性场景值。值只用于 synthetic Bundle，并通过变量名与 support_id 绑定，
+// 从而保证同一 KBD 的 argv、stdout 和重复运行使用同一值。
+func declaredSyntheticVariable(name, supportID string) (string, bool) {
+	if !syntheticVariablePattern.MatchString("{{" + name + "}}") {
+		return "", false
+	}
+	return "SIM-" + strings.ToLower(strings.ReplaceAll(name, "_", "-")) + "-" + supportID, true
 }
 
 func defaultSyntheticVariable(name, supportID, node, container string) (string, bool) {
