@@ -292,6 +292,9 @@
   - **复盘**：`argocd-ops` Application 在 2026-07-02 02:47 因 `argocd-repo-server-probe-patch` Job 失败 6 次达 `BackoffLimitExceeded` 后，`status.operationState.phase: Failed` 一直无法被新 sync 覆盖，必须直接 patch 清空 operationState 才能恢复（`kubectl patch application ... -p='[{"op":"remove","path":"/status/operationState"}]'`）。
   - **修复**：`deploy/gitops/argocd-ops/argocd-repo-server-probe-patch.yaml` 升级到 v1.4，`hook-delete-policy` 改为 `HookSucceeded,HookFailed`，失败时也自动清理。
   - **避坑指南**：D-011（docs/deploy/pitfalls/k8s.md）
+- **db-migrate 镜像构建 cache export 失败修复**：
+  - **根因**：`ci.yml` 的「构建 db-migrate 镜像（仅 schema 变更时）」job 使用 `type=gha` 缓存但未配置 `setup-buildx-action`，默认 docker 驱动不支持缓存导出（`Cache export is not supported for the docker driver`）。该 job 自 PR #139 引入后从未被触发（长期无 schema 变更 PR 合入 main），直到 #875 合并后首次执行暴露。
+  - **修复**：在 build-push-action 前补齐 `docker/setup-buildx-action`（docker-container 驱动），与「构建并推送镜像」job 对齐。
 
 ---
 
