@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.25.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.24.0...v2.25.0) (2026-08-24)
+
+
+### ✨ 新功能
+
+* 实现 qfk_var 四层变量处理器 ([#881](https://github.com/tomturing/hci-troubleshoot-platform/issues/881)) ([9f113be](https://github.com/tomturing/hci-troubleshoot-platform/commit/9f113be368b6e9fdf0195516e7ab60c7166e8351))
+
 ## [2.24.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.23.0...v2.24.0) (2026-08-24)
 
 
