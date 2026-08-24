@@ -3242,7 +3242,9 @@ CREATE INDEX IF NOT EXISTS idx_effect_verification_case ON effect_verification (
 CREATE INDEX IF NOT EXISTS idx_effect_verification_conversation ON effect_verification (conversation_id);
 CREATE INDEX IF NOT EXISTS idx_effect_verification_schedule
     ON effect_verification (next_check_at)
-    WHERE status NOT IN ('verdict_achieved', 'verdict_not_achieved', 'verdict_inconclusive', 'failed', 'cancelled');
+    WHERE (status)::text <> ALL (
+        (ARRAY['verdict_achieved'::varchar, 'verdict_not_achieved'::varchar, 'verdict_inconclusive'::varchar, 'failed'::varchar, 'cancelled'::varchar])::text[]
+    );
 CREATE INDEX IF NOT EXISTS idx_effect_verification_trace_id ON effect_verification (trace_id);
 
 -- ------------------------------------------------------------

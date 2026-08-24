@@ -9,13 +9,13 @@ import (
 )
 
 type Metrics struct {
-	ActiveSSHConnections          atomic.Int64
-	SSHConnectionsTotal           atomic.Uint64
-	LeaseRejectTotal              atomic.Uint64
-	CommandsTotal                 atomic.Uint64
-	CommandErrorsTotal            atomic.Uint64
-	FixtureHitsTotal              atomic.Uint64
-	FixtureMissesTotal            atomic.Uint64
+	ActiveSSHConnections atomic.Int64
+	SSHConnectionsTotal  atomic.Uint64
+	LeaseRejectTotal     atomic.Uint64
+	CommandsTotal        atomic.Uint64
+	CommandErrorsTotal   atomic.Uint64
+	FixtureHitsTotal     atomic.Uint64
+	FixtureMissesTotal   atomic.Uint64
 	// VMConsoleSimsTotal 统计虚拟机控制台固定操作的确定性仿真次数（动态 capture
 	// 路径无法发布为静态 Fixture，单独计数避免污染 fixture 命中指标）。
 	VMConsoleSimsTotal            atomic.Uint64

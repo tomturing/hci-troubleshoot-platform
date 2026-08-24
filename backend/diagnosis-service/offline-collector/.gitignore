@@ -1,0 +1,2 @@
+# 本地 go build 产物（调试版，未 strip）；正式制品在 resources/bin/ 并受 git 跟踪
+hci-offline-collector

@@ -63,7 +63,9 @@ CREATE INDEX IF NOT EXISTS idx_effect_verification_case ON effect_verification (
 CREATE INDEX IF NOT EXISTS idx_effect_verification_conversation ON effect_verification (conversation_id);
 CREATE INDEX IF NOT EXISTS idx_effect_verification_schedule
     ON effect_verification (next_check_at)
-    WHERE status NOT IN ('verdict_achieved', 'verdict_not_achieved', 'verdict_inconclusive', 'failed', 'cancelled');
+    WHERE (status)::text <> ALL (
+        (ARRAY['verdict_achieved'::varchar, 'verdict_not_achieved'::varchar, 'verdict_inconclusive'::varchar, 'failed'::varchar, 'cancelled'::varchar])::text[]
+    );
 CREATE INDEX IF NOT EXISTS idx_effect_verification_trace_id ON effect_verification (trace_id);
 
 CREATE TABLE IF NOT EXISTS effect_verification_check (
@@ -99,4 +101,5 @@ COMMENT ON TABLE effect_verification_check IS '效果验证每次观测判定记
 CREATE INDEX IF NOT EXISTS idx_effect_check_verification ON effect_verification_check (verification_id, check_seq);
 
 -- diagnostic_item.type 无 CHECK 约束；新增 effect_verification 类型值仅更新注释。
-COMMENT ON COLUMN diagnostic_item."type" IS '条目类型：hypothesis（S2）/ verification_step（S3）/ root_cause（S4）/ solution（S5）/ effect_verification（S5 修复动作效果复核）';
+-- 注释文本必须与 desired_schema.sql 完全一致（Atlas 幂等性验证按字节比对）。
+COMMENT ON COLUMN diagnostic_item."type" IS '条目类型：hypothesis（根因假设，S2）/ verification_step（验证步骤，S3）/ root_cause（根因结论，S4）/ solution（解决方案，S5）/ effect_verification（S5 修复动作效果复核）';
