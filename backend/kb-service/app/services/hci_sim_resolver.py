@@ -67,6 +67,7 @@ class ResolvedKbdInput:
     metadata: dict[str, Any]
     verification_contract: dict[str, Any]
     synthetic_routes: tuple[SyntheticRouteInput, ...]
+    local_operations: tuple[LocalOperationInput, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,6 +82,7 @@ class ResolvedKbdInput:
             "metadata": self.metadata,
             "verification_contract": self.verification_contract,
             "synthetic_routes": [route.to_dict() for route in self.synthetic_routes],
+            "local_operations": [operation.to_dict() for operation in self.local_operations],
         }
 
 
@@ -113,6 +115,30 @@ class SyntheticRouteInput:
             "produces": list(self.produces),
             "sample_output": self.sample_output,
             "sample_source": self.sample_source,
+        }
+
+
+@dataclass(frozen=True)
+class LocalOperationInput:
+    """由 Agent 本地执行的操作契约；hci-sim 只校验和传递，不执行。"""
+
+    signal_id: str
+    tool: str
+    mode: str
+    operation: str
+    args: dict[str, Any]
+    required_variables: tuple[str, ...] = ()
+    produces: tuple[dict[str, Any], ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "signal_id": self.signal_id,
+            "tool": self.tool,
+            "mode": self.mode,
+            "operation": self.operation,
+            "args": self.args,
+            "required_variables": list(self.required_variables),
+            "produces": list(self.produces),
         }
 
 
@@ -273,8 +299,11 @@ class HciSimKbdResolver:
         # 此处保留 tool_revision 供 ResolvedKbdInput 追溯，staleness 仅观测不阻断。
 
         synthetic_routes: tuple[SyntheticRouteInput, ...] = ()
+        local_operations: tuple[LocalOperationInput, ...] = ()
         if isinstance(signals, list) and signals:
-            synthetic_routes, route_gaps = self._resolve_synthetic_routes(signals_document, tool_snapshots or {})
+            synthetic_routes, local_operations, route_gaps = self._resolve_synthetic_routes(
+                signals_document, tool_snapshots or {}
+            )
             gaps.extend(route_gaps)
 
         snapshot_metadata = dict(
@@ -301,6 +330,7 @@ class HciSimKbdResolver:
             metadata=snapshot_metadata,
             verification_contract=dict(signals_document.get("verification_contract") or {}),
             synthetic_routes=synthetic_routes,
+            local_operations=local_operations,
         )
         return KbdResolution(
             support_id=support_id,
@@ -313,12 +343,13 @@ class HciSimKbdResolver:
     def _resolve_synthetic_routes(
         signals_document: dict[str, Any],
         tool_snapshots: dict[str, tuple[DynamicResourceActive, DynamicResourceRevision]],
-    ) -> tuple[tuple[SyntheticRouteInput, ...], list[CapabilityGap]]:
-        """从当前 Signal Runtime 与 Tool Registry 生成路由，不识别具体 KBD。"""
+    ) -> tuple[tuple[SyntheticRouteInput, ...], tuple[LocalOperationInput, ...], list[CapabilityGap]]:
+        """分离外部命令路由与 Agent 本地操作，禁止 qfk_var 伪装成 aCLI。"""
 
         review = review_signal_document(signals_document, feature=SignalReviewFeature.PUBLISH)
         gaps: list[CapabilityGap] = []
         routes: list[SyntheticRouteInput] = []
+        local_operations: list[LocalOperationInput] = []
         unresolved_signal_ids: list[str] = []
         signals = signals_document.get("signals") or []
         reviews = {item.signal_index: item for item in review.signals}
@@ -329,6 +360,7 @@ class HciSimKbdResolver:
             acquire = signal.get("acquire") if isinstance(signal.get("acquire"), dict) else {}
             orchestrate = signal.get("orchestrate") if isinstance(signal.get("orchestrate"), dict) else {}
             tool = str(acquire.get("tool") or "").strip()
+            args = acquire.get("args") if isinstance(acquire.get("args"), dict) else {}
             tool_snapshot = tool_snapshots.get(tool)
             if tool_snapshot is None:
                 gaps.append(CapabilityGap("TOOL_ACTIVE_SNAPSHOT_MISSING", f"Tool {tool} 没有 active 不可变修订"))
@@ -345,6 +377,43 @@ class HciSimKbdResolver:
                 )
                 continue
             runtime = reviews.get(index)
+            if tool == "qfk_var":
+                if runtime is None or runtime.status is ResolutionStatus.BLOCKED:
+                    unresolved_signal_ids.append(signal_id)
+                    continue
+                referenced_variables = {
+                    variable
+                    for variable in re.findall(
+                        r"\{\{([A-Za-z][A-Za-z0-9_.]*)\}\}", json.dumps(args, ensure_ascii=False)
+                    )
+                }
+                declared_variables = {
+                    str(variable).strip()
+                    for variable in (orchestrate.get("requires") or [])
+                    if str(variable).strip()
+                }
+                if referenced_variables != declared_variables:
+                    gaps.append(
+                        CapabilityGap(
+                            "QFK_VAR_REQUIRES_MISMATCH",
+                            f"Signal {signal_id} 的 qfk_var requires 与 args 占位符集合不一致",
+                        )
+                    )
+                    continue
+                local_operations.append(
+                    LocalOperationInput(
+                        signal_id=signal_id,
+                        tool=tool,
+                        mode=str(args.get("mode") or ""),
+                        operation=str(args.get("operation") or ""),
+                        args=json.loads(json.dumps(args, ensure_ascii=False)),
+                        required_variables=tuple(sorted(declared_variables)),
+                        produces=tuple(
+                            dict(item) for item in (orchestrate.get("produces") or []) if isinstance(item, dict)
+                        ),
+                    )
+                )
+                continue
             if runtime is None or runtime.status is ResolutionStatus.BLOCKED or not runtime.command:
                 unresolved_signal_ids.append(signal_id)
                 continue
@@ -382,7 +451,7 @@ class HciSimKbdResolver:
                     sample_source=_sample_output_source(signal, tool),
                 )
             )
-        if not routes and not gaps:
+        if not routes and not local_operations and not gaps:
             detail = "、".join(unresolved_signal_ids[:5])
             gaps.append(
                 CapabilityGap(
@@ -390,7 +459,7 @@ class HciSimKbdResolver:
                     f"当前没有可确定编译的 Signal 模拟路由{f'：{detail}' if detail else ''}",
                 )
             )
-        return tuple(routes), gaps
+        return tuple(routes), tuple(local_operations), gaps
 
 
 def _sample_output_source(signal: dict[str, Any], tool: str) -> str:

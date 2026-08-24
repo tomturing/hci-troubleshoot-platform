@@ -187,3 +187,66 @@ def test_resolver_does_not_allow_a_kbd_without_active_tool_revision():
 
     assert resolution.status == "capability_gap"
     assert [gap.code for gap in resolution.gaps] == ["TOOL_ACTIVE_SNAPSHOT_MISSING"]
+
+
+def test_resolver_separates_qfk_var_into_local_operation_without_command_route():
+    active, revision = _snapshot(support_id="qfk-var-kbd")
+    document = revision.content_json["signals_json"]
+    document["signals"] = [
+        {
+            "id": "extract-percent",
+            "role": "must",
+            "acquire": {
+                "tool": "qfk_var",
+                "args": {
+                    "schema_version": 1,
+                    "mode": "derive",
+                    "operation": "feature_extract",
+                    "input": "{{DESCRIPTION}}",
+                    "target_variable": "percent.current",
+                    "value_type": "percentage",
+                    "cardinality": "exactly_one",
+                },
+            },
+            "match": None,
+            "orchestrate": {
+                "phase": "diagnostic",
+                "requires": ["DESCRIPTION"],
+                "produces": [{"name": "CURRENT_PERCENT", "type": "number"}],
+            },
+        }
+    ]
+    document["verification_contract"]["variables"]["DESCRIPTION"] = {"type": "string"}
+    qfk_tool = _tool_snapshots(tool="qfk_var")
+    resolution = HciSimKbdResolver().resolve_entry(_entry(support_id="qfk-var-kbd"), (active, revision), qfk_tool)
+
+    assert resolution.status == "ready_for_artifact_binding"
+    assert resolution.resolved is not None
+    assert resolution.resolved.synthetic_routes == ()
+    assert len(resolution.resolved.local_operations) == 1
+    operation = resolution.resolved.local_operations[0]
+    assert operation.tool == "qfk_var"
+    assert operation.operation == "feature_extract"
+    assert operation.required_variables == ("DESCRIPTION",)
+    assert operation.produces[0]["name"] == "CURRENT_PERCENT"
+    assert "command" not in operation.to_dict()
+
+
+def test_resolver_rejects_qfk_var_requires_mismatch_instead_of_repairing_it():
+    active, revision = _snapshot(support_id="qfk-var-bad-requires")
+    document = revision.content_json["signals_json"]
+    document["signals"] = [{
+        "id": "bad-requires",
+        "role": "must",
+        "acquire": {"tool": "qfk_var", "args": {
+            "schema_version": 1, "mode": "derive", "operation": "cast",
+            "input": "{{DESCRIPTION}}", "value_type": "string",
+        }},
+        "match": None,
+        "orchestrate": {"phase": "diagnostic", "requires": [], "produces": [{"name": "VALUE", "type": "string"}]},
+    }]
+    resolution = HciSimKbdResolver().resolve_entry(
+        _entry(support_id="qfk-var-bad-requires"), (active, revision), _tool_snapshots(tool="qfk_var")
+    )
+    assert resolution.status == "capability_gap"
+    assert [gap.code for gap in resolution.gaps] == ["QFK_VAR_REQUIRES_MISMATCH"]

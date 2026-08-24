@@ -98,7 +98,8 @@ func runCompileBatch(args []string) error {
 		}
 		resolved := item.Resolved
 		if resolved.SupportID != item.SupportID || resolved.KBDRevision < 1 || strings.TrimSpace(resolved.KBDChecksum) == "" || strings.TrimSpace(resolved.SignalsDigest) == "" ||
-			strings.TrimSpace(resolved.ToolContractRevision) == "" || strings.TrimSpace(resolved.PolicyRevision) == "" || len(resolved.SyntheticRoutes) == 0 {
+			strings.TrimSpace(resolved.ToolContractRevision) == "" || strings.TrimSpace(resolved.PolicyRevision) == "" ||
+			(len(resolved.SyntheticRoutes) == 0 && len(resolved.LocalOperations) == 0) {
 			batch.Skipped = append(batch.Skipped, batchSkippedEntry{SupportID: item.SupportID, Status: item.Status, Reason: "C1 resolved 输入与请求 KBD 不一致或不完整"})
 			continue
 		}

@@ -94,6 +94,32 @@ func TestBundleFactoryAPICompilesKBDWithProducedSceneVariable(t *testing.T) {
 	}
 }
 
+func TestBundleFactoryAPICompilesPureQfkVarAsLocalOperation(t *testing.T) {
+	registry := controlplane.NewMemoryRegistryWithDependencies(controlplane.NewMemoryArtifactRegistry(), controlplane.NewMemoryBundleObjectStore())
+	mux := http.NewServeMux()
+	registerControlPlaneAPI(mux, registry, "test-control-token", false)
+	compiled := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix, map[string]any{
+		"resolved": map[string]any{
+			"support_id": "qfk-var-only", "kbd_revision": 1, "kbd_checksum": "sha256:kbd-qfk-var",
+			"signals_digest": "sha256:signals-qfk-var", "tool_contract_revision": "tool-r1", "policy_revision": "policy-r1",
+			"verification_contract": map[string]any{"variables": map[string]any{"DESCRIPTION": map[string]any{"type": "string"}}},
+			"local_operations": []map[string]any{{
+				"signal_id": "extract-percent", "tool": "qfk_var", "mode": "derive", "operation": "feature_extract",
+				"args":               map[string]any{"mode": "derive", "operation": "feature_extract", "input": "{{DESCRIPTION}}", "target_variable": "percent.current", "value_type": "percentage", "cardinality": "exactly_one"},
+				"required_variables": []string{"DESCRIPTION"}, "produces": []map[string]any{{"name": "CURRENT_PERCENT", "type": "number"}},
+			}},
+		},
+	}, "compiler", "compiler-service", http.StatusCreated)
+	manifest := compiled["bundle"].(map[string]any)["manifest"].(map[string]any)
+	if routes := manifest["routes"].([]any); len(routes) != 0 {
+		t.Fatalf("qfk_var 不应生成 SSH routes: %+v", routes)
+	}
+	operations := manifest["local_operations"].([]any)
+	if len(operations) != 1 || operations[0].(map[string]any)["tool"] != "qfk_var" {
+		t.Fatalf("local_operations=%+v", operations)
+	}
+}
+
 func TestBundleFactoryAPIRetiresDraftWithoutPhysicalDeletion(t *testing.T) {
 	registry := controlplane.NewMemoryRegistryWithDependencies(controlplane.NewMemoryArtifactRegistry(), controlplane.NewMemoryBundleObjectStore())
 	mux := http.NewServeMux()

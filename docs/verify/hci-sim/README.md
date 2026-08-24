@@ -20,6 +20,7 @@
 
 ## 横向重构验证
 
+- [qfk_var 与 hci-sim 关联验证](events/2026-08-24-qfk_var与hci-sim关联验证.md)
 - [三段链路稳定性验证](events/2026-08-09-hci-sim三段链路稳定性验证.md)
 - [三 PR 闭环验证](events/2026-08-10-hci-sim三PR闭环验证.md)
 - [独立数据库隔离验证](events/2026-08-10-hci_sim独立数据库隔离验证.md)

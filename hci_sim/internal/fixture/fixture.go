@@ -37,6 +37,9 @@ type Manifest struct {
 	Variables     map[string]string `json:"variables"`
 	Limits        Limits            `json:"limits"`
 	Routes        []Route           `json:"routes"`
+	// LocalOperations 是 Agent 本地执行的变量处理契约。Runtime 只保存并审计它，
+	// 不把 qfk_var 转成 SSH Route，也不执行 Python/LLM 变量处理算法。
+	LocalOperations []LocalOperation `json:"local_operations,omitempty"`
 }
 
 type BundleRef struct {
@@ -72,6 +75,16 @@ type Route struct {
 	Result       ResultDef `json:"result"`
 	Stream       StreamDef `json:"stream"`
 	Fault        FaultDef  `json:"fault"`
+}
+
+type LocalOperation struct {
+	SignalID          string           `json:"signal_id"`
+	Tool              string           `json:"tool"`
+	Mode              string           `json:"mode"`
+	Operation         string           `json:"operation"`
+	Args              map[string]any   `json:"args"`
+	RequiredVariables []string         `json:"required_variables,omitempty"`
+	Produces          []map[string]any `json:"produces,omitempty"`
 }
 
 // RouteKey 不允许打分、部分匹配或顺序依赖；所有字段共同决定唯一 Fixture。
@@ -190,6 +203,9 @@ func validateManifest(raw []byte, manifest *Manifest) error {
 	if manifest.Limits.MaxRoutes < 1 || manifest.Limits.MaxRoutes > 10000 || len(manifest.Routes) > manifest.Limits.MaxRoutes {
 		return errors.New("fixture manifest route 数量越界")
 	}
+	if len(manifest.LocalOperations) > 10000 {
+		return errors.New("fixture manifest local operation 数量越界")
+	}
 	if manifest.Limits.MaxOutputBytesPerCommand < 1 || manifest.Limits.MaxOutputBytesPerCommand > 64*1024*1024 {
 		return errors.New("fixture manifest per-command 输出限制无效")
 	}
@@ -203,6 +219,89 @@ func validateManifest(raw []byte, manifest *Manifest) error {
 		if err := validateRoute(route, manifest.Variables, manifest.Limits.MaxOutputBytesPerCommand); err != nil {
 			return err
 		}
+	}
+	for _, operation := range manifest.LocalOperations {
+		if err := validateLocalOperation(operation, manifest.Variables); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var localPlaceholderPattern = regexp.MustCompile(`\{\{([A-Za-z][A-Za-z0-9_.]*)\}\}`)
+
+func validateLocalOperation(operation LocalOperation, variables map[string]string) error {
+	if operation.SignalID == "" || operation.Tool != "qfk_var" || operation.Mode == "" || operation.Operation == "" {
+		return fmt.Errorf("local operation 缺少 signal_id/tool/mode/operation，或 tool 不是 qfk_var")
+	}
+	if operation.Args == nil {
+		return fmt.Errorf("local operation %s 缺少 args", operation.SignalID)
+	}
+	referenced := make(map[string]struct{})
+	var walk func(any) error
+	walk = func(value any) error {
+		switch item := value.(type) {
+		case string:
+			for _, match := range localPlaceholderPattern.FindAllStringSubmatch(item, -1) {
+				referenced[match[1]] = struct{}{}
+			}
+		case []any:
+			for _, child := range item {
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+		case map[string]any:
+			for key, child := range item {
+				switch strings.ToLower(key) {
+				case "command", "shell", "exec", "argv":
+					return fmt.Errorf("local operation %s 禁止包含 %s", operation.SignalID, key)
+				}
+				if err := walk(child); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := walk(operation.Args); err != nil {
+		return err
+	}
+	declared := make(map[string]struct{}, len(operation.RequiredVariables))
+	for _, name := range operation.RequiredVariables {
+		if name == "" {
+			return fmt.Errorf("local operation %s 的 requires 含空变量", operation.SignalID)
+		}
+		if _, exists := declared[name]; exists {
+			return fmt.Errorf("local operation %s 的 requires 重复: %s", operation.SignalID, name)
+		}
+		declared[name] = struct{}{}
+	}
+	if len(referenced) != len(declared) {
+		return fmt.Errorf("local operation %s 的 requires 与占位符集合不一致", operation.SignalID)
+	}
+	for name := range referenced {
+		if _, exists := declared[name]; !exists {
+			return fmt.Errorf("local operation %s 缺少 requires: %s", operation.SignalID, name)
+		}
+		if _, exists := variables[name]; exists && strings.Contains(variables[name], "{{") {
+			return fmt.Errorf("local operation %s 的变量 %s 未完成场景绑定", operation.SignalID, name)
+		}
+	}
+	if operation.Mode == "derive" {
+		if len(operation.Produces) != 1 {
+			return fmt.Errorf("local operation %s derive 必须恰好一个 produces", operation.SignalID)
+		}
+		name, ok := operation.Produces[0]["name"].(string)
+		if !ok || strings.TrimSpace(name) == "" {
+			return fmt.Errorf("local operation %s derive produces.name 必须为非空字符串", operation.SignalID)
+		}
+	} else if operation.Mode == "assert" {
+		if len(operation.Produces) != 0 {
+			return fmt.Errorf("local operation %s assert 不得声明 produces", operation.SignalID)
+		}
+	} else {
+		return fmt.Errorf("local operation %s mode 不支持: %s", operation.SignalID, operation.Mode)
 	}
 	return nil
 }

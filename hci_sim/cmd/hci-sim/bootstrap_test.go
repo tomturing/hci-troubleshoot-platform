@@ -34,6 +34,51 @@ func TestBuildSyntheticManifestIsExactAndSynthetic(t *testing.T) {
 	}
 }
 
+func TestBuildSyntheticManifestCarriesQfkVarAsLocalOperationWithoutRoute(t *testing.T) {
+	manifest, err := buildSyntheticManifest(&resolvedKbd{
+		SupportID: "qfk-var-only", KBDRevision: 1, KBDChecksum: strings.Repeat("a", 64),
+		ToolContractRevision: "tool-r1", PolicyRevision: "policy-r1",
+		VerificationContract: map[string]any{
+			"variables": map[string]any{"DESCRIPTION": map[string]any{"type": "string"}},
+		},
+		LocalOperations: []localOperation{{
+			SignalID: "extract-percent", Tool: "qfk_var", Mode: "derive", Operation: "feature_extract",
+			Args: map[string]any{
+				"schema_version": 1, "mode": "derive", "operation": "feature_extract",
+				"input": "{{DESCRIPTION}}", "target_variable": "percent.current",
+				"value_type": "percentage", "cardinality": "exactly_one",
+			},
+			RequiredVariables: []string{"DESCRIPTION"},
+			Produces:          []map[string]any{{"name": "CURRENT_PERCENT", "type": "number"}},
+		}},
+	}, "SIM-HCI-NODE-01", "host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Routes) != 0 || len(manifest.LocalOperations) != 1 {
+		t.Fatalf("qfk_var 不应生成 SSH route: %+v", manifest)
+	}
+	manifest.Bundle.Digest = fixture.ComputeBundleDigest(manifest)
+	if _, err := fixture.Parse(mustJSON(t, manifest)); err != nil {
+		t.Fatalf("local operation manifest 必须通过 runtime 校验: %v", err)
+	}
+}
+
+func TestBuildSyntheticManifestRejectsQfkVarMissingDependency(t *testing.T) {
+	_, err := buildSyntheticManifest(&resolvedKbd{
+		SupportID: "qfk-var-missing", KBDRevision: 1, KBDChecksum: strings.Repeat("a", 64),
+		ToolContractRevision: "tool-r1", PolicyRevision: "policy-r1",
+		LocalOperations: []localOperation{{
+			SignalID: "assert-percent", Tool: "qfk_var", Mode: "assert", Operation: "compare",
+			Args:              map[string]any{"schema_version": 1, "mode": "assert", "operation": "compare", "left": "{{PERCENT}}", "right": "90%", "operator": ">", "value_type": "percentage"},
+			RequiredVariables: []string{"PERCENT"},
+		}},
+	}, "SIM-HCI-NODE-01", "host")
+	if err == nil || !strings.Contains(err.Error(), "PERCENT") {
+		t.Fatalf("expected local dependency gap, got %v", err)
+	}
+}
+
 func TestBuildSyntheticManifestAcceptsAnyPublishedKBDContract(t *testing.T) {
 	manifest, err := buildSyntheticManifest(&resolvedKbd{
 		SupportID: "new-kbd-without-code-change", KBDRevision: 2, KBDChecksum: "a" + strings.Repeat("b", 63),

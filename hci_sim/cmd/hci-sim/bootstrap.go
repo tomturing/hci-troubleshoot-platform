@@ -44,6 +44,17 @@ type resolvedKbd struct {
 	Metadata             map[string]any   `json:"metadata"`
 	VerificationContract map[string]any   `json:"verification_contract"`
 	SyntheticRoutes      []syntheticRoute `json:"synthetic_routes"`
+	LocalOperations      []localOperation `json:"local_operations"`
+}
+
+type localOperation struct {
+	SignalID          string           `json:"signal_id"`
+	Tool              string           `json:"tool"`
+	Mode              string           `json:"mode"`
+	Operation         string           `json:"operation"`
+	Args              map[string]any   `json:"args"`
+	RequiredVariables []string         `json:"required_variables"`
+	Produces          []map[string]any `json:"produces"`
 }
 
 // declaredVariableNames 返回 KBD 发布契约声明的外部变量。变量名只在发布门禁
@@ -65,6 +76,13 @@ func (r *resolvedKbd) declaredVariableNames() map[string]struct{} {
 				if ok && syntheticVariablePattern.MatchString("{{"+name+"}}") {
 					result[name] = struct{}{}
 				}
+			}
+		}
+	}
+	for _, operation := range r.LocalOperations {
+		for _, produced := range operation.Produces {
+			if name, ok := produced["name"].(string); ok && syntheticVariablePattern.MatchString("{{"+name+"}}") {
+				result[name] = struct{}{}
 			}
 		}
 	}
@@ -143,7 +161,8 @@ func runBootstrap(args []string) error {
 	}
 	resolved := capability.Resolved
 	if resolved.SupportID != *supportID || resolved.KBDRevision < 1 || strings.TrimSpace(resolved.KBDChecksum) == "" || strings.TrimSpace(resolved.SignalsDigest) == "" ||
-		strings.TrimSpace(resolved.ToolContractRevision) == "" || strings.TrimSpace(resolved.PolicyRevision) == "" || len(resolved.SyntheticRoutes) == 0 {
+		strings.TrimSpace(resolved.ToolContractRevision) == "" || strings.TrimSpace(resolved.PolicyRevision) == "" ||
+		(len(resolved.SyntheticRoutes) == 0 && len(resolved.LocalOperations) == 0) {
 		return fmt.Errorf("capability_gap: C1 resolved 输入与请求 KBD %s 不一致或不完整", *supportID)
 	}
 	profile, err := loadScenarioProfile(*profilePath, resolved)
@@ -299,6 +318,9 @@ func buildScenarioManifest(resolved *resolvedKbd, profile *scenarioProfile, node
 	if !allowedVariants[selectedVariant] {
 		return fixture.Manifest{}, fmt.Errorf("不支持的场景变体: %s", selectedVariant)
 	}
+	if err := validateLocalOperations(resolved); err != nil {
+		return fixture.Manifest{}, err
+	}
 	variables := map[string]string{"SYNTHETIC": "true", "FACTS_BOUNDARY": "signal-contract-only", "SIGNALS_DIGEST": resolved.SignalsDigest}
 	var caseProfile scenarioCaseProfile
 	if profile != nil {
@@ -399,15 +421,121 @@ func buildScenarioManifest(resolved *resolvedKbd, profile *scenarioProfile, node
 			Fault:        fault,
 		})
 	}
+	maxRoutes := len(routes)
+	if maxRoutes < 1 {
+		// 纯 qfk_var KBD 没有 SSH Route，但 Manifest 仍需满足既有 limits 结构。
+		maxRoutes = 1
+	}
 	return fixture.Manifest{
-		SchemaVersion: fixture.SchemaVersion,
-		Bundle:        fixture.BundleRef{Status: "published"},
-		KBD:           fixture.KBDRef{SupportID: resolved.SupportID, Revision: resolved.KBDRevision, Checksum: "sha256:" + strings.TrimPrefix(resolved.KBDChecksum, "sha256:")},
-		Contracts:     fixture.Contracts{ToolRevision: resolved.ToolContractRevision, PolicyRevision: resolved.PolicyRevision},
-		Variables:     variables,
-		Limits:        fixture.Limits{MaxRoutes: len(routes), MaxOutputBytesPerCommand: 4096, MaxBundleBytes: 65536},
-		Routes:        routes,
+		SchemaVersion:   fixture.SchemaVersion,
+		Bundle:          fixture.BundleRef{Status: "published"},
+		KBD:             fixture.KBDRef{SupportID: resolved.SupportID, Revision: resolved.KBDRevision, Checksum: "sha256:" + strings.TrimPrefix(resolved.KBDChecksum, "sha256:")},
+		Contracts:       fixture.Contracts{ToolRevision: resolved.ToolContractRevision, PolicyRevision: resolved.PolicyRevision},
+		Variables:       variables,
+		LocalOperations: toFixtureLocalOperations(resolved.LocalOperations),
+		Limits:          fixture.Limits{MaxRoutes: maxRoutes, MaxOutputBytesPerCommand: 4096, MaxBundleBytes: 65536},
+		Routes:          routes,
 	}, nil
+}
+
+func toFixtureLocalOperations(operations []localOperation) []fixture.LocalOperation {
+	result := make([]fixture.LocalOperation, 0, len(operations))
+	for _, operation := range operations {
+		result = append(result, fixture.LocalOperation{
+			SignalID: operation.SignalID, Tool: operation.Tool, Mode: operation.Mode,
+			Operation: operation.Operation, Args: operation.Args,
+			RequiredVariables: operation.RequiredVariables, Produces: operation.Produces,
+		})
+	}
+	return result
+}
+
+func validateLocalOperations(resolved *resolvedKbd) error {
+	available := resolved.declaredVariableNames()
+	providers := make(map[string]string)
+	for _, route := range resolved.SyntheticRoutes {
+		for _, produced := range route.Produces {
+			for _, key := range []string{"name", "alias"} {
+				if name, ok := produced[key].(string); ok && name != "" {
+					if previous, exists := providers[name]; exists && previous != route.SignalID {
+						return fmt.Errorf("capability_gap: 变量 %s 存在重复 Producer: %s 与 %s", name, previous, route.SignalID)
+					}
+					providers[name] = route.SignalID
+					available[name] = struct{}{}
+				}
+			}
+		}
+	}
+	for _, operation := range resolved.LocalOperations {
+		for _, produced := range operation.Produces {
+			if name, ok := produced["name"].(string); ok && name != "" {
+				if previous, exists := providers[name]; exists && previous != operation.SignalID {
+					return fmt.Errorf("capability_gap: 变量 %s 存在重复 Producer: %s 与 %s", name, previous, operation.SignalID)
+				}
+				providers[name] = operation.SignalID
+				available[name] = struct{}{}
+			}
+		}
+	}
+	seenSignals := make(map[string]struct{}, len(resolved.LocalOperations))
+	for _, operation := range resolved.LocalOperations {
+		if _, exists := seenSignals[operation.SignalID]; exists {
+			return fmt.Errorf("capability_gap: local operation Signal ID 重复: %s", operation.SignalID)
+		}
+		seenSignals[operation.SignalID] = struct{}{}
+		if operation.Tool != "qfk_var" || operation.SignalID == "" || operation.Mode == "" || operation.Operation == "" || operation.Args == nil {
+			return fmt.Errorf("capability_gap: local operation %s 契约不完整或不是 qfk_var", operation.SignalID)
+		}
+		if operation.Mode == "derive" && len(operation.Produces) != 1 {
+			return fmt.Errorf("capability_gap: local operation %s derive 必须恰好一个 produces", operation.SignalID)
+		}
+		if operation.Mode == "assert" && len(operation.Produces) != 0 {
+			return fmt.Errorf("capability_gap: local operation %s assert 不得声明 produces", operation.SignalID)
+		}
+		if operation.Mode != "assert" && operation.Mode != "derive" {
+			return fmt.Errorf("capability_gap: local operation %s mode 不支持: %s", operation.SignalID, operation.Mode)
+		}
+		for _, required := range operation.RequiredVariables {
+			if _, ok := available[required]; !ok {
+				return fmt.Errorf("capability_gap: local operation %s 依赖变量 %s 未由 Contract、Producer 或其他 local operation 声明", operation.SignalID, required)
+			}
+		}
+	}
+	// Producer 图只允许从外部 Contract 或其他节点流入；沿变量 Producer 回溯，
+	// 发现环即阻断，避免 hci-sim 编译出 Agent 永远无法调度的 synthetic Bundle。
+	var visit func(string, map[string]bool, map[string]bool) error
+	visit = func(signalID string, visiting, visited map[string]bool) error {
+		if visiting[signalID] {
+			return fmt.Errorf("capability_gap: local operation 依赖图存在循环，涉及 %s", signalID)
+		}
+		if visited[signalID] {
+			return nil
+		}
+		visiting[signalID] = true
+		for _, operation := range resolved.LocalOperations {
+			if operation.SignalID != signalID {
+				continue
+			}
+			for _, required := range operation.RequiredVariables {
+				producer, exists := providers[required]
+				if exists {
+					if err := visit(producer, visiting, visited); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		delete(visiting, signalID)
+		visited[signalID] = true
+		return nil
+	}
+	visited := make(map[string]bool)
+	for _, operation := range resolved.LocalOperations {
+		if err := visit(operation.SignalID, map[string]bool{}, visited); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // deriveRouteSampleOutput 优先使用 C1 从 KBD provenance/matcher 派生的输出。

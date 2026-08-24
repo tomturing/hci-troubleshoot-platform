@@ -336,7 +336,8 @@ func compileSynthetic(w http.ResponseWriter, r *http.Request, registry controlpl
 		http.Error(w, "resolved capability is required", http.StatusBadRequest)
 		return
 	}
-	if request.Resolved.SupportID == "" || request.Resolved.KBDRevision < 1 || request.Resolved.KBDChecksum == "" || len(request.Resolved.SyntheticRoutes) == 0 {
+	if request.Resolved.SupportID == "" || request.Resolved.KBDRevision < 1 || request.Resolved.KBDChecksum == "" ||
+		(len(request.Resolved.SyntheticRoutes) == 0 && len(request.Resolved.LocalOperations) == 0) {
 		http.Error(w, "capability_gap: C1 resolved input incomplete", http.StatusConflict)
 		return
 	}

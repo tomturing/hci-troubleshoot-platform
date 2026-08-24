@@ -55,6 +55,34 @@
 用户关注：喂哪个 KBD、Lease 有效性窗口与来源文件、在 admin-ui 仿真会话面板验收、看命令卡片 passed/failed 与 output。
 平台黑盒：server/fixture/lease 执行内核、controlplane 状态机、17 张表 CRUD、迁移与 CI、Helm 编排、trace_id/idempotency_key。
 
+## 6.1 qfk_var 关联边界
+
+`qfk_var` 是 Agent 变量池处理器，不是 HCI 命令。C1 Resolver 将已发布 KBD 拆成两类不可变输入：
+
+```text
+synthetic_routes  -> hci-sim 模拟外部 qkv/qfk 命令并返回 stdout
+local_operations  -> Agent 执行 qfk_var；hci-sim 只校验、保存和审计
+```
+
+`local_operations` 至少携带 `signal_id`、`tool=qfk_var`、`mode`、`operation`、完整 `args`、`required_variables` 和 `produces`。Bundle Compiler 必须校验：
+
+- qfk_var 不生成 aCLI/SSH Route；`args` 任意层级不能包含 `command`、`shell`、`exec` 或 `argv` 字段；
+- `requires` 与 args 中的 `{{VAR}}` 集合一致；
+- derive 恰好一个 `produces`，assert 不产生变量；
+- 依赖变量必须来自 Verification Contract、外部 Route producer 或其他 local operation；
+- hci-sim 不复制 `variable_processor`，不执行确定性抽取，也不把 Synthetic 输出当真实 HCI 事实。
+
+因此完整链路是：
+
+```text
+hci-sim 外部事实 Route
+  -> Agent 变量池
+  -> qfk_var local operation
+  -> Agent/CDD outcome 或派生变量
+```
+
+确定性 qfk_var 可以纳入 hci-sim 合约链路；AI fallback 仍使用固定 mock/离线回放验证，不作为 hci-sim 基础绿灯的真实模型依赖。
+
 ## 7. 当前状态与边界
 
 - 仿真运行控制面（Runtime/Bridge/Manifest）代码级基础已实现；C1 对 dev 126 条 KBD 完成只读快照基线。

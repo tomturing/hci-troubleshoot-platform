@@ -154,6 +154,100 @@ func TestParseRejectsUnknownFieldsAndDigestDrift(t *testing.T) {
 	}
 }
 
+func TestManifestPreservesQfkVarLocalOperationWithoutSSHRoute(t *testing.T) {
+	manifest := Manifest{
+		SchemaVersion: SchemaVersion,
+		Bundle:        BundleRef{Status: "published"},
+		KBD:           KBDRef{SupportID: "qfk-var-only", Revision: 1, Checksum: "sha256:kbd"},
+		Contracts:     Contracts{ToolRevision: "tool", PolicyRevision: "policy"},
+		Variables:     map[string]string{},
+		Limits:        Limits{MaxRoutes: 1, MaxOutputBytesPerCommand: 4096, MaxBundleBytes: 65536},
+		LocalOperations: []LocalOperation{{
+			SignalID: "extract-percent", Tool: "qfk_var", Mode: "derive", Operation: "cast",
+			Args:              map[string]any{"schema_version": float64(1), "mode": "derive", "operation": "cast", "input": "{{PERCENT}}", "value_type": "percentage"},
+			RequiredVariables: []string{"PERCENT"},
+			Produces:          []map[string]any{{"name": "CURRENT_PERCENT", "type": "number"}},
+		}},
+	}
+	manifest.Bundle.Digest = ComputeBundleDigest(manifest)
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(raw); err != nil {
+		t.Fatalf("qfk_var local operation manifest should be accepted: %v", err)
+	}
+}
+
+func TestManifestRejectsCommandLikeQfkVarLocalOperation(t *testing.T) {
+	manifest := Manifest{
+		SchemaVersion: SchemaVersion,
+		Bundle:        BundleRef{Status: "published"},
+		KBD:           KBDRef{SupportID: "qfk-var-invalid", Revision: 1, Checksum: "sha256:kbd"},
+		Contracts:     Contracts{ToolRevision: "tool", PolicyRevision: "policy"},
+		Limits:        Limits{MaxRoutes: 1, MaxOutputBytesPerCommand: 4096, MaxBundleBytes: 65536},
+		LocalOperations: []LocalOperation{{
+			SignalID: "invalid", Tool: "qfk_var", Mode: "derive", Operation: "cast",
+			Args:     map[string]any{"options": map[string]any{"command": "acli system lsof"}},
+			Produces: []map[string]any{{"name": "VALUE", "type": "string"}},
+		}},
+	}
+	manifest.Bundle.Digest = ComputeBundleDigest(manifest)
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(raw); err == nil || !strings.Contains(err.Error(), "禁止包含 command") {
+		t.Fatalf("command-like local operation must fail closed: %v", err)
+	}
+}
+
+func TestManifestRejectsUnsupportedQfkVarModeAndInvalidOutputName(t *testing.T) {
+	base := Manifest{
+		SchemaVersion: SchemaVersion,
+		Bundle:        BundleRef{Status: "published"},
+		KBD:           KBDRef{SupportID: "qfk-var-invalid-mode", Revision: 1, Checksum: "sha256:kbd"},
+		Contracts:     Contracts{ToolRevision: "tool", PolicyRevision: "policy"},
+		Limits:        Limits{MaxRoutes: 1, MaxOutputBytesPerCommand: 4096, MaxBundleBytes: 65536},
+	}
+	tests := []struct {
+		name      string
+		operation LocalOperation
+		contains  string
+	}{
+		{
+			name: "未知模式",
+			operation: LocalOperation{
+				SignalID: "unknown-mode", Tool: "qfk_var", Mode: "transform", Operation: "cast",
+				Args: map[string]any{"input": "literal"},
+			},
+			contains: "mode 不支持",
+		},
+		{
+			name: "非字符串输出变量名",
+			operation: LocalOperation{
+				SignalID: "invalid-output", Tool: "qfk_var", Mode: "derive", Operation: "cast",
+				Args: map[string]any{"input": "literal"}, Produces: []map[string]any{{"name": float64(1)}},
+			},
+			contains: "produces.name",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manifest := base
+			manifest.LocalOperations = []LocalOperation{test.operation}
+			manifest.Bundle.Digest = ComputeBundleDigest(manifest)
+			raw, err := json.Marshal(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Parse(raw); err == nil || !strings.Contains(err.Error(), test.contains) {
+				t.Fatalf("local operation must fail closed: %v", err)
+			}
+		})
+	}
+}
+
 func TestLexRejectsShellAndNormalizesLongFlags(t *testing.T) {
 	argv, err := Lex(`acli --formatter=json task get -l 1`)
 	if err != nil {
