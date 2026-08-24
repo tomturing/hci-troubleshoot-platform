@@ -32,6 +32,8 @@ class CollectorOutputContract(BaseModel):
             "states",
             "commands",
             "exports",
+            # vm_console_capture 执行器的截图包目录（与 evidence_bundle.STANDARD_DIRS 保持一致）
+            "captures",
             "attachments",
         }
         if path.is_absolute() or ".." in path.parts or len(path.parts) < 2 or path.parts[0] not in allowed:
