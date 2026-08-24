@@ -5,7 +5,7 @@ def test_descriptor_is_code_generated_and_does_not_claim_runtime_deployment():
     document = capability_descriptor_document()
 
     assert document["source"] == "code"
-    assert document["count"] == 14
+    assert document["count"] == 13
     assert {item["capability_id"] for item in document["capabilities"]} >= {
         "qkv_alert",
         "qkv_task",

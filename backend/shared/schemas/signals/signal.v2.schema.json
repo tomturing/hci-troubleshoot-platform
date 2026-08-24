@@ -110,7 +110,6 @@
             "qkv_dialog",
             "qkv_vm_console",
             "qkv_effect",
-            "qfk_var",
             "qfk_log",
             "qfk_service",
             "qfk_system",
@@ -217,25 +216,6 @@
             "properties": {
               "args": {
                 "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qkv_effect.schema.json"
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "tool": {
-                "const": "qfk_var"
-              }
-            },
-            "required": [
-              "tool"
-            ]
-          },
-          "then": {
-            "properties": {
-              "args": {
-                "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qfk_var.schema.json"
               }
             }
           }

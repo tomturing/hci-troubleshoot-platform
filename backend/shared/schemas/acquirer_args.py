@@ -45,7 +45,9 @@ from shared.schemas.log_source_catalog import (
 # ``acli log get -f`` 的安全边界是 basename 字符集，而不是扩展名。真实 HCI 日志
 # 包含 messages、无扩展名文件及带 {{VAR}} 的动态 basename；配置文件和 BMC SEL 即使
 # 字符形状合法，也会由日志源 Catalog 的 acquisition/runtime_supported 语义门拒绝。
-SAFE_LOG_FILE_PATTERN = r"^(?:[A-Za-z0-9_.-]|\{\{[A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*\}\})+$"
+SAFE_LOG_FILE_PATTERN = (
+    r"^(?:[A-Za-z0-9_.-]|\{\{[A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*\}\})+$"
+)
 # 向后兼容旧调用方导入名；值已按实机 aCLI 契约收紧为根目录，而非宽泛前缀。
 ALLOWED_LOG_PATH_PREFIXES = ALLOWED_LOG_ROOTS
 ILLEGAL_COMMAND_CHARS = frozenset("|#;&`$<>{}\n\r")
@@ -71,7 +73,6 @@ def _contains_illegal_command_chars(value: str) -> bool:
 
     without_placeholders = _PLACEHOLDER_RE.sub("VALUE", value)
     return any(char in ILLEGAL_COMMAND_CHARS for char in without_placeholders)
-
 
 # ─── 公共参数：全局只定义一次 ───────────────────────────────────────────────────
 # 60 秒是新建信号和未声明 timeout 的统一运行时默认值；显式配置的历史信号
@@ -227,10 +228,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
                 "description": "在当前主控搜索的固定弹框日志域；不是自由路径",
             },
             "context_lines": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 10,
-                "default": 2,
+                "type": "integer", "minimum": 0, "maximum": 10, "default": 2,
                 "description": "命中行上下文，用于提取 END/REQUEST_ID",
             },
         },
@@ -306,7 +304,9 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
                         "properties": {
                             "type": {
                                 "type": "string",
-                                "enum": ["keyword", "regex", "state", "threshold", "delta", "trend", "exists"],
+                                "enum": [
+                                    "keyword", "regex", "state", "threshold", "delta", "trend", "exists"
+                                ],
                             },
                             "pattern": {
                                 "anyOf": [
@@ -329,13 +329,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
                             "aggregation": {
                                 "type": "string",
                                 "enum": [
-                                    "first_number",
-                                    "last_number",
-                                    "line_count",
-                                    "duration_seconds",
-                                    "max",
-                                    "min",
-                                    "sum",
+                                    "first_number", "last_number", "line_count", "duration_seconds", "max", "min", "sum"
                                 ],
                                 "default": "first_number",
                             },
@@ -375,64 +369,6 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             },
         },
         "required": ["expectation"],
-    },
-    # ── 变量池处理器：不执行 aCLI，不读取未声明变量 ──
-    "qfk_var": {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "schema_version": {"type": "integer", "enum": [1]},
-            "mode": {"type": "string", "enum": ["assert", "derive"]},
-            "operation": {
-                "type": "string",
-                "enum": ["feature_extract", "field", "json_path", "cast", "string", "compose", "compare", "exists"],
-            },
-            "input": {},
-            "left": {},
-            "right": {},
-            "parts": {"type": "array"},
-            "path": {"type": "string"},
-            "target_variable": {
-                "type": "string",
-                "enum": [
-                    "vm_name",
-                    "host",
-                    "storage_name",
-                    "disk_name",
-                    "interface_name",
-                    "percent.current",
-                    "percent.threshold",
-                    "memory.used",
-                    "memory.threshold",
-                    "memory.remaining",
-                    "error_code",
-                    "source_host",
-                    "destination_host",
-                    "change_pair",
-                ],
-            },
-            "value_type": {
-                "type": "string",
-                "enum": ["string", "integer", "number", "percentage", "boolean", "quantity", "object", "array<string>"],
-            },
-            "cardinality": {"type": "string", "enum": ["exactly_one", "zero_or_more"]},
-            "operator": {"type": "string", "enum": [">", ">=", "<", "<=", "==", "=", "!="]},
-            "function": {"type": "string", "enum": ["trim", "lower", "upper", "split", "replace"]},
-            "separator": {"type": "string"},
-            "old": {"type": "string"},
-            "new": {"type": "string"},
-            "fallback": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "type": {"type": "string", "enum": ["ai_extract"]},
-                    "instruction": {"type": "string"},
-                },
-                "required": ["type", "instruction"],
-            },
-            "on_error": {"type": "string", "enum": ["unknown", "error"]},
-        },
-        "required": ["schema_version", "mode", "operation"],
     },
     # ── 后端信号（QFK）：resource_keyword=资源/主题选择器，非匹配关键词 ──
     "qfk_log": {
@@ -571,11 +507,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             "timeout": COMMON_ARGS["timeout"],
             "nonzero_exit_as_negative": COMMON_ARGS["nonzero_exit_as_negative"],
             "command": {"type": "string", "description": "acli vm <command>（如 list/status/console）"},
-            "command_args": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "结构化命令参数，例如 --vm-id {{VM}}",
-            },
+            "command_args": {"type": "array", "items": {"type": "string"}, "description": "结构化命令参数，例如 --vm-id {{VM}}"},
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "虚拟机名选择器（可选）"},
         },
@@ -760,7 +692,9 @@ def _validate_effect_expectation(expectation: Any) -> tuple[bool, str | None]:
         return False, f"qkv_effect.expectation.observation 含未注册字段: {', '.join(sorted(obs_extra))}"
     obs_tool = observation.get("tool")
     if obs_tool not in EFFECT_OBSERVATION_CHANNELS:
-        return False, (f"qkv_effect 观测通道不在封闭集合: {obs_tool}；允许 {sorted(EFFECT_OBSERVATION_CHANNELS)}")
+        return False, (
+            f"qkv_effect 观测通道不在封闭集合: {obs_tool}；允许 {sorted(EFFECT_OBSERVATION_CHANNELS)}"
+        )
     obs_args = observation.get("args") or {}
     obs_ok, obs_error = validate_acquire_args(str(obs_tool), obs_args)
     if not obs_ok:
@@ -770,23 +704,16 @@ def _validate_effect_expectation(expectation: Any) -> tuple[bool, str | None]:
     if not isinstance(matcher, dict):
         return False, "qkv_effect.expectation.matcher 必填且必须是对象（封闭判定规则）"
     matcher_extra = set(matcher) - {
-        "type",
-        "pattern",
-        "mode",
-        "expected",
-        "value",
-        "operator",
-        "aggregation",
-        "metric",
-        "minimum_samples",
-        "direction",
-        "extract",
+        "type", "pattern", "mode", "expected", "value", "operator",
+        "aggregation", "metric", "minimum_samples", "direction", "extract",
     }
     if matcher_extra:
         return False, f"qkv_effect.expectation.matcher 含未注册字段: {', '.join(sorted(matcher_extra))}"
     mtype = matcher.get("type")
     if mtype not in EFFECT_MATCHER_TYPES:
-        return False, (f"qkv_effect 判定规则不在封闭 matcher 集合: {mtype}；允许 {sorted(EFFECT_MATCHER_TYPES)}")
+        return False, (
+            f"qkv_effect 判定规则不在封闭 matcher 集合: {mtype}；允许 {sorted(EFFECT_MATCHER_TYPES)}"
+        )
     if not isinstance(matcher.get("expected"), bool):
         return False, "qkv_effect.matcher.expected 必须是布尔值（三态判定由平台合成，不由 matcher 表达）"
     for field_name in _EFFECT_MATCHER_REQUIRED_FIELDS.get(str(mtype), frozenset()):
@@ -802,29 +729,20 @@ def _validate_effect_expectation(expectation: Any) -> tuple[bool, str | None]:
         return False, "qkv_effect.matcher.extract 为 text 时必须配置 rows"
 
     settle = expectation.get("settle_seconds", 120)
-    if (
-        isinstance(settle, bool)
-        or not isinstance(settle, int)
-        or not (EFFECT_SETTLE_RANGE[0] <= settle <= EFFECT_SETTLE_RANGE[1])
+    if isinstance(settle, bool) or not isinstance(settle, int) or not (
+        EFFECT_SETTLE_RANGE[0] <= settle <= EFFECT_SETTLE_RANGE[1]
     ):
         return False, f"qkv_effect.expectation.settle_seconds 必须在 {EFFECT_SETTLE_RANGE[0]}-{EFFECT_SETTLE_RANGE[1]}"
     window = expectation.get("window_seconds", 900)
-    if (
-        isinstance(window, bool)
-        or not isinstance(window, int)
-        or not (EFFECT_WINDOW_RANGE[0] <= window <= EFFECT_WINDOW_RANGE[1])
+    if isinstance(window, bool) or not isinstance(window, int) or not (
+        EFFECT_WINDOW_RANGE[0] <= window <= EFFECT_WINDOW_RANGE[1]
     ):
         return False, f"qkv_effect.expectation.window_seconds 必须在 {EFFECT_WINDOW_RANGE[0]}-{EFFECT_WINDOW_RANGE[1]}"
     max_recheck = expectation.get("max_recheck", 2)
-    if (
-        isinstance(max_recheck, bool)
-        or not isinstance(max_recheck, int)
-        or not (EFFECT_MAX_RECHECK_RANGE[0] <= max_recheck <= EFFECT_MAX_RECHECK_RANGE[1])
+    if isinstance(max_recheck, bool) or not isinstance(max_recheck, int) or not (
+        EFFECT_MAX_RECHECK_RANGE[0] <= max_recheck <= EFFECT_MAX_RECHECK_RANGE[1]
     ):
-        return (
-            False,
-            f"qkv_effect.expectation.max_recheck 必须在 {EFFECT_MAX_RECHECK_RANGE[0]}-{EFFECT_MAX_RECHECK_RANGE[1]}",
-        )
+        return False, f"qkv_effect.expectation.max_recheck 必须在 {EFFECT_MAX_RECHECK_RANGE[0]}-{EFFECT_MAX_RECHECK_RANGE[1]}"
     return True, None
 
 
@@ -930,70 +848,6 @@ def validate_acquire_args(tool: str, args: Any) -> tuple[bool, str | None]:
         if isinstance(timeout, int) and not isinstance(timeout, bool) and not 1 <= timeout <= 60:
             return False, "qkv_effect.timeout 必须在 1-60（单次观测快速失败，整体预算由期望窗口约束）"
 
-    if tool == "qfk_var":
-        mode = str(args.get("mode") or "")
-        operation = str(args.get("operation") or "")
-        assert_operations = {"compare", "exists"}
-        derive_operations = {"feature_extract", "field", "json_path", "cast", "string", "compose", "compare", "exists"}
-        if mode == "assert" and operation not in assert_operations:
-            return False, f"qfk_var assert 仅支持 {sorted(assert_operations)}"
-        if mode == "derive" and operation not in derive_operations:
-            return False, f"qfk_var derive 不支持 operation={operation}"
-        if mode not in {"assert", "derive"}:
-            return False, "qfk_var.mode 必须是 assert 或 derive"
-        required_by_operation = {
-            "feature_extract": {"input", "target_variable", "value_type", "cardinality"},
-            "field": {"input", "path", "value_type"},
-            "json_path": {"input", "path", "value_type"},
-            "cast": {"input", "value_type"},
-            "string": {"input", "function"},
-            "compose": {"parts"},
-            "compare": {"left", "right", "operator", "value_type"},
-            "exists": {"input"},
-        }
-        missing = sorted(field for field in required_by_operation.get(operation, set()) if field not in args)
-        if missing:
-            return False, f"qfk_var operation={operation} 缺少必填字段: {', '.join(missing)}"
-        target_types = {
-            "vm_name": "string",
-            "host": "string",
-            "storage_name": "string",
-            "disk_name": "string",
-            "interface_name": "string",
-            "percent.current": "percentage",
-            "percent.threshold": "percentage",
-            "memory.used": "quantity",
-            "memory.threshold": "quantity",
-            "memory.remaining": "quantity",
-            "error_code": "string",
-            "source_host": "string",
-            "destination_host": "string",
-            "change_pair": "object",
-        }
-        target = args.get("target_variable")
-        if operation == "feature_extract" and target_types.get(str(target)) != args.get("value_type"):
-            return False, (
-                f"qfk_var target_variable={target} 固定类型为 {target_types.get(str(target))}，"
-                f"不能配置为 {args.get('value_type')}"
-            )
-        if operation != "feature_extract" and "target_variable" in args:
-            return False, "target_variable 仅允许用于 feature_extract"
-        if (
-            operation == "string"
-            and args.get("function") == "split"
-            and (not isinstance(args.get("separator"), str) or not args.get("separator"))
-        ):
-            return False, "qfk_var string.split 必须提供非空 separator"
-        fallback = args.get("fallback")
-        if fallback is not None:
-            if operation != "feature_extract":
-                return False, "qfk_var AI 兜底仅允许用于 feature_extract"
-            if not isinstance(fallback, dict) or fallback.get("type") != "ai_extract":
-                return False, "qfk_var fallback.type 仅支持 ai_extract"
-            instruction = fallback.get("instruction")
-            if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 1000:
-                return False, "qfk_var AI 兜底 instruction 必须为 1-1000 字符"
-
     if tool == "qfk_log":
         file_name = str(args.get("file") or "")
         path = str(args.get("path") or "")
@@ -1003,7 +857,10 @@ def validate_acquire_args(tool: str, args: Any) -> tuple[bool, str | None]:
             return False, f"acquire.args 日志路径不可解析: {exc}"
         is_request_artifact = bool(
             normalized_path
-            and (normalized_path == REQUEST_ARTIFACT_ROOT or normalized_path.startswith(f"{REQUEST_ARTIFACT_ROOT}/"))
+            and (
+                normalized_path == REQUEST_ARTIFACT_ROOT
+                or normalized_path.startswith(f"{REQUEST_ARTIFACT_ROOT}/")
+            )
         )
         if is_request_artifact:
             if not str(args.get("request_id") or "").strip():

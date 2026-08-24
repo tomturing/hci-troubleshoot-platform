@@ -32,7 +32,6 @@ QKV_QFK_DISPLAY_ORDER = [
     "qfk_storage",
     "qfk_hardware",
     "qfk_platform",
-    "qfk_var",
 ]
 _QKV_QFK_RANK = {name: i for i, name in enumerate(QKV_QFK_DISPLAY_ORDER)}
 

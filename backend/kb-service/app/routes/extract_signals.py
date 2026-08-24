@@ -111,7 +111,7 @@ EXTRACT_SIGNALS_MAX_TOKENS = max(2048, int(os.environ.get("EXTRACT_SIGNALS_MAX_T
 _EXTRACT_PROMPT_NAME = "kbd_extract_signals_v2"
 
 # ─── 封闭采集器词表（acquirer 必须取自此处）─────────────────────────────────
-# QKV（生产者，3 方法）+ QFK（消费者，8 个 namespace）+ qfk_var（变量处理器）
+# QKV（生产者，3 方法）+ QFK（消费者，8 个 namespace）
 # display_name 标准命名（勿擅自修改以免造成误解）：
 #   qkv_alert - 前端信号-告警查询
 #   qkv_task  - 前端信号-任务查询
@@ -145,10 +145,6 @@ ACQUIRER_CATALOG: dict[str, str] = {
     "qfk_storage": "后端信号-存储相关操作：acli storage <command>（如 asan disk list），使用声明式取值后再判定",
     "qfk_hardware": "后端信号-硬件相关操作：acli hardware <command>，使用声明式取值后再判定",
     "qfk_platform": "后端信号-平台相关操作：acli platform <command>，使用声明式取值后再判定",
-    "qfk_var": (
-        "变量池处理器：不执行 aCLI；对显式 requires 输入执行固定四层流水线（确定性变量提取、"
-        "变量命名和归一化、类型和基数校验、受控 AI 兜底），支持 assert/derive"
-    ),
 }
 
 # ─── 默认变量池 schema（produces/requires 引用的变量名集合）───────────────────
@@ -383,27 +379,10 @@ def _calibrate_confidence(signal: dict[str, Any], quality: float) -> float:
 # 历史上 LLM 易把检查动作的自然语言标题（如「镜像文件占用检查」）写进 resource_keyword
 # （UI 的"关键字"字段），导致 instruction 留空、说明错显为关键字。此处做防御性兜底：
 # 当 acquire.args.instruction 缺失、而 resource_keyword 读起来像说明性长句时，迁回 instruction。
-_DESCRIPTION_VERBS = frozenset(
-    {
-        "检查",
-        "确认",
-        "占用",
-        "查看",
-        "判断",
-        "核对",
-        "检测",
-        "查询",
-        "分析",
-        "定位",
-        "获取",
-        "导出",
-        "验证",
-        "排查",
-        "统计",
-        "罗列",
-        "列举",
-    }
-)
+_DESCRIPTION_VERBS = frozenset({
+    "检查", "确认", "占用", "查看", "判断", "核对", "检测", "查询", "分析",
+    "定位", "获取", "导出", "验证", "排查", "统计", "罗列", "列举",
+})
 
 
 def _looks_descriptive(text: Any) -> bool:
@@ -448,7 +427,11 @@ def _clean_signal_description(signal: dict[str, Any]) -> None:
         matcher = signal.get("match")
         if isinstance(matcher, dict):
             pattern = matcher.get("pattern")
-            if isinstance(pattern, str) and _looks_descriptive(pattern) and len(pattern.strip()) >= 6:
+            if (
+                isinstance(pattern, str)
+                and _looks_descriptive(pattern)
+                and len(pattern.strip()) >= 6
+            ):
                 args["instruction"] = pattern.strip()
                 matcher["pattern"] = ""
                 signal.setdefault("provenance", {})["needs_review"] = True
@@ -512,9 +495,13 @@ def _enrich_signal(
     else:
         # 人工确认是执行授权策略，不等价于处置动作；只读诊断即使需要确认，
         # 仍保留在诊断证据图中。
-        orchestrate["phase"] = orchestrate.get("phase", "diagnostic") if allow_solution_signals else "diagnostic"
+        orchestrate["phase"] = (
+            orchestrate.get("phase", "diagnostic") if allow_solution_signals else "diagnostic"
+        )
         review.setdefault("require_human_confirm", False)
-        provenance["risk"] = provenance.get("risk", 2 if review.get("require_human_confirm") else 1)
+        provenance["risk"] = provenance.get(
+            "risk", 2 if review.get("require_human_confirm") else 1
+        )
 
     if "id" not in signal:
         signal["id"] = "sig_001"
@@ -674,7 +661,10 @@ def _normalize_simple_match_extract(signal: dict[str, Any]) -> bool:
     if not isinstance(matcher, dict) or isinstance(matcher.get("extract"), dict):
         return False
     simple_text_matcher = matcher.get("type") in {"keyword", "regex", "state"}
-    full_stdout_line_count = matcher.get("type") == "threshold" and matcher.get("aggregation") == "line_count"
+    full_stdout_line_count = (
+        matcher.get("type") == "threshold"
+        and matcher.get("aggregation") == "line_count"
+    )
     if not simple_text_matcher and not full_stdout_line_count:
         return False
     matcher["extract"] = {
@@ -735,7 +725,10 @@ def _qfk_command_capability_violation(signal: dict[str, Any]) -> str | None:
     evidence = str((signal.get("provenance") or {}).get("evidence") or "")
     instruction = str(args.get("instruction") or "")
     if re.search(r"(?:RAID|适配器|阵列卡|磁盘控制器)", f"{instruction}\n{evidence}", re.IGNORECASE):
-        return "ipmitool mc info 只能采集 BMC/MC 信息，不能采集 RAID/适配器固件；命令能力与 Candidate 目标事实不一致"
+        return (
+            "ipmitool mc info 只能采集 BMC/MC 信息，不能采集 RAID/适配器固件；"
+            "命令能力与 Candidate 目标事实不一致"
+        )
     return None
 
 
@@ -959,9 +952,9 @@ async def _call_llm(
                     ("total", total_tokens),
                 ):
                     if value:
-                        KBD_LLM_TOKENS_TOTAL.labels(operation="extract_signals", model=LLM_MODEL, type=token_type).inc(
-                            value
-                        )
+                        KBD_LLM_TOKENS_TOTAL.labels(
+                            operation="extract_signals", model=LLM_MODEL, type=token_type
+                        ).inc(value)
                 update_observation(
                     observation,
                     output={"content": content},
@@ -1139,12 +1132,19 @@ def _normalize_config_file_read(signal: dict[str, Any]) -> bool:
     if path != "/sf/cfg" and not path.startswith("/sf/cfg/"):
         return False
     path_parts = path.split("/")[3:]
-    if any(part in {"", ".", ".."} or not re.fullmatch(r"[A-Za-z0-9_.-]+", part) for part in path_parts):
+    if any(
+        part in {"", ".", ".."} or not re.fullmatch(r"[A-Za-z0-9_.-]+", part)
+        for part in path_parts
+    ):
         return False
     if file_name in {"", ".", ".."} or not re.fullmatch(SAFE_LOG_FILE_PATTERN, file_name):
         return False
 
-    system_args = {key: args[key] for key in ("host", "timeout", "instruction") if key in args}
+    system_args = {
+        key: args[key]
+        for key in ("host", "timeout", "instruction")
+        if key in args
+    }
     system_args.update({"command": "cat", "command_args": [f"{path}/{file_name}"]})
     acquire["tool"] = "qfk_system"
     acquire["args"] = system_args
@@ -1263,7 +1263,9 @@ def _unconsumed_qfk_producer_reasons(raw_signals: list[Any]) -> dict[int, str]:
         }
         unused = sorted(produced - consumed_variables)
         if unused:
-            rejected[id(signal)] = "QFK producer 产出变量未被任何下游信号消费: " + ", ".join(unused)
+            rejected[id(signal)] = (
+                "QFK producer 产出变量未被任何下游信号消费: " + ", ".join(unused)
+            )
     return rejected
 
 
@@ -1337,7 +1339,9 @@ def _validate_and_collect_signals(
         if reason_code not in REJECT_REASON_CODES:  # pragma: no cover - 内部编程错误防御
             raise ValueError(f"未知 Candidate 拒绝码: {reason_code}")
         original = original_candidates.get(id(candidate), copy.deepcopy(candidate))
-        rejected.append({"signal": original, "reason_code": reason_code, "reason": reason})
+        rejected.append(
+            {"signal": original, "reason_code": reason_code, "reason": reason}
+        )
 
     preparation_errors: dict[int, str] = {}
     for s in raw_signals:
@@ -1378,7 +1382,11 @@ def _validate_and_collect_signals(
         acquire = s.get("acquire") or {}
         tool = str(acquire.get("tool") or "")
         args = acquire.get("args") or {}
-        args_ok, _ = validate_acquire_args(tool, args) if tool in ACQUIRER_CATALOG else (False, None)
+        args_ok, _ = (
+            validate_acquire_args(tool, args)
+            if tool in ACQUIRER_CATALOG
+            else (False, None)
+        )
         if args_ok:
             catalog_violation = _qfk_catalog_violation(tool, args)
             if catalog_violation:
@@ -1470,7 +1478,9 @@ def _validate_and_collect_signals(
         ready = [
             signal
             for signal in remaining
-            if set((signal.get("orchestrate") or {}).get("requires") or []).issubset(reachable_variables)
+            if set((signal.get("orchestrate") or {}).get("requires") or []).issubset(
+                reachable_variables
+            )
         ]
         if not ready:
             break
@@ -1485,11 +1495,15 @@ def _validate_and_collect_signals(
     if remaining:
         validated = [signal for signal in validated if id(signal) in reachable_ids]
         for signal in remaining:
-            requires = sorted(set((signal.get("orchestrate") or {}).get("requires") or []) - reachable_variables)
+            requires = sorted(
+                set((signal.get("orchestrate") or {}).get("requires") or [])
+                - reachable_variables
+            )
             reject(
                 signal,
                 "run_failed",
-                "变量依赖不可达，所需 producer 未通过门禁或依赖成环: " + ", ".join(requires),
+                "变量依赖不可达，所需 producer 未通过门禁或依赖成环: "
+                + ", ".join(requires),
             )
 
     return validated, rejected
@@ -1549,7 +1563,8 @@ def _build_verification_contract(
                 signal
                 for signal in signals
                 if signal.get("id")
-                and str((signal.get("orchestrate") or {}).get("phase") or "diagnostic") != "solution"
+                and str((signal.get("orchestrate") or {}).get("phase") or "diagnostic")
+                != "solution"
             ),
             None,
         )
@@ -1573,7 +1588,8 @@ def _build_verification_contract(
     allowed_scope = {
         key: list(value)
         for key, value in scope.items()
-        if key in {"products", "versions", "components", "topology_constraints"} and isinstance(value, list)
+        if key in {"products", "versions", "components", "topology_constraints"}
+        and isinstance(value, list)
     }
     variables = _normalize_contract_variables(proposed)
     produced = {
@@ -1727,7 +1743,9 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
             "alert_info": entry.alert_info or "",
             "steps_text": entry.steps_text or "",
             "category_id": entry.category_id or entry.ai_category_id or "",
-            "images_json": [dict(item) for item in (entry.images_json or []) if isinstance(item, dict)],
+            "images_json": [
+                dict(item) for item in (entry.images_json or []) if isinstance(item, dict)
+            ],
         }
 
         prompt_template = await StrictPromptLoader.load_and_validate(
