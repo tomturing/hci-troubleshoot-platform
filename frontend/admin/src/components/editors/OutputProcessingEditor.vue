@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * QKV 产出变量处理编辑器。
- * QKV 的输入已经是 JSON 投影后的具体值，这里只负责特征、分割、AI 兜底和 QFK 断言。
+ * QKV 的输入已经是 JSON 投影后的具体值，这里只负责特征、分隔、AI 兜底和 QFK 断言。
  */
 import { computed } from 'vue'
 import { Delete, InfoFilled, Plus } from '@element-plus/icons-vue'
@@ -69,23 +69,23 @@ function setMatch(index: number, match: ProcessingSpec): void { update(index, { 
       <div class="processing-title"><el-icon><InfoFilled /></el-icon><span>产出变量处理</span></div>
       <el-button text type="primary" size="small" :icon="Plus" @click="add">添加处理</el-button>
     </div>
-    <el-alert v-if="specs.length === 0" type="info" :closable="false" title="可选：对 QKV 已取得的具体值派生变量，或执行 QFK 断言。" />
+    <el-alert v-if="specs.length === 0" type="info" :closable="false" title="可选：对 QKV 产出变量进一步处理，包括派生变量和断言判断。" />
     <div v-for="(item, index) in specs" :key="index" class="processing-unit">
       <div class="unit-header"><span>处理单元 {{ index + 1 }}</span><el-button text type="danger" size="small" :icon="Delete" @click="remove(index)">删除</el-button></div>
       <template v-if="item.mode !== 'assert'">
         <section class="processing-step">
           <div class="step-header"><span class="stage-number">1</span><div><strong>派生变量</strong><small>从已有具体值提取并写入变量池</small></div></div>
           <div class="processing-grid derive-grid">
-            <label>处理方式<el-select :model-value="item.mode || 'derive'" size="small" @change="(value: string) => setMode(index, value)"><el-option label="派生变量" value="derive" /><el-option label="断言判断" value="assert" /></el-select></label>
-            <label>输入变量<el-select :model-value="item.input" filterable size="small" placeholder="选择已有具体值" @change="(value: string) => update(index, { input: value })"><el-option v-for="value in inputOptionsFor(index)" :key="value" :label="value" :value="value" /></el-select></label>
+            <label>处理方式<el-select class="processing-control" popper-class="processing-select-popper" :model-value="item.mode || 'derive'" size="small" @change="(value: string) => setMode(index, value)"><el-option label="派生变量" value="derive" /><el-option label="断言判断" value="assert" /></el-select></label>
+            <label>输入变量<el-select class="processing-control" popper-class="processing-select-popper" :model-value="item.input" filterable size="small" placeholder="选择已有具体值" @change="(value: string) => update(index, { input: value })"><el-option v-for="value in inputOptionsFor(index)" :key="value" :label="value" :value="value" /></el-select></label>
             <label>输出变量<el-input :model-value="item.name" placeholder="如 VM_NAME" size="small" @input="(value: string) => update(index, { name: value.toUpperCase() })" /></label>
           </div>
           <div class="processing-grid derive-grid second-row">
-            <label>提取方式<el-select :model-value="extractionMode(item)" size="small" @change="(value: string) => setExtractType(index, value)"><el-option label="特征" value="feature" /><el-option label="分割" value="split" /><el-option label="AI" value="ai" /></el-select></label>
-            <label v-if="extractionMode(item) === 'feature'">特征名<el-select :model-value="item.extract?.feature" size="small" @change="(value: string) => setExtractField(index, 'feature', value)"><el-option v-for="option in featureOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></label>
-            <label v-else-if="extractionMode(item) === 'split'">分隔符<el-input :model-value="item.extract?.separator" placeholder=",、→" size="small" @input="(value: string) => setExtractField(index, 'separator', value)" /></label>
+            <label>提取方式<el-select class="processing-control" popper-class="processing-select-popper" :model-value="extractionMode(item)" size="small" @change="(value: string) => setExtractType(index, value)"><el-option label="特征" value="feature" /><el-option label="分隔" value="split" /><el-option label="AI" value="ai" /></el-select></label>
+            <label v-if="extractionMode(item) === 'feature'">特征名<el-select class="processing-control" popper-class="processing-select-popper" :model-value="item.extract?.feature" size="small" @change="(value: string) => setExtractField(index, 'feature', value)"><el-option v-for="option in featureOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></label>
+            <label v-else-if="extractionMode(item) === 'split'">分隔符<el-input class="processing-control" :model-value="item.extract?.separator" placeholder="例如：（）、<>、【】、：" size="small" @input="(value: string) => setExtractField(index, 'separator', value)" /></label>
             <label v-else class="ai-prompt">提示词<el-input :model-value="item.extract?.ai_extract?.instruction" type="textarea" :rows="2" maxlength="1000" show-word-limit placeholder="例如：提取第一个虚拟机名称" @input="(value: string) => setAiInstruction(index, value)" /></label>
-            <label>变量类型<el-select :model-value="item.type || 'string'" size="small" @change="(value: string) => update(index, { type: value })"><el-option label="字符串" value="string" /><el-option label="整数" value="integer" /><el-option label="数字" value="number" /><el-option label="百分比" value="percentage" /><el-option label="布尔值" value="boolean" /><el-option label="数组" value="array" /></el-select></label>
+            <label>变量类型<el-select class="processing-control" popper-class="processing-select-popper" :model-value="item.type || 'string'" size="small" @change="(value: string) => update(index, { type: value })"><el-option label="字符串" value="string" /><el-option label="整数" value="integer" /><el-option label="数字" value="number" /><el-option label="百分比" value="percentage" /><el-option label="布尔值" value="boolean" /><el-option label="数组" value="array" /></el-select></label>
           </div>
           <div class="step-output final"><span>最终输出</span><code>{{ item.name || '变量名' }} → 写入变量池</code></div>
         </section>
@@ -94,8 +94,8 @@ function setMatch(index: number, match: ProcessingSpec): void { update(index, { 
         <section class="processing-step">
           <div class="step-header"><span class="stage-number">1</span><div><strong>断言判断</strong><small>对 QKV 已取得的具体值复用 QFK Matcher</small></div></div>
           <div class="processing-grid assert-grid">
-            <label>处理方式<el-select :model-value="item.mode" size="small" @change="(value: string) => setMode(index, value)"><el-option label="派生变量" value="derive" /><el-option label="断言判断" value="assert" /></el-select></label>
-            <label>输入变量<el-select :model-value="item.input" filterable size="small" placeholder="选择已有具体值" @change="(value: string) => update(index, { input: value })"><el-option v-for="value in inputOptionsFor(index)" :key="value" :label="value" :value="value" /></el-select></label>
+            <label>处理方式<el-select class="processing-control" popper-class="processing-select-popper" :model-value="item.mode" size="small" @change="(value: string) => setMode(index, value)"><el-option label="派生变量" value="derive" /><el-option label="断言判断" value="assert" /></el-select></label>
+            <label>输入变量<el-select class="processing-control" popper-class="processing-select-popper" :model-value="item.input" filterable size="small" placeholder="选择已有具体值" @change="(value: string) => update(index, { input: value })"><el-option v-for="value in inputOptionsFor(index)" :key="value" :label="value" :value="value" /></el-select></label>
           </div>
           <div class="matcher-heading">判断类型及要求</div>
           <MatcherEditor :model-value="item.match || defaultAssert()" :allowed-types="matcherTypes" embedded :show-header="false" :show-extract="false" :show-step-title="false" @update:model-value="(value: ProcessingSpec) => setMatch(index, value)" />
@@ -125,7 +125,8 @@ function setMatch(index: number, match: ProcessingSpec): void { update(index, { 
 .assert-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .second-row { margin-top: 10px; }
 .processing-grid label { display: flex; flex-direction: column; gap: 5px; color: var(--el-text-color-secondary); font-size: 12px; }
-.processing-grid :deep(.el-select), .processing-grid :deep(.el-input), .ai-prompt { width: 100%; }
+.processing-control, .processing-grid :deep(.el-select), .processing-grid :deep(.el-input), .ai-prompt { width: 100%; }
+.processing-grid :deep(.el-select__selected-item), .processing-grid :deep(.el-input__inner) { font-size: 13px; }
 .ai-prompt { grid-column: span 2; }
 .matcher-heading { margin: 16px 0 8px; color: var(--el-text-color-primary); font-size: 13px; font-weight: 600; }
 .step-output { justify-content: space-between; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--el-border-color); color: var(--el-text-color-secondary); font-size: 12px; }

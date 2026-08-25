@@ -205,10 +205,10 @@ function removeProduce(index: number): void {
           <div class="step-header"><span class="stage-number">2</span><div><strong>第二步：产出</strong><small>校验结果数量和变量类型后写入变量池</small></div></div>
           <el-form label-position="left" label-width="96px" size="small">
             <el-form-item label="变量名">
-              <el-input :model-value="produce.name" placeholder="如 KVM_PID（必填）" @input="(value: string) => updateProduce(index, { name: value })" />
+              <el-input class="processing-control" :model-value="produce.name" placeholder="如 KVM_PID（必填）" @input="(value: string) => updateProduce(index, { name: value })" />
             </el-form-item>
             <el-form-item label="变量类型">
-              <el-select :model-value="produce.type || 'string'" @change="(value: string) => updateProduce(index, { type: value })">
+              <el-select class="processing-control" popper-class="processing-select-popper" :model-value="produce.type || 'string'" @change="(value: string) => updateProduce(index, { type: value })">
                 <el-option label="字符串" value="string" />
                 <el-option label="整数" value="integer" />
                 <el-option label="数字" value="number" />
@@ -358,6 +358,9 @@ function removeProduce(index: number): void {
   line-height: 26px;
 }
 .add-processing-unit { width: 100%; margin-top: 12px; }
+.processing-control { width: 100%; }
+.processing-control :deep(.el-select__selected-item),
+.processing-control :deep(.el-input__inner) { font-size: 13px; }
 
 @media (max-width: 720px) {
   .processing-header { align-items: flex-start; flex-direction: column; }

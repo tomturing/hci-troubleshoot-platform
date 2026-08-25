@@ -47,6 +47,12 @@ const menuItems = buildMenuItems(router.getRoutes())
   padding: 0;
   box-sizing: border-box;
 }
+
+/* QFK/QKV 处理编辑器及其取值子组件统一下拉选项字号。 */
+.el-select-dropdown__item,
+.processing-select-popper .el-select-dropdown__item {
+  font-size: 13px;
+}
 </style>
 
 <style scoped>

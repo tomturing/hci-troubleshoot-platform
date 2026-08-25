@@ -181,10 +181,10 @@ function setNumericValueMode(mode: 'constant' | 'variable'): void {
       </div>
     </div>
 
-    <el-form label-position="left" label-width="90px" class="matcher-form">
+    <el-form label-position="left" label-width="90px" size="small" class="matcher-form">
       <!-- 判定类型选择 -->
       <el-form-item label="判定类型">
-        <el-select v-model="matcherType" style="width: 100%;">
+        <el-select v-model="matcherType" size="small" class="processing-control" popper-class="processing-select-popper" style="width: 100%;">
           <el-option
             v-for="opt in matcherTypeOptions"
             :key="opt.value"
@@ -262,7 +262,7 @@ function setNumericValueMode(mode: 'constant' | 'variable'): void {
       <!-- threshold 类型参数 -->
       <template v-else-if="matcherType === 'threshold'">
         <el-form-item label="聚合方式">
-          <el-select v-model="matcher.aggregation" style="width: 100%;">
+          <el-select v-model="matcher.aggregation" class="processing-control" popper-class="processing-select-popper" style="width: 100%;">
             <el-option label="首个取值" value="first_number" />
             <el-option label="最后数值（最后一个样本）" value="last_number" />
             <el-option label="最大值（所有样本）" value="max" />
@@ -273,7 +273,7 @@ function setNumericValueMode(mode: 'constant' | 'variable'): void {
           </el-select>
         </el-form-item>
         <el-form-item label="运算符">
-          <el-select v-model="matcher.operator" style="width: 100%;">
+          <el-select v-model="matcher.operator" class="processing-control" popper-class="processing-select-popper" style="width: 100%;">
             <el-option
               v-for="opt in operatorOptions"
               :key="opt.value"
@@ -304,7 +304,7 @@ function setNumericValueMode(mode: 'constant' | 'variable'): void {
 
       <template v-else-if="matcherType === 'delta'">
         <el-form-item label="运算符">
-          <el-select v-model="matcher.operator" style="width: 100%;">
+          <el-select v-model="matcher.operator" class="processing-control" popper-class="processing-select-popper" style="width: 100%;">
             <el-option v-for="opt in operatorOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
           </el-select>
         </el-form-item>
@@ -323,7 +323,7 @@ function setNumericValueMode(mode: 'constant' | 'variable'): void {
 
       <template v-else-if="matcherType === 'trend'">
         <el-form-item label="趋势方向">
-          <el-select v-model="matcher.direction" style="width: 100%;">
+          <el-select v-model="matcher.direction" class="processing-control" popper-class="processing-select-popper" style="width: 100%;">
             <el-option label="连续上升" value="increasing" />
             <el-option label="连续下降" value="decreasing" />
             <el-option label="保持稳定" value="stable" />
@@ -444,4 +444,8 @@ function setNumericValueMode(mode: 'constant' | 'variable'): void {
   gap: 6px;
   width: 100%;
 }
+
+.processing-control { width: 100%; }
+.processing-control :deep(.el-select__selected-item),
+.processing-control :deep(.el-input__inner) { font-size: 13px; }
 </style>
