@@ -48,6 +48,7 @@ from shared.schemas.signal_output import sync_signal_requires
 from shared.schemas.signal_schema import (
     certify_publishable_signals_json,
     normalize_optional_matcher_nulls,
+    normalize_qkv_output_processing_matchers,
     validate_draft_signals_json,
     validate_kbd_publishable_signals_json,
 )
@@ -280,7 +281,16 @@ def _prepare_expert_draft_signals(
 
     document = copy.deepcopy(_load_signals_json(raw))
     _strip_legacy_expert_provenance_flags(document)
+    migrated_qkv_matchers = normalize_qkv_output_processing_matchers(document)
     normalize_optional_matcher_nulls(document)
+    if migrated_qkv_matchers:
+        logger.info(
+            event="kbd_qkv_output_processing_legacy_matcher_migrated",
+            kbd_id=kbd_id,
+            operation=operation,
+            migrated_matcher_count=migrated_qkv_matchers,
+            trace_id=get_current_trace_id(),
+        )
     document, _ = reconcile_verification_contract(document)
     try:
         document = _normalize_qfk_system_command_args(document)
