@@ -661,7 +661,25 @@ onMounted(() => loadBundles())
               <div><span class="field-label">Variant</span><span>{{ row.variant }}</span></div>
               <div><span class="field-label">目标</span><span>{{ row.route_key.node }} / {{ row.route_key.container }}</span></div>
             </div>
-            <div class="route-command"><span class="field-label">命令（只读）</span><code>{{ row.route_key.argv.join(' ') }}</code></div>
+            <div class="route-command">
+              <span class="field-label">命令参数（可编辑，每行一个）</span>
+              <el-input
+                :model-value="row.route_key.argv.join('\n')"
+                type="textarea"
+                :rows="Math.max(2, row.route_key.argv.length)"
+                class="mono-input"
+                resize="vertical"
+                @update:model-value="(val: string) => (row.route_key.argv = val.split('\n').map((t: string) => t.trim()).filter((t: string) => t.length > 0))"
+              />
+              <code class="route-command-preview">{{ row.route_key.argv.join(' ') }}</code>
+              <el-button
+                size="small"
+                text
+                type="primary"
+                class="route-command-reset"
+                @click="row.route_key.argv = (selected.manifest?.routes.find((r: ManifestRoute) => r.id === row.id)?.route_key.argv || [])"
+              >还原</el-button>
+            </div>
             <div class="route-response-grid">
               <label><span class="field-label">stdout</span><el-input v-model="row.result.stdout" type="textarea" :rows="4" resize="vertical" class="mono-input" /></label>
               <label><span class="field-label">stderr</span><el-input v-model="row.result.stderr" type="textarea" :rows="4" resize="vertical" class="mono-input" /></label>
@@ -1158,14 +1176,30 @@ onMounted(() => loadBundles())
 }
 
 .route-command {
+  display: block;
   padding: 10px 12px;
   border-radius: 4px;
   background: #f7f8fa;
 }
 
-.route-command code {
+.route-command .mono-input {
+  margin: 4px 0;
+}
+
+.route-command-preview {
+  display: block;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  padding: 6px 8px;
+  margin-top: 4px;
+  background: #1e293b;
+  color: #e2e8f0;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.route-command-reset {
+  margin-top: 6px;
 }
 
 .route-response-grid {
