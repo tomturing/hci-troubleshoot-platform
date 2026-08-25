@@ -417,7 +417,7 @@ terminalBridge:
   # 通过 NetworkPolicy 静默放行真实 HCI 网段。
   networkPolicy:
     enabled: true
-    ingressNamespace: traefik
+    ingressNamespace: kube-system
     hciSimNamespace: hci-sim-dev
     hciSimSshPort: 2222
     observabilityNamespace: hci-observability

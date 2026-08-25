@@ -18,7 +18,7 @@ tests:
           value: terminal-bridge
       - equal:
           path: spec.ingress[0].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
-          value: traefik
+          value: kube-system
       - equal:
           path: spec.egress[1].to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
           value: hci-sim-dev
