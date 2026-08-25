@@ -105,11 +105,42 @@ class ExecResult:
     error_type: str | None = None
 
 
+def _exit_code_to_meaning(exit_code: int) -> str:
+    """将退出码转换为语义化描述"""
+    meanings = {
+        0: "success",
+        124: "timeout",
+        126: "permission_denied",
+        127: "command_not_found",
+        -1: "execution_failed",
+    }
+    return meanings.get(exit_code, f"exit_code_{exit_code}")
+
+
+def _extract_error_summary(result: ExecResult) -> str | None:
+    """提取错误摘要，用于快速诊断"""
+    if result.error_type:
+        return f"[{result.error_type}] {smart_truncate(result.stderr or 'Unknown error', 200)}"
+    if result.stderr:
+        return smart_truncate(result.stderr, 200)
+    if result.exit_code != 0:
+        return f"Exit code {result.exit_code}: {_exit_code_to_meaning(result.exit_code)}"
+    return None
+
+
 def exec_result_observation(result: ExecResult) -> dict[str, Any]:
-    """生成不含命令原文与输出正文的 Langfuse 工具观测摘要。"""
-    # 可观测性契约要求字段集合稳定：成功时 error_type=null、空流时 bytes=0
-    # 与字段缺失具有不同语义，不能为了缩短 JSON 而过滤 None/零值。
-    return {
+    """生成包含执行摘要和诊断信息的 Langfuse 工具观测数据。
+
+    此函数返回的数据将写入 Langfuse TOOL observation 的 output 字段，
+    用于诊断命令执行结果和失败原因。
+
+    设计原则：
+      1. 字段集稳定：成功时 error_type=null、空流时 bytes=0，不能省略
+      2. 提供诊断信息：包含 stdout/stderr 预览和错误摘要
+      3. 保护敏感数据：不包含完整命令原文和完整输出
+    """
+    obs: dict[str, Any] = {
+        # 原有元数据（保持稳定字段集）
         "exec_id": result.exec_id,
         "otel_trace_id": result.trace_id,
         "artifact_id": result.artifact_id,
@@ -122,7 +153,21 @@ def exec_result_observation(result: ExecResult) -> dict[str, Any]:
         "error_type": result.error_type,
         "exit_code": result.exit_code,
         "duration_ms": result.duration_ms,
+
+        # 新增：执行摘要（用于诊断）
+        "success": result.exit_code == 0 and not result.error_type,
+        "exit_code_meaning": result.exit_code_meaning or _exit_code_to_meaning(result.exit_code),
+        "node": result.node,
+        "command_type": result.container or "host",
+
+        # 新增：输出摘要（截断到合理长度，用于快速诊断）
+        "stdout_preview": smart_truncate(result.stdout, 500) if result.stdout else "",
+        "stderr_preview": smart_truncate(result.stderr, 300) if result.stderr else "",
+
+        # 新增：错误信息（仅失败时）
+        "error_summary": _extract_error_summary(result) if result.exit_code != 0 or result.error_type else None,
     }
+    return obs
 
 
 # ─────────────────────────────────────────────────────────────────────────────

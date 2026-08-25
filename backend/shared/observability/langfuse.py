@@ -338,10 +338,21 @@ def update_observation(
     level: str | None = None,
     status_message: str | None = None,
 ) -> None:
-    """以统一脱敏策略结束前更新 observation。"""
+    """以统一脱敏策略更新 observation，确保数据完整性。
 
+    此函数更新 observation 的输出和元数据，并记录调试日志以便追踪数据写入情况。
+
+    Args:
+        observation: Langfuse observation 对象
+        output: 输出数据（将被脱敏处理）
+        metadata: 元数据字典
+        usage_details: token 使用详情（用于 GENERATION 类型）
+        level: 日志级别（DEBUG、DEFAULT、WARNING、ERROR）
+        status_message: 状态消息（通常用于错误信息）
+    """
     if observation is None:
         return
+
     try:
         kwargs: dict[str, Any] = {
             "output": _content_summary(output, capture_content=_current_content_capture.get()),
@@ -353,9 +364,21 @@ def update_observation(
             kwargs["level"] = level
         if status_message:
             kwargs["status_message"] = status_message[:1000]
+
         observation.update(**kwargs)
+
+        # 记录调试日志，用于追踪数据写入
+        logger.debug(
+            event="langfuse_observation_updated",
+            has_output=output is not None,
+            has_metadata=metadata is not None,
+            has_status_message=status_message is not None,
+        )
     except Exception as exc:
-        logger.warning(event="langfuse_observation_update_error", error=str(exc))
+        logger.warning(
+            event="langfuse_observation_update_error",
+            error=str(exc),
+        )
 
 
 async def observe_invoke(
@@ -578,27 +601,47 @@ def observe_tool(
     risk_level: int = 1,
     trace_id: str = "",
 ) -> Generator[Any, None, None]:
-    """为 ReAct 工具执行创建 Langfuse tool observation（context manager）。
+    """为工具执行创建 Langfuse tool observation，确保数据完整性。
 
-    在 _execute_tool_call 中嵌入，记录工具调用的 input（参数）、output（执行结果）和错误信息。
+    此函数使用 `start_observation` 创建 observation，而不是 `start_as_current_observation`，
+    以确保数据能够正确写入 Langfuse。数据通过 OTel Span Exporter 异步导出。
+
+    Args:
+        tool_name: 工具名称（如 "acli_exec"、"qkv_task"）
+        tool_args: 工具参数（将被脱敏处理）
+        exec_id: 执行流水号，用于关联具体执行
+        session_id: 会话标识（通常是 conversation_id 或 case_id）
+        risk_level: 风险等级（1=低风险只读，2=需确认，3=高风险）
+        trace_id: W3C trace ID，用于跨服务追踪
+
+    Yields:
+        Langfuse observation 对象，或 None（Langfuse 未配置时）
 
     Usage:
-        with observe_tool(tool_name="acli_exec", tool_args={...}, exec_id=...) as obs:
+        with observe_tool(
+            tool_name="acli_exec",
+            tool_args={"command": "acli log get -k keyword"},
+            exec_id="exec-123",
+            session_id="conv-456",
+            risk_level=1,
+            trace_id="abc123",
+        ) as obs:
             result = await executor.execute(...)
             if obs:
-                obs.update(output=str(result))
-
-    若 Langfuse 未配置，gracefully 降级为 noop。
+                obs.update(output=exec_result_observation(result))
     """
     lf = get_langfuse()
     if lf is None:
         yield None
         return
 
+    observation = None
     try:
         from shared.observability.redaction import redact_observation_value
 
-        with lf.start_as_current_observation(
+        # 使用 start_observation 创建 observation（不是 start_as_current_observation）
+        # 这样可以确保数据通过 OTel Span Exporter 正确导出
+        observation = lf.start_observation(
             as_type="tool",
             name=f"tool.{tool_name}",
             input=redact_observation_value(tool_args),
@@ -607,12 +650,50 @@ def observe_tool(
                 "session_id": session_id,
                 "risk_level": risk_level,
                 "otel_trace_id": trace_id,
+                "tool_name": tool_name,
             },
-        ) as obs:
-            yield obs
+        )
+
+        # 记录 observation 创建成功
+        logger.debug(
+            event="langfuse_observation_created",
+            observation_id=observation.id if hasattr(observation, 'id') else None,
+            tool_name=tool_name,
+            exec_id=exec_id,
+        )
+
+        yield observation
+
     except Exception as e:
-        logger.warning(event="langfuse_tool_observe_error", error=str(e))
+        logger.warning(
+            event="langfuse_tool_observe_error",
+            tool_name=tool_name,
+            error=str(e),
+            exec_id=exec_id,
+        )
+        # 如果创建成功但后续出错，更新错误状态
+        if observation:
+            try:
+                observation.update(
+                    level="ERROR",
+                    status_message=str(e)[:1000],
+                )
+            except Exception as update_err:
+                logger.warning(
+                    event="langfuse_observation_update_error",
+                    error=str(update_err),
+                )
         yield None
+    finally:
+        # 确保 observation 被正确结束
+        if observation:
+            try:
+                observation.end()
+            except Exception as end_err:
+                logger.warning(
+                    event="langfuse_observation_end_error",
+                    error=str(end_err),
+                )
 
 
 @contextmanager
