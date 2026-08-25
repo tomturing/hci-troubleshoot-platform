@@ -324,6 +324,19 @@ def test_qkv_output_processing_is_optional_and_declares_derived_producer():
     with pytest.raises(ValidationError, match="派生变量重复"):
         validate_signals_json(duplicate_target)
 
+    unknown_input = {**document, "signals": [{**document["signals"][0], "orchestrate": {
+        **document["signals"][0]["orchestrate"],
+        "output_processing": [{
+            "id": "unknown",
+            "mode": "derive",
+            "input": "{{NOT_PRODUCED}}",
+            "operation": "trim",
+            "target_variable": "VM_NAME",
+        }],
+    }}]}
+    with pytest.raises(ValidationError, match="未声明变量"):
+        validate_signals_json(unknown_input)
+
 
 def test_text_extract_allows_grounded_ai_extract_instruction():
     document = _qfk_produce(

@@ -679,9 +679,7 @@
             "string",
             "integer",
             "number",
-            "percentage",
-            "boolean",
-            "array"
+            "percentage"
           ]
         },
         "cardinality": {

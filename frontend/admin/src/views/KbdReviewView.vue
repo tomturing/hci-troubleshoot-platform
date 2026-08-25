@@ -7,7 +7,7 @@ import { FullScreen, InfoFilled, Refresh, Upload } from '@element-plus/icons-vue
 import { useCategories } from '../composables/useCategories'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { QfkProcessingEditor } from '@/components/editors'
+import { OutputProcessingEditor, QfkProcessingEditor } from '@/components/editors'
 import type { SignalV2, SignalsDoc, ChangeAnnotation } from '@/utils/kbdSignalTypes'
 import { generateUUID } from '@hci/shared'
 import {
@@ -2548,7 +2548,19 @@ function deriveSignalRequires(sig: SignalV2): string[] {
   // 数值 Matcher 的阈值可以引用变量，必须纳入自动生成的输入变量契约。
   collect(sig.match || {})
   for (const produce of sig.orchestrate?.produces || []) collect(produce?.extract || {})
-  return [...found].sort()
+  const local = new Set<string>()
+  for (const produce of sig.orchestrate?.produces || []) {
+    for (const key of ['name', 'alias']) {
+      const value = String((produce as any)?.[key] || '').trim().toUpperCase()
+      if (value) local.add(value)
+    }
+  }
+  for (const processing of sig.orchestrate?.output_processing || []) {
+    collect(processing?.input)
+    const target = String((processing as any)?.target_variable || '').trim().toUpperCase()
+    if (processing?.mode === 'derive' && target) local.add(target)
+  }
+  return [...found].filter((name) => !local.has(name.split('.')[0].toUpperCase())).sort()
 }
 
 function syncDraftRequires() {
@@ -4652,6 +4664,14 @@ onUnmounted(() => clearBatchPollTimer())
                       <span v-else class="text-muted">—</span>
                     </div>
                   </div>
+                  <div v-if="(sigOrch(item.sig).output_processing || []).length" class="signal-row">
+                    <span class="signal-k">输出后处理</span>
+                    <div class="signal-v">
+                      <el-tag v-for="processing in sigOrch(item.sig).output_processing" :key="processing.id" size="small" effect="plain" style="margin-right: 6px">
+                        {{ processing.mode === 'assert' ? `判断：${processing.input} ${processing.operator || ''} ${processing.right || ''}` : `提取：${processing.input} → ${processing.target_variable}` }}
+                      </el-tag>
+                    </div>
+                  </div>
                   <!-- 来源证据固定在信号卡片最后：它是只读溯源，不应打断专家对可执行字段的阅读。 -->
                   <details class="signal-evidence-details">
                     <summary>来源证据（默认收起，不参与编辑）</summary>
@@ -4775,6 +4795,10 @@ onUnmounted(() => clearBatchPollTimer())
                       </div>
                     </div>
                     <div class="field-hint" v-pre>抽取后写入变量池的变量名(name)与取值路径(path)，供下游消费者信号（QFK）通过 {{变量名}} 引用；同一 KBD 两个信号产出同名变量时，填「别名」区分（如 END1/END2），别名即实际变量 key</div>
+                    <OutputProcessingEditor
+                      v-model="signalEditDraft.orchestrate.output_processing"
+                      :produces="signalEditDraft.orchestrate.produces || []"
+                    />
                   </template>
                 </div>
               </div>

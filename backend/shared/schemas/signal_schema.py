@@ -713,8 +713,16 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                     f"signals[{index}] 的 {tool} 只支持 JSON path，不支持文本 extract",
                     path=["signals", index, "orchestrate", "produces"],
                 )
+            processing_specs = (signal.get("orchestrate") or {}).get("output_processing")
+            available_inputs = {
+                str(item.get(key) or "").strip().upper()
+                for item in produces
+                if isinstance(item, dict)
+                for key in ("name", "alias")
+                if str(item.get(key) or "").strip()
+            }
             try:
-                validate_output_processing((signal.get("orchestrate") or {}).get("output_processing"))
+                validate_output_processing(processing_specs, available_inputs=available_inputs)
             except QKVProcessingError as exc:
                 raise ValidationError(
                     f"signals[{index}].orchestrate.output_processing 无效: {exc.message}",

@@ -121,6 +121,28 @@ def test_instruction_text_does_not_split_identical_runtime_acquisition():
     assert {ref.signal_id for ref in acquisition.signal_refs} == {"gpu-type", "slice-type"}
 
 
+def test_qkv_shared_acquisition_keeps_distinct_processing_consumers():
+    first = signal("description-vm", "qkv_task", "启动失败")
+    second = signal("description-host", "qkv_task", "启动失败")
+    for item, target, feature in ((first, "VM_NAME", "vm_name"), (second, "HOST_NAME", "host")):
+        item["match"] = None
+        item["orchestrate"]["produces"] = [{"name": "DESCRIPTION", "path": "description"}]
+        item["orchestrate"]["output_processing"] = [{
+            "id": target.lower(), "mode": "derive", "input": "{{DESCRIPTION}}",
+            "operation": "feature_extract", "feature": feature, "target_variable": target,
+        }]
+
+    plan = compile_signal_plan([kbd("shared-qkv", [first, second])])
+
+    assert plan.compile_errors == {}
+    assert len(plan.acquisitions) == 1
+    acquisition = next(iter(plan.acquisitions.values()))
+    assert {ref.signal_id for ref in acquisition.signal_refs} == {"description-vm", "description-host"}
+    assert {"vm_name", "host_name"} == {
+        ref.produces[-1] for ref in plan.signals.values()
+    }
+
+
 def test_required_fail_rejects_candidate_and_removes_exclusive_work():
     plan = compile_signal_plan([kbd("1", [signal("a", "first", "x"), signal("b", "exclusive", "y")])])
     assessments = initial_assessments(plan)

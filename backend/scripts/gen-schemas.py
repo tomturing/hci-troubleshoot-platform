@@ -282,7 +282,7 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     },
                     "value_type": {
                         "type": "string",
-                        "enum": ["string", "integer", "number", "percentage", "boolean", "array"],
+                        "enum": ["string", "integer", "number", "percentage"],
                     },
                     "cardinality": {
                         "type": "string",

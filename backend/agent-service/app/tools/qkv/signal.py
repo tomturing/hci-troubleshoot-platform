@@ -150,7 +150,14 @@ class FrontendSignal(BaseModel):
 
     @model_validator(mode="after")
     def _validate_output_processing(self) -> FrontendSignal:
-        validate_output_processing(self.output_processing)
+        available_inputs = {
+            str(item.get(key) or "").strip().upper()
+            for item in self.produces
+            if isinstance(item, dict)
+            for key in ("name", "alias")
+            if str(item.get(key) or "").strip()
+        }
+        validate_output_processing(self.output_processing, available_inputs=available_inputs)
         return self
 
     @classmethod
