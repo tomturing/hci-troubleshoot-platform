@@ -65,6 +65,27 @@ def test_producer_unlock_value_schedules_before_consumer():
     assert selected[1].unlock == 1
 
 
+def test_qkv_output_processing_target_unlocks_downstream_consumer():
+    producer = signal("producer", "qkv_task", "x")
+    producer["match"] = None
+    producer["orchestrate"]["produces"] = [{"name": "DESCRIPTION", "path": "description"}]
+    producer["orchestrate"]["output_processing"] = [{
+        "id": "vm-name",
+        "mode": "derive",
+        "input": "{{DESCRIPTION}}",
+        "operation": "feature_extract",
+        "feature": "vm_name",
+        "target_variable": "VM_NAME",
+    }]
+    consumer = signal("consumer", "qfk_system", "y", requires=("VM_NAME",))
+    plan = compile_signal_plan([kbd("qkv-postprocess", [producer, consumer])])
+
+    assert plan.compile_errors == {}
+    producer_ref = next(ref for ref in plan.signals.values() if ref.signal_id == "producer")
+    assert "vm_name" in producer_ref.produces
+    assert next(ref for ref in plan.signals.values() if ref.signal_id == "consumer").requires == ("vm_name",)
+
+
 def test_discriminating_shared_acquisition_wins_over_plain_coverage():
     candidates = [
         kbd("1", [signal("shared-1", "shared", "A"), signal("plain-1", "plain", "same")]),

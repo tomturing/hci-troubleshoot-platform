@@ -9,6 +9,7 @@ from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
+from shared.signals.qkv_output_processing import validate_output_processing
 
 
 class FrontendQueryType(StrEnum):
@@ -88,6 +89,10 @@ class FrontendSignal(BaseModel):
         default_factory=list,
         description="产出变量规格：[{name: 'HOST', path: 'host'}, ...]，为空时 parser 走硬编码兜底",
     )
+    output_processing: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="QKV produces 完成后执行的可选确定性后处理；不创建新的采集信号",
+    )
     # ── qkv_vm_console 专用目标参数（其余 query 类型不使用）──
     host: str | None = Field(default=None, description="vm_console/effect 目标宿主机（{{HOST}} 或规范化节点标识）")
     vm_id: str | None = Field(default=None, description="vm_console 目标 VMID（{{VM_ID}} 或精确数值）")
@@ -143,6 +148,11 @@ class FrontendSignal(BaseModel):
                 raise ValueError("qkv_effect.timeout 必须在 1-60（单次观测快速失败）")
         return self
 
+    @model_validator(mode="after")
+    def _validate_output_processing(self) -> FrontendSignal:
+        validate_output_processing(self.output_processing)
+        return self
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> FrontendSignal:
         """从字典构建并校验，自动清洗关键词和检测状态。
@@ -169,6 +179,7 @@ class FrontendSignal(BaseModel):
                 "paths": args.get("paths", ["/sf/log/today", "/sf/log/today/vt"]),
                 "context_lines": args.get("context_lines", 2),
                 "produces": (data.get("orchestrate") or {}).get("produces", []),
+                "output_processing": (data.get("orchestrate") or {}).get("output_processing", []),
                 "host": args.get("host"),
                 "vm_id": args.get("vm_id"),
                 "capture_mode": args.get("capture_mode", "baseline_then_optional_wake"),

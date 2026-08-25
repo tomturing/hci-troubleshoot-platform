@@ -286,6 +286,45 @@ def test_qfk_produce_path_and_extract_conflict_has_actionable_message():
     assert "extract" in issue["message"]
 
 
+def test_qkv_output_processing_is_optional_and_declares_derived_producer():
+    document = {
+        "schema_version": 2,
+        "signals": [{
+            "id": "qkv_description_processing",
+            "acquire": {"tool": "qkv_task", "args": {"keyword": "虚拟机无法启动"}},
+            "match": None,
+            "orchestrate": {
+                "produces": [{"name": "DESCRIPTION", "path": "description", "type": "string"}],
+                "output_processing": [{
+                    "id": "extract-vm",
+                    "mode": "derive",
+                    "input": "{{DESCRIPTION}}",
+                    "operation": "feature_extract",
+                    "feature": "vm_name",
+                    "target_variable": "VM_NAME",
+                }],
+            },
+        }],
+    }
+    validate_signals_json(document)
+
+    invalid = {**document, "signals": [{**document["signals"][0], "orchestrate": {
+        **document["signals"][0]["orchestrate"],
+        "output_processing": [{"id": "bad", "mode": "derive", "input": "{{DESCRIPTION}}", "operation": "eval"}],
+    }}]}
+    with pytest.raises(ValidationError):
+        validate_signals_json(invalid)
+
+    duplicate_target = {**document, "signals": [{**document["signals"][0], "orchestrate": {
+        **document["signals"][0]["orchestrate"],
+        "output_processing": [
+            {"id": "one", "mode": "derive", "input": "{{DESCRIPTION}}", "operation": "trim", "target_variable": "DESCRIPTION"},
+        ],
+    }}]}
+    with pytest.raises(ValidationError, match="派生变量重复"):
+        validate_signals_json(duplicate_target)
+
+
 def test_text_extract_allows_grounded_ai_extract_instruction():
     document = _qfk_produce(
         {

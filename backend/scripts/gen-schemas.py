@@ -253,7 +253,74 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                         },
                     },
                     "requires": {"type": "array", "items": {"type": "string"}},
+                    "output_processing": {
+                        "type": "array",
+                        "description": "QKV produces 完成后的可选确定性后处理，不创建新的采集信号",
+                        "items": {"$ref": "#/definitions/outputProcessing"},
+                    },
                 },
+            },
+            "outputProcessing": {
+                "type": "object",
+                "description": "QKV 投影变量的受控后处理；禁止脚本和动态变量名",
+                "additionalProperties": False,
+                "required": ["id", "mode", "input", "operation"],
+                "properties": {
+                    "id": {"type": "string", "minLength": 1},
+                    "mode": {"type": "string", "enum": ["derive", "assert"]},
+                    "input": {"type": "string", "minLength": 1},
+                    "operation": {
+                        "type": "string",
+                        "enum": [
+                            "json_path", "trim", "lower", "upper", "split",
+                            "compare", "feature_extract",
+                        ],
+                    },
+                    "target_variable": {
+                        "type": "string",
+                        "pattern": "^[A-Z][A-Z0-9_]*$",
+                    },
+                    "value_type": {
+                        "type": "string",
+                        "enum": ["string", "integer", "number", "percentage", "boolean", "array"],
+                    },
+                    "cardinality": {
+                        "type": "string",
+                        "enum": ["exactly_one", "zero_or_more", "all"],
+                        "default": "exactly_one",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["per_record", "single"],
+                        "default": "per_record",
+                    },
+                    "feature": {"type": "string"},
+                    "path": {"type": "string", "minLength": 1},
+                    "separator": {"type": "string", "minLength": 1},
+                    "operator": {
+                        "type": "string",
+                        "enum": [">", ">=", "<", "<=", "==", "=", "!="],
+                    },
+                    "right": {},
+                    "fallback": {"type": "string", "enum": ["none", "ai_extract"]},
+                },
+                "allOf": [
+                    {
+                        "if": {"properties": {"mode": {"const": "derive"}}, "required": ["mode"]},
+                        "then": {"required": ["target_variable"]},
+                    },
+                    {
+                        "if": {"properties": {"mode": {"const": "assert"}}, "required": ["mode"]},
+                        "then": {"not": {"required": ["target_variable"]}},
+                    },
+                    {
+                        "if": {"properties": {"operation": {"const": "compare"}}, "required": ["operation"]},
+                        "then": {
+                            "properties": {"mode": {"const": "assert"}},
+                            "required": ["mode"],
+                        },
+                    },
+                ],
             },
             "rowRange": {
                 "type": "object",

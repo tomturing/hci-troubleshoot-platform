@@ -83,6 +83,7 @@ class VmConsoleCaptureResult:
     exec_id: str | None = None
     capture_id: str | None = None
     resolution: dict[str, Any] = field(default_factory=dict)
+    processing_applied: bool = False
 
     def to_observation(self) -> str:
         if not self.success:

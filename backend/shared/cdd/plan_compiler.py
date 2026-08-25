@@ -217,7 +217,17 @@ def compile_signal_plan(
             failure_effect = str(signal.get("failure_effect") or ("reject" if required else "no_support"))
             orchestrate = signal.get("orchestrate") or {}
             requires = _names(orchestrate.get("requires") or signal.get("requires"))
-            produces = _names(orchestrate.get("produces") or signal.get("produces"))
+            produces = set(_names(orchestrate.get("produces") or signal.get("produces")))
+            if tool.startswith("qkv_"):
+                produces.update(
+                    _names(
+                        [
+                            item.get("target_variable")
+                            for item in orchestrate.get("output_processing") or []
+                            if isinstance(item, dict) and item.get("mode") == "derive"
+                        ]
+                    )
+                )
             ref_id = f"{kbd.id}/{revision}/{signal_id}"
             ref = SignalRef(
                 ref_id=ref_id,
@@ -230,7 +240,7 @@ def compile_signal_plan(
                 evidence_role=evidence_role,
                 failure_effect=failure_effect,
                 requires=requires,
-                produces=produces,
+                produces=tuple(sorted(produces)),
                 phase=phase,
                 matcher_fingerprint=_fingerprint(signal.get("match")),
             )

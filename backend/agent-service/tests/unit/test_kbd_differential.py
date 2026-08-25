@@ -179,6 +179,68 @@ def test_state_matching_is_exact_after_json_extract():
     assert diag._evaluate_matcher(matcher, '{"status":"running-extra"}') is False
 
 
+@pytest.mark.asyncio
+async def test_qkv_output_processing_commits_raw_and_derived_values_atomically():
+    diag = _diag()
+    signal = {
+        "acquire": {"tool": "qkv_alert", "args": {}},
+        "orchestrate": {
+            "produces": [{"name": "DESCRIPTION", "path": "description"}],
+            "output_processing": [{
+                "id": "vm",
+                "mode": "derive",
+                "input": "{{DESCRIPTION}}",
+                "operation": "feature_extract",
+                "target_variable": "VM_NAME",
+                "feature": "vm_name",
+            }],
+        },
+    }
+    result = SimpleNamespace(
+        values=[{"description": "虚拟机名称：vm-001"}],
+        processing_applied=False,
+    )
+
+    await diag._fill_pool_from_qkv(signal, result)
+
+    assert diag._variable_pool == {
+        "description": "虚拟机名称：vm-001",
+        "vm_name": "vm-001",
+    }
+
+
+@pytest.mark.asyncio
+async def test_qkv_output_processing_multiple_records_commit_derived_list():
+    diag = _diag()
+    signal = {
+        "acquire": {"tool": "qkv_alert", "args": {}},
+        "orchestrate": {
+            "produces": [{"name": "DESCRIPTION", "path": "description"}],
+            "output_processing": [{
+                "id": "vm",
+                "mode": "derive",
+                "input": "{{DESCRIPTION}}",
+                "operation": "feature_extract",
+                "target_variable": "VM_NAME",
+                "feature": "vm_name",
+            }],
+        },
+    }
+    result = SimpleNamespace(
+        values=[
+            {"description": "虚拟机名称：vm-001"},
+            {"description": "虚拟机名称：vm-002"},
+        ],
+        processing_applied=False,
+    )
+
+    await diag._fill_pool_from_qkv(signal, result)
+
+    # 原 produces 变量沿用既有 QKV 语义取首条；后处理派生变量按多记录汇总。
+    assert diag._variable_pool["description"] == "虚拟机名称：vm-001"
+    assert diag._variable_pool["vm_name"] == ["vm-001", "vm-002"]
+
+
 def test_numeric_matcher_threshold_resolves_variable_before_comparison():
     diag = _diag()
     matcher = {

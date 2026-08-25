@@ -31,6 +31,7 @@ from shared.schemas.log_source_catalog import (
 )
 from shared.schemas.signal_generation import current_tool_contract_revision
 from shared.schemas.signal_output import derive_signal_requires
+from shared.signals.qkv_output_processing import QKVProcessingError, validate_output_processing
 
 _SIGNALS_DIR = Path(__file__).resolve().parent / "signals"
 _MATCHER_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
@@ -576,6 +577,12 @@ def _collect_variable_sources(raw: dict[str, Any]) -> tuple[
                     produces.add(name)
             elif str(item).strip():
                 produces.add(str(item).strip().upper())
+        if str((signal.get("acquire") or {}).get("tool") or "").startswith("qkv_"):
+            for item in orchestrate.get("output_processing") or []:
+                if isinstance(item, dict) and item.get("mode") == "derive":
+                    target = str(item.get("target_variable") or "").strip().upper()
+                    if target:
+                        produces.add(target)
         nodes.append((signal_id, requires, produces))
 
     all_produced = {name for _, _, produces in nodes for name in produces}
@@ -706,7 +713,35 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                     f"signals[{index}] 的 {tool} 只支持 JSON path，不支持文本 extract",
                     path=["signals", index, "orchestrate", "produces"],
                 )
+            try:
+                validate_output_processing((signal.get("orchestrate") or {}).get("output_processing"))
+            except QKVProcessingError as exc:
+                raise ValidationError(
+                    f"signals[{index}].orchestrate.output_processing 无效: {exc.message}",
+                    path=["signals", index, "orchestrate", "output_processing"],
+                ) from exc
+            declared_names = {
+                str(item.get("name") or item.get("alias") or "").strip().casefold()
+                for item in produces
+                if isinstance(item, dict) and str(item.get("name") or item.get("alias") or "").strip()
+            }
+            processing_names: set[str] = set()
+            for processing in (signal.get("orchestrate") or {}).get("output_processing") or []:
+                if not isinstance(processing, dict) or processing.get("mode") != "derive":
+                    continue
+                target = str(processing.get("target_variable") or "").strip().casefold()
+                if target in declared_names or target in processing_names:
+                    raise ValidationError(
+                        f"signals[{index}] 的 output_processing 派生变量重复: {processing.get('target_variable')}",
+                        path=["signals", index, "orchestrate", "output_processing"],
+                    )
+                processing_names.add(target)
             continue
+        if (signal.get("orchestrate") or {}).get("output_processing"):
+            raise ValidationError(
+                f"signals[{index}] 的 output_processing 仅允许配置在 qkv_* Signal 上",
+                path=["signals", index, "orchestrate", "output_processing"],
+            )
         if not isinstance(tool, str) or not tool.startswith("qfk_"):
             continue
         command = str(((signal.get("acquire") or {}).get("args") or {}).get("command") or "")
