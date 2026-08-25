@@ -3,6 +3,10 @@
 Langfuse v3 SDK 集成修复验证脚本
 
 此脚本用于验证 Langfuse observation 数据是否正确写入。
+
+使用方法：
+    cd /aihci/hci-troubleshoot-platform
+    uv run python backend/agent-service/tests/manual/test_langfuse_fix.py
 """
 
 import os
@@ -15,7 +19,7 @@ sys.path.insert(0, backend_path)
 # 设置 PYTHONPATH 环境变量
 os.environ['PYTHONPATH'] = backend_path
 
-from backend.agent-service.app.tools.acli.executor import ExecResult, exec_result_observation
+from app.tools.acli.executor import ExecResult, exec_result_observation
 
 
 def test_exec_result_observation():
