@@ -1,9 +1,11 @@
 <script setup lang="ts">
-/** QKV 后处理编辑器：复用 QFK 的“取值 → 判断/产出”词汇。
- * QKV produces 已经是 JSON 路径投影出的具体值，因此这里不再显示 JSON 路径、trim、大小写等重复操作。
+/**
+ * QKV 产出变量处理编辑器。
+ * QKV 的输入已经是 JSON 投影后的具体值，这里只负责特征、分割、AI 兜底和 QFK 断言。
  */
 import { computed } from 'vue'
-import { Delete, Plus } from '@element-plus/icons-vue'
+import { Delete, InfoFilled, Plus } from '@element-plus/icons-vue'
+import MatcherEditor from './MatcherEditor.vue'
 
 type ProcessingSpec = Record<string, any>
 const props = defineProps<{ modelValue?: ProcessingSpec[]; produces?: ProcessingSpec[] }>()
@@ -13,14 +15,14 @@ const inputOptions = computed(() => {
   const names = new Set<string>()
   for (const item of props.produces || []) {
     const value = String(item?.alias || item?.name || '').trim().toUpperCase()
-    if (value) names.add(`{{${value}}}`)
+    if (value) names.add('{{' + value + '}}')
   }
   return [...names].sort()
 })
 function inputOptionsFor(index: number): string[] {
   const names = new Set(inputOptions.value)
   for (const item of specs.value.slice(0, index)) {
-    if (item?.mode === 'derive' && item?.name) names.add(`{{${String(item.name).toUpperCase()}}}`)
+    if (item?.mode === 'derive' && item?.name) names.add('{{' + String(item.name).toUpperCase() + '}}')
   }
   return [...names].sort()
 }
@@ -31,69 +33,102 @@ const featureOptions = [
   { label: '目标主机', value: 'destination_host' }, { label: '百分比', value: 'percent.current' },
   { label: '数字', value: 'number' }, { label: '源主机 → 目标主机', value: 'change_pair' },
 ]
-const matcherTypes = [
-  { label: '关键字匹配', value: 'keyword' }, { label: '正则表达式', value: 'regex' },
-  { label: '状态判定', value: 'state' }, { label: '数值阈值', value: 'threshold' },
-  { label: '首末差值', value: 'delta' }, { label: '变化趋势', value: 'trend' }, { label: '存在性判定', value: 'exists' },
-]
+const matcherTypes = ['keyword', 'regex', 'state', 'threshold', 'delta', 'trend', 'exists']
+function defaultExtract(): ProcessingSpec { return { type: 'feature', feature: 'vm_name', cardinality: 'exactly_one' } }
+function defaultAssert(): ProcessingSpec { return { type: 'threshold', expected: true, operator: '>', value: 90, aggregation: 'first_number' } }
 function update(index: number, patch: ProcessingSpec): void { emit('update:modelValue', specs.value.map((item, i) => i === index ? { ...item, ...patch } : item)) }
-function add(): void {
-  emit('update:modelValue', [...specs.value, { mode: 'derive', input: inputOptions.value[0] || '', name: '', type: 'string', extract: { type: 'feature', feature: 'vm_name', cardinality: 'exactly_one' } }])
-}
+function add(): void { emit('update:modelValue', [...specs.value, { mode: 'derive', input: inputOptions.value[0] || '', name: '', type: 'string', extract: defaultExtract() }]) }
 function remove(index: number): void { emit('update:modelValue', specs.value.filter((_, i) => i !== index)) }
 function setMode(index: number, mode: string): void {
-  if (mode === 'assert') update(index, { mode, name: undefined, type: undefined, extract: undefined, match: { type: 'threshold', expected: true, operator: '>', value: 90, aggregation: 'first_number' } })
-  else update(index, { mode, match: undefined, name: '', type: 'string', extract: { type: 'feature', feature: 'vm_name', cardinality: 'exactly_one' } })
+  if (mode === 'assert') update(index, { mode, name: undefined, type: undefined, extract: undefined, match: defaultAssert() })
+  else update(index, { mode, match: undefined, name: '', type: 'string', extract: defaultExtract() })
 }
-function setMatchType(index: number, type: string): void {
-  const current = specs.value[index]?.match || {}
-  const next: ProcessingSpec = { ...current, type, expected: true }
-  if (['threshold', 'delta'].includes(type)) Object.assign(next, { operator: '>', value: 90 })
-  if (type === 'trend') Object.assign(next, { direction: 'increasing', value: 0 })
-  if (['keyword', 'regex', 'state'].includes(type)) next.pattern = ''
-  update(index, { match: next })
+function setExtractType(index: number, type: string): void {
+  const current = specs.value[index]?.extract || defaultExtract()
+  if (type === 'ai') {
+    update(index, { extract: { type: 'feature', feature: current.feature || 'vm_name', cardinality: current.cardinality || 'exactly_one', ai_extract: { instruction: current.ai_extract?.instruction || '' } } })
+    return
+  }
+  const next: ProcessingSpec = { type, cardinality: current.cardinality || (type === 'split' ? 'all' : 'exactly_one') }
+  if (type === 'feature') next.feature = current.feature || 'vm_name'
+  if (type === 'split') next.separator = current.separator || ','
+  update(index, { extract: next })
 }
+function setExtractField(index: number, key: string, value: any): void { update(index, { extract: { ...(specs.value[index]?.extract || defaultExtract()), [key]: value } }) }
+function setAiInstruction(index: number, instruction: string): void {
+  const extract = { ...(specs.value[index]?.extract || defaultExtract()), ai_extract: { instruction } }
+  update(index, { extract })
+}
+function extractionMode(item: ProcessingSpec): string { return item.extract?.ai_extract ? 'ai' : (item.extract?.type || 'feature') }
+function setMatch(index: number, match: ProcessingSpec): void { update(index, { match }) }
 </script>
 
 <template>
   <div class="qkv-output-processing-editor">
-    <div class="processing-editor-header"><div><strong>输出后处理</strong><span>沿用 QFK 的处理单元；QKV 只增加特征提取和分割</span></div><el-button text type="primary" size="small" :icon="Plus" @click="add">添加处理</el-button></div>
-    <el-alert v-if="specs.length === 0" type="info" :closable="false" title="可选：从 DESCRIPTION 提取 VM_NAME，或对已有具体值执行 QFK 判断。" />
-    <div v-for="(item, index) in specs" :key="index" class="processing-card">
-      <div class="processing-card-title"><span>处理单元 {{ index + 1 }}</span><el-button text type="danger" size="small" :icon="Delete" @click="remove(index)">删除</el-button></div>
-      <div class="processing-grid">
-        <label>处理方式<el-select :model-value="item.mode || 'derive'" size="small" @change="(v: string) => setMode(index, v)"><el-option label="派生变量" value="derive" /><el-option label="断言判断" value="assert" /></el-select></label>
-        <label class="wide">输入变量<el-select :model-value="item.input" filterable size="small" placeholder="选择已有具体值" @change="(v: string) => update(index, { input: v })"><el-option v-for="value in inputOptionsFor(index)" :key="value" :label="value" :value="value" /></el-select></label>
-        <template v-if="item.mode !== 'assert'">
-          <label>变量名<el-input :model-value="item.name" placeholder="VM_NAME" size="small" @input="(v: string) => update(index, { name: v.toUpperCase() })" /></label>
-          <label>变量类型<el-select :model-value="item.type || 'string'" size="small" @change="(v: string) => update(index, { type: v })"><el-option label="字符串" value="string" /><el-option label="整数" value="integer" /><el-option label="数字" value="number" /><el-option label="百分比" value="percentage" /><el-option label="数组" value="array" /></el-select></label>
-          <label>提取方式<el-select :model-value="item.extract?.type || 'feature'" size="small" @change="(v: string) => update(index, { extract: { ...(item.extract || {}), type: v } })"><el-option label="特征提取" value="feature" /><el-option label="分割" value="split" /></el-select></label>
-          <label v-if="item.extract?.type !== 'split'" class="wide">特征<el-select :model-value="item.extract?.feature" size="small" @change="(v: string) => update(index, { extract: { ...item.extract, feature: v } })"><el-option v-for="option in featureOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></label>
-          <label v-else>分隔符<el-input :model-value="item.extract?.separator" placeholder=",、→" size="small" @input="(v: string) => update(index, { extract: { ...item.extract, separator: v } })" /></label>
-          <label>基数<el-select :model-value="item.extract?.cardinality || 'exactly_one'" size="small" @change="(v: string) => update(index, { extract: { ...item.extract, cardinality: v } })"><el-option label="必须唯一" value="exactly_one" /><el-option label="第一项" value="first" /><el-option label="最后一项" value="last" /><el-option label="全部项（数组）" value="all" /></el-select></label>
-          <div class="field-hint wide">QKV 已从 JSON 路径取得具体值；不再重复配置 JSON 路径、去空白或大小写转换。AI 兜底沿用 QFK 的 `extract.ai_extract.instruction`，仅在特征/分割确定性提取失败后执行。</div>
-        </template>
-        <template v-else>
-          <label>判断类型<el-select :model-value="item.match?.type || 'threshold'" size="small" @change="(v: string) => setMatchType(index, v)"><el-option v-for="option in matcherTypes" :key="option.value" :label="option.label" :value="option.value" /></el-select></label>
-          <label v-if="['keyword', 'regex', 'state'].includes(item.match?.type)" class="wide">匹配内容<el-input :model-value="item.match?.pattern" size="small" @input="(v: string) => update(index, { match: { ...item.match, pattern: v } })" /></label>
-          <label v-if="['threshold', 'delta'].includes(item.match?.type)">比较符<el-select :model-value="item.match?.operator || '>'" size="small" @change="(v: string) => update(index, { match: { ...item.match, operator: v } })"><el-option v-for="operator in ['>', '>=', '<', '<=', '==', '!=']" :key="operator" :label="operator" :value="operator" /></el-select></label>
-          <label v-if="['threshold', 'delta', 'trend'].includes(item.match?.type)">比较值<el-input :model-value="item.match?.value" size="small" @input="(v: string) => update(index, { match: { ...item.match, value: v } })" /></label>
-          <div class="field-hint wide">断言直接复用 QFK Matcher：对 QKV 已投影的具体值执行关键字、状态、阈值、差值、趋势或存在性判断。</div>
-        </template>
-      </div>
+    <div class="processing-header">
+      <div class="processing-title"><el-icon><InfoFilled /></el-icon><span>产出变量处理</span></div>
+      <el-button text type="primary" size="small" :icon="Plus" @click="add">添加处理</el-button>
     </div>
+    <el-alert v-if="specs.length === 0" type="info" :closable="false" title="可选：对 QKV 已取得的具体值派生变量，或执行 QFK 断言。" />
+    <div v-for="(item, index) in specs" :key="index" class="processing-unit">
+      <div class="unit-header"><span>处理单元 {{ index + 1 }}</span><el-button text type="danger" size="small" :icon="Delete" @click="remove(index)">删除</el-button></div>
+      <template v-if="item.mode !== 'assert'">
+        <section class="processing-step">
+          <div class="step-header"><span class="stage-number">1</span><div><strong>派生变量</strong><small>从已有具体值提取并写入变量池</small></div></div>
+          <div class="processing-grid derive-grid">
+            <label>处理方式<el-select :model-value="item.mode || 'derive'" size="small" @change="(value: string) => setMode(index, value)"><el-option label="派生变量" value="derive" /><el-option label="断言判断" value="assert" /></el-select></label>
+            <label>输入变量<el-select :model-value="item.input" filterable size="small" placeholder="选择已有具体值" @change="(value: string) => update(index, { input: value })"><el-option v-for="value in inputOptionsFor(index)" :key="value" :label="value" :value="value" /></el-select></label>
+            <label>输出变量<el-input :model-value="item.name" placeholder="如 VM_NAME" size="small" @input="(value: string) => update(index, { name: value.toUpperCase() })" /></label>
+          </div>
+          <div class="processing-grid derive-grid second-row">
+            <label>提取方式<el-select :model-value="extractionMode(item)" size="small" @change="(value: string) => setExtractType(index, value)"><el-option label="特征" value="feature" /><el-option label="分割" value="split" /><el-option label="AI" value="ai" /></el-select></label>
+            <label v-if="extractionMode(item) === 'feature'">特征名<el-select :model-value="item.extract?.feature" size="small" @change="(value: string) => setExtractField(index, 'feature', value)"><el-option v-for="option in featureOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></label>
+            <label v-else-if="extractionMode(item) === 'split'">分隔符<el-input :model-value="item.extract?.separator" placeholder=",、→" size="small" @input="(value: string) => setExtractField(index, 'separator', value)" /></label>
+            <label v-else class="ai-prompt">提示词<el-input :model-value="item.extract?.ai_extract?.instruction" type="textarea" :rows="2" maxlength="1000" show-word-limit placeholder="例如：提取第一个虚拟机名称" @input="(value: string) => setAiInstruction(index, value)" /></label>
+            <label>变量类型<el-select :model-value="item.type || 'string'" size="small" @change="(value: string) => update(index, { type: value })"><el-option label="字符串" value="string" /><el-option label="整数" value="integer" /><el-option label="数字" value="number" /><el-option label="百分比" value="percentage" /><el-option label="布尔值" value="boolean" /><el-option label="数组" value="array" /></el-select></label>
+          </div>
+          <div class="step-output final"><span>最终输出</span><code>{{ item.name || '变量名' }} → 写入变量池</code></div>
+        </section>
+      </template>
+      <template v-else>
+        <section class="processing-step">
+          <div class="step-header"><span class="stage-number">1</span><div><strong>断言判断</strong><small>对 QKV 已取得的具体值复用 QFK Matcher</small></div></div>
+          <div class="processing-grid assert-grid">
+            <label>处理方式<el-select :model-value="item.mode" size="small" @change="(value: string) => setMode(index, value)"><el-option label="派生变量" value="derive" /><el-option label="断言判断" value="assert" /></el-select></label>
+            <label>输入变量<el-select :model-value="item.input" filterable size="small" placeholder="选择已有具体值" @change="(value: string) => update(index, { input: value })"><el-option v-for="value in inputOptionsFor(index)" :key="value" :label="value" :value="value" /></el-select></label>
+          </div>
+          <div class="matcher-heading">判断类型及要求</div>
+          <MatcherEditor :model-value="item.match || defaultAssert()" :allowed-types="matcherTypes" embedded :show-header="false" :show-extract="false" :show-step-title="false" @update:model-value="(value: ProcessingSpec) => setMatch(index, value)" />
+          <div class="step-output final"><span>最终输出</span><code>True / False</code></div>
+        </section>
+      </template>
+    </div>
+    <el-empty v-if="specs.length === 0" :image-size="48" description="暂无处理单元，请添加处理" />
   </div>
 </template>
 
 <style scoped>
-.qkv-output-processing-editor { margin-top: 8px; padding: 10px; border: 1px solid var(--el-border-color); background: var(--el-fill-color-lighter); }
-.processing-editor-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-.processing-editor-header span { margin-left: 8px; color: var(--el-text-color-secondary); font-size: 12px; }
-.processing-card { margin-top: 8px; padding: 10px; background: var(--el-bg-color); border: 1px solid var(--el-border-color-light); }
-.processing-card-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 13px; }
-.processing-grid { display: grid; grid-template-columns: repeat(3, minmax(140px, 1fr)); gap: 8px 12px; }
-.processing-grid label { display: flex; flex-direction: column; gap: 4px; color: var(--el-text-color-secondary); font-size: 12px; }
-.wide { grid-column: span 2; }
-.field-hint { color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.5; }
-@media (max-width: 900px) { .processing-grid { grid-template-columns: 1fr; } .wide { grid-column: auto; } }
+.qkv-output-processing-editor { width: 100%; margin-top: 12px; padding: 14px; border: 1px solid var(--el-border-color); border-radius: 6px; background: var(--el-fill-color-extra-light); }
+.processing-header, .unit-header, .step-header, .step-output { display: flex; align-items: center; }
+.processing-header, .unit-header { justify-content: space-between; gap: 12px; }
+.processing-title { display: flex; align-items: center; gap: 6px; color: var(--el-text-color-primary); font-weight: 600; }
+.processing-title .el-icon { color: var(--el-color-primary); }
+.processing-unit { margin-top: 12px; padding: 12px; border: 1px solid var(--el-border-color-light); border-radius: 6px; background: var(--el-fill-color-blank); }
+.unit-header { margin-bottom: 10px; font-size: 13px; font-weight: 600; }
+.processing-step { padding: 12px; border: 1px solid var(--el-color-primary-light-8); border-radius: 6px; background: var(--el-fill-color-extra-light); }
+.step-header { gap: 9px; margin-bottom: 12px; }
+.step-header > div { min-width: 0; }
+.step-header small { display: block; margin-top: 3px; color: var(--el-text-color-secondary); font-size: 12px; font-weight: 400; }
+.stage-number { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%; background: var(--el-color-primary); color: #fff; font-size: 12px; font-weight: 600; }
+.processing-grid { display: grid; gap: 10px 14px; }
+.derive-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.assert-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.second-row { margin-top: 10px; }
+.processing-grid label { display: flex; flex-direction: column; gap: 5px; color: var(--el-text-color-secondary); font-size: 12px; }
+.processing-grid :deep(.el-select), .processing-grid :deep(.el-input), .ai-prompt { width: 100%; }
+.ai-prompt { grid-column: span 2; }
+.matcher-heading { margin: 16px 0 8px; color: var(--el-text-color-primary); font-size: 13px; font-weight: 600; }
+.step-output { justify-content: space-between; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--el-border-color); color: var(--el-text-color-secondary); font-size: 12px; }
+.step-output code { color: var(--el-color-primary); font-family: inherit; }
+@media (max-width: 900px) { .derive-grid, .assert-grid { grid-template-columns: 1fr; } .ai-prompt { grid-column: auto; } }
 </style>
