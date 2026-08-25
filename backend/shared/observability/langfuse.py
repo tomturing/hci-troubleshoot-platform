@@ -639,11 +639,15 @@ def observe_tool(
     try:
         from shared.observability.redaction import redact_observation_value
 
-        # 使用 start_observation 创建 observation（不是 start_as_current_observation）
-        # 这样可以确保数据通过 OTel Span Exporter 正确导出
+        # 使用 start_observation 创建 observation
+        # 注意：v3 SDK 需要显式调用 update() 设置 input 和 metadata
         observation = lf.start_observation(
             as_type="tool",
             name=f"tool.{tool_name}",
+        )
+
+        # 显式调用 update() 设置 input 和 metadata（v3 SDK 的正确用法）
+        observation.update(
             input=redact_observation_value(tool_args),
             metadata={
                 "exec_id": exec_id,
