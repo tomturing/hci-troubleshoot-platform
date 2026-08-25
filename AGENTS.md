@@ -37,7 +37,9 @@
     - 布局重构：左边栏宽度收敛固定为 280px，右侧详情区占 80%+ 视口空间以充分展示仿真路由表格与控制台。
     - 列宽精细化：KBD 列固定宽度为 76px（居中紧凑展示 support_id 与 rev 标识），状态列固定 78px，Digest 列自适应剩余宽度。
     - Digest 交互芯片：右侧 Header 引入 `digest-chip` 样式卡片，集成标签、等宽截断、Tooltip 悬浮全显与一键复制功能。
-    - 可观性升级：右侧事实卡片哈希支持一键复制，流程步骤条增加浅色卡片包裹，仿真路由控制台展开行升级为极客终端高对比度风格。
+- **Admin 工单详情页 AI 上下文与 Prompt 审计接口对齐**：
+  - **根因**：前端 `createPromptAuditApi` 历史遗留调用 `/cases/{caseId}/prompt-audit`（404），而后端统一重构为 `/audit-logs/prompts?case_id={caseId}` 并由 `audit_log`（`audit_type='prompt'`）承载；`createAuditLogApi` 缺少相对路径规范，导致 Admin 工单详情页的「AI 上下文」标签页始终显示为空。
+  - **修复**：在 `@hci/shared` 中修正 `createPromptAuditApi` 映射至 `/audit-logs/prompts`，适配 `audit_log.payload` 字段结构；规范 `createAuditLogApi` 请求路径为 `/audit-logs`，确保 Prompt 上下文与工具执行审计正常加载。
 - **KBD 分类与识图 LLM 超时配置优化**：
   - **根因**：data-pipeline 的 API_TIMEOUT（30s）小于 kb-service 的 LLM_TIMEOUT（60s），导致 LLM 在 30-60s 完成时客户端超时判定失败。识图提交超时也存在类似风险。
   - **修复**：
