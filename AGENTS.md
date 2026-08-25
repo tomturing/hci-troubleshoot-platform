@@ -26,6 +26,12 @@
   - **修复**：
     - 在 `build_log_selector` 中支持从 `matcher.extract.rows.include` 自动提取关键词并编译为 `-E -k "k1|k2"`，并在 `exists` 模式下优先下推关键词粗筛。
     - 在 `review_signal_document` 编译期提取 `match` 与 `produces` 的 `rows.include`，注入 `qfk_log` 的 `keyword` 和 `extended_regex`，确保不同 Signal 生成精确的专属采集指令。
+- **QFK AI 提取 value_mode 配置过滤与 Langfuse 可观测性集成**（PR #903）：
+  - **根因**：AI 提取调用确定性 Extractor 获取候选行时，`_deterministic_spec` 未过滤 `value_mode` 配置，导致 `extract_output_values` 尝试将整行文本转换为数值类型而抛出 `QFK_TYPE_CAST_FAILED`，AI 提取在 0.8ms 内立即失败，根本没有机会调用 LLM。
+  - **修复**：
+    - 在 `_deterministic_spec` 中将 `value_mode` 纳入过滤集，确保确定性选择阶段只获取文本候选行，类型转换延迟到 AI 提取结果阶段处理。
+    - 为 AI 提取过程添加 Langfuse `observe_llm_generation` 观测，记录 instruction、expected_type、candidate_lines 等输入和 value、evidence_lines 等输出，使 AI 提取过程可追踪。
+  - **效果**：AI 提取能够正常调用 LLM 从日志行中摘取数值，类型转换在 AI 结果返回后按声明的 `value_type` 执行，Langfuse trace 完整呈现信号执行全过程。
 - **KBD 关键信号阅览与预览呈现完整性优化**：
   - **根因**：KBD 审查页面在非编辑态（阅览/预览模式）下，仅平铺展示基础参数，缺失了取值（`ValueExtract`，包括完整行/行列解析/JSON路径/行列选择/数量/AI提取等）与判断规则（`Matcher` / `Produces`，包括多 pattern 排版、比较条件、样本数、趋势方向、产出变量路径等）的完整结构，导致专家每次必须点击“编辑”才能获取全量判定细节。
   - **修复**：
