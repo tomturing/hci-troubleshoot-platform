@@ -28,6 +28,7 @@
 **修改内容**：
 - 重构 `observe_tool()` 函数：
   - 使用 `lf.start_observation()` 替代 `lf.start_as_current_observation()`，确保数据正确写入
+  - **关键修复**：在创建 observation 后显式调用 `update()` 方法设置 `input` 和 `metadata`，因为 Langfuse v3 SDK 的 `start_observation()` 虽然接受这些参数，但实际不生效
   - 增强错误处理：创建成功但后续出错时，设置 `level="ERROR"` 和 `status_message`
   - 确保 `observation.end()` 始终被调用（在 finally 块中）
   - 添加调试日志记录 observation 创建和更新过程
