@@ -2,9 +2,59 @@ from unittest.mock import AsyncMock, MagicMock
 
 import app.routes.admin as admin_route
 import pytest
-from app.routes.admin import kbd_router, set_dependencies
+from app.routes.admin import _prepare_expert_draft_signals, kbd_router, set_dependencies
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+
+def test_prepare_expert_draft_migrates_legacy_qkv_nested_match_extract():
+    """KBD41464 同类历史草稿在保存边界自动清理 QKV 嵌套 QFK 提取字段。"""
+
+    qfk_extract = {
+        "type": "text",
+        "rows": {"mode": "all"},
+        "cardinality": "all",
+        "source": "stdout",
+        "value_mode": "string",
+    }
+    document = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "sig_002",
+                "role": "must",
+                "review": {"notes": "", "require_human_confirm": False},
+                "provenance": {"category": "frontend", "confidence": 0.9},
+                "acquire": {
+                    "tool": "qkv_task",
+                    "args": {"keyword": "创建虚拟机", "limit": 1, "timeout": 60, "is_failed": True},
+                },
+                "match": None,
+                "orchestrate": {
+                    "phase": "diagnostic",
+                    "produces": [{"name": "DESCRIPTION", "path": "description"}],
+                    "requires": [],
+                    "output_processing": [
+                        {
+                            "mode": "assert",
+                            "input": "{{DESCRIPTION}}",
+                            "match": {
+                                "type": "keyword",
+                                "pattern": "无法复制镜像",
+                                "mode": "or",
+                                "expected": True,
+                                "extract": qfk_extract,
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+
+    normalized = _prepare_expert_draft_signals(document, kbd_id=2051, operation="test")
+    matcher = normalized["signals"][0]["orchestrate"]["output_processing"][0]["match"]
+    assert "extract" not in matcher
 
 
 @pytest.mark.anyio
@@ -198,4 +248,3 @@ async def test_update_kbd_entry_signals_with_produce_alias():
 
     admin_route._check_auth = original_check_auth
     assert response.status_code == 200, response.text
-

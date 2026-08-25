@@ -1968,8 +1968,22 @@ function cloneSignal(signal: SignalV2): SignalV2 {
   return JSON.parse(JSON.stringify(signal)) as SignalV2
 }
 
-function normalizeOptionalMatcherNulls(signal: SignalV2): SignalV2 {
+function normalizeQkvOutputProcessingMatchers(signal: SignalV2): SignalV2 {
   const normalized = cloneSignal(signal)
+  if (!sigTool(normalized).startsWith('qkv_')) return normalized
+  const processing = normalized.orchestrate?.output_processing
+  if (!Array.isArray(processing)) return normalized
+  for (const item of processing) {
+    if (item?.mode !== 'assert' || !item.match || typeof item.match !== 'object') continue
+    // QKV 的 input 已是 produces.path 投影后的具体值；match.extract 只属于
+    // QFK 顶层 Matcher，删除历史残留以满足 qkvMatch 的白名单契约。
+    delete (item.match as any).extract
+  }
+  return normalized
+}
+
+function normalizeOptionalMatcherNulls(signal: SignalV2): SignalV2 {
+  const normalized = normalizeQkvOutputProcessingMatchers(signal)
   const matcher = normalized.match
   if (!matcher || typeof matcher !== 'object') return normalized
   const requiredByType: Record<string, string[]> = {
@@ -2637,7 +2651,7 @@ function startEditSignal(origIdx: number) {
   signalEditMode.value = 'form'
   signalJsonDraft.value = ''
   signalJsonError.value = null
-  const draft = cloneSignal(sig)
+  const draft = normalizeOptionalMatcherNulls(sig)
   // 确保嵌套对象存在，便于 v-model 直接绑定 v2 字段路径
   draft.acquire = draft.acquire || { tool: '', args: {} }
   draft.acquire.args = draft.acquire.args || {}
