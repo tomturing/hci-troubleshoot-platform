@@ -5,10 +5,52 @@ from shared.schemas.signal_output import derive_signal_requires
 from shared.schemas.signal_schema import (
     humanize_signal_validation_error,
     normalize_optional_matcher_nulls,
+    normalize_qkv_output_processing_matchers,
     validate_kbd_publishable_signals_json,
     validate_publishable_signals_json,
     validate_signals_json,
 )
+
+
+def test_qkv_nested_match_extract_is_migrated_without_touching_qfk_match_extract():
+    """历史 QKV 草稿可保存；QFK 顶层 extract 必须保持不变。"""
+
+    qfk_extract = _text_extract()
+    document = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "qkv_legacy",
+                "acquire": {"tool": "qkv_task", "args": {"keyword": "创建虚拟机"}},
+                "match": None,
+                "orchestrate": {
+                    "produces": [{"name": "DESCRIPTION", "path": "description"}],
+                    "output_processing": [
+                        {
+                            "mode": "assert",
+                            "input": "{{DESCRIPTION}}",
+                            "match": {
+                                "type": "keyword",
+                                "pattern": "无法复制镜像",
+                                "expected": True,
+                                "extract": qfk_extract,
+                            },
+                        }
+                    ],
+                },
+            },
+            {
+                "id": "qfk_legacy",
+                "acquire": {"tool": "qfk_log", "args": {"file": "sfvt_vtpdaemon.log"}},
+                "match": {"type": "keyword", "pattern": "write失败", "expected": True, "extract": qfk_extract},
+                "orchestrate": {"produces": [], "requires": []},
+            },
+        ],
+    }
+
+    assert normalize_qkv_output_processing_matchers(document) == 1
+    assert "extract" not in document["signals"][0]["orchestrate"]["output_processing"][0]["match"]
+    assert document["signals"][1]["match"]["extract"] == qfk_extract
 
 
 def _text_extract(*, rows=None, columns=None, value_key=None, value_mode="string"):

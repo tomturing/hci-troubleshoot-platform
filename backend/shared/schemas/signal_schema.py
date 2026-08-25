@@ -95,6 +95,10 @@ def normalize_optional_matcher_nulls(raw: Any) -> Any:
 
     if not isinstance(raw, dict):
         return raw
+    # QKV 的 output_processing 已经接收 produces.path 投影后的具体值；历史版本
+    # 可能把 QFK 的 match.extract 残留在嵌套 Matcher 中。保存边界必须先做无损
+    # 迁移，避免旧草稿因当前 qkvMatch 的 additionalProperties=false 永久无法保存。
+    normalize_qkv_output_processing_matchers(raw)
     signals = raw.get("signals") if isinstance(raw.get("signals"), list) else [raw]
     for signal in signals:
         if not isinstance(signal, dict) or not isinstance(signal.get("match"), dict):
@@ -105,6 +109,39 @@ def normalize_optional_matcher_nulls(raw: Any) -> Any:
             if matcher.get(field) is None:
                 matcher.pop(field, None)
     return raw
+
+
+def normalize_qkv_output_processing_matchers(raw: Any) -> int:
+    """移除 QKV 后处理断言中历史遗留的 QFK match.extract。
+
+    QFK 顶层 signal.match.extract 仍然合法，绝不能做全局字段删除；只有
+    orchestrate.output_processing[*] 的 assert.match 已经绑定具体值，
+    因此这里仅删除该精确路径上的字段。返回迁移数量供保存入口记录指标和日志。
+    """
+
+    if not isinstance(raw, dict):
+        return 0
+    signals = raw.get("signals") if isinstance(raw.get("signals"), list) else [raw]
+    removed = 0
+    for signal in signals:
+        if not isinstance(signal, dict):
+            continue
+        acquire = signal.get("acquire")
+        tool = acquire.get("tool") if isinstance(acquire, dict) else None
+        if not isinstance(tool, str) or not tool.startswith("qkv_"):
+            continue
+        orchestrate = signal.get("orchestrate")
+        processing = orchestrate.get("output_processing") if isinstance(orchestrate, dict) else None
+        if not isinstance(processing, list):
+            continue
+        for item in processing:
+            if not isinstance(item, dict) or item.get("mode") != "assert":
+                continue
+            matcher = item.get("match")
+            if isinstance(matcher, dict) and "extract" in matcher:
+                matcher.pop("extract", None)
+                removed += 1
+    return removed
 
 
 def humanize_signal_validation_error(error: ValidationError, signals: list[Any]) -> dict[str, Any]:
