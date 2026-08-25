@@ -20,6 +20,7 @@ from shared.observability.otel import get_current_trace_id
 from shared.signals.extractor import QFKExtractionError
 from shared.signals.matcher import evaluate_matcher
 
+from app.core.utils import smart_truncate
 from app.tools.acli.executor import exec_result_observation
 from app.tools.qfk.ai_extractor import ai_value_type_for_matcher, extract_ai_value, has_ai_extract
 from app.tools.qfk.extractor import get_complete_output
@@ -327,7 +328,30 @@ async def _qfk_exec_impl(
                     timeout=signal.timeout,
                 )
                 if observation:
-                    observation.update(output=exec_result_observation(exec_res))
+                    try:
+                        output_data = exec_result_observation(exec_res)
+
+                        # 如果执行失败，添加错误信息到 observation
+                        if exec_res.exit_code not in (0, None):
+                            error_msg = exec_res.stderr or exec_res.stdout or "Command execution failed"
+                            output_data["error"] = smart_truncate(error_msg, 500)
+                            output_data["success"] = False
+
+                            logger.warning(
+                                event="qfk_execution_failed_in_observation",
+                                namespace=signal.namespace,
+                                exec_id=exec_res.exec_id,
+                                exit_code=exec_res.exit_code,
+                                error_type=exec_res.error_type,
+                            )
+
+                        observation.update(output=output_data)
+                    except Exception as update_err:
+                        logger.warning(
+                            event="qfk_observation_update_error",
+                            namespace=signal.namespace,
+                            error=str(update_err),
+                        )
             if exec_res.exec_id:
                 exec_ids.append(exec_res.exec_id)
             if exec_res.artifact_id:
