@@ -381,6 +381,45 @@ async def send_message(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Admin 接口：只读查询（绕过 case ownership 校验，供管理后台使用）
+# 安全模型：使用 INTERNAL_API_TOKEN Bearer 校验，而非 client 身份签名；
+# 管理员可查看任意工单的对话记录，但不能代替用户执行操作。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/admin/cases/{case_id}/conversations")
+async def admin_get_conversations_by_case(
+    case_id: str,
+    _: None = Depends(require_admin_token),
+    service: ConversationService = Depends(get_conversation_service),
+):
+    """
+    [Admin] 查询指定工单的所有对话列表
+
+    绕过 case ownership 校验，允许管理后台查看任意工单的对话记录。
+    校验方式：INTERNAL_API_TOKEN Bearer Token（而非 client 身份签名）。
+    """
+    conversations = await service.repository.get_conversations_by_case(case_id)
+    return conversations
+
+
+@router.get("/admin/conversations/{conversation_id}/messages", response_model=list[MessageResponse])
+async def admin_get_messages(
+    conversation_id: uuid.UUID,
+    _: None = Depends(require_admin_token),
+    service: ConversationService = Depends(get_conversation_service),
+):
+    """
+    [Admin] 查询指定会话的消息历史
+
+    绕过 conversation ownership 校验，允许管理后台查看任意会话的消息。
+    校验方式：INTERNAL_API_TOKEN Bearer Token（而非 client 身份签名）。
+    """
+    messages = await service.get_messages(conversation_id)
+    return [MessageResponse.model_validate(msg) for msg in messages]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Admin 接口：修正工单关联的根因 KBD 条目
 # ─────────────────────────────────────────────────────────────────────────────
 

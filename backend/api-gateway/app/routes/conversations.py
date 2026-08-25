@@ -13,7 +13,7 @@ import json
 import re
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from shared.observability.logger import get_logger
 from shared.security.signature import CLIENT_ID_PATTERN, sign_client_identity
@@ -174,6 +174,59 @@ async def get_conversation(conversation_id: str, request: Request):
     if response.status_code == 404:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+# ── Admin 只读路由（使用 INTERNAL_API_TOKEN 校验，置于动态路径之前避免冲突）──────
+
+
+@router.get("/admin/cases/{case_id}/conversations")
+async def admin_get_conversations_by_case(
+    case_id: str,
+    authorization: str | None = Header(default=None),
+):
+    """
+    [Admin] 查询指定工单的所有对话列表（绕过 client 身份签名）
+
+    透传 Authorization: Bearer INTERNAL_API_TOKEN 到 conversation-service，
+    由下游的 require_admin_token 依赖完成校验。
+    管理后台专用，不携带 X-Client-ID，不限制工单归属。
+    """
+    headers = {}
+    if authorization:
+        headers["Authorization"] = authorization
+    else:
+        # admin-ui 在生产环境通过 window.__HCI_AUTH__ 注入；
+        # 未携带时注入网关配置的内部 Token，保证下游鉴权能通过。
+        headers["Authorization"] = f"Bearer {settings.INTERNAL_API_TOKEN}"
+    response = await proxy_request(
+        "GET", f"/admin/cases/{case_id}/conversations", headers=headers
+    )
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@router.get("/admin/conversations/{conversation_id}/messages")
+async def admin_get_messages(
+    conversation_id: str,
+    authorization: str | None = Header(default=None),
+):
+    """
+    [Admin] 查询指定会话的消息历史（绕过 client 身份签名）
+
+    透传 Authorization: Bearer INTERNAL_API_TOKEN 到 conversation-service，
+    由下游的 require_admin_token 依赖完成校验。
+    """
+    headers = {}
+    if authorization:
+        headers["Authorization"] = authorization
+    else:
+        headers["Authorization"] = f"Bearer {settings.INTERNAL_API_TOKEN}"
+    response = await proxy_request(
+        "GET", f"/admin/conversations/{conversation_id}/messages", headers=headers
+    )
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+# ── 用户路由（需 X-Client-ID 身份签名，按 case/conversation 归属校验）───────────
 
 
 @router.get("/case/{case_id}")
