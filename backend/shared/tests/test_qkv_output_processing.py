@@ -57,6 +57,8 @@ def test_unknown_operation_and_script_field_fail_closed() -> None:
         validate_output_processing([{"id": "x", "mode": "derive", "input": "{{DESCRIPTION}}", "operation": "eval"}])
     with pytest.raises(QKVProcessingError):
         validate_output_processing([{"id": "x", "mode": "derive", "input": "{{DESCRIPTION}}", "operation": "trim", "script": "x"}])
+    with pytest.raises(QKVProcessingError, match="value_type 不受支持"):
+        validate_output_processing([{"id": "x", "mode": "derive", "input": "{{DESCRIPTION}}", "operation": "trim", "target_variable": "TEXT", "value_type": "boolean"}])
 
 
 def test_json_path_supports_nested_array_indexes() -> None:
@@ -103,3 +105,28 @@ def test_assert_failure_does_not_create_derived_variable() -> None:
     )
     assert result.matched is False
     assert "derived_value" not in result.records[0]
+
+
+def test_static_scope_allows_only_prior_derived_variable() -> None:
+    """后处理不是变量池查询；不能引用尚未产生的后续派生变量。"""
+
+    with pytest.raises(QKVProcessingError, match="QKV_PROCESSING_UNKNOWN_INPUT"):
+        validate_output_processing(
+            [
+                {
+                    "id": "first",
+                    "mode": "derive",
+                    "input": "{{LATER}}",
+                    "operation": "trim",
+                    "target_variable": "EARLY",
+                },
+                {
+                    "id": "later",
+                    "mode": "derive",
+                    "input": "{{DESCRIPTION}}",
+                    "operation": "trim",
+                    "target_variable": "LATER",
+                },
+            ],
+            available_inputs={"DESCRIPTION"},
+        )

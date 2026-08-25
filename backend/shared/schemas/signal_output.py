@@ -42,6 +42,26 @@ def derive_signal_requires(signal: dict[str, Any]) -> list[str]:
             if isinstance(produce, dict):
                 collect(produce.get("extract") or {})
         return sorted(set(values))
+    if tool.startswith("qkv_"):
+        orchestrate = signal.get("orchestrate") or {}
+        local = {
+            str(item.get(key) or "").strip().upper()
+            for item in (orchestrate.get("produces") or [])
+            if isinstance(item, dict)
+            for key in ("name", "alias")
+            if str(item.get(key) or "").strip()
+        }
+        derived: set[str] = set()
+        for item in orchestrate.get("output_processing") or []:
+            if not isinstance(item, dict):
+                continue
+            collect(item.get("input"))
+            target = str(item.get("target_variable") or "").strip().upper()
+            if item.get("mode") == "derive" and target:
+                derived.add(target)
+        # QKV 后处理的 input 优先引用本信号的 produces/前序 derive，只有其余
+        # 占位符才是外部依赖，避免把同一 Signal 内部流水线误报为上游输入。
+        return sorted(set(values) - local - derived | set(explicit_requires))
     # qkv_vm_console / qkv_effect：显式 requires 与占位符扫描合并，
     # 保证 HOST/VM_ID 与期望锚点变量依赖不缺失。
     return sorted(set(explicit_requires) | set(values))
@@ -52,6 +72,6 @@ def sync_signal_requires(signal: dict[str, Any]) -> list[str]:
 
     requires = derive_signal_requires(signal)
     tool = str((signal.get("acquire") or {}).get("tool") or "")
-    if tool.startswith("qfk_") or tool in {"qkv_vm_console", "qkv_effect"}:
+    if tool.startswith("qfk_") or tool.startswith("qkv_"):
         signal.setdefault("orchestrate", {})["requires"] = requires
     return requires

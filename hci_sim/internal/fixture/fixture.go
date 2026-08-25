@@ -72,6 +72,16 @@ type Route struct {
 	Result       ResultDef `json:"result"`
 	Stream       StreamDef `json:"stream"`
 	Fault        FaultDef  `json:"fault"`
+	// LogicalConsumers 允许多个 Signal 共享同一次 acquisition；每个消费者保留独立后处理契约。
+	LogicalConsumers []RouteConsumer `json:"logical_consumers,omitempty"`
+}
+
+type RouteConsumer struct {
+	SignalID              string           `json:"signal_id"`
+	Produces              []map[string]any `json:"produces,omitempty"`
+	OutputProcessing      []map[string]any `json:"output_processing,omitempty"`
+	DerivedVariables      []string         `json:"derived_variables,omitempty"`
+	ProcessingFingerprint string           `json:"processing_fingerprint,omitempty"`
 }
 
 // RouteKey 不允许打分、部分匹配或顺序依赖；所有字段共同决定唯一 Fixture。
@@ -245,6 +255,19 @@ func validateRoute(route Route, variables map[string]string, outputLimit int) er
 	}
 	if route.Fault.AfterMS < 0 || route.Fault.AfterMS > 300000 || route.Fault.MaxBytes < 0 || route.Fault.MaxBytes > outputLimit {
 		return fmt.Errorf("fixture route %s fault 配置越界", route.ID)
+	}
+	consumerIDs := make(map[string]struct{}, len(route.LogicalConsumers))
+	for _, consumer := range route.LogicalConsumers {
+		if strings.TrimSpace(consumer.SignalID) == "" {
+			return fmt.Errorf("fixture route %s logical consumer 缺少 signal_id", route.ID)
+		}
+		if _, exists := consumerIDs[consumer.SignalID]; exists {
+			return fmt.Errorf("fixture route %s logical consumer signal_id 重复: %s", route.ID, consumer.SignalID)
+		}
+		consumerIDs[consumer.SignalID] = struct{}{}
+		if len(consumer.OutputProcessing) > 0 && strings.TrimSpace(consumer.ProcessingFingerprint) == "" {
+			return fmt.Errorf("fixture route %s logical consumer %s 缺少后处理契约指纹", route.ID, consumer.SignalID)
+		}
 	}
 	return nil
 }

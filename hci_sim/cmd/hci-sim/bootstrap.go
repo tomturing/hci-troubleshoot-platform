@@ -72,17 +72,20 @@ func (r *resolvedKbd) declaredVariableNames() map[string]struct{} {
 }
 
 type syntheticRoute struct {
-	SignalID          string           `json:"signal_id"`
-	Tool              string           `json:"tool"`
-	Argv              []string         `json:"argv"`
-	ToolRevision      int              `json:"tool_revision"`
-	ToolChecksum      string           `json:"tool_checksum"`
-	RequiredVariables []string         `json:"required_variables"`
-	Role              string           `json:"role"`
-	Matcher           map[string]any   `json:"matcher"`
-	Produces          []map[string]any `json:"produces"`
-	SampleOutput      string           `json:"sample_output"`
-	SampleSource      string           `json:"sample_source"`
+	SignalID              string           `json:"signal_id"`
+	Tool                  string           `json:"tool"`
+	Argv                  []string         `json:"argv"`
+	ToolRevision          int              `json:"tool_revision"`
+	ToolChecksum          string           `json:"tool_checksum"`
+	RequiredVariables     []string         `json:"required_variables"`
+	Role                  string           `json:"role"`
+	Matcher               map[string]any   `json:"matcher"`
+	Produces              []map[string]any `json:"produces"`
+	OutputProcessing      []map[string]any `json:"output_processing"`
+	DerivedVariables      []string         `json:"derived_variables"`
+	ProcessingFingerprint string           `json:"processing_fingerprint"`
+	SampleOutput          string           `json:"sample_output"`
+	SampleSource          string           `json:"sample_source"`
 }
 
 type scenarioProfile struct {
@@ -318,7 +321,7 @@ func buildScenarioManifest(resolved *resolvedKbd, profile *scenarioProfile, node
 		}
 	}
 	routes := make([]fixture.Route, 0, len(resolved.SyntheticRoutes))
-	seen := make(map[string]struct{}, len(resolved.SyntheticRoutes))
+	routeIndexes := make(map[string]int, len(resolved.SyntheticRoutes))
 	for index, route := range resolved.SyntheticRoutes {
 		if strings.TrimSpace(route.SignalID) == "" || strings.TrimSpace(route.Tool) == "" || route.ToolRevision < 1 || strings.TrimSpace(route.ToolChecksum) == "" {
 			return fixture.Manifest{}, fmt.Errorf("capability_gap: synthetic route %d 缺少 Signal 或 Tool 修订事实", index)
@@ -338,10 +341,6 @@ func buildScenarioManifest(resolved *resolvedKbd, profile *scenarioProfile, node
 			return fixture.Manifest{}, fmt.Errorf("capability_gap: Signal %s 不是受控 aCLI 只读路由", route.SignalID)
 		}
 		key := strings.Join(argv, "\x1f")
-		if _, exists := seen[key]; exists {
-			return fixture.Manifest{}, fmt.Errorf("capability_gap: Signal %s 与其他 Signal 生成了重复 RouteKey", route.SignalID)
-		}
-		seen[key] = struct{}{}
 		acquisitionKey := argv[0]
 		if len(argv) > 1 {
 			acquisitionKey += ":" + argv[1]
@@ -388,15 +387,36 @@ func buildScenarioManifest(resolved *resolvedKbd, profile *scenarioProfile, node
 		if result.ExitCode == 0 && fault.Type == fixture.FaultNone && strings.TrimSpace(result.Stdout) == "" && selectedVariant != "missing-evidence" {
 			return fixture.Manifest{}, fmt.Errorf("capability_gap: Signal %s 没有可消费的 stdout", route.SignalID)
 		}
+		consumer := fixture.RouteConsumer{
+			SignalID:              route.SignalID,
+			Produces:              route.Produces,
+			OutputProcessing:      route.OutputProcessing,
+			DerivedVariables:      route.DerivedVariables,
+			ProcessingFingerprint: route.ProcessingFingerprint,
+		}
+		if existing, ok := routeIndexes[key]; ok {
+			// 同一 acquisition 只保留一条可执行路由，多个 Signal 作为逻辑消费者
+			// 挂在元数据上，避免仅因后处理不同而制造 RouteKey 冲突。
+			if routes[existing].ToolRevision != route.ToolRevision || routes[existing].ToolChecksum != route.ToolChecksum {
+				return fixture.Manifest{}, fmt.Errorf("capability_gap: 共享 acquisition 的 Tool 契约不一致: %s", route.SignalID)
+			}
+			if !sameRouteReplay(routes[existing], result, fault) {
+				return fixture.Manifest{}, fmt.Errorf("capability_gap: 共享 acquisition 的回放事实不一致: %s；请为同一命令提供同一原始 stdout", route.SignalID)
+			}
+			routes[existing].LogicalConsumers = append(routes[existing].LogicalConsumers, consumer)
+			continue
+		}
+		routeIndexes[key] = len(routes)
 		routes = append(routes, fixture.Route{
-			ID:           fmt.Sprintf("synthetic-%s-%03d", resolved.SupportID, index+1),
-			SignalID:     route.SignalID,
-			ToolRevision: route.ToolRevision,
-			ToolChecksum: route.ToolChecksum,
-			Variant:      selectedVariant,
-			RouteKey:     fixture.RouteKey{Tool: argv[0], AcquisitionKey: acquisitionKey, Argv: argv, Node: node, Container: container},
-			Result:       result,
-			Fault:        fault,
+			ID:               fmt.Sprintf("synthetic-%s-%03d", resolved.SupportID, index+1),
+			SignalID:         route.SignalID,
+			ToolRevision:     route.ToolRevision,
+			ToolChecksum:     route.ToolChecksum,
+			Variant:          selectedVariant,
+			RouteKey:         fixture.RouteKey{Tool: argv[0], AcquisitionKey: acquisitionKey, Argv: argv, Node: node, Container: container},
+			Result:           result,
+			Fault:            fault,
+			LogicalConsumers: []fixture.RouteConsumer{consumer},
 		})
 	}
 	return fixture.Manifest{
@@ -408,6 +428,11 @@ func buildScenarioManifest(resolved *resolvedKbd, profile *scenarioProfile, node
 		Limits:        fixture.Limits{MaxRoutes: len(routes), MaxOutputBytesPerCommand: 4096, MaxBundleBytes: 65536},
 		Routes:        routes,
 	}, nil
+}
+
+// sameRouteReplay 确保共享的是同一份 acquisition 事实，而非把两个不同样例静默拼接。
+func sameRouteReplay(existing fixture.Route, result fixture.ResultDef, fault fixture.FaultDef) bool {
+	return existing.Result == result && existing.Fault == fault
 }
 
 // deriveRouteSampleOutput 优先使用 C1 从 KBD provenance/matcher 派生的输出。

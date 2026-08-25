@@ -1329,6 +1329,13 @@ def _validate_and_collect_signals(
                     available_vars.add(name)
                 if alias and re.fullmatch(r"[A-Z][A-Z0-9_]*", alias):
                     available_vars.add(alias)
+            for processing in orch.get("output_processing") or []:
+                if (
+                    isinstance(processing, dict)
+                    and processing.get("mode") == "derive"
+                    and re.fullmatch(r"[A-Z][A-Z0-9_]*", str(processing.get("target_variable") or ""))
+                ):
+                    available_vars.add(str(processing["target_variable"]))
 
     validated: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
@@ -1487,9 +1494,16 @@ def _validate_and_collect_signals(
         for signal in ready:
             reachable_ids.add(id(signal))
             reachable_variables.update(
-                str(item.get("name"))
+                str(item.get("alias") or item.get("name"))
                 for item in ((signal.get("orchestrate") or {}).get("produces") or [])
-                if isinstance(item, dict) and item.get("name")
+                if isinstance(item, dict) and (item.get("alias") or item.get("name"))
+            )
+            reachable_variables.update(
+                str(item.get("target_variable"))
+                for item in ((signal.get("orchestrate") or {}).get("output_processing") or [])
+                if isinstance(item, dict)
+                and item.get("mode") == "derive"
+                and item.get("target_variable")
             )
             remaining.remove(signal)
     if remaining:

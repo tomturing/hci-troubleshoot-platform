@@ -76,7 +76,23 @@ _FEATURE_PATTERNS = {
 }
 
 
-def validate_output_processing(specs: Any) -> None:
+def processing_input_variables(specs: Any) -> set[str]:
+    """返回后处理 input 中引用的变量名（统一为大写）。"""
+
+    if not isinstance(specs, list):
+        return set()
+    variables: set[str] = set()
+    for spec in specs:
+        if not isinstance(spec, dict):
+            continue
+        value = spec.get("input")
+        if not isinstance(value, str):
+            continue
+        variables.update(match.group(1).split(".")[0].upper() for match in re.finditer(r"\{\{([A-Za-z][A-Za-z0-9_.]*)\}\}", value))
+    return variables
+
+
+def validate_output_processing(specs: Any, *, available_inputs: set[str] | None = None) -> None:
     """校验 QKV 后处理静态契约，拒绝未知操作和脚本化字段。"""
 
     if specs in (None, []):
@@ -88,6 +104,8 @@ def validate_output_processing(specs: Any) -> None:
         "id", "mode", "input", "operation", "target_variable", "value_type", "cardinality", "scope",
         "feature", "path", "separator", "operator", "right", "fallback",
     }
+    available = {str(item).strip().upper() for item in (available_inputs or set()) if str(item).strip()}
+    derived: set[str] = set()
     for index, spec in enumerate(specs):
         if not isinstance(spec, dict):
             raise QKVProcessingError("QKV_PROCESSING_INVALID", f"处理单元[{index}] 必须是对象")
@@ -106,6 +124,13 @@ def validate_output_processing(specs: Any) -> None:
             raise QKVProcessingError("QKV_PROCESSING_INVALID", f"{processing_id}.operation 不受支持: {operation}")
         if not isinstance(spec.get("input"), str) or not str(spec["input"]).strip():
             raise QKVProcessingError("QKV_PROCESSING_INVALID", f"{processing_id}.input 必须是非空字符串")
+        referenced = processing_input_variables([spec])
+        unknown = referenced - available - derived
+        if available_inputs is not None and unknown:
+            raise QKVProcessingError(
+                "QKV_PROCESSING_UNKNOWN_INPUT",
+                f"{processing_id}.input 引用了未声明变量: {', '.join(sorted(unknown))}",
+            )
         if mode == "derive":
             target = str(spec.get("target_variable") or "")
             if not re.fullmatch(r"[A-Z][A-Z0-9_]*", target):
@@ -118,6 +143,9 @@ def validate_output_processing(specs: Any) -> None:
         scope = str(spec.get("scope") or "per_record")
         if scope not in {"per_record", "single"}:
             raise QKVProcessingError("QKV_PROCESSING_INVALID", f"{processing_id}.scope 仅支持 per_record/single")
+        value_type = str(spec.get("value_type") or "string")
+        if value_type not in {"string", "integer", "number", "percentage"}:
+            raise QKVProcessingError("QKV_PROCESSING_INVALID", f"{processing_id}.value_type 不受支持: {value_type}")
         if operation == "split" and not isinstance(spec.get("separator"), str):
             raise QKVProcessingError("QKV_PROCESSING_INVALID", f"{processing_id}.split 必须配置 separator")
         if operation == "json_path" and (
@@ -126,6 +154,8 @@ def validate_output_processing(specs: Any) -> None:
             raise QKVProcessingError("QKV_PROCESSING_INVALID", f"{processing_id}.json_path 必须配置 path")
         if operation == "compare" and str(spec.get("operator") or "") not in {">", ">=", "<", "<=", "==", "=", "!="}:
             raise QKVProcessingError("QKV_PROCESSING_INVALID", f"{processing_id}.compare.operator 不受支持")
+        if operation == "compare" and spec.get("right") is None:
+            raise QKVProcessingError("QKV_PROCESSING_INVALID", f"{processing_id}.compare 必须配置 right")
         if operation == "feature_extract" and not str(spec.get("feature") or "").strip():
             raise QKVProcessingError("QKV_PROCESSING_INVALID", f"{processing_id}.feature_extract 必须配置 feature")
         if operation == "feature_extract" and str(spec.get("feature")) not in _SUPPORTED_FEATURES:
@@ -136,6 +166,8 @@ def validate_output_processing(specs: Any) -> None:
             raise QKVProcessingError("QKV_PROCESSING_INVALID", f"{processing_id} compare 仅支持 assert")
         if spec.get("fallback") not in (None, "none", "ai_extract"):
             raise QKVProcessingError("QKV_PROCESSING_INVALID", f"{processing_id}.fallback 仅支持 none/ai_extract")
+        if mode == "derive":
+            derived.add(str(spec["target_variable"]).upper())
 
 
 def apply_output_processing(records: list[dict[str, Any]], specs: list[dict[str, Any]] | None) -> QKVProcessingResult:
@@ -161,7 +193,13 @@ def apply_output_processing(records: list[dict[str, Any]], specs: list[dict[str,
         staged: list[tuple[dict[str, Any], Any]] = []
         for record in working:
             value = _resolve_input(spec["input"], record)
-            result = _operate(value, spec)
+            try:
+                result = _operate(value, spec)
+            except QKVProcessingError as exc:
+                if spec.get("mode") == "assert":
+                    assertions.append(QKVAssertion(processing_id, "UNKNOWN", observed=value, reason=exc.code))
+                    continue
+                raise
             values = result if isinstance(result, list) else [result]
             cardinality = spec.get("cardinality", "exactly_one")
             if cardinality == "exactly_one" and len(values) != 1:

@@ -137,6 +137,28 @@ def test_resolver_derives_consumable_stdout_from_kbd_evidence():
     assert route.sample_source == "kbd_provenance_evidence"
 
 
+def test_resolver_freezes_qkv_output_processing_contract_metadata():
+    active, revision = _snapshot()
+    signal = revision.content_json["signals_json"]["signals"][0]
+    signal["orchestrate"]["produces"] = [{"name": "DESCRIPTION", "type": "string", "path": "description"}]
+    signal["orchestrate"]["output_processing"] = [{
+        "id": "vm",
+        "mode": "derive",
+        "input": "{{DESCRIPTION}}",
+        "operation": "feature_extract",
+        "feature": "vm_name",
+        "target_variable": "VM_NAME",
+    }]
+    resolution = HciSimKbdResolver().resolve_entry(_entry(), (active, revision), _tool_snapshots())
+
+    assert resolution.status == "ready_for_artifact_binding"
+    route = resolution.resolved.synthetic_routes[0]
+    assert route.output_processing[0]["target_variable"] == "VM_NAME"
+    assert route.derived_variables == ("VM_NAME",)
+    assert route.processing_fingerprint.startswith("sha256:")
+    assert route.to_dict()["output_processing"]
+
+
 def test_resolver_fails_closed_for_missing_active_snapshot_and_unpublished_kbd():
     missing_snapshot = HciSimKbdResolver().resolve_entry(_entry(), None)
     assert missing_snapshot.status == "capability_gap"
