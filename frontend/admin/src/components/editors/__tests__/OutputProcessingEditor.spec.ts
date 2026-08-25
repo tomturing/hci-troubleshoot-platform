@@ -28,9 +28,17 @@ describe('OutputProcessingEditor', () => {
   it('使用产出变量处理标题并删除旧说明', () => {
     const wrapper = mountEditor()
     expect(wrapper.text()).toContain('产出变量处理')
+    expect(wrapper.text()).toContain('可选：对 QKV 产出变量进一步处理，包括派生变量和断言判断。')
     expect(wrapper.text()).not.toContain('输出后处理')
     expect(wrapper.text()).not.toContain('沿用 QFK 的处理单元')
     expect(wrapper.text()).not.toContain('QKV 已从 JSON 路径取得具体值')
+  })
+
+  it('使用“分隔”术语并展示真实边界符号示例', async () => {
+    const wrapper = mountEditor([{ mode: 'derive', input: '{{DESCRIPTION}}', name: 'VM_NAME', type: 'string', extract: { type: 'split', separator: '：' } }])
+    expect(wrapper.text()).toContain('分隔')
+    expect(wrapper.text()).not.toContain('分割')
+    expect(wrapper.findAll('input').find((input) => input.attributes('placeholder')?.startsWith('例如：'))?.attributes('placeholder')).toBe('例如：（）、<>、【】、：')
   })
 
   it('新增派生变量符合三列布局契约', async () => {
