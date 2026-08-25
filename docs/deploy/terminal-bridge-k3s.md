@@ -85,7 +85,7 @@ terminalBridge:
   allowedOrigins: "same-origin"
   networkPolicy:
     enabled: true
-    ingressNamespace: traefik
+    ingressNamespace: kube-system
     hciSimNamespace: hci-sim-dev
     hciSimSshPort: 2222
     observabilityNamespace: hci-observability
