@@ -54,6 +54,26 @@ class TestFrontendSignalValidation:
         assert sig.keyword == "启动虚拟机"
         assert sig.is_failed is True
 
+    def test_qkv_output_processing_is_part_of_same_signal(self):
+        sig = qkv_load({
+            "acquire": {"tool": "qkv_task", "args": {"keyword": "虚拟机无法启动"}},
+            "orchestrate": {
+                "produces": [{"name": "DESCRIPTION", "path": "description"}],
+                "output_processing": [{
+                    "id": "percent", "mode": "assert", "input": "{{DESCRIPTION}}",
+                    "operation": "compare", "value_type": "percentage", "operator": ">", "right": "90%",
+                }],
+            },
+        })
+        assert sig.output_processing[0]["id"] == "percent"
+
+    def test_qkv_output_processing_rejects_script_fields(self):
+        with pytest.raises(ValidationError):
+            qkv_load({
+                "query": "task", "keyword": "x",
+                "output_processing": [{"id": "x", "mode": "derive", "input": "{{DESCRIPTION}}", "operation": "trim", "script": "x"}],
+            })
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # QKV Engine 实际指令组装测试
@@ -158,6 +178,47 @@ async def test_qkv_dialog_searches_master_logs_and_extracts_end_request_id_host(
         "acli log get -k '编辑显卡核心失败' -p /sf/log/today/vt -c 2",
     ]
     assert all(" -l " not in command for command in commands)
+
+
+@pytest.mark.asyncio
+async def test_qkv_output_processing_derives_variable_and_reports_assertion():
+    signal = FrontendSignal(
+        query=FrontendQueryType.TASK,
+        keyword="虚拟机无法启动",
+        produces=[{"name": "DESCRIPTION", "path": "description"}],
+        output_processing=[
+            {
+                "id": "vm",
+                "mode": "derive",
+                "input": "{{DESCRIPTION}}",
+                "operation": "feature_extract",
+                "target_variable": "VM_NAME",
+                "feature": "vm_name",
+            },
+            {
+                "id": "percent",
+                "mode": "assert",
+                "input": "{{DESCRIPTION}}",
+                "operation": "compare",
+                "value_type": "percentage",
+                "operator": ">",
+                "right": "90%",
+            },
+        ],
+    )
+    mock_executor = AsyncMock()
+    mock_executor.execute.return_value = ExecResult(
+        stdout='{"data":[{"description":"虚拟机名称：vm-001，使用率：92%"}]}',
+        stderr="", exit_code=0, command="", node="127.0.0.1", duration_ms=1, truncated=False, risk_level=1,
+    )
+    with patch("app.tools.acli.executor._executor", mock_executor):
+        result = await qkv_exec(signal, conversation_id="test")
+
+    assert result.success is True
+    assert result.values[0]["description"] == "虚拟机名称：vm-001，使用率：92%"
+    assert result.values[0]["vm_name"] == "vm-001"
+    assert result.matched is True
+    assert result.assertions[0]["status"] == "PASS"
 
 
 @pytest.mark.asyncio

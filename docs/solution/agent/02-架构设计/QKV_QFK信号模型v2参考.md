@@ -40,7 +40,7 @@ owner: team
 |----|------|------|-----------|
 | `acquire` | **是** | 采集：用哪个工具（`tool`）+ 参数（`args`） | 全部 |
 | `match` | 否（可 `null`） | 判定：把采集文本与 `pattern` 比对 | 后端 QFK |
-| `orchestrate` | 否 | 编排：本信号产出哪些变量（`produces`）、依赖哪些变量（`requires`） | QKV/QFK |
+| `orchestrate` | 否 | 编排：本信号产出哪些变量（`produces`）、依赖哪些变量（`requires`），以及 QKV 输出后的可选处理（`output_processing`） | QKV/QFK |
 | `provenance` | 否 | 来源：信号是前端 / 后端产生、置信度、风险 | 全部 |
 | `review` | 否（`require_human_confirm` 必填） | 复核：是否需人工确认后才生效 | 全部 |
 
@@ -69,6 +69,16 @@ owner: team
       { "name": "HOST", "path": "host|hostname|hostid" }, // 变量名 + JSON 路径（| 多路径容错）
       { "name": "VM_ID", "path": "vm_id|vmid" },
       { "name": "TASK_ID", "path": "task_id" }
+    ],
+    "output_processing": [          // 可选：对本信号已投影输出继续处理，不创建新的 qkv_var 信号
+      {
+        "id": "extract-vm-name",
+        "mode": "derive",
+        "input": "{{DESCRIPTION}}",
+        "operation": "feature_extract",
+        "feature": "vm_name",
+        "target_variable": "VM_NAME"
+      }
     ],
     "requires": []                  // 本信号依赖的变量（QKV 一般为空）
   },
@@ -181,6 +191,9 @@ owner: team
 | `container` | string | 否 | 容器 |
 | `produces` | `array<{name, type?, path?或extract?}>` | 否 | 产出变量；JSON 用 `path`，非 JSON 用 `extract`，二者互斥 |
 | `requires` | `array<string>` | 否 | QFK 从 args/extract 中 `{{VAR}}` 自动推导；取自上游 `produces` |
+| `output_processing` | `array<OutputProcessing>` | 否 | 仅 QKV 使用；对 `produces` 投影后的记录做可选确定性转换、提取或断言，不新增采集信号 |
+
+`output_processing` 的详细契约、白名单操作、单记录基数和 AI 兜底边界见[QKV 输出后处理设计与实现方案](../../knowledge-base/events/2026-08-25-QKV输出后处理设计与实现方案.md)。
 
 #### text extract
 

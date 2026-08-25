@@ -58,6 +58,7 @@ class EffectVerificationResult:
     exec_id: str | None = None
     verification_id: str | None = None
     resolution: dict[str, Any] = field(default_factory=dict)
+    processing_applied: bool = False
 
     def to_observation(self) -> str:
         """给 ReAct/判定层的标准化观察文本。"""

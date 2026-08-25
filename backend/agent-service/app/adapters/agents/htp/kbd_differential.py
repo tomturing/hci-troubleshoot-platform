@@ -961,7 +961,15 @@ class KBDDiagnostic:
                     continue
                 key = (
                     _acquire_tool(s),
-                    json.dumps((s.get("acquire") or {}).get("args") or {}, sort_keys=True, ensure_ascii=False),
+                    json.dumps(
+                        {
+                            "args": (s.get("acquire") or {}).get("args") or {},
+                            "produces": (s.get("orchestrate") or {}).get("produces") or [],
+                            "output_processing": (s.get("orchestrate") or {}).get("output_processing") or [],
+                        },
+                        sort_keys=True,
+                        ensure_ascii=False,
+                    ),
                 )
                 if key in seen:
                     continue
@@ -1373,6 +1381,22 @@ class KBDDiagnostic:
             produces = self._tool_def_default(_acquire_tool(signal), "produces") or []
         if not res.values:
             return
+        processing = (signal.get("orchestrate") or {}).get("output_processing") or []
+        if processing and not getattr(res, "processing_applied", False):
+            from shared.signals.qkv_output_processing import apply_output_processing
+
+            processed = apply_output_processing(res.values, processing)
+            res.values = processed.records
+            res.assertions = [
+                {
+                    "processing_id": item.processing_id,
+                    "status": item.status,
+                    "observed": item.observed,
+                    "reason": item.reason,
+                }
+                for item in processed.assertions
+            ]
+            res.matched = processed.matched
         res.values = await self._normalize_qkv_values(
             res.values,
             node_ip=node_ip,
@@ -1396,6 +1420,21 @@ class KBDDiagnostic:
             val = first.get(name.lower()) if isinstance(first, dict) else None
             if val is not None:
                 self._set_pool_var(name, val, producer_priority=producer_priority)
+
+        # 后处理已经在 QKV engine 中完成确定性求值，这里只提交其派生结果。
+        for spec in processing:
+            if not isinstance(spec, dict) or spec.get("mode") != "derive":
+                continue
+            name = str(spec.get("target_variable") or "").strip()
+            if not name:
+                continue
+            values = [
+                item[name.lower()]
+                for item in res.values
+                if isinstance(item, dict) and name.lower() in item
+            ]
+            if values:
+                self._set_pool_var(name, values[0] if len(values) == 1 else values, producer_priority=producer_priority)
 
     async def _execute_acquirer(
         self,
@@ -1441,7 +1480,9 @@ class KBDDiagnostic:
                     )
                     if res is None or not res.success:
                         return None, (res.error if res else "无法构建控制台截图信号"), None, None
-                    return res.to_observation(), None, bool(res.values), None
+                    assertions = getattr(res, "assertions", None) or []
+                    pre_matched = getattr(res, "matched", None) if assertions else bool(res.values)
+                    return res.to_observation(), None, pre_matched, None
                 except Exception as exc:
                     logger.error(
                         event="signal_exec_exception",
@@ -1506,7 +1547,9 @@ class KBDDiagnostic:
                     values_count=len(res.values) if res.values else 0,
                     session_id=session_id,
                 )
-                return res.to_observation(), None, bool(res.values), None
+                assertions = getattr(res, "assertions", None) or []
+                pre_matched = res.matched if assertions else bool(res.values)
+                return res.to_observation(), None, pre_matched, None
             except Exception as exc:
                 logger.error(
                     event="signal_exec_exception",
@@ -1884,6 +1927,7 @@ class KBDDiagnostic:
                     "paths": args.get("paths", ["/sf/log/today", "/sf/log/today/vt"]),
                     "context_lines": int(args.get("context_lines", 2)),
                     "produces": produces,
+                    "output_processing": (signal.get("orchestrate") or {}).get("output_processing") or [],
                 }
             )
         except Exception:
