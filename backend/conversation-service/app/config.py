@@ -29,7 +29,13 @@ class Settings(BaseSettings):
 
     # KB 服务配置
     KB_SERVICE_URL: str = "http://kb-service:8004"
+    # 内部服务间 API 鉴权 Token；同时用作网关身份签名的 HMAC 密钥（见
+    # shared/security/signature.py）。生产部署由 helm secrets.internalApiToken
+    # 注入，源码默认值仅用于本地开发。
     INTERNAL_API_TOKEN: str = "hci-dev-internal-token"
+    # 身份签名严格模式：True 时未携带有效网关签名的请求一律 401；
+    # False 为过渡模式（放行但告警且跳过归属比对），供存量脚本迁移。
+    STRICT_IDENTITY_SIGNATURE: bool = True
     # KB 检索参数
     KB_SEARCH_TOP_N: int = 5  # RRF 融合后取 top-N
     KB_CONTEXT_MAX_CHARS: int = 40000  # 注入 Prompt 的最大字符数

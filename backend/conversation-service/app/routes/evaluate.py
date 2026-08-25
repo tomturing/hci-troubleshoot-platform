@@ -4,6 +4,7 @@ Evaluation Routes - 用户评分API路由
 提供用户主动评分接口和管理后台质量统计接口
 """
 
+import secrets
 import uuid
 from typing import Any
 
@@ -46,7 +47,10 @@ def require_admin_token(authorization: str | None = Header(default=None)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="缺少 Bearer Token")
 
     token = authorization[7:].strip()
-    if token != settings.INTERNAL_API_TOKEN:
+    # 安全修复：空 token 直接拒绝；常数时间比较防时序侧信道
+    if not token or not settings.INTERNAL_API_TOKEN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权限访问管理员接口")
+    if not secrets.compare_digest(token, settings.INTERNAL_API_TOKEN):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权限访问管理员接口")
 
 

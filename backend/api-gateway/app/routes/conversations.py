@@ -1,15 +1,22 @@
 """
-对话路由 — API 网关代理层
+对话路由 - API 网关代理层
 
 负责将对话相关请求代理到 conversation-service，处理 SSE 流式响应的透传。
+
+安全审计 2026-08-19 修复：出口身份签名。网关是唯一允许对下游声明客户端
+身份的组件--统一剥离用户传入的 X-Client-ID / X-Client-Signature，改用
+共享密钥 HMAC 重签后注入（见 shared/security/signature.py），下游
+conversation-service 据此做会话归属校验（IDOR 防护）。
 """
 
 import json
+import re
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from shared.observability.logger import get_logger
+from shared.security.signature import CLIENT_ID_PATTERN, sign_client_identity
 from shared.utils.exceptions import ErrorCode
 
 from app.config import settings
@@ -19,6 +26,27 @@ logger = get_logger("gateway-conversations")
 
 CONVERSATION_SERVICE_URL = f"{settings.CONVERSATION_SERVICE_URL}/api/conversations"
 MAX_EXEC_RESULT_BODY_BYTES = 2 * 1024 * 1024
+
+# 用户可伪造的身份头变体（出口前一律剥离）
+_IDENTITY_HEADERS = ("x-client-id", "x-client-signature")
+
+
+def _extract_client_id(request: Request) -> str | None:
+    """从用户请求提取 client_id 并做格式校验（供出口签名）。"""
+    client_id = request.headers.get("X-Client-ID")
+    if not client_id:
+        return None
+    if not re.fullmatch(CLIENT_ID_PATTERN, client_id):
+        raise HTTPException(status_code=400, detail="X-Client-ID 格式非法")
+    return client_id
+
+
+def _signed_outbound_headers(headers: dict | None, client_id: str | None) -> dict:
+    """剥离用户传入的身份头，注入网关 HMAC 签名。"""
+    merged = {k: v for k, v in (headers or {}).items() if k.lower() not in _IDENTITY_HEADERS}
+    if client_id:
+        merged.update(sign_client_identity(client_id, settings.INTERNAL_API_TOKEN))
+    return merged
 
 
 async def _read_json_body_limited(request: Request, max_bytes: int) -> dict:
@@ -45,12 +73,16 @@ async def _read_json_body_limited(request: Request, max_bytes: int) -> dict:
     return payload
 
 
-async def proxy_request_stream(method: str, path: str, payload: dict | None, headers: dict):
+async def proxy_request_stream(
+    method: str, path: str, payload: dict | None, headers: dict, client_id: str | None = None
+):
     """Proxy request with response streaming (SSE)"""
     # SSE 场景下，默认 httpx timeout(约 5s) 很容易触发 ReadTimeout，且 str(e) 可能为空。
     # 这里禁用超时，让上游按实际流式节奏输出。
     client = httpx.AsyncClient(timeout=None)
     url = f"{CONVERSATION_SERVICE_URL}{path}"
+    # 出口身份签名：剥离用户身份头，注入网关 HMAC 签名
+    headers = _signed_outbound_headers(headers, client_id)
 
     async def stream_generator():
         try:
@@ -107,13 +139,20 @@ async def proxy_request_stream(method: str, path: str, payload: dict | None, hea
 
 
 async def proxy_request(
-    method: str, path: str, payload: dict | None = None, params: dict | None = None, headers: dict | None = None
+    method: str,
+    path: str,
+    payload: dict | None = None,
+    params: dict | None = None,
+    headers: dict | None = None,
+    client_id: str | None = None,
 ):
     """Standard proxy request"""
     async with httpx.AsyncClient() as client:
         try:
             url = f"{CONVERSATION_SERVICE_URL}{path}"
-            response = await client.request(method, url, json=payload, params=params, headers=headers)
+            # 出口身份签名：剥离用户身份头，注入网关 HMAC 签名
+            signed = _signed_outbound_headers(headers, client_id)
+            response = await client.request(method, url, json=payload, params=params, headers=signed)
             return response
         except httpx.RequestError as exc:
             logger.error(f"Error requesting {exc.request.url!r}.")
@@ -124,14 +163,14 @@ async def proxy_request(
 async def create_conversation(request: Request):
     """创建对话"""
     query_params = dict(request.query_params)
-    response = await proxy_request("POST", "/", params=query_params)
+    response = await proxy_request("POST", "/", params=query_params, client_id=_extract_client_id(request))
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
 @router.get("/{conversation_id}")
 async def get_conversation(conversation_id: str, request: Request):
     """获取对话详情"""
-    response = await proxy_request("GET", f"/{conversation_id}")
+    response = await proxy_request("GET", f"/{conversation_id}", client_id=_extract_client_id(request))
     if response.status_code == 404:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return JSONResponse(content=response.json(), status_code=response.status_code)
@@ -140,14 +179,14 @@ async def get_conversation(conversation_id: str, request: Request):
 @router.get("/case/{case_id}")
 async def get_conversations_by_case(case_id: str, request: Request):
     """获取工单的所有对话"""
-    response = await proxy_request("GET", f"/case/{case_id}")
+    response = await proxy_request("GET", f"/case/{case_id}", client_id=_extract_client_id(request))
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
 @router.get("/{conversation_id}/messages")
 async def get_messages(conversation_id: str, request: Request):
     """获取对话的消息历史"""
-    response = await proxy_request("GET", f"/{conversation_id}/messages")
+    response = await proxy_request("GET", f"/{conversation_id}/messages", client_id=_extract_client_id(request))
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
@@ -155,14 +194,18 @@ async def get_messages(conversation_id: str, request: Request):
 async def send_message(conversation_id: str, request: Request):
     """发送消息 (SSE流式返回)"""
     payload = await request.json()
-    return await proxy_request_stream("POST", f"/{conversation_id}/message", payload, headers={})
+    return await proxy_request_stream(
+        "POST", f"/{conversation_id}/message", payload, headers={}, client_id=_extract_client_id(request)
+    )
 
 
 @router.post("/{conversation_id}/interactive-response")
 async def submit_interactive_response(conversation_id: str, request: Request):
     """提交 ops-agent 交互式响应（用户选择备选项后回传）"""
     payload = await request.json()
-    response = await proxy_request("POST", f"/{conversation_id}/interactive-response", payload=payload)
+    response = await proxy_request(
+        "POST", f"/{conversation_id}/interactive-response", payload=payload, client_id=_extract_client_id(request)
+    )
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
@@ -182,26 +225,34 @@ async def submit_exec_result(conversation_id: str, request: Request):
     if tracestate := request.headers.get("tracestate"):
         headers["tracestate"] = tracestate
 
-    response = await proxy_request("POST", f"/{conversation_id}/exec-result", payload=payload, headers=headers)
+    response = await proxy_request(
+        "POST", f"/{conversation_id}/exec-result", payload=payload, headers=headers,
+        client_id=_extract_client_id(request),
+    )
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
 @router.get("/{conversation_id}/resume-stream")
 async def resume_stream(conversation_id: str, request: Request):
     """重连 ops-agent outbox SSE 流（页面刷新后恢复会话续写）"""
-    return await proxy_request_stream("GET", f"/{conversation_id}/resume-stream", payload=None, headers={})
+    return await proxy_request_stream(
+        "GET", f"/{conversation_id}/resume-stream", payload=None, headers={},
+        client_id=_extract_client_id(request),
+    )
 
 
 @router.post("/{conversation_id}/evaluate")
 async def submit_evaluation(conversation_id: str, request: Request):
     """提交用户评分"""
     payload = await request.json()
-    response = await proxy_request("POST", f"/{conversation_id}/evaluate", payload=payload)
+    response = await proxy_request(
+        "POST", f"/{conversation_id}/evaluate", payload=payload, client_id=_extract_client_id(request)
+    )
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
 @router.get("/{conversation_id}/evaluation")
 async def get_evaluation(conversation_id: str, request: Request):
     """获取对话的评分信息"""
-    response = await proxy_request("GET", f"/{conversation_id}/evaluation")
+    response = await proxy_request("GET", f"/{conversation_id}/evaluation", client_id=_extract_client_id(request))
     return JSONResponse(content=response.json(), status_code=response.status_code)

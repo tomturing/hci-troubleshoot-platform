@@ -17,6 +17,12 @@ from shared.observability.logger import get_logger
 from shared.utils.exceptions import AIStreamError, ErrorCode, ExternalServiceError
 
 from ..repositories.conversation_repo import ConversationRepository
+from ..security.auth import (
+    check_request_size,
+    sanitize_message_content,
+    verify_case_ownership,
+    verify_conversation_ownership,
+)
 from ..services.agent_client import AgentClient
 from ..services.conversation_service import ConversationService
 from ..services.environment_client import EnvironmentClient
@@ -85,9 +91,12 @@ async def create_conversation(
     initial_message: str | None = None,
     case_title: str | None = None,
     case_description: str | None = None,
+    request: Request = None,  # FastAPI 自动注入
     service: ConversationService = Depends(get_conversation_service),
 ):
     """创建新对话，case_title/case_description 存入 metadata 供 Pod 分配时使用"""
+    # 安全修复：校验工单归属（签名身份 + case.client_id 比对）
+    await verify_case_ownership(case_id, request, service)
     metadata: dict | None = None
     if case_title or case_description:
         metadata = {"case_title": case_title or "", "case_description": case_description or ""}
@@ -99,9 +108,13 @@ async def create_conversation(
 
 @router.get("/{conversation_id}")
 async def get_conversation(
-    conversation_id: uuid.UUID, service: ConversationService = Depends(get_conversation_service)
+    conversation_id: uuid.UUID,
+    request: Request,
+    service: ConversationService = Depends(get_conversation_service),
 ):
     """获取对话详情"""
+    # 安全修复：会话归属校验（防 IDOR）
+    await verify_conversation_ownership(conversation_id, request, service)
     conversation = await service.get_conversation(conversation_id)
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -109,14 +122,23 @@ async def get_conversation(
 
 
 @router.get("/case/{case_id}")
-async def get_conversations_by_case(case_id: str, service: ConversationService = Depends(get_conversation_service)):
+async def get_conversations_by_case(
+    case_id: str,
+    request: Request,
+    service: ConversationService = Depends(get_conversation_service),
+):
     """获取工单的所有对话"""
+    # 安全修复：工单归属校验（防 IDOR 枚举他人会话）
+    await verify_case_ownership(case_id, request, service)
     return await service.repository.get_conversations_by_case(case_id)
 
 
 @router.get("/{conversation_id}/messages", response_model=list[MessageResponse])
-async def get_messages(conversation_id: uuid.UUID, service: ConversationService = Depends(get_conversation_service)):
+async def get_messages(conversation_id: uuid.UUID, request: Request, service: ConversationService = Depends(get_conversation_service)):
     """获取对话消息历史"""
+    # ━━ 安全修复：权限校验 ━━
+    await verify_conversation_ownership(conversation_id, request, service)
+    
     messages = await service.get_messages(conversation_id)
     return [MessageResponse.model_validate(msg) for msg in messages]
 
@@ -135,6 +157,33 @@ async def send_message(
     Returns:
         StreamingResponse: SSE流，格式为 data: <chunk>\n\n
     """
+    # ━━ 安全修复：权限校验 ━━
+    await verify_conversation_ownership(conversation_id, request, service)
+
+    # ━━ 安全修复：请求大小检查 ━━
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            check_request_size(int(content_length), max_size_mb=1)
+        except HTTPException as e:
+            logger.warning(
+                event="request_too_large",
+                conversation_id=str(conversation_id),
+                content_length=content_length,
+            )
+            raise
+
+    # ━━ 安全修复：消息内容清理 ━━
+    original_content = message.content
+    message.content = sanitize_message_content(message.content)
+    if message.content != original_content:
+        logger.warning(
+            event="content_sanitized",
+            conversation_id=str(conversation_id),
+            original_length=len(original_content),
+            sanitized_length=len(message.content),
+        )
+
     ai_content = []
     # 获取 SSE 推送服务（用于接收 agent_exec_command 等外部事件）
     sse_pusher = getattr(request.app.state, "sse_pusher", None)
@@ -535,6 +584,7 @@ async def persist_tool_turn(
 async def resume_ops_agent_stream(
     conversation_id: uuid.UUID,
     background_tasks: BackgroundTasks,
+    request: Request,
     service: ConversationService = Depends(get_conversation_service),
 ):
     """恢复消费 ops-agent 续写事件流（不提交新 prompt，用于页面刷新后重接 SSE）。
@@ -549,6 +599,8 @@ async def resume_ops_agent_stream(
     响应格式与 POST /{id}/message 基本一致（data: {content} / event: interactive_request / [DONE]），
     但异常时不产出 event: error 帧，而是记录日志后直接返回 [DONE]。
     """
+    # 安全修复：会话归属校验（防 IDOR 接收他人续写流）
+    await verify_conversation_ownership(conversation_id, request, service)
     ai_content: list[str] = []
 
     async def event_generator():
