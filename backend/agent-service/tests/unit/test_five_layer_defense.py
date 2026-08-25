@@ -10,11 +10,9 @@
 """
 
 import pytest
-
 from app.services.policy_service import PolicyService
 from app.tools.acli.classifier import classify_acli, classify_bash
 from app.tools.acli.executor import CommandSanitizer
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 第 1 层验证：知识治理与编译门禁 (Knowledge & Schema Gate)
@@ -71,18 +69,8 @@ def test_layer3_q2026082575766_sim_ssh_readonly_accuracy():
     assert needs_confirm is False, "qkv_task 在 sim-ssh 模式下应自动执行，不应误判拦截"
 
     # 2. safe-only 与 aggressive 模式下的只读工具同样放行
-    assert (
-        policy.evaluate_needs_confirm(
-            "qkv_task", 1, execution_mode="safe-only"
-        )
-        is False
-    )
-    assert (
-        policy.evaluate_needs_confirm(
-            "qkv_task", 1, execution_mode="aggressive"
-        )
-        is False
-    )
+    assert policy.evaluate_needs_confirm("qkv_task", 1, execution_mode="safe-only") is False
+    assert policy.evaluate_needs_confirm("qkv_task", 1, execution_mode="aggressive") is False
 
 
 def test_layer3_high_risk_and_write_operations_effectiveness():
@@ -115,12 +103,7 @@ def test_layer3_high_risk_and_write_operations_effectiveness():
     )
 
     # 破坏性操作 (risk=3) 在策略服务中同样返回需要确认/拦截
-    assert (
-        policy.evaluate_needs_confirm(
-            "acli_vm_delete", 3, execution_mode="sim-ssh"
-        )
-        is True
-    )
+    assert policy.evaluate_needs_confirm("acli_vm_delete", 3, execution_mode="sim-ssh") is True
 
 
 def test_layer3_phase_gate_s5_require_all_confirm():
@@ -157,18 +140,8 @@ def test_layer3_off_and_unknown_mode_fallback():
     """
     policy = PolicyService()
 
-    assert (
-        policy.evaluate_needs_confirm(
-            "qkv_task", 1, execution_mode="off"
-        )
-        is True
-    )
-    assert (
-        policy.evaluate_needs_confirm(
-            "qkv_task", 1, execution_mode="unknown_custom_mode"
-        )
-        is True
-    )
+    assert policy.evaluate_needs_confirm("qkv_task", 1, execution_mode="off") is True
+    assert policy.evaluate_needs_confirm("qkv_task", 1, execution_mode="unknown_custom_mode") is True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -214,9 +187,7 @@ def test_layer4_command_sanitizer_effectiveness_anti_injection():
 
         with pytest.raises(ValueError) as exc_info:
             CommandSanitizer.sanitize(cmd, tool)
-        assert len(str(exc_info.value)) > 0, (
-            f"必须拦截恶意指令: {cmd}"
-        )
+        assert len(str(exc_info.value)) > 0, f"必须拦截恶意指令: {cmd}"
 
 
 def test_layer4_command_sanitizer_accuracy_legitimate_pipeline():
@@ -268,7 +239,6 @@ def test_layer4_risk_classifier_dynamic_evaluation():
 
 def test_layer5_transport_lease_and_isolation_contract():
     """验证仿真测试与生产真实主机的物理隔离契约。"""
-    from shared.database.redis import RedisManager
 
     # 验证仿真租约参数结构与隔离边界
     simulation_params = {
