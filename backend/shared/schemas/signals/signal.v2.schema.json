@@ -633,19 +633,13 @@
     },
     "outputProcessing": {
       "type": "object",
-      "description": "QKV 投影变量的受控后处理；禁止脚本和动态变量名",
+      "description": "QKV 具体值后处理；派生复用 QFK 产出变量词汇，判断复用 QFK Matcher",
       "additionalProperties": false,
       "required": [
-        "id",
         "mode",
-        "input",
-        "operation"
+        "input"
       ],
       "properties": {
-        "id": {
-          "type": "string",
-          "minLength": 1
-        },
         "mode": {
           "type": "string",
           "enum": [
@@ -657,39 +651,20 @@
           "type": "string",
           "minLength": 1
         },
-        "operation": {
-          "type": "string",
-          "enum": [
-            "json_path",
-            "trim",
-            "lower",
-            "upper",
-            "split",
-            "compare",
-            "feature_extract"
-          ]
-        },
-        "target_variable": {
+        "name": {
           "type": "string",
           "pattern": "^[A-Z][A-Z0-9_]*$"
         },
-        "value_type": {
+        "type": {
           "type": "string",
           "enum": [
             "string",
             "integer",
             "number",
-            "percentage"
+            "percentage",
+            "boolean",
+            "array"
           ]
-        },
-        "cardinality": {
-          "type": "string",
-          "enum": [
-            "exactly_one",
-            "zero_or_more",
-            "all"
-          ],
-          "default": "exactly_one"
         },
         "scope": {
           "type": "string",
@@ -699,36 +674,11 @@
           ],
           "default": "per_record"
         },
-        "feature": {
-          "type": "string"
+        "extract": {
+          "$ref": "#/definitions/qkvValueExtract"
         },
-        "path": {
-          "type": "string",
-          "minLength": 1
-        },
-        "separator": {
-          "type": "string",
-          "minLength": 1
-        },
-        "operator": {
-          "type": "string",
-          "enum": [
-            ">",
-            ">=",
-            "<",
-            "<=",
-            "==",
-            "=",
-            "!="
-          ]
-        },
-        "right": {},
-        "fallback": {
-          "type": "string",
-          "enum": [
-            "none",
-            "ai_extract"
-          ]
+        "match": {
+          "$ref": "#/definitions/qkvMatch"
         }
       },
       "allOf": [
@@ -745,7 +695,8 @@
           },
           "then": {
             "required": [
-              "target_variable"
+              "name",
+              "extract"
             ]
           }
         },
@@ -761,32 +712,234 @@
             ]
           },
           "then": {
+            "required": [
+              "match"
+            ],
             "not": {
               "required": [
-                "target_variable"
+                "name",
+                "type",
+                "extract"
               ]
             }
           }
+        }
+      ]
+    },
+    "qkvValueExtract": {
+      "type": "object",
+      "description": "QKV 已有具体值上的唯一特有提取：业务特征或固定分割",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "feature",
+            "split"
+          ]
+        },
+        "feature": {
+          "type": "string"
+        },
+        "separator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cardinality": {
+          "type": "string",
+          "enum": [
+            "exactly_one",
+            "first",
+            "last",
+            "all"
+          ],
+          "default": "exactly_one"
+        },
+        "ai_extract": {
+          "$ref": "#/definitions/aiExtract"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "feature"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "feature"
+            ]
+          }
         },
         {
           "if": {
             "properties": {
-              "operation": {
-                "const": "compare"
+              "type": {
+                "const": "split"
               }
             },
             "required": [
-              "operation"
+              "type"
             ]
           },
           "then": {
-            "properties": {
-              "mode": {
-                "const": "assert"
-              }
-            },
             "required": [
-              "mode"
+              "separator"
+            ]
+          }
+        }
+      ]
+    },
+    "qkvMatch": {
+      "type": "object",
+      "description": "QKV 具体值上的 QFK Matcher；extract 由运行时自动绑定为 identity",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "expected"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "keyword",
+            "regex",
+            "state",
+            "threshold",
+            "delta",
+            "trend",
+            "exists"
+          ]
+        },
+        "pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          ]
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "or",
+            "and",
+            "not"
+          ]
+        },
+        "expected": {
+          "type": "boolean"
+        },
+        "value": {
+          "type": [
+            "number",
+            "integer",
+            "string"
+          ]
+        },
+        "operator": {
+          "type": "string",
+          "enum": [
+            ">",
+            ">=",
+            "<",
+            "<=",
+            "==",
+            "=",
+            "!="
+          ]
+        },
+        "aggregation": {
+          "type": "string",
+          "enum": [
+            "first_number",
+            "last_number",
+            "max",
+            "min",
+            "sum"
+          ]
+        },
+        "minimum_samples": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 10000
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "increasing",
+            "decreasing",
+            "stable"
+          ]
+        },
+        "metric": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "keyword",
+                  "regex",
+                  "state"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "pattern"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "threshold",
+                  "delta"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "value",
+              "operator"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "trend"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "direction"
             ]
           }
         }

@@ -56,7 +56,7 @@ def derive_signal_requires(signal: dict[str, Any]) -> list[str]:
             if not isinstance(item, dict):
                 continue
             collect(item.get("input"))
-            target = str(item.get("target_variable") or "").strip().upper()
+            target = str(item.get("name") or item.get("target_variable") or "").strip().upper()
             if item.get("mode") == "derive" and target:
                 derived.add(target)
         # QKV 后处理的 input 优先引用本信号的 produces/前序 derive，只有其余

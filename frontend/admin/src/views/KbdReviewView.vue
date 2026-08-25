@@ -2557,7 +2557,7 @@ function deriveSignalRequires(sig: SignalV2): string[] {
   }
   for (const processing of sig.orchestrate?.output_processing || []) {
     collect(processing?.input)
-    const target = String((processing as any)?.target_variable || '').trim().toUpperCase()
+    const target = String((processing as any)?.name || (processing as any)?.target_variable || '').trim().toUpperCase()
     if (processing?.mode === 'derive' && target) local.add(target)
   }
   return [...found].filter((name) => !local.has(name.split('.')[0].toUpperCase())).sort()
@@ -4668,7 +4668,7 @@ onUnmounted(() => clearBatchPollTimer())
                     <span class="signal-k">输出后处理</span>
                     <div class="signal-v">
                       <el-tag v-for="processing in sigOrch(item.sig).output_processing" :key="processing.id" size="small" effect="plain" style="margin-right: 6px">
-                        {{ processing.mode === 'assert' ? `判断：${processing.input} ${processing.operator || ''} ${processing.right || ''}` : `提取：${processing.input} → ${processing.target_variable}` }}
+                        {{ processing.mode === 'assert' ? `判断：${processing.input} ${processing.match?.type || ''}` : `提取：${processing.input} → ${processing.name || processing.target_variable || ''}` }}
                       </el-tag>
                     </div>
                   </div>

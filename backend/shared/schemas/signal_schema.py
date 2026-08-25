@@ -737,7 +737,7 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
             for processing in (signal.get("orchestrate") or {}).get("output_processing") or []:
                 if not isinstance(processing, dict) or processing.get("mode") != "derive":
                     continue
-                target = str(processing.get("target_variable") or "").strip().casefold()
+                target = str(processing.get("name") or processing.get("target_variable") or "").strip().casefold()
                 if target in declared_names or target in processing_names:
                     raise ValidationError(
                         f"signals[{index}] 的 output_processing 派生变量重复: {processing.get('target_variable')}",

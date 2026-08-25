@@ -142,18 +142,17 @@ def test_resolver_freezes_qkv_output_processing_contract_metadata():
     signal = revision.content_json["signals_json"]["signals"][0]
     signal["orchestrate"]["produces"] = [{"name": "DESCRIPTION", "type": "string", "path": "description"}]
     signal["orchestrate"]["output_processing"] = [{
-        "id": "vm",
         "mode": "derive",
         "input": "{{DESCRIPTION}}",
-        "operation": "feature_extract",
-        "feature": "vm_name",
-        "target_variable": "VM_NAME",
+        "name": "VM_NAME",
+        "type": "string",
+        "extract": {"type": "feature", "feature": "vm_name", "cardinality": "exactly_one"},
     }]
     resolution = HciSimKbdResolver().resolve_entry(_entry(), (active, revision), _tool_snapshots())
 
     assert resolution.status == "ready_for_artifact_binding"
     route = resolution.resolved.synthetic_routes[0]
-    assert route.output_processing[0]["target_variable"] == "VM_NAME"
+    assert route.output_processing[0]["name"] == "VM_NAME"
     assert route.derived_variables == ("VM_NAME",)
     assert route.processing_fingerprint.startswith("sha256:")
     assert route.to_dict()["output_processing"]
