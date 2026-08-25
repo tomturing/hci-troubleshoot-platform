@@ -40,7 +40,7 @@ owner: team
 |----|------|------|-----------|
 | `acquire` | **是** | 采集：用哪个工具（`tool`）+ 参数（`args`） | 全部 |
 | `match` | 否（可 `null`） | 判定：把采集文本与 `pattern` 比对 | 后端 QFK |
-| `orchestrate` | 否 | 编排：本信号产出哪些变量（`produces`）、依赖哪些变量（`requires`） | QKV/QFK |
+| `orchestrate` | 否 | 编排：本信号产出哪些变量（`produces`）、依赖哪些变量（`requires`），以及 QKV 输出后的可选处理（`output_processing`） | QKV/QFK |
 | `provenance` | 否 | 来源：信号是前端 / 后端产生、置信度、风险 | 全部 |
 | `review` | 否（`require_human_confirm` 必填） | 复核：是否需人工确认后才生效 | 全部 |
 
@@ -54,7 +54,7 @@ owner: team
 {
   "id": "s_vm_boot_failed",        // 可选：信号唯一标识，便于引用 / 调试
   "acquire": {                      // 【必填】采集段
-    "tool": "qkv_task",             // 采集工具枚举（见 §4.1）；QKV 三选一：qkv_alert / qkv_task / qkv_dialog
+    "tool": "qkv_task",             // 采集工具枚举（见 §4.1）；QKV 直接生产者三选一：qkv_alert / qkv_task / qkv_dialog；另含条件型视觉生产者 qkv_vm_console
     "args": {                       // 该 tool 的参数对象（字段见 §4.2）
       "keyword": "启动虚拟机",       // QKV 采集关键词（acli task get -k 的检索词，非自由描述）
       "is_failed": true,            // qkv_task 专属：仅取失败任务（等价于 acli -s failed）
@@ -69,6 +69,16 @@ owner: team
       { "name": "HOST", "path": "host|hostname|hostid" }, // 变量名 + JSON 路径（| 多路径容错）
       { "name": "VM_ID", "path": "vm_id|vmid" },
       { "name": "TASK_ID", "path": "task_id" }
+    ],
+    "output_processing": [          // 可选：对本信号已投影输出继续处理，不创建新的 qkv_var 信号
+      {
+        "id": "extract-vm-name",
+        "mode": "derive",
+        "input": "{{DESCRIPTION}}",
+        "operation": "feature_extract",
+        "feature": "vm_name",
+        "target_variable": "VM_NAME"
+      }
     ],
     "requires": []                  // 本信号依赖的变量（QKV 一般为空）
   },
@@ -181,6 +191,9 @@ owner: team
 | `container` | string | 否 | 容器 |
 | `produces` | `array<{name, type?, path?或extract?}>` | 否 | 产出变量；JSON 用 `path`，非 JSON 用 `extract`，二者互斥 |
 | `requires` | `array<string>` | 否 | QFK 从 args/extract 中 `{{VAR}}` 自动推导；取自上游 `produces` |
+| `output_processing` | `array<OutputProcessing>` | 否 | 仅 QKV 使用；对 `produces` 投影后的记录做可选确定性转换、提取或断言，不新增采集信号 |
+
+`output_processing` 的详细契约、白名单操作、单记录基数和 AI 兜底边界见[QKV 输出后处理设计与实现方案](../../knowledge-base/events/2026-08-25-QKV输出后处理设计与实现方案.md)。
 
 #### text extract
 
@@ -234,9 +247,10 @@ owner: team
 
 ## 4. acquire.tool 枚举与 args 字段
 
-### 4.1 枚举（共 11 个）
+### 4.1 枚举（共 12 个）
 
-- **前端 QKV**：`qkv_alert` / `qkv_task` / `qkv_dialog`
+- **前端 QKV（3 种直接生产者）**：`qkv_alert` / `qkv_task` / `qkv_dialog`
+- **前端 QKV（1 种条件型实时视觉生产者）**：`qkv_vm_console`（虚拟机控制台截图；必须先具备可信 `HOST` 与 `VM_ID` 才可执行，见《虚拟机控制台视觉生产者信号设计与需求》）
 - **后端 QFK**：`qfk_log` / `qfk_service` / `qfk_system` / `qfk_vm` / `qfk_network` / `qfk_storage` / `qfk_hardware` / `qfk_platform`
 
 ### 4.2 各 tool 的 `args` 字段表
@@ -268,6 +282,19 @@ owner: team
 | `limit` | int | 否 | 结构化候选结果上限 |
 | `paths` | string[] | 否 | 固定为 `/sf/log/today`、`/sf/log/today/vt` 的一个或两个 |
 | `context_lines` | int | 否 | 上下文行数，0–10，默认 2 |
+
+**qkv_vm_console**（条件型实时视觉生产者：虚拟机控制台截图）
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `host` | string | **是** | 仅允许 `{{HOST}}` 或系统规范化节点标识；执行时 Inventory 校验 |
+| `vm_id` | string | **是** | 仅允许 `{{VM_ID}}` 或精确数值 VMID；不接受模糊 VM 名称 |
+| `capture_mode` | enum | 否 | 固定 `baseline_then_optional_wake`（基线截图，近黑时经人工确认唤醒重截） |
+| `timeout` | int | 否 | 1–60 秒（有意偏离公共 1–300：快速失败型采集） |
+
+> 不接受 `command` / `monitor_command` / `path` / `key` 等自由字段（422）。以 `qkv_vm_console`
+> 为唯一生产者的 KBD，必须在 `verification_contract.variables` 声明 `HOST`、`VM_ID` 外部来源；
+> 截图产出 `VM_CONSOLE_STATE` / `VM_CONSOLE_SUMMARY` / `VM_CONSOLE_CONFIDENCE` / `VM_CONSOLE_ARTIFACT_ID` 供 QFK 与验证契约消费。
 
 目标 HCI/aCLI 没有独立 dialog API。运行时在当前主控两个固定目录执行 `acli log get -k`，
 过滤 audit 自观测后提取 END、REQUEST_ID/trace_id、HOST；对应失败任务存在时优先用 qkv_task。

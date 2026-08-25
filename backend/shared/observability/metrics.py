@@ -187,6 +187,71 @@ KB_SEARCH_DURATION_SECONDS = Histogram(
 )
 
 # ──────────────────────────────────────────────
+#  qkv_vm_console 控制台截图指标（设计文档 §10.2）
+# ──────────────────────────────────────────────
+
+# 各阶段成功/失败率（stage: inventory/baseline/recapture/wake/vision/...）
+VM_CONSOLE_CAPTURE_TOTAL = Counter(
+    "hci_vm_console_capture_total",
+    "虚拟机控制台截图各阶段结果计数",
+    labelnames=["stage", "status", "mode"],  # mode: online | offline
+)
+
+# 截图/上传/识图时延
+VM_CONSOLE_CAPTURE_DURATION_SECONDS = Histogram(
+    "hci_vm_console_capture_duration_seconds",
+    "虚拟机控制台截图阶段耗时（秒）",
+    labelnames=["stage", "mode"],
+    buckets=[0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0, float("inf")],
+)
+
+# 熄屏/黑屏发生比例
+VM_CONSOLE_NEAR_BLACK_TOTAL = Counter(
+    "hci_vm_console_near_black_total",
+    "控制台截图近黑判定计数",
+    labelnames=["near_black", "mode"],
+)
+
+# 唤醒确认、拒绝和结果（decision: confirmed/declined/non_interactive/timed_out；result: success/failed/not_attempted）
+VM_CONSOLE_WAKE_TOTAL = Counter(
+    "hci_vm_console_wake_total",
+    "控制台近黑唤醒决定与结果计数",
+    labelnames=["decision", "result", "mode"],
+)
+
+# 识别状态与置信度分布（confidence_band: high/medium/low）
+VM_CONSOLE_VISION_TOTAL = Counter(
+    "hci_vm_console_vision_total",
+    "控制台视觉提取结果计数",
+    labelnames=["state", "confidence_band", "mode"],
+)
+
+# 制品大小和成本控制（累计字节）
+VM_CONSOLE_ARTIFACT_BYTES_TOTAL = Counter(
+    "hci_vm_console_artifact_bytes_total",
+    "控制台截图制品累计字节数",
+    labelnames=["kind", "mode"],  # kind: ppm | png
+)
+
+# 权属/参数/哈希安全拒绝
+VM_CONSOLE_SECURITY_REJECTION_TOTAL = Counter(
+    "hci_vm_console_security_rejection_total",
+    "控制台截图安全拒绝计数",
+    labelnames=["reason", "mode"],
+)
+
+
+def vm_console_confidence_band(confidence: float) -> str:
+    """视觉置信度分档（用于指标标签，避免高基数）。"""
+
+    if confidence >= 0.8:
+        return "high"
+    if confidence >= 0.5:
+        return "medium"
+    return "low"
+
+
+# ──────────────────────────────────────────────
 #  Pod 池指标 (O-2)
 # ──────────────────────────────────────────────
 

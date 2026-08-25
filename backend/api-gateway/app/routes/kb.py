@@ -298,6 +298,32 @@ async def update_catalog_proxy(filename: str, request: Request):
 # ============ KBD 审核代理（前端使用 /api/v1/kbd 前缀） ============
 
 KBD_SERVICE_URL = f"{settings.KB_SERVICE_URL}/api/admin/kbd"
+
+# qkv_vm_console 截图会话审计查询（§7.3）：代理到 kb-service 管理端只读路由。
+VM_CONSOLE_SERVICE_URL = f"{settings.KB_SERVICE_URL}/api/admin/vm-console"
+vm_console_router = APIRouter(prefix="/api/v1/vm-console", tags=["vm-console"])
+
+
+@vm_console_router.get("/captures")
+async def vm_console_captures_proxy(request: Request):
+    """代理控制台截图会话审计查询 → kb-service（仅脱敏摘要）"""
+    headers = _internal_auth_headers()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.request(
+                "GET",
+                f"{VM_CONSOLE_SERVICE_URL}/captures",
+                params=dict(request.query_params),
+                headers=headers,
+            )
+        except httpx.RequestError as exc:
+            logger.error(f"vm-console captures 代理失败: {exc.request.url!r}")
+            raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
+    try:
+        body = response.json()
+    except (ValueError, json.JSONDecodeError):
+        body = {"detail": response.text[:500]}
+    return JSONResponse(content=body, status_code=response.status_code)
 kbd_router = APIRouter(prefix="/api/v1/kbd", tags=["kbd"])
 
 
@@ -833,3 +859,44 @@ async def sop_upload_proxy(request: Request):
         except httpx.RequestError as exc:
             logger.error(f"KB Service SOP 上传请求失败: {exc.request.url!r}")
             raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
+
+
+@vm_console_router.get("/captures/{capture_id}/events")
+async def vm_console_capture_events_proxy(capture_id: str, request: Request):
+    """代理截图会话审计事件流查询 → kb-service"""
+    headers = _internal_auth_headers()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.request(
+                "GET",
+                f"{VM_CONSOLE_SERVICE_URL}/captures/{capture_id}/events",
+                params=dict(request.query_params),
+                headers=headers,
+            )
+        except httpx.RequestError as exc:
+            logger.error(f"vm-console events 代理失败: {exc.request.url!r}")
+            raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
+    try:
+        body = response.json()
+    except (ValueError, json.JSONDecodeError):
+        body = {"detail": response.text[:500]}
+    return JSONResponse(content=body, status_code=response.status_code)
+
+
+@vm_console_router.get("/replay-fixtures")
+async def vm_console_replay_fixtures_proxy(request: Request):
+    """代理控制台截图回放 Fixture 查询 → kb-service"""
+    headers = _internal_auth_headers()
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.request(
+                "GET", f"{VM_CONSOLE_SERVICE_URL}/replay-fixtures", headers=headers
+            )
+        except httpx.RequestError as exc:
+            logger.error(f"vm-console replay 代理失败: {exc.request.url!r}")
+            raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
+    try:
+        body = response.json()
+    except (ValueError, json.JSONDecodeError):
+        body = {"detail": response.text[:500]}
+    return JSONResponse(content=body, status_code=response.status_code)

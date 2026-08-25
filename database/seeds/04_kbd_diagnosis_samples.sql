@@ -5,7 +5,8 @@
 -- 设计约束：
 --   1. 只创建 draft KBD，不自动审核、不自动发布、不生成离线派生资源；
 --   2. 通过 metadata.sample_suite 检索，不允许业务代码判断具体 KBD ID；
---   3. 覆盖 3 类 QKV、8 类 QFK、7 类 Matcher 以及当前 Signal v2 字段；
+--   3. 覆盖 3 类直接 QKV + 2 类条件型生产者（视觉/效果验证）、8 类 QFK、
+--      7 类 Matcher 以及当前 Signal v2 字段；
 --   4. 只使用 Tool Registry/Shared Resolution Runtime 已声明的只读命令；
 --   5. 已发布样例不覆盖；仅升级仍为 draft 的旧版样例，修复测试契约后可重新审核。
 -- ============================================================
@@ -76,6 +77,90 @@ WITH sample_rows (
               "review": {"require_human_confirm": false, "notes": "审核时确认现场任务关键字。"}
             },
             {
+              "id": "vm_console_visual",
+              "role": "should",
+              "acquire": {
+                "tool": "qkv_vm_console",
+                "args": {
+                  "host": "{{HOST}}",
+                  "vm_id": "{{VM_ID}}",
+                  "capture_mode": "baseline_then_optional_wake",
+                  "timeout": 60,
+                  "instruction": "采集虚拟机控制台画面，确认 Guest 内部是否存在黑屏、内核恐慌或启动失败现象"
+                }
+              },
+              "match": null,
+              "orchestrate": {
+                "phase": "diagnostic",
+                "requires": ["HOST", "VM_ID"],
+                "produces": [
+                  {"name": "VM_CONSOLE_STATE", "type": "string", "path": "display_state"},
+                  {"name": "VM_CONSOLE_SUMMARY", "type": "string", "path": "summary"},
+                  {"name": "VM_CONSOLE_CONFIDENCE", "type": "number", "path": "confidence"},
+                  {"name": "VM_CONSOLE_ARTIFACT_ID", "type": "string", "path": "artifact_id"}
+                ]
+              },
+              "provenance": {
+                "category": "frontend",
+                "method": "controlled_vm_console_capture",
+                "source_section": "steps_text",
+                "confidence": 0.8,
+                "risk": 0.4,
+                "needs_review": false,
+                "evidence": "条件型实时视觉生产者：HOST/VM_ID 来自上游失败任务；近黑唤醒须运行时人工确认。",
+                "source_refs": ["kbd:steps_text"]
+              },
+              "review": {"require_human_confirm": false, "notes": "截图本身不需确认；sendkey down 唤醒必须运行时单独确认。"}
+            },
+            {
+              "id": "vm_effect_verify",
+              "role": "should",
+              "acquire": {
+                "tool": "qkv_effect",
+                "args": {
+                  "usage": "remediation_verify",
+                  "expectation": {
+                    "observation": {
+                      "tool": "qkv_task",
+                      "args": {"keyword": "启动虚拟机", "is_failed": true}
+                    },
+                    "matcher": {
+                      "type": "exists",
+                      "expected": false,
+                      "extract": {"type": "text", "rows": {"mode": "all"}}
+                    },
+                    "settle_seconds": 120,
+                    "window_seconds": 900,
+                    "max_recheck": 3
+                  },
+                  "host": "{{HOST}}",
+                  "timeout": 60,
+                  "instruction": "复核恢复动作完成后，虚拟机启动失败任务是否在窗口内不再出现"
+                }
+              },
+              "match": null,
+              "orchestrate": {
+                "phase": "remediation",
+                "requires": ["HOST"],
+                "produces": [
+                  {"name": "EFFECT_STATUS", "type": "string", "path": "verdict"},
+                  {"name": "EFFECT_CHECKED_AT", "type": "string", "path": "checked_at"},
+                  {"name": "EFFECT_EVIDENCE", "type": "string", "path": "evidence_ref"}
+                ]
+              },
+              "provenance": {
+                "category": "frontend",
+                "method": "effect_verification",
+                "source_section": "steps_text",
+                "confidence": 0.8,
+                "risk": 0.1,
+                "needs_review": false,
+                "evidence": "条件型效果验证生产者：观测委派 qkv_task 只读原语，判定规则为封闭 matcher，HOST 来自上游失败任务。",
+                "source_refs": ["kbd:steps_text"]
+              },
+              "review": {"require_human_confirm": false, "notes": "纯只读观测判定，不向环境写入任何变更。"}
+            },
+            {
               "id": "vm_status_must",
               "role": "must",
               "acquire": {
@@ -87,6 +172,7 @@ WITH sample_rows (
                   "host": "{{HOST}}",
                   "resource_keyword": "{{VM_ID}}",
                   "timeout": 60,
+                  "nonzero_exit_as_negative": false,
                   "instruction": "在目标宿主机读取虚拟机状态"
                 }
               },
@@ -130,23 +216,28 @@ WITH sample_rows (
                   "host": "{{HOST}}",
                   "resource_keyword": "{{VM_ID}}",
                   "timeout": 60,
+                  "nonzero_exit_as_negative": false,
                   "instruction": "读取虚拟机清单并产出结构化对象"
                 }
               },
               "match": null,
               "orchestrate": {
                 "phase": "diagnostic",
+                "action": "collect",
+                "source": "vm",
+                "target": "host",
+                "container": "host",
                 "requires": ["HOST"],
                 "produces": [
                   {
-                    "name": "VM_OBJECT",
-                    "type": "object",
+                    "name": "VM_STATUS",
+                    "type": "string",
                     "extract": {
                       "type": "json",
                       "source": "stdout",
-                      "path": "data[0]",
-                      "cardinality": "exactly_one",
-                      "value_mode": "object"
+                      "path": "data[0].status",
+                      "cardinality": "first",
+                      "value_mode": "string"
                     }
                   }
                 ]
@@ -158,10 +249,10 @@ WITH sample_rows (
                 "confidence": 1.0,
                 "risk": 0,
                 "needs_review": false,
-                "evidence": "虚拟机清单用于补充上下文。",
+                "evidence": "虚拟机清单返回首个匹配对象的状态。",
                 "source_refs": ["kbd:steps_text"]
               },
-              "review": {"require_human_confirm": false, "notes": "验证 JSON 路径是否符合目标版本。"}
+              "review": {"require_human_confirm": false, "notes": "只用于产出 VM_STATUS 变量。"}
             }
           ],
           "rejected_candidates": [],
@@ -170,39 +261,38 @@ WITH sample_rows (
             "case_id": "SAMPLE-SIG-VM",
             "scope": {
               "products": ["HCI"],
-              "versions": ["sample"],
-              "components": ["virtual-machine"],
-              "topology_constraints": ["single-or-multi-node"]
+              "versions": ["6.9.0"],
+              "components": ["asv-vm"],
+              "topology_constraints": []
             },
             "variables": {
-              "HOST": {"type": "string", "description": "目标宿主机"},
-              "VM_ID": {"type": "integer", "description": "虚拟机标识"},
-              "SAMPLE_LOAD": {"type": "number", "description": "数值类型覆盖样例"},
-              "SAMPLE_ENABLED": {"type": "boolean", "description": "布尔类型覆盖样例"},
-              "SAMPLE_ITEMS": {"type": "array", "description": "数组类型覆盖样例"}
+              "HOST": {"type": "string", "description": "目标宿主机标识"},
+              "VM_ID": {"type": "integer", "description": "目标虚拟机标识"},
+              "END": {"type": "string", "description": "任务结束时间"},
+              "VM_STATUS": {"type": "string", "description": "虚拟机当前状态"}
             },
             "evidence_policy": {
               "must": ["vm_status_must"],
-              "should": ["vm_task_context"],
+              "should": ["vm_task_context", "vm_effect_verify"],
               "exclude": [],
               "context": ["vm_list_context"],
-              "minimum_should": 1,
+              "minimum_should": 0,
               "on_missing_must": "inconclusive"
             }
           }
         }
         $signals$::jsonb,
-        '["qkv_task", "qfk_vm"]'::jsonb
+        '["qkv_task", "qkv_vm_console", "qkv_effect", "qfk_vm"]'::jsonb
     ),
     (
         'SAMPLE-SIG-CORE',
-        '平台',
-        '【诊断样例】告警、服务与系统容量联合检查',
-        '平台出现服务异常告警，需要定位目标主机、检查服务状态并核对日志分区容量。',
-        '活跃告警包含“服务不可用”关键字。',
-        '查询告警产出 HOST 与 SERVICE；检查服务只读状态；在集群范围读取 df 结果并做容量阈值判定。',
-        '服务不可用可能与日志分区容量过高相关。',
-        '本条仅验证多信号编排、文本取值和阈值判定，不执行服务启停。',
+        '核心服务',
+        '【诊断样例】服务状态断言与容器域容量阈值',
+        '服务响应异常时，需判定核心服务状态，并在容器域检查日志分区使用率。',
+        '控制台显示服务未就绪，且伴随容量预警。',
+        '通过 qfk_service 核对运行状态，再通过 qfk_system 在容器域检查 /sf/log 容量。',
+        'asv-manager 退出或日志分区达到阈值。',
+        '本条仅用于验证诊断采集和判定链路，不包含自动处置动作。',
         $signals$
         {
           "schema_version": 2,
@@ -213,33 +303,34 @@ WITH sample_rows (
               "acquire": {
                 "tool": "qkv_alert",
                 "args": {
-                  "keyword": "服务不可用",
-                  "limit": 50,
+                  "keyword": "服务异常",
+                  "limit": 10,
                   "alert_type": "service",
                   "timeout": 60,
-                  "instruction": "读取服务类告警并产出主机与服务名"
+                  "instruction": "读取服务异常告警并提取宿主机"
                 }
               },
               "match": null,
               "orchestrate": {
                 "phase": "diagnostic",
+                "action": "collect",
+                "source": "alert",
+                "target": "cluster",
+                "container": "host",
                 "requires": [],
-                "produces": [
-                  {"name": "HOST", "type": "string", "path": "host|hostname"},
-                  {"name": "SERVICE", "type": "string", "path": "service|object_name"}
-                ]
+                "produces": [{"name": "HOST", "type": "string", "path": "host"}]
               },
               "provenance": {
                 "category": "frontend",
                 "method": "sql_sample",
-                "source_section": "alert_info",
+                "source_section": "steps_text",
                 "confidence": 1.0,
                 "risk": 0,
                 "needs_review": false,
-                "evidence": "服务告警提供目标主机和服务对象。",
-                "source_refs": ["kbd:alert_info"]
+                "evidence": "告警列表提供 HOST 目标。",
+                "source_refs": ["kbd:steps_text"]
               },
-              "review": {"require_human_confirm": false, "notes": "审核告警关键字与字段路径。"}
+              "review": {"require_human_confirm": false, "notes": "必须先有 HOST。"}
             },
             {
               "id": "core_service_must",
@@ -254,6 +345,7 @@ WITH sample_rows (
                   "command": "status",
                   "action": "status",
                   "timeout": 60,
+                  "nonzero_exit_as_negative": false,
                   "instruction": "读取服务运行状态，禁止启停"
                 }
               },
@@ -300,6 +392,7 @@ WITH sample_rows (
                   "formatter": "json",
                   "container": "asv-con",
                   "timeout": 90,
+                  "nonzero_exit_as_negative": false,
                   "instruction": "在集群节点的受控容器域读取日志分区容量"
                 }
               },
@@ -454,6 +547,7 @@ WITH sample_rows (
                   "include_archives": true,
                   "archive_precheck": "verified",
                   "timeout": 120,
+                  "nonzero_exit_as_negative": false,
                   "instruction": "按请求链读取网络计数器快照及归档"
                 }
               },
@@ -677,6 +771,7 @@ WITH sample_rows (
                   "host": "{{HOST}}",
                   "resource_keyword": "eth0",
                   "timeout": 60,
+                  "nonzero_exit_as_negative": false,
                   "instruction": "读取网卡清单并检查链路状态"
                 }
               },
@@ -709,6 +804,7 @@ WITH sample_rows (
                   "host": "{{HOST}}",
                   "resource_keyword": "sample-volume",
                   "timeout": 90,
+                  "nonzero_exit_as_negative": false,
                   "instruction": "读取存储卷 I/O 指标"
                 }
               },
@@ -805,6 +901,7 @@ WITH sample_rows (
                   "host": "{{HOST}}",
                   "resource_keyword": "gpu0",
                   "timeout": 90,
+                  "nonzero_exit_as_negative": false,
                   "instruction": "读取 GPU 配置指标并进行趋势判断"
                 }
               },
@@ -842,6 +939,7 @@ WITH sample_rows (
                   "host": "{{HOST}}",
                   "resource_keyword": "version",
                   "timeout": 60,
+                  "nonzero_exit_as_negative": false,
                   "instruction": "读取平台版本信息"
                 }
               },
@@ -868,6 +966,7 @@ WITH sample_rows (
                   "host": "{{HOST}}",
                   "resource_keyword": "platform-info",
                   "timeout": 60,
+                  "nonzero_exit_as_negative": false,
                   "instruction": "读取平台信息并产出结构化对象"
                 }
               },
@@ -975,7 +1074,7 @@ SELECT
         'sample_purpose', 'online_offline_diagnosis',
         'domain_hint', domain_hint,
         'signal_tools', sample_tools,
-        'seed_version', 4
+        'seed_version', 5
     ),
     NULL,
     suggested_category_id,
@@ -1007,4 +1106,4 @@ ON CONFLICT (support_id) DO UPDATE SET
     ai_category_reason = EXCLUDED.ai_category_reason
 WHERE kbd_entry.status = 'draft'
   AND kbd_entry.metadata ->> 'sample_suite' = 'diagnosis-signal-matrix-v1'
-  AND COALESCE((kbd_entry.metadata ->> 'seed_version')::integer, 0) < 4;
+  AND COALESCE((kbd_entry.metadata ->> 'seed_version')::integer, 0) < 5;

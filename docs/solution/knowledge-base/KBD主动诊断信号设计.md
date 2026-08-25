@@ -2,13 +2,41 @@
 status: active
 category: solution
 audience: developer
-last_updated: 2026-07-26
+last_updated: 2026-08-20
 owner: team
 ---
 
 # KBD 主动诊断信号调度与证据闭环算法设计
 
+## 变更历史
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|---|---|---|---|
+| 2026-08-20 | v1.1 | 按当前 main 校正 KBD 候选、采集调度和结论门禁；明确真实与仿真使用相同分类完整候选，修正历史 top_k/早停/采集器频次描述 | [仿真诊断等价性与 CDD 全候选修正方案](../agent/events/2026-08-20-仿真诊断等价性与CDD全候选修正方案.md) |
+
 ## 1. 决策摘要
+
+### 1.1 CDD 术语
+
+`CDD` = **Case Differential Diagnosis**，中文为**案例差异诊断**。它的输入是一个已经由 S0 确认的分类和该分类的 KBD 候选全集；它的输出不是相似度，而是每篇 KBD 的证据状态及最终结论等级。
+
+完整业务链路是：
+
+```text
+用户主诉
+  -> S0 意图识别
+  -> category_id 确认
+  -> 分类 KnowledgeSnapshot
+  -> 全部 executable KBD 候选
+  -> SignalPlan / Acquisition Graph
+  -> 主动调度和工具执行
+  -> Signal Matcher
+  -> Candidate Reducer
+  -> Conclusion Gate
+  -> DEFINITIVE 才进入 S4
+```
+
+分类、候选 KBD 和 Signal 不是同一个概念：S0 只确认“范围”，CDD 才验证“具体哪篇案例”。真实环境与 hci-sim 都必须按分类全量候选运行；TestRun 的 `support_id/revision/bundle_digest` 只标识要模拟的故障场景和数据版本，不得作为 CDD 的答案输入。
 
 S0 已确认故障分类后，S1 必须把该分类的版本化 KnowledgeSnapshot 作为候选全集，不能再用用户的模糊原话调用 `/api/kb/route`、embedding、FTS 或 top-K 筛掉候选。进入 CDD 后，系统不让模型生成命令、判断信号或撰写根因，而是执行以下确定性流水线：
 
@@ -146,6 +174,8 @@ CANDIDATE
 | `NO_MATCH` | 所有可执行候选均被明确 REJECTED | 否 |
 
 多篇 KBD 可以同时 SUPPORTED；这代表并发根因或同一事实支持多个知识条目，不应被算法强行压成一个。
+
+`PARTIAL` 虽然禁止输出根因、解决方案和进入 S4，但不能抹掉已经满足全部必要信号的候选。报告必须单独列出“已命中参考案例”及其现场证据，同时继续列出未决候选和未决原因；只有 `DEFINITIVE` 才能使用根因/解决方案报告模板。
 
 ## 6. 主动信号调度算法
 

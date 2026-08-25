@@ -4,10 +4,18 @@
  * 工具定义的 parameters_schema.properties.produces.default 是产出变量的
  * 唯一事实来源；这里集中处理旧数据兼容、空值和重复名称，避免不同页面
  * 各自实现一套稍有差异的解析规则。
+ *
+ * alias 字段说明（PR#790 后引入）：
+ * - name：工具目录标准变量名，全局唯一，由工具管理维护。
+ * - alias：KBD 级局部变量名，可选，由 KBD 审核者填写。
+ * - effectiveKey = alias.trim() || name，是运行时变量池的实际写入 key。
+ * - 同一信号的多个 produces 条目中，effectiveKey 必须互不相同。
  */
 export interface ProduceVariableOption {
   name: string
   path: string
+  /** KBD 级局部变量名别名，留空时运行时沿用 name。 */
+  alias?: string
 }
 
 export interface ProduceVariableToolLike {
@@ -15,6 +23,17 @@ export interface ProduceVariableToolLike {
   category?: unknown
   is_active?: unknown
   parameters_schema?: unknown
+}
+
+/**
+ * 计算产出变量的运行时有效 key（单一真相源）。
+ *
+ * 优先使用 alias（非空时），否则回退到 name。
+ * 调用方不应自行实现此逻辑，统一调用此函数。
+ */
+export function effectiveProduceKey(produce: Pick<ProduceVariableOption, 'name' | 'alias'>): string {
+  const a = (produce.alias ?? '').trim()
+  return a || produce.name
 }
 
 /**
@@ -34,6 +53,8 @@ export function parseProduceVariableDraftsFromSchema(schema: unknown): ProduceVa
     .map((item) => ({
       name: String(item.name ?? ''),
       path: String(item.path ?? ''),
+      // alias 可选字段，缺失时为 undefined，保持向下兼容
+      alias: item.alias !== undefined ? String(item.alias) : undefined,
     }))
 }
 
@@ -47,7 +68,7 @@ export function extractProduceVariablesFromSchema(schema: unknown): ProduceVaria
     const name = item.name.trim()
     if (!name || seen.has(name)) continue
     seen.add(name)
-    options.push({ name, path: item.path.trim() })
+    options.push({ name, path: item.path.trim(), alias: item.alias })
   }
   return options
 }

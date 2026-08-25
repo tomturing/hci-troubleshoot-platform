@@ -257,6 +257,9 @@ async def test_five_samples_full_sync_publish_resources_and_reach_supported_diag
             len(signal["acquire"]["args"].get("paths") or []) or 1 if signal["acquire"]["tool"] == "qkv_dialog" else 1
             for item in inserted.values()
             for signal in item["document"]["signals"]
+            # qkv_effect 离线零执行（extract_requirements 刻意跳过），不生成采集映射；
+            # qkv_vm_console 正常生成映射（executor=vm_console_capture 的专用 Collector）。
+            if signal["acquire"]["tool"] != "qkv_effect"
         )
         assert len(mapping_changes) == expected_mapping_count
         assert {item["candidate_json"]["source_kbd_id"] for item in mapping_changes} == set(inserted)
@@ -309,9 +312,16 @@ async def test_five_samples_full_sync_publish_resources_and_reach_supported_diag
         for kbd_id, item in inserted.items():
             kbd_mappings = [dict(mapping) for mapping in mappings if int(mapping["source_kbd_id"]) == kbd_id]
             mapping_by_signal = {str(mapping["source_signal_id"]): mapping for mapping in kbd_mappings}
-            assert len(mapping_by_signal) == len(item["document"]["signals"])
+            # qkv_effect 离线零执行（extract_requirements 刻意跳过），不生成采集映射；
+            # 映射/证据链对齐仅覆盖可采集信号，效果验证按 P2 追溯判定处理。
+            acquirable_signals = [
+                signal
+                for signal in item["document"]["signals"]
+                if signal["acquire"]["tool"] != "qkv_effect"
+            ]
+            assert len(mapping_by_signal) == len(acquirable_signals)
             evidence = []
-            for signal in item["document"]["signals"]:
+            for signal in acquirable_signals:
                 mapping = mapping_by_signal[signal["id"]]
                 structured_data = (
                     "platform version supported" if signal.get("role") == "exclude" else _matching_evidence(signal)

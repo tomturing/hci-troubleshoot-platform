@@ -72,6 +72,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | KBD 人工复核标签三态纠偏 | ✅ 代码与自动验证完成：普通 Signal 无标签；待复核 Signal 按专家是否保存显示黄/绿；详情 API 从现有 Revision 派生，不新增数据库状态 | 2026-08-04 |
 | KBD 关键信号统一过滤、取值与输出 | ✅ 代码与自动验证完成：same_record 包含/排除独立关系、完整行/文本行列/JSON、可选 AI、Match/Produce、qfk_log 有界保存与四类完整链路矩阵；真实 HCI replay 待部署后执行 | 2026-08-05 |
 | KBD 关键信号两步处理交互统一 | ✅ 代码与自动验证完成：匹配模式和每个产出变量统一为“处理单元 → 第一步取值 → 第二步判断/产出”；取值/判定关键字独立，交互与样式由共享组件保证一致；多行关键字编辑保留输入换行，保存时按行归一化 | 2026-08-05 |
+| QKV 输出后处理 | ✅ 文档与最小确定性闭环完成：QKV 同一 Signal 内支持投影后的转换、特征提取和断言；不新增 qkv_var；AI 兜底保留受控契约 | 2026-08-25 |
 | QFK 数值 AI 取值、判断与产出统一 | ✅ 代码与自动验证完成，待 PR CI：数值 Matcher 先从确定性候选行取得经逐字回查的 AI 类型化数值，再执行 delta/trend/threshold；非数值 Matcher 保持后置证据提取，Produce 原子写入且同 Signal 变量名唯一 | 2026-08-07 |
 | hci-real/hci-sim 双轨与 100+ Agent 并发回归 | 🟡 A/B Runtime 与 C–E 控制面代码级基础已实现；C1 已对 dev 126 条 KBD 完成只读 active snapshot/Tool Contract 基线（2 条待 Artifact 绑定、4 条 Tool stale、120 条未发布），C2 已补 Artifact Gate、payload digest 和对象存储参考契约，C3 已提供 27736/34164 的 synthetic 两步 dev 闭环脚本和 Custom UI lease 入口；真实 Artifact/生产 CAS/Bridge E2E、20-repeat、真实校准与 100+ 并发仍未验证 | 2026-08-06 |
 | KBD 六阶段数据管道可靠性与可观测性 | 🟡 代码级完成：VISION/CLASSIFY 并行，EXTRACT 严格等待两者成功；状态、重试、中文 CLI 和 JSONL 排障日志已加固。真实 Provider 20 KBD 故障注入与 Redis 多副本 Job 持久化尚未验收，不得宣称批量生产稳定性已通过。 | 2026-08-06 |
@@ -81,7 +82,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | CI 发布链路按影响范围收敛 | ✅ 已实施：main push 动态构建 Dockerfile 实际输入影响的镜像，db-migrate job 级跳过，环境仓库仅更新已构建服务；文档治理复用既有 runner，所有 job 有超时，第三方 action/tool 已固定，P50/P95 报告仅手动运行。 | 2026-08-07 |
 | hci-sim KBD 27123 纵向样板与生产化差距审查 | 🟡 27123 revision 25 的 Admin→Agent→K3s Bridge→Runtime→Result 已通过；平台生产交付保持 BLOCKED，下一阶段转入 Bundle 工厂化 | 2026-08-11 |
 
-**当前关注点（2026-08-11）**：KBD 27123 revision 25 已完成真实 Chromium 下的 Admin→Case/Conversation→Agent→K3s terminal_bridge→hci-sim→Result 纵向闭环，并修复 Bundle 事实分叉、结果假阳性、容器 Catalog 缺失、命令契约漂移和 capability matrix 吞错。该结果只接受为纵向样板，hci-sim 面向终端用户的生产交付仍为 `BLOCKED`；下一阶段必须把新增 KBD 改造为无需代码/镜像/Helm/Argo 变更的 Bundle 工厂化发布。以[生产化差距与重构基线](solution/hci-sim/events/2026-08-11-hci-sim生产化差距审查与Bundle工厂化重构基线.md)、[P0–P1 需求](requirement/hci-sim/events/hci-sim-P0-P1-27123全链路修复需求.md)、[设计](solution/hci-sim/events/2026-08-11-hci-sim-P0-P1-27123全链路修复方案.md)、[任务](task/hci-sim/events/2026-08-11-hci-sim-P0-P1-27123全链路修复任务.md)和[验证](verify/hci-sim/events/2026-08-11-hci-sim-P0-P1-27123全链路验证.md)为当前事实入口。
+**当前关注点（2026-08-20）**：KBD CDD 使用“分类完整候选 + 主动 acquisition 调度 + 确定性证据门禁”，不使用 KBD 向量 `top_k`、早停到 2 篇或最高频采集器筛选。真实与仿真必须保持诊断等价：`sim-ssh` 只把现场采集切换到 hci-sim Bundle，TestRun 的目标 KBD/revision 不能成为候选答案。Q2026082002685 的 `PARTIAL` 来自 27123 Bundle 未覆盖同分类 30880 所需 acquisition；PR #857 通过单 KBD 过滤绕开缺口，已按[仿真诊断等价性与 CDD 全候选修正方案](solution/agent/events/2026-08-20-仿真诊断等价性与CDD全候选修正方案.md)、[任务](task/agent/events/2026-08-20-仿真诊断等价性与CDD全候选修正任务.md)和[验证复盘](verify/events/2026-08-20-Q2026082002685仿真CDD全候选问题复盘.md)纠正。
 
 ### 2026-08-10 三组 hci-sim 重构事件文档
 

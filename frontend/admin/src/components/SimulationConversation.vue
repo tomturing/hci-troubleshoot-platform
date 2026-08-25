@@ -217,7 +217,6 @@ async function executeAgentCommand(event: Record<string, unknown>) {
   if (riskLevel >= 3) {
     card.status = 'blocked'
     failedCommandCount.value += 1
-    agentOutcome.value = 'failed'
     await postExecResult(event, { output: '高危操作已自动阻止', exit_code: -1, error_type: 'policy_blocked' })
     return
   }
@@ -229,7 +228,6 @@ async function executeAgentCommand(event: Record<string, unknown>) {
     if (!approved) {
       card.status = 'blocked'
       failedCommandCount.value += 1
-      agentOutcome.value = 'failed'
       await postExecResult(event, { output: '用户拒绝执行', exit_code: -1, error_type: 'user_rejected' })
       return
     }
@@ -258,7 +256,6 @@ async function executeAgentCommand(event: Record<string, unknown>) {
   card.status = exitCode === 0 ? 'passed' : 'failed'
   card.detail = { ...card.detail, exitCode, output: String(result.output || result.stdout || '') }
   if (exitCode !== 0) failedCommandCount.value += 1
-  if (exitCode !== 0) agentOutcome.value = 'failed'
   await postExecResult(event, result)
 }
 

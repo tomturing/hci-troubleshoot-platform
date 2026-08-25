@@ -65,6 +65,27 @@ def test_producer_unlock_value_schedules_before_consumer():
     assert selected[1].unlock == 1
 
 
+def test_qkv_output_processing_target_unlocks_downstream_consumer():
+    producer = signal("producer", "qkv_task", "x")
+    producer["match"] = None
+    producer["orchestrate"]["produces"] = [{"name": "DESCRIPTION", "path": "description"}]
+    producer["orchestrate"]["output_processing"] = [{
+        "id": "vm-name",
+        "mode": "derive",
+        "input": "{{DESCRIPTION}}",
+        "operation": "feature_extract",
+        "feature": "vm_name",
+        "target_variable": "VM_NAME",
+    }]
+    consumer = signal("consumer", "qfk_system", "y", requires=("VM_NAME",))
+    plan = compile_signal_plan([kbd("qkv-postprocess", [producer, consumer])])
+
+    assert plan.compile_errors == {}
+    producer_ref = next(ref for ref in plan.signals.values() if ref.signal_id == "producer")
+    assert "vm_name" in producer_ref.produces
+    assert next(ref for ref in plan.signals.values() if ref.signal_id == "consumer").requires == ("vm_name",)
+
+
 def test_discriminating_shared_acquisition_wins_over_plain_coverage():
     candidates = [
         kbd("1", [signal("shared-1", "shared", "A"), signal("plain-1", "plain", "same")]),
@@ -98,6 +119,28 @@ def test_instruction_text_does_not_split_identical_runtime_acquisition():
     acquisition = next(iter(plan.acquisitions.values()))
     assert acquisition.args_template["instruction"] == "检查 GPU 类型"
     assert {ref.signal_id for ref in acquisition.signal_refs} == {"gpu-type", "slice-type"}
+
+
+def test_qkv_shared_acquisition_keeps_distinct_processing_consumers():
+    first = signal("description-vm", "qkv_task", "启动失败")
+    second = signal("description-host", "qkv_task", "启动失败")
+    for item, target, feature in ((first, "VM_NAME", "vm_name"), (second, "HOST_NAME", "host")):
+        item["match"] = None
+        item["orchestrate"]["produces"] = [{"name": "DESCRIPTION", "path": "description"}]
+        item["orchestrate"]["output_processing"] = [{
+            "id": target.lower(), "mode": "derive", "input": "{{DESCRIPTION}}",
+            "operation": "feature_extract", "feature": feature, "target_variable": target,
+        }]
+
+    plan = compile_signal_plan([kbd("shared-qkv", [first, second])])
+
+    assert plan.compile_errors == {}
+    assert len(plan.acquisitions) == 1
+    acquisition = next(iter(plan.acquisitions.values()))
+    assert {ref.signal_id for ref in acquisition.signal_refs} == {"description-vm", "description-host"}
+    assert {"vm_name", "host_name"} == {
+        ref.produces[-1] for ref in plan.signals.values()
+    }
 
 
 def test_required_fail_rejects_candidate_and_removes_exclusive_work():

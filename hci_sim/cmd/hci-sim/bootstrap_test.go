@@ -48,6 +48,57 @@ func TestBuildSyntheticManifestAcceptsAnyPublishedKBDContract(t *testing.T) {
 	}
 }
 
+func TestBuildSyntheticManifestSharesAcquisitionAndPreservesProcessingConsumers(t *testing.T) {
+	manifest, err := buildSyntheticManifest(&resolvedKbd{
+		SupportID: "shared-processing", KBDRevision: 1, KBDChecksum: strings.Repeat("a", 64),
+		ToolContractRevision: "tool-r1", PolicyRevision: "policy-r1",
+		SyntheticRoutes: []syntheticRoute{
+			{
+				SignalID: "extract-vm", Tool: "qkv_task",
+				Argv:         []string{"acli", "--formatter", "json", "task", "get", "-k", "启动失败", "-l", "1"},
+				ToolRevision: 1, ToolChecksum: "sha256:tool", Produces: []map[string]any{{"name": "DESCRIPTION", "path": "description"}},
+				OutputProcessing: []map[string]any{{"id": "vm", "mode": "derive", "input": "{{DESCRIPTION}}", "operation": "feature_extract", "target_variable": "VM_NAME"}},
+				DerivedVariables: []string{"VM_NAME"}, ProcessingFingerprint: "sha256:vm",
+			},
+			{
+				SignalID: "extract-host", Tool: "qkv_task",
+				Argv:         []string{"acli", "--formatter", "json", "task", "get", "-k", "启动失败", "-l", "1"},
+				ToolRevision: 1, ToolChecksum: "sha256:tool", Produces: []map[string]any{{"name": "DESCRIPTION", "path": "description"}},
+				OutputProcessing: []map[string]any{{"id": "host", "mode": "derive", "input": "{{DESCRIPTION}}", "operation": "feature_extract", "target_variable": "HOST_NAME"}},
+				DerivedVariables: []string{"HOST_NAME"}, ProcessingFingerprint: "sha256:host",
+			},
+		},
+	}, "SIM-HCI-NODE-01", "host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Routes) != 1 {
+		t.Fatalf("same acquisition must compile once, routes=%d", len(manifest.Routes))
+	}
+	consumers := manifest.Routes[0].LogicalConsumers
+	if len(consumers) != 2 || consumers[0].SignalID != "extract-vm" || consumers[1].SignalID != "extract-host" {
+		t.Fatalf("logical consumers were not preserved: %+v", consumers)
+	}
+	if consumers[0].ProcessingFingerprint == consumers[1].ProcessingFingerprint ||
+		len(consumers[0].OutputProcessing) != 1 || len(consumers[1].DerivedVariables) != 1 {
+		t.Fatalf("processing contracts were merged incorrectly: %+v", consumers)
+	}
+}
+
+func TestBuildSyntheticManifestRejectsDifferentReplayFactsForSharedAcquisition(t *testing.T) {
+	_, err := buildSyntheticManifest(&resolvedKbd{
+		SupportID: "shared-output-conflict", KBDRevision: 1, KBDChecksum: strings.Repeat("a", 64),
+		ToolContractRevision: "tool-r1", PolicyRevision: "policy-r1",
+		SyntheticRoutes: []syntheticRoute{
+			{SignalID: "one", Tool: "qkv_task", Argv: []string{"acli", "task", "get"}, ToolRevision: 1, ToolChecksum: "sha256:tool", SampleOutput: `{"data":[{"description":"one"}]}`},
+			{SignalID: "two", Tool: "qkv_task", Argv: []string{"acli", "task", "get"}, ToolRevision: 1, ToolChecksum: "sha256:tool", SampleOutput: `{"data":[{"description":"two"}]}`},
+		},
+	}, "SIM-HCI-NODE-01", "host")
+	if err == nil || !strings.Contains(err.Error(), "回放事实不一致") {
+		t.Fatalf("expected shared acquisition replay rejection, got %v", err)
+	}
+}
+
 func TestBuildSyntheticManifestProvidesDeterministicSceneVariables(t *testing.T) {
 	manifest, err := buildSyntheticManifest(&resolvedKbd{
 		SupportID: "40061", KBDRevision: 1, KBDChecksum: strings.Repeat("a", 64),
@@ -103,8 +154,52 @@ func TestBuildSyntheticManifestRejectsUnknownSceneVariableProvider(t *testing.T)
 			RequiredVariables: []string{"CUSTOM_WINDOW"}, ToolRevision: 1, ToolChecksum: "sha256:tool",
 		}},
 	}, "SIM-HCI-NODE-01", "host")
-	if err == nil || !strings.Contains(err.Error(), "缺少场景变量") || !strings.Contains(err.Error(), "CUSTOM_WINDOW") {
+	if err == nil || !strings.Contains(err.Error(), "未在已发布 KBD Contract 或 Producer 中声明") || !strings.Contains(err.Error(), "CUSTOM_WINDOW") {
 		t.Fatalf("expected unknown scene variable gap, got %v", err)
+	}
+}
+
+func TestBuildSyntheticManifestUsesPublishedContractForCustomVariable(t *testing.T) {
+	manifest, err := buildSyntheticManifest(&resolvedKbd{
+		SupportID: "18906", KBDRevision: 1, KBDChecksum: strings.Repeat("a", 64),
+		SignalsDigest: "sha256:signals", ToolContractRevision: "tool-r1", PolicyRevision: "policy-r1",
+		VerificationContract: map[string]any{
+			"variables": map[string]any{"VM_DISK_ID": map[string]any{"type": "string"}},
+		},
+		SyntheticRoutes: []syntheticRoute{{
+			SignalID: "expert_1787040047488_900be1862f6d", Tool: "qfk_vm",
+			Argv:              []string{"acli", "vm", "disk", "get", "{{VM_DISK_ID}}"},
+			RequiredVariables: []string{"VM_DISK_ID"}, ToolRevision: 1, ToolChecksum: "sha256:tool",
+		}},
+	}, "SIM-HCI-NODE-01", "host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manifest.Variables["VM_DISK_ID"]; got != "SIM-vm-disk-id-18906" {
+		t.Fatalf("unexpected declared variable binding: %q", got)
+	}
+	if got := manifest.Routes[0].RouteKey.Argv[4]; got != manifest.Variables["VM_DISK_ID"] {
+		t.Fatalf("argv did not use declared binding: %q", got)
+	}
+}
+
+func TestBuildSyntheticManifestUsesPublishedProducerForCustomVariable(t *testing.T) {
+	manifest, err := buildSyntheticManifest(&resolvedKbd{
+		SupportID: "producer-case", KBDRevision: 1, KBDChecksum: strings.Repeat("b", 64),
+		SignalsDigest: "sha256:signals", ToolContractRevision: "tool-r1", PolicyRevision: "policy-r1",
+		SyntheticRoutes: []syntheticRoute{
+			{SignalID: "producer", Tool: "qkv_task", Argv: []string{"acli", "task", "get"},
+				ToolRevision: 1, ToolChecksum: "sha256:tool",
+				Produces: []map[string]any{{"name": "VM_DISK_ID", "type": "string"}}},
+			{SignalID: "consumer", Tool: "qfk_vm", Argv: []string{"acli", "vm", "disk", "get", "{{VM_DISK_ID}}"},
+				RequiredVariables: []string{"VM_DISK_ID"}, ToolRevision: 1, ToolChecksum: "sha256:tool"},
+		},
+	}, "SIM-HCI-NODE-01", "host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manifest.Routes[1].RouteKey.Argv[4]; got != "SIM-vm-disk-id-producer-case" {
+		t.Fatalf("producer binding was not used: %q", got)
 	}
 }
 

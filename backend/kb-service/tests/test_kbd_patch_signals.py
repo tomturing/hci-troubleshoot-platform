@@ -120,3 +120,82 @@ async def test_update_kbd_entry_signals_json_sql_bind_compiles():
     # 同时确认两个命名绑定都被编译成了参数占位符
     assert "signals_json" in sql.compile(dialect=postgresql.dialect()).params or "%(signals_json)s" in compiled or "$1" in compiled
     assert "id" in sql.compile(dialect=postgresql.dialect()).params or "%(id)s" in compiled or "$2" in compiled
+
+
+@pytest.mark.anyio
+async def test_update_kbd_entry_signals_with_produce_alias():
+    """回归测试：KBD 生产者信号支持产出变量 alias 字段保存且不报 SIGNAL_FIELD_UNSUPPORTED。"""
+    app = FastAPI()
+    app.include_router(kbd_router)
+
+    mock_db = MagicMock()
+    mock_session = AsyncMock()
+    mock_session.__aenter__.return_value = mock_session
+    mock_db.async_session_factory.return_value = mock_session
+
+    original_check_auth = admin_route._check_auth
+    admin_route._check_auth = lambda req: None
+    set_dependencies(mock_db)
+
+    mock_update_row = MagicMock()
+    mock_update_row.mappings.return_value.first.return_value = {"id": 2051, "status": "draft"}
+    mock_session.execute.return_value = mock_update_row
+
+    client = TestClient(app)
+    test_signals = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "sig_002",
+                "role": "must",
+                "acquire": {"tool": "qkv_task", "args": {"keyword": "创建虚拟机", "is_failed": True}},
+                "match": None,
+                "orchestrate": {
+                    "phase": "diagnostic",
+                    "produces": [
+                        {"name": "VM", "path": "vm"},
+                        {"name": "HOST", "path": "host"},
+                        {"name": "REQUEST_ID", "path": "request_id"},
+                        {"name": "END", "path": "end", "alias": "END1"},
+                    ],
+                },
+                "provenance": {"category": "frontend"},
+            },
+            {
+                "id": "expert_qfk_log",
+                "role": "must",
+                "acquire": {
+                    "tool": "qfk_log",
+                    "args": {
+                        "host": "{{HOST}}",
+                        "file": "sfscp.log",
+                        "request_id": "{{REQUEST_ID}}",
+                        "time_window": "{{END1}}",
+                        "instruction": "检索日志",
+                    },
+                },
+                "match": {
+                    "type": "keyword",
+                    "pattern": "write失败",
+                    "mode": "and",
+                    "expected": True,
+                    "extract": {"type": "text", "rows": {"mode": "all"}},
+                },
+                "orchestrate": {
+                    "phase": "diagnostic",
+                    "requires": ["END1", "HOST", "REQUEST_ID"],
+                },
+                "provenance": {"category": "backend"},
+            },
+        ],
+    }
+
+    response = client.patch(
+        "/api/admin/kbd/2051",
+        json={"signals_json": test_signals},
+        headers={"Authorization": "Bearer dev-internalapi-api-token-2026"},
+    )
+
+    admin_route._check_auth = original_check_auth
+    assert response.status_code == 200, response.text
+

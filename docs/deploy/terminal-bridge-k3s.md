@@ -7,15 +7,15 @@
 本方案将同一套 `terminal_bridge` Go 代码扩展为两种运行形态：
 
 ```text
-desktop（客户/生产）
-Custom UI ── ws://localhost:9999 ──> Windows terminal_bridge.exe ── SSH ──> HCI
+desktop（Customer UI - 客户/生产）
+Customer UI ── ws://localhost:9999 ──> Windows terminal_bridge.exe ── SSH ──> HCI
 
-cluster（WSL 本地端到端联调）
-Custom UI ── 同源 /terminal-bridge ──> K3s terminal_bridge Pod ── SSH ──> HCI
-                                          │
-                                          ├── stdout JSON ──> Alloy/Loki
-                                          ├── /metrics ─────> Prometheus/Grafana
-                                          └── bridge_log ───> 工单日志回采接口
+cluster（Admin UI - 仿真测试）
+Admin UI ── 同源 /terminal-bridge ──> K3s terminal_bridge Pod ── SSH ──> hci-sim Pod
+                                        │
+                                        ├── stdout JSON ──> Alloy/Loki
+                                        ├── /metrics ─────> Prometheus/Grafana
+                                        └── bridge_log ───> 工单日志回采接口
 ```
 
 核心边界：
@@ -30,12 +30,12 @@ NetworkPolicy 的 DNS、hci-sim 与 Tempo 目标必须使用 Kubernetes `podSele
 
 ## 2. 运行时选择机制
 
-customer-ui 不再把 Bridge 地址永久写死为唯一值。nginx 在运行时生成 `/runtime-config.js`：
+**架构设计**：
 
-- `terminalBridge.enabled=false`：注入空值，前端回退到 `ws://localhost:9999`；
-- `terminalBridge.enabled=true`：注入 `/terminal-bridge`，前端根据页面协议自动使用 `ws://` 或 `wss://` 同源地址。
+- **Customer UI**：始终使用 `ws://localhost:9999`（Windows 本地 Bridge），用于真实客户环境
+- **Admin UI**：始终使用 `/terminal-bridge`（集群中的 terminal-bridge Pod），用于仿真测试
 
-因此，切换运行形态只需要 Helm 配置，不需要为了 Bridge URL 重新构建 customer-ui。公网 HTTPS 页面会自动使用 `wss://`，不会产生 mixed content。
+这是架构设计，跟环境（dev/staging/prod）无关。
 
 ## 3. 构建
 

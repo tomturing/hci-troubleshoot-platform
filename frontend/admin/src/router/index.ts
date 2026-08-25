@@ -98,6 +98,12 @@ const router = createRouter({
       component: () => import('@/views/OfflineDiagnosisView.vue'),
       meta: { title: '离线诊断', icon: 'FirstAidKit', order: 11 },
     },
+    {
+      path: '/vm-console-audit',
+      name: 'VmConsoleAudit',
+      component: () => import('@/views/VmConsoleCaptureView.vue'),
+      meta: { title: '控制台截图审计', icon: 'Monitor', order: 11.5 },
+    },
   ],
 })
 

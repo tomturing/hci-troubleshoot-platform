@@ -13,6 +13,7 @@ from shared.observability.langfuse import observe_tool
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from shared.resolution import SignalIntent, build_resolution_audit_snapshot, get_resolution_runtime
+from shared.signals.qkv_output_processing import apply_output_processing
 
 from app.tools.acli.executor import exec_result_observation
 from app.tools.qkv.parser import parse_frontend_value
@@ -52,6 +53,9 @@ class QKVResult:
     error: str | None = None  # 报错信息描述
     exec_id: str | None = None  # 流水号记录
     resolution: dict[str, Any] = field(default_factory=dict)
+    assertions: list[dict[str, Any]] = field(default_factory=list)
+    matched: bool | None = None
+    processing_applied: bool = False
 
     def to_observation(self) -> str:
         """
@@ -74,6 +78,13 @@ class QKVResult:
                 lines.append(f"记录 [{idx + 1}]: {json.dumps(val, ensure_ascii=False)}")
             if len(self.values) > preview_limit:
                 lines.append(f"... 还有 {len(self.values) - preview_limit} 条记录已暂存至变量上下文")
+        if self.assertions:
+            lines.append("\n【QKV 输出后处理断言】")
+            for assertion in self.assertions:
+                lines.append(
+                    f"{assertion.get('processing_id')}: {assertion.get('status')}"
+                    + (f" ({assertion.get('reason')})" if assertion.get("reason") else "")
+                )
         return "\n".join(lines)
 
 
@@ -263,11 +274,26 @@ async def qkv_exec(
         )
 
     # 3. 数据结构清洗与提取
+    stdout = ""
+    assertions: list[dict[str, Any]] = []
+    matched: bool | None = None
     try:
         stdout = "\n".join(item.stdout or "" for item in exec_results)
         if signal.query == FrontendQueryType.DIALOG:
             stdout = _dialog_output_without_self_observation(stdout, commands)
         values = parse_frontend_value(signal.query, stdout, signal.produces)
+        processing = apply_output_processing(values, signal.output_processing)
+        values = processing.records
+        matched = processing.matched
+        assertions = [
+            {
+                "processing_id": item.processing_id,
+                "status": item.status,
+                "observed": item.observed,
+                "reason": item.reason,
+            }
+            for item in processing.assertions
+        ]
         if signal.query == FrontendQueryType.DIALOG and node_ip:
             for value in values:
                 value.setdefault("host", node_ip)
@@ -276,6 +302,7 @@ async def qkv_exec(
         evidence["keywords_tried"] = keyword_candidates[: len(exec_results)] if signal.query != FrontendQueryType.DIALOG else [signal.keyword]
         evidence["query_count"] = len(exec_results)
         evidence["match_count"] = len(values)
+        evidence["output_processing"] = assertions
         if values and signal.query != FrontendQueryType.DIALOG:
             selected_index = 0
             for index, item in enumerate(exec_results):
@@ -303,6 +330,8 @@ async def qkv_exec(
             error=f"分析提取 JSON 返回值异常: {parse_err}",
             exec_id=getattr(exec_results[0], "exec_id", None) if exec_results else None,
             resolution=resolution,
+            assertions=assertions,
+            matched=matched,
         )
 
     return QKVResult(
@@ -313,4 +342,7 @@ async def qkv_exec(
         values=values,
         exec_id=getattr(exec_results[0], "exec_id", None) if exec_results else None,
         resolution=resolution,
+        assertions=assertions,
+        matched=matched,
+        processing_applied=True,
     )

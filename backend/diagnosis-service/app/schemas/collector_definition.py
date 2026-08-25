@@ -32,6 +32,8 @@ class CollectorOutputContract(BaseModel):
             "states",
             "commands",
             "exports",
+            # vm_console_capture 执行器的截图包目录（与 evidence_bundle.STANDARD_DIRS 保持一致）
+            "captures",
             "attachments",
         }
         if path.is_absolute() or ".." in path.parts or len(path.parts) < 2 or path.parts[0] not in allowed:
@@ -48,12 +50,14 @@ class CollectorDefinitionWrite(BaseModel):
     display_name: str = Field(min_length=1, max_length=255)
     description: str = Field(min_length=1, max_length=2000)
     platform: Literal["linux", "hci_api", "manual"] = "linux"
-    executor: Literal["shell", "http", "manual"] = "shell"
+    executor: Literal["shell", "http", "manual", "vm_console_capture"] = "shell"
     command_template: str = Field(min_length=1, max_length=4000)
     parameter_schema: dict[str, Any] = Field(default_factory=dict)
-    risk_level: Literal["read_only"] = "read_only"
+    # controlled_interaction 仅限 vm_console_capture（近黑唤醒 sendkey down 属
+    # 受控 Guest 交互，运行时必须人工确认；其余执行器保持只读）。
+    risk_level: Literal["read_only", "controlled_interaction"] = "read_only"
     timeout_seconds: int = Field(default=30, ge=1, le=3600)
-    max_output_mb: float = Field(default=4, gt=0, le=4)
+    max_output_mb: float = Field(default=4, gt=0, le=16)
     supported_product_versions: list[str] = Field(min_length=1, max_length=64)
     output_contract: CollectorOutputContract
     version: str = Field(min_length=1, max_length=64)
@@ -66,9 +70,19 @@ class CollectorDefinitionWrite(BaseModel):
 
         if any(not pattern.strip() or len(pattern) > 64 for pattern in self.supported_product_versions):
             raise ValueError("supported_product_versions 每项长度必须为 1-64")
-        expected_executor = {"linux": "shell", "hci_api": "http", "manual": "manual"}[self.platform]
-        if self.executor != expected_executor:
-            raise ValueError(f"platform={self.platform} 必须使用 executor={expected_executor}")
+        expected_executors = {
+            "linux": {"shell", "vm_console_capture"},
+            "hci_api": {"http"},
+            "manual": {"manual"},
+        }[self.platform]
+        if self.executor not in expected_executors:
+            raise ValueError(f"platform={self.platform} 必须使用 executor∈{sorted(expected_executors)}")
+        if self.risk_level == "controlled_interaction" and self.executor != "vm_console_capture":
+            raise ValueError("controlled_interaction 风险级别仅限 vm_console_capture 执行器")
+        if self.executor == "vm_console_capture" and self.max_output_mb > 16:
+            raise ValueError("vm_console_capture 输出上限为 16MB")
+        if self.executor != "vm_console_capture" and self.max_output_mb > 4:
+            raise ValueError("通用执行器输出上限为 4MB")
         return self
 
 

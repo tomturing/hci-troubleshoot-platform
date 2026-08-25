@@ -97,6 +97,9 @@ class SyntheticRouteInput:
     role: str = "context"
     matcher: dict[str, Any] | None = None
     produces: tuple[dict[str, Any], ...] = ()
+    output_processing: tuple[dict[str, Any], ...] = ()
+    derived_variables: tuple[str, ...] = ()
+    processing_fingerprint: str = ""
     sample_output: str = ""
     sample_source: str = ""
 
@@ -111,6 +114,9 @@ class SyntheticRouteInput:
             "role": self.role,
             "matcher": self.matcher,
             "produces": list(self.produces),
+            "output_processing": list(self.output_processing),
+            "derived_variables": list(self.derived_variables),
+            "processing_fingerprint": self.processing_fingerprint,
             "sample_output": self.sample_output,
             "sample_source": self.sample_source,
         }
@@ -378,6 +384,23 @@ class HciSimKbdResolver:
                     produces=tuple(
                         dict(item) for item in (orchestrate.get("produces") or []) if isinstance(item, dict)
                     ),
+                    output_processing=tuple(
+                        dict(item)
+                        for item in (orchestrate.get("output_processing") or [])
+                        if isinstance(item, dict)
+                    ),
+                    derived_variables=tuple(
+                        sorted(
+                            {
+                                str(item.get("target_variable")).strip().upper()
+                                for item in (orchestrate.get("output_processing") or [])
+                                if isinstance(item, dict)
+                                and item.get("mode") == "derive"
+                                and str(item.get("target_variable") or "").strip()
+                            }
+                        )
+                    ),
+                    processing_fingerprint=_sha256(orchestrate.get("output_processing") or []),
                     sample_output=_derive_sample_output(signal, tool, signal_id, runtime.command),
                     sample_source=_sample_output_source(signal, tool),
                 )
@@ -439,7 +462,10 @@ def _derive_sample_output(signal: dict[str, Any], tool: str, signal_id: str, com
             name = str(item.get("name") or "").strip().upper()
             if not name:
                 continue
-            record[str(item.get("path") or name.lower())] = _sample_variable(name)
+            # alias 存在时用 alias 作为运行时 key，保持与 effectiveProduceKey() 逻辑一致
+            alias = str(item.get("alias") or "").strip().upper()
+            effective_key = alias if alias else name
+            record[str(item.get("path") or name.lower())] = _sample_variable(effective_key)
         pattern = str(matcher.get("pattern") or "").strip()
         if matcher.get("type") == "keyword" and bool(matcher.get("expected", True)) and pattern:
             record["evidence"] = pattern

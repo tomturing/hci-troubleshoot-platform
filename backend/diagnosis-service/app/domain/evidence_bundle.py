@@ -65,6 +65,30 @@ class ManifestTimeCoverage(BaseModel):
         return self
 
 
+class ManifestVmConsoleDetails(BaseModel):
+    """vm_console_capture 采集项的受控元数据（设计文档 §3.4）。
+
+    截图画面本身不进 manifest；这里只记录固定操作、唤醒决定与确定性质量指标，
+    供验包审计与离线变量回放。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    executor: str = Field(pattern=r"^vm_console_capture$")
+    operation_version: str = Field(default="v1", max_length=16)
+    capture_mode: str = Field(default="baseline_then_prompt_if_near_black", max_length=64)
+    host_node_id: str = Field(min_length=1, max_length=128)
+    vm_id: str = Field(min_length=1, max_length=32, pattern=r"^[0-9]{1,20}$")
+    wake_decision: str = Field(
+        pattern=r"^(not_needed|confirmed|declined|non_interactive|timed_out)$"
+    )
+    wake_result: str = Field(default="", max_length=64)
+    near_black: bool = False
+    near_black_algorithm_revision: str = Field(default="near-black-v1", max_length=32)
+    quality_metrics: dict[str, Any] = Field(default_factory=dict)
+    recapture_generated: bool = False
+
+
 class ManifestCollectionItem(BaseModel):
     """清单中的采集项。"""
 
@@ -79,6 +103,8 @@ class ManifestCollectionItem(BaseModel):
     files: list[ManifestFile] = Field(default_factory=list, max_length=10000)
     exit_code: int | None = None
     failure_reason: str | None = Field(default=None, max_length=2000)
+    # 仅 vm_console_capture 执行器携带；其余执行器不得出现（extra=forbid 已约束）。
+    vm_console: ManifestVmConsoleDetails | None = None
 
     @model_validator(mode="after")
     def validate_status(self) -> "ManifestCollectionItem":
@@ -323,6 +349,21 @@ def bounded_structured_data(path: Path, media_type: str) -> dict[str, Any] | lis
         except (ValueError, UnicodeDecodeError):
             return {"parse_error": "invalid_json"}
         return value if isinstance(value, (dict, list)) else {"value": value}
+    if media_type == "image/x-portable-pixmap" or path.suffix == ".ppm":
+        # 控制台截图原件：只记录确定性质量指标与近黑判定（与在线路径同算法修订），
+        # 视觉观察属于上传后派生 Evidence Item，不回写原始证据包。
+        from shared.vision.near_black import MAX_PPM_BYTES, analyze_ppm_near_black
+
+        raw = path.read_bytes()[: MAX_PPM_BYTES + 1]
+        quality = analyze_ppm_near_black(raw)
+        return {
+            "kind": "vm_console_capture_image",
+            "parse_ok": quality.get("parse_ok"),
+            "near_black": quality.get("near_black"),
+            "algorithm_revision": quality.get("algorithm_revision"),
+            "metrics": quality.get("metrics"),
+            "parse_error": quality.get("parse_error"),
+        }
     if media_type.startswith("text/") or path.suffix in {".log", ".txt", ".stdout", ".stderr"} or mimetypes.guess_type(path.name)[0] in {"text/plain", "text/csv"}:
         content = path.read_text(encoding="utf-8", errors="replace")
         return {"preview": content, "truncated": False, "indexed_bytes": size}

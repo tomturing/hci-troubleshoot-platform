@@ -1,14 +1,16 @@
 -- ============================================================
 -- Seed 数据：QKV/QFK 关键信号工具定义
--- Version : 20260730
+-- Version : 20260820
 -- Issue   : T-TOOL-QKV-QFK-001
--- 说明    : 插入 11 条工具定义记录（QKV 3个 + QFK 8个）
+-- 说明    : 插入 13 条工具定义记录（QKV 3个直接生产者 + 2个条件型生产者[视觉/效果验证] + QFK 8个）
 -- 幂等键  : tool_name（ON CONFLICT DO NOTHING，禁止覆盖管理员治理结果）
 --
 -- 统一定义（display_name 标准命名，勿擅自修改以免造成误解）：
 --   qkv_alert    - 前端信号-告警查询
 --   qkv_task     - 前端信号-任务查询
 --   qkv_dialog   - 前端信号-弹框查询
+--   qkv_vm_console - 前端信号-虚拟机控制台截图（条件型实时视觉生产者）
+--   qkv_effect   - 前端信号-效果验证（条件型效果验证生产者）
 --   qfk_log      - 后端信号-日志检查和操作
 --   qfk_service  - 后端信号-服务检查和操作
 --   qfk_system   - 后端信号-系统检查和操作
@@ -188,6 +190,130 @@ INSERT INTO tool_definition (
     true
 ) ON CONFLICT (tool_name) DO NOTHING;
 
+-- QKV.vm_console: 条件型实时视觉生产者-虚拟机控制台截图
+INSERT INTO tool_definition (
+    tool_name, display_name, category, description,
+    usage_template, parameters_schema, examples, risk_level, is_active
+) VALUES (
+    'qkv_vm_console',
+    '前端信号-虚拟机控制台截图',
+    'qkv',
+    '条件型实时视觉生产者：在可信获得 HOST 与 VM_ID 后，以代码固定的 QEMU Monitor 操作采集虚拟机控制台截图（screendump），经确定性近黑检测、受控唤醒重截（sendkey down，运行时人工确认，每诊断运行最多一次）与 Vision 提取，产出 VM_CONSOLE_* 结构化变量。用于观察告警/任务/弹框无法覆盖的 Guest OS 内部现象（黑屏、蓝屏、Kernel Panic、启动失败等）。不接受任意命令、路径或按键参数；usage_template 为 NULL（固定操作不暴露为可编辑命令模板）。',
+    NULL,
+    '{
+        "type": "object",
+        "properties": {
+            "host": {
+                "type": "string",
+                "description": "仅允许 {{HOST}} 或由系统规范化后的节点变量；执行时必须 Inventory 校验"
+            },
+            "vm_id": {
+                "type": "string",
+                "description": "仅允许 {{VM_ID}} 或受控 VMID 变量；执行时必须精确匹配、不可含 Shell 控制字符"
+            },
+            "capture_mode": {
+                "type": "string",
+                "enum": ["baseline_then_optional_wake"],
+                "default": "baseline_then_optional_wake",
+                "description": "固定采集模式：基线截图，近黑时经人工确认后可唤醒重截"
+            },
+            "timeout": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 60,
+                "default": 60,
+                "description": "控制台截图超时（秒，1-60）；有意偏离公共 timeout（1-300）"
+            },
+            "instruction": {"type": "string", "description": "信号语义说明（不参与命令构造）"},
+            "produces": {
+                "type": "array",
+                "description": "产出变量规格列表。固定视觉观察 Schema 的 JSON path 引用。",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "输出变量名（大写）"},
+                        "path": {"type": "string", "description": "视觉观察 Schema 的 JSON 字段路径"}
+                    },
+                    "required": ["name", "path"]
+                },
+                "default": [
+                    {"name": "VM_CONSOLE_STATE", "path": "display_state"},
+                    {"name": "VM_CONSOLE_SUMMARY", "path": "summary"},
+                    {"name": "VM_CONSOLE_CONFIDENCE", "path": "confidence"},
+                    {"name": "VM_CONSOLE_ARTIFACT_ID", "path": "artifact_id"}
+                ]
+            }
+        },
+        "required": ["host", "vm_id"],
+        "additionalProperties": false
+    }',
+    '[{"host":"{{HOST}}","vm_id":"{{VM_ID}}","capture_mode":"baseline_then_optional_wake","timeout":60,"produces":[{"name":"VM_CONSOLE_STATE","path":"display_state"},{"name":"VM_CONSOLE_SUMMARY","path":"summary"},{"name":"VM_CONSOLE_CONFIDENCE","path":"confidence"},{"name":"VM_CONSOLE_ARTIFACT_ID","path":"artifact_id"}]}]',
+    2,
+    true
+) ON CONFLICT (tool_name) DO NOTHING;
+
+-- QKV.effect: 条件型效果验证生产者-期望 × 观测的三态判定
+INSERT INTO tool_definition (
+    tool_name, display_name, category, description,
+    usage_template, parameters_schema, examples, risk_level, is_active
+) VALUES (
+    'qkv_effect',
+    '前端信号-效果验证',
+    'qkv',
+    '条件型效果验证生产者：在 KBD/SOP 显式声明结构化期望（封闭观测通道 + 封闭 matcher 判定规则 + 时序窗口）后，于动作完成后的正确时机执行只读观测，产出三态判定变量 EFFECT_STATUS（achieved/not_achieved/inconclusive）。用于捕获告警/任务/弹框/画面均无法表达的“执行成功但未达预期效果”现象。观测全部委派已批准的只读采集原语，严格只读；不得作为 KBD 唯一生产者；不接受自由文本判定、命令或脚本参数；usage_template 为 NULL（固定验证意图不暴露为可编辑命令模板）。',
+    NULL,
+    '{
+        "type": "object",
+        "properties": {
+            "usage": {
+                "type": "string",
+                "enum": ["remediation_verify", "symptom_confirm"],
+                "default": "remediation_verify",
+                "description": "修复后复核（默认）/ S1 症状确认"
+            },
+            "expectation": {
+                "type": "object",
+                "description": "结构化期望锚点：observation（封闭观测通道+原语参数）/ matcher（7 类封闭判定+extract）/ settle_seconds(0-3600) / window_seconds(60-86400) / max_recheck(0-5)",
+                "required": ["observation", "matcher"]
+            },
+            "host": {
+                "type": "string",
+                "description": "目标绑定（可选）：仅允许 {{HOST}} 或规范化节点变量；执行时 Inventory 校验"
+            },
+            "timeout": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 60,
+                "default": 60,
+                "description": "单次观测超时（秒，1-60）；整体复核预算由期望窗口参数约束"
+            },
+            "instruction": {"type": "string", "description": "信号语义说明（不参与判定构造）"},
+            "produces": {
+                "type": "array",
+                "description": "产出变量规格列表。固定三态判定 Schema 的 JSON path 引用。",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "输出变量名（大写）"},
+                        "path": {"type": "string", "description": "判定结果 Schema 的 JSON 字段路径"}
+                    },
+                    "required": ["name", "path"]
+                },
+                "default": [
+                    {"name": "EFFECT_STATUS", "path": "verdict"},
+                    {"name": "EFFECT_CHECKED_AT", "path": "checked_at"},
+                    {"name": "EFFECT_EVIDENCE", "path": "evidence_ref"}
+                ]
+            }
+        },
+        "required": ["expectation"],
+        "additionalProperties": false
+    }',
+    '[{"usage":"remediation_verify","expectation":{"observation":{"tool":"qkv_alert","args":{"keyword":"内存不足"}},"matcher":{"type":"exists","expected":false,"extract":{"type":"text","rows":{"mode":"all"}}},"settle_seconds":120,"window_seconds":900,"max_recheck":3},"host":"{{HOST}}","timeout":60,"produces":[{"name":"EFFECT_STATUS","path":"verdict"},{"name":"EFFECT_CHECKED_AT","path":"checked_at"},{"name":"EFFECT_EVIDENCE","path":"evidence_ref"}]}]',
+    1,
+    true
+) ON CONFLICT (tool_name) DO NOTHING;
+
 -- ─── QFK 后端信号（消费者）─────────────────────────────────────
 
 -- QFK.log: 后端信号-日志检查和操作
@@ -246,6 +372,11 @@ INSERT INTO tool_definition (
             "resource_keyword": {
                 "type": "string",
                 "description": "无 matcher 的变量产出模式所需受控行选择器"
+            },
+            "nonzero_exit_as_negative": {
+                "type": "boolean",
+                "default": false,
+                "description": "只读命令非零退出码作为否定证据（未命中）"
             },
             "matcher": {
                 "type": "object",
@@ -320,6 +451,11 @@ INSERT INTO tool_definition (
             },
             "timeout": {"type": "integer", "minimum": 1, "maximum": 300, "default": 10},
             "instruction": {"type": "string", "description": "信号语义说明"},
+            "nonzero_exit_as_negative": {
+                "type": "boolean",
+                "default": false,
+                "description": "只读命令非零退出码作为否定证据（未命中）"
+            },
             "matcher": {
                 "type": "object",
                 "description": "判定器配置，通常使用 state 类型检查 running 状态",
@@ -624,14 +760,14 @@ INSERT INTO tool_definition (
 -- 随后服务启动对账会产生新的不可变 Tool Revision。
 WITH qfk_contract_patches(tool_name, properties_patch, required_patch) AS (
     VALUES
-        ('qfk_log', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"host":{"type":"string"},"instruction":{"type":"string"}}'::jsonb, NULL::jsonb),
-        ('qfk_service', '{"service":{"type":"string"},"action":{"type":"string","enum":["status","start","stop","restart"],"default":"status"}}'::jsonb, '[]'::jsonb),
-        ('qfk_system', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"cluster":{"type":"boolean","default":false},"formatter":{"type":"string","enum":["xml","csv","keyvalue","json"]},"container":{"type":"string","enum":["asv-con","vn-con","vn-agent","vs-cp-manager"]}}'::jsonb, NULL::jsonb),
-        ('qfk_vm', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"}}'::jsonb, NULL::jsonb),
-        ('qfk_network', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"}}'::jsonb, NULL::jsonb),
-        ('qfk_storage', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"}}'::jsonb, NULL::jsonb),
-        ('qfk_hardware', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"}}'::jsonb, NULL::jsonb),
-        ('qfk_platform', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"}}'::jsonb, NULL::jsonb)
+        ('qfk_log', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"host":{"type":"string"},"instruction":{"type":"string"},"nonzero_exit_as_negative":{"type":"boolean","default":false,"description":"只读命令非零退出码作为否定证据（未命中）"}}'::jsonb, NULL::jsonb),
+        ('qfk_service', '{"service":{"type":"string"},"action":{"type":"string","enum":["status","start","stop","restart"],"default":"status"},"nonzero_exit_as_negative":{"type":"boolean","default":false,"description":"只读命令非零退出码作为否定证据（未命中）"}}'::jsonb, '[]'::jsonb),
+        ('qfk_system', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"cluster":{"type":"boolean","default":false},"formatter":{"type":"string","enum":["xml","csv","keyvalue","json"]},"container":{"type":"string","enum":["asv-con","vn-con","vn-agent","vs-cp-manager"]},"nonzero_exit_as_negative":{"type":"boolean","default":false,"description":"只读命令非零退出码作为否定证据（未命中）"}}'::jsonb, NULL::jsonb),
+        ('qfk_vm', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"},"nonzero_exit_as_negative":{"type":"boolean","default":false,"description":"只读命令非零退出码作为否定证据（未命中）"}}'::jsonb, NULL::jsonb),
+        ('qfk_network', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"},"nonzero_exit_as_negative":{"type":"boolean","default":false,"description":"只读命令非零退出码作为否定证据（未命中）"}}'::jsonb, NULL::jsonb),
+        ('qfk_storage', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"},"nonzero_exit_as_negative":{"type":"boolean","default":false,"description":"只读命令非零退出码作为否定证据（未命中）"}}'::jsonb, NULL::jsonb),
+        ('qfk_hardware', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"},"nonzero_exit_as_negative":{"type":"boolean","default":false,"description":"只读命令非零退出码作为否定证据（未命中）"}}'::jsonb, NULL::jsonb),
+        ('qfk_platform', '{"timeout":{"type":"integer","minimum":1,"maximum":300,"default":60},"instruction":{"type":"string"},"command_args":{"type":"array","items":{"type":"string"}},"resource_keyword":{"type":"string"},"nonzero_exit_as_negative":{"type":"boolean","default":false,"description":"只读命令非零退出码作为否定证据（未命中）"}}'::jsonb, NULL::jsonb)
 )
 UPDATE tool_definition AS tool
 SET parameters_schema = CASE

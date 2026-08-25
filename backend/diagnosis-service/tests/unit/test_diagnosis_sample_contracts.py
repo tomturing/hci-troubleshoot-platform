@@ -6,7 +6,11 @@ import json
 import re
 from pathlib import Path
 
-from app.services.offline_acquisition_compiler import compile_signal_acquisition
+from app.services.offline_acquisition_compiler import (
+    compile_effect_verification_intent,
+    compile_signal_acquisition,
+    compile_vm_console_capture_intent,
+)
 from app.services.offline_analysis_service import _evaluate_matcher
 from shared.cdd import CandidateState, SignalOutcome, compile_signal_plan
 from shared.cdd.candidate_reducer import initial_assessments, reduce_candidates
@@ -61,8 +65,34 @@ def test_five_samples_compile_every_signal_into_offline_collectors():
     assert {item["verification_contract"]["case_id"] for item in documents} == SAMPLE_IDS
     for document in documents:
         for signal in document["signals"]:
+            tool = signal["acquire"]["tool"]
+            if tool == "qkv_vm_console":
+                # 条件型视觉生产者编译为专用 vm_console_capture 采集项（无
+                # command_template）；样例中的占位符由离线会话目标上下文解析。
+                compiled_capture = compile_vm_console_capture_intent(
+                    args={
+                        **signal["acquire"]["args"],
+                        "host": "SVR_SAMPLE_01",
+                        "vm_id": "123",
+                    }
+                )
+                assert compiled_capture.executor == "vm_console_capture"
+                assert compiled_capture.operation_version == "v1"
+                assert compiled_capture.capture_mode == "baseline_then_prompt_if_near_black"
+                continue
+            if tool == "qkv_effect":
+                # 条件型效果验证生产者编译为冻结的期望声明项（无 command_template，
+                # 客户侧采集器不执行任何动作）；host 占位符由离线会话目标上下文解析。
+                compiled_effect = compile_effect_verification_intent(
+                    args={**signal["acquire"]["args"], "host": "SVR_SAMPLE_01"}
+                )
+                assert compiled_effect.executor == "effect_expectation"
+                assert compiled_effect.operation_version == "v1"
+                assert compiled_effect.usage == "remediation_verify"
+                assert compiled_effect.expectation == signal["acquire"]["args"]["expectation"]
+                continue
             compiled = compile_signal_acquisition(
-                tool=signal["acquire"]["tool"],
+                tool=tool,
                 args=signal["acquire"]["args"],
                 matcher=signal.get("match"),
                 produces=(signal.get("orchestrate") or {}).get("produces") or [],

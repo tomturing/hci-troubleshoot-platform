@@ -135,6 +135,29 @@ class SolutionDetail(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 成功条件（效果验证期望锚点）
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class SuccessCriteria(BaseModel):
+    """叶节点成功条件——修复动作“预期效果”在知识层的落点。
+
+    设计来源：docs/solution/agent/效果验证生产者信号设计与需求.md §3.1/§13。
+    SOP 节点此前只有前置条件（prerequisite_items）；本字段补齐后置语义：
+    “做到什么程度算生效”。qkv_effect 条件型效果验证生产者的结构化期望锚点
+    （封闭观测通道 + 封闭 matcher + 窗口）在信号生成期据此编译，并另行通过
+    封闭集合与来源可达门禁；此处声明语义内容，不允许自由命令或脚本。
+    """
+
+    description: str = Field(..., min_length=1, description="预期效果描述（如：内存告警应清除）")
+    observation_hint: Literal["alert", "task", "dialog", "vm_console"] | None = Field(
+        None, description="观测通道提示（封闭集合；metric 等待平台确认项闭环后按提案加入）"
+    )
+    settle_seconds: int | None = Field(None, ge=0, le=3600, description="动作后首次判定前的稳定窗口（秒）")
+    window_seconds: int | None = Field(None, ge=60, le=86400, description="复核窗口总预算（秒）")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 校验问题
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -177,6 +200,10 @@ class SOPNode(BaseModel):
     )
     diagnosis: DiagnosisDetail | None = Field(None, description="诊断详情（叶节点）")
     solution: SolutionDetail | None = Field(None, description="解决方案（叶节点）")
+    success_criteria: SuccessCriteria | None = Field(
+        None,
+        description="成功条件（叶节点可选）：修复动作的预期效果声明，供 qkv_effect 效果验证编译期望锚点",
+    )
 
     @model_validator(mode="after")
     def sync_prerequisites(self) -> SOPNode:

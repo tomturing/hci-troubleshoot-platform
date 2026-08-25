@@ -10,7 +10,11 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-from shared.schemas.acquirer_args import DEFAULT_SIGNAL_TIMEOUT_SECONDS
+from shared.schemas.acquirer_args import (
+    CONDITIONAL_PRODUCERS,
+    DEFAULT_SIGNAL_TIMEOUT_SECONDS,
+    FRONTEND_TOOLS,
+)
 
 from app.config import settings
 from app.tools.qfk.handlers import HandlerRegistry, build_acli_command
@@ -36,16 +40,34 @@ def runtime_capability_document() -> dict:
     """从当前 Agent 进程构造确定性的 Handler/Validator 部署快照。"""
 
     from app.tools.acli import executor as executor_module
+    from app.tools.effect.adapter import effect_enabled
+    from app.tools.vm_console.adapter import capture_enabled
 
     bridge_ready = executor_module._executor is not None
-    qkv_tools = ("qkv_alert", "qkv_task", "qkv_dialog")
+    # QKV 工具清单从共享契约集合派生（防硬编码漏改）：直接生产者 + 条件型生产者。
+    qkv_tools = tuple(sorted(FRONTEND_TOOLS)) + tuple(sorted(CONDITIONAL_PRODUCERS))
     qfk_tools = tuple(f"qfk_{namespace}" for namespace in HandlerRegistry.supported_namespaces())
     capabilities = []
     for capability_id in (*qkv_tools, *qfk_tools):
         producer = capability_id.startswith("qkv_")
+        conditional = capability_id in CONDITIONAL_PRODUCERS
+        is_effect = capability_id == "qkv_effect"
         handler_ready = producer or capability_id.removeprefix("qfk_") in HandlerRegistry.supported_namespaces()
         validator_ready = FrontendSignal is not None if producer else BackendSignal is not None
         usable = handler_ready and validator_ready and bridge_ready
+        reason = None if usable else "Terminal Bridge Executor 尚未注入，参数可校验但暂不可执行"
+        if conditional and is_effect:
+            # 条件型效果验证生产者：执行层受 EFFECT_VERIFICATION_ENABLED 策略门禁控制。
+            enabled = effect_enabled()
+            usable = usable and enabled
+            if not enabled:
+                reason = "条件型效果验证生产者：执行层未启用（EFFECT_VERIFICATION_ENABLED=false），契约与发布不受影响"
+        elif conditional:
+            # 条件型实时视觉生产者：执行层受 VM_CONSOLE_CAPTURE_ENABLED 策略门禁控制。
+            enabled = capture_enabled()
+            usable = usable and enabled
+            if not enabled:
+                reason = "条件型视觉生产者：执行层未启用（VM_CONSOLE_CAPTURE_ENABLED=false），契约与发布不受影响"
         capabilities.append(
             {
                 "capability_id": capability_id,
@@ -55,7 +77,11 @@ def runtime_capability_document() -> dict:
                 "executor_ready": bridge_ready,
                 "usable": usable,
                 "runtime_status": "available" if usable else "degraded",
-                "reason": None if usable else "Terminal Bridge Executor 尚未注入，参数可校验但暂不可执行",
+                "reason": reason,
+                # 条件生产者标记：vm_console 需可信 HOST/VM_ID 且唤醒为受控交互（非只读）；
+                # effect 的先决变量随期望锚点动态声明，且严格只读、无受控交互。
+                "conditional_producer": conditional,
+                "controlled_interaction": conditional and not is_effect,
             }
         )
     return {

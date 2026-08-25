@@ -237,8 +237,26 @@ class InvestigationAgent(BaseAgent):
             snapshot_id = str(inventory.get("snapshot_id") or "")
             sop_results = list(inventory.get("sops") or [])
             all_kbds = list(inventory.get("kbds") or [])
+            # 诊断等价性不变量：S0 确认的分类是候选集合唯一边界。sim-ssh 只切换
+            # acquisition 的数据提供方，不得使用 TestRun.support_id/revision 缩窄候选，
+            # 否则会把仿真场景标签泄漏为诊断答案并绕过 CDD/Conclusion Gate。
             raw_cases = [kbd for kbd in all_kbds if kbd.get("executable") is True]
             track = "sop" if sop_results else "kbd" if all_kbds else "human_escalation"
+            candidate_scope = {
+                "mode": "category_complete",
+                "source": "s0_confirmed_category",
+                "acquisition_provider": "hci-sim" if execution_mode == "sim-ssh" else "real_environment",
+            }
+            logger.info(
+                event="kbd_candidate_scope_resolved",
+                message="真实与仿真使用相同分类候选全集；执行模式只决定现场数据采集提供方",
+                category_id=category_id,
+                snapshot_id=snapshot_id,
+                execution_mode=execution_mode,
+                candidate_count=len(raw_cases),
+                session_id=session_id,
+                case_id=case_id,
+            )
             yield AgentStageUpdate(
                 stage="knowledge_snapshot",
                 metadata={
@@ -247,19 +265,14 @@ class InvestigationAgent(BaseAgent):
                     "sop_count": len(sop_results),
                     "kbd_count": len(all_kbds),
                     "executable_kbd_count": len(raw_cases),
+                    "candidate_scope": candidate_scope,
                 },
             )
 
         logger.info(
             event="investigation_route",
             track=track,
-            result_count=(
-                len(sop_results)
-                if track == "sop"
-                else len(raw_cases)
-                if track == "kbd"
-                else 0
-            ),
+            result_count=(len(sop_results) if track == "sop" else len(raw_cases) if track == "kbd" else 0),
             category_id=category_id,
             session_id=session_id,
             snapshot_id=snapshot_id,
@@ -287,7 +300,7 @@ class InvestigationAgent(BaseAgent):
                 yield event
             return
 
-        # 3. 无 SOP 时直接对分类内完整的可执行 KBD 集合进行证据诊断。
+        # 3. 无 SOP 时对分类内完整可执行 KBD 集合进行证据诊断；真实/仿真语义完全一致。
         if not raw_cases:
             reason = (
                 f"分类 {category_id} 下没有已发布 KBD"

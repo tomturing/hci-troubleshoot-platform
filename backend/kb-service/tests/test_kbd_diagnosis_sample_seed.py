@@ -37,7 +37,7 @@ def test_sample_seed_only_creates_drafts_and_only_upgrades_unreviewed_old_sample
     assert "'draft'" in sql
     assert "ON CONFLICT (support_id) DO UPDATE SET" in sql
     assert "WHERE kbd_entry.status = 'draft'" in sql
-    assert "COALESCE((kbd_entry.metadata ->> 'seed_version')::integer, 0) < 4" in sql
+    assert "COALESCE((kbd_entry.metadata ->> 'seed_version')::integer, 0) < 5" in sql
     assert "dynamic_resource" not in sql
     assert "collector_definition" not in sql
     assert "collection_profile" not in sql
@@ -105,7 +105,11 @@ def test_sample_documents_are_publishable_read_only_and_runtime_compilable():
         result = review_signal_document(document, feature=SignalReviewFeature.PUBLISH)
         assert result.status in {SignalReviewStatus.PASSED, SignalReviewStatus.NEEDS_REVIEW}
         assert not result.blocked
-        assert all(item.command for item in result.signals)
+        # 条件型生产者编译为不可变意图（Capture Intent / Verification Intent），
+        # 刻意不产出命令字符串；其余信号仍必须编译出可执行命令。
+        assert all(
+            item.command for item in result.signals if item.tool not in {"qkv_vm_console", "qkv_effect"}
+        )
 
 
 def test_sample_documents_compile_in_online_agent_runtime():

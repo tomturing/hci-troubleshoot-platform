@@ -33,6 +33,7 @@ from app.routes import (
     resolution_catalogs,
     route,
     sop_ingest,
+    vm_console_admin,
 )
 from app.services.embedding import EmbeddingService
 from app.utils.jieba_hci import init_jieba
@@ -85,6 +86,7 @@ async def lifespan(app: FastAPI):
     kbd_search.set_dependencies(database_manager, embedding_service)  # KBD 语义检索（agent 专用）
     playbooks.set_dependencies(database_manager)  # S0 分类驱动的完整知识清单
     admin.set_dependencies(database_manager, embedding_service)  # 注入 embedding 服务
+    vm_console_admin.set_dependencies(database_manager)  # qkv_vm_console 截图审计查询
     route.set_dependencies(database_manager)
     classify.set_dependencies(database_manager)
     extract_signals.set_dependencies(database_manager)  # 关键信号分级抽取
@@ -169,6 +171,7 @@ app.include_router(resolution_catalogs.router)  # Shared Resolution Catalogs 管
 app.include_router(hits.sop_hit_router)  # SOP 命中统计路由
 app.include_router(hits.kbd_hit_router)  # KBD 命中统计路由
 app.include_router(hci_sim.router)  # hci-sim 不可变 KBD 快照与批量 capability report
+app.include_router(vm_console_admin.router)  # qkv_vm_console 截图会话审计查询（§7.3）
 
 
 @app.get("/metrics")

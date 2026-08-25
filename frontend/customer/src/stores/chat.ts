@@ -8,7 +8,7 @@ import { createApiClient, createCaseApi, createConversationApi, createAssistantA
 import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse, EnvironmentResponse, EnvironmentContextResponse, EnvType } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
 import { createEvaluateApi } from '@/api/evaluate'
-import { checkBridgeRunning, checkBridgeBeforeOpen, createBridgeSocket, getBridgeUrl, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, parseAgentExecResult, type BridgeStatus, type TerminalWsMessage, type OutputFilterSpec } from '@/api/terminal'
+import { checkBridgeRunning, checkBridgeBeforeOpen, createBridgeSocket, getBridgeUrl, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, buildVmConsoleOpMessage, parseAgentExecResult, type BridgeStatus, type TerminalWsMessage, type OutputFilterSpec } from '@/api/terminal'
 import {
   appendExecOutput as appendFilteredExecOutput,
   buildSafeExecResultPayload,
@@ -368,6 +368,27 @@ export const useChatStore = defineStore('chat', () => {
     timeoutId: number
   }>()
 
+  // === qkv_vm_console 固定操作结果等待队列（vm_console_result 元数据）===
+  type VmConsoleResult = {
+    captureId: string
+    execId: string
+    operation: string
+    exitCode?: number
+    sha256?: string
+    sizeBytes?: number
+    uploadStatus?: string
+    errorType?: string
+    durationMs?: number
+    timedOut?: boolean
+    traceId?: string
+    artifactId?: string
+  }
+  const pendingVmConsoleCallbacks = new Map<string, {
+    resolve: (result: VmConsoleResult) => void
+    reject: (error: Error) => void
+    timeoutId: number
+  }>()
+
   // 双通道流式缓冲 (Scheme B)，使用分块数组和统一预算避免大输出导致 O(n²) 复制。
   const execBuffers = new Map<string, ExecOutputBuffer>()
   const execOutputFilters = new Map<string, ExecOutputFilter[]>()
@@ -391,15 +412,23 @@ export const useChatStore = defineStore('chat', () => {
   } | null>(null)
 
   // T-TOOL-18：待确认的命令执行请求（agent_exec_command SSE 事件，risk=2）
+  // 修复 Q2026082095867：补充执行下发所需的全部字段，确保 confirmAgentExec 可复用 risk=1 路径
   const pendingExecConfirm = ref<{
     execId: string
     command: string
     reason: string
     riskLevel: 1 | 2 | 3
-    nodeIp: string
+    nodeIp: string | null
     caseId: string
-    convId: string  // conversation ID（用于 POST 结果）
-    timestamp: number  // 创建时间戳（用于倒计时）
+    convId: string        // conversation ID（用于 POST 结果）
+    timestamp: number     // 创建时间戳（用于倒计时）
+    // 以下字段供 confirmAgentExec 执行时透传给 terminal_bridge
+    container: string | null
+    traceId: string | null
+    traceparent: string | null
+    toolCallId: string | null
+    timeoutSeconds: number
+    outputFilters: OutputFilterSpec[]
   } | null>(null)
 
   // T-E7: ops-agent 交互请求（interactive_request SSE 事件）
@@ -415,6 +444,13 @@ export const useChatStore = defineStore('chat', () => {
     execId?: string
     inputHash?: string
     expiresAt?: string
+    // vm_console_wake_confirm 专用字段
+    captureId?: string
+    wakeToken?: string
+    message?: string
+    hostNodeId?: string
+    vmId?: string
+    timeoutSeconds?: number
   } | null>(null)
 
   // Bridge 运行状态
@@ -883,6 +919,13 @@ export const useChatStore = defineStore('chat', () => {
                   execId: event.execId,
                   inputHash: event.inputHash,
                   expiresAt: event.expiresAt,
+                  // vm_console_wake_confirm 专用字段（控制台近黑唤醒确认卡）
+                  captureId: event.captureId,
+                  wakeToken: event.wakeToken,
+                  message: event.message,
+                  hostNodeId: event.hostNodeId,
+                  vmId: event.vmId,
+                  timeoutSeconds: event.timeoutSeconds,
                 }
                 // 将 interactive_request 作为 assistant 气泡追加到消息列表
                 const irMsgId = `ir-${event.requestId ?? Date.now()}`
@@ -1005,14 +1048,115 @@ export const useChatStore = defineStore('chat', () => {
                   command,
                   reason,
                   riskLevel,
-                  nodeIp,
+                  nodeIp: nodeIp ?? null,
                   caseId,
                   convId,
                   timestamp: Date.now(),
+                  // 补充执行下发所需字段（修复 Q2026082095867）
+                  container: container ?? null,
+                  traceId: traceId ?? null,
+                  traceparent: traceparent ?? null,
+                  toolCallId: toolCallId ?? null,
+                  timeoutSeconds: timeoutSeconds,
+                  outputFilters: Array.isArray(outputFilters) ? outputFilters as OutputFilterSpec[] : [],
                 }
                 devLog('agent_exec_command', 'risk=2 等待用户确认', { execId, command, nodeIp })
               } catch (e) {
                 console.warn('[agent_exec_command] 处理失败:', e)
+              }
+            } else if (pendingEventType === 'vm_console_capture') {
+              // qkv_vm_console：基线/重截图制品就绪（近黑质量已知），更新结果卡。
+              try {
+                const event = JSON.parse(data)
+                upsertVmConsoleCard({
+                  captureId: event.captureId,
+                  phase: 'captured',
+                  nearBlack: Boolean(event.nearBlack),
+                  sizeBytes: event.sizeBytes,
+                })
+              } catch (e) {
+                console.warn('[vm_console_capture] 处理失败:', e)
+              }
+            } else if (pendingEventType === 'vm_console_observation') {
+              // qkv_vm_console：视觉提取完成 → 完成态结果卡（状态/摘要/置信度/复核提示）。
+              try {
+                const event = JSON.parse(data)
+                upsertVmConsoleCard({
+                  captureId: event.captureId,
+                  phase: 'completed',
+                  observationStatus: event.observationStatus,
+                  displayState: event.displayState,
+                  summary: event.summary,
+                  confidence: event.confidence,
+                  needsHumanReview: Boolean(event.needsHumanReview),
+                  artifactId: event.artifactId,
+                  wakeExecuted: Boolean(event.wakeExecuted),
+                  errorCode: event.errorCode,
+                })
+              } catch (e) {
+                console.warn('[vm_console_observation] 处理失败:', e)
+              }
+            } else if (pendingEventType === 'effect_result') {
+              // qkv_effect：效果验证三态判定结果卡（achieved/not_achieved/inconclusive）。
+              try {
+                const event = JSON.parse(data)
+                upsertEffectResultCard({
+                  verificationId: event.verificationId,
+                  signalId: event.signalId,
+                  verdict: event.verdict,
+                  usage: event.usage,
+                  checkCount: event.checkCount,
+                  errorCode: event.errorCode,
+                  checkedAt: event.checkedAt,
+                })
+              } catch (e) {
+                console.warn('[effect_result] 处理失败:', e)
+              }
+            } else if (pendingEventType === 'vm_console_op') {
+              // qkv_vm_console：固定截图/唤醒操作请求（SSE → WebSocket → POST 元数据结果）。
+              // 无自由文本命令；operation 仅 capture_baseline / wake_down_key。
+              try {
+                const event = JSON.parse(data)
+                const { captureId, execId, operation, hostNodeId, vmId, nodeIp, caseId, conversationId: convId, traceId, traceparent, role, artifactPolicy, catalogRevision } = event
+                const timeoutSeconds = Math.min(60, Math.max(1, Number(event.timeoutSeconds) || 60))
+                devLog('vm_console_op', '收到固定操作请求', { captureId, execId, operation })
+
+                // 展示采集状态提示（不得误称"正在执行只读命令"）
+                messages.value.push({
+                  id: `vm-console-${execId ?? Date.now()}`,
+                  role: 'system',
+                  content: operation === 'wake_down_key' ? '正在向虚拟机控制台发送唤醒按键…' : '正在采集控制台画面…',
+                  timestamp: new Date(),
+                  metadata: { kind: 'vm_console_progress', captureId, execId, operation },
+                })
+
+                if (sshConnectionState.value !== 'connected' || !sshWebSocket.value) {
+                  devLog('vm_console_op', 'SSH 未连接，无法执行', { execId })
+                  postVmConsoleResult(convId, { captureId, execId, operation, exitCode: -1, errorType: 'ssh_not_connected' }, traceparent).catch((e) => {
+                    console.warn('[vm_console_op] postVmConsoleResult 失败:', e)
+                  })
+                  continue
+                }
+
+                const waitResult = waitForVmConsoleResult(execId, (timeoutSeconds + 30) * 1000)
+                const wsMsg = buildVmConsoleOpMessage(caseId, captureId, execId, operation, hostNodeId, vmId, {
+                  nodeIp,
+                  timeoutSeconds,
+                  role,
+                  artifactPolicy,
+                  catalogRevision,
+                  traceId,
+                  traceparent,
+                  conversationId: convId,
+                })
+                sshWebSocket.value.send(wsMsg)
+                devLog('vm_console_op', '固定操作已发送到 Bridge', { execId, operation })
+                waitResult
+                  .then((result) => postVmConsoleResult(convId, result, traceparent))
+                  .catch(() => postVmConsoleResult(convId, { captureId, execId, operation, exitCode: -1, errorType: 'browser_wait_timeout', timedOut: true }, traceparent))
+                  .catch((e) => console.warn('[vm_console_op] 结果回传失败:', e))
+              } catch (e) {
+                console.warn('[vm_console_op] 处理失败:', e)
               }
             } else {
               try {
@@ -1069,6 +1213,75 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  /**
+   * 用户确认 risk=2 命令后，通过 terminal_bridge 执行命令。
+   *
+   * 修复 Q2026082095867：handleExecConfirmApprove 原为 TODO 空实现，
+   * 用户点击"确认执行"后命令从未发送到 bridge，导致 blpop 超时触发 QFK_TERMINAL_FAILURE。
+   * 本函数对齐 risk=1 自动执行路径（chat.ts L948-L979），补全缺失的执行下发逻辑。
+   *
+   * @param execId 要确认执行的命令 ID
+   */
+  async function confirmAgentExec(execId: string): Promise<void> {
+    const pending = pendingExecConfirm.value
+    if (!pending || pending.execId !== execId) return
+
+    // 清空确认状态（防止重复提交）
+    pendingExecConfirm.value = null
+
+    // 检查 SSH 连接状态
+    if (sshConnectionState.value !== 'connected' || !sshWebSocket.value) {
+      devLog('confirmAgentExec', 'SSH 未连接，无法执行', { execId })
+      postExecResult(
+        pending.convId, execId, 'SSH 未连接', -1, 'ssh_not_connected',
+        undefined, undefined, { errorType: 'ssh_not_connected' },
+      ).catch((e) => console.warn('[confirmAgentExec] postExecResult 失败:', e))
+      resumeOpsAgentStream()
+      return
+    }
+
+    // 准备输出过滤器和缓冲区（与 risk=1 路径对齐）
+    execOutputFilters.set(execId, pending.outputFilters ?? [])
+    execBuffers.set(execId, createExecOutputBuffer())
+
+    // 等待 bridge 执行结果（bridge 超时 + 5 秒宽限）
+    const waitResult = waitForExecResult(execId, (pending.timeoutSeconds + 5) * 1000)
+
+    // 通过 terminal_bridge WebSocket 发送命令（隔离执行通道 ssh_exec_process）
+    const wsMsg = buildAgentExecProcessMessage(
+      pending.caseId,
+      execId,
+      pending.command,
+      pending.nodeIp,
+      pending.container,
+      pending.traceId,
+      pending.traceparent,
+      pending.convId,
+      pending.toolCallId,
+      pending.timeoutSeconds,
+      pending.outputFilters,
+    )
+    sshWebSocket.value.send(wsMsg)
+    devLog('confirmAgentExec', '命令已发送到 Bridge', { execId, nodeIp: pending.nodeIp, container: pending.container })
+
+    // 结果回传与流程继续
+    await waitResult
+      .then((result) => {
+        devLog('confirmAgentExec', '执行完成', { execId, exitCode: result.exitCode })
+        return postExecResult(
+          pending.convId, execId, result.output, result.exitCode,
+          undefined, result.stdout, result.stderr, result,
+        )
+      })
+      .catch(() => {
+        devLog('confirmAgentExec', '执行超时', { execId })
+        return postExecResult(
+          pending.convId, execId, 'timeout', -1, 'timeout',
+          undefined, undefined, { timedOut: true, errorType: 'browser_wait_timeout' },
+        )
+      })
+      .finally(() => resumeOpsAgentStream())
+  }
 
   /**
    * 重新消费 ops-agent 续写事件流（不提交新 prompt）。
@@ -1612,7 +1825,8 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       function markConnected() {
-        if (settled || sshWebSocket.value !== socket || socket.readyState !== WebSocket.OPEN) return
+        const isOpen = socket.readyState === 1 || (typeof WebSocket !== 'undefined' && socket.readyState === WebSocket.OPEN)
+        if (settled || !sshWebSocket.value || !isOpen) return
         settled = true
         clearStabilityTimer()
         sshConnectionState.value = 'connected'
@@ -1689,6 +1903,7 @@ export const useChatStore = defineStore('chat', () => {
         } else if (msg.type === 'ssh_output' && msg.output) {
           sshOutputBuffer.value += msg.output
           if (sshConnectionState.value === 'connecting') {
+            clearStabilityTimer()
             markConnected()
           }
           // 如果有消费者，触发输出事件
@@ -1738,6 +1953,29 @@ export const useChatStore = defineStore('chat', () => {
               pendingExecCallbacks.delete(parsed.execId)
               callback.resolve(parsed)
             }
+          }
+        } else if (msg.type === 'vm_console_result') {
+          // qkv_vm_console 固定操作元数据结果（不含图片字节）
+          const raw = msg as unknown as Record<string, unknown>
+          const vmResult: VmConsoleResult = {
+            captureId: String(raw.capture_id || ''),
+            execId: String(raw.exec_id || ''),
+            operation: String(raw.operation || ''),
+            exitCode: typeof raw.exit_code === 'number' ? raw.exit_code : undefined,
+            sha256: typeof raw.sha256 === 'string' ? raw.sha256 : undefined,
+            sizeBytes: typeof raw.size_bytes === 'number' ? raw.size_bytes : undefined,
+            uploadStatus: typeof raw.upload_status === 'string' ? raw.upload_status : undefined,
+            errorType: typeof raw.error_type === 'string' ? raw.error_type : undefined,
+            durationMs: typeof raw.duration_ms === 'number' ? raw.duration_ms : undefined,
+            timedOut: Boolean(raw.timed_out),
+            traceId: typeof raw.trace_id === 'string' ? raw.trace_id : undefined,
+          }
+          devLog('SSH', '收到 vm_console_result', { execId: vmResult.execId, operation: vmResult.operation })
+          const vmCallback = pendingVmConsoleCallbacks.get(vmResult.execId)
+          if (vmCallback) {
+            clearTimeout(vmCallback.timeoutId)
+            pendingVmConsoleCallbacks.delete(vmResult.execId)
+            vmCallback.resolve(vmResult)
           }
         }
       }
@@ -1817,6 +2055,24 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
+   * 等待虚拟机控制台固定操作结果（vm_console_result 元数据，不含图片字节）。
+   */
+  function waitForVmConsoleResult(execId: string, timeoutMs: number): Promise<VmConsoleResult> {
+    return new Promise((resolve, reject) => {
+      if (sshConnectionState.value !== 'connected' || !sshWebSocket.value) {
+        reject(new Error('SSH 未连接'))
+        return
+      }
+      const timeoutId = window.setTimeout(() => {
+        pendingVmConsoleCallbacks.delete(execId)
+        reject(new Error(`等待 vm_console_result 超时（${timeoutMs / 1000}s）`))
+      }, timeoutMs)
+      pendingVmConsoleCallbacks.set(execId, { resolve, reject, timeoutId })
+      devLog('SSH', '等待 vm_console_result', { execId, timeoutMs })
+    })
+  }
+
+  /**
    * POST 执行结果到后端 API
    * 用于 agent_exec_command SSE 事件处理
    *
@@ -1870,6 +2126,93 @@ export const useChatStore = defineStore('chat', () => {
       }
     } catch (e) {
       console.warn('[postExecResult] 网络错误:', e)
+    }
+  }
+
+  /** qkv_vm_console 结果卡：同一 captureId 的阶段数据合并为一条卡片消息。 */
+  function upsertVmConsoleCard(data: Record<string, unknown>) {
+    const captureId = String(data.captureId || '')
+    if (!captureId) return
+    const existing = messages.value.find(
+      (m) => m.metadata?.kind === 'vm_console_result_card' && m.metadata?.captureId === captureId,
+    )
+    const merged = { ...(existing?.metadata as Record<string, unknown> | undefined), ...data, kind: 'vm_console_result_card' }
+    if (existing) {
+      existing.metadata = merged
+    } else {
+      messages.value.push({
+        id: `vm-console-card-${captureId}`,
+        role: 'assistant',
+        content: '',
+        timestamp: new Date(),
+        metadata: merged,
+      })
+    }
+  }
+
+  /**
+   * qkv_effect 三态判定结果卡 upsert（按 verificationId 幂等）。
+   * achieved/not_achieved/inconclusive 原样展示；观察不足禁止解释为已恢复。
+   */
+  function upsertEffectResultCard(data: Record<string, unknown>) {
+    const verificationId = String(data.verificationId || '')
+    if (!verificationId) return
+    const existing = messages.value.find(
+      (m) => m.metadata?.kind === 'effect_result_card' && m.metadata?.verificationId === verificationId,
+    )
+    const merged = { ...(existing?.metadata as Record<string, unknown> | undefined), ...data, kind: 'effect_result_card' }
+    if (existing) {
+      existing.metadata = merged
+    } else {
+      messages.value.push({
+        id: `effect-result-card-${verificationId}`,
+        role: 'assistant',
+        content: '',
+        timestamp: new Date(),
+        metadata: merged,
+      })
+    }
+  }
+
+  /**
+   * POST 虚拟机控制台截图元数据结果到后端（qkv_vm_console）。
+   * 只传元数据（capture_id/sha256/尺寸/上传状态），图片字节由 Bridge 直传平台。
+   */
+  async function postVmConsoleResult(
+    convId: string,
+    result: Partial<VmConsoleResult> & { captureId: string; execId: string; operation: string },
+    traceparent?: string,
+  ): Promise<void> {
+    try {
+      const response = await fetch(`/api/conversations/${convId}/vm-console-result`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Client-ID': clientId,
+          ...(traceparent ? { traceparent } : {}),
+        },
+        body: JSON.stringify({
+          capture_id: result.captureId,
+          exec_id: result.execId,
+          operation: result.operation,
+          exit_code: result.exitCode ?? null,
+          sha256: result.sha256,
+          size_bytes: result.sizeBytes,
+          upload_status: result.uploadStatus,
+          error_type: result.errorType,
+          duration_ms: result.durationMs,
+          timed_out: result.timedOut ?? false,
+          trace_id: result.traceId,
+        }),
+      })
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({ detail: '未知错误' }))
+        console.warn('[postVmConsoleResult] 回传失败:', errData.detail)
+      } else {
+        devLog('SSH', 'vm_console_result 已回传', { execId: result.execId, captureId: result.captureId })
+      }
+    } catch (e) {
+      console.warn('[postVmConsoleResult] 网络错误:', e)
     }
   }
 
@@ -2772,6 +3115,7 @@ export const useChatStore = defineStore('chat', () => {
     // T-TOOL-18: 命令执行确认卡片
     pendingExecConfirm,
     clearExecConfirm: () => { pendingExecConfirm.value = null },
+    confirmAgentExec,
     resumeOpsAgentStream,
     initialize,
     sendMessage,

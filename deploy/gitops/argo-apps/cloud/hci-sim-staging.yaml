@@ -1,0 +1,52 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-sim-staging
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: hci-platform
+    app.kubernetes.io/component: hci-sim
+  annotations:
+    hci-platform.dev/immutable-image-required: "true"
+    hci-platform.dev/image-source-revision: "6556cfbc5fc94e54d7c523628aa1864068d23e9e"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+    targetRevision: main
+    path: deploy/helm/hci-sim
+    helm:
+      values: |
+        image:
+          repository: ghcr.io/tomturing/hci-troubleshoot-platform/hci-sim
+          digest: "sha256:a7562f0eb99191d61714649d403c2f40ddf9c0f6010955233030bbd0756b1efe"
+        networkPolicy:
+          enabled: true
+          terminalBridgeNamespace: hci-staging
+          apiGatewayNamespace: hci-staging
+          conversationServiceNamespace: hci-staging
+          observabilityNamespace: hci-observability
+          databaseNamespace: hci-staging
+        database:
+          required: true
+          existingSecret: hci-sim-runtime-credentials
+        runtime:
+          environment: staging
+          existingSecret: hci-sim-credentials
+          authorityScope: dev_golden
+          allowSyntheticPublish: false
+          sshHost: hci-sim.hci-sim-staging.svc
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hci-sim-staging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: hci-sim-credentials
+      jsonPointers: ["/data"]

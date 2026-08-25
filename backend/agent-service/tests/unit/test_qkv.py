@@ -54,6 +54,26 @@ class TestFrontendSignalValidation:
         assert sig.keyword == "启动虚拟机"
         assert sig.is_failed is True
 
+    def test_qkv_output_processing_is_part_of_same_signal(self):
+        sig = qkv_load({
+            "acquire": {"tool": "qkv_task", "args": {"keyword": "虚拟机无法启动"}},
+            "orchestrate": {
+                "produces": [{"name": "DESCRIPTION", "path": "description"}],
+                "output_processing": [{
+                    "id": "percent", "mode": "assert", "input": "{{DESCRIPTION}}",
+                    "operation": "compare", "value_type": "percentage", "operator": ">", "right": "90%",
+                }],
+            },
+        })
+        assert sig.output_processing[0]["id"] == "percent"
+
+    def test_qkv_output_processing_rejects_script_fields(self):
+        with pytest.raises(ValidationError):
+            qkv_load({
+                "query": "task", "keyword": "x",
+                "output_processing": [{"id": "x", "mode": "derive", "input": "{{DESCRIPTION}}", "operation": "trim", "script": "x"}],
+            })
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # QKV Engine 实际指令组装测试
@@ -158,6 +178,175 @@ async def test_qkv_dialog_searches_master_logs_and_extracts_end_request_id_host(
         "acli log get -k '编辑显卡核心失败' -p /sf/log/today/vt -c 2",
     ]
     assert all(" -l " not in command for command in commands)
+
+
+@pytest.mark.asyncio
+async def test_qkv_output_processing_derives_variable_and_reports_assertion():
+    signal = FrontendSignal(
+        query=FrontendQueryType.TASK,
+        keyword="虚拟机无法启动",
+        produces=[{"name": "DESCRIPTION", "path": "description"}],
+        output_processing=[
+            {
+                "id": "vm",
+                "mode": "derive",
+                "input": "{{DESCRIPTION}}",
+                "operation": "feature_extract",
+                "target_variable": "VM_NAME",
+                "feature": "vm_name",
+            },
+            {
+                "id": "percent",
+                "mode": "assert",
+                "input": "{{DESCRIPTION}}",
+                "operation": "compare",
+                "value_type": "percentage",
+                "operator": ">",
+                "right": "90%",
+            },
+        ],
+    )
+    mock_executor = AsyncMock()
+    mock_executor.execute.return_value = ExecResult(
+        stdout='{"data":[{"description":"虚拟机名称：vm-001，使用率：92%"}]}',
+        stderr="", exit_code=0, command="", node="127.0.0.1", duration_ms=1, truncated=False, risk_level=1,
+    )
+    with patch("app.tools.acli.executor._executor", mock_executor):
+        result = await qkv_exec(signal, conversation_id="test")
+
+    assert result.success is True
+    assert result.values[0]["description"] == "虚拟机名称：vm-001，使用率：92%"
+    assert result.values[0]["vm_name"] == "vm-001"
+    assert result.matched is True
+    assert result.assertions[0]["status"] == "PASS"
+
+
+@pytest.mark.asyncio
+async def test_qkv_output_processing_agent_negative_assertion_is_false():
+    signal = FrontendSignal(
+        query=FrontendQueryType.TASK,
+        keyword="资源占用",
+        produces=[{"name": "DESCRIPTION", "path": "description"}],
+        output_processing=[{
+            "id": "percent",
+            "mode": "assert",
+            "input": "{{DESCRIPTION}}",
+            "operation": "compare",
+            "value_type": "percentage",
+            "operator": ">",
+            "right": "90%",
+        }],
+    )
+    mock_executor = AsyncMock()
+    mock_executor.execute.return_value = ExecResult(
+        stdout='{"data":[{"description":"使用率：80%"}]}', stderr="", exit_code=0,
+        command="", node="127.0.0.1", duration_ms=1, truncated=False, risk_level=1,
+    )
+    with patch("app.tools.acli.executor._executor", mock_executor):
+        result = await qkv_exec(signal, conversation_id="test")
+    assert result.success is True
+    assert result.matched is False
+    assert result.assertions[0]["status"] == "FAIL"
+
+
+@pytest.mark.asyncio
+async def test_qkv_output_processing_agent_unknown_and_cardinality_are_not_success():
+    unknown_signal = FrontendSignal(
+        query=FrontendQueryType.TASK,
+        keyword="缺少字段",
+        produces=[{"name": "DESCRIPTION", "path": "description"}],
+        output_processing=[{
+            "id": "vm", "mode": "assert", "input": "{{DESCRIPTION}}",
+            "operation": "compare", "value_type": "percentage", "operator": ">", "right": "90%",
+        }],
+    )
+    cardinality_signal = FrontendSignal(
+        query=FrontendQueryType.TASK,
+        keyword="多条记录",
+        produces=[{"name": "DESCRIPTION", "path": "description"}],
+        output_processing=[{
+            "id": "vm", "mode": "derive", "scope": "single", "input": "{{DESCRIPTION}}",
+            "operation": "trim", "target_variable": "DESCRIPTION_TEXT",
+        }],
+    )
+    mock_executor = AsyncMock()
+    mock_executor.execute.side_effect = [
+        ExecResult(stdout='{"data":[{"other":"x"}]}', stderr="", exit_code=0, command="", node="127.0.0.1", duration_ms=1, truncated=False, risk_level=1),
+        ExecResult(stdout='{"data":[{"description":"a"},{"description":"b"}]}', stderr="", exit_code=0, command="", node="127.0.0.1", duration_ms=1, truncated=False, risk_level=1),
+    ]
+    with patch("app.tools.acli.executor._executor", mock_executor):
+        unknown = await qkv_exec(unknown_signal, conversation_id="test")
+        cardinality = await qkv_exec(cardinality_signal, conversation_id="test")
+    assert unknown.success is True
+    assert unknown.matched is None
+    assert unknown.assertions[0]["status"] == "UNKNOWN"
+    assert cardinality.success is False
+    assert "QKV_CARDINALITY_MISMATCH" in (cardinality.error or "")
+
+
+@pytest.mark.asyncio
+async def test_hci_sim_shared_route_logical_consumers_cover_processing_outcomes():
+    """hci-sim 只回放一份 stdout，Agent 按每个逻辑消费者各自处理。
+
+    这是 Bundle→Agent 的契约级测试：不在 Go 中复制后处理规则，四态仍由
+    QKV Agent 的共享内核计算，避免模拟环境和生产运行时出现双重语义。
+    """
+
+    physical_route = {
+        "route_key": {"argv": ["acli", "--formatter", "json", "task", "get", "-k", "资源占用", "-l", "100"]},
+        "logical_consumers": [
+            {
+                "signal_id": "assert-percent",
+                "produces": [{"name": "DESCRIPTION", "path": "description"}],
+                "output_processing": [{
+                    "id": "percent", "mode": "assert", "input": "{{DESCRIPTION}}",
+                    "operation": "compare", "value_type": "percentage", "operator": ">", "right": "90%",
+                }],
+                "derived_variables": [], "processing_fingerprint": "sha256:assert-percent",
+            },
+            {
+                "signal_id": "derive-description",
+                "produces": [{"name": "DESCRIPTION", "path": "description"}],
+                "output_processing": [{
+                    "id": "single-description", "mode": "derive", "scope": "single",
+                    "input": "{{DESCRIPTION}}", "operation": "trim", "target_variable": "DESCRIPTION_TEXT",
+                }],
+                "derived_variables": ["DESCRIPTION_TEXT"], "processing_fingerprint": "sha256:derive-description",
+            },
+        ],
+    }
+
+    def as_signal(consumer: dict[str, object]) -> FrontendSignal:
+        return FrontendSignal(
+            query=FrontendQueryType.TASK,
+            keyword="资源占用",
+            produces=consumer["produces"],  # type: ignore[arg-type]
+            output_processing=consumer["output_processing"],  # type: ignore[arg-type]
+        )
+
+    assert len(physical_route["logical_consumers"]) == 2
+    assert physical_route["logical_consumers"][0]["processing_fingerprint"] != physical_route["logical_consumers"][1]["processing_fingerprint"]
+    assert physical_route["logical_consumers"][1]["derived_variables"] == ["DESCRIPTION_TEXT"]
+
+    assert_consumer = as_signal(physical_route["logical_consumers"][0])
+    derive_consumer = as_signal(physical_route["logical_consumers"][1])
+    mock_executor = AsyncMock()
+    mock_executor.execute.side_effect = [
+        ExecResult(stdout='{"data":[{"description":"使用率：92%"}]}', stderr="", exit_code=0, command="", node="sim", duration_ms=1, truncated=False, risk_level=1),
+        ExecResult(stdout='{"data":[{"description":"使用率：80%"}]}', stderr="", exit_code=0, command="", node="sim", duration_ms=1, truncated=False, risk_level=1),
+        ExecResult(stdout='{"data":[{"other":"missing"}]}', stderr="", exit_code=0, command="", node="sim", duration_ms=1, truncated=False, risk_level=1),
+        ExecResult(stdout='{"data":[{"description":"a"},{"description":"b"}]}', stderr="", exit_code=0, command="", node="sim", duration_ms=1, truncated=False, risk_level=1),
+    ]
+    with patch("app.tools.acli.executor._executor", mock_executor):
+        positive = await qkv_exec(assert_consumer, conversation_id="sim-positive")
+        negative = await qkv_exec(assert_consumer, conversation_id="sim-negative")
+        unknown = await qkv_exec(assert_consumer, conversation_id="sim-unknown")
+        cardinality = await qkv_exec(derive_consumer, conversation_id="sim-cardinality")
+
+    assert positive.success is True and positive.matched is True and positive.assertions[0]["status"] == "PASS"
+    assert negative.success is True and negative.matched is False and negative.assertions[0]["status"] == "FAIL"
+    assert unknown.success is True and unknown.matched is None and unknown.assertions[0]["status"] == "UNKNOWN"
+    assert cardinality.success is False and "QKV_CARDINALITY_MISMATCH" in (cardinality.error or "")
 
 
 @pytest.mark.asyncio

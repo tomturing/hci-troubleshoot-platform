@@ -1,0 +1,40 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "timeout": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60,
+      "default": 60,
+      "description": "控制台截图超时（秒，1-60）；有意偏离公共 timeout（1-300），不复用公共定义"
+    },
+    "host": {
+      "type": "string",
+      "description": "仅允许 {{HOST}} 或由系统规范化后的节点变量；执行时必须 Inventory 校验"
+    },
+    "vm_id": {
+      "type": "string",
+      "description": "仅允许 {{VM_ID}} 或受控 VMID 变量；执行时必须精确匹配、不可含 Shell 控制字符"
+    },
+    "capture_mode": {
+      "type": "string",
+      "enum": [
+        "baseline_then_optional_wake"
+      ],
+      "default": "baseline_then_optional_wake",
+      "description": "固定采集模式：基线截图，近黑时经人工确认后可唤醒重截；不提供任意 Monitor 指令"
+    },
+    "instruction": {
+      "type": "string",
+      "description": "信号语义说明（acli 调用的人类可读解释）"
+    }
+  },
+  "required": [
+    "host",
+    "vm_id"
+  ],
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://hci-troubleshoot/schemas/signals/acquirer_args/qkv_vm_console.schema.json",
+  "title": "acquire.args for qkv_vm_console"
+}

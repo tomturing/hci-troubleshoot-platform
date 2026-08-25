@@ -3,7 +3,7 @@ suite: "Customer UI Bridge URL 配置测试"
 templates:
   - customer-ui/deployment.yaml
 tests:
-  - it: "集群 Bridge 启用且无显式地址时使用同源路径"
+  - it: "默认使用空字符串（ws://localhost:9999，Windows 本地 Bridge）"
     set:
       terminalBridge.enabled: true
       customerUI.terminalBridgeUrl: ""
@@ -12,9 +12,9 @@ tests:
           path: spec.template.spec.containers[0].env
           content:
             name: TERMINAL_BRIDGE_URL
-            value: /terminal-bridge
+            value: ""
 
-  - it: "外部 Linux Bridge 地址优先于集群开关"
+  - it: "可通过 customerUI.terminalBridgeUrl 覆盖默认值（例如 Linux Docker Bridge）"
     set:
       terminalBridge.enabled: false
       customerUI.terminalBridgeUrl: ws://172.28.24.21:9999
@@ -25,9 +25,9 @@ tests:
             name: TERMINAL_BRIDGE_URL
             value: ws://172.28.24.21:9999
 
-  - it: "默认关闭时保持桌面 localhost 兼容模式"
+  - it: "terminalBridge.enabled 不影响 Customer UI 的默认行为"
     set:
-      terminalBridge.enabled: false
+      terminalBridge.enabled: true
       customerUI.terminalBridgeUrl: ""
     asserts:
       - contains:

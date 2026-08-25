@@ -18,6 +18,10 @@ import (
 var fingerprintPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var itemIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
+// 通用执行器（command/http/manual）文本输出上限 4MiB；
+// vm_console_capture 截图二进制输出上限单独放宽到 16MiB（见 types.go）。
+const defaultMaxOutputBytes int64 = 4 * 1024 * 1024
+
 type trustedKey struct {
 	Algorithm            string `json:"algorithm"`
 	KeyID                string `json:"key_id"`
@@ -253,10 +257,15 @@ func validateCollectorArtifact(manifest *artifactManifest, artifact *collectorAr
 	}
 	for index, item := range artifact.ExecutionItems {
 		declared := manifest.CollectionItems[index]
+		// vm_console_capture 的输出是 PPM 截图二进制，上限放宽到 16MiB；其他执行器保持 4MiB。
+		maxOutputBytesLimit := defaultMaxOutputBytes
+		if item.Executor == executorVmConsoleCapture {
+			maxOutputBytesLimit = maxVmConsoleCaptureBytes
+		}
 		if !itemIDPattern.MatchString(item.ItemID) || item.ItemID != declared.PlanItemID || item.CollectorID != declared.CollectorID ||
 			item.CollectorRevision != declared.CollectorRevision || item.CollectorChecksum != declared.CollectorChecksum ||
 			item.Executor != declared.Executor ||
-			item.TimeoutSeconds < 1 || item.TimeoutSeconds > 3600 || item.MaxOutputBytes < 1 || item.MaxOutputBytes > 4*1024*1024 {
+			item.TimeoutSeconds < 1 || item.TimeoutSeconds > 3600 || item.MaxOutputBytes < 1 || item.MaxOutputBytes > maxOutputBytesLimit {
 			return fmt.Errorf("结构化采集项 %d 契约不合法", index+1)
 		}
 		seenSourceRefs := make(map[string]bool, len(item.SourceSignalRefs))
@@ -296,6 +305,15 @@ func validateCollectorArtifact(manifest *artifactManifest, artifact *collectorAr
 		case "manual":
 			if strings.TrimSpace(item.Guide) == "" || strings.ContainsRune(item.Guide, '\x00') {
 				return fmt.Errorf("人工附件采集项缺少合法指引")
+			}
+		case executorVmConsoleCapture:
+			// vm 控制台采集是专用执行器：不走通用只读命令白名单（validateReadOnlyCommand），
+			// 只允许签名制品内的结构化采集意图；禁止携带任何自由命令字段。
+			if len(item.Argv) > 0 || item.Method != "" || item.Path != "" || item.Guide != "" {
+				return fmt.Errorf("虚拟机控制台采集项禁止携带 argv/method/path/guide 字段")
+			}
+			if _, err := parseCaptureIntent(item); err != nil {
+				return fmt.Errorf("虚拟机控制台采集项契约不合法：%w", err)
 			}
 		default:
 			return fmt.Errorf("结构化采集项执行器不受支持：%s", item.Executor)

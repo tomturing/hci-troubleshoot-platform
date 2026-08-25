@@ -107,6 +107,7 @@ jobs:
               - 'scripts/ci/test_update_hci_sim_promotion.py'
               - 'hci_sim/Dockerfile'
               - 'deploy/gitops/argo-apps/local/hci-sim-dev.yaml'
+              - 'deploy/gitops/argo-apps/cloud/hci-sim-staging.yaml'
 
       - name: 安装 uv（发布协议回归）
         if: steps.filter.outputs.release_ci == 'true'
@@ -949,6 +950,9 @@ jobs:
           build-args: |
             SOURCE_SHA=${{ github.sha }}
             IMAGE_TAG=${{ needs.prepare.outputs.image_tag }}
+            # GitHub 托管 Runner（海外）：镜像源脚本走官方源（deploy/docker/base/setup-mirror.sh），
+            # mirrors.aliyun.com 从海外访问高延迟且偶发限流，仅本地开发（国内网络）使用。
+            MIRROR_MODE=off
 
       # 扫描只提供安全信号，不得成为 GHCR 发布的单点故障；正式标签必须在
       # 构建成功后才能推送。扫描使用本地镜像，避免先发布后扫描的不可追溯窗口。
@@ -1000,7 +1004,7 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
   # hci-sim 暂未迁入 hci-platform-env，由本仓库 Argo Application 直接消费。
-  # 只有构建输入变化才允许生成新制品；晋级请求按 service+environment 唯一，
+  # dev/staging 各有独立 Argo Application，晋级请求按 service+environment 唯一，
   # 后续构建更新同一个 PR，禁止按 digest 堆积或允许旧候选乱序合并。
   #
   # 设计（第一性原理 + 对抗性审查）：
@@ -1022,7 +1026,7 @@ jobs:
       contains(needs.prepare.outputs.image_matrix, '"service":"hci-sim"') &&
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && (inputs.promote_target == 'dev' || inputs.promote_target == 'both'))
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && (inputs.promote_target == 'dev' || inputs.promote_target == 'staging' || inputs.promote_target == 'both'))
       )
     permissions:
       contents: write
@@ -1078,14 +1082,15 @@ jobs:
           echo "source_sha=${actual_source_sha}" >> "${GITHUB_OUTPUT}"
           echo "hci-sim image=${immutable_image} source_sha=${actual_source_sha}"
 
-      - name: 创建或更新唯一 dev promotion PR
+      - name: 创建或更新唯一 hci-sim 非生产 promotion PR
         id: promote
         env:
           HCI_SIM_DIGEST: ${{ steps.digest.outputs.digest }}
           HCI_SIM_REPOSITORY: ghcr.io/${{ github.repository }}/hci-sim
           HCI_SIM_SOURCE_SHA: ${{ steps.digest.outputs.source_sha }}
           IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
-          APP_FILE: deploy/gitops/argo-apps/local/hci-sim-dev.yaml
+          EVENT_NAME: ${{ github.event_name }}
+          PROMOTE_TARGET: ${{ inputs.promote_target }}
           # gh pr create/edit 必须使用与 checkout/push 相同的 owner PAT，
           # 否则 PR 作者仍会是 github-actions[bot]，继续触发审批门禁。
           GH_TOKEN: ${{ secrets.ENV_REPO_PAT }}
@@ -1101,48 +1106,93 @@ jobs:
           echo "promotion_recorded=false" >> "${GITHUB_OUTPUT}"
           echo "pr_url=" >> "${GITHUB_OUTPUT}"
 
-          # 仓库声明与不可变制品锚点校验
-          grep -Fq "repository: ${HCI_SIM_REPOSITORY}" "${APP_FILE}" || {
-            echo "::error::Argo Application repository 未固定为 ${HCI_SIM_REPOSITORY}"
-            exit 1
-          }
+          if [[ "${EVENT_NAME}" == "push" ]]; then
+            app_files=(
+              "deploy/gitops/argo-apps/local/hci-sim-dev.yaml"
+              "deploy/gitops/argo-apps/cloud/hci-sim-staging.yaml"
+            )
+            promotion_target="dev/staging"
+            promotion_labels=("env:dev:sf" "env:staging:aihci")
+          else
+            case "${PROMOTE_TARGET}" in
+              dev)
+                app_files=("deploy/gitops/argo-apps/local/hci-sim-dev.yaml")
+                promotion_target="dev"
+                promotion_labels=("env:dev:sf")
+                ;;
+              staging)
+                app_files=("deploy/gitops/argo-apps/cloud/hci-sim-staging.yaml")
+                promotion_target="staging"
+                promotion_labels=("env:staging:aihci")
+                ;;
+              both)
+                app_files=(
+                  "deploy/gitops/argo-apps/local/hci-sim-dev.yaml"
+                  "deploy/gitops/argo-apps/cloud/hci-sim-staging.yaml"
+                )
+                promotion_target="dev/staging"
+                promotion_labels=("env:dev:sf" "env:staging:aihci")
+                ;;
+              *)
+                echo "::error::无效的 hci-sim 晋级目标：${PROMOTE_TARGET}"
+                exit 1
+                ;;
+            esac
+          fi
 
-          # digest 与来源都一致才算无漂移，禁止只对随机 SHA 做无来源晋级。
-          if grep -Fq "digest: \"${HCI_SIM_DIGEST}\"" "${APP_FILE}" && \
-             grep -Fq "hci-platform.dev/image-source-revision: \"${HCI_SIM_SOURCE_SHA}\"" "${APP_FILE}"; then
-            echo "${APP_FILE} 已固定到 ${HCI_SIM_REPOSITORY}@${HCI_SIM_DIGEST} source=${HCI_SIM_SOURCE_SHA}"
+          label_args=(--label "agent:codebuddy")
+          for label in "${promotion_labels[@]}"; do
+            label_args+=(--label "${label}")
+          done
+
+          # 每个目标 Application 都必须固定同一不可变 digest/source revision。
+          all_pinned=1
+          for app_file in "${app_files[@]}"; do
+            grep -Fq "repository: ${HCI_SIM_REPOSITORY}" "${app_file}" || {
+              echo "::error::Argo Application repository 未固定为 ${HCI_SIM_REPOSITORY}：${app_file}"
+              exit 1
+            }
+            if ! grep -Fq "digest: \"${HCI_SIM_DIGEST}\"" "${app_file}" || \
+               ! grep -Fq "hci-platform.dev/image-source-revision: \"${HCI_SIM_SOURCE_SHA}\"" "${app_file}"; then
+              all_pinned=0
+            fi
+          done
+          if [[ "${all_pinned}" == "1" ]]; then
+            echo "hci-sim ${promotion_target} 已固定到 ${HCI_SIM_REPOSITORY}@${HCI_SIM_DIGEST} source=${HCI_SIM_SOURCE_SHA}"
             exit 0
           fi
 
-          branch="ci/promote-hci-sim-dev"
+          branch="ci/promote-hci-sim-non-prod"
           git fetch origin "refs/heads/${branch}:refs/remotes/origin/${branch}" || true
           git checkout -B "${branch}" "${GITHUB_SHA}"
-          python3 scripts/ci/update_hci_sim_promotion.py \
-            --file "${APP_FILE}" \
-            --digest "${HCI_SIM_DIGEST}" \
-            --source-sha "${HCI_SIM_SOURCE_SHA}"
+          for app_file in "${app_files[@]}"; do
+            python3 scripts/ci/update_hci_sim_promotion.py \
+              --file "${app_file}" \
+              --digest "${HCI_SIM_DIGEST}" \
+              --source-sha "${HCI_SIM_SOURCE_SHA}"
+          done
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${APP_FILE}"
-          git commit -m "ci(hci-sim): 晋级 dev 制品 ${HCI_SIM_DIGEST}
+          git add "${app_files[@]}"
+          git commit -m "ci(hci-sim): 晋级 ${promotion_target} 制品 ${HCI_SIM_DIGEST}
 
-          [env:dev:sf][agent:codebuddy]"
+          [env:staging:aihci][agent:codebuddy]"
           git push --force-with-lease origin "HEAD:refs/heads/${branch}"
 
           body="$(cat <<EOF
-          ## hci-sim dev 制品晋级
+          ## hci-sim ${promotion_target} 制品晋级
 
           本 PR 只记录已经构建完成的不可变制品，不代表 ArgoCD 已部署完成。
 
           - 源码提交：\`${HCI_SIM_SOURCE_SHA}\`
           - 镜像标签：\`${IMAGE_TAG}\`
           - 镜像：\`${HCI_SIM_REPOSITORY}@${HCI_SIM_DIGEST}\`
-          - GitOps 文件：\`${APP_FILE}\`
+          - GitOps 文件：\`${app_files[*]}\`
 
           后续构建会更新本 PR，旧候选不得乱序合并；合并后仍需验证 ArgoCD Desired/Live digest。
 
-          [env:dev:sf][agent:codebuddy]
+          [env:staging:aihci][agent:codebuddy]
           EOF
           )"
 
@@ -1151,7 +1201,7 @@ jobs:
               --jq '.[] | [.url, .author.login] | @tsv'
           )
           if (( ${#existing_prs[@]} > 1 )); then
-            echo "::error::发现多个 hci-sim dev promotion PR，拒绝选择不确定候选"
+            echo "::error::发现多个 hci-sim ${promotion_target} promotion PR，拒绝选择不确定候选"
             exit 1
           elif (( ${#existing_prs[@]} == 1 )); then
             IFS=$'\t' read -r pr_url pr_author <<< "${existing_prs[0]}"
@@ -1162,22 +1212,23 @@ jobs:
               pr_url="$(gh pr create \
                 --head "${branch}" \
                 --base main \
-                --title "ci(hci-sim): 晋级 dev 制品 ${HCI_SIM_DIGEST}" \
-                --label "env:dev:sf" --label "agent:codebuddy" \
+                --title "ci(hci-sim): 晋级 ${promotion_target} 制品 ${HCI_SIM_DIGEST}" \
+                "${label_args[@]}" \
                 --body "${body}")"
             else
               gh pr edit "${pr_url}" \
-                --title "ci(hci-sim): 晋级 dev 制品 ${HCI_SIM_DIGEST}" \
+                --title "ci(hci-sim): 晋级 ${promotion_target} 制品 ${HCI_SIM_DIGEST}" \
                 --body "${body}" \
-                --add-label "env:dev:sf" --add-label "agent:codebuddy"
+                --add-label "agent:codebuddy" \
+                $(printf -- '--add-label %q ' "${promotion_labels[@]}")
             fi
           else
             pr_url="$(gh pr create \
-              --head "${branch}" \
-              --base main \
-              --title "ci(hci-sim): 晋级 dev 制品 ${HCI_SIM_DIGEST}" \
-              --label "env:dev:sf" --label "agent:codebuddy" \
-              --body "${body}")"
+                --head "${branch}" \
+                --base main \
+                --title "ci(hci-sim): 晋级 ${promotion_target} 制品 ${HCI_SIM_DIGEST}" \
+                "${label_args[@]}" \
+                --body "${body}")"
           fi
 
           # 清理旧实现按 digest 生成的候选，防止人工误合并旧制品。
@@ -1190,24 +1241,27 @@ jobs:
             gh pr close "${legacy_pr}" --comment "已由唯一 promotion PR ${pr_url} 取代，关闭旧 digest 候选以防乱序合并。"
           done <<< "${legacy_prs}"
 
-          echo "已记录 hci-sim dev promotion：${pr_url}"
+          echo "已记录 hci-sim ${promotion_target} promotion：${pr_url}"
           echo "promotion_recorded=true" >> "${GITHUB_OUTPUT}"
           echo "pr_url=${pr_url}" >> "${GITHUB_OUTPUT}"
+          echo "promotion_target=${promotion_target}" >> "${GITHUB_OUTPUT}"
 
       - name: 汇总提示
         if: steps.promote.outputs.promotion_recorded == 'true'
         env:
           PR_URL: ${{ steps.promote.outputs.pr_url }}
+          PROMOTION_TARGET: ${{ steps.promote.outputs.promotion_target }}
           SOURCE_SHA: ${{ steps.digest.outputs.source_sha }}
           IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
         run: |
           set -euo pipefail
           {
-            echo "### hci-sim dev promotion 结果"
+            echo "### hci-sim 非生产 promotion 结果"
             echo "- 状态：晋级请求已持久化（不代表部署完成）"
             echo "- source SHA：${SOURCE_SHA}"
             echo "- image digest：${IMAGE_DIGEST}"
             echo "- PR：${PR_URL}"
+            echo "- 目标：${PROMOTION_TARGET}"
             echo "- 后续：合并后核验 ArgoCD Desired/Live digest 与 Pod revision。"
           } >> "${GITHUB_STEP_SUMMARY}"
 
@@ -1234,6 +1288,11 @@ jobs:
       built: ${{ needs.prepare.outputs.db_migrate }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      # 必须配置 buildx（docker-container 驱动）：默认 docker 驱动不支持
+      # type=gha 缓存导出，会报 Cache export is not supported for the docker driver。
+      - name: 配置 Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
 
       - name: 登录 GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9

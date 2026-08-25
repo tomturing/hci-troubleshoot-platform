@@ -395,26 +395,78 @@ async def _qfk_exec_impl(
                 resolution=resolution,
             )
 
-    # 3. 非零退出是执行失败，与是否请求完整输出无关。任何调用方即使漏传
-    # required_output_sources，也不能让 stderr/空 stdout 进入 Matcher 并冒充业务 False。
+    # 3. 非零退出处理：区分"系统执行故障"与"否定证据"两种完全不同的语义。
+    #
+    # 默认行为（nonzero_exit_as_negative=False）：
+    #   非零退出 = 系统执行故障（命令本身崩溃/权限不足/网络错误等），不能让
+    #   stderr/空 stdout 进入 Matcher 冒充业务 False（防假阴性安全门禁）。
+    #
+    # 只读探针容错模式（nonzero_exit_as_negative=True）：
+    #   POSIX 只读命令（cat/grep/pgrep/ls 等）在探测对象（文件/进程/服务）不存在时
+    #   天然返回 exit 1，这是"否定证据"而非系统故障。此时应允许流程继续，让
+    #   Matcher 以实际输出（通常为空或含错误提示的 stderr）做出 matched=False 判定，
+    #   而非直接标记 QFK_COMMAND_FAILED 触发门禁死锁。
+    #   二次安全门：仍检查终端故障哨兵，确保命令确实在 HCI 主机上执行过。
     failed = next((result for result in results if result.exit_code not in (0, None)), None)
     if failed is not None:
         combined = f"{failed.stdout or ''}\n{failed.stderr or ''}".strip()
-        return QFKResult(
-            matched=False,
-            namespace=signal.namespace,
-            commands=commands,
-            keywords=signal.keyword,
-            match_mode=signal.match_mode,
-            matched_keywords=[],
-            evidence=combined[:800],
-            error=f"QFK_COMMAND_FAILED: 命令退出码为 {failed.exit_code}，不执行判定或变量写入",
-            exec_ids=exec_ids,
-            artifact_ids=artifact_ids,
-            raw_output=combined,
-            output_mode=execution_mode,
-            resolution=resolution,
-        )
+        if signal.nonzero_exit_as_negative:
+            # 二次安全门：即便声明了容错模式，也不能让终端会话缺失/桥未运行的
+            # 错误输出穿透进入 Matcher（否则 match_mode="not" 信号会假阳性命中）。
+            is_real_terminal_failure = any(s in combined for s in terminal_failure_sentinels)
+            if not is_real_terminal_failure:
+                logger.info(
+                    event="qfk_nonzero_as_negative",
+                    message="只读探针非零退出被视为否定证据，继续进入 Matcher",
+                    namespace=signal.namespace,
+                    exit_code=failed.exit_code,
+                    stderr_bytes=len((failed.stderr or "").encode("utf-8", errors="replace")),
+                    instruction=signal.instruction or "",
+                    conversation_id=conversation_id,
+                )
+                # 将非零退出的结果以 exit_code=0 的语义送入后续 Matcher，
+                # 保留原始 stdout/stderr 供关键词判定使用。
+                # 直接继续循环后的 Matcher 流程，results 列表已包含此结果。
+            else:
+                # 哨兵命中：命令根本没落到主机，不能被容错模式放行
+                logger.warning(
+                    event="qfk_nonzero_as_negative_sentinel_blocked",
+                    message="nonzero_exit_as_negative 检测到终端故障哨兵，拒绝放行",
+                    namespace=signal.namespace,
+                    exit_code=failed.exit_code,
+                    conversation_id=conversation_id,
+                )
+                return QFKResult(
+                    matched=False,
+                    namespace=signal.namespace,
+                    commands=commands,
+                    keywords=signal.keyword,
+                    match_mode=signal.match_mode,
+                    matched_keywords=[],
+                    evidence=combined[:800],
+                    error=f"QFK_COMMAND_FAILED: 命令退出码为 {failed.exit_code}，不执行判定或变量写入",
+                    exec_ids=exec_ids,
+                    artifact_ids=artifact_ids,
+                    raw_output=combined,
+                    output_mode=execution_mode,
+                    resolution=resolution,
+                )
+        else:
+            return QFKResult(
+                matched=False,
+                namespace=signal.namespace,
+                commands=commands,
+                keywords=signal.keyword,
+                match_mode=signal.match_mode,
+                matched_keywords=[],
+                evidence=combined[:800],
+                error=f"QFK_COMMAND_FAILED: 命令退出码为 {failed.exit_code}，不执行判定或变量写入",
+                exec_ids=exec_ids,
+                artifact_ids=artifact_ids,
+                raw_output=combined,
+                output_mode=execution_mode,
+                resolution=resolution,
+            )
 
     # 4. 产出变量必须使用完整物理流。展示摘要仍可截断；缓存缺失/超限时 Fail Closed。
     complete_outputs: dict[str, str] = {}
@@ -575,25 +627,31 @@ async def _qfk_exec_impl(
             precomputed_detail=precomputed_detail,
         )
         if matcher_result.matched is None:
-            return QFKResult(
-                matched=False,
-                namespace=signal.namespace,
-                commands=commands,
-                keywords=signal.keyword,
-                match_mode=signal.match_mode,
-                matched_keywords=[],
-                evidence=matcher_result.evidence,
-                error="QFK_MATCHER_INCONCLUSIVE: 现场输出不足以完成确定性判定",
-                exec_ids=exec_ids,
-                artifact_ids=artifact_ids,
-                raw_output=combined_output,
-                complete_outputs=complete_outputs,
-                output_mode=execution_mode,
-                resolution=resolution,
-            )
-        final_matched = bool(matcher_result.matched)
-        matched_kws = list(matcher_result.detail.get("matched_keywords") or [])
-        evidence = matcher_result.evidence
+            if signal.nonzero_exit_as_negative and "QFK_OUTPUT_EMPTY" in (matcher_result.evidence or ""):
+                final_matched = False
+                matched_kws = []
+                evidence = f"只读探针容错模式：现场输出为空，未检测到目标项（判定为未命中）: {matcher_result.evidence}"
+            else:
+                return QFKResult(
+                    matched=False,
+                    namespace=signal.namespace,
+                    commands=commands,
+                    keywords=signal.keyword,
+                    match_mode=signal.match_mode,
+                    matched_keywords=[],
+                    evidence=matcher_result.evidence,
+                    error="QFK_MATCHER_INCONCLUSIVE: 现场输出不足以完成确定性判定",
+                    exec_ids=exec_ids,
+                    artifact_ids=artifact_ids,
+                    raw_output=combined_output,
+                    complete_outputs=complete_outputs,
+                    output_mode=execution_mode,
+                    resolution=resolution,
+                )
+        else:
+            final_matched = bool(matcher_result.matched)
+            matched_kws = list(matcher_result.detail.get("matched_keywords") or [])
+            evidence = matcher_result.evidence
         ai_value: Any | None = precomputed_detail.get("extract", {}).get("ai_value") if precomputed_detail else None
         # AI 只在确定性 Matcher 已真实命中时处理同一份完整候选日志。expected=False
         # 或 NOT 的“符合预期”不是正向日志命中，不允许借此凭空提取一个值。

@@ -83,6 +83,7 @@ export interface TerminalWsMessage {
   | 'exec_stdout'  // 双通道：隔离通道 stdout
   | 'exec_stderr'  // 双通道：隔离通道 stderr
   | 'bridge_log'   // terminal_bridge 结构化回采日志（OBS-TERMINAL-BRIDGE-001）
+  | 'vm_console_result'  // qkv_vm_console 固定操作元数据结果（不含图片字节）
   case_id?: string
   output?: string
   message?: string
@@ -357,6 +358,50 @@ export function buildAgentExecProcessMessage(
     tool_call_id: toolCallId || undefined,
     timeout: timeout || undefined,
     output_filters: outputFilters?.length ? outputFilters : undefined,
+  })
+}
+
+/**
+ * 构造虚拟机控制台固定操作的 WebSocket 消息（vm_console_op 类型）。
+ *
+ * 与 ssh_exec_process 的根本差异：不携带自由文本命令——operation 仅允许
+ * capture_baseline / wake_down_key，vtpsh 等价操作由 Bridge 内部固定常量构造。
+ * 二进制 PPM 由 Bridge 直传平台制品端点，WS 只回传元数据（vm_console_result）。
+ */
+export function buildVmConsoleOpMessage(
+  caseId: string,
+  captureId: string,
+  execId: string,
+  operation: 'capture_baseline' | 'wake_down_key',
+  hostNodeId: string,
+  vmId: string,
+  options?: {
+    nodeIp?: string | null
+    timeoutSeconds?: number | null
+    role?: 'baseline' | 'recapture' | 'wake' | null
+    artifactPolicy?: string | null
+    catalogRevision?: string | null
+    traceId?: string | null
+    traceparent?: string | null
+    conversationId?: string | null
+  },
+): string {
+  return JSON.stringify({
+    type: 'vm_console_op',
+    case_id: caseId,
+    capture_id: captureId,
+    exec_id: execId,
+    operation,
+    host_node_id: hostNodeId,
+    vm_id: vmId,
+    node_ip: options?.nodeIp || undefined,
+    timeout_seconds: options?.timeoutSeconds || undefined,
+    role: options?.role || undefined,
+    artifact_policy: options?.artifactPolicy || undefined,
+    catalog_revision: options?.catalogRevision || undefined,
+    trace_id: options?.traceId || undefined,
+    traceparent: options?.traceparent || undefined,
+    conversation_id: options?.conversationId || undefined,
   })
 }
 

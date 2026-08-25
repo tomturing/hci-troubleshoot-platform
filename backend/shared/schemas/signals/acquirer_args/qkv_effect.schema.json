@@ -1,0 +1,199 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "timeout": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 60,
+      "default": 60,
+      "description": "单次观测超时（秒，1-60）；有意偏离公共 timeout（1-300）。整体复核预算由期望窗口参数约束"
+    },
+    "usage": {
+      "type": "string",
+      "enum": [
+        "remediation_verify",
+        "symptom_confirm"
+      ],
+      "default": "remediation_verify",
+      "description": "修复后复核（默认）/ S1 症状确认"
+    },
+    "expectation": {
+      "type": "object",
+      "description": "结构化期望锚点：观测通道 + 封闭判定规则 + 时序窗口",
+      "additionalProperties": false,
+      "required": [
+        "observation",
+        "matcher"
+      ],
+      "properties": {
+        "observation": {
+          "type": "object",
+          "description": "观测原语引用；args 原样通过对应原语的 acquirer_args 校验",
+          "additionalProperties": false,
+          "required": [
+            "tool"
+          ],
+          "properties": {
+            "tool": {
+              "type": "string",
+              "enum": [
+                "qkv_alert",
+                "qkv_dialog",
+                "qkv_task",
+                "qkv_vm_console"
+              ],
+              "description": "封闭观测通道集合；metric_query 等待平台确认项闭环后按提案加入"
+            },
+            "args": {
+              "type": "object"
+            }
+          }
+        },
+        "matcher": {
+          "type": "object",
+          "description": "封闭 matcher 判定规则（与信号 match 段同构）；必须配置新版 extract",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "expected",
+            "extract"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "keyword",
+                "regex",
+                "state",
+                "threshold",
+                "delta",
+                "trend",
+                "exists"
+              ]
+            },
+            "pattern": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 1
+                }
+              ]
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "or",
+                "and",
+                "not"
+              ]
+            },
+            "expected": {
+              "type": "boolean"
+            },
+            "value": {
+              "anyOf": [
+                {
+                  "type": [
+                    "number",
+                    "integer"
+                  ]
+                },
+                {
+                  "type": "string",
+                  "pattern": "^\\{\\{[A-Z][A-Z0-9_]*(?:\\.[A-Z0-9_]+)*\\}\\}$"
+                }
+              ]
+            },
+            "operator": {
+              "type": "string",
+              "enum": [
+                ">",
+                ">=",
+                "<",
+                "<=",
+                "==",
+                "=",
+                "!="
+              ]
+            },
+            "aggregation": {
+              "type": "string",
+              "enum": [
+                "first_number",
+                "last_number",
+                "line_count",
+                "duration_seconds",
+                "max",
+                "min",
+                "sum"
+              ],
+              "default": "first_number"
+            },
+            "metric": {
+              "type": "string"
+            },
+            "minimum_samples": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 10000
+            },
+            "direction": {
+              "type": "string",
+              "enum": [
+                "increasing",
+                "decreasing",
+                "stable"
+              ]
+            },
+            "extract": {
+              "type": "object"
+            }
+          }
+        },
+        "settle_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3600,
+          "default": 120,
+          "description": "动作完成后、首次判定前的稳定窗口（秒）"
+        },
+        "window_seconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 86400,
+          "default": 900,
+          "description": "复核窗口总预算（秒）"
+        },
+        "max_recheck": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5,
+          "default": 2,
+          "description": "窗口内最大复核次数；配额耗尽即 inconclusive"
+        }
+      }
+    },
+    "host": {
+      "type": "string",
+      "description": "目标绑定（可选）：仅允许 {{HOST}} 或规范化节点变量；执行时 Inventory 校验"
+    },
+    "instruction": {
+      "type": "string",
+      "description": "信号语义说明（acli 调用的人类可读解释）"
+    }
+  },
+  "required": [
+    "expectation"
+  ],
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://hci-troubleshoot/schemas/signals/acquirer_args/qkv_effect.schema.json",
+  "title": "acquire.args for qkv_effect"
+}

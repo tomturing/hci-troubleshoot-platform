@@ -339,25 +339,25 @@ SOP 全文注入 System Prompt
 
 ---
 
-#### ✅ 匹配到 KBD（第2轨，无 SOP）
+#### ✅ KBD 证据诊断（CDD；无 SOP）
 
 ```
-route_by_category() → track="kbd"
+kb-service GET /categories/{category_id}/playbooks
          │
-         ▼ KBDDiagnostic.diagnose()（贪心消除算法）
-         
-1. 检索 top-15 候选 KBD（kb_client.search_cases_with_steps）
-2. 贪心循环（候选数 > early_stop_threshold=2 时）：
-   - 统计各步骤工具在候选 KBD 中的覆盖频率
-   - 选覆盖频率最高的工具（最具区分度）
-   - 执行工具命令 → 获取实际输出
-   - 判断各 KBD 的期望模式是否匹配（regex/contains/LLM 批判）
-   - 过滤掉不匹配的 KBD
-3. 剩余 ≤ 2 个候选时停止，生成诊断报告
+         ▼ 分类快照内全部 published KBD（executable=true）
+SignalPlanCompiler → ActiveDiagnosticScheduler → 确定性 Matcher
+         │                         │
+         │                         └─ 仅改变 acquisition 执行顺序，不改变候选成员
+         ▼
+CandidateReducer → ConclusionGate
 ```
 
-- 期望模式判断优先级：__REGEX__: 正则匹配 > __CONTAINS__: 包含文本 > 自然语言（LLM 批量判断）
-- 工具连续失败保护：超过 3 次连续失败时中止循环
+- acquisition 按 `tool + args（排除 instruction）+ policy_version` 去重；`qfk_log` 的 Matcher
+  参与身份，普通 `qfk_system` 的不同 Matcher 可共享一次采集、分别评价
+- 调度评分为 `4*discrimination + 2*required_coverage + 3*unlock + reuse -
+  0.25*cost - 0.15*latency - risk`，同分按 risk/cost/latency/template_key 升序
+- 不存在“向量 top_k 截断”“早停到 2 篇”或“按最高频采集器选择”规则；调度器会持续执行
+  仍可能改变结论的 acquisition，直到候选状态闭合或剩余项不可执行
 - 事件流：kbd_diag_start → kbd_diag_step（每步）→ kbd_diag_running → kbd_diag_complete → AgentTextChunk(诊断报告) → AgentStageUpdate(stage="S4")
 
 ---
@@ -383,11 +383,11 @@ System Prompt 注入「机制推理模式」规则：
 
 | 维度       | SOP 命中       | KBD 命中              | 均未命中       |
 | -------- | ------------ | ------------------- | ---------- |
-| **推理方式** | LLM 按权威步骤推理  | CDD 贪心消除算法 + LLM 报告 | LLM 机制推理   |
+| **推理方式** | LLM 按权威步骤推理  | CDD 主动采集 + 确定性证据归并 + LLM 报告 | LLM 机制推理   |
 | **确定性**  | 高（有操作手册）     | 中（相似案例收敛）           | 低（纯模型知识）   |
 | **工具调用** | 被动（LLM 提出）   | 主动（CDD 引擎驱动）        | 被动（LLM 提出） |
 | **标注要求** | 无            | 无                   | 必须标注【机制推理】 |
-| **引导策略** | 按 SOP 节点收集证据 | 逐步消除候选到 ≤2 个        | 主动引导补充信息   |
+| **引导策略** | 按 SOP 节点收集证据 | 执行所有仍可能改变结论的 acquisition | 主动引导补充信息   |
 
 ---
 
@@ -1442,6 +1442,7 @@ Executor：只执行 verified 的 ResolvedAcquisition
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
 | 2026-08-07 | v6.5 | 实施 Shared Resolution Runtime 第一阶段并完成 aCLI 在线 Catalog 与真实 HCI 代表性测评；明确 production path probe、tar.gz 和持久化 resolution audit 仍为后续门禁 | [Runtime 代码与真实 HCI 能力测评](../../../verify/events/2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md) |
+| 2026-08-20 | v6.6 | 按当前 CDD 校正 KBD 候选与调度说明；明确真实与仿真都以 S0 分类完整候选为诊断边界，`sim-ssh` 只替换现场数据采集提供方 | [仿真诊断等价性与 CDD 全候选修正方案](../events/2026-08-20-仿真诊断等价性与CDD全候选修正方案.md) |
 | 2026-08-07 | v6.4 | 收敛六个领域 Resolver 的正式名称与稳定 `resolver_id`：`LogResolver`/`SystemResolver`/`DomainResolver`/`ServiceResolver`/`QkvResolver`/`VariableResolver`，保持统一 Runtime 生命周期不变 | [统一解析运行时与 Resolver 分层方案](../events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
 | 2026-08-07 | v6.3 | 确定 Shared Resolution Runtime 与领域 Resolver 分层：`qfk_system` 独立，aCLI 领域 QFK 归入独立领域 Resolver；生产门禁与消费前校验复用同一编译/解析平台，Catalog Git 化、运行快照不可变 | [统一解析运行时与 Resolver 分层方案](../events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
 | 2026-08-04 | v6.2 | KBD 运行时复用共享只读边界，历史 solution/明确写动作 Signal 在调度前 fail closed；SOP 处置节点授权语义保持不变 | [KBD 关键信号只读边界方案](../../knowledge-base/events/2026-08-04-KBD关键信号只读边界方案.md) |

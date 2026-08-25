@@ -9,6 +9,7 @@ from typing import Any
 
 from shared.cdd.kbd_model import KBD, _acquire_tool
 from shared.schemas.acquirer_args import SUPPORTED_TOOLS, validate_acquire_args
+from shared.schemas.signal_output import derive_signal_requires
 
 from .models import Acquisition, CaseVerificationPolicy, EvidenceRole, SignalPlan, SignalRef
 
@@ -216,8 +217,21 @@ def compile_signal_plan(
             required = evidence_role is EvidenceRole.MUST
             failure_effect = str(signal.get("failure_effect") or ("reject" if required else "no_support"))
             orchestrate = signal.get("orchestrate") or {}
-            requires = _names(orchestrate.get("requires") or signal.get("requires"))
-            produces = _names(orchestrate.get("produces") or signal.get("produces"))
+            requires = set(_names(orchestrate.get("requires") or signal.get("requires")))
+            # 与发布门禁共用占位符扫描：QKV output_processing 的内部输入会被
+            # 排除，真正外部/上游变量必须进入 CDD 图，前端漏同步 requires 也不能漏边。
+            requires.update(_names(derive_signal_requires(signal)))
+            produces = set(_names(orchestrate.get("produces") or signal.get("produces")))
+            if tool.startswith("qkv_"):
+                produces.update(
+                    _names(
+                        [
+                            item.get("target_variable")
+                            for item in orchestrate.get("output_processing") or []
+                            if isinstance(item, dict) and item.get("mode") == "derive"
+                        ]
+                    )
+                )
             ref_id = f"{kbd.id}/{revision}/{signal_id}"
             ref = SignalRef(
                 ref_id=ref_id,
@@ -229,8 +243,8 @@ def compile_signal_plan(
                 required_for_support=required,
                 evidence_role=evidence_role,
                 failure_effect=failure_effect,
-                requires=requires,
-                produces=produces,
+                requires=tuple(sorted(requires)),
+                produces=tuple(sorted(produces)),
                 phase=phase,
                 matcher_fingerprint=_fingerprint(signal.get("match")),
             )
@@ -250,8 +264,6 @@ def compile_signal_plan(
             # 日志采集之前，Matcher 的变化会改变采集本身。
             if tool == "qfk_log":
                 template_material["execution_matcher"] = signal.get("match")
-            if tool.startswith("qkv_"):
-                template_material["producer_contract"] = orchestrate.get("produces") or signal.get("produces")
             template_key = _fingerprint(template_material)
             acquisition = acquisitions.setdefault(
                 template_key,

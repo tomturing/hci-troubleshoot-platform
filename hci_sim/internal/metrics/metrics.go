@@ -9,13 +9,16 @@ import (
 )
 
 type Metrics struct {
-	ActiveSSHConnections          atomic.Int64
-	SSHConnectionsTotal           atomic.Uint64
-	LeaseRejectTotal              atomic.Uint64
-	CommandsTotal                 atomic.Uint64
-	CommandErrorsTotal            atomic.Uint64
-	FixtureHitsTotal              atomic.Uint64
-	FixtureMissesTotal            atomic.Uint64
+	ActiveSSHConnections atomic.Int64
+	SSHConnectionsTotal  atomic.Uint64
+	LeaseRejectTotal     atomic.Uint64
+	CommandsTotal        atomic.Uint64
+	CommandErrorsTotal   atomic.Uint64
+	FixtureHitsTotal     atomic.Uint64
+	FixtureMissesTotal   atomic.Uint64
+	// VMConsoleSimsTotal 统计虚拟机控制台固定操作的确定性仿真次数（动态 capture
+	// 路径无法发布为静态 Fixture，单独计数避免污染 fixture 命中指标）。
+	VMConsoleSimsTotal            atomic.Uint64
 	OverloadRejectsTotal          atomic.Uint64
 	InflightCommands              atomic.Int64
 	QueueDepth                    atomic.Int64
@@ -38,6 +41,7 @@ func (m *Metrics) Handler() http.Handler {
 		counter(&b, "hci_sim_command_errors_total", m.CommandErrorsTotal.Load())
 		counter(&b, "hci_sim_fixture_hits_total", m.FixtureHitsTotal.Load())
 		counter(&b, "hci_sim_fixture_misses_total", m.FixtureMissesTotal.Load())
+		counter(&b, "hci_sim_vm_console_sims_total", m.VMConsoleSimsTotal.Load())
 		counter(&b, "hci_sim_overload_reject_total", m.OverloadRejectsTotal.Load())
 		gauge(&b, "hci_sim_commands_inflight", m.InflightCommands.Load())
 		gauge(&b, "hci_sim_queue_depth", m.QueueDepth.Load())

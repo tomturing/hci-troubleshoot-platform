@@ -81,6 +81,13 @@ spec:
               value: {{ add .Values.terminalBridge.execTimeoutSeconds 60 | quote }}
             - name: BRIDGE_ARTIFACT_RETENTION_DAYS
               value: {{ .Values.terminalBridge.artifactRetentionDays | quote }}
+            # qkv_vm_console：控制台截图制品存储目录与保留天数（原图静态落盘，
+            # 访问走内部鉴权端点并记审计；Pod 重建会清空 emptyDir，长期保全依赖
+            # 法务策略时请改挂 PVC）。
+            - name: VM_CONSOLE_ARTIFACT_DIR
+              value: "/data/vm-console-artifacts"
+            - name: VM_CONSOLE_ARTIFACT_RETENTION_DAYS
+              value: {{ .Values.terminalBridge.artifactRetentionDays | quote }}
             {{- if .Values.apiGateway.hciSim.enabled }}
             # sim-ssh Agent requests read their authoritative TestRun context
             # directly from hci-sim and never fall back to customer environments.
@@ -120,3 +127,11 @@ spec:
             failureThreshold: 30
           resources:
             {{- toYaml .Values.conversationService.resources | nindent 12 }}
+          # qkv_vm_console 截图制品卷（emptyDir；法务保全场景改挂 PVC）
+          volumeMounts:
+            - name: vm-console-artifacts
+              mountPath: /data/vm-console-artifacts
+      volumes:
+        - name: vm-console-artifacts
+          emptyDir:
+            sizeLimit: 1Gi

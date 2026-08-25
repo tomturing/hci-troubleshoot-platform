@@ -64,8 +64,12 @@ def build_common_args(mod: object) -> dict:
 
 def build_tool_schema(mod: object, tool: str, schema: dict) -> dict:
     s = deepcopy(schema)
-    # timeout 改为引用 common_args，消除重复定义（§6.1）
-    if "timeout" in s.get("properties", {}):
+    # timeout 改为引用 common_args，消除重复定义（§6.1）。
+    # 仅当与 COMMON_ARGS.timeout 完全一致时才替换为 $ref：个别工具（如
+    # qkv_vm_console，1-60 秒快速失败型采集）可有意偏离公共定义并保持内联，
+    # 此时语义差异必须在 per-tool schema 中可见，不能被 common_args 掩盖。
+    timeout = s.get("properties", {}).get("timeout")
+    if timeout is not None and timeout == mod.COMMON_ARGS["timeout"]:  # type: ignore[attr-defined]
         s["properties"]["timeout"] = {
             "$ref": f"{BASE}/acquirer_args/common_args.schema.json#/properties/timeout"
         }
@@ -230,6 +234,11 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                             "required": ["name"],
                             "properties": {
                                 "name": {"type": "string"},
+                                "alias": {
+                                    "type": "string",
+                                    "pattern": "^[A-Z][A-Z0-9_]*$",
+                                    "description": "KBD 级局部变量名别名，可选；留空时运行时沿用 name",
+                                },
                                 "type": {
                                     "type": "string",
                                     "enum": [
@@ -244,7 +253,74 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                         },
                     },
                     "requires": {"type": "array", "items": {"type": "string"}},
+                    "output_processing": {
+                        "type": "array",
+                        "description": "QKV produces 完成后的可选确定性后处理，不创建新的采集信号",
+                        "items": {"$ref": "#/definitions/outputProcessing"},
+                    },
                 },
+            },
+            "outputProcessing": {
+                "type": "object",
+                "description": "QKV 投影变量的受控后处理；禁止脚本和动态变量名",
+                "additionalProperties": False,
+                "required": ["id", "mode", "input", "operation"],
+                "properties": {
+                    "id": {"type": "string", "minLength": 1},
+                    "mode": {"type": "string", "enum": ["derive", "assert"]},
+                    "input": {"type": "string", "minLength": 1},
+                    "operation": {
+                        "type": "string",
+                        "enum": [
+                            "json_path", "trim", "lower", "upper", "split",
+                            "compare", "feature_extract",
+                        ],
+                    },
+                    "target_variable": {
+                        "type": "string",
+                        "pattern": "^[A-Z][A-Z0-9_]*$",
+                    },
+                    "value_type": {
+                        "type": "string",
+                        "enum": ["string", "integer", "number", "percentage"],
+                    },
+                    "cardinality": {
+                        "type": "string",
+                        "enum": ["exactly_one", "zero_or_more", "all"],
+                        "default": "exactly_one",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["per_record", "single"],
+                        "default": "per_record",
+                    },
+                    "feature": {"type": "string"},
+                    "path": {"type": "string", "minLength": 1},
+                    "separator": {"type": "string", "minLength": 1},
+                    "operator": {
+                        "type": "string",
+                        "enum": [">", ">=", "<", "<=", "==", "=", "!="],
+                    },
+                    "right": {},
+                    "fallback": {"type": "string", "enum": ["none", "ai_extract"]},
+                },
+                "allOf": [
+                    {
+                        "if": {"properties": {"mode": {"const": "derive"}}, "required": ["mode"]},
+                        "then": {"required": ["target_variable"]},
+                    },
+                    {
+                        "if": {"properties": {"mode": {"const": "assert"}}, "required": ["mode"]},
+                        "then": {"not": {"required": ["target_variable"]}},
+                    },
+                    {
+                        "if": {"properties": {"operation": {"const": "compare"}}, "required": ["operation"]},
+                        "then": {
+                            "properties": {"mode": {"const": "assert"}},
+                            "required": ["mode"],
+                        },
+                    },
+                ],
             },
             "rowRange": {
                 "type": "object",

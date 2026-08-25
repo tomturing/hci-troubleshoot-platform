@@ -2421,6 +2421,7 @@ class ConversationService:
             ValueError: pending_confirm 非 NULL（约束 3 violation）
         """
         from shared.models.conversation import Conversation as ConversationModel
+        from sqlalchemy import select as sa_select
         from sqlalchemy import update as sa_update
 
         conv = await self.repository.get_conversation(conversation_id)
@@ -2434,7 +2435,47 @@ class ConversationService:
                 "不能设置 pending_resolution，两种等待状态互斥"
             )
 
-        pending = self._conversation_manager.build_pending_resolution()
+        # S6 证据化：收集本会话的效果验证判定条目（diagnostic_item
+        # type=effect_verification，未归档），作为三选项的展示证据。
+        effect_evidence: list[dict] = []
+        if self.session_factory:
+            try:
+                from app.models.diagnostic_item import DiagnosticItem
+
+                async with self.session_factory() as session:
+                    rows = (
+                        await session.execute(
+                            sa_select(DiagnosticItem)
+                            .where(
+                                DiagnosticItem.conversation_id == conversation_id,
+                                DiagnosticItem.type == "effect_verification",
+                                DiagnosticItem.status != "archived",
+                            )
+                            .order_by(DiagnosticItem.seq)
+                        )
+                    ).scalars().all()
+                    for item in rows:
+                        content = item.content if isinstance(item.content, dict) else {}
+                        effect_evidence.append(
+                            {
+                                "signal_id": str(content.get("signal_id") or ""),
+                                "verification_id": str(content.get("verification_id") or ""),
+                                "usage": str(content.get("usage") or "remediation_verify"),
+                                "verdict": str(content.get("verdict") or "inconclusive"),
+                                "check_count": content.get("check_count"),
+                                "error_code": content.get("error_code"),
+                                "status": str(item.status or "pending"),
+                            }
+                        )
+            except Exception as exc:
+                # 证据收集失败不阻断 S6 三选项：降级为无证据人工裁决。
+                logger.warning(
+                    event="s6_effect_evidence_collect_failed",
+                    conversation_id=str(conversation_id),
+                    error=str(exc),
+                )
+
+        pending = self._conversation_manager.build_pending_resolution(effect_evidence or None)
 
         if self.session_factory:
             async with self.session_factory() as session:
@@ -2461,6 +2502,7 @@ class ConversationService:
                 "message": "问题是否已解决？请选择：\nA. 是，问题已解决\nB. 否，还有新报错\nC. 需要人工支持",
                 "options": pending["options"],
                 "sent_at": pending["sent_at"],
+                "effect_evidence": effect_evidence,
             },
         }
 
@@ -2560,6 +2602,96 @@ class ConversationService:
 
         return results
 
+    async def _submit_vm_console_wake_decision(
+        self,
+        conversation_id: uuid.UUID,
+        outcome: dict,
+        metadata: dict | None,
+    ) -> bool:
+        """处理虚拟机控制台近黑唤醒确认卡的用户决定。
+
+        - 确认：先原子消费一次性令牌（wake_state=confirmation_pending 且
+          wake_token_hash 匹配才置 confirmed），防重放/重复确认；
+        - 拒绝或令牌失效：按拒绝处理；
+        - 决定经 Redis ``vm_console_wake_decision:{capture_id}`` 回传 agent-service
+          适配器（BLPOP 等待），适配器再按固定 operation 调度唤醒与重截。
+        """
+        import hashlib
+        import json as _json
+
+        from shared.database.redis import get_shared_redis
+        from sqlalchemy import text
+
+        metadata = metadata or {}
+        capture_id = str(metadata.get("capture_id") or "")
+        wake_token = str(metadata.get("wake_token") or "")
+        if not capture_id:
+            logger.warning(
+                event="vm_console_wake_missing_capture_id",
+                conversation_id=str(conversation_id),
+            )
+            return False
+
+        confirmed = bool(outcome.get("confirmed")) or outcome.get("optionId") == "confirm"
+        if confirmed and wake_token and self.session_factory is not None:
+            wake_token_hash = hashlib.sha256(wake_token.encode()).hexdigest()
+            try:
+                async with self.session_factory() as session:
+                    result = await session.execute(
+                        text(
+                            """
+                            UPDATE vm_console_capture
+                            SET wake_state = 'confirmed',
+                                wake_token_hash = NULL,
+                                wake_confirmed_by = 'interactive_user',
+                                wake_confirmed_at = now(),
+                                updated_at = now()
+                            WHERE capture_id = CAST(:capture_id AS uuid)
+                              AND wake_state = 'confirmation_pending'
+                              AND wake_token_hash = :wake_token_hash
+                            """
+                        ),
+                        {"capture_id": capture_id, "wake_token_hash": wake_token_hash},
+                    )
+                    await session.commit()
+                    if (result.rowcount or 0) != 1:
+                        # 令牌重放/重复/超时：一律按拒绝处理。
+                        logger.warning(
+                            event="vm_console_wake_token_rejected",
+                            conversation_id=str(conversation_id),
+                            capture_id=capture_id,
+                        )
+                        confirmed = False
+            except Exception as exc:
+                logger.error(
+                    event="vm_console_wake_token_consume_error",
+                    conversation_id=str(conversation_id),
+                    capture_id=capture_id,
+                    error=str(exc),
+                )
+                confirmed = False
+
+        redis_manager = get_shared_redis()
+        if redis_manager is None or redis_manager.client is None:
+            logger.error(
+                event="vm_console_wake_redis_unavailable",
+                conversation_id=str(conversation_id),
+                capture_id=capture_id,
+            )
+            return False
+        await redis_manager.client.lpush(
+            f"vm_console_wake_decision:{capture_id}",
+            _json.dumps({"confirmed": confirmed, "capture_id": capture_id}, ensure_ascii=False),
+        )
+        await redis_manager.client.expire(f"vm_console_wake_decision:{capture_id}", 600)
+        logger.info(
+            event="vm_console_wake_decision_submitted",
+            conversation_id=str(conversation_id),
+            capture_id=capture_id,
+            confirmed=confirmed,
+        )
+        return True
+
     async def submit_interactive_response(
         self,
         conversation_id: uuid.UUID,
@@ -2611,6 +2743,14 @@ class ConversationService:
                 message="用户已确认人工升级提示；不转发 ops-agent",
                 conversation_id=str(conversation_id),
                 request_id=request_id,
+            )
+        elif kind == "vm_console_wake_confirm":
+            # ── 虚拟机控制台近黑唤醒确认（qkv_vm_console）──
+            # sendkey down 是受控 Guest 交互：必须用户明确确认；拒绝/超时按拒绝处理
+            # 并继续基线识图。决定经 Redis 回传 agent-service 适配器，令牌原子消费
+            # 防重放（见 vm_console 路由 wake-and-recapture 端点）。
+            success = await self._submit_vm_console_wake_decision(
+                conversation_id, outcome, metadata
             )
         elif self._agent_client is None:
             logger.warning(

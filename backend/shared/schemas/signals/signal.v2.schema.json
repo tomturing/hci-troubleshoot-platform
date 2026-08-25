@@ -108,6 +108,8 @@
             "qkv_alert",
             "qkv_task",
             "qkv_dialog",
+            "qkv_vm_console",
+            "qkv_effect",
             "qfk_log",
             "qfk_service",
             "qfk_system",
@@ -176,6 +178,44 @@
             "properties": {
               "args": {
                 "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qkv_dialog.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "qkv_vm_console"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qkv_vm_console.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "qkv_effect"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qkv_effect.schema.json"
               }
             }
           }
@@ -544,6 +584,11 @@
               "name": {
                 "type": "string"
               },
+              "alias": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]*$",
+                "description": "KBD 级局部变量名别名，可选；留空时运行时沿用 name"
+              },
               "type": {
                 "type": "string",
                 "enum": [
@@ -576,8 +621,176 @@
           "items": {
             "type": "string"
           }
+        },
+        "output_processing": {
+          "type": "array",
+          "description": "QKV produces 完成后的可选确定性后处理，不创建新的采集信号",
+          "items": {
+            "$ref": "#/definitions/outputProcessing"
+          }
         }
       }
+    },
+    "outputProcessing": {
+      "type": "object",
+      "description": "QKV 投影变量的受控后处理；禁止脚本和动态变量名",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "mode",
+        "input",
+        "operation"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "derive",
+            "assert"
+          ]
+        },
+        "input": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "json_path",
+            "trim",
+            "lower",
+            "upper",
+            "split",
+            "compare",
+            "feature_extract"
+          ]
+        },
+        "target_variable": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
+        "value_type": {
+          "type": "string",
+          "enum": [
+            "string",
+            "integer",
+            "number",
+            "percentage"
+          ]
+        },
+        "cardinality": {
+          "type": "string",
+          "enum": [
+            "exactly_one",
+            "zero_or_more",
+            "all"
+          ],
+          "default": "exactly_one"
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "per_record",
+            "single"
+          ],
+          "default": "per_record"
+        },
+        "feature": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "separator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operator": {
+          "type": "string",
+          "enum": [
+            ">",
+            ">=",
+            "<",
+            "<=",
+            "==",
+            "=",
+            "!="
+          ]
+        },
+        "right": {},
+        "fallback": {
+          "type": "string",
+          "enum": [
+            "none",
+            "ai_extract"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "derive"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "required": [
+              "target_variable"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "assert"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "not": {
+              "required": [
+                "target_variable"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "compare"
+              }
+            },
+            "required": [
+              "operation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "mode": {
+                "const": "assert"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          }
+        }
+      ]
     },
     "rowRange": {
       "type": "object",

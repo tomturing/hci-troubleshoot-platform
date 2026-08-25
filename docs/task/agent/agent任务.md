@@ -16,6 +16,7 @@ update_trigger: Agent 层功能新增/重构/问题修复任务
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
 | 2026-08-07 | v2.12 | 实施 Shared Resolution Runtime 首个纵向切片：六领域 Resolver、声明式 Runtime Catalog、QFK/QKV preflight、argv/未知命令/只读门禁、Schema 与真实 HCI/aCLI 测评；生产 path-probe 硬门禁、tar.gz Handler 和不可变审计快照仍进行中。 | [关键信号统一解析运行时与 Resolver 分层任务](events/2026-08-07-关键信号统一解析运行时与Resolver分层任务.md) |
+| 2026-08-20 | v2.13 | 纠正 PR #857 的仿真答案泄漏：恢复真实/仿真分类完整候选，删除 revision 候选过滤和错误 SOP 特判，并增加诊断等价性回归 | [仿真诊断等价性与 CDD 全候选修正任务](events/2026-08-20-仿真诊断等价性与CDD全候选修正任务.md) |
 | 2026-08-07 | v2.11 | 收敛实施任务中的 Resolver 正式名称和稳定 `resolver_id`：`log`、`system`、`domain`、`service`、`qkv`、`variable`。 | [关键信号统一解析运行时与 Resolver 分层任务](events/2026-08-07-关键信号统一解析运行时与Resolver分层任务.md) |
 | 2026-08-07 | v2.10 | 提出 Shared Resolution Runtime 与领域 Resolver 实施任务：`qfk_log`、独立 `qfk_system`、aCLI 领域 QFK、服务/QKV/变量解析共用 Catalog Compiler、能力探针和生产/消费统一校验；当前尚未实施运行时代码。 | [关键信号统一解析运行时与 Resolver 分层任务](events/2026-08-07-关键信号统一解析运行时与Resolver分层任务.md) |
 | 2026-08-05 | v2.9 | 完成 QFK 完整输出 AI 提取：确定性 Extract/Matcher 先行，AI 只能定位候选原文中的字面量并逐字回查；Matcher evidence 与 produces 共享实现，失败关闭且变量池原子写入。 | [QFK完整输出AI提取任务](events/2026-08-05-QFK完整输出AI提取任务.md) |

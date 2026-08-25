@@ -134,9 +134,7 @@ def _count_extract():
 
 def test_count_cardinality_is_a_numeric_row_selection_projection():
     validate_signals_json(
-        _qfk_match(
-            {"type": "threshold", "operator": ">=", "value": 2, "expected": True, "extract": _count_extract()}
-        )
+        _qfk_match({"type": "threshold", "operator": ">=", "value": 2, "expected": True, "extract": _count_extract()})
     )
     validate_signals_json(_qfk_produce({"name": "FAILED_COUNT", "type": "integer", "extract": _count_extract()}))
     validate_signals_json(_qfk_produce({"name": "FAILED_COUNT", "type": "number", "extract": _count_extract()}))
@@ -286,6 +284,58 @@ def test_qfk_produce_path_and_extract_conflict_has_actionable_message():
     assert issue["field_path"] == "orchestrate.produces.0"
     assert "path" in issue["message"]
     assert "extract" in issue["message"]
+
+
+def test_qkv_output_processing_is_optional_and_declares_derived_producer():
+    document = {
+        "schema_version": 2,
+        "signals": [{
+            "id": "qkv_description_processing",
+            "acquire": {"tool": "qkv_task", "args": {"keyword": "虚拟机无法启动"}},
+            "match": None,
+            "orchestrate": {
+                "produces": [{"name": "DESCRIPTION", "path": "description", "type": "string"}],
+                "output_processing": [{
+                    "id": "extract-vm",
+                    "mode": "derive",
+                    "input": "{{DESCRIPTION}}",
+                    "operation": "feature_extract",
+                    "feature": "vm_name",
+                    "target_variable": "VM_NAME",
+                }],
+            },
+        }],
+    }
+    validate_signals_json(document)
+
+    invalid = {**document, "signals": [{**document["signals"][0], "orchestrate": {
+        **document["signals"][0]["orchestrate"],
+        "output_processing": [{"id": "bad", "mode": "derive", "input": "{{DESCRIPTION}}", "operation": "eval"}],
+    }}]}
+    with pytest.raises(ValidationError):
+        validate_signals_json(invalid)
+
+    duplicate_target = {**document, "signals": [{**document["signals"][0], "orchestrate": {
+        **document["signals"][0]["orchestrate"],
+        "output_processing": [
+            {"id": "one", "mode": "derive", "input": "{{DESCRIPTION}}", "operation": "trim", "target_variable": "DESCRIPTION"},
+        ],
+    }}]}
+    with pytest.raises(ValidationError, match="派生变量重复"):
+        validate_signals_json(duplicate_target)
+
+    unknown_input = {**document, "signals": [{**document["signals"][0], "orchestrate": {
+        **document["signals"][0]["orchestrate"],
+        "output_processing": [{
+            "id": "unknown",
+            "mode": "derive",
+            "input": "{{NOT_PRODUCED}}",
+            "operation": "trim",
+            "target_variable": "VM_NAME",
+        }],
+    }}]}
+    with pytest.raises(ValidationError, match="未声明变量"):
+        validate_signals_json(unknown_input)
 
 
 def test_text_extract_allows_grounded_ai_extract_instruction():
@@ -484,6 +534,31 @@ def test_variable_dependency_error_targets_signal_that_declares_missing_input():
     assert "NOT_DECLARED" in issue["message"]
 
 
+def test_variable_name_format_is_independent_from_external_variable_catalog():
+    """合法的大写变量可以由 Verification Contract 声明，不受默认目录限制。"""
+    document = _qfk_match(
+        {"type": "exists", "expected": True, "extract": _text_extract()},
+    )
+    document["signals"][0]["orchestrate"] = {
+        "produces": [],
+        "requires": ["VM_DISK_ID"],
+    }
+    document["verification_contract"] = {
+        "schema_version": 1,
+        "variables": {"VM_DISK_ID": {"type": "string"}},
+        "evidence_policy": {
+            "must": [document["signals"][0].get("id", "sig_001")],
+            "should": [],
+            "exclude": [],
+            "context": [],
+        },
+    }
+    document["signals"][0]["id"] = "sig_disk"
+    document["verification_contract"]["evidence_policy"]["must"] = ["sig_disk"]
+
+    validate_publishable_signals_json(document)
+
+
 def test_kbd_publish_gate_rejects_consumer_only_document_with_external_variables():
     """外部变量可满足依赖，但不能替代描述故障入口的 QKV 生产者。"""
 
@@ -633,3 +708,187 @@ def test_data_basis_and_header_column_selection_require_a_header():
                 }
             )
         )
+
+
+def test_qfk_log_signals_with_different_includes_compile_to_distinct_commands():
+    """两个 qfk_log 信号即使基础参数相同，包含不同的 rows.include 时应编译为携带不同 -k 的指令。"""
+    from shared.resolution.review import SignalReviewFeature, review_signal_document
+
+    document = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "sig_task",
+                "role": "must",
+                "acquire": {"tool": "qkv_task", "args": {"keyword": "清理失败", "instruction": "查询任务"}},
+                "match": None,
+                "orchestrate": {
+                    "phase": "diagnostic",
+                    "produces": [{"name": "VM", "path": "task.vm_id"}],
+                },
+            },
+            {
+                "id": "sig_a",
+                "role": "must",
+                "acquire": {"tool": "qfk_log", "args": {"file": "sfvt_vtpdaemon.log", "host": "{{HOST}}"}},
+                "match": {
+                    "type": "exists",
+                    "expected": True,
+                    "extract": {
+                        "type": "text",
+                        "rows": {
+                            "mode": "keywords",
+                            "scope": "same_record",
+                            "include": ["Get {{VM}} from vmlist or conf failed"],
+                        },
+                    },
+                },
+            },
+            {
+                "id": "sig_b",
+                "role": "must",
+                "acquire": {"tool": "qfk_log", "args": {"file": "sfvt_vtpdaemon.log", "host": "{{HOST}}"}},
+                "match": {
+                    "type": "exists",
+                    "expected": True,
+                    "extract": {
+                        "type": "text",
+                        "rows": {
+                            "mode": "keywords",
+                            "scope": "same_record",
+                            "include": ["file is not exists, can't open file"],
+                        },
+                    },
+                },
+            },
+        ],
+    }
+
+    result = review_signal_document(document, feature=SignalReviewFeature.PUBLISH)
+    assert not result.blocked
+    assert len(result.signals) == 3
+    cmd_a = result.signals[1].command
+    cmd_b = result.signals[2].command
+    assert "-k" in cmd_a and "Get" in cmd_a
+    assert "-k" in cmd_b and "file" in cmd_b
+    assert cmd_a != cmd_b
+
+
+# ─── qkv_vm_console 条件型生产者发布门禁 ───────────────────────────────
+
+
+def _vm_console_document(*, external_variables: dict | None):
+    """构造 Guest 内部问题 KBD：唯一生产者为 qkv_vm_console。"""
+
+    contract: dict = {
+        "schema_version": 1,
+        "evidence_policy": {"must": ["s_vm_console_kernel_panic"], "should": [], "exclude": [], "context": []},
+    }
+    if external_variables is not None:
+        contract["variables"] = external_variables
+    return {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "s_vm_console_kernel_panic",
+                "role": "must",
+                "acquire": {
+                    "tool": "qkv_vm_console",
+                    "args": {
+                        "host": "{{HOST}}",
+                        "vm_id": "{{VM_ID}}",
+                        "capture_mode": "baseline_then_optional_wake",
+                        "timeout": 60,
+                        "instruction": "采集虚拟机控制台画面，确认是否存在内核恐慌或启动失败现象",
+                    },
+                },
+                "match": None,
+                "orchestrate": {
+                    "requires": ["HOST", "VM_ID"],
+                    "produces": [
+                        {"name": "VM_CONSOLE_STATE", "path": "display_state"},
+                        {"name": "VM_CONSOLE_SUMMARY", "path": "summary"},
+                        {"name": "VM_CONSOLE_CONFIDENCE", "path": "confidence"},
+                        {"name": "VM_CONSOLE_ARTIFACT_ID", "path": "artifact_id"},
+                    ],
+                },
+                "provenance": {
+                    "category": "frontend",
+                    "method": "controlled_vm_console_capture",
+                    "confidence": 0.8,
+                    "risk": 0.4,
+                    "needs_review": True,
+                    "evidence": "受控虚拟机控制台截图与结构化视觉观察",
+                },
+                "review": {"require_human_confirm": False, "notes": "近黑后的 sendkey down 必须在运行时单独确认"},
+            }
+        ],
+        "verification_contract": contract,
+    }
+
+
+def test_vm_console_only_kbd_is_publishable_with_declared_external_targets():
+    document = _vm_console_document(
+        external_variables={"HOST": {"type": "string"}, "VM_ID": {"type": "string"}}
+    )
+
+    validate_kbd_publishable_signals_json(document)
+
+
+def test_vm_console_only_kbd_is_publishable_with_upstream_producers():
+    document = _vm_console_document(external_variables=None)
+    document["signals"].insert(
+        0,
+        {
+            "id": "s_task_producer",
+            "role": "should",
+            "acquire": {"tool": "qkv_task", "args": {"keyword": "虚拟机内核恐慌"}},
+            "match": None,
+            "orchestrate": {
+                "produces": [{"name": "HOST", "path": "host"}, {"name": "VM_ID", "path": "vm"}],
+            },
+            "provenance": {
+                "category": "frontend",
+                "method": "task_query",
+                "confidence": 0.8,
+                "risk": 0.2,
+                "needs_review": False,
+                "evidence": "失败任务定位宿主机与 VMID",
+            },
+            "review": {"require_human_confirm": False, "notes": ""},
+        },
+    )
+
+    validate_kbd_publishable_signals_json(document)
+
+
+def test_vm_console_only_kbd_without_target_sources_is_blocked():
+    document = _vm_console_document(external_variables={})
+
+    with pytest.raises(ValidationError) as exc_info:
+        validate_kbd_publishable_signals_json(document)
+
+    # HOST/VM_ID 无来源时，变量依赖门禁或条件生产者门禁必须阻断。
+    message = str(exc_info.value.message)
+    assert "HOST" in message and "VM_ID" in message
+
+
+def test_vm_console_free_form_fields_are_rejected_by_schema():
+    document = _vm_console_document(
+        external_variables={"HOST": {"type": "string"}, "VM_ID": {"type": "string"}}
+    )
+    document["signals"][0]["acquire"]["args"]["monitor_command"] = "screendump /tmp/x.ppm"
+
+    with pytest.raises(ValidationError):
+        validate_signals_json(document)
+
+
+def test_vm_console_review_passes_with_external_targets():
+    document = _vm_console_document(
+        external_variables={"HOST": {"type": "string"}, "VM_ID": {"type": "string"}}
+    )
+
+    review = review_signal_document(document, feature=SignalReviewFeature.PUBLISH)
+    # 占位符目标在发布期无变量上下文，resolver 报 needs_probe 属预期保留项，
+    # 但不能阻断发布审查。
+    assert review.status is not SignalReviewStatus.BLOCKED
