@@ -262,64 +262,67 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
             },
             "outputProcessing": {
                 "type": "object",
-                "description": "QKV 投影变量的受控后处理；禁止脚本和动态变量名",
+                "description": "QKV 具体值后处理；派生复用 QFK 产出变量词汇，判断复用 QFK Matcher",
                 "additionalProperties": False,
-                "required": ["id", "mode", "input", "operation"],
+                "required": ["mode", "input"],
                 "properties": {
-                    "id": {"type": "string", "minLength": 1},
                     "mode": {"type": "string", "enum": ["derive", "assert"]},
                     "input": {"type": "string", "minLength": 1},
-                    "operation": {
-                        "type": "string",
-                        "enum": [
-                            "json_path", "trim", "lower", "upper", "split",
-                            "compare", "feature_extract",
-                        ],
-                    },
-                    "target_variable": {
-                        "type": "string",
-                        "pattern": "^[A-Z][A-Z0-9_]*$",
-                    },
-                    "value_type": {
-                        "type": "string",
-                        "enum": ["string", "integer", "number", "percentage"],
-                    },
-                    "cardinality": {
-                        "type": "string",
-                        "enum": ["exactly_one", "zero_or_more", "all"],
-                        "default": "exactly_one",
-                    },
-                    "scope": {
-                        "type": "string",
-                        "enum": ["per_record", "single"],
-                        "default": "per_record",
-                    },
-                    "feature": {"type": "string"},
-                    "path": {"type": "string", "minLength": 1},
-                    "separator": {"type": "string", "minLength": 1},
-                    "operator": {
-                        "type": "string",
-                        "enum": [">", ">=", "<", "<=", "==", "=", "!="],
-                    },
-                    "right": {},
-                    "fallback": {"type": "string", "enum": ["none", "ai_extract"]},
+                    "name": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+                    "type": {"type": "string", "enum": ["string", "integer", "number", "percentage", "boolean", "array"]},
+                    "scope": {"type": "string", "enum": ["per_record", "single"], "default": "per_record"},
+                    "extract": {"$ref": "#/definitions/qkvValueExtract"},
+                    "match": {"$ref": "#/definitions/qkvMatch"},
                 },
                 "allOf": [
                     {
                         "if": {"properties": {"mode": {"const": "derive"}}, "required": ["mode"]},
-                        "then": {"required": ["target_variable"]},
+                        "then": {"required": ["name", "extract"]},
                     },
                     {
                         "if": {"properties": {"mode": {"const": "assert"}}, "required": ["mode"]},
-                        "then": {"not": {"required": ["target_variable"]}},
+                        "then": {"required": ["match"], "not": {"required": ["name", "type", "extract"]}},
                     },
-                    {
-                        "if": {"properties": {"operation": {"const": "compare"}}, "required": ["operation"]},
-                        "then": {
-                            "properties": {"mode": {"const": "assert"}},
-                            "required": ["mode"],
-                        },
-                    },
+                ],
+            },
+            "qkvValueExtract": {
+                "type": "object",
+                "description": "QKV 已有具体值上的唯一特有提取：业务特征或固定分割",
+                "additionalProperties": False,
+                "required": ["type"],
+                "properties": {
+                    "type": {"type": "string", "enum": ["feature", "split"]},
+                    "feature": {"type": "string"},
+                    "separator": {"type": "string", "minLength": 1},
+                    "cardinality": {"type": "string", "enum": ["exactly_one", "first", "last", "all"], "default": "exactly_one"},
+                    "ai_extract": {"$ref": "#/definitions/aiExtract"},
+                },
+                "allOf": [
+                    {"if": {"properties": {"type": {"const": "feature"}}, "required": ["type"]}, "then": {"required": ["feature"]}},
+                    {"if": {"properties": {"type": {"const": "split"}}, "required": ["type"]}, "then": {"required": ["separator"]}},
+                ],
+            },
+            "qkvMatch": {
+                "type": "object",
+                "description": "QKV 具体值上的 QFK Matcher；extract 由运行时自动绑定为 identity",
+                "additionalProperties": False,
+                "required": ["type", "expected"],
+                "properties": {
+                    "type": {"type": "string", "enum": ["keyword", "regex", "state", "threshold", "delta", "trend", "exists"]},
+                    "pattern": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}]},
+                    "mode": {"type": "string", "enum": ["or", "and", "not"]},
+                    "expected": {"type": "boolean"},
+                    "value": {"type": ["number", "integer", "string"]},
+                    "operator": {"type": "string", "enum": [">", ">=", "<", "<=", "==", "=", "!="]},
+                    "aggregation": {"type": "string", "enum": ["first_number", "last_number", "max", "min", "sum"]},
+                    "minimum_samples": {"type": "integer", "minimum": 2, "maximum": 10000},
+                    "direction": {"type": "string", "enum": ["increasing", "decreasing", "stable"]},
+                    "metric": {"type": "string"},
+                },
+                "allOf": [
+                    {"if": {"properties": {"type": {"enum": ["keyword", "regex", "state"]}}}, "then": {"required": ["pattern"]}},
+                    {"if": {"properties": {"type": {"enum": ["threshold", "delta"]}}}, "then": {"required": ["value", "operator"]}},
+                    {"if": {"properties": {"type": {"const": "trend"}}}, "then": {"required": ["direction"]}},
                 ],
             },
             "rowRange": {

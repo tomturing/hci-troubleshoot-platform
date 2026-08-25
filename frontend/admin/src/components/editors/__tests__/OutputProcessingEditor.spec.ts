@@ -28,7 +28,8 @@ describe('OutputProcessingEditor', () => {
     expect((emitted?.at(-1)?.[0] as Array<Record<string, unknown>>)[0]).toMatchObject({
       mode: 'derive',
       input: '{{DESCRIPTION}}',
-      operation: 'feature_extract',
+      name: '',
+      extract: { type: 'feature', feature: 'vm_name', cardinality: 'exactly_one' },
     })
   })
 
@@ -36,8 +37,8 @@ describe('OutputProcessingEditor', () => {
     const wrapper = mount(OutputProcessingEditor, {
       props: {
         modelValue: [
-          { id: 'one', mode: 'derive', input: '{{DESCRIPTION}}', operation: 'trim', target_variable: 'TEXT' },
-          { id: 'two', mode: 'derive', input: '{{TEXT}}', operation: 'upper', target_variable: 'NORMALIZED' },
+          { mode: 'derive', input: '{{DESCRIPTION}}', name: 'TEXT', type: 'string', extract: { type: 'feature', feature: 'vm_name' } },
+          { mode: 'derive', input: '{{TEXT}}', name: 'NORMALIZED', type: 'string', extract: { type: 'feature', feature: 'vm_name' } },
         ],
         produces: [{ name: 'DESCRIPTION', path: 'description' }],
       },

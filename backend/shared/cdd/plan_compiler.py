@@ -10,6 +10,7 @@ from typing import Any
 from shared.cdd.kbd_model import KBD, _acquire_tool
 from shared.schemas.acquirer_args import SUPPORTED_TOOLS, validate_acquire_args
 from shared.schemas.signal_output import derive_signal_requires
+from shared.signals.qkv_output_processing import processing_derived_variables
 
 from .models import Acquisition, CaseVerificationPolicy, EvidenceRole, SignalPlan, SignalRef
 
@@ -223,15 +224,7 @@ def compile_signal_plan(
             requires.update(_names(derive_signal_requires(signal)))
             produces = set(_names(orchestrate.get("produces") or signal.get("produces")))
             if tool.startswith("qkv_"):
-                produces.update(
-                    _names(
-                        [
-                            item.get("target_variable")
-                            for item in orchestrate.get("output_processing") or []
-                            if isinstance(item, dict) and item.get("mode") == "derive"
-                        ]
-                    )
-                )
+                produces.update(_names(processing_derived_variables(orchestrate.get("output_processing"))))
             ref_id = f"{kbd.id}/{revision}/{signal_id}"
             ref = SignalRef(
                 ref_id=ref_id,

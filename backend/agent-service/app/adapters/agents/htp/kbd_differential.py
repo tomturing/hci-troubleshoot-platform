@@ -1003,6 +1003,7 @@ class KBDDiagnostic:
                     conversation_id=self._conversation_id or session_id,
                     node_ip=env_context.get("node_ip"),
                     exec_id=None,
+                    ai_client=self._ai_registry.get_client(self._assistant_type),
                 )
                 if res.success:
                     await self._fill_pool_from_qkv(
@@ -1383,16 +1384,26 @@ class KBDDiagnostic:
             return
         processing = (signal.get("orchestrate") or {}).get("output_processing") or []
         if processing and not getattr(res, "processing_applied", False):
-            from shared.signals.qkv_output_processing import apply_output_processing
+            from shared.signals.qkv_output_processing import apply_output_processing_async
 
-            processed = apply_output_processing(res.values, processing)
+            from app.tools.qkv.engine import _qkv_ai_extractor
+
+            processed = await apply_output_processing_async(
+                res.values,
+                processing,
+                ai_client=self._ai_registry.get_client(self._assistant_type),
+                conversation_id=self._conversation_id or session_id,
+                case_id=self._case_id or "",
+                ai_extractor=_qkv_ai_extractor,
+            )
             res.values = processed.records
             res.assertions = [
                 {
-                    "processing_id": item.processing_id,
+                    "unit_index": item.unit_index,
                     "status": item.status,
                     "observed": item.observed,
                     "reason": item.reason,
+                    "evidence": item.evidence,
                 }
                 for item in processed.assertions
             ]
@@ -1425,7 +1436,7 @@ class KBDDiagnostic:
         for spec in processing:
             if not isinstance(spec, dict) or spec.get("mode") != "derive":
                 continue
-            name = str(spec.get("target_variable") or "").strip()
+            name = str(spec.get("name") or spec.get("target_variable") or "").strip()
             if not name:
                 continue
             values = [
@@ -1514,6 +1525,7 @@ class KBDDiagnostic:
                     conversation_id=self._conversation_id or session_id,
                     node_ip=env_context.get("node_ip"),
                     exec_id=exec_id,
+                    ai_client=self._ai_registry.get_client(self._assistant_type),
                 )
                 if not res.success:
                     logger.warning(

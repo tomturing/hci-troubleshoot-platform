@@ -13,13 +13,21 @@ from shared.observability.langfuse import observe_tool
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from shared.resolution import SignalIntent, build_resolution_audit_snapshot, get_resolution_runtime
-from shared.signals.qkv_output_processing import apply_output_processing
+from shared.signals.qkv_output_processing import apply_output_processing_async
 
 from app.tools.acli.executor import exec_result_observation
 from app.tools.qkv.parser import parse_frontend_value
 from app.tools.qkv.signal import FrontendQueryType, FrontendSignal
 
 logger = get_logger("qkv-engine")
+
+
+async def _qkv_ai_extractor(output: str, spec: dict[str, Any], value_type: str, ai_client: Any, **kwargs: Any) -> Any:
+    """QKV 通过适配器调用 QFK 公共 AI 提取器，避免 shared 层反向依赖 app。"""
+
+    from app.tools.qfk.ai_extractor import extract_ai_value
+
+    return await extract_ai_value(output, spec, value_type, ai_client, **kwargs)
 
 
 def _dialog_output_without_self_observation(text: str, commands: list[str]) -> str:
@@ -82,7 +90,7 @@ class QKVResult:
             lines.append("\n【QKV 输出后处理断言】")
             for assertion in self.assertions:
                 lines.append(
-                    f"{assertion.get('processing_id')}: {assertion.get('status')}"
+                    f"处理单元 {assertion.get('unit_index')}: {assertion.get('status')}"
                     + (f" ({assertion.get('reason')})" if assertion.get("reason") else "")
                 )
         return "\n".join(lines)
@@ -103,6 +111,7 @@ async def qkv_exec(
     conversation_id: str,
     node_ip: str | None = None,
     exec_id: str | None = None,
+    ai_client: Any | None = None,
 ) -> QKVResult:
     """
     运行前端信号提取引擎，执行 acli 并过滤析出特定字段
@@ -282,15 +291,22 @@ async def qkv_exec(
         if signal.query == FrontendQueryType.DIALOG:
             stdout = _dialog_output_without_self_observation(stdout, commands)
         values = parse_frontend_value(signal.query, stdout, signal.produces)
-        processing = apply_output_processing(values, signal.output_processing)
+        processing = await apply_output_processing_async(
+            values,
+            signal.output_processing,
+            ai_client=ai_client,
+            conversation_id=conversation_id,
+            ai_extractor=_qkv_ai_extractor,
+        )
         values = processing.records
         matched = processing.matched
         assertions = [
             {
-                "processing_id": item.processing_id,
+                "unit_index": item.unit_index,
                 "status": item.status,
                 "observed": item.observed,
                 "reason": item.reason,
+                "evidence": item.evidence,
             }
             for item in processing.assertions
         ]

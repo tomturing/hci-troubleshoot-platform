@@ -19,6 +19,7 @@ from shared.models.dynamic_resource import DynamicResourceActive, DynamicResourc
 from shared.resolution.models import ResolutionStatus
 from shared.resolution.review import SignalReviewFeature, review_signal_document
 from shared.schemas.hci_sim_policy import current_hci_sim_policy_revision
+from shared.signals.qkv_output_processing import QKVProcessingError, normalize_output_processing
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -371,6 +372,15 @@ class HciSimKbdResolver:
                     }
                 )
             )
+            raw_processing = [
+                dict(item)
+                for item in (orchestrate.get("output_processing") or [])
+                if isinstance(item, dict)
+            ]
+            try:
+                normalized_processing = normalize_output_processing(raw_processing)
+            except QKVProcessingError:
+                normalized_processing = raw_processing
             routes.append(
                 SyntheticRouteInput(
                     signal_id=signal_id,
@@ -384,23 +394,19 @@ class HciSimKbdResolver:
                     produces=tuple(
                         dict(item) for item in (orchestrate.get("produces") or []) if isinstance(item, dict)
                     ),
-                    output_processing=tuple(
-                        dict(item)
-                        for item in (orchestrate.get("output_processing") or [])
-                        if isinstance(item, dict)
-                    ),
+                    output_processing=tuple(normalized_processing),
                     derived_variables=tuple(
                         sorted(
                             {
-                                str(item.get("target_variable")).strip().upper()
-                                for item in (orchestrate.get("output_processing") or [])
+                                str(item.get("name") or item.get("target_variable")).strip().upper()
+                                for item in normalized_processing
                                 if isinstance(item, dict)
                                 and item.get("mode") == "derive"
-                                and str(item.get("target_variable") or "").strip()
+                                and str(item.get("name") or item.get("target_variable") or "").strip()
                             }
                         )
                     ),
-                    processing_fingerprint=_sha256(orchestrate.get("output_processing") or []),
+                    processing_fingerprint=_sha256(normalized_processing),
                     sample_output=_derive_sample_output(signal, tool, signal_id, runtime.command),
                     sample_source=_sample_output_source(signal, tool),
                 )

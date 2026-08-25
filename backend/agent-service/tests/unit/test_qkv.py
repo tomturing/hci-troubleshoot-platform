@@ -60,12 +60,12 @@ class TestFrontendSignalValidation:
             "orchestrate": {
                 "produces": [{"name": "DESCRIPTION", "path": "description"}],
                 "output_processing": [{
-                    "id": "percent", "mode": "assert", "input": "{{DESCRIPTION}}",
-                    "operation": "compare", "value_type": "percentage", "operator": ">", "right": "90%",
+                    "mode": "assert", "input": "{{DESCRIPTION}}",
+                    "match": {"type": "threshold", "expected": True, "operator": ">", "value": 90},
                 }],
             },
         })
-        assert sig.output_processing[0]["id"] == "percent"
+        assert sig.output_processing[0]["mode"] == "assert"
 
     def test_qkv_output_processing_rejects_script_fields(self):
         with pytest.raises(ValidationError):
@@ -188,21 +188,16 @@ async def test_qkv_output_processing_derives_variable_and_reports_assertion():
         produces=[{"name": "DESCRIPTION", "path": "description"}],
         output_processing=[
             {
-                "id": "vm",
                 "mode": "derive",
                 "input": "{{DESCRIPTION}}",
-                "operation": "feature_extract",
-                "target_variable": "VM_NAME",
-                "feature": "vm_name",
+                "name": "VM_NAME",
+                "type": "string",
+                "extract": {"type": "feature", "feature": "vm_name", "cardinality": "exactly_one"},
             },
             {
-                "id": "percent",
                 "mode": "assert",
                 "input": "{{DESCRIPTION}}",
-                "operation": "compare",
-                "value_type": "percentage",
-                "operator": ">",
-                "right": "90%",
+                "match": {"type": "threshold", "expected": True, "operator": ">", "value": 90},
             },
         ],
     )
@@ -228,13 +223,9 @@ async def test_qkv_output_processing_agent_negative_assertion_is_false():
         keyword="资源占用",
         produces=[{"name": "DESCRIPTION", "path": "description"}],
         output_processing=[{
-            "id": "percent",
             "mode": "assert",
             "input": "{{DESCRIPTION}}",
-            "operation": "compare",
-            "value_type": "percentage",
-            "operator": ">",
-            "right": "90%",
+            "match": {"type": "threshold", "expected": True, "operator": ">", "value": 90},
         }],
     )
     mock_executor = AsyncMock()
@@ -256,8 +247,8 @@ async def test_qkv_output_processing_agent_unknown_and_cardinality_are_not_succe
         keyword="缺少字段",
         produces=[{"name": "DESCRIPTION", "path": "description"}],
         output_processing=[{
-            "id": "vm", "mode": "assert", "input": "{{DESCRIPTION}}",
-            "operation": "compare", "value_type": "percentage", "operator": ">", "right": "90%",
+            "mode": "assert", "input": "{{DESCRIPTION}}",
+            "match": {"type": "threshold", "expected": True, "operator": ">", "value": 90},
         }],
     )
     cardinality_signal = FrontendSignal(
@@ -265,8 +256,9 @@ async def test_qkv_output_processing_agent_unknown_and_cardinality_are_not_succe
         keyword="多条记录",
         produces=[{"name": "DESCRIPTION", "path": "description"}],
         output_processing=[{
-            "id": "vm", "mode": "derive", "scope": "single", "input": "{{DESCRIPTION}}",
-            "operation": "trim", "target_variable": "DESCRIPTION_TEXT",
+            "mode": "derive", "scope": "single", "input": "{{DESCRIPTION}}",
+            "name": "DESCRIPTION_TEXT", "type": "string",
+            "extract": {"type": "feature", "feature": "number", "cardinality": "first"},
         }],
     )
     mock_executor = AsyncMock()
@@ -281,7 +273,7 @@ async def test_qkv_output_processing_agent_unknown_and_cardinality_are_not_succe
     assert unknown.matched is None
     assert unknown.assertions[0]["status"] == "UNKNOWN"
     assert cardinality.success is False
-    assert "QKV_CARDINALITY_MISMATCH" in (cardinality.error or "")
+    assert "QFK_CARDINALITY_MISMATCH" in (cardinality.error or "")
 
 
 @pytest.mark.asyncio
@@ -299,8 +291,8 @@ async def test_hci_sim_shared_route_logical_consumers_cover_processing_outcomes(
                 "signal_id": "assert-percent",
                 "produces": [{"name": "DESCRIPTION", "path": "description"}],
                 "output_processing": [{
-                    "id": "percent", "mode": "assert", "input": "{{DESCRIPTION}}",
-                    "operation": "compare", "value_type": "percentage", "operator": ">", "right": "90%",
+                    "mode": "assert", "input": "{{DESCRIPTION}}",
+                    "match": {"type": "threshold", "expected": True, "operator": ">", "value": 90},
                 }],
                 "derived_variables": [], "processing_fingerprint": "sha256:assert-percent",
             },
@@ -308,8 +300,9 @@ async def test_hci_sim_shared_route_logical_consumers_cover_processing_outcomes(
                 "signal_id": "derive-description",
                 "produces": [{"name": "DESCRIPTION", "path": "description"}],
                 "output_processing": [{
-                    "id": "single-description", "mode": "derive", "scope": "single",
-                    "input": "{{DESCRIPTION}}", "operation": "trim", "target_variable": "DESCRIPTION_TEXT",
+                    "mode": "derive", "scope": "single", "input": "{{DESCRIPTION}}",
+                    "name": "DESCRIPTION_TEXT", "type": "string",
+                    "extract": {"type": "feature", "feature": "number", "cardinality": "first"},
                 }],
                 "derived_variables": ["DESCRIPTION_TEXT"], "processing_fingerprint": "sha256:derive-description",
             },
@@ -346,7 +339,7 @@ async def test_hci_sim_shared_route_logical_consumers_cover_processing_outcomes(
     assert positive.success is True and positive.matched is True and positive.assertions[0]["status"] == "PASS"
     assert negative.success is True and negative.matched is False and negative.assertions[0]["status"] == "FAIL"
     assert unknown.success is True and unknown.matched is None and unknown.assertions[0]["status"] == "UNKNOWN"
-    assert cardinality.success is False and "QKV_CARDINALITY_MISMATCH" in (cardinality.error or "")
+    assert cardinality.success is False and "QFK_CARDINALITY_MISMATCH" in (cardinality.error or "")
 
 
 @pytest.mark.asyncio

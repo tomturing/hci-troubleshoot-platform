@@ -295,14 +295,13 @@ def test_qkv_output_processing_is_optional_and_declares_derived_producer():
             "match": None,
             "orchestrate": {
                 "produces": [{"name": "DESCRIPTION", "path": "description", "type": "string"}],
-                "output_processing": [{
-                    "id": "extract-vm",
-                    "mode": "derive",
-                    "input": "{{DESCRIPTION}}",
-                    "operation": "feature_extract",
-                    "feature": "vm_name",
-                    "target_variable": "VM_NAME",
-                }],
+                    "output_processing": [{
+                        "mode": "derive",
+                        "input": "{{DESCRIPTION}}",
+                        "name": "VM_NAME",
+                        "type": "string",
+                        "extract": {"type": "feature", "feature": "vm_name", "cardinality": "exactly_one"},
+                    }],
             },
         }],
     }
@@ -318,7 +317,7 @@ def test_qkv_output_processing_is_optional_and_declares_derived_producer():
     duplicate_target = {**document, "signals": [{**document["signals"][0], "orchestrate": {
         **document["signals"][0]["orchestrate"],
         "output_processing": [
-            {"id": "one", "mode": "derive", "input": "{{DESCRIPTION}}", "operation": "trim", "target_variable": "DESCRIPTION"},
+                {"mode": "derive", "input": "{{DESCRIPTION}}", "name": "DESCRIPTION", "type": "string", "extract": {"type": "feature", "feature": "vm_name", "cardinality": "exactly_one"}},
         ],
     }}]}
     with pytest.raises(ValidationError, match="派生变量重复"):
@@ -327,11 +326,11 @@ def test_qkv_output_processing_is_optional_and_declares_derived_producer():
     unknown_input = {**document, "signals": [{**document["signals"][0], "orchestrate": {
         **document["signals"][0]["orchestrate"],
         "output_processing": [{
-            "id": "unknown",
-            "mode": "derive",
-            "input": "{{NOT_PRODUCED}}",
-            "operation": "trim",
-            "target_variable": "VM_NAME",
+                "mode": "derive",
+                "input": "{{NOT_PRODUCED}}",
+                "name": "VM_NAME",
+                "type": "string",
+                "extract": {"type": "feature", "feature": "vm_name", "cardinality": "exactly_one"},
         }],
     }}]}
     with pytest.raises(ValidationError, match="未声明变量"):
