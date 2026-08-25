@@ -16,9 +16,9 @@ import re
 import uuid
 
 from fastapi import HTTPException, Request
-from sqlalchemy import text
 from shared.observability.logger import get_logger
 from shared.security.signature import verify_client_identity
+from sqlalchemy import text
 
 from app.config import settings
 

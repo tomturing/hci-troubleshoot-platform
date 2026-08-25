@@ -138,7 +138,7 @@ async def get_messages(conversation_id: uuid.UUID, request: Request, service: Co
     """获取对话消息历史"""
     # ━━ 安全修复：权限校验 ━━
     await verify_conversation_ownership(conversation_id, request, service)
-    
+
     messages = await service.get_messages(conversation_id)
     return [MessageResponse.model_validate(msg) for msg in messages]
 
@@ -165,7 +165,7 @@ async def send_message(
     if content_length:
         try:
             check_request_size(int(content_length), max_size_mb=1)
-        except HTTPException as e:
+        except HTTPException:
             logger.warning(
                 event="request_too_large",
                 conversation_id=str(conversation_id),
