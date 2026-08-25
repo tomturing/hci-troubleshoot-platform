@@ -31,6 +31,8 @@ const authHeader = { Authorization: `Bearer ${internalToken}` }
 const caseDetail = ref<CaseResponse | null>(null)
 const messages = ref<MessageResponse[]>([])
 const loading = ref(true)
+// 当前加载到的最新 conversation_id（供 AI 上下文 Tab 复用，避免重复请求）
+const loadedConversationId = ref<string | null>(null)
 
 // AI 上下文标签页数据
 const activeTab = ref('dialogue') // dialogue | ai-context
@@ -59,14 +61,24 @@ onMounted(async () => {
     const caseRes = await caseApi.getById(caseId)
     caseDetail.value = caseRes.data
 
-    // 加载对话
-    const convRes = await apiClient.get(`/conversations/case/${caseId}`)
+    // 加载对话：使用 admin 专用路由，绕过 client 身份签名校验
+    // 历史路由 /conversations/case/{caseId} 需要 X-Client-ID，管理后台无此凭证
+    const convRes = await apiClient.get(`/conversations/admin/cases/${caseId}/conversations`, {
+      headers: { Authorization: `Bearer ${internalToken}` },
+    })
     const conversations = convRes.data as any[]
     if (conversations.length > 0) {
-      const msgRes = await conversationApi.getMessages(conversations[0].conversation_id)
-      messages.value = msgRes.data
-      // 提取最新 conversation 的 resolved_kbd_entry_id
       const latestConv = conversations[0]
+      loadedConversationId.value = latestConv.conversation_id
+
+      // 使用 admin 消息路由加载消息列表
+      const msgRes = await apiClient.get(
+        `/conversations/admin/conversations/${latestConv.conversation_id}/messages`,
+        { headers: { Authorization: `Bearer ${internalToken}` } },
+      )
+      messages.value = msgRes.data
+
+      // 提取最新 conversation 的 resolved_kbd_entry_id
       resolvedKbdId.value = latestConv.resolved_kbd_entry_id ?? null
       if (resolvedKbdId.value !== null) {
         await loadKbdInfo(resolvedKbdId.value)
@@ -92,14 +104,14 @@ async function loadAiContext() {
     promptAuditRecords.value = res.data.records
 
     // 加载工具调用审计日志
-    // 先获取该 case 关联的 conversation_id
+    // 优先从 promptAudit 记录获取 conversation_id，回退到 onMounted 已加载的 loadedConversationId
     const conversationIds = promptAuditRecords.value
       .map((r) => r.conversation_id)
       .filter(Boolean)
 
-    if (conversationIds.length > 0) {
+    const sessionId = conversationIds.length > 0 ? conversationIds[0] : loadedConversationId.value
+    if (sessionId) {
       // 使用第一个 conversation_id 查询工具调用日志
-      const sessionId = conversationIds[0]
       const logsRes = await auditLogApi.list({ session_id: sessionId, limit: 100 })
       auditLogs.value = logsRes.data.items
     }
