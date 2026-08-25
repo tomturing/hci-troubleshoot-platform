@@ -15,6 +15,7 @@ from shared.observability.otel import get_current_trace_id
 from shared.resolution import SignalIntent, build_resolution_audit_snapshot, get_resolution_runtime
 from shared.signals.qkv_output_processing import apply_output_processing_async
 
+from app.core.utils import smart_truncate
 from app.tools.acli.executor import exec_result_observation
 from app.tools.qkv.parser import parse_frontend_value
 from app.tools.qkv.signal import FrontendQueryType, FrontendSignal
@@ -229,7 +230,30 @@ async def qkv_exec(
                         exec_id=exec_id,
                     )
                     if observation:
-                        observation.update(output=exec_result_observation(exec_res))
+                        try:
+                            output_data = exec_result_observation(exec_res)
+
+                            # 如果执行失败，添加错误信息到 observation
+                            if exec_res.exit_code not in (0, None):
+                                error_msg = exec_res.stderr or exec_res.stdout or "Command execution failed"
+                                output_data["error"] = smart_truncate(error_msg, 500)
+                                output_data["success"] = False
+
+                                logger.warning(
+                                    event="qkv_execution_failed_in_observation",
+                                    query=signal.query.value,
+                                    exec_id=exec_res.exec_id,
+                                    exit_code=exec_res.exit_code,
+                                    error_type=exec_res.error_type,
+                                )
+
+                            observation.update(output=output_data)
+                        except Exception as update_err:
+                            logger.warning(
+                                event="qkv_observation_update_error",
+                                query=signal.query.value,
+                                error=str(update_err),
+                            )
                 exec_results.append(exec_res)
                 if exec_res.exit_code not in (0, None):
                     break
