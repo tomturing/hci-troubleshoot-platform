@@ -44,8 +44,8 @@ class PolicyService:
         # 规则 3：低风险工具，根据执行模式决策
         if execution_mode == "off":
             return True
-        elif execution_mode in ("safe-only", "aggressive"):
-            # safe-only / aggressive 均允许自动执行低风险工具
+        elif execution_mode in ("safe-only", "aggressive", "sim-ssh"):
+            # safe-only / aggressive / sim-ssh 仿真环境均允许自动执行低风险工具
             return False
 
         # 兼容旧默认值（如 direct / react），默认强制需要确认

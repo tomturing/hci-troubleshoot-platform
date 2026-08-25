@@ -633,12 +633,19 @@ class ConversationService:
                     _used_ops_agent_path = resolved_assistant_type == "ops-agent"
                     _agent_had_error = False
 
-                    # 提取自动执行偏好
+                    # 提取自动执行偏好（解耦执行偏好与底层连接通道）
                     exec_mode = "safe-only"
                     if metadata and "auto_execute_mode" in metadata:
                         exec_mode = metadata["auto_execute_mode"]
                     elif metadata and "execution_mode" in metadata:
-                        exec_mode = metadata["execution_mode"]
+                        raw_exec_mode = str(metadata["execution_mode"]).strip()
+                        if raw_exec_mode in ("off", "safe-only", "aggressive"):
+                            exec_mode = raw_exec_mode
+                        elif raw_exec_mode == "sim-ssh":
+                            # 仿真测试通道默认采用 safe-only 安全模式（低危只读自动执行，高危确认）
+                            exec_mode = "safe-only"
+                        else:
+                            exec_mode = raw_exec_mode
 
                     async for agent_event in self._agent_client.stream(
                         assistant_type=resolved_assistant_type,
