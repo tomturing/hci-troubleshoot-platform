@@ -39,7 +39,9 @@ class Settings(BaseSettings):
     DIAGNOSIS_SERVICE_URL: str = "http://diagnosis-service:8008"
     DIAGNOSIS_IDENTITY_MODE: str = "internal"
 
-    # 内部服务间 API 鉴权 Token
+    # 内部服务间 API 鉴权 Token；同时用作出口身份签名的 HMAC 密钥
+    # （见 shared/security/signature.py），必须与 conversation-service 同值。
+    # 生产部署由 helm secrets.internalApiToken 注入，源码默认值仅用于本地开发。
     INTERNAL_API_TOKEN: str = "hci-dev-internal-token"
 
     # === 终端 SSH 配置 ===

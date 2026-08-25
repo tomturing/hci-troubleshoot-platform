@@ -6,6 +6,7 @@ API Gateway - 主应用
 - CORS 使用显式来源列表
 """
 
+import json
 import uuid
 from contextlib import asynccontextmanager
 
@@ -23,6 +24,7 @@ from shared.utils.exception_handlers import register_exception_handlers
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
+from app.middleware.error_handler import SecureErrorHandlerMiddleware  # 安全异常处理中间件
 from app.routes import (
     assistants,
     audit,
@@ -109,6 +111,68 @@ class TraceIDMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    """请求体大小限制中间件，防止 DoS 攻击。
+
+    限制：
+    - 默认最大请求体: 1MB
+    - SSE 流式端点例外（允许更大请求体）
+    - 拒绝非豁免路径的 chunked 编码请求（绕过 Content-Length 检测的
+      已知旁路，安全审计 2026-08-19）
+    """
+
+    MAX_REQUEST_SIZE = 1 * 1024 * 1024  # 1MB
+    EXEMPT_PATHS = [
+        "/api/conversations/",
+        "/api/terminal/",
+    ]
+
+    async def dispatch(self, request: Request, call_next):
+        is_exempt = any(
+            request.url.path.startswith(path) for path in self.EXEMPT_PATHS
+        )
+
+        # chunked 编码无 Content-Length，会绕过下方大小检测；
+        # JSON API 客户端正常都带 Content-Length，非豁免路径直接拒绝
+        transfer_encoding = request.headers.get("transfer-encoding", "").lower()
+        if "chunked" in transfer_encoding and not is_exempt:
+            logger.warning(
+                event="chunked_encoding_rejected",
+                path=request.url.path,
+            )
+            return Response(
+                content=json.dumps({"detail": "请提供 Content-Length（不支持 chunked 编码）"}),
+                status_code=411,
+                media_type="application/json",
+            )
+
+        # 检查请求体大小
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                size = int(content_length)
+                max_size = 10 * 1024 * 1024 if is_exempt else self.MAX_REQUEST_SIZE
+
+                if size > max_size:
+                    logger.warning(
+                        event="request_too_large",
+                        path=request.url.path,
+                        content_length=size,
+                        max_allowed=max_size,
+                    )
+                    return Response(
+                        content=json.dumps({
+                            "detail": f"请求体过大，最大允许 {max_size // (1024*1024)}MB"
+                        }),
+                        status_code=413,
+                        media_type="application/json",
+                    )
+            except ValueError:
+                pass
+
+        return await call_next(request)
+
+
 app = FastAPI(title="HCI Troubleshoot - API Gateway", description="API网关服务", version="1.0.0", lifespan=lifespan)
 
 # 注入 OpenTelemetry 中间件到 app 实例（必须在 app 创建后调用）
@@ -116,6 +180,9 @@ instrument_app(app)
 register_exception_handlers(app)
 
 # 中间件 — CORS 使用显式来源列表，避免 allow_origins=["*"] + allow_credentials=True 的 RFC 6454 违规
+# 注意：中间件注册顺序很重要，从下往上执行（最后注册的最先执行）
+app.add_middleware(RequestSizeLimitMiddleware)  # 安全修复：请求体大小限制
+app.add_middleware(SecureErrorHandlerMiddleware)  # 安全修复：异常处理信息泄漏防护
 app.add_middleware(TraceIDMiddleware)
 app.add_middleware(HTTPMetricsMiddleware)
 app.add_middleware(

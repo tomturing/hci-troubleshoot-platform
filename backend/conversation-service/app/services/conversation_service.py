@@ -198,6 +198,8 @@ class ConversationService:
         # 查询 Case 的 trace_id，确保一案一链继承机制
         case_trace_id = None
         try:
+            # 注：case 表的 ORM 模型属 case-service 包，跨服务无法导入，
+            # 沿用参数化 text() 查询（绑定参数 :case_id，无注入面）。
             from sqlalchemy import text
 
             res = await self.repository.session.execute(
