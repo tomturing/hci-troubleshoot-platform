@@ -6,8 +6,8 @@ API Gateway - 主应用
 - CORS 使用显式来源列表
 """
 
-import uuid
 import json
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -22,9 +22,9 @@ from shared.observability.metrics import HTTPMetricsMiddleware
 from shared.observability.otel import init_telemetry, instrument_app
 from shared.utils.exception_handlers import register_exception_handlers
 from starlette.middleware.base import BaseHTTPMiddleware
-from app.middleware.error_handler import SecureErrorHandlerMiddleware  # 安全异常处理中间件
 
 from app.config import settings
+from app.middleware.error_handler import SecureErrorHandlerMiddleware  # 安全异常处理中间件
 from app.routes import (
     assistants,
     audit,

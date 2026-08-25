@@ -10,6 +10,7 @@ WebSocket Routes - 实时双向通信
    主字段，转发前经 Pydantic 校验（metadata 黑名单 + 大小限制）。
 """
 
+import contextlib
 import json
 import re
 
@@ -20,8 +21,9 @@ from shared.models.schemas import WebSocketMessage
 from shared.observability.logger import get_logger
 from shared.security.signature import CLIENT_ID_PATTERN, sign_client_identity
 
-from ..services.session import SessionManager
 from app.config import settings
+
+from ..services.session import SessionManager
 
 router = APIRouter()
 logger = get_logger("websocket-handler")
@@ -65,13 +67,17 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 try:
                     ws_message = WebSocketMessage.model_validate_json(data)
                 except ValidationError as e:
+                    errors = e.errors()[:5]
+                    # 构造更有帮助的错误消息，包含缺失字段名
+                    missing_fields = [err["loc"][-1] for err in errors if err.get("type") == "missing"]
+                    error_msg = f"missing required field: {', '.join(missing_fields)}" if missing_fields else "invalid_schema"
                     logger.warning(
                         event="websocket_invalid_schema",
                         message="Invalid message schema",
                         client_id=client_id,
-                        errors=e.errors()[:5],
+                        errors=errors,
                     )
-                    await websocket.send_text(json.dumps({"error": "invalid_schema", "details": e.errors()[:5]}))
+                    await websocket.send_text(json.dumps({"error": error_msg, "details": errors}))
                     continue
 
                 logger.info(
@@ -137,8 +143,6 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 client_id=client_id,
                 error_type=type(e).__name__,
             )
-            try:
+            with contextlib.suppress(Exception):
                 await websocket.send_text(json.dumps({"error": "internal_error", "message": "服务暂时不可用，请稍后重试"}))
-            except Exception:
-                pass  # WebSocket 已关闭，忽略发送失败
             await session_manager.close_session(client_id)

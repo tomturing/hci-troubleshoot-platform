@@ -8,13 +8,12 @@ error_id（uuid4）用于日志与客户端反馈的关联追踪。
 
 import traceback
 import uuid
-from uuid import UUID
 
 from fastapi import Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
 from shared.observability.logger import get_logger
+from starlette.middleware.base import BaseHTTPMiddleware
 
 logger = get_logger("error-handler")
 
