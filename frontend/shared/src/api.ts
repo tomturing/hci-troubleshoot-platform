@@ -190,25 +190,40 @@ export function createPromptAuditApi(client: AxiosInstance) {
     /** [Admin] 获取工单的 PromptAudit 记录列表 */
     listByCaseId(caseId: string, params?: { limit?: number; offset?: number; include_messages?: boolean }) {
       return client.get<{
-        case_id: string
         total: number
-        offset: number
         limit: number
-        records: Array<{
-          audit_id: string
-          conversation_id: string | null
-          assistant_type: string | null
-          model: string | null
-          has_sop: boolean | null
-          kb_chunks_count: number | null
-          kb_top_score: number | null
-          system_prompt_chars: number | null
-          message_count: number | null
-          user_rating: number | null
-          captured_at: string | null
-          messages?: any
-        }>
-      }>(`/cases/${caseId}/prompt-audit`, { params })
+        offset: number
+        items: Array<any>
+      }>('/audit-logs/prompts', { params: { case_id: caseId, ...params } }).then((res) => {
+        const items = res.data?.items || []
+        const records = items.map((item: any) => {
+          const payload = item.payload || {}
+          return {
+            audit_id: item.id,
+            conversation_id: item.conversation_id,
+            assistant_type: payload.assistant_type || null,
+            model: payload.model || null,
+            has_sop: payload.has_sop ?? null,
+            kb_chunks_count: payload.kb_chunks_count ?? null,
+            kb_top_score: payload.kb_top_score ?? null,
+            system_prompt_chars: payload.total_chars ?? payload.system_prompt_chars ?? null,
+            message_count: payload.message_count ?? null,
+            user_rating: payload.user_rating ?? null,
+            captured_at: item.started_at || null,
+            messages: payload.messages || [],
+          }
+        })
+        return {
+          ...res,
+          data: {
+            case_id: caseId,
+            total: res.data?.total ?? records.length,
+            offset: params?.offset || 0,
+            limit: params?.limit || 50,
+            records,
+          },
+        }
+      })
     },
   }
 }
@@ -243,7 +258,7 @@ export function createAuditLogApi(client: AxiosInstance) {
           duration_ms: number | null
           trace_id: string | null
         }>
-      }>('/api/v1/audit-logs', { params })
+      }>('/audit-logs', { params })
     },
   }
 }
