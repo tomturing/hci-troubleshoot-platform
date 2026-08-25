@@ -17,6 +17,11 @@ import {
   type ProduceVariableOption,
 } from '@/utils/produceVariables'
 import {
+  formatAssertSummary,
+  formatDeriveExtractSummary,
+  formatOutputProcessingFullText,
+} from '@/utils/outputProcessing'
+import {
   assignImportedSignalIds,
   buildImportAnnotations,
   countImportIdRegenerations,
@@ -4679,11 +4684,35 @@ onUnmounted(() => clearBatchPollTimer())
                     </div>
                   </div>
                   <div v-if="(sigOrch(item.sig).output_processing || []).length" class="signal-row">
-                    <span class="signal-k">输出后处理</span>
+                    <span class="signal-k">变量处理</span>
                     <div class="signal-v">
-                      <el-tag v-for="processing in sigOrch(item.sig).output_processing" :key="processing.id" size="small" effect="plain" style="margin-right: 6px">
-                        {{ processing.mode === 'assert' ? `判断：${processing.input} ${processing.match?.type || ''}` : `提取：${processing.input} → ${processing.name || processing.target_variable || ''}` }}
-                      </el-tag>
+                      <div class="output-processing-preview-list">
+                        <div
+                          v-for="(processing, procIdx) in sigOrch(item.sig).output_processing"
+                          :key="processing.id || procIdx"
+                          class="output-processing-preview-chip"
+                          :class="processing.mode === 'assert' ? 'is-assert' : 'is-derive'"
+                          :title="formatOutputProcessingFullText(processing)"
+                        >
+                          <template v-if="processing.mode === 'assert'">
+                            <span class="op-mode-tag is-assert">判断</span>
+                            <span class="op-input code">{{ processing.input || '—' }}</span>
+                            <span class="op-condition code">{{ formatAssertSummary(processing) }}</span>
+                            <span v-if="processing.match?.expected === false" class="op-extra-badge is-negate">应不满足</span>
+                          </template>
+                          <template v-else>
+                            <span class="op-mode-tag is-derive">提取</span>
+                            <span class="op-input code">{{ processing.input || '—' }}</span>
+                            <span class="op-arrow">→</span>
+                            <span class="op-extract-detail">{{ formatDeriveExtractSummary(processing) }}</span>
+                            <span class="op-arrow">→</span>
+                            <span class="op-target-var">
+                              <strong>{{ processing.name || processing.target_variable || '未命名' }}</strong>
+                              <code v-if="processing.type" class="op-type">({{ processing.type }})</code>
+                            </span>
+                          </template>
+                        </div>
+                      </div>
                     </div>
                   </div>
                   <!-- 来源证据固定在信号卡片最后：它是只读溯源，不应打断专家对可执行字段的阅读。 -->
@@ -6981,6 +7010,90 @@ onUnmounted(() => clearBatchPollTimer())
   background: #e0e7ff;
   padding: 1px 4px;
   border-radius: 3px;
+}
+.output-processing-preview-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.output-processing-preview-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.output-processing-preview-chip.is-assert {
+  background: #fefce8;
+  border: 1px solid #fef08a;
+  color: #854d0e;
+}
+.output-processing-preview-chip.is-derive {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #166534;
+}
+.output-processing-preview-chip .op-mode-tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: #fff;
+}
+.output-processing-preview-chip .op-mode-tag.is-assert {
+  background: #eab308;
+}
+.output-processing-preview-chip .op-mode-tag.is-derive {
+  background: #22c55e;
+}
+.output-processing-preview-chip .op-input {
+  font-family: var(--el-font-family-monospace, monospace);
+  font-weight: 600;
+  color: #1e293b;
+  background: rgba(255, 255, 255, 0.85);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+.output-processing-preview-chip .op-condition {
+  font-family: var(--el-font-family-monospace, monospace);
+  font-weight: 600;
+  color: #a16207;
+}
+.output-processing-preview-chip .op-arrow {
+  color: #94a3b8;
+  font-size: 11px;
+  margin: 0 1px;
+}
+.output-processing-preview-chip .op-extract-detail {
+  color: #15803d;
+  font-size: 12px;
+}
+.output-processing-preview-chip .op-target-var {
+  color: #0f172a;
+}
+.output-processing-preview-chip .op-target-var strong {
+  font-weight: 600;
+}
+.output-processing-preview-chip .op-type {
+  font-size: 11px;
+  color: #64748b;
+  margin-left: 3px;
+  background: #e2e8f0;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.output-processing-preview-chip .op-extra-badge {
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.output-processing-preview-chip .op-extra-badge.is-negate {
+  background: #fee2e2;
+  color: #b91c1c;
 }
 
 /* 执行结果两步处理流式卡片（阅览态） */
