@@ -730,7 +730,7 @@ func (r *RunRepository) ClaimOutbox(ctx context.Context) (OutboxRecord, error) {
 		       COALESCE(o.trace_id, ''), o.attempts, o.available_at
 		FROM control_plane.outbox o LEFT JOIN control_plane.run r ON r.id = o.run_id
 		WHERE o.status = 'pending' AND o.available_at <= now()
-		ORDER BY o.id FOR UPDATE SKIP LOCKED LIMIT 1
+		ORDER BY o.id FOR UPDATE OF o SKIP LOCKED LIMIT 1
 	`)
 	if err := row.Scan(&record.ID, &record.Topic, &record.AggregateType, &record.AggregateID,
 		&record.RunExternalID, &record.EventType, &record.PayloadDigest, &record.TraceID,

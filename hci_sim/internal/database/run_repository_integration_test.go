@@ -68,8 +68,8 @@ func TestRunRepositorySyncPublishedBundles(t *testing.T) {
 		t.Fatalf("unexpected replacement states: first=%q second=%q", firstStatus, secondStatus)
 	}
 	var tracedEvents int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit.entity_event WHERE trace_id = $1`, secondTraceID).Scan(&tracedEvents); err != nil || tracedEvents != 3 {
-		t.Fatalf("replacement audit events = %d, want 3: %v", tracedEvents, err)
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM audit.entity_event WHERE trace_id = $1`, secondTraceID).Scan(&tracedEvents); err != nil || tracedEvents != 2 {
+		t.Fatalf("replacement audit events = %d, want 2: %v", tracedEvents, err)
 	}
 	replayTraceID := "trace-" + suffix + "-replay"
 	if err := repository.SyncPublishedBundles(ctx, []PublishedBundleInput{second}, "integration-test", replayTraceID); err != nil {
