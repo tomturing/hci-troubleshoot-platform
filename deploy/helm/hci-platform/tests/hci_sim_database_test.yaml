@@ -97,6 +97,8 @@ tests:
           path: data["000003_controlplane_bundle_lifecycle.sql"]
       - exists:
           path: data["000004_bundle_activation.sql"]
+      - exists:
+          path: data["000005_bundle_template.sql"]
 
   - it: "普通迁移触发器暴露稳定 digest，驱动 migration-only 自动同步"
     set:
@@ -118,7 +120,7 @@ tests:
           pattern: "^[a-f0-9]{64}$"
       - equal:
           path: data.migration_file_count
-          value: "4"
+          value: "5"
 
   - it: "迁移 Job 在依赖之后以 wave -8 执行"
     set:
