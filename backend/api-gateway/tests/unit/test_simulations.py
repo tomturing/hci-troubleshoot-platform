@@ -43,6 +43,7 @@ def test_bundle_factory_reads_c1_and_injects_compiler_identity():
     assert runtime_post.await_args.kwargs["actor_role"] == "compiler"
     assert len(runtime_post.await_args.kwargs["trace_id"]) == 32
     assert runtime_post.await_args.args[1]["resolved"]["kbd_revision"] == 25
+    assert runtime_post.await_args.args[1]["compiler_revision"] == "bundle-factory-v2"
 
 
 def test_bundle_factory_rejects_c1_gap_without_compiling():
