@@ -60,6 +60,10 @@
   - **需求**：用户反馈关键信号执行结果列表中，信号标题只有序号和检查说明，无法快速识别信号归属于哪个 KBD 案例。
   - **修复**：在 `_format_step_evidence` 方法中新增 `support_id` 参数，标题格式从 `{index}. {icon} {title}` 改为 `{index}. {icon} [{support_id}] {title}`，方便用户识别信号归属。
   - **效果**：信号标题现在显示为 `1. ✅ [18906] 查看新建虚拟机任务详情确认失败报错信息`，清晰标识案例归属。
+- **hci-sim 数据库新增 bundle_template 表**：
+  - **背景**：fixture.bundle.compile_input 是"已冻结、已绑定到具体 bundle"的编译输入快照，不能充当可复用模板。
+  - **修复**：新增 `fixture.bundle_template` 表存储可复用 Bundle 模板（蓝图），支持草稿、编辑、版本化、归属管理，每次实例化生成 fixture.bundle。
+  - **配套**：更新 Helm 单元测试期望值（`migration_file_count` 从 "4" 改为 "5"），同步 CI 检查的 `expected_tables` 列表。
 - **KBD 关键信号阅览与预览呈现完整性优化**：
   - **根因**：KBD 审查页面在非编辑态（阅览/预览模式）下，仅平铺展示基础参数，缺失了取值（`ValueExtract`，包括完整行/行列解析/JSON路径/行列选择/数量/AI提取等）与判断规则（`Matcher` / `Produces`，包括多 pattern 排版、比较条件、样本数、趋势方向、产出变量路径等）的完整结构，导致专家每次必须点击“编辑”才能获取全量判定细节。
   - **修复**：
