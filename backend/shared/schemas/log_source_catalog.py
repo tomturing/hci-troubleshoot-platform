@@ -158,11 +158,12 @@ LOG_SOURCE_CATALOG: tuple[LogSourceDefinition, ...] = (
         file_pattern=r"sfvt_vtpdaemon\.log",
         family="whitebox",
         # 未提供可用 END 时必须回退到 /sf/log；不能把历史查询错误锁在 today。
-        # END 已解析时由 qfk_log 按月内日号定位 /sf/log/<D 或 DD>/vt。
+        # END 已解析时先按月内无前导零日号定位 /sf/log/<D>/vt；
+        # 目标文件不在 vt 子目录时只回退同日根目录 /sf/log/<D>。
         default_path=LOG_ROOT,
         parser="timestamped_lines",
         predicates=("keyword", "regex", "state", "threshold", "delta", "trend", "exists"),
-        description="vtpdaemon 白盒日志；块迁移作业进度为周期采样数值，需 delta/trend 判定，END 可用时位于 /sf/log/<D或DD>/vt，未提供 END 时回退 /sf/log",
+        description="vtpdaemon 白盒日志；块迁移作业进度为周期采样数值，需 delta/trend 判定，END 可用时先查 /sf/log/<D>/vt，未命中时回退 /sf/log/<D>，未提供 END 时回退 /sf/log",
         date_subpath="vt",
     ),
     LogSourceDefinition(
@@ -172,7 +173,7 @@ LOG_SOURCE_CATALOG: tuple[LogSourceDefinition, ...] = (
         default_path=LOG_ROOT,
         parser="timestamped_lines",
         predicates=("keyword", "regex", "state", "threshold", "exists"),
-        description="按虚拟机标识分文件的 QEMU 白盒日志；END 可用时位于 /sf/log/<D或DD>/vt",
+        description="按虚拟机标识分文件的 QEMU 白盒日志；END 可用时先查 /sf/log/<D>/vt，未命中时回退 /sf/log/<D>",
         date_subpath="vt",
     ),
     LogSourceDefinition(
@@ -182,7 +183,7 @@ LOG_SOURCE_CATALOG: tuple[LogSourceDefinition, ...] = (
         default_path=LOG_ROOT,
         parser="timestamped_lines",
         predicates=("keyword", "regex", "state", "threshold", "exists"),
-        description="宿主机内核白盒日志；END 可用时位于 /sf/log/<D或DD>",
+        description="宿主机内核白盒日志；END 可用时位于 /sf/log/<D>",
     ),
     LogSourceDefinition(
         source_id="system_messages",

@@ -43,7 +43,7 @@ blackbox 与 whitebox 的差异是数据布局和解释方法，不是执行通�
 |---|---|
 | `/sf/data/local` | 不是常规日志根；常规日志根只有 `/sf/log`。它包含镜像、备份、TSDB、升级包、info_collect 产物等。因为实机 `acli log get` 明确允许该路径，所以只保留 `request_id + path=/sf/data/local` 的辅助关联模式 |
 | 文件与路径映射 | 不是散落条件，也不是简单 `dict[str, str]`；代码使用有序、不可变 `tuple[LogSourceDefinition, ...]`。条目包含 file pattern、family、default path、parser、predicates 和 acquisition |
-| HOST/END/VM/file | KBD 先由 QKV 生产 HOST/END/REQUEST_ID/VM，变量池递归替换 `{{VAR}}`；HOST 由 bridge 选择对应 SSH 会话；VM 可进入 `sfvt_qemu_{{VM}}.log`；END 同时决定 `-t` 与日志目录：whitebox 使用月内日号 `/sf/log/<D或DD>[/vt]`，blackbox 使用 `YYYYMMDD`；file/Catalog 决定目录子层与 parser。无法得到实际 END 时，whitebox 回退 `/sf/log`。 |
+| HOST/END/VM/file | KBD 先由 QKV 生产 HOST/END/REQUEST_ID/VM，变量池递归替换 `{{VAR}}`；HOST 由 bridge 选择对应 SSH 会话；VM 可进入 `sfvt_qemu_{{VM}}.log`；END 同时决定 `-t` 与日志目录：whitebox 使用月内无前导零日号 `/sf/log/<D>`；带 `vt` 子目录的文件先查 `/sf/log/<D>/vt`，目标文件未命中时只回退同日 `/sf/log/<D>`；blackbox 使用 `YYYYMMDD`；file/Catalog 决定目录子层与 parser。无法得到实际 END 时，whitebox 回退 `/sf/log`。 |
 | 解压 | qfk_log 不直接执行解压命令。它决定安全参数；`-t` 保留为日志行的绝对时间过滤，历史归档处理仍由 `acli log get` 完成；显式 gzip path 才使用 `-g`。 |
 | qfk_log 与 aCLI | qfk_log 是 HTP 语义层和确定性判定层，`acli log get` 是当前主机的设备采集原语。两者不是重复实现，也不能互相替代 |
 | qkv_dialog | 在当前主控分别搜索 `/sf/log/today` 和 `/sf/log/today/vt`，过滤本次探针被 audit 记录的自观测行，兼容 `request_id:`、`request_id=` 和 trace 格式，产出 `END/REQUEST_ID/HOST` |
@@ -803,12 +803,12 @@ include_archives=true 但未完成 archive_precheck
 - 生产门禁调用共享 Runtime 的 `compile()` 检查 Schema、Catalog、安全边界和变量依赖；工具执行前调用 `resolve()` 按当前 HOST/END、版本和能力探针确认唯一的绝对路径或安全回退。Executor 只接受 `ResolvedAcquisition`。
 - 现有 `backend/shared/schemas/log_source_catalog.py`、`acquirer_args.py` 与 qfk_log Handler/Matcher 是该 Resolver 的迁移来源；迁移期间保留兼容字段，但不得把原始 `path` 当作已验证的物理路径。
 
-实施状态：`LogResolver` 已实现 `vtpdaemon` 别名/错别字、完整 filename、`vt/filename` 相对路径、完整绝对文件路径、END 的 D/DD 候选、`today` 改写和 gzip 前置检查，并在当前 HCI 上确认 `/sf/log/today -> /sf/log/7`、`/sf/log/7/vt/sfvt_vtpdaemon.log` 与 `/sf/log/6/vt/sfvt_vtpdaemon.log.2.gz`。当前仍未实现 tar.gz member Handler 和“第一个 D/DD 候选失败后自动重试下一个”的执行闭环；详见 [Runtime 代码与真实 HCI 能力测评](../../../verify/events/2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md)。
+实施状态：`LogResolver` 已实现 `vtpdaemon` 别名/错别字、完整 filename、`vt/filename` 相对路径、完整绝对文件路径、END 的 `D/vt -> D` 同日回退、`today` 改写和 gzip 前置检查，并在当前 HCI 上确认 `/sf/log/today -> /sf/log/7`、`/sf/log/7/vt/sfvt_vtpdaemon.log` 与 `/sf/log/6/vt/sfvt_vtpdaemon.log.2.gz`。当前仍未实现 tar.gz member Handler 和 production path-probe 硬门禁；详见 [Runtime 代码与真实 HCI 能力测评](../../../verify/events/2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md)。
 
 ## 16. 变更历史
 
 | 日期 | 版本 | 变更摘要 | 关联方案 |
 |------|------|---------|---------|
-| 2026-08-07 | v1.4 | 实施 LogResolver 第一阶段，并以真实 HCI 验证 vtpdaemon 的 D/vt 路径和 `.gz` 轮转；tar.gz Handler、D/DD 自动 fallback 和 production path-probe 硬门禁仍进行中。 | [Runtime 代码与真实 HCI 能力测评](../../../verify/events/2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md) |
+| 2026-08-07 | v1.4 | 实施 LogResolver 第一阶段，并以真实 HCI 验证 vtpdaemon 的 D/vt 路径和 `.gz` 轮转；仅允许 `D/vt -> D` 同日回退，tar.gz Handler 与 production path-probe 硬门禁仍进行中。 | [Runtime 代码与真实 HCI 能力测评](../../../verify/events/2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md) |
 | 2026-08-07 | v1.3 | 对齐共享运行时的正式命名：日志目标解析器统一称为 `LogResolver`，并固定 `resolver_id=log`；不改变 qfk_log 的日志领域职责和执行前校验边界。 | [关键信号统一解析运行时与 Resolver 分层方案](../events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
 | 2026-08-07 | v1.2 | 将 qfk_log 明确接入 Shared Resolution Runtime 的 `LogResolver`，定义 `compile()`/`resolve()` 与 Executor 的边界；保留 qfk_log 的日志目标领域职责，跨版本绝对路径和归档解析仍为待实施事项。 | [关键信号统一解析运行时与 Resolver 分层方案](../events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |

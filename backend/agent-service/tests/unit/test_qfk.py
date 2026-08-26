@@ -191,6 +191,21 @@ def test_legacy_whitebox_today_path_does_not_override_end_day_directory():
     assert "/sf/log/today" not in command
 
 
+def test_log_resolution_retry_falls_back_to_same_day_root_without_zero_padded_day():
+    command = "acli log get -E -k x -f sfvt_vtpdaemon.log -p /sf/log/1/vt -t '2026-01-01 00:00:08'"
+    resolution = {
+        "candidates_tried": [
+            "/sf/log/1/vt/sfvt_vtpdaemon.log",
+            "/sf/log/1/sfvt_vtpdaemon.log",
+        ]
+    }
+
+    commands = engine._expand_log_resolution_retries([command], resolution)
+
+    assert commands == [command, command.replace("-p /sf/log/1/vt", "-p /sf/log/1")]
+    assert all("/sf/log/01" not in item for item in commands)
+
+
 @pytest.mark.asyncio
 async def test_producer_mode_returns_complete_output_without_matcher(monkeypatch):
     """KBD 的 lsof -> PID producer 不能被 QFK_MATCHER_MISSING 短路。"""
@@ -705,4 +720,3 @@ async def test_auto_inference_enables_nonzero_as_negative_for_readonly_cat(monke
     assert result.matched is False
     assert result.execution_status == "succeeded"
     assert result.business_output_available is True
-

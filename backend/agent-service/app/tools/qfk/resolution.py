@@ -35,7 +35,7 @@ def resolve_backend_signal(
         "resource_keyword": signal.resource_keyword,
         "file": signal.file,
         # BackendSignal 为兼容既有 Handler 会填入 Catalog 默认 path；只有显式 path
-        # 才能覆盖 Runtime 的 END/D/DD 候选展开。
+        # 才能覆盖 Runtime 的 END 路径候选展开（D/vt -> D）。
         "path": None if signal.path_inferred else signal.path,
         "time_window": signal.time_window,
         "source_family": signal.source_family,
