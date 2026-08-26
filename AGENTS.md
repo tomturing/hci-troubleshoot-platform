@@ -32,6 +32,14 @@
     - 在 `_deterministic_spec` 中将 `value_mode` 纳入过滤集，确保确定性选择阶段只获取文本候选行，类型转换延迟到 AI 提取结果阶段处理。
     - 为 AI 提取过程添加 Langfuse `observe_llm_generation` 观测，记录 instruction、expected_type、candidate_lines 等输入和 value、evidence_lines 等输出，使 AI 提取过程可追踪。
   - **效果**：AI 提取能够正常调用 LLM 从日志行中摘取数值，类型转换在 AI 结果返回后按声明的 `value_type` 执行，Langfuse trace 完整呈现信号执行全过程。
+- **QFK AI 提取 Langfuse 可观测性增强**（PR #904）：
+  - **根因**：AI 提取失败时，Langfuse trace 不包含 LLM 的实际响应内容，只记录 token 统计。例如工单 Q2026082687344 报错 `QFK_AI_EXTRACT_INVALID_RESPONSE: AI 提取结果必须是非空字符串`，但无法看到 LLM 返回了什么，导致排查困难。
+  - **修复**：
+    - 在 LLM 调用成功后立即保存 `raw_response`，确保后续验证失败时也能获取原始响应。
+    - JSON 解析失败、验证失败、成功三种情况都会调用 `update_observation` 记录实际响应内容。
+    - 失败时额外记录 `parsed_payload`、`payload_value_type`、`payload_value_preview` 便于调试。
+    - 限制响应长度为 2000 字符，防止超大响应影响性能。
+  - **效果**：现在可以在 Langfuse 中直接看到 LLM 返回的完整 JSON，包括 `value` 字段的实际类型和内容，便于快速定位问题根因（如 LLM 返回数组而非字符串、返回 null、返回错误 JSON 格式等）。
 - **KBD 关键信号阅览与预览呈现完整性优化**：
   - **根因**：KBD 审查页面在非编辑态（阅览/预览模式）下，仅平铺展示基础参数，缺失了取值（`ValueExtract`，包括完整行/行列解析/JSON路径/行列选择/数量/AI提取等）与判断规则（`Matcher` / `Produces`，包括多 pattern 排版、比较条件、样本数、趋势方向、产出变量路径等）的完整结构，导致专家每次必须点击“编辑”才能获取全量判定细节。
   - **修复**：

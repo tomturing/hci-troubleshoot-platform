@@ -278,6 +278,8 @@ async def _extract_ai_value_impl(
                 ),
             },
         ]
+        raw_response = ""
+        payload = None
         try:
             response = await ai_client.invoke(
                 messages=messages,
@@ -288,43 +290,82 @@ async def _extract_ai_value_impl(
                 temperature=0,
                 top_p=1,
             )
-            payload = json.loads(str(getattr(response, "content", "") or ""))
+            raw_response = str(getattr(response, "content", "") or "")
+            payload = json.loads(raw_response) if raw_response else None
         except QFKExtractionError:
             raise
         except Exception as exc:
+            # 即使 JSON 解析失败，也记录 LLM 原始响应
+            update_observation(
+                observation,
+                output={
+                    "status": "failed",
+                    "error": f"AI 提取调用或 JSON 解析失败: {exc}",
+                    "raw_response": raw_response[:2000] if raw_response else None,  # 限制长度
+                },
+                metadata={
+                    "response_chars": len(raw_response),
+                    "response_hash": hashlib.sha256(raw_response.encode("utf-8", errors="replace")).hexdigest()[:16] if raw_response else None,
+                    "json_parse_failed": True,
+                },
+            )
             raise QFKExtractionError("QFK_AI_EXTRACT_FAILED", f"AI 提取调用或 JSON 解析失败: {exc}") from exc
-        if not isinstance(payload, dict):
-            raise QFKExtractionError("QFK_AI_EXTRACT_INVALID_RESPONSE", "AI 提取返回不是 JSON 对象")
-        if payload.get("ok") is False:
-            raise QFKExtractionError("QFK_AI_EXTRACT_FAILED", f"AI 无法提取：{payload.get('error') or '未说明原因'}")
-        evidence_numbers = payload.get("evidence_lines")
-        if not isinstance(evidence_numbers, list) or not evidence_numbers or any(
-            not isinstance(item, int) or isinstance(item, bool) for item in evidence_numbers
-        ):
-            raise QFKExtractionError("QFK_AI_EXTRACT_INVALID_RESPONSE", "AI 必须返回非空整数 evidence_lines")
-        by_number = dict(zip(line_numbers, lines, strict=True))
-        if any(number not in by_number for number in evidence_numbers):
-            raise QFKExtractionError("QFK_AI_EXTRACT_UNGROUNDED", "AI 引用了候选完整输出之外的行，已拒绝")
-        evidence_lines = [by_number[number] for number in evidence_numbers]
-        raw_value = payload.get("value")
-        value = _cast_grounded_value(raw_value, value_type)
-        _assert_grounded(raw_value, evidence_lines)
-        raw_response = str(getattr(response, "content", "") or "")
 
-        # 更新 Langfuse observation 的输出
-        update_observation(
-            observation,
-            output={
-                "value": value,
-                "raw_value": raw_value,
-                "evidence_line_numbers": evidence_numbers,
-                "evidence_lines": [line[:200] for line in evidence_lines],  # 截断避免过长
-            },
-            metadata={
-                "response_chars": len(raw_response),
-                "response_hash": hashlib.sha256(raw_response.encode("utf-8", errors="replace")).hexdigest()[:16],
-            },
-        )
+        # 验证阶段：确保无论如何都记录 LLM 的实际响应
+        try:
+            if not isinstance(payload, dict):
+                raise QFKExtractionError("QFK_AI_EXTRACT_INVALID_RESPONSE", "AI 提取返回不是 JSON 对象")
+            if payload.get("ok") is False:
+                raise QFKExtractionError("QFK_AI_EXTRACT_FAILED", f"AI 无法提取：{payload.get('error') or '未说明原因'}")
+            evidence_numbers = payload.get("evidence_lines")
+            if not isinstance(evidence_numbers, list) or not evidence_numbers or any(
+                not isinstance(item, int) or isinstance(item, bool) for item in evidence_numbers
+            ):
+                raise QFKExtractionError("QFK_AI_EXTRACT_INVALID_RESPONSE", "AI 必须返回非空整数 evidence_lines")
+            by_number = dict(zip(line_numbers, lines, strict=True))
+            if any(number not in by_number for number in evidence_numbers):
+                raise QFKExtractionError("QFK_AI_EXTRACT_UNGROUNDED", "AI 引用了候选完整输出之外的行，已拒绝")
+            evidence_lines = [by_number[number] for number in evidence_numbers]
+            raw_value = payload.get("value")
+            value = _cast_grounded_value(raw_value, value_type)
+            _assert_grounded(raw_value, evidence_lines)
+
+            # 成功情况：更新 Langfuse observation 的输出
+            update_observation(
+                observation,
+                output={
+                    "status": "succeeded",
+                    "value": value,
+                    "raw_value": raw_value,
+                    "evidence_line_numbers": evidence_numbers,
+                    "evidence_lines": [line[:200] for line in evidence_lines],  # 截断避免过长
+                    "raw_response": raw_response[:2000] if len(raw_response) > 2000 else raw_response,  # 限制长度
+                },
+                metadata={
+                    "response_chars": len(raw_response),
+                    "response_hash": hashlib.sha256(raw_response.encode("utf-8", errors="replace")).hexdigest(),
+                },
+            )
+        except QFKExtractionError as exc:
+            # 失败情况：仍然记录 LLM 的实际响应，方便排查问题
+            update_observation(
+                observation,
+                output={
+                    "status": "failed",
+                    "error_code": exc.code,
+                    "error_message": str(exc),
+                    "raw_response": raw_response[:2000] if raw_response else None,  # 限制长度
+                    "parsed_payload": payload,  # 记录解析后的 payload，便于调试
+                    "payload_value_type": type(payload.get("value")).__name__ if isinstance(payload, dict) and "value" in payload else None,
+                    "payload_value_preview": str(payload.get("value"))[:500] if isinstance(payload, dict) and payload.get("value") is not None else None,
+                },
+                metadata={
+                    "response_chars": len(raw_response) if raw_response else 0,
+                    "response_hash": hashlib.sha256(raw_response.encode("utf-8", errors="replace")).hexdigest() if raw_response else None,
+                    "validation_failed": True,
+                },
+            )
+            raise
 
         return AIExtractionResult(
             value=value,
