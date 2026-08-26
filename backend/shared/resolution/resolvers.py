@@ -238,12 +238,14 @@ class LogResolver:
         if family == "pod":
             return ["/sf/log/pods"]
         if absolute_time and not str(absolute_time).startswith("{{"):
+            # 白盒目录只有无前导零的月内日号 D。带 vt 子目录的日志先检查
+            # /sf/log/D/vt；若文件不存在，受控回退到同日父目录 /sf/log/D。
             day = int(str(absolute_time)[8:10])
-            tokens = [str(day), f"{day:02d}"]
+            day_root = f"{LOG_ROOT}/{day}"
             subpath = str(source.get("date_subpath") or hint).strip("/")
-            return [
-                f"{LOG_ROOT}/{token}/{subpath}" if subpath else f"{LOG_ROOT}/{token}" for token in dict.fromkeys(tokens)
-            ]
+            if not subpath:
+                return [day_root]
+            return [f"{day_root}/{subpath}", day_root]
         if hint:
             return [f"{LOG_ROOT}/{hint}"]
         default = source.get("default_path") or LOG_ROOT
