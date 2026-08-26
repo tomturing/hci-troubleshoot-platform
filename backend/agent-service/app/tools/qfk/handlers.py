@@ -223,7 +223,7 @@ class LogKeywordHandler(BackendSignalHandler):
     def _inferred_whitebox_path(source: dict[str, object], absolute_time: str | None) -> str:
         """按白盒日志布局定位目录；无法从 END 得到日号时回退日志根。
 
-        HCI whitebox 实机目录使用月内日号（``/sf/log/4``），不是 ISO 日期或
+        HCI whitebox 实机目录使用月内无前导零日号（``/sf/log/4``），不是 ISO 日期或
         ``YYYYMMDD``。``absolute_time`` 在正常执行前已由变量池将 ``{{END}}``
         替换为实际绝对时间；若仍为占位符，不能猜测日期或继续使用 ``today``。
         """
