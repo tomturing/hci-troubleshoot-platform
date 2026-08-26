@@ -398,7 +398,8 @@ async def test_matcher_ai_extract_runs_only_after_deterministic_hit_and_records_
     [
         ("delta", {"operator": "==", "value": 0, "minimum_samples": 2}, [347688534016, 347688534016], "Completed 347688534016 of 347688534016 bytes\\n", True),
         ("delta", {"operator": "==", "value": 0, "minimum_samples": 2}, [347688534016, 347688534017], "Completed 347688534016 of 347688534017 bytes\\n", False),
-        ("threshold", {"operator": ">=", "value": 347688534016}, 347688534016, "Completed 347688534016 bytes\\n", True),
+        # threshold 现在也使用 array<number>，通过聚合转为单值
+        ("threshold", {"operator": ">=", "value": 347688534016}, [347688534016], "Completed 347688534016 bytes\\n", True),
         ("trend", {"direction": "increasing", "value": 1, "minimum_samples": 3}, [1, 2, 3], "Samples 1 2 3\\n", True),
     ],
 )
@@ -453,7 +454,8 @@ async def test_numeric_matcher_consumes_grounded_ai_values_before_deterministic_
 
     assert result.error is None
     assert result.matched is expected
-    assert result.ai_value == (float(ai_value) if matcher_type == "threshold" else [float(item) for item in ai_value])
+    # 所有数值 matcher 现在都返回数组
+    assert result.ai_value == [float(item) for item in ai_value]
     assert "value_source=ai_grounded" in result.evidence or "AI 提取" in result.evidence
 
 

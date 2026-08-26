@@ -46,6 +46,10 @@
     - **方案 A**：优化系统提示词，明确强调 "value 字段必须是字符串类型，绝不能是数组或对象"，提供清晰示例并删除歧义表述。
     - **方案 B**：增强后处理逻辑，在 `_cast_grounded_value` 中添加对数组类型的兼容处理，如果 value 是数值数组则自动转换为逗号分隔的字符串（例如 `[0, 0, 0]` → `"0, 0, 0"`）。
   - **效果**：新提示词引导 LLM 正确返回字符串格式，即使 LLM 仍返回数组，后处理逻辑也能自动兼容，彻底解决 `QFK_AI_EXTRACT_INVALID_RESPONSE` 错误。
+- **QFK AI 提取 threshold matcher 多值聚合支持**：
+  - **根因**：`ai_value_type_for_matcher("threshold")` 返回 `"number"`，期望单个数值。当用户配置 AI 提取多个数值（如日志中所有 `unaligned` 和 `invalid` 值）然后通过聚合求和时，AI 返回 `"0, 1, 2, 3, 4, 5"` 这样的逗号分隔字符串，但 `_cast_grounded_value` 尝试将其解析为单个数值而失败，抛出 `QFK_AI_EXTRACT_INVALID_RESPONSE: AI 结果 '...' 不是数字`。
+  - **修复**：修改 `ai_value_type_for_matcher` 函数，让 `threshold` matcher 也返回 `"array<number>"`，与 `delta`/`trend` 一致。AI 可以返回多个数值，通过聚合方式（sum/max/min）转换为单个数值后再进行阈值比较。
+  - **效果**：threshold matcher 现在完整支持"多值提取 + 聚合 + 阈值判断"的流程。
 - **KBD 关键信号阅览与预览呈现完整性优化**：
   - **根因**：KBD 审查页面在非编辑态（阅览/预览模式）下，仅平铺展示基础参数，缺失了取值（`ValueExtract`，包括完整行/行列解析/JSON路径/行列选择/数量/AI提取等）与判断规则（`Matcher` / `Produces`，包括多 pattern 排版、比较条件、样本数、趋势方向、产出变量路径等）的完整结构，导致专家每次必须点击“编辑”才能获取全量判定细节。
   - **修复**：

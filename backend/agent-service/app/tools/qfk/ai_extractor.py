@@ -50,13 +50,12 @@ def ai_value_type_for_matcher(matcher_type: str) -> str | None:
     """返回需要由 AI 预先提供值的数值 Matcher 类型。
 
     keyword/regex/state/exists 都可以先由确定性 Matcher 判断，再做可选的证据提取；
-    threshold 需要一个数，delta/trend 需要有序的数值数组。
+    threshold 需要数值数组（通过聚合 sum/max/min 等转为单值）；
+    delta/trend 同样需要有序数值数组。
     """
 
     normalized = str(matcher_type or "").strip().lower()
-    if normalized == "threshold":
-        return "number"
-    if normalized in {"delta", "trend"}:
+    if normalized in {"threshold", "delta", "trend"}:
         return "array<number>"
     return None
 
