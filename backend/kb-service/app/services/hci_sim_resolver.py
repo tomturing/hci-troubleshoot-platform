@@ -18,6 +18,7 @@ from typing import Any
 from shared.models.dynamic_resource import DynamicResourceActive, DynamicResourceRevision
 from shared.resolution.models import ResolutionStatus
 from shared.resolution.review import SignalReviewFeature, review_signal_document
+from shared.schemas.acquirer_args import CONDITIONAL_PRODUCERS
 from shared.schemas.hci_sim_policy import current_hci_sim_policy_revision
 from shared.signals.qkv_output_processing import QKVProcessingError, normalize_output_processing
 from sqlalchemy import and_, select
@@ -351,6 +352,10 @@ class HciSimKbdResolver:
                 gaps.append(
                     CapabilityGap("TOOL_ACTIVE_SNAPSHOT_INVALID", f"Tool {tool} 当前修订未发布、已停用或校验不一致")
                 )
+                continue
+            # 条件型生产者没有可执行的 acli argv，但其 Tool Contract 已冻结为
+            # 专用 Intent；它们由在线/离线专用适配器消费，不能被当成遗漏路由。
+            if tool in CONDITIONAL_PRODUCERS:
                 continue
             runtime = reviews.get(index)
             if runtime is None or runtime.status is ResolutionStatus.BLOCKED or not runtime.command:
