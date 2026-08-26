@@ -74,6 +74,18 @@ describe('QfkProcessingEditor 两步处理交互', () => {
     expect(matcher.props('embedded')).toBe(true)
   })
 
+  it('执行结果处理标题展示绑定 Signal 的试运行入口', () => {
+    const wrapper = shallowMount(QfkProcessingEditor, {
+      props: matchProps(),
+      global: {
+        plugins: [ElementPlus],
+        stubs: { 'el-button': { template: '<button><slot /></button>' } },
+      },
+    })
+
+    expect(wrapper.find('.processing-header-actions').text()).toContain('试运行')
+  })
+
   it('第一步取值关键字与第二步判定关键字分别更新，互不复制或覆盖', async () => {
     const props = matchProps()
     const wrapper = mountEditor(props)

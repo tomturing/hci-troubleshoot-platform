@@ -7,7 +7,7 @@ import { FullScreen, InfoFilled, Refresh, Upload } from '@element-plus/icons-vue
 import { useCategories } from '../composables/useCategories'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { OutputProcessingEditor, QfkProcessingEditor } from '@/components/editors'
+import { OutputProcessingEditor, QfkProcessingEditor, SignalDryRunDialog } from '@/components/editors'
 import type { SignalV2, SignalsDoc, ChangeAnnotation } from '@/utils/kbdSignalTypes'
 import { generateUUID } from '@hci/shared'
 import {
@@ -2483,6 +2483,15 @@ const signalJsonDraft = ref('')
 const signalJsonError = ref<string | null>(null)
 const signalSaveLoading = ref(false)
 const pipelineConvertLoading = ref(false)
+const signalDryRunVisible = ref(false)
+const signalDryRunSignal = ref<SignalV2 | null>(null)
+const signalDryRunIndex = ref<number | null>(null)
+
+function openSignalDryRun(signal: SignalV2, index: number): void {
+  signalDryRunSignal.value = cloneSignal(signal)
+  signalDryRunIndex.value = index
+  signalDryRunVisible.value = true
+}
 
 function onSignalEditModeChange(mode: string | number | boolean | undefined) {
   const targetMode = mode === 'json' ? 'json' : 'form'
@@ -4649,6 +4658,7 @@ onUnmounted(() => clearBatchPollTimer())
                   <el-button text size="small" :disabled="!canEditCurrent || item.origIdx === signalList.length - 1" @click="moveSignal(item.origIdx, 1)">下移</el-button>
                   <el-button text size="small" :disabled="!canEditCurrent" @click="duplicateSignal(item.origIdx)">复制</el-button>
                   <el-button text size="small" title="复制该信号的 JSON，可粘贴到其他 KBD 导入" @click="copySignalJson(item.sig)">复制 JSON</el-button>
+                  <el-button text type="primary" size="small" @click="openSignalDryRun(item.sig, item.origIdx)">试运行</el-button>
                   <el-button text type="danger" size="small" :disabled="!canEditCurrent" @click="deleteSignal(item.origIdx)">删除</el-button>
                   <el-button v-if="editingSignalIndex !== item.origIdx" text type="primary" size="small" :disabled="!canEditCurrent" @click="startEditSignal(item.origIdx)">编辑</el-button>
                   <template v-else>
@@ -4841,6 +4851,7 @@ onUnmounted(() => clearBatchPollTimer())
                     <OutputProcessingEditor
                       v-model="signalEditDraft.orchestrate.output_processing"
                       :produces="signalEditDraft.orchestrate.produces || []"
+                      @dry-run="openSignalDryRun(signalEditDraft, editingSignalIndex ?? item.origIdx)"
                     />
                   </template>
                 </div>
@@ -4870,6 +4881,7 @@ onUnmounted(() => clearBatchPollTimer())
                   <el-button text size="small" :disabled="!canEditCurrent || item.origIdx === signalList.length - 1" @click="moveSignal(item.origIdx, 1)">下移</el-button>
                   <el-button text size="small" :disabled="!canEditCurrent" @click="duplicateSignal(item.origIdx)">复制</el-button>
                   <el-button text size="small" title="复制该信号的 JSON，可粘贴到其他 KBD 导入" @click="copySignalJson(item.sig)">复制 JSON</el-button>
+                  <el-button text type="primary" size="small" @click="openSignalDryRun(item.sig, item.origIdx)">试运行</el-button>
                   <el-button text type="danger" size="small" :disabled="!canEditCurrent" @click="deleteSignal(item.origIdx)">删除</el-button>
                   <el-button v-if="editingSignalIndex !== item.origIdx" text type="primary" size="small" :disabled="!canEditCurrent" @click="startEditSignal(item.origIdx)">编辑</el-button>
                   <template v-else>
@@ -5326,6 +5338,7 @@ onUnmounted(() => clearBatchPollTimer())
                     @update:mode="setQfkOutputMode"
                     @update:match="setQfkMatch"
                     @update:produces="setQfkProduces"
+                    @dry-run="openSignalDryRun(signalEditDraft, editingSignalIndex ?? item.origIdx)"
                   />
 
                   <!-- 其他工具特有字段 -->
@@ -6038,6 +6051,14 @@ onUnmounted(() => clearBatchPollTimer())
         <el-button type="primary" :loading="signalSaveLoading" @click="submitImportSignals">确认导入</el-button>
       </template>
     </el-dialog>
+
+    <SignalDryRunDialog
+      v-model="signalDryRunVisible"
+      :support-id="detailEntry?.support_id"
+      :kbd-revision="revisionState?.working_revision_id || detailEntry?.working_revision_id || detailEntry?.latest_proposal_revision_id"
+      :signal="signalDryRunSignal"
+      :signal-index="signalDryRunIndex"
+    />
 
     <!-- 编辑弹窗 -->
     <el-dialog
