@@ -2093,6 +2093,8 @@ class KBDDiagnostic:
         """构建诊断报告：根因/方案原文 + 证据 + KBD 标题可点击超链接。"""
         if not matched_kbds:
             candidate_links = []
+            # 构建 kbd_id -> support_id 映射，用于在证据标题中显示案例 ID
+            kbd_id_to_support = {str(kbd.id): (kbd.support_id or kbd.id) for kbd in evaluated_kbds or []}
             for kbd in evaluated_kbds or []:
                 support_id = kbd.support_id or kbd.id
                 url = kbd_detail_url.format(id=kbd.id, support_id=support_id)
@@ -2100,7 +2102,10 @@ class KBDDiagnostic:
                 suffix = f"（未确认：{'；'.join(reasons)}）" if reasons else "（未确认）"
                 candidate_links.append(f"- [参考案例 {support_id} - {kbd.name}]({url}){suffix}")
             evidence = [
-                KBDDiagnostic._format_step_evidence(step, index) for index, step in enumerate(steps_executed, start=1)
+                KBDDiagnostic._format_step_evidence(
+                    step, index, support_id=str(kbd_id_to_support.get(str(step.kbd_id), step.kbd_id))
+                )
+                for index, step in enumerate(steps_executed, start=1)
             ]
             return (
                 "### 诊断结论：证据不足\n\n"
@@ -2118,7 +2123,7 @@ class KBDDiagnostic:
             for s in steps_executed:
                 if s.kbd_id != kbd.id:
                     continue
-                evidence.append(KBDDiagnostic._format_step_evidence(s, len(evidence) + 1))
+                evidence.append(KBDDiagnostic._format_step_evidence(s, len(evidence) + 1, support_id=support_id))
             blocks.append(
                 f"### 诊断结论：参考案例 {support_id} - {title_link}\n\n"
                 f"**根因（原始文本）**：\n{kbd.root_cause or '（无）'}\n\n"
@@ -2143,7 +2148,7 @@ class KBDDiagnostic:
         for kbd in supported_kbds:
             support_id = kbd.support_id or kbd.id
             evidence = [
-                KBDDiagnostic._format_step_evidence(step, index)
+                KBDDiagnostic._format_step_evidence(step, index, support_id=support_id)
                 for index, step in enumerate(
                     (step for step in steps_executed if step.kbd_id == kbd.id),
                     start=1,
@@ -2155,7 +2160,7 @@ class KBDDiagnostic:
         return "\n".join(blocks) + "\n\n"
 
     @staticmethod
-    def _format_step_evidence(step: StepResult, index: int = 1) -> str:
+    def _format_step_evidence(step: StepResult, index: int = 1, support_id: str | int = "") -> str:
         """把内部执行记录转换为面向用户的关键信号结果。
 
         exec_id、evaluation_id、完整参数和原始 stdout/stderr 属于审计数据，继续保留在
@@ -2173,6 +2178,8 @@ class KBDDiagnostic:
         }
         icon, status = status_labels[step.outcome]
         instruction = KBDDiagnostic._single_line_report_text(step.tool_args.get("instruction"), max_chars=160)
+        # 标题加入案例 ID 标识，方便用户识别信号归属
+        kbd_prefix = f"[{support_id}] " if support_id else ""
         title = instruction or f"关键信号检查 {index}"
 
         if step.outcome is SignalOutcome.SATISFIED:
@@ -2191,7 +2198,7 @@ class KBDDiagnostic:
             check_result = "本项未执行。"
 
         lines = [
-            f"#### {index}. {icon} {title}",
+            f"#### {index}. {icon} {kbd_prefix}{title}",
             "",
             f"- **状态**：{status}",
             f"- **检查结果**：{check_result}",
