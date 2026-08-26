@@ -6,7 +6,7 @@
  * 每个产出变量拥有独立的取值配置，避免多个变量错误共享同一个提取结果。
  */
 import { computed, toRaw } from 'vue'
-import { Delete, InfoFilled, Plus } from '@element-plus/icons-vue'
+import { Delete, InfoFilled, Plus, VideoPlay } from '@element-plus/icons-vue'
 
 import MatcherEditor from './MatcherEditor.vue'
 import ValueExtractEditor from './ValueExtractEditor.vue'
@@ -24,6 +24,7 @@ const emit = defineEmits<{
   'update:mode': [value: QfkOutputMode]
   'update:match': [value: Record<string, any>]
   'update:produces': [value: Array<Record<string, any>>]
+  'dry-run': []
 }>()
 
 const matchValue = computed(() => props.match || defaultMatch())
@@ -110,10 +111,13 @@ function removeProduce(index: number): void {
         </div>
         <div class="processing-subtitle">两种模式使用相同的取值组件、步骤顺序、字段样式和状态反馈。</div>
       </div>
-      <el-radio-group :model-value="mode" size="small" @change="setMode">
-        <el-radio-button value="keyword">匹配模式</el-radio-button>
-        <el-radio-button value="produces">产出变量</el-radio-button>
-      </el-radio-group>
+      <div class="processing-header-actions">
+        <el-button text type="primary" size="small" :icon="VideoPlay" @click="emit('dry-run')">试运行</el-button>
+        <el-radio-group :model-value="mode" size="small" @change="setMode">
+          <el-radio-button value="keyword">匹配模式</el-radio-button>
+          <el-radio-button value="produces">产出变量</el-radio-button>
+        </el-radio-group>
+      </div>
     </div>
 
     <div class="processing-flow" aria-label="执行结果两步处理流程">
@@ -257,6 +261,7 @@ function removeProduce(index: number): void {
   justify-content: space-between;
   gap: 12px;
 }
+.processing-header-actions { display: flex; align-items: center; gap: 8px; }
 .processing-title {
   display: flex;
   align-items: center;
