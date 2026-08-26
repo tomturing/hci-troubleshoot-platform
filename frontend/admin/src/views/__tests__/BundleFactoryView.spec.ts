@@ -17,7 +17,7 @@ const manifest = {
 const draft = {
   digest: 'sha256:bundle', status: 'draft', input_fingerprint: 'sha256:input', support_id: '27123', kbd_revision: 25,
   kbd_checksum: 'sha256:kbd', signals_digest: 'sha256:signals', tool_contract_revision: 'tool-r25', policy_revision: 'policy-r1',
-  compiler_revision: 'bundle-factory-v2', draft_revision: 0, creator: 'compiler', created_at: '2026-08-18T00:00:00Z', updated_at: '2026-08-18T00:00:00Z', approvals: [], manifest,
+        compiler_revision: 'bundle-factory-v3', draft_revision: 0, creator: 'compiler', created_at: '2026-08-18T00:00:00Z', updated_at: '2026-08-18T00:00:00Z', approvals: [], manifest,
 }
 
 describe('BundleFactoryView', () => {

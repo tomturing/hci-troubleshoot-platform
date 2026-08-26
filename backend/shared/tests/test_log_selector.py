@@ -62,6 +62,25 @@ def test_exists_matcher_with_persisted_row_include_pushes_down_selector():
     assert resolved_type == "exists"
 
 
+def test_selector_can_preserve_templates_for_bundle_compilation():
+    """Bundle 编译阶段保留模板，待场景变量渲染后再完成正则字面量转义。"""
+
+    selector, extended, resolved_type = build_log_selector(
+        matcher={
+            "type": "exists",
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "keywords", "include": ["Get {{VM}} from vmlist or conf failed"]},
+            },
+        },
+        preserve_placeholders=True,
+    )
+
+    assert selector == r"Get\ {{VM}}\ from\ vmlist\ or\ conf\ failed"
+    assert extended is True
+    assert resolved_type == "exists"
+
+
 def test_exists_matcher_without_include_falls_back_to_dot():
     """exists 模式下若无任何 include 或 filter_keywords，保持回退为 . 匹配。"""
 

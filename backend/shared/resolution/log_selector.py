@@ -7,6 +7,23 @@ from typing import Any
 
 from shared.schemas.log_source_catalog import LOG_MATCHER_TYPES
 
+_TEMPLATE_PATTERN = re.compile(r"\{\{[A-Z][A-Z0-9_]*\}\}")
+
+
+def _escape_selector_item(item: str, *, preserve_placeholders: bool) -> str:
+    """转义字面量，同时保留 Bundle 编译阶段需要渲染的占位符。"""
+
+    if not preserve_placeholders:
+        return re.escape(item)
+    parts: list[str] = []
+    cursor = 0
+    for match in _TEMPLATE_PATTERN.finditer(item):
+        parts.append(re.escape(item[cursor : match.start()]))
+        parts.append(match.group(0))
+        cursor = match.end()
+    parts.append(re.escape(item[cursor:]))
+    return "".join(parts)
+
 
 def build_log_selector(
     *,
@@ -15,6 +32,7 @@ def build_log_selector(
     filter_keywords: list[str] | None = None,
     resource_keyword: str | None = None,
     request_id: str | None = None,
+    preserve_placeholders: bool = False,
 ) -> tuple[str | None, bool, str]:
     """把结构化 Matcher 编译为 ``acli log get`` 的只读粗筛条件。
 
@@ -35,14 +53,22 @@ def build_log_selector(
     if filter_keywords:
         unique = sorted({str(item) for item in filter_keywords if str(item)})
         if unique:
-            return "|".join(re.escape(item) for item in unique), True, matcher_type or "producer"
+            return (
+                "|".join(_escape_selector_item(item, preserve_placeholders=preserve_placeholders) for item in unique),
+                True,
+                matcher_type or "producer",
+            )
 
     pattern = matcher.get("pattern")
     if matcher_type == "keyword":
         raw_items = pattern if isinstance(pattern, list) else [pattern] if pattern else keywords
         unique = sorted({str(item) for item in raw_items if str(item)})
         if unique:
-            return "|".join(re.escape(item) for item in unique), True, matcher_type
+            return (
+                "|".join(_escape_selector_item(item, preserve_placeholders=preserve_placeholders) for item in unique),
+                True,
+                matcher_type,
+            )
     elif matcher_type == "regex":
         if not isinstance(pattern, str) or not pattern:
             raise ValueError("qfk_log regex matcher 必须提供非空 pattern")

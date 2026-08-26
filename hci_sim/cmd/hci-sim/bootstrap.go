@@ -328,7 +328,11 @@ func buildScenarioManifest(resolved *resolvedKbd, profile *scenarioProfile, node
 		}
 		renderedArgv := make([]string, len(route.Argv))
 		for argvIndex, value := range route.Argv {
-			renderedArgv[argvIndex] = renderProfileVariables(value, variables)
+			if argvIndex > 0 && (route.Argv[argvIndex-1] == "-k" || route.Argv[argvIndex-1] == "--keyword") {
+				renderedArgv[argvIndex] = renderProfileRegexVariables(value, variables)
+			} else {
+				renderedArgv[argvIndex] = renderProfileVariables(value, variables)
+			}
 			if strings.Contains(renderedArgv[argvIndex], "{{") || strings.Contains(renderedArgv[argvIndex], "}}") {
 				return fixture.Manifest{}, fmt.Errorf("capability_gap: Signal %s 缺少场景变量: %s", route.SignalID, value)
 			}
@@ -611,6 +615,25 @@ func renderProfileVariables(value string, variables map[string]string) string {
 	sort.Strings(keys)
 	for _, key := range keys {
 		value = strings.ReplaceAll(value, "{{"+key+"}}", variables[key])
+	}
+	return value
+}
+
+// renderProfileRegexVariables 渲染日志 selector 中的模板，并对变量值执行与
+// Python re.escape 兼容的字面量转义。旧 Bundle 可能保存了已转义的模板，故同时
+// 接受 {{VAR}} 与 \{\{VAR\}\} 两种形式。
+func renderProfileRegexVariables(value string, variables map[string]string) string {
+	keys := make([]string, 0, len(variables))
+	for key := range variables {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		escaped := regexp.QuoteMeta(variables[key])
+		escaped = strings.ReplaceAll(escaped, "-", `\-`)
+		escaped = strings.ReplaceAll(escaped, " ", `\ `)
+		value = strings.ReplaceAll(value, `\{\{`+key+`\}\}`, escaped)
+		value = strings.ReplaceAll(value, "{{"+key+"}}", escaped)
 	}
 	return value
 }

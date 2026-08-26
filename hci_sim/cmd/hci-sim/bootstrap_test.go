@@ -203,6 +203,19 @@ func TestBuildSyntheticManifestUsesPublishedProducerForCustomVariable(t *testing
 	}
 }
 
+func TestRenderProfileRegexVariablesEscapesSelectorTemplates(t *testing.T) {
+	variables := map[string]string{"VM": "SIM-VM-26980"}
+	want := `Get\ SIM\-VM\-26980\ from`
+	for _, value := range []string{`Get\ {{VM}}\ from`, `Get\ \{\{VM\}\}\ from`} {
+		if got := renderProfileRegexVariables(value, variables); got != want {
+			t.Fatalf("selector template was not rendered consistently: input=%q got=%q want=%q", value, got, want)
+		}
+	}
+	if got := renderProfileVariables(`vm={{VM}}`, variables); got != "vm=SIM-VM-26980" {
+		t.Fatalf("non-selector variable rendering changed: %q", got)
+	}
+}
+
 func TestBuildSyntheticManifestRejectsUncontrolledCommand(t *testing.T) {
 	_, err := buildSyntheticManifest(&resolvedKbd{
 		SupportID: "dynamic", KBDRevision: 1, KBDChecksum: strings.Repeat("a", 64),
