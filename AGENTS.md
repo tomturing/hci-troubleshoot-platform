@@ -50,6 +50,12 @@
   - **根因**：`ai_value_type_for_matcher("threshold")` 返回 `"number"`，期望单个数值。当用户配置 AI 提取多个数值（如日志中所有 `unaligned` 和 `invalid` 值）然后通过聚合求和时，AI 返回 `"0, 1, 2, 3, 4, 5"` 这样的逗号分隔字符串，但 `_cast_grounded_value` 尝试将其解析为单个数值而失败，抛出 `QFK_AI_EXTRACT_INVALID_RESPONSE: AI 结果 '...' 不是数字`。
   - **修复**：修改 `ai_value_type_for_matcher` 函数，让 `threshold` matcher 也返回 `"array<number>"`，与 `delta`/`trend` 一致。AI 可以返回多个数值，通过聚合方式（sum/max/min）转换为单个数值后再进行阈值比较。
   - **效果**：threshold matcher 现在完整支持"多值提取 + 聚合 + 阈值判断"的流程。
+- **QFK AI 提取 array<number> 字符串格式兼容**：
+  - **根因**：系统提示词要求 LLM 返回字符串格式的 value（`"0, 1, 2, 3"`），但 `array<number>` 类型期望列表格式（`[0, 1, 2, 3]`）。LLM 遵循提示词返回字符串，但代码验证期望列表，导致工单 Q2026082632708 报错 `AI array<number> 结果必须为非空数组`。
+  - **修复**：
+    - 在 `_cast_grounded_value` 中为 `array<number>` 添加字符串兼容解析，自动将 `"0, 1, 2, 3"` 解析为 `[0.0, 1.0, 2.0, 3.0]`。
+    - 在 `_assert_grounded` 中增强逐字回查逻辑，对逗号分隔字符串分割后逐个检查每个值是否在证据行中出现。
+  - **效果**：系统提示词与代码验证不再冲突，LLM 返回字符串或列表格式都能正确处理。
 - **KBD 关键信号阅览与预览呈现完整性优化**：
   - **根因**：KBD 审查页面在非编辑态（阅览/预览模式）下，仅平铺展示基础参数，缺失了取值（`ValueExtract`，包括完整行/行列解析/JSON路径/行列选择/数量/AI提取等）与判断规则（`Matcher` / `Produces`，包括多 pattern 排版、比较条件、样本数、趋势方向、产出变量路径等）的完整结构，导致专家每次必须点击“编辑”才能获取全量判定细节。
   - **修复**：

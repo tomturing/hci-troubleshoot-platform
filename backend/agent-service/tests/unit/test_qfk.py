@@ -459,6 +459,80 @@ async def test_numeric_matcher_consumes_grounded_ai_values_before_deterministic_
     assert "value_source=ai_grounded" in result.evidence or "AI 提取" in result.evidence
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("matcher_type", "matcher_extra", "ai_value_str", "output", "expected"),
+    [
+        # 测试 LLM 返回逗号分隔字符串而非数组的情况（符合系统提示词要求）
+        # 输出必须包含所有提取的值
+        ("threshold", {"operator": ">=", "value": 0}, "0, 0, 10, 11", "unaligned: 0, invalid: 0\\nunaligned: 10, invalid: 11\\n", True),
+        ("threshold", {"operator": ">=", "value": 100}, "0, 0", "unaligned: 0, invalid: 0\\n", False),
+        ("delta", {"operator": "==", "value": 0, "minimum_samples": 2}, "100, 100", "Samples: 100, 100\\n", True),
+        ("trend", {"direction": "increasing", "value": 1, "minimum_samples": 3}, "1, 2, 3", "Samples 1 2 3\\n", True),
+    ],
+)
+async def test_array_number_accepts_comma_separated_string(
+    monkeypatch, matcher_type, matcher_extra, ai_value_str, output, expected
+):
+    """测试 array<number> 类型兼容 LLM 返回的逗号分隔字符串格式。
+
+    系统提示词要求 LLM 返回字符串格式的 value，但 array<number> 类型期望列表。
+    修复后应自动将 "0, 1, 2" 解析为 [0.0, 1.0, 2.0]。
+    """
+
+    class FakeExecutor:
+        _redis = SimpleNamespace()
+
+        async def execute(self, **_kwargs):
+            return ExecResult(
+                stdout=output,
+                stderr="",
+                exit_code=0,
+                command="acli --timeout 120 system ps",
+                node="172.28.25.4",
+                duration_ms=1,
+                truncated=False,
+                risk_level=1,
+                exec_id="qfk-array-number-string",
+            )
+
+    class FakeAIClient:
+        async def invoke(self, **_kwargs):
+            # 返回字符串格式的 value（符合系统提示词要求）
+            return SimpleNamespace(content=json.dumps({"ok": True, "value": ai_value_str, "evidence_lines": [1]}))
+
+    monkeypatch.setattr(executor_module, "_executor", FakeExecutor())
+    signal = BackendSignal(
+        namespace="system",
+        command="ps",
+        matcher={
+            "type": matcher_type,
+            "expected": True,
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "all"},
+                "cardinality": "all",
+                "source": "stdout",
+                "ai_extract": {"instruction": "按日志出现顺序提取数值"},
+            },
+            **matcher_extra,
+        },
+    )
+
+    result = await engine.qfk_exec(
+        signal,
+        conversation_id="array-number-string-test",
+        required_output_sources={"stdout"},
+        ai_client=FakeAIClient(),
+    )
+
+    assert result.error is None, f"预期无错误，但得到: {result.error}"
+    assert result.matched is expected
+    # 验证解析后的数组格式
+    expected_values = [float(p.strip()) for p in ai_value_str.split(",")]
+    assert result.ai_value == expected_values
+
+
 # ─── nonzero_exit_as_negative 只读探针容错模式 ────────────────────────────────
 
 
