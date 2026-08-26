@@ -312,7 +312,7 @@ func TestRunRepositoryPostgresEventResultAndOutbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("claim outbox: %v", err)
 	}
-	if claimed.RunExternalID != input.ExternalID || claimed.Attempts != 1 {
+	if claimed.Topic != "run" || claimed.AggregateType != "run" || claimed.AggregateID != input.ExternalID || claimed.RunExternalID != input.ExternalID || claimed.TraceID != "trace-test" || claimed.Attempts != 1 {
 		t.Fatalf("unexpected outbox claim: %+v", claimed)
 	}
 	if err := repository.CompleteOutbox(ctx, claimed.ID, true, time.Time{}); err != nil {

@@ -18,7 +18,7 @@ import (
 
 // BundleRegistry 是 controlplane.Registry 的 PostgreSQL 实现。
 // 语义与 MemoryRegistry 对齐：Compile 幂等（指纹去重）、Validate/Approve/Publish
-// 状态迁移 CAS、MarkStale 写入 stale_outbox、GetPublished 验证对象完整性。
+// 状态迁移 CAS、MarkStale 写入统一 Outbox、GetPublished 验证对象完整性。
 // 依赖注入：ArtifactGate 用于 realistic 路由的 Artifact 绑定校验；
 // BundleObjectStore 用于 Manifest 字节存储（生产需对接 OCI/S3）。
 type BundleRegistry struct {
@@ -40,6 +40,19 @@ func NewBundleRegistry(pool *pgxpool.Pool, artifactGate controlplane.ArtifactGat
 func (r *BundleRegistry) Compile(actor controlplane.Actor, input controlplane.CompileInput, manifest fixture.Manifest, now time.Time) (controlplane.BundleRecord, error) {
 	if actor.Role != controlplane.RoleCompiler || actor.ID == "" {
 		return controlplane.BundleRecord{}, errors.New("forbidden: 仅 compiler 身份可创建 draft")
+	}
+	if len(input.RouteSources) == 0 {
+		input.RouteSources = make([]controlplane.RouteSource, 0, len(manifest.Routes))
+		for _, route := range manifest.Routes {
+			sourceRef := route.SignalID
+			if sourceRef == "" {
+				sourceRef = route.ID
+			}
+			input.RouteSources = append(input.RouteSources, controlplane.RouteSource{
+				RouteID: route.ID, SignalID: route.SignalID, SourceType: "kbd_signal_contract",
+				SourceRef: sourceRef, SourceDigest: input.SignalsDigest,
+			})
+		}
 	}
 	fingerprint, err := input.Fingerprint()
 	if err != nil {
@@ -87,7 +100,7 @@ func (r *BundleRegistry) Compile(actor controlplane.Actor, input controlplane.Co
 	variant := primaryVariant(manifest)
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO control_plane.scenario (id, support_id, kbd_revision, variant, input_fingerprint, status)
-		VALUES ($1, $2, $3, $4, $5, 'draft')
+		VALUES ($1, $2, $3, $4, $5, 'indexed')
 		ON CONFLICT (input_fingerprint) DO UPDATE SET updated_at = now()
 	`, scenarioID, input.SupportID, input.KBDRevision, variant, fingerprint); err != nil {
 		r.objectStore.Abort(object)
@@ -116,10 +129,6 @@ func (r *BundleRegistry) Compile(actor controlplane.Actor, input controlplane.Co
 		return controlplane.BundleRecord{}, fmt.Errorf("insert bundle: %w", err)
 	}
 	if err := writeDependencies(ctx, tx, bundleID, input.Dependencies); err != nil {
-		r.objectStore.Abort(object)
-		return controlplane.BundleRecord{}, err
-	}
-	if err := writeProvenances(ctx, tx, bundleID, manifest, input.Artifacts); err != nil {
 		r.objectStore.Abort(object)
 		return controlplane.BundleRecord{}, err
 	}
@@ -392,37 +401,66 @@ func (r *BundleRegistry) MarkStale(actor controlplane.Actor, changed controlplan
 		return nil, errors.New("forbidden: 仅受信任控制面可标记 stale")
 	}
 	ctx := context.Background()
-	rows, err := r.pool.Query(ctx, `
+	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	rows, err := tx.Query(ctx, `
 		UPDATE fixture.bundle b SET status = 'stale', stale_reason = $1, version = b.version + 1, updated_at = $2
 		FROM fixture.dependency d
 		WHERE b.id = d.bundle_id AND b.status = 'published'
 		  AND d.dependency_type = $3 AND d.dependency_id = $4 AND d.revision <> $5
-		RETURNING b.digest
+		RETURNING b.id, b.digest
 	`, reason, now.UTC(), changed.Type, changed.ID, changed.Revision)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var digests []string
-	for rows.Next() {
-		var d string
-		if err := rows.Scan(&d); err != nil {
-			return nil, err
-		}
-		digests = append(digests, d)
+	type staleBundle struct {
+		id     uuid.UUID
+		digest string
 	}
-	if len(digests) > 0 {
-		if _, err := r.pool.Exec(ctx, `
-			INSERT INTO fixture.stale_outbox (dependency_type, dependency_id, dependency_revision, dependency_digest, reason_code, status, available_at)
-			VALUES ($1, $2, $3, $4, $5, 'pending', $6)
-			ON CONFLICT DO NOTHING
-		`, changed.Type, changed.ID, changed.Revision, changed.Digest, reason, now.UTC()); err != nil {
+	staleBundles := make([]staleBundle, 0)
+	for rows.Next() {
+		var item staleBundle
+		if err := rows.Scan(&item.id, &item.digest); err != nil {
 			return nil, err
 		}
+		staleBundles = append(staleBundles, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for _, stale := range staleBundles {
+		payload, err := json.Marshal(map[string]string{
+			"dependency_type": changed.Type, "dependency_id": changed.ID,
+			"dependency_revision": changed.Revision, "dependency_digest": changed.Digest,
+			"reason": reason, "bundle_digest": stale.digest,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if err := enqueueOutbox(ctx, tx, "fixture_stale", "fixture_bundle", stale.digest, nil, "bundle.stale", digestBytes(payload), ""); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO audit.entity_event
+				(entity_type, entity_id, action, actor_id, trace_id, before_state, after_state)
+			VALUES ('fixture_bundle', $1, 'bundle.stale', $2, NULLIF($3, ''),
+			        jsonb_build_object('status', 'published', 'digest', $4::text),
+			        jsonb_build_object('status', 'stale', 'digest', $4::text))
+		`, stale.id, actor.ID, "", stale.digest); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
 	}
 	var stale []controlplane.BundleRecord
-	for _, d := range digests {
-		rec, err := r.Get(d)
+	for _, item := range staleBundles {
+		rec, err := r.Get(item.digest)
 		if err != nil {
 			return nil, err
 		}
@@ -608,21 +646,6 @@ func writeDependencies(ctx context.Context, tx pgx.Tx, bundleID uuid.UUID, deps 
 			ON CONFLICT DO NOTHING
 		`, bundleID, dep.Type, dep.ID, dep.Revision, dep.Digest); err != nil {
 			return err
-		}
-	}
-	return nil
-}
-
-func writeProvenances(ctx context.Context, tx pgx.Tx, bundleID uuid.UUID, manifest fixture.Manifest, artifacts []controlplane.Artifact) error {
-	for _, route := range manifest.Routes {
-		for _, artifact := range artifacts {
-			if _, err := tx.Exec(ctx, `
-				INSERT INTO fixture.provenance (bundle_id, route_id, artifact_id, artifact_digest, transform_digest)
-				VALUES ($1, $2, $3, $4, 'sha256:identity')
-				ON CONFLICT DO NOTHING
-			`, bundleID, route.ID, artifact.ID, artifact.Digest); err != nil {
-				return err
-			}
 		}
 	}
 	return nil

@@ -89,9 +89,13 @@ type BundleActivationRecord struct {
 
 type OutboxRecord struct {
 	ID            int64
+	Topic         string
+	AggregateType string
+	AggregateID   string
 	RunExternalID string
 	EventType     string
 	PayloadDigest string
+	TraceID       string
 	Attempts      int
 	AvailableAt   time.Time
 }
@@ -293,7 +297,7 @@ func (r *RunRepository) Create(ctx context.Context, input RunInput) (RunRecord, 
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO control_plane.scenario
 			(id, support_id, kbd_revision, variant, input_fingerprint, status)
-		VALUES ($1, $2, $3, $4, $5, 'published')
+		VALUES ($1, $2, $3, $4, $5, 'indexed')
 		ON CONFLICT (input_fingerprint) DO UPDATE SET updated_at = now()
 		RETURNING id
 	`, uuid.NewSHA1(uuid.NameSpaceURL, []byte(input.InputFingerprint)), input.SupportID, input.KBDRevision,
@@ -382,9 +386,9 @@ func (r *RunRepository) SyncPublishedBundles(ctx context.Context, bundles []Publ
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO control_plane.scenario
 				(id, support_id, kbd_revision, variant, input_fingerprint, status)
-			VALUES ($1, $2, $3, $4, $5, 'published')
+			VALUES ($1, $2, $3, $4, $5, 'indexed')
 			ON CONFLICT (input_fingerprint) DO UPDATE
-			SET status = 'published', updated_at = now()
+			SET updated_at = now()
 		`, scenarioID, bundle.SupportID, bundle.KBDRevision, bundle.Variant, bundle.InputFingerprint); err != nil {
 			return fmt.Errorf("upsert published bundle scenario: %w", err)
 		}
@@ -428,26 +432,24 @@ func (r *RunRepository) SyncPublishedBundles(ctx context.Context, bundles []Publ
 			FROM control_plane.scenario s
 			WHERE b.scenario_id = s.id AND s.support_id = $1
 			  AND b.digest <> $2 AND b.status = 'published' AND b.compile_input IS NULL
-			RETURNING b.id, b.scenario_id, b.digest
+			RETURNING b.id, b.digest
 		`, bundle.SupportID, bundle.Digest)
 		if err != nil {
 			return fmt.Errorf("mark previous bundle stale: %w", err)
 		}
 		type staleBundle struct {
-			id         uuid.UUID
-			scenarioID uuid.UUID
-			digest     string
+			id     uuid.UUID
+			digest string
 		}
 		staleBundles := make([]staleBundle, 0)
 		for rows.Next() {
 			var staleID uuid.UUID
-			var staleScenarioID uuid.UUID
 			var staleDigest string
-			if err := rows.Scan(&staleID, &staleScenarioID, &staleDigest); err != nil {
+			if err := rows.Scan(&staleID, &staleDigest); err != nil {
 				rows.Close()
 				return fmt.Errorf("scan stale bundle: %w", err)
 			}
-			staleBundles = append(staleBundles, staleBundle{id: staleID, scenarioID: staleScenarioID, digest: staleDigest})
+			staleBundles = append(staleBundles, staleBundle{id: staleID, digest: staleDigest})
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
@@ -463,29 +465,6 @@ func (r *RunRepository) SyncPublishedBundles(ctx context.Context, bundles []Publ
 				        jsonb_build_object('status', 'stale', 'digest', $4::text))
 			`, stale.id, actorID, traceID, stale.digest); err != nil {
 				return fmt.Errorf("audit stale bundle: %w", err)
-			}
-			staledScenario, err := tx.Exec(ctx, `
-				UPDATE control_plane.scenario s
-				SET status = 'stale', updated_at = now()
-				WHERE s.id = $1 AND s.status = 'published'
-				  AND NOT EXISTS (
-					SELECT 1 FROM fixture.bundle b
-					WHERE b.scenario_id = s.id AND b.status = 'published'
-				  )
-			`, stale.scenarioID)
-			if err != nil {
-				return fmt.Errorf("mark previous scenario stale: %w", err)
-			}
-			if staledScenario.RowsAffected() == 1 {
-				if _, err := tx.Exec(ctx, `
-					INSERT INTO audit.entity_event
-						(entity_type, entity_id, action, actor_id, trace_id, before_state, after_state)
-					VALUES ('scenario', $1, 'scenario.stale', $2, $3,
-					        jsonb_build_object('status', 'published'),
-					        jsonb_build_object('status', 'stale'))
-				`, stale.scenarioID, actorID, traceID); err != nil {
-					return fmt.Errorf("audit stale scenario: %w", err)
-				}
 			}
 		}
 		if inserted.RowsAffected() == 1 || reactivated.RowsAffected() == 1 {
@@ -649,10 +628,7 @@ func (r *RunRepository) AppendEvent(ctx context.Context, externalID string, atte
 	`, runID, attemptNo, seq, eventType, payloadDigest, traceID); err != nil {
 		return 0, fmt.Errorf("insert hci_sim run event: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO control_plane.run_outbox (run_id, event_type, payload_digest)
-		VALUES ($1, $2, $3) ON CONFLICT (run_id, event_type, payload_digest) DO NOTHING
-	`, runID, eventType, payloadDigest); err != nil {
+	if err := enqueueOutbox(ctx, tx, "run", "run", externalID, &runID, eventType, payloadDigest, traceID); err != nil {
 		return 0, fmt.Errorf("enqueue hci_sim run event: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -731,10 +707,7 @@ func (r *RunRepository) RecordResult(ctx context.Context, externalID string, att
 	if err != nil {
 		return RunRecord{}, err
 	}
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO control_plane.run_outbox (run_id, event_type, payload_digest)
-		VALUES ($1, 'run.result', $2) ON CONFLICT (run_id, event_type, payload_digest) DO NOTHING
-	`, runID, reportDigest); err != nil {
+	if err := enqueueOutbox(ctx, tx, "run", "run", externalID, &runID, "run.result", reportDigest, ""); err != nil {
 		return RunRecord{}, fmt.Errorf("enqueue hci_sim result: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -751,17 +724,20 @@ func (r *RunRepository) ClaimOutbox(ctx context.Context) (OutboxRecord, error) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var record OutboxRecord
-	var runID uuid.UUID
 	row := tx.QueryRow(ctx, `
-		SELECT o.id, r.external_id, o.event_type, o.payload_digest, o.attempts, o.available_at, o.run_id
-		FROM control_plane.run_outbox o JOIN control_plane.run r ON r.id = o.run_id
+		SELECT o.id, o.topic, o.aggregate_type, o.aggregate_id,
+		       COALESCE(r.external_id, ''), o.event_type, o.payload_digest,
+		       COALESCE(o.trace_id, ''), o.attempts, o.available_at
+		FROM control_plane.outbox o LEFT JOIN control_plane.run r ON r.id = o.run_id
 		WHERE o.status = 'pending' AND o.available_at <= now()
 		ORDER BY o.id FOR UPDATE SKIP LOCKED LIMIT 1
 	`)
-	if err := row.Scan(&record.ID, &record.RunExternalID, &record.EventType, &record.PayloadDigest, &record.Attempts, &record.AvailableAt, &runID); err != nil {
+	if err := row.Scan(&record.ID, &record.Topic, &record.AggregateType, &record.AggregateID,
+		&record.RunExternalID, &record.EventType, &record.PayloadDigest, &record.TraceID,
+		&record.Attempts, &record.AvailableAt); err != nil {
 		return OutboxRecord{}, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE control_plane.run_outbox SET status = 'processing', attempts = attempts + 1, processing_at = now() WHERE id = $1`, record.ID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE control_plane.outbox SET status = 'processing', attempts = attempts + 1, processing_at = now() WHERE id = $1`, record.ID); err != nil {
 		return OutboxRecord{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -780,7 +756,7 @@ func (r *RunRepository) CompleteOutbox(ctx context.Context, id int64, success bo
 		status = "processed"
 	}
 	_, err := r.pool.Exec(ctx, `
-		UPDATE control_plane.run_outbox
+		UPDATE control_plane.outbox
 		SET status = $1, available_at = CASE WHEN $2 THEN available_at ELSE $3 END,
 		    processing_at = NULL, processed_at = CASE WHEN $2 THEN now() ELSE NULL END
 		WHERE id = $4 AND status = 'processing'
@@ -796,7 +772,7 @@ func (r *RunRepository) RecoverProcessingOutbox(ctx context.Context, olderThan t
 		return 0, errors.New("invalid outbox attempt budget")
 	}
 	result, err := r.pool.Exec(ctx, `
-		UPDATE control_plane.run_outbox
+		UPDATE control_plane.outbox
 		SET status = CASE WHEN attempts >= $2 THEN 'failed' ELSE 'pending' END,
 		    available_at = now(), processing_at = NULL
 		WHERE status = 'processing' AND COALESCE(processing_at, created_at) < $1
@@ -841,10 +817,7 @@ func (r *RunRepository) ExpireRuns(ctx context.Context, now time.Time) (int64, e
 	rows.Close()
 	for _, item := range expired {
 		digest := textDigest("run.expired:" + item.externalID)
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO control_plane.run_outbox (run_id, event_type, payload_digest)
-			VALUES ($1, 'run.expired', $2) ON CONFLICT DO NOTHING
-		`, item.id, digest); err != nil {
+		if err := enqueueOutbox(ctx, tx, "run", "run", item.externalID, &item.id, "run.expired", digest, ""); err != nil {
 			return 0, err
 		}
 	}
@@ -895,6 +868,21 @@ func outcomeToRunStatus(outcome string) string {
 	default:
 		return ""
 	}
+}
+
+// enqueueOutbox 将所有可靠事件写入统一 Outbox。事件与业务状态必须处于同一事务，
+// 这样提交成功就意味着事件可重试，提交失败则不会留下孤儿通知。
+func enqueueOutbox(ctx context.Context, tx pgx.Tx, topic, aggregateType, aggregateID string, runID *uuid.UUID, eventType, payloadDigest, traceID string) error {
+	if strings.TrimSpace(topic) == "" || strings.TrimSpace(aggregateType) == "" || strings.TrimSpace(aggregateID) == "" || strings.TrimSpace(eventType) == "" || strings.TrimSpace(payloadDigest) == "" {
+		return errors.New("invalid outbox event identity")
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO control_plane.outbox
+			(topic, aggregate_type, aggregate_id, run_id, event_type, payload_digest, trace_id)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''))
+		ON CONFLICT (topic, aggregate_type, aggregate_id, event_type, payload_digest) DO NOTHING
+	`, topic, aggregateType, aggregateID, runID, eventType, payloadDigest, traceID)
+	return err
 }
 
 func textDigest(value string) string {
