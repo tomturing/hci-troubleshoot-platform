@@ -60,20 +60,31 @@ type Artifact struct {
 	Digest string `json:"digest"`
 }
 
+// RouteSource 是编译时绑定的 Route 来源摘要。它把来源事实冻结在 Bundle 输入中，
+// 避免使用无法表达真实映射关系的 route × artifact 笛卡尔积表。
+type RouteSource struct {
+	RouteID      string `json:"route_id"`
+	SignalID     string `json:"signal_id,omitempty"`
+	SourceType   string `json:"source_type"`
+	SourceRef    string `json:"source_ref"`
+	SourceDigest string `json:"source_digest"`
+}
+
 // CompileInput 在编译一开始被冻结；不接受 active 指针或任意 URL。
 type CompileInput struct {
-	SupportID            string       `json:"support_id"`
-	KBDRevision          int          `json:"kbd_revision"`
-	KBDChecksum          string       `json:"kbd_checksum"`
-	SignalsDigest        string       `json:"signals_digest"`
-	ToolContractRevision string       `json:"tool_contract_revision"`
-	PolicyRevision       string       `json:"policy_revision"`
-	CompilerRevision     string       `json:"compiler_revision"`
-	Artifacts            []Artifact   `json:"artifacts"`
-	Dependencies         []Dependency `json:"dependencies"`
-	ParentBundleDigest   string       `json:"parent_bundle_digest,omitempty"`
-	DraftRevision        int          `json:"draft_revision,omitempty"`
-	EditReason           string       `json:"edit_reason,omitempty"`
+	SupportID            string        `json:"support_id"`
+	KBDRevision          int           `json:"kbd_revision"`
+	KBDChecksum          string        `json:"kbd_checksum"`
+	SignalsDigest        string        `json:"signals_digest"`
+	ToolContractRevision string        `json:"tool_contract_revision"`
+	PolicyRevision       string        `json:"policy_revision"`
+	CompilerRevision     string        `json:"compiler_revision"`
+	Artifacts            []Artifact    `json:"artifacts"`
+	Dependencies         []Dependency  `json:"dependencies"`
+	RouteSources         []RouteSource `json:"route_sources,omitempty"`
+	ParentBundleDigest   string        `json:"parent_bundle_digest,omitempty"`
+	DraftRevision        int           `json:"draft_revision,omitempty"`
+	EditReason           string        `json:"edit_reason,omitempty"`
 }
 
 func (in CompileInput) Fingerprint() (string, error) {
@@ -83,10 +94,12 @@ func (in CompileInput) Fingerprint() (string, error) {
 	copy := in
 	copy.Artifacts = append([]Artifact(nil), in.Artifacts...)
 	copy.Dependencies = append([]Dependency(nil), in.Dependencies...)
+	copy.RouteSources = append([]RouteSource(nil), in.RouteSources...)
 	sort.Slice(copy.Artifacts, func(i, j int) bool { return copy.Artifacts[i].ID < copy.Artifacts[j].ID })
 	sort.Slice(copy.Dependencies, func(i, j int) bool {
 		return copy.Dependencies[i].Type+copy.Dependencies[i].ID < copy.Dependencies[j].Type+copy.Dependencies[j].ID
 	})
+	sort.Slice(copy.RouteSources, func(i, j int) bool { return copy.RouteSources[i].RouteID < copy.RouteSources[j].RouteID })
 	payload, err := json.Marshal(copy)
 	if err != nil {
 		return "", err
@@ -122,6 +135,16 @@ func (in CompileInput) validate() error {
 			return fmt.Errorf("capability_gap: dependency %s/%s 重复", dependency.Type, dependency.ID)
 		}
 		dependencies[key] = struct{}{}
+	}
+	routes := make(map[string]struct{}, len(in.RouteSources))
+	for _, source := range in.RouteSources {
+		if source.RouteID == "" || source.SourceType == "" || source.SourceRef == "" || source.SourceDigest == "" {
+			return errors.New("capability_gap: route source 必须有 route_id、source_type、source_ref 和 source_digest")
+		}
+		if _, ok := routes[source.RouteID]; ok {
+			return fmt.Errorf("capability_gap: route source %s 重复", source.RouteID)
+		}
+		routes[source.RouteID] = struct{}{}
 	}
 	return nil
 }
@@ -205,6 +228,19 @@ func NewMemoryRegistryWithDependencies(artifactGate ArtifactGate, objectStore Bu
 func (r *MemoryRegistry) Compile(actor Actor, input CompileInput, manifest fixture.Manifest, now time.Time) (BundleRecord, error) {
 	if actor.Role != RoleCompiler || actor.ID == "" {
 		return BundleRecord{}, errors.New("forbidden: 仅 compiler 身份可创建 draft")
+	}
+	if len(input.RouteSources) == 0 {
+		input.RouteSources = make([]RouteSource, 0, len(manifest.Routes))
+		for _, route := range manifest.Routes {
+			sourceRef := route.SignalID
+			if sourceRef == "" {
+				sourceRef = route.ID
+			}
+			input.RouteSources = append(input.RouteSources, RouteSource{
+				RouteID: route.ID, SignalID: route.SignalID, SourceType: "kbd_signal_contract",
+				SourceRef: sourceRef, SourceDigest: input.SignalsDigest,
+			})
+		}
 	}
 	fingerprint, err := input.Fingerprint()
 	if err != nil {

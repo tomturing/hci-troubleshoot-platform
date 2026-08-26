@@ -29,6 +29,8 @@
 - [HCI 真实环境与 hci-sim 双轨运行时设计](events/2026-07-30-HCI真实环境与hci-sim双轨运行时设计.md)
 - [能力缺口对抗性审查与仿真环境构造流程全景](hci-sim能力缺口对抗性审查与仿真环境构造流程.md)（2026-08-17，含配套浏览器版流程图 [sim-env-construction-flow.html](sim-env-construction-flow.html)）
 - [环节细化、规模化构造与 Bundle 工厂双模式分析](events/2026-08-17-hci-sim环节细化与规模化构造及Bundle工厂双模式分析.md)（2026-08-17，C1/C2 环节细化、1000 KBD 规模化、专家审核闭环、synthetic/realistic 关系判定与 #779 多 Bundle 池基线更新）
+- [qkv_dialog 模板/实例资产化与 Bundle 工厂数据设计](events/2026-08-26-qkv-dialog模板实例资产化与Bundle工厂数据设计.md)（2026-08-26，**长期完整态选项，已被最小化审查取代**；qkv_dialog 真实 stdout、END_MS/today 路径关系与资产化方向）
+- [hci-sim 数据库最小化设计审查](events/2026-08-26-hci-sim数据库最小化设计审查.md)（2026-08-26，逐表核对四大 schema 的接线完整性、冗余状态、双 outbox 与模板/实例资产库的渐进式演进结论）
 
 ## 快速导航
 

@@ -18,6 +18,7 @@ from typing import Any
 from shared.models.dynamic_resource import DynamicResourceActive, DynamicResourceRevision
 from shared.resolution.models import ResolutionStatus
 from shared.resolution.review import SignalReviewFeature, review_signal_document
+from shared.schemas.acquirer_args import CONDITIONAL_PRODUCERS
 from shared.schemas.hci_sim_policy import current_hci_sim_policy_revision
 from shared.signals.qkv_output_processing import QKVProcessingError, normalize_output_processing
 from sqlalchemy import and_, select
@@ -331,6 +332,7 @@ class HciSimKbdResolver:
         reviews = {item.signal_index: item for item in review.signals}
         for index, signal in enumerate(signals):
             if not isinstance(signal, dict):
+                unresolved_signal_ids.append(f"signals[{index}]")
                 continue
             signal_id = str(signal.get("id") or f"signals[{index}]")
             acquire = signal.get("acquire") if isinstance(signal.get("acquire"), dict) else {}
@@ -350,6 +352,10 @@ class HciSimKbdResolver:
                 gaps.append(
                     CapabilityGap("TOOL_ACTIVE_SNAPSHOT_INVALID", f"Tool {tool} 当前修订未发布、已停用或校验不一致")
                 )
+                continue
+            # 条件型生产者没有可执行的 acli argv，但其 Tool Contract 已冻结为
+            # 专用 Intent；它们由在线/离线专用适配器消费，不能被当成遗漏路由。
+            if tool in CONDITIONAL_PRODUCERS:
                 continue
             runtime = reviews.get(index)
             if runtime is None or runtime.status is ResolutionStatus.BLOCKED or not runtime.command:
@@ -409,6 +415,16 @@ class HciSimKbdResolver:
                     processing_fingerprint=_sha256(normalized_processing),
                     sample_output=_derive_sample_output(signal, tool, signal_id, runtime.command),
                     sample_source=_sample_output_source(signal, tool),
+                )
+            )
+        # 只要有任一 Signal 无法确定编译，就拒绝部分路由 Draft。部分 Bundle
+        # 会让运行时把未覆盖的 Signal 误判为“已验证”，比整条 KBD 暂不可编译更危险。
+        if unresolved_signal_ids:
+            detail = "、".join(unresolved_signal_ids[:5])
+            gaps.append(
+                CapabilityGap(
+                    "SYNTHETIC_ROUTE_UNRESOLVED",
+                    f"存在无法确定编译的 Signal：{detail}",
                 )
             )
         if not routes and not gaps:
@@ -513,7 +529,9 @@ def _sample_variable(name: str) -> str:
         return "{{PID}}"
     if name == "REQUEST_ID":
         return "{{REQUEST_ID}}"
-    return "SIM-" + name.lower()
+    # 自定义 Producer 必须输出变量模板，由 Bundle 编译器统一绑定场景值；
+    # 直接写死 SIM-* 会与 Consumer 的变量池产生漂移。
+    return "{{" + name + "}}"
 
 
 def _derive_matcher_output(matcher: dict[str, Any], signal_id: str, command: str) -> str:

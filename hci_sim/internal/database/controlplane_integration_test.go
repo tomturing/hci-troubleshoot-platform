@@ -147,6 +147,9 @@ func TestBundleRegistryCompileAndLifecycle(t *testing.T) {
 	if drafted.Status != controlplane.BundleDraft {
 		t.Fatalf("expected draft, got %s", drafted.Status)
 	}
+	if len(drafted.Input.RouteSources) != len(manifest.Routes) || drafted.Input.RouteSources[0].SourceRef != manifest.Routes[0].SignalID {
+		t.Fatalf("compile_input 必须冻结 route_sources: %+v", drafted.Input.RouteSources)
+	}
 	retireInput := input
 	retireInput.KBDRevision = 2
 	retireInput.KBDChecksum = integrationDigest("kbd-retire-" + testID)

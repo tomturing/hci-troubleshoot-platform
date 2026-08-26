@@ -75,9 +75,13 @@ func ReconcileOnce(ctx context.Context, repository *database.RunRepository, conf
 			return err
 		}
 		payload, _ := json.Marshal(map[string]any{
+			"topic":           record.Topic,
+			"aggregate_type":  record.AggregateType,
+			"aggregate_id":    record.AggregateID,
 			"run_external_id": record.RunExternalID,
 			"event_type":      record.EventType,
 			"payload_digest":  record.PayloadDigest,
+			"trace_id":        record.TraceID,
 			"attempts":        record.Attempts,
 		})
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost, config.WebhookURL, bytes.NewReader(payload))

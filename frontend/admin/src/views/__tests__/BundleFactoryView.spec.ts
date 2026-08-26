@@ -17,7 +17,7 @@ const manifest = {
 const draft = {
   digest: 'sha256:bundle', status: 'draft', input_fingerprint: 'sha256:input', support_id: '27123', kbd_revision: 25,
   kbd_checksum: 'sha256:kbd', signals_digest: 'sha256:signals', tool_contract_revision: 'tool-r25', policy_revision: 'policy-r1',
-  compiler_revision: 'bundle-factory-v1', draft_revision: 0, creator: 'compiler', created_at: '2026-08-18T00:00:00Z', updated_at: '2026-08-18T00:00:00Z', approvals: [], manifest,
+  compiler_revision: 'bundle-factory-v2', draft_revision: 0, creator: 'compiler', created_at: '2026-08-18T00:00:00Z', updated_at: '2026-08-18T00:00:00Z', approvals: [], manifest,
 }
 
 describe('BundleFactoryView', () => {
@@ -26,7 +26,7 @@ describe('BundleFactoryView', () => {
     vi.stubGlobal('fetch', vi.fn())
   })
 
-  it('展示冻结事实和仿真 Route，不把 argv 暴露为普通编辑字段', async () => {
+  it('展示冻结事实和仿真 Route', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(response({ bundles: [draft] })).mockResolvedValueOnce(response({ bundle: draft }))
     const wrapper = mount(BundleFactoryView, { global: { plugins: [ElementPlus] } })
     await flushPromises()
@@ -37,6 +37,7 @@ describe('BundleFactoryView', () => {
     expect(wrapper.text()).toContain('tool-r25')
     expect(wrapper.text()).toContain('acli system ps')
     expect(wrapper.text()).toContain('编辑 Draft')
+    wrapper.unmount()
   })
 
   it('专家修改输出时生成新 Draft 并携带修改原因', async () => {
@@ -56,7 +57,7 @@ describe('BundleFactoryView', () => {
     const reason = document.querySelector('input[placeholder="说明证据或仿真设定的修正依据"]') as HTMLInputElement
     reason.value = '修正专家复核后的进程输出'
     reason.dispatchEvent(new Event('input', { bubbles: true }))
-    const stdout = document.querySelector('.route-editor textarea') as HTMLTextAreaElement
+    const stdout = document.querySelector('.route-response-grid textarea') as HTMLTextAreaElement
     stdout.value = 'corrected\n'
     stdout.dispatchEvent(new Event('input', { bubbles: true }))
     const save = Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.trim() === '生成新 Draft') as HTMLButtonElement
@@ -84,7 +85,7 @@ describe('BundleFactoryView', () => {
     expect(document.querySelector('.route-command')?.textContent).toContain('acli system ps')
     expect(document.querySelector('.route-controls')?.textContent).toContain('Exit')
     expect(document.querySelector('.route-controls')?.textContent).toContain('Fault')
-    expect(document.querySelectorAll('.route-editor textarea')).toHaveLength(2)
+    expect(document.querySelectorAll('.route-editor textarea')).toHaveLength(3)
     wrapper.unmount()
   })
 

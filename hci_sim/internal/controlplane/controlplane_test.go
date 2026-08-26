@@ -50,6 +50,27 @@ func TestCompileInputFingerprintDoesNotMutateCaller(t *testing.T) {
 	}
 }
 
+func TestCompileInputRouteSourcesAreCanonicalAndValidated(t *testing.T) {
+	input := compileInput()
+	input.RouteSources = []RouteSource{
+		{RouteID: "route-b", SignalID: "sig-b", SourceType: "kbd_signal_contract", SourceRef: "sig-b", SourceDigest: "sha256:signals"},
+		{RouteID: "route-a", SignalID: "sig-a", SourceType: "kbd_signal_contract", SourceRef: "sig-a", SourceDigest: "sha256:signals"},
+	}
+	first, err := input.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.RouteSources[0], input.RouteSources[1] = input.RouteSources[1], input.RouteSources[0]
+	second, err := input.Fingerprint()
+	if err != nil || first != second {
+		t.Fatalf("route source 顺序不应改变指纹: %s %s %v", first, second, err)
+	}
+	input.RouteSources[1].RouteID = input.RouteSources[0].RouteID
+	if _, err := input.Fingerprint(); err == nil || !strings.Contains(err.Error(), "route source") {
+		t.Fatalf("重复 route source 必须拒绝: %v", err)
+	}
+}
+
 func registryWithApprovedArtifact(t *testing.T, now time.Time) *MemoryRegistry {
 	t.Helper()
 	artifacts := NewMemoryArtifactRegistry()

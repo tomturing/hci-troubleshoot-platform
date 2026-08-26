@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from app.services.hci_sim_resolver import HciSimKbdResolver, KbdResolutionReport
+from app.services.hci_sim_resolver import HciSimKbdResolver, KbdResolutionReport, _derive_sample_output
 from shared.schemas.hci_sim_policy import current_hci_sim_policy_revision
 from shared.schemas.signal_generation import current_tool_contract_revision
 
@@ -208,3 +208,35 @@ def test_resolver_does_not_allow_a_kbd_without_active_tool_revision():
 
     assert resolution.status == "capability_gap"
     assert [gap.code for gap in resolution.gaps] == ["TOOL_ACTIVE_SNAPSHOT_MISSING"]
+
+
+def test_resolver_rejects_partial_route_set_when_any_signal_is_unresolved():
+    active, revision = _snapshot()
+    revision.content_json["signals_json"]["signals"].append(
+        {
+            "id": "sig-blocked",
+            "role": "must",
+            "acquire": {"tool": "qkv_task", "args": {}},
+            "orchestrate": {},
+        }
+    )
+
+    resolution = HciSimKbdResolver().resolve_entry(_entry(), (active, revision), _tool_snapshots())
+
+    assert resolution.status == "capability_gap"
+    assert any(gap.code == "SYNTHETIC_ROUTE_UNRESOLVED" for gap in resolution.gaps)
+    assert resolution.resolved is None
+
+
+def test_custom_producer_sample_output_uses_shared_variable_template():
+    signal = {
+        "acquire": {"args": {}},
+        "match": {},
+        "orchestrate": {
+            "produces": [{"name": "CUSTOM_DISK", "type": "string", "path": "disk"}],
+        },
+    }
+
+    output = _derive_sample_output(signal, "qkv_task", "producer", "acli task get")
+
+    assert '"disk":"{{CUSTOM_DISK}}"' in output

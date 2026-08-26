@@ -162,7 +162,9 @@ async def create_bundle_draft(request: Request) -> JSONResponse:
         "resolved": capability["resolved"],
         "node": str(body.get("node") or "SIM-HCI-NODE-01"),
         "container": str(body.get("container") or "host"),
-        "compiler_revision": "bundle-factory-v1",
+        # Draft 生成算法变更必须提升编译器修订，避免 Registry 将新 Manifest
+        # 与旧算法视为同一冻结输入而触发幂等冲突。
+        "compiler_revision": "bundle-factory-v2",
     }
     return await _post(
         "/v1/control-plane/bundles",
