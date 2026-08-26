@@ -43,7 +43,33 @@ def test_bundle_factory_reads_c1_and_injects_compiler_identity():
     assert runtime_post.await_args.kwargs["actor_role"] == "compiler"
     assert len(runtime_post.await_args.kwargs["trace_id"]) == 32
     assert runtime_post.await_args.args[1]["resolved"]["kbd_revision"] == 25
-    assert runtime_post.await_args.args[1]["compiler_revision"] == "bundle-factory-v3"
+    assert runtime_post.await_args.args[1]["compiler_revision"] == "bundle-factory-v4-fixture-assets"
+
+
+def test_fixture_asset_actions_use_server_mapped_identity_and_trace_id():
+    client = TestClient(app)
+    runtime_response = JSONResponse({"asset": {"asset_key": "qkv_task.template", "revision": 2}}, status_code=200)
+    with patch("app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)) as runtime_post:
+        created = client.post(
+            "/api/hci-sim/v1/control-plane/fixture-assets",
+            json={
+                "asset_key": "qkv_task.template",
+                "asset_type": "template",
+                "signal_type": "qkv_task",
+                "content": {"stdout_template": "{{KEYWORD}}"},
+                "category_baseline": {},
+                "catalog_baseline": {},
+            },
+        )
+        assert created.status_code == 200
+        assert runtime_post.await_args.args[0] == "/v1/control-plane/fixture-assets"
+        assert runtime_post.await_args.kwargs["actor_role"] == "expert"
+        assert runtime_post.await_args.kwargs["actor_purpose"] == "edit"
+        assert len(runtime_post.await_args.kwargs["trace_id"]) == 32
+
+        published = client.post("/api/hci-sim/v1/control-plane/fixture-assets/qkv_task.template/2/publish")
+        assert published.status_code == 200
+        assert runtime_post.await_args.kwargs["actor_role"] == "publisher"
 
 
 def test_bundle_factory_rejects_c1_gap_without_compiling():

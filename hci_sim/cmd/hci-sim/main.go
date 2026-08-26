@@ -22,6 +22,7 @@ import (
 	"hci_sim/internal/controlplane"
 	"hci_sim/internal/database"
 	"hci_sim/internal/fixture"
+	"hci_sim/internal/fixtureasset"
 	"hci_sim/internal/lease"
 	"hci_sim/internal/metrics"
 	"hci_sim/internal/reconciler"
@@ -209,6 +210,7 @@ func runServer() error {
 	var runRepository *database.RunRepository
 	var databasePool interface{ Close() }
 	var controlplaneRegistry controlplane.Registry
+	var fixtureAssetStore fixtureasset.Store
 	var runtimeActivator *runtimeBundleActivator
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("HCI_SIM_CONTROLPLANE_REGISTRY")), "memory") {
 		artifactRegistry := controlplane.NewMemoryArtifactRegistry()
@@ -246,6 +248,10 @@ func runServer() error {
 			controlplaneRegistry, err = database.NewBundleRegistry(pool, artifactRepo, objectStore)
 			if err != nil {
 				return fmt.Errorf("构造 PG BundleRegistry 失败: %w", err)
+			}
+			fixtureAssetStore, err = database.NewFixtureAssetRegistry(pool)
+			if err != nil {
+				return fmt.Errorf("构造 PG FixtureAssetRegistry 失败: %w", err)
 			}
 			log.Printf("hci-sim controlplane registry initialized (postgres) pool_size=%d", bundlePool.Size())
 		}
@@ -331,7 +337,7 @@ func runServer() error {
 	controlAuthorized := func(r *http.Request) bool {
 		return (controlToken != "" && r.Header.Get("Authorization") == "Bearer "+controlToken) || (controlToken == "" && allowInsecureControlAPI)
 	}
-	registerControlPlaneAPI(mux, controlplaneRegistry, controlToken, allowInsecureControlAPI, runtimeActivator)
+	registerControlPlaneAPI(mux, controlplaneRegistry, controlToken, allowInsecureControlAPI, runtimeActivator, fixtureAssetStore)
 	mux.HandleFunc("/v1/simulations/capabilities/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || !controlAuthorized(r) {
 			http.Error(w, "forbidden", http.StatusForbidden)
