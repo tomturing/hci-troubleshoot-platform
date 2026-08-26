@@ -2,7 +2,7 @@ from shared.resolution import ResolutionStatus, SignalIntent, build_resolution_a
 from shared.resolution.catalog import command_path_known, load_acli_catalog
 
 
-def test_log_resolver_corrects_typo_and_expands_single_or_double_day_directory():
+def test_log_resolver_corrects_typo_and_falls_back_from_vt_to_day_root():
     runtime = get_resolution_runtime()
     plan = runtime.compile(
         SignalIntent(
@@ -13,13 +13,25 @@ def test_log_resolver_corrects_typo_and_expands_single_or_double_day_directory()
     )
     assert plan.status is ResolutionStatus.COMPILED
     assert plan.canonical_args["file"] == "sfvt_vtpdaemon.log"
-    assert [item["path"] for item in plan.candidates] == ["/sf/log/7/vt", "/sf/log/07/vt"]
-    resolved = runtime.resolve(plan, {"path_exists": lambda path: path == "/sf/log/07/vt/sfvt_vtpdaemon.log"})
+    assert [item["path"] for item in plan.candidates] == ["/sf/log/7/vt", "/sf/log/7"]
+    resolved = runtime.resolve(plan, {"path_exists": lambda path: path == "/sf/log/7/sfvt_vtpdaemon.log"})
     assert resolved.status is ResolutionStatus.VERIFIED
-    assert resolved.absolute_path == "/sf/log/07/vt/sfvt_vtpdaemon.log"
+    assert resolved.absolute_path == "/sf/log/7/sfvt_vtpdaemon.log"
     assert resolved.evidence["aliases_used"] == ["vtpdeamon"]
     missing = runtime.resolve(plan, {"path_exists": lambda _path: False})
     assert missing.status is ResolutionStatus.NEEDS_PROBE
+
+
+def test_log_resolver_uses_single_day_directory_without_vt_subpath():
+    plan = get_resolution_runtime().compile(
+        SignalIntent(
+            resolver_id="log",
+            tool="qfk_log",
+            args={"file": "kernel.log", "time_window": "2026-01-01 00:00:08"},
+        )
+    )
+
+    assert [item["path"] for item in plan.candidates] == ["/sf/log/1"]
 
 
 def test_log_resolver_accepts_partial_and_full_absolute_file_paths():
