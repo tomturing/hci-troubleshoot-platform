@@ -78,6 +78,26 @@ manifest；场景画像路径继续支持显式覆盖这些默认值。
 
 ## 2. 环节 2 · Fixture Bundle 生产细化
 
+### 2.0 KBD Signal 试运行资产接入（新增设计）
+
+Admin UI 中针对单个 KBD Signal 的试运行结果，不应停留在浏览器临时状态。通过校验的样本应作为该 KBD/revision 对应 Bundle Draft 的 `verification_assets` 进入 Bundle 工厂，再由编译器生成完整 Bundle。该资产是“仿真验证输入”，不是现场证据：
+
+```text
+Signal 试运行对话框
+  -> POST /api/hci-sim/v1/control-plane/bundles/{bundle_digest}/revise
+  -> Bundle Draft.verification_assets（按 signal_id + route_fingerprint 追加）
+  -> 所有必需 Signal 均有有效资产
+  -> Compiler 重新计算 input_fingerprint / bundle.digest
+  -> draft -> validate -> approve -> publish
+  -> Runtime 按不可变 digest 回放完整 KBD
+```
+
+编译输入必须保留 `support_id`、`kbd_revision`、`signal_id`、工具/路由指纹、`stdout/stderr`（QKV 为已投影 records）、验证范围、结果状态、`config_revision` 和 `trace_id`。数据库和普通日志只保留摘要、长度和 sha256；完整输出进入受控 Bundle 对象/manifest payload，并沿用 Artifact 的脱敏、扫描和保留策略。当前 `fixture.bundle_template.template_json` 可作为最小过渡载体，但生产化需要把资产纳入 Bundle Registry 的版本化 CAS 和 stale 传播，不能依赖前端直接改 JSON。
+
+编译器把每个资产映射到对应 Signal 的 RouteKey 响应（该路由的 `stdout/stderr`），禁止把不同 Signal 的文本拼成全局 stdout。同一 Signal 的多组样本必须保留 `asset_id/dataset_id` 并由专家选择 canonical 响应或显式 variant，不能按保存顺序静默取第一组。
+
+保存门禁只接受 `PASS`、`AI_DERIVED_VERIFIED` 或已人工确认的结果；`FAIL/UNKNOWN/AI_DERIVED_UNVERIFIED` 不能计入 Signal 完成度。KBD、工具契约、命令、Matcher 或 Prompt 指纹发生变化时，相关资产标记 stale，必须重新试运行。完整用户交互和对抗性门禁见 [`2026-08-26-QFK-AI派生兜底与KBD41398问题归档.md`](../../events/2026-08-26-QFK-AI派生兜底与KBD41398问题归档.md) 第 13 节。
+
 ### 2.1 设计：为什么必须分叉
 
 第一性问题：**"命令进来回什么"的数据从哪来？** 两条互斥口径，验证目标不同：

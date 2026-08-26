@@ -34,6 +34,12 @@ describe('OutputProcessingEditor', () => {
     expect(wrapper.text()).not.toContain('QKV 已从 JSON 路径取得具体值')
   })
 
+  it('变量处理标题提供绑定 Signal 的试运行入口', () => {
+    const wrapper = mountEditor()
+
+    expect(wrapper.find('.processing-header-actions').text()).toContain('试运行')
+  })
+
   it('使用“分隔”术语并展示真实边界符号示例', async () => {
     const wrapper = mountEditor([{ mode: 'derive', input: '{{DESCRIPTION}}', name: 'VM_NAME', type: 'string', extract: { type: 'split', separator: '：' } }])
     expect(wrapper.text()).toContain('分隔')
@@ -43,7 +49,7 @@ describe('OutputProcessingEditor', () => {
 
   it('新增派生变量符合三列布局契约', async () => {
     const wrapper = mountEditor()
-    await wrapper.find('button').trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === '添加处理')!.trigger('click')
     const emitted = wrapper.emitted('update:modelValue')
     expect((emitted?.at(-1)?.[0] as Array<Record<string, unknown>>)[0]).toMatchObject({
       mode: 'derive', input: '{{DESCRIPTION}}', name: '', type: 'string',

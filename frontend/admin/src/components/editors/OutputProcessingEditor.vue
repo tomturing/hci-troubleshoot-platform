@@ -4,12 +4,12 @@
  * QKV 的输入已经是 JSON 投影后的具体值，这里只负责特征、分隔、AI 兜底和 QFK 断言。
  */
 import { computed } from 'vue'
-import { Delete, InfoFilled, Plus } from '@element-plus/icons-vue'
+import { Delete, InfoFilled, Plus, VideoPlay } from '@element-plus/icons-vue'
 import MatcherEditor from './MatcherEditor.vue'
 
 type ProcessingSpec = Record<string, any>
 const props = defineProps<{ modelValue?: ProcessingSpec[]; produces?: ProcessingSpec[] }>()
-const emit = defineEmits<{ 'update:modelValue': [value: ProcessingSpec[]] }>()
+const emit = defineEmits<{ 'update:modelValue': [value: ProcessingSpec[]]; 'dry-run': [] }>()
 const specs = computed(() => props.modelValue || [])
 const inputOptions = computed(() => {
   const names = new Set<string>()
@@ -67,7 +67,10 @@ function setMatch(index: number, match: ProcessingSpec): void { update(index, { 
   <div class="qkv-output-processing-editor">
     <div class="processing-header">
       <div class="processing-title"><el-icon><InfoFilled /></el-icon><span>产出变量处理</span></div>
-      <el-button text type="primary" size="small" :icon="Plus" @click="add">添加处理</el-button>
+      <div class="processing-header-actions">
+        <el-button text type="primary" size="small" :icon="VideoPlay" @click="emit('dry-run')">试运行</el-button>
+        <el-button text type="primary" size="small" :icon="Plus" @click="add">添加处理</el-button>
+      </div>
     </div>
     <el-alert v-if="specs.length === 0" type="info" :closable="false" title="可选：对 QKV 产出变量进一步处理，包括派生变量和断言判断。" />
     <div v-for="(item, index) in specs" :key="index" class="processing-unit">
@@ -111,6 +114,7 @@ function setMatch(index: number, match: ProcessingSpec): void { update(index, { 
 .qkv-output-processing-editor { width: 100%; margin-top: 12px; padding: 14px; border: 1px solid var(--el-border-color); border-radius: 6px; background: var(--el-fill-color-extra-light); }
 .processing-header, .unit-header, .step-header, .step-output { display: flex; align-items: center; }
 .processing-header, .unit-header { justify-content: space-between; gap: 12px; }
+.processing-header-actions { display: flex; align-items: center; gap: 8px; }
 .processing-title { display: flex; align-items: center; gap: 6px; color: var(--el-text-color-primary); font-weight: 600; }
 .processing-title .el-icon { color: var(--el-color-primary); }
 .processing-unit { margin-top: 12px; padding: 12px; border: 1px solid var(--el-border-color-light); border-radius: 6px; background: var(--el-fill-color-blank); }
