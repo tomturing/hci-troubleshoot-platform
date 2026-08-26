@@ -146,6 +146,12 @@ def _cast_grounded_value(value: Any, value_type: str) -> Any:
             raise QFKExtractionError("QFK_AI_EXTRACT_INVALID_RESPONSE", "AI array 结果必须是非空字符串数组")
         return [item.strip() for item in value]
     if normalized_type == "array<number>":
+        # 兼容：LLM 可能返回逗号分隔字符串而非数组（遵循系统提示词要求）
+        # 例如："0, 1, 2, 3" → [0.0, 1.0, 2.0, 3.0]
+        if isinstance(value, str) and value.strip():
+            parts = [p.strip() for p in value.split(",") if p.strip()]
+            if parts:
+                value = parts
         if not isinstance(value, list) or not value:
             raise QFKExtractionError("QFK_AI_EXTRACT_INVALID_RESPONSE", "AI array<number> 结果必须为非空数组")
         normalized: list[float] = []
@@ -206,8 +212,17 @@ def _assert_grounded(raw_value: Any, evidence_lines: list[str]) -> None:
     """
 
     values = raw_value if isinstance(raw_value, list) else [raw_value]
+    # 对于逗号分隔的字符串（如 "0, 1, 2, 3"），分割后逐个检查
+    expanded_values: list[str] = []
     for item in values:
         literal = str(item)
+        # 如果是逗号分隔的多个值，分割后逐个检查
+        if "," in literal:
+            expanded_values.extend([p.strip() for p in literal.split(",") if p.strip()])
+        else:
+            expanded_values.append(literal)
+
+    for literal in expanded_values:
         if not any(literal in line for line in evidence_lines):
             raise QFKExtractionError(
                 "QFK_AI_EXTRACT_UNGROUNDED",
