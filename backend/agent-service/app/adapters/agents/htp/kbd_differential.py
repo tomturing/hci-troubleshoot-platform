@@ -542,30 +542,21 @@ class KBDDiagnostic:
                 reasons.extend(assessment.reasons)
             if reasons:
                 exclusion_reasons[str(kbd.id)] = reasons
-        report = await self._generate_report(
-            supported if definitive else [],
-            steps_executed,
-            evaluated_kbds=(
-                ordered
-                if definitive
-                else [kbd for kbd in ordered if kbd.id not in decision.supported_ids]
-            ),
-            user_id=user_id,
-            exclusion_reasons=exclusion_reasons,
-        )
+        pending_kbds = [kbd for kbd in ordered if kbd.id not in decision.supported_ids]
         if decision.level is ConclusionLevel.PARTIAL:
-            supported_refs = ", ".join(
-                plan.candidates[kbd_id].support_id or kbd_id for kbd_id in decision.supported_ids
+            report = self._build_partial_report(
+                supported,
+                steps_executed,
+                evaluated_kbds=pending_kbds,
+                exclusion_reasons=exclusion_reasons,
             )
-            report = (
-                "### 诊断结论：部分证据成立，暂不能定论\n\n"
-                f"参考案例 {supported_refs} 的必需关键信号均已满足，但分类内仍有未决或不可执行 KBD；"
-                "这些候选仍可能成立，因此 Conclusion Gate 禁止输出根因、解决方案或进入 S4。\n\n"
-                + self._build_partial_supported_summary(supported, steps_executed)
-                + report.replace(
-                    "没有任何 KBD 的全部必需关键信号均已满足",
-                    "已有 KBD 的必要证据均已满足，但候选全集尚未完成排除",
-                )
+        else:
+            report = await self._generate_report(
+                supported if definitive else [],
+                steps_executed,
+                evaluated_kbds=ordered if definitive else pending_kbds,
+                user_id=user_id,
+                exclusion_reasons=exclusion_reasons,
             )
 
         self._result = KBDDiagResult(
@@ -2133,20 +2124,26 @@ class KBDDiagnostic:
         return "\n\n".join(blocks)
 
     @staticmethod
-    def _build_partial_supported_summary(
+    def _build_partial_report(
         supported_kbds: list[KBD],
         steps_executed: list[StepResult],
+        *,
+        evaluated_kbds: list[KBD] | None = None,
+        exclusion_reasons: dict[str, list[str]] | None = None,
+        kbd_detail_url: str = KBD_DETAIL_URL_TEMPLATE,
     ) -> str:
-        """PARTIAL 时展示已命中参考案例，但不泄露根因和解决方案。
-
-        Conclusion Gate 只禁止未闭合结论进入 S4；它不应抹掉已经满足全部必要信号的
-        候选事实。该摘要与 definitive 报告故意分开，避免 PARTIAL 路径误用根因模板。
-        """
-        if not supported_kbds:
-            return ""
-        blocks: list[str] = ["**已命中参考案例（结论尚未闭合）**："]
+        """构建 PARTIAL 报告：只保留一个结论，避免混入「证据不足」模板。"""
+        blocks = [
+            "### 诊断结论：部分证据成立，暂不能定论",
+            "",
+            "以下参考案例的全部必要关键信号已满足，但仍有其他候选尚未排除。",
+            "因此当前仅展示命中事实，不输出根因或解决方案。",
+            "",
+            "**已命中参考案例**：",
+        ]
         for kbd in supported_kbds:
             support_id = kbd.support_id or kbd.id
+            blocks.append(f"- **参考案例 {support_id} - {kbd.name}**")
             evidence = [
                 KBDDiagnostic._format_step_evidence(step, index, support_id=support_id)
                 for index, step in enumerate(
@@ -2154,10 +2151,35 @@ class KBDDiagnostic:
                     start=1,
                 )
             ]
-            blocks.append(f"- **参考案例 {support_id} - {kbd.name}**：必需关键信号已全部命中。")
             if evidence:
                 blocks.append("  - 现场证据：\n" + "\n".join(f"    {line}" for item in evidence for line in item.splitlines()))
-        return "\n".join(blocks) + "\n\n"
+
+        pending = evaluated_kbds or []
+        if pending:
+            blocks.extend(["", "**仍需排除的候选**："])
+            for kbd in pending:
+                support_id = kbd.support_id or kbd.id
+                url = kbd_detail_url.format(id=kbd.id, support_id=support_id)
+                reasons = (exclusion_reasons or {}).get(str(kbd.id)) or []
+                reason = KBDDiagnostic._friendly_exclusion_reason(reasons)
+                blocks.append(f"- [参考案例 {support_id} - {kbd.name}]({url})：{reason}")
+        return "\n".join(blocks)
+
+    @staticmethod
+    def _friendly_exclusion_reason(reasons: list[str]) -> str:
+        """将内部候选状态压缩为用户可理解的单一原因。"""
+        text = "；".join(reasons)
+        if "scope UNKNOWN" in text or "missing environment" in text:
+            return "适用范围信息不足"
+        if "stale" in text:
+            return "发布契约已过期"
+        if "publish validation" in text or "compile failed" in text or "compile error" in text:
+            return "候选暂不可执行"
+        if "must signal CONTRADICTED" in text or "exclude signal SATISFIED" in text:
+            return "必要条件尚未满足"
+        if "ERROR" in text or "error" in text.lower():
+            return "检查执行未完成"
+        return "证据尚未闭合"
 
     @staticmethod
     def _format_step_evidence(step: StepResult, index: int = 1, support_id: str | int = "") -> str:

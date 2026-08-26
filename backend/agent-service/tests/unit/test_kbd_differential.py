@@ -318,31 +318,41 @@ def test_diagnostic_report_keeps_legacy_suffix_without_exclusion_reasons():
     assert "（未确认：" not in report
 
 
-def test_partial_report_keeps_supported_reference_case_without_root_cause():
-    """一篇 KBD 已命中、另一篇未决时，必须展示命中案例但不能输出根因。"""
+def test_partial_report_has_one_conclusion_and_no_inconclusive_template_noise():
+    """最终 PARTIAL 报告只能有一个结论，并压缩未决候选的内部错误信息。"""
     from app.adapters.agents.htp.kbd_model import KBD
 
-    kbd = KBD(
+    supported = KBD(
         id="1",
-        support_id="27123",
-        name="虚拟机镜像忙",
-        root_cause="镜像被其他进程占用",
-        solution="结束占用进程",
+        support_id="18906",
+        name="导入第三方 qcow2 镜像失败",
+        root_cause="磁盘镜像格式异常",
+        solution="修复镜像格式",
     )
+    pending = KBD(id="2", support_id="38744", name="其他虚拟机创建失败")
     step = StepResult(
-        tool_name="qkv_task",
-        tool_args={"instruction": "获取虚拟机开机失败任务详情"},
-        raw_output='{"data": [{"type": "启动虚拟机", "status": "failed"}]}',
+        tool_name="qfk_system",
+        tool_args={"instruction": "确认磁盘检查结果"},
+        raw_output="ok",
         error=None,
         kbd_id="1",
         signal_id="sig_001",
         outcome=SignalOutcome.SATISFIED,
     )
 
-    report = KBDDiagnostic._build_partial_supported_summary([kbd], [step])
+    report = KBDDiagnostic._build_partial_report(
+        [supported],
+        [step],
+        evaluated_kbds=[pending],
+        exclusion_reasons={"2": ["expert_1785835354159_mzmmpkurzl=ERROR"]},
+    )
 
+    assert report.count("### 诊断结论") == 1
+    assert "诊断结论：证据不足" not in report
     assert "已命中参考案例" in report
-    assert "参考案例 27123 - 虚拟机镜像忙" in report
-    assert "必需关键信号已全部命中" in report
-    assert "镜像被其他进程占用" not in report
-    assert "结束占用进程" not in report
+    assert "参考案例 18906 - 导入第三方 qcow2 镜像失败" in report
+    assert "参考案例 38744 - 其他虚拟机创建失败" in report
+    assert "检查执行未完成" in report
+    assert "expert_1785835354159_mzmmpkurzl" not in report
+    assert "磁盘镜像格式异常" not in report
+    assert "修复镜像格式" not in report
