@@ -143,6 +143,9 @@ def _intent(tool: str, args: dict[str, Any], signal: dict[str, Any]) -> SignalIn
                 filter_keywords=filter_keywords,
                 resource_keyword=canonical_args.get("resource_keyword"),
                 request_id=canonical_args.get("request_id"),
+                # 发布 Bundle 需要把变量留给 hci-sim 场景画像渲染；普通在线
+                # 执行路径仍在变量解析后调用 build_log_selector，保持正则安全。
+                preserve_placeholders=True,
             )
             if selector and not canonical_args.get("keyword"):
                 canonical_args["keyword"] = selector

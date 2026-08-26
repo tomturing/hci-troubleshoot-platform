@@ -347,7 +347,7 @@ func compileSynthetic(w http.ResponseWriter, r *http.Request, registry controlpl
 		request.Container = "host"
 	}
 	if request.CompilerRevision == "" {
-		request.CompilerRevision = "bundle-factory-v2"
+		request.CompilerRevision = "bundle-factory-v3"
 	}
 	dependencies := []controlplane.Dependency{
 		{Type: "kbd", ID: request.Resolved.SupportID, Revision: fmt.Sprint(request.Resolved.KBDRevision), Digest: request.Resolved.KBDChecksum},

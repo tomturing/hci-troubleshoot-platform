@@ -813,6 +813,8 @@ def test_qfk_log_signals_with_different_includes_compile_to_distinct_commands():
     assert "-k" in cmd_a and "Get" in cmd_a
     assert "-k" in cmd_b and "file" in cmd_b
     assert cmd_a != cmd_b
+    assert r"Get\ {{VM}}\ from\ vmlist\ or\ conf\ failed" in cmd_a
+    assert r"Get\ \{\{VM\}\}" not in cmd_a
 
 
 # ─── qkv_vm_console 条件型生产者发布门禁 ───────────────────────────────
