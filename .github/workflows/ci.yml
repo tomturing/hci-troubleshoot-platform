@@ -179,8 +179,8 @@ jobs:
             echo "frontend=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # 快速门禁只接受直接改动的单元测试或同名服务测试；共享依赖等未知
-      # 影响范围会输出 full，由 unit-tests 走完整回归，避免路径选择漏测。
+      # 快速门禁只接受已审计的直接单元测试、服务测试目录或信号公共层集合；
+      # 共享依赖等未知影响范围会输出 full，由 unit-tests 走完整回归，避免漏测。
       - name: 解析 PR 快速单元测试目标
         id: pr-unit-plan
         if: github.event_name == 'pull_request'
@@ -805,11 +805,7 @@ jobs:
 
           STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           echo "trace_id=${CI_TRACE_ID} mode=targeted reason=${TEST_REASON} targets=${TARGETS[*]}"
-          timeout 20s bash -euo pipefail -c '
-            for target in "$@"; do
-              uv run pytest "$target" -q --no-cov -m "not integration and not slow"
-            done
-          ' -- "${TARGETS[@]}"
+          timeout 20s uv run pytest "${TARGETS[@]}" -q --no-cov -m "not integration and not slow"
           FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           {
             echo "### PR 快速单元测试"
