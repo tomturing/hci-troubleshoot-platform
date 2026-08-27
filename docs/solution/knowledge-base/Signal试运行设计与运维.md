@@ -56,7 +56,11 @@ fixture/replay 只能从已发布 Bundle 的 `verification_assets` 读取 PASS �
 
 发布前，Bundle 的 schema/digest/RouteKey 校验仍由既有控制面执行。验证资产目前用于可复现实例输入；多样本 canonical variant 和“所有必需 Signal 覆盖”仍需在发布门禁中进一步落地，不能把单个样本等同于完整场景证明。
 
-## 5. 可观测性与排障
+## 5. AI Prompt 依赖
+
+AI 试运行与正式 QFK/QKV 处理共用数据库中的 `ai_processing` Prompt 槽位。Agent 启动时将数据库会话工厂注入试运行路由；Prompt 缺失或数据库不可用时返回结构化 `QFK_AI_PROCESSING_PROMPT_UNAVAILABLE`，不会使用代码内置 Prompt 伪造结果。部署后应确认 `system_prompt.ai_processing_v1` 和 `prompt_slot.ai_processing` 均为 active。
+
+## 6. 可观测性与排障
 
 Agent 暴露：
 
@@ -74,6 +78,6 @@ Agent 暴露：
 | `QFK_AI_EXTRACT_UNAVAILABLE` | Agent 未初始化 AI 客户端 | 检查 Agent 启动与 LLM 配置 |
 | `verification_asset_route_not_found` | QFK Signal 与 Bundle Route 不一致 | 先重新生成/整理 Bundle Draft |
 
-## 6. 验收
+## 7. 验收
 
 Python 单测覆盖 QFK PASS、草稿漂移拒绝、QKV 前序依赖执行及 AI 范围约束；Vue 测试覆盖入口与对话框。hci-sim 需要执行 fixture/controlplane Go 单测，验证资产追加必须生成新 digest、错误 Route/payload 被拒绝、父 Draft 不变。

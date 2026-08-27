@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from types import SimpleNamespace
 
 import pytest
 from app.routes.signal_dry_run import SignalDryRunRequest, evaluate_signal_dry_run
@@ -100,3 +101,30 @@ async def test_ai_step_requires_an_explicit_ai_target() -> None:
 
     with pytest.raises(ValueError, match="AI_STEP_TARGET_REQUIRED"):
         await evaluate_signal_dry_run(request, ai_client=None, trace_id="c" * 32)
+
+
+@pytest.mark.asyncio
+async def test_qfk_ai_dry_run_passes_prompt_session_factory(monkeypatch: pytest.MonkeyPatch) -> None:
+    signal = _qfk_signal()
+    signal["match"]["extract"]["ai_processing"] = {
+        "contract_version": 1, "mode": "extract", "instruction": "提取状态", "output_type": "string",
+    }
+    session_factory = object()
+    seen: dict[str, object] = {}
+
+    async def fake_extract(*args, **kwargs):
+        seen["db_session_factory"] = kwargs.get("db_session_factory")
+        return SimpleNamespace(value="FAILED", evidence_line_numbers=[1], evidence_lines=["FAILED"], candidate_count=1, prompt_revision="prompt-v1", evidence="已定位")
+
+    monkeypatch.setattr("app.routes.signal_dry_run.extract_ai_value", fake_extract)
+    request = SignalDryRunRequest(
+        draft_revision=_revision(signal), scope="qfk_execution_result",
+        unit_ref={"signal_id": signal["id"]}, verification_scope="ai_step",
+        dataset={"dataset_id": "preview-ai", "source_type": "pasted", "source_ref": "user-input", "payload": "FAILED"},
+        signal=signal, support_id="41398", kbd_revision=7,
+    )
+
+    result = await evaluate_signal_dry_run(request, ai_client=object(), trace_id="d" * 32, db_session_factory=session_factory)
+
+    assert result.status == "PASS"
+    assert seen["db_session_factory"] is session_factory

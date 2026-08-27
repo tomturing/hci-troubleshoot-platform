@@ -62,8 +62,8 @@ const inputPlaceholder = computed(() => isQkv.value
   : '粘贴当前 Signal 的完整 stdout / stderr 输出')
 const sourceDescription = computed(() => ({
   pasted: '临时样本只用于本次预览，不写入 KBD 或现场证据。',
-  fixture: '将从已加载的 hci-sim fixture 读取当前 Signal 的独立样本。',
-  replay: '将从不可变 exec_id/artifact_id 回放记录读取当前 Signal 的独立样本。',
+  fixture: '将从已发布 Bundle 的仿真测试资产读取当前 Signal 的独立样本。',
+  replay: '现场回放尚未接入，不会读取或伪造现场制品。',
 })[source.value])
 const previewStatus = computed(() => {
   if (!previewRequested.value) return '暂无运行数据'
@@ -104,6 +104,10 @@ async function requestPreview(): Promise<void> {
   }
   if (source.value !== 'pasted' && !selectedDataset.value) {
     ElMessage.warning('请先选择服务端提供的数据集')
+    return
+  }
+  if (source.value === 'replay') {
+    ElMessage.warning('现场回放暂不支持')
     return
   }
   if (source.value === 'pasted' && !sampleInput.value.trim()) return
@@ -169,7 +173,7 @@ async function saveToBundle(): Promise<void> {
 async function loadDatasets(): Promise<void> {
   datasets.value = []
   selectedDatasetId.value = ''
-  if (source.value === 'pasted' || !props.supportId) return
+  if (source.value === 'pasted' || source.value === 'replay' || !props.supportId) return
   datasetLoading.value = true
   try {
     const listed = await fetch('/api/hci-sim/v1/control-plane/bundles?support_id=' + encodeURIComponent(props.supportId))
@@ -259,8 +263,8 @@ watch(selectedDatasetId, () => {
         <el-form-item label="输入来源">
           <el-select v-model="source" :loading="datasetLoading">
             <el-option label="临时样本（用户输入）" value="pasted" />
-            <el-option label="hci-sim fixture（已发布资产）" value="fixture" />
-            <el-option label="现场回放（已发布资产）" value="replay" />
+            <el-option label="仿真测试（bundle资产）" value="fixture" />
+            <el-option label="现场回放（暂不支持）" value="replay" disabled />
           </el-select>
           <div class="field-hint">{{ sourceDescription }}</div>
         </el-form-item>
