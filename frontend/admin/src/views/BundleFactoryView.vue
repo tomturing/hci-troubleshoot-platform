@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, Delete, EditPen, Plus, Refresh, Upload, Switch, CopyDocument } from '@element-plus/icons-vue'
+import { useRouter } from 'vue-router'
 
 type BundleStatus = 'draft' | 'validated' | 'approved' | 'published' | 'stale' | 'retired'
 
@@ -59,6 +60,7 @@ interface BundleRecord {
 }
 
 const endpoint = (import.meta.env.VITE_HCI_SIM_CONTROL_PLANE_URL || '/api/hci-sim').replace(/\/$/, '')
+const router = useRouter()
 const loading = ref(false)
 const actionLoading = ref(false)
 const supportFilter = ref('')
@@ -328,6 +330,7 @@ onMounted(() => loadBundles())
         </div>
       </div>
       <div class="create-bar">
+        <el-button plain @click="router.push('/simulation/bundle-factory/assets')">管理资产</el-button>
         <el-input
           v-model="createSupportId"
           placeholder="输入 KBD support_id (如 27123)"
@@ -1275,4 +1278,3 @@ pre,
   }
 }
 </style>
-

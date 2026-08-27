@@ -122,6 +122,74 @@ async def get_bundle(bundle_digest: str, request: Request) -> JSONResponse:
     return await _get(f"/v1/control-plane/bundles/{bundle_digest}", trace_id=_trace_id(request))
 
 
+@router.get("/v1/control-plane/fixture-assets")
+async def list_fixture_assets(
+    request: Request,
+    signal_type: str | None = None,
+    asset_type: str | None = None,
+    status: str | None = None,
+) -> JSONResponse:
+    """列出 Bundle Factory 可复用 stdout 资产，查询参数只允许固定枚举。"""
+
+    allowed_signals = {"qkv_alert", "qkv_task", "qkv_dialog"}
+    allowed_types = {"template", "instance"}
+    allowed_statuses = {"draft", "published", "retired"}
+    if signal_type and signal_type not in allowed_signals:
+        raise HTTPException(status_code=400, detail="signal_type invalid")
+    if asset_type and asset_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="asset_type invalid")
+    if status and status not in allowed_statuses:
+        raise HTTPException(status_code=400, detail="status invalid")
+    query = "&".join(
+        f"{key}={value}"
+        for key, value in (("signal_type", signal_type), ("asset_type", asset_type), ("status", status))
+        if value
+    )
+    return await _get(f"/v1/control-plane/fixture-assets{'?' + query if query else ''}", trace_id=_trace_id(request))
+
+
+@router.get("/v1/control-plane/fixture-assets/{asset_key}")
+async def get_fixture_asset(asset_key: str, request: Request) -> JSONResponse:
+    if not re.fullmatch(r"[a-zA-Z0-9._-]{1,128}", asset_key):
+        raise HTTPException(status_code=400, detail="asset_key invalid")
+    return await _get(f"/v1/control-plane/fixture-assets/{asset_key}", trace_id=_trace_id(request))
+
+
+@router.post("/v1/control-plane/fixture-assets")
+async def create_fixture_asset_revision(request: Request) -> JSONResponse:
+    return await _post(
+        "/v1/control-plane/fixture-assets",
+        await request.json(),
+        actor_role="expert",
+        actor_purpose="edit",
+        trace_id=_trace_id(request),
+    )
+
+
+@router.post("/v1/control-plane/fixture-assets/{asset_key}/{revision}/publish")
+async def publish_fixture_asset(asset_key: str, revision: int, request: Request) -> JSONResponse:
+    if not re.fullmatch(r"[a-zA-Z0-9._-]{1,128}", asset_key) or revision < 1:
+        raise HTTPException(status_code=400, detail="asset_key or revision invalid")
+    return await _post(
+        f"/v1/control-plane/fixture-assets/{asset_key}/{revision}/publish",
+        {},
+        actor_role="publisher",
+        trace_id=_trace_id(request),
+    )
+
+
+@router.post("/v1/control-plane/fixture-assets/{asset_key}/{revision}/retire")
+async def retire_fixture_asset(asset_key: str, revision: int, request: Request) -> JSONResponse:
+    if not re.fullmatch(r"[a-zA-Z0-9._-]{1,128}", asset_key) or revision < 1:
+        raise HTTPException(status_code=400, detail="asset_key or revision invalid")
+    return await _post(
+        f"/v1/control-plane/fixture-assets/{asset_key}/{revision}/retire",
+        {},
+        actor_role="expert",
+        trace_id=_trace_id(request),
+    )
+
+
 @router.post("/v1/control-plane/bundles")
 async def create_bundle_draft(request: Request) -> JSONResponse:
     """读取 C1 权威快照并创建 synthetic Draft；不接受浏览器提交 KBD revision。"""
@@ -164,7 +232,7 @@ async def create_bundle_draft(request: Request) -> JSONResponse:
         "container": str(body.get("container") or "host"),
         # Draft 生成算法变更必须提升编译器修订，避免 Registry 将新 Manifest
         # 与旧算法视为同一冻结输入而触发幂等冲突。
-        "compiler_revision": "bundle-factory-v3",
+        "compiler_revision": "bundle-factory-v4-fixture-assets",
     }
     return await _post(
         "/v1/control-plane/bundles",
