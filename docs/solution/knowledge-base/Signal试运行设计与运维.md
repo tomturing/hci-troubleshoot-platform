@@ -8,6 +8,10 @@ owner: platform
 
 # Signal 试运行设计与运维
 
+## Admin UI 结果展示约定
+
+试运行结果在主视图只展示一个业务终态：`PASS`、`FAIL` 或 `UNKNOWN`。其中 `PASS` 对应当前 Signal 完整后处理链判定通过，`FAIL` 对应判定不通过，`UNKNOWN` 表示输入、处理链或 AI 响应不足以可靠给出结论。终态由平台后处理链的判定结果决定，**不得根据 AI `output` 的类型或取值（包括 `1/0`、布尔值、字符串、数组和对象）推导或改写**。`AI status=success/insufficient` 仅属于原始响应字段，不与主视图终态并列展示；原始四字段 JSON（`status`、`output`、`evidence`、`reason`）通过“AI 原始响应详情”展开查看。
+
 ## 1. 边界
 
 试运行验证的是**当前未保存 Signal 草稿对一组既有输入的执行结果处理**，不是执行 acquisition、aCLI 命令、SSH 或任何现场动作。

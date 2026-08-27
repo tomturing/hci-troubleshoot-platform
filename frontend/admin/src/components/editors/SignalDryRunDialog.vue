@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { InfoFilled, WarningFilled } from '@element-plus/icons-vue'
+import { InfoFilled } from '@element-plus/icons-vue'
 
 type SignalLike = Record<string, any>
 type VerificationScope = 'signal' | 'ai_step'
@@ -19,6 +19,7 @@ interface PreviewResult {
   derivation?: Record<string, unknown>
   error_code?: string | null
   error_message?: string | null
+  ai_raw_response?: Record<string, unknown> | null
 }
 
 const props = defineProps<{
@@ -40,7 +41,6 @@ const previewLoading = ref(false)
 const previewResult = ref<PreviewResult | null>(null)
 const lastDryRunRequest = ref<Record<string, unknown> | null>(null)
 const saveLoading = ref(false)
-const resultViewMode = ref<'form' | 'json'>('form')
 const datasetLoading = ref(false)
 const datasets = ref<Array<{ dataset_id: string; source_type: DatasetSource; source_ref: string; payload: unknown }>>([])
 const selectedDatasetId = ref('')
@@ -73,27 +73,24 @@ const previewStatus = computed(() => {
   if (!sampleInput.value.trim() && source.value === 'pasted') return '请提供试运行输入'
   return '试运行未完成'
 })
-const resultTagType = computed(() => ({ PASS: 'success', FAIL: 'danger', UNKNOWN: 'warning' } as const)[previewResult.value?.status || 'UNKNOWN'])
 const canSave = computed(() => previewResult.value?.status === 'PASS')
 const selectedDataset = computed(() => datasets.value.find(item => item.dataset_id === selectedDatasetId.value) || null)
-const resultFormEntries = computed(() => {
-  const value = previewResult.value?.value
-  if (Array.isArray(value)) return value.map((item, index) => ({ label: `[${index}]`, value: formatResultValue(item) }))
-  if (value && typeof value === 'object') return Object.entries(value as Record<string, unknown>).map(([label, item]) => ({ label, value: formatResultValue(item) }))
-  return [{ label: '结果', value: formatResultValue(value) }]
+const resultExplanation = computed(() => {
+  const result = previewResult.value
+  if (!result) return ''
+  if (result.status === 'PASS') return result.evidence || '处理结果满足当前 Signal 判定条件。'
+  if (result.status === 'FAIL') return result.evidence || '处理结果不满足当前 Signal 判定条件。'
+  return result.error_message || result.evidence || 'AI 未能可靠处理，无法给出业务结论。'
 })
-const resultJson = computed(() => {
-  try { return JSON.stringify(previewResult.value?.value, null, 2) ?? 'null' } catch { return String(previewResult.value?.value) }
+const resultOutput = computed(() => {
+  const result = previewResult.value
+  if (!result || result.value === undefined || result.value === null) return '—'
+  return typeof result.value === 'string' ? result.value : JSON.stringify(result.value)
 })
-
-function formatResultValue(value: unknown): string {
-  if (value === undefined) return '—'
-  if (value === null) return 'null'
-  if (typeof value === 'object') {
-    try { return JSON.stringify(value, null, 2) } catch { return String(value) }
-  }
-  return String(value)
-}
+const rawAiResponse = computed(() => {
+  const result = previewResult.value
+  return result?.ai_raw_response || null
+})
 
 function close(): void {
   emit('update:modelValue', false)
@@ -117,7 +114,6 @@ async function canonicalHash(value: unknown): Promise<string> {
 async function requestPreview(): Promise<void> {
   previewRequested.value = true
   previewResult.value = null
-  resultViewMode.value = 'form'
   if (!props.signal || !props.supportId || !props.kbdRevision) {
     ElMessage.warning('当前 KBD 草稿身份不完整，无法试运行')
     return
@@ -158,10 +154,29 @@ async function requestPreview(): Promise<void> {
       body: JSON.stringify(dryRunRequest),
     })
     const body = await response.json().catch(() => ({}))
-    if (!response.ok) throw new Error(String(body?.detail?.message || body?.detail || `HTTP ${response.status}`))
+    if (!response.ok) {
+      const detail = body?.detail
+      const errorCode = typeof detail === 'object' ? String(detail?.code || '') : ''
+      const errorMessage = typeof detail === 'object' ? String(detail?.message || '') : String(detail || '')
+      previewResult.value = {
+        trace_id: typeof detail === 'object' ? String(detail?.trace_id || '') : '',
+        dataset_id: String(dryRunRequest.dataset && (dryRunRequest.dataset as Record<string, unknown>).dataset_id),
+        config_revision: revision,
+        status: 'UNKNOWN',
+        error_code: errorCode || null,
+        error_message: errorMessage || `HTTP ${response.status}`,
+      }
+      throw new Error(errorMessage || `HTTP ${response.status}`)
+    }
     previewResult.value = body as PreviewResult
     lastDryRunRequest.value = dryRunRequest
   } catch (error) {
+    if (!previewResult.value) {
+      previewResult.value = {
+        trace_id: '', dataset_id: '', config_revision: '', status: 'UNKNOWN',
+        error_message: error instanceof Error ? error.message : '试运行请求失败',
+      }
+    }
     ElMessage.error(error instanceof Error ? error.message : '试运行请求失败')
   } finally {
     previewLoading.value = false
@@ -245,7 +260,6 @@ watch(() => props.modelValue, (visible) => {
 watch([sampleInput, source, verificationScope], () => {
   previewRequested.value = false
   previewResult.value = null
-  resultViewMode.value = 'form'
   lastDryRunRequest.value = null
 })
 
@@ -322,42 +336,30 @@ watch(selectedDatasetId, () => {
         />
       </el-form>
 
-      <section class="preview-panel" aria-label="配置效果预览">
-        <div class="preview-heading">
-          <span>配置效果预览</span>
-          <el-tag size="small" type="info" effect="plain">独立数据集</el-tag>
-        </div>
+      <section class="preview-panel" aria-label="AI 处理结果" aria-live="polite">
+        <div class="preview-heading"><span>AI 处理结果</span></div>
         <div v-if="!previewResult" class="preview-empty">
-          <el-icon><WarningFilled /></el-icon>
           <strong>{{ previewStatus }}</strong>
-          <p v-if="!previewRequested">提供一组输入后执行预览。结果会绑定当前 KBD revision、Signal 和处理范围。</p>
-          <p v-else-if="sampleInput.trim() || source !== 'pasted'">服务未返回结果。不会以浏览器规则或示例数据伪造 PASS/FAIL 结果。</p>
-          <p v-else>临时样本为空，无法生成配置效果。</p>
+          <p>提供一组输入后执行预览。</p>
         </div>
-        <template v-if="previewResult">
-          <el-tag :type="resultTagType" effect="dark">{{ previewResult.status }}</el-tag>
-          <el-radio-group v-model="resultViewMode" class="result-view-switch" size="small">
-            <el-radio-button value="form">表单展示</el-radio-button>
-            <el-radio-button value="json">JSON 展示</el-radio-button>
-          </el-radio-group>
-          <div v-if="resultViewMode === 'form'" class="result-form" aria-label="结构化结果表单">
-            <div v-for="entry in resultFormEntries" :key="entry.label" class="result-form-row">
-              <span class="result-form-label">{{ entry.label }}</span>
-              <code class="result-form-value">{{ entry.value }}</code>
-            </div>
+        <template v-else>
+          <div class="result-conclusion" :class="`result-${previewResult.status.toLowerCase()}`">
+            <span>最终结论</span>
+            <strong>{{ previewResult.status }}</strong>
+            <small>{{ resultExplanation }}</small>
           </div>
-          <pre v-else class="result-value">{{ resultJson }}</pre>
-          <div v-if="previewResult.evidence" class="result-evidence">
-            <strong>处理说明</strong>
-            <p>{{ previewResult.evidence }}</p>
-          </div>
+          <dl class="preview-context result-context">
+            <div><dt>输出值</dt><dd><code>{{ resultOutput }}</code><small>AI 返回的业务结果</small></dd></div>
+            <div><dt>证据行</dt><dd>{{ previewResult.evidence_lines?.length ? previewResult.evidence_lines.map(line => `line:${line}`).join(' · ') : '—' }}</dd></div>
+            <div><dt>处理说明</dt><dd>{{ resultExplanation }}</dd></div>
+          </dl>
+          <details class="raw-response">
+            <summary><strong>AI 原始响应详情</strong><span>展开查看原始 JSON</span></summary>
+            <pre v-if="rawAiResponse">{{ JSON.stringify(rawAiResponse, null, 2) }}</pre>
+            <p v-else class="raw-missing">本次处理未调用 AI，或服务未返回可审计的原始响应。</p>
+            <div class="raw-meta"><span>trace_id</span><code>{{ previewResult.trace_id || '—' }}</code><span v-if="previewResult.error_code">error_code</span><code v-if="previewResult.error_code">{{ previewResult.error_code }}</code></div>
+          </details>
         </template>
-        <dl class="preview-context">
-          <dt>处理对象</dt><dd>{{ signalId }}</dd>
-          <dt>输入类型</dt><dd>{{ inputLabel }}</dd>
-          <dt>调用链</dt><dd>{{ previewResult?.trace_id || '生成后返回 trace_id' }}</dd>
-          <dt>保存目标</dt><dd>Bundle Draft verification_assets</dd>
-        </dl>
       </section>
     </div>
 
@@ -391,22 +393,34 @@ watch(selectedDatasetId, () => {
 .preview-panel { min-width: 0; border: 1px solid var(--el-border-color); border-radius: 6px; background: var(--el-fill-color-extra-light); overflow: hidden; }
 .preview-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 11px 12px; border-bottom: 1px solid var(--el-border-color-light); background: var(--el-bg-color); font-size: 13px; font-weight: 600; }
 .preview-empty { display: grid; justify-items: center; padding: 30px 18px 18px; text-align: center; }
-.preview-empty .el-icon { margin-bottom: 9px; color: var(--el-color-warning); font-size: 24px; }
 .preview-empty strong { color: var(--el-text-color-primary); font-size: 13px; }
 .preview-empty p { margin: 7px 0 0; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.55; }
-.result-value { max-height: 180px; margin: 12px; padding: 8px; overflow: auto; border: 1px solid var(--el-border-color-light); background: var(--el-bg-color); font-size: 12px; line-height: 1.5; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
-.result-view-switch { display: flex; justify-content: center; width: 100%; margin: 12px 0 0; }
-.result-form { margin: 12px; border: 1px solid var(--el-border-color-light); background: var(--el-bg-color); text-align: left; }
-.result-form-row { display: grid; grid-template-columns: minmax(86px, 28%) minmax(0, 1fr); gap: 10px; padding: 8px; border-bottom: 1px solid var(--el-border-color-lighter); font-size: 12px; line-height: 1.5; }
-.result-form-row:last-child { border-bottom: 0; }
-.result-form-label { color: var(--el-text-color-secondary); overflow-wrap: anywhere; }
-.result-form-value { color: var(--el-text-color-primary); white-space: pre-wrap; overflow-wrap: anywhere; }
-.result-evidence { margin: 10px 12px; color: var(--el-text-color-regular); font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
-.result-evidence strong { display: block; margin-bottom: 4px; color: var(--el-text-color-secondary); font-size: 11px; font-weight: 600; }
-.result-evidence p { margin: 0; white-space: pre-wrap; }
-.preview-context { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 7px 8px; margin: 0 12px 14px; padding-top: 12px; border-top: 1px dashed var(--el-border-color); font-size: 12px; }
+.result-conclusion { padding: 18px 16px 15px; border-bottom: 1px solid var(--el-border-color-light); }
+.result-conclusion > span { display: block; color: var(--el-text-color-secondary); font-size: 12px; }
+.result-conclusion strong { display: block; margin: 6px 0 4px; font: 600 28px/1.15 ui-monospace, SFMono-Regular, monospace; letter-spacing: .2px; }
+.result-conclusion small { display: block; color: var(--el-text-color-regular); font-size: 12px; line-height: 1.5; }
+.result-pass { background: var(--el-color-success-light-9); }
+.result-pass strong { color: var(--el-color-success); }
+.result-fail { background: var(--el-color-danger-light-9); }
+.result-fail strong { color: var(--el-color-danger); }
+.result-unknown { background: var(--el-color-warning-light-9); }
+.result-unknown strong { color: var(--el-color-warning-dark-2); }
+.preview-context { display: grid; gap: 0; margin: 0 12px 12px; font-size: 12px; }
+.preview-context > div { display: grid; grid-template-columns: 60px minmax(0, 1fr); gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--el-border-color-lighter); }
+.preview-context > div:last-child { border-bottom: 0; }
 .preview-context dt { color: var(--el-text-color-secondary); }
-.preview-context dd { margin: 0; overflow-wrap: anywhere; color: var(--el-text-color-regular); font-family: var(--el-font-family); }
+.preview-context dd { margin: 0; overflow-wrap: anywhere; color: var(--el-text-color-regular); line-height: 1.5; }
+.preview-context dd small { display: block; margin-top: 2px; color: var(--el-text-color-secondary); font-size: 11px; }
+.raw-response { margin: 8px 12px 14px; border: 1px solid var(--el-border-color); border-radius: 5px; background: var(--el-bg-color); }
+.raw-response summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 11px 12px; cursor: pointer; list-style: none; }
+.raw-response summary::-webkit-details-marker { display: none; }
+.raw-response summary strong { font-size: 12px; font-weight: 600; }
+.raw-response summary span { color: var(--el-text-color-secondary); font-size: 11px; }
+.raw-response pre { max-height: 220px; margin: 0 10px 10px; padding: 10px; overflow: auto; border: 1px solid var(--el-border-color-light); border-radius: 4px; background: var(--el-fill-color-extra-light); font: 11px/1.55 ui-monospace, SFMono-Regular, monospace; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
+.raw-missing { margin: 0 10px 10px; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.5; }
+.raw-meta { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 6px 8px; margin: 0 10px 11px; padding-top: 9px; border-top: 1px dashed var(--el-border-color); font-size: 11px; }
+.raw-meta span { color: var(--el-text-color-secondary); }
+.raw-meta code { color: var(--el-text-color-regular); overflow-wrap: anywhere; }
 .dialog-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; color: var(--el-text-color-secondary); font-size: 12px; text-align: left; }
 .dialog-footer > div { display: flex; flex: 0 0 auto; gap: 8px; }
 @media (max-width: 720px) { .dialog-grid { grid-template-columns: 1fr; } .dialog-footer { align-items: flex-start; flex-direction: column; } .dialog-footer > div { align-self: flex-end; flex-wrap: wrap; justify-content: flex-end; } }

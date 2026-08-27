@@ -86,6 +86,7 @@ class SignalDryRunResult(BaseModel):
     derivation: dict[str, Any] = Field(default_factory=dict)
     error_code: str | None = None
     error_message: str | None = None
+    ai_raw_response: dict[str, Any] | None = None
 
 
 def _check_internal_auth(request: Request) -> None:
@@ -145,6 +146,7 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, db_
         precomputed_detail: dict[str, Any] | None = None
         evidence_lines: list[int] = []
         value: Any = None
+        ai_raw_response: dict[str, Any] | None = None
         if has_ai_extract(extract):
             if ai_client is None:
                 raise RuntimeError("QFK_AI_EXTRACT_UNAVAILABLE: 当前 Agent 未初始化 AI 客户端")
@@ -163,6 +165,7 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, db_
                 db_session_factory=db_session_factory,
             )
             value = ai_result.value
+            ai_raw_response = getattr(ai_result, "raw_response", None)
             evidence_lines = ai_result.evidence_line_numbers
             precomputed_detail = {
                 "extract": {
@@ -191,6 +194,7 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, db_
                     status="PASS", input_sha256=input_sha, value=ai_result.value,
                     evidence=ai_result.reason, evidence_lines=evidence_lines,
                     derivation={"ai_contract": precomputed_detail["extract"]},
+                    ai_raw_response=ai_raw_response,
                 )
         result = evaluate_matcher(signal_matcher, matcher_input, precomputed_values=precomputed_values, precomputed_detail=precomputed_detail)
         status = "UNKNOWN" if result.matched is None else ("PASS" if result.matched else "FAIL")
@@ -199,6 +203,7 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, db_
             verification_scope=body.verification_scope, config_revision=body.draft_revision,
             status=status, input_sha256=input_sha, value=value, matcher=result.detail,
             evidence=result.evidence, evidence_lines=evidence_lines,
+            ai_raw_response=ai_raw_response,
         )
 
     if not isinstance(produces, list) or not produces:
@@ -230,6 +235,7 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, db_
                     status="PASS", input_sha256=input_sha, value=ai_result.value,
                     evidence=ai_result.reason, evidence_lines=ai_result.evidence_line_numbers,
                     derivation={"ai_contract": {"produce": produce.get("name"), "value_source": "ai_grounded"}},
+                    ai_raw_response=getattr(ai_result, "raw_response", None),
                 )
         else:
             values[str(produce["name"])] = extract_value(output, extract, str(produce.get("type") or "string"))
