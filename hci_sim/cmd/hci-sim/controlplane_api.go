@@ -4,6 +4,7 @@ package main
 // 仍由 controlplane.Registry 执行；浏览器不能直接修改 Runtime Manifest 或绕过审批。
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -163,6 +164,52 @@ func handleBundleFactory(w http.ResponseWriter, r *http.Request, registry contro
 		writeJSON(w, http.StatusOK, map[string]any{"bundle": bundleView(record), "trace_id": requestTraceID(r)})
 		return
 	}
+	if len(parts) == 2 && parts[1] == "dry-run-datasets" && r.Method == http.MethodGet {
+		record, getErr := registry.Get(digest)
+		if getErr != nil {
+			writeControlPlaneError(w, getErr)
+			return
+		}
+		if record.Status != controlplane.BundlePublished {
+			writeControlPlaneError(w, errors.New("dry_run_dataset_requires_published_bundle"))
+			return
+		}
+		var manifest fixture.Manifest
+		if err := json.Unmarshal(record.Manifest, &manifest); err != nil {
+			writeControlPlaneError(w, fmt.Errorf("bundle_manifest_corrupt: %w", err))
+			return
+		}
+		signalID := strings.TrimSpace(r.URL.Query().Get("signal_id"))
+		sourceType := strings.TrimSpace(r.URL.Query().Get("source_type"))
+		if signalID == "" || (sourceType != "fixture" && sourceType != "replay") {
+			writeControlPlaneError(w, errors.New("signal_id and source_type(fixture|replay) are required"))
+			return
+		}
+		assets := make([]map[string]any, 0)
+		if sourceType == "fixture" {
+			for _, route := range manifest.Routes {
+				if route.SignalID != signalID || route.Result.Stdout == "" {
+					continue
+				}
+				assets = append(assets, map[string]any{
+					"dataset_id": "fixture-" + route.ID, "source_type": "fixture",
+					"source_ref": record.Digest + ":" + route.ID, "payload": route.Result.Stdout,
+					"signal_id": route.SignalID, "config_revision": record.Digest,
+				})
+			}
+		}
+		for _, asset := range manifest.VerificationAssets {
+			if asset.SignalID == signalID && asset.SourceType == sourceType && asset.ResultStatus == "PASS" {
+				assets = append(assets, map[string]any{
+					"dataset_id": asset.AssetID, "source_type": asset.SourceType,
+					"source_ref": record.Digest + ":" + asset.AssetID, "payload": asset.Payload,
+					"signal_id": asset.SignalID, "config_revision": asset.ConfigRevision,
+				})
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"bundle_digest": record.Digest, "datasets": assets, "trace_id": requestTraceID(r)})
+		return
+	}
 	if len(parts) != 2 || r.Method != http.MethodPost {
 		http.NotFound(w, r)
 		return
@@ -186,6 +233,8 @@ func handleBundleFactory(w http.ResponseWriter, r *http.Request, registry contro
 		writeJSON(w, http.StatusOK, map[string]any{"bundle": bundleView(record), "trace_id": requestTraceID(r)})
 	case "revise":
 		reviseDraft(w, r, registry, digest)
+	case "verification-assets":
+		appendVerificationAsset(w, r, registry, digest)
 	case "validate":
 		actor, actorErr := requestActor(r, controlplane.RoleCompiler)
 		if actorErr != nil {
@@ -466,6 +515,75 @@ func reviseDraft(w http.ResponseWriter, r *http.Request, registry controlplane.R
 		return
 	}
 	log.Printf("bundle_factory revise trace_id=%s parent_digest=%s digest=%s actor_id=%s", requestTraceID(r), parentDigest, record.Digest, actor.ID)
+	writeJSON(w, http.StatusCreated, map[string]any{"bundle": bundleView(record), "trace_id": requestTraceID(r)})
+}
+
+func appendVerificationAsset(w http.ResponseWriter, r *http.Request, registry controlplane.Registry, parentDigest string) {
+	actor, err := requestActor(r, controlplane.RoleExpert)
+	if err != nil {
+		writeControlPlaneError(w, err)
+		return
+	}
+	var request struct {
+		Asset  fixture.VerificationAsset `json:"asset"`
+		Reason string                    `json:"reason"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024*1024)).Decode(&request); err != nil || strings.TrimSpace(request.Reason) == "" {
+		http.Error(w, "asset and reason are required", http.StatusBadRequest)
+		return
+	}
+	parent, err := registry.Get(parentDigest)
+	if err != nil {
+		writeControlPlaneError(w, err)
+		return
+	}
+	var manifest fixture.Manifest
+	if err := json.Unmarshal(parent.Manifest, &manifest); err != nil {
+		writeControlPlaneError(w, fmt.Errorf("bundle_manifest_corrupt: %w", err))
+		return
+	}
+	if request.Asset.Scope == "qfk_execution_result" {
+		if request.Asset.RouteID == "" {
+			for _, route := range manifest.Routes {
+				if route.SignalID != request.Asset.SignalID {
+					continue
+				}
+				if request.Asset.RouteID != "" {
+					writeControlPlaneError(w, errors.New("verification_asset_route_ambiguous"))
+					return
+				}
+				request.Asset.RouteID = route.ID
+			}
+		}
+		var stdout string
+		if err := json.Unmarshal(request.Asset.Payload, &stdout); err != nil || stdout == "" {
+			writeControlPlaneError(w, errors.New("verification_asset_qfk_payload_invalid"))
+			return
+		}
+		updated := false
+		for index := range manifest.Routes {
+			if manifest.Routes[index].ID == request.Asset.RouteID && manifest.Routes[index].SignalID == request.Asset.SignalID {
+				manifest.Routes[index].Result.Stdout = stdout
+				updated = true
+				break
+			}
+		}
+		if !updated {
+			writeControlPlaneError(w, errors.New("verification_asset_route_not_found"))
+			return
+		}
+	}
+	manifest.VerificationAssets = append(manifest.VerificationAssets, request.Asset)
+	// payload 摘要由受信控制面接收的原始 JSON 重新计算，绝不相信调用方给出的摘要。
+	sum := sha256.Sum256(request.Asset.Payload)
+	manifest.VerificationAssets[len(manifest.VerificationAssets)-1].PayloadSHA256 = fmt.Sprintf("sha256:%x", sum[:])
+	// ReviseDraft 会重算 digest、冻结 compile input 并产生新对象；这里绝不覆盖父 Draft。
+	record, err := registry.ReviseDraft(actor, parentDigest, manifest, strings.TrimSpace(request.Reason), time.Now().UTC())
+	if err != nil {
+		writeControlPlaneError(w, err)
+		return
+	}
+	log.Printf("bundle_factory verification_asset trace_id=%s parent_digest=%s digest=%s signal_id=%s asset_id=%s actor_id=%s", requestTraceID(r), parentDigest, record.Digest, request.Asset.SignalID, request.Asset.AssetID, actor.ID)
 	writeJSON(w, http.StatusCreated, map[string]any{"bundle": bundleView(record), "trace_id": requestTraceID(r)})
 }
 

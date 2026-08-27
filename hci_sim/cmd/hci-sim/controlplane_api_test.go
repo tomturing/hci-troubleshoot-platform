@@ -57,6 +57,11 @@ func TestBundleFactoryAPICompileReviseDualApproveAndPublish(t *testing.T) {
 		t.Fatalf("published response=%+v", published)
 	}
 	publishedBundle := published["bundle"].(map[string]any)
+	datasets := bundleFactoryRequest(t, mux, http.MethodGet, controlPlanePrefix+"/"+childDigest+"/dry-run-datasets?signal_id=sig-1&source_type=fixture", nil, "expert", "expert-editor", http.StatusOK)
+	items := datasets["datasets"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["payload"] != "expert corrected output\n" {
+		t.Fatalf("published fixture datasets=%+v", datasets)
+	}
 	publishedManifest := publishedBundle["manifest"].(map[string]any)
 	publishedManifest["routes"].([]any)[0].(map[string]any)["result"].(map[string]any)["stdout"] = "expert revised published fixture\n"
 	forked := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+childDigest+"/revise", map[string]any{

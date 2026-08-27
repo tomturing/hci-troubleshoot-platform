@@ -30,13 +30,14 @@ const (
 
 // Manifest 只表示已经发布、可被 Runtime 读取的不可变 Bundle。
 type Manifest struct {
-	SchemaVersion string            `json:"schema_version"`
-	Bundle        BundleRef         `json:"bundle"`
-	KBD           KBDRef            `json:"kbd"`
-	Contracts     Contracts         `json:"contracts"`
-	Variables     map[string]string `json:"variables"`
-	Limits        Limits            `json:"limits"`
-	Routes        []Route           `json:"routes"`
+	SchemaVersion      string              `json:"schema_version"`
+	Bundle             BundleRef           `json:"bundle"`
+	KBD                KBDRef              `json:"kbd"`
+	Contracts          Contracts           `json:"contracts"`
+	Variables          map[string]string   `json:"variables"`
+	Limits             Limits              `json:"limits"`
+	Routes             []Route             `json:"routes"`
+	VerificationAssets []VerificationAsset `json:"verification_assets,omitempty"`
 }
 
 type BundleRef struct {
@@ -97,6 +98,23 @@ type ResultDef struct {
 	ExitCode int    `json:"exit_code"`
 	Stdout   string `json:"stdout,omitempty"`
 	Stderr   string `json:"stderr,omitempty"`
+}
+
+// VerificationAsset 是由服务端复算的只读试运行结果。payload 只保存在受控 Bundle
+// 对象中，不进入普通数据库字段或日志；其摘要、配置修订和调用链参与不可变 digest。
+type VerificationAsset struct {
+	AssetID        string          `json:"asset_id"`
+	SupportID      string          `json:"support_id"`
+	KBDRevision    int             `json:"kbd_revision"`
+	SignalID       string          `json:"signal_id"`
+	RouteID        string          `json:"route_id,omitempty"`
+	Scope          string          `json:"scope"`
+	SourceType     string          `json:"source_type"`
+	Payload        json.RawMessage `json:"payload"`
+	PayloadSHA256  string          `json:"payload_sha256"`
+	ResultStatus   string          `json:"result_status"`
+	ConfigRevision string          `json:"config_revision"`
+	TraceID        string          `json:"trace_id"`
 }
 
 type StreamDef struct {
@@ -184,6 +202,52 @@ func ensureEOF(decoder *json.Decoder) error {
 	return nil
 }
 
+func validateVerificationAssets(manifest *Manifest) error {
+	if len(manifest.VerificationAssets) > len(manifest.Routes)*16+128 {
+		return errors.New("verification_assets 数量超过 Bundle 上限")
+	}
+	seen := make(map[string]struct{}, len(manifest.VerificationAssets))
+	routes := make(map[string]Route, len(manifest.Routes))
+	for _, route := range manifest.Routes {
+		routes[route.ID] = route
+	}
+	for _, asset := range manifest.VerificationAssets {
+		if asset.AssetID == "" || asset.SupportID != manifest.KBD.SupportID || asset.KBDRevision != manifest.KBD.Revision || asset.SignalID == "" {
+			return errors.New("verification_asset 缺少不可变 KBD 或 Signal 绑定")
+		}
+		if _, exists := seen[asset.AssetID]; exists {
+			return fmt.Errorf("verification_asset asset_id 重复: %s", asset.AssetID)
+		}
+		seen[asset.AssetID] = struct{}{}
+		if asset.Scope != "qfk_execution_result" && asset.Scope != "qkv_variable_processing" {
+			return fmt.Errorf("verification_asset %s scope 无效", asset.AssetID)
+		}
+		if asset.SourceType != "pasted" && asset.SourceType != "fixture" && asset.SourceType != "replay" {
+			return fmt.Errorf("verification_asset %s source_type 无效", asset.AssetID)
+		}
+		if asset.ResultStatus != "PASS" || len(asset.Payload) == 0 || !strings.HasPrefix(asset.PayloadSHA256, "sha256:") || !strings.HasPrefix(asset.ConfigRevision, "sha256:") || asset.TraceID == "" {
+			return fmt.Errorf("verification_asset %s 不是可发布的已验证资产", asset.AssetID)
+		}
+		sum := sha256.Sum256(asset.Payload)
+		if asset.PayloadSHA256 != fmt.Sprintf("sha256:%x", sum[:]) {
+			return fmt.Errorf("verification_asset %s payload 摘要不匹配", asset.AssetID)
+		}
+		if asset.Scope == "qfk_execution_result" {
+			route, ok := routes[asset.RouteID]
+			if !ok || route.SignalID != asset.SignalID {
+				return fmt.Errorf("verification_asset %s 未绑定同一 Signal 的 Route", asset.AssetID)
+			}
+			var output string
+			if err := json.Unmarshal(asset.Payload, &output); err != nil || output == "" {
+				return fmt.Errorf("verification_asset %s 的 QFK payload 必须是非空文本", asset.AssetID)
+			}
+		} else if asset.RouteID != "" {
+			return fmt.Errorf("verification_asset %s 的 QKV 资产不得伪装为 Route 输出", asset.AssetID)
+		}
+	}
+	return nil
+}
+
 func validateManifest(raw []byte, manifest *Manifest) error {
 	if manifest.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("不支持 fixture schema %q", manifest.SchemaVersion)
@@ -213,6 +277,9 @@ func validateManifest(raw []byte, manifest *Manifest) error {
 		if err := validateRoute(route, manifest.Variables, manifest.Limits.MaxOutputBytesPerCommand); err != nil {
 			return err
 		}
+	}
+	if err := validateVerificationAssets(manifest); err != nil {
+		return err
 	}
 	return nil
 }
