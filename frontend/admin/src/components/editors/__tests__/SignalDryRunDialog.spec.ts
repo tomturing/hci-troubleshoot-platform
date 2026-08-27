@@ -69,4 +69,29 @@ describe('SignalDryRunDialog', () => {
     expect(wrapper.text()).not.toContain('服务未返回结果')
     expect(wrapper.find('.preview-empty').exists()).toBe(false)
   })
+
+  it('支持在表单展示与 JSON 展示之间切换', async () => {
+    const wrapper = mount(SignalDryRunDialog, {
+      props: { modelValue: true, supportId: '41398', kbdRevision: 7, signal, signalIndex: 2 },
+      global: { plugins: [ElementPlus], stubs },
+    })
+    const vm = wrapper.vm as unknown as {
+      previewRequested: boolean
+      previewResult: Record<string, unknown>
+      resultViewMode: 'form' | 'json'
+    }
+    vm.previewRequested = true
+    vm.previewResult = { status: 'PASS', value: { diff: 12, ok: true }, evidence: '说明' }
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.result-form').exists()).toBe(true)
+    expect(wrapper.find('.result-value').exists()).toBe(false)
+    expect(wrapper.text()).toContain('diff')
+
+    vm.resultViewMode = 'json'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.result-form').exists()).toBe(false)
+    expect(wrapper.find('.result-value').exists()).toBe(true)
+    expect(wrapper.find('.result-value').text()).toContain('"diff": 12')
+  })
 })

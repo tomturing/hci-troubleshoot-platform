@@ -40,7 +40,7 @@ Admin 草稿 + 独立数据集
 
 一次 Preview 的最小身份为：`support_id`、`kbd_revision`、`signal_id`、QKV 的 `processing_index`、`dataset_id`、`config_revision` 和 `trace_id`。
 
-前端结果面板遵循互斥状态：请求尚未完成时显示等待/未返回说明；服务返回 `PASS`、`FAIL` 或 `UNKNOWN` 后仅显示该结果、处理值和证据，不再显示“服务未返回结果”或空状态感叹号。
+前端结果面板遵循互斥状态：请求尚未完成时显示等待/未返回说明；服务返回 `PASS`、`FAIL` 或 `UNKNOWN` 后仅显示该结果、处理值（支持结构化表单与 JSON 切换展示）和证据，不再显示“服务未返回结果”或空状态感叹号。
 
 `config_revision` 是草稿 Signal 的稳定 SHA-256。后端每次自行复算；不匹配返回 `DRAFT_REVISION_MISMATCH`。输入、数据集切换或草稿编辑均会清空前端结果，禁止混用 A 数据集的 evidence 与 B 数据集的结果。
 
