@@ -267,10 +267,7 @@ def _normalize_qkv_records(payload: Any) -> list[dict[str, Any]]:
             raise ValueError("QKV 试运行输入必须是合法 JSON (records 数组或包含 data/items 的对象)") from exc
     if isinstance(payload, dict):
         items = payload.get("data") or payload.get("items")
-        if isinstance(items, list):
-            payload = items
-        else:
-            payload = [payload]
+        payload = items if isinstance(items, list) else [payload]
     if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
         raise ValueError("QKV 试运行输入必须是已投影变量 JSON records")
     return payload
@@ -283,7 +280,7 @@ async def _evaluate_qkv(body: SignalDryRunRequest, *, ai_client: Any | None, db_
         raise ValueError("scope=qkv_variable_processing 必须绑定 QKV Signal")
     if _signal_id(signal) != body.unit_ref.signal_id:
         raise ValueError("unit_ref.signal_id 与草稿 Signal 不一致")
-    
+
     records = _normalize_qkv_records(body.dataset.payload)
     orchestrate = signal.get("orchestrate") if isinstance(signal.get("orchestrate"), dict) else {}
     processing = orchestrate.get("output_processing") or []
