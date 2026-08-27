@@ -5,6 +5,8 @@ on:
     branches: [main]
   push:
     branches: [main]
+  merge_group:
+    branches: [main]
   workflow_dispatch:
     inputs:
       reason:
@@ -48,6 +50,9 @@ jobs:
       platform_helm: ${{ steps.filter.outputs.platform_helm }}
       docs: ${{ steps.filter.outputs.docs }}
       module_docs: ${{ steps.filter.outputs.module_docs }}
+      unit_test_mode: ${{ steps.pr-unit-plan.outputs.mode || 'full' }}
+      unit_test_targets: ${{ steps.pr-unit-plan.outputs.targets || '' }}
+      unit_test_reason: ${{ steps.pr-unit-plan.outputs.reason || '非 PR 事件运行完整回归' }}
       image_matrix: ${{ steps.image-plan.outputs.matrix || '[]' }}
       has_images: ${{ steps.image-plan.outputs.has_images || 'false' }}
       deploy_services: ${{ steps.image-plan.outputs.deploy_services || '' }}
@@ -166,6 +171,20 @@ jobs:
           else
             echo "frontend=false" >> "$GITHUB_OUTPUT"
           fi
+
+      # 快速门禁只接受直接改动的单元测试或同名服务测试；共享依赖等未知
+      # 影响范围会输出 full，由 unit-tests 走完整回归，避免路径选择漏测。
+      - name: 解析 PR 快速单元测试目标
+        id: pr-unit-plan
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git -c core.quotepath=false diff --name-only "$BASE_SHA" "$HEAD_SHA" > /tmp/pr-changed-files.txt
+          python3 scripts/ci/resolve_pr_fast_test_targets.py \
+            --changed-files /tmp/pr-changed-files.txt \
+            --github-output "$GITHUB_OUTPUT"
 
       # 主干发布不能只比较相邻两个 commit：上一轮发布可能在镜像构建阶段被
       # 后续 main push 取消，随后到达的空 diff push 会把尚未发布的改动误判为无需构建。
@@ -334,6 +353,7 @@ jobs:
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'merge_group' ||
       (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -668,16 +688,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [changes]
+    env:
+      HCI_TESTING: "1"
+      CI_TRACE_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-unit-tests
     if: |
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
+        github.event_name == 'merge_group' ||
+        (github.event_name == 'pull_request' && (needs.changes.outputs.backend == 'true' || needs.changes.outputs.unit_test_mode == 'full'))
       )
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: 安装 Go
+        if: github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full'
         uses: actions/setup-go@v5
         with:
           go-version: "1.26.5"
@@ -703,7 +728,38 @@ jobs:
       - name: 安装依赖
         run: uv sync --group dev
 
-      - name: 运行单元测试（含覆盖率）
+      - name: 运行 PR 受影响单元测试
+        if: github.event_name == 'pull_request' && needs.changes.outputs.unit_test_mode == 'targeted'
+        env:
+          TEST_TARGETS: ${{ needs.changes.outputs.unit_test_targets }}
+          TEST_REASON: ${{ needs.changes.outputs.unit_test_reason }}
+        run: |
+          mapfile -t TARGETS <<< "$TEST_TARGETS"
+          if [[ "${#TARGETS[@]}" -eq 0 || -z "${TARGETS[0]}" ]]; then
+            echo "快速测试计划没有目标，拒绝将空集合标记为成功"
+            exit 1
+          fi
+
+          STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "trace_id=${CI_TRACE_ID} mode=targeted reason=${TEST_REASON} targets=${TARGETS[*]}"
+          timeout 10s bash -euo pipefail -c '
+            for target in "$@"; do
+              uv run pytest "$target" -q -o addopts="" -p no:xdist --no-cov -m "not integration and not slow"
+            done
+          ' -- "${TARGETS[@]}"
+          FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          {
+            echo "### PR 快速单元测试"
+            echo
+            echo "- 调用链：\`${CI_TRACE_ID}\`"
+            echo "- 模式：受影响测试"
+            echo "- 开始：${STARTED_AT}"
+            echo "- 结束：${FINISHED_AT}"
+            echo "- 目标：\`${TARGETS[*]}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 运行完整单元测试（含覆盖率）
+        if: github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full'
         run: |
           # 各服务 app/ 包名相同，pytest 单进程 sys.modules 会跨服务污染
           # 分进程运行保证各自 sys.modules 隔离，--cov-append 合并覆盖率
@@ -743,9 +799,11 @@ jobs:
             -m "not integration and not slow"
 
       - name: 验证在线/离线诊断 KBD 样例闭环
+        if: github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full'
         run: make diagnosis-sample-preflight
 
       - name: 验证 Diagnosis Sample Lab（诊断样例实验室）Go Runtime
+        if: github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full'
         working-directory: hci_sim
         run: |
           go test -p 4 ./...
@@ -753,6 +811,7 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -o /tmp/hci-sim-diagnosis-lab ./cmd/hci-sim
 
       - name: 运行离线采集 Go 运行时测试
+        if: github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full'
         working-directory: backend/diagnosis-service/offline-collector
         run: |
           go test -p 4 ./...
@@ -762,7 +821,7 @@ jobs:
 
       - name: 上传覆盖率报告
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238
-        if: always()
+        if: always() && (github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full')
         with:
           file: ./coverage.xml
           fail_ci_if_error: false
@@ -776,7 +835,8 @@ jobs:
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
+        github.event_name == 'merge_group' ||
+        (github.event_name == 'pull_request' && needs.changes.outputs.unit_test_mode == 'full')
       )
 
     services:
@@ -833,7 +893,8 @@ jobs:
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
+        github.event_name == 'merge_group' ||
+        (github.event_name == 'pull_request' && needs.changes.outputs.unit_test_mode == 'full')
       )
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262

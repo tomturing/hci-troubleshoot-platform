@@ -51,15 +51,22 @@ def init_telemetry(service_name: str):
         3. 所有 Span 通过 OTLP gRPC 上报到 Tempo
         4. Logging 自动注入 trace_id / span_id
     """
+    resource = Resource.create({SERVICE_NAME: service_name})
+    provider = TracerProvider(resource=resource)
+
+    # 单元测试需要保留可观测性 API 与 trace 上下文，但不能尝试访问集群内 Tempo。
+    # 否则 BatchSpanProcessor 会在进程退出时重试不可达端点，放大 CI 时延。
+    if os.getenv("HCI_TESTING") == "1":
+        global _otel_provider
+        _otel_provider = provider
+        return
+
     # 读取环境变量（OTEL_EXPORTER_OTLP_ENDPOINT 使用 http://host:port 格式）
     # 必须 strip scheme 后再传给 gRPC channel，否则 grpc.insecure_channel() 会把
     # "http:" 解析为主机名，导致 StatusCode.UNAVAILABLE（TCP 通但 gRPC 握手失败）
     raw_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://tempo:4317")
     otlp_endpoint, is_insecure = _parse_grpc_endpoint(raw_endpoint)
 
-    resource = Resource.create({SERVICE_NAME: service_name})
-
-    provider = TracerProvider(resource=resource)
     processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=otlp_endpoint, insecure=is_insecure))
     provider.add_span_processor(processor)
 
@@ -69,7 +76,6 @@ def init_telemetry(service_name: str):
     # 产生 96%+ 噪音。以下所有 instrument 都显式绑定本 provider，发往 Tempo。
     # trace.set_tracer_provider(provider)
 
-    global _otel_provider
     _otel_provider = provider
 
     # --- 自动仪表化（不含 FastAPI，需通过 instrument_app 单独注入） ---
