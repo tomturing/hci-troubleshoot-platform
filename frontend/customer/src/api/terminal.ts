@@ -77,6 +77,7 @@ export interface TerminalWsMessage {
   | 'ssh_disconnected'
   | 'ssh_output'
   | 'ssh_error'
+  | 'ping'         // WebSocket 保活心跳（服务端发送）
   | 'pong'
   | 'bridge_ready'
   | 'exec_result'  // T-TOOL-01: Agent 命令执行结果
@@ -105,6 +106,8 @@ export interface TerminalWsMessage {
   timed_out?: boolean
   cancelled?: boolean
   error_type?: string
+  // WebSocket 保活心跳字段
+  ping?: number     // 服务端发送心跳时间戳（Unix 毫秒）
   // bridge_log 消息的负载（结构化日志条目）
   seq?: number
   ts?: string

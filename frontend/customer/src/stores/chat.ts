@@ -1888,6 +1888,14 @@ export const useChatStore = defineStore('chat', () => {
 
         devLog('SSH', '收到消息', { type: msg.type })
 
+        // WebSocket 保活心跳：收到 ping 立即回复 pong
+        if (msg.type === 'ping') {
+          const pongMsg = JSON.stringify({ type: 'pong', pong: msg.ping })
+          socket.send(pongMsg)
+          devLog('SSH', '收到 ping，已回复 pong', { ping: msg.ping })
+          return
+        }
+
         if (msg.case_id && msg.case_id !== config.caseId) {
           devLog('SSH', '消息 case_id 不匹配，忽略')
           return
@@ -2739,6 +2747,14 @@ export const useChatStore = defineStore('chat', () => {
               devLog('SSH-CREATE', '解析后', { type: msg.type, case_id: msg.case_id, output: msg.output?.substring(0, 100) })
             } catch (parseErr) {
               devLog('SSH-CREATE', 'ERROR: JSON 解析失败', parseErr)
+              return
+            }
+
+            // WebSocket 保活心跳：收到 ping 立即回复 pong
+            if (msg.type === 'ping') {
+              const pongMsg = JSON.stringify({ type: 'pong', pong: msg.ping })
+              socket.send(pongMsg)
+              devLog('SSH-CREATE', '收到 ping，已回复 pong', { ping: msg.ping })
               return
             }
 
