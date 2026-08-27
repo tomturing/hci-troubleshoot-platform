@@ -548,6 +548,86 @@ async def test_array_number_accepts_comma_separated_string(
     assert result.ai_value == expected_values
 
 
+@pytest.mark.asyncio
+async def test_time_skew_uses_ai_derive_then_threshold_range(monkeypatch):
+    output = (
+        "10.97.128.120: Wed Aug 26 11:05:24 CST 2026\n"
+        "10.97.128.13: Wed Aug 26 11:00:24 CST 2026\n"
+        "10.97.128.11: Wed Aug 26 11:00:26 CST 2026\n"
+    )
+
+    class FakeExecutor:
+        _redis = SimpleNamespace()
+
+        async def execute(self, **_kwargs):
+            return ExecResult(
+                stdout=output,
+                stderr="",
+                exit_code=0,
+                command="acli system date",
+                node="10.97.128.120",
+                duration_ms=1,
+                truncated=False,
+                risk_level=1,
+                exec_id="qfk-time-skew",
+            )
+
+    class FakeAIClient:
+        async def invoke(self, **_kwargs):
+            return SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "ok": True,
+                        "records": [
+                            {"source_value": "Wed Aug 26 11:05:24 CST 2026", "evidence_lines": [1]},
+                            {"source_value": "Wed Aug 26 11:00:24 CST 2026", "evidence_lines": [2]},
+                            {"source_value": "Wed Aug 26 11:00:26 CST 2026", "evidence_lines": [3]},
+                        ],
+                    }
+                )
+            )
+
+    monkeypatch.setattr(executor_module, "_executor", FakeExecutor())
+    signal = BackendSignal(
+        namespace="system",
+        command="date",
+        matcher={
+            "type": "threshold",
+            "aggregation": "range",
+            "operator": ">",
+            "value": 2,
+            "expected": True,
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "all"},
+                "cardinality": "all",
+                "source": "stdout",
+                "ai_extract": {
+                    "mode": "derive",
+                    "instruction": "从每行识别主机系统时间",
+                    "derive": {
+                        "normalizer": "datetime_epoch",
+                        "formats": ["%a %b %d %H:%M:%S %Z %Y"],
+                        "timezone": "Asia/Shanghai",
+                    },
+                },
+            },
+        },
+    )
+
+    result = await engine.qfk_exec(
+        signal,
+        conversation_id="time-skew",
+        required_output_sources={"stdout"},
+        ai_client=FakeAIClient(),
+    )
+
+    assert result.error is None
+    assert result.matched is True
+    assert "threshold/range" in result.evidence
+    assert "300.0 > 2.0" in result.evidence
+
+
 # ─── nonzero_exit_as_negative 只读探针容错模式 ────────────────────────────────
 
 

@@ -1,9 +1,12 @@
 """QKV 输出后处理的确定性契约测试。"""
 
+from types import SimpleNamespace
+
 import pytest
 from shared.signals.qkv_output_processing import (
     QKVProcessingError,
     apply_output_processing,
+    apply_output_processing_async,
     validate_output_processing,
 )
 
@@ -149,3 +152,67 @@ def test_multiple_feature_values_use_qfk_aggregation_instead_of_zero_or_more() -
     )
     assert result.matched is True
     assert result.assertions[0].status == "PASS"
+
+
+def test_qkv_ai_derive_requires_array_target_variable() -> None:
+    specs = [{
+        "mode": "derive",
+        "input": "{{DESCRIPTION}}",
+        "name": "HOST_TIMES",
+        "type": "number",
+        "extract": {
+            "type": "feature",
+            "feature": "host",
+            "ai_extract": {
+                "mode": "derive",
+                "instruction": "从每行识别主机系统时间",
+                "derive": {
+                    "normalizer": "datetime_epoch",
+                    "formats": ["%a %b %d %H:%M:%S %Z %Y"],
+                    "timezone": "Asia/Shanghai",
+                },
+            },
+        },
+    }]
+
+    with pytest.raises(QKVProcessingError, match="数组变量类型"):
+        validate_output_processing(specs, available_inputs={"DESCRIPTION"})
+
+
+@pytest.mark.asyncio
+async def test_qkv_ai_derive_is_an_explicit_main_path_not_a_failure_fallback() -> None:
+    calls: list[dict] = []
+
+    async def fake_ai_extractor(output, spec, value_type, client, **kwargs):
+        calls.append({"output": output, "spec": spec, "value_type": value_type, "client": client, **kwargs})
+        return SimpleNamespace(value=[1787713224.0, 1787713524.0])
+
+    result = await apply_output_processing_async(
+        [{"description": "主机 host-a 时间 Wed Aug 26 11:00:24 CST 2026"}],
+        [{
+            "mode": "derive",
+            "input": "{{DESCRIPTION}}",
+            "name": "HOST_TIMES",
+            "type": "array",
+            "extract": {
+                "type": "feature",
+                "feature": "host",
+                "ai_extract": {
+                    "mode": "derive",
+                    "instruction": "从每行识别主机系统时间",
+                    "derive": {
+                        "normalizer": "datetime_epoch",
+                        "formats": ["%a %b %d %H:%M:%S %Z %Y"],
+                        "timezone": "Asia/Shanghai",
+                    },
+                },
+            },
+        }],
+        ai_client=object(),
+        ai_extractor=fake_ai_extractor,
+        conversation_id="qkv-derive-test",
+        case_id="41398",
+    )
+
+    assert calls and calls[0]["value_type"] == "array"
+    assert result.records[0]["host_times"] == [1787713224.0, 1787713524.0]

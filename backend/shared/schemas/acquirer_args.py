@@ -329,7 +329,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
                             "aggregation": {
                                 "type": "string",
                                 "enum": [
-                                    "first_number", "last_number", "line_count", "duration_seconds", "max", "min", "sum"
+                                    "first_number", "last_number", "line_count", "duration_seconds", "max", "min", "sum", "range"
                                 ],
                                 "default": "first_number",
                             },

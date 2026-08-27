@@ -133,7 +133,8 @@
                 "duration_seconds",
                 "max",
                 "min",
-                "sum"
+                "sum",
+                "range"
               ],
               "default": "first_number"
             },

@@ -268,6 +268,7 @@ function setNumericValueMode(mode: 'constant' | 'variable'): void {
             <el-option label="最大值（所有样本）" value="max" />
             <el-option label="最小值（所有样本）" value="min" />
             <el-option label="求和（所有样本相加）" value="sum" />
+            <el-option label="极差（最大值减最小值）" value="range" />
             <el-option label="非空行数（旧聚合）" value="line_count" />
             <el-option label="命令耗时秒（解析 real）" value="duration_seconds" />
           </el-select>
