@@ -60,9 +60,9 @@ const hasAiProcessing = computed(() => {
   }
   return Boolean(props.signal?.match?.extract?.ai_processing || props.signal?.match?.extract?.ai_extract)
 })
-const inputLabel = computed(() => isQkv.value ? '已投影变量 JSON records' : '完整 stdout / stderr')
+const inputLabel = computed(() => isQkv.value ? '已投影变量 JSON records 或采集原始输出' : '完整 stdout / stderr')
 const inputPlaceholder = computed(() => isQkv.value
-  ? '[\n  {"description": "...", "host": "..."}\n]'
+  ? '[\n  {"description": "...", "host": "..."}\n] 或 {"data": [...]}'
   : '粘贴当前 Signal 的完整 stdout / stderr 输出')
 const sourceDescription = computed(() => ({
   pasted: '临时样本只用于本次预览，不写入 KBD 或现场证据。',
@@ -159,17 +159,29 @@ async function requestPreview(): Promise<void> {
   const isEditing = source.value === 'pasted' || isEditingFork.value
   if (isEditing && !sampleInput.value.trim()) return
 
-  let payload: string | Array<Record<string, unknown>> = isEditing
+  const rawSource = isEditing
     ? sampleInput.value
-    : (selectedDataset.value?.payload as string | Array<Record<string, unknown>> || sampleInput.value)
+    : (selectedDataset.value?.payload ?? sampleInput.value)
+
+  let payload: string | Array<Record<string, unknown>> = rawSource as any
 
   if (isQkv.value) {
     try {
-      const parsed = JSON.parse(sampleInput.value)
+      const textToParse = typeof rawSource === 'string' ? rawSource : JSON.stringify(rawSource)
+      let parsed = JSON.parse(textToParse)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        if (Array.isArray(parsed.data)) {
+          parsed = parsed.data
+        } else if (Array.isArray(parsed.items)) {
+          parsed = parsed.items
+        } else {
+          parsed = [parsed]
+        }
+      }
       if (!Array.isArray(parsed) || parsed.some(item => !item || typeof item !== 'object' || Array.isArray(item))) throw new Error()
       payload = parsed as Array<Record<string, unknown>>
     } catch {
-      ElMessage.error('QKV 输入必须是 JSON records 数组')
+      ElMessage.error('QKV 输入必须是合法 JSON（records 数组或包含 data/items 的返回对象）')
       return
     }
   }

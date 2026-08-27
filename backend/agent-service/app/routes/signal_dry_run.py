@@ -37,7 +37,7 @@ class PreviewDataset(BaseModel):
     dataset_id: str = Field(min_length=1, max_length=128)
     source_type: Literal["pasted", "fixture", "replay"]
     source_ref: str = Field(min_length=1, max_length=256)
-    payload: str | list[dict[str, Any]]
+    payload: str | list[dict[str, Any]] | dict[str, Any]
 
     @model_validator(mode="after")
     def validate_payload(self) -> PreviewDataset:
@@ -258,6 +258,24 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, db_
     )
 
 
+def _normalize_qkv_records(payload: Any) -> list[dict[str, Any]]:
+    """自适应解析与归一化 QKV 试运行输入为 records 字典列表。"""
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception as exc:
+            raise ValueError("QKV 试运行输入必须是合法 JSON (records 数组或包含 data/items 的对象)") from exc
+    if isinstance(payload, dict):
+        items = payload.get("data") or payload.get("items")
+        if isinstance(items, list):
+            payload = items
+        else:
+            payload = [payload]
+    if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+        raise ValueError("QKV 试运行输入必须是已投影变量 JSON records")
+    return payload
+
+
 async def _evaluate_qkv(body: SignalDryRunRequest, *, ai_client: Any | None, db_session_factory: Any | None, trace_id: str) -> SignalDryRunResult:
     signal = body.signal
     acquire = signal.get("acquire")
@@ -265,45 +283,75 @@ async def _evaluate_qkv(body: SignalDryRunRequest, *, ai_client: Any | None, db_
         raise ValueError("scope=qkv_variable_processing 必须绑定 QKV Signal")
     if _signal_id(signal) != body.unit_ref.signal_id:
         raise ValueError("unit_ref.signal_id 与草稿 Signal 不一致")
-    if not isinstance(body.dataset.payload, list):
-        raise ValueError("QKV 试运行输入必须是已投影变量 JSON records")
-    processing = ((signal.get("orchestrate") or {}).get("output_processing") or []) if isinstance(signal.get("orchestrate"), dict) else []
-    if not isinstance(processing, list) or not processing:
-        raise ValueError("QKV Signal 没有可试运行的 output_processing")
-    end_index = body.unit_ref.processing_index if body.unit_ref.processing_index is not None else len(processing) - 1
-    if end_index >= len(processing):
-        raise ValueError("processing_index 超出当前草稿范围")
-    if body.verification_scope == "ai_step":
-        target = processing[end_index]
-        if not isinstance(target, dict) or target.get("mode") != "derive" or not ai_processing_config(target.get("extract")):
-            raise ValueError("AI_STEP_TARGET_REQUIRED: ai_step 必须绑定带 ai_processing 的 derive 单元")
-        if any(
-            isinstance(item, dict) and item.get("mode") == "derive" and ai_processing_config(item.get("extract"))
-            for item in processing[:end_index]
-        ):
-            raise ValueError("AI_STEP_DEPENDENCY_UNSUPPORTED: ai_step 的前序依赖必须是确定性 derive")
-        # 断言不会产出后续依赖，跳过它既避免把业务 PASS/FAIL 混入 AI 契约验证，
-        # 也确保试运行只执行到目标 AI 单元为止。
-        selected = [item for item in processing[: end_index + 1] if isinstance(item, dict) and item.get("mode") == "derive"]
-    else:
-        selected = processing[: end_index + 1]
-    processed = await apply_output_processing_async(
-        body.dataset.payload,
-        selected,
-        ai_client=ai_client,
-        conversation_id=f"dry-run:{trace_id}",
-        db_session_factory=db_session_factory,
-    )
-    statuses = [item.status for item in processed.assertions]
-    status = "UNKNOWN" if "UNKNOWN" in statuses else ("FAIL" if "FAIL" in statuses else "PASS")
-    return SignalDryRunResult(
-        trace_id=trace_id, dataset_id=body.dataset.dataset_id, unit_ref=body.unit_ref,
-        verification_scope=body.verification_scope, config_revision=body.draft_revision,
-        status=status, input_sha256=_canonical_hash({"source": body.dataset.source_type, "payload": body.dataset.payload}),
-        value=processed.records,
-        derivation={"assertions": [item.__dict__ for item in processed.assertions], "processing_end_index": end_index},
-        evidence="QKV 已投影 records 已按当前草稿及前序处理单元完成只读处理。",
-    )
+    
+    records = _normalize_qkv_records(body.dataset.payload)
+    orchestrate = signal.get("orchestrate") if isinstance(signal.get("orchestrate"), dict) else {}
+    processing = orchestrate.get("output_processing") or []
+    produces = orchestrate.get("produces") or []
+
+    # 1. 配置了 output_processing：执行确定性/AI 后处理流水线
+    if isinstance(processing, list) and processing:
+        end_index = body.unit_ref.processing_index if body.unit_ref.processing_index is not None else len(processing) - 1
+        if end_index >= len(processing):
+            raise ValueError("processing_index 超出当前草稿范围")
+        if body.verification_scope == "ai_step":
+            target = processing[end_index]
+            if not isinstance(target, dict) or target.get("mode") != "derive" or not ai_processing_config(target.get("extract")):
+                raise ValueError("AI_STEP_TARGET_REQUIRED: ai_step 必须绑定带 ai_processing 的 derive 单元")
+            if any(
+                isinstance(item, dict) and item.get("mode") == "derive" and ai_processing_config(item.get("extract"))
+                for item in processing[:end_index]
+            ):
+                raise ValueError("AI_STEP_DEPENDENCY_UNSUPPORTED: ai_step 的前序依赖必须是确定性 derive")
+            # 断言不会产出后续依赖，跳过它既避免把业务 PASS/FAIL 混入 AI 契约验证，
+            # 也确保试运行只执行到目标 AI 单元为止。
+            selected = [item for item in processing[: end_index + 1] if isinstance(item, dict) and item.get("mode") == "derive"]
+        else:
+            selected = processing[: end_index + 1]
+        processed = await apply_output_processing_async(
+            records,
+            selected,
+            ai_client=ai_client,
+            conversation_id=f"dry-run:{trace_id}",
+            db_session_factory=db_session_factory,
+        )
+        statuses = [item.status for item in processed.assertions]
+        status = "UNKNOWN" if "UNKNOWN" in statuses else ("FAIL" if "FAIL" in statuses else "PASS")
+        return SignalDryRunResult(
+            trace_id=trace_id, dataset_id=body.dataset.dataset_id, unit_ref=body.unit_ref,
+            verification_scope=body.verification_scope, config_revision=body.draft_revision,
+            status=status, input_sha256=_canonical_hash({"source": body.dataset.source_type, "payload": body.dataset.payload}),
+            value=processed.records,
+            derivation={"assertions": [item.__dict__ for item in processed.assertions], "processing_end_index": end_index},
+            evidence="QKV 已投影 records 已按当前草稿及前序处理单元完成只读处理。",
+        )
+
+    # 2. 纯 Producer：仅配置 produces 变量提取规格
+    if isinstance(produces, list) and produces:
+        if body.verification_scope == "ai_step":
+            raise ValueError("AI_STEP_TARGET_REQUIRED: QKV 纯生产者未配置 AI 处理单元")
+        from app.tools.qkv.parser import _extract_by_produces
+        extracted = _extract_by_produces(records, produces)
+        if not extracted:
+            return SignalDryRunResult(
+                trace_id=trace_id, dataset_id=body.dataset.dataset_id, unit_ref=body.unit_ref,
+                verification_scope=body.verification_scope, config_revision=body.draft_revision,
+                status="FAIL", input_sha256=_canonical_hash({"source": body.dataset.source_type, "payload": body.dataset.payload}),
+                value=[],
+                evidence="输入数据中未能按 produces 规格提取出任何有效变量。",
+                derivation={"produces": [p.get("name") for p in produces if isinstance(p, dict) and p.get("name")]},
+            )
+        produced_keys = list(extracted[0].keys())
+        return SignalDryRunResult(
+            trace_id=trace_id, dataset_id=body.dataset.dataset_id, unit_ref=body.unit_ref,
+            verification_scope=body.verification_scope, config_revision=body.draft_revision,
+            status="PASS", input_sha256=_canonical_hash({"source": body.dataset.source_type, "payload": body.dataset.payload}),
+            value=extracted,
+            evidence="QKV 产出变量已按当前草稿 produces 规格完成只读提取。",
+            derivation={"produces": produced_keys, "record_count": len(extracted)},
+        )
+
+    raise ValueError("QKV Signal 必须配置 orchestrate.produces 或 orchestrate.output_processing")
 
 
 async def evaluate_signal_dry_run(body: SignalDryRunRequest, *, ai_client: Any | None, trace_id: str, db_session_factory: Any | None = None) -> SignalDryRunResult:

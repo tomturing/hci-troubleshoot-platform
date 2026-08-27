@@ -135,3 +135,103 @@ async def test_qfk_ai_dry_run_passes_prompt_session_factory(monkeypatch: pytest.
     assert seen["db_session_factory"] is session_factory
     assert result.evidence == "已定位"
     assert result.ai_raw_response and result.ai_raw_response["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_qkv_dry_run_pure_producer_success() -> None:
+    signal = {
+        "id": "sig_qkv_producer",
+        "acquire": {"tool": "qkv_task", "args": {"keyword": "0x1900006c"}},
+        "orchestrate": {
+            "produces": [
+                {"name": "HOST", "path": "host"},
+                {"name": "VM", "path": "vm"},
+                {"name": "REQUEST_ID", "path": "request_id"},
+            ]
+        },
+    }
+    # 测试包含 {"data": [...]} 包装对象的自适应解析与变量提取
+    request = SignalDryRunRequest(
+        draft_revision=_revision(signal), scope="qkv_variable_processing",
+        unit_ref={"signal_id": signal["id"]}, verification_scope="signal",
+        dataset={
+            "dataset_id": "fixture-1",
+            "source_type": "fixture",
+            "source_ref": "sha256:abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd",
+            "payload": {
+                "data": [
+                    {
+                        "type": "0x1900006c",
+                        "host": "SIM-HCI-NODE-01",
+                        "vm": "SIM-VM-41398",
+                        "request_id": "SIM-REQUEST-41398",
+                    }
+                ]
+            },
+        },
+        signal=signal, support_id="41398", kbd_revision=7,
+    )
+
+    result = await evaluate_signal_dry_run(request, ai_client=None, trace_id="e" * 32)
+
+    assert result.status == "PASS"
+    assert result.value == [{"host": "SIM-HCI-NODE-01", "vm": "SIM-VM-41398", "request_id": "SIM-REQUEST-41398"}]
+    assert result.derivation["produces"] == ["host", "vm", "request_id"]
+    assert result.derivation["record_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_qkv_dry_run_pure_producer_fail_when_no_variables_matched() -> None:
+    signal = {
+        "id": "sig_qkv_producer",
+        "acquire": {"tool": "qkv_task", "args": {}},
+        "orchestrate": {
+            "produces": [
+                {"name": "HOST", "path": "host"},
+                {"name": "VM", "path": "vm"},
+            ]
+        },
+    }
+    request = SignalDryRunRequest(
+        draft_revision=_revision(signal), scope="qkv_variable_processing",
+        unit_ref={"signal_id": signal["id"]}, verification_scope="signal",
+        dataset={
+            "dataset_id": "preview-fail",
+            "source_type": "pasted",
+            "source_ref": "user-input",
+            "payload": [{"unrelated_field": "foo"}],
+        },
+        signal=signal, support_id="41398", kbd_revision=7,
+    )
+
+    result = await evaluate_signal_dry_run(request, ai_client=None, trace_id="f" * 32)
+
+    assert result.status == "FAIL"
+    assert result.value == []
+    assert "未能按 produces 规格提取出任何有效变量" in result.evidence
+
+
+@pytest.mark.asyncio
+async def test_qkv_dry_run_pure_producer_rejects_ai_step() -> None:
+    signal = {
+        "id": "sig_qkv_producer",
+        "acquire": {"tool": "qkv_task", "args": {}},
+        "orchestrate": {
+            "produces": [{"name": "HOST", "path": "host"}]
+        },
+    }
+    request = SignalDryRunRequest(
+        draft_revision=_revision(signal), scope="qkv_variable_processing",
+        unit_ref={"signal_id": signal["id"]}, verification_scope="ai_step",
+        dataset={
+            "dataset_id": "preview-qkv",
+            "source_type": "pasted",
+            "source_ref": "user-input",
+            "payload": [{"host": "NODE-1"}],
+        },
+        signal=signal, support_id="41398", kbd_revision=7,
+    )
+
+    with pytest.raises(ValueError, match="AI_STEP_TARGET_REQUIRED"):
+        await evaluate_signal_dry_run(request, ai_client=None, trace_id="1" * 32)
+
