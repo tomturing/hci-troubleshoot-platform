@@ -216,7 +216,13 @@ async function saveToBundle(): Promise<void> {
       drafts = [createdBundle]
     }
     const response = await fetch(`/api/v1/signals/dry-run/bundles/${encodeURIComponent(String(drafts[0].digest))}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dry_run: lastDryRunRequest.value }),
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        dry_run: lastDryRunRequest.value,
+        preview_token: (previewResult.value as Record<string, unknown> | null)?.preview_token,
+        preview_result: previewResult.value,
+      }),
     })
     const body = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(String(body?.detail || `Bundle 控制面 HTTP ${response.status}`))
@@ -237,11 +243,23 @@ async function loadDatasets(): Promise<void> {
     const listed = await fetch('/api/hci-sim/v1/control-plane/bundles?support_id=' + encodeURIComponent(props.supportId))
     const listBody = await listed.json().catch(() => ({}))
     if (!listed.ok) throw new Error('Bundle 控制面 HTTP ' + listed.status)
-    const published = Array.isArray(listBody.bundles)
-      ? listBody.bundles.filter((item: Record<string, unknown>) => item.status === 'published' && (!props.kbdRevision || item.kbd_revision === props.kbdRevision))
+    const allPublished = Array.isArray(listBody.bundles)
+      ? listBody.bundles.filter((item: Record<string, unknown>) => item.status === 'published')
       : []
-    // 优先匹配当前线上激活生效（Active）的 Bundle；若无激活记录或激活不在此版本，降级取最新 Published Bundle
-    let targetBundle = published[0]
+    if (allPublished.length === 0) {
+      throw new Error('当前 KBD 没有已发布 Bundle，请先在 Bundle 工厂发布后再使用仿真测试数据源')
+    }
+
+    // 优先匹配当前版本 published，若当前草稿版本未发布过，回退到全部 published 中
+    const revisionMatched = typeof props.kbdRevision === 'number'
+      ? allPublished.filter((item: Record<string, unknown>) => item.kbd_revision === props.kbdRevision)
+      : []
+    const publishedCandidates = revisionMatched.length > 0 ? revisionMatched : allPublished
+
+    // 默认取候选列表中最新的 published
+    let targetBundle: Record<string, unknown> | undefined = publishedCandidates[0]
+
+    // 优先匹配当前线上激活生效（Active）的 Bundle
     try {
       const actRes = await fetch(`/api/hci-sim/v1/control-plane/activations/${encodeURIComponent(props.supportId)}`)
       if (actRes.ok) {
@@ -250,14 +268,18 @@ async function loadDatasets(): Promise<void> {
         const activeDigest = String(runtime.active_digest || runtime.ActiveDigest || '')
         const activeStatus = String(runtime.status || runtime.Status || '')
         if (activeDigest && (activeStatus === 'active' || !activeStatus)) {
-          const matchedActive = published.find(b => String(b.digest) === activeDigest)
+          const matchedActive = allPublished.find(b => String(b.digest) === activeDigest)
           if (matchedActive) {
             targetBundle = matchedActive
           }
         }
       }
     } catch {
-      // 激活信息获取失败时不阻断，平滑降级使用最新 published Bundle
+      // 激活信息获取失败时不阻断，平滑使用已选出的 targetBundle
+    }
+
+    if (!targetBundle || !targetBundle.digest) {
+      throw new Error('未找到可用的已发布 Bundle 资产')
     }
 
     const digest = String(targetBundle.digest)

@@ -5,7 +5,11 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
+import time
 import uuid
 
 import httpx
@@ -66,6 +70,54 @@ async def _resolve_authoritative_dataset(payload: dict, request: Request) -> dic
     return resolved
 
 
+def _sign_preview_result(preview_body: dict, payload: dict) -> str:
+    """对已验证的 PASS 试运行结果签发 HMAC 令牌，防止浏览器篡改，支持秒级保存。"""
+
+    token_claims = {
+        "trace_id": str(preview_body.get("trace_id") or ""),
+        "config_revision": str(preview_body.get("config_revision") or ""),
+        "input_sha256": str(preview_body.get("input_sha256") or ""),
+        "status": str(preview_body.get("status") or ""),
+        "scope": str(payload.get("scope") or ""),
+        "signal_id": str((payload.get("unit_ref") or {}).get("signal_id") or ""),
+        "support_id": str(payload.get("support_id") or ""),
+        "kbd_revision": str(payload.get("kbd_revision") or ""),
+        "exp": int(time.time()) + 900,
+    }
+    raw_claims = json.dumps(token_claims, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    sig = hmac.new(settings.INTERNAL_API_TOKEN.encode("utf-8"), raw_claims, hashlib.sha256).hexdigest()
+    claims_b64 = base64.urlsafe_b64encode(raw_claims).decode("utf-8").rstrip("=")
+    return f"{claims_b64}.{sig}"
+
+
+def _verify_preview_token(token: str, preview_result: dict, dry_run_payload: dict) -> bool:
+    """验证 preview_token 的完整性、有效期及与当前 dry_run 参数的一致性。"""
+
+    if not token or "." not in token:
+        return False
+    claims_b64, _, sig = token.rpartition(".")
+    try:
+        padding = "=" * (-len(claims_b64) % 4)
+        raw_claims = base64.urlsafe_b64decode((claims_b64 + padding).encode("utf-8"))
+        claims = json.loads(raw_claims.decode("utf-8"))
+    except Exception:
+        return False
+    expected_sig = hmac.new(settings.INTERNAL_API_TOKEN.encode("utf-8"), raw_claims, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected_sig):
+        return False
+    if claims.get("exp", 0) < int(time.time()):
+        return False
+    if claims.get("status") != "PASS":
+        return False
+    if claims.get("trace_id") != str(preview_result.get("trace_id") or ""):
+        return False
+    if claims.get("signal_id") != str((dry_run_payload.get("unit_ref") or {}).get("signal_id") or ""):
+        return False
+    if str(claims.get("support_id") or "") != str(dry_run_payload.get("support_id") or ""):
+        return False
+    return True
+
+
 async def _preview(payload: dict, request: Request) -> JSONResponse:
     """以 Gateway 内部身份调用 Agent，不把服务间凭据交给浏览器。"""
 
@@ -88,6 +140,8 @@ async def _preview(payload: dict, request: Request) -> JSONResponse:
         body = response.json()
     except ValueError:
         body = {"detail": "试运行服务返回无效响应"}
+    if response.status_code == 200 and isinstance(body, dict) and body.get("status") == "PASS":
+        body["preview_token"] = _sign_preview_result(body, payload)
     outgoing = JSONResponse(content=body, status_code=response.status_code)
     if trace_id := response.headers.get("X-Trace-Id"):
         outgoing.headers["X-Trace-Id"] = trace_id
@@ -106,18 +160,30 @@ async def proxy_signal_dry_run(request: Request) -> JSONResponse:
 
 @router.post("/signals/dry-run/bundles/{bundle_digest}")
 async def save_verified_preview_to_bundle(bundle_digest: str, request: Request) -> JSONResponse:
-    """重新执行 dry-run 后追加验证资产，浏览器提交的预览结果不具备信任权。"""
+    """追加验证资产；优先使用已签名的 PASS 结果以秒级保存，签名无效时重新执行。"""
 
     body = await request.json()
     if not isinstance(body, dict) or not isinstance(body.get("dry_run"), dict):
         raise HTTPException(status_code=422, detail="dry_run 请求快照必填")
-    preview_response = await _preview(body["dry_run"], request)
-    preview_body = json.loads(preview_response.body)
-    if preview_response.status_code != 200:
-        return preview_response
-    if preview_body.get("status") != "PASS":
-        raise HTTPException(status_code=409, detail="只有 PASS 试运行结果可以保存到 Bundle 草稿")
     dry_run = body["dry_run"]
+    preview_token = body.get("preview_token")
+    preview_result = body.get("preview_result")
+
+    # 优先校验签名 Token，命中则直接秒级使用已验证的试运行结果，避免重复耗时调用大模型
+    if (
+        isinstance(preview_token, str)
+        and isinstance(preview_result, dict)
+        and _verify_preview_token(preview_token, preview_result, dry_run)
+    ):
+        preview_body = preview_result
+    else:
+        preview_response = await _preview(dry_run, request)
+        preview_body = json.loads(preview_response.body)
+        if preview_response.status_code != 200:
+            return preview_response
+        if preview_body.get("status") != "PASS":
+            raise HTTPException(status_code=409, detail="只有 PASS 试运行结果可以保存到 Bundle 草稿")
+
     dataset = dry_run.get("dataset") if isinstance(dry_run.get("dataset"), dict) else {}
     unit_ref = dry_run.get("unit_ref") if isinstance(dry_run.get("unit_ref"), dict) else {}
     asset = {
