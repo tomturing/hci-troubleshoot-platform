@@ -141,6 +141,11 @@ async function connectBridge() {
     ws.onmessage = (event) => {
       let message: Record<string, unknown>
       try { message = JSON.parse(String(event.data || '')) } catch { return }
+      // WebSocket 保活心跳：收到 ping 立即回复 pong
+      if (message.type === 'ping') {
+        ws.send(JSON.stringify({ type: 'pong', pong: message.ping }))
+        return
+      }
       if (message.type === 'ssh_error') {
         finish(new Error(String(message.detail || message.message || 'SSH 握手失败')))
         return
