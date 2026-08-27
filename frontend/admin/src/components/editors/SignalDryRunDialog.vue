@@ -105,7 +105,7 @@ function startForkEditing(): void {
     return
   }
   isEditingFork.value = true
-  forkedSourceRef.value = String(selectedDataset.value.source_ref || selectedDataset.value.dataset_id)
+  forkedSourceRef.value = String(selectedDataset.value.dataset_id || selectedDataset.value.source_ref)
   sampleInput.value = typeof selectedDataset.value.payload === 'string'
     ? selectedDataset.value.payload
     : JSON.stringify(selectedDataset.value.payload, null, 2)
@@ -177,7 +177,7 @@ async function requestPreview(): Promise<void> {
   try {
     const revision = await canonicalHash(props.signal)
     const effectiveSourceType = isEditingFork.value ? 'pasted' : source.value
-    const effectiveSourceRef = isEditingFork.value ? `forked:${forkedSourceRef.value}` : (selectedDataset.value?.source_ref || 'user-input')
+    const effectiveSourceRef = effectiveSourceType === 'pasted' ? 'user-input' : (selectedDataset.value?.source_ref || 'user-input')
     const dryRunRequest = {
       draft_revision: revision,
       scope: isQkv.value ? 'qkv_variable_processing' : 'qfk_execution_result',
@@ -597,7 +597,7 @@ watch(selectedDatasetId, () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
   margin-bottom: 12px;
   padding: 8px 12px;
   border-radius: 6px;
@@ -605,23 +605,41 @@ watch(selectedDatasetId, () => {
   border: 1px solid var(--el-color-warning-light-7);
   font-size: 12px;
   color: var(--el-color-warning-dark-2);
+  line-height: 1.4;
 }
 .fork-banner-content {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
+  flex: 1;
 }
 .fork-icon {
   color: var(--el-color-warning);
   font-size: 14px;
   flex-shrink: 0;
 }
+.fork-banner-content span {
+  min-width: 0;
+  word-break: break-word;
+}
 .fork-banner-content code {
   font-family: ui-monospace, monospace;
-  background: rgba(0, 0, 0, 0.04);
+  background: rgba(0, 0, 0, 0.05);
   padding: 1px 4px;
   border-radius: 3px;
+  max-width: 180px;
+  display: inline-block;
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fork-edit-banner :deep(.el-button) {
+  flex-shrink: 0;
+  white-space: nowrap;
+  padding: 0;
+  margin-left: 8px;
 }
 .readonly-input :deep(textarea) {
   background-color: var(--el-fill-color-light);
