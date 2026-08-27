@@ -45,6 +45,9 @@ const datasetLoading = ref(false)
 const datasets = ref<Array<{ dataset_id: string; source_type: DatasetSource; source_ref: string; payload: unknown }>>([])
 const selectedDatasetId = ref('')
 
+const isEditingFork = ref(false)
+const forkedSourceRef = ref('')
+
 const signalId = computed(() => String(props.signal?.id || `sig_${(props.signalIndex ?? 0) + 1}`))
 const instruction = computed(() => String(props.signal?.acquire?.args?.instruction || '未命名 Signal'))
 const tool = computed(() => String(props.signal?.acquire?.tool || '未选择工具'))
@@ -70,7 +73,7 @@ const previewStatus = computed(() => {
   if (!previewRequested.value) return '暂无运行数据'
   if (previewLoading.value) return '正在执行只读处理链'
   if (previewResult.value) return previewResult.value.status
-  if (!sampleInput.value.trim() && source.value === 'pasted') return '请提供试运行输入'
+  if (!sampleInput.value.trim() && (source.value === 'pasted' || isEditingFork.value)) return '请提供试运行输入'
   return '试运行未完成'
 })
 const canSave = computed(() => previewResult.value?.status === 'PASS')
@@ -96,6 +99,34 @@ function close(): void {
   emit('update:modelValue', false)
 }
 
+function startForkEditing(): void {
+  if (!selectedDataset.value) {
+    ElMessage.warning('请先选择一条服务端数据集作为编辑模板')
+    return
+  }
+  isEditingFork.value = true
+  forkedSourceRef.value = String(selectedDataset.value.source_ref || selectedDataset.value.dataset_id)
+  sampleInput.value = typeof selectedDataset.value.payload === 'string'
+    ? selectedDataset.value.payload
+    : JSON.stringify(selectedDataset.value.payload, null, 2)
+  previewResult.value = null
+  lastDryRunRequest.value = null
+  previewRequested.value = false
+}
+
+function cancelForkEditing(): void {
+  isEditingFork.value = false
+  forkedSourceRef.value = ''
+  if (selectedDataset.value) {
+    sampleInput.value = typeof selectedDataset.value.payload === 'string'
+      ? selectedDataset.value.payload
+      : JSON.stringify(selectedDataset.value.payload, null, 2)
+  }
+  previewResult.value = null
+  lastDryRunRequest.value = null
+  previewRequested.value = false
+}
+
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize)
   if (value && typeof value === 'object') {
@@ -105,7 +136,6 @@ function canonicalize(value: unknown): unknown {
 }
 
 async function canonicalHash(value: unknown): Promise<string> {
-  // 与服务端一致的稳定草稿身份；服务端仍会自行复算，前端值不具备信任权。
   const text = JSON.stringify(canonicalize(value))
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
   return `sha256:${Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('')}`
@@ -118,7 +148,7 @@ async function requestPreview(): Promise<void> {
     ElMessage.warning('当前 KBD 草稿身份不完整，无法试运行')
     return
   }
-  if (source.value !== 'pasted' && !selectedDataset.value) {
+  if (source.value !== 'pasted' && !isEditingFork.value && !selectedDataset.value) {
     ElMessage.warning('请先选择服务端提供的数据集')
     return
   }
@@ -126,8 +156,13 @@ async function requestPreview(): Promise<void> {
     ElMessage.warning('现场回放暂不支持')
     return
   }
-  if (source.value === 'pasted' && !sampleInput.value.trim()) return
-  let payload: string | Array<Record<string, unknown>> = selectedDataset.value?.payload as string | Array<Record<string, unknown>> || sampleInput.value
+  const isEditing = source.value === 'pasted' || isEditingFork.value
+  if (isEditing && !sampleInput.value.trim()) return
+
+  let payload: string | Array<Record<string, unknown>> = isEditing
+    ? sampleInput.value
+    : (selectedDataset.value?.payload as string | Array<Record<string, unknown>> || sampleInput.value)
+
   if (isQkv.value) {
     try {
       const parsed = JSON.parse(sampleInput.value)
@@ -141,12 +176,19 @@ async function requestPreview(): Promise<void> {
   previewLoading.value = true
   try {
     const revision = await canonicalHash(props.signal)
+    const effectiveSourceType = isEditingFork.value ? 'pasted' : source.value
+    const effectiveSourceRef = isEditingFork.value ? `forked:${forkedSourceRef.value}` : (selectedDataset.value?.source_ref || 'user-input')
     const dryRunRequest = {
       draft_revision: revision,
       scope: isQkv.value ? 'qkv_variable_processing' : 'qfk_execution_result',
       unit_ref: { signal_id: signalId.value, ...(isQkv.value && typeof props.processingIndex === 'number' ? { processing_index: props.processingIndex } : {}) },
       verification_scope: verificationScope.value,
-      dataset: { dataset_id: selectedDataset.value?.dataset_id || crypto.randomUUID(), source_type: source.value, source_ref: selectedDataset.value?.source_ref || 'user-input', payload },
+      dataset: {
+        dataset_id: isEditingFork.value ? `fork-${crypto.randomUUID()}` : (selectedDataset.value?.dataset_id || crypto.randomUUID()),
+        source_type: effectiveSourceType,
+        source_ref: effectiveSourceRef,
+        payload,
+      },
       signal: props.signal, support_id: props.supportId, kbd_revision: props.kbdRevision,
     }
     const response = await fetch('/api/v1/signals/dry-run', {
@@ -190,7 +232,6 @@ async function saveToBundle(): Promise<void> {
     const listed = await fetch(`/api/hci-sim/v1/control-plane/bundles?support_id=${encodeURIComponent(props.supportId)}`)
     const listBody = await listed.json().catch(() => ({}))
     if (!listed.ok) throw new Error(`Bundle 控制面 HTTP ${listed.status}`)
-    // Bug #2 修复：按 kbd_revision 过滤 draft，避免跨版本遗留 draft 误触发 length > 1
     const targetRevision = typeof props.kbdRevision === 'number' ? props.kbdRevision : null
     let drafts = Array.isArray(listBody.bundles)
       ? listBody.bundles.filter((item: Record<string, unknown>) =>
@@ -199,11 +240,9 @@ async function saveToBundle(): Promise<void> {
       : []
     if (drafts.length > 1) throw new Error('当前 KBD 版本存在多个 Draft，请在 Bundle 工厂完成整理后再保存')
     if (drafts.length === 0) {
-      // published Bundle 不能直接追加资产；先让 Gateway 根据当前 KBD C1 权威快照创建唯一 Draft。
       const created = await fetch('/api/hci-sim/v1/control-plane/bundles', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `signal-dry-run-draft:${props.supportId}:${previewResult.value?.trace_id || 'current'}` },
-        // Bug #3 修复：透传 kbd_revision，确保新建 Draft 绑定正确的 KBD 版本
         body: JSON.stringify({
           support_id: props.supportId,
           ...(typeof props.kbdRevision === 'number' ? { kbd_revision: props.kbdRevision } : {}),
@@ -226,7 +265,9 @@ async function saveToBundle(): Promise<void> {
     })
     const body = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(String(body?.detail || `Bundle 控制面 HTTP ${response.status}`))
-    ElMessage.success('已生成包含验证资产的新 Bundle Draft')
+    ElMessage.success('已生成包含新验证资产的 Bundle Draft')
+    isEditingFork.value = false
+    void loadDatasets()
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '保存 Bundle 草稿失败')
   } finally {
@@ -250,16 +291,12 @@ async function loadDatasets(): Promise<void> {
       throw new Error('当前 KBD 没有已发布 Bundle，请先在 Bundle 工厂发布后再使用仿真测试数据源')
     }
 
-    // 优先匹配当前版本 published，若当前草稿版本未发布过，回退到全部 published 中
     const revisionMatched = typeof props.kbdRevision === 'number'
       ? allPublished.filter((item: Record<string, unknown>) => item.kbd_revision === props.kbdRevision)
       : []
     const publishedCandidates = revisionMatched.length > 0 ? revisionMatched : allPublished
-
-    // 默认取候选列表中最新的 published
     let targetBundle: Record<string, unknown> | undefined = publishedCandidates[0]
 
-    // 优先匹配当前线上激活生效（Active）的 Bundle
     try {
       const actRes = await fetch(`/api/hci-sim/v1/control-plane/activations/${encodeURIComponent(props.supportId)}`)
       if (actRes.ok) {
@@ -275,7 +312,7 @@ async function loadDatasets(): Promise<void> {
         }
       }
     } catch {
-      // 激活信息获取失败时不阻断，平滑使用已选出的 targetBundle
+      // ignore
     }
 
     if (!targetBundle || !targetBundle.digest) {
@@ -301,6 +338,8 @@ watch(() => props.modelValue, (visible) => {
   verificationScope.value = 'signal'
   source.value = 'pasted'
   sampleInput.value = ''
+  isEditingFork.value = false
+  forkedSourceRef.value = ''
   previewRequested.value = false
   previewResult.value = null
   lastDryRunRequest.value = null
@@ -308,13 +347,21 @@ watch(() => props.modelValue, (visible) => {
   selectedDatasetId.value = ''
 })
 
-watch([sampleInput, source, verificationScope], () => {
+watch([sampleInput, verificationScope], () => {
   previewRequested.value = false
   previewResult.value = null
   lastDryRunRequest.value = null
 })
 
-watch(source, () => { void loadDatasets() })
+watch(source, () => {
+  isEditingFork.value = false
+  forkedSourceRef.value = ''
+  previewRequested.value = false
+  previewResult.value = null
+  lastDryRunRequest.value = null
+  void loadDatasets()
+})
+
 watch(selectedDatasetId, () => {
   if (selectedDataset.value && source.value !== 'pasted') {
     sampleInput.value = typeof selectedDataset.value.payload === 'string'
@@ -358,7 +405,7 @@ watch(selectedDatasetId, () => {
         </el-form-item>
 
         <el-form-item label="输入来源">
-          <el-select v-model="source" :loading="datasetLoading">
+          <el-select v-model="source" :loading="datasetLoading" :disabled="isEditingFork">
             <el-option label="临时样本（用户输入）" value="pasted" />
             <el-option label="仿真测试（bundle资产）" value="fixture" />
             <el-option label="现场回放（暂不支持）" value="replay" disabled />
@@ -367,12 +414,22 @@ watch(selectedDatasetId, () => {
         </el-form-item>
 
         <el-form-item v-if="source !== 'pasted'" label="服务端数据集">
-          <el-select v-model="selectedDatasetId" :loading="datasetLoading" placeholder="选择已发布 Bundle 中的 PASS 资产">
+          <el-select v-model="selectedDatasetId" :loading="datasetLoading" :disabled="isEditingFork" placeholder="选择已发布 Bundle 中的 PASS 资产">
             <el-option v-for="item in datasets" :key="item.dataset_id" :label="item.dataset_id + ' · ' + item.source_ref" :value="item.dataset_id" />
           </el-select>
         </el-form-item>
 
-        <el-form-item v-if="source === 'pasted'" :label="`试运行输入（${inputLabel}）`">
+        <!-- 编辑模式提示条 -->
+        <div v-if="isEditingFork" class="fork-edit-banner">
+          <div class="fork-banner-content">
+            <el-icon class="fork-icon"><InfoFilled /></el-icon>
+            <span>正在基于 <code>{{ forkedSourceRef }}</code> 编辑新内容，修改后需重新试运行通过方可保存。</span>
+          </div>
+          <el-button link type="primary" size="small" @click="cancelForkEditing">放弃修改</el-button>
+        </div>
+
+        <!-- 试运行输入区 -->
+        <el-form-item v-if="source === 'pasted' || isEditingFork" :label="`试运行输入（${inputLabel}）`">
           <el-input
             v-model="sampleInput"
             type="textarea"
@@ -383,13 +440,19 @@ watch(selectedDatasetId, () => {
           />
         </el-form-item>
 
-        <el-alert
-          v-else
-          type="info"
-          :closable="false"
-          show-icon
-          title="数据集来自已发布 Bundle 的服务端验证资产，浏览器不能伪造输入。"
-        />
+        <!-- 只读预览区（当 source 为 fixture 且尚未点击编辑时） -->
+        <el-form-item v-else :label="`基线资产内容预览（${inputLabel}）`">
+          <el-input
+            :model-value="sampleInput"
+            type="textarea"
+            :rows="9"
+            readonly
+            class="sample-input readonly-input"
+          />
+          <div class="field-hint">
+            数据来自已发布 Bundle。如需基于此内容修改并沉淀为新资产，请点击右下角「创建新 Bundle 草稿」。
+          </div>
+        </el-form-item>
       </el-form>
 
       <section class="preview-panel" aria-label="运行结果" aria-live="polite">
@@ -468,9 +531,26 @@ watch(selectedDatasetId, () => {
         <div class="footer-actions">
           <el-button @click="close">取消</el-button>
           <el-button type="primary" plain :loading="previewLoading" @click="requestPreview">试运行</el-button>
-          <el-tooltip content="服务端重新验证通过后追加为新的 Bundle Draft" placement="top">
-            <span><el-button type="primary" :loading="saveLoading" :disabled="!canSave" @click="saveToBundle">保存到 Bundle 草稿</el-button></span>
-          </el-tooltip>
+
+          <!-- 场景 1：Bundle 资产只读模式 -> 显示【创建新 Bundle 草稿】 -->
+          <template v-if="source !== 'pasted' && !isEditingFork">
+            <el-tooltip content="将当前选中的 Bundle 资产载入编辑窗口，可二次修改并生成新 Draft" placement="top">
+              <el-button type="primary" :disabled="!selectedDatasetId" @click="startForkEditing">
+                创建新 Bundle 草稿
+              </el-button>
+            </el-tooltip>
+          </template>
+
+          <!-- 场景 2：编辑模式（临时输入或从 Bundle fork 编辑）-> 显示【保存到 Bundle 草稿】 -->
+          <template v-else>
+            <el-tooltip :content="canSave ? '将当前编辑并验证通过的资产保存为新的 Bundle Draft' : '请先完成试运行且结果为 PASS 后再保存'" placement="top">
+              <span>
+                <el-button type="primary" :loading="saveLoading" :disabled="!canSave" @click="saveToBundle">
+                  保存到 Bundle 草稿
+                </el-button>
+              </span>
+            </el-tooltip>
+          </template>
         </div>
       </div>
     </template>
@@ -513,6 +593,41 @@ watch(selectedDatasetId, () => {
 .dry-run-form :deep(.el-form-item__label) { font-size: 13px; font-weight: 500; color: var(--el-text-color-primary); padding-bottom: 6px; }
 .dry-run-form :deep(.el-select) { width: 100%; }
 
+.fork-edit-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--el-color-warning-light-9);
+  border: 1px solid var(--el-color-warning-light-7);
+  font-size: 12px;
+  color: var(--el-color-warning-dark-2);
+}
+.fork-banner-content {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.fork-icon {
+  color: var(--el-color-warning);
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.fork-banner-content code {
+  font-family: ui-monospace, monospace;
+  background: rgba(0, 0, 0, 0.04);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.readonly-input :deep(textarea) {
+  background-color: var(--el-fill-color-light);
+  color: var(--el-text-color-regular);
+  cursor: default;
+}
 .field-hint { margin-top: 5px; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.5; }
 .sample-input :deep(textarea) {
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
