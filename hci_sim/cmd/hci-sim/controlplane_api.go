@@ -573,6 +573,12 @@ func appendVerificationAsset(w http.ResponseWriter, r *http.Request, registry co
 			return
 		}
 	}
+	if request.Asset.SupportID != "" && request.Asset.SupportID != manifest.KBD.SupportID {
+		writeControlPlaneError(w, errors.New("verification_asset_support_id_mismatch"))
+		return
+	}
+	request.Asset.SupportID = manifest.KBD.SupportID
+	request.Asset.KBDRevision = manifest.KBD.Revision
 	manifest.VerificationAssets = append(manifest.VerificationAssets, request.Asset)
 	// payload 摘要由受信控制面接收的原始 JSON 重新计算，绝不相信调用方给出的摘要。
 	sum := sha256.Sum256(request.Asset.Payload)
