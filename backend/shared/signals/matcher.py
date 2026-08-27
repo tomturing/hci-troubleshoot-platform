@@ -4,7 +4,7 @@ Matcher 求值单一真相源（Single Source of Truth）
 统一处理 KBD 差异诊断（全部 7 类）与 QFK 引擎（keyword 类）的 Matcher 求值逻辑，
 消除在线和离线模式中重复且可能漂移的实现，并统一证据链结构。
 
-支持类型：keyword / regex / state / threshold / delta / trend / exists。
+支持类型：keyword / regex / state / boolean / threshold / delta / trend / exists。
 
 求值契约
 --------
@@ -371,6 +371,33 @@ def evaluate_matcher(
             matched=matched,
             detail={"hit": present, **extraction_detail},
             evidence=(f"【Matcher 求值 (exists)】\n存在性: {present}\n期望 expected: {expected}\n最终判定: {matched}"),
+        )
+
+    if mtype == "boolean":
+        values, extraction_detail, extraction_error = _extract_predicate_values(text, matcher, "boolean")
+        if extraction_error and not extraction_error.startswith("QFK_NO_MATCH:"):
+            return MatcherResult(
+                matched=None,
+                detail={"error": extraction_error, **extraction_detail},
+                evidence=f"【Matcher 求值 (boolean)】取值失败: {extraction_error}",
+            )
+        if not values:
+            return MatcherResult(
+                matched=None,
+                detail={"error": "QFK_NO_MATCH: 布尔值取值结果为空", **extraction_detail},
+                evidence="【Matcher 求值 (boolean)】取值结果为空",
+            )
+        raw_bool = bool(values[0])
+        matched = raw_bool if expected else not raw_bool
+        return MatcherResult(
+            matched=matched,
+            detail={"hit": raw_bool, "values": values, **extraction_detail},
+            evidence=(
+                f"【Matcher 求值 (boolean)】\n"
+                f"提取布尔值: {raw_bool}\n"
+                f"期望 expected: {expected}\n"
+                f"最终判定: {matched}"
+            ),
         )
 
     # 未知类型 → 交 LLM

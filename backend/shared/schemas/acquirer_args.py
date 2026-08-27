@@ -138,12 +138,13 @@ EFFECT_OBSERVATION_CHANNELS = frozenset({"qkv_alert", "qkv_task", "qkv_dialog", 
 EFFECT_USAGES = frozenset({"remediation_verify", "symptom_confirm"})
 # 判定规则封闭集合：与 shared/signals/matcher.py 的 7 类 matcher 严格一致，
 # 不新增自由文本判定；确需扩展走提案 + 测试。
-EFFECT_MATCHER_TYPES = frozenset({"keyword", "regex", "state", "threshold", "delta", "trend", "exists"})
+EFFECT_MATCHER_TYPES = frozenset({"keyword", "regex", "state", "boolean", "threshold", "delta", "trend", "exists"})
 # 各 matcher 类型的必填字段（与 signal_schema._MATCHER_REQUIRED_FIELDS 同源口径）。
 _EFFECT_MATCHER_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     "keyword": frozenset({"pattern"}),
     "regex": frozenset({"pattern"}),
     "state": frozenset({"pattern"}),
+    "boolean": frozenset(),
     "threshold": frozenset({"value", "operator"}),
     "delta": frozenset({"value", "operator"}),
     "trend": frozenset({"direction"}),
@@ -305,7 +306,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
                             "type": {
                                 "type": "string",
                                 "enum": [
-                                    "keyword", "regex", "state", "threshold", "delta", "trend", "exists"
+                                    "keyword", "regex", "state", "boolean", "threshold", "delta", "trend", "exists"
                                 ],
                             },
                             "pattern": {

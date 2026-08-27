@@ -229,7 +229,7 @@ def _validate_match(match: Any, index: int) -> None:
     if not isinstance(match, dict):
         raise QKVProcessingError("QKV_PROCESSING_INVALID", f"处理单元[{index + 1}] assert 必须配置 QFK match")
     matcher_type = str(match.get("type") or "")
-    if matcher_type not in {"keyword", "regex", "state", "threshold", "delta", "trend", "exists"}:
+    if matcher_type not in {"keyword", "regex", "state", "boolean", "threshold", "delta", "trend", "exists"}:
         raise QKVProcessingError("QKV_PROCESSING_INVALID", f"处理单元[{index + 1}] match.type 不受支持")
     if matcher_type in {"keyword", "regex", "state"} and not match.get("pattern"):
         raise QKVProcessingError("QKV_PROCESSING_INVALID", f"处理单元[{index + 1}] match.pattern 必填")
@@ -343,7 +343,7 @@ def _assert_concrete_value(value: Any, match: dict[str, Any]) -> tuple[bool | No
     matcher = copy.deepcopy(match)
     matcher.pop("extract", None)
     matcher_type = str(matcher.get("type") or "")
-    value_type = "number" if matcher_type in {"threshold", "delta", "trend"} else "string"
+    value_type = "number" if matcher_type in {"threshold", "delta", "trend"} else ("boolean" if matcher_type == "boolean" else "string")
     text = _value_text(value)
     # 历史 compare 载荷直接把 DESCRIPTION 作为数值输入；仅为读取旧快照保留
     # 这个兼容适配，新契约要求先用 feature=percent.current 派生具体数值。

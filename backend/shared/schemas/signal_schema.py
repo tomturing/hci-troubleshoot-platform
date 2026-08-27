@@ -39,6 +39,7 @@ _MATCHER_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
     "keyword": frozenset({"pattern"}),
     "regex": frozenset({"pattern"}),
     "state": frozenset({"pattern"}),
+    "boolean": frozenset(),
     "threshold": frozenset({"value", "operator"}),
     "delta": frozenset({"value", "operator"}),
     "trend": frozenset({"direction"}),
@@ -815,10 +816,10 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
             )
             if (
                 ai_processing_mode(ai_processing_config(matcher["extract"])) == "derive"
-                and str(matcher.get("type") or "") not in {"threshold", "delta", "trend"}
+                and str(matcher.get("type") or "") not in {"threshold", "delta", "trend", "boolean"}
             ):
                 raise ValidationError(
-                    f"signals[{index}].match 的智能推导仅支持 threshold/delta/trend 数值判定",
+                    f"signals[{index}].match 的智能推导仅支持 threshold/delta/trend/boolean 判定",
                     path=["signals", index, "match", "extract", "ai_processing", "mode"],
                 )
             if str((matcher.get("extract") or {}).get("cardinality") or "") == "count":
