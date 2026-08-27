@@ -7,6 +7,7 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
+MAX_FAST_SERVICES = 1
 MAX_FAST_TARGETS = 2
 GLOBAL_DEPENDENCY_PREFIXES = (
     "backend/shared/",
@@ -44,30 +45,22 @@ def _is_unit_test(path: str) -> bool:
     )
 
 
-def _service_test_candidates(repo_root: Path, changed_path: str) -> list[str]:
-    """为服务源码寻找可证明对应的测试；找不到时由调用方升级为完整回归。"""
+def _service_test_target(repo_root: Path, changed_path: str) -> str | None:
+    """按服务选择单测目录，不依赖源码与测试文件的命名关系。"""
     parts = Path(changed_path).parts
     if len(parts) < 4 or parts[0] != "backend" or parts[2] != "app":
-        return []
+        return None
 
     service = parts[1]
-    stem = Path(changed_path).stem
     tests_root = repo_root / "backend" / service / "tests"
     if not tests_root.is_dir():
-        return []
+        return None
 
-    app_parts = (*parts[3:-1], stem)
-    candidate_names = {f"test_{stem}.py"}
-    # 测试文件有时保留领域前缀，例如 app/tools/qfk/ai_extractor.py
-    # 对应 test_qfk_ai_extractor.py。只接受仓库中实际存在的文件，避免猜测。
-    candidate_names.update(f"test_{'_'.join(app_parts[start:])}.py" for start in range(len(app_parts) - 1))
-    candidates = {
-        path.relative_to(repo_root).as_posix()
-        for name in candidate_names
-        for path in tests_root.rglob(name)
-        if "integration" not in path.parts
-    }
-    return sorted(candidates)
+    unit_root = tests_root / "unit"
+    if not unit_root.is_dir():
+        # 根 tests 目录通常同时包含 integration，无法安全缩小范围。
+        return None
+    return unit_root.relative_to(repo_root).as_posix()
 
 
 def resolve_test_plan(changed_files: list[str], repo_root: Path) -> TestPlan:
@@ -87,16 +80,29 @@ def resolve_test_plan(changed_files: list[str], repo_root: Path) -> TestPlan:
         return TestPlan("full", (), "共享依赖、测试基础设施或工作流变更需要完整回归")
 
     targets: set[str] = set()
+    services: set[str] = set()
     for path in normalized:
         if _is_unit_test(path):
-            targets.add(path)
+            service = path.split("/", 2)[1] if path.startswith("backend/") else None
+            if service:
+                service_target = _service_test_target(repo_root, path.replace("/tests/", "/app/", 1))
+                if service_target is None:
+                    return TestPlan("full", (), "服务单测目录不可安全确定，升级为完整回归")
+                services.add(service)
+                targets.add(service_target)
+            else:
+                targets.add(path)
             continue
 
         if path.startswith("backend/") and path.endswith(".py"):
-            candidates = _service_test_candidates(repo_root, path)
-            if not candidates:
-                return TestPlan("full", (), "无法建立后端源码到单元测试的安全映射")
-            targets.update(candidates)
+            service_target = _service_test_target(repo_root, path)
+            if service_target is None:
+                return TestPlan("full", (), "无法将后端源码安全归属到服务单元测试目录")
+            services.add(path.split("/", 2)[1])
+            targets.add(service_target)
+
+    if len(services) > MAX_FAST_SERVICES:
+        return TestPlan("full", (), f"受影响服务超过 {MAX_FAST_SERVICES} 个，升级为完整回归")
 
     if not targets:
         return TestPlan("none", (), "本次 PR 未修改 Python 单元测试或后端源码")
