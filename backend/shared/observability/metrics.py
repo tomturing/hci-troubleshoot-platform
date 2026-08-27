@@ -65,6 +65,19 @@ QFK_EXECUTION_DURATION_SECONDS = Histogram(
     buckets=[0.05, 0.1, 0.5, 1.0, 2.5, 5.0, 15.0, 30.0, 60.0, 120.0, 300.0, float("inf")],
 )
 
+QFK_AI_PROCESSINGS_TOTAL = Counter(
+    "hci_qfk_ai_processings_total",
+    "QFK AI 处理终态计数",
+    labelnames=["mode", "status", "error_code"],
+)
+
+QFK_AI_PROCESSING_DURATION_SECONDS = Histogram(
+    "hci_qfk_ai_processing_duration_seconds",
+    "QFK AI 处理耗时（秒）",
+    labelnames=["mode", "status"],
+    buckets=[0.05, 0.1, 0.5, 1.0, 2.5, 5.0, 15.0, 30.0, 60.0, float("inf")],
+)
+
 KBD_LLM_REQUESTS_TOTAL = Counter(
     "hci_kbd_llm_requests_total",
     "KBD LLM 请求次数",

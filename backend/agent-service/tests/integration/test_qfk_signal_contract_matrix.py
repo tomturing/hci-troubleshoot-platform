@@ -10,6 +10,7 @@ import pytest
 from app.adapters.agents.htp.kbd_differential import KBDDiagnostic
 from app.tools.acli import executor as executor_module
 from app.tools.acli.executor import ExecResult
+from jsonschema import ValidationError
 from shared.cdd.kbd_model import KBDStep
 from shared.schemas.kbd_signal_safety import validate_kbd_read_only_signals_json
 from shared.schemas.signal_schema import validate_signals_json
@@ -179,6 +180,44 @@ async def test_qfk_system_match_text_column_threshold(monkeypatch):
     assert matched is True
     assert raw is not None and "83%" in raw
     assert executor.calls[0]["args"]["command"] == "acli --timeout 60 system df -P /sf/log"
+
+
+def test_qfk_time_derive_requires_numeric_matcher_and_full_normalizer_config():
+    signal = {
+        "id": "qfk-system-time-skew",
+        "acquire": {"tool": "qfk_system", "args": {"command": "date", "timeout": 60}},
+        "match": {
+            "type": "threshold",
+            "operator": ">",
+            "value": 2,
+            "aggregation": "range",
+            "expected": True,
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "all"},
+                "cardinality": "all",
+                "source": "stdout",
+                "ai_extract": {
+                    "mode": "derive",
+                    "instruction": "从每行识别主机系统时间",
+                    "derive": {
+                        "normalizer": "datetime_epoch",
+                        "formats": ["%a %b %d %H:%M:%S %Z %Y"],
+                        "timezone": "Asia/Shanghai",
+                    },
+                },
+            },
+        },
+        "orchestrate": {"phase": "diagnostic", "produces": [], "requires": []},
+    }
+
+    validate_signals_json(_document(signal))
+
+    invalid = json.loads(json.dumps(signal))
+    invalid["match"]["type"] = "keyword"
+    invalid["match"]["pattern"] = "date"
+    with pytest.raises(ValidationError, match="智能推导仅支持"):
+        validate_signals_json(_document(invalid))
 
 
 @pytest.mark.asyncio

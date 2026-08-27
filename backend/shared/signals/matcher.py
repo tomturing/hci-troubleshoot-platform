@@ -206,6 +206,12 @@ def evaluate_matcher(
                 detail={"error": extraction_error, **extraction_detail},
                 evidence=f"【Matcher 求值 (threshold)】文本取值失败: {extraction_error}",
             )
+        if aggregation == "range" and len(values) < 2:
+            return MatcherResult(
+                matched=None,
+                detail={"sample_count": len(values), "error": "insufficient_samples", **extraction_detail},
+                evidence=f"【Matcher 求值 (threshold/range)】样本不足: {len(values)}",
+            )
         if aggregation == "line_count":
             selected = (extraction_detail.get("extract") or {}).get("selected_lines") or []
             val = float(len(selected))
@@ -219,6 +225,8 @@ def evaluate_matcher(
             val = min(values) if values else None
         elif aggregation == "sum":
             val = sum(values) if values else None
+        elif aggregation == "range":
+            val = max(values) - min(values) if values else None
         else:
             val = values[0] if values else None
         target = matcher.get("value")

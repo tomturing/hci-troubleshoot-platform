@@ -173,6 +173,31 @@ describe('QfkProcessingEditor 两步处理交互', () => {
     expect(unsupportedWrapper.getComponent(TextExtractEditor).props('allowRowCount')).toBe(false)
   })
 
+  it('智能推导保存受约束的时间归一化配置，而非 AI 计算结果', async () => {
+    const wrapper = mount(ValueExtractEditor, {
+      props: { modelValue: { ...textExtract, value_mode: 'number' }, consumerKind: 'matcher', defaultValueMode: 'number' },
+      global: { plugins: [ElementPlus] },
+    })
+
+    ;(wrapper.vm as unknown as { setAiProcessingMode: (mode: string) => void }).setAiProcessingMode('derive')
+    await wrapper.vm.$nextTick()
+
+    const update = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as Record<string, any>
+    expect(update.ai_extract).toEqual({
+      mode: 'derive',
+      instruction: '',
+      derive: {
+        normalizer: 'datetime_epoch',
+        formats: ['%a %b %d %H:%M:%S %Z %Y'],
+        timezone: 'Asia/Shanghai',
+      },
+    })
+    await wrapper.setProps({ modelValue: update })
+    expect(wrapper.text()).toContain('智能推导')
+    expect(wrapper.text()).toContain('日期时间')
+    expect(wrapper.text()).toContain('全部候选行')
+  })
+
   it('取值和判断关键字输入按回车后保留编辑中的换行', async () => {
     const extractWrapper = mount(ValueExtractEditor, {
       props: { modelValue: textExtract },
