@@ -146,7 +146,7 @@ func TestBundleFactoryAPIAppendVerificationAssetBindsImmutableKbd(t *testing.T) 
 			"result_status": "PASS", "config_revision": "sha256:cfg", "trace_id": "t-1",
 		},
 		"reason": "跨 KBD 注入尝试",
-	}, "expert", "expert-editor", http.StatusBadRequest)
+	}, "expert", "expert-editor", http.StatusConflict)
 
 	// 2. 客户端传错误的内部 DB 自增 revision（如 6469），服务端自动绑定权威 parent manifest 的 revision=1 和 support_id=41398
 	appended := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+parentDigest+"/verification-assets", map[string]any{
