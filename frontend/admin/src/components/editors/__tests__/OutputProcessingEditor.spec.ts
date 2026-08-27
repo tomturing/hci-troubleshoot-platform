@@ -97,6 +97,23 @@ describe('OutputProcessingEditor', () => {
     const wrapper = mountEditor([{ mode: 'assert', input: '{{PERCENT_CURRENT}}', match: { type: 'threshold', expected: true, operator: '>', value: 90 } }])
     expect(wrapper.find('.matcher-editor').exists()).toBe(true)
     expect(wrapper.text()).toContain('判断类型及要求')
-    expect((wrapper.props('modelValue') as any)[0]).not.toHaveProperty('compare')
+    expect((wrapper.props() as any).modelValue[0]).not.toHaveProperty('compare')
+  })
+
+  it('统一展示输出类型并同步 item.type 与 ai_processing.output_type', async () => {
+    const wrapper = mountEditor([{
+      mode: 'derive',
+      input: '{{DESCRIPTION}}',
+      name: 'RATIO',
+      type: 'string',
+      extract: { type: 'feature', feature: 'vm_name', ai_processing: { mode: 'derive', instruction: '提取比例', output_type: 'string' } },
+    }])
+    expect(wrapper.text()).toContain('输出类型')
+    expect(wrapper.text()).not.toContain('变量类型')
+    ;(wrapper.vm as any).setOutputType(0, 'number')
+    const latest = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as Array<Record<string, any>>
+    expect(latest[0].type).toBe('number')
+    expect(latest[0].extract.ai_processing.output_type).toBe('number')
   })
 })
+
