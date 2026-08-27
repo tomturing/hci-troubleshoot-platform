@@ -154,7 +154,7 @@ def test_multiple_feature_values_use_qfk_aggregation_instead_of_zero_or_more() -
     assert result.assertions[0].status == "PASS"
 
 
-def test_qkv_ai_derive_requires_array_target_variable() -> None:
+def test_qkv_ai_processing_allows_scalar_target_with_explicit_output_contract() -> None:
     specs = [{
         "mode": "derive",
         "input": "{{DESCRIPTION}}",
@@ -163,20 +163,15 @@ def test_qkv_ai_derive_requires_array_target_variable() -> None:
         "extract": {
             "type": "feature",
             "feature": "host",
-            "ai_extract": {
+            "ai_processing": {
                 "mode": "derive",
                 "instruction": "从每行识别主机系统时间",
-                "derive": {
-                    "normalizer": "datetime_epoch",
-                    "formats": ["%a %b %d %H:%M:%S %Z %Y"],
-                    "timezone": "Asia/Shanghai",
-                },
+                "output_type": "number",
             },
         },
     }]
 
-    with pytest.raises(QKVProcessingError, match="数组变量类型"):
-        validate_output_processing(specs, available_inputs={"DESCRIPTION"})
+    validate_output_processing(specs, available_inputs={"DESCRIPTION"})
 
 
 @pytest.mark.asyncio

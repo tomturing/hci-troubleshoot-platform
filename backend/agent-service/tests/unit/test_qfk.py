@@ -576,14 +576,10 @@ async def test_time_skew_uses_ai_derive_then_threshold_range(monkeypatch):
         async def invoke(self, **_kwargs):
             return SimpleNamespace(
                 content=json.dumps(
-                    {
-                        "ok": True,
-                        "records": [
-                            {"source_value": "Wed Aug 26 11:05:24 CST 2026", "evidence_lines": [1]},
-                            {"source_value": "Wed Aug 26 11:00:24 CST 2026", "evidence_lines": [2]},
-                            {"source_value": "Wed Aug 26 11:00:26 CST 2026", "evidence_lines": [3]},
-                        ],
-                    }
+                    {"status": "success", "output": [1787713524, 1787713224, 1787713226], "evidence": [
+                        {"ref": "line:1", "quote": "10.97.128.120: Wed Aug 26 11:05:24 CST 2026"},
+                        {"ref": "line:2", "quote": "10.97.128.13: Wed Aug 26 11:00:24 CST 2026"},
+                        {"ref": "line:3", "quote": "10.97.128.11: Wed Aug 26 11:00:26 CST 2026"}], "reason": "计算时间差"}
                 )
             )
 
@@ -602,14 +598,10 @@ async def test_time_skew_uses_ai_derive_then_threshold_range(monkeypatch):
                 "rows": {"mode": "all"},
                 "cardinality": "all",
                 "source": "stdout",
-                "ai_extract": {
+                "ai_processing": {
                     "mode": "derive",
                     "instruction": "从每行识别主机系统时间",
-                    "derive": {
-                        "normalizer": "datetime_epoch",
-                        "formats": ["%a %b %d %H:%M:%S %Z %Y"],
-                        "timezone": "Asia/Shanghai",
-                    },
+                    "output_type": "array", "item_type": "number",
                 },
             },
         },
