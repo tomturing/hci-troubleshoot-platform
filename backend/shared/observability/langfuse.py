@@ -313,6 +313,9 @@ def observe_llm_generation(
         logger.warning(event="langfuse_generation_start_error", operation=operation, error=str(exc))
         observation = None
     capture_token = _current_content_capture.set(capture_content)
+    # 设置 _current_workflow_observation，使内部 observe_invoke/observe_stream_start
+    # 调用能获取到父节点，建立正确的嵌套关系
+    workflow_token = _current_workflow_observation.set(observation)
     try:
         yield observation
     except Exception as exc:
@@ -321,6 +324,7 @@ def observe_llm_generation(
                 observation.update(level="ERROR", status_message=str(exc)[:1000])
         raise
     finally:
+        _current_workflow_observation.reset(workflow_token)
         _current_content_capture.reset(capture_token)
         if observation is not None:
             try:
@@ -395,6 +399,8 @@ async def observe_invoke(
     在 invoke() 调用前调用，返回 (observations_tuple, trace_id, start_time)。
     调用完成后需调用 end_generation()。
 
+    当在 observe_llm_generation 上下文中调用时，会自动嵌套为子节点。
+
     Returns:
         ((root_observation, generation_observation), otel_trace_id, start_timestamp)
     """
@@ -409,6 +415,34 @@ async def observe_invoke(
     except Exception:
         otel_trace_id = ""
 
+    # 检查是否有父 observation（来自 observe_llm_generation 上下文）
+    parent = _current_workflow_observation.get()
+    if parent is not None:
+        # 有父节点：直接在 parent 上创建 generation（不创建 root span）
+        gen_metadata: dict[str, Any] = {
+            "assistant_type": assistant_type,
+            "otel_trace_id": otel_trace_id,
+            "nested_under_parent": True,  # 标记来源
+        }
+        if tools:
+            gen_metadata["tools"] = [t.get("function", {}).get("name", "") for t in tools]
+
+        try:
+            gen = parent.start_observation(
+                as_type="generation",
+                name="llm-invoke",
+                model=model,
+                input=messages,
+                metadata=gen_metadata,
+            )
+            # 返回 (parent, gen)，保持原有接口兼容
+            return (parent, gen), otel_trace_id, time.monotonic()
+        except Exception as e:
+            logger.warning(event="langfuse_nested_observe_error", error=str(e))
+            # 降级：返回 None，不影响业务
+            return None, "", time.monotonic()
+
+    # 无父节点：原有行为，创建 root span + generation
     try:
         root = lf.start_observation(
             as_type="span",
@@ -447,6 +481,8 @@ async def observe_stream_start(
 ) -> tuple[Any, str, float]:
     """为流式 LLM 调用创建 Langfuse observation（根 span + generation）。
 
+    当在 observe_llm_generation 上下文中调用时，会自动嵌套为子节点。
+
     Returns:
         ((root_observation, generation_observation), otel_trace_id, start_timestamp)
     """
@@ -461,6 +497,28 @@ async def observe_stream_start(
     except Exception:
         otel_trace_id = ""
 
+    # 检查是否有父 observation（来自 observe_llm_generation 上下文）
+    parent = _current_workflow_observation.get()
+    if parent is not None:
+        # 有父节点：直接在 parent 上创建 generation（不创建 root span）
+        try:
+            gen = parent.start_observation(
+                as_type="generation",
+                name="llm-stream",
+                model=model,
+                input=messages,
+                metadata={
+                    "assistant_type": assistant_type,
+                    "otel_trace_id": otel_trace_id,
+                    "nested_under_parent": True,  # 标记来源
+                },
+            )
+            return (parent, gen), otel_trace_id, time.monotonic()
+        except Exception as e:
+            logger.warning(event="langfuse_nested_stream_error", error=str(e))
+            return None, "", time.monotonic()
+
+    # 无父节点：原有行为，创建 root span + generation
     try:
         root = lf.start_observation(
             as_type="span",
