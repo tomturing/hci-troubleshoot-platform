@@ -165,6 +165,7 @@ async def _qfk_exec_impl(
     output_filters: list[dict[str, Any]] | None = None,
     execution_mode: str = "match",
     ai_client: Any | None = None,
+    db_session_factory: Any | None = None,
 ) -> QFKResult:
     """
     根据给定的标准化后端信号，寻找对应 Handler 执行 acli 底层命令，并自动执行关键字逻辑评估
@@ -611,6 +612,7 @@ async def _qfk_exec_impl(
                     matcher=signal.matcher,
                     conversation_id=conversation_id,
                     case_id=case_id or "",
+                    db_session_factory=db_session_factory,
                 )
                 evidence_line_numbers = ai_result.evidence_line_numbers
             except QFKExtractionError as exc:
@@ -644,6 +646,8 @@ async def _qfk_exec_impl(
                     "evidence_line_numbers": ai_result.evidence_line_numbers,
                     "evidence_lines": ai_result.evidence_lines,
                     "candidate_count": ai_result.candidate_count,
+                    "prompt_name": ai_result.prompt_name,
+                    "prompt_revision": ai_result.prompt_revision,
                 }
             }
             if (precomputed_values is None or matcher_type not in {"threshold", "delta", "trend"}) and not legacy_ai:
@@ -800,6 +804,7 @@ async def qfk_exec(
     output_filters: list[dict[str, Any]] | None = None,
     execution_mode: str = "match",
     ai_client: Any | None = None,
+    db_session_factory: Any | None = None,
 ) -> QFKResult:
     """执行 QFK，并保证每次调用都有可关联且唯一的终态日志与指标。"""
 
@@ -831,6 +836,7 @@ async def qfk_exec(
             output_filters=output_filters,
             execution_mode=execution_mode,
             ai_client=ai_client,
+            db_session_factory=db_session_factory,
         )
     except Exception as exc:
         duration = time.perf_counter() - started

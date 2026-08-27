@@ -405,6 +405,7 @@ async def apply_output_processing_async(
     ai_extractor: Any | None = None,
     conversation_id: str = "",
     case_id: str = "",
+    db_session_factory: Any | None = None,
 ) -> QKVProcessingResult:
     """QKV 后处理异步入口：确定性取值后再执行可选 AI 后处理。"""
 
@@ -447,6 +448,7 @@ async def apply_output_processing_async(
                     ai_extractor,
                     conversation_id,
                     case_id,
+                    db_session_factory=db_session_factory,
                 )
             staged.append((record, derived))
         if item["mode"] == "derive":
@@ -463,6 +465,7 @@ async def _derive_with_ai(
     ai_extractor: Any | None,
     conversation_id: str,
     case_id: str,
+    db_session_factory: Any | None = None,
     deterministic_error: QKVProcessingError | None = None,
 ) -> Any:
     """执行统一 AI 后处理；原文取值与智能推导共用同一契约。"""
@@ -482,6 +485,7 @@ async def _derive_with_ai(
             ai_client,
             conversation_id=conversation_id,
             case_id=case_id,
+            db_session_factory=db_session_factory,
         )
     except QFKExtractionError as exc:
         raise QKVProcessingError(exc.code, exc.message) from exc

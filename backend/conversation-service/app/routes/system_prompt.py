@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from shared.database.postgres import DatabaseManager
 from shared.dynamic_resource.adapters import prompt_resource_payload
 from shared.dynamic_resource.publisher import DynamicResourcePublisher
+from shared.models.dynamic_resource import PromptSlot
 from shared.models.system_prompt import SystemPrompt
 from shared.observability.logger import get_logger
 from sqlalchemy import delete, select, update
@@ -46,9 +47,38 @@ async def _publish_prompt_resource(db: AsyncSession, prompt: SystemPrompt) -> di
     }
 
 
+async def _sync_ai_prompt_slot(db: AsyncSession) -> None:
+    """保持 AI 逻辑槽位指向当前激活版本，确保新增/切换版本立即热生效。"""
+
+    active_result = await db.execute(
+        select(SystemPrompt)
+        .where(SystemPrompt.stage == "AI", SystemPrompt.is_active.is_(True))
+        .order_by(SystemPrompt.id.desc())
+    )
+    active = active_result.scalars().first()
+    if active is None:
+        return
+    slot_result = await db.execute(select(PromptSlot).where(PromptSlot.slot_name == "ai_processing"))
+    slot = slot_result.scalar_one_or_none()
+    if slot is None:
+        db.add(
+            PromptSlot(
+                slot_name="ai_processing",
+                active_prompt_name=active.name,
+                expected_placeholders=["mode", "output_type"],
+                consumer="agent-service.qfk.ai_processing",
+                is_active=True,
+            )
+        )
+    else:
+        slot.active_prompt_name = active.name
+        slot.expected_placeholders = ["mode", "output_type"]
+        slot.is_active = True
+
+
 @router.get("", summary="获取 Prompt 模板列表")
 async def list_prompts(
-    stage: str | None = Query(None, description="按诊断阶段过滤 (S0/S1/S2/S3/S4/S5/BASE)"),
+    stage: str | None = Query(None, description="按诊断阶段过滤 (S0/S1/S2/S3/S4/S5/S6/KBD/KEY/AI/BASE)"),
     is_active: bool | None = Query(None, description="按是否启用状态过滤"),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
@@ -132,6 +162,8 @@ async def create_prompt(payload: dict[str, Any], db: AsyncSession = Depends(get_
     db.add(p)
     await db.flush()
     await db.refresh(p)
+    if p.stage == "AI" and p.is_active:
+        await _sync_ai_prompt_slot(db)
     resource_revision = await _publish_prompt_resource(db, p)
     await db.commit()
 
@@ -184,6 +216,8 @@ async def update_prompt(prompt_id: int, payload: dict[str, Any], db: AsyncSessio
 
     await db.flush()
     await db.refresh(p)
+    if p.stage == "AI":
+        await _sync_ai_prompt_slot(db)
     resource_revision = await _publish_prompt_resource(db, p)
     await db.commit()
     logger.info(
@@ -199,11 +233,15 @@ async def update_prompt(prompt_id: int, payload: dict[str, Any], db: AsyncSessio
 @router.delete("/{prompt_id}", summary="删除 Prompt 模板")
 async def delete_prompt(prompt_id: int, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     """删除已有的 Prompt 模板记录"""
-    stmt = delete(SystemPrompt).where(SystemPrompt.id == prompt_id)
-    result = await db.execute(stmt)
-    await db.commit()
-    if result.rowcount == 0:
+    prompt_result = await db.execute(select(SystemPrompt).where(SystemPrompt.id == prompt_id))
+    prompt = prompt_result.scalar_one_or_none()
+    if prompt is None:
         raise HTTPException(status_code=404, detail="Prompt 模板不存在")
+    if prompt.is_active:
+        raise HTTPException(status_code=400, detail="激活中的 Prompt 不允许删除，请先切换到其他版本")
+    stmt = delete(SystemPrompt).where(SystemPrompt.id == prompt_id)
+    await db.execute(stmt)
+    await db.commit()
 
     logger.info(event="prompt_deleted", prompt_id=prompt_id, message="删除了 Prompt 模板")
     return {"status": "success"}

@@ -1981,7 +1981,7 @@ CREATE TABLE IF NOT EXISTS system_prompt (
 
 COMMENT ON TABLE system_prompt IS 'System Instructions 模板表 — 存储 S0-S6 各诊断阶段的 Prompt 模板，支持版本管理和阶段级 A/B 测试';
 COMMENT ON COLUMN system_prompt.id IS '模板主键，自增';
-COMMENT ON COLUMN system_prompt.stage IS '适用诊断阶段：S0/S1/S2/S3/S4/S5/S6 或 BASE（全局基础 Prompt，各阶段共用）';
+COMMENT ON COLUMN system_prompt.stage IS '适用诊断阶段：S0/S1/S2/S3/S4/S5/S6、KBD、KEY 或 AI（统一 AI 数据后处理）或 BASE（全局基础 Prompt，各阶段共用）';
 COMMENT ON COLUMN system_prompt.name IS '模板唯一名称（如 s0_intent_recognition_v2），建议格式为 {stage}_{purpose}_{version}';
 COMMENT ON COLUMN system_prompt.description IS '模板说明，描述该 Prompt 的用途、设计思路和与前版本的区别';
 COMMENT ON COLUMN system_prompt.content_template IS 'Prompt 模板内容，使用 {placeholder} 占位符（如 {tool_list}、{category_name}、{sop_content}、{hypothesis_list}）';

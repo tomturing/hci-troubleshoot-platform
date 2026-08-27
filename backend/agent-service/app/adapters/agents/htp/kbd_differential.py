@@ -995,6 +995,7 @@ class KBDDiagnostic:
                     node_ip=env_context.get("node_ip"),
                     exec_id=None,
                     ai_client=self._ai_registry.get_client(self._assistant_type),
+                    db_session_factory=self._db_session_factory,
                 )
                 if res.success:
                     await self._fill_pool_from_qkv(
@@ -1386,6 +1387,7 @@ class KBDDiagnostic:
                 conversation_id=self._conversation_id or session_id,
                 case_id=self._case_id or "",
                 ai_extractor=_qkv_ai_extractor,
+                db_session_factory=self._db_session_factory,
             )
             res.values = processed.records
             res.assertions = [
@@ -1517,6 +1519,7 @@ class KBDDiagnostic:
                     node_ip=env_context.get("node_ip"),
                     exec_id=exec_id,
                     ai_client=self._ai_registry.get_client(self._assistant_type),
+                    db_session_factory=self._db_session_factory,
                 )
                 if not res.success:
                     logger.warning(
@@ -1648,6 +1651,7 @@ class KBDDiagnostic:
                     output_filters=output_filters,
                     execution_mode="produce" if produces else "match",
                     ai_client=self._ai_registry.get_client(self._assistant_type),
+                    db_session_factory=self._db_session_factory,
                 )
                 if res.error:
                     return res.raw_output or None, res.error, None, None
@@ -1778,6 +1782,7 @@ class KBDDiagnostic:
                     ai_client,
                     conversation_id=self._conversation_id or "",
                     case_id=self._case_id or "",
+                    db_session_factory=self._db_session_factory,
                 )
             except QFKExtractionError as exc:
                 return {}, f"QFK 产出变量 {name} AI 提取失败：{exc}"

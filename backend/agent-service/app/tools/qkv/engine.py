@@ -113,6 +113,7 @@ async def qkv_exec(
     node_ip: str | None = None,
     exec_id: str | None = None,
     ai_client: Any | None = None,
+    db_session_factory: Any | None = None,
 ) -> QKVResult:
     """
     运行前端信号提取引擎，执行 acli 并过滤析出特定字段
@@ -321,6 +322,7 @@ async def qkv_exec(
             ai_client=ai_client,
             conversation_id=conversation_id,
             ai_extractor=_qkv_ai_extractor,
+            db_session_factory=db_session_factory,
         )
         values = processing.records
         matched = processing.matched
