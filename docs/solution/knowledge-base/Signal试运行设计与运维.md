@@ -60,6 +60,8 @@ fixture/replay 只能从已发布 Bundle 的 `verification_assets` 读取 PASS �
 
 AI 试运行与正式 QFK/QKV 处理共用数据库中的 `ai_processing` Prompt 槽位。Agent 启动时将数据库会话工厂注入试运行路由；Prompt 缺失或数据库不可用时返回结构化 `QFK_AI_PROCESSING_PROMPT_UNAVAILABLE`，不会使用代码内置 Prompt 伪造结果。部署后应确认 `system_prompt.ai_processing_v1` 和 `prompt_slot.ai_processing` 均为 active。
 
+AI 处理成功后的试运行结果使用 `AIExtractionResult.reason` 作为可读证据说明，并保留 `evidence_line_numbers` 与 `evidence_lines` 作为原始定位信息；不得访问不存在的 `evidence` 字段。验证时应覆盖一次带 AI 后处理的真实 Gateway 请求，确认模型成功响应能返回 `PASS` 或明确的业务失败，而不是 500。
+
 ## 6. 可观测性与排障
 
 Agent 暴露：
