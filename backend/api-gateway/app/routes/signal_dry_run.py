@@ -113,9 +113,7 @@ def _verify_preview_token(token: str, preview_result: dict, dry_run_payload: dic
         return False
     if claims.get("signal_id") != str((dry_run_payload.get("unit_ref") or {}).get("signal_id") or ""):
         return False
-    if str(claims.get("support_id") or "") != str(dry_run_payload.get("support_id") or ""):
-        return False
-    return True
+    return str(claims.get("support_id") or "") == str(dry_run_payload.get("support_id") or "")
 
 
 async def _preview(payload: dict, request: Request) -> JSONResponse:
