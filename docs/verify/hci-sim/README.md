@@ -7,6 +7,13 @@
 
 - [hci-sim 架构评估与构建机制分析](hci-sim架构评估与构建机制分析.md)：代码 + 数据库 + 目录表的构建逻辑完整说明。
 
+### Bundle 资产可空引用回归
+
+`fixture.asset_revision` 的模板行按数据库约束将 `template_asset_key` 和
+`template_revision` 保存为 SQL `NULL`。资产扫描契约必须使用可空指针承接这两个字段，
+并覆盖单行模板扫描和实例-模板联表扫描；验证命令为 `go test ./...`、`go test -race ./...`、
+`go vet ./...` 与 `go build ./cmd/hci-sim`。
+
 ## 阶段化验证（按 A→E 严格依赖）
 
 | 阶段 | 核心验证 | 验证计划 / 报告 |
