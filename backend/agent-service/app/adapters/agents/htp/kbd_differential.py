@@ -1378,15 +1378,12 @@ class KBDDiagnostic:
         if processing and not getattr(res, "processing_applied", False):
             from shared.signals.qkv_output_processing import apply_output_processing_async
 
-            from app.tools.qkv.engine import _qkv_ai_extractor
-
             processed = await apply_output_processing_async(
                 res.values,
                 processing,
                 ai_client=self._ai_registry.get_client(self._assistant_type),
                 conversation_id=self._conversation_id or session_id,
                 case_id=self._case_id or "",
-                ai_extractor=_qkv_ai_extractor,
                 db_session_factory=self._db_session_factory,
             )
             res.values = processed.records
@@ -1753,9 +1750,8 @@ class KBDDiagnostic:
     ) -> tuple[dict[str, Any], str | None]:
         """统一执行 QFK 产出变量的 AI 提取，并在原子写池前完成溯源校验。"""
 
+        from shared.signals.ai_extractor import extract_ai_value, has_ai_extract
         from shared.signals.extractor import QFKExtractionError
-
-        from app.tools.qfk.ai_extractor import extract_ai_value, has_ai_extract
 
         if isinstance(complete_outputs, str):
             complete_outputs = {"stdout": complete_outputs}
@@ -1780,6 +1776,8 @@ class KBDDiagnostic:
                     resolved_extract,
                     str(spec.get("type") or "string"),
                     ai_client,
+                    consumer="agent-service.kbd_differential.ai_processing",
+                    signal_type="kbd_qfk",
                     conversation_id=self._conversation_id or "",
                     case_id=self._case_id or "",
                     db_session_factory=self._db_session_factory,
