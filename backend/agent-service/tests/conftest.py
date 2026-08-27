@@ -39,7 +39,7 @@ def sample_messages():
 def ai_processing_prompt_for_unit_tests(monkeypatch):
     """为不启动数据库的单元测试提供受控 Prompt 管理桩。"""
 
-    async def load_prompt(_factory, *, mode, output_type, conversation_id, case_id):
+    async def load_prompt(_factory, *, mode, output_type, **kwargs):
         return (
             "你是 HCI 排障平台的受控 AI 数据后处理器。"
             f"当前处理模式：{mode}；输出类型：{output_type}。"
@@ -47,4 +47,4 @@ def ai_processing_prompt_for_unit_tests(monkeypatch):
             None,
         )
 
-    monkeypatch.setattr("app.tools.qfk.ai_extractor._load_ai_processing_system_prompt", load_prompt)
+    monkeypatch.setattr("shared.signals.ai_extractor._load_ai_processing_system_prompt", load_prompt)

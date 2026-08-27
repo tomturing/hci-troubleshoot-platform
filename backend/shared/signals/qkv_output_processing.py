@@ -23,6 +23,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from shared.signals.ai_extractor import extract_ai_value
 from shared.signals.ai_processing import ai_processing_config, validate_ai_processing_config
 from shared.signals.extractor import QFKExtractionError, extract_value
 from shared.signals.matcher import evaluate_matcher
@@ -474,15 +475,16 @@ async def _derive_with_ai(
         raise deterministic_error or QKVProcessingError("QKV_PROCESSING_INVALID", "QKV AI 处理缺少配置")
     if ai_client is None:
         raise QKVProcessingError("QFK_AI_EXTRACT_UNAVAILABLE", "QKV AI 处理客户端不可用") from deterministic_error
-    if ai_extractor is None:
-        raise QKVProcessingError("QFK_AI_EXTRACT_UNAVAILABLE", "QKV AI 提取器不可用") from deterministic_error
+    extractor = ai_extractor or extract_ai_value
     ai_spec = _identity_extract(value_type) | {"ai_processing": ai_config}
     try:
-        ai_result = await ai_extractor(
+        ai_result = await extractor(
             _value_text(value),
             ai_spec,
             "array" if value_type == "array" else ("number" if value_type == "percentage" else value_type),
             ai_client,
+            consumer="agent-service.qkv.ai_processing",
+            signal_type="qkv",
             conversation_id=conversation_id,
             case_id=case_id,
             db_session_factory=db_session_factory,

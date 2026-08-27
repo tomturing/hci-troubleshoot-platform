@@ -1,4 +1,4 @@
-"""QFK/QKV 统一 AI 后处理器。
+"""QFK/QKV 统一 AI 信号后处理器。
 
 确定性取值先构造候选输入，AI 只做可选再加工。两种 AI 处理方式共用同一响应契约，
 平台完成结构、类型、证据和下游消费者校验。
@@ -31,7 +31,7 @@ from shared.signals.ai_processing import (
 from shared.signals.extractor import ExtractionResult, QFKExtractionError, extract_output_values
 from shared.utils.prompt_loader import StrictPromptLoader
 
-logger = get_logger("qfk-ai-processor")
+logger = get_logger("signal-ai-processor")
 
 MAX_AI_EXTRACT_INPUT_BYTES = 64 * 1024
 MAX_AI_EXTRACT_LINES = 200
@@ -41,7 +41,7 @@ AI_PROCESSING_PROMPT_PLACEHOLDERS = ["mode", "output_type"]
 
 @dataclass(frozen=True)
 class AIExtractionResult:
-    """兼容 QFK 结果字段的统一 AI 后处理结果。"""
+    """兼容 QFK/QKV 结果字段的统一 AI 后处理结果。"""
 
     value: Any
     raw_value: Any
@@ -55,7 +55,6 @@ class AIExtractionResult:
     response_chars: int = 0
     prompt_name: str = AI_PROCESSING_PROMPT_NAME
     prompt_revision: str | None = None
-    raw_response: dict[str, Any] | None = None
 
 
 def has_ai_extract(spec: Any) -> bool:
@@ -174,6 +173,7 @@ async def _load_ai_processing_system_prompt(
     *,
     mode: str,
     output_type: str,
+    consumer: str = "agent-service.signal.ai_processing",
     conversation_id: str,
     case_id: str,
 ) -> tuple[str, str | None]:
@@ -191,7 +191,7 @@ async def _load_ai_processing_system_prompt(
                 session,
                 AI_PROCESSING_PROMPT_NAME,
                 AI_PROCESSING_PROMPT_PLACEHOLDERS,
-                consumer="agent-service.qfk.ai_processing",
+                consumer=consumer,
                 conversation_id=conversation_id,
                 case_id=case_id,
                 trace_id=get_current_trace_id(),
@@ -213,6 +213,8 @@ async def _extract_ai_value_impl(
     ai_client: Any,
     *,
     matcher: dict[str, Any] | None = None,
+    consumer: str = "agent-service.signal.ai_processing",
+    signal_type: str = "signal",
     conversation_id: str = "",
     case_id: str = "",
     run_id: str = "",
@@ -234,6 +236,7 @@ async def _extract_ai_value_impl(
         db_session_factory,
         mode=mode,
         output_type=output_type,
+        consumer=consumer,
         conversation_id=conversation_id,
         case_id=case_id,
     )
@@ -241,7 +244,7 @@ async def _extract_ai_value_impl(
         operation="ai_processing",
         model=ai_client.default_model if hasattr(ai_client, "default_model") else "unknown",
         input={"instruction": instruction, "mode": mode, "output_type": output_type, "candidate_count": len(lines), "candidate_lines": [{"ref": ref, "content": text[:200]} for ref, text in list(candidates.items())[:10]]},
-        metadata={"conversation_id": conversation_id, "case_id": case_id, "run_id": run_id, "signal_id": signal_id, "kbd_revision": kbd_revision, "value_type": value_type, "mode": mode, "output_type": output_type, "prompt_name": AI_PROCESSING_PROMPT_NAME, "prompt_revision": prompt_revision, "otel_trace_id": get_current_trace_id()},
+        metadata={"conversation_id": conversation_id, "case_id": case_id, "run_id": run_id, "signal_id": signal_id, "signal_type": signal_type, "kbd_revision": kbd_revision, "value_type": value_type, "mode": mode, "output_type": output_type, "prompt_name": AI_PROCESSING_PROMPT_NAME, "prompt_revision": prompt_revision, "otel_trace_id": get_current_trace_id()},
     ) as observation:
         messages = [
             {"role": "system", "content": system_prompt},
@@ -297,25 +300,62 @@ async def _extract_ai_value_impl(
             ).inc()
             update_observation(observation, output={"status": "failed", "error": str(exc), "raw_response": raw_response[:2000], "parsed_payload": payload}, metadata={"response_chars": len(raw_response), "validation_failed": True})
             raise QFKExtractionError("QFK_AI_PROCESSING_INVALID_RESPONSE", str(exc)) from exc
-    return AIExtractionResult(value=validated.output, raw_value=validated.output, evidence_line_numbers=evidence_numbers, evidence_lines=evidence_lines, candidate_count=len(lines), instruction=instruction, reason=validated.reason, output_type=output_type, response_hash=hashlib.sha256(raw_response.encode("utf-8", errors="replace")).hexdigest(), response_chars=len(raw_response), prompt_revision=prompt_revision, raw_response=payload if isinstance(payload, dict) else None)
+    return AIExtractionResult(value=validated.output, raw_value=validated.output, evidence_line_numbers=evidence_numbers, evidence_lines=evidence_lines, candidate_count=len(lines), instruction=instruction, reason=validated.reason, output_type=output_type, response_hash=hashlib.sha256(raw_response.encode("utf-8", errors="replace")).hexdigest(), response_chars=len(raw_response), prompt_revision=prompt_revision)
 
 
-async def extract_ai_value(output: str, spec: dict[str, Any], value_type: str, ai_client: Any, *, matcher: dict[str, Any] | None = None, conversation_id: str = "", case_id: str = "", run_id: str = "", signal_id: str = "", kbd_revision: int | str | None = None, db_session_factory: Any | None = None) -> AIExtractionResult:
+async def extract_ai_value(
+    output: str,
+    spec: dict[str, Any],
+    value_type: str,
+    ai_client: Any,
+    *,
+    matcher: dict[str, Any] | None = None,
+    consumer: str = "agent-service.signal.ai_processing",
+    signal_type: str = "signal",
+    conversation_id: str = "",
+    case_id: str = "",
+    run_id: str = "",
+    signal_id: str = "",
+    kbd_revision: int | str | None = None,
+    db_session_factory: Any | None = None,
+) -> AIExtractionResult:
     started = time.perf_counter()
     config = ai_processing_config(spec)
     mode = ai_processing_mode(config)
-    common = {"conversation_id": conversation_id or None, "case_id": case_id or None, "value_type": value_type, "ai_mode": mode, "output_bytes": len(output.encode("utf-8", errors="replace"))}
-    logger.info(event="qfk_ai_processing_started", **common)
+    common = {
+        "conversation_id": conversation_id or None,
+        "case_id": case_id or None,
+        "value_type": value_type,
+        "ai_mode": mode,
+        "signal_type": signal_type,
+        "consumer": consumer,
+        "output_bytes": len(output.encode("utf-8", errors="replace")),
+    }
+    logger.info(event="signal_ai_processing_started", **common)
     try:
-        result = await _extract_ai_value_impl(output, spec, value_type, ai_client, matcher=matcher, conversation_id=conversation_id, case_id=case_id, run_id=run_id, signal_id=signal_id, kbd_revision=kbd_revision, db_session_factory=db_session_factory)
+        result = await _extract_ai_value_impl(
+            output,
+            spec,
+            value_type,
+            ai_client,
+            matcher=matcher,
+            consumer=consumer,
+            signal_type=signal_type,
+            conversation_id=conversation_id,
+            case_id=case_id,
+            run_id=run_id,
+            signal_id=signal_id,
+            kbd_revision=kbd_revision,
+            db_session_factory=db_session_factory,
+        )
     except QFKExtractionError as exc:
         duration = time.perf_counter() - started
         QFK_AI_PROCESSINGS_TOTAL.labels(mode=mode if mode in {"extract", "derive"} else "invalid", status="failed", error_code=exc.code).inc()
         QFK_AI_PROCESSING_DURATION_SECONDS.labels(mode=mode if mode in {"extract", "derive"} else "invalid", status="failed").observe(duration)
-        logger.warning(event="qfk_ai_processing_failed", error_code=exc.code, error_message=str(exc), duration_ms=round(duration * 1000, 3), run_id=run_id or None, signal_id=signal_id or None, kbd_revision=kbd_revision, **common)
+        logger.warning(event="signal_ai_processing_failed", error_code=exc.code, error_message=str(exc), duration_ms=round(duration * 1000, 3), run_id=run_id or None, signal_id=signal_id or None, kbd_revision=kbd_revision, **common)
         raise
     duration = time.perf_counter() - started
     QFK_AI_PROCESSINGS_TOTAL.labels(mode=mode if mode in {"extract", "derive"} else "invalid", status="succeeded", error_code="").inc()
     QFK_AI_PROCESSING_DURATION_SECONDS.labels(mode=mode if mode in {"extract", "derive"} else "invalid", status="succeeded").observe(duration)
-    logger.info(event="qfk_ai_processing_finished", status="succeeded", candidate_count=result.candidate_count, evidence_refs=result.evidence_line_numbers, response_chars=result.response_chars, response_hash=result.response_hash, prompt_name=result.prompt_name, prompt_revision=result.prompt_revision, duration_ms=round(duration * 1000, 3), run_id=run_id or None, signal_id=signal_id or None, kbd_revision=kbd_revision, **common)
+    logger.info(event="signal_ai_processing_finished", status="succeeded", candidate_count=result.candidate_count, evidence_refs=result.evidence_line_numbers, response_chars=result.response_chars, response_hash=result.response_hash, prompt_name=result.prompt_name, prompt_revision=result.prompt_revision, duration_ms=round(duration * 1000, 3), run_id=run_id or None, signal_id=signal_id or None, kbd_revision=kbd_revision, **common)
     return result

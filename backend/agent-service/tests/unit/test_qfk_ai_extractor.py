@@ -1,11 +1,9 @@
-"""QFK 完整输出 AI 提取的溯源与失败闭环。"""
-
 import json
 from types import SimpleNamespace
 
 import pytest
-from app.tools.qfk.ai_extractor import extract_ai_value
-from app.tools.qfk.extractor import QFKExtractionError
+from shared.signals.ai_extractor import extract_ai_value
+from shared.signals.extractor import QFKExtractionError
 
 
 class _FakeAIClient:

@@ -17,14 +17,13 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 from shared.observability.logger import get_logger
 from shared.observability.metrics import SIGNAL_DRY_RUN_DURATION_SECONDS, SIGNAL_DRY_RUN_TOTAL
+from shared.signals.ai_extractor import extract_ai_value, has_ai_extract
 from shared.signals.ai_processing import ai_item_type, ai_output_type, ai_processing_config
 from shared.signals.extractor import QFKExtractionError
 from shared.signals.matcher import evaluate_matcher
 from shared.signals.qkv_output_processing import QKVProcessingError, apply_output_processing_async
 
 from app.config import settings
-from app.tools.qfk.ai_extractor import extract_ai_value, has_ai_extract
-from app.tools.qkv.engine import _qkv_ai_extractor
 
 router = APIRouter(prefix="/internal", tags=["signal-dry-run"])
 logger = get_logger("signal-dry-run")
@@ -159,6 +158,8 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, db_
                 value_type,
                 ai_client,
                 matcher=matcher,
+                consumer="agent-service.signal_dry_run.ai_processing",
+                signal_type="dry_run",
                 conversation_id=f"dry-run:{trace_id}",
                 signal_id=body.unit_ref.signal_id,
                 kbd_revision=body.kbd_revision,
@@ -223,8 +224,15 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, db_
             if ai_client is None:
                 raise RuntimeError("QFK_AI_EXTRACT_UNAVAILABLE: 当前 Agent 未初始化 AI 客户端")
             ai_result = await extract_ai_value(
-                output, extract, str(produce.get("type") or "string"), ai_client,
-                conversation_id=f"dry-run:{trace_id}", signal_id=body.unit_ref.signal_id, kbd_revision=body.kbd_revision,
+                output,
+                extract,
+                str(produce.get("type") or "string"),
+                ai_client,
+                consumer="agent-service.signal_dry_run.ai_processing",
+                signal_type="dry_run",
+                conversation_id=f"dry-run:{trace_id}",
+                signal_id=body.unit_ref.signal_id,
+                kbd_revision=body.kbd_revision,
                 db_session_factory=db_session_factory,
             )
             values[str(produce["name"])] = ai_result.value
@@ -238,12 +246,15 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, db_
                     ai_raw_response=getattr(ai_result, "raw_response", None),
                 )
         else:
-            values[str(produce["name"])] = extract_value(output, extract, str(produce.get("type") or "string"))
+            values[str(produce["name"])] = extract_value(
+                output, extract, str(produce.get("type") or "string")
+            )
     return SignalDryRunResult(
         trace_id=trace_id, dataset_id=body.dataset.dataset_id, unit_ref=body.unit_ref,
         verification_scope=body.verification_scope, config_revision=body.draft_revision,
         status="PASS", input_sha256=input_sha, value=values,
-        evidence="QFK 离线输出已按当前草稿完成变量产出；未写入生产变量池。",
+        evidence="QFK 产出变量已按当前草稿完成提取。",
+        derivation={"produces": list(values.keys())},
     )
 
 
@@ -280,7 +291,6 @@ async def _evaluate_qkv(body: SignalDryRunRequest, *, ai_client: Any | None, db_
         body.dataset.payload,
         selected,
         ai_client=ai_client,
-        ai_extractor=_qkv_ai_extractor if ai_client is not None else None,
         conversation_id=f"dry-run:{trace_id}",
         db_session_factory=db_session_factory,
     )
