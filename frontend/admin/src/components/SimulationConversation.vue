@@ -418,8 +418,14 @@ async function sendMessage(content?: string, metadata: Record<string, unknown> =
   } catch (error) {
     agentOutcome.value = 'failed'
     assistant.status = 'failed'
-    assistant.content ||= error instanceof Error ? error.message : String(error)
-    emit('fatal', assistant.content)
+    // 错误信息追加到已有内容之后，确保用户始终能看到失败原因
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    if (assistant.content) {
+      assistant.content += `\n\n❌ 会话失败：${errorMessage}`
+    } else {
+      assistant.content = `❌ 会话失败：${errorMessage}`
+    }
+    emit('fatal', errorMessage)
   } finally {
     streaming.value = false
   }

@@ -277,7 +277,12 @@ def observe_workflow(
             yield observation
         except Exception as exc:
             with suppress(Exception):
-                observation.update(level="ERROR", status_message=str(exc)[:1000])
+                # 同时设置 output 和 status_message，确保 Langfuse UI 可直接查看错误原因
+                observation.update(
+                    level="ERROR",
+                    status_message=str(exc)[:1000],
+                    output={"status": "failed", "error": str(exc)[:2000]},
+                )
             raise
         finally:
             _current_workflow_observation.reset(token)
@@ -321,7 +326,12 @@ def observe_llm_generation(
     except Exception as exc:
         if observation is not None:
             with suppress(Exception):
-                observation.update(level="ERROR", status_message=str(exc)[:1000])
+                # 同时设置 output 和 status_message，确保 Langfuse UI 可直接查看错误原因
+                observation.update(
+                    level="ERROR",
+                    status_message=str(exc)[:1000],
+                    output={"status": "failed", "error": str(exc)[:2000]},
+                )
         raise
     finally:
         _current_workflow_observation.reset(workflow_token)
