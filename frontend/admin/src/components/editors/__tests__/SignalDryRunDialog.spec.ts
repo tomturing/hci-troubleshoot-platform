@@ -54,4 +54,44 @@ describe('SignalDryRunDialog', () => {
     expect(aiButton?.attributes('disabled')).toBeDefined()
   })
 
+  it('有服务结果时不再显示空状态感叹号和未返回提示', async () => {
+    const wrapper = mount(SignalDryRunDialog, {
+      props: { modelValue: true, supportId: '41398', kbdRevision: 7, signal, signalIndex: 2 },
+      global: { plugins: [ElementPlus], stubs },
+    })
+    // 通过组件实例注入结果，专门验证结果/空状态的互斥渲染契约。
+    const vm = wrapper.vm as unknown as { previewRequested: boolean; previewResult: Record<string, unknown> }
+    vm.previewRequested = true
+    vm.previewResult = { status: 'PASS', value: true, evidence: '已完成处理' }
+    await wrapper.vm.$nextTick()
+    expect(wrapper.text()).toContain('PASS')
+    expect(wrapper.text()).toContain('已完成处理')
+    expect(wrapper.text()).not.toContain('服务未返回结果')
+    expect(wrapper.find('.preview-empty').exists()).toBe(false)
+  })
+
+  it('支持在表单展示与 JSON 展示之间切换', async () => {
+    const wrapper = mount(SignalDryRunDialog, {
+      props: { modelValue: true, supportId: '41398', kbdRevision: 7, signal, signalIndex: 2 },
+      global: { plugins: [ElementPlus], stubs },
+    })
+    const vm = wrapper.vm as unknown as {
+      previewRequested: boolean
+      previewResult: Record<string, unknown>
+      resultViewMode: 'form' | 'json'
+    }
+    vm.previewRequested = true
+    vm.previewResult = { status: 'PASS', value: { diff: 12, ok: true }, evidence: '说明' }
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.result-form').exists()).toBe(true)
+    expect(wrapper.find('.result-value').exists()).toBe(false)
+    expect(wrapper.text()).toContain('diff')
+
+    vm.resultViewMode = 'json'
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.result-form').exists()).toBe(false)
+    expect(wrapper.find('.result-value').exists()).toBe(true)
+    expect(wrapper.find('.result-value').text()).toContain('"diff": 12')
+  })
 })

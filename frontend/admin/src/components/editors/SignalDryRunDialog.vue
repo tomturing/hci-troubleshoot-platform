@@ -40,6 +40,7 @@ const previewLoading = ref(false)
 const previewResult = ref<PreviewResult | null>(null)
 const lastDryRunRequest = ref<Record<string, unknown> | null>(null)
 const saveLoading = ref(false)
+const resultViewMode = ref<'form' | 'json'>('form')
 const datasetLoading = ref(false)
 const datasets = ref<Array<{ dataset_id: string; source_type: DatasetSource; source_ref: string; payload: unknown }>>([])
 const selectedDatasetId = ref('')
@@ -75,6 +76,24 @@ const previewStatus = computed(() => {
 const resultTagType = computed(() => ({ PASS: 'success', FAIL: 'danger', UNKNOWN: 'warning' } as const)[previewResult.value?.status || 'UNKNOWN'])
 const canSave = computed(() => previewResult.value?.status === 'PASS')
 const selectedDataset = computed(() => datasets.value.find(item => item.dataset_id === selectedDatasetId.value) || null)
+const resultFormEntries = computed(() => {
+  const value = previewResult.value?.value
+  if (Array.isArray(value)) return value.map((item, index) => ({ label: `[${index}]`, value: formatResultValue(item) }))
+  if (value && typeof value === 'object') return Object.entries(value as Record<string, unknown>).map(([label, item]) => ({ label, value: formatResultValue(item) }))
+  return [{ label: '结果', value: formatResultValue(value) }]
+})
+const resultJson = computed(() => {
+  try { return JSON.stringify(previewResult.value?.value, null, 2) ?? 'null' } catch { return String(previewResult.value?.value) }
+})
+
+function formatResultValue(value: unknown): string {
+  if (value === undefined) return '—'
+  if (value === null) return 'null'
+  if (typeof value === 'object') {
+    try { return JSON.stringify(value, null, 2) } catch { return String(value) }
+  }
+  return String(value)
+}
 
 function close(): void {
   emit('update:modelValue', false)
@@ -98,6 +117,7 @@ async function canonicalHash(value: unknown): Promise<string> {
 async function requestPreview(): Promise<void> {
   previewRequested.value = true
   previewResult.value = null
+  resultViewMode.value = 'form'
   if (!props.signal || !props.supportId || !props.kbdRevision) {
     ElMessage.warning('当前 KBD 草稿身份不完整，无法试运行')
     return
@@ -225,6 +245,7 @@ watch(() => props.modelValue, (visible) => {
 watch([sampleInput, source, verificationScope], () => {
   previewRequested.value = false
   previewResult.value = null
+  resultViewMode.value = 'form'
   lastDryRunRequest.value = null
 })
 
@@ -306,7 +327,7 @@ watch(selectedDatasetId, () => {
           <span>配置效果预览</span>
           <el-tag size="small" type="info" effect="plain">独立数据集</el-tag>
         </div>
-        <div class="preview-empty">
+        <div v-if="!previewResult" class="preview-empty">
           <el-icon><WarningFilled /></el-icon>
           <strong>{{ previewStatus }}</strong>
           <p v-if="!previewRequested">提供一组输入后执行预览。结果会绑定当前 KBD revision、Signal 和处理范围。</p>
@@ -315,8 +336,21 @@ watch(selectedDatasetId, () => {
         </div>
         <template v-if="previewResult">
           <el-tag :type="resultTagType" effect="dark">{{ previewResult.status }}</el-tag>
-          <pre v-if="previewResult.value !== undefined" class="result-value">{{ JSON.stringify(previewResult.value, null, 2) }}</pre>
-          <p v-if="previewResult.evidence" class="result-evidence">{{ previewResult.evidence }}</p>
+          <el-radio-group v-model="resultViewMode" class="result-view-switch" size="small">
+            <el-radio-button value="form">表单展示</el-radio-button>
+            <el-radio-button value="json">JSON 展示</el-radio-button>
+          </el-radio-group>
+          <div v-if="resultViewMode === 'form'" class="result-form" aria-label="结构化结果表单">
+            <div v-for="entry in resultFormEntries" :key="entry.label" class="result-form-row">
+              <span class="result-form-label">{{ entry.label }}</span>
+              <code class="result-form-value">{{ entry.value }}</code>
+            </div>
+          </div>
+          <pre v-else class="result-value">{{ resultJson }}</pre>
+          <div v-if="previewResult.evidence" class="result-evidence">
+            <strong>处理说明</strong>
+            <p>{{ previewResult.evidence }}</p>
+          </div>
         </template>
         <dl class="preview-context">
           <dt>处理对象</dt><dd>{{ signalId }}</dd>
@@ -361,7 +395,15 @@ watch(selectedDatasetId, () => {
 .preview-empty strong { color: var(--el-text-color-primary); font-size: 13px; }
 .preview-empty p { margin: 7px 0 0; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.55; }
 .result-value { max-height: 180px; margin: 12px; padding: 8px; overflow: auto; border: 1px solid var(--el-border-color-light); background: var(--el-bg-color); font-size: 12px; line-height: 1.5; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
+.result-view-switch { display: flex; justify-content: center; width: 100%; margin: 12px 0 0; }
+.result-form { margin: 12px; border: 1px solid var(--el-border-color-light); background: var(--el-bg-color); text-align: left; }
+.result-form-row { display: grid; grid-template-columns: minmax(86px, 28%) minmax(0, 1fr); gap: 10px; padding: 8px; border-bottom: 1px solid var(--el-border-color-lighter); font-size: 12px; line-height: 1.5; }
+.result-form-row:last-child { border-bottom: 0; }
+.result-form-label { color: var(--el-text-color-secondary); overflow-wrap: anywhere; }
+.result-form-value { color: var(--el-text-color-primary); white-space: pre-wrap; overflow-wrap: anywhere; }
 .result-evidence { margin: 10px 12px; color: var(--el-text-color-regular); font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
+.result-evidence strong { display: block; margin-bottom: 4px; color: var(--el-text-color-secondary); font-size: 11px; font-weight: 600; }
+.result-evidence p { margin: 0; white-space: pre-wrap; }
 .preview-context { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 7px 8px; margin: 0 12px 14px; padding-top: 12px; border-top: 1px dashed var(--el-border-color); font-size: 12px; }
 .preview-context dt { color: var(--el-text-color-secondary); }
 .preview-context dd { margin: 0; overflow-wrap: anywhere; color: var(--el-text-color-regular); font-family: var(--el-font-family); }
