@@ -27,7 +27,7 @@ type Asset struct {
 	Revision         int             `json:"revision"`
 	Status           string          `json:"status"`
 	Content          json.RawMessage `json:"content"`
-	TemplateAssetKey string          `json:"template_asset_key,omitempty"`
+	TemplateAssetKey *string         `json:"template_asset_key,omitempty"`
 	TemplateRevision *int            `json:"template_revision,omitempty"`
 	CategoryBaseline json.RawMessage `json:"category_baseline"`
 	CatalogBaseline  json.RawMessage `json:"catalog_baseline"`

@@ -72,7 +72,7 @@ func (r *FixtureAssetRegistry) CreateRevision(ctx context.Context, request fixtu
 		return fixtureasset.Asset{}, err
 	}
 	digest := digestAsset(request)
-	asset, err := insertAsset(ctx, tx, fixtureasset.Asset{ID: uuid.NewString(), AssetKey: request.AssetKey, AssetType: request.AssetType, SignalType: request.SignalType, Revision: revision, Status: fixtureasset.StatusDraft, Content: request.Content, TemplateAssetKey: request.TemplateAssetKey, TemplateRevision: request.TemplateRevision, CategoryBaseline: request.CategoryBaseline, CatalogBaseline: request.CatalogBaseline, ContentDigest: digest, CreatedBy: actor, TraceID: traceID})
+	asset, err := insertAsset(ctx, tx, fixtureasset.Asset{ID: uuid.NewString(), AssetKey: request.AssetKey, AssetType: request.AssetType, SignalType: request.SignalType, Revision: revision, Status: fixtureasset.StatusDraft, Content: request.Content, TemplateAssetKey: nullableString(request.TemplateAssetKey), TemplateRevision: request.TemplateRevision, CategoryBaseline: request.CategoryBaseline, CatalogBaseline: request.CatalogBaseline, ContentDigest: digest, CreatedBy: actor, TraceID: traceID})
 	if err != nil {
 		return fixtureasset.Asset{}, err
 	}
@@ -96,17 +96,18 @@ func (r *FixtureAssetRegistry) transition(ctx context.Context, assetKey string, 
 	}
 	defer tx.Rollback(ctx)
 	if status == fixtureasset.StatusPublished {
-		var assetType, templateKey string
+		var assetType string
+		var templateKey *string
 		var templateRevision *int
 		if err = tx.QueryRow(ctx, `SELECT asset_type, template_asset_key, template_revision FROM fixture.asset_revision WHERE asset_key = $1 AND revision = $2 FOR UPDATE`, assetKey, revision).Scan(&assetType, &templateKey, &templateRevision); err != nil {
 			return fixtureasset.Asset{}, err
 		}
 		if assetType == fixtureasset.TypeInstance {
 			var templateStatus string
-			if templateRevision == nil {
-				return fixtureasset.Asset{}, errors.New("实例缺少模板修订")
+			if templateKey == nil || templateRevision == nil {
+				return fixtureasset.Asset{}, errors.New("实例缺少模板引用")
 			}
-			if err = tx.QueryRow(ctx, `SELECT status FROM fixture.asset_revision WHERE asset_key = $1 AND revision = $2`, templateKey, *templateRevision).Scan(&templateStatus); err != nil {
+			if err = tx.QueryRow(ctx, `SELECT status FROM fixture.asset_revision WHERE asset_key = $1 AND revision = $2`, *templateKey, *templateRevision).Scan(&templateStatus); err != nil {
 				return fixtureasset.Asset{}, fmt.Errorf("实例引用模板不存在: %w", err)
 			}
 			if templateStatus != fixtureasset.StatusPublished {
@@ -183,6 +184,13 @@ func digestAsset(request fixtureasset.CreateRequest) string {
 	payload, _ := json.Marshal(request)
 	sum := sha256.Sum256(payload)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func nullableString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 type rowScanner interface{ Scan(...any) error }

@@ -74,6 +74,7 @@
 3. 状态/枚举全用 `CHECK` 约束强制，运行时不能回退内存态；
 4. 所有表带 `trace_id` 字段，满足调用链可追踪；
 5. 应用只接受 `HCI_SIM_DATABASE_URL`（或等效拆分字段），**禁止 fallback 到 `DATABASE_URL`**；缺少配置即启动 fail-closed。
+6. `fixture.asset_revision` 的模板行不引用其他模板，`template_asset_key` 与 `template_revision` 必须保持 SQL `NULL`；Go 资产契约以指针类型承接可空字段，禁止用空字符串替代 `NULL`。
 
 ---
 
