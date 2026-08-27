@@ -53,4 +53,5 @@ describe('SignalDryRunDialog', () => {
     const aiButton = wrapper.findAll('button').find((item) => item.text().includes('当前 AI 处理'))
     expect(aiButton?.attributes('disabled')).toBeDefined()
   })
+
 })
