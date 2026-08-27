@@ -62,6 +62,12 @@
     - 修改 `observe_llm_generation`：在 yield 前设置 `_current_workflow_observation` context var
     - 修改 `observe_invoke` 和 `observe_stream_start`：检查 context var，如有父节点则创建子节点而非独立的根 span
   - **效果**：Langfuse trace 正确呈现 `llm.ai_extract → llm-invoke` 嵌套结构，完整追踪 AI 提取的 LLM 调用链路。
+- **QFK AI 提取 UNGROUNDED 错误可观测性增强**：
+  - **根因**：工单 Q2026082725128 AI 提取报错 `QFK_AI_EXTRACT_UNGROUNDED`，错误信息只有 "原文取值 output 无法从 evidence 原文回查"，无法判断是 AI 幻觉还是数据收集层污染导致 candidate_lines 包含错误数据。
+  - **修复**：
+    - 错误信息中输出候选行摘要，便于快速判断问题来源。
+    - Langfuse observation output 中记录完整的 `output_value`、`evidence_lines` 和 `candidate_lines`，确保排查时能看到完整上下文。
+  - **效果**：UNGROUNDED 错误现在包含候选行摘要，便于区分 AI 幻觉和数据收集层污染。
 - **KBD 关键信号执行结果标题加入案例 ID 标识**：
   - **需求**：用户反馈关键信号执行结果列表中，信号标题只有序号和检查说明，无法快速识别信号归属于哪个 KBD 案例。
   - **修复**：在 `_format_step_evidence` 方法中新增 `support_id` 参数，标题格式从 `{index}. {icon} {title}` 改为 `{index}. {icon} [{support_id}] {title}`，方便用户识别信号归属。
