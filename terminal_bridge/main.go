@@ -46,9 +46,10 @@ import (
 )
 
 const (
-	defaultWSPort = 9999
-	desktopMode   = "desktop"
-	clusterMode   = "cluster"
+	defaultWSPort        = 9999
+	desktopMode          = "desktop"
+	clusterMode          = "cluster"
+	websocketPingInteval = 30 * time.Second // WebSocket 心跳间隔：每 30 秒发送 ping，防止空闲超时断开
 )
 
 type runtimeConfig struct {
@@ -183,6 +184,9 @@ type InMessage struct {
 	Resume         bool           `json:"resume"`         // P0-2: 浏览器重连时发送 resume 信号，触发历史日志回放  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
 	OutputFilters  []OutputFilter `json:"output_filters"` // 平台定义的安全逐行筛选，不执行 shell/正则
 
+	// ── WebSocket 保活（ping/pong）专用字段 ──
+	Pong int64 `json:"pong,omitempty"` // 客户端回复心跳时间戳（回显服务端 ping 值）
+
 	// ── vm_console_op（虚拟机控制台截图固定操作）专用字段 ──
 	// 该消息类型刻意不包含自由文本 command 字段：Bridge 只执行代码常量表
 	// 构造的固定操作（screendump / sendkey down / 固定读取 / 无条件删除）。
@@ -240,6 +244,9 @@ type OutMessage struct {
 	SHA256       string `json:"sha256,omitempty"`        // 解码后原始 PPM 的 SHA-256
 	SizeBytes    int64  `json:"size_bytes,omitempty"`    // 解码后原始 PPM 字节数
 	UploadStatus string `json:"upload_status,omitempty"` // uploaded | artifact_upload_disabled | upload_failed | not_applicable
+
+	// ── WebSocket 保活（ping/pong）专用字段 ──
+	Ping int64 `json:"ping,omitempty"` // 服务端发送心跳时间戳（Unix毫秒），客户端需回复 pong
 }
 
 type execRequestContext struct {
@@ -2663,7 +2670,27 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 	sub := logHub.addSubscriber(ws, cui)
 	// ownedSessions 追踪 ssh_connect 显式创建的会话
 	ownedSessions := newOwnedSessionTracker()
+
+	// WebSocket 保活心跳：定期发送 ping，防止中间层（负载均衡器、Traefik）空闲超时断开
+	pingCtx, pingCancel := context.WithCancel(context.Background())
+	pingDone := make(chan struct{})
+	go func() {
+		defer close(pingDone)
+		ticker := time.NewTicker(websocketPingInteval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pingCtx.Done():
+				return
+			case <-ticker.C:
+				sendMsg(ws, OutMessage{Type: "ping", Ping: time.Now().UnixMilli()})
+			}
+		}
+	}()
+
 	defer func() {
+		pingCancel() // 停止心跳 goroutine
+		<-pingDone   // 等待心跳 goroutine 退出
 		log.Printf("[Bridge] 浏览器已断开: custom_ui=%s remote=%s", cui, ws.RemoteAddr())
 		logHub.removeSubscriber(ws)
 		websocketWriteLocks.Delete(ws)
@@ -2780,6 +2807,10 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				sendMsg(ws, OutMessage{Type: "resumed", CaseID: msg.CaseID, TraceID: msg.TraceID, CustomUI: cui})
 				log.Printf("[Bridge] 收到 resume 信号: case=%s 触发日志回放", msg.CaseID)
 			}
+
+		case "pong":
+			// WebSocket 保活心跳响应：客户端回复 pong，连接保持活跃
+			// 不需要特殊处理，只需确保消息被识别即可
 
 		case "ssh_disconnect":
 			// 关闭当前 WebSocket 所拥有的该工单全部会话，防止自动节点会话泄漏。
