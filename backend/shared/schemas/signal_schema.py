@@ -31,6 +31,7 @@ from shared.schemas.log_source_catalog import (
 )
 from shared.schemas.signal_generation import current_tool_contract_revision
 from shared.schemas.signal_output import derive_signal_requires
+from shared.signals.ai_derive import ai_extract_mode, validate_ai_extract_config
 from shared.signals.qkv_output_processing import QKVProcessingError, validate_output_processing
 
 _SIGNALS_DIR = Path(__file__).resolve().parent / "signals"
@@ -812,6 +813,14 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                 location=f"signals[{index}].match.extract",
                 consumer_type="matcher",
             )
+            if (
+                ai_extract_mode(matcher["extract"].get("ai_extract")) == "derive"
+                and str(matcher.get("type") or "") not in {"threshold", "delta", "trend"}
+            ):
+                raise ValidationError(
+                    f"signals[{index}].match 的智能推导仅支持 threshold/delta/trend 数值判定",
+                    path=["signals", index, "match", "extract", "ai_extract", "mode"],
+                )
             if str((matcher.get("extract") or {}).get("cardinality") or "") == "count":
                 if matcher.get("type") != "threshold":
                     raise ValidationError(
@@ -955,6 +964,14 @@ def _validate_value_extract(
         return ValidationError(message, path=location_path)
 
     extract_type = str(extract.get("type") or "")
+    ai_config = extract.get("ai_extract")
+    if ai_config is not None:
+        try:
+            ai_mode = validate_ai_extract_config(ai_config)
+        except ValueError as exc:
+            raise _error(f"{location}.ai_extract 无效: {exc}", ".ai_extract") from exc
+        if ai_mode == "derive" and consumer_type not in {"matcher", "array"}:
+            raise _error(f"{location} 的智能推导只能产出 array 或供数值 Matcher 使用", ".ai_extract.mode")
     if extract_type == "json":
         cardinality = str(extract.get("cardinality") or "exactly_one")
         if consumer_type == "object" and cardinality == "all":

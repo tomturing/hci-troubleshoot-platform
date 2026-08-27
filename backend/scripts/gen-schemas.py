@@ -189,7 +189,7 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     "aggregation": {
                         "type": "string",
                         "enum": [
-                            "first_number", "last_number", "line_count", "duration_seconds", "max", "min", "sum"
+                            "first_number", "last_number", "line_count", "duration_seconds", "max", "min", "sum", "range"
                         ],
                         "default": "first_number",
                     },
@@ -314,7 +314,7 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     "expected": {"type": "boolean"},
                     "value": {"type": ["number", "integer", "string"]},
                     "operator": {"type": "string", "enum": [">", ">=", "<", "<=", "==", "=", "!="]},
-                    "aggregation": {"type": "string", "enum": ["first_number", "last_number", "max", "min", "sum"]},
+                    "aggregation": {"type": "string", "enum": ["first_number", "last_number", "max", "min", "sum", "range"]},
                     "minimum_samples": {"type": "integer", "minimum": 2, "maximum": 10000},
                     "direction": {"type": "string", "enum": ["increasing", "decreasing", "stable"]},
                     "metric": {"type": "string"},
@@ -520,7 +520,7 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
             },
             "aiExtract": {
                 "type": "object",
-                "description": "在确定性筛选出的完整文本行上执行受控 AI 字面量提取；AI 不参与 Matcher 是否命中的判定",
+                "description": "在确定性筛选出的完整文本行上执行受控 AI 处理；原文取值只摘录字面量，智能推导只摘录可回查源值并由代码归一化",
                 "additionalProperties": False,
                 "required": ["instruction"],
                 "properties": {
@@ -529,7 +529,28 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                         "minLength": 1,
                         "maxLength": 1000,
                     },
+                    "mode": {"type": "string", "enum": ["extract", "derive"], "default": "extract"},
+                    "derive": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["normalizer", "formats", "timezone"],
+                        "properties": {
+                            "normalizer": {"const": "datetime_epoch"},
+                            "formats": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 8,
+                                "items": {"type": "string", "minLength": 1, "maxLength": 128},
+                            },
+                            "timezone": {"type": "string", "minLength": 1, "maxLength": 64},
+                        },
+                    },
                 },
+                "allOf": [{
+                    "if": {"properties": {"mode": {"const": "derive"}}, "required": ["mode"]},
+                    "then": {"required": ["derive"]},
+                    "else": {"not": {"required": ["derive"]}},
+                }],
             },
             "jsonExtract": {
                 "type": "object",

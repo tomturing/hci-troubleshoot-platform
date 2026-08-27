@@ -68,6 +68,23 @@ describe('OutputProcessingEditor', () => {
     expect(latest[0].extract).toMatchObject({ type: 'feature', ai_extract: { instruction: '' } })
   })
 
+  it('智能推导将 QKV 输出约束为数组并保存时间归一化配置', async () => {
+    const wrapper = mountEditor([{ mode: 'derive', input: '{{DESCRIPTION}}', name: 'HOST_TIMES', type: 'string', extract: { type: 'feature', feature: 'host', ai_extract: { instruction: '识别主机时间' } } }])
+    ;(wrapper.vm as any).setAiProcessingMode(0, 'derive')
+
+    const latest = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as Array<Record<string, any>>
+    expect(latest[0]).toMatchObject({
+      type: 'array',
+      extract: {
+        ai_extract: {
+          mode: 'derive',
+          instruction: '识别主机时间',
+          derive: { normalizer: 'datetime_epoch', timezone: 'Asia/Shanghai' },
+        },
+      },
+    })
+  })
+
   it('派生变量可以引用前序变量，且不提供后序变量', () => {
     const wrapper = mountEditor([
       { mode: 'derive', input: '{{DESCRIPTION}}', name: 'TEXT', type: 'string', extract: { type: 'feature', feature: 'vm_name' } },
