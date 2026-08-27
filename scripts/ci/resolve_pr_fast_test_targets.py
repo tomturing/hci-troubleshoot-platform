@@ -45,7 +45,7 @@ def _is_unit_test(path: str) -> bool:
 
 
 def _service_test_candidates(repo_root: Path, changed_path: str) -> list[str]:
-    """为服务源码寻找同名测试；找不到时由调用方升级为完整回归。"""
+    """为服务源码寻找可证明对应的测试；找不到时由调用方升级为完整回归。"""
     parts = Path(changed_path).parts
     if len(parts) < 4 or parts[0] != "backend" or parts[2] != "app":
         return []
@@ -56,11 +56,18 @@ def _service_test_candidates(repo_root: Path, changed_path: str) -> list[str]:
     if not tests_root.is_dir():
         return []
 
-    return sorted(
+    app_parts = (*parts[3:-1], stem)
+    candidate_names = {f"test_{stem}.py"}
+    # 测试文件有时保留领域前缀，例如 app/tools/qfk/ai_extractor.py
+    # 对应 test_qfk_ai_extractor.py。只接受仓库中实际存在的文件，避免猜测。
+    candidate_names.update(f"test_{'_'.join(app_parts[start:])}.py" for start in range(len(app_parts) - 1))
+    candidates = {
         path.relative_to(repo_root).as_posix()
-        for path in tests_root.rglob(f"test_{stem}.py")
+        for name in candidate_names
+        for path in tests_root.rglob(name)
         if "integration" not in path.parts
-    )
+    }
+    return sorted(candidates)
 
 
 def resolve_test_plan(changed_files: list[str], repo_root: Path) -> TestPlan:
