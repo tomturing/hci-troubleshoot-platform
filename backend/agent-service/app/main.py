@@ -47,6 +47,7 @@ from app.config import settings
 from app.routes.agent import router as agent_router_route
 from app.routes.agent import set_agent_router, set_confirm_service
 from app.routes.capabilities import router as capabilities_router
+from app.routes.signal_dry_run import router as signal_dry_run_router
 from app.routes.vm_console import router as vm_console_router
 
 if TYPE_CHECKING:
@@ -132,6 +133,8 @@ async def lifespan(app: FastAPI):
         event="ai_registry_initialized",
         message=f"Registered AI assistants: {ai_registry.list_types()}",
     )
+    # 仅供内部只读试运行路由取得正式 AI 客户端；路由不拥有或重建客户端。
+    app.state.ai_registry = ai_registry
 
     # ── KB 客户端（TriageAgent + InvestigationAgent 使用）──────────────────────────
     kb_client: KBClient | None = None
@@ -645,6 +648,7 @@ register_exception_handlers(app)
 # 路由挂载
 app.include_router(agent_router_route)
 app.include_router(capabilities_router)
+app.include_router(signal_dry_run_router)
 app.include_router(vm_console_router)
 
 

@@ -2486,10 +2486,12 @@ const pipelineConvertLoading = ref(false)
 const signalDryRunVisible = ref(false)
 const signalDryRunSignal = ref<SignalV2 | null>(null)
 const signalDryRunIndex = ref<number | null>(null)
+const signalDryRunProcessingIndex = ref<number | null>(null)
 
-function openSignalDryRun(signal: SignalV2, index: number): void {
+function openSignalDryRun(signal: SignalV2, index: number, processingIndex: number | null = null): void {
   signalDryRunSignal.value = cloneSignal(signal)
   signalDryRunIndex.value = index
+  signalDryRunProcessingIndex.value = processingIndex
   signalDryRunVisible.value = true
 }
 
@@ -4851,7 +4853,7 @@ onUnmounted(() => clearBatchPollTimer())
                     <OutputProcessingEditor
                       v-model="signalEditDraft.orchestrate.output_processing"
                       :produces="signalEditDraft.orchestrate.produces || []"
-                      @dry-run="openSignalDryRun(signalEditDraft, editingSignalIndex ?? item.origIdx)"
+                      @dry-run="(processingIndex: number | null) => openSignalDryRun(signalEditDraft, editingSignalIndex ?? item.origIdx, processingIndex)"
                     />
                   </template>
                 </div>
@@ -6058,6 +6060,7 @@ onUnmounted(() => clearBatchPollTimer())
       :kbd-revision="revisionState?.working_revision_id || detailEntry?.working_revision_id || detailEntry?.latest_proposal_revision_id"
       :signal="signalDryRunSignal"
       :signal-index="signalDryRunIndex"
+      :processing-index="signalDryRunProcessingIndex"
     />
 
     <!-- 编辑弹窗 -->

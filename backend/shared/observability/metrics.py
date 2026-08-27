@@ -78,6 +78,21 @@ QFK_AI_PROCESSING_DURATION_SECONDS = Histogram(
     buckets=[0.05, 0.1, 0.5, 1.0, 2.5, 5.0, 15.0, 30.0, 60.0, float("inf")],
 )
 
+# Signal 试运行是独立于现场执行的只读处理链。按范围和终态拆分，便于发现配置
+# 漂移、输入质量不足及 AI 依赖不可用，绝不把试运行计入生产 QFK 执行指标。
+SIGNAL_DRY_RUN_TOTAL = Counter(
+    "hci_signal_dry_run_total",
+    "Signal 试运行终态计数",
+    labelnames=["scope", "verification_scope", "status", "error_code"],
+)
+
+SIGNAL_DRY_RUN_DURATION_SECONDS = Histogram(
+    "hci_signal_dry_run_duration_seconds",
+    "Signal 试运行处理耗时（秒）",
+    labelnames=["scope", "status"],
+    buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 15.0, 30.0, 60.0, float("inf")],
+)
+
 AI_PROCESSING_VALIDATION_FAILURES_TOTAL = Counter(
     "hci_ai_processing_validation_failures_total",
     "AI 统一输出契约校验失败次数",

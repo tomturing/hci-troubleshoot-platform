@@ -9,7 +9,7 @@ import MatcherEditor from './MatcherEditor.vue'
 
 type ProcessingSpec = Record<string, any>
 const props = defineProps<{ modelValue?: ProcessingSpec[]; produces?: ProcessingSpec[] }>()
-const emit = defineEmits<{ 'update:modelValue': [value: ProcessingSpec[]]; 'dry-run': [] }>()
+const emit = defineEmits<{ 'update:modelValue': [value: ProcessingSpec[]]; 'dry-run': [processingIndex: number | null] }>()
 const specs = computed(() => props.modelValue || [])
 const inputOptions = computed(() => {
   const names = new Set<string>()
@@ -83,13 +83,13 @@ function setMatch(index: number, match: ProcessingSpec): void { update(index, { 
     <div class="processing-header">
       <div class="processing-title"><el-icon><InfoFilled /></el-icon><span>产出变量处理</span></div>
       <div class="processing-header-actions">
-        <el-button text type="primary" size="small" :icon="VideoPlay" @click="emit('dry-run')">试运行</el-button>
+        <el-button text type="primary" size="small" :icon="VideoPlay" @click="emit('dry-run', specs.length ? specs.length - 1 : null)">试运行</el-button>
         <el-button text type="primary" size="small" :icon="Plus" @click="add">添加处理</el-button>
       </div>
     </div>
     <el-alert v-if="specs.length === 0" type="info" :closable="false" title="可选：对 QKV 产出变量进一步处理，包括派生变量和断言判断。" />
     <div v-for="(item, index) in specs" :key="index" class="processing-unit">
-      <div class="unit-header"><span>处理单元 {{ index + 1 }}</span><el-button text type="danger" size="small" :icon="Delete" @click="remove(index)">删除</el-button></div>
+      <div class="unit-header"><span>处理单元 {{ index + 1 }}</span><span><el-button text type="primary" size="small" :icon="VideoPlay" @click="emit('dry-run', index)">试运行</el-button><el-button text type="danger" size="small" :icon="Delete" @click="remove(index)">删除</el-button></span></div>
       <template v-if="item.mode !== 'assert'">
         <section class="processing-step">
           <div class="step-header"><span class="stage-number">1</span><div><strong>派生变量</strong><small>从已有具体值提取并写入变量池</small></div></div>
