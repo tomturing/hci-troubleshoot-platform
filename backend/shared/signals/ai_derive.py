@@ -6,6 +6,7 @@ AI 只负责从已筛选的原文行中标注可回查的源值。任何时间�
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -79,14 +80,37 @@ def normalize_derived_values(source_values: list[str], config: dict[str, Any]) -
     for source_value in source_values:
         parsed: datetime | None = None
         for value_format in formats:
-            try:
-                parsed = datetime.strptime(source_value, value_format)
+            parsed = _parse_datetime(source_value, value_format, timezone)
+            if parsed is not None:
                 break
-            except ValueError:
-                continue
         if parsed is None:
             raise ValueError(f"源值 {source_value!r} 不符合配置的时间格式")
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone)
         normalized.append(parsed.timestamp())
     return normalized
+
+
+def _parse_datetime(source_value: str, value_format: str, timezone: ZoneInfo) -> datetime | None:
+    """解析源时间，并在格式含时区缩写时校验其与配置时区一致。"""
+
+    if "%Z" not in value_format:
+        try:
+            return datetime.strptime(source_value, value_format).replace(tzinfo=timezone)
+        except ValueError:
+            return None
+
+    # Python 对 %Z 可识别的缩写随运行环境变化。移除一个候选缩写后仍用同一
+    # 格式解析，并要求该缩写等于配置 IANA 时区在对应时间的名称，避免宽松接受。
+    if value_format.count("%Z") != 1:
+        return None
+    format_without_timezone = value_format.replace("%Z", "")
+    for match in re.finditer(r"[A-Za-z][A-Za-z0-9_+/-]*", source_value):
+        timezone_name = match.group(0)
+        source_without_timezone = source_value[: match.start()] + source_value[match.end() :]
+        try:
+            parsed = datetime.strptime(source_without_timezone, format_without_timezone)
+        except ValueError:
+            continue
+        localized = parsed.replace(tzinfo=timezone)
+        if localized.tzname() == timezone_name:
+            return localized
+    return None

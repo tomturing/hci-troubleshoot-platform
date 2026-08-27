@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from app.tools.qfk.ai_extractor import extract_ai_value
 from app.tools.qfk.extractor import QFKExtractionError
+from shared.signals.ai_derive import normalize_derived_values
 
 
 class _FakeAIClient:
@@ -168,3 +169,21 @@ async def test_ai_derive_rejects_a_calculated_value_without_grounded_source_reco
 
     with pytest.raises(QFKExtractionError, match="QFK_AI_DERIVE_INVALID_RESPONSE"):
         await extract_ai_value("Wed Aug 26 11:05:24 CST 2026\n", spec, "array<number>", client)
+
+
+def test_ai_derive_timezone_abbreviation_is_portable_and_strict():
+    config = {
+        "mode": "derive",
+        "instruction": "从每行识别主机系统时间",
+        "derive": {
+            "normalizer": "datetime_epoch",
+            "formats": ["%a %b %d %H:%M:%S %Z %Y"],
+            "timezone": "Asia/Shanghai",
+        },
+    }
+
+    values = normalize_derived_values(["Wed Aug 26 11:05:24 CST 2026"], config)
+
+    assert len(values) == 1
+    with pytest.raises(ValueError, match="不符合配置的时间格式"):
+        normalize_derived_values(["Wed Aug 26 11:05:24 EST 2026"], config)
