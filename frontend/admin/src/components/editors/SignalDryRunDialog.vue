@@ -190,14 +190,24 @@ async function saveToBundle(): Promise<void> {
     const listed = await fetch(`/api/hci-sim/v1/control-plane/bundles?support_id=${encodeURIComponent(props.supportId)}`)
     const listBody = await listed.json().catch(() => ({}))
     if (!listed.ok) throw new Error(`Bundle 控制面 HTTP ${listed.status}`)
-    let drafts = Array.isArray(listBody.bundles) ? listBody.bundles.filter((item: Record<string, unknown>) => item.status === 'draft') : []
-    if (drafts.length > 1) throw new Error('当前 KBD 存在多个 Draft，请在 Bundle 工厂完成整理后再保存')
+    // Bug #2 修复：按 kbd_revision 过滤 draft，避免跨版本遗留 draft 误触发 length > 1
+    const targetRevision = typeof props.kbdRevision === 'number' ? props.kbdRevision : null
+    let drafts = Array.isArray(listBody.bundles)
+      ? listBody.bundles.filter((item: Record<string, unknown>) =>
+          item.status === 'draft' && (!targetRevision || item.kbd_revision === targetRevision)
+        )
+      : []
+    if (drafts.length > 1) throw new Error('当前 KBD 版本存在多个 Draft，请在 Bundle 工厂完成整理后再保存')
     if (drafts.length === 0) {
       // published Bundle 不能直接追加资产；先让 Gateway 根据当前 KBD C1 权威快照创建唯一 Draft。
       const created = await fetch('/api/hci-sim/v1/control-plane/bundles', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `signal-dry-run-draft:${props.supportId}:${previewResult.value?.trace_id || 'current'}` },
-        body: JSON.stringify({ support_id: props.supportId }),
+        // Bug #3 修复：透传 kbd_revision，确保新建 Draft 绑定正确的 KBD 版本
+        body: JSON.stringify({
+          support_id: props.supportId,
+          ...(typeof props.kbdRevision === 'number' ? { kbd_revision: props.kbdRevision } : {}),
+        }),
       })
       const createdBody = await created.json().catch(() => ({}))
       if (!created.ok) throw new Error(String(createdBody?.detail || `创建 Bundle Draft HTTP ${created.status}`))
@@ -230,7 +240,8 @@ async function loadDatasets(): Promise<void> {
     const published = Array.isArray(listBody.bundles)
       ? listBody.bundles.filter((item: Record<string, unknown>) => item.status === 'published' && (!props.kbdRevision || item.kbd_revision === props.kbdRevision))
       : []
-    if (published.length !== 1) throw new Error(published.length ? '当前 KBD 存在多个已发布 Bundle，无法猜测数据源' : '当前 KBD 没有已发布 Bundle')
+    // Bug #5 修复：多个 published 时取最新一个（List API 已按 updated_at DESC 排序），而非直接报错
+    if (published.length === 0) throw new Error('当前 KBD 没有已发布 Bundle，请先发布一个 Bundle 后再使用仿真测试数据源')
     const digest = String(published[0].digest)
     const response = await fetch('/api/hci-sim/v1/control-plane/bundles/' + encodeURIComponent(digest) + '/dry-run-datasets?signal_id=' + encodeURIComponent(signalId.value) + '&source_type=' + source.value)
     const body = await response.json().catch(() => ({}))
