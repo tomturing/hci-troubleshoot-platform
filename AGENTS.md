@@ -68,6 +68,13 @@
     - 错误信息中输出候选行摘要，便于快速判断问题来源。
     - Langfuse observation output 中记录完整的 `output_value`、`evidence_lines` 和 `candidate_lines`，确保排查时能看到完整上下文。
   - **效果**：UNGROUNDED 错误现在包含候选行摘要，便于区分 AI 幻觉和数据收集层污染。
+- **WebSocket 保活心跳机制**：
+  - **根因**：仿真测试执行超时（60秒），前端页面保持打开但 WebSocket 仍断开。`terminal_bridge` 使用 `golang.org/x/net/websocket` 库，该库没有内置 ping/pong 保活机制；前端也没有心跳发送逻辑。当 WebSocket 空闲时，云厂商负载均衡器或 Traefik 的空闲超时机制会关闭连接。
+  - **修复**：
+    - terminal_bridge 启动定时器，每 30 秒发送 `ping` 消息（带时间戳）
+    - 前端收到 `ping` 后立即回复 `pong` 消息（回显时间戳）
+    - 保持连接活跃，防止中间层网络设备因空闲超时断开
+  - **效果**：WebSocket 连接在空闲期间保持活跃，仿真测试等长时间等待场景不再因连接断开而失败。
 - **KBD 关键信号执行结果标题加入案例 ID 标识**：
   - **需求**：用户反馈关键信号执行结果列表中，信号标题只有序号和检查说明，无法快速识别信号归属于哪个 KBD 案例。
   - **修复**：在 `_format_step_evidence` 方法中新增 `support_id` 参数，标题格式从 `{index}. {icon} {title}` 改为 `{index}. {icon} [{support_id}] {title}`，方便用户识别信号归属。
