@@ -95,29 +95,32 @@ describe('SignalDryRunDialog', () => {
       previewResult: Record<string, unknown> | null
     }
 
-    // 1. 切换到 fixture 来源并注入模拟数据集
+    // 1. 先切换到 fixture 来源并等待 watch 处理完成
     vm.source = 'fixture'
+    await nextTick()
+
+    // 2. 注入模拟数据集与选中项
     vm.datasets = [{ dataset_id: 'ds-1', source_type: 'fixture', source_ref: 'route-stdout', payload: 'Wed Aug 26 11:00:24 CST 2026' }]
     vm.selectedDatasetId = 'ds-1'
     await nextTick()
 
-    // 2. 初始状态：展示「创建新 Bundle 草稿」按钮
+    // 3. 初始状态：展示「创建新 Bundle 草稿」按钮
     const forkButton = wrapper.findAll('button').find((item) => item.text().includes('创建新 Bundle 草稿'))
     expect(forkButton?.exists()).toBe(true)
 
-    // 3. 点击「创建新 Bundle 草稿」进入编辑模式
+    // 4. 点击「创建新 Bundle 草稿」进入编辑模式
     await forkButton?.trigger('click')
     await nextTick()
 
     expect(vm.isEditingFork).toBe(true)
     expect(wrapper.find('.fork-edit-banner').exists()).toBe(true)
 
-    // 4. 按钮变为置灰的「保存到 Bundle 草稿」
+    // 5. 按钮变为置灰的「保存到 Bundle 草稿」
     const saveButtonBeforePass = wrapper.findAll('button').find((item) => item.text().includes('保存到 Bundle 草稿'))
     expect(saveButtonBeforePass?.exists()).toBe(true)
     expect(saveButtonBeforePass?.attributes('disabled')).toBeDefined()
 
-    // 5. 试运行 PASS 后变为可用状态
+    // 6. 试运行 PASS 后变为可用状态
     vm.previewResult = {
       trace_id: 't-123', dataset_id: 'ds-1', config_revision: 'sha256:test', status: 'PASS',
       value: true,
