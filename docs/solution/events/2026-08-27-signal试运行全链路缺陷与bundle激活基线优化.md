@@ -23,11 +23,16 @@
 - 仿真测试数据源读取不仅按 `kbd_revision` 过滤，还优先匹配 `/v1/control-plane/activations/{support_id}` 中 `active_digest`。
 - 在发生线上回滚、新版本未激活或多版本并存时，确保专家调试读取的是当前真正承接流量的仿真基线；在无激活记录时平滑降级为最新 published bundle。
 
-### 2.3 Signed Preview Token 签发与秒级保存
-- 试运行 PASS 时，网关对包含 `trace_id`、`config_revision`、`input_sha256`、`status`、`support_id`、`kbd_revision`、`signal_id` 及过期时间的元数据进行 HMAC-SHA256 签名，生成 `preview_token`。
-- 保存 Bundle 时，网关校验 `preview_token` 防篡改合法性，直接使用已验证结果写入控制面，彻底免去二次大模型调用，将保存耗时由 46 秒降低至 0.05 秒。
+### 2.4 基于已发布 Bundle 资产载入编辑与创建新 Draft 状态机
+- 初始选择【仿真测试（bundle 资产）】时展示只读预览，操作栏提供【试运行】与【创建新 Bundle 草稿】；
+- 点击【创建新 Bundle 草稿】后，将所选资产内容载入编辑窗口并切换为可编辑模式，操作按钮流转为置灰的【保存到 Bundle 草稿】；
+- 专家修改内容后执行【试运行】，判定为 `PASS` 后按钮激活，点击即可基于编辑后的内容生成全新的 Bundle Draft。
 
 ## 3. 验证与回归测试
+- `frontend/admin/src/components/editors/__tests__/SignalDryRunDialog.spec.ts`:
+  - 验证初始选择 fixture 来源展示【创建新 Bundle 草稿】；
+  - 验证点击进入编辑模式后流转为置灰的【保存到 Bundle 草稿】；
+  - 验证试运行 PASS 后【保存到 Bundle 草稿】激活可点击。
 - `hci_sim/cmd/hci-sim/controlplane_api_test.go`:
   - `TestReviseDraftStalesParentDraft`: 验证连续保存产生新 Draft 时父 Draft 自动 stale 降级。
   - `TestThreeSignalsCompleteBundle`: 验证 3 个信号分别调试、多次试运行保存后，最终 Draft 聚合全部 3 个信号的输出。

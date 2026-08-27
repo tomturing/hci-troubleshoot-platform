@@ -78,8 +78,57 @@ describe('SignalDryRunDialog', () => {
 
     expect(wrapper.find('.result-conclusion strong').text()).toBe('PASS')
     expect(wrapper.find('.result-context dd code').text()).toBe('true')
-    expect(wrapper.find('.raw-response').exists()).toBe(true)
-    expect(wrapper.text()).not.toContain('配置效果预览')
+    expect(wrapper.find('.raw-response pre').text()).toContain('"status": "success"')
+  })
+
+  it('支持从已发布 Bundle 资产载入编辑并流转按钮状态机', async () => {
+    const wrapper = mount(SignalDryRunDialog, {
+      props: { modelValue: true, supportId: '41398', kbdRevision: 7, signal, signalIndex: 2 },
+      global: { plugins: [ElementPlus], stubs },
+    })
+
+    const vm = wrapper.vm as unknown as {
+      source: string
+      datasets: Array<{ dataset_id: string; source_type: string; source_ref: string; payload: unknown }>
+      selectedDatasetId: string
+      isEditingFork: boolean
+      previewResult: Record<string, unknown> | null
+    }
+
+    // 1. 先切换到 fixture 来源并等待 watch 处理完成
+    vm.source = 'fixture'
+    await nextTick()
+
+    // 2. 注入模拟数据集与选中项
+    vm.datasets = [{ dataset_id: 'ds-1', source_type: 'fixture', source_ref: 'route-stdout', payload: 'Wed Aug 26 11:00:24 CST 2026' }]
+    vm.selectedDatasetId = 'ds-1'
+    await nextTick()
+
+    // 3. 初始状态：展示「创建新 Bundle 草稿」按钮
+    const forkButton = wrapper.findAll('button').find((item) => item.text().includes('创建新 Bundle 草稿'))
+    expect(forkButton?.exists()).toBe(true)
+
+    // 4. 点击「创建新 Bundle 草稿」进入编辑模式
+    await forkButton?.trigger('click')
+    await nextTick()
+
+    expect(vm.isEditingFork).toBe(true)
+    expect(wrapper.find('.fork-edit-banner').exists()).toBe(true)
+
+    // 5. 按钮变为置灰的「保存到 Bundle 草稿」
+    const saveButtonBeforePass = wrapper.findAll('button').find((item) => item.text().includes('保存到 Bundle 草稿'))
+    expect(saveButtonBeforePass?.exists()).toBe(true)
+    expect(saveButtonBeforePass?.attributes('disabled')).toBeDefined()
+
+    // 6. 试运行 PASS 后变为可用状态
+    vm.previewResult = {
+      trace_id: 't-123', dataset_id: 'ds-1', config_revision: 'sha256:test', status: 'PASS',
+      value: true,
+    }
+    await nextTick()
+
+    const saveButtonAfterPass = wrapper.findAll('button').find((item) => item.text().includes('保存到 Bundle 草稿'))
+    expect(saveButtonAfterPass?.attributes('disabled')).toBeUndefined()
   })
 
   it('不根据 AI output 值推导或改写最终结论', async () => {
