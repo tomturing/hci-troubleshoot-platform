@@ -56,6 +56,12 @@
     - 在 `_cast_grounded_value` 中为 `array<number>` 添加字符串兼容解析，自动将 `"0, 1, 2, 3"` 解析为 `[0.0, 1.0, 2.0, 3.0]`。
     - 在 `_assert_grounded` 中增强逐字回查逻辑，对逗号分隔字符串分割后逐个检查每个值是否在证据行中出现。
   - **效果**：系统提示词与代码验证不再冲突，LLM 返回字符串或列表格式都能正确处理。
+- **Langfuse observation 父子关系修复**（PR #924）：
+  - **根因**：工单 Q2026082764962 Langfuse trace 中 `llm.ai_extract` observation 下没有 `llm-invoke` 子节点。`observe_llm_generation` 创建 `llm.ai_extract` observation，然后调用 `ai_client.invoke()`，后者内部调用 `observe_invoke()` 创建独立的 `(htp-agent-invoke, llm-invoke)` 结构，两者没有建立父子关系。
+  - **修复**：
+    - 修改 `observe_llm_generation`：在 yield 前设置 `_current_workflow_observation` context var
+    - 修改 `observe_invoke` 和 `observe_stream_start`：检查 context var，如有父节点则创建子节点而非独立的根 span
+  - **效果**：Langfuse trace 正确呈现 `llm.ai_extract → llm-invoke` 嵌套结构，完整追踪 AI 提取的 LLM 调用链路。
 - **KBD 关键信号执行结果标题加入案例 ID 标识**：
   - **需求**：用户反馈关键信号执行结果列表中，信号标题只有序号和检查说明，无法快速识别信号归属于哪个 KBD 案例。
   - **修复**：在 `_format_step_evidence` 方法中新增 `support_id` 参数，标题格式从 `{index}. {icon} {title}` 改为 `{index}. {icon} [{support_id}] {title}`，方便用户识别信号归属。

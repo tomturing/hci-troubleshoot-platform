@@ -1,12 +1,15 @@
 """共享 Langfuse 业务观测封装测试。"""
 
+import asyncio
 from unittest.mock import MagicMock, patch
 
 from shared.observability.langfuse import (
     _capture_content_for_operation,
     _content_summary,
     _current_workflow_observation,
+    observe_invoke,
     observe_llm_generation,
+    observe_stream_start,
     observe_workflow,
 )
 
@@ -81,3 +84,117 @@ def test_workflow_forwards_explicit_trace_id():
             pass
 
     assert start_explicit.call_args.kwargs["trace_id"] == "a" * 32
+
+
+def test_invoke_is_nested_under_observe_llm_generation():
+    """验证 observe_invoke 在 observe_llm_generation 上下文中会嵌套为子节点。"""
+    parent_observation = MagicMock()
+    child_generation = MagicMock()
+    parent_observation.start_observation.return_value = child_generation
+
+    async def run_test():
+        with patch("shared.observability.langfuse.get_langfuse") as mock_get_langfuse:
+            mock_langfuse = MagicMock()
+            mock_get_langfuse.return_value = mock_langfuse
+
+            with patch(
+                "shared.observability.langfuse._start_explicit_observation",
+                return_value=parent_observation,
+            ):
+                with observe_llm_generation(operation="ai_extract", model="glm-5", input={"prompt": "x"}):
+                    # 在 observe_llm_generation 上下文中调用 observe_invoke
+                    obs_tuple, trace_id, _ = await observe_invoke(
+                        model="glm-5",
+                        assistant_type="test-agent",
+                        user_id="user-1",
+                        case_id="case-1",
+                        messages=[{"role": "user", "content": "test"}],
+                    )
+
+                    # 验证返回的 observation tuple 是 (parent, child_generation)
+                    assert obs_tuple is not None
+                    assert obs_tuple[0] is parent_observation
+                    assert obs_tuple[1] is child_generation
+
+                    # 验证 parent.start_observation 被调用
+                    parent_observation.start_observation.assert_called_once()
+                    call_kwargs = parent_observation.start_observation.call_args.kwargs
+                    assert call_kwargs["as_type"] == "generation"
+                    assert call_kwargs["name"] == "llm-invoke"
+                    assert call_kwargs["metadata"]["nested_under_parent"] is True
+
+    asyncio.run(run_test())
+
+
+def test_invoke_creates_root_when_no_parent():
+    """验证 observe_invoke 在没有父节点时会创建根 span。"""
+    root = MagicMock()
+    generation = MagicMock()
+    root.start_observation.return_value = generation
+
+    async def run_test():
+        with patch("shared.observability.langfuse.get_langfuse") as mock_get_langfuse:
+            mock_langfuse = MagicMock()
+            mock_langfuse.start_observation.return_value = root
+            mock_get_langfuse.return_value = mock_langfuse
+
+            obs_tuple, trace_id, _ = await observe_invoke(
+                model="glm-5",
+                assistant_type="test-agent",
+                user_id="user-1",
+                case_id="case-1",
+                messages=[{"role": "user", "content": "test"}],
+            )
+
+            # 验证返回的 observation tuple 是 (root, generation)
+            assert obs_tuple is not None
+            assert obs_tuple[0] is root
+            assert obs_tuple[1] is generation
+
+            # 验证创建了根 span
+            mock_langfuse.start_observation.assert_called_once()
+            call_kwargs = mock_langfuse.start_observation.call_args.kwargs
+            assert call_kwargs["as_type"] == "span"
+            assert call_kwargs["name"] == "test-agent-invoke"
+
+    asyncio.run(run_test())
+
+
+def test_stream_start_is_nested_under_observe_llm_generation():
+    """验证 observe_stream_start 在 observe_llm_generation 上下文中会嵌套为子节点。"""
+    parent_observation = MagicMock()
+    child_generation = MagicMock()
+    parent_observation.start_observation.return_value = child_generation
+
+    async def run_test():
+        with patch("shared.observability.langfuse.get_langfuse") as mock_get_langfuse:
+            mock_langfuse = MagicMock()
+            mock_get_langfuse.return_value = mock_langfuse
+
+            with patch(
+                "shared.observability.langfuse._start_explicit_observation",
+                return_value=parent_observation,
+            ):
+                with observe_llm_generation(operation="ai_extract", model="glm-5", input={"prompt": "x"}):
+                    # 在 observe_llm_generation 上下文中调用 observe_stream_start
+                    obs_tuple, trace_id, _ = await observe_stream_start(
+                        model="glm-5",
+                        assistant_type="test-agent",
+                        user_id="user-1",
+                        case_id="case-1",
+                        messages=[{"role": "user", "content": "test"}],
+                    )
+
+                    # 验证返回的 observation tuple 是 (parent, child_generation)
+                    assert obs_tuple is not None
+                    assert obs_tuple[0] is parent_observation
+                    assert obs_tuple[1] is child_generation
+
+                    # 验证 parent.start_observation 被调用
+                    parent_observation.start_observation.assert_called_once()
+                    call_kwargs = parent_observation.start_observation.call_args.kwargs
+                    assert call_kwargs["as_type"] == "generation"
+                    assert call_kwargs["name"] == "llm-stream"
+                    assert call_kwargs["metadata"]["nested_under_parent"] is True
+
+    asyncio.run(run_test())
