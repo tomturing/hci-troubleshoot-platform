@@ -48,10 +48,15 @@ const menuItems = buildMenuItems(router.getRoutes())
   box-sizing: border-box;
 }
 
-/* QFK/QKV 处理编辑器及其取值子组件统一下拉选项字号。 */
+/* QFK/QKV 处理编辑器及其取值子组件统一下拉选项字号与弹层自适应高度（容纳 8 种判定类型，无需滚动条）。 */
 .el-select-dropdown__item,
 .processing-select-popper .el-select-dropdown__item {
   font-size: 13px;
+}
+
+.processing-select-popper .el-select-dropdown__wrap,
+.processing-select-popper .el-scrollbar__wrap {
+  max-height: 400px;
 }
 </style>
 

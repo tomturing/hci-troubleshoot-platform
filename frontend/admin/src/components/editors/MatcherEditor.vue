@@ -3,14 +3,15 @@
  * MatcherEditor - 匹配模式可视化编辑器
  *
  * 用于 QFK 工具的 matcher 字段编辑。
- * 支持 7 种判定类型：
+ * 支持 8 种判定类型：
  *   - keyword: 关键字匹配（pattern, mode）
  *   - regex: 正则表达式（pattern）
- *   - state: 状态值匹配（pattern）
+ *   - boolean: 布尔值判定（直接判定 True/False）
+ *   - exists: 存在性判定（确认输出）
  *   - threshold: 数值阈值（operator, value）
- *   - delta: 多样本首末差值（operator, value, minimum_samples）
  *   - trend: 多样本趋势（direction, value, minimum_samples）
- *   - exists: 存在性判定（筛选结果是否存在）
+ *   - delta: 多样本首末差值（operator, value, minimum_samples）
+ *   - state: 状态值匹配（pattern）
  *
  * 使用方式（v-model 双向绑定对象）：
  *   <MatcherEditor v-model="matcherData" />
@@ -122,12 +123,12 @@ const operatorOptions = [
 const allMatcherTypeOptions = [
   { label: '关键字匹配（搜索文字）', value: 'keyword', desc: '在输出中搜索关键字' },
   { label: '正则表达式（模式匹配）', value: 'regex', desc: '用正则匹配输出' },
-  { label: '状态判定（匹配状态值）', value: 'state', desc: '匹配特定状态值' },
   { label: '布尔值判定（判定真假）', value: 'boolean', desc: '判定布尔输出为 True 或 False' },
+  { label: '存在性判定（确认输出）', value: 'exists', desc: '检查筛选结果是否存在' },
   { label: '数值阈值（比较数字）', value: 'threshold', desc: '数值比较判定' },
-  { label: '首末差值（比较变化量）', value: 'delta', desc: '周期日志计数器差值' },
   { label: '变化趋势（连续变化）', value: 'trend', desc: '周期日志连续趋势' },
-  { label: '存在性判定', value: 'exists', desc: '检查筛选结果是否存在' },
+  { label: '首末差值（比较变化量）', value: 'delta', desc: '周期日志计数器差值' },
+  { label: '状态判定（匹配状态值）', value: 'state', desc: '匹配特定状态值' },
 ]
 const matcherTypeOptions = computed(() => {
   if (!props.allowedTypes?.length) return allMatcherTypeOptions
@@ -170,12 +171,12 @@ function setNumericValueMode(mode: 'constant' | 'variable'): void {
               定义如何判定执行结果是否满足预期。
               <br/><b>keyword</b> — 关键字匹配，支持多关键字 AND/OR。
               <br/><b>regex</b> — 正则表达式匹配。
-              <br/><b>state</b> — 匹配特定状态值（如 running、stopped）。
               <br/><b>boolean</b> — 布尔值判定（直接判定第一步输出的 True / False）。
+              <br/><b>exists</b> — 存在性判定（确认第一步筛选结果是否存在）。
               <br/><b>threshold</b> — 数值阈值比较（支持 &gt; &gt;= &lt; &lt;= == !=）。
-              <br/><b>delta</b> — 比较多个样本的末值减首值。
               <br/><b>trend</b> — 判断多个样本连续上升、下降或稳定。
-              <br/><b>exists</b> — 检查第一步筛选结果是否存在。
+              <br/><b>delta</b> — 比较多个样本的末值减首值。
+              <br/><b>state</b> — 匹配特定状态值（如 running、stopped）。
               <br/><b>期望</b> — 开启表示第二步条件应为 True，关闭表示第二步条件应为 False。
             </div>
           </template>
