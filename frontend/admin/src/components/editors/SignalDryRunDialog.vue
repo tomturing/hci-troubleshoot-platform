@@ -277,17 +277,15 @@ watch(selectedDatasetId, () => {
   <el-dialog
     :model-value="modelValue"
     class="signal-dry-run-dialog"
-    width="min(900px, calc(100vw - 32px))"
-    top="6vh"
+    width="min(1080px, calc(100vw - 32px))"
+    top="5vh"
     :close-on-click-modal="false"
     @update:model-value="(value: boolean) => emit('update:modelValue', value)"
   >
     <template #header>
       <div class="dialog-heading">
-        <div>
-          <div class="dialog-title">试运行 · {{ signalId }} {{ instruction }}</div>
-          <div class="dialog-subtitle">已绑定 KBD {{ supportId || '—' }} / rev.{{ kbdRevision || '草稿' }} · {{ tool }}</div>
-        </div>
+        <div class="dialog-title">试运行 · {{ signalId }} {{ instruction }}</div>
+        <div class="dialog-subtitle">已绑定 KBD {{ supportId || '—' }} / rev.{{ kbdRevision || '草稿' }} · {{ tool }}</div>
       </div>
     </template>
 
@@ -299,7 +297,7 @@ watch(selectedDatasetId, () => {
     <div class="dialog-grid">
       <el-form label-position="top" class="dry-run-form">
         <el-form-item label="验证范围">
-          <el-radio-group v-model="verificationScope">
+          <el-radio-group v-model="verificationScope" class="scope-radio-group">
             <el-radio-button value="signal">整个 Signal</el-radio-button>
             <el-radio-button value="ai_step" :disabled="!hasAiProcessing">当前 AI 处理</el-radio-button>
           </el-radio-group>
@@ -324,7 +322,14 @@ watch(selectedDatasetId, () => {
         </el-form-item>
 
         <el-form-item v-if="source === 'pasted'" :label="`试运行输入（${inputLabel}）`">
-          <el-input v-model="sampleInput" type="textarea" :rows="9" :placeholder="inputPlaceholder" resize="vertical" class="sample-input" />
+          <el-input
+            v-model="sampleInput"
+            type="textarea"
+            :rows="11"
+            :placeholder="inputPlaceholder"
+            resize="vertical"
+            class="sample-input"
+          />
         </el-form-item>
 
         <el-alert
@@ -336,28 +341,71 @@ watch(selectedDatasetId, () => {
         />
       </el-form>
 
-      <section class="preview-panel" aria-label="AI 处理结果" aria-live="polite">
-        <div class="preview-heading"><span>AI 处理结果</span></div>
-        <div v-if="!previewResult" class="preview-empty">
-          <strong>{{ previewStatus }}</strong>
-          <p>提供一组输入后执行预览。</p>
+      <section class="preview-panel" aria-label="运行结果" aria-live="polite">
+        <div class="preview-heading">
+          <span class="preview-title">运行结果</span>
+          <span v-if="previewResult" class="preview-badge" :class="`badge-${previewResult.status.toLowerCase()}`">
+            {{ previewResult.status }}
+          </span>
+          <span v-else-if="previewLoading" class="preview-badge badge-running">执行中</span>
+          <span v-else class="preview-badge badge-idle">待运行</span>
         </div>
+
+        <div v-if="!previewResult" class="preview-empty">
+          <div class="empty-state-icon">
+            <el-icon :size="28"><InfoFilled /></el-icon>
+          </div>
+          <strong>{{ previewStatus }}</strong>
+          <p>提供一组输入后点击「试运行」获取处理结果与验证结论。</p>
+        </div>
+
         <template v-else>
           <div class="result-conclusion" :class="`result-${previewResult.status.toLowerCase()}`">
-            <span>最终结论</span>
-            <strong>{{ previewResult.status }}</strong>
-            <small>{{ resultExplanation }}</small>
+            <div class="conclusion-meta">
+              <span class="conclusion-label">最终结论</span>
+              <strong class="conclusion-status">{{ previewResult.status }}</strong>
+            </div>
+            <div class="conclusion-text">{{ resultExplanation }}</div>
           </div>
+
           <dl class="preview-context result-context">
-            <div><dt>输出值</dt><dd><code>{{ resultOutput }}</code><small>AI 返回的业务结果</small></dd></div>
-            <div><dt>证据行</dt><dd>{{ previewResult.evidence_lines?.length ? previewResult.evidence_lines.map(line => `line:${line}`).join(' · ') : '—' }}</dd></div>
-            <div><dt>处理说明</dt><dd>{{ resultExplanation }}</dd></div>
+            <div class="context-row">
+              <dt>输出值</dt>
+              <dd>
+                <div class="code-value"><code>{{ resultOutput }}</code></div>
+                <small class="code-caption">AI 返回的业务结果</small>
+              </dd>
+            </div>
+            <div class="context-row">
+              <dt>证据行</dt>
+              <dd>
+                <div v-if="previewResult.evidence_lines?.length" class="evidence-list">
+                  <span v-for="line in previewResult.evidence_lines" :key="line" class="evidence-tag">line:{{ line }}</span>
+                </div>
+                <span v-else class="text-muted">—</span>
+              </dd>
+            </div>
+            <div class="context-row">
+              <dt>处理说明</dt>
+              <dd class="explanation-text">{{ resultExplanation }}</dd>
+            </div>
           </dl>
+
           <details class="raw-response">
-            <summary><strong>AI 原始响应详情</strong><span>展开查看原始 JSON</span></summary>
+            <summary>
+              <strong>AI 原始响应详情</strong>
+              <span class="summary-hint">展开查看原始 JSON</span>
+            </summary>
             <pre v-if="rawAiResponse">{{ JSON.stringify(rawAiResponse, null, 2) }}</pre>
             <p v-else class="raw-missing">本次处理未调用 AI，或服务未返回可审计的原始响应。</p>
-            <div class="raw-meta"><span>trace_id</span><code>{{ previewResult.trace_id || '—' }}</code><span v-if="previewResult.error_code">error_code</span><code v-if="previewResult.error_code">{{ previewResult.error_code }}</code></div>
+            <div class="raw-meta">
+              <span>trace_id</span>
+              <code>{{ previewResult.trace_id || '—' }}</code>
+              <template v-if="previewResult.error_code">
+                <span>error_code</span>
+                <code>{{ previewResult.error_code }}</code>
+              </template>
+            </div>
           </details>
         </template>
       </section>
@@ -365,10 +413,10 @@ watch(selectedDatasetId, () => {
 
     <template #footer>
       <div class="dialog-footer">
-        <span>保存功能依赖 Bundle Draft 的 `verification_assets` 后端契约。</span>
-        <div>
+        <span class="footer-hint">保存功能依赖 Bundle Draft 的 `verification_assets` 后端契约。</span>
+        <div class="footer-actions">
           <el-button @click="close">取消</el-button>
-          <el-button type="primary" plain :loading="previewLoading" @click="requestPreview">解析预览</el-button>
+          <el-button type="primary" plain :loading="previewLoading" @click="requestPreview">试运行</el-button>
           <el-tooltip content="服务端重新验证通过后追加为新的 Bundle Draft" placement="top">
             <span><el-button type="primary" :loading="saveLoading" :disabled="!canSave" @click="saveToBundle">保存到 Bundle 草稿</el-button></span>
           </el-tooltip>
@@ -380,48 +428,257 @@ watch(selectedDatasetId, () => {
 
 <style scoped>
 .dialog-heading { min-width: 0; padding-right: 24px; }
-.dialog-title { color: var(--el-text-color-primary); font-size: 16px; font-weight: 600; line-height: 1.35; }
+.dialog-title { color: var(--el-text-color-primary); font-size: 16px; font-weight: 600; line-height: 1.4; }
 .dialog-subtitle { margin-top: 4px; color: var(--el-text-color-secondary); font-size: 12px; }
-.bound-context { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 16px; padding: 10px 12px; border: 1px solid var(--el-color-primary-light-7); border-radius: 6px; background: var(--el-color-primary-light-9); color: var(--el-color-primary-dark-2); font-size: 12px; }
-.bound-context .el-icon { flex: 0 0 auto; margin-top: 2px; }
-.dialog-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(260px, .75fr); gap: 16px; }
-.dry-run-form { min-width: 0; }
+
+.bound-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--el-color-primary-light-7);
+  border-radius: 6px;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary-dark-2);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.bound-context .el-icon { flex: 0 0 auto; color: var(--el-color-primary); font-size: 14px; }
+
+.dialog-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 20px;
+  align-items: stretch;
+}
+
+.dry-run-form {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
 .dry-run-form :deep(.el-form-item) { margin-bottom: 16px; }
+.dry-run-form :deep(.el-form-item__label) { font-size: 13px; font-weight: 500; color: var(--el-text-color-primary); padding-bottom: 6px; }
 .dry-run-form :deep(.el-select) { width: 100%; }
-.field-hint { margin-top: 6px; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.5; }
-.sample-input :deep(textarea) { font-family: var(--el-font-family); font-size: 12px; line-height: 1.55; }
-.preview-panel { min-width: 0; border: 1px solid var(--el-border-color); border-radius: 6px; background: var(--el-fill-color-extra-light); overflow: hidden; }
-.preview-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 11px 12px; border-bottom: 1px solid var(--el-border-color-light); background: var(--el-bg-color); font-size: 13px; font-weight: 600; }
-.preview-empty { display: grid; justify-items: center; padding: 30px 18px 18px; text-align: center; }
+
+.field-hint { margin-top: 5px; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.5; }
+.sample-input :deep(textarea) {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  background: var(--el-fill-color-blank);
+  border-color: var(--el-border-color);
+  border-radius: 6px;
+}
+.sample-input :deep(textarea:focus) {
+  border-color: var(--el-color-primary);
+}
+
+.preview-panel {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--el-border-color);
+  border-radius: 8px;
+  background: var(--el-bg-color);
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+}
+
+.preview-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  background: var(--el-fill-color-light);
+}
+.preview-title { font-size: 13px; font-weight: 600; color: var(--el-text-color-primary); }
+
+.preview-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.badge-idle { background: var(--el-fill-color-darker); color: var(--el-text-color-secondary); }
+.badge-running { background: var(--el-color-primary-light-8); color: var(--el-color-primary); }
+.badge-pass { background: var(--el-color-success-light-8); color: var(--el-color-success-dark-2); }
+.badge-fail { background: var(--el-color-danger-light-8); color: var(--el-color-danger-dark-2); }
+.badge-unknown { background: var(--el-color-warning-light-8); color: var(--el-color-warning-dark-2); }
+
+.preview-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 36px 20px;
+  text-align: center;
+  min-height: 260px;
+}
+.empty-state-icon {
+  margin-bottom: 10px;
+  color: var(--el-text-color-placeholder);
+}
 .preview-empty strong { color: var(--el-text-color-primary); font-size: 13px; }
-.preview-empty p { margin: 7px 0 0; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.55; }
-.result-conclusion { padding: 18px 16px 15px; border-bottom: 1px solid var(--el-border-color-light); }
-.result-conclusion > span { display: block; color: var(--el-text-color-secondary); font-size: 12px; }
-.result-conclusion strong { display: block; margin: 6px 0 4px; font: 600 28px/1.15 ui-monospace, SFMono-Regular, monospace; letter-spacing: .2px; }
-.result-conclusion small { display: block; color: var(--el-text-color-regular); font-size: 12px; line-height: 1.5; }
-.result-pass { background: var(--el-color-success-light-9); }
-.result-pass strong { color: var(--el-color-success); }
-.result-fail { background: var(--el-color-danger-light-9); }
-.result-fail strong { color: var(--el-color-danger); }
-.result-unknown { background: var(--el-color-warning-light-9); }
-.result-unknown strong { color: var(--el-color-warning-dark-2); }
-.preview-context { display: grid; gap: 0; margin: 0 12px 12px; font-size: 12px; }
-.preview-context > div { display: grid; grid-template-columns: 60px minmax(0, 1fr); gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--el-border-color-lighter); }
-.preview-context > div:last-child { border-bottom: 0; }
-.preview-context dt { color: var(--el-text-color-secondary); }
-.preview-context dd { margin: 0; overflow-wrap: anywhere; color: var(--el-text-color-regular); line-height: 1.5; }
-.preview-context dd small { display: block; margin-top: 2px; color: var(--el-text-color-secondary); font-size: 11px; }
-.raw-response { margin: 8px 12px 14px; border: 1px solid var(--el-border-color); border-radius: 5px; background: var(--el-bg-color); }
-.raw-response summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 11px 12px; cursor: pointer; list-style: none; }
+.preview-empty p { margin: 6px 0 0; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.5; max-width: 260px; }
+
+.result-conclusion {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--el-border-color-light);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.conclusion-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.conclusion-label { color: var(--el-text-color-secondary); font-size: 12px; }
+.conclusion-status {
+  font: 700 24px/1 ui-monospace, SFMono-Regular, "SF Mono", monospace;
+  letter-spacing: 0.5px;
+}
+.conclusion-text {
+  color: var(--el-text-color-regular);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.result-pass {
+  background: var(--el-color-success-light-9);
+  border-left: 4px solid var(--el-color-success);
+}
+.result-pass .conclusion-status { color: var(--el-color-success); }
+
+.result-fail {
+  background: var(--el-color-danger-light-9);
+  border-left: 4px solid var(--el-color-danger);
+}
+.result-fail .conclusion-status { color: var(--el-color-danger); }
+
+.result-unknown {
+  background: var(--el-color-warning-light-9);
+  border-left: 4px solid var(--el-color-warning);
+}
+.result-unknown .conclusion-status { color: var(--el-color-warning-dark-2); }
+
+.preview-context {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 8px 14px;
+  font-size: 12px;
+  flex: 1;
+}
+.context-row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.context-row:last-child { border-bottom: 0; }
+.context-row dt { color: var(--el-text-color-secondary); font-weight: 500; line-height: 1.5; }
+.context-row dd { margin: 0; overflow-wrap: anywhere; color: var(--el-text-color-primary); line-height: 1.5; }
+
+.code-value {
+  display: inline-block;
+  max-width: 100%;
+}
+.code-value code {
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--el-color-primary-dark-2);
+}
+.code-caption { display: block; margin-top: 3px; color: var(--el-text-color-secondary); font-size: 11px; }
+
+.evidence-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.evidence-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  color: var(--el-text-color-regular);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+}
+.text-muted { color: var(--el-text-color-placeholder); }
+.explanation-text { color: var(--el-text-color-regular); font-size: 12px; line-height: 1.5; }
+
+.raw-response {
+  margin: 10px 14px 14px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  background: var(--el-fill-color-blank);
+  overflow: hidden;
+}
+.raw-response summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 12px;
+  background: var(--el-fill-color-extra-light);
+  cursor: pointer;
+  list-style: none;
+  font-size: 12px;
+}
 .raw-response summary::-webkit-details-marker { display: none; }
-.raw-response summary strong { font-size: 12px; font-weight: 600; }
-.raw-response summary span { color: var(--el-text-color-secondary); font-size: 11px; }
-.raw-response pre { max-height: 220px; margin: 0 10px 10px; padding: 10px; overflow: auto; border: 1px solid var(--el-border-color-light); border-radius: 4px; background: var(--el-fill-color-extra-light); font: 11px/1.55 ui-monospace, SFMono-Regular, monospace; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
-.raw-missing { margin: 0 10px 10px; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.5; }
-.raw-meta { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 6px 8px; margin: 0 10px 11px; padding-top: 9px; border-top: 1px dashed var(--el-border-color); font-size: 11px; }
+.raw-response summary strong { font-weight: 600; color: var(--el-text-color-regular); }
+.summary-hint { color: var(--el-text-color-secondary); font-size: 11px; }
+.raw-response pre {
+  max-height: 200px;
+  margin: 8px 10px 10px;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+  background: var(--el-fill-color-light);
+  font: 11px/1.55 ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.raw-missing { margin: 8px 10px 10px; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.5; }
+.raw-meta {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 6px 8px;
+  margin: 0 10px 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--el-border-color-lighter);
+  font-size: 11px;
+}
 .raw-meta span { color: var(--el-text-color-secondary); }
-.raw-meta code { color: var(--el-text-color-regular); overflow-wrap: anywhere; }
-.dialog-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; color: var(--el-text-color-secondary); font-size: 12px; text-align: left; }
-.dialog-footer > div { display: flex; flex: 0 0 auto; gap: 8px; }
-@media (max-width: 720px) { .dialog-grid { grid-template-columns: 1fr; } .dialog-footer { align-items: flex-start; flex-direction: column; } .dialog-footer > div { align-self: flex-end; flex-wrap: wrap; justify-content: flex-end; } }
+.raw-meta code { color: var(--el-text-color-regular); overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, monospace; }
+
+.dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  text-align: left;
+}
+.footer-hint { color: var(--el-text-color-secondary); font-size: 12px; }
+.footer-actions { display: flex; flex: 0 0 auto; gap: 10px; }
+
+@media (max-width: 840px) {
+  .dialog-grid { grid-template-columns: 1fr; gap: 16px; }
+  .dialog-footer { align-items: flex-start; flex-direction: column; }
+  .footer-actions { align-self: flex-end; flex-wrap: wrap; justify-content: flex-end; }
+}
 </style>

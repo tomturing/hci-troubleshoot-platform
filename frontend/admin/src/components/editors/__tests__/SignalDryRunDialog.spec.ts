@@ -37,7 +37,11 @@ describe('SignalDryRunDialog', () => {
 
     expect(wrapper.text()).toContain('试运行 · sig_003 检查主机系统时间')
     expect(wrapper.text()).toContain('已绑定 KBD 41398 / rev.7 · qfk_system')
+    expect(wrapper.text()).toContain('运行结果')
     expect(wrapper.find('.sample-input').exists()).toBe(true)
+    const dryRunButton = wrapper.findAll('button').find((item) => item.text() === '试运行')
+    expect(dryRunButton?.exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('解析预览')
     expect(wrapper.text()).not.toContain('编辑位置')
   })
 
