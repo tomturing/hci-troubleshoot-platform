@@ -47,6 +47,8 @@ jobs:
       # frontend 改用 fe-real step 的确定性 git diff 判定（见下方注释），
       # 不再直接依赖 dorny/paths-filter（其在 PR 事件下对 frontend/** 误判为 true）。
       frontend: ${{ steps.fe-real.outputs.frontend }}
+      frontend_scope: ${{ steps.pr-frontend-plan.outputs.scope || 'full' }}
+      frontend_reason: ${{ steps.pr-frontend-plan.outputs.reason || '非 PR 事件运行完整前端回归' }}
       platform_helm: ${{ steps.filter.outputs.platform_helm }}
       docs: ${{ steps.filter.outputs.docs }}
       module_docs: ${{ steps.filter.outputs.module_docs }}
@@ -132,7 +134,9 @@ jobs:
             scripts/ci/test_resolve_release_baseline.py \
             scripts/ci/test_resolve_image_build_plan.py \
             scripts/ci/test_check_digest_pin_exempt.py \
-            scripts/ci/test_update_hci_sim_promotion.py
+            scripts/ci/test_update_hci_sim_promotion.py \
+            scripts/ci/resolve_pr_frontend_targets.py \
+            scripts/ci/test_resolve_pr_frontend_targets.py
           uvx ruff format --check \
             scripts/ci/resolve_release_baseline.py \
             scripts/ci/resolve_image_build_plan.py \
@@ -141,12 +145,15 @@ jobs:
             scripts/ci/test_resolve_release_baseline.py \
             scripts/ci/test_resolve_image_build_plan.py \
             scripts/ci/test_check_digest_pin_exempt.py \
-            scripts/ci/test_update_hci_sim_promotion.py
+            scripts/ci/test_update_hci_sim_promotion.py \
+            scripts/ci/resolve_pr_frontend_targets.py \
+            scripts/ci/test_resolve_pr_frontend_targets.py
           uv run --no-project --with pytest --with pytest-xdist pytest \
             scripts/ci/test_resolve_release_baseline.py \
             scripts/ci/test_resolve_image_build_plan.py \
             scripts/ci/test_check_digest_pin_exempt.py \
             scripts/ci/test_update_hci_sim_promotion.py \
+            scripts/ci/test_resolve_pr_frontend_targets.py \
             -q
 
       # 确定性前端改动判定（覆盖 dorny/paths-filter 的 frontend 输出）。
@@ -183,6 +190,18 @@ jobs:
         run: |
           git -c core.quotepath=false diff --name-only "$BASE_SHA" "$HEAD_SHA" > /tmp/pr-changed-files.txt
           python3 scripts/ci/resolve_pr_fast_test_targets.py \
+            --changed-files /tmp/pr-changed-files.txt \
+            --github-output "$GITHUB_OUTPUT"
+
+      # PR 只构建实际受影响的前端应用；共享包、锁文件和未知映射自动回退全量。
+      - name: 解析 PR 前端测试与构建范围
+        id: pr-frontend-plan
+        if: github.event_name == 'pull_request'
+        run: |
+          git -c core.quotepath=false diff --name-only \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}" > /tmp/pr-changed-files.txt
+          python3 scripts/ci/resolve_pr_frontend_targets.py \
             --changed-files /tmp/pr-changed-files.txt \
             --github-output "$GITHUB_OUTPUT"
 
@@ -379,43 +398,69 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [changes]
+    env:
+      CI_TRACE_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-frontend-check
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-
-      - name: 安装 Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 20
+          # 前端门禁不消费后端源码；稀疏检出缩短 hosted runner 的固定启动时间。
+          sparse-checkout: frontend
 
       - name: 安装 pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
           version: 9
 
-      - name: 获取 pnpm store 路径
-        id: pnpm-cache-dir
-        run: echo "dir=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
-
-      - name: 缓存 pnpm store
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+      - name: 安装 Node.js 并恢复 pnpm 缓存
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          path: ${{ steps.pnpm-cache-dir.outputs.dir }}
-          key: ${{ runner.os }}-pnpm-${{ hashFiles('frontend/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: 输出前端门禁范围
+        run: |
+          echo "trace_id=$CI_TRACE_ID frontend_scope=${{ needs.changes.outputs.frontend_scope }}"
+          echo "reason=${{ needs.changes.outputs.frontend_reason }}"
 
       - name: 安装前端依赖
         run: pnpm --dir frontend install --frozen-lockfile
 
       - name: 运行前端单元测试
-        run: pnpm --filter @hci/customer test
+        env:
+          FRONTEND_SCOPE: ${{ needs.changes.outputs.frontend_scope }}
+        run: |
+          case "$FRONTEND_SCOPE" in
+            admin)
+              if find frontend/admin -type f \( -name '*.spec.*' -o -name '*.test.*' \) -print -quit | grep -q .; then
+                pnpm --filter @hci/admin test
+              else
+                echo 'admin 未发现前端单元测试文件，跳过'
+              fi
+              ;;
+            customer) pnpm --filter @hci/customer test ;;
+            *) pnpm --dir frontend -r --if-present test ;;
+          esac
 
       - name: 构建前端工作区
-        run: pnpm --dir frontend -r build
+        env:
+          FRONTEND_SCOPE: ${{ needs.changes.outputs.frontend_scope }}
+          IS_PR: ${{ github.event_name == 'pull_request' }}
+        run: |
+          if [ "$IS_PR" = 'true' ] && [ "$FRONTEND_SCOPE" != 'full' ]; then
+            # 快速 PR 门禁验证 Vite 生产构建；vue-tsc 类型检查在完整回归中执行。
+            pnpm --filter "@hci/$FRONTEND_SCOPE" exec vite build
+            exit 0
+          fi
+          case "$FRONTEND_SCOPE" in
+            admin) pnpm --filter @hci/admin build ;;
+            customer) pnpm --filter @hci/customer build ;;
+            *) pnpm --dir frontend -r build ;;
+          esac
 
   agent-reliability-regression:
     name: agent-reliability-regression
