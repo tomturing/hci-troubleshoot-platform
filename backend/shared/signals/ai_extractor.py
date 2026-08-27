@@ -51,6 +51,7 @@ class AIExtractionResult:
     instruction: str
     reason: str
     output_type: str
+    raw_response: dict[str, Any] | None = None
     response_hash: str | None = None
     response_chars: int = 0
     prompt_name: str = AI_PROCESSING_PROMPT_NAME
@@ -300,7 +301,20 @@ async def _extract_ai_value_impl(
             ).inc()
             update_observation(observation, output={"status": "failed", "error": str(exc), "raw_response": raw_response[:2000], "parsed_payload": payload}, metadata={"response_chars": len(raw_response), "validation_failed": True})
             raise QFKExtractionError("QFK_AI_PROCESSING_INVALID_RESPONSE", str(exc)) from exc
-    return AIExtractionResult(value=validated.output, raw_value=validated.output, evidence_line_numbers=evidence_numbers, evidence_lines=evidence_lines, candidate_count=len(lines), instruction=instruction, reason=validated.reason, output_type=output_type, response_hash=hashlib.sha256(raw_response.encode("utf-8", errors="replace")).hexdigest(), response_chars=len(raw_response), prompt_revision=prompt_revision)
+    return AIExtractionResult(
+        value=validated.output,
+        raw_value=validated.output,
+        evidence_line_numbers=evidence_numbers,
+        evidence_lines=evidence_lines,
+        candidate_count=len(lines),
+        instruction=instruction,
+        reason=validated.reason,
+        output_type=output_type,
+        raw_response=payload if isinstance(payload, dict) else None,
+        response_hash=hashlib.sha256(raw_response.encode("utf-8", errors="replace")).hexdigest(),
+        response_chars=len(raw_response),
+        prompt_revision=prompt_revision,
+    )
 
 
 async def extract_ai_value(
