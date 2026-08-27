@@ -23,14 +23,6 @@ from app.tools.qkv.signal import FrontendQueryType, FrontendSignal
 logger = get_logger("qkv-engine")
 
 
-async def _qkv_ai_extractor(output: str, spec: dict[str, Any], value_type: str, ai_client: Any, **kwargs: Any) -> Any:
-    """QKV 通过适配器调用 QFK 公共 AI 提取器，避免 shared 层反向依赖 app。"""
-
-    from app.tools.qfk.ai_extractor import extract_ai_value
-
-    return await extract_ai_value(output, spec, value_type, ai_client, **kwargs)
-
-
 def _dialog_output_without_self_observation(text: str, commands: list[str]) -> str:
     """剔除本次 ``acli log get`` 被 audit_log 记录后反查到的探针自身，并去重。"""
 
@@ -321,7 +313,6 @@ async def qkv_exec(
             signal.output_processing,
             ai_client=ai_client,
             conversation_id=conversation_id,
-            ai_extractor=_qkv_ai_extractor,
             db_session_factory=db_session_factory,
         )
         values = processing.records

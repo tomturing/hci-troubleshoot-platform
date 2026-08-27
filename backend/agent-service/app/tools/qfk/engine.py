@@ -18,6 +18,7 @@ from shared.observability.langfuse import observe_tool
 from shared.observability.logger import get_logger
 from shared.observability.metrics import QFK_EXECUTION_DURATION_SECONDS, QFK_EXECUTIONS_TOTAL
 from shared.observability.otel import get_current_trace_id
+from shared.signals.ai_extractor import extract_ai_value, has_ai_extract
 from shared.signals.ai_processing import ai_item_type, ai_output_type, ai_processing_config
 from shared.signals.extractor import QFKExtractionError
 from shared.signals.matcher import evaluate_matcher
@@ -610,6 +611,8 @@ async def _qfk_exec_impl(
                     ai_value_type,
                     ai_client,
                     matcher=signal.matcher,
+                    consumer="agent-service.qfk.ai_processing",
+                    signal_type="qfk",
                     conversation_id=conversation_id,
                     case_id=case_id or "",
                     db_session_factory=db_session_factory,
