@@ -211,3 +211,34 @@ async def test_qkv_ai_derive_is_an_explicit_main_path_not_a_failure_fallback() -
 
     assert calls and calls[0]["value_type"] == "array"
     assert result.records[0]["host_times"] == [1787713224.0, 1787713524.0]
+
+
+def test_boolean_matcher_evaluates_boolean_output() -> None:
+    result = apply_output_processing(
+        [{"status_flag": "True"}],
+        [{
+            "mode": "assert",
+            "input": "{{STATUS_FLAG}}",
+            "match": {
+                "type": "boolean",
+                "expected": True,
+            },
+        }],
+    )
+    assert result.matched is True
+    assert result.assertions[0].status == "PASS"
+
+    result_false = apply_output_processing(
+        [{"status_flag": "False"}],
+        [{
+            "mode": "assert",
+            "input": "{{STATUS_FLAG}}",
+            "match": {
+                "type": "boolean",
+                "expected": True,
+            },
+        }],
+    )
+    assert result_false.matched is False
+    assert result_false.assertions[0].status == "FAIL"
+

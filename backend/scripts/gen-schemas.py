@@ -163,7 +163,7 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     "type": {
                         "type": "string",
                         "enum": [
-                            "keyword", "regex", "state", "threshold", "delta", "trend", "exists"
+                            "keyword", "regex", "state", "boolean", "threshold", "delta", "trend", "exists"
                         ],
                     },
                     "pattern": {
@@ -309,7 +309,7 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                 "additionalProperties": False,
                 "required": ["type", "expected"],
                 "properties": {
-                    "type": {"type": "string", "enum": ["keyword", "regex", "state", "threshold", "delta", "trend", "exists"]},
+                    "type": {"type": "string", "enum": ["keyword", "regex", "state", "boolean", "threshold", "delta", "trend", "exists"]},
                     "pattern": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}]},
                     "mode": {"type": "string", "enum": ["or", "and", "not"]},
                     "expected": {"type": "boolean"},

@@ -36,7 +36,7 @@ def build_capability_descriptors() -> list[dict[str, Any]]:
             if is_frontend or is_conditional_producer
             else list(LOG_MATCHER_TYPES)
             if capability_id == "qfk_log"
-            else ["keyword", "regex", "state", "threshold", "delta", "trend", "exists"]
+            else ["keyword", "regex", "state", "boolean", "threshold", "delta", "trend", "exists"]
         )
         kind = (
             "producer"

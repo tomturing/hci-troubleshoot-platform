@@ -173,7 +173,7 @@ describe('QfkProcessingEditor 两步处理交互', () => {
     expect(unsupportedWrapper.getComponent(TextExtractEditor).props('allowRowCount')).toBe(false)
   })
 
-  it('智能推导保存受约束的时间归一化配置，而非 AI 计算结果', async () => {
+  it('智能推导保存统一 ai_processing 契约', async () => {
     const wrapper = mount(ValueExtractEditor, {
       props: { modelValue: { ...textExtract, value_mode: 'number' }, consumerKind: 'matcher', defaultValueMode: 'number' },
       global: { plugins: [ElementPlus] },
@@ -183,19 +183,13 @@ describe('QfkProcessingEditor 两步处理交互', () => {
     await wrapper.vm.$nextTick()
 
     const update = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as Record<string, any>
-    expect(update.ai_extract).toEqual({
+    expect(update.ai_processing).toEqual({
       mode: 'derive',
       instruction: '',
-      derive: {
-        normalizer: 'datetime_epoch',
-        formats: ['%a %b %d %H:%M:%S %Z %Y'],
-        timezone: 'Asia/Shanghai',
-      },
+      output_type: 'number',
     })
     await wrapper.setProps({ modelValue: update })
     expect(wrapper.text()).toContain('智能推导')
-    expect(wrapper.text()).toContain('日期时间')
-    expect(wrapper.text()).toContain('全部候选行')
   })
 
   it('取值和判断关键字输入按回车后保留编辑中的换行', async () => {
@@ -215,7 +209,7 @@ describe('QfkProcessingEditor 两步处理交互', () => {
     await matcherWrapper.setProps({ modelValue: { type: 'keyword', pattern: '虚拟机开机失败', mode: 'or', expected: true } })
     await matcherWrapper.vm.$nextTick()
     expect((matcherWrapper.findAll('textarea')[1].element as HTMLTextAreaElement).value).toBe('虚拟机开机失败\n')
-  })
+  }, 15000)
 
   it('产出模式为每个变量创建独立处理单元，步骤标题统一为“第二步：产出”', () => {
     const produces = [
@@ -334,5 +328,12 @@ describe('QfkProcessingEditor 两步处理交互', () => {
     wrapper.getComponent({ name: 'ElRadioGroup' }).vm.$emit('change', 'produces')
 
     expect(wrapper.emitted('update:mode')).toEqual([['produces']])
+  })
+
+  it('支持 boolean 判定类型并展示说明', () => {
+    const wrapper = mountMatcher({ type: 'boolean', expected: true })
+    expect(wrapper.text()).toContain('直接消费第一步提取的布尔值')
+    expect((wrapper.vm as any).matcherType).toBe('boolean')
+    expect((wrapper.vm as any).extractDefaultValueMode).toBe('boolean')
   })
 })

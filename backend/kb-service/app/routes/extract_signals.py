@@ -173,7 +173,7 @@ _EXTERNAL_BMC_EVENT_RE = re.compile(
     re.IGNORECASE,
 )
 _CONFIG_FILE_EXTENSION_RE = re.compile(r"\.(?:cfg|conf|ini|json|ya?ml)$", re.IGNORECASE)
-VALID_MATCHER_TYPES = {"keyword", "regex", "state", "threshold", "delta", "trend", "exists"}
+VALID_MATCHER_TYPES = {"keyword", "regex", "state", "boolean", "threshold", "delta", "trend", "exists"}
 VALID_VARIABLE_TYPES = {"string", "integer", "number", "boolean", "array"}
 REJECT_REASON_CODES = frozenset({"write_signal", "not_exists", "run_failed"})
 

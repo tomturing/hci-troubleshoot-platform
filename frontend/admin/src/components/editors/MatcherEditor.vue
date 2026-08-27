@@ -76,9 +76,10 @@ const matcherType = computed({
       newMatcher.minimum_samples = 3
     }
     const numeric = ['threshold', 'delta', 'trend'].includes(type)
+    const isBool = type === 'boolean'
     newMatcher.extract = existingExtract || {
       type: 'text', rows: { mode: 'all' }, cardinality: 'all', source: 'stdout',
-      value_mode: numeric ? 'number' : 'string',
+      value_mode: isBool ? 'boolean' : (numeric ? 'number' : 'string'),
     }
     matcher.value = newMatcher
   },
@@ -122,6 +123,7 @@ const allMatcherTypeOptions = [
   { label: '关键字匹配（搜索文字）', value: 'keyword', desc: '在输出中搜索关键字' },
   { label: '正则表达式（模式匹配）', value: 'regex', desc: '用正则匹配输出' },
   { label: '状态判定（匹配状态值）', value: 'state', desc: '匹配特定状态值' },
+  { label: '布尔值判定（判定真假）', value: 'boolean', desc: '判定布尔输出为 True 或 False' },
   { label: '数值阈值（比较数字）', value: 'threshold', desc: '数值比较判定' },
   { label: '首末差值（比较变化量）', value: 'delta', desc: '周期日志计数器差值' },
   { label: '变化趋势（连续变化）', value: 'trend', desc: '周期日志连续趋势' },
@@ -132,7 +134,7 @@ const matcherTypeOptions = computed(() => {
   return allMatcherTypeOptions.filter((item) => props.allowedTypes?.includes(item.value))
 })
 const extractDefaultValueMode = computed(() => (
-  ['threshold', 'delta', 'trend'].includes(matcherType.value) ? 'number' : 'string'
+  matcherType.value === 'boolean' ? 'boolean' : (['threshold', 'delta', 'trend'].includes(matcherType.value) ? 'number' : 'string')
 ))
 
 const numericValueMode = computed<'constant' | 'variable'>(() => {
@@ -169,6 +171,7 @@ function setNumericValueMode(mode: 'constant' | 'variable'): void {
               <br/><b>keyword</b> — 关键字匹配，支持多关键字 AND/OR。
               <br/><b>regex</b> — 正则表达式匹配。
               <br/><b>state</b> — 匹配特定状态值（如 running、stopped）。
+              <br/><b>boolean</b> — 布尔值判定（直接判定第一步输出的 True / False）。
               <br/><b>threshold</b> — 数值阈值比较（支持 &gt; &gt;= &lt; &lt;= == !=）。
               <br/><b>delta</b> — 比较多个样本的末值减首值。
               <br/><b>trend</b> — 判断多个样本连续上升、下降或稳定。
@@ -256,6 +259,13 @@ function setNumericValueMode(mode: 'constant' | 'variable'): void {
             placeholder="如：running、stopped、active"
             spellcheck="false"
           />
+        </el-form-item>
+      </template>
+
+      <!-- boolean 类型参数 -->
+      <template v-else-if="matcherType === 'boolean'">
+        <el-form-item label="说明">
+          <el-tag type="info" effect="plain">直接消费第一步提取的布尔值（如 AI 判定结果、JSON 布尔字段）</el-tag>
         </el-form-item>
       </template>
 
