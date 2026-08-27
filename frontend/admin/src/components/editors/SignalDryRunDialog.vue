@@ -293,7 +293,7 @@ watch(selectedDatasetId, () => {
           <span>配置效果预览</span>
           <el-tag size="small" type="info" effect="plain">独立数据集</el-tag>
         </div>
-        <div class="preview-empty">
+        <div v-if="!previewResult" class="preview-empty">
           <el-icon><WarningFilled /></el-icon>
           <strong>{{ previewStatus }}</strong>
           <p v-if="!previewRequested">提供一组输入后执行预览。结果会绑定当前 KBD revision、Signal 和处理范围。</p>
@@ -303,7 +303,10 @@ watch(selectedDatasetId, () => {
         <template v-if="previewResult">
           <el-tag :type="resultTagType" effect="dark">{{ previewResult.status }}</el-tag>
           <pre v-if="previewResult.value !== undefined" class="result-value">{{ JSON.stringify(previewResult.value, null, 2) }}</pre>
-          <p v-if="previewResult.evidence" class="result-evidence">{{ previewResult.evidence }}</p>
+          <div v-if="previewResult.evidence" class="result-evidence">
+            <strong>处理说明</strong>
+            <p>{{ previewResult.evidence }}</p>
+          </div>
         </template>
         <dl class="preview-context">
           <dt>处理对象</dt><dd>{{ signalId }}</dd>
@@ -349,6 +352,8 @@ watch(selectedDatasetId, () => {
 .preview-empty p { margin: 7px 0 0; color: var(--el-text-color-secondary); font-size: 12px; line-height: 1.55; }
 .result-value { max-height: 180px; margin: 12px; padding: 8px; overflow: auto; border: 1px solid var(--el-border-color-light); background: var(--el-bg-color); font-size: 12px; line-height: 1.5; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
 .result-evidence { margin: 10px 12px; color: var(--el-text-color-regular); font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
+.result-evidence strong { display: block; margin-bottom: 4px; color: var(--el-text-color-secondary); font-size: 11px; font-weight: 600; }
+.result-evidence p { margin: 0; white-space: pre-wrap; }
 .preview-context { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 7px 8px; margin: 0 12px 14px; padding-top: 12px; border-top: 1px dashed var(--el-border-color); font-size: 12px; }
 .preview-context dt { color: var(--el-text-color-secondary); }
 .preview-context dd { margin: 0; overflow-wrap: anywhere; color: var(--el-text-color-regular); font-family: var(--el-font-family); }
