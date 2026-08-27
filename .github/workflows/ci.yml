@@ -193,6 +193,24 @@ jobs:
             --changed-files /tmp/pr-changed-files.txt \
             --github-output "$GITHUB_OUTPUT"
 
+      - name: 输出 PR 单元测试计划
+        if: github.event_name == 'pull_request'
+        env:
+          CI_TRACE_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-changes
+          PLAN_MODE: ${{ steps.pr-unit-plan.outputs.mode }}
+          PLAN_REASON: ${{ steps.pr-unit-plan.outputs.reason }}
+          PLAN_TARGETS: ${{ steps.pr-unit-plan.outputs.targets }}
+        run: |
+          echo "trace_id=${CI_TRACE_ID} unit_test_mode=${PLAN_MODE} reason=${PLAN_REASON}"
+          {
+            echo "### PR 单元测试计划"
+            echo
+            echo "- 调用链：\`${CI_TRACE_ID}\`"
+            echo "- 模式：\`${PLAN_MODE}\`"
+            echo "- 原因：${PLAN_REASON}"
+            echo "- 目标：\`${PLAN_TARGETS//$'\n'/, }\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # PR 只构建实际受影响的前端应用；共享包、锁文件和未知映射自动回退全量。
       - name: 解析 PR 前端测试与构建范围
         id: pr-frontend-plan
