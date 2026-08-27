@@ -306,6 +306,8 @@ func (r *MemoryRegistry) Compile(actor Actor, input CompileInput, manifest fixtu
 
 // ReviseDraft 由专家基于现有 draft/validated/published Bundle 生成新的不可变 Draft。
 // 修改者成为新 Draft 的创建者，因此不能再为该 revision 完成专家审批。
+// 新 Draft 写入成功后，父 Draft（若仍为 draft 状态）被降级为 stale，确保
+// List() 返回的 draft 列表始终只有一个条目，避免前端误判"存在多个 Draft"。
 func (r *MemoryRegistry) ReviseDraft(actor Actor, parentDigest string, manifest fixture.Manifest, reason string, now time.Time) (BundleRecord, error) {
 	if actor.Role != RoleExpert || actor.ID == "" {
 		return BundleRecord{}, errors.New("forbidden: 仅 expert 可修订 Draft")
@@ -329,7 +331,23 @@ func (r *MemoryRegistry) ReviseDraft(actor Actor, parentDigest string, manifest 
 	input.ParentBundleDigest = parent.Digest
 	input.DraftRevision++
 	input.EditReason = strings.TrimSpace(reason)
-	return r.Compile(Actor{ID: actor.ID, Role: RoleCompiler}, input, manifest, now)
+	record, err := r.Compile(Actor{ID: actor.ID, Role: RoleCompiler}, input, manifest, now)
+	if err != nil {
+		return BundleRecord{}, err
+	}
+	// 父 Draft 已被新 Draft 取代，降级为 stale，使其不再出现在 status='draft' 过滤结果中。
+	// 仅对 draft 状态降级；validated/published 由各自独立流程管理，不受影响。
+	if parent.Status == BundleDraft {
+		r.mu.Lock()
+		if existing, ok := r.byDigest[parentDigest]; ok && existing.Status == BundleDraft {
+			existing.Status = BundleStale
+			existing.StaleReason = "superseded_by_revision:" + record.Digest
+			existing.UpdatedAt = now.UTC()
+			r.byDigest[parentDigest] = existing
+		}
+		r.mu.Unlock()
+	}
+	return record, nil
 }
 
 func (r *MemoryRegistry) Validate(actor Actor, digest string, report ValidationReport, now time.Time) (BundleRecord, error) {

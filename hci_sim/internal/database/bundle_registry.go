@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -150,6 +151,8 @@ func (r *BundleRegistry) Compile(actor controlplane.Actor, input controlplane.Co
 }
 
 // ReviseDraft 将专家修改固化为新 Draft，而不是覆盖既有对象或已发布 Bundle。
+// 新 Draft 写入成功后，父 Draft（若仍为 draft 状态）被降级为 stale，确保
+// List() 返回的 draft 列表始终只有一个条目，避免前端误判"存在多个 Draft"。
 func (r *BundleRegistry) ReviseDraft(actor controlplane.Actor, parentDigest string, manifest fixture.Manifest, reason string, now time.Time) (controlplane.BundleRecord, error) {
 	if actor.Role != controlplane.RoleExpert || actor.ID == "" {
 		return controlplane.BundleRecord{}, errors.New("forbidden: 仅 expert 可修订 Draft")
@@ -173,7 +176,27 @@ func (r *BundleRegistry) ReviseDraft(actor controlplane.Actor, parentDigest stri
 	input.ParentBundleDigest = parent.Digest
 	input.DraftRevision++
 	input.EditReason = reason
-	return r.Compile(controlplane.Actor{ID: actor.ID, Role: controlplane.RoleCompiler}, input, manifest, now)
+	record, err := r.Compile(controlplane.Actor{ID: actor.ID, Role: controlplane.RoleCompiler}, input, manifest, now)
+	if err != nil {
+		return controlplane.BundleRecord{}, err
+	}
+	// 父 Draft 已被新 Draft 取代，降级为 stale，使其不再出现在 status='draft' 过滤结果中。
+	// 仅对 draft 状态降级；validated/published 由各自独立流程管理。
+	// 注意：Compile() 已提交自身事务，此处为独立 SQL，极端失败时记录日志而不回滚新 Draft。
+	if parent.Status == controlplane.BundleDraft {
+		ctx := context.Background()
+		staleReason := "superseded_by_revision:" + record.Digest
+		if _, staleErr := r.pool.Exec(ctx,
+			`UPDATE fixture.bundle SET status = 'stale', stale_reason = $1, version = version + 1, updated_at = $2
+			 WHERE digest = $3 AND status = 'draft'`,
+			staleReason, now.UTC(), parentDigest,
+		); staleErr != nil {
+			// stale 降级失败不影响新 Draft 的可用性，只影响下次保存时的 draft 计数；记录日志供排查。
+			log.Printf("bundle_factory revise_draft_stale_parent_failed parent=%s child=%s err=%v",
+				parentDigest, record.Digest, staleErr)
+		}
+	}
+	return record, nil
 }
 
 // Retire 将 Draft 或 Stale Bundle 标记为 retired。对象、审批和运行引用保持不变；

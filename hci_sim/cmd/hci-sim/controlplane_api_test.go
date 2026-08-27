@@ -192,3 +192,142 @@ func bundleFactoryRequest(t *testing.T, handler http.Handler, method, path strin
 	}
 	return response
 }
+
+// TestReviseDraftStalensParentDraft 验证每次 appendVerificationAsset 后，
+// 父 Draft 被自动降级为 stale，List() 始终只返回一个 status=draft 的 Bundle。
+// 这是保证前端 saveToBundle 的 drafts.length > 1 检查永远不会被意外触发的关键路径。
+func TestReviseDraftStalesParentDraft(t *testing.T) {
+	registry := controlplane.NewMemoryRegistryWithDependencies(controlplane.NewMemoryArtifactRegistry(), controlplane.NewMemoryBundleObjectStore())
+	mux := http.NewServeMux()
+	registerControlPlaneAPI(mux, registry, "test-control-token", false)
+
+	// 编译初始 Draft-A
+	compiled := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix, map[string]any{"resolved": map[string]any{
+		"support_id": "stale-test", "kbd_revision": 1, "kbd_checksum": "sha256:kbd-stale",
+		"signals_digest": "sha256:sig-stale", "tool_contract_revision": "tool-r1", "policy_revision": "policy-r1",
+		"synthetic_routes": []map[string]any{{
+			"signal_id": "sig_001", "tool": "qfk_system", "argv": []string{"acli", "system", "date"},
+			"tool_revision": 1, "tool_checksum": "sha256:tool",
+		}},
+	}}, "compiler", "compiler-service", http.StatusCreated)
+	draftA := compiled["bundle"].(map[string]any)["digest"].(string)
+
+	assetBody := func(assetID string) map[string]any {
+		return map[string]any{
+			"asset": map[string]any{
+				"asset_id": assetID, "support_id": "stale-test", "kbd_revision": 1,
+				"signal_id": "sig_001", "scope": "qfk_execution_result",
+				"source_type": "pasted", "payload": "Wed Aug 27 12:00:00 CST 2026\n",
+				"result_status": "PASS", "config_revision": "sha256:cfg", "trace_id": "t-stale",
+			},
+			"reason": "Signal 试运行验证资产保存",
+		}
+	}
+
+	// 第 1 次保存 → Draft-A 应变为 stale，Draft-B 是唯一 draft
+	res1 := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+draftA+"/verification-assets", assetBody("va-001"), "expert", "expert-editor", http.StatusCreated)
+	draftB := res1["bundle"].(map[string]any)["digest"].(string)
+	if draftB == draftA {
+		t.Fatal("第 1 次追加后 digest 应该变化")
+	}
+	listed1 := bundleFactoryRequest(t, mux, http.MethodGet, controlPlanePrefix+"?support_id=stale-test", nil, "expert", "expert-editor", http.StatusOK)
+	bundles1 := listed1["bundles"].([]any)
+	drafts1 := 0
+	for _, b := range bundles1 {
+		if b.(map[string]any)["status"] == "draft" {
+			drafts1++
+		}
+	}
+	if drafts1 != 1 {
+		t.Fatalf("第 1 次保存后应只有 1 个 draft，得到 %d 个（bundles=%+v）", drafts1, bundles1)
+	}
+
+	// 第 2 次保存（模拟 signal1 调整后重新试运行） → Draft-B 应变 stale，Draft-C 是唯一 draft
+	res2 := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+draftB+"/verification-assets", assetBody("va-002"), "expert", "expert-editor", http.StatusCreated)
+	draftC := res2["bundle"].(map[string]any)["digest"].(string)
+	if draftC == draftB {
+		t.Fatal("第 2 次追加后 digest 应该变化")
+	}
+	listed2 := bundleFactoryRequest(t, mux, http.MethodGet, controlPlanePrefix+"?support_id=stale-test", nil, "expert", "expert-editor", http.StatusOK)
+	bundles2 := listed2["bundles"].([]any)
+	drafts2 := 0
+	for _, b := range bundles2 {
+		if b.(map[string]any)["status"] == "draft" {
+			drafts2++
+		}
+	}
+	if drafts2 != 1 {
+		t.Fatalf("第 2 次保存后应只有 1 个 draft，得到 %d 个（bundles=%+v）", drafts2, bundles2)
+	}
+}
+
+// TestThreeSignalsCompleteBundle 验证 KBD 有 3 个 Signal，分别调试保存后
+// 最终 Draft 包含 3 个 Signal 的完整输出，可直接用于发布。
+func TestThreeSignalsCompleteBundle(t *testing.T) {
+	registry := controlplane.NewMemoryRegistryWithDependencies(controlplane.NewMemoryArtifactRegistry(), controlplane.NewMemoryBundleObjectStore())
+	mux := http.NewServeMux()
+	registerControlPlaneAPI(mux, registry, "test-control-token", false)
+
+	// 编译初始 Draft（3 个 signal，stdout 均为空）
+	compiled := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix, map[string]any{"resolved": map[string]any{
+		"support_id": "kbd-3sig", "kbd_revision": 1, "kbd_checksum": "sha256:kbd-3sig",
+		"signals_digest": "sha256:sig-3sig", "tool_contract_revision": "tool-r1", "policy_revision": "policy-r1",
+		"synthetic_routes": []map[string]any{
+			{
+				"signal_id": "sig_001", "tool": "qfk_system", "argv": []string{"acli", "system", "ps"},
+				"tool_revision": 1, "tool_checksum": "sha256:tool",
+			},
+			{
+				"signal_id": "sig_002", "tool": "qfk_system", "argv": []string{"acli", "system", "date"},
+				"tool_revision": 1, "tool_checksum": "sha256:tool",
+			},
+			{
+				"signal_id": "sig_003", "tool": "qfk_system", "argv": []string{"acli", "system", "uptime"},
+				"tool_revision": 1, "tool_checksum": "sha256:tool",
+			},
+		},
+	}}, "compiler", "compiler-service", http.StatusCreated)
+	currentDigest := compiled["bundle"].(map[string]any)["digest"].(string)
+
+	save := func(signalID, assetID, payload string) string {
+		res := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+currentDigest+"/verification-assets", map[string]any{
+			"asset": map[string]any{
+				"asset_id": assetID, "support_id": "kbd-3sig", "kbd_revision": 1,
+				"signal_id": signalID, "scope": "qfk_execution_result",
+				"source_type": "pasted", "payload": payload,
+				"result_status": "PASS", "config_revision": "sha256:cfg", "trace_id": "t-" + assetID,
+			},
+			"reason": signalID + " 试运行验证资产保存",
+		}, "expert", "expert-editor", http.StatusCreated)
+		return res["bundle"].(map[string]any)["digest"].(string)
+	}
+
+	// signal1: 调试 1 次即通过
+	currentDigest = save("sig_001", "va-s1-1", "process list output\n")
+	// signal2: 调试 3 次，只有第 3 次通过保存（前两次试运行不调用 save）
+	currentDigest = save("sig_002", "va-s2-3", "Wed Aug 27 12:00:00 CST 2026\n")
+	// signal3: 调试 1 次即通过
+	currentDigest = save("sig_003", "va-s3-1", "up 3 days, 4:12\n")
+
+	// 验证最终 Draft 只有一个，且 3 个 Signal 的 Route stdout 均已更新
+	listed := bundleFactoryRequest(t, mux, http.MethodGet, controlPlanePrefix+"?support_id=kbd-3sig", nil, "expert", "expert-editor", http.StatusOK)
+	var draftCount int
+	for _, b := range listed["bundles"].([]any) {
+		if b.(map[string]any)["status"] == "draft" {
+			draftCount++
+		}
+	}
+	if draftCount != 1 {
+		t.Fatalf("3 次保存后应只有 1 个 draft，得到 %d 个", draftCount)
+	}
+	final := bundleFactoryRequest(t, mux, http.MethodGet, controlPlanePrefix+"/"+currentDigest, nil, "expert", "expert-editor", http.StatusOK)
+	routes := final["bundle"].(map[string]any)["manifest"].(map[string]any)["routes"].([]any)
+	stdouts := map[string]string{}
+	for _, r := range routes {
+		rm := r.(map[string]any)
+		stdouts[rm["signal_id"].(string)] = rm["result"].(map[string]any)["stdout"].(string)
+	}
+	if stdouts["sig_001"] != "process list output\n" || stdouts["sig_002"] != "Wed Aug 27 12:00:00 CST 2026\n" || stdouts["sig_003"] != "up 3 days, 4:12\n" {
+		t.Fatalf("最终 Bundle 3 个 Signal 输出不完整: %+v", stdouts)
+	}
+}
