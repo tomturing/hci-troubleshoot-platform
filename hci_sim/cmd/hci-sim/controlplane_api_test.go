@@ -273,9 +273,18 @@ func TestThreeSignalsCompleteBundle(t *testing.T) {
 		"support_id": "kbd-3sig", "kbd_revision": 1, "kbd_checksum": "sha256:kbd-3sig",
 		"signals_digest": "sha256:sig-3sig", "tool_contract_revision": "tool-r1", "policy_revision": "policy-r1",
 		"synthetic_routes": []map[string]any{
-			{"signal_id": "sig_001", "tool": "qfk_system", "argv": []string{"acli", "system", "ps"}, "tool_revision": 1, "tool_checksum": "sha256:tool"},
-			{"signal_id": "sig_002", "tool": "qfk_system", "argv": []string{"acli", "system", "date"}, "tool_revision": 1, "tool_checksum": "sha256:tool"},
-			{"signal_id": "sig_003", "tool": "qfk_system", "argv": []string{"acli", "system", "uptime"}, "tool_revision": 1, "tool_checksum": "sha256:tool"},
+			{
+				"signal_id": "sig_001", "tool": "qfk_system", "argv": []string{"acli", "system", "ps"},
+				"tool_revision": 1, "tool_checksum": "sha256:tool",
+			},
+			{
+				"signal_id": "sig_002", "tool": "qfk_system", "argv": []string{"acli", "system", "date"},
+				"tool_revision": 1, "tool_checksum": "sha256:tool",
+			},
+			{
+				"signal_id": "sig_003", "tool": "qfk_system", "argv": []string{"acli", "system", "uptime"},
+				"tool_revision": 1, "tool_checksum": "sha256:tool",
+			},
 		},
 	}}, "compiler", "compiler-service", http.StatusCreated)
 	currentDigest := compiled["bundle"].(map[string]any)["digest"].(string)
@@ -322,4 +331,3 @@ func TestThreeSignalsCompleteBundle(t *testing.T) {
 		t.Fatalf("最终 Bundle 3 个 Signal 输出不完整: %+v", stdouts)
 	}
 }
-
