@@ -124,6 +124,51 @@ func TestBundleFactoryAPIRetiresDraftWithoutPhysicalDeletion(t *testing.T) {
 	bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+digest+"/retire", map[string]any{}, "compiler", "compiler-service", http.StatusForbidden)
 }
 
+func TestBundleFactoryAPIAppendVerificationAssetBindsImmutableKbd(t *testing.T) {
+	registry := controlplane.NewMemoryRegistryWithDependencies(controlplane.NewMemoryArtifactRegistry(), controlplane.NewMemoryBundleObjectStore())
+	mux := http.NewServeMux()
+	registerControlPlaneAPI(mux, registry, "test-control-token", false)
+	compiled := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix, map[string]any{"resolved": map[string]any{
+		"support_id": "41398", "kbd_revision": 1, "kbd_checksum": "sha256:kbd-41398",
+		"signals_digest": "sha256:signals-41398", "tool_contract_revision": "tool-r1", "policy_revision": "policy-r1",
+		"synthetic_routes": []map[string]any{{
+			"signal_id": "sig_003", "tool": "qfk_system", "argv": []string{"acli", "system", "date"},
+			"tool_revision": 1, "tool_checksum": "sha256:tool",
+		}},
+	}}, "compiler", "compiler-service", http.StatusCreated)
+	parentDigest := compiled["bundle"].(map[string]any)["digest"].(string)
+
+	// 1. 跨 KBD 注入报错
+	bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+parentDigest+"/verification-assets", map[string]any{
+		"asset": map[string]any{
+			"asset_id": "va-1", "support_id": "99999", "kbd_revision": 999, "signal_id": "sig_003",
+			"scope": "qfk_execution_result", "source_type": "pasted", "payload": "2026-08-27\n",
+			"result_status": "PASS", "config_revision": "sha256:cfg", "trace_id": "t-1",
+		},
+		"reason": "跨 KBD 注入尝试",
+	}, "expert", "expert-editor", http.StatusConflict)
+
+	// 2. 客户端传错误的内部 DB 自增 revision（如 6469），服务端自动绑定权威 parent manifest 的 revision=1 和 support_id=41398
+	appended := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+parentDigest+"/verification-assets", map[string]any{
+		"asset": map[string]any{
+			"asset_id": "va-1", "support_id": "41398", "kbd_revision": 6469, "signal_id": "sig_003",
+			"scope": "qfk_execution_result", "source_type": "pasted", "payload": "2026-08-27\n",
+			"result_status": "PASS", "config_revision": "sha256:cfg", "trace_id": "t-1",
+		},
+		"reason": "保存 Signal 试运行验证资产",
+	}, "expert", "expert-editor", http.StatusCreated)
+
+	childManifest := appended["bundle"].(map[string]any)["manifest"].(map[string]any)
+	assets := childManifest["verification_assets"].([]any)
+	if len(assets) != 1 {
+		t.Fatalf("expected 1 verification asset, got %+v", assets)
+	}
+	first := assets[0].(map[string]any)
+	if first["support_id"] != "41398" || int(first["kbd_revision"].(float64)) != 1 {
+		t.Fatalf("expected kbd_revision=1, got %+v", first)
+	}
+}
+
 func bundleFactoryRequest(t *testing.T, handler http.Handler, method, path string, body any, role, actorID string, wantStatus int) map[string]any {
 	t.Helper()
 	raw, err := json.Marshal(body)
