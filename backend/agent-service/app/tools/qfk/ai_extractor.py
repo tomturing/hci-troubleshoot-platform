@@ -139,13 +139,18 @@ def _upgrade_legacy_response(payload: Any, candidates: dict[str, str]) -> Any:
     if not isinstance(payload, dict) or "status" in payload:
         return payload
     if payload.get("ok") is True and "value" in payload:
+        output = payload["value"]
+        if isinstance(output, str) and "," in output:
+            parts = [item.strip() for item in output.split(",") if item.strip()]
+            if parts and all(re.fullmatch(r"[+-]?(?:\d+(?:\.\d+)?|\.\d+)", item) for item in parts):
+                output = [float(item) for item in parts]
         refs = payload.get("evidence_lines") or []
         evidence = [
             {"ref": f"line:{int(number)}", "quote": candidates[f"line:{int(number)}"]}
             for number in refs
             if f"line:{int(number)}" in candidates
         ]
-        return {"status": "success", "output": payload["value"], "evidence": evidence, "reason": "兼容历史 AI 响应"}
+        return {"status": "success", "output": output, "evidence": evidence, "reason": "兼容历史 AI 响应"}
     if payload.get("ok") is True and isinstance(payload.get("records"), list):
         values = [item.get("source_value") for item in payload["records"] if isinstance(item, dict) and "source_value" in item]
         refs = [number for item in payload["records"] if isinstance(item, dict) for number in item.get("evidence_lines") or []]
