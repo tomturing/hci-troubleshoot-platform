@@ -33,7 +33,7 @@ const featureOptions = [
   { label: '目标主机', value: 'destination_host' }, { label: '百分比', value: 'percent.current' },
   { label: '数字', value: 'number' }, { label: '源主机 → 目标主机', value: 'change_pair' },
 ]
-const matcherTypes = ['keyword', 'regex', 'boolean', 'exists', 'threshold', 'trend', 'delta', 'state']
+const matcherTypes = ['keyword', 'regex', 'boolean', 'exists', 'state', 'delta', 'threshold', 'trend']
 function defaultExtract(): ProcessingSpec { return { type: 'feature', feature: 'vm_name', cardinality: 'exactly_one' } }
 function defaultAssert(): ProcessingSpec { return { type: 'threshold', expected: true, operator: '>', value: 90, aggregation: 'first_number' } }
 function update(index: number, patch: ProcessingSpec): void { emit('update:modelValue', specs.value.map((item, i) => i === index ? { ...item, ...patch } : item)) }
