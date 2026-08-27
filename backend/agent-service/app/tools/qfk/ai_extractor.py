@@ -71,13 +71,17 @@ def _deterministic_spec(spec: dict[str, Any]) -> dict[str, Any]:
 
 def _validate_ai_config(spec: dict[str, Any], expected_type: str) -> tuple[dict[str, Any], str, str, str]:
     config = ai_processing_config(spec)
+    legacy = isinstance(spec, dict) and "ai_processing" not in spec and "ai_extract" in spec
     try:
         mode = validate_ai_processing_config(config)
     except ValueError as exc:
         raise QFKExtractionError("QFK_AI_PROCESSING_INVALID_SPEC", str(exc)) from exc
     assert config is not None
     instruction = str(config["instruction"]).strip()
-    output_type = ai_output_type(config, expected_type)
+    output_type = expected_type if legacy else ai_output_type(config, expected_type)
+    if expected_type == "array<number>" or output_type == "array<number>":
+        output_type = "array"
+        config = {**config, "output_type": "array", "item_type": "number"}
     return config, instruction, mode, output_type
 
 
@@ -170,6 +174,7 @@ async def _extract_ai_value_impl(
     from shared.observability.langfuse import observe_llm_generation
 
     config, instruction, mode, output_type = _validate_ai_config(spec, value_type)
+    legacy = "ai_processing" not in spec and "ai_extract" in spec
     if ai_client is None:
         raise QFKExtractionError("QFK_AI_PROCESSING_UNAVAILABLE", "AI 处理客户端不可用")
     selected = extract_output_values(output, _deterministic_spec(spec), "string")
@@ -213,7 +218,7 @@ async def _extract_ai_value_impl(
             if mode == "extract":
                 evidence_text = [item.quote for item in validated.evidence]
                 if not _output_is_grounded(validated.output, evidence_text):
-                    raise QFKExtractionError("QFK_AI_PROCESSING_UNGROUNDED", "原文取值 output 无法从 evidence 原文回查")
+                    raise QFKExtractionError("QFK_AI_EXTRACT_UNGROUNDED" if legacy else "QFK_AI_PROCESSING_UNGROUNDED", "原文取值 output 无法从 evidence 原文回查")
             update_observation(observation, output={"status": "succeeded", "output": validated.output, "evidence": [item.__dict__ for item in validated.evidence], "reason": validated.reason, "raw_response": raw_response[:2000]}, metadata={"response_chars": len(raw_response), "response_hash": hashlib.sha256(raw_response.encode("utf-8", errors="replace")).hexdigest()})
         except QFKExtractionError:
             raise

@@ -594,9 +594,12 @@ async def _qfk_exec_impl(
         if has_ai_extract(matcher_extract):
             config = ai_processing_config(matcher_extract) or {}
             legacy_ai = isinstance(matcher_extract, dict) and "ai_processing" not in matcher_extract and "ai_extract" in matcher_extract
-            configured_type = ai_output_type(config, "string")
+            configured_type = (
+                "array" if legacy_ai and matcher_type in {"threshold", "delta", "trend"}
+                else ai_output_type(config, "string")
+            )
             ai_value_type = (
-                "array<number>" if configured_type == "array" and ai_item_type(config) == "number"
+                "array<number>" if configured_type == "array" and (ai_item_type(config) == "number" or legacy_ai)
                 else configured_type
             )
             try:
@@ -630,7 +633,7 @@ async def _qfk_exec_impl(
             precomputed_values = None
             if configured_type == "number":
                 precomputed_values = [float(ai_result.value)]
-            elif configured_type == "array" and ai_item_type(config) == "number":
+            elif configured_type == "array" and (ai_item_type(config) == "number" or legacy_ai):
                 precomputed_values = [float(item) for item in ai_result.value]
             precomputed_detail = {
                 "extract": {
@@ -696,6 +699,7 @@ async def _qfk_exec_impl(
             evidence = (
                 f"{evidence}\n【AI 处理】候选行: {ai_extract_detail['candidate_count']}；"
                 f"引用物理行: {ai_extract_detail['evidence_line_numbers']}\n"
+                "value_source=ai_grounded；"
                 f"提取值: {ai_extract_detail['ai_value']!r}"
             )
         if signal.namespace == "log":
