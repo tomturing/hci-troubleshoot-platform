@@ -43,10 +43,46 @@ function setMode(index: number, mode: string): void {
   if (mode === 'assert') update(index, { mode, name: undefined, type: undefined, extract: undefined, match: defaultAssert() })
   else update(index, { mode, match: undefined, name: '', type: 'string', extract: defaultExtract() })
 }
+function setOutputType(index: number, value: string): void {
+  const currentItem = specs.value[index] || {}
+  const currentExtract = currentItem.extract || defaultExtract()
+  if (currentExtract.ai_processing) {
+    update(index, {
+      type: value,
+      extract: {
+        ...currentExtract,
+        ai_processing: {
+          contract_version: 1,
+          ...(currentExtract.ai_processing || {}),
+          output_type: value,
+        },
+      },
+    })
+  } else {
+    update(index, { type: value })
+  }
+}
 function setExtractType(index: number, type: string): void {
   const current = specs.value[index]?.extract || defaultExtract()
   if (type === 'ai') {
-    update(index, { extract: { type: 'feature', feature: current.feature || 'vm_name', cardinality: current.cardinality || 'exactly_one', ai_processing: { contract_version: 1, mode: 'extract', instruction: current.ai_processing?.instruction || '', output_type: 'string' } } })
+    const rawType = specs.value[index]?.type || 'string'
+    const normalizedType = ['string', 'number', 'boolean', 'array'].includes(rawType)
+      ? rawType
+      : (['integer', 'percentage'].includes(rawType) ? 'number' : 'string')
+    update(index, {
+      type: normalizedType,
+      extract: {
+        type: 'feature',
+        feature: current.feature || 'vm_name',
+        cardinality: current.cardinality || 'exactly_one',
+        ai_processing: {
+          contract_version: 1,
+          mode: 'extract',
+          instruction: current.ai_processing?.instruction || '',
+          output_type: normalizedType,
+        },
+      },
+    })
     return
   }
   const next: ProcessingSpec = { type, cardinality: current.cardinality || (type === 'split' ? 'all' : 'exactly_one') }
@@ -59,10 +95,11 @@ function aiProcessingMode(item: ProcessingSpec): string { return item.extract?.a
 function setAiProcessingMode(index: number, mode: string): void {
   const current = specs.value[index]?.extract || defaultExtract()
   const aiProcessing = current.ai_processing || {}
+  const currentType = specs.value[index]?.type || aiProcessing.output_type || 'string'
   update(index, {
     extract: {
       ...current,
-      ai_processing: { contract_version: 1, ...aiProcessing, mode, output_type: aiProcessing.output_type || 'string' },
+      ai_processing: { contract_version: 1, ...aiProcessing, mode, output_type: currentType },
     },
   })
 }
@@ -102,13 +139,12 @@ function setMatch(index: number, match: ProcessingSpec): void { update(index, { 
             <label>提取方式<el-select class="processing-control" popper-class="processing-select-popper" :model-value="extractionMode(item)" size="small" @change="(value: string) => setExtractType(index, value)"><el-option label="特征" value="feature" /><el-option label="分隔" value="split" /><el-option label="AI" value="ai" /></el-select></label>
             <label v-if="extractionMode(item) === 'feature'">特征名<el-select class="processing-control" popper-class="processing-select-popper" :model-value="item.extract?.feature" size="small" @change="(value: string) => setExtractField(index, 'feature', value)"><el-option v-for="option in featureOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></label>
             <label v-else-if="extractionMode(item) === 'split'">分隔符<el-input class="processing-control" :model-value="item.extract?.separator" placeholder="例如：（）、<>、【】、：" size="small" @input="(value: string) => setExtractField(index, 'separator', value)" /></label>
-            <template v-else>
-              <label>AI 处理方式<el-radio-group :model-value="aiProcessingMode(item)" size="small" @change="(value: string) => setAiProcessingMode(index, value)"><el-radio-button value="extract">原文取值</el-radio-button><el-radio-button value="derive">智能推导</el-radio-button></el-radio-group></label>
+            <label v-else>处理方式<el-select class="processing-control" popper-class="processing-select-popper" :model-value="aiProcessingMode(item)" size="small" @change="(value: string) => setAiProcessingMode(index, value)"><el-option label="原文取值" value="extract" /><el-option label="智能推导" value="derive" /></el-select></label>
+            <label>输出类型<el-select class="processing-control" popper-class="processing-select-popper" :model-value="item.type || item.extract?.ai_processing?.output_type || 'string'" size="small" @change="(value: string) => setOutputType(index, value)"><el-option label="文本" value="string" /><el-option label="数值" value="number" /><el-option label="布尔值" value="boolean" /><el-option label="数组" value="array" /></el-select></label>
+            <template v-if="extractionMode(item) === 'ai'">
               <label class="ai-prompt">处理说明 *<el-input :model-value="item.extract?.ai_processing?.instruction" type="textarea" :rows="2" maxlength="1000" show-word-limit placeholder="描述如何对上一步确定性输出进行再加工" @input="(value: string) => setAiInstruction(index, value)" /></label>
-              <label>输出类型<el-select class="processing-control" :model-value="item.extract?.ai_processing?.output_type || 'string'" size="small" @change="(value: string) => setAiOutputField(index, 'output_type', value)"><el-option label="布尔值（1/0）" value="boolean" /><el-option label="数值" value="number" /><el-option label="文本" value="string" /><el-option label="数组" value="array" /></el-select></label>
-              <label v-if="item.extract?.ai_processing?.output_type === 'array'">数组元素类型<el-select class="processing-control" :model-value="item.extract?.ai_processing?.item_type || 'string'" size="small" @change="(value: string) => setAiOutputField(index, 'item_type', value)"><el-option label="布尔值" value="boolean" /><el-option label="数值" value="number" /><el-option label="文本" value="string" /></el-select></label>
+              <label v-if="(item.type || item.extract?.ai_processing?.output_type) === 'array'" class="array-item-type">数组元素类型<el-select class="processing-control" popper-class="processing-select-popper" :model-value="item.extract?.ai_processing?.item_type || 'string'" size="small" @change="(value: string) => setAiOutputField(index, 'item_type', value)"><el-option label="文本" value="string" /><el-option label="数值" value="number" /><el-option label="布尔值" value="boolean" /></el-select></label>
             </template>
-            <label>变量类型<el-select class="processing-control" popper-class="processing-select-popper" :model-value="item.type || 'string'" size="small" @change="(value: string) => update(index, { type: value })"><el-option label="字符串" value="string" /><el-option label="整数" value="integer" /><el-option label="数字" value="number" /><el-option label="百分比" value="percentage" /><el-option label="布尔值" value="boolean" /><el-option label="数组" value="array" /></el-select></label>
           </div>
           <div class="step-output final"><span>最终输出</span><code>{{ item.name || '变量名' }} → 写入变量池</code></div>
         </section>
@@ -151,7 +187,8 @@ function setMatch(index: number, match: ProcessingSpec): void { update(index, { 
 .processing-grid label { display: flex; flex-direction: column; gap: 5px; color: var(--el-text-color-secondary); font-size: 12px; }
 .processing-control, .processing-grid :deep(.el-select), .processing-grid :deep(.el-input), .ai-prompt { width: 100%; }
 .processing-grid :deep(.el-select__selected-item), .processing-grid :deep(.el-input__inner) { font-size: 13px; }
-.ai-prompt { grid-column: span 2; }
+.ai-prompt { grid-column: 1 / -1; }
+.array-item-type { grid-column: 1 / 2; }
 .matcher-heading { margin: 16px 0 8px; color: var(--el-text-color-primary); font-size: 13px; font-weight: 600; }
 .step-output { justify-content: space-between; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--el-border-color); color: var(--el-text-color-secondary); font-size: 12px; }
 .step-output code { color: var(--el-color-primary); font-family: inherit; }
