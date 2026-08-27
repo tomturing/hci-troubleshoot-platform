@@ -114,7 +114,8 @@ async def test_qfk_ai_dry_run_passes_prompt_session_factory(monkeypatch: pytest.
 
     async def fake_extract(*args, **kwargs):
         seen["db_session_factory"] = kwargs.get("db_session_factory")
-        return SimpleNamespace(value="FAILED", evidence_line_numbers=[1], evidence_lines=["FAILED"], candidate_count=1, prompt_revision="prompt-v1", evidence="已定位")
+        # 对齐生产 AIExtractionResult：证据说明字段名为 reason，没有 evidence 属性。
+        return SimpleNamespace(value="FAILED", evidence_line_numbers=[1], evidence_lines=["FAILED"], candidate_count=1, prompt_revision="prompt-v1", reason="已定位")
 
     monkeypatch.setattr("app.routes.signal_dry_run.extract_ai_value", fake_extract)
     request = SignalDryRunRequest(
@@ -128,3 +129,4 @@ async def test_qfk_ai_dry_run_passes_prompt_session_factory(monkeypatch: pytest.
 
     assert result.status == "PASS"
     assert seen["db_session_factory"] is session_factory
+    assert result.evidence == "已定位"

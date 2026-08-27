@@ -189,7 +189,7 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, db_
                     trace_id=trace_id, dataset_id=body.dataset.dataset_id, unit_ref=body.unit_ref,
                     verification_scope=body.verification_scope, config_revision=body.draft_revision,
                     status="PASS", input_sha256=input_sha, value=ai_result.value,
-                    evidence=ai_result.evidence, evidence_lines=evidence_lines,
+                    evidence=ai_result.reason, evidence_lines=evidence_lines,
                     derivation={"ai_contract": precomputed_detail["extract"]},
                 )
         result = evaluate_matcher(signal_matcher, matcher_input, precomputed_values=precomputed_values, precomputed_detail=precomputed_detail)
@@ -228,7 +228,7 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, db_
                     trace_id=trace_id, dataset_id=body.dataset.dataset_id, unit_ref=body.unit_ref,
                     verification_scope=body.verification_scope, config_revision=body.draft_revision,
                     status="PASS", input_sha256=input_sha, value=ai_result.value,
-                    evidence=ai_result.evidence, evidence_lines=ai_result.evidence_line_numbers,
+                    evidence=ai_result.reason, evidence_lines=ai_result.evidence_line_numbers,
                     derivation={"ai_contract": {"produce": produce.get("name"), "value_source": "ai_grounded"}},
                 )
         else:
