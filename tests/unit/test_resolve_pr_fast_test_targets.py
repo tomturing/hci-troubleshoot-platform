@@ -4,32 +4,53 @@ from scripts.ci.resolve_pr_fast_test_targets import resolve_test_plan
 
 
 def test_changed_unit_test_is_selected_directly(tmp_path: Path) -> None:
+    (tmp_path / "backend/agent-service/tests/unit").mkdir(parents=True)
     plan = resolve_test_plan(["backend/agent-service/tests/unit/test_signal_dry_run.py"], tmp_path)
 
     assert plan.mode == "targeted"
-    assert plan.targets == ("backend/agent-service/tests/unit/test_signal_dry_run.py",)
+    assert plan.targets == ("backend/agent-service/tests/unit",)
 
 
-def test_source_change_uses_same_name_service_test(tmp_path: Path) -> None:
-    test_path = tmp_path / "backend/agent-service/tests/unit/test_signal_dry_run.py"
-    test_path.parent.mkdir(parents=True)
-    test_path.touch()
+def test_source_change_selects_service_test_directory(tmp_path: Path) -> None:
+    (tmp_path / "backend/agent-service/tests/unit").mkdir(parents=True)
 
     plan = resolve_test_plan(["backend/agent-service/app/routes/signal_dry_run.py"], tmp_path)
 
     assert plan.mode == "targeted"
-    assert plan.targets == ("backend/agent-service/tests/unit/test_signal_dry_run.py",)
+    assert plan.targets == ("backend/agent-service/tests/unit",)
 
 
-def test_source_change_uses_domain_prefixed_service_test(tmp_path: Path) -> None:
-    test_path = tmp_path / "backend/agent-service/tests/unit/test_qfk_ai_extractor.py"
-    test_path.parent.mkdir(parents=True)
-    test_path.touch()
+def test_source_path_rename_does_not_require_test_rename(tmp_path: Path) -> None:
+    (tmp_path / "backend/agent-service/tests/unit").mkdir(parents=True)
 
-    plan = resolve_test_plan(["backend/agent-service/app/tools/qfk/ai_extractor.py"], tmp_path)
+    plan = resolve_test_plan(["backend/agent-service/app/new_area/renamed_extractor.py"], tmp_path)
 
     assert plan.mode == "targeted"
-    assert plan.targets == ("backend/agent-service/tests/unit/test_qfk_ai_extractor.py",)
+    assert plan.targets == ("backend/agent-service/tests/unit",)
+
+
+def test_multiple_services_fall_back_to_full(tmp_path: Path) -> None:
+    for service in ("agent-service", "case-service"):
+        (tmp_path / f"backend/{service}/tests/unit").mkdir(parents=True)
+
+    plan = resolve_test_plan(
+        [
+            "backend/agent-service/app/routes/agent.py",
+            "backend/case-service/app/routes/case.py",
+        ],
+        tmp_path,
+    )
+
+    assert plan.mode == "full"
+
+
+def test_backend_test_change_uses_service_directory(tmp_path: Path) -> None:
+    (tmp_path / "backend/agent-service/tests/unit").mkdir(parents=True)
+
+    plan = resolve_test_plan(["backend/agent-service/tests/unit/test_qfk_ai_extractor.py"], tmp_path)
+
+    assert plan.mode == "targeted"
+    assert plan.targets == ("backend/agent-service/tests/unit",)
 
 
 def test_shared_code_change_fails_closed_to_full_regression(tmp_path: Path) -> None:
