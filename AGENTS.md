@@ -68,6 +68,12 @@
     - 错误信息中输出候选行摘要，便于快速判断问题来源。
     - Langfuse observation output 中记录完整的 `output_value`、`evidence_lines` 和 `candidate_lines`，确保排查时能看到完整上下文。
   - **效果**：UNGROUNDED 错误现在包含候选行摘要，便于区分 AI 幻觉和数据收集层污染。
+- **Langfuse 与前端错误可见性增强**（PR #941）：
+  - **根因**：Langfuse observation 异常时只设置了 `status_message` 字段，但 Langfuse UI 主要展示 `output` 字段内容，导致错误原因在 UI 中不可见。同时，前端仿真会话失败时直接覆盖已有对话内容，用户可能看不到失败前的对话和具体错误原因。
+  - **修复**：
+    - 后端 `observe_workflow` 和 `observe_llm_generation` 异常时同时设置 `output` 和 `status_message` 字段，确保 Langfuse UI 可直接查看错误详情。
+    - 前端 `SimulationConversation.vue` 将错误信息追加到已有内容之后，用户始终能看到完整对话和失败原因。
+  - **效果**：Langfuse trace 和前端界面都能清晰展示错误信息，提升问题排查效率。
 - **WebSocket 保活心跳机制**：
   - **根因**：仿真测试执行超时（60秒），前端页面保持打开但 WebSocket 仍断开。`terminal_bridge` 使用 `golang.org/x/net/websocket` 库，该库没有内置 ping/pong 保活机制；前端也没有心跳发送逻辑。当 WebSocket 空闲时，云厂商负载均衡器或 Traefik 的空闲超时机制会关闭连接。
   - **修复**：
