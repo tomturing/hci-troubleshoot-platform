@@ -266,7 +266,27 @@ async def _extract_ai_value_impl(
             if mode == "extract":
                 evidence_text = [item.quote for item in validated.evidence]
                 if not _output_is_grounded(validated.output, evidence_text):
-                    raise QFKExtractionError("QFK_AI_EXTRACT_UNGROUNDED" if legacy else "QFK_AI_PROCESSING_UNGROUNDED", "原文取值 output 无法从 evidence 原文回查")
+                    # 输出候选行摘要便于排查根因（可能是数据收集层问题导致 candidate_lines 污染）
+                    candidates_preview = list(candidates.values())[:5]
+                    error_msg = f"原文取值 {validated.output!r} 无法从 evidence 原文回查。候选行（前 {len(candidates_preview)} 条）：{candidates_preview}"
+                    update_observation(
+                        observation,
+                        output={
+                            "status": "failed",
+                            "error_code": "QFK_AI_EXTRACT_UNGROUNDED" if legacy else "QFK_AI_PROCESSING_UNGROUNDED",
+                            "error_message": error_msg,
+                            "raw_response": raw_response[:2000] if raw_response else None,
+                            "parsed_payload": payload,
+                            "output_value": validated.output,
+                            "evidence_lines": evidence_text[:5],
+                            "candidate_lines": candidates_preview,
+                        },
+                        metadata={"validation_failed": True},
+                    )
+                    raise QFKExtractionError(
+                        "QFK_AI_EXTRACT_UNGROUNDED" if legacy else "QFK_AI_PROCESSING_UNGROUNDED",
+                        error_msg,
+                    )
             update_observation(observation, output={"status": "succeeded", "output": validated.output, "evidence": [item.__dict__ for item in validated.evidence], "reason": validated.reason, "raw_response": raw_response[:2000]}, metadata={"response_chars": len(raw_response), "response_hash": hashlib.sha256(raw_response.encode("utf-8", errors="replace")).hexdigest(), "prompt_name": AI_PROCESSING_PROMPT_NAME, "prompt_revision": prompt_revision})
         except QFKExtractionError:
             raise
