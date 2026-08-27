@@ -4,4 +4,6 @@
 
 当前迁移按领域创建 `control_plane`、`fixture`、`artifact`、`audit` 四个 schema。跨数据库引用只保存 `support_id`、KBD revision/checksum 与 digest，不建立外键。`000005` 起，可靠投递统一使用 `control_plane.outbox`；旧 `run_outbox` 与 `stale_outbox` 仅在迁移观察窗口内保留，并通过镜像触发器保障滚动发布不漏事件。
 
+`000006_fixture_asset_revision.sql` 在既有 `fixture` schema 中新增最小的 stdout 资产修订表 `fixture.asset_revision`。它保存 Bundle Factory QKV 模板和实例的不可变修订、分类/Catalog 基线快照与调用链；不得恢复已废弃的 `fixture.bundle_template`，也不得绕过修订/发布状态直接修改既有资产。
+
 迁移前必须完成源表 inventory、备份/恢复演练和行数/PK/FK/sequence 校验；旧库的 `agent_test_*` 表只有在切换观察窗口结束后，才能由独立 contract 变更删除。

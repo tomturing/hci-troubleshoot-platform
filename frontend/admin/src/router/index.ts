@@ -33,6 +33,12 @@ const router = createRouter({
       meta: { title: 'Bundle工厂', icon: 'Box', order: 12.5 },
     },
     {
+      path: '/simulation/bundle-factory/assets',
+      name: 'BundleFixtureAssets',
+      component: () => import('@/views/BundleFixtureAssetsView.vue'),
+      meta: { title: 'Bundle资产库', icon: 'Files', order: 12.6 },
+    },
+    {
       path: '/clients',
       name: 'Clients',
       component: () => import('@/views/ClientListView.vue'),

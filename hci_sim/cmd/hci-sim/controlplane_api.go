@@ -15,16 +15,29 @@ import (
 
 	"hci_sim/internal/controlplane"
 	"hci_sim/internal/fixture"
+	"hci_sim/internal/fixtureasset"
 )
 
 const controlPlanePrefix = "/v1/control-plane/bundles"
 const controlPlaneActivationPrefix = "/v1/control-plane/activations"
+const controlPlaneFixtureAssetPrefix = "/v1/control-plane/fixture-assets"
 
-func registerControlPlaneAPI(mux *http.ServeMux, registry controlplane.Registry, controlToken string, allowInsecure bool, activators ...*runtimeBundleActivator) {
+func registerControlPlaneAPI(mux *http.ServeMux, registry controlplane.Registry, controlToken string, allowInsecure bool, dependencies ...any) {
+	var assetStore fixtureasset.Store
 	var activator *runtimeBundleActivator
-	if len(activators) > 0 {
-		activator = activators[0]
+	for _, dependency := range dependencies {
+		switch value := dependency.(type) {
+		case fixtureasset.Store:
+			assetStore = value
+		case *runtimeBundleActivator:
+			activator = value
+		}
 	}
+	registerControlPlaneAssetAPI(mux, controlToken, allowInsecure, assetStore)
+	registerControlPlaneBundleAPI(mux, registry, controlToken, allowInsecure, activator, assetStore)
+}
+
+func registerControlPlaneBundleAPI(mux *http.ServeMux, registry controlplane.Registry, controlToken string, allowInsecure bool, activator *runtimeBundleActivator, assetStore fixtureasset.Store) {
 	mux.HandleFunc(controlPlanePrefix, func(w http.ResponseWriter, r *http.Request) {
 		if !controlPlaneAuthorized(r, controlToken, allowInsecure) {
 			http.Error(w, "forbidden", http.StatusForbidden)
@@ -34,7 +47,7 @@ func registerControlPlaneAPI(mux *http.ServeMux, registry controlplane.Registry,
 			http.Error(w, "controlplane registry unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		handleBundleFactory(w, r, registry, activator)
+		handleBundleFactory(w, r, registry, activator, assetStore)
 	})
 	mux.HandleFunc(controlPlanePrefix+"/", func(w http.ResponseWriter, r *http.Request) {
 		if !controlPlaneAuthorized(r, controlToken, allowInsecure) {
@@ -45,7 +58,7 @@ func registerControlPlaneAPI(mux *http.ServeMux, registry controlplane.Registry,
 			http.Error(w, "controlplane registry unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		handleBundleFactory(w, r, registry, activator)
+		handleBundleFactory(w, r, registry, activator, assetStore)
 	})
 	mux.HandleFunc(controlPlaneActivationPrefix+"/", func(w http.ResponseWriter, r *http.Request) {
 		if !controlPlaneAuthorized(r, controlToken, allowInsecure) {
@@ -111,7 +124,7 @@ func registerControlPlaneAPI(mux *http.ServeMux, registry controlplane.Registry,
 	})
 }
 
-func handleBundleFactory(w http.ResponseWriter, r *http.Request, registry controlplane.Registry, activator *runtimeBundleActivator) {
+func handleBundleFactory(w http.ResponseWriter, r *http.Request, registry controlplane.Registry, activator *runtimeBundleActivator, assetStore fixtureasset.Store) {
 	suffix := strings.TrimPrefix(r.URL.Path, controlPlanePrefix)
 	if suffix == "" || suffix == "/" {
 		if r.Method == http.MethodGet {
@@ -125,7 +138,7 @@ func handleBundleFactory(w http.ResponseWriter, r *http.Request, registry contro
 			return
 		}
 		if r.Method == http.MethodPost {
-			compileSynthetic(w, r, registry)
+			compileSynthetic(w, r, registry, assetStore)
 			return
 		}
 		http.NotFound(w, r)
@@ -318,7 +331,7 @@ func releaseProfile() string {
 	return profile
 }
 
-func compileSynthetic(w http.ResponseWriter, r *http.Request, registry controlplane.Registry) {
+func compileSynthetic(w http.ResponseWriter, r *http.Request, registry controlplane.Registry, assetStore fixtureasset.Store) {
 	actor, err := requestActor(r, controlplane.RoleCompiler)
 	if err != nil {
 		writeControlPlaneError(w, err)
@@ -347,7 +360,7 @@ func compileSynthetic(w http.ResponseWriter, r *http.Request, registry controlpl
 		request.Container = "host"
 	}
 	if request.CompilerRevision == "" {
-		request.CompilerRevision = "bundle-factory-v3"
+		request.CompilerRevision = "bundle-factory-v4-fixture-assets"
 	}
 	dependencies := []controlplane.Dependency{
 		{Type: "kbd", ID: request.Resolved.SupportID, Revision: fmt.Sprint(request.Resolved.KBDRevision), Digest: request.Resolved.KBDChecksum},
@@ -361,11 +374,16 @@ func compileSynthetic(w http.ResponseWriter, r *http.Request, registry controlpl
 		writeControlPlaneError(w, err)
 		return
 	}
+	assetDependencies, routeSources, assetErr := bindFixtureAssets(r, request.Resolved, &manifest, assetStore)
+	if assetErr != nil {
+		log.Printf("bundle_factory fixture_asset_resolution_failed trace_id=%s support_id=%s error=%v", requestTraceID(r), request.Resolved.SupportID, assetErr)
+	}
+	dependencies = append(dependencies, assetDependencies...)
 	record, err := registry.Compile(actor, controlplane.CompileInput{
 		SupportID: request.Resolved.SupportID, KBDRevision: request.Resolved.KBDRevision, KBDChecksum: request.Resolved.KBDChecksum,
 		SignalsDigest: request.Resolved.SignalsDigest, ToolContractRevision: request.Resolved.ToolContractRevision,
 		PolicyRevision: request.Resolved.PolicyRevision, CompilerRevision: request.CompilerRevision,
-		Dependencies: dependencies,
+		Dependencies: dependencies, RouteSources: routeSources,
 	}, manifest, time.Now().UTC())
 	if err != nil {
 		log.Printf("bundle_factory compile_failed trace_id=%s support_id=%s stage=registry error=%v", requestTraceID(r), request.Resolved.SupportID, err)
@@ -374,6 +392,58 @@ func compileSynthetic(w http.ResponseWriter, r *http.Request, registry controlpl
 	}
 	log.Printf("bundle_factory compile trace_id=%s support_id=%s digest=%s actor_id=%s", requestTraceID(r), record.Input.SupportID, record.Digest, actor.ID)
 	writeJSON(w, http.StatusCreated, map[string]any{"bundle": bundleView(record), "synthetic": true, "trace_id": requestTraceID(r)})
+}
+
+// bindFixtureAssets 只覆盖三个已建模 qkv 信号；没有已发布实例或渲染失败时保留 C1
+// 的已冻结 sample_output，避免样例库不足导致其它 KBD 无法创建 Draft。
+func bindFixtureAssets(request *http.Request, resolved *resolvedKbd, manifest *fixture.Manifest, store fixtureasset.Store) ([]controlplane.Dependency, []controlplane.RouteSource, error) {
+	if store == nil {
+		return nil, nil, nil
+	}
+	bySignal := make(map[string]syntheticRoute, len(resolved.SyntheticRoutes))
+	for _, route := range resolved.SyntheticRoutes {
+		bySignal[route.SignalID] = route
+	}
+	dependencies := make([]controlplane.Dependency, 0)
+	dependencySeen := make(map[string]struct{})
+	routeSources := make([]controlplane.RouteSource, 0, len(manifest.Routes))
+	var firstErr error
+	for index := range manifest.Routes {
+		route := &manifest.Routes[index]
+		// 每条 Route 都有来源；QKV 成功命中后再覆盖为资产来源。
+		routeSources = append(routeSources, controlplane.RouteSource{RouteID: route.ID, SignalID: route.SignalID, SourceType: "kbd_signal_contract", SourceRef: route.SignalID, SourceDigest: resolved.SignalsDigest})
+		resolvedRoute, ok := bySignal[route.SignalID]
+		if !ok || (resolvedRoute.Tool != "qkv_alert" && resolvedRoute.Tool != "qkv_task" && resolvedRoute.Tool != "qkv_dialog") {
+			continue
+		}
+		instance, template, err := store.ResolvePublishedInstance(request.Context(), resolvedRoute.Tool, fixtureasset.Keyword(resolvedRoute.Argv))
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		stdout, err := fixtureasset.Render(template, instance, fixtureasset.Keyword(resolvedRoute.Argv))
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		route.Result.Stdout = stdout
+		routeSources[len(routeSources)-1] = controlplane.RouteSource{RouteID: route.ID, SignalID: route.SignalID, SourceType: "fixture_asset_instance", SourceRef: fmt.Sprintf("%s@%d", instance.AssetKey, instance.Revision), SourceDigest: instance.ContentDigest}
+		for _, dependency := range []controlplane.Dependency{
+			{Type: "fixture_asset", ID: instance.AssetKey, Revision: fmt.Sprint(instance.Revision), Digest: instance.ContentDigest},
+			{Type: "fixture_template", ID: template.AssetKey, Revision: fmt.Sprint(template.Revision), Digest: template.ContentDigest},
+		} {
+			key := dependency.Type + "\x00" + dependency.ID
+			if _, exists := dependencySeen[key]; !exists {
+				dependencies = append(dependencies, dependency)
+				dependencySeen[key] = struct{}{}
+			}
+		}
+	}
+	return dependencies, routeSources, firstErr
 }
 
 func reviseDraft(w http.ResponseWriter, r *http.Request, registry controlplane.Registry, parentDigest string) {
