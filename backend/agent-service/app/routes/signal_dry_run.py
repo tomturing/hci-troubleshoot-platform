@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, model_validator
 from shared.observability.logger import get_logger
 from shared.observability.metrics import SIGNAL_DRY_RUN_DURATION_SECONDS, SIGNAL_DRY_RUN_TOTAL
 from shared.signals.ai_processing import ai_item_type, ai_output_type, ai_processing_config
+from shared.signals.extractor import QFKExtractionError
 from shared.signals.matcher import evaluate_matcher
 from shared.signals.qkv_output_processing import QKVProcessingError, apply_output_processing_async
 
@@ -122,7 +123,7 @@ def _qfk_output(dataset: PreviewDataset, matcher: dict[str, Any] | None) -> str:
     return dataset.payload
 
 
-async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, trace_id: str) -> SignalDryRunResult:
+async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, db_session_factory: Any | None, trace_id: str) -> SignalDryRunResult:
     signal = body.signal
     acquire = signal.get("acquire")
     if not isinstance(acquire, dict) or not str(acquire.get("tool") or "").startswith("qfk_"):
@@ -159,6 +160,7 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, tra
                 conversation_id=f"dry-run:{trace_id}",
                 signal_id=body.unit_ref.signal_id,
                 kbd_revision=body.kbd_revision,
+                db_session_factory=db_session_factory,
             )
             value = ai_result.value
             evidence_lines = ai_result.evidence_line_numbers
@@ -218,6 +220,7 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, tra
             ai_result = await extract_ai_value(
                 output, extract, str(produce.get("type") or "string"), ai_client,
                 conversation_id=f"dry-run:{trace_id}", signal_id=body.unit_ref.signal_id, kbd_revision=body.kbd_revision,
+                db_session_factory=db_session_factory,
             )
             values[str(produce["name"])] = ai_result.value
             if body.verification_scope == "ai_step":
@@ -238,7 +241,7 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, tra
     )
 
 
-async def _evaluate_qkv(body: SignalDryRunRequest, *, ai_client: Any | None, trace_id: str) -> SignalDryRunResult:
+async def _evaluate_qkv(body: SignalDryRunRequest, *, ai_client: Any | None, db_session_factory: Any | None, trace_id: str) -> SignalDryRunResult:
     signal = body.signal
     acquire = signal.get("acquire")
     if not isinstance(acquire, dict) or not str(acquire.get("tool") or "").startswith("qkv_"):
@@ -273,6 +276,7 @@ async def _evaluate_qkv(body: SignalDryRunRequest, *, ai_client: Any | None, tra
         ai_client=ai_client,
         ai_extractor=_qkv_ai_extractor if ai_client is not None else None,
         conversation_id=f"dry-run:{trace_id}",
+        db_session_factory=db_session_factory,
     )
     statuses = [item.status for item in processed.assertions]
     status = "UNKNOWN" if "UNKNOWN" in statuses else ("FAIL" if "FAIL" in statuses else "PASS")
@@ -286,15 +290,15 @@ async def _evaluate_qkv(body: SignalDryRunRequest, *, ai_client: Any | None, tra
     )
 
 
-async def evaluate_signal_dry_run(body: SignalDryRunRequest, *, ai_client: Any | None, trace_id: str) -> SignalDryRunResult:
+async def evaluate_signal_dry_run(body: SignalDryRunRequest, *, ai_client: Any | None, trace_id: str, db_session_factory: Any | None = None) -> SignalDryRunResult:
     """领域入口，供 HTTP 路由与单元测试共用。"""
 
     computed_revision = _canonical_hash(body.signal)
     if body.draft_revision != computed_revision:
         raise ValueError("DRAFT_REVISION_MISMATCH: 草稿已变更，请重新试运行")
     if body.scope == "qfk_execution_result":
-        return await _evaluate_qfk(body, ai_client=ai_client, trace_id=trace_id)
-    return await _evaluate_qkv(body, ai_client=ai_client, trace_id=trace_id)
+        return await _evaluate_qfk(body, ai_client=ai_client, db_session_factory=db_session_factory, trace_id=trace_id)
+    return await _evaluate_qkv(body, ai_client=ai_client, db_session_factory=db_session_factory, trace_id=trace_id)
 
 
 @router.post("/signal-dry-run", response_model=SignalDryRunResult)
@@ -308,7 +312,8 @@ async def signal_dry_run(request: Request, body: SignalDryRunRequest) -> SignalD
     try:
         ai_registry = getattr(request.app.state, "ai_registry", None)
         ai_client = ai_registry.get_client("htp-agent") if ai_registry is not None else None
-        result = await evaluate_signal_dry_run(body, ai_client=ai_client, trace_id=trace_id)
+        db_session_factory = getattr(request.app.state, "db_session_factory", None)
+        result = await evaluate_signal_dry_run(body, ai_client=ai_client, db_session_factory=db_session_factory, trace_id=trace_id)
         status = result.status
         logger.info(
             event="signal_dry_run_completed", trace_id=trace_id, scope=body.scope,
@@ -317,6 +322,14 @@ async def signal_dry_run(request: Request, body: SignalDryRunRequest) -> SignalD
             dataset_id=body.dataset.dataset_id, input_sha256=result.input_sha256, status=status,
         )
         return result
+    except QFKExtractionError as exc:
+        error_code = exc.code
+        logger.warning(event="signal_dry_run_rejected", trace_id=trace_id, scope=body.scope, error_code=error_code)
+        status_code = 503 if error_code == "QFK_AI_PROCESSING_PROMPT_UNAVAILABLE" else 422
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": error_code, "message": str(exc), "trace_id": trace_id},
+        ) from exc
     except (ValueError, QKVProcessingError) as exc:
         error_code = str(exc).split(":", 1)[0] if ":" in str(exc) else "SIGNAL_DRY_RUN_INVALID"
         logger.warning(event="signal_dry_run_rejected", trace_id=trace_id, scope=body.scope, error_code=error_code)
