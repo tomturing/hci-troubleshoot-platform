@@ -33,3 +33,18 @@ def mock_settings(mocker):
 def sample_messages():
     """示例消息列表"""
     return [{"role": "user", "content": "我的虚拟机无法启动"}]
+
+
+@pytest.fixture(autouse=True)
+def ai_processing_prompt_for_unit_tests(monkeypatch):
+    """为不启动数据库的单元测试提供受控 Prompt 管理桩。"""
+
+    async def load_prompt(_factory, *, mode, output_type, conversation_id, case_id):
+        return (
+            "你是 HCI 排障平台的受控 AI 数据后处理器。"
+            f"当前处理模式：{mode}；输出类型：{output_type}。"
+            '只能返回 JSON：{"status":"success","output":结果,"evidence":[],"reason":"理由"}',
+            None,
+        )
+
+    monkeypatch.setattr("app.tools.qfk.ai_extractor._load_ai_processing_system_prompt", load_prompt)

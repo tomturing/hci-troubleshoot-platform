@@ -295,7 +295,8 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     "feature": {"type": "string"},
                     "separator": {"type": "string", "minLength": 1},
                     "cardinality": {"type": "string", "enum": ["exactly_one", "first", "last", "all"], "default": "exactly_one"},
-                    "ai_extract": {"$ref": "#/definitions/aiExtract"},
+                    "ai_processing": {"$ref": "#/definitions/aiProcessing"},
+                    "ai_extract": {"type": "object", "description": "历史兼容字段；保存新配置时请迁移为 ai_processing"},
                 },
                 "allOf": [
                     {"if": {"properties": {"type": {"const": "feature"}}, "required": ["type"]}, "then": {"required": ["feature"]}},
@@ -473,7 +474,8 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     },
                     # AI 只能在该 Extract 已确定的完整文本行中摘取字面量；
                     # 不参与 Matcher 的确定性命中判定。
-                    "ai_extract": {"$ref": "#/definitions/aiExtract"},
+                    "ai_processing": {"$ref": "#/definitions/aiProcessing"},
+                    "ai_extract": {"type": "object", "description": "历史兼容字段；保存新配置时请迁移为 ai_processing"},
                     "parser": {"type": "string", "enum": ["whitespace_table", "delimited_table"]},
                     "header": {"$ref": "#/definitions/tableHeader"},
                     "rows": {"$ref": "#/definitions/rowSelector"},
@@ -511,46 +513,29 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                                     {"required": ["parser"]},
                                     {"required": ["columns"]},
                                     {"required": ["value_key"]},
-                                    {"required": ["ai_extract"]},
+                                    {"required": ["ai_processing"]},
                                 ]
                             },
                         },
                     },
                 ],
             },
-            "aiExtract": {
+            "aiProcessing": {
                 "type": "object",
-                "description": "在确定性筛选出的完整文本行上执行受控 AI 处理；原文取值只摘录字面量，智能推导只摘录可回查源值并由代码归一化",
+                "description": "确定性取值后的可选 AI 再加工；平台按统一输出契约校验并衔接后续流程",
                 "additionalProperties": False,
                 "required": ["instruction"],
                 "properties": {
+                    "contract_version": {"type": "integer", "const": 1},
                     "instruction": {
                         "type": "string",
                         "minLength": 1,
                         "maxLength": 1000,
                     },
                     "mode": {"type": "string", "enum": ["extract", "derive"], "default": "extract"},
-                    "derive": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "required": ["normalizer", "formats", "timezone"],
-                        "properties": {
-                            "normalizer": {"const": "datetime_epoch"},
-                            "formats": {
-                                "type": "array",
-                                "minItems": 1,
-                                "maxItems": 8,
-                                "items": {"type": "string", "minLength": 1, "maxLength": 128},
-                            },
-                            "timezone": {"type": "string", "minLength": 1, "maxLength": 64},
-                        },
-                    },
+                    "output_type": {"type": "string", "enum": ["boolean", "number", "string", "array"], "default": "string"},
+                    "item_type": {"type": "string", "enum": ["boolean", "number", "string"]},
                 },
-                "allOf": [{
-                    "if": {"properties": {"mode": {"const": "derive"}}, "required": ["mode"]},
-                    "then": {"required": ["derive"]},
-                    "else": {"not": {"required": ["derive"]}},
-                }],
             },
             "jsonExtract": {
                 "type": "object",

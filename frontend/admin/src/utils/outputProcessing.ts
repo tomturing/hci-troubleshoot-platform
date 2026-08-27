@@ -45,8 +45,9 @@ export function formatDeriveExtractSummary(processing?: Record<string, any>): st
   const extract = processing.extract
   if (!extract || typeof extract !== 'object') return '直接取值'
 
-  if (extract.ai_extract?.instruction) {
-    return `AI提取「${extract.ai_extract.instruction}」`
+  if (extract.ai_processing?.instruction) {
+    const mode = extract.ai_processing.mode === 'derive' ? '智能推导' : '原文取值'
+    return `${mode}「${extract.ai_processing.instruction}」`
   }
   if (extract.type === 'split') {
     const sep = extract.separator !== undefined ? extract.separator : ','

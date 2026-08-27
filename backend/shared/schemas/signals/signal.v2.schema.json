@@ -759,8 +759,12 @@
           ],
           "default": "exactly_one"
         },
+        "ai_processing": {
+          "$ref": "#/definitions/aiProcessing"
+        },
         "ai_extract": {
-          "$ref": "#/definitions/aiExtract"
+          "type": "object",
+          "description": "历史兼容字段；保存新配置时请迁移为 ai_processing"
         }
       },
       "allOf": [
@@ -1245,8 +1249,12 @@
           ],
           "description": "提取后的确定性类型；number 支持 54%→54，不剥离容量/时长单位"
         },
+        "ai_processing": {
+          "$ref": "#/definitions/aiProcessing"
+        },
         "ai_extract": {
-          "$ref": "#/definitions/aiExtract"
+          "type": "object",
+          "description": "历史兼容字段；保存新配置时请迁移为 ai_processing"
         },
         "parser": {
           "type": "string",
@@ -1343,7 +1351,7 @@
                 },
                 {
                   "required": [
-                    "ai_extract"
+                    "ai_processing"
                   ]
                 }
               ]
@@ -1352,14 +1360,18 @@
         }
       ]
     },
-    "aiExtract": {
+    "aiProcessing": {
       "type": "object",
-      "description": "在确定性筛选出的完整文本行上执行受控 AI 处理；原文取值只摘录字面量，智能推导只摘录可回查源值并由代码归一化",
+      "description": "确定性取值后的可选 AI 再加工；平台按统一输出契约校验并衔接后续流程",
       "additionalProperties": false,
       "required": [
         "instruction"
       ],
       "properties": {
+        "contract_version": {
+          "type": "integer",
+          "const": 1
+        },
         "instruction": {
           "type": "string",
           "minLength": 1,
@@ -1373,62 +1385,25 @@
           ],
           "default": "extract"
         },
-        "derive": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "normalizer",
-            "formats",
-            "timezone"
+        "output_type": {
+          "type": "string",
+          "enum": [
+            "boolean",
+            "number",
+            "string",
+            "array"
           ],
-          "properties": {
-            "normalizer": {
-              "const": "datetime_epoch"
-            },
-            "formats": {
-              "type": "array",
-              "minItems": 1,
-              "maxItems": 8,
-              "items": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128
-              }
-            },
-            "timezone": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 64
-            }
-          }
+          "default": "string"
+        },
+        "item_type": {
+          "type": "string",
+          "enum": [
+            "boolean",
+            "number",
+            "string"
+          ]
         }
-      },
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "mode": {
-                "const": "derive"
-              }
-            },
-            "required": [
-              "mode"
-            ]
-          },
-          "then": {
-            "required": [
-              "derive"
-            ]
-          },
-          "else": {
-            "not": {
-              "required": [
-                "derive"
-              ]
-            }
-          }
-        }
-      ]
+      }
     },
     "jsonExtract": {
       "type": "object",

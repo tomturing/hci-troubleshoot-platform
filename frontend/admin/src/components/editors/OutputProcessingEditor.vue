@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * QKV 产出变量处理编辑器。
- * QKV 的输入已经是 JSON 投影后的具体值，这里只负责特征、分隔、AI 兜底和 QFK 断言。
+ * QKV 的输入已经是 JSON 投影后的具体值；AI 是确定性取值后的可选再加工。
  */
 import { computed } from 'vue'
 import { Delete, InfoFilled, Plus, VideoPlay } from '@element-plus/icons-vue'
@@ -46,7 +46,7 @@ function setMode(index: number, mode: string): void {
 function setExtractType(index: number, type: string): void {
   const current = specs.value[index]?.extract || defaultExtract()
   if (type === 'ai') {
-    update(index, { extract: { type: 'feature', feature: current.feature || 'vm_name', cardinality: current.cardinality || 'exactly_one', ai_extract: { instruction: current.ai_extract?.instruction || '' } } })
+    update(index, { extract: { type: 'feature', feature: current.feature || 'vm_name', cardinality: current.cardinality || 'exactly_one', ai_processing: { contract_version: 1, mode: 'extract', instruction: current.ai_processing?.instruction || '', output_type: 'string' } } })
     return
   }
   const next: ProcessingSpec = { type, cardinality: current.cardinality || (type === 'split' ? 'all' : 'exactly_one') }
@@ -55,33 +55,26 @@ function setExtractType(index: number, type: string): void {
   update(index, { extract: next })
 }
 function setExtractField(index: number, key: string, value: any): void { update(index, { extract: { ...(specs.value[index]?.extract || defaultExtract()), [key]: value } }) }
-function defaultAiDerive(): ProcessingSpec { return { normalizer: 'datetime_epoch', formats: ['%a %b %d %H:%M:%S %Z %Y'], timezone: 'Asia/Shanghai' } }
-function aiProcessingMode(item: ProcessingSpec): string { return item.extract?.ai_extract?.mode || 'extract' }
+function aiProcessingMode(item: ProcessingSpec): string { return item.extract?.ai_processing?.mode || 'extract' }
 function setAiProcessingMode(index: number, mode: string): void {
   const current = specs.value[index]?.extract || defaultExtract()
-  const aiExtract = current.ai_extract || {}
+  const aiProcessing = current.ai_processing || {}
   update(index, {
-    type: mode === 'derive' ? 'array' : specs.value[index]?.type || 'string',
     extract: {
       ...current,
-      ai_extract: mode === 'derive'
-        ? { ...aiExtract, mode: 'derive', instruction: aiExtract.instruction || '', derive: aiExtract.derive || defaultAiDerive() }
-        : { instruction: aiExtract.instruction || '', mode: 'extract' },
+      ai_processing: { contract_version: 1, ...aiProcessing, mode, output_type: aiProcessing.output_type || 'string' },
     },
   })
 }
 function setAiInstruction(index: number, instruction: string): void {
   const current = specs.value[index]?.extract || defaultExtract()
-  const aiExtract = current.ai_extract || {}
-  const extract = { ...current, ai_extract: aiProcessingMode(specs.value[index]) === 'derive' ? { ...aiExtract, mode: 'derive', instruction, derive: aiExtract.derive || defaultAiDerive() } : { ...aiExtract, mode: 'extract', instruction } }
-  update(index, { extract })
+  update(index, { extract: { ...current, ai_processing: { contract_version: 1, ...(current.ai_processing || {}), mode: aiProcessingMode(specs.value[index]), instruction } } })
 }
-function setAiDeriveField(index: number, key: string, value: string): void {
+function setAiOutputField(index: number, key: string, value: string): void {
   const current = specs.value[index]?.extract || defaultExtract()
-  const aiExtract = current.ai_extract || {}
-  update(index, { extract: { ...current, ai_extract: { ...aiExtract, mode: 'derive', derive: { ...(aiExtract.derive || defaultAiDerive()), [key]: key === 'formats' ? [value] : value } } } })
+  update(index, { extract: { ...current, ai_processing: { contract_version: 1, ...(current.ai_processing || {}), [key]: value } } })
 }
-function extractionMode(item: ProcessingSpec): string { return item.extract?.ai_extract ? 'ai' : (item.extract?.type || 'feature') }
+function extractionMode(item: ProcessingSpec): string { return item.extract?.ai_processing ? 'ai' : (item.extract?.type || 'feature') }
 function setMatch(index: number, match: ProcessingSpec): void { update(index, { match }) }
 </script>
 
@@ -111,13 +104,11 @@ function setMatch(index: number, match: ProcessingSpec): void { update(index, { 
             <label v-else-if="extractionMode(item) === 'split'">分隔符<el-input class="processing-control" :model-value="item.extract?.separator" placeholder="例如：（）、<>、【】、：" size="small" @input="(value: string) => setExtractField(index, 'separator', value)" /></label>
             <template v-else>
               <label>AI 处理方式<el-radio-group :model-value="aiProcessingMode(item)" size="small" @change="(value: string) => setAiProcessingMode(index, value)"><el-radio-button value="extract">原文取值</el-radio-button><el-radio-button value="derive">智能推导</el-radio-button></el-radio-group></label>
-              <label class="ai-prompt">处理说明 *<el-input :model-value="item.extract?.ai_extract?.instruction" type="textarea" :rows="2" maxlength="1000" show-word-limit :placeholder="aiProcessingMode(item) === 'derive' ? '例如：从每行识别主机系统时间' : '例如：提取第一个虚拟机名称'" @input="(value: string) => setAiInstruction(index, value)" /></label>
-              <label v-if="aiProcessingMode(item) === 'derive'">提取类型<el-select class="processing-control" :model-value="item.extract?.ai_extract?.derive?.normalizer || 'datetime_epoch'" size="small" @change="(value: string) => setAiDeriveField(index, 'normalizer', value)"><el-option label="日期时间 → Unix 秒" value="datetime_epoch" /></el-select></label>
-              <label v-if="aiProcessingMode(item) === 'derive'">结果数量<el-tag size="small" type="info" effect="plain">全部候选行</el-tag></label>
-              <label v-if="aiProcessingMode(item) === 'derive'">时间格式<el-input class="processing-control" :model-value="item.extract?.ai_extract?.derive?.formats?.[0] || ''" placeholder="%a %b %d %H:%M:%S %Z %Y" size="small" @input="(value: string) => setAiDeriveField(index, 'formats', value)" /></label>
-              <label v-if="aiProcessingMode(item) === 'derive'">时区<el-input class="processing-control" :model-value="item.extract?.ai_extract?.derive?.timezone || ''" placeholder="Asia/Shanghai" size="small" @input="(value: string) => setAiDeriveField(index, 'timezone', value)" /></label>
+              <label class="ai-prompt">处理说明 *<el-input :model-value="item.extract?.ai_processing?.instruction" type="textarea" :rows="2" maxlength="1000" show-word-limit placeholder="描述如何对上一步确定性输出进行再加工" @input="(value: string) => setAiInstruction(index, value)" /></label>
+              <label>输出类型<el-select class="processing-control" :model-value="item.extract?.ai_processing?.output_type || 'string'" size="small" @change="(value: string) => setAiOutputField(index, 'output_type', value)"><el-option label="布尔值（1/0）" value="boolean" /><el-option label="数值" value="number" /><el-option label="文本" value="string" /><el-option label="数组" value="array" /></el-select></label>
+              <label v-if="item.extract?.ai_processing?.output_type === 'array'">数组元素类型<el-select class="processing-control" :model-value="item.extract?.ai_processing?.item_type || 'string'" size="small" @change="(value: string) => setAiOutputField(index, 'item_type', value)"><el-option label="布尔值" value="boolean" /><el-option label="数值" value="number" /><el-option label="文本" value="string" /></el-select></label>
             </template>
-            <label>变量类型<el-select class="processing-control" popper-class="processing-select-popper" :model-value="item.type || 'string'" size="small" :disabled="aiProcessingMode(item) === 'derive'" @change="(value: string) => update(index, { type: value })"><el-option label="字符串" value="string" /><el-option label="整数" value="integer" /><el-option label="数字" value="number" /><el-option label="百分比" value="percentage" /><el-option label="布尔值" value="boolean" /><el-option label="数组" value="array" /></el-select></label>
+            <label>变量类型<el-select class="processing-control" popper-class="processing-select-popper" :model-value="item.type || 'string'" size="small" @change="(value: string) => update(index, { type: value })"><el-option label="字符串" value="string" /><el-option label="整数" value="integer" /><el-option label="数字" value="number" /><el-option label="百分比" value="percentage" /><el-option label="布尔值" value="boolean" /><el-option label="数组" value="array" /></el-select></label>
           </div>
           <div class="step-output final"><span>最终输出</span><code>{{ item.name || '变量名' }} → 写入变量池</code></div>
         </section>

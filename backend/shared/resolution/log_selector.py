@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from shared.schemas.log_source_catalog import LOG_MATCHER_TYPES
+from shared.signals.ai_processing import ai_processing_config
 
 _TEMPLATE_PATTERN = re.compile(r"\{\{[A-Z][A-Z0-9_]*\}\}")
 
@@ -89,9 +90,9 @@ def build_log_selector(
             ai_instruction = ""
             rows_include: list[Any] = []
             if isinstance(extract, dict):
-                ai_extract = extract.get("ai_extract")
-                if isinstance(ai_extract, dict):
-                    ai_instruction = str(ai_extract.get("instruction") or "").strip()
+                ai_processing = ai_processing_config(extract)
+                if isinstance(ai_processing, dict):
+                    ai_instruction = str(ai_processing.get("instruction") or "").strip()
                 rows = extract.get("rows")
                 include = rows.get("include") if isinstance(rows, dict) else None
                 if isinstance(include, (list, tuple)):

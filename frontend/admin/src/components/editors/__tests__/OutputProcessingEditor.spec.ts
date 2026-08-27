@@ -65,21 +65,20 @@ describe('OutputProcessingEditor', () => {
     const wrapper = mountEditor([{ mode: 'derive', input: '{{DESCRIPTION}}', name: 'VM_NAME', type: 'string', extract: { type: 'feature', feature: 'vm_name' } }])
     ;(wrapper.vm as any).setExtractType(0, 'ai')
     const latest = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as Array<Record<string, any>>
-    expect(latest[0].extract).toMatchObject({ type: 'feature', ai_extract: { instruction: '' } })
+    expect(latest[0].extract).toMatchObject({ type: 'feature', ai_processing: { instruction: '', mode: 'extract', output_type: 'string' } })
   })
 
-  it('智能推导将 QKV 输出约束为数组并保存时间归一化配置', async () => {
-    const wrapper = mountEditor([{ mode: 'derive', input: '{{DESCRIPTION}}', name: 'HOST_TIMES', type: 'string', extract: { type: 'feature', feature: 'host', ai_extract: { instruction: '识别主机时间' } } }])
+  it('智能推导使用统一输出契约', async () => {
+    const wrapper = mountEditor([{ mode: 'derive', input: '{{DESCRIPTION}}', name: 'HOST_TIMES', type: 'string', extract: { type: 'feature', feature: 'host', ai_processing: { instruction: '识别主机时间', output_type: 'string' } } }])
     ;(wrapper.vm as any).setAiProcessingMode(0, 'derive')
 
     const latest = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as Array<Record<string, any>>
     expect(latest[0]).toMatchObject({
-      type: 'array',
       extract: {
-        ai_extract: {
+        ai_processing: {
           mode: 'derive',
           instruction: '识别主机时间',
-          derive: { normalizer: 'datetime_epoch', timezone: 'Asia/Shanghai' },
+          output_type: 'string',
         },
       },
     })

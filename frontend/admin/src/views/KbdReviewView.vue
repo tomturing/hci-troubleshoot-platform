@@ -5009,9 +5009,9 @@ onUnmounted(() => clearBatchPollTimer())
                               <span class="preview-k">取值类型</span>
                               <span class="preview-v">{{ formatValueModeLabel(p.extract?.value_mode || p.type) }}</span>
                             </div>
-                            <div v-if="p.extract?.ai_extract?.instruction" class="preview-item full-width">
+                            <div v-if="p.extract?.ai_processing?.instruction" class="preview-item full-width">
                               <span class="preview-k">AI 提取</span>
-                              <span class="preview-v ai-instruction"><code>{{ p.extract.ai_extract.instruction }}</code></span>
+                              <span class="preview-v ai-instruction"><code>{{ p.extract.ai_processing.instruction }}</code></span>
                             </div>
                           </div>
                         </div>
@@ -5089,9 +5089,9 @@ onUnmounted(() => clearBatchPollTimer())
                           <span class="preview-k">取值类型</span>
                           <span class="preview-v">{{ formatValueModeLabel(sigExtract(item.sig).value_mode) }}</span>
                         </div>
-                        <div v-if="sigExtract(item.sig).ai_extract?.instruction" class="preview-item full-width">
+                        <div v-if="sigExtract(item.sig).ai_processing?.instruction" class="preview-item full-width">
                           <span class="preview-k">AI 提取</span>
-                          <span class="preview-v ai-instruction"><code>{{ sigExtract(item.sig).ai_extract.instruction }}</code></span>
+                          <span class="preview-v ai-instruction"><code>{{ sigExtract(item.sig).ai_processing.instruction }}</code></span>
                         </div>
                       </div>
                     </div>

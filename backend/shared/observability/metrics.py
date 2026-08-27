@@ -78,6 +78,12 @@ QFK_AI_PROCESSING_DURATION_SECONDS = Histogram(
     buckets=[0.05, 0.1, 0.5, 1.0, 2.5, 5.0, 15.0, 30.0, 60.0, float("inf")],
 )
 
+AI_PROCESSING_VALIDATION_FAILURES_TOTAL = Counter(
+    "hci_ai_processing_validation_failures_total",
+    "AI 统一输出契约校验失败次数",
+    labelnames=["reason", "mode", "output_type"],
+)
+
 KBD_LLM_REQUESTS_TOTAL = Counter(
     "hci_kbd_llm_requests_total",
     "KBD LLM 请求次数",

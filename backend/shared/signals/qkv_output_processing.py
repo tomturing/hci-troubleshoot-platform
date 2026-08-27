@@ -23,7 +23,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from shared.signals.ai_derive import ai_extract_mode, validate_ai_extract_config
+from shared.signals.ai_processing import ai_processing_config, validate_ai_processing_config
 from shared.signals.extractor import QFKExtractionError, extract_value
 from shared.signals.matcher import evaluate_matcher
 
@@ -141,7 +141,7 @@ def _canonicalize(spec: dict[str, Any], index: int) -> dict[str, Any]:
                 "type": "feature",
                 "feature": item.get("feature"),
                 "cardinality": item.get("cardinality", "exactly_one"),
-                "ai_extract": item.get("ai_extract"),
+                "ai_processing": item.get("ai_processing") or (ai_processing_config({"ai_extract": item.get("ai_extract")}) if item.get("ai_extract") else None),
             }
             for key in ("operation", "feature", "cardinality", "fallback", "value_type", "target_variable"):
                 if key != "target_variable":
@@ -151,7 +151,7 @@ def _canonicalize(spec: dict[str, Any], index: int) -> dict[str, Any]:
                 "type": "split",
                 "separator": item.get("separator"),
                 "cardinality": item.get("cardinality", "all"),
-                "ai_extract": item.get("ai_extract"),
+                "ai_processing": item.get("ai_processing") or (ai_processing_config({"ai_extract": item.get("ai_extract")}) if item.get("ai_extract") else None),
             }
             for key in ("operation", "separator", "cardinality", "fallback", "value_type", "target_variable"):
                 item.pop(key, None)
@@ -281,15 +281,13 @@ def validate_output_processing(specs: Any, *, available_inputs: set[str] | None 
                 raise QKVProcessingError("QKV_PROCESSING_INVALID", f"处理单元[{index + 1}] feature 不受支持")
             if extract.get("type") == "split" and not isinstance(extract.get("separator"), str):
                 raise QKVProcessingError("QKV_PROCESSING_INVALID", f"处理单元[{index + 1}] split 必须配置 separator")
-            ai_extract = extract.get("ai_extract")
+            ai_extract = ai_processing_config(extract)
             if ai_extract is not None:
                 try:
-                    ai_mode = validate_ai_extract_config(ai_extract)
+                    validate_ai_processing_config(ai_extract)
                 except ValueError as exc:
                     raise QKVProcessingError("QKV_PROCESSING_INVALID", f"处理单元[{index + 1}] AI 处理无效: {exc}") from exc
-                if ai_mode == "derive" and value_type != "array":
-                    raise QKVProcessingError("QKV_PROCESSING_INVALID", f"处理单元[{index + 1}] 智能推导必须使用数组变量类型")
-            derived.add(name)
+                derived.add(name)
         else:
             if set(item) - {"mode", "input", "scope", "match"}:
                 raise QKVProcessingError("QKV_PROCESSING_INVALID", f"处理单元[{index + 1}] assert 只能包含 input/scope/match")
@@ -407,14 +405,13 @@ async def apply_output_processing_async(
     ai_extractor: Any | None = None,
     conversation_id: str = "",
     case_id: str = "",
+    db_session_factory: Any | None = None,
 ) -> QKVProcessingResult:
-    """QKV 后处理异步入口；AI 只作为确定性 feature/split 失败后的 QFK 兜底。"""
+    """QKV 后处理异步入口：确定性取值后再执行可选 AI 后处理。"""
 
     normalized = normalize_output_processing(specs)
     validate_output_processing(normalized)
-    if not normalized or not any(
-        item.get("mode") == "derive" and (item.get("extract") or {}).get("ai_extract") for item in normalized
-    ):
+    if not normalized or not any(item.get("mode") == "derive" and ai_processing_config(item.get("extract")) for item in normalized):
         return apply_output_processing(records, normalized)
     working = [dict(record) for record in records]
     assertions: list[QKVAssertion] = []
@@ -435,32 +432,23 @@ async def apply_output_processing_async(
                 matched, observed, reason, evidence = _assert_concrete_value(value, item["match"])
                 assertions.append(QKVAssertion(index + 1, "UNKNOWN" if matched is None else ("PASS" if matched else "FAIL"), observed, reason, evidence))
                 continue
-            ai_config = (item.get("extract") or {}).get("ai_extract")
-            must_derive = ai_extract_mode(ai_config) == "derive"
             try:
-                derived = _derive_values(value, item) if not must_derive else None
-            except QKVProcessingError as deterministic_error:
-                if not ai_config:
-                    raise
+                # AI 的输入只能是确定性取值阶段已经产出的值，不能绕过前一步
+                # 读取原始记录，也不能在确定性失败时充当兜底。
+                derived = _derive_values(value, item)
+            except QKVProcessingError:
+                raise
+            ai_config = ai_processing_config(item.get("extract"))
+            if ai_config is not None:
                 derived = await _derive_with_ai(
-                    value,
+                    derived,
                     ai_config,
                     str(item.get("type") or "string"),
                     ai_client,
                     ai_extractor,
                     conversation_id,
                     case_id,
-                    deterministic_error,
-                )
-            if must_derive:
-                derived = await _derive_with_ai(
-                    value,
-                    ai_config,
-                    str(item.get("type") or "string"),
-                    ai_client,
-                    ai_extractor,
-                    conversation_id,
-                    case_id,
+                    db_session_factory=db_session_factory,
                 )
             staged.append((record, derived))
         if item["mode"] == "derive":
@@ -477,9 +465,10 @@ async def _derive_with_ai(
     ai_extractor: Any | None,
     conversation_id: str,
     case_id: str,
+    db_session_factory: Any | None = None,
     deterministic_error: QKVProcessingError | None = None,
 ) -> Any:
-    """执行受控 AI 处理；智能推导是显式主路径，原文取值才是失败兜底。"""
+    """执行统一 AI 后处理；原文取值与智能推导共用同一契约。"""
 
     if not ai_config:
         raise deterministic_error or QKVProcessingError("QKV_PROCESSING_INVALID", "QKV AI 处理缺少配置")
@@ -487,7 +476,7 @@ async def _derive_with_ai(
         raise QKVProcessingError("QFK_AI_EXTRACT_UNAVAILABLE", "QKV AI 处理客户端不可用") from deterministic_error
     if ai_extractor is None:
         raise QKVProcessingError("QFK_AI_EXTRACT_UNAVAILABLE", "QKV AI 提取器不可用") from deterministic_error
-    ai_spec = _identity_extract(value_type) | {"ai_extract": ai_config}
+    ai_spec = _identity_extract(value_type) | {"ai_processing": ai_config}
     try:
         ai_result = await ai_extractor(
             _value_text(value),
@@ -496,6 +485,7 @@ async def _derive_with_ai(
             ai_client,
             conversation_id=conversation_id,
             case_id=case_id,
+            db_session_factory=db_session_factory,
         )
     except QFKExtractionError as exc:
         raise QKVProcessingError(exc.code, exc.message) from exc

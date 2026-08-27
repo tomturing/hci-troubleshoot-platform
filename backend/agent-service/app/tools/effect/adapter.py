@@ -120,6 +120,7 @@ async def _run_observation(
         conversation_id=conversation_id,
         node_ip=node_ip,
         exec_id=exec_id,
+        db_session_factory=db_session_factory,
     )
     if not result.success:
         return False, "", result.error or "观测原语执行失败"

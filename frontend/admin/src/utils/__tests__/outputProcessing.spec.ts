@@ -108,8 +108,8 @@ describe('outputProcessing utils', () => {
       expect(formatDeriveExtractSummary({
         mode: 'derive',
         input: '{{DESCRIPTION}}',
-        extract: { type: 'feature', ai_extract: { instruction: '提取虚拟机名称' } },
-      })).toBe('AI提取「提取虚拟机名称」')
+        extract: { type: 'feature', ai_processing: { mode: 'extract', instruction: '提取虚拟机名称' } },
+      })).toBe('原文取值「提取虚拟机名称」')
     })
 
     it('处理缺失 extract', () => {
