@@ -190,8 +190,21 @@ async function saveToBundle(): Promise<void> {
     const listed = await fetch(`/api/hci-sim/v1/control-plane/bundles?support_id=${encodeURIComponent(props.supportId)}`)
     const listBody = await listed.json().catch(() => ({}))
     if (!listed.ok) throw new Error(`Bundle 控制面 HTTP ${listed.status}`)
-    const drafts = Array.isArray(listBody.bundles) ? listBody.bundles.filter((item: Record<string, unknown>) => item.status === 'draft') : []
-    if (drafts.length !== 1) throw new Error(drafts.length ? '当前 KBD 存在多个 Draft，请在 Bundle 工厂完成整理后再保存' : '当前 KBD 没有可写入的 Bundle Draft')
+    let drafts = Array.isArray(listBody.bundles) ? listBody.bundles.filter((item: Record<string, unknown>) => item.status === 'draft') : []
+    if (drafts.length > 1) throw new Error('当前 KBD 存在多个 Draft，请在 Bundle 工厂完成整理后再保存')
+    if (drafts.length === 0) {
+      // published Bundle 不能直接追加资产；先让 Gateway 根据当前 KBD C1 权威快照创建唯一 Draft。
+      const created = await fetch('/api/hci-sim/v1/control-plane/bundles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `signal-dry-run-draft:${props.supportId}:${previewResult.value?.trace_id || 'current'}` },
+        body: JSON.stringify({ support_id: props.supportId }),
+      })
+      const createdBody = await created.json().catch(() => ({}))
+      if (!created.ok) throw new Error(String(createdBody?.detail || `创建 Bundle Draft HTTP ${created.status}`))
+      const createdBundle = createdBody?.bundle
+      if (!createdBundle || createdBundle.status !== 'draft' || !createdBundle.digest) throw new Error('Bundle 控制面未返回可写入的 Draft')
+      drafts = [createdBundle]
+    }
     const response = await fetch(`/api/v1/signals/dry-run/bundles/${encodeURIComponent(String(drafts[0].digest))}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dry_run: lastDryRunRequest.value }),
     })
