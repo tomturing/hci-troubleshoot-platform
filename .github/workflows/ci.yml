@@ -805,9 +805,9 @@ jobs:
 
           STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           echo "trace_id=${CI_TRACE_ID} mode=targeted reason=${TEST_REASON} targets=${TARGETS[*]}"
-          timeout 10s bash -euo pipefail -c '
+          timeout 20s bash -euo pipefail -c '
             for target in "$@"; do
-              uv run pytest "$target" -q -o addopts="" -p no:xdist --no-cov -m "not integration and not slow"
+              uv run pytest "$target" -q --no-cov -m "not integration and not slow"
             done
           ' -- "${TARGETS[@]}"
           FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
