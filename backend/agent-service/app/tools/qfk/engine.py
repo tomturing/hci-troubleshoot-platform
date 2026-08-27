@@ -593,6 +593,7 @@ async def _qfk_exec_impl(
         # AI 不再是数值 Matcher 特殊入口，也不在确定性失败后兜底。
         if has_ai_extract(matcher_extract):
             config = ai_processing_config(matcher_extract) or {}
+            legacy_ai = isinstance(matcher_extract, dict) and "ai_processing" not in matcher_extract and "ai_extract" in matcher_extract
             configured_type = ai_output_type(config, "string")
             ai_value_type = (
                 "array<number>" if configured_type == "array" and ai_item_type(config) == "number"
@@ -642,7 +643,7 @@ async def _qfk_exec_impl(
                     "candidate_count": ai_result.candidate_count,
                 }
             }
-            if precomputed_values is None or matcher_type not in {"threshold", "delta", "trend"}:
+            if (precomputed_values is None or matcher_type not in {"threshold", "delta", "trend"}) and not legacy_ai:
                 # 文本/布尔/非数值数组 Matcher 消费 AI 的第一步输出；使用受控
                 # identity extract，避免再次读取原始候选或触发第二次 AI 调用。
                 ai_text = json.dumps(ai_result.value, ensure_ascii=False) if isinstance(ai_result.value, (list, dict)) else str(ai_result.value)

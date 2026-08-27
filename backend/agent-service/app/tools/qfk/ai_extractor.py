@@ -129,6 +129,31 @@ def _output_is_grounded(output: Any, evidence_lines: list[str]) -> bool:
     return True
 
 
+def _upgrade_legacy_response(payload: Any, candidates: dict[str, str]) -> Any:
+    """读取旧版本响应并立刻转换为统一契约；新运行路径不再产生旧字段。"""
+
+    if not isinstance(payload, dict) or "status" in payload:
+        return payload
+    if payload.get("ok") is True and "value" in payload:
+        refs = payload.get("evidence_lines") or []
+        evidence = [
+            {"ref": f"line:{int(number)}", "quote": candidates[f"line:{int(number)}"]}
+            for number in refs
+            if f"line:{int(number)}" in candidates
+        ]
+        return {"status": "success", "output": payload["value"], "evidence": evidence, "reason": "兼容历史 AI 响应"}
+    if payload.get("ok") is True and isinstance(payload.get("records"), list):
+        values = [item.get("source_value") for item in payload["records"] if isinstance(item, dict) and "source_value" in item]
+        refs = [number for item in payload["records"] if isinstance(item, dict) for number in item.get("evidence_lines") or []]
+        evidence = [
+            {"ref": f"line:{int(number)}", "quote": candidates[f"line:{int(number)}"]}
+            for number in refs
+            if f"line:{int(number)}" in candidates
+        ]
+        return {"status": "success", "output": values, "evidence": evidence, "reason": "兼容历史 AI 响应"}
+    return payload
+
+
 async def _extract_ai_value_impl(
     output: str,
     spec: dict[str, Any],
@@ -178,6 +203,7 @@ async def _extract_ai_value_impl(
             update_observation(observation, output={"status": "failed", "error": str(exc), "raw_response": raw_response[:2000]}, metadata={"response_chars": len(raw_response), "json_parse_failed": True})
             raise QFKExtractionError("QFK_AI_PROCESSING_FAILED", f"AI 处理调用或 JSON 解析失败: {exc}") from exc
         try:
+            payload = _upgrade_legacy_response(payload, candidates)
             if not isinstance(payload, dict) or payload.get("status") != "success":
                 reason = payload.get("reason") if isinstance(payload, dict) else "返回不是成功结构"
                 raise QFKExtractionError("QFK_AI_PROCESSING_FAILED", f"AI 无法处理：{reason or '未说明原因'}")
