@@ -208,7 +208,7 @@ function setNumericValueMode(mode: 'constant' | 'variable'): void {
       />
       <div v-if="showStepTitle" class="predicate-order-title">第二步：判断</div>
       <el-alert
-        v-if="['threshold', 'delta', 'trend'].includes(matcherType) && matcher.extract?.ai_extract?.instruction"
+        v-if="['threshold', 'delta', 'trend'].includes(matcherType) && matcher.extract?.ai_processing?.instruction"
         type="info"
         :closable="false"
         show-icon

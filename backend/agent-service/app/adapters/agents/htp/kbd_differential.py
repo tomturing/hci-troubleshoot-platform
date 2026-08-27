@@ -1783,7 +1783,7 @@ class KBDDiagnostic:
                 return {}, f"QFK 产出变量 {name} AI 提取失败：{exc}"
             values[name] = result.value
             logger.info(
-                event="qfk_ai_extract_produce_ready",
+                event="qfk_ai_processing_produce_ready",
                 name=name,
                 candidate_count=result.candidate_count,
                 evidence_line_numbers=result.evidence_line_numbers,

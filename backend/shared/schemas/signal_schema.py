@@ -31,7 +31,7 @@ from shared.schemas.log_source_catalog import (
 )
 from shared.schemas.signal_generation import current_tool_contract_revision
 from shared.schemas.signal_output import derive_signal_requires
-from shared.signals.ai_derive import ai_extract_mode, validate_ai_extract_config
+from shared.signals.ai_processing import ai_processing_config, ai_processing_mode, validate_ai_processing_config
 from shared.signals.qkv_output_processing import QKVProcessingError, validate_output_processing
 
 _SIGNALS_DIR = Path(__file__).resolve().parent / "signals"
@@ -814,12 +814,12 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                 consumer_type="matcher",
             )
             if (
-                ai_extract_mode(matcher["extract"].get("ai_extract")) == "derive"
+                ai_processing_mode(ai_processing_config(matcher["extract"])) == "derive"
                 and str(matcher.get("type") or "") not in {"threshold", "delta", "trend"}
             ):
                 raise ValidationError(
                     f"signals[{index}].match 的智能推导仅支持 threshold/delta/trend 数值判定",
-                    path=["signals", index, "match", "extract", "ai_extract", "mode"],
+                    path=["signals", index, "match", "extract", "ai_processing", "mode"],
                 )
             if str((matcher.get("extract") or {}).get("cardinality") or "") == "count":
                 if matcher.get("type") != "threshold":
@@ -899,17 +899,17 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                             path=["signals", index, "acquire", "args", "file"],
                         ) from exc
                 supports_direct_predicate = matcher_type in source.get("predicates", [])
-                numeric_ai_extract = (
+                numeric_ai_processing = (
                     matcher_type in {"threshold", "delta", "trend"}
                     and isinstance(matcher.get("extract"), dict)
-                    and isinstance((matcher.get("extract") or {}).get("ai_extract"), dict)
-                    and str(((matcher.get("extract") or {}).get("ai_extract") or {}).get("instruction") or "").strip()
+                    and isinstance(ai_processing_config(matcher.get("extract")), dict)
+                    and str((ai_processing_config(matcher.get("extract")) or {}).get("instruction") or "").strip()
                     and not (
                         matcher_type == "threshold"
                         and str(matcher.get("aggregation") or "first_number") in {"line_count", "duration_seconds"}
                     )
                 )
-                if not supports_direct_predicate and not numeric_ai_extract:
+                if not supports_direct_predicate and not numeric_ai_processing:
                     allowed_predicates = ", ".join(str(item) for item in source.get("predicates", []))
                     raise ValidationError(
                         f"signals[{index}] 的日志源 {source.get('source_id')} / parser={source.get('parser')} "
@@ -964,14 +964,12 @@ def _validate_value_extract(
         return ValidationError(message, path=location_path)
 
     extract_type = str(extract.get("type") or "")
-    ai_config = extract.get("ai_extract")
+    ai_config = extract.get("ai_processing")
     if ai_config is not None:
         try:
-            ai_mode = validate_ai_extract_config(ai_config)
+            validate_ai_processing_config(ai_config)
         except ValueError as exc:
-            raise _error(f"{location}.ai_extract 无效: {exc}", ".ai_extract") from exc
-        if ai_mode == "derive" and consumer_type not in {"matcher", "array"}:
-            raise _error(f"{location} 的智能推导只能产出 array 或供数值 Matcher 使用", ".ai_extract.mode")
+            raise _error(f"{location}.ai_processing 无效: {exc}", ".ai_processing") from exc
     if extract_type == "json":
         cardinality = str(extract.get("cardinality") or "exactly_one")
         if consumer_type == "object" and cardinality == "all":
@@ -996,7 +994,7 @@ def _validate_value_extract(
             raise _error(f"{location} 的统计行数只能用于数值阈值判断或 integer/number 变量", ".cardinality")
         if str(extract.get("value_mode") or "") != "integer":
             raise _error(f"{location} 的统计行数必须使用 value_mode=integer", ".value_mode")
-        incompatible = [key for key in ("parser", "columns", "value_key", "ai_extract") if key in extract]
+        incompatible = [key for key in ("parser", "columns", "value_key", "ai_processing") if key in extract]
         if incompatible:
             raise _error(
                 f"{location} 的统计行数不能同时配置 {', '.join(incompatible)}；它只统计行选择结果",

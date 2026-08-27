@@ -30,7 +30,7 @@ const hasAiProcessing = computed(() => {
     if (!value || typeof value !== 'object') return false
     if (Array.isArray(value)) return value.some(visit)
     const object = value as Record<string, unknown>
-    if (object.ai_extract) return true
+    if (object.ai_processing || object.ai_extract) return true
     return Object.values(object).some(visit)
   }
   return visit(props.signal?.match) || visit(props.signal?.orchestrate?.produces) || visit(props.signal?.orchestrate?.output_processing)

@@ -46,7 +46,7 @@ function setCardinality(value: string) {
   }
   // 行数是筛选结果的整数投影；表头仍可定义数据行边界，列解析和 AI 配置必须清理。
   const next = { ...extract.value, cardinality: 'count', value_mode: 'integer' }
-  for (const key of ['parser', 'columns', 'value_key', 'ai_extract']) delete next[key]
+  for (const key of ['parser', 'columns', 'value_key', 'ai_processing', 'ai_extract']) delete next[key]
   setExtract(next)
 }
 function removeField(key: string) {

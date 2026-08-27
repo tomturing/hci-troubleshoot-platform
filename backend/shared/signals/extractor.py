@@ -97,7 +97,7 @@ def extract_value(output: str, spec: dict[str, Any], value_type: str = "string")
 
 
 def _extract_structured_text_values(output: str, spec: dict[str, Any], value_type: str) -> ExtractionResult:
-    allowed = {"type", "rows", "parser", "header", "columns", "value_key", "delimiter", "cardinality", "source", "value_mode", "ai_extract"}
+    allowed = {"type", "rows", "parser", "header", "columns", "value_key", "delimiter", "cardinality", "source", "value_mode", "ai_processing", "ai_extract"}
     unsupported = sorted(set(spec) - allowed)
     if unsupported:
         raise QFKExtractionError("QFK_EXTRACT_INVALID_SPEC", f"不支持旧版或未知 text extract 字段: {', '.join(unsupported)}")
@@ -109,7 +109,7 @@ def _extract_structured_text_values(output: str, spec: dict[str, Any], value_typ
     if cardinality == "count":
         if str(spec.get("value_mode") or "") != "integer":
             raise QFKExtractionError("QFK_EXTRACT_INVALID_SPEC", "统计行数必须配置 value_mode=integer")
-        incompatible = [key for key in ("parser", "columns", "value_key", "ai_extract") if key in spec]
+        incompatible = [key for key in ("parser", "columns", "value_key", "ai_processing", "ai_extract") if key in spec]
         if incompatible:
             raise QFKExtractionError(
                 "QFK_EXTRACT_INVALID_SPEC",

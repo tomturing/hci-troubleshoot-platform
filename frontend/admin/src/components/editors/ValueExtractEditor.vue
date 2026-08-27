@@ -31,7 +31,7 @@ const mode = computed(() => {
   return isTextSelection ? 'text' : 'complete'
 })
 const isNumericConsumer = computed(() => props.consumerKind === 'matcher' && ['number', 'integer'].includes(props.defaultValueMode))
-const aiProcessingMode = computed(() => extract.value.ai_extract?.mode || 'extract')
+const aiProcessingMode = computed(() => extract.value.ai_processing?.mode || 'extract')
 
 function completeExtract(): Record<string, any> {
   return {
@@ -40,7 +40,7 @@ function completeExtract(): Record<string, any> {
   }
 }
 function setMode(next: string) {
-  const aiExtract = extract.value.ai_extract
+  const aiProcessing = extract.value.ai_processing
   if (next === 'json') {
     extract.value = {
       type: 'json', path: '', cardinality: 'exactly_one', source: 'stdout',
@@ -57,7 +57,7 @@ function setMode(next: string) {
       value_mode: props.defaultValueMode,
     }
   } else extract.value = completeExtract()
-  if (next !== 'json' && aiExtract) extract.value = { ...extract.value, ai_extract: aiExtract }
+  if (next !== 'json' && aiProcessing) extract.value = { ...extract.value, ai_processing: aiProcessing }
 }
 function setField(key: string, value: any) {
   extract.value = { ...extract.value, [key]: value }
@@ -69,39 +69,27 @@ function setAiInstruction(value: string) {
   const next = { ...extract.value }
   const instruction = value.trim()
   if (instruction) {
-    const current = next.ai_extract || {}
-    next.ai_extract = aiProcessingMode.value === 'derive'
-      ? { ...current, mode: 'derive', instruction, derive: current.derive || defaultAiDerive() }
-      : { ...current, mode: 'extract', instruction }
+    const current = next.ai_processing || {}
+    next.ai_processing = { ...current, mode: aiProcessingMode.value, instruction, output_type: current.output_type || defaultAiOutputType() }
   }
-  else delete next.ai_extract
+  else delete next.ai_processing
   extract.value = next
 }
-function defaultAiDerive(): Record<string, any> {
-  return {
-    normalizer: 'datetime_epoch',
-    formats: ['%a %b %d %H:%M:%S %Z %Y'],
-    timezone: 'Asia/Shanghai',
-  }
+function defaultAiOutputType(): string {
+  return props.defaultValueMode === 'boolean' ? 'boolean' : props.defaultValueMode === 'number' || props.defaultValueMode === 'integer' ? 'number' : props.defaultValueMode === 'array' || props.allowRowCount ? 'array' : 'string'
 }
 function setAiProcessingMode(nextMode: string) {
-  const current = extract.value.ai_extract || {}
+  const current = extract.value.ai_processing || {}
   extract.value = {
     ...extract.value,
-    ai_extract: nextMode === 'derive'
-      ? { ...current, mode: 'derive', instruction: current.instruction || '', derive: current.derive || defaultAiDerive() }
-      : { instruction: current.instruction || '', mode: 'extract' },
+    ai_processing: { ...current, mode: nextMode, instruction: current.instruction || '', output_type: current.output_type || defaultAiOutputType() },
   }
 }
-function setAiDeriveField(key: string, value: string) {
-  const current = extract.value.ai_extract || {}
+function setAiOutputType(value: string) {
+  const current = extract.value.ai_processing || {}
   extract.value = {
     ...extract.value,
-    ai_extract: {
-      ...current,
-      mode: 'derive',
-      derive: { ...(current.derive || defaultAiDerive()), [key]: key === 'formats' ? [value] : value },
-    },
+    ai_processing: { ...current, output_type: value },
   }
 }
 
@@ -152,30 +140,23 @@ watch(() => props.modelValue, value => {
       </el-form-item>
       <el-form-item label="处理说明 *">
         <el-input
-          :model-value="extract.ai_extract?.instruction || ''"
+          :model-value="extract.ai_processing?.instruction || ''"
           type="textarea"
           :rows="2"
           maxlength="1000"
           show-word-limit
-          :placeholder="aiProcessingMode === 'derive' ? '例如：从每行识别主机系统时间' : '可选，例如：提取其中的第一个 IP 地址'"
+          placeholder="例如：提取每行中的主机时间并判断最大差值是否超过 2 秒"
           @input="setAiInstruction"
         />
       </el-form-item>
-      <template v-if="aiProcessingMode === 'derive'">
-        <el-form-item label="提取类型">
-          <el-select :model-value="extract.ai_extract?.derive?.normalizer || 'datetime_epoch'" @change="(value: string) => setAiDeriveField('normalizer', value)">
-            <el-option label="日期时间 → Unix 秒" value="datetime_epoch" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="结果数量"><el-tag type="info" effect="plain">全部候选行</el-tag></el-form-item>
-        <el-form-item label="时间格式"><el-input :model-value="extract.ai_extract?.derive?.formats?.[0] || ''" placeholder="%a %b %d %H:%M:%S %Z %Y" @input="(value: string) => setAiDeriveField('formats', value)" /></el-form-item>
-        <el-form-item label="时区"><el-input :model-value="extract.ai_extract?.derive?.timezone || ''" placeholder="Asia/Shanghai" @input="(value: string) => setAiDeriveField('timezone', value)" /></el-form-item>
-      </template>
+      <el-form-item label="输出类型 *">
+        <el-select :model-value="extract.ai_processing?.output_type || defaultAiOutputType()" @change="setAiOutputType">
+          <el-option label="布尔值（1/0）" value="boolean" /><el-option label="数值" value="number" /><el-option label="文本" value="string" /><el-option label="数组" value="array" />
+        </el-select>
+      </el-form-item>
       <div class="field-hint">
-        <template v-if="aiProcessingMode === 'derive'">AI 只能标注每行中原样出现的源时间；平台按上述时间格式和时区归一化，再由 threshold 的“极差”聚合与代码完成判断。</template>
-        <template v-else>平台先按当前取值配置从完整输出确定候选行，再让 AI 从候选原文中提取值；AI 返回值和引用行必须可逐字回查，否则本次信号失败。</template>
-        <template v-if="aiProcessingMode === 'extract' && isNumericConsumer">当前为数值判断：threshold 需要一个数；delta/trend 需要 AI 按日志出现顺序返回数值数组，第二步只做确定性比较。</template>
-        <template v-else-if="aiProcessingMode === 'extract'">当前为文本判断/产出：AI 仅提供已溯源的取值证据，命中结论仍由确定性规则决定。</template>
+        AI 是确定性取值后的可选再加工。它返回结构化输出、证据和理由，平台校验通过后才作为第一步输出交给 Matcher 或变量处理。
+        <template v-if="isNumericConsumer">数值 Matcher 的阈值、变化量和趋势计算仍由代码执行。</template>
       </div>
     </el-form>
   </div>

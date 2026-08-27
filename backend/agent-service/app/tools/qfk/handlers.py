@@ -31,6 +31,7 @@ from shared.schemas.log_source_catalog import (
     normalize_log_path,
     resolve_log_source,
 )
+from shared.signals.ai_processing import ai_processing_config
 
 from app.tools.qfk.signal import (
     BackendSignal,
@@ -181,15 +182,15 @@ class LogKeywordHandler(BackendSignalHandler):
         elif matcher_type in {"threshold", "delta", "trend"}:
             metric = matcher.get("metric") or signal.resource_keyword
             if not isinstance(metric, str) or not metric:
-                # 对齐 2026-08-07 契约：数值 Matcher 配置了 ai_extract.instruction 时，
+                # 数值 Matcher 配置了统一 AI 后处理时，
                 # 走 "AI 类型化取值" 通道，数值比较由 AI 完成，命令只需用 filter_keywords/keyword
                 # 作为日志粗筛 pattern，不再强制要求 metric 字段。
                 extract = matcher.get("extract") if isinstance(matcher, dict) else None
                 ai_instruction = ""
                 if isinstance(extract, dict):
-                    ai_extract = extract.get("ai_extract")
-                    if isinstance(ai_extract, dict):
-                        ai_instruction = str(ai_extract.get("instruction") or "")
+                    ai_processing = ai_processing_config(extract)
+                    if isinstance(ai_processing, dict):
+                        ai_instruction = str(ai_processing.get("instruction") or "")
                 if ai_instruction:
                     # 关键字事实的权威来源是 matcher.extract.rows.include（如
                     # {"mode":"keywords","include":["info block-jobs","Completed"]}），
@@ -298,15 +299,15 @@ class LogKeywordHandler(BackendSignalHandler):
         selector, use_extended, matcher_type = self._matcher_selector(signal)
         if matcher_type in LOG_MATCHER_TYPES and matcher_type not in source["predicates"]:
             # 对齐 2026-08-07 QFK 取值执行契约：数值 Matcher（threshold/delta/trend）在配置了
-            # ai_extract.instruction 时，允许走 "AI 类型化取值 → 确定性判断" 通道，日志源
+            # ai_processing.instruction 时，允许走 "确定性取值 → AI 后处理 → 确定性判断" 通道，日志源
             # catalog 无需直接支持该 predicate；未配置 AI 提取时仍按 catalog 单一事实源 fail closed。
             numeric_matcher = matcher_type in {"threshold", "delta", "trend"}
             extract = (signal.matcher or {}).get("extract") if isinstance(signal.matcher, dict) else None
             ai_instruction = ""
             if isinstance(extract, dict):
-                ai_extract = extract.get("ai_extract")
-                if isinstance(ai_extract, dict):
-                    ai_instruction = str(ai_extract.get("instruction") or "")
+                ai_processing = ai_processing_config(extract)
+                if isinstance(ai_processing, dict):
+                    ai_instruction = str(ai_processing.get("instruction") or "")
             if not (numeric_matcher and ai_instruction):
                 raise CommandBuildError(
                     f"日志源 {source['source_id']} 的 parser={source['parser']} 不支持 {matcher_type} predicate"
