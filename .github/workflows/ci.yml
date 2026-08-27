@@ -5,6 +5,8 @@ on:
     branches: [main]
   push:
     branches: [main]
+  merge_group:
+    branches: [main]
   workflow_dispatch:
     inputs:
       reason:
@@ -45,9 +47,14 @@ jobs:
       # frontend 改用 fe-real step 的确定性 git diff 判定（见下方注释），
       # 不再直接依赖 dorny/paths-filter（其在 PR 事件下对 frontend/** 误判为 true）。
       frontend: ${{ steps.fe-real.outputs.frontend }}
+      frontend_scope: ${{ steps.pr-frontend-plan.outputs.scope || 'full' }}
+      frontend_reason: ${{ steps.pr-frontend-plan.outputs.reason || '非 PR 事件运行完整前端回归' }}
       platform_helm: ${{ steps.filter.outputs.platform_helm }}
       docs: ${{ steps.filter.outputs.docs }}
       module_docs: ${{ steps.filter.outputs.module_docs }}
+      unit_test_mode: ${{ steps.pr-unit-plan.outputs.mode || 'full' }}
+      unit_test_targets: ${{ steps.pr-unit-plan.outputs.targets || '' }}
+      unit_test_reason: ${{ steps.pr-unit-plan.outputs.reason || '非 PR 事件运行完整回归' }}
       image_matrix: ${{ steps.image-plan.outputs.matrix || '[]' }}
       has_images: ${{ steps.image-plan.outputs.has_images || 'false' }}
       deploy_services: ${{ steps.image-plan.outputs.deploy_services || '' }}
@@ -127,7 +134,9 @@ jobs:
             scripts/ci/test_resolve_release_baseline.py \
             scripts/ci/test_resolve_image_build_plan.py \
             scripts/ci/test_check_digest_pin_exempt.py \
-            scripts/ci/test_update_hci_sim_promotion.py
+            scripts/ci/test_update_hci_sim_promotion.py \
+            scripts/ci/resolve_pr_frontend_targets.py \
+            scripts/ci/test_resolve_pr_frontend_targets.py
           uvx ruff format --check \
             scripts/ci/resolve_release_baseline.py \
             scripts/ci/resolve_image_build_plan.py \
@@ -136,12 +145,15 @@ jobs:
             scripts/ci/test_resolve_release_baseline.py \
             scripts/ci/test_resolve_image_build_plan.py \
             scripts/ci/test_check_digest_pin_exempt.py \
-            scripts/ci/test_update_hci_sim_promotion.py
+            scripts/ci/test_update_hci_sim_promotion.py \
+            scripts/ci/resolve_pr_frontend_targets.py \
+            scripts/ci/test_resolve_pr_frontend_targets.py
           uv run --no-project --with pytest --with pytest-xdist pytest \
             scripts/ci/test_resolve_release_baseline.py \
             scripts/ci/test_resolve_image_build_plan.py \
             scripts/ci/test_check_digest_pin_exempt.py \
             scripts/ci/test_update_hci_sim_promotion.py \
+            scripts/ci/test_resolve_pr_frontend_targets.py \
             -q
 
       # 确定性前端改动判定（覆盖 dorny/paths-filter 的 frontend 输出）。
@@ -166,6 +178,32 @@ jobs:
           else
             echo "frontend=false" >> "$GITHUB_OUTPUT"
           fi
+
+      # 快速门禁只接受直接改动的单元测试或同名服务测试；共享依赖等未知
+      # 影响范围会输出 full，由 unit-tests 走完整回归，避免路径选择漏测。
+      - name: 解析 PR 快速单元测试目标
+        id: pr-unit-plan
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git -c core.quotepath=false diff --name-only "$BASE_SHA" "$HEAD_SHA" > /tmp/pr-changed-files.txt
+          python3 scripts/ci/resolve_pr_fast_test_targets.py \
+            --changed-files /tmp/pr-changed-files.txt \
+            --github-output "$GITHUB_OUTPUT"
+
+      # PR 只构建实际受影响的前端应用；共享包、锁文件和未知映射自动回退全量。
+      - name: 解析 PR 前端测试与构建范围
+        id: pr-frontend-plan
+        if: github.event_name == 'pull_request'
+        run: |
+          git -c core.quotepath=false diff --name-only \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}" > /tmp/pr-changed-files.txt
+          python3 scripts/ci/resolve_pr_frontend_targets.py \
+            --changed-files /tmp/pr-changed-files.txt \
+            --github-output "$GITHUB_OUTPUT"
 
       # 主干发布不能只比较相邻两个 commit：上一轮发布可能在镜像构建阶段被
       # 后续 main push 取消，随后到达的空 diff push 会把尚未发布的改动误判为无需构建。
@@ -334,6 +372,7 @@ jobs:
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'merge_group' ||
       (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -359,43 +398,69 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [changes]
+    env:
+      CI_TRACE_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-frontend-check
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-
-      - name: 安装 Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 20
+          # 前端门禁不消费后端源码；稀疏检出缩短 hosted runner 的固定启动时间。
+          sparse-checkout: frontend
 
       - name: 安装 pnpm
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
           version: 9
 
-      - name: 获取 pnpm store 路径
-        id: pnpm-cache-dir
-        run: echo "dir=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
-
-      - name: 缓存 pnpm store
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+      - name: 安装 Node.js 并恢复 pnpm 缓存
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          path: ${{ steps.pnpm-cache-dir.outputs.dir }}
-          key: ${{ runner.os }}-pnpm-${{ hashFiles('frontend/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: 输出前端门禁范围
+        run: |
+          echo "trace_id=$CI_TRACE_ID frontend_scope=${{ needs.changes.outputs.frontend_scope }}"
+          echo "reason=${{ needs.changes.outputs.frontend_reason }}"
 
       - name: 安装前端依赖
         run: pnpm --dir frontend install --frozen-lockfile
 
       - name: 运行前端单元测试
-        run: pnpm --filter @hci/customer test
+        env:
+          FRONTEND_SCOPE: ${{ needs.changes.outputs.frontend_scope }}
+        run: |
+          case "$FRONTEND_SCOPE" in
+            admin)
+              if find frontend/admin -type f \( -name '*.spec.*' -o -name '*.test.*' \) -print -quit | grep -q .; then
+                pnpm --filter @hci/admin test
+              else
+                echo 'admin 未发现前端单元测试文件，跳过'
+              fi
+              ;;
+            customer) pnpm --filter @hci/customer test ;;
+            *) pnpm --dir frontend -r --if-present test ;;
+          esac
 
       - name: 构建前端工作区
-        run: pnpm --dir frontend -r build
+        env:
+          FRONTEND_SCOPE: ${{ needs.changes.outputs.frontend_scope }}
+          IS_PR: ${{ github.event_name == 'pull_request' }}
+        run: |
+          if [ "$IS_PR" = 'true' ] && [ "$FRONTEND_SCOPE" != 'full' ]; then
+            # 快速 PR 门禁验证 Vite 生产构建；vue-tsc 类型检查在完整回归中执行。
+            pnpm --filter "@hci/$FRONTEND_SCOPE" exec vite build
+            exit 0
+          fi
+          case "$FRONTEND_SCOPE" in
+            admin) pnpm --filter @hci/admin build ;;
+            customer) pnpm --filter @hci/customer build ;;
+            *) pnpm --dir frontend -r build ;;
+          esac
 
   agent-reliability-regression:
     name: agent-reliability-regression
@@ -668,16 +733,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [changes]
+    env:
+      HCI_TESTING: "1"
+      CI_TRACE_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-unit-tests
     if: |
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
+        github.event_name == 'merge_group' ||
+        (github.event_name == 'pull_request' && (needs.changes.outputs.backend == 'true' || needs.changes.outputs.unit_test_mode == 'full'))
       )
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: 安装 Go
+        if: github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full'
         uses: actions/setup-go@v5
         with:
           go-version: "1.26.5"
@@ -703,7 +773,38 @@ jobs:
       - name: 安装依赖
         run: uv sync --group dev
 
-      - name: 运行单元测试（含覆盖率）
+      - name: 运行 PR 受影响单元测试
+        if: github.event_name == 'pull_request' && needs.changes.outputs.unit_test_mode == 'targeted'
+        env:
+          TEST_TARGETS: ${{ needs.changes.outputs.unit_test_targets }}
+          TEST_REASON: ${{ needs.changes.outputs.unit_test_reason }}
+        run: |
+          mapfile -t TARGETS <<< "$TEST_TARGETS"
+          if [[ "${#TARGETS[@]}" -eq 0 || -z "${TARGETS[0]}" ]]; then
+            echo "快速测试计划没有目标，拒绝将空集合标记为成功"
+            exit 1
+          fi
+
+          STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "trace_id=${CI_TRACE_ID} mode=targeted reason=${TEST_REASON} targets=${TARGETS[*]}"
+          timeout 10s bash -euo pipefail -c '
+            for target in "$@"; do
+              uv run pytest "$target" -q -o addopts="" -p no:xdist --no-cov -m "not integration and not slow"
+            done
+          ' -- "${TARGETS[@]}"
+          FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          {
+            echo "### PR 快速单元测试"
+            echo
+            echo "- 调用链：\`${CI_TRACE_ID}\`"
+            echo "- 模式：受影响测试"
+            echo "- 开始：${STARTED_AT}"
+            echo "- 结束：${FINISHED_AT}"
+            echo "- 目标：\`${TARGETS[*]}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 运行完整单元测试（含覆盖率）
+        if: github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full'
         run: |
           # 各服务 app/ 包名相同，pytest 单进程 sys.modules 会跨服务污染
           # 分进程运行保证各自 sys.modules 隔离，--cov-append 合并覆盖率
@@ -743,9 +844,11 @@ jobs:
             -m "not integration and not slow"
 
       - name: 验证在线/离线诊断 KBD 样例闭环
+        if: github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full'
         run: make diagnosis-sample-preflight
 
       - name: 验证 Diagnosis Sample Lab（诊断样例实验室）Go Runtime
+        if: github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full'
         working-directory: hci_sim
         run: |
           go test -p 4 ./...
@@ -753,6 +856,7 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -o /tmp/hci-sim-diagnosis-lab ./cmd/hci-sim
 
       - name: 运行离线采集 Go 运行时测试
+        if: github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full'
         working-directory: backend/diagnosis-service/offline-collector
         run: |
           go test -p 4 ./...
@@ -762,7 +866,7 @@ jobs:
 
       - name: 上传覆盖率报告
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238
-        if: always()
+        if: always() && (github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full')
         with:
           file: ./coverage.xml
           fail_ci_if_error: false
@@ -776,7 +880,8 @@ jobs:
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
+        github.event_name == 'merge_group' ||
+        (github.event_name == 'pull_request' && needs.changes.outputs.unit_test_mode == 'full')
       )
 
     services:
@@ -833,7 +938,8 @@ jobs:
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
+        github.event_name == 'merge_group' ||
+        (github.event_name == 'pull_request' && needs.changes.outputs.unit_test_mode == 'full')
       )
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
