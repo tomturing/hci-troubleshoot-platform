@@ -17,13 +17,13 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 from shared.observability.logger import get_logger
 from shared.observability.metrics import SIGNAL_DRY_RUN_DURATION_SECONDS, SIGNAL_DRY_RUN_TOTAL
+from shared.signals.ai_extractor import extract_ai_value, has_ai_extract
 from shared.signals.ai_processing import ai_item_type, ai_output_type, ai_processing_config
 from shared.signals.extractor import QFKExtractionError
 from shared.signals.matcher import evaluate_matcher
 from shared.signals.qkv_output_processing import QKVProcessingError, apply_output_processing_async
 
 from app.config import settings
-from shared.signals.ai_extractor import extract_ai_value, has_ai_extract
 
 router = APIRouter(prefix="/internal", tags=["signal-dry-run"])
 logger = get_logger("signal-dry-run")

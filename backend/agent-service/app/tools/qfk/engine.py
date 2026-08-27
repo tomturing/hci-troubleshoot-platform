@@ -25,7 +25,6 @@ from shared.signals.matcher import evaluate_matcher
 
 from app.core.utils import smart_truncate
 from app.tools.acli.executor import exec_result_observation
-from app.tools.qfk.ai_extractor import extract_ai_value, has_ai_extract
 from app.tools.qfk.extractor import get_complete_output
 from app.tools.qfk.handlers import HandlerRegistry
 from app.tools.qfk.resolution import resolve_backend_signal
