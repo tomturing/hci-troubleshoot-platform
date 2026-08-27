@@ -60,6 +60,26 @@ def test_shared_code_change_fails_closed_to_full_regression(tmp_path: Path) -> N
     assert plan.targets == ()
 
 
+def test_shared_signal_change_uses_audited_fast_suite(tmp_path: Path) -> None:
+    plan = resolve_test_plan(["backend/shared/signals/ai_extractor.py"], tmp_path)
+
+    assert plan.mode == "targeted"
+    assert "backend/shared/tests/test_ai_extractor.py" in plan.targets
+    assert "backend/agent-service/tests/unit/test_signal_dry_run.py" in plan.targets
+
+
+def test_signal_change_with_unknown_shared_file_falls_back_to_full(tmp_path: Path) -> None:
+    plan = resolve_test_plan(
+        [
+            "backend/shared/signals/ai_extractor.py",
+            "backend/shared/observability/otel.py",
+        ],
+        tmp_path,
+    )
+
+    assert plan.mode == "full"
+
+
 def test_test_infrastructure_change_fails_closed_to_full_regression(tmp_path: Path) -> None:
     plan = resolve_test_plan(["backend/agent-service/pyproject.toml", "Makefile"], tmp_path)
 

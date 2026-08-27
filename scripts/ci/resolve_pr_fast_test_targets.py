@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 MAX_FAST_SERVICES = 1
-MAX_FAST_TARGETS = 2
+MAX_FAST_TARGETS = 8
 GLOBAL_DEPENDENCY_PREFIXES = (
     "backend/shared/",
     "backend/conftest.py",
@@ -21,6 +21,33 @@ GLOBAL_DEPENDENCY_FILES = {
     "uv.lock",
     "scripts/ci/resolve_pr_fast_test_targets.py",
 }
+
+# 信号公共层拥有独立、可审计的消费者测试集合。只有 PR 的所有代码变更都
+# 落在此白名单内时才启用快速路径；混入任意未知共享代码仍然完整回归。
+SIGNAL_FAST_PATH_FILES = {
+    "backend/agent-service/app/adapters/agents/htp/kbd_differential.py",
+    "backend/agent-service/app/routes/signal_dry_run.py",
+    "backend/agent-service/app/tools/qfk/engine.py",
+    "backend/agent-service/app/tools/qkv/engine.py",
+    "backend/agent-service/tests/conftest.py",
+    "backend/agent-service/tests/unit/test_kbd_differential.py",
+    "backend/agent-service/tests/unit/test_qfk_ai_extractor.py",
+    "backend/agent-service/tests/unit/test_qkv.py",
+    "backend/agent-service/tests/unit/test_signal_dry_run.py",
+    "backend/shared/tests/test_ai_extractor.py",
+    "backend/shared/tests/test_ai_processing.py",
+    "backend/shared/tests/test_qkv_output_processing.py",
+}
+SIGNAL_FAST_PATH_PREFIXES = ("backend/shared/signals/",)
+SIGNAL_FAST_TEST_TARGETS = (
+    "backend/shared/tests/test_ai_extractor.py",
+    "backend/shared/tests/test_ai_processing.py",
+    "backend/shared/tests/test_qkv_output_processing.py",
+    "backend/agent-service/tests/unit/test_kbd_differential.py",
+    "backend/agent-service/tests/unit/test_qfk_ai_extractor.py",
+    "backend/agent-service/tests/unit/test_qkv.py",
+    "backend/agent-service/tests/unit/test_signal_dry_run.py",
+)
 
 
 @dataclass(frozen=True)
@@ -63,11 +90,22 @@ def _service_test_target(repo_root: Path, changed_path: str) -> str | None:
     return unit_root.relative_to(repo_root).as_posix()
 
 
+def _is_signal_fast_path(normalized: list[str]) -> bool:
+    """判断变更是否严格属于已审计的信号公共层快速范围。"""
+    code_paths = [path for path in normalized if not path.startswith("docs/")]
+    if not code_paths or not any(path.startswith(SIGNAL_FAST_PATH_PREFIXES) for path in code_paths):
+        return False
+    return all(path in SIGNAL_FAST_PATH_FILES or path.startswith(SIGNAL_FAST_PATH_PREFIXES) for path in code_paths)
+
+
 def resolve_test_plan(changed_files: list[str], repo_root: Path) -> TestPlan:
     """从最小可验证集合推导计划；不确定依赖时绝不猜测。"""
     normalized = sorted({path.strip() for path in changed_files if path.strip()})
     if not normalized:
         return TestPlan("full", (), "无法获得 PR 变更清单，按失败关闭策略运行完整回归")
+
+    if _is_signal_fast_path(normalized):
+        return TestPlan("targeted", SIGNAL_FAST_TEST_TARGETS, "信号公共层变更，运行审计过的共享层与消费者单测")
 
     if any(
         path in GLOBAL_DEPENDENCY_FILES
