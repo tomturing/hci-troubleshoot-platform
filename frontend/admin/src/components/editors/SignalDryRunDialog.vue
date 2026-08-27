@@ -240,9 +240,27 @@ async function loadDatasets(): Promise<void> {
     const published = Array.isArray(listBody.bundles)
       ? listBody.bundles.filter((item: Record<string, unknown>) => item.status === 'published' && (!props.kbdRevision || item.kbd_revision === props.kbdRevision))
       : []
-    // Bug #5 修复：多个 published 时取最新一个（List API 已按 updated_at DESC 排序），而非直接报错
-    if (published.length === 0) throw new Error('当前 KBD 没有已发布 Bundle，请先发布一个 Bundle 后再使用仿真测试数据源')
-    const digest = String(published[0].digest)
+    // 优先匹配当前线上激活生效（Active）的 Bundle；若无激活记录或激活不在此版本，降级取最新 Published Bundle
+    let targetBundle = published[0]
+    try {
+      const actRes = await fetch(`/api/hci-sim/v1/control-plane/activations/${encodeURIComponent(props.supportId)}`)
+      if (actRes.ok) {
+        const actBody = await actRes.json().catch(() => ({}))
+        const runtime = (actBody?.runtime_activation || {}) as Record<string, unknown>
+        const activeDigest = String(runtime.active_digest || runtime.ActiveDigest || '')
+        const activeStatus = String(runtime.status || runtime.Status || '')
+        if (activeDigest && (activeStatus === 'active' || !activeStatus)) {
+          const matchedActive = published.find(b => String(b.digest) === activeDigest)
+          if (matchedActive) {
+            targetBundle = matchedActive
+          }
+        }
+      }
+    } catch {
+      // 激活信息获取失败时不阻断，平滑降级使用最新 published Bundle
+    }
+
+    const digest = String(targetBundle.digest)
     const response = await fetch('/api/hci-sim/v1/control-plane/bundles/' + encodeURIComponent(digest) + '/dry-run-datasets?signal_id=' + encodeURIComponent(signalId.value) + '&source_type=' + source.value)
     const body = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(String(body?.detail || '数据集 HTTP ' + response.status))
