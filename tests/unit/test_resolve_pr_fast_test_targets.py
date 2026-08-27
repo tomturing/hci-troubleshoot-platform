@@ -21,6 +21,17 @@ def test_source_change_uses_same_name_service_test(tmp_path: Path) -> None:
     assert plan.targets == ("backend/agent-service/tests/unit/test_signal_dry_run.py",)
 
 
+def test_source_change_uses_domain_prefixed_service_test(tmp_path: Path) -> None:
+    test_path = tmp_path / "backend/agent-service/tests/unit/test_qfk_ai_extractor.py"
+    test_path.parent.mkdir(parents=True)
+    test_path.touch()
+
+    plan = resolve_test_plan(["backend/agent-service/app/tools/qfk/ai_extractor.py"], tmp_path)
+
+    assert plan.mode == "targeted"
+    assert plan.targets == ("backend/agent-service/tests/unit/test_qfk_ai_extractor.py",)
+
+
 def test_shared_code_change_fails_closed_to_full_regression(tmp_path: Path) -> None:
     plan = resolve_test_plan(["backend/shared/observability/otel.py"], tmp_path)
 
