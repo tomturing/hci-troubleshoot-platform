@@ -31,7 +31,10 @@ const props = defineProps<{
   processingIndex?: number | null
 }>()
 
-const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
+const emit = defineEmits<{
+  'update:modelValue': [value: boolean]
+  'saved': [bundle: Record<string, unknown>]
+}>()
 
 const verificationScope = ref<VerificationScope>('signal')
 const source = ref<DatasetSource>('pasted')
@@ -277,7 +280,10 @@ async function saveToBundle(): Promise<void> {
     })
     const body = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(String(body?.detail || `Bundle 控制面 HTTP ${response.status}`))
-    ElMessage.success('已生成包含新验证资产的 Bundle Draft')
+    const savedBundle = (body?.bundle || drafts[0]) as Record<string, unknown>
+    const shortDigest = String(savedBundle?.digest || '').slice(0, 16)
+    ElMessage.success(`已生成包含最新仿真输出与验证资产的 Bundle Draft${shortDigest ? ` (${shortDigest}...)` : ''}`)
+    emit('saved', savedBundle)
     isEditingFork.value = false
     void loadDatasets()
   } catch (error) {
