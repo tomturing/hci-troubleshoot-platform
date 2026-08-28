@@ -1,5 +1,69 @@
 # Changelog
 
+## [2.25.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.24.0...v2.25.0) (2026-08-28)
+
+
+### ✨ 新功能
+
+* **admin:** 优化 QKV 变量处理预览并修正文案 ([#901](https://github.com/tomturing/hci-troubleshoot-platform/issues/901)) ([3602f41](https://github.com/tomturing/hci-troubleshoot-platform/commit/3602f41d97dd9b91352e6d382e42b842d49785c6))
+* **admin:** 统一派生变量输出类型与AI处理方式配置并优化表单排版 ([#931](https://github.com/tomturing/hci-troubleshoot-platform/issues/931)) ([0397cab](https://github.com/tomturing/hci-troubleshoot-platform/commit/0397cab3deda1af81b5d50ff7b789ca7e421ca41))
+* **frontend:** 支持从已发布 Bundle 资产载入编辑与创建新 Draft 状态机 ([#955](https://github.com/tomturing/hci-troubleshoot-platform/issues/955)) ([8091112](https://github.com/tomturing/hci-troubleshoot-platform/commit/809111222daa4da6136771728b595edf712f6647))
+* QKV 后处理复用 QFK 契约收敛 ([#890](https://github.com/tomturing/hci-troubleshoot-platform/issues/890)) ([a462920](https://github.com/tomturing/hci-troubleshoot-platform/commit/a462920bb20a5a85f94c9d3bbc56d94b4aa657ae))
+* **signals:** 第二步判断新增布尔值判定(boolean matcher)支持 ([#936](https://github.com/tomturing/hci-troubleshoot-platform/issues/936)) ([27d4016](https://github.com/tomturing/hci-troubleshoot-platform/commit/27d4016c983599bf3aee5b4836f115b7b980db87))
+* 优化 Signal 试运行弹窗文案与双列排版 ([#951](https://github.com/tomturing/hci-troubleshoot-platform/issues/951)) ([2a33122](https://github.com/tomturing/hci-troubleshoot-platform/commit/2a3312278e403a46da279601cd5461f9f2ee900a))
+* 关键信号执行结果标题加入案例 ID 标识 ([#908](https://github.com/tomturing/hci-troubleshoot-platform/issues/908)) ([aead9af](https://github.com/tomturing/hci-troubleshoot-platform/commit/aead9afa91b021c0248e1f2c2bb73099e22a453a))
+* 增加 AI 智能推导与确定性复算 ([#921](https://github.com/tomturing/hci-troubleshoot-platform/issues/921)) ([f55691c](https://github.com/tomturing/hci-troubleshoot-platform/commit/f55691c9139d425161ed561e7ff5d280cd4b4cd0))
+* 增加 QKV 输出后处理能力 ([#886](https://github.com/tomturing/hci-troubleshoot-platform/issues/886)) ([9c986d6](https://github.com/tomturing/hci-troubleshoot-platform/commit/9c986d6a526c8c34eba04313b0fb6b13755b2c04))
+* 增加 Signal 试运行入口与 Bundle 草稿设计 ([#916](https://github.com/tomturing/hci-troubleshoot-platform/issues/916)) ([47d5edc](https://github.com/tomturing/hci-troubleshoot-platform/commit/47d5edca517d5c7979045ee5cee65ea09db05024))
+* 完善 Signal 试运行闭环 ([#927](https://github.com/tomturing/hci-troubleshoot-platform/issues/927)) ([2649cce](https://github.com/tomturing/hci-troubleshoot-platform/commit/2649cced1b0dd609d311ff5a6ab6903f1d2b04ad))
+* 实现 qfk_var 四层变量处理器 ([#881](https://github.com/tomturing/hci-troubleshoot-platform/issues/881)) ([9f113be](https://github.com/tomturing/hci-troubleshoot-platform/commit/9f113be368b6e9fdf0195516e7ab60c7166e8351))
+* 建立 Bundle 工厂 QKV 资产库与 Draft 绑定 ([#920](https://github.com/tomturing/hci-troubleshoot-platform/issues/920)) ([780b166](https://github.com/tomturing/hci-troubleshoot-platform/commit/780b16671e59403107cd066348eaf9747e95fffc))
+* 收敛 hci-sim 最小化控制面 ([#912](https://github.com/tomturing/hci-troubleshoot-platform/issues/912)) ([db44dc4](https://github.com/tomturing/hci-troubleshoot-platform/commit/db44dc4791b647f13d542d480032be36e81d41df))
+* 收敛 Signal 试运行结果展示 ([#944](https://github.com/tomturing/hci-troubleshoot-platform/issues/944)) ([5799b54](https://github.com/tomturing/hci-troubleshoot-platform/commit/5799b54bc7711282ce9337c0756e0f25f176705f))
+* 补齐 QKV 输出后处理端到端闭环 ([#888](https://github.com/tomturing/hci-troubleshoot-platform/issues/888)) ([6556cfb](https://github.com/tomturing/hci-troubleshoot-platform/commit/6556cfbc5fc94e54d7c523628aa1864068d23e9e))
+
+
+### 🐛 Bug 修复
+
+* admin 工单详情页对话记录显示为空（严格签名模式 401） ([#895](https://github.com/tomturing/hci-troubleshoot-platform/issues/895)) ([ca7109a](https://github.com/tomturing/hci-troubleshoot-platform/commit/ca7109a6ffbd927d11e3d0f9fe0153139f221bd4))
+* **admin:** 补充 SimulationConversation WebSocket ping/pong 心跳响应 ([#934](https://github.com/tomturing/hci-troubleshoot-platform/issues/934)) ([62c349a](https://github.com/tomturing/hci-troubleshoot-platform/commit/62c349a5f5c646732441cb9ea78a4b52fc819b04))
+* **agent:** 修复仿真模式下只读工具误触发人工确认问题及五层防御加固 ([#894](https://github.com/tomturing/hci-troubleshoot-platform/issues/894)) ([2f0efb6](https://github.com/tomturing/hci-troubleshoot-platform/commit/2f0efb634778d9facf974405890663e2a489dbcd))
+* AI 提取器兼容数组格式 value 并优化提示词 ([#905](https://github.com/tomturing/hci-troubleshoot-platform/issues/905)) ([55b8989](https://github.com/tomturing/hci-troubleshoot-platform/commit/55b89894089febe60628837f2d62915d5fd0a7e6))
+* AI 提取器改进 Langfuse 记录，确保无论成功或失败都记录 LLM 实际响应 ([#904](https://github.com/tomturing/hci-troubleshoot-platform/issues/904)) ([de427a3](https://github.com/tomturing/hci-troubleshoot-platform/commit/de427a36a2132b95ebf70d1d3922ae26c56cd874))
+* **ai-extract:** 增强 UNGROUNDED 错误可观测性，输出候选行摘要 ([#928](https://github.com/tomturing/hci-troubleshoot-platform/issues/928)) ([4722cff](https://github.com/tomturing/hci-troubleshoot-platform/commit/4722cffc0eb66df0375f58218ddf1421eb01c941))
+* **db:** 回滚误提交的 000005_bundle_template 与种子迁移 ([#919](https://github.com/tomturing/hci-troubleshoot-platform/issues/919)) ([b636ebe](https://github.com/tomturing/hci-troubleshoot-platform/commit/b636ebefef69a181c403eec832162d0fddc5ce58))
+* **deploy:** 修正 terminalBridge NetworkPolicy 默认 Ingress 命名空间为 kube-system ([#891](https://github.com/tomturing/hci-troubleshoot-platform/issues/891)) ([0301607](https://github.com/tomturing/hci-troubleshoot-platform/commit/0301607307448b419389daaed87bea1f1a0aef2b))
+* **frontend:** bundle 工厂 draft 编辑放开 route argv 参数修正 ([#902](https://github.com/tomturing/hci-troubleshoot-platform/issues/902)) ([8c7b045](https://github.com/tomturing/hci-troubleshoot-platform/commit/8c7b045d4a4e408639b78713da06d81a2233efa6))
+* **frontend:** 修复 Admin 工单详情页 AI 上下文及工具调用审计接口路径 ([#896](https://github.com/tomturing/hci-troubleshoot-platform/issues/896)) ([8cbdb8a](https://github.com/tomturing/hci-troubleshoot-platform/commit/8cbdb8a5e96880bf1c34537b8826cf77111f07ba))
+* **frontend:** 修复二次编辑试运行422报错与放弃修改按钮文字重叠 ([#956](https://github.com/tomturing/hci-troubleshoot-platform/issues/956)) ([22fcdd5](https://github.com/tomturing/hci-troubleshoot-platform/commit/22fcdd5c95102eb11be441883f5a79a7938759e3))
+* **langfuse:** 显式调用 update() 设置 input 和 metadata ([#899](https://github.com/tomturing/hci-troubleshoot-platform/issues/899)) ([9c4249d](https://github.com/tomturing/hci-troubleshoot-platform/commit/9c4249de449f080890eac068b64290b7f205b1fc))
+* **observability:** 修复 Langfuse observation 父子关系断层 ([#924](https://github.com/tomturing/hci-troubleshoot-platform/issues/924)) ([98ccc30](https://github.com/tomturing/hci-troubleshoot-platform/commit/98ccc30c9b94c9a2d2bae386ff50e423e8695301))
+* QFK AI 提取 array&lt;number&gt; 兼容逗号分隔字符串格式 ([#907](https://github.com/tomturing/hci-troubleshoot-platform/issues/907)) ([c354aca](https://github.com/tomturing/hci-troubleshoot-platform/commit/c354aca35b70c25d82ae7ce511361d946c7a8dd8))
+* QFK AI 提取支持 threshold matcher 多值聚合 ([#906](https://github.com/tomturing/hci-troubleshoot-platform/issues/906)) ([b13effd](https://github.com/tomturing/hci-troubleshoot-platform/commit/b13effda454157a4e5ed86eff7ea386986564f3e))
+* **qkv:** 试运行前置 produces 变量投影与生产环境 parser 完全对齐 ([#958](https://github.com/tomturing/hci-troubleshoot-platform/issues/958)) ([45fdae7](https://github.com/tomturing/hci-troubleshoot-platform/commit/45fdae72414ca9ef6e96bfa362acbdfc0a3c6a2a))
+* **security:** 服务间身份签名 + 元数据白名单，修复 IDOR 等 5 项安全漏洞 ([#887](https://github.com/tomturing/hci-troubleshoot-platform/issues/887)) ([7962342](https://github.com/tomturing/hci-troubleshoot-platform/commit/7962342d324c2c6c51b80e612b07e27665e159e7))
+* 优化 PARTIAL 诊断报告信息干扰 ([#911](https://github.com/tomturing/hci-troubleshoot-platform/issues/911)) ([ffb5ef5](https://github.com/tomturing/hci-troubleshoot-platform/commit/ffb5ef5f5972c7a07fee44218ae3a716db3d1a5f))
+* 修复 AI 提取前置确定性选择阶段的类型转换错误 ([#903](https://github.com/tomturing/hci-troubleshoot-platform/issues/903)) ([29ce526](https://github.com/tomturing/hci-troubleshoot-platform/commit/29ce526c9f94825cb894350ca5d123a8d171817e))
+* 修复 Bundle 工厂 {{VM}} 日志 selector 渲染并归档 KBD26980 ([#917](https://github.com/tomturing/hci-troubleshoot-platform/issues/917)) ([7aebb53](https://github.com/tomturing/hci-troubleshoot-platform/commit/7aebb53d71f8f8d925b887eea50f79daf8553057))
+* 修复 Langfuse v3 SDK 集成数据缺失问题 ([#898](https://github.com/tomturing/hci-troubleshoot-platform/issues/898)) ([4d601e6](https://github.com/tomturing/hci-troubleshoot-platform/commit/4d601e6a380db766bfc440fdd15eade42785d950))
+* 修复 QKV 信号试运行纯生产者适配与输入自适应解析 ([#957](https://github.com/tomturing/hci-troubleshoot-platform/issues/957)) ([65537ee](https://github.com/tomturing/hci-troubleshoot-platform/commit/65537ee328e7441d261b22a234895ff8f24e6b3b))
+* 修复 Signal 试运行 raw_response 缺失、Signed Token 秒级保存与 digest 空指针 ([#954](https://github.com/tomturing/hci-troubleshoot-platform/issues/954)) ([918876f](https://github.com/tomturing/hci-troubleshoot-platform/commit/918876f4c30cb0a704219b02e5f941bf8a7eb838))
+* 修复 Signal 试运行全链路 5 个 Bug（Draft stale 降级 / kbd_revision 类型 / published 取最新） ([#952](https://github.com/tomturing/hci-troubleshoot-platform/issues/952)) ([12fcf19](https://github.com/tomturing/hci-troubleshoot-platform/commit/12fcf19bf6f7c2a6216e49cebb7984d3772340a2))
+* 修复 verification_asset 绑定 KBD 不可变版本及防注入 ([#947](https://github.com/tomturing/hci-troubleshoot-platform/issues/947)) ([6b2c78d](https://github.com/tomturing/hci-troubleshoot-platform/commit/6b2c78dae509bc11e56daab7ad08ea9c80c472b1))
+* 修复试运行 AI Prompt 依赖与来源文案 ([#935](https://github.com/tomturing/hci-troubleshoot-platform/issues/935)) ([3395637](https://github.com/tomturing/hci-troubleshoot-platform/commit/339563773be72386221275846cb44a802251ccf8))
+* 修复试运行 AI 结果证据字段适配 ([#938](https://github.com/tomturing/hci-troubleshoot-platform/issues/938)) ([4a8497d](https://github.com/tomturing/hci-troubleshoot-platform/commit/4a8497d546427758516763289c503fd6bddefe07))
+* 修正白盒日志日目录回退规则 ([#910](https://github.com/tomturing/hci-troubleshoot-platform/issues/910)) ([f979d40](https://github.com/tomturing/hci-troubleshoot-platform/commit/f979d40ff55d6781504dab489886ffbb6aca7e64))
+* 修正试运行结果面板状态展示 ([#943](https://github.com/tomturing/hci-troubleshoot-platform/issues/943)) ([aea4d55](https://github.com/tomturing/hci-troubleshoot-platform/commit/aea4d555798e30e81ae6f56fcfb3360da8f5d43c))
+* 增强 Langfuse 和前端错误信息可见性 ([#941](https://github.com/tomturing/hci-troubleshoot-platform/issues/941)) ([6347029](https://github.com/tomturing/hci-troubleshoot-platform/commit/634702942211ec36a2afe4a2281740489024425d))
+* 更新 Helm 单元测试以匹配新增的迁移文件 ([#909](https://github.com/tomturing/hci-troubleshoot-platform/issues/909)) ([884704d](https://github.com/tomturing/hci-troubleshoot-platform/commit/884704d21f9808307192a8e9ec5985e569f6f297))
+* 添加 WebSocket 保活心跳机制防止空闲超时断开 ([#930](https://github.com/tomturing/hci-troubleshoot-platform/issues/930)) ([0730186](https://github.com/tomturing/hci-troubleshoot-platform/commit/0730186ccf46b32ea4883cb0fc52b74a894e8dc7))
+* 试运行保存时自动创建 Bundle Draft ([#942](https://github.com/tomturing/hci-troubleshoot-platform/issues/942)) ([356305b](https://github.com/tomturing/hci-troubleshoot-platform/commit/356305b3fd1f048278dd209636657e0a736f39e1))
+
+
+### ♻️ 代码重构
+
+* 信号 AI 提取器公共层下沉与全链路优化 ([#948](https://github.com/tomturing/hci-troubleshoot-platform/issues/948)) ([5a13ed3](https://github.com/tomturing/hci-troubleshoot-platform/commit/5a13ed3ce19b83d08673a9fe8c28d8e4d8135fce))
+
 ## [2.24.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.23.0...v2.24.0) (2026-08-24)
 
 
