@@ -202,6 +202,7 @@ async function requestPreview(): Promise<void> {
         dataset_id: isEditingFork.value ? `fork-${crypto.randomUUID()}` : (selectedDataset.value?.dataset_id || crypto.randomUUID()),
         source_type: effectiveSourceType,
         source_ref: effectiveSourceRef,
+        raw_input: rawSource,
         payload,
       },
       signal: props.signal, support_id: props.supportId, kbd_revision: props.kbdRevision,

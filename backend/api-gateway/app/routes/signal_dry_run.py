@@ -184,6 +184,7 @@ async def save_verified_preview_to_bundle(bundle_digest: str, request: Request) 
 
     dataset = dry_run.get("dataset") if isinstance(dry_run.get("dataset"), dict) else {}
     unit_ref = dry_run.get("unit_ref") if isinstance(dry_run.get("unit_ref"), dict) else {}
+    payload_data = dataset.get("raw_input") if dataset.get("raw_input") is not None else dataset.get("payload")
     asset = {
         "asset_id": f"va-{uuid.uuid4()}",
         "support_id": dry_run.get("support_id"),
@@ -191,7 +192,7 @@ async def save_verified_preview_to_bundle(bundle_digest: str, request: Request) 
         "signal_id": unit_ref.get("signal_id"),
         "scope": dry_run.get("scope"),
         "source_type": dataset.get("source_type"),
-        "payload": dataset.get("payload"),
+        "payload": payload_data,
         "result_status": preview_body.get("status"),
         "config_revision": preview_body.get("config_revision"),
         "trace_id": preview_body.get("trace_id"),

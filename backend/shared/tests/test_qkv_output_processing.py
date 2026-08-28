@@ -107,7 +107,32 @@ def test_assert_failure_does_not_create_derived_variable() -> None:
         }],
     )
     assert result.matched is False
-    assert "derived_value" not in result.records[0]
+    assert result.records == []
+
+
+def test_stream_filter_keeps_matching_records_and_filters_unmatched() -> None:
+    """验证多记录场景下，流式过滤剔除不匹配记录，仅保留命中记录并判定 PASS。"""
+    result = apply_output_processing(
+        [
+            {"alert_type": "删除虚拟机", "description": "存在虚拟机，请迁移后再删除", "vm": "7903385510955"},
+            {"alert_type": "启动虚拟机", "description": "启动虚拟机失败，错误信息：镜像忙", "vm": "18864231143"},
+        ],
+        [{
+            "mode": "assert",
+            "input": "{{DESCRIPTION}}",
+            "match": {
+                "type": "keyword",
+                "pattern": "存在虚拟机，请迁移后再删除",
+                "expected": True,
+            },
+        }],
+    )
+    assert result.matched is True
+    assert len(result.records) == 1
+    assert result.records[0]["vm"] == "7903385510955"
+    assert result.records[0]["alert_type"] == "删除虚拟机"
+    assert result.assertions[0].status == "PASS"
+
 
 
 def test_static_scope_allows_only_prior_derived_variable() -> None:

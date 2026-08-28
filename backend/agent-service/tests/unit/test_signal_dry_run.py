@@ -279,3 +279,61 @@ async def test_qkv_dry_run_pure_producer_rejects_ai_step() -> None:
     with pytest.raises(ValueError, match="AI_STEP_TARGET_REQUIRED"):
         await evaluate_signal_dry_run(request, ai_client=None, trace_id="1" * 32)
 
+
+@pytest.mark.asyncio
+async def test_qkv_dry_run_multi_records_stream_filtering_passes_and_cleans_output() -> None:
+    """验证多条告警队列输入时，包含无关告警不会误判 FAIL，且输出值仅保留命中的记录。"""
+    signal = {
+        "id": "sig_qkv_alert",
+        "acquire": {"tool": "qkv_alert", "args": {"instruction": "获取告警"}},
+        "orchestrate": {
+            "produces": [
+                {"name": "VM", "path": "object_id"},
+                {"name": "DESCRIPTION", "path": "description"},
+            ],
+            "output_processing": [
+                {
+                    "mode": "assert",
+                    "input": "{{DESCRIPTION}}",
+                    "match": {
+                        "type": "keyword",
+                        "pattern": "存在虚拟机，请迁移后再删除",
+                        "mode": "or",
+                        "expected": True,
+                        "extract": {"type": "text", "rows": {"mode": "all"}, "cardinality": "all", "source": "stdout"},
+                    },
+                }
+            ],
+        },
+    }
+    raw_alerts_payload = [
+        {
+            "action_type": 0,
+            "alert_type": "删除虚拟机",
+            "description": "存在虚拟机，请迁移后再删除",
+            "object_id": "7903385510955",
+            "object_name": "Windows-DISK",
+        },
+        {
+            "action_type": 0,
+            "alert_type": "启动虚拟机",
+            "description": "启动虚拟机（Rocky-IMG）失败，错误信息：虚拟机镜像忙，正在执行其他操作！",
+            "object_id": "18864231143",
+            "object_name": "Rocky-IMG",
+        },
+    ]
+    request = SignalDryRunRequest(
+        draft_revision=_revision(signal), scope="qkv_variable_processing",
+        unit_ref={"signal_id": signal["id"]}, verification_scope="signal",
+        dataset={"dataset_id": "preview-multi-qkv", "source_type": "pasted", "source_ref": "user-input", "payload": raw_alerts_payload},
+        signal=signal, support_id="41398", kbd_revision=20,
+    )
+
+    result = await evaluate_signal_dry_run(request, ai_client=None, trace_id="8" * 32)
+
+    assert result.status == "PASS"
+    # 核心断言：输出值只保留命中的删除虚拟机记录，启动虚拟机的无关记录被流式过滤剔除！
+    assert len(result.value) == 1
+    assert result.value == [{"vm": "7903385510955", "description": "存在虚拟机，请迁移后再删除"}]
+
+
