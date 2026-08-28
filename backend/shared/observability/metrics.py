@@ -198,6 +198,28 @@ class HTTPMetricsMiddleware(BaseHTTPMiddleware):
 #  AI 层指标 (O-1)
 # ──────────────────────────────────────────────
 
+# AI 统一治理重试计数器
+AI_GOVERNANCE_RETRIES_TOTAL = Counter(
+    "hci_ai_governance_retries_total",
+    "AI 统一治理层重试次数",
+    labelnames=["operation", "error_type"],
+)
+
+# AI 统一治理重试耗尽失败计数器
+AI_GOVERNANCE_EXHAUSTED_TOTAL = Counter(
+    "hci_ai_governance_exhausted_total",
+    "AI 统一治理层重试耗尽失败次数",
+    labelnames=["operation", "error_type"],
+)
+
+# AI 统一治理并发槽位等待耗时直方图
+AI_GOVERNANCE_CONCURRENCY_WAIT_SECONDS = Histogram(
+    "hci_ai_governance_concurrency_wait_seconds",
+    "AI 统一治理并发槽位排队等待耗时（秒）",
+    labelnames=["operation"],
+    buckets=[0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 15.0, float("inf")],
+)
+
 # 首 Token 延迟直方图 (TTFT)
 AI_TTFT_SECONDS = Histogram(
     "hci_ai_ttft_seconds",

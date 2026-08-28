@@ -53,6 +53,52 @@ class TestOpenClawAssistant:
         # 不可重试的错误
         assert OpenClawAssistant._is_retriable_stream_error(Exception("Invalid request")) is False
 
+    @pytest.mark.asyncio
+    async def test_invoke_retries_on_connect_timeout_and_recovers(self, monkeypatch):
+        """测试 invoke 发生 ConnectTimeout 时执行治理重试并成功恢复"""
+        from unittest.mock import AsyncMock, MagicMock
+
+        import httpx
+
+        client = OpenClawAssistant(base_url="http://localhost:8000", api_key="test")
+        req = httpx.Request("POST", "http://localhost:8000/v1/chat/completions")
+        success_resp = MagicMock()
+        success_resp.status_code = 200
+        success_resp.json.return_value = {
+            "choices": [{"message": {"content": "recovered response", "tool_calls": []}}],
+            "usage": {"total_tokens": 10},
+        }
+
+        mock_post = AsyncMock(
+            side_effect=[
+                httpx.ConnectTimeout("Connect timeout", request=req),
+                success_resp,
+            ]
+        )
+        monkeypatch.setattr(client.client, "post", mock_post)
+
+        res = await client.invoke(messages=[{"role": "user", "content": "hi"}], user_id="u1")
+        assert res.content == "recovered response"
+        assert mock_post.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_invoke_exhausts_retries_and_raises_aistream_error(self, monkeypatch):
+        """测试 invoke 持续超时耗尽重试后抛出结构化 AIStreamError"""
+        from unittest.mock import AsyncMock
+
+        import httpx
+        from shared.utils.exceptions import AIStreamError, ErrorCode
+
+        client = OpenClawAssistant(base_url="http://localhost:8000", api_key="test")
+        req = httpx.Request("POST", "http://localhost:8000/v1/chat/completions")
+        mock_post = AsyncMock(side_effect=httpx.ConnectTimeout("Always timeout", request=req))
+        monkeypatch.setattr(client.client, "post", mock_post)
+
+        with pytest.raises(AIStreamError) as exc_info:
+            await client.invoke(messages=[{"role": "user", "content": "hi"}], user_id="u1")
+        assert exc_info.value.code == ErrorCode.AI_TIMEOUT
+        assert mock_post.call_count == 3
+
 
 class TestAIAssistantRegistry:
     """AIAssistantRegistry 测试"""
