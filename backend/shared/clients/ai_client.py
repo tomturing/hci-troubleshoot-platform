@@ -63,23 +63,9 @@ class AIAssistantClient(Protocol):
 
 def _is_retriable_invoke_error(exc: Exception) -> bool:
     """判定非流式 invoke 调用的瞬态错误（可重试）。"""
-    import httpx
+    from shared.governance.llm_governor import is_retryable_llm_error
 
-    if isinstance(exc, httpx.TimeoutException):
-        return True
-    if isinstance(exc, httpx.RemoteProtocolError):
-        return True
-    if isinstance(exc, httpx.ConnectError):
-        return True
-    message = str(exc).lower()
-    retriable_signatures = (
-        "incomplete chunked read",
-        "peer closed connection",
-        "read timeout",
-        "connection reset",
-        "server disconnected",
-    )
-    return any(sig in message for sig in retriable_signatures)
+    return is_retryable_llm_error(exc)
 
 
 class OpenClawAssistant:
@@ -196,10 +182,14 @@ class OpenClawAssistant:
                 )
             )
             task.add_done_callback(
-                lambda t: logger.warning(
-                    event="prompt_audit_callback_failed",
-                    error=str(t.exception()),
-                ) if t.exception() else None
+                lambda t: (
+                    logger.warning(
+                        event="prompt_audit_callback_failed",
+                        error=str(t.exception()),
+                    )
+                    if t.exception()
+                    else None
+                )
             )
 
         # Langfuse: 创建流式 generation（在首次请求前，覆盖所有 endpoint 重试）
@@ -214,7 +204,7 @@ class OpenClawAssistant:
         stream_usage: dict[str, int] = {}  # SSE 流末端的 usage 信息
         stream_tool_calls: dict[int, dict] = {}  # 流式 tool_calls delta 累积（按 index 分组）
 
-        # 先尝试 scheduler 分配的实例端点，若在首 token 前发生可恢复断流，再回退到稳定 base_url 重试一次。
+        # 先尝试 scheduler 分配的实例端点，若在首 token 前发生可恢复断流，再回退到稳定 base_url 重试。
         endpoints_to_try: list[str] = []
         first_endpoint = (pod_endpoint or self.base_url).rstrip("/")
         endpoints_to_try.append(first_endpoint)
@@ -222,13 +212,20 @@ class OpenClawAssistant:
         if fallback_endpoint not in endpoints_to_try:
             endpoints_to_try.append(fallback_endpoint)
 
-        # ZhipuAI v4 API 路径为 /chat/completions（无 /v1/），OpenAI 兴容接口为 /v1/chat/completions
+        # 构建 endpoint 尝试序列（单 endpoint 支持最多 2 次建连重试）
+        max_attempts_per_endpoint = 2 if len(endpoints_to_try) == 1 else 1
+        endpoint_attempts: list[str] = []
+        for ep in endpoints_to_try:
+            for _ in range(max_attempts_per_endpoint):
+                endpoint_attempts.append(ep)
+
+        # ZhipuAI v4 API 路径为 /chat/completions（无 /v1/），OpenAI 兼容接口为 /v1/chat/completions
         # 根据 endpoint 类型动态选择正确路径，而不是依赖单一环境变量
-        _default_internal_path = "/v1/chat/completions"  # OpenAI 兴容接口（OpenClaw Pod）
+        _default_internal_path = "/v1/chat/completions"  # OpenAI 兼容接口（OpenClaw Pod）
         _default_external_path = "/chat/completions"  # ZhipuAI v4 API
 
         last_error: Exception | None = None
-        for idx, endpoint in enumerate(endpoints_to_try, start=1):
+        for idx, endpoint in enumerate(endpoint_attempts, start=1):
             # 根据 endpoint 类型选择正确的 completions path
             if self._is_internal_gateway_endpoint(endpoint):
                 _completions_path = os.environ.get("AI_COMPLETIONS_PATH", _default_internal_path)
@@ -389,7 +386,7 @@ class OpenClawAssistant:
             except Exception as e:
                 last_error = e
                 retriable = self._is_retriable_stream_error(e)
-                can_retry = (not got_first_token) and retriable and idx < len(endpoints_to_try)
+                can_retry = (not got_first_token) and retriable and idx < len(endpoint_attempts)
 
                 error_text = str(e) if str(e).strip() else repr(e)
                 request_info = self._extract_httpx_request_info(e)
@@ -405,6 +402,17 @@ class OpenClawAssistant:
                 )
 
                 if can_retry:
+                    import asyncio as _asyncio
+                    import random as _random
+
+                    from shared.governance.llm_governor import classify_error_type
+                    from shared.observability.metrics import AI_GOVERNANCE_RETRIES_TOTAL
+
+                    AI_GOVERNANCE_RETRIES_TOTAL.labels(
+                        operation="ai_client.stream", error_type=classify_error_type(e)
+                    ).inc()
+                    delay = _random.uniform(0.1, min(5.0, 1.0 * (2 ** (idx - 1))))
+                    await _asyncio.sleep(delay)
                     continue
                 # 将未捕获的异常转换为结构化错误
                 error_detail = self._parse_generic_error(e)
@@ -600,17 +608,10 @@ class OpenClawAssistant:
 
     @staticmethod
     def _is_retriable_stream_error(exc: Exception) -> bool:
-        """判定是否属于可通过切换端点重试的流式瞬态错误。"""
-        message = str(exc).lower()
-        retriable_signatures = (
-            "incomplete chunked read",
-            "peer closed connection",
-            "read timeout",
-            "remoteprotocolerror",
-            "connection reset",
-        )
-        return any(sig in message for sig in retriable_signatures)
+        """判定是否属于可通过切换端点/重试的流式瞬态错误。"""
+        from shared.governance.llm_governor import is_retryable_llm_error
 
+        return is_retryable_llm_error(exc)
 
     async def check_health(self) -> bool:
         """检查OpenClaw服务健康状态"""
@@ -697,10 +698,14 @@ class OpenClawAssistant:
                 )
             )
             task.add_done_callback(
-                lambda t: logger.warning(
-                    event="prompt_audit_callback_failed",
-                    error=str(t.exception()),
-                ) if t.exception() else None
+                lambda t: (
+                    logger.warning(
+                        event="prompt_audit_callback_failed",
+                        error=str(t.exception()),
+                    )
+                    if t.exception()
+                    else None
+                )
             )
         if tools:
             payload["tools"] = tools
@@ -733,110 +738,155 @@ class OpenClawAssistant:
         )
 
         import asyncio as _asyncio
+        import random as _random
+        import time as _time
+
+        from shared.governance.llm_governor import (
+            classify_error_type,
+            extract_retry_after,
+            get_llm_semaphore,
+            is_retryable_llm_error,
+        )
+        from shared.observability.metrics import (
+            AI_GOVERNANCE_CONCURRENCY_WAIT_SECONDS,
+            AI_GOVERNANCE_EXHAUSTED_TOTAL,
+            AI_GOVERNANCE_RETRIES_TOTAL,
+        )
 
         max_retries = 2
 
         for attempt in range(max_retries + 1):
-            try:
-                response = await self.client.post(url, json=payload, headers=headers)
-                if response.status_code != 200:
-                    error_detail = self._parse_ai_error(response.status_code, response.text, url)
-                    # 5xx 服务器错误 → 可重试
-                    if response.status_code >= 500 and attempt < max_retries:
-                        logger.warning(
-                            event="ai_invoke_retry",
-                            message=f"HTTP {response.status_code} 可重试，第 {attempt + 1} 次",
-                            url=url,
-                            attempt=attempt + 1,
+            attempt_idx = attempt + 1
+            wait_start = _time.perf_counter()
+            semaphore = await get_llm_semaphore()
+            async with semaphore:
+                AI_GOVERNANCE_CONCURRENCY_WAIT_SECONDS.labels(operation="ai_client.invoke").observe(
+                    _time.perf_counter() - wait_start
+                )
+                try:
+                    response = await self.client.post(url, json=payload, headers=headers)
+                    if response.status_code != 200:
+                        error_detail = self._parse_ai_error(response.status_code, response.text, url)
+                        # 5xx 服务器错误或 429 请求超限 → 可重试
+                        if (response.status_code >= 500 or response.status_code == 429) and attempt < max_retries:
+                            err_type = f"http_{response.status_code}"
+                            AI_GOVERNANCE_RETRIES_TOTAL.labels(operation="ai_client.invoke", error_type=err_type).inc()
+                            retry_after = extract_retry_after(response)
+                            delay = (
+                                retry_after
+                                if retry_after is not None
+                                else _random.uniform(0.1, min(10.0, 1.0 * (2**attempt)))
+                            )
+                            logger.warning(
+                                event="ai_invoke_retry",
+                                message=f"HTTP {response.status_code} 可重试，第 {attempt_idx} 次",
+                                url=url,
+                                attempt=attempt_idx,
+                                delay_s=round(delay, 2),
+                            )
+                            await _asyncio.sleep(delay)
+                            continue
+                        if attempt >= max_retries and (response.status_code >= 500 or response.status_code == 429):
+                            AI_GOVERNANCE_EXHAUSTED_TOTAL.labels(
+                                operation="ai_client.invoke", error_type=f"http_{response.status_code}"
+                            ).inc()
+                        end_generation(
+                            langfuse_gen,
+                            error=error_detail.get("message", f"HTTP {response.status_code}"),
+                            start_time=lf_start,
                         )
-                        await _asyncio.sleep(1.0 * (attempt + 1))
-                        continue
+                        raise AIStreamError(
+                            code=error_detail["code"],
+                            message=error_detail["message"],
+                            detail=error_detail["detail"],
+                        )
+
+                    data = response.json()
+                    choice = data.get("choices", [{}])[0]
+                    message = choice.get("message", {})
+
+                    usage = data.get("usage") or {}
+                    prompt_tokens = usage.get("prompt_tokens") or 0
+                    completion_tokens = usage.get("completion_tokens") or 0
+                    total_tokens = usage.get("total_tokens") or 0
+
+                    # 工具调用分支
+                    raw_tool_calls: list[dict] = message.get("tool_calls") or []
+                    if raw_tool_calls:
+                        parsed: list[ToolCallRequest] = []
+                        for tc in raw_tool_calls:
+                            fn = tc.get("function", {})
+                            try:
+                                args = json.loads(fn.get("arguments", "{}"))
+                            except json.JSONDecodeError:
+                                args = {}
+                            parsed.append(
+                                ToolCallRequest(
+                                    id=tc.get("id", ""),
+                                    name=fn.get("name", ""),
+                                    arguments=args,
+                                )
+                            )
+                        end_generation(
+                            langfuse_gen,
+                            tool_calls=[{"name": t.name, "arguments": t.arguments} for t in parsed],
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            total_tokens=total_tokens,
+                            start_time=lf_start,
+                        )
+                        return InvokeResult(content=None, tool_calls=parsed)
+
+                    # 文字终止分支
+                    content = message.get("content") or ""
                     end_generation(
                         langfuse_gen,
-                        error=error_detail.get("message", f"HTTP {response.status_code}"),
+                        output=content,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        start_time=lf_start,
+                    )
+                    return InvokeResult(content=content, tool_calls=[])
+
+                except AIStreamError:
+                    raise
+                except Exception as e:
+                    retriable = is_retryable_llm_error(e)
+                    err_type = classify_error_type(e)
+                    if retriable and attempt < max_retries:
+                        AI_GOVERNANCE_RETRIES_TOTAL.labels(operation="ai_client.invoke", error_type=err_type).inc()
+                        retry_error_text = str(e) if str(e).strip() else repr(e)
+                        retry_request_info = self._extract_httpx_request_info(e)
+                        retry_after = extract_retry_after(e)
+                        delay = (
+                            retry_after
+                            if retry_after is not None
+                            else _random.uniform(0.1, min(10.0, 1.0 * (2**attempt)))
+                        )
+                        logger.warning(
+                            event="ai_invoke_retry",
+                            message=f"瞬态错误可重试，第 {attempt_idx} 次",
+                            error=retry_error_text[:200],
+                            url=retry_request_info if retry_request_info else None,
+                            attempt=attempt_idx,
+                            delay_s=round(delay, 2),
+                        )
+                        await _asyncio.sleep(delay)
+                        continue
+                    if attempt >= max_retries and retriable:
+                        AI_GOVERNANCE_EXHAUSTED_TOTAL.labels(operation="ai_client.invoke", error_type=err_type).inc()
+                    error_detail = self._parse_generic_error(e)
+                    end_generation(
+                        langfuse_gen,
+                        error=error_detail.get("message", str(e)),
                         start_time=lf_start,
                     )
                     raise AIStreamError(
                         code=error_detail["code"],
                         message=error_detail["message"],
                         detail=error_detail["detail"],
-                    )
-
-                data = response.json()
-                choice = data.get("choices", [{}])[0]
-                message = choice.get("message", {})
-
-                usage = data.get("usage") or {}
-                prompt_tokens = usage.get("prompt_tokens") or 0
-                completion_tokens = usage.get("completion_tokens") or 0
-                total_tokens = usage.get("total_tokens") or 0
-
-                # 工具调用分支
-                raw_tool_calls: list[dict] = message.get("tool_calls") or []
-                if raw_tool_calls:
-                    parsed: list[ToolCallRequest] = []
-                    for tc in raw_tool_calls:
-                        fn = tc.get("function", {})
-                        try:
-                            args = json.loads(fn.get("arguments", "{}"))
-                        except json.JSONDecodeError:
-                            args = {}
-                        parsed.append(
-                            ToolCallRequest(
-                                id=tc.get("id", ""),
-                                name=fn.get("name", ""),
-                                arguments=args,
-                            )
-                        )
-                    end_generation(
-                        langfuse_gen,
-                        tool_calls=[{"name": t.name, "arguments": t.arguments} for t in parsed],
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        total_tokens=total_tokens,
-                        start_time=lf_start,
-                    )
-                    return InvokeResult(content=None, tool_calls=parsed)
-
-                # 文字终止分支
-                content = message.get("content") or ""
-                end_generation(
-                    langfuse_gen,
-                    output=content,
-                    prompt_tokens=prompt_tokens,
-                    completion_tokens=completion_tokens,
-                    total_tokens=total_tokens,
-                    start_time=lf_start,
-                )
-                return InvokeResult(content=content, tool_calls=[])
-
-            except AIStreamError:
-                raise
-            except Exception as e:
-                retriable = _is_retriable_invoke_error(e)
-                if retriable and attempt < max_retries:
-                    retry_error_text = str(e) if str(e).strip() else repr(e)
-                    retry_request_info = self._extract_httpx_request_info(e)
-                    logger.warning(
-                        event="ai_invoke_retry",
-                        message=f"瞬态错误可重试，第 {attempt + 1} 次",
-                        error=retry_error_text[:200],
-                        url=retry_request_info if retry_request_info else None,
-                        attempt=attempt + 1,
-                    )
-                    await _asyncio.sleep(1.0 * (attempt + 1))
-                    continue
-                error_detail = self._parse_generic_error(e)
-                end_generation(
-                    langfuse_gen,
-                    error=error_detail.get("message", str(e)),
-                    start_time=lf_start,
-                )
-                raise AIStreamError(
-                    code=error_detail["code"],
-                    message=error_detail["message"],
-                    detail=error_detail["detail"],
-                ) from e
+                    ) from e
 
     async def close(self):
         """关闭客户端"""
