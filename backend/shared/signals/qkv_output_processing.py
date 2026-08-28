@@ -375,26 +375,58 @@ def apply_output_processing(records: list[dict[str, Any]], specs: list[dict[str,
                 raise QKVProcessingError("QFK_OUTPUT_EMPTY", f"处理单元[{index + 1}] 没有可处理的 QKV 记录")
         return QKVProcessingResult(records=working, assertions=assertions)
     for index, item in enumerate(normalized):
+        if not working:
+            break
         if item.get("scope", "per_record") == "single" and len(working) != 1:
             if item["mode"] == "assert":
                 assertions.append(QKVAssertion(index + 1, "UNKNOWN", reason="QFK_CARDINALITY_MISMATCH"))
                 continue
             raise QKVProcessingError("QFK_CARDINALITY_MISMATCH", f"处理单元[{index + 1}] 要求恰好一条记录，实际 {len(working)} 条")
-        staged: list[tuple[dict[str, Any], Any]] = []
-        for record in working:
-            value = _resolve_input(item["input"], record)
-            if item["mode"] == "derive":
+        if item["mode"] == "derive":
+            staged: list[tuple[dict[str, Any], Any]] = []
+            for record in working:
+                value = _resolve_input(item["input"], record)
                 try:
                     derived = _derive_values(value, item)
                 except QKVProcessingError:
                     raise
                 staged.append((record, derived))
-            else:
-                matched, observed, reason, evidence = _assert_concrete_value(value, item["match"])
-                assertions.append(QKVAssertion(index + 1, "UNKNOWN" if matched is None else ("PASS" if matched else "FAIL"), observed, reason, evidence))
-        if item["mode"] == "derive":
             for record, derived in staged:
                 record[str(item["name"]).lower()] = derived
+        else:
+            # 流式过滤（Filter）：逐条评估并保留匹配条件的记录，剔除无关记录
+            matched_records: list[dict[str, Any]] = []
+            observed_values: list[Any] = []
+            evidences: list[str] = []
+            for record in working:
+                try:
+                    value = _resolve_input(item["input"], record)
+                    matched, observed, reason, evidence = _assert_concrete_value(value, item["match"])
+                    if matched is True:
+                        matched_records.append(record)
+                        observed_values.append(observed)
+                        if evidence:
+                            evidences.append(evidence)
+                except Exception:
+                    continue  # 容错安全剔除
+            if matched_records:
+                assertions.append(QKVAssertion(
+                    unit_index=index + 1,
+                    status="PASS",
+                    observed=observed_values if len(observed_values) > 1 else (observed_values[0] if observed_values else None),
+                    reason="",
+                    evidence="\n".join(evidences) if evidences else "流式过滤匹配成功",
+                ))
+                working = matched_records
+            else:
+                assertions.append(QKVAssertion(
+                    unit_index=index + 1,
+                    status="FAIL",
+                    observed=None,
+                    reason="QFK_NO_MATCH",
+                    evidence="流式过滤未匹配到任何满足条件的记录",
+                ))
+                working = []
     return QKVProcessingResult(records=working, assertions=assertions)
 
 
@@ -424,37 +456,69 @@ async def apply_output_processing_async(
                 raise QKVProcessingError("QFK_OUTPUT_EMPTY", f"处理单元[{index + 1}] 没有可处理的 QKV 记录")
         return QKVProcessingResult(records=working, assertions=assertions)
     for index, item in enumerate(normalized):
+        if not working:
+            break
         if item.get("scope", "per_record") == "single" and len(working) != 1:
             raise QKVProcessingError("QFK_CARDINALITY_MISMATCH", f"处理单元[{index + 1}] 要求恰好一条记录，实际 {len(working)} 条")
-        staged: list[tuple[dict[str, Any], Any]] = []
-        for record in working:
-            value = _resolve_input(item["input"], record)
-            if item["mode"] == "assert":
-                matched, observed, reason, evidence = _assert_concrete_value(value, item["match"])
-                assertions.append(QKVAssertion(index + 1, "UNKNOWN" if matched is None else ("PASS" if matched else "FAIL"), observed, reason, evidence))
-                continue
-            try:
-                # AI 的输入只能是确定性取值阶段已经产出的值，不能绕过前一步
-                # 读取原始记录，也不能在确定性失败时充当兜底。
-                derived = _derive_values(value, item)
-            except QKVProcessingError:
-                raise
-            ai_config = ai_processing_config(item.get("extract"))
-            if ai_config is not None:
-                derived = await _derive_with_ai(
-                    derived,
-                    ai_config,
-                    str(item.get("type") or "string"),
-                    ai_client,
-                    ai_extractor,
-                    conversation_id,
-                    case_id,
-                    db_session_factory=db_session_factory,
-                )
-            staged.append((record, derived))
         if item["mode"] == "derive":
+            staged: list[tuple[dict[str, Any], Any]] = []
+            for record in working:
+                value = _resolve_input(item["input"], record)
+                try:
+                    # AI 的输入只能是确定性取值阶段已经产出的值，不能绕过前一步
+                    # 读取原始记录，也不能在确定性失败时充当兜底。
+                    derived = _derive_values(value, item)
+                except QKVProcessingError:
+                    raise
+                ai_config = ai_processing_config(item.get("extract"))
+                if ai_config is not None:
+                    derived = await _derive_with_ai(
+                        derived,
+                        ai_config,
+                        str(item.get("type") or "string"),
+                        ai_client,
+                        ai_extractor,
+                        conversation_id,
+                        case_id,
+                        db_session_factory=db_session_factory,
+                    )
+                staged.append((record, derived))
             for record, derived in staged:
                 record[str(item["name"]).lower()] = derived
+        else:
+            # 流式过滤（Filter）：逐条评估并保留匹配条件的记录，剔除无关记录
+            matched_records = []
+            observed_values = []
+            evidences = []
+            for record in working:
+                try:
+                    value = _resolve_input(item["input"], record)
+                    matched, observed, reason, evidence = _assert_concrete_value(value, item["match"])
+                    if matched is True:
+                        matched_records.append(record)
+                        observed_values.append(observed)
+                        if evidence:
+                            evidences.append(evidence)
+                except Exception:
+                    continue  # 容错安全剔除
+            if matched_records:
+                assertions.append(QKVAssertion(
+                    unit_index=index + 1,
+                    status="PASS",
+                    observed=observed_values if len(observed_values) > 1 else (observed_values[0] if observed_values else None),
+                    reason="",
+                    evidence="\n".join(evidences) if evidences else "流式过滤匹配成功",
+                ))
+                working = matched_records
+            else:
+                assertions.append(QKVAssertion(
+                    unit_index=index + 1,
+                    status="FAIL",
+                    observed=None,
+                    reason="QFK_NO_MATCH",
+                    evidence="流式过滤未匹配到任何满足条件的记录",
+                ))
+                working = []
     return QKVProcessingResult(records=working, assertions=assertions)
 
 
