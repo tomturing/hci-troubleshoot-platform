@@ -232,17 +232,11 @@ func validateVerificationAssets(manifest *Manifest) error {
 		if asset.PayloadSHA256 != fmt.Sprintf("sha256:%x", sum[:]) {
 			return fmt.Errorf("verification_asset %s payload 摘要不匹配", asset.AssetID)
 		}
-		if asset.Scope == "qfk_execution_result" {
+		if asset.RouteID != "" {
 			route, ok := routes[asset.RouteID]
 			if !ok || route.SignalID != asset.SignalID {
 				return fmt.Errorf("verification_asset %s 未绑定同一 Signal 的 Route", asset.AssetID)
 			}
-			var output string
-			if err := json.Unmarshal(asset.Payload, &output); err != nil || output == "" {
-				return fmt.Errorf("verification_asset %s 的 QFK payload 必须是非空文本", asset.AssetID)
-			}
-		} else if asset.RouteID != "" {
-			return fmt.Errorf("verification_asset %s 的 QKV 资产不得伪装为 Route 输出", asset.AssetID)
 		}
 	}
 	return nil
