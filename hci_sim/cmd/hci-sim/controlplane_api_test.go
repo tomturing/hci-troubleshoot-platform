@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"hci_sim/internal/controlplane"
@@ -331,3 +332,67 @@ func TestThreeSignalsCompleteBundle(t *testing.T) {
 		t.Fatalf("最终 Bundle 3 个 Signal 输出不完整: %+v", stdouts)
 	}
 }
+
+func TestBundleFactoryAPIAppendVerificationAssetQKVUpdatesRouteStdout(t *testing.T) {
+	registry := controlplane.NewMemoryRegistryWithDependencies(controlplane.NewMemoryArtifactRegistry(), controlplane.NewMemoryBundleObjectStore())
+	mux := http.NewServeMux()
+	registerControlPlaneAPI(mux, registry, "test-control-token", false)
+
+	// 编译初始包含 QKV 信号的 Draft
+	compiled := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix, map[string]any{"resolved": map[string]any{
+		"support_id": "41446", "kbd_revision": 3, "kbd_checksum": "sha256:kbd-41446",
+		"signals_digest": "sha256:signals-41446", "tool_contract_revision": "tool-r1", "policy_revision": "policy-r1",
+		"synthetic_routes": []map[string]any{{
+			"signal_id": "sig_001", "tool": "qkv_alert", "argv": []string{"acli", "alert", "get"},
+			"tool_revision": 1, "tool_checksum": "sha256:tool",
+		}},
+	}}, "compiler", "compiler-service", http.StatusCreated)
+	parentDigest := compiled["bundle"].(map[string]any)["digest"].(string)
+
+	// 追加 QKV 验证资产（Scope: qkv_variable_processing，Payload: JSON 数组）
+	qkvPayload := []map[string]any{
+		{
+			"alert_type":  "删除虚拟机",
+			"description": "存在虚拟机，请迁移后再删除",
+			"vm":          "7903385510955",
+		},
+	}
+	appended := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+parentDigest+"/verification-assets", map[string]any{
+		"asset": map[string]any{
+			"asset_id": "va-qkv-001", "support_id": "41446", "kbd_revision": 3, "signal_id": "sig_001",
+			"scope": "qkv_variable_processing", "source_type": "pasted", "payload": qkvPayload,
+			"result_status": "PASS", "config_revision": "sha256:cfg", "trace_id": "trace-qkv-001",
+		},
+		"reason": "保存 QKV 试运行验证资产",
+	}, "expert", "expert-editor", http.StatusCreated)
+
+	childBundle := appended["bundle"].(map[string]any)
+	newDigest := childBundle["digest"].(string)
+	if newDigest == parentDigest {
+		t.Fatalf("ReviseDraft 应产生新的 digest，但 parent 和 child 相同")
+	}
+
+	manifest := childBundle["manifest"].(map[string]any)
+	routes := manifest["routes"].([]any)
+	if len(routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(routes))
+	}
+	updatedRoute := routes[0].(map[string]any)
+	updatedResult := updatedRoute["result"].(map[string]any)
+	stdoutStr := updatedResult["stdout"].(string)
+
+	if !strings.Contains(stdoutStr, "删除虚拟机") || !strings.Contains(stdoutStr, "7903385510955") {
+		t.Fatalf("QKV Route stdout 未正确更新为 JSON payload: %s", stdoutStr)
+	}
+
+	// 验证 verification_assets 中已追加记录
+	assets := manifest["verification_assets"].([]any)
+	if len(assets) != 1 {
+		t.Fatalf("expected 1 verification asset, got %d", len(assets))
+	}
+	firstAsset := assets[0].(map[string]any)
+	if firstAsset["asset_id"] != "va-qkv-001" || firstAsset["scope"] != "qkv_variable_processing" {
+		t.Fatalf("verification asset 记录不匹配: %+v", firstAsset)
+	}
+}
+

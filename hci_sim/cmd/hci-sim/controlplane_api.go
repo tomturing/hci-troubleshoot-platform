@@ -542,35 +542,16 @@ func appendVerificationAsset(w http.ResponseWriter, r *http.Request, registry co
 		writeControlPlaneError(w, fmt.Errorf("bundle_manifest_corrupt: %w", err))
 		return
 	}
-	if request.Asset.Scope == "qfk_execution_result" {
-		if request.Asset.RouteID == "" {
-			for _, route := range manifest.Routes {
-				if route.SignalID != request.Asset.SignalID {
-					continue
-				}
-				if request.Asset.RouteID != "" {
-					writeControlPlaneError(w, errors.New("verification_asset_route_ambiguous"))
-					return
-				}
-				request.Asset.RouteID = route.ID
-			}
-		}
-		var stdout string
-		if err := json.Unmarshal(request.Asset.Payload, &stdout); err != nil || stdout == "" {
-			writeControlPlaneError(w, errors.New("verification_asset_qfk_payload_invalid"))
+	// 统一规范化 Payload 为 Route Stdout 字符串（支持纯文本与 JSON 结构），并物化更新对应的 Route
+	stdout := normalizePayloadToStdout(request.Asset.Payload)
+	if stdout != "" && request.Asset.SignalID != "" {
+		matchedRouteID, updateErr := updateRouteStdout(&manifest, request.Asset.SignalID, request.Asset.RouteID, stdout)
+		if updateErr != nil {
+			writeControlPlaneError(w, updateErr)
 			return
 		}
-		updated := false
-		for index := range manifest.Routes {
-			if manifest.Routes[index].ID == request.Asset.RouteID && manifest.Routes[index].SignalID == request.Asset.SignalID {
-				manifest.Routes[index].Result.Stdout = stdout
-				updated = true
-				break
-			}
-		}
-		if !updated {
-			writeControlPlaneError(w, errors.New("verification_asset_route_not_found"))
-			return
+		if request.Asset.RouteID == "" && matchedRouteID != "" {
+			request.Asset.RouteID = matchedRouteID
 		}
 	}
 	if request.Asset.SupportID != "" && request.Asset.SupportID != manifest.KBD.SupportID {
@@ -672,3 +653,51 @@ func requestTraceID(r *http.Request) string {
 	}
 	return "trace-missing"
 }
+
+// normalizePayloadToStdout 统一规范化任何类型的 Payload 为可供 Route Stdout 使用的文本字符串。
+func normalizePayloadToStdout(payload json.RawMessage) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	var stdout string
+	if err := json.Unmarshal(payload, &stdout); err == nil && stdout != "" {
+		return stdout
+	}
+	return string(payload)
+}
+
+// updateRouteStdout 统一更新 Route Stdout 并返回更新的 RouteID。
+func updateRouteStdout(manifest *fixture.Manifest, signalID, routeID, stdout string) (string, error) {
+	if signalID == "" || stdout == "" {
+		return "", nil
+	}
+	if routeID != "" {
+		for index := range manifest.Routes {
+			if manifest.Routes[index].ID == routeID && manifest.Routes[index].SignalID == signalID {
+				manifest.Routes[index].Result.Stdout = stdout
+				return routeID, nil
+			}
+		}
+		return "", errors.New("verification_asset_route_not_found")
+	}
+
+	var matchedIndex = -1
+	for index := range manifest.Routes {
+		if manifest.Routes[index].SignalID != signalID {
+			continue
+		}
+		if matchedIndex != -1 {
+			// 存在多个相同 Signal 的 Route 时，若未显式指定 RouteID，返回歧义错误
+			return "", errors.New("verification_asset_route_ambiguous")
+		}
+		matchedIndex = index
+	}
+
+	if matchedIndex != -1 {
+		manifest.Routes[matchedIndex].Result.Stdout = stdout
+		return manifest.Routes[matchedIndex].ID, nil
+	}
+
+	return "", nil
+}
+
