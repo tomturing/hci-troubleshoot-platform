@@ -700,4 +700,3 @@ func updateRouteStdout(manifest *fixture.Manifest, signalID, routeID, stdout str
 
 	return "", nil
 }
-

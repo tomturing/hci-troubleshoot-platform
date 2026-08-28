@@ -395,4 +395,3 @@ func TestBundleFactoryAPIAppendVerificationAssetQKVUpdatesRouteStdout(t *testing
 		t.Fatalf("verification asset 记录不匹配: %+v", firstAsset)
 	}
 }
-
