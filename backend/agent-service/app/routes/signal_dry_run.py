@@ -281,12 +281,28 @@ async def _evaluate_qkv(body: SignalDryRunRequest, *, ai_client: Any | None, db_
     if _signal_id(signal) != body.unit_ref.signal_id:
         raise ValueError("unit_ref.signal_id 与草稿 Signal 不一致")
 
+    from app.tools.qkv.parser import _extract_by_produces
+
     records = _normalize_qkv_records(body.dataset.payload)
     orchestrate = signal.get("orchestrate") if isinstance(signal.get("orchestrate"), dict) else {}
     processing = orchestrate.get("output_processing") or []
     produces = orchestrate.get("produces") or []
 
-    # 1. 配置了 output_processing：执行确定性/AI 后处理流水线
+    # 1. 前置变量投影：若配置了 produces，先按声明提取有效变量（与生产环境 parser 对齐）
+    if isinstance(produces, list) and produces:
+        extracted = _extract_by_produces(records, produces)
+        if not extracted:
+            return SignalDryRunResult(
+                trace_id=trace_id, dataset_id=body.dataset.dataset_id, unit_ref=body.unit_ref,
+                verification_scope=body.verification_scope, config_revision=body.draft_revision,
+                status="FAIL", input_sha256=_canonical_hash({"source": body.dataset.source_type, "payload": body.dataset.payload}),
+                value=[],
+                evidence="输入数据中未能按 produces 规格提取出任何有效变量。",
+                derivation={"produces": [p.get("name") for p in produces if isinstance(p, dict) and p.get("name")]},
+            )
+        records = extracted
+
+    # 2. 配置了 output_processing：在已投影变量上执行确定性/AI 后处理流水线
     if isinstance(processing, list) and processing:
         end_index = body.unit_ref.processing_index if body.unit_ref.processing_index is not None else len(processing) - 1
         if end_index >= len(processing):
@@ -300,8 +316,6 @@ async def _evaluate_qkv(body: SignalDryRunRequest, *, ai_client: Any | None, db_
                 for item in processing[:end_index]
             ):
                 raise ValueError("AI_STEP_DEPENDENCY_UNSUPPORTED: ai_step 的前序依赖必须是确定性 derive")
-            # 断言不会产出后续依赖，跳过它既避免把业务 PASS/FAIL 混入 AI 契约验证，
-            # 也确保试运行只执行到目标 AI 单元为止。
             selected = [item for item in processing[: end_index + 1] if isinstance(item, dict) and item.get("mode") == "derive"]
         else:
             selected = processing[: end_index + 1]
@@ -323,29 +337,18 @@ async def _evaluate_qkv(body: SignalDryRunRequest, *, ai_client: Any | None, db_
             evidence="QKV 已投影 records 已按当前草稿及前序处理单元完成只读处理。",
         )
 
-    # 2. 纯 Producer：仅配置 produces 变量提取规格
+    # 3. 纯 Producer：仅配置 produces 变量提取规格
     if isinstance(produces, list) and produces:
         if body.verification_scope == "ai_step":
             raise ValueError("AI_STEP_TARGET_REQUIRED: QKV 纯生产者未配置 AI 处理单元")
-        from app.tools.qkv.parser import _extract_by_produces
-        extracted = _extract_by_produces(records, produces)
-        if not extracted:
-            return SignalDryRunResult(
-                trace_id=trace_id, dataset_id=body.dataset.dataset_id, unit_ref=body.unit_ref,
-                verification_scope=body.verification_scope, config_revision=body.draft_revision,
-                status="FAIL", input_sha256=_canonical_hash({"source": body.dataset.source_type, "payload": body.dataset.payload}),
-                value=[],
-                evidence="输入数据中未能按 produces 规格提取出任何有效变量。",
-                derivation={"produces": [p.get("name") for p in produces if isinstance(p, dict) and p.get("name")]},
-            )
-        produced_keys = list(extracted[0].keys())
+        produced_keys = list(records[0].keys()) if records else []
         return SignalDryRunResult(
             trace_id=trace_id, dataset_id=body.dataset.dataset_id, unit_ref=body.unit_ref,
             verification_scope=body.verification_scope, config_revision=body.draft_revision,
             status="PASS", input_sha256=_canonical_hash({"source": body.dataset.source_type, "payload": body.dataset.payload}),
-            value=extracted,
+            value=records,
             evidence="QKV 产出变量已按当前草稿 produces 规格完成只读提取。",
-            derivation={"produces": produced_keys, "record_count": len(extracted)},
+            derivation={"produces": produced_keys, "record_count": len(records)},
         )
 
     raise ValueError("QKV Signal 必须配置 orchestrate.produces 或 orchestrate.output_processing")

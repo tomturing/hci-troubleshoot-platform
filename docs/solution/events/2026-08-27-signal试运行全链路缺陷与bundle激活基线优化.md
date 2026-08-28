@@ -13,6 +13,7 @@
 7. **Bug #7（api-gateway / SignalDryRunDialog.vue）**：保存 Bundle 草稿时网关强制进行全量服务端二次执行（再次请求大模型），导致保存耗时高达 46 秒，且存在大模型轻微波动导致的偶发保存失败风险。
 8. **Bug #8（SignalDryRunDialog.vue）**：高版本草稿过滤 `kbd_revision` 为空时，`targetBundle` 为 `undefined` 导致读取 `digest` 抛出 JS 异常；修复为支持向历史已发布 / Active Bundle 平滑回退并增加强判空保护。
 9. **Bug #9（SignalDryRunDialog.vue）**：二次编辑模式下由于 source_ref 未重置为 `user-input` 触发后端 Pydantic 422 校验异常；同时修复超长 asset ID 导致的放弃修改按钮与文字重叠问题。
+10. **Bug #10（signal_dry_run.py / parser.py）**：QKV 试运行直接将 30 个原始字段送入 `output_processing` 而跳过 `produces` 变量投影，导致输出值冗余且未验证声明有效性；修复为前置调用 `_extract_by_produces`，与生产环境 100% 对齐。
 
 ## 2. 核心架构优化
 
