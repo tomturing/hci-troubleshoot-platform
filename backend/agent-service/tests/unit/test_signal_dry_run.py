@@ -90,6 +90,50 @@ async def test_qkv_dry_run_only_runs_target_and_preceding_units() -> None:
 
 
 @pytest.mark.asyncio
+async def test_qkv_dry_run_produces_filters_raw_fields_before_output_processing() -> None:
+    signal = {
+        "id": "sig_qkv_task",
+        "acquire": {"tool": "qkv_task", "args": {"instruction": "查看任务"}},
+        "orchestrate": {
+            "produces": [
+                {"name": "ERRCODE_TRACING", "path": "errcode_tracing"},
+                {"name": "DESCRIPTION", "path": "description"},
+            ],
+            "output_processing": [
+                {"mode": "assert", "input": "{{ERRCODE_TRACING}}", "match": {"type": "keyword", "pattern": "0x1900006c", "mode": "or", "expected": True, "extract": {"type": "text", "rows": {"mode": "all"}, "cardinality": "all", "source": "stdout"}}},
+                {"mode": "assert", "input": "{{DESCRIPTION}}", "match": {"type": "keyword", "pattern": "无法导出基镜像", "mode": "or", "expected": True, "extract": {"type": "text", "rows": {"mode": "all"}, "cardinality": "all", "source": "stdout"}}},
+            ],
+        },
+    }
+    raw_task_payload = [
+        {
+            "action_type": 0, "alert_type": "新建虚拟机", "bcancel": 0,
+            "description": "无法导出基镜像，所有可用基镜像副本均导出失败；无法导出基镜像副本，虚拟存储上拷贝文件失败；服务异常（0x1900006c）",
+            "errcode_tracing": "0x1900006c", "event_id": 1048595, "host": "SVR_aCloud_681",
+            "object_name": "Windows-DISK", "pid": "UPID:host-80615f1e94a6", "status": 2,
+        }
+    ]
+    request = SignalDryRunRequest(
+        draft_revision=_revision(signal), scope="qkv_variable_processing",
+        unit_ref={"signal_id": signal["id"]}, verification_scope="signal",
+        dataset={"dataset_id": "preview-qkv", "source_type": "pasted", "source_ref": "user-input", "payload": raw_task_payload},
+        signal=signal, support_id="41398", kbd_revision=18,
+    )
+
+    result = await evaluate_signal_dry_run(request, ai_client=None, trace_id="e" * 32)
+
+    assert result.status == "PASS"
+    # 核心断言：30 多个冗余字段已被剔除，输出值只包含声明的 produces 变量！
+    assert result.value == [
+        {
+            "errcode_tracing": "0x1900006c",
+            "description": "无法导出基镜像，所有可用基镜像副本均导出失败；无法导出基镜像副本，虚拟存储上拷贝文件失败；服务异常（0x1900006c）",
+        }
+    ]
+
+
+
+@pytest.mark.asyncio
 async def test_ai_step_requires_an_explicit_ai_target() -> None:
     signal = _qfk_signal()
     request = SignalDryRunRequest(
