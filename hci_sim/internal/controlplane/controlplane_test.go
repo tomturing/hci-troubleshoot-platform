@@ -264,6 +264,42 @@ func TestRetireRejectsPublishedBundle(t *testing.T) {
 	}
 }
 
+func TestRecompileRetiredBundleReactivatesDraft(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	registry := registryWithApprovedArtifact(t, now)
+	draft, err := registry.Compile(Actor{ID: "compiler", Role: RoleCompiler}, compileInput(), fixtureManifest(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retired, err := registry.Retire(Actor{ID: "expert", Role: RoleExpert}, draft.Digest, now.Add(time.Minute))
+	if err != nil || retired.Status != BundleRetired {
+		t.Fatalf("retire=%+v err=%v", retired, err)
+	}
+	listed, err := registry.List(draft.Input.SupportID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 0 {
+		t.Fatalf("归档 Bundle 不应出现在默认列表: %+v", listed)
+	}
+
+	// 再次调用 Compile，应重激活为 draft 并能在列表中被查出
+	recompiled, err := registry.Compile(Actor{ID: "compiler", Role: RoleCompiler}, compileInput(), fixtureManifest(), now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("重新 Compile 失败: %v", err)
+	}
+	if recompiled.Status != BundleDraft {
+		t.Fatalf("重新 Compile 后状态应为 draft，实际为: %s", recompiled.Status)
+	}
+	listedAfter, err := registry.List(draft.Input.SupportID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listedAfter) != 1 || listedAfter[0].Digest != draft.Digest || listedAfter[0].Status != BundleDraft {
+		t.Fatalf("重新 Compile 后应出现在列表中: %+v", listedAfter)
+	}
+}
+
 func TestKBDContractFlowCollectionFourScansDualReviewDraftEditAndPublish(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	artifacts := NewMemoryArtifactRegistry()

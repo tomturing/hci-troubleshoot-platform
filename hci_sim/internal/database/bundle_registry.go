@@ -110,10 +110,23 @@ func (r *BundleRegistry) Compile(actor controlplane.Actor, input controlplane.Co
 	inputJSON, _ := json.Marshal(input)
 	bundleID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(manifest.Bundle.Digest))
 	var existingDigest string
-	if err := tx.QueryRow(ctx, `SELECT digest FROM fixture.bundle WHERE input_fingerprint = $1`, fingerprint).Scan(&existingDigest); err == nil {
+	var existingStatus string
+	if err := tx.QueryRow(ctx, `SELECT digest, status FROM fixture.bundle WHERE input_fingerprint = $1`, fingerprint).Scan(&existingDigest, &existingStatus); err == nil {
 		r.objectStore.Abort(object)
 		if existingDigest != manifest.Bundle.Digest {
 			return controlplane.BundleRecord{}, errors.New("compiler_nondeterministic_output: 相同冻结输入生成了不同 Bundle")
+		}
+		if existingStatus == string(controlplane.BundleRetired) {
+			if _, err := tx.Exec(ctx, `
+				UPDATE fixture.bundle
+				SET status = 'draft', stale_reason = NULL, version = version + 1, updated_at = $2
+				WHERE digest = $1
+			`, existingDigest, now.UTC()); err != nil {
+				return controlplane.BundleRecord{}, fmt.Errorf("reactivate retired bundle: %w", err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return controlplane.BundleRecord{}, err
+			}
 		}
 		return r.Get(manifest.Bundle.Digest)
 	} else if !errors.Is(err, pgx.ErrNoRows) {
