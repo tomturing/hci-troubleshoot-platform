@@ -123,6 +123,23 @@ func TestBundleFactoryAPIRetiresDraftWithoutPhysicalDeletion(t *testing.T) {
 		t.Fatalf("retired bundle must not be listed: %+v", bundles)
 	}
 	bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+digest+"/retire", map[string]any{}, "compiler", "compiler-service", http.StatusForbidden)
+
+	// 再次请求生成 Draft，应成功重激活且列表可见
+	recompiled := bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix, map[string]any{"resolved": map[string]any{
+		"support_id": "40062", "kbd_revision": 1, "kbd_checksum": "sha256:kbd-40062",
+		"signals_digest": "sha256:signals-40062", "tool_contract_revision": "tool-r1", "policy_revision": "policy-r1",
+		"synthetic_routes": []map[string]any{{
+			"signal_id": "sig_004", "tool": "qfk_log", "argv": []string{"acli", "log", "get"},
+			"tool_revision": 1, "tool_checksum": "sha256:tool",
+		}},
+	}}, "compiler", "compiler-service", http.StatusCreated)
+	if recompiled["bundle"].(map[string]any)["status"] != string(controlplane.BundleDraft) {
+		t.Fatalf("recompiled bundle must be draft: %+v", recompiled)
+	}
+	listedAfter := bundleFactoryRequest(t, mux, http.MethodGet, controlPlanePrefix+"?support_id=40062", nil, "expert", "expert-editor", http.StatusOK)
+	if bundles := listedAfter["bundles"].([]any); len(bundles) != 1 || bundles[0].(map[string]any)["digest"] != digest {
+		t.Fatalf("recompiled bundle must be listed: %+v", bundles)
+	}
 }
 
 func TestBundleFactoryAPIAppendVerificationAssetBindsImmutableKbd(t *testing.T) {

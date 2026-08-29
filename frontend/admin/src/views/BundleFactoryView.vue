@@ -171,7 +171,7 @@ async function createDraft() {
   try {
     const body = await request('/v1/control-plane/bundles', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `bundle-factory-${supportId}` },
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `bundle-factory-${supportId}-${Date.now()}` },
       body: JSON.stringify({ support_id: supportId }),
     })
     const bundle = body.bundle as BundleRecord
