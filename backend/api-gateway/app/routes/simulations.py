@@ -125,7 +125,9 @@ async def get_bundle(bundle_digest: str, request: Request) -> JSONResponse:
 @router.get("/v1/control-plane/bundles/{bundle_digest}/dry-run-datasets")
 async def list_dry_run_datasets(bundle_digest: str, request: Request, signal_id: str, source_type: str) -> JSONResponse:
     """从已发布 Bundle 读取服务端保存的 PASS 验证资产；浏览器不能自报 payload。"""
-    if not re.fullmatch(r"sig[a-zA-Z0-9_.-]{0,127}", signal_id):
+    # signal_id 同时存在 AI 抽取链路的 sig_* 与专家工作稿的 expert_* 前缀，
+    # 这里只约束字符集与长度，前缀交给下游 Bundle Manifest 匹配。
+    if not re.fullmatch(r"[a-zA-Z0-9_.-]{1,128}", signal_id):
         raise HTTPException(status_code=400, detail="signal_id invalid")
     if source_type not in {"fixture", "replay"}:
         raise HTTPException(status_code=400, detail="source_type invalid")

@@ -2,7 +2,7 @@
 status: active
 category: solution
 audience: developer, reviewer, sre
-last_updated: 2026-08-27
+last_updated: 2026-08-29
 owner: platform
 ---
 
@@ -50,6 +50,8 @@ Admin 草稿 + 独立数据集
 `config_revision` 是草稿 Signal 的稳定 SHA-256。后端每次自行复算；不匹配返回 `DRAFT_REVISION_MISMATCH`。输入、数据集切换或草稿编辑均会清空前端结果，禁止混用 A 数据集的 evidence 与 B 数据集的结果。
 
 fixture/replay 只能从已发布 Bundle 的 `verification_assets` 读取 PASS 资产，Gateway 会按 `source_ref` 回读并覆盖浏览器 payload。临时样本不会写入 Bundle。保存时仍必须重新执行并通过草稿漂移校验。
+
+Gateway 对 `dry-run-datasets` 的 `signal_id` 查询参数只做字符集与长度白名单（`[a-zA-Z0-9_.-]{1,128}`，与 `asset_key` 口径一致），不校验业务前缀：AI 抽取链路的 `sig_*` 与专家工作稿生成的 `expert_<时间戳>_<随机>` 两种 ID 约定都必须放行，Signal 与资产的对应关系由下游 Bundle Manifest 精确匹配保证。收紧为特定前缀会导致专家新建信号无法拉取数据集（KBD 41446 曾因此报 `signal_id invalid`）。
 
 ## 4. Bundle 验证资产
 

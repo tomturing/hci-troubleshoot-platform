@@ -322,3 +322,31 @@ def test_simulation_result_accepts_structured_inconclusive_without_commands():
             },
         )
     assert response.status_code == 200
+
+
+def test_dry_run_datasets_accept_expert_prefixed_signal_ids():
+    """专家工作稿生成的 expert_* 信号与 AI 抽取的 sig_* 信号都必须能拉取试运行数据集。"""
+    client = TestClient(app)
+    runtime_response = JSONResponse({"datasets": []}, status_code=200)
+    with patch("app.routes.simulations._get", new=AsyncMock(return_value=runtime_response)) as runtime_get:
+        for signal_id in ("sig_qfk_001", "expert_1787108982945_03ec9aba7fb2"):
+            response = client.get(
+                "/api/hci-sim/v1/control-plane/bundles/sha256:bundle/dry-run-datasets",
+                params={"signal_id": signal_id, "source_type": "fixture"},
+            )
+            assert response.status_code == 200
+            assert signal_id in runtime_get.await_args.args[0]
+
+
+def test_dry_run_datasets_reject_signal_ids_outside_charset():
+    """白名单只约束字符集与长度，防止查询串注入；不校验业务前缀。"""
+    client = TestClient(app)
+    with patch("app.routes.simulations._get", new=AsyncMock()) as runtime_get:
+        for signal_id in ("sig_1 x", "信号1", ""):
+            response = client.get(
+                "/api/hci-sim/v1/control-plane/bundles/sha256:bundle/dry-run-datasets",
+                params={"signal_id": signal_id, "source_type": "fixture"},
+            )
+            assert response.status_code == 400
+            assert response.json()["detail"] == "signal_id invalid"
+    runtime_get.assert_not_awaited()
