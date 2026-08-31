@@ -25,6 +25,7 @@ class QFKExtractionError(ValueError):
 
     code: str
     message: str
+    raw_response: dict[str, Any] | None = None
 
     def __str__(self) -> str:
         return f"{self.code}: {self.message}"

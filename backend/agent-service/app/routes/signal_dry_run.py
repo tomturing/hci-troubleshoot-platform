@@ -386,15 +386,27 @@ async def signal_dry_run(request: Request, body: SignalDryRunRequest) -> SignalD
             dataset_id=body.dataset.dataset_id, input_sha256=result.input_sha256, status=status,
         )
         return result
-    except QFKExtractionError as exc:
+    except (QFKExtractionError, QKVProcessingError) as exc:
         error_code = exc.code
-        logger.warning(event="signal_dry_run_rejected", trace_id=trace_id, scope=body.scope, error_code=error_code)
+        raw_response = getattr(exc, "raw_response", None)
+        logger.warning(
+            event="signal_dry_run_rejected",
+            trace_id=trace_id,
+            scope=body.scope,
+            error_code=error_code,
+            has_raw_response=bool(raw_response),
+        )
         status_code = 503 if error_code == "QFK_AI_PROCESSING_PROMPT_UNAVAILABLE" else 422
         raise HTTPException(
             status_code=status_code,
-            detail={"code": error_code, "message": str(exc), "trace_id": trace_id},
+            detail={
+                "code": error_code,
+                "message": str(exc),
+                "trace_id": trace_id,
+                "ai_raw_response": raw_response,
+            },
         ) from exc
-    except (ValueError, QKVProcessingError) as exc:
+    except ValueError as exc:
         error_code = str(exc).split(":", 1)[0] if ":" in str(exc) else "SIGNAL_DRY_RUN_INVALID"
         logger.warning(event="signal_dry_run_rejected", trace_id=trace_id, scope=body.scope, error_code=error_code)
         raise HTTPException(status_code=422, detail={"code": error_code, "message": str(exc), "trace_id": trace_id}) from exc

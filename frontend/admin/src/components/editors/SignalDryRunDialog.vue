@@ -216,6 +216,7 @@ async function requestPreview(): Promise<void> {
       const detail = body?.detail
       const errorCode = typeof detail === 'object' ? String(detail?.code || '') : ''
       const errorMessage = typeof detail === 'object' ? String(detail?.message || '') : String(detail || '')
+      const aiRawResponse = typeof detail === 'object' && detail?.ai_raw_response ? detail.ai_raw_response : null
       previewResult.value = {
         trace_id: typeof detail === 'object' ? String(detail?.trace_id || '') : '',
         dataset_id: String(dryRunRequest.dataset && (dryRunRequest.dataset as Record<string, unknown>).dataset_id),
@@ -223,6 +224,7 @@ async function requestPreview(): Promise<void> {
         status: 'UNKNOWN',
         error_code: errorCode || null,
         error_message: errorMessage || `HTTP ${response.status}`,
+        ai_raw_response: aiRawResponse,
       }
       throw new Error(errorMessage || `HTTP ${response.status}`)
     }

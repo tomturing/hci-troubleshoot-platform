@@ -259,12 +259,14 @@ async def _extract_ai_value_impl(
             payload = json.loads(raw_response) if raw_response else None
         except Exception as exc:
             update_observation(observation, output={"status": "failed", "error": str(exc), "raw_response": raw_response[:2000]}, metadata={"response_chars": len(raw_response), "json_parse_failed": True})
-            raise QFKExtractionError("QFK_AI_PROCESSING_FAILED", f"AI 处理调用或 JSON 解析失败: {exc}") from exc
+            fallback_raw = {"raw_text": raw_response} if raw_response else None
+            raise QFKExtractionError("QFK_AI_PROCESSING_FAILED", f"AI 处理调用或 JSON 解析失败: {exc}", raw_response=fallback_raw) from exc
         try:
             payload = _upgrade_legacy_response(payload, candidates)
+            raw_payload_dict = payload if isinstance(payload, dict) else None
             if not isinstance(payload, dict) or payload.get("status") != "success":
                 reason = payload.get("reason") if isinstance(payload, dict) else "返回不是成功结构"
-                raise QFKExtractionError("QFK_AI_PROCESSING_FAILED", f"AI 无法处理：{reason or '未说明原因'}")
+                raise QFKExtractionError("QFK_AI_PROCESSING_FAILED", f"AI 无法处理：{reason or '未说明原因'}", raw_response=raw_payload_dict)
             validated = validate_ai_response(payload, config, candidates, value_type)
             evidence_numbers = [int(item.ref.split(":", 1)[1]) for item in validated.evidence if item.ref.startswith("line:")]
             evidence_lines = [candidates[item.ref] for item in validated.evidence]
@@ -291,6 +293,7 @@ async def _extract_ai_value_impl(
                     raise QFKExtractionError(
                         "QFK_AI_EXTRACT_UNGROUNDED" if legacy else "QFK_AI_PROCESSING_UNGROUNDED",
                         error_msg,
+                        raw_response=raw_payload_dict,
                     )
             update_observation(observation, output={"status": "succeeded", "output": validated.output, "evidence": [item.__dict__ for item in validated.evidence], "reason": validated.reason, "raw_response": raw_response[:2000]}, metadata={"response_chars": len(raw_response), "response_hash": hashlib.sha256(raw_response.encode("utf-8", errors="replace")).hexdigest(), "prompt_name": AI_PROCESSING_PROMPT_NAME, "prompt_revision": prompt_revision})
         except QFKExtractionError:
@@ -300,7 +303,8 @@ async def _extract_ai_value_impl(
                 reason="response_schema", mode=mode, output_type=output_type
             ).inc()
             update_observation(observation, output={"status": "failed", "error": str(exc), "raw_response": raw_response[:2000], "parsed_payload": payload}, metadata={"response_chars": len(raw_response), "validation_failed": True})
-            raise QFKExtractionError("QFK_AI_PROCESSING_INVALID_RESPONSE", str(exc)) from exc
+            raw_payload_dict = payload if isinstance(payload, dict) else None
+            raise QFKExtractionError("QFK_AI_PROCESSING_INVALID_RESPONSE", str(exc), raw_response=raw_payload_dict) from exc
     return AIExtractionResult(
         value=validated.output,
         raw_value=validated.output,

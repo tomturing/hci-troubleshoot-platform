@@ -98,3 +98,27 @@ def test_shared_ai_helpers():
     assert has_ai_extract({"type": "text"}) is False
     assert ai_value_type_for_matcher("threshold") == "array<number>"
     assert ai_value_type_for_matcher("keyword") is None
+
+
+@pytest.mark.asyncio
+async def test_shared_ai_extract_failure_preserves_raw_response():
+    failed_payload = {
+        "status": "failed",
+        "reason": "候选内容中存在多个不同的size值 (120G和400G), 无法确定单一的数值结果。",
+    }
+    client = _FakeAIClient(failed_payload)
+    spec = {
+        "type": "text",
+        "rows": {"mode": "all"},
+        "cardinality": "all",
+        "ai_processing": {"instruction": "提取磁盘大小", "output_type": "number"},
+    }
+    output = "ide0: size=120G\nide1: size=400G\n"
+
+    with pytest.raises(QFKExtractionError) as exc_info:
+        await extract_ai_value(output, spec, "number", client)
+
+    assert exc_info.value.code == "QFK_AI_PROCESSING_FAILED"
+    assert "候选内容中存在多个不同的size值" in exc_info.value.message
+    assert exc_info.value.raw_response == failed_payload
+
