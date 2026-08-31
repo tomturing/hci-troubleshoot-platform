@@ -43,11 +43,9 @@ class Conversation(Base, TraceableMixin):
     pending_confirm = Column(
         JSONB, nullable=True, comment="待确认工具调用快照（S3/S5 高危工具等待授权），断线重连恢复锚点"
     )
-    # v6.3 新增：S6 完成后等待用户意图选择的快照
-    # 格式：{"stage":"S6","sent_at":"...","options":["A","B","C"]}
-    # 选 A(已解决) → case.status=resolved；选 B(未解决) → 回退S1；选 C(升级人工) → in_progress
-    # 与 pending_confirm 独立：两者不会同时出现（pending_confirm在S3/S5，此字段在S6）
-    pending_resolution = Column(JSONB, nullable=True, comment="S6 验证闭环后等待用户选择的快照，A/B/C 选择后清空")
+    # 等待用户决定诊断去向的一次性交互快照。当前生产路径用于 SOP 继续/转 KBD，
+    # request_id 与 conversation 行锁共同提供防重放边界。
+    pending_resolution = Column(JSONB, nullable=True, comment="等待用户选择诊断去向的一次性交互快照")
 
     # 知识资产命中引用（case 级去重，hit_count 物化列的数据源）
     # S1 阶段按 category_id 命中 SOP 后写入；NULL 表示无 SOP 或未到 S1

@@ -225,11 +225,36 @@ async def send_message(
                 )
 
         _message_metadata = {}
+        _interactive_events: list[dict] = []
+        _persistence_scheduled = False
+        _case_id = message.case_id
+
+        def schedule_message_persistence() -> None:
+            nonlocal _persistence_scheduled
+            if _persistence_scheduled:
+                return
+            _persistence_scheduled = True
+            resolved_case_id = _case_id or message.case_id
+            if ai_content:
+                background_tasks.add_task(
+                    service.save_assistant_message,
+                    conversation_id=conversation_id,
+                    case_id=resolved_case_id,
+                    content="".join(ai_content),
+                    metadata=_message_metadata,
+                )
+            for interactive_event in _interactive_events:
+                background_tasks.add_task(
+                    service.save_interactive_request_message,
+                    conversation_id=conversation_id,
+                    case_id=resolved_case_id,
+                    event=interactive_event,
+                )
+
         try:
             # 同时监听 AI 流和外部事件队列
             # B1 修复：消息未携带 case_id 时，回退到会话记录关联的真实工单，
             # 避免空 case_id 一路透传至 terminal_bridge 的 exec 路由失败（exec.session_missing）。
-            _case_id = message.case_id
             if not _case_id:
                 try:
                     _conv = await service.get_conversation(conversation_id)
@@ -274,6 +299,11 @@ async def send_message(
                                 if evt_type == "metadata":
                                     with contextlib.suppress(Exception):
                                         _message_metadata.update(json.loads(evt_data))
+                                elif evt_type == "interactive_request":
+                                    with contextlib.suppress(Exception):
+                                        interactive_event = json.loads(evt_data)
+                                        if isinstance(interactive_event, dict):
+                                            _interactive_events.append(interactive_event)
                             else:
                                 event_payload = json.dumps({"to": evt_data}, ensure_ascii=False)
                                 yield f"event: {evt_type}\ndata: {event_payload}\n\n"
@@ -286,49 +316,22 @@ async def send_message(
                     # 直接透传接收到的外部事件（例如 agent_exec_command）
                     yield data
 
-            # 正常流结束后，提交后台任务保存消息
-            background_tasks.add_task(
-                service.save_assistant_message,
-                conversation_id=conversation_id,
-                case_id=message.case_id,
-                content="".join(ai_content),
-                metadata=_message_metadata,
-            )
+            # BackgroundTasks 按添加顺序执行：先保存普通回复，再保存交互卡。
+            schedule_message_persistence()
 
             yield "data: [DONE]\n\n"
 
         except asyncio.CancelledError:
             # 客户端断开连接，若已收到部分 AI 回复则在后台保存，避免丢失
-            if ai_content:
-                background_tasks.add_task(
-                    service.save_assistant_message,
-                    conversation_id=conversation_id,
-                    case_id=message.case_id,
-                    content="".join(ai_content),
-                    metadata=_message_metadata,
-                )
+            schedule_message_persistence()
             raise
         except AIStreamError as e:
             # 结构化 AI 流错误，使用 json.dumps 安全序列化
-            if ai_content:
-                background_tasks.add_task(
-                    service.save_assistant_message,
-                    conversation_id=conversation_id,
-                    case_id=message.case_id,
-                    content="".join(ai_content),
-                    metadata=_message_metadata,
-                )
+            schedule_message_persistence()
             yield f"event: error\ndata: {e.to_sse_data()}\n\n"
         except ExternalServiceError as e:
             # 外部服务故障（KB/Scheduler 等），回传完整错误信息给前端
-            if ai_content:
-                background_tasks.add_task(
-                    service.save_assistant_message,
-                    conversation_id=conversation_id,
-                    case_id=message.case_id,
-                    content="".join(ai_content),
-                    metadata=_message_metadata,
-                )
+            schedule_message_persistence()
             error_data = json.dumps(
                 {"code": e.code.value, "message": e.message, "detail": e.detail},
                 ensure_ascii=False,
@@ -343,14 +346,7 @@ async def send_message(
                 error_message=str(e),
                 conversation_id=str(conversation_id),
             )
-            if ai_content:
-                background_tasks.add_task(
-                    service.save_assistant_message,
-                    conversation_id=conversation_id,
-                    case_id=message.case_id,
-                    content="".join(ai_content),
-                    metadata=_message_metadata,
-                )
+            schedule_message_persistence()
             # 透传真实错误信息，让用户了解问题根因
             error_message = str(e)[:200] if str(e) else f"{type(e).__name__}（无详细信息）"
             error_data = json.dumps(
@@ -363,6 +359,7 @@ async def send_message(
             )
             yield f"event: error\ndata: {error_data}\n\n"
         finally:
+            schedule_message_persistence()
             # 安全地终止并清理后台生产者任务，彻底杜绝悬空协程和内存泄露
             if ai_task and not ai_task.done():
                 ai_task.cancel()

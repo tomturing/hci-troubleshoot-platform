@@ -1694,7 +1694,7 @@ COMMENT ON COLUMN conversation.ended_at IS '会话结束时间（用户关闭工
 COMMENT ON COLUMN conversation.message_count IS '只读字段，由触发器 update_conversation_message_count 在 message 表 INSERT/DELETE 时自动维护；代码层只读，禁止手动修改';
 COMMENT ON COLUMN conversation.metadata IS '扩展字段，存储 case_title/case_description（供 Pod 分配时注入环境变量）、context_info（S0 意图识别环境上下文）等';
 COMMENT ON COLUMN conversation.pending_confirm IS '待用户确认的工具调用快照，格式：{"audit_id":"...","tool_name":"vm_migrate","risk":"medium","cmd":"..."}。仅 risk_level>=2 且等待确认期间有值，用户确认/拒绝/超时后清空（NULL）。前端 SSE 事件驱动，此字段作为断线重连时的恢复锚点';
-COMMENT ON COLUMN conversation.pending_resolution IS 'S6 验证闭环后等待用户选择的快照（A/B/C 选项），格式：{"resolution":"...","choices":["A:...","B:...","C:..."]}。用户选择后清空（NULL），A 选项触发关闭工单';
+COMMENT ON COLUMN conversation.pending_resolution IS '等待用户选择诊断去向的一次性交互快照；包含 kind、request_id、trace_id 和场景状态，选择后原子清空。兼容 S6 A/B/C 与 SOP 继续/转 KBD';
 COMMENT ON COLUMN conversation.repeat_question_count IS '用户重复提问次数，由 conversation-service 实时统计（Jaccard 相似度 >= 0.6 判定为重复）。质量评分效率维度的核心输入，关单时复制到 assistant_evaluation.repeat_question_count';
 COMMENT ON COLUMN conversation.trace_id IS '创建会话的请求 trace ID';
 COMMENT ON COLUMN conversation.sop_document_id IS 'S1 阶段按 category_id 命中的 SOP 文档 ID（FK → sop_document.id）；NULL 表示该分类无对应 SOP 或尚未到达 S1。每个 case 的首个到达 S1 的 conversation 写入此字段，断线重连产生的重复 conversation 不覆盖已写入值';
