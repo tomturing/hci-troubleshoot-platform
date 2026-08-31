@@ -599,6 +599,23 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
     return
   }
 
+  if (ev.kind === 'sop_fallback') {
+    interactiveSubmitting.value = true
+    try {
+      chatStore.clearInteractiveRequest()
+      await chatStore.sendMessage(optionName, {
+        kind: 'interactive_response',
+        interactiveKind: 'sop_fallback',
+        selectedOptionId: optionId,
+        sourceRequestId: ev.requestId,
+        sourceMessageId: props.message.id,
+      })
+    } finally {
+      interactiveSubmitting.value = false
+    }
+    return
+  }
+
   const isVariable = ['variable_input', 'variable_confirm'].includes(ev.kind)
 
   // ── 以下为 ops-agent 原有逻辑 / 变量确认逻辑 ──

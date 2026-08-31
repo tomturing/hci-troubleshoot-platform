@@ -235,6 +235,18 @@ AI_REQUESTS_TOTAL = Counter(
     labelnames=["assistant_type", "status"],  # status: success | error
 )
 
+SOP_FALLBACK_PROMPTS_TOTAL = Counter(
+    "hci_sop_fallback_prompts_total",
+    "SOP 退出选择卡生成次数",
+    labelnames=["sop_status", "stage"],
+)
+
+SOP_FALLBACK_DECISIONS_TOTAL = Counter(
+    "hci_sop_fallback_decisions_total",
+    "SOP 退出选择处理结果",
+    labelnames=["choice", "status"],
+)
+
 # KB 检索耗时直方图
 KB_SEARCH_DURATION_SECONDS = Histogram(
     "hci_kb_search_seconds",

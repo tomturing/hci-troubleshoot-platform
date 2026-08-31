@@ -82,6 +82,42 @@ async function mountInteractiveBubble(options: Record<string, unknown>[]) {
   })
 }
 
+async function mountSopFallbackBubble() {
+  const MessageBubble = (await import('@/components/MessageBubble.vue')).default
+  return shallowMount(MessageBubble, {
+    props: {
+      message: {
+        id: 'assistant-sop-fallback-1',
+        role: 'assistant' as const,
+        content: '请选择后续排查方式',
+        timestamp: new Date('2026-08-31T18:00:00+08:00'),
+        metadata: {
+          kind: 'interactive_request',
+          event: {
+            requestId: 'sop-fallback-1',
+            acpSessionId: 'conv-s0-1',
+            kind: 'sop_fallback',
+            title: '选择后续排查方式',
+            prompt: '当前 SOP 是否解决了问题？',
+            options: [
+              { optionId: 'continue_sop', name: '继续按当前 SOP 排查' },
+              { optionId: 'switch_kbd', name: 'SOP 未解决，切换 KBD' },
+            ],
+            customInput: false,
+            metadata: { sop_document_id: 3 },
+          },
+        },
+      },
+    },
+    global: {
+      stubs: {
+        CommandBlock: true,
+        InteractiveOptions: true,
+      },
+    },
+  })
+}
+
 describe('MessageBubble S0 稳定分类身份', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -228,6 +264,24 @@ describe('MessageBubble S0 稳定分类身份', () => {
 
     expect(setup.hasBeenInteracted).toBe(true)
     expect(setup.interactedChoice).toBe('②')
+    wrapper.unmount()
+  })
+
+  it('SOP 未解决通过普通消息流提交一次性 KBD 切换选择', async () => {
+    const wrapper = await mountSopFallbackBubble()
+    const setup = (wrapper.getCurrentComponent() as any).setupState
+
+    await setup.handleInteractiveOption('switch_kbd', 'SOP 未解决，切换 KBD')
+
+    expect(mockStore.clearInteractiveRequest).toHaveBeenCalledOnce()
+    expect(mockSendMessage).toHaveBeenCalledWith('SOP 未解决，切换 KBD', {
+      kind: 'interactive_response',
+      interactiveKind: 'sop_fallback',
+      selectedOptionId: 'switch_kbd',
+      sourceRequestId: 'sop-fallback-1',
+      sourceMessageId: 'assistant-sop-fallback-1',
+    })
+    expect(mockStore.resumeOpsAgentStream).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })
