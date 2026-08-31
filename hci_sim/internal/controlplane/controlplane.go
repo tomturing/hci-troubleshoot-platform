@@ -291,7 +291,7 @@ func (r *MemoryRegistry) Compile(actor Actor, input CompileInput, manifest fixtu
 			return BundleRecord{}, errors.New("compiler_nondeterministic_output: 相同冻结输入生成了不同 Bundle")
 		}
 		r.objectStore.Abort(object)
-		if record.Status == BundleRetired {
+		if record.Status == BundleRetired || record.Status == BundleStale {
 			record.Status = BundleDraft
 			record.StaleReason = ""
 			record.UpdatedAt = now.UTC()
@@ -302,7 +302,7 @@ func (r *MemoryRegistry) Compile(actor Actor, input CompileInput, manifest fixtu
 	record := BundleRecord{Digest: manifest.Bundle.Digest, InputFingerprint: fingerprint, Input: input, Manifest: raw, Object: object, Status: BundleDraft, Creator: actor.ID, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}
 	if existing, ok := r.byDigest[record.Digest]; ok {
 		r.objectStore.Abort(object)
-		if existing.Status == BundleRetired {
+		if existing.Status == BundleRetired || existing.Status == BundleStale {
 			existing.Status = BundleDraft
 			existing.StaleReason = ""
 			existing.UpdatedAt = now.UTC()

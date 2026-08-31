@@ -277,11 +277,62 @@ describe('SignalDryRunDialog', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await vm.saveToBundle()
-    // 验证没有调用 POST /api/hci-sim/v1/control-plane/bundles（即没有创建新 Draft，而是直接复用）
-    expect(fetchMock).not.toHaveBeenCalledWith('/api/hci-sim/v1/control-plane/bundles', expect.objectContaining({ method: 'POST' }))
     // 验证直接调用了向已有 Draft 写入验证资产的接口
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining('sha256%3Aexisting_draft_rev9'),
+      expect.objectContaining({ method: 'POST' })
+    )
+    vi.unstubAllGlobals()
+  })
+
+  it('当前版本无活跃 Draft 但存在 Published Bundle 时自动基于 Published Bundle 派生写入', async () => {
+    const wrapper = mount(SignalDryRunDialog, {
+      props: { modelValue: true, supportId: '39175', kbdRevision: 32, signal: { ...signal, id: 'sig_001' }, signalIndex: 0 },
+      global: { plugins: [ElementPlus], stubs },
+    })
+    const vm = wrapper.vm as unknown as {
+      previewResult: Record<string, unknown>
+      lastDryRunRequest: Record<string, unknown>
+      saveToBundle: () => Promise<void>
+    }
+    vm.previewResult = {
+      trace_id: 't-pub-derive', dataset_id: 'sample', config_revision: 'sha256:test', status: 'PASS',
+      preview_token: 'token.pub',
+    }
+    vm.lastDryRunRequest = { support_id: '39175', kbd_revision: 32, unit_ref: { signal_id: 'sig_001' } }
+
+    const fetchMock = vi.fn().mockImplementation((url: string, opts?: { method?: string; body?: string }) => {
+      if (url.includes('/bundles?support_id=39175')) {
+        // 只有 published 和 stale，没有活跃 draft
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            bundles: [
+              { digest: 'sha256:pub_rev32', status: 'published', kbd_revision: 32, route_sources: [{ signal_id: 'sig_001' }] },
+              { digest: 'sha256:stale_rev32', status: 'stale', kbd_revision: 32, route_sources: [{ signal_id: 'sig_001' }] }
+            ]
+          }),
+        })
+      }
+      if (url.includes('/dry-run/bundles/sha256%3Apub_rev32') || url.includes('/dry-run/bundles/sha256:pub_rev32')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            bundle: { digest: 'sha256:derived_draft_rev32', status: 'draft' }
+          }),
+        })
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await vm.saveToBundle()
+    // 验证没有调用 POST /api/hci-sim/v1/control-plane/bundles，而是直接使用 published digest 作为 targetDigest
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/hci-sim/v1/control-plane/bundles', expect.objectContaining({ method: 'POST' }))
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('sha256%3Apub_rev32'),
       expect.objectContaining({ method: 'POST' })
     )
     vi.unstubAllGlobals()

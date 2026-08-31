@@ -283,23 +283,38 @@ async function saveToBundle(): Promise<void> {
           return true
         })
       : []
-    if (drafts.length > 1) throw new Error('当前 KBD 版本存在多个包含该信号的 Draft，请在 Bundle 工厂完成整理后再保存')
-    if (drafts.length === 0) {
-      const created = await fetch('/api/hci-sim/v1/control-plane/bundles', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `signal-dry-run-draft:${props.supportId}:${previewResult.value?.trace_id || 'current'}` },
-        body: JSON.stringify({
-          support_id: props.supportId,
-          ...(typeof props.kbdRevision === 'number' ? { kbd_revision: props.kbdRevision } : {}),
-        }),
-      })
-      const createdBody = await created.json().catch(() => ({}))
-      if (!created.ok) throw new Error(String(createdBody?.detail || `创建 Bundle Draft HTTP ${created.status}`))
-      const createdBundle = createdBody?.bundle
-      if (!createdBundle || createdBundle.status !== 'draft' || !createdBundle.digest) throw new Error('Bundle 控制面未返回可写入的 Draft')
-      drafts = [createdBundle]
+    let targetDigest: string | null = drafts[0]?.digest ? String(drafts[0].digest) : null
+    if (!targetDigest) {
+      // 若当前版本无活跃 Draft 但已存在 Published Bundle，直接以已发布 Bundle 为父基线写入（后端自动派生新 Draft）
+      const publishedBundle = Array.isArray(listBody.bundles)
+        ? listBody.bundles.find((item: Record<string, unknown>) => {
+            if (item.status !== 'published') return false
+            if (targetRevision !== null && item.kbd_revision !== targetRevision) return false
+            return true
+          })
+        : null
+
+      if (publishedBundle && publishedBundle.digest) {
+        targetDigest = String(publishedBundle.digest)
+      } else {
+        const created = await fetch('/api/hci-sim/v1/control-plane/bundles', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `signal-dry-run-draft:${props.supportId}:${previewResult.value?.trace_id || 'current'}` },
+          body: JSON.stringify({
+            support_id: props.supportId,
+            ...(typeof props.kbdRevision === 'number' ? { kbd_revision: props.kbdRevision } : {}),
+          }),
+        })
+        const createdBody = await created.json().catch(() => ({}))
+        if (!created.ok) throw new Error(String(createdBody?.detail || `创建 Bundle Draft HTTP ${created.status}`))
+        const createdBundle = createdBody?.bundle
+        if (!createdBundle || !createdBundle.digest || (createdBundle.status !== 'draft' && createdBundle.status !== 'published')) {
+          throw new Error('Bundle 控制面未返回可写入的 Draft')
+        }
+        targetDigest = String(createdBundle.digest)
+      }
     }
-    const response = await fetch(`/api/v1/signals/dry-run/bundles/${encodeURIComponent(String(drafts[0].digest))}`, {
+    const response = await fetch(`/api/v1/signals/dry-run/bundles/${encodeURIComponent(targetDigest)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

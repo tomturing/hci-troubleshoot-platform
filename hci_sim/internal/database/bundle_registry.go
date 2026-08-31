@@ -116,13 +116,13 @@ func (r *BundleRegistry) Compile(actor controlplane.Actor, input controlplane.Co
 		if existingDigest != manifest.Bundle.Digest {
 			return controlplane.BundleRecord{}, errors.New("compiler_nondeterministic_output: 相同冻结输入生成了不同 Bundle")
 		}
-		if existingStatus == string(controlplane.BundleRetired) {
+		if existingStatus == string(controlplane.BundleRetired) || existingStatus == string(controlplane.BundleStale) {
 			if _, err := tx.Exec(ctx, `
 				UPDATE fixture.bundle
 				SET status = 'draft', stale_reason = NULL, version = version + 1, updated_at = $2
 				WHERE digest = $1
 			`, existingDigest, now.UTC()); err != nil {
-				return controlplane.BundleRecord{}, fmt.Errorf("reactivate retired bundle: %w", err)
+				return controlplane.BundleRecord{}, fmt.Errorf("reactivate non-draft bundle: %w", err)
 			}
 			if err := tx.Commit(ctx); err != nil {
 				return controlplane.BundleRecord{}, err
