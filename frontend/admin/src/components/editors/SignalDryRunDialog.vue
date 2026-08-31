@@ -54,14 +54,31 @@ const forkedSourceRef = ref('')
 const signalId = computed(() => String(props.signal?.id || `sig_${(props.signalIndex ?? 0) + 1}`))
 const instruction = computed(() => String(props.signal?.acquire?.args?.instruction || '未命名 Signal'))
 const tool = computed(() => String(props.signal?.acquire?.tool || '未选择工具'))
+function hasValidAi(extract: Record<string, any> | null | undefined): boolean {
+  if (!extract || typeof extract !== 'object') return false
+  return Boolean(extract.ai_processing || extract.ai_extract)
+}
+
 const isQkv = computed(() => tool.value.startsWith('qkv'))
 const hasAiProcessing = computed(() => {
   if (isQkv.value) {
     const processing = props.signal?.orchestrate?.output_processing
     const target = Array.isArray(processing) && typeof props.processingIndex === 'number' ? processing[props.processingIndex] : null
-    return Boolean(target?.mode === 'derive' && (target?.extract?.ai_processing || target?.extract?.ai_extract))
+    if (target) {
+      return Boolean(target?.mode === 'derive' && hasValidAi(target?.extract))
+    }
+    return Array.isArray(processing) && processing.some(item => item?.mode === 'derive' && hasValidAi(item?.extract))
   }
-  return Boolean(props.signal?.match?.extract?.ai_processing || props.signal?.match?.extract?.ai_extract)
+  // QFK 信号：同时支持匹配模式 (match) 与产出变量模式 (produces)
+  const hasMatchAi = hasValidAi(props.signal?.match?.extract)
+  const produces = props.signal?.orchestrate?.produces || props.signal?.produces
+  if (Array.isArray(produces) && produces.length > 0) {
+    if (typeof props.processingIndex === 'number' && produces[props.processingIndex]) {
+      return hasValidAi(produces[props.processingIndex]?.extract)
+    }
+    return hasMatchAi || produces.some(item => hasValidAi(item?.extract))
+  }
+  return hasMatchAi
 })
 const inputLabel = computed(() => isQkv.value ? '已投影变量 JSON records 或采集原始输出' : '完整 stdout / stderr')
 const inputPlaceholder = computed(() => isQkv.value
@@ -196,7 +213,11 @@ async function requestPreview(): Promise<void> {
     const dryRunRequest = {
       draft_revision: revision,
       scope: isQkv.value ? 'qkv_variable_processing' : 'qfk_execution_result',
-      unit_ref: { signal_id: signalId.value, ...(isQkv.value && typeof props.processingIndex === 'number' ? { processing_index: props.processingIndex } : {}) },
+      unit_ref: {
+        signal_id: signalId.value,
+        ...(isQkv.value && typeof props.processingIndex === 'number' ? { processing_index: props.processingIndex } : {}),
+        ...(!isQkv.value && typeof props.processingIndex === 'number' ? { produce_index: props.processingIndex } : {}),
+      },
       verification_scope: verificationScope.value,
       dataset: {
         dataset_id: isEditingFork.value ? `fork-${crypto.randomUUID()}` : (selectedDataset.value?.dataset_id || crypto.randomUUID()),

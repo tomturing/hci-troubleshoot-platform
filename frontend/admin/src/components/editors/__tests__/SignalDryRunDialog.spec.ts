@@ -59,6 +59,35 @@ describe('SignalDryRunDialog', () => {
     expect(aiButton?.attributes('disabled')).toBeDefined()
   })
 
+  it('QFK 产出变量（produces）配置了 AI 处理时启用当前 AI 处理范围', () => {
+    const wrapper = mount(SignalDryRunDialog, {
+      props: {
+        modelValue: true,
+        supportId: '39175',
+        signal: {
+          id: 'expert_disk_size',
+          acquire: { tool: 'qfk_vm', args: {} },
+          orchestrate: {
+            produces: [
+              {
+                name: 'DISK_SIZES',
+                type: 'array',
+                extract: {
+                  type: 'text',
+                  ai_processing: { mode: 'extract', instruction: '获取size的具体的值，保存为数组', output_type: 'array' },
+                },
+              },
+            ],
+          },
+        },
+      },
+      global: { plugins: [ElementPlus], stubs },
+    })
+
+    const aiButton = wrapper.findAll('button').find((item) => item.text().includes('当前 AI 处理'))
+    expect(aiButton?.attributes('disabled')).toBeUndefined()
+  })
+
   it('结果区域只展示单一终态并可展开 AI 原始响应', async () => {
     const wrapper = mount(SignalDryRunDialog, {
       props: { modelValue: true, supportId: '41398', kbdRevision: 7, signal, signalIndex: 2 },
