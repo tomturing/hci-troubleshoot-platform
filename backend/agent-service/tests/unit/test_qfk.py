@@ -792,3 +792,42 @@ async def test_auto_inference_enables_nonzero_as_negative_for_readonly_cat(monke
     assert result.matched is False
     assert result.execution_status == "succeeded"
     assert result.business_output_available is True
+
+
+def test_threshold_matcher_unresolved_placeholder_and_missing_value_evidence():
+    matcher_placeholder = {
+        "type": "threshold",
+        "value": "{{TOTAL_DISK_SIZE}}",
+        "operator": "<",
+        "aggregation": "first_number",
+        "expected": True,
+        "extract": {
+            "type": "text",
+            "source": "stdout",
+            "rows": {"mode": "keywords", "include": ["108610050048"]},
+        },
+    }
+    sample_text = "108610050048\n"
+    res_placeholder = evaluate_matcher(matcher_placeholder, sample_text)
+    assert res_placeholder.matched is None
+    assert "未求值" in res_placeholder.evidence
+    assert res_placeholder.detail["error"] == "unresolved_variable_placeholder"
+    assert res_placeholder.detail["value"] == 108610050048.0
+
+    matcher_no_match = {
+        "type": "threshold",
+        "value": 100,
+        "operator": "<",
+        "aggregation": "first_number",
+        "expected": True,
+        "extract": {
+            "type": "text",
+            "source": "stdout",
+            "rows": {"mode": "keywords", "include": ["non_existent_key"]},
+        },
+    }
+    res_no_match = evaluate_matcher(matcher_no_match, sample_text)
+    assert res_no_match.matched is None
+    assert "QFK_NO_MATCH" in res_no_match.evidence or "文本取值失败" in res_no_match.evidence
+
+

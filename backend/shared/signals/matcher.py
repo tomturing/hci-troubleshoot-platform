@@ -232,28 +232,52 @@ def evaluate_matcher(
         target = matcher.get("value")
         op = matcher.get("operator", ">")
         if val is None or target is None:
-            return MatcherResult(matched=None)
+            if val is None:
+                evidence = "【Matcher 求值 (threshold)】从输出文本中未提取到有效数值（匹配行未命中或未解析出数字）"
+                detail_err = "no_numeric_value_extracted"
+            else:
+                evidence = f"【Matcher 求值 (threshold)】目标阈值未配置或为空（当前提取数值为 {val}）"
+                detail_err = "missing_target_value"
+            return MatcherResult(
+                matched=None,
+                detail={"error": detail_err, "value": val, "target": target, **extraction_detail},
+                evidence=evidence,
+            )
         try:
-            target = float(target)
+            target_float = float(target)
         except (TypeError, ValueError):
-            return MatcherResult(matched=None)
-        cmp = _compare_threshold(val, target, op)
+            if isinstance(target, str) and "{{" in target:
+                evidence = f"【Matcher 求值 (threshold)】目标阈值为占位符 {target!r}（单信号试运行中前序动态变量未求值，当前提取数值为 {val}）"
+                detail_err = "unresolved_variable_placeholder"
+            else:
+                evidence = f"【Matcher 求值 (threshold)】目标阈值 {target!r} 无法转为合法数值（当前提取数值为 {val}）"
+                detail_err = "invalid_target_number"
+            return MatcherResult(
+                matched=None,
+                detail={"error": detail_err, "value": val, "target": target, **extraction_detail},
+                evidence=evidence,
+            )
+        cmp = _compare_threshold(val, target_float, op)
         if cmp is None:
-            return MatcherResult(matched=None)
+            return MatcherResult(
+                matched=None,
+                detail={"error": "unsupported_operator", "value": val, "target": target_float, "operator": op, **extraction_detail},
+                evidence=f"【Matcher 求值 (threshold)】不支持的操作符: {op}",
+            )
         matched = cmp if expected else not cmp
         return MatcherResult(
             matched=matched,
             detail={
                 "hit": cmp,
                 "value": val,
-                "target": target,
+                "target": target_float,
                 "operator": op,
                 "aggregation": aggregation,
                 "metric": matcher.get("metric"),
                 **extraction_detail,
             },
             evidence=(
-                f"【Matcher 求值 (threshold/{aggregation})】\n提取数值: {val} {op} {target}\n"
+                f"【Matcher 求值 (threshold/{aggregation})】\n提取数值: {val} {op} {target_float}\n"
                 f"比较结果: {cmp}\n期望 expected: {expected}\n最终判定: {matched}"
             ),
         )
