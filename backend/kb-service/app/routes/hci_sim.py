@@ -64,11 +64,11 @@ async def list_hci_sim_capabilities(request: Request, sample_suite: str | None =
 
 
 @router.get("/capabilities/{support_id}")
-async def get_hci_sim_capability(support_id: str, request: Request) -> dict:
-    """按 support_id 解析单条 KBD 的不可变输入或 capability gap。"""
+async def get_hci_sim_capability(support_id: str, request: Request, revision: int | None = None) -> dict:
+    """按 support_id 解析单条 KBD 的不可变输入或 capability gap，支持按工作稿 revision 针对性解析。"""
 
     _check_internal_auth(request)
     if _db_manager is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="数据库依赖未初始化")
     async with _db_manager.async_session_factory() as session:
-        return (await _resolver.resolve_support_id(session, support_id)).to_dict()
+        return (await _resolver.resolve_support_id(session, support_id, revision=revision)).to_dict()
