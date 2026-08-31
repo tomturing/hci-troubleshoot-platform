@@ -250,11 +250,17 @@ async function saveToBundle(): Promise<void> {
     if (!listed.ok) throw new Error(`Bundle 控制面 HTTP ${listed.status}`)
     const targetRevision = typeof props.kbdRevision === 'number' ? props.kbdRevision : null
     let drafts = Array.isArray(listBody.bundles)
-      ? listBody.bundles.filter((item: Record<string, unknown>) =>
-          item.status === 'draft' && (!targetRevision || item.kbd_revision === targetRevision)
-        )
+      ? listBody.bundles.filter((item: Record<string, unknown>) => {
+          if (item.status !== 'draft') return false
+          if (targetRevision !== null && item.kbd_revision !== targetRevision) return false
+          const routes = Array.isArray(item.route_sources) ? (item.route_sources as Array<Record<string, unknown>>) : []
+          if (routes.length > 0 && !routes.some(r => r.signal_id === signalId.value)) {
+            return false
+          }
+          return true
+        })
       : []
-    if (drafts.length > 1) throw new Error('当前 KBD 版本存在多个 Draft，请在 Bundle 工厂完成整理后再保存')
+    if (drafts.length > 1) throw new Error('当前 KBD 版本存在多个包含该信号的 Draft，请在 Bundle 工厂完成整理后再保存')
     if (drafts.length === 0) {
       const created = await fetch('/api/hci-sim/v1/control-plane/bundles', {
         method: 'POST',

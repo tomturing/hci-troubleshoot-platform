@@ -240,3 +240,53 @@ def test_custom_producer_sample_output_uses_shared_variable_template():
     output = _derive_sample_output(signal, "qkv_task", "producer", "acli task get")
 
     assert '"disk":"{{CUSTOM_DISK}}"' in output
+
+
+def test_resolver_resolves_working_draft_revision():
+    """验证工作稿（KbdRevision）态下的信号可被正确解析为 Bundle 编译输入。"""
+    document = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "expert_1788139182831_f2fcdaefb29d",
+                "role": "must",
+                "acquire": {
+                    "tool": "qkv_task",
+                    "args": {"keyword": "删除虚拟机", "limit": 1, "is_failed": True},
+                },
+                "match": None,
+                "orchestrate": {
+                    "phase": "diagnostic",
+                    "requires": [],
+                    "produces": [{"name": "VM", "type": "string", "path": "vm"}],
+                },
+            }
+        ],
+        "verification_contract": {
+            "schema_version": 1,
+            "case_id": "41446",
+            "evidence_policy": {"must": ["expert_1788139182831_f2fcdaefb29d"]},
+        },
+        "publish_validation": {
+            "schema_version": 1,
+            "status": "passed",
+            "tool_contract_revision": current_tool_contract_revision(),
+            "validator": "expert_publish_gate",
+        },
+    }
+    kbd_rev = SimpleNamespace(
+        revision_no=23,
+        checksum="c" * 64,
+        payload_json={"signals_json": document, "metadata": {"sample_suite": "working-draft-v1"}},
+        trace_id="test-trace-rev-23",
+    )
+    resolution = HciSimKbdResolver().resolve_revision(_entry(support_id="41446"), kbd_rev, _tool_snapshots())
+
+    assert resolution.status == "ready_for_artifact_binding"
+    assert resolution.resolved is not None
+    assert resolution.resolved.support_id == "41446"
+    assert resolution.resolved.kbd_revision == 23
+    assert resolution.resolved.kbd_checksum == "sha256:" + "c" * 64
+    assert resolution.resolved.source_trace_id == "test-trace-rev-23"
+    assert [route.signal_id for route in resolution.resolved.synthetic_routes] == ["expert_1788139182831_f2fcdaefb29d"]
+

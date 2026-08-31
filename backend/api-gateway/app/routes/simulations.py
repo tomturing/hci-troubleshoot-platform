@@ -207,21 +207,25 @@ async def retire_fixture_asset(asset_key: str, revision: int, request: Request) 
 
 @router.post("/v1/control-plane/bundles")
 async def create_bundle_draft(request: Request) -> JSONResponse:
-    """读取 C1 权威快照并创建 synthetic Draft；不接受浏览器提交 KBD revision。"""
+    """读取 C1 权威快照或工作稿修订并创建 synthetic Draft。"""
 
     body = await request.json()
     support_id = str(body.get("support_id", "")).strip() if isinstance(body, dict) else ""
     if not re.fullmatch(r"\d{1,20}", support_id):
         raise HTTPException(status_code=400, detail="support_id must be 1-20 digits")
+    kbd_revision = body.get("kbd_revision") if isinstance(body, dict) else None
+    if kbd_revision is not None and not (isinstance(kbd_revision, int) and kbd_revision > 0):
+        raise HTTPException(status_code=400, detail="kbd_revision must be a positive integer")
     trace_id = _trace_id(request)
     headers = {
         "Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}",
         "X-Trace-ID": trace_id,
     }
+    url_suffix = f"?revision={kbd_revision}" if kbd_revision else ""
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             capability_response = await client.get(
-                f"{settings.KB_SERVICE_URL.rstrip('/')}/api/kb/hci-sim/capabilities/{support_id}",
+                f"{settings.KB_SERVICE_URL.rstrip('/')}/api/kb/hci-sim/capabilities/{support_id}{url_suffix}",
                 headers=headers,
             )
     except httpx.RequestError as exc:
