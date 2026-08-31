@@ -429,7 +429,8 @@ func compileSynthetic(w http.ResponseWriter, r *http.Request, registry controlpl
 	}
 	dependencies = append(dependencies, assetDependencies...)
 	record, err := registry.Compile(actor, controlplane.CompileInput{
-		SupportID: request.Resolved.SupportID, KBDRevision: request.Resolved.KBDRevision, KBDChecksum: request.Resolved.KBDChecksum,
+		SupportID: request.Resolved.SupportID, PackageSnapshotDigest: request.Resolved.PackageSnapshotDigest,
+		KnowledgeReleaseID: request.Resolved.KnowledgeReleaseID, KBDRevision: request.Resolved.KBDRevision, KBDChecksum: request.Resolved.KBDChecksum,
 		SignalsDigest: request.Resolved.SignalsDigest, ToolContractRevision: request.Resolved.ToolContractRevision,
 		PolicyRevision: request.Resolved.PolicyRevision, CompilerRevision: request.CompilerRevision,
 		Dependencies: dependencies, RouteSources: routeSources,
@@ -615,7 +616,8 @@ func bundleView(record controlplane.BundleRecord) map[string]any {
 	}
 	return map[string]any{
 		"digest": record.Digest, "status": record.Status, "input_fingerprint": record.InputFingerprint,
-		"support_id": record.Input.SupportID, "kbd_revision": record.Input.KBDRevision,
+		"support_id": record.Input.SupportID, "package_snapshot_digest": record.Input.PackageSnapshotDigest,
+		"knowledge_release_id": record.Input.KnowledgeReleaseID, "kbd_revision": record.Input.KBDRevision,
 		"kbd_checksum": record.Input.KBDChecksum, "signals_digest": record.Input.SignalsDigest,
 		"tool_contract_revision": record.Input.ToolContractRevision, "policy_revision": record.Input.PolicyRevision,
 		"compiler_revision": record.Input.CompilerRevision, "parent_bundle_digest": record.Input.ParentBundleDigest,

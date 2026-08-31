@@ -34,6 +34,9 @@ class ResourceSnapshot:
     checksum: str
     trace_id: str | None = None
     published_at: datetime | None = None
+    package_snapshot_digest: str | None = None
+    knowledge_snapshot_digest: str | None = None
+    release_id: str | None = None
 
 
 class UsageStatus(StrEnum):

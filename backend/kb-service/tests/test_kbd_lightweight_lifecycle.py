@@ -138,8 +138,10 @@ async def test_explicit_republish_has_new_lifecycle_event_identity():
     """相同正文重新发布也必须越过 tombstone 后的增量 Watermark。"""
 
     session = AsyncMock()
-    entry = SimpleNamespace(id=9)
-    session.execute.return_value.scalar_one_or_none.return_value = entry
+    entry = SimpleNamespace(id=9, support_id="27123", active_release_id=None)
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = entry
+    session.execute.return_value = result
     snapshot = SimpleNamespace(
         resource_type="kbd",
         resource_name="9",
@@ -149,10 +151,18 @@ async def test_explicit_republish_has_new_lifecycle_event_identity():
     )
     publisher = MagicMock()
     publisher.ensure_published = AsyncMock(return_value=snapshot)
+    package_snapshot = SimpleNamespace(
+        package_snapshot_digest="sha256:package",
+        knowledge_snapshot_digest="sha256:knowledge",
+    )
+    release = SimpleNamespace(id=44)
+    package = SimpleNamespace(active_release_id=None, status="draft_editing", trace_id="")
+    session.scalar.side_effect = [release, package]
 
     with (
         patch.object(admin_route, "kbd_resource_payload", return_value={"contract": {"metadata": {}}}),
         patch.object(admin_route, "DynamicResourcePublisher", return_value=publisher),
+        patch.object(admin_route, "ensure_publish_snapshot", AsyncMock(return_value=package_snapshot)),
     ):
         result = await admin_route._publish_kbd_revision(
             session,
@@ -166,6 +176,7 @@ async def test_explicit_republish_has_new_lifecycle_event_identity():
         "state": "published",
         "event_id": 42,
     }
+    assert result["knowledge_release_id"]
 
 
 @pytest.mark.asyncio

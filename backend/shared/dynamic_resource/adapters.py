@@ -149,6 +149,10 @@ def kbd_resource_payload(kbd: Any) -> dict[str, Any]:
     """将 kbd_entry 行/字典转换为动态资源 payload。"""
     getter = kbd.get if isinstance(kbd, dict) else lambda key, default=None: getattr(kbd, key, default)
     resource_name = str(getter("id") or getter("support_id"))
+    metadata = getter("entry_metadata")
+    if not isinstance(metadata, dict):
+        raw_metadata = getter("metadata")
+        metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
     return {
         "resource_type": "kbd",
         "resource_name": resource_name,
@@ -174,7 +178,7 @@ def kbd_resource_payload(kbd: Any) -> dict[str, Any]:
         },
         "contract": {
             "agent_usable": bool(getter("signals_json") or []),
-            "metadata": getter("entry_metadata") or getter("metadata") or {},
+            "metadata": metadata,
         },
         "dependencies": [],
         "status": "published" if getter("status") == "published" else "draft",

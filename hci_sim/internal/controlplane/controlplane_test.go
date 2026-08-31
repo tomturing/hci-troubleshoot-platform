@@ -50,6 +50,36 @@ func TestCompileInputFingerprintDoesNotMutateCaller(t *testing.T) {
 	}
 }
 
+func TestCompileInputFingerprintIsStableAfterPersistence(t *testing.T) {
+	input := compileInput()
+	first, err := input.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input.BundleInputDigest = first
+	second, err := input.Fingerprint()
+	if err != nil || second != first {
+		t.Fatalf("持久化 bundle_input_digest 后重算必须稳定: first=%s second=%s err=%v", first, second, err)
+	}
+	input.BundleInputDigest = "sha256:tampered"
+	if _, err := input.Fingerprint(); err == nil || !strings.Contains(err.Error(), "bundle_input_digest") {
+		t.Fatalf("调用方伪造 bundle_input_digest 必须拒绝: %v", err)
+	}
+}
+
+func TestCompileInputVersionIdentityMustBePaired(t *testing.T) {
+	input := compileInput()
+	input.PackageSnapshotDigest = "sha256:package"
+	if _, err := input.Fingerprint(); err == nil || !strings.Contains(err.Error(), "必须成对") {
+		t.Fatalf("缺少 knowledge release 时必须拒绝: %v", err)
+	}
+	input.PackageSnapshotDigest = ""
+	input.KnowledgeReleaseID = "release-1"
+	if _, err := input.Fingerprint(); err == nil || !strings.Contains(err.Error(), "必须成对") {
+		t.Fatalf("缺少 package snapshot 时必须拒绝: %v", err)
+	}
+}
+
 func TestCompileInputRouteSourcesAreCanonicalAndValidated(t *testing.T) {
 	input := compileInput()
 	input.RouteSources = []RouteSource{

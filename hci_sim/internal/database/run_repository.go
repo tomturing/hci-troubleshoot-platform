@@ -23,49 +23,59 @@ var (
 // RunInput 是控制面创建 TestRun 时被冻结的字段集合。Lease 明文、SSH 密码和
 // 原始 Artifact 不属于该结构，也不能进入数据库。
 type RunInput struct {
-	ExternalID          string
-	SupportID           string
-	KBDRevision         int
-	Variant             string
-	BundleDigest        string
-	BundleSchemaVersion string
-	BundleObjectURI     string
-	BundleObjectDigest  string
-	BundleSizeBytes     int64
-	ExecutionMode       string
-	IdempotencyKey      string
-	RequestDigest       string
-	Deadline            time.Time
-	InputFingerprint    string
-	EnvironmentContext  map[string]any
+	ExternalID            string
+	SupportID             string
+	PackageSnapshotDigest string
+	KnowledgeReleaseID    string
+	BundleBuildID         string
+	KBDRevision           int
+	Variant               string
+	BundleDigest          string
+	BundleSchemaVersion   string
+	BundleObjectURI       string
+	BundleObjectDigest    string
+	BundleSizeBytes       int64
+	ExecutionMode         string
+	IdempotencyKey        string
+	RequestDigest         string
+	Deadline              time.Time
+	InputFingerprint      string
+	EnvironmentContext    map[string]any
 }
 
 type RunRecord struct {
-	ExternalID         string
-	SupportID          string
-	KBDRevision        int
-	BundleDigest       string
-	Variant            string
-	ExecutionMode      string
-	IdempotencyKey     string
-	RequestDigest      string
-	Status             string
-	Version            int
-	Deadline           time.Time
-	EnvironmentContext json.RawMessage
+	ExternalID            string
+	SupportID             string
+	PackageSnapshotDigest string
+	KnowledgeReleaseID    string
+	BundleBuildID         string
+	KBDRevision           int
+	BundleDigest          string
+	Variant               string
+	ExecutionMode         string
+	IdempotencyKey        string
+	RequestDigest         string
+	Status                string
+	Version               int
+	Deadline              time.Time
+	EnvironmentContext    json.RawMessage
 }
 
 // PublishedBundleInput 是 GitOps 发布集合写入 Registry 元数据所需的冻结字段。
 type PublishedBundleInput struct {
-	SupportID        string
-	KBDRevision      int
-	Variant          string
-	Digest           string
-	SchemaVersion    string
-	ObjectURI        string
-	ObjectDigest     string
-	SizeBytes        int64
-	InputFingerprint string
+	SupportID             string
+	PackageSnapshotDigest string
+	KnowledgeReleaseID    string
+	BundleInputDigest     string
+	CompilerRevision      string
+	KBDRevision           int
+	Variant               string
+	Digest                string
+	SchemaVersion         string
+	ObjectURI             string
+	ObjectDigest          string
+	SizeBytes             int64
+	InputFingerprint      string
 }
 
 // BundleActivationRecord 是 Runtime 热激活指针的持久化确认状态。
@@ -296,24 +306,27 @@ func (r *RunRepository) Create(ctx context.Context, input RunInput) (RunRecord, 
 	var scenarioID uuid.UUID
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO control_plane.scenario
-			(id, support_id, kbd_revision, variant, input_fingerprint, status)
-		VALUES ($1, $2, $3, $4, $5, 'indexed')
+			(id, support_id, kbd_revision, variant, input_fingerprint, status, package_snapshot_digest)
+		VALUES ($1, $2, $3, $4, $5, 'indexed', NULLIF($6, ''))
 		ON CONFLICT (input_fingerprint) DO UPDATE SET updated_at = now()
 		RETURNING id
 	`, uuid.NewSHA1(uuid.NameSpaceURL, []byte(input.InputFingerprint)), input.SupportID, input.KBDRevision,
-		input.Variant, input.InputFingerprint).Scan(&scenarioID); err != nil {
+		input.Variant, input.InputFingerprint, input.PackageSnapshotDigest).Scan(&scenarioID); err != nil {
 		return RunRecord{}, fmt.Errorf("upsert hci_sim scenario: %w", err)
 	}
 	runID := uuid.New()
 	bundleID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(input.BundleDigest))
+	workspaceID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("hci:bundle-workspace:"+input.SupportID))
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO fixture.bundle
 			(id, scenario_id, revision, digest, schema_version, object_uri,
-			 object_digest, size_bytes, status, created_by)
-		VALUES ($1, $2, $8, $3, $4, $5, $6, $7, 'published', 'hci-sim-runtime')
+			 object_digest, size_bytes, status, created_by, package_snapshot_digest,
+			 knowledge_release_id, workspace_id, source_knowledge_revision_no)
+		VALUES ($1, $2, $8, $3, $4, $5, $6, $7, 'published', 'hci-sim-runtime', NULLIF($9, ''), NULLIF($10, ''), $11, $12)
 		ON CONFLICT (digest) DO NOTHING
 	`, bundleID, scenarioID, input.BundleDigest, input.BundleSchemaVersion,
-		input.BundleObjectURI, input.BundleObjectDigest, input.BundleSizeBytes, input.KBDRevision); err != nil {
+		input.BundleObjectURI, input.BundleObjectDigest, input.BundleSizeBytes, input.KBDRevision,
+		input.PackageSnapshotDigest, input.KnowledgeReleaseID, workspaceID, int64(input.KBDRevision)); err != nil {
 		return RunRecord{}, fmt.Errorf("register hci_sim fixture bundle: %w", err)
 	}
 	var bundleMatches bool
@@ -336,13 +349,15 @@ func (r *RunRepository) Create(ctx context.Context, input RunInput) (RunRecord, 
 	row := tx.QueryRow(ctx, `
 		INSERT INTO control_plane.run
 			(id, external_id, support_id, kbd_revision, scenario_id, bundle_digest,
+			 package_snapshot_digest, knowledge_release_id, bundle_build_id,
 			 variant, execution_mode, environment_context, status, idempotency_key, request_digest, deadline_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'requested', $10, $11, $12)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, ''), $10, $11, $12, 'requested', $13, $14, $15)
 		ON CONFLICT (idempotency_key) DO NOTHING
-		RETURNING external_id, support_id, kbd_revision, bundle_digest, variant,
-		          execution_mode, status, version, deadline_at, idempotency_key, request_digest, environment_context
+		RETURNING external_id, support_id, COALESCE(package_snapshot_digest, ''), COALESCE(knowledge_release_id, ''), COALESCE(bundle_build_id, ''),
+		          kbd_revision, bundle_digest, variant, execution_mode, status, version, deadline_at, idempotency_key, request_digest, environment_context
 	`, runID, input.ExternalID, input.SupportID, input.KBDRevision, scenarioID, input.BundleDigest,
-		input.Variant, input.ExecutionMode, environmentContext, input.IdempotencyKey, input.RequestDigest, input.Deadline.UTC())
+		input.PackageSnapshotDigest, input.KnowledgeReleaseID, input.BundleBuildID, input.Variant, input.ExecutionMode,
+		environmentContext, input.IdempotencyKey, input.RequestDigest, input.Deadline.UTC())
 	record, scanErr := scanRun(row)
 	if scanErr != nil {
 		if !errors.Is(scanErr, pgx.ErrNoRows) {
@@ -378,6 +393,9 @@ func (r *RunRepository) SyncPublishedBundles(ctx context.Context, bundles []Publ
 		if bundle.SupportID == "" || bundle.KBDRevision < 1 || bundle.Variant == "" || bundle.Digest == "" || bundle.SchemaVersion == "" || bundle.ObjectURI == "" || bundle.ObjectDigest == "" || bundle.SizeBytes < 1 || bundle.InputFingerprint == "" {
 			return errors.New("published bundle sync contains incomplete bundle")
 		}
+		if (bundle.PackageSnapshotDigest == "") != (bundle.KnowledgeReleaseID == "") {
+			return errors.New("published bundle sync package snapshot 与 knowledge release 必须成对绑定")
+		}
 		if _, exists := seen[bundle.SupportID]; exists {
 			return fmt.Errorf("published bundle sync contains duplicate support_id %s", bundle.SupportID)
 		}
@@ -393,14 +411,18 @@ func (r *RunRepository) SyncPublishedBundles(ctx context.Context, bundles []Publ
 			return fmt.Errorf("upsert published bundle scenario: %w", err)
 		}
 		bundleID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(bundle.Digest))
+		workspaceID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("hci:bundle-workspace:"+bundle.SupportID))
 		inserted, err := tx.Exec(ctx, `
 			INSERT INTO fixture.bundle
 				(id, scenario_id, revision, digest, schema_version, object_uri,
-				 object_digest, size_bytes, status, created_by)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'published', $9)
+				 object_digest, size_bytes, status, created_by, package_snapshot_digest,
+				 knowledge_release_id, bundle_input_digest, compiler_revision, workspace_id,
+				 source_knowledge_revision_no)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'published', $9, NULLIF($10, ''), NULLIF($11, ''), NULLIF($12, ''), NULLIF($13, ''), $14, $15)
 			ON CONFLICT (digest) DO NOTHING
 		`, bundleID, scenarioID, bundle.KBDRevision, bundle.Digest, bundle.SchemaVersion,
-			bundle.ObjectURI, bundle.ObjectDigest, bundle.SizeBytes, actorID)
+			bundle.ObjectURI, bundle.ObjectDigest, bundle.SizeBytes, actorID, bundle.PackageSnapshotDigest,
+			bundle.KnowledgeReleaseID, bundle.BundleInputDigest, bundle.CompilerRevision, workspaceID, bundle.KBDRevision)
 		if err != nil {
 			return fmt.Errorf("insert published bundle: %w", err)
 		}
@@ -489,7 +511,7 @@ func (r *RunRepository) Get(ctx context.Context, externalID string) (RunRecord, 
 		return RunRecord{}, errors.New("external TestRun ID is required")
 	}
 	return scanRun(r.pool.QueryRow(ctx, `
-		SELECT external_id, support_id, kbd_revision, bundle_digest, variant,
+		SELECT external_id, support_id, COALESCE(package_snapshot_digest, ''), COALESCE(knowledge_release_id, ''), COALESCE(bundle_build_id, ''), kbd_revision, bundle_digest, variant,
 		       execution_mode, status, version, deadline_at, idempotency_key, request_digest, environment_context
 		FROM control_plane.run WHERE external_id = $1
 	`, externalID))
@@ -527,7 +549,7 @@ func (r *RunRepository) UpdateStatusCAS(ctx context.Context, externalID string, 
 		UPDATE control_plane.run
 		SET status = $1, version = version + 1, updated_at = now()
 		WHERE external_id = $2 AND version = $3
-		RETURNING external_id, support_id, kbd_revision, bundle_digest, variant,
+		RETURNING external_id, support_id, COALESCE(package_snapshot_digest, ''), COALESCE(knowledge_release_id, ''), COALESCE(bundle_build_id, ''), kbd_revision, bundle_digest, variant,
 		          execution_mode, status, version, deadline_at, idempotency_key, request_digest, environment_context
 	`, status, externalID, expectedVersion))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -576,7 +598,7 @@ func (r *RunRepository) RecordLease(ctx context.Context, externalID string, expe
 	record, err := scanRun(tx.QueryRow(ctx, `
 		UPDATE control_plane.run SET status = 'leased', version = version + 1, updated_at = now()
 		WHERE id = $1 AND version = $2
-		RETURNING external_id, support_id, kbd_revision, bundle_digest, variant,
+		RETURNING external_id, support_id, COALESCE(package_snapshot_digest, ''), COALESCE(knowledge_release_id, ''), COALESCE(bundle_build_id, ''), kbd_revision, bundle_digest, variant,
 		          execution_mode, status, version, deadline_at, idempotency_key, request_digest, environment_context
 	`, runID, expectedVersion))
 	if err != nil {
@@ -691,7 +713,7 @@ func (r *RunRepository) RecordResult(ctx context.Context, externalID string, att
 	record, err := scanRun(tx.QueryRow(ctx, `
 		UPDATE control_plane.run SET status = $1, version = version + 1, updated_at = now()
 		WHERE id = $2 AND status NOT IN ('passed', 'failed', 'inconclusive', 'cancelled', 'expired')
-		RETURNING external_id, support_id, kbd_revision, bundle_digest, variant,
+		RETURNING external_id, support_id, COALESCE(package_snapshot_digest, ''), COALESCE(knowledge_release_id, ''), COALESCE(bundle_build_id, ''), kbd_revision, bundle_digest, variant,
 		          execution_mode, status, version, deadline_at, idempotency_key, request_digest, environment_context
 	`, status, runID))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -699,7 +721,7 @@ func (r *RunRepository) RecordResult(ctx context.Context, externalID string, att
 			return RunRecord{}, ErrRunVersionConflict
 		}
 		record, err = scanRun(tx.QueryRow(ctx, `
-			SELECT external_id, support_id, kbd_revision, bundle_digest, variant,
+			SELECT external_id, support_id, COALESCE(package_snapshot_digest, ''), COALESCE(knowledge_release_id, ''), COALESCE(bundle_build_id, ''), kbd_revision, bundle_digest, variant,
 			       execution_mode, status, version, deadline_at, idempotency_key, request_digest, environment_context
 			FROM control_plane.run WHERE id = $1
 		`, runID))
@@ -829,7 +851,7 @@ func (r *RunRepository) ExpireRuns(ctx context.Context, now time.Time) (int64, e
 
 func (r *RunRepository) getByIdempotency(ctx context.Context, tx pgx.Tx, key string) (RunRecord, error) {
 	return scanRun(tx.QueryRow(ctx, `
-		SELECT external_id, support_id, kbd_revision, bundle_digest, variant,
+		SELECT external_id, support_id, COALESCE(package_snapshot_digest, ''), COALESCE(knowledge_release_id, ''), COALESCE(bundle_build_id, ''), kbd_revision, bundle_digest, variant,
 		       execution_mode, status, version, deadline_at, idempotency_key, request_digest, environment_context
 		FROM control_plane.run WHERE idempotency_key = $1
 	`, key))
@@ -842,8 +864,8 @@ type runScanner interface {
 func scanRun(row runScanner) (RunRecord, error) {
 	var record RunRecord
 	err := row.Scan(
-		&record.ExternalID, &record.SupportID, &record.KBDRevision, &record.BundleDigest,
-		&record.Variant, &record.ExecutionMode, &record.Status, &record.Version,
+		&record.ExternalID, &record.SupportID, &record.PackageSnapshotDigest, &record.KnowledgeReleaseID, &record.BundleBuildID,
+		&record.KBDRevision, &record.BundleDigest, &record.Variant, &record.ExecutionMode, &record.Status, &record.Version,
 		&record.Deadline, &record.IdempotencyKey, &record.RequestDigest,
 		&record.EnvironmentContext,
 	)
@@ -853,6 +875,9 @@ func scanRun(row runScanner) (RunRecord, error) {
 func validateRunInput(input RunInput) error {
 	if input.ExternalID == "" || input.SupportID == "" || input.KBDRevision < 1 || input.Variant == "" || input.BundleDigest == "" || input.BundleSchemaVersion == "" || input.BundleObjectURI == "" || input.BundleObjectDigest == "" || input.BundleSizeBytes < 1 || input.ExecutionMode != "sim-ssh" || input.IdempotencyKey == "" || input.RequestDigest == "" || input.InputFingerprint == "" || input.Deadline.IsZero() || input.EnvironmentContext == nil {
 		return errors.New("invalid hci_sim run input")
+	}
+	if (input.PackageSnapshotDigest == "") != (input.KnowledgeReleaseID == "") {
+		return errors.New("invalid hci_sim run version identity")
 	}
 	return nil
 }

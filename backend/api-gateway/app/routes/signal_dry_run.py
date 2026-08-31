@@ -23,6 +23,59 @@ router = APIRouter(prefix="/api/v1", tags=["signal-dry-run"])
 logger = get_logger("gateway-signal-dry-run")
 
 
+def _preview_result_digest(preview_body: dict) -> str:
+    canonical = {key: value for key, value in preview_body.items() if key != "preview_token"}
+    raw = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
+
+def _preview_input_digest(payload: dict) -> str:
+    dataset = payload.get("dataset") if isinstance(payload.get("dataset"), dict) else {}
+    canonical = {"source": dataset.get("source_type"), "payload": dataset.get("payload")}
+    raw = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
+
+async def _resolve_package_context(payload: dict, request: Request) -> dict:
+    """把浏览器携带的 PackageSnapshot 转换为内部兼容 revision，并校验 observed CAS。"""
+
+    package_digest = str(payload.get("package_snapshot_digest") or "")
+    if not package_digest:
+        return payload
+    observed = str(payload.get("observed_snapshot_digest") or "")
+    support_id = str(payload.get("support_id") or "")
+    if observed != package_digest or not support_id:
+        raise HTTPException(status_code=409, detail="工作快照身份缺失或已变化")
+    headers = {"Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}"}
+    trace_id = request.headers.get("X-Trace-Id")
+    if trace_id:
+        headers["X-Trace-Id"] = trace_id
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                f"{settings.KB_SERVICE_URL.rstrip('/')}/api/v1/kbd/{support_id}/context",
+                params={"scope": "working_draft"},
+                headers=headers,
+            )
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail="KBD 工作快照服务暂不可用") from exc
+    try:
+        context = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="KBD 工作快照返回无效响应") from exc
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail=context.get("detail", "KBD 工作快照不可用"))
+    if context.get("package_snapshot_digest") != package_digest:
+        raise HTTPException(status_code=409, detail="工作快照已变化，请刷新后重试")
+    revision = context.get("source_knowledge_revision_no")
+    if not isinstance(revision, int) or revision < 1:
+        raise HTTPException(status_code=409, detail="工作快照缺少知识修订映射")
+    resolved = dict(payload)
+    resolved["kbd_revision"] = revision
+    resolved["_package_context"] = context
+    return resolved
+
+
 async def _resolve_authoritative_dataset(payload: dict, request: Request) -> dict:
     """仅 Gateway 可将已发布 Bundle 的验证资产送入 Agent，拒绝浏览器自报 fixture/replay 内容。"""
 
@@ -82,6 +135,8 @@ def _sign_preview_result(preview_body: dict, payload: dict) -> str:
         "signal_id": str((payload.get("unit_ref") or {}).get("signal_id") or ""),
         "support_id": str(payload.get("support_id") or ""),
         "kbd_revision": str(payload.get("kbd_revision") or ""),
+        "package_snapshot_digest": str(payload.get("package_snapshot_digest") or ""),
+        "preview_result_digest": _preview_result_digest(preview_body),
         "exp": int(time.time()) + 900,
     }
     raw_claims = json.dumps(token_claims, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -111,14 +166,27 @@ def _verify_preview_token(token: str, preview_result: dict, dry_run_payload: dic
         return False
     if claims.get("trace_id") != str(preview_result.get("trace_id") or ""):
         return False
+    if not hmac.compare_digest(str(claims.get("input_sha256") or ""), _preview_input_digest(dry_run_payload)):
+        return False
     if claims.get("signal_id") != str((dry_run_payload.get("unit_ref") or {}).get("signal_id") or ""):
         return False
-    return str(claims.get("support_id") or "") == str(dry_run_payload.get("support_id") or "")
+    if str(claims.get("support_id") or "") != str(dry_run_payload.get("support_id") or ""):
+        return False
+    if str(claims.get("kbd_revision") or "") != str(dry_run_payload.get("kbd_revision") or ""):
+        return False
+    if str(claims.get("package_snapshot_digest") or "") != str(dry_run_payload.get("package_snapshot_digest") or ""):
+        return False
+    return hmac.compare_digest(
+        str(claims.get("preview_result_digest") or ""),
+        _preview_result_digest(preview_result),
+    )
 
 
 async def _preview(payload: dict, request: Request) -> JSONResponse:
     """以 Gateway 内部身份调用 Agent，不把服务间凭据交给浏览器。"""
 
+    payload = await _resolve_package_context(payload, request)
+    payload.pop("_package_context", None)
     payload = await _resolve_authoritative_dataset(payload, request)
     headers = {
         "Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}",
@@ -164,6 +232,9 @@ async def save_verified_preview_to_bundle(bundle_digest: str, request: Request) 
     if not isinstance(body, dict) or not isinstance(body.get("dry_run"), dict):
         raise HTTPException(status_code=422, detail="dry_run 请求快照必填")
     dry_run = body["dry_run"]
+    dry_run = await _resolve_package_context(dry_run, request)
+    dry_run.pop("_package_context", None)
+    dry_run = await _resolve_authoritative_dataset(dry_run, request)
     preview_token = body.get("preview_token")
     preview_result = body.get("preview_result")
 
@@ -217,4 +288,102 @@ async def save_verified_preview_to_bundle(bundle_digest: str, request: Request) 
         result = response.json()
     except ValueError:
         result = {"detail": "Bundle 控制面返回无效响应"}
+    return JSONResponse(content=result, status_code=response.status_code)
+
+
+@router.post("/signals/dry-run/verification-assets")
+async def save_verified_preview_to_package(request: Request) -> JSONResponse:
+    """把已签名 PASS 结果保存为当前 Package 工作稿的不可变验证凭证。"""
+
+    body = await request.json()
+    if not isinstance(body, dict) or not isinstance(body.get("dry_run"), dict):
+        raise HTTPException(status_code=422, detail="dry_run 请求快照必填")
+    dry_run = await _resolve_package_context(body["dry_run"], request)
+    package_context = dry_run.pop("_package_context", None)
+    if not isinstance(package_context, dict):
+        raise HTTPException(status_code=422, detail="PackageSnapshot 身份必填")
+    dry_run = await _resolve_authoritative_dataset(dry_run, request)
+    preview_token = body.get("preview_token")
+    preview_result = body.get("preview_result")
+    if (
+        isinstance(preview_token, str)
+        and isinstance(preview_result, dict)
+        and _verify_preview_token(preview_token, preview_result, dry_run)
+    ):
+        preview_body = preview_result
+    else:
+        preview_response = await _preview(dry_run, request)
+        preview_body = json.loads(preview_response.body)
+        if preview_response.status_code != 200:
+            return preview_response
+        if preview_body.get("status") != "PASS":
+            raise HTTPException(status_code=409, detail="只有 PASS 试运行结果可以保存为验证凭证")
+
+    dataset = dry_run.get("dataset") if isinstance(dry_run.get("dataset"), dict) else {}
+    unit_ref = dry_run.get("unit_ref") if isinstance(dry_run.get("unit_ref"), dict) else {}
+    raw_response = preview_body.get("ai_raw_response")
+    raw_response_hash = None
+    if isinstance(raw_response, dict):
+        encoded = json.dumps(raw_response, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        raw_response_hash = f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+    processing_index = unit_ref.get("processing_index", unit_ref.get("produce_index", 0))
+    verification_payload = {
+        "observed_snapshot_digest": package_context.get("package_snapshot_digest"),
+        "signal_id": unit_ref.get("signal_id"),
+        "processing_index": processing_index if isinstance(processing_index, int) else 0,
+        "dataset_id": dataset.get("dataset_id"),
+        "input_digest": preview_body.get("input_sha256"),
+        "deterministic_input": {
+            "source_type": dataset.get("source_type"),
+            "source_ref": dataset.get("source_ref"),
+            "payload": dataset.get("payload"),
+        },
+        "ai_input": {
+            "verification_scope": dry_run.get("verification_scope"),
+            "signal": dry_run.get("signal"),
+        },
+        "raw_response_hash": raw_response_hash,
+        "output_json": {
+            "value": preview_body.get("value"),
+            "matcher": preview_body.get("matcher"),
+            "derivation": preview_body.get("derivation"),
+        },
+        "evidence_json": {
+            "evidence": preview_body.get("evidence"),
+            "evidence_lines": preview_body.get("evidence_lines") or [],
+        },
+        "downstream_result": {},
+        "model": str(raw_response.get("model") or "deterministic") if isinstance(raw_response, dict) else "deterministic",
+        "prompt_revision": package_context.get("prompt_revision"),
+        "contract_version": preview_body.get("config_revision"),
+        "run_id": preview_body.get("trace_id"),
+        "result_status": "pass",
+        "knowledge_snapshot_digest": package_context.get("knowledge_snapshot_digest"),
+        "signal_spec_digest": package_context.get("signal_spec_digest"),
+        "simulation_spec_digest": package_context.get("simulation_spec_digest"),
+        "tool_contract_revision": package_context.get("tool_contract_revision"),
+        "policy_revision": package_context.get("policy_revision"),
+        "compiler_revision": package_context.get("compiler_revision"),
+        "actor_id": settings.HCI_SIM_EXPERT_EDITOR_ACTOR_ID,
+    }
+    trace_id = str(preview_body.get("trace_id") or uuid.uuid4().hex)
+    headers = {
+        "Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}",
+        "Content-Type": "application/json",
+        "X-Trace-ID": trace_id,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{settings.KB_SERVICE_URL.rstrip('/')}/api/v1/kbd/{dry_run.get('support_id')}/working-draft/verification-assets",
+                json=verification_payload,
+                headers=headers,
+            )
+    except httpx.RequestError as exc:
+        logger.error(event="package_verification_asset_upstream_unavailable", error=str(exc), trace_id=trace_id)
+        raise HTTPException(status_code=503, detail="KBD 验证资产服务暂不可用") from exc
+    try:
+        result = response.json()
+    except ValueError:
+        result = {"detail": "KBD 验证资产服务返回无效响应"}
     return JSONResponse(content=result, status_code=response.status_code)

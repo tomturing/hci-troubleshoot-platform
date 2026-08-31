@@ -70,6 +70,8 @@ class ResolvedKbdInput:
     metadata: dict[str, Any]
     verification_contract: dict[str, Any]
     synthetic_routes: tuple[SyntheticRouteInput, ...]
+    package_snapshot_digest: str | None = None
+    knowledge_release_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -84,6 +86,8 @@ class ResolvedKbdInput:
             "metadata": self.metadata,
             "verification_contract": self.verification_contract,
             "synthetic_routes": [route.to_dict() for route in self.synthetic_routes],
+            "package_snapshot_digest": self.package_snapshot_digest,
+            "knowledge_release_id": self.knowledge_release_id,
         }
 
 
@@ -195,15 +199,18 @@ class HciSimKbdResolver:
                     status="capability_gap",
                     gaps=(CapabilityGap("KBD_REVISION_NOT_FOUND", f"KBD 修订版本 rev.{revision} 不存在"),),
                 )
-            return self.resolve_revision(entry, kbd_rev, tool_snapshots)
+            snapshots = await self._active_snapshots(session)
+            return self.resolve_revision(entry, kbd_rev, tool_snapshots, snapshots.get(str(entry.id)))
         snapshots = await self._active_snapshots(session)
-        return self.resolve_entry(entry, snapshots.get(str(entry.id)), tool_snapshots)
+        active_snapshot = snapshots.get(str(entry.id))
+        return self.resolve_entry(entry, active_snapshot, tool_snapshots)
 
     def resolve_revision(
         self,
         entry: KbdEntry | Any,
         kbd_rev: KbdRevision | Any,
         tool_snapshots: dict[str, tuple[DynamicResourceActive, DynamicResourceRevision]] | None = None,
+        active_snapshot: tuple[DynamicResourceActive, DynamicResourceRevision] | None = None,
     ) -> KbdResolution:
         """从不可变 KbdRevision 工作稿快照解析 Bundle 编译输入。"""
 
@@ -246,6 +253,27 @@ class HciSimKbdResolver:
             return KbdResolution(
                 support_id=support_id, status="capability_gap", metadata=rev_metadata, gaps=tuple(gaps)
             )
+        release = active_snapshot[1] if active_snapshot is not None else None
+        package_digest = getattr(release, "package_snapshot_digest", None)
+        release_id = str(getattr(release, "release_id", "") or "") or None
+        release_contract = getattr(release, "contract_json", None)
+        version_identity = (
+            release_contract.get("version_identity")
+            if isinstance(release_contract, dict)
+            else None
+        )
+        release_source_revision = (
+            version_identity.get("source_knowledge_revision_no")
+            if isinstance(version_identity, dict)
+            else None
+        )
+        if (
+            package_digest != getattr(entry, "working_snapshot_digest", None)
+            or not release_id
+            or release_source_revision != int(kbd_rev.revision_no)
+        ):
+            package_digest = None
+            release_id = None
         resolved = ResolvedKbdInput(
             support_id=support_id,
             kbd_id=int(entry.id),
@@ -258,6 +286,8 @@ class HciSimKbdResolver:
             metadata=rev_metadata,
             verification_contract=dict(signals_document.get("verification_contract") or {}),
             synthetic_routes=synthetic_routes,
+            package_snapshot_digest=package_digest,
+            knowledge_release_id=release_id,
         )
         return KbdResolution(
             support_id=support_id,
@@ -382,10 +412,27 @@ class HciSimKbdResolver:
             return KbdResolution(
                 support_id=support_id, status="capability_gap", metadata=snapshot_metadata, gaps=tuple(gaps)
             )
+        package_digest = getattr(snapshot, "package_snapshot_digest", None)
+        release_id = str(getattr(snapshot, "release_id", "") or "") or None
+        if not package_digest or not release_id:
+            gaps.append(CapabilityGap("UNIFIED_VERSION_IDENTITY_MISSING", "active KBD 缺少 PackageSnapshot 或 KnowledgeRelease 身份"))
+            return KbdResolution(
+                support_id=support_id, status="capability_gap", metadata=snapshot_metadata, gaps=tuple(gaps)
+            )
+        version_identity = (
+            snapshot.contract_json.get("version_identity")
+            if isinstance(getattr(snapshot, "contract_json", None), dict)
+            else None
+        )
+        source_revision_no = (
+            version_identity.get("source_knowledge_revision_no")
+            if isinstance(version_identity, dict)
+            else None
+        )
         resolved = ResolvedKbdInput(
             support_id=support_id,
             kbd_id=int(entry.id),
-            kbd_revision=int(snapshot.revision),
+            kbd_revision=int(source_revision_no or snapshot.revision),
             kbd_checksum=_digest(snapshot.checksum),
             signals_digest=_sha256(signals_document),
             tool_contract_revision=tool_revision,
@@ -394,6 +441,8 @@ class HciSimKbdResolver:
             metadata=snapshot_metadata,
             verification_contract=dict(signals_document.get("verification_contract") or {}),
             synthetic_routes=synthetic_routes,
+            package_snapshot_digest=package_digest,
+            knowledge_release_id=release_id,
         )
         return KbdResolution(
             support_id=support_id,

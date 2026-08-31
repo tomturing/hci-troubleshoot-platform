@@ -33,6 +33,7 @@ from app.routes import (
     resolution_catalogs,
     route,
     sop_ingest,
+    version_governance,
     vm_console_admin,
 )
 from app.services.embedding import EmbeddingService
@@ -94,6 +95,7 @@ async def lifespan(app: FastAPI):
     categories.set_dependencies(database_manager, embedding_service)  # 分类管理路由
     hits.set_dependencies(database_manager)  # 知识命中统计路由
     hci_sim.set_dependencies(database_manager)  # hci-sim 控制面只读 KBD Resolver
+    version_governance.set_dependencies(database_manager)  # KBD Package/快照 CAS 工作区
 
     # 服务异常退出时进程内批量执行器会消失；启动后收敛超过安全窗口的遗留任务，
     # 保留既有结果，并把未完成条目标为可重试中断，避免管理页永久显示“处理中”。
@@ -171,6 +173,7 @@ app.include_router(resolution_catalogs.router)  # Shared Resolution Catalogs 管
 app.include_router(hits.sop_hit_router)  # SOP 命中统计路由
 app.include_router(hits.kbd_hit_router)  # KBD 命中统计路由
 app.include_router(hci_sim.router)  # hci-sim 不可变 KBD 快照与批量 capability report
+app.include_router(version_governance.router)  # KBD/验证资产统一版本治理
 app.include_router(vm_console_admin.router)  # qkv_vm_console 截图会话审计查询（§7.3）
 
 

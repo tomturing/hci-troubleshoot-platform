@@ -31,7 +31,7 @@
 | 模块 | 职责 |
 |---|---|
 | `controlplane/` | 阶段 C–E 业务内核：Bundle 生命周期状态机（draft→validated→approved→published→stale/retired）、双角色审批、TestRun、Run Lease、差分/mutation/稳定性/容量证据模型。 |
-| `database/` | PostgreSQL 访问层（`RunRepository`）：scenario/run/run_attempt/run_event/run_result/run_outbox 的 CRUD、CAS 幂等、过期、outbox claim/complete。 |
+| `database/` | PostgreSQL 访问层（`RunRepository`）：scenario/run/run_attempt/run_event/run_result/outbox 的 CRUD、CAS 幂等、过期、outbox claim/complete。 |
 | `fixture/` | 从 GitOps 只读发布集合加载多个已发布 Manifest v2，按租约 `support_id` 选择 Bundle，再按精确 RouteKey 确定性路由；Fault 模型（none/nonzero_exit/permission/timeout/disconnect/truncate）。 |
 | `lease/` | `htp2` 前缀 Capability 租约签发、每命令复验、单副本配额；HMAC 签名，Claims 绑定 Run/Bundle/Target。 |
 | `server/` | SSH + HTTP 服务面；exec/交互 shell 共用有界 worker 队列、授权、fail-closed 路由、观测。 |
@@ -54,16 +54,16 @@
 
 ---
 
-## 3. 数据库层（独立库 `hci_sim`，17 张表 / 4 schema）
+## 3. 数据库层（独立库 `hci_sim`，16 张表 / 4 schema）
 
 迁移目录：`database/hci-sim-migrations/000001_control_plane.sql`（**独立库**，绝不被主库 Atlas Job 读取）。
 
 ### 3.1 四个领域 schema
 
-| schema | 责任 | 表（共 17） |
+| schema | 责任 | 表（共 16） |
 |---|---|---|
-| `control_plane` | 仿真运行控制面 | `scenario`、`run`、`run_attempt`、`run_event`、`run_result`、`run_outbox`、`runtime_instance` |
-| `fixture` | 已编译夹具 Bundle、审批与激活指针 | `bundle`、`dependency`、`provenance`、`approval`、`stale_outbox`、`bundle_activation` |
+| `control_plane` | 仿真运行控制面 | `scenario`、`run`、`run_attempt`、`run_event`、`run_result`、`outbox`、`runtime_instance` |
+| `fixture` | 已编译夹具 Bundle、审批与激活指针 | `bundle`、`dependency`、`approval`、`bundle_activation`、`asset_revision` |
 | `artifact` | 准入制品与安全扫描 | `metadata`、`scan`、`approval` |
 | `audit` | 审计 | `entity_event` |
 
@@ -113,7 +113,7 @@ GitOps 适合管理镜像、Helm、NetworkPolicy、信任根和启动基线，�
 | 工作流 | 作用 |
 |---|---|
 | `.github/workflows/hci-sim-go.yml` | Go 质量门禁：`gofmt`/`go test`/`go test -race`/`go vet`/`go build`；`published bundle and Helm gate` 校验已发布 bundle digest 一致、拒绝已退役的运行时 marker、Helm lint/template 并校验 NetworkPolicy 必填项。 |
-| `.github/workflows/hci-sim-db-migration-test.yml` | 隔离 PG 跑迁移校验 17 张期望表，反向校验主库无 `agent_test_*` 表，验证 `hci_sim_runtime` 角色不能建表（DDL 负向检查），再跑 `internal/database` + `internal/reconciler` 的 CAS/幂等测试。 |
+| `.github/workflows/hci-sim-db-migration-test.yml` | 隔离 PG 跑迁移校验 16 张期望表，反向校验主库无 `agent_test_*` 表，验证 `hci_sim_runtime` 角色不能建表（DDL 负向检查），再跑 `internal/database` + `internal/reconciler` 的 CAS/幂等测试。 |
 
 ---
 

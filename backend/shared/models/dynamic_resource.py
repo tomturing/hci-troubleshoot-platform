@@ -7,8 +7,9 @@ KBD/SOP/Tool/Skill/Prompt/Collection Profile 等动态资源共享 revision、ac
 
 from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 
 from ..database.postgres import Base
 
@@ -35,6 +36,9 @@ class DynamicResourceRevision(Base):
     trace_id = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
     published_at = Column(DateTime(timezone=True), nullable=True)
+    package_snapshot_digest = Column(String(71), nullable=True, index=True)
+    knowledge_snapshot_digest = Column(String(71), nullable=True, index=True)
+    release_id = Column(PGUUID(as_uuid=True), nullable=True, unique=True)
 
 
 class DynamicResourceActive(Base):
@@ -53,6 +57,9 @@ class DynamicResourceActive(Base):
         nullable=False,
     )
     trace_id = Column(String(64), nullable=True, index=True)
+    generation = Column(BigInteger, nullable=False, default=1)
+    desired_revision = Column(Integer, nullable=True)
+    desired_checksum = Column(String(128), nullable=True)
 
 
 class DynamicResourceUsageAudit(Base):
@@ -74,6 +81,10 @@ class DynamicResourceUsageAudit(Base):
     status = Column(String(32), nullable=False)
     error = Column(Text, nullable=True)
     metadata_json = Column(JSONB, nullable=False, default=dict)
+    package_snapshot_digest = Column(String(71), nullable=True, index=True)
+    knowledge_snapshot_digest = Column(String(71), nullable=True, index=True)
+    release_id = Column(PGUUID(as_uuid=True), nullable=True, index=True)
+    bundle_digest = Column(String(71), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
 
 

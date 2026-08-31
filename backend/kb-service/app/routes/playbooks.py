@@ -8,8 +8,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 from shared.database.postgres import DatabaseManager
-from shared.dynamic_resource.adapters import kbd_resource_payload, sop_resource_payload
-from shared.dynamic_resource.loader import snapshot_revision_metadata
+from shared.dynamic_resource.adapters import sop_resource_payload
+from shared.dynamic_resource.loader import DynamicResourceLoader, snapshot_revision_metadata
 from shared.dynamic_resource.publisher import DynamicResourcePublisher
 from shared.observability.logger import get_logger
 from shared.observability.metrics import (
@@ -207,9 +207,7 @@ async def get_category_playbooks(
                 support_id=kbd.support_id,
                 category_id=kbd.category_id,
             )
-            snapshot = await DynamicResourcePublisher(session).ensure_published(
-                **kbd_resource_payload(kbd), trace_id=trace_id
-            )
+            snapshot = await DynamicResourceLoader(session).get_active("kbd", str(kbd.id))
             revision = snapshot_revision_metadata(snapshot)
             revision_keys.append(f"kbd:{kbd.id}:{revision.get('revision', 0)}")
             serialized_kbds.append(

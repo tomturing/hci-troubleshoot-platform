@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -84,6 +85,10 @@ class DynamicResourceLoader:
                 status=usage.status.value,
                 error=usage.error,
                 metadata_json=usage.metadata,
+                package_snapshot_digest=snapshot.package_snapshot_digest,
+                knowledge_snapshot_digest=snapshot.knowledge_snapshot_digest,
+                release_id=UUID(snapshot.release_id) if snapshot.release_id else None,
+                bundle_digest=str(usage.metadata.get("bundle_digest") or "") or None,
             )
         )
         await self._session.flush()
@@ -121,6 +126,9 @@ class DynamicResourceLoader:
             checksum=str(row.checksum),
             trace_id=row.trace_id,
             published_at=row.published_at,
+            package_snapshot_digest=row.package_snapshot_digest,
+            knowledge_snapshot_digest=row.knowledge_snapshot_digest,
+            release_id=str(row.release_id) if row.release_id else None,
         )
 
 
@@ -132,4 +140,7 @@ def snapshot_revision_metadata(snapshot: ResourceSnapshot) -> dict[str, Any]:
         "revision": snapshot.revision,
         "version": snapshot.version,
         "checksum": snapshot.checksum,
+        "package_snapshot_digest": getattr(snapshot, "package_snapshot_digest", None),
+        "knowledge_snapshot_digest": getattr(snapshot, "knowledge_snapshot_digest", None),
+        "knowledge_release_id": getattr(snapshot, "release_id", None),
     }
