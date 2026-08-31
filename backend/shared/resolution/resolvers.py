@@ -283,7 +283,11 @@ class LogResolver:
                 argv.append("-E")
             argv.extend(["-k", str(selector)])
         if args.get("request_id"):
-            argv.extend(["-i", str(args["request_id"])])
+            cleaned_req_id = str(args["request_id"]).strip().lstrip(",").strip()
+            if "," in cleaned_req_id:
+                cleaned_req_id = cleaned_req_id.split(",")[0].strip()
+            if cleaned_req_id:
+                argv.extend(["-i", cleaned_req_id])
         if args.get("file"):
             argv.extend(["-f", str(args["file"])])
         if selected:

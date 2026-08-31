@@ -319,7 +319,11 @@ class LogKeywordHandler(BackendSignalHandler):
                 parts.append("-E")
             parts.extend(["-k", shlex.quote(selector)])
         if signal.request_id:
-            parts.extend(["-i", shlex.quote(signal.request_id)])
+            req_id = str(signal.request_id).strip().lstrip(",").strip()
+            if "," in req_id:
+                req_id = req_id.split(",")[0].strip()
+            if req_id:
+                parts.extend(["-i", shlex.quote(req_id)])
         if file:
             parts.extend(["-f", shlex.quote(file)])
         if path:

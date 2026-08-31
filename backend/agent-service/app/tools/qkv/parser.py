@@ -86,6 +86,23 @@ def _convert_timestamp(time_str: str | None) -> str:
     return time_str
 
 
+def _normalize_request_id(value: Any) -> str:
+    """清洗与规范化 request_id / trace_id 字段。
+
+    HCI 任务系统（acli task get 等）历史实现中，request_id 字段经常带有前导逗号
+    （如 ",a678d3fb5fdf2af4e78e6dae896a06e2"）或多 trace 逗号拼接。
+    本函数剔除前导逗号及首尾空白，多值时保留首个有效标识，确保下游 QFK 能够
+    精准命中日志与仿真 RouteKey。
+    """
+    if not value:
+        return ""
+    val_str = str(value).strip()
+    val_clean = val_str.lstrip(",").strip()
+    if "," in val_clean:
+        val_clean = val_clean.split(",")[0].strip()
+    return val_clean
+
+
 def _extract_time_from_log_line(line: str) -> str:
     """从日志行中提取时间并转换为标准格式 "YYYY-MM-DD HH:MM:SS"。
 
@@ -350,6 +367,8 @@ def _extract_by_produces(items: list[Any], produces: list[dict[str, str]]) -> li
             # 变量池都只保存 HCI 本地绝对时间；各消费者再按日志族转换日期格式。
             if name.strip().upper() == "END" and val not in (None, ""):
                 val = _convert_timestamp(val)
+            elif name.strip().upper() == "REQUEST_ID" and val not in (None, ""):
+                val = _normalize_request_id(val)
             extracted[name.lower()] = val if val is not None else ""
         if any(v not in (None, "") for v in extracted.values()):
             results.append(extracted)
@@ -388,7 +407,7 @@ def _extract_hardcoded(items: list[Any], query_type: FrontendQueryType) -> list[
             extracted["host"] = item.get("host") or item.get("hostname") or item.get("hostid") or ""
             extracted["vm"] = item.get("vm") or ""
             extracted["errcode_tracing"] = item.get("errcode_tracing") or ""
-            extracted["request_id"] = item.get("request_id") or ""
+            extracted["request_id"] = _normalize_request_id(item.get("request_id"))
             # status 字段保留（额外）
             extracted["status"] = item.get("status") or item.get("process") or ""
 

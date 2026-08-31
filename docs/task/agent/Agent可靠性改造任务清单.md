@@ -647,3 +647,10 @@ owner: team
 - [x] 正向与负向门禁全部通过，恢复“端到端完整可观测”结论；hci-sim 技术 Spike 可在用户明确决定投入后启动。
 
 当前状态以 [2026-07-29 真实入口重验事件](../../verify/events/2026-07-29-terminal-bridge真实入口P0修复与端到端重验.md) 为准；2026-07-27 报告是 PR #632 合并时的历史验收，不覆盖本次真实业务案例追加门禁。
+
+## 2026-08-31 · QKV 任务与 QFK 日志 REQUEST_ID 前导逗号清洗修复
+
+- [x] QKV 解析层（`backend/agent-service/app/tools/qkv/parser.py`）：在 `_extract_by_produces` 和 `_extract_hardcoded` 中自动对 `REQUEST_ID` 执行 `_normalize_request_id` 清洗，剥离前导逗号及多 trace 拼接前缀。
+- [x] QFK 消费层（`backend/agent-service/app/tools/qfk/handlers.py`）：构建 `acli log get -i` 时增加防御性清洗，剔除前导逗号，确保命令行与仿真路由完全一致。
+- [x] 单元测试覆盖前导逗号清洗、多 ID 取首及合成格式支持（`test_qkv.py`、`test_qfk.py`）。
+
