@@ -7,6 +7,7 @@ import re
 import secrets
 import uuid
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 from typing import Any
 
 from opentelemetry import context as otel_context
@@ -16,13 +17,24 @@ from shared.clients import AIAssistantRegistry, KBClient, SchedulerClient
 from shared.models.audit import AuditLog
 from shared.models.conversation import Conversation
 from shared.observability.logger import get_logger
-from shared.observability.metrics import AI_REQUESTS_TOTAL, AI_TTFT_SECONDS
+from shared.observability.metrics import (
+    AI_REQUESTS_TOTAL,
+    AI_TTFT_SECONDS,
+    SOP_FALLBACK_DECISIONS_TOTAL,
+    SOP_FALLBACK_PROMPTS_TOTAL,
+)
 from shared.observability.otel import get_current_trace_id
 
 from app.config import settings
 
 from ..models.message import Message, MessageRole
-from ..models.sop_execution import STATUS_ABORTED, STATUS_ACTIVE, STATUS_INTERRUPTED, SopExecution
+from ..models.sop_execution import (
+    STATUS_ABORTED,
+    STATUS_ACTIVE,
+    STATUS_COMPLETED,
+    STATUS_INTERRUPTED,
+    SopExecution,
+)
 from ..repositories.conversation_repo import ConversationRepository
 from ..repositories.sop_execution_repository import SopExecutionRepository
 from .agent_client import AgentClient
@@ -290,9 +302,55 @@ class ConversationService:
         try:
             trace_id = get_current_trace_id()
 
-            # 1. 保存用户消息（独立事务，确保 AI 报错不会导致用户消息回滚）
+            # 1. SOP 去向选择必须先校验一次性快照，并与用户消息、状态变更原子提交。
+            # 普通消息仍使用独立事务，确保 AI 报错不会导致用户消息回滚。
             user_message: Message | None = None
-            if self.session_factory:
+            is_sop_fallback_response = bool(
+                metadata
+                and metadata.get("kind") == "interactive_response"
+                and metadata.get("interactiveKind") == "sop_fallback"
+            )
+            if is_sop_fallback_response:
+                requested_choice = str(metadata.get("selectedOptionId") or "")
+                choice_metric = requested_choice if requested_choice in ("continue_sop", "switch_kbd") else "invalid"
+                try:
+                    await self.handle_sop_fallback_choice(
+                        conversation_id=conversation_id,
+                        request_id=str(metadata.get("sourceRequestId") or ""),
+                        choice=requested_choice,
+                        content=content,
+                        metadata=metadata,
+                        trace_id=trace_id,
+                    )
+                except ValueError as exc:
+                    SOP_FALLBACK_DECISIONS_TOTAL.labels(
+                        choice=choice_metric,
+                        status="rejected",
+                    ).inc()
+                    logger.warning(
+                        event="sop_fallback_choice_rejected",
+                        message="SOP 去向选择校验失败",
+                        conversation_id=str(conversation_id),
+                        request_id=str(metadata.get("sourceRequestId") or ""),
+                        choice=requested_choice,
+                        error=str(exc),
+                        trace_id=trace_id,
+                    )
+                    yield f"该 SOP 去向选择已失效或不合法：{exc}"
+                    return
+                except Exception as exc:
+                    SOP_FALLBACK_DECISIONS_TOTAL.labels(choice=choice_metric, status="error").inc()
+                    logger.error(
+                        event="sop_fallback_choice_error",
+                        message="SOP 去向选择事务执行失败",
+                        conversation_id=str(conversation_id),
+                        request_id=str(metadata.get("sourceRequestId") or ""),
+                        choice=requested_choice,
+                        error=str(exc),
+                        trace_id=trace_id,
+                    )
+                    raise
+            elif self.session_factory:
                 async with self.session_factory() as independent_session:
                     user_message = await ConversationRepository(independent_session).add_message(
                         conversation_id=conversation_id,
@@ -612,8 +670,9 @@ class ConversationService:
                                 sop_document_id=sop_execution.sop_document_id,
                                 trace_id=get_current_trace_id(),
                             )
-                        elif sop_execution.status in (STATUS_ACTIVE, STATUS_INTERRUPTED):
-                            # 存在活跃/中断的 SOP 执行，构建恢复上下文。
+                        elif sop_execution.status in (STATUS_ACTIVE, STATUS_INTERRUPTED, STATUS_COMPLETED):
+                            # completed 也保留为可恢复上下文：用户可以继续追问当前 SOP，
+                            # 或通过去向卡明确转入 KBD，不能重新创建同一会话的 SOP 实例。
                             sop_resume_context = {
                                 "sop_document_id": sop_execution.sop_document_id,
                                 "current_node_id": sop_execution.current_node_id,
@@ -643,6 +702,9 @@ class ConversationService:
             # N-4 修复：记录是否走了 ops-agent 路径（跳过 htp 状态机后验检测）
             _used_ops_agent_path = False
             _message_metadata: dict = {}
+            _sop_track_seen = False
+            _blocking_interactive_seen = False
+            _escalation_seen = False
             try:
                 if self._agent_client is not None:
                     # ── 新路径：委托 agent-service（HTTP SSE）────────────────────
@@ -702,6 +764,7 @@ class ConversationService:
                                 yield f"\x00event:{_stage}:{_payload}\x00"
                             # T-AGT-07: 处理 SOP 命中统计（sop_reasoning 事件携带 sop_document_id）
                             if _stage == "sop_reasoning" and _metadata.get("sop_document_id"):
+                                _sop_track_seen = True
                                 _sop_doc_id = _metadata.get("sop_document_id")
                                 if _sop_doc_id and isinstance(_sop_doc_id, int):
                                     asyncio.create_task(
@@ -730,6 +793,7 @@ class ConversationService:
                                 _payload = _json.dumps(_intent_metadata, ensure_ascii=False)
                                 yield f"\x00event:metadata:{_payload}\x00"
                                 continue
+                            _blocking_interactive_seen = True
                             _ir_payload = _json.dumps(
                                 {
                                     "requestId": agent_event.get("request_id"),
@@ -746,34 +810,9 @@ class ConversationService:
                                 },
                                 ensure_ascii=False,
                             )
-                            # Bug2 修复保持：先落库再 yield
-                            _ir_content = self._format_interactive_request_content_dict(agent_event)
-                            asyncio.create_task(
-                                self._save_message_bg(
-                                    conversation_id=conversation_id,
-                                    case_id=case_id,
-                                    role=MessageRole.assistant,
-                                    content=_ir_content,
-                                    metadata={
-                                        "kind": "interactive_request",
-                                        "event": {
-                                            "requestId": agent_event.get("request_id"),
-                                            "acpSessionId": agent_event.get("acp_session_id"),
-                                            "kind": agent_event.get("kind"),
-                                            "title": agent_event.get("title"),
-                                            "prompt": agent_event.get("prompt"),
-                                            "options": agent_event.get("options"),
-                                            "customInput": agent_event.get("custom_input"),
-                                            "metadata": agent_event.get("metadata"),
-                                            "execId": agent_event.get("exec_id"),
-                                            "inputHash": agent_event.get("input_hash"),
-                                            "expiresAt": agent_event.get("expires_at"),
-                                        },
-                                    },
-                                )
-                            )
                             yield f"\x00event:interactive_request:{_ir_payload}\x00"
                         elif event_type == "escalation":
+                            _escalation_seen = True
                             _escalation_event = self._escalation_interactive_event(
                                 conversation_id,
                                 agent_event,
@@ -883,6 +922,17 @@ class ConversationService:
                         conversation_id=str(conversation_id),
                         current_stage=current_stage,
                     )
+
+                # SOP 的退出权必须来自显式用户选择。每轮 SOP 结束且没有其他阻塞交互时，
+                # 持久化一次性快照并推送继续 SOP / 切换 KBD 卡片。
+                if _sop_track_seen and not _blocking_interactive_seen and not _escalation_seen:
+                    fallback_event = await self.send_sop_fallback_options(
+                        conversation_id=conversation_id,
+                        stage=current_stage,
+                    )
+                    if fallback_event:
+                        fallback_payload = _json.dumps(fallback_event, ensure_ascii=False)
+                        yield f"\x00event:interactive_request:{fallback_payload}\x00"
             except Exception as e:
                 AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="error").inc()
                 if isinstance(e, asyncio.CancelledError):
@@ -953,6 +1003,20 @@ class ConversationService:
                 conversation_id=str(conversation_id),
                 error=str(e),
             )
+
+    async def save_interactive_request_message(
+        self,
+        conversation_id: uuid.UUID,
+        case_id: str,
+        event: dict,
+    ) -> None:
+        """在普通助手回复之后持久化交互卡，保证刷新后的消息顺序一致。"""
+        await self.save_assistant_message(
+            conversation_id=conversation_id,
+            case_id=case_id,
+            content=self._format_interactive_request_content_dict(event),
+            metadata={"kind": "interactive_request", "event": event},
+        )
 
     async def save_assistant_message_for_resume(
         self,
@@ -2420,7 +2484,214 @@ class ConversationService:
             f"工单编号：{case_id}，工程师将尽快与您联系。"
         )
 
-    # ─── S6 三选项处理方法 (v6.3) ────────────────────────────────────────────
+    # ─── SOP 去向选择闭环 ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _sop_fallback_event(conversation_id: uuid.UUID, pending: dict) -> dict:
+        """把持久化快照转换为前端通用交互协议。"""
+        return {
+            "requestId": pending["request_id"],
+            "acpSessionId": str(conversation_id),
+            "kind": "sop_fallback",
+            "title": "选择后续排查方式",
+            "prompt": "当前 SOP 是否解决了问题？如果未解决，可立即切换到同分类 KBD 继续排查。",
+            "options": pending["options"],
+            "customInput": False,
+            "metadata": {
+                "stage": pending["stage"],
+                "sop_document_id": pending["sop_document_id"],
+                "sop_status": pending["sop_status"],
+                "trace_id": pending.get("trace_id"),
+            },
+        }
+
+    async def send_sop_fallback_options(
+        self,
+        conversation_id: uuid.UUID,
+        stage: str,
+    ) -> dict | None:
+        """持久化一次性 SOP 去向快照，并返回可直接推送的交互事件。"""
+        if not self.session_factory:
+            logger.error(
+                event="sop_fallback_prompt_session_unavailable",
+                conversation_id=str(conversation_id),
+                trace_id=get_current_trace_id(),
+            )
+            return None
+
+        from sqlalchemy import select
+
+        with tracer.start_as_current_span("conversation.sop_fallback.prompt") as span:
+            span.set_attribute("conversation.id", str(conversation_id))
+            async with self.session_factory() as session:
+                conv = (
+                    await session.execute(
+                        select(Conversation).where(Conversation.conversation_id == conversation_id).with_for_update()
+                    )
+                ).scalar_one_or_none()
+                sop_execution = (
+                    await session.execute(
+                        select(SopExecution).where(SopExecution.conversation_id == conversation_id).with_for_update()
+                    )
+                ).scalar_one_or_none()
+
+                if conv is None or sop_execution is None or sop_execution.status == STATUS_ABORTED:
+                    logger.info(
+                        event="sop_fallback_prompt_skipped",
+                        message="会话没有可退出的 SOP 执行",
+                        conversation_id=str(conversation_id),
+                        sop_status=getattr(sop_execution, "status", None),
+                        trace_id=get_current_trace_id(),
+                    )
+                    return None
+                if conv.pending_confirm is not None:
+                    logger.info(
+                        event="sop_fallback_prompt_blocked_by_confirmation",
+                        message="存在待确认工具操作，暂不生成 SOP 去向选择",
+                        conversation_id=str(conversation_id),
+                        trace_id=get_current_trace_id(),
+                    )
+                    return None
+                if isinstance(conv.pending_resolution, dict):
+                    if conv.pending_resolution.get("kind") == "sop_fallback":
+                        return self._sop_fallback_event(conversation_id, conv.pending_resolution)
+                    logger.warning(
+                        event="sop_fallback_prompt_state_conflict",
+                        message="存在其他待处理诊断去向选择，拒绝覆盖",
+                        conversation_id=str(conversation_id),
+                        pending_kind=conv.pending_resolution.get("kind"),
+                        trace_id=get_current_trace_id(),
+                    )
+                    return None
+
+                pending = {
+                    "kind": "sop_fallback",
+                    "request_id": f"sop-fallback-{uuid.uuid4()}",
+                    "stage": stage,
+                    "sent_at": datetime.now(UTC).isoformat(),
+                    "sop_document_id": sop_execution.sop_document_id,
+                    "sop_status": sop_execution.status,
+                    "trace_id": get_current_trace_id(),
+                    "options": [
+                        {"optionId": "continue_sop", "name": "继续按当前 SOP 排查"},
+                        {"optionId": "switch_kbd", "name": "SOP 未解决，切换 KBD"},
+                    ],
+                }
+                conv.pending_resolution = pending
+                await session.commit()
+
+            SOP_FALLBACK_PROMPTS_TOTAL.labels(sop_status=pending["sop_status"], stage=stage).inc()
+            logger.info(
+                event="sop_fallback_prompt_sent",
+                message="SOP 去向选择已持久化并推送",
+                conversation_id=str(conversation_id),
+                request_id=pending["request_id"],
+                sop_document_id=pending["sop_document_id"],
+                sop_status=pending["sop_status"],
+                stage=stage,
+                trace_id=get_current_trace_id(),
+            )
+            return self._sop_fallback_event(conversation_id, pending)
+
+    async def handle_sop_fallback_choice(
+        self,
+        conversation_id: uuid.UUID,
+        request_id: str,
+        choice: str,
+        content: str,
+        metadata: dict,
+        trace_id: str,
+    ) -> dict:
+        """校验一次性选择，并原子提交用户消息与 SOP 去向变更。"""
+        if choice not in ("continue_sop", "switch_kbd"):
+            raise ValueError("选择值无效")
+        if not request_id:
+            raise ValueError("缺少 request_id")
+        if not self.session_factory:
+            raise ValueError("数据库会话不可用")
+
+        from sqlalchemy import select, update
+
+        from ..models.diagnostic_item import STATUS_ARCHIVED, DiagnosticItem
+
+        with tracer.start_as_current_span("conversation.sop_fallback.decide") as span:
+            span.set_attribute("conversation.id", str(conversation_id))
+            span.set_attribute("sop_fallback.choice", choice)
+            async with self.session_factory() as session:
+                conv = (
+                    await session.execute(
+                        select(Conversation).where(Conversation.conversation_id == conversation_id).with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if conv is None:
+                    raise ValueError("会话不存在")
+
+                pending = conv.pending_resolution
+                if not isinstance(pending, dict) or pending.get("kind") != "sop_fallback":
+                    raise ValueError("当前没有待处理的 SOP 去向选择")
+                if not secrets.compare_digest(str(pending.get("request_id") or ""), request_id):
+                    raise ValueError("request_id 已失效")
+
+                sop_execution = (
+                    await session.execute(
+                        select(SopExecution).where(SopExecution.conversation_id == conversation_id).with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if sop_execution is None:
+                    raise ValueError("SOP 执行不存在")
+                if sop_execution.sop_document_id != pending.get("sop_document_id"):
+                    raise ValueError("SOP 执行与选择快照不一致")
+                if sop_execution.status == STATUS_ABORTED:
+                    raise ValueError("SOP 已终止")
+
+                archived_count = 0
+                if choice == "switch_kbd":
+                    archived = await session.execute(
+                        update(DiagnosticItem)
+                        .where(DiagnosticItem.conversation_id == conversation_id)
+                        .where(DiagnosticItem.status != STATUS_ARCHIVED)
+                        .values(status=STATUS_ARCHIVED)
+                    )
+                    archived_count = archived.rowcount
+                    sop_execution.status = STATUS_ABORTED
+                    sop_execution.pending_variable_name = None
+                    conv.diagnostic_stage = "S1"
+
+                conv.pending_resolution = None
+                sop_document_id = sop_execution.sop_document_id
+                final_sop_status = sop_execution.status
+                new_stage = conv.diagnostic_stage
+                await ConversationRepository(session).add_message(
+                    conversation_id=conversation_id,
+                    case_id=conv.case_id,
+                    role=MessageRole.user,
+                    content=content,
+                    trace_id=trace_id,
+                    metadata=metadata,
+                )
+                await session.commit()
+
+            SOP_FALLBACK_DECISIONS_TOTAL.labels(choice=choice, status="success").inc()
+            logger.info(
+                event="sop_fallback_choice_committed",
+                message="SOP 去向选择、用户消息与执行状态已原子提交",
+                conversation_id=str(conversation_id),
+                request_id=request_id,
+                choice=choice,
+                sop_document_id=sop_document_id,
+                sop_status=final_sop_status,
+                archived_count=archived_count,
+                new_stage=new_stage,
+                trace_id=trace_id,
+            )
+            return {
+                "choice": choice,
+                "sop_status": final_sop_status,
+                "archived_count": archived_count,
+                "new_stage": new_stage,
+            }
+
+    # ─── S6 三选项处理方法 (v6.3，保留兼容) ─────────────────────────────────
 
     async def send_s6_resolution_options(
         self,

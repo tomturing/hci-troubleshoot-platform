@@ -311,6 +311,63 @@ describe('场景B2：interactive_response 后无 AI 回复 → 自动 resume', (
     })
 })
 
+describe('SOP 去向选择使用普通消息流，不接入 ops-agent resume', () => {
+    it('SOP 切换 KBD 已提交但无后续回复时不调用 /resume-stream', async () => {
+        mockApiGet.mockImplementation((url: string) => {
+            if (url.includes('/conversations/case/')) return Promise.resolve(makeConvResponse())
+            return Promise.resolve({ data: [] })
+        })
+        mockConvGetMessages.mockResolvedValue({
+            data: makeMessages([
+                { role: 'user', content: '帮我排查' },
+                {
+                    role: 'assistant',
+                    content: '请选择后续排查方式',
+                    metadata: {
+                        kind: 'interactive_request',
+                        event: { ...IR_EVENT, requestId: 'sop-fallback-1', kind: 'sop_fallback' },
+                    },
+                },
+                {
+                    role: 'user',
+                    content: 'SOP 未解决，切换 KBD',
+                    metadata: {
+                        kind: 'interactive_response',
+                        interactiveKind: 'sop_fallback',
+                        selectedOptionId: 'switch_kbd',
+                        sourceRequestId: 'sop-fallback-1',
+                    },
+                },
+            ]),
+        })
+
+        const mockFetch = makeDoneResumeFetch()
+        vi.stubGlobal('fetch', mockFetch)
+
+        const { useChatStore } = await import('../chat')
+        const store = useChatStore()
+        await store.initialize()
+        await store.switchToCase({
+            case_id: 'c-resume-1',
+            assistant_type: 'htp-agent',
+            status: 'in_progress',
+            client_id: 'test',
+            title: 'SOP fallback Test',
+            description: null,
+            created_at: '',
+            updated_at: '',
+            closed_at: null,
+            trace_id: null,
+        } as any)
+        await new Promise(resolve => setTimeout(resolve, 50))
+
+        const resumeCalls = mockFetch.mock.calls.filter((args: unknown[]) =>
+            typeof args[0] === 'string' && args[0].includes('/resume-stream')
+        )
+        expect(resumeCalls).toHaveLength(0)
+    })
+})
+
 // ══════════════════════════════════════════════════════════════════════════
 // 防重入：场景A已调度时，场景B不重复调度
 // ══════════════════════════════════════════════════════════════════════════

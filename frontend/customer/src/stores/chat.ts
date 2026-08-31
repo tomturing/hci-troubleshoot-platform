@@ -657,6 +657,7 @@ export const useChatStore = defineStore('chat', () => {
           m => m.role === 'assistant' && m.metadata?.kind === 'interactive_request' && m.metadata?.event
         )
         if (lastIRMsg?.metadata?.event) {
+          const isSopFallback = (lastIRMsg.metadata.event as { kind?: string }).kind === 'sop_fallback'
           const irMsgIdx = messages.value.indexOf(lastIRMsg)
           const hasResponse = messages.value.slice(irMsgIdx + 1).some(
             m => m.role === 'user' && (m.metadata as any)?.kind === 'interactive_response'
@@ -676,7 +677,7 @@ export const useChatStore = defineStore('chat', () => {
               && msgsAfterIR.slice(lastIRResponseIdx + 1).some(
                 m => m.role === 'assistant' && m.metadata?.kind !== 'interactive_request'
               )
-            if (!hasSubsequentAIReply && lastIRResponseIdx >= 0 && !resumeScheduled) {
+            if (!isSopFallback && !hasSubsequentAIReply && lastIRResponseIdx >= 0 && !resumeScheduled) {
               // ops-agent 续写事件尚未到达前端，页面稳定后自动重连（场景A未调度时才触发）
               nextTick().then(() => resumeOpsAgentStream())
             }

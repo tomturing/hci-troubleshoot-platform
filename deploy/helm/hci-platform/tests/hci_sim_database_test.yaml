@@ -101,6 +101,8 @@ tests:
           path: data["000005_minimize_control_plane.sql"]
       - exists:
           path: data["000006_fixture_asset_revision.sql"]
+      - exists:
+          path: data["000007_qkv_task_template_v2.sql"]
 
   - it: "普通迁移触发器暴露稳定 digest，驱动 migration-only 自动同步"
     set:
@@ -122,7 +124,7 @@ tests:
           pattern: "^[a-f0-9]{64}$"
       - equal:
           path: data.migration_file_count
-          value: "6"
+          value: "7"
 
   - it: "迁移 Job 在依赖之后以 wave -8 执行"
     set:
