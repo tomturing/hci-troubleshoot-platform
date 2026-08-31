@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
 import { nextTick } from 'vue'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import SignalDryRunDialog from '../SignalDryRunDialog.vue'
 
@@ -204,5 +204,59 @@ describe('SignalDryRunDialog', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/hci-sim/v1/control-plane/bundles', expect.objectContaining({ method: 'POST' }))
     vi.unstubAllGlobals()
   })
+
+  it('【模式一：先发布再测试】存在匹配当前信号路由的 Draft 时直接复用，不重复创建 Draft', async () => {
+    const wrapper = mount(SignalDryRunDialog, {
+      props: { modelValue: true, supportId: '27123', kbdRevision: 9, signal: { ...signal, id: 'sig_001' }, signalIndex: 0 },
+      global: { plugins: [ElementPlus], stubs },
+    })
+    const vm = wrapper.vm as unknown as {
+      previewResult: Record<string, unknown>
+      lastDryRunRequest: Record<string, unknown>
+      saveToBundle: () => Promise<void>
+    }
+    vm.previewResult = {
+      trace_id: 't-mode1', dataset_id: 'sample', config_revision: 'sha256:test', status: 'PASS',
+      preview_token: 'token.mode1',
+    }
+    vm.lastDryRunRequest = { support_id: '27123', kbd_revision: 9, unit_ref: { signal_id: 'sig_001' } }
+
+    const fetchMock = vi.fn().mockImplementation((url: string, opts?: { method?: string; body?: string }) => {
+      if (url.includes('/bundles?support_id=27123')) {
+        // 返回一个匹配的已有 Draft
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            bundles: [
+              { digest: 'sha256:existing_draft_rev9', status: 'draft', kbd_revision: 9, route_sources: [{ signal_id: 'sig_001' }] }
+            ]
+          }),
+        })
+      }
+      if (url.includes('/dry-run/bundles/sha256%3Aexisting_draft_rev9') || url.includes('/dry-run/bundles/sha256:existing_draft_rev9')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            bundle: { digest: 'sha256:existing_draft_rev9', status: 'draft' }
+          }),
+        })
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await vm.saveToBundle()
+    // 验证没有调用 POST /api/hci-sim/v1/control-plane/bundles（即没有创建新 Draft，而是直接复用）
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/hci-sim/v1/control-plane/bundles', expect.objectContaining({ method: 'POST' }))
+    // 验证直接调用了向已有 Draft 写入验证资产的接口
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('sha256%3Aexisting_draft_rev9'),
+      expect.objectContaining({ method: 'POST' })
+    )
+    vi.unstubAllGlobals()
+  })
 })
+
 
