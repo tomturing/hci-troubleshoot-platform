@@ -88,7 +88,7 @@ jobs:
           actual_tables="$(psql -d hci_sim -Atc "SELECT table_schema || '.' || table_name FROM information_schema.tables WHERE table_schema IN ('control_plane','fixture','artifact','audit') AND table_type = 'BASE TABLE' ORDER BY 1" | tr '\n' ' ' | sed 's/[[:space:]]\+$//')"
           test "$actual_tables" = "$expected_tables"
           test "$(psql -d hci_sim -Atc "SELECT count(*) FROM fixture.asset_revision WHERE asset_type = 'template' AND status = 'published'")" = 3
-          test "$(psql -d hci_sim -Atc "SELECT count(*) FROM fixture.asset_revision WHERE asset_type = 'instance' AND status = 'published'")" = 3
+          test "$(psql -d hci_sim -Atc "SELECT count(*) FROM fixture.asset_revision WHERE asset_type = 'instance' AND status = 'published'")" = 4
           test "$(psql -d hci_sim -Atc "SELECT count(*) FROM fixture.asset_revision WHERE category_baseline_json = '{}'::jsonb OR catalog_baseline_json = '{}'::jsonb")" = 0
           test "$(psql -d hci_troubleshoot -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE 'agent_test_%'")" = 0
           psql -d hci_sim -v ON_ERROR_STOP=1 -c "REVOKE ALL ON DATABASE hci_sim FROM PUBLIC; GRANT CONNECT ON DATABASE hci_sim TO hci_sim_runtime;"
