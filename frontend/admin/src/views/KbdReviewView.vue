@@ -6057,7 +6057,9 @@ onUnmounted(() => clearBatchPollTimer())
     <SignalDryRunDialog
       v-model="signalDryRunVisible"
       :support-id="detailEntry?.support_id"
-      :kbd-revision="revisionState?.active_resource?.revision || revisionState?.history?.find(h => h.id === (revisionState?.working_revision_id || detailEntry?.working_revision_id))?.revision_no || null"
+      :kbd-revision="(detailEntry?.maintenance_working || revisionState?.working_revision_id)
+        ? (revisionState?.history?.find(h => h.id === (revisionState?.working_revision_id || detailEntry?.working_revision_id))?.revision_no || null)
+        : (revisionState?.active_resource?.revision || null)"
       :signal="signalDryRunSignal"
       :signal-index="signalDryRunIndex"
       :processing-index="signalDryRunProcessingIndex"
