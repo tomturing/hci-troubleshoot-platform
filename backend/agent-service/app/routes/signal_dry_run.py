@@ -254,6 +254,9 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, db_
         )
 
     values: dict[str, Any] = {}
+    ai_raw_responses: list[dict[str, Any]] = []
+    evidence_lines: list[int] = []
+    ai_contracts: list[dict[str, Any]] = []
     from shared.signals.extractor import extract_value
 
     for index, produce in enumerate(produces):
@@ -278,16 +281,34 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, db_
                 db_session_factory=db_session_factory,
             )
             values[str(produce["name"])] = ai_result.value
+            raw = getattr(ai_result, "raw_response", None)
+            if isinstance(raw, dict):
+                ai_raw_responses.append(raw)
+            if ai_result.evidence_line_numbers:
+                evidence_lines.extend(ai_result.evidence_line_numbers)
+            ai_contracts.append({
+                "produce": produce.get("name"),
+                "value_source": "ai_grounded",
+                "reason": ai_result.reason,
+            })
         else:
             values[str(produce["name"])] = extract_value(
                 output, extract, str(produce.get("type") or "string")
             )
+    sorted_evidence_lines = sorted(set(evidence_lines))
+    primary_ai_raw_response = ai_raw_responses[-1] if ai_raw_responses else None
+    derivation_payload: dict[str, Any] = {"produces": list(values.keys())}
+    if ai_contracts:
+        derivation_payload["ai_contracts"] = ai_contracts
+
     return SignalDryRunResult(
         trace_id=trace_id, dataset_id=body.dataset.dataset_id, unit_ref=body.unit_ref,
         verification_scope=body.verification_scope, config_revision=body.draft_revision,
         status="PASS", input_sha256=input_sha, value=values,
         evidence="QFK 产出变量已按当前草稿完成提取。",
-        derivation={"produces": list(values.keys())},
+        evidence_lines=sorted_evidence_lines,
+        derivation=derivation_payload,
+        ai_raw_response=primary_ai_raw_response,
     )
 
 
