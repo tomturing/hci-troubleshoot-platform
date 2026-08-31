@@ -22,6 +22,7 @@ from shared.observability.otel import get_current_trace_id
 from app.config import settings
 
 from ..models.message import Message, MessageRole
+from ..models.sop_execution import STATUS_ABORTED, STATUS_ACTIVE, STATUS_INTERRUPTED, SopExecution
 from ..repositories.conversation_repo import ConversationRepository
 from ..repositories.sop_execution_repository import SopExecutionRepository
 from .agent_client import AgentClient
@@ -593,25 +594,43 @@ class ConversationService:
             if self.session_factory:
                 async with self.session_factory() as sop_session:
                     sop_repo = SopExecutionRepository(sop_session)
-                    sop_execution = await sop_repo.get_active_by_conversation(conversation_id)
+                    # 已放弃的 SOP 也要传给 Agent：S6 选择“未解决”后，
+                    # 下一轮必须进入同分类 KBD，不能再次命中同一 SOP。
+                    sop_execution = await sop_repo.get_by_conversation(conversation_id)
                     if sop_execution:
-                        # 存在活跃的 SOP 执行，构建恢复上下文
-                        sop_resume_context = {
-                            "sop_document_id": sop_execution.sop_document_id,
-                            "current_node_id": sop_execution.current_node_id,
-                            "completed_steps": sop_execution.completed_steps or [],
-                            "context_variables": sop_execution.context_variables or {},
-                            "execution_log": sop_execution.execution_log or [],
-                            "status": sop_execution.status,
-                        }
-                        logger.info(
-                            event="sop_execution_resume_detected",
-                            message="检测到活跃的 SOP 执行，构建恢复上下文",
-                            conversation_id=str(conversation_id),
-                            sop_document_id=sop_execution.sop_document_id,
-                            current_node_id=sop_execution.current_node_id,
-                            completed_steps_count=len(sop_execution.completed_steps or []),
-                        )
+                        if sop_execution.status == STATUS_ABORTED:
+                            sop_resume_context = {
+                                "sop_document_id": sop_execution.sop_document_id,
+                                "status": STATUS_ABORTED,
+                                "sop_fallback_requested": True,
+                            }
+                            logger.info(
+                                event="sop_fallback_to_kbd_detected",
+                                message="检测到已放弃的 SOP，下一轮切换到同分类 KBD",
+                                conversation_id=str(conversation_id),
+                                case_id=case_id,
+                                sop_document_id=sop_execution.sop_document_id,
+                                trace_id=get_current_trace_id(),
+                            )
+                        elif sop_execution.status in (STATUS_ACTIVE, STATUS_INTERRUPTED):
+                            # 存在活跃/中断的 SOP 执行，构建恢复上下文。
+                            sop_resume_context = {
+                                "sop_document_id": sop_execution.sop_document_id,
+                                "current_node_id": sop_execution.current_node_id,
+                                "completed_steps": sop_execution.completed_steps or [],
+                                "context_variables": sop_execution.context_variables or {},
+                                "execution_log": sop_execution.execution_log or [],
+                                "status": sop_execution.status,
+                            }
+                            logger.info(
+                                event="sop_execution_resume_detected",
+                                message="检测到活跃的 SOP 执行，构建恢复上下文",
+                                conversation_id=str(conversation_id),
+                                sop_document_id=sop_execution.sop_document_id,
+                                current_node_id=sop_execution.current_node_id,
+                                completed_steps_count=len(sop_execution.completed_steps or []),
+                                trace_id=get_current_trace_id(),
+                            )
 
             # 4. 从注册表获取 AI 助手客户端
             resolved_assistant_type = await self._resolve_assistant_type(conversation_id, assistant_type)
@@ -2579,6 +2598,25 @@ class ConversationService:
                         message=f"B 选项回退：已归档 {result.rowcount} 条诊断结论",
                         conversation_id=str(conversation_id),
                         archived_count=result.rowcount,
+                    )
+
+                # SOP 未解决时必须终止当前执行，给下一轮路由一个持久化的
+                # 状态边界；否则 Agent 只看到分类下有 SOP，会无限重入 SOP。
+                if action["new_stage"] == "S1":
+                    sop_result = await session.execute(
+                        sa_update(SopExecution)
+                        .where(SopExecution.conversation_id == conversation_id)
+                        .where(SopExecution.status != STATUS_ABORTED)
+                        .values(status=STATUS_ABORTED, pending_variable_name=None)
+                    )
+                    results["sop_aborted"] = bool(sop_result.rowcount)
+                    logger.info(
+                        event="sop_aborted_for_kbd_fallback",
+                        message="S6 未解决：已终止 SOP 执行并允许下一轮转入 KBD",
+                        conversation_id=str(conversation_id),
+                        case_id=case_id,
+                        aborted_count=sop_result.rowcount,
+                        trace_id=get_current_trace_id(),
                     )
 
                 # 更新 conversation 字段
