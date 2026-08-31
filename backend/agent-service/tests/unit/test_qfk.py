@@ -831,3 +831,19 @@ def test_threshold_matcher_unresolved_placeholder_and_missing_value_evidence():
     assert "QFK_NO_MATCH" in res_no_match.evidence or "文本取值失败" in res_no_match.evidence
 
 
+def test_log_handler_cleans_leading_comma_request_id():
+    """QFK 日志命令构建时防御性清洗 request_id 前导逗号。"""
+    handler = LogKeywordHandler()
+    sig = BackendSignal(
+        namespace="log",
+        file="sfscp.log",
+        request_id=",a678d3fb5fdf2af4e78e6dae896a06e2",
+        time_window="2026-07-28 00:54:36",
+    )
+    commands = handler.build_commands(sig)
+    assert len(commands) == 1
+    assert "-i a678d3fb5fdf2af4e78e6dae896a06e2" in commands[0]
+    assert "-i ,a678d3fb" not in commands[0]
+
+
+

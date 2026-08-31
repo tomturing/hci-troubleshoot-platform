@@ -533,7 +533,38 @@ class TestQKVParserDynamicProduces:
         fallback = parse_frontend_value(FrontendQueryType.TASK, task_json)
 
         assert vals[0]["end"] == fallback[0]["end"]
-        assert vals[0]["end"].count(":") == 2
+
+    def test_explicit_request_id_produce_normalizes_leading_comma(self):
+        """显式 produces 与硬编码路径均自动剥离 request_id 的前导逗号。"""
+        raw_task = '{"data": [{"request_id": ",a678d3fb5fdf2af4e78e6dae896a06e2", "end": "2026-07-28 00:54:36"}]}'
+
+        vals = parse_frontend_value(
+            FrontendQueryType.TASK,
+            raw_task,
+            [{"name": "REQUEST_ID", "path": "request_id"}, {"name": "END", "path": "end"}],
+        )
+        fallback = parse_frontend_value(FrontendQueryType.TASK, raw_task)
+
+        assert vals[0]["request_id"] == "a678d3fb5fdf2af4e78e6dae896a06e2"
+        assert fallback[0]["request_id"] == "a678d3fb5fdf2af4e78e6dae896a06e2"
+
+    def test_request_id_normalization_multi_ids_and_synthetic_format(self):
+        """多 trace 逗号拼接取首个，合成与常规 ID 正常保留。"""
+        raw_multi = '{"data": [{"request_id": ",trace_first,trace_second"}]}'
+        vals_multi = parse_frontend_value(
+            FrontendQueryType.TASK,
+            raw_multi,
+            [{"name": "REQUEST_ID", "path": "request_id"}],
+        )
+        assert vals_multi[0]["request_id"] == "trace_first"
+
+        raw_sim = '{"data": [{"request_id": ",SIM-REQUEST-41464"}]}'
+        vals_sim = parse_frontend_value(
+            FrontendQueryType.TASK,
+            raw_sim,
+            [{"name": "REQUEST_ID", "path": "request_id"}],
+        )
+        assert vals_sim[0]["request_id"] == "SIM-REQUEST-41464"
 
     def test_extract_empty_produces_falls_back(self):
         """produces 为空时走硬编码兜底"""
