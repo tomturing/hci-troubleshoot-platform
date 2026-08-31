@@ -112,6 +112,7 @@ jobs:
               - 'scripts/ci/test_resolve_image_build_plan.py'
               - 'scripts/ci/test_check_digest_pin_exempt.py'
               - 'scripts/ci/test_update_hci_sim_promotion.py'
+              - 'scripts/ci/test_ci_image_publication.py'
               - 'hci_sim/Dockerfile'
               - 'deploy/gitops/argo-apps/local/hci-sim-dev.yaml'
               - 'deploy/gitops/argo-apps/cloud/hci-sim-staging.yaml'
@@ -135,6 +136,7 @@ jobs:
             scripts/ci/test_resolve_image_build_plan.py \
             scripts/ci/test_check_digest_pin_exempt.py \
             scripts/ci/test_update_hci_sim_promotion.py \
+            scripts/ci/test_ci_image_publication.py \
             scripts/ci/resolve_pr_frontend_targets.py \
             scripts/ci/test_resolve_pr_frontend_targets.py
           uvx ruff format --check \
@@ -146,6 +148,7 @@ jobs:
             scripts/ci/test_resolve_image_build_plan.py \
             scripts/ci/test_check_digest_pin_exempt.py \
             scripts/ci/test_update_hci_sim_promotion.py \
+            scripts/ci/test_ci_image_publication.py \
             scripts/ci/resolve_pr_frontend_targets.py \
             scripts/ci/test_resolve_pr_frontend_targets.py
           uv run --no-project --with pytest --with pytest-xdist pytest \
@@ -153,6 +156,7 @@ jobs:
             scripts/ci/test_resolve_image_build_plan.py \
             scripts/ci/test_check_digest_pin_exempt.py \
             scripts/ci/test_update_hci_sim_promotion.py \
+            scripts/ci/test_ci_image_publication.py \
             scripts/ci/test_resolve_pr_frontend_targets.py \
             -q
 
@@ -1554,6 +1558,7 @@ jobs:
           IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
           DB_MIGRATE_BUILT: ${{ needs.build-db-migrate.outputs.built }}
           SERVICES_CSV: ${{ needs.prepare.outputs.deploy_services }}
+          HAS_DEPLOY_SERVICES: ${{ needs.prepare.outputs.has_deploy_services }}
         run: |
           set -euo pipefail
           if [[ -z "${ENV_REPO_PAT:-}" ]]; then
@@ -1569,6 +1574,24 @@ jobs:
           else
             echo "本次无 schema 变更，跳过 db-migrate 更新"
             SKIP_DB_MIGRATE="true"
+          fi
+
+          # 空业务清单必须显式确认跳过；同时校验布尔输出与实际清单，避免发布范围漂移。
+          if [[ "${HAS_DEPLOY_SERVICES}" == "true" ]]; then
+            if [[ -z "${SERVICES_CSV}" ]]; then
+              echo "::error::has_deploy_services=true，但 deploy_services 为空"
+              exit 1
+            fi
+            SKIP_BUSINESS_TAGS="false"
+          elif [[ "${HAS_DEPLOY_SERVICES}" == "false" ]]; then
+            if [[ -n "${SERVICES_CSV}" ]]; then
+              echo "::error::has_deploy_services=false，但 deploy_services 非空：${SERVICES_CSV}"
+              exit 1
+            fi
+            SKIP_BUSINESS_TAGS="true"
+          else
+            echo "::error::has_deploy_services 非法：${HAS_DEPLOY_SERVICES:-<empty>}"
+            exit 1
           fi
 
           # clone 环境仓库
@@ -1601,6 +1624,7 @@ jobs:
             TARGET_ENV="${env}" \
             IMAGE_TAG="${IMAGE_TAG}" \
             SERVICES_CSV="${SERVICES_CSV}" \
+            SKIP_BUSINESS_TAGS="${SKIP_BUSINESS_TAGS}" \
             SKIP_DB_MIGRATE="${SKIP_DB_MIGRATE}" \
               bash "$GITHUB_WORKSPACE/scripts/ops/sync-env-repo-tags.sh"
 
