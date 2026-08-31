@@ -1,5 +1,7 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from app.services.hci_sim_resolver import HciSimKbdResolver, KbdResolutionReport, _derive_sample_output
 from shared.schemas.hci_sim_policy import current_hci_sim_policy_revision
 from shared.schemas.signal_generation import current_tool_contract_revision
@@ -291,17 +293,13 @@ def test_resolver_resolves_working_draft_revision():
     assert [route.signal_id for route in resolution.resolved.synthetic_routes] == ["expert_1788139182831_f2fcdaefb29d"]
 
 
-from unittest.mock import AsyncMock, MagicMock
-import pytest
-
-
 @pytest.mark.asyncio
 async def test_resolve_support_id_mode_1_published_default():
     """【模式一：先发布再测试】未传 revision 时默认从 active 发布快照解析。"""
     resolver = HciSimKbdResolver()
     entry = _entry(support_id="27123", status="published")
     active, revision = _snapshot(support_id="27123")
-    
+
     session = AsyncMock()
     # 模拟查询 KbdEntry
     entry_result = MagicMock()
@@ -348,7 +346,7 @@ async def test_resolve_support_id_mode_2_working_draft():
     """【模式二：先测试再发布】传入 revision 时从工作稿 KbdRevision 解析，不要求 KbdEntry 处于 published 状态。"""
     resolver = HciSimKbdResolver()
     entry = _entry(support_id="41446", status="draft")  # 工作稿态，未发布
-    
+
     document = {
         "schema_version": 2,
         "signals": [
