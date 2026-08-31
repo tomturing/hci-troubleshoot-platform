@@ -337,3 +337,61 @@ async def test_qkv_dry_run_multi_records_stream_filtering_passes_and_cleans_outp
     assert result.value == [{"vm": "7903385510955", "description": "存在虚拟机，请迁移后再删除"}]
 
 
+@pytest.mark.asyncio
+async def test_qfk_dry_run_ai_failure_retains_raw_response() -> None:
+    failed_payload = {
+        "status": "failed",
+        "reason": "候选内容中存在多个不同的size值 (120G和400G), 无法确定单一的数值结果。",
+    }
+    ai_client = SimpleNamespace(
+        invoke=lambda **kwargs: SimpleNamespace(content=json.dumps(failed_payload, ensure_ascii=False))
+    )
+
+    async def _async_invoke(**kwargs):
+        return SimpleNamespace(content=json.dumps(failed_payload, ensure_ascii=False))
+
+    ai_client.invoke = _async_invoke
+
+    signal = {
+        "id": "sig_qfk_vm",
+        "acquire": {"tool": "qfk_vm", "args": {"instruction": "获取虚拟机所有磁盘大小"}},
+        "match": {
+            "type": "threshold",
+            "op": ">",
+            "threshold": 100,
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "all"},
+                "cardinality": "all",
+                "source": "stdout",
+                "ai_processing": {"instruction": "提取所有磁盘大小", "output_type": "number"},
+            },
+        },
+        "orchestrate": {},
+    }
+    request = SignalDryRunRequest(
+        draft_revision=_revision(signal),
+        scope="qfk_execution_result",
+        unit_ref={"signal_id": signal["id"]},
+        verification_scope="signal",
+        dataset={
+            "dataset_id": "preview-fail",
+            "source_type": "pasted",
+            "source_ref": "user-input",
+            "payload": "ide0: size=120G\nide1: size=400G\n",
+        },
+        signal=signal,
+        support_id="39175",
+        kbd_revision=12,
+    )
+
+    from shared.signals.extractor import QFKExtractionError
+
+    with pytest.raises(QFKExtractionError) as exc_info:
+        await evaluate_signal_dry_run(request, ai_client=ai_client, trace_id="9" * 32)
+
+    assert exc_info.value.code == "QFK_AI_PROCESSING_FAILED"
+    assert exc_info.value.raw_response == failed_payload
+
+
+

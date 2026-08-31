@@ -32,9 +32,10 @@ from shared.signals.matcher import evaluate_matcher
 class QKVProcessingError(ValueError):
     """带稳定错误码的 QKV 后处理错误。"""
 
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, raw_response: dict[str, Any] | None = None):
         self.code = code
         self.message = message
+        self.raw_response = raw_response
         super().__init__(f"{code}: {message}")
 
 
@@ -554,7 +555,7 @@ async def _derive_with_ai(
             db_session_factory=db_session_factory,
         )
     except QFKExtractionError as exc:
-        raise QKVProcessingError(exc.code, exc.message) from exc
+        raise QKVProcessingError(exc.code, exc.message, raw_response=exc.raw_response) from exc
     return ai_result.value
 
 
