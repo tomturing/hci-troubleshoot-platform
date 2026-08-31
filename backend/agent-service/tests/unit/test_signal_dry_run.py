@@ -453,4 +453,78 @@ async def test_qfk_dry_run_ai_failure_retains_raw_response() -> None:
     assert exc_info.value.raw_response == failed_payload
 
 
+@pytest.mark.asyncio
+async def test_qfk_dry_run_produces_signal_scope_preserves_ai_raw_response_and_evidence() -> None:
+    success_payload = {
+        "status": "success",
+        "output": ["120G", "400G"],
+        "evidence": [
+            {"ref": "line:23", "quote": "size=120G"},
+            {"ref": "line:24", "quote": "size=400G"},
+        ],
+        "reason": "从候选行中提取了 size 的具体值。",
+    }
+    ai_client = SimpleNamespace()
+
+    async def _async_invoke(**kwargs):
+        return SimpleNamespace(content=json.dumps(success_payload, ensure_ascii=False))
+
+    ai_client.invoke = _async_invoke
+
+    signal = {
+        "id": "expert_1787121034275_d55cbb28a849",
+        "acquire": {"tool": "qfk_vm", "args": {"instruction": "获取虚拟机所有磁盘大小"}},
+        "orchestrate": {
+            "produces": [
+                {
+                    "name": "TOTAL_DISK_SIZE",
+                    "type": "array",
+                    "extract": {
+                        "type": "text",
+                        "rows": {"mode": "all"},
+                        "cardinality": "all",
+                        "source": "stdout",
+                        "ai_processing": {
+                            "instruction": "提取所有磁盘大小",
+                            "output_type": "array",
+                            "item_type": "string",
+                        },
+                    },
+                }
+            ]
+        },
+    }
+    sample_output = "\n".join([f"line_{i}" for i in range(1, 23)]) + "\nide0: size=120G\nide1: size=400G\n"
+    request = SignalDryRunRequest(
+        draft_revision=_revision(signal),
+        scope="qfk_execution_result",
+        unit_ref={"signal_id": signal["id"]},
+        verification_scope="signal",
+        dataset={
+            "dataset_id": "fixture-synthetic-39175-002",
+            "source_type": "pasted",
+            "source_ref": "user-input",
+            "payload": sample_output,
+        },
+        signal=signal,
+        support_id="39175",
+        kbd_revision=26,
+    )
+
+    result = await evaluate_signal_dry_run(request, ai_client=ai_client, trace_id="c" * 32)
+
+    assert result.status == "PASS"
+    assert result.value == {"TOTAL_DISK_SIZE": ["120G", "400G"]}
+    assert result.evidence_lines == [23, 24]
+    assert result.ai_raw_response == success_payload
+    assert result.derivation.get("ai_contracts") == [
+        {
+            "produce": "TOTAL_DISK_SIZE",
+            "value_source": "ai_grounded",
+            "reason": "从候选行中提取了 size 的具体值。",
+        }
+    ]
+
+
+
 
