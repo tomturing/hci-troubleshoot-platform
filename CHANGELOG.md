@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.26.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.25.0...v2.26.0) (2026-08-31)
+
+
+### ✨ 新功能
+
+* **ai-governance:** 实现全平台 AI 调用统一治理层与全抖动重试舱壁 ([#961](https://github.com/tomturing/hci-troubleshoot-platform/issues/961)) ([211e6ba](https://github.com/tomturing/hci-troubleshoot-platform/commit/211e6baf880dae8bb01e1a81a12521d4b3054509))
+* **hci-sim:** 统一 Signal 试运行与 Bundle 草稿物化公共模块支持 QKV 与通用信号 ([#959](https://github.com/tomturing/hci-troubleshoot-platform/issues/959)) ([d5ddc07](https://github.com/tomturing/hci-troubleshoot-platform/commit/d5ddc07ad8d7700180ac54b28ead408004048142))
+* **kb-service:** 支持基于维护工作稿编译 Bundle Draft 与验证资产闭环 ([#967](https://github.com/tomturing/hci-troubleshoot-platform/issues/967)) ([ef673d2](https://github.com/tomturing/hci-troubleshoot-platform/commit/ef673d26c79fc4f674190bc54395c716df7eeb38))
+* **observability:** 优化 Signal 试运行中 AI 处理失败的可观测性与审计信息透传 ([#968](https://github.com/tomturing/hci-troubleshoot-platform/issues/968)) ([1e78c1b](https://github.com/tomturing/hci-troubleshoot-platform/commit/1e78c1b6dabf364a44316692b9031e42ee64837d))
+* 实现 QKV 多记录队列流式过滤与原始输入高保真物化 ([#963](https://github.com/tomturing/hci-troubleshoot-platform/issues/963)) ([8593ee2](https://github.com/tomturing/hci-troubleshoot-platform/commit/8593ee2d5e42e70b1230346097d8a08cf7a7d694))
+
+
+### 🐛 Bug 修复
+
+* **agent-service:** 修复 QFK 产出变量模式下整个 Signal 试运行透传 AI 原始响应与证据行 ([#970](https://github.com/tomturing/hci-troubleshoot-platform/issues/970)) ([0cc5228](https://github.com/tomturing/hci-troubleshoot-platform/commit/0cc5228eef4b4522a5b08fe19b1bc3096a91c099))
+* **api-gateway:** 放宽试运行数据集 signal_id 白名单兼容 expert_* 信号 ([#966](https://github.com/tomturing/hci-troubleshoot-platform/issues/966)) ([e9550c0](https://github.com/tomturing/hci-troubleshoot-platform/commit/e9550c05dc62034c3b9d8a1fcc6e16c98e790a42))
+* **hci-sim:** 修复 Bundle 工厂生成 Draft 命中已退役记录无法恢复问题 ([#964](https://github.com/tomturing/hci-troubleshoot-platform/issues/964)) ([143909c](https://github.com/tomturing/hci-troubleshoot-platform/commit/143909ccd7d5dde4aec836ece7169ce9610d2ce9))
+* **signals:** 修复 QFK 产出变量模式下 AI 试运行可用性判断与执行支持 ([#969](https://github.com/tomturing/hci-troubleshoot-platform/issues/969)) ([3822b75](https://github.com/tomturing/hci-troubleshoot-platform/commit/3822b75f4e7f563d7f01a339d5c1284a013b628b))
+
 ## [2.25.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.24.0...v2.25.0) (2026-08-28)
 
 
