@@ -41,6 +41,20 @@ def test_db_migrate_scans_before_push() -> None:
     assert "if: always() && steps.build.outcome == 'success'" in block
 
 
+def test_db_only_promotion_explicitly_skips_business_tags() -> None:
+    """纯数据库发布必须显式跳过业务标签，并拒绝范围输出自相矛盾。"""
+    text = WORKFLOW.read_text(encoding="utf-8")
+    block = text[text.index("  auto-deploy-non-prod:\n") :]
+
+    assert "HAS_DEPLOY_SERVICES: ${{ needs.prepare.outputs.has_deploy_services }}" in block
+    assert 'if [[ "${HAS_DEPLOY_SERVICES}" == "true" ]]; then' in block
+    assert 'if [[ -z "${SERVICES_CSV}" ]]; then' in block
+    assert 'elif [[ "${HAS_DEPLOY_SERVICES}" == "false" ]]; then' in block
+    assert 'if [[ -n "${SERVICES_CSV}" ]]; then' in block
+    assert 'SKIP_BUSINESS_TAGS="true"' in block
+    assert 'SKIP_BUSINESS_TAGS="${SKIP_BUSINESS_TAGS}" \\' in block
+
+
 def test_openclaw_scans_before_push() -> None:
     """独立手动发布工作流也必须满足相同的发布顺序。"""
     text = OPENCLAW_WORKFLOW.read_text(encoding="utf-8")
