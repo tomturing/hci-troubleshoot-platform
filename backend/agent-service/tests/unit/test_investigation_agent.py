@@ -195,6 +195,59 @@ class TestInvestigationAgentRouting:
         )
 
     @pytest.mark.asyncio
+    async def test_aborted_sop_falls_back_to_kbd_in_same_category(self, monkeypatch):
+        """S6 选择未解决后，已放弃 SOP 不得再次抢占同分类 KBD。"""
+        captured_candidates: list[list[str]] = []
+
+        class FakeKBDDiagnostic:
+            def __init__(self, **kwargs):
+                self._result = None
+
+            async def diagnose(self, *, candidates, **kwargs):
+                captured_candidates.append([candidate.support_id for candidate in candidates])
+                yield AgentStageUpdate(stage="kbd_diag_complete", metadata={})
+
+            def get_result(self):
+                return None
+
+        monkeypatch.setattr(
+            "app.adapters.agents.htp.investigation_agent.KBDDiagnostic",
+            FakeKBDDiagnostic,
+        )
+        kb = _make_kb_client(
+            route_result={
+                "track": "sop",
+                "results": [{"id": 42, "title": "已有 SOP", "content_md": "SOP 内容"}],
+            },
+            cases=[{"id": "kbd-1", "support_id": "27123", "name": "历史案例", "category_id": "虚拟机-003"}],
+        )
+        agent = InvestigationAgent(
+            ai_registry=_make_registry_mock_with_stream([]),
+            kb_client=kb,
+            tool_executor=MagicMock(),
+        )
+
+        events = [
+            event
+            async for event in agent.process(
+                session_id="test-sop-kbd-fallback",
+                messages=[{"role": "user", "content": "仍未解决"}],
+                category_id="虚拟机-003",
+                diagnostic_stage="S1",
+                assistant_type="htp-agent",
+                sop_resume_context={
+                    "sop_document_id": 42,
+                    "status": "aborted",
+                },
+            )
+        ]
+
+        assert captured_candidates == [["27123"]]
+        assert not any(event.stage == "sop_reasoning" for event in events if isinstance(event, AgentStageUpdate))
+        snapshot = next(event for event in events if isinstance(event, AgentStageUpdate) and event.stage == "knowledge_snapshot")
+        assert snapshot.metadata["sop_fallback_requested"] is True
+
+    @pytest.mark.asyncio
     async def test_routes_to_fallback_when_no_cases(self):
         """分类清单无 KBD 时显式升级人工，不进入自由推理"""
         kb = _make_kb_client(

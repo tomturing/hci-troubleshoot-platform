@@ -29,6 +29,7 @@ from typing import Any
 from shared.cdd.kbd_model import KBD, kbd_from_dict
 from shared.clients import AIAssistantRegistry, DiagnosticItemClient, KBClient
 from shared.observability.logger import get_logger
+from shared.observability.otel import get_current_trace_id
 
 from app.adapters.agents.htp.kbd_differential import KBDDiagnostic
 from app.adapters.agents.htp.react_engine import ReactEngine
@@ -195,9 +196,24 @@ class InvestigationAgent(BaseAgent):
         sop_results = []
         raw_cases: list[dict[str, Any]] = []
         snapshot_id = ""
+        resume_status = str((sop_resume_context or {}).get("status") or "").strip().lower()
+        # status=aborted 是服务端持久化的权威终态；布尔字段仅用于兼容/审计展示。
+        sop_fallback_requested = bool(
+            (sop_resume_context or {}).get("sop_fallback_requested") or resume_status == "aborted"
+        )
+        if sop_fallback_requested:
+            logger.info(
+                event="sop_fallback_to_kbd_requested",
+                message="会话已放弃 SOP，本轮仅使用同分类 KBD 候选",
+                session_id=session_id,
+                case_id=case_id,
+                category_id=category_id,
+                sop_document_id=(sop_resume_context or {}).get("sop_document_id"),
+                trace_id=get_current_trace_id(),
+            )
 
         # T-AGT-23: 如果存在活跃的 SOP 恢复上下文，直接使用已有的 SOP 路由，不再重新计算路由，防止输入内容变化导致路由漂移
-        if sop_resume_context and sop_resume_context.get("sop_document_id"):
+        if not sop_fallback_requested and sop_resume_context and sop_resume_context.get("sop_document_id"):
             resume_doc_id = sop_resume_context.get("sop_document_id")
             logger.info(
                 event="sop_resume_bypass_route",
@@ -241,7 +257,7 @@ class InvestigationAgent(BaseAgent):
             # acquisition 的数据提供方，不得使用 TestRun.support_id/revision 缩窄候选，
             # 否则会把仿真场景标签泄漏为诊断答案并绕过 CDD/Conclusion Gate。
             raw_cases = [kbd for kbd in all_kbds if kbd.get("executable") is True]
-            track = "sop" if sop_results else "kbd" if all_kbds else "human_escalation"
+            track = "sop" if sop_results and not sop_fallback_requested else "kbd" if all_kbds else "human_escalation"
             candidate_scope = {
                 "mode": "category_complete",
                 "source": "s0_confirmed_category",
@@ -265,6 +281,7 @@ class InvestigationAgent(BaseAgent):
                     "sop_count": len(sop_results),
                     "kbd_count": len(all_kbds),
                     "executable_kbd_count": len(raw_cases),
+                    "sop_fallback_requested": sop_fallback_requested,
                     "candidate_scope": candidate_scope,
                 },
             )
