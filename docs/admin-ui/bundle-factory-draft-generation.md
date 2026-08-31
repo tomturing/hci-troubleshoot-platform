@@ -18,19 +18,28 @@ Bundle 工厂生成 Draft 前，Gateway 读取 KBD 的 C1 active snapshot。Reso
 
 ## QKV 模板与实例
 
-当前迁移 `000006_fixture_asset_revision.sql` 恢复并长期保存以下 3 个模板与 3 个实例：
+当前迁移通过 `000006_fixture_asset_revision.sql` 与 `000007_qkv_task_template_v2.sql` 演进并长期保存以下模板与实例：
 
 | 信号 | 模板 | 实例 | stdout 规则 |
 | --- | --- | --- | --- |
-| `qkv_alert` | `qkv_alert.template` | `qkv_alert.instance.sample` | JSON `data[]`，使用告警类型、对象、时间和紧急程度 bindings。 |
-| `qkv_task` | `qkv_task.template` | `qkv_task.instance.sample` | JSON `data[]`，本次检索 keyword 覆盖 `KEYWORD`，其余任务失败事实来自实例。 |
-| `qkv_dialog` | `qkv_dialog.template` | `qkv_dialog.instance.sample` | `/sf/log/<D>/vt/sfvt_vtpdaemon.log` 双日志行；`END_MS` 为微秒日志时间，`END` 为同一时刻的秒内毫秒时钟。错误码链按真实 warning 记录保存，且不伪造 request_id。 |
+| `qkv_alert` | `qkv_alert.template` (r1) | `qkv_alert.instance.sample` | JSON `data[]`，使用告警类型、对象、时间和紧急程度 bindings。 |
+| `qkv_task` | `qkv_task.template` (r2) | `qkv_task.instance.delete_vm`<br>`qkv_task.instance.sample` | 全字段真实 acli task get 输出（严格对齐 Tool Registry 的 10 个标准产出变量 `TYPE`, `DESCRIPTION`, `PROCESS`, `ERRCODE_TRACING`, `REQUEST_ID`, `TARGET`, `VM`, `HOST`, `HOSTID`, `END`，其余无关键信号依赖的审计/底层系统字段如 `pid`, `user`, `id`, `status` 等作为高保真固定常量）。`delete_vm` 实例精准绑定真实“创建回收站目录失败”故障样本；关键词不匹配时可由全局 default 实例兜底。 |
+| `qkv_dialog` | `qkv_dialog.template` (r1) | `qkv_dialog.instance.sample` | `/sf/log/<D>/vt/sfvt_vtpdaemon.log` 双日志行；`END_MS` 为微秒日志时间，`END` 为同一时刻的秒内毫秒时钟。错误码链按真实 warning 记录保存，且不伪造 request_id。 |
 
-所有种子均记录分类基线 `category_baseline.yaml@1.0` 和对应 Catalog 基线 checksum。它们是样例资产而不是“全量 QKV 真相”；关键词不匹配时允许 C1 回退，避免把样例错误套用到所有 KBD。
+所有种子均记录分类基线 `category_baseline.yaml@1.0` 和对应 Catalog 基线 checksum。它们是样例资产而不是“全量 QKV 真相”；关键词不匹配且无 default 兜底时允许 C1 回退，避免把样例错误套用到所有 KBD。
 
 ## 管理入口
 
-`/simulation/bundle-factory/assets` 是 Bundle Factory 的资产管理子页，可筛选模板/实例及状态、查看基线和调用链、创建新修订、发布草稿修订。资产内容和两类基线均以 JSON 编辑；实例必须指向同信号的模板修订。浏览器只访问 Gateway，Gateway 以固定专家/发布者身份调用 hci-sim 控制面。
+`/simulation/bundle-factory/assets` 是 Bundle Factory 的资产管理子页，可筛选模板/实例及状态、查看基线和调用链、创建新修订、发布草稿修订。
+
+该子页对齐“关键信号”编辑交互规范，提供 **『表单编辑向导』** 与 **『JSON 显式编辑』** 双模式无缝切换：
+- **表单编辑向导（可视化模式）**：
+  - **实例配置**：提供关键词推荐标签、全局默认兜底开关（`default fallback`），结构化绑定输入网格（支持 `DESCRIPTION`、`STATUS`、`ERRCODE_TRACING`、`REQUEST_ID`、`VM_ID`、`HOST` 等全字段快速录入与当前时间一键填充），并支持自由增删附加自定义变量；
+  - **模板配置**：支持一键载入 acli task 全字段高保真模板（v2）与精简模板（v1），提供常用占位符快捷插入芯片；
+  - **基线配置**：支持一键恢复系统标准分类与 Catalog 基线快照；
+- **JSON 显式编辑模式**：
+  - 完整保留原生 JSON 文本编辑能力，提供一键格式化与从表单双向重置功能；
+- 浏览器只访问 Gateway，Gateway 以固定专家/发布者身份调用 hci-sim 控制面。
 
 QKV Producer 的样例 stdout 不写入固定的 `SIM-*` 值，而是写入 `{{VARIABLE}}` 模板。Go Bundle 编译器随后使用同一组 Scenario Variables 渲染 Producer stdout 与 Consumer argv，避免同一变量在两条路由中出现不同值。自定义变量仍须在已发布的 Verification Contract 或 Producer 声明中存在，未声明变量继续 fail closed。
 
