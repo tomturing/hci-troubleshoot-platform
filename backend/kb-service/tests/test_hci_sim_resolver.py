@@ -1,5 +1,7 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from app.services.hci_sim_resolver import HciSimKbdResolver, KbdResolutionReport, _derive_sample_output
 from shared.schemas.hci_sim_policy import current_hci_sim_policy_revision
 from shared.schemas.signal_generation import current_tool_contract_revision
@@ -240,3 +242,164 @@ def test_custom_producer_sample_output_uses_shared_variable_template():
     output = _derive_sample_output(signal, "qkv_task", "producer", "acli task get")
 
     assert '"disk":"{{CUSTOM_DISK}}"' in output
+
+
+def test_resolver_resolves_working_draft_revision():
+    """验证工作稿（KbdRevision）态下的信号可被正确解析为 Bundle 编译输入。"""
+    document = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "expert_1788139182831_f2fcdaefb29d",
+                "role": "must",
+                "acquire": {
+                    "tool": "qkv_task",
+                    "args": {"keyword": "删除虚拟机", "limit": 1, "is_failed": True},
+                },
+                "match": None,
+                "orchestrate": {
+                    "phase": "diagnostic",
+                    "requires": [],
+                    "produces": [{"name": "VM", "type": "string", "path": "vm"}],
+                },
+            }
+        ],
+        "verification_contract": {
+            "schema_version": 1,
+            "case_id": "41446",
+            "evidence_policy": {"must": ["expert_1788139182831_f2fcdaefb29d"]},
+        },
+        "publish_validation": {
+            "schema_version": 1,
+            "status": "passed",
+            "tool_contract_revision": current_tool_contract_revision(),
+            "validator": "expert_publish_gate",
+        },
+    }
+    kbd_rev = SimpleNamespace(
+        revision_no=23,
+        checksum="c" * 64,
+        payload_json={"signals_json": document, "metadata": {"sample_suite": "working-draft-v1"}},
+        trace_id="test-trace-rev-23",
+    )
+    resolution = HciSimKbdResolver().resolve_revision(_entry(support_id="41446"), kbd_rev, _tool_snapshots())
+
+    assert resolution.status == "ready_for_artifact_binding"
+    assert resolution.resolved is not None
+    assert resolution.resolved.support_id == "41446"
+    assert resolution.resolved.kbd_revision == 23
+    assert resolution.resolved.kbd_checksum == "sha256:" + "c" * 64
+    assert resolution.resolved.source_trace_id == "test-trace-rev-23"
+    assert [route.signal_id for route in resolution.resolved.synthetic_routes] == ["expert_1788139182831_f2fcdaefb29d"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_support_id_mode_1_published_default():
+    """【模式一：先发布再测试】未传 revision 时默认从 active 发布快照解析。"""
+    resolver = HciSimKbdResolver()
+    entry = _entry(support_id="27123", status="published")
+    active, revision = _snapshot(support_id="27123")
+
+    session = AsyncMock()
+    # 模拟查询 KbdEntry
+    entry_result = MagicMock()
+    entry_result.scalar_one_or_none.return_value = entry
+    session.execute.return_value = entry_result
+
+    # 模拟 _active_snapshots 与 _active_tool_snapshots
+    resolver._active_snapshots = AsyncMock(return_value={"9": (active, revision)})
+    resolver._active_tool_snapshots = AsyncMock(return_value=_tool_snapshots())
+
+    resolution = await resolver.resolve_support_id(session, "27123")
+
+    assert resolution.status == "ready_for_artifact_binding"
+    assert resolution.resolved is not None
+    assert resolution.resolved.support_id == "27123"
+    assert resolution.resolved.kbd_revision == 24
+    assert [r.signal_id for r in resolution.resolved.synthetic_routes] == ["sig-001"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_support_id_mode_1_unpublished_fails():
+    """【模式一：先发布再测试】未发布 KBD 在不指定 revision 时严格阻断（保持原有安全基线）。"""
+    resolver = HciSimKbdResolver()
+    entry = _entry(support_id="27123", status="draft")  # 尚未发布
+    active, revision = _snapshot(support_id="27123")
+
+    session = AsyncMock()
+    entry_result = MagicMock()
+    entry_result.scalar_one_or_none.return_value = entry
+    session.execute.return_value = entry_result
+
+    resolver._active_snapshots = AsyncMock(return_value={"9": (active, revision)})
+    resolver._active_tool_snapshots = AsyncMock(return_value=_tool_snapshots())
+
+    resolution = await resolver.resolve_support_id(session, "27123")
+
+    assert resolution.status == "capability_gap"
+    assert any(g.code == "KBD_NOT_PUBLISHED" for g in resolution.gaps)
+    assert resolution.resolved is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_support_id_mode_2_working_draft():
+    """【模式二：先测试再发布】传入 revision 时从工作稿 KbdRevision 解析，不要求 KbdEntry 处于 published 状态。"""
+    resolver = HciSimKbdResolver()
+    entry = _entry(support_id="41446", status="draft")  # 工作稿态，未发布
+
+    document = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "expert_1788139182831_f2fcdaefb29d",
+                "role": "must",
+                "acquire": {
+                    "tool": "qkv_task",
+                    "args": {"keyword": "删除虚拟机", "limit": 1, "is_failed": True},
+                },
+                "match": None,
+                "orchestrate": {
+                    "phase": "diagnostic",
+                    "requires": [],
+                    "produces": [{"name": "VM", "type": "string", "path": "vm"}],
+                },
+            }
+        ],
+        "verification_contract": {
+            "schema_version": 1,
+            "case_id": "41446",
+            "evidence_policy": {"must": ["expert_1788139182831_f2fcdaefb29d"]},
+        },
+        "publish_validation": {
+            "schema_version": 1,
+            "status": "passed",
+            "tool_contract_revision": current_tool_contract_revision(),
+            "validator": "expert_publish_gate",
+        },
+    }
+    kbd_rev = SimpleNamespace(
+        revision_no=23,
+        checksum="c" * 64,
+        payload_json={"signals_json": document, "metadata": {"sample_suite": "working-draft-v1"}},
+        trace_id="trace-rev-23",
+    )
+
+    session = AsyncMock()
+    # 第一次 execute 查 KbdEntry，第二次 execute 查 KbdRevision
+    entry_result = MagicMock()
+    entry_result.scalar_one_or_none.return_value = entry
+    rev_result = MagicMock()
+    rev_result.scalar_one_or_none.return_value = kbd_rev
+    session.execute.side_effect = [entry_result, rev_result]
+
+    resolver._active_tool_snapshots = AsyncMock(return_value=_tool_snapshots())
+
+    resolution = await resolver.resolve_support_id(session, "41446", revision=23)
+
+    assert resolution.status == "ready_for_artifact_binding"
+    assert resolution.resolved is not None
+    assert resolution.resolved.support_id == "41446"
+    assert resolution.resolved.kbd_revision == 23
+    assert [r.signal_id for r in resolution.resolved.synthetic_routes] == ["expert_1788139182831_f2fcdaefb29d"]
+
+

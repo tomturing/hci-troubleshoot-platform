@@ -350,3 +350,29 @@ def test_dry_run_datasets_reject_signal_ids_outside_charset():
             assert response.status_code == 400
             assert response.json()["detail"] == "signal_id invalid"
     runtime_get.assert_not_awaited()
+
+
+def test_create_bundle_draft_passes_kbd_revision_to_kb_service():
+    """验证创建 Bundle Draft 时透传 kbd_revision 到 kb-service 解析指定工作稿。"""
+    client = TestClient(app)
+    cap_data = {
+        "status": "ready_for_artifact_binding",
+        "resolved": {
+            "support_id": "41446",
+            "kbd_revision": 23,
+            "synthetic_routes": [],
+        },
+    }
+    cap_resp = AsyncMock(status_code=200, json=lambda: cap_data)
+    runtime_resp = JSONResponse({"bundle": {"digest": "sha256:test"}}, status_code=201)
+
+    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=cap_resp)) as mock_kb_get, \
+         patch("app.routes.simulations._post", new=AsyncMock(return_value=runtime_resp)) as mock_post:
+        response = client.post(
+            "/api/hci-sim/v1/control-plane/bundles",
+            json={"support_id": "41446", "kbd_revision": 23},
+        )
+        assert response.status_code == 201
+        assert "revision=23" in mock_kb_get.await_args.args[0]
+        assert mock_post.await_args.args[1]["resolved"]["kbd_revision"] == 23
+

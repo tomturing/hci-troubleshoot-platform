@@ -25,6 +25,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.kbd_entry import KbdEntry
+from app.models.kbd_revision import KbdRevision
 
 
 def _sha256(value: Any) -> str:
@@ -168,7 +169,9 @@ class KbdResolutionReport:
 class HciSimKbdResolver:
     """解析已发布 KBD 的 active 快照，并批量输出稳定 capability gaps。"""
 
-    async def resolve_support_id(self, session: AsyncSession, support_id: str) -> KbdResolution:
+    async def resolve_support_id(
+        self, session: AsyncSession, support_id: str, revision: int | None = None
+    ) -> KbdResolution:
         result = await session.execute(select(KbdEntry).where(KbdEntry.support_id == support_id))
         entry = result.scalar_one_or_none()
         if entry is None:
@@ -177,9 +180,91 @@ class HciSimKbdResolver:
                 status="capability_gap",
                 gaps=(CapabilityGap("KBD_NOT_FOUND", "support_id 不存在"),),
             )
-        snapshots = await self._active_snapshots(session)
         tool_snapshots = await self._active_tool_snapshots(session)
+        if revision is not None:
+            rev_result = await session.execute(
+                select(KbdRevision).where(
+                    KbdRevision.kbd_entry_id == entry.id,
+                    KbdRevision.revision_no == revision,
+                )
+            )
+            kbd_rev = rev_result.scalar_one_or_none()
+            if kbd_rev is None:
+                return KbdResolution(
+                    support_id=support_id,
+                    status="capability_gap",
+                    gaps=(CapabilityGap("KBD_REVISION_NOT_FOUND", f"KBD 修订版本 rev.{revision} 不存在"),),
+                )
+            return self.resolve_revision(entry, kbd_rev, tool_snapshots)
+        snapshots = await self._active_snapshots(session)
         return self.resolve_entry(entry, snapshots.get(str(entry.id)), tool_snapshots)
+
+    def resolve_revision(
+        self,
+        entry: KbdEntry | Any,
+        kbd_rev: KbdRevision | Any,
+        tool_snapshots: dict[str, tuple[DynamicResourceActive, DynamicResourceRevision]] | None = None,
+    ) -> KbdResolution:
+        """从不可变 KbdRevision 工作稿快照解析 Bundle 编译输入。"""
+
+        support_id = str(getattr(entry, "support_id", "") or "")
+        entry_metadata = (
+            dict(getattr(entry, "entry_metadata", {}) or {})
+            if isinstance(getattr(entry, "entry_metadata", {}), dict)
+            else {}
+        )
+        gaps: list[CapabilityGap] = []
+        payload = kbd_rev.payload_json if isinstance(getattr(kbd_rev, "payload_json", None), dict) else {}
+        signals_document = payload.get("signals_json")
+        if not isinstance(signals_document, dict):
+            if isinstance(payload.get("signals"), list):
+                signals_document = payload
+            else:
+                gaps.append(CapabilityGap("SIGNALS_DOCUMENT_INVALID", "该 revision 没有 v2 Signal 文档"))
+                return KbdResolution(
+                    support_id=support_id, status="capability_gap", metadata=entry_metadata, gaps=tuple(gaps)
+                )
+        signals = signals_document.get("signals")
+        if not isinstance(signals, list) or not signals:
+            gaps.append(CapabilityGap("SIGNALS_MISSING", "该 revision 没有可编译 Signal"))
+
+        publish_validation = signals_document.get("publish_validation")
+        tool_revision = str((publish_validation or {}).get("tool_contract_revision") or "")
+        if not tool_revision:
+            gen_meta = signals_document.get("generation_metadata")
+            tool_revision = str((gen_meta or {}).get("tool_contract_revision") or "")
+        if not tool_revision:
+            tool_revision = "bundle-factory-tool-contract-v1"
+
+        synthetic_routes: tuple[SyntheticRouteInput, ...] = ()
+        if isinstance(signals, list) and signals:
+            synthetic_routes, route_gaps = self._resolve_synthetic_routes(signals_document, tool_snapshots or {})
+            gaps.extend(route_gaps)
+
+        rev_metadata = dict(payload.get("metadata") or entry_metadata)
+        if gaps:
+            return KbdResolution(
+                support_id=support_id, status="capability_gap", metadata=rev_metadata, gaps=tuple(gaps)
+            )
+        resolved = ResolvedKbdInput(
+            support_id=support_id,
+            kbd_id=int(entry.id),
+            kbd_revision=int(kbd_rev.revision_no),
+            kbd_checksum=_digest(kbd_rev.checksum),
+            signals_digest=_sha256(signals_document),
+            tool_contract_revision=tool_revision,
+            policy_revision=current_hci_sim_policy_revision(),
+            source_trace_id=getattr(kbd_rev, "trace_id", None),
+            metadata=rev_metadata,
+            verification_contract=dict(signals_document.get("verification_contract") or {}),
+            synthetic_routes=synthetic_routes,
+        )
+        return KbdResolution(
+            support_id=support_id,
+            status="ready_for_artifact_binding",
+            metadata=rev_metadata,
+            resolved=resolved,
+        )
 
     async def resolve_all(self, session: AsyncSession) -> KbdResolutionReport:
         entries_result = await session.execute(select(KbdEntry).order_by(KbdEntry.support_id))

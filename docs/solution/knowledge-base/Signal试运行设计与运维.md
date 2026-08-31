@@ -58,8 +58,9 @@ Gateway 对 `dry-run-datasets` 的 `signal_id` 查询参数只做字符集与长
 `fixture.Manifest.verification_assets` 是 Bundle 对象的一部分，参与 Bundle digest。资产包含 KBD/Signal 绑定、来源、payload 摘要、配置修订和调用链。
 
 - 仅 `PASS` 可保存。
-- 若当前工单没有 Draft，Admin UI 会先通过 Gateway 按 C1 权威 KBD 快照创建唯一 Draft，再追加验证资产；多个 Draft 或 C1 capability gap 仍然 fail-closed。
+- 若当前工单没有 Draft，Admin UI 会先通过 Gateway 按指定 KBD 修订号（工作稿 `kbd_revision` 或 C1 权威快照）创建匹配当前信号路由的唯一 Draft，再追加验证资产；多个 Draft 或 C1 capability gap 仍然 fail-closed。
 - 追加资产权威继承目标 Bundle Manifest 的 `KBD.SupportID` 与 `KBD.Revision`（运行时修订号，如 `r1`），并严格校验请求体 `support_id` 防止跨 KBD 注入；前端组件绑定与控制面均对齐该不可变运行时快照版本，杜绝透传业务表自增 ID 导致不可变 Lint 失败。
+- 支持在未发布的工作稿（Working Revision）态下编译包含最新专家信号路由的 Bundle Draft，确保“先在工作稿试运行验证、固化 Bundle 资产，后评审发布”的沙箱隔离闭环。
 - QFK 必须绑定到相同 Signal 的精确 Route，payload 是非空文本，并写入该 Route 的 `stdout`。
 - QKV 保存已投影 records；不允许声明 Route，防止把 QKV 原始响应伪装成 stdout。
 - payload 只存在于受控 Bundle 对象；数据库、指标和日志仅保存摘要、长度、状态及 trace。
