@@ -176,7 +176,7 @@ KnowledgeActive(kbd_entry_id) -> KnowledgeRelease
 BundleActive(support_id)       -> BundleBuild
 ```
 
-二者分别负责 KBD Runtime 和仿真 Runtime，不复用任何序号。激活必须携带 `generation`、`desired_digest`、`active_digest` 和 `trace_id`。
+二者分别负责 KBD Runtime 和仿真 Runtime，不复用任何序号。激活必须携带 `generation`、`desired_digest`、`active_digest` 和 `trace_id`。`generation` 仅在激活目标变化时递增；相同目标的幂等调用只刷新 `trace_id/updated_at`，既不制造虚假代数，也不丢失最后一次调用链。
 
 ## 4. 目标主链路
 

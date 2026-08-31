@@ -11,7 +11,9 @@ CREATE TABLE IF NOT EXISTS kbd_package (
     trace_id varchar(64) NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT kbd_package_status_check CHECK (status IN ('draft_editing', 'published'))
+    CONSTRAINT kbd_package_status_check CHECK (
+        status::text = ANY (ARRAY['draft_editing'::varchar, 'published'::varchar]::text[])
+    )
 );
 
 CREATE TABLE IF NOT EXISTS verification_asset (
@@ -35,7 +37,11 @@ CREATE TABLE IF NOT EXISTS verification_asset (
     trace_id varchar(64) NOT NULL,
     result_status varchar(20) NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT verification_asset_status_check CHECK (result_status IN ('pass', 'fail', 'inconclusive'))
+    CONSTRAINT verification_asset_status_check CHECK (
+        result_status::text = ANY (
+            ARRAY['pass'::varchar, 'fail'::varchar, 'inconclusive'::varchar]::text[]
+        )
+    )
 );
 
 CREATE INDEX IF NOT EXISTS idx_verification_asset_support_signal

@@ -104,6 +104,7 @@ async def test_dynamic_resource_publisher_reuses_same_checksum_and_moves_active_
     assert first.revision == 1
     assert first.checksum == first_checksum
     assert session.active[("tool", "acli_exec")].active_revision == 1
+    assert session.active[("tool", "acli_exec")].generation == 1
     assert len(session.revisions) == 1
 
     session._pending_existing = session.revisions[0]
@@ -120,6 +121,7 @@ async def test_dynamic_resource_publisher_reuses_same_checksum_and_moves_active_
     assert reused.revision == 1
     assert len(session.revisions) == 1
     assert session.active[("tool", "acli_exec")].trace_id == "trace-2"
+    assert session.active[("tool", "acli_exec")].generation == 1
 
     changed_content = {"description": "执行 acli 命令，新描述"}
     session._pending_existing = None
@@ -137,6 +139,7 @@ async def test_dynamic_resource_publisher_reuses_same_checksum_and_moves_active_
     assert changed.revision == 2
     assert len(session.revisions) == 2
     assert session.active[("tool", "acli_exec")].active_revision == 2
+    assert session.active[("tool", "acli_exec")].generation == 2
 
     session._pending_existing = None
     session._pending_next_revision = 3
@@ -170,6 +173,9 @@ async def test_dynamic_resource_loader_audit_usage_hashes_payloads():
         checksum="abc",
         trace_id="trace-a",
         published_at=None,
+        package_snapshot_digest=None,
+        knowledge_snapshot_digest=None,
+        release_id=None,
     )
     session._pending_loader_snapshot = row
 
@@ -196,6 +202,9 @@ async def test_dynamic_resource_loader_audit_usage_hashes_payloads():
         "revision": 3,
         "version": "1.0",
         "checksum": "abc",
+        "package_snapshot_digest": None,
+        "knowledge_snapshot_digest": None,
+        "knowledge_release_id": None,
     }
     audit = session.audit_rows[0]
     assert audit.resource_type == "skill"

@@ -3391,7 +3391,9 @@ CREATE TABLE IF NOT EXISTS kbd_package (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT kbd_package_pkey PRIMARY KEY (package_id),
-    CONSTRAINT kbd_package_status_check CHECK (status IN ('draft_editing', 'published')),
+    CONSTRAINT kbd_package_status_check CHECK (
+        status::text = ANY (ARRAY['draft_editing'::varchar, 'published'::varchar]::text[])
+    ),
     CONSTRAINT kbd_package_workspace_version_check CHECK (workspace_version > 0)
 );
 
@@ -3420,7 +3422,11 @@ CREATE TABLE IF NOT EXISTS verification_asset (
     CONSTRAINT verification_asset_digest_format CHECK (asset_digest ~ '^sha256:[0-9a-f]{64}$'),
     CONSTRAINT verification_asset_input_digest_format CHECK (input_digest ~ '^sha256:[0-9a-f]{64}$'),
     CONSTRAINT verification_asset_processing_index_check CHECK (processing_index >= 0),
-    CONSTRAINT verification_asset_status_check CHECK (result_status IN ('pass', 'fail', 'inconclusive'))
+    CONSTRAINT verification_asset_status_check CHECK (
+        result_status::text = ANY (
+            ARRAY['pass'::varchar, 'fail'::varchar, 'inconclusive'::varchar]::text[]
+        )
+    )
 );
 
 CREATE TABLE IF NOT EXISTS verification_set (

@@ -116,6 +116,7 @@ class DynamicResourcePublisher:
                     active_revision=revision_row.revision,
                     checksum=checksum,
                     trace_id=trace_id,
+                    generation=1,
                     desired_revision=revision_row.revision,
                     desired_checksum=checksum,
                 )
@@ -124,11 +125,12 @@ class DynamicResourcePublisher:
             if active.active_revision != revision_row.revision or active.checksum != checksum:
                 active.active_revision = revision_row.revision
                 active.checksum = checksum
-                active.trace_id = trace_id
                 active.generation += 1
                 active.desired_revision = revision_row.revision
                 active.desired_checksum = checksum
-                active.updated_at = datetime.now(UTC)
+            # generation 只描述指针目标变化；trace_id/updated_at 记录最后一次幂等发布调用。
+            active.trace_id = trace_id
+            active.updated_at = datetime.now(UTC)
 
         if created:
             revision_row.package_snapshot_digest = package_snapshot_digest
