@@ -173,6 +173,34 @@ describe('QfkProcessingEditor 两步处理交互', () => {
     expect(unsupportedWrapper.getComponent(TextExtractEditor).props('allowRowCount')).toBe(false)
   })
 
+  it('默认未开启 AI 后处理时隐藏配置项，开启后展开配置并可关闭清理', async () => {
+    const wrapper = mount(ValueExtractEditor, {
+      props: { modelValue: textExtract },
+      global: { plugins: [ElementPlus] },
+    })
+
+    expect(wrapper.text()).toContain('AI 后处理')
+    expect(wrapper.text()).not.toContain('处理方式')
+    expect(wrapper.text()).not.toContain('处理说明')
+
+    // 开启 AI
+    ;(wrapper.vm as unknown as { toggleAi: (val: boolean) => void }).toggleAi(true)
+    await wrapper.vm.$nextTick()
+    const update = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as Record<string, any>
+    expect(update.ai_processing).toBeDefined()
+    expect(update.ai_processing.mode).toBe('extract')
+
+    await wrapper.setProps({ modelValue: update })
+    expect(wrapper.text()).toContain('处理方式')
+    expect(wrapper.text()).toContain('处理说明')
+
+    // 关闭 AI
+    ;(wrapper.vm as unknown as { toggleAi: (val: boolean) => void }).toggleAi(false)
+    await wrapper.vm.$nextTick()
+    const closedUpdate = wrapper.emitted('update:modelValue')?.at(-1)?.[0] as Record<string, any>
+    expect(closedUpdate.ai_processing).toBeUndefined()
+  })
+
   it('智能推导保存统一 ai_processing 契约', async () => {
     const wrapper = mount(ValueExtractEditor, {
       props: { modelValue: { ...textExtract, value_mode: 'number' }, consumerKind: 'matcher', defaultValueMode: 'number' },
@@ -208,7 +236,8 @@ describe('QfkProcessingEditor 两步处理交互', () => {
     await (matcherWrapper.vm as any).updateKeywordPatterns('虚拟机开机失败\n')
     await matcherWrapper.setProps({ modelValue: { type: 'keyword', pattern: '虚拟机开机失败', mode: 'or', expected: true } })
     await matcherWrapper.vm.$nextTick()
-    expect((matcherWrapper.findAll('textarea')[1].element as HTMLTextAreaElement).value).toBe('虚拟机开机失败\n')
+    const matcherTextareas = matcherWrapper.findAll('textarea')
+    expect((matcherTextareas[matcherTextareas.length - 1].element as HTMLTextAreaElement).value).toBe('虚拟机开机失败\n')
   }, 15000)
 
   it('产出模式为每个变量创建独立处理单元，步骤标题统一为“第二步：产出”', () => {

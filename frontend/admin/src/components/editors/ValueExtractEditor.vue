@@ -31,6 +31,7 @@ const mode = computed(() => {
   return isTextSelection ? 'text' : 'complete'
 })
 const isNumericConsumer = computed(() => props.consumerKind === 'matcher' && ['number', 'integer'].includes(props.defaultValueMode))
+const isAiEnabled = computed(() => Boolean(extract.value.ai_processing || extract.value.ai_extract))
 const aiProcessingMode = computed(() => extract.value.ai_processing?.mode || 'extract')
 
 function completeExtract(): Record<string, any> {
@@ -65,14 +66,24 @@ function setField(key: string, value: any) {
 function setExtract(value: Record<string, any>) {
   extract.value = value
 }
+function toggleAi(enabled: boolean | string | number) {
+  const next = { ...extract.value }
+  if (enabled) {
+    next.ai_processing = {
+      mode: 'extract',
+      instruction: '',
+      output_type: defaultAiOutputType(),
+    }
+  } else {
+    delete next.ai_processing
+    delete next.ai_extract
+  }
+  extract.value = next
+}
 function setAiInstruction(value: string) {
   const next = { ...extract.value }
-  const instruction = value.trim()
-  if (instruction) {
-    const current = next.ai_processing || {}
-    next.ai_processing = { ...current, mode: aiProcessingMode.value, instruction, output_type: current.output_type || defaultAiOutputType() }
-  }
-  else delete next.ai_processing
+  const current = next.ai_processing || {}
+  next.ai_processing = { ...current, mode: aiProcessingMode.value, instruction: value, output_type: current.output_type || defaultAiOutputType() }
   extract.value = next
 }
 function defaultAiOutputType(): string {
@@ -132,32 +143,37 @@ watch(() => props.modelValue, value => {
       <div class="field-hint">只支持受控点号和数组下标，例如 <code>data[0].status</code>；不执行 jq、函数、过滤器或通配符。</div>
     </el-form>
     <el-form v-if="mode !== 'json'" label-position="left" label-width="96px" size="small" class="ai-extract-form">
-      <el-form-item label="AI 处理方式">
-        <el-radio-group :model-value="aiProcessingMode" @change="setAiProcessingMode">
-          <el-radio-button value="extract">原文取值</el-radio-button>
-          <el-radio-button value="derive">智能推导</el-radio-button>
-        </el-radio-group>
+      <el-form-item label="AI 后处理">
+        <el-switch :model-value="isAiEnabled" active-text="开启" inactive-text="关闭" @change="toggleAi" />
       </el-form-item>
-      <el-form-item label="处理说明 *">
-        <el-input
-          :model-value="extract.ai_processing?.instruction || ''"
-          type="textarea"
-          :rows="2"
-          maxlength="1000"
-          show-word-limit
-          placeholder="例如：提取每行中的主机时间并判断最大差值是否超过 2 秒"
-          @input="setAiInstruction"
-        />
-      </el-form-item>
-      <el-form-item label="输出类型 *">
-        <el-select :model-value="extract.ai_processing?.output_type || defaultAiOutputType()" @change="setAiOutputType">
-          <el-option label="布尔值（1/0）" value="boolean" /><el-option label="数值" value="number" /><el-option label="文本" value="string" /><el-option label="数组" value="array" />
-        </el-select>
-      </el-form-item>
-      <div class="field-hint">
-        AI 是确定性取值后的可选再加工。它返回结构化输出、证据和理由，平台校验通过后才作为第一步输出交给 Matcher 或变量处理。
-        <template v-if="isNumericConsumer">数值 Matcher 的阈值、变化量和趋势计算仍由代码执行。</template>
-      </div>
+      <template v-if="isAiEnabled">
+        <el-form-item label="处理方式">
+          <el-radio-group :model-value="aiProcessingMode" @change="setAiProcessingMode">
+            <el-radio-button value="extract">原文取值</el-radio-button>
+            <el-radio-button value="derive">智能推导</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="处理说明" required>
+          <el-input
+            :model-value="extract.ai_processing?.instruction || ''"
+            type="textarea"
+            :rows="2"
+            maxlength="1000"
+            show-word-limit
+            placeholder="例如：提取每行中的主机时间并判断最大差值是否超过 2 秒"
+            @input="setAiInstruction"
+          />
+        </el-form-item>
+        <el-form-item label="输出类型" required>
+          <el-select :model-value="extract.ai_processing?.output_type || defaultAiOutputType()" @change="setAiOutputType">
+            <el-option label="布尔值（1/0）" value="boolean" /><el-option label="数值" value="number" /><el-option label="文本" value="string" /><el-option label="数组" value="array" />
+          </el-select>
+        </el-form-item>
+        <div class="field-hint">
+          AI 是确定性取值后的可选再加工。它返回结构化输出、证据和理由，平台校验通过后才作为第一步输出交给 Matcher 或变量处理。
+          <template v-if="isNumericConsumer">数值 Matcher 的阈值、变化量和趋势计算仍由代码执行。</template>
+        </div>
+      </template>
     </el-form>
   </div>
 </template>
