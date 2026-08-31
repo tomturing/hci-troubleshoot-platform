@@ -182,6 +182,65 @@ async def test_qfk_ai_dry_run_passes_prompt_session_factory(monkeypatch: pytest.
 
 
 @pytest.mark.asyncio
+async def test_qfk_produces_ai_dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    signal = {
+        "id": "expert_disk_size",
+        "acquire": {"tool": "qfk_vm", "args": {"instruction": "获取虚拟机所有磁盘大小"}},
+        "orchestrate": {
+            "produces": [
+                {
+                    "name": "DISK_SIZES",
+                    "type": "array",
+                    "extract": {
+                        "type": "text",
+                        "rows": {"mode": "all"},
+                        "cardinality": "all",
+                        "source": "stdout",
+                        "ai_processing": {
+                            "mode": "extract",
+                            "instruction": "获取size的具体的值，保存为数组",
+                            "output_type": "array",
+                        },
+                    },
+                }
+            ]
+        },
+    }
+
+    async def fake_extract(*args, **kwargs):
+        return SimpleNamespace(
+            value=[100, 200], evidence_line_numbers=[1, 2], evidence_lines=["disk 1 size: 100", "disk 2 size: 200"],
+            candidate_count=2, prompt_revision="prompt-v1", reason="提取成功",
+            raw_response={"status": "success", "output": [100, 200], "evidence": [], "reason": "提取成功"},
+        )
+
+    monkeypatch.setattr("app.routes.signal_dry_run.extract_ai_value", fake_extract)
+
+    # 1. 验证 verification_scope == "ai_step"
+    request_ai = SignalDryRunRequest(
+        draft_revision=_revision(signal), scope="qfk_execution_result",
+        unit_ref={"signal_id": signal["id"], "produce_index": 0}, verification_scope="ai_step",
+        dataset={"dataset_id": "preview-produce-ai", "source_type": "pasted", "source_ref": "user-input", "payload": "disk 1 size: 100\ndisk 2 size: 200\n"},
+        signal=signal, support_id="39175", kbd_revision=12,
+    )
+    result_ai = await evaluate_signal_dry_run(request_ai, ai_client=object(), trace_id="f" * 32)
+    assert result_ai.status == "PASS"
+    assert result_ai.value == [100, 200]
+    assert result_ai.derivation["ai_contract"]["produce"] == "DISK_SIZES"
+
+    # 2. 验证 verification_scope == "signal"
+    request_sig = SignalDryRunRequest(
+        draft_revision=_revision(signal), scope="qfk_execution_result",
+        unit_ref={"signal_id": signal["id"]}, verification_scope="signal",
+        dataset={"dataset_id": "preview-produce-sig", "source_type": "pasted", "source_ref": "user-input", "payload": "disk 1 size: 100\ndisk 2 size: 200\n"},
+        signal=signal, support_id="39175", kbd_revision=12,
+    )
+    result_sig = await evaluate_signal_dry_run(request_sig, ai_client=object(), trace_id="f" * 32)
+    assert result_sig.status == "PASS"
+    assert result_sig.value == {"DISK_SIZES": [100, 200]}
+
+
+@pytest.mark.asyncio
 async def test_qkv_dry_run_pure_producer_success() -> None:
     signal = {
         "id": "sig_qkv_producer",
