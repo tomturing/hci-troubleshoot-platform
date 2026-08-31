@@ -103,7 +103,7 @@ const resultExplanation = computed(() => {
   if (!result) return ''
   if (result.status === 'PASS') return result.evidence || '处理结果满足当前 Signal 判定条件。'
   if (result.status === 'FAIL') return result.evidence || '处理结果不满足当前 Signal 判定条件。'
-  return result.error_message || result.evidence || 'AI 未能可靠处理，无法给出业务结论。'
+  return result.error_message || result.evidence || (hasAiProcessing.value ? 'AI 未能可靠处理，无法给出业务结论。' : '当前 Signal 未能得出明确判定结论（可能包含未求值的动态变量或未满足规则条件）。')
 })
 const resultOutput = computed(() => {
   const result = previewResult.value
@@ -535,7 +535,7 @@ watch(selectedDatasetId, () => {
               <dt>输出值</dt>
               <dd>
                 <div class="code-value"><code>{{ resultOutput }}</code></div>
-                <small class="code-caption">AI 返回的业务结果</small>
+                <small class="code-caption">{{ hasAiProcessing ? 'AI 返回的业务结果' : 'Signal 规则提取或判定的业务结果' }}</small>
               </dd>
             </div>
             <div class="context-row">
@@ -559,7 +559,7 @@ watch(selectedDatasetId, () => {
               <span class="summary-hint">展开查看原始 JSON</span>
             </summary>
             <pre v-if="rawAiResponse">{{ JSON.stringify(rawAiResponse, null, 2) }}</pre>
-            <p v-else class="raw-missing">本次处理未调用 AI，或服务未返回可审计的原始响应。</p>
+            <p v-else class="raw-missing">{{ hasAiProcessing ? '本次处理未调用 AI，或服务未返回可审计的原始响应。' : '当前 Signal 采用确定性规则提取与判定，未开启 AI 后处理。' }}</p>
             <div class="raw-meta">
               <span>trace_id</span>
               <code>{{ previewResult.trace_id || '—' }}</code>
