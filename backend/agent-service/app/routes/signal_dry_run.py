@@ -68,6 +68,14 @@ class SignalDryRunRequest(BaseModel):
     signal: dict[str, Any]
     support_id: str = Field(min_length=1, max_length=64)
     kbd_revision: int = Field(ge=1)
+    package_snapshot_digest: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    observed_snapshot_digest: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_snapshot_cas(self) -> SignalDryRunRequest:
+        if self.package_snapshot_digest != self.observed_snapshot_digest:
+            raise ValueError("package_snapshot_digest 与 observed_snapshot_digest 必须一致")
+        return self
 
 
 class SignalDryRunResult(BaseModel):
@@ -436,7 +444,8 @@ async def signal_dry_run(request: Request, body: SignalDryRunRequest) -> SignalD
         logger.info(
             event="signal_dry_run_completed", trace_id=trace_id, scope=body.scope,
             verification_scope=body.verification_scope, support_id=body.support_id,
-            kbd_revision=body.kbd_revision, signal_id=body.unit_ref.signal_id,
+            kbd_revision=body.kbd_revision, package_snapshot_digest=body.package_snapshot_digest,
+            signal_id=body.unit_ref.signal_id,
             dataset_id=body.dataset.dataset_id, input_sha256=result.input_sha256, status=status,
         )
         return result

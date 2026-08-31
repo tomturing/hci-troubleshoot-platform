@@ -72,19 +72,22 @@ type RouteSource struct {
 
 // CompileInput 在编译一开始被冻结；不接受 active 指针或任意 URL。
 type CompileInput struct {
-	SupportID            string        `json:"support_id"`
-	KBDRevision          int           `json:"kbd_revision"`
-	KBDChecksum          string        `json:"kbd_checksum"`
-	SignalsDigest        string        `json:"signals_digest"`
-	ToolContractRevision string        `json:"tool_contract_revision"`
-	PolicyRevision       string        `json:"policy_revision"`
-	CompilerRevision     string        `json:"compiler_revision"`
-	Artifacts            []Artifact    `json:"artifacts"`
-	Dependencies         []Dependency  `json:"dependencies"`
-	RouteSources         []RouteSource `json:"route_sources,omitempty"`
-	ParentBundleDigest   string        `json:"parent_bundle_digest,omitempty"`
-	DraftRevision        int           `json:"draft_revision,omitempty"`
-	EditReason           string        `json:"edit_reason,omitempty"`
+	SupportID             string        `json:"support_id"`
+	PackageSnapshotDigest string        `json:"package_snapshot_digest,omitempty"`
+	KnowledgeReleaseID    string        `json:"knowledge_release_id,omitempty"`
+	BundleInputDigest     string        `json:"bundle_input_digest,omitempty"`
+	KBDRevision           int           `json:"kbd_revision"`
+	KBDChecksum           string        `json:"kbd_checksum"`
+	SignalsDigest         string        `json:"signals_digest"`
+	ToolContractRevision  string        `json:"tool_contract_revision"`
+	PolicyRevision        string        `json:"policy_revision"`
+	CompilerRevision      string        `json:"compiler_revision"`
+	Artifacts             []Artifact    `json:"artifacts"`
+	Dependencies          []Dependency  `json:"dependencies"`
+	RouteSources          []RouteSource `json:"route_sources,omitempty"`
+	ParentBundleDigest    string        `json:"parent_bundle_digest,omitempty"`
+	DraftRevision         int           `json:"draft_revision,omitempty"`
+	EditReason            string        `json:"edit_reason,omitempty"`
 }
 
 func (in CompileInput) Fingerprint() (string, error) {
@@ -92,6 +95,10 @@ func (in CompileInput) Fingerprint() (string, error) {
 		return "", err
 	}
 	copy := in
+	// BundleInputDigest 是本次规范化输入的计算结果，不能参与自身哈希。
+	// 数据库读回的 CompileInput 会携带该字段；若不清空，重算将不再幂等。
+	declaredDigest := strings.TrimSpace(copy.BundleInputDigest)
+	copy.BundleInputDigest = ""
 	copy.Artifacts = append([]Artifact(nil), in.Artifacts...)
 	copy.Dependencies = append([]Dependency(nil), in.Dependencies...)
 	copy.RouteSources = append([]RouteSource(nil), in.RouteSources...)
@@ -105,10 +112,19 @@ func (in CompileInput) Fingerprint() (string, error) {
 		return "", err
 	}
 	sum := sha256.Sum256(payload)
-	return fmt.Sprintf("sha256:%x", sum[:]), nil
+	computedDigest := fmt.Sprintf("sha256:%x", sum[:])
+	if declaredDigest != "" && declaredDigest != computedDigest {
+		return "", errors.New("capability_gap: bundle_input_digest 与规范化编译输入不一致")
+	}
+	return computedDigest, nil
 }
 
 func (in CompileInput) validate() error {
+	if in.PackageSnapshotDigest != "" || in.KnowledgeReleaseID != "" {
+		if in.PackageSnapshotDigest == "" || in.KnowledgeReleaseID == "" {
+			return errors.New("capability_gap: package snapshot 与 knowledge release 必须成对提供")
+		}
+	}
 	if in.SupportID == "" || in.KBDRevision < 1 || in.KBDChecksum == "" || in.SignalsDigest == "" || in.ToolContractRevision == "" || in.PolicyRevision == "" || in.CompilerRevision == "" {
 		return errors.New("capability_gap: immutable KBD、Signal、Tool、Policy 或 Compiler 输入缺失")
 	}
@@ -790,7 +806,7 @@ func (s *RunStore) Start(ctx context.Context, runID string, runner Runner, now t
 	if err != nil {
 		return s.finish(runID, RunInconclusive)
 	}
-	claims := lease.Claims{JTI: fmt.Sprintf("%s-%d", run.ID, run.Attempt), LeaseID: fmt.Sprintf("lease-%s", run.ID), TestRunID: run.ID, ScenarioID: record.InputFingerprint, SupportID: run.SupportID, KBDRevision: run.KBDRevision, BundleDigest: run.BundleDigest, FixtureVariant: run.Variant, ToolContractRevision: record.Input.ToolContractRevision, PolicyRevision: record.Input.PolicyRevision, VirtualNodeID: run.Node, Container: run.Container, ExecutionMode: "sim-ssh", Issuer: s.issuer, Audience: s.audience, IssuedAt: now.Unix(), NotBefore: now.Unix(), ExpiresAt: minTime(run.Deadline, now.Add(15*time.Minute)).Unix(), RunDeadline: run.Deadline.Unix(), MaxSessions: 4, MaxCommands: 200, MaxOutputBytes: int64(routerOutputLimit(record.Manifest))}
+	claims := lease.Claims{JTI: fmt.Sprintf("%s-%d", run.ID, run.Attempt), LeaseID: fmt.Sprintf("lease-%s", run.ID), TestRunID: run.ID, ScenarioID: record.InputFingerprint, SupportID: run.SupportID, PackageSnapshotDigest: record.Input.PackageSnapshotDigest, KnowledgeReleaseID: record.Input.KnowledgeReleaseID, KBDRevision: run.KBDRevision, BundleDigest: run.BundleDigest, FixtureVariant: run.Variant, ToolContractRevision: record.Input.ToolContractRevision, PolicyRevision: record.Input.PolicyRevision, VirtualNodeID: run.Node, Container: run.Container, ExecutionMode: "sim-ssh", Issuer: s.issuer, Audience: s.audience, IssuedAt: now.Unix(), NotBefore: now.Unix(), ExpiresAt: minTime(run.Deadline, now.Add(15*time.Minute)).Unix(), RunDeadline: run.Deadline.Unix(), MaxSessions: 4, MaxCommands: 200, MaxOutputBytes: int64(routerOutputLimit(record.Manifest))}
 	token, err := lease.Sign(s.secret, claims)
 	if err != nil {
 		return s.finish(runID, RunInconclusive)

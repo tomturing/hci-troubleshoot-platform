@@ -19,28 +19,30 @@ var rawURL = base64.RawURLEncoding
 
 // Claims 是 v2 Capability：每一个字段均是不可变 Run/Bundle/Target 绑定的一部分。
 type Claims struct {
-	JTI                  string `json:"jti"`
-	LeaseID              string `json:"lease_id"`
-	TestRunID            string `json:"test_run_id"`
-	ScenarioID           string `json:"scenario_id"`
-	SupportID            string `json:"support_id"`
-	KBDRevision          int    `json:"kbd_revision"`
-	BundleDigest         string `json:"bundle_digest"`
-	FixtureVariant       string `json:"variant"`
-	ToolContractRevision string `json:"tool_contract_revision"`
-	PolicyRevision       string `json:"policy_revision"`
-	VirtualNodeID        string `json:"virtual_node_id"`
-	Container            string `json:"container"`
-	ExecutionMode        string `json:"execution_mode"`
-	Issuer               string `json:"issuer"`
-	Audience             string `json:"audience"`
-	IssuedAt             int64  `json:"issued_at"`
-	NotBefore            int64  `json:"not_before"`
-	ExpiresAt            int64  `json:"expires_at"`
-	RunDeadline          int64  `json:"run_deadline"`
-	MaxSessions          int    `json:"max_sessions"`
-	MaxCommands          int    `json:"max_commands"`
-	MaxOutputBytes       int64  `json:"max_output_bytes"`
+	JTI                   string `json:"jti"`
+	LeaseID               string `json:"lease_id"`
+	TestRunID             string `json:"test_run_id"`
+	ScenarioID            string `json:"scenario_id"`
+	SupportID             string `json:"support_id"`
+	PackageSnapshotDigest string `json:"package_snapshot_digest,omitempty"`
+	KnowledgeReleaseID    string `json:"knowledge_release_id,omitempty"`
+	KBDRevision           int    `json:"kbd_revision"`
+	BundleDigest          string `json:"bundle_digest"`
+	FixtureVariant        string `json:"variant"`
+	ToolContractRevision  string `json:"tool_contract_revision"`
+	PolicyRevision        string `json:"policy_revision"`
+	VirtualNodeID         string `json:"virtual_node_id"`
+	Container             string `json:"container"`
+	ExecutionMode         string `json:"execution_mode"`
+	Issuer                string `json:"issuer"`
+	Audience              string `json:"audience"`
+	IssuedAt              int64  `json:"issued_at"`
+	NotBefore             int64  `json:"not_before"`
+	ExpiresAt             int64  `json:"expires_at"`
+	RunDeadline           int64  `json:"run_deadline"`
+	MaxSessions           int    `json:"max_sessions"`
+	MaxCommands           int    `json:"max_commands"`
+	MaxOutputBytes        int64  `json:"max_output_bytes"`
 }
 
 // IsToken 只识别协议前缀，不执行真实性校验。
@@ -109,6 +111,9 @@ func validateClaims(claims Claims, now time.Time) error {
 	}
 	if claims.SupportID == "" || claims.KBDRevision < 1 || claims.BundleDigest == "" || claims.FixtureVariant == "" {
 		return errors.New("场景租约缺少 KBD 或 bundle 绑定")
+	}
+	if (claims.PackageSnapshotDigest == "") != (claims.KnowledgeReleaseID == "") {
+		return errors.New("场景租约 package snapshot 与 knowledge release 必须成对绑定")
 	}
 	if claims.ToolContractRevision == "" || claims.PolicyRevision == "" || claims.VirtualNodeID == "" || claims.Container == "" {
 		return errors.New("场景租约缺少工具、策略或目标绑定")

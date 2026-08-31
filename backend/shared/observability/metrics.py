@@ -158,6 +158,23 @@ KBD_CONTRACT_HARD_BREAK_TOTAL = Counter(
     labelnames=["support_id", "category"],
 )
 
+KBD_PACKAGE_SNAPSHOT_TOTAL = Counter(
+    "hci_kbd_package_snapshot_total",
+    "KBD PackageSnapshot 创建或幂等复用次数",
+    labelnames=["result"],
+)
+
+KBD_PACKAGE_CAS_CONFLICTS_TOTAL = Counter(
+    "hci_kbd_package_cas_conflicts_total",
+    "KBD 工作快照 CAS 冲突次数",
+)
+
+KBD_VERIFICATION_ASSET_ATTACH_TOTAL = Counter(
+    "hci_kbd_verification_asset_attach_total",
+    "KBD 验证资产附着次数",
+    labelnames=["status"],
+)
+
 
 class HTTPMetricsMiddleware(BaseHTTPMiddleware):
     """HTTP 请求指标采集中间件

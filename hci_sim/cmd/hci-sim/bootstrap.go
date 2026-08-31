@@ -33,17 +33,19 @@ type capabilityResponse struct {
 }
 
 type resolvedKbd struct {
-	SupportID            string           `json:"support_id"`
-	KBDID                int              `json:"kbd_id"`
-	KBDRevision          int              `json:"kbd_revision"`
-	KBDChecksum          string           `json:"kbd_checksum"`
-	SignalsDigest        string           `json:"signals_digest"`
-	ToolContractRevision string           `json:"tool_contract_revision"`
-	PolicyRevision       string           `json:"policy_revision"`
-	SourceTraceID        *string          `json:"source_trace_id"`
-	Metadata             map[string]any   `json:"metadata"`
-	VerificationContract map[string]any   `json:"verification_contract"`
-	SyntheticRoutes      []syntheticRoute `json:"synthetic_routes"`
+	SupportID             string           `json:"support_id"`
+	PackageSnapshotDigest string           `json:"package_snapshot_digest,omitempty"`
+	KnowledgeReleaseID    string           `json:"knowledge_release_id,omitempty"`
+	KBDID                 int              `json:"kbd_id"`
+	KBDRevision           int              `json:"kbd_revision"`
+	KBDChecksum           string           `json:"kbd_checksum"`
+	SignalsDigest         string           `json:"signals_digest"`
+	ToolContractRevision  string           `json:"tool_contract_revision"`
+	PolicyRevision        string           `json:"policy_revision"`
+	SourceTraceID         *string          `json:"source_trace_id"`
+	Metadata              map[string]any   `json:"metadata"`
+	VerificationContract  map[string]any   `json:"verification_contract"`
+	SyntheticRoutes       []syntheticRoute `json:"synthetic_routes"`
 }
 
 // declaredVariableNames 返回 KBD 发布契约声明的外部变量。变量名只在发布门禁
@@ -171,7 +173,8 @@ func runBootstrap(args []string) error {
 	expires := now.Add(*ttl)
 	claims := lease.Claims{
 		JTI: testRunID + "-1", LeaseID: "lease-" + testRunID, TestRunID: testRunID, ScenarioID: scenarioID,
-		SupportID: *supportID, KBDRevision: resolved.KBDRevision, BundleDigest: manifest.Bundle.Digest,
+		SupportID: *supportID, PackageSnapshotDigest: resolved.PackageSnapshotDigest, KnowledgeReleaseID: resolved.KnowledgeReleaseID,
+		KBDRevision: resolved.KBDRevision, BundleDigest: manifest.Bundle.Digest,
 		FixtureVariant: *variant, ToolContractRevision: resolved.ToolContractRevision, PolicyRevision: resolved.PolicyRevision,
 		VirtualNodeID: *node, Container: *container, ExecutionMode: "sim-ssh", Issuer: *issuer, Audience: *audience,
 		IssuedAt: now.Unix(), NotBefore: now.Unix(), ExpiresAt: expires.Unix(), RunDeadline: expires.Unix(),

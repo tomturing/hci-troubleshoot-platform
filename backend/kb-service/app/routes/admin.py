@@ -21,7 +21,7 @@ import re
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import jsonschema
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, Request, UploadFile, status
@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field, StrictInt, model_validator
 from shared.dynamic_resource.adapters import kbd_resource_payload, sop_resource_payload
 from shared.dynamic_resource.loader import snapshot_revision_metadata
 from shared.dynamic_resource.publisher import DynamicResourcePublisher
+from shared.models.dynamic_resource import DynamicResourceRevision
 from shared.models.skill_definition import SkillDefinitionORM
 from shared.models.tool_definition import ToolDefinitionORM
 from shared.observability.langfuse import observe_workflow, update_observation
@@ -66,6 +67,7 @@ from sqlalchemy import select, text
 from app.models.kbd_entry import KbdEntry, build_kbd_embedding_text, strip_markdown
 from app.models.kbd_revision import KbdRevision
 from app.models.sop_document import SopDocument
+from app.models.version_governance import KbdPackage
 from app.schemas.sop_template import ValidationIssue
 from app.services.kbd_mutation_guard import PublishedKbdMutationError, require_mutable_kbd
 from app.services.kbd_review_metadata import build_review_metadata, normalize_change_annotations
@@ -86,6 +88,7 @@ from app.services.kbd_revision_service import (
 )
 from app.services.sop_parser import extract_sop_variables, merge_variable_schema, parse_sop_markdown
 from app.services.sop_tool_contract_validator import validate_sop_tool_contract
+from app.services.version_governance import ensure_publish_snapshot
 from app.utils.jieba_hci import segment
 
 
@@ -704,7 +707,21 @@ async def _publish_kbd_revision(
     kbd = result.scalar_one_or_none()
     if kbd is None:
         return None
+    effective_trace_id = trace_id or "trace-unavailable"
+    package_snapshot = await ensure_publish_snapshot(session, kbd=kbd, trace_id=effective_trace_id)
+    release_id = uuid5(NAMESPACE_URL, f"hci:knowledge-release:{package_snapshot.package_snapshot_digest}")
     payload = kbd_resource_payload(kbd)
+    payload["contract"] = {
+        **dict(payload.get("contract") or {}),
+        "version_identity": {
+            "package_snapshot_digest": package_snapshot.package_snapshot_digest,
+            "knowledge_snapshot_digest": package_snapshot.knowledge_snapshot_digest,
+            "knowledge_release_id": str(release_id),
+            "source_knowledge_revision_no": (getattr(package_snapshot, "manifest_json", {}) or {}).get(
+                "source_knowledge_revision_no"
+            ),
+        },
+    }
     if lifecycle_event_id is not None:
         payload["contract"] = {
             **dict(payload.get("contract") or {}),
@@ -712,8 +729,38 @@ async def _publish_kbd_revision(
             # 不会因为普通检索重复制造动态资源修订。
             "lifecycle": {"state": "published", "event_id": lifecycle_event_id},
         }
-    snapshot = await DynamicResourcePublisher(session).ensure_published(**payload, trace_id=trace_id)
-    return snapshot_revision_metadata(snapshot)
+    snapshot = await DynamicResourcePublisher(session).ensure_published(
+        **payload,
+        trace_id=trace_id,
+        package_snapshot_digest=package_snapshot.package_snapshot_digest,
+        knowledge_snapshot_digest=package_snapshot.knowledge_snapshot_digest,
+        release_id=release_id,
+    )
+    release = await session.scalar(
+        select(DynamicResourceRevision).where(
+            DynamicResourceRevision.resource_type == snapshot.resource_type,
+            DynamicResourceRevision.resource_name == snapshot.resource_name,
+            DynamicResourceRevision.revision == snapshot.revision,
+        )
+    )
+    if release is None:
+        raise RuntimeError("KnowledgeRelease 写入后无法回读")
+    package = await session.scalar(select(KbdPackage).where(KbdPackage.support_id == kbd.support_id).with_for_update())
+    if package is None:
+        raise RuntimeError("KbdPackage 发布指针不存在")
+    package.active_release_id = release.id
+    package.status = "published"
+    package.trace_id = effective_trace_id
+    kbd.active_release_id = release.id
+    metadata = snapshot_revision_metadata(snapshot)
+    metadata.update(
+        {
+            "package_snapshot_digest": package_snapshot.package_snapshot_digest,
+            "knowledge_snapshot_digest": package_snapshot.knowledge_snapshot_digest,
+            "knowledge_release_id": str(release_id),
+        }
+    )
+    return metadata
 
 
 async def _publish_kbd_tombstone(

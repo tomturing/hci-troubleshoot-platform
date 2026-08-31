@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.config import settings
+from app.routes.signal_dry_run import _resolve_package_context
 
 router = APIRouter(prefix="/api/hci-sim", tags=["hci-sim"])
 
@@ -210,6 +211,8 @@ async def create_bundle_draft(request: Request) -> JSONResponse:
     """读取 C1 权威快照或工作稿修订并创建 synthetic Draft。"""
 
     body = await request.json()
+    if isinstance(body, dict) and body.get("package_snapshot_digest"):
+        body = await _resolve_package_context(body, request)
     support_id = str(body.get("support_id", "")).strip() if isinstance(body, dict) else ""
     if not re.fullmatch(r"\d{1,20}", support_id):
         raise HTTPException(status_code=400, detail="support_id must be 1-20 digits")
@@ -241,6 +244,15 @@ async def create_bundle_draft(request: Request) -> JSONResponse:
             content={
                 "detail": "capability_gap: KBD is not ready_for_artifact_binding",
                 "capability": capability,
+                "trace_id": trace_id,
+            },
+            status_code=409,
+        )
+    requested_package = str(body.get("package_snapshot_digest") or "")
+    if requested_package and capability["resolved"].get("package_snapshot_digest") != requested_package:
+        return JSONResponse(
+            content={
+                "detail": "capability_gap: 当前 PackageSnapshot 尚未形成 KnowledgeRelease",
                 "trace_id": trace_id,
             },
             status_code=409,

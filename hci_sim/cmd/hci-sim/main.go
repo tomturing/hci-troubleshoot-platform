@@ -454,8 +454,10 @@ func runServer() error {
 		runVersion := 1
 		if runRepository != nil {
 			record, persistErr := runRepository.Create(r.Context(), database.RunInput{
-				ExternalID: runID, SupportID: request.KBDID, KBDRevision: router.KBD().Revision,
-				Variant: activeVariant, BundleDigest: router.BundleDigest(),
+				ExternalID: runID, SupportID: request.KBDID, PackageSnapshotDigest: bundleMetadata.PackageSnapshotDigest,
+				KnowledgeReleaseID: bundleMetadata.KnowledgeReleaseID, BundleBuildID: bundleMetadata.BundleBuildID,
+				KBDRevision: router.KBD().Revision,
+				Variant:     activeVariant, BundleDigest: router.BundleDigest(),
 				BundleSchemaVersion: bundleMetadata.SchemaVersion, BundleObjectURI: bundleMetadata.ObjectURI,
 				BundleObjectDigest: bundleMetadata.ObjectDigest, BundleSizeBytes: bundleMetadata.SizeBytes, ExecutionMode: "sim-ssh",
 				IdempotencyKey: idempotencyKey, RequestDigest: requestDigest, Deadline: now.Add(15 * time.Minute),
@@ -475,7 +477,7 @@ func runServer() error {
 			runVersion = record.Version
 		}
 		expires := now.Add(15 * time.Minute)
-		claims := lease.Claims{JTI: runID + "-1", LeaseID: "lease-" + runID, TestRunID: runID, ScenarioID: "kbd-" + request.KBDID + "-" + activeVariant, SupportID: request.KBDID, KBDRevision: router.KBD().Revision, BundleDigest: router.BundleDigest(), FixtureVariant: activeVariant, ToolContractRevision: router.Contracts().ToolRevision, PolicyRevision: router.Contracts().PolicyRevision, VirtualNodeID: "SIM-HCI-NODE-01", Container: "host", ExecutionMode: "sim-ssh", Issuer: env("HCI_SIM_LEASE_ISSUER", "hci-platform"), Audience: env("HCI_SIM_LEASE_AUDIENCE", "hci-sim"), IssuedAt: now.Unix(), NotBefore: now.Unix(), ExpiresAt: expires.Unix(), RunDeadline: expires.Unix(), MaxSessions: 4, MaxCommands: 200, MaxOutputBytes: int64(router.OutputLimit())}
+		claims := lease.Claims{JTI: runID + "-1", LeaseID: "lease-" + runID, TestRunID: runID, ScenarioID: "kbd-" + request.KBDID + "-" + activeVariant, SupportID: request.KBDID, PackageSnapshotDigest: bundleMetadata.PackageSnapshotDigest, KnowledgeReleaseID: bundleMetadata.KnowledgeReleaseID, KBDRevision: router.KBD().Revision, BundleDigest: router.BundleDigest(), FixtureVariant: activeVariant, ToolContractRevision: router.Contracts().ToolRevision, PolicyRevision: router.Contracts().PolicyRevision, VirtualNodeID: "SIM-HCI-NODE-01", Container: "host", ExecutionMode: "sim-ssh", Issuer: env("HCI_SIM_LEASE_ISSUER", "hci-platform"), Audience: env("HCI_SIM_LEASE_AUDIENCE", "hci-sim"), IssuedAt: now.Unix(), NotBefore: now.Unix(), ExpiresAt: expires.Unix(), RunDeadline: expires.Unix(), MaxSessions: 4, MaxCommands: 200, MaxOutputBytes: int64(router.OutputLimit())}
 		token, err := lease.Sign(secret, claims)
 		if err != nil {
 			http.Error(w, "lease signing failed", http.StatusInternalServerError)
@@ -938,11 +940,14 @@ type repositoryEventRecorder struct {
 // digest 只标识内容；场景指纹、对象引用和 schema 必须来自同一个 Registry 记录，
 // 不能由请求参数或 Helm 基线重新拼接，否则会把同一 Bundle 注册成不同场景。
 type runtimeBundleMetadata struct {
-	InputFingerprint string
-	SchemaVersion    string
-	ObjectURI        string
-	ObjectDigest     string
-	SizeBytes        int64
+	InputFingerprint      string
+	PackageSnapshotDigest string
+	KnowledgeReleaseID    string
+	BundleBuildID         string
+	SchemaVersion         string
+	ObjectURI             string
+	ObjectDigest          string
+	SizeBytes             int64
 }
 
 func runtimeBundleMetadataFromRecord(router *fixture.Router, record controlplane.BundleRecord) (runtimeBundleMetadata, error) {
@@ -953,11 +958,14 @@ func runtimeBundleMetadataFromRecord(router *fixture.Router, record controlplane
 		return runtimeBundleMetadata{}, fmt.Errorf("active Bundle Registry 元数据与 Router 不一致: digest=%s support_id=%s", router.BundleDigest(), router.KBD().SupportID)
 	}
 	metadata := runtimeBundleMetadata{
-		InputFingerprint: strings.TrimSpace(record.InputFingerprint),
-		SchemaVersion:    router.SchemaVersion(),
-		ObjectURI:        strings.TrimSpace(record.Object.Key),
-		ObjectDigest:     strings.TrimSpace(record.Object.Digest),
-		SizeBytes:        record.Object.Size,
+		InputFingerprint:      strings.TrimSpace(record.InputFingerprint),
+		PackageSnapshotDigest: strings.TrimSpace(record.Input.PackageSnapshotDigest),
+		KnowledgeReleaseID:    strings.TrimSpace(record.Input.KnowledgeReleaseID),
+		BundleBuildID:         strings.TrimSpace(record.Digest),
+		SchemaVersion:         router.SchemaVersion(),
+		ObjectURI:             strings.TrimSpace(record.Object.Key),
+		ObjectDigest:          strings.TrimSpace(record.Object.Digest),
+		SizeBytes:             record.Object.Size,
 	}
 	if metadata.InputFingerprint == "" || metadata.ObjectURI == "" || metadata.ObjectDigest == "" || metadata.SizeBytes < 1 {
 		return runtimeBundleMetadata{}, fmt.Errorf("active Bundle Registry 元数据不完整: digest=%s", router.BundleDigest())

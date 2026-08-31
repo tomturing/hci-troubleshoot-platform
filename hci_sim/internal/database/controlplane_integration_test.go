@@ -229,3 +229,91 @@ func TestBundleRegistryCompileAndLifecycle(t *testing.T) {
 		t.Fatalf("unexpected stale bundles: %d", len(stale))
 	}
 }
+
+func TestBundleRegistryReviseDraftCAS(t *testing.T) {
+	rawURL := os.Getenv("HCI_SIM_TEST_DATABASE_URL")
+	if rawURL == "" {
+		t.Skip("HCI_SIM_TEST_DATABASE_URL is not configured")
+	}
+	target, err := Parse(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pool, err := Open(ctx, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	bundleRepo, err := NewBundleRegistry(pool, nil, controlplane.NewMemoryBundleObjectStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	testID := uuid.New().String()[:8]
+	now := time.Now().UTC()
+	input := controlplane.CompileInput{
+		SupportID:            "r" + testID,
+		KBDRevision:          1,
+		KBDChecksum:          integrationDigest("kbd-revise-" + testID),
+		SignalsDigest:        integrationDigest("signals-revise-" + testID),
+		ToolContractRevision: "tool-r1",
+		PolicyRevision:       "policy-r1",
+		CompilerRevision:     "compiler-v1",
+	}
+	manifest := fixture.Manifest{
+		SchemaVersion: "2.0",
+		Bundle:        fixture.BundleRef{Status: "published"},
+		KBD:           fixture.KBDRef{SupportID: input.SupportID, Revision: input.KBDRevision, Checksum: input.KBDChecksum},
+		Contracts:     fixture.Contracts{ToolRevision: input.ToolContractRevision, PolicyRevision: input.PolicyRevision},
+		Variables:     map[string]string{"SYNTHETIC": "true"},
+		Limits:        fixture.Limits{MaxRoutes: 1, MaxOutputBytesPerCommand: 4096, MaxBundleBytes: 65536},
+		Routes: []fixture.Route{{
+			ID: "synthetic-route", SignalID: "sig-1", Variant: "positive-minimal",
+			RouteKey: fixture.RouteKey{Tool: "acli", AcquisitionKey: "acli:test", Argv: []string{"acli", "test"}, Node: "node-1", Container: "host"},
+			Result:   fixture.ResultDef{ExitCode: 0, Stdout: "before\n"},
+		}},
+	}
+	parent, err := bundleRepo.Compile(controlplane.Actor{ID: "compiler-test", Role: controlplane.RoleCompiler}, input, manifest, now)
+	if err != nil {
+		t.Fatalf("compile parent draft: %v", err)
+	}
+	edited := manifest
+	edited.Routes = append([]fixture.Route(nil), manifest.Routes...)
+	edited.Routes[0].Result.Stdout = "after\n"
+	child, err := bundleRepo.ReviseDraft(
+		controlplane.Actor{ID: "expert-test", Role: controlplane.RoleExpert},
+		parent.Digest,
+		edited,
+		"更新验证输出",
+		now.Add(time.Second),
+	)
+	if err != nil {
+		t.Fatalf("revise draft: %v", err)
+	}
+	if child.Input.ParentBundleDigest != parent.Digest {
+		t.Fatalf("child parent digest = %q, want %q", child.Input.ParentBundleDigest, parent.Digest)
+	}
+	parentAfter, err := bundleRepo.Get(parent.Digest)
+	if err != nil || parentAfter.Status != controlplane.BundleStale {
+		t.Fatalf("parent must become stale atomically: record=%+v err=%v", parentAfter, err)
+	}
+	if _, err := bundleRepo.ReviseDraft(
+		controlplane.Actor{ID: "expert-test-2", Role: controlplane.RoleExpert},
+		parent.Digest,
+		manifest,
+		"基于过期父版本再次修订",
+		now.Add(2*time.Second),
+	); err == nil {
+		t.Fatal("stale parent revision must be rejected")
+	}
+	var draftCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM fixture.bundle b
+		JOIN control_plane.scenario s ON s.id = b.scenario_id
+		WHERE s.support_id = $1 AND b.status = 'draft'
+	`, input.SupportID).Scan(&draftCount); err != nil || draftCount != 1 {
+		t.Fatalf("active draft count=%d, want 1: %v", draftCount, err)
+	}
+}

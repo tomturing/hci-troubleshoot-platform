@@ -84,12 +84,15 @@ jobs:
           ! grep -Fq '/migrations/000001_control_plane.sql' /tmp/hci-platform-rendered.yaml
       - name: 校验模块表和主库边界
         run: |
-          expected_tables='artifact.approval artifact.metadata artifact.scan audit.entity_event control_plane.outbox control_plane.run control_plane.run_attempt control_plane.run_event control_plane.run_outbox control_plane.run_result control_plane.runtime_instance control_plane.scenario fixture.approval fixture.asset_revision fixture.bundle fixture.bundle_activation fixture.dependency fixture.provenance fixture.stale_outbox'
+          expected_tables='artifact.approval artifact.metadata artifact.scan audit.entity_event control_plane.outbox control_plane.run control_plane.run_attempt control_plane.run_event control_plane.run_result control_plane.runtime_instance control_plane.scenario fixture.approval fixture.asset_revision fixture.bundle fixture.bundle_activation fixture.dependency'
           actual_tables="$(psql -d hci_sim -Atc "SELECT table_schema || '.' || table_name FROM information_schema.tables WHERE table_schema IN ('control_plane','fixture','artifact','audit') AND table_type = 'BASE TABLE' ORDER BY 1" | tr '\n' ' ' | sed 's/[[:space:]]\+$//')"
           test "$actual_tables" = "$expected_tables"
           test "$(psql -d hci_sim -Atc "SELECT count(*) FROM fixture.asset_revision WHERE asset_type = 'template' AND status = 'published'")" = 3
           test "$(psql -d hci_sim -Atc "SELECT count(*) FROM fixture.asset_revision WHERE asset_type = 'instance' AND status = 'published'")" = 4
           test "$(psql -d hci_sim -Atc "SELECT count(*) FROM fixture.asset_revision WHERE category_baseline_json = '{}'::jsonb OR catalog_baseline_json = '{}'::jsonb")" = 0
+          test "$(psql -d hci_sim -Atc "SELECT count(*) FROM information_schema.columns WHERE table_schema='fixture' AND table_name='bundle' AND column_name IN ('package_snapshot_digest','knowledge_release_id','bundle_input_digest','workspace_id','source_knowledge_revision_no')")" = 5
+          test "$(psql -d hci_sim -Atc "SELECT count(*) FROM pg_constraint WHERE conname IN ('run_unified_identity_pair','bundle_unified_identity_pair','bundle_package_digest_format','bundle_input_digest_format','run_package_digest_format','scenario_package_digest_format','activation_package_digest_format','asset_revision_package_digest_format')")" = 8
+          test "$(psql -d hci_sim -Atc "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('control_plane','fixture') AND c.relname IN ('run_outbox','stale_outbox','provenance') AND c.relkind='r'")" = 0
           test "$(psql -d hci_troubleshoot -Atc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE 'agent_test_%'")" = 0
           psql -d hci_sim -v ON_ERROR_STOP=1 -c "REVOKE ALL ON DATABASE hci_sim FROM PUBLIC; GRANT CONNECT ON DATABASE hci_sim TO hci_sim_runtime;"
           ! PGPASSWORD=run_pass psql -h localhost -U hci_sim_runtime -d hci_sim -c 'CREATE TABLE control_plane.must_fail(id int);'

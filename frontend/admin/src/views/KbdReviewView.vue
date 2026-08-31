@@ -72,6 +72,8 @@ interface KbdEntry {
   signal_review_facts?: Record<string, { status: 'needs_review' | 'reviewed' }>
   latest_proposal_revision_id?: number | null
   working_revision_id?: number | null
+  working_snapshot_digest?: string | null
+  active_release_id?: number | null
   lock_version?: number
   maintenance_working?: boolean
   review_view?: 'entry' | 'maintenance_working'
@@ -2493,6 +2495,11 @@ function openSignalDryRun(signal: SignalV2, index: number, processingIndex: numb
   signalDryRunIndex.value = index
   signalDryRunProcessingIndex.value = processingIndex
   signalDryRunVisible.value = true
+}
+
+function handleVerificationAssetSaved(result: Record<string, unknown>): void {
+  const digest = typeof result.package_snapshot_digest === 'string' ? result.package_snapshot_digest : ''
+  if (digest && detailEntry.value) detailEntry.value.working_snapshot_digest = digest
 }
 
 function onSignalEditModeChange(mode: string | number | boolean | undefined) {
@@ -6060,9 +6067,11 @@ onUnmounted(() => clearBatchPollTimer())
       :kbd-revision="(detailEntry?.maintenance_working || revisionState?.working_revision_id)
         ? (revisionState?.history?.find(h => h.id === (revisionState?.working_revision_id || detailEntry?.working_revision_id))?.revision_no || null)
         : (revisionState?.active_resource?.revision || null)"
+      :package-snapshot-digest="detailEntry?.working_snapshot_digest || null"
       :signal="signalDryRunSignal"
       :signal-index="signalDryRunIndex"
       :processing-index="signalDryRunProcessingIndex"
+      @saved="handleVerificationAssetSaved"
     />
 
     <!-- 编辑弹窗 -->

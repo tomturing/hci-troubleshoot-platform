@@ -13,10 +13,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from shared.dynamic_resource.adapters import kbd_resource_payload
 from shared.dynamic_resource.loader import DynamicResourceLoader, snapshot_revision_metadata
 from shared.dynamic_resource.models import UsageRecord, UsageStatus
-from shared.dynamic_resource.publisher import DynamicResourcePublisher
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from sqlalchemy import case as sql_case
@@ -104,9 +102,7 @@ async def _audit_and_serialize(
     cases: list[dict[str, Any]] = []
     for rank, entry in enumerate(entries, start=1):
         score = scores[entry.id]
-        snapshot = await DynamicResourcePublisher(session).ensure_published(
-            **kbd_resource_payload(entry), trace_id=trace_id
-        )
+        snapshot = await DynamicResourceLoader(session).get_active("kbd", str(entry.id))
         await DynamicResourceLoader(session).audit_usage(
             snapshot,
             UsageRecord(

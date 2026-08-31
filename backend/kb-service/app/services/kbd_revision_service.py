@@ -496,6 +496,19 @@ async def ensure_kbd_revision_payload(
     else:
         kbd.working_revision_id = revision.id
     await session.flush()
+    if isinstance(session, AsyncSession):
+        # Revision、PackageSnapshot 与两个 head 指针处于同一数据库事务；任一失败全部回滚。
+        from app.services.version_governance import advance_revision_snapshot
+
+        await advance_revision_snapshot(
+            session,
+            kbd=kbd,
+            revision_id=int(revision.id),
+            revision_no=int(revision.revision_no),
+            payload=payload,
+            actor_type=actor_type,
+            trace_id=trace_id,
+        )
     return revision
 
 

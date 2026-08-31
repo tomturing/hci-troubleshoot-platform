@@ -3376,3 +3376,149 @@ COMMENT ON COLUMN migration_history.version IS '迁移版本号（如 001、002�
 COMMENT ON COLUMN migration_history.checksum IS '迁移文件内容的 SHA256 校验和，用于检测篡改';
 COMMENT ON COLUMN migration_history.description IS '迁移描述（从文件名解析）';
 COMMENT ON COLUMN migration_history.executed_at IS '执行时间戳';
+
+-- ------------------------------------------------------------
+-- KBD 与仿真资产统一版本治理（Package/Verification）
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS kbd_package (
+    package_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    support_id varchar(20) NOT NULL UNIQUE,
+    working_snapshot_digest varchar(71),
+    active_release_id integer,
+    workspace_version bigint NOT NULL DEFAULT 1,
+    status varchar(20) NOT NULL DEFAULT 'draft_editing',
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT kbd_package_pkey PRIMARY KEY (package_id),
+    CONSTRAINT kbd_package_status_check CHECK (
+        status::text = ANY (ARRAY['draft_editing'::varchar, 'published'::varchar]::text[])
+    ),
+    CONSTRAINT kbd_package_workspace_version_check CHECK (workspace_version > 0)
+);
+
+CREATE TABLE IF NOT EXISTS verification_asset (
+    asset_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    asset_digest varchar(71) NOT NULL UNIQUE,
+    support_id varchar(20) NOT NULL,
+    signal_id varchar(128) NOT NULL,
+    processing_index integer NOT NULL,
+    dataset_id varchar(128) NOT NULL,
+    input_digest varchar(71) NOT NULL,
+    deterministic_input jsonb NOT NULL DEFAULT '{}'::jsonb,
+    ai_input jsonb NOT NULL DEFAULT '{}'::jsonb,
+    raw_response_hash varchar(128),
+    output_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    evidence_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    downstream_result jsonb NOT NULL DEFAULT '{}'::jsonb,
+    model varchar(128) NOT NULL,
+    prompt_revision varchar(128) NOT NULL,
+    contract_version varchar(128) NOT NULL,
+    run_id varchar(128),
+    trace_id varchar(64) NOT NULL,
+    result_status varchar(20) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT verification_asset_pkey PRIMARY KEY (asset_id),
+    CONSTRAINT verification_asset_digest_format CHECK (asset_digest ~ '^sha256:[0-9a-f]{64}$'),
+    CONSTRAINT verification_asset_input_digest_format CHECK (input_digest ~ '^sha256:[0-9a-f]{64}$'),
+    CONSTRAINT verification_asset_processing_index_check CHECK (processing_index >= 0),
+    CONSTRAINT verification_asset_status_check CHECK (
+        result_status::text = ANY (
+            ARRAY['pass'::varchar, 'fail'::varchar, 'inconclusive'::varchar]::text[]
+        )
+    )
+);
+
+CREATE TABLE IF NOT EXISTS verification_set (
+    verification_set_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    verification_set_digest varchar(71) NOT NULL UNIQUE,
+    support_id varchar(20) NOT NULL,
+    asset_digests jsonb NOT NULL DEFAULT '[]'::jsonb,
+    asset_count integer NOT NULL DEFAULT 0,
+    created_by varchar(128) NOT NULL,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT verification_set_pkey PRIMARY KEY (verification_set_id),
+    CONSTRAINT verification_set_digest_format CHECK (verification_set_digest ~ '^sha256:[0-9a-f]{64}$'),
+    CONSTRAINT verification_set_assets_array CHECK (jsonb_typeof(asset_digests) = 'array'),
+    CONSTRAINT verification_set_asset_count_check CHECK (asset_count >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS package_snapshot (
+    package_snapshot_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    package_snapshot_digest varchar(71) NOT NULL UNIQUE,
+    support_id varchar(20) NOT NULL,
+    parent_snapshot_digest varchar(71),
+    knowledge_snapshot_digest varchar(71) NOT NULL,
+    signal_spec_digest varchar(71) NOT NULL,
+    simulation_spec_digest varchar(71) NOT NULL,
+    verification_set_digest varchar(71),
+    prompt_revision varchar(128) NOT NULL,
+    tool_contract_revision varchar(128) NOT NULL,
+    policy_revision varchar(128) NOT NULL,
+    compiler_revision varchar(128) NOT NULL,
+    manifest_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_by varchar(128) NOT NULL,
+    trace_id varchar(64) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT package_snapshot_pkey PRIMARY KEY (package_snapshot_id),
+    CONSTRAINT package_snapshot_digest_format CHECK (package_snapshot_digest ~ '^sha256:[0-9a-f]{64}$'),
+    CONSTRAINT package_snapshot_component_digest_format CHECK (
+        knowledge_snapshot_digest ~ '^sha256:[0-9a-f]{64}$'
+        AND signal_spec_digest ~ '^sha256:[0-9a-f]{64}$'
+        AND simulation_spec_digest ~ '^sha256:[0-9a-f]{64}$'
+        AND (verification_set_digest IS NULL OR verification_set_digest ~ '^sha256:[0-9a-f]{64}$')
+    ),
+    CONSTRAINT package_snapshot_parent_fk FOREIGN KEY (parent_snapshot_digest)
+        REFERENCES package_snapshot(package_snapshot_digest) ON DELETE RESTRICT,
+    CONSTRAINT package_snapshot_verification_fk FOREIGN KEY (verification_set_digest)
+        REFERENCES verification_set(verification_set_digest) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_verification_asset_support_signal ON verification_asset (support_id, signal_id, processing_index, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_verification_asset_trace ON verification_asset (trace_id);
+CREATE INDEX IF NOT EXISTS idx_verification_set_support_created ON verification_set (support_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_package_snapshot_support_created ON package_snapshot (support_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_package_snapshot_parent ON package_snapshot (parent_snapshot_digest) WHERE parent_snapshot_digest IS NOT NULL;
+
+ALTER TABLE kbd_package
+    ADD CONSTRAINT kbd_package_working_snapshot_fk FOREIGN KEY (working_snapshot_digest)
+        REFERENCES package_snapshot(package_snapshot_digest) ON DELETE RESTRICT;
+ALTER TABLE kbd_package
+    ADD CONSTRAINT kbd_package_active_release_fk FOREIGN KEY (active_release_id)
+        REFERENCES dynamic_resource_revision(id) ON DELETE RESTRICT;
+ALTER TABLE kbd_entry
+    ADD COLUMN IF NOT EXISTS working_snapshot_digest varchar(71),
+    ADD COLUMN IF NOT EXISTS active_release_id integer;
+ALTER TABLE kbd_entry
+    ADD CONSTRAINT kbd_entry_working_snapshot_fk FOREIGN KEY (working_snapshot_digest)
+        REFERENCES package_snapshot(package_snapshot_digest) ON DELETE SET NULL;
+ALTER TABLE kbd_entry
+    ADD CONSTRAINT kbd_entry_active_release_fk FOREIGN KEY (active_release_id)
+        REFERENCES dynamic_resource_revision(id) ON DELETE SET NULL;
+ALTER TABLE dynamic_resource_revision
+    ADD COLUMN IF NOT EXISTS package_snapshot_digest varchar(71),
+    ADD COLUMN IF NOT EXISTS knowledge_snapshot_digest varchar(71),
+    ADD COLUMN IF NOT EXISTS release_id uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_dynamic_resource_release_id
+    ON dynamic_resource_revision (release_id) WHERE release_id IS NOT NULL;
+ALTER TABLE dynamic_resource_active
+    ADD COLUMN IF NOT EXISTS generation bigint NOT NULL DEFAULT 1,
+    ADD COLUMN IF NOT EXISTS desired_revision integer,
+    ADD COLUMN IF NOT EXISTS desired_checksum varchar(128);
+ALTER TABLE dynamic_resource_usage_audit
+    ADD COLUMN IF NOT EXISTS package_snapshot_digest varchar(71),
+    ADD COLUMN IF NOT EXISTS knowledge_snapshot_digest varchar(71),
+    ADD COLUMN IF NOT EXISTS release_id uuid,
+    ADD COLUMN IF NOT EXISTS bundle_digest varchar(71);
+ALTER TABLE dynamic_resource_revision
+    ADD CONSTRAINT dynamic_resource_revision_version_digest_format CHECK (
+        (package_snapshot_digest IS NULL OR package_snapshot_digest ~ '^sha256:[0-9a-f]{64}$')
+        AND (knowledge_snapshot_digest IS NULL OR knowledge_snapshot_digest ~ '^sha256:[0-9a-f]{64}$')
+    );
+ALTER TABLE dynamic_resource_usage_audit
+    ADD CONSTRAINT dynamic_resource_usage_version_digest_format CHECK (
+        (package_snapshot_digest IS NULL OR package_snapshot_digest ~ '^sha256:[0-9a-f]{64}$')
+        AND (knowledge_snapshot_digest IS NULL OR knowledge_snapshot_digest ~ '^sha256:[0-9a-f]{64}$')
+        AND (bundle_digest IS NULL OR bundle_digest ~ '^sha256:[0-9a-f]{64}$')
+    );

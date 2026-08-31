@@ -65,6 +65,20 @@ func TestSignValidateAndBundleBinding(t *testing.T) {
 	}
 }
 
+func TestLeaseVersionIdentityMustBePaired(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	claims := validClaims(now)
+	claims.PackageSnapshotDigest = "sha256:package"
+	if _, err := Sign(testSecret, claims); err == nil || !strings.Contains(err.Error(), "必须成对") {
+		t.Fatalf("缺少 knowledge release 时必须拒绝: %v", err)
+	}
+	claims.PackageSnapshotDigest = ""
+	claims.KnowledgeReleaseID = "release-1"
+	if _, err := Sign(testSecret, claims); err == nil || !strings.Contains(err.Error(), "必须成对") {
+		t.Fatalf("缺少 package snapshot 时必须拒绝: %v", err)
+	}
+}
+
 func TestTrackerEnforcesSessionCommandOutputAndRevocation(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	claims := validClaims(now)

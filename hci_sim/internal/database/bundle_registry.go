@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,6 +38,12 @@ func NewBundleRegistry(pool *pgxpool.Pool, artifactGate controlplane.ArtifactGat
 }
 
 func (r *BundleRegistry) Compile(actor controlplane.Actor, input controlplane.CompileInput, manifest fixture.Manifest, now time.Time) (controlplane.BundleRecord, error) {
+	return r.compile(actor, input, manifest, now, "")
+}
+
+// compile 将 BundleBuild、依赖、统一 outbox 和可选的父 Draft 淘汰收敛在同一事务。
+// supersedeParentDigest 非空时必须先锁定父行，避免两个并发修订都成为当前 Draft。
+func (r *BundleRegistry) compile(actor controlplane.Actor, input controlplane.CompileInput, manifest fixture.Manifest, now time.Time, supersedeParentDigest string) (controlplane.BundleRecord, error) {
 	if actor.Role != controlplane.RoleCompiler || actor.ID == "" {
 		return controlplane.BundleRecord{}, errors.New("forbidden: 仅 compiler 身份可创建 draft")
 	}
@@ -58,6 +63,9 @@ func (r *BundleRegistry) Compile(actor controlplane.Actor, input controlplane.Co
 	fingerprint, err := input.Fingerprint()
 	if err != nil {
 		return controlplane.BundleRecord{}, err
+	}
+	if input.BundleInputDigest == "" {
+		input.BundleInputDigest = fingerprint
 	}
 	if manifest.KBD.SupportID != input.SupportID || manifest.KBD.Revision != input.KBDRevision || manifest.KBD.Checksum != input.KBDChecksum || manifest.Contracts.ToolRevision != input.ToolContractRevision || manifest.Contracts.PolicyRevision != input.PolicyRevision {
 		return controlplane.BundleRecord{}, errors.New("capability_gap: manifest 与已冻结编译输入不一致")
@@ -97,18 +105,37 @@ func (r *BundleRegistry) Compile(actor controlplane.Actor, input controlplane.Co
 		return controlplane.BundleRecord{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	parentStatus := ""
+	if supersedeParentDigest != "" {
+		if input.ParentBundleDigest != supersedeParentDigest {
+			r.objectStore.Abort(object)
+			return controlplane.BundleRecord{}, errors.New("parent_bundle_digest_mismatch")
+		}
+		if err := tx.QueryRow(ctx, `SELECT status FROM fixture.bundle WHERE digest = $1 FOR UPDATE`, supersedeParentDigest).Scan(&parentStatus); err != nil {
+			r.objectStore.Abort(object)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return controlplane.BundleRecord{}, errors.New("bundle_not_found")
+			}
+			return controlplane.BundleRecord{}, fmt.Errorf("lock parent bundle: %w", err)
+		}
+		if parentStatus != string(controlplane.BundleDraft) && parentStatus != string(controlplane.BundleValidated) && parentStatus != string(controlplane.BundlePublished) {
+			r.objectStore.Abort(object)
+			return controlplane.BundleRecord{}, fmt.Errorf("invalid_transition: %s 不能修订", parentStatus)
+		}
+	}
 	scenarioID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("controlplane:"+fingerprint))
 	variant := primaryVariant(manifest)
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO control_plane.scenario (id, support_id, kbd_revision, variant, input_fingerprint, status)
-		VALUES ($1, $2, $3, $4, $5, 'indexed')
+		INSERT INTO control_plane.scenario (id, support_id, kbd_revision, variant, input_fingerprint, status, package_snapshot_digest, knowledge_snapshot_digest)
+		VALUES ($1, $2, $3, $4, $5, 'indexed', NULLIF($6, ''), NULLIF($7, ''))
 		ON CONFLICT (input_fingerprint) DO UPDATE SET updated_at = now()
-	`, scenarioID, input.SupportID, input.KBDRevision, variant, fingerprint); err != nil {
+	`, scenarioID, input.SupportID, input.KBDRevision, variant, fingerprint, input.PackageSnapshotDigest, input.KBDChecksum); err != nil {
 		r.objectStore.Abort(object)
 		return controlplane.BundleRecord{}, fmt.Errorf("upsert scenario: %w", err)
 	}
 	inputJSON, _ := json.Marshal(input)
 	bundleID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(manifest.Bundle.Digest))
+	workspaceID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("hci:bundle-workspace:"+input.SupportID))
 	var existingDigest string
 	var existingStatus string
 	if err := tx.QueryRow(ctx, `SELECT digest, status FROM fixture.bundle WHERE input_fingerprint = $1`, fingerprint).Scan(&existingDigest, &existingStatus); err == nil {
@@ -124,9 +151,12 @@ func (r *BundleRegistry) Compile(actor controlplane.Actor, input controlplane.Co
 			`, existingDigest, now.UTC()); err != nil {
 				return controlplane.BundleRecord{}, fmt.Errorf("reactivate non-draft bundle: %w", err)
 			}
-			if err := tx.Commit(ctx); err != nil {
-				return controlplane.BundleRecord{}, err
-			}
+		}
+		if err := supersedeParentDraft(ctx, tx, supersedeParentDigest, manifest.Bundle.Digest, parentStatus, now); err != nil {
+			return controlplane.BundleRecord{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return controlplane.BundleRecord{}, err
 		}
 		return r.Get(manifest.Bundle.Digest)
 	} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -134,15 +164,24 @@ func (r *BundleRegistry) Compile(actor controlplane.Actor, input controlplane.Co
 		return controlplane.BundleRecord{}, err
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO fixture.bundle (id, scenario_id, revision, digest, schema_version, object_uri, object_digest, size_bytes, status, created_by, input_fingerprint, compile_input)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'draft', $9, $10, $11)
+		INSERT INTO fixture.bundle (id, scenario_id, revision, digest, schema_version, object_uri, object_digest, size_bytes, status, created_by, input_fingerprint, compile_input, bundle_input_digest, package_snapshot_digest, knowledge_release_id, compiler_revision, workspace_id, source_knowledge_revision_no)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'draft', $9, $10, $11, $12, NULLIF($13, ''), NULLIF($14, ''), $15, $16, $17)
 		ON CONFLICT (digest) DO NOTHING
 	`, bundleID, scenarioID, input.KBDRevision, manifest.Bundle.Digest, manifest.SchemaVersion,
-		object.Key, object.Digest, object.Size, actor.ID, fingerprint, inputJSON); err != nil {
+		object.Key, object.Digest, object.Size, actor.ID, fingerprint, inputJSON, input.BundleInputDigest,
+		input.PackageSnapshotDigest, input.KnowledgeReleaseID, input.CompilerRevision, workspaceID, input.KBDRevision); err != nil {
 		r.objectStore.Abort(object)
 		return controlplane.BundleRecord{}, fmt.Errorf("insert bundle: %w", err)
 	}
 	if err := writeDependencies(ctx, tx, bundleID, input.Dependencies); err != nil {
+		r.objectStore.Abort(object)
+		return controlplane.BundleRecord{}, err
+	}
+	if err := enqueueOutbox(ctx, tx, "bundle", "bundle_build", manifest.Bundle.Digest, nil, "bundle.compiled", fingerprint, ""); err != nil {
+		r.objectStore.Abort(object)
+		return controlplane.BundleRecord{}, fmt.Errorf("enqueue bundle compile event: %w", err)
+	}
+	if err := supersedeParentDraft(ctx, tx, supersedeParentDigest, manifest.Bundle.Digest, parentStatus, now); err != nil {
 		r.objectStore.Abort(object)
 		return controlplane.BundleRecord{}, err
 	}
@@ -161,6 +200,24 @@ func (r *BundleRegistry) Compile(actor controlplane.Actor, input controlplane.Co
 		CreatedAt:        now.UTC(),
 		UpdatedAt:        now.UTC(),
 	}, nil
+}
+
+func supersedeParentDraft(ctx context.Context, tx pgx.Tx, parentDigest, childDigest, parentStatus string, now time.Time) error {
+	if parentDigest == "" || parentStatus != string(controlplane.BundleDraft) {
+		return nil
+	}
+	result, err := tx.Exec(ctx, `
+		UPDATE fixture.bundle
+		SET status = 'stale', stale_reason = $1, version = version + 1, updated_at = $2
+		WHERE digest = $3 AND status = 'draft'
+	`, "superseded_by_revision:"+childDigest, now.UTC(), parentDigest)
+	if err != nil {
+		return fmt.Errorf("supersede parent draft: %w", err)
+	}
+	if result.RowsAffected() != 1 {
+		return errors.New("bundle_parent_cas_conflict")
+	}
+	return nil
 }
 
 // ReviseDraft 将专家修改固化为新 Draft，而不是覆盖既有对象或已发布 Bundle。
@@ -189,27 +246,14 @@ func (r *BundleRegistry) ReviseDraft(actor controlplane.Actor, parentDigest stri
 	input.ParentBundleDigest = parent.Digest
 	input.DraftRevision++
 	input.EditReason = reason
-	record, err := r.Compile(controlplane.Actor{ID: actor.ID, Role: controlplane.RoleCompiler}, input, manifest, now)
-	if err != nil {
-		return controlplane.BundleRecord{}, err
-	}
-	// 父 Draft 已被新 Draft 取代，降级为 stale，使其不再出现在 status='draft' 过滤结果中。
-	// 仅对 draft 状态降级；validated/published 由各自独立流程管理。
-	// 注意：Compile() 已提交自身事务，此处为独立 SQL，极端失败时记录日志而不回滚新 Draft。
-	if parent.Status == controlplane.BundleDraft {
-		ctx := context.Background()
-		staleReason := "superseded_by_revision:" + record.Digest
-		if _, staleErr := r.pool.Exec(ctx,
-			`UPDATE fixture.bundle SET status = 'stale', stale_reason = $1, version = version + 1, updated_at = $2
-			 WHERE digest = $3 AND status = 'draft'`,
-			staleReason, now.UTC(), parentDigest,
-		); staleErr != nil {
-			// stale 降级失败不影响新 Draft 的可用性，只影响下次保存时的 draft 计数；记录日志供排查。
-			log.Printf("bundle_factory revise_draft_stale_parent_failed parent=%s child=%s err=%v",
-				parentDigest, record.Digest, staleErr)
-		}
-	}
-	return record, nil
+	input.BundleInputDigest = ""
+	return r.compile(
+		controlplane.Actor{ID: actor.ID, Role: controlplane.RoleCompiler},
+		input,
+		manifest,
+		now,
+		parentDigest,
+	)
 }
 
 // Retire 将 Draft 或 Stale Bundle 标记为 retired。对象、审批和运行引用保持不变；

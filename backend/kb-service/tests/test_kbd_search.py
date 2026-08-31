@@ -67,15 +67,12 @@ async def test_audit_marks_candidates_as_retrieved_with_context():
         signals_json=[{"name": "task_failed"}],
     )
     snapshot = SimpleNamespace()
-    publisher = MagicMock()
-    publisher.ensure_published = AsyncMock(return_value=snapshot)
     loader = MagicMock()
+    loader.get_active = AsyncMock(return_value=snapshot)
     loader.audit_usage = AsyncMock()
 
     with (
-        patch.object(kbd_search, "DynamicResourcePublisher", return_value=publisher),
         patch.object(kbd_search, "DynamicResourceLoader", return_value=loader),
-        patch.object(kbd_search, "kbd_resource_payload", return_value={}),
         patch.object(kbd_search, "snapshot_revision_metadata", return_value={"revision": 3}),
         patch.object(kbd_search, "get_current_trace_id", return_value="trace-1"),
     ):

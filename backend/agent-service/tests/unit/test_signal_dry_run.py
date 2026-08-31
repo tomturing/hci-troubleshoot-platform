@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from app.routes.signal_dry_run import SignalDryRunRequest, evaluate_signal_dry_run
+from pydantic import ValidationError
 
 
 def _revision(signal: dict) -> str:
@@ -28,6 +29,22 @@ def _qfk_signal() -> dict:
         },
         "orchestrate": {},
     }
+
+
+def test_dry_run_rejects_mismatched_package_snapshot() -> None:
+    signal = _qfk_signal()
+    with pytest.raises(ValidationError, match="必须一致"):
+        SignalDryRunRequest(
+            draft_revision=_revision(signal),
+            scope="qfk_execution_result",
+            unit_ref={"signal_id": signal["id"]},
+            dataset={"dataset_id": "preview-1", "source_type": "pasted", "source_ref": "user-input", "payload": "FAILED"},
+            signal=signal,
+            support_id="41398",
+            kbd_revision=7,
+            package_snapshot_digest="sha256:" + "a" * 64,
+            observed_snapshot_digest="sha256:" + "b" * 64,
+        )
 
 
 @pytest.mark.asyncio
@@ -524,7 +541,6 @@ async def test_qfk_dry_run_produces_signal_scope_preserves_ai_raw_response_and_e
             "reason": "从候选行中提取了 size 的具体值。",
         }
     ]
-
 
 
 

@@ -12,6 +12,7 @@ def _entry(*, support_id: str = "27123", status: str = "published"):
         id=9,
         support_id=support_id,
         status=status,
+        working_snapshot_digest="sha256:package",
         entry_metadata={"sample_suite": "diagnosis-signal-matrix-v1"},
     )
 
@@ -68,6 +69,8 @@ def _snapshot(*, support_id: str = "27123", tool_revision: str | None = None, ch
         revision=24,
         trace_id="00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
         content_json={"support_id": support_id, "signals_json": document},
+        package_snapshot_digest="sha256:package",
+        release_id="00000000-0000-0000-0000-000000000024",
     )
     return active, revision
 
@@ -393,6 +396,7 @@ async def test_resolve_support_id_mode_2_working_draft():
     session.execute.side_effect = [entry_result, rev_result]
 
     resolver._active_tool_snapshots = AsyncMock(return_value=_tool_snapshots())
+    resolver._active_snapshots = AsyncMock(return_value={})
 
     resolution = await resolver.resolve_support_id(session, "41446", revision=23)
 
@@ -401,5 +405,3 @@ async def test_resolve_support_id_mode_2_working_draft():
     assert resolution.resolved.support_id == "41446"
     assert resolution.resolved.kbd_revision == 23
     assert [r.signal_id for r in resolution.resolved.synthetic_routes] == ["expert_1788139182831_f2fcdaefb29d"]
-
-

@@ -84,6 +84,34 @@ def test_bundle_factory_rejects_c1_gap_without_compiling():
     runtime_post.assert_not_awaited()
 
 
+def test_bundle_factory_rejects_working_package_bound_to_old_release():
+    client = TestClient(app)
+    requested = "sha256:" + "a" * 64
+    capability = {
+        "support_id": "27123",
+        "status": "ready_for_artifact_binding",
+        "resolved": {
+            "support_id": "27123",
+            "kbd_revision": 25,
+            "package_snapshot_digest": "sha256:" + "b" * 64,
+        },
+    }
+    with patch(
+        "app.routes.simulations._resolve_package_context",
+        new=AsyncMock(return_value={"support_id": "27123", "kbd_revision": 25, "package_snapshot_digest": requested}),
+    ), patch("httpx.AsyncClient.get", new=AsyncMock(return_value=httpx.Response(200, json=capability))), patch(
+        "app.routes.simulations._post", new=AsyncMock()
+    ) as runtime_post:
+        response = client.post(
+            "/api/hci-sim/v1/control-plane/bundles",
+            json={"support_id": "27123", "package_snapshot_digest": requested},
+        )
+
+    assert response.status_code == 409
+    assert "尚未形成 KnowledgeRelease" in response.json()["detail"]
+    runtime_post.assert_not_awaited()
+
+
 def test_bundle_factory_actions_use_server_mapped_split_roles():
     client = TestClient(app)
     runtime_response = JSONResponse({"bundle": {"digest": "sha256:bundle", "status": "validated"}}, status_code=200)
@@ -375,4 +403,3 @@ def test_create_bundle_draft_passes_kbd_revision_to_kb_service():
         assert response.status_code == 201
         assert "revision=23" in mock_kb_get.await_args.args[0]
         assert mock_post.await_args.args[1]["resolved"]["kbd_revision"] == 23
-

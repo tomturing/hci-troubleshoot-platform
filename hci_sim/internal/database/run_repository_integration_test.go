@@ -209,6 +209,7 @@ func TestRunRepositoryCreateReusesControlPlaneScenarioID(t *testing.T) {
 	registryScenarioID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("controlplane:"+fingerprint))
 	bundleID := uuid.NewSHA1(uuid.NameSpaceURL, []byte(bundleDigest))
 	supportID := "sc" + suffix[:12]
+	workspaceID := uuid.NewSHA1(uuid.NameSpaceURL, []byte("hci:bundle-workspace:"+supportID))
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO control_plane.scenario
 			(id, support_id, kbd_revision, variant, input_fingerprint, status)
@@ -219,9 +220,10 @@ func TestRunRepositoryCreateReusesControlPlaneScenarioID(t *testing.T) {
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO fixture.bundle
 			(id, scenario_id, revision, digest, schema_version, object_uri,
-			 object_digest, size_bytes, status, created_by, input_fingerprint, compile_input)
-		VALUES ($1, $2, 1, $3, '2.0', $4, $5, 1024, 'published', 'compiler-test', $6, '{}'::jsonb)
-	`, bundleID, registryScenarioID, bundleDigest, "object://bundle/"+suffix, objectDigest, fingerprint); err != nil {
+			 object_digest, size_bytes, status, created_by, input_fingerprint, compile_input,
+			 workspace_id, source_knowledge_revision_no)
+		VALUES ($1, $2, 1, $3, '2.0', $4, $5, 1024, 'published', 'compiler-test', $6, '{}'::jsonb, $7, 1)
+	`, bundleID, registryScenarioID, bundleDigest, "object://bundle/"+suffix, objectDigest, fingerprint, workspaceID); err != nil {
 		t.Fatalf("insert published controlplane bundle: %v", err)
 	}
 	input := RunInput{
@@ -309,8 +311,14 @@ func TestRunRepositoryPostgresEventResultAndOutbox(t *testing.T) {
 		t.Fatalf("expected conflicting result rejection, got %v", err)
 	}
 	claimed, err := repository.ClaimOutbox(ctx)
+	for err == nil && claimed.Topic != "run" {
+		if completeErr := repository.CompleteOutbox(ctx, claimed.ID, true, time.Time{}); completeErr != nil {
+			t.Fatalf("complete unrelated outbox: %v", completeErr)
+		}
+		claimed, err = repository.ClaimOutbox(ctx)
+	}
 	if err != nil {
-		t.Fatalf("claim outbox: %v", err)
+		t.Fatalf("claim run outbox: %v", err)
 	}
 	if claimed.Topic != "run" || claimed.AggregateType != "run" || claimed.AggregateID != input.ExternalID || claimed.RunExternalID != input.ExternalID || claimed.TraceID != "trace-test" || claimed.Attempts != 1 {
 		t.Fatalf("unexpected outbox claim: %+v", claimed)

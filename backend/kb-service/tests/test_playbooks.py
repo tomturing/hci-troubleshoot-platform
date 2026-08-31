@@ -65,13 +65,12 @@ async def test_inventory_returns_published_kbd_without_embedding_gate():
         commit=AsyncMock(),
     )
     db = SimpleNamespace(async_session_factory=lambda: _SessionContext(session))
-    publisher = MagicMock()
-    publisher.ensure_published = AsyncMock(return_value=SimpleNamespace())
+    loader = MagicMock()
+    loader.get_active = AsyncMock(return_value=SimpleNamespace())
 
     with (
         patch.object(playbooks, "_db_manager", db),
-        patch.object(playbooks, "DynamicResourcePublisher", return_value=publisher),
-        patch.object(playbooks, "kbd_resource_payload", return_value={}),
+        patch.object(playbooks, "DynamicResourceLoader", return_value=loader),
         patch.object(playbooks, "snapshot_revision_metadata", return_value={"revision": 4}),
     ):
         response = await playbooks.get_category_playbooks("虚拟机-003")

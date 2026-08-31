@@ -3,6 +3,7 @@ package reconciler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -35,6 +36,20 @@ func TestReconcilePostgresNoFalseSuccessAndWebhookAck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// database 包的 Bundle 编译集成测试会写统一 outbox；本用例只验证下方新建 Run，
+	// 先完成其它 topic，避免共享临时库时把合法 bundle 事件误判为 no.sink 事件。
+	for {
+		record, claimErr := repository.ClaimOutbox(ctx)
+		if errors.Is(claimErr, pgx.ErrNoRows) {
+			break
+		}
+		if claimErr != nil {
+			t.Fatal(claimErr)
+		}
+		if err := repository.CompleteOutbox(ctx, record.ID, true, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	input := database.RunInput{
 		ExternalID: "run-reconcile-" + suffix, SupportID: "27123", KBDRevision: 1,
@@ -59,9 +74,18 @@ func TestReconcilePostgresNoFalseSuccessAndWebhookAck(t *testing.T) {
 	if err := ReconcileOnce(ctx, repository, Config{}); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := repository.ClaimOutbox(ctx)
-	if err != nil || pending.EventType != "no.sink" {
-		t.Fatalf("record was falsely processed without sink: %+v %v", pending, err)
+	var pending database.OutboxRecord
+	for {
+		pending, err = repository.ClaimOutbox(ctx)
+		if err != nil {
+			t.Fatalf("claim no.sink outbox: %v", err)
+		}
+		if pending.RunExternalID == input.ExternalID && pending.EventType == "no.sink" {
+			break
+		}
+		if err := repository.CompleteOutbox(ctx, pending.ID, true, time.Time{}); err != nil {
+			t.Fatalf("complete unrelated outbox: %v", err)
+		}
 	}
 	if err := repository.CompleteOutbox(ctx, pending.ID, true, time.Time{}); err != nil {
 		t.Fatal(err)
@@ -77,13 +101,23 @@ func TestReconcilePostgresNoFalseSuccessAndWebhookAck(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
-	if err := ReconcileOnce(ctx, repository, Config{WebhookURL: server.URL, MaxAttempts: 3}); err != nil {
-		t.Fatal(err)
+	for attempt := 0; attempt < 32; attempt++ {
+		delivered = nil
+		if err := ReconcileOnce(ctx, repository, Config{WebhookURL: server.URL, MaxAttempts: 3}); err != nil {
+			t.Fatal(err)
+		}
+		if delivered["run_external_id"] == input.ExternalID && delivered["event_type"] == "with.sink" {
+			break
+		}
 	}
 	if delivered["run_external_id"] != input.ExternalID || delivered["event_type"] != "with.sink" {
 		t.Fatalf("unexpected webhook payload: %+v", delivered)
 	}
-	if _, err := repository.ClaimOutbox(ctx); err != pgx.ErrNoRows {
-		t.Fatalf("processed outbox remained pending: %v", err)
+	var ownPending int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM control_plane.outbox
+		WHERE topic = 'run' AND aggregate_id = $1 AND status <> 'processed'
+	`, input.ExternalID).Scan(&ownPending); err != nil || ownPending != 0 {
+		t.Fatalf("processed run outbox remained pending: count=%d err=%v", ownPending, err)
 	}
 }
