@@ -588,3 +588,11 @@ tool_contract_revision / policy_revision / compiler_revision
 3. **前端防假成功双重门禁与精准草稿态判定**：`SignalDryRunDialog.vue` 在保存后严格校验返回 Bundle 的 routes 中是否包含当前 `signal_id`，未包含时直接阻断报错，绝不向用户展示虚假成功；在 `KbdReviewView.vue` 中仅以 `detailEntry.maintenance_working` 作为 `working_snapshot_digest` 开关，非草稿维护态严格回退至 `active_resource.package_snapshot_digest`；
 4. **可观测性闭环**：`admin.py` 的 `get_kbd_entry_detail` 捕获异常时记录结构化异常日志（带 `kbd_id`、`support_id` 与 `trace_id`），杜绝静默吞掉异常。
 
+### 13.6 正式发布版试运行门禁解耦与回退保底（PR 983 回归缺陷修复）
+
+针对 PR 983 将非维护草稿态 `:kbd-revision` 设为 `null` 导致的正式发布版试运行被硬校验阻断的问题，进行了根因修复与防御加固：
+1. **试运行弹窗解耦非空草稿版本依赖**：`SignalDryRunDialog.vue` 的 `requestPreview` 门禁解除对单一 `kbdRevision` 的硬性要求，仅校验 `props.signal` 与 `props.supportId`，允许正式发布版基于已有权威 Bundle 资产直接开展仿真试运行；
+2. **后端契约有效版本保底**：在构建 `dryRunRequest` 与创建新 Bundle Draft 时，若当前无快照且 `kbdRevision` 为空（处于正式发布版），防御性回退到保底版本号 `1`，确保满足后端 `SignalDryRunRequest.kbd_revision: int >= 1` 的 Schema 校验；
+3. **UI 语义与单测全覆盖**：弹窗副标题在非草稿态时权威展示“正式发布版”，并在 `SignalDryRunDialog.spec.ts` 中补充正式发布版（`kbdRevision: null`）试运行无阻断的回归单测，彻底消灭测试盲区。
+
+

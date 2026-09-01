@@ -165,8 +165,8 @@ async function canonicalHash(value: unknown): Promise<string> {
 async function requestPreview(): Promise<void> {
   previewRequested.value = true
   previewResult.value = null
-  if (!props.signal || !props.supportId || !props.kbdRevision) {
-    ElMessage.warning('当前 KBD 草稿身份不完整，无法试运行')
+  if (!props.signal || !props.supportId) {
+    ElMessage.warning('当前 KBD 身份不完整，无法试运行')
     return
   }
   if (source.value !== 'pasted' && !isEditingFork.value && !selectedDataset.value) {
@@ -231,7 +231,7 @@ async function requestPreview(): Promise<void> {
       ...(props.packageSnapshotDigest ? {
         package_snapshot_digest: props.packageSnapshotDigest,
         observed_snapshot_digest: props.packageSnapshotDigest,
-      } : (typeof props.kbdRevision === 'number' ? { kbd_revision: props.kbdRevision } : {})),
+      } : { kbd_revision: typeof props.kbdRevision === 'number' && props.kbdRevision > 0 ? props.kbdRevision : 1 }),
     }
     const response = await fetch('/api/v1/signals/dry-run', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -334,7 +334,7 @@ async function saveToBundle(): Promise<void> {
             ...(targetPackage ? {
               package_snapshot_digest: targetPackage,
               observed_snapshot_digest: targetPackage,
-            } : (typeof props.kbdRevision === 'number' ? { kbd_revision: props.kbdRevision } : {})),
+            } : { kbd_revision: typeof props.kbdRevision === 'number' && props.kbdRevision > 0 ? props.kbdRevision : 1 }),
           }),
         })
         const createdBody = await created.json().catch(() => ({}))
