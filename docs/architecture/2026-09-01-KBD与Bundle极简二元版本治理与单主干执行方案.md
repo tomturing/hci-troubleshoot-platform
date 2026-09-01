@@ -325,24 +325,6 @@ BEGIN
     ON CONFLICT (support_id) DO UPDATE SET
         status = EXCLUDED.status,
         updated_at = EXCLUDED.updated_at;
-
-    -- 2. 回填动态资源使用审计到统一 audit_log
-    INSERT INTO audit_log (event_type, actor_type, actor_id, resource_type, resource_id, payload_json, trace_id, created_at)
-    SELECT 
-        'dynamic_resource_loaded',
-        'agent_engine',
-        COALESCE(consumer, 'agent-service'),
-        'dynamic_resource',
-        resource_name,
-        jsonb_build_object('revision', revision, 'status', status, 'input_hash', input_hash, 'output_hash', output_hash),
-        COALESCE(trace_id, 'audit-backfill-trace'),
-        created_at
-    FROM dynamic_resource_usage_audit
-    WHERE NOT EXISTS (
-        SELECT 1 FROM audit_log a 
-        WHERE a.trace_id = dynamic_resource_usage_audit.trace_id 
-          AND a.event_type = 'dynamic_resource_loaded'
-    );
 END $$;
 ```
 

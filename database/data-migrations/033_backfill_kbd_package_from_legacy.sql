@@ -37,43 +37,5 @@ BEGIN
         RAISE NOTICE 'kbd_package 存量数据回填完成';
     END IF;
 
-    -- 2. 回填动态资源使用审计到统一 audit_log
-    IF to_regclass('public.dynamic_resource_usage_audit') IS NOT NULL AND to_regclass('public.audit_log') IS NOT NULL THEN
-        INSERT INTO audit_log (
-            event_type,
-            actor_type,
-            actor_id,
-            resource_type,
-            resource_id,
-            payload_json,
-            trace_id,
-            created_at
-        )
-        SELECT 
-            'dynamic_resource_loaded',
-            'agent_engine',
-            COALESCE(consumer, 'agent-service'),
-            'dynamic_resource',
-            resource_name,
-            jsonb_build_object(
-                'revision', revision,
-                'status', status,
-                'input_hash', input_hash,
-                'output_hash', output_hash,
-                'package_snapshot_digest', package_snapshot_digest,
-                'bundle_digest', bundle_digest
-            ),
-            COALESCE(trace_id, 'audit-backfill-trace'),
-            created_at
-        FROM dynamic_resource_usage_audit
-        WHERE NOT EXISTS (
-            SELECT 1 FROM audit_log a 
-            WHERE a.trace_id = dynamic_resource_usage_audit.trace_id 
-              AND a.event_type = 'dynamic_resource_loaded'
-        );
-
-        RAISE NOTICE 'dynamic_resource_usage_audit 存量审计日志回填至 audit_log 完成';
-    END IF;
-
     RAISE NOTICE '阶段 1 数据回填执行完毕';
 END $$;
