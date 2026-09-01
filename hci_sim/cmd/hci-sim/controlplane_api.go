@@ -545,15 +545,17 @@ func appendVerificationAsset(w http.ResponseWriter, r *http.Request, registry co
 	}
 	// 统一规范化 Payload 为 Route Stdout 字符串（支持纯文本与 JSON 结构），并物化更新对应的 Route
 	stdout := normalizePayloadToStdout(request.Asset.Payload)
-	if stdout != "" && request.Asset.SignalID != "" {
-		matchedRouteID, updateErr := updateRouteStdout(&manifest, request.Asset.SignalID, request.Asset.RouteID, stdout)
-		if updateErr != nil {
-			writeControlPlaneError(w, updateErr)
-			return
-		}
-		if request.Asset.RouteID == "" && matchedRouteID != "" {
-			request.Asset.RouteID = matchedRouteID
-		}
+	if request.Asset.SignalID == "" {
+		writeControlPlaneError(w, errors.New("verification_asset_signal_id_required"))
+		return
+	}
+	matchedRouteID, updateErr := updateRouteStdout(&manifest, request.Asset.SignalID, request.Asset.RouteID, stdout)
+	if updateErr != nil {
+		writeControlPlaneError(w, updateErr)
+		return
+	}
+	if request.Asset.RouteID == "" && matchedRouteID != "" {
+		request.Asset.RouteID = matchedRouteID
 	}
 	if request.Asset.SupportID != "" && request.Asset.SupportID != manifest.KBD.SupportID {
 		writeControlPlaneError(w, errors.New("verification_asset_support_id_mismatch"))
@@ -586,12 +588,14 @@ func approveBundle(w http.ResponseWriter, r *http.Request, registry controlplane
 		writeControlPlaneError(w, err)
 		return
 	}
+	log.Printf("bundle_factory approve trace_id=%s digest=%s role=%s actor_id=%s", requestTraceID(r), record.Digest, role, actor.ID)
 	writeJSON(w, http.StatusOK, map[string]any{"bundle": bundleView(record), "trace_id": requestTraceID(r)})
 }
 
 func requestActor(r *http.Request, role controlplane.Role) (controlplane.Actor, error) {
 	id := strings.TrimSpace(r.Header.Get("X-HCI-Sim-Actor-ID"))
-	if id == "" || strings.TrimSpace(r.Header.Get("X-HCI-Sim-Actor-Role")) != string(role) {
+	claimedRole := controlplane.Role(strings.TrimSpace(r.Header.Get("X-HCI-Sim-Actor-Role")))
+	if id == "" || claimedRole == "" || (role != "" && claimedRole != role) {
 		return controlplane.Actor{}, errors.New("forbidden: Gateway 未提供匹配的已认证控制面身份")
 	}
 	return controlplane.Actor{ID: id, Role: role}, nil
@@ -611,8 +615,25 @@ func bundleViews(records []controlplane.BundleRecord) []map[string]any {
 
 func bundleView(record controlplane.BundleRecord) map[string]any {
 	var manifest any
+	var manifestRoutes []fixture.Route
 	if len(record.Manifest) > 0 {
-		_ = json.Unmarshal(record.Manifest, &manifest)
+		var m fixture.Manifest
+		if err := json.Unmarshal(record.Manifest, &m); err == nil {
+			manifest = m
+			manifestRoutes = m.Routes
+		} else {
+			_ = json.Unmarshal(record.Manifest, &manifest)
+		}
+	}
+	routeSources := record.Input.RouteSources
+	if len(routeSources) == 0 && len(manifestRoutes) > 0 {
+		routeSources = make([]controlplane.RouteSource, 0, len(manifestRoutes))
+		for _, r := range manifestRoutes {
+			routeSources = append(routeSources, controlplane.RouteSource{
+				RouteID:  r.ID,
+				SignalID: r.SignalID,
+			})
+		}
 	}
 	return map[string]any{
 		"digest": record.Digest, "status": record.Status, "input_fingerprint": record.InputFingerprint,
@@ -622,7 +643,8 @@ func bundleView(record controlplane.BundleRecord) map[string]any {
 		"tool_contract_revision": record.Input.ToolContractRevision, "policy_revision": record.Input.PolicyRevision,
 		"compiler_revision": record.Input.CompilerRevision, "parent_bundle_digest": record.Input.ParentBundleDigest,
 		"draft_revision": record.Input.DraftRevision, "edit_reason": record.Input.EditReason,
-		"creator": record.Creator, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt,
+		"route_sources": routeSources,
+		"creator":       record.Creator, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt,
 		"stale_reason": record.StaleReason, "approvals": record.Approvals, "manifest": manifest,
 	}
 }
@@ -637,7 +659,7 @@ func writeControlPlaneError(w http.ResponseWriter, err error) {
 	status := http.StatusConflict
 	if strings.Contains(err.Error(), "forbidden") {
 		status = http.StatusForbidden
-	} else if strings.Contains(err.Error(), "not_found") {
+	} else if strings.Contains(err.Error(), "not_found") && !strings.Contains(err.Error(), "route") {
 		status = http.StatusNotFound
 	}
 	writeJSON(w, status, map[string]any{"detail": err.Error()})
@@ -670,17 +692,19 @@ func normalizePayloadToStdout(payload json.RawMessage) string {
 
 // updateRouteStdout 统一更新 Route Stdout 并返回更新的 RouteID。
 func updateRouteStdout(manifest *fixture.Manifest, signalID, routeID, stdout string) (string, error) {
-	if signalID == "" || stdout == "" {
-		return "", nil
+	if signalID == "" {
+		return "", errors.New("verification_asset_signal_id_required")
 	}
 	if routeID != "" {
 		for index := range manifest.Routes {
 			if manifest.Routes[index].ID == routeID && manifest.Routes[index].SignalID == signalID {
-				manifest.Routes[index].Result.Stdout = stdout
+				if stdout != "" {
+					manifest.Routes[index].Result.Stdout = stdout
+				}
 				return routeID, nil
 			}
 		}
-		return "", errors.New("verification_asset_route_not_found")
+		return "", errors.New("verification_asset_route_missing")
 	}
 
 	var matchedIndex = -1
@@ -696,9 +720,11 @@ func updateRouteStdout(manifest *fixture.Manifest, signalID, routeID, stdout str
 	}
 
 	if matchedIndex != -1 {
-		manifest.Routes[matchedIndex].Result.Stdout = stdout
+		if stdout != "" {
+			manifest.Routes[matchedIndex].Result.Stdout = stdout
+		}
 		return manifest.Routes[matchedIndex].ID, nil
 	}
 
-	return "", nil
+	return "", errors.New("verification_asset_route_missing")
 }
