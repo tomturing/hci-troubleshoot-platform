@@ -311,22 +311,20 @@ flowchart TD
 DO $$
 BEGIN
     -- 1. 回填主表 kbd_package
-    INSERT INTO kbd_package (support_id, title, status, working_draft_digest, workspace_version, trace_id, created_at, updated_at)
+    INSERT INTO kbd_package (support_id, working_snapshot_digest, workspace_version, status, trace_id, created_at, updated_at)
     SELECT 
         e.support_id,
-        COALESCE(e.title, ''),
-        CASE WHEN e.status = 'published' THEN 'published' ELSE 'draft_editing' END,
         e.working_snapshot_digest,
         1,
+        CASE WHEN e.status = 'published' THEN 'published' ELSE 'draft_editing' END,
         COALESCE(e.trace_id, 'backfill-init-trace'),
         e.created_at,
         e.updated_at
     FROM kbd_entry e
     WHERE e.support_id IS NOT NULL AND e.support_id != ''
     ON CONFLICT (support_id) DO UPDATE SET
-        title = EXCLUDED.title,
         status = EXCLUDED.status,
-        working_draft_digest = COALESCE(EXCLUDED.working_draft_digest, kbd_package.working_draft_digest),
+        working_snapshot_digest = COALESCE(EXCLUDED.working_snapshot_digest, kbd_package.working_snapshot_digest),
         updated_at = EXCLUDED.updated_at;
 
     -- 2. 回填动态资源使用审计到统一 audit_log
