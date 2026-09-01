@@ -6070,7 +6070,7 @@ onUnmounted(() => clearBatchPollTimer())
       :kbd-revision="(detailEntry?.maintenance_working || revisionState?.working_revision_id)
         ? (revisionState?.history?.find(h => h.id === (revisionState?.working_revision_id || detailEntry?.working_revision_id))?.revision_no || null)
         : null"
-      :package-snapshot-digest="(detailEntry?.maintenance_working || revisionState?.working_revision_id)
+      :package-snapshot-digest="detailEntry?.maintenance_working
         ? (detailEntry?.working_snapshot_digest || null)
         : (revisionState?.active_resource?.package_snapshot_digest || null)"
       :signal="signalDryRunSignal"

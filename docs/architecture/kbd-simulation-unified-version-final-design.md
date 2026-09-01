@@ -585,6 +585,6 @@ tool_contract_revision / policy_revision / compiler_revision
 针对 Code Review 与第一性原理推演发现的边界隐患进行彻底闭环加固：
 1. **阻断孤立验证资产（Fail-closed）**：`hci_sim/cmd/hci-sim/controlplane_api.go` 在 `updateRouteStdout` 中，当目标 Bundle 缺失当前 `signal_id` 的 Route 时，禁止静默放行，改为严格返回 `verification_asset_route_missing` 错误并阻断生成孤立资产，向调用方返回 HTTP 409 Conflict；
 2. **列表接口补齐 `route_sources`**：在 `bundleView` 返回体中显式下发 `route_sources`，并从 `manifest.Routes` 防御性兜底提取，消除前端列表筛选短路失效隐患；
-3. **前端防假成功双重门禁**：`SignalDryRunDialog.vue` 在保存后严格校验返回 Bundle 的 routes 中是否包含当前 `signal_id`，未包含时直接阻断报错，绝不向用户展示虚假成功；在非维护草稿态下严格回退至 `active_resource.package_snapshot_digest`；
+3. **前端防假成功双重门禁与精准草稿态判定**：`SignalDryRunDialog.vue` 在保存后严格校验返回 Bundle 的 routes 中是否包含当前 `signal_id`，未包含时直接阻断报错，绝不向用户展示虚假成功；在 `KbdReviewView.vue` 中仅以 `detailEntry.maintenance_working` 作为 `working_snapshot_digest` 开关，非草稿维护态严格回退至 `active_resource.package_snapshot_digest`；
 4. **可观测性闭环**：`admin.py` 的 `get_kbd_entry_detail` 捕获异常时记录结构化异常日志（带 `kbd_id`、`support_id` 与 `trace_id`），杜绝静默吞掉异常。
 
