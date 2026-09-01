@@ -1,8 +1,8 @@
 # KBD 与 Bundle 极简二元版本治理与单主干执行方案
 
 > **文档状态**：架构收敛与全量执行终局方案（2026-09-01）  
-> **核心原则**：第一性原理拆解 + 对抗性审查 + 彻底一步到位  
-> **取代**：此前所有引入多套 Revision、多层 snapshot 胶水旁路及打补丁的阶段性提案  
+> **核心原则**：第一性原理拆解 + 对抗性审查 + 彻底一步到位（只做减法，不做无谓加法）  
+> **取代**：此前所有引入多套 Revision、多层 snapshot 胶水旁路、中间过渡表及打补丁的阶段性提案  
 > **适用范围**：KBD 知识管理、Signal 试运行、仿真沙箱（hci-sim）、验证资产沉淀、数据库物理设计与 Runtime 激活  
 
 ---
@@ -16,10 +16,13 @@
    - **`🟢 Active Published`（当前线上生产生效的正式发布版）**
 2. **底层物理实现层面**：真正需要的有且仅有 **1 种身份体系**：
    - **基于 SHA-256 的不可变内容寻址（Content-Addressed Immutable Snapshot）**。
-3. **彻底抛弃**：
+3. **彻底做减法与收敛**：
    - 抛弃 20 个含义不清、跨界混用的裸整数 `revision`；
    - 抛弃在前端 Vue 组件与微服务之间传递的多层 `package_snapshot_digest` / `working_snapshot_digest` 嵌套胶水代码；
-   - 抛弃为单信号调试强加的全局 CAS 大事务（彻底根除 409 CAS Conflict）。
+   - 彻底废弃伪中间表 `verification_set`，测试资产直接内嵌于 `package_snapshot`；
+   - 彻底干掉 `dynamic_resource_usage_audit`，审计职能全量收敛进统一的 `audit_log`；
+   - 逐步下线历史重叠表（`kbd_entry`, `kbd_revision`, `dynamic_resource_revision`, `dynamic_resource_active`）；
+   - 核心版本表**从历史混乱的 16 张大幅收敛为 4 张核心物理表**。
 
 ### 1.2 架构收敛全景对比
 
@@ -29,27 +32,197 @@
 | **前端保存链路** | `SignalDryRunDialog.vue` 中分叉：`if (props.packageSnapshotDigest)` 走一套，`else` 走另一套 | **纯粹单主干**：统一走坚固的**三级状态机**（Draft 写入 $\rightarrow$ Published 派生 $\rightarrow$ 冷启动创建） |
 | **单信号调试保存** | 试图在 `kb-service` 强行计算全量 snapshot，导致多信号保存频繁 409 CAS 冲突；过度校验导致新信号无法保存 | **单信号原子 Upsert**：匹配 `signal_id` 则替换输出，未匹配则追加，其余所有信号与历史资产 100% 完整保持 |
 | **死锁与冷启动** | 历史 stale 对象 Compile 时报不可写死锁；无 draft 时报身份不完整 | **就地重新激活（Reactivate）**：编译遇到同指纹 stale/retired 自动就地激活为 draft，冷启动自动开辟初始 draft |
-| **数据库追溯** | 散落在多个 revision 表，缺乏统一调用链关联 | **全表唯一调用链 `trace_id`** 贯穿知识、仿真、测试资产与激活指针 |
+| **数据库表设计** | 新建了 `verification_set`、`dynamic_resource_usage_audit` 等冗余表，膨胀到 16 张相关表 | **做大减法，收敛为 4 张核心表**；审计统一接入 `audit_log`，全链路唯一调用链 `trace_id` 贯穿 |
 
 ---
 
-## 2. 第一性原理推导（First Principles Foundation）
+## 2. 数据库 68 张表现状与 16 张相关表全息审查
 
-### 2.1 实体与同源性事实
-* **事实 1（KBD 规则与 Bundle 仿真是同源制品的两面）**：
-  KBD 规则（现象、排障步骤、Matcher、Signal 提取规则）是业务代码，Bundle 仿真资产（Mock 输出、Route Stdout、验证凭证）是对应的测试基准。在物理上，它们同属于一个排障知识包，**在发布时共同冻结，在调试时共同演进**。
-* **事实 2（物理不可变快照与业务可变指针）**：
-  线上生产生效的内容必须只读（不可变快照），专家调试必须在沙箱中进行（工作区草稿）。
-  因此：系统只需要维护指向不可变快照的 2 个可变指针：
-  $$\text{KbdPackage} = \{ \text{support\_id}, \text{working\_draft\_digest}, \text{active\_release\_digest} \}$$
-* **事实 3（单信号渐进式调试物理法则）**：
-  专家调试单信号 $sig_i$ 并点击保存时，系统的唯一物理动作是：
-  $$\text{Manifest}_{new} = \text{Manifest}_{parent} \oplus \{ \text{Route}(sig_i) \leftarrow \text{Stdout}_{new} \} \cup \{ \text{Asset}(sig_i) \}$$
-  **绝不破坏、绝不覆盖父快照中的其余信号和测试资产**。
+当前数据库共有 68 张表。其中与 KBD、知识版本、动态资源与 Bundle 仿真正式相关的表共有 **16 张**。经第一性原理对抗审查，处置矩阵如下：
+
+### 2.1 16 张相关表全息审查与淘汰处置矩阵
+
+| 领域分类 | 表名 | 当前物理定位 | 第一性原理审查结论 | 终局处置方案 |
+| :--- | :--- | :--- | :--- | :--- |
+| **一、旧 KBD 知识体系 (5张)** | 1. `kbd_entry` | 旧主表（存标题/草稿指针） | 与 `kbd_package` 职能 100% 重叠 | 🛑 **被 `kbd_package` 替代下线** |
+| | 2. `kbd_revision` | 旧知识快照表 | 仅存文本，缺乏联合快照能力 | 🛑 **被 `package_snapshot` 替代下线** |
+| | 3. `kb_category` | 分类元数据表 | 通用字典分类 | ✅ **保留** |
+| | 4. `kbd_image` | 图片附件表 | 图片二进制与路径 | ✅ **保留** |
+| | 5. `kbd_batch_job` / `_item` | 批量任务导入表 | 离线批量导入任务使用 | ✅ **保留** |
+| **二、旧动态运行时体系 (3张)** | 6. `dynamic_resource_revision` | 旧运行时发布记录 | 与 `kbd_revision` 割裂产生歧义 | 🛑 **被 `package_snapshot` 替代下线** |
+| | 7. `dynamic_resource_active` | 旧运行时生效指针 | 仅存一个整数，应收敛进主表 | 🛑 **收敛进 `kbd_package.active_release_digest`** |
+| | 8. `dynamic_resource_usage_audit`| 运行时使用审计 | 独立建表冗余，属日志而非版本 | 🛑 **彻底干掉，收敛进统一 `audit_log`** |
+| **三、PR #981 新增治理表 (4张)** | 9. `kbd_package` | 统一业务聚合根主表 | 管理 2 个二元指针的唯一入口 | 🌟 **保留为唯一业务主表** |
+| | 10. `package_snapshot` | 不可变联合快照表 | 联合内容寻址唯一事实源 | 🌟 **保留为唯一快照表** |
+| | 11. `verification_set` | 测试资产中间集合表 | 纯胶水表，仅存一个字符串数组 | 🛑 **彻底删除！直接内嵌进 `package_snapshot`** |
+| | 12. `verification_asset` | 不可变单次试运行凭证表 | 不可变测试样本与 PASS 凭证 | ✅ **保留为凭证存储** |
+| **四、仿真沙箱体系 (`fixture` 4张)** | 13. `fixture.bundle` | 仿真沙箱构建制品表 | 仿真沙箱执行的核心制品表 | ✅ **保留为仿真制品** |
+| | 14. `fixture.bundle_activation` | 仿真沙箱节点激活指针 | 沙箱节点 CAS 租约分发控制 | ✅ **保留为激活指针** |
+| | 15. `fixture.asset_template` | 沙箱公共资产模板 | 系统公共 Mock 模板库 | ✅ **保留** |
+| | 16. `fixture.asset_instance` / `_revision` | 沙箱资产实例 | 系统公共 Mock 实例库 | ✅ **保留** |
 
 ---
 
-## 3. 终局架构与单主干执行流
+## 3. 终局数据库物理模型（收敛为 4 张核心表）
+
+通过彻底废弃 `verification_set` 并干掉 `dynamic_resource_usage_audit`，版本物理存储收敛为极简的 **4 张核心物理表**：
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        【终极收敛后的 4 张核心物理表】                     │
+│                                                                        │
+│  🌟 1. kbd_package (业务主表)        ── 唯一入口，管理 Working/Active 两个二元指针 │
+│  🌟 2. package_snapshot (联合快照)    ── 不可变事实源 (直接内嵌测试资产数组)      │
+│  ✅ 3. verification_asset (测试凭证) ── 不可变试运行 PASS/FAIL 证据落库        │
+│  ✅ 4. fixture.bundle (仿真制品)     ── 仿真沙箱执行 Manifest 与 Mock 制品     │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### 3.1 核心 DDL 定义（含唯一调用链 `trace_id`）
+
+```sql
+-- ============================================================================
+-- 1. 排障知识包聚合根表 (业务主表，管理二元指针)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS kbd_package (
+    support_id                  VARCHAR(64) PRIMARY KEY,           -- 业务工单标识 (如 '41464')
+    title                       TEXT NOT NULL DEFAULT '',          -- 故障标题
+    status                      VARCHAR(32) NOT NULL DEFAULT 'published', -- 'published' | 'draft_editing' | 'validating'
+    
+    -- 业务指针 1：当前线上生产生效的正式发布版指纹 (只读)
+    active_release_digest       VARCHAR(71),                       -- sha256:xxxxxxxx...
+    active_release_version      VARCHAR(32) DEFAULT 'v1.0.0',      -- 语义化版本展示号
+    
+    -- 业务指针 2：当前正在维护调试的工作草稿指纹 (可写，未维护时为 NULL)
+    working_draft_digest        VARCHAR(71),                       -- sha256:yyyyyyyy...
+    workspace_version           INT NOT NULL DEFAULT 1,            -- 工作区自增代数
+    
+    -- 唯一调用链与审计
+    trace_id                    VARCHAR(64) NOT NULL,              -- 触发最后一次变更的唯一调用链
+    created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    
+    CONSTRAINT chk_active_digest_fmt CHECK (active_release_digest IS NULL OR active_release_digest ~ '^sha256:[0-9a-f]{64}$'),
+    CONSTRAINT chk_draft_digest_fmt CHECK (working_draft_digest IS NULL OR working_draft_digest ~ '^sha256:[0-9a-f]{64}$')
+);
+CREATE INDEX IF NOT EXISTS idx_kbd_package_trace_id ON kbd_package(trace_id);
+
+
+-- ============================================================================
+-- 2. 统一不可变快照表 (package_snapshot: 彻底废弃 verification_set 中间表，直接内嵌)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS package_snapshot (
+    package_snapshot_digest     VARCHAR(71) PRIMARY KEY,           -- sha256:xxxxxxxx...
+    support_id                  VARCHAR(64) NOT NULL,              -- 关联工单
+    parent_snapshot_digest      VARCHAR(71),                       -- 父快照哈希 (Git 式血缘)
+    
+    -- 核心知识资产与仿真资产 (JSONB 冻结结构)
+    knowledge_spec              JSONB NOT NULL DEFAULT '{}'::jsonb,-- 现象、排障步骤、解决方案正文
+    signals_spec                JSONB NOT NULL DEFAULT '[]'::jsonb,-- 全部 Signal 规则定义 (QFK/QKV/Matcher/AI)
+    simulation_spec             JSONB NOT NULL DEFAULT '{}'::jsonb,-- 各 Signal 仿真输出、Mock 路由表
+    
+    -- 验证资产集合 (直接内嵌 asset digest 数组，不再依赖外部 verification_set 表)
+    verification_assets         JSONB NOT NULL DEFAULT '[]'::jsonb,-- 如 ["sha256:asset1", "sha256:asset2"]
+    
+    -- 依赖与契约版本 (冻结不可变)
+    tool_contract_revision      VARCHAR(64) NOT NULL DEFAULT 'v1',
+    policy_revision             VARCHAR(64) NOT NULL DEFAULT 'v1',
+    compiler_revision           VARCHAR(64) NOT NULL DEFAULT 'v1',
+    
+    -- 唯一调用链与操作审计
+    created_by                  VARCHAR(64) NOT NULL,
+    commit_reason               TEXT NOT NULL DEFAULT '',
+    trace_id                    VARCHAR(64) NOT NULL,              -- 本次快照生成的唯一调用链
+    created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    
+    CONSTRAINT chk_snapshot_digest_fmt CHECK (package_snapshot_digest ~ '^sha256:[0-9a-f]{64}$'),
+    CONSTRAINT chk_parent_digest_fmt CHECK (parent_snapshot_digest IS NULL OR parent_snapshot_digest ~ '^sha256:[0-9a-f]{64}$')
+);
+CREATE INDEX IF NOT EXISTS idx_snapshot_support_id ON package_snapshot(support_id);
+CREATE INDEX IF NOT EXISTS idx_snapshot_trace_id ON package_snapshot(trace_id);
+
+
+-- ============================================================================
+-- 3. 不可变单次测试凭证表 (verification_asset: 试运行 PASS/FAIL 证据)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS verification_asset (
+    asset_id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    asset_digest                VARCHAR(71) NOT NULL UNIQUE,       -- sha256:...
+    support_id                  VARCHAR(64) NOT NULL,
+    signal_id                   VARCHAR(128) NOT NULL,
+    processing_index            INT NOT NULL DEFAULT 0,
+    dataset_id                  VARCHAR(128) NOT NULL,
+    input_digest                VARCHAR(71) NOT NULL,
+    deterministic_input         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ai_input                    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    raw_response_hash           VARCHAR(128),
+    output_json                 JSONB NOT NULL DEFAULT '{}'::jsonb,
+    evidence_json               JSONB NOT NULL DEFAULT '{}'::jsonb,
+    downstream_result           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    model                       VARCHAR(128) NOT NULL,
+    prompt_revision             VARCHAR(128) NOT NULL,
+    contract_version            VARCHAR(128) NOT NULL,
+    result_status               VARCHAR(20) NOT NULL,              -- 'pass' | 'fail' | 'inconclusive'
+    trace_id                    VARCHAR(64) NOT NULL,              -- 运行唯一调用链
+    created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    
+    CONSTRAINT chk_asset_digest_fmt CHECK (asset_digest ~ '^sha256:[0-9a-f]{64}$'),
+    CONSTRAINT chk_asset_status CHECK (result_status IN ('pass', 'fail', 'inconclusive'))
+);
+CREATE INDEX IF NOT EXISTS idx_asset_support_signal ON verification_asset(support_id, signal_id, processing_index, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_asset_trace_id ON verification_asset(trace_id);
+
+
+-- ============================================================================
+-- 4. 仿真沙箱 Bundle 制品表 (fixture.bundle: HCI-Sim 沙箱核心制品)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS fixture.bundle (
+    id                          VARCHAR(64) PRIMARY KEY,
+    scenario_id                 VARCHAR(64) NOT NULL,
+    digest                      VARCHAR(71) NOT NULL UNIQUE,       -- Manifest 语义 SHA-256
+    bundle_input_digest         VARCHAR(71) UNIQUE,                -- 规范化输入唯一指纹 (防并发重复构建)
+    manifest                    JSONB NOT NULL,                    -- 完整 Manifest (含 routes 与 verification_assets)
+    object_digest               VARCHAR(71) NOT NULL,              -- 二进制对象字节摘要
+    object_uri                  TEXT,
+    size_bytes                  BIGINT NOT NULL DEFAULT 0,
+    
+    status                      VARCHAR(32) NOT NULL DEFAULT 'draft', -- 'draft' | 'validated' | 'approved' | 'published' | 'stale' | 'retired'
+    stale_reason                TEXT,
+    version                     INT NOT NULL DEFAULT 1,            -- 乐观锁版本
+    
+    -- 唯一调用链与审计
+    created_by                  VARCHAR(64) NOT NULL,
+    trace_id                    VARCHAR(64) NOT NULL,              -- 构建调用的唯一调用链
+    created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    
+    CONSTRAINT chk_bundle_digest_fmt CHECK (digest ~ '^sha256:[0-9a-f]{64}$')
+);
+CREATE INDEX IF NOT EXISTS idx_bundle_status ON fixture.bundle(status);
+CREATE INDEX IF NOT EXISTS idx_bundle_trace_id ON fixture.bundle(trace_id);
+```
+
+### 3.2 动态资源使用审计全面收敛进统一 `audit_log`
+
+原有的 `dynamic_resource_usage_audit` 独立表彻底废弃，所有 Agent 推理加载动态资源/快照的审计事件统一写入标准 `audit_log` 表：
+
+```sql
+-- 统一审计落库格式示例 (audit_log)
+INSERT INTO audit_log (
+    event_type,      -- 'dynamic_resource_loaded'
+    actor_type,      -- 'agent_engine'
+    actor_id,        -- 'agent-service.react_engine'
+    resource_type,   -- 'kbd_package'
+    resource_id,     -- '41464'
+    payload_json,    -- {"package_snapshot_digest": "sha256:...", "bundle_digest": "sha256:..."}
+    trace_id,        -- 't-diag-session-98765'
+    created_at
+) VALUES (...);
+```
+
+---
+
+## 4. 前端与控制面单主干执行流
 
 ```mermaid
 flowchart TD
@@ -81,194 +254,7 @@ flowchart TD
 
 ---
 
-## 4. 数据库物理模型与唯一调用链设计（Database Schema & Traceability）
-
-按照全局约束：**所有数据库表设计必须包含唯一调用链（`trace_id`），支持全链路穿透追溯。**
-
-### 4.1 核心数据表设计 DDL
-
-```sql
--- ============================================================================
--- 1. 排障知识包聚合根表 (业务主表，管理二元指针)
--- ============================================================================
-CREATE TABLE IF NOT EXISTS kbd_package (
-    support_id                  VARCHAR(64) PRIMARY KEY,           -- 业务工单标识 (如 '41464')
-    title                       TEXT NOT NULL DEFAULT '',          -- 故障标题
-    status                      VARCHAR(32) NOT NULL DEFAULT 'published', -- 'published' | 'draft_editing' | 'validating'
-    
-    -- 业务指针 1：当前线上生产生效的正式发布版指纹 (只读)
-    active_release_digest       VARCHAR(71),                       -- sha256:xxxxxxxx...
-    active_release_version      VARCHAR(32) DEFAULT 'v1.0.0',      -- 语义化版本展示号
-    
-    -- 业务指针 2：当前正在维护调试的工作草稿指纹 (可写，未维护时为 NULL)
-    working_draft_digest        VARCHAR(71),                       -- sha256:yyyyyyyy...
-    workspace_version           INT NOT NULL DEFAULT 1,            -- 工作区自增代数
-    
-    -- 唯一调用链与审计
-    trace_id                    VARCHAR(64) NOT NULL,              -- 触发最后一次变更的唯一调用链
-    created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    
-    -- 约束
-    CONSTRAINT chk_active_digest_fmt CHECK (active_release_digest IS NULL OR active_release_digest ~ '^sha256:[0-9a-f]{64}$'),
-    CONSTRAINT chk_draft_digest_fmt CHECK (working_draft_digest IS NULL OR working_draft_digest ~ '^sha256:[0-9a-f]{64}$')
-);
-
-CREATE INDEX IF NOT EXISTS idx_kbd_package_trace_id ON kbd_package(trace_id);
-
-
--- ============================================================================
--- 2. 统一不可变快照表 (Content-Addressed Immutable Snapshot)
--- ============================================================================
-CREATE TABLE IF NOT EXISTS kbd_package_snapshot (
-    package_snapshot_digest     VARCHAR(71) PRIMARY KEY,           -- sha256:xxxxxxxx...
-    support_id                  VARCHAR(64) NOT NULL,              -- 关联工单
-    parent_snapshot_digest      VARCHAR(71),                       -- 父快照哈希 (Git 式血缘)
-    
-    -- 核心知识资产 (JSONB 冻结结构)
-    knowledge_spec              JSONB NOT NULL DEFAULT '{}'::jsonb,-- 现象、排障步骤、解决方案正文
-    signals_spec                JSONB NOT NULL DEFAULT '[]'::jsonb,-- 全部 Signal 规则定义 (QFK/QKV/Matcher/AI)
-    
-    -- 核心仿真资产
-    simulation_spec             JSONB NOT NULL DEFAULT '{}'::jsonb,-- 各 Signal 仿真输出、Mock 路由表
-    verification_assets         JSONB NOT NULL DEFAULT '[]'::jsonb,-- 测试样本库与 PASS 断言凭证集
-    
-    -- 依赖与契约版本 (冻结不可变)
-    tool_contract_revision      VARCHAR(64) NOT NULL DEFAULT 'v1', -- 工具协议版本
-    policy_revision             VARCHAR(64) NOT NULL DEFAULT 'v1', -- 策略规则版本
-    compiler_revision           VARCHAR(64) NOT NULL DEFAULT 'v1', -- 编译器版本
-    
-    -- 唯一调用链与操作审计
-    created_by                  VARCHAR(64) NOT NULL,              -- 操作人 / Actor ID
-    commit_reason               TEXT NOT NULL DEFAULT '',          -- 演进修改原因
-    trace_id                    VARCHAR(64) NOT NULL,              -- 本次生成的唯一调用链
-    created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    
-    CONSTRAINT chk_snapshot_digest_fmt CHECK (package_snapshot_digest ~ '^sha256:[0-9a-f]{64}$'),
-    CONSTRAINT chk_parent_digest_fmt CHECK (parent_snapshot_digest IS NULL OR parent_snapshot_digest ~ '^sha256:[0-9a-f]{64}$')
-);
-
-CREATE INDEX IF NOT EXISTS idx_snapshot_support_id ON kbd_package_snapshot(support_id);
-CREATE INDEX IF NOT EXISTS idx_snapshot_trace_id ON kbd_package_snapshot(trace_id);
-
-
--- ============================================================================
--- 3. 仿真沙箱 Bundle 存储表 (HCI-Sim 核心制品表)
--- ============================================================================
-CREATE TABLE IF NOT EXISTS fixture.bundle (
-    id                          VARCHAR(64) PRIMARY KEY,           -- 内部唯一 ID
-    scenario_id                 VARCHAR(64) NOT NULL,              -- 关联场景 ID
-    digest                      VARCHAR(71) NOT NULL UNIQUE,       -- Manifest 语义 SHA-256
-    bundle_input_digest         VARCHAR(71) UNIQUE,                -- 规范化输入唯一指纹 (防并发重复构建)
-    manifest                    JSONB NOT NULL,                    -- 完整 Manifest (含 routes 与 verification_assets)
-    object_digest               VARCHAR(71) NOT NULL,              -- 二进制对象字节摘要
-    object_uri                  TEXT,                              -- 对象存储存储路径
-    size_bytes                  BIGINT NOT NULL DEFAULT 0,
-    
-    -- 状态机
-    status                      VARCHAR(32) NOT NULL DEFAULT 'draft', -- 'draft' | 'validated' | 'approved' | 'published' | 'stale' | 'retired'
-    stale_reason                TEXT,                              -- 如 'superseded_by_revision:sha256:...'
-    version                     INT NOT NULL DEFAULT 1,            -- 乐观锁版本
-    
-    -- 唯一调用链与审计
-    created_by                  VARCHAR(64) NOT NULL,
-    trace_id                    VARCHAR(64) NOT NULL,              -- 构建调用的唯一调用链
-    created_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    
-    CONSTRAINT chk_bundle_digest_fmt CHECK (digest ~ '^sha256:[0-9a-f]{64}$')
-);
-
-CREATE INDEX IF NOT EXISTS idx_bundle_status ON fixture.bundle(status);
-CREATE INDEX IF NOT EXISTS idx_bundle_trace_id ON fixture.bundle(trace_id);
-
-
--- ============================================================================
--- 4. 仿真运行时激活指针表 (Runtime Active Pointer)
--- ============================================================================
-CREATE TABLE IF NOT EXISTS fixture.bundle_activation (
-    support_id                  VARCHAR(64) PRIMARY KEY,           -- 业务工单标识
-    active_digest               VARCHAR(71) REFERENCES fixture.bundle(digest), -- 当前生效 Bundle
-    desired_digest              VARCHAR(71),                       -- 期望生效 Bundle (支持灰度/异步)
-    generation                  BIGINT NOT NULL DEFAULT 1,         -- 代数指针 (CAS 控制)
-    status                      VARCHAR(32) NOT NULL DEFAULT 'active',
-    trace_id                    VARCHAR(64) NOT NULL,              -- 激活切换的唯一调用链
-    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    
-    CONSTRAINT chk_activation_active_fmt CHECK (active_digest IS NULL OR active_digest ~ '^sha256:[0-9a-f]{64}$')
-);
-
-CREATE INDEX IF NOT EXISTS idx_activation_trace_id ON fixture.bundle_activation(trace_id);
-```
-
-### 4.2 全链路调用链穿透图（End-to-End Trace Lineage）
-
-通过在每一张表与接口中强制落库 `trace_id`，实现**从用户操作 $\rightarrow$ 网关请求 $\rightarrow$ 控制面编译 $\rightarrow$ 沙箱执行 $\rightarrow$ 数据库沉淀**的 100% 唯一调用链可观测闭环：
-
-```
-[前端请求 Trace ID: t-dryrun-41464-001]
-       │
-       ▼
-[API Gateway: /signals/dry-run/bundles/{digest}] ──记录日志 [trace_id=t-dryrun-41464-001]
-       │
-       ▼
-[HCI-Sim Control Plane: ReviseDraft] ────────────写入 fixture.bundle (trace_id=t-dryrun-41464-001)
-       │
-       ▼
-[KBD Package Pointer Update] ────────────────────写入 kbd_package (trace_id=t-dryrun-41464-001)
-```
-
----
-
-## 5. 详细技术改造与代码落地清单
-
-### 5.1 前端单主干收敛与胶水代码彻底清理
-
-#### ① [`frontend/admin/src/components/editors/SignalDryRunDialog.vue`](file:///aihci/hci-troubleshoot-platform-fix-bundle-draft-derive-and-compile-deadlock/frontend/admin/src/components/editors/SignalDryRunDialog.vue)
-- **彻底删除**：删除 `props.packageSnapshotDigest` 属性声明及其对应的 `if (props.packageSnapshotDigest)` 分叉代码；
-- **彻底删除**：删除底部 footer 提示中关于 packageSnapshotDigest 的双模文案判断；
-- **全面收敛**：统一采用坚固的三级状态机（Draft -> Published -> Create）；
-- **防并发与边界加固**：
-  - 维持 `saveLoading` 互斥遮罩，避免连续连点引发覆盖；
-  - 维持对 `route_sources` 预先包含限制的移除，支持新建信号即调即存。
-
-#### ② [`frontend/admin/src/views/KbdReviewView.vue`](file:///aihci/hci-troubleshoot-platform-fix-bundle-draft-derive-and-compile-deadlock/frontend/admin/src/views/KbdReviewView.vue)
-- **彻底删除**：删除向 `SignalDryRunDialog` 传递 `:package-snapshot-digest` 的属性绑定；
-- **彻底删除**：删除 `handleVerificationAssetSaved` 中复杂的 `snapshot.package_snapshot_digest` 嵌套解构与 CAS 回退逻辑；
-- **极简维护**：条目加载后直接读取当前 `support_id` 与 `kbdRevision`，只负责向弹窗注入基础上下文。
-
----
-
-### 5.2 API 网关与后端控制面收敛
-
-#### ① [`backend/api-gateway/app/routes/signal_dry_run.py`](file:///aihci/hci-troubleshoot-platform-fix-bundle-draft-derive-and-compile-deadlock/backend/api-gateway/app/routes/signal_dry_run.py)
-- **唯一保存端点**：确立 `POST /signals/dry-run/bundles/{bundle_digest}` 作为试运行保存沉淀的唯一入口；
-- **秒级保存保障**：维持 `_verify_preview_token` 签名快速校验，避免保存时再次重复调用耗时的大模型推理；
-- **清理多余旁路**：停用/标记废弃旧的 `POST /signals/dry-run/verification-assets` 全量 CAS 旁路接口。
-
-#### ② [`hci_sim/cmd/hci-sim/controlplane_api.go`](file:///aihci/hci-troubleshoot-platform-fix-bundle-draft-derive-and-compile-deadlock/hci_sim/cmd/hci-sim/controlplane_api.go) & [`hci_sim/internal/controlplane/controlplane.go`](file:///aihci/hci-troubleshoot-platform-fix-bundle-draft-derive-and-compile-deadlock/hci_sim/internal/controlplane/controlplane.go)
-- **单信号 Stdout Upsert 算法**：
-  ```go
-  func updateRouteStdout(manifest *fixture.Manifest, signalID string, routeID string, stdout string) (string, error) {
-      for i := range manifest.Routes {
-          if (routeID != "" && manifest.Routes[i].ID == routeID) || (signalID != "" && manifest.Routes[i].SignalID == signalID) {
-              manifest.Routes[i].Result.Stdout = stdout
-              return manifest.Routes[i].ID, nil
-          }
-      }
-      // 未匹配则追加新 Route，保障新增信号即调即存
-      newID := fmt.Sprintf("route-%s", signalID)
-      manifest.Routes = append(manifest.Routes, fixture.Route{
-          ID: newID, SignalID: signalID, Result: fixture.ExecutionResult{Stdout: stdout, ExitCode: 0},
-      })
-      return newID, nil
-  }
-  ```
-- **Stale/Retired 就地激活防死锁**：维持 `Compile` 时当检测到相同指纹对象处于 `stale`/`retired` 时直接更新为 `draft`，消灭死锁。
-
----
-
-## 6. 对抗性审查（Adversarial Review & Edge Cases）
+## 5. 对抗性审查（Adversarial Review & Edge Cases）
 
 | 极端场景 | 攻击推演 / 失败条件 | 终局方案防御机制 |
 | :--- | :--- | :--- |
@@ -282,7 +268,7 @@ CREATE INDEX IF NOT EXISTS idx_activation_trace_id ON fixture.bundle_activation(
 
 ---
 
-## 7. 验证保障与测试矩阵
+## 6. 验证保障与测试矩阵
 
 1. **前端单测矩阵（`SignalDryRunDialog.spec.ts`）**：
    - [x] 显示已绑定的 KBD 与 Signal，不提供编辑位置选择；
