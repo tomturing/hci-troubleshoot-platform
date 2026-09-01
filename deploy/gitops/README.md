@@ -50,3 +50,13 @@ kubectl apply -f deploy/gitops/argo-apps/local/hci-platform-dev.yaml
 2. 将 `env-repo-template/` 下内容复制到环境仓库根目录
 3. 修改 `argo-apps/local/*.yaml` 与 `argo-apps/cloud/*.yaml` 中的 `repoURL` 和 `targetRevision`
 4. 配置 ArgoCD 仓库凭据（见 [argo-apps/local/README.md](argo-apps/local/README.md)）
+
+## 版本封板与多环境晋级策略（2026-09-01 封板）
+
+平台已进入稳定封板期，多环境持续交付策略如下：
+
+| 触发方式 | 影响环境 | 晋级行为 |
+| :--- | :--- | :--- |
+| **日常 PR 合并（`push: main`）** | `dev` | 仅自动构建并更新 `dev` 环境镜像标签，**不再自动更新 `staging` 与 `prod`**。 |
+| **手动工作流（`workflow_dispatch`）** | `dev` / `staging` / `prod` / `both` / `all` | 在 GitHub Actions 页面手动运行 CI 流水线，选择 `promote_target` 触发指定环境的升级部署。 |
+| **独立环境仓库同步（`env-repo-sync.yml`）** | 指定 `target_env` | 手动指定镜像标签和目标环境，向 `hci-platform-env` 发起 PR。 |
