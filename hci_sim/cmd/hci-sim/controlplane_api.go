@@ -644,7 +644,7 @@ func bundleView(record controlplane.BundleRecord) map[string]any {
 		"compiler_revision": record.Input.CompilerRevision, "parent_bundle_digest": record.Input.ParentBundleDigest,
 		"draft_revision": record.Input.DraftRevision, "edit_reason": record.Input.EditReason,
 		"route_sources": routeSources,
-		"creator": record.Creator, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt,
+		"creator":       record.Creator, "created_at": record.CreatedAt, "updated_at": record.UpdatedAt,
 		"stale_reason": record.StaleReason, "approvals": record.Approvals, "manifest": manifest,
 	}
 }
