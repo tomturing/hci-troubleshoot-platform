@@ -26,7 +26,6 @@ const props = defineProps<{
   modelValue: boolean
   supportId?: string
   kbdRevision?: number | null
-  packageSnapshotDigest?: string | null
   signal?: SignalLike | null
   signalIndex?: number | null
   processingIndex?: number | null
@@ -228,10 +227,7 @@ async function requestPreview(): Promise<void> {
         payload,
       },
       signal: props.signal, support_id: props.supportId,
-      ...(props.packageSnapshotDigest ? {
-        package_snapshot_digest: props.packageSnapshotDigest,
-        observed_snapshot_digest: props.packageSnapshotDigest,
-      } : { kbd_revision: typeof props.kbdRevision === 'number' && props.kbdRevision > 0 ? props.kbdRevision : 1 }),
+      kbd_revision: typeof props.kbdRevision === 'number' && props.kbdRevision > 0 ? props.kbdRevision : 1,
     }
     const response = await fetch('/api/v1/signals/dry-run', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -273,33 +269,14 @@ async function saveToBundle(): Promise<void> {
   if (!canSave.value || !lastDryRunRequest.value || !props.supportId) return
   saveLoading.value = true
   try {
-    if (props.packageSnapshotDigest) {
-      const response = await fetch('/api/v1/signals/dry-run/verification-assets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          dry_run: lastDryRunRequest.value,
-          preview_token: (previewResult.value as Record<string, unknown> | null)?.preview_token,
-          preview_result: previewResult.value,
-        }),
-      })
-      const body = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(String(body?.detail || `验证资产服务 HTTP ${response.status}`))
-      ElMessage.success('已保存到当前 KBD 草稿测试集')
-      emit('saved', body as Record<string, unknown>)
-      isEditingFork.value = false
-      return
-    }
     const listed = await fetch(`/api/hci-sim/v1/control-plane/bundles?support_id=${encodeURIComponent(props.supportId)}`)
     const listBody = await listed.json().catch(() => ({}))
     if (!listed.ok) throw new Error(`Bundle 控制面 HTTP ${listed.status}`)
     const targetRevision = typeof props.kbdRevision === 'number' ? props.kbdRevision : null
-    const targetPackage = props.packageSnapshotDigest || null
     let drafts = Array.isArray(listBody.bundles)
       ? listBody.bundles.filter((item: Record<string, unknown>) => {
           if (item.status !== 'draft') return false
-          if (targetPackage && item.package_snapshot_digest !== targetPackage) return false
-          if (!targetPackage && targetRevision !== null && item.kbd_revision !== targetRevision) return false
+          if (targetRevision !== null && item.kbd_revision !== targetRevision) return false
           return true
         })
       : []
@@ -309,8 +286,7 @@ async function saveToBundle(): Promise<void> {
       const publishedBundle = Array.isArray(listBody.bundles)
         ? listBody.bundles.find((item: Record<string, unknown>) => {
             if (item.status !== 'published') return false
-            if (targetPackage && item.package_snapshot_digest !== targetPackage) return false
-            if (!targetPackage && targetRevision !== null && item.kbd_revision !== targetRevision) return false
+            if (targetRevision !== null && item.kbd_revision !== targetRevision) return false
             return true
           })
         : null
@@ -323,10 +299,7 @@ async function saveToBundle(): Promise<void> {
           headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `signal-dry-run-draft:${props.supportId}:${previewResult.value?.trace_id || 'current'}` },
           body: JSON.stringify({
             support_id: props.supportId,
-            ...(targetPackage ? {
-              package_snapshot_digest: targetPackage,
-              observed_snapshot_digest: targetPackage,
-            } : { kbd_revision: typeof props.kbdRevision === 'number' && props.kbdRevision > 0 ? props.kbdRevision : 1 }),
+            kbd_revision: typeof props.kbdRevision === 'number' && props.kbdRevision > 0 ? props.kbdRevision : 1,
           }),
         })
         const createdBody = await created.json().catch(() => ({}))
@@ -343,7 +316,6 @@ async function saveToBundle(): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         dry_run: lastDryRunRequest.value,
-        ...(props.packageSnapshotDigest ? { package_snapshot_digest: props.packageSnapshotDigest } : {}),
         preview_token: (previewResult.value as Record<string, unknown> | null)?.preview_token,
         preview_result: previewResult.value,
       }),
@@ -481,7 +453,7 @@ watch(selectedDatasetId, () => {
     <template #header>
       <div class="dialog-heading">
         <div class="dialog-title">试运行 · {{ signalId }} {{ instruction }}</div>
-        <div class="dialog-subtitle">已绑定 KBD {{ supportId || '—' }} / {{ kbdRevision ? `rev.${kbdRevision}` : (packageSnapshotDigest ? `快照 ${packageSnapshotDigest.slice(7, 15)}` : '正式发布版') }} · {{ tool }}</div>
+        <div class="dialog-subtitle">已绑定 KBD {{ supportId || '—' }} / {{ kbdRevision ? `rev.${kbdRevision}` : '正式发布版' }} · {{ tool }}</div>
       </div>
     </template>
 
@@ -625,7 +597,7 @@ watch(selectedDatasetId, () => {
 
     <template #footer>
       <div class="dialog-footer">
-        <span class="footer-hint">{{ packageSnapshotDigest ? '验证结果保存到当前 KBD 草稿测试集。' : '兼容模式保存到 Bundle Draft。' }}</span>
+        <span class="footer-hint">保存功能自动将验证通过的输出与凭证沉淀到 Bundle Draft 工作区。</span>
         <div class="footer-actions">
           <el-button @click="close">取消</el-button>
           <el-button type="primary" plain :loading="previewLoading" @click="requestPreview">试运行</el-button>
@@ -644,7 +616,7 @@ watch(selectedDatasetId, () => {
             <el-tooltip :content="canSave ? '将当前编辑并验证通过的资产保存为新的 Bundle Draft' : '请先完成试运行且结果为 PASS 后再保存'" placement="top">
               <span>
                 <el-button type="primary" :loading="saveLoading" :disabled="!canSave" @click="saveToBundle">
-                  {{ packageSnapshotDigest ? '保存到草稿测试集' : '保存到 Bundle 草稿' }}
+                  保存到 Bundle 草稿
                 </el-button>
               </span>
             </el-tooltip>

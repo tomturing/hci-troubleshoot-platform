@@ -56,21 +56,6 @@ class VerificationAsset(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
 
 
-class VerificationSet(Base):
-    """不可变验证资产集合。"""
-
-    __tablename__ = "verification_set"
-
-    verification_set_id = Column(PGUUID(as_uuid=True), primary_key=True)
-    verification_set_digest = Column(String(71), nullable=False, unique=True)
-    support_id = Column(String(20), nullable=False, index=True)
-    asset_digests = Column(JSONB, nullable=False, default=list)
-    asset_count = Column(Integer, nullable=False, default=0)
-    created_by = Column(String(128), nullable=False)
-    trace_id = Column(String(64), nullable=False)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
-
-
 class PackageSnapshot(Base):
     """一次完整业务视图的不可变 manifest。"""
 
@@ -87,11 +72,7 @@ class PackageSnapshot(Base):
     knowledge_snapshot_digest = Column(String(71), nullable=False)
     signal_spec_digest = Column(String(71), nullable=False)
     simulation_spec_digest = Column(String(71), nullable=False)
-    verification_set_digest = Column(
-        String(71),
-        ForeignKey("verification_set.verification_set_digest", ondelete="RESTRICT"),
-        nullable=True,
-    )
+    verification_assets = Column(JSONB, nullable=False, default=list)
     prompt_revision = Column(String(128), nullable=False)
     tool_contract_revision = Column(String(128), nullable=False)
     policy_revision = Column(String(128), nullable=False)

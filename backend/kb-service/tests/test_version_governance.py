@@ -53,21 +53,11 @@ def test_verification_asset_digest_binds_snapshot_context():
         "run_id": "run-1",
         "result_status": "pass",
     }
-    snapshot = {
-        "knowledge_snapshot_digest": "sha256:" + "2" * 64,
-        "signal_spec_digest": "sha256:" + "3" * 64,
-        "simulation_spec_digest": "sha256:" + "4" * 64,
-        "prompt_revision": "prompt-1",
-        "tool_contract_revision": "tool-1",
-        "policy_revision": "policy-1",
-        "compiler_revision": "compiler-1",
-    }
 
-    first = verification_asset_digest("CASE-1", asset, snapshot)
+    first = verification_asset_digest("CASE-1", asset)
     changed = verification_asset_digest(
         "CASE-1",
-        asset,
-        {**snapshot, "knowledge_snapshot_digest": "sha256:" + "5" * 64},
+        {**asset, "model": "other-model"},
     )
 
     assert first.startswith("sha256:")
@@ -77,15 +67,6 @@ def test_verification_asset_digest_binds_snapshot_context():
 @pytest.mark.asyncio
 async def test_repeated_verification_asset_does_not_advance_workspace():
     support_id = "CASE-1"
-    snapshot_fields = {
-        "knowledge_snapshot_digest": "sha256:" + "2" * 64,
-        "signal_spec_digest": "sha256:" + "3" * 64,
-        "simulation_spec_digest": "sha256:" + "4" * 64,
-        "prompt_revision": "prompt-1",
-        "tool_contract_revision": "tool-1",
-        "policy_revision": "policy-1",
-        "compiler_revision": "compiler-1",
-    }
     asset = {
         "asset_digest": None,
         "signal_id": "sig-1",
@@ -104,18 +85,23 @@ async def test_repeated_verification_asset_does_not_advance_workspace():
         "run_id": "run-1",
         "result_status": "pass",
     }
-    digest = verification_asset_digest(support_id, asset, snapshot_fields)
+    digest = verification_asset_digest(support_id, asset)
     package = SimpleNamespace(working_snapshot_digest="sha256:" + "9" * 64)
     current = SimpleNamespace(
         package_snapshot_digest=package.working_snapshot_digest,
-        verification_set_digest="sha256:" + "8" * 64,
+        verification_assets=[digest],
         manifest_json={"source_knowledge_revision_no": 7},
-        **snapshot_fields,
+        knowledge_snapshot_digest="sha256:" + "2" * 64,
+        signal_spec_digest="sha256:" + "3" * 64,
+        simulation_spec_digest="sha256:" + "4" * 64,
+        prompt_revision="prompt-1",
+        tool_contract_revision="tool-1",
+        policy_revision="policy-1",
+        compiler_revision="compiler-1",
     )
     row = SimpleNamespace(asset_digest=digest, support_id=support_id, result_status="pass")
-    current_set = SimpleNamespace(asset_digests=[digest])
     session = AsyncMock()
-    session.scalar.side_effect = [current, row, current_set]
+    session.scalar.side_effect = [current, row]
 
     with (
         patch("app.services.version_governance._lock_package", new=AsyncMock(return_value=package)),
@@ -126,7 +112,6 @@ async def test_repeated_verification_asset_does_not_advance_workspace():
             support_id=support_id,
             observed_snapshot_digest=package.working_snapshot_digest,
             asset=asset,
-            snapshot_fields=snapshot_fields,
             actor_id="expert-1",
             trace_id="trace-1",
         )
