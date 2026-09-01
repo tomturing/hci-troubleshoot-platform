@@ -300,10 +300,6 @@ async function saveToBundle(): Promise<void> {
           if (item.status !== 'draft') return false
           if (targetPackage && item.package_snapshot_digest !== targetPackage) return false
           if (!targetPackage && targetRevision !== null && item.kbd_revision !== targetRevision) return false
-          const routes = (Array.isArray(item.route_sources) ? item.route_sources : ((item.manifest as Record<string, unknown>)?.routes || [])) as Array<Record<string, unknown>>
-          if (routes.length > 0 && !routes.some(r => r.signal_id === signalId.value)) {
-            return false
-          }
           return true
         })
       : []
@@ -315,10 +311,6 @@ async function saveToBundle(): Promise<void> {
             if (item.status !== 'published') return false
             if (targetPackage && item.package_snapshot_digest !== targetPackage) return false
             if (!targetPackage && targetRevision !== null && item.kbd_revision !== targetRevision) return false
-            const routes = (Array.isArray(item.route_sources) ? item.route_sources : ((item.manifest as Record<string, unknown>)?.routes || [])) as Array<Record<string, unknown>>
-            if (routes.length > 0 && !routes.some(r => r.signal_id === signalId.value)) {
-              return false
-            }
             return true
           })
         : null
