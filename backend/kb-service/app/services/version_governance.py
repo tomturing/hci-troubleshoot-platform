@@ -286,7 +286,7 @@ async def append_verification_asset(
         session,
         support_id=support_id,
         observed_snapshot_digest=package.working_snapshot_digest,
-        verification_set_digest=set_digest,
+        verification_assets=current_assets,
         manifest={
             **dict(current.manifest_json or {}),
             "verification_asset_digest": asset_digest,
