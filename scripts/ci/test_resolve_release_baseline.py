@@ -128,8 +128,12 @@ def test_hci_sim_promotion_workflow_targets_dev_and_staging_applications():
     workflow = _WORKFLOW.read_text(encoding="utf-8")
     assert "deploy/gitops/argo-apps/local/hci-sim-dev.yaml" in workflow
     assert "deploy/gitops/argo-apps/cloud/hci-sim-staging.yaml" in workflow
+    assert 'promotion_target="dev"' in workflow
     assert 'promotion_target="dev/staging"' in workflow
     assert "staging)\n                app_files=" in workflow
+    assert "ENVIRONMENTS=(dev)" in workflow
+    assert "staging) ENVIRONMENTS=(staging) ;;" in workflow
+    assert "prod) ENVIRONMENTS=(prod) ;;" in workflow
 
 
 def test_hci_sim_promotion_pr_uses_owner_pat_and_fail_closed_actor_check():
