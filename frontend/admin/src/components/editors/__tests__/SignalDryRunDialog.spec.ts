@@ -337,6 +337,47 @@ describe('SignalDryRunDialog', () => {
     )
     vi.unstubAllGlobals()
   })
+
+  it('正式发布版条目（未提供 kbdRevision 时）点击试运行不应抛出草稿身份不完整警告，正常发起请求', async () => {
+    const wrapper = mount(SignalDryRunDialog, {
+      props: {
+        modelValue: true,
+        supportId: '41464',
+        kbdRevision: null,
+        signal: {
+          id: 'sig_002',
+          role: 'must',
+          acquire: { tool: 'qkv_task', args: { keyword: '创建虚拟机' } },
+          orchestrate: { produces: [{ name: 'VM', path: 'vm' }] },
+        },
+      },
+      global: { plugins: [ElementPlus], stubs },
+    })
+    const vm = wrapper.vm as any
+    vm.sampleInput = JSON.stringify([{ action_type: 0, description: '无法复制镜像' }])
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ status: 'PASS', config_revision: 'sha256:cfg1' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await vm.requestPreview()
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/v1/signals/dry-run',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('"kbd_revision":1'),
+      })
+    )
+    expect(vm.previewResult).not.toBeNull()
+    expect(vm.previewResult.status).toBe('PASS')
+    expect(wrapper.text()).toContain('正式发布版')
+
+    vi.unstubAllGlobals()
+  })
 })
 
 
