@@ -5,7 +5,7 @@ from .kbd_entry import KbdEntry
 from .kbd_revision import KbdRevision
 from .sop_document import SopDocument
 from .sop_node import KBSopNode
-from .version_governance import KbdPackage, PackageSnapshot, VerificationAsset, VerificationSet
+from .version_governance import KbdPackage, PackageSnapshot, VerificationAsset
 
 __all__ = [
     "KbCategory",
@@ -15,6 +15,5 @@ __all__ = [
     "KbdPackage",
     "PackageSnapshot",
     "VerificationAsset",
-    "VerificationSet",
     "SopDocument",
 ]

@@ -24,7 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.kbd_entry import KbdEntry
-from app.models.version_governance import KbdPackage, PackageSnapshot, VerificationAsset, VerificationSet
+from app.models.version_governance import KbdPackage, PackageSnapshot, VerificationAsset
 
 logger = get_logger("kb-service-version-governance")
 
@@ -38,69 +38,65 @@ class VerificationAssetDigestError(ValueError):
 
 
 def _digest(value: Any) -> str:
-    """对规范化 JSON 计算稳定 SHA-256 身份。"""
-
-    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+    serialized = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return f"sha256:{hashlib.sha256(serialized.encode('utf-8')).hexdigest()}"
 
 
-_VERIFICATION_ASSET_FIELDS = (
-    "signal_id",
-    "processing_index",
-    "dataset_id",
-    "input_digest",
-    "deterministic_input",
-    "ai_input",
-    "raw_response_hash",
-    "output_json",
-    "evidence_json",
-    "downstream_result",
-    "model",
-    "prompt_revision",
-    "contract_version",
-    "run_id",
-    "result_status",
-)
+def _normalize_asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "signal_id": str(asset["signal_id"]),
+        "processing_index": int(asset["processing_index"]),
+        "dataset_id": str(asset["dataset_id"]),
+        "input_digest": str(asset["input_digest"]),
+        "deterministic_input": dict(asset.get("deterministic_input") or {}),
+        "ai_input": dict(asset.get("ai_input") or {}),
+        "raw_response_hash": asset.get("raw_response_hash"),
+        "output_json": dict(asset.get("output_json") or {}),
+        "evidence_json": dict(asset.get("evidence_json") or {}),
+        "downstream_result": dict(asset.get("downstream_result") or {}),
+        "model": str(asset["model"]),
+        "prompt_revision": str(asset["prompt_revision"]),
+        "contract_version": str(asset["contract_version"]),
+        "run_id": asset.get("run_id"),
+        "result_status": str(asset["result_status"]),
+    }
 
 
 def verification_asset_digest(
     support_id: str,
     asset: dict[str, Any],
-    snapshot_fields: dict[str, str],
 ) -> str:
-    """由服务端冻结上下文和验证结果共同计算不可变资产身份。"""
+    """计算单个验证资产的不可变 SHA-256。"""
 
-    return _digest(
-        {
-            "support_id": support_id,
-            "snapshot": dict(sorted(snapshot_fields.items())),
-            "asset": {field: asset.get(field) for field in _VERIFICATION_ASSET_FIELDS},
-        }
+    normalized = _normalize_asset_payload(asset)
+    identity = {
+        "support_id": support_id,
+        **normalized,
+    }
+    return _digest(identity)
+
+
+async def _lock_package(
+    session: AsyncSession,
+    support_id: str,
+    trace_id: str,
+) -> KbdPackage:
+    stmt = (
+        pg_insert(KbdPackage)
+        .values(
+            package_id=uuid4(),
+            support_id=support_id,
+            status="draft_editing",
+            workspace_version=1,
+            trace_id=trace_id,
+        )
+        .on_conflict_do_nothing(index_elements=["support_id"])
     )
-
-
-async def _lock_package(session: AsyncSession, support_id: str, trace_id: str) -> KbdPackage:
-    result = await session.execute(select(KbdPackage).where(KbdPackage.support_id == support_id).with_for_update())
-    package = result.scalar_one_or_none()
+    await session.execute(stmt)
+    query = select(KbdPackage).where(KbdPackage.support_id == support_id).with_for_update()
+    package = await session.scalar(query)
     if package is None:
-        # 首次保存也必须在数据库层收敛并发创建，再重新加锁读取唯一工作区行。
-        await session.execute(
-            pg_insert(KbdPackage)
-            .values(
-                package_id=uuid4(),
-                support_id=support_id,
-                workspace_version=1,
-                status="draft_editing",
-                trace_id=trace_id,
-            )
-            .on_conflict_do_nothing(index_elements=[KbdPackage.support_id])
-        )
-        package = await session.scalar(
-            select(KbdPackage).where(KbdPackage.support_id == support_id).with_for_update()
-        )
-        if package is None:
-            raise RuntimeError("无法创建或锁定 KbdPackage")
-        await session.flush()
+        raise RuntimeError(f"kbd_package row missing after upsert: support_id={support_id}")
     return package
 
 
@@ -127,7 +123,7 @@ async def create_snapshot(
     knowledge_snapshot_digest: str,
     signal_spec_digest: str,
     simulation_spec_digest: str,
-    verification_set_digest: str | None,
+    verification_assets: list[str] | None = None,
     prompt_revision: str,
     tool_contract_revision: str,
     policy_revision: str,
@@ -147,11 +143,12 @@ async def create_snapshot(
                 PackageSnapshot.package_snapshot_digest == package.working_snapshot_digest
             )
         )
+    clean_assets = sorted(set(verification_assets or []))
     if current is not None and (
         current.knowledge_snapshot_digest == knowledge_snapshot_digest
         and current.signal_spec_digest == signal_spec_digest
         and current.simulation_spec_digest == simulation_spec_digest
-        and current.verification_set_digest == verification_set_digest
+        and list(current.verification_assets or []) == clean_assets
         and current.prompt_revision == prompt_revision
         and current.tool_contract_revision == tool_contract_revision
         and current.policy_revision == policy_revision
@@ -166,7 +163,7 @@ async def create_snapshot(
         "knowledge_snapshot_digest": knowledge_snapshot_digest,
         "signal_spec_digest": signal_spec_digest,
         "simulation_spec_digest": simulation_spec_digest,
-        "verification_set_digest": verification_set_digest,
+        "verification_assets": clean_assets,
         "prompt_revision": prompt_revision,
         "tool_contract_revision": tool_contract_revision,
         "policy_revision": policy_revision,
@@ -199,7 +196,7 @@ async def create_snapshot(
         knowledge_snapshot_digest=knowledge_snapshot_digest,
         signal_spec_digest=signal_spec_digest,
         simulation_spec_digest=simulation_spec_digest,
-        verification_set_digest=verification_set_digest,
+        verification_assets=clean_assets,
         prompt_revision=prompt_revision,
         tool_contract_revision=tool_contract_revision,
         policy_revision=policy_revision,
@@ -238,35 +235,27 @@ async def append_verification_asset(
     support_id: str,
     observed_snapshot_digest: str | None,
     asset: dict[str, Any],
-    snapshot_fields: dict[str, str],
     actor_id: str,
     trace_id: str,
+    declared_digest: str | None = None,
+    **snapshot_fields: Any,
 ) -> tuple[VerificationAsset, PackageSnapshot]:
-    """幂等追加验证资产，并在同一事务生成新的集合和工作快照。"""
+    """保存单次试运行不可变证据并原子追加到当前 PackageSnapshot 中。"""
 
     package = await _lock_package(session, support_id, trace_id)
     _check_observed(package, observed_snapshot_digest)
-    if not package.working_snapshot_digest:
-        raise SnapshotConflictError("验证资产必须绑定已存在的工作快照")
-    current = await session.scalar(
-        select(PackageSnapshot).where(PackageSnapshot.package_snapshot_digest == package.working_snapshot_digest)
-    )
+    current = None
+    if package.working_snapshot_digest:
+        current = await session.scalar(
+            select(PackageSnapshot).where(
+                PackageSnapshot.package_snapshot_digest == package.working_snapshot_digest
+            )
+        )
     if current is None:
-        raise SnapshotConflictError("当前工作快照不存在")
-    authoritative_snapshot_fields = {
-        "knowledge_snapshot_digest": current.knowledge_snapshot_digest,
-        "signal_spec_digest": current.signal_spec_digest,
-        "simulation_spec_digest": current.simulation_spec_digest,
-        "prompt_revision": current.prompt_revision,
-        "tool_contract_revision": current.tool_contract_revision,
-        "policy_revision": current.policy_revision,
-        "compiler_revision": current.compiler_revision,
-    }
-    if snapshot_fields != authoritative_snapshot_fields:
-        raise SnapshotConflictError("验证资产携带的冻结依赖与当前工作快照不一致")
+        raise ValueError(f"当前 working_snapshot_digest={package.working_snapshot_digest!r} 对应快照不存在")
 
-    declared_digest = str(asset.pop("asset_digest", "") or "")
-    asset_digest = verification_asset_digest(support_id, asset, authoritative_snapshot_fields)
+    asset = _normalize_asset_payload(asset)
+    asset_digest = verification_asset_digest(support_id, asset)
     if declared_digest and declared_digest != asset_digest:
         raise VerificationAssetDigestError(
             f"asset_digest mismatch: declared={declared_digest!r}, computed={asset_digest!r}"
@@ -286,36 +275,12 @@ async def append_verification_asset(
     elif row.support_id != support_id:
         raise ValueError("asset_digest 已属于其他 support_id")
 
-    current_assets: list[str] = []
-    if current.verification_set_digest:
-        current_set = await session.scalar(
-            select(VerificationSet).where(
-                VerificationSet.verification_set_digest == current.verification_set_digest
-            )
-        )
-        if current_set and isinstance(current_set.asset_digests, list):
-            current_assets = [str(item) for item in current_set.asset_digests]
+    current_assets: list[str] = list(current.verification_assets or []) if isinstance(current.verification_assets, list) else []
     if asset_digest in current_assets:
         KBD_VERIFICATION_ASSET_ATTACH_TOTAL.labels(status=str(row.result_status)).inc()
         return row, current
     current_assets.append(asset_digest)
     current_assets = sorted(set(current_assets))
-    set_digest = _digest({"support_id": support_id, "asset_digests": current_assets})
-    verification_set = await session.scalar(
-        select(VerificationSet).where(VerificationSet.verification_set_digest == set_digest)
-    )
-    if verification_set is None:
-        verification_set = VerificationSet(
-            verification_set_id=uuid4(),
-            verification_set_digest=set_digest,
-            support_id=support_id,
-            asset_digests=current_assets,
-            asset_count=len(current_assets),
-            created_by=actor_id,
-            trace_id=trace_id,
-        )
-        session.add(verification_set)
-        await session.flush()
 
     snapshot = await create_snapshot(
         session,
@@ -400,7 +365,7 @@ async def ensure_publish_snapshot(
         knowledge_snapshot_digest=knowledge_digest,
         signal_spec_digest=signal_digest,
         simulation_spec_digest=simulation_digest,
-        verification_set_digest=None,
+        verification_assets=[],
         prompt_revision=prompt_revision,
         tool_contract_revision=tool_revision,
         policy_revision=policy_revision,
@@ -448,7 +413,7 @@ async def advance_revision_snapshot(
         knowledge_snapshot_digest=_digest(payload),
         signal_spec_digest=_digest(signals or {}),
         simulation_spec_digest=_digest({"support_id": kbd.support_id, "assets": []}),
-        verification_set_digest=None,
+        verification_assets=[],
         prompt_revision=str((publish_validation or {}).get("prompt_revision") or "legacy-unversioned"),
         tool_contract_revision=str(
             (publish_validation or {}).get("tool_contract_revision") or "legacy-unversioned"

@@ -56,7 +56,7 @@ class SnapshotRequest(BaseModel):
     knowledge_snapshot_digest: str = Field(..., pattern=_SHA256_PATTERN)
     signal_spec_digest: str = Field(..., pattern=_SHA256_PATTERN)
     simulation_spec_digest: str = Field(..., pattern=_SHA256_PATTERN)
-    verification_set_digest: str | None = Field(None, pattern=_SHA256_PATTERN)
+    verification_assets: list[str] = Field(default_factory=list)
     prompt_revision: str = Field(..., min_length=1, max_length=128)
     tool_contract_revision: str = Field(..., min_length=1, max_length=128)
     policy_revision: str = Field(..., min_length=1, max_length=128)
@@ -189,7 +189,7 @@ async def save_snapshot(support_id: str, body: SnapshotRequest, request: Request
                 knowledge_snapshot_digest=body.knowledge_snapshot_digest,
                 signal_spec_digest=body.signal_spec_digest,
                 simulation_spec_digest=body.simulation_spec_digest,
-                verification_set_digest=body.verification_set_digest,
+                verification_assets=body.verification_assets,
                 prompt_revision=body.prompt_revision,
                 tool_contract_revision=body.tool_contract_revision,
                 policy_revision=body.policy_revision,

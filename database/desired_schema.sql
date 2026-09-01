@@ -3429,21 +3429,6 @@ CREATE TABLE IF NOT EXISTS verification_asset (
     )
 );
 
-CREATE TABLE IF NOT EXISTS verification_set (
-    verification_set_id uuid NOT NULL DEFAULT gen_random_uuid(),
-    verification_set_digest varchar(71) NOT NULL UNIQUE,
-    support_id varchar(20) NOT NULL,
-    asset_digests jsonb NOT NULL DEFAULT '[]'::jsonb,
-    asset_count integer NOT NULL DEFAULT 0,
-    created_by varchar(128) NOT NULL,
-    trace_id varchar(64) NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT verification_set_pkey PRIMARY KEY (verification_set_id),
-    CONSTRAINT verification_set_digest_format CHECK (verification_set_digest ~ '^sha256:[0-9a-f]{64}$'),
-    CONSTRAINT verification_set_assets_array CHECK (jsonb_typeof(asset_digests) = 'array'),
-    CONSTRAINT verification_set_asset_count_check CHECK (asset_count >= 0)
-);
-
 CREATE TABLE IF NOT EXISTS package_snapshot (
     package_snapshot_id uuid NOT NULL DEFAULT gen_random_uuid(),
     package_snapshot_digest varchar(71) NOT NULL UNIQUE,
@@ -3452,7 +3437,7 @@ CREATE TABLE IF NOT EXISTS package_snapshot (
     knowledge_snapshot_digest varchar(71) NOT NULL,
     signal_spec_digest varchar(71) NOT NULL,
     simulation_spec_digest varchar(71) NOT NULL,
-    verification_set_digest varchar(71),
+    verification_assets jsonb NOT NULL DEFAULT '[]'::jsonb,
     prompt_revision varchar(128) NOT NULL,
     tool_contract_revision varchar(128) NOT NULL,
     policy_revision varchar(128) NOT NULL,
@@ -3467,17 +3452,13 @@ CREATE TABLE IF NOT EXISTS package_snapshot (
         knowledge_snapshot_digest ~ '^sha256:[0-9a-f]{64}$'
         AND signal_spec_digest ~ '^sha256:[0-9a-f]{64}$'
         AND simulation_spec_digest ~ '^sha256:[0-9a-f]{64}$'
-        AND (verification_set_digest IS NULL OR verification_set_digest ~ '^sha256:[0-9a-f]{64}$')
     ),
     CONSTRAINT package_snapshot_parent_fk FOREIGN KEY (parent_snapshot_digest)
-        REFERENCES package_snapshot(package_snapshot_digest) ON DELETE RESTRICT,
-    CONSTRAINT package_snapshot_verification_fk FOREIGN KEY (verification_set_digest)
-        REFERENCES verification_set(verification_set_digest) ON DELETE RESTRICT
+        REFERENCES package_snapshot(package_snapshot_digest) ON DELETE RESTRICT
 );
 
 CREATE INDEX IF NOT EXISTS idx_verification_asset_support_signal ON verification_asset (support_id, signal_id, processing_index, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_verification_asset_trace ON verification_asset (trace_id);
-CREATE INDEX IF NOT EXISTS idx_verification_set_support_created ON verification_set (support_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_package_snapshot_support_created ON package_snapshot (support_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_package_snapshot_parent ON package_snapshot (parent_snapshot_digest) WHERE parent_snapshot_digest IS NOT NULL;
 
