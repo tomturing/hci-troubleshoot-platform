@@ -175,7 +175,7 @@ describe('SignalDryRunDialog', () => {
     expect(wrapper.find('.result-context dd code').text()).toBe('degraded')
   })
 
-  it('保存草稿时过滤并创建匹配当前信号路由的 Draft', async () => {
+  it('当前版本无任何 Draft 与 Published Bundle 时（冷启动），自动创建新 Draft 并写入', async () => {
     const wrapper = mount(SignalDryRunDialog, {
       props: { modelValue: true, supportId: '41446', kbdRevision: 23, signal: { ...signal, id: 'expert_new_001' }, signalIndex: 1 },
       global: { plugins: [ElementPlus], stubs },
@@ -193,14 +193,12 @@ describe('SignalDryRunDialog', () => {
 
     const fetchMock = vi.fn().mockImplementation((url: string, opts?: { method?: string; body?: string }) => {
       if (url.includes('/bundles?support_id=41446')) {
-        // 返回一个包含旧信号 sig_001 的已存在草稿
+        // 无任何草稿或已发布版（冷启动）
         return Promise.resolve({
           ok: true,
           status: 200,
           json: () => Promise.resolve({
-            bundles: [
-              { digest: 'sha256:old_draft', status: 'draft', kbd_revision: 23, route_sources: [{ signal_id: 'sig_001' }] }
-            ]
+            bundles: []
           }),
         })
       }
@@ -376,6 +374,54 @@ describe('SignalDryRunDialog', () => {
     expect(vm.previewResult.status).toBe('PASS')
     expect(wrapper.text()).toContain('正式发布版')
 
+    vi.unstubAllGlobals()
+  })
+
+  it('向已有 Draft 保存一个 Draft 中原本不存在的全新 Signal 时，能够正常复用已有 Draft 并写入', async () => {
+    const wrapper = mount(SignalDryRunDialog, {
+      props: { modelValue: true, supportId: '41464', kbdRevision: 5, signal: { ...signal, id: 'sig_new_999' }, signalIndex: 2 },
+      global: { plugins: [ElementPlus], stubs },
+    })
+    const vm = wrapper.vm as any
+    vm.previewResult = {
+      trace_id: 't-new-sig', dataset_id: 'sample', config_revision: 'sha256:cfg_new', status: 'PASS',
+      preview_token: 'token.new_sig',
+    }
+    vm.lastDryRunRequest = { support_id: '41464', kbd_revision: 5, unit_ref: { signal_id: 'sig_new_999' } }
+
+    const fetchMock = vi.fn().mockImplementation((url: string, opts?: { method?: string; body?: string }) => {
+      if (url.includes('/bundles?support_id=41464')) {
+        // 返回包含 sig_001 但不包含 sig_new_999 的活跃 Draft
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            bundles: [
+              { digest: 'sha256:draft_existing_rev5', status: 'draft', kbd_revision: 5, route_sources: [{ signal_id: 'sig_001' }] }
+            ]
+          }),
+        })
+      }
+      if (url.includes('/dry-run/bundles/sha256%3Adraft_existing_rev5') || url.includes('/dry-run/bundles/sha256:draft_existing_rev5')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            bundle: { digest: 'sha256:draft_existing_rev5_updated', status: 'draft' }
+          }),
+        })
+      }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await vm.saveToBundle()
+    // 验证直接复用了已有的 draft_existing_rev5，而不是报错或走新建/基于已发布版派生
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/hci-sim/v1/control-plane/bundles', expect.objectContaining({ method: 'POST' }))
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('sha256%3Adraft_existing_rev5'),
+      expect.objectContaining({ method: 'POST' })
+    )
     vi.unstubAllGlobals()
   })
 })
