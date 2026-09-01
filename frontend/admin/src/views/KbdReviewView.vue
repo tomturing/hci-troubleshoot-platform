@@ -102,7 +102,7 @@ interface KbdRevisionState {
     modified_signal_ids: string[]
   }
   history: RevisionMetadata[]
-  active_resource: { revision: number; checksum: string; version: string } | null
+  active_resource: { revision: number; checksum: string; version: string; package_snapshot_digest?: string | null; release_id?: string | null } | null
 }
 
 interface CapabilityDescriptor {
@@ -6066,8 +6066,8 @@ onUnmounted(() => clearBatchPollTimer())
       :support-id="detailEntry?.support_id"
       :kbd-revision="(detailEntry?.maintenance_working || revisionState?.working_revision_id)
         ? (revisionState?.history?.find(h => h.id === (revisionState?.working_revision_id || detailEntry?.working_revision_id))?.revision_no || null)
-        : (revisionState?.active_resource?.revision || null)"
-      :package-snapshot-digest="detailEntry?.working_snapshot_digest || null"
+        : null"
+      :package-snapshot-digest="detailEntry?.working_snapshot_digest || revisionState?.active_resource?.package_snapshot_digest || null"
       :signal="signalDryRunSignal"
       :signal-index="signalDryRunIndex"
       :processing-index="signalDryRunProcessingIndex"

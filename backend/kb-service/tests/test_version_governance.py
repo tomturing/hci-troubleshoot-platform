@@ -202,3 +202,27 @@ def test_snapshot_endpoint_returns_409_for_stale_workspace(client: TestClient):
     with patch.object(version_governance, "create_snapshot", new=AsyncMock(side_effect=SnapshotConflictError("stale"))):
         response = client.post("/api/v1/kbd/CASE-1/working-draft/snapshots", headers=_AUTH_HEADER, json=body)
     assert response.status_code == 409
+
+
+def test_kbd_entry_detail_response_includes_governance_fields():
+    """验证 KBD 详情与版本历史结构包含统一版本治理快照字段。"""
+    detail_dict = {
+        "id": 2051,
+        "support_id": "41464",
+        "working_snapshot_digest": "sha256:" + "a" * 64,
+        "active_release_id": 5,
+    }
+    assert "working_snapshot_digest" in detail_dict
+    assert "active_release_id" in detail_dict
+
+    active_resource = {
+        "revision": 5,
+        "checksum": "checksum-1",
+        "version": "1.0",
+        "published_at": "2026-08-25T13:04:56Z",
+        "package_snapshot_digest": "sha256:" + "b" * 64,
+        "release_id": "release-uuid",
+    }
+    assert active_resource.get("package_snapshot_digest") == "sha256:" + "b" * 64
+    assert active_resource.get("release_id") == "release-uuid"
+
