@@ -314,17 +314,16 @@ BEGIN
     INSERT INTO kbd_package (support_id, working_snapshot_digest, workspace_version, status, trace_id, created_at, updated_at)
     SELECT 
         e.support_id,
-        e.working_snapshot_digest,
+        NULL,
         1,
         CASE WHEN e.status = 'published' THEN 'published' ELSE 'draft_editing' END,
-        COALESCE(e.trace_id, 'backfill-init-trace'),
+        'backfill-init-trace',
         e.created_at,
         e.updated_at
     FROM kbd_entry e
     WHERE e.support_id IS NOT NULL AND e.support_id != ''
     ON CONFLICT (support_id) DO UPDATE SET
         status = EXCLUDED.status,
-        working_snapshot_digest = COALESCE(EXCLUDED.working_snapshot_digest, kbd_package.working_snapshot_digest),
         updated_at = EXCLUDED.updated_at;
 
     -- 2. 回填动态资源使用审计到统一 audit_log
