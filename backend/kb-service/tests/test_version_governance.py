@@ -202,3 +202,99 @@ def test_snapshot_endpoint_returns_409_for_stale_workspace(client: TestClient):
     with patch.object(version_governance, "create_snapshot", new=AsyncMock(side_effect=SnapshotConflictError("stale"))):
         response = client.post("/api/v1/kbd/CASE-1/working-draft/snapshots", headers=_AUTH_HEADER, json=body)
     assert response.status_code == 409
+
+
+def test_kbd_entry_detail_and_revisions_real_endpoint_returns_governance_fields():
+    """验证真实的 /api/admin/kbd/{id} 与 /api/admin/kbd/{id}/revisions 端点下发统一版本治理字段。"""
+    from app.routes import admin as admin_route
+
+    app = FastAPI()
+    app.include_router(admin_route.kbd_router)
+
+    mock_db = MagicMock()
+    mock_session = AsyncMock()
+    mock_session.__aenter__.return_value = mock_session
+    mock_session.__aexit__.return_value = None
+    mock_db.async_session_factory.return_value = mock_session
+
+    admin_route._check_auth = lambda req: None
+    admin_route.set_dependencies(mock_db)
+
+    # 1. 模拟 /api/admin/kbd/2051 端点
+    fake_entry_row = {
+        "id": 2051,
+        "support_id": "41464",
+        "title": "测试 KBD",
+        "problem_description": "问题描述",
+        "alert_info": "",
+        "steps_text": "",
+        "root_cause": "",
+        "solution": "",
+        "operational_impact": "",
+        "is_temporary": False,
+        "recommendations": "",
+        "signals_json": {"schema_version": 2, "signals": []},
+        "content_md": "",
+        "content_raw": "",
+        "images_json": [],
+        "metadata": {},
+        "category_id": None,
+        "ai_category_id": None,
+        "ai_category_conf": None,
+        "ai_category_reason": None,
+        "status": "published",
+        "reviewer_id": "admin",
+        "review_note": "",
+        "latest_proposal_revision_id": None,
+        "working_revision_id": None,
+        "lock_version": 1,
+        "created_at": None,
+        "updated_at": None,
+        "published_at": None,
+    }
+
+    mock_exec_row = MagicMock()
+    mock_exec_row.mappings.return_value.first.return_value = fake_entry_row
+
+    mock_history_res = MagicMock()
+    mock_history_res.scalars.return_value.all.return_value = []
+
+    mock_session.execute = AsyncMock(side_effect=[mock_exec_row, mock_history_res])
+
+    fake_package = MagicMock()
+    fake_package.working_snapshot_digest = "sha256:" + "a" * 64
+    fake_package.active_release_id = 123
+    mock_session.scalar = AsyncMock(return_value=fake_package)
+
+    client = TestClient(app)
+    response = client.get("/api/admin/kbd/2051")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["working_snapshot_digest"] == "sha256:" + "a" * 64
+    assert data["active_release_id"] == 123
+
+    # 2. 模拟 /api/admin/kbd/2051/revisions 端点
+    mock_entry_orm = MagicMock()
+    mock_entry_orm.latest_proposal_revision_id = None
+    mock_entry_orm.working_revision_id = None
+    mock_entry_orm.lock_version = 1
+    mock_session.get = AsyncMock(return_value=mock_entry_orm)
+
+    mock_active_res = MagicMock()
+    mock_active_res.mappings.return_value.first.return_value = {
+        "revision": 5,
+        "checksum": "chk-1",
+        "version": "1.0",
+        "published_at": None,
+        "package_snapshot_digest": "sha256:" + "b" * 64,
+        "release_id": "rel-uuid-456",
+    }
+    mock_session.execute = AsyncMock(side_effect=[mock_history_res, mock_active_res])
+
+    rev_response = client.get("/api/admin/kbd/2051/revisions")
+    assert rev_response.status_code == 200
+    rev_data = rev_response.json()
+    assert rev_data["active_resource"]["package_snapshot_digest"] == "sha256:" + "b" * 64
+    assert rev_data["active_resource"]["release_id"] == "rel-uuid-456"
+
+

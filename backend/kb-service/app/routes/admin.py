@@ -2316,6 +2316,18 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
         )
         revision_history = list(history_result.scalars().all())
 
+        working_snapshot_digest: str | None = None
+        active_release_id: int | None = None
+        try:
+            package = await session.scalar(
+                select(KbdPackage).where(KbdPackage.support_id == row["support_id"])
+            )
+            if package is not None:
+                working_snapshot_digest = package.working_snapshot_digest
+                active_release_id = package.active_release_id
+        except Exception:
+            pass
+
     def review_value(field: str, fallback: Any = None) -> Any:
         if working_payload is not None and field in working_payload:
             return working_payload[field]
@@ -2362,6 +2374,8 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
         "published_at": row["published_at"].isoformat() if row["published_at"] else None,
         "latest_proposal_revision_id": row["latest_proposal_revision_id"],
         "working_revision_id": row["working_revision_id"],
+        "working_snapshot_digest": working_snapshot_digest,
+        "active_release_id": active_release_id,
         "lock_version": row["lock_version"],
         "maintenance_working": working_payload is not None,
         "review_view": "maintenance_working" if working_payload is not None else "entry",
@@ -2394,7 +2408,8 @@ async def get_kbd_revisions(request: Request, kbd_id: int) -> dict[str, Any]:
         active_result = await session.execute(
             text(
                 """
-                SELECT r.revision, r.checksum, r.version, r.published_at
+                SELECT r.revision, r.checksum, r.version, r.published_at,
+                       r.package_snapshot_digest, r.release_id
                 FROM dynamic_resource_active a
                 JOIN dynamic_resource_revision r
                   ON r.resource_type = a.resource_type
@@ -2442,6 +2457,8 @@ async def get_kbd_revisions(request: Request, kbd_id: int) -> dict[str, Any]:
                 "checksum": active["checksum"],
                 "version": active["version"],
                 "published_at": active["published_at"].isoformat() if active["published_at"] else None,
+                "package_snapshot_digest": active.get("package_snapshot_digest"),
+                "release_id": str(active["release_id"]) if active.get("release_id") else None,
             }
             if active
             else None

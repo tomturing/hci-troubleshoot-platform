@@ -475,7 +475,7 @@ watch(selectedDatasetId, () => {
     <template #header>
       <div class="dialog-heading">
         <div class="dialog-title">试运行 · {{ signalId }} {{ instruction }}</div>
-        <div class="dialog-subtitle">已绑定 KBD {{ supportId || '—' }} / rev.{{ kbdRevision || '草稿' }} · {{ tool }}</div>
+        <div class="dialog-subtitle">已绑定 KBD {{ supportId || '—' }} / {{ kbdRevision ? `rev.${kbdRevision}` : (packageSnapshotDigest ? `快照 ${packageSnapshotDigest.slice(7, 15)}` : '正式发布版') }} · {{ tool }}</div>
       </div>
     </template>
 
