@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.27.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.26.0...v2.27.0) (2026-09-01)
+
+
+### ✨ 新功能
+
+* 升级 qkv_task 高保真模板并对齐 Tool 产出变量规范 ([#971](https://github.com/tomturing/hci-troubleshoot-platform/issues/971)) ([f60ccd2](https://github.com/tomturing/hci-troubleshoot-platform/commit/f60ccd2d4d89343c2bd4d7295f22abed9b1ad36f))
+* 完成 KBD 与仿真资产统一版本治理 ([#981](https://github.com/tomturing/hci-troubleshoot-platform/issues/981)) ([79ccb27](https://github.com/tomturing/hci-troubleshoot-platform/commit/79ccb27085d3e245870e05ba2d08570890831fe2))
+
+
+### 🐛 Bug 修复
+
+* **matcher:** 优化 Signal 试运行非 AI 判定真实证据透传与前端文案自适应 ([#974](https://github.com/tomturing/hci-troubleshoot-platform/issues/974)) ([e6450a8](https://github.com/tomturing/hci-troubleshoot-platform/commit/e6450a80476d1bc58368f557b9cedbab03ee86dd))
+* **qkv:** 修复 QKV 任务与 QFK 日志 REQUEST_ID 前导逗号清洗问题 ([#979](https://github.com/tomturing/hci-troubleshoot-platform/issues/979)) ([c5a7c99](https://github.com/tomturing/hci-troubleshoot-platform/commit/c5a7c999281687ddc770357a0239b0fefe8450e4))
+* 修复 Signal 试运行保存到已发布 Bundle 时的状态死锁与自动派生 ([#975](https://github.com/tomturing/hci-troubleshoot-platform/issues/975)) ([e3e1157](https://github.com/tomturing/hci-troubleshoot-platform/commit/e3e11571a2f28f2af3c5c866c290df8ea3b6f4f7))
+* 修复 Signal 试运行向已有草稿追加新信号边界漏洞并归档三级状态机设计 ([#987](https://github.com/tomturing/hci-troubleshoot-platform/issues/987)) ([3046eba](https://github.com/tomturing/hci-troubleshoot-platform/commit/3046eba1ddcbc569b9de26a16a65057d3041df7a))
+* 修复 SOP 未解决后无法转入 KBD ([#972](https://github.com/tomturing/hci-troubleshoot-platform/issues/972)) ([38c2971](https://github.com/tomturing/hci-troubleshoot-platform/commit/38c29712bba1c40b8d6892ca420ce00d21cae908))
+* 修复已发布条目试运行门禁阻断缺陷并对齐 Helm 单元测试 ([#986](https://github.com/tomturing/hci-troubleshoot-platform/issues/986)) ([05d1c10](https://github.com/tomturing/hci-troubleshoot-platform/commit/05d1c1027c25675fb2d1525c3559e74dbdc3c663))
+* 修复纯数据库发布的业务标签跳过契约 ([#980](https://github.com/tomturing/hci-troubleshoot-platform/issues/980)) ([6190e63](https://github.com/tomturing/hci-troubleshoot-platform/commit/6190e63268552352c866b2e7449828687b5d2ad8))
+* 修复统一版本治理前端断链与 KBD 裸版本混淆缺陷 ([#983](https://github.com/tomturing/hci-troubleshoot-platform/issues/983)) ([93dc0f5](https://github.com/tomturing/hci-troubleshoot-platform/commit/93dc0f58c1482d1b389faf6d17f49fc6d4dd77cb))
+* 完成 SOP 未解决切换 KBD 的交互闭环 ([#977](https://github.com/tomturing/hci-troubleshoot-platform/issues/977)) ([8e765fd](https://github.com/tomturing/hci-troubleshoot-platform/commit/8e765fddb070c47a61b7e3339a90161954526f26))
+* 对齐 hci-sim 第七个迁移的 Helm 门禁 ([#978](https://github.com/tomturing/hci-troubleshoot-platform/issues/978)) ([31a600c](https://github.com/tomturing/hci-troubleshoot-platform/commit/31a600c00ea32223b891795aa7109166b35e084a))
+* 补齐验证资产路由一致性校验、修复草稿快照回退与异常可观测性 ([#984](https://github.com/tomturing/hci-troubleshoot-platform/issues/984)) ([46cab22](https://github.com/tomturing/hci-troubleshoot-platform/commit/46cab220bb9c6c544b4a4c390f055f10dda72a45))
+
 ## [2.26.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.25.0...v2.26.0) (2026-08-31)
 
 
