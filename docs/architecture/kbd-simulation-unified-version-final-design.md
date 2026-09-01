@@ -579,3 +579,12 @@ tool_contract_revision / policy_revision / compiler_revision
 2. **条目详情与修订接口数据补齐**：`get_kbd_entry_detail` 与 `get_kbd_revisions` 补充返回 `working_snapshot_digest`、`active_release_id` 与 `package_snapshot_digest`；
 3. **前端双轨绑定闭环**：`SignalDryRunDialog` 的 `:package-snapshot-digest` 优先取 `working_snapshot_digest`，未处于草稿态时取 `active_resource.package_snapshot_digest`，实现从条目初始加载即走通统一版本 Digest 链路；
 4. **连续保存防 CAS 冲突（handleVerificationAssetSaved 闭环）**：修复前端回调提取返回快照摘要时的嵌套路径问题，容错提取 `snapshot.package_snapshot_digest || result.package_snapshot_digest`，保证同页面连续保存多个信号时不因旧 observed digest 触发 409 CAS 冲突；同时通过真实路由集成单测加固版本治理字段有效性。
+
+### 13.5 验证资产路由一致性与可观测性加固（PR 983 后续闭环）
+
+针对 Code Review 与第一性原理推演发现的边界隐患进行彻底闭环加固：
+1. **阻断孤立验证资产（Fail-closed）**：`hci_sim/cmd/hci-sim/controlplane_api.go` 在 `updateRouteStdout` 中，当目标 Bundle 缺失当前 `signal_id` 的 Route 时，禁止静默放行，改为严格返回 `verification_asset_route_missing` 错误并阻断生成孤立资产，向调用方返回 HTTP 409 Conflict；
+2. **列表接口补齐 `route_sources`**：在 `bundleView` 返回体中显式下发 `route_sources`，并从 `manifest.Routes` 防御性兜底提取，消除前端列表筛选短路失效隐患；
+3. **前端防假成功双重门禁**：`SignalDryRunDialog.vue` 在保存后严格校验返回 Bundle 的 routes 中是否包含当前 `signal_id`，未包含时直接阻断报错，绝不向用户展示虚假成功；在非维护草稿态下严格回退至 `active_resource.package_snapshot_digest`；
+4. **可观测性闭环**：`admin.py` 的 `get_kbd_entry_detail` 捕获异常时记录结构化异常日志（带 `kbd_id`、`support_id` 与 `trace_id`），杜绝静默吞掉异常。
+

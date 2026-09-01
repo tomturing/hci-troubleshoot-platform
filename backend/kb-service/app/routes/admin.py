@@ -2325,8 +2325,14 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
             if package is not None:
                 working_snapshot_digest = package.working_snapshot_digest
                 active_release_id = package.active_release_id
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.exception(
+                event="kbd_package_lookup_failed",
+                kbd_id=kbd_id,
+                support_id=row["support_id"],
+                trace_id=get_current_trace_id(),
+                error=str(exc),
+            )
 
     def review_value(field: str, fallback: Any = None) -> Any:
         if working_payload is not None and field in working_payload:

@@ -300,7 +300,7 @@ async function saveToBundle(): Promise<void> {
           if (item.status !== 'draft') return false
           if (targetPackage && item.package_snapshot_digest !== targetPackage) return false
           if (!targetPackage && targetRevision !== null && item.kbd_revision !== targetRevision) return false
-          const routes = Array.isArray(item.route_sources) ? (item.route_sources as Array<Record<string, unknown>>) : []
+          const routes = (Array.isArray(item.route_sources) ? item.route_sources : ((item.manifest as Record<string, unknown>)?.routes || [])) as Array<Record<string, unknown>>
           if (routes.length > 0 && !routes.some(r => r.signal_id === signalId.value)) {
             return false
           }
@@ -315,6 +315,10 @@ async function saveToBundle(): Promise<void> {
             if (item.status !== 'published') return false
             if (targetPackage && item.package_snapshot_digest !== targetPackage) return false
             if (!targetPackage && targetRevision !== null && item.kbd_revision !== targetRevision) return false
+            const routes = (Array.isArray(item.route_sources) ? item.route_sources : ((item.manifest as Record<string, unknown>)?.routes || [])) as Array<Record<string, unknown>>
+            if (routes.length > 0 && !routes.some(r => r.signal_id === signalId.value)) {
+              return false
+            }
             return true
           })
         : null
@@ -355,6 +359,16 @@ async function saveToBundle(): Promise<void> {
     const body = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(String(body?.detail || `Bundle 控制面 HTTP ${response.status}`))
     const savedBundle = (body?.bundle || drafts[0]) as Record<string, unknown>
+
+    // 校验生成的 Bundle 确实包含目标 Signal 路由，防止假成功提示
+    const manifest = (savedBundle?.manifest || {}) as Record<string, unknown>
+    const manifestRoutes = Array.isArray(manifest.routes) ? (manifest.routes as Array<Record<string, unknown>>) : []
+    const routeSources = Array.isArray(savedBundle?.route_sources) ? (savedBundle?.route_sources as Array<Record<string, unknown>>) : []
+    const hasSignalInRoutes = manifestRoutes.some(r => r.signal_id === signalId.value) || routeSources.some(r => r.signal_id === signalId.value)
+    if (!hasSignalInRoutes && (manifestRoutes.length > 0 || routeSources.length > 0)) {
+      throw new Error(`保存异常：生成的 Bundle 未包含信号 ${signalId.value} 的路由`)
+    }
+
     const shortDigest = String(savedBundle?.digest || '').slice(0, 16)
     ElMessage.success(`已生成包含最新仿真输出与验证资产的 Bundle Draft${shortDigest ? ` (${shortDigest}...)` : ''}`)
     emit('saved', savedBundle)

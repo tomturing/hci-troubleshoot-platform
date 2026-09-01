@@ -185,6 +185,16 @@ func TestBundleFactoryAPIAppendVerificationAssetBindsImmutableKbd(t *testing.T) 
 	if first["support_id"] != "41398" || int(first["kbd_revision"].(float64)) != 1 {
 		t.Fatalf("expected kbd_revision=1, got %+v", first)
 	}
+
+	// 3. 目标 Bundle 不存在当前 Signal 的 Route 时必须返回 409，严禁生成孤立资产
+	bundleFactoryRequest(t, mux, http.MethodPost, controlPlanePrefix+"/"+parentDigest+"/verification-assets", map[string]any{
+		"asset": map[string]any{
+			"asset_id": "va-missing-route", "support_id": "41398", "kbd_revision": 1, "signal_id": "sig_missing",
+			"scope": "qfk_execution_result", "source_type": "pasted", "payload": "2026-08-27\n",
+			"result_status": "PASS", "config_revision": "sha256:cfg", "trace_id": "t-1",
+		},
+		"reason": "测试缺失 Route 时阻断孤立资产",
+	}, "expert", "expert-editor", http.StatusConflict)
 }
 
 func bundleFactoryRequest(t *testing.T, handler http.Handler, method, path string, body any, role, actorID string, wantStatus int) map[string]any {
