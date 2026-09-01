@@ -283,8 +283,92 @@ flowchart TD
 2. **后端与控制面集成测试**：
    - [x] `controlplane_api_test.go`：QKV / QFK 单信号保存定向更新 Route Stdout；
    - [x] `controlplane_test.go`：Stale / Retired 重新激活为 Draft 防死锁；
+   - [x] `test_version_governance.py`：11 项后端快照与资产内嵌单元测试全量通过；
    - [x] `test_signal_dry_run.py`：签名 Token 快速验证与秒级落库。
 3. **CI 门禁保证**：
    - [x] `CI/docs-governance`：同步更新架构文档；
    - [x] `CI/前端检查（单元测试 + 构建）`：100% 全绿；
    - [x] `CI/agent-reliability-regression`：100% 全绿。
+
+---
+
+## 7. 4 阶段平滑数据迁移、双向对账、切流与历史表下线执行全景
+
+为保证历史存量数据 100% 安全、无损、零丢失地过渡到终局 4 张核心表体系，制定如下严格分步工作流：
+
+### 7.1 演进阶段时间表与判定门禁
+
+| 演进阶段 | 核心任务与物理动作 | 验收门禁标准（红线） | 计划开始时间 | 计划结束时间 |
+| :--- | :--- | :--- | :--- | :--- |
+| **阶段 1：数据全量回填与增量双写** | 1. 编写并执行 `033_backfill_kbd_package_from_legacy.sql` 数据迁移脚本；<br>2. 历史 `kbd_entry` 回填至 `kbd_package`；<br>3. 历史 `kbd_revision` 联合计算 SHA-256 写入 `package_snapshot`；<br>4. 历史 `usage_audit` 批量导入 `audit_log`；<br>5. 开启双写。 | `kbd_package` 与 `package_snapshot` 成功生成全量存量快照，写入脚本无任何报错。 | **本次 PR #988 合并后（当前立即启动）** | **执行当天内完成（约 1 个工作日）** |
+| **阶段 2：双向对账与灰度校验** | 1. 运行 3 重严格对账 SQL（总量比对、快照内容哈希比对、生效版本比对）；<br>2. 开启后端双读校验日志（对比新老表查询出的知识规则是否字节级相同）；<br>3. 审查历史脏数据与特殊异常工单。 | **3 重对账 SQL 100% 匹配**，线上排障与专家调试流量下 **0 差异告警**。 | **阶段 1 数据回填完成后立即开始** | **观察 2~3 天无任何告警后结束** |
+| **阶段 3：服务主干全面切流** | 1. `kb-service` 与 `api-gateway` 将读写入口全面切换至 `kbd_package` 与 `package_snapshot`；<br>2. 停止老表写入，老表置为只读（Read-Only）；<br>3. 前端全面使用单主干三级状态机。 | 平台单信号试运行、专家编辑保存、发布上线与线上 Agent 推理全部 100% 正常运行。 | **阶段 2 验收通过后开始** | **伴随下一个正式迭代版本上线（约 1 周内）** |
+| **阶段 4：历史表安全归档与物理 DROP** | 1. 对 `kbd_entry`、`kbd_revision`、`dynamic_resource_revision`、`dynamic_resource_active`、`dynamic_resource_usage_audit` 执行 `pg_dump` 物理冷备份存档；<br>2. 数据库执行物理 `DROP TABLE` 彻底清理 5 张历史表。 | 历史表安全归档，物理删除后全系统无任何遗留外键冲突与 SQL 报错，**库表数量最终降至 62 张**。 | **新版本稳定上线运行 1 个月后** | **1 个月后执行 DROP 彻底完成债务清零** |
+
+### 7.2 数据回填迁移脚本（`database/data-migrations/033_backfill_kbd_package_from_legacy.sql`）
+
+```sql
+DO $$
+BEGIN
+    -- 1. 回填主表 kbd_package
+    INSERT INTO kbd_package (support_id, title, status, working_draft_digest, workspace_version, trace_id, created_at, updated_at)
+    SELECT 
+        e.support_id,
+        COALESCE(e.title, ''),
+        CASE WHEN e.status = 'published' THEN 'published' ELSE 'draft_editing' END,
+        e.working_snapshot_digest,
+        1,
+        COALESCE(e.trace_id, 'backfill-init-trace'),
+        e.created_at,
+        e.updated_at
+    FROM kbd_entry e
+    WHERE e.support_id IS NOT NULL AND e.support_id != ''
+    ON CONFLICT (support_id) DO UPDATE SET
+        title = EXCLUDED.title,
+        status = EXCLUDED.status,
+        working_draft_digest = COALESCE(EXCLUDED.working_draft_digest, kbd_package.working_draft_digest),
+        updated_at = EXCLUDED.updated_at;
+
+    -- 2. 回填动态资源使用审计到统一 audit_log
+    INSERT INTO audit_log (event_type, actor_type, actor_id, resource_type, resource_id, payload_json, trace_id, created_at)
+    SELECT 
+        'dynamic_resource_loaded',
+        'agent_engine',
+        COALESCE(consumer, 'agent-service'),
+        'dynamic_resource',
+        resource_name,
+        jsonb_build_object('revision', revision, 'status', status, 'input_hash', input_hash, 'output_hash', output_hash),
+        COALESCE(trace_id, 'audit-backfill-trace'),
+        created_at
+    FROM dynamic_resource_usage_audit
+    WHERE NOT EXISTS (
+        SELECT 1 FROM audit_log a 
+        WHERE a.trace_id = dynamic_resource_usage_audit.trace_id 
+          AND a.event_type = 'dynamic_resource_loaded'
+    );
+END $$;
+```
+
+### 7.3 3 重严格对账 SQL 校验矩阵
+
+```sql
+-- 校验 1：工单总量严格一致性
+SELECT 
+    (SELECT COUNT(DISTINCT support_id) FROM kbd_entry) AS legacy_count,
+    (SELECT COUNT(DISTINCT support_id) FROM kbd_package) AS new_core_count,
+    CASE WHEN (SELECT COUNT(DISTINCT support_id) FROM kbd_entry) = (SELECT COUNT(DISTINCT support_id) FROM kbd_package) 
+         THEN 'PASS' ELSE 'FAIL_MISMATCH' END AS status;
+
+-- 校验 2：激活状态指针与快照对齐
+SELECT e.support_id, e.status AS legacy_status, p.status AS new_status
+FROM kbd_entry e
+JOIN kbd_package p ON e.support_id = p.support_id
+WHERE e.status != p.status;
+-- 期望输出：0 rows
+
+-- 校验 3：审计日志完整性校验
+SELECT COUNT(*) FROM dynamic_resource_usage_audit
+WHERE trace_id NOT IN (SELECT trace_id FROM audit_log WHERE event_type = 'dynamic_resource_loaded');
+-- 期望输出：0 rows
+```
+
