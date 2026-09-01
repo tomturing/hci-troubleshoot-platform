@@ -1150,7 +1150,7 @@ jobs:
       contains(needs.prepare.outputs.image_matrix, '"service":"hci-sim"') &&
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && (inputs.promote_target == 'dev' || inputs.promote_target == 'staging' || inputs.promote_target == 'both'))
+        (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && (inputs.promote_target == 'dev' || inputs.promote_target == 'staging' || inputs.promote_target == 'both' || inputs.promote_target == 'all'))
       )
     permissions:
       contents: write
@@ -1231,12 +1231,9 @@ jobs:
           echo "pr_url=" >> "${GITHUB_OUTPUT}"
 
           if [[ "${EVENT_NAME}" == "push" ]]; then
-            app_files=(
-              "deploy/gitops/argo-apps/local/hci-sim-dev.yaml"
-              "deploy/gitops/argo-apps/cloud/hci-sim-staging.yaml"
-            )
-            promotion_target="dev/staging"
-            promotion_labels=("env:dev:sf" "env:staging:aihci")
+            app_files=("deploy/gitops/argo-apps/local/hci-sim-dev.yaml")
+            promotion_target="dev"
+            promotion_labels=("env:dev:sf")
           else
             case "${PROMOTE_TARGET}" in
               dev)
@@ -1250,6 +1247,14 @@ jobs:
                 promotion_labels=("env:staging:aihci")
                 ;;
               both)
+                app_files=(
+                  "deploy/gitops/argo-apps/local/hci-sim-dev.yaml"
+                  "deploy/gitops/argo-apps/cloud/hci-sim-staging.yaml"
+                )
+                promotion_target="dev/staging"
+                promotion_labels=("env:dev:sf" "env:staging:aihci")
+                ;;
+              all)
                 app_files=(
                   "deploy/gitops/argo-apps/local/hci-sim-dev.yaml"
                   "deploy/gitops/argo-apps/cloud/hci-sim-staging.yaml"
@@ -1542,7 +1547,7 @@ jobs:
             exit 1
           fi
           if [[ "${EVENT_NAME}" == "push" ]]; then
-            echo "发布触发器：main push，目标环境：dev → staging"
+            echo "发布触发器：main push，目标环境：dev（已封板，staging/prod 需手动触发）"
           else
             echo "发布触发器：workflow_dispatch，目标环境：${PROMOTE_TARGET}"
           fi
@@ -1601,7 +1606,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           if [[ "${EVENT_NAME}" == "push" ]]; then
-            ENVIRONMENTS=(dev staging)
+            ENVIRONMENTS=(dev)
           else
             case "${PROMOTE_TARGET}" in
               dev) ENVIRONMENTS=(dev) ;;
