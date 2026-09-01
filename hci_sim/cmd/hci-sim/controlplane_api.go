@@ -577,7 +577,7 @@ func appendVerificationAsset(w http.ResponseWriter, r *http.Request, registry co
 	writeJSON(w, http.StatusCreated, map[string]any{"bundle": bundleView(record), "trace_id": requestTraceID(r)})
 }
 
-func approveBundle(w http.ResponseWriter, r *http.Request, registry controlplane.Registry, digest string, role controlplane.ActorRole) {
+func approveBundle(w http.ResponseWriter, r *http.Request, registry controlplane.Registry, digest string, role controlplane.Role) {
 	actor, err := requestActor(r, role)
 	if err != nil {
 		writeControlPlaneError(w, err)
@@ -592,9 +592,9 @@ func approveBundle(w http.ResponseWriter, r *http.Request, registry controlplane
 	writeJSON(w, http.StatusOK, map[string]any{"bundle": bundleView(record), "trace_id": requestTraceID(r)})
 }
 
-func requestActor(r *http.Request, role controlplane.ActorRole) (controlplane.Actor, error) {
+func requestActor(r *http.Request, role controlplane.Role) (controlplane.Actor, error) {
 	id := strings.TrimSpace(r.Header.Get("X-HCI-Sim-Actor-ID"))
-	claimedRole := controlplane.ActorRole(strings.TrimSpace(r.Header.Get("X-HCI-Sim-Actor-Role")))
+	claimedRole := controlplane.Role(strings.TrimSpace(r.Header.Get("X-HCI-Sim-Actor-Role")))
 	if id == "" || claimedRole == "" || (role != "" && claimedRole != role) {
 		return controlplane.Actor{}, errors.New("forbidden: Gateway 未提供匹配的已认证控制面身份")
 	}
@@ -627,9 +627,9 @@ func bundleView(record controlplane.BundleRecord) map[string]any {
 	}
 	routeSources := record.Input.RouteSources
 	if len(routeSources) == 0 && len(manifestRoutes) > 0 {
-		routeSources = make([]fixture.RouteSource, 0, len(manifestRoutes))
+		routeSources = make([]controlplane.RouteSource, 0, len(manifestRoutes))
 		for _, r := range manifestRoutes {
-			routeSources = append(routeSources, fixture.RouteSource{
+			routeSources = append(routeSources, controlplane.RouteSource{
 				RouteID:  r.ID,
 				SignalID: r.SignalID,
 			})
