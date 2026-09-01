@@ -577,4 +577,5 @@ tool_contract_revision / policy_revision / compiler_revision
 在 PR 981 落地后，针对前端与条目详情数据链路的断裂进行了彻底闭环修复：
 1. **阻断裸 revision 混淆**：`KbdReviewView.vue` 在非草稿维护态下将 `:kbd-revision` 设为 `null`，彻底禁止传递 `active_resource.revision`（发布计数），避免误查历史单信号快照；
 2. **条目详情与修订接口数据补齐**：`get_kbd_entry_detail` 与 `get_kbd_revisions` 补充返回 `working_snapshot_digest`、`active_release_id` 与 `package_snapshot_digest`；
-3. **前端双轨绑定闭环**：`SignalDryRunDialog` 的 `:package-snapshot-digest` 优先取 `working_snapshot_digest`，未处于草稿态时取 `active_resource.package_snapshot_digest`，实现从条目初始加载即走通统一版本 Digest 链路。
+3. **前端双轨绑定闭环**：`SignalDryRunDialog` 的 `:package-snapshot-digest` 优先取 `working_snapshot_digest`，未处于草稿态时取 `active_resource.package_snapshot_digest`，实现从条目初始加载即走通统一版本 Digest 链路；
+4. **连续保存防 CAS 冲突（handleVerificationAssetSaved 闭环）**：修复前端回调提取返回快照摘要时的嵌套路径问题，容错提取 `snapshot.package_snapshot_digest || result.package_snapshot_digest`，保证同页面连续保存多个信号时不因旧 observed digest 触发 409 CAS 冲突；同时通过真实路由集成单测加固版本治理字段有效性。

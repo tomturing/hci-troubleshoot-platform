@@ -2498,8 +2498,11 @@ function openSignalDryRun(signal: SignalV2, index: number, processingIndex: numb
 }
 
 function handleVerificationAssetSaved(result: Record<string, unknown>): void {
-  const digest = typeof result.package_snapshot_digest === 'string' ? result.package_snapshot_digest : ''
-  if (digest && detailEntry.value) detailEntry.value.working_snapshot_digest = digest
+  const snapshot = (result.snapshot || result.bundle || result.data || {}) as Record<string, unknown>
+  const digest = String(snapshot.package_snapshot_digest || result.package_snapshot_digest || '')
+  if (digest && detailEntry.value) {
+    detailEntry.value.working_snapshot_digest = digest
+  }
 }
 
 function onSignalEditModeChange(mode: string | number | boolean | undefined) {
