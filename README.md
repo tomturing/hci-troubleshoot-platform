@@ -193,7 +193,7 @@ bash scripts/ops/k3s-verify.sh
 **工程化**
 - GitHub Actions CI：lint · 单测（覆盖率 ≥ 60%）· 集成 · Helm lint · 安全扫描 · 文档治理
 - 镜像推至 `ghcr.io`，Trivy HIGH/CRITICAL 阻断
-- GitOps 双仓模型：dev 自动晋级 PR，staging/prod 手动审批
+- GitOps 双仓模型：dev + staging 自动晋级 PR，prod 手动审批
 - pre-commit hooks：ruff · prettier · detect-secrets
 - release-please CHANGELOG 自动化（Conventional Commits）
 

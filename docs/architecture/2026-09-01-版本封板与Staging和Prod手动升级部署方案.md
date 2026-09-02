@@ -1,5 +1,10 @@
 # 版本封板与 Staging 和 Prod 手动升级部署方案
 
+> **⚠️ 本文档策略已于 2026-09-02 调整，此处保留为决策记录**
+>
+> 主干自动晋级已恢复为 **`dev` + `staging` 双环境**，`prod` 仍维持手动触发。
+> 现行策略以 [deploy/gitops/README.md](../../deploy/gitops/README.md) 为准，调整说明见第 5 节。
+
 ## 1. 背景与目标
 
 当前 `hci-troubleshoot-platform` 与 `hci-platform-env` 系统及业务功能已趋于稳定，现执行版本封板治理：
@@ -57,3 +62,34 @@
 1. 在 GitHub Actions 中手动运行 **CI** 工作流，`promote_target` 选择 `prod`（或 `all`）。
 2. 流水线将镜像 Tag 写入 `environments/prod/values.yaml`。
 3. 登录 ArgoCD 控制台，查看 `hci-platform-prod` Application 的 Diff，确认无误后点击 **Sync** 执行生产发布。
+
+---
+
+## 5. 后续调整：2026-09-02 恢复 staging 自动晋级
+
+### 5.1 调整内容
+
+撤销本文档第 2、3 节中「自动交付收敛为仅 `dev`」的部分，恢复主干双环境自动晋级：
+
+| 触发场景 | 调整前（PR #989 封板） | 调整后（本次） |
+| :--- | :--- | :--- |
+| **日常 PR 合并（`push: main`）** | 仅 `dev` | `dev` + `staging` |
+| **`workflow_dispatch` 手动晋级** | `dev` / `staging` / `prod` / `both` / `all` | 保持不变 |
+| **`prod` 自动晋级** | 无（手动） | **仍无**（维持手动，ArgoCD 端不做自动 Sync） |
+
+### 5.2 调整理由
+
+1. **封板成本高于收益**：`staging` 的定位是预发布验证环境，自动跟随主干才能持续暴露主干回归；
+   改为手动后，验证滞后且依赖人工记忆触发，`staging` 逐步与主干脱节。
+2. **风险边界未被削弱**：`prod` 的防护不依赖 CI 侧的晋级收敛，而由 `hci-platform-prod.yaml`
+   不配置 `syncPolicy.automated` 保证——即使 tag 被写入，仍需 ArgoCD 人工 Sync。因此放开
+   `staging` 不引入生产风险。
+3. **封板目标可按需恢复**：如需临时止血，仍可通过 `workflow_dispatch` 精确控制晋级范围，
+   无需长期牺牲 `staging` 的自动验证能力。
+
+### 5.3 防回归加固
+
+`scripts/ci/test_resolve_release_baseline.py` 新增
+`test_main_push_auto_promotes_dev_and_staging`，按 **push 分支代码块**（而非子串）断言
+`ENVIRONMENTS=(dev staging)` 与 hci-sim 双 ArgoCD Application 晋级，
+避免再次被单环境收敛时因命中手动 `case` 分支而漏过。

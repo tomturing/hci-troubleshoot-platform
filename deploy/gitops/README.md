@@ -51,12 +51,17 @@ kubectl apply -f deploy/gitops/argo-apps/local/hci-platform-dev.yaml
 3. 修改 `argo-apps/local/*.yaml` 与 `argo-apps/cloud/*.yaml` 中的 `repoURL` 和 `targetRevision`
 4. 配置 ArgoCD 仓库凭据（见 [argo-apps/local/README.md](argo-apps/local/README.md)）
 
-## 版本封板与多环境晋级策略（2026-09-01 封板）
+## 多环境晋级策略（2026-09-02 修订：恢复 dev + staging 自动晋级）
 
-平台已进入稳定封板期，多环境持续交付策略如下：
+> **变更记录**：2026-09-01 曾将主干自动晋级收敛为仅 `dev`（PR #989，见
+> [版本封板与手动升级部署方案](../../docs/architecture/2026-09-01-版本封板与Staging和Prod手动升级部署方案.md)）。
+> 现恢复 `dev` + `staging` 双环境自动晋级，`prod` 继续保持手动触发。
 
 | 触发方式 | 影响环境 | 晋级行为 |
 | :--- | :--- | :--- |
-| **日常 PR 合并（`push: main`）** | `dev` | 仅自动构建并更新 `dev` 环境镜像标签，**不再自动更新 `staging` 与 `prod`**。 |
+| **日常 PR 合并（`push: main`）** | `dev` + `staging` | 自动构建镜像并**同时**更新 `dev` 与 `staging` 环境镜像标签，**仍不自动更新 `prod`**。 |
 | **手动工作流（`workflow_dispatch`）** | `dev` / `staging` / `prod` / `both` / `all` | 在 GitHub Actions 页面手动运行 CI 流水线，选择 `promote_target` 触发指定环境的升级部署。 |
 | **独立环境仓库同步（`env-repo-sync.yml`）** | 指定 `target_env` | 手动指定镜像标签和目标环境，向 `hci-platform-env` 发起 PR。 |
+
+该策略由单测 `scripts/ci/test_resolve_release_baseline.py::test_main_push_auto_promotes_dev_and_staging`
+按 push 分支代码块断言锁定，收敛为单环境会直接导致 CI 失败。
