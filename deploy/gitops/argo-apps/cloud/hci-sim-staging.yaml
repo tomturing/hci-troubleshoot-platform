@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/component: hci-sim
   annotations:
     hci-platform.dev/immutable-image-required: "true"
-    hci-platform.dev/image-source-revision: "46cab220bb9c6c544b4a4c390f055f10dda72a45"
+    hci-platform.dev/image-source-revision: "b41cd142661c9c540cd5201534a9240c02baa75c"
 spec:
   project: default
   source:
@@ -19,7 +19,7 @@ spec:
       values: |
         image:
           repository: ghcr.io/tomturing/hci-troubleshoot-platform/hci-sim
-          digest: "sha256:a23c59062fcb3cdec95cf51a65767866fb3491e390a866f6c3b6fd2c4817dcf8"
+          digest: "sha256:b36a26a2a10f338b9d3eed6a9587f479b0b71d9e7bed7f08b14a8bd6bbf7ab64"
         networkPolicy:
           enabled: true
           terminalBridgeNamespace: hci-staging
