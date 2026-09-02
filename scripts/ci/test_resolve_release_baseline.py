@@ -136,6 +136,30 @@ def test_hci_sim_promotion_workflow_targets_dev_and_staging_applications():
     assert "prod) ENVIRONMENTS=(prod) ;;" in workflow
 
 
+def test_main_push_auto_promotes_dev_and_staging():
+    """主干 push 必须同时自动晋级 dev 与 staging，防止再次被单环境收敛。
+
+    PR #989 曾把自动晋级收敛为仅 dev。上面的用例只做子串匹配，会被手动
+    ``case`` 分支误命中而放行回归；此处按「push 分支代码块」断言，确保
+    回归到单环境时立刻失败。
+    """
+    workflow = _WORKFLOW.read_text(encoding="utf-8")
+    # 环境仓库 tag 晋级：push 分支目标环境必须是 dev + staging
+    assert (
+        'if [[ "${EVENT_NAME}" == "push" ]]; then\n            ENVIRONMENTS=(dev staging)\n          else'
+    ) in workflow
+    # hci-sim 晋级：push 分支必须同时固定 dev 与 staging 两个 ArgoCD Application
+    assert (
+        'if [[ "${EVENT_NAME}" == "push" ]]; then\n'
+        "            app_files=(\n"
+        '              "deploy/gitops/argo-apps/local/hci-sim-dev.yaml"\n'
+        '              "deploy/gitops/argo-apps/cloud/hci-sim-staging.yaml"\n'
+        "            )\n"
+        '            promotion_target="dev/staging"\n'
+        '            promotion_labels=("env:dev:sf" "env:staging:aihci")'
+    ) in workflow
+
+
 def test_hci_sim_promotion_pr_uses_owner_pat_and_fail_closed_actor_check():
     """自动晋级 PR 必须来自仓库 owner，不能退回 bot token 或隐式信任。"""
     workflow = _WORKFLOW.read_text(encoding="utf-8")
