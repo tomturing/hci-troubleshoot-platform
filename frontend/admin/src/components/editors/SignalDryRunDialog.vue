@@ -201,8 +201,13 @@ async function requestPreview(): Promise<void> {
       if (!Array.isArray(parsed) || parsed.some(item => !item || typeof item !== 'object' || Array.isArray(item))) throw new Error()
       payload = parsed as Array<Record<string, unknown>>
     } catch {
-      ElMessage.error('QKV 输入必须是合法 JSON（records 数组或包含 data/items 的返回对象）')
-      return
+      // qkv_dialog 支持原始日志文本输入，后端会自动解析提取 request_id
+      if (tool.value === 'qkv_dialog' && typeof rawSource === 'string' && rawSource.trim()) {
+        payload = rawSource
+      } else {
+        ElMessage.error('QKV 输入必须是合法 JSON（records 数组或包含 data/items 的返回对象）；qkv_dialog 也可输入原始日志文本')
+        return
+      }
     }
   }
   previewLoading.value = true
