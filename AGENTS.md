@@ -361,7 +361,10 @@
   - **修复**：同时支持 `name`（规范字段）和 `target_variable`（历史兼容），与同文件重复校验逻辑保持一致。
 - **qkv_dialog 试运行支持原始日志文本输入**：
   - **问题**：qkv_dialog 试运行只接受 JSON 格式输入，但 qkv_dialog 的实际输出是原始日志文本，用户需要手动转换格式才能测试。
-  - **修复**：`_normalize_qkv_records` 函数新增 tool 参数，对于 qkv_dialog 自动识别并解析原始日志文本，调用 `_extract_from_dialog_log` 提取 request_id、end 等信息。
+  - **根因**：前端 `SignalDryRunDialog.vue` 第 204 行在请求发送前验证输入必须是 JSON，拦截了非 JSON 输入，导致后端修复无效。
+  - **修复**：
+    - 后端：`_normalize_qkv_records` 函数新增 tool 参数，对于 qkv_dialog 自动识别并解析原始日志文本，调用 `_extract_from_dialog_log` 提取 request_id、end 等信息。
+    - 前端：`SignalDryRunDialog.vue` 验证逻辑新增 tool 类型判断，当 `tool.value === 'qkv_dialog'` 时允许原始文本输入，直接传给后端处理。
 
 ---
 
