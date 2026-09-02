@@ -619,7 +619,8 @@ def _collect_variable_sources(raw: dict[str, Any]) -> tuple[
         if str((signal.get("acquire") or {}).get("tool") or "").startswith("qkv_"):
             for item in orchestrate.get("output_processing") or []:
                 if isinstance(item, dict) and item.get("mode") == "derive":
-                    target = str(item.get("target_variable") or "").strip().upper()
+                    # 同时支持 name（规范字段）和 target_variable（历史兼容）
+                    target = str(item.get("name") or item.get("target_variable") or "").strip().upper()
                     if target:
                         produces.add(target)
         nodes.append((signal_id, requires, produces))
