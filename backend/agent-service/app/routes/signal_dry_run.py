@@ -320,13 +320,29 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, db_
     )
 
 
-def _normalize_qkv_records(payload: Any) -> list[dict[str, Any]]:
-    """自适应解析与归一化 QKV 试运行输入为 records 字典列表。"""
+def _normalize_qkv_records(payload: Any, tool: str = "") -> list[dict[str, Any]]:
+    """自适应解析与归一化 QKV 试运行输入为 records 字典列表。
+
+    支持两种输入格式：
+    1. JSON 格式：records 数组或包含 data/items 的对象（适用于所有 QKV 类型）
+    2. 原始日志文本：仅适用于 qkv_dialog，自动从日志行提取 request_id 等信息
+    """
     if isinstance(payload, str):
+        # 先尝试解析为 JSON
         try:
             payload = json.loads(payload)
-        except Exception as exc:
-            raise ValueError("QKV 试运行输入必须是合法 JSON (records 数组或包含 data/items 的对象)") from exc
+        except json.JSONDecodeError:
+            # JSON 解析失败，检查是否为 qkv_dialog 的原始日志文本
+            if tool == "qkv_dialog":
+                from app.tools.qkv.parser import _extract_from_dialog_log
+                records = _extract_from_dialog_log(payload)
+                if records:
+                    return records
+            # 非 qkv_dialog 或日志解析失败，提示用户使用正确格式
+            raise ValueError(
+                "QKV 试运行输入必须是合法 JSON (records 数组或包含 data/items 的对象)；"
+                "qkv_dialog 也可输入原始日志文本，平台会自动提取 request_id"
+            ) from None
     if isinstance(payload, dict):
         items = payload.get("data") or payload.get("items")
         payload = items if isinstance(items, list) else [payload]
@@ -345,7 +361,8 @@ async def _evaluate_qkv(body: SignalDryRunRequest, *, ai_client: Any | None, db_
 
     from app.tools.qkv.parser import _extract_by_produces
 
-    records = _normalize_qkv_records(body.dataset.payload)
+    tool = str(acquire.get("tool") or "")
+    records = _normalize_qkv_records(body.dataset.payload, tool=tool)
     orchestrate = signal.get("orchestrate") if isinstance(signal.get("orchestrate"), dict) else {}
     processing = orchestrate.get("output_processing") or []
     produces = orchestrate.get("produces") or []

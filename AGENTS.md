@@ -359,6 +359,9 @@
 - **output_processing 派生变量无法被下游消费者引用修复**：
   - **根因**：`_collect_variable_sources` 函数只查找 `target_variable` 字段，但 Schema 规范定义使用 `name` 字段，导致 qkv 生产者信号通过 `output_processing` 派生的变量无法被下游 qfk 消费者信号引用，保存时报错"输入变量没有上游产出或外部声明"。
   - **修复**：同时支持 `name`（规范字段）和 `target_variable`（历史兼容），与同文件重复校验逻辑保持一致。
+- **qkv_dialog 试运行支持原始日志文本输入**：
+  - **问题**：qkv_dialog 试运行只接受 JSON 格式输入，但 qkv_dialog 的实际输出是原始日志文本，用户需要手动转换格式才能测试。
+  - **修复**：`_normalize_qkv_records` 函数新增 tool 参数，对于 qkv_dialog 自动识别并解析原始日志文本，调用 `_extract_from_dialog_log` 提取 request_id、end 等信息。
 
 ---
 
