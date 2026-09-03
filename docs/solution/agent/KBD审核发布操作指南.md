@@ -31,7 +31,7 @@ KBD 审核不是校对文章，而是确认 Agent 能用这篇 KBD 完成一次�
 
 ```mermaid
 flowchart LR
-    A["工单：任务失败<br/>告警 / 弹框"] --> B["生产者信号 QKV<br/>从工单里拿到什么变量<br/>（NODE_IP、TASK_ID…）"]
+    A["工单：任务失败<br/>告警 / 弹框"] --> B["生产者信号 QKV<br/>从工单里拿到什么变量<br/>（HOST、TASK_ID…）"]
     B --> C["消费者信号 QFK<br/>去哪台主机执行什么只读检查"]
     C --> D["结果处理<br/>命中了什么 / 提取了什么变量"]
     D --> E["Agent 形成结论<br/>支持或排除根因"]
@@ -39,7 +39,7 @@ flowchart LR
 
 一句话：**正文讲清楚故障，生产者信号找到入口，消费者信号采到证据，处理规则得出结论。**
 
-对照样例：工单里备份任务失败（生产者信号从任务详情提取 `NODE_IP`、`TASK_ID`）→ Agent 登录该节点查存储池容量和备份日志（两条消费者信号）→ 容量 94% > 90% 且日志出现 `connection refused`（处理规则命中）→ 支持「存储池容量满」根因。
+对照样例：工单里备份任务失败（生产者信号从任务详情提取 `HOST`、`TASK_ID`）→ Agent 在该主机查存储池容量和备份日志（两条消费者信号）→ 容量 94% > 90% 且日志出现 `connection refused`（处理规则命中）→ 支持「存储池容量满」根因。
 
 ### 1.2 三个 KBD 版本，别搞混
 
@@ -235,7 +235,7 @@ flowchart TD
 
 ```text
 已确认案例分类为虚拟机备份失败；修正根因描述为存储池容量超限；
-qkv_task 关键字改为「虚拟机备份失败」并产出 NODE_IP、TASK_ID、END、REQUEST_ID；
+qkv_task 关键字改为「虚拟机备份失败」并产出 HOST、TASK_ID、END、REQUEST_ID；
 新增容量阈值判定（Use% > 90）与 vtpdaemon.log 错误检查（connection refused）；
 命令预览均为只读；关键 Signal 已试运行 PASS；Signal Review 已通过。
 发布后需执行离线诊断 KBD 增量同步。
@@ -358,7 +358,7 @@ flowchart TD
 >
 > 「验证规则外部变量」不是当前审核页可随意新增的表单项：它只会展示已由平台上下文、受控对象查询或用户表单集成预置的来源。没有现成来源时，优先补上游生产者；确需外部值时联系平台/集成管理员配置，不能通过复制 JSON 临时绕过证据链。
 
-▶ 样例生产者信号（完整配置见附录 B.2）：采集类型选「任务信号 `qkv_task`」，关键字填任务列表里真实出现的「虚拟机备份失败」，产出 `NODE_IP`、`TASK_ID`、`END`、`REQUEST_ID`，供后面两条消费者信号引用。
+▶ 样例生产者信号（完整配置见附录 B.2）：采集类型选「任务信号 `qkv_task`」，关键字填任务列表里真实出现的「虚拟机备份失败」，产出 `HOST`、`TASK_ID`、`END`、`REQUEST_ID`，供后面两条消费者信号引用。
 
 #### 4.1.1 效果验证信号（qkv_effect）：结构化期望表单怎么配与怎么审
 
@@ -442,7 +442,7 @@ flowchart LR
 | 输入变量 | 由命令中 `{{变量}}` 自动推导（只读展示），每个变量都必须有来源 |
 | 超时时间 | 1–300 秒，必须有上限 |
 
-▶ 样例两条消费者信号：容量检查（`qfk_system`，主机 `{{NODE_IP}}`，命令 `df -h /storage`）、日志检查（`qfk_log`，主机 `{{NODE_IP}}`，文件 `vtpdaemon.log`）。安全红线完整版见附录 A.4。
+▶ 样例两条消费者信号：容量检查（`qfk_system`，主机 `{{HOST}}`，`command=df` + `command_args=["-h", "/storage"]`）、日志检查（`qfk_log`，主机 `{{HOST}}`，文件 `vtpdaemon.log`）。安全红线完整版见附录 A.4。
 
 **第三层：结果怎么处理**（见 4.3）
 
@@ -658,7 +658,7 @@ flowchart TD
 - [ ] 若使用 `qkv_effect`：不是唯一生产者（另有直接/视觉生产者）；观测通道在封闭集合内、matcher 在 8 类封闭集合内、时序窗口在受限范围；期望锚点变量来源可达；正文已说明 `not_achieved` 后的处理语义；
 - [ ] 负证据期望（`exists` + `expected=false`）的观测通道能自证有效，不存在「查询失败也当作效果达成」的配置（见 4.1.1 负证据警示）。
 
-▶ 样例核对：C1/C2 都引用 `{{NODE_IP}}`，C2 还引用 `{{END}}` 和 `{{REQUEST_ID}}`，这些变量均由 P1 产出 ✅；P1、C1、C2 都是 Must，共同支持根因 ✅。
+▶ 样例核对：C1/C2 都引用 `{{HOST}}`，C2 还引用 `{{END}}` 和 `{{REQUEST_ID}}`，这些变量均由 P1 产出 ✅；P1、C1、C2 都是 Must，共同支持根因 ✅。
 
 ### 4.7 四类验证不要混用
 
@@ -938,6 +938,71 @@ P0/P1/P2 标签和自动化报告尚未完全作为平台功能落地前，按�
 4. 发布 KBD 后，执行离线 KBD 增量同步；需纳入仿真的分类，在 Bundle 工厂建立同分类完整候选集，按 `draft → validated → approved → published` 运行回归；
 5. 将缺少可信样本、无法路由、多个候选同时成立等条目记录为待办，不以“发布成功”代替“仿真通过”。
 
+### 10.8 流水线如何生产 Signal（信号）
+
+流水线的 Signal 生产不是“LLM（大语言模型）直接写入可执行信号”，而是**候选生成 → 服务端门禁 → 专家确认**三段式。这样既能保留模型从原文发现的线索，又不会让危险或不可执行内容进入 Agent 运行路径。
+
+```mermaid
+flowchart TD
+    A[Stage 1-4\n抓取、导入、分类、识图] --> B[准备诊断输入\n标题 / 问题描述 / 告警 / 排查步骤\n+ 可信截图 Evidence IR]
+    B --> C[Stage 5：调用 kb-service\n加载 kbd_extract_signals_v2]
+    C --> D[LLM 输出 Candidate 集合\n候选信号 + 验证契约建议]
+    D --> E{服务端逐条门禁}
+    E -->|只读、参数/变量/溯源/命令均合法| F[Signal Proposal\n写入 signals_json]
+    E -->|写操作、工具不存在、无法编译或变量断链| G[Rejected Candidate\n保留候选和拒绝原因]
+    F --> H[构建 verification_contract\n生成元数据 + LLM 级静态审查]
+    H --> I[Stage 6：Shared Runtime\n全量静态审查]
+    I --> J[待审核 KBD\n专家复核、试运行、发布]
+```
+
+具体步骤如下：
+
+1. **输入最小化**：仅将 `title`、`problem_description`、`alert_info`、`steps_text` 和可追溯的截图 Evidence IR（证据中间表示）送入提示词。`root_cause`、`solution` 虽保留模板占位符，但运行时固定传空，不能反向把处置命令抽成诊断信号；
+2. **动态注入契约**：服务端注入当前采集器目录、默认变量集合和截图事实。截图只允许 `observed_facts`、`text_lines`、`fields` 进入模型输入；模型描述、推断和不可信截图会被排除或标记待复核；
+3. **LLM 只提 Candidate（候选）**：模型必须输出 v2 JSON。它不负责决定是否可执行，也不得自行删去疑似写操作；
+4. **服务端强制门禁**：逐条校验 `acquire.args`、全大写占位符、变量依赖、只读边界、字段级溯源、截图来源、Tool Registry（工具注册表）能力和命令可执行性。通过的进入 `signals`，失败的保留在 `rejected_candidates`，并带 `write_signal`、`not_exists` 或 `run_failed` 原因；
+5. **构建与审查**：服务端重建 `verification_contract`、写入 Prompt/模型/输入指纹等 `generation_metadata`，并以 `LLM_GENERATION` 功能级运行 Shared Resolution Runtime（共享决议运行时）审查；流水线 Stage 6 再对全量 KBD 运行统一静态审查；
+6. **人工收口**：任何自动生成结果都保持 `draft`（待审核）。审核人处理 Rejected Candidate、补齐真实样本、运行单 Signal 试运行后，才可进入发布门禁。
+
+> `qkv_effect`（效果验证）虽然是已注册的条件型生产者，但**不在当前流水线 LLM 直出采集器目录中**。它是对已执行动作的结构化复核，需要专家基于动作语义、期望锚点和时序窗口配置；不要要求抽取模型凭根因或解决方案自动生成它。`qkv_vm_console`（控制台截图）可被模型提出候选，但只有 HOST 与 VM_ID 来源可信时才会通过后续门禁。
+
+### 10.9 流水线信号抽取的完整提示词与版本维护
+
+当前运行时 Prompt（提示词）名称固定为 `kbd_extract_signals_v2`。它由 `system_prompt` 表热加载，管理员在管理端修改后会立即生效；因此**运行数据库中的 active 内容才是完整提示词的唯一事实源**，不能把文档内复制的一段文本当成当前生效版本。
+
+| 项目 | 当前约定 |
+|---|---|
+| Prompt 名称 | `kbd_extract_signals_v2`（KBD 关键信号 Candidate 抽取） |
+| 默认基线 | [database/seeds/02_system_prompts.sql](../../../database/seeds/02_system_prompts.sql) 中该名称的 `2.5` 版模板 |
+| 运行加载点 | [extract_signals.py](../../../backend/kb-service/app/routes/extract_signals.py) 的 `_EXTRACT_PROMPT_NAME` 与 `StrictPromptLoader.load_and_validate` |
+| 可替换变量 | `title`、`problem_description`、`alert_info`、`steps_text`、`root_cause`、`solution`、`category_id`、`acquirer_catalog`、`variable_schema`、`image_evidence` |
+| 实际诊断输入 | 前四个叙事字段、分类、动态采集器目录、变量表和可信截图事实；`root_cause`、`solution` 运行时传空 |
+| 输出 | `schema_version=2` 的 Candidate/Signal 文档、`verification_contract`（验证契约）建议；随后由服务端分流为 `signals` 与 `rejected_candidates` |
+
+要查看某环境**当前完整生效提示词**，使用只读查询（不要根据文档片段手工拼接）：
+
+```sql
+SELECT
+  name,
+  version,
+  is_active,
+  content_template
+FROM system_prompt
+WHERE name = 'kbd_extract_signals_v2'
+  AND stage = 'KEY';
+```
+
+该查询返回的 `content_template` 即完整提示词；仓库基线可在上述种子文件中审阅。提示词本身的关键约束可概括为：
+
+1. 只从诊断叙事与可信截图事实抽取，根因/解决方案不作为事实来源；
+2. 只允许当前目录中的采集器，QKV（生产者）负责 `produces`，QFK（消费者）负责匹配或变量产出，变量是两者唯一契约面；
+3. QFK 必须在“匹配模式”与“产出变量模式”二选一；`match` 使用受限 Matcher（判定器）类型和声明式 `extract`（取值）规则；
+4. 所有变量占位符必须是 `{{大写变量}}`；字段级 `evidence`（证据）和截图 `source_refs`（来源引用）必须可回查；
+5. 发现写操作、目录不存在或运行校验失败时仍输出 Candidate，由服务端保存为 Rejected Candidate，禁止模型静默删除或伪装成只读命令；
+6. 输出严格 JSON，禁止 Markdown、自由字段和虚构工具/参数。
+
+**提示词变更流程**：先在非生产环境更新 Prompt → 对固定 KBD 回归集重跑 Stage 5/6 → 比较 Candidate 数、Rejected Candidate 原因、发布候选比例和 Fixture（固定样例）覆盖率 → 专家抽查字段级溯源与命令编译 → 记录 Prompt 版本/摘要后再晋级。提示词变更会改变后续 Proposal，不会自动修改已发布 KBD；已发布知识仍须通过维护工作稿、审核与仿真回归更新。
+
 ---
 
 ## 附录 A：信号字段判断口径
@@ -1058,7 +1123,7 @@ P0/P1/P2 标签和自动化报告尚未完全作为平台功能落地前，按�
 ```text
 工单：备份任务失败，弹框「连接存储失败」
   ↓ 生产者信号 P1（qkv_task）
-产出 NODE_IP=10.20.1.15、TASK_ID=T20260810-021、END、REQUEST_ID
+产出 HOST=SVR_aCloud_668、TASK_ID=566、END、REQUEST_ID
   ↓ 两条消费者信号引用上述变量
 C1 df -h 查容量（阈值判定）   C2 查备份日志（存在性判定）
   ↓
@@ -1081,7 +1146,7 @@ C1 df -h 查容量（阈值判定）   C2 查备份日志（存在性判定）
 | 证据作用 | 必要证据（Must） |
 | 采集类型 | 任务信号 `qkv_task` |
 | 关键字 | `虚拟机备份失败`（任务列表中真实出现的文字） |
-| 产出变量 | `NODE_IP`（节点 IP）、`TASK_ID`（任务 ID）、`END`（故障结束时间）、`REQUEST_ID`（请求链路标识） |
+| 产出变量 | `HOST`（规范化宿主机标识）、`TASK_ID`（任务 ID）、`END`（故障结束时间）、`REQUEST_ID`（请求链路标识） |
 
 ### B.3 消费者信号 C1：容量阈值判定（匹配模式 = 文本行列取值 + 数值阈值）
 
@@ -1092,9 +1157,9 @@ C1 df -h 查容量（阈值判定）   C2 查备份日志（存在性判定）
 | 说明 | 检查存储挂载点容量使用率 |
 | 证据作用 | 必要证据（Must） |
 | 采集类型 | 系统检查 `qfk_system` |
-| 主机 / 容器 | `{{NODE_IP}}` / `asv-con` |
+| 主机 / 容器 | `{{HOST}}` / `asv-con` |
 | 集群执行 | 关 |
-| 执行命令 | `df -h /storage`（只读） |
+| 执行命令 | `command=df`、`command_args=["-h", "/storage"]`（编译为 `acli system df -h /storage`，只读） |
 | 超时 | 30 秒 |
 
 命令真实输出：
@@ -1139,7 +1204,7 @@ Filesystem      Size  Used Avail Use% Mounted on
 | 说明 | 检查备份日志中的存储连接错误 |
 | 证据作用 | 必要证据（Must） |
 | 采集类型 | 日志检查 `qfk_log` |
-| 主机 | `{{NODE_IP}}` |
+| 主机 | `{{HOST}}` |
 | 文件 / 时间 | `vtpdaemon.log` / 故障前后 30 分钟（`{{END}}` 相对时间） |
 | Request ID | `{{REQUEST_ID}}` |
 | 超时 | 60 秒 |
@@ -1164,12 +1229,12 @@ Filesystem      Size  Used Avail Use% Mounted on
 
 ### B.5 样例的证据链自查
 
-- [x] C1/C2 引用的 `NODE_IP` / `END` / `REQUEST_ID` 均由 P1 产出，名字一致；
+- [x] C1/C2 引用的 `HOST` / `END` / `REQUEST_ID` 均由 P1 产出，名字一致；
 - [x] P1、C1、C2 三条均为 Must，共同构成根因证据链；
 - [x] 两条 QFK 命令均为只读，超时有上限；
 - [x] C1 取值结果数量「必须唯一」与现场（单一挂载点行）相符；
 - [x] 期望开关极性与各步骤原文一致（本样例两条 QFK 都是"出现异常现象=支持根因"的正向证据，故均为期望命中；阴性验证步骤应配期望不命中，见 4.3.2）；
-- [x] 命令预览编译通过，SSH 目标为 `{{NODE_IP}}` 运行时解析。
+- [x] 命令预览编译通过，SSH 目标为 `{{HOST}}` 运行时解析；`HOST` 由运行时映射为目标节点地址，KBD 不应自行猜测或硬编码 IP。
 
 试运行建议：
 
@@ -1196,7 +1261,7 @@ Filesystem      Size  Used Avail Use% Mounted on
       "acquire": {
         "tool": "qkv_task",
         "args": {
-          "instruction": "备份任务失败入口：从失败的备份任务中获取节点与任务信息",
+          "instruction": "备份任务失败入口：从失败的备份任务中获取宿主机与任务信息",
           "keyword": "虚拟机备份失败",
           "is_failed": true
         }
@@ -1205,8 +1270,8 @@ Filesystem      Size  Used Avail Use% Mounted on
       "orchestrate": {
         "phase": "diagnostic",
         "produces": [
-          { "name": "NODE_IP", "path": "node_ip" },
-          { "name": "TASK_ID", "path": "task_id" },
+          { "name": "HOST", "path": "host" },
+          { "name": "TASK_ID", "path": "id" },
           { "name": "END", "path": "end" },
           { "name": "REQUEST_ID", "path": "request_id" }
         ],
@@ -1222,10 +1287,10 @@ Filesystem      Size  Used Avail Use% Mounted on
         "tool": "qfk_system",
         "args": {
           "instruction": "检查存储挂载点容量使用率",
-          "host": "{{NODE_IP}}",
+          "host": "{{HOST}}",
           "container": "asv-con",
-          "command": "df -h /storage",
-          "command_args": [],
+          "command": "df",
+          "command_args": ["-h", "/storage"],
           "timeout": 30
         }
       },
@@ -1260,7 +1325,7 @@ Filesystem      Size  Used Avail Use% Mounted on
           "value_mode": "number"
         }
       },
-      "orchestrate": { "phase": "diagnostic", "produces": [], "requires": ["NODE_IP"] },
+      "orchestrate": { "phase": "diagnostic", "produces": [], "requires": ["HOST"] },
       "provenance": { "category": "backend", "needs_review": false },
       "review": { "require_human_confirm": false }
     },
@@ -1271,7 +1336,7 @@ Filesystem      Size  Used Avail Use% Mounted on
         "tool": "qfk_log",
         "args": {
           "instruction": "检查备份守护进程日志中的存储连接错误",
-          "host": "{{NODE_IP}}",
+          "host": "{{HOST}}",
           "file": "vtpdaemon.log",
           "time_window": "{{END}}",
           "request_id": "{{REQUEST_ID}}",
@@ -1300,7 +1365,7 @@ Filesystem      Size  Used Avail Use% Mounted on
       "orchestrate": {
         "phase": "diagnostic",
         "produces": [],
-        "requires": ["END", "NODE_IP", "REQUEST_ID"]
+        "requires": ["END", "HOST", "REQUEST_ID"]
       },
       "provenance": { "category": "backend", "needs_review": false },
       "review": { "require_human_confirm": false }
@@ -1313,7 +1378,7 @@ Filesystem      Size  Used Avail Use% Mounted on
 
 1. **生产者没有 `match`**：P1 的 `match` 为 `null`，它的职责是产出变量（`orchestrate.produces`，`path` 是变量在任务证据数据中的取值路径）。
 2. **匹配模式的取值嵌在 `match.extract`**：C1 的「文本行列」取值（行选择按关键字 → 空白分列表头解析 → `USE_PERCENT` 主值列）与「数值阈值」判断（`aggregation`/`operator`/`value`）都在 `match` 对象内，与 4.3 节表单字段一一对应。
-3. **`requires` 自动推导**：由 `{{变量}}` 占位符收集排序而来。本例为了让证据链完全可追溯，让 P1 明确产出 C2 所需的 `END` 和 `REQUEST_ID`；真实 KBD 若使用已预置的平台上下文外部变量，也不得留下无来源占位符。
+3. **`requires` 自动推导**：由 `{{变量}}` 占位符收集排序而来。本例为了让证据链完全可追溯，让 P1 明确产出 C1/C2 所需的 `HOST`、`END` 和 `REQUEST_ID`；真实 KBD 若使用已预置的平台上下文外部变量，也不得留下无来源占位符。
 4. **`time_window` 存相对时间占位符**：`{{END}}` 在信号进入执行前由运行时解析为绝对时间（`YYYY-MM-DD[ HH[:MM:SS]]`）。
 5. **最终审核态**：`provenance.needs_review: false` 且 `review.require_human_confirm: false` 表示专家已逐条确认。导入时平台会重新标记待复核，不会信任外部 JSON 自带的已确认状态。
 6. **导入复用**：这段 JSON 可直接粘贴到「导入信号」弹窗（完整信号文档形态，顶层的 `verification_contract` 等字段如有会被丢弃）；导入后三条信号都会标记待复核，需逐条确认、必要时试运行，并运行「检查当前内容」后才能发布。
