@@ -6,26 +6,41 @@ backend/kb-service/app/services/signal_orchestrator.py
 3. 建模 Agent (ModelAgent): 注入最佳实践黄金案例与全局共享变量契约
 4. 验证 Agent (VerifyAgent): 全局对账、DAG 拓扑连通性校验与门禁自愈闭环
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-from app.services.signal_asset_service import SignalAssetService
 from shared.database.postgres import DatabaseManager
 from shared.utils.prompt_loader import StrictPromptLoader
+
+from app.services.signal_asset_service import SignalAssetService
 
 logger = logging.getLogger("signal_orchestrator")
 
 # 13 类封闭受限 Catalog (5 QKV + 8 QFK)
-VALID_CATALOG_TOOLS = frozenset({
-    "qkv_task", "qkv_alert", "qkv_dialog", "qkv_vm_console", "qkv_effect",
-    "qfk_log", "qfk_system", "qfk_vm", "qfk_service", "qfk_network",
-    "qfk_storage", "qfk_hardware", "qfk_platform"
-})
+VALID_CATALOG_TOOLS = frozenset(
+    {
+        "qkv_task",
+        "qkv_alert",
+        "qkv_dialog",
+        "qkv_vm_console",
+        "qkv_effect",
+        "qfk_log",
+        "qfk_system",
+        "qfk_vm",
+        "qfk_service",
+        "qfk_network",
+        "qfk_storage",
+        "qfk_hardware",
+        "qfk_platform",
+    }
+)
 
 DEFAULT_SHARED_VARIABLES = ["HOST", "VM", "REQUEST_ID", "STORAGE_ID", "STATUS", "ERRCODE_TRACING", "TARGET", "END"]
 
@@ -51,6 +66,7 @@ class SignalExtractionOrchestrator:
 
         # 默认回退到系统全局 openai/llm 接口 (从 extract_signals 导入 _call_llm)
         from app.routes.extract_signals import _call_llm
+
         res = await _call_llm(prompt, source_type="multi_agent", source_id=0)
         return res if isinstance(res, dict) else {}
 
@@ -196,10 +212,18 @@ class SignalExtractionOrchestrator:
 
         # 动态拉取同类型黄金实践
         best_practices = await SignalAssetService.get_best_practices_by_tool(session, tool_name, limit=3)
-        bp_formatted = json.dumps(
-            [{"category": b["pattern_category"], "signal": b["signal_json"], "notes": b["design_notes"]} for b in best_practices],
-            ensure_ascii=False, indent=2
-        ) if best_practices else "当前暂无特定实例，请遵循通用契约"
+        bp_formatted = (
+            json.dumps(
+                [
+                    {"category": b["pattern_category"], "signal": b["signal_json"], "notes": b["design_notes"]}
+                    for b in best_practices
+                ],
+                ensure_ascii=False,
+                indent=2,
+            )
+            if best_practices
+            else "当前暂无特定实例，请遵循通用契约"
+        )
 
         shared_vars_text = ", ".join(DEFAULT_SHARED_VARIABLES)
         prompt = prompt_template.format(
@@ -270,7 +294,9 @@ class SignalExtractionOrchestrator:
                     consumer="kb-service.signal_extract.verify",
                 )
                 prompt = prompt_template.format(
-                    signals_json=json.dumps(validated + [r.get("signal", r) for r in all_rejected], ensure_ascii=False, indent=2),
+                    signals_json=json.dumps(
+                        validated + [r.get("signal", r) for r in all_rejected], ensure_ascii=False, indent=2
+                    ),
                     rejected_candidates=json.dumps(all_rejected, ensure_ascii=False),
                     raw_count=raw_count,
                     kbd_context=kbd_context[:3000],
@@ -336,14 +362,12 @@ class SignalExtractionOrchestrator:
         valid_classified = [c for c in classified_results if c.get("valid")]
         rejected_candidates = [
             {"signal": c.get("intent"), "reason_code": "run_failed", "reason": "无法映射到 13 类受限 Catalog"}
-            for c in classified_results if not c.get("valid")
+            for c in classified_results
+            if not c.get("valid")
         ]
 
         # 阶段 3: 建模 Agent (并发注入最佳实践与全局变量契约)
-        model_tasks = [
-            self.run_model_agent(session, kbd_id, c, acli_catalog_text)
-            for c in valid_classified
-        ]
+        model_tasks = [self.run_model_agent(session, kbd_id, c, acli_catalog_text) for c in valid_classified]
         modeled_signals = await asyncio.gather(*model_tasks)
 
         raw_signals = []
@@ -351,14 +375,16 @@ class SignalExtractionOrchestrator:
             if sig is not None:
                 # 赋予规范 id
                 if "id" not in sig or not sig["id"]:
-                    sig["id"] = f"sig_{idx+1:03d}"
+                    sig["id"] = f"sig_{idx + 1:03d}"
                 raw_signals.append(sig)
             else:
-                rejected_candidates.append({
-                    "signal": valid_classified[idx].get("intent"),
-                    "reason_code": "run_failed",
-                    "reason": "建模 Agent 生成失败",
-                })
+                rejected_candidates.append(
+                    {
+                        "signal": valid_classified[idx].get("intent"),
+                        "reason_code": "run_failed",
+                        "reason": "建模 Agent 生成失败",
+                    }
+                )
 
         # 阶段 4: 验证 Agent (对账、DAG 拓扑与自愈门禁)
         validated, final_rejected = await self.run_verify_and_self_heal(

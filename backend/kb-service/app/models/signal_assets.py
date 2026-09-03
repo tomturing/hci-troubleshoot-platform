@@ -4,10 +4,10 @@
 - SignalBestPractice: 专家最终审核通过的黄金实例 (Few-Shot 检索)
 - SignalFailureExtraction: 计数/分类/建模/验证各阶段异常抽取复盘表
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
 
 from shared.database.postgres import Base
 from sqlalchemy import ARRAY, BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, String, Text
@@ -29,7 +29,9 @@ class SignalModelingTemplate(Base):
     anti_patterns = Column(ARRAY(Text), nullable=False, default=[])
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False
+    )
 
 
 class SignalBestPractice(Base):
@@ -49,7 +51,9 @@ class SignalBestPractice(Base):
     completeness_score = Column(Integer, default=10, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False
+    )
 
 
 class SignalFailureExtraction(Base):
@@ -67,4 +71,6 @@ class SignalFailureExtraction(Base):
     resolved_by = Column(String(64), nullable=True)
     resolved_notes = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC), nullable=False
+    )

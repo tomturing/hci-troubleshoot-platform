@@ -2,17 +2,13 @@
 backend/kb-service/tests/test_signal_multi_agent_prompts.py
 验证关键信号多 Agent 分层抽取的 4 个系统提示词占位符契约与规则约束。
 """
+
 from pathlib import Path
-import pytest
+
 from shared.utils.prompt_loader import StrictPromptLoader
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_MIGRATION_PATH = (
-    _REPO_ROOT
-    / "database"
-    / "atlas-migrations"
-    / "20260904000001_seed_multi_agent_extract_prompts.sql"
-)
+_MIGRATION_PATH = _REPO_ROOT / "database" / "atlas-migrations" / "20260904000001_seed_multi_agent_extract_prompts.sql"
 
 
 def _load_prompt_template_from_migration(prompt_name: str) -> str:
@@ -28,7 +24,7 @@ def test_count_agent_prompt_placeholders_and_contracts():
     """验证计数 Agent 提示词占位符与角色解耦契约"""
     template = _load_prompt_template_from_migration("kbd_signal_count_v1")
     placeholders = StrictPromptLoader.get_template_placeholders(template)
-    
+
     assert placeholders == {"composite_text", "steps_text"}
     assert "纯内容驱动" in template
     assert "角色感知去重" in template
@@ -41,7 +37,7 @@ def test_classify_agent_prompt_placeholders_and_contracts():
     """验证分类 Agent 提示词占位符与双重视角对抗审查契约"""
     template = _load_prompt_template_from_migration("kbd_signal_classify_v1")
     placeholders = StrictPromptLoader.get_template_placeholders(template)
-    
+
     assert placeholders == {
         "core_entity",
         "evidence_raw",
@@ -62,7 +58,7 @@ def test_model_agent_prompt_placeholders_and_contracts():
     """验证建模 Agent 提示词占位符与最佳实践注入契约"""
     template = _load_prompt_template_from_migration("kbd_signal_model_v1")
     placeholders = StrictPromptLoader.get_template_placeholders(template)
-    
+
     assert placeholders == {
         "tool_name",
         "core_entity",
@@ -81,7 +77,7 @@ def test_verify_agent_prompt_placeholders_and_contracts():
     """验证裁判 Agent 提示词占位符与门禁自愈契约"""
     template = _load_prompt_template_from_migration("kbd_signal_verify_v1")
     placeholders = StrictPromptLoader.get_template_placeholders(template)
-    
+
     assert placeholders == {
         "signals_json",
         "rejected_candidates",

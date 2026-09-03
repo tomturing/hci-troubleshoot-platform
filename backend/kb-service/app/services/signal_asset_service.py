@@ -3,15 +3,17 @@ backend/kb-service/app/services/signal_asset_service.py
 信号建模资产（模板库、最佳实践库、异常复盘记录）服务层
 提供带内存缓存的高性能数据访问与异常持久化
 """
+
 from __future__ import annotations
 
 import logging
 import time
 from typing import Any
 
-from app.models.signal_assets import SignalBestPractice, SignalFailureExtraction, SignalModelingTemplate
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.signal_assets import SignalBestPractice, SignalFailureExtraction, SignalModelingTemplate
 
 logger = logging.getLogger("signal_asset_service")
 
@@ -31,9 +33,7 @@ class SignalAssetService:
             if now < expire_at:
                 return val
 
-        res = await session.execute(
-            select(SignalModelingTemplate).where(SignalModelingTemplate.is_active.is_(True))
-        )
+        res = await session.execute(select(SignalModelingTemplate).where(SignalModelingTemplate.is_active.is_(True)))
         templates = res.scalars().all()
         result = {
             t.tool_name: {
@@ -94,8 +94,9 @@ class SignalAssetService:
     @classmethod
     async def record_failure(
         cls,
-        session: AsyncSession,
+        session: AsyncSession | None = None,
         *,
+        db_manager: Any = None,
         kbd_id: int | None,
         stage: str,
         raw_content: str,
@@ -103,18 +104,39 @@ class SignalAssetService:
         detail_payload: dict[str, Any] | None = None,
     ) -> int:
         """记录抽取链路异常到 signal_failure_extraction 表，不抛出异常阻塞主流程"""
-        try:
-            record = SignalFailureExtraction(
-                kbd_id=kbd_id,
-                stage=stage,
-                raw_content=raw_content[:4000] if raw_content else "",
-                reason=reason,
-                detail_payload=detail_payload or {},
-            )
-            session.add(record)
-            await session.flush()
-            logger.info("已沉淀抽取异常记录 id=%d stage=%s reason=%s kbd_id=%s", record.id, stage, reason, kbd_id)
-            return record.id
-        except Exception as exc:
-            logger.warning("记录抽取异常失败（忽略此错误以免影响主链路）: %s", exc)
-            return -1
+        record_data = {
+            "kbd_id": kbd_id,
+            "stage": stage,
+            "raw_content": raw_content[:4000] if raw_content else "",
+            "reason": reason,
+            "detail_payload": detail_payload or {},
+        }
+        # 1. 优先使用 db_manager 开辟独立隔离事务提交，避免随业务 session 回滚
+        if db_manager is not None:
+            try:
+                async with db_manager.async_session_factory() as independent_session:
+                    record = SignalFailureExtraction(**record_data)
+                    independent_session.add(record)
+                    await independent_session.commit()
+                    logger.info(
+                        "独立事务沉淀抽取异常记录 id=%d stage=%s reason=%s kbd_id=%s", record.id, stage, reason, kbd_id
+                    )
+                    return record.id
+            except Exception as exc:
+                logger.warning("独立事务记录抽取异常失败: %s", exc)
+
+        # 2. 备用方式：使用传入 session 并通过 savepoint 隔离
+        if session is not None:
+            try:
+                async with session.begin_nested():
+                    record = SignalFailureExtraction(**record_data)
+                    session.add(record)
+                    await session.flush()
+                    logger.info(
+                        "已在当前 session 嵌套保存点沉淀抽取异常记录 id=%d stage=%s reason=%s", record.id, stage, reason
+                    )
+                    return record.id
+            except Exception as exc:
+                logger.warning("当前 session 记录抽取异常失败: %s", exc)
+
+        return -1
