@@ -3503,3 +3503,51 @@ ALTER TABLE dynamic_resource_usage_audit
         AND (knowledge_snapshot_digest IS NULL OR knowledge_snapshot_digest ~ '^sha256:[0-9a-f]{64}$')
         AND (bundle_digest IS NULL OR bundle_digest ~ '^sha256:[0-9a-f]{64}$')
     );
+
+-- 关键信号多 Agent 分层建模与最佳实践库资产
+CREATE TABLE IF NOT EXISTS signal_modeling_template (
+    id SERIAL PRIMARY KEY,
+    tool_name VARCHAR(32) NOT NULL UNIQUE,
+    category VARCHAR(16) NOT NULL,
+    description TEXT NOT NULL,
+    acquire_schema JSONB NOT NULL,
+    allowed_matcher_types VARCHAR(32)[] NOT NULL,
+    variable_protocol JSONB NOT NULL,
+    anti_patterns TEXT[] NOT NULL DEFAULT '{}',
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS signal_best_practice (
+    id SERIAL PRIMARY KEY,
+    template_id INT REFERENCES signal_modeling_template(id) ON DELETE CASCADE,
+    tool_name VARCHAR(32) NOT NULL,
+    pattern_category VARCHAR(64) NOT NULL,
+    source_kbd_id BIGINT REFERENCES kbd_entry(id) ON DELETE SET NULL,
+    support_id VARCHAR(32),
+    raw_evidence TEXT NOT NULL,
+    signal_json JSONB NOT NULL,
+    design_notes TEXT NOT NULL,
+    completeness_score INT DEFAULT 10,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_signal_best_practice_tool ON signal_best_practice(tool_name) WHERE is_active = TRUE;
+
+CREATE TABLE IF NOT EXISTS signal_failure_extraction (
+    id BIGSERIAL PRIMARY KEY,
+    kbd_id BIGINT REFERENCES kbd_entry(id) ON DELETE CASCADE,
+    stage VARCHAR(32) NOT NULL,
+    raw_content TEXT NOT NULL,
+    reason VARCHAR(64) NOT NULL,
+    detail_payload JSONB DEFAULT '{}'::jsonb,
+    resolved BOOLEAN DEFAULT FALSE,
+    resolved_by VARCHAR(64),
+    resolved_notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_signal_failure_stage ON signal_failure_extraction(stage, resolved);
+

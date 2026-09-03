@@ -64,7 +64,9 @@ from app.services.safe_pipeline_converter import (
     convert_safe_pipeline,
 )
 from app.services.signal_job_manager import get_signal_job_manager
+from app.services.signal_orchestrator import SignalExtractionOrchestrator
 from app.services.sop_tool_contract_validator import (
+
     get_acli_catalog_commands,
     validate_acli_catalog_command,
     validate_acli_invocation_command,
@@ -1799,26 +1801,74 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
     )
 
     prompt_revision = hashlib.sha256(prompt_template.encode("utf-8")).hexdigest()
-    llm_result = await _call_llm(
-        prompt,
-        prompt_revision=prompt_revision,
-        source_type="kbd",
-        source_id=kbd_id,
-    )
-    raw_signals = llm_result.get("candidates")
-    if raw_signals is None:
-        raw_signals = llm_result.get("signals", [])
-    if not isinstance(raw_signals, list):
-        raise HTTPException(status_code=500, detail="LLM 未返回 Candidate 数组（candidates/signals）")
-    proposed_contract = llm_result.get("verification_contract")
-    external_variables = set(_normalize_contract_variables(proposed_contract))
-    validated, rejected = _validate_and_collect_signals(
-        raw_signals,
-        f"kbd:{kbd_id}",
-        external_variables,
-        enforce_kbd_read_only=True,
-        diagnostic_image_source_refs=diagnostic_image_source_refs,
-    )
+
+    # 优先执行多 Agent 分层建模流水线 (可通过环境变量 ENABLE_MULTI_AGENT_EXTRACTION 开关控制)
+    multi_agent_enabled = os.environ.get("ENABLE_MULTI_AGENT_EXTRACTION", "true").lower() in ("true", "1", "yes")
+    validated: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    proposed_contract = None
+
+    if multi_agent_enabled:
+        logger.info(
+            event="extract_signals_multi_agent_start",
+            kbd_id=kbd_id,
+            trace_id=get_current_trace_id(),
+        )
+        orchestrator = SignalExtractionOrchestrator(db_manager)
+
+        def _orchestrator_gate_checker(candidates: list[dict[str, Any]]):
+            v, r = _validate_and_collect_signals(
+                candidates,
+                f"kbd:{kbd_id}",
+                enforce_kbd_read_only=True,
+                diagnostic_image_source_refs=diagnostic_image_source_refs,
+            )
+            issues = [str(item.get("reason", "")) for item in r if item.get("reason")]
+            return v, r, issues
+
+        try:
+            validated, rejected, raw_count = await orchestrator.extract_kbd_signals_pipeline(
+                session,
+                kbd_id,
+                entry_data,
+                acquirer_catalog_text,
+                acquirer_catalog_text,
+                _orchestrator_gate_checker,
+            )
+            logger.info(
+                event="extract_signals_multi_agent_done",
+                kbd_id=kbd_id,
+                validated_count=len(validated),
+                rejected_count=len(rejected),
+                raw_count=raw_count,
+            )
+        except Exception as exc:
+            logger.warning("多 Agent 抽取流水线遇到异常，回退单体抽取: %s", exc)
+
+    # 若未启用多 Agent 或多 Agent 抽取产出完全为空，回退到传统单体抽取链路兜底
+    if not validated and not rejected:
+        logger.info(event="extract_signals_fallback_monolith", kbd_id=kbd_id)
+        llm_result = await _call_llm(
+            prompt,
+            prompt_revision=prompt_revision,
+            source_type="kbd",
+            source_id=kbd_id,
+        )
+        raw_signals = llm_result.get("candidates")
+        if raw_signals is None:
+            raw_signals = llm_result.get("signals", [])
+        if not isinstance(raw_signals, list):
+            raise HTTPException(status_code=500, detail="LLM 未返回 Candidate 数组（candidates/signals）")
+        proposed_contract = llm_result.get("verification_contract")
+        external_variables = set(_normalize_contract_variables(proposed_contract))
+        validated, rejected = _validate_and_collect_signals(
+            raw_signals,
+            f"kbd:{kbd_id}",
+            external_variables,
+            enforce_kbd_read_only=True,
+            diagnostic_image_source_refs=diagnostic_image_source_refs,
+        )
+
     verification_contract = _build_verification_contract(
         validated,
         proposed_contract,
