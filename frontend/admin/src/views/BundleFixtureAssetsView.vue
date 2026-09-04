@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Back, Check, EditPen, Plus, RefreshRight, View, Document, SetUp } from '@element-plus/icons-vue'
+import { Back, Check, CopyDocument, Document, EditPen, Files, Plus, RefreshRight, Search, SetUp, View, Warning } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 
 type AssetType = 'template' | 'instance'
@@ -473,6 +473,163 @@ async function transition(asset: Asset, action: 'publish' | 'retire') {
   }
 }
 
+
+// 内部鉴权头（调用 API Gateway 转发 kb-service）
+const internalToken = localStorage.getItem('internalToken') || ''
+const authHeader = { Authorization: `Bearer ${internalToken}` }
+
+// 顶层主标签：'bundle' | 'signal'
+const activeTab = ref<'bundle' | 'signal'>('bundle')
+
+// Signal 库子视图：'templates' | 'best-practices'
+const signalSubTab = ref<'templates' | 'best-practices'>('templates')
+
+const ALL_SIGNAL_TOOLS = [
+  'qfk_log', 'qkv_log', 'qfk_network', 'qkv_network',
+  'qfk_storage', 'qkv_storage', 'qfk_alert', 'qkv_alert',
+  'qfk_task', 'qkv_task', 'qfk_dialog', 'qkv_dialog', 'qkv_vm_console'
+]
+
+// 13 类建模标准模板
+interface SignalModelingTemplate {
+  id: number
+  tool_name: string
+  category: 'frontend' | 'backend'
+  description: string
+  acquire_schema: Record<string, unknown>
+  allowed_matcher_types: string[]
+  variable_protocol: Record<string, unknown>
+  anti_patterns: string[]
+  is_active: boolean
+  trace_id: string
+  created_at: string | null
+  updated_at: string | null
+}
+
+const templatesLoading = ref(false)
+const templates = ref<SignalModelingTemplate[]>([])
+const selectedTemplate = ref<SignalModelingTemplate | null>(null)
+const templateCategoryFilter = ref('')
+const templateToolSearch = ref('')
+
+// 专家黄金排障实例
+interface SignalBestPractice {
+  id: number
+  template_id: number | null
+  tool_name: string
+  pattern_category: string
+  source_kbd_id: number | null
+  support_id: string | null
+  signal_title: string
+  raw_evidence: string
+  signal_json: Record<string, unknown>
+  design_notes: string
+  completeness_score: number
+  is_active: boolean
+  trace_id: string
+  created_at: string | null
+  updated_at: string | null
+}
+
+const bpLoading = ref(false)
+const bestPractices = ref<SignalBestPractice[]>([])
+const selectedBP = ref<SignalBestPractice | null>(null)
+const bpToolFilter = ref('')
+const bpSearch = ref('')
+const bpPage = ref(1)
+const bpPageSize = ref(20)
+const bpTotal = ref(0)
+
+async function loadSignalTemplates() {
+  templatesLoading.value = true
+  try {
+    const params = new URLSearchParams()
+    if (templateCategoryFilter.value) params.set('category', templateCategoryFilter.value)
+    if (templateToolSearch.value) params.set('tool_name', templateToolSearch.value)
+    const resp = await fetch(`/api/v1/signal-assets/templates?${params}`, { headers: authHeader })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const data = await resp.json()
+    templates.value = data.items || []
+    if (templates.value.length > 0) {
+      if (!selectedTemplate.value || !templates.value.find((t) => t.id === selectedTemplate.value?.id)) {
+        selectedTemplate.value = templates.value[0]
+      }
+    } else {
+      selectedTemplate.value = null
+    }
+  } catch (err) {
+    ElMessage.error(`加载标准建模模板失败: ${err instanceof Error ? err.message : String(err)}`)
+  } finally {
+    templatesLoading.value = false
+  }
+}
+
+async function loadSignalBestPractices() {
+  bpLoading.value = true
+  try {
+    const params = new URLSearchParams()
+    if (bpToolFilter.value) params.set('tool_name', bpToolFilter.value)
+    if (bpSearch.value) params.set('search', bpSearch.value)
+    params.set('limit', String(bpPageSize.value))
+    params.set('offset', String((bpPage.value - 1) * bpPageSize.value))
+    const resp = await fetch(`/api/v1/signal-assets/best-practices?${params}`, { headers: authHeader })
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const data = await resp.json()
+    bestPractices.value = data.items || []
+    bpTotal.value = data.total || 0
+    if (bestPractices.value.length > 0) {
+      if (!selectedBP.value || !bestPractices.value.find((b) => b.id === selectedBP.value?.id)) {
+        selectedBP.value = bestPractices.value[0]
+      }
+    } else {
+      selectedBP.value = null
+    }
+  } catch (err) {
+    ElMessage.error(`加载黄金排障实例失败: ${err instanceof Error ? err.message : String(err)}`)
+  } finally {
+    bpLoading.value = false
+  }
+}
+
+function handleTabChange(tab: 'bundle' | 'signal') {
+  if (tab === 'signal') {
+    if (signalSubTab.value === 'templates' && templates.value.length === 0) {
+      loadSignalTemplates()
+    } else if (signalSubTab.value === 'best-practices' && bestPractices.value.length === 0) {
+      loadSignalBestPractices()
+    }
+  }
+}
+
+function handleSignalSubTabChange(subTab: 'templates' | 'best-practices') {
+  if (subTab === 'templates' && templates.value.length === 0) {
+    loadSignalTemplates()
+  } else if (subTab === 'best-practices' && bestPractices.value.length === 0) {
+    loadSignalBestPractices()
+  }
+}
+
+async function copyText(text: string, tip: string = '内容') {
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success(`${tip}已复制到剪贴板`)
+  } catch {
+    ElMessage.error('复制失败，请手动选取复制')
+  }
+}
+
+function formatJson(val: unknown): string {
+  if (val === null || val === undefined) return ''
+  if (typeof val === 'string') {
+    try {
+      return JSON.stringify(JSON.parse(val), null, 2)
+    } catch {
+      return val
+    }
+  }
+  return JSON.stringify(val, null, 2)
+}
+
 onMounted(loadAssets)
 </script>
 
@@ -480,15 +637,20 @@ onMounted(loadAssets)
   <main class="asset-page">
     <header class="page-header">
       <div>
-        <h2>Bundle 资产库</h2>
-        <p>管理 qkv stdout 高保真模板、实例修订及其基线快照。</p>
+        <h2>模板实例库</h2>
+        <p>统一管理离线仿真资产（Bundle 库）与关键信号建模契约及黄金样本（Signal 库）。</p>
       </div>
       <div class="header-actions">
         <el-tooltip content="返回 Bundle 工厂"><el-button :icon="Back" circle @click="router.push('/simulation/bundle-factory')" /></el-tooltip>
-        <el-button :icon="Plus" type="primary" @click="openCreate('template')">新建模板</el-button>
-        <el-button :icon="Plus" @click="openCreate('instance')">新建实例</el-button>
+        <template v-if="activeTab === 'bundle'">
+          <el-button :icon="Plus" type="primary" @click="openCreate('template')">新建模板</el-button>
+          <el-button :icon="Plus" @click="openCreate('instance')">新建实例</el-button>
+        </template>
       </div>
     </header>
+
+    <el-tabs v-model="activeTab" class="library-tabs" type="card" @tab-change="handleTabChange">
+      <el-tab-pane label="Bundle 库" name="bundle">
 
     <section class="filters">
       <el-select v-model="signalFilter" clearable placeholder="全部信号" @change="loadAssets">
@@ -608,6 +770,282 @@ onMounted(loadAssets)
         <el-empty v-else description="选择一个资产修订查看详情" />
       </aside>
     </section>
+      </el-tab-pane>
+
+      <!-- ==================== Tab 2: Signal 库 ==================== -->
+      <el-tab-pane label="Signal 库" name="signal">
+        <section class="signal-sub-bar">
+          <el-button-group class="signal-sub-toggle">
+            <el-button
+              :type="signalSubTab === 'templates' ? 'primary' : 'default'"
+              @click="handleSignalSubTabChange('templates')"
+            >
+              标准建模模板 (13类)
+            </el-button>
+            <el-button
+              :type="signalSubTab === 'best-practices' ? 'primary' : 'default'"
+              @click="handleSignalSubTabChange('best-practices')"
+            >
+              专家最佳实践 (Few-Shot)
+            </el-button>
+          </el-button-group>
+
+          <div v-if="signalSubTab === 'templates'" class="signal-filters">
+            <el-select v-model="templateCategoryFilter" clearable placeholder="全部分类" style="width: 140px;" @change="loadSignalTemplates">
+              <el-option label="后端信号 (backend)" value="backend" />
+              <el-option label="前端信号 (frontend)" value="frontend" />
+            </el-select>
+            <el-input
+              v-model="templateToolSearch"
+              placeholder="搜索工具名 (如 qfk_log)"
+              clearable
+              style="width: 200px;"
+              :prefix-icon="Search"
+              @clear="loadSignalTemplates"
+              @keyup.enter="loadSignalTemplates"
+            />
+            <el-button :icon="RefreshRight" circle :loading="templatesLoading" @click="loadSignalTemplates" />
+          </div>
+
+          <div v-else class="signal-filters">
+            <el-select v-model="bpToolFilter" clearable placeholder="全部工具" style="width: 150px;" @change="() => { bpPage = 1; loadSignalBestPractices(); }">
+              <el-option v-for="t in ALL_SIGNAL_TOOLS" :key="t" :label="t" :value="t" />
+            </el-select>
+            <el-input
+              v-model="bpSearch"
+              placeholder="搜索案例 / 模式 / 笔记"
+              clearable
+              style="width: 220px;"
+              :prefix-icon="Search"
+              @clear="() => { bpPage = 1; loadSignalBestPractices(); }"
+              @keyup.enter="() => { bpPage = 1; loadSignalBestPractices(); }"
+            />
+            <el-button :icon="RefreshRight" circle :loading="bpLoading" @click="() => { bpPage = 1; loadSignalBestPractices(); }" />
+          </div>
+        </section>
+
+        <!-- 子视图 A: 13 类建模标准模板 -->
+        <section v-if="signalSubTab === 'templates'" class="asset-layout" v-loading="templatesLoading">
+          <el-table
+            :data="templates"
+            row-key="id"
+            height="calc(100vh - 310px)"
+            highlight-current-row
+            @row-click="(tmpl: SignalModelingTemplate) => selectedTemplate = tmpl"
+          >
+            <el-table-column prop="tool_name" label="工具名称" width="160">
+              <template #default="{ row }">
+                <el-tag :type="row.category === 'frontend' ? 'primary' : 'success'" effect="plain" class="mono-tag">
+                  {{ row.tool_name }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="category" label="分类" width="100">
+              <template #default="{ row }">
+                <span :class="row.category === 'frontend' ? 'type-template' : 'type-instance'">
+                  {{ row.category === 'frontend' ? '前端信号' : '后端信号' }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="description" label="契约描述" min-width="220" show-overflow-tooltip />
+            <el-table-column label="允许 Matcher 类型" min-width="200">
+              <template #default="{ row }">
+                <div class="tags-cluster">
+                  <el-tag
+                    v-for="m in (row.allowed_matcher_types || [])"
+                    :key="m"
+                    size="small"
+                    type="info"
+                  >
+                    {{ m }}
+                  </el-tag>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="85">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.is_active ? 'success' : 'danger'">
+                  {{ row.is_active ? '激活' : '禁用' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="80" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" :icon="View" @click.stop="selectedTemplate = row">查看</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <!-- 标准模板右侧详情 -->
+          <div class="detail" v-if="selectedTemplate">
+            <div class="detail-head">
+              <h3>
+                <el-tag :type="selectedTemplate.category === 'frontend' ? 'primary' : 'success'" size="small">
+                  {{ selectedTemplate.category }}
+                </el-tag>
+                <span style="margin-left: 8px;">{{ selectedTemplate.tool_name }}</span>
+              </h3>
+              <el-button size="small" :icon="CopyDocument" @click="copyText(JSON.stringify(selectedTemplate, null, 2), '模板完整JSON')">
+                复制配置
+              </el-button>
+            </div>
+
+            <el-descriptions :column="1" border size="small" class="meta-desc">
+              <el-descriptions-item label="工具职责">
+                {{ selectedTemplate.description }}
+              </el-descriptions-item>
+              <el-descriptions-item label="允许 Matcher">
+                <div class="tags-cluster">
+                  <el-tag v-for="m in selectedTemplate.allowed_matcher_types" :key="m" size="small" type="info">
+                    {{ m }}
+                  </el-tag>
+                </div>
+              </el-descriptions-item>
+              <el-descriptions-item label="更新时间">
+                {{ selectedTemplate.updated_at ? new Date(selectedTemplate.updated_at).toLocaleString() : '-' }}
+              </el-descriptions-item>
+            </el-descriptions>
+
+            <h4>参数采集契约 Schema (acquire_schema)</h4>
+            <div class="code-box">
+              <pre>{{ formatJson(selectedTemplate.acquire_schema) }}</pre>
+            </div>
+
+            <h4>变量协议规约 (variable_protocol)</h4>
+            <div class="code-box">
+              <pre>{{ formatJson(selectedTemplate.variable_protocol) }}</pre>
+            </div>
+
+            <h4>反模式规约清单 (anti_patterns)</h4>
+            <div v-if="selectedTemplate.anti_patterns && selectedTemplate.anti_patterns.length > 0" class="anti-pattern-list">
+              <div v-for="(rule, idx) in selectedTemplate.anti_patterns" :key="idx" class="anti-pattern-item">
+                <el-icon color="#f56c6c" style="margin-top: 2px;"><Warning /></el-icon>
+                <span>{{ rule }}</span>
+              </div>
+            </div>
+            <div v-else class="rule-chip is-empty">未定义反模式规约</div>
+          </div>
+          <div class="detail empty-tip" v-else>
+            <el-empty description="选择一个建模模板查看详情" />
+          </div>
+        </section>
+        <!-- 子视图 B: 黄金排障实例 (Few-Shot) -->
+        <section v-else-if="signalSubTab === 'best-practices'" class="asset-layout" v-loading="bpLoading">
+          <div class="table-wrapper">
+            <el-table
+              :data="bestPractices"
+              row-key="id"
+              height="calc(100vh - 360px)"
+              highlight-current-row
+              @row-click="(bp: SignalBestPractice) => selectedBP = bp"
+            >
+              <el-table-column prop="tool_name" label="工具" width="130">
+                <template #default="{ row }">
+                  <el-tag size="small" class="mono-tag">{{ row.tool_name }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="support_id" label="案例 KBD" width="110">
+                <template #default="{ row }">
+                  <el-tag v-if="row.support_id" type="warning" size="small" effect="plain">
+                    #{{ row.support_id }}
+                  </el-tag>
+                  <span v-else class="rule-chip is-empty">-</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="pattern_category" label="模式分类" width="140" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <span class="pattern-badge">{{ row.pattern_category }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="signal_title" label="信号标题 / 说明" min-width="220" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <strong>{{ row.signal_title || row.design_notes || '未命名信号' }}</strong>
+                </template>
+              </el-table-column>
+              <el-table-column prop="completeness_score" label="质量评分" width="95">
+                <template #default="{ row }">
+                  <el-tag size="small" :type="row.completeness_score >= 9 ? 'success' : 'warning'">
+                    {{ row.completeness_score }} / 10
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="80" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" :icon="View" @click.stop="selectedBP = row">详情</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+
+            <div class="bp-pagination">
+              <el-pagination
+                v-model:current-page="bpPage"
+                v-model:page-size="bpPageSize"
+                :page-sizes="[10, 20, 50, 100]"
+                layout="total, sizes, prev, pager, next"
+                :total="bpTotal"
+                small
+                @size-change="loadSignalBestPractices"
+                @current-change="loadSignalBestPractices"
+              />
+            </div>
+          </div>
+
+          <div class="detail" v-if="selectedBP">
+            <div class="detail-head">
+              <h3>
+                <el-tag type="warning" size="small">#{{ selectedBP.support_id || '通用' }}</el-tag>
+                <span style="margin-left: 8px;">{{ selectedBP.signal_title || selectedBP.pattern_category }}</span>
+              </h3>
+              <el-button size="small" :icon="CopyDocument" @click="copyText(JSON.stringify(selectedBP.signal_json, null, 2), '信号JSON')">
+                复制信号JSON
+              </el-button>
+            </div>
+
+            <el-descriptions :column="1" border size="small" class="meta-desc">
+              <el-descriptions-item label="归属工具">
+                <el-tag size="small">{{ selectedBP.tool_name }}</el-tag>
+              </el-descriptions-item>
+              <el-descriptions-item label="模式分类">
+                <code>{{ selectedBP.pattern_category }}</code>
+              </el-descriptions-item>
+              <el-descriptions-item label="设计说明">
+                {{ selectedBP.design_notes || '专家审核金标样本，用于 Few-Shot 语义对齐与建模提示注入。' }}
+              </el-descriptions-item>
+              <el-descriptions-item label="专家评分">
+                <el-rate :model-value="selectedBP.completeness_score / 2" disabled show-score score-template="{value} 星" />
+              </el-descriptions-item>
+            </el-descriptions>
+
+            <div class="evidence-head">
+              <h4>原始证据文本 (raw_evidence)</h4>
+              <el-button link type="primary" size="small" :icon="CopyDocument" @click="copyText(selectedBP.raw_evidence, '证据文本')">
+                复制证据
+              </el-button>
+            </div>
+            <div class="code-box evidence-box">
+              <pre>{{ selectedBP.raw_evidence }}</pre>
+            </div>
+
+            <h4>黄金信号完整建模 JSON (signal_json)</h4>
+            <div class="code-box">
+              <pre>{{ formatJson(selectedBP.signal_json) }}</pre>
+            </div>
+
+            <details class="baseline-details">
+              <summary>链路审计追踪信息</summary>
+              <div style="margin-top: 6px;">
+                <div>ID: {{ selectedBP.id }}</div>
+                <div>Trace ID: <code>{{ selectedBP.trace_id }}</code></div>
+                <div>更新时间: {{ selectedBP.updated_at ? new Date(selectedBP.updated_at).toLocaleString() : '-' }}</div>
+              </div>
+            </details>
+          </div>
+          <div class="detail empty-tip" v-else>
+            <el-empty description="选择一条黄金排障实例查看详情" />
+          </div>
+        </section>
+      </el-tab-pane>
+    </el-tabs>
 
     <!-- 创建 / 编辑修订 Dialog（支持表单编辑与 JSON 双模式） -->
     <el-dialog
@@ -1128,4 +1566,94 @@ pre {
   .form-grid-top, .form-grid-2, .form-grid-3 { grid-template-columns: 1fr; }
   .page-header { align-items: flex-start; flex-direction: column; }
 }
+
+.library-tabs :deep(.el-tabs__header) {
+  margin-bottom: 14px;
+}
+.library-tabs :deep(.el-tabs__item) {
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.signal-sub-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.signal-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.table-wrapper {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.bp-pagination {
+  padding: 10px 14px;
+  border-top: 1px solid #ebeef5;
+  background: #fafafa;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.mono-tag {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+}
+.pattern-badge {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #409eff;
+  background: #ecf5ff;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.tags-cluster {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.evidence-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.code-box {
+  background: #f6f8fa;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+.evidence-box pre {
+  max-height: 180px;
+  color: #b88230;
+}
+
+.anti-pattern-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.anti-pattern-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  color: #f56c6c;
+  background: #fef0f0;
+  border: 1px solid #fde2e2;
+  border-radius: 4px;
+  padding: 6px 10px;
+}
+
 </style>

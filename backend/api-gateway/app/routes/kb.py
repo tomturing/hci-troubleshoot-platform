@@ -324,6 +324,78 @@ async def vm_console_captures_proxy(request: Request):
     except (ValueError, json.JSONDecodeError):
         body = {"detail": response.text[:500]}
     return JSONResponse(content=body, status_code=response.status_code)
+
+
+# 关键信号建模资产管理（模板库 + 最佳实践黄金实例）：代理到 kb-service 管理端只读路由。
+SIGNAL_ASSETS_SERVICE_URL = f"{settings.KB_SERVICE_URL}/api/admin/signal-assets"
+signal_assets_router = APIRouter(prefix="/api/v1/signal-assets", tags=["signal-assets"])
+
+
+@signal_assets_router.get("/templates")
+async def signal_templates_proxy(request: Request):
+    """代理 13 类关键信号标准模板查询 → kb-service"""
+    headers = _internal_auth_headers()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.request(
+                "GET",
+                f"{SIGNAL_ASSETS_SERVICE_URL}/templates",
+                params=dict(request.query_params),
+                headers=headers,
+            )
+        except httpx.RequestError as exc:
+            logger.error(f"signal-assets templates 代理失败: {exc.request.url!r}")
+            raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
+    try:
+        body = response.json()
+    except (ValueError, json.JSONDecodeError):
+        body = {"detail": response.text[:500]}
+    return JSONResponse(content=body, status_code=response.status_code)
+
+
+@signal_assets_router.get("/best-practices")
+async def signal_best_practices_proxy(request: Request):
+    """代理关键信号最佳实践黄金实例列表查询 → kb-service"""
+    headers = _internal_auth_headers()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.request(
+                "GET",
+                f"{SIGNAL_ASSETS_SERVICE_URL}/best-practices",
+                params=dict(request.query_params),
+                headers=headers,
+            )
+        except httpx.RequestError as exc:
+            logger.error(f"signal-assets best-practices 代理失败: {exc.request.url!r}")
+            raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
+    try:
+        body = response.json()
+    except (ValueError, json.JSONDecodeError):
+        body = {"detail": response.text[:500]}
+    return JSONResponse(content=body, status_code=response.status_code)
+
+
+@signal_assets_router.get("/best-practices/{practice_id}")
+async def signal_best_practice_detail_proxy(request: Request, practice_id: int):
+    """代理单条关键信号最佳实践黄金实例详情查询 → kb-service"""
+    headers = _internal_auth_headers()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.request(
+                "GET",
+                f"{SIGNAL_ASSETS_SERVICE_URL}/best-practices/{practice_id}",
+                headers=headers,
+            )
+        except httpx.RequestError as exc:
+            logger.error(f"signal-assets best-practice detail 代理失败: {exc.request.url!r}")
+            raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
+    try:
+        body = response.json()
+    except (ValueError, json.JSONDecodeError):
+        body = {"detail": response.text[:500]}
+    return JSONResponse(content=body, status_code=response.status_code)
+
+
 kbd_router = APIRouter(prefix="/api/v1/kbd", tags=["kbd"])
 
 
@@ -889,9 +961,7 @@ async def vm_console_replay_fixtures_proxy(request: Request):
     headers = _internal_auth_headers()
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
-            response = await client.request(
-                "GET", f"{VM_CONSOLE_SERVICE_URL}/replay-fixtures", headers=headers
-            )
+            response = await client.request("GET", f"{VM_CONSOLE_SERVICE_URL}/replay-fixtures", headers=headers)
         except httpx.RequestError as exc:
             logger.error(f"vm-console replay 代理失败: {exc.request.url!r}")
             raise HTTPException(status_code=503, detail="KB Service unavailable") from exc

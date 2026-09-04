@@ -30,7 +30,7 @@ describe('admin menu', () => {
   it('实际路由菜单顺序与产品分组一致', () => {
     expect(buildMenuItems(router.getRoutes()).map((item) => item.title)).toEqual([
       '仪表盘', '用户管理', '工单管理', '可观测性', '分类基线', 'Catalog基线',
-      'KBD管理', 'SOP管理', '工具管理', '技能管理', 'Prompt管理', '离线诊断', '控制台截图审计', '仿真测试', 'Bundle工厂', 'Bundle资产库',
+      'KBD管理', 'SOP管理', '工具管理', '技能管理', 'Prompt管理', '离线诊断', 'console审计', '仿真测试', 'Bundle工厂', '模板实例库',
     ])
   })
 
