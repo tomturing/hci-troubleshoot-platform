@@ -38,6 +38,7 @@ VALUES (
     {{
       "intent_id": "intent_001",
       "role_type": "producer 或 consumer",
+      "source_kind": "composite 或 steps",
       "core_entity": "核心实体/现象/动作简述",
       "evidence_raw": "逐字摘取的关键原文片段",
       "proposed_variables": ["预估需要的变量，如 HOST, VM, STORAGE_ID"]
@@ -125,7 +126,7 @@ VALUES (
 【建模规范与硬性约束】：
 1. acquire 标准化：
    - 命令必须符合 aCLI 白名单规范；
-   - qfk_log: file 必须是纯 basename 文件名（如 vn-node-agent-api.log），禁止包含目录或 <日期>；时间窗口通过 time_window (如 "{{END}}" 或 "{{YMD}}")；
+   - qfk_log: file 必须是纯 basename 文件名（如 vn-node-agent-api.log），禁止包含目录或 <日期>；时间窗口通过 time_window（如 "{{END}}" 或合法的 "{{LOG_DATE}}"）；禁止使用 TODAY/YMD 等未注册别名；
    - 严禁硬编码具体客户环境的特定存储卷 UUID 或 IP，必须泛化为模板变量（如 /sf/data/{{STORAGE_ID}}/...）。
 2. orchestrate 变量协议约束：
    - 全局变量命名必须严格遵循下发的【共享变量白名单】：{shared_variables}；
@@ -133,6 +134,11 @@ VALUES (
 3. Matcher 精确化：
    - 禁止在 qfk_system 命令（date/uptime/ps 等）中使用无实质过滤的 exists: true 恒真伪断言；
    - 若涉及字节换算或数值超限，强制采用 threshold Matcher 配合 ai_processing.derive。
+   - `ai_processing` 只能放在 `orchestrate.output_processing` 的 derive/assert 输入中；`match.extract` 只描述取值方式，不允许塞入 ai_processing、threshold 等额外字段。
+4. 信号语义门禁：
+   - 动作本身不是故障事实。"启动虚拟机"、"删除虚拟机"、"导入虚拟机"、"迁移虚拟机"等裸动作不得单独建模；必须有失败、异常、报错、告警或具体检查目标。
+   - 每条信号必须逐字引用输入 evidence；不得从最佳实践复制当前 KBD 原文不存在的文件名、命令、阈值或变量。
+   - acquire.tool 必须严格等于分类 Agent 分配的 {tool_name}，禁止建模阶段自行换类。
 
 参考的最佳实践黄金案例：
 {best_practices}

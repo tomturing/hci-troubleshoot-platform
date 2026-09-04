@@ -3515,6 +3515,7 @@ CREATE TABLE IF NOT EXISTS signal_modeling_template (
     variable_protocol JSONB NOT NULL,
     anti_patterns TEXT[] NOT NULL DEFAULT '{}',
     is_active BOOLEAN DEFAULT TRUE,
+    trace_id VARCHAR(64) NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -3531,6 +3532,7 @@ CREATE TABLE IF NOT EXISTS signal_best_practice (
     design_notes TEXT NOT NULL,
     completeness_score INT DEFAULT 10,
     is_active BOOLEAN DEFAULT TRUE,
+    trace_id VARCHAR(64) NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -3543,6 +3545,7 @@ CREATE TABLE IF NOT EXISTS signal_failure_extraction (
     raw_content TEXT NOT NULL,
     reason VARCHAR(64) NOT NULL,
     detail_payload JSONB DEFAULT '{}'::jsonb,
+    trace_id VARCHAR(64) NOT NULL,
     resolved BOOLEAN DEFAULT FALSE,
     resolved_by VARCHAR(64),
     resolved_notes TEXT,
@@ -3550,4 +3553,4 @@ CREATE TABLE IF NOT EXISTS signal_failure_extraction (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_signal_failure_stage ON signal_failure_extraction(stage, resolved);
-
+CREATE INDEX IF NOT EXISTS idx_signal_failure_trace_id ON signal_failure_extraction(trace_id);

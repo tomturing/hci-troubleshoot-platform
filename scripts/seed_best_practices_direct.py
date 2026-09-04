@@ -92,10 +92,10 @@ def main():
             sql_lines.append(f"""
 INSERT INTO signal_best_practice (
     template_id, tool_name, pattern_category, source_kbd_id, support_id,
-    raw_evidence, signal_json, design_notes, completeness_score
+    raw_evidence, signal_json, design_notes, completeness_score, trace_id
 ) VALUES (
     {template_id}, '{tool}', '{pattern_cat}', {kbd_id}, '{support_id}',
-    '{evidence}', '{sig_json_str}'::jsonb, '{notes}', 10
+    '{evidence}', '{sig_json_str}'::jsonb, '{notes}', 10, 'seed-best-practice:{support_id}:{total_inserted}'
 );
 """)
             total_inserted += 1

@@ -26,6 +26,7 @@ sys.path.insert(0, KB_SERVICE_DIR)
 from app.models.signal_assets import SignalBestPractice, SignalModelingTemplate
 from shared.database.postgres import DatabaseManager
 from sqlalchemy import select, text
+from uuid import uuid4
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("seed_signal_best_practices")
@@ -136,6 +137,7 @@ async def main():
                     "signal_json": sig,
                     "design_notes": notes,
                     "completeness_score": 10
+                    ,"trace_id": f"seed-best-practice:{uuid4().hex}"
                 })
                 tool_counts[tool] = tool_counts.get(tool, 0) + 1
 
