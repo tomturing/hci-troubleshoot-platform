@@ -532,3 +532,97 @@ async def test_verify_rejects_partial_self_heal_even_if_it_improves_count():
 
     assert validated == []
     assert len(rejected) == 1
+
+
+@pytest.mark.asyncio
+async def test_model_agent_dag_dynamic_variable_closure():
+    """验证 Producer 产出变量能动态注入到 Consumer 建模上下文，实现闭包。"""
+    prompts_seen = {}
+
+    async def mock_llm(prompt: str, stage: str):
+        if "qkv_task" in prompt:
+            return {
+                "id": "sig_001",
+                "acquire": {"tool": "qkv_task", "args": {"keyword": "磁盘坏道"}},
+                "orchestrate": {"phase": "diagnostic", "produces": [{"name": "DISK_ID", "alias": "DISK_ID"}]},
+                "provenance": {"evidence": "磁盘坏道报错"},
+            }
+        # 记录消费者建模收到的 prompt
+        prompts_seen["consumer_prompt"] = prompt
+        return {
+            "id": "sig_002",
+            "acquire": {"tool": "qfk_system", "args": {"command": "smartctl -a /dev/{{DISK_ID}}"}},
+            "orchestrate": {"phase": "diagnostic", "requires": ["DISK_ID"]},
+            "provenance": {"evidence": "执行 smartctl 检查磁盘"},
+        }
+
+    orchestrator = SignalExtractionOrchestrator(MagicMock(), llm_caller=mock_llm)
+    entry_data = {
+        "title": "磁盘坏道故障",
+        "problem_description": "磁盘坏道报错",
+        "alert_info": "",
+        "steps_text": "执行 smartctl 检查磁盘",
+    }
+
+    # 模拟分类结果包含 1 个 Producer 和 1 个 Consumer
+    with patch.object(orchestrator, "run_count_agent", new_callable=AsyncMock) as mock_count:
+        mock_count.return_value = (
+            2,
+            [
+                {"core_entity": "磁盘坏道", "evidence_raw": "磁盘坏道报错", "role_type": "producer"},
+                {"core_entity": "检查磁盘", "evidence_raw": "执行 smartctl 检查磁盘", "role_type": "consumer"},
+            ],
+        )
+        with patch.object(orchestrator, "run_classify_agent", new_callable=AsyncMock) as mock_classify:
+            mock_classify.side_effect = [
+                {"valid": True, "tool_name": "qkv_task", "intent": {"candidate_id": "c1", "evidence_raw": "磁盘坏道报错"}},
+                {"valid": True, "tool_name": "qfk_system", "intent": {"candidate_id": "c2", "evidence_raw": "执行 smartctl 检查磁盘"}},
+            ]
+            with patch.object(orchestrator, "_load_prompt", new_callable=AsyncMock) as mock_load:
+                mock_load.return_value = "{tool_name} {core_entity} {evidence_raw} {shared_variables} {best_practices} {acli_catalog}"
+                with patch.object(orchestrator, "_get_best_practices", new_callable=AsyncMock, return_value=[]):
+                    def dummy_gate_checker(sigs):
+                        return sigs, [], []
+
+                    validated, rejected, raw_count = await orchestrator.extract_kbd_signals_pipeline(
+                        None, 2001, entry_data, "catalog", "acli", dummy_gate_checker
+                    )
+
+    assert len(validated) == 2
+    # 验证 Consumer 接收到了 Producer 动态产出的 DISK_ID 变量
+    assert "DISK_ID" in prompts_seen.get("consumer_prompt", "")
+    assert validated[1]["acquire"]["args"]["command"] == "smartctl -a /dev/{{DISK_ID}}"
+
+
+@pytest.mark.asyncio
+async def test_model_agent_evidence_grounding_auto_repair_and_requires_cleaning():
+    """验证证据轻微改写时自动纠偏回填候选原文，且清洗悬空变量。"""
+    async def mock_llm(prompt: str, stage: str):
+        return {
+            "id": "sig_001",
+            "acquire": {"tool": "qfk_storage", "args": {"command": "acli storage pool info"}},
+            # 模型自行臆造了悬空变量 VM_DISK_PATH
+            "orchestrate": {"phase": "diagnostic", "requires": ["HOST", "VM_DISK_PATH"]},
+            # 模型轻微改写了证据（少了空格，但核心字符匹配）
+            "provenance": {"evidence": "存储池异常"},
+        }
+
+    orchestrator = SignalExtractionOrchestrator(MagicMock(), llm_caller=mock_llm)
+    classified = {
+        "tool_name": "qfk_storage",
+        "intent": {
+            "candidate_id": "kbd_3001_candidate_001",
+            "core_entity": "存储池状态异常",
+            "evidence_raw": "存储池 状态 异常",
+        },
+    }
+    with patch.object(orchestrator, "_load_prompt", new_callable=AsyncMock) as mock_load:
+        mock_load.return_value = "{tool_name} {core_entity} {evidence_raw} {shared_variables} {best_practices} {acli_catalog}"
+        with patch.object(orchestrator, "_get_best_practices", new_callable=AsyncMock, return_value=[]):
+            sig = await orchestrator.run_model_agent(AsyncMock(), 3001, classified, "Catalog")
+
+    assert sig is not None
+    # 验证证据被自动安全纠偏回填为候选原文
+    assert sig["provenance"]["evidence"] == "存储池 状态 异常"
+    # 验证未闭合且未被引用的悬空变量 VM_DISK_PATH 被清洗剔除，保留合法的 HOST
+    assert sig["orchestrate"]["requires"] == ["HOST"]

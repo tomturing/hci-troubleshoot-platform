@@ -447,6 +447,7 @@ class SignalExtractionOrchestrator:
         kbd_id: int,
         classified: dict[str, Any],
         acli_catalog_text: str,
+        dynamic_shared_variables: list[str] | None = None,
     ) -> dict[str, Any] | None:
         """执行建模 Agent：注入同类型黄金最佳实践与全局变量契约"""
         tool_name = classified["tool_name"]
@@ -455,12 +456,16 @@ class SignalExtractionOrchestrator:
         evidence_raw = str(intent.get("evidence_raw") or "")
         candidate_id = str(intent.get("candidate_id") or intent.get("intent_id") or "").strip()
 
-        # 动态拉取同类型黄金实践
+        # 动态拉取同类型黄金实践并加上防污染标识
         best_practices = await self._get_best_practices(tool_name, limit=3)
         bp_formatted = (
             json.dumps(
                 [
-                    {"category": b["pattern_category"], "signal": b["signal_json"], "notes": b["design_notes"]}
+                    {
+                        "category": b["pattern_category"],
+                        "signal": b["signal_json"],
+                        "notes": f"[示例参考范式，严禁抄袭示例中的特定文件名/变量名] {b['design_notes']}",
+                    }
                     for b in best_practices
                 ],
                 ensure_ascii=False,
@@ -470,7 +475,8 @@ class SignalExtractionOrchestrator:
             else "当前暂无特定实例，请遵循通用契约"
         )
 
-        shared_vars_text = ", ".join(DEFAULT_SHARED_VARIABLES)
+        effective_vars = dynamic_shared_variables if dynamic_shared_variables is not None else DEFAULT_SHARED_VARIABLES
+        shared_vars_text = ", ".join(sorted(set(effective_vars)))
         try:
             prompt_template = await self._load_prompt(
                 "kbd_signal_model_v1",
@@ -503,10 +509,37 @@ class SignalExtractionOrchestrator:
                 model_evidence = str(provenance.get("evidence") or "").strip() if isinstance(provenance, dict) else ""
                 source_evidence = re.sub(r"\s+", "", evidence_raw).casefold()
                 generated_evidence = re.sub(r"\s+", "", model_evidence).casefold()
-                if source_evidence and (
-                    not generated_evidence or generated_evidence not in source_evidence or len(generated_evidence) < 4
-                ):
-                    raise ValueError("建模 provenance.evidence 未逐字取自候选原文，疑似混入 Few-Shot 内容")
+                if source_evidence:
+                    if not generated_evidence:
+                        raise ValueError("建模 provenance.evidence 为空")
+                    is_exact_subset = generated_evidence in source_evidence
+                    overlap_chars = len(set(generated_evidence) & set(source_evidence))
+                    if not is_exact_subset:
+                        if overlap_chars < 3:
+                            # 与候选证据毫无字符交集，确属外部/Few-Shot 污染
+                            raise ValueError("建模 provenance.evidence 未逐字取自候选原文，疑似混入 Few-Shot 内容")
+                        # 若存在实质重叠（微小改写或修饰），自动回填候选原文证据，既阻断污染又避免误杀
+                        logger.info("建模 evidence 存在改写，已安全纠偏回填候选原文: candidate_id=%s", candidate_id)
+                        if not isinstance(candidate.get("provenance"), dict):
+                            candidate["provenance"] = {}
+                        candidate["provenance"]["evidence"] = evidence_raw
+
+                # 清洗 orchestrate.requires 中未在白名单且未在 acquire 中引用的悬空变量（如模型臆造的 VM_DISK_PATH）
+                orchestrate = candidate.get("orchestrate") or {}
+                if isinstance(orchestrate, dict):
+                    requires = orchestrate.get("requires")
+                    if isinstance(requires, list):
+                        allowed_var_set = set(effective_vars)
+                        acquire_str = json.dumps(candidate.get("acquire") or {})
+                        cleaned_requires = []
+                        for req in requires:
+                            req_name = str(req).strip()
+                            if req_name in allowed_var_set or f"{{{{{req_name}}}}}" in acquire_str:
+                                cleaned_requires.append(req_name)
+                            else:
+                                logger.info("剔除未闭合且未被消费的悬空变量: candidate_id=%s var=%s", candidate_id, req_name)
+                        orchestrate["requires"] = cleaned_requires
+
                 # 模型生成的 id 不具备身份权威性；最终信号 id 固定绑定原始候选。
                 if candidate_id:
                     candidate["id"] = candidate_id
@@ -717,9 +750,64 @@ class SignalExtractionOrchestrator:
             if not c.get("valid")
         ]
 
-        # 阶段 3: 建模 Agent (并发注入最佳实践与全局变量契约)
-        model_tasks = [self.run_model_agent(session, kbd_id, c, acli_catalog_text) for c in valid_classified]
-        modeled_signals = await asyncio.gather(*model_tasks)
+        # 阶段 3: 建模 Agent (按 DAG 拓扑分层建模：Producer 优先并导出动态符号表 -> 注入 Consumer)
+        def _is_producer_candidate(c: dict[str, Any]) -> bool:
+            tool = str(c.get("tool_name") or "")
+            role = str((c.get("intent") or {}).get("role_type") or "")
+            return tool.startswith("qkv_") or role == "producer"
+
+        producer_indices = [i for i, c in enumerate(valid_classified) if _is_producer_candidate(c)]
+        consumer_indices = [i for i, c in enumerate(valid_classified) if not _is_producer_candidate(c)]
+
+        modeled_signals: list[dict[str, Any] | None] = [None] * len(valid_classified)
+
+        # 3.1 优先并发建模生产者（QKV / producer）
+        if producer_indices:
+            producer_tasks = [
+                self.run_model_agent(
+                    session,
+                    kbd_id,
+                    valid_classified[i],
+                    acli_catalog_text,
+                    dynamic_shared_variables=DEFAULT_SHARED_VARIABLES,
+                )
+                for i in producer_indices
+            ]
+            producer_results = await asyncio.gather(*producer_tasks)
+            for idx, res_sig in zip(producer_indices, producer_results, strict=True):
+                modeled_signals[idx] = res_sig
+
+        # 3.2 动态汇聚已成功生产的变量符号表（如 VM, HOST, DISK_ID 等）
+        discovered_variables: set[str] = set()
+        for sig in modeled_signals:
+            if isinstance(sig, dict):
+                orch = sig.get("orchestrate") or {}
+                if isinstance(orch, dict):
+                    for prod in orch.get("produces") or []:
+                        if isinstance(prod, dict):
+                            var_name = prod.get("name") or prod.get("alias")
+                            if var_name and re.match(r"^[A-Z][A-Z0-9_]*$", str(var_name)):
+                                discovered_variables.add(str(var_name).strip())
+
+        active_shared_variables = sorted(set(DEFAULT_SHARED_VARIABLES) | discovered_variables)
+        diagnostics["discovered_variables"] = list(discovered_variables)
+
+        # 3.3 将动态符号表上下文注入消费者（QFK / consumer）并发建模
+        if consumer_indices:
+            consumer_tasks = [
+                self.run_model_agent(
+                    session,
+                    kbd_id,
+                    valid_classified[i],
+                    acli_catalog_text,
+                    dynamic_shared_variables=active_shared_variables,
+                )
+                for i in consumer_indices
+            ]
+            consumer_results = await asyncio.gather(*consumer_tasks)
+            for idx, res_sig in zip(consumer_indices, consumer_results, strict=True):
+                modeled_signals[idx] = res_sig
+
         diagnostics["modeled_count"] = sum(sig is not None for sig in modeled_signals)
         diagnostics["modeling_failed_count"] = sum(sig is None for sig in modeled_signals)
 
