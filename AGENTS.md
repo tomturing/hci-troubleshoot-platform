@@ -449,6 +449,12 @@ hci-troubleshoot-platform/
 - 每个微服务（`backend/xxx-service/`）是独立的 Workspace 单元
 - 前端双应用（`customer/` + `admin/`）可并行，但共享类型变更需先完成
 - `database/desired_schema.sql` 或 `database/desired_extras.sql` 修改必须附带迁移说明
+- **给已存在数据的表新增 `NOT NULL` 列必须带 DEFAULT**：`atlas schema apply` 会直接下发
+  `ADD COLUMN ... NOT NULL`，无默认值时 PostgreSQL 因存量行无法填值而整体失败
+  （`column "x" contains null values`），进而阻塞 db-migrate 的 PreSync hook 与环境同步
+- **`database/atlas-migrations/` 不会被打进 db-migrate 镜像**：`Dockerfile.migrations` 只
+  `COPY database/data-migrations/`，写在该目录的迁移不会执行。存量兼容逻辑要么落在
+  `database/data-migrations/`，要么直接表达在 `desired_schema.sql` 的列定义上
 
 ---
 
@@ -599,6 +605,7 @@ make post-merge           # 合并后集成验证
 |---------|------|
 | 删除 `backend/shared/` 下的模型定义 | 多个服务依赖 |
 | 直接修改 `database/desired_schema.sql` 或 `database/desired_extras.sql` 而不提供迁移说明 | 生产数据安全 |
+| 给存量数据表新增 `NOT NULL` 列却不带 DEFAULT | Atlas apply 失败 → db-migrate PreSync hook 失败 → Argo CD 同步卡死 |
 | 修改 `deploy/helm/` 中的 Secret 值 | 安全敏感 |
 | 在代码中硬编码 API Key / Token | 安全规范 |
 | 修改 `pyproject.toml` 的 Python 版本要求 | 全局影响 |
