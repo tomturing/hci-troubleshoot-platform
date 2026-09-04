@@ -2035,6 +2035,18 @@ function normalizeSignalProduces(signal: SignalV2): SignalV2 {
       }
     }
   }
+  // 生产者若产出 END 且未显式声明 DATE，自动持久化补齐派生的 DATE 产出变量，使前端、存储与门禁契约一致
+  if (sigTool(normalized).startsWith('qkv')) {
+    const hasEnd = produces.some((p: any) => p && typeof p === 'object' && ['END'].includes(String(p.name || p.alias || '').trim().toUpperCase()))
+    const hasDate = produces.some((p: any) => p && typeof p === 'object' && ['DATE'].includes(String(p.name || p.alias || '').trim().toUpperCase()))
+    if (hasEnd && !hasDate) {
+      const endItem = produces.find((p: any) => p && typeof p === 'object' && ['END'].includes(String(p.name || p.alias || '').trim().toUpperCase()))
+      produces.push({
+        name: 'DATE',
+        path: endItem?.path || 'end',
+      })
+    }
+  }
   return normalized
 }
 

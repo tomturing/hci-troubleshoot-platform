@@ -48,6 +48,7 @@ from shared.schemas.kbd_signal_safety import validate_kbd_read_only_signals_json
 from shared.schemas.signal_output import sync_signal_requires
 from shared.schemas.signal_schema import (
     certify_publishable_signals_json,
+    normalize_derived_date_variables,
     normalize_optional_matcher_nulls,
     normalize_qkv_output_processing_matchers,
     validate_draft_signals_json,
@@ -180,6 +181,7 @@ def _prepare_expert_publish_signals(raw: Any) -> dict[str, Any]:
 def _validate_kbd_draft_signals_json(raw: Any) -> None:
     """KBD 工作稿门禁：先给出处置边界原因，再校验通用 v2 结构。"""
 
+    normalize_derived_date_variables(raw)
     validate_kbd_read_only_signals_json(raw)
     validate_draft_signals_json(raw)
 
@@ -187,6 +189,7 @@ def _validate_kbd_draft_signals_json(raw: Any) -> None:
 def _validate_kbd_publishable_signals_json(raw: Any) -> None:
     """KBD 发布预检：先给出处置边界原因，再校验通用发布契约。"""
 
+    normalize_derived_date_variables(raw)
     validate_kbd_read_only_signals_json(raw)
     validate_kbd_publishable_signals_json(raw)
 
@@ -286,6 +289,7 @@ def _prepare_expert_draft_signals(
     _strip_legacy_expert_provenance_flags(document)
     migrated_qkv_matchers = normalize_qkv_output_processing_matchers(document)
     normalize_optional_matcher_nulls(document)
+    normalize_derived_date_variables(document)
     if migrated_qkv_matchers:
         logger.info(
             event="kbd_qkv_output_processing_legacy_matcher_migrated",
@@ -2528,6 +2532,7 @@ async def review_kbd_signals(request: Request, kbd_id: int) -> dict[str, Any]:
             )
 
     signals_doc = _load_signals_json(kbd.signals_json)
+    normalize_derived_date_variables(signals_doc)
     signals = signals_doc.get("signals") if isinstance(signals_doc, dict) else []
     shared_review = review_signal_document(
         signals_doc,

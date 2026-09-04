@@ -48,6 +48,7 @@ from shared.schemas.signal_generation import build_signal_generation_metadata
 from shared.schemas.signal_output import sync_signal_requires
 from shared.schemas.signal_schema import (
     humanize_signal_validation_error,
+    normalize_derived_date_variables,
     normalize_optional_matcher_nulls,
     validate_signals_json,
 )
@@ -148,7 +149,7 @@ ACQUIRER_CATALOG: dict[str, str] = {
         "统一日志判定：/sf/log 下 whitebox/blackbox/vn-blackbox/pod 均由 acli log get 获取；"
         "/sf/data/local 仅允许 request_id 辅助关联，"
         "Catalog 推断 path/parser，支持 keyword/regex/state/threshold/delta/trend/exists；"
-        "因 HCI 日志按自然日轮转，时间窗口必须使用 time_window: '{{DATE}}'（由生产者 END 自动派生，禁止使用旧的秒级 '{{END}}'）"
+        "因 HCI 日志按自然日轮转，时间窗口必须使用 time_window: '{{DATE}}'（由生产者 END 自动派生）"
     ),
     "qfk_service": "服务状态：领域含 asv(vt)/anet(vn)/asan(vs)/host；当前运行时按 acli capability probe 执行",
     "qfk_system": "后端信号-系统检查和操作：acli system <command>（如 lsof/ps/lsblk/iostat/smartctl），使用声明式取值后再判定",
@@ -1303,45 +1304,7 @@ def _unconsumed_qfk_producer_reasons(raw_signals: list[Any]) -> dict[int, str]:
     return rejected
 
 
-def _normalize_derived_date_variables(raw_signals: list[Any]) -> int:
-    """生产者信号（qkv_alert与qkv_task）产出 END 时，自动派生 DATE 变量 (YYYY-MM-DD)。
-
-    HCI 日志按自然日轮转存储，下游 qfk_log 依赖日期而非精确到秒的时间戳做 -t 过滤。
-    """
-    derived_count = 0
-    for signal in raw_signals:
-        if not isinstance(signal, dict):
-            continue
-        acquire = signal.get("acquire")
-        if not isinstance(acquire, dict):
-            continue
-        tool = str(acquire.get("tool") or "").strip()
-        if tool not in {"qkv_alert", "qkv_task"}:
-            continue
-        orch = signal.get("orchestrate")
-        if not isinstance(orch, dict):
-            continue
-        produces = orch.get("produces")
-        if not isinstance(produces, list):
-            continue
-
-        has_end = False
-        end_path = "end"
-        has_date = False
-        for item in produces:
-            if isinstance(item, dict):
-                name = str(item.get("name") or "").strip().upper()
-                alias = str(item.get("alias") or "").strip().upper()
-                if "END" in {name, alias}:
-                    has_end = True
-                    end_path = item.get("path") or "end"
-                if "DATE" in {name, alias}:
-                    has_date = True
-
-        if has_end and not has_date:
-            produces.append({"name": "DATE", "path": end_path})
-            derived_count += 1
-    return derived_count
+_normalize_derived_date_variables = normalize_derived_date_variables
 
 
 def _has_producer_date_variable(signals: list) -> bool:

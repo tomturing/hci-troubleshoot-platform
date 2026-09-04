@@ -80,7 +80,7 @@ def test_evaluator_loads_candidate_prompts_from_current_pr_migration():
     prompts = _load_candidate_prompts(DEFAULT_PROMPT_MIGRATION)
 
     assert set(prompts) == set(PROMPT_NAMES)
-    assert "禁止使用 TODAY/YMD 等未注册别名" in prompts["kbd_signal_model_v1"]
+    assert 'time_window: "{{DATE}}"' in prompts["kbd_signal_model_v1"]
 
 
 def test_rule_candidate_discovery_covers_failure_command_and_log_evidence():
