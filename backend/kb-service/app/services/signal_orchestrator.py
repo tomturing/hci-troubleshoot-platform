@@ -637,7 +637,18 @@ class SignalExtractionOrchestrator:
                     v2, r2, issues2 = gate_checker_fn(healed_signals)
                     if not issues2 and len(v2) + len(r2) == raw_count:
                         logger.info("自愈修正成功：原通过 %d -> 自愈通过 %d", len(validated), len(v2))
-                        return v2, list(all_rejected) + list(r2)
+                        # 过滤掉已经成功自愈并进入 v2 的候选，避免幽灵残留
+                        v2_ids = {
+                            str(item.get("candidate_id") or item.get("id"))
+                            for item in v2
+                            if isinstance(item, dict) and (item.get("id") or item.get("candidate_id"))
+                        }
+                        remaining_rejected = [
+                            r
+                            for r in all_rejected
+                            if str(r.get("candidate_id") or (r.get("signal") or {}).get("id")) not in v2_ids
+                        ]
+                        return v2, remaining_rejected + list(r2)
             except Exception as exc:
                 logger.warning("自愈回路异常 kbd_id=%d: %s", kbd_id, exc)
 
