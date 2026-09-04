@@ -147,7 +147,8 @@ ACQUIRER_CATALOG: dict[str, str] = {
     "qfk_log": (
         "统一日志判定：/sf/log 下 whitebox/blackbox/vn-blackbox/pod 均由 acli log get 获取；"
         "/sf/data/local 仅允许 request_id 辅助关联，"
-        "Catalog 推断 path/parser，支持 keyword/regex/state/threshold/delta/trend/exists"
+        "Catalog 推断 path/parser，支持 keyword/regex/state/threshold/delta/trend/exists；"
+        "因 HCI 日志按自然日轮转，时间窗口必须使用 time_window: '{{DATE}}'（由生产者 END 自动派生，禁止使用旧的秒级 '{{END}}'）"
     ),
     "qfk_service": "服务状态：领域含 asv(vt)/anet(vn)/asan(vs)/host；当前运行时按 acli capability probe 执行",
     "qfk_system": "后端信号-系统检查和操作：acli system <command>（如 lsof/ps/lsblk/iostat/smartctl），使用声明式取值后再判定",
@@ -1343,6 +1344,26 @@ def _normalize_derived_date_variables(raw_signals: list[Any]) -> int:
     return derived_count
 
 
+def _has_producer_date_variable(signals: list) -> bool:
+    """判断候选集是否包含产出 END 或派生 DATE 的时间生产者信号。"""
+    for s in signals:
+        if not isinstance(s, dict):
+            continue
+        orch = s.get("orchestrate") or {}
+        if not isinstance(orch, dict):
+            continue
+        produces = orch.get("produces") or []
+        if not isinstance(produces, list):
+            continue
+        for p in produces:
+            if isinstance(p, dict):
+                name = str(p.get("name") or "").strip().upper()
+                alias = str(p.get("alias") or "").strip().upper()
+                if name in {"END", "DATE"} or alias in {"END", "DATE"}:
+                    return True
+    return False
+
+
 def _validate_and_collect_signals(
     raw_signals: list,
     source_id: Any,
@@ -1454,6 +1475,7 @@ def _validate_and_collect_signals(
         except SafePipelineConversionError as exc:
             preparation_errors[id(s)] = str(exc)
     unconsumed_producers = _unconsumed_qfk_producer_reasons(raw_signals)
+    has_producer_date = _has_producer_date_variable(raw_signals)
 
     for s in raw_signals:
         if not isinstance(s, dict):
@@ -1528,6 +1550,21 @@ def _validate_and_collect_signals(
             reject(s, "run_failed", reason)
             logger.warning("extract_signals 拒绝未消费 QFK producer source=%s reason=%s", source_id, reason)
             continue
+        if has_producer_date and tool == "qfk_log":
+            time_window = str(args.get("time_window") or "").strip()
+            if time_window.upper() != "{{DATE}}":
+                date_violation = (
+                    "检测到生产者已产出时间变量并派生 DATE，但 qfk_log 未配置 -t {{DATE}}（当前为 "
+                    + (f"'{time_window}'" if time_window else "未配置")
+                    + "）。HCI 系统日志按自然日轮转存储，未指定 -t {{DATE}} 或使用旧的秒级时间会导致日志筛选为空；已加入待专家确认列表"
+                )
+                reject(s, "run_failed", date_violation)
+                logger.warning(
+                    "extract_signals 拦截未按日期轮转检索的 qfk_log source=%s reason=%s",
+                    source_id,
+                    date_violation,
+                )
+                continue
         ok, err = _validate_signal(
             s,
             available_vars,

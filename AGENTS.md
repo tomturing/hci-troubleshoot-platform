@@ -21,19 +21,21 @@
 **HCI 智能排障平台** — AI 驱动的超融合基础设施运维故障诊断系统。
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
-- **模板实例库扩展与菜单规范对齐（Bundle库 + Signal库，console审计更名）**：
+- **模板实例库扩展与菜单规范对齐（Bundle库 + Signal库，console审计更名）**（PR #1001）：
   - **背景**：新增的 `signal_modeling_template`（13类工具标准建模契约模板）与 `signal_best_practice`（专家审核黄金排障实例 Few-Shot）两个表在 admin-ui 缺失管理与阅览入口；原菜单名称“控制台截图审计”与“Bundle资产库”认知范围局限。
   - **重构**：
     - **菜单与路由规范更名**：侧边栏与页面内“控制台截图审计”统一更名为“console审计”；原“Bundle 资产库”统一更名为“模板实例库”。
     - **模板实例库双子库架构**：顶层引入 `Bundle 库` 与 `Signal 库` 双 Tab 切换，100% 完整保留 Bundle 仿真资产的原有编辑向导、版本切换与发布能力。
     - **Signal 库资产沉浸式阅览**：子模块支持【13类标准模板】与【专家最佳实践】，提供分类/工具/案例 Support ID 多维过滤、分页承载、Schema/变量协议/反模式规约高亮呈现，以及 Few-Shot 样本证据与 `signal_json` 完整预览及一键复制。
     - **全链路后端透传**：`kb-service` 暴露 `/api/admin/signal-assets/*` 只读查询接口，`api-gateway` 提供 `/api/v1/signal-assets/*` 安全代理透传并注入 Internal Token。
-- **生产者信号（qkv_alert与qkv_task）END变量自动派生DATE变量**：
+- **生产者信号（qkv_alert与qkv_task）END变量自动派生DATE变量与日志门禁治理**（PR #1002）：
   - **根因**：`qkv_alert` 和 `qkv_task` 生产的 `END` 是精确到秒的绝对时间（`YYYY-MM-DD HH:MM:SS`），而下游最大消费者 `qfk_log`（`acli log get`）所消费的底层日志是按自然日（如 `1.tar.zst` ~ `31.tar.zst`）轮转存储的。`acli log get -t` 若传入精确到秒的时间做 grep 过滤，命中行数极少甚至为 0，现场日志定位必须按天过滤日志。
   - **修复**：
     - **抽取与建模层**：在 `DEFAULT_VARIABLE_SCHEMA` 与 `DEFAULT_SHARED_VARIABLES` 中登记 `DATE`；当生产者声明产出 `END` 时，自动在 `orchestrate.produces` 中派生追加 `{"name": "DATE", "path": "end"}`；在调度器阶段 3.2 动态变量符号表与阶段 4 DAG 闭包可达性中，只要识别到 `END`，自动将 `DATE` 连通至下游消费者上下文。
     - **执行与解析层**：在 `agent-service` 的 `_extract_by_produces` 与 `_extract_hardcoded` 中，提取到 `end` 时自动派生 `date`（`YYYY-MM-DD`）；在 `_fill_pool_from_qkv` 写入变量池时，若写入了 `END`，自动向变量池派生写入 `DATE`（继承生产者优先级）。
-    - **仿真与模板层**：在 `_sample_variable` 中统一渲染 `{{DATE}}`；更新 `signal_modeling_template` 种子与 System Prompt 建模指南，指引 `qfk_log` 优先使用 `time_window: "{{DATE}}"`.
+    - **信号门禁严苛校验**：在 `extract_signals.py` 中引入强门禁，若生产者产出 `END`（派生 `DATE`），候选集中所有 `qfk_log` 消费者必须显式配置 `-t {{DATE}}`（`time_window: "{{DATE}}"`）；未配置或仍使用旧的秒级 `{{END}}`，直接拦截并加入 `rejected` 候选列表，标明原因供专家人工复核。
+    - **KBD 页面交互与预览**：在 KBD 编辑页面（`KbdReviewView.vue` 和 `ProducesEditor.vue`）中，当生产者选中产出 `END` 变量时，右侧自动弹出高亮徽标 `派生 DATE` 并在下方提供提示卡片；阅览模式下在右侧自动呈现派生芯片 `DATE (派生)`；`qfk_log` 表单提示收敛为推荐使用 `{{DATE}}`。
+    - **抽取 Prompt 与规范收口**：在 `kbd_signal_model_v1` 和 `kbd_signal_verify_v1` 提示词模板中明确 `qfk_log` 必须使用 `time_window: "{{DATE}}"`，严禁使用旧的秒级 `{{END}}` 或未注册别名。
 - **关键信号多 Agent 分层抽取与 DAG 变量闭包穿透**（PR #1000）：
   - **根因**：PR #999 在真实 23 篇 KBD 上复测发现多 Agent 串行死锁、单体兜底短路、缺少 trace_id、丢失图片证据，且消费者信号无法感知生产者动态变量导致变量闭包校验大面积被拒。
   - **修复**：

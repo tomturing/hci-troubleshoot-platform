@@ -712,6 +712,9 @@ function updateProduceVariableName(index: number, value?: string): void {
   const option = findProduceVariable(produceVariableCatalog.value, sigTool(signalEditDraft.value), name)
   // 目录项是“变量名 → JSON 路径”的不可拆分映射，选择后必须同步写入两字段；alias 保持不动。
   produces[index] = option ? { ...produce, name: option.name, path: option.path } : { ...produce, name }
+  if (name.toUpperCase() === 'END') {
+    ElMessage.info('已自动派生 DATE 变量（供下游 qfk_log 按天轮转检索）')
+  }
 }
 
 /** 规范化 alias 输入：强制大写，仅允许 [A-Z][A-Z0-9_]* 字符。 */
@@ -4701,6 +4704,18 @@ onUnmounted(() => clearBatchPollTimer())
                           </span>
                           <span v-if="p.path" class="produce-path" title="取值路径"><code>{{ p.path }}</code></span>
                         </div>
+                        <!-- 若产出 END，右侧自动展示派生的 DATE 芯片 -->
+                        <div
+                          v-if="(sigOrch(item.sig).produces || []).some((p: any) => p.name === 'END') && !(sigOrch(item.sig).produces || []).some((p: any) => p.name === 'DATE')"
+                          class="produce-preview-chip is-derived"
+                          title="由 END 自动派生（YYYY-MM-DD），供下游 qfk_log 日志轮转检索使用"
+                        >
+                          <span class="produce-name">
+                            <span class="produce-catalog-name">DATE</span>
+                            <span class="derived-badge-sub">派生</span>
+                          </span>
+                          <span class="produce-path" title="自动派生规则"><code>derive(END, 'YYYY-MM-DD')</code></span>
+                        </div>
                       </div>
                       <span v-else class="text-muted">—</span>
                     </div>
@@ -4854,9 +4869,30 @@ onUnmounted(() => clearBatchPollTimer())
                             :placeholder="p.name ? `留空用 ${p.name}` : '别名（可选）'"
                             @input="(v: string) => updateProduceAlias(idx, v)"
                           />
+                          <!-- 需求1：如果生产者信号被选中产出END变量，右侧自动弹出派生的DATE变量 -->
+                          <transition name="el-zoom-in-center">
+                            <div v-if="p.name === 'END'" class="derived-variable-tag" title="由于系统日志按天轮转存储，系统已由 END 自动派生 DATE (YYYY-MM-DD) 注入共享变量池">
+                              <el-tag type="success" size="small" effect="light" round class="derived-pill">
+                                派生 DATE
+                              </el-tag>
+                            </div>
+                          </transition>
                           <el-button text type="danger" size="small" @click="signalEditDraft.orchestrate.produces?.splice(idx, 1)">删除</el-button>
                         </div>
                         <el-button text type="primary" size="small" @click="signalEditDraft.orchestrate.produces = [...(signalEditDraft.orchestrate.produces || []), { name: '', path: '', alias: '' }]">+ 添加变量</el-button>
+
+                        <!-- 当产出变量包含 END 时，下方自动弹出派生变量提示条 -->
+                        <transition name="el-fade-in-linear">
+                          <div v-if="(signalEditDraft.orchestrate.produces || []).some((item: any) => item?.name === 'END')" class="derived-date-alert">
+                            <el-alert
+                              type="success"
+                              :closable="false"
+                              show-icon
+                              title="已自动派生产出变量: DATE"
+                              description="检测到本信号产出完整时间戳 END (YYYY-MM-DD HH:MM:SS)，系统已自动派生 DATE (YYYY-MM-DD) 注入变量池。下游 qfk_log 必须配置 -t '{{DATE}}' 进行日志轮转检索。"
+                            />
+                          </div>
+                        </transition>
                       </div>
                     </div>
                     <div class="field-hint" v-pre>抽取后写入变量池的变量名(name)与取值路径(path)，供下游消费者信号（QFK）通过 {{变量名}} 引用；同一 KBD 两个信号产出同名变量时，填「别名」区分（如 END1/END2），别名即实际变量 key</div>
@@ -5256,8 +5292,8 @@ onUnmounted(() => clearBatchPollTimer())
                     <div class="field-hint">KBD 自动诊断只允许只读 status；start/stop/restart 不属于关键信号执行权限。</div>
                   </template>
                   <template v-if="sigTool(signalEditDraft) === 'qfk_log'">
-                    <div class="signal-row"><span class="signal-k">时间</span><el-input v-model="signalEditDraft.acquire.args.time_window" size="small" placeholder="{{END}}（推荐）或 YYYY-MM-DD HH:MM:SS" /></div>
-                    <div class="field-hint">推荐引用上游 qkv_task/qkv_alert/qkv_dialog 产出的 <code v-pre>{{END}}</code>。Agent 保持绝对时间，再由 qfk_log 按日志族转换为所需日期格式。</div>
+                    <div class="signal-row"><span class="signal-k">时间</span><el-input v-model="signalEditDraft.acquire.args.time_window" size="small" placeholder="{{DATE}}（推荐）或 YYYY-MM-DD" /></div>
+                    <div class="field-hint">推荐引用上游生产者产出并派生的 <code v-pre>{{DATE}}</code>。因 HCI 日志按自然日轮转存储，若上游已产出时间戳 END，qfk_log 未配置 <code v-pre>{{DATE}}</code> 将被门禁拦截。</div>
                     <div class="signal-row"><span class="signal-k">文件</span><el-input v-model="signalEditDraft.acquire.args.file" size="small" placeholder="安全 basename，如 sfvt_vtpdaemon.log / LOG_ifconfig.txt" /></div>
                     <div class="field-hint">只填 basename，禁止包含目录；扩展名不限。blackbox、whitebox 和其他 /sf/log 日志都使用 qfk_log。</div>
                     <div class="signal-row"><span class="signal-k">上下文行</span><el-input-number v-model="signalEditDraft.acquire.args.context_lines" :min="0" :max="50" size="small" /></div>
@@ -7048,6 +7084,25 @@ onUnmounted(() => clearBatchPollTimer())
   padding: 1px 4px;
   border-radius: 3px;
 }
+.produce-preview-chip.is-derived {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+.produce-preview-chip.is-derived .produce-name {
+  color: #166534;
+}
+.produce-preview-chip.is-derived .derived-badge-sub {
+  font-size: 10px;
+  background: #dcfce7;
+  color: #15803d;
+  padding: 0 4px;
+  border-radius: 2px;
+  margin-left: 2px;
+}
+.produce-preview-chip.is-derived .produce-path code {
+  background: #dcfce7;
+  color: #166534;
+}
 .output-processing-preview-list {
   display: flex;
   flex-wrap: wrap;
@@ -7304,6 +7359,19 @@ onUnmounted(() => clearBatchPollTimer())
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.derived-variable-tag {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 2px;
+}
+.derived-pill {
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+.derived-date-alert {
+  margin-top: 6px;
+  margin-bottom: 4px;
 }
 .qfk-formatter-control {
   display: flex;
