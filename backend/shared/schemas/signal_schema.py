@@ -146,6 +146,60 @@ def normalize_qkv_output_processing_matchers(raw: Any) -> int:
     return removed
 
 
+def normalize_derived_date_variables(raw: Any) -> int:
+    """生产者信号（如 qkv_alert / qkv_task）产出 END 时，自动派生补齐 DATE 变量 (YYYY-MM-DD)。
+
+    HCI 日志按自然日轮转存储，下游 qfk_log 依赖日期而非精确到秒的时间戳做 -t 过滤。
+    返回自动补全的变量数量。
+    """
+    if not isinstance(raw, dict):
+        if isinstance(raw, list):
+            signals = raw
+        else:
+            return 0
+    else:
+        signals = raw.get("signals") if isinstance(raw.get("signals"), list) else [raw]
+
+    derived_count = 0
+    for signal in signals:
+        if not isinstance(signal, dict):
+            continue
+        acquire = signal.get("acquire")
+        if not isinstance(acquire, dict):
+            continue
+        tool = str(acquire.get("tool") or "").strip()
+        if not tool.startswith("qkv_"):
+            continue
+        orch = signal.get("orchestrate")
+        if not isinstance(orch, dict):
+            continue
+        produces = orch.get("produces")
+        if not isinstance(produces, list):
+            continue
+
+        has_end = False
+        end_path = "end"
+        has_date = False
+        for item in produces:
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip().upper()
+                alias = str(item.get("alias") or "").strip().upper()
+                if "END" in {name, alias}:
+                    has_end = True
+                    end_path = item.get("path") or "end"
+                if "DATE" in {name, alias}:
+                    has_date = True
+            elif str(item).strip().upper() == "END":
+                has_end = True
+            elif str(item).strip().upper() == "DATE":
+                has_date = True
+
+        if has_end and not has_date:
+            produces.append({"name": "DATE", "path": end_path})
+            derived_count += 1
+    return derived_count
+
+
 def humanize_signal_validation_error(error: ValidationError, signals: list[Any]) -> dict[str, Any]:
     """把 JSON Schema 错误转换成可定位、可执行的专家问题。
 
@@ -617,6 +671,9 @@ def _collect_variable_sources(raw: dict[str, Any]) -> tuple[
             elif str(item).strip():
                 produces.add(str(item).strip().upper())
         if str((signal.get("acquire") or {}).get("tool") or "").startswith("qkv_"):
+            # 生产者信号（如 qkv_task / qkv_alert）产出 END 时，平台规范自动派生 DATE 变量供下游按天轮转检索
+            if "END" in produces:
+                produces.add("DATE")
             for item in orchestrate.get("output_processing") or []:
                 if isinstance(item, dict) and item.get("mode") == "derive":
                     # 同时支持 name（规范字段）和 target_variable（历史兼容）

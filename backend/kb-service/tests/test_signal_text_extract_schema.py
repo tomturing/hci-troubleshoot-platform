@@ -935,3 +935,54 @@ def test_vm_console_review_passes_with_external_targets():
     # 占位符目标在发布期无变量上下文，resolver 报 needs_probe 属预期保留项，
     # 但不能阻断发布审查。
     assert review.status is not SignalReviewStatus.BLOCKED
+
+
+def test_producer_end_variable_auto_derives_date_in_dependency_graph():
+    """验证生产者仅声明 END 时，底层依赖图校验判定下游 {{DATE}} 连通合法。"""
+    from shared.schemas.signal_schema import normalize_derived_date_variables
+
+    # 1. 未调用 normalize 前，Schema 的 _collect_variable_sources 也能通过隐式 END 派生识别 DATE
+    doc = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "sig_task",
+                "acquire": {"tool": "qkv_task", "args": {"keyword": "vm_start"}},
+                "orchestrate": {
+                    "phase": "diagnostic",
+                    "produces": [{"name": "HOST", "path": "host"}, {"name": "END", "path": "end"}],
+                },
+                "provenance": {"category": "frontend", "evidence": "任务报错"},
+            },
+            {
+                "id": "sig_log",
+                "acquire": {"tool": "qfk_log", "args": {"file": "syslog", "time_window": "{{DATE}}"}},
+                "orchestrate": {
+                    "phase": "diagnostic",
+                    "requires": ["HOST", "DATE"],
+                },
+                "match": {
+                    "type": "keyword",
+                    "pattern": "error",
+                    "expected": True,
+                    "extract": _text_extract(),
+                },
+                "provenance": {"category": "backend", "evidence": "系统日志报错"},
+            },
+        ],
+        "verification_contract": {
+            "schema_version": 1,
+            "evidence_policy": {"must": ["sig_task", "sig_log"], "should": [], "exclude": [], "context": []},
+        },
+    }
+
+    # 发布前契约校验必须直接通过，不能报“输入变量 DATE 没有上游产出或外部声明”
+    validate_kbd_publishable_signals_json(doc)
+
+    # 2. 验证 normalize_derived_date_variables 规整函数自动补齐 DATE 字典项
+    assert len(doc["signals"][0]["orchestrate"]["produces"]) == 2
+    added = normalize_derived_date_variables(doc)
+    assert added == 1
+    assert len(doc["signals"][0]["orchestrate"]["produces"]) == 3
+    assert any(p.get("name") == "DATE" for p in doc["signals"][0]["orchestrate"]["produces"])
+

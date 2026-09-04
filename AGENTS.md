@@ -36,6 +36,12 @@
     - **信号门禁严苛校验**：在 `extract_signals.py` 中引入强门禁，若生产者产出 `END`（派生 `DATE`），候选集中所有 `qfk_log` 消费者必须显式配置 `-t {{DATE}}`（`time_window: "{{DATE}}"`）；未配置或仍使用旧的秒级 `{{END}}`，直接拦截并加入 `rejected` 候选列表，标明原因供专家人工复核。
     - **KBD 页面交互与预览**：在 KBD 编辑页面（`KbdReviewView.vue` 和 `ProducesEditor.vue`）中，当生产者选中产出 `END` 变量时，右侧自动弹出高亮徽标 `派生 DATE` 并在下方提供提示卡片；阅览模式下在右侧自动呈现派生芯片 `DATE (派生)`；`qfk_log` 表单提示收敛为推荐使用 `{{DATE}}`。
     - **抽取 Prompt 与规范收口**：在 `kbd_signal_model_v1` 和 `kbd_signal_verify_v1` 提示词模板中明确 `qfk_log` 必须使用 `time_window: "{{DATE}}"`，严禁使用旧的秒级 `{{END}}` 或未注册别名。
+- **生产者信号 END 自动派生 DATE 变量依赖图校验与持久化归一加固（PR #1002 遗漏项修复）**：
+  - **根因**：PR #1002 仅在 AI 重新抽取管道（`extract_signals.py`）中执行了 `_normalize_derived_date_variables`，且前端在 `KbdReviewView.vue` 中仅通过 `v-if` Mock 渲染派生 DATE 芯片而未真实写入 payload；底层 Schema 门禁（`signal_schema.py` 中的 `_collect_variable_sources`）未同步感知 `END -> DATE` 派生产出。导致存量 KBD、人工编辑保存的 KBD 在审核发布时，下游引用 `{{DATE}}` 被误判为“输入变量 DATE 没有上游产出或外部声明”，发生虚假阻断报错。
+  - **修复**：
+    - **底层 Schema 符号表加固**：在 `backend/shared/schemas/signal_schema.py` 的 `_collect_variable_sources` 中，当生产者信号（`tool.startswith("qkv_")`）产出集合包含 `END` 时，自动将其派生的 `DATE` 变量加入 `produces` 集合，使底层 DAG 闭包校验彻底消除悬空误报。
+    - **核心规整函数共享化与持久化归一**：在 `signal_schema.py` 中导出 `normalize_derived_date_variables`；在 `kb-service` 的 `_prepare_expert_draft_signals`、`review_kbd_signals`、`_validate_kbd_publishable_signals_json` 及 `_validate_kbd_draft_signals_json` 中统一接入归一化规整，确保保存与审查时持久化补齐 `DATE`。
+    - **前端保存归一化闭环**：在 `frontend/admin/src/views/KbdReviewView.vue` 的 `normalizeSignalProduces` 中，若生产者信号产出 `END` 且未显式声明 `DATE`，自动补齐 `{ name: 'DATE', path: endItem?.path || 'end' }`，实现“所见即所得”的数据持久化闭环。
 - **KBD 批量任务默认收起折叠与可观测性「信号抽取」Tab 异常复盘透传**：
   - **背景**：KBD 知识条目管理页面的「批量任务」区域默认平铺展开占用大量首屏空间，影响专家对核心 KBD 条目的日常阅览；同时抽取链路异常表 `signal_failure_extraction` 缺乏直观的前端检索入口。
   - **优化**：
