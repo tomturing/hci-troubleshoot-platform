@@ -71,6 +71,8 @@ def test_model_agent_prompt_placeholders_and_contracts():
     assert "orchestrate 变量协议约束" in template
     assert "禁止在 qfk_system 命令（date/uptime/ps 等）中使用无实质过滤的 exists: true 恒真伪断言" in template
     assert "threshold Matcher" in template
+    assert "JSON 取值路径契约" in template
+    assert "受控点号路径" in template
 
 
 def test_verify_agent_prompt_placeholders_and_contracts():
@@ -88,4 +90,5 @@ def test_verify_agent_prompt_placeholders_and_contracts():
     assert "数量刚性对账" in template
     assert "变量 DAG 连通性" in template
     assert "门禁错误自愈" in template
+    assert "修复 JSON 取值路径错误" in template
     assert "verification_status" in template

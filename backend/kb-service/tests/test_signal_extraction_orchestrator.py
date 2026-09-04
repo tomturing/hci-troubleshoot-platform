@@ -809,3 +809,147 @@ async def test_qfk_log_requires_date_variable_when_producer_has_end():
     assert len(rejected4) == 0
     assert len(validated4) == 2
 
+
+def test_json_path_gate_rejection_and_friendly_issue():
+    """测试 JSON 取值路径门禁拦截与结构化友好错误指引"""
+    from app.routes.extract_signals import _validate_and_collect_signals
+
+    # 包含类似 16998 案例中非法 $. 前缀的信号
+    signal_with_dollar_path = [
+        {
+            "id": "sig_001",
+            "role": "must",
+            "acquire": {
+                "tool": "qfk_system",
+                "args": {
+                    "command": "cat",
+                    "command_args": ["/cfs/auth/login.json"],
+                    "host": "{{HOST}}",
+                },
+            },
+            "match": {
+                "type": "threshold",
+                "value": 43200,
+                "operator": "<=",
+                "expected": True,
+                "extract": {
+                    "type": "json",
+                    "path": "$.conf.idle_duration",
+                    "source": "stdout",
+                    "cardinality": "exactly_one",
+                },
+            },
+            "orchestrate": {"phase": "diagnostic", "requires": ["HOST"]},
+            "provenance": {"category": "backend", "evidence": "查看配置文件 /cfs/auth/login.json"},
+        }
+    ]
+
+    validated, rejected = _validate_and_collect_signals(signal_with_dollar_path, source_id="kbd_test_json_gate")
+    assert len(validated) == 0
+    assert len(rejected) == 1
+    reason = rejected[0].get("reason", "")
+    assert "[门禁拦截 | 信号 sig_001]" in reason
+    assert "包含非法字符 '$'" in reason
+    assert "受控点号路径" in reason
+    assert "改进指导" in reason
+    assert "conf.idle_duration" in reason
+
+
+@pytest.mark.asyncio
+async def test_verify_agent_self_heals_json_path_and_cleans_ghost_rejected():
+    """测试验证 Agent 接收友好门禁报错后自愈纠偏 JSON 路径并清除幽灵拒绝候选"""
+    from app.routes.extract_signals import _validate_and_collect_signals
+
+    attempts = 0
+
+    def mock_gate_checker(signals):
+        nonlocal attempts
+        attempts += 1
+        v, r = _validate_and_collect_signals(signals, source_id="gate_self_heal_test")
+        issues = [str(item.get("reason", "")) for item in r if item.get("reason")]
+        return v, r, issues
+
+    async def mock_llm(prompt: str, stage: str, kbd_id: int = 0):
+        assert stage == "verify"
+        # 验证 Agent 提示词中必须收到门禁指引
+        assert "门禁阻断原因" in prompt or "gate_issues" in prompt
+        assert "$.conf.idle_duration" in prompt
+        # 模拟验证 Agent 自愈修正：将 $. 纠偏为纯点号
+        return {
+            "verification_status": "passed",
+            "alignment_check": "成功自愈 1 条信号的 JSON 路径格式",
+            "signals": [
+                {
+                    "id": "sig_001",
+                    "role": "must",
+                    "acquire": {
+                        "tool": "qfk_system",
+                        "args": {
+                            "command": "cat",
+                            "command_args": ["/cfs/auth/login.json"],
+                            "host": "{{HOST}}",
+                        },
+                    },
+                    "match": {
+                        "type": "threshold",
+                        "value": 43200,
+                        "operator": "<=",
+                        "expected": True,
+                        "extract": {
+                            "type": "json",
+                            "path": "conf.idle_duration",
+                            "source": "stdout",
+                            "cardinality": "exactly_one",
+                        },
+                    },
+                    "orchestrate": {"phase": "diagnostic", "requires": ["HOST"]},
+                    "provenance": {"category": "backend", "evidence": "查看配置文件 /cfs/auth/login.json"},
+                }
+            ],
+            "rejected_candidates": [],
+        }
+
+    orchestrator = SignalExtractionOrchestrator(MagicMock(), llm_caller=mock_llm)
+    bad_signal = {
+        "id": "sig_001",
+        "role": "must",
+        "acquire": {
+            "tool": "qfk_system",
+            "args": {
+                "command": "cat",
+                "command_args": ["/cfs/auth/login.json"],
+                "host": "{{HOST}}",
+            },
+        },
+        "match": {
+            "type": "threshold",
+            "value": 43200,
+            "operator": "<=",
+            "expected": True,
+            "extract": {
+                "type": "json",
+                "path": "$.conf.idle_duration",
+                "source": "stdout",
+                "cardinality": "exactly_one",
+            },
+        },
+        "orchestrate": {"phase": "diagnostic", "requires": ["HOST"]},
+        "provenance": {"category": "backend", "evidence": "查看配置文件 /cfs/auth/login.json"},
+    }
+
+    with patch.object(orchestrator, "_load_prompt", new_callable=AsyncMock) as mock_load:
+        mock_load.return_value = (
+            "Verify: {signals_json} {rejected_candidates} {raw_count} {kbd_context} gate_issues: {gate_issues}"
+        )
+        validated, final_rejected = await orchestrator.run_verify_and_self_heal(
+            AsyncMock(), 16998, 1, [bad_signal], [], "KBD 16998", mock_gate_checker
+        )
+
+    # 1. 验证自愈触发（第一轮被门禁拦截，第二轮自愈后通过）
+    assert attempts == 2
+    # 2. 验证信号成功修正
+    assert len(validated) == 1
+    assert validated[0]["match"]["extract"]["path"] == "conf.idle_duration"
+    # 3. 验证对抗性审查关键点：已自愈成功的候选不能残留在 rejected 列表中（幽灵残留清零）
+    assert len(final_rejected) == 0
+

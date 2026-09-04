@@ -135,6 +135,7 @@ VALUES (
    - 禁止在 qfk_system 命令（date/uptime/ps 等）中使用无实质过滤的 exists: true 恒真伪断言；
    - 若涉及字节换算或数值超限，强制采用 threshold Matcher 配合 ai_processing.derive。
    - `ai_processing` 只能放在 `orchestrate.output_processing` 的 derive/assert 输入中；`match.extract` 只描述取值方式，不允许塞入 ai_processing、threshold 等额外字段。
+   - JSON 取值路径契约（严苛门禁）：当提取方式为 JSON（type: "json"）时，path 必须使用受控点号路径。根节点直接从顶层 Key 开始（如 "conf.idle_duration"、"data[0].status"），严禁以 "$" 或 "$." 开头！严禁使用任何通配符 (*)、过滤器 (?())、切片或引号访问。
 4. 信号语义门禁：
    - 动作本身不是故障事实。"启动虚拟机"、"删除虚拟机"、"导入虚拟机"、"迁移虚拟机"等裸动作不得单独建模；必须有失败、异常、报错、告警或具体检查目标。
    - 每条信号必须逐字引用输入 evidence；不得从最佳实践复制当前 KBD 原文不存在的文件名、命令、阈值或变量。
@@ -202,6 +203,7 @@ VALUES (
 3. 门禁错误自愈（Self-Healing）：
    - 参考当前的门禁阻断原因：{gate_issues} 以及被拒候选：{rejected_candidates}；
    - 修复非法参数与占位符、补齐必要参数、剔除写操作；若生产者产出 END/DATE，检查并确保 qfk_log 配置 time_window 为 {{DATE}}。
+   - 修复 JSON 取值路径错误：根据门禁提示中的【改进指导】，将带 "$" 或 "$." 前缀的非法路径纠偏为纯受控点号路径（如将 "$.conf.idle_duration" 修正为 "conf.idle_duration"），移除通配符与非法过滤器。
 
 整篇 KBD 上下文：
 {kbd_context}

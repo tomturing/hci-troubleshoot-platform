@@ -662,6 +662,14 @@ def _validate_signal(
             return False, f"同一信号的 produces effective_key 重复: {effective_key}（请使用 alias 区分）"
         if effective_key:
             effective_keys_seen.add(effective_key)
+        if isinstance(p.get("extract"), dict):
+            p_extract_violation = _json_extract_path_violation(p["extract"], signal_id=str(signal.get("id") or ""))
+            if p_extract_violation:
+                return False, p_extract_violation
+        elif p.get("type") == "json" and "path" in p:
+            p_extract_violation = _json_extract_path_violation({"type": "json", "path": p.get("path")}, signal_id=str(signal.get("id") or ""))
+            if p_extract_violation:
+                return False, p_extract_violation
     for r in requires:
         if r not in available_vars:
             return False, f"requires 变量不在 schema 内: {r}"
@@ -679,6 +687,7 @@ def _validate_signal(
             matcher_violation = _matcher_quality_violation(
                 matcher,
                 evidence=str(prov.get("evidence") or ""),
+                signal_id=str(signal.get("id") or ""),
             )
             if matcher_violation:
                 return False, matcher_violation
@@ -778,7 +787,12 @@ def _acquirer_catalog_prompt_text() -> str:
     )
 
 
-def _matcher_quality_violation(matcher: dict[str, Any], *, evidence: str = "") -> str | None:
+def _matcher_quality_violation(
+    matcher: dict[str, Any],
+    *,
+    evidence: str = "",
+    signal_id: str = "",
+) -> str | None:
     """拒绝结构合法但运行时会静默误判的 Matcher。"""
 
     matcher_type = str(matcher.get("type") or "")
@@ -815,6 +829,73 @@ def _matcher_quality_violation(matcher: dict[str, Any], *, evidence: str = "") -
                     "regex Matcher 的 match.pattern 无法命中 provenance.evidence，"
                     f"现场执行前已验证失败: {regex_pattern}"
                 )
+    extract = matcher.get("extract")
+    if isinstance(extract, dict):
+        extract_violation = _json_extract_path_violation(extract, signal_id=signal_id)
+        if extract_violation:
+            return extract_violation
+    return None
+
+
+def _json_extract_path_violation(extract_spec: Any, *, signal_id: str = "") -> str | None:
+    """门禁校验：提取 spec 中声明 type: json 时的 path 路径语法合规性。
+
+    平台采用受控点号路径规范（非业界 RFC 9535 完整 JSONPath DSL）：
+    1. 根节点直接从顶层键名开始，严禁带 '$' 或 '$.' 前缀；
+    2. 仅支持受控点号和非负整数下标（如 'conf.idle_duration'、'data[0].status'）；
+    3. 严禁包含通配符 (*)、过滤器 (?())、切片、函数或引号键访问。
+    校验失败时生成对 Agent 极友好的结构化诊断信息与改进指导。
+    """
+    if not isinstance(extract_spec, dict):
+        return None
+    extract_type = str(extract_spec.get("type") or "").strip().lower()
+    if extract_type != "json":
+        return None
+    path = extract_spec.get("path")
+    if path is None:
+        return None
+    path_str = str(path).strip()
+    if not path_str:
+        return None
+
+    sig_label = f"信号 {signal_id}" if signal_id else "当前信号"
+
+    # 1. 检查根节点 '$' 符号
+    if "$" in path_str:
+        return (
+            f"[门禁拦截 | {sig_label}]: JSON 取值路径 '{path_str}' 包含非法字符 '$'。"
+            f"原因：平台采用受控点号路径（非业界 RFC 9535 标准），隐式从根节点开始，禁止使用 '$' 或 '$.' 前缀。"
+            f"改进指导：根节点请直接从顶层键名开始（例如将 '$.conf.idle_duration' 纠偏为 'conf.idle_duration'，"
+            f"或将 '$.data[0].status' 纠偏为 'data[0].status'）。"
+        )
+
+    # 2. 检查非法通配符、过滤器或控制符
+    illegal_chars = [token for token in ("*", "?", "@", "(", ")", ";", "|", "'", '"') if token in path_str]
+    if illegal_chars:
+        return (
+            f"[门禁拦截 | {sig_label}]: JSON 取值路径 '{path_str}' 包含非法通配符或表达式字符 {illegal_chars}。"
+            f"原因：平台提取器为安全沙箱投射器，不支持通配符、切片、过滤器或 jq 表达式。"
+            f"改进指导：仅支持明确字段层级点号和确定性下标（如 'items[0].name'），请移除通配或过滤逻辑。"
+        )
+
+    # 3. 检查点号与方括号下标语法结构
+    normalized = re.sub(r"\[(\d+)]", r".\1", path_str)
+    if "[" in normalized or "]" in normalized:
+        return (
+            f"[门禁拦截 | {sig_label}]: JSON 取值路径 '{path_str}' 方括号语法非法。"
+            f"改进指导：方括号内仅支持纯非负整数下标（如 '[0]'），禁止属性名或切片（如 \"['key']\" 或 '[-1]'）。"
+        )
+    if normalized.startswith(".") or normalized.endswith(".") or ".." in normalized:
+        return (
+            f"[门禁拦截 | {sig_label}]: JSON 取值路径 '{path_str}' 点号结构非法。"
+            f"改进指导：禁止以点号开头/结尾，禁止连续点号 '..'，请修正为标准层级命名（如 'conf.idle_duration'）。"
+        )
+    for part in normalized.split("."):
+        if not part or not re.fullmatch(r"[a-zA-Z0-9_]+", part):
+            return (
+                f"[门禁拦截 | {sig_label}]: JSON 取值路径 '{path_str}' 的层级节点 '{part}' 命名非法。"
+                f"改进指导：节点名称仅能由英文字母、数字和下划线组成。"
+            )
     return None
 
 
