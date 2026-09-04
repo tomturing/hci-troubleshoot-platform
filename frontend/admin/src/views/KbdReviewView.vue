@@ -3,7 +3,7 @@
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type TableColumnCtx, type TableInstance, type UploadFile } from 'element-plus'
-import { FullScreen, InfoFilled, Refresh, Upload } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, FullScreen, InfoFilled, Loading, Refresh, Upload } from '@element-plus/icons-vue'
 import { useCategories } from '../composables/useCategories'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -1133,6 +1133,10 @@ const batchJobsLoading = ref(false)
 const batchJobsPage = ref(1)
 const batchJobsPageSize = ref(10)
 const batchJobsTotal = ref(0)
+const batchTasksCollapsed = ref(true) // 批量任务默认收起，释放首屏空间
+const runningBatchJobsCount = computed(() => {
+  return batchJobs.value.filter(job => job.status === 'running' || job.status === 'pending').length
+})
 const batchJobTypeFilter = ref<KbdBatchJob['job_type'] | ''>('')
 const batchJobDetail = ref<KbdBatchJob | null>(null)
 const batchJobDetailVisible = ref(false)
@@ -1406,6 +1410,7 @@ function rememberSubmittedBatch(data: any) {
   // 新任务无论类型都应立即出现在任务区，避免被当前筛选或历史页隐藏。
   batchJobTypeFilter.value = ''
   batchJobsPage.value = 1
+  batchTasksCollapsed.value = false // 提交新批量任务时自动展开，方便专家实时查看进度
   void loadBatchJobs()
 }
 
@@ -4066,16 +4071,45 @@ onUnmounted(() => clearBatchPollTimer())
       </el-row>
     </el-card>
 
-    <!-- 批量任务：进度和逐条结果持久化，页面刷新后仍可查看。 -->
-    <el-card v-if="batchJobs.length > 0" shadow="never" class="batch-jobs-card">
+    <!-- 批量任务：可展开/收起（默认收起，避免占用主视口空间） -->
+    <el-card
+      v-if="batchJobs.length > 0"
+      shadow="never"
+      class="batch-jobs-card"
+      :class="{ 'is-collapsed': batchTasksCollapsed }"
+    >
       <template #header>
-        <div class="batch-jobs-header">
-          <div>
+        <div
+          class="batch-jobs-header"
+          :class="{ 'clickable': batchTasksCollapsed }"
+          @click="batchTasksCollapsed = !batchTasksCollapsed"
+        >
+          <div class="batch-jobs-header-title">
             <strong>批量任务</strong>
             <span class="batch-jobs-hint">全部任务可追溯；失败原因和 KBD 查看/编辑入口位于详情中</span>
+            <el-tag
+              v-if="runningBatchJobsCount > 0"
+              size="small"
+              type="warning"
+              effect="plain"
+              class="batch-status-chip"
+            >
+              <el-icon class="is-loading" style="margin-right: 3px"><Loading /></el-icon>
+              {{ runningBatchJobsCount }} 个任务处理中
+            </el-tag>
+            <el-tag
+              v-else-if="batchTasksCollapsed"
+              size="small"
+              type="info"
+              effect="plain"
+              class="batch-status-chip"
+            >
+              共 {{ batchJobsTotal }} 个任务
+            </el-tag>
           </div>
-          <div class="batch-jobs-actions">
+          <div class="batch-jobs-actions" @click.stop>
             <el-select
+              v-if="!batchTasksCollapsed"
               v-model="batchJobTypeFilter"
               size="small"
               style="width: 150px"
@@ -4091,68 +4125,83 @@ onUnmounted(() => clearBatchPollTimer())
             <el-button size="small" :icon="Refresh" :loading="batchJobsLoading" @click="loadBatchJobs">
               刷新
             </el-button>
+            <el-button
+              size="small"
+              type="primary"
+              link
+              class="batch-toggle-button"
+              @click.stop="batchTasksCollapsed = !batchTasksCollapsed"
+            >
+              <span>{{ batchTasksCollapsed ? '展开任务' : '收起' }}</span>
+              <el-icon class="toggle-icon">
+                <ArrowDown v-if="batchTasksCollapsed" />
+                <ArrowUp v-else />
+              </el-icon>
+            </el-button>
           </div>
         </div>
       </template>
-      <el-table :data="batchJobs" size="small" row-key="batch_id" class="batch-jobs-table">
-        <el-table-column label="任务" min-width="130">
-          <template #default="{ row }">
-            {{ batchJobTypeLabel(row.job_type) }}
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="100">
-          <template #default="{ row }">
-            <el-tag :type="batchJobStatusTag(row.status)" size="small">
-              {{ batchJobStatusLabel(row.status) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="进度" min-width="230">
-          <template #default="{ row }">
-            <div class="batch-progress-cell">
-              <el-progress
-                :percentage="batchProgress(row)"
-                :status="row.status === 'completed' ? 'success' : row.status === 'failed' ? 'exception' : undefined"
-              />
-              <span>{{ batchProgressLabel(row) }}</span>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="结果" min-width="150">
-          <template #default="{ row }">
-            <span class="batch-success-count">成功 {{ row.succeeded_count }}</span>
-            <span :class="['batch-failed-count', { active: row.failed_count > 0 }]">失败 {{ row.failed_count }}</span>
-            <span v-if="row.interrupted_count > 0" class="batch-interrupted-count">中断 {{ row.interrupted_count }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="提交时间" width="180">
-          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="190" fixed="right">
-          <template #default="{ row }">
-            <el-button link type="primary" @click="openBatchJobDetail(row)">详情</el-button>
-            <el-button
-              v-if="canRetryBatch(row)"
-              link
-              type="warning"
-              :loading="batchRetryLoadingId === row.batch_id"
-              @click="retryUnsuccessfulBatch(row)"
-            >重试未成功</el-button>
-            <el-tag v-else-if="row.retried_by_batch_id" size="small" type="info">已创建重试</el-tag>
-          </template>
-        </el-table-column>
-      </el-table>
-      <el-pagination
-        v-if="batchJobsTotal > batchJobsPageSize"
-        class="batch-jobs-pagination"
-        small
-        background
-        layout="total, prev, pager, next"
-        :total="batchJobsTotal"
-        :page-size="batchJobsPageSize"
-        :current-page="batchJobsPage"
-        @current-change="changeBatchJobsPage"
-      />
+      <div v-show="!batchTasksCollapsed" class="batch-jobs-body">
+        <el-table :data="batchJobs" size="small" row-key="batch_id" class="batch-jobs-table">
+          <el-table-column label="任务" min-width="130">
+            <template #default="{ row }">
+              {{ batchJobTypeLabel(row.job_type) }}
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="100">
+            <template #default="{ row }">
+              <el-tag :type="batchJobStatusTag(row.status)" size="small">
+                {{ batchJobStatusLabel(row.status) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="进度" min-width="230">
+            <template #default="{ row }">
+              <div class="batch-progress-cell">
+                <el-progress
+                  :percentage="batchProgress(row)"
+                  :status="row.status === 'completed' ? 'success' : row.status === 'failed' ? 'exception' : undefined"
+                />
+                <span>{{ batchProgressLabel(row) }}</span>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="结果" min-width="150">
+            <template #default="{ row }">
+              <span class="batch-success-count">成功 {{ row.succeeded_count }}</span>
+              <span :class="['batch-failed-count', { active: row.failed_count > 0 }]">失败 {{ row.failed_count }}</span>
+              <span v-if="row.interrupted_count > 0" class="batch-interrupted-count">中断 {{ row.interrupted_count }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="提交时间" width="180">
+            <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="190" fixed="right">
+            <template #default="{ row }">
+              <el-button link type="primary" @click="openBatchJobDetail(row)">详情</el-button>
+              <el-button
+                v-if="canRetryBatch(row)"
+                link
+                type="warning"
+                :loading="batchRetryLoadingId === row.batch_id"
+                @click="retryUnsuccessfulBatch(row)"
+              >重试未成功</el-button>
+              <el-tag v-else-if="row.retried_by_batch_id" size="small" type="info">已创建重试</el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-pagination
+          v-if="batchJobsTotal > batchJobsPageSize"
+          class="batch-jobs-pagination"
+          small
+          background
+          layout="total, prev, pager, next"
+          :total="batchJobsTotal"
+          :page-size="batchJobsPageSize"
+          :current-page="batchJobsPage"
+          @current-change="changeBatchJobsPage"
+        />
+      </div>
     </el-card>
 
     <!-- 列表：按 AI 分类 Tab 分组 -->
@@ -6256,6 +6305,16 @@ onUnmounted(() => clearBatchPollTimer())
 
 .batch-jobs-card {
   margin-bottom: 12px;
+  transition: all 0.2s ease-in-out;
+}
+
+.batch-jobs-card.is-collapsed {
+  margin-bottom: 10px;
+}
+
+.batch-jobs-card.is-collapsed :deep(.el-card__body) {
+  display: none !important;
+  padding: 0 !important;
 }
 
 .batch-jobs-card :deep(.el-card__header) {
@@ -6271,6 +6330,34 @@ onUnmounted(() => clearBatchPollTimer())
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  user-select: none;
+}
+
+.batch-jobs-header.clickable {
+  cursor: pointer;
+}
+
+.batch-jobs-header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.batch-status-chip {
+  margin-left: 6px;
+  font-size: 11px;
+}
+
+.batch-toggle-button {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 500;
+  margin-left: 4px;
+}
+
+.batch-toggle-button .toggle-icon {
+  margin-left: 2px;
 }
 
 .batch-jobs-actions {

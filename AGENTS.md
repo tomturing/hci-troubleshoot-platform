@@ -36,6 +36,12 @@
     - **信号门禁严苛校验**：在 `extract_signals.py` 中引入强门禁，若生产者产出 `END`（派生 `DATE`），候选集中所有 `qfk_log` 消费者必须显式配置 `-t {{DATE}}`（`time_window: "{{DATE}}"`）；未配置或仍使用旧的秒级 `{{END}}`，直接拦截并加入 `rejected` 候选列表，标明原因供专家人工复核。
     - **KBD 页面交互与预览**：在 KBD 编辑页面（`KbdReviewView.vue` 和 `ProducesEditor.vue`）中，当生产者选中产出 `END` 变量时，右侧自动弹出高亮徽标 `派生 DATE` 并在下方提供提示卡片；阅览模式下在右侧自动呈现派生芯片 `DATE (派生)`；`qfk_log` 表单提示收敛为推荐使用 `{{DATE}}`。
     - **抽取 Prompt 与规范收口**：在 `kbd_signal_model_v1` 和 `kbd_signal_verify_v1` 提示词模板中明确 `qfk_log` 必须使用 `time_window: "{{DATE}}"`，严禁使用旧的秒级 `{{END}}` 或未注册别名。
+- **KBD 批量任务默认收起折叠与可观测性「信号抽取」Tab 异常复盘透传**：
+  - **背景**：KBD 知识条目管理页面的「批量任务」区域默认平铺展开占用大量首屏空间，影响专家对核心 KBD 条目的日常阅览；同时抽取链路异常表 `signal_failure_extraction` 缺乏直观的前端检索入口。
+  - **优化**：
+    - **批量任务卡片折叠交互**：KBD 管理页面「批量任务」卡片改造为可平滑展开/收起，默认设为收起状态；Header 紧凑展示运行中任务与总数摘要 Badge，提供明确展开/收起按钮与旋转微动画；当专家主动触发新批量任务时，智能联动自动展开，兼顾空间释放与任务状态可达。
+    - **可观测性「信号抽取」Tab 新增**：在 Admin UI 可观测性模块的「审查日志」右侧新增「信号抽取」Tab，直连后端 `GET /api/v1/signal-assets/failures` 接口；支持按 Support 案例号、KBD、阶段（count/classify/model/verify）、原因分类及 Trace ID 综合检索与分页，提供异常复盘详情抽屉，展示失败诊断、原文上下文和原始 Payload JSON。
+    - **后端接口与反向代理透传**：`kb-service` 在 `signal_assets` 路由中提供 `/failures` 与 `/failures/{failure_id}` 分页与详情接口（LEFT JOIN `kbd_entry` 获取案例号与标题）；`api-gateway` 在 `signal_assets_router` 完成安全代理。
 - **关键信号多 Agent 分层抽取与 DAG 变量闭包穿透**（PR #1000）：
   - **根因**：PR #999 在真实 23 篇 KBD 上复测发现多 Agent 串行死锁、单体兜底短路、缺少 trace_id、丢失图片证据，且消费者信号无法感知生产者动态变量导致变量闭包校验大面积被拒。
   - **修复**：
