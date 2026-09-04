@@ -3,6 +3,7 @@ backend/kb-service/tests/test_signal_asset_service.py
 单元测试验证 SignalAssetService 的模板缓存、最佳实践 Few-Shot 过滤及非阻塞异常持久化。
 """
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -76,8 +77,14 @@ async def test_get_best_practices_by_tool_caching():
 async def test_record_failure_with_db_manager_independent_commit():
     """验证 record_failure 优先使用 db_manager 开辟独立事务提交"""
     mock_db = MagicMock()
-    mock_independent_session = AsyncMock()
-    mock_db.async_session_factory.return_value.__aenter__.return_value = mock_independent_session
+    mock_independent_session = MagicMock()
+    mock_independent_session.commit = AsyncMock()
+
+    @asynccontextmanager
+    async def session_factory():
+        yield mock_independent_session
+
+    mock_db.async_session_factory = session_factory
 
     ret_id = await SignalAssetService.record_failure(
         session=None,
@@ -93,9 +100,25 @@ async def test_record_failure_with_db_manager_independent_commit():
 
 
 @pytest.mark.asyncio
+async def test_record_failure_dry_run_does_not_touch_database():
+    """dry-run 失败记录必须完全禁写数据库。"""
+    mock_db = MagicMock()
+    result = await SignalAssetService.record_failure(
+        db_manager=mock_db,
+        kbd_id=1,
+        stage="count",
+        raw_content="x",
+        reason="UNCOUNTABLE",
+        persist=False,
+    )
+    assert result == -1
+    mock_db.async_session_factory.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_record_failure_graceful_exception_handling():
     """验证即使数据库写入失败也优雅返回 -1，绝不阻塞抛出异常"""
-    mock_session = AsyncMock()
+    mock_session = MagicMock()
     mock_session.begin_nested.side_effect = RuntimeError("DB down")
 
     ret_id = await SignalAssetService.record_failure(

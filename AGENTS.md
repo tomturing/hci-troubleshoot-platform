@@ -21,6 +21,13 @@
 **HCI 智能排障平台** — AI 驱动的超融合基础设施运维故障诊断系统。
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
+- **关键信号多 Agent 分层抽取与 DAG 变量闭包穿透**（PR #1000）：
+  - **根因**：PR #999 在真实 23 篇 KBD 上复测发现多 Agent 串行死锁、单体兜底短路、缺少 trace_id、丢失图片证据，且消费者信号无法感知生产者动态变量导致变量闭包校验大面积被拒。
+  - **修复**：
+    - 将单体回退条件修正为 `if not validated:`，确保未产生有效信号时 100% 触发单体兜底，默认开关改为 fail-closed。
+    - 补齐 `signal_failure_extraction` 等表 `trace_id` 字段及索引；传入 `image_evidence_text` 打通图片诊断上下文。
+    - 阶段 3 升级为 DAG 拓扑分层建模：优先并发建模 Producer 信号，动态导出已声明的变量符号表（如 `VM`, `HOST`, `DISK_ID`），再注入 Consumer 信号建模上下文，彻底根治跨候选变量断裂。
+    - 强化 Few-Shot 样本防污染与证据自愈：证据轻微改写时自动纠偏回填候选原文，自动清洗悬空未闭合变量（如 `VM_DISK_PATH`）。
 - **QFK 日志关键字粗筛下推与 RouteKey 细粒度判重**：
   - **根因**：同一 KBD 下针对同一日志文件匹配不同特征行时，由于 `build_log_selector` 与 `review_signal_document` 编译期未将 `match.extract.rows.include` 下推为 `acli log get -k` 正则粗筛参数，导致多个不同判定逻辑的 Signal 退化为完全相同的无 `-k` 命令行，在 Bundle 编译器和离线模拟器中触发 `重复 RouteKey` 报错。
   - **修复**：

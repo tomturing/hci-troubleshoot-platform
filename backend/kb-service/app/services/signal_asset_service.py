@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Mapping
 from typing import Any
 
-from sqlalchemy import desc, select
+from shared.observability.otel import get_current_trace_id
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.signal_assets import SignalBestPractice, SignalFailureExtraction, SignalModelingTemplate
+from app.models.signal_assets import SignalFailureExtraction, SignalModelingTemplate
 
 logger = logging.getLogger("signal_asset_service")
 
@@ -66,25 +68,31 @@ class SignalAssetService:
             if now < expire_at:
                 return val
 
+        # 显式列查询，兼容迁移期间旧环境缺少新增 trace_id 列的情况。
         res = await session.execute(
-            select(SignalBestPractice)
-            .where(
-                SignalBestPractice.tool_name == tool_name,
-                SignalBestPractice.is_active.is_(True),
-            )
-            .order_by(desc(SignalBestPractice.completeness_score), desc(SignalBestPractice.id))
-            .limit(limit)
+            text(
+                """
+                SELECT id, tool_name, pattern_category, support_id, raw_evidence, signal_json, design_notes
+                FROM signal_best_practice
+                WHERE tool_name = :tool_name AND is_active = TRUE
+                ORDER BY completeness_score DESC, id DESC LIMIT :limit
+                """
+            ),
+            {"tool_name": tool_name, "limit": limit},
         )
-        practices = res.scalars().all()
+        practices = res.mappings().all()
+        # 保持轻量单测/替代驱动对旧 Result.scalars() 形态的兼容。
+        if (not isinstance(practices, list) or not practices) and hasattr(res, "scalars"):
+            practices = res.scalars().all()
         result = [
             {
-                "id": bp.id,
-                "tool_name": bp.tool_name,
-                "pattern_category": bp.pattern_category,
-                "support_id": bp.support_id,
-                "raw_evidence": bp.raw_evidence,
-                "signal_json": bp.signal_json,
-                "design_notes": bp.design_notes,
+                "id": bp["id"] if isinstance(bp, Mapping) else bp.id,
+                "tool_name": bp["tool_name"] if isinstance(bp, Mapping) else bp.tool_name,
+                "pattern_category": bp["pattern_category"] if isinstance(bp, Mapping) else bp.pattern_category,
+                "support_id": bp["support_id"] if isinstance(bp, Mapping) else bp.support_id,
+                "raw_evidence": bp["raw_evidence"] if isinstance(bp, Mapping) else bp.raw_evidence,
+                "signal_json": bp["signal_json"] if isinstance(bp, Mapping) else bp.signal_json,
+                "design_notes": bp["design_notes"] if isinstance(bp, Mapping) else bp.design_notes,
             }
             for bp in practices
         ]
@@ -102,14 +110,25 @@ class SignalAssetService:
         raw_content: str,
         reason: str,
         detail_payload: dict[str, Any] | None = None,
+        persist: bool = True,
     ) -> int:
         """记录抽取链路异常到 signal_failure_extraction 表，不抛出异常阻塞主流程"""
+        if not persist:
+            logger.info(
+                "dry-run 跳过异常复盘写入 stage=%s reason=%s kbd_id=%s",
+                stage,
+                reason,
+                kbd_id,
+            )
+            return -1
+        trace_id = get_current_trace_id() or f"signal-failure:{kbd_id or 'unknown'}:{stage}"
         record_data = {
             "kbd_id": kbd_id,
             "stage": stage,
             "raw_content": raw_content[:4000] if raw_content else "",
             "reason": reason,
             "detail_payload": detail_payload or {},
+            "trace_id": trace_id,
         }
         # 1. 优先使用 db_manager 开辟独立隔离事务提交，避免随业务 session 回滚
         if db_manager is not None:

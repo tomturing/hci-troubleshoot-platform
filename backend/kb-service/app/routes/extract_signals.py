@@ -55,6 +55,7 @@ from shared.schemas.verification_contract import reconcile_verification_contract
 from shared.utils.prompt_loader import StrictPromptLoader
 from sqlalchemy import select, text
 
+from app.models.kb_category import KbCategory
 from app.services.kbd_mutation_guard import PublishedKbdMutationError, require_mutable_kbd
 from app.services.kbd_revision_service import freeze_kbd_ai_proposal
 from app.services.llm_runtime import call_with_llm_governance
@@ -97,6 +98,11 @@ def _resolve_extract_model() -> str:
     return "deepseek-v4-flash"
 
 
+def _multi_agent_extraction_enabled() -> bool:
+    """Gold Label 验收达标前仅允许通过显式环境变量开启候选链路。"""
+    return os.environ.get("ENABLE_MULTI_AGENT_EXTRACTION", "false").lower() in ("true", "1", "yes")
+
+
 # 抽取可用更强模型；未配置或被 Compose 注入空值时回退到分类/平台默认模型。
 LLM_MODEL = _resolve_extract_model()
 # 是否启用思维链（与 classify.py / vision_processor.py 统一由 LLM_ENABLE_THINKING 控制，默认关闭。
@@ -134,6 +140,10 @@ ACQUIRER_CATALOG: dict[str, str] = {
         "仅适用于 Guest 内部现象（黑屏/蓝屏/Kernel Panic/启动卡住）且 HOST/VM_ID 可信可得；"
         "args 仅 host/vm_id/capture_mode/timeout，不接受命令、路径或按键字段"
     ),
+    "qkv_effect": (
+        "条件型效果验证生产者：在修复后或症状确认窗口内，通过 qkv_alert/qkv_task/qkv_dialog/"
+        "qkv_vm_console 观测通道对结构化期望进行只读复核；不执行命令，不得作为唯一生产者"
+    ),
     "qfk_log": (
         "统一日志判定：/sf/log 下 whitebox/blackbox/vn-blackbox/pod 均由 acli log get 获取；"
         "/sf/data/local 仅允许 request_id 辅助关联，"
@@ -161,6 +171,8 @@ DEFAULT_VARIABLE_SCHEMA: list[str] = [
     "STATUS",
     "ERRCODE_TRACING",
     "REQUEST_ID",
+    "STORAGE_ID",
+    "LOG_DATE",
 ]
 
 VALID_CATEGORIES = {"frontend", "backend"}
@@ -565,6 +577,8 @@ def _validate_signal(
     缺失 acquire 段的信号将被直接拒绝（不再经 migrate 兜底归一）。
     """
     acquire = signal.get("acquire") or {}
+    if not isinstance(acquire, dict):
+        return False, "信号 acquire 段必须是对象"
     tool = acquire.get("tool")
     if not tool:
         return False, "信号缺少 acquire.tool 段"
@@ -573,12 +587,16 @@ def _validate_signal(
 
     # ── v2 契约校验（RFC §4.4 / §6.1）：acquire.args 机器强制门禁 ──
     args = acquire.get("args") or {}
+    if not isinstance(args, dict):
+        return False, "信号 acquire.args 段必须是对象"
     ok, err = validate_acquire_args(tool, args)
     if not ok:
         return False, f"acquire.args 校验失败: {err}"
 
     # category
     prov = signal.get("provenance") or {}
+    if not isinstance(prov, dict):
+        return False, "信号 provenance 段必须是对象"
     cat = prov.get("category")
     if cat is None:
         cat = "backend" if str(tool).startswith("qfk_") else "frontend"
@@ -611,8 +629,14 @@ def _validate_signal(
 
     # produces/requires 变量命名与可见性（均取自 v2 orchestrate 段）
     orchestrate = signal.get("orchestrate") or {}
+    if not isinstance(orchestrate, dict):
+        return False, "信号 orchestrate 段必须是对象"
     produces = orchestrate.get("produces") or []
     requires = orchestrate.get("requires") or []
+    if not isinstance(produces, list) or not all(isinstance(item, dict) for item in produces):
+        return False, "orchestrate.produces 必须是对象数组"
+    if not isinstance(requires, list) or not all(isinstance(item, str) for item in requires):
+        return False, "orchestrate.requires 必须是字符串数组"
 
     # 占位符大写校验（acquire.args + 文本提取条件）
     try:
@@ -1172,14 +1196,21 @@ def _normalize_derived_file_assertions(raw_signals: list[Any]) -> int:
         if not isinstance(signal, dict):
             continue
         acquire = signal.get("acquire") or {}
+        if not isinstance(acquire, dict):
+            continue
         args = acquire.get("args") or {}
+        if not isinstance(args, dict):
+            continue
         if acquire.get("tool") != "qfk_system" or str(args.get("command") or "").strip() != "cat":
             continue
         command_args = args.get("command_args")
         resource = str(command_args[0]) if isinstance(command_args, list) and len(command_args) == 1 else ""
         if not resource or _PLACEHOLDER_RE.fullmatch(resource):
             continue
-        for produced in (signal.get("orchestrate") or {}).get("produces") or []:
+        orchestrate = signal.get("orchestrate") or {}
+        if not isinstance(orchestrate, dict):
+            continue
+        for produced in orchestrate.get("produces") or []:
             name = str(produced.get("name") or "") if isinstance(produced, dict) else ""
             if not name:
                 continue
@@ -1193,7 +1224,11 @@ def _normalize_derived_file_assertions(raw_signals: list[Any]) -> int:
         if not isinstance(signal, dict) or not isinstance(signal.get("match"), dict):
             continue
         acquire = signal.get("acquire") or {}
+        if not isinstance(acquire, dict):
+            continue
         args = acquire.get("args") or {}
+        if not isinstance(args, dict):
+            continue
         if acquire.get("tool") != "qfk_system" or str(args.get("command") or "").strip() != "cat":
             continue
         command_args = args.get("command_args")
@@ -1244,6 +1279,8 @@ def _unconsumed_qfk_producer_reasons(raw_signals: list[Any]) -> dict[int, str]:
         if not isinstance(signal, dict):
             continue
         acquire = signal.get("acquire") or {}
+        if not isinstance(acquire, dict):
+            continue
         if not str(acquire.get("tool") or "").startswith("qfk_") or signal.get("match") is not None:
             continue
         produced = {
@@ -1288,6 +1325,8 @@ def _validate_and_collect_signals(
         id(item): violation
         for item in raw_signals
         if enforce_kbd_read_only
+        and isinstance(item, dict)
+        and isinstance(item.get("acquire"), dict)
         and (
             violation := kbd_signal_read_only_violation(
                 item,
@@ -1316,7 +1355,11 @@ def _validate_and_collect_signals(
     for s in raw_signals:
         if isinstance(s, dict):
             orch = s.get("orchestrate") or {}
+            if not isinstance(orch, dict):
+                continue
             for p in orch.get("produces") or []:
+                if not isinstance(p, dict):
+                    continue
                 name = str(p.get("name", ""))
                 alias = str(p.get("alias") or "").strip()
                 # effective_key：alias 非空时优先，否则 name；两者均加入合法变量名集合
@@ -1347,6 +1390,21 @@ def _validate_and_collect_signals(
     for s in raw_signals:
         if not isinstance(s, dict) or "acquire" not in s:
             continue
+        acquire = s.get("acquire")
+        orchestrate = s.get("orchestrate")
+        if not isinstance(acquire, dict) or (orchestrate is not None and not isinstance(orchestrate, dict)):
+            continue
+        if isinstance(orchestrate, dict):
+            produces = orchestrate.get("produces")
+            requires = orchestrate.get("requires")
+            if produces is not None and (
+                not isinstance(produces, list) or not all(isinstance(item, dict) for item in produces)
+            ):
+                continue
+            if requires is not None and (
+                not isinstance(requires, list) or not all(isinstance(item, str) for item in requires)
+            ):
+                continue
         try:
             apply_safe_pipeline_to_signal(s)
             sync_signal_requires(s)
@@ -1360,6 +1418,12 @@ def _validate_and_collect_signals(
             continue
         if "acquire" not in s:
             reject(s, "run_failed", "Candidate 缺少 acquire 段（v1 扁平格式已不再支持）")
+            continue
+        if not isinstance(s.get("acquire"), dict):
+            reject(s, "run_failed", "信号 acquire 段必须是对象")
+            continue
+        if s.get("orchestrate") is not None and not isinstance(s.get("orchestrate"), dict):
+            reject(s, "run_failed", "信号 orchestrate 段必须是对象")
             continue
         if id(s) in image_provenance_violations:
             provenance_violation = image_provenance_violations[id(s)]
@@ -1738,6 +1802,23 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
             "category_id": entry.category_id or entry.ai_category_id or "",
             "images_json": [dict(item) for item in (entry.images_json or []) if isinstance(item, dict)],
         }
+        category_baseline = ""
+        if entry_data["category_id"]:
+            category_result = await session.execute(
+                select(KbCategory).where(KbCategory.code == entry_data["category_id"])
+            )
+            category = category_result.scalar_one_or_none()
+            if category is not None:
+                category_baseline = json.dumps(
+                    {
+                        "code": category.code,
+                        "name": category.name,
+                        "domain": category.domain,
+                        "path": category.path_labels or [],
+                    },
+                    ensure_ascii=False,
+                )
+        entry_data["category_baseline"] = category_baseline or entry_data["category_id"]
 
         prompt_template = await StrictPromptLoader.load_and_validate(
             session,
@@ -1778,9 +1859,11 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
     prompt_revision = hashlib.sha256(prompt_template.encode("utf-8")).hexdigest()
 
     # 优先执行多 Agent 分层建模流水线 (可通过环境变量 ENABLE_MULTI_AGENT_EXTRACTION 开关控制)
-    multi_agent_enabled = os.environ.get("ENABLE_MULTI_AGENT_EXTRACTION", "true").lower() in ("true", "1", "yes")
+    # Gold Label Shadow 验收达标前 fail closed；只有环境显式开启时才允许接管写回路径。
+    multi_agent_enabled = _multi_agent_extraction_enabled()
     validated: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
+    raw_candidate_count = 0
     proposed_contract = None
 
     if multi_agent_enabled:
@@ -1806,13 +1889,15 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
 
         try:
             validated, rejected, raw_count = await orchestrator.extract_kbd_signals_pipeline(
-                session,
+                None,
                 kbd_id,
                 entry_data,
                 acquirer_catalog_text,
                 acli_catalog_text,
                 _orchestrator_gate_checker,
+                image_evidence_text,
             )
+            raw_candidate_count = raw_count
 
             logger.info(
                 event="extract_signals_multi_agent_done",
@@ -1820,13 +1905,17 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
                 validated_count=len(validated),
                 rejected_count=len(rejected),
                 raw_count=raw_count,
+                diagnostics=orchestrator.last_diagnostics.get(kbd_id, {}),
             )
         except Exception as exc:
             logger.warning("多 Agent 抽取流水线遇到异常，回退单体抽取: %s", exc)
 
     # 若未启用多 Agent 或多 Agent 抽取产出完全为空，回退到传统单体抽取链路兜底
-    if not validated and not rejected:
+    # 多 Agent 只要没有任何可发布信号，就进入传统链路兜底；rejected-only 不能阻断兜底。
+    # 已有部分 validated 时不重复调用，避免重复生成和信号身份漂移。
+    if not validated:
         logger.info(event="extract_signals_fallback_monolith", kbd_id=kbd_id)
+        multi_agent_rejected = list(rejected)
         llm_result = await _call_llm(
             prompt,
             prompt_revision=prompt_revision,
@@ -1838,6 +1927,7 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
             raw_signals = llm_result.get("signals", [])
         if not isinstance(raw_signals, list):
             raise HTTPException(status_code=500, detail="LLM 未返回 Candidate 数组（candidates/signals）")
+        raw_candidate_count = len(raw_signals)
         proposed_contract = llm_result.get("verification_contract")
         external_variables = set(_normalize_contract_variables(proposed_contract))
         validated, rejected = _validate_and_collect_signals(
@@ -1847,6 +1937,7 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
             enforce_kbd_read_only=True,
             diagnostic_image_source_refs=diagnostic_image_source_refs,
         )
+        rejected = multi_agent_rejected + rejected
 
     verification_contract = _build_verification_contract(
         validated,
@@ -1891,7 +1982,7 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
     logger.info(
         event="extract_signals_kbd_done",
         kbd_id=kbd_id,
-        total=len(raw_signals),
+        total=raw_candidate_count,
         validated=len(validated),
         rejected=len(rejected),
         prompt_revision=prompt_revision,

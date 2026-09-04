@@ -7,12 +7,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from app.routes import extract_signals
 from app.routes.extract_signals import (
+    ACQUIRER_CATALOG,
+    DEFAULT_VARIABLE_SCHEMA,
     ExtractSignalsResponse,
     _acquirer_catalog_prompt_text,
     _build_verification_contract,
     _call_llm,
     _decode_llm_json_object,
     _matcher_quality_violation,
+    _multi_agent_extraction_enabled,
     _normalize_config_file_read,
     _normalize_generated_timeouts,
     _persist_signals,
@@ -24,8 +27,10 @@ from app.routes.extract_signals import (
     _unconsumed_qfk_producer_reasons,
     _validate_and_collect_signals,
 )
+from app.services.signal_orchestrator import DEFAULT_SHARED_VARIABLES, VALID_CATALOG_TOOLS
 from jsonschema import ValidationError
 from shared.resolution.review import SignalReviewFeature
+from shared.schemas.acquirer_args import SUPPORTED_TOOLS
 from shared.schemas.kbd_signal_safety import (
     signal_write_operation_command,
     validate_kbd_read_only_signals_json,
@@ -65,17 +70,28 @@ def test_extract_model_ignores_empty_dedicated_setting(monkeypatch):
     assert _resolve_extract_model() == "deepseek-v4-pro"
 
 
+def test_multi_agent_extraction_is_fail_closed_until_explicitly_enabled(monkeypatch):
+    """未通过 Gold Label 验收的新链路不得默认接管生产写回。"""
+    monkeypatch.delenv("ENABLE_MULTI_AGENT_EXTRACTION", raising=False)
+    assert _multi_agent_extraction_enabled() is False
+
+    monkeypatch.setenv("ENABLE_MULTI_AGENT_EXTRACTION", "true")
+    assert _multi_agent_extraction_enabled() is True
+
+
 def test_extract_json_decoder_accepts_complete_markdown_fence():
-    assert _decode_llm_json_object("```json\n{\"candidates\": []}\n```") == {"candidates": []}
+    assert _decode_llm_json_object('```json\n{"candidates": []}\n```') == {"candidates": []}
 
 
 @pytest.mark.asyncio
 async def test_extract_llm_retries_malformed_json_with_correction(monkeypatch):
     malformed = SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content='{\"candidates\":[{\"pattern\":\"a\"b\"}]}'), finish_reason="stop")]
+        choices=[
+            SimpleNamespace(message=SimpleNamespace(content='{"candidates":[{"pattern":"a"b"}]}'), finish_reason="stop")
+        ]
     )
     valid = SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content='{\"candidates\":[]}'), finish_reason="stop")]
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"candidates":[]}'), finish_reason="stop")]
     )
     create = AsyncMock(side_effect=[malformed, valid])
     client = MagicMock(chat=MagicMock(completions=MagicMock(create=create)))
@@ -188,9 +204,7 @@ def test_simple_matcher_missing_extract_is_normalized_to_full_stdout():
         "review": {"notes": "", "require_human_confirm": False},
     }
 
-    accepted, rejected = _validate_and_collect_signals(
-        [candidate], "kbd:39643", enforce_kbd_read_only=True
-    )
+    accepted, rejected = _validate_and_collect_signals([candidate], "kbd:39643", enforce_kbd_read_only=True)
 
     assert rejected == []
     assert accepted[0]["match"]["extract"] == {
@@ -323,9 +337,7 @@ def test_llm_candidate_gate_delegates_to_shared_signal_review():
     blocked_review = SimpleNamespace(blocked=True, issues=[runtime_issue])
 
     with patch.object(extract_signals, "review_signal_document", return_value=blocked_review) as review:
-        accepted, rejected = _validate_and_collect_signals(
-            [candidate], "kbd:test", enforce_kbd_read_only=True
-        )
+        accepted, rejected = _validate_and_collect_signals([candidate], "kbd:test", enforce_kbd_read_only=True)
 
     assert accepted == []
     assert rejected[0]["reason_code"] == "run_failed"
@@ -346,9 +358,7 @@ def test_post_remediation_read_only_check_is_not_misclassified_as_write_signal()
         "provenance": {"evidence": "重启后执行 lspci -vvv，可看到 NVMe 控制器"},
     }
 
-    accepted, rejected = _validate_and_collect_signals(
-        [candidate], "kbd:test", enforce_kbd_read_only=True
-    )
+    accepted, rejected = _validate_and_collect_signals([candidate], "kbd:test", enforce_kbd_read_only=True)
 
     assert accepted == []
     assert rejected[0]["reason_code"] == "not_exists"
@@ -368,9 +378,7 @@ def test_post_remediation_read_only_check_is_not_misclassified_as_write_signal()
         ("ipmitool", ["mc", "reset", "cold"], "reset"),
     ],
 )
-def test_write_gate_inspects_actual_command_vector_before_catalog(
-    command, command_args, expected_action
-):
+def test_write_gate_inspects_actual_command_vector_before_catalog(command, command_args, expected_action):
     candidate = {
         "id": "write-in-argv",
         "acquire": {
@@ -381,9 +389,7 @@ def test_write_gate_inspects_actual_command_vector_before_catalog(
         "orchestrate": {"phase": "diagnostic", "produces": [], "requires": []},
     }
 
-    accepted, rejected = _validate_and_collect_signals(
-        [candidate], "kbd:test", enforce_kbd_read_only=True
-    )
+    accepted, rejected = _validate_and_collect_signals([candidate], "kbd:test", enforce_kbd_read_only=True)
 
     assert accepted == []
     assert rejected[0]["reason_code"] == "write_signal"
@@ -420,9 +426,7 @@ def test_write_gate_does_not_treat_read_only_arguments_as_actions(command, comma
         "orchestrate": {"phase": "diagnostic", "produces": [], "requires": []},
     }
 
-    accepted, rejected = _validate_and_collect_signals(
-        [candidate], "kbd:test", enforce_kbd_read_only=True
-    )
+    accepted, rejected = _validate_and_collect_signals([candidate], "kbd:test", enforce_kbd_read_only=True)
 
     assert [item["id"] for item in accepted] == ["read-only-argument"]
     assert rejected == []
@@ -543,7 +547,9 @@ def test_staleness_reports_source_prompt_model_tool_and_explicit_changes():
 
 
 def test_kbd_reextract_creates_fresh_proposal_and_clears_stale_draft_pointer(monkeypatch):
-    entry = SimpleNamespace(id=27123, status="draft", signals_json={}, latest_proposal_revision_id=11, working_revision_id=13)
+    entry = SimpleNamespace(
+        id=27123, status="draft", signals_json={}, latest_proposal_revision_id=11, working_revision_id=13
+    )
     calls = {}
 
     class FakeSession:
@@ -629,6 +635,16 @@ def test_prompt_catalog_reference_uses_current_catalog_as_knowledge_not_model_ga
     assert "acli system ipmitool" in reference
     assert "acli hardware mc info" not in reference
     assert "缺失时仍须输出 Candidate" in reference
+    assert "qkv_effect" in reference
+
+
+def test_multi_agent_catalog_and_variable_contracts_have_one_consistent_surface():
+    """分类、Prompt、参数 Schema 与最终门禁不能声明互相冲突的能力。"""
+    assert set(ACQUIRER_CATALOG) == VALID_CATALOG_TOOLS
+    assert set(ACQUIRER_CATALOG) == set(SUPPORTED_TOOLS)
+    assert set(DEFAULT_SHARED_VARIABLES).issubset(set(DEFAULT_VARIABLE_SCHEMA))
+    assert "LOG_DATE" in DEFAULT_VARIABLE_SCHEMA
+    assert "YMD" not in DEFAULT_VARIABLE_SCHEMA
 
 
 @pytest.mark.parametrize(
@@ -652,15 +668,8 @@ def test_qfk_proposal_command_must_exist_in_runtime_catalog(tool, args, expected
 
 
 def test_qfk_invocation_violation_rejects_catalog_hit_that_cannot_run():
-    assert "smartctl 至少需要 1 个命令参数" in _qfk_invocation_violation(
-        "qfk_system", {"command": "smartctl"}
-    )
-    assert (
-        _qfk_invocation_violation(
-            "qfk_system", {"command": "smartctl", "command_args": ["--scan"]}
-        )
-        is None
-    )
+    assert "smartctl 至少需要 1 个命令参数" in _qfk_invocation_violation("qfk_system", {"command": "smartctl"})
+    assert _qfk_invocation_violation("qfk_system", {"command": "smartctl", "command_args": ["--scan"]}) is None
 
 
 def test_ipmitool_mc_info_cannot_claim_raid_firmware_capability():
@@ -727,18 +736,14 @@ def test_regex_matcher_must_match_its_own_evidence():
                 "acquire": {"tool": "qfk_log", "args": {"file": "vmid.conf"}},
                 "match": {"type": "keyword", "pattern": "vtool_installed", "expected": True},
                 "orchestrate": {"produces": [], "requires": []},
-                "provenance": {
-                    "evidence": "cat `find /cfs/nodes/ -name vmid.conf` | grep vtool_installed"
-                },
+                "provenance": {"evidence": "cat `find /cfs/nodes/ -name vmid.conf` | grep vtool_installed"},
             },
             "不能把配置文件 vmid.conf 作为日志",
         ),
     ],
 )
 def test_acquisition_must_be_supported_by_candidate_evidence(candidate, expected):
-    accepted, rejected = _validate_and_collect_signals(
-        [candidate], "kbd:test", enforce_kbd_read_only=True
-    )
+    accepted, rejected = _validate_and_collect_signals([candidate], "kbd:test", enforce_kbd_read_only=True)
 
     assert accepted == []
     assert rejected[0]["reason_code"] == "run_failed"
@@ -763,9 +768,7 @@ def test_log_shaped_evidence_keeps_normal_qfk_log_candidate():
         "provenance": {"evidence": "err [kernel:] MCE: Killing due to memory fault"},
     }
 
-    accepted, rejected = _validate_and_collect_signals(
-        [candidate], "kbd:test", enforce_kbd_read_only=True
-    )
+    accepted, rejected = _validate_and_collect_signals([candidate], "kbd:test", enforce_kbd_read_only=True)
 
     assert len(accepted) == 1
     assert rejected == []
@@ -821,9 +824,7 @@ def test_kbd30880_exists_candidate_null_pattern_is_normalized_before_schema_gate
         "provenance": {"evidence": "查看报错主机的/sf/cfg/gpu_info.ini配置文件"},
     }
 
-    accepted, rejected = _validate_and_collect_signals(
-        [candidate], "kbd:30880", enforce_kbd_read_only=True
-    )
+    accepted, rejected = _validate_and_collect_signals([candidate], "kbd:30880", enforce_kbd_read_only=True)
 
     assert len(accepted) == 1
     assert rejected == []
@@ -995,6 +996,32 @@ def test_kbd_read_only_match_signal_remains_accepted():
 
     assert rejected == []
     assert [signal["id"] for signal in accepted] == ["sig_001"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("orchestrate", {"produces": ["BROKEN"], "requires": []}, "orchestrate.produces 必须是对象数组"),
+        ("orchestrate", {"produces": [], "requires": "HOST"}, "orchestrate.requires 必须是字符串数组"),
+        ("acquire", "qkv_task", "信号 acquire 段必须是对象"),
+    ],
+)
+def test_signal_gate_rejects_malformed_nested_sections(field, value, expected):
+    """模型返回错误嵌套类型时应结构化拒绝，不能让门禁抛出 AttributeError。"""
+    candidate = {
+        "id": "sig-malformed",
+        "acquire": {"tool": "qkv_task", "args": {"keyword": "任务失败"}},
+        "orchestrate": {"produces": [], "requires": []},
+        "provenance": {"category": "frontend", "evidence": "任务失败"},
+        "match": None,
+    }
+    candidate[field] = value
+
+    accepted, rejected = _validate_and_collect_signals([candidate], source_id="KBD-malformed")
+
+    assert accepted == []
+    assert len(rejected) == 1
+    assert expected in rejected[0]["reason"]
 
 
 @pytest.mark.parametrize(("field", "value"), [("command", "restart"), ("action", "restart")])
