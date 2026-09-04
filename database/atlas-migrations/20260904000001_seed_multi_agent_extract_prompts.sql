@@ -126,7 +126,7 @@ VALUES (
 【建模规范与硬性约束】：
 1. acquire 标准化：
    - 命令必须符合 aCLI 白名单规范；
-   - qfk_log: file 必须是纯 basename 文件名（如 vn-node-agent-api.log），禁止包含目录或 <日期>；因系统日志按天轮转存储，时间窗口必须使用 time_window: "{{DATE}}"（由生产者 END 自动派生，明确使用 DATE 变量而非旧的 END 变量）；禁止使用 TODAY/YMD 等未注册别名；
+   - qfk_log: file 必须是纯 basename 文件名（如 vn-node-agent-api.log），禁止包含目录或日期；因系统日志按天轮转存储，时间窗口必须使用 time_window: "{{DATE}}"；
    - 严禁硬编码具体客户环境的特定存储卷 UUID 或 IP，必须泛化为模板变量（如 /sf/data/{{STORAGE_ID}}/...）。
 2. orchestrate 变量协议约束：
    - 全局变量命名必须严格遵循下发的【共享变量白名单】：{shared_variables}；
@@ -201,7 +201,7 @@ VALUES (
    - 检查所有下游信号 requires 引用的变量，必须在上游信号 produces 中明确声明或属于系统默认变量池。
 3. 门禁错误自愈（Self-Healing）：
    - 参考当前的门禁阻断原因：{gate_issues} 以及被拒候选：{rejected_candidates}；
-   - 修复非法占位符（如将 <日期> 或旧的秒级 {{END}} 纠偏为 {{DATE}}）、补齐必要参数、剔除写操作；若生产者产出 END/DATE，检查并确保 qfk_log 配置 time_window 为 {{DATE}}。
+   - 修复非法参数与占位符、补齐必要参数、剔除写操作；若生产者产出 END/DATE，检查并确保 qfk_log 配置 time_window 为 {{DATE}}。
 
 整篇 KBD 上下文：
 {kbd_context}

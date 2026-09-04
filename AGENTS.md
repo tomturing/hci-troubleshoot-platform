@@ -35,7 +35,7 @@
     - **执行与解析层**：在 `agent-service` 的 `_extract_by_produces` 与 `_extract_hardcoded` 中，提取到 `end` 时自动派生 `date`（`YYYY-MM-DD`）；在 `_fill_pool_from_qkv` 写入变量池时，若写入了 `END`，自动向变量池派生写入 `DATE`（继承生产者优先级）。
     - **信号门禁严苛校验**：在 `extract_signals.py` 中引入强门禁，若生产者产出 `END`（派生 `DATE`），候选集中所有 `qfk_log` 消费者必须显式配置 `-t {{DATE}}`（`time_window: "{{DATE}}"`）；未配置或仍使用旧的秒级 `{{END}}`，直接拦截并加入 `rejected` 候选列表，标明原因供专家人工复核。
     - **KBD 页面交互与预览**：在 KBD 编辑页面（`KbdReviewView.vue` 和 `ProducesEditor.vue`）中，当生产者选中产出 `END` 变量时，右侧自动弹出高亮徽标 `派生 DATE` 并在下方提供提示卡片；阅览模式下在右侧自动呈现派生芯片 `DATE (派生)`；`qfk_log` 表单提示收敛为推荐使用 `{{DATE}}`。
-    - **抽取 Prompt 与规范收口**：在 `kbd_signal_model_v1` 和 `kbd_signal_verify_v1` 提示词模板中明确 `qfk_log` 必须使用 `time_window: "{{DATE}}"`，严禁使用旧的秒级 `{{END}}` 或未注册别名。
+    - **抽取 Prompt 与规范收口**：在 `kbd_signal_model_v1` 和 `kbd_signal_verify_v1` 提示词模板中收敛为正向确定性指令，明确 `qfk_log` 必须使用 `time_window: "{{DATE}}"`。
 - **生产者信号 END 自动派生 DATE 变量依赖图校验与持久化归一加固（PR #1002 遗漏项修复）**：
   - **根因**：PR #1002 仅在 AI 重新抽取管道（`extract_signals.py`）中执行了 `_normalize_derived_date_variables`，且前端在 `KbdReviewView.vue` 中仅通过 `v-if` Mock 渲染派生 DATE 芯片而未真实写入 payload；底层 Schema 门禁（`signal_schema.py` 中的 `_collect_variable_sources`）未同步感知 `END -> DATE` 派生产出。导致存量 KBD、人工编辑保存的 KBD 在审核发布时，下游引用 `{{DATE}}` 被误判为“输入变量 DATE 没有上游产出或外部声明”，发生虚假阻断报错。
   - **修复**：

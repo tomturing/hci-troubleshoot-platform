@@ -149,7 +149,7 @@ ACQUIRER_CATALOG: dict[str, str] = {
         "统一日志判定：/sf/log 下 whitebox/blackbox/vn-blackbox/pod 均由 acli log get 获取；"
         "/sf/data/local 仅允许 request_id 辅助关联，"
         "Catalog 推断 path/parser，支持 keyword/regex/state/threshold/delta/trend/exists；"
-        "因 HCI 日志按自然日轮转，时间窗口必须使用 time_window: '{{DATE}}'（由生产者 END 自动派生，禁止使用旧的秒级 '{{END}}'）"
+        "因 HCI 日志按自然日轮转，时间窗口必须使用 time_window: '{{DATE}}'（由生产者 END 自动派生）"
     ),
     "qfk_service": "服务状态：领域含 asv(vt)/anet(vn)/asan(vs)/host；当前运行时按 acli capability probe 执行",
     "qfk_system": "后端信号-系统检查和操作：acli system <command>（如 lsof/ps/lsblk/iostat/smartctl），使用声明式取值后再判定",
