@@ -399,7 +399,6 @@ async def signal_best_practice_detail_proxy(request: Request, practice_id: int):
 kbd_router = APIRouter(prefix="/api/v1/kbd", tags=["kbd"])
 
 
-
 async def _kbd_proxy(
     method: str,
     path: str,
@@ -962,9 +961,7 @@ async def vm_console_replay_fixtures_proxy(request: Request):
     headers = _internal_auth_headers()
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
-            response = await client.request(
-                "GET", f"{VM_CONSOLE_SERVICE_URL}/replay-fixtures", headers=headers
-            )
+            response = await client.request("GET", f"{VM_CONSOLE_SERVICE_URL}/replay-fixtures", headers=headers)
         except httpx.RequestError as exc:
             logger.error(f"vm-console replay 代理失败: {exc.request.url!r}")
             raise HTTPException(status_code=503, detail="KB Service unavailable") from exc

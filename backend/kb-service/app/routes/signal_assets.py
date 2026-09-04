@@ -63,9 +63,10 @@ async def list_templates(
 
     async with _db_manager.async_session_factory() as session:
         rows = (
-            await session.execute(
-                text(
-                    f"""
+            (
+                await session.execute(
+                    text(
+                        f"""
                     SELECT id, tool_name, category, description,
                            acquire_schema, allowed_matcher_types,
                            variable_protocol, anti_patterns,
@@ -74,10 +75,13 @@ async def list_templates(
                     {where}
                     ORDER BY category ASC, tool_name ASC
                     """
-                ),
-                params,
+                    ),
+                    params,
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
 
     items = [
         {
@@ -140,15 +144,14 @@ async def list_best_practices(
 
     async with _db_manager.async_session_factory() as session:
         total = (
-            await session.execute(
-                text(f"SELECT count(*) AS total FROM signal_best_practice {where}"), params
-            )
+            await session.execute(text(f"SELECT count(*) AS total FROM signal_best_practice {where}"), params)
         ).scalar_one()
 
         rows = (
-            await session.execute(
-                text(
-                    f"""
+            (
+                await session.execute(
+                    text(
+                        f"""
                     SELECT id, template_id, tool_name, pattern_category,
                            source_kbd_id, support_id, raw_evidence,
                            signal_json, design_notes, completeness_score,
@@ -158,10 +161,13 @@ async def list_best_practices(
                     ORDER BY completeness_score DESC, id DESC
                     LIMIT :limit OFFSET :offset
                     """
-                ),
-                params,
+                    ),
+                    params,
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
 
     items = [
         {
@@ -204,9 +210,10 @@ async def get_best_practice(
 
     async with _db_manager.async_session_factory() as session:
         row = (
-            await session.execute(
-                text(
-                    """
+            (
+                await session.execute(
+                    text(
+                        """
                     SELECT id, template_id, tool_name, pattern_category,
                            source_kbd_id, support_id, raw_evidence,
                            signal_json, design_notes, completeness_score,
@@ -214,10 +221,13 @@ async def get_best_practice(
                     FROM signal_best_practice
                     WHERE id = :practice_id
                     """
-                ),
-                {"practice_id": practice_id},
+                    ),
+                    {"practice_id": practice_id},
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
 
     if not row:
         raise HTTPException(status_code=404, detail="最佳实践记录不存在")

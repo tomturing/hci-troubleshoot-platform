@@ -129,9 +129,7 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
     ]
 
     async def dispatch(self, request: Request, call_next):
-        is_exempt = any(
-            request.url.path.startswith(path) for path in self.EXEMPT_PATHS
-        )
+        is_exempt = any(request.url.path.startswith(path) for path in self.EXEMPT_PATHS)
 
         # chunked 编码无 Content-Length，会绕过下方大小检测；
         # JSON API 客户端正常都带 Content-Length，非豁免路径直接拒绝
@@ -162,9 +160,7 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
                         max_allowed=max_size,
                     )
                     return Response(
-                        content=json.dumps({
-                            "detail": f"请求体过大，最大允许 {max_size // (1024*1024)}MB"
-                        }),
+                        content=json.dumps({"detail": f"请求体过大，最大允许 {max_size // (1024 * 1024)}MB"}),
                         status_code=413,
                         media_type="application/json",
                     )

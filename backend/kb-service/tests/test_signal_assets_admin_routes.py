@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
-import pytest
-from fastapi import HTTPException, Request
 
+import pytest
 from app.config import settings
 from app.routes import signal_assets
+from fastapi import HTTPException, Request
 
 
 class _SessionContext:
