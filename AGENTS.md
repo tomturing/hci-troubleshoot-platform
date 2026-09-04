@@ -81,7 +81,16 @@
     - 前端收到 `ping` 后立即回复 `pong` 消息（回显时间戳）
     - 保持连接活跃，防止中间层网络设备因空闲超时断开
   - **效果**：WebSocket 连接在空闲期间保持活跃，仿真测试等长时间等待场景不再因连接断开而失败。
+- **关键信号多 Agent 分层建模与最佳实践库架构**（2026-09-04）：
+  - **根因**：单体 Agent 承担实体切分、13 类工具分类、JSON 建模与 DAG 拓扑校验四重异构认知，导致漏抽率 37.3%、失真率 68.2%、threshold 覆盖率 0% 及伪信号问题。
+  - **重构**：
+    - 解耦为四个专属 Agent（计数 Agent、分类 Agent、建模 Agent、验证 Agent）；
+    - 统一纳入 `system_prompt` 管理并通过 `StrictPromptLoader` 支持热加载（`kbd_signal_count_v1`, `kbd_signal_classify_v1`, `kbd_signal_model_v1`, `kbd_signal_verify_v1`）；
+    - 新增标准模板库 `signal_modeling_template`、黄金最佳实践库 `signal_best_practice`（首批注入 67 个专家金标实例）和异常复盘表 `signal_failure_extraction`；
+    - 验证层引入门禁反馈驱动的智能自愈回路。
+  - **文档**：`docs/solution/agent/02-架构设计/关键信号多Agent分层抽取与建模模板库设计.md`
 - **KBD 关键信号执行结果标题加入案例 ID 标识**：
+
   - **需求**：用户反馈关键信号执行结果列表中，信号标题只有序号和检查说明，无法快速识别信号归属于哪个 KBD 案例。
   - **修复**：在 `_format_step_evidence` 方法中新增 `support_id` 参数，标题格式从 `{index}. {icon} {title}` 改为 `{index}. {icon} [{support_id}] {title}`，方便用户识别信号归属。
   - **效果**：信号标题现在显示为 `1. ✅ [18906] 查看新建虚拟机任务详情确认失败报错信息`，清晰标识案例归属。
