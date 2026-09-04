@@ -42,6 +42,7 @@
     - **底层 Schema 符号表加固**：在 `backend/shared/schemas/signal_schema.py` 的 `_collect_variable_sources` 中，当生产者信号（`tool.startswith("qkv_")`）产出集合包含 `END` 时，自动将其派生的 `DATE` 变量加入 `produces` 集合，使底层 DAG 闭包校验彻底消除悬空误报。
     - **核心规整函数共享化与持久化归一**：在 `signal_schema.py` 中导出 `normalize_derived_date_variables`；在 `kb-service` 的 `_prepare_expert_draft_signals`、`review_kbd_signals`、`_validate_kbd_publishable_signals_json` 及 `_validate_kbd_draft_signals_json` 中统一接入归一化规整，确保保存与审查时持久化补齐 `DATE`。
     - **前端保存归一化闭环**：在 `frontend/admin/src/views/KbdReviewView.vue` 的 `normalizeSignalProduces` 中，若生产者信号产出 `END` 且未显式声明 `DATE`，自动补齐 `{ name: 'DATE', path: endItem?.path || 'end' }`，实现“所见即所得”的数据持久化闭环。
+    - **线上环境 Prompt 数据迁移闭环**：新增 `034_update_multi_agent_extract_prompts_date.sql` 数据迁移（带有唯一调用链 `migration:20260904000002`），更新已部署的 `kbd_signal_model_v1` 与 `kbd_signal_verify_v1`，收敛 qfk_log 时间窗口为 `time_window: "{{DATE}}"`，并同步更新 `signal_modeling_template` 的 `variable_protocol`。解决此前仅在 Atlas 目录修改导致 Staging 数据库未实际生效的问题。
 - **KBD 批量任务默认收起折叠与可观测性「信号抽取」Tab 异常复盘透传**：
   - **背景**：KBD 知识条目管理页面的「批量任务」区域默认平铺展开占用大量首屏空间，影响专家对核心 KBD 条目的日常阅览；同时抽取链路异常表 `signal_failure_extraction` 缺乏直观的前端检索入口。
   - **优化**：
