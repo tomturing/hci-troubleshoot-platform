@@ -55,24 +55,34 @@ class TestFrontendSignalValidation:
         assert sig.is_failed is True
 
     def test_qkv_output_processing_is_part_of_same_signal(self):
-        sig = qkv_load({
-            "acquire": {"tool": "qkv_task", "args": {"keyword": "虚拟机无法启动"}},
-            "orchestrate": {
-                "produces": [{"name": "DESCRIPTION", "path": "description"}],
-                "output_processing": [{
-                    "mode": "assert", "input": "{{DESCRIPTION}}",
-                    "match": {"type": "threshold", "expected": True, "operator": ">", "value": 90},
-                }],
-            },
-        })
+        sig = qkv_load(
+            {
+                "acquire": {"tool": "qkv_task", "args": {"keyword": "虚拟机无法启动"}},
+                "orchestrate": {
+                    "produces": [{"name": "DESCRIPTION", "path": "description"}],
+                    "output_processing": [
+                        {
+                            "mode": "assert",
+                            "input": "{{DESCRIPTION}}",
+                            "match": {"type": "threshold", "expected": True, "operator": ">", "value": 90},
+                        }
+                    ],
+                },
+            }
+        )
         assert sig.output_processing[0]["mode"] == "assert"
 
     def test_qkv_output_processing_rejects_script_fields(self):
         with pytest.raises(ValidationError):
-            qkv_load({
-                "query": "task", "keyword": "x",
-                "output_processing": [{"id": "x", "mode": "derive", "input": "{{DESCRIPTION}}", "operation": "trim", "script": "x"}],
-            })
+            qkv_load(
+                {
+                    "query": "task",
+                    "keyword": "x",
+                    "output_processing": [
+                        {"id": "x", "mode": "derive", "input": "{{DESCRIPTION}}", "operation": "trim", "script": "x"}
+                    ],
+                }
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -110,10 +120,25 @@ async def test_qkv_alias_fallback_runs_only_after_canonical_keyword_has_no_match
     signal = FrontendSignal(query=FrontendQueryType.TASK, keyword="开启虚拟机", limit=5)
     mock_executor = AsyncMock()
     mock_executor.execute.side_effect = [
-        ExecResult(stdout='{"data": []}', stderr="", exit_code=0, command="", node="127.0.0.1", duration_ms=1, truncated=False, risk_level=1),
+        ExecResult(
+            stdout='{"data": []}',
+            stderr="",
+            exit_code=0,
+            command="",
+            node="127.0.0.1",
+            duration_ms=1,
+            truncated=False,
+            risk_level=1,
+        ),
         ExecResult(
             stdout='{"data": [{"id": 7, "type": "启动虚拟机", "status": 2, "process": "完成"}]}',
-            stderr="", exit_code=0, command="", node="127.0.0.1", duration_ms=1, truncated=False, risk_level=1,
+            stderr="",
+            exit_code=0,
+            command="",
+            node="127.0.0.1",
+            duration_ms=1,
+            truncated=False,
+            risk_level=1,
         ),
     ]
 
@@ -150,12 +175,25 @@ async def test_qkv_dialog_searches_master_logs_and_extracts_end_request_id_host(
                 "acli log get -k '编辑显卡核心失败' -p /sf/log/today -c 2\n"
                 f"/sf/log/today/api.log:[2026-07-30 10:01:02] 编辑显卡核心失败 request_id={request_id}:123"
             ),
-            stderr="", exit_code=0, command="", node="172.28.24.1", duration_ms=1,
-            truncated=False, risk_level=1, exec_id="dialog-1",
+            stderr="",
+            exit_code=0,
+            command="",
+            node="172.28.24.1",
+            duration_ms=1,
+            truncated=False,
+            risk_level=1,
+            exec_id="dialog-1",
         ),
         ExecResult(
-            stdout="", stderr="", exit_code=0, command="", node="172.28.24.1", duration_ms=1,
-            truncated=False, risk_level=1, exec_id="dialog-2",
+            stdout="",
+            stderr="",
+            exit_code=0,
+            command="",
+            node="172.28.24.1",
+            duration_ms=1,
+            truncated=False,
+            risk_level=1,
+            exec_id="dialog-2",
         ),
     ]
 
@@ -163,14 +201,14 @@ async def test_qkv_dialog_searches_master_logs_and_extracts_end_request_id_host(
         result = await qkv_exec(signal, conversation_id="test", node_ip="172.28.24.1")
 
     assert result.success is True
-    assert result.values == [{
-        "request_id": request_id,
-        "end": "2026-07-30 10:01:02",
-        "line": (
-            f"/sf/log/today/api.log:[2026-07-30 10:01:02] 编辑显卡核心失败 request_id={request_id}:123"
-        ),
-        "host": "172.28.24.1",
-    }]
+    assert result.values == [
+        {
+            "request_id": request_id,
+            "end": "2026-07-30 10:01:02",
+            "line": (f"/sf/log/today/api.log:[2026-07-30 10:01:02] 编辑显卡核心失败 request_id={request_id}:123"),
+            "host": "172.28.24.1",
+        }
+    ]
     assert mock_executor.execute.await_count == 2
     commands = [call.kwargs["args"]["command"] for call in mock_executor.execute.await_args_list]
     assert commands == [
@@ -204,7 +242,13 @@ async def test_qkv_output_processing_derives_variable_and_reports_assertion():
     mock_executor = AsyncMock()
     mock_executor.execute.return_value = ExecResult(
         stdout='{"data":[{"description":"虚拟机名称：vm-001，使用率：92%"}]}',
-        stderr="", exit_code=0, command="", node="127.0.0.1", duration_ms=1, truncated=False, risk_level=1,
+        stderr="",
+        exit_code=0,
+        command="",
+        node="127.0.0.1",
+        duration_ms=1,
+        truncated=False,
+        risk_level=1,
     )
     with patch("app.tools.acli.executor._executor", mock_executor):
         result = await qkv_exec(signal, conversation_id="test")
@@ -222,16 +266,24 @@ async def test_qkv_output_processing_agent_negative_assertion_is_false():
         query=FrontendQueryType.TASK,
         keyword="资源占用",
         produces=[{"name": "DESCRIPTION", "path": "description"}],
-        output_processing=[{
-            "mode": "assert",
-            "input": "{{DESCRIPTION}}",
-            "match": {"type": "threshold", "expected": True, "operator": ">", "value": 90},
-        }],
+        output_processing=[
+            {
+                "mode": "assert",
+                "input": "{{DESCRIPTION}}",
+                "match": {"type": "threshold", "expected": True, "operator": ">", "value": 90},
+            }
+        ],
     )
     mock_executor = AsyncMock()
     mock_executor.execute.return_value = ExecResult(
-        stdout='{"data":[{"description":"使用率：80%"}]}', stderr="", exit_code=0,
-        command="", node="127.0.0.1", duration_ms=1, truncated=False, risk_level=1,
+        stdout='{"data":[{"description":"使用率：80%"}]}',
+        stderr="",
+        exit_code=0,
+        command="",
+        node="127.0.0.1",
+        duration_ms=1,
+        truncated=False,
+        risk_level=1,
     )
     with patch("app.tools.acli.executor._executor", mock_executor):
         result = await qkv_exec(signal, conversation_id="test")
@@ -246,25 +298,51 @@ async def test_qkv_output_processing_agent_unknown_and_cardinality_are_not_succe
         query=FrontendQueryType.TASK,
         keyword="缺少字段",
         produces=[{"name": "DESCRIPTION", "path": "description"}],
-        output_processing=[{
-            "mode": "assert", "input": "{{DESCRIPTION}}",
-            "match": {"type": "threshold", "expected": True, "operator": ">", "value": 90},
-        }],
+        output_processing=[
+            {
+                "mode": "assert",
+                "input": "{{DESCRIPTION}}",
+                "match": {"type": "threshold", "expected": True, "operator": ">", "value": 90},
+            }
+        ],
     )
     cardinality_signal = FrontendSignal(
         query=FrontendQueryType.TASK,
         keyword="多条记录",
         produces=[{"name": "DESCRIPTION", "path": "description"}],
-        output_processing=[{
-            "mode": "derive", "scope": "single", "input": "{{DESCRIPTION}}",
-            "name": "DESCRIPTION_TEXT", "type": "string",
-            "extract": {"type": "feature", "feature": "number", "cardinality": "first"},
-        }],
+        output_processing=[
+            {
+                "mode": "derive",
+                "scope": "single",
+                "input": "{{DESCRIPTION}}",
+                "name": "DESCRIPTION_TEXT",
+                "type": "string",
+                "extract": {"type": "feature", "feature": "number", "cardinality": "first"},
+            }
+        ],
     )
     mock_executor = AsyncMock()
     mock_executor.execute.side_effect = [
-        ExecResult(stdout='{"data":[{"other":"x"}]}', stderr="", exit_code=0, command="", node="127.0.0.1", duration_ms=1, truncated=False, risk_level=1),
-        ExecResult(stdout='{"data":[{"description":"a"},{"description":"b"}]}', stderr="", exit_code=0, command="", node="127.0.0.1", duration_ms=1, truncated=False, risk_level=1),
+        ExecResult(
+            stdout='{"data":[{"other":"x"}]}',
+            stderr="",
+            exit_code=0,
+            command="",
+            node="127.0.0.1",
+            duration_ms=1,
+            truncated=False,
+            risk_level=1,
+        ),
+        ExecResult(
+            stdout='{"data":[{"description":"a"},{"description":"b"}]}',
+            stderr="",
+            exit_code=0,
+            command="",
+            node="127.0.0.1",
+            duration_ms=1,
+            truncated=False,
+            risk_level=1,
+        ),
     ]
     with patch("app.tools.acli.executor._executor", mock_executor):
         unknown = await qkv_exec(unknown_signal, conversation_id="test")
@@ -290,21 +368,31 @@ async def test_hci_sim_shared_route_logical_consumers_cover_processing_outcomes(
             {
                 "signal_id": "assert-percent",
                 "produces": [{"name": "DESCRIPTION", "path": "description"}],
-                "output_processing": [{
-                    "mode": "assert", "input": "{{DESCRIPTION}}",
-                    "match": {"type": "threshold", "expected": True, "operator": ">", "value": 90},
-                }],
-                "derived_variables": [], "processing_fingerprint": "sha256:assert-percent",
+                "output_processing": [
+                    {
+                        "mode": "assert",
+                        "input": "{{DESCRIPTION}}",
+                        "match": {"type": "threshold", "expected": True, "operator": ">", "value": 90},
+                    }
+                ],
+                "derived_variables": [],
+                "processing_fingerprint": "sha256:assert-percent",
             },
             {
                 "signal_id": "derive-description",
                 "produces": [{"name": "DESCRIPTION", "path": "description"}],
-                "output_processing": [{
-                    "mode": "derive", "scope": "single", "input": "{{DESCRIPTION}}",
-                    "name": "DESCRIPTION_TEXT", "type": "string",
-                    "extract": {"type": "feature", "feature": "number", "cardinality": "first"},
-                }],
-                "derived_variables": ["DESCRIPTION_TEXT"], "processing_fingerprint": "sha256:derive-description",
+                "output_processing": [
+                    {
+                        "mode": "derive",
+                        "scope": "single",
+                        "input": "{{DESCRIPTION}}",
+                        "name": "DESCRIPTION_TEXT",
+                        "type": "string",
+                        "extract": {"type": "feature", "feature": "number", "cardinality": "first"},
+                    }
+                ],
+                "derived_variables": ["DESCRIPTION_TEXT"],
+                "processing_fingerprint": "sha256:derive-description",
             },
         ],
     }
@@ -318,17 +406,56 @@ async def test_hci_sim_shared_route_logical_consumers_cover_processing_outcomes(
         )
 
     assert len(physical_route["logical_consumers"]) == 2
-    assert physical_route["logical_consumers"][0]["processing_fingerprint"] != physical_route["logical_consumers"][1]["processing_fingerprint"]
+    assert (
+        physical_route["logical_consumers"][0]["processing_fingerprint"]
+        != physical_route["logical_consumers"][1]["processing_fingerprint"]
+    )
     assert physical_route["logical_consumers"][1]["derived_variables"] == ["DESCRIPTION_TEXT"]
 
     assert_consumer = as_signal(physical_route["logical_consumers"][0])
     derive_consumer = as_signal(physical_route["logical_consumers"][1])
     mock_executor = AsyncMock()
     mock_executor.execute.side_effect = [
-        ExecResult(stdout='{"data":[{"description":"使用率：92%"}]}', stderr="", exit_code=0, command="", node="sim", duration_ms=1, truncated=False, risk_level=1),
-        ExecResult(stdout='{"data":[{"description":"使用率：80%"}]}', stderr="", exit_code=0, command="", node="sim", duration_ms=1, truncated=False, risk_level=1),
-        ExecResult(stdout='{"data":[{"other":"missing"}]}', stderr="", exit_code=0, command="", node="sim", duration_ms=1, truncated=False, risk_level=1),
-        ExecResult(stdout='{"data":[{"description":"a"},{"description":"b"}]}', stderr="", exit_code=0, command="", node="sim", duration_ms=1, truncated=False, risk_level=1),
+        ExecResult(
+            stdout='{"data":[{"description":"使用率：92%"}]}',
+            stderr="",
+            exit_code=0,
+            command="",
+            node="sim",
+            duration_ms=1,
+            truncated=False,
+            risk_level=1,
+        ),
+        ExecResult(
+            stdout='{"data":[{"description":"使用率：80%"}]}',
+            stderr="",
+            exit_code=0,
+            command="",
+            node="sim",
+            duration_ms=1,
+            truncated=False,
+            risk_level=1,
+        ),
+        ExecResult(
+            stdout='{"data":[{"other":"missing"}]}',
+            stderr="",
+            exit_code=0,
+            command="",
+            node="sim",
+            duration_ms=1,
+            truncated=False,
+            risk_level=1,
+        ),
+        ExecResult(
+            stdout='{"data":[{"description":"a"},{"description":"b"}]}',
+            stderr="",
+            exit_code=0,
+            command="",
+            node="sim",
+            duration_ms=1,
+            truncated=False,
+            risk_level=1,
+        ),
     ]
     with patch("app.tools.acli.executor._executor", mock_executor):
         positive = await qkv_exec(assert_consumer, conversation_id="sim-positive")
@@ -462,10 +589,7 @@ class TestQKVParser:
 
     def test_parse_dialog_uses_context_time_and_trace_id_equals_shape(self):
         trace_id = "b5ed4ad9340ce338ba1ac71d13ffcfb8"
-        stdout = (
-            "/sf/log/today/api.log:[2026-07-30 11:22:33] 编辑失败\n"
-            f"/sf/log/today/api.log: trace_id={trace_id}"
-        )
+        stdout = f"/sf/log/today/api.log:[2026-07-30 11:22:33] 编辑失败\n/sf/log/today/api.log: trace_id={trace_id}"
         vals = parse_frontend_value(FrontendQueryType.DIALOG, stdout)
         assert vals[0]["request_id"] == trace_id
         assert vals[0]["end"] == "2026-07-30 11:22:33"
@@ -533,6 +657,31 @@ class TestQKVParserDynamicProduces:
         fallback = parse_frontend_value(FrontendQueryType.TASK, task_json)
 
         assert vals[0]["end"] == fallback[0]["end"]
+
+    def test_end_auto_derives_date_variable(self):
+        """无论显式声明 produces END 还是硬编码兜底，均自动派生 DATE (YYYY-MM-DD)。"""
+        task_json = '{"data": [{"end": "2026-06-23 22:54:03", "type": "delete_vm"}]}'
+
+        vals = parse_frontend_value(
+            FrontendQueryType.TASK,
+            task_json,
+            [{"name": "END", "path": "end"}],
+        )
+        assert vals[0]["end"] == "2026-06-23 22:54:03"
+        assert vals[0]["date"] == "2026-06-23"
+
+        # 显式声明 DATE 时直接提取
+        vals_explicit = parse_frontend_value(
+            FrontendQueryType.TASK,
+            task_json,
+            [{"name": "END", "path": "end"}, {"name": "DATE", "path": "end"}],
+        )
+        assert vals_explicit[0]["date"] == "2026-06-23"
+
+        # 硬编码兜底模式
+        fallback = parse_frontend_value(FrontendQueryType.TASK, task_json)
+        assert fallback[0]["end"] == "2026-06-23 22:54:03"
+        assert fallback[0]["date"] == "2026-06-23"
 
     def test_explicit_request_id_produce_normalizes_leading_comma(self):
         """显式 produces 与硬编码路径均自动剥离 request_id 的前导逗号。"""
@@ -658,3 +807,35 @@ async def test_qkv_records_langfuse_tool_observation_without_output_body():
     assert "error_type" in output
     assert output["error_type"] is None
     assert "stdout" not in output
+
+
+@pytest.mark.asyncio
+async def test_qkv_to_variable_pool_auto_derives_date():
+    """QKV 生产者写入 END 时，自动向变量池派生 DATE (YYYY-MM-DD)。"""
+    from types import SimpleNamespace
+
+    from app.adapters.agents.htp.kbd_differential import KBDDiagnostic
+
+    agent = KBDDiagnostic.__new__(KBDDiagnostic)
+    agent._variable_pool = {}
+    agent._variable_sources = {}
+    agent._variable_pool_priority = {}
+    agent._tool_def_default = lambda tool, field: None
+    agent._resolve_host_ip = AsyncMock(side_effect=lambda x, **kw: x)
+    agent._ai_registry = MagicMock()
+    agent._assistant_type = "htp"
+    agent._conversation_id = ""
+    agent._case_id = ""
+    agent._db_session_factory = None
+
+    signal = {
+        "acquire": {"tool": "qkv_task", "args": {"keyword": "delete"}},
+        "orchestrate": {"produces": [{"name": "END", "path": "end"}]},
+    }
+    res = SimpleNamespace(
+        values=[{"end": "2026-06-23 22:54:03", "date": "2026-06-23"}],
+    )
+    await agent._fill_pool_from_qkv(signal, res)
+
+    assert (agent._variable_pool.get("end") or agent._variable_pool.get("END")) == "2026-06-23 22:54:03"
+    assert (agent._variable_pool.get("date") or agent._variable_pool.get("DATE")) == "2026-06-23"

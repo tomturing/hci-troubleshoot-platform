@@ -257,15 +257,9 @@ class HciSimKbdResolver:
         package_digest = getattr(release, "package_snapshot_digest", None)
         release_id = str(getattr(release, "release_id", "") or "") or None
         release_contract = getattr(release, "contract_json", None)
-        version_identity = (
-            release_contract.get("version_identity")
-            if isinstance(release_contract, dict)
-            else None
-        )
+        version_identity = release_contract.get("version_identity") if isinstance(release_contract, dict) else None
         release_source_revision = (
-            version_identity.get("source_knowledge_revision_no")
-            if isinstance(version_identity, dict)
-            else None
+            version_identity.get("source_knowledge_revision_no") if isinstance(version_identity, dict) else None
         )
         if (
             package_digest != getattr(entry, "working_snapshot_digest", None)
@@ -415,7 +409,11 @@ class HciSimKbdResolver:
         package_digest = getattr(snapshot, "package_snapshot_digest", None)
         release_id = str(getattr(snapshot, "release_id", "") or "") or None
         if not package_digest or not release_id:
-            gaps.append(CapabilityGap("UNIFIED_VERSION_IDENTITY_MISSING", "active KBD 缺少 PackageSnapshot 或 KnowledgeRelease 身份"))
+            gaps.append(
+                CapabilityGap(
+                    "UNIFIED_VERSION_IDENTITY_MISSING", "active KBD 缺少 PackageSnapshot 或 KnowledgeRelease 身份"
+                )
+            )
             return KbdResolution(
                 support_id=support_id, status="capability_gap", metadata=snapshot_metadata, gaps=tuple(gaps)
             )
@@ -425,9 +423,7 @@ class HciSimKbdResolver:
             else None
         )
         source_revision_no = (
-            version_identity.get("source_knowledge_revision_no")
-            if isinstance(version_identity, dict)
-            else None
+            version_identity.get("source_knowledge_revision_no") if isinstance(version_identity, dict) else None
         )
         resolved = ResolvedKbdInput(
             support_id=support_id,
@@ -504,18 +500,10 @@ class HciSimKbdResolver:
                 unresolved_signal_ids.append(signal_id)
                 continue
             required_variables = tuple(
-                sorted(
-                    {
-                        variable
-                        for item in argv
-                        for variable in re.findall(r"\{\{([A-Z][A-Z0-9_]*)\}\}", item)
-                    }
-                )
+                sorted({variable for item in argv for variable in re.findall(r"\{\{([A-Z][A-Z0-9_]*)\}\}", item)})
             )
             raw_processing = [
-                dict(item)
-                for item in (orchestrate.get("output_processing") or [])
-                if isinstance(item, dict)
+                dict(item) for item in (orchestrate.get("output_processing") or []) if isinstance(item, dict)
             ]
             try:
                 normalized_processing = normalize_output_processing(raw_processing)
@@ -637,7 +625,11 @@ def _derive_sample_output(signal: dict[str, Any], tool: str, signal_id: str, com
         elif expected is not False and pattern not in output:
             output += pattern + "\n"
     if matcher.get("type") == "exists" and expected is False:
-        includes = matcher.get("extract", {}).get("rows", {}).get("include", []) if isinstance(matcher.get("extract"), dict) else []
+        includes = (
+            matcher.get("extract", {}).get("rows", {}).get("include", [])
+            if isinstance(matcher.get("extract"), dict)
+            else []
+        )
         if any(str(value) in output for value in includes):
             output = f"signal_id={signal_id}\nno matching evidence\n"
     if matcher.get("type") == "delta":
@@ -657,6 +649,8 @@ def _sample_variable(name: str) -> str:
         return "{{HOST}}"
     if name == "END":
         return "{{END}}"
+    if name in {"DATE", "LOG_DATE"}:
+        return "{{DATE}}"
     if name == "START":
         return "{{START}}"
     if name == "PID":
@@ -682,5 +676,5 @@ def _derive_matcher_output(matcher: dict[str, Any], signal_id: str, command: str
         value = matcher.get("value", 0)
         return f"{value}\n{value}\n"
     if matcher_type == "exists":
-        return ("no matching evidence\n" if matcher.get("expected") is False else f"signal_id={signal_id}\nmatched\n")
+        return "no matching evidence\n" if matcher.get("expected") is False else f"signal_id={signal_id}\nmatched\n"
     return f"signal_id={signal_id}\ncommand={command}\nstatus=matched\n"

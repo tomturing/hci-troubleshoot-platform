@@ -167,6 +167,7 @@ DEFAULT_VARIABLE_SCHEMA: list[str] = [
     "NODE_IP",
     "TARGET",
     "END",
+    "DATE",
     "ALERT_TYPE",
     "STATUS",
     "ERRCODE_TRACING",
@@ -1301,6 +1302,47 @@ def _unconsumed_qfk_producer_reasons(raw_signals: list[Any]) -> dict[int, str]:
     return rejected
 
 
+def _normalize_derived_date_variables(raw_signals: list[Any]) -> int:
+    """生产者信号（qkv_alert与qkv_task）产出 END 时，自动派生 DATE 变量 (YYYY-MM-DD)。
+
+    HCI 日志按自然日轮转存储，下游 qfk_log 依赖日期而非精确到秒的时间戳做 -t 过滤。
+    """
+    derived_count = 0
+    for signal in raw_signals:
+        if not isinstance(signal, dict):
+            continue
+        acquire = signal.get("acquire")
+        if not isinstance(acquire, dict):
+            continue
+        tool = str(acquire.get("tool") or "").strip()
+        if tool not in {"qkv_alert", "qkv_task"}:
+            continue
+        orch = signal.get("orchestrate")
+        if not isinstance(orch, dict):
+            continue
+        produces = orch.get("produces")
+        if not isinstance(produces, list):
+            continue
+
+        has_end = False
+        end_path = "end"
+        has_date = False
+        for item in produces:
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip().upper()
+                alias = str(item.get("alias") or "").strip().upper()
+                if "END" in {name, alias}:
+                    has_end = True
+                    end_path = item.get("path") or "end"
+                if "DATE" in {name, alias}:
+                    has_date = True
+
+        if has_end and not has_date:
+            produces.append({"name": "DATE", "path": end_path})
+            derived_count += 1
+    return derived_count
+
+
 def _validate_and_collect_signals(
     raw_signals: list,
     source_id: Any,
@@ -1349,6 +1391,7 @@ def _validate_and_collect_signals(
             _normalize_config_file_read(signal)
             _normalize_simple_match_extract(signal)
     _normalize_derived_file_assertions(raw_signals)
+    _normalize_derived_date_variables(raw_signals)
     _normalize_generated_timeouts(raw_signals)
 
     available_vars = set(DEFAULT_VARIABLE_SCHEMA) | set(external_variables or set())
@@ -1554,6 +1597,8 @@ def _validate_and_collect_signals(
                 for item in ((signal.get("orchestrate") or {}).get("output_processing") or [])
                 if isinstance(item, dict) and item.get("mode") == "derive" and item.get("target_variable")
             )
+            if "END" in reachable_variables:
+                reachable_variables.add("DATE")
             remaining.remove(signal)
     if remaining:
         validated = [signal for signal in validated if id(signal) in reachable_ids]

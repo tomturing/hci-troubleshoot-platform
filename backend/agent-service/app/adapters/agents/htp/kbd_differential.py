@@ -61,9 +61,13 @@ def _tool_contract_checker(tool: str, signal: dict[str, Any]) -> str | None:
     namespace = tool.removeprefix("qfk_")
     args = (signal.get("acquire") or {}).get("args") or {}
     sample_values = {
-        "PID": "1", "HOST": "127.0.0.1", "VM": "golden-vm",
-        "DEVICE": "/dev/sda", "STORAGE_PATH": "/sf/data/golden",
-        "END": "2026-07-30 10:00:00", "REQUEST_ID": "a5ed4ad9340ce338ba1ac71d13ffcfb9",
+        "PID": "1",
+        "HOST": "127.0.0.1",
+        "VM": "golden-vm",
+        "DEVICE": "/dev/sda",
+        "STORAGE_PATH": "/sf/data/golden",
+        "END": "2026-07-30 10:00:00",
+        "REQUEST_ID": "a5ed4ad9340ce338ba1ac71d13ffcfb9",
     }
 
     def resolve_sample(value: Any, field_name: str = "") -> Any:
@@ -85,8 +89,7 @@ def _tool_contract_checker(tool: str, signal: dict[str, Any]) -> str | None:
     matcher = signal.get("match") or {}
     pattern = matcher.get("pattern") if matcher.get("type") == "keyword" else None
     keywords = (
-        [pattern] if isinstance(pattern, str) and pattern
-        else list(pattern or []) if isinstance(pattern, list) else []
+        [pattern] if isinstance(pattern, str) and pattern else list(pattern or []) if isinstance(pattern, list) else []
     )
     data: dict[str, Any] = {
         "namespace": namespace,
@@ -106,7 +109,9 @@ def _tool_contract_checker(tool: str, signal: dict[str, Any]) -> str | None:
         "archive_precheck": compiled_args.get("archive_precheck"),
         "matcher": matcher or None,
         "keyword": keywords,
-        "match_mode": {"any": "or", "all": "and"}.get(str(matcher.get("mode") or "or"), str(matcher.get("mode") or "or")),
+        "match_mode": {"any": "or", "all": "and"}.get(
+            str(matcher.get("mode") or "or"), str(matcher.get("mode") or "or")
+        ),
         "expected": bool(matcher.get("expected", True)),
     }
     if namespace == "service":
@@ -317,10 +322,7 @@ class KBDDiagnostic:
                 "snapshot_id": snapshot_id,
                 "plan_id": plan.plan_id,
                 "acquisition_count": len(plan.acquisitions),
-                "scope_states": {
-                    kbd_id: result.state.value
-                    for kbd_id, result in scope_results.items()
-                },
+                "scope_states": {kbd_id: result.state.value for kbd_id, result in scope_results.items()},
             },
         )
 
@@ -1060,8 +1062,12 @@ class KBDDiagnostic:
         result = await run_vm_console_signal(
             resolved_signal,
             {
-                "HOST": str(merged_context.get("HOST") or merged_context.get("host") or resolved_args.get("host") or ""),
-                "VM_ID": str(merged_context.get("VM_ID") or merged_context.get("vm_id") or resolved_args.get("vm_id") or ""),
+                "HOST": str(
+                    merged_context.get("HOST") or merged_context.get("host") or resolved_args.get("host") or ""
+                ),
+                "VM_ID": str(
+                    merged_context.get("VM_ID") or merged_context.get("vm_id") or resolved_args.get("vm_id") or ""
+                ),
                 "node_ip": str(env_context.get("node_ip") or ""),
             },
             conversation_id=self._conversation_id or session_id,
@@ -1422,6 +1428,14 @@ class KBDDiagnostic:
             if val is not None:
                 self._set_pool_var(name, val, producer_priority=producer_priority)
 
+        # 自动派生：若生产者写入了 END 变量，自动派生 DATE 变量 (YYYY-MM-DD)，供下游 qfk_log 等检索日志
+        end_val = self._variable_pool.get("end") or self._variable_pool.get("END")
+        has_date = bool(self._variable_pool.get("date") or self._variable_pool.get("DATE"))
+        if end_val and not has_date:
+            date_cand = str(first.get("date") or str(end_val).strip()[:10])
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", date_cand):
+                self._set_pool_var("DATE", date_cand, producer_priority=producer_priority)
+
         # 后处理已经在 QKV engine 中完成确定性求值，这里只提交其派生结果。
         for spec in processing:
             if not isinstance(spec, dict) or spec.get("mode") != "derive":
@@ -1429,11 +1443,7 @@ class KBDDiagnostic:
             name = str(spec.get("name") or spec.get("target_variable") or "").strip()
             if not name:
                 continue
-            values = [
-                item[name.lower()]
-                for item in res.values
-                if isinstance(item, dict) and name.lower() in item
-            ]
+            values = [item[name.lower()] for item in res.values if isinstance(item, dict) and name.lower() in item]
             if values:
                 self._set_pool_var(name, values[0] if len(values) == 1 else values, producer_priority=producer_priority)
 
@@ -1474,7 +1484,9 @@ class KBDDiagnostic:
                 # 条件型视觉生产者专用路径：固定截图操作 + 受控制品通道 + 视觉提取。
                 try:
                     res = await self._run_vm_console_producer(
-                        signal if signal is not None else {"acquire": {"tool": step.tool_name, "args": step.tool_args_template}},
+                        signal
+                        if signal is not None
+                        else {"acquire": {"tool": step.tool_name, "args": step.tool_args_template}},
                         env_context,
                         session_id,
                         exec_id=exec_id,
@@ -2155,7 +2167,9 @@ class KBDDiagnostic:
                 )
             ]
             if evidence:
-                blocks.append("  - 现场证据：\n" + "\n".join(f"    {line}" for item in evidence for line in item.splitlines()))
+                blocks.append(
+                    "  - 现场证据：\n" + "\n".join(f"    {line}" for item in evidence for line in item.splitlines())
+                )
 
         pending = evaluated_kbds or []
         if pending:

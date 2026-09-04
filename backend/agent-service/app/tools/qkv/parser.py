@@ -181,11 +181,13 @@ def _extract_from_dialog_log(stdout_text: str) -> list[dict[str, Any]]:
             request_id = match.group(1)
             if request_id not in seen_request_ids:
                 seen_request_ids.add(request_id)
-                results.append({
-                    "request_id": request_id,
-                    "end": end_ts,
-                    "line": line.strip(),
-                })
+                results.append(
+                    {
+                        "request_id": request_id,
+                        "end": end_ts,
+                        "line": line.strip(),
+                    }
+                )
                 continue
 
         # 尝试匹配 trace id（备选）
@@ -194,11 +196,13 @@ def _extract_from_dialog_log(stdout_text: str) -> list[dict[str, Any]]:
             trace_id = match.group(1)
             if trace_id not in seen_request_ids:
                 seen_request_ids.add(trace_id)
-                results.append({
-                    "request_id": trace_id,
-                    "end": end_ts,
-                    "line": line.strip(),
-                })
+                results.append(
+                    {
+                        "request_id": trace_id,
+                        "end": end_ts,
+                        "line": line.strip(),
+                    }
+                )
 
     # 同一弹框文本可能重复出现；按 END 降序让当前/最近一次事件优先，避免依赖
     # aCLI 的文件遍历顺序。仍返回全部候选，由 QKV limit 统一截断并在 Evidence 展示歧义。
@@ -247,9 +251,7 @@ def _extract_from_vm_console_observation(
     return [extracted] if any(extracted.values()) else []
 
 
-def _extract_from_effect_verdict(
-    verdict_json: str, produces: list[dict[str, str]] | None
-) -> list[dict[str, Any]]:
+def _extract_from_effect_verdict(verdict_json: str, produces: list[dict[str, str]] | None) -> list[dict[str, Any]]:
     """解析效果验证判定 JSON 为 EFFECT_* 变量。
 
     输入是专用适配器产出的三态判定结果（而非命令 stdout）。inconclusive 同样
@@ -367,9 +369,17 @@ def _extract_by_produces(items: list[Any], produces: list[dict[str, str]]) -> li
             # 变量池都只保存 HCI 本地绝对时间；各消费者再按日志族转换日期格式。
             if name.strip().upper() == "END" and val not in (None, ""):
                 val = _convert_timestamp(val)
+            elif name.strip().upper() == "DATE" and val not in (None, ""):
+                std_time = _convert_timestamp(val)
+                val = std_time[:10] if std_time else str(val)[:10]
             elif name.strip().upper() == "REQUEST_ID" and val not in (None, ""):
                 val = _normalize_request_id(val)
             extracted[name.lower()] = val if val is not None else ""
+        # 自动派生：若提取到 end 但未显式声明 date，自动从 end 派生 date (YYYY-MM-DD)
+        if "end" in extracted and extracted["end"] and "date" not in extracted:
+            date_cand = str(extracted["end"])[:10]
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", date_cand):
+                extracted["date"] = date_cand
         if any(v not in (None, "") for v in extracted.values()):
             results.append(extracted)
     return results
@@ -384,24 +394,28 @@ def _extract_hardcoded(items: list[Any], query_type: FrontendQueryType) -> list[
         extracted: dict[str, Any] = {}
 
         if query_type == FrontendQueryType.ALERT:
-            # 告警提取标准：alert_type, end, target, type, description, host, vm
+            # 告警提取标准：alert_type, end, date, target, type, description, host, vm
             # 支持对 hostname / hostid 等容错兼容映射
             extracted["alert_type"] = item.get("alert_type") or item.get("type") or ""
-            # end 字段转换为 Unix 时间戳
+            # end 字段转换为标准时间格式并派生 date
             end_raw = item.get("end") or item.get("start") or ""
             extracted["end"] = _convert_timestamp(end_raw)
+            extracted["date"] = extracted["end"][:10] if extracted["end"] else ""
             extracted["target"] = item.get("target") or item.get("object_name") or ""
             extracted["type"] = item.get("type") or ""
             extracted["description"] = item.get("description") or ""
             extracted["host"] = item.get("host") or item.get("hostname") or item.get("hostid") or ""
-            extracted["vm"] = item.get("vm") or item.get("object_id") if item.get("object_type") == "虚拟机" else item.get("vm", "")
+            extracted["vm"] = (
+                item.get("vm") or item.get("object_id") if item.get("object_type") == "虚拟机" else item.get("vm", "")
+            )
 
         elif query_type == FrontendQueryType.TASK:
-            # 任务提取标准：type, end, target, description, host, vm, errcode_tracing, request_id
+            # 任务提取标准：type, end, date, target, description, host, vm, errcode_tracing, request_id
             extracted["type"] = item.get("type") or item.get("alert_type") or ""
-            # end 字段转换为 Unix 时间戳
+            # end 字段转换为标准时间格式并派生 date
             end_raw = item.get("end") or item.get("start") or ""
             extracted["end"] = _convert_timestamp(end_raw)
+            extracted["date"] = extracted["end"][:10] if extracted["end"] else ""
             extracted["target"] = item.get("target") or item.get("object_name") or ""
             extracted["description"] = item.get("description") or ""
             extracted["host"] = item.get("host") or item.get("hostname") or item.get("hostid") or ""

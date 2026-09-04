@@ -28,6 +28,12 @@
     - **模板实例库双子库架构**：顶层引入 `Bundle 库` 与 `Signal 库` 双 Tab 切换，100% 完整保留 Bundle 仿真资产的原有编辑向导、版本切换与发布能力。
     - **Signal 库资产沉浸式阅览**：子模块支持【13类标准模板】与【专家最佳实践】，提供分类/工具/案例 Support ID 多维过滤、分页承载、Schema/变量协议/反模式规约高亮呈现，以及 Few-Shot 样本证据与 `signal_json` 完整预览及一键复制。
     - **全链路后端透传**：`kb-service` 暴露 `/api/admin/signal-assets/*` 只读查询接口，`api-gateway` 提供 `/api/v1/signal-assets/*` 安全代理透传并注入 Internal Token。
+- **生产者信号（qkv_alert与qkv_task）END变量自动派生DATE变量**：
+  - **根因**：`qkv_alert` 和 `qkv_task` 生产的 `END` 是精确到秒的绝对时间（`YYYY-MM-DD HH:MM:SS`），而下游最大消费者 `qfk_log`（`acli log get`）所消费的底层日志是按自然日（如 `1.tar.zst` ~ `31.tar.zst`）轮转存储的。`acli log get -t` 若传入精确到秒的时间做 grep 过滤，命中行数极少甚至为 0，现场日志定位必须按天过滤日志。
+  - **修复**：
+    - **抽取与建模层**：在 `DEFAULT_VARIABLE_SCHEMA` 与 `DEFAULT_SHARED_VARIABLES` 中登记 `DATE`；当生产者声明产出 `END` 时，自动在 `orchestrate.produces` 中派生追加 `{"name": "DATE", "path": "end"}`；在调度器阶段 3.2 动态变量符号表与阶段 4 DAG 闭包可达性中，只要识别到 `END`，自动将 `DATE` 连通至下游消费者上下文。
+    - **执行与解析层**：在 `agent-service` 的 `_extract_by_produces` 与 `_extract_hardcoded` 中，提取到 `end` 时自动派生 `date`（`YYYY-MM-DD`）；在 `_fill_pool_from_qkv` 写入变量池时，若写入了 `END`，自动向变量池派生写入 `DATE`（继承生产者优先级）。
+    - **仿真与模板层**：在 `_sample_variable` 中统一渲染 `{{DATE}}`；更新 `signal_modeling_template` 种子与 System Prompt 建模指南，指引 `qfk_log` 优先使用 `time_window: "{{DATE}}"`.
 - **关键信号多 Agent 分层抽取与 DAG 变量闭包穿透**（PR #1000）：
   - **根因**：PR #999 在真实 23 篇 KBD 上复测发现多 Agent 串行死锁、单体兜底短路、缺少 trace_id、丢失图片证据，且消费者信号无法感知生产者动态变量导致变量闭包校验大面积被拒。
   - **修复**：

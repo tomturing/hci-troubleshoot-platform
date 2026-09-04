@@ -126,7 +126,7 @@ VALUES (
 【建模规范与硬性约束】：
 1. acquire 标准化：
    - 命令必须符合 aCLI 白名单规范；
-   - qfk_log: file 必须是纯 basename 文件名（如 vn-node-agent-api.log），禁止包含目录或 <日期>；时间窗口通过 time_window（如 "{{END}}" 或合法的 "{{LOG_DATE}}"）；禁止使用 TODAY/YMD 等未注册别名；
+   - qfk_log: file 必须是纯 basename 文件名（如 vn-node-agent-api.log），禁止包含目录或 <日期>；时间窗口优先通过 time_window（如 "{{DATE}}"、"{{END}}" 或合法的 "{{LOG_DATE}}"）；禁止使用 TODAY/YMD 等未注册别名；
    - 严禁硬编码具体客户环境的特定存储卷 UUID 或 IP，必须泛化为模板变量（如 /sf/data/{{STORAGE_ID}}/...）。
 2. orchestrate 变量协议约束：
    - 全局变量命名必须严格遵循下发的【共享变量白名单】：{shared_variables}；
