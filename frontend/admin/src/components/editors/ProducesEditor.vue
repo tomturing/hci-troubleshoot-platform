@@ -111,7 +111,17 @@ function addFallbackPath(item: { name: string; path: string }) {
             </template>
           </el-input>
         </el-col>
-        <el-col :span="3" style="text-align: right;">
+        <el-col :span="3" style="text-align: right; display: flex; align-items: center; justify-content: flex-end; gap: 4px;">
+          <el-tag
+            v-if="item.name === 'END'"
+            type="success"
+            size="small"
+            effect="light"
+            round
+            title="由 END 自动派生 DATE 变量（YYYY-MM-DD），供下游日志按天轮转检索"
+          >
+            派生 DATE
+          </el-tag>
           <el-button
             v-if="pathCount(item.path) >= 2"
             type="info"
@@ -137,6 +147,16 @@ function addFallbackPath(item: { name: string; path: string }) {
         容错路径：{{ item.path.split('|').map((p: string) => p.trim()).filter(Boolean).join(' → ') }}
       </div>
     </div>
+
+    <el-alert
+      v-if="produces.some((p: any) => p.name === 'END')"
+      type="success"
+      :closable="false"
+      show-icon
+      title="已自动派生产出变量: DATE"
+      description="检测到产出 END 时间戳，系统已自动派生 DATE 变量（YYYY-MM-DD）。下游 qfk_log 需配置 -t '{{DATE}}' 进行日志轮转过滤。"
+      style="margin-top: 10px;"
+    />
 
     <el-empty
       v-if="produces.length === 0"

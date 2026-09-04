@@ -396,6 +396,49 @@ async def signal_best_practice_detail_proxy(request: Request, practice_id: int):
     return JSONResponse(content=body, status_code=response.status_code)
 
 
+@signal_assets_router.get("/failures")
+async def signal_failures_proxy(request: Request):
+    """代理关键信号抽取失败复盘日志列表查询 → kb-service"""
+    headers = _internal_auth_headers()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.request(
+                "GET",
+                f"{SIGNAL_ASSETS_SERVICE_URL}/failures",
+                params=dict(request.query_params),
+                headers=headers,
+            )
+        except httpx.RequestError as exc:
+            logger.error(f"signal-assets failures 代理失败: {exc.request.url!r}")
+            raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
+    try:
+        body = response.json()
+    except (ValueError, json.JSONDecodeError):
+        body = {"detail": response.text[:500]}
+    return JSONResponse(content=body, status_code=response.status_code)
+
+
+@signal_assets_router.get("/failures/{failure_id}")
+async def signal_failure_detail_proxy(request: Request, failure_id: int):
+    """代理单条关键信号抽取失败复盘日志详情查询 → kb-service"""
+    headers = _internal_auth_headers()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.request(
+                "GET",
+                f"{SIGNAL_ASSETS_SERVICE_URL}/failures/{failure_id}",
+                headers=headers,
+            )
+        except httpx.RequestError as exc:
+            logger.error(f"signal-assets failure detail 代理失败: {exc.request.url!r}")
+            raise HTTPException(status_code=503, detail="KB Service unavailable") from exc
+    try:
+        body = response.json()
+    except (ValueError, json.JSONDecodeError):
+        body = {"detail": response.text[:500]}
+    return JSONResponse(content=body, status_code=response.status_code)
+
+
 kbd_router = APIRouter(prefix="/api/v1/kbd", tags=["kbd"])
 
 

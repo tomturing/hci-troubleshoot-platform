@@ -3,7 +3,7 @@
 import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type TableColumnCtx, type TableInstance, type UploadFile } from 'element-plus'
-import { FullScreen, InfoFilled, Refresh, Upload } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, FullScreen, InfoFilled, Loading, Refresh, Upload } from '@element-plus/icons-vue'
 import { useCategories } from '../composables/useCategories'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
@@ -712,6 +712,9 @@ function updateProduceVariableName(index: number, value?: string): void {
   const option = findProduceVariable(produceVariableCatalog.value, sigTool(signalEditDraft.value), name)
   // 目录项是“变量名 → JSON 路径”的不可拆分映射，选择后必须同步写入两字段；alias 保持不动。
   produces[index] = option ? { ...produce, name: option.name, path: option.path } : { ...produce, name }
+  if (name.toUpperCase() === 'END') {
+    ElMessage.info('已自动派生 DATE 变量（供下游 qfk_log 按天轮转检索）')
+  }
 }
 
 /** 规范化 alias 输入：强制大写，仅允许 [A-Z][A-Z0-9_]* 字符。 */
@@ -1130,6 +1133,10 @@ const batchJobsLoading = ref(false)
 const batchJobsPage = ref(1)
 const batchJobsPageSize = ref(10)
 const batchJobsTotal = ref(0)
+const batchTasksCollapsed = ref(true) // 批量任务默认收起，释放首屏空间
+const runningBatchJobsCount = computed(() => {
+  return batchJobs.value.filter(job => job.status === 'running' || job.status === 'pending').length
+})
 const batchJobTypeFilter = ref<KbdBatchJob['job_type'] | ''>('')
 const batchJobDetail = ref<KbdBatchJob | null>(null)
 const batchJobDetailVisible = ref(false)
@@ -1403,6 +1410,7 @@ function rememberSubmittedBatch(data: any) {
   // 新任务无论类型都应立即出现在任务区，避免被当前筛选或历史页隐藏。
   batchJobTypeFilter.value = ''
   batchJobsPage.value = 1
+  batchTasksCollapsed.value = false // 提交新批量任务时自动展开，方便专家实时查看进度
   void loadBatchJobs()
 }
 
@@ -4063,16 +4071,45 @@ onUnmounted(() => clearBatchPollTimer())
       </el-row>
     </el-card>
 
-    <!-- 批量任务：进度和逐条结果持久化，页面刷新后仍可查看。 -->
-    <el-card v-if="batchJobs.length > 0" shadow="never" class="batch-jobs-card">
+    <!-- 批量任务：可展开/收起（默认收起，避免占用主视口空间） -->
+    <el-card
+      v-if="batchJobs.length > 0"
+      shadow="never"
+      class="batch-jobs-card"
+      :class="{ 'is-collapsed': batchTasksCollapsed }"
+    >
       <template #header>
-        <div class="batch-jobs-header">
-          <div>
+        <div
+          class="batch-jobs-header"
+          :class="{ 'clickable': batchTasksCollapsed }"
+          @click="batchTasksCollapsed = !batchTasksCollapsed"
+        >
+          <div class="batch-jobs-header-title">
             <strong>批量任务</strong>
             <span class="batch-jobs-hint">全部任务可追溯；失败原因和 KBD 查看/编辑入口位于详情中</span>
+            <el-tag
+              v-if="runningBatchJobsCount > 0"
+              size="small"
+              type="warning"
+              effect="plain"
+              class="batch-status-chip"
+            >
+              <el-icon class="is-loading" style="margin-right: 3px"><Loading /></el-icon>
+              {{ runningBatchJobsCount }} 个任务处理中
+            </el-tag>
+            <el-tag
+              v-else-if="batchTasksCollapsed"
+              size="small"
+              type="info"
+              effect="plain"
+              class="batch-status-chip"
+            >
+              共 {{ batchJobsTotal }} 个任务
+            </el-tag>
           </div>
-          <div class="batch-jobs-actions">
+          <div class="batch-jobs-actions" @click.stop>
             <el-select
+              v-if="!batchTasksCollapsed"
               v-model="batchJobTypeFilter"
               size="small"
               style="width: 150px"
@@ -4088,68 +4125,83 @@ onUnmounted(() => clearBatchPollTimer())
             <el-button size="small" :icon="Refresh" :loading="batchJobsLoading" @click="loadBatchJobs">
               刷新
             </el-button>
+            <el-button
+              size="small"
+              type="primary"
+              link
+              class="batch-toggle-button"
+              @click.stop="batchTasksCollapsed = !batchTasksCollapsed"
+            >
+              <span>{{ batchTasksCollapsed ? '展开任务' : '收起' }}</span>
+              <el-icon class="toggle-icon">
+                <ArrowDown v-if="batchTasksCollapsed" />
+                <ArrowUp v-else />
+              </el-icon>
+            </el-button>
           </div>
         </div>
       </template>
-      <el-table :data="batchJobs" size="small" row-key="batch_id" class="batch-jobs-table">
-        <el-table-column label="任务" min-width="130">
-          <template #default="{ row }">
-            {{ batchJobTypeLabel(row.job_type) }}
-          </template>
-        </el-table-column>
-        <el-table-column label="状态" width="100">
-          <template #default="{ row }">
-            <el-tag :type="batchJobStatusTag(row.status)" size="small">
-              {{ batchJobStatusLabel(row.status) }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="进度" min-width="230">
-          <template #default="{ row }">
-            <div class="batch-progress-cell">
-              <el-progress
-                :percentage="batchProgress(row)"
-                :status="row.status === 'completed' ? 'success' : row.status === 'failed' ? 'exception' : undefined"
-              />
-              <span>{{ batchProgressLabel(row) }}</span>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="结果" min-width="150">
-          <template #default="{ row }">
-            <span class="batch-success-count">成功 {{ row.succeeded_count }}</span>
-            <span :class="['batch-failed-count', { active: row.failed_count > 0 }]">失败 {{ row.failed_count }}</span>
-            <span v-if="row.interrupted_count > 0" class="batch-interrupted-count">中断 {{ row.interrupted_count }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="提交时间" width="180">
-          <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="190" fixed="right">
-          <template #default="{ row }">
-            <el-button link type="primary" @click="openBatchJobDetail(row)">详情</el-button>
-            <el-button
-              v-if="canRetryBatch(row)"
-              link
-              type="warning"
-              :loading="batchRetryLoadingId === row.batch_id"
-              @click="retryUnsuccessfulBatch(row)"
-            >重试未成功</el-button>
-            <el-tag v-else-if="row.retried_by_batch_id" size="small" type="info">已创建重试</el-tag>
-          </template>
-        </el-table-column>
-      </el-table>
-      <el-pagination
-        v-if="batchJobsTotal > batchJobsPageSize"
-        class="batch-jobs-pagination"
-        small
-        background
-        layout="total, prev, pager, next"
-        :total="batchJobsTotal"
-        :page-size="batchJobsPageSize"
-        :current-page="batchJobsPage"
-        @current-change="changeBatchJobsPage"
-      />
+      <div v-show="!batchTasksCollapsed" class="batch-jobs-body">
+        <el-table :data="batchJobs" size="small" row-key="batch_id" class="batch-jobs-table">
+          <el-table-column label="任务" min-width="130">
+            <template #default="{ row }">
+              {{ batchJobTypeLabel(row.job_type) }}
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="100">
+            <template #default="{ row }">
+              <el-tag :type="batchJobStatusTag(row.status)" size="small">
+                {{ batchJobStatusLabel(row.status) }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="进度" min-width="230">
+            <template #default="{ row }">
+              <div class="batch-progress-cell">
+                <el-progress
+                  :percentage="batchProgress(row)"
+                  :status="row.status === 'completed' ? 'success' : row.status === 'failed' ? 'exception' : undefined"
+                />
+                <span>{{ batchProgressLabel(row) }}</span>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="结果" min-width="150">
+            <template #default="{ row }">
+              <span class="batch-success-count">成功 {{ row.succeeded_count }}</span>
+              <span :class="['batch-failed-count', { active: row.failed_count > 0 }]">失败 {{ row.failed_count }}</span>
+              <span v-if="row.interrupted_count > 0" class="batch-interrupted-count">中断 {{ row.interrupted_count }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="提交时间" width="180">
+            <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="190" fixed="right">
+            <template #default="{ row }">
+              <el-button link type="primary" @click="openBatchJobDetail(row)">详情</el-button>
+              <el-button
+                v-if="canRetryBatch(row)"
+                link
+                type="warning"
+                :loading="batchRetryLoadingId === row.batch_id"
+                @click="retryUnsuccessfulBatch(row)"
+              >重试未成功</el-button>
+              <el-tag v-else-if="row.retried_by_batch_id" size="small" type="info">已创建重试</el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-pagination
+          v-if="batchJobsTotal > batchJobsPageSize"
+          class="batch-jobs-pagination"
+          small
+          background
+          layout="total, prev, pager, next"
+          :total="batchJobsTotal"
+          :page-size="batchJobsPageSize"
+          :current-page="batchJobsPage"
+          @current-change="changeBatchJobsPage"
+        />
+      </div>
     </el-card>
 
     <!-- 列表：按 AI 分类 Tab 分组 -->
@@ -4701,6 +4753,18 @@ onUnmounted(() => clearBatchPollTimer())
                           </span>
                           <span v-if="p.path" class="produce-path" title="取值路径"><code>{{ p.path }}</code></span>
                         </div>
+                        <!-- 若产出 END，右侧自动展示派生的 DATE 芯片 -->
+                        <div
+                          v-if="(sigOrch(item.sig).produces || []).some((p: any) => p.name === 'END') && !(sigOrch(item.sig).produces || []).some((p: any) => p.name === 'DATE')"
+                          class="produce-preview-chip is-derived"
+                          title="由 END 自动派生（YYYY-MM-DD），供下游 qfk_log 日志轮转检索使用"
+                        >
+                          <span class="produce-name">
+                            <span class="produce-catalog-name">DATE</span>
+                            <span class="derived-badge-sub">派生</span>
+                          </span>
+                          <span class="produce-path" title="自动派生规则"><code>derive(END, 'YYYY-MM-DD')</code></span>
+                        </div>
                       </div>
                       <span v-else class="text-muted">—</span>
                     </div>
@@ -4854,9 +4918,30 @@ onUnmounted(() => clearBatchPollTimer())
                             :placeholder="p.name ? `留空用 ${p.name}` : '别名（可选）'"
                             @input="(v: string) => updateProduceAlias(idx, v)"
                           />
+                          <!-- 需求1：如果生产者信号被选中产出END变量，右侧自动弹出派生的DATE变量 -->
+                          <transition name="el-zoom-in-center">
+                            <div v-if="p.name === 'END'" class="derived-variable-tag" title="由于系统日志按天轮转存储，系统已由 END 自动派生 DATE (YYYY-MM-DD) 注入共享变量池">
+                              <el-tag type="success" size="small" effect="light" round class="derived-pill">
+                                派生 DATE
+                              </el-tag>
+                            </div>
+                          </transition>
                           <el-button text type="danger" size="small" @click="signalEditDraft.orchestrate.produces?.splice(idx, 1)">删除</el-button>
                         </div>
                         <el-button text type="primary" size="small" @click="signalEditDraft.orchestrate.produces = [...(signalEditDraft.orchestrate.produces || []), { name: '', path: '', alias: '' }]">+ 添加变量</el-button>
+
+                        <!-- 当产出变量包含 END 时，下方自动弹出派生变量提示条 -->
+                        <transition name="el-fade-in-linear">
+                          <div v-if="(signalEditDraft.orchestrate.produces || []).some((item: any) => item?.name === 'END')" class="derived-date-alert">
+                            <el-alert
+                              type="success"
+                              :closable="false"
+                              show-icon
+                              title="已自动派生产出变量: DATE"
+                              description="检测到本信号产出完整时间戳 END (YYYY-MM-DD HH:MM:SS)，系统已自动派生 DATE (YYYY-MM-DD) 注入变量池。下游 qfk_log 必须配置 -t '{{DATE}}' 进行日志轮转检索。"
+                            />
+                          </div>
+                        </transition>
                       </div>
                     </div>
                     <div class="field-hint" v-pre>抽取后写入变量池的变量名(name)与取值路径(path)，供下游消费者信号（QFK）通过 {{变量名}} 引用；同一 KBD 两个信号产出同名变量时，填「别名」区分（如 END1/END2），别名即实际变量 key</div>
@@ -5256,8 +5341,8 @@ onUnmounted(() => clearBatchPollTimer())
                     <div class="field-hint">KBD 自动诊断只允许只读 status；start/stop/restart 不属于关键信号执行权限。</div>
                   </template>
                   <template v-if="sigTool(signalEditDraft) === 'qfk_log'">
-                    <div class="signal-row"><span class="signal-k">时间</span><el-input v-model="signalEditDraft.acquire.args.time_window" size="small" placeholder="{{END}}（推荐）或 YYYY-MM-DD HH:MM:SS" /></div>
-                    <div class="field-hint">推荐引用上游 qkv_task/qkv_alert/qkv_dialog 产出的 <code v-pre>{{END}}</code>。Agent 保持绝对时间，再由 qfk_log 按日志族转换为所需日期格式。</div>
+                    <div class="signal-row"><span class="signal-k">时间</span><el-input v-model="signalEditDraft.acquire.args.time_window" size="small" placeholder="{{DATE}}（推荐）或 YYYY-MM-DD" /></div>
+                    <div class="field-hint">推荐引用上游生产者产出并派生的 <code v-pre>{{DATE}}</code>。因 HCI 日志按自然日轮转存储，若上游已产出时间戳 END，qfk_log 未配置 <code v-pre>{{DATE}}</code> 将被门禁拦截。</div>
                     <div class="signal-row"><span class="signal-k">文件</span><el-input v-model="signalEditDraft.acquire.args.file" size="small" placeholder="安全 basename，如 sfvt_vtpdaemon.log / LOG_ifconfig.txt" /></div>
                     <div class="field-hint">只填 basename，禁止包含目录；扩展名不限。blackbox、whitebox 和其他 /sf/log 日志都使用 qfk_log。</div>
                     <div class="signal-row"><span class="signal-k">上下文行</span><el-input-number v-model="signalEditDraft.acquire.args.context_lines" :min="0" :max="50" size="small" /></div>
@@ -6220,6 +6305,16 @@ onUnmounted(() => clearBatchPollTimer())
 
 .batch-jobs-card {
   margin-bottom: 12px;
+  transition: all 0.2s ease-in-out;
+}
+
+.batch-jobs-card.is-collapsed {
+  margin-bottom: 10px;
+}
+
+.batch-jobs-card.is-collapsed :deep(.el-card__body) {
+  display: none !important;
+  padding: 0 !important;
 }
 
 .batch-jobs-card :deep(.el-card__header) {
@@ -6235,6 +6330,34 @@ onUnmounted(() => clearBatchPollTimer())
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  user-select: none;
+}
+
+.batch-jobs-header.clickable {
+  cursor: pointer;
+}
+
+.batch-jobs-header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.batch-status-chip {
+  margin-left: 6px;
+  font-size: 11px;
+}
+
+.batch-toggle-button {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 500;
+  margin-left: 4px;
+}
+
+.batch-toggle-button .toggle-icon {
+  margin-left: 2px;
 }
 
 .batch-jobs-actions {
@@ -7048,6 +7171,25 @@ onUnmounted(() => clearBatchPollTimer())
   padding: 1px 4px;
   border-radius: 3px;
 }
+.produce-preview-chip.is-derived {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+.produce-preview-chip.is-derived .produce-name {
+  color: #166534;
+}
+.produce-preview-chip.is-derived .derived-badge-sub {
+  font-size: 10px;
+  background: #dcfce7;
+  color: #15803d;
+  padding: 0 4px;
+  border-radius: 2px;
+  margin-left: 2px;
+}
+.produce-preview-chip.is-derived .produce-path code {
+  background: #dcfce7;
+  color: #166534;
+}
 .output-processing-preview-list {
   display: flex;
   flex-wrap: wrap;
@@ -7304,6 +7446,19 @@ onUnmounted(() => clearBatchPollTimer())
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.derived-variable-tag {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 2px;
+}
+.derived-pill {
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+.derived-date-alert {
+  margin-top: 6px;
+  margin-bottom: 4px;
 }
 .qfk-formatter-control {
   display: flex;

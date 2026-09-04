@@ -575,12 +575,23 @@ async def test_model_agent_dag_dynamic_variable_closure():
         )
         with patch.object(orchestrator, "run_classify_agent", new_callable=AsyncMock) as mock_classify:
             mock_classify.side_effect = [
-                {"valid": True, "tool_name": "qkv_task", "intent": {"candidate_id": "c1", "evidence_raw": "磁盘坏道报错"}},
-                {"valid": True, "tool_name": "qfk_system", "intent": {"candidate_id": "c2", "evidence_raw": "执行 smartctl 检查磁盘"}},
+                {
+                    "valid": True,
+                    "tool_name": "qkv_task",
+                    "intent": {"candidate_id": "c1", "evidence_raw": "磁盘坏道报错"},
+                },
+                {
+                    "valid": True,
+                    "tool_name": "qfk_system",
+                    "intent": {"candidate_id": "c2", "evidence_raw": "执行 smartctl 检查磁盘"},
+                },
             ]
             with patch.object(orchestrator, "_load_prompt", new_callable=AsyncMock) as mock_load:
-                mock_load.return_value = "{tool_name} {core_entity} {evidence_raw} {shared_variables} {best_practices} {acli_catalog}"
+                mock_load.return_value = (
+                    "{tool_name} {core_entity} {evidence_raw} {shared_variables} {best_practices} {acli_catalog}"
+                )
                 with patch.object(orchestrator, "_get_best_practices", new_callable=AsyncMock, return_value=[]):
+
                     def dummy_gate_checker(sigs):
                         return sigs, [], []
 
@@ -597,6 +608,7 @@ async def test_model_agent_dag_dynamic_variable_closure():
 @pytest.mark.asyncio
 async def test_model_agent_evidence_grounding_auto_repair_and_requires_cleaning():
     """验证证据轻微改写时自动纠偏回填候选原文，且清洗悬空变量。"""
+
     async def mock_llm(prompt: str, stage: str):
         return {
             "id": "sig_001",
@@ -617,7 +629,9 @@ async def test_model_agent_evidence_grounding_auto_repair_and_requires_cleaning(
         },
     }
     with patch.object(orchestrator, "_load_prompt", new_callable=AsyncMock) as mock_load:
-        mock_load.return_value = "{tool_name} {core_entity} {evidence_raw} {shared_variables} {best_practices} {acli_catalog}"
+        mock_load.return_value = (
+            "{tool_name} {core_entity} {evidence_raw} {shared_variables} {best_practices} {acli_catalog}"
+        )
         with patch.object(orchestrator, "_get_best_practices", new_callable=AsyncMock, return_value=[]):
             sig = await orchestrator.run_model_agent(AsyncMock(), 3001, classified, "Catalog")
 
@@ -626,3 +640,172 @@ async def test_model_agent_evidence_grounding_auto_repair_and_requires_cleaning(
     assert sig["provenance"]["evidence"] == "存储池 状态 异常"
     # 验证未闭合且未被引用的悬空变量 VM_DISK_PATH 被清洗剔除，保留合法的 HOST
     assert sig["orchestrate"]["requires"] == ["HOST"]
+
+
+@pytest.mark.asyncio
+async def test_producer_end_variable_auto_derives_date_variable():
+    """验证生产者信号（qkv_alert/qkv_task）产出 END 时，自动派生 DATE 变量并闭环注入下游。"""
+    from app.routes.extract_signals import _normalize_derived_date_variables, _validate_and_collect_signals
+
+    # 1. 单测 _normalize_derived_date_variables
+    signals = [
+        {
+            "id": "sig_task",
+            "acquire": {"tool": "qkv_task", "args": {"keyword": "delete"}},
+            "orchestrate": {"produces": [{"name": "END", "path": "end"}]},
+        },
+        {
+            "id": "sig_log",
+            "acquire": {"tool": "qfk_log", "args": {"file": "vtp.log", "time_window": "{{DATE}}"}},
+            "orchestrate": {"requires": ["HOST", "DATE"]},
+            "match": {"type": "keyword", "pattern": "error"},
+            "provenance": {"category": "backend", "evidence": "日志报错"},
+        },
+    ]
+
+    count = _normalize_derived_date_variables(signals)
+    assert count == 1
+    task_produces = signals[0]["orchestrate"]["produces"]
+    names = [p["name"] for p in task_produces]
+    assert "END" in names
+    assert "DATE" in names
+
+    # 2. 端到端 DAG 闭包验证
+    full_signals = [
+        {
+            "id": "sig_001",
+            "role": "must",
+            "acquire": {"tool": "qkv_task", "args": {"keyword": "delete"}},
+            "orchestrate": {
+                "phase": "diagnostic",
+                "produces": [{"name": "HOST", "path": "host"}, {"name": "END", "path": "end"}],
+            },
+            "provenance": {"category": "frontend", "evidence": "删除失败"},
+        },
+        {
+            "id": "sig_002",
+            "role": "must",
+            "acquire": {"tool": "qfk_log", "args": {"file": "vtp.log", "time_window": "{{DATE}}"}},
+            "match": {"type": "keyword", "pattern": "error", "expected": True},
+            "orchestrate": {"phase": "diagnostic", "requires": ["HOST", "DATE"]},
+            "provenance": {"category": "backend", "evidence": "vtpdaemon error 发生故障"},
+        },
+    ]
+    validated, rejected = _validate_and_collect_signals(full_signals, source_id="kbd_test")
+    assert len(rejected) == 0
+    assert len(validated) == 2
+    # 验证 sig_001 获得了 DATE 产出，sig_002 顺利消费了 DATE
+    sig1_produces = validated[0]["orchestrate"]["produces"]
+    assert any(p.get("name") == "DATE" for p in sig1_produces)
+
+
+@pytest.mark.asyncio
+async def test_qfk_log_requires_date_variable_when_producer_has_end():
+    """验证信号门禁：若生产者产出 END/DATE，消费者中的 qfk_log 必须配置 -t {{DATE}}，否则加入 rejected。"""
+    from app.routes.extract_signals import _validate_and_collect_signals
+
+    # 1. 生产者产出 END，qfk_log 仍使用旧的 {{END}} -> 必须被拒绝
+    signals_with_old_end = [
+        {
+            "id": "sig_001",
+            "role": "must",
+            "acquire": {"tool": "qkv_task", "args": {"keyword": "delete"}},
+            "orchestrate": {
+                "phase": "diagnostic",
+                "produces": [{"name": "HOST", "path": "host"}, {"name": "END", "path": "end"}],
+            },
+            "provenance": {"category": "frontend", "evidence": "删除失败"},
+        },
+        {
+            "id": "sig_002",
+            "role": "must",
+            "acquire": {"tool": "qfk_log", "args": {"file": "vtp.log", "time_window": "{{END}}"}},
+            "match": {"type": "keyword", "pattern": "error", "expected": True},
+            "orchestrate": {"phase": "diagnostic", "requires": ["HOST", "END"]},
+            "provenance": {"category": "backend", "evidence": "vtpdaemon error 发生故障"},
+        },
+    ]
+    validated, rejected = _validate_and_collect_signals(signals_with_old_end, source_id="kbd_test_gate_1")
+    assert len(rejected) == 1
+    assert rejected[0]["signal"]["id"] == "sig_002"
+    assert rejected[0]["reason_code"] == "run_failed"
+    assert "未配置 -t {{DATE}}" in rejected[0]["reason"]
+    assert len(validated) == 1
+    assert validated[0]["id"] == "sig_001"
+
+    # 2. 生产者产出 END，qfk_log 未配置 time_window -> 必须被拒绝
+    signals_without_time = [
+        {
+            "id": "sig_001",
+            "role": "must",
+            "acquire": {"tool": "qkv_alert", "args": {"keyword": "alert"}},
+            "orchestrate": {
+                "phase": "diagnostic",
+                "produces": [{"name": "HOST", "path": "host"}, {"name": "END", "path": "end"}],
+            },
+            "provenance": {"category": "frontend", "evidence": "告警产生"},
+        },
+        {
+            "id": "sig_002",
+            "role": "must",
+            "acquire": {"tool": "qfk_log", "args": {"file": "vtp.log"}},
+            "match": {"type": "keyword", "pattern": "error", "expected": True},
+            "orchestrate": {"phase": "diagnostic", "requires": ["HOST"]},
+            "provenance": {"category": "backend", "evidence": "vtpdaemon error 发生故障"},
+        },
+    ]
+    validated2, rejected2 = _validate_and_collect_signals(signals_without_time, source_id="kbd_test_gate_2")
+    assert len(rejected2) == 1
+    assert rejected2[0]["signal"]["id"] == "sig_002"
+    assert "未配置 -t {{DATE}}" in rejected2[0]["reason"]
+
+    # 3. 生产者产出 END，qfk_log 正确配置 time_window: "{{DATE}}" -> 顺利通过
+    signals_with_date = [
+        {
+            "id": "sig_001",
+            "role": "must",
+            "acquire": {"tool": "qkv_task", "args": {"keyword": "delete"}},
+            "orchestrate": {
+                "phase": "diagnostic",
+                "produces": [{"name": "HOST", "path": "host"}, {"name": "END", "path": "end"}],
+            },
+            "provenance": {"category": "frontend", "evidence": "删除失败"},
+        },
+        {
+            "id": "sig_002",
+            "role": "must",
+            "acquire": {"tool": "qfk_log", "args": {"file": "vtp.log", "time_window": "{{DATE}}"}},
+            "match": {"type": "keyword", "pattern": "error", "expected": True},
+            "orchestrate": {"phase": "diagnostic", "requires": ["HOST", "DATE"]},
+            "provenance": {"category": "backend", "evidence": "vtpdaemon error 发生故障"},
+        },
+    ]
+    validated3, rejected3 = _validate_and_collect_signals(signals_with_date, source_id="kbd_test_gate_3")
+    assert len(rejected3) == 0
+    assert len(validated3) == 2
+
+    # 4. 无生产者产出时间变量时，普通 qfk_log 不被拦截
+    signals_no_time_producer = [
+        {
+            "id": "sig_001",
+            "role": "must",
+            "acquire": {"tool": "qkv_task", "args": {"keyword": "restart"}},
+            "orchestrate": {
+                "phase": "diagnostic",
+                "produces": [{"name": "HOST", "path": "host"}],
+            },
+            "provenance": {"category": "frontend", "evidence": "重启任务"},
+        },
+        {
+            "id": "sig_002",
+            "role": "must",
+            "acquire": {"tool": "qfk_log", "args": {"file": "syslog"}},
+            "match": {"type": "keyword", "pattern": "error", "expected": True},
+            "orchestrate": {"phase": "diagnostic", "requires": ["HOST"]},
+            "provenance": {"category": "backend", "evidence": "系统日志检查 error 发生故障"},
+        },
+    ]
+    validated4, rejected4 = _validate_and_collect_signals(signals_no_time_producer, source_id="kbd_test_gate_4")
+    assert len(rejected4) == 0
+    assert len(validated4) == 2
+

@@ -71,13 +71,13 @@ VALUES
   ('qkv_task', 'frontend', '前端任务查询：acli task get，产出 status/host/vm/errcode_tracing/request_id 等', 
    '{"type":"object","required":["keyword"],"properties":{"keyword":{"type":"string"},"limit":{"type":"integer","default":100},"is_failed":{"type":"boolean","default":true},"timeout":{"type":"integer","default":60},"instruction":{"type":"string"}}}'::jsonb, 
    ARRAY[]::varchar[], 
-   '{"produces":["HOST","VM","REQUEST_ID","STATUS","ERRCODE_TRACING","TARGET","END","DESCRIPTION"],"requires":[]}'::jsonb, 
+   '{"produces":["HOST","VM","REQUEST_ID","STATUS","ERRCODE_TRACING","TARGET","END","DATE","DESCRIPTION"],"requires":[]}'::jsonb, 
    ARRAY['禁止使用非失败任务关键词', '禁止配置 match 字段'], 'migration:20260904000000'),
 
   ('qkv_alert', 'frontend', '前端信号-告警查询：acli alert get，产出 host/vm/target/alert_type/end 等', 
    '{"type":"object","required":["keyword"],"properties":{"keyword":{"type":"string"},"limit":{"type":"integer","default":100},"alert_type":{"type":"string"},"timeout":{"type":"integer","default":60},"instruction":{"type":"string"}}}'::jsonb, 
    ARRAY[]::varchar[], 
-   '{"produces":["HOST","VM","TARGET","END","ALERT_TYPE","STATUS"],"requires":[]}'::jsonb, 
+   '{"produces":["HOST","VM","TARGET","END","DATE","ALERT_TYPE","STATUS"],"requires":[]}'::jsonb, 
    ARRAY['无 is_failed 字段', '禁止将普通任务失败当做告警'], 'migration:20260904000000'),
 
   ('qkv_dialog', 'frontend', '弹框复合取值：在当前主控 today 与 today/vt 日志检索弹框文本，产出 END/REQUEST_ID/HOST', 

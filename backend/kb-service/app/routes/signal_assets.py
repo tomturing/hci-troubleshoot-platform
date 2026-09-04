@@ -249,3 +249,164 @@ async def get_best_practice(
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
     }
+
+
+@router.get("/failures")
+async def list_failures(
+    request: Request,
+    kbd_id: int | None = Query(default=None, description="KBD 内部自增 ID 过滤"),
+    support_id: str | None = Query(default=None, description="Support 案例 ID 过滤"),
+    stage: str | None = Query(default=None, description="抽取阶段 (count/classify/modeling/verification)"),
+    reason: str | None = Query(default=None, description="失败原因分类过滤"),
+    trace_id: str | None = Query(default=None, description="调用链 Trace ID 过滤"),
+    resolved: bool | None = Query(default=None, description="是否已解决过滤"),
+    limit: int = Query(default=20, ge=1, le=100, description="分页限制"),
+    offset: int = Query(default=0, ge=0, description="分页偏移"),
+) -> dict[str, Any]:
+    """分页查询信号抽取异常复盘日志 (signal_failure_extraction)。"""
+    _check_auth(request)
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    clauses: list[str] = []
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+
+    if isinstance(kbd_id, int):
+        clauses.append("f.kbd_id = :kbd_id")
+        params["kbd_id"] = kbd_id
+    if isinstance(support_id, str) and support_id.strip():
+        clauses.append("((ke.support_id ILIKE :support_id) OR (f.detail_payload->>'support_id' ILIKE :support_id))")
+        params["support_id"] = f"%{support_id.strip()}%"
+    if isinstance(stage, str) and stage.strip():
+        clauses.append("f.stage = :stage")
+        params["stage"] = stage.strip()
+    if isinstance(reason, str) and reason.strip():
+        clauses.append("f.reason ILIKE :reason")
+        params["reason"] = f"%{reason.strip()}%"
+    if isinstance(trace_id, str) and trace_id.strip():
+        clauses.append("f.trace_id ILIKE :trace_id")
+        params["trace_id"] = f"%{trace_id.strip()}%"
+    if isinstance(resolved, bool):
+        clauses.append("f.resolved = :resolved")
+        params["resolved"] = resolved
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+    async with _db_manager.async_session_factory() as session:
+        total_res = await session.execute(
+            text(
+                f"""
+                SELECT COUNT(*)
+                FROM signal_failure_extraction f
+                LEFT JOIN kbd_entry ke ON f.kbd_id = ke.id
+                {where}
+                """
+            ),
+            params,
+        )
+        total = total_res.scalar_one()
+
+        rows = (
+            (
+                await session.execute(
+                    text(
+                        f"""
+                        SELECT f.id, f.kbd_id, f.stage, f.raw_content, f.reason,
+                               f.detail_payload, f.trace_id, f.resolved,
+                               f.resolved_by, f.resolved_notes, f.created_at, f.updated_at,
+                               ke.support_id AS kbd_support_id, ke.title AS kbd_title
+                        FROM signal_failure_extraction f
+                        LEFT JOIN kbd_entry ke ON f.kbd_id = ke.id
+                        {where}
+                        ORDER BY f.id DESC
+                        LIMIT :limit OFFSET :offset
+                        """
+                    ),
+                    params,
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    items = [
+        {
+            "id": row["id"],
+            "kbd_id": row["kbd_id"],
+            "support_id": row["kbd_support_id"] or (row["detail_payload"] or {}).get("support_id") or "",
+            "kbd_title": row["kbd_title"] or "",
+            "stage": row["stage"],
+            "reason": row["reason"],
+            "raw_content_preview": (row["raw_content"][:300] + "...") if row["raw_content"] and len(row["raw_content"]) > 300 else (row["raw_content"] or ""),
+            "raw_content": row["raw_content"],
+            "detail_payload": row["detail_payload"] or {},
+            "trace_id": row["trace_id"],
+            "resolved": row["resolved"],
+            "resolved_by": row["resolved_by"],
+            "resolved_notes": row["resolved_notes"],
+            "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+        }
+        for row in rows
+    ]
+
+    return {
+        "total": int(total),
+        "limit": limit,
+        "offset": offset,
+        "items": items,
+    }
+
+
+@router.get("/failures/{failure_id}")
+async def get_failure(
+    request: Request,
+    failure_id: int,
+) -> dict[str, Any]:
+    """获取单条信号抽取失败复盘日志完整详情。"""
+    _check_auth(request)
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    async with _db_manager.async_session_factory() as session:
+        row = (
+            (
+                await session.execute(
+                    text(
+                        """
+                        SELECT f.id, f.kbd_id, f.stage, f.raw_content, f.reason,
+                               f.detail_payload, f.trace_id, f.resolved,
+                               f.resolved_by, f.resolved_notes, f.created_at, f.updated_at,
+                               ke.support_id AS kbd_support_id, ke.title AS kbd_title
+                        FROM signal_failure_extraction f
+                        LEFT JOIN kbd_entry ke ON f.kbd_id = ke.id
+                        WHERE f.id = :failure_id
+                        """
+                    ),
+                    {"failure_id": failure_id},
+                )
+            )
+            .mappings()
+            .first()
+        )
+
+    if not row:
+        raise HTTPException(status_code=404, detail="信号抽取异常记录不存在")
+
+    return {
+        "id": row["id"],
+        "kbd_id": row["kbd_id"],
+        "support_id": row["kbd_support_id"] or (row["detail_payload"] or {}).get("support_id") or "",
+        "kbd_title": row["kbd_title"] or "",
+        "stage": row["stage"],
+        "reason": row["reason"],
+        "raw_content": row["raw_content"],
+        "detail_payload": row["detail_payload"] or {},
+        "trace_id": row["trace_id"],
+        "resolved": row["resolved"],
+        "resolved_by": row["resolved_by"],
+        "resolved_notes": row["resolved_notes"],
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+    }
+

@@ -169,3 +169,89 @@ async def test_signal_assets_get_best_practice_detail():
     with pytest.raises(HTTPException) as exc_info:
         await signal_assets.get_best_practice(req, practice_id=999)
     assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_signal_assets_list_failures_success():
+    req = _make_request(token=settings.INTERNAL_API_TOKEN)
+    mock_db = MagicMock()
+    mock_session = AsyncMock()
+
+    now = datetime.now(UTC)
+    fake_rows = [
+        {
+            "id": 1,
+            "kbd_id": 101,
+            "stage": "verification",
+            "raw_content": "producer produced [END] but consumer qfk_log missing -t {{DATE}}",
+            "reason": "CLOSED_VARIABLE_MISSING",
+            "detail_payload": {"support_id": "35815", "missing_variable": "DATE"},
+            "trace_id": "trace-fail-1",
+            "resolved": False,
+            "resolved_by": None,
+            "resolved_notes": None,
+            "created_at": now,
+            "updated_at": now,
+            "kbd_support_id": "35815",
+            "kbd_title": "虚拟机导入失败排障",
+        }
+    ]
+
+    mock_session.execute = AsyncMock(side_effect=[_ScalarResult(1), _MappingsResult(fake_rows)])
+    mock_db.async_session_factory = MagicMock(return_value=_SessionContext(mock_session))
+    signal_assets.set_dependencies(mock_db)
+
+    res = await signal_assets.list_failures(
+        req,
+        support_id="35815",
+        stage="verification",
+        reason="CLOSED_VARIABLE_MISSING",
+        limit=10,
+        offset=0,
+    )
+    assert res["total"] == 1
+    assert res["items"][0]["support_id"] == "35815"
+    assert res["items"][0]["reason"] == "CLOSED_VARIABLE_MISSING"
+    assert res["items"][0]["stage"] == "verification"
+    assert "producer produced" in res["items"][0]["raw_content"]
+
+
+@pytest.mark.asyncio
+async def test_signal_assets_get_failure_detail():
+    req = _make_request(token=settings.INTERNAL_API_TOKEN)
+    mock_db = MagicMock()
+    mock_session = AsyncMock()
+
+    now = datetime.now(UTC)
+    fake_row = {
+        "id": 1,
+        "kbd_id": 101,
+        "stage": "verification",
+        "raw_content": "producer produced [END] but consumer qfk_log missing -t {{DATE}}",
+        "reason": "CLOSED_VARIABLE_MISSING",
+        "detail_payload": {"support_id": "35815", "missing_variable": "DATE"},
+        "trace_id": "trace-fail-1",
+        "resolved": False,
+        "resolved_by": None,
+        "resolved_notes": None,
+        "created_at": now,
+        "updated_at": now,
+        "kbd_support_id": "35815",
+        "kbd_title": "虚拟机导入失败排障",
+    }
+
+    mock_session.execute = AsyncMock(return_value=_MappingsResult([fake_row]))
+    mock_db.async_session_factory = MagicMock(return_value=_SessionContext(mock_session))
+    signal_assets.set_dependencies(mock_db)
+
+    detail = await signal_assets.get_failure(req, failure_id=1)
+    assert detail["id"] == 1
+    assert detail["support_id"] == "35815"
+    assert detail["reason"] == "CLOSED_VARIABLE_MISSING"
+
+    # 测试不存在返回 404
+    mock_session.execute = AsyncMock(return_value=_MappingsResult([]))
+    with pytest.raises(HTTPException) as exc_info:
+        await signal_assets.get_failure(req, failure_id=999)
+    assert exc_info.value.status_code == 404
+

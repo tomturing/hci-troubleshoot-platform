@@ -54,6 +54,7 @@ DEFAULT_SHARED_VARIABLES = [
     "ERRCODE_TRACING",
     "TARGET",
     "END",
+    "DATE",
 ]
 VALID_ROLE_TYPES = frozenset({"producer", "consumer"})
 
@@ -537,7 +538,9 @@ class SignalExtractionOrchestrator:
                             if req_name in allowed_var_set or f"{{{{{req_name}}}}}" in acquire_str:
                                 cleaned_requires.append(req_name)
                             else:
-                                logger.info("剔除未闭合且未被消费的悬空变量: candidate_id=%s var=%s", candidate_id, req_name)
+                                logger.info(
+                                    "剔除未闭合且未被消费的悬空变量: candidate_id=%s var=%s", candidate_id, req_name
+                                )
                         orchestrate["requires"] = cleaned_requires
 
                 # 模型生成的 id 不具备身份权威性；最终信号 id 固定绑定原始候选。
@@ -777,17 +780,34 @@ class SignalExtractionOrchestrator:
             for idx, res_sig in zip(producer_indices, producer_results, strict=True):
                 modeled_signals[idx] = res_sig
 
-        # 3.2 动态汇聚已成功生产的变量符号表（如 VM, HOST, DISK_ID 等）
+        # 3.2 动态汇聚已成功生产的变量符号表，并在生产者信号中为 END 自动派生 DATE
         discovered_variables: set[str] = set()
         for sig in modeled_signals:
             if isinstance(sig, dict):
                 orch = sig.get("orchestrate") or {}
                 if isinstance(orch, dict):
-                    for prod in orch.get("produces") or []:
-                        if isinstance(prod, dict):
-                            var_name = prod.get("name") or prod.get("alias")
-                            if var_name and re.match(r"^[A-Z][A-Z0-9_]*$", str(var_name)):
-                                discovered_variables.add(str(var_name).strip())
+                    produces = orch.get("produces")
+                    if isinstance(produces, list):
+                        has_end = False
+                        has_date = False
+                        end_path = "end"
+                        for prod in produces:
+                            if isinstance(prod, dict):
+                                var_name = prod.get("name") or prod.get("alias")
+                                if var_name and re.match(r"^[A-Z][A-Z0-9_]*$", str(var_name)):
+                                    discovered_variables.add(str(var_name).strip())
+                                if "END" in {str(prod.get("name")), str(prod.get("alias"))}:
+                                    has_end = True
+                                    end_path = prod.get("path") or "end"
+                                if "DATE" in {str(prod.get("name")), str(prod.get("alias"))}:
+                                    has_date = True
+                        tool = str((sig.get("acquire") or {}).get("tool") or "")
+                        if has_end and not has_date and (tool in {"qkv_alert", "qkv_task"} or tool.startswith("qkv_")):
+                            produces.append({"name": "DATE", "path": end_path})
+                            discovered_variables.add("DATE")
+
+        if "END" in discovered_variables:
+            discovered_variables.add("DATE")
 
         active_shared_variables = sorted(set(DEFAULT_SHARED_VARIABLES) | discovered_variables)
         diagnostics["discovered_variables"] = list(discovered_variables)
