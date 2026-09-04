@@ -163,7 +163,7 @@ onMounted(() => {
     <el-card shadow="never">
       <template #header>
         <div class="card-header">
-          <span>虚拟机控制台截图审计（qkv_vm_console）</span>
+          <span>console审计（qkv_vm_console）</span>
           <span class="hint">脱敏摘要视图；原图访问须经授权端点并单独记录审计</span>
         </div>
       </template>

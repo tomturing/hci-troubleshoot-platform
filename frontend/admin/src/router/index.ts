@@ -36,7 +36,7 @@ const router = createRouter({
       path: '/simulation/bundle-factory/assets',
       name: 'BundleFixtureAssets',
       component: () => import('@/views/BundleFixtureAssetsView.vue'),
-      meta: { title: 'Bundle资产库', icon: 'Files', order: 12.6 },
+      meta: { title: '模板实例库', icon: 'Files', order: 12.6 },
     },
     {
       path: '/clients',
@@ -108,7 +108,7 @@ const router = createRouter({
       path: '/vm-console-audit',
       name: 'VmConsoleAudit',
       component: () => import('@/views/VmConsoleCaptureView.vue'),
-      meta: { title: '控制台截图审计', icon: 'Monitor', order: 11.5 },
+      meta: { title: 'console审计', icon: 'Monitor', order: 11.5 },
     },
   ],
 })
