@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.28.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.27.0...v2.28.0) (2026-09-04)
+
+
+### ✨ 新功能
+
+* **kbd:** 落地关键信号多Agent分层建模与最佳实践库架构 [env:staging:aihci][agent:gemini] ([#999](https://github.com/tomturing/hci-troubleshoot-platform/issues/999)) ([311e600](https://github.com/tomturing/hci-troubleshoot-platform/commit/311e6000b4f77f62111085d1941850b846b41442))
+* qkv_dialog 试运行支持原始日志文本输入 ([#993](https://github.com/tomturing/hci-troubleshoot-platform/issues/993)) ([b41cd14](https://github.com/tomturing/hci-troubleshoot-platform/commit/b41cd142661c9c540cd5201534a9240c02baa75c))
+
+
+### 🐛 Bug 修复
+
+* 修复 output_processing 派生变量无法被下游消费者引用的问题 ([#991](https://github.com/tomturing/hci-troubleshoot-platform/issues/991)) ([0524a98](https://github.com/tomturing/hci-troubleshoot-platform/commit/0524a9863f6867aaa1e2cb8a782577bfe74c0fc2))
+* 前端 qkv_dialog 试运行支持原始日志文本输入 ([#994](https://github.com/tomturing/hci-troubleshoot-platform/issues/994)) ([d0af08e](https://github.com/tomturing/hci-troubleshoot-platform/commit/d0af08eb8865c48cb4c601adb2fb62200a2a073b))
+* 加固关键信号多Agent候选链路与证据绑定 ([#1000](https://github.com/tomturing/hci-troubleshoot-platform/issues/1000)) ([2d5e6a4](https://github.com/tomturing/hci-troubleshoot-platform/commit/2d5e6a40fcc674222937d1c897c0f4ecc192b768))
+
+
+### ♻️ 代码重构
+
+* 收敛 KBD 与 Bundle 极简二元版本治理并彻底清理前端快照胶水分叉 ([#988](https://github.com/tomturing/hci-troubleshoot-platform/issues/988)) ([d607f17](https://github.com/tomturing/hci-troubleshoot-platform/commit/d607f17cff2c6402efb7acdc21af8075e8f343a4))
+
+
+### 📝 文档
+
+* **kbd:** clarify lifecycle governance ([#998](https://github.com/tomturing/hci-troubleshoot-platform/issues/998)) ([9b195bd](https://github.com/tomturing/hci-troubleshoot-platform/commit/9b195bd589866c554966807df52cac58fc0e658d))
+* **kbd:** 完善生产生命周期审核指南 ([#996](https://github.com/tomturing/hci-troubleshoot-platform/issues/996)) ([c452d74](https://github.com/tomturing/hci-troubleshoot-platform/commit/c452d742770be52d6f3d2df57118e102b2eada96))
+* **kbd:** 对齐信号流水线与样例契约 ([#997](https://github.com/tomturing/hci-troubleshoot-platform/issues/997)) ([314b096](https://github.com/tomturing/hci-troubleshoot-platform/commit/314b096aea3564d9c8295981479529b165596b59))
+
 ## [2.27.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.26.0...v2.27.0) (2026-09-01)
 
 
