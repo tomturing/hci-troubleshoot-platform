@@ -654,3 +654,11 @@ owner: team
 - [x] QFK 消费层（`backend/agent-service/app/tools/qfk/handlers.py`）：构建 `acli log get -i` 时增加防御性清洗，剔除前导逗号，确保命令行与仿真路由完全一致。
 - [x] 单元测试覆盖前导逗号清洗、多 ID 取首及合成格式支持（`test_qkv.py`、`test_qfk.py`）。
 
+## 2026-09-04 · 关键信号资产表 trace_id 加列 DEFAULT 兜底修复（PR #1000 存量兼容）
+
+- [x] **故障现象**：`hci-platform-staging` 的 PreSync hook `Job/hci-staging/db-migrate-20260904-0205-2-010` 持续失败，Argo CD 自动同步重试 5 次达上限后停止，Application 卡在 `OutOfSync`，`admin-ui` / `api-gateway` / `kb-service` 三个 Deployment 无法升级。
+- [x] **根因**：PR #1000 在 `database/desired_schema.sql` 中给 `signal_modeling_template`、`signal_best_practice`、`signal_failure_extraction` 三张表新增 `trace_id VARCHAR(64) NOT NULL`，**未带 DEFAULT**。`db-migrate.sh` Step 3 的 `atlas schema apply` 直接对存量表执行无默认值的 `ADD COLUMN NOT NULL`，被 PostgreSQL 拒绝（报错 `column "trace_id" of relation "signal_best_practice" contains null values`；该表存量 67 行，`signal_modeling_template` 13 行）。
+- [x] **修复**：三处 `trace_id` 统一补 `DEFAULT 'migration:20260904000000'`。Atlas 生成的 DDL 变为 `ADD COLUMN trace_id character varying(64) NOT NULL DEFAULT 'migration:20260904000000'`，PostgreSQL 用默认值回填存量行后加列成功；新写入仍由应用显式传入 W3C traceparent，不依赖该默认值。待 dev / staging / prod 全部完成加列后，可移除该 DEFAULT，Atlas 会自动收敛为纯 `NOT NULL`。
+- [x] **验证**：用同一镜像跑 Atlas dry-run，确认加列语句携带 DEFAULT；在 `atlas_dev` 临时库做 67 行对照实验，无 DEFAULT 复现 `contains null values` 报错，带 DEFAULT 执行成功且 67 行全部回填为 `migration:20260904000000`。
+- [x] **附带发现（未修，需另立任务）**：`database/atlas-migrations/` 已被 `scripts/ci/resolve_image_build_plan.py` 纳入镜像构建触发路径，但 `Dockerfile.migrations` 仅 `COPY database/data-migrations/`，该目录下所有迁移（含 PR #1000 配套的 `20260904000002_add_signal_asset_trace_id.sql`）从未打进镜像、从未执行，形成"改了会触发构建、构建了却不生效"的陷阱。
+

@@ -3505,6 +3505,9 @@ ALTER TABLE dynamic_resource_usage_audit
     );
 
 -- 关键信号多 Agent 分层建模与最佳实践库资产
+-- trace_id 的 DEFAULT 是 Atlas 声明式 apply 的存量兼容位：对已有行回填迁移批次标识，
+-- 新写入由应用显式传入 W3C traceparent，不依赖该默认值。
+-- 待全部环境完成加列后，可移除 DEFAULT，Atlas 会自动收敛为纯 NOT NULL。
 CREATE TABLE IF NOT EXISTS signal_modeling_template (
     id SERIAL PRIMARY KEY,
     tool_name VARCHAR(32) NOT NULL UNIQUE,
@@ -3515,7 +3518,7 @@ CREATE TABLE IF NOT EXISTS signal_modeling_template (
     variable_protocol JSONB NOT NULL,
     anti_patterns TEXT[] NOT NULL DEFAULT '{}',
     is_active BOOLEAN DEFAULT TRUE,
-    trace_id VARCHAR(64) NOT NULL,
+    trace_id VARCHAR(64) NOT NULL DEFAULT 'migration:20260904000000',
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -3532,7 +3535,7 @@ CREATE TABLE IF NOT EXISTS signal_best_practice (
     design_notes TEXT NOT NULL,
     completeness_score INT DEFAULT 10,
     is_active BOOLEAN DEFAULT TRUE,
-    trace_id VARCHAR(64) NOT NULL,
+    trace_id VARCHAR(64) NOT NULL DEFAULT 'migration:20260904000000',
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -3545,7 +3548,7 @@ CREATE TABLE IF NOT EXISTS signal_failure_extraction (
     raw_content TEXT NOT NULL,
     reason VARCHAR(64) NOT NULL,
     detail_payload JSONB DEFAULT '{}'::jsonb,
-    trace_id VARCHAR(64) NOT NULL,
+    trace_id VARCHAR(64) NOT NULL DEFAULT 'migration:20260904000000',
     resolved BOOLEAN DEFAULT FALSE,
     resolved_by VARCHAR(64),
     resolved_notes TEXT,
