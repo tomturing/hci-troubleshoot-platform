@@ -35,9 +35,9 @@ const featureOptions = [
 ]
 const matcherTypes = ['keyword', 'regex', 'boolean', 'exists', 'state', 'delta', 'threshold', 'trend']
 function defaultExtract(): ProcessingSpec { return { type: 'feature', feature: 'vm_name', cardinality: 'exactly_one' } }
-function defaultAssert(): ProcessingSpec { return { type: 'threshold', expected: true, operator: '>', value: 90, aggregation: 'first_number' } }
+function defaultAssert(): ProcessingSpec { return { type: 'keyword', expected: true, pattern: '', mode: 'or' } }
 function update(index: number, patch: ProcessingSpec): void { emit('update:modelValue', specs.value.map((item, i) => i === index ? { ...item, ...patch } : item)) }
-function add(): void { emit('update:modelValue', [...specs.value, { mode: 'derive', input: inputOptions.value[0] || '', name: '', type: 'string', extract: defaultExtract() }]) }
+function add(): void { emit('update:modelValue', [...specs.value, { mode: 'assert', input: inputOptions.value[0] || '', match: defaultAssert() }]) }
 function remove(index: number): void { emit('update:modelValue', specs.value.filter((_, i) => i !== index)) }
 function setMode(index: number, mode: string): void {
   if (mode === 'assert') update(index, { mode, name: undefined, type: undefined, extract: undefined, match: defaultAssert() })
@@ -124,14 +124,14 @@ function setMatch(index: number, match: ProcessingSpec): void { update(index, { 
         <el-button text type="primary" size="small" :icon="Plus" @click="add">添加处理</el-button>
       </div>
     </div>
-    <el-alert v-if="specs.length === 0" type="info" :closable="false" title="可选：对 QKV 产出变量进一步处理，包括派生变量和断言判断。" />
+    <el-alert v-if="specs.length === 0" type="info" :closable="false" title="可选：对 QKV 产出变量进一步处理，包括断言判断和派生变量。" />
     <div v-for="(item, index) in specs" :key="index" class="processing-unit">
       <div class="unit-header"><span>处理单元 {{ index + 1 }}</span><span><el-button text type="primary" size="small" :icon="VideoPlay" @click="emit('dry-run', index)">试运行</el-button><el-button text type="danger" size="small" :icon="Delete" @click="remove(index)">删除</el-button></span></div>
-      <template v-if="item.mode !== 'assert'">
+      <template v-if="item.mode === 'derive'">
         <section class="processing-step">
           <div class="step-header"><span class="stage-number">1</span><div><strong>派生变量</strong><small>从已有具体值提取并写入变量池</small></div></div>
           <div class="processing-grid derive-grid">
-            <label>处理方式<el-select class="processing-control" popper-class="processing-select-popper" :model-value="item.mode || 'derive'" size="small" @change="(value: string) => setMode(index, value)"><el-option label="派生变量" value="derive" /><el-option label="断言判断" value="assert" /></el-select></label>
+            <label>处理方式<el-select class="processing-control" popper-class="processing-select-popper" :model-value="item.mode || 'derive'" size="small" @change="(value: string) => setMode(index, value)"><el-option label="断言判断" value="assert" /><el-option label="派生变量" value="derive" /></el-select></label>
             <label>输入变量<el-select class="processing-control" popper-class="processing-select-popper" :model-value="item.input" filterable size="small" placeholder="选择已有具体值" @change="(value: string) => update(index, { input: value })"><el-option v-for="value in inputOptionsFor(index)" :key="value" :label="value" :value="value" /></el-select></label>
             <label>输出变量<el-input :model-value="item.name" placeholder="如 VM_NAME" size="small" @input="(value: string) => update(index, { name: value.toUpperCase() })" /></label>
           </div>
@@ -153,7 +153,7 @@ function setMatch(index: number, match: ProcessingSpec): void { update(index, { 
         <section class="processing-step">
           <div class="step-header"><span class="stage-number">1</span><div><strong>断言判断</strong><small>对 QKV 已取得的具体值复用 QFK Matcher</small></div></div>
           <div class="processing-grid assert-grid">
-            <label>处理方式<el-select class="processing-control" popper-class="processing-select-popper" :model-value="item.mode" size="small" @change="(value: string) => setMode(index, value)"><el-option label="派生变量" value="derive" /><el-option label="断言判断" value="assert" /></el-select></label>
+            <label>处理方式<el-select class="processing-control" popper-class="processing-select-popper" :model-value="item.mode || 'assert'" size="small" @change="(value: string) => setMode(index, value)"><el-option label="断言判断" value="assert" /><el-option label="派生变量" value="derive" /></el-select></label>
             <label>输入变量<el-select class="processing-control" popper-class="processing-select-popper" :model-value="item.input" filterable size="small" placeholder="选择已有具体值" @change="(value: string) => update(index, { input: value })"><el-option v-for="value in inputOptionsFor(index)" :key="value" :label="value" :value="value" /></el-select></label>
           </div>
           <div class="matcher-heading">判断类型及要求</div>

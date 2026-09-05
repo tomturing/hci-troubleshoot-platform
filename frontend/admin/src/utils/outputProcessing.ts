@@ -67,7 +67,7 @@ export function formatAssertSummary(processing?: Record<string, any>): string {
   if (!processing || typeof processing !== 'object') return '—'
   const match = processing.match
   if (!match || typeof match !== 'object') return '—'
-  const type = match.type || 'threshold'
+  const type = match.type || 'keyword'
 
   if (type === 'threshold') {
     const op = match.operator || '>'
