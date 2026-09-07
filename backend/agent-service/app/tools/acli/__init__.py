@@ -17,12 +17,14 @@ from app.tools.acli.executor import (
     ExecResult,
     acli_exec,
     bash_exec,
+    get_or_init_executor,
     set_executor,
 )
 
 __all__ = [
     # 执行器
     "BridgeRelayExecutor",
+    "get_or_init_executor",
     "set_executor",
     # 结果数据结构
     "ExecResult",

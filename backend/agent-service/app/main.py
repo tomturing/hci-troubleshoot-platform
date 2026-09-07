@@ -20,6 +20,7 @@ Agent Service - 主应用
   - S5（修复执行）→ RemediationAgent（继承 BaseAgent）
 """
 
+import asyncio
 import uuid
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
@@ -161,23 +162,43 @@ async def lifespan(app: FastAPI):
     )
 
     # ── Redis（confirm_service + BridgeRelayExecutor 使用）───────────────────────
+    # 第一性原理与对抗性加固：冷启动并发拉起时，Redis 或 CoreDNS 就绪可能比 agent-service 稍慢数秒。
+    # 增加有限退避重试（最多 5 次，总计 ~7 秒），平滑抹平节点重启时的 Pod 就绪时差；
+    # 即使极端情况下重试耗尽，后续工具调用仍将触发 get_or_init_executor 惰性自愈。
     redis_client: Redis | None = None
     redis_manager: RedisManager | None = None
-    try:
-        redis_client = Redis.from_url(settings.REDIS_URL, decode_responses=True)
-        await redis_client.ping()
-        logger.info(event="redis_connected", message="Redis 连接成功")
+    max_redis_retries = 5
+    for attempt in range(1, max_redis_retries + 1):
+        try:
+            redis_client = Redis.from_url(settings.REDIS_URL, decode_responses=True)
+            await redis_client.ping()
+            logger.info(event="redis_connected", attempt=attempt, message="Redis 连接成功")
 
-        # 为 BridgeRelayExecutor 创建 RedisManager 实例
-        redis_manager = RedisManager(settings.REDIS_URL)
-        await redis_manager.connect()
-        logger.info(event="redis_manager_connected", message="RedisManager 已连接")
-    except Exception as exc:
-        logger.warning(
-            event="redis_unavailable",
-            message=f"Redis 不可达，ReAct 确认功能降级: {exc}",
-        )
-        redis_client = None
+            # 为 BridgeRelayExecutor 创建 RedisManager 实例
+            redis_manager = RedisManager(settings.REDIS_URL)
+            await redis_manager.connect()
+            logger.info(event="redis_manager_connected", attempt=attempt, message="RedisManager 已连接")
+            break
+        except Exception as exc:
+            if attempt < max_redis_retries:
+                backoff_sec = min(2 ** (attempt - 1), 4)
+                logger.warning(
+                    event="redis_connect_retry",
+                    attempt=attempt,
+                    backoff_sec=backoff_sec,
+                    error=str(exc),
+                    message=f"Redis 连接失败，将在 {backoff_sec} 秒后重试 (attempt {attempt}/{max_redis_retries}): {exc}",
+                )
+                await asyncio.sleep(backoff_sec)
+            else:
+                logger.warning(
+                    event="redis_unavailable_at_startup",
+                    attempts=attempt,
+                    error=str(exc),
+                    message=f"Redis 重试 {attempt} 次后仍不可达，启动流程降级，核心执行器将在调用时进入惰性自愈模式: {exc}",
+                )
+                redis_client = None
+                redis_manager = None
 
     # ── FactStore（轻量事实存储） ────────────────────────────────────────────────
     from app.services.fact_store import FactStore
@@ -342,10 +363,10 @@ async def lifespan(app: FastAPI):
         )
     else:
         logger.warning(
-            event="bridge_relay_executor_not_registered",
+            event="bridge_relay_executor_not_registered_at_startup",
             message=(
-                "CompositeToolExecutor._bridge_executor 为 None（Redis/依赖缺失），"
-                "QFK 诊断将不可用，请检查 REDIS_URL / CONVERSATION_SERVICE_URL / INTERNAL_API_TOKEN"
+                "CompositeToolExecutor._bridge_executor 启动时为 None（Redis/依赖暂未就绪），"
+                "已进入惰性自愈模式，将在后续关键信号诊断或工具调用时自动尝试重连自愈恢复"
             ),
         )
 

@@ -259,12 +259,12 @@ async def _qfk_exec_impl(
         conversation_id=conversation_id,
     )
 
-    # 3. 复用底层 BridgeRelayExecutor 执行命令
-    from app.tools.acli.executor import _executor
+    # 3. 复用底层 BridgeRelayExecutor 执行命令（优先使用已有实例，未注入时尝试惰性自愈）
+    from app.tools.acli.executor import get_or_init_executor
 
-    if _executor is None:
-        # 注意：此处的 None 仅表示 agent-service 进程内部的全局执行器未注入
-        # （lifespan 未调用 set_executor），并不代表 terminal_bridge / SSH 链路异常。
+    executor = await get_or_init_executor()
+    if executor is None:
+        # 注意：此处表示全局执行器未注入且惰性自愈连接尝试失败，并不代表 terminal_bridge / SSH 链路异常。
         # 切勿据此误判为"终端桥未启动"而去重启 terminal_bridge。
         return QFKResult(
             matched=False,
@@ -275,10 +275,9 @@ async def _qfk_exec_impl(
             matched_keywords=[],
             evidence="",
             error=(
-                "QFK_EXECUTOR_UNAVAILABLE: 诊断服务端 BridgeRelayExecutor 全局实例未注入"
-                "（agent-service 启动流程未完成 set_executor 注册），"
-                "并非终端桥未启动。请检查 agent-service 启动日志（bridge_relay_executor_registered 事件），"
-                "确认 REDIS_URL / CONVERSATION_SERVICE_URL / INTERNAL_API_TOKEN 均已就绪后重启 agent-service。"
+                "QFK_EXECUTOR_UNAVAILABLE: 诊断服务端 BridgeRelayExecutor 全局实例未注入且惰性自愈连接失败，"
+                "并非终端桥未启动。请检查 agent-service 启动与自愈日志（bridge_relay_executor_self_healed / registered 事件），"
+                "确认 REDIS_URL / CONVERSATION_SERVICE_URL / INTERNAL_API_TOKEN 均已就绪。"
             ),
             output_mode=execution_mode,
             resolution=resolution,
@@ -319,7 +318,7 @@ async def _qfk_exec_impl(
                 risk_level=1,
                 trace_id=get_current_trace_id(),
             ) as observation:
-                exec_res = await _executor.execute(
+                exec_res = await executor.execute(
                     tool_name="acli_exec",
                     args=tool_args,
                     conversation_id=conversation_id,
@@ -504,7 +503,7 @@ async def _qfk_exec_impl(
                 if source not in {"stdout", "stderr"}:
                     raise QFKExtractionError("QFK_EXTRACT_INVALID_SPEC", f"不支持的输出来源: {source}")
                 complete_outputs[source] = "\n".join(
-                    [await get_complete_output(result, _executor._redis, source=source) for result in results]
+                    [await get_complete_output(result, executor._redis, source=source) for result in results]
                 )
         except QFKExtractionError as exc:
             return QFKResult(

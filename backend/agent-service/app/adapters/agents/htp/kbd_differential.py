@@ -1257,20 +1257,21 @@ class KBDDiagnostic:
             )
             return endpoint
 
-        from app.tools.acli.executor import _executor
+        from app.tools.acli.executor import get_or_init_executor
 
-        if _executor is None:
+        executor = await get_or_init_executor()
+        if executor is None:
             logger.warning(
                 event="kbd_host_ip_resolve_skipped",
                 host=host,
-                reason="BridgeRelayExecutor 尚未初始化",
+                reason="BridgeRelayExecutor 尚未初始化且自愈连接失败",
                 session_id=session_id,
             )
             return host
 
         command = "acli --formatter json platform node list"
         try:
-            result = await _executor.execute(
+            result = await executor.execute(
                 tool_name="acli_exec",
                 args={"command": command, "reason": "将 QKV 节点名称解析为节点 IP"},
                 conversation_id=self._conversation_id or session_id,

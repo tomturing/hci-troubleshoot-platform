@@ -264,9 +264,12 @@ async def agent_stream(req: AgentStreamRequest) -> StreamingResponse:
 @router.get("/v1/agent/health")
 async def agent_health() -> dict:
     """健康检查"""
+    from app.tools.acli.executor import _executor
+
     return {
         "status": "ok",
         "agent_router": _agent_router is not None,
+        "bridge_relay_executor": _executor is not None,
     }
 
 

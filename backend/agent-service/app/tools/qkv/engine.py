@@ -173,16 +173,17 @@ async def qkv_exec(
         keyword_candidates=keyword_candidates,
     )
 
-    # 2. 复用 BridgeRelayExecutor 执行命令
-    from app.tools.acli.executor import _executor
+    # 2. 复用 BridgeRelayExecutor 执行命令（优先使用已有实例，未注入时尝试惰性自愈）
+    from app.tools.acli.executor import get_or_init_executor
 
-    if _executor is None:
+    executor = await get_or_init_executor()
+    if executor is None:
         return QKVResult(
             success=False,
             query=signal.query.value,
             keyword=signal.keyword,
             command="",
-            error="BridgeRelayExecutor 尚未初始化",
+            error="BridgeRelayExecutor 尚未初始化（自愈连接未成功，请检查 Redis 与核心配置）",
             resolution=resolution,
         )
 
@@ -213,7 +214,7 @@ async def qkv_exec(
                     risk_level=1,
                     trace_id=get_current_trace_id(),
                 ) as observation:
-                    exec_res = await _executor.execute(
+                    exec_res = await executor.execute(
                         tool_name="acli_exec",
                         args=tool_args,
                         conversation_id=conversation_id,
