@@ -8,6 +8,7 @@ BridgeRelayExecutor 单元测试
   4. stdout 超 4000 chars 被截断
 """
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -644,24 +645,24 @@ class TestToolEntryFunctions:
     """工具入口函数测试"""
 
     def test_acli_exec_requires_executor_initialized(self):
-        """acli_exec 需执行器已初始化"""
+        """acli_exec 在执行器未初始化且自愈失败时抛 RuntimeError"""
         from app.tools.acli.executor import acli_exec
 
-        # 未初始化时抛 RuntimeError
-        with pytest.raises(RuntimeError, match="未初始化"):
-            import asyncio
+        with patch("app.tools.acli.executor.get_or_init_executor", AsyncMock(return_value=None)):
+            with pytest.raises(RuntimeError, match="未初始化"):
+                import asyncio
 
-            asyncio.run(acli_exec("acli vm list", "测试", "conv-123"))
+                asyncio.run(acli_exec("acli vm list", "测试", "conv-123"))
 
     def test_bash_exec_requires_executor_initialized(self):
-        """bash_exec 需执行器已初始化"""
+        """bash_exec 在执行器未初始化且自愈失败时抛 RuntimeError"""
         from app.tools.acli.executor import bash_exec
 
-        # 未初始化时抛 RuntimeError
-        with pytest.raises(RuntimeError, match="未初始化"):
-            import asyncio
+        with patch("app.tools.acli.executor.get_or_init_executor", AsyncMock(return_value=None)):
+            with pytest.raises(RuntimeError, match="未初始化"):
+                import asyncio
 
-            asyncio.run(bash_exec("asv-con", "df -h", "测试", "conv-123"))
+                asyncio.run(bash_exec("asv-con", "df -h", "测试", "conv-123"))
 
     def test_set_executor(self):
         """测试 set_executor 函数"""
@@ -680,3 +681,146 @@ class TestToolEntryFunctions:
         import app.tools.acli.executor as executor_module
 
         assert executor_module._executor is mock_executor
+        set_executor(None)
+
+
+class TestExecutorLazyInit:
+    """BridgeRelayExecutor 惰性自愈初始化测试"""
+
+    @pytest.mark.asyncio
+    async def test_get_or_init_executor_when_already_set(self):
+        """当已注入 executor 时，直接返回既有实例"""
+        from app.tools.acli.executor import get_or_init_executor, set_executor
+
+        mock_executor = MagicMock()
+        set_executor(mock_executor)
+        try:
+            res = await get_or_init_executor()
+            assert res is mock_executor
+        finally:
+            set_executor(None)
+
+    @pytest.mark.asyncio
+    async def test_get_or_init_executor_missing_config(self, monkeypatch):
+        """当缺失核心环境变量或配置时，安全返回 None 并记录警告"""
+        from app.tools.acli.executor import get_or_init_executor, set_executor
+
+        set_executor(None)
+        monkeypatch.setenv("REDIS_URL", "")
+        monkeypatch.setenv("CONVERSATION_SERVICE_URL", "")
+        monkeypatch.setenv("INTERNAL_API_TOKEN", "")
+
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "REDIS_URL", "")
+        monkeypatch.setattr(settings, "CONVERSATION_SERVICE_URL", "")
+        monkeypatch.setattr(settings, "INTERNAL_API_TOKEN", "")
+
+        res = await get_or_init_executor()
+        assert res is None
+
+    @pytest.mark.asyncio
+    async def test_get_or_init_executor_self_heals_success(self, monkeypatch):
+        """当环境配置就绪且未初始化时，自愈连接并成功注册全局实例"""
+        import app.tools.acli.executor as executor_module
+        from app.config import settings
+        from app.tools.acli.executor import get_or_init_executor, set_executor
+
+        set_executor(None)
+
+        monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+        monkeypatch.setenv("CONVERSATION_SERVICE_URL", "http://test-conversation:8000")
+        monkeypatch.setenv("INTERNAL_API_TOKEN", "mock-token-2026")
+        monkeypatch.setattr(settings, "REDIS_URL", "redis://127.0.0.1:6379/0")
+        monkeypatch.setattr(settings, "CONVERSATION_SERVICE_URL", "http://test-conversation:8000")
+        monkeypatch.setattr(settings, "INTERNAL_API_TOKEN", "mock-token-2026")
+
+        mock_redis_mgr = AsyncMock()
+        mock_redis_mgr.connect = AsyncMock()
+
+        try:
+            with patch("app.tools.acli.executor.RedisManager", return_value=mock_redis_mgr):
+                res = await get_or_init_executor()
+                assert res is not None
+                assert executor_module._executor is res
+                assert executor_module._lazy_redis_mgr is mock_redis_mgr
+                assert res._conversation_service_url == "http://test-conversation:8000"
+        finally:
+            set_executor(None)
+
+    @pytest.mark.asyncio
+    async def test_get_or_init_executor_connect_failure(self, monkeypatch):
+        """当 Redis 连接失败时，安全返回 None 而不抛出未捕获异常"""
+        from app.tools.acli.executor import get_or_init_executor, set_executor
+
+        set_executor(None)
+        monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+        monkeypatch.setenv("CONVERSATION_SERVICE_URL", "http://test-conversation:8000")
+        monkeypatch.setenv("INTERNAL_API_TOKEN", "mock-token-2026")
+
+        mock_redis_mgr = AsyncMock()
+        mock_redis_mgr.connect = AsyncMock(side_effect=ConnectionError("Redis connection refused"))
+
+        try:
+            with patch("app.tools.acli.executor.RedisManager", return_value=mock_redis_mgr):
+                res = await get_or_init_executor()
+                assert res is None
+        finally:
+            set_executor(None)
+
+    @pytest.mark.asyncio
+    async def test_get_or_init_executor_concurrency(self, monkeypatch):
+        """测试多协程并发调用时的双重检查互斥锁（DCL）安全性"""
+        from app.tools.acli.executor import get_or_init_executor, set_executor
+
+        set_executor(None)
+        monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+        monkeypatch.setenv("CONVERSATION_SERVICE_URL", "http://test-conversation:8000")
+        monkeypatch.setenv("INTERNAL_API_TOKEN", "mock-token-2026")
+
+        mock_redis_mgr = AsyncMock()
+        mock_redis_mgr.connect = AsyncMock()
+
+        try:
+            with patch("app.tools.acli.executor.RedisManager", return_value=mock_redis_mgr):
+                # 并发执行 10 次自愈初始化
+                results = await asyncio.gather(*[get_or_init_executor() for _ in range(10)])
+                # 所有结果应该是同一个非 None 实例
+                first = results[0]
+                assert first is not None
+                for item in results:
+                    assert item is first
+                assert mock_redis_mgr.connect.await_count == 1
+        finally:
+            set_executor(None)
+
+    @pytest.mark.asyncio
+    async def test_close_lazy_executor_cleans_up_resources(self, monkeypatch):
+        """测试 close_lazy_executor 能够优雅关闭惰性创建的 Redis 连接并清理全局状态"""
+        import app.tools.acli.executor as executor_module
+        from app.tools.acli.executor import close_lazy_executor, get_or_init_executor, set_executor
+
+        set_executor(None)
+        monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+        monkeypatch.setenv("CONVERSATION_SERVICE_URL", "http://test-conversation:8000")
+        monkeypatch.setenv("INTERNAL_API_TOKEN", "mock-token-2026")
+
+        mock_redis_mgr = AsyncMock()
+        mock_redis_mgr.connect = AsyncMock()
+        mock_redis_mgr.close = AsyncMock()
+
+        try:
+            with patch("app.tools.acli.executor.RedisManager", return_value=mock_redis_mgr):
+                res = await get_or_init_executor()
+                assert res is not None
+                assert executor_module._lazy_redis_mgr is mock_redis_mgr
+
+            # 调用优雅关闭
+            await close_lazy_executor()
+            mock_redis_mgr.close.assert_awaited_once()
+            assert executor_module._executor is None
+            assert executor_module._lazy_redis_mgr is None
+        finally:
+            set_executor(None)
+
+

@@ -16,6 +16,7 @@ Bridge Relay 执行器 — 所有 acli/bash 工具的唯一执行后端
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -860,14 +861,104 @@ class BridgeRelayExecutor:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-# 全局执行器实例（由 main.py lifespan 初始化）
+# 全局执行器实例（由 main.py lifespan 初始化或运行时惰性自愈）
 _executor: BridgeRelayExecutor | None = None
+_lazy_redis_mgr: RedisManager | None = None
+_executor_lock = asyncio.Lock()
 
 
-def set_executor(executor: BridgeRelayExecutor) -> None:
-    """设置全局执行器实例（main.py lifespan 调用）"""
-    global _executor
+def set_executor(executor: BridgeRelayExecutor | None) -> None:
+    """设置全局执行器实例（main.py lifespan 调用或测试重置）"""
+    global _executor, _lazy_redis_mgr
     _executor = executor
+    if executor is None:
+        _lazy_redis_mgr = None
+
+
+async def close_lazy_executor() -> None:
+    """
+    优雅关闭由惰性自愈创建的 BridgeRelayExecutor 底层 RedisManager 资源。
+    供 lifespan shutdown 清理调用，杜绝后台孤儿连接池泄露。
+    """
+    global _executor, _lazy_redis_mgr
+    async with _executor_lock:
+        if _lazy_redis_mgr is not None:
+            try:
+                await _lazy_redis_mgr.close()
+                logger.info(
+                    event="lazy_executor_redis_closed",
+                    message="惰性自愈 BridgeRelayExecutor 之 RedisManager 连接已显式优雅关闭",
+                )
+            except Exception as exc:
+                logger.warning(
+                    event="close_lazy_executor_failed",
+                    error=str(exc),
+                    message=f"关闭惰性 RedisManager 异常（已容错忽略）: {exc}",
+                )
+            finally:
+                _lazy_redis_mgr = None
+        _executor = None
+
+
+async def get_or_init_executor() -> BridgeRelayExecutor | None:
+    """
+    获取全局 BridgeRelayExecutor 实例。若当前为 None，尝试进行惰性自愈初始化。
+
+    第一性原理与对抗性设计：
+        在冷启动或依赖并发拉起阶段（如集群节点重启），Redis 容器或网络就绪可能较 agent-service
+        延迟数秒，导致进程启动时跳过执行器注册。
+        通过双重检查锁（DCL）与惰性连接尝试，确保在首次执行关键信号或命令时能够无缝自愈，
+        彻底消除因启动时序问题导致的“永久未初始化”瘫痪缺陷。
+    """
+    global _executor, _lazy_redis_mgr
+    if _executor is not None:
+        return _executor
+
+    async with _executor_lock:
+        if _executor is not None:
+            return _executor
+
+        from app.config import settings
+
+        redis_url = getattr(settings, "REDIS_URL", None) or os.getenv("REDIS_URL")
+        conv_url = getattr(settings, "CONVERSATION_SERVICE_URL", None) or os.getenv("CONVERSATION_SERVICE_URL")
+        internal_token = getattr(settings, "INTERNAL_API_TOKEN", None) or os.getenv("INTERNAL_API_TOKEN")
+
+        if not redis_url or not conv_url or not internal_token:
+            logger.warning(
+                event="bridge_relay_executor_lazy_init_skipped",
+                trace_id=get_current_trace_id(),
+                has_redis=bool(redis_url),
+                has_conv=bool(conv_url),
+                has_token=bool(internal_token),
+                message="BridgeRelayExecutor 惰性自愈初始化跳过：基础配置不完整",
+            )
+            return None
+
+        try:
+            redis_mgr = RedisManager(redis_url)
+            await redis_mgr.connect()
+            executor = BridgeRelayExecutor(
+                redis=redis_mgr,
+                conversation_service_url=conv_url,
+                internal_token=internal_token,
+            )
+            _executor = executor
+            _lazy_redis_mgr = redis_mgr
+            logger.info(
+                event="bridge_relay_executor_self_healed",
+                trace_id=get_current_trace_id(),
+                message="全局 BridgeRelayExecutor 惰性自愈初始化成功",
+            )
+            return _executor
+        except Exception as exc:
+            logger.warning(
+                event="bridge_relay_executor_self_heal_failed",
+                trace_id=get_current_trace_id(),
+                error=str(exc),
+                message=f"全局 BridgeRelayExecutor 惰性自愈连接失败: {exc}",
+            )
+            return None
 
 
 async def acli_exec(
@@ -888,10 +979,11 @@ async def acli_exec(
     Returns:
         ExecResult: 执行结果
     """
-    if _executor is None:
-        raise RuntimeError("BridgeRelayExecutor 未初始化")
+    executor = await get_or_init_executor()
+    if executor is None:
+        raise RuntimeError("BridgeRelayExecutor 未初始化（且自愈连接失败）")
 
-    return await _executor.execute(
+    return await executor.execute(
         tool_name="acli_exec",
         args={"command": command, "reason": reason},
         conversation_id=conversation_id,
@@ -919,10 +1011,11 @@ async def bash_exec(
     Returns:
         ExecResult: 执行结果
     """
-    if _executor is None:
-        raise RuntimeError("BridgeRelayExecutor 未初始化")
+    executor = await get_or_init_executor()
+    if executor is None:
+        raise RuntimeError("BridgeRelayExecutor 未初始化（且自愈连接失败）")
 
-    return await _executor.execute(
+    return await executor.execute(
         tool_name="bash_exec",
         args={"container": container, "command": command, "reason": reason},
         conversation_id=conversation_id,
