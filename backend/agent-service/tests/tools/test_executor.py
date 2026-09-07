@@ -738,11 +738,14 @@ class TestExecutorLazyInit:
         mock_redis_mgr = AsyncMock()
         mock_redis_mgr.connect = AsyncMock()
 
-        with patch("app.tools.acli.executor.RedisManager", return_value=mock_redis_mgr):
-            res = await get_or_init_executor()
-            assert res is not None
-            assert executor_module._executor is res
-            assert res._conversation_service_url == "http://test-conversation:8000"
+        try:
+            with patch("app.tools.acli.executor.RedisManager", return_value=mock_redis_mgr):
+                res = await get_or_init_executor()
+                assert res is not None
+                assert executor_module._executor is res
+                assert executor_module._lazy_redis_mgr is mock_redis_mgr
+                assert res._conversation_service_url == "http://test-conversation:8000"
+        finally:
             set_executor(None)
 
     @pytest.mark.asyncio
@@ -758,9 +761,11 @@ class TestExecutorLazyInit:
         mock_redis_mgr = AsyncMock()
         mock_redis_mgr.connect = AsyncMock(side_effect=ConnectionError("Redis connection refused"))
 
-        with patch("app.tools.acli.executor.RedisManager", return_value=mock_redis_mgr):
-            res = await get_or_init_executor()
-            assert res is None
+        try:
+            with patch("app.tools.acli.executor.RedisManager", return_value=mock_redis_mgr):
+                res = await get_or_init_executor()
+                assert res is None
+        finally:
             set_executor(None)
 
     @pytest.mark.asyncio
@@ -776,14 +781,46 @@ class TestExecutorLazyInit:
         mock_redis_mgr = AsyncMock()
         mock_redis_mgr.connect = AsyncMock()
 
-        with patch("app.tools.acli.executor.RedisManager", return_value=mock_redis_mgr):
-            # 并发执行 10 次自愈初始化
-            results = await asyncio.gather(*[get_or_init_executor() for _ in range(10)])
-            # 所有结果应该是同一个非 None 实例
-            first = results[0]
-            assert first is not None
-            for item in results:
-                assert item is first
-            assert mock_redis_mgr.connect.await_count == 1
+        try:
+            with patch("app.tools.acli.executor.RedisManager", return_value=mock_redis_mgr):
+                # 并发执行 10 次自愈初始化
+                results = await asyncio.gather(*[get_or_init_executor() for _ in range(10)])
+                # 所有结果应该是同一个非 None 实例
+                first = results[0]
+                assert first is not None
+                for item in results:
+                    assert item is first
+                assert mock_redis_mgr.connect.await_count == 1
+        finally:
             set_executor(None)
+
+    @pytest.mark.asyncio
+    async def test_close_lazy_executor_cleans_up_resources(self, monkeypatch):
+        """测试 close_lazy_executor 能够优雅关闭惰性创建的 Redis 连接并清理全局状态"""
+        import app.tools.acli.executor as executor_module
+        from app.tools.acli.executor import close_lazy_executor, get_or_init_executor, set_executor
+
+        set_executor(None)
+        monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+        monkeypatch.setenv("CONVERSATION_SERVICE_URL", "http://test-conversation:8000")
+        monkeypatch.setenv("INTERNAL_API_TOKEN", "mock-token-2026")
+
+        mock_redis_mgr = AsyncMock()
+        mock_redis_mgr.connect = AsyncMock()
+        mock_redis_mgr.close = AsyncMock()
+
+        try:
+            with patch("app.tools.acli.executor.RedisManager", return_value=mock_redis_mgr):
+                res = await get_or_init_executor()
+                assert res is not None
+                assert executor_module._lazy_redis_mgr is mock_redis_mgr
+
+            # 调用优雅关闭
+            await close_lazy_executor()
+            mock_redis_mgr.close.assert_awaited_once()
+            assert executor_module._executor is None
+            assert executor_module._lazy_redis_mgr is None
+        finally:
+            set_executor(None)
+
 

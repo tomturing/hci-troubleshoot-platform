@@ -21,8 +21,10 @@
 - 注入唯一调用链追踪日志 `bridge_relay_executor_self_healed` / `bridge_relay_executor_self_heal_failed`。
 - 将 `app/tools/qkv/engine.py`、`app/tools/qfk/engine.py`、`app/adapters/agents/htp/kbd_differential.py` 以及 `acli_exec`/`bash_exec` 的硬编码 `_executor` 统一收敛至 `await get_or_init_executor()`。
 
-### 2.3 健康检查与可观测性透传
-- 在 `/v1/agent/health` 接口中暴露 `bridge_relay_executor: bool` 状态字段，运维巡检及 Prometheus 探针可即时洞察执行器就绪度。
+### 2.4 惰性自愈连接生命周期闭环（对抗性审查加固）
+- **第一性原理分析**：惰性自愈创建的 `RedisManager` 拥有底层 TCP 连接池，若未在应用关闭时销毁，会导致应用在优雅下线/重启时遗留孤儿连接与资源泄露。
+- **加固实现**：在 `executor.py` 内部维护模块级 `_lazy_redis_mgr` 实例引用，并导出异步清理函数 `close_lazy_executor()`；在 `main.py` 的 FastAPI `lifespan` 清理段（`yield` 之后）显式调用 `await close_lazy_executor()`，彻底实现从“惰性创建”到“优雅停机”的完整生命周期管理。
+- **测试隔离保证**：将 `test_executor.py` 中全部惰性自愈测试改为 `try...finally: set_executor(None)`，杜绝断言失败时全局污染其它测试套件；并新增 `test_close_lazy_executor_cleans_up_resources` 自动化用例覆盖率。
 
 ## 3. 测试与验证
 
@@ -33,8 +35,10 @@
    - `test_get_or_init_executor_self_heals_success`：验证在未注入时全自动惰性自愈连接并注入全局变量。
    - `test_get_or_init_executor_connect_failure`：验证连接异常时不抛崩溃未捕获异常。
    - `test_get_or_init_executor_concurrency`：验证多协程并发调用时的互斥锁安全性与单次建连幂等性。
+   - `test_close_lazy_executor_cleans_up_resources`：验证惰性连接优雅释放与全局状态重置。
 2. `backend/agent-service/tests/unit/test_qkv.py` 与 `test_qfk.py`：
    - 全量 QKV 与 QFK 信号执行、完整物理流缓存及变量池派生测试 100% 通过（75 passed, 36 passed）。
 
 ## 4. 结论
-通过“启动退避重试 + 运行时惰性自愈 + 健康检查可观测性”三层防护，彻底根除了执行器单点初始化脆弱性，保证了排障系统的全天候韧性。
+通过“启动退避重试 + 运行时惰性自愈 + 停机优雅清理 + 健康检查可观测性”四层防护，彻底根除了执行器单点初始化脆弱性，保证了排障系统的全天候韧性。
+

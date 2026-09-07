@@ -436,6 +436,9 @@ async def lifespan(app: FastAPI):
     yield
 
     # ── 清理 ────────────────────────────────────────────────────────────────────────
+    from app.tools.acli.executor import close_lazy_executor
+
+    await close_lazy_executor()
     if redis_client:
         await redis_client.aclose()
     if redis_manager:

@@ -863,13 +863,41 @@ class BridgeRelayExecutor:
 
 # 全局执行器实例（由 main.py lifespan 初始化或运行时惰性自愈）
 _executor: BridgeRelayExecutor | None = None
+_lazy_redis_mgr: RedisManager | None = None
 _executor_lock = asyncio.Lock()
 
 
 def set_executor(executor: BridgeRelayExecutor | None) -> None:
     """设置全局执行器实例（main.py lifespan 调用或测试重置）"""
-    global _executor
+    global _executor, _lazy_redis_mgr
     _executor = executor
+    if executor is None:
+        _lazy_redis_mgr = None
+
+
+async def close_lazy_executor() -> None:
+    """
+    优雅关闭由惰性自愈创建的 BridgeRelayExecutor 底层 RedisManager 资源。
+    供 lifespan shutdown 清理调用，杜绝后台孤儿连接池泄露。
+    """
+    global _executor, _lazy_redis_mgr
+    async with _executor_lock:
+        if _lazy_redis_mgr is not None:
+            try:
+                await _lazy_redis_mgr.close()
+                logger.info(
+                    event="lazy_executor_redis_closed",
+                    message="惰性自愈 BridgeRelayExecutor 之 RedisManager 连接已显式优雅关闭",
+                )
+            except Exception as exc:
+                logger.warning(
+                    event="close_lazy_executor_failed",
+                    error=str(exc),
+                    message=f"关闭惰性 RedisManager 异常（已容错忽略）: {exc}",
+                )
+            finally:
+                _lazy_redis_mgr = None
+        _executor = None
 
 
 async def get_or_init_executor() -> BridgeRelayExecutor | None:
@@ -882,7 +910,7 @@ async def get_or_init_executor() -> BridgeRelayExecutor | None:
         通过双重检查锁（DCL）与惰性连接尝试，确保在首次执行关键信号或命令时能够无缝自愈，
         彻底消除因启动时序问题导致的“永久未初始化”瘫痪缺陷。
     """
-    global _executor
+    global _executor, _lazy_redis_mgr
     if _executor is not None:
         return _executor
 
@@ -916,6 +944,7 @@ async def get_or_init_executor() -> BridgeRelayExecutor | None:
                 internal_token=internal_token,
             )
             _executor = executor
+            _lazy_redis_mgr = redis_mgr
             logger.info(
                 event="bridge_relay_executor_self_healed",
                 trace_id=get_current_trace_id(),
