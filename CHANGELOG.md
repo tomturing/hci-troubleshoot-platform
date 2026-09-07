@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.29.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.28.0...v2.29.0) (2026-09-07)
+
+
+### ✨ 新功能
+
+* **admin:** 优化 QKV 产出变量处理默认行为为断言判断与关键字匹配 ([#1008](https://github.com/tomturing/hci-troubleshoot-platform/issues/1008)) ([9b665a4](https://github.com/tomturing/hci-troubleshoot-platform/commit/9b665a4a0d8a2b2e16c7dc01906ac6825795a4ec))
+* **kb:** 增强 JSON 取值路径门禁拦截与验证 Agent 友好自愈闭环 ([#1007](https://github.com/tomturing/hci-troubleshoot-platform/issues/1007)) ([4d133b0](https://github.com/tomturing/hci-troubleshoot-platform/commit/4d133b0c5f81684cd6b7c31a13302693ac933196))
+* 扩展模板实例库支持Signal资产阅览并对齐console审计菜单 ([#1001](https://github.com/tomturing/hci-troubleshoot-platform/issues/1001)) ([08e12ef](https://github.com/tomturing/hci-troubleshoot-platform/commit/08e12efc3d38d5ea20b112f40ef88d1e56108280))
+* 生产者信号qkv_alert与qkv_task自动派生DATE变量支持日志按天检索 ([#1002](https://github.com/tomturing/hci-troubleshoot-platform/issues/1002)) ([6954bae](https://github.com/tomturing/hci-troubleshoot-platform/commit/6954bae10ceb04bb86d908c0f82898ea5d059f9d))
+
+
+### 🐛 Bug 修复
+
+* **db:** 关键信号资产表 trace_id 加列补 DEFAULT 修复 staging 同步卡死 ([#1004](https://github.com/tomturing/hci-troubleshoot-platform/issues/1004)) ([8dc8eb5](https://github.com/tomturing/hci-troubleshoot-platform/commit/8dc8eb551efbb87662be1b877da91ae1ac4f7519))
+* **kbd:** 修复生产者信号END自动派生DATE变量依赖校验与持久化归一 ([#1006](https://github.com/tomturing/hci-troubleshoot-platform/issues/1006)) ([b16696a](https://github.com/tomturing/hci-troubleshoot-platform/commit/b16696a51e081497005da10b4a0d2f468e3880d4))
+
 ## [2.28.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.27.0...v2.28.0) (2026-09-04)
 
 
