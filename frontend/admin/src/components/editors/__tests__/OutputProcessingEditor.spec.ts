@@ -28,7 +28,7 @@ describe('OutputProcessingEditor', () => {
   it('使用产出变量处理标题并删除旧说明', () => {
     const wrapper = mountEditor()
     expect(wrapper.text()).toContain('产出变量处理')
-    expect(wrapper.text()).toContain('可选：对 QKV 产出变量进一步处理，包括派生变量和断言判断。')
+    expect(wrapper.text()).toContain('可选：对 QKV 产出变量进一步处理，包括断言判断和派生变量。')
     expect(wrapper.text()).not.toContain('输出后处理')
     expect(wrapper.text()).not.toContain('沿用 QFK 的处理单元')
     expect(wrapper.text()).not.toContain('QKV 已从 JSON 路径取得具体值')
@@ -47,18 +47,47 @@ describe('OutputProcessingEditor', () => {
     expect(wrapper.findAll('input').find((input) => input.attributes('placeholder')?.startsWith('例如：'))?.attributes('placeholder')).toBe('例如：（）、<>、【】、：')
   })
 
-  it('新增派生变量符合三列布局契约', async () => {
+  it('添加处理默认创建断言判断，且默认判断类型为关键字匹配', async () => {
     const wrapper = mountEditor()
     await wrapper.findAll('button').find((button) => button.text() === '添加处理')!.trigger('click')
     const emitted = wrapper.emitted('update:modelValue')
     expect((emitted?.at(-1)?.[0] as Array<Record<string, unknown>>)[0]).toMatchObject({
-      mode: 'derive', input: '{{DESCRIPTION}}', name: '', type: 'string',
+      mode: 'assert',
+      input: '{{DESCRIPTION}}',
+      match: { type: 'keyword', expected: true, pattern: '', mode: 'or' },
+    })
+    await wrapper.setProps({ modelValue: (emitted?.at(-1)?.[0] as Array<Record<string, unknown>>) })
+    expect(wrapper.text()).toContain('断言判断')
+    expect(wrapper.text()).toContain('输入变量')
+    expect(wrapper.text()).toContain('判断类型及要求')
+    expect(wrapper.find('.matcher-editor').exists()).toBe(true)
+  })
+
+  it('手动切换为派生变量符合三列布局契约', async () => {
+    const wrapper = mountEditor([{ mode: 'assert', input: '{{DESCRIPTION}}', match: { type: 'keyword', expected: true, pattern: '', mode: 'or' } }])
+    ;(wrapper.vm as any).setMode(0, 'derive')
+    const emitted = wrapper.emitted('update:modelValue')
+    expect((emitted?.at(-1)?.[0] as Array<Record<string, unknown>>)[0]).toMatchObject({
+      mode: 'derive',
+      input: '{{DESCRIPTION}}',
+      name: '',
+      type: 'string',
       extract: { type: 'feature', feature: 'vm_name', cardinality: 'exactly_one' },
     })
     await wrapper.setProps({ modelValue: (emitted?.at(-1)?.[0] as Array<Record<string, unknown>>) })
     expect(wrapper.text()).toContain('输入变量')
     expect(wrapper.text()).toContain('输出变量')
     expect(wrapper.text()).toContain('提取方式')
+  })
+
+  it('从派生变量切换回断言判断时默认采用关键字匹配', async () => {
+    const wrapper = mountEditor([{ mode: 'derive', input: '{{DESCRIPTION}}', name: 'VM_NAME', type: 'string', extract: { type: 'feature', feature: 'vm_name' } }])
+    ;(wrapper.vm as any).setMode(0, 'assert')
+    const emitted = wrapper.emitted('update:modelValue')
+    expect((emitted?.at(-1)?.[0] as Array<Record<string, unknown>>)[0]).toMatchObject({
+      mode: 'assert',
+      match: { type: 'keyword', expected: true, pattern: '', mode: 'or' },
+    })
   })
 
   it('AI 提取入口保存 QFK 兼容的 instruction', async () => {
