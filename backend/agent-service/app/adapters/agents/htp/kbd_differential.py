@@ -67,6 +67,8 @@ def _tool_contract_checker(tool: str, signal: dict[str, Any]) -> str | None:
         "DEVICE": "/dev/sda",
         "STORAGE_PATH": "/sf/data/golden",
         "END": "2026-07-30 10:00:00",
+        "DATE": "2026-07-30",
+        "ABSOLUTE_TIME": "2026-07-30 10:00:00",
         "REQUEST_ID": "a5ed4ad9340ce338ba1ac71d13ffcfb9",
     }
 
