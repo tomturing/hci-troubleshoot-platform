@@ -140,6 +140,11 @@ BUNDLE_MIGRATION_RETRY_COUNT=3
 - `POST /api/v1/bundle-migration/migrate` - 批量迁移
 - `GET  /api/v1/bundle-migration/version` - 版本查询
 
+### 前端
+
+- `frontend/admin/src/views/BundleFactoryView.vue` - Bundle 工厂页面，包含迁移按钮和对话框
+- `backend/api-gateway/app/routes/diagnosis.py` - API 网关代理路由
+
 ## 优势
 
 1. **代码修复立即生效**：工厂升级后，可以批量重新编译

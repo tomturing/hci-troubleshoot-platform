@@ -207,6 +207,10 @@ async def _proxy_diagnosis_request(request: Request) -> Response:
 @router.api_route("/api/internal/offline-signal-mappings/{path:path}", methods=["PUT"])
 @router.api_route("/api/internal/offline-resource-sync/{path:path}", methods=["GET"])
 @router.api_route("/api/internal/offline-resource-sync/{path:path}", methods=["POST"])
+# Bundle 迁移路由
+@router.api_route("/api/v1/bundle-migration/health", methods=["GET"])
+@router.api_route("/api/v1/bundle-migration/migrate", methods=["POST"])
+@router.api_route("/api/v1/bundle-migration/version", methods=["GET"])
 async def proxy_diagnosis_control_plane(request: Request, path: str = "") -> Response:
     """代理离线诊断控制面接口；不接收证据大文件。"""
 
