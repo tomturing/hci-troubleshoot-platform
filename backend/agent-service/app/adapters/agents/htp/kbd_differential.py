@@ -921,6 +921,23 @@ class KBDDiagnostic:
                 expected=matcher.get("expected", True),
             )
             return SignalOutcome.UNKNOWN
+        # 记录匹配详情，便于排查 CONTRADICTED 状态原因
+        from shared.signals.matcher import evaluate_matcher
+        result = evaluate_matcher(matcher, raw_output)
+        logger.info(
+            event="matcher_evaluation_result",
+            signal_id=signal.get("id") or signal.get("signal_id"),
+            conversation_id=self._conversation_id,
+            case_id=self._case_id,
+            matcher_type=matcher.get("type"),
+            expected=matcher.get("expected", True),
+            matched=result.matched,
+            matched_keywords=result.detail.get("matched_keywords", []),
+            hit=result.detail.get("hit"),
+            mode=result.detail.get("mode"),
+            evidence=result.evidence,
+            raw_output_preview=(raw_output or "")[:500],
+        )
         return SignalOutcome.SATISFIED if evaluated else SignalOutcome.CONTRADICTED
 
     @staticmethod
