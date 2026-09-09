@@ -38,6 +38,7 @@ const buildBody = {
   environment_context: { test_run_id: 'run-27123', support_id: '27123', kbd_revision: 1, case_id: '' },
   connection: { host: 'hci-sim', port: 2222, username: 'sim', password: 'htp2.test', execution_mode: 'sim-ssh', test_run_id: 'run-27123' },
 }
+const diagnosticOutcomeFrame = 'event: diagnostic_outcome\ndata: {"is_definitive":true,"supported_support_ids":["27123"]}\n\n'
 
 describe('SimulationTestView 可恢复状态机', () => {
   let sockets: SocketHarness[]
@@ -133,7 +134,7 @@ describe('SimulationTestView 可恢复状态机', () => {
       .mockResolvedValueOnce(response(buildBody))
       .mockResolvedValueOnce(response({ test_run_id: 'run-27123', case_id: 'Q2026081100001' }))
       .mockResolvedValueOnce(response({ conversation_id: '00000000-0000-0000-0000-000000027123' }, 201))
-      .mockResolvedValueOnce(sse(['event: agent_exec_command\ndata: {"execId":"exec-1","command":"acli system lsof","riskLevel":1}\n\n', 'event: message\ndata: {"content":"诊断完成"}\n\n', 'data: [DONE]\n\n']))
+      .mockResolvedValueOnce(sse(['event: agent_exec_command\ndata: {"execId":"exec-1","command":"acli system lsof","riskLevel":1}\n\n', 'event: message\ndata: {"content":"诊断完成"}\n\n', diagnosticOutcomeFrame, 'data: [DONE]\n\n']))
       .mockResolvedValueOnce(response({ status: 'accepted' }))
       .mockResolvedValueOnce(response({ status: 'passed' }))
 
@@ -276,7 +277,7 @@ describe('SimulationTestView 可恢复状态机', () => {
       .mockResolvedValueOnce(response(buildBody))
       .mockResolvedValueOnce(response({ test_run_id: 'run-27123', case_id: 'Q2026081100001' }))
       .mockResolvedValueOnce(response({ conversation_id: '00000000-0000-0000-0000-000000027123' }, 201))
-      .mockResolvedValueOnce(sse(['event: agent_exec_command\ndata: {"execId":"exec-1","command":"acli system lsof","riskLevel":1}\n\n', 'data: {"content":"完成"}\n\n']))
+      .mockResolvedValueOnce(sse(['event: agent_exec_command\ndata: {"execId":"exec-1","command":"acli system lsof","riskLevel":1}\n\n', 'data: {"content":"完成"}\n\n', diagnosticOutcomeFrame]))
       .mockResolvedValueOnce(response({ status: 'accepted' }))
       .mockResolvedValueOnce(response({ detail: 'temporary unavailable' }, 503))
       .mockResolvedValueOnce(response({ status: 'passed' }))
@@ -308,6 +309,7 @@ describe('SimulationTestView 可恢复状态机', () => {
       .mockResolvedValueOnce(sse([
         'event: agent_exec_command\ndata: {"execId":"exec-1","command":"acli system lsof","riskLevel":1}\n\n',
       ]))
+      .mockResolvedValueOnce(response({ status: 'failed' }))
 
     const wrapper = mountView()
     await build(wrapper)
@@ -324,7 +326,7 @@ describe('SimulationTestView 可恢复状态机', () => {
     const connectMessages = sockets.flatMap((socket) => socket.sent.map((item) => JSON.parse(item))).filter((item) => item.type === 'ssh_connect')
     expect(connectMessages).toHaveLength(1)
     expect(connectMessages[0].password).toBe('htp2.test')
-    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/result'))).toBe(false)
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/result'))).toBe(true)
   })
 
   it('命令执行返回非零退出码（排障探测）但会话正常完成时判定为通过', async () => {
@@ -337,6 +339,7 @@ describe('SimulationTestView 可恢复状态机', () => {
       .mockResolvedValueOnce(sse([
         'event: agent_exec_command\ndata: {"execId":"exec-probe","command":"acli --timeout 120 system cat /sf/cfg/gpu_info.ini","riskLevel":1}\n\n',
         'event: message\ndata: {"content":"已确认无独立显卡配置文件，定位到虚拟机未复位故障，排障完成。"}\n\n',
+        diagnosticOutcomeFrame,
         'data: [DONE]\n\n',
       ]))
       .mockResolvedValueOnce(response({ status: 'accepted' }))
@@ -363,10 +366,15 @@ describe('SimulationTestView 可恢复状态机', () => {
       agent_stream_completed: true,
       outcome: 'passed',
       command_count: 1,
-      failed_command_count: 1,
+      failed_command_count: 0,
+      nonzero_exit_count: 1,
+      transport_error_count: 0,
+      expected_support_id: '27123',
+      supported_support_ids: ['27123'],
+      is_definitive: true,
+      diagnostic_outcome_received: true,
     })
     expect(wrapper.text()).toContain('已通过')
     expect(wrapper.text()).not.toContain('仿真测试失败')
   })
 })
-

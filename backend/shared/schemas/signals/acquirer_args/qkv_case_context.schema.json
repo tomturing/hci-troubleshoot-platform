@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "instruction": {
+      "type": "string",
+      "description": "信号语义说明（acli 调用的人类可读解释）"
+    }
+  },
+  "required": [],
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://hci-troubleshoot/schemas/signals/acquirer_args/qkv_case_context.schema.json",
+  "title": "acquire.args for qkv_case_context"
+}

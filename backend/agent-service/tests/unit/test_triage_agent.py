@@ -239,6 +239,28 @@ def test_deterministic_fallback_ranks_vm_power_on_from_prefetched_task():
     assert result.candidates[0] == {"code": "虚拟机-003", "name": "虚拟机开机失败"}
 
 
+def test_deterministic_fallback_tokenizes_long_chinese_category_names():
+    """模型不可用时，长中文分类名也能靠局部语义词组进入人工确认候选。"""
+
+    TriageAgent._categories_cache = {
+        "隔离验收": [
+            {
+                "code": "E2E-full-20260906-0",
+                "name": "服务状态断言与容器域容量阈值",
+            },
+            {"code": "E2E-full-20260906-1", "name": "硬件趋势与平台信息采集"},
+        ]
+    }
+
+    result = TriageAgent._deterministic_candidates(
+        [{"role": "user", "content": "服务不可用，请检查服务状态和日志分区容量"}],
+        {},
+    )
+
+    assert result.needs_confirmation is True
+    assert result.candidates[0]["code"] == "E2E-full-20260906-0"
+
+
 # ─── process() 流程测试 ──────────────────────────────────────────────────────
 
 

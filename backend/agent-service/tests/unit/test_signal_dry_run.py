@@ -31,6 +31,60 @@ def _qfk_signal() -> dict:
     }
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["qkv_variable_processing", "qfk_execution_result"])
+@pytest.mark.parametrize("with_produces", [False, True])
+async def test_case_context_requires_semantic_preview(scope: str, with_produces: bool, monkeypatch) -> None:
+    from app.routes import signal_dry_run as module
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("上下文信号不得进入 QKV/QFK 数据处理")
+
+    monkeypatch.setattr(module, "_evaluate_qkv", forbidden)
+    monkeypatch.setattr(module, "_evaluate_qfk", forbidden)
+    signal = {
+        "id": "case_context", "acquire": {"tool": "qkv_case_context", "args": {}},
+        "orchestrate": {"produces": [{"name": "HOST", "path": "host"}]} if with_produces else {},
+    }
+    request = SignalDryRunRequest(
+        draft_revision=_revision(signal), scope=scope, unit_ref={"signal_id": signal["id"]},
+        dataset={"dataset_id": "context", "source_type": "pasted", "source_ref": "user-input", "payload": "虚拟机启动失败"},
+        signal=signal, support_id="semantic-preview-test", kbd_revision=1,
+    )
+    with pytest.raises(ValueError, match="SEMANTIC_ROUTE_PREVIEW_REQUIRED.*路由试运行"):
+        await evaluate_signal_dry_run(request, ai_client=None, trace_id="c" * 32)
+
+
+@pytest.mark.asyncio
+async def test_case_context_http_error_contains_action_and_trace(monkeypatch) -> None:
+    from app.routes import signal_dry_run as module
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    monkeypatch.setattr(module.settings, "INTERNAL_API_TOKEN", "test-preview-token")
+    app = FastAPI()
+    app.include_router(module.router)
+    signal = {"id": "context", "acquire": {"tool": "qkv_case_context", "args": {}}, "orchestrate": {}}
+    payload = {
+        "draft_revision": _revision(signal), "scope": "qkv_variable_processing",
+        "unit_ref": {"signal_id": "context"}, "signal": signal,
+        "support_id": "semantic-preview-test", "kbd_revision": 1,
+        "dataset": {"dataset_id": "context", "source_type": "pasted", "source_ref": "user-input", "payload": "启动失败"},
+    }
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        unauthorized = await client.post("/internal/signal-dry-run", json=payload)
+        assert unauthorized.status_code == 401
+        response = await client.post(
+            "/internal/signal-dry-run", json=payload,
+            headers={"Authorization": "Bearer test-preview-token", "X-Trace-Id": "d" * 32},
+        )
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == "SEMANTIC_ROUTE_PREVIEW_REQUIRED"
+    assert detail["trace_id"] == "d" * 32
+    assert "路由试运行" in detail["message"]
+
+
 def test_dry_run_rejects_mismatched_package_snapshot() -> None:
     signal = _qfk_signal()
     with pytest.raises(ValidationError, match="必须一致"):
@@ -80,7 +134,7 @@ async def test_qfk_dry_run_rejects_changed_draft() -> None:
 
 
 @pytest.mark.asyncio
-async def test_qkv_dry_run_only_runs_target_and_preceding_units() -> None:
+async def test_qkv_signal_dry_run_always_runs_the_complete_processing_chain() -> None:
     signal = {
         "id": "sig_qkv_001",
         "acquire": {"tool": "qkv_task", "args": {}},
@@ -88,7 +142,7 @@ async def test_qkv_dry_run_only_runs_target_and_preceding_units() -> None:
             "output_processing": [
                 {"mode": "derive", "input": "{{description}}", "name": "NAME", "type": "string", "extract": {"type": "feature", "feature": "vm_name", "cardinality": "exactly_one"}},
                 {"mode": "assert", "input": "{{NAME}}", "match": {"type": "keyword", "pattern": "vm-01", "mode": "or", "expected": True, "extract": {"type": "text", "rows": {"mode": "all"}, "cardinality": "all", "source": "stdout"}}},
-                {"mode": "derive", "input": "{{missing}}", "name": "MUST_NOT_RUN", "type": "string", "extract": {"type": "feature", "feature": "host", "cardinality": "exactly_one"}},
+                {"mode": "assert", "input": "{{NAME}}", "match": {"type": "keyword", "pattern": "must-not-pass", "mode": "or", "expected": True}},
             ]
         },
     }
@@ -101,9 +155,9 @@ async def test_qkv_dry_run_only_runs_target_and_preceding_units() -> None:
 
     result = await evaluate_signal_dry_run(request, ai_client=None, trace_id="b" * 32)
 
-    assert result.status == "PASS"
-    assert result.value == [{"description": "虚拟机名称: vm-01", "name": "vm-01"}]
-    assert result.derivation["processing_end_index"] == 1
+    assert result.status == "FAIL"
+    assert result.value == []
+    assert result.derivation["processing_end_index"] == 2
 
 
 @pytest.mark.asyncio
@@ -541,6 +595,3 @@ async def test_qfk_dry_run_produces_signal_scope_preserves_ai_raw_response_and_e
             "reason": "从候选行中提取了 size 的具体值。",
         }
     ]
-
-
-

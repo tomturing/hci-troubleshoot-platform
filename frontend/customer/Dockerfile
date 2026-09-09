@@ -32,6 +32,11 @@ FROM nginx:alpine
 # 吸收 Alpine 安全仓库中已发布的基础包修复。
 RUN apk upgrade --no-cache
 
+# 与管理端保持一致：官方 IPv6 初始化脚本会调用 `apk manifest nginx`，在
+# 部分本地 Docker/Alpine 组合中会永久卡住，导致 Nginx 主进程没有机会启动。
+# 当前模板显式声明 listen，不依赖该脚本改写。
+RUN rm -f /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
+
 # Nginx 官方 entrypoint 只替换进程环境中已存在的变量。提供安全默认值，
 # 避免直接 docker run 或某个部署清单漏配时，占位符残留并被 Nginx 当成未知变量。
 ENV TERMINAL_BRIDGE_URL="" \

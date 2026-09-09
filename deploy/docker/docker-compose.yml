@@ -96,7 +96,6 @@ services:
       PYTHONPATH: /app
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      API_GATEWAY_SERVICE_URL: ${API_GATEWAY_SERVICE_URL:-http://api-gateway-service:8000}
       CASE_SERVICE_URL: ${CASE_SERVICE_URL:-http://case-service:8001}
       CONVERSATION_SERVICE_URL: ${CONVERSATION_SERVICE_URL:-http://conversation-service:8002}
       SCHEDULER_SERVICE_URL: ${SCHEDULER_SERVICE_URL:-http://scheduler-service:8003}
@@ -129,7 +128,6 @@ services:
       PYTHONPATH: /app
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      API_GATEWAY_SERVICE_URL: ${API_GATEWAY_SERVICE_URL:-http://api-gateway-service:8000}
       CASE_SERVICE_URL: ${CASE_SERVICE_URL:-http://case-service:8001}
       CONVERSATION_SERVICE_URL: ${CONVERSATION_SERVICE_URL:-http://conversation-service:8002}
       SCHEDULER_SERVICE_URL: ${SCHEDULER_SERVICE_URL:-http://scheduler-service:8003}
@@ -241,9 +239,6 @@ services:
       PYTHONPATH: /app
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      OPENCLAW_BASE_URL: ${OPENCLAW_BASE_URL:-http://host.docker.internal:18790}
-      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-hci-dev-openclaw-token}
-      API_GATEWAY_SERVICE_URL: ${API_GATEWAY_SERVICE_URL:-http://api-gateway-service:8000}
       CASE_SERVICE_URL: ${CASE_SERVICE_URL:-http://case-service:8001}
       CONVERSATION_SERVICE_URL: ${CONVERSATION_SERVICE_URL:-http://conversation-service:8002}
       SCHEDULER_SERVICE_URL: ${SCHEDULER_SERVICE_URL:-http://scheduler-service:8003}
@@ -278,7 +273,6 @@ services:
       PYTHONPATH: /app
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       K8S_NAMESPACE: ${K8S_NAMESPACE:-hci-troubleshoot}
-      API_GATEWAY_SERVICE_URL: ${API_GATEWAY_SERVICE_URL:-http://api-gateway-service:8000}
       CASE_SERVICE_URL: ${CASE_SERVICE_URL:-http://case-service:8001}
       CONVERSATION_SERVICE_URL: ${CONVERSATION_SERVICE_URL:-http://conversation-service:8002}
       SCHEDULER_SERVICE_URL: ${SCHEDULER_SERVICE_URL:-http://scheduler-service:8003}
@@ -306,9 +300,6 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://coding.dashscope.aliyuncs.com/v1}
       LLM_API_KEY: ${LLM_API_KEY:-}
-      ZAI_BASE_URL: ${ZAI_BASE_URL:-http://host.docker.internal:18790}
-      ZAI_API_KEY: ${ZAI_API_KEY:-hci-dev-openclaw-token}
-      API_GATEWAY_SERVICE_URL: ${API_GATEWAY_SERVICE_URL:-http://api-gateway-service:8000}
       CASE_SERVICE_URL: ${CASE_SERVICE_URL:-http://case-service:8001}
       CONVERSATION_SERVICE_URL: ${CONVERSATION_SERVICE_URL:-http://conversation-service:8002}
       SCHEDULER_SERVICE_URL: ${SCHEDULER_SERVICE_URL:-http://scheduler-service:8003}
@@ -371,7 +362,6 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
       LLM_API_KEY: ${LLM_API_KEY:-}
-      API_GATEWAY_SERVICE_URL: ${API_GATEWAY_SERVICE_URL:-http://api-gateway-service:8000}
       CASE_SERVICE_URL: ${CASE_SERVICE_URL:-http://case-service:8001}
       CONVERSATION_SERVICE_URL: ${CONVERSATION_SERVICE_URL:-http://conversation-service:8002}
       SCHEDULER_SERVICE_URL: ${SCHEDULER_SERVICE_URL:-http://scheduler-service:8003}
@@ -432,6 +422,8 @@ services:
   admin-ui:
     environment:
       - DNS_RESOLVER=127.0.0.11
+      # Admin 仿真页面固定使用同源 /terminal-bridge；Nginx 在本地转发到桌面 Bridge。
+      - TERMINAL_BRIDGE_UPSTREAM=http://host.docker.internal:9999
       # 本地管理入口由 Nginx 服务端注入开发身份，禁止把内部令牌打包进浏览器静态资源。
       - ADMIN_API_AUTHORIZATION=Bearer ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
       - ADMIN_API_TENANT_ID=${DIAGNOSIS_DEV_TENANT_ID:-local-admin}
@@ -444,6 +436,8 @@ services:
       - "3002:80"
     depends_on:
       - api-gateway
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - hci-troubleshoot-platform_default
 

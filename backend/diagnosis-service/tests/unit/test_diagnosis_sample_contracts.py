@@ -6,12 +6,14 @@ import json
 import re
 from pathlib import Path
 
+import pytest
 from app.services.offline_acquisition_compiler import (
     compile_effect_verification_intent,
     compile_signal_acquisition,
     compile_vm_console_capture_intent,
 )
 from app.services.offline_analysis_service import _evaluate_matcher
+from app.services.offline_resource_sync_service import offline_diagnosis_capability
 from shared.cdd import CandidateState, SignalOutcome, compile_signal_plan
 from shared.cdd.candidate_reducer import initial_assessments, reduce_candidates
 from shared.cdd.kbd_model import kbd_from_dict
@@ -45,7 +47,11 @@ def _matched_evidence(signal: dict) -> object:
         return "eth0    link up"
     if matcher_type == "state":
         return "running"
+    if matcher_type == "boolean":
+        return "true"
     if matcher_type == "threshold":
+        if (matcher.get("extract") or {}).get("delimiter") == ",":
+            return "Filesystem,Use%\n/sf/log,83%\n"
         return "Filesystem Use%\n/sf/log 83%\n"
     if matcher_type == "delta":
         if signal["acquire"]["tool"] == "qfk_storage":
@@ -66,6 +72,9 @@ def test_five_samples_compile_every_signal_into_offline_collectors():
     for document in documents:
         for signal in document["signals"]:
             tool = signal["acquire"]["tool"]
+            if tool == "qkv_case_context":
+                # 语义入口只消费工单文字；不属于离线采集器，也没有命令输出 fixture。
+                continue
             if tool == "qkv_vm_console":
                 # 条件型视觉生产者编译为专用 vm_console_capture 采集项（无
                 # command_template）；样例中的占位符由离线会话目标上下文解析。
@@ -102,12 +111,73 @@ def test_five_samples_compile_every_signal_into_offline_collectors():
             assert compiled.resolution_status.value in {"verified", "needs_probe"}
 
 
+def test_semantic_entry_capability_variants_have_explicit_offline_gate():
+    document = next(item for item in _documents() if item["verification_contract"]["case_id"] == "SAMPLE-SIG-VM")
+    assert offline_diagnosis_capability({"signals_json": document}) == "executable"
+    for capability in ("guidance_only", "capability_gap"):
+        variant = json.loads(json.dumps(document))
+        variant["semantic_entry_profile"]["diagnosis_capability"] = capability
+        assert offline_diagnosis_capability({"signals_json": variant}) == capability
+
+
+@pytest.mark.asyncio
+async def test_hci_sim_semantic_scenarios_enforce_offline_eligibility():
+    """离线路由和资源资格必须同时满足，不能把 guidance/unavailable 当成可采集。"""
+
+    from shared.schemas.semantic_routing import resolve_candidates
+
+    scenarios = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))["semantic_entry_scenarios"]
+    for name, scenario in scenarios.items():
+        candidate = scenario["candidate"]
+        document = {
+            "signals": [{"id": "case_context", "acquire": {"tool": "qkv_case_context", "args": {}}}],
+            "semantic_entry_profile": {
+                "schema_version": 1,
+                **{key: value for key, value in candidate.items() if key != "executable"},
+            },
+        }
+        route = await resolve_candidates(
+            entries=[{
+                "id": scenario["case_id"],
+                "support_id": scenario["case_id"],
+                "title": name,
+                "executable": candidate["executable"],
+                "signals_json": document,
+            }],
+            context=scenario["case_context"],
+            strong_status=scenario["strong_producer_status"],
+            mode="offline",
+        )
+        eligible = offline_diagnosis_capability({"signals_json": document}) == "executable" and route["decision"] == "executable"
+        assert route["decision"] == scenario["expected_offline_decision"], (name, route)
+        assert eligible is scenario["expected_offline_eligible"], (name, route)
+
+
+def test_sample_fixtures_respect_compiled_json_output_contract():
+    """以真实仿真回显检查 JSON 声明，不能用人工构造 Matcher 输入绕过入库解析。"""
+    profile = json.loads(PROFILE_PATH.read_text())
+    for document in _documents():
+        case = profile["cases"][document["verification_contract"]["case_id"]]
+        variables = {**profile["variables"], **case["variables"]}
+        for signal in document["signals"]:
+            if not signal["acquire"]["tool"].startswith("qfk_"):
+                continue
+            compiled = compile_signal_acquisition(
+                tool=signal["acquire"]["tool"], args=signal["acquire"]["args"], matcher=signal.get("match")
+            )
+            if compiled.query_type != "json":
+                continue
+            for variant in ("positive_output", "negative_output"):
+                output = case["signals"][signal["id"]][variant]
+                for name, value in variables.items():
+                    output = output.replace("{{" + name + "}}", str(value))
+                json.loads(output)  # 声明 JSON 的证据必须能实际入库，不能是文本表格。
+
+
 def test_vm_sample_normalizes_global_formatter_and_inherits_command_version_gate():
     """vm 全局参数位置和 status get 最低版本必须在同步阶段固化。"""
 
-    vm_document = next(
-        item for item in _documents() if item["verification_contract"]["case_id"] == "SAMPLE-SIG-VM"
-    )
+    vm_document = next(item for item in _documents() if item["verification_contract"]["case_id"] == "SAMPLE-SIG-VM")
     signals = {item["id"]: item for item in vm_document["signals"]}
     status = compile_signal_acquisition(
         tool="qfk_vm",

@@ -10,6 +10,55 @@ import (
 	"hci_sim/internal/fixture"
 )
 
+func TestLoadRepositoryProfileWithSemanticAssertions(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "sample-suites", "diagnosis-signal-matrix-v1.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source scenarioProfile
+	if err := json.Unmarshal(raw, &source); err != nil {
+		t.Fatal(err)
+	}
+	if len(source.SemanticEntryScenarios) != 4 {
+		t.Fatal("缺少四类语义入口声明")
+	}
+	for supportID, card := range source.Cases {
+		resolved := &resolvedKbd{SupportID: supportID, Metadata: map[string]any{"sample_suite": source.SampleSuite}}
+		for signalID := range card.Signals {
+			resolved.SyntheticRoutes = append(resolved.SyntheticRoutes, syntheticRoute{SignalID: signalID})
+		}
+		profile, err := loadScenarioProfile(path, resolved)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(profile.Cases[supportID].Signals) != len(resolved.SyntheticRoutes) {
+			t.Fatal("语义声明不得变成采集路由")
+		}
+	}
+}
+
+func TestRepositoryProfileResolvesConfiguredSignalV2Aliases(t *testing.T) {
+	path := filepath.Join("..", "..", "testdata", "sample-suites", "diagnosis-signal-matrix-v1.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var profile scenarioProfile
+	if err := json.Unmarshal(raw, &profile); err != nil {
+		t.Fatal(err)
+	}
+	if !profile.supportsSuite("kbd-semantic-entry-signal-v2") {
+		t.Fatal("Signal v2 样例集未声明为兼容画像")
+	}
+	for _, supportID := range []string{"SAMPLE-V2-VM", "SAMPLE-V2-CORE", "SAMPLE-V2-LOG", "SAMPLE-V2-NET-STO", "SAMPLE-V2-HW-PLT"} {
+		caseProfile, ok := profile.caseFor(supportID)
+		if !ok || len(caseProfile.Signals) == 0 {
+			t.Fatalf("Signal v2 别名 %s 未解析到完整证据画像", supportID)
+		}
+	}
+}
+
 func TestBuildSyntheticManifestIsExactAndSynthetic(t *testing.T) {
 	manifest, err := buildSyntheticManifest(&resolvedKbd{
 		SupportID: "27736", KBDRevision: 1, KBDChecksum: "e2a4d1761206b1dbe3bcd19329af329cabaf2094f59aa3f70a81ebbebb55f74e",
@@ -123,6 +172,24 @@ func TestBuildSyntheticManifestProvidesDeterministicSceneVariables(t *testing.T)
 	}
 }
 
+func TestBuildSyntheticManifestAcceptsNestedJSONOutput(t *testing.T) {
+	for _, output := range []string{`{"data":{"version":"6.12.0"}}`, `{"data":{}}`} {
+		manifest, err := buildSyntheticManifest(&resolvedKbd{
+			SupportID: "nested-json", KBDRevision: 1, KBDChecksum: strings.Repeat("a", 64),
+			ToolContractRevision: "tool-r1", PolicyRevision: "policy-r1",
+			SyntheticRoutes: []syntheticRoute{{SignalID: "platform", Tool: "qfk_platform",
+				Argv: []string{"acli", "platform", "info", "get"}, ToolRevision: 1,
+				ToolChecksum: "sha256:tool", SampleOutput: output}},
+		}, "SIM-HCI-NODE-01", "host")
+		if err != nil {
+			t.Fatalf("合法 JSON 的连续右花括号不是缺失变量: %v", err)
+		}
+		if manifest.Routes[0].Result.Stdout != output {
+			t.Fatalf("JSON 输出不应被修改: %s", manifest.Routes[0].Result.Stdout)
+		}
+	}
+}
+
 func TestBuildSyntheticManifestRendersVariablesFromKbdDerivedOutput(t *testing.T) {
 	manifest, err := buildSyntheticManifest(&resolvedKbd{
 		SupportID: "23821", KBDRevision: 1, KBDChecksum: strings.Repeat("a", 64),
@@ -216,6 +283,20 @@ func TestRenderProfileRegexVariablesEscapesSelectorTemplates(t *testing.T) {
 	}
 }
 
+func TestShellDisplayQuotesRegexMetacharacters(t *testing.T) {
+	argv := []string{"acli", "log", "get", "-E", "-k", "drop|error", "-f", "log[1].txt"}
+	parsed, err := fixture.Lex(shellDisplay(argv))
+	if err != nil {
+		t.Fatalf("推荐命令必须可被实际 SSH 执行器解析: %v", err)
+	}
+	if strings.Join(parsed, "\x00") != strings.Join(argv, "\x00") {
+		t.Fatalf("推荐命令必须保持原 argv: %v", parsed)
+	}
+	if _, err := fixture.Lex("acli log get | reboot"); err == nil {
+		t.Fatal("真实管道仍必须拒绝")
+	}
+}
+
 func TestBuildSyntheticManifestRejectsUncontrolledCommand(t *testing.T) {
 	_, err := buildSyntheticManifest(&resolvedKbd{
 		SupportID: "dynamic", KBDRevision: 1, KBDChecksum: strings.Repeat("a", 64),
@@ -232,6 +313,10 @@ func TestBuildScenarioManifestRendersVariablesAndAllVariants(t *testing.T) {
 		SupportID: "SAMPLE-DYNAMIC", KBDRevision: 2, KBDChecksum: strings.Repeat("a", 64),
 		SignalsDigest: "sha256:signals", ToolContractRevision: "tool-r2", PolicyRevision: "policy-r2",
 		Metadata: map[string]any{"sample_suite": "suite-v1"},
+		VerificationContract: map[string]any{"scope": map[string]any{
+			"products": []any{"HCI"}, "versions": []any{"sample"},
+			"components": []any{"虚拟机"}, "topology_constraints": []any{"target-host"},
+		}},
 		SyntheticRoutes: []syntheticRoute{{
 			SignalID: "sig-vm", Tool: "qfk_vm", Role: "must",
 			Argv:         []string{"acli", "--formatter", "json", "vm", "status", "get", "--vm-id", "{{VM_ID}}"},
@@ -261,6 +346,12 @@ func TestBuildScenarioManifestRendersVariablesAndAllVariants(t *testing.T) {
 		}
 		if variant == "timeout" && route.Fault.Type != fixture.FaultTimeout {
 			t.Fatalf("timeout fault missing: %+v", route.Fault)
+		}
+		if manifest.Environment == nil || len(manifest.Environment.Components) != 1 || manifest.Environment.Components[0] != "虚拟机" {
+			t.Fatalf("variant=%s environment scope was not frozen: %+v", variant, manifest.Environment)
+		}
+		if len(manifest.Environment.Versions) != 1 || manifest.Environment.Versions[0] != "6.12.0" {
+			t.Fatalf("variant=%s scenario version did not override contract placeholder: %+v", variant, manifest.Environment)
 		}
 	}
 }

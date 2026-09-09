@@ -11,6 +11,7 @@ from typing import Any
 
 from shared.observability.otel import get_current_trace_id
 from shared.observability.redaction import redact_observation_value
+from shared.signals.extractor import QFKExtractionError, extract_value
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -658,7 +659,12 @@ class OfflineAnalysisService:
             )
 
     async def _evaluate_kbds(
-        self, session_row: dict[str, Any], collection_plan: dict[str, Any], evidence: list[dict[str, Any]]
+        self,
+        session_row: dict[str, Any],
+        collection_plan: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        *,
+        _routed: bool = False,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """使用共享 CDD 内核评估 KBD 候选。
 
@@ -683,12 +689,18 @@ class OfflineAnalysisService:
         from shared.cdd.kbd_model import kbd_from_dict
 
         ruleset = list(collection_plan.get("kbd_ruleset_snapshot") or [])
+        if not _routed:
+            self._semantic_route = None
+            self._cdd_decision = None
         if not ruleset:
             raise DiagnosisError(
                 code="KBD_RULESET_SNAPSHOT_MISSING",
                 message="采集计划缺少不可变 KBD 规则快照，请重新生成采集计划和制品",
                 http_status=409,
             )
+
+        if not _routed and any(item.get("semantic_entry_profile") for item in ruleset):
+            return await self._evaluate_semantic_ruleset(session_row, collection_plan, evidence)
 
         # 1. 只从采集计划的不可变快照构建 KBD 对象，禁止运行时回读当前 KBD/映射。
         kbd_rows: list[dict[str, Any]] = []
@@ -710,6 +722,7 @@ class OfflineAnalysisService:
                     "verification_contract": item.get("verification_contract") or {},
                     "generation_metadata": item.get("generation_metadata") or {},
                     "publish_validation": item.get("publish_validation") or {},
+                    "semantic_entry_profile": item.get("semantic_entry_profile"),
                 },
                 "updated_at": item.get("updated_at"),
                 "resource_revision": item.get("revision"),
@@ -769,7 +782,9 @@ class OfflineAnalysisService:
                         outcomes[ref.ref_id] = SignalOutcome.CONTRADICTED
                     else:
                         outcomes[ref.ref_id] = SignalOutcome.UNKNOWN
-                    if evaluation["evidence_status"] == "available":
+                    # 变量只有在该 Signal 的 produces/后处理已实际成功时才能解锁下游。
+                    # “制品可读”只表示输入存在，不能冒充 HOST、PID 等已被提取。
+                    if evaluation["state"] == "MATCHED":
                         produced.update(ref.produces)
                 return AcquisitionRunResult(
                     outcomes=outcomes,
@@ -876,6 +891,77 @@ class OfflineAnalysisService:
 
         return offline_candidates, all_evaluations
 
+    async def _evaluate_semantic_ruleset(self, session_row, collection_plan, evidence):
+        """上传后先验证冻结的强证据，再选择语义假设；绝不回读当前 KBD。"""
+        from shared.schemas.semantic_entry import STRONG_PRODUCER_TOOLS, has_strong_producer
+        from shared.schemas.semantic_routing import resolve_candidates
+
+        ruleset = collection_plan["kbd_ruleset_snapshot"]
+        ordinary = [
+            item
+            for item in ruleset
+            if not item.get("semantic_entry_profile") or has_strong_producer({"signals": item.get("signals", [])})
+        ]
+        candidates, evaluations = [], []
+        if ordinary:
+            candidates, evaluations = await self._evaluate_kbds(
+                session_row,
+                {**collection_plan, "kbd_ruleset_snapshot": ordinary},
+                evidence,
+                _routed=True,
+            )
+            if any(item.get("cdd_state") == "SUPPORTED" for item in candidates):
+                return candidates, evaluations
+        strong_signals = {
+            f"kbd:{item['support_id']}:{signal['id']}"
+            for item in ordinary
+            for signal in item.get("signals", [])
+            if (signal.get("acquire") or {}).get("tool") in STRONG_PRODUCER_TOOLS
+        }
+        strong_evaluations = [item for item in evaluations if item["signal_id"] in strong_signals]
+        if not ordinary:
+            status = "not_applicable"
+        elif (
+            not strong_signals
+            or len(strong_evaluations) != len(strong_signals)
+            or any(item["state"] == "UNKNOWN" for item in strong_evaluations)
+        ):
+            status = "source_unavailable"
+        elif any(item["state"] == "MATCHED" for item in strong_evaluations):
+            status = "matched"
+        else:
+            status = "no_match"
+        entries = [
+            {
+                **item,
+                "id": str(item["kbd_id"]),
+                "signals_json": {
+                    "signals": item.get("signals", []),
+                    "semantic_entry_profile": item.get("semantic_entry_profile"),
+                },
+                "resource_revision": {"revision": item.get("revision"), "checksum": item.get("checksum")},
+            }
+            for item in ruleset
+        ]
+        frozen_context = collection_plan.get("context_snapshot") or {}
+        # 故障描述与计划同版本冻结；不把近期变更描述偷换为主诉。
+        context = frozen_context.get("semantic_context") or {}
+        route = await resolve_candidates(entries=entries, context=context, strong_status=status, mode="offline")
+        self._semantic_route = route
+        if route["decision"] == "executable":
+            selected_ids = {item["kbd_id"] for item in route["candidates"]}
+            selected = [item for item in ruleset if str(item["kbd_id"]) in selected_ids]
+            candidates, routed_evaluations = await self._evaluate_kbds(
+                session_row,
+                {**collection_plan, "kbd_ruleset_snapshot": selected},
+                evidence,
+                _routed=True,
+            )
+            evaluations.extend(routed_evaluations)
+        for candidate in candidates:
+            candidate["snapshot"]["semantic_route"] = route
+        return candidates, evaluations
+
     def _evaluate_signal(
         self,
         kbd_id: int,
@@ -955,11 +1041,21 @@ class OfflineAnalysisService:
             }
         refs = [str(item["evidence_id"]) for item in available]
         if matcher is None:
+            producer_outcomes = [_evaluate_offline_producer(signal, item["structured_data"]) for item in available]
+            determinate = [item for item in producer_outcomes if item is not None]
+            if not determinate:
+                state, reason = "UNKNOWN", "证据存在，但产出变量无法按当前 Signal 契约确定性提取"
+            elif any(determinate) and not all(determinate):
+                state, reason = "UNKNOWN", "不同证据项的产出变量提取结果冲突"
+            elif all(determinate):
+                state, reason = "MATCHED", "产出变量及 QKV 后处理已按当前 Signal 契约完成"
+            else:
+                state, reason = "NOT_MATCHED", "证据存在，但无法按 produces 规格提取有效变量或后处理未通过"
             return {
                 "support_id": support_id,
                 "signal_id": full_signal_id,
-                "state": "MATCHED",
-                "reason": "信号所需证据存在，产出变量模式由结构化证据支持",
+                "state": state,
+                "reason": reason,
                 "required_for_conclusion": required,
                 "evidence_status": "available",
                 "evidence_refs": refs,
@@ -1433,6 +1529,12 @@ class OfflineAnalysisService:
             }
         )
         summary = _report_summary(conclusion["level"], top, assessment)
+        semantic_route = getattr(self, "_semantic_route", None)
+        if semantic_route:
+            action = (semantic_route.get("next_action") or {}).get("question")
+            summary += "\n语义入口：" + str(semantic_route.get("reason_text") or semantic_route.get("reason") or "")
+            if action:
+                summary += "\n下一步：" + action
         report_id = uuid.uuid4()
         await self._session.execute(
             text(
@@ -1465,7 +1567,11 @@ class OfflineAnalysisService:
                 "resolved_domain": top["category_id"] if top else session_row["selected_category"],
                 "hypothesis": top["root_cause"] if top and conclusion["level"] != "Insufficient" else None,
                 "confidence": conclusion["confidence"],
-                "supporting": json.dumps([{"evidence_ref": ref} for ref in matched_refs]),
+                "supporting": json.dumps(
+                    [{"evidence_ref": ref} for ref in matched_refs]
+                    + ([{"kind": "semantic_route", "route": semantic_route}] if semantic_route else []),
+                    ensure_ascii=False,
+                ),
                 "counter": json.dumps([{"evidence_ref": ref} for ref in counter_refs]),
                 "excluded": json.dumps(
                     [{"support_id": item["support_id"], "title": item["title"]} for item in candidates[1:4]]
@@ -1740,6 +1846,91 @@ def _evaluate_matcher(matcher: Any, value: Any) -> bool | None:
     text_value = _flatten_text(value)
     result = evaluate_matcher(translated, text_value)
     return result.matched
+
+
+def _evaluate_offline_producer(signal: dict[str, Any], structured_data: Any) -> bool | None:
+    """用发布时同一份 produces/output_processing 契约验证离线变量生产。
+
+    离线证据可读不代表变量已取到。无法在离线确定性复放的 AI 后处理保持 UNKNOWN，
+    避免把不可复现的模型行为误标为现场支持证据。
+    """
+    acquire = signal.get("acquire") or {}
+    tool = str(acquire.get("tool") or "")
+    orchestrate = signal.get("orchestrate") or {}
+    produces = orchestrate.get("produces") or []
+    if not isinstance(produces, list) or not produces:
+        return None
+    processing = orchestrate.get("output_processing") or []
+    # 文本制品的 structured_data 是索引包装，preview 才是物理输出。
+    # 被截断的索引不能证明完整产出，必须保留 UNKNOWN。
+    if isinstance(structured_data, dict) and structured_data.get("truncated") is True:
+        return None
+    if any(
+        isinstance(item, dict)
+        and item.get("mode") == "derive"
+        and isinstance((item.get("extract") or {}).get("ai_processing"), dict)
+        for item in processing
+    ):
+        return None
+    try:
+        if tool.startswith("qkv_"):
+            from shared.signals.qkv_output_processing import apply_output_processing
+            from shared.signals.qkv_parser import first_complete_produced_record
+
+            values = _project_offline_qkv_records(structured_data, produces, tool=tool)
+            processed = apply_output_processing(values, processing)
+            return (
+                processed.matched
+                if processed.assertions
+                else first_complete_produced_record(processed.records, produces) is not None
+            )
+        if tool.startswith("qfk_"):
+            outputs = structured_data if isinstance(structured_data, dict) else {"stdout": _flatten_text(structured_data)}
+            if "stdout" not in outputs:
+                outputs = {**outputs, "stdout": _flatten_text(structured_data)}
+            for spec in produces:
+                if not isinstance(spec, dict) or not str(spec.get("name") or "").strip():
+                    return False
+                extract = spec.get("extract")
+                if not isinstance(extract, dict):
+                    return False
+                source = str(extract.get("source") or "stdout")
+                if source not in outputs:
+                    return False
+                extract_value(_flatten_text(outputs[source]), extract, str(spec.get("type") or "string"))
+            return True
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError, QFKExtractionError):
+        return False
+    return None
+
+
+def _project_offline_qkv_records(
+    structured_data: Any, produces: list[Any], *, tool: str = "qkv_task"
+) -> list[dict[str, Any]]:
+    """展开离线索引包装，字段投影、时间和弹框解析均委托共享 QKV parser。"""
+    from shared.signals.qkv_parser import _extract_by_produces, parse_frontend_value
+
+    payload = structured_data
+    if isinstance(payload, dict) and isinstance(payload.get("preview"), str):
+        payload = payload["preview"]
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            if tool == "qkv_dialog":
+                return parse_frontend_value("dialog", payload, produces)
+            # 任务、告警、视觉观察必须是结构化记录，任意文本不是有效变量证据。
+            return []
+    if isinstance(payload, dict):
+        if "data" in payload:
+            payload = payload["data"]
+        elif "items" in payload:
+            payload = payload["items"]
+        else:
+            payload = [payload]
+    if not isinstance(payload, list):
+        return []
+    return _extract_by_produces(payload, produces)
 
 
 def row_to_kbd_dict(row: dict[str, Any]) -> dict[str, Any]:

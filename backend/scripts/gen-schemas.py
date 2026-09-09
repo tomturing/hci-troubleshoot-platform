@@ -20,6 +20,7 @@
   python backend/scripts/gen-schemas.py --out DIR       # 指定输出目录
   make gen-schemas                                      # 等价
 """
+
 from __future__ import annotations
 
 import argparse
@@ -29,7 +30,7 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent                 # backend/scripts
+HERE = Path(__file__).resolve().parent  # backend/scripts
 SCHEMA_MODULE = HERE.parent / "shared" / "schemas" / "acquirer_args.py"
 DEFAULT_OUT = HERE.parent / "shared" / "schemas" / "signals"
 
@@ -70,9 +71,7 @@ def build_tool_schema(mod: object, tool: str, schema: dict) -> dict:
     # 此时语义差异必须在 per-tool schema 中可见，不能被 common_args 掩盖。
     timeout = s.get("properties", {}).get("timeout")
     if timeout is not None and timeout == mod.COMMON_ARGS["timeout"]:  # type: ignore[attr-defined]
-        s["properties"]["timeout"] = {
-            "$ref": f"{BASE}/acquirer_args/common_args.schema.json#/properties/timeout"
-        }
+        s["properties"]["timeout"] = {"$ref": f"{BASE}/acquirer_args/common_args.schema.json#/properties/timeout"}
     s["$schema"] = DRAFT
     s["$id"] = f"{BASE}/acquirer_args/{tool}.schema.json"
     s["title"] = f"acquire.args for {tool}"
@@ -86,11 +85,7 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
         acquire_allof.append(
             {
                 "if": {"properties": {"tool": {"const": tool}}, "required": ["tool"]},
-                "then": {
-                    "properties": {
-                        "args": {"$ref": f"{BASE}/acquirer_args/{tool}.schema.json"}
-                    }
-                },
+                "then": {"properties": {"args": {"$ref": f"{BASE}/acquirer_args/{tool}.schema.json"}}},
             }
         )
 
@@ -111,8 +106,71 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
             "verification_contract": {"$ref": "#/definitions/verificationContract"},
             "generation_metadata": {"$ref": "#/definitions/generationMetadata"},
             "publish_validation": {"$ref": "#/definitions/publishValidation"},
+            "semantic_entry_profile": {"$ref": "#/definitions/semanticEntryProfile"},
         },
         "definitions": {
+            "semanticEntryProfile": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["schema_version", "diagnosis_capability", "canonical_symptoms", "positive_anchors"],
+                "properties": {
+                    "schema_version": {"const": 1},
+                    "diagnosis_capability": {
+                        "type": "string",
+                        "enum": ["executable", "guidance_only", "capability_gap"],
+                    },
+                    "canonical_symptoms": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+                    "positive_anchors": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+                    "exclusion_anchors": {"type": "array", "items": {"type": "string"}},
+                    "scope": {"type": ["string", "array"], "items": {"type": "string"}},
+                    "manual_evidence_request": {"type": "array", "items": {"type": "string"}},
+                    "clarifying_questions": {
+                        "type": "array",
+                        "maxItems": 10,
+                        "items": {"type": "string", "minLength": 1, "maxLength": 500},
+                    },
+                    "source_refs": {"type": "array", "maxItems": 30, "items": {"type": "string", "minLength": 1}},
+                    "source_evidence": {
+                        "type": "array",
+                        "maxItems": 100,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["field_path", "source_ref", "quote", "source_sha256"],
+                            "properties": {
+                                "field_path": {
+                                    "type": "string",
+                                    "pattern": "^(canonical_symptoms|positive_anchors|exclusion_anchors)\\.[0-9]+$",
+                                },
+                                "source_ref": {"enum": ["problem_description", "alert_info", "steps_text"]},
+                                "quote": {"type": "string", "minLength": 1, "maxLength": 2000},
+                                "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+                            },
+                        },
+                    },
+                    "routing_examples": {
+                        "type": "array",
+                        "maxItems": 30,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["description", "expected_match"],
+                            "properties": {
+                                "description": {"type": "string", "minLength": 1, "maxLength": 16000},
+                                "expected_match": {"type": "boolean"},
+                            },
+                        },
+                    },
+                    "applicability": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            field: {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1}}
+                            for field in ("product", "product_version", "component", "object_type", "operation")
+                        },
+                    },
+                },
+            },
             "rejectedCandidate": {
                 "type": "object",
                 "required": ["candidate", "reason"],
@@ -162,9 +220,7 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                 "properties": {
                     "type": {
                         "type": "string",
-                        "enum": [
-                            "keyword", "regex", "state", "boolean", "threshold", "delta", "trend", "exists"
-                        ],
+                        "enum": ["keyword", "regex", "state", "boolean", "threshold", "delta", "trend", "exists"],
                     },
                     "pattern": {
                         "anyOf": [
@@ -189,7 +245,14 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     "aggregation": {
                         "type": "string",
                         "enum": [
-                            "first_number", "last_number", "line_count", "duration_seconds", "max", "min", "sum", "range"
+                            "first_number",
+                            "last_number",
+                            "line_count",
+                            "duration_seconds",
+                            "max",
+                            "min",
+                            "sum",
+                            "range",
                         ],
                         "default": "first_number",
                     },
@@ -242,8 +305,13 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                                 "type": {
                                     "type": "string",
                                     "enum": [
-                                        "string", "integer", "number", "boolean", "array",
-                                        "object", "array<object>",
+                                        "string",
+                                        "integer",
+                                        "number",
+                                        "boolean",
+                                        "array",
+                                        "object",
+                                        "array<object>",
                                     ],
                                 },
                                 "path": {"type": "string"},
@@ -269,7 +337,10 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     "mode": {"type": "string", "enum": ["derive", "assert"]},
                     "input": {"type": "string", "minLength": 1},
                     "name": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
-                    "type": {"type": "string", "enum": ["string", "integer", "number", "percentage", "boolean", "array"]},
+                    "type": {
+                        "type": "string",
+                        "enum": ["string", "integer", "number", "percentage", "boolean", "array"],
+                    },
                     "scope": {"type": "string", "enum": ["per_record", "single"], "default": "per_record"},
                     "extract": {"$ref": "#/definitions/qkvValueExtract"},
                     "match": {"$ref": "#/definitions/qkvMatch"},
@@ -294,13 +365,23 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     "type": {"type": "string", "enum": ["feature", "split"]},
                     "feature": {"type": "string"},
                     "separator": {"type": "string", "minLength": 1},
-                    "cardinality": {"type": "string", "enum": ["exactly_one", "first", "last", "all"], "default": "exactly_one"},
+                    "cardinality": {
+                        "type": "string",
+                        "enum": ["exactly_one", "first", "last", "all"],
+                        "default": "exactly_one",
+                    },
                     "ai_processing": {"$ref": "#/definitions/aiProcessing"},
                     "ai_extract": {"type": "object", "description": "历史兼容字段；保存新配置时请迁移为 ai_processing"},
                 },
                 "allOf": [
-                    {"if": {"properties": {"type": {"const": "feature"}}, "required": ["type"]}, "then": {"required": ["feature"]}},
-                    {"if": {"properties": {"type": {"const": "split"}}, "required": ["type"]}, "then": {"required": ["separator"]}},
+                    {
+                        "if": {"properties": {"type": {"const": "feature"}}, "required": ["type"]},
+                        "then": {"required": ["feature"]},
+                    },
+                    {
+                        "if": {"properties": {"type": {"const": "split"}}, "required": ["type"]},
+                        "then": {"required": ["separator"]},
+                    },
                 ],
             },
             "qkvMatch": {
@@ -309,20 +390,37 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                 "additionalProperties": False,
                 "required": ["type", "expected"],
                 "properties": {
-                    "type": {"type": "string", "enum": ["keyword", "regex", "state", "boolean", "threshold", "delta", "trend", "exists"]},
-                    "pattern": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}]},
+                    "type": {
+                        "type": "string",
+                        "enum": ["keyword", "regex", "state", "boolean", "threshold", "delta", "trend", "exists"],
+                    },
+                    "pattern": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+                        ]
+                    },
                     "mode": {"type": "string", "enum": ["or", "and", "not"]},
                     "expected": {"type": "boolean"},
                     "value": {"type": ["number", "integer", "string"]},
                     "operator": {"type": "string", "enum": [">", ">=", "<", "<=", "==", "=", "!="]},
-                    "aggregation": {"type": "string", "enum": ["first_number", "last_number", "max", "min", "sum", "range"]},
+                    "aggregation": {
+                        "type": "string",
+                        "enum": ["first_number", "last_number", "max", "min", "sum", "range"],
+                    },
                     "minimum_samples": {"type": "integer", "minimum": 2, "maximum": 10000},
                     "direction": {"type": "string", "enum": ["increasing", "decreasing", "stable"]},
                     "metric": {"type": "string"},
                 },
                 "allOf": [
-                    {"if": {"properties": {"type": {"enum": ["keyword", "regex", "state"]}}}, "then": {"required": ["pattern"]}},
-                    {"if": {"properties": {"type": {"enum": ["threshold", "delta"]}}}, "then": {"required": ["value", "operator"]}},
+                    {
+                        "if": {"properties": {"type": {"enum": ["keyword", "regex", "state"]}}},
+                        "then": {"required": ["pattern"]},
+                    },
+                    {
+                        "if": {"properties": {"type": {"enum": ["threshold", "delta"]}}},
+                        "then": {"required": ["value", "operator"]},
+                    },
                     {"if": {"properties": {"type": {"const": "trend"}}}, "then": {"required": ["direction"]}},
                 ],
             },
@@ -533,7 +631,11 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                         "maxLength": 1000,
                     },
                     "mode": {"type": "string", "enum": ["extract", "derive"], "default": "extract"},
-                    "output_type": {"type": "string", "enum": ["boolean", "number", "string", "array"], "default": "string"},
+                    "output_type": {
+                        "type": "string",
+                        "enum": ["boolean", "number", "string", "array"],
+                        "default": "string",
+                    },
                     "item_type": {"type": "string", "enum": ["boolean", "number", "string"]},
                 },
             },

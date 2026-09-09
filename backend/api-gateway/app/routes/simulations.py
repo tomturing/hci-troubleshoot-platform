@@ -441,8 +441,14 @@ async def record_test_run_result(test_run_id: str, request: Request) -> JSONResp
         "execution_mode",
         "command_count",
         "failed_command_count",
+        "nonzero_exit_count",
+        "transport_error_count",
         "agent_stream_completed",
         "outcome",
+        "expected_support_id",
+        "supported_support_ids",
+        "is_definitive",
+        "diagnostic_outcome_received",
     }
     unknown_fields = sorted(set(report_summary) - allowed_fields)
     if unknown_fields:
@@ -456,31 +462,52 @@ async def record_test_run_result(test_run_id: str, request: Request) -> JSONResp
             status_code=400,
             detail=f"report_summary missing required fields: {', '.join(missing_fields)}",
         )
-    for field in ("case_id", "conversation_id"):
+    for field in ("case_id", "conversation_id", "expected_support_id"):
         value = report_summary[field]
         if not isinstance(value, str) or not value.strip() or len(value) > 128:
             raise HTTPException(status_code=400, detail=f"report_summary.{field} must be a non-empty string")
     if report_summary["execution_mode"] != "sim-ssh":
         raise HTTPException(status_code=400, detail="report_summary.execution_mode must be sim-ssh")
-    for field in ("command_count", "failed_command_count"):
+    for field in ("command_count", "failed_command_count", "nonzero_exit_count", "transport_error_count"):
         value = report_summary[field]
         if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > 10000:
             raise HTTPException(status_code=400, detail=f"report_summary.{field} must be an integer from 0 to 10000")
-    if report_summary["failed_command_count"] > report_summary["command_count"]:
-        raise HTTPException(status_code=400, detail="failed_command_count cannot exceed command_count")
-    if report_summary["agent_stream_completed"] is not True:
-        raise HTTPException(status_code=400, detail="report_summary.agent_stream_completed must be true")
+    if report_summary["transport_error_count"] > report_summary["failed_command_count"]:
+        raise HTTPException(status_code=400, detail="transport_error_count cannot exceed failed_command_count")
+    if not isinstance(report_summary["agent_stream_completed"], bool):
+        raise HTTPException(status_code=400, detail="report_summary.agent_stream_completed must be a boolean")
+    if not isinstance(report_summary["is_definitive"], bool):
+        raise HTTPException(status_code=400, detail="report_summary.is_definitive must be a boolean")
+    if not isinstance(report_summary["diagnostic_outcome_received"], bool):
+        raise HTTPException(status_code=400, detail="report_summary.diagnostic_outcome_received must be a boolean")
+    supported_support_ids = report_summary["supported_support_ids"]
+    if (
+        not isinstance(supported_support_ids, list)
+        or len(supported_support_ids) > 100
+        or any(not isinstance(item, str) or not item.strip() or len(item) > 128 for item in supported_support_ids)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="report_summary.supported_support_ids must be a list of non-empty strings",
+        )
     outcome = report_summary["outcome"]
     if outcome not in {"passed", "failed", "inconclusive"}:
         raise HTTPException(status_code=400, detail="report_summary.outcome must be passed, failed, or inconclusive")
     if payload.get("outcome") != outcome:
         raise HTTPException(status_code=400, detail="result outcome must match report_summary.outcome")
-    if outcome == "passed" and (
-        report_summary["command_count"] < 1 or report_summary["failed_command_count"] != 0
+    if outcome == "passed" and not (
+        report_summary["command_count"] >= 1
+        and report_summary["failed_command_count"] == 0
+        and report_summary["transport_error_count"] == 0
+        and report_summary["agent_stream_completed"] is True
+        and report_summary["diagnostic_outcome_received"] is True
+        and report_summary["is_definitive"] is True
+        and report_summary["expected_support_id"] in supported_support_ids
     ):
-        raise HTTPException(status_code=400, detail="passed result requires at least one successful command")
-    if outcome == "failed" and report_summary["failed_command_count"] < 1:
-        raise HTTPException(status_code=400, detail="failed result requires failed_command_count greater than zero")
+        raise HTTPException(
+            status_code=400,
+            detail="passed result requires a definitive diagnostic outcome matching expected_support_id",
+        )
     encoded_summary = json.dumps(
         report_summary,
         ensure_ascii=False,

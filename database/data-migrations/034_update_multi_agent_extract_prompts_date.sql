@@ -124,19 +124,41 @@ BEGIN
       version = EXCLUDED.version,
       updated_at = NOW();
 
-    -- 3. 若存在 signal_modeling_template 表，同步更新生产者 qkv_task / qkv_alert 的产出契约增加 DATE
+    -- 3. 若存在 signal_modeling_template 表，同步更新生产者 qkv_task / qkv_alert 的产出契约增加 DATE。
+    -- 防御性降级：存量库中数据迁移（Step 1）先于 Atlas schema apply（Step 3）执行，
+    -- 此时 trace_id 列可能尚未由 Atlas 补齐。列缺失时仅更新 variable_protocol
+    -- （审计标记由建列 DEFAULT 兜底），避免迁移与 Schema 收敛互相死锁。
     IF to_regclass('public.signal_modeling_template') IS NOT NULL THEN
-        UPDATE signal_modeling_template
-        SET variable_protocol = '{"produces":["HOST","VM","REQUEST_ID","STATUS","ERRCODE_TRACING","TARGET","END","DATE","DESCRIPTION"],"requires":[]}'::jsonb,
-            trace_id = 'migration:20260904000002',
-            updated_at = NOW()
-        WHERE tool_name = 'qkv_task';
+        IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'signal_modeling_template'
+              AND column_name = 'trace_id'
+        ) THEN
+            UPDATE signal_modeling_template
+            SET variable_protocol = '{"produces":["HOST","VM","REQUEST_ID","STATUS","ERRCODE_TRACING","TARGET","END","DATE","DESCRIPTION"],"requires":[]}'::jsonb,
+                trace_id = 'migration:20260904000002',
+                updated_at = NOW()
+            WHERE tool_name = 'qkv_task';
 
-        UPDATE signal_modeling_template
-        SET variable_protocol = '{"produces":["HOST","VM","TARGET","END","DATE","ALERT_TYPE","STATUS"],"requires":[]}'::jsonb,
-            trace_id = 'migration:20260904000002',
-            updated_at = NOW()
-        WHERE tool_name = 'qkv_alert';
+            UPDATE signal_modeling_template
+            SET variable_protocol = '{"produces":["HOST","VM","TARGET","END","DATE","ALERT_TYPE","STATUS"],"requires":[]}'::jsonb,
+                trace_id = 'migration:20260904000002',
+                updated_at = NOW()
+            WHERE tool_name = 'qkv_alert';
+        ELSE
+            RAISE NOTICE 'signal_modeling_template 缺少 trace_id 列（Atlas 尚未收敛），本次仅更新 variable_protocol';
+
+            UPDATE signal_modeling_template
+            SET variable_protocol = '{"produces":["HOST","VM","REQUEST_ID","STATUS","ERRCODE_TRACING","TARGET","END","DATE","DESCRIPTION"],"requires":[]}'::jsonb,
+                updated_at = NOW()
+            WHERE tool_name = 'qkv_task';
+
+            UPDATE signal_modeling_template
+            SET variable_protocol = '{"produces":["HOST","VM","TARGET","END","DATE","ALERT_TYPE","STATUS"],"requires":[]}'::jsonb,
+                updated_at = NOW()
+            WHERE tool_name = 'qkv_alert';
+        END IF;
     END IF;
 
     RAISE NOTICE '034 数据迁移执行完成';

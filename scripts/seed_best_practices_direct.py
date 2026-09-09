@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
 scripts/seed_best_practices_direct.py
-读取已发布的 23 个 KBD 终稿信号，生成标准 SQL 并直接导入 staging 数据库 signal_best_practice 表。
+读取已发布 KBD 终稿信号，生成标准 SQL 并直接回灌 signal_best_practice 表。
 """
+import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -42,11 +44,13 @@ def infer_pattern_category(tool: str, signal: dict) -> str:
 
 
 def main():
-    json_path = "/home/node/.gemini/antigravity-ide/brain/7da02bdb-c3a1-4e7c-9222-5e51c94c887f/scratch/kbd_published_23.json"
-    with open(json_path, "r", encoding="utf-8") as f:
+    parser = argparse.ArgumentParser(description="从导出的已发布 KBD JSON 回灌信号最佳实践")
+    parser.add_argument("--input", required=True, help="KBD JSON 导出文件路径")
+    args = parser.parse_args()
+    with open(args.input, encoding="utf-8") as f:
         kbds = json.load(f)
 
-    # 1. 建立 template 映射 (由之前 migration 插入的 13 类)
+    # 1. 建立 template 映射（数据库行只提供描述，代码契约仍是运行时权威源）
     template_map_query = "SELECT id, tool_name FROM signal_modeling_template;"
     proc = subprocess.run(
         ["kubectl", "exec", "-i", "-n", "hci-staging", "postgres-0", "--",
@@ -64,7 +68,7 @@ def main():
     # 2. 构造 INSERT SQL
     sql_lines = [
         "BEGIN;",
-        "DELETE FROM signal_best_practice WHERE source_kbd_id IS NOT NULL;"
+        "UPDATE signal_best_practice SET is_active = FALSE WHERE source_kbd_id IS NOT NULL;"
     ]
 
     total_inserted = 0
@@ -73,6 +77,9 @@ def main():
         support_id = kbd["support_id"]
         title = kbd["title"]
         final_sigs_doc = kbd.get("final_signals") or {}
+        source_checksum = hashlib.sha256(
+            json.dumps(final_sigs_doc, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
         sigs = final_sigs_doc.get("signals") if isinstance(final_sigs_doc, dict) else (final_sigs_doc if isinstance(final_sigs_doc, list) else [])
 
         for sig in sigs:
@@ -80,7 +87,8 @@ def main():
                 continue
             acquire = sig.get("acquire") or {}
             tool = acquire.get("tool")
-            if not tool:
+            signal_id = str(sig.get("id") or "").strip()
+            if not tool or tool == "qkv_case_context" or not signal_id:
                 continue
 
             template_id = template_ids.get(tool, "NULL")
@@ -88,15 +96,20 @@ def main():
             evidence = ((sig.get("provenance") or {}).get("evidence") or (acquire.get("args") or {}).get("instruction") or title).replace("'", "''")
             notes = f"来源：已发布 KBD {support_id} 专家最终审核版本".replace("'", "''")
             sig_json_str = json.dumps(sig, ensure_ascii=False).replace("'", "''")
+            escaped_signal_id = signal_id.replace("'", "''")
 
             sql_lines.append(f"""
 INSERT INTO signal_best_practice (
     template_id, tool_name, pattern_category, source_kbd_id, support_id,
-    raw_evidence, signal_json, design_notes, completeness_score, trace_id
+    source_revision, source_checksum, signal_id,
+    raw_evidence, signal_json, design_notes, completeness_score, trace_id, is_active
 ) VALUES (
     {template_id}, '{tool}', '{pattern_cat}', {kbd_id}, '{support_id}',
-    '{evidence}', '{sig_json_str}'::jsonb, '{notes}', 10, 'seed-best-practice:{support_id}:{total_inserted}'
-);
+    0, '{source_checksum}', '{escaped_signal_id}',
+    '{evidence}', '{sig_json_str}'::jsonb, '{notes}', 10, 'seed-best-practice:{support_id}:{total_inserted}', TRUE
+)
+ON CONFLICT (source_kbd_id, source_checksum, signal_id)
+DO UPDATE SET is_active = TRUE, updated_at = NOW();
 """)
             total_inserted += 1
 

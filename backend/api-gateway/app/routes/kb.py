@@ -865,6 +865,19 @@ async def kbd_extract_signals_proxy(kbd_id: int, request: Request):
     return _kbd_json_response(response)
 
 
+@kbd_router.post("/{kbd_id}/semantic-preview")
+async def kbd_semantic_preview_proxy(kbd_id: int, request: Request):
+    """沿现有管理端鉴权代理非执行画像预览。"""
+    response = await _kbd_proxy(
+        "POST",
+        f"/{kbd_id}/semantic-preview",
+        payload=await request.json(),
+        headers=_internal_auth_headers(),
+        timeout=90.0,
+    )
+    return _kbd_json_response(response)
+
+
 # ============ SOP 管理代理（前端使用 /api/v1/sop 前缀） ============
 
 SOP_ADMIN_SERVICE_URL = f"{settings.KB_SERVICE_URL}/api/admin/sop"

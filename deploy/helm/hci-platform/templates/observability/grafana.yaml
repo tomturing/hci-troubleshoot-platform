@@ -25,7 +25,7 @@ spec:
               protocol: TCP
           env:
             - name: GF_SECURITY_ADMIN_USER
-              value: "admin"
+              value: {{ .Values.observability.grafana.adminUser | quote }}
             - name: GF_SECURITY_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:

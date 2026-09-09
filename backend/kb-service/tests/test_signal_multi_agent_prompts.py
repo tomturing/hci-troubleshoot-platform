@@ -9,6 +9,7 @@ from shared.utils.prompt_loader import StrictPromptLoader
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _MIGRATION_PATH = _REPO_ROOT / "database" / "atlas-migrations" / "20260904000001_seed_multi_agent_extract_prompts.sql"
+_ALIGNMENT_PATH = _REPO_ROOT / "database" / "atlas-migrations" / "20260907000000_align_signal_modeling_pipeline_contract.sql"
 
 
 def _load_prompt_template_from_migration(prompt_name: str) -> str:
@@ -92,3 +93,12 @@ def test_verify_agent_prompt_placeholders_and_contracts():
     assert "门禁错误自愈" in template
     assert "修复 JSON 取值路径错误" in template
     assert "verification_status" in template
+
+
+def test_alignment_migration_removes_effect_from_auto_catalog_and_preserves_history():
+    migration = _ALIGNMENT_PATH.read_text(encoding="utf-8")
+
+    assert "12 种可自动建模采集工具" in migration
+    assert "不得生成 qkv_effect" in migration
+    assert "ON DELETE SET NULL" in migration
+    assert "uq_signal_best_practice_source_checksum_signal" in migration

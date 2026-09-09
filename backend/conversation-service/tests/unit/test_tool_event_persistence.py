@@ -154,6 +154,15 @@ async def test_resume_stream_persists_and_forwards_tool_lifecycle():
                 "status": "success",
             },
         }
+        yield {
+            "type": "stage_update",
+            "stage": "kbd_diag_complete",
+            "metadata": {
+                "is_definitive": True,
+                "supported_kbds": ["1893"],
+                "supported_support_ids": ["99178853535200"],
+            },
+        }
         yield {"type": "done"}
 
     agent_client.resume_stream = resume_stream
@@ -170,6 +179,8 @@ async def test_resume_stream_persists_and_forwards_tool_lifecycle():
 
     assert any("event:tool_call:" in chunk for chunk in chunks)
     assert any("event:tool_result:" in chunk for chunk in chunks)
+    outcome_chunk = next(chunk for chunk in chunks if "event:diagnostic_outcome:" in chunk)
+    assert '"supported_support_ids": ["99178853535200"]' in outcome_chunk
     assert service._record_tool_call.await_count == 2
     assert service._record_tool_call.await_args_list[0].kwargs == {
         "conversation_id": conversation_id,
@@ -182,3 +193,29 @@ async def test_resume_stream_persists_and_forwards_tool_lifecycle():
             "status": "running",
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_resume_stream_forwards_structured_agent_error():
+    conversation_id = uuid.UUID("00000000-0000-0000-0000-000000000752")
+    repository = MagicMock()
+    repository.get_conversation = AsyncMock(return_value=MagicMock(case_id="Q2026072747494"))
+    agent_client = MagicMock()
+
+    async def resume_stream(_session_id):
+        yield {"type": "error", "message": "QFK 执行通道中断"}
+        yield {"type": "done"}
+
+    agent_client.resume_stream = resume_stream
+    service = ConversationService(
+        repository=repository,
+        ai_registry=MagicMock(),
+        kb_client=AsyncMock(),
+        session_factory=MagicMock(),
+        agent_client=agent_client,
+    )
+
+    chunks = [chunk async for chunk in service.resume_ops_agent_stream(conversation_id)]
+
+    assert any('event:error:{"message": "QFK 执行通道中断"}' in chunk for chunk in chunks)
+    assert any("[Agent Error: QFK 执行通道中断]" in chunk for chunk in chunks)

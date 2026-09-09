@@ -29,10 +29,14 @@ class _FakeHTTPClient:
 
     def __init__(self, *args, **kwargs):
         self.posts: list[tuple[str, dict]] = []
+        self.closed = False
 
     async def post(self, url: str, json: dict | None = None, **kwargs):  # noqa: A002
         self.posts.append((url, json or {}))
         return _FakeResponse()
+
+    async def aclose(self):
+        self.closed = True
 
 
 class _FakeRedis:
@@ -133,6 +137,7 @@ async def test_online_orchestration_baseline_path_produces_variables(monkeypatch
 
     assert result.success is True
     assert result.capture_id
+    assert fake_http.closed is True
     # 状态机前进顺序（无唤醒分支）
     assert status_log == [
         "created",
@@ -216,6 +221,7 @@ async def test_online_orchestration_near_black_wake_flow(monkeypatch):
     )
 
     assert result.success is True
+    assert fake_http.closed is True
     # 唤醒链路状态：confirmation_pending → waking → recapturing
     assert "wake_confirmation_pending" in status_log
     assert "waking" in status_log

@@ -32,6 +32,60 @@ class CollectionProfileService:
     def __init__(self, session: AsyncSession):
         self._session = session
 
+    async def semantic_advice(
+        self, *, actor: ActorContext, category_id: str | None = None, context: dict | None = None
+    ):
+        """无可执行采集画像时仍可查看人工指引；不创建空计划、不伪造未命中。"""
+        from shared.schemas.semantic_entry import capability_of
+        from shared.schemas.semantic_routing import resolve_candidates
+
+        if not actor.has_any_role(
+            "customer_admin",
+            "field_engineer",
+            "support_engineer",
+            "domain_expert",
+            "platform_admin",
+            "diagnosis_worker",
+        ):
+            raise DiagnosisError(code="FORBIDDEN", message="当前角色无权读取离线诊断指引", http_status=403)
+        snapshots = [
+            snapshot
+            for snapshot in await DynamicResourceLoader(self._session).list_active("kbd")
+            if snapshot.status == "published" and snapshot.content.get("status", "published") == "published"
+        ]
+        if category_id is None:
+            categories = {
+                str(snapshot.content["category_id"]): str(
+                    snapshot.content.get("category_name") or snapshot.content["category_id"]
+                )
+                for snapshot in snapshots
+                if snapshot.content.get("category_id")
+                and capability_of(snapshot.content.get("signals_json")) == "guidance_only"
+            }
+            return [{"category_id": key, "display_name": value} for key, value in sorted(categories.items())]
+        entries = [
+            {
+                **snapshot.content,
+                "id": str(snapshot.content.get("id") or snapshot.resource_name),
+                "resource_revision": {"revision": snapshot.revision, "checksum": snapshot.checksum},
+            }
+            for snapshot in snapshots
+            if snapshot.content.get("category_id") == category_id
+        ]
+        route = await resolve_candidates(
+            entries=entries, context=context, strong_status="not_applicable", mode="offline_advice"
+        )
+        # 采集前没有强证据结果，遇到强入口只能要求正常采集。
+        if route["decision"] == "executable":
+            route.update(
+                decision="inconclusive",
+                next_action={
+                    "type": "collect_evidence",
+                    "question": "该分类有可执行检查，请选择对应采集场景生成工具并上传证据；描述相似尚不能确认根因。",
+                },
+            )
+        return route
+
     async def publish(
         self,
         *,
@@ -288,9 +342,7 @@ class CollectionProfileService:
             select(CollectorDefinition).where(CollectorDefinition.collector_id.in_(collector_ids))
         )
         valid = {
-            item.collector_id
-            for item in result.scalars().all()
-            if item.review_status == "approved" and item.is_enabled
+            item.collector_id for item in result.scalars().all() if item.review_status == "approved" and item.is_enabled
         }
         missing = sorted(set(collector_ids) - valid)
         if missing:

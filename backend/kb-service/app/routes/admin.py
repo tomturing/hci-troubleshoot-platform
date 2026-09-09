@@ -208,7 +208,10 @@ def _humanize_signal_validation_error(error: jsonschema.ValidationError, signals
             "code": "KBD_PRODUCER_SIGNAL_MISSING",
             "location": "生产者信号",
             "field_path": "signals",
-            "message": "发布前请至少新增一条生产者信号，说明 Agent 如何通过任务、告警或弹框发现该故障。",
+            "message": (
+                "发布前请至少新增一条生产者信号或受控故障入口：优先使用任务、告警或弹框生产者；"
+                "原文确实没有这三类入口时，可配置语义入口并补齐诊断能力说明。"
+            ),
             "action": {"type": "add_signal", "kind": "producer"},
             "validation_reason": message,
         }
@@ -711,6 +714,16 @@ async def _publish_kbd_revision(
     kbd = result.scalar_one_or_none()
     if kbd is None:
         return None
+    from shared.schemas.semantic_entry import validate_profile_source_evidence
+
+    signals_json = getattr(kbd, "signals_json", None)
+    try:
+        validate_profile_source_evidence(
+            signals_json,
+            {field: getattr(kbd, field, None) for field in ("problem_description", "alert_info", "steps_text")},
+        )
+    except jsonschema.ValidationError as exc:
+        _raise_signal_validation_error(exc, (signals_json or {}).get("signals", []))
     effective_trace_id = trace_id or "trace-unavailable"
     package_snapshot = await ensure_publish_snapshot(session, kbd=kbd, trace_id=effective_trace_id)
     release_id = uuid5(NAMESPACE_URL, f"hci:knowledge-release:{package_snapshot.package_snapshot_digest}")
@@ -756,6 +769,14 @@ async def _publish_kbd_revision(
     package.status = "published"
     package.trace_id = effective_trace_id
     kbd.active_release_id = release.id
+    from app.services.signal_asset_service import SignalAssetService
+
+    await SignalAssetService.sync_published_kbd_best_practices(
+        session,
+        kbd=kbd,
+        source_revision=snapshot.revision,
+        source_checksum=package_snapshot.package_snapshot_digest.removeprefix("sha256:"),
+    )
     metadata = snapshot_revision_metadata(snapshot)
     metadata.update(
         {
@@ -800,6 +821,9 @@ async def _publish_kbd_tombstone(
         ),
         {"resource_name": str(kbd.id)},
     )
+    from app.services.signal_asset_service import SignalAssetService
+
+    await SignalAssetService.deactivate_kbd_best_practices(session, kbd.id)
     return snapshot_revision_metadata(snapshot)
 
 
@@ -2323,9 +2347,7 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
         working_snapshot_digest: str | None = None
         active_release_id: int | None = None
         try:
-            package = await session.scalar(
-                select(KbdPackage).where(KbdPackage.support_id == row["support_id"])
-            )
+            package = await session.scalar(select(KbdPackage).where(KbdPackage.support_id == row["support_id"]))
             if package is not None:
                 working_snapshot_digest = package.working_snapshot_digest
                 active_release_id = package.active_release_id
@@ -2389,6 +2411,88 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
         "lock_version": row["lock_version"],
         "maintenance_working": working_payload is not None,
         "review_view": "maintenance_working" if working_payload is not None else "entry",
+    }
+
+
+class SemanticPreviewRequest(BaseModel):
+    """仅试运行画像，不执行命令或保存草稿。"""
+
+    profile: dict[str, Any]
+    context: dict[str, Any]
+    strong_producer_status: str = "no_match"
+
+
+@kbd_router.post("/{kbd_id}/semantic-preview")
+async def preview_semantic_profile(request: Request, kbd_id: int, command: SemanticPreviewRequest):
+    """在同分类发布候选中对工作稿进行路由预览；不能作为发布／仿真通过证明。"""
+    from shared.dynamic_resource.loader import DynamicResourceLoader
+    from shared.schemas.semantic_entry import profile_source_evidence
+    from shared.schemas.semantic_routing import resolve_candidates
+    from shared.schemas.signal_schema import validate_signals_json
+
+    from app.routes.playbooks import _execution_issues
+
+    _check_auth(request)
+    detail = await get_kbd_entry_detail(request, kbd_id)
+    document = copy.deepcopy(detail.get("signals_json") or {"schema_version": 2, "signals": []})
+    # 没有已确认分类时无法构造同分类候选集，不能用单篇草稿制造成功预览。
+    if not str(detail.get("category_id") or "").strip():
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SEMANTIC_PREVIEW_CATEGORY_REQUIRED",
+                "message": "请先为 KBD 确认并保存问题分类，再执行路由试运行；未分类时无法比较同分类候选。",
+                "field_path": ["category_id"],
+            },
+        )
+    document["semantic_entry_profile"] = command.profile
+    if not any((signal.get("acquire") or {}).get("tool") == "qkv_case_context" for signal in document["signals"]):
+        document["signals"].append(
+            {"id": "case_context", "role": "context", "acquire": {"tool": "qkv_case_context", "args": {}}}
+        )
+    try:
+        validate_signals_json(document)
+    except jsonschema.ValidationError as exc:
+        raise HTTPException(status_code=422, detail={"message": exc.message, "field_path": list(exc.path)}) from exc
+    entries = []
+    async with _db_manager.async_session_factory() as session:
+        for snapshot in await DynamicResourceLoader(session).list_active("kbd"):
+            content = snapshot.content
+            if (
+                snapshot.status == "published"
+                and content.get("category_id") == detail.get("category_id")
+                and str(content.get("id")) != str(kbd_id)
+            ):
+                entries.append({**content, "resource_revision": snapshot_revision_metadata(snapshot)})
+    entries.append(
+        {
+            **detail,
+            "id": str(kbd_id),
+            "signals_json": document,
+            "resource_revision": {"working": True, "lock_version": detail.get("lock_version")},
+        }
+    )
+    for entry in entries:
+        signals = entry.get("signals_json") or {}
+        issues = _execution_issues(
+            signals.get("signals", []),
+            signals,
+            support_id=entry.get("support_id"),
+            category_id=detail.get("category_id"),
+        )
+        entry["executable"] = not issues
+    result = await resolve_candidates(
+        entries=entries,
+        context=command.context,
+        strong_status=command.strong_producer_status,
+        embed=_embedding_service.embed_batch if _embedding_service else None,
+        mode="admin_preview",
+    )
+    return {
+        **result,
+        "source_evidence": profile_source_evidence(command.profile, detail),
+        "preview_only": True,
+        "notice": "仅验证候选路由，不执行消费者；不代表发布或端到端验收通过。",
     }
 
 
@@ -2534,6 +2638,22 @@ async def review_kbd_signals(request: Request, kbd_id: int) -> dict[str, Any]:
     signals_doc = _load_signals_json(kbd.signals_json)
     normalize_derived_date_variables(signals_doc)
     signals = signals_doc.get("signals") if isinstance(signals_doc, dict) else []
+    from shared.schemas.semantic_entry import validate_profile_source_evidence
+
+    try:
+        validate_profile_source_evidence(
+            signals_doc,
+            {field: getattr(kbd, field, None) for field in ("problem_description", "alert_info", "steps_text")},
+        )
+    except jsonschema.ValidationError as exc:
+        issues.append(
+            {
+                "level": "error",
+                "code": "SEMANTIC_SOURCE_STALE",
+                "location": ".".join(map(str, exc.path)),
+                "message": exc.message,
+            }
+        )
     shared_review = review_signal_document(
         signals_doc,
         feature=SignalReviewFeature.EXPERT,
@@ -2872,7 +2992,9 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
             )
             for s in _raw_signals
         )
-        if not _has_consumer:
+        from shared.schemas.semantic_entry import capability_of
+
+        if not _has_consumer and capability_of(_signals_doc) != "guidance_only":
             raise HTTPException(
                 status_code=422,
                 detail=f"KBD 条目 {kbd_id} 缺少消费者(backend)信号，CDD 无法进行差异诊断消除，请补充至少 1 条 QFK 消费者信号后再审核",

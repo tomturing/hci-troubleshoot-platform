@@ -138,6 +138,37 @@ def test_extract_requirements_reads_v2_review_flags():
     assert [item["needs_review"] for item in requirements] == [True, True, False]
 
 
+def test_extract_requirements_excludes_context_and_post_remediation_effect():
+    """工单上下文与处置后复核不能伪装成一次性离线采集项。"""
+
+    kbd = {
+        "id": 45,
+        "resource_revision": 6,
+        "resource_checksum": "kbd-checksum-6",
+        "category_id": "vm-start",
+        "signals_json": {
+            "signals": [
+                {"id": "context", "acquire": {"tool": "qkv_case_context", "args": {}}},
+                {
+                    "id": "effect",
+                    "acquire": {
+                        "tool": "qkv_effect",
+                        "args": {
+                            "expectation": {
+                                "channel": "qkv_task",
+                                "matcher": {"type": "boolean", "expected": True},
+                                "window_seconds": 300,
+                            }
+                        },
+                    },
+                },
+            ]
+        },
+    }
+
+    assert extract_requirements(kbd) == []
+
+
 def test_qkv_dialog_expands_both_reviewed_log_paths():
     """弹框信号必须生成两个独立 Collector，不能静默漏掉 vt 日志域。"""
 
@@ -397,6 +428,11 @@ def test_target_scope_depends_on_compiled_target_binding_not_vm_tool_name():
         == "affected_object"
     )
     assert (
-        resolve_target_scope([{"target_scope": "once"}], "qfk_vm", "acli vm status get --vm-id {target_id}")
-        == "once"
+        resolve_target_scope([{"target_scope": "once"}], "qfk_vm", "acli vm status get --vm-id {target_id}") == "once"
     )
+
+
+def test_vm_console_target_scope_is_affected_object_without_command_template():
+    """固定操作也必须逐 VM 展开，不能因没有 target_id 模板退化为 once。"""
+
+    assert resolve_target_scope([], "qkv_vm_console", "vm_console_capture://fixed-operation") == "affected_object"

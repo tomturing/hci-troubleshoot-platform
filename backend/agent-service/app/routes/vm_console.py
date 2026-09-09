@@ -128,20 +128,23 @@ async def wake_and_recapture(capture_id: str, payload: WakeRequest, request: Req
     from app.tools.vm_console.adapter import run_wake_and_recapture
 
     intent = build_wake_intent(str(record["host_node_id"]), str(record["vm_id"]))
-    http_client = InternalHTTPClient(service_name="conversation-service")
-    outcome = await run_wake_and_recapture(
-        http_client,
-        db_session_factory=factory,
-        capture_id=capture_id,
-        conversation_id=str(record.get("conversation_id") or ""),
-        case_id=str(record.get("case_id") or ""),
-        host_node_id=str(record["host_node_id"]),
-        vm_id=str(record["vm_id"]),
-        node_ip=None,
-        timeout_seconds=60,
-        intent=intent,
-        trace_id=str(record.get("trace_id") or ""),
-    )
+    async with InternalHTTPClient(
+        base_url=settings.CONVERSATION_SERVICE_URL,
+        timeout=90.0,
+    ) as http_client:
+        outcome = await run_wake_and_recapture(
+            http_client,
+            db_session_factory=factory,
+            capture_id=capture_id,
+            conversation_id=str(record.get("conversation_id") or ""),
+            case_id=str(record.get("case_id") or ""),
+            host_node_id=str(record["host_node_id"]),
+            vm_id=str(record["vm_id"]),
+            node_ip=None,
+            timeout_seconds=60,
+            intent=intent,
+            trace_id=str(record.get("trace_id") or ""),
+        )
     return {"ok": outcome.get("success", False), "artifact_id": outcome.get("artifact_id"), "error": outcome.get("error")}
 
 
@@ -182,8 +185,11 @@ async def analyze_capture(capture_id: str, request: Request) -> dict[str, Any]:
     from app.tools.vm_console.adapter import _fetch_artifact_bytes
     from app.tools.vm_console.vision_extractor import extract_observation
 
-    http_client = InternalHTTPClient(service_name="conversation-service")
-    ppm_bytes = await _fetch_artifact_bytes(http_client, str(artifact["artifact_id"]))
+    async with InternalHTTPClient(
+        base_url=settings.CONVERSATION_SERVICE_URL,
+        timeout=30.0,
+    ) as http_client:
+        ppm_bytes = await _fetch_artifact_bytes(http_client, str(artifact["artifact_id"]))
     if ppm_bytes is None:
         raise HTTPException(status_code=409, detail="制品字节不可读取")
 

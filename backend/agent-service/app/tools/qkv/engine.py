@@ -57,6 +57,9 @@ class QKVResult:
     assertions: list[dict[str, Any]] = field(default_factory=list)
     matched: bool | None = None
     processing_applied: bool = False
+    # 保留已去除 qkv_dialog 探针自身记录的原始采集输出。CDD 可以复用一次物理采集，
+    # 但必须让每个 SignalRef 以自己的 produces/output_processing 独立求值。
+    raw_output: str = ""
 
     def to_observation(self) -> str:
         """
@@ -330,7 +333,8 @@ async def qkv_exec(
         ]
         if signal.query == FrontendQueryType.DIALOG and node_ip:
             for value in values:
-                value.setdefault("host", node_ip)
+                if not value.get("host"):
+                    value["host"] = node_ip
         values = values[:limit_val]
         evidence = resolution.setdefault("evidence", {})
         evidence["keywords_tried"] = keyword_candidates[: len(exec_results)] if signal.query != FrontendQueryType.DIALOG else [signal.keyword]
@@ -366,6 +370,7 @@ async def qkv_exec(
             resolution=resolution,
             assertions=assertions,
             matched=matched,
+            raw_output=stdout,
         )
 
     return QKVResult(
@@ -379,4 +384,5 @@ async def qkv_exec(
         assertions=assertions,
         matched=matched,
         processing_applied=True,
+        raw_output=stdout,
     )

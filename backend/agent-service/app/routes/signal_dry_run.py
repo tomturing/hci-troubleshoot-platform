@@ -288,7 +288,8 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, db_
                 kbd_revision=body.kbd_revision,
                 db_session_factory=db_session_factory,
             )
-            values[str(produce["name"])] = ai_result.value
+            effective_name = str(produce.get("alias") or produce["name"])
+            values[effective_name] = ai_result.value
             raw = getattr(ai_result, "raw_response", None)
             if isinstance(raw, dict):
                 ai_raw_responses.append(raw)
@@ -300,7 +301,8 @@ async def _evaluate_qfk(body: SignalDryRunRequest, *, ai_client: Any | None, db_
                 "reason": ai_result.reason,
             })
         else:
-            values[str(produce["name"])] = extract_value(
+            effective_name = str(produce.get("alias") or produce["name"])
+            values[effective_name] = extract_value(
                 output, extract, str(produce.get("type") or "string")
             )
     sorted_evidence_lines = sorted(set(evidence_lines))
@@ -377,13 +379,25 @@ async def _evaluate_qkv(body: SignalDryRunRequest, *, ai_client: Any | None, db_
                 status="FAIL", input_sha256=_canonical_hash({"source": body.dataset.source_type, "payload": body.dataset.payload}),
                 value=[],
                 evidence="输入数据中未能按 produces 规格提取出任何有效变量。",
-                derivation={"produces": [p.get("name") for p in produces if isinstance(p, dict) and p.get("name")]},
+                derivation={
+                    "produces": [
+                        p.get("alias") or p.get("name")
+                        for p in produces
+                        if isinstance(p, dict) and p.get("name")
+                    ]
+                },
             )
         records = extracted
 
     # 2. 配置了 output_processing：在已投影变量上执行确定性/AI 后处理流水线
     if isinstance(processing, list) and processing:
-        end_index = body.unit_ref.processing_index if body.unit_ref.processing_index is not None else len(processing) - 1
+        # “整个 Signal”是可保存、可发布的业务验证，必须穿透全部处理单元。
+        # processing_index 仅是 AI 单步调试的目标，不能截断整条信号后伪造 PASS。
+        end_index = (
+            body.unit_ref.processing_index
+            if body.verification_scope == "ai_step" and body.unit_ref.processing_index is not None
+            else len(processing) - 1
+        )
         if end_index >= len(processing):
             raise ValueError("processing_index 超出当前草稿范围")
         if body.verification_scope == "ai_step":
@@ -439,6 +453,14 @@ async def evaluate_signal_dry_run(body: SignalDryRunRequest, *, ai_client: Any |
     computed_revision = _canonical_hash(body.signal)
     if body.draft_revision != computed_revision:
         raise ValueError("DRAFT_REVISION_MISMATCH: 草稿已变更，请重新试运行")
+    acquire = body.signal.get("acquire")
+    if isinstance(acquire, dict) and acquire.get("tool") == "qkv_case_context":
+        # 工单上下文不采集、不投影变量；即使误传 scope 或伪造处理单元也不得执行。
+        raise ValueError(
+            "SEMANTIC_ROUTE_PREVIEW_REQUIRED: 工单上下文信号不执行采集或变量提取，"
+            "请在 KBD 的语义入口画像中使用“路由试运行”，输入故障描述验证候选匹配；"
+            "路由结果不代表消费者验证通过或根因确诊"
+        )
     if body.scope == "qfk_execution_result":
         return await _evaluate_qfk(body, ai_client=ai_client, db_session_factory=db_session_factory, trace_id=trace_id)
     return await _evaluate_qkv(body, ai_client=ai_client, db_session_factory=db_session_factory, trace_id=trace_id)

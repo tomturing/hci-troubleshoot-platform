@@ -14,7 +14,7 @@ import pytest
 from app.routes import admin
 from app.services.hci_sim_resolver import HciSimKbdResolver
 from shared.dynamic_resource.publisher import DynamicResourcePublisher
-from shared.schemas.acquirer_args import CONDITIONAL_PRODUCERS
+from shared.schemas.acquirer_args import CONDITIONAL_PRODUCERS, CONTEXT_INPUTS, EXECUTABLE_SIGNAL_TOOLS
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
@@ -106,7 +106,8 @@ class _TransactionDatabase:
 
 
 @pytest.mark.asyncio
-async def test_five_samples_batch_approve_and_publish_immutable_revisions():
+@pytest.mark.parametrize("sample_mode", ["baseline", "semantic", "guidance"])
+async def test_five_samples_batch_approve_and_publish_immutable_revisions(sample_mode):
     """真实批量任务必须把五篇样例全部发布，并保留 Expert/Runtime 修订。"""
 
     documents = _documents()
@@ -114,6 +115,24 @@ async def test_five_samples_batch_approve_and_publish_immutable_revisions():
     engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
     connection = await engine.connect()
     transaction = await connection.begin()
+    if sample_mode in {"semantic", "guidance"}:
+        # 直接执行种子 SQL 的只读 CTE，验证真正的 V2 数据而非另造一份近似 fixture。
+        sql = SEED_PATH.read_text(encoding="utf-8")
+        query = sql[sql.index("WITH sample_rows") : sql.index("INSERT INTO kbd_entry")]
+        query += "SELECT target_support_id, target_signals_json FROM seed_rows WHERE target_sample_suite = 'kbd-semantic-entry-signal-v2'"
+        rows = (await connection.execute(text(query))).mappings().all()
+        documents = {row["target_support_id"]: row["target_signals_json"] for row in rows}
+        assert len(documents) == 5
+        if sample_mode == "guidance":
+            for document in documents.values():
+                document["signals"] = [
+                    signal for signal in document["signals"] if signal["acquire"]["tool"] == "qkv_case_context"
+                ]
+                document["semantic_entry_profile"]["diagnosis_capability"] = "guidance_only"
+                document["semantic_entry_profile"]["manual_evidence_request"] = [
+                    "请补充完整报错和现场截图，由人工复核。"
+                ]
+                document.pop("verification_contract", None)
     database = _TransactionDatabase(connection)
     previous_database = admin._db_manager
     previous_embedding = admin._embedding_service
@@ -148,6 +167,7 @@ async def test_five_samples_batch_approve_and_publish_immutable_revisions():
                     signal["acquire"]["tool"]
                     for document in documents.values()
                     for signal in document["signals"]
+                    if signal["acquire"]["tool"] != "qkv_case_context"
                 }
             )
             await _reconcile_tool_snapshots(session, tool_names)
@@ -238,6 +258,21 @@ async def test_five_samples_batch_approve_and_publish_immutable_revisions():
                 .mappings()
                 .one()
             )
+            failures = (
+                (
+                    await session.execute(
+                        text(
+                            "SELECT kbd_id, error_json FROM kbd_batch_job_item WHERE batch_id = CAST(:batch_id AS uuid) AND status = 'failed'"
+                        ),
+                        {"batch_id": str(batch_id)},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            if failures:
+                print(json.dumps(dict(failures[0]), ensure_ascii=False, indent=2))
+            assert not failures, [dict(item) for item in failures]
             assert dict(job) == {
                 "status": "completed",
                 "total_count": 5,
@@ -317,6 +352,58 @@ async def test_five_samples_batch_approve_and_publish_immutable_revisions():
             assert expert_revision_count == 5
             assert runtime_revision_count == 5
 
+            # 发布还必须把同一不可变修订中的可执行 Signal 沉淀为 Few-Shot
+            # 最佳实践。语义上下文不是采集器，不能混入建模样本；校验和字段只
+            # 保存 64 位裸 digest，避免把 ``sha256:`` 前缀写爆 VARCHAR(64)。
+            practices = (
+                (
+                    await session.execute(
+                        text(
+                            """
+                            SELECT source_kbd_id, source_revision, source_checksum,
+                                   signal_id, is_active
+                            FROM signal_best_practice
+                            WHERE source_kbd_id = ANY(CAST(:kbd_ids AS bigint[]))
+                            """
+                        ),
+                        {"kbd_ids": list(inserted)},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            expected_practice_count = sum(
+                1
+                for document in documents.values()
+                for signal in document["signals"]
+                if (signal.get("acquire") or {}).get("tool") in EXECUTABLE_SIGNAL_TOOLS
+            )
+            assert len(practices) == expected_practice_count
+            assert all(row["source_revision"] and row["signal_id"] for row in practices)
+            assert all(
+                len(row["source_checksum"]) == 64 and not row["source_checksum"].startswith("sha256:")
+                for row in practices
+            )
+            assert all(row["is_active"] for row in practices)
+
+            if sample_mode == "guidance":
+                from app.routes.playbooks import _execution_issues
+                from shared.schemas.semantic_routing import resolve_candidates
+
+                entries = [{"id": str(row["id"]), "signals_json": row["signals_json"]} for row in published]
+                for row in published:
+                    document = row["signals_json"]
+                    assert _execution_issues(document["signals"], document)
+                    route = await resolve_candidates(
+                        entries=entries,
+                        context="；".join(document["semantic_entry_profile"]["canonical_symptoms"]),
+                        strong_status="not_applicable",
+                    )
+                    assert route["decision"] == "inconclusive"
+                    assert route["reason"] == "guidance_only"
+                    assert route["next_action"]["question"]
+                return
+
             # 发布不是终点：同一事务内直接验证实验室控制面能从真实不可变修订和
             # Tool Registry 编译全部 Signal，不允许样例“发布成功但运行时不可用”。
             report = await HciSimKbdResolver().resolve_all(session)
@@ -327,7 +414,7 @@ async def test_five_samples_batch_approve_and_publish_immutable_revisions():
                 and item.resolved.metadata.get("sample_suite") == "diagnosis-signal-matrix-v1"
                 and item.support_id.startswith("T")
             }
-            assert set(sample_results) == SAMPLE_IDS
+            assert set(sample_results) == set(documents)
             assert all(item.status == "ready_for_artifact_binding" for item in sample_results.values())
             for source_support_id, result in sample_results.items():
                 assert result.resolved is not None
@@ -337,7 +424,7 @@ async def test_five_samples_batch_approve_and_publish_immutable_revisions():
                 expected = {
                     signal["id"]
                     for signal in documents[source_support_id]["signals"]
-                    if (signal.get("acquire") or {}).get("tool") not in CONDITIONAL_PRODUCERS
+                    if (signal.get("acquire") or {}).get("tool") not in CONDITIONAL_PRODUCERS | CONTEXT_INPUTS
                 }
                 actual = {route.signal_id for route in result.resolved.synthetic_routes}
                 assert actual == expected, (source_support_id, actual, expected)

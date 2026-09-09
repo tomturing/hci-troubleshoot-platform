@@ -17,6 +17,7 @@ from shared.observability.metrics import (
     KBD_CONTRACT_SOFT_STALE_TOTAL,
 )
 from shared.observability.otel import get_current_trace_id
+from shared.schemas.semantic_entry import capability_of
 from shared.schemas.signal_generation import current_tool_contract_revision
 from shared.schemas.signal_schema import validate_publishable_signals_json
 from sqlalchemy import select
@@ -58,6 +59,11 @@ def _execution_issues(
     """
     issues: list[str] = []
     validation_document = document or {"schema_version": 2, "signals": signals}
+    semantic_capability = capability_of(validation_document)
+    if semantic_capability == "guidance_only":
+        return ["语义入口为 guidance_only：仅可请求人工补充证据，不进入自动执行 CDD"]
+    if semantic_capability == "capability_gap":
+        return ["语义入口为 capability_gap：当前平台缺少可执行消费者，必须人工升级处理"]
 
     # ── Layer 1：唯一真相源，一次校验，结果向下传递 ──────────────────────────────
     schema_valid = True
@@ -85,25 +91,20 @@ def _execution_issues(
             issues.append(f"{signal_id or f'signal[{index}]'} 缺少 acquire.tool")
         tool = str(acquire.get("tool") or "")
         matcher = signal.get("match")
-        produces = ((signal.get("orchestrate") or {}).get("produces") or [])
+        produces = (signal.get("orchestrate") or {}).get("produces") or []
         has_match = isinstance(matcher, dict)
         has_produces = any(
-            isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"].strip()
-            for item in produces
+            isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"].strip() for item in produces
         )
-        if tool.startswith("qkv_") and (has_match or not has_produces):
-            issues.append(
-                f"{signal_id or f'signal[{index}]'} 的 QKV 必须配置有效产出变量且 match 为 null"
-            )
+        if tool != "qkv_case_context" and tool.startswith("qkv_") and (has_match or not has_produces):
+            issues.append(f"{signal_id or f'signal[{index}]'} 的 QKV 必须配置有效产出变量且 match 为 null")
         if tool.startswith("qfk_") and has_match == has_produces:
             # QFK v2 有两种互斥且都可自动执行的模式：
             # 1. match：对命令结果做确定性判定；
             # 2. orchestrate.produces：命令成功并完成受控提取后写入变量池。
             # 不能再把 match=None 一律判成不可执行，否则合法的产出变量链会在
             # 分类快照阶段被提前过滤，永远无法进入实际执行器。
-            issues.append(
-                f"{signal_id or f'signal[{index}]'} 必须且只能配置确定性 matcher 或有效产出变量"
-            )
+            issues.append(f"{signal_id or f'signal[{index}]'} 必须且只能配置确定性 matcher 或有效产出变量")
 
     # match/produces 互斥已经由上面的带 signal_id 诊断表达，不重复返回 Schema
     # 的 signals[index] 版本；其他 Schema 问题（字段缺失、类型错误、非法枚举等）
@@ -196,18 +197,30 @@ async def get_category_playbooks(
             )
 
         for kbd in kbds:
+            snapshot = await DynamicResourceLoader(session).get_active("kbd", str(kbd.id))
+            frozen = getattr(snapshot, "content", {})
             signals = _signals(kbd)
             raw_signal_doc = kbd.signals_json if isinstance(kbd.signals_json, dict) else {}
+            # 语义候选执行与检索必须读取同一份发布修订，不能用工作稿配旧摘要。
+            frozen_document = frozen.get("signals_json") if isinstance(frozen.get("signals_json"), dict) else {}
+            is_semantic = bool(
+                raw_signal_doc.get("semantic_entry_profile") or frozen_document.get("semantic_entry_profile")
+            )
+            if is_semantic:
+                if getattr(snapshot, "status", "") != "published" or frozen.get("category_id") != category_id:
+                    continue
+                raw_signal_doc = frozen.get("signals_json") or {}
+                signals = raw_signal_doc.get("signals") or []
             verification_contract = raw_signal_doc.get("verification_contract") or {}
             generation_metadata = raw_signal_doc.get("generation_metadata") or {}
             publish_validation = raw_signal_doc.get("publish_validation") or {}
+            semantic_profile = raw_signal_doc.get("semantic_entry_profile") or {}
             issues = _execution_issues(
                 signals,
                 raw_signal_doc,
                 support_id=kbd.support_id,
                 category_id=kbd.category_id,
             )
-            snapshot = await DynamicResourceLoader(session).get_active("kbd", str(kbd.id))
             revision = snapshot_revision_metadata(snapshot)
             revision_keys.append(f"kbd:{kbd.id}:{revision.get('revision', 0)}")
             serialized_kbds.append(
@@ -215,8 +228,8 @@ async def get_category_playbooks(
                     "id": str(kbd.id),
                     "kbd_id": kbd.id,
                     "support_id": kbd.support_id,
-                    "name": kbd.title,
-                    "title": kbd.title,
+                    "name": frozen.get("title", kbd.title) if is_semantic else kbd.title,
+                    "title": frozen.get("title", kbd.title) if is_semantic else kbd.title,
                     "category_id": kbd.category_id,
                     "status": kbd.status,
                     "executable": not issues,
@@ -225,9 +238,13 @@ async def get_category_playbooks(
                     "verification_contract": verification_contract,
                     "generation_metadata": generation_metadata,
                     "publish_validation": publish_validation,
-                    "root_cause": kbd.root_cause,
-                    "solution": kbd.solution,
-                    "problem_description": kbd.problem_description,
+                    "semantic_entry_profile": semantic_profile,
+                    "diagnosis_capability": capability_of(raw_signal_doc) or "executable",
+                    "root_cause": frozen.get("root_cause") if is_semantic else kbd.root_cause,
+                    "solution": frozen.get("solution") if is_semantic else kbd.solution,
+                    "problem_description": frozen.get("problem_description")
+                    if is_semantic
+                    else kbd.problem_description,
                     "resource_revision": revision,
                 }
             )

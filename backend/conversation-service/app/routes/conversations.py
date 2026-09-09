@@ -184,6 +184,15 @@ async def send_message(
             sanitized_length=len(message.content),
         )
 
+    # StreamingResponse 会把 yield 依赖的生命周期延长到整个 SSE 流结束。
+    # 先在路由前置阶段解析工单号，再释放归属校验/查询开启的只读事务，避免命令
+    # 审批等待期间触发 PostgreSQL idle_in_transaction_session_timeout。
+    resolved_case_id = message.case_id
+    if not resolved_case_id:
+        conversation = await service.get_conversation(conversation_id)
+        resolved_case_id = conversation.case_id if conversation else None
+    await service.release_request_transaction_before_stream()
+
     ai_content = []
     # 获取 SSE 推送服务（用于接收 agent_exec_command 等外部事件）
     sse_pusher = getattr(request.app.state, "sse_pusher", None)
@@ -227,7 +236,7 @@ async def send_message(
         _message_metadata = {}
         _interactive_events: list[dict] = []
         _persistence_scheduled = False
-        _case_id = message.case_id
+        _case_id = resolved_case_id
 
         def schedule_message_persistence() -> None:
             nonlocal _persistence_scheduled
@@ -253,14 +262,6 @@ async def send_message(
 
         try:
             # 同时监听 AI 流和外部事件队列
-            # B1 修复：消息未携带 case_id 时，回退到会话记录关联的真实工单，
-            # 避免空 case_id 一路透传至 terminal_bridge 的 exec 路由失败（exec.session_missing）。
-            if not _case_id:
-                try:
-                    _conv = await service.get_conversation(conversation_id)
-                    _case_id = _conv.case_id if _conv else None
-                except Exception:
-                    _case_id = None
             ai_stream = service.send_message_stream_only(
                 conversation_id=conversation_id,
                 case_id=_case_id,
@@ -293,7 +294,13 @@ async def send_message(
                             parts = inner.split(":", 1)
                             evt_type = parts[0]
                             evt_data = parts[1] if len(parts) > 1 else ""
-                            if evt_type in ("interactive_request", "metadata", "tool_call", "tool_result"):
+                            if evt_type in (
+                                "interactive_request",
+                                "metadata",
+                                "tool_call",
+                                "tool_result",
+                                "diagnostic_outcome",
+                            ):
                                 # 透传完整 JSON，无需包装
                                 yield f"event: {evt_type}\ndata: {evt_data}\n\n"
                                 if evt_type == "metadata":

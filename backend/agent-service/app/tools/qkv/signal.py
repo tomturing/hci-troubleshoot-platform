@@ -151,11 +151,10 @@ class FrontendSignal(BaseModel):
     @model_validator(mode="after")
     def _validate_output_processing(self) -> FrontendSignal:
         available_inputs = {
-            str(item.get(key) or "").strip().upper()
+            str(item.get("name") or "").strip().upper()
             for item in self.produces
             if isinstance(item, dict)
-            for key in ("name", "alias")
-            if str(item.get(key) or "").strip()
+            if str(item.get("name") or "").strip()
         }
         validate_output_processing(self.output_processing, available_inputs=available_inputs)
         return self
@@ -167,7 +166,8 @@ class FrontendSignal(BaseModel):
         直接切 v2 列形态（RFC §4.4）：原生读取 acquire/args/orchestrate 段，
         无需任何 v1 扁平桥接还原——v2 嵌套信号由运行时直接消费。
         """
-        if "acquire" in data:  # v2 嵌套信号
+        is_v2 = "acquire" in data
+        if is_v2:  # v2 嵌套信号
             a = data["acquire"]
             args = a.get("args", {}) or {}
             tool = a.get("tool", "")
@@ -194,10 +194,12 @@ class FrontendSignal(BaseModel):
                 "expectation": args.get("expectation"),
                 "timeout": args.get("timeout", 60),
             }
-        # 自动清洗关键词和检测状态
+        # 旧扁平输入继续兼容历史清洗行为；Signal v2 的 keyword 已经过人工审核、
+        # 发布审查和共享 Resolution 编译，运行时必须逐字消费。再次去掉“告警”/
+        # “任务”等后缀会让在线命令与已发布 hci-sim/离线 RouteKey 漂移。
         keyword = data.get("keyword", "")
         query_type = data.get("query", "")
-        if keyword and query_type:
+        if not is_v2 and keyword and query_type:
             cleaned_keyword, detected_failed = _clean_keyword(keyword, query_type)
             data = {**data, "keyword": cleaned_keyword}
             # 如果检测到"失败"，设置 is_failed（除非显式指定了 is_failed=False）

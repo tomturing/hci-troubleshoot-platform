@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CollectionPlan, CollectionPlanItem } from '@hci/shared'
 import {
+  buildKnownVariableContext,
   buildOfflineDiagnosisUrl,
   formatPlanTarget,
   getPlanTargetNodes,
@@ -8,6 +9,19 @@ import {
   isOfflineDiagnosisPath,
   resolveArtifactTarget,
 } from '@/utils/offlineDiagnosis'
+
+describe('已确认诊断变量', () => {
+  it('规范化明确输入，跳过空白行', () => {
+    expect(buildKnownVariableContext([{ name: 'request_id', value: ' REQ-1 ' }, { name: '', value: '' }])).toEqual({ REQUEST_ID: 'REQ-1' })
+  })
+  it('禁止覆盖目标和故障上下文，拒绝重复或不完整输入', () => {
+    for (const name of ['HOST', 'VM_ID', 'END', 'semantic_context', '__proto__']) {
+      expect(() => buildKnownVariableContext([{ name, value: 'x' }])).toThrow()
+    }
+    expect(() => buildKnownVariableContext([{ name: 'REQUEST_ID', value: '' }])).toThrow()
+    expect(() => buildKnownVariableContext([{ name: 'ID', value: '1' }, { name: 'id', value: '2' }])).toThrow()
+  })
+})
 
 function makePlan(targets: Array<Record<string, unknown>>, inactiveTarget?: Record<string, unknown>): CollectionPlan {
   const items: CollectionPlanItem[] = targets.map(

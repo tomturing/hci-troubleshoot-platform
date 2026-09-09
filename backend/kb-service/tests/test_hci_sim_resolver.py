@@ -121,6 +121,10 @@ def test_resolver_freezes_active_snapshot_with_current_contracts():
 def test_resolver_preserves_runtime_placeholders_for_lab_compiler():
     active, revision = _snapshot()
     revision.content_json["signals_json"]["signals"][0]["acquire"]["args"]["keyword"] = "{{ALERT_TYPE}}"
+    revision.content_json["signals_json"]["verification_contract"]["variables"]["ALERT_TYPE"] = {
+        "type": "string",
+        "description": "由仿真场景注入的告警类型",
+    }
     resolution = HciSimKbdResolver().resolve_entry(_entry(), (active, revision), _tool_snapshots())
 
     assert resolution.status == "ready_for_artifact_binding"

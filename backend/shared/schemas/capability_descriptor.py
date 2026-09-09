@@ -12,6 +12,7 @@ from typing import Any
 from shared.schemas.acquirer_args import (
     ACQUIRER_ARGS_SCHEMA,
     CONDITIONAL_PRODUCERS,
+    CONTEXT_INPUTS,
     FRONTEND_TOOLS,
     SERVICE_DOMAIN_CATALOG,
     VM_CONSOLE_REQUIRED_TARGET_VARS,
@@ -28,18 +29,21 @@ def build_capability_descriptors() -> list[dict[str, Any]]:
     for capability_id, args_schema in sorted(ACQUIRER_ARGS_SCHEMA.items()):
         is_frontend = capability_id in FRONTEND_TOOLS
         is_conditional_producer = capability_id in CONDITIONAL_PRODUCERS
+        is_context_input = capability_id in CONTEXT_INPUTS
         # 效果验证生产者虽属条件型，但严格只读（观测全部委派只读原语），
         # 且先决变量随期望锚点动态声明，不固定为 HOST/VM_ID。
         is_effect_producer = capability_id == "qkv_effect"
         supported_matchers = (
             []
-            if is_frontend or is_conditional_producer
+            if is_frontend or is_conditional_producer or is_context_input
             else list(LOG_MATCHER_TYPES)
             if capability_id == "qfk_log"
             else ["keyword", "regex", "state", "boolean", "threshold", "delta", "trend", "exists"]
         )
         kind = (
-            "producer"
+            "context"
+            if is_context_input
+            else "producer"
             if is_frontend
             else "conditional_producer"
             if is_conditional_producer
@@ -61,7 +65,7 @@ def build_capability_descriptors() -> list[dict[str, Any]]:
                     "free_shell": False,
                     # 截图阶段近似只读；近黑后的 sendkey down 属受控 Guest 交互，
                     # 不是只读操作，须运行时人工确认。qkv_effect 严格只读。
-                    "read_only_intent": is_effect_producer or not is_conditional_producer,
+                    "read_only_intent": is_context_input or is_effect_producer or not is_conditional_producer,
                     "controlled_interaction": is_conditional_producer and not is_effect_producer,
                     "conditional": is_conditional_producer,
                     # qkv_effect 的先决变量随期望锚点动态声明（发布门禁校验来源可达），
@@ -76,7 +80,9 @@ def build_capability_descriptors() -> list[dict[str, Any]]:
                 },
                 "source": "shared.schemas.acquirer_args",
                 "limitations": (
-                    ["复合取值能力：在当前主控 /sf/log/today 与 /sf/log/today/vt 检索弹框文本并提取 END/REQUEST_ID"]
+                    ["用户故障描述的结构化语义上下文；仅用于候选召回，不执行任何现场采集"]
+                    if is_context_input
+                    else ["复合取值能力：在当前主控 /sf/log/today 与 /sf/log/today/vt 检索弹框文本并提取 END/REQUEST_ID"]
                     if capability_id == "qkv_dialog"
                     else [
                         "条件型效果验证生产者：期望锚点（观测通道+封闭 matcher+窗口）必须结构化声明且变量来源可达；"

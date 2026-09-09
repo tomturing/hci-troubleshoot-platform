@@ -183,6 +183,7 @@ async def _proxy_diagnosis_request(request: Request) -> Response:
 
 @router.api_route("/api/diagnosis-sessions", methods=["POST"])
 @router.api_route("/api/diagnosis-scenarios", methods=["GET"])
+@router.api_route("/api/diagnosis-scenarios/semantic-advice", methods=["GET", "POST"])
 @router.api_route("/api/diagnosis-sessions/{path:path}", methods=["GET"])
 @router.api_route("/api/diagnosis-sessions/{path:path}", methods=["POST"])
 @router.api_route("/api/internal/diagnosis-sessions", methods=["GET"])

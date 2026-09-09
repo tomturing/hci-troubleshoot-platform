@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -12,6 +13,7 @@ from shared.dynamic_resource.loader import DynamicResourceLoader, ResourceNotFou
 from shared.dynamic_resource.models import UsageRecord, UsageStatus
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
+from shared.observability.redaction import redact_observation_value
 from shared.resolution.product_versions import matches_any_product_version
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +35,58 @@ from app.services.collection_profile_service import COLLECTION_PROFILE_RESOURCE_
 
 logger = get_logger("collection-plan-service")
 PLAN_ROLES = frozenset({"platform_admin", "support_engineer", "diagnosis_worker"})
+RESERVED_RUNTIME_CONTEXT_KEYS = frozenset({"HOST", "VM_ID", "END", "SEMANTIC_CONTEXT", "CONSTRUCTOR", "PROTOTYPE"})
+
+
+def _session_runtime_context(context: dict[str, Any], diagnosis_session: Any) -> dict[str, Any]:
+    """冻结已填写的唯一对象；不从语义文本推断目标，也不替多对象选择目标。"""
+
+    frozen: dict[str, Any] = {}
+    for raw_name, raw_value in context.items():
+        name = str(raw_name).strip()
+        normalized = name.upper()
+        if name == "semantic_context":
+            frozen[name] = raw_value
+            continue
+        if normalized in RESERVED_RUNTIME_CONTEXT_KEYS:
+            raise DiagnosisError(
+                code="RESERVED_CONTEXT_OVERRIDE",
+                message=f"{normalized} 只能由已确认的执行节点、故障对象或故障时间生成，不能在变量中覆盖",
+                http_status=422,
+                details={"field": normalized},
+            )
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", normalized):
+            raise DiagnosisError(
+                code="INVALID_CONTEXT_VARIABLE",
+                message="已确认变量名称必须以字母开头，只能包含大写字母、数字和下划线",
+                http_status=422,
+                details={"field": name[:64]},
+            )
+        if not isinstance(raw_value, str) or not raw_value.strip() or len(raw_value.strip()) > 2000:
+            raise DiagnosisError(
+                code="INVALID_CONTEXT_VARIABLE",
+                message=f"变量 {normalized} 必须是非空字符串且不超过 2000 字符",
+                http_status=422,
+                details={"field": normalized},
+            )
+        if normalized in frozen:
+            raise DiagnosisError(
+                code="DUPLICATE_CONTEXT_VARIABLE",
+                message=f"变量 {normalized} 重复，请只保留一项",
+                http_status=422,
+                details={"field": normalized},
+            )
+        frozen[normalized] = raw_value.strip()
+    objects = diagnosis_session.affected_objects or []
+    nodes = {str(item.get("source_node") or "").strip() for item in objects} - {""}
+    vm_objects = [item for item in objects if item.get("type") == "vm"]
+    vm_ids = {str(item.get("id") or "").strip() for item in vm_objects} - {""}
+    if len(nodes) == 1 and all(str(item.get("source_node") or "").strip() for item in objects):
+        frozen["HOST"] = next(iter(nodes))
+    if len(vm_ids) == 1 and all(str(item.get("id") or "").strip() for item in vm_objects):
+        frozen["VM_ID"] = next(iter(vm_ids))
+    frozen["END"] = diagnosis_session.incident_end_time.isoformat()
+    return frozen
 
 
 class CollectionPlanService:
@@ -100,11 +154,44 @@ class CollectionPlanService:
             diagnosis_session.selected_category,
             kbd_dependencies=[item for item in snapshot.dependencies if item.get("resource_type") == "kbd"],
         )
+        from shared.schemas.semantic_entry import has_strong_producer, normalize_case_context
+
+        needs_context = any(
+            item.get("semantic_entry_profile") and not has_strong_producer({"signals": item.get("signals", [])})
+            for item in kbd_ruleset
+        )
+        if needs_context and not normalize_case_context(command.context.get("semantic_context")):
+            raise DiagnosisError(
+                code="SEMANTIC_CONTEXT_REQUIRED",
+                message="该场景包含语义入口 KBD，请填写当前故障现象和报错后再生成采集计划",
+                http_status=422,
+            )
+        frozen_context = _session_runtime_context(command.context, diagnosis_session)
+        if "semantic_context" in frozen_context:
+            semantic_context = frozen_context["semantic_context"]
+            if not isinstance(semantic_context, dict):
+                semantic_context = {"description": str(semantic_context or "")}
+            frozen_context["semantic_context"] = redact_observation_value(
+                {
+                    **{
+                        key: str(semantic_context.get(key) or "")[:limit]
+                        for key, limit in {
+                            "description": 16000,
+                            "error_text": 1000,
+                            "component": 120,
+                            "object_type": 120,
+                            "operation": 120,
+                        }.items()
+                    },
+                    "product": getattr(diagnosis_session, "product_line", "HCI"),
+                    "product_version": command.product_version,
+                }
+            )
         trace_id = get_current_trace_id() or secrets.token_hex(16)
         item_values, summary = self.expand_profile(
             profile=profile,
             diagnosis_session=diagnosis_session,
-            context=command.context,
+            context=frozen_context,
             trace_id=trace_id,
         )
         await self._freeze_collector_revisions(item_values, snapshot, product_version=command.product_version)
@@ -122,7 +209,7 @@ class CollectionPlanService:
             "product_version": command.product_version,
             "kbd_ruleset_snapshot": kbd_ruleset,
             "kbd_ruleset_checksum": kbd_ruleset_checksum,
-            "context_snapshot": command.context,
+            "context_snapshot": frozen_context,
             "required_permissions": summary["required_permissions"],
             "sensitive_data_types": summary["sensitive_data_types"],
             "unresolved_variables": summary["unresolved_variables"],
@@ -582,6 +669,9 @@ class CollectionPlanService:
                     "version": resource.version,
                     "resource_checksum": resource.checksum,
                     "signals": list(signals),
+                    "semantic_entry_profile": signal_document.get("semantic_entry_profile")
+                    if isinstance(signal_document, dict)
+                    else None,
                     "verification_contract": signal_document.get("verification_contract", {})
                     if isinstance(signal_document, dict)
                     else {},
@@ -652,6 +742,9 @@ class CollectionPlanService:
                 "version": row["resource_version"],
                 "resource_checksum": row["resource_checksum"],
                 "signals": list(signals),
+                "semantic_entry_profile": signal_document.get("semantic_entry_profile")
+                if isinstance(signal_document, dict)
+                else None,
                 "verification_contract": signal_document.get("verification_contract", {})
                 if isinstance(signal_document, dict)
                 else {},

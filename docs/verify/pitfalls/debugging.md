@@ -134,3 +134,13 @@ PY
 **修复：** 真实与仿真始终加载同一个 S0 分类完整可执行 KBD 集合；`sim-ssh` 只能切换 acquisition provider。Bundle 编译和发布必须覆盖分类 SignalPlan 可能执行的 RouteKey，并为非目标候选提供可审查的反证现场数据。`fixture_not_found/ERROR` 仍然 fail closed，绝不能改判为 `CONTRADICTED`。
 
 **预防：** 回归测试必须断言 real/sim 的 candidate IDs 完全相同，并通过至少两篇同分类 KBD 的端到端用例证明目标 KBD `SUPPORTED`、其他 KBD 由真实 Matcher 得到 `REJECTED`。Bundle freshness 在 TestRun 创建前检查；版本过期阻止使用旧仿真数据，但不得在 Agent S1 阶段把 revision 当作候选过滤条件。
+
+## V-015：离线 producer 必须用与 Collector 一致的结构化证据形态取值
+
+**症状：** 已发布 KBD 有可读 Evidence Item，但 QKV/QFK producer 变为 `NOT_MATCHED` 或 `UNKNOWN`，下游变量不再解锁；常见于测试将 producer 输出写成泛化文本 `"collected"`。
+
+**根因：** 离线 `structured_data` 不是统一字符串：文本采集器以 `{preview, truncated}` 包装，JSON 采集器保存对象，控制台截图保存视觉观察对象。Evidence Item 存在不能证明变量已从 `produces` 路径取到。
+
+**修复：** QKV 复用共享 parser 展开 JSON、文本 preview 和弹框日志；QFK 对 preview 使用完整文本取值。`truncated=true` 的文本索引保持 `UNKNOWN`。PostgreSQL 样例为每种 producer 提供可按契约解析的真实输出形态。
+
+**预防：** producer 回归同时断言实际变量、`MATCHED` 和下游依赖解锁；为 JSON、文本 preview、弹框日志、控制台观察和截断文本各保留一条测试。不要用“有可读证据”替代变量提取断言。

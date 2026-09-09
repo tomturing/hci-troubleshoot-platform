@@ -40,6 +40,7 @@ from shared.resolution.vm_console import (
 )
 from shared.utils.internal_http import InternalHTTPClient
 
+from app.config import settings
 from app.tools.vm_console import store
 from app.tools.vm_console.inventory import verify_vm_target
 
@@ -240,7 +241,10 @@ async def run_vm_console_signal(
 
     node_ip = str(env_context.get("node_ip") or "").strip() or None
     capture_id = str(uuid.uuid4())
-    http_client = InternalHTTPClient(service_name="conversation-service")
+    http_client = InternalHTTPClient(
+        base_url=settings.CONVERSATION_SERVICE_URL,
+        timeout=float(timeout_seconds + 30),
+    )
     run_exec_id = exec_id or f"vmc-{uuid.uuid4().hex[:16]}"
 
     # 3. 创建不可变截图会话记录。
@@ -340,6 +344,7 @@ async def run_vm_console_signal(
             )
         except Exception as exc:
             logger.warning("vm_console_failure_push_failed", capture_id=capture_id, error=str(exc))
+        await http_client.aclose()
         return VmConsoleCaptureResult(
             success=False, error=str(baseline.get("error") or "基线截图失败"), error_code=code,
             capture_id=capture_id, exec_id=run_exec_id,
@@ -417,6 +422,7 @@ async def run_vm_console_signal(
                 session, capture_id, "failed",
                 error_code="ARTIFACT_UPLOAD_FAILED", error_summary="制品读取失败，无法执行视觉提取",
             )
+        await http_client.aclose()
         return VmConsoleCaptureResult(
             success=False, error="截图制品不可读取", error_code="ARTIFACT_UPLOAD_FAILED",
             capture_id=capture_id, exec_id=run_exec_id,
@@ -479,6 +485,7 @@ async def run_vm_console_signal(
     values = parse_frontend_value(
         FrontendQueryType.VM_CONSOLE, json.dumps(observation_payload), produces=produces
     )
+    await http_client.aclose()
     return VmConsoleCaptureResult(
         success=True,
         values=values,

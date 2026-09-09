@@ -23,7 +23,8 @@ LABEL org.opencontainers.image.revision="${SOURCE_SHA}" \
 
 RUN addgroup -g 1000 hci-sim && adduser -D -H -u 1000 -G hci-sim hci-sim
 COPY --from=builder /out/hci-sim /usr/local/bin/hci-sim
-RUN ln -s /usr/local/bin/hci-sim /usr/local/bin/acli
+RUN ln -s /usr/local/bin/hci-sim /usr/local/bin/acli \
+    && ln -s /usr/local/bin/hci-sim /usr/local/bin/vtpsh
 USER 1000:1000
 EXPOSE 2222 8080
 ENTRYPOINT ["/usr/local/bin/hci-sim"]

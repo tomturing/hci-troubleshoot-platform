@@ -2,7 +2,7 @@
 backend/kb-service/app/services/signal_orchestrator.py
 关键信号多 Agent 分层建模调度器 (SignalExtractionOrchestrator):
 1. 计数 Agent (CountAgent): 纯内容驱动边界切分与角色感知去重
-2. 分类 Agent (ClassifyAgent): 13 类受限 Catalog 双重视角对抗审查
+2. 分类 Agent (ClassifyAgent): 12 类可自动建模 Catalog 双重视角对抗审查
 3. 建模 Agent (ModelAgent): 注入最佳实践黄金案例与全局共享变量契约
 4. 验证 Agent (VerifyAgent): 全局对账、DAG 拓扑连通性校验与门禁自愈闭环
 """
@@ -10,6 +10,7 @@ backend/kb-service/app/services/signal_orchestrator.py
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -19,43 +20,23 @@ from typing import Any
 
 from shared.database.postgres import DatabaseManager
 from shared.observability.otel import get_current_trace_id
+from shared.schemas.acquirer_args import AUTO_MODELING_SIGNAL_TOOLS, DEFAULT_EXTERNAL_SIGNAL_VARIABLES
 from shared.utils.prompt_loader import StrictPromptLoader
 
 from app.services.signal_asset_service import SignalAssetService
 
 logger = logging.getLogger("signal_orchestrator")
 
-# 13 类封闭受限 Catalog (5 QKV + 8 QFK)
-VALID_CATALOG_TOOLS = frozenset(
-    {
-        "qkv_task",
-        "qkv_alert",
-        "qkv_dialog",
-        "qkv_vm_console",
-        "qkv_effect",
-        "qfk_log",
-        "qfk_system",
-        "qfk_vm",
-        "qfk_service",
-        "qfk_network",
-        "qfk_storage",
-        "qfk_hardware",
-        "qfk_platform",
-    }
-)
+# 流水线只自动生产 12 类可从原始 KBD 事实安全推导的 Signal（4 QKV + 8 QFK）。
+# qkv_effect 是“修复后应达到什么效果”的专家契约，不能从排障叙事臆造；
+# qkv_case_context 则由语义画像生成器确定性补入，二者都不进入分类 Agent Catalog。
+VALID_CATALOG_TOOLS = AUTO_MODELING_SIGNAL_TOOLS
 
-DEFAULT_SHARED_VARIABLES = [
-    "HOST",
-    "VM",
-    "REQUEST_ID",
-    "STORAGE_ID",
-    "LOG_DATE",
-    "STATUS",
-    "ERRCODE_TRACING",
-    "TARGET",
-    "END",
-    "DATE",
-]
+# 变量权威源是代码契约 DEFAULT_EXTERNAL_SIGNAL_VARIABLES；额外并入调度层按 END 自动
+# 派生的 DATE 与 qfk_log 按自然日过滤使用的 LOG_DATE，口径与
+# extract_signals.DEFAULT_VARIABLE_SCHEMA 保持一致。条件生产者专属变量
+# （VM_CONSOLE_*/EFFECT_*）不进默认表，由阶段 3.2 动态符号表在实际存在生产者时注入。
+DEFAULT_SHARED_VARIABLES = list(dict.fromkeys((*DEFAULT_EXTERNAL_SIGNAL_VARIABLES, "LOG_DATE", "DATE")))
 VALID_ROLE_TYPES = frozenset({"producer", "consumer"})
 
 # 候选发现只负责从原文找出“可能是信号”的证据，不负责替代分类或建模。
@@ -150,6 +131,31 @@ def discover_signal_candidates(composite_text: str, steps_text: str) -> list[dic
     return candidates
 
 
+_RUNTIME_PLACEHOLDER_RE = re.compile(r"\{\{([A-Z][A-Z0-9_.]*)\}\}")
+
+
+def render_prompt_template(template: str, **values: Any) -> str:
+    """渲染系统 Prompt，同时逐字保留 ``{{RUNTIME_VAR}}`` 运行时占位符。
+
+    系统 Prompt 自身使用 ``str.format`` 注入 KBD 内容，而 Signal 示例中的双花括号
+    属于稍后变量池解析的业务语法。先保护再恢复，避免 ``{{END}}`` 被意外折叠为
+    ``{END}``，导致 LLM 复制出永远无法解析的占位符。
+    """
+
+    sentinels: dict[str, str] = {}
+
+    def _protect(match: re.Match[str]) -> str:
+        token = f"__HCI_RUNTIME_PLACEHOLDER_{len(sentinels)}__"
+        sentinels[token] = match.group(0)
+        return token
+
+    protected = _RUNTIME_PLACEHOLDER_RE.sub(_protect, template)
+    rendered = protected.format(**values)
+    for token, placeholder in sentinels.items():
+        rendered = rendered.replace(token, placeholder)
+    return rendered
+
+
 class SignalExtractionOrchestrator:
     def __init__(
         self,
@@ -169,6 +175,20 @@ class SignalExtractionOrchestrator:
         self.last_diagnostics: dict[int, dict[str, Any]] = {}
         concurrency = max(1, int(os.environ.get("SIGNAL_MULTI_AGENT_CONCURRENCY", "3")))
         self._llm_semaphore = asyncio.Semaphore(concurrency)
+        self._prompt_revisions: dict[str, str] = {}
+
+    def _remember_prompt(self, name: str, template: str) -> None:
+        self._prompt_revisions[name] = hashlib.sha256(template.encode("utf-8")).hexdigest()
+
+    def generation_prompt_material(self) -> str:
+        """返回本轮多 Agent 实际使用的 Prompt 修订集合，供 Proposal 不可变追溯。"""
+
+        return json.dumps(
+            {"pipeline": "kbd_signal_multi_agent_v1", "prompts": self._prompt_revisions},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
 
     async def _load_prompt(self, name: str, placeholders: list[str], consumer: str) -> str:
         """每次加载 Prompt 使用独立 session，避免并发 Agent 共享 AsyncSession。"""
@@ -216,6 +236,19 @@ class SignalExtractionOrchestrator:
         async with self.db_manager.async_session_factory() as asset_session:
             return await SignalAssetService.get_best_practices_by_tool(asset_session, tool_name, limit=limit)
 
+    async def _get_modeling_contract(self, tool_name: str) -> dict[str, Any]:
+        """建模模板查询使用独立 session，避免并发建模任务共享会话。
+
+        模板资产是增强上下文；代码 Schema 与最终发布门禁仍是 fail-closed 权威源，
+        读取失败时降级为不注入机器契约，不阻断建模主流程。
+        """
+        try:
+            async with self.db_manager.async_session_factory() as asset_session:
+                return (await SignalAssetService.get_all_templates(asset_session)).get(tool_name, {})
+        except Exception as exc:
+            logger.warning("读取 %s 建模模板失败，继续使用代码契约门禁: %s", tool_name, exc)
+            return {}
+
     async def _invoke_llm(self, prompt: str, stage_name: str, *, kbd_id: int) -> dict[str, Any]:
         """统一调用 LLM 并进行安全 JSON 反序列化"""
         if self.llm_caller is not None:
@@ -261,7 +294,9 @@ class SignalExtractionOrchestrator:
             prompt_template = await self._load_prompt(
                 "kbd_signal_count_v1", ["composite_text", "steps_text"], "kb-service.signal_extract.count"
             )
-            prompt = prompt_template.format(
+            self._remember_prompt("kbd_signal_count_v1", prompt_template)
+            prompt = render_prompt_template(
+                prompt_template,
                 composite_text=composite_text[:4000],
                 steps_text=steps_text[:6000],
             )
@@ -400,7 +435,9 @@ class SignalExtractionOrchestrator:
                 ],
                 "kb-service.signal_extract.classify",
             )
-            prompt = prompt_template.format(
+            self._remember_prompt("kbd_signal_classify_v1", prompt_template)
+            prompt = render_prompt_template(
+                prompt_template,
                 core_entity=core_entity,
                 evidence_raw=evidence_raw,
                 composite_text=composite_text[:2000],
@@ -478,19 +515,27 @@ class SignalExtractionOrchestrator:
 
         effective_vars = dynamic_shared_variables if dynamic_shared_variables is not None else DEFAULT_SHARED_VARIABLES
         shared_vars_text = ", ".join(sorted(set(effective_vars)))
+        catalog_with_contract = acli_catalog_text
+        modeling_contract = await self._get_modeling_contract(tool_name)
+        if modeling_contract:
+            catalog_with_contract += "\n\n【当前工具机器契约】\n" + json.dumps(
+                modeling_contract, ensure_ascii=False, sort_keys=True
+            )
         try:
             prompt_template = await self._load_prompt(
                 "kbd_signal_model_v1",
                 ["tool_name", "core_entity", "evidence_raw", "shared_variables", "best_practices", "acli_catalog"],
                 "kb-service.signal_extract.model",
             )
-            prompt = prompt_template.format(
+            self._remember_prompt("kbd_signal_model_v1", prompt_template)
+            prompt = render_prompt_template(
+                prompt_template,
                 tool_name=tool_name,
                 core_entity=core_entity,
                 evidence_raw=evidence_raw,
                 shared_variables=shared_vars_text,
                 best_practices=bp_formatted,
-                acli_catalog=acli_catalog_text,
+                acli_catalog=catalog_with_contract,
             )
             res = await self._invoke_llm(prompt, "model", kbd_id=kbd_id)
             # 校验是否返回合法单信号结构
@@ -597,7 +642,9 @@ class SignalExtractionOrchestrator:
                     ["signals_json", "rejected_candidates", "raw_count", "kbd_context", "gate_issues"],
                     "kb-service.signal_extract.verify",
                 )
-                prompt = prompt_template.format(
+                self._remember_prompt("kbd_signal_verify_v1", prompt_template)
+                prompt = render_prompt_template(
+                    prompt_template,
                     signals_json=json.dumps(
                         validated + [r.get("signal", r) for r in all_rejected], ensure_ascii=False, indent=2
                     ),
@@ -758,7 +805,7 @@ class SignalExtractionOrchestrator:
                 "candidate_id": (c.get("intent") or {}).get("candidate_id"),
                 "signal": c.get("intent"),
                 "reason_code": "run_failed",
-                "reason": "无法映射到 13 类受限 Catalog",
+                "reason": "无法映射到 12 类自动建模 Catalog",
             }
             for c in classified_results
             if not c.get("valid")

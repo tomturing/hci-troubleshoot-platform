@@ -51,6 +51,21 @@ def test_command_preview_uses_service_runtime_mapping():
     assert preview["command"] == "acli service asv asv status"
 
 
+def test_command_preview_keeps_domain_formatter_in_global_position():
+    preview = compile_qfk_command_preview(
+        {
+            "acquire": {
+                "tool": "qfk_platform",
+                "args": {"command": "info get", "formatter": "json", "host": "{{HOST}}"},
+            },
+            "match": None,
+        }
+    )
+
+    assert preview["command"] == "acli --formatter json platform info get"
+    assert preview["variables"] == ["HOST"]
+
+
 def test_command_preview_uses_log_handler_and_preserves_time_template():
     preview = compile_qfk_command_preview(
         {

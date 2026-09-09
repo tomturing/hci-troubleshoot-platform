@@ -8,9 +8,10 @@ def test_openapi_exposes_collector_registry_and_artifact_contracts():
 
     specification = app.openapi()
 
-    assert len(specification["paths"]) == 70
+    assert len(specification["paths"]) == 71
     assert "/api/diagnosis-sessions/by-case/{case_id}/workspace" in specification["paths"]
     assert "/api/diagnosis-scenarios" in specification["paths"]
+    assert "/api/diagnosis-scenarios/semantic-advice" in specification["paths"]
     assert "/api/internal/collection-plans" in specification["paths"]
     assert "/api/internal/collection-plans/{plan_id}/regenerate" in specification["paths"]
     assert "/api/internal/collector-artifacts" in specification["paths"]

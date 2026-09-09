@@ -96,7 +96,7 @@ const previewStatus = computed(() => {
   if (!sampleInput.value.trim() && (source.value === 'pasted' || isEditingFork.value)) return '请提供试运行输入'
   return '试运行未完成'
 })
-const canSave = computed(() => previewResult.value?.status === 'PASS')
+const canSave = computed(() => verificationScope.value === 'signal' && previewResult.value?.status === 'PASS')
 const selectedDataset = computed(() => datasets.value.find(item => item.dataset_id === selectedDatasetId.value) || null)
 const resultExplanation = computed(() => {
   const result = previewResult.value
@@ -220,7 +220,9 @@ async function requestPreview(): Promise<void> {
       scope: isQkv.value ? 'qkv_variable_processing' : 'qfk_execution_result',
       unit_ref: {
         signal_id: signalId.value,
-        ...(isQkv.value && typeof props.processingIndex === 'number' ? { processing_index: props.processingIndex } : {}),
+        ...(verificationScope.value === 'ai_step' && isQkv.value && typeof props.processingIndex === 'number'
+          ? { processing_index: props.processingIndex }
+          : {}),
         ...(!isQkv.value && typeof props.processingIndex === 'number' ? { produce_index: props.processingIndex } : {}),
       },
       verification_scope: verificationScope.value,

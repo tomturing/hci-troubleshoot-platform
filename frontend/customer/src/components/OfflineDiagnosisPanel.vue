@@ -17,7 +17,7 @@ import {
   type OfflineScenario,
   type OfflineScenarioOption,
 } from '@hci/shared'
-import { formatPlanTarget, getPlanTargetNodes, resolveArtifactTarget } from '@/utils/offlineDiagnosis'
+import { buildKnownVariableContext, formatPlanTarget, getPlanTargetNodes, resolveArtifactTarget } from '@/utils/offlineDiagnosis'
 
 const props = defineProps<{ caseId: string; standalone?: boolean }>()
 const visible = defineModel<boolean>({ required: true })
@@ -52,6 +52,22 @@ const api = createOfflineDiagnosisApi(client, { token: getIdentityToken, tenantI
 const scenarios = ref<OfflineScenarioOption[]>([])
 const scenariosLoading = ref(false)
 const scenariosError = ref('')
+const adviceCategories = ref<{ category_id: string; display_name: string }[]>([])
+const adviceCategory = ref('')
+const adviceResult = ref<Record<string, any> | null>(null)
+const adviceBusy = ref(false)
+async function loadAdviceCategories() {
+  adviceBusy.value = true
+  try { adviceCategories.value = (await api.listSemanticAdviceCategories()).data }
+  catch (error) { ElMessage.error(errorMessage(error)) }
+  finally { adviceBusy.value = false }
+}
+async function requestAdvice() {
+  adviceBusy.value = true
+  try { adviceResult.value = (await api.getSemanticAdvice({ category_id: adviceCategory.value, ...semanticContext.value.semantic_context })).data }
+  catch (error) { ElMessage.error(errorMessage(error)) }
+  finally { adviceBusy.value = false }
+}
 const reportLevelLabels: Record<DiagnosisReport['diagnosis_level'], string> = {
   Confirmed: '已确认',
   Probable: '高概率',
@@ -81,8 +97,14 @@ const form = ref({
   impactScope: 'single_object',
   currentStatus: 'ongoing' as 'ongoing' | 'recovered' | 'intermittent',
   recentChangeDescription: '',
+  description: '',
+  errorText: '',
+  component: '',
+  operation: '',
+  semanticObjectType: '',
 })
 const session = ref<DiagnosisSession | null>(null)
+const knownVariables = ref<Array<{ id: string; name: string; value: string }>>([])
 const plan = ref<CollectionPlan | null>(null)
 const artifact = ref<CollectorArtifact | null>(null)
 const artifactTargetNode = ref('')
@@ -97,12 +119,14 @@ const refreshing = ref(false)
 let pollTimer: number | undefined
 
 const activeReport = computed(() => reports.value[0] || null)
+const semanticRoute = computed(() => activeReport.value?.supporting_evidence?.find(item => item.kind === 'semantic_route')?.route as Record<string, any> | undefined)
 const publishedReport = computed(
   () => reports.value.find((item) => item.publish_status === 'customer_published') || null,
 )
 const canCreate = computed(() =>
   Boolean(
     form.value.scenario &&
+      form.value.description.trim() &&
       form.value.productVersion.trim() &&
       (!selectedScenario.value?.requires_affected_object || form.value.objectId.trim()) &&
       form.value.sourceNode.trim() &&
@@ -111,6 +135,17 @@ const canCreate = computed(() =>
   ),
 )
 const selectedScenario = computed(() => scenarios.value.find((item) => item.scenario === form.value.scenario) || null)
+const semanticContext = computed(() => ({
+  semantic_context: {
+    description: form.value.description.trim(),
+    error_text: form.value.errorText.trim(),
+    product: 'HCI',
+    product_version: form.value.productVersion.trim(),
+    component: form.value.component.trim(),
+    operation: form.value.operation.trim(),
+    object_type: form.value.semanticObjectType.trim(),
+  },
+}))
 const planTargetNodes = computed(() => getPlanTargetNodes(plan.value))
 const artifactPlanItems = computed(() => {
   const artifactItemIds = new Set((artifact.value?.items || []).map((item) => item.plan_item_id))
@@ -217,6 +252,7 @@ async function createCollector() {
   if (!canCreate.value) return
   busy.value = true
   try {
+    const collectionContext = { ...semanticContext.value, ...buildKnownVariableContext(knownVariables.value) }
     const sessionPayload = {
       case_id: props.caseId,
       selected_scenario: form.value.scenario,
@@ -252,7 +288,9 @@ async function createCollector() {
         stableRequestKey('create-plan', {
           session_id: session.value.session_id,
           product_version: form.value.productVersion,
+          context: collectionContext,
         }),
+        collectionContext,
       )
     ).data
     artifactTargetNode.value = resolveArtifactTarget(plan.value, form.value.sourceNode)
@@ -270,6 +308,7 @@ async function retryCreatePlan() {
   if (!session.value || !form.value.productVersion.trim()) return
   busy.value = true
   try {
+    const collectionContext = { ...semanticContext.value, ...buildKnownVariableContext(knownVariables.value) }
     plan.value = (
       await api.createPlan(
         session.value.session_id,
@@ -277,7 +316,9 @@ async function retryCreatePlan() {
         stableRequestKey('create-plan', {
           session_id: session.value.session_id,
           product_version: form.value.productVersion.trim(),
+          context: collectionContext,
         }),
+        collectionContext,
       )
     ).data
     artifactTargetNode.value = resolveArtifactTarget(plan.value, form.value.sourceNode)
@@ -608,6 +649,17 @@ onBeforeUnmount(stopPolling)
         <el-form-item label="执行节点" required>
           <el-input v-model="form.sourceNode" placeholder="运行采集工具的 HCI 节点名称或 IP" />
         </el-form-item>
+        <el-form-item label="已确认的诊断变量（选填）">
+          <div>
+            <p class="field-help">例如从报错中复制的 REQUEST_ID。仅填写已核实的值；未知请留空，系统不会按语义猜测。</p>
+            <div v-for="(variable, index) in knownVariables" :key="variable.id" class="actions">
+              <el-input v-model="variable.name" placeholder="变量名，例如 REQUEST_ID" :maxlength="64" />
+              <el-input v-model="variable.value" placeholder="已确认的值" :maxlength="2000" />
+              <el-button @click="knownVariables.splice(index, 1)">移除</el-button>
+            </div>
+            <el-button :disabled="knownVariables.length >= 32" @click="knownVariables.push({ id: generateUUID(), name: '', value: '' })">添加已确认变量</el-button>
+          </div>
+        </el-form-item>
         <el-form-item label="故障时间范围" required>
           <el-date-picker v-model="form.startTime" type="datetime" placeholder="开始时间" />
           <span class="time-separator">至</span>
@@ -623,12 +675,36 @@ onBeforeUnmount(stopPolling)
         <el-form-item label="近期变更">
           <el-input v-model="form.recentChangeDescription" type="textarea" :rows="3" />
         </el-form-item>
+        <el-form-item label="当前故障现象" required>
+          <el-input v-model="form.description" type="textarea" :rows="3" :maxlength="16000" show-word-limit placeholder="请描述当前操作、异常和报错。用于语义入口筛选；不会从描述猜测主机或虚拟机 ID。" />
+        </el-form-item>
+        <el-form-item label="完整报错">
+          <el-input v-model="form.errorText" type="textarea" :rows="2" :maxlength="1000" placeholder="可选；请保留错误码，不要填写密码或令牌。" />
+        </el-form-item>
+        <el-form-item label="发生故障的组件"><el-input v-model="form.component" :maxlength="120" placeholder="可选；填写已确认的组件名称，不确定可以留空" /></el-form-item>
+        <el-form-item label="发生故障的操作"><el-input v-model="form.operation" :maxlength="120" placeholder="可选；例如创建、启动、备份" /></el-form-item>
+        <el-form-item label="问题对象类型"><el-input v-model="form.semanticObjectType" :maxlength="120" placeholder="可选；例如虚拟机、备份池。仅用于候选筛选，不是命令执行目标。" /></el-form-item>
         <el-form-item>
           <el-button type="primary" :disabled="!canCreate" :loading="busy" @click="createCollector">
             生成离线采集工具
           </el-button>
         </el-form-item>
       </el-form>
+      <el-collapse>
+        <el-collapse-item title="没有可自动采集的场景？查看人工补证据指引" name="manual-advice">
+          <p>该入口只提供排查方向，不生成采集器，也不输出已确认根因。请先在上方填写当前故障现象。</p>
+          <el-button :loading="adviceBusy" @click="loadAdviceCategories">加载已发布的人工指引分类</el-button>
+          <el-select v-model="adviceCategory" placeholder="选择问题所属分类">
+            <el-option v-for="item in adviceCategories" :key="item.category_id" :label="item.display_name" :value="item.category_id" />
+          </el-select>
+          <el-button :disabled="!adviceCategory || !form.description.trim()" :loading="adviceBusy" @click="requestAdvice">查看指引</el-button>
+          <template v-if="adviceResult">
+            <el-alert type="info" :closable="false" :title="adviceResult.reason_text || adviceResult.reason" />
+            <p v-if="adviceResult.next_action">{{ adviceResult.next_action.question }}</p>
+            <el-table :data="adviceResult.candidates || []"><el-table-column prop="title" label="可能方向" /><el-table-column prop="manual_evidence_request" label="需要补充的证据" /></el-table>
+          </template>
+        </el-collapse-item>
+      </el-collapse>
     </el-card>
 
     <template v-else>
@@ -763,6 +839,19 @@ onBeforeUnmount(stopPolling)
           :closable="false"
         />
         <h3>{{ activeReport.summary }}</h3>
+        <section v-if="semanticRoute">
+          <h4>为什么选择这些排查方向</h4>
+          <p>{{ semanticRoute.reason_text || semanticRoute.reason }}。描述相似只用于选择候选，结论仍以采集证据为准。</p>
+          <el-alert v-if="semanticRoute.next_action" type="warning" :closable="false" :title="semanticRoute.next_action.question" />
+          <p v-if="semanticRoute.degraded">本次未使用向量排序，按明确症状与报错进行文字筛选。</p>
+          <el-table :data="semanticRoute.candidates || []">
+            <el-table-column prop="support_id" label="案例" /><el-table-column prop="title" label="排查方向" />
+            <el-table-column prop="matched_positive_anchors" label="描述中的命中信息" />
+          </el-table>
+          <el-collapse><el-collapse-item title="查看未采用的候选及原因" name="semantic-rejected">
+            <el-table :data="semanticRoute.filtered_candidates || []"><el-table-column prop="support_id" label="案例" /><el-table-column prop="reason_text" label="未采用原因" /></el-table>
+          </el-collapse-item></el-collapse>
+        </section>
         <el-descriptions :column="2" border>
           <el-descriptions-item label="诊断可信度">{{ (activeReport.confidence * 100).toFixed(1) }}%</el-descriptions-item>
           <el-descriptions-item label="主要判断">{{ activeReport.primary_hypothesis || '当前证据不足，尚不能确认根因' }}</el-descriptions-item>

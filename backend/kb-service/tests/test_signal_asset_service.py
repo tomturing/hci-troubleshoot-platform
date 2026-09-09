@@ -4,6 +4,7 @@ backend/kb-service/tests/test_signal_asset_service.py
 """
 
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -38,6 +39,10 @@ async def test_get_all_templates_caching():
     # 首次调用
     t1 = await SignalAssetService.get_all_templates(mock_session)
     assert "qkv_task" in t1
+    assert len(t1) == 13
+    assert t1["qkv_task"]["contract_source"] == "shared.schemas.acquirer_args"
+    assert t1["qkv_task"]["acquire_schema"]["required"] == ["keyword"]
+    assert "qkv_case_context" not in t1
     assert mock_session.execute.call_count == 1
 
     # 第二次调用命中缓存
@@ -55,6 +60,9 @@ async def test_get_best_practices_by_tool_caching():
     mock_bp.tool_name = "qfk_log"
     mock_bp.pattern_category = "日志排查"
     mock_bp.support_id = "18906"
+    mock_bp.source_revision = 8
+    mock_bp.source_checksum = "a" * 64
+    mock_bp.signal_id = "sig_1"
     mock_bp.raw_evidence = "检查 log"
     mock_bp.signal_json = {"id": "sig_1"}
     mock_bp.design_notes = "设计要点"
@@ -66,12 +74,57 @@ async def test_get_best_practices_by_tool_caching():
     res1 = await SignalAssetService.get_best_practices_by_tool(mock_session, "qfk_log", limit=3)
     assert len(res1) == 1
     assert res1[0]["support_id"] == "18906"
+    assert res1[0]["source_revision"] == 8
+    assert res1[0]["source_checksum"] == "a" * 64
+    assert res1[0]["signal_id"] == "sig_1"
     assert mock_session.execute.call_count == 1
 
     res2 = await SignalAssetService.get_best_practices_by_tool(mock_session, "qfk_log", limit=3)
     assert res2 == res1
     assert mock_session.execute.call_count == 1
 
+
+@pytest.mark.asyncio
+async def test_published_kbd_creates_revisioned_best_practices_and_skips_context():
+    mock_session = AsyncMock()
+    mock_session.add = MagicMock()
+    template_result = MagicMock()
+    template_result.all.return_value = [(1, "qkv_task"), (2, "qfk_log")]
+    mock_session.execute.side_effect = [MagicMock(), template_result]
+    mock_session.scalar.return_value = None
+    kbd = SimpleNamespace(
+        id=42,
+        support_id="KBD-42",
+        title="任务失败样例",
+        signals_json={
+            "signals": [
+                {
+                    "id": "task",
+                    "acquire": {"tool": "qkv_task", "args": {"keyword": "启动失败"}},
+                    "orchestrate": {"produces": [{"name": "VM", "path": "vm"}]},
+                },
+                {
+                    "id": "context",
+                    "acquire": {"tool": "qkv_case_context", "args": {}},
+                    "orchestrate": {"produces": []},
+                },
+            ]
+        },
+    )
+
+    count = await SignalAssetService.sync_published_kbd_best_practices(
+        mock_session,
+        kbd=kbd,
+        source_revision=7,
+        source_checksum="a" * 64,
+    )
+
+    assert count == 1
+    best_practice = mock_session.add.call_args.args[0]
+    assert best_practice.signal_id == "task"
+    assert best_practice.source_revision == 7
+    assert best_practice.source_checksum == "a" * 64
+    assert best_practice.is_active is True
 
 @pytest.mark.asyncio
 async def test_record_failure_with_db_manager_independent_commit():

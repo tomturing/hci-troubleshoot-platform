@@ -1,7 +1,8 @@
 """统一的 `acquire.args` 契约注册表（producer/consumer 同构）。
 
 来源：RFC《关键信号数据模型分层重构》§4.4。
-对应 `kb-service` 的 `ACQUIRER_CATALOG`（11 个 acquirer）。本注册表是该 catalog 的
+对应 `kb-service` 的 `ACQUIRER_CATALOG`。当前共 14 类 Signal 输入，其中 13 类可执行
+采集器、1 类语义上下文输入（qkv_case_context）。本注册表是该 catalog 的
 "参数契约"补全——catalog 只描述"能采什么"，本模块描述"args 里能写什么"。
 
 核心结构
@@ -45,9 +46,7 @@ from shared.schemas.log_source_catalog import (
 # ``acli log get -f`` 的安全边界是 basename 字符集，而不是扩展名。真实 HCI 日志
 # 包含 messages、无扩展名文件及带 {{VAR}} 的动态 basename；配置文件和 BMC SEL 即使
 # 字符形状合法，也会由日志源 Catalog 的 acquisition/runtime_supported 语义门拒绝。
-SAFE_LOG_FILE_PATTERN = (
-    r"^(?:[A-Za-z0-9_.-]|\{\{[A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*\}\})+$"
-)
+SAFE_LOG_FILE_PATTERN = r"^(?:[A-Za-z0-9_.-]|\{\{[A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*\}\})+$"
 # 向后兼容旧调用方导入名；值已按实机 aCLI 契约收紧为根目录，而非宽泛前缀。
 ALLOWED_LOG_PATH_PREFIXES = ALLOWED_LOG_ROOTS
 ILLEGAL_COMMAND_CHARS = frozenset("|#;&`$<>{}\n\r")
@@ -73,6 +72,7 @@ def _contains_illegal_command_chars(value: str) -> bool:
 
     without_placeholders = _PLACEHOLDER_RE.sub("VALUE", value)
     return any(char in ILLEGAL_COMMAND_CHARS for char in without_placeholders)
+
 
 # ─── 公共参数：全局只定义一次 ───────────────────────────────────────────────────
 # 60 秒是新建信号和未声明 timeout 的统一运行时默认值；显式配置的历史信号
@@ -134,7 +134,7 @@ VM_CONSOLE_REQUIRED_TARGET_VARS = frozenset({"HOST", "VM_ID"})
 # 封闭观测通道集合：效果观测一律委派已批准的只读采集原语，不新开命令面。
 # metric_query 等通道待设计文档第十二章平台确认项闭环后按提案加入。
 EFFECT_OBSERVATION_CHANNELS = frozenset({"qkv_alert", "qkv_task", "qkv_dialog", "qkv_vm_console"})
-# 使用模式：修复后复核（默认）/ S1 症状确认。
+# 使用模式：操作后效果验证（默认）/ S1 症状确认。
 EFFECT_USAGES = frozenset({"remediation_verify", "symptom_confirm"})
 # 判定规则封闭集合：与 shared/signals/matcher.py 的 7 类 matcher 严格一致，
 # 不新增自由文本判定；确需扩展走提案 + 测试。
@@ -229,11 +229,22 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
                 "description": "在当前主控搜索的固定弹框日志域；不是自由路径",
             },
             "context_lines": {
-                "type": "integer", "minimum": 0, "maximum": 10, "default": 2,
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10,
+                "default": 2,
                 "description": "命中行上下文，用于提取 END/REQUEST_ID",
             },
         },
         "required": ["keyword"],
+    },
+    # 语义入口上下文不是远程采集器：只消费用户已经显式提交的描述、表单字段或
+    # 已审核图片事实。args 故意为空，避免在 KBD 中夹带命令、目标或推断规则。
+    "qkv_case_context": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {},
+        "required": [],
     },
     # ── 条件型实时视觉生产者（QKV 扩展）：虚拟机控制台截图 ──
     # 只产出变量（produces），match 必须为 null。不提供任意 Monitor 指令、路径、
@@ -275,7 +286,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
                 "type": "string",
                 "enum": ["remediation_verify", "symptom_confirm"],
                 "default": "remediation_verify",
-                "description": "修复后复核（默认）/ S1 症状确认",
+                "description": "操作后效果验证（默认）/ S1 症状确认",
             },
             "expectation": {
                 "type": "object",
@@ -306,7 +317,14 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
                             "type": {
                                 "type": "string",
                                 "enum": [
-                                    "keyword", "regex", "state", "boolean", "threshold", "delta", "trend", "exists"
+                                    "keyword",
+                                    "regex",
+                                    "state",
+                                    "boolean",
+                                    "threshold",
+                                    "delta",
+                                    "trend",
+                                    "exists",
                                 ],
                             },
                             "pattern": {
@@ -330,7 +348,14 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
                             "aggregation": {
                                 "type": "string",
                                 "enum": [
-                                    "first_number", "last_number", "line_count", "duration_seconds", "max", "min", "sum", "range"
+                                    "first_number",
+                                    "last_number",
+                                    "line_count",
+                                    "duration_seconds",
+                                    "max",
+                                    "min",
+                                    "sum",
+                                    "range",
                                 ],
                                 "default": "first_number",
                             },
@@ -508,7 +533,11 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
             "timeout": COMMON_ARGS["timeout"],
             "nonzero_exit_as_negative": COMMON_ARGS["nonzero_exit_as_negative"],
             "command": {"type": "string", "description": "acli vm <command>（如 list/status/console）"},
-            "command_args": {"type": "array", "items": {"type": "string"}, "description": "结构化命令参数，例如 --vm-id {{VM}}"},
+            "command_args": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "结构化命令参数，例如 --vm-id {{VM}}",
+            },
             "host": _TARGET_DIMENSIONS["host"],
             "resource_keyword": {"type": "string", "description": "虚拟机名选择器（可选）"},
         },
@@ -599,7 +628,139 @@ FRONTEND_TOOLS: set[str] = {"qkv_alert", "qkv_task", "qkv_dialog"}
 # qkv 校验分支与解析器分发引用，并入会让条件生产者获得直接生产者语义。
 # 发布门禁见 signal_schema.validate_kbd_publishable_signals_json。
 CONDITIONAL_PRODUCERS: set[str] = {"qkv_vm_console", "qkv_effect"}
-BACKEND_TOOLS: set[str] = set(ACQUIRER_ARGS_SCHEMA) - FRONTEND_TOOLS - CONDITIONAL_PRODUCERS
+# 语义入口是用户故障描述的结构化上下文，不发起命令、查询或截图，也不能作为
+# Agent 运行时 Capability 对外宣称“已部署”。它只参与 KBD 召回和发布入口门禁。
+CONTEXT_INPUTS: set[str] = {"qkv_case_context"}
+BACKEND_TOOLS: set[str] = set(ACQUIRER_ARGS_SCHEMA) - FRONTEND_TOOLS - CONDITIONAL_PRODUCERS - CONTEXT_INPUTS
+EXECUTABLE_SIGNAL_TOOLS: frozenset[str] = frozenset(FRONTEND_TOOLS | CONDITIONAL_PRODUCERS | BACKEND_TOOLS)
+# 自动建模只覆盖能够从 KBD 原始事实安全推导的能力。qkv_effect 的期望锚点由
+# 专家在处置语义明确后维护；qkv_case_context 由语义画像生成器确定性补建。
+EXPERT_MAINTAINED_SIGNAL_TOOLS: frozenset[str] = frozenset({"qkv_effect"})
+AUTO_MODELING_SIGNAL_TOOLS: frozenset[str] = frozenset(EXECUTABLE_SIGNAL_TOOLS - EXPERT_MAINTAINED_SIGNAL_TOOLS)
+# 离线证据包只负责采集现场事实。工单上下文已经随工单提交；效果验证依赖处置后
+# 的时间窗口和重复观测，不能伪装成一次性离线采集项。
+OFFLINE_NON_ACQUISITION_TOOLS: frozenset[str] = frozenset(CONTEXT_INPUTS | EXPERT_MAINTAINED_SIGNAL_TOOLS)
+
+# 诊断运行开始前可由工单、资产上下文或受控用户输入提供的变量。生成、发布门禁、
+# 在线 Plan 与离线 Profile 必须复用此表，禁止各模块维护不同的“默认变量”列表。
+DEFAULT_EXTERNAL_SIGNAL_VARIABLES: tuple[str, ...] = (
+    "HOST",
+    "VM",
+    "VM_ID",
+    "NODE_IP",
+    "TARGET",
+    "END",
+    "ALERT_TYPE",
+    "STATUS",
+    "STORAGE_ID",
+    "ERRCODE_TRACING",
+    "REQUEST_ID",
+)
+
+# QKV 原始记录允许映射为产出变量的字段。这里约束的是 path，而变量 name/alias
+# 仍可由 KBD 取有业务含义的名称；这样既防止写入运行时永远取不到的幽灵字段，
+# 又允许同一原始字段被映射为领域变量。
+QKV_ALLOWED_PRODUCE_PATHS: dict[str, frozenset[str]] = {
+    "qkv_task": frozenset(
+        {
+            "id",
+            "type",
+            "end",
+            "start",
+            "target",
+            "object_name",
+            "description",
+            "host",
+            "hostname",
+            "hostid",
+            "vm",
+            "vm_id",
+            "object_id",
+            "status",
+            "urgent_type",
+            "errcode_tracing",
+            "request_id",
+        }
+    ),
+    "qkv_alert": frozenset(
+        {
+            "id",
+            "type",
+            "alert_type",
+            "end",
+            "start",
+            "target",
+            "object_name",
+            "object_type",
+            "description",
+            "host",
+            "hostname",
+            "hostid",
+            "vm",
+            "vm_id",
+            "object_id",
+            "status",
+            "urgent_type",
+            "request_id",
+        }
+    ),
+    "qkv_dialog": frozenset({"end", "request_id", "host", "line", "description"}),
+    "qkv_vm_console": frozenset({"display_state", "summary", "confidence", "artifact_id"}),
+    "qkv_effect": frozenset({"verdict", "checked_at", "evidence_ref"}),
+}
+QKV_OPEN_RECORD_PRODUCERS = frozenset({"qkv_task", "qkv_alert"})
+_QKV_RECORD_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\|[A-Za-z_][A-Za-z0-9_]*)*$")
+
+QKV_STANDARD_OUTPUTS: dict[str, tuple[tuple[str, str], ...]] = {
+    "qkv_vm_console": (
+        ("VM_CONSOLE_STATE", "display_state"),
+        ("VM_CONSOLE_SUMMARY", "summary"),
+        ("VM_CONSOLE_CONFIDENCE", "confidence"),
+        ("VM_CONSOLE_ARTIFACT_ID", "artifact_id"),
+    ),
+    "qkv_effect": (
+        ("EFFECT_STATUS", "verdict"),
+        ("EFFECT_CHECKED_AT", "checked_at"),
+        ("EFFECT_EVIDENCE", "evidence_ref"),
+    ),
+}
+
+STANDARD_SIGNAL_VARIABLES: tuple[str, ...] = tuple(
+    dict.fromkeys(
+        (*DEFAULT_EXTERNAL_SIGNAL_VARIABLES, *(name for rows in QKV_STANDARD_OUTPUTS.values() for name, _ in rows))
+    )
+)
+
+
+def validate_qkv_produce_contract(tool: str, produces: Any) -> tuple[bool, str | None]:
+    """校验 QKV produces 路径和条件生产者固定输出，防止保存幽灵字段。"""
+
+    if tool not in QKV_ALLOWED_PRODUCE_PATHS:
+        return True, None
+    if not isinstance(produces, list):
+        return False, f"{tool} 的 orchestrate.produces 必须是数组"
+    allowed_paths = QKV_ALLOWED_PRODUCE_PATHS[tool]
+    standard = dict(QKV_STANDARD_OUTPUTS.get(tool, ()))
+    for index, item in enumerate(produces):
+        if not isinstance(item, dict):
+            return False, f"{tool} produces[{index}] 必须是对象"
+        name = str(item.get("name") or "").strip().upper()
+        path = str(item.get("path") or "").strip()
+        path_parts = [part.strip() for part in path.split("|") if part.strip()]
+        if not name or not path_parts:
+            return False, f"{tool} produces[{index}] 必须同时配置 name 与 path"
+        unknown = sorted(set(path_parts) - allowed_paths)
+        # task/alert 的 aCLI JSON 会随产品版本增加领域字段，允许安全的扁平字段名；
+        # dialog/视觉/效果输出由平台解析器固定，必须严格闭合集合。
+        if tool in QKV_OPEN_RECORD_PRODUCERS and not _QKV_RECORD_PATH_RE.fullmatch(path):
+            return False, f"{tool} produces[{index}] path 仅允许扁平 JSON 字段及 | 容错链"
+        if tool not in QKV_OPEN_RECORD_PRODUCERS and unknown:
+            return False, f"{tool} produces[{index}] 使用未注册原始字段: {', '.join(unknown)}"
+        if standard and (name not in standard or standard[name] != path):
+            expected = ", ".join(f"{key}→{value}" for key, value in standard.items())
+            return False, f"{tool} 使用固定产出契约；允许 {expected}"
+    return True, None
+
 
 # Stable error code for the most common LLM contract drift.  Keep QKV keyword
 # strict: the runtime builds one ``acli -k`` argument, while arrays belong to
@@ -693,9 +854,7 @@ def _validate_effect_expectation(expectation: Any) -> tuple[bool, str | None]:
         return False, f"qkv_effect.expectation.observation 含未注册字段: {', '.join(sorted(obs_extra))}"
     obs_tool = observation.get("tool")
     if obs_tool not in EFFECT_OBSERVATION_CHANNELS:
-        return False, (
-            f"qkv_effect 观测通道不在封闭集合: {obs_tool}；允许 {sorted(EFFECT_OBSERVATION_CHANNELS)}"
-        )
+        return False, (f"qkv_effect 观测通道不在封闭集合: {obs_tool}；允许 {sorted(EFFECT_OBSERVATION_CHANNELS)}")
     obs_args = observation.get("args") or {}
     obs_ok, obs_error = validate_acquire_args(str(obs_tool), obs_args)
     if not obs_ok:
@@ -705,16 +864,23 @@ def _validate_effect_expectation(expectation: Any) -> tuple[bool, str | None]:
     if not isinstance(matcher, dict):
         return False, "qkv_effect.expectation.matcher 必填且必须是对象（封闭判定规则）"
     matcher_extra = set(matcher) - {
-        "type", "pattern", "mode", "expected", "value", "operator",
-        "aggregation", "metric", "minimum_samples", "direction", "extract",
+        "type",
+        "pattern",
+        "mode",
+        "expected",
+        "value",
+        "operator",
+        "aggregation",
+        "metric",
+        "minimum_samples",
+        "direction",
+        "extract",
     }
     if matcher_extra:
         return False, f"qkv_effect.expectation.matcher 含未注册字段: {', '.join(sorted(matcher_extra))}"
     mtype = matcher.get("type")
     if mtype not in EFFECT_MATCHER_TYPES:
-        return False, (
-            f"qkv_effect 判定规则不在封闭 matcher 集合: {mtype}；允许 {sorted(EFFECT_MATCHER_TYPES)}"
-        )
+        return False, (f"qkv_effect 判定规则不在封闭 matcher 集合: {mtype}；允许 {sorted(EFFECT_MATCHER_TYPES)}")
     if not isinstance(matcher.get("expected"), bool):
         return False, "qkv_effect.matcher.expected 必须是布尔值（三态判定由平台合成，不由 matcher 表达）"
     for field_name in _EFFECT_MATCHER_REQUIRED_FIELDS.get(str(mtype), frozenset()):
@@ -730,20 +896,29 @@ def _validate_effect_expectation(expectation: Any) -> tuple[bool, str | None]:
         return False, "qkv_effect.matcher.extract 为 text 时必须配置 rows"
 
     settle = expectation.get("settle_seconds", 120)
-    if isinstance(settle, bool) or not isinstance(settle, int) or not (
-        EFFECT_SETTLE_RANGE[0] <= settle <= EFFECT_SETTLE_RANGE[1]
+    if (
+        isinstance(settle, bool)
+        or not isinstance(settle, int)
+        or not (EFFECT_SETTLE_RANGE[0] <= settle <= EFFECT_SETTLE_RANGE[1])
     ):
         return False, f"qkv_effect.expectation.settle_seconds 必须在 {EFFECT_SETTLE_RANGE[0]}-{EFFECT_SETTLE_RANGE[1]}"
     window = expectation.get("window_seconds", 900)
-    if isinstance(window, bool) or not isinstance(window, int) or not (
-        EFFECT_WINDOW_RANGE[0] <= window <= EFFECT_WINDOW_RANGE[1]
+    if (
+        isinstance(window, bool)
+        or not isinstance(window, int)
+        or not (EFFECT_WINDOW_RANGE[0] <= window <= EFFECT_WINDOW_RANGE[1])
     ):
         return False, f"qkv_effect.expectation.window_seconds 必须在 {EFFECT_WINDOW_RANGE[0]}-{EFFECT_WINDOW_RANGE[1]}"
     max_recheck = expectation.get("max_recheck", 2)
-    if isinstance(max_recheck, bool) or not isinstance(max_recheck, int) or not (
-        EFFECT_MAX_RECHECK_RANGE[0] <= max_recheck <= EFFECT_MAX_RECHECK_RANGE[1]
+    if (
+        isinstance(max_recheck, bool)
+        or not isinstance(max_recheck, int)
+        or not (EFFECT_MAX_RECHECK_RANGE[0] <= max_recheck <= EFFECT_MAX_RECHECK_RANGE[1])
     ):
-        return False, f"qkv_effect.expectation.max_recheck 必须在 {EFFECT_MAX_RECHECK_RANGE[0]}-{EFFECT_MAX_RECHECK_RANGE[1]}"
+        return (
+            False,
+            f"qkv_effect.expectation.max_recheck 必须在 {EFFECT_MAX_RECHECK_RANGE[0]}-{EFFECT_MAX_RECHECK_RANGE[1]}",
+        )
     return True, None
 
 
@@ -858,10 +1033,7 @@ def validate_acquire_args(tool: str, args: Any) -> tuple[bool, str | None]:
             return False, f"acquire.args 日志路径不可解析: {exc}"
         is_request_artifact = bool(
             normalized_path
-            and (
-                normalized_path == REQUEST_ARTIFACT_ROOT
-                or normalized_path.startswith(f"{REQUEST_ARTIFACT_ROOT}/")
-            )
+            and (normalized_path == REQUEST_ARTIFACT_ROOT or normalized_path.startswith(f"{REQUEST_ARTIFACT_ROOT}/"))
         )
         if is_request_artifact:
             if not str(args.get("request_id") or "").strip():

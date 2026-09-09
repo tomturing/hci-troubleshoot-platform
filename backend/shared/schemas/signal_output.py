@@ -19,7 +19,7 @@ def derive_signal_requires(signal: dict[str, Any]) -> list[str]:
     acquire = signal.get("acquire") or {}
     tool = str(acquire.get("tool") or "")
     explicit_requires = list((signal.get("orchestrate") or {}).get("requires") or [])
-    if not tool.startswith("qfk_") and tool not in {"qkv_vm_console", "qkv_effect"}:
+    if not tool.startswith(("qfk_", "qkv_")):
         return explicit_requires
 
     values: list[str] = []
@@ -44,12 +44,13 @@ def derive_signal_requires(signal: dict[str, Any]) -> list[str]:
         return sorted(set(values))
     if tool.startswith("qkv_"):
         orchestrate = signal.get("orchestrate") or {}
+        # QKV parser 先按标准 name 投影本信号内部记录；alias 仅在后处理结束、
+        # 写入跨信号变量池时生效，不能冒充 output_processing 的本地字段。
         local = {
-            str(item.get(key) or "").strip().upper()
+            str(item.get("name") or "").strip().upper()
             for item in (orchestrate.get("produces") or [])
             if isinstance(item, dict)
-            for key in ("name", "alias")
-            if str(item.get(key) or "").strip()
+            if str(item.get("name") or "").strip()
         }
         derived: set[str] = set()
         for item in orchestrate.get("output_processing") or []:

@@ -177,6 +177,7 @@ async def push_vm_console_op(request: Request, conversation_id: uuid.UUID, body:
     )
 
     event_data = {
+        "conversationId": str(conversation_id),
         "captureId": body.capture_id,
         "execId": body.exec_id,
         "operation": body.operation,

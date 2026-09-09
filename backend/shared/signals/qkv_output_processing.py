@@ -289,7 +289,10 @@ def validate_output_processing(specs: Any, *, available_inputs: set[str] | None 
                     validate_ai_processing_config(ai_extract)
                 except ValueError as exc:
                     raise QKVProcessingError("QKV_PROCESSING_INVALID", f"处理单元[{index + 1}] AI 处理无效: {exc}") from exc
-                derived.add(name)
+            # 无论使用确定性 feature/split 还是 AI 取值，derive 的输出都可供后续
+            # 处理单元引用。此前只在 ai_processing 分支登记，导致纯确定性流水线
+            # 被错误判为 UNKNOWN_INPUT。
+            derived.add(name)
         else:
             if set(item) - {"mode", "input", "scope", "match"}:
                 raise QKVProcessingError("QKV_PROCESSING_INVALID", f"处理单元[{index + 1}] assert 只能包含 input/scope/match")

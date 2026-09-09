@@ -2,6 +2,27 @@ import type { CollectionPlan } from '@hci/shared'
 
 export const OFFLINE_DIAGNOSIS_PATH = '/offline-diagnosis'
 
+/** 仅接受用户明确填写的变量；不从故障描述推断 ID 或命令参数。 */
+export function buildKnownVariableContext(rows: Array<{ name: string; value: string }>): Record<string, string> {
+  const entries: Array<[string, string]> = []
+  const names = new Set<string>()
+  for (const row of rows) {
+    const name = row.name.trim().toUpperCase()
+    const value = row.value.trim()
+    if (!name && !value) continue
+    if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(name) || !value || value.length > 2000) {
+      throw new Error('已确认变量需要填写合法变量名和非空值（最多 2000 字符）')
+    }
+    if (['HOST', 'VM_ID', 'END', 'SEMANTIC_CONTEXT', 'CONSTRUCTOR', 'PROTOTYPE'].includes(name)) {
+      throw new Error(`${name} 请在执行节点、故障对象或故障时间字段填写，不能重复覆盖`)
+    }
+    if (names.has(name)) throw new Error(`变量 ${name} 重复，请只保留一项`)
+    names.add(name)
+    entries.push([name, value])
+  }
+  return Object.fromEntries(entries)
+}
+
 /** 构造独立离线诊断页面地址。 */
 export function buildOfflineDiagnosisUrl(caseId: string): string {
   const query = new URLSearchParams({ case_id: caseId.trim() })

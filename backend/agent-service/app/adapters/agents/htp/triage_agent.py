@@ -400,6 +400,12 @@ class TriageAgent(BaseAgent):
                 for token in re.findall(r"[a-z0-9]+|[一-鿿]{2,}", distinctive):
                     if token in combined:
                         score += min(len(token), 6)
+                    # 连续中文短语不能作为一个不可分词的 token。例如“服务状态断言”
+                    # 与“服务不可用、请检查状态”有明确重叠，但整句 substring 不成立。
+                    # 模型不可用的兜底只产出候选并要求人工确认，因此使用二元词组
+                    # 提升召回，不在这里自动确认分类。
+                    if re.fullmatch(r"[一-鿿]{3,}", token):
+                        score += sum(1 for index in range(len(token) - 1) if token[index : index + 2] in combined)
                 if score > 0:
                     scored.append((score, code, name))
 

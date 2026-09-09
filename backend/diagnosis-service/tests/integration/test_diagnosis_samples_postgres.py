@@ -91,6 +91,32 @@ def _documents() -> dict[str, dict]:
 
 
 def _matching_evidence(signal: dict) -> object:
+    produces = (signal.get("orchestrate") or {}).get("produces") or []
+    if not signal.get("match") and produces:
+        tool = str((signal.get("acquire") or {}).get("tool") or "")
+        if tool == "qfk_platform":
+            return '{"data":{"name":"HCI-SIM","version":"6.12.0","node_count":1}}'
+        if tool == "qkv_alert":
+            return {
+                "data": [{
+                    "id": "ALERT-SAMPLE-20260812",
+                    "host": "sample-host",
+                    "hardware_type": "gpu",
+                    "end": "2026-08-12 10:05:00",
+                }]
+            }
+        if tool == "qkv_task":
+            return {"data": [{"host": "sample-host", "vm": 1, "end": "2026-08-12 10:05:00"}]}
+        if tool == "qkv_dialog":
+            return "[2026-08-12 10:05:00] request_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa host=sample-host"
+        if tool == "qkv_vm_console":
+            return {
+                "observation_status": "observed",
+                "display_state": "normal",
+                "summary": "控制台画面正常，未发现黑屏或内核恐慌",
+                "confidence": 0.95,
+                "artifact_id": "sim-vmconsole-0001",
+            }
     matcher = signal.get("match") or {}
     matcher_type = matcher.get("type")
     if matcher_type == "keyword":
@@ -100,7 +126,11 @@ def _matching_evidence(signal: dict) -> object:
         return "eth0    link up"
     if matcher_type == "state":
         return "running"
+    if matcher_type == "boolean":
+        return "true"
     if matcher_type == "threshold":
+        if (matcher.get("extract") or {}).get("delimiter") == ",":
+            return "Filesystem,Use%\n/sf/log,83%\n"
         return "Filesystem Use%\n/sf/log 83%\n"
     if matcher_type == "delta":
         if signal["acquire"]["tool"] == "qfk_storage":
@@ -116,7 +146,8 @@ def _matching_evidence(signal: dict) -> object:
 
 
 @pytest.mark.asyncio
-async def test_five_samples_full_sync_publish_resources_and_reach_supported_diagnosis():
+@pytest.mark.parametrize("sample_mode", ["baseline", "semantic"])
+async def test_five_samples_full_sync_publish_resources_and_reach_supported_diagnosis(sample_mode):
     """五篇样例必须经全量同步生成资源，并能用冻结映射完成离线诊断。"""
 
     documents = _documents()
@@ -124,6 +155,14 @@ async def test_five_samples_full_sync_publish_resources_and_reach_supported_diag
     engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
     connection = await engine.connect()
     transaction = await connection.begin()
+    if sample_mode == "semantic":
+        # 直接执行种子 SQL 的只读 CTE，验证真正的 V2 数据而非另造一份近似 fixture。
+        sql = SEED_PATH.read_text(encoding="utf-8")
+        query = sql[sql.index("WITH sample_rows") : sql.index("INSERT INTO kbd_entry")]
+        query += "SELECT target_support_id, target_signals_json FROM seed_rows WHERE target_sample_suite = 'kbd-semantic-entry-signal-v2'"
+        rows = (await connection.execute(text(query))).mappings().all()
+        documents = {row["target_support_id"]: row["target_signals_json"] for row in rows}
+        assert len(documents) == 5
     session = AsyncSession(bind=connection, expire_on_commit=False)
     try:
         # 隔离共享开发库现有发布数据，测试退出时由外层事务完整回滚。
@@ -236,7 +275,12 @@ async def test_five_samples_full_sync_publish_resources_and_reach_supported_diag
             }
 
         tools = sorted(
-            {signal["acquire"]["tool"] for item in inserted.values() for signal in item["document"]["signals"]}
+            {
+                signal["acquire"]["tool"]
+                for item in inserted.values()
+                for signal in item["document"]["signals"]
+                if signal["acquire"]["tool"] != "qkv_case_context"
+            }
         )
         await _reconcile_tool_snapshots(session, tools)
 
@@ -259,7 +303,7 @@ async def test_five_samples_full_sync_publish_resources_and_reach_supported_diag
             for signal in item["document"]["signals"]
             # qkv_effect 离线零执行（extract_requirements 刻意跳过），不生成采集映射；
             # qkv_vm_console 正常生成映射（executor=vm_console_capture 的专用 Collector）。
-            if signal["acquire"]["tool"] != "qkv_effect"
+            if signal["acquire"]["tool"] not in {"qkv_effect", "qkv_case_context"}
         )
         assert len(mapping_changes) == expected_mapping_count
         assert {item["candidate_json"]["source_kbd_id"] for item in mapping_changes} == set(inserted)
@@ -317,7 +361,7 @@ async def test_five_samples_full_sync_publish_resources_and_reach_supported_diag
             acquirable_signals = [
                 signal
                 for signal in item["document"]["signals"]
-                if signal["acquire"]["tool"] != "qkv_effect"
+                if signal["acquire"]["tool"] not in {"qkv_effect", "qkv_case_context"}
             ]
             assert len(mapping_by_signal) == len(acquirable_signals)
             evidence = []
@@ -345,6 +389,7 @@ async def test_five_samples_full_sync_publish_resources_and_reach_supported_diag
                 "category_id": item["category_id"],
                 "metadata": {"source_support_id": item["source_support_id"]},
                 "signals": item["document"]["signals"],
+                "semantic_entry_profile": item["document"].get("semantic_entry_profile"),
                 "verification_contract": item["document"].get("verification_contract") or {},
                 "generation_metadata": item["document"].get("generation_metadata") or {},
                 "publish_validation": item["document"]["publish_validation"],
@@ -357,6 +402,11 @@ async def test_five_samples_full_sync_publish_resources_and_reach_supported_diag
                 {
                     "kbd_ruleset_snapshot": [ruleset],
                     "context_snapshot": {
+                        "semantic_context": {
+                            "description": "；".join(
+                                (item["document"].get("semantic_entry_profile") or {}).get("canonical_symptoms", [])
+                            )
+                        },
                         "HOST": "sample-host",
                         "VM_ID": 1,
                         "END": "2026-08-12T00:00:00Z",
@@ -366,7 +416,15 @@ async def test_five_samples_full_sync_publish_resources_and_reach_supported_diag
                 },
                 evidence,
             )
-            assert len(evaluations) == len(item["document"]["signals"])
+            # qkv_case_context 是语义入口上下文，不对应离线采集制品或证据评估；
+            # remediation 阶段的 qkv_effect 只在修复后执行，不能提前混入根因诊断。
+            expected_evaluation_signal_ids = {
+                f"kbd:{item['runtime_support_id']}:{signal['id']}"
+                for signal in item["document"]["signals"]
+                if signal["acquire"]["tool"] != "qkv_case_context"
+                and (signal.get("orchestrate") or {}).get("phase", "diagnostic") == "diagnostic"
+            }
+            assert {str(evaluation["signal_id"]) for evaluation in evaluations} == expected_evaluation_signal_ids
             assert candidates[0]["cdd_state"] == "SUPPORTED", {
                 item["source_support_id"]: evaluations,
             }

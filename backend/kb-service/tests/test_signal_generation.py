@@ -30,7 +30,7 @@ from app.routes.extract_signals import (
 from app.services.signal_orchestrator import DEFAULT_SHARED_VARIABLES, VALID_CATALOG_TOOLS
 from jsonschema import ValidationError
 from shared.resolution.review import SignalReviewFeature
-from shared.schemas.acquirer_args import SUPPORTED_TOOLS
+from shared.schemas.acquirer_args import EXECUTABLE_SIGNAL_TOOLS, SUPPORTED_TOOLS
 from shared.schemas.kbd_signal_safety import (
     signal_write_operation_command,
     validate_kbd_read_only_signals_json,
@@ -639,9 +639,14 @@ def test_prompt_catalog_reference_uses_current_catalog_as_knowledge_not_model_ga
 
 
 def test_multi_agent_catalog_and_variable_contracts_have_one_consistent_surface():
-    """分类、Prompt、参数 Schema 与最终门禁不能声明互相冲突的能力。"""
-    assert set(ACQUIRER_CATALOG) == VALID_CATALOG_TOOLS
-    assert set(ACQUIRER_CATALOG) == set(SUPPORTED_TOOLS)
+    """分类、Prompt、参数 Schema 与最终门禁不能声明互相冲突的能力。
+
+    分层契约：自动建模 Catalog（12 类）⊂ 门禁/Prompt Catalog（13 类可执行信号，
+    含专家维护的 qkv_effect）⊂ 参数 Schema 全集（再含语义入口 qkv_case_context）。
+    """
+    assert set(ACQUIRER_CATALOG) == set(EXECUTABLE_SIGNAL_TOOLS)
+    assert set(ACQUIRER_CATALOG) - set(VALID_CATALOG_TOOLS) == {"qkv_effect"}
+    assert set(SUPPORTED_TOOLS) - set(ACQUIRER_CATALOG) == {"qkv_case_context"}
     assert set(DEFAULT_SHARED_VARIABLES).issubset(set(DEFAULT_VARIABLE_SCHEMA))
     assert "LOG_DATE" in DEFAULT_VARIABLE_SCHEMA
     assert "YMD" not in DEFAULT_VARIABLE_SCHEMA

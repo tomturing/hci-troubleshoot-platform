@@ -41,6 +41,8 @@ global:
   imagePullPolicy: IfNotPresent
   # ghcr.io 镜像拉取 Secret 名称；非空时自动挂载到所有工作负载
   imagePullSecretName: ""
+  # 部署环境标识，供 terminal_bridge 等组件写入审计与观测标签。
+  environment: ""
   # ghcr.io 认证用户名（与 secrets.ghcrToken 配合使用）
   imagePullUser: ""
 
@@ -222,6 +224,8 @@ conversationService:
   externalDns: false
   # ReAct 引擎开关
   reactEnabled: "false"
+  pydanticAiEnabled: "false"
+  llmTemperatureS0: "0.3"
   resources:
     requests:
       cpu: "50m"
@@ -279,11 +283,13 @@ kbService:
   # KBD 分类与识图模型配置（注入为 CLASSIFY_MODEL / VISION_MODEL 环境变量）
   # 两者均已在 DashScope 端点验证可用且支持多模态
   classifyModel: "kimi-k2.5"
+  classifyBaseUrl: ""
   visionModel: "kimi-k2.5"
   # Vision 输出预算；长日志/配置截图需覆盖完整 FULL_TEXT，避免 finish_reason=length。
   visionMaxTokens: "8192"
   # 信号抽取应显式选择擅长结构化长 JSON 的模型；留空时回退到 classifyModel。
   extractSignalsModel: ""
+  extractSignalsBaseUrl: ""
   classifyMaxTokens: "2048"
   # Vision LLM 单次调用超时（秒），注入为 LLM_VISION_TIMEOUT 环境变量
   # 注意：data-pipeline 提交超时（180s）需大于此值，预留重试和启动时间
@@ -464,6 +470,7 @@ adminUI:
     # 或配置内网域名如: admin.internal
     host: ""
     annotations: {}
+    tls: []
     # TLS 配置（可选）
     # tls:
     #   - secretName: admin-tls
@@ -495,6 +502,7 @@ ingress:
   enabled: true
   className: traefik
   annotations: {}
+  tls: []
   grafanaRouterPriority: "2000"
 
 # ======================== Phase 3: ReAct 引擎配置 ==============================
@@ -528,9 +536,15 @@ config:
   caseServiceUrl: "http://case-service:8001"
   conversationServiceUrl: "http://conversation-service:8002"
   diagnosisServiceUrl: "http://diagnosis-service:8008"
+  agentServiceUrl: "http://agent-service:8005"
+  allowedOrigins: ""
   # assistantRegistryJson 由 hci.assistantRegistry 模板自动生成，无需手动配置
   # 助手选择器显示控制：auto（智能判断）、true（强制显示）、false（强制隐藏）
   assistantShowSelector: "auto"
+  # Scheduler 可选预热池参数；留空则不注入容器环境变量。
+  warmPoolSize: ""
+  maxPoolSize: ""
+  podIdleTimeout: ""
 
 # ======================== 敏感配置（→ Secret）===============================
 # 生产环境通过 helm install --set secrets.xxx=xxx 覆盖
@@ -540,6 +554,8 @@ secrets:
   llmApiKey: ""
   # Vision 专属 API Key，默认为空时自动回退到 llmApiKey
   llmVisionApiKey: ""
+  classifyApiKey: ""
+  extractSignalsApiKey: ""
   # 内部服务间 API 鉴权 Token
   internalApiToken: "hci-dev-internal-token"
   # Ed25519 原始私钥 Base64 及其稳定 key_id；生产环境必须由密钥管理系统覆盖。
@@ -551,6 +567,8 @@ secrets:
   grafanaAdminPassword: "admin"
   # SCP 平台 认证 Token
   scpApiKey: ""
+  # 可选 GHCR 拉取凭据；为空时不创建 imagePullSecret。
+  ghcrToken: ""
 
 # ======================== 可观测性栈 ========================================
 observability:
@@ -589,6 +607,7 @@ observability:
         memory: "512Mi"
   grafana:
     image: grafana/grafana:latest
+    adminUser: "admin"
     resources:
       requests:
         cpu: "50m"
@@ -646,6 +665,11 @@ opsAgent:
   image:
     repository: "ghcr.io/p3n9w31/ops-agent"
     tag: "latest"
+    pullPolicy: ""
+  # 空值表示使用 Kubernetes 默认滚动升级策略。
+  strategy: {}
+  sopDataHostPath: "/aihci/ops-agent/data/case_sop_data/hci/sop"
+  trajectoryDataHostPath: "/data/ops-agent-trajectories"
   service:
     type: ClusterIP
     port: 8006
@@ -672,6 +696,12 @@ agentService:
   externalDns: false
   glmModel: "glm-5"
   reactEnabled: "false"
+  defaultAssistantType: "htp-agent"
+  llmTemperature: "0.1"
+  llmTemperatureReact: "0.0"
+  llmTopP: "0.3"
+  llmLogprobs: "false"
+  llmTopLogprobs: "0"
   pydanticAiEnabled: "false"
   confirmTimeoutSec: "120"
   # 本地 aCLI Catalog 未知命令：confirm=允许进入人工确认；deny=执行前拒绝（生产推荐）

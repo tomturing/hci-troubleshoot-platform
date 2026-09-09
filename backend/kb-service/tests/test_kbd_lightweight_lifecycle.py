@@ -128,9 +128,12 @@ async def test_kbd_tombstone_is_append_only_and_removes_active_pointer():
     assert payload["status"] == "disabled"
     assert payload["contract"]["lifecycle"] == {"state": "draft", "tombstone": True}
     assert payload["contract"]["metadata"]["offline_scenario"] == "vm_start_failed"
-    delete_sql = str(session.execute.await_args.args[0])
+    delete_call = next(
+        call for call in session.execute.await_args_list if "DELETE FROM dynamic_resource_active" in str(call.args[0])
+    )
+    delete_sql = str(delete_call.args[0])
     assert "DELETE FROM dynamic_resource_active" in delete_sql
-    assert session.execute.await_args.args[1] == {"resource_name": "9"}
+    assert delete_call.args[1] == {"resource_name": "9"}
 
 
 @pytest.mark.asyncio
@@ -158,11 +161,16 @@ async def test_explicit_republish_has_new_lifecycle_event_identity():
     release = SimpleNamespace(id=44)
     package = SimpleNamespace(active_release_id=None, status="draft_editing", trace_id="")
     session.scalar.side_effect = [release, package]
+    sync_best_practices = AsyncMock(return_value=1)
 
     with (
         patch.object(admin_route, "kbd_resource_payload", return_value={"contract": {"metadata": {}}}),
         patch.object(admin_route, "DynamicResourcePublisher", return_value=publisher),
         patch.object(admin_route, "ensure_publish_snapshot", AsyncMock(return_value=package_snapshot)),
+        patch(
+            "app.services.signal_asset_service.SignalAssetService.sync_published_kbd_best_practices",
+            sync_best_practices,
+        ),
     ):
         result = await admin_route._publish_kbd_revision(
             session,
@@ -176,6 +184,12 @@ async def test_explicit_republish_has_new_lifecycle_event_identity():
         "state": "published",
         "event_id": 42,
     }
+    sync_best_practices.assert_awaited_once_with(
+        session,
+        kbd=entry,
+        source_revision=4,
+        source_checksum="package",
+    )
     assert result["knowledge_release_id"]
 
 
