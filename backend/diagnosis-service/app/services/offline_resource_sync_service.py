@@ -37,6 +37,7 @@ from app.domain.collector_security import (
 from app.errors import DiagnosisError
 from app.schemas.collection_profile import CollectionProfileDefinition
 from app.schemas.collector_definition import CollectorDefinitionWrite
+from app.services.bundle_migration import CURRENT_BUNDLE_FACTORY_VERSION
 from app.services.offline_acquisition_compiler import compile_signal_acquisition
 
 logger = get_logger("diagnosis-service-offline-resource-sync")
@@ -1579,6 +1580,16 @@ class OfflineResourceSyncService:
                 )
                 after_revision = snapshot.revision
                 after_json = snapshot.content
+                # 记录 Bundle 工厂版本
+                if command.collector_id.startswith("kbd_"):
+                    kbd_id_str = command.collector_id[4:]
+                    if kbd_id_str.isdigit():
+                        await self._record_bundle_metadata(
+                            kbd_id=int(kbd_id_str),
+                            support_id=change.get("source_kbd_support_id", ""),
+                            bundle_digest=snapshot.checksum,
+                            trace_id=trace_id,
+                        )
         elif change["resource_type"] == "collection_profile":
             if change["change_type"] == "disable":
                 await self._session.execute(
@@ -2430,6 +2441,51 @@ class OfflineResourceSyncService:
         if isinstance(exc, DiagnosisError):
             return {"code": exc.code, "message": exc.message, "details": exc.details}
         return {"code": type(exc).__name__, "message": str(exc)[:2000]}
+
+    async def _record_bundle_metadata(
+        self,
+        *,
+        kbd_id: int,
+        support_id: str,
+        bundle_digest: str,
+        trace_id: str,
+    ) -> None:
+        """记录 Bundle 工厂版本到 bundle_metadata 表。"""
+
+        await self._session.execute(
+            text(
+                """
+                INSERT INTO bundle_metadata (
+                    kbd_id, support_id, bundle_digest, factory_version,
+                    compiler_revision, compiled_at, command_template, parameters, trace_id
+                ) VALUES (
+                    :kbd_id, :support_id, :bundle_digest, :factory_version,
+                    :compiler_revision, CURRENT_TIMESTAMP, '', '{}', :trace_id
+                )
+                ON CONFLICT (kbd_id, bundle_digest) DO UPDATE SET
+                    factory_version = EXCLUDED.factory_version,
+                    compiler_revision = EXCLUDED.compiler_revision,
+                    compiled_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                """
+            ),
+            {
+                "kbd_id": kbd_id,
+                "support_id": support_id,
+                "bundle_digest": bundle_digest,
+                "factory_version": CURRENT_BUNDLE_FACTORY_VERSION,
+                "compiler_revision": f"diagnosis-service:{CURRENT_BUNDLE_FACTORY_VERSION}",
+                "trace_id": trace_id,
+            },
+        )
+        logger.info(
+            event="bundle_metadata_recorded",
+            kbd_id=kbd_id,
+            support_id=support_id,
+            bundle_digest=bundle_digest[:16] if bundle_digest else "",
+            factory_version=CURRENT_BUNDLE_FACTORY_VERSION,
+            trace_id=trace_id,
+        )
 
     @staticmethod
     def _json(value: Any) -> str:

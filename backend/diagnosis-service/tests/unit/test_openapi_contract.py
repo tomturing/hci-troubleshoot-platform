@@ -52,6 +52,9 @@ def test_openapi_exposes_collector_registry_and_artifact_contracts():
     assert "/api/internal/diagnosis-sessions/governance" in specification["paths"]
     assert "/api/internal/diagnosis-sessions/audit" in specification["paths"]
     assert "/api/internal/collection-profiles" in specification["paths"]
+    assert "/api/v1/bundle-migration/health" in specification["paths"]
+    assert "/api/v1/bundle-migration/migrate" in specification["paths"]
+    assert "/api/v1/bundle-migration/version" in specification["paths"]
     assert "/health" in specification["paths"]
 
     artifact_schema = specification["components"]["schemas"]["CollectorArtifactResponse"]

@@ -86,6 +86,15 @@
 - **Bundle 工厂版本迁移路由注册修复**：
   - **根因**：`backend/diagnosis-service/app/routes/migration.py` 已创建但未在 `main.py` 中注册，导致 Admin UI Bundle 迁移功能报 Not Found。
   - **修复**：在 `diagnosis-service/app/main.py` 中导入并注册 `migration.router`。
+- **Bundle 工厂版本迁移功能完整实现**：
+  - **根因**：Bundle 编译器升级后，已发布的 Bundle 不会自动更新。用户从已发布版本创建 draft 再发布时，只是复制旧的 Bundle 数据，没有触发重新编译，导致旧编译器的 bug（变量替换顺序错误）仍然存在。例如 KBD 26980 信号 10 失败（CONTRADICTED）而信号 5 成功（SATISFIED），根因是旧版编译器对 `{{VM}}` 变量的 `re.escape()` 处理顺序错误导致 `fixture_not_found`。
+  - **修复**：
+    - 在 `bundle_migration.py` 中实现 `get_outdated_bundles()` 查询 `bundle_metadata` 表获取工厂版本过期的 Bundle 列表。
+    - 实现 `migrate_bundle()` 单个迁移、`batch_migrate_bundles()` 批量迁移（支持 `dry_run` 预览模式）、`check_factory_version_health()` 健康状态检查。
+    - 在 `offline_resource_sync_service.py` 的 `_publish_change()` 方法中，当发布 KBD Collector 时自动调用 `_record_bundle_metadata()` 记录 `factory_version` 到 `bundle_metadata` 表。
+    - 在 `diagnosis-service/app/main.py` 中注册 `migration.router`。
+    - 前端 `BundleFactoryView.vue` 更新 TypeScript 接口匹配新 API 响应格式（`current_factory_version`、`outdated_bundles`、`outdated_bundle_details`）。
+  - **效果**：用户可以通过 Admin UI 的"Bundle 迁移"功能查看过时 Bundle 列表（包含 KBD ID、Support ID、当前版本、期望版本），并选择预览或执行迁移。迁移会触发 Bundle 重新编译，使其使用最新的编译器版本。
 - **信号匹配器评估详细日志记录**：
   - **根因**：KBD 仿真执行时，信号状态为 CONTRADICTED 的原因难以定位，缺少详细的匹配日志，无法看到关键字命中情况和期望值。
   - **修复**：在 `kbd_differential.py` 中添加 `matcher_evaluation_result` 事件日志，记录信号 ID、匹配器类型、期望结果、最终判定、命中关键字、原始输出预览等。
