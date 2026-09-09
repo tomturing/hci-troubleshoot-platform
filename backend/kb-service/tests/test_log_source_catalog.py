@@ -1,6 +1,7 @@
 import pytest
 from shared.schemas.acquirer_args import validate_acquire_args
 from shared.schemas.log_source_catalog import (
+    normalize_absolute_log_time,
     normalize_log_path,
     resolve_log_source,
     validate_absolute_log_time,
@@ -35,6 +36,24 @@ def test_catalog_explicit_family_resolves_ambiguous_ifconfig():
 )
 def test_absolute_log_time_contract_accepts_acli_shapes(value):
     assert validate_absolute_log_time(value) == (True, None)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        # ISO 日期时间的 T 分隔符转为 aCLI 接受的空格
+        ("2026-07-30T00:10:20", "2026-07-30 00:10:20"),
+        ("2026-07-30T00", "2026-07-30 00"),
+        # 纯日期与变量占位符必须原样保留：占位符里变量名的 T（如 DATE）
+        # 不能被误替换成 {{DA E}}，否则执行前变量替换永远无法命中
+        ("2026-07-30", "2026-07-30"),
+        ("{{DATE}}", "{{DATE}}"),
+        ("{{END}}", "{{END}}"),
+        ("{{DATETIME}}", "{{DATETIME}}"),
+    ],
+)
+def test_normalize_absolute_log_time_preserves_placeholders(value, expected):
+    assert normalize_absolute_log_time(value) == expected
 
 
 @pytest.mark.parametrize(
