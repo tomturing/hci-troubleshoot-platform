@@ -44,7 +44,8 @@ def runtime_capability_document() -> dict:
     from app.tools.vm_console.adapter import capture_enabled
 
     bridge_ready = executor_module._executor is not None
-    # QKV 工具清单从共享契约集合派生（防硬编码漏改）：直接生产者 + 条件型生产者。
+    # 只报告真正可执行的 QKV：语义上下文 qkv_case_context 不是 Handler，不能冒充
+    # runtime capability。
     qkv_tools = tuple(sorted(FRONTEND_TOOLS)) + tuple(sorted(CONDITIONAL_PRODUCERS))
     qfk_tools = tuple(f"qfk_{namespace}" for namespace in HandlerRegistry.supported_namespaces())
     capabilities = []

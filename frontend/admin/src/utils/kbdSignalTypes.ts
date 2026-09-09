@@ -24,6 +24,20 @@ export interface SignalsDoc {
   verification_contract?: Record<string, any>
   generation_metadata?: Record<string, any>
   publish_validation?: Record<string, any>
+  semantic_entry_profile?: {
+    schema_version: 1
+    diagnosis_capability: 'executable' | 'guidance_only' | 'capability_gap'
+    canonical_symptoms: string[]
+    positive_anchors: string[]
+    exclusion_anchors?: string[]
+    scope?: string | string[]
+    manual_evidence_request?: string[]
+    clarifying_questions?: string[]
+    source_refs?: string[]
+    source_evidence?: { field_path: string; source_ref: 'problem_description' | 'alert_info' | 'steps_text'; quote: string; source_sha256: string }[]
+    routing_examples?: { description: string; expected_match: boolean }[]
+    applicability?: Partial<Record<'product' | 'product_version' | 'component' | 'object_type' | 'operation', string[]>>
+  }
 }
 
 export interface ChangeAnnotation {

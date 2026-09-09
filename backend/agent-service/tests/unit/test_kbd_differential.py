@@ -4,13 +4,42 @@ from unittest.mock import MagicMock
 
 import pytest
 from app.adapters.agents.htp.kbd_differential import KBDDiagnostic, StepResult, _signal_requires_human
+from app.tools.acli import executor as executor_module
+from app.tools.acli.executor import ExecResult
 from app.tools.qfk.handlers import SystemHandler
 from app.tools.qfk.signal import BackendSignal
 from shared.cdd import SignalOutcome
+from shared.cdd.kbd_model import KBD
 
 
 def _diag() -> KBDDiagnostic:
     return KBDDiagnostic(MagicMock(), MagicMock())
+
+
+def test_signal_to_qkv_preserves_published_signal_v2_route_key():
+    diag = _diag()
+
+    signal = diag._signal_to_qkv(
+        {
+            "acquire": {
+                "tool": "qkv_alert",
+                "args": {
+                    "keyword": "硬件温度异常告警",
+                    "limit": 50,
+                    "timeout": 60,
+                },
+            },
+            "orchestrate": {
+                "produces": [{"name": "ALERT_HOST", "path": "host"}],
+            },
+        },
+        {},
+    )
+
+    assert signal is not None
+    assert signal.keyword == "硬件温度异常告警"
+    assert signal.limit == 50
+    assert signal.produces == [{"name": "ALERT_HOST", "path": "host"}]
 
 
 @pytest.mark.asyncio
@@ -26,6 +55,21 @@ async def test_sim_ssh_binds_logical_host_to_authoritative_managed_endpoint():
 
     assert endpoint == "hci-sim.hci-sim-dev.svc"
     assert diag._host_ip_cache["SIM-HCI-NODE-01"] == endpoint
+
+
+@pytest.mark.asyncio
+async def test_qkv_values_preserve_logical_host_until_consumer_execution_boundary():
+    diag = _diag()
+
+    values = await diag._normalize_qkv_values(
+        [{"host": "SIM-HCI-NODE-01", "vm_id": "90010001"}],
+        node_ip="hci-diagnosis-lab-semantic-online",
+        execution_mode="sim-ssh",
+        session_id="simulation-session",
+    )
+
+    assert values == [{"host": "SIM-HCI-NODE-01", "vm_id": "90010001"}]
+    assert diag._host_ip_cache == {}
 
 
 def test_runtime_blocks_historical_solution_and_write_signals_but_not_read_only_checks():
@@ -58,6 +102,39 @@ def test_qfk_produces_use_new_text_and_json_extracts_atomically():
     ok, error = diag._fill_pool_from_qfk(produces, {"stdout": "Filesystem Use%\n/ 83%\n", "stderr": '{"data":[{"status":"alert"}]}'})
     assert (ok, error) == (True, None)
     assert diag._variable_pool == {"use_percent": 83.0, "status": "alert"}
+
+
+def test_qfk_produce_alias_is_the_only_runtime_pool_key():
+    diag = _diag()
+    produces = [
+        {
+            "name": "STATUS",
+            "alias": "VM_RUNTIME_STATUS",
+            "type": "string",
+            "extract": {
+                "type": "text",
+                "rows": {"mode": "all"},
+                "cardinality": "exactly_one",
+                "source": "stdout",
+                "value_mode": "string",
+            },
+        }
+    ]
+
+    ok, error = diag._fill_pool_from_qfk(produces, {"stdout": "running\n"})
+
+    assert (ok, error) == (True, None)
+    assert diag._variable_pool == {"vm_runtime_status": "running"}
+
+
+def test_same_priority_variable_conflict_is_removed_and_blocks_consumers():
+    diag = _diag()
+
+    diag._set_pool_var("HOST", "node-a", producer_priority=20)
+    diag._set_pool_var("HOST", "node-b", producer_priority=20)
+
+    assert "host" not in diag._variable_pool
+    assert "host" in diag._variable_pool_conflicts
 
 
 def test_qfk_produces_reject_old_path_and_never_partially_write():
@@ -356,3 +433,51 @@ def test_partial_report_has_one_conclusion_and_no_inconclusive_template_noise():
     assert "expert_1785835354159_mzmmpkurzl" not in report
     assert "磁盘镜像格式异常" not in report
     assert "修复镜像格式" not in report
+
+
+@pytest.mark.asyncio
+async def test_shared_qkv_acquisition_evaluates_each_signal_ref_independently(monkeypatch):
+    """同一物理任务查询不得让第二条断言继承代表信号的处理结果。"""
+
+    def signal(signal_id: str, pattern: str) -> dict:
+        return {
+            "id": signal_id,
+            "acquire": {"tool": "qkv_task", "args": {"keyword": "启动失败"}},
+            "match": None,
+            "orchestrate": {
+                "phase": "diagnostic",
+                "produces": [{"name": "DESCRIPTION", "path": "description"}],
+                "output_processing": [
+                    {"mode": "assert", "input": "{{DESCRIPTION}}", "match": {
+                        "type": "keyword", "pattern": pattern, "mode": "or", "expected": True,
+                    }}
+                ],
+            },
+        }
+
+    class FakeExecutor:
+        def __init__(self):
+            self._redis = object()
+            self.calls = 0
+
+        async def execute(self, **kwargs):
+            self.calls += 1
+            return ExecResult(
+                stdout='{"data":[{"description":"only-A"}]}', stderr="", exit_code=0,
+                command=str(kwargs["args"]["command"]), node="172.28.25.4", duration_ms=1,
+                truncated=False, risk_level=1, exec_id="shared-qkv",
+            )
+
+    executor = FakeExecutor()
+    monkeypatch.setattr(executor_module, "_executor", executor)
+    diagnostic = _diag()
+    first = KBD(id="1", support_id="1", signals=[signal("a", "only-A")])
+    second = KBD(id="2", support_id="2", signals=[signal("b", "only-B")])
+
+    _events = [event async for event in diagnostic.diagnose([first, second], {}, "shared-qkv")]
+    result = diagnostic.get_result()
+
+    assert executor.calls == 1
+    outcomes = {(step.kbd_id, step.signal_id): step.outcome for step in result.steps_executed}
+    assert outcomes[("1", "a")] is SignalOutcome.SATISFIED
+    assert outcomes[("2", "b")] is SignalOutcome.CONTRADICTED

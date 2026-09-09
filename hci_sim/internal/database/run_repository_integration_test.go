@@ -53,6 +53,13 @@ func TestRunRepositorySyncPublishedBundles(t *testing.T) {
 	if err := repository.SyncPublishedBundles(ctx, []PublishedBundleInput{first}, "integration-test", "trace-"+suffix+"-a"); err != nil {
 		t.Fatalf("publish first bundle: %v", err)
 	}
+	resolvedFirst, err := repository.ResolveGitOpsPublishedBundle(ctx, first.Digest, first.SupportID, first.KBDRevision)
+	if err != nil {
+		t.Fatalf("resolve GitOps bundle: %v", err)
+	}
+	if resolvedFirst.InputFingerprint != first.InputFingerprint || resolvedFirst.ObjectDigest != first.ObjectDigest {
+		t.Fatalf("resolved GitOps identity drifted: %+v", resolvedFirst)
+	}
 	secondTraceID := "trace-" + suffix + "-b"
 	if err := repository.SyncPublishedBundles(ctx, []PublishedBundleInput{second}, "integration-test", secondTraceID); err != nil {
 		t.Fatalf("publish replacement bundle: %v", err)

@@ -6,7 +6,12 @@ backend/kb-service/tests/test_signal_extraction_orchestrator.py
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from app.services.signal_orchestrator import SignalExtractionOrchestrator, discover_signal_candidates
+from app.services.signal_orchestrator import (
+    VALID_CATALOG_TOOLS,
+    SignalExtractionOrchestrator,
+    discover_signal_candidates,
+    render_prompt_template,
+)
 
 from scripts.evaluate_multi_agent_extraction import (
     DEFAULT_PROMPT_MIGRATION,
@@ -94,6 +99,21 @@ def test_rule_candidate_discovery_covers_failure_command_and_log_evidence():
     assert {item["role_type"] for item in candidates} == {"producer", "consumer"}
     assert all(item["evidence_raw"] for item in candidates)
     assert all(item["discovery_method"] == "rule" for item in candidates)
+
+
+def test_multi_agent_catalog_excludes_expert_effect_and_semantic_context():
+    assert len(VALID_CATALOG_TOOLS) == 12
+    assert "qkv_effect" not in VALID_CATALOG_TOOLS
+    assert "qkv_case_context" not in VALID_CATALOG_TOOLS
+
+
+def test_prompt_renderer_preserves_signal_runtime_placeholders():
+    rendered = render_prompt_template(
+        '输入={content}; 示例={{"time_window":"{{END}}","path":"/sf/data/{{STORAGE_ID}}"}}',
+        content="KBD",
+    )
+
+    assert rendered == '输入=KBD; 示例={"time_window":"{{END}}","path":"/sf/data/{{STORAGE_ID}}"}'
 
 
 @pytest.mark.asyncio
@@ -419,12 +439,19 @@ async def test_signal_orchestrator_model_agent_with_best_practice():
             mock_bp.return_value = [
                 {"pattern_category": "任务失败", "signal_json": {"id": "ref_1"}, "design_notes": "参考notes"}
             ]
-            sig = await orchestrator.run_model_agent(mock_session, 1005, classified, "Catalog")
+            with patch(
+                "app.services.signal_asset_service.SignalAssetService.get_all_templates", new_callable=AsyncMock
+            ) as mock_templates:
+                mock_templates.return_value = {
+                    "qkv_task": {"contract_source": "shared.schemas.acquirer_args"}
+                }
+                sig = await orchestrator.run_model_agent(mock_session, 1005, classified, "Catalog")
 
     assert sig is not None
     assert sig["id"] == "kbd_1005_candidate_001"
     assert sig["acquire"]["tool"] == "qkv_task"
     assert sig["orchestrate"]["produces"][0]["name"] == "VM"
+    assert "kbd_signal_model_v1" in orchestrator.generation_prompt_material()
 
 
 @pytest.mark.asyncio

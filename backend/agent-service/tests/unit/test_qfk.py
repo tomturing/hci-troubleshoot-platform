@@ -6,7 +6,7 @@ import pytest
 from app.tools.acli import executor as executor_module
 from app.tools.acli.executor import ExecResult
 from app.tools.qfk import engine
-from app.tools.qfk.handlers import LogKeywordHandler
+from app.tools.qfk.handlers import GenericSubCommandHandler, LogKeywordHandler
 from app.tools.qfk.matcher import evaluate_matcher
 from app.tools.qfk.signal import BackendSignal
 
@@ -158,6 +158,15 @@ def test_whitebox_vt_uses_end_day_directory_and_and_remains_a_backend_predicate(
     assert "-t '2026-08-04 10:11:12'" in command
     assert evaluate_matcher(matcher, "仅检测到IP\n").matched is False
     assert evaluate_matcher(matcher, "检测到IP，发生冲突\n").matched is True
+
+
+@pytest.mark.parametrize("namespace", ["vm", "network", "storage", "hardware", "platform"])
+def test_domain_handler_places_formatter_before_namespace(namespace):
+    signal = BackendSignal(namespace=namespace, command="info get", formatter="json")
+
+    command = GenericSubCommandHandler().build_commands(signal)[0]
+
+    assert command == f"acli --formatter json {namespace} info get"
 
 
 @pytest.mark.parametrize("time_window", [None, "{{END}}"])
@@ -844,6 +853,5 @@ def test_log_handler_cleans_leading_comma_request_id():
     assert len(commands) == 1
     assert "-i a678d3fb5fdf2af4e78e6dae896a06e2" in commands[0]
     assert "-i ,a678d3fb" not in commands[0]
-
 
 

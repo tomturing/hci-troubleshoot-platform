@@ -22,6 +22,7 @@ from shared.schemas.acquirer_args import (
     FRONTEND_TOOLS,
     VM_CONSOLE_REQUIRED_TARGET_VARS,
     validate_acquire_args,
+    validate_qkv_produce_contract,
 )
 from shared.schemas.log_source_catalog import (
     LOG_MATCHER_TYPES,
@@ -29,6 +30,7 @@ from shared.schemas.log_source_catalog import (
     normalize_log_path,
     resolve_log_source,
 )
+from shared.schemas.semantic_entry import capability_of, has_case_context_signal, validate_semantic_entry_profile
 from shared.schemas.signal_generation import current_tool_contract_revision
 from shared.schemas.signal_output import derive_signal_requires
 from shared.signals.ai_processing import ai_processing_config, ai_processing_mode, validate_ai_processing_config
@@ -262,14 +264,15 @@ def humanize_signal_validation_error(error: ValidationError, signals: list[Any])
     if "至少需要 1 条生产者信号" in raw_message:
         field_path = "signals"
         field_label = "生产者信号"
-        message = "发布前请至少新增一条生产者信号，说明 Agent 如何通过任务、告警或弹框发现该故障。"
+        message = (
+            "发布前请至少新增一条生产者信号或受控故障入口：优先使用任务、告警或弹框生产者；"
+            "原文确实没有这三类入口时，可配置语义入口（qkv_case_context）并补齐诊断能力说明。"
+        )
         code = "KBD_PRODUCER_SIGNAL_MISSING"
     elif "控制台截图信号需要可信的 HOST 与 VM_ID 来源" in raw_message:
         field_path = "signals"
         field_label = "条件型生产者"
-        message = (
-            "控制台截图信号需要可信的 HOST 与 VM_ID 来源；请增加上游生产者、平台对象查询或受控用户输入。"
-        )
+        message = "控制台截图信号需要可信的 HOST 与 VM_ID 来源；请增加上游生产者、平台对象查询或受控用户输入。"
         code = "KBD_CONDITIONAL_PRODUCER_TARGET_MISSING"
     elif "效果验证信号需要可信的期望来源" in raw_message:
         field_path = "acquire.args"
@@ -287,6 +290,21 @@ def humanize_signal_validation_error(error: ValidationError, signals: list[Any])
             "（告警/任务/弹框）或条件型视觉生产者，用于建立诊断观测入口。"
         )
         code = "EFFECT_SOLE_PRODUCER_FORBIDDEN"
+    elif "QKV 产出字段不可执行" in raw_message:
+        field_path = "orchestrate.produces"
+        field_label = "产出变量"
+        message = (
+            "产出变量与该生产者的真实输出不一致；请从当前信号类型提供的标准变量中重新选择，"
+            "不要手写不存在的 JSON 字段路径。"
+        )
+        code = "QKV_OUTPUT_CONTRACT_INVALID"
+    elif "qkv_effect usage=" in raw_message and "必须位于" in raw_message:
+        field_path = "orchestrate.phase"
+        field_label = "效果验证 / 执行阶段"
+        message = (
+            "效果验证用途与执行阶段不一致：症状确认应放在诊断阶段，处置效果复核应放在处置验证阶段。"
+        )
+        code = "EFFECT_PHASE_INVALID"
     elif "缺少稳定 id" in raw_message:
         field_path = "id"
         field_label = _field_label(field_path)
@@ -438,6 +456,7 @@ def validate_signals_json(raw: Any) -> None:
     _validate_qfk_match_or_produces(raw)
     _validate_runtime_acquire_args(raw)
     _validate_verification_contract(raw, require_must=True)
+    validate_semantic_entry_profile(raw)
 
 
 def validate_draft_signals_json(raw: Any) -> None:
@@ -452,6 +471,7 @@ def validate_draft_signals_json(raw: Any) -> None:
     _validate_qfk_match_or_produces(raw)
     _validate_runtime_acquire_args(raw)
     _validate_verification_contract(raw, require_must=False)
+    validate_semantic_entry_profile(raw)
 
 
 def _validate_runtime_acquire_args(raw: Any) -> None:
@@ -510,16 +530,12 @@ def validate_kbd_publishable_signals_json(raw: Any) -> None:
     validate_publishable_signals_json(raw)
     signals = raw.get("signals") if isinstance(raw, dict) else None
     tools = [
-        str((signal.get("acquire") or {}).get("tool") or "")
-        for signal in signals or []
-        if isinstance(signal, dict)
+        str((signal.get("acquire") or {}).get("tool") or "") for signal in signals or [] if isinstance(signal, dict)
     ]
     if any(tool == "qkv_effect" for tool in tools):
         _validate_effect_producer_sources(raw)
         other_producers = [
-            tool
-            for tool in tools
-            if tool in FRONTEND_TOOLS or (tool in CONDITIONAL_PRODUCERS and tool != "qkv_effect")
+            tool for tool in tools if tool in FRONTEND_TOOLS or (tool in CONDITIONAL_PRODUCERS and tool != "qkv_effect")
         ]
         if not other_producers:
             raise ValidationError(
@@ -530,7 +546,7 @@ def validate_kbd_publishable_signals_json(raw: Any) -> None:
             )
     if any(tool in FRONTEND_TOOLS for tool in tools):
         return
-    if any(tool in CONDITIONAL_PRODUCERS and tool != "qkv_effect" for tool in tools):
+    if "qkv_vm_console" in tools:
         _nodes, all_produced, declared_external = _collect_variable_sources(raw)
         available_sources = all_produced | declared_external
         if VM_CONSOLE_REQUIRED_TARGET_VARS.issubset(available_sources):
@@ -540,6 +556,9 @@ def validate_kbd_publishable_signals_json(raw: Any) -> None:
             f"（当前缺失：{', '.join(sorted(VM_CONSOLE_REQUIRED_TARGET_VARS - available_sources))}）",
             path=["signals"],
         )
+    # 语义入口只补足“没有强生产者”的入口，不绕过上方视觉／效果信号的来源门禁。
+    if has_case_context_signal(raw) and capability_of(raw) in {"executable", "guidance_only"}:
+        return
     raise ValidationError(
         "KBD 发布至少需要 1 条生产者信号（qkv_task、qkv_alert、qkv_dialog，"
         "或具备可信变量来源的条件型生产者 qkv_vm_console），用于描述 Agent 如何发现故障并建立诊断上下文；"
@@ -633,13 +652,11 @@ def certify_publishable_signals_json(raw: Any) -> dict[str, Any]:
     return certified
 
 
-def _collect_variable_sources(raw: dict[str, Any]) -> tuple[
-    list[tuple[str, set[str], set[str]]], set[str], set[str]
-]:
+def _collect_variable_sources(raw: dict[str, Any]) -> tuple[list[tuple[str, set[str], set[str]]], set[str], set[str]]:
     """收集诊断信号的变量节点、全部产出变量与外部声明变量（严格口径）。
 
     返回 ``(nodes, all_produced, declared_external)``：
-    - nodes：(signal_id, requires, produces)，跳过 solution 阶段信号；
+    - nodes：(signal_id, requires, produces)，仅包含 diagnostic 阶段信号；
     - all_produced：所有 diagnostic 信号 produces 的并集；
     - declared_external：verification_contract.variables 的显式外部声明，
       **不含**无 Contract 历史数据的兼容兜底（条件生产者门禁必须严格口径）。
@@ -652,7 +669,7 @@ def _collect_variable_sources(raw: dict[str, Any]) -> tuple[
         if not isinstance(signal, dict):
             continue
         orchestrate = signal.get("orchestrate") or {}
-        if str(orchestrate.get("phase") or "diagnostic") == "solution":
+        if str(orchestrate.get("phase") or "diagnostic") != "diagnostic":
             continue
         signal_id = str(signal.get("id") or f"signal_{index:03d}")
         requires = {str(name).strip().upper() for name in (orchestrate.get("requires") or []) if str(name).strip()}
@@ -660,14 +677,13 @@ def _collect_variable_sources(raw: dict[str, Any]) -> tuple[
         # 这样即使前端未同步只读 requires，发布门禁也不会漏掉阈值变量依赖。
         requires.update(str(name).strip().upper() for name in derive_signal_requires(signal) if str(name).strip())
         produces = set()
-        for item in (orchestrate.get("produces") or []):
+        for item in orchestrate.get("produces") or []:
             if isinstance(item, dict):
                 alias = str(item.get("alias") or "").strip().upper()
                 name = str(item.get("name") or "").strip().upper()
-                if alias:
-                    produces.add(alias)
-                if name:
-                    produces.add(name)
+                effective_name = alias or name
+                if effective_name:
+                    produces.add(effective_name)
             elif str(item).strip():
                 produces.add(str(item).strip().upper())
         if str((signal.get("acquire") or {}).get("tool") or "").startswith("qkv_"):
@@ -770,7 +786,7 @@ def _validate_verification_contract(raw: Any, *, require_must: bool) -> None:
                     path=["verification_contract", "evidence_policy", role],
                 )
             assigned[signal_id] = role
-    if require_must and signals and not (policy.get("must") or []):
+    if require_must and signals and not (policy.get("must") or []) and capability_of(raw) != "guidance_only":
         raise ValidationError(
             "verification_contract.evidence_policy.must 至少需要 1 条必要信号",
             path=["verification_contract", "evidence_policy", "must"],
@@ -791,6 +807,15 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
             continue
         tool = (signal.get("acquire") or {}).get("tool") or ""
         produces = (signal.get("orchestrate") or {}).get("produces") or []
+        if tool == "qkv_case_context":
+            # 它不是采集输出变量的 QKV，而是受限的用户已提供上下文声明。
+            # 禁止 match/produces，避免被误当作可执行命令或变量推断器。
+            if isinstance(signal.get("match"), dict) or produces:
+                raise ValidationError(
+                    f"signals[{index}] 的 qkv_case_context 不允许 match 或 produces",
+                    path=["signals", index],
+                )
+            continue
         matcher = signal.get("match")
         has_produces = any(
             isinstance(item, dict) and isinstance(item.get("name"), str) and item["name"].strip() for item in produces
@@ -810,13 +835,27 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                     f"signals[{index}] 的 {tool} 只支持 JSON path，不支持文本 extract",
                     path=["signals", index, "orchestrate", "produces"],
                 )
+            ok, produce_error = validate_qkv_produce_contract(tool, produces)
+            if not ok:
+                raise ValidationError(
+                    f"signals[{index}] 的 QKV 产出字段不可执行: {produce_error}",
+                    path=["signals", index, "orchestrate", "produces"],
+                )
+            if tool == "qkv_effect":
+                usage = str(((signal.get("acquire") or {}).get("args") or {}).get("usage") or "")
+                phase = str((signal.get("orchestrate") or {}).get("phase") or "diagnostic")
+                expected_phase = "remediation" if usage == "remediation_verify" else "diagnostic"
+                if phase != expected_phase:
+                    raise ValidationError(
+                        f"signals[{index}] 的 qkv_effect usage={usage} 必须位于 {expected_phase} phase",
+                        path=["signals", index, "orchestrate", "phase"],
+                    )
             processing_specs = (signal.get("orchestrate") or {}).get("output_processing")
             available_inputs = {
-                str(item.get(key) or "").strip().upper()
+                str(item.get("name") or "").strip().upper()
                 for item in produces
                 if isinstance(item, dict)
-                for key in ("name", "alias")
-                if str(item.get(key) or "").strip()
+                if str(item.get("name") or "").strip()
             }
             try:
                 validate_output_processing(processing_specs, available_inputs=available_inputs)
@@ -826,9 +865,11 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                     path=["signals", index, "orchestrate", "output_processing"],
                 ) from exc
             declared_names = {
-                str(item.get("name") or item.get("alias") or "").strip().casefold()
+                str(item.get(key) or "").strip().casefold()
                 for item in produces
-                if isinstance(item, dict) and str(item.get("name") or item.get("alias") or "").strip()
+                if isinstance(item, dict)
+                for key in ("name", "alias")
+                if str(item.get(key) or "").strip()
             }
             processing_names: set[str] = set()
             for processing in (signal.get("orchestrate") or {}).get("output_processing") or []:
@@ -872,10 +913,9 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                 location=f"signals[{index}].match.extract",
                 consumer_type="matcher",
             )
-            if (
-                ai_processing_mode(ai_processing_config(matcher["extract"])) == "derive"
-                and str(matcher.get("type") or "") not in {"threshold", "delta", "trend", "boolean"}
-            ):
+            if ai_processing_mode(ai_processing_config(matcher["extract"])) == "derive" and str(
+                matcher.get("type") or ""
+            ) not in {"threshold", "delta", "trend", "boolean"}:
                 raise ValidationError(
                     f"signals[{index}].match 的智能推导仅支持 threshold/delta/trend/boolean 判定",
                     path=["signals", index, "match", "extract", "ai_processing", "mode"],

@@ -41,7 +41,11 @@ def _matched_output(signal: dict) -> str:
         return "eth0    link up"
     if matcher_type == "state":
         return "running"
+    if matcher_type == "boolean":
+        return "true"
     if matcher_type == "threshold":
+        if (matcher.get("extract") or {}).get("delimiter") == ",":
+            return "Filesystem,Use%\n/sf/log,83%\n"
         return "Filesystem Use%\n/sf/log 83%\n"
     if matcher_type == "delta":
         if signal["acquire"]["tool"] == "qfk_storage":
@@ -79,8 +83,40 @@ def test_five_samples_pass_publish_review_and_online_cdd_compilation():
             tool_contract_checker=_tool_contract_checker,
         )
         assert plan.compile_errors == {}, {support_id: plan.compile_errors}
-        assert len(plan.signals) == len(document["signals"])
+        assert len(plan.signals) == sum(
+            1
+            for signal in document["signals"]
+            if signal["acquire"]["tool"] != "qkv_case_context"
+            and (signal.get("orchestrate") or {}).get("phase", "diagnostic") == "diagnostic"
+        )
         assert plan.acquisitions
+
+
+def test_vm_sample_requires_both_task_context_and_console_visual_before_support():
+    document = next(
+        item for item in _documents() if item["verification_contract"]["case_id"] == "SAMPLE-SIG-VM"
+    )
+    assert document["verification_contract"]["evidence_policy"]["minimum_should"] == 2
+    candidate = kbd_from_dict(
+        {
+            "id": "vm",
+            "support_id": "SAMPLE-SIG-VM",
+            "name": "VM",
+            "category_id": "VM",
+            "signals": document,
+            "resource_revision": {"revision": 1},
+        }
+    )
+    plan = compile_signal_plan(
+        [candidate], snapshot_id="vm-console-required", tool_contract_checker=_tool_contract_checker
+    )
+    assert {ref.signal_id for ref in plan.signals.values()} == {
+        "vm_task_context",
+        "vm_console_visual",
+        "vm_status_must",
+        "vm_list_context",
+    }
+    assert all(ref.signal_id != "vm_effect_verify" for ref in plan.signals.values())
 
 
 def test_five_samples_reach_supported_state_with_online_agent_matchers():

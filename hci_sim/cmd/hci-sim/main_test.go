@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
 	"hci_sim/internal/controlplane"
+	"hci_sim/internal/database"
 	"hci_sim/internal/fixture"
 )
 
@@ -54,6 +56,7 @@ func TestSimulationEnvironmentContextCarriesAgentScopeAndBinding(t *testing.T) {
 		t.Fatalf("load fixture: %v", err)
 	}
 	t.Setenv("HCI_SIM_SSH_HOST", "hci-sim.example.svc")
+	t.Setenv("HCI_SIM_COMPONENTS", "虚拟机")
 	context := simulationEnvironmentContext(router, "run-27123", "Q27123", "positive-realistic")
 	for key, want := range map[string]any{
 		"simulation": true, "execution_mode": "sim-ssh", "test_run_id": "run-27123",
@@ -67,6 +70,39 @@ func TestSimulationEnvironmentContextCarriesAgentScopeAndBinding(t *testing.T) {
 	components, ok := context["components"].([]string)
 	if !ok || len(components) != 1 || components[0] != "虚拟机" {
 		t.Fatalf("unexpected components: %#v", context["components"])
+	}
+	topology, ok := context["topology"].([]string)
+	if !ok || topology == nil || len(topology) != 0 {
+		t.Fatalf("empty topology must be a non-nil []string: %#v", context["topology"])
+	}
+}
+
+func TestSimulationEnvironmentContextUsesFrozenBundleScopeAndVariables(t *testing.T) {
+	manifest := fixture.Manifest{
+		SchemaVersion: fixture.SchemaVersion,
+		Bundle:        fixture.BundleRef{Status: "published"},
+		KBD:           fixture.KBDRef{SupportID: "SAMPLE", Revision: 1, Checksum: "sha256:kbd"},
+		Contracts:     fixture.Contracts{ToolRevision: "tool-1", PolicyRevision: "policy-1"},
+		Environment:   &fixture.EnvironmentScope{Products: []string{"HCI"}, Versions: []string{"7.0"}, Components: []string{"storage"}, TopologyConstraints: []string{"cluster"}},
+		Variables:     map[string]string{"SYNTHETIC": "true", "VM_ID": "vm-100"},
+		Limits:        fixture.Limits{MaxRoutes: 1, MaxOutputBytesPerCommand: 1024, MaxBundleBytes: 65536},
+		Routes:        []fixture.Route{{ID: "r1", Variant: "positive", RouteKey: fixture.RouteKey{Tool: "acli", AcquisitionKey: "acli:system", Argv: []string{"acli", "system", "top"}, Node: "node", Container: "host"}, Result: fixture.ResultDef{Stdout: "ok\n"}, Fault: fixture.FaultDef{Type: fixture.FaultNone}}},
+	}
+	manifest.Bundle.Digest = fixture.ComputeBundleDigest(manifest)
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := fixture.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	context := simulationEnvironmentContext(router, "run-1", "case-1", "positive")
+	if context["version"] != "7.0" || context["VM_ID"] != "vm-100" {
+		t.Fatalf("unexpected frozen context: %#v", context)
+	}
+	if got := context["components"].([]string); len(got) != 1 || got[0] != "storage" {
+		t.Fatalf("unexpected frozen components: %#v", got)
 	}
 }
 
@@ -87,6 +123,28 @@ func TestSimulationBuildableAllowsKBDDerivedFixtureOnlyInInternalFastPath(t *tes
 	}
 	if simulationBuildable("27123", kbd, 25, "sha256:bundle", "dev_golden", true, "high_assurance") {
 		t.Fatal("high_assurance must reject synthetic fixtures")
+	}
+}
+
+func TestSimulationConnectionUsesExplicitPublicEndpoint(t *testing.T) {
+	t.Setenv("HCI_SIM_SSH_HOST", "127.0.0.1")
+	t.Setenv("HCI_SIM_SSH_LISTEN", ":2222")
+	t.Setenv("HCI_SIM_SSH_PUBLIC_PORT", "22001")
+	connection := simulationConnection("run-1", "lease-token")
+	if connection["host"] != "127.0.0.1" || connection["port"] != "22001" {
+		t.Fatalf("unexpected public endpoint: %#v", connection)
+	}
+	if connection["test_run_id"] != "run-1" || connection["password"] != "lease-token" {
+		t.Fatalf("connection identity was not preserved: %#v", connection)
+	}
+}
+
+func TestSimulationConnectionFallsBackToListenPort(t *testing.T) {
+	t.Setenv("HCI_SIM_SSH_LISTEN", ":2222")
+	t.Setenv("HCI_SIM_SSH_PUBLIC_PORT", "")
+	connection := simulationConnection("run-2", "lease-token")
+	if connection["port"] != "2222" {
+		t.Fatalf("listen-port fallback = %#v, want 2222", connection["port"])
 	}
 }
 
@@ -154,6 +212,31 @@ func TestRuntimeBundleMetadataRejectsDigestConflict(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("digest conflict must be rejected")
+	}
+}
+
+func TestRuntimeBundleMetadataUsesGitOpsRegistryIdentity(t *testing.T) {
+	router, err := fixture.Load(filepath.Join("..", "..", "testdata", "kbd-27123-fixture-manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := database.PublishedBundleInput{
+		SupportID: router.KBD().SupportID, KBDRevision: router.KBD().Revision,
+		Digest: router.BundleDigest(), SchemaVersion: router.SchemaVersion(),
+		ObjectURI:    "configmap://hci-sim-fixture/kbd-27123-fixture-manifest.json",
+		ObjectDigest: router.ManifestHash(), SizeBytes: router.ManifestSize(),
+		InputFingerprint: "sha256:gitops-input",
+	}
+	metadata, err := runtimeBundleMetadataFromGitOps(router, record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.InputFingerprint != record.InputFingerprint || metadata.ObjectDigest != router.ManifestHash() {
+		t.Fatalf("GitOps metadata identity drifted: %+v", metadata)
+	}
+	record.ObjectDigest = "sha256:corrupt"
+	if _, err := runtimeBundleMetadataFromGitOps(router, record); err == nil {
+		t.Fatal("GitOps object identity conflict must fail closed")
 	}
 }
 

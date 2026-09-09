@@ -50,7 +50,7 @@ const submitting = ref(false)
 const titleInput = ref<{ focus?: () => void } | null>(null)
 const pendingResultSummary = ref<Record<string, unknown> | null>(null)
 
-const validKBD = computed(() => /^\d{1,20}$/.test(kbdId.value.trim()))
+const validKBD = computed(() => /^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$/.test(kbdId.value.trim()))
 const canBuild = computed(() => validKBD.value && buildState.value !== 'building' && !conversationActive.value && (capability.value === null || capability.value.buildable))
 const canStart = computed(() => buildState.value === 'succeeded'
   && !!connection.value
@@ -298,6 +298,7 @@ onMounted(() => { if (kbdId.value) logs.value = ['已恢复上次输入；Lease 
         :case-id="caseId"
         :test-run-id="testRunId"
         :client-id="clientId"
+        :expected-support-id="kbdId.trim()"
         :initial-message="description"
         :connection="connection"
         @lease-consumed="consumeLease"

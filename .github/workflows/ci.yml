@@ -865,6 +865,13 @@ jobs:
         if: github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full'
         run: make diagnosis-sample-preflight
 
+      - name: 验证 QFK Schema 到变量池契约矩阵
+        if: github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full'
+        run: PYTHONPATH=backend/agent-service:backend uv run pytest backend/agent-service/tests/integration/test_qfk_signal_contract_matrix.py -x -q
+
+      - name: 校验部署配置契约
+        run: REQUIRE_HELM=1 make config-contract-check
+
       - name: 验证 Diagnosis Sample Lab（诊断样例实验室）Go Runtime
         if: github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full'
         working-directory: hci_sim

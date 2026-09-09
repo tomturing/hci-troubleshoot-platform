@@ -411,7 +411,17 @@ class GenericSubCommandHandler(BackendSignalHandler):
         extra_args = signal.command_args or []
         if any(not isinstance(item, str) or not item or _has_illegal_chars(item) for item in extra_args):
             raise CommandBuildError(f"{namespace} command_args 包含非法参数")
-        parts = ["acli", namespace, *[shlex.quote(item) for item in command_parts], *[shlex.quote(item) for item in extra_args]]
+        # ``--formatter`` 是 aCLI 全局参数，必须位于领域 namespace 之前。
+        # Shared Resolution Runtime 与离线编译器已经按这一规范生成 argv；在线
+        # Handler 必须复用相同形态，否则发布快照、hci-sim RouteKey 与现场命令会漂移。
+        parts = ["acli"]
+        if signal.formatter:
+            if signal.formatter not in {"xml", "csv", "keyvalue", "json"}:
+                raise CommandBuildError(f"{namespace} formatter 必须是 xml/csv/keyvalue/json 之一")
+            parts.extend(["--formatter", shlex.quote(signal.formatter)])
+        parts.extend(
+            [namespace, *[shlex.quote(item) for item in command_parts], *[shlex.quote(item) for item in extra_args]]
+        )
         return [" ".join(parts)]
 
 

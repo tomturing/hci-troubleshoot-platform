@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from app.errors import DiagnosisError
 from app.schemas.collection_profile import CollectionProfileDefinition
-from app.services.collection_plan_service import CollectionPlanService
+from app.services.collection_plan_service import CollectionPlanService, _session_runtime_context
 
 
 def make_profile() -> CollectionProfileDefinition:
@@ -66,6 +66,54 @@ def test_product_version_validation_accepts_comparison_constraint():
     CollectionPlanService._validate_product_version(profile, "6.12.0")
     with pytest.raises(DiagnosisError, match="不支持该产品版本"):
         CollectionPlanService._validate_product_version(profile, "6.11.9")
+
+
+def test_session_context_binds_only_explicit_unique_objects():
+    session = make_session()
+    original = {"semantic_context": {"description": "虚拟机启动失败"}}
+    frozen = _session_runtime_context(original, session)
+    assert frozen["HOST"] == "node-1"
+    assert frozen["END"] == session.incident_end_time.isoformat()
+    assert "VM_ID" not in frozen  # 两台虚拟机，不能替用户选择。
+    assert "HOST" not in original
+    session.affected_objects = [{"type": "vm", "id": "vm-1", "source_node": "node-1"}]
+    assert _session_runtime_context({}, session)["VM_ID"] == "vm-1"
+
+
+def test_session_context_does_not_invent_missing_or_ambiguous_targets():
+    session = make_session(source_node=None)
+    session.affected_objects = [{"type": "vm", "name": "未创建成功的虚拟机"}]
+    frozen = _session_runtime_context({"semantic_context": {"description": "HOST=node-1 VM_ID=123"}}, session)
+    assert "HOST" not in frozen and "VM_ID" not in frozen
+    session.affected_objects = [{"type": "node", "source_node": "node-1"}, {"type": "node", "source_node": "node-2"}]
+    assert "HOST" not in _session_runtime_context({}, session)
+    session.affected_objects = [{"type": "vm", "id": "vm-1", "source_node": "node-1"}, {"type": "vm"}]
+    frozen = _session_runtime_context({}, session)
+    assert "HOST" not in frozen and "VM_ID" not in frozen
+
+
+@pytest.mark.parametrize("name", ["HOST", "host", "VM_ID", "END", "constructor", "prototype"])
+def test_session_context_rejects_reserved_top_level_overrides(name):
+    session = make_session(source_node=None)
+    session.affected_objects = []
+    with pytest.raises(DiagnosisError) as error:
+        _session_runtime_context({name: "attacker-controlled"}, session)
+    assert error.value.code == "RESERVED_CONTEXT_OVERRIDE"
+    assert error.value.http_status == 422
+
+
+def test_session_context_validates_and_normalizes_confirmed_variables():
+    session = make_session(source_node=None)
+    session.affected_objects = []
+    frozen = _session_runtime_context(
+        {"request_id": " request-123 ", "semantic_context": {"description": "启动失败"}}, session
+    )
+    assert frozen["REQUEST_ID"] == "request-123"
+    assert frozen["semantic_context"] == {"description": "启动失败"}
+    with pytest.raises(DiagnosisError, match="变量名称"):
+        _session_runtime_context({"bad-name": "value"}, session)
+    with pytest.raises(DiagnosisError, match="非空字符串"):
+        _session_runtime_context({"REQUEST_ID": ""}, session)
 
 
 def make_session(*, source_node: str | None = "node-1"):

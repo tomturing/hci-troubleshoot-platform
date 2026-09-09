@@ -16,7 +16,7 @@
         "symptom_confirm"
       ],
       "default": "remediation_verify",
-      "description": "修复后复核（默认）/ S1 症状确认"
+      "description": "操作后效果验证（默认）/ S1 症状确认"
     },
     "expectation": {
       "type": "object",

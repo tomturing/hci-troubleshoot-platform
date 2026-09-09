@@ -295,6 +295,12 @@ export function createOfflineDiagnosisApi(
     listScenarios() {
       return client.get<OfflineScenarioOption[]>('/diagnosis-scenarios', { headers: headers() })
     },
+    listSemanticAdviceCategories() {
+      return client.get<{ category_id: string; display_name: string }[]>('/diagnosis-scenarios/semantic-advice', { headers: headers() })
+    },
+    getSemanticAdvice(context: Record<string, string>) {
+      return client.post<Record<string, any>>('/diagnosis-scenarios/semantic-advice', context, { headers: headers() })
+    },
     getSession(sessionId: string) {
       return client.get<DiagnosisSession>(`/diagnosis-sessions/${sessionId}`, { headers: headers() })
     },
@@ -303,10 +309,10 @@ export function createOfflineDiagnosisApi(
         headers: headers(),
       })
     },
-    createPlan(sessionId: string, productVersion: string, idempotencyKey?: string) {
+    createPlan(sessionId: string, productVersion: string, idempotencyKey?: string, context: Record<string, unknown> = {}) {
       return client.post<CollectionPlan>(
         `/diagnosis-sessions/${sessionId}/collection-plans`,
-        { product_version: productVersion, context: {} },
+        { product_version: productVersion, context },
         { headers: { ...headers(), 'Idempotency-Key': idempotencyKey || generateUUID() } },
       )
     },

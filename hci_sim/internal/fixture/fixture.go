@@ -34,10 +34,20 @@ type Manifest struct {
 	Bundle             BundleRef           `json:"bundle"`
 	KBD                KBDRef              `json:"kbd"`
 	Contracts          Contracts           `json:"contracts"`
+	Environment        *EnvironmentScope   `json:"environment,omitempty"`
 	Variables          map[string]string   `json:"variables"`
 	Limits             Limits              `json:"limits"`
 	Routes             []Route             `json:"routes"`
 	VerificationAssets []VerificationAsset `json:"verification_assets,omitempty"`
+}
+
+// EnvironmentScope 是随 Bundle 冻结的适用环境事实。Runtime 用它构造
+// TestRun 环境上下文，避免用某一个样例的产品、版本或组件污染其它 KBD。
+type EnvironmentScope struct {
+	Products            []string `json:"products,omitempty"`
+	Versions            []string `json:"versions,omitempty"`
+	Components          []string `json:"components,omitempty"`
+	TopologyConstraints []string `json:"topology_constraints,omitempty"`
 }
 
 type BundleRef struct {
@@ -255,6 +265,11 @@ func validateManifest(raw []byte, manifest *Manifest) error {
 	if manifest.Contracts.ToolRevision == "" || manifest.Contracts.PolicyRevision == "" {
 		return errors.New("fixture manifest 缺少 Tool 或 Policy revision")
 	}
+	if manifest.Environment != nil {
+		if err := validateEnvironmentScope(*manifest.Environment); err != nil {
+			return err
+		}
+	}
 	if manifest.Limits.MaxRoutes < 1 || manifest.Limits.MaxRoutes > 10000 || len(manifest.Routes) > manifest.Limits.MaxRoutes {
 		return errors.New("fixture manifest route 数量越界")
 	}
@@ -274,6 +289,29 @@ func validateManifest(raw []byte, manifest *Manifest) error {
 	}
 	if err := validateVerificationAssets(manifest); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateEnvironmentScope(scope EnvironmentScope) error {
+	for name, values := range map[string][]string{
+		"products": scope.Products, "versions": scope.Versions,
+		"components": scope.Components, "topology_constraints": scope.TopologyConstraints,
+	} {
+		if len(values) > 64 {
+			return fmt.Errorf("fixture environment.%s 数量超过 64", name)
+		}
+		seen := make(map[string]struct{}, len(values))
+		for _, value := range values {
+			value = strings.TrimSpace(value)
+			if value == "" || len(value) > 128 {
+				return fmt.Errorf("fixture environment.%s 包含空值或超长值", name)
+			}
+			if _, exists := seen[value]; exists {
+				return fmt.Errorf("fixture environment.%s 包含重复值: %s", name, value)
+			}
+			seen[value] = struct{}{}
+		}
 	}
 	return nil
 }
@@ -339,8 +377,26 @@ func (r *Router) SchemaVersion() string { return r.manifest.SchemaVersion }
 func (r *Router) BundleDigest() string  { return r.manifest.Bundle.Digest }
 func (r *Router) KBD() KBDRef           { return r.manifest.KBD }
 func (r *Router) Contracts() Contracts  { return r.manifest.Contracts }
-func (r *Router) OutputLimit() int      { return r.manifest.Limits.MaxOutputBytesPerCommand }
-func (r *Router) IsSynthetic() bool     { return r.manifest.Variables["SYNTHETIC"] == "true" }
+func (r *Router) Environment() EnvironmentScope {
+	if r.manifest.Environment == nil {
+		return EnvironmentScope{}
+	}
+	scope := *r.manifest.Environment
+	scope.Products = append([]string(nil), scope.Products...)
+	scope.Versions = append([]string(nil), scope.Versions...)
+	scope.Components = append([]string(nil), scope.Components...)
+	scope.TopologyConstraints = append([]string(nil), scope.TopologyConstraints...)
+	return scope
+}
+func (r *Router) Variables() map[string]string {
+	variables := make(map[string]string, len(r.manifest.Variables))
+	for key, value := range r.manifest.Variables {
+		variables[key] = value
+	}
+	return variables
+}
+func (r *Router) OutputLimit() int  { return r.manifest.Limits.MaxOutputBytesPerCommand }
+func (r *Router) IsSynthetic() bool { return r.manifest.Variables["SYNTHETIC"] == "true" }
 func (r *Router) HasVariant(variant string) bool {
 	if r == nil || strings.TrimSpace(variant) == "" {
 		return false

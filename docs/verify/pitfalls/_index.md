@@ -15,7 +15,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 > 2. 再写入对应分类文件  
 > 3. 同一 commit/PR 提交，不允许分开提交  
 >
-> **下一个可用编号：V-015**（旧格式延续：PIT-042）
+> **下一个可用编号：V-016**（旧格式延续：PIT-042）
 
 ---
 
@@ -54,6 +54,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 | V-012 | debugging.md | QKV acquire.keyword 不得复用 QFK 数组语义 |
 | V-013 | frontend.md | 可编辑列表 key 不得依赖正在编辑的字段 |
 | V-014 | debugging.md | 仿真场景标签不得充当 KBD 候选答案；Bundle 必须覆盖分类完整采集面 |
+| V-015 | debugging.md | 离线 producer 必须用与 Collector 一致的结构化证据形态取值 |
 | PIT-004 | python.md | Pydantic 验证 |
 | PIT-005 | frontend.md | pnpm workspace |
 | PIT-006 | dispatcher.md | 分布式锁 |

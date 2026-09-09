@@ -1,6 +1,6 @@
 -- ============================================================
 -- Seed 数据：在线/离线诊断 KBD 信号契约样例集
--- 样例集标识：diagnosis-signal-matrix-v1
+-- 基线样例集标识：diagnosis-signal-matrix-v1
 --
 -- 设计约束：
 --   1. 只创建 draft KBD，不自动审核、不自动发布、不生成离线派生资源；
@@ -8,7 +8,8 @@
 --   3. 覆盖 3 类直接 QKV + 2 类条件型生产者（视觉/效果验证）、8 类 QFK、
 --      7 类 Matcher 以及当前 Signal v2 字段；
 --   4. 只使用 Tool Registry/Shared Resolution Runtime 已声明的只读命令；
---   5. 已发布样例不覆盖；仅升级仍为 draft 的旧版样例，修复测试契约后可重新审核。
+--   5. 已发布样例不覆盖；仅升级仍为 draft 的旧版样例，修复测试契约后可重新审核；
+--   6. 语义入口改造使用独立 KBD 样例集，不回写既有已发布的基线样例。
 -- ============================================================
 
 WITH sample_rows (
@@ -62,6 +63,22 @@ WITH sample_rows (
                   {"name": "HOST", "type": "string", "path": "host|hostname"},
                   {"name": "VM_ID", "type": "integer", "path": "vm|object_id"},
                   {"name": "END", "type": "string", "path": "end"}
+                ],
+                "output_processing": [
+                  {
+                    "mode": "derive",
+                    "input": "{{VM_ID}}",
+                    "name": "VM_ID_NORMALIZED",
+                    "type": "integer",
+                    "scope": "per_record",
+                    "extract": {"type": "split", "separator": ",", "cardinality": "exactly_one"}
+                  },
+                  {
+                    "mode": "assert",
+                    "input": "{{VM_ID_NORMALIZED}}",
+                    "scope": "per_record",
+                    "match": {"type": "exists", "expected": true}
+                  }
                 ]
               },
               "provenance": {
@@ -253,15 +270,35 @@ WITH sample_rows (
                 "source_refs": ["kbd:steps_text"]
               },
               "review": {"require_human_confirm": false, "notes": "只用于产出 VM_STATUS 变量。"}
+            },
+            {
+              "id": "vm_case_context",
+              "role": "context",
+              "acquire": {
+                "tool": "qkv_case_context",
+                "args": {"instruction": "仅使用用户填写的虚拟机异常现象参与语义入口候选，不执行命令或推断目标"}
+              },
+              "match": null,
+              "orchestrate": {"phase": "diagnostic", "requires": [], "produces": []},
+              "provenance": {"category": "frontend", "method": "sql_sample", "source_section": "problem_description", "confidence": 1.0, "risk": 0, "needs_review": false, "evidence": "工单原始描述是受限上下文来源。", "source_refs": ["kbd:problem_description"]},
+              "review": {"require_human_confirm": false, "notes": "不得在此信号中配置 HOST、VM_ID 或命令。"}
             }
           ],
           "rejected_candidates": [],
+          "semantic_entry_profile": {
+            "schema_version": 1,
+            "diagnosis_capability": "executable",
+            "canonical_symptoms": ["虚拟机操作失败或状态异常"],
+            "positive_anchors": ["虚拟机", "启动失败"],
+            "exclusion_anchors": ["网络超时"],
+            "manual_evidence_request": ["请补充虚拟机名称、失败时间和页面报错截图"]
+          },
           "verification_contract": {
             "schema_version": 1,
             "case_id": "SAMPLE-SIG-VM",
             "scope": {
               "products": ["HCI"],
-              "versions": ["6.9.0"],
+              "versions": ["6.12.0"],
               "components": ["asv-vm"],
               "topology_constraints": []
             },
@@ -275,14 +312,14 @@ WITH sample_rows (
               "must": ["vm_status_must"],
               "should": ["vm_task_context", "vm_effect_verify"],
               "exclude": [],
-              "context": ["vm_list_context"],
-              "minimum_should": 0,
+              "context": ["vm_list_context", "vm_case_context"],
+              "minimum_should": 2,
               "on_missing_must": "inconclusive"
             }
           }
         }
         $signals$::jsonb,
-        '["qkv_task", "qkv_vm_console", "qkv_effect", "qfk_vm"]'::jsonb
+        '["qkv_task", "qkv_case_context", "qkv_vm_console", "qkv_effect", "qfk_vm"]'::jsonb
     ),
     (
         'SAMPLE-SIG-CORE',
@@ -389,7 +426,7 @@ WITH sample_rows (
                   "command_args": ["-P", "/sf/log"],
                   "host": "cluster",
                   "cluster": true,
-                  "formatter": "json",
+                  "formatter": "csv",
                   "container": "asv-con",
                   "timeout": 90,
                   "nonzero_exit_as_negative": false,
@@ -404,12 +441,12 @@ WITH sample_rows (
                 "aggregation": "max",
                 "extract": {
                   "type": "text",
-                  "delimiter": "whitespace",
+                  "delimiter": ",",
                   "cardinality": "last",
                   "source": "stdout",
                   "value_mode": "number",
                   "ai_extract": {"instruction": "仅从筛选后的 Use% 列提取百分比数值。"},
-                  "parser": "whitespace_table",
+                  "parser": "delimited_table",
                   "header": {
                     "mode": "contains",
                     "required": ["Filesystem", "Use%"],
@@ -459,17 +496,55 @@ WITH sample_rows (
                 "source_refs": ["kbd:steps_text"]
               },
               "review": {"require_human_confirm": false, "notes": "确认 formatter 与目标版本兼容。"}
+            },
+            {
+              "id": "core_boolean_should",
+              "role": "should",
+              "acquire": {
+                "tool": "qfk_system",
+                "args": {
+                  "command": "cat",
+                  "command_args": ["/sf/log/sample-feature-enabled"],
+                  "host": "{{HOST}}",
+                  "timeout": 60,
+                  "nonzero_exit_as_negative": true,
+                  "instruction": "读取样例功能开关并验证布尔值解析"
+                }
+              },
+              "match": {
+                "type": "boolean",
+                "expected": true,
+                "extract": {
+                  "type": "text",
+                  "rows": {"mode": "all"},
+                  "cardinality": "exactly_one",
+                  "source": "stdout",
+                  "value_mode": "boolean"
+                }
+              },
+              "orchestrate": {"phase": "diagnostic", "requires": ["HOST"], "produces": []},
+              "provenance": {
+                "category": "backend",
+                "method": "sql_sample",
+                "source_section": "steps_text",
+                "confidence": 1.0,
+                "risk": 0,
+                "needs_review": false,
+                "evidence": "样例文件逐字返回 true/false，用于覆盖 boolean Matcher。",
+                "source_refs": ["kbd:steps_text"]
+              },
+              "review": {"require_human_confirm": false, "notes": "仅为仿真契约样例；真实 KBD 必须引用实际存在的只读状态源。"}
             }
           ],
           "rejected_candidates": [],
           "verification_contract": {
             "schema_version": 1,
             "case_id": "SAMPLE-SIG-CORE",
-            "scope": {"products": ["HCI"], "versions": ["sample"], "components": ["service", "system"], "topology_constraints": ["cluster"]},
+            "scope": {"products": ["HCI"], "versions": ["6.12.0"], "components": ["service", "system"], "topology_constraints": ["cluster"]},
             "variables": {},
             "evidence_policy": {
               "must": ["core_service_must", "core_disk_threshold"],
-              "should": ["core_alert_context"],
+              "should": ["core_alert_context", "core_boolean_should"],
               "exclude": [],
               "context": [],
               "minimum_should": 1,
@@ -706,7 +781,7 @@ WITH sample_rows (
           "verification_contract": {
             "schema_version": 1,
             "case_id": "SAMPLE-SIG-LOG",
-            "scope": {"products": ["HCI"], "versions": ["sample"], "components": ["network-log"], "topology_constraints": ["target-host"]},
+            "scope": {"products": ["HCI"], "versions": ["6.12.0"], "components": ["network-log"], "topology_constraints": ["target-host"]},
             "variables": {},
             "evidence_policy": {
               "must": ["log_keyword_must"],
@@ -836,7 +911,7 @@ WITH sample_rows (
           "verification_contract": {
             "schema_version": 1,
             "case_id": "SAMPLE-SIG-NET-STO",
-            "scope": {"products": ["HCI"], "versions": ["sample"], "components": ["network", "storage"], "topology_constraints": ["target-host"]},
+            "scope": {"products": ["HCI"], "versions": ["6.12.0"], "components": ["network", "storage"], "topology_constraints": ["target-host"]},
             "variables": {},
             "evidence_policy": {
               "must": ["network_regex_must"],
@@ -995,7 +1070,7 @@ WITH sample_rows (
           "verification_contract": {
             "schema_version": 1,
             "case_id": "SAMPLE-SIG-HW-PLT",
-            "scope": {"products": ["HCI"], "versions": ["sample"], "components": ["hardware", "platform"], "topology_constraints": ["target-host"]},
+            "scope": {"products": ["HCI"], "versions": ["6.12.0"], "components": ["hardware", "platform"], "topology_constraints": ["target-host"]},
             "variables": {},
             "evidence_policy": {
               "must": ["hardware_trend_must"],
@@ -1025,6 +1100,123 @@ resolved_rows AS (
             LIMIT 1
         ) AS suggested_category_id
     FROM sample_rows
+),
+semantic_entry_rows AS (
+    -- 语义入口样例只保留消费者与 qkv_case_context：任务、告警、弹框、控制台、
+    -- 效果验证均属于原基线样例的强/条件生产者覆盖，不应混入兜底路径。
+    SELECT
+        resolved_rows.*,
+        jsonb_set(
+            jsonb_set(
+                jsonb_set(
+                    signals_json,
+                    '{signals}',
+                    filtered_signals || CASE
+                    WHEN has_case_context THEN '[]'::jsonb
+                    ELSE jsonb_build_array(
+                        jsonb_build_object(
+                            'id', 'semantic_case_context',
+                            'role', 'context',
+                            'acquire', jsonb_build_object(
+                                'tool', 'qkv_case_context',
+                                'args', jsonb_build_object(
+                                    'instruction', '仅使用客户已提交的故障描述、表单和授权截图事实进行语义入口候选，不执行命令或推断目标变量'
+                                )
+                            ),
+                            'match', NULL,
+                            'orchestrate', jsonb_build_object('phase', 'diagnostic', 'requires', '[]'::jsonb, 'produces', '[]'::jsonb),
+                            'provenance', jsonb_build_object(
+                                'category', 'frontend', 'method', 'sql_sample', 'source_section', 'problem_description',
+                                'confidence', 1.0, 'risk', 0, 'needs_review', false,
+                                'evidence', '工单原始描述是受限上下文来源。', 'source_refs', jsonb_build_array('kbd:problem_description')
+                            ),
+                            'review', jsonb_build_object('require_human_confirm', false, 'notes', '不得配置命令、match 或 HOST、VM_ID 等推断产出。')
+                        )
+                    )
+                    END,
+                    true
+                ),
+                '{verification_contract,variables}',
+                COALESCE(signals_json #> '{verification_contract,variables}', '{}'::jsonb)
+                || jsonb_strip_nulls(jsonb_build_object(
+                    -- 语义入口禁止 qkv_case_context 推断目标。移除强生产者后仍被
+                    -- 消费者引用的占位符必须显式成为人工/已授权上下文输入。
+                    'HOST', CASE WHEN signals_json::text LIKE '%{{HOST}}%' THEN jsonb_build_object(
+                        'type', 'string', 'description', '目标宿主机标识；由用户填写或从已授权对象范围选择'
+                    ) END,
+                    'VM_ID', CASE WHEN signals_json::text LIKE '%{{VM_ID}}%' THEN jsonb_build_object(
+                        'type', 'integer', 'description', '目标虚拟机 ID；仅在用户已确认对象后填写'
+                    ) END,
+                    'REQUEST_ID', CASE WHEN signals_json::text LIKE '%{{REQUEST_ID}}%' THEN jsonb_build_object(
+                        'type', 'string', 'description', '关联请求 ID；从用户提供的报错原文或工单记录复制'
+                    ) END,
+                    'END', CASE WHEN signals_json::text LIKE '%{{END}}%' THEN jsonb_build_object(
+                        'type', 'string', 'description', '故障或任务结束时间；由用户确认后填写'
+                    ) END
+                )),
+                true
+            ),
+            '{semantic_entry_profile}',
+            jsonb_build_object(
+                'schema_version', 1,
+                'diagnosis_capability', 'executable',
+                'canonical_symptoms', jsonb_build_array(problem_description),
+                'positive_anchors', jsonb_build_array(domain_hint),
+                'exclusion_anchors', '[]'::jsonb,
+                'manual_evidence_request', jsonb_build_array('请补充报错原文、故障发生时间、对象名称及已知目标标识；未确认的目标不会用于执行命令。')
+            ),
+            true
+        ) AS semantic_signals_json
+    FROM resolved_rows
+    CROSS JOIN LATERAL (
+        SELECT
+            COALESCE(jsonb_agg(signal), '[]'::jsonb) AS filtered_signals,
+            COALESCE(bool_or(signal -> 'acquire' ->> 'tool' = 'qkv_case_context'), false) AS has_case_context
+        FROM jsonb_array_elements(signals_json -> 'signals') AS signal
+        WHERE signal -> 'acquire' ->> 'tool' NOT IN ('qkv_task', 'qkv_alert', 'qkv_dialog', 'qkv_vm_console', 'qkv_effect')
+    ) AS semantic_signals
+),
+seed_rows AS (
+    -- 既有 Signal v2 基线样例：保持历史 support_id，保护已审核发布的数据。
+    SELECT
+        resolved_rows.*,
+        NULL::jsonb AS semantic_signals_json,
+        support_id AS target_support_id,
+        signals_json AS target_signals_json,
+        'diagnosis-signal-matrix-v1'::text AS target_sample_suite,
+        '在线/离线诊断 Signal v2 全量样例'::text AS target_sample_suite_label,
+        6 AS target_seed_version
+    FROM resolved_rows
+    UNION ALL
+    -- 语义入口 v2 样例：独立 support_id + draft，供人工审核发布；绝不篡改已发布基线样例。
+    SELECT
+        semantic_entry_rows.*,
+        regexp_replace(support_id, '^SAMPLE-SIG-', 'SAMPLE-V2-') AS target_support_id,
+        jsonb_set(
+            jsonb_set(
+                semantic_signals_json,
+                '{verification_contract,case_id}',
+                to_jsonb(regexp_replace(support_id, '^SAMPLE-SIG-', 'SAMPLE-V2-'))
+            ),
+            '{verification_contract,evidence_policy}',
+            -- 删除强生产者时同步重建证据引用；不能残留不存在的 signal_id。
+            (semantic_signals_json #> '{verification_contract,evidence_policy}') || (
+                SELECT jsonb_build_object(
+                    'must', COALESCE(jsonb_agg(signal -> 'id') FILTER (WHERE signal ->> 'role' = 'must'), '[]'::jsonb),
+                    'should', COALESCE(jsonb_agg(signal -> 'id') FILTER (WHERE signal ->> 'role' = 'should'), '[]'::jsonb),
+                    'exclude', COALESCE(jsonb_agg(signal -> 'id') FILTER (WHERE signal ->> 'role' = 'exclude'), '[]'::jsonb),
+                    'context', COALESCE(jsonb_agg(signal -> 'id') FILTER (WHERE signal ->> 'role' = 'context'), '[]'::jsonb),
+                    'minimum_should', LEAST(
+                        COALESCE((semantic_signals_json #>> '{verification_contract,evidence_policy,minimum_should}')::int, 0),
+                        count(*) FILTER (WHERE signal ->> 'role' = 'should')
+                    )
+                ) FROM jsonb_array_elements(semantic_signals_json -> 'signals') AS signal
+            )
+        ) AS target_signals_json,
+        'kbd-semantic-entry-signal-v2'::text AS target_sample_suite,
+        '语义入口 Signal v2 样例'::text AS target_sample_suite_label,
+        5 AS target_seed_version
+    FROM semantic_entry_rows
 )
 INSERT INTO kbd_entry (
     support_id,
@@ -1049,8 +1241,12 @@ INSERT INTO kbd_entry (
     status
 )
 SELECT
-    support_id,
-    title,
+    target_support_id,
+    CASE
+        WHEN target_sample_suite = 'kbd-semantic-entry-signal-v2'
+            THEN regexp_replace(title, '^【诊断样例】', '【语义入口兜底样例】')
+        ELSE title
+    END,
     problem_description,
     alert_info,
     steps_text,
@@ -1059,23 +1255,39 @@ SELECT
     '仅用于测试环境验证在线诊断与离线诊断的读取、同步、采集和判定流程。',
     '否',
     '请由审核人员核对分类、命令模板、变量链与证据作用后再发布。',
-    signals_json,
+    target_signals_json,
     '[]'::jsonb,
-    '# 问题描述' || chr(10) || chr(10) || problem_description || chr(10) || chr(10)
+    CASE
+        WHEN target_sample_suite = 'kbd-semantic-entry-signal-v2' THEN
+            '# 语义入口说明' || chr(10) || chr(10)
+            || '本样例用于验证：没有任务、告警、弹框或控制台等强生产者信号时，系统只基于客户填写的故障描述进行语义候选召回；'
+            || '候选命中后仍必须由下方只读消费者信号采集证据并判定。' || chr(10) || chr(10)
+        ELSE ''
+    END
+    || '# 问题描述' || chr(10) || chr(10) || problem_description || chr(10) || chr(10)
       || '# 告警信息' || chr(10) || chr(10) || alert_info || chr(10) || chr(10)
       || '# 有效排查步骤' || chr(10) || chr(10) || steps_text || chr(10) || chr(10)
       || '# 根因' || chr(10) || chr(10) || root_cause || chr(10) || chr(10)
       || '# 解决方案' || chr(10) || chr(10) || solution,
     problem_description || chr(10) || alert_info || chr(10) || steps_text || chr(10) || root_cause || chr(10) || solution,
-    jsonb_build_object(
+    jsonb_strip_nulls(jsonb_build_object(
         'is_test_sample', true,
-        'sample_suite', 'diagnosis-signal-matrix-v1',
-        'sample_suite_label', '在线/离线诊断 Signal v2 全量样例',
+        'sample_suite', target_sample_suite,
+        'sample_suite_label', target_sample_suite_label,
         'sample_purpose', 'online_offline_diagnosis',
+        'sample_entry_mode', CASE
+            WHEN target_sample_suite = 'kbd-semantic-entry-signal-v2' THEN 'semantic_fallback'
+            ELSE NULL
+        END,
+        'sample_description', CASE
+            WHEN target_sample_suite = 'kbd-semantic-entry-signal-v2'
+                THEN '仅 qkv_case_context（工单语义上下文）作为生产者入口；用于验证语义兜底召回后的在线/离线证据采集与诊断。'
+            ELSE NULL
+        END,
         'domain_hint', domain_hint,
         'signal_tools', sample_tools,
-        'seed_version', 5
-    ),
+        'seed_version', target_seed_version
+    )),
     NULL,
     suggested_category_id,
     CASE WHEN suggested_category_id IS NULL THEN NULL ELSE 1.0 END,
@@ -1084,7 +1296,7 @@ SELECT
         ELSE 'SQL 样例按技术域给出分类建议，仍须审核人员确认'
     END,
     'draft'
-FROM resolved_rows
+FROM seed_rows
 ON CONFLICT (support_id) DO UPDATE SET
     title = EXCLUDED.title,
     problem_description = EXCLUDED.problem_description,
@@ -1105,5 +1317,6 @@ ON CONFLICT (support_id) DO UPDATE SET
     ai_category_conf = EXCLUDED.ai_category_conf,
     ai_category_reason = EXCLUDED.ai_category_reason
 WHERE kbd_entry.status = 'draft'
-  AND kbd_entry.metadata ->> 'sample_suite' = 'diagnosis-signal-matrix-v1'
-  AND COALESCE((kbd_entry.metadata ->> 'seed_version')::integer, 0) < 5;
+  AND kbd_entry.metadata ->> 'sample_suite' = EXCLUDED.metadata ->> 'sample_suite'
+  AND COALESCE((kbd_entry.metadata ->> 'seed_version')::integer, 0)
+      < COALESCE((EXCLUDED.metadata ->> 'seed_version')::integer, 0);

@@ -9,6 +9,16 @@ from shared.signals.qkv_output_processing import (
     apply_output_processing_async,
     validate_output_processing,
 )
+from shared.signals.qkv_parser import first_complete_produced_record
+
+
+def test_producer_record_requires_every_declared_variable_before_unblocking() -> None:
+    produces = [{"name": "HOST"}, {"name": "VM_ID"}]
+
+    assert first_complete_produced_record([{"host": "node-a"}], produces) is None
+    assert first_complete_produced_record(
+        [{"host": "node-a", "vm_id": 7}, {"host": "node-b"}], produces
+    ) == {"host": "node-a", "vm_id": 7}
 
 
 def test_feature_extract_and_compare_are_applied_per_record() -> None:
@@ -160,6 +170,28 @@ def test_static_scope_allows_only_prior_derived_variable() -> None:
         )
 
 
+def test_deterministic_derived_variable_is_available_to_following_assertion() -> None:
+    specs = [
+        {
+            "mode": "derive",
+            "input": "{{VM_ID}}",
+            "name": "VM_ID_NORMALIZED",
+            "type": "integer",
+            "extract": {"type": "split", "separator": ",", "cardinality": "exactly_one"},
+        },
+        {
+            "mode": "assert",
+            "input": "{{VM_ID_NORMALIZED}}",
+            "match": {"type": "exists", "expected": True},
+        },
+    ]
+
+    validate_output_processing(specs, available_inputs={"VM_ID"})
+    result = apply_output_processing([{"vm_id": "90010001"}], specs)
+    assert result.records[0]["vm_id_normalized"] == 90010001
+    assert result.matched is True
+
+
 def test_multiple_feature_values_use_qfk_aggregation_instead_of_zero_or_more() -> None:
     result = apply_output_processing(
         [{"description": "使用率：80%，峰值：92%，告警值：95%"}],
@@ -266,4 +298,3 @@ def test_boolean_matcher_evaluates_boolean_output() -> None:
     )
     assert result_false.matched is False
     assert result_false.assertions[0].status == "FAIL"
-

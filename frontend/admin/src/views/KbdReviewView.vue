@@ -8,6 +8,7 @@ import { useCategories } from '../composables/useCategories'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { OutputProcessingEditor, QfkProcessingEditor, SignalDryRunDialog } from '@/components/editors'
+import SemanticProfileEditor from '@/components/editors/SemanticProfileEditor.vue'
 import type { SignalV2, SignalsDoc, ChangeAnnotation } from '@/utils/kbdSignalTypes'
 import { generateUUID } from '@hci/shared'
 import {
@@ -45,6 +46,8 @@ interface KbdMetadata {
   sample_suite?: string | null
   sample_suite_label?: string | null
   sample_purpose?: string | null
+  sample_entry_mode?: string | null
+  sample_description?: string | null
   domain_hint?: string | null
   signal_tools?: string[]
   seed_version?: number
@@ -79,6 +82,8 @@ interface KbdEntry {
   review_view?: 'entry' | 'maintenance_working'
 }
 
+type SemanticEntryProfile = NonNullable<SignalsDoc['semantic_entry_profile']>
+
 interface RevisionMetadata {
   id: number
   revision_no: number
@@ -107,7 +112,7 @@ interface KbdRevisionState {
 
 interface CapabilityDescriptor {
   capability_id: string
-  kind: 'producer' | 'consumer'
+  kind: 'producer' | 'conditional_producer' | 'consumer' | 'context'
   contract_status: string
   runtime_status: string
   verification_status: string
@@ -1778,6 +1783,68 @@ function consumerSignalCount(row: KbdEntry): number {
   return signals.filter((s: any) => sigTool(s).startsWith('qfk')).length
 }
 
+const semanticProfileDialogVisible = ref(false)
+const semanticProfilePreviewInitiallyOpen = ref(false)
+const semanticProfileDraft = ref<SemanticEntryProfile>({ schema_version: 1, diagnosis_capability: 'executable', canonical_symptoms: [], positive_anchors: [] })
+const semanticSaving = ref(false)
+const activeSemanticProfile = computed<SemanticEntryProfile | null>(() => {
+  const profile = (detailEntry.value?.signals_json as SignalsDoc | undefined)?.semantic_entry_profile
+  return profile && typeof profile === 'object' ? profile as SemanticEntryProfile : null
+})
+const semanticRequiredInputs = computed(() => {
+  const doc = detailEntry.value?.signals_json as any
+  const declared = doc?.verification_contract?.variables || {}
+  const required = new Set<string>()
+  for (const signal of doc?.signals || []) {
+    if (sigTool(signal) === 'qkv_case_context') continue
+    for (const match of JSON.stringify(signal.acquire?.args || {}).matchAll(/\{\{([A-Z][A-Z0-9_]*)\}\}/g)) {
+      required.add(match[1])
+    }
+  }
+  return [...required].sort().map((name) => ({
+    name,
+    type: declared[name]?.type || '未声明',
+    description: declared[name]?.description || '缺少输入契约，发布门禁应阻断。',
+  }))
+})
+const semanticConsumerSignals = computed(() => {
+  const signals = (detailEntry.value?.signals_json as SignalsDoc | undefined)?.signals || []
+  return signals.filter((signal) => sigTool(signal).startsWith('qfk'))
+})
+function semanticCapabilityLabel(value?: string): string {
+  return ({ executable: '可执行诊断', guidance_only: '仅人工指引', capability_gap: '能力缺口' } as Record<string, string>)[value || ''] || '未声明'
+}
+function openSemanticProfileEditor(previewInitiallyOpen = false): void {
+  semanticProfilePreviewInitiallyOpen.value = previewInitiallyOpen
+  const profile = (detailEntry.value?.signals_json as SignalsDoc | undefined)?.semantic_entry_profile
+  semanticProfileDraft.value = JSON.parse(JSON.stringify(profile || {
+    schema_version: 1, diagnosis_capability: 'executable', canonical_symptoms: [], positive_anchors: [],
+    exclusion_anchors: [], manual_evidence_request: [],
+  }))
+  semanticProfileDialogVisible.value = true
+}
+async function previewSemanticProfile(profile: SemanticEntryProfile, context: Record<string, string>): Promise<Record<string, any>> {
+  const resp = await fetch(`/api/v1/kbd/${detailEntry.value!.id}/semantic-preview`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeader },
+    body: JSON.stringify({ profile, context, strong_producer_status: 'no_match' }),
+  })
+  const body = await resp.json()
+  if (!resp.ok) throw buildSignalRequestError(body, resp.status, resp.headers)
+  return body
+}
+async function saveSemanticProfile(profile: SemanticEntryProfile): Promise<void> {
+  if (!detailEntry.value || semanticSaving.value) return
+  semanticSaving.value = true
+  const doc = JSON.parse(JSON.stringify(detailEntry.value.signals_json)) as SignalsDoc
+  doc.semantic_entry_profile = profile
+  if (!(doc.signals || []).some((signal) => sigTool(signal) === 'qkv_case_context')) doc.signals.push(buildSignalForTool('qkv_case_context'))
+  try {
+    await persistSignalList(doc.signals, '语义入口画像已保存', [], doc)
+    semanticProfileDialogVisible.value = false
+  } catch (error) { ElMessage.error(error instanceof Error ? error.message : '保存失败') }
+  finally { semanticSaving.value = false }
+}
+
 function imageTotal(row: KbdEntry): number {
   const imgs = row.images_json as any[]
   return Array.isArray(imgs) ? imgs.length : 0
@@ -1899,6 +1966,7 @@ function formatMatcherTypeLabel(type?: string): string {
     keyword: '关键字匹配 (keyword)',
     regex: '正则表达式 (regex)',
     state: '状态值匹配 (state)',
+    boolean: '布尔值判定 (boolean)',
     threshold: '数值阈值 (threshold)',
     delta: '差值计算 (delta)',
     trend: '趋势判断 (trend)',
@@ -2224,6 +2292,15 @@ function buildSignalForTool(tool: string, previous?: SignalV2): SignalV2 {
     args.timeout = 60
     delete args.keyword
   }
+  if (tool === 'qkv_case_context') {
+    delete args.keyword
+    return {
+      id: previous?.id || createSignalId(), role: 'context', acquire: { tool, args: {} }, match: null,
+      orchestrate: { phase: 'diagnostic', produces: [], requires: [] },
+      provenance: { ...(previous?.provenance || {}), category: 'frontend', needs_review: true },
+      review: { require_human_confirm: true },
+    }
+  }
   // qfk_system 在宿主机执行时，持久化契约通过省略 container 表达；编辑器使用
   // host 作为显式的默认选项，便于专家把已选择的 aCLI 容器恢复为宿主机。
   if (tool === 'qfk_system') args.container = 'host'
@@ -2251,6 +2328,11 @@ function buildSignalForTool(tool: string, previous?: SignalV2): SignalV2 {
 function onSignalToolChange(tool: string) {
   signalEditDraft.value = buildSignalForTool(tool, signalEditDraft.value)
   if (tool.startsWith('qfk')) syncDraftRequires()
+}
+
+function onEffectUsageChange(value: string): void {
+  if (!signalEditDraft.value.orchestrate) return
+  signalEditDraft.value.orchestrate.phase = value === 'symptom_confirm' ? 'diagnostic' : 'remediation'
 }
 
 function supportsQfkFormatter(tool: string): boolean {
@@ -2464,6 +2546,7 @@ function qkvNatureLabel(tool: string): string {
   if (tool === 'qkv_task' || tool === 'qkv_dialog') return '（任务失败型故障 · 分类基线）'
   if (tool === 'qkv_vm_console') return '（条件型实时视觉生产者 · Guest 内部现象）'
   if (tool === 'qkv_effect') return '（条件型效果验证生产者 · 动作成功 ≠ 效果达成）'
+  if (tool === 'qkv_case_context') return '（受限工单上下文 · 不执行命令、不推断目标）'
   return ''
 }
 function effectExpectationSummary(expectation: any): string {
@@ -2511,6 +2594,12 @@ const signalDryRunIndex = ref<number | null>(null)
 const signalDryRunProcessingIndex = ref<number | null>(null)
 
 function openSignalDryRun(signal: SignalV2, index: number, processingIndex: number | null = null): void {
+  // 上下文信号没有采集输出，试运行应验证画像路由，不进入 QKV 变量处理。
+  if (sigTool(signal) === 'qkv_case_context') {
+    signalDryRunVisible.value = false
+    openSemanticProfileEditor(true)
+    return
+  }
   signalDryRunSignal.value = cloneSignal(signal)
   signalDryRunIndex.value = index
   signalDryRunProcessingIndex.value = processingIndex
@@ -2610,10 +2699,9 @@ function deriveSignalRequires(sig: SignalV2): string[] {
   for (const produce of sig.orchestrate?.produces || []) collect(produce?.extract || {})
   const local = new Set<string>()
   for (const produce of sig.orchestrate?.produces || []) {
-    for (const key of ['name', 'alias']) {
-      const value = String((produce as any)?.[key] || '').trim().toUpperCase()
-      if (value) local.add(value)
-    }
+    // 后处理发生在 alias 写入跨信号变量池之前，本地只能读取标准 name。
+    const value = String((produce as any)?.name || '').trim().toUpperCase()
+    if (value) local.add(value)
   }
   for (const processing of sig.orchestrate?.output_processing || []) {
     collect(processing?.input)
@@ -2797,9 +2885,10 @@ async function persistSignalList(
   list: SignalV2[],
   successMessage: string,
   changeAnnotations: ChangeAnnotation[] = [],
+  documentOverride?: SignalsDoc,
 ): Promise<boolean> {
   if (!detailEntry.value) return false
-  const currentDoc = (detailEntry.value.signals_json || {}) as SignalsDoc
+  const currentDoc = documentOverride || (detailEntry.value.signals_json || {}) as SignalsDoc
   const payload = reconcileSignalContract(
     { ...currentDoc, schema_version: 2 },
     list.map(normalizeOptionalMatcherNulls),
@@ -3772,6 +3861,8 @@ function metaLabel(key: keyof KbdMetadata): string {
     sample_suite: '样例集标识',
     sample_suite_label: '样例集名称',
     sample_purpose: '样例用途',
+    sample_entry_mode: '样例入口模式',
+    sample_description: '样例说明',
     domain_hint: '技术域提示',
     signal_tools: '覆盖信号类型',
     seed_version: '样例版本',
@@ -3960,7 +4051,7 @@ const metaKeys: (keyof KbdMetadata)[] = [
   'sangfor_main_module', 'sangfor_sub_module', 'suite_version',
   'sangfor_updated_at', 'sangfor_created_at',
   'create_admin_id', 'update_admin_id',
-  'sample_suite', 'sample_suite_label', 'sample_purpose',
+  'sample_suite', 'sample_suite_label', 'sample_purpose', 'sample_entry_mode', 'sample_description',
   'domain_hint', 'signal_tools', 'seed_version',
 ]
 
@@ -4286,6 +4377,14 @@ onUnmounted(() => clearBatchPollTimer())
               style="margin-left: 8px"
               :title="row.metadata.sample_suite"
             >{{ row.metadata.sample_suite_label || row.metadata.sample_suite }}</el-tag>
+            <el-tag
+              v-if="row.metadata?.sample_entry_mode === 'semantic_fallback'"
+              size="small"
+              type="warning"
+              effect="plain"
+              style="margin-left: 6px"
+              :title="row.metadata.sample_description || ''"
+            >语义入口兜底</el-tag>
           </template>
         </el-table-column>
 
@@ -4600,6 +4699,7 @@ onUnmounted(() => clearBatchPollTimer())
           <div class="section-header-row">
             <h4 class="section-title">关键信号（QKV / QFK）</h4>
             <div class="section-actions">
+              <el-button size="small" :disabled="!canEditCurrent" @click="openSemanticProfileEditor()">语义入口画像</el-button>
               <el-dropdown :disabled="!canEditCurrent" @command="(tool: string) => addSignal(tool)">
                 <el-button type="primary" size="small">新增信号</el-button>
                 <template #dropdown>
@@ -4607,6 +4707,7 @@ onUnmounted(() => clearBatchPollTimer())
                     <el-dropdown-item command="qkv_task">任务信号 qkv_task</el-dropdown-item>
                     <el-dropdown-item command="qkv_alert">告警信号 qkv_alert</el-dropdown-item>
                     <el-dropdown-item command="qkv_dialog">弹框信号 qkv_dialog</el-dropdown-item>
+                    <el-dropdown-item command="qkv_case_context">工单上下文 qkv_case_context（语义兜底）</el-dropdown-item>
                     <el-dropdown-item command="qkv_vm_console">控制台截图 qkv_vm_console（条件型）</el-dropdown-item>
                     <el-dropdown-item command="qkv_effect">效果验证 qkv_effect（条件型）</el-dropdown-item>
                     <el-dropdown-item divided command="qfk_log">日志检查 qfk_log</el-dropdown-item>
@@ -4643,6 +4744,56 @@ onUnmounted(() => clearBatchPollTimer())
               </el-button>
             </div>
           </div>
+
+          <section v-if="activeSemanticProfile" class="semantic-entry-contract">
+            <el-alert
+              type="info" :closable="false" show-icon
+              :title="`语义入口契约：${semanticCapabilityLabel(activeSemanticProfile.diagnosis_capability)}。仅在任务、告警、弹框均确认未命中后，才按工单描述参与候选。`"
+            />
+            <el-descriptions :column="2" border size="small" class="semantic-entry-summary">
+              <el-descriptions-item label="入口信号">
+                <code>qkv_case_context</code>（只读取工单事实，不执行命令、不推断目标）
+              </el-descriptions-item>
+              <el-descriptions-item label="诊断能力">
+                <el-tag :type="activeSemanticProfile.diagnosis_capability === 'executable' ? 'success' : 'warning'" size="small">
+                  {{ semanticCapabilityLabel(activeSemanticProfile.diagnosis_capability) }}
+                </el-tag>
+              </el-descriptions-item>
+              <el-descriptions-item label="标准症状" :span="2">
+                <el-tag v-for="item in activeSemanticProfile.canonical_symptoms" :key="item" size="small" style="margin: 0 6px 4px 0">{{ item }}</el-tag>
+              </el-descriptions-item>
+              <el-descriptions-item label="正向锚点">
+                <el-tag v-for="item in activeSemanticProfile.positive_anchors" :key="item" type="success" effect="plain" size="small" style="margin: 0 6px 4px 0">{{ item }}</el-tag>
+              </el-descriptions-item>
+              <el-descriptions-item label="排除锚点">
+                <template v-if="activeSemanticProfile.exclusion_anchors?.length">
+                  <el-tag v-for="item in activeSemanticProfile.exclusion_anchors" :key="item" type="danger" effect="plain" size="small" style="margin: 0 6px 4px 0">{{ item }}</el-tag>
+                </template>
+                <span v-else>无</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="后续消费者采集" :span="2">
+                <el-tag v-for="signal in semanticConsumerSignals" :key="signal.id" type="primary" effect="plain" size="small" style="margin: 0 6px 4px 0">
+                  {{ signal.id }} · {{ sigTool(signal) }}
+                </el-tag>
+              </el-descriptions-item>
+            </el-descriptions>
+            <div class="semantic-entry-inputs">
+              <strong>语义命中后的必填输入</strong>
+              <span class="field-hint">这些值只能由用户填写或从已授权对象范围选择；入口信号不会自行推断。</span>
+              <el-table :data="semanticRequiredInputs" size="small" border empty-text="本样例的消费者不依赖额外目标变量">
+                <el-table-column prop="name" label="变量" width="140"><template #default="{ row }"><code>{{ row.name }}</code></template></el-table-column>
+                <el-table-column prop="type" label="类型" width="110" />
+                <el-table-column prop="description" label="填写方式" />
+              </el-table>
+            </div>
+            <div v-if="activeSemanticProfile.manual_evidence_request?.length" class="semantic-entry-inputs">
+              <strong>未命中或信息不足时，请补充</strong>
+              <ul><li v-for="item in activeSemanticProfile.manual_evidence_request" :key="item">{{ item }}</li></ul>
+            </div>
+          </section>
+          <el-dialog v-model="semanticProfileDialogVisible" title="语义入口画像：先找方向，再用证据验证" width="840px" append-to-body destroy-on-close>
+            <SemanticProfileEditor v-if="semanticProfileDialogVisible" :initial="semanticProfileDraft" :preview-initially-open="semanticProfilePreviewInitiallyOpen" :busy="semanticSaving" :preview="previewSemanticProfile" @save="saveSemanticProfile" @cancel="semanticProfileDialogVisible = false" />
+          </el-dialog>
 
           <el-alert v-if="stagedSignalEditCount > 0" type="warning" :closable="false" show-icon>
             <template #title>
@@ -4714,7 +4865,7 @@ onUnmounted(() => clearBatchPollTimer())
 
           <!-- 生产者信号（QKV） -->
           <div class="signal-group">
-            <div class="signal-group-title">生产者信号（QKV：前端采集，写入变量池）</div>
+            <div class="signal-group-title">生产者信号（QKV：采集事实或读取工单上下文；上下文信号不产出变量）</div>
             <el-empty v-if="producerSignals.length === 0" description="暂无生产者信号" :image-size="44" />
             <div
               v-for="item in producerSignals"
@@ -4734,7 +4885,7 @@ onUnmounted(() => clearBatchPollTimer())
                   <el-button text size="small" :disabled="!canEditCurrent || item.origIdx === signalList.length - 1" @click="moveSignal(item.origIdx, 1)">下移</el-button>
                   <el-button text size="small" :disabled="!canEditCurrent" @click="duplicateSignal(item.origIdx)">复制</el-button>
                   <el-button text size="small" title="复制该信号的 JSON，可粘贴到其他 KBD 导入" @click="copySignalJson(item.sig)">复制 JSON</el-button>
-                  <el-button text type="primary" size="small" @click="openSignalDryRun(item.sig, item.origIdx)">试运行</el-button>
+                  <el-button text type="primary" size="small" @click="openSignalDryRun(item.sig, item.origIdx)">{{ sigTool(item.sig) === 'qkv_case_context' ? '路由试运行' : '试运行' }}</el-button>
                   <el-button text type="danger" size="small" :disabled="!canEditCurrent" @click="deleteSignal(item.origIdx)">删除</el-button>
                   <el-button v-if="editingSignalIndex !== item.origIdx" text type="primary" size="small" :disabled="!canEditCurrent" @click="startEditSignal(item.origIdx)">编辑</el-button>
                   <template v-else>
@@ -4860,7 +5011,7 @@ onUnmounted(() => clearBatchPollTimer())
                     <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" type="textarea" :rows="2" placeholder="信号说明，如 镜像文件占用检查" /></div>
                     <div class="field-hint">信号语义说明：用自然语言描述这个采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
                     <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据（必须满足）" value="must" /><el-option label="增强证据（按门槛满足）" value="should" /><el-option label="排除证据（出现即排除）" value="exclude" /><el-option label="上下文证据（执行但不参与结论）" value="context" /></el-select></div>
-                    <div class="signal-row signal-type-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" @change="onSignalToolChange"><el-option label="任务 qkv_task" value="qkv_task" /><el-option label="告警 qkv_alert" value="qkv_alert" /><el-option label="弹框 qkv_dialog" value="qkv_dialog" /><el-option label="控制台截图 qkv_vm_console" value="qkv_vm_console" /><el-option label="效果验证 qkv_effect" value="qkv_effect" /></el-select><span class="signal-nature">{{ qkvNatureLabel(sigTool(signalEditDraft)) }}</span></div>
+                    <div class="signal-row signal-type-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" @change="onSignalToolChange"><el-option label="任务 qkv_task" value="qkv_task" /><el-option label="告警 qkv_alert" value="qkv_alert" /><el-option label="弹框 qkv_dialog" value="qkv_dialog" /><el-option label="工单上下文 qkv_case_context" value="qkv_case_context" /><el-option label="控制台截图 qkv_vm_console" value="qkv_vm_console" /><el-option label="效果验证 qkv_effect" value="qkv_effect" /></el-select><span class="signal-nature">{{ qkvNatureLabel(sigTool(signalEditDraft)) }}</span></div>
                     <template v-if="sigTool(signalEditDraft) === 'qkv_vm_console'">
                       <div class="signal-row"><span class="signal-k">宿主机</span><el-input v-model="signalEditDraft.acquire.args.host" size="small" placeholder="{{HOST}} 或 Inventory 规范化节点标识" /></div>
                       <div class="signal-row"><span class="signal-k">虚拟机 ID</span><el-input v-model="signalEditDraft.acquire.args.vm_id" size="small" placeholder="{{VM_ID}} 或精确数值 VMID" /></div>
@@ -4876,16 +5027,19 @@ onUnmounted(() => clearBatchPollTimer())
                       <div class="field-hint">条件型实时视觉生产者：必须先具备可信 HOST 与 VM_ID（在验证规则的外部变量中声明，或由上游生产者产出）。截图为代码固定操作；近黑唤醒（sendkey down）属受控交互，运行时必须用户确认。编辑器不提供命令、路径或按键字段。</div>
                     </template>
                     <template v-else-if="sigTool(signalEditDraft) === 'qkv_effect'">
-                      <div class="signal-row"><span class="signal-k">使用模式</span><el-select v-model="signalEditDraft.acquire.args.usage" size="small"><el-option label="修复后复核" value="remediation_verify" /><el-option label="S1 症状确认" value="symptom_confirm" /></el-select></div>
+                      <div class="signal-row"><span class="signal-k">使用模式</span><el-select v-model="signalEditDraft.acquire.args.usage" size="small" @change="onEffectUsageChange"><el-option label="操作后效果验证" value="remediation_verify" /><el-option label="S1 症状确认" value="symptom_confirm" /></el-select></div>
                       <div class="signal-row"><span class="signal-k">观测通道</span><el-select v-model="signalEditDraft.acquire.args.expectation.observation.tool" size="small"><el-option label="告警再查询 qkv_alert" value="qkv_alert" /><el-option label="任务再查询 qkv_task" value="qkv_task" /><el-option label="弹框再查询 qkv_dialog" value="qkv_dialog" /><el-option label="控制台画面 qkv_vm_console" value="qkv_vm_console" /></el-select></div>
                       <div class="signal-row"><span class="signal-k">观测关键字</span><el-input v-model="signalEditDraft.acquire.args.expectation.observation.args.keyword" size="small" placeholder="观测原语查询关键字，如 内存不足" /></div>
-                      <div class="signal-row"><span class="signal-k">判定方式</span><el-select v-model="signalEditDraft.acquire.args.expectation.matcher.type" size="small"><el-option label="存在性 exists" value="exists" /><el-option label="关键字 keyword" value="keyword" /><el-option label="正则 regex" value="regex" /><el-option label="状态 state" value="state" /><el-option label="数值阈值 threshold" value="threshold" /><el-option label="差值 delta" value="delta" /><el-option label="趋势 trend" value="trend" /></el-select></div>
+                      <div class="signal-row"><span class="signal-k">判定方式</span><el-select v-model="signalEditDraft.acquire.args.expectation.matcher.type" size="small"><el-option label="存在性 exists" value="exists" /><el-option label="布尔值 boolean" value="boolean" /><el-option label="关键字 keyword" value="keyword" /><el-option label="正则 regex" value="regex" /><el-option label="状态 state" value="state" /><el-option label="数值阈值 threshold" value="threshold" /><el-option label="差值 delta" value="delta" /><el-option label="趋势 trend" value="trend" /></el-select></div>
                       <div class="signal-row"><span class="signal-k">期望方向</span><el-select v-model="signalEditDraft.acquire.args.expectation.matcher.expected" size="small"><el-option label="应出现（expected=true）" :value="true" /><el-option label="应消失（expected=false，负证据）" :value="false" /></el-select></div>
                       <div class="signal-row"><span class="signal-k">稳定窗口（秒）</span><el-input-number v-model="signalEditDraft.acquire.args.expectation.settle_seconds" :min="0" :max="3600" size="small" /></div>
                       <div class="signal-row"><span class="signal-k">复核窗口（秒）</span><el-input-number v-model="signalEditDraft.acquire.args.expectation.window_seconds" :min="60" :max="86400" size="small" /></div>
                       <div class="signal-row"><span class="signal-k">复核次数</span><el-input-number v-model="signalEditDraft.acquire.args.expectation.max_recheck" :min="0" :max="5" size="small" /></div>
                       <div class="signal-row"><span class="signal-k">目标宿主机</span><el-input v-model="signalEditDraft.acquire.args.host" size="small" placeholder="{{HOST}} 或 Inventory 规范化节点标识" /></div>
                       <div class="field-hint">条件型效果验证生产者：期望必须是结构化契约数据（封闭观测通道 + 封闭 matcher + 受限窗口），观测委派已批准的只读原语。三态判定 achieved/not_achieved/inconclusive 由平台合成，观察不足禁止坍缩为已恢复；不得作为 KBD 唯一生产者。编辑器不提供自由文本判定、命令或脚本字段。</div>
+                    </template>
+                    <template v-else-if="sigTool(signalEditDraft) === 'qkv_case_context'">
+                      <el-alert type="info" :closable="false" show-icon title="工单上下文信号不执行任何命令，也不产出 HOST、VM_ID 等目标变量。请在下方“语义入口画像”维护症状、正向锚点和补证据指引。" />
                     </template>
                     <div v-else class="signal-row"><span class="signal-k">关键字</span><el-input v-model="signalEditDraft.acquire.args.keyword" size="small" :placeholder="qkvKeywordPlaceholder(sigTool(signalEditDraft))" /></div>
                     <div v-if="sigTool(signalEditDraft) === 'qkv_alert'" class="field-hint">告警型关键字（acli alert get -k）：取自「分类基线 · 告警型故障」（标签以「告警」结尾），如 虚拟机CPU或内存占用过高告警、主机网口丢包告警、序列号过期告警。多个用逗号分隔</div>
@@ -5268,6 +5422,13 @@ onUnmounted(() => clearBatchPollTimer())
                             <span class="preview-v">{{ sigMatch(item.sig).direction === 'increasing' ? '单调递增' : sigMatch(item.sig).direction === 'decreasing' ? '单调递减' : sigMatch(item.sig).direction }}</span>
                           </div>
                         </template>
+                        <!-- 布尔值判定 boolean -->
+                        <template v-else-if="sigMatch(item.sig).type === 'boolean'">
+                          <div class="preview-item full-width">
+                            <span class="preview-k">判定逻辑</span>
+                            <span class="preview-v">将第一步取得的布尔值与期望结论比较</span>
+                          </div>
+                        </template>
                         <!-- 存在性判定 exists -->
                         <template v-else-if="sigMatch(item.sig).type === 'exists'">
                           <div class="preview-item full-width">
@@ -5442,7 +5603,7 @@ onUnmounted(() => clearBatchPollTimer())
                     :match="signalEditDraft.match"
                     :produces="signalEditDraft.orchestrate.produces || []"
                     :allowed-matcher-types="sigTool(signalEditDraft) === 'qfk_log'
-                      ? ['keyword', 'regex', 'state', 'threshold', 'delta', 'trend', 'exists']
+                      ? ['keyword', 'regex', 'state', 'boolean', 'threshold', 'delta', 'trend', 'exists']
                       : undefined"
                     @update:mode="setQfkOutputMode"
                     @update:match="setQfkMatch"
@@ -6244,6 +6405,39 @@ onUnmounted(() => clearBatchPollTimer())
 .kbd-review {
   min-width: 0;
   padding: 16px;
+}
+
+.semantic-entry-contract {
+  margin: 10px 0 14px;
+  padding: 12px;
+  border: 1px solid var(--el-color-info-light-5);
+  border-radius: 6px;
+  background: var(--el-color-info-light-9);
+}
+
+.semantic-entry-summary {
+  margin-top: 10px;
+}
+
+.semantic-entry-inputs {
+  margin-top: 12px;
+}
+
+.semantic-entry-inputs > strong {
+  display: inline-block;
+  margin-right: 8px;
+  font-size: 13px;
+}
+
+.semantic-entry-inputs .field-hint {
+  display: inline;
+  margin: 0;
+}
+
+.semantic-entry-inputs ul {
+  margin: 6px 0 0;
+  padding-left: 20px;
+  color: var(--el-text-color-regular);
 }
 
 .signal-edit-mode-bar {

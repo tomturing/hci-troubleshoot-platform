@@ -6,7 +6,7 @@
 >
 > 状态：设计定稿（Approved）  
 > 归档目录：`docs/solution/agent/02-架构设计/`  
-> 最近更新：2026-09-04
+> 最近更新：2026-09-08
 
 ---
 
@@ -15,7 +15,7 @@
 ### 0.1 第一性原理解构：单体 Agent 认知过载的物理必然性
 一个达到工业级可执行标准的“关键信号（Signal）”，在逻辑与工程上包含四个不可逾越的认知层级：
 1. **事实解构层**：从半结构化运维排障叙事中提取物理实体、现象描述与处置动作边界，确定信号的独立数量与观察维度；
-2. **工具映射层**：在平台已严格定义的 13 个采集探针词表（5 QKV 生产者 + 8 QFK 消费者）中，基于关键字、动作语义与分类基线实现精准二选一或分类收敛；
+2. **工具映射层**：在平台严格定义的 12 个自动建模能力（4 个可自动提出的 QKV + 8 个 QFK）中完成分类；第 13 个可执行能力 `qkv_effect` 由专家维护，非执行型 `qkv_case_context` 由服务端确定性补建；
 3. **结构建模层**：将自然语言指令准确翻译为具备可执行契约的 JSON（包含 `acquire.args` 标准命令/路径、`match` 模式规则、`extract` 取值规则、`orchestrate` 变量流转拓扑）；
 4. **拓扑与门禁层**：验证跨信号间变量生产与消费的 DAG 有向无环闭环性，确保命令符合 aCLI 白名单、无硬编码特定环境 UUID、无必然恒真的伪断言。
 
@@ -60,7 +60,7 @@
                              │  - 并发处理各 Signal Intent                                 │
                              │  - 三维判定：关键词(硬词) + 语义(动作) + 分类基线(kb_category)│
                              │  - 双重视角对抗审查（单信号局部 vs 全局上下文对抗）         │
-                             │  - 13 类封闭 Catalog 映射（5 QKV + 8 QFK + 无法分类）      │
+                             │  - 12 类自动建模 Catalog（4 QKV + 8 QFK + 无法分类）      │
                              │  - 异常落库：signal_failure_extraction (UNCLASSIFIED)      │
                              └──────────────────────────────┬──────────────────────────────┘
                                                             │
@@ -141,15 +141,14 @@
 ### 1.2 分类 Agent（属性与语义抽象）
 
 #### 职责定义
-针对计数 Agent 产出的每一个 `Signal Intent`，映射到平台严格封闭的 13 种信号采集器词表，给出高置信度的分类结果与分类证据。
+针对计数 Agent 产出的每一个 `Signal Intent`，映射到平台严格封闭的 12 种自动建模能力，给出高置信度的分类结果与分类证据。
 
-#### 封闭 Catalog 词表规范（修正事实错误：总计 13 种，非 14 种）
-- **前端生产者 QKV（5 种）**：
+#### 封闭 Catalog 词表规范（自动建模 12 种，可执行总能力 13 种）
+- **自动建模 QKV（4 种）**：
   1. `qkv_task`：前端任务查询（`acli task get`，产出 `HOST`, `VM`, `STATUS`, `ERRCODE_TRACING` 等）
   2. `qkv_alert`：平台异步告警查询（`acli alert get`，产出 `ALERT_TYPE`, `TARGET`, `HOST` 等）
   3. `qkv_dialog`：前端弹框文本复合检索（在 today/today-vt 日志检索弹框，产出 `REQUEST_ID`, `END`）
   4. `qkv_vm_console`：条件型视觉生产者（虚拟机控制台 VNC 截图，产出 `VM_CONSOLE_*`）
-  5. `qkv_effect`：条件型效果验证生产者（用于排障恢复后的状态复查，**严禁作为唯一生产者**）
 - **后端消费者 QFK（8 种）**：
   1. `qfk_log`：统一日志采集与判定（whitebox/blackbox/pod 日志检查）
   2. `qfk_system`：系统底层命令探针（`lsof`, `ps`, `df`, `lsblk`, `smartctl` 等）
@@ -159,6 +158,8 @@
   6. `qfk_storage`：存储领域探针（`asan disk list`, 存储池状态）
   7. `qfk_hardware`：硬件固件与传感器探针（IPMI、RAID 卡状态）
   8. `qfk_platform`：平台级集群状态探针
+- **专家维护的第 13 个可执行能力**：`qkv_effect`，用于操作后效果验证；分类/建模 Agent 不得从处置叙事自动生成。
+- **非执行型上下文**：`qkv_case_context`，由服务端在缺少强生产者且原文满足条件时确定性补建，不进入 Tool Catalog 或采集路由。
 - **特殊分类**：`unclassified`（无法分类，落库复盘）
 
 #### 判定逻辑与双向对抗审查加固
@@ -173,7 +174,7 @@
      - *动词优先律*：凡原文包含具体执行命令或日志文件名者，**强制裁决为 QFK**，全局上下文不得将其降级为 QKV；
      - *任务优先律*：前端现象中，`qkv_task` 与 `qkv_alert` 先验比例为 10:1。若未出现明确系统巡检/容量阈值告警特征，所有因操作引发的界面报错**默认归入 `qkv_task` 或 `qkv_dialog`，禁止泛滥使用 `qkv_alert`**。
 3. **异常持久化**：
-   - 无法归入上述 13 类的信号，打上 `unclassified` 标签，写入 `signal_failure_extraction` 表（`stage='classify', reason='UNCLASSIFIED'`）。
+   - 无法归入上述 12 类自动建模能力的信号，打上 `unclassified` 标签，写入 `signal_failure_extraction` 表（`stage='classify', reason='UNCLASSIFIED'`）。
 
 ---
 
@@ -231,8 +232,8 @@
 | Agent 阶段 | Prompt 注册名称 | Stage | Version | 核心输入占位符契约 (`expected_placeholders`) | 职责说明 |
 | :--- | :--- | :---: | :---: | :--- | :--- |
 | **计数 Agent** | `kbd_signal_count_v1` | `KEY` | `1.0` | `composite_text`, `steps_text` | 实体切分、角色解耦、数量提取与去重 |
-| **分类 Agent** | `kbd_signal_classify_v1` | `KEY` | `1.0` | `core_entity`, `evidence_raw`, `composite_text`, `steps_text`, `acquirer_catalog`, `category_baseline` | 双视角对抗分类、13 类 Catalog 映射 |
-| **建模 Agent** | `kbd_signal_model_v1` | `KEY` | `1.0` | `tool_name`, `core_entity`, `evidence_raw`, `shared_variables`, `best_practices`, `acli_catalog` | JSON 参数化建模、变量契约注入 |
+| **分类 Agent** | `kbd_signal_classify_v1` | `KEY` | `1.1` | `core_entity`, `evidence_raw`, `composite_text`, `steps_text`, `acquirer_catalog`, `category_baseline` | 双视角对抗分类、12 类自动建模 Catalog 映射 |
+| **建模 Agent** | `kbd_signal_model_v1` | `KEY` | `1.1` | `tool_name`, `core_entity`, `evidence_raw`, `shared_variables`, `best_practices`, `acli_catalog` | JSON 参数化建模、当前机器契约与变量契约注入 |
 | **验证 Agent** | `kbd_signal_verify_v1` | `KEY` | `1.0` | `signals_json`, `rejected_candidates`, `raw_count`, `kbd_context`, `gate_issues` | 全局对账、DAG 检查、门禁错误智能自愈 |
 
 ### 2.2 StrictPromptLoader 契约集成与热加载流程
@@ -300,23 +301,27 @@ CREATE TABLE IF NOT EXISTS signal_modeling_template (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
-COMMENT ON TABLE signal_modeling_template IS '信号类型建模标准模板库：定义 13 类信号的输入 Schema 与参数契约';
+COMMENT ON TABLE signal_modeling_template IS '信号类型建模标准模板库：描述 13 类可执行信号；机器契约以 shared 代码为准';
 
 -- 2. 信号建模最佳实践库 (Golden Few-Shot Dataset)
 CREATE TABLE IF NOT EXISTS signal_best_practice (
     id SERIAL PRIMARY KEY,
-    template_id INT REFERENCES signal_modeling_template(id) ON DELETE CASCADE,
+    template_id INT REFERENCES signal_modeling_template(id) ON DELETE SET NULL,
     tool_name VARCHAR(32) NOT NULL,              -- 工具名称 (冗余提升检索效率)
     pattern_category VARCHAR(64) NOT NULL,       -- 场景模式子类 (如 "任务失败超时", "日志阈值换算", "进程D状态卡死")
     source_kbd_id BIGINT REFERENCES kbd_entry(id) ON DELETE SET NULL, -- 溯源的已发布 KBD 实体 ID
     support_id VARCHAR(32),                      -- 案例 Support ID (如 18906, 39233)
+    source_revision INT,                         -- 发布动态资源修订号
+    source_checksum VARCHAR(64),                 -- 不可变发布包内容摘要（不含 sha256: 前缀）
+    signal_id VARCHAR(128),                      -- 发布修订内稳定 Signal ID
     raw_evidence TEXT NOT NULL,                  -- KBD 原始文本切片证据
     signal_json JSONB NOT NULL,                  -- 经过专家验证的标准 signals_json 完整片段
     design_notes TEXT NOT NULL,                  -- 专家设计要点与避坑说明
     completeness_score INT DEFAULT 10,           -- 规范与完整度评分 (0-10)
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (source_kbd_id, source_checksum, signal_id)
 );
 CREATE INDEX IF NOT EXISTS idx_signal_best_practice_tool ON signal_best_practice(tool_name) WHERE is_active = TRUE;
 COMMENT ON TABLE signal_best_practice IS '信号建模最佳实践库：沉淀已发布 KBD 中专家最终审核通过的黄金实例';
@@ -341,9 +346,9 @@ COMMENT ON TABLE signal_failure_extraction IS '信号抽取异常复盘日志表
 
 ---
 
-### 3.2 黄金最佳实践库（Seed 资产精选）
+### 3.2 黄金最佳实践库（发布生命周期资产）
 
-从 Staging 环境 23 个已发布 KBD 的 67 个专家修订信号中，提炼出覆盖高频核心场景的种子最佳实践（写入 `signal_best_practice`）：
+历史上曾从 Staging 环境已发布 KBD 中回灌冷启动样本；当前正式口径是由 KBD 发布生命周期自动维护：首次发布新增不可变示例，重新发布停用旧 checksum 并新增或重激活新版本，退回草稿、归档或停用则停用当前示例。示例不得依赖手工种子维持，也不得因模板目录删除而消失。
 
 #### 实践 1：`qkv_task` 标准任务生产者（来源：Case 18906）
 ```json
@@ -553,12 +558,12 @@ COMMENT ON TABLE signal_failure_extraction IS '信号抽取异常复盘日志表
 
 #### 具体任务清单
 1. **任务 1.1（Atlas 迁移脚本编写）**：创建 `database/atlas-migrations/` 数据库迁移文件，定义 `signal_modeling_template`、`signal_best_practice`、`signal_failure_extraction` 三张表及索引结构。
-2. **任务 1.2（种子数据抽取脚本）**：编写 `scripts/seed_signal_best_practices.py`，遍历 staging 数据库中 23 个已发布 KBD 的 `kbd_revision` 终稿，自动解析提取符合规范的黄金信号，写入 `signal_best_practice` 表。
+2. **任务 1.2（历史数据回灌与持续同步）**：`scripts/seed_signal_best_practices.py` 只负责一次性回灌当前全部已发布 KBD；日常由发布/停用事务自动维护最佳实践版本。
 3. **任务 1.3（DAO 与仓储层集成）**：在 `backend/kb-service/app/services/` 中实现模板与实践库的数据查询缓存（内存 TTL 60 秒，支持快速检索）。
 
 #### 验收标准
 - [ ] 数据库迁移执行成功，无任何 SQL 语法错误；
-- [ ] `signal_modeling_template` 完整登记 13 类工具的标准 Schema；
+- [ ] `signal_modeling_template` 覆盖 13 类可执行能力的描述性模板，运行时机器 Schema 由 shared 代码覆盖旧数据库快照；
 - [ ] `signal_best_practice` 包含不少于 30 个有效种子实例，完整覆盖已发布 KBD 中的 7 类活跃工具；
 - [ ] 单元测试验证 `BestPracticeService.get_examples_by_tool("qfk_log")` 返回耗时 < 5ms。
 

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 scripts/seed_signal_best_practices.py
-从已发布的 23 个 KBD 中清洗提取专家黄金信号，初始化注入到 signal_best_practice 表。
+从当前全部已发布 KBD 中回灌专家黄金信号，初始化 signal_best_practice 表。
 支持 --dry-run 查看待入库资产。
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -23,10 +24,13 @@ sys.path.insert(0, os.path.join(PROJECT_ROOT, "backend"))
 sys.path.insert(0, KB_SERVICE_DIR)
 
 
-from app.models.signal_assets import SignalBestPractice, SignalModelingTemplate
-from shared.database.postgres import DatabaseManager
-from sqlalchemy import select, text
-from uuid import uuid4
+from uuid import uuid4  # noqa: E402
+
+from app.models.signal_assets import SignalModelingTemplate  # noqa: E402
+from app.services.signal_asset_service import SignalAssetService  # noqa: E402
+from shared.database.postgres import DatabaseManager  # noqa: E402
+from shared.schemas.acquirer_args import EXECUTABLE_SIGNAL_TOOLS  # noqa: E402
+from sqlalchemy import select, text  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("seed_signal_best_practices")
@@ -91,7 +95,7 @@ async def main():
         templates = {t.tool_name: t.id for t in template_res.scalars().all()}
         logger.info("已加载 %d 个信号模板定义: %s", len(templates), list(templates.keys()))
 
-        # 2. 查询已发布的 23 个 KBD
+        # 2. 查询当前全部已发布 KBD
         kbd_res = await session.execute(
             text("""
             SELECT id, support_id, title, problem_description, alert_info, steps_text, signals_json
@@ -114,12 +118,12 @@ async def main():
             if not signals:
                 continue
 
-            for idx, sig in enumerate(signals):
+            for sig in signals:
                 if not isinstance(sig, dict):
                     continue
                 acquire = sig.get("acquire") or {}
                 tool = acquire.get("tool")
-                if not tool:
+                if tool not in EXECUTABLE_SIGNAL_TOOLS:
                     continue
 
                 template_id = templates.get(tool)
@@ -152,15 +156,20 @@ async def main():
             print(f"\nTotal extracted: {len(instances_to_create)}")
             return
 
-        # 3. 实际写入数据库
-        # 先清空旧的种子数据（如果存在）
-        await session.execute(text("DELETE FROM signal_best_practice WHERE source_kbd_id IS NOT NULL;"))
-        for inst in instances_to_create:
-            bp = SignalBestPractice(**inst)
-            session.add(bp)
+        # 3. 实际写入数据库：复用发布生命周期服务。旧修订只停用、不删除，脚本
+        # 可重复执行且不会破坏历史追溯。
+        for kbd in kbds:
+            canonical = json.dumps(kbd.signals_json or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            checksum = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            await SignalAssetService.sync_published_kbd_best_practices(
+                session,
+                kbd=kbd,
+                source_revision=0,
+                source_checksum=checksum,
+            )
 
         await session.commit()
-        logger.info("成功将 %d 个黄金最佳实践信号入库到 signal_best_practice 表！", len(instances_to_create))
+        logger.info("成功同步 %d 个黄金最佳实践信号；历史修订已保留！", len(instances_to_create))
 
 
 if __name__ == "__main__":

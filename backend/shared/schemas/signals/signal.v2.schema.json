@@ -32,9 +32,193 @@
     },
     "publish_validation": {
       "$ref": "#/definitions/publishValidation"
+    },
+    "semantic_entry_profile": {
+      "$ref": "#/definitions/semanticEntryProfile"
     }
   },
   "definitions": {
+    "semanticEntryProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "diagnosis_capability",
+        "canonical_symptoms",
+        "positive_anchors"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "diagnosis_capability": {
+          "type": "string",
+          "enum": [
+            "executable",
+            "guidance_only",
+            "capability_gap"
+          ]
+        },
+        "canonical_symptoms": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "positive_anchors": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "exclusion_anchors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scope": {
+          "type": [
+            "string",
+            "array"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "manual_evidence_request": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "clarifying_questions": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "source_refs": {
+          "type": "array",
+          "maxItems": 30,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "source_evidence": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "field_path",
+              "source_ref",
+              "quote",
+              "source_sha256"
+            ],
+            "properties": {
+              "field_path": {
+                "type": "string",
+                "pattern": "^(canonical_symptoms|positive_anchors|exclusion_anchors)\\.[0-9]+$"
+              },
+              "source_ref": {
+                "enum": [
+                  "problem_description",
+                  "alert_info",
+                  "steps_text"
+                ]
+              },
+              "quote": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "source_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          }
+        },
+        "routing_examples": {
+          "type": "array",
+          "maxItems": 30,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "description",
+              "expected_match"
+            ],
+            "properties": {
+              "description": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 16000
+              },
+              "expected_match": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "applicability": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "product": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "product_version": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "component": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "object_type": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "operation": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
     "rejectedCandidate": {
       "type": "object",
       "required": [
@@ -108,6 +292,7 @@
             "qkv_alert",
             "qkv_task",
             "qkv_dialog",
+            "qkv_case_context",
             "qkv_vm_console",
             "qkv_effect",
             "qfk_log",
@@ -178,6 +363,25 @@
             "properties": {
               "args": {
                 "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qkv_dialog.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "qkv_case_context"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qkv_case_context.schema.json"
               }
             }
           }

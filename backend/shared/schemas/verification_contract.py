@@ -101,11 +101,7 @@ def reconcile_verification_contract(document: dict[str, Any]) -> tuple[dict[str,
         previous_minimum = 0
     minimum_should = min(previous_minimum, len(policy["should"]))
 
-    contract = {
-        key: copy.deepcopy(value)
-        for key, value in previous_contract.items()
-        if key != "evidence_policy"
-    }
+    contract = {key: copy.deepcopy(value) for key, value in previous_contract.items() if key != "evidence_policy"}
     contract.setdefault("schema_version", 1)
     contract["evidence_policy"] = {
         **policy,
@@ -145,7 +141,9 @@ def expert_editor_issues(document: dict[str, Any]) -> list[dict[str, str]]:
         return []
     policy = contract["evidence_policy"]
     issues: list[dict[str, str]] = []
-    if signals and not (policy.get("must") or []):
+    from shared.schemas.semantic_entry import capability_of
+
+    if signals and not (policy.get("must") or []) and capability_of(document) != "guidance_only":
         issues.append(
             {
                 "code": "NO_MUST_SIGNAL",

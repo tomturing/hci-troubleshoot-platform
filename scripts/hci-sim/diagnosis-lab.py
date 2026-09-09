@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -13,6 +14,7 @@ import shutil
 import socket
 import stat
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -23,10 +25,14 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "backend"))
+
+from shared.schemas.signal_output import derive_signal_requires  # noqa: E402
 RUN_ROOT = ROOT / ".hci-sim-run" / "lab"
 STATE_ROOT = ROOT / ".hci-sim-state" / "lab"
-PROFILE = ROOT / "hci_sim" / "testdata" / "sample-suites" / "diagnosis-signal-matrix-v1.json"
+PROFILE = Path(os.getenv("HCI_SIM_SCENARIO_PROFILE", str(ROOT / "hci_sim" / "testdata" / "sample-suites" / "diagnosis-signal-matrix-v1.json"))).resolve()
 IMAGE = os.getenv("HCI_SIM_IMAGE", "hci-sim:diagnosis-lab")
+PLATFORM = "linux/amd64"  # 验证包中的采集器固定为 amd64，仿真命令也必须使用同一架构。
 CAPABILITIES_URL = os.getenv("HCI_SIM_CAPABILITIES_URL", "http://127.0.0.1:18004/api/kb/hci-sim/capabilities")
 INTERNAL_TOKEN = os.getenv("INTERNAL_API_TOKEN", "hci-dev-internal-token")
 VALID_VARIANTS = {
@@ -40,15 +46,34 @@ VALID_VARIANTS = {
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,96}$")
 
 
-def run(command: list[str], *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+def run(
+    command: list[str],
+    *,
+    capture: bool = False,
+    check: bool = True,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    child_env = os.environ.copy()
+    child_env.update(env_overrides or {})
+    result = subprocess.run(
         command,
         cwd=ROOT,
-        check=check,
+        check=False,
         text=True,
+        env=child_env,
         stdout=subprocess.PIPE if capture else None,
         stderr=subprocess.PIPE if capture else None,
     )
+    if check and result.returncode:
+        # CalledProcessError 会把完整 argv（含令牌与租约签名密钥）打印到终端。
+        detail = result.stderr or "请查看上方工具错误输出"
+        for index, argument in enumerate(command):
+            if argument in {"--api-token", "--lease-key"} and index + 1 < len(command):
+                detail = detail.replace(command[index + 1], "[REDACTED]")
+            if argument.startswith(("INTERNAL_API_TOKEN=", "HCI_SIM_LEASE_HMAC_KEY=")):
+                detail = detail.replace(argument.split("=", 1)[1], "[REDACTED]")
+        raise SystemExit(f"{command[0]} 执行失败（退出码 {result.returncode}）：{detail}")
+    return result
 
 
 def request_json(url: str) -> dict[str, Any]:
@@ -69,6 +94,11 @@ def profile() -> dict[str, Any]:
 
 def suite_ids() -> list[str]:
     return sorted(profile()["cases"])
+
+
+def profile_case(document: dict[str, Any], scenario: str) -> dict[str, Any] | None:
+    profile_id = (document.get("support_aliases") or {}).get(scenario, scenario)
+    return document["cases"].get(profile_id)
 
 
 def validate_name(name: str, label: str) -> str:
@@ -137,6 +167,7 @@ def free_port(start: int, end: int) -> int:
 
 def build_image() -> None:
     digest = hashlib.sha256()
+    digest.update(PLATFORM.encode())
     source_root = ROOT / "hci_sim"
     for path in sorted(item for item in source_root.rglob("*") if item.is_file()):
         digest.update(str(path.relative_to(source_root)).encode())
@@ -152,7 +183,7 @@ def build_image() -> None:
     if inspected.returncode == 0 and inspected.stdout.strip() == source_digest:
         return
     run([
-        "docker", "build", "--quiet", "--label", f"com.hci.diagnosis-lab.source-sha256={source_digest}",
+        "docker", "build", "--platform", PLATFORM, "--quiet", "--label", f"com.hci.diagnosis-lab.source-sha256={source_digest}",
         "-t", IMAGE, "-f", str(ROOT / "hci_sim" / "Dockerfile"), str(ROOT),
     ])
 
@@ -174,7 +205,8 @@ def capability(scenario: str) -> dict[str, Any]:
 
 
 def check_scenario(scenario: str) -> dict[str, Any]:
-    expected = profile()["cases"].get(scenario)
+    document = profile()
+    expected = profile_case(document, scenario)
     if expected is None:
         raise SystemExit(f"场景画像不存在：{scenario}")
     result = capability(scenario)
@@ -184,8 +216,9 @@ def check_scenario(scenario: str) -> dict[str, Any]:
         message = "；".join(f"{item.get('code')}: {item.get('message')}" for item in gaps)
         raise SystemExit(f"场景尚不可启动：{message or result.get('status')}")
     metadata = resolved.get("metadata") or {}
-    if metadata.get("sample_suite") != "diagnosis-signal-matrix-v1":
-        raise SystemExit("KBD 不属于 diagnosis-signal-matrix-v1 样例集")
+    supported_suites = {document["sample_suite"], *(document.get("compatible_sample_suites") or [])}
+    if metadata.get("sample_suite") not in supported_suites:
+        raise SystemExit("KBD 不属于当前场景画像的样例集")
     signal_ids = {item["signal_id"] for item in resolved.get("synthetic_routes") or []}
     missing = set(expected["signals"]) - signal_ids
     extra = signal_ids - set(expected["signals"])
@@ -207,7 +240,9 @@ def ensure_host_key(run_dir: Path) -> Path:
 
 
 def scenario_card(run_dir: Path, state: dict[str, Any], connection: dict[str, Any]) -> None:
-    card = profile()["cases"][state["scenario"]]
+    card = profile_case(profile(), state["scenario"])
+    if card is None:
+        raise SystemExit(f"场景画像不存在：{state['scenario']}")
     commands = "\n".join(f"- `{command}`" for command in connection.get("recommended_commands") or [])
     text = f"""# Diagnosis Sample Lab（诊断样例实验室）场景卡
 
@@ -267,35 +302,67 @@ def up(args: argparse.Namespace) -> None:
     lab_run_id = f"lab-{instance}-{int(time.time())}"
     lease_key = secrets.token_hex(32)
     compiler_url = container_capabilities_url()
+    docker_network = os.getenv("HCI_SIM_DOCKER_NETWORK", "").strip()
+    if docker_network:
+        validate_name(docker_network, "HCI_SIM_DOCKER_NETWORK")
+    database_url = os.getenv("HCI_SIM_DATABASE_URL", "").strip()
+    connection_port = getattr(args, "connection_port", None) or ssh_port
     bootstrap = run(
         [
-            "docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}",
+            "docker", "run", "--rm", "--platform", PLATFORM, "--user", f"{os.getuid()}:{os.getgid()}",
             "--add-host", "host.docker.internal:host-gateway",
-            "-e", f"HCI_SIM_CAPABILITIES_URL={compiler_url}", "-e", f"INTERNAL_API_TOKEN={INTERNAL_TOKEN}",
-            "-e", f"HCI_SIM_LEASE_HMAC_KEY={lease_key}", "-v", f"{run_dir}:/run/hci-sim",
+            "-e", f"HCI_SIM_CAPABILITIES_URL={compiler_url}", "-e", "INTERNAL_API_TOKEN",
+            "-e", "HCI_SIM_LEASE_HMAC_KEY", "-v", f"{run_dir}:/run/hci-sim",
             "-v", f"{PROFILE}:/etc/hci-sim/scenario-profile.json:ro", IMAGE, "bootstrap",
-            "--kbd-id", scenario, "--capabilities-url", compiler_url, "--api-token", INTERNAL_TOKEN,
-            "--lease-key", lease_key, "--output-dir", "/run/hci-sim", "--connection-host", args.host,
-            "--connection-port", str(ssh_port), "--ttl", args.ttl, "--variant", args.variant,
+            "--kbd-id", scenario, "--capabilities-url", compiler_url,
+            "--output-dir", "/run/hci-sim", "--connection-host", args.host,
+            "--connection-port", str(connection_port), "--ttl", args.ttl, "--variant", args.variant,
             "--scenario-profile", "/etc/hci-sim/scenario-profile.json",
         ],
         capture=True,
+        env_overrides={"INTERNAL_API_TOKEN": INTERNAL_TOKEN, "HCI_SIM_LEASE_HMAC_KEY": lease_key},
     )
     (run_dir / "bootstrap.json").write_text(bootstrap.stdout, encoding="utf-8")
     connection = json.loads((run_dir / "connection.json").read_text(encoding="utf-8"))
-    run(
-        [
-            "docker", "run", "-d", "--name", container,
+    virtual_node_id = str(connection.get("virtual_node_id") or "").strip()
+    if not SAFE_NAME.fullmatch(virtual_node_id):
+        raise SystemExit("hci-sim bootstrap 未返回合法 virtual_node_id")
+    runtime_command = [
+            "docker", "run", "-d", "--platform", PLATFORM, "--name", container,
+            "--hostname", virtual_node_id,
             "--user", f"{os.getuid()}:{os.getgid()}",
             "-p", f"127.0.0.1:{ssh_port}:2222", "-p", f"127.0.0.1:{http_port}:8080",
             "--label", "com.hci.diagnosis-lab=true", "--label", f"com.hci.diagnosis-lab.instance={instance}",
             "-e", "HCI_SIM_FIXTURE_MANIFEST=/run/hci-sim/fixture-manifest.json",
             "-e", "HCI_SIM_HOST_KEY_FILE=/run/hci-sim/ssh_host_key", "-e", "HCI_SIM_SSH_LISTEN=:2222",
-            "-e", "HCI_SIM_HTTP_LISTEN=:8080", "-e", f"HCI_SIM_LEASE_HMAC_KEY={lease_key}",
+            "-e", f"HCI_SIM_SSH_HOST={args.host}", "-e", f"HCI_SIM_SSH_PUBLIC_PORT={connection_port}",
+            "-e", "HCI_SIM_HTTP_LISTEN=:8080", "-e", "HCI_SIM_LEASE_HMAC_KEY",
+            "-e", "HCI_SIM_CONTROL_TOKEN", "-e", "HCI_SIM_AUTHORITY_SCOPE=dev_golden",
+            "-e", "HCI_SIM_RELEASE_PROFILE=internal_fast",
             "-e", f"HCI_SIM_FIXTURE_VARIANT={args.variant}", "-e", f"HCI_SIM_LAB_RUN_ID={lab_run_id}",
             "-v", f"{run_dir}:/run/hci-sim:ro", IMAGE,
-        ],
+        ]
+    if docker_network:
+        runtime_command[5:5] = ["--network", docker_network]
+    runtime_environment = {
+        "HCI_SIM_LEASE_HMAC_KEY": lease_key,
+        "HCI_SIM_CONTROL_TOKEN": INTERNAL_TOKEN,
+    }
+    if database_url:
+        # 完整在线 Agent 仿真必须让 conversation-service 从持久化 TestRun
+        # 读取环境上下文；无数据库模式只适合 SSH/命令冒烟。
+        runtime_command[-1:-1] = [
+            "-e", "HCI_SIM_DATABASE_URL",
+            "-e", "HCI_SIM_DATABASE_REQUIRED=true",
+            "-e", "HCI_SIM_CONTROLPLANE_REGISTRY=postgres",
+            "-e", "HCI_SIM_ALLOW_SYNTHETIC_PUBLISH=true",
+            "-e", "HCI_SIM_BUNDLE_OBJECT_DIR=/tmp/hci-sim-bundles",
+        ]
+        runtime_environment["HCI_SIM_DATABASE_URL"] = database_url
+    run(
+        runtime_command,
         capture=True,
+        env_overrides=runtime_environment,
     )
     ready = False
     for _ in range(50):
@@ -303,7 +370,7 @@ def up(args: argparse.Namespace) -> None:
             with urllib.request.urlopen(f"http://127.0.0.1:{http_port}/readyz", timeout=1):
                 ready = True
                 break
-        except (urllib.error.URLError, TimeoutError):
+        except (urllib.error.URLError, TimeoutError, http.client.HTTPException, ConnectionError):
             time.sleep(0.2)
     if not ready:
         capture_container_logs(run_dir, container)
@@ -316,6 +383,8 @@ def up(args: argparse.Namespace) -> None:
         "http_port": http_port, "created_at": datetime.now(UTC).isoformat(), "kbd_revision": resolved["kbd_revision"],
         "kbd_checksum": resolved["kbd_checksum"], "tool_contract_revision": resolved["tool_contract_revision"],
         "bundle_digest": connection["bundle_digest"], "connection_file": str(run_dir / "connection.json"),
+        "virtual_node_id": virtual_node_id,
+        "database_configured": bool(database_url), "docker_network": docker_network or None,
     }
     atomic_json(state_file(instance), state)
     scenario_card(run_dir, state, connection)
@@ -358,7 +427,7 @@ def sync_resources(args: argparse.Namespace) -> None:
 def list_scenarios(_: argparse.Namespace) -> None:
     document = profile()
     try:
-        remote = request_json(f"{CAPABILITIES_URL}?sample_suite=diagnosis-signal-matrix-v1")
+        remote = request_json(f"{CAPABILITIES_URL}?sample_suite={urllib.parse.quote(document['sample_suite'])}")
         by_id = {item["support_id"]: item for item in remote.get("results") or []}
     except SystemExit:
         by_id = {}
@@ -497,6 +566,13 @@ def offline_run(args: argparse.Namespace) -> None:
     if not re.fullmatch(r"[0-9a-f]{64}", args.fingerprint):
         raise SystemExit("FINGERPRINT 必须是 64 位小写十六进制 SHA-256")
     run_dir = instance_dir(args.instance)
+    virtual_node_id = str(state.get("virtual_node_id") or "").strip()
+    if not SAFE_NAME.fullmatch(virtual_node_id):
+        # 兼容修复前已经创建但尚未执行离线采集的实验室实例。
+        connection = json.loads(Path(state["connection_file"]).read_text(encoding="utf-8"))
+        virtual_node_id = str(connection.get("virtual_node_id") or "").strip()
+    if not SAFE_NAME.fullmatch(virtual_node_id):
+        raise SystemExit("实验室实例缺少合法 virtual_node_id，拒绝模拟节点身份")
     offline_dir = run_dir / "offline-inbox" / f"run-{int(time.time())}"
     bundle_dir = offline_dir / "bundle"
     output_dir = offline_dir / "plaintext"
@@ -506,7 +582,7 @@ def offline_run(args: argparse.Namespace) -> None:
     build_image()
     offline_manifest = offline_dir / "offline-fixture-manifest.json"
     run([
-        "docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}",
+        "docker", "run", "--rm", "--platform", PLATFORM, "--user", f"{os.getuid()}:{os.getgid()}",
         "-v", f"{bundle}:/input/bundle.zip:ro", "-v", f"{run_dir}:/run/hci-sim", IMAGE,
         "offline-manifest", "--verification-bundle", "/input/bundle.zip", "--online-manifest",
         "/run/hci-sim/fixture-manifest.json", "--output", f"/run/hci-sim/{offline_manifest.relative_to(run_dir)}",
@@ -515,6 +591,7 @@ def offline_run(args: argparse.Namespace) -> None:
     output_package = run_dir / "offline-output" / f"{args.instance}-{int(time.time())}.hci-eb"
     result = run([
         "docker", "run", "--rm", "--platform", "linux/amd64", "--network", "none",
+        "--hostname", virtual_node_id,
         "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--user", f"{os.getuid()}:{os.getgid()}",
         "-e", f"HCI_SIM_FIXTURE_VARIANT={state['variant']}", "-e", f"HCI_SIM_LAB_RUN_ID={state['lab_run_id']}",
         "-e", "HCI_SIM_FIXTURE_MANIFEST=/scenario/offline-fixture-manifest.json",
@@ -522,7 +599,7 @@ def offline_run(args: argparse.Namespace) -> None:
         "-v", f"{offline_dir}:/scenario:ro", "-v", f"{bundle_dir}:/bundle:ro", "-v", f"{output_dir}:/plaintext",
         "-v", f"{output_package.parent}:/output", "--entrypoint", "/bundle/hci-collect-linux-amd64", IMAGE,
         "--expected-root-fingerprint", args.fingerprint, "--bundle-dir", "/bundle", "--output-dir", "/plaintext",
-        "--output", f"/output/{output_package.name}", "--yes",
+        "--output", f"/output/{output_package.name}", "--yes", "--cleanup-plaintext",
     ], check=False)
     append_audit(
         run_dir, "offline.collection", lab_run_id=state["lab_run_id"], bundle_sha256=hashlib.sha256(bundle.read_bytes()).hexdigest(),
@@ -546,7 +623,13 @@ def contract_smoke(_: argparse.Namespace) -> None:
     if set(by_id) != set(document["cases"]):
         raise SystemExit(f"五篇 KBD 与场景画像不一致：kbd={sorted(by_id)} profile={sorted(document['cases'])}")
     for support_id, signals_document in by_id.items():
-        expected = {item["id"] for item in signals_document["signals"]}
+        # qkv_case_context 是 KBD 候选入口，不是 hci-sim 的在线/离线执行
+        # fixture，更不能要求它拥有 positive/negative 命令输出。
+        expected = {
+            item["id"]
+            for item in signals_document["signals"]
+            if (item.get("acquire") or {}).get("tool") != "qkv_case_context"
+        }
         actual = set(document["cases"][support_id]["signals"])
         if expected != actual:
             raise SystemExit(f"{support_id} Signal 漂移：kbd={sorted(expected)} profile={sorted(actual)}")
@@ -554,7 +637,7 @@ def contract_smoke(_: argparse.Namespace) -> None:
         required = {
             variable
             for signal in signals_document["signals"]
-            for variable in re.findall(r"\{\{([A-Z][A-Z0-9_]*)\}\}", json.dumps(signal, ensure_ascii=False))
+            for variable in derive_signal_requires(signal)
         }
         missing = required - set(variables)
         if missing:
@@ -562,6 +645,26 @@ def contract_smoke(_: argparse.Namespace) -> None:
         for signal_id, outputs in document["cases"][support_id]["signals"].items():
             if not isinstance(outputs.get("positive_output"), str) or not isinstance(outputs.get("negative_output"), str):
                 raise SystemExit(f"{support_id}/{signal_id} 缺少正/负场景输出")
+    semantic_scenarios = document.get("semantic_entry_scenarios")
+    if not isinstance(semantic_scenarios, dict) or set(semantic_scenarios) != {
+        "executable_after_strong_no_match", "guidance_only_after_strong_no_match",
+        "source_unavailable_fail_closed", "exclusion_anchor_rejected",
+    }:
+        raise SystemExit("语义入口仿真场景不完整")
+    for name, scenario in semantic_scenarios.items():
+        if not isinstance(scenario, dict) or scenario.get("strong_producer_status") not in {
+            "no_match", "source_unavailable",
+        }:
+            raise SystemExit(f"语义入口场景无效：{name}")
+        candidate = scenario.get("candidate")
+        required = {
+            "case_id", "case_context", "expected_online_decision", "expected_online_reason",
+            "expected_offline_decision", "expected_offline_eligible",
+        }
+        if required - set(scenario) or not isinstance(candidate, dict):
+            raise SystemExit(f"语义入口场景缺少可执行断言：{name}")
+        if candidate.get("diagnosis_capability") not in {"executable", "guidance_only", "capability_gap"}:
+            raise SystemExit(f"语义入口场景能力无效：{name}")
     print(f"PASS sample_suite={document['sample_suite']} cases={len(by_id)} variants={len(VALID_VARIANTS)}")
 
 
@@ -578,6 +681,11 @@ def parser() -> argparse.ArgumentParser:
     up_parser.add_argument("--instance")
     up_parser.add_argument("--variant", default="positive")
     up_parser.add_argument("--host", default=os.getenv("HCI_SIM_CONNECTION_HOST", "127.0.0.1"))
+    up_parser.add_argument(
+        "--connection-port",
+        type=int,
+        help="写入连接租约的 SSH 端口；省略时使用宿主机随机映射端口",
+    )
     up_parser.add_argument("--ttl", default="2h")
     up_parser.set_defaults(handler=up)
     sync = commands.add_parser("sync-resources")

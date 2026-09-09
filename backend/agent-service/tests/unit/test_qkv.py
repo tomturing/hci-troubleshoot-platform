@@ -72,6 +72,22 @@ class TestFrontendSignalValidation:
         )
         assert sig.output_processing[0]["mode"] == "assert"
 
+    def test_signal_v2_preserves_reviewed_keyword_verbatim(self):
+        sig = qkv_load({
+            "acquire": {
+                "tool": "qkv_alert",
+                "args": {"keyword": "硬件温度异常告警", "limit": 50, "timeout": 60},
+            },
+            "orchestrate": {"produces": []},
+        })
+
+        assert sig.keyword == "硬件温度异常告警"
+
+    def test_legacy_flat_signal_keeps_suffix_cleanup_compatibility(self):
+        sig = qkv_load({"query": "alert", "keyword": "硬件温度异常告警", "limit": 50})
+
+        assert sig.keyword == "硬件温度异常"
+
     def test_qkv_output_processing_rejects_script_fields(self):
         with pytest.raises(ValidationError):
             qkv_load(
@@ -113,6 +129,35 @@ async def test_qkv_command_build():
             policy="auto",
             exec_id=None,
         )
+
+
+@pytest.mark.asyncio
+async def test_signal_v2_command_matches_published_resolution_route_key():
+    signal = qkv_load({
+        "acquire": {
+            "tool": "qkv_alert",
+            "args": {"keyword": "硬件温度异常告警", "limit": 50, "timeout": 60},
+        },
+        "orchestrate": {"produces": []},
+    })
+    mock_executor = AsyncMock()
+    mock_executor.execute.return_value = ExecResult(
+        stdout='{"data":[]}',
+        stderr="",
+        exit_code=0,
+        command="",
+        node="127.0.0.1",
+        duration_ms=1,
+        truncated=False,
+        risk_level=1,
+    )
+
+    with patch("app.tools.acli.executor._executor", mock_executor):
+        await qkv_exec(signal, conversation_id="test")
+
+    assert mock_executor.execute.await_args.kwargs["args"]["command"] == (
+        "acli --formatter json alert get -k '硬件温度异常告警' -l 50"
+    )
 
 
 @pytest.mark.asyncio
@@ -205,6 +250,7 @@ async def test_qkv_dialog_searches_master_logs_and_extracts_end_request_id_host(
         {
             "request_id": request_id,
             "end": "2026-07-30 10:01:02",
+            "date": "2026-07-30",
             "line": (f"/sf/log/today/api.log:[2026-07-30 10:01:02] 编辑显卡核心失败 request_id={request_id}:123"),
             "host": "172.28.24.1",
         }
@@ -820,6 +866,7 @@ async def test_qkv_to_variable_pool_auto_derives_date():
     agent._variable_pool = {}
     agent._variable_sources = {}
     agent._variable_pool_priority = {}
+    agent._variable_pool_conflicts = set()
     agent._tool_def_default = lambda tool, field: None
     agent._resolve_host_ip = AsyncMock(side_effect=lambda x, **kw: x)
     agent._ai_registry = MagicMock()

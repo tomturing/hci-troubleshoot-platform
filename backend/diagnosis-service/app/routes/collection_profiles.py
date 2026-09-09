@@ -3,6 +3,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, Response
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.auth import ActorContext, require_actor
 from app.dependencies import get_collection_profile_service
@@ -16,6 +17,37 @@ from app.services.collection_profile_service import CollectionProfileService
 
 router = APIRouter(prefix="/api/internal/collection-profiles", tags=["collection-profiles"])
 scenario_router = APIRouter(prefix="/api/diagnosis-scenarios", tags=["diagnosis-scenarios"])
+
+
+class SemanticAdviceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    category_id: str = Field(min_length=1, max_length=100)
+    description: str = Field(min_length=1, max_length=16000)
+    error_text: str = Field(default="", max_length=1000)
+    product: str = Field(default="HCI", max_length=120)
+    product_version: str = Field(default="", max_length=120)
+    component: str = Field(default="", max_length=120)
+    object_type: str = Field(default="", max_length=120)
+    operation: str = Field(default="", max_length=120)
+
+
+@scenario_router.get("/semantic-advice")
+async def list_semantic_advice_categories(
+    actor: Annotated[ActorContext, Depends(require_actor)],
+    service: Annotated[CollectionProfileService, Depends(get_collection_profile_service)],
+):
+    return await service.semantic_advice(actor=actor)
+
+
+@scenario_router.post("/semantic-advice")
+async def get_semantic_advice(
+    body: SemanticAdviceRequest,
+    actor: Annotated[ActorContext, Depends(require_actor)],
+    service: Annotated[CollectionProfileService, Depends(get_collection_profile_service)],
+):
+    return await service.semantic_advice(
+        actor=actor, category_id=body.category_id, context=body.model_dump(exclude={"category_id"})
+    )
 
 
 @scenario_router.get("", response_model=list[OfflineScenarioOptionResponse])

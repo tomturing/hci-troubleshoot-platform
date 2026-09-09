@@ -156,6 +156,30 @@ def test_numeric_matcher_threshold_accepts_canonical_variable_reference():
     assert derive_signal_requires({"acquire": {"tool": "qfk_system", "args": {}}, "match": matcher}) == ["THRESHOLD"]
 
 
+def test_qkv_output_processing_uses_local_name_not_runtime_alias():
+    signal = {
+        "acquire": {"tool": "qkv_task", "args": {}},
+        "orchestrate": {
+            "requires": [],
+            "produces": [{"name": "DESCRIPTION", "alias": "TASK_DETAIL", "path": "description"}],
+            "output_processing": [
+                {
+                    "mode": "derive",
+                    "input": "{{DESCRIPTION}}",
+                    "name": "ERROR_CODE",
+                    "type": "string",
+                    "extract": {"type": "feature", "feature": "error_code", "cardinality": "first"},
+                }
+            ],
+        },
+    }
+
+    assert derive_signal_requires(signal) == []
+
+    signal["orchestrate"]["output_processing"][0]["input"] = "{{TASK_DETAIL}}"
+    assert derive_signal_requires(signal) == ["TASK_DETAIL"]
+
+
 def test_numeric_matcher_rejects_arbitrary_string_threshold():
     extract = _text_extract(value_mode="number")
     matcher = {"type": "threshold", "operator": ">", "value": "80ms", "expected": True, "extract": extract}
@@ -765,7 +789,7 @@ def test_qfk_log_signals_with_different_includes_compile_to_distinct_commands():
                 "match": None,
                 "orchestrate": {
                     "phase": "diagnostic",
-                    "produces": [{"name": "VM", "path": "task.vm_id"}],
+                    "produces": [{"name": "VM", "path": "vm"}],
                 },
             },
             {
@@ -924,6 +948,27 @@ def test_vm_console_free_form_fields_are_rejected_by_schema():
 
     with pytest.raises(ValidationError):
         validate_signals_json(document)
+
+
+def test_qkv_produce_paths_reject_unexecutable_nested_and_fixed_output_drift():
+    task_document = {
+        "schema_version": 2,
+        "signals": [{
+            "id": "task",
+            "acquire": {"tool": "qkv_task", "args": {"keyword": "启动虚拟机"}},
+            "match": None,
+            "orchestrate": {"produces": [{"name": "VM_ID", "path": "task.vm_id"}]},
+        }],
+    }
+    with pytest.raises(ValidationError, match="扁平 JSON 字段"):
+        validate_signals_json(task_document)
+
+    console_document = _vm_console_document(
+        external_variables={"HOST": {"type": "string"}, "VM_ID": {"type": "string"}}
+    )
+    console_document["signals"][0]["orchestrate"]["produces"][0]["path"] = "screen_state"
+    with pytest.raises(ValidationError, match="固定产出契约|未注册原始字段"):
+        validate_signals_json(console_document)
 
 
 def test_vm_console_review_passes_with_external_targets():

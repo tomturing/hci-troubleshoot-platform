@@ -43,7 +43,7 @@ def _required(signal: dict[str, Any]) -> bool:
 def _names(items: Any) -> tuple[str, ...]:
     names: list[str] = []
     for item in items or []:
-        name = item.get("name") if isinstance(item, dict) else item
+        name = (item.get("alias") or item.get("name")) if isinstance(item, dict) else item
         if name:
             names.append(str(name).strip().lower())
     return tuple(sorted(set(names)))
@@ -207,11 +207,17 @@ def compile_signal_plan(
             if not tool:
                 errors.setdefault(kbd.id, []).append(f"{signal_id}: missing acquire.tool")
                 continue
+            if tool == "qkv_case_context":
+                # 已在候选集合确定阶段消费；绝不进入现场采集图或生成命令。
+                continue
             contract_error = _compile_tool_contract(tool, signal, checker=tool_contract_checker)
             if contract_error:
                 errors.setdefault(kbd.id, []).append(f"{signal_id}: {contract_error}")
                 continue
-            if phase == "solution":
+            # 诊断采集图只执行 diagnostic 阶段。solution 是处置动作，
+            # remediation 是处置完成后的效果复核；两者都不能在形成诊断结论前
+            # 被调度。效果验证契约仍会被发布门禁和离线编译器独立校验。
+            if phase in {"solution", "remediation"}:
                 continue
             required = _required(signal)
             evidence_role = _evidence_role(signal_id, signal, verification_policy)
@@ -224,6 +230,10 @@ def compile_signal_plan(
             requires.update(_names(derive_signal_requires(signal)))
             produces = set(_names(orchestrate.get("produces") or signal.get("produces")))
             if tool.startswith("qkv_"):
+                # 与发布门禁、在线变量池保持一致：END 是绝对时间，平台同时可用
+                # DATE 供 qfk_log 的自然日检索依赖图解锁。
+                if "end" in produces:
+                    produces.add("date")
                 produces.update(_names(processing_derived_variables(orchestrate.get("output_processing"))))
             ref_id = f"{kbd.id}/{revision}/{signal_id}"
             ref = SignalRef(

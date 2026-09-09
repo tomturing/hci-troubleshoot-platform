@@ -36,13 +36,19 @@ FROM nginx:alpine
 # 吸收 Alpine 安全仓库中已发布的基础包修复。
 RUN apk upgrade --no-cache
 
+# 官方 Nginx 的 IPv6 初始化脚本会调用 `apk manifest nginx`；部分本地 Docker/Alpine
+# 组合下该命令会卡住，使 Nginx 主进程永远无法启动。当前模板不依赖脚本自动改写
+# listen 指令，故单独移除它（保留上方安全升级层的可复用构建缓存）。
+RUN rm -f /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
+
 # 默认保持原始浏览器身份头；Docker Compose（本地容器编排）可在服务端覆盖为开发身份。
 # 值中的 Nginx 变量经过 envsubst 单次替换后保留给 Nginx 请求阶段解析。
 ENV ADMIN_API_AUTHORIZATION=\$http_authorization \
     ADMIN_API_TENANT_ID=\$http_x_tenant_id \
     ADMIN_API_ACTOR_ID=\$http_x_actor_id \
     API_GATEWAY_UPSTREAM=http://api-gateway:8000 \
-    DIAGNOSIS_SERVICE_UPSTREAM=http://diagnosis-service:8008
+    DIAGNOSIS_SERVICE_UPSTREAM=http://diagnosis-service:8008 \
+    TERMINAL_BRIDGE_UPSTREAM=http://host.docker.internal:9999
 
 COPY --from=build /app/admin/dist /usr/share/nginx/html
 COPY frontend/admin/nginx.conf /etc/nginx/templates/default.conf.template

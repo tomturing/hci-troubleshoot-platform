@@ -1,6 +1,6 @@
 """
 关键信号建模资产与异常复盘模型:
-- SignalModelingTemplate: 13 类信号的输入 Schema 与参数契约
+- SignalModelingTemplate: 13 类可执行信号的输入 Schema 与参数契约
 - SignalBestPractice: 专家最终审核通过的黄金实例 (Few-Shot 检索)
 - SignalFailureExtraction: 计数/分类/建模/验证各阶段异常抽取复盘表
 """
@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from shared.database.postgres import Base
-from sqlalchemy import ARRAY, BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import ARRAY, BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 
 
@@ -40,13 +40,24 @@ class SignalBestPractice(Base):
     """信号建模最佳实践库"""
 
     __tablename__ = "signal_best_practice"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_kbd_id",
+            "source_checksum",
+            "signal_id",
+            name="uq_signal_best_practice_source_checksum_signal",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    template_id = Column(Integer, ForeignKey("signal_modeling_template.id", ondelete="CASCADE"), nullable=True)
+    template_id = Column(Integer, ForeignKey("signal_modeling_template.id", ondelete="SET NULL"), nullable=True)
     tool_name = Column(String(32), nullable=False, index=True)
     pattern_category = Column(String(64), nullable=False)
     source_kbd_id = Column(BigInteger, ForeignKey("kbd_entry.id", ondelete="SET NULL"), nullable=True)
     support_id = Column(String(32), nullable=True)
+    source_revision = Column(Integer, nullable=True)
+    source_checksum = Column(String(64), nullable=True)
+    signal_id = Column(String(128), nullable=True)
     raw_evidence = Column(Text, nullable=False)
     signal_json = Column(JSONB, nullable=False, default=dict)
     design_notes = Column(Text, nullable=False, default="")

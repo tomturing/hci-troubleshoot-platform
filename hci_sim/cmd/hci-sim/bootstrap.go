@@ -91,10 +91,35 @@ type syntheticRoute struct {
 }
 
 type scenarioProfile struct {
-	SchemaVersion string                         `json:"schema_version"`
-	SampleSuite   string                         `json:"sample_suite"`
-	Variables     map[string]string              `json:"variables"`
-	Cases         map[string]scenarioCaseProfile `json:"cases"`
+	SchemaVersion          string                         `json:"schema_version"`
+	SampleSuite            string                         `json:"sample_suite"`
+	CompatibleSampleSuites []string                       `json:"compatible_sample_suites,omitempty"`
+	SupportAliases         map[string]string              `json:"support_aliases,omitempty"`
+	Variables              map[string]string              `json:"variables"`
+	Cases                  map[string]scenarioCaseProfile `json:"cases"`
+	// 语义入口测试声明只供上层断言使用，不生成命令、不改变 RouteKey 或消费者结果。
+	SemanticEntryScenarios map[string]json.RawMessage `json:"semantic_entry_scenarios,omitempty"`
+}
+
+func (p *scenarioProfile) caseFor(supportID string) (scenarioCaseProfile, bool) {
+	profileID := supportID
+	if alias := strings.TrimSpace(p.SupportAliases[supportID]); alias != "" {
+		profileID = alias
+	}
+	value, ok := p.Cases[profileID]
+	return value, ok
+}
+
+func (p *scenarioProfile) supportsSuite(sampleSuite string) bool {
+	if sampleSuite == p.SampleSuite {
+		return true
+	}
+	for _, compatible := range p.CompatibleSampleSuites {
+		if sampleSuite == compatible {
+			return true
+		}
+	}
+	return false
 }
 
 type scenarioCaseProfile struct {
@@ -278,10 +303,10 @@ func loadScenarioProfile(path string, resolved *resolvedKbd) (*scenarioProfile, 
 	if profile.SchemaVersion != "1.0" || profile.SampleSuite == "" {
 		return nil, errors.New("场景画像缺少 schema_version=1.0 或 sample_suite")
 	}
-	if expected := strings.TrimSpace(fmt.Sprint(resolved.Metadata["sample_suite"])); expected != "" && expected != profile.SampleSuite {
+	if expected := strings.TrimSpace(fmt.Sprint(resolved.Metadata["sample_suite"])); expected != "" && !profile.supportsSuite(expected) {
 		return nil, fmt.Errorf("场景画像 sample_suite=%s 与 KBD metadata=%s 不一致", profile.SampleSuite, expected)
 	}
-	caseProfile, ok := profile.Cases[resolved.SupportID]
+	caseProfile, ok := profile.caseFor(resolved.SupportID)
 	if !ok {
 		return nil, fmt.Errorf("场景画像未定义已发布 KBD %s", resolved.SupportID)
 	}
@@ -311,10 +336,14 @@ func buildScenarioManifest(resolved *resolvedKbd, profile *scenarioProfile, node
 		for key, value := range profile.Variables {
 			variables[key] = value
 		}
-		caseProfile = profile.Cases[resolved.SupportID]
+		caseProfile, _ = profile.caseFor(resolved.SupportID)
 		for key, value := range caseProfile.Variables {
 			variables[key] = value
 		}
+	}
+	environment := environmentScopeFromContract(resolved.VerificationContract)
+	if strings.TrimSpace(caseProfile.ProductVersion) != "" {
+		environment.Versions = []string{strings.TrimSpace(caseProfile.ProductVersion)}
 	}
 	// 场景画像是显式的专家输入，缺值继续严格阻断；Bundle 工厂的无画像路径
 	// 才使用受控默认值，避免把画像配置错误悄悄掩盖掉。
@@ -336,7 +365,7 @@ func buildScenarioManifest(resolved *resolvedKbd, profile *scenarioProfile, node
 			} else {
 				renderedArgv[argvIndex] = renderProfileVariables(value, variables)
 			}
-			if strings.Contains(renderedArgv[argvIndex], "{{") || strings.Contains(renderedArgv[argvIndex], "}}") {
+			if strings.Contains(renderedArgv[argvIndex], "{{") {
 				return fixture.Manifest{}, fmt.Errorf("capability_gap: Signal %s 缺少场景变量: %s", route.SignalID, value)
 			}
 		}
@@ -382,13 +411,12 @@ func buildScenarioManifest(resolved *resolvedKbd, profile *scenarioProfile, node
 				result.Stderr = "当前命令不支持场景产品版本 " + caseProfile.ProductVersion + "\n"
 				fault.Type = fixture.FaultNonzeroExit
 			}
-			if strings.Contains(result.Stdout, "{{") || strings.Contains(result.Stdout, "}}") ||
-				strings.Contains(result.Stderr, "{{") || strings.Contains(result.Stderr, "}}") {
+			if strings.Contains(result.Stdout, "{{") || strings.Contains(result.Stderr, "{{") {
 				return fixture.Manifest{}, fmt.Errorf("capability_gap: Signal %s 的场景输出缺少变量", route.SignalID)
 			}
 		}
-		if strings.Contains(result.Stdout, "{{") || strings.Contains(result.Stdout, "}}") ||
-			strings.Contains(result.Stderr, "{{") || strings.Contains(result.Stderr, "}}") {
+		// JSON 嵌套对象合法地以 }} 结尾；只能按占位符起始符检查未绑定变量。
+		if strings.Contains(result.Stdout, "{{") || strings.Contains(result.Stderr, "{{") {
 			return fixture.Manifest{}, fmt.Errorf("capability_gap: Signal %s 的 stdout/stderr 缺少场景变量", route.SignalID)
 		}
 		if result.ExitCode == 0 && fault.Type == fixture.FaultNone && strings.TrimSpace(result.Stdout) == "" && selectedVariant != "missing-evidence" {
@@ -431,10 +459,47 @@ func buildScenarioManifest(resolved *resolvedKbd, profile *scenarioProfile, node
 		Bundle:        fixture.BundleRef{Status: "published"},
 		KBD:           fixture.KBDRef{SupportID: resolved.SupportID, Revision: resolved.KBDRevision, Checksum: "sha256:" + strings.TrimPrefix(resolved.KBDChecksum, "sha256:")},
 		Contracts:     fixture.Contracts{ToolRevision: resolved.ToolContractRevision, PolicyRevision: resolved.PolicyRevision},
+		Environment:   &environment,
 		Variables:     variables,
 		Limits:        fixture.Limits{MaxRoutes: len(routes), MaxOutputBytesPerCommand: 4096, MaxBundleBytes: 65536},
 		Routes:        routes,
 	}, nil
+}
+
+func environmentScopeFromContract(contract map[string]any) fixture.EnvironmentScope {
+	scope, _ := contract["scope"].(map[string]any)
+	return fixture.EnvironmentScope{
+		Products:            stringValues(scope["products"]),
+		Versions:            stringValues(scope["versions"]),
+		Components:          stringValues(scope["components"]),
+		TopologyConstraints: stringValues(scope["topology_constraints"]),
+	}
+}
+
+func stringValues(value any) []string {
+	raw, ok := value.([]any)
+	if !ok {
+		if typed, typedOK := value.([]string); typedOK {
+			raw = make([]any, len(typed))
+			for index := range typed {
+				raw[index] = typed[index]
+			}
+		}
+	}
+	values := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, item := range raw {
+		text := strings.TrimSpace(fmt.Sprint(item))
+		if text == "" {
+			continue
+		}
+		if _, exists := seen[text]; exists {
+			continue
+		}
+		seen[text] = struct{}{}
+		values = append(values, text)
+	}
+	return values
 }
 
 // sameRouteReplay 确保共享的是同一份 acquisition 事实，而非把两个不同样例静默拼接。
@@ -644,7 +709,7 @@ func renderProfileRegexVariables(value string, variables map[string]string) stri
 func shellDisplay(argv []string) string {
 	parts := make([]string, 0, len(argv))
 	for _, value := range argv {
-		if value != "" && !strings.ContainsAny(value, " \t'\"") {
+		if value != "" && !strings.ContainsAny(value, " \t\r\n'\";|&`$<>(){}*?[]!\\") {
 			parts = append(parts, value)
 			continue
 		}

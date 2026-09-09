@@ -1,9 +1,9 @@
 /**
  * 产出变量目录解析工具。
  *
- * 工具定义的 parameters_schema.properties.produces.default 是产出变量的
- * 唯一事实来源；这里集中处理旧数据兼容、空值和重复名称，避免不同页面
- * 各自实现一套稍有差异的解析规则。
+ * 工具定义的 parameters_schema.properties.produces.default 是编辑器候选目录；
+ * 后端 shared 代码契约仍会在保存/发布时校验字段路径和固定输出，避免数据库
+ * 中的历史目录覆盖实际 Handler 能力。这里集中处理旧数据兼容、空值和重复名称。
  *
  * alias 字段说明（PR#790 后引入）：
  * - name：工具目录标准变量名，全局唯一，由工具管理维护。

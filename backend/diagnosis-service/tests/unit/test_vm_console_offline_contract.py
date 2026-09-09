@@ -81,6 +81,24 @@ def test_render_vm_console_capture_spec_produces_fixed_intent(monkeypatch):
     assert "vtpsh" not in rendered_command
 
 
+def test_render_vm_console_capture_spec_resolves_affected_vm_target(monkeypatch):
+    """逐 VM 计划项必须从受影响对象冻结宿主机和精确 VMID。"""
+
+    monkeypatch.setenv("VM_CONSOLE_CAPTURE_ENABLED", "true")
+
+    class _Definition:
+        collector_id = "kbd_qkv_vm_console_test"
+        timeout_seconds = 60
+
+    execution_spec, rendered_command = CollectorArtifactService._render_vm_console_capture_spec(
+        _Definition(), {}, {"type": "vm", "id": "90010001", "source_node": "SIM-HCI-NODE-01"}
+    )
+
+    assert execution_spec["host_node_id"] == "SIM-HCI-NODE-01"
+    assert execution_spec["vm_id"] == "90010001"
+    assert rendered_command == "vm_console_capture://SIM-HCI-NODE-01/90010001"
+
+
 def test_render_vm_console_capture_spec_requires_targets(monkeypatch):
     monkeypatch.setenv("VM_CONSOLE_CAPTURE_ENABLED", "true")
 

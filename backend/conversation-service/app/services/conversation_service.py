@@ -251,6 +251,24 @@ class ConversationService:
         """获取对话历史"""
         return await self.repository.get_messages(conversation_id)
 
+    async def release_request_transaction_before_stream(self) -> None:
+        """在返回长连接响应前释放请求级只读事务占用的数据库连接。
+
+        ``send_message_stream_only`` 的持久化、阶段读取与工具审计已经使用
+        ``session_factory`` 创建独立短事务。路由前置的归属校验和工单号查询仍会
+        在请求级 Session 上开启只读事务；若该事务伴随 SSE/命令审批等待数分钟，
+        PostgreSQL 的 ``idle_in_transaction_session_timeout`` 会关闭底层连接，最终
+        依赖清理再次 commit 时便会抛出 InterfaceError。
+
+        此处只回滚尚未写入的前置只读事务，使 Session 归还连接但保持对象可关闭；
+        非流式写接口仍继续沿用 DatabaseManager 的统一提交语义。
+        """
+        if self.session_factory is None:
+            return
+        session = self.repository.session
+        if session.in_transaction():
+            await session.rollback()
+
     async def send_message_stream_only(
         self,
         conversation_id: uuid.UUID,
@@ -751,6 +769,20 @@ class ConversationService:
                             _stage = agent_event.get("stage", "")
                             _metadata = agent_event.get("metadata", {})
                             yield f"\x00event:stage_change:{_stage}\x00"
+                            if _stage == "kbd_diag_complete":
+                                # stage_change 只携带阶段名，管理端仿真无法据此判断最终
+                                # 命中了哪篇 KBD。额外发布结构化结论供结果 oracle 使用；
+                                # 普通 Customer UI 不识别该事件时会自然忽略。
+                                logger.info(
+                                    event="diagnostic_outcome_forwarded",
+                                    message="向客户端转发确定性 KBD 诊断结论",
+                                    conversation_id=str(conversation_id),
+                                    conclusion_level=_metadata.get("conclusion_level"),
+                                    is_definitive=_metadata.get("is_definitive"),
+                                    supported_support_ids=_metadata.get("supported_support_ids") or [],
+                                )
+                                _payload = _json.dumps(_metadata, ensure_ascii=False)
+                                yield f"\x00event:diagnostic_outcome:{_payload}\x00"
                             if _stage in ("tool_call", "tool_result"):
                                 # 工具生命周期先按 exec_id 持久化，再向 SSE 发布。
                                 # 这样即使客户端随即断线或 Pod 滚动，审计状态也不会丢失。
@@ -822,7 +854,9 @@ class ConversationService:
                             yield f"\x00event:interactive_request:{_payload}\x00"
                         elif event_type == "error":
                             _agent_had_error = True
-                            yield f"\n[Agent Error: {agent_event.get('message', '未知错误')}]"
+                            _error_message = str(agent_event.get("message") or "未知错误")
+                            yield f"\x00event:error:{_json.dumps({'message': _error_message}, ensure_ascii=False)}\x00"
+                            yield f"\n[Agent Error: {_error_message}]"
                         elif event_type == "done":
                             break
 
@@ -3400,6 +3434,9 @@ class ConversationService:
                 _stage = agent_event.get("stage", "")
                 _metadata = agent_event.get("metadata", {})
                 yield f"\x00event:stage_change:{_stage}\x00"
+                if _stage == "kbd_diag_complete":
+                    _payload = _json.dumps(_metadata, ensure_ascii=False)
+                    yield f"\x00event:diagnostic_outcome:{_payload}\x00"
                 if _stage in ("tool_call", "tool_result"):
                     if _case_id is not None:
                         await self._record_tool_call(
@@ -3410,5 +3447,9 @@ class ConversationService:
                         )
                     _payload = _json.dumps(_metadata, ensure_ascii=False)
                     yield f"\x00event:{_stage}:{_payload}\x00"
+            elif event_type == "error":
+                _error_message = str(agent_event.get("message") or "未知错误")
+                yield f"\x00event:error:{_json.dumps({'message': _error_message}, ensure_ascii=False)}\x00"
+                yield f"\n[Agent Error: {_error_message}]"
             elif event_type == "done":
                 break

@@ -35,6 +35,7 @@ from shared.observability.metrics import KBD_LLM_REQUESTS_TOTAL, KBD_LLM_TOKENS_
 from shared.observability.otel import get_current_trace_id
 from shared.resolution.review import SignalReviewFeature, review_signal_document
 from shared.schemas.acquirer_args import (
+    DEFAULT_EXTERNAL_SIGNAL_VARIABLES,
     DEFAULT_SIGNAL_TIMEOUT_SECONDS,
     SAFE_LOG_FILE_PATTERN,
     validate_acquire_args,
@@ -161,22 +162,9 @@ ACQUIRER_CATALOG: dict[str, str] = {
 }
 
 # ─── 默认变量池 schema（produces/requires 引用的变量名集合）───────────────────
-DEFAULT_VARIABLE_SCHEMA: list[str] = [
-    "HOST",
-    "VM",
-    # qkv_vm_console 目标变量（与 VM 同义但为新信号规范名，二者不自动互通）
-    "VM_ID",
-    "NODE_IP",
-    "TARGET",
-    "END",
-    "DATE",
-    "ALERT_TYPE",
-    "STATUS",
-    "ERRCODE_TRACING",
-    "REQUEST_ID",
-    "STORAGE_ID",
-    "LOG_DATE",
-]
+# 外部变量唯一权威源是代码契约 DEFAULT_EXTERNAL_SIGNAL_VARIABLES；额外登记由生产者
+# END 自动派生的 DATE（qfk_log 按自然日过滤必须）与日志日期变量 LOG_DATE。
+DEFAULT_VARIABLE_SCHEMA: list[str] = list(dict.fromkeys((*DEFAULT_EXTERNAL_SIGNAL_VARIABLES, "DATE", "LOG_DATE")))
 
 VALID_CATEGORIES = {"frontend", "backend"}
 _LOG_EVIDENCE_RE = re.compile(
@@ -1295,7 +1283,7 @@ def _normalize_derived_file_assertions(raw_signals: list[Any]) -> int:
         if not isinstance(orchestrate, dict):
             continue
         for produced in orchestrate.get("produces") or []:
-            name = str(produced.get("name") or "") if isinstance(produced, dict) else ""
+            name = str(produced.get("alias") or produced.get("name") or "") if isinstance(produced, dict) else ""
             if not name:
                 continue
             if name in producers:
@@ -1368,7 +1356,7 @@ def _unconsumed_qfk_producer_reasons(raw_signals: list[Any]) -> dict[int, str]:
         if not str(acquire.get("tool") or "").startswith("qfk_") or signal.get("match") is not None:
             continue
         produced = {
-            str(item.get("name"))
+            str(item.get("alias") or item.get("name"))
             for item in ((signal.get("orchestrate") or {}).get("produces") or [])
             if isinstance(item, dict) and str(item.get("name") or "").strip()
         }
@@ -1470,11 +1458,10 @@ def _validate_and_collect_signals(
                     continue
                 name = str(p.get("name", ""))
                 alias = str(p.get("alias") or "").strip()
-                # effective_key：alias 非空时优先，否则 name；两者均加入合法变量名集合
-                if re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
-                    available_vars.add(name)
-                if alias and re.fullmatch(r"[A-Z][A-Z0-9_]*", alias):
-                    available_vars.add(alias)
+                # 跨 Signal 只暴露一个运行时 key：alias 非空时优先，否则 name。
+                effective_key = alias or name
+                if re.fullmatch(r"[A-Z][A-Z0-9_]*", effective_key):
+                    available_vars.add(effective_key)
             for processing in orch.get("output_processing") or []:
                 if (
                     isinstance(processing, dict)
@@ -1776,7 +1763,7 @@ def _build_verification_contract(
     }
     variables = _normalize_contract_variables(proposed)
     produced = {
-        str(item.get("name"))
+        str(item.get("alias") or item.get("name"))
         for signal in signals
         if str((signal.get("orchestrate") or {}).get("phase") or "diagnostic") != "solution"
         for item in ((signal.get("orchestrate") or {}).get("produces") or [])
@@ -1817,6 +1804,7 @@ def _signals_to_v2(
     verification_contract: dict[str, Any] | None = None,
     generation_metadata: dict[str, Any] | None = None,
     rejected_candidates: list[dict[str, Any]] | None = None,
+    semantic_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """持久化为 v2 数组级文档（RFC §7）：{schema_version, signals}。
 
@@ -1824,6 +1812,8 @@ def _signals_to_v2(
     v2 衍生段（provenance/review/orchestrate）的嵌套结构，无需再做 migrate 兜底归一。
     """
     doc: dict[str, Any] = {"schema_version": 2, "signals": signals}
+    if semantic_profile is not None:
+        doc["semantic_entry_profile"] = semantic_profile
     if rejected_candidates:
         doc["rejected_candidates"] = []
         for item in rejected_candidates:
@@ -1851,6 +1841,7 @@ async def _persist_signals(
     generation_metadata: dict[str, Any] | None = None,
     rejected_candidates: list[dict[str, Any]] | None = None,
     review_summary: dict[str, Any] | None = None,
+    semantic_profile: dict[str, Any] | None = None,
 ) -> int | None:
     """通用写回：signals_json 列。table ∈ {'kbd_entry', 'sop_document'}。
 
@@ -1867,6 +1858,7 @@ async def _persist_signals(
         verification_contract,
         generation_metadata,
         rejected_candidates,
+        semantic_profile,
     )
     validate_signals_json(doc)
     async with db_manager.async_session_factory() as session:
@@ -1991,6 +1983,8 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
     rejected: list[dict[str, Any]] = []
     raw_candidate_count = 0
     proposed_contract = None
+    raw_candidate_count = 0
+    generation_prompt_template = prompt_template
 
     if multi_agent_enabled:
         logger.info(
@@ -2024,6 +2018,7 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
                 image_evidence_text,
             )
             raw_candidate_count = raw_count
+            generation_prompt_template = orchestrator.generation_prompt_material()
 
             logger.info(
                 event="extract_signals_multi_agent_done",
@@ -2042,6 +2037,10 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
     if not validated:
         logger.info(event="extract_signals_fallback_monolith", kbd_id=kbd_id)
         multi_agent_rejected = list(rejected)
+        # 审计元数据必须描述真正生成候选的 Prompt。多 Agent 可能已经成功加载
+        # 分阶段 Prompt、但最终没有任何候选，此时下面实际执行的是单体 Prompt；
+        # 若继续沿用 generation_prompt_material()，后续无法按指纹复现本次产出。
+        generation_prompt_template = prompt_template
         llm_result = await _call_llm(
             prompt,
             prompt_revision=prompt_revision,
@@ -2065,6 +2064,22 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
         )
         rejected = multi_agent_rejected + rejected
 
+    from shared.schemas.semantic_entry import propose_semantic_profile
+
+    semantic_profile = propose_semantic_profile(entry_data, validated)
+    if semantic_profile is not None and not any(
+        (item.get("acquire") or {}).get("tool") == "qkv_case_context" for item in validated
+    ):
+        validated.append(
+            {
+                "id": "case_context",
+                "role": "context",
+                "acquire": {"tool": "qkv_case_context", "args": {}},
+                "match": None,
+                "orchestrate": {"phase": "diagnostic", "requires": [], "produces": []},
+                "review": {"require_human_confirm": True},
+            }
+        )
     verification_contract = _build_verification_contract(
         validated,
         proposed_contract,
@@ -2072,11 +2087,11 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
     )
     generation_metadata = build_signal_generation_metadata(
         source=entry_data,
-        prompt_template=prompt_template,
+        prompt_template=generation_prompt_template,
         model_id=LLM_MODEL,
     )
     generation_review = review_signal_document(
-        _signals_to_v2(validated, verification_contract, generation_metadata, rejected),
+        _signals_to_v2(validated, verification_contract, generation_metadata, rejected, semantic_profile),
         feature=SignalReviewFeature.LLM_GENERATION,
     )
     if generation_review.blocked:
@@ -2099,6 +2114,7 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
             generation_metadata,
             rejected,
             generation_review.model_dump(mode="json"),
+            semantic_profile=semantic_profile,
         )
     except PublishedKbdMutationError as exc:
         raise HTTPException(

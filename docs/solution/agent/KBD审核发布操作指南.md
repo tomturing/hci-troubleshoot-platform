@@ -49,15 +49,31 @@ KBD 审核不是校对文章，而是确认 Agent 能用这篇 KBD 完成一次�
 
 ```mermaid
 flowchart LR
-    A["工单：任务失败<br/>告警 / 弹框"] --> B["生产者信号 QKV<br/>从工单里拿到什么变量<br/>（HOST、TASK_ID…）"]
-    B --> C["消费者信号 QFK<br/>去哪台主机执行什么只读检查"]
-    C --> D["结果处理<br/>命中了什么 / 提取了什么变量"]
-    D --> E["Agent 形成结论<br/>支持或排除根因"]
+    A["工单描述 / 客户附件"] --> B["语义入口<br/>qkv_case_context"]
+    A --> C["现场观察<br/>task / alert / dialog"]
+    C --> D["条件观察<br/>qkv_vm_console"]
+    B --> E["QFK 只读诊断验证"]
+    C --> E
+    D --> E
+    E --> F["支持或排除根因"]
+    F --> G["处置后复核<br/>qkv_effect"]
 ```
 
-一句话：**正文讲清楚故障，生产者信号找到入口，消费者信号采到证据，处理规则得出结论。**
+一句话：**语义入口只找方向，现场观察提供事实，QFK 验证诊断假设，效果验证确认操作结果。** 不要再把所有 `qkv_*` 当成同一种“生产者”。
 
-对照样例：工单里备份任务失败（生产者信号从任务详情提取 `HOST`、`TASK_ID`）→ Agent 在该主机查存储池容量和备份日志（两条消费者信号）→ 容量 94% > 90% 且日志出现 `connection refused`（处理规则命中）→ 支持「存储池容量满」根因。
+对照样例：工单里备份任务失败，任务详情产出 `HOST`、`TASK_ID`；Agent 在该主机查存储池容量和备份日志；容量 94% 和 `connection refused` 共同支持「存储池容量满」根因。若任务、告警、弹框均无命中，才使用客户描述的语义入口召回少量待验证 KBD；清理快照或扩容操作完成后，再用效果验证确认备份是否达到预期，而不是只确认命令返回成功。
+
+### 1.1.1 按职责审核信号，而不是按 QKV/QFK 名称分组
+
+| 信号职责 | 典型工具 | 何时配置 | 审核重点 | 可以形成的结论 |
+|---|---|---|---|---|
+| 语义入口 | `qkv_case_context` + `semantic_entry_profile` | 没有强现场入口，或任务、告警、弹框已完整执行但未命中 | 症状和锚点逐字来自问题描述；不引用根因或解决方案；有明确补证据指引 | 仅候选召回或人工指引，不能确诊、不能产出变量 |
+| 直接现场观察 | `qkv_task`、`qkv_alert`、`qkv_dialog` | 任务、告警、弹框可建立诊断上下文 | 关键字、JSON 路径、完整变量记录和来源时间 | 可生产 HOST、VM_ID、END 等变量 |
+| 条件现场观察 | `qkv_vm_console` | 需要确认 Guest 内部黑屏、蓝屏、Kernel Panic、启动卡住等现象 | HOST/VM_ID 来源可信；固定截图操作、制品和视觉观察都可审计 | 画面状态和截图证据，不以客户口述替代 |
+| 诊断验证 | `qfk_*` | 已有目标或可执行只读检查 | 命令只读、变量依赖完整、取值和 Matcher 正确 | 支持或排除根因 |
+| 操作效果验证 | `qkv_effect` | 某个操作已完成，需要确认其预期效果；或在诊断阶段确认症状 | 观察通道、Matcher、等待窗口、复查次数；不作为唯一诊断入口 | `achieved`、`not_achieved`、`inconclusive` |
+
+客户提供的文字、截图和日志可以作为语义入口的补充材料，也可以提示人工复核；没有受控采集来源、采集时间和目标对象关联时，不能自动等价为控制台观察或效果已经达成。
 
 ### 1.2 三个 KBD 版本，别搞混
 
@@ -114,7 +130,7 @@ flowchart TD
 2. 关键信号不为空；
 3. 信号通过统一发布审查（无 error 级问题）；
 4. 信号满足发布结构契约和专家确认要求；
-5. 至少有 1 条消费者（QFK）信号；
+5. 可执行诊断至少有 1 条消费者（QFK）信号；当前实现要求语义画像与 `qkv_case_context` 成对声明。能力为 `guidance_only`（仅人工指引）的 KBD 不要求消费者或必要证据，但不得进入自动执行；
 6. 最终分类不为空；
 7. 没有并发修改（版本锁一致）。
 
@@ -201,11 +217,14 @@ flowchart TD
 这是审核工作量最大的部分，字段口径详见第四章。最短路径：
 
 1. 如果关键信号区顶部出现**红色过期警告**（正文/截图/工具契约已变化），先点 **「重新抽取」**，再逐条复核；
-2. 逐条检查「生产者信号（QKV）」和「消费者信号（QFK）」卡片，点 **「编辑」** 修改，每条改完点卡片上的 **「保存」**；
+2. 按本章 1.1.1 的职责表逐条检查：语义入口、直接现场观察、条件现场观察、QFK 诊断验证和操作效果验证；点 **「编辑」** 修改，每条改完点卡片上的 **「保存」**；
 3. 出现黄色暂存提示条（「已暂存 N 条信号的修改」）时，确认全部保存或点「放弃全部暂存修改」；
 4. 没有信号或信号质量太差：点 **「重新抽取」** 让 AI 重新生成，再人工复核；
-5. 若 QKV 卡片有「产出变量处理」，逐单元核对「输入 → 派生变量」或「输入 → 断言」：输入来自本信号原始产出/前序派生，派生名不重复，断言不会误筛掉正确记录（见 4.1.2）；
-6. 检查每条 QFK 卡片上的「完整命令」预览：点 **「编译当前草稿的 HCI 执行命令」**，确认命令只读、目标主机正确（见第四章 4.4）。
+5. 直接现场观察的 `produces` 必须由**同一条完整记录**覆盖；例如声明了 `HOST`、`VM_ID`、`END`，就不能只从不同记录分别取到其中一项后宣称下游可执行；
+6. `qkv_case_context` 只审核语义画像，不允许配置命令、Matcher 或 HOST/VM_ID 等变量产出；客户附件只能作为待核实材料；
+7. `qkv_vm_console` 要核对 HOST/VM_ID 上游来源、固定截图动作和制品审计；不要用客户上传截图替代受控现场采集；
+8. `qkv_effect` 要核对“操作是什么、预期效果是什么”、观察通道、封闭 Matcher、等待窗口和复查次数；`inconclusive` 是合法结果，不能人为改成已恢复；
+9. 检查每条 QFK 卡片上的「完整命令」预览：点 **「编译当前草稿的 HCI 执行命令」**，确认命令只读、目标主机正确（见第四章 4.4）。
 
 ▶ 样例：本例最终配置 1 条生产者信号（`qkv_task`）+ 2 条消费者信号（容量阈值判定、日志错误检查），完整参数见附录 B。
 
@@ -221,11 +240,11 @@ flowchart TD
 
 ### 第 7 步：对关键 Signal 做单条试运行（关键信号区）
 
-1. 点信号卡片的 **「试运行」**，选择验证范围：整条 Signal（信号）或仅 AI 处理步骤；
+1. 先确认试运行对象：`qkv_case_context` 使用「路由试运行」验证症状能否召回候选；直接现场观察和 QFK 使用「试运行」验证整条处理链；控制台观察用已批准的截图 Fixture 或受控采集结果；效果验证在操作完成后用实际观察结果验证预期，或在 `symptom_confirm` 模式下验证症状；
 2. 输入来源可选粘贴现场输出，或选择 Fixture（固定样例）。Fixture 读取已发布 Bundle 中的试运行数据；「现场回放」入口当前尚未开放，不能作为审核手段；
 3. 运行后核对状态、输出、Evidence Lines（证据行）、AI 原始响应和 Trace ID（链路标识）；
 4. `FAIL` 表示确定性结果不符合预期，`UNKNOWN` 表示执行/取值/依赖不足；两者都要先修复，不能当成 PASS；
-5. 只有 `PASS` 可点 **「保存到 Bundle 草稿」**。系统优先复用同一 KBD 修订的 Bundle Draft（仿真包草稿）；没有时以已发布 Bundle 为基线创建新的 Bundle Draft，并把本次输出和验证证据写入该草稿；这不会改写 KBD 的 Signal 配置；
+5. 只有“整条 Signal”的 `PASS` 可点 **「保存到 Bundle 草稿」**。语义入口的路由命中、AI 单步试运行和客户声明都不能作为 Bundle 的现场验证资产；系统优先复用同一 KBD 修订的 Bundle Draft（仿真包草稿）；没有时以已发布 Bundle 为基线创建新的 Bundle Draft，并把本次输出和验证证据写入该草稿；这不会改写 KBD 的 Signal 配置；
 6. 选择 Fixture 后，已发布 Bundle 的数据只读；需要调整输入或路由时，先点 **「创建新 Bundle 草稿」** 派生草稿，再运行和保存；
 7. Package Snapshot / Verification Asset 是后端包治理对象。当前审核页没有「保存到草稿测试集」或手工绑定 Package Snapshot 的操作；KBD、Signal 或工具依赖变更后，应基于当前工作稿重新试运行并保存新的 Bundle Draft 证据。
 
@@ -346,7 +365,7 @@ flowchart TD
     Q -->|"系统告警<br/>（磁盘 / 网络 / 存储 / 硬件）"| A["qkv_alert 告警信号"]
     Q -->|"只出现在页面弹框、<br/>截图或文本提示中"| D["qkv_dialog 弹框信号"]
     Q -->|"Guest 内部现象（黑屏 / 蓝屏 / Kernel Panic），<br/>且已能定位宿主机与 VMID"| V["qkv_vm_console 控制台截图（条件型）"]
-    Q -->|"动作执行成功但需验证效果<br/>（告警是否消失 / 任务是否恢复）"| E["qkv_effect 效果验证（条件型）"]
+    Q -->|"动作已执行，需验证预期效果<br/>（告警是否消失 / 任务是否恢复）"| E["qkv_effect 效果验证（条件型）"]
 ```
 
 | 类型 | 什么时候选 |
@@ -355,7 +374,7 @@ flowchart TD
 | `qkv_alert` 告警信号 | 故障来自系统告警（磁盘、网络、存储、硬件告警等） |
 | `qkv_dialog` 弹框信号 | 故障信息只出现在页面弹框、截图或文本提示中 |
 | `qkv_vm_console` 控制台截图 | Guest OS 内部现象（黑屏、蓝屏、Kernel Panic、启动卡住等）没有对应告警/任务/弹框；**条件型**：必须声明可信 `HOST`/`VM_ID` 来源（外部变量或上游生产者），否则发布门禁阻断 |
-| `qkv_effect` 效果验证 | 修复动作/操作执行成功后，验证「预期效果」是否达成（告警清除、任务恢复、弹框消失、画面恢复等）；**条件型**：期望锚点变量必须有可信来源，且**不得作为 KBD 唯一生产者**。配置口径见 4.1.1 |
+| `qkv_effect` 效果验证 | 任意操作完成后，验证「预期效果」是否达成（告警清除、任务恢复、弹框消失、画面恢复或新配置生效等）；也可在 `symptom_confirm` 模式确认症状。**条件型**：期望锚点变量必须有可信来源，且**不得作为 KBD 唯一生产者**。配置口径见 4.1.1 |
 
 编辑表单字段与审核要点：
 
@@ -389,7 +408,7 @@ flowchart TD
 | 观测通道 | `expectation.observation.tool` | 封闭集合四选一：`qkv_alert` / `qkv_task` / `qkv_dialog` / `qkv_vm_console` 再查询；禁止自由命令；`args` 必须原样通过对应原语的参数校验（如 keyword 单字符串、host 占位符规则） |
 | 判定规则 | `expectation.matcher` | 8 类封闭 matcher（keyword / regex / boolean / state / threshold / delta / trend / exists）+ `expected` 翻转；「告警应消失」用 `exists` + `expected=false`（负证据），不允许自由文本判定 |
 | 时序窗口 | `settle_seconds` / `window_seconds` / `max_recheck` | settle 0–3600（默认按动作类型经验值）、window 60–86400（默认 900）、max_recheck 0–5（默认 2）。超出受限范围发布必被阻断——防止「永远复核下去」或「零等待立即判定」 |
-| 用途 | `usage` | `remediation_verify`（修复后复核，默认）/ `symptom_confirm`（S1 症状确认）。`remediation_verify` 建议在 solution 的 `success_criteria` 或 `provenance.evidence` 中留下所复核动作的语义依据，便于人工和审计理解 |
+| 用途 | `usage` | `remediation_verify`（操作后效果验证，默认）/ `symptom_confirm`（S1 症状确认）。`remediation_verify` 建议在 `success_criteria` 或 `provenance.evidence` 中留下操作和预期效果的语义依据，便于人工和审计理解 |
 | 主机 | `host` | 仅 `{{HOST}}` 占位符或规范化节点变量，与 `qkv_vm_console` 同口径 |
 | 超时 | `timeout` | 1–60 秒，**仅约束单次观测**（与 `qkv_vm_console` 同为对公共 1–300 的有意偏离）；长周期语义由 settle/window 承载 |
 | 产出变量 | 固定 `EFFECT_STATUS` / `EFFECT_CHECKED_AT` / `EFFECT_EVIDENCE` | 只允许这三个 `EFFECT_*` 变量；`EFFECT_STATUS` 为三态词表（achieved / not_achieved / inconclusive），**单独不构成根因结论**，须与其他证据组合 |
@@ -402,7 +421,7 @@ flowchart TD
 
 > 上述第 1、2 项是当前发布结构门禁；第 3 项和 `success_criteria` / `provenance.evidence` 是专家语义复核要求。
 
-> **表单能力提醒：** 后端契约已支持 `boolean`（布尔）Matcher；但本文维护时，`qkv_effect` 编辑器的下拉选项尚未暴露“布尔判定”。审核人不要用“导入 JSON”绕过表单能力和人工复核：可改用更贴合事实的 `state` / `exists`，或记录为平台待补能力后再配置。前端补齐该选项后，本节的八类 Matcher 口径无需改变。
+> **表单能力提醒：** `qkv_effect` 编辑器已经支持包括 `boolean`（布尔）在内的八类 Matcher（判定器）。应直接使用结构化表单配置，不要通过“导入 JSON”绕过字段范围和人工复核。
 
 ⚠️ **负证据是最大的坑**：「告警消失了」不能由「查询返回空」直接证明。`exists` + `expected=false` 类期望要求观测通道先自证有效——查询成功返回、关键词与观测域匹配、观测时间晚于动作完成时间；任一环节不满足只能出 `inconclusive`（观察不足），禁止向「已达成」坍缩。
 
@@ -430,13 +449,32 @@ flowchart LR
 具体配置与审核：
 
 1. 先在「产出变量」中声明原始字段，再点「产出变量处理 → 添加处理」；处理单元按顺序执行。
-2. `derive` 的输入只能选本条 QKV 的原始产出变量的**实际键**（Alias 优先，否则是 `name`），或前面处理单元已成功派生的变量；不能跳过上游声明引用任意 `{{变量}}`。
+2. `derive` 的输入只能选本条 QKV 原始产出的标准 `name`，或前面处理单元已成功派生的变量；Alias（别名）只在整条信号处理完成、写入跨信号变量池时生效，不能当成本信号内部字段。
 3. 派生名称必须全大写，不能与原始产出变量、前面派生变量重名；类型必须与取值匹配（文本/整数/数值/百分比/布尔值/数组）。
 4. 特征提取只选表单提供的受控特征；分隔拆分要注意「必须唯一 / 首条 / 末条 / 全部」的结果数量。使用 AI 时，AI 仅能对前一步已确定的值再加工，结果必须能由证据原文回查。
 5. `assert` 只包含输入、作用范围（逐记录 `per_record`，默认；或单记录 `single`）和 Matcher；不能再填变量名、类型或取值规则。`single` 遇到不是恰好一条的记录会产生 UNKNOWN，不应被解读成断言通过；应先回到原始 QKV 关键字或结果数量修正。
 6. 断言的意思必须与正文一致：例如「只保留失败任务」就对 `TASK_STATUS` 使用状态判定 `failed`；不要把「可供参考的数值」误配成筛选断言，否则会把所有记录筛掉。
 
-▶ 小样例：`qkv_task` 原始产出 `DESCRIPTION`（任务描述）和 `TASK_STATUS`（任务状态）。处理单元 1：从 `{{DESCRIPTION}}` 以「虚拟机名称」特征派生 `VM_NAME`；处理单元 2：对 `{{TASK_STATUS}}` 作状态断言 `failed`。只有断言通过的任务会将 `DESCRIPTION`、`TASK_STATUS`、`VM_NAME` 一起写入变量池，供后续 QFK 引用。若 `DESCRIPTION` 配了 Alias `TASK_DESCRIPTION`，这里的输入应改为 `{{TASK_DESCRIPTION}}`。
+▶ 小样例：`qkv_task` 原始产出 `DESCRIPTION`（任务描述）和 `TASK_STATUS`（任务状态）。处理单元 1：从 `{{DESCRIPTION}}` 以「虚拟机名称」特征派生 `VM_NAME`；处理单元 2：对 `{{TASK_STATUS}}` 作状态断言 `failed`。只有断言通过的任务会把变量写入变量池。若 `DESCRIPTION` 配了 Alias `TASK_DESCRIPTION`，本信号内部仍从 `{{DESCRIPTION}}` 处理；后续 QFK 则引用 `{{TASK_DESCRIPTION}}`。
+
+#### 4.1.3 没有任务、告警、弹框时：语义入口画像
+
+若原始 KB 只有客户能观察到的异常文字，可以在关键信号区点击“语义入口画像”。它回答的是“哪些描述值得继续查”，不是“根因是什么”。保存时配套加入 `qkv_case_context`（工单上下文信号）；这条信号不执行命令、不产出变量，也不配置派生变量或断言。
+
+开始路由试运行前，须先确认并保存 KBD 的问题分类；只有 AI 推荐分类或尚未分类时会被阻止，否则无法与同分类已发布候选公平比较。
+
+1. 填“标准症状”：客户通常怎么描述现象，不填根因与修复步骤。
+2. 填“正向锚点”：至少出现哪一个特征报错才继续检查；“排除锚点”填写有依据的不适用情况，可留空。
+3. 选择诊断能力：`executable`（可执行）必须有现有消费者验证；`guidance_only`（仅人工指引）必须说明请客户补充什么证据，不要求虚构消费者；`capability_gap`（能力缺口）不能仅靠画像绕过发布门禁。
+4. 在结构化表单里按需填写范围、补充问题和原文依据；展开“路由试运行”，分别输入正例和近似反例，查看每篇候选的命中／过滤原因。试运行不会执行命令。
+5. 展开“原文关联与正反例”：可采用最近一次试运行的逐字原文关联，并保存测试输入。原文章节改动后，已声明的引用会失效，发布前须重新核对；测试期望与画像不一致也会阻断。自动关联找不到的改写内容仍须人工审查，不能将“没有引用”当成“已经证明”。
+6. 发布后，可执行画像还要走离线“KBD 同步与版本”生成采集资源。人工指引不生成空采集器，可在线直接展示，或在离线页面“没有可自动采集的场景？查看人工补证据指引”中查看。
+
+上下文信号卡片上的按钮为“路由试运行”，点击后直接展开画像测试区；画像尚未填写时先补齐字段。它使用当前画像草稿和同分类已发布候选，并假设强生产者已确认未命中，不会自动保存或执行消费者。普通信号的“试运行”仍用于验证记录／命令输出的处理规则；不要给上下文信号补造产出变量来通过试运行。路由选中候选不代表根因确诊，也不代替在线／离线仿真验收。
+
+流水线会在没有强生产者、但问题描述存在可靠异常原句时保守生成待审核画像，并附原文关联、正例及否定反例；不会据此自动发布。纯语义分类可以直接选候选；有强生产者的分类只有确认未命中才能兜底，查询失败不能当作未命中。
+
+完整字段、JSON、运行边界和已执行回归记录见 [KBD 语义入口兜底诊断设计与需求](KBD语义入口兜底诊断设计与需求.md)。该入口不改变已有任务、告警、弹框、视觉及效果验证信号的专用安全门禁。
 
 ### 4.2 消费者信号（QFK）：回答「去哪执行什么只读检查」
 
@@ -575,7 +613,7 @@ flowchart TD
 |---|---|---|---|
 | 关键字匹配 | **关键字**（多行文本框，每行一个字面量）+ **组合关系**（任一匹配 OR / 全部匹配 AND） | 输出中是否出现特定错误文字 | 关键字两行：`connection refused`、`connect storage failed`；组合关系：任一匹配 |
 | 正则表达式 | **正则表达式**（单行） | 内容会变化但有固定模式的错误 | `error\|failed\|timeout`。复制到表单时实际填 `error` + 分支符 + `failed` + 分支符 + `timeout`；此处反斜杠只用于 Markdown 表格转义，不是正则内容。日志采集会下推到 aCLI `-E`，表达式必须同时兼容 Python `re` 和 ERE（扩展正则） |
-| 布尔判定 | 无额外参数；用下方 `expected` 期望开关决定应为 true 还是 false | 命令或 AI 提取结果已规范为布尔值 | **后端契约支持；当前编辑器待补选项。** 未补齐前不要靠导入 JSON 绕过 |
+| 布尔判定 | 无额外参数；用下方 `expected` 期望开关决定应为 true 还是 false | 命令或 AI 提取结果已规范为布尔值 | 在编辑器中选择“布尔判定”，再设置期望开关 |
 | 状态判定 | **期望状态**（单行，如 `running`、`stopped`、`active`） | 服务/进程/链路状态是否等于某值 | 期望状态：`running` |
 | 数值阈值 | **聚合方式** + **运算符** + **阈值** | 数值超限判断（容量、次数、耗时） | 聚合：首个取值；运算符：大于；阈值：90 |
 | 首末差值 | **运算符** + **差值阈值** + **最少样本**（≥2） | 周期日志计数器末值减首值的变化量 | 运算符：大于；差值阈值：100；最少样本：2 |
@@ -773,7 +811,7 @@ flowchart TD
 - 批量通过同样逐条执行全部门禁，且每条必须携带提交时的版本快照，防止排队期间静默发布已被修改的内容；
 - 离线采集影响不在硬门禁内；
 - 单 Signal 试运行、将 PASS 保存到 Bundle Draft（其后端会沉淀验证资产）、Bundle 仿真不在当前 KBD 发布 API 的 7 道硬门禁内，但它们是发布后使用质量的关键证据；
-- 「至少 1 条生产者」的判定区分三类：`qkv_alert`/`qkv_task`/`qkv_dialog` 是直接生产者；`qkv_vm_console` 是**条件型生产者**，只有 HOST、VM_ID 均可由同一 KBD 的上游产出或已预置的验证规则外部变量取得时才算数。以 `qkv_vm_console` 为唯一生产者的 KBD 必须描述的是 Guest 内部现象，且不得为凑门禁凭空添加告警/任务/弹框信号。`qkv_effect` 是**条件型生产者**：期望锚点变量须来源可达（口径同 vm_console），且**不得作为 KBD 唯一生产者**——KBD 必须有直接生产者或条件型视觉生产者作为诊断观测入口，效果验证只是对动作效果的复核，不能替代观测入口本身。
+- 「至少 1 条生产者」的判定区分三类：`qkv_alert`/`qkv_task`/`qkv_dialog` 是直接生产者；`qkv_vm_console` 是**条件型生产者**，只有 HOST、VM_ID 均可由同一 KBD 的上游产出或已预置的验证规则外部变量取得时才算数。以 `qkv_vm_console` 为唯一生产者的 KBD 必须描述的是 Guest 内部现象，且不得为凑门禁凭空添加告警/任务/弹框信号。`qkv_effect` 是**条件型生产者**：期望锚点变量须来源可达（口径同 vm_console），且**不得作为 KBD 唯一生产者**——KBD 必须有直接生产者或条件型视觉生产者作为诊断观测入口，效果验证只是对操作结果的复核，不能替代观测入口本身。
 
 ---
 
@@ -994,6 +1032,31 @@ P0/P1/P2 标签和自动化报告尚未完全作为平台功能落地前，按�
 4. 发布 KBD 后，执行离线 KBD 增量同步；需纳入仿真的分类，在 Bundle 工厂建立同分类完整候选集，按 `draft → validated → approved → published` 运行回归；
 5. 将缺少可信样本、无法路由、多个候选同时成立等条目记录为待办，不以“发布成功”代替“仿真通过”。
 
+仓库内有两套隔离验收，不能互相替代：`SAMPLE-V2-*` 检查“无强生产者时的语义入口”，`SAMPLE-SIG-*` 检查任务／告警／弹框及完整 QFK 等原有信号是否回归。二者都只创建独立测试分类和 KBD 副本，不改动原始待审核样例。
+
+```bash
+# 语义入口五篇：创建独立副本并跑完整在线矩阵
+make semantic-e2e-prepare RUN_ID=local-YYYYMMDD
+make semantic-online-matrix \
+  RUN_ID=local-YYYYMMDD \
+  DATABASE_NAME=hci_semantic_e2e_YYYYMMDD
+
+# 原 Signal v2 全量五篇：验证语义入口改动没有影响其它信号
+make signal-v2-e2e-prepare RUN_ID=full-YYYYMMDD
+make signal-v2-online-matrix \
+  RUN_ID=full-YYYYMMDD \
+  DATABASE_NAME=hci_semantic_e2e_full_YYYYMMDD \
+  ATTEMPT=regression-YYYYMMDD
+make signal-v2-offline-matrix \
+  RUN_ID=full-YYYYMMDD \
+  DATABASE_NAME=hci_semantic_e2e_full_YYYYMMDD \
+  ATTEMPT=regression-YYYYMMDD
+```
+
+语义入口的单篇离线验收按 `semantic-offline-prepare → collect → upload → result → verify` 五阶段执行，对应 Make 目标均需传 `RUN_ID`、`SUPPORT_ID`（案例编号）和 `INSTANCE`（仿真实例名）。需客户确认的变量通过 `SEMANTIC_OFFLINE_ARGS='--known-variable NAME=VALUE'` 传入，不能由脚本猜测。原全量五篇优先使用 `signal-v2-offline-matrix` 一次跑完并保存每篇结果。详细隔离边界、两套五篇在线／离线结果和故障排查见 [KBD 语义入口兜底诊断设计与需求](KBD语义入口兜底诊断设计与需求.md#9-本次验证记录与上线检查)。
+
+这套验收有三条硬边界：TestRun（测试运行）只能提供仿真执行环境，不能把目标案例注入 Agent 候选；最终结果以 Agent 实际支持／排除的案例为准；独立副本和测试分类不得替代原 KBD 的人工审核。
+
 ### 10.8 流水线如何生产 Signal（信号）
 
 流水线的 Signal 生产不是“LLM（大语言模型）直接写入可执行信号”，而是**候选生成 → 服务端门禁 → 专家确认**三段式。这样既能保留模型从原文发现的线索，又不会让危险或不可执行内容进入 Agent 运行路径。
@@ -1024,18 +1087,19 @@ flowchart TD
 
 ### 10.9 流水线信号抽取的完整提示词与版本维护
 
-当前运行时 Prompt（提示词）名称固定为 `kbd_extract_signals_v2`。它由 `system_prompt` 表热加载，管理员在管理端修改后会立即生效；因此**运行数据库中的 active 内容才是完整提示词的唯一事实源**，不能把文档内复制的一段文本当成当前生效版本。
+当前默认链路不是一个 LLM（大语言模型）一次完成全部工作，而是四个专职 Agent（智能处理单元）依次完成“计数 → 分类 → 建模 → 验证与一次自愈”。`ENABLE_MULTI_AGENT_EXTRACTION=false` 或多 Agent 链路整体没有产物时，才回退到历史单体 Prompt `kbd_extract_signals_v2`。因此排查抽取结果时，必须先看本次 `generation_metadata` 记录的是四阶段版本集合还是单体版本，不能只查旧 Prompt。
 
-| 项目 | 当前约定 |
-|---|---|
-| Prompt 名称 | `kbd_extract_signals_v2`（KBD 关键信号 Candidate 抽取） |
-| 默认基线 | [database/seeds/02_system_prompts.sql](../../../database/seeds/02_system_prompts.sql) 中该名称的 `2.5` 版模板 |
-| 运行加载点 | [extract_signals.py](../../../backend/kb-service/app/routes/extract_signals.py) 的 `_EXTRACT_PROMPT_NAME` 与 `StrictPromptLoader.load_and_validate` |
-| 可替换变量 | `title`、`problem_description`、`alert_info`、`steps_text`、`root_cause`、`solution`、`category_id`、`acquirer_catalog`、`variable_schema`、`image_evidence` |
-| 实际诊断输入 | 前四个叙事字段、分类、动态采集器目录、变量表和可信截图事实；`root_cause`、`solution` 运行时传空 |
-| 输出 | `schema_version=2` 的 Candidate/Signal 文档、`verification_contract`（验证契约）建议；随后由服务端分流为 `signals` 与 `rejected_candidates` |
+| 阶段 | Prompt 名称 | 输入重点 | 输出 / 边界 |
+|---|---|---|---|
+| 1. 计数 | `kbd_signal_count_v1` | 问题描述、告警、排查步骤 | 先列出不重复的原子诊断意图和数量，不决定工具 |
+| 2. 分类 | `kbd_signal_classify_v1` | 单个意图、分类、12 类自动建模目录 | 把意图映射到工具；映射不了必须标记 `unclassified`（无法分类），不能虚构工具 |
+| 3. 建模 | `kbd_signal_model_v1` | 单个意图、当前工具机器契约、同工具已发布最佳实践 | 生成单条 v2 Signal；机器契约来自 shared 代码，数据库模板只补描述，不得覆盖 Handler（处理器）真实能力 |
+| 4. 验证 | `kbd_signal_verify_v1` | 全部候选、拒绝候选、计数结果、服务端门禁错误 | 数量对账、变量 DAG（依赖图）检查并最多自愈一次；修复后仍须重新过同一服务端门禁 |
+| 单体回退 | `kbd_extract_signals_v2` | 标题、问题描述、告警、步骤、分类、目录、变量、可信截图事实 | 仅为异常回退保留；结果仍要经过相同服务端门禁和专家审核 |
 
-要查看某环境**当前完整生效提示词**，使用只读查询（不要根据文档片段手工拼接）：
+自动分类目录共 **12 类**：3 个直接生产者（任务、告警、弹框）、`qkv_vm_console`（虚拟机控制台）和 8 个 QFK（后端检查）消费者。`qkv_effect`（效果验证）虽是第 13 个可执行能力，但只能由专家根据处置动作和期望锚点维护；`qkv_case_context`（工单语义上下文）不是采集工具，由服务端在缺少强生产者且原文满足条件时确定性补建。两者都不进入分类 Agent 的 12 类目录。
+
+要查看某环境**当前完整生效提示词**，使用只读查询（运行数据库中的 active 内容才是事实源）：
 
 ```sql
 SELECT
@@ -1044,20 +1108,28 @@ SELECT
   is_active,
   content_template
 FROM system_prompt
-WHERE name = 'kbd_extract_signals_v2'
+WHERE name IN (
+  'kbd_signal_count_v1',
+  'kbd_signal_classify_v1',
+  'kbd_signal_model_v1',
+  'kbd_signal_verify_v1',
+  'kbd_extract_signals_v2'
+)
   AND stage = 'KEY';
 ```
 
-该查询返回的 `content_template` 即完整提示词；仓库基线可在上述种子文件中审阅。提示词本身的关键约束可概括为：
+四阶段 Prompt 的仓库基线见 [20260904000001_seed_multi_agent_extract_prompts.sql](../../../database/atlas-migrations/20260904000001_seed_multi_agent_extract_prompts.sql)，目录收敛与效果验证排除规则见 [20260907000000_align_signal_modeling_pipeline_contract.sql](../../../database/atlas-migrations/20260907000000_align_signal_modeling_pipeline_contract.sql)；单体回退基线仍在 [02_system_prompts.sql](../../../database/seeds/02_system_prompts.sql)。提示词的共同硬约束是：
 
 1. 只从诊断叙事与可信截图事实抽取，根因/解决方案不作为事实来源；
-2. 只允许当前目录中的采集器，QKV（生产者）负责 `produces`，QFK（消费者）负责匹配或变量产出，变量是两者唯一契约面；
+2. 只允许当前代码目录中的采集能力；QKV（生产者）负责 `produces`，QFK（消费者）负责匹配或变量产出，变量是两者唯一契约面；
 3. QFK 必须在“匹配模式”与“产出变量模式”二选一；`match` 使用受限 Matcher（判定器）类型和声明式 `extract`（取值）规则；
 4. 所有变量占位符必须是 `{{大写变量}}`；字段级 `evidence`（证据）和截图 `source_refs`（来源引用）必须可回查；
 5. 发现写操作、目录不存在或运行校验失败时仍输出 Candidate，由服务端保存为 Rejected Candidate，禁止模型静默删除或伪装成只读命令；
 6. 输出严格 JSON，禁止 Markdown、自由字段和虚构工具/参数。
 
-**历史生成审计：不要用“当前 Prompt”冒充“当时 Prompt”。** 上述查询只适合查看当前生效模板；管理员后来修改过 Prompt 时，它不能复原某次历史 Signal Proposal 的完整输入。复核一次历史抽取时，应至少归档并关联以下证据：
+每次成功发布 KBD 后，平台会把该不可变发布修订中的可执行 Signal 自动沉淀为同工具 Few-Shot（少样本示例）；重新发布会停用旧示例并新增或重新激活对应 checksum（内容摘要）版本，退回草稿、归档或停用会停用当前示例。`qkv_case_context` 不执行采集，不能进入最佳实践库；历史示例不得因模板目录删除而级联消失。
+
+**历史生成审计：不要用“当前 Prompt”冒充“当时 Prompt”。** `generation_metadata.prompt_revision` 会基于本次实际加载的四阶段 Prompt 名称与 SHA-256（内容摘要）集合生成稳定指纹；走单体回退时则记录单体模板指纹。复核一次历史抽取时，应至少归档并关联以下证据：
 
 | 审计证据 | 用途 | 当前获取位置 / 操作 |
 |---|---|---|
@@ -1105,7 +1177,7 @@ WHERE name = 'kbd_extract_signals_v2'
 
 - 变量名准确表达含义（NODE_IP、VM_ID、TASK_ID、DEVICE_ID、ALERT_TYPE、REQUEST_ID）；
 - 同一含义只用一个变量名，不要多处不同叫法；
-- `name` 是 Tool Registry（工具注册表）标准变量名；Alias 是可选的 KBD 本地别名，填写 Alias 后 Alias 才是变量池和 `{{变量}}` 引用的实际键。同一生产者内的实际键不得重复；
+- `name` 是标准变量名，也是 QKV 本信号内部“产出变量处理”的输入名；Alias 是可选的 KBD 本地别名。填写 Alias 后，只有 Alias 会写入跨信号变量池并供下游 `{{变量}}` 引用，原 `name` 不再作为下游同义键。同一生产者内的实际键不得重复；
 - 变量类型正确，值必须能从证据中稳定取得；
 - 后续消费者信号引用的变量必须存在；后续没有使用的变量删除；
 - 生产者的「路径」是任务/告警 JSON 的**简单字段名**（`vm`、`host`、`end`），不是 JSONPath——不支持 `$.data.vm`、通配符或函数；字段在真实任务/告警数据中必须存在，取值失败的变量不会写入变量池。

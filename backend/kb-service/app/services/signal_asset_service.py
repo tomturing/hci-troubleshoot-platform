@@ -6,16 +6,26 @@ backend/kb-service/app/services/signal_asset_service.py
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Mapping
 from typing import Any
 
 from shared.observability.otel import get_current_trace_id
-from sqlalchemy import select, text
+from shared.schemas.acquirer_args import (
+    ACQUIRER_ARGS_SCHEMA,
+    BACKEND_TOOLS,
+    DEFAULT_EXTERNAL_SIGNAL_VARIABLES,
+    EXECUTABLE_SIGNAL_TOOLS,
+    QKV_ALLOWED_PRODUCE_PATHS,
+    QKV_STANDARD_OUTPUTS,
+)
+from shared.schemas.log_source_catalog import LOG_MATCHER_TYPES
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.signal_assets import SignalFailureExtraction, SignalModelingTemplate
+from app.models.signal_assets import SignalBestPractice, SignalFailureExtraction, SignalModelingTemplate
 
 logger = logging.getLogger("signal_asset_service")
 
@@ -25,6 +35,96 @@ CACHE_TTL_SECONDS = 60.0
 
 
 class SignalAssetService:
+    @staticmethod
+    def _infer_pattern_category(tool: str, signal: dict[str, Any]) -> str:
+        args = (signal.get("acquire") or {}).get("args") or {}
+        matcher = signal.get("match") or {}
+        matcher_type = matcher.get("type") if isinstance(matcher, dict) else "produces"
+        subject = args.get("file") or args.get("command") or args.get("keyword") or "标准契约"
+        return f"{tool}:{matcher_type}({str(subject)[:24]})"
+
+    @classmethod
+    async def sync_published_kbd_best_practices(
+        cls,
+        session: AsyncSession,
+        *,
+        kbd: Any,
+        source_revision: int,
+        source_checksum: str,
+    ) -> int:
+        """把一次专家发布快照沉淀为不可变 Few-Shot 资产，并切换 active 指针。"""
+
+        await session.execute(
+            update(SignalBestPractice)
+            .where(SignalBestPractice.source_kbd_id == kbd.id)
+            .values(is_active=False)
+        )
+        templates = await session.execute(select(SignalModelingTemplate.id, SignalModelingTemplate.tool_name))
+        template_ids = {tool_name: template_id for template_id, tool_name in templates.all()}
+        document = getattr(kbd, "signals_json", None) or {}
+        signals = document.get("signals") if isinstance(document, dict) else []
+        activated = 0
+        for signal in signals or []:
+            if not isinstance(signal, dict):
+                continue
+            tool = str((signal.get("acquire") or {}).get("tool") or "")
+            if tool not in EXECUTABLE_SIGNAL_TOOLS:
+                continue
+            signal_id = str(signal.get("id") or "").strip()
+            if not signal_id:
+                continue
+            existing = await session.scalar(
+                select(SignalBestPractice).where(
+                    SignalBestPractice.source_kbd_id == kbd.id,
+                    SignalBestPractice.source_checksum == source_checksum,
+                    SignalBestPractice.signal_id == signal_id,
+                )
+            )
+            if existing is not None:
+                existing.is_active = True
+                activated += 1
+                continue
+            args = (signal.get("acquire") or {}).get("args") or {}
+            evidence = (
+                (signal.get("provenance") or {}).get("evidence")
+                or args.get("instruction")
+                or getattr(kbd, "title", "")
+            )
+            session.add(
+                SignalBestPractice(
+                    template_id=template_ids.get(tool),
+                    tool_name=tool,
+                    pattern_category=cls._infer_pattern_category(tool, signal),
+                    source_kbd_id=kbd.id,
+                    support_id=getattr(kbd, "support_id", None),
+                    source_revision=source_revision,
+                    source_checksum=source_checksum,
+                    signal_id=signal_id,
+                    raw_evidence=str(evidence),
+                    signal_json=json.loads(json.dumps(signal, ensure_ascii=False)),
+                    design_notes=(signal.get("review") or {}).get("notes")
+                    or f"来源于已发布 KBD {getattr(kbd, 'support_id', kbd.id)} 修订 {source_revision}",
+                    completeness_score=10,
+                    is_active=True,
+                )
+            )
+            activated += 1
+        cls.invalidate_cache()
+        return activated
+
+    @classmethod
+    async def deactivate_kbd_best_practices(cls, session: AsyncSession, kbd_id: int) -> None:
+        await session.execute(
+            update(SignalBestPractice)
+            .where(SignalBestPractice.source_kbd_id == kbd_id)
+            .values(is_active=False)
+        )
+        cls.invalidate_cache()
+
+    @staticmethod
+    def invalidate_cache() -> None:
+        _CACHE.clear()
+
     @classmethod
     async def get_all_templates(cls, session: AsyncSession) -> dict[str, dict[str, Any]]:
         """获取所有激活的信号类型模板（带内存 TTL 缓存）"""
@@ -37,7 +137,7 @@ class SignalAssetService:
 
         res = await session.execute(select(SignalModelingTemplate).where(SignalModelingTemplate.is_active.is_(True)))
         templates = res.scalars().all()
-        result = {
+        stored = {
             t.tool_name: {
                 "id": t.id,
                 "tool_name": t.tool_name,
@@ -50,6 +150,37 @@ class SignalAssetService:
             }
             for t in templates
         }
+        result: dict[str, dict[str, Any]] = {}
+        generic_matchers = ["keyword", "regex", "state", "boolean", "threshold", "delta", "trend", "exists"]
+        for tool_name in sorted(EXECUTABLE_SIGNAL_TOOLS):
+            descriptive = stored.get(tool_name, {})
+            allowed_matchers = (
+                list(LOG_MATCHER_TYPES)
+                if tool_name == "qfk_log"
+                else generic_matchers
+                if tool_name in BACKEND_TOOLS
+                else []
+            )
+            result[tool_name] = {
+                "id": descriptive.get("id"),
+                "tool_name": tool_name,
+                "category": "backend" if tool_name in BACKEND_TOOLS else "frontend",
+                "description": descriptive.get("description") or "由代码契约生成的 Signal 建模模板",
+                # 机器可执行字段永远覆盖数据库里的历史描述性快照，避免旧模板继续
+                # 诱导 LLM 生成已被 Handler/Schema 淘汰的参数。
+                "acquire_schema": ACQUIRER_ARGS_SCHEMA[tool_name],
+                "allowed_matcher_types": allowed_matchers,
+                "variable_protocol": {
+                    "external_variables": list(DEFAULT_EXTERNAL_SIGNAL_VARIABLES),
+                    "allowed_produce_paths": sorted(QKV_ALLOWED_PRODUCE_PATHS.get(tool_name, ())),
+                    "fixed_outputs": [
+                        {"name": name, "path": path}
+                        for name, path in QKV_STANDARD_OUTPUTS.get(tool_name, ())
+                    ],
+                },
+                "anti_patterns": descriptive.get("anti_patterns") or [],
+                "contract_source": "shared.schemas.acquirer_args",
+            }
         _CACHE[cache_key] = (now + CACHE_TTL_SECONDS, result)
         return result
 
@@ -72,7 +203,9 @@ class SignalAssetService:
         res = await session.execute(
             text(
                 """
-                SELECT id, tool_name, pattern_category, support_id, raw_evidence, signal_json, design_notes
+                SELECT id, tool_name, pattern_category, support_id,
+                       source_revision, source_checksum, signal_id,
+                       raw_evidence, signal_json, design_notes
                 FROM signal_best_practice
                 WHERE tool_name = :tool_name AND is_active = TRUE
                 ORDER BY completeness_score DESC, id DESC LIMIT :limit
@@ -90,6 +223,9 @@ class SignalAssetService:
                 "tool_name": bp["tool_name"] if isinstance(bp, Mapping) else bp.tool_name,
                 "pattern_category": bp["pattern_category"] if isinstance(bp, Mapping) else bp.pattern_category,
                 "support_id": bp["support_id"] if isinstance(bp, Mapping) else bp.support_id,
+                "source_revision": bp["source_revision"] if isinstance(bp, Mapping) else bp.source_revision,
+                "source_checksum": bp["source_checksum"] if isinstance(bp, Mapping) else bp.source_checksum,
+                "signal_id": bp["signal_id"] if isinstance(bp, Mapping) else bp.signal_id,
                 "raw_evidence": bp["raw_evidence"] if isinstance(bp, Mapping) else bp.raw_evidence,
                 "signal_json": bp["signal_json"] if isinstance(bp, Mapping) else bp.signal_json,
                 "design_notes": bp["design_notes"] if isinstance(bp, Mapping) else bp.design_notes,

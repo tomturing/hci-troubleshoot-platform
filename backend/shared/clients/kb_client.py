@@ -483,3 +483,35 @@ class KBClient(InternalHTTPClient):
                 query=query[:80],
             )
             return []
+
+    async def resolve_semantic_entry(
+        self,
+        *,
+        category_id: str,
+        case_context: str | dict,
+        strong_producer_status: str,
+        top_k: int = 5,
+        expected_revisions: dict[str, int] | None = None,
+    ) -> dict | None:
+        """强生产者未命中时的受限语义入口候选。
+
+        ``case_context`` 可为历史字符串，或包含 description/error_text/object_type/
+        operation 的受控结构化上下文。此接口不会执行任何命令；source_unavailable
+        必须由服务端 fail closed。
+        """
+        try:
+            response = await self.post(
+                f"{self._api_prefix}/kbd/semantic-entry/resolve",
+                json={
+                    "category_id": category_id,
+                    "case_context": case_context,
+                    "strong_producer_status": strong_producer_status,
+                    "top_k": top_k,
+                    "expected_revisions": expected_revisions or {},
+                },
+            )
+            response.raise_for_status()
+            return response.json()
+        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+            logger.warning(event="kb_semantic_entry_resolve_failed", category_id=category_id, error=str(exc))
+            return None

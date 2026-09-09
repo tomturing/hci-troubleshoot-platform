@@ -78,6 +78,43 @@ type PublishedBundleInput struct {
 	InputFingerprint      string
 }
 
+// ResolveGitOpsPublishedBundle 只解析 Runtime 启动同步的 GitOps Bundle。
+// compile_input IS NULL 是与控制面编译制品的硬边界；调用方仍须把对象摘要、
+// 大小和 KBD 身份与内存中已校验的 Manifest 交叉核对。
+func (r *RunRepository) ResolveGitOpsPublishedBundle(
+	ctx context.Context, digest, supportID string, kbdRevision int,
+) (PublishedBundleInput, error) {
+	if r == nil || r.pool == nil || strings.TrimSpace(digest) == "" || strings.TrimSpace(supportID) == "" || kbdRevision < 1 {
+		return PublishedBundleInput{}, errors.New("invalid gitops bundle lookup")
+	}
+	var result PublishedBundleInput
+	err := r.pool.QueryRow(ctx, `
+		SELECT s.support_id, s.kbd_revision, s.variant, b.digest, b.schema_version,
+		       b.object_uri, b.object_digest, b.size_bytes, s.input_fingerprint,
+		       COALESCE(b.package_snapshot_digest, ''), COALESCE(b.knowledge_release_id, ''),
+		       COALESCE(b.bundle_input_digest, ''), COALESCE(b.compiler_revision, '')
+		FROM fixture.bundle b
+		JOIN control_plane.scenario s ON s.id = b.scenario_id
+		WHERE b.digest = $1 AND s.support_id = $2 AND s.kbd_revision = $3
+		  AND b.status = 'published' AND b.compile_input IS NULL
+	`, digest, supportID, kbdRevision).Scan(
+		&result.SupportID, &result.KBDRevision, &result.Variant, &result.Digest,
+		&result.SchemaVersion, &result.ObjectURI, &result.ObjectDigest, &result.SizeBytes,
+		&result.InputFingerprint, &result.PackageSnapshotDigest, &result.KnowledgeReleaseID,
+		&result.BundleInputDigest, &result.CompilerRevision,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PublishedBundleInput{}, errors.New("gitops_bundle_not_found")
+	}
+	if err != nil {
+		return PublishedBundleInput{}, fmt.Errorf("resolve gitops published bundle: %w", err)
+	}
+	if result.InputFingerprint == "" || result.ObjectURI == "" || result.ObjectDigest == "" || result.SizeBytes < 1 {
+		return PublishedBundleInput{}, errors.New("gitops_bundle_metadata_incomplete")
+	}
+	return result, nil
+}
+
 // BundleActivationRecord 是 Runtime 热激活指针的持久化确认状态。
 // Manifest 内容和 digest 身份仍由 fixture.bundle/object store 管理。
 type BundleActivationRecord struct {

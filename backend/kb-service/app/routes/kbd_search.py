@@ -10,9 +10,10 @@ GET /api/kb/kbd/search
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 from shared.dynamic_resource.loader import DynamicResourceLoader, snapshot_revision_metadata
 from shared.dynamic_resource.models import UsageRecord, UsageStatus
 from shared.observability.logger import get_logger
@@ -74,6 +75,129 @@ def _entry_to_case_dict(entry: KbdEntry, similarity: float) -> dict[str, Any]:
         "recommendations": entry.recommendations,
         "signals": signals_list,
     }
+
+
+class SemanticCaseContext(BaseModel):
+    """客户已提交事实的检索载体；字段均不得由 LLM 推断。"""
+
+    description: str = Field(min_length=1, max_length=16000)
+    error_text: str | None = Field(default=None, max_length=1000)
+    object_type: str | None = Field(default=None, max_length=120)
+    operation: str | None = Field(default=None, max_length=120)
+    product: str | None = Field(default=None, max_length=120)
+    product_version: str | None = Field(default=None, max_length=120)
+    component: str | None = Field(default=None, max_length=120)
+
+
+class SemanticEntryResolveRequest(BaseModel):
+    """受限语义入口请求；context 仅允许用户已提交的故障文字。"""
+
+    category_id: str = Field(min_length=1, max_length=32)
+    # 兼容历史调用方传字符串；新调用方传结构化片段，KB 服务仍会做确定性归一化。
+    case_context: SemanticCaseContext | Annotated[str, Field(min_length=1, max_length=16000)] = Field(
+        union_mode="left_to_right"
+    )
+    strong_producer_status: Literal["matched", "no_match", "source_unavailable", "not_applicable"] = Field(
+        description="真实未命中为 no_match；分类没有强生产者为 not_applicable；已命中或查询不可用时禁止兜底"
+    )
+    top_k: int = Field(default=5, ge=1, le=10)
+    expected_revisions: dict[str, int] = Field(default_factory=dict)
+
+
+@router.post("/kbd/semantic-entry/resolve")
+async def resolve_semantic_entry(request: SemanticEntryResolveRequest) -> dict[str, Any]:
+    """只从权威发布快照检索，返回可审计候选而非根因。"""
+    from shared.dynamic_resource.loader import ResourceNotFoundError
+    from shared.observability.redaction import redact_observation_value
+    from shared.schemas.semantic_routing import resolve_candidates
+
+    from app.routes.playbooks import _execution_issues
+
+    if request.strong_producer_status not in {"no_match", "not_applicable"}:
+        return await resolve_candidates(
+            entries=[],
+            context=request.case_context.model_dump()
+            if isinstance(request.case_context, SemanticCaseContext)
+            else request.case_context,
+            strong_status=request.strong_producer_status,
+        )
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="服务依赖未初始化")
+    context = (
+        request.case_context.model_dump(exclude_none=True)
+        if isinstance(request.case_context, SemanticCaseContext)
+        else request.case_context
+    )
+    context = redact_observation_value(context)
+    entries = []
+    async with _db_manager.async_session_factory() as session:
+        loader = DynamicResourceLoader(session)
+        result = await session.execute(
+            select(KbdEntry).where(KbdEntry.category_id == request.category_id, KbdEntry.status == "published")
+        )
+        for entry in result.scalars().all():
+            try:
+                snapshot = await loader.get_active("kbd", str(entry.id))
+            except ResourceNotFoundError:
+                continue
+            content = snapshot.content
+            if snapshot.status != "published" or content.get("status", "published") != "published":
+                continue
+            if content.get("category_id") != request.category_id:
+                continue
+            expected = request.expected_revisions.get(str(entry.id))
+            if expected is not None and expected != snapshot.revision:
+                raise HTTPException(status_code=409, detail="KBD 画像修订已变更，请重新加载分类快照后重试")
+            document = content.get("signals_json") or {}
+            if not isinstance(document, dict):
+                document = {"schema_version": 2, "signals": document}
+            issues = _execution_issues(
+                document.get("signals") or [],
+                document,
+                support_id=content.get("support_id"),
+                category_id=request.category_id,
+            )
+            entries.append(
+                {
+                    **content,
+                    "id": str(entry.id),
+                    "signals_json": document,
+                    "executable": not issues,
+                    "resource_revision": snapshot_revision_metadata(snapshot),
+                }
+            )
+        if request.expected_revisions and {entry["id"] for entry in entries} != set(request.expected_revisions):
+            raise HTTPException(status_code=409, detail="分类发布成员已变更，请重新加载完整分类快照后重试")
+        resolved = await resolve_candidates(
+            entries=entries,
+            context=context,
+            strong_status=request.strong_producer_status,
+            embed=_embedding_service.embed_batch if _embedding_service else None,
+            embedding_namespace=(str(settings.LLM_BASE_URL) + ":" + _embedding_service.model_name)
+            if _embedding_service
+            else "",
+            top_k=request.top_k,
+        )
+        # 运行时使用的精确修订进入现有审计，停用／回滚不会归属到错误版本。
+        for candidate in resolved["candidates"]:
+            revision = candidate.get("resource_revision") or {}
+            snapshot = await loader.get_revision("kbd", candidate["kbd_id"], int(revision["revision"]))
+            await loader.audit_usage(
+                snapshot,
+                UsageRecord(
+                    consumer="semantic-entry",
+                    trace_id=get_current_trace_id(),
+                    status=UsageStatus.SUCCESS,
+                    input_payload=context,
+                    output_payload=candidate,
+                    metadata={
+                        "routing_version": resolved["routing_version"],
+                        "profile_digest": candidate["profile_digest"],
+                    },
+                ),
+            )
+        await session.commit()
+    return resolved
 
 
 async def _load_entries_in_order(session: Any, ids: list[int]) -> list[KbdEntry]:

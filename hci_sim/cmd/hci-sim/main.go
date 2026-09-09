@@ -39,6 +39,9 @@ func main() {
 	if filepath.Base(os.Args[0]) == "acli" {
 		os.Exit(runLocalACLI(os.Args[1:]))
 	}
+	if filepath.Base(os.Args[0]) == "vtpsh" {
+		os.Exit(runLocalVTPSH(os.Args[1:]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "lease" {
 		if err := runLease(os.Args[2:]); err != nil {
 			log.Fatal(err)
@@ -444,6 +447,18 @@ func runServer() error {
 				bundleMetadata, metadataErr = runtimeBundleMetadataFromRecord(router, record)
 			}
 			if metadataErr != nil {
+				// Runtime 启动同步的 GitOps Bundle 没有 compile_input/对象存储副本，
+				// 只能走专用查询。查询硬性要求 compile_input IS NULL，控制面编译
+				// 制品的对象损坏不能借此降级绕过。
+				gitOpsRecord, gitOpsErr := runRepository.ResolveGitOpsPublishedBundle(
+					r.Context(), router.BundleDigest(), router.KBD().SupportID, router.KBD().Revision,
+				)
+				if gitOpsErr == nil {
+					bundleMetadata, gitOpsErr = runtimeBundleMetadataFromGitOps(router, gitOpsRecord)
+				}
+				metadataErr = gitOpsErr
+			}
+			if metadataErr != nil {
 				log.Printf("hci-sim active Bundle metadata resolve failed trace_id=%s support_id=%s digest=%s error=%v", requestTraceID(r), request.KBDID, router.BundleDigest(), metadataErr)
 				http.Error(w, "hci_sim active Bundle metadata unavailable", http.StatusServiceUnavailable)
 				return
@@ -501,7 +516,7 @@ func runServer() error {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		environmentContext = simulationEnvironmentContext(router, runID, strings.TrimSpace(request.CaseID), activeVariant)
-		_ = json.NewEncoder(w).Encode(map[string]any{"test_run_id": runID, "case_id": strings.TrimSpace(request.CaseID), "support_id": request.KBDID, "bundle_digest": router.BundleDigest(), "synthetic": router.IsSynthetic(), "fixture_class": fixtureClass(router), "release_profile": releaseProfile(), "environment_context": environmentContext, "connection": map[string]any{"host": env("HCI_SIM_SSH_HOST", "hci-sim.hci-sim-dev.svc"), "port": strings.TrimPrefix(env("HCI_SIM_SSH_LISTEN", ":2222"), ":"), "username": "sim", "auth_type": "lease", "password": token, "execution_mode": "sim-ssh", "test_run_id": runID}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"test_run_id": runID, "case_id": strings.TrimSpace(request.CaseID), "support_id": request.KBDID, "bundle_digest": router.BundleDigest(), "synthetic": router.IsSynthetic(), "fixture_class": fixtureClass(router), "release_profile": releaseProfile(), "environment_context": environmentContext, "connection": simulationConnection(runID, token)})
 	})
 	mux.HandleFunc("/v1/simulations/test-runs", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || !controlAuthorized(r) {
@@ -679,6 +694,29 @@ func runServer() error {
 	return httpServer.Shutdown(shutdownCtx)
 }
 
+func runtimeBundleMetadataFromGitOps(router *fixture.Router, record database.PublishedBundleInput) (runtimeBundleMetadata, error) {
+	if router == nil || record.Digest != router.BundleDigest() || record.SupportID != router.KBD().SupportID || record.KBDRevision != router.KBD().Revision {
+		return runtimeBundleMetadata{}, errors.New("GitOps Bundle Registry 元数据与 Router 不一致")
+	}
+	metadata := runtimeBundleMetadata{
+		InputFingerprint:      strings.TrimSpace(record.InputFingerprint),
+		PackageSnapshotDigest: strings.TrimSpace(record.PackageSnapshotDigest),
+		KnowledgeReleaseID:    strings.TrimSpace(record.KnowledgeReleaseID),
+		BundleBuildID:         strings.TrimSpace(record.Digest),
+		SchemaVersion:         strings.TrimSpace(record.SchemaVersion),
+		ObjectURI:             strings.TrimSpace(record.ObjectURI),
+		ObjectDigest:          strings.TrimSpace(record.ObjectDigest),
+		SizeBytes:             record.SizeBytes,
+	}
+	if metadata.InputFingerprint == "" || metadata.SchemaVersion != router.SchemaVersion() || metadata.ObjectURI == "" {
+		return runtimeBundleMetadata{}, errors.New("GitOps Bundle Registry 元数据不完整")
+	}
+	if metadata.ObjectDigest != router.ManifestHash() || metadata.SizeBytes != router.ManifestSize() {
+		return runtimeBundleMetadata{}, errors.New("GitOps Bundle 对象身份与已加载 Manifest 不一致")
+	}
+	return metadata, nil
+}
+
 // runtimeBundleActivationLoop 以低频重试 durable pointer，发布请求无需等待 GitOps
 // 滚动重启；短暂故障恢复后仍能得到明确的 Runtime ACK。
 func runtimeBundleActivationLoop(ctx context.Context, activator *runtimeBundleActivator) {
@@ -703,13 +741,21 @@ func runtimeBundleActivationLoop(ctx context.Context, activator *runtimeBundleAc
 }
 
 func simulationEnvironmentContext(router *fixture.Router, runID, caseID, variant string) map[string]any {
-	components := make([]string, 0)
-	for _, component := range strings.Split(env("HCI_SIM_COMPONENTS", "虚拟机"), ",") {
-		if value := strings.TrimSpace(component); value != "" {
-			components = append(components, value)
-		}
+	scope := router.Environment()
+	products := configuredValues("HCI_SIM_PRODUCT", scope.Products)
+	versions := configuredValues("HCI_SIM_PRODUCT_VERSION", scope.Versions)
+	components := configuredValues("HCI_SIM_COMPONENTS", scope.Components)
+	topology := configuredValues("HCI_SIM_TOPOLOGY", scope.TopologyConstraints)
+	if len(products) == 0 {
+		products = []string{"HCI"}
 	}
-	return map[string]any{
+	if len(versions) == 0 {
+		versions = []string{"unspecified"}
+	}
+	if len(components) == 0 {
+		components = []string{"unspecified"}
+	}
+	context := map[string]any{
 		"simulation":      true,
 		"execution_mode":  "sim-ssh",
 		"test_run_id":     runID,
@@ -718,16 +764,45 @@ func simulationEnvironmentContext(router *fixture.Router, runID, caseID, variant
 		"support_id":      router.KBD().SupportID,
 		"kbd_revision":    router.KBD().Revision,
 		"bundle_digest":   router.BundleDigest(),
-		"product":         env("HCI_SIM_PRODUCT", "HCI"),
-		"version":         env("HCI_SIM_PRODUCT_VERSION", "6.11.1_R1"),
+		"product":         products[0],
+		"version":         versions[0],
 		"components":      components,
-		"topology":        []string{},
+		"topology":        topology,
 		"virtual_node_id": "SIM-HCI-NODE-01",
 		"node_ip":         env("HCI_SIM_SSH_HOST", "hci-sim.hci-sim-dev.svc"),
 		"container":       "host",
 		"authority_scope": env("HCI_SIM_AUTHORITY_SCOPE", "runtime_fixture"),
 		"active_revision": router.KBD().Revision,
 	}
+	// 场景画像变量是 TestRun 的权威已知事实。内部完整性字段不外发，且变量
+	// 不得覆盖 Runtime 绑定字段；其余变量以顶层键提供给 Agent 的模板解析器。
+	reserved := map[string]bool{"SYNTHETIC": true, "FACTS_BOUNDARY": true, "SIGNALS_DIGEST": true}
+	for key, value := range router.Variables() {
+		if reserved[key] || strings.TrimSpace(key) == "" {
+			continue
+		}
+		if _, exists := context[key]; !exists {
+			context[key] = value
+		}
+	}
+	return context
+}
+
+func configuredValues(name string, fallback []string) []string {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		// JSON 必须把空集合编码成 []，不能编码成 null。仿真上下文是跨服务
+		// 消费的权威契约；nil slice 会变成 null，导致“没有拓扑约束”这一
+		// 合法状态被 conversation-service 拒绝。
+		return append([]string{}, fallback...)
+	}
+	values := make([]string, 0)
+	for _, item := range strings.Split(raw, ",") {
+		if value := strings.TrimSpace(item); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 func publishedBundleInputs(pool *fixture.BundlePool, variant string) []database.PublishedBundleInput {
@@ -762,6 +837,25 @@ func simulationBuildable(requestedID string, runtimeKBD fixture.KBDRef, activeRe
 		bundleDigest != "" &&
 		authorityScope != "runtime_fixture" &&
 		(!synthetic || profile == "internal_fast")
+}
+
+func simulationConnection(runID, token string) map[string]any {
+	// Kubernetes Service 暴露端口通常与容器监听端口相同；本地 diagnosis-lab
+	// 会把容器 2222 映射到随机宿主机端口，因此必须能单独声明浏览器/Bridge
+	// 实际可达的 public port，不能把 HCI_SIM_SSH_LISTEN 错当成外部端口。
+	port := strings.TrimSpace(os.Getenv("HCI_SIM_SSH_PUBLIC_PORT"))
+	if port == "" {
+		port = strings.TrimPrefix(env("HCI_SIM_SSH_LISTEN", ":2222"), ":")
+	}
+	return map[string]any{
+		"host":           env("HCI_SIM_SSH_HOST", "hci-sim.hci-sim-dev.svc"),
+		"port":           port,
+		"username":       "sim",
+		"auth_type":      "lease",
+		"password":       token,
+		"execution_mode": "sim-ssh",
+		"test_run_id":    runID,
+	}
 }
 
 func fixtureClass(router *fixture.Router) string {

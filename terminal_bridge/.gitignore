@@ -1,2 +1,4 @@
 # 本地构建产物（CI 产物在 frontend/customer/public/downloads/terminal_bridge.exe）
 terminal_bridge.exe
+# 桌面 Bridge 首次连接时写入的本机主机指纹缓存，可能包含客户环境地址。
+known_hosts

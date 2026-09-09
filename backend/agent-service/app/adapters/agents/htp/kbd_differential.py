@@ -213,6 +213,10 @@ class KBDDiagnostic:
         # 会话级变量池（黑板）：阶段 A 生产者(QKV)写入，阶段 B 消费者(QFK)读取
         self._variable_pool: dict[str, Any] = {}
         self._variable_pool_priority: dict[str, int] = {}
+        self._variable_pool_conflicts: set[str] = set()
+        # 一次 QKV 命令可服务多个 SignalRef；这里只缓存物理采集输出，不缓存任何
+        # Signal 的 produces 或 output_processing 结果，防止代表信号污染其它引用。
+        self._qkv_shared_outputs: dict[str, str] = {}
         # 当前诊断会话内缓存 HCI 节点名称到 IP 的映射，避免每个 QKV 结果重复查询节点列表。
         self._host_ip_cache: dict[str, str] = {}
 
@@ -245,7 +249,23 @@ class KBDDiagnostic:
             )
             return
         old_value = self._variable_pool.get(key)
+        if old_value is not None and old_value != value and existing_priority == producer_priority:
+            # 同一可信度的生产者对同名变量给出不同现场值时，不能由执行顺序决定
+            # 下游命令参数。移除该键会使依赖项被安全阻塞，等待更具体的 Signal 设计。
+            self._variable_pool.pop(key, None)
+            self._variable_pool_priority.pop(key, None)
+            self._variable_pool_conflicts.add(key)
+            logger.warning(
+                event="variable_pool_conflict",
+                name=name,
+                key=key,
+                existing_value_preview=smart_truncate(str(old_value), max_chars=160),
+                incoming_value_preview=smart_truncate(str(value), max_chars=160),
+                producer_priority=producer_priority,
+            )
+            return
         self._variable_pool[key] = value
+        self._variable_pool_conflicts.discard(key)
         if producer_priority is not None:
             self._variable_pool_priority[key] = producer_priority
 
@@ -421,14 +441,29 @@ class KBDDiagnostic:
 
             for ref in active_refs:
                 evaluation_id = self._stable_evaluation_id(exec_id, ref.ref_id)
+                ref_raw_output = raw_output
+                ref_error = error
+                ref_pre_matched = pre_matched if ref.matcher_fingerprint == representative.matcher_fingerprint else None
+                ref_ai_value = ai_value
+                if (
+                    not blocked_reason
+                    and error is None
+                    and exec_id in self._qkv_shared_outputs
+                ):
+                    ref_raw_output, ref_error, ref_pre_matched, ref_ai_value = await self._evaluate_shared_qkv_ref(
+                        ref.signal,
+                        env_context,
+                        session_id,
+                        exec_id,
+                    )
                 outcome = (
                     SignalOutcome.BLOCKED
                     if blocked_reason
                     else self._evaluate_signal_outcome(
                         ref.signal,
-                        raw_output,
-                        error,
-                        pre_matched if ref.matcher_fingerprint == representative.matcher_fingerprint else None,
+                        ref_raw_output,
+                        ref_error,
+                        ref_pre_matched,
                     )
                 )
                 assessments[ref.kbd_id].signal_outcomes[ref.ref_id] = outcome
@@ -436,7 +471,7 @@ class KBDDiagnostic:
                     (ref.signal.get("orchestrate") or {}).get("produces") or ref.signal.get("produces") or ref.produces
                 )
                 produced_variables: dict[str, Any] = {}
-                if not error:
+                if not ref_error:
                     for item in declared_produces:
                         name = item.get("name") if isinstance(item, dict) else item
                         key = str(name or "").strip().lower()
@@ -445,8 +480,8 @@ class KBDDiagnostic:
                 result = StepResult(
                     tool_name=acquisition.tool_name,
                     tool_args=resolved_args,
-                    raw_output=raw_output,
-                    error=error,
+                    raw_output=ref_raw_output,
+                    error=ref_error,
                     match_kbd_ids={ref.kbd_id} if outcome is SignalOutcome.SATISFIED else set(),
                     kbd_id=ref.kbd_id,
                     signal_id=ref.signal_id,
@@ -456,7 +491,7 @@ class KBDDiagnostic:
                     outcome=outcome,
                     required=ref.required_for_support,
                     produced_variables=produced_variables,
-                    ai_value=ai_value,
+                    ai_value=ref_ai_value,
                 )
                 steps_executed.append(result)
                 yield AgentStageUpdate(stage="tool_result", metadata=self._tool_result_metadata(result))
@@ -475,8 +510,8 @@ class KBDDiagnostic:
                             "acquisition_id": acquisition.template_key,
                             "tool_name": acquisition.tool_name,
                             "tool_args": resolved_args,
-                            "raw_output": smart_truncate(raw_output or "", max_chars=500),
-                            "error": error,
+                            "raw_output": smart_truncate(ref_raw_output or "", max_chars=500),
+                            "error": ref_error,
                             "outcome": outcome.value,
                             "produced_variables": result.produced_variables,
                         },
@@ -604,6 +639,19 @@ class KBDDiagnostic:
             environment=env_context,
         )
 
+        logger.info(
+            event="kbd_diagnostic_conclusion",
+            message="CDD 结论门禁已完成",
+            session_id=session_id,
+            case_id=self._case_id or "",
+            snapshot_id=snapshot_id,
+            conclusion_level=decision.level.value,
+            is_definitive=definitive,
+            supported_support_ids=[kbd.support_id or str(kbd.id) for kbd in supported],
+            candidate_states={kbd_id: item.state.value for kbd_id, item in assessments.items()},
+            candidate_reasons={kbd_id: list(item.reasons) for kbd_id, item in assessments.items()},
+        )
+
         yield AgentStageUpdate(
             stage="kbd_diag_complete",
             metadata={
@@ -613,6 +661,10 @@ class KBDDiagnostic:
                 "is_definitive": definitive,
                 "conclusion_level": decision.level.value,
                 "supported_kbds": list(decision.supported_ids),
+                # supported_kbds 是平台内部 KBD 主键，历史消费者仍依赖该字段。
+                # 仿真 oracle 和人工报告应使用稳定的案例编号，不能把内部主键与
+                # TestRun 输入的 support_id 混为一谈。
+                "supported_support_ids": [kbd.support_id or str(kbd.id) for kbd in supported],
                 "rejected_kbds": list(decision.rejected_ids),
                 "inconclusive_kbds": list(decision.inconclusive_ids),
                 "not_executable_kbds": list(decision.not_executable_ids),
@@ -816,11 +868,15 @@ class KBDDiagnostic:
             return SignalOutcome.UNKNOWN
         matcher = signal.get("match")
         if matcher is None:
+            produces = (signal.get("orchestrate") or {}).get("produces") or []
+            # QKV/QFK producer 的“未提取到值或后处理断言失败”是明确的反证，
+            # 不能因为它属于 frontend category 而退化为 UNKNOWN。
+            if produces:
+                if pre_matched is None:
+                    return SignalOutcome.UNKNOWN
+                return SignalOutcome.SATISFIED if pre_matched else SignalOutcome.CONTRADICTED
             if _signal_category(signal) == "frontend":
                 return SignalOutcome.SATISFIED if pre_matched is True else SignalOutcome.UNKNOWN
-            produces = (signal.get("orchestrate") or {}).get("produces") or []
-            if produces:
-                return SignalOutcome.SATISFIED if pre_matched is True else SignalOutcome.CONTRADICTED
             return SignalOutcome.UNKNOWN
         if pre_matched is not None:
             return SignalOutcome.SATISFIED if pre_matched else SignalOutcome.CONTRADICTED
@@ -1341,22 +1397,23 @@ class KBDDiagnostic:
         execution_mode: str | None = None,
         session_id: str,
     ) -> list[dict[str, Any]]:
-        """归一化 QKV 结果中的 HOST，并返回用于变量池与报告的结果副本。"""
+        """复制 QKV 结果，同时保留其中的逻辑 HOST 标识。
+
+        QKV 返回的 ``host`` 是 HCI 业务对象标识（节点名称/ID），不是 Terminal
+        Bridge 的传输地址。它既会参与后续信号模板渲染，也会被
+        ``qkv_vm_console`` 用于虚拟机归属清单校验，因此不能在写入变量池前改写
+        成 ``node_ip``。
+
+        QFK 消费者真正发起远程命令时，会在 ``_execute_acquirer`` 的执行边界通过
+        ``_resolve_host_ip`` 把逻辑 HOST 解析为受管连接端点。保留这里的参数是为了
+        兼容现有调用方；HOST 解析职责已经明确下沉到消费者执行边界。
+        """
         normalized: list[dict[str, Any]] = []
         for item in values:
             if not isinstance(item, dict):
                 normalized.append(item)
                 continue
-            current = dict(item)
-            for key, value in item.items():
-                if str(key).strip().lower() == "host":
-                    current[key] = await self._resolve_host_ip(
-                        value,
-                        node_ip=node_ip,
-                        execution_mode=execution_mode,
-                        session_id=session_id,
-                    )
-            normalized.append(current)
+            normalized.append(dict(item))
         return normalized
 
     async def _fill_pool_from_qkv(
@@ -1411,7 +1468,20 @@ class KBDDiagnostic:
             execution_mode=execution_mode,
             session_id=session_id or self._conversation_id or "",
         )
-        first = res.values[0]
+        from shared.signals.qkv_parser import first_complete_produced_record
+
+        first = first_complete_produced_record(res.values, produces)
+        if first is None:
+            logger.warning(
+                event="qkv_producer_incomplete",
+                signal_id=signal.get("id") or signal.get("signal_id"),
+                declared_variables=[
+                    str(item.get("name") or "")
+                    for item in produces
+                    if isinstance(item, dict) and str(item.get("name") or "").strip()
+                ],
+            )
+            return
         # 同一案例允许 qkv_alert/qkv_task 作为替代证据。任务记录包含更完整的执行
         # 上下文，故标准变量采用 task > alert > dialog 的确定性优先级，与执行顺序无关。
         producer_priority = {
@@ -1427,7 +1497,8 @@ class KBDDiagnostic:
             # 提取后的 dict key 是 name.lower()（见 parser._extract_by_produces line 90）
             val = first.get(name.lower()) if isinstance(first, dict) else None
             if val is not None:
-                self._set_pool_var(name, val, producer_priority=producer_priority)
+                effective_name = str(spec.get("alias") or name).strip()
+                self._set_pool_var(effective_name, val, producer_priority=producer_priority)
 
         # 自动派生：若生产者写入了 END 变量，自动派生 DATE 变量 (YYYY-MM-DD)，供下游 qfk_log 等检索日志
         end_val = self._variable_pool.get("end") or self._variable_pool.get("END")
@@ -1447,6 +1518,87 @@ class KBDDiagnostic:
             values = [item[name.lower()] for item in res.values if isinstance(item, dict) and name.lower() in item]
             if values:
                 self._set_pool_var(name, values[0] if len(values) == 1 else values, producer_priority=producer_priority)
+
+    async def _evaluate_shared_qkv_ref(
+        self,
+        signal: dict[str, Any],
+        env_context: dict[str, str],
+        session_id: str,
+        exec_id: str,
+    ) -> tuple[str | None, str | None, bool | None, Any | None]:
+        """以各自配置重放共享 QKV 的采集输出，不重复执行现场命令。
+
+        CDD 的 acquisition 只代表物理查询可以去重；``produces``、派生和断言
+        属于 SignalRef，必须逐条执行。否则不同断言会错误继承代表信号的 PASS。
+        """
+        raw_output = self._qkv_shared_outputs.get(exec_id)
+        if raw_output is None:
+            return None, "QKV_SHARED_OUTPUT_MISSING: 共享采集未保留原始输出", None, None
+        try:
+            from shared.signals.qkv_output_processing import apply_output_processing_async
+
+            from app.tools.qkv.engine import QKVResult
+            from app.tools.qkv.parser import parse_frontend_value
+
+            signal_context = dict(env_context)
+            signal_context.update(self._variable_pool)
+            frontend_signal = self._signal_to_qkv(signal, signal_context)
+            if frontend_signal is None:
+                return None, "无法构建前端信号", None, None
+            values = parse_frontend_value(frontend_signal.query, raw_output, frontend_signal.produces)
+            processed = await apply_output_processing_async(
+                values,
+                frontend_signal.output_processing,
+                ai_client=self._ai_registry.get_client(self._assistant_type),
+                conversation_id=self._conversation_id or session_id,
+                case_id=self._case_id or "",
+                db_session_factory=self._db_session_factory,
+            )
+            result = QKVResult(
+                success=True,
+                query=frontend_signal.query.value,
+                keyword=frontend_signal.keyword,
+                command="共享 QKV 采集结果",
+                values=processed.records,
+                assertions=[
+                    {
+                        "unit_index": item.unit_index,
+                        "status": item.status,
+                        "observed": item.observed,
+                        "reason": item.reason,
+                        "evidence": item.evidence,
+                    }
+                    for item in processed.assertions
+                ],
+                matched=processed.matched,
+                processing_applied=True,
+                raw_output=raw_output,
+            )
+            await self._fill_pool_from_qkv(
+                signal,
+                result,
+                node_ip=env_context.get("node_ip"),
+                execution_mode=env_context.get("execution_mode"),
+                session_id=session_id,
+            )
+            complete = self._qkv_producer_complete(signal, result.values)
+            pre_matched = bool(result.matched) and complete if result.assertions else complete
+            return result.to_observation(), None, pre_matched, None
+        except Exception as exc:
+            logger.exception(
+                event="shared_qkv_ref_evaluation_failed",
+                signal_id=signal.get("id") or signal.get("signal_id"),
+                exec_id=exec_id,
+                error=str(exc),
+            )
+            return None, str(exc), None, None
+
+    @staticmethod
+    def _qkv_producer_complete(signal: dict[str, Any], values: list[dict[str, Any]]) -> bool:
+        from shared.signals.qkv_parser import first_complete_produced_record
+
+        produces = (signal.get("orchestrate") or {}).get("produces") or []
+        return first_complete_produced_record(values, produces) is not None
 
     async def _execute_acquirer(
         self,
@@ -1556,6 +1708,11 @@ class KBDDiagnostic:
                     )
                     self._fill_pool_from_qkv_on_step(step, res)
 
+                # 采集输出用于本轮其它 SignalRef 的本地处理复放。缓存键是稳定 exec_id，
+                # 生命周期仅限当前 KBDDiagnostic 实例，不会跨会话复用现场证据。
+                if exec_id:
+                    self._qkv_shared_outputs[exec_id] = res.raw_output
+
                 # P2: 信号执行成功日志
                 logger.info(
                     event="signal_exec_success",
@@ -1564,7 +1721,8 @@ class KBDDiagnostic:
                     session_id=session_id,
                 )
                 assertions = getattr(res, "assertions", None) or []
-                pre_matched = res.matched if assertions else bool(res.values)
+                complete = self._qkv_producer_complete(signal or {}, res.values)
+                pre_matched = bool(res.matched) and complete if assertions else complete
                 return res.to_observation(), None, pre_matched, None
             except Exception as exc:
                 logger.error(
@@ -1732,8 +1890,9 @@ class KBDDiagnostic:
 
         for spec in valid_specs:
             name = str(spec["name"]).strip()
+            effective_name = str(spec.get("alias") or name).strip()
             if name in ai_values:
-                pending_values.append((name, ai_values[name]))
+                pending_values.append((effective_name, ai_values[name]))
                 continue
             extract_spec = spec.get("extract")
             if not isinstance(extract_spec, dict):
@@ -1750,7 +1909,7 @@ class KBDDiagnostic:
                 )
             except QFKExtractionError as exc:
                 return False, f"QFK 产出变量 {name} 提取失败：{exc}"
-            pending_values.append((name, value))
+            pending_values.append((effective_name, value))
         for name, value in pending_values:
             self._set_pool_var(name, value)
         return True, None
@@ -1925,7 +2084,7 @@ class KBDDiagnostic:
         if len(parts) != 2 or parts[0] != "qkv":
             return None
         try:
-            query = FrontendQueryType(parts[1])
+            _query = FrontendQueryType(parts[1])
         except ValueError:
             return None
         args = self._resolve_args(acquire.get("args") or {}, env_context, {})
@@ -1935,18 +2094,19 @@ class KBDDiagnostic:
             # 回退到 admin-ui 配置的 tool_definition 默认值。
             produces = self._tool_def_default(acquirer, "produces") or []
         try:
-            # 统一走 FrontendSignal.from_dict，确保“启动虚拟机失败”被规范化为
-            # keyword="启动虚拟机" + is_failed=true，与 QKV 命令契约一致。
+            # 保留 Signal v2 的嵌套形态交给运行时直接消费。已审核发布的 keyword、
+            # is_failed 等参数共同构成 RouteKey，不能在适配层退化成旧扁平输入后
+            # 再次执行历史关键词清洗，否则在线命令会与仿真/离线制品漂移。
             return FrontendSignal.from_dict(
                 {
-                    "query": query.value,
-                    "keyword": str(args.get("keyword", "")),
-                    "is_failed": bool(args.get("is_failed", False)),
-                    "limit": int(args.get("limit", 100)),
-                    "paths": args.get("paths", ["/sf/log/today", "/sf/log/today/vt"]),
-                    "context_lines": int(args.get("context_lines", 2)),
-                    "produces": produces,
-                    "output_processing": (signal.get("orchestrate") or {}).get("output_processing") or [],
+                    "acquire": {
+                        "tool": acquirer,
+                        "args": args,
+                    },
+                    "orchestrate": {
+                        "produces": produces,
+                        "output_processing": (signal.get("orchestrate") or {}).get("output_processing") or [],
+                    },
                 }
             )
         except Exception:

@@ -1,7 +1,7 @@
 # HCI智能排障平台 - Makefile
 # 依赖管理: uv (https://docs.astral.sh/uv/)
 
-.PHONY: help install compose-check dev-up dev-down db-sync diagnosis-dev-keys diagnosis-sample-preflight diagnosis-sample-postgres-preflight diagnosis-lab-list diagnosis-lab-check diagnosis-lab-sync diagnosis-lab-up diagnosis-lab-status diagnosis-lab-connection diagnosis-lab-renew diagnosis-lab-online-smoke diagnosis-lab-offline-run diagnosis-lab-reset diagnosis-lab-down diagnosis-sample-e2e test lint clean quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill local-deploy local-deploy-import gen-schemas schema-check build-offline-collector test-offline-collector
+.PHONY: help install compose-check config-contract-check dev-up dev-down db-sync diagnosis-dev-keys diagnosis-sample-preflight diagnosis-sample-postgres-preflight diagnosis-lab-list diagnosis-lab-check diagnosis-lab-sync diagnosis-lab-up diagnosis-lab-status diagnosis-lab-connection diagnosis-lab-renew diagnosis-lab-online-smoke diagnosis-lab-offline-run diagnosis-lab-reset diagnosis-lab-down diagnosis-sample-e2e semantic-e2e-prepare semantic-online-up semantic-online-status semantic-online-verify semantic-online-matrix semantic-online-down semantic-offline-prepare semantic-offline-collect semantic-offline-upload semantic-offline-result semantic-offline-verify signal-v2-e2e-prepare signal-v2-online-matrix signal-v2-offline-stack signal-v2-offline-matrix signal-v2-offline-prepare signal-v2-offline-collect signal-v2-offline-upload signal-v2-offline-result signal-v2-offline-verify signal-v2-e2e-down test lint clean quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill local-deploy local-deploy-import gen-schemas schema-check build-offline-collector test-offline-collector
 
 # Docker Compose v2 是 Docker 官方当前发行形态，也是 GitHub Runner 提供的命令。
 # 仍可通过 `make COMPOSE=docker-compose ...` 兼容仅安装 v1 的旧环境。
@@ -13,6 +13,7 @@ help:
 	@echo "  基础命令:"
 	@echo "  make install        - 安装所有依赖 (uv sync + pnpm install)"
 	@echo "  make dev-up         - 启动开发环境(Docker Compose)"
+	@echo "  make config-contract-check - 校验 Compose、.env.example 与 Helm 配置契约"
 	@echo "  make dev-down       - 停止开发环境"
 	@echo "  make diagnosis-dev-keys - 生成/校验本地离线诊断 RSA-3072 加密密钥"
 	@echo "  make diagnosis-sample-preflight - 启动前验证 5 篇在线/离线诊断 KBD 样例"
@@ -20,6 +21,15 @@ help:
 	@echo "  make diagnosis-lab-list - 查看可按需启动的在线/离线诊断样例场景"
 	@echo "  make diagnosis-lab-up SCENARIO=... [VARIANT=positive] - 启动长期手工测试实例"
 	@echo "  make diagnosis-lab-offline-run INSTANCE=... BUNDLE=... FINGERPRINT=... - 无网络执行离线采集"
+	@echo "  make semantic-e2e-prepare RUN_ID=... - 创建并发布 5 篇隔离语义验收副本"
+	@echo "  make semantic-online-matrix RUN_ID=... DATABASE_NAME=... - 完整在线 Agent 五场景浏览器验收"
+	@echo "  make semantic-offline-prepare RUN_ID=... SUPPORT_ID=... INSTANCE=... - 准备离线语义验收制品"
+	@echo "  make semantic-offline-{collect,upload,result,verify} ... - 分阶段采集、上传并核对离线结论"
+	@echo "  make signal-v2-e2e-prepare RUN_ID=... - 创建并发布 5 篇原全量信号隔离副本"
+	@echo "  make signal-v2-online-matrix RUN_ID=... DATABASE_NAME=... - 回归全量信号在线闭环"
+	@echo "  make signal-v2-offline-stack RUN_ID=... DATABASE_NAME=... - 启动隔离离线栈并全量同步资源"
+	@echo "  make signal-v2-offline-matrix RUN_ID=... DATABASE_NAME=... - 回归全量信号离线闭环"
+	@echo "  make signal-v2-offline-{prepare,collect,upload,result,verify} ... - 回归全量信号离线闭环"
 	@echo "  make test           - 运行测试 (uv run pytest)"
 	@echo "  make lint           - 代码检查 (uv run ruff)"
 	@echo "  make clean          - 清理临时文件"
@@ -63,7 +73,10 @@ compose-check:
 		exit 1; \
 	}
 
-dev-up: compose-check diagnosis-dev-keys diagnosis-sample-preflight
+config-contract-check:
+	@UV_CACHE_DIR=$${TMPDIR:-/tmp}/hci-uv-cache uv run --frozen python scripts/verify/verify_config_contract.py $(if $(filter 1,$(REQUIRE_HELM)),--require-render,)
+
+dev-up: compose-check config-contract-check diagnosis-dev-keys diagnosis-sample-preflight
 	@echo "Starting PostgreSQL & Redis..."
 	$(COMPOSE) --env-file .env -f deploy/docker/docker-compose.yml up -d postgres redis
 	@echo "Waiting for PostgreSQL to be ready..."
@@ -90,16 +103,19 @@ diagnosis-dev-keys:
 	UV_CACHE_DIR=$${TMPDIR:-/tmp}/hci-uv-cache uv run --frozen python scripts/dev/ensure-diagnosis-dev-keys.py --env-file .env
 
 diagnosis-sample-preflight:
-	@echo "验证 5 篇 KBD 样例的发布、在线 Agent 与离线同步/诊断契约..."
+	@echo "验证原五篇、语义 V2 五篇 KBD 及语义入口安全契约..."
+	PYTHONPATH=backend .venv/bin/pytest -q backend/shared/tests/test_semantic_entry.py backend/shared/tests/test_semantic_routing.py
 	.venv/bin/python scripts/hci-sim/diagnosis-lab.py contract-smoke
 	PYTHONPATH=backend/kb-service:backend .venv/bin/pytest -q backend/kb-service/tests/test_kbd_diagnosis_sample_seed.py
-	PYTHONPATH=backend/agent-service:backend .venv/bin/pytest -q backend/agent-service/tests/unit/test_diagnosis_sample_contracts.py
+	PYTHONPATH=backend/agent-service:backend .venv/bin/pytest -q backend/agent-service/tests/unit/test_diagnosis_sample_contracts.py backend/agent-service/tests/unit/test_semantic_entry_investigation.py
 	PYTHONPATH=backend/diagnosis-service:backend .venv/bin/pytest -q backend/diagnosis-service/tests/unit/test_diagnosis_sample_contracts.py
 	PYTHONPATH=backend/diagnosis-service:backend .venv/bin/pytest -q backend/diagnosis-service/tests/unit/test_collector_artifact_service.py
+	.venv/bin/pytest -q scripts/hci-sim/test_semantic_llm_stub.py
 
 diagnosis-sample-postgres-preflight:
-	@echo "在 PostgreSQL 事务中验证 5 篇 KBD 的批量发布、离线同步、资源生成与诊断（结束后回滚）..."
+	@echo "在 PostgreSQL 事务中验证原五篇、V2 五篇及人工指引变体的发布与诊断（结束后回滚）..."
 	RUN_KB_POSTGRES_INTEGRATION=1 TEST_DATABASE_URL=$${DIAGNOSIS_PREFLIGHT_DATABASE_URL:-postgresql+asyncpg://$${POSTGRES_USER:-hci_admin}:$${POSTGRES_PASSWORD:-dev_password_123}@localhost:15432/$${POSTGRES_DB:-hci_troubleshoot}} PYTHONPATH=backend/kb-service:backend .venv/bin/pytest -q backend/kb-service/tests/integration/test_kbd_diagnosis_samples_postgres.py
+	RUN_KB_POSTGRES_INTEGRATION=1 TEST_DATABASE_URL=$${DIAGNOSIS_PREFLIGHT_DATABASE_URL:-postgresql+asyncpg://$${POSTGRES_USER:-hci_admin}:$${POSTGRES_PASSWORD:-dev_password_123}@localhost:15432/$${POSTGRES_DB:-hci_troubleshoot}} PYTHONPATH=backend/agent-service:backend .venv/bin/pytest -q backend/agent-service/tests/integration/test_semantic_samples_postgres.py
 	RUN_DIAGNOSIS_POSTGRES_INTEGRATION=1 TEST_DATABASE_URL=$${DIAGNOSIS_PREFLIGHT_DATABASE_URL:-postgresql+asyncpg://$${POSTGRES_USER:-hci_admin}:$${POSTGRES_PASSWORD:-dev_password_123}@localhost:15432/$${POSTGRES_DB:-hci_troubleshoot}} PYTHONPATH=backend/diagnosis-service:backend .venv/bin/pytest -q backend/diagnosis-service/tests/integration/test_diagnosis_samples_postgres.py
 
 DIAGNOSIS_LAB := .venv/bin/python scripts/hci-sim/diagnosis-lab.py
@@ -148,6 +164,78 @@ diagnosis-lab-down:
 diagnosis-sample-e2e: diagnosis-dev-keys diagnosis-sample-preflight diagnosis-sample-postgres-preflight
 	@echo "静态与 PostgreSQL 生命周期回归通过。运行层 E2E 请在平台/Terminal Bridge 启动后按需执行 diagnosis-lab-up、online-smoke 和 offline-run。"
 
+SEMANTIC_ONLINE := .venv/bin/python scripts/hci-sim/semantic-online-e2e.py
+SEMANTIC_OFFLINE := .venv/bin/python scripts/hci-sim/semantic-e2e-offline.py
+
+semantic-e2e-prepare:
+	@test -n "$(RUN_ID)" || { echo "缺少 RUN_ID"; exit 2; }
+	.venv/bin/python scripts/hci-sim/semantic-e2e-prepare.py --run-id $(RUN_ID) --publish
+
+signal-v2-e2e-prepare:
+	@test -n "$(RUN_ID)" || { echo "缺少 RUN_ID"; exit 2; }
+	.venv/bin/python scripts/hci-sim/semantic-e2e-prepare.py --run-id $(RUN_ID) --suite full --publish
+
+semantic-online-up:
+	@test -n "$(RUN_ID)" -a -n "$(DATABASE_NAME)" -a -n "$(SCENARIO)" || { echo "缺少 RUN_ID、DATABASE_NAME 或 SCENARIO"; exit 2; }
+	$(SEMANTIC_ONLINE) up --run-id $(RUN_ID) --database-name $(DATABASE_NAME) --scenario $(SCENARIO) --variant $(if $(VARIANT),$(VARIANT),positive) --admin-port $(if $(ADMIN_PORT),$(ADMIN_PORT),3004)
+
+semantic-online-status:
+	$(SEMANTIC_ONLINE) status
+
+semantic-online-verify:
+	$(SEMANTIC_ONLINE) verify
+
+semantic-online-matrix:
+	@test -n "$(RUN_ID)" -a -n "$(DATABASE_NAME)" || { echo "缺少 RUN_ID 或 DATABASE_NAME"; exit 2; }
+	$(SEMANTIC_ONLINE) matrix --run-id $(RUN_ID) --database-name $(DATABASE_NAME) --variant $(if $(VARIANT),$(VARIANT),positive) --admin-port $(if $(ADMIN_PORT),$(ADMIN_PORT),3004) $(if $(ATTEMPT),--attempt $(ATTEMPT),) $(if $(filter 1,$(LEAVE_RUNNING)),--leave-running,)
+
+signal-v2-online-matrix: semantic-online-matrix
+
+semantic-online-down:
+	$(SEMANTIC_ONLINE) down
+
+define semantic_offline_stage
+	@test -n "$(RUN_ID)" -a -n "$(SUPPORT_ID)" -a -n "$(INSTANCE)" || { echo "缺少 RUN_ID、SUPPORT_ID 或 INSTANCE"; exit 2; }
+	$(SEMANTIC_OFFLINE) --run-id $(RUN_ID) --support-id $(SUPPORT_ID) --instance $(INSTANCE) --base-url $(if $(BASE_URL),$(BASE_URL),http://localhost:3003) $(if $(ATTEMPT),--attempt $(ATTEMPT),) $(SEMANTIC_OFFLINE_ARGS) --stage $(1)
+endef
+
+semantic-offline-prepare:
+	$(call semantic_offline_stage,prepare)
+
+semantic-offline-collect:
+	$(call semantic_offline_stage,collect)
+
+semantic-offline-upload:
+	$(call semantic_offline_stage,upload)
+
+semantic-offline-result:
+	$(call semantic_offline_stage,result)
+
+semantic-offline-verify:
+	$(call semantic_offline_stage,verify)
+
+signal-v2-offline-stack:
+	@test -n "$(RUN_ID)" -a -n "$(DATABASE_NAME)" || { echo "缺少 RUN_ID 或 DATABASE_NAME"; exit 2; }
+	.venv/bin/python scripts/hci-sim/semantic-e2e-stack.py --run-id $(RUN_ID) --database-name $(DATABASE_NAME) --sync-offline-resources
+
+signal-v2-offline-matrix:
+	@test -n "$(RUN_ID)" -a -n "$(DATABASE_NAME)" || { echo "缺少 RUN_ID 或 DATABASE_NAME"; exit 2; }
+	.venv/bin/python scripts/hci-sim/signal-v2-offline-matrix.py --run-id $(RUN_ID) --database-name $(DATABASE_NAME) $(if $(ATTEMPT),--attempt $(ATTEMPT),) $(if $(filter 1,$(LEAVE_RUNNING)),--leave-running,)
+
+signal-v2-offline-prepare: semantic-offline-prepare
+
+signal-v2-offline-collect: semantic-offline-collect
+
+signal-v2-offline-upload: semantic-offline-upload
+
+signal-v2-offline-result: semantic-offline-result
+
+signal-v2-offline-verify: semantic-offline-verify
+
+signal-v2-e2e-down:
+	@test -n "$(RUN_ID)" -a -n "$(DATABASE_NAME)" || { echo "缺少 RUN_ID 或 DATABASE_NAME"; exit 2; }
+	.venv/bin/python scripts/hci-sim/semantic-e2e-stack.py --run-id $(RUN_ID) --database-name $(DATABASE_NAME) --down
+
 db-sync: compose-check
 	@echo "Running database schema migration..."
 	@until $(COMPOSE) -f deploy/docker/docker-compose.yml exec -T postgres pg_isready -U $${POSTGRES_USER:-hci_admin}; do sleep 1; done
@@ -169,6 +257,9 @@ test:
 	uv run pytest backend/case-service/tests/ -q
 	uv run pytest backend/conversation-service/tests/ -q
 	uv run pytest backend/scheduler-service/tests/ -q
+	uv run pytest backend/shared/tests/ -q
+	uv run pytest backend/agent-service/tests/unit/ -q
+	uv run pytest backend/agent-service/tests/integration/test_qfk_signal_contract_matrix.py -q
 	uv run pytest backend/kb-service/tests/ -q
 	uv run pytest backend/diagnosis-service/tests/unit/ -q
 	$(MAKE) test-offline-collector
@@ -241,11 +332,11 @@ rollback-drill:
 
 gen-schemas:
 	@echo "导出信号 v2 JSON Schema 契约..."
-	python backend/scripts/gen-schemas.py
+	.venv/bin/python backend/scripts/gen-schemas.py
 
 schema-check:
 	@echo "运行信号 v2 JSON Schema 契约校验..."
-	python scripts/ci/check_signal_schemas.py
+	.venv/bin/python scripts/ci/check_signal_schemas.py
 
 build-offline-collector:
 	@echo "构建 Linux x86_64 静态离线采集运行时..."

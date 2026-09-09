@@ -1,0 +1,338 @@
+# HCI 配置契约（唯一清单）
+#
+# 本文件定义“同一个配置在不同部署形态中如何交付”，而非复制具体值：
+# - Compose 的变量必须在 .env.example 有无敏感值的声明；
+# - local_only 只服务于本地开发，不要求 Helm 同名变量；
+# - helm_equivalents 指出 Helm values 路径及最终容器环境变量名。
+#
+# 新增配置时：先登记其交付类型，再修改 Compose / .env.example / Helm；执行
+# `make config-contract-check`。密钥只登记名称，绝不登记真实值。
+version: 1
+sources:
+  env_example: .env.example
+  compose: deploy/docker/docker-compose.yml
+  helm_values: deploy/helm/hci-platform/values.yaml
+  helm_templates: deploy/helm/hci-platform/templates
+
+# 这些变量不由 Compose 注入，可能由本地工具消费，也可能有单独的 Helm values
+# 等价映射。其余 .env.example 变量必须被 Compose 使用，防止“文档存在、实际不注入”。
+non_compose:
+  - AGENT_SERVICE_PORT
+  - API_GATEWAY_PORT
+  - CASE_SERVICE_PORT
+  - CONVERSATION_SERVICE_PORT
+  - GF_SECURITY_ADMIN_PASSWORD
+  - GF_SECURITY_ADMIN_USER
+  - KB_SERVICE_PORT
+  - LOG_LEVEL
+  - MAX_POOL_SIZE
+  - OTEL_EXPORTER_OTLP_ENDPOINT
+  - POD_IDLE_TIMEOUT
+  - SCHEDULER_SERVICE_PORT
+  - VITE_API_BASE_URL
+  - WARM_POOL_SIZE
+
+# 跨部署形态的关键运行时配置。value_paths 是 Helm 默认值的来源；template_env
+# 是渲染后容器看到的环境变量。derived 表示值由多个 Helm 值组合生成。
+helm_equivalents:
+  API_GATEWAY_PORT:
+    value_paths: [apiGateway.port]
+    template_env: [SERVICE_PORT]
+  CASE_SERVICE_PORT:
+    value_paths: [caseService.port]
+    template_env: [SERVICE_PORT]
+  CONVERSATION_SERVICE_PORT:
+    value_paths: [conversationService.port]
+    template_env: [SERVICE_PORT]
+  SCHEDULER_SERVICE_PORT:
+    value_paths: [schedulerService.port]
+    template_env: [SERVICE_PORT]
+  KB_SERVICE_PORT:
+    value_paths: [kbService.port]
+    template_env: [SERVICE_PORT]
+  AGENT_SERVICE_PORT:
+    value_paths: [agentService.port]
+    template_env: [SERVICE_PORT]
+  VITE_API_BASE_URL:
+    value_paths: [apiGateway.port, global.clusterDomain]
+    template_env: [API_GATEWAY_UPSTREAM]
+    derived: true
+  ASSISTANT_REGISTRY_JSON:
+    value_paths: [llm.baseUrl, llm.model]
+    derived: true
+  AGENT_SERVICE_URL:
+    value_paths: [config.agentServiceUrl]
+  AI_DEFAULT_ASSISTANT_TYPE:
+    value_paths: [agentService.defaultAssistantType]
+  ALLOWED_ORIGINS:
+    value_paths: [config.allowedOrigins]
+  CASE_SERVICE_URL:
+    value_paths: [config.caseServiceUrl]
+  CONVERSATION_SERVICE_URL:
+    value_paths: [config.conversationServiceUrl]
+  SCHEDULER_SERVICE_URL:
+    value_paths: [schedulerService.port]
+    derived: true
+  KB_SERVICE_URL:
+    value_paths: [config.kbServiceUrl]
+  KB_ENABLED:
+    value_paths: [kbService.enabled]
+  GLM_MODEL:
+    value_paths: [agentService.glmModel]
+  REACT_ENABLED:
+    value_paths: [agentService.reactEnabled, conversationService.reactEnabled]
+  GF_SECURITY_ADMIN_USER:
+    value_paths: [observability.grafana.adminUser]
+    render_optional: true
+  GF_SECURITY_ADMIN_PASSWORD:
+    value_paths: [secrets.grafanaAdminPassword]
+  LOG_LEVEL:
+    value_paths: [config.logLevel]
+  OTEL_EXPORTER_OTLP_ENDPOINT:
+    value_paths: [config.otelEndpoint]
+  K8S_NAMESPACE:
+    value_paths: [config.k8sNamespace]
+  WARM_POOL_SIZE:
+    value_paths: [config.warmPoolSize]
+    render_optional: true
+  MAX_POOL_SIZE:
+    value_paths: [config.maxPoolSize]
+    render_optional: true
+  POD_IDLE_TIMEOUT:
+    value_paths: [config.podIdleTimeout]
+    render_optional: true
+  TERMINAL_BRIDGE_URL:
+    value_paths: [customerUI.terminalBridgeUrl]
+  TERMINAL_BRIDGE_EXEC_TIMEOUT_SECONDS:
+    value_paths: [terminalBridge.execTimeoutSeconds]
+  CLASSIFY_MODEL:
+    value_paths: [kbService.classifyModel]
+  CLASSIFY_BASE_URL:
+    value_paths: [kbService.classifyBaseUrl]
+  CLASSIFY_API_KEY:
+    value_paths: [secrets.classifyApiKey]
+  CLASSIFY_MAX_TOKENS:
+    value_paths: [kbService.classifyMaxTokens]
+  EXTRACT_SIGNALS_MODEL:
+    value_paths: [kbService.extractSignalsModel]
+  EXTRACT_SIGNALS_BASE_URL:
+    value_paths: [kbService.extractSignalsBaseUrl]
+  EXTRACT_SIGNALS_API_KEY:
+    value_paths: [secrets.extractSignalsApiKey]
+  EXTRACT_SIGNALS_MAX_TOKENS:
+    value_paths: [kbService.extractSignalsMaxTokens]
+  EXTRACT_SIGNALS_FORMAT_MAX_ATTEMPTS:
+    value_paths: [kbService.extractSignalsFormatMaxAttempts]
+  KBD_BATCH_STALE_AFTER_SECONDS:
+    value_paths: [kbService.batchStaleAfterSeconds]
+  LLM_ENABLE_THINKING:
+    value_paths: [kbService.enableThinking]
+  LLM_TEMPERATURE:
+    value_paths: [agentService.llmTemperature]
+  LLM_TEMPERATURE_S0:
+    value_paths: [conversationService.llmTemperatureS0]
+  LLM_TEMPERATURE_REACT:
+    value_paths: [agentService.llmTemperatureReact]
+  LLM_TOP_P:
+    value_paths: [agentService.llmTopP]
+  LLM_LOGPROBS:
+    value_paths: [agentService.llmLogprobs]
+  LLM_TOP_LOGPROBS:
+    value_paths: [agentService.llmTopLogprobs]
+  LLM_GLOBAL_CONCURRENCY:
+    value_paths: [kbService.llmGlobalConcurrency]
+  LLM_TIMEOUT:
+    value_paths: [kbService.llmTimeoutSec]
+  VISION_MODEL:
+    value_paths: [kbService.visionModel]
+  VISION_MAX_TOKENS:
+    value_paths: [kbService.visionMaxTokens]
+  VISION_LLM_MAX_ATTEMPTS:
+    value_paths: [kbService.visionMaxAttempts]
+  VISION_GLOBAL_CONCURRENCY:
+    value_paths: [kbService.visionGlobalConcurrency]
+  POSTGRES_DB:
+    value_paths: [config.postgresDb]
+  POSTGRES_USER:
+    value_paths: [config.postgresUser]
+  POSTGRES_PASSWORD:
+    value_paths: [secrets.postgresPassword]
+  DATABASE_URL:
+    value_paths: [config.postgresHost, config.postgresDb, config.postgresUser, secrets.postgresPassword]
+    derived: true
+  REDIS_URL:
+    value_paths: [config.redisUrl]
+  INTERNAL_API_TOKEN:
+    value_paths: [secrets.internalApiToken]
+  LLM_BASE_URL:
+    value_paths: [llm.baseUrl]
+  LLM_API_KEY:
+    value_paths: [secrets.llmApiKey]
+  LLM_VISION_BASE_URL:
+    value_paths: [llmVision.baseUrl]
+  LLM_VISION_API_KEY:
+    value_paths: [secrets.llmVisionApiKey]
+  LLM_DEFAULT_MODEL:
+    value_paths: [llm.model]
+  LANGFUSE_SECRET_KEY:
+    value_paths: [langfuse.secretKey]
+  LANGFUSE_PUBLIC_KEY:
+    value_paths: [langfuse.publicKey]
+  LANGFUSE_HOST:
+    value_paths: [langfuse.host]
+  LANGFUSE_CAPTURE_CONTENT:
+    value_paths: [langfuse.captureContent]
+  LANGFUSE_CAPTURE_EXTRACT_SIGNALS_CONTENT:
+    value_paths: [langfuse.captureExtractSignalsContent]
+  DIAGNOSIS_SERVICE_URL:
+    value_paths: [config.diagnosisServiceUrl]
+  DIAGNOSIS_IDENTITY_MODE:
+    value_paths: [diagnosisService.identityMode]
+  DIAGNOSIS_DIRECT_UPLOAD_BASE_URL:
+    value_paths: [diagnosisService.directUploadBaseUrl]
+  DIAGNOSIS_ALLOWED_ORIGINS:
+    value_paths: [diagnosisService.allowedOrigins]
+  DIAGNOSIS_ENABLE_AUTOMATIC_SUPPLEMENT:
+    value_paths: [diagnosisService.automaticSupplementEnabled]
+  COLLECTOR_SIGNING_PRIVATE_KEY_B64:
+    value_paths: [diagnosisService.existingCredentialsSecret]
+    external_secret: true
+  COLLECTOR_SIGNING_KEY_ID:
+    value_paths: [diagnosisService.existingCredentialsSecret]
+    external_secret: true
+  DIAGNOSIS_ENCRYPTION_PRIVATE_KEY_B64:
+    value_paths: [diagnosisService.existingCredentialsSecret]
+    external_secret: true
+  DIAGNOSIS_ENCRYPTION_KEY_ID:
+    value_paths: [diagnosisService.existingCredentialsSecret]
+    external_secret: true
+  OIDC_ISSUER:
+    value_paths: [diagnosisService.oidcIssuer]
+  OIDC_AUDIENCE:
+    value_paths: [diagnosisService.oidcAudience]
+  OIDC_JWKS_URL:
+    value_paths: [diagnosisService.oidcJwksUrl]
+  OIDC_PUBLIC_KEY_PEM_B64:
+    value_paths: [diagnosisService.existingCredentialsSecret]
+    external_secret: true
+  DIAGNOSIS_DEV_TENANT_ID:
+    value_paths: [diagnosisService.internalIdentity.tenantId]
+    template_env: [CUSTOMER_API_TENANT_ID, ADMIN_API_TENANT_ID]
+  DIAGNOSIS_DEV_CUSTOMER_ACTOR_ID:
+    value_paths: [diagnosisService.internalIdentity.customerActorId]
+    template_env: [CUSTOMER_API_ACTOR_ID]
+  DIAGNOSIS_DEV_ACTOR_ID:
+    value_paths: [diagnosisService.internalIdentity.adminActorId]
+    template_env: [ADMIN_API_ACTOR_ID]
+  MIGRATION_DATABASE_URL:
+    value_paths: [config.postgresHost, config.postgresDb, config.postgresUser, secrets.postgresPassword]
+    template_env: [DATABASE_URL]
+    derived: true
+  MIGRATION_DEV_URL:
+    value_paths: [config.postgresHost, config.postgresUser, secrets.postgresPassword]
+    template_env: [DEV_URL]
+    derived: true
+
+# Helm 模板中的容器内部变量可以不出现在 .env.example；它们仍由模板扫描并受
+# values 路径存在性校验。这里列出刻意不做 Compose 同名映射的运行时变量，避免
+# 未来误把它们当成漏配。
+helm_only_runtime:
+  - AI_CLIENT_READ_TIMEOUT_SEC
+  - AI_COMPLETIONS_PATH
+  - ACLI_CATALOG_PATH
+  - ACLI_UNKNOWN_COMMAND_POLICY
+  - ADMIN_API_ACTOR_ID
+  - ADMIN_API_AUTHORIZATION
+  - ADMIN_API_TENANT_ID
+  - AGENT_EXEC_RESULT_TIMEOUT_SECONDS
+  - AGENT_EXEC_STATE_TTL_SECONDS
+  - API_GATEWAY_UPSTREAM
+  - ASSISTANT_SHOW_SELECTOR
+  - ATLAS_DEV_URL
+  - BRIDGE_ARTIFACT_RETENTION_DAYS
+  - CONFIRM_TIMEOUT_SEC
+  - CUSTOMER_API_ACTOR_ID
+  - CUSTOMER_API_AUTHORIZATION
+  - CUSTOMER_API_TENANT_ID
+  - DEV_URL
+  - DIAGNOSIS_OBJECT_STORAGE_MODE
+  - DIAGNOSIS_OBJECT_STORAGE_ROOT
+  - DIAGNOSIS_SERVICE_UPSTREAM
+  - DIAGNOSIS_WORKER_METRICS_PORT
+  - DIAGNOSIS_WORKER_POLL_SECONDS
+  - DIAGNOSIS_WORKER_STALE_SECONDS
+  - DNS_RESOLVER
+  - EFFECT_VERIFICATION_ENABLED
+  - GF_AUTH_ANONYMOUS_ENABLED
+  - GF_AUTH_ANONYMOUS_ORG_NAME
+  - GF_AUTH_ANONYMOUS_ORG_ROLE
+  - GF_AUTH_DISABLE_LOGIN_FORM
+  - GF_SECURITY_ALLOW_EMBEDDING
+  - GF_SECURITY_COOKIE_SAMESITE
+  - GF_SERVER_DOMAIN
+  - GF_SERVER_ROOT_URL
+  - GF_SERVER_SERVE_FROM_SUB_PATH
+  - GITOPS_FORCE_RESET
+  - HCI_BRIDGE_ALLOWED_ORIGINS
+  - HCI_BRIDGE_EXEC_MAX_OUTPUT_BYTES
+  - HCI_BRIDGE_EXEC_TIMEOUT_SECONDS
+  - HCI_BRIDGE_HOST_KEY_POLICY
+  - HCI_BRIDGE_KNOWN_HOSTS_FILE
+  - HCI_BRIDGE_LOG_DIR
+  - HCI_BRIDGE_LOG_MAX_BYTES
+  - HCI_BRIDGE_OTEL_ENDPOINT
+  - HCI_BRIDGE_PORT
+  - HCI_DEPLOYMENT_ENVIRONMENT
+  - HCI_SIM_COMPILER_ACTOR_ID
+  - HCI_SIM_CONTROL_TOKEN
+  - HCI_SIM_EXPERT_EDITOR_ACTOR_ID
+  - HCI_SIM_EXPERT_REVIEWER_ACTOR_ID
+  - HCI_SIM_PUBLISHER_ACTOR_ID
+  - HCI_SIM_SECURITY_ACTOR_ID
+  - HCI_SIM_URL
+  - HCI_TP_ENABLED
+  - HOME
+  - IDENTITY_MODE
+  - KBD_OTEL_ENABLED
+  - INTERNAL_API_AUTHORIZATION
+  - K8S_IMAGE_PULL_SECRET
+  - KBD_MIN_SIMILARITY
+  - LLM_CLASSIFY_TIMEOUT
+  - LLM_EMBEDDING_MODEL
+  - LLM_VISION_TIMEOUT
+  - MIGRATOR_PASSWORD
+  - MIGRATOR_ROLE
+  - OPENAI_COMPATIBLE_API_KEY
+  - OPS_AGENT_BASE_URL
+  - OPS_AGENT_ENABLED
+  - OPS_AGENT_FALLBACK_ASSISTANT_TYPE
+  - OPS_AGENT_READ_TIMEOUT_SEC
+  - OPS_AGENT_TRAJECTORY_DIR
+  - OPS_CONFIG_PATH
+  - OWNER_ROLE
+  - PGDATABASE
+  - PGHOST
+  - PGPASSWORD
+  - PGPORT
+  - PGUSER
+  - PLATFORM_ARTIFACT_URL
+  - PLATFORM_DATABASE
+  - PLATFORM_INTERNAL_API_TOKEN
+  - POSTGRES_HOST
+  - PROMETHEUS_URL
+  - PYDANTIC_AI_ENABLED
+  - RESOLUTION_CATALOG_PATH
+  - RUNTIME_PASSWORD
+  - RUNTIME_ROLE
+  - SCP_API_KEY
+  - SCP_BASE_URL
+  - SERVICE_NAME
+  - SERVICE_PORT
+  - SIM_DATABASE
+  - STREAMLIT_BROWSER_GATHER_USAGE_STATS
+  - STREAMLIT_SERVER_ADDRESS
+  - STREAMLIT_SERVER_PORT
+  - VM_CONSOLE_ARTIFACT_DIR
+  - VM_CONSOLE_ARTIFACT_RETENTION_DAYS
+  - VM_CONSOLE_CAPTURE_ENABLED
+  - VM_CONSOLE_VISION_ALLOWED

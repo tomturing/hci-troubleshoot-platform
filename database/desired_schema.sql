@@ -3525,11 +3525,14 @@ CREATE TABLE IF NOT EXISTS signal_modeling_template (
 
 CREATE TABLE IF NOT EXISTS signal_best_practice (
     id SERIAL PRIMARY KEY,
-    template_id INT REFERENCES signal_modeling_template(id) ON DELETE CASCADE,
+    template_id INT REFERENCES signal_modeling_template(id) ON DELETE SET NULL,
     tool_name VARCHAR(32) NOT NULL,
     pattern_category VARCHAR(64) NOT NULL,
     source_kbd_id BIGINT REFERENCES kbd_entry(id) ON DELETE SET NULL,
     support_id VARCHAR(32),
+    source_revision INT,
+    source_checksum VARCHAR(64),
+    signal_id VARCHAR(128),
     raw_evidence TEXT NOT NULL,
     signal_json JSONB NOT NULL,
     design_notes TEXT NOT NULL,
@@ -3537,7 +3540,9 @@ CREATE TABLE IF NOT EXISTS signal_best_practice (
     is_active BOOLEAN DEFAULT TRUE,
     trace_id VARCHAR(64) NOT NULL DEFAULT 'migration:20260904000000',
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW()
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_signal_best_practice_source_checksum_signal
+        UNIQUE (source_kbd_id, source_checksum, signal_id)
 );
 CREATE INDEX IF NOT EXISTS idx_signal_best_practice_tool ON signal_best_practice(tool_name) WHERE is_active = TRUE;
 

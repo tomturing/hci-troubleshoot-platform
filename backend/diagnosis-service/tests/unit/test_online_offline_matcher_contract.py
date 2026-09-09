@@ -1,7 +1,9 @@
 """在线 Shared Matcher 与离线证据适配的 Golden Contract（黄金契约）回归。"""
 
+from unittest.mock import MagicMock
+
 import pytest
-from app.services.offline_analysis_service import _evaluate_matcher, _flatten_text
+from app.services.offline_analysis_service import OfflineAnalysisService, _evaluate_matcher, _flatten_text
 from shared.signals.matcher import evaluate_matcher
 
 TEXT_ALL = {
@@ -164,3 +166,35 @@ def test_online_and_offline_matcher_contracts_are_identical(matcher, evidence, e
 
     assert online is expected
     assert offline is expected
+
+
+def test_offline_qkv_producer_requires_declared_values_and_processing_to_pass():
+    """离线 available 制品不能绕过 QKV 的 produces 与断言处理链。"""
+    service = OfflineAnalysisService(MagicMock())
+    signal = {
+        "id": "task-description",
+        "acquire": {"tool": "qkv_task", "args": {}},
+        "match": None,
+        "orchestrate": {
+            "produces": [{"name": "DESCRIPTION", "path": "description"}],
+            "output_processing": [
+                {"mode": "assert", "input": "{{DESCRIPTION}}", "match": {
+                    "type": "keyword", "pattern": "expected-failure", "mode": "or", "expected": True,
+                }}
+            ],
+        },
+    }
+    mapping = [{
+        "source_kbd_id": 1, "source_kbd_revision": 1, "source_signal_id": "task-description",
+        "acquire_tool": "qkv_task", "category_scope": "category", "command_scope": "*",
+        "priority": 1, "collector_id": "task-collector",
+    }]
+    evidence = [{
+        "collector_id": "task-collector", "evidence_status": "available", "evidence_id": "evidence-1",
+        "structured_data": {"data": [{"description": "different-failure"}]},
+    }]
+
+    evaluation = service._evaluate_signal(1, 1, "support", "category", signal, evidence, mapping)
+
+    assert evaluation["state"] == "NOT_MATCHED"
+    assert "后处理未通过" in evaluation["reason"]

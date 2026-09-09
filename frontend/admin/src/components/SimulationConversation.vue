@@ -35,6 +35,7 @@ const props = defineProps<{
   caseId: string
   testRunId: string
   clientId: string
+  expectedSupportId: string
   initialMessage: string
   connection: ConnectionInfo
 }>()
@@ -54,10 +55,16 @@ const messageList = ref<HTMLElement | null>(null)
 const socket = ref<WebSocket | null>(null)
 const commandCount = ref(0)
 const failedCommandCount = ref(0)
+const nonZeroExitCount = ref(0)
+const transportErrorCount = ref(0)
+const vmConsoleOperationCount = ref(0)
+const vmConsoleObservationCount = ref(0)
 const agentOutcome = ref<'passed' | 'failed' | 'inconclusive'>('passed')
+const diagnosticOutcome = ref<Record<string, unknown> | null>(null)
 const completionEmitted = ref(false)
 const pendingApproval = ref<{ execId: string; resolve: (approved: boolean) => void } | null>(null)
 const execWaiters = new Map<string, { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void; timer: number }>()
+const vmConsoleWaiters = new Map<string, { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void; timer: number }>()
 const pendingNoneIntent = ref<PendingNoneIntent | null>(null)
 const noneSymptomText = ref('')
 
@@ -102,6 +109,11 @@ function rejectExecWaiters(reason: string) {
     waiter.reject(new Error(reason))
   }
   execWaiters.clear()
+  for (const waiter of vmConsoleWaiters.values()) {
+    window.clearTimeout(waiter.timer)
+    waiter.reject(new Error(reason))
+  }
+  vmConsoleWaiters.clear()
 }
 
 async function connectBridge() {
@@ -167,8 +179,27 @@ async function connectBridge() {
         } else {
           waiter.resolve(message)
         }
+        return
+      }
+      if (message.type === 'vm_console_result') {
+        const execId = String(message.exec_id || '')
+        const waiter = vmConsoleWaiters.get(execId)
+        if (!waiter) return
+        window.clearTimeout(waiter.timer)
+        vmConsoleWaiters.delete(execId)
+        waiter.resolve(message)
       }
     }
+  })
+}
+
+function waitForVmConsoleResult(execId: string, timeoutSeconds: number) {
+  return new Promise<Record<string, unknown>>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      vmConsoleWaiters.delete(execId)
+      reject(new Error(`虚拟机控制台固定操作超时（${timeoutSeconds}s）`))
+    }, (timeoutSeconds + 30) * 1000)
+    vmConsoleWaiters.set(execId, { resolve, reject, timer })
   })
 }
 
@@ -203,6 +234,82 @@ async function postExecResult(event: Record<string, unknown>, result: Record<str
   await readJson(response)
 }
 
+async function postVmConsoleResult(event: Record<string, unknown>, result: Record<string, unknown>) {
+  const response = await fetch(
+    `/api/conversations/${encodeURIComponent(conversationId.value)}/vm-console-result`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Client-ID': props.clientId },
+      body: JSON.stringify({
+        capture_id: String(event.captureId || ''),
+        exec_id: String(event.execId || ''),
+        operation: String(event.operation || ''),
+        exit_code: Number.isInteger(Number(result.exit_code)) ? Number(result.exit_code) : -1,
+        sha256: result.sha256 || undefined,
+        size_bytes: result.size_bytes ?? undefined,
+        upload_status: result.upload_status || undefined,
+        error_type: result.error_type || undefined,
+        duration_ms: result.duration_ms ?? undefined,
+        timed_out: Boolean(result.timed_out),
+        trace_id: result.trace_id || event.traceId || undefined,
+      }),
+    },
+  )
+  await readJson(response)
+}
+
+async function executeVmConsoleOperation(event: Record<string, unknown>) {
+  const execId = String(event.execId || '')
+  const captureId = String(event.captureId || '')
+  const operation = String(event.operation || '')
+  if (!execId || !captureId || !['capture_baseline', 'wake_down_key'].includes(operation)) {
+    throw new Error('虚拟机控制台事件缺少受控固定操作参数')
+  }
+  if (bridgeState.value !== 'connected' || !socket.value) throw new Error('SSH 未连接，不能采集虚拟机控制台')
+  const timeoutSeconds = Math.min(60, Math.max(1, Number(event.timeoutSeconds) || 60))
+  const card = addMessage({
+    role: 'assistant',
+    kind: 'tool',
+    content: operation === 'wake_down_key' ? '虚拟机控制台受控唤醒' : '虚拟机控制台截图采集',
+    status: 'running',
+    detail: { execId, captureId, operation },
+  })
+  const resultPromise = waitForVmConsoleResult(execId, timeoutSeconds)
+  socket.value.send(JSON.stringify({
+    type: 'vm_console_op',
+    case_id: String(event.caseId || props.caseId),
+    capture_id: captureId,
+    exec_id: execId,
+    operation,
+    host_node_id: String(event.hostNodeId || ''),
+    vm_id: String(event.vmId || ''),
+    node_ip: String(event.nodeIp || ''),
+    timeout: timeoutSeconds,
+    role: event.role,
+    artifact_policy: event.artifactPolicy,
+    catalog_revision: event.catalogRevision,
+    trace_id: event.traceId,
+    traceparent: event.traceparent,
+    conversation_id: conversationId.value,
+  }))
+  try {
+    const result = await resultPromise
+    await postVmConsoleResult(event, result)
+    vmConsoleOperationCount.value += 1
+    card.status = Number(result.exit_code) === 0 && !result.error_type ? 'passed' : 'failed'
+    card.detail = { ...card.detail, result }
+  } catch (error) {
+    card.status = 'failed'
+    transportErrorCount.value += 1
+    await postVmConsoleResult(event, {
+      exit_code: -1,
+      error_type: 'browser_wait_failed',
+      timed_out: true,
+    }).catch(() => undefined)
+    throw error
+  }
+}
+
 async function executeAgentCommand(event: Record<string, unknown>) {
   const execId = String(event.execId || event.exec_id || '')
   const command = String(event.command || '')
@@ -217,11 +324,10 @@ async function executeAgentCommand(event: Record<string, unknown>) {
     status: riskLevel >= 2 ? 'pending' : 'running',
     detail: { execId, reason: event.reason, riskLevel },
   })
-  commandCount.value += 1
-
   if (riskLevel >= 3) {
     card.status = 'blocked'
     failedCommandCount.value += 1
+    agentOutcome.value = 'failed'
     await postExecResult(event, { output: '高危操作已自动阻止', exit_code: -1, error_type: 'policy_blocked' })
     return
   }
@@ -233,6 +339,7 @@ async function executeAgentCommand(event: Record<string, unknown>) {
     if (!approved) {
       card.status = 'blocked'
       failedCommandCount.value += 1
+      agentOutcome.value = 'failed'
       await postExecResult(event, { output: '用户拒绝执行', exit_code: -1, error_type: 'user_rejected' })
       return
     }
@@ -256,12 +363,22 @@ async function executeAgentCommand(event: Record<string, unknown>) {
     traceparent: event.traceparent,
     tool_call_id: event.toolCallId,
   }))
-  const result = await resultPromise
-  const exitCode = Number(result.exit_code)
-  card.status = exitCode === 0 ? 'passed' : 'failed'
-  card.detail = { ...card.detail, exitCode, output: String(result.output || result.stdout || '') }
-  if (exitCode !== 0) failedCommandCount.value += 1
-  await postExecResult(event, result)
+  try {
+    const result = await resultPromise
+    const exitCode = Number(result.exit_code)
+    // 非零退出码往往正是“文件不存在/服务异常”等故障证据。只要 Bridge
+    // 完整返回并成功回传 Agent，就属于一次完成的探测，而不是传输失败。
+    card.status = 'passed'
+    card.detail = { ...card.detail, exitCode, output: String(result.output || result.stdout || '') }
+    if (exitCode !== 0) nonZeroExitCount.value += 1
+    await postExecResult(event, result)
+    commandCount.value += 1
+  } catch (error) {
+    card.status = 'failed'
+    failedCommandCount.value += 1
+    transportErrorCount.value += 1
+    throw error
+  }
 }
 
 function approveCommand(approved: boolean) {
@@ -275,6 +392,10 @@ async function handleStreamEvent(type: string, data: string, assistant: Conversa
     return
   }
   if (type === 'error') throw new Error(String(event.message || 'Agent 返回错误'))
+  if (type === 'diagnostic_outcome') {
+    diagnosticOutcome.value = event
+    return
+  }
   if (type === 'metadata') {
     if (event.kind === 'choice_options' && Array.isArray(event.options)) {
       addMessage({
@@ -289,6 +410,21 @@ async function handleStreamEvent(type: string, data: string, assistant: Conversa
   }
   if (type === 'agent_exec_command') {
     await executeAgentCommand(event)
+    return
+  }
+  if (type === 'vm_console_op') {
+    await executeVmConsoleOperation(event)
+    return
+  }
+  if (type === 'vm_console_observation') {
+    vmConsoleObservationCount.value += 1
+    addMessage({
+      role: 'assistant',
+      kind: 'tool',
+      content: `虚拟机控制台观察：${String(event.summary || event.displayState || '已完成')}`,
+      status: event.observationStatus === 'unavailable' ? 'failed' : 'passed',
+      detail: event,
+    })
     return
   }
   if (type === 'thinking' || type === 'stage_change') {
@@ -401,9 +537,22 @@ async function sendMessage(content?: string, metadata: Record<string, unknown> =
     })
     await consumeConversationStream(response, (event) => handleStreamEvent(event.type, event.data, assistant))
     assistant.status = 'passed'
-    // 纯文本首轮（例如 S0 分类追问）不构成仿真执行证据。至少收到并完成一个
-    // Agent 命令后才能关闭 TestRun，避免把“Agent 回复了一句话”误报为测试通过。
-    if (!completionEmitted.value && (commandCount.value > 0 || agentOutcome.value === 'inconclusive')) {
+    // 纯文本、命令数量都不是诊断成功的 oracle。只有 Agent 的确定性诊断结论
+    // 明确包含当前 TestRun 的 support_id，且至少一条命令完成回传，才能通过。
+    if (!completionEmitted.value && (diagnosticOutcome.value || agentOutcome.value === 'inconclusive')) {
+      const supportedSupportIds = Array.isArray(diagnosticOutcome.value?.supported_support_ids)
+        ? diagnosticOutcome.value.supported_support_ids.map((item) => String(item))
+        : []
+      const isDefinitive = diagnosticOutcome.value?.is_definitive === true
+      const expectedMatched = supportedSupportIds.includes(props.expectedSupportId.trim())
+      if (agentOutcome.value !== 'inconclusive') {
+        agentOutcome.value = isDefinitive && expectedMatched && commandCount.value > 0
+          && failedCommandCount.value === 0 && transportErrorCount.value === 0
+          ? 'passed'
+          : isDefinitive
+            ? 'failed'
+            : 'inconclusive'
+      }
       completionEmitted.value = true
       emit('sessionReady', {
         case_id: props.caseId,
@@ -411,8 +560,14 @@ async function sendMessage(content?: string, metadata: Record<string, unknown> =
         execution_mode: 'sim-ssh',
         command_count: commandCount.value,
         failed_command_count: failedCommandCount.value,
+        nonzero_exit_count: nonZeroExitCount.value,
+        transport_error_count: transportErrorCount.value,
         agent_stream_completed: true,
         outcome: agentOutcome.value,
+        expected_support_id: props.expectedSupportId.trim(),
+        supported_support_ids: supportedSupportIds,
+        is_definitive: isDefinitive,
+        diagnostic_outcome_received: diagnosticOutcome.value !== null,
       })
     }
   } catch (error) {
@@ -424,6 +579,24 @@ async function sendMessage(content?: string, metadata: Record<string, unknown> =
       assistant.content += `\n\n❌ 会话失败：${errorMessage}`
     } else {
       assistant.content = `❌ 会话失败：${errorMessage}`
+    }
+    if (!completionEmitted.value) {
+      completionEmitted.value = true
+      emit('sessionReady', {
+        case_id: props.caseId,
+        conversation_id: conversationId.value,
+        execution_mode: 'sim-ssh',
+        command_count: commandCount.value,
+        failed_command_count: failedCommandCount.value,
+        nonzero_exit_count: nonZeroExitCount.value,
+        transport_error_count: transportErrorCount.value,
+        agent_stream_completed: false,
+        outcome: 'failed',
+        expected_support_id: props.expectedSupportId.trim(),
+        supported_support_ids: [],
+        is_definitive: false,
+        diagnostic_outcome_received: false,
+      })
     }
     emit('fatal', errorMessage)
   } finally {

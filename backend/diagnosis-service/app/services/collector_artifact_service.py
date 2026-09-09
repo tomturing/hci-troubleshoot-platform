@@ -550,11 +550,15 @@ class CollectorArtifactService:
                 details={"collector_id": definition.collector_id},
             )
 
-        # 仅已解析的具体节点（type=node）可作为目标；type=variable 表示 Collection
-        # Plan 尚未绑定节点（source_node 占位），此时 fail-closed。
-        target_id = target.get("id") if (target or {}).get("type") == "node" else None
-        host = str(values.get("host") or target_id or "").strip()
-        vm_id = str(values.get("vm_id") or "").strip()
+        # qkv_vm_console 按 affected_object 逐 VM 展开：VM id 是精确 VMID，
+        # source_node 是经过会话确认的宿主机。保留显式 values 以兼容已发布旧画像，
+        # 但绝不从普通 diagnosis_session 或 variable 目标猜测任一参数。
+        target_type = str((target or {}).get("type") or "").strip()
+        target_node_id = target.get("id") if target_type == "node" else None
+        affected_vm_id = target.get("id") if target_type == "vm" else None
+        affected_vm_host = target.get("source_node") if target_type == "vm" else None
+        host = str(values.get("host") or affected_vm_host or target_node_id or "").strip()
+        vm_id = str(values.get("vm_id") or affected_vm_id or "").strip()
         if not host or not vm_id:
             raise DiagnosisError(
                 code="VM_CONSOLE_TARGET_MISSING",

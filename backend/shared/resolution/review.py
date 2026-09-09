@@ -99,6 +99,8 @@ def _resolver_id(tool: str) -> str | None:
         return "vm_console"
     if tool == "qkv_effect":
         return "effect"
+    if tool == "qkv_case_context":
+        return "case_context"
     if tool.startswith("qkv_"):
         return "qkv"
     if tool == "qfk_log":
@@ -117,6 +119,9 @@ def _intent(tool: str, args: dict[str, Any], signal: dict[str, Any]) -> SignalIn
     if resolver_id is None:
         raise ValueError(f"acquire.tool 没有 Shared Resolution Runtime Resolver: {tool}")
     canonical_args = dict(args)
+    if resolver_id == "case_context":
+        # 仅供发布期契约审查；现场解析由 KBD 语义入口候选器完成，不编译命令。
+        canonical_args["source"] = "user_supplied_case_context"
     if resolver_id == "qkv":
         canonical_args["query"] = tool.removeprefix("qkv_")
     elif resolver_id == "domain":
@@ -314,6 +319,21 @@ def review_signal_document(
                     signal_index=index,
                     tool=tool or None,
                     status=ResolutionStatus.BLOCKED,
+                    issues=per_signal,
+                )
+            )
+            continue
+
+        if resolver_id == "case_context":
+            # qkv_case_context 不编译远端命令；它只声明用户已提交上下文的来源，
+            # 实际候选匹配在 kb-service 的受限语义入口完成。
+            signal_reviews.append(
+                SignalRuntimeReview(
+                    signal_id=signal_id,
+                    signal_index=index,
+                    tool=tool,
+                    resolver_id=resolver_id,
+                    status=ResolutionStatus.VERIFIED if args_ok else ResolutionStatus.BLOCKED,
                     issues=per_signal,
                 )
             )

@@ -17,6 +17,26 @@ if _svc not in sys.path:
 from app.main import app
 
 
+def _result_summary(**overrides):
+    value = {
+        "conversation_id": "00000000-0000-0000-0000-000000027123",
+        "case_id": "Q2026081100001",
+        "execution_mode": "sim-ssh",
+        "command_count": 1,
+        "failed_command_count": 0,
+        "nonzero_exit_count": 0,
+        "transport_error_count": 0,
+        "agent_stream_completed": True,
+        "outcome": "passed",
+        "expected_support_id": "27123",
+        "supported_support_ids": ["27123"],
+        "is_definitive": True,
+        "diagnostic_outcome_received": True,
+    }
+    value.update(overrides)
+    return value
+
+
 def test_bundle_factory_reads_c1_and_injects_compiler_identity():
     client = TestClient(app)
     capability = {
@@ -235,15 +255,7 @@ def test_simulation_result_digest_is_generated_from_canonical_summary():
     """HTTP 浏览器只提交结构化摘要，Gateway 生成确定性 digest。"""
     client = TestClient(app)
     runtime_response = JSONResponse({"status": "passed"}, status_code=200)
-    summary = {
-        "conversation_id": "00000000-0000-0000-0000-000000027123",
-        "case_id": "Q2026081100001",
-        "execution_mode": "sim-ssh",
-        "command_count": 3,
-        "failed_command_count": 0,
-        "agent_stream_completed": True,
-        "outcome": "passed",
-    }
+    summary = _result_summary(command_count=3)
     canonical = json.dumps(summary, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     expected_digest = f"sha256:{hashlib.sha256(canonical).hexdigest()}"
 
@@ -294,19 +306,16 @@ def test_simulation_result_rejects_invalid_summary_types():
     response = client.post(
         "/api/hci-sim/v1/simulations/test-runs/run-27123/result",
         json={
-            "report_summary": {
-                "case_id": "Q2026081100001",
-                "conversation_id": "conversation-27123",
-                "execution_mode": "sim-ssh",
-                "command_count": 1,
-                "failed_command_count": 2,
-                "agent_stream_completed": True,
-                "outcome": "failed",
-            }
+            "report_summary": _result_summary(
+                conversation_id="conversation-27123",
+                failed_command_count=1,
+                transport_error_count=2,
+                outcome="failed",
+            )
         },
     )
     assert response.status_code == 400
-    assert response.json()["detail"] == "failed_command_count cannot exceed command_count"
+    assert response.json()["detail"] == "transport_error_count cannot exceed failed_command_count"
 
 
 def test_simulation_result_rejects_false_positive_passed_outcome():
@@ -315,19 +324,26 @@ def test_simulation_result_rejects_false_positive_passed_outcome():
         "/api/hci-sim/v1/simulations/test-runs/run-27123/result",
         json={
             "outcome": "passed",
-            "report_summary": {
-                "case_id": "Q2026081100001",
-                "conversation_id": "conversation-27123",
-                "execution_mode": "sim-ssh",
-                "command_count": 0,
-                "failed_command_count": 0,
-                "agent_stream_completed": True,
-                "outcome": "passed",
-            },
+            "report_summary": _result_summary(conversation_id="conversation-27123", command_count=0),
         },
     )
     assert response.status_code == 400
-    assert response.json()["detail"] == "passed result requires at least one successful command"
+    assert response.json()["detail"] == (
+        "passed result requires a definitive diagnostic outcome matching expected_support_id"
+    )
+
+
+def test_simulation_result_rejects_definitive_but_wrong_kbd():
+    client = TestClient(app)
+    response = client.post(
+        "/api/hci-sim/v1/simulations/test-runs/run-27123/result",
+        json={
+            "outcome": "passed",
+            "report_summary": _result_summary(supported_support_ids=["99999"]),
+        },
+    )
+    assert response.status_code == 400
+    assert "matching expected_support_id" in response.json()["detail"]
 
 
 def test_simulation_result_accepts_structured_inconclusive_without_commands():
@@ -338,15 +354,14 @@ def test_simulation_result_accepts_structured_inconclusive_without_commands():
             "/api/hci-sim/v1/simulations/test-runs/run-27123/result",
             json={
                 "outcome": "inconclusive",
-                "report_summary": {
-                    "case_id": "Q2026081100001",
-                    "conversation_id": "conversation-27123",
-                    "execution_mode": "sim-ssh",
-                    "command_count": 0,
-                    "failed_command_count": 0,
-                    "agent_stream_completed": True,
-                    "outcome": "inconclusive",
-                },
+                "report_summary": _result_summary(
+                    command_count=0,
+                    agent_stream_completed=True,
+                    outcome="inconclusive",
+                    supported_support_ids=[],
+                    is_definitive=False,
+                    diagnostic_outcome_received=False,
+                ),
             },
         )
     assert response.status_code == 200

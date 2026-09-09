@@ -317,10 +317,12 @@ async def test_route_persists_reply_before_sop_fallback_card():
 
     async def stream(**_kwargs):
         yield "SOP 本轮说明"
+        yield "\x00event:diagnostic_outcome:{\"is_definitive\":true,\"supported_support_ids\":[\"SAMPLE-1\"]}\x00"
         yield f"\x00event:interactive_request:{json.dumps(fallback_event, ensure_ascii=False)}\x00"
 
     service = MagicMock()
     service.send_message_stream_only = stream
+    service.release_request_transaction_before_stream = AsyncMock()
     request = MagicMock()
     request.headers = {}
     request.app.state.sse_pusher = None
@@ -343,10 +345,17 @@ async def test_route_persists_reply_before_sop_fallback_card():
             request=request,
             service=service,
         )
-        _ = [chunk async for chunk in response.body_iterator]
+        chunks = [chunk async for chunk in response.body_iterator]
 
     assert [task.func for task in background_tasks.tasks] == [
         service.save_assistant_message,
         service.save_interactive_request_message,
     ]
+    service.release_request_transaction_before_stream.assert_awaited_once()
     assert background_tasks.tasks[1].kwargs["event"] == fallback_event
+    stream_body = "".join(chunks)
+    assert (
+        'event: diagnostic_outcome\ndata: {"is_definitive":true,'
+        '"supported_support_ids":["SAMPLE-1"]}\n\n'
+    ) in stream_body
+    assert 'event: diagnostic_outcome\ndata: {"to":' not in stream_body

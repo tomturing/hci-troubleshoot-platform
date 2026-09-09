@@ -18,7 +18,7 @@ from typing import Any
 from shared.models.dynamic_resource import DynamicResourceActive, DynamicResourceRevision
 from shared.resolution.models import ResolutionStatus
 from shared.resolution.review import SignalReviewFeature, review_signal_document
-from shared.schemas.acquirer_args import CONDITIONAL_PRODUCERS
+from shared.schemas.acquirer_args import CONDITIONAL_PRODUCERS, CONTEXT_INPUTS
 from shared.schemas.hci_sim_policy import current_hci_sim_policy_revision
 from shared.signals.qkv_output_processing import QKVProcessingError, normalize_output_processing
 from sqlalchemy import and_, select
@@ -468,6 +468,10 @@ class HciSimKbdResolver:
             acquire = signal.get("acquire") if isinstance(signal.get("acquire"), dict) else {}
             orchestrate = signal.get("orchestrate") if isinstance(signal.get("orchestrate"), dict) else {}
             tool = str(acquire.get("tool") or "").strip()
+            if tool in CONTEXT_INPUTS:
+                # 工单上下文由仿真用例的 fault_description 提供；它没有 Tool
+                # Registry 快照、命令或 Synthetic Route，不能伪造能力缺口。
+                continue
             tool_snapshot = tool_snapshots.get(tool)
             if tool_snapshot is None:
                 gaps.append(CapabilityGap("TOOL_ACTIVE_SNAPSHOT_MISSING", f"Tool {tool} 没有 active 不可变修订"))

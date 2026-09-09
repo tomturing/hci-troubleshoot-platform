@@ -22,6 +22,7 @@ from shared.observability.metrics import (
     OFFLINE_RESOURCE_SYNC_TOTAL,
 )
 from shared.observability.otel import get_current_trace_id
+from shared.schemas.acquirer_args import OFFLINE_NON_ACQUISITION_TOOLS
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -93,12 +94,31 @@ def resolve_scenario(kbd: dict[str, Any]) -> str | None:
     return category_id
 
 
+def offline_diagnosis_capability(kbd: dict[str, Any]) -> str:
+    """语义入口的三档能力必须在离线资源同步处再次强制执行。
+
+    guidance_only/capability_gap 可以保留为已发布知识，但绝不能生成采集画像、
+    采集计划或下载制品。
+    """
+    signals = kbd.get("signals_json") or {}
+    if not isinstance(signals, dict):
+        return "executable"
+    profile = signals.get("semantic_entry_profile") or {}
+    value = profile.get("diagnosis_capability") if isinstance(profile, dict) else None
+    return value if value in {"executable", "guidance_only", "capability_gap"} else "executable"
+
+
 def resolve_target_scope(requirements: list[dict[str, Any]], tool: str, command_template: str) -> str:
     """由显式离线声明或最终命令真实依赖确定画像目标范围。"""
 
     declared = {item.get("target_scope") for item in requirements if item.get("target_scope")}
     if len(declared) == 1:
         return str(next(iter(declared)))
+    if tool == "qkv_vm_console":
+        # 控制台截图必须逐个已确认 VM 展开。它没有可渲染的 command_template，
+        # host/vm_id 会在制品签发时从 affected_object 的 id/source_node 冻结进
+        # 签名 Capture Intent；按 once 生成会丢失这两个安全边界参数。
+        return "affected_object"
     if "{target_id}" in command_template:
         return "affected_object"
     return "source_node" if tool.startswith("qfk_") else "once"
@@ -136,10 +156,11 @@ def extract_requirements(kbd: dict[str, Any]) -> list[dict[str, Any]]:
         tool = normalize_acquirer(str(acquire.get("tool") or signal.get("acquirer") or ""))
         if not tool:
             continue
-        if tool == "qkv_effect":
+        if tool in OFFLINE_NON_ACQUISITION_TOOLS:
             # 效果验证是在线编排的复核信号（settle/recheck），客户侧采集器不执行
             # 任何动作；期望快照保留在 signals_json 中供验包后追溯判定（P2），
-            # 不生成离线采集需求（设计文档 §9.2/§9.3）。
+            # 不生成离线采集需求（设计文档 §9.2/§9.3）。qkv_case_context
+            # 同样仅用于在线候选入口，绝不编译为客户侧采集器。
             continue
         args = acquire.get("args") or signal.get("acquirer_args") or {}
         matcher = signal.get("match") or signal.get("matcher") or {}
@@ -939,7 +960,11 @@ class OfflineResourceSyncService:
         )
         current_kbds = await self._load_published_kbds()
         current_by_id = {int(item["id"]): item for item in current_kbds}
-        eligible_kbds = [item for item in current_kbds if resolve_scenario(item) is not None]
+        eligible_kbds = [
+            item
+            for item in current_kbds
+            if resolve_scenario(item) is not None and offline_diagnosis_capability(item) == "executable"
+        ]
         unresolved_kbd_ids = sorted(int(item["id"]) for item in current_kbds if resolve_scenario(item) is None)
         impacted_scenarios: set[str] = (
             {

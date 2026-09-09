@@ -206,7 +206,12 @@ async def _preview(payload: dict, request: Request) -> JSONResponse:
         body = response.json()
     except ValueError:
         body = {"detail": "试运行服务返回无效响应"}
-    if response.status_code == 200 and isinstance(body, dict) and body.get("status") == "PASS":
+    if (
+        response.status_code == 200
+        and isinstance(body, dict)
+        and body.get("status") == "PASS"
+        and payload.get("verification_scope", "signal") == "signal"
+    ):
         body["preview_token"] = _sign_preview_result(body, payload)
     outgoing = JSONResponse(content=body, status_code=response.status_code)
     if trace_id := response.headers.get("X-Trace-Id"):
