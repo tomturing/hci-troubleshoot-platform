@@ -24,6 +24,7 @@ from app.routes import (
     diagnosis_management,
     diagnosis_sessions,
     evidence_lifecycle,
+    migration,
     offline_resource_sync,
 )
 
@@ -101,6 +102,7 @@ app.include_router(collector_artifacts.router)
 app.include_router(collector_artifacts.management_router)
 app.include_router(evidence_lifecycle.router)
 app.include_router(offline_resource_sync.router)
+app.include_router(migration.router)
 
 
 @app.get("/metrics")
