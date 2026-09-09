@@ -1,8 +1,12 @@
 """Bundle 迁移 API 路由"""
 
-from fastapi import APIRouter
-from pydantic import BaseModel
+from collections.abc import AsyncIterator
 
+from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..dependencies import _require_database_manager
 from ..services.bundle_migration import (
     CURRENT_BUNDLE_FACTORY_VERSION,
     batch_migrate_bundles,
@@ -19,18 +23,30 @@ class MigrateRequest(BaseModel):
     dry_run: bool = False
 
 
+async def get_db_session(request: Request) -> AsyncIterator[AsyncSession]:
+    """为请求创建事务级数据库会话。"""
+    database_manager = _require_database_manager(request)
+    async for session in database_manager.get_session():
+        yield session
+
+
 @router.get("/health")
-async def get_bundle_migration_health():
+async def get_bundle_migration_health(
+    session: AsyncSession = Depends(get_db_session),
+):
     """获取 Bundle 迁移健康状态
 
     Returns:
         当前工厂版本和需要迁移的 Bundle 数量
     """
-    return check_factory_version_health()
+    return await check_factory_version_health(session)
 
 
 @router.post("/migrate")
-async def migrate_bundles(request: MigrateRequest):
+async def migrate_bundles(
+    request: MigrateRequest,
+    session: AsyncSession = Depends(get_db_session),
+):
     """批量迁移 Bundle
 
     Args:
@@ -40,6 +56,7 @@ async def migrate_bundles(request: MigrateRequest):
         迁移结果
     """
     result = await batch_migrate_bundles(
+        session,
         kbd_ids=request.kbd_ids,
         dry_run=request.dry_run,
     )

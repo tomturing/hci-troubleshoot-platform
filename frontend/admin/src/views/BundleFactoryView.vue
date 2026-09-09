@@ -78,9 +78,22 @@ const activationDigest = ref('')
 // Bundle 迁移相关状态
 const migrationVisible = ref(false)
 const migrationLoading = ref(false)
-const migrationHealth = ref<{ current_version: string; outdated_count: number; outdated_bundles: Array<{ kbd_id: number; support_id: string; factory_version: string }> } | null>(null)
+const migrationHealth = ref<{
+  current_factory_version: string
+  total_bundles: number
+  outdated_bundles: number
+  outdated_bundle_details: Array<{ kbd_id: number; support_id: string; factory_version: string }>
+  health_status: string
+  recommendation: string
+} | null>(null)
 const migrationDryRun = ref(true)
-const migrationResult = ref<{ migrated: number; failed: number; details: Array<{ kbd_id: number; support_id: string; status: string; error?: string }> } | null>(null)
+const migrationResult = ref<{
+  dry_run: boolean
+  total: number
+  success: number
+  failed: number
+  details: Array<{ kbd_id: number; support_id?: string; status: string; error?: string; note?: string }>
+} | null>(null)
 
 const lifecycleStep: Partial<Record<BundleStatus, number>> = { draft: 0, validated: 1, approved: 2, published: 4 }
 const currentStep = computed(() => selected.value ? lifecycleStep[selected.value.status] ?? 0 : 0)
@@ -329,9 +342,12 @@ async function loadMigrationHealth() {
   try {
     const body = await request('/v1/bundle-migration/health')
     migrationHealth.value = {
-      current_version: String(body.current_version || 'unknown'),
-      outdated_count: Number(body.outdated_count || 0),
-      outdated_bundles: (body.outdated_bundles || []) as Array<{ kbd_id: number; support_id: string; factory_version: string }>,
+      current_factory_version: String(body.current_factory_version || 'unknown'),
+      total_bundles: Number(body.total_bundles || 0),
+      outdated_bundles: Number(body.outdated_bundles || 0),
+      outdated_bundle_details: (body.outdated_bundle_details || []) as Array<{ kbd_id: number; support_id: string; factory_version: string }>,
+      health_status: String(body.health_status || 'unknown'),
+      recommendation: String(body.recommendation || ''),
     }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error))
@@ -347,11 +363,11 @@ async function openMigrationDialog() {
 }
 
 async function executeMigration() {
-  if (!migrationHealth.value || migrationHealth.value.outdated_count === 0) return
+  if (!migrationHealth.value || migrationHealth.value.outdated_bundles === 0) return
   const action = migrationDryRun.value ? '预演迁移' : '执行迁移'
   try {
     await ElMessageBox.confirm(
-      `确认${action} ${migrationHealth.value.outdated_count} 个过时 Bundle？`,
+      `确认${action} ${migrationHealth.value.outdated_bundles} 个过时 Bundle？`,
       'Bundle 迁移',
       { type: migrationDryRun.value ? 'info' : 'warning' },
     )
@@ -366,9 +382,11 @@ async function executeMigration() {
       body: JSON.stringify({ dry_run: migrationDryRun.value }),
     })
     migrationResult.value = {
-      migrated: Number(body.migrated || 0),
+      dry_run: Boolean(body.dry_run),
+      total: Number(body.total || 0),
+      success: Number(body.success || 0),
       failed: Number(body.failed || 0),
-      details: (body.details || []) as Array<{ kbd_id: number; support_id: string; status: string; error?: string }>,
+      details: (body.details || []) as Array<{ kbd_id: number; support_id?: string; status: string; error?: string; note?: string }>,
     }
     if (!migrationDryRun.value) {
       await loadBundles()
@@ -773,18 +791,18 @@ onMounted(() => loadBundles())
         <div v-if="migrationHealth" class="migration-health">
           <el-descriptions :column="2" border size="small">
             <el-descriptions-item label="当前工厂版本">
-              <el-tag type="primary">{{ migrationHealth.current_version }}</el-tag>
+              <el-tag type="primary">{{ migrationHealth.current_factory_version }}</el-tag>
             </el-descriptions-item>
             <el-descriptions-item label="需迁移 Bundle 数">
-              <el-tag :type="migrationHealth.outdated_count > 0 ? 'warning' : 'success'">
-                {{ migrationHealth.outdated_count }}
+              <el-tag :type="migrationHealth.outdated_bundles > 0 ? 'warning' : 'success'">
+                {{ migrationHealth.outdated_bundles }}
               </el-tag>
             </el-descriptions-item>
           </el-descriptions>
 
-          <div v-if="migrationHealth.outdated_bundles.length > 0" class="outdated-list">
+          <div v-if="migrationHealth.outdated_bundle_details.length > 0" class="outdated-list">
             <h4>过时 Bundle 列表</h4>
-            <el-table :data="migrationHealth.outdated_bundles" size="small" max-height="200">
+            <el-table :data="migrationHealth.outdated_bundle_details" size="small" max-height="200">
               <el-table-column prop="kbd_id" label="KBD ID" width="100" />
               <el-table-column prop="support_id" label="Support ID" width="120" />
               <el-table-column prop="factory_version" label="旧版本" />
@@ -795,7 +813,7 @@ onMounted(() => loadBundles())
         <div v-if="migrationResult" class="migration-result">
           <el-alert
             :type="migrationResult.failed > 0 ? 'warning' : 'success'"
-            :title="`迁移完成：成功 ${migrationResult.migrated}，失败 ${migrationResult.failed}`"
+            :title="`迁移完成：成功 ${migrationResult.success}，失败 ${migrationResult.failed}`"
             :closable="false"
             show-icon
           />
@@ -806,7 +824,7 @@ onMounted(() => loadBundles())
               <el-table-column prop="status" label="状态">
                 <template #default="{ row }">
                   <el-tag :type="row.status === 'success' ? 'success' : 'danger'" size="small">
-                    {{ row.status === 'success' ? '成功' : row.error || row.status }}
+                    {{ row.status === 'success' ? '成功' : row.error || row.note || row.status }}
                   </el-tag>
                 </template>
               </el-table-column>
@@ -814,14 +832,14 @@ onMounted(() => loadBundles())
           </div>
         </div>
 
-        <div v-if="migrationHealth?.outdated_count > 0 && !migrationResult" class="migration-actions">
+        <div v-if="migrationHealth?.outdated_bundles > 0 && !migrationResult" class="migration-actions">
           <el-checkbox v-model="migrationDryRun">预演模式（不实际执行迁移）</el-checkbox>
         </div>
       </div>
       <template #footer>
         <el-button @click="migrationVisible = false">关闭</el-button>
         <el-button
-          v-if="migrationHealth?.outdated_count > 0 && !migrationResult"
+          v-if="migrationHealth?.outdated_bundles > 0 && !migrationResult"
           type="primary"
           :loading="migrationLoading"
           @click="executeMigration"
