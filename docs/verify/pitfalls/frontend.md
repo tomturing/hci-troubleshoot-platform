@@ -197,3 +197,13 @@ RUN pnpm config set onlyBuiltDependencies[0] esbuild \
 - 前端负向测试必须在 Aggressive、SSH connected、推进虚拟时钟的条件下断言 WebSocket/旧执行器调用次数为 0；
 - S0 没有工具能力，必须在调用 LLM 前拒绝明确执行请求，并在输出前阻断 fenced shell、退出码和“执行结果”等无工具证据；
 - 端到端验收同时检查 SSE 类型、WebSocket 消息类型、Bridge counter、Artifact 和 Trace；出现 `ssh_input` 不能算 Agent 工具链成功。
+
+## V-016：CI 低配 runner 上 vitest 默认 5s 超时导致重挂载用例临界抖动
+
+**现象：** 同一份代码在 PR CI 前端 job 全绿；merge 后的 push run 中 `QfkProcessingEditor.spec.ts` 单个用例 `Test timed out in 5000ms`（实际 6.2s），同文件其余用例普遍 1.6~3.5s，import 阶段高达 23s（本地同套件全绿且 import <0.5s）。
+
+**根因：** admin 前端套件大量用例以 `global: { plugins: [ElementPlus] }` 完整安装 ElementPlus 后挂载重组件，属 CPU 密集型；GitHub 2 核 runner 在 push run 中与十余个镜像构建 job 并行抢占资源时整体劣化数十倍，把贴近阈值（3~5s）的用例推过 vitest 默认 `testTimeout: 5000`。这不是功能回归，而是"重测试 × 低配 runner × 默认阈值"的临界抖动——同一代码重跑即可通过，但不治理会持续偶发红。
+
+**修复：** 在 `frontend/admin/vitest.config.ts` 与 `frontend/customer/vitest.config.ts` 显式设置 `testTimeout: 20000, hookTimeout: 20000`，为慢 runner 留出 3 倍以上余量；阈值放宽只影响真挂死用例的失败时延，不影响正常套件速度。
+
+**预防测试：** 新增会完整挂载 ElementPlus（或其它全量组件库）的用例时，先确认单用例本地耗时；若本地已 >1s，应优先拆薄挂载（stub 掉无关子组件、按需注册组件）而不是依赖放宽阈值。CI 偶发超时先用 `gh run rerun <id> --failed` 复核抖动，再对比 PR run 与 push run 的并发负载差异定位资源抢占。
