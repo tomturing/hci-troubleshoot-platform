@@ -93,6 +93,17 @@ def _tool_contract_checker(tool: str, signal: dict[str, Any]) -> str | None:
     keywords = (
         [pattern] if isinstance(pattern, str) and pattern else list(pattern or []) if isinstance(pattern, list) else []
     )
+    # 从 produces[].extract.rows.include 提取 filter_keywords
+    filter_keywords: list[str] = []
+    for produce in signal.get("orchestrate", {}).get("produces", []) or []:
+        if isinstance(produce, dict):
+            extract = produce.get("extract")
+            if isinstance(extract, dict):
+                rows = extract.get("rows")
+                if isinstance(rows, dict):
+                    include = rows.get("include")
+                    if isinstance(include, (list, tuple)):
+                        filter_keywords.extend(str(item) for item in include if str(item))
     data: dict[str, Any] = {
         "namespace": namespace,
         "host": compiled_args.get("host"),
@@ -111,6 +122,7 @@ def _tool_contract_checker(tool: str, signal: dict[str, Any]) -> str | None:
         "archive_precheck": compiled_args.get("archive_precheck"),
         "matcher": matcher or None,
         "keyword": keywords,
+        "filter_keywords": filter_keywords,
         "match_mode": {"any": "or", "all": "and"}.get(
             str(matcher.get("mode") or "or"), str(matcher.get("mode") or "or")
         ),
