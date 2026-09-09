@@ -95,6 +95,10 @@
     - 在 `diagnosis-service/app/main.py` 中注册 `migration.router`。
     - 前端 `BundleFactoryView.vue` 更新 TypeScript 接口匹配新 API 响应格式（`current_factory_version`、`outdated_bundles`、`outdated_bundle_details`）。
   - **效果**：用户可以通过 Admin UI 的"Bundle 迁移"功能查看过时 Bundle 列表（包含 KBD ID、Support ID、当前版本、期望版本），并选择预览或执行迁移。迁移会触发 Bundle 重新编译，使其使用最新的编译器版本。
+- **Bundle 迁移 API Gateway 路由代理修复**：
+  - **根因**：前端 BundleFactoryView.vue 使用 `/api/hci-sim/v1/bundle-migration/*` 路径访问 Bundle 迁移 API，但该路由未在 API Gateway 中注册，导致 404 错误。
+  - **修复**：在 `backend/api-gateway/app/routes/simulations.py` 中添加 bundle-migration 路由代理，将 `/api/hci-sim/v1/bundle-migration/*` 转发到 diagnosis-service 的 `/api/v1/bundle-migration/*`。
+  - **效果**：Admin UI 可以正常访问 Bundle 迁移 API。
 - **信号匹配器评估详细日志记录**：
   - **根因**：KBD 仿真执行时，信号状态为 CONTRADICTED 的原因难以定位，缺少详细的匹配日志，无法看到关键字命中情况和期望值。
   - **修复**：在 `kbd_differential.py` 中添加 `matcher_evaluation_result` 事件日志，记录信号 ID、匹配器类型、期望结果、最终判定、命中关键字、原始输出预览等。

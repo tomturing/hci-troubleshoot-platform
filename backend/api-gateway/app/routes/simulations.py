@@ -14,7 +14,7 @@ import uuid
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from app.config import settings
 from app.routes.signal_dry_run import _resolve_package_context
@@ -541,3 +541,37 @@ async def _get(path: str, *, trace_id: str | None = None) -> JSONResponse:
     except ValueError:
         body = {"detail": response.text}
     return JSONResponse(content=body, status_code=response.status_code)
+
+
+# Bundle 迁移路由（代理到 diagnosis-service）
+@router.get("/v1/bundle-migration/health")
+@router.post("/v1/bundle-migration/migrate")
+@router.get("/v1/bundle-migration/version")
+async def proxy_bundle_migration(request: Request) -> Response:
+    """代理 Bundle 迁移请求到 diagnosis-service。"""
+    # 将 /api/hci-sim/v1/bundle-migration/* 转换为 /api/v1/bundle-migration/*
+    path = request.url.path.replace("/api/hci-sim", "/api")
+
+    headers = {}
+    if settings.INTERNAL_API_TOKEN:
+        headers["Authorization"] = f"Bearer {settings.INTERNAL_API_TOKEN}"
+
+    body = await request.body()
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            upstream = await client.request(
+                request.method,
+                f"{settings.DIAGNOSIS_SERVICE_URL.rstrip('/')}{path}",
+                content=body or None,
+                params=request.query_params,
+                headers=headers,
+            )
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail="diagnosis-service unavailable") from exc
+
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        headers={"Content-Type": upstream.headers.get("Content-Type", "application/json")},
+    )
