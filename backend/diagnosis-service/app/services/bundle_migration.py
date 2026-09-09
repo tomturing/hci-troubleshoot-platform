@@ -64,7 +64,6 @@ async def migrate_bundle(
     Returns:
         迁移结果
     """
-    from .offline_acquisition_compiler import compile_signal_acquisition
 
     # TODO: 实现迁移逻辑
     # 1. 读取 KBD 信号配置

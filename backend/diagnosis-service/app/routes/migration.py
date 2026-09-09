@@ -1,12 +1,12 @@
 """Bundle 迁移 API 路由"""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel
 
 from ..services.bundle_migration import (
+    CURRENT_BUNDLE_FACTORY_VERSION,
     batch_migrate_bundles,
     check_factory_version_health,
-    CURRENT_BUNDLE_FACTORY_VERSION,
 )
 
 router = APIRouter(prefix="/api/v1/bundle-migration", tags=["bundle-migration"])
