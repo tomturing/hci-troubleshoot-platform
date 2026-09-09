@@ -83,6 +83,9 @@
 - **QFK 日志关键字从 produces[].extract.rows.include 提取**：
   - **根因**：KBD 44374 案例的信号将关键字放在 `produces[].extract.rows.include` 而非 `match` 中，但 `_compile_qfk_signal_to_command` 函数只从 `match.pattern` 提取关键字，导致 `qfk_log 必须提供关键字 matcher、resource_keyword 或 request_id` 报错。
   - **修复**：在 `_compile_qfk_signal_to_command` 中新增从 `orchestrate.produces[].extract.rows.include` 提取 `filter_keywords` 的逻辑，与离线编译器 `offline_acquisition_compiler.py` 的行为对齐。
+- **Bundle 工厂版本迁移路由注册修复**：
+  - **根因**：`backend/diagnosis-service/app/routes/migration.py` 已创建但未在 `main.py` 中注册，导致 Admin UI Bundle 迁移功能报 Not Found。
+  - **修复**：在 `diagnosis-service/app/main.py` 中导入并注册 `migration.router`。
 - **QFK AI 提取 value_mode 配置过滤与 Langfuse 可观测性集成**（PR #903）：
   - **根因**：AI 提取调用确定性 Extractor 获取候选行时，`_deterministic_spec` 未过滤 `value_mode` 配置，导致 `extract_output_values` 尝试将整行文本转换为数值类型而抛出 `QFK_TYPE_CAST_FAILED`，AI 提取在 0.8ms 内立即失败，根本没有机会调用 LLM。
   - **修复**：
