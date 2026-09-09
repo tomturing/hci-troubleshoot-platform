@@ -21,6 +21,11 @@
 **HCI 智能排障平台** — AI 驱动的超融合基础设施运维故障诊断系统。
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
+- **QFK 日志时间窗口变量占位符被 T→空格替换破坏修复**：
+  - **根因**：`backend/shared/schemas/log_source_catalog.py` 的 `normalize_absolute_log_time()` 为把 ISO 日期时间的 `T` 分隔符转为 aCLI 接受的空格（`2026-09-04T10:00:00` → `2026-09-04 10:00:00`），对入参无条件执行 `value.replace("T", " ", 1)`。当 `time_window` 是变量占位符时，`{{DATE}}` 中变量名里的第一个 `T` 被替换成空格，编译出的命令模板变成 `-t '{{DA E}}'`，执行前变量替换永远无法命中。该函数同时被 agent-service 的 `LogKeywordHandler.build_commands()`（真实执行路径）、`shared/resolution/resolvers.py`（Shared Resolution Runtime）与 QFK 命令预览接口调用，所有变量名含 `T` 的时间占位符（`{{DATE}}`、`{{DATETIME}}` 等）均受影响；`{{END}}` 因不含 `T` 而未暴露。
+  - **修复**：占位符（匹配 `_PLACEHOLDER` 正则）直接原样返回，`T`→空格替换只对真实 ISO 日期时间生效；`validate_absolute_log_time()` 内部的同名替换无此问题（占位符分支已提前返回）。
+  - **测试守护**：在 `backend/kb-service/tests/test_log_source_catalog.py` 新增 `test_normalize_absolute_log_time_preserves_placeholders` 参数化回归测试，覆盖 `{{DATE}}`/`{{END}}`/`{{DATETIME}}` 原样保留与 ISO `T` 分隔符正常转换。
+  - **存量修复**：已编译落库的 Bundle 若包含被破坏的 `{{DA E}}`，通过 Admin UI「Bundle 迁移」功能触发重新编译即可修正。
 - **BridgeRelayExecutor 冷启动并发自愈与探针加固**：
   - **背景与根因**：在节点/集群统一重启（冷启动）时，Pod 并发启动导致 `agent-service` 连接 Redis 遭遇短暂网络时差；原 FastAPI `lifespan` 仅尝试一次建连，连接失败后进入降级逻辑，跳过了 `set_executor(...)` 全局注册，且缺乏运行时自愈机制。导致 `BridgeRelayExecutor` 永久置空，后续所有 KBD 关键信号排障（QKV/QFK）100% 报错“BridgeRelayExecutor 尚未初始化”；同时 `/v1/agent/health` 缺乏对执行器状态的可观测性感知。
   - **优化落地**：
