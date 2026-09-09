@@ -122,3 +122,7 @@ scripts/kbd/
 # Go 测试/构建产物不得进入源码仓库
 hci_sim/*.test
 hci_sim/database.test
+
+
+# conversation-service 在线控制台截图制品由运行时目录或持久卷管理，不提交本地 PPM。
+backend/conversation-service/data/vm-console-artifacts/
