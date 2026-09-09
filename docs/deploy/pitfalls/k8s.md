@@ -1569,3 +1569,39 @@ kubectl get pod -n <ns> -l app.kubernetes.io/name=kb-service -o jsonpath='{range
 ```
 
 **参考案例**：2026-08-06 staging 的 kb-service 使用 `dnsPolicy: None` 且缺少 searches，`postgres` 解析失败，KBD/SOP/分类管理接口 500；`/health` 仍返回 200。显式收敛 ClusterFirst 并拆分三级探针后，数据库不可达会从流量池摘除而不会触发重启风暴。
+
+## D-027：镜像 ENV 烘焙仅本地可解析的 upstream 默认值，导致集群内 Nginx 启动期 crashloop
+
+**现象：** #1010 合入后 K3s 环境 admin-ui Pod CrashLoopBackOff，日志：
+
+```
+nginx: [emerg] host not found in upstream "host.docker.internal" in /etc/nginx/conf.d/default.conf:78
+```
+
+本地 Docker Compose 与 PR CI（仅前端单测/构建，不部署）均正常，问题只在集群侧暴露。
+
+**根因：** Admin UI 为支持本地同源反代桌面 terminal-bridge，在 `frontend/admin/Dockerfile` 中烘焙了
+`ENV TERMINAL_BRIDGE_UPSTREAM=http://host.docker.internal:9999` 默认值，nginx 模板经 envsubst 生成
+`proxy_pass ${TERMINAL_BRIDGE_UPSTREAM};`（字面量形式，Nginx 在**启动期**通过 libc 解析主机名，解析失败即 `[emerg]` 退出）。
+Helm admin-ui Deployment 只注入了 `TERMINAL_BRIDGE_URL`（前端运行时配置），未覆盖新增的 `TERMINAL_BRIDGE_UPSTREAM`，
+于是镜像默认值泄漏进集群——`host.docker.internal` 是 Docker Desktop 专属域名，K3s Pod 内必然 NXDOMAIN。
+
+**修复：**（另见 PIT-045：nginx 启动期 upstream DNS 解析失败的同类现象；D-025：动态 resolver 的 FQDN 规则）
+
+Helm `admin-ui/deployment.yaml` 显式注入并按开关分流：
+
+- `terminalBridge.enabled=true`：指向 `http://terminal-bridge.<ns>.svc.<clusterDomain>:<port>` 完整 Service FQDN（与 D-025 同规则）；
+- `terminalBridge.enabled=false`：给回环占位 `http://127.0.0.1:9999`——集群内该路径由同源 Ingress 接管，占位值仅保证
+  Nginx 可启动，直连 Pod 的请求得到 502 而非进程崩溃（fail-visible，不 fail-crash）。
+
+并新增 helm-unittest `admin_ui_terminal_bridge_upstream_test.yaml` 锁定两种分支的渲染结果。
+
+**预防：**
+
+- 镜像 ENV 默认值必须假设"在任意编排环境裸启动也能拉起进程"：凡进入 `proxy_pass`/`upstream` 字面量的主机名，
+  默认值只能是回环地址或必然可解析的名字，开发专属域名（`host.docker.internal`、`*.local`、宿主机 IP）只能由
+  Compose/env 文件显式注入，禁止烘焙进镜像。
+- 给前端镜像 nginx 模板新增 envsubst 变量时，必须同步检查 Helm Deployment 是否需要注入对应 env（模板变量清单 =
+  Dockerfile ENV 清单 = Helm env 清单，三者对齐）。
+- 字面量 `proxy_pass` 与变量式 `proxy_pass` 的解析时机不同（启动期 libc vs 运行期 resolver），本地开发依赖
+  `/etc/hosts`（Docker Desktop 注入）时必须用字面量形式，集群侧则必须保证启动期可解析——两种形态不可混淆。

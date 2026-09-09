@@ -1,0 +1,31 @@
+# Admin UI nginx /terminal-bridge upstream 启动期可解析性回归测试（D-027）
+suite: "Admin UI Terminal Bridge Upstream 配置测试"
+templates:
+  - admin-ui/deployment.yaml
+tests:
+  - it: "terminalBridge 启用时指向集群 Service FQDN（启动期可解析）"
+    set:
+      global.namespace: hci-staging
+      terminalBridge.enabled: true
+      terminalBridge.port: 9999
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TERMINAL_BRIDGE_UPSTREAM
+            value: "http://terminal-bridge.hci-staging.svc.cluster.local:9999"
+
+  - it: "terminalBridge 未启用时使用回环占位地址，杜绝镜像默认 host.docker.internal 导致 crashloop"
+    set:
+      terminalBridge.enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TERMINAL_BRIDGE_UPSTREAM
+            value: "http://127.0.0.1:9999"
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TERMINAL_BRIDGE_UPSTREAM
+            value: "http://host.docker.internal:9999"
