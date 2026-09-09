@@ -86,6 +86,10 @@
 - **Bundle 工厂版本迁移路由注册修复**：
   - **根因**：`backend/diagnosis-service/app/routes/migration.py` 已创建但未在 `main.py` 中注册，导致 Admin UI Bundle 迁移功能报 Not Found。
   - **修复**：在 `diagnosis-service/app/main.py` 中导入并注册 `migration.router`。
+- **信号匹配器评估详细日志记录**：
+  - **根因**：KBD 仿真执行时，信号状态为 CONTRADICTED 的原因难以定位，缺少详细的匹配日志，无法看到关键字命中情况和期望值。
+  - **修复**：在 `kbd_differential.py` 中添加 `matcher_evaluation_result` 事件日志，记录信号 ID、匹配器类型、期望结果、最终判定、命中关键字、原始输出预览等。
+  - **效果**：通过日志可以清楚看到目标关键字、实际命中关键字、原始命中结果、期望 expected 和最终判定，便于排查信号状态与预期矛盾的原因。
 - **QFK AI 提取 value_mode 配置过滤与 Langfuse 可观测性集成**（PR #903）：
   - **根因**：AI 提取调用确定性 Extractor 获取候选行时，`_deterministic_spec` 未过滤 `value_mode` 配置，导致 `extract_output_values` 尝试将整行文本转换为数值类型而抛出 `QFK_TYPE_CAST_FAILED`，AI 提取在 0.8ms 内立即失败，根本没有机会调用 LLM。
   - **修复**：
