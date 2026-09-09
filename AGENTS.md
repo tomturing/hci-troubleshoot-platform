@@ -80,6 +80,9 @@
   - **修复**：
     - 在 `build_log_selector` 中支持从 `matcher.extract.rows.include` 自动提取关键词并编译为 `-E -k "k1|k2"`，并在 `exists` 模式下优先下推关键词粗筛。
     - 在 `review_signal_document` 编译期提取 `match` 与 `produces` 的 `rows.include`，注入 `qfk_log` 的 `keyword` 和 `extended_regex`，确保不同 Signal 生成精确的专属采集指令。
+- **QFK 日志关键字从 produces[].extract.rows.include 提取**：
+  - **根因**：KBD 44374 案例的信号将关键字放在 `produces[].extract.rows.include` 而非 `match` 中，但 `_compile_qfk_signal_to_command` 函数只从 `match.pattern` 提取关键字，导致 `qfk_log 必须提供关键字 matcher、resource_keyword 或 request_id` 报错。
+  - **修复**：在 `_compile_qfk_signal_to_command` 中新增从 `orchestrate.produces[].extract.rows.include` 提取 `filter_keywords` 的逻辑，与离线编译器 `offline_acquisition_compiler.py` 的行为对齐。
 - **QFK AI 提取 value_mode 配置过滤与 Langfuse 可观测性集成**（PR #903）：
   - **根因**：AI 提取调用确定性 Extractor 获取候选行时，`_deterministic_spec` 未过滤 `value_mode` 配置，导致 `extract_output_values` 尝试将整行文本转换为数值类型而抛出 `QFK_TYPE_CAST_FAILED`，AI 提取在 0.8ms 内立即失败，根本没有机会调用 LLM。
   - **修复**：
