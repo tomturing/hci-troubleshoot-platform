@@ -3262,6 +3262,10 @@ CREATE TABLE IF NOT EXISTS effect_verification_check (
     -- valid=观测有效；error=观测失败/通道不可用；insufficient=负证据观测域有效性不足
     observation_status varchar(32) NOT NULL,
     observation_summary text,
+    -- 受控观测输出的 SHA-256 指纹；用于跨次进展判断，不保存额外原始内容。
+    observation_fingerprint varchar(64),
+    -- baseline=首个快照；in_progress=输出变化；stalled=超过停滞窗口无变化；inconclusive=无法形成进展判断。
+    progress_state varchar(32),
     -- evaluate_matcher 的人类可读证据串（期望/命中/最终判定）
     matcher_evidence text,
     check_verdict varchar(32),
@@ -3274,6 +3278,10 @@ CREATE TABLE IF NOT EXISTS effect_verification_check (
     CONSTRAINT ck_effect_check_observation CHECK (
         (observation_status)::text = ANY ((ARRAY['valid'::varchar, 'error'::varchar, 'insufficient'::varchar])::text[])
     ),
+    CONSTRAINT ck_effect_check_progress_state CHECK (
+        progress_state IS NULL
+        OR (progress_state)::text = ANY ((ARRAY['baseline'::varchar, 'in_progress'::varchar, 'stalled'::varchar, 'inconclusive'::varchar, 'achieved'::varchar])::text[])
+    ),
     CONSTRAINT ck_effect_check_verdict CHECK (
         check_verdict IS NULL
         OR (check_verdict)::text = ANY ((ARRAY['achieved'::varchar, 'not_achieved'::varchar, 'inconclusive'::varchar])::text[])
@@ -3281,6 +3289,8 @@ CREATE TABLE IF NOT EXISTS effect_verification_check (
 );
 
 COMMENT ON TABLE effect_verification_check IS '效果验证每次观测判定记录（append-only 时间线）；与 effect_verification 一对多';
+COMMENT ON COLUMN effect_verification_check.observation_fingerprint IS '受控观测输出 SHA-256；用于跨次进展比较';
+COMMENT ON COLUMN effect_verification_check.progress_state IS 'baseline/in_progress/stalled/inconclusive/achieved';
 
 CREATE INDEX IF NOT EXISTS idx_effect_check_verification ON effect_verification_check (verification_id, check_seq);
 

@@ -5,6 +5,7 @@ from app.routes import capabilities as capability_routes
 from app.tools.acli import executor as executor_module
 from app.tools.qfk.handlers import HandlerRegistry
 from fastapi import HTTPException
+from shared.schemas.capability_descriptor import get_capability_descriptor
 from starlette.requests import Request
 
 
@@ -98,6 +99,18 @@ def test_runtime_discovery_marks_effect_available_when_policy_enabled(monkeypatc
     assert effect["runtime_status"] == "available"
     assert effect["usable"] is True
     assert effect["reason"] is None
+
+
+def test_runtime_discovery_reuses_shared_capability_descriptor(monkeypatch):
+    monkeypatch.setattr(executor_module, "_executor", object())
+    document = capability_routes.runtime_capability_document()
+    effect = next(item for item in document["capabilities"] if item["capability_id"] == "qkv_effect")
+    descriptor = get_capability_descriptor("qkv_effect")
+
+    assert effect["kind"] == descriptor["kind"]
+    assert effect["supported_matchers"] == descriptor["supported_matchers"]
+    assert effect["safety"] == descriptor["safety"]
+    assert effect["limitations"] == descriptor["limitations"]
 
 
 @pytest.mark.asyncio

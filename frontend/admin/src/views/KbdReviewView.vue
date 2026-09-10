@@ -2335,6 +2335,28 @@ function onEffectUsageChange(value: string): void {
   signalEditDraft.value.orchestrate.phase = value === 'symptom_confirm' ? 'diagnostic' : 'remediation'
 }
 
+function onEffectProgressChange(enabled: boolean): void {
+  const expectation = signalEditDraft.value?.acquire?.args?.expectation
+  if (!expectation || typeof expectation !== 'object') return
+  if (enabled) {
+    expectation.progress = {
+      mode: 'change_required',
+      idle_after_seconds: 120,
+    }
+    expectation.max_recheck = Math.max(Number(expectation.max_recheck || 0), 1)
+  } else {
+    delete expectation.progress
+  }
+}
+
+function onEffectObservationToolChange(tool: string): void {
+  const expectation = signalEditDraft.value?.acquire?.args?.expectation
+  if (!expectation || typeof expectation !== 'object') return
+  expectation.observation = tool === 'qfk_storage'
+    ? { tool, args: { command: '', command_args: [], resource_keyword: '', host: '{{HOST}}', timeout: 60 } }
+    : { tool, args: { keyword: '' } }
+}
+
 function supportsQfkFormatter(tool: string): boolean {
   return qfkTools.has(tool)
 }
@@ -5028,15 +5050,21 @@ onUnmounted(() => clearBatchPollTimer())
                     </template>
                     <template v-else-if="sigTool(signalEditDraft) === 'qkv_effect'">
                       <div class="signal-row"><span class="signal-k">使用模式</span><el-select v-model="signalEditDraft.acquire.args.usage" size="small" @change="onEffectUsageChange"><el-option label="操作后效果验证" value="remediation_verify" /><el-option label="S1 症状确认" value="symptom_confirm" /></el-select></div>
-                      <div class="signal-row"><span class="signal-k">观测通道</span><el-select v-model="signalEditDraft.acquire.args.expectation.observation.tool" size="small"><el-option label="告警再查询 qkv_alert" value="qkv_alert" /><el-option label="任务再查询 qkv_task" value="qkv_task" /><el-option label="弹框再查询 qkv_dialog" value="qkv_dialog" /><el-option label="控制台画面 qkv_vm_console" value="qkv_vm_console" /></el-select></div>
-                      <div class="signal-row"><span class="signal-k">观测关键字</span><el-input v-model="signalEditDraft.acquire.args.expectation.observation.args.keyword" size="small" placeholder="观测原语查询关键字，如 内存不足" /></div>
+                      <div class="signal-row"><span class="signal-k">观测通道</span><el-select :model-value="signalEditDraft.acquire.args.expectation.observation.tool" size="small" @change="onEffectObservationToolChange"><el-option label="告警再查询 qkv_alert" value="qkv_alert" /><el-option label="任务再查询 qkv_task" value="qkv_task" /><el-option label="弹框再查询 qkv_dialog" value="qkv_dialog" /><el-option label="控制台画面 qkv_vm_console" value="qkv_vm_console" /><el-option label="存储快照 qfk_storage" value="qfk_storage" /></el-select></div>
+                      <template v-if="signalEditDraft.acquire.args.expectation.observation.tool === 'qfk_storage'">
+                        <div class="signal-row"><span class="signal-k">存储查询命令</span><el-input v-model="signalEditDraft.acquire.args.expectation.observation.args.command" size="small" placeholder="受控 acli storage 子命令" /></div>
+                        <div class="signal-row"><span class="signal-k">资源选择器</span><el-input v-model="signalEditDraft.acquire.args.expectation.observation.args.resource_keyword" size="small" placeholder="迁移目标存储对象" /></div>
+                      </template>
+                      <div v-else class="signal-row"><span class="signal-k">观测关键字</span><el-input v-model="signalEditDraft.acquire.args.expectation.observation.args.keyword" size="small" placeholder="观测原语查询关键字，如 内存不足" /></div>
                       <div class="signal-row"><span class="signal-k">判定方式</span><el-select v-model="signalEditDraft.acquire.args.expectation.matcher.type" size="small"><el-option label="存在性 exists" value="exists" /><el-option label="布尔值 boolean" value="boolean" /><el-option label="关键字 keyword" value="keyword" /><el-option label="正则 regex" value="regex" /><el-option label="状态 state" value="state" /><el-option label="数值阈值 threshold" value="threshold" /><el-option label="差值 delta" value="delta" /><el-option label="趋势 trend" value="trend" /></el-select></div>
                       <div class="signal-row"><span class="signal-k">期望方向</span><el-select v-model="signalEditDraft.acquire.args.expectation.matcher.expected" size="small"><el-option label="应出现（expected=true）" :value="true" /><el-option label="应消失（expected=false，负证据）" :value="false" /></el-select></div>
                       <div class="signal-row"><span class="signal-k">稳定窗口（秒）</span><el-input-number v-model="signalEditDraft.acquire.args.expectation.settle_seconds" :min="0" :max="3600" size="small" /></div>
                       <div class="signal-row"><span class="signal-k">复核窗口（秒）</span><el-input-number v-model="signalEditDraft.acquire.args.expectation.window_seconds" :min="60" :max="86400" size="small" /></div>
                       <div class="signal-row"><span class="signal-k">复核次数</span><el-input-number v-model="signalEditDraft.acquire.args.expectation.max_recheck" :min="0" :max="5" size="small" /></div>
+                      <div class="signal-row"><span class="signal-k">监控输出变化</span><el-switch :model-value="Boolean(signalEditDraft.acquire.args.expectation.progress)" @change="onEffectProgressChange" /></div>
+                      <div v-if="signalEditDraft.acquire.args.expectation.progress" class="signal-row"><span class="signal-k">停滞窗口（秒）</span><el-input-number v-model="signalEditDraft.acquire.args.expectation.progress.idle_after_seconds" :min="30" :max="signalEditDraft.acquire.args.expectation.window_seconds" size="small" /></div>
                       <div class="signal-row"><span class="signal-k">目标宿主机</span><el-input v-model="signalEditDraft.acquire.args.host" size="small" placeholder="{{HOST}} 或 Inventory 规范化节点标识" /></div>
-                      <div class="field-hint">条件型效果验证生产者：期望必须是结构化契约数据（封闭观测通道 + 封闭 matcher + 受限窗口），观测委派已批准的只读原语。三态判定 achieved/not_achieved/inconclusive 由平台合成，观察不足禁止坍缩为已恢复；不得作为 KBD 唯一生产者。编辑器不提供自由文本判定、命令或脚本字段。</div>
+                      <div class="field-hint">启用“监控输出变化”后，平台只比较已批准观测原语的输出指纹：首次为基线，变化表示任务仍在推进，连续无变化超过停滞窗口才判定 stalled。它不开放目录、路径或 Shell 字段；要监控存储文件须先有受控存储快照观测原语。</div>
                     </template>
                     <template v-else-if="sigTool(signalEditDraft) === 'qkv_case_context'">
                       <el-alert type="info" :closable="false" show-icon title="工单上下文信号不执行任何命令，也不产出 HOST、VM_ID 等目标变量。请在下方“语义入口画像”维护症状、正向锚点和补证据指引。" />
