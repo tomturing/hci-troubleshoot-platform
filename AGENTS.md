@@ -21,6 +21,13 @@
 **HCI 智能排障平台** — AI 驱动的超融合基础设施运维故障诊断系统。
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
+- **语义入口画像级联删除与切换清理提示**（PR #1027）：
+  - **背景**：`semantic_entry_profile` 与 `qkv_case_context` 信号必须成对共存（后端校验）。删除信号后画像成为孤儿，或切换唯一上下文信号时，用户不知道需要清理画像，导致保存失败。
+  - **修复**：
+    - **后端级联删除**：`_delete_signal_from_document` 删除 `qkv_case_context` 时自动移除孤儿画像；`_prepare_expert_draft_signals` 工具改走后自动移除孤儿画像。
+    - **前端清理提示**：唯一上下文信号切换时弹出确认对话框，提示用户将一并移除语义入口画像；`deleteSemanticEntry` 支持 `skipConfirm` 参数避免重复确认。
+    - **删除按钮提示**：点击"删除语义入口"按钮时明确提示将级联删除信号。
+  - **测试守护**：新增测试用例验证级联删除行为与孤儿画像清理。
 - **QFK 日志时间窗口变量占位符被 T→空格替换破坏修复**：
   - **根因**：`backend/shared/schemas/log_source_catalog.py` 的 `normalize_absolute_log_time()` 为把 ISO 日期时间的 `T` 分隔符转为 aCLI 接受的空格（`2026-09-04T10:00:00` → `2026-09-04 10:00:00`），对入参无条件执行 `value.replace("T", " ", 1)`。当 `time_window` 是变量占位符时，`{{DATE}}` 中变量名里的第一个 `T` 被替换成空格，编译出的命令模板变成 `-t '{{DA E}}'`，执行前变量替换永远无法命中。该函数同时被 agent-service 的 `LogKeywordHandler.build_commands()`（真实执行路径）、`shared/resolution/resolvers.py`（Shared Resolution Runtime）与 QFK 命令预览接口调用，所有变量名含 `T` 的时间占位符（`{{DATE}}`、`{{DATETIME}}` 等）均受影响；`{{END}}` 因不含 `T` 而未暴露。
   - **修复**：占位符（匹配 `_PLACEHOLDER` 正则）直接原样返回，`T`→空格替换只对真实 ISO 日期时间生效；`validate_absolute_log_time()` 内部的同名替换无此问题（占位符分支已提前返回）。
