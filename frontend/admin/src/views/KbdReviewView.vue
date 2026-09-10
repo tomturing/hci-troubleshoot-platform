@@ -1832,6 +1832,74 @@ async function previewSemanticProfile(profile: SemanticEntryProfile, context: Re
   if (!resp.ok) throw buildSignalRequestError(body, resp.status, resp.headers)
   return body
 }
+async function deleteSemanticEntry(options?: { skipConfirm?: boolean }): Promise<void> {
+  // 语义入口成对契约：删除画像必须连同 qkv_case_context 信号一起移除，
+  // 否则保存会被”只保留其中一项”的 SIGNAL_FIELD_INVALID 门禁拒绝。
+  if (!detailEntry.value || semanticSaving.value) return
+  const doc = JSON.parse(JSON.stringify(detailEntry.value.signals_json || { schema_version: 2, signals: [] })) as SignalsDoc
+  const signals = doc.signals || []
+  const entryIndex = signals.findIndex((signal) => sigTool(signal) === 'qkv_case_context')
+  const entrySignal = entryIndex >= 0 ? signals[entryIndex] : null
+  const signalId = entrySignal ? signalStableId(entrySignal, entryIndex) : ''
+
+  // 如果不是跳过确认，则需要用户确认
+  if (!options?.skipConfirm) {
+    await ElMessageBox.confirm(
+      '将同时删除语义入口画像与 qkv_case_context 信号（成对契约要求二者一起移除）。原始 KBD 正文和截图证据不受影响。',
+      '删除语义入口',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  }
+
+  semanticSaving.value = true
+  try {
+    // 情况一：画像为孤儿（信号已被移除）或信号仍是未保存草稿 → 本地成对移除后整稿保存
+    if (!entrySignal || localSignalIds.value.has(signalId)) {
+      doc.signals = signals.filter((signal) => sigTool(signal) !== 'qkv_case_context')
+      delete (doc as Partial<SignalsDoc>).semantic_entry_profile
+      if (entrySignal) {
+        discardStagedSignalEdit(signalId)
+        unmarkLocalSignal(signalId)
+      }
+      await persistSignalList(doc.signals, '语义入口已删除', [], doc)
+      return
+    }
+    // 情况二：信号已写入权威工作稿 → 走 delete_signal_id，后端级联移除画像
+    const annotation: ChangeAnnotation = {
+      signal_id: signalId,
+      reason_code: 'redundant_signal',
+      note: '级联删除语义入口画像（qkv_case_context 与 semantic_entry_profile 成对移除）',
+    }
+    const resp = await fetch(kbdEditEndpoint(detailEntry.value), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify({
+        delete_signal_id: signalId,
+        change_annotations: [annotation],
+        lock_version: detailEntry.value.lock_version,
+      }),
+    })
+    const responseBody = await resp.json().catch(() => ({}))
+    if (!resp.ok) throw buildSignalRequestError(responseBody, resp.status, resp.headers)
+    const serverDoc = (responseBody?.payload?.signals_json || responseBody?.signals_json) as SignalsDoc
+    if (!serverDoc) throw new Error('服务端未返回删除后的关键信号工作稿')
+    applyMaintenanceResponse(detailEntry.value, responseBody)
+    detailEntry.value.lock_version = responseBody?.lock_version ?? detailEntry.value.lock_version
+    detailEntry.value.signals_json = serverDoc
+    const entryListIndex = entries.value.findIndex((entry) => entry.id === detailEntry.value!.id)
+    if (entryListIndex !== -1) entries.value[entryListIndex].signals_json = serverDoc
+    void fetchRevisionState(detailEntry.value.id)
+    await reviewCurrentSignals({ silent: true })
+    ElMessage.success('语义入口已删除')
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    await focusSignalRequestError(error)
+    ElMessage.error(error instanceof Error ? `删除失败：${error.message}` : '删除失败，请重试')
+  } finally {
+    semanticSaving.value = false
+  }
+}
+
 async function saveSemanticProfile(profile: SemanticEntryProfile): Promise<void> {
   if (!detailEntry.value || semanticSaving.value) return
   semanticSaving.value = true
@@ -2325,7 +2393,42 @@ function buildSignalForTool(tool: string, previous?: SignalV2): SignalV2 {
   }
 }
 
-function onSignalToolChange(tool: string) {
+async function onSignalToolChange(tool: string): Promise<void> {
+  // 检测是否需要清理语义入口画像：唯一的 qkv_case_context 信号要切换为其他信号
+  const oldTool = sigTool(signalEditDraft.value)
+  if (oldTool === 'qkv_case_context' && tool !== 'qkv_case_context') {
+    const profile = (detailEntry.value?.signals_json as SignalsDoc | undefined)?.semantic_entry_profile
+    // 检查是否是唯一的 qkv_case_context 信号
+    const contextSignals = signalList.value.filter((signal) => sigTool(signal) === 'qkv_case_context')
+    const isOnlyContextSignal = contextSignals.length === 1 && editingSignalIndex.value !== null
+      && sigTool(signalList.value[editingSignalIndex.value]) === 'qkv_case_context'
+
+    if (profile && isOnlyContextSignal) {
+      // 弹出确认对话框，提示用户需要清理语义入口画像
+      try {
+        await ElMessageBox.confirm(
+          '当前信号是唯一的"工单上下文"信号，切换后将一并移除语义入口画像（成对契约要求二者共存）。原始 KBD 正文和截图证据不受影响。',
+          '确认清理语义入口画像',
+          { type: 'warning', confirmButtonText: '确认清理并关闭', cancelButtonText: '取消' },
+        )
+        // 用户确认：清理语义入口画像（跳过内部确认），关闭编辑弹窗
+        await deleteSemanticEntry({ skipConfirm: true })
+        cancelEditSignal()
+        ElMessage.info('语义入口已清理，请点击"添加信号"按钮添加新类型的信号')
+        return
+      } catch (error) {
+        // 用户取消：保持原信号类型不变
+        if (error === 'cancel' || error === 'close') return
+        // 其他错误：显示错误信息
+        ElMessage.error(error instanceof Error ? error.message : '清理语义入口失败')
+        return
+      }
+    } else if (profile) {
+      // 有画像但不只有这一条信号（理论上不应该存在，但做防御性处理）
+      const msg = '检测到语义入口画像存在，但当前信号不是唯一的上下文信号。请检查信号配置或手动删除语义入口画像。'
+      ElMessage.warning(msg)
+    }
+  }
   signalEditDraft.value = buildSignalForTool(tool, signalEditDraft.value)
   if (tool.startsWith('qfk')) syncDraftRequires()
 }
@@ -4768,10 +4871,16 @@ onUnmounted(() => clearBatchPollTimer())
           </div>
 
           <section v-if="activeSemanticProfile" class="semantic-entry-contract">
-            <el-alert
-              type="info" :closable="false" show-icon
-              :title="`语义入口契约：${semanticCapabilityLabel(activeSemanticProfile.diagnosis_capability)}。仅在任务、告警、弹框均确认未命中后，才按工单描述参与候选。`"
-            />
+            <div class="semantic-entry-header">
+              <el-alert
+                type="info" :closable="false" show-icon
+                :title="`语义入口契约：${semanticCapabilityLabel(activeSemanticProfile.diagnosis_capability)}。仅在任务、告警、弹框均确认未命中后，才按工单描述参与候选。`"
+              />
+              <el-button
+                size="small" type="danger" plain :loading="semanticSaving" :disabled="!canEditCurrent"
+                @click="deleteSemanticEntry"
+              >删除语义入口</el-button>
+            </div>
             <el-descriptions :column="2" border size="small" class="semantic-entry-summary">
               <el-descriptions-item label="入口信号">
                 <code>qkv_case_context</code>（只读取工单事实，不执行命令、不推断目标）
@@ -6441,6 +6550,16 @@ onUnmounted(() => clearBatchPollTimer())
   border: 1px solid var(--el-color-info-light-5);
   border-radius: 6px;
   background: var(--el-color-info-light-9);
+}
+
+.semantic-entry-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.semantic-entry-header .el-alert {
+  flex: 1;
 }
 
 .semantic-entry-summary {
