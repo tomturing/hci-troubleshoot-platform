@@ -2407,14 +2407,33 @@ async function onSignalToolChange(tool: string): Promise<void> {
       // 弹出确认对话框，提示用户需要清理语义入口画像
       try {
         await ElMessageBox.confirm(
-          '当前信号是唯一的"工单上下文"信号，切换后将一并移除语义入口画像（成对契约要求二者共存）。原始 KBD 正文和截图证据不受影响。',
+          '当前信号是唯一的"工单上下文"信号，切换类型后将一并移除语义入口画像（成对契约要求二者共存）。信号类型将切换为新类型。原始 KBD 正文和截图证据不受影响。',
           '确认清理语义入口画像',
-          { type: 'warning', confirmButtonText: '确认清理并关闭', cancelButtonText: '取消' },
+          { type: 'warning', confirmButtonText: '确认切换', cancelButtonText: '取消' },
         )
-        // 用户确认：清理语义入口画像（跳过内部确认），关闭编辑弹窗
-        await deleteSemanticEntry({ skipConfirm: true })
+        // 用户确认：
+        // 1. 先切换信号类型
+        signalEditDraft.value = buildSignalForTool(tool, signalEditDraft.value)
+        if (tool.startsWith('qfk')) syncDraftRequires()
+
+        // 2. 保存新的信号列表（包含切换后的信号）和空的画像
+        const doc = JSON.parse(JSON.stringify(detailEntry.value.signals_json)) as SignalsDoc
+        // 用切换后的新信号替换原来的 qkv_case_context 信号
+        const newSignalList = signalList.value.map((signal, index) => {
+          if (index === editingSignalIndex.value) {
+            return cloneSignal(signalEditDraft.value)
+          }
+          return cloneSignal(signal)
+        })
+        doc.signals = newSignalList
+        // 清理语义入口画像
+        delete (doc as Partial<SignalsDoc>).semantic_entry_profile
+
+        // 保存
+        await persistSignalList(doc.signals, '语义入口画像已清理，信号类型已切换', [], doc)
+
+        // 关闭编辑弹窗
         cancelEditSignal()
-        ElMessage.info('语义入口已清理，请点击"添加信号"按钮添加新类型的信号')
         return
       } catch (error) {
         // 用户取消：保持原信号类型不变
