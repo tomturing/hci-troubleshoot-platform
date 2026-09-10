@@ -289,6 +289,20 @@ def _prepare_expert_draft_signals(
     """归约并校验专家工作稿，保存与按 ID 删除共用同一权威边界。"""
 
     document = copy.deepcopy(_load_signals_json(raw))
+    # 语义入口成对契约归一化：qkv_case_context 信号被删除或工具被改为其它信号后，
+    # 文档顶层画像成为孤儿；若不移除，后续校验会以“只保留 semantic_entry_profile”
+    # 拒绝保存（SIGNAL_FIELD_INVALID）。此处自动级联移除，与删除链路行为一致。
+    if document.get("semantic_entry_profile") is not None:
+        from shared.schemas.semantic_entry import SEMANTIC_ENTRY_TOOL, has_case_context_signal
+
+        if not has_case_context_signal(document):
+            document.pop("semantic_entry_profile", None)
+            logger.info(
+                event="semantic_entry_profile_cascade_removed",
+                kbd_id=kbd_id,
+                operation=operation,
+                message="qkv_case_context 信号不存在，已级联移除孤儿的 semantic_entry_profile",
+            )
     _strip_legacy_expert_provenance_flags(document)
     migrated_qkv_matchers = normalize_qkv_output_processing_matchers(document)
     normalize_optional_matcher_nulls(document)
@@ -390,10 +404,31 @@ def _delete_signal_from_document(raw: Any, signal_id: str) -> dict[str, Any]:
                 "signal_id": normalized_id or None,
             },
         )
+    # 语义入口成对契约：删除 qkv_case_context 信号时必须级联移除文档级画像，
+    # 否则后续校验会因“只保留 semantic_entry_profile”被 SIGNAL_FIELD_INVALID 拒绝。
+    from shared.schemas.semantic_entry import SEMANTIC_ENTRY_TOOL
+
+    removed_semantic_profile = False
+    if document.get("semantic_entry_profile") is not None:
+        removed_semantic_profile = any(
+            isinstance(signal, dict)
+            and str(signal.get("id") or "") == normalized_id
+            and str((signal.get("acquire") or {}).get("tool") or "") == SEMANTIC_ENTRY_TOOL
+            for signal in signals
+        )
+        if removed_semantic_profile:
+            document.pop("semantic_entry_profile", None)
     document["signals"] = [
         signal for signal in signals if not (isinstance(signal, dict) and str(signal.get("id") or "") == normalized_id)
     ]
-    return _prepare_expert_draft_signals(document)
+    document = _prepare_expert_draft_signals(document)
+    if removed_semantic_profile:
+        logger.info(
+            event="semantic_entry_profile_cascade_removed",
+            kbd_signal_id=normalized_id,
+            message="已级联移除 semantic_entry_profile（qkv_case_context 信号被删除）",
+        )
+    return document
 
 
 if TYPE_CHECKING:
