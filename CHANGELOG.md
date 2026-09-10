@@ -1,5 +1,40 @@
 # Changelog
 
+## [2.29.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.28.0...v2.29.0) (2026-09-10)
+
+
+### ✨ 新功能
+
+* **admin:** 优化 QKV 产出变量处理默认行为为断言判断与关键字匹配 ([#1008](https://github.com/tomturing/hci-troubleshoot-platform/issues/1008)) ([9b665a4](https://github.com/tomturing/hci-troubleshoot-platform/commit/9b665a4a0d8a2b2e16c7dc01906ac6825795a4ec))
+* Bundle 迁移功能完整实现 ([#1023](https://github.com/tomturing/hci-troubleshoot-platform/issues/1023)) ([f18e4c8](https://github.com/tomturing/hci-troubleshoot-platform/commit/f18e4c8195ba969d1381756e53382d78032ac2fa))
+* **kb:** 增强 JSON 取值路径门禁拦截与验证 Agent 友好自愈闭环 ([#1007](https://github.com/tomturing/hci-troubleshoot-platform/issues/1007)) ([4d133b0](https://github.com/tomturing/hci-troubleshoot-platform/commit/4d133b0c5f81684cd6b7c31a13302693ac933196))
+* 完善语义信号诊断与仿真闭环 ([#1010](https://github.com/tomturing/hci-troubleshoot-platform/issues/1010)) ([54b8d4e](https://github.com/tomturing/hci-troubleshoot-platform/commit/54b8d4eeb39e6dd1b163933a635af948758d0e33))
+* 实现 Bundle 工厂版本自动迁移机制 ([#1018](https://github.com/tomturing/hci-troubleshoot-platform/issues/1018)) ([dfdf184](https://github.com/tomturing/hci-troubleshoot-platform/commit/dfdf184819df289820df3bc460b907d41777d76c))
+* 扩展模板实例库支持Signal资产阅览并对齐console审计菜单 ([#1001](https://github.com/tomturing/hci-troubleshoot-platform/issues/1001)) ([08e12ef](https://github.com/tomturing/hci-troubleshoot-platform/commit/08e12efc3d38d5ea20b112f40ef88d1e56108280))
+* 支持 QKV 生产者信号断言判断中引用变量 ([#1029](https://github.com/tomturing/hci-troubleshoot-platform/issues/1029)) ([4cf4ad3](https://github.com/tomturing/hci-troubleshoot-platform/commit/4cf4ad3b712abaa3aff64cf24a25576ba43df4ed))
+* 添加 Admin UI Bundle 批量迁移功能 ([#1019](https://github.com/tomturing/hci-troubleshoot-platform/issues/1019)) ([0e14a60](https://github.com/tomturing/hci-troubleshoot-platform/commit/0e14a60ec509e9ed333f9c110976e913137e6f23))
+* 添加信号匹配器评估详细日志记录 ([#1022](https://github.com/tomturing/hci-troubleshoot-platform/issues/1022)) ([dc720ce](https://github.com/tomturing/hci-troubleshoot-platform/commit/dc720ceaa056e4e77e016ac1caa5adc05e05e164))
+* 生产者信号qkv_alert与qkv_task自动派生DATE变量支持日志按天检索 ([#1002](https://github.com/tomturing/hci-troubleshoot-platform/issues/1002)) ([6954bae](https://github.com/tomturing/hci-troubleshoot-platform/commit/6954bae10ceb04bb86d908c0f82898ea5d059f9d))
+* 语义入口画像级联删除与切换清理提示 ([#1027](https://github.com/tomturing/hci-troubleshoot-platform/issues/1027)) ([6e866d9](https://github.com/tomturing/hci-troubleshoot-platform/commit/6e866d95c5127380d3c46781af789b5d2b9f1019))
+
+
+### 🐛 Bug 修复
+
+* **agent:** 增强 BridgeRelayExecutor 启动退避重试与运行时双检锁惰性自愈 ([#1009](https://github.com/tomturing/hci-troubleshoot-platform/issues/1009)) ([720af9a](https://github.com/tomturing/hci-troubleshoot-platform/commit/720af9a4397f0d446b8249b9a3e9954b3d5507c1))
+* Bundle 工厂编译日志选择器时保留变量占位符 ([#1017](https://github.com/tomturing/hci-troubleshoot-platform/issues/1017)) ([662187f](https://github.com/tomturing/hci-troubleshoot-platform/commit/662187f775de1b79cbfda9c80f1d350176bef807))
+* **ci:** 前端 vitest 超时阈值放宽至 20s 根治低配 runner 临界抖动（V-016） ([#1013](https://github.com/tomturing/hci-troubleshoot-platform/issues/1013)) ([6117d55](https://github.com/tomturing/hci-troubleshoot-platform/commit/6117d55cf271694565f7016d3075eeacc6caeb3c))
+* **config:** 契约登记 TERMINAL_BRIDGE_UPSTREAM 修复 config-contract-check（D-027 后续） ([#1015](https://github.com/tomturing/hci-troubleshoot-platform/issues/1015)) ([b06649e](https://github.com/tomturing/hci-troubleshoot-platform/commit/b06649ecbe3d40d04cf0a70b55cbe7cd0275dc7c))
+* **db:** 关键信号资产表 trace_id 加列补 DEFAULT 修复 staging 同步卡死 ([#1004](https://github.com/tomturing/hci-troubleshoot-platform/issues/1004)) ([8dc8eb5](https://github.com/tomturing/hci-troubleshoot-platform/commit/8dc8eb551efbb87662be1b877da91ae1ac4f7519))
+* **helm:** admin-ui 注入 TERMINAL_BRIDGE_UPSTREAM 修复 K3s nginx 启动期 crashloop（D-027） ([#1014](https://github.com/tomturing/hci-troubleshoot-platform/issues/1014)) ([e2b9b63](https://github.com/tomturing/hci-troubleshoot-platform/commit/e2b9b63ac7823d81248d7286397f0958cdbf1a95))
+* **kbd:** 修复生产者信号END自动派生DATE变量依赖校验与持久化归一 ([#1006](https://github.com/tomturing/hci-troubleshoot-platform/issues/1006)) ([b16696a](https://github.com/tomturing/hci-troubleshoot-platform/commit/b16696a51e081497005da10b4a0d2f468e3880d4))
+* QFK 日志时间窗口变量占位符被 T→空格替换破坏为 {{DA E}} ([#1025](https://github.com/tomturing/hci-troubleshoot-platform/issues/1025)) ([6e0b36d](https://github.com/tomturing/hci-troubleshoot-platform/commit/6e0b36dbba773eac0fc307ab7170c63535946613))
+* 从 produces[].extract.rows.include 提取 qfk_log filter_keywords ([#1020](https://github.com/tomturing/hci-troubleshoot-platform/issues/1020)) ([cb1b46b](https://github.com/tomturing/hci-troubleshoot-platform/commit/cb1b46b6bf80aaf5d79487e681727bd252c86d2a))
+* 信号类型切换时初始化必填字段避免验证错误 ([#1031](https://github.com/tomturing/hci-troubleshoot-platform/issues/1031)) ([0bc1d2f](https://github.com/tomturing/hci-troubleshoot-platform/commit/0bc1d2fc89658ffc21522630c88ad56a36d159fa))
+* 修复 KBD 信号编译验证时 DATE 和 ABSOLUTE_TIME 变量缺少示例值的问题 ([#1016](https://github.com/tomturing/hci-troubleshoot-platform/issues/1016)) ([35a1b5e](https://github.com/tomturing/hci-troubleshoot-platform/commit/35a1b5e479f4cd5c3eed86c2437002ae9f96bd8e))
+* 切换信号类型时保留切换后的新信号而非删除 ([#1028](https://github.com/tomturing/hci-troubleshoot-platform/issues/1028)) ([1748e87](https://github.com/tomturing/hci-troubleshoot-platform/commit/1748e8758488199faa4133f57d6afea222dfa659))
+* 注册 Bundle 迁移路由到 diagnosis-service main.py ([#1021](https://github.com/tomturing/hci-troubleshoot-platform/issues/1021)) ([8ba9218](https://github.com/tomturing/hci-troubleshoot-platform/commit/8ba921836f7a15ec7e6bad3d6ecece1cd7ee564a))
+* 添加 bundle-migration 路由代理到 API Gateway ([#1024](https://github.com/tomturing/hci-troubleshoot-platform/issues/1024)) ([e5c7dad](https://github.com/tomturing/hci-troubleshoot-platform/commit/e5c7dad02efcf056f11a3903d2520b2b6e633815))
+
 ## [2.28.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.27.0...v2.28.0) (2026-09-04)
 
 
