@@ -802,6 +802,32 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
     """校验生产者/QFK 的判定与产出契约。"""
     if not isinstance(raw, dict):
         return
+
+    # 预先收集所有信号的产出变量，供跨信号引用检查使用
+    all_produced_vars: set[str] = set()
+    for signal in raw.get("signals") or []:
+        if not isinstance(signal, dict):
+            continue
+        tool = str((signal.get("acquire") or {}).get("tool") or "")
+        if not tool.startswith("qkv_"):
+            continue
+        orchestrate = signal.get("orchestrate") or {}
+        for item in orchestrate.get("produces") or []:
+            if isinstance(item, dict):
+                alias = str(item.get("alias") or "").strip().upper()
+                name = str(item.get("name") or "").strip().upper()
+                effective_name = alias or name
+                if effective_name:
+                    all_produced_vars.add(effective_name)
+            elif str(item).strip():
+                all_produced_vars.add(str(item).strip().upper())
+        # 收集 output_processing 派生的变量
+        for item in orchestrate.get("output_processing") or []:
+            if isinstance(item, dict) and item.get("mode") == "derive":
+                target = str(item.get("name") or item.get("target_variable") or "").strip().upper()
+                if target:
+                    all_produced_vars.add(target)
+
     for index, signal in enumerate(raw.get("signals") or []):
         if not isinstance(signal, dict):
             continue
@@ -857,6 +883,8 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
                 if isinstance(item, dict)
                 if str(item.get("name") or "").strip()
             }
+            # 允许引用其他信号产出的变量（跨信号引用）
+            available_inputs.update(all_produced_vars)
             try:
                 validate_output_processing(processing_specs, available_inputs=available_inputs)
             except QKVProcessingError as exc:
