@@ -493,7 +493,7 @@ def test_qfk_log_unsupported_predicate_points_to_match_type():
         "signals": [
             {
                 "id": "sig_log_predicate",
-                # 用 qemu_vm 作为“仍不支持 delta”的对照源（vtpdaemon 已在方案 A 补齐 delta）；
+                # 用 qemu_vm 作为"仍不支持 delta"的对照源（vtpdaemon 已在方案 A 补齐 delta）；
                 # 该测试仅验证：当 source 的 predicates 确实不含某数值谓词时，校验器应拒绝并指向 match.type
                 "acquire": {"tool": "qfk_log", "args": {"file": "sfvt_qemu_vm.log"}},
                 "match": {
@@ -1021,7 +1021,7 @@ def test_producer_end_variable_auto_derives_date_in_dependency_graph():
         },
     }
 
-    # 发布前契约校验必须直接通过，不能报“输入变量 DATE 没有上游产出或外部声明”
+    # 发布前契约校验必须直接通过，不能报"输入变量 DATE 没有上游产出或外部声明"
     validate_kbd_publishable_signals_json(doc)
 
     # 2. 验证 normalize_derived_date_variables 规整函数自动补齐 DATE 字典项
@@ -1030,4 +1030,107 @@ def test_producer_end_variable_auto_derives_date_in_dependency_graph():
     assert added == 1
     assert len(doc["signals"][0]["orchestrate"]["produces"]) == 3
     assert any(p.get("name") == "DATE" for p in doc["signals"][0]["orchestrate"]["produces"])
+
+
+def test_qkv_output_processing_assert_match_allows_variable_references():
+    """验证 QKV 生产者信号 output_processing 的断言判断 match 配置支持变量引用。"""
+    # 场景：两个生产者信号，第二个信号的断言判断引用第一个信号产出的变量和自身产出的变量
+    doc = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "sig_alert",
+                "acquire": {"tool": "qkv_alert", "args": {"keyword": "磁盘空间不足"}},
+                "match": None,
+                "orchestrate": {
+                    "phase": "diagnostic",
+                    "produces": [{"name": "ALERT_HOST", "path": "host"}],
+                },
+                "provenance": {"category": "frontend", "evidence": "告警定位主机"},
+            },
+            {
+                "id": "sig_task",
+                "acquire": {"tool": "qkv_task", "args": {"keyword": "清理失败"}},
+                "match": None,
+                "orchestrate": {
+                    "phase": "diagnostic",
+                    "produces": [{"name": "TASK_HOST", "path": "host"}],
+                    "output_processing": [
+                        {
+                            "mode": "assert",
+                            "input": "{{TASK_HOST}}",
+                            "match": {
+                                # 关键字匹配引用第一个信号产出的变量
+                                "type": "keyword",
+                                "pattern": "{{ALERT_HOST}}",
+                                "expected": True,
+                            },
+                        }
+                    ],
+                },
+                "provenance": {"category": "frontend", "evidence": "任务定位主机"},
+            },
+        ],
+        "verification_contract": {
+            "schema_version": 1,
+            "evidence_policy": {"must": ["sig_alert", "sig_task"], "should": [], "exclude": [], "context": []},
+        },
+    }
+
+    # 发布前契约校验必须通过
+    validate_kbd_publishable_signals_json(doc)
+
+    # 验证变量依赖被正确识别
+    signal = doc["signals"][1]
+    requires = derive_signal_requires(signal)
+    # ALERT_HOST 应该被识别为输入依赖（跨信号引用）
+    assert "ALERT_HOST" in requires
+    # TASK_HOST 不应该在 requires 中（因为是同信号产出的变量）
+
+
+def test_qkv_output_processing_assert_match_allows_threshold_variable_reference():
+    """验证 QKV 生产者信号 output_processing 的断言判断 threshold matcher 支持变量引用。"""
+    doc = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "sig_task",
+                "acquire": {"tool": "qkv_task", "args": {"keyword": "磁盘清理"}},
+                "match": None,
+                "orchestrate": {
+                    "phase": "diagnostic",
+                    "produces": [
+                        {"name": "CLEANED_SIZE", "path": "cleaned_size"},
+                        {"name": "THRESHOLD", "path": "threshold"},
+                    ],
+                    "output_processing": [
+                        {
+                            "mode": "assert",
+                            "input": "{{CLEANED_SIZE}}",
+                            "match": {
+                                # threshold matcher 的 value 引用同信号产出的变量
+                                "type": "threshold",
+                                "operator": ">=",
+                                "value": "{{THRESHOLD}}",
+                                "expected": True,
+                            },
+                        }
+                    ],
+                },
+                "provenance": {"category": "frontend", "evidence": "任务清理大小"},
+            },
+        ],
+        "verification_contract": {
+            "schema_version": 1,
+            "evidence_policy": {"must": ["sig_task"], "should": [], "exclude": [], "context": []},
+        },
+    }
+
+    # 发布前契约校验必须通过
+    validate_kbd_publishable_signals_json(doc)
+
+    # 验证 THRESHOLD 变量不被识别为输入依赖（因为是同信号产出的变量）
+    signal = doc["signals"][0]
+    requires = derive_signal_requires(signal)
+    assert "THRESHOLD" not in requires
 

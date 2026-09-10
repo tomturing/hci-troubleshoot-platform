@@ -261,7 +261,7 @@ def validate_output_processing(specs: Any, *, available_inputs: set[str] | None 
         if available_inputs is not None and unknown_inputs:
             raise QKVProcessingError(
                 "QKV_PROCESSING_UNKNOWN_INPUT",
-                f"处理单元[{index + 1}] input 引用了未声明变量: {', '.join(sorted(unknown_inputs))}",
+                f"处理单元[{index + 1}] 引用了未声明变量: {', '.join(sorted(unknown_inputs))}",
             )
         scope = str(item.get("scope") or "per_record")
         if scope not in {"per_record", "single"}:
