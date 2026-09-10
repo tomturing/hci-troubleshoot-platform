@@ -293,7 +293,7 @@ def _prepare_expert_draft_signals(
     # 文档顶层画像成为孤儿；若不移除，后续校验会以“只保留 semantic_entry_profile”
     # 拒绝保存（SIGNAL_FIELD_INVALID）。此处自动级联移除，与删除链路行为一致。
     if document.get("semantic_entry_profile") is not None:
-        from shared.schemas.semantic_entry import SEMANTIC_ENTRY_TOOL, has_case_context_signal
+        from shared.schemas.semantic_entry import has_case_context_signal
 
         if not has_case_context_signal(document):
             document.pop("semantic_entry_profile", None)
