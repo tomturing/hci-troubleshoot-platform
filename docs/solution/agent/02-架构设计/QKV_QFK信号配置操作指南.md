@@ -1,12 +1,16 @@
 ---
-status: active
+status: superseded
 category: solution
 audience: developer
 last_updated: 2026-07-27
 owner: team
 ---
 
-# QKV/QFK 信号配置操作指南
+# QKV/QFK 信号配置操作指南（迁移阅读）
+
+> **此文档不再是现行操作手册。** 审核和发布请使用
+> [KBD 审核发布操作指南](../KBD审核发布操作指南.md)，字段以 Schema 与
+> [关键信号架构设计](../../knowledge-base/关键信号架构设计.md) 为准。
 
 > 版本：v2.1
 > 日期：2026-07-27

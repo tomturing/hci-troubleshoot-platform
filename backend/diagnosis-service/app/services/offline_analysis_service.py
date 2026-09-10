@@ -7,6 +7,7 @@ import re
 import secrets
 import uuid
 from collections import defaultdict
+from collections.abc import Mapping
 from typing import Any
 
 from shared.observability.otel import get_current_trace_id
@@ -30,6 +31,7 @@ REPORT_READ_ROLES = frozenset(
     {"customer_admin", "field_engineer", "support_engineer", "domain_expert", "platform_admin", "diagnosis_worker"}
 )
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_VARIABLE_PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z][A-Za-z0-9_.]*)\}\}")
 
 
 class OfflineEvidenceProvider:
@@ -680,6 +682,7 @@ class OfflineAnalysisService:
         from shared.cdd import (
             AcquisitionRunResult,
             CandidateState,
+            ProducedVariable,
             SignalOutcome,
             compile_signal_plan,
             decide_conclusion,
@@ -760,10 +763,11 @@ class OfflineAnalysisService:
         class FrozenEvidenceAcquisitionProvider:
             """把已冻结证据映射适配为共享采集提供器。"""
 
-            async def acquire(self, acquisition) -> AcquisitionRunResult:
+            async def acquire(self, acquisition, *, variable_values) -> AcquisitionRunResult:
                 outcomes: dict[str, SignalOutcome] = {}
                 evaluations: list[dict[str, Any]] = []
                 produced: set[str] = set()
+                produced_values: dict[str, ProducedVariable] = {}
                 for ref in acquisition.signal_refs:
                     row = rows_by_id[ref.kbd_id]
                     evaluation = service._evaluate_signal(
@@ -774,6 +778,7 @@ class OfflineAnalysisService:
                         ref.signal,
                         evidence,
                         signal_mappings,
+                        variable_values=variable_values,
                     )
                     evaluations.append(evaluation)
                     if evaluation["state"] == "MATCHED":
@@ -785,20 +790,43 @@ class OfflineAnalysisService:
                     # 变量只有在该 Signal 的 produces/后处理已实际成功时才能解锁下游。
                     # “制品可读”只表示输入存在，不能冒充 HOST、PID 等已被提取。
                     if evaluation["state"] == "MATCHED":
-                        produced.update(ref.produces)
+                        values = evaluation.get("produced_values") or {}
+                        for name in ref.produces:
+                            normalized = str(name).lower()
+                            if normalized not in values:
+                                continue
+                            produced.add(normalized)
+                            produced_values[normalized] = ProducedVariable(
+                                value=values[normalized],
+                                evidence_refs=tuple(evaluation["evidence_refs"]),
+                                source_signal_refs=(ref.ref_id,),
+                            )
                 return AcquisitionRunResult(
                     outcomes=outcomes,
                     produced_variables=frozenset(produced),
+                    produced_values=produced_values,
                     evaluations=tuple(evaluations),
                 )
 
         context_snapshot = collection_plan.get("context_snapshot") or {}
         initial_variables = set(context_snapshot) if isinstance(context_snapshot, dict) else set()
+        initial_variable_values = (
+            {
+                str(name).lower(): ProducedVariable(
+                    value=value,
+                    source_signal_refs=("context_snapshot",),
+                )
+                for name, value in context_snapshot.items()
+            }
+            if isinstance(context_snapshot, dict)
+            else {}
+        )
         _variables, all_evaluations = await execute_acquisition_plan(
             plan,
             assessments,
             FrozenEvidenceAcquisitionProvider(),
             available_variables=initial_variables,
+            available_variable_values=initial_variable_values,
         )
 
         # 5. 执行 CDD 候选归约
@@ -889,7 +917,93 @@ class OfflineAnalysisService:
         self._cdd_decision = decision
         self._cdd_assessments = assessments
 
+        # remediation 阶段的 qkv_effect 不参与根因 CDD 归约；离线侧只回放同一
+        # diagnosis_run 已持久化的在线效果判定，作为报告可审计补充，绝不补跑观测。
+        all_evaluations.extend(
+            await self._replay_effect_verifications(
+                diagnosis_run_id=str(session_row["session_id"]),
+                kbd_rows=kbd_rows,
+            )
+        )
+
         return offline_candidates, all_evaluations
+
+    async def _replay_effect_verifications(
+        self,
+        *,
+        diagnosis_run_id: str,
+        kbd_rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """只读回放同一诊断运行已完成的 qkv_effect 记录。
+
+        效果验证依赖动作后时序，离线诊断不能重新执行或从无关制品猜测结果。只有
+        ``effect_verification`` 中存在同一 diagnosis_run 的终态记录时才给出可用
+        证据；其余情况明确标为 UNKNOWN，保留人工裁决边界。
+        """
+
+        result = await self._session.execute(
+            text(
+                """
+                SELECT verification_id::text, source_kbd_id, signal_id, verdict,
+                       error_code, completed_at, trace_id
+                FROM effect_verification
+                WHERE diagnosis_run_id = :diagnosis_run_id
+                  AND status IN ('verdict_achieved', 'verdict_not_achieved', 'verdict_inconclusive')
+                ORDER BY completed_at DESC NULLS LAST, created_at DESC
+                """
+            ),
+            {"diagnosis_run_id": diagnosis_run_id},
+        )
+        latest: dict[tuple[str, str], dict[str, Any]] = {}
+        for record in result.mappings().all():
+            item = dict(record)
+            key = (str(item.get("source_kbd_id") or ""), str(item.get("signal_id") or ""))
+            latest.setdefault(key, item)
+
+        evaluations: list[dict[str, Any]] = []
+        for row in kbd_rows:
+            document = row.get("signals_json") or {}
+            signals = document.get("signals") if isinstance(document, dict) else document
+            for signal in signals if isinstance(signals, list) else []:
+                if not isinstance(signal, dict) or (signal.get("acquire") or {}).get("tool") != "qkv_effect":
+                    continue
+                signal_id = str(signal.get("id") or _canonical_hash(signal)[:16])
+                record = latest.get((str(row["id"]), signal_id))
+                base = {
+                    "support_id": row["support_id"],
+                    "signal_id": f"kbd:{row['support_id']}:{signal_id}",
+                    "required_for_conclusion": False,
+                    "matcher_snapshot": {"_effect_replay": True},
+                }
+                if record is None:
+                    evaluations.append(
+                        {
+                            **base,
+                            "state": "UNKNOWN",
+                            "reason": "未找到同一诊断运行已完成的效果验证记录，离线模式不会重新执行复核",
+                            "evidence_status": "missing",
+                            "evidence_refs": [],
+                        }
+                    )
+                    continue
+                verdict = str(record.get("verdict") or "inconclusive")
+                evaluations.append(
+                    {
+                        **base,
+                        "state": "MATCHED",
+                        "reason": f"回放已完成的效果验证：{verdict}",
+                        "evidence_status": "available",
+                        "evidence_refs": [f"effect_verification:{record['verification_id']}"],
+                        "matcher_snapshot": {
+                            "_effect_replay": True,
+                            "verdict": verdict,
+                            "error_code": record.get("error_code"),
+                            "completed_at": str(record.get("completed_at") or ""),
+                            "trace_id": record.get("trace_id"),
+                        },
+                    }
+                )
+        return evaluations
 
     async def _evaluate_semantic_ruleset(self, session_row, collection_plan, evidence):
         """上传后先验证冻结的强证据，再选择语义假设；绝不回读当前 KBD。"""
@@ -971,11 +1085,15 @@ class OfflineAnalysisService:
         signal: dict[str, Any],
         evidence: list[dict[str, Any]],
         signal_mappings: list[dict[str, Any]],
+        *,
+        variable_values: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         acquire = signal.get("acquire") or {}
         explicit_collector = acquire.get("collector_id") or (acquire.get("offline") or {}).get("collector_id")
         acquire_tool = str(acquire.get("tool") or "")
-        acquire_command = str((acquire.get("args") or {}).get("command") or "*")
+        raw_args = acquire.get("args") or {}
+        resolved_args, unresolved_variables = _resolve_offline_acquire_args(raw_args, variable_values or {})
+        acquire_command = str(resolved_args.get("command") or "*")
         signal_id = str(signal.get("id") or _canonical_hash(signal)[:16])
         mapped = [
             item
@@ -1011,6 +1129,8 @@ class OfflineAnalysisService:
                     "acquire_command": acquire_command,
                     "collector_ids": collector_ids,
                 },
+                "_resolved_acquire_args": resolved_args,
+                "_variable_provenance": _variable_provenance_snapshot(raw_args, variable_values or {}),
             }
             if isinstance(matcher, dict)
             else {
@@ -1018,10 +1138,23 @@ class OfflineAnalysisService:
                     "acquire_tool": acquire_tool,
                     "acquire_command": acquire_command,
                     "collector_ids": collector_ids,
-                }
+                },
+                "_resolved_acquire_args": resolved_args,
+                "_variable_provenance": _variable_provenance_snapshot(raw_args, variable_values or {}),
             }
         )
         required = bool((signal.get("review") or {}).get("require_human_confirm"))
+        if unresolved_variables:
+            return {
+                "support_id": support_id,
+                "signal_id": full_signal_id,
+                "state": "UNKNOWN",
+                "reason": f"依赖变量没有可审计的实际值：{', '.join(sorted(unresolved_variables))}",
+                "required_for_conclusion": required,
+                "evidence_status": "missing",
+                "evidence_refs": [],
+                "matcher_snapshot": matcher_snapshot,
+            }
         if not available:
             status = OfflineEvidenceProvider._missing_status({item["evidence_status"] for item in eligible})
             reason = (
@@ -1041,17 +1174,23 @@ class OfflineAnalysisService:
             }
         refs = [str(item["evidence_id"]) for item in available]
         if matcher is None:
-            producer_outcomes = [_evaluate_offline_producer(signal, item["structured_data"]) for item in available]
+            producer_results = [_extract_offline_producer_values(signal, item["structured_data"]) for item in available]
+            producer_outcomes = [result[0] for result in producer_results]
             determinate = [item for item in producer_outcomes if item is not None]
+            complete_values = [result[1] for result in producer_results if result[0] is True]
             if not determinate:
                 state, reason = "UNKNOWN", "证据存在，但产出变量无法按当前 Signal 契约确定性提取"
             elif any(determinate) and not all(determinate):
                 state, reason = "UNKNOWN", "不同证据项的产出变量提取结果冲突"
             elif all(determinate):
-                state, reason = "MATCHED", "产出变量及 QKV 后处理已按当前 Signal 契约完成"
+                fingerprints = {_canonical_hash(item) for item in complete_values}
+                if len(fingerprints) != 1:
+                    state, reason = "UNKNOWN", "不同证据项提取出不同变量值，不能安全解锁下游采集"
+                else:
+                    state, reason = "MATCHED", "产出变量及 QKV 后处理已按当前 Signal 契约完成"
             else:
                 state, reason = "NOT_MATCHED", "证据存在，但无法按 produces 规格提取有效变量或后处理未通过"
-            return {
+            result = {
                 "support_id": support_id,
                 "signal_id": full_signal_id,
                 "state": state,
@@ -1061,6 +1200,13 @@ class OfflineAnalysisService:
                 "evidence_refs": refs,
                 "matcher_snapshot": matcher_snapshot,
             }
+            if state == "MATCHED" and complete_values:
+                result["produced_values"] = complete_values[0]
+                result["matcher_snapshot"] = {
+                    **matcher_snapshot,
+                    "_produced_values": complete_values[0],
+                }
+            return result
         outcomes = [_evaluate_matcher(matcher, item["structured_data"]) for item in available]
         determinate = [item for item in outcomes if item is not None]
         if not determinate:
@@ -1849,59 +1995,146 @@ def _evaluate_matcher(matcher: Any, value: Any) -> bool | None:
 
 
 def _evaluate_offline_producer(signal: dict[str, Any], structured_data: Any) -> bool | None:
-    """用发布时同一份 produces/output_processing 契约验证离线变量生产。
+    """兼容入口：仅返回离线生产者是否可确定性复放。"""
+
+    return _extract_offline_producer_values(signal, structured_data)[0]
+
+
+def _extract_offline_producer_values(
+    signal: dict[str, Any], structured_data: Any
+) -> tuple[bool | None, dict[str, Any]]:
+    """用发布时同一份 produces/output_processing 契约提取离线生产变量。
 
     离线证据可读不代表变量已取到。无法在离线确定性复放的 AI 后处理保持 UNKNOWN，
-    避免把不可复现的模型行为误标为现场支持证据。
+    避免把不可复现的模型行为误标为现场支持证据。返回值包含实际变量，供共享
+    AcquisitionProvider 将值和 Evidence 来源一并交给下游消费者。
     """
     acquire = signal.get("acquire") or {}
     tool = str(acquire.get("tool") or "")
     orchestrate = signal.get("orchestrate") or {}
     produces = orchestrate.get("produces") or []
     if not isinstance(produces, list) or not produces:
-        return None
+        return None, {}
     processing = orchestrate.get("output_processing") or []
     # 文本制品的 structured_data 是索引包装，preview 才是物理输出。
     # 被截断的索引不能证明完整产出，必须保留 UNKNOWN。
     if isinstance(structured_data, dict) and structured_data.get("truncated") is True:
-        return None
+        return None, {}
     if any(
         isinstance(item, dict)
         and item.get("mode") == "derive"
         and isinstance((item.get("extract") or {}).get("ai_processing"), dict)
         for item in processing
     ):
-        return None
+        return None, {}
     try:
         if tool.startswith("qkv_"):
-            from shared.signals.qkv_output_processing import apply_output_processing
+            from shared.signals.qkv_output_processing import apply_output_processing, processing_derived_variables
             from shared.signals.qkv_parser import first_complete_produced_record
 
             values = _project_offline_qkv_records(structured_data, produces, tool=tool)
             processed = apply_output_processing(values, processing)
-            return (
-                processed.matched
-                if processed.assertions
-                else first_complete_produced_record(processed.records, produces) is not None
-            )
+            complete = first_complete_produced_record(processed.records, produces)
+            if complete is None:
+                return False, {}
+            outcome = processed.matched if processed.assertions else True
+            if outcome is not True:
+                return outcome, {}
+            output_names = {
+                str(item.get("name") or "").lower()
+                for item in produces
+                if isinstance(item, dict) and str(item.get("name") or "").strip()
+            }
+            output_names.update(name.lower() for name in processing_derived_variables(processing))
+            projected = {name: complete[name] for name in output_names if name in complete}
+            if "date" in complete:
+                projected["date"] = complete["date"]
+            return True, projected
         if tool.startswith("qfk_"):
             outputs = structured_data if isinstance(structured_data, dict) else {"stdout": _flatten_text(structured_data)}
             if "stdout" not in outputs:
                 outputs = {**outputs, "stdout": _flatten_text(structured_data)}
+            values: dict[str, Any] = {}
             for spec in produces:
                 if not isinstance(spec, dict) or not str(spec.get("name") or "").strip():
-                    return False
+                    return False, {}
                 extract = spec.get("extract")
                 if not isinstance(extract, dict):
-                    return False
+                    return False, {}
                 source = str(extract.get("source") or "stdout")
                 if source not in outputs:
-                    return False
-                extract_value(_flatten_text(outputs[source]), extract, str(spec.get("type") or "string"))
-            return True
+                    return False, {}
+                values[str(spec["name"]).lower()] = extract_value(
+                    _flatten_text(outputs[source]), extract, str(spec.get("type") or "string")
+                )
+            return True, values
     except (ValueError, TypeError, KeyError, json.JSONDecodeError, QFKExtractionError):
-        return False
-    return None
+        return False, {}
+    return None, {}
+
+
+def _resolve_offline_acquire_args(
+    args: Any,
+    variable_values: Mapping[str, Any],
+) -> tuple[dict[str, Any], set[str]]:
+    """用已提取的实际值渲染离线消费者参数，绝不把未解析占位符当作有效输入。"""
+
+    unresolved: set[str] = set()
+
+    def value_for(path: str) -> Any:
+        parts = path.split(".")
+        current = variable_values.get(parts[0].lower())
+        if hasattr(current, "value"):
+            current = current.value
+        if current is None:
+            unresolved.add(parts[0].upper())
+            return None
+        for part in parts[1:]:
+            if isinstance(current, Mapping) and part in current:
+                current = current[part]
+            elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
+                current = current[int(part)]
+            else:
+                unresolved.add(parts[0].upper())
+                return None
+        return current
+
+    def render(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: render(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [render(item) for item in value]
+        if not isinstance(value, str):
+            return value
+        full = _VARIABLE_PLACEHOLDER_RE.fullmatch(value)
+        if full:
+            resolved = value_for(full.group(1))
+            return value if resolved is None else resolved
+
+        def replace(match: re.Match[str]) -> str:
+            resolved = value_for(match.group(1))
+            return match.group(0) if resolved is None else str(resolved)
+
+        return _VARIABLE_PLACEHOLDER_RE.sub(replace, value)
+
+    return render(args) if isinstance(args, dict) else {}, unresolved
+
+
+def _variable_provenance_snapshot(args: Any, variable_values: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """只记录本消费者真正引用的变量来源，避免把整个变量池写入审计快照。"""
+
+    serialized = json.dumps(args, ensure_ascii=False, sort_keys=True) if isinstance(args, (dict, list)) else str(args or "")
+    names = sorted({match.group(1).split(".")[0].lower() for match in _VARIABLE_PLACEHOLDER_RE.finditer(serialized)})
+    snapshot: dict[str, dict[str, Any]] = {}
+    for name in names:
+        produced = variable_values.get(name)
+        if produced is None:
+            continue
+        snapshot[name.upper()] = {
+            "evidence_refs": list(getattr(produced, "evidence_refs", ()) or ()),
+            "source_signal_refs": list(getattr(produced, "source_signal_refs", ()) or ()),
+        }
+    return snapshot
 
 
 def _project_offline_qkv_records(

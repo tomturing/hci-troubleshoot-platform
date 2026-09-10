@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "description": "现行关键信号机器可读示例；由 scripts/ci/check_signal_schemas.py 校验。",
+  "examples": [
+    {
+      "name": "任务生产 HOST_VM_ID_END",
+      "document": {
+        "schema_version": 2,
+        "signals": [
+          {
+            "id": "task_context",
+            "acquire": {
+              "tool": "qkv_task",
+              "args": {"keyword": "启动虚拟机", "is_failed": true, "timeout": 60}
+            },
+            "match": null,
+            "orchestrate": {
+              "phase": "diagnostic",
+              "produces": [
+                {"name": "HOST", "path": "host"},
+                {"name": "VM_ID", "path": "vm"},
+                {"name": "END", "path": "end"}
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "日志消费者",
+      "document": {
+        "schema_version": 2,
+        "signals": [
+          {
+            "id": "log_check",
+            "acquire": {
+              "tool": "qfk_log",
+              "args": {"file": "sfvt_vtpdaemon.log", "time_window": "{{DATE}}", "timeout": 60}
+            },
+            "match": {
+              "type": "keyword",
+              "pattern": "error",
+              "mode": "or",
+              "expected": true,
+              "extract": {"type": "text", "rows": {"mode": "all"}, "cardinality": "all", "source": "stdout"}
+            },
+            "orchestrate": {"phase": "diagnostic", "requires": ["DATE"], "produces": []}
+          }
+        ]
+      }
+    },
+    {
+      "name": "存储快照进展效果验证",
+      "document": {
+        "schema_version": 2,
+        "signals": [
+          {
+            "id": "storage_migration_progress",
+            "acquire": {
+              "tool": "qkv_effect",
+              "args": {
+                "usage": "remediation_verify",
+                "host": "{{HOST}}",
+                "timeout": 60,
+                "expectation": {
+                  "observation": {
+                    "tool": "qfk_storage",
+                    "args": {
+                      "command": "migration list",
+                      "resource_keyword": "target-store",
+                      "host": "{{HOST}}",
+                      "timeout": 60
+                    }
+                  },
+                  "matcher": {
+                    "type": "exists",
+                    "expected": false,
+                    "extract": {"type": "text", "rows": {"mode": "all"}}
+                  },
+                  "settle_seconds": 0,
+                  "window_seconds": 300,
+                  "max_recheck": 2,
+                  "progress": {"mode": "change_required", "idle_after_seconds": 120}
+                }
+              }
+            },
+            "match": null,
+            "orchestrate": {
+              "phase": "remediation",
+              "requires": ["HOST"],
+              "produces": [{"name": "EFFECT_STATUS", "path": "verdict"}]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

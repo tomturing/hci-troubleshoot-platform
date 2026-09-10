@@ -57,6 +57,7 @@ class EffectResultRequest(BaseModel):
     usage: str = Field(default="remediation_verify", pattern=r"^(remediation_verify|symptom_confirm)$")
     check_count: int = Field(default=1, ge=1)
     error_code: str | None = None
+    progress_state: str | None = Field(default=None, pattern=r"^(baseline|in_progress|stalled|achieved)$")
     checked_at: str | None = None
     trace_id: str | None = None
 
@@ -79,6 +80,7 @@ async def push_effect_result(request: Request, conversation_id: uuid.UUID, body:
         "usage": body.usage,
         "checkCount": body.check_count,
         "errorCode": body.error_code,
+        "progressState": body.progress_state,
         "checkedAt": body.checked_at,
         "traceId": body.trace_id,
     }
@@ -107,6 +109,7 @@ async def push_effect_result(request: Request, conversation_id: uuid.UUID, body:
         "usage": body.usage,
         "checkCount": body.check_count,
         "errorCode": body.error_code,
+        "progressState": body.progress_state,
         "checkedAt": body.checked_at,
         "traceId": body.trace_id,
     }
@@ -155,7 +158,8 @@ async def list_effect_verifications(request: Request, conversation_id: uuid.UUID
                 text(
                     """
                     SELECT c.verification_id::text, c.check_seq, c.checked_at, c.trigger_source,
-                           c.observation_status, c.check_verdict, c.error_code
+                           c.observation_status, c.observation_fingerprint, c.progress_state,
+                           c.check_verdict, c.error_code
                     FROM effect_verification_check c
                     JOIN effect_verification v ON v.verification_id = c.verification_id
                     WHERE v.conversation_id = CAST(:conversation_id AS uuid)

@@ -1,6 +1,6 @@
 import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from app.adapters.agents.htp.kbd_differential import KBDDiagnostic, StepResult, _signal_requires_human
@@ -9,7 +9,7 @@ from app.tools.acli.executor import ExecResult
 from app.tools.qfk.handlers import SystemHandler
 from app.tools.qfk.signal import BackendSignal
 from shared.cdd import SignalOutcome
-from shared.cdd.kbd_model import KBD
+from shared.cdd.kbd_model import KBD, KBDStep
 
 
 def _diag() -> KBDDiagnostic:
@@ -135,6 +135,76 @@ def test_same_priority_variable_conflict_is_removed_and_blocks_consumers():
 
     assert "host" not in diag._variable_pool
     assert "host" in diag._variable_pool_conflicts
+    diag._set_pool_var("HOST", "node-a", producer_priority=20)
+    assert "host" not in diag._variable_pool
+    assert "host" in diag._variable_pool_conflicts
+
+
+def test_qkv_unknown_assertion_remains_unknown_instead_of_negative_evidence():
+    signal = {
+        "acquire": {"tool": "qkv_task", "args": {"keyword": "启动失败"}},
+        "match": None,
+        "orchestrate": {"produces": [{"name": "DESCRIPTION", "path": "description"}]},
+    }
+    diag = _diag()
+
+    pre_matched = diag._qkv_pre_matched(signal, [{"description": "已提取"}], None, True)
+
+    assert pre_matched is None
+    assert diag._evaluate_signal_outcome(signal, "观察结果", None, pre_matched) is SignalOutcome.UNKNOWN
+
+
+@pytest.mark.asyncio
+async def test_effect_signal_uses_specialized_cdd_execution_path(monkeypatch):
+    diag = _diag()
+    signal = {
+        "id": "effect",
+        "acquire": {"tool": "qkv_effect", "args": {"usage": "symptom_confirm"}},
+        "match": None,
+        "orchestrate": {"produces": [{"name": "EFFECT_STATUS", "path": "verdict"}]},
+    }
+    result = SimpleNamespace(
+        success=True,
+        error=None,
+        values=[{"effect_status": "achieved"}],
+        to_observation=lambda: "效果验证判定：achieved",
+    )
+    runner = AsyncMock(return_value=result)
+    monkeypatch.setattr(diag, "_run_effect_producer", runner)
+
+    output, error, matched, _ = await diag._execute_acquirer(
+        KBDStep(tool_name="qkv_effect", tool_args_template=signal["acquire"]["args"]),
+        {}, "effect-session", "", signal=signal, exec_id="effect-exec",
+    )
+
+    assert (output, error, matched) == ("效果验证判定：achieved", None, True)
+    runner.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_effect_signal_preserves_inconclusive_as_unknown(monkeypatch):
+    diag = _diag()
+    signal = {
+        "id": "effect",
+        "acquire": {"tool": "qkv_effect", "args": {"usage": "symptom_confirm"}},
+        "match": None,
+        "orchestrate": {"produces": [{"name": "EFFECT_STATUS", "path": "verdict"}]},
+    }
+    result = SimpleNamespace(
+        success=True,
+        error=None,
+        values=[{"effect_status": "inconclusive"}],
+        to_observation=lambda: "效果验证判定：inconclusive",
+    )
+    monkeypatch.setattr(diag, "_run_effect_producer", AsyncMock(return_value=result))
+
+    output, error, matched, _ = await diag._execute_acquirer(
+        KBDStep(tool_name="qkv_effect", tool_args_template=signal["acquire"]["args"]),
+        {}, "effect-session", "", signal=signal, exec_id="effect-exec",
+    )
+
+    assert (output, error, matched) == ("效果验证判定：inconclusive", None, None)
+    assert diag._evaluate_signal_outcome(signal, output, error, matched) is SignalOutcome.UNKNOWN
 
 
 def test_qfk_produces_reject_old_path_and_never_partially_write():

@@ -75,6 +75,7 @@ class EffectExpectationSnapshot(BaseModel):
     settle_seconds: int = Field(default=120, ge=0, le=3600)
     window_seconds: int = Field(default=900, ge=60, le=86400)
     max_recheck: int = Field(default=2, ge=0, le=5)
+    progress: dict[str, Any] | None = None
 
     @field_validator("usage")
     @classmethod
@@ -232,6 +233,7 @@ class EffectVerificationResolver:
                 settle_seconds=int(expectation_raw.get("settle_seconds", 120)),
                 window_seconds=int(expectation_raw.get("window_seconds", 900)),
                 max_recheck=int(expectation_raw.get("max_recheck", 2)),
+                progress=dict(expectation_raw["progress"]) if isinstance(expectation_raw.get("progress"), dict) else None,
             )
         except PydanticValidationError as exc:
             return blocked([_issue("EFFECT_EXPECTATION_INVALID", f"期望锚点不可编译: {exc}", field="acquire.args.expectation")])

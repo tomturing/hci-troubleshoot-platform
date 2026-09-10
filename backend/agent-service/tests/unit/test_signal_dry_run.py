@@ -203,6 +203,31 @@ async def test_qkv_dry_run_produces_filters_raw_fields_before_output_processing(
     ]
 
 
+@pytest.mark.asyncio
+async def test_qkv_dry_run_rejects_partial_producer_record() -> None:
+    signal = {
+        "id": "partial-producer",
+        "acquire": {"tool": "qkv_task", "args": {"keyword": "启动失败"}},
+        "orchestrate": {
+            "produces": [
+                {"name": "HOST", "path": "host"},
+                {"name": "VM_ID", "path": "vm"},
+            ]
+        },
+    }
+    request = SignalDryRunRequest(
+        draft_revision=_revision(signal), scope="qkv_variable_processing",
+        unit_ref={"signal_id": signal["id"]}, verification_scope="signal",
+        dataset={"dataset_id": "partial", "source_type": "pasted", "source_ref": "user-input", "payload": [{"host": "node-a"}]},
+        signal=signal, support_id="41398", kbd_revision=7,
+    )
+
+    result = await evaluate_signal_dry_run(request, ai_client=None, trace_id="f" * 32)
+
+    assert result.status == "FAIL"
+    assert "同时覆盖全部 produces" in result.evidence
+
+
 
 @pytest.mark.asyncio
 async def test_ai_step_requires_an_explicit_ai_target() -> None:

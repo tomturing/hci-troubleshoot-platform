@@ -251,6 +251,16 @@ class KBDDiagnostic:
         P2 增强：记录变量池变更日志，便于追溯信号执行链路。
         """
         key = name.strip().lower()
+        if key in self._variable_pool_conflicts:
+            # 冲突只能由显式人工／编排决议解除；后续恰好写回旧值不能让执行顺序
+            # 静默恢复下游依赖。
+            logger.warning(
+                event="variable_pool_conflict_latched",
+                name=name,
+                key=key,
+                producer_priority=producer_priority,
+            )
+            return
         existing_priority = self._variable_pool_priority.get(key)
         if producer_priority is not None and existing_priority is not None and producer_priority < existing_priority:
             logger.info(
@@ -279,7 +289,6 @@ class KBDDiagnostic:
             )
             return
         self._variable_pool[key] = value
-        self._variable_pool_conflicts.discard(key)
         if producer_priority is not None:
             self._variable_pool_priority[key] = producer_priority
 
@@ -1612,8 +1621,7 @@ class KBDDiagnostic:
                 execution_mode=env_context.get("execution_mode"),
                 session_id=session_id,
             )
-            complete = self._qkv_producer_complete(signal, result.values)
-            pre_matched = bool(result.matched) and complete if result.assertions else complete
+            pre_matched = self._qkv_pre_matched(signal, result.values, result.matched, bool(result.assertions))
             return result.to_observation(), None, pre_matched, None
         except Exception as exc:
             logger.exception(
@@ -1630,6 +1638,15 @@ class KBDDiagnostic:
 
         produces = (signal.get("orchestrate") or {}).get("produces") or []
         return first_complete_produced_record(values, produces) is not None
+
+    @classmethod
+    def _qkv_pre_matched(
+        cls, signal: dict[str, Any], values: list[dict[str, Any]], matched: bool | None, has_assertions: bool
+    ) -> bool | None:
+        """保持 producer 完整性与后处理三态，不把 UNKNOWN 塌缩为 False。"""
+        if not cls._qkv_producer_complete(signal, values):
+            return False
+        return matched if has_assertions else True
 
     async def _execute_acquirer(
         self,
@@ -1678,8 +1695,35 @@ class KBDDiagnostic:
                     if res is None or not res.success:
                         return None, (res.error if res else "无法构建控制台截图信号"), None, None
                     assertions = getattr(res, "assertions", None) or []
-                    pre_matched = getattr(res, "matched", None) if assertions else bool(res.values)
+                    pre_matched = self._qkv_pre_matched(
+                        signal or {}, res.values, getattr(res, "matched", None), bool(assertions)
+                    )
                     return res.to_observation(), None, pre_matched, None
+                except Exception as exc:
+                    logger.error(
+                        event="signal_exec_exception",
+                        acquirer=acquirer,
+                        error=str(exc),
+                        session_id=session_id,
+                    )
+                    return None, str(exc), None, None
+            if acquirer == "qkv_effect":
+                try:
+                    res = await self._run_effect_producer(
+                        signal
+                        if signal is not None
+                        else {"acquire": {"tool": step.tool_name, "args": step.tool_args_template}},
+                        env_context,
+                        session_id,
+                        exec_id=exec_id,
+                    )
+                    if res is None or not res.success:
+                        return None, (res.error if res else "效果验证不可执行"), None, None
+                    if not self._qkv_producer_complete(signal or {}, res.values):
+                        return res.to_observation(), None, False, None
+                    verdict = str((res.values[0] if res.values else {}).get("effect_status") or "inconclusive")
+                    effect_outcome = {"achieved": True, "not_achieved": False, "inconclusive": None}.get(verdict)
+                    return res.to_observation(), None, effect_outcome, None
                 except Exception as exc:
                     logger.error(
                         event="signal_exec_exception",
@@ -1752,8 +1796,7 @@ class KBDDiagnostic:
                     session_id=session_id,
                 )
                 assertions = getattr(res, "assertions", None) or []
-                complete = self._qkv_producer_complete(signal or {}, res.values)
-                pre_matched = bool(res.matched) and complete if assertions else complete
+                pre_matched = self._qkv_pre_matched(signal or {}, res.values, res.matched, bool(assertions))
                 return res.to_observation(), None, pre_matched, None
             except Exception as exc:
                 logger.error(
