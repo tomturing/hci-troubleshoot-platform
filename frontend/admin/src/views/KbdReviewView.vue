@@ -2328,6 +2328,8 @@ function buildSignalForTool(tool: string, previous?: SignalV2): SignalV2 {
   const args = schemaDefaultArgs(tool)
   if (typeof oldArgs.instruction === 'string') args.instruction = oldArgs.instruction
   if (producer && typeof oldArgs.keyword === 'string') args.keyword = oldArgs.keyword
+  // qkv_task/qkv_alert/qkv_dialog 必须有 keyword，从 qkv_case_context 切换时需要初始化默认值
+  if (['qkv_task', 'qkv_alert', 'qkv_dialog'].includes(tool) && !args.keyword) args.keyword = ''
   if (tool === 'qkv_task') args.is_failed = true
   if (tool === 'qkv_dialog') {
     args.paths = ['/sf/log/today', '/sf/log/today/vt']
@@ -2373,6 +2375,10 @@ function buildSignalForTool(tool: string, previous?: SignalV2): SignalV2 {
   // host 作为显式的默认选项，便于专家把已选择的 aCLI 容器恢复为宿主机。
   if (tool === 'qfk_system') args.container = 'host'
   if (tool === 'qfk_service') args.action = 'status'
+  // 消费者信号 qfk_hardware/qfk_network/qfk_platform/qfk_storage/qfk_vm 必须有 command
+  if (['qfk_hardware', 'qfk_network', 'qfk_platform', 'qfk_storage', 'qfk_vm'].includes(tool) && !args.command) {
+    args.command = ''
+  }
   return {
     id: previous?.id || createSignalId(),
     role: previous?.role || 'should',
