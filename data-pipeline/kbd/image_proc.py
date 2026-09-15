@@ -28,6 +28,7 @@ import httpx
 from .config import settings
 from .error_catalog import JobFailureError, humanize_error
 from .observability import get_trace_id, traceparent
+from .tunnel import ensure_postgres_reachable
 
 logger = logging.getLogger("kbd.image_proc")
 
@@ -232,6 +233,7 @@ async def process_images_batch(
     # 查询每个 support_id 对应的 kbd_entry.id
     pool: asyncpg.Pool | None = _pool
     if pool is None:
+        ensure_postgres_reachable()
         pool = await asyncpg.create_pool(
             dsn=settings.asyncpg_database_url
         )
@@ -349,6 +351,7 @@ async def process_images_for_kbd(kbd_id: str, client: Any = None) -> dict[str, i
     Returns:
         {"done": N, "failed": N, "skipped": N}
     """
+    ensure_postgres_reachable()
     pool = await asyncpg.create_pool(
         dsn=settings.asyncpg_database_url
     )

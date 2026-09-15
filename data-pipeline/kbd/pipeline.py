@@ -68,6 +68,7 @@ from .progress import (
     update_stage_status,
 )
 from .terminal_layout import TERMINAL_LAYOUT_WIDTH
+from .tunnel import ensure_postgres_reachable
 
 logger = logging.getLogger("kbd.pipeline")
 
@@ -312,6 +313,7 @@ def resolve_stages(requested: Iterable[Stage]) -> list[Stage]:
 
 async def _create_pool() -> asyncpg.Pool:
     """创建 asyncpg 连接池（用于读取状态，写入通过 API）"""
+    ensure_postgres_reachable()
     return await asyncpg.create_pool(
         dsn=settings.asyncpg_database_url,
         min_size=settings.DB_POOL_MIN,
@@ -1041,6 +1043,7 @@ async def _db_failed_vision_ids(
         return []
     close_pool = False
     if pool is None:
+        ensure_postgres_reachable()
         pool = await asyncpg.create_pool(dsn=settings.asyncpg_database_url)
         close_pool = True
     try:

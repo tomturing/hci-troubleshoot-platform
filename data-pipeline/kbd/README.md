@@ -124,8 +124,8 @@ cp data-pipeline/kbd/.env.example data-pipeline/kbd/.env
 |---|---|---|
 | `SANGFOR_COOKIE` | fetch | Support Portal 登录 Cookie；过期后需更新 |
 | `SANGFOR_API_BASE` | fetch | 默认 `https://support.sangfor.com.cn` |
-| `DATABASE_URL` | import 后各阶段、DB Signal Review | asyncpg 可连接的 PostgreSQL DSN |
-| `KB_SERVICE_URL` | import、vision、extract | KB Service 地址 |
+| `DATABASE_URL` | 全局断点裁剪、状态快照、DB Signal Review | asyncpg 连接 DSN；指向 localhost 时自动拉起 kubectl 端口转发 |
+| `KB_SERVICE_URL` | import、vision、classify、extract | KB Service 地址；指向 localhost 时自动拉起 kubectl 端口转发 |
 | `INTERNAL_API_TOKEN` | import、vision、classify、extract | 与 KB Service 一致的内部 Token |
 | `EXCEL_FILE` | `--excel` | 第一列为案例 ID 的 Excel 路径 |
 | `KBD_CACHE_DIR` | fetch/import | 默认 `data-pipeline/kbd/cache` |
@@ -135,6 +135,8 @@ cp data-pipeline/kbd/.env.example data-pipeline/kbd/.env
 | `EXTRACT_CONCURRENCY` | extract | Signal 抽取并发，默认 3 |
 
 `.env` 含 Cookie、Token 和数据库地址，禁止提交 Git。不要在工单、文档或测试输出中粘贴真实值。
+
+> **隧道自动守护**：当 `DATABASE_URL` 或 `KB_SERVICE_URL` 配置为本地端口（如 `localhost:5432`、`localhost:8004`）且本地未建立连接时，流水线会根据当前集群命名空间自动拉起对应的 `kubectl port-forward` 后台守护进程（带 PID 校验和文件锁），无需人工预先在后台挂起端口转发命令。
 
 ### 4.3 统一命令前缀
 

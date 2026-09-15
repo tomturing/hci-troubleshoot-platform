@@ -27,127 +27,96 @@ data-pipeline/kbd/importer.py — KBD 条目入库（API 调用版）
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import json
 import logging
 import os
 import signal
 import subprocess
-import time
-from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 
 from .config import settings
 from .observability import traceparent
+from .tunnel import (
+    _KB_LOCK_FILE as _PORT_FORWARD_LOCK_FILE,
+)
+from .tunnel import (
+    _KB_LOG_FILE as _PORT_FORWARD_LOG_FILE,
+)
+from .tunnel import (
+    _KB_PID_FILE as _PORT_FORWARD_PID_FILE,
+)
+from .tunnel import (
+    _KB_PROCESS as _PORT_FORWARD_PROCESS,
+)
+from .tunnel import (
+    PortForwardError,
+    _check_kb_service_reachable,
+    _kubectl_output,
+    _namespace_has_service,
+    _port_forward_command,
+    _port_forward_lock,
+    _resolve_k8s_namespace,
+    _start_tunnel,
+    ensure_kb_service_reachable,
+)
+from .tunnel import (
+    _local_kb_port as _local_port,
+)
+from .tunnel import (
+    _process_identity as _base_process_identity,
+)
+from .tunnel import (
+    _read_pid_metadata as _base_read_pid_metadata,
+)
+from .tunnel import (
+    _stop_kb_port_forward as _stop_port_forward,
+)
 
 logger = logging.getLogger("kbd.importer")
 
-# ─── Port-forward 管理 ────────────────────────────────────────────────────────────
 
-_PORT_FORWARD_PID_FILE = settings.KBD_CACHE_DIR.parent / ".kb-service-portforward.pid"
-_PORT_FORWARD_LOCK_FILE = settings.KBD_CACHE_DIR.parent / ".kb-service-portforward.lock"
-_PORT_FORWARD_LOG_FILE = settings.KBD_CACHE_DIR.parent / ".kb-service-portforward.log"
-_PORT_FORWARD_PROCESS: subprocess.Popen | None = None
+def _read_pid_metadata() -> dict[str, Any] | None:
+    return _base_read_pid_metadata(_PORT_FORWARD_PID_FILE)
 
 
-class PortForwardError(RuntimeError):
-    """port-forward 前置检查或启动失败。"""
+def _process_identity(pid: int) -> dict[str, str]:
+    return _base_process_identity(pid)
 
 
-def _check_kb_service_reachable(timeout: float = 2.0) -> bool:
-    """快速检测目标确实是 kb-service，而不只是本地端口有任意 HTTP 服务。"""
+def _process_matches_metadata(metadata: dict[str, Any]) -> bool:
     try:
-        with httpx.Client(timeout=timeout) as client:
-            resp = client.get(f"{settings.KB_SERVICE_URL}/health", follow_redirects=True)
-            if resp.status_code >= 500:
-                return False
-            payload = resp.json()
-            return isinstance(payload, dict) and payload.get("service") == "kb-service"
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError, OSError):
+        pid = int(metadata["pid"])
+        namespace = str(metadata["namespace"])
+        local_port = int(metadata["local_port"])
+        recorded_identity = metadata["process_identity"]
+        recorded_command = metadata["command"]
+        current_identity = _process_identity(pid)
+    except (IndexError, KeyError, TypeError, ValueError, OSError):
         return False
-    except ValueError:
-        return False
-
-
-def _kubectl_output(*args: str) -> str:
-    """执行只读 kubectl 命令并返回输出；错误保留原始 stderr 便于定位。"""
-    try:
-        result = subprocess.run(
-            ["kubectl", *args],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except FileNotFoundError as exc:
-        raise PortForwardError("kubectl 未安装或不在 PATH 中") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise PortForwardError(f"kubectl 命令超时: {' '.join(args)}") from exc
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise PortForwardError(f"kubectl {' '.join(args)} 失败: {detail[:2000]}")
-    return result.stdout.strip()
-
-
-def _namespace_has_service(namespace: str) -> bool:
-    """确认候选命名空间中存在 kb-service。"""
-    if not namespace or namespace == "default":
-        return False
-    try:
-        _kubectl_output("get", "service", "kb-service", "-n", namespace, "-o", "name")
-        return True
-    except PortForwardError:
-        return False
-
-
-def _resolve_k8s_namespace() -> str:
-    """解析本次连接的命名空间；不能唯一确定时拒绝猜测环境。"""
-    configured = os.getenv("KBD_K8S_NAMESPACE") or settings.K8S_NAMESPACE
-    if configured:
-        if not _namespace_has_service(configured):
-            raise PortForwardError(
-                f"显式命名空间 {configured!r} 中不存在 svc/kb-service；"
-                "请检查 KBD_K8S_NAMESPACE/K8S_NAMESPACE，禁止回退到其他环境"
-            )
-        return configured
-
-    current = _kubectl_output(
-        "config", "view", "--minify", "-o", "jsonpath={..namespace}"
+    expected = _port_forward_command(namespace, local_port)
+    return (
+        recorded_command == expected
+        and recorded_identity == current_identity
+        and Path(current_identity["executable"]).name in {"kubectl", "k3s"}
     )
-    if _namespace_has_service(current):
-        return current
 
+
+def _terminate_owned_process(metadata: dict[str, Any]) -> None:
+    if not _process_matches_metadata(metadata):
+        logger.warning("忽略不属于本工具的 PID 文件，避免误杀进程: %s", metadata)
+        return
     try:
-        role = _kubectl_output(
-            "get", "namespace", "argocd", "-o",
-            "jsonpath={.metadata.labels.hci\\.env\\.role}",
-        )
-    except PortForwardError:
-        role = ""
-    role_namespace = f"hci-{role}" if role in {"dev", "staging", "prod"} else ""
-    if _namespace_has_service(role_namespace):
-        return role_namespace
-
-    raw_candidates = _kubectl_output(
-        "get", "service", "-A", "-o",
-        "jsonpath={range .items[?(@.metadata.name==\"kb-service\")]}"
-        "{.metadata.namespace}{\"\\n\"}{end}",
-    )
-    candidates = sorted({item for item in raw_candidates.splitlines() if item.startswith("hci-")})
-    if len(candidates) == 1:
-        return candidates[0]
-    raise PortForwardError(
-        "无法唯一确定 kb-service 命名空间；"
-        f"候选={candidates or '无'}。请显式设置 KBD_K8S_NAMESPACE，禁止默认连接 hci-dev"
-    )
+        pid = int(metadata["pid"])
+        os.killpg(pid, signal.SIGTERM)
+        logger.info("已终止本工具创建的 port-forward 进程 PID=%d", pid)
+    except (ProcessLookupError, OSError, ValueError, KeyError):
+        pass
 
 
 def _validate_port_forward_target(namespace: str) -> None:
-    """在启动隧道前验证 Service 和后端地址，避免把配置错误伪装成网络超时。"""
     _kubectl_output("get", "service", "kb-service", "-n", namespace, "-o", "name")
     endpoint_data = _kubectl_output(
         "get", "endpointslice", "-n", namespace,
@@ -171,214 +140,45 @@ def _validate_port_forward_target(namespace: str) -> None:
         )
 
 
-def _local_port() -> int:
-    parsed = urlparse(settings.KB_SERVICE_URL)
-    if parsed.hostname not in {"127.0.0.1", "localhost"}:
-        raise PortForwardError(
-            f"KB_SERVICE_URL={settings.KB_SERVICE_URL!r} 不指向本机；"
-            "不会为远端地址自动创建 port-forward"
-        )
-    return parsed.port or (443 if parsed.scheme == "https" else 80)
-
-
-def _port_forward_command(namespace: str, local_port: int) -> list[str]:
-    return [
-        "kubectl", "port-forward", "svc/kb-service", "-n", namespace,
-        f"{local_port}:8004", "--address", "127.0.0.1",
-    ]
-
-
-def _read_pid_metadata() -> dict[str, Any] | None:
-    try:
-        value = json.loads(_PORT_FORWARD_PID_FILE.read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else None
-    except (OSError, json.JSONDecodeError):
-        return None
-
-
-def _process_identity(pid: int) -> dict[str, str]:
-    """读取 Linux 进程不可复用的启动时钟与可执行文件身份。"""
-    stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-    stat_fields = stat[stat.rfind(")") + 2 :].split()
-    return {
-        # /proc/<pid>/stat 第 22 字段为 starttime；去掉 pid/comm 后索引为 19。
-        "start_ticks": stat_fields[19],
-        "executable": os.path.realpath(f"/proc/{pid}/exe"),
-    }
-
-
-def _process_matches_metadata(metadata: dict[str, Any]) -> bool:
-    """用启动时钟和 executable 校验进程归属，防止 PID 复用后误杀。"""
-    try:
-        pid = int(metadata["pid"])
-        namespace = str(metadata["namespace"])
-        local_port = int(metadata["local_port"])
-        recorded_identity = metadata["process_identity"]
-        recorded_command = metadata["command"]
-        current_identity = _process_identity(pid)
-    except (IndexError, KeyError, TypeError, ValueError, OSError):
-        return False
-    expected = _port_forward_command(namespace, local_port)
-    return (
-        recorded_command == expected
-        and recorded_identity == current_identity
-        # k3s 安装中 kubectl 是指向 k3s 多调用二进制的符号链接。
-        and Path(current_identity["executable"]).name in {"kubectl", "k3s"}
+def _start_port_forward(namespace: str) -> subprocess.Popen | None:
+    local_port = _local_port()
+    _validate_port_forward_target(namespace)
+    return _start_tunnel(
+        "svc/kb-service",
+        namespace,
+        local_port,
+        8004,
+        _PORT_FORWARD_PID_FILE,
+        _PORT_FORWARD_LOG_FILE,
+        _check_kb_service_reachable,
     )
 
 
-def _terminate_owned_process(metadata: dict[str, Any]) -> None:
-    if not _process_matches_metadata(metadata):
-        logger.warning("忽略不属于本工具的 PID 文件，避免误杀进程: %s", metadata)
-        return
-    try:
-        pid = int(metadata["pid"])
-        os.killpg(pid, signal.SIGTERM)
-        logger.info("已终止本工具创建的 port-forward 进程 PID=%d", pid)
-    except (ProcessLookupError, OSError, ValueError, KeyError):
-        pass
+__all__ = [
+    "PortForwardError",
+    "ensure_kb_service_reachable",
+    "import_batch",
+    "import_entry",
+    "_PORT_FORWARD_LOCK_FILE",
+    "_PORT_FORWARD_LOG_FILE",
+    "_PORT_FORWARD_PID_FILE",
+    "_PORT_FORWARD_PROCESS",
+    "_check_kb_service_reachable",
+    "_kubectl_output",
+    "_local_port",
+    "_namespace_has_service",
+    "_port_forward_command",
+    "_port_forward_lock",
+    "_process_identity",
+    "_process_matches_metadata",
+    "_read_pid_metadata",
+    "_resolve_k8s_namespace",
+    "_start_port_forward",
+    "_stop_port_forward",
+    "_terminate_owned_process",
+    "_validate_port_forward_target",
+]
 
-
-@contextmanager
-def _port_forward_lock():
-    """串行化隧道检查与创建，防止并发 pipeline 抢占同一本地端口。"""
-    _PORT_FORWARD_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with _PORT_FORWARD_LOCK_FILE.open("a+", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-
-
-def _start_port_forward(namespace: str) -> subprocess.Popen | None:
-    """
-    启动 kubectl port-forward 将 kb-service 暴露到本地。
-
-    Returns:
-        启动的 subprocess.Popen 对象，失败返回 None
-    """
-    local_port = _local_port()
-    _validate_port_forward_target(namespace)
-    cmd = _port_forward_command(namespace, local_port)
-
-    logger.info("启动 port-forward: %s", " ".join(cmd))
-
-    proc: subprocess.Popen | None = None
-    output = None
-    started = False
-    try:
-        _PORT_FORWARD_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        output = _PORT_FORWARD_LOG_FILE.open("w+", encoding="utf-8")
-        proc = subprocess.Popen(cmd, stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
-
-        # 等待端口就绪（最多 5 秒）
-        for _ in range(10):
-            time.sleep(0.5)
-            if _check_kb_service_reachable():
-                logger.info("port-forward 已就绪 PID=%d", proc.pid)
-                # 记录 PID 到文件，便于后续清理
-                metadata = {
-                    "pid": proc.pid,
-                    "namespace": namespace,
-                    "local_port": local_port,
-                    "command": cmd,
-                    "process_identity": _process_identity(proc.pid),
-                    "started_at": time.time(),
-                }
-                _PORT_FORWARD_PID_FILE.write_text(
-                    json.dumps(metadata, ensure_ascii=False), encoding="utf-8"
-                )
-                output.close()
-                started = True
-                return proc
-            if proc.poll() is not None:
-                output.flush()
-                output.seek(0)
-                detail = output.read()[-4000:].strip()
-                output.close()
-                logger.error(
-                    "port-forward 进程已退出 retcode=%d namespace=%s 输出=%s",
-                    proc.returncode, namespace, detail or "<无输出>",
-                )
-                return None
-
-        logger.warning("port-forward 启动超时，服务仍未就绪")
-        os.killpg(proc.pid, signal.SIGTERM)
-        output.close()
-        return None
-
-    except FileNotFoundError:
-        logger.error("kubectl 未安装或不在 PATH 中")
-        return None
-    except Exception as exc:
-        logger.error("启动 port-forward 失败: %s", exc)
-        return None
-    finally:
-        # 正常运行的子进程已继承日志 fd；父进程无需长期持有文件对象。
-        if output is not None and not output.closed:
-            output.close()
-        # 异常路径不能留下既无 PID 元数据、又占用端口的孤儿进程。
-        if proc is not None and proc.poll() is None and not started:
-            with suppress(ProcessLookupError, OSError):
-                os.killpg(proc.pid, signal.SIGTERM)
-
-
-def _stop_port_forward() -> None:
-    """停止 port-forward 进程。"""
-    global _PORT_FORWARD_PROCESS
-
-    metadata = _read_pid_metadata()
-    if metadata:
-        _terminate_owned_process(metadata)
-    _PORT_FORWARD_PID_FILE.unlink(missing_ok=True)
-
-    # 清理当前进程
-    if _PORT_FORWARD_PROCESS and _PORT_FORWARD_PROCESS.poll() is None:
-        with suppress(ProcessLookupError, OSError):
-            os.killpg(_PORT_FORWARD_PROCESS.pid, signal.SIGTERM)
-        logger.info("已终止当前 port-forward 进程 PID=%d", _PORT_FORWARD_PROCESS.pid)
-        _PORT_FORWARD_PROCESS = None
-
-
-def ensure_kb_service_reachable() -> bool:
-    """
-    确保 kb-service 可达，自动启动 port-forward（如果需要）。
-
-    Returns:
-        True 表示服务可达，False 表示无法连接
-    """
-    global _PORT_FORWARD_PROCESS
-
-    # 1. 先检测是否已可达（可能是已有 port-forward 或本地 Docker 环境）
-    if _check_kb_service_reachable():
-        logger.debug("kb-service 已可达，无需 port-forward")
-        return True
-
-    try:
-        with _port_forward_lock():
-            if _check_kb_service_reachable():
-                return True
-            namespace = _resolve_k8s_namespace()
-            metadata = _read_pid_metadata()
-            if metadata:
-                if (
-                    metadata.get("namespace") == namespace
-                    and _process_matches_metadata(metadata)
-                ):
-                    logger.info("发现已有受管 port-forward PID=%s，等待就绪", metadata.get("pid"))
-                    for _ in range(5):
-                        time.sleep(0.5)
-                        if _check_kb_service_reachable():
-                            return True
-                _terminate_owned_process(metadata)
-                _PORT_FORWARD_PID_FILE.unlink(missing_ok=True)
-
-            _PORT_FORWARD_PROCESS = _start_port_forward(namespace)
-            return bool(_PORT_FORWARD_PROCESS and _check_kb_service_reachable())
-    except PortForwardError as exc:
-        logger.error("kb-service 连接前置检查失败: %s", exc)
-        return False
 
 
 # ─── API 客户端 ──────────────────────────────────────────────────────────────

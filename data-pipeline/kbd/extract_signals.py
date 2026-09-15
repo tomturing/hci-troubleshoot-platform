@@ -19,6 +19,7 @@ import httpx
 from .config import settings
 from .error_catalog import JobFailureError, humanize_error
 from .observability import get_trace_id, traceparent
+from .tunnel import ensure_postgres_reachable
 
 logger = logging.getLogger("kbd.extract_signals")
 
@@ -192,6 +193,7 @@ async def extract_signals_batch(
 
     owns_pool = pool is None
     if pool is None:
+        ensure_postgres_reachable()
         pool = await asyncpg.create_pool(
             dsn=settings.asyncpg_database_url
         )
