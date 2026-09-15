@@ -59,6 +59,10 @@ data:
   KBD_BATCH_STALE_AFTER_SECONDS: {{ .Values.kbService.batchStaleAfterSeconds | default "600" | quote }}
   EXTRACT_SIGNALS_MAX_TOKENS: {{ .Values.kbService.extractSignalsMaxTokens | default "16384" | quote }}
   EXTRACT_SIGNALS_FORMAT_MAX_ATTEMPTS: {{ .Values.kbService.extractSignalsFormatMaxAttempts | default "2" | quote }}
+  # 信号抽取 LLM 单次调用超时（秒），独立于全局 LLM_TIMEOUT。
+  # 设计约束：api-gateway 超时=240s，LLM Governor 默认重试 3 次，单次超时必须小于 80s（240÷3=80）。
+  # 默认 70s → 3×70=210s < 240s，确保 kb-service 先于 api-gateway 超时并返回有意义错误。
+  EXTRACT_SIGNALS_LLM_TIMEOUT: {{ .Values.kbService.extractSignalsLlmTimeoutSec | default "70.0" | quote }}
   # 可观测性
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.otelEndpoint | quote }}
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}

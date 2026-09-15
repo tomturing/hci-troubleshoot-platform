@@ -111,7 +111,19 @@ LLM_MODEL = _resolve_extract_model()
 # 推理模型（glm-5.2 / deepseek-v4-flash）开启 thinking 时会先消耗大量 reasoning token，
 # 导致 json_object 正文被挤出 max_tokens 预算 —— 这正是「LLM 响应格式错误」的根因。）
 LLM_ENABLE_THINKING = os.environ.get("LLM_ENABLE_THINKING", "false").lower() in ("1", "true", "yes", "on")
+# 信号抽取专属 LLM 超时（秒）。
+# 设计约束：api-gateway 代理此端点的超时为 240s；
+# LLM Governor 默认重试 3 次，故单次超时须满足：
+#   EXTRACT_SIGNALS_LLM_TIMEOUT × LLM_MAX_ATTEMPTS < 240s（api-gateway timeout）
+# 默认 70s → 3 × 70 = 210s < 240s，保证 kb-service 总在 api-gateway 之前超时，
+# 确保前端收到有意义的错误（而非误导性的「KB Service unavailable」）。
+# 可通过 EXTRACT_SIGNALS_LLM_TIMEOUT 环境变量独立覆盖，留空则回退到全局 LLM_TIMEOUT。
 LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "120"))
+_EXTRACT_LLM_TIMEOUT = float(
+    os.environ.get("EXTRACT_SIGNALS_LLM_TIMEOUT") or LLM_TIMEOUT
+    if os.environ.get("EXTRACT_SIGNALS_LLM_TIMEOUT")
+    else min(LLM_TIMEOUT, 70.0)
+)
 EXTRACT_SIGNALS_MAX_TOKENS = max(2048, int(os.environ.get("EXTRACT_SIGNALS_MAX_TOKENS", "16384")))
 
 # Prompt 名称（system_prompt 表热加载，admin-ui 可在线编辑）
@@ -967,7 +979,9 @@ async def _call_llm(
     client = AsyncOpenAI(
         api_key=_EXTRACT_API_KEY,
         base_url=_EXTRACT_BASE_URL,
-        timeout=LLM_TIMEOUT,
+        # 使用专属超时，确保 3 次重试总耗时 < api-gateway 代理超时（240s）。
+        # 详见模块顶部 _EXTRACT_LLM_TIMEOUT 注释。
+        timeout=_EXTRACT_LLM_TIMEOUT,
         # 重试由共享治理器负责，避免 SDK/路由双重重试。
         max_retries=0,
     )

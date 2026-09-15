@@ -313,6 +313,12 @@ kbService:
   # 信号抽取专用输出预算和 JSON 格式纠错次数。长度截断不会按相同策略重试。
   extractSignalsMaxTokens: "16384"
   extractSignalsFormatMaxAttempts: "2"
+  # 信号抽取 LLM 单次调用超时（秒），独立于全局 llmTimeoutSec。
+  # 设计约束（必须严格满足）：
+  #   extractSignalsLlmTimeoutSec × LLM_MAX_ATTEMPTS < api-gateway 代理超时（240s）
+  #   70 × 3 = 210s < 240s（当前配置满足）
+  # 调整此值时，必须同步调整 api-gateway 超时或 LLM_MAX_ATTEMPTS。
+  extractSignalsLlmTimeoutSec: "70.0"
   # 是否启用 LLM 思维链（注入为 LLM_ENABLE_THINKING，默认关闭）
   enableThinking: "false"
   # KBD 数据管道 Job 配置（符合 Twelve-Factor App 配置规范）
