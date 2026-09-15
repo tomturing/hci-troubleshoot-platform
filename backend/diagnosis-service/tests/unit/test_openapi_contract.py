@@ -8,7 +8,7 @@ def test_openapi_exposes_collector_registry_and_artifact_contracts():
 
     specification = app.openapi()
 
-    assert len(specification["paths"]) == 71
+    assert len(specification["paths"]) == 74
     assert "/api/diagnosis-sessions/by-case/{case_id}/workspace" in specification["paths"]
     assert "/api/diagnosis-scenarios" in specification["paths"]
     assert "/api/diagnosis-scenarios/semantic-advice" in specification["paths"]
@@ -52,6 +52,9 @@ def test_openapi_exposes_collector_registry_and_artifact_contracts():
     assert "/api/internal/diagnosis-sessions/governance" in specification["paths"]
     assert "/api/internal/diagnosis-sessions/audit" in specification["paths"]
     assert "/api/internal/collection-profiles" in specification["paths"]
+    assert "/api/v1/bundle-migration/health" in specification["paths"]
+    assert "/api/v1/bundle-migration/migrate" in specification["paths"]
+    assert "/api/v1/bundle-migration/version" in specification["paths"]
     assert "/health" in specification["paths"]
 
     artifact_schema = specification["components"]["schemas"]["CollectorArtifactResponse"]

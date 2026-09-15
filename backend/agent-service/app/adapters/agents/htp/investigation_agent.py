@@ -390,6 +390,25 @@ class InvestigationAgent(BaseAgent):
             )
             return
 
+        # 已进入 guidance_only 人工补证据阶段时，后续用户补充不应反复执行同分类
+        # 的全量 CDD。该快捷路径只会返回人工指引，绝不据此执行语义候选命令。
+        if semantic_cases and self._semantic_guidance_pending(messages):
+            semantic_result = await self._kb_client.resolve_semantic_entry(
+                category_id=category_id,
+                case_context=self._build_semantic_context(messages, env_context),
+                strong_producer_status="matched_inconclusive",
+                expected_revisions=self._semantic_revisions(all_kbds),
+            )
+            yield AgentStageUpdate(
+                stage="semantic_entry_fallback", metadata=semantic_result or {"reason": "service_unavailable"}
+            )
+            if (semantic_result or {}).get("decision") == "inconclusive":
+                guidance_messages = self._semantic_guidance_messages(messages, semantic_result or {})
+                if guidance_messages:
+                    for content in guidance_messages:
+                        yield AgentTextChunk(content=content)
+                    return
+
         candidates: list[KBD] = [kbd_from_dict(d) for d in raw_cases]
         logger.info(
             event="kbd_diag_candidates",
@@ -430,25 +449,22 @@ class InvestigationAgent(BaseAgent):
         kbd_result = self._kbd_diag.get_result()
         if kbd_result and not kbd_result.is_definitive and semantic_cases and not semantic_preselected:
             strong_steps = [step for step in kbd_result.steps_executed if step.tool_name in STRONG_PRODUCER_TOOLS]
-            expected_strong = {
-                (str(item["id"]), str(signal.get("id") or ""))
-                for item in raw_cases
-                for signal in item.get("signals", [])
-                if (signal.get("acquire") or {}).get("tool") in STRONG_PRODUCER_TOOLS
-                and (signal.get("orchestrate") or {}).get("phase", "diagnostic") != "solution"
-            }
-            executed_strong = {(str(step.kbd_id), str(step.signal_id)) for step in strong_steps}
+            # CDD 在某条必要信号已 CONTRADICTED 后会停止该 KBD 的后续步骤；那些
+            # 被正确剪枝的强生产者不能被静态声明集合误认为“查询不完整”。只对实际
+            # 调度执行过的强生产者检查失败/阻断，保留任何真实执行问题的 fail-closed。
             if (
                 not strong_steps
                 or any(
                     step.error or str(step.outcome).split(".")[-1].upper() in {"UNKNOWN", "NOT_RUN", "BLOCKED"}
                     for step in strong_steps
                 )
-                or not expected_strong.issubset(executed_strong)
             ):
                 strong_status = "source_unavailable"
             elif any(step.match_kbd_ids for step in strong_steps):
-                strong_status = "matched"
+                # 强生产者返回过记录，但完整 CDD 在当前分支仍然不确定。历史记录或
+                # 宽泛关键字命中不能吞掉 guidance_only 的人工补证据路径；同时保留
+                # 与普通 matched 不同的状态，使服务端继续禁止 executable 语义候选。
+                strong_status = "matched_inconclusive"
             else:
                 strong_status = "no_match"
             semantic_result = await self._kb_client.resolve_semantic_entry(
@@ -505,26 +521,13 @@ class InvestigationAgent(BaseAgent):
                         yield event
                     kbd_result = self._kbd_diag.get_result()
             elif (semantic_result or {}).get("decision") == "inconclusive":
-                question = ((semantic_result or {}).get("next_action") or {}).get("question")
-                if self._semantic_question_exhausted(messages, question):
-                    yield AgentTextChunk(content="补充信息后仍无法安全区分候选，停止重复追问，已请求人工复核。")
-                    yield AgentEscalation(
-                        reason="语义入口补充信息后仍无法区分",
-                        context={"category_id": category_id, "session_id": session_id, "case_id": case_id},
-                    )
+                guidance_messages = self._semantic_guidance_messages(messages, semantic_result or {})
+                if guidance_messages:
+                    for content in guidance_messages:
+                        yield AgentTextChunk(content=content)
+                    # guidance_only/歧义候选已明确要求用户补充信息；不得继续拼接
+                    # 通用 CDD 报告或升级人工卡片，否则会淹没正确的下一步动作。
                     return
-                if question:
-                    yield AgentTextChunk(content="目前无法确认根因。" + question)
-                requests = [
-                    request
-                    for item in semantic_candidates
-                    for request in (item.get("manual_evidence_request") or [])
-                    if isinstance(request, str) and request.strip()
-                ]
-                if requests:
-                    yield AgentTextChunk(
-                        content="强生产者未命中，当前只能请求补充证据：" + "；".join(dict.fromkeys(requests))
-                    )
         if kbd_result:
             # 流式输出报告文本
             for chunk in self._split_text_chunks(kbd_result.diagnosis_report, chunk_size=100):
@@ -1361,6 +1364,83 @@ class InvestigationAgent(BaseAgent):
                 if message.get("role") == "assistant"
             )
             >= 2
+        )
+
+    @staticmethod
+    def _semantic_question_answered(messages: list[dict], question: str | None) -> bool:
+        """从持久化对话判断语义澄清问题是否已有客户事实回答。"""
+
+        if not question:
+            return False
+        user_messages = [
+            str(message.get("content") or "").strip()
+            for message in messages
+            if message.get("role") == "user"
+            and str(message.get("content") or "").strip()
+            and not _RETRIEVAL_CONTROL_RE.fullmatch(str(message.get("content") or "").strip())
+        ]
+        # 对“当前报错是否为‘…’”一类问题，用户原始描述已包含引号事实时无需再问。
+        quoted = [item for pair in re.findall(r'“([^”]+)”|"([^"]+)"', question) for item in pair if item]
+        if any(quote in message for quote in quoted for message in user_messages):
+            return True
+
+        last_question_index = max(
+            (
+                index
+                for index, message in enumerate(messages)
+                if message.get("role") == "assistant" and question in str(message.get("content") or "")
+            ),
+            default=-1,
+        )
+        return last_question_index >= 0 and any(
+            message.get("role") == "user"
+            and isinstance(message.get("content"), str)
+            and message["content"].strip()
+            and not _RETRIEVAL_CONTROL_RE.fullmatch(message["content"].strip())
+            for message in messages[last_question_index + 1 :]
+        )
+
+    @classmethod
+    def _semantic_guidance_messages(cls, messages: list[dict], semantic_result: dict) -> list[str]:
+        """构造下一轮人工补证据文本，避免重复提问或混入 CDD 报告。"""
+
+        question = str((semantic_result.get("next_action") or {}).get("question") or "").strip()
+        question_answered = cls._semantic_question_answered(messages, question)
+        if not question_answered and cls._semantic_question_exhausted(messages, question):
+            return ["补充信息后仍无法安全区分候选，已请求人工复核。"]
+
+        outputs: list[str] = []
+        if question and not question_answered:
+            outputs.append("目前无法确认根因。" + question)
+        requests = [
+            request.strip()
+            for item in semantic_result.get("candidates") or []
+            for request in (item.get("manual_evidence_request") or [])
+            if isinstance(request, str) and request.strip()
+        ]
+        if requests:
+            outputs.append("当前只能请求补充证据：" + "；".join(dict.fromkeys(requests)))
+        return outputs
+
+    @staticmethod
+    def _semantic_guidance_pending(messages: list[dict]) -> bool:
+        """检测上一轮已发出补证据请求且客户随后提供了新事实。"""
+
+        marker = "当前只能请求补充证据："
+        marker_index = max(
+            (
+                index
+                for index, message in enumerate(messages)
+                if message.get("role") == "assistant" and marker in str(message.get("content") or "")
+            ),
+            default=-1,
+        )
+        return marker_index >= 0 and any(
+            message.get("role") == "user"
+            and isinstance(message.get("content"), str)
+            and message["content"].strip()
+            and not _RETRIEVAL_CONTROL_RE.fullmatch(message["content"].strip())
+            for message in messages[marker_index + 1 :]
         )
 
     @staticmethod

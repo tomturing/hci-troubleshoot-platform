@@ -371,6 +371,22 @@ def test_contract_no_publish_validation_falls_back_to_generation_metadata():
     assert issues == ["Signal/Contract 生成输入已变化，必须重新抽取或完成人工复核"]
 
 
+def test_published_stale_generation_metadata_is_not_executable():
+    """发布章通过不能覆盖后续标记的 stale，必须与 CDD 编译门禁一致。"""
+    doc = _contract_doc_current()
+    doc["generation_metadata"] = {
+        "schema_version": 1,
+        "status": "stale",
+        "source_fingerprint": "0" * 64,
+        "prompt_revision": "1" * 64,
+        "model_id": "model-v1",
+        "tool_contract_revision": current_tool_contract_revision(),
+        "generation_fingerprint": "2" * 64,
+    }
+
+    assert _exec(doc) == ["Signal/Contract 生成输入已变化，必须重新抽取或完成人工复核"]
+
+
 def test_contract_legacy_snapshot_stale_revision():
     """旧快照（publish_validation 中 tool_contract_revision 不等）→ 提示过期，阻断。"""
     doc = {

@@ -15,6 +15,7 @@ from shared.schemas.acquirer_args import (
     DEFAULT_SIGNAL_TIMEOUT_SECONDS,
     FRONTEND_TOOLS,
 )
+from shared.schemas.capability_descriptor import get_capability_descriptor
 
 from app.config import settings
 from app.tools.qfk.handlers import HandlerRegistry, build_acli_command
@@ -50,6 +51,10 @@ def runtime_capability_document() -> dict:
     qfk_tools = tuple(f"qfk_{namespace}" for namespace in HandlerRegistry.supported_namespaces())
     capabilities = []
     for capability_id in (*qkv_tools, *qfk_tools):
+        descriptor = get_capability_descriptor(capability_id)
+        if descriptor is None:
+            # 注册能力缺少共享描述符属于仓库契约漂移，运行时不能静默伪造字段。
+            raise RuntimeError(f"能力目录缺少共享描述符: {capability_id}")
         producer = capability_id.startswith("qkv_")
         conditional = capability_id in CONDITIONAL_PRODUCERS
         is_effect = capability_id == "qkv_effect"
@@ -83,6 +88,11 @@ def runtime_capability_document() -> dict:
                 # effect 的先决变量随期望锚点动态声明，且严格只读、无受控交互。
                 "conditional_producer": conditional,
                 "controlled_interaction": conditional and not is_effect,
+                # 运行时状态由本进程探测，职责、Matcher 和安全边界由共享描述符派生。
+                "kind": descriptor["kind"],
+                "supported_matchers": descriptor["supported_matchers"],
+                "safety": descriptor["safety"],
+                "limitations": descriptor["limitations"],
             }
         )
     return {

@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.diagnostic_item import (
@@ -58,7 +59,8 @@ class DiagnosticItemRepository:
         Returns:
             创建的 DiagnosticItem 实例
         """
-        item = DiagnosticItem(
+        now = datetime.now(UTC)
+        statement = insert(DiagnosticItem).values(
             id=uuid.uuid4(),
             conversation_id=conversation_id,
             stage=stage,
@@ -68,13 +70,24 @@ class DiagnosticItemRepository:
             probability=probability,
             status=status,
             trace_id=trace_id,
-            created_at=datetime.now(UTC),
-            updated_at=datetime.now(UTC),
+            created_at=now,
+            updated_at=now,
         )
-        self.session.add(item)
-        await self.session.flush()
-        await self.session.refresh(item)
-        return item
+        # 同一会话重试 CDD 时会复用 verification_step 的稳定序号。更新既有
+        # 审计事实而非抛 500，使重试可恢复且不产生重复条目。
+        statement = statement.on_conflict_do_update(
+            index_elements=[DiagnosticItem.conversation_id, DiagnosticItem.type, DiagnosticItem.seq],
+            set_={
+                "stage": statement.excluded.stage,
+                "content": statement.excluded.content,
+                "probability": statement.excluded.probability,
+                "status": statement.excluded.status,
+                "trace_id": statement.excluded.trace_id,
+                "updated_at": statement.excluded.updated_at,
+            },
+        ).returning(DiagnosticItem)
+        result = await self.session.execute(statement)
+        return result.scalar_one()
 
     async def batch_create(
         self,

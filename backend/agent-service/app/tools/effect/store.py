@@ -170,6 +170,8 @@ async def insert_check_record(
     observation_summary: str | None,
     matcher_evidence: str | None,
     check_verdict: str | None,
+    observation_fingerprint: str | None = None,
+    progress_state: str | None = None,
     error_code: str | None = None,
     trace_id: str | None = None,
 ) -> None:
@@ -184,10 +186,10 @@ async def insert_check_record(
             """
             INSERT INTO effect_verification_check (
                 verification_id, check_seq, trigger_source, observation_status,
-                observation_summary, matcher_evidence, check_verdict, error_code, trace_id
+                observation_summary, observation_fingerprint, progress_state, matcher_evidence, check_verdict, error_code, trace_id
             ) VALUES (
                 CAST(:verification_id AS uuid), :check_seq, :trigger_source, :observation_status,
-                :observation_summary, :matcher_evidence, :check_verdict, :error_code, :trace_id
+                :observation_summary, :observation_fingerprint, :progress_state, :matcher_evidence, :check_verdict, :error_code, :trace_id
             )
             """
         ),
@@ -197,6 +199,8 @@ async def insert_check_record(
             "trigger_source": trigger_source,
             "observation_status": observation_status,
             "observation_summary": observation_summary,
+            "observation_fingerprint": observation_fingerprint,
+            "progress_state": progress_state,
             "matcher_evidence": matcher_evidence,
             "check_verdict": check_verdict,
             "error_code": error_code,

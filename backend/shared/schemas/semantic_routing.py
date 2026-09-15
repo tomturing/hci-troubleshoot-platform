@@ -147,7 +147,11 @@ async def _resolve(entries, context, segments, strong_status, embed, namespace, 
         "degraded": embed is None,
     }
     strong_defined = any(has_strong_producer(entry.get("signals_json")) for entry in entries)
-    if strong_status not in {"no_match", "not_applicable"} or (strong_status == "not_applicable" and strong_defined):
+    # ``matched_inconclusive`` 表示强生产者确实返回过记录，但完整 CDD 仍未形成
+    # 确定性结论。此时只能继续提供 guidance_only 的人工补证据指引；可执行语义
+    # 候选仍须 fail closed，避免用描述相似度绕过已经命中的强证据路径。
+    allowed_fallback_statuses = {"no_match", "not_applicable", "matched_inconclusive"}
+    if strong_status not in allowed_fallback_statuses or (strong_status == "not_applicable" and strong_defined):
         result.update(
             decision="strong_producer_first",
             reason="strong_producer_matched" if strong_status == "matched" else "strong_producer_unavailable",
@@ -166,7 +170,10 @@ async def _resolve(entries, context, segments, strong_status, embed, namespace, 
         if not profile:
             continue
         capability = profile.get("diagnosis_capability")
-        rejected = "capability_gap" if capability == "capability_gap" else scope_rejection(profile, context)
+        if strong_status == "matched_inconclusive" and capability != "guidance_only":
+            rejected = "strong_producer_matched"
+        else:
+            rejected = "capability_gap" if capability == "capability_gap" else scope_rejection(profile, context)
         if capability == "executable" and entry.get("executable") is False:
             rejected = "consumer_not_executable"
         score, hits, excluded = lexical_profile_score(profile, text)

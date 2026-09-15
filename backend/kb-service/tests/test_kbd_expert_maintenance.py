@@ -422,6 +422,84 @@ def test_delete_signal_id_rejects_missing_stable_target():
     assert exc_info.value.detail["code"] == "KBD_SIGNAL_NOT_FOUND"
 
 
+def _semantic_entry_document() -> dict:
+    """构造带语义入口（画像 + qkv_case_context 信号）的合法工作稿。"""
+
+    document = copy.deepcopy(_payload()["signals_json"])
+    document["signals"].append(
+        {
+            "id": "case_context",
+            "role": "context",
+            "acquire": {"tool": "qkv_case_context", "args": {}},
+            "match": None,
+            "orchestrate": {"produces": [], "requires": []},
+            "provenance": {"category": "frontend"},
+        }
+    )
+    document["semantic_entry_profile"] = {
+        "schema_version": 1,
+        "diagnosis_capability": "executable",
+        "canonical_symptoms": ["任务中心显示失败"],
+        "positive_anchors": ["任务中心显示失败"],
+        "exclusion_anchors": [],
+        "source_refs": ["kbd:problem_description"],
+    }
+    return document
+
+
+def test_delete_case_context_signal_cascades_semantic_entry_profile():
+    """删除 qkv_case_context 信号必须级联移除画像，且删除后文档通过工作稿校验。"""
+
+    document = _semantic_entry_document()
+
+    deleted = _delete_signal_from_document(document, "case_context")
+
+    # 成对契约：信号与画像必须一起消失，否则后续保存会被 SIGNAL_FIELD_INVALID 拒绝
+    assert "semantic_entry_profile" not in deleted
+    assert not any(signal["id"] == "case_context" for signal in deleted["signals"])
+    assert [signal["id"] for signal in deleted["signals"]] == ["task_failure", "log_failure"]
+    # _delete_signal_from_document 内部已跑 _prepare_expert_draft_signals（含草稿校验），
+    # 能正常返回即代表校验通过，不再出现“只保留 semantic_entry_profile”的悬空状态。
+
+
+def test_delete_non_semantic_signal_keeps_semantic_entry_profile():
+    """删除普通信号不影响语义入口的成对结构。"""
+
+    document = _semantic_entry_document()
+
+    deleted = _delete_signal_from_document(document, "task_failure")
+
+    assert deleted.get("semantic_entry_profile") == document["semantic_entry_profile"]
+    assert any(signal["id"] == "case_context" for signal in deleted["signals"])
+    assert [signal["id"] for signal in deleted["signals"]] == ["log_failure", "case_context"]
+
+
+def test_case_context_tool_changed_away_cascades_semantic_entry_profile():
+    """把 qkv_case_context 的工具改为其它信号后保存，孤儿画像应被自动级联移除。
+
+    工具改走后画像仍留在文档顶层，会以“只保留其中一项”被 SIGNAL_FIELD_INVALID
+    拒绝；归一化边界（_prepare_expert_draft_signals）需自动移除画像放行保存。
+    """
+
+    document = _semantic_entry_document()
+    retargeted = copy.deepcopy(document)
+    for signal in retargeted["signals"]:
+        if signal["id"] == "case_context":
+            signal["acquire"] = {"tool": "qkv_task", "args": {"keyword": "任务中心显示失败"}}
+            signal["match"] = None
+            signal["orchestrate"] = {
+                "produces": [{"name": "HOST", "path": "host"}, {"name": "END", "path": "end"}],
+                "requires": [],
+            }
+
+    normalized = admin._prepare_expert_draft_signals(retargeted)
+
+    assert "semantic_entry_profile" not in normalized
+    assert not any(
+        (signal.get("acquire") or {}).get("tool") == "qkv_case_context" for signal in normalized["signals"]
+    )
+
+
 def test_expert_can_save_working_draft_without_must_and_gets_actionable_issue():
     """工作稿允许逐步编辑；只有发布门禁要求必要证据。"""
 

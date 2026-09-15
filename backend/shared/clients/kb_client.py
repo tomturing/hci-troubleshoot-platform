@@ -493,11 +493,11 @@ class KBClient(InternalHTTPClient):
         top_k: int = 5,
         expected_revisions: dict[str, int] | None = None,
     ) -> dict | None:
-        """强生产者未命中时的受限语义入口候选。
+        """强生产者未命中或命中但 CDD 不确定时的受限语义入口候选。
 
         ``case_context`` 可为历史字符串，或包含 description/error_text/object_type/
         operation 的受控结构化上下文。此接口不会执行任何命令；source_unavailable
-        必须由服务端 fail closed。
+        必须由服务端 fail closed，matched_inconclusive 只能返回 guidance_only。
         """
         try:
             response = await self.post(

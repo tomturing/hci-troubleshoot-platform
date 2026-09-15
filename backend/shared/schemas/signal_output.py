@@ -57,6 +57,9 @@ def derive_signal_requires(signal: dict[str, Any]) -> list[str]:
             if not isinstance(item, dict):
                 continue
             collect(item.get("input"))
+            # 断言判断的 matcher 同样可能引用上游变量
+            if item.get("mode") == "assert":
+                collect(item.get("match"))
             target = str(item.get("name") or item.get("target_variable") or "").strip().upper()
             if item.get("mode") == "derive" and target:
                 derived.add(target)

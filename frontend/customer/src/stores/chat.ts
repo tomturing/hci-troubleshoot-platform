@@ -1108,6 +1108,7 @@ export const useChatStore = defineStore('chat', () => {
                   usage: event.usage,
                   checkCount: event.checkCount,
                   errorCode: event.errorCode,
+                  progressState: event.progressState,
                   checkedAt: event.checkedAt,
                 })
               } catch (e) {

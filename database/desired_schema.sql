@@ -3262,6 +3262,10 @@ CREATE TABLE IF NOT EXISTS effect_verification_check (
     -- valid=观测有效；error=观测失败/通道不可用；insufficient=负证据观测域有效性不足
     observation_status varchar(32) NOT NULL,
     observation_summary text,
+    -- 受控观测输出的 SHA-256 指纹；用于跨次进展判断，不保存额外原始内容。
+    observation_fingerprint varchar(64),
+    -- baseline=首个快照；in_progress=输出变化；stalled=超过停滞窗口无变化；inconclusive=无法形成进展判断。
+    progress_state varchar(32),
     -- evaluate_matcher 的人类可读证据串（期望/命中/最终判定）
     matcher_evidence text,
     check_verdict varchar(32),
@@ -3274,6 +3278,10 @@ CREATE TABLE IF NOT EXISTS effect_verification_check (
     CONSTRAINT ck_effect_check_observation CHECK (
         (observation_status)::text = ANY ((ARRAY['valid'::varchar, 'error'::varchar, 'insufficient'::varchar])::text[])
     ),
+    CONSTRAINT ck_effect_check_progress_state CHECK (
+        progress_state IS NULL
+        OR (progress_state)::text = ANY ((ARRAY['baseline'::varchar, 'in_progress'::varchar, 'stalled'::varchar, 'inconclusive'::varchar, 'achieved'::varchar])::text[])
+    ),
     CONSTRAINT ck_effect_check_verdict CHECK (
         check_verdict IS NULL
         OR (check_verdict)::text = ANY ((ARRAY['achieved'::varchar, 'not_achieved'::varchar, 'inconclusive'::varchar])::text[])
@@ -3281,6 +3289,8 @@ CREATE TABLE IF NOT EXISTS effect_verification_check (
 );
 
 COMMENT ON TABLE effect_verification_check IS '效果验证每次观测判定记录（append-only 时间线）；与 effect_verification 一对多';
+COMMENT ON COLUMN effect_verification_check.observation_fingerprint IS '受控观测输出 SHA-256；用于跨次进展比较';
+COMMENT ON COLUMN effect_verification_check.progress_state IS 'baseline/in_progress/stalled/inconclusive/achieved';
 
 CREATE INDEX IF NOT EXISTS idx_effect_check_verification ON effect_verification_check (verification_id, check_seq);
 
@@ -3562,3 +3572,45 @@ CREATE TABLE IF NOT EXISTS signal_failure_extraction (
 );
 CREATE INDEX IF NOT EXISTS idx_signal_failure_stage ON signal_failure_extraction(stage, resolved);
 CREATE INDEX IF NOT EXISTS idx_signal_failure_trace_id ON signal_failure_extraction(trace_id);
+
+-- Bundle 工厂版本元数据表
+-- 用于跟踪每个 Bundle 使用的工厂版本，支持自动迁移
+CREATE TABLE IF NOT EXISTS bundle_metadata (
+    id SERIAL PRIMARY KEY,
+    kbd_id INTEGER NOT NULL REFERENCES kbd_entry(id) ON DELETE CASCADE,
+    support_id VARCHAR(20) NOT NULL,
+    bundle_digest VARCHAR(128) NOT NULL,
+    factory_version VARCHAR(50) NOT NULL,
+    compiler_revision VARCHAR(100),
+    compiled_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    command_template TEXT,
+    parameters JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_bundle_metadata_kbd_digest UNIQUE (kbd_id, bundle_digest),
+    CONSTRAINT uq_bundle_metadata_support_digest UNIQUE (support_id, bundle_digest)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bundle_metadata_kbd_id ON bundle_metadata(kbd_id);
+CREATE INDEX IF NOT EXISTS idx_bundle_metadata_support_id ON bundle_metadata(support_id);
+CREATE INDEX IF NOT EXISTS idx_bundle_metadata_factory_version ON bundle_metadata(factory_version);
+CREATE INDEX IF NOT EXISTS idx_bundle_metadata_compiled_at ON bundle_metadata(compiled_at DESC);
+
+COMMENT ON TABLE bundle_metadata IS 'Bundle 工厂版本元数据表，用于跟踪和迁移';
+COMMENT ON COLUMN bundle_metadata.factory_version IS 'Bundle 工厂版本（如 v4-fixture-assets）';
+COMMENT ON COLUMN bundle_metadata.compiler_revision IS '编译器完整修订版本';
+COMMENT ON COLUMN bundle_metadata.compiled_at IS 'Bundle 编译时间';
+
+-- 触发器函数：自动更新 updated_at
+CREATE OR REPLACE FUNCTION update_bundle_metadata_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER update_bundle_metadata_updated_at
+    BEFORE UPDATE ON bundle_metadata
+    FOR EACH ROW
+    EXECUTE FUNCTION update_bundle_metadata_updated_at();

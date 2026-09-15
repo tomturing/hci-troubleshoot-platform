@@ -123,6 +123,8 @@ helm_equivalents:
     value_paths: [kbService.extractSignalsMaxTokens]
   EXTRACT_SIGNALS_FORMAT_MAX_ATTEMPTS:
     value_paths: [kbService.extractSignalsFormatMaxAttempts]
+  EXTRACT_SIGNALS_LLM_TIMEOUT:
+    value_paths: [kbService.extractSignalsLlmTimeoutSec]
   KBD_BATCH_STALE_AFTER_SECONDS:
     value_paths: [kbService.batchStaleAfterSeconds]
   LLM_ENABLE_THINKING:

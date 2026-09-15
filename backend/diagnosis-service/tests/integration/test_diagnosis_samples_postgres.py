@@ -417,12 +417,16 @@ async def test_five_samples_full_sync_publish_resources_and_reach_supported_diag
                 evidence,
             )
             # qkv_case_context 是语义入口上下文，不对应离线采集制品或证据评估；
-            # remediation 阶段的 qkv_effect 只在修复后执行，不能提前混入根因诊断。
+            # remediation 阶段的 qkv_effect 不参与 CDD 根因裁决，但离线报告会回放
+            # 同一 diagnosis_run 已完成的效果验证（无记录时为 UNKNOWN）。
             expected_evaluation_signal_ids = {
                 f"kbd:{item['runtime_support_id']}:{signal['id']}"
                 for signal in item["document"]["signals"]
                 if signal["acquire"]["tool"] != "qkv_case_context"
-                and (signal.get("orchestrate") or {}).get("phase", "diagnostic") == "diagnostic"
+                and (
+                    (signal.get("orchestrate") or {}).get("phase", "diagnostic") == "diagnostic"
+                    or signal["acquire"]["tool"] == "qkv_effect"
+                )
             }
             assert {str(evaluation["signal_id"]) for evaluation in evaluations} == expected_evaluation_signal_ids
             assert candidates[0]["cdd_state"] == "SUPPORTED", {

@@ -81,6 +81,24 @@ async def test_strong_source_guard_does_not_call_vector_service(status):
 
 
 @pytest.mark.asyncio
+async def test_matched_inconclusive_only_allows_guidance_candidates():
+    result = await resolve_candidates(
+        entries=[entry("executable"), entry("guidance", capability="guidance_only")],
+        context="镜像格式不支持",
+        strong_status="matched_inconclusive",
+    )
+
+    assert result["decision"] == "inconclusive"
+    assert result["reason"] == "guidance_only"
+    assert [candidate["kbd_id"] for candidate in result["candidates"]] == ["guidance"]
+    assert result["next_action"]["type"] == "manual_evidence_request"
+    assert any(
+        candidate["kbd_id"] == "executable" and candidate["reason"] == "strong_producer_matched"
+        for candidate in result["filtered_candidates"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_not_applicable_is_checked_against_authoritative_inventory():
     strong = {"id": "strong", "signals_json": {"signals": [{"acquire": {"tool": "qkv_task"}}]}}
     result = await resolve_candidates(

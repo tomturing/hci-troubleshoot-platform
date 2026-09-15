@@ -57,6 +57,15 @@ function effectVerdictLabel(verdict: string): string {
   return '观察不足'
 }
 
+function effectProgressLabel(state: string): string {
+  return {
+    baseline: '已建立首个观测快照',
+    in_progress: '观测输出仍在变化，任务仍在推进',
+    stalled: '观测输出持续未变化，任务已停滞',
+    achieved: '已达到预期效果',
+  }[state] || ''
+}
+
 const isUser = computed(() => props.message.role === 'user')
 const isSystem = computed(() => props.message.role === 'system')
 const isAssistant = computed(() => props.message.role === 'assistant')
@@ -1168,6 +1177,9 @@ async function handleToolCallReject() {
                   {{ effectVerdictLabel(String(message.metadata?.verdict || 'inconclusive')) }}
                 </el-tag>
                 <span class="vm-console-muted">复核 {{ message.metadata?.checkCount ?? 1 }} 次</span>
+                <span v-if="effectProgressLabel(String(message.metadata?.progressState || ''))" class="vm-console-muted">
+                  {{ effectProgressLabel(String(message.metadata?.progressState || '')) }}
+                </span>
               </div>
               <div v-if="String(message.metadata?.verdict) === 'not_achieved'" class="vm-console-review-hint">
                 ⚠ 操作已执行但未达到预期效果：已生成显式事实，建议返回重新诊断定位原因。

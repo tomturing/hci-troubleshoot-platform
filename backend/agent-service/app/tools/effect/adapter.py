@@ -13,6 +13,7 @@ not_achieved；观测失败/负证据不足/窗口耗尽=inconclusive——绝�
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import uuid
@@ -84,7 +85,8 @@ async def _run_observation(
     """委派观测原语执行，返回 (观测是否有效, 观测输出文本, 错误描述)。
 
     观测全部复用已批准的只读采集路径：alert/task/dialog 走 qkv_exec 受控参数
-    分支；vm_console 走专用截图适配器。绝不新开命令面。
+    分支；vm_console 走专用截图适配器；storage 快照走 qfk_storage 的受控 aCLI
+    路径。绝不新开命令面。
     """
 
     if observation_tool == "qkv_vm_console":
@@ -106,6 +108,37 @@ async def _run_observation(
         if not result.success:
             return False, "", result.error or result.error_code or "控制台观测失败"
         return True, _encode_observation_text(result.values), None
+
+    if observation_tool == "qfk_storage":
+        from app.tools.qfk.engine import qfk_exec
+        from app.tools.qfk.signal import BackendSignal
+
+        backend_signal = BackendSignal.from_dict(
+            {
+                "namespace": "storage",
+                "host": observation_args.get("host"),
+                "command": observation_args.get("command"),
+                "command_args": observation_args.get("command_args") or [],
+                "resource_keyword": observation_args.get("resource_keyword"),
+                "formatter": observation_args.get("formatter"),
+                "timeout": observation_args.get("timeout", 60),
+                "nonzero_exit_as_negative": observation_args.get("nonzero_exit_as_negative", False),
+                "matcher": None,
+            }
+        )
+        result = await qfk_exec(
+            backend_signal,
+            conversation_id=conversation_id,
+            node_ip=node_ip,
+            case_id=case_id,
+            exec_id=exec_id,
+            required_output_sources={"stdout"},
+            execution_mode="produce",
+            db_session_factory=db_session_factory,
+        )
+        if result.error:
+            return False, "", result.error
+        return True, result.complete_outputs.get("stdout") or result.raw_output, None
 
     from app.tools.qkv.engine import qkv_exec
 
@@ -148,6 +181,7 @@ async def _push_effect_result_card(
     usage: str,
     check_count: int,
     error_code: str | None,
+    progress_state: str | None,
     checked_at: str,
     trace_id: str,
 ) -> None:
@@ -177,6 +211,7 @@ async def _push_effect_result_card(
                     "usage": usage,
                     "check_count": max(1, check_count),
                     "error_code": error_code,
+                    "progress_state": progress_state,
                     "checked_at": checked_at,
                     "trace_id": trace_id,
                 },
@@ -277,6 +312,9 @@ async def run_effect_verification_signal(
     settle_seconds = int(expectation.get("settle_seconds") or 0)
     window_seconds = int(expectation.get("window_seconds") or 900)
     max_recheck = int(expectation.get("max_recheck") or 0)
+    progress = dict(expectation.get("progress") or {})
+    progress_enabled = progress.get("mode") == "change_required"
+    idle_after_seconds = int(progress.get("idle_after_seconds") or 0)
     usage = str(args.get("usage") or "remediation_verify")
     host = str(args.get("host") or "") or None
     timeout_seconds = int(args.get("timeout") or 60)
@@ -346,6 +384,9 @@ async def run_effect_verification_signal(
     last_error: str | None = None
     check_seq = 0
     total_checks = 1 + max(0, max_recheck)
+    previous_fingerprint: str | None = None
+    last_change_at: datetime | None = None
+    progress_state: str | None = None
 
     while check_seq < total_checks:
         if datetime.now(UTC) >= deadline:
@@ -384,7 +425,65 @@ async def run_effect_verification_signal(
         else:
             matcher_result = evaluate_matcher(matcher, observation_text)
             matched = _resolve_effect_match(matcher, observation_text, matcher_result)
-            if matched is None:
+            fingerprint = hashlib.sha256(observation_text.encode("utf-8", errors="replace")).hexdigest()
+            observed_at = datetime.now(UTC)
+            if matched is True:
+                verdict = "achieved"
+                if progress_enabled:
+                    progress_state = "achieved"
+                await _store_check(
+                    check_seq,
+                    trigger_source="scheduler",
+                    observation_status="valid",
+                    observation_summary=observation_text[:2000],
+                    matcher_evidence=matcher_result.evidence,
+                    check_verdict="achieved",
+                    progress_state=progress_state,
+                    observation_fingerprint=fingerprint if progress_enabled else None,
+                    trace_id=trace_id,
+                )
+                break
+            if progress_enabled:
+                if previous_fingerprint is None:
+                    previous_fingerprint = fingerprint
+                    last_change_at = observed_at
+                    progress_state = "baseline"
+                    verdict = "inconclusive"
+                elif fingerprint != previous_fingerprint:
+                    previous_fingerprint = fingerprint
+                    last_change_at = observed_at
+                    progress_state = "in_progress"
+                    verdict = "inconclusive"
+                elif last_change_at and (observed_at - last_change_at).total_seconds() >= idle_after_seconds:
+                    progress_state = "stalled"
+                    verdict = "not_achieved"
+                    await _store_check(
+                        check_seq,
+                        trigger_source="scheduler",
+                        observation_status="valid",
+                        observation_summary=observation_text[:2000],
+                        matcher_evidence=matcher_result.evidence,
+                        check_verdict="not_achieved",
+                        progress_state=progress_state,
+                        observation_fingerprint=fingerprint,
+                        trace_id=trace_id,
+                    )
+                    break
+                else:
+                    progress_state = "in_progress"
+                    verdict = "inconclusive"
+                await _store_check(
+                    check_seq,
+                    trigger_source="scheduler",
+                    observation_status="valid",
+                    observation_summary=observation_text[:2000],
+                    matcher_evidence=matcher_result.evidence,
+                    check_verdict="inconclusive",
+                    progress_state=progress_state,
+                    observation_fingerprint=fingerprint,
+                    trace_id=trace_id,
+                )
+            elif matched is None:
                 # 无法确定性求值（取值配置缺失等）：观察不足，禁止坍缩。
                 last_error_code = "NEGATIVE_EVIDENCE_INSUFFICIENT"
                 last_error = matcher_result.evidence or "matcher 无法确定性求值"
@@ -399,18 +498,6 @@ async def run_effect_verification_signal(
                     trace_id=trace_id,
                 )
                 verdict = "inconclusive"
-            elif matched:
-                verdict = "achieved"
-                await _store_check(
-                    check_seq,
-                    trigger_source="scheduler",
-                    observation_status="valid",
-                    observation_summary=observation_text[:2000],
-                    matcher_evidence=matcher_result.evidence,
-                    check_verdict="achieved",
-                    trace_id=trace_id,
-                )
-                break
             else:
                 verdict = "not_achieved"
                 await _store_check(
@@ -456,6 +543,7 @@ async def run_effect_verification_signal(
         usage=usage,
         check_count=check_seq,
         error_code=last_error_code,
+        progress_state=progress_state,
         checked_at=checked_at,
         trace_id=trace_id,
     )
@@ -484,6 +572,7 @@ async def run_effect_verification_signal(
             "verdict": verdict,
             "error_code": last_error_code,
             "check_count": check_seq,
+            "progress_state": progress_state,
             "catalog_version": acquisition.catalog_version,
         },
     )

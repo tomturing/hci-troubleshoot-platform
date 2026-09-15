@@ -21,6 +21,22 @@
 **HCI 智能排障平台** — AI 驱动的超融合基础设施运维故障诊断系统。
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
+- **Langfuse 子路径导航丢失修复（NEXT_PUBLIC_BASE_PATH 补齐）**（PR #1035）：
+  - **根因**：Langfuse (Next.js) 通过 Traefik `stripPrefix` 中间件挂载在 `/langfuse` 子路径，但容器内未配置 `NEXT_PUBLIC_BASE_PATH`，导致 Next.js 前端生成的内部链接（页面跳转、tRPC 请求）不含 `/langfuse` 前缀。首页直接访问 `/langfuse` 能命中 Ingress 规则，但点击项目/设置等页面后，浏览器 URL 变为 `/project/xxx` 或 `/api/trpc/...`，脱离 Ingress 路由范围导致导航丢失。
+  - **修复**：在 `deploy/helm/hci-platform-obs/templates/langfuse.yaml` 的 `langfuse-server` 环境变量中增加 `NEXT_PUBLIC_BASE_PATH=/langfuse`（subdomain 模式下不设置），使 Next.js 前端生成的内部链接（页面跳转、静态资源、tRPC 请求）自动带 `/langfuse` 前缀。**注意**：Next.js `basePath` 不影响 `/api/` 路由，健康端点始终在 `/api/public/health`，探针路径保持不变。Docker Compose 无需修改（本地 `localhost:13000` 无子路径前缀）。
+- **语义入口画像级联删除与切换清理提示**（PR #1027, #1028）：
+  - **背景**：`semantic_entry_profile` 与 `qkv_case_context` 信号必须成对共存（后端校验）。删除信号后画像成为孤儿，或切换唯一上下文信号时，用户不知道需要清理画像，导致保存失败。
+  - **修复**：
+    - **后端级联删除**：`_delete_signal_from_document` 删除 `qkv_case_context` 时自动移除孤儿画像；`_prepare_expert_draft_signals` 工具改走后自动移除孤儿画像。
+    - **前端清理提示**：唯一上下文信号切换时弹出确认对话框，提示用户将一并移除语义入口画像；`deleteSemanticEntry` 支持 `skipConfirm` 参数避免重复确认。
+    - **切换保留信号**：切换信号类型时**保留切换后的新信号**而非删除，仅清理语义入口画像，用户无需重新添加信号（PR #1028）。
+    - **删除按钮提示**：点击"删除语义入口"按钮时明确提示将级联删除信号。
+  - **测试守护**：新增测试用例验证级联删除行为与孤儿画像清理。
+- **QFK 日志时间窗口变量占位符被 T→空格替换破坏修复**：
+  - **根因**：`backend/shared/schemas/log_source_catalog.py` 的 `normalize_absolute_log_time()` 为把 ISO 日期时间的 `T` 分隔符转为 aCLI 接受的空格（`2026-09-04T10:00:00` → `2026-09-04 10:00:00`），对入参无条件执行 `value.replace("T", " ", 1)`。当 `time_window` 是变量占位符时，`{{DATE}}` 中变量名里的第一个 `T` 被替换成空格，编译出的命令模板变成 `-t '{{DA E}}'`，执行前变量替换永远无法命中。该函数同时被 agent-service 的 `LogKeywordHandler.build_commands()`（真实执行路径）、`shared/resolution/resolvers.py`（Shared Resolution Runtime）与 QFK 命令预览接口调用，所有变量名含 `T` 的时间占位符（`{{DATE}}`、`{{DATETIME}}` 等）均受影响；`{{END}}` 因不含 `T` 而未暴露。
+  - **修复**：占位符（匹配 `_PLACEHOLDER` 正则）直接原样返回，`T`→空格替换只对真实 ISO 日期时间生效；`validate_absolute_log_time()` 内部的同名替换无此问题（占位符分支已提前返回）。
+  - **测试守护**：在 `backend/kb-service/tests/test_log_source_catalog.py` 新增 `test_normalize_absolute_log_time_preserves_placeholders` 参数化回归测试，覆盖 `{{DATE}}`/`{{END}}`/`{{DATETIME}}` 原样保留与 ISO `T` 分隔符正常转换。
+  - **存量修复**：已编译落库的 Bundle 若包含被破坏的 `{{DA E}}`，通过 Admin UI「Bundle 迁移」功能触发重新编译即可修正。
 - **BridgeRelayExecutor 冷启动并发自愈与探针加固**：
   - **背景与根因**：在节点/集群统一重启（冷启动）时，Pod 并发启动导致 `agent-service` 连接 Redis 遭遇短暂网络时差；原 FastAPI `lifespan` 仅尝试一次建连，连接失败后进入降级逻辑，跳过了 `set_executor(...)` 全局注册，且缺乏运行时自愈机制。导致 `BridgeRelayExecutor` 永久置空，后续所有 KBD 关键信号排障（QKV/QFK）100% 报错“BridgeRelayExecutor 尚未初始化”；同时 `/v1/agent/health` 缺乏对执行器状态的可观测性感知。
   - **优化落地**：
@@ -28,11 +44,19 @@
     - **运行时双重检查锁惰性自愈**：在 `app/tools/acli/executor.py` 中引入线程/协程安全的 `get_or_init_executor()`，若执行器未注入，在首次工具或信号调用时自动读取配置重连 Redis 并完成全局自愈注册，打通唯一调用链日志追踪；QKV/QFK 与 `kbd_differential` 统一接入该获取器。
     - **探针可观测性暴露**：在 `/v1/agent/health` 中透传 `bridge_relay_executor` 状态，消除运维盲区。
 - **QKV 产出变量处理默认行为对齐高频场景（断言判断与关键字匹配）**：
-  - **背景与根因**：在 QKV 关键信号的变量后处理（`orchestrate.output_processing`）场景中，运维故障排查最频繁的诉求是对已采集的具体字段直接进行断言筛选（如检测任务报错、告警描述中包含特定故障关键字），极少在 QKV 中做变量二次派生；此前“处理方式”默认值为“派生变量”（`derive`），断言“判断类型”默认值为“数值阈值”（`threshold`），导致专家每次添加处理都必须进行多次下拉菜单切换，配置操作冗余。
+  - **背景与根因**：在 QKV 关键信号的变量后处理（`orchestrate.output_processing`）场景中，运维故障排查最频繁的诉求是对已采集的具体字段直接进行断言筛选（如检测任务报错、告警描述中包含特定故障关键字），极少在 QKV 中做变量二次派生；此前”处理方式”默认值为”派生变量”（`derive`），断言”判断类型”默认值为”数值阈值”（`threshold`），导致专家每次添加处理都必须进行多次下拉菜单切换，配置操作冗余。
   - **优化落地**：
-    - **处理方式默认值切换为断言判断**：`OutputProcessingEditor.vue` 中添加处理单元（`add`）默认 mode 调整为 `assert`，缺省渲染断言分支，并将下拉选项中“断言判断”优先展示。
+    - **处理方式默认值切换为断言判断**：`OutputProcessingEditor.vue` 中添加处理单元（`add`）默认 mode 调整为 `assert`，缺省渲染断言分支，并将下拉选项中”断言判断”优先展示。
     - **判断类型默认值切换为关键字匹配**：`defaultAssert()` 初始 matcher 类型调整为 `keyword`（`pattern: ''`, `mode: 'or'`, `expected: true`），同时对齐 `formatAssertSummary` 工具函数的缺省 matcher 类型。
     - **向后兼容与测试守护**：保留对既有 `derive` 存量配置与手动切换的完整兼容；更新并扩充前端单元测试，全量覆盖默认断言契约、类型推导与模式切换。
+- **QKV 生产者信号断言判断支持变量引用**（PR #1029）：
+  - **背景与根因**：QKV 生产者信号的 `output_processing` 断言判断中，关键字匹配、正则表达式、状态判定、数值阈值等 matcher 配置无法引用变量，导致两个问题：引用上游生产者产出的变量时报”未声明变量”错误；引用当前信号产出的变量时同样被误判。
+  - **修复**：
+    - **变量引用识别增强**：`derive_signal_requires` 函数新增收集断言判断 `match` 中的变量引用，确保关键字匹配的 pattern、正则表达式的 pattern、状态判定的期望状态、数值阈值的 value 等配置中的变量都能被正确识别为依赖。
+    - **跨信号变量引用支持**：`_validate_qfk_match_or_produces` 预先收集所有信号的产出变量，支持跨信号引用（上游生产者产出的变量）和同信号内引用（当前信号产出的变量）。
+    - **错误消息优化**：优化错误消息，准确反映变量引用位置。
+  - **影响范围**：支持在 keyword/regex/state/threshold/delta/trend 等 matcher 配置中引用变量；支持跨信号变量引用和同信号内变量引用。
+  - **测试守护**：新增两个测试用例验证修复效果，全部通过（44个测试用例）。
 - **JSON 取值路径门禁校验增强、友好报错与验证 Agent 自愈能力加固**：
   - **背景与根因**：以 16998 案例（sig_002）为例，LLM 由于预训练通用先验偏置，在 JSON 取值时习惯输出带 `$` 根节点前缀的路径（如 `$.conf.idle_duration`），而平台底层取值器（`_read_json_path`）采用受控点号路径规范（禁止 `$` 前缀，正确值为 `conf.idle_duration`）。原门禁体系未对 `extract.path` 语法进行校验，导致非法路径直通入库并在运行时报错崩溃；同时验证链路缺乏结构化友好报错与指引，自愈调度器存在自愈成功后被拒候选未清理的幽灵残留缺陷。
   - **加固落地**：
@@ -80,6 +104,29 @@
   - **修复**：
     - 在 `build_log_selector` 中支持从 `matcher.extract.rows.include` 自动提取关键词并编译为 `-E -k "k1|k2"`，并在 `exists` 模式下优先下推关键词粗筛。
     - 在 `review_signal_document` 编译期提取 `match` 与 `produces` 的 `rows.include`，注入 `qfk_log` 的 `keyword` 和 `extended_regex`，确保不同 Signal 生成精确的专属采集指令。
+- **QFK 日志关键字从 produces[].extract.rows.include 提取**：
+  - **根因**：KBD 44374 案例的信号将关键字放在 `produces[].extract.rows.include` 而非 `match` 中，但 `_compile_qfk_signal_to_command` 函数只从 `match.pattern` 提取关键字，导致 `qfk_log 必须提供关键字 matcher、resource_keyword 或 request_id` 报错。
+  - **修复**：在 `_compile_qfk_signal_to_command` 中新增从 `orchestrate.produces[].extract.rows.include` 提取 `filter_keywords` 的逻辑，与离线编译器 `offline_acquisition_compiler.py` 的行为对齐。
+- **Bundle 工厂版本迁移路由注册修复**：
+  - **根因**：`backend/diagnosis-service/app/routes/migration.py` 已创建但未在 `main.py` 中注册，导致 Admin UI Bundle 迁移功能报 Not Found。
+  - **修复**：在 `diagnosis-service/app/main.py` 中导入并注册 `migration.router`。
+- **Bundle 工厂版本迁移功能完整实现**：
+  - **根因**：Bundle 编译器升级后，已发布的 Bundle 不会自动更新。用户从已发布版本创建 draft 再发布时，只是复制旧的 Bundle 数据，没有触发重新编译，导致旧编译器的 bug（变量替换顺序错误）仍然存在。例如 KBD 26980 信号 10 失败（CONTRADICTED）而信号 5 成功（SATISFIED），根因是旧版编译器对 `{{VM}}` 变量的 `re.escape()` 处理顺序错误导致 `fixture_not_found`。
+  - **修复**：
+    - 在 `bundle_migration.py` 中实现 `get_outdated_bundles()` 查询 `bundle_metadata` 表获取工厂版本过期的 Bundle 列表。
+    - 实现 `migrate_bundle()` 单个迁移、`batch_migrate_bundles()` 批量迁移（支持 `dry_run` 预览模式）、`check_factory_version_health()` 健康状态检查。
+    - 在 `offline_resource_sync_service.py` 的 `_publish_change()` 方法中，当发布 KBD Collector 时自动调用 `_record_bundle_metadata()` 记录 `factory_version` 到 `bundle_metadata` 表。
+    - 在 `diagnosis-service/app/main.py` 中注册 `migration.router`。
+    - 前端 `BundleFactoryView.vue` 更新 TypeScript 接口匹配新 API 响应格式（`current_factory_version`、`outdated_bundles`、`outdated_bundle_details`）。
+  - **效果**：用户可以通过 Admin UI 的"Bundle 迁移"功能查看过时 Bundle 列表（包含 KBD ID、Support ID、当前版本、期望版本），并选择预览或执行迁移。迁移会触发 Bundle 重新编译，使其使用最新的编译器版本。
+- **Bundle 迁移 API Gateway 路由代理修复**：
+  - **根因**：前端 BundleFactoryView.vue 使用 `/api/hci-sim/v1/bundle-migration/*` 路径访问 Bundle 迁移 API，但该路由未在 API Gateway 中注册，导致 404 错误。
+  - **修复**：在 `backend/api-gateway/app/routes/simulations.py` 中添加 bundle-migration 路由代理，将 `/api/hci-sim/v1/bundle-migration/*` 转发到 diagnosis-service 的 `/api/v1/bundle-migration/*`。
+  - **效果**：Admin UI 可以正常访问 Bundle 迁移 API。
+- **信号匹配器评估详细日志记录**：
+  - **根因**：KBD 仿真执行时，信号状态为 CONTRADICTED 的原因难以定位，缺少详细的匹配日志，无法看到关键字命中情况和期望值。
+  - **修复**：在 `kbd_differential.py` 中添加 `matcher_evaluation_result` 事件日志，记录信号 ID、匹配器类型、期望结果、最终判定、命中关键字、原始输出预览等。
+  - **效果**：通过日志可以清楚看到目标关键字、实际命中关键字、原始命中结果、期望 expected 和最终判定，便于排查信号状态与预期矛盾的原因。
 - **QFK AI 提取 value_mode 配置过滤与 Langfuse 可观测性集成**（PR #903）：
   - **根因**：AI 提取调用确定性 Extractor 获取候选行时，`_deterministic_spec` 未过滤 `value_mode` 配置，导致 `extract_output_values` 尝试将整行文本转换为数值类型而抛出 `QFK_TYPE_CAST_FAILED`，AI 提取在 0.8ms 内立即失败，根本没有机会调用 LLM。
   - **修复**：
@@ -779,3 +826,4 @@ def correct():
 - **根因**：`markdownify` 在将嵌套列表内的截图 span 转为 blockquote 时，携带了 CommonMark 规范的列表缩进（属于样式信息），污染了 content_md，导致前端解析失败
 - **修复**：data-pipeline 改为只取语义文本（新增 `_html_to_semantic_text` 作为唯一权威提取器），content_md 不再由 pipeline 生成，改由后端 `rebuild_content_md()` 统一渲染——截图块格式由单一权威函数保证，彻底根除 markdownify 缩进污染
 - **结论**：data-pipeline 必须对输出做**格式规范化**（只输出语义文本 + `![img:N]` 占位符），任何来自 markdownify 或源 HTML 的"意外格式"都不应透传到 content_md
+
