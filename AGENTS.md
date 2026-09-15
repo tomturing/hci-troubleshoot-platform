@@ -21,6 +21,12 @@
 **HCI 智能排障平台** — AI 驱动的超融合基础设施运维故障诊断系统。
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
+- **INCONCLUSIVE 回复死循环修复**：
+  - **根因**：`_semantic_guidance_messages()` 中 `manual_evidence_request` 列表无条件全量输出，未检查用户是否已在对话中提供了对应信息。即使用户按请求提供了 ISO 文件名、SHA1、磁盘控制器类型等信息，系统仍逐字重复同一条"请求补充证据"回复，进入死循环。工单 Q2026091523611、Q2026091524854 均复现。
+  - **修复**：
+    - 新增 `_evidence_request_satisfied()` 方法，使用字符 bigram 匹配策略（无需中文分词）检测用户消息中是否已包含 evidence request 要求的信息；`_semantic_guidance_messages()` 过滤掉已满足的请求项。
+    - 新增循环中断机制：快捷路径中统计 guidance marker 出现次数，≥3 轮用户补充后仍无法推进时，输出确认收到 + 建议转人工的消息，不再重复请求。
+  - **测试守护**：新增 4 个单元测试覆盖 bigram 匹配、已提供过滤、无关消息不误判等场景。
 - **Langfuse 子路径导航丢失修复（NEXT_PUBLIC_BASE_PATH 补齐）**（PR #1035）：
   - **根因**：Langfuse (Next.js) 通过 Traefik `stripPrefix` 中间件挂载在 `/langfuse` 子路径，但容器内未配置 `NEXT_PUBLIC_BASE_PATH`，导致 Next.js 前端生成的内部链接（页面跳转、tRPC 请求）不含 `/langfuse` 前缀。首页直接访问 `/langfuse` 能命中 Ingress 规则，但点击项目/设置等页面后，浏览器 URL 变为 `/project/xxx` 或 `/api/trpc/...`，脱离 Ingress 路由范围导致导航丢失。
   - **修复**：在 `deploy/helm/hci-platform-obs/templates/langfuse.yaml` 的 `langfuse-server` 环境变量中增加 `NEXT_PUBLIC_BASE_PATH=/langfuse`（subdomain 模式下不设置），使 Next.js 前端生成的内部链接（页面跳转、静态资源、tRPC 请求）自动带 `/langfuse` 前缀。**注意**：Next.js `basePath` 不影响 `/api/` 路由，健康端点始终在 `/api/public/health`，探针路径保持不变。Docker Compose 无需修改（本地 `localhost:13000` 无子路径前缀）。

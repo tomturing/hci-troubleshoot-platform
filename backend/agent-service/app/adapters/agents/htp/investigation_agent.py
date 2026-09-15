@@ -393,6 +393,28 @@ class InvestigationAgent(BaseAgent):
         # 已进入 guidance_only 人工补证据阶段时，后续用户补充不应反复执行同分类
         # 的全量 CDD。该快捷路径只会返回人工指引，绝不据此执行语义候选命令。
         if semantic_cases and self._semantic_guidance_pending(messages):
+            # 循环中断：用户已补充多轮信息但系统仍无法推进时，确认收到并升级人工
+            guidance_round = sum(
+                1
+                for m in messages
+                if m.get("role") == "assistant" and "当前只能请求补充证据：" in str(m.get("content") or "")
+            )
+            if guidance_round >= 3:
+                yield AgentTextChunk(
+                    content="已收到您补充的信息，但当前知识库仍无法自动确认根因。建议转人工复核，或提供更详细的故障截图。"
+                )
+                yield AgentEscalation(
+                    reason="INCONCLUSIVE 循环中断：用户已补充多轮信息但 CDD 仍无法确认",
+                    context={
+                        "category_id": category_id,
+                        "snapshot_id": snapshot_id,
+                        "session_id": session_id,
+                        "case_id": case_id,
+                        "guidance_rounds": guidance_round,
+                    },
+                )
+                return
+
             semantic_result = await self._kb_client.resolve_semantic_entry(
                 category_id=category_id,
                 case_context=self._build_semantic_context(messages, env_context),
@@ -1400,6 +1422,48 @@ class InvestigationAgent(BaseAgent):
             for message in messages[last_question_index + 1 :]
         )
 
+    # 中文功能字：在 bigram 匹配中视为无信息量，至少需要一个非功能字才算有意义匹配
+    _CN_STOP_CHARS = set(
+        "请提供确认是否以及对应的了和与所用完整详细具体一下什么哪个需要"
+        "如将把被让给从到在有没不也都很还再又才就而但如果因为所以"
+    )
+
+    @classmethod
+    def _evidence_request_satisfied(cls, messages: list[dict], request: str) -> bool:
+        """检测用户消息中是否已提供该 evidence request 要求的信息。
+
+        使用字符 bigram 匹配策略：从 request 提取所有相邻字符对，过滤掉纯功能字
+        组合，然后检查用户消息中命中了多少。至少 2 个有意义 bigram 命中才认为
+        用户已提供对应信息。此策略无需中文分词即可覆盖中英文混合场景。
+        """
+
+        user_messages = [
+            str(m.get("content") or "").strip()
+            for m in messages
+            if m.get("role") == "user"
+            and str(m.get("content") or "").strip()
+            and not _RETRIEVAL_CONTROL_RE.fullmatch(str(m.get("content") or "").strip())
+        ]
+        if not user_messages:
+            return False
+
+        # 从 request 提取字符 bigram，过滤纯功能字组合
+        request_lower = request.lower()
+        distinctive_bigrams = set()
+        for i in range(len(request_lower) - 1):
+            bg = request_lower[i : i + 2]
+            # 至少一个字符不是功能字才视为有意义 bigram
+            if any(c not in cls._CN_STOP_CHARS for c in bg):
+                distinctive_bigrams.add(bg)
+
+        if not distinctive_bigrams:
+            return False
+
+        # 合并所有用户消息，检查 bigram 命中数
+        combined = " ".join(user_messages).lower()
+        matched = sum(1 for bg in distinctive_bigrams if bg in combined)
+        return matched >= 2
+
     @classmethod
     def _semantic_guidance_messages(cls, messages: list[dict], semantic_result: dict) -> list[str]:
         """构造下一轮人工补证据文本，避免重复提问或混入 CDD 报告。"""
@@ -1412,11 +1476,13 @@ class InvestigationAgent(BaseAgent):
         outputs: list[str] = []
         if question and not question_answered:
             outputs.append("目前无法确认根因。" + question)
+        # 过滤用户已提供的 evidence request，避免重复索要已知信息
         requests = [
             request.strip()
             for item in semantic_result.get("candidates") or []
             for request in (item.get("manual_evidence_request") or [])
             if isinstance(request, str) and request.strip()
+            and not cls._evidence_request_satisfied(messages, request.strip())
         ]
         if requests:
             outputs.append("当前只能请求补充证据：" + "；".join(dict.fromkeys(requests)))

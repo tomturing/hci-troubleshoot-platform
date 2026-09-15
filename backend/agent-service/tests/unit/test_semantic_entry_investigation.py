@@ -117,6 +117,66 @@ def test_answered_semantic_question_advances_even_after_prior_retries():
     assert result == ["当前只能请求补充证据：请提供安装失败截图"]
 
 
+def test_evidence_request_satisfied_by_user_keywords():
+    """用户消息中包含 evidence request 的多个关键词时，视为已满足。"""
+    messages = [
+        {"role": "assistant", "content": "当前只能请求补充证据：请提供所用 ISO 的文件名、SHA1 和文件大小"},
+        {"role": "user", "content": "iso文件名是test.iso、sha1是643af07a077069e7c0784986eab7796e9a1fb854、文件大小1G"},
+    ]
+    assert InvestigationAgent._evidence_request_satisfied(messages, "请提供所用 ISO 的文件名、SHA1 和文件大小")
+
+
+def test_evidence_request_satisfied_controller_driver():
+    """用户提到磁盘控制器和驱动时，满足对应 evidence request。"""
+    messages = [
+        {"role": "assistant", "content": "当前只能请求补充证据：请确认虚拟磁盘控制器类型以及是否已加载对应驱动"},
+        {"role": "user", "content": "虚拟磁盘控制器类型是virtio并且已经加载virtio驱动"},
+    ]
+    assert InvestigationAgent._evidence_request_satisfied(
+        messages, "请确认虚拟磁盘控制器类型以及是否已加载对应驱动（如 VirtIO）"
+    )
+
+
+def test_evidence_request_not_satisfied_when_no_match():
+    """用户消息与 evidence request 无关时，不应标记为已满足。"""
+    messages = [
+        {"role": "assistant", "content": "当前只能请求补充证据：请提供安装失败截图"},
+        {"role": "user", "content": "你好，请问这个问题怎么解决"},
+    ]
+    assert not InvestigationAgent._evidence_request_satisfied(messages, "请提供安装失败界面的完整报错截图")
+
+
+def test_guidance_filters_already_provided_evidence():
+    """用户已提供的 evidence request 不应重复出现在 guidance 输出中。"""
+    question = '当前报错是否为“缺少介质驱动程序”？'
+    result = InvestigationAgent._semantic_guidance_messages(
+        [
+            {"role": "assistant", "content": "目前无法确认根因。" + question},
+            {"role": "assistant", "content": "当前只能请求补充证据：请提供 ISO 文件名；请提供截图；请确认磁盘控制器"},
+            {"role": "user", "content": "iso文件名是test.iso，sha1是abc123"},
+        ],
+        {
+            "next_action": {"question": question},
+            "candidates": [
+                {
+                    "manual_evidence_request": [
+                        "请提供所用 ISO 的文件名、SHA1 和文件大小",
+                        "请提供安装失败界面的完整报错截图",
+                        "请确认虚拟磁盘控制器类型以及是否已加载对应驱动",
+                    ]
+                }
+            ],
+        },
+    )
+    # question 已被回答（用户消息包含引号内关键词），ISO request 也已满足
+    # 只剩"截图"和"控制器"未被满足
+    assert len(result) == 1
+    assert "当前只能请求补充证据" in result[0]
+    assert "ISO" not in result[0]  # 已被用户满足，应被过滤
+    assert "截图" in result[0]  # 未满足，应保留
+    assert "控制器" in result[0]  # 未满足，应保留
+
+
 @pytest.mark.asyncio
 async def test_matched_strong_history_still_exposes_guidance_after_inconclusive_cdd(monkeypatch):
     """无关历史任务命中不能吞掉安全的 guidance_only 人工补证据路径。"""
