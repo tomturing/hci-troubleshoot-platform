@@ -1832,6 +1832,74 @@ async function previewSemanticProfile(profile: SemanticEntryProfile, context: Re
   if (!resp.ok) throw buildSignalRequestError(body, resp.status, resp.headers)
   return body
 }
+async function deleteSemanticEntry(options?: { skipConfirm?: boolean }): Promise<void> {
+  // 语义入口成对契约：删除画像必须连同 qkv_case_context 信号一起移除，
+  // 否则保存会被”只保留其中一项”的 SIGNAL_FIELD_INVALID 门禁拒绝。
+  if (!detailEntry.value || semanticSaving.value) return
+  const doc = JSON.parse(JSON.stringify(detailEntry.value.signals_json || { schema_version: 2, signals: [] })) as SignalsDoc
+  const signals = doc.signals || []
+  const entryIndex = signals.findIndex((signal) => sigTool(signal) === 'qkv_case_context')
+  const entrySignal = entryIndex >= 0 ? signals[entryIndex] : null
+  const signalId = entrySignal ? signalStableId(entrySignal, entryIndex) : ''
+
+  // 如果不是跳过确认，则需要用户确认
+  if (!options?.skipConfirm) {
+    await ElMessageBox.confirm(
+      '将同时删除语义入口画像与 qkv_case_context 信号（成对契约要求二者一起移除）。原始 KBD 正文和截图证据不受影响。',
+      '删除语义入口',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  }
+
+  semanticSaving.value = true
+  try {
+    // 情况一：画像为孤儿（信号已被移除）或信号仍是未保存草稿 → 本地成对移除后整稿保存
+    if (!entrySignal || localSignalIds.value.has(signalId)) {
+      doc.signals = signals.filter((signal) => sigTool(signal) !== 'qkv_case_context')
+      delete (doc as Partial<SignalsDoc>).semantic_entry_profile
+      if (entrySignal) {
+        discardStagedSignalEdit(signalId)
+        unmarkLocalSignal(signalId)
+      }
+      await persistSignalList(doc.signals, '语义入口已删除', [], doc)
+      return
+    }
+    // 情况二：信号已写入权威工作稿 → 走 delete_signal_id，后端级联移除画像
+    const annotation: ChangeAnnotation = {
+      signal_id: signalId,
+      reason_code: 'redundant_signal',
+      note: '级联删除语义入口画像（qkv_case_context 与 semantic_entry_profile 成对移除）',
+    }
+    const resp = await fetch(kbdEditEndpoint(detailEntry.value), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify({
+        delete_signal_id: signalId,
+        change_annotations: [annotation],
+        lock_version: detailEntry.value.lock_version,
+      }),
+    })
+    const responseBody = await resp.json().catch(() => ({}))
+    if (!resp.ok) throw buildSignalRequestError(responseBody, resp.status, resp.headers)
+    const serverDoc = (responseBody?.payload?.signals_json || responseBody?.signals_json) as SignalsDoc
+    if (!serverDoc) throw new Error('服务端未返回删除后的关键信号工作稿')
+    applyMaintenanceResponse(detailEntry.value, responseBody)
+    detailEntry.value.lock_version = responseBody?.lock_version ?? detailEntry.value.lock_version
+    detailEntry.value.signals_json = serverDoc
+    const entryListIndex = entries.value.findIndex((entry) => entry.id === detailEntry.value!.id)
+    if (entryListIndex !== -1) entries.value[entryListIndex].signals_json = serverDoc
+    void fetchRevisionState(detailEntry.value.id)
+    await reviewCurrentSignals({ silent: true })
+    ElMessage.success('语义入口已删除')
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    await focusSignalRequestError(error)
+    ElMessage.error(error instanceof Error ? `删除失败：${error.message}` : '删除失败，请重试')
+  } finally {
+    semanticSaving.value = false
+  }
+}
+
 async function saveSemanticProfile(profile: SemanticEntryProfile): Promise<void> {
   if (!detailEntry.value || semanticSaving.value) return
   semanticSaving.value = true
@@ -2260,6 +2328,8 @@ function buildSignalForTool(tool: string, previous?: SignalV2): SignalV2 {
   const args = schemaDefaultArgs(tool)
   if (typeof oldArgs.instruction === 'string') args.instruction = oldArgs.instruction
   if (producer && typeof oldArgs.keyword === 'string') args.keyword = oldArgs.keyword
+  // qkv_task/qkv_alert/qkv_dialog 必须有 keyword，从 qkv_case_context 切换时需要初始化默认值
+  if (['qkv_task', 'qkv_alert', 'qkv_dialog'].includes(tool) && !args.keyword) args.keyword = ''
   if (tool === 'qkv_task') args.is_failed = true
   if (tool === 'qkv_dialog') {
     args.paths = ['/sf/log/today', '/sf/log/today/vt']
@@ -2305,6 +2375,10 @@ function buildSignalForTool(tool: string, previous?: SignalV2): SignalV2 {
   // host 作为显式的默认选项，便于专家把已选择的 aCLI 容器恢复为宿主机。
   if (tool === 'qfk_system') args.container = 'host'
   if (tool === 'qfk_service') args.action = 'status'
+  // 消费者信号 qfk_hardware/qfk_network/qfk_platform/qfk_storage/qfk_vm 必须有 command
+  if (['qfk_hardware', 'qfk_network', 'qfk_platform', 'qfk_storage', 'qfk_vm'].includes(tool) && !args.command) {
+    args.command = ''
+  }
   return {
     id: previous?.id || createSignalId(),
     role: previous?.role || 'should',
@@ -2325,7 +2399,61 @@ function buildSignalForTool(tool: string, previous?: SignalV2): SignalV2 {
   }
 }
 
-function onSignalToolChange(tool: string) {
+async function onSignalToolChange(tool: string): Promise<void> {
+  // 检测是否需要清理语义入口画像：唯一的 qkv_case_context 信号要切换为其他信号
+  const oldTool = sigTool(signalEditDraft.value)
+  if (oldTool === 'qkv_case_context' && tool !== 'qkv_case_context') {
+    const profile = (detailEntry.value?.signals_json as SignalsDoc | undefined)?.semantic_entry_profile
+    // 检查是否是唯一的 qkv_case_context 信号
+    const contextSignals = signalList.value.filter((signal) => sigTool(signal) === 'qkv_case_context')
+    const isOnlyContextSignal = contextSignals.length === 1 && editingSignalIndex.value !== null
+      && sigTool(signalList.value[editingSignalIndex.value]) === 'qkv_case_context'
+
+    if (profile && isOnlyContextSignal) {
+      // 弹出确认对话框，提示用户需要清理语义入口画像
+      try {
+        await ElMessageBox.confirm(
+          '当前信号是唯一的"工单上下文"信号，切换类型后将一并移除语义入口画像（成对契约要求二者共存）。信号类型将切换为新类型。原始 KBD 正文和截图证据不受影响。',
+          '确认清理语义入口画像',
+          { type: 'warning', confirmButtonText: '确认切换', cancelButtonText: '取消' },
+        )
+        // 用户确认：
+        // 1. 先切换信号类型
+        signalEditDraft.value = buildSignalForTool(tool, signalEditDraft.value)
+        if (tool.startsWith('qfk')) syncDraftRequires()
+
+        // 2. 保存新的信号列表（包含切换后的信号）和空的画像
+        const doc = JSON.parse(JSON.stringify(detailEntry.value.signals_json)) as SignalsDoc
+        // 用切换后的新信号替换原来的 qkv_case_context 信号
+        const newSignalList = signalList.value.map((signal, index) => {
+          if (index === editingSignalIndex.value) {
+            return cloneSignal(signalEditDraft.value)
+          }
+          return cloneSignal(signal)
+        })
+        doc.signals = newSignalList
+        // 清理语义入口画像
+        delete (doc as Partial<SignalsDoc>).semantic_entry_profile
+
+        // 保存
+        await persistSignalList(doc.signals, '语义入口画像已清理，信号类型已切换', [], doc)
+
+        // 关闭编辑弹窗
+        cancelEditSignal()
+        return
+      } catch (error) {
+        // 用户取消：保持原信号类型不变
+        if (error === 'cancel' || error === 'close') return
+        // 其他错误：显示错误信息
+        ElMessage.error(error instanceof Error ? error.message : '清理语义入口失败')
+        return
+      }
+    } else if (profile) {
+      // 有画像但不只有这一条信号（理论上不应该存在，但做防御性处理）
+      const msg = '检测到语义入口画像存在，但当前信号不是唯一的上下文信号。请检查信号配置或手动删除语义入口画像。'
+      ElMessage.warning(msg)
+    }
+  }
   signalEditDraft.value = buildSignalForTool(tool, signalEditDraft.value)
   if (tool.startsWith('qfk')) syncDraftRequires()
 }
@@ -2333,6 +2461,28 @@ function onSignalToolChange(tool: string) {
 function onEffectUsageChange(value: string): void {
   if (!signalEditDraft.value.orchestrate) return
   signalEditDraft.value.orchestrate.phase = value === 'symptom_confirm' ? 'diagnostic' : 'remediation'
+}
+
+function onEffectProgressChange(enabled: boolean): void {
+  const expectation = signalEditDraft.value?.acquire?.args?.expectation
+  if (!expectation || typeof expectation !== 'object') return
+  if (enabled) {
+    expectation.progress = {
+      mode: 'change_required',
+      idle_after_seconds: 120,
+    }
+    expectation.max_recheck = Math.max(Number(expectation.max_recheck || 0), 1)
+  } else {
+    delete expectation.progress
+  }
+}
+
+function onEffectObservationToolChange(tool: string): void {
+  const expectation = signalEditDraft.value?.acquire?.args?.expectation
+  if (!expectation || typeof expectation !== 'object') return
+  expectation.observation = tool === 'qfk_storage'
+    ? { tool, args: { command: '', command_args: [], resource_keyword: '', host: '{{HOST}}', timeout: 60 } }
+    : { tool, args: { keyword: '' } }
 }
 
 function supportsQfkFormatter(tool: string): boolean {
@@ -4746,10 +4896,16 @@ onUnmounted(() => clearBatchPollTimer())
           </div>
 
           <section v-if="activeSemanticProfile" class="semantic-entry-contract">
-            <el-alert
-              type="info" :closable="false" show-icon
-              :title="`语义入口契约：${semanticCapabilityLabel(activeSemanticProfile.diagnosis_capability)}。仅在任务、告警、弹框均确认未命中后，才按工单描述参与候选。`"
-            />
+            <div class="semantic-entry-header">
+              <el-alert
+                type="info" :closable="false" show-icon
+                :title="`语义入口契约：${semanticCapabilityLabel(activeSemanticProfile.diagnosis_capability)}。仅在任务、告警、弹框均确认未命中后，才按工单描述参与候选。`"
+              />
+              <el-button
+                size="small" type="danger" plain :loading="semanticSaving" :disabled="!canEditCurrent"
+                @click="deleteSemanticEntry"
+              >删除语义入口</el-button>
+            </div>
             <el-descriptions :column="2" border size="small" class="semantic-entry-summary">
               <el-descriptions-item label="入口信号">
                 <code>qkv_case_context</code>（只读取工单事实，不执行命令、不推断目标）
@@ -5028,15 +5184,21 @@ onUnmounted(() => clearBatchPollTimer())
                     </template>
                     <template v-else-if="sigTool(signalEditDraft) === 'qkv_effect'">
                       <div class="signal-row"><span class="signal-k">使用模式</span><el-select v-model="signalEditDraft.acquire.args.usage" size="small" @change="onEffectUsageChange"><el-option label="操作后效果验证" value="remediation_verify" /><el-option label="S1 症状确认" value="symptom_confirm" /></el-select></div>
-                      <div class="signal-row"><span class="signal-k">观测通道</span><el-select v-model="signalEditDraft.acquire.args.expectation.observation.tool" size="small"><el-option label="告警再查询 qkv_alert" value="qkv_alert" /><el-option label="任务再查询 qkv_task" value="qkv_task" /><el-option label="弹框再查询 qkv_dialog" value="qkv_dialog" /><el-option label="控制台画面 qkv_vm_console" value="qkv_vm_console" /></el-select></div>
-                      <div class="signal-row"><span class="signal-k">观测关键字</span><el-input v-model="signalEditDraft.acquire.args.expectation.observation.args.keyword" size="small" placeholder="观测原语查询关键字，如 内存不足" /></div>
+                      <div class="signal-row"><span class="signal-k">观测通道</span><el-select :model-value="signalEditDraft.acquire.args.expectation.observation.tool" size="small" @change="onEffectObservationToolChange"><el-option label="告警再查询 qkv_alert" value="qkv_alert" /><el-option label="任务再查询 qkv_task" value="qkv_task" /><el-option label="弹框再查询 qkv_dialog" value="qkv_dialog" /><el-option label="控制台画面 qkv_vm_console" value="qkv_vm_console" /><el-option label="存储快照 qfk_storage" value="qfk_storage" /></el-select></div>
+                      <template v-if="signalEditDraft.acquire.args.expectation.observation.tool === 'qfk_storage'">
+                        <div class="signal-row"><span class="signal-k">存储查询命令</span><el-input v-model="signalEditDraft.acquire.args.expectation.observation.args.command" size="small" placeholder="受控 acli storage 子命令" /></div>
+                        <div class="signal-row"><span class="signal-k">资源选择器</span><el-input v-model="signalEditDraft.acquire.args.expectation.observation.args.resource_keyword" size="small" placeholder="迁移目标存储对象" /></div>
+                      </template>
+                      <div v-else class="signal-row"><span class="signal-k">观测关键字</span><el-input v-model="signalEditDraft.acquire.args.expectation.observation.args.keyword" size="small" placeholder="观测原语查询关键字，如 内存不足" /></div>
                       <div class="signal-row"><span class="signal-k">判定方式</span><el-select v-model="signalEditDraft.acquire.args.expectation.matcher.type" size="small"><el-option label="存在性 exists" value="exists" /><el-option label="布尔值 boolean" value="boolean" /><el-option label="关键字 keyword" value="keyword" /><el-option label="正则 regex" value="regex" /><el-option label="状态 state" value="state" /><el-option label="数值阈值 threshold" value="threshold" /><el-option label="差值 delta" value="delta" /><el-option label="趋势 trend" value="trend" /></el-select></div>
                       <div class="signal-row"><span class="signal-k">期望方向</span><el-select v-model="signalEditDraft.acquire.args.expectation.matcher.expected" size="small"><el-option label="应出现（expected=true）" :value="true" /><el-option label="应消失（expected=false，负证据）" :value="false" /></el-select></div>
                       <div class="signal-row"><span class="signal-k">稳定窗口（秒）</span><el-input-number v-model="signalEditDraft.acquire.args.expectation.settle_seconds" :min="0" :max="3600" size="small" /></div>
                       <div class="signal-row"><span class="signal-k">复核窗口（秒）</span><el-input-number v-model="signalEditDraft.acquire.args.expectation.window_seconds" :min="60" :max="86400" size="small" /></div>
                       <div class="signal-row"><span class="signal-k">复核次数</span><el-input-number v-model="signalEditDraft.acquire.args.expectation.max_recheck" :min="0" :max="5" size="small" /></div>
+                      <div class="signal-row"><span class="signal-k">监控输出变化</span><el-switch :model-value="Boolean(signalEditDraft.acquire.args.expectation.progress)" @change="onEffectProgressChange" /></div>
+                      <div v-if="signalEditDraft.acquire.args.expectation.progress" class="signal-row"><span class="signal-k">停滞窗口（秒）</span><el-input-number v-model="signalEditDraft.acquire.args.expectation.progress.idle_after_seconds" :min="30" :max="signalEditDraft.acquire.args.expectation.window_seconds" size="small" /></div>
                       <div class="signal-row"><span class="signal-k">目标宿主机</span><el-input v-model="signalEditDraft.acquire.args.host" size="small" placeholder="{{HOST}} 或 Inventory 规范化节点标识" /></div>
-                      <div class="field-hint">条件型效果验证生产者：期望必须是结构化契约数据（封闭观测通道 + 封闭 matcher + 受限窗口），观测委派已批准的只读原语。三态判定 achieved/not_achieved/inconclusive 由平台合成，观察不足禁止坍缩为已恢复；不得作为 KBD 唯一生产者。编辑器不提供自由文本判定、命令或脚本字段。</div>
+                      <div class="field-hint">启用“监控输出变化”后，平台只比较已批准观测原语的输出指纹：首次为基线，变化表示任务仍在推进，连续无变化超过停滞窗口才判定 stalled。它不开放目录、路径或 Shell 字段；要监控存储文件须先有受控存储快照观测原语。</div>
                     </template>
                     <template v-else-if="sigTool(signalEditDraft) === 'qkv_case_context'">
                       <el-alert type="info" :closable="false" show-icon title="工单上下文信号不执行任何命令，也不产出 HOST、VM_ID 等目标变量。请在下方“语义入口画像”维护症状、正向锚点和补证据指引。" />
@@ -6413,6 +6575,16 @@ onUnmounted(() => clearBatchPollTimer())
   border: 1px solid var(--el-color-info-light-5);
   border-radius: 6px;
   background: var(--el-color-info-light-9);
+}
+
+.semantic-entry-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.semantic-entry-header .el-alert {
+  flex: 1;
 }
 
 .semantic-entry-summary {

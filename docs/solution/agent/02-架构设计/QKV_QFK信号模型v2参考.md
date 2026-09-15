@@ -1,12 +1,17 @@
 ---
-status: active
+status: superseded
 category: solution
 audience: developer
 last_updated: 2026-07-27
 owner: team
 ---
 
-# QKV/QFK 信号模型 v2 参考
+# QKV/QFK 信号模型 v2 参考（迁移阅读）
+
+> **此文档不再是现行字段权威。** 当前参数、枚举和默认值以
+> [acquirer_args.py](../../../../backend/shared/schemas/acquirer_args.py)、
+> `signal.v2.schema.json` 与 [关键信号架构设计](../../knowledge-base/关键信号架构设计.md)
+> 为准。本文保留 v2 迁移背景和历史示例，不应用于新增配置。
 
 > 版本：v2.1 ｜ 日期：2026-07-27
 > 权威契约：`backend/shared/schemas/signals/signal.v2.schema.json`

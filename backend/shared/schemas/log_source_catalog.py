@@ -245,6 +245,11 @@ def normalize_absolute_log_time(value: str | None) -> str | None:
     ok, error = validate_absolute_log_time(value)
     if not ok:
         raise ValueError(error)
+    # 变量占位符（如 ``{{DATE}}``）必须原样保留：T→空格替换只针对 ISO 日期时间的
+    # 分隔符 ``T``。若对占位符也执行替换，``{{DATE}}`` 中变量名里的第一个 ``T`` 会被
+    # 破坏成 ``{{DA E}}``，导致执行前变量替换永远无法命中，命令带着非法占位符下发。
+    if re.fullmatch(_PLACEHOLDER, value):
+        return value
     return value.replace("T", " ", 1)
 
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, Delete, EditPen, Plus, Refresh, Upload, Switch, CopyDocument } from '@element-plus/icons-vue'
+import { Check, Delete, EditPen, Plus, Refresh, Upload, Switch, CopyDocument, Promotion } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 
 type BundleStatus = 'draft' | 'validated' | 'approved' | 'published' | 'stale' | 'retired'
@@ -74,6 +74,26 @@ const editReason = ref('')
 const variablesJSON = ref('{}')
 const activationStatus = ref('not_requested')
 const activationDigest = ref('')
+
+// Bundle 迁移相关状态
+const migrationVisible = ref(false)
+const migrationLoading = ref(false)
+const migrationHealth = ref<{
+  current_factory_version: string
+  total_bundles: number
+  outdated_bundles: number
+  outdated_bundle_details: Array<{ kbd_id: number; support_id: string; factory_version: string }>
+  health_status: string
+  recommendation: string
+} | null>(null)
+const migrationDryRun = ref(true)
+const migrationResult = ref<{
+  dry_run: boolean
+  total: number
+  success: number
+  failed: number
+  details: Array<{ kbd_id: number; support_id?: string; status: string; error?: string; note?: string }>
+} | null>(null)
 
 const lifecycleStep: Partial<Record<BundleStatus, number>> = { draft: 0, validated: 1, approved: 2, published: 4 }
 const currentStep = computed(() => selected.value ? lifecycleStep[selected.value.status] ?? 0 : 0)
@@ -316,6 +336,70 @@ async function retireSelected() {
   }
 }
 
+// Bundle 迁移功能
+async function loadMigrationHealth() {
+  migrationLoading.value = true
+  try {
+    const body = await request('/v1/bundle-migration/health')
+    migrationHealth.value = {
+      current_factory_version: String(body.current_factory_version || 'unknown'),
+      total_bundles: Number(body.total_bundles || 0),
+      outdated_bundles: Number(body.outdated_bundles || 0),
+      outdated_bundle_details: (body.outdated_bundle_details || []) as Array<{ kbd_id: number; support_id: string; factory_version: string }>,
+      health_status: String(body.health_status || 'unknown'),
+      recommendation: String(body.recommendation || ''),
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    migrationLoading.value = false
+  }
+}
+
+async function openMigrationDialog() {
+  migrationResult.value = null
+  migrationVisible.value = true
+  await loadMigrationHealth()
+}
+
+async function executeMigration() {
+  if (!migrationHealth.value || migrationHealth.value.outdated_bundles === 0) return
+  const action = migrationDryRun.value ? '预演迁移' : '执行迁移'
+  try {
+    await ElMessageBox.confirm(
+      `确认${action} ${migrationHealth.value.outdated_bundles} 个过时 Bundle？`,
+      'Bundle 迁移',
+      { type: migrationDryRun.value ? 'info' : 'warning' },
+    )
+  } catch {
+    return
+  }
+  migrationLoading.value = true
+  try {
+    const body = await request('/v1/bundle-migration/migrate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dry_run: migrationDryRun.value }),
+    })
+    migrationResult.value = {
+      dry_run: Boolean(body.dry_run),
+      total: Number(body.total || 0),
+      success: Number(body.success || 0),
+      failed: Number(body.failed || 0),
+      details: (body.details || []) as Array<{ kbd_id: number; support_id?: string; status: string; error?: string; note?: string }>,
+    }
+    if (!migrationDryRun.value) {
+      await loadBundles()
+      await loadMigrationHealth()
+    }
+    ElMessage.success(migrationDryRun.value ? '迁移预演完成' : '迁移完成')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    migrationLoading.value = false
+  }
+}
+
 onMounted(() => loadBundles())
 </script>
 
@@ -331,6 +415,7 @@ onMounted(() => loadBundles())
       </div>
       <div class="create-bar">
         <el-button plain @click="router.push('/simulation/bundle-factory/assets')">管理资产</el-button>
+        <el-button plain :icon="Promotion" @click="openMigrationDialog">Bundle 迁移</el-button>
         <el-input
           v-model="createSupportId"
           placeholder="输入 KBD support_id (如 27123)"
@@ -697,6 +782,70 @@ onMounted(() => loadBundles())
       <template #footer>
         <el-button @click="editVisible = false">取消</el-button>
         <el-button type="primary" :loading="actionLoading" @click="saveRevision">生成新 Draft</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- Bundle 迁移对话框 -->
+    <el-dialog v-model="migrationVisible" title="Bundle 批量迁移" width="640px" :close-on-click-modal="false">
+      <div v-loading="migrationLoading" class="migration-body">
+        <div v-if="migrationHealth" class="migration-health">
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item label="当前工厂版本">
+              <el-tag type="primary">{{ migrationHealth.current_factory_version }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="需迁移 Bundle 数">
+              <el-tag :type="migrationHealth.outdated_bundles > 0 ? 'warning' : 'success'">
+                {{ migrationHealth.outdated_bundles }}
+              </el-tag>
+            </el-descriptions-item>
+          </el-descriptions>
+
+          <div v-if="migrationHealth.outdated_bundle_details.length > 0" class="outdated-list">
+            <h4>过时 Bundle 列表</h4>
+            <el-table :data="migrationHealth.outdated_bundle_details" size="small" max-height="200">
+              <el-table-column prop="kbd_id" label="KBD ID" width="100" />
+              <el-table-column prop="support_id" label="Support ID" width="120" />
+              <el-table-column prop="factory_version" label="旧版本" />
+            </el-table>
+          </div>
+        </div>
+
+        <div v-if="migrationResult" class="migration-result">
+          <el-alert
+            :type="migrationResult.failed > 0 ? 'warning' : 'success'"
+            :title="`迁移完成：成功 ${migrationResult.success}，失败 ${migrationResult.failed}`"
+            :closable="false"
+            show-icon
+          />
+          <div v-if="migrationResult.details.length > 0" class="result-details">
+            <el-table :data="migrationResult.details" size="small" max-height="200">
+              <el-table-column prop="kbd_id" label="KBD ID" width="100" />
+              <el-table-column prop="support_id" label="Support ID" width="120" />
+              <el-table-column prop="status" label="状态">
+                <template #default="{ row }">
+                  <el-tag :type="row.status === 'success' ? 'success' : 'danger'" size="small">
+                    {{ row.status === 'success' ? '成功' : row.error || row.note || row.status }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </div>
+
+        <div v-if="migrationHealth?.outdated_bundles > 0 && !migrationResult" class="migration-actions">
+          <el-checkbox v-model="migrationDryRun">预演模式（不实际执行迁移）</el-checkbox>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="migrationVisible = false">关闭</el-button>
+        <el-button
+          v-if="migrationHealth?.outdated_bundles > 0 && !migrationResult"
+          type="primary"
+          :loading="migrationLoading"
+          @click="executeMigration"
+        >
+          {{ migrationDryRun ? '预演迁移' : '执行迁移' }}
+        </el-button>
       </template>
     </el-dialog>
   </main>
@@ -1229,6 +1378,40 @@ onMounted(() => loadBundles())
 .route-controls :deep(.el-input-number),
 .route-controls :deep(.el-select) {
   width: 100%;
+}
+
+/* 迁移对话框 */
+.migration-body {
+  min-height: 120px;
+}
+
+.migration-health {
+  margin-bottom: 16px;
+}
+
+.outdated-list {
+  margin-top: 16px;
+}
+
+.outdated-list h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #303133;
+}
+
+.migration-result {
+  margin-top: 16px;
+}
+
+.result-details {
+  margin-top: 12px;
+}
+
+.migration-actions {
+  margin-top: 16px;
+  padding: 12px;
+  background: #f5f7fa;
+  border-radius: 6px;
 }
 
 :deep(.bundle-editor-dialog) {

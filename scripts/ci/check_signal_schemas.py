@@ -21,6 +21,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]  # scripts/ci -> scripts -> repo root
 GEN_SCRIPT_DIR = REPO_ROOT / "backend" / "scripts"
 SCHEMA_DIR = REPO_ROOT / "backend" / "shared" / "schemas" / "signals"
+DOC_EXAMPLES_PATH = REPO_ROOT / "docs" / "contracts" / "signal-examples.json"
 
 sys.path.insert(0, str(GEN_SCRIPT_DIR))
 
@@ -135,6 +136,23 @@ def _main() -> int:
         except jsonschema.ValidationError:
             pass
     print(f"[fixture] {len(invalid_cases)} 个非法样本均被正确拒绝 ✓")
+
+    if DOC_EXAMPLES_PATH.exists():
+        examples_document = json.loads(DOC_EXAMPLES_PATH.read_text(encoding="utf-8"))
+        examples = examples_document.get("examples") if isinstance(examples_document, dict) else None
+        if not isinstance(examples, list):
+            print(f"[docs] 示例文件格式错误: {DOC_EXAMPLES_PATH}")
+            return 1
+        for example in examples:
+            if not isinstance(example, dict) or not isinstance(example.get("document"), dict):
+                print(f"[docs] 示例缺少 document: {example!r}")
+                return 1
+            try:
+                validator.validate(example["document"])
+            except jsonschema.ValidationError as exc:
+                print(f"[docs] 示例 '{example.get('name', 'unknown')}' 不符合当前契约: {exc.message}")
+                return 1
+        print(f"[docs] {len(examples)} 个现行机器可读示例通过 ✓")
 
     # 漂移检测：重新导出并与入库文件对比
     memory = build_all()

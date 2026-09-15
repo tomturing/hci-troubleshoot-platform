@@ -361,7 +361,7 @@ async def _evaluate_qkv(body: SignalDryRunRequest, *, ai_client: Any | None, db_
     if _signal_id(signal) != body.unit_ref.signal_id:
         raise ValueError("unit_ref.signal_id 与草稿 Signal 不一致")
 
-    from app.tools.qkv.parser import _extract_by_produces
+    from app.tools.qkv.parser import _extract_by_produces, first_complete_produced_record
 
     tool = str(acquire.get("tool") or "")
     records = _normalize_qkv_records(body.dataset.payload, tool=tool)
@@ -386,6 +386,15 @@ async def _evaluate_qkv(body: SignalDryRunRequest, *, ai_client: Any | None, db_
                         if isinstance(p, dict) and p.get("name")
                     ]
                 },
+            )
+        if first_complete_produced_record(extracted, produces) is None:
+            return SignalDryRunResult(
+                trace_id=trace_id, dataset_id=body.dataset.dataset_id, unit_ref=body.unit_ref,
+                verification_scope=body.verification_scope, config_revision=body.draft_revision,
+                status="FAIL", input_sha256=_canonical_hash({"source": body.dataset.source_type, "payload": body.dataset.payload}),
+                value=extracted,
+                evidence="输入中没有单条记录同时覆盖全部 produces 变量，不能解锁下游依赖。",
+                derivation={"produces": [p.get("name") for p in produces if isinstance(p, dict)]},
             )
         records = extracted
 
@@ -421,6 +430,8 @@ async def _evaluate_qkv(body: SignalDryRunRequest, *, ai_client: Any | None, db_
         )
         statuses = [item.status for item in processed.assertions]
         status = "UNKNOWN" if "UNKNOWN" in statuses else ("FAIL" if "FAIL" in statuses else "PASS")
+        if status == "PASS" and first_complete_produced_record(processed.records, produces) is None:
+            status = "FAIL"
         return SignalDryRunResult(
             trace_id=trace_id, dataset_id=body.dataset.dataset_id, unit_ref=body.unit_ref,
             verification_scope=body.verification_scope, config_revision=body.draft_revision,
@@ -434,7 +445,17 @@ async def _evaluate_qkv(body: SignalDryRunRequest, *, ai_client: Any | None, db_
     if isinstance(produces, list) and produces:
         if body.verification_scope == "ai_step":
             raise ValueError("AI_STEP_TARGET_REQUIRED: QKV 纯生产者未配置 AI 处理单元")
-        produced_keys = list(records[0].keys()) if records else []
+        complete_record = first_complete_produced_record(records, produces)
+        if complete_record is None:
+            return SignalDryRunResult(
+                trace_id=trace_id, dataset_id=body.dataset.dataset_id, unit_ref=body.unit_ref,
+                verification_scope=body.verification_scope, config_revision=body.draft_revision,
+                status="FAIL", input_sha256=_canonical_hash({"source": body.dataset.source_type, "payload": body.dataset.payload}),
+                value=records,
+                evidence="输入中没有单条记录同时覆盖全部 produces 变量，不能解锁下游依赖。",
+                derivation={"produces": [p.get("name") for p in produces if isinstance(p, dict)]},
+            )
+        produced_keys = list(complete_record.keys())
         return SignalDryRunResult(
             trace_id=trace_id, dataset_id=body.dataset.dataset_id, unit_ref=body.unit_ref,
             verification_scope=body.verification_scope, config_revision=body.draft_revision,

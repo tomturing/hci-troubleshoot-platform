@@ -38,6 +38,7 @@
             "tool": {
               "type": "string",
               "enum": [
+                "qfk_storage",
                 "qkv_alert",
                 "qkv_dialog",
                 "qkv_task",
@@ -180,6 +181,29 @@
           "maximum": 5,
           "default": 2,
           "description": "窗口内最大复核次数；配额耗尽即 inconclusive"
+        },
+        "progress": {
+          "type": "object",
+          "description": "可选跨次进展观察：比较同一受控观测原语的输出指纹",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "idle_after_seconds"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "change_required"
+              ]
+            },
+            "idle_after_seconds": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 86400,
+              "description": "连续无指纹变化超过该时长后判定 stalled"
+            }
+          }
         }
       }
     },

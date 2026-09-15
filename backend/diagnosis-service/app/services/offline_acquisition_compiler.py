@@ -143,6 +143,7 @@ def _resolver_input(
             filter_keywords=filter_keywords,
             resource_keyword=normalized.get("resource_keyword"),
             request_id=normalized.get("request_id"),
+            preserve_placeholders=True,
         )
         # REQUEST_ID 是在线 QKV 变量，不是离线会话的固有字段。只要 Matcher/取值规则
         # 已提供有界 selector，离线 Collector 就省略未解析的 -i，而不是生成无法执行的制品。

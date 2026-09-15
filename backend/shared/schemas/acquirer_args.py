@@ -133,10 +133,10 @@ VM_CONSOLE_REQUIRED_TARGET_VARS = frozenset({"HOST", "VM_ID"})
 # 设计来源：docs/solution/agent/效果验证生产者信号设计与需求.md
 # 封闭观测通道集合：效果观测一律委派已批准的只读采集原语，不新开命令面。
 # metric_query 等通道待设计文档第十二章平台确认项闭环后按提案加入。
-EFFECT_OBSERVATION_CHANNELS = frozenset({"qkv_alert", "qkv_task", "qkv_dialog", "qkv_vm_console"})
+EFFECT_OBSERVATION_CHANNELS = frozenset({"qkv_alert", "qkv_task", "qkv_dialog", "qkv_vm_console", "qfk_storage"})
 # 使用模式：操作后效果验证（默认）/ S1 症状确认。
 EFFECT_USAGES = frozenset({"remediation_verify", "symptom_confirm"})
-# 判定规则封闭集合：与 shared/signals/matcher.py 的 7 类 matcher 严格一致，
+# 判定规则封闭集合：与 shared/signals/matcher.py 的 8 类 matcher 严格一致，
 # 不新增自由文本判定；确需扩展走提案 + 测试。
 EFFECT_MATCHER_TYPES = frozenset({"keyword", "regex", "state", "boolean", "threshold", "delta", "trend", "exists"})
 # 各 matcher 类型的必填字段（与 signal_schema._MATCHER_REQUIRED_FIELDS 同源口径）。
@@ -154,6 +154,9 @@ _EFFECT_MATCHER_REQUIRED_FIELDS: dict[str, frozenset[str]] = {
 EFFECT_SETTLE_RANGE = (0, 3600)
 EFFECT_WINDOW_RANGE = (60, 86400)
 EFFECT_MAX_RECHECK_RANGE = (0, 5)
+# 跨次进展观察仅比较已批准观测原语的输出指纹，不开放目录、路径或 Shell。
+EFFECT_PROGRESS_MODES = frozenset({"change_required"})
+EFFECT_PROGRESS_IDLE_RANGE = (30, 86400)
 # 判定词表（v1）：三态输出，禁止向两侧坍缩；词表变更须提升修订号。
 EFFECT_VERDICT_VOCABULARY = frozenset({"achieved", "not_achieved", "inconclusive"})
 EFFECT_VERDICT_VOCABULARY_REVISION = "effect-verdict-v1"
@@ -302,7 +305,7 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
                         "properties": {
                             "tool": {
                                 "type": "string",
-                                "enum": ["qkv_alert", "qkv_dialog", "qkv_task", "qkv_vm_console"],
+                                "enum": sorted(EFFECT_OBSERVATION_CHANNELS),
                                 "description": "封闭观测通道集合；metric_query 等待平台确认项闭环后按提案加入",
                             },
                             "args": {"type": "object"},
@@ -386,6 +389,21 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
                         "maximum": 5,
                         "default": 2,
                         "description": "窗口内最大复核次数；配额耗尽即 inconclusive",
+                    },
+                    "progress": {
+                        "type": "object",
+                        "description": "可选跨次进展观察：比较同一受控观测原语的输出指纹",
+                        "additionalProperties": False,
+                        "required": ["mode", "idle_after_seconds"],
+                        "properties": {
+                            "mode": {"type": "string", "enum": ["change_required"]},
+                            "idle_after_seconds": {
+                                "type": "integer",
+                                "minimum": EFFECT_PROGRESS_IDLE_RANGE[0],
+                                "maximum": EFFECT_PROGRESS_IDLE_RANGE[1],
+                                "description": "连续无指纹变化超过该时长后判定 stalled",
+                            },
+                        },
                     },
                 },
             },
@@ -842,7 +860,7 @@ def _validate_effect_expectation(expectation: Any) -> tuple[bool, str | None]:
 
     if not isinstance(expectation, dict):
         return False, "qkv_effect.expectation 必须是对象（结构化期望锚点）"
-    extra = set(expectation) - {"observation", "matcher", "settle_seconds", "window_seconds", "max_recheck"}
+    extra = set(expectation) - {"observation", "matcher", "settle_seconds", "window_seconds", "max_recheck", "progress"}
     if extra:
         return False, f"qkv_effect.expectation 含未注册字段: {', '.join(sorted(extra))}"
 
@@ -919,6 +937,24 @@ def _validate_effect_expectation(expectation: Any) -> tuple[bool, str | None]:
             False,
             f"qkv_effect.expectation.max_recheck 必须在 {EFFECT_MAX_RECHECK_RANGE[0]}-{EFFECT_MAX_RECHECK_RANGE[1]}",
         )
+    progress = expectation.get("progress")
+    if progress is not None:
+        if not isinstance(progress, dict) or set(progress) - {"mode", "idle_after_seconds"}:
+            return False, "qkv_effect.expectation.progress 必须只包含 mode/idle_after_seconds"
+        if progress.get("mode") not in EFFECT_PROGRESS_MODES:
+            return False, f"qkv_effect.expectation.progress.mode 仅支持 {sorted(EFFECT_PROGRESS_MODES)}"
+        idle_after = progress.get("idle_after_seconds")
+        if (
+            isinstance(idle_after, bool)
+            or not isinstance(idle_after, int)
+            or not (EFFECT_PROGRESS_IDLE_RANGE[0] <= idle_after <= window)
+        ):
+            return False, (
+                "qkv_effect.expectation.progress.idle_after_seconds 必须在 "
+                f"{EFFECT_PROGRESS_IDLE_RANGE[0]}-{window}"
+            )
+        if max_recheck < 1:
+            return False, "qkv_effect.expectation.progress 至少需要 1 次复核"
     return True, None
 
 

@@ -1,6 +1,6 @@
 """确定性 KBD 候选诊断内核。"""
 
-from .acquisition_provider import AcquisitionProvider, AcquisitionRunResult, execute_acquisition_plan
+from .acquisition_provider import AcquisitionProvider, AcquisitionRunResult, ProducedVariable, execute_acquisition_plan
 from .conclusion_gate import decide_conclusion
 from .coverage import CandidateCoverage, CoverageReport, build_coverage_report
 from .models import (
@@ -50,6 +50,7 @@ __all__ = [
     "decide_conclusion",
     "AcquisitionProvider",
     "AcquisitionRunResult",
+    "ProducedVariable",
     "execute_acquisition_plan",
     "evaluate_scope",
     "replay_evaluations",

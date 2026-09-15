@@ -223,3 +223,114 @@ def test_adapter_blocked_when_expectation_variables_unresolved(monkeypatch):
     )
     assert result.success is False
     assert result.error_code == "EXPECTATION_SOURCE_MISSING"
+
+
+def test_progress_policy_keeps_changing_observation_inconclusive(monkeypatch):
+    signal = _effect_signal_v2(
+        expectation={
+            "observation": {"tool": "qkv_alert", "args": {"keyword": "内存不足"}},
+            "matcher": {"type": "keyword", "pattern": "completed", "expected": True, "extract": {"type": "text", "rows": {"mode": "all"}}},
+            "settle_seconds": 0,
+            "window_seconds": 60,
+            "max_recheck": 1,
+            "progress": {"mode": "change_required", "idle_after_seconds": 30},
+        }
+    )
+    monkeypatch.setenv("EFFECT_VERIFICATION_ENABLED", "true")
+    _patch_store(monkeypatch)
+    observations = iter([(True, "progress=10", None), (True, "progress=20", None)])
+
+    async def _fake_observation(*_args, **_kwargs):
+        return next(observations)
+
+    async def _no_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(effect_adapter, "_run_observation", _fake_observation)
+    monkeypatch.setattr(effect_adapter.asyncio, "sleep", _no_sleep)
+    result = asyncio.run(
+        effect_adapter.run_effect_verification_signal(
+            signal,
+            {"HOST": "SVR_aCloud_670"},
+            conversation_id="conv-1",
+            case_id="Q1",
+            db_session_factory=lambda: _FakeSession(),
+        )
+    )
+
+    assert result.resolution["verdict"] == "inconclusive"
+    assert result.resolution["progress_state"] == "in_progress"
+
+
+def test_progress_policy_requires_recheck_and_valid_idle_window():
+    from shared.schemas.acquirer_args import validate_acquire_args
+
+    signal = _effect_signal_v2()
+    args = signal["acquire"]["args"]
+    args["expectation"]["progress"] = {"mode": "change_required", "idle_after_seconds": 30}
+    args["expectation"]["max_recheck"] = 0
+
+    ok, error = validate_acquire_args("qkv_effect", args)
+
+    assert ok is False
+    assert "至少需要 1 次复核" in str(error)
+
+
+def test_storage_snapshot_observation_uses_qfk_storage_producer_path(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.tools.qfk import engine as qfk_engine
+
+    async def _fake_qfk_exec(*_args, **kwargs):
+        assert kwargs["execution_mode"] == "produce"
+        assert kwargs["required_output_sources"] == {"stdout"}
+        return SimpleNamespace(error=None, complete_outputs={"stdout": "objects=2\nsize=120"}, raw_output="")
+
+    monkeypatch.setattr(qfk_engine, "qfk_exec", _fake_qfk_exec)
+    observed, output, error = asyncio.run(
+        effect_adapter._run_observation(
+            "qfk_storage",
+            {"command": "migration list", "resource_keyword": "target-store", "timeout": 60},
+            conversation_id="conv-1",
+            node_ip="127.0.0.1",
+            exec_id="effect-storage",
+            env_context={},
+            db_session_factory=lambda: _FakeSession(),
+            case_id="Q1",
+            session_id="session-1",
+        )
+    )
+
+    assert (observed, output, error) == (True, "objects=2\nsize=120", None)
+
+
+def test_effect_check_store_persists_progress_fingerprint_and_state():
+    class CaptureSession:
+        def __init__(self):
+            self.params = None
+
+        async def execute(self, _statement, params):
+            self.params = params
+
+        async def commit(self):
+            return None
+
+    session = CaptureSession()
+    asyncio.run(
+        effect_store.insert_check_record(
+            session,
+            verification_id="11111111-1111-4111-8111-111111111111",
+            check_seq=2,
+            trigger_source="scheduler",
+            observation_status="valid",
+            observation_summary="objects=2",
+            matcher_evidence="未达到完成条件",
+            check_verdict="inconclusive",
+            observation_fingerprint="a" * 64,
+            progress_state="in_progress",
+            trace_id="trace-progress",
+        )
+    )
+
+    assert session.params["observation_fingerprint"] == "a" * 64
+    assert session.params["progress_state"] == "in_progress"

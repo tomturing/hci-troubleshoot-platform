@@ -45,6 +45,17 @@ spec:
             # Admin UI 始终使用集群中的 terminal-bridge Pod（仿真测试）
             - name: TERMINAL_BRIDGE_URL
               value: "/terminal-bridge"
+            # nginx 模板的 /terminal-bridge location 使用字面量 proxy_pass，Nginx 启动期
+            # 即解析 upstream 主机名。镜像内烘焙的默认值 host.docker.internal 仅 Docker
+            # Desktop 可解析，集群内会导致 [emerg] crashloop（D-027）。启用 terminal-bridge
+            # 时指向 Service FQDN；未启用时该路径由同源 Ingress 接管，此处给回环占位地址，
+            # 保证 Nginx 可启动、直连 Pod 的请求得到 502 而非进程崩溃。
+            - name: TERMINAL_BRIDGE_UPSTREAM
+              {{- if .Values.terminalBridge.enabled }}
+              value: "http://terminal-bridge.{{ include "hci.namespace" . }}.svc.{{ .Values.global.clusterDomain }}:{{ .Values.terminalBridge.port }}"
+              {{- else }}
+              value: "http://127.0.0.1:9999"
+              {{- end }}
             {{- if and .Values.diagnosisService.enabled (eq .Values.diagnosisService.identityMode "internal") }}
             - name: ADMIN_API_AUTHORIZATION
               valueFrom:

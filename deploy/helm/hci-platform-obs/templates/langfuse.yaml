@@ -313,6 +313,16 @@ spec:
             - name: NODE_OPTIONS
               value: "--max-old-space-size=1536"
             # -----------------------------------------------------------------
+            # Base Path：Langfuse 通过 Traefik stripPrefix 挂载在 /langfuse 子路径，
+            # 必须告知 Next.js 真实的 base path，否则前端内部链接和静态资源（/_next/...）
+            # 不含 /langfuse 前缀，点击页面跳转后浏览器 URL 脱离 Ingress 规则导致路由丢失。
+            # NEXTAUTH_URL 已在上方拼接了 /langfuse，此处补齐 NEXT_PUBLIC_BASE_PATH 使
+            # Next.js 前端路由、Link href 和 asset prefix 全部对齐到 /langfuse。
+            {{- if ne .Values.global.routingMode "subdomain" }}
+            - name: NEXT_PUBLIC_BASE_PATH
+              value: "/langfuse"
+            {{- end }}
+            # -----------------------------------------------------------------
             # 无头初始化（Headless Initialization）：DB 为空时首次启动自动创建
             # org / project / 初始用户与 API Key，避免手动在 Web UI 配置。
             # project 的 public/secret key 复用 .Values.langfuse.publicKey/secretKey
@@ -341,15 +351,26 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.langfuse.server.resources | nindent 12 }}
+          # 探针路径需与 NEXT_PUBLIC_BASE_PATH 对齐：
+          # 设置 basePath 后，Next.js 将所有路由（含 /api/*）挂到 /langfuse 下，
+          # 容器内健康端点从 /api/public/health 迁移到 /langfuse/api/public/health。
           readinessProbe:
             httpGet:
+              {{- if and (ne .Values.global.routingMode "subdomain") .Values.langfuse.enabled }}
+              path: /langfuse/api/public/health
+              {{- else }}
               path: /api/public/health
+              {{- end }}
               port: 3000
             initialDelaySeconds: 15
             periodSeconds: 15
           livenessProbe:
             httpGet:
+              {{- if and (ne .Values.global.routingMode "subdomain") .Values.langfuse.enabled }}
+              path: /langfuse/api/public/health
+              {{- else }}
               path: /api/public/health
+              {{- end }}
               port: 3000
             initialDelaySeconds: 30
             periodSeconds: 20
