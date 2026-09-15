@@ -146,7 +146,14 @@ async def test_matched_strong_history_still_exposes_guidance_after_inconclusive_
                             "id": "task_failure",
                             "acquire": {"tool": "qkv_task", "args": {}},
                             "orchestrate": {"phase": "diagnostic"},
-                        }
+                        },
+                        # 第一条必要信号已命中后，CDD 可按候选状态剪枝，不执行这个
+                        # 后续告警；它不能让 strong_status 退化为 source_unavailable。
+                        {
+                            "id": "alert_failure",
+                            "acquire": {"tool": "qkv_alert", "args": {}},
+                            "orchestrate": {"phase": "diagnostic"},
+                        },
                     ],
                 },
                 {

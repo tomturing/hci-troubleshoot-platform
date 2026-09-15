@@ -430,21 +430,15 @@ class InvestigationAgent(BaseAgent):
         kbd_result = self._kbd_diag.get_result()
         if kbd_result and not kbd_result.is_definitive and semantic_cases and not semantic_preselected:
             strong_steps = [step for step in kbd_result.steps_executed if step.tool_name in STRONG_PRODUCER_TOOLS]
-            expected_strong = {
-                (str(item["id"]), str(signal.get("id") or ""))
-                for item in raw_cases
-                for signal in item.get("signals", [])
-                if (signal.get("acquire") or {}).get("tool") in STRONG_PRODUCER_TOOLS
-                and (signal.get("orchestrate") or {}).get("phase", "diagnostic") != "solution"
-            }
-            executed_strong = {(str(step.kbd_id), str(step.signal_id)) for step in strong_steps}
+            # CDD 在某条必要信号已 CONTRADICTED 后会停止该 KBD 的后续步骤；那些
+            # 被正确剪枝的强生产者不能被静态声明集合误认为“查询不完整”。只对实际
+            # 调度执行过的强生产者检查失败/阻断，保留任何真实执行问题的 fail-closed。
             if (
                 not strong_steps
                 or any(
                     step.error or str(step.outcome).split(".")[-1].upper() in {"UNKNOWN", "NOT_RUN", "BLOCKED"}
                     for step in strong_steps
                 )
-                or not expected_strong.issubset(executed_strong)
             ):
                 strong_status = "source_unavailable"
             elif any(step.match_kbd_ids for step in strong_steps):
