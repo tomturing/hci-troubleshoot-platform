@@ -287,6 +287,11 @@ class InvestigationAgent(BaseAgent):
                 snapshot_id=snapshot_id,
                 execution_mode=execution_mode,
                 candidate_count=len(raw_cases),
+                # 诊断可观测性：记录全量 KBD、语义候选、可执行候选的分布，
+                # 便于定位 guidance_only KBD 是否被正确纳入语义兜底候选。
+                total_kbd_count=len(all_kbds),
+                semantic_case_count=len(semantic_cases),
+                semantic_case_ids=[str(kbd.get("id")) for kbd in semantic_cases],
                 session_id=session_id,
                 case_id=case_id,
             )
@@ -469,6 +474,25 @@ class InvestigationAgent(BaseAgent):
 
         # 5. 输出诊断报告
         kbd_result = self._kbd_diag.get_result()
+        # 诊断可观测性：记录语义兜底入口的完整条件判定，
+        # 便于定位 guidance_only KBD 未被评估的根因。
+        logger.info(
+            event="kbd_post_cdd_summary",
+            message="CDD 完成后语义兜底条件判定",
+            session_id=session_id,
+            case_id=case_id,
+            has_kbd_result=kbd_result is not None,
+            is_definitive=kbd_result.is_definitive if kbd_result else None,
+            conclusion_level=kbd_result.conclusion_level if kbd_result else None,
+            semantic_case_count=len(semantic_cases),
+            semantic_preselected=semantic_preselected,
+            will_enter_semantic_fallback=(
+                kbd_result is not None
+                and not kbd_result.is_definitive
+                and bool(semantic_cases)
+                and not semantic_preselected
+            ),
+        )
         if kbd_result and not kbd_result.is_definitive and semantic_cases and not semantic_preselected:
             strong_steps = [step for step in kbd_result.steps_executed if step.tool_name in STRONG_PRODUCER_TOOLS]
             # CDD 在某条必要信号已 CONTRADICTED 后会停止该 KBD 的后续步骤；那些
@@ -494,6 +518,20 @@ class InvestigationAgent(BaseAgent):
                 case_context=self._build_semantic_context(messages, env_context),
                 strong_producer_status=strong_status,
                 expected_revisions=self._semantic_revisions(all_kbds),
+            )
+            logger.info(
+                event="semantic_entry_fallback_result",
+                message="语义兜底 resolve_semantic_entry 返回",
+                session_id=session_id,
+                case_id=case_id,
+                strong_status=strong_status,
+                decision=(semantic_result or {}).get("decision"),
+                candidate_count=len((semantic_result or {}).get("candidates") or []),
+                candidate_ids=[
+                    str(item.get("kbd_id"))
+                    for item in (semantic_result or {}).get("candidates") or []
+                ],
+                has_result=semantic_result is not None,
             )
             yield AgentStageUpdate(
                 stage="semantic_entry_fallback", metadata=semantic_result or {"reason": "service_unavailable"}
