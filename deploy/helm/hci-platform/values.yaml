@@ -287,7 +287,16 @@ kbService:
   visionModel: "kimi-k2.5"
   # Vision 输出预算；长日志/配置截图需覆盖完整 FULL_TEXT，避免 finish_reason=length。
   visionMaxTokens: "8192"
-  # 信号抽取应显式选择擅长结构化长 JSON 的模型；留空时回退到 classifyModel。
+  # 信号抽取专用模型；留空时回退到 classifyModel（当前 kimi-k2.5）。
+  # ⚠️  模型选型约束（来自 docs.bigmodel.cn 官方文档）：
+  #   - GLM-5.3-Flash：thinking 强制开启、不可关闭（官方确认）。
+  #     thinking token 会与 content token 竞争 max_tokens 预算，
+  #     16384 token 的 JSON 输出场景响应延迟可达 >120s/次，不适合此场景。
+  #   - 推荐低延迟结构化输出的模型选型优先级：
+  #       1. glm-4.5-airx（"极速版本，适合低延迟、高响应要求"，支持关闭 thinking）
+  #       2. glm-4.5-air（轻量版，推理/编码稳定，支持关闭 thinking）
+  #       3. kimi-k2.5（当前默认，适合复杂推理，非极速场景）
+  # 当前设置为空（回退 kimi-k2.5），如需优化延迟请显式设置 glm-4.5-airx。
   extractSignalsModel: ""
   extractSignalsBaseUrl: ""
   classifyMaxTokens: "2048"

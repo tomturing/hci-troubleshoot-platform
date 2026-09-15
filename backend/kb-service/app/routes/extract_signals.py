@@ -967,9 +967,17 @@ async def _call_llm(
     2026-07-23 修复：原 max_tokens=2000 对推理模型（glm-5.2 / deepseek-v4-flash）不足——
     思维链 reasoning_content 会先耗尽 token 预算，使 message.content 为空、
     json.loads("") 报「LLM 响应格式错误」。现统一：
-      1) 对齐 classify.py / vision_processor.py，显式关闭思维链（enable_thinking=false）；
+      1) 对齐 classify.py / vision_processor.py，尝试关闭思维链；
+         ⚠️  重要：GLM-5.3-Flash 强制开启 thinking 不可关闭（官方文档：
+             https://docs.bigmodel.cn/cn/guide/capabilities/thinking-mode）
+             对 GLM-5.3-Flash，传入 thinking.type:disabled 会被服务端忽略，
+             thinking token 将持续消耗 max_tokens 预算，导致响应延迟显著增加。
+             建议信号抽取场景改用 EXTRACT_SIGNALS_MODEL=glm-4.5-airx 等低延迟模型。
       2) max_tokens 独立配置，默认为 16384，为长 KBD 文档 / 长输出预留余量；
       3) 对空 content 做显式防御，避免把「被 token 截断」暴露成模糊的 JSON 解析失败。
+
+    2026-09-15 修复：thinking 参数迁移到新版 API 格式（旧版 enable_thinking 已废弃），
+    同时修正超时链路倒置问题（见 _EXTRACT_LLM_TIMEOUT 注释）。
     """
     from openai import AsyncOpenAI
 
@@ -1018,7 +1026,18 @@ async def _call_llm(
                 temperature=0.0,
                 max_tokens=EXTRACT_SIGNALS_MAX_TOKENS,
                 response_format={"type": "json_object"},
-                extra_body={"enable_thinking": LLM_ENABLE_THINKING},
+                extra_body={
+                    # 尝试关闭思维链，降低延迟和 token 消耗。
+                    # ⚠️  GLM-5.3-Flash 官方约束（https://docs.bigmodel.cn/cn/guide/capabilities/thinking-mode）：
+                    #     该模型强制开启 thinking，thinking.type:disabled 会被忽略。
+                    #     如果 EXTRACT_SIGNALS_MODEL 使用 glm-5.3-flash，thinking 无法关闭，
+                    #     建议切换到支持关闭 thinking 的模型（如 glm-4.5-airx / glm-4.5-air）
+                    #     以获得更低延迟的 JSON 结构化输出。
+                    # 使用新版 thinking API（旧版 enable_thinking 字段已废弃）。
+                    "thinking": {
+                        "type": "disabled" if not LLM_ENABLE_THINKING else "enabled",
+                    },
+                },
             )
 
         try:
