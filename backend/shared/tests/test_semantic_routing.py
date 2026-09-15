@@ -123,6 +123,17 @@ async def test_guidance_gap_and_ambiguous_candidates_never_execute():
 
 
 @pytest.mark.asyncio
+async def test_guidance_candidate_exposes_declared_structured_evidence_fields():
+    fields = [{"id": "controller", "label": "控制器类型", "required": True}]
+    result = await resolve_candidates(
+        entries=[entry(capability="guidance_only", manual_evidence_fields=fields)],
+        context="镜像格式不支持",
+        strong_status="no_match",
+    )
+    assert result["candidates"][0]["manual_evidence_fields"] == fields
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("version", "expected"), [("6.12.0", "executable"), ("6.9", "inconclusive"), ("", "inconclusive")]
 )

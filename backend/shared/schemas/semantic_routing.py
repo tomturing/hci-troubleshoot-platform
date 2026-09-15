@@ -201,6 +201,7 @@ async def _resolve(entries, context, segments, strong_status, embed, namespace, 
                     "source_refs": profile.get("source_refs", []),
                     "applicability": profile.get("applicability", {}),
                     "manual_evidence_request": profile.get("manual_evidence_request", []),
+                    "manual_evidence_fields": profile.get("manual_evidence_fields", []),
                     "score_parts": {"anchor_score": score},
                 },
             )

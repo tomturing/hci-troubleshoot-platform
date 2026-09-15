@@ -124,6 +124,21 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     "exclusion_anchors": {"type": "array", "items": {"type": "string"}},
                     "scope": {"type": ["string", "array"], "items": {"type": "string"}},
                     "manual_evidence_request": {"type": "array", "items": {"type": "string"}},
+                    "manual_evidence_fields": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["id", "label"],
+                            "properties": {
+                                "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+                                "label": {"type": "string", "minLength": 1},
+                                "required": {"type": "boolean"},
+                                "input_type": {"enum": ["text", "textarea"]},
+                                "placeholder": {"type": "string"},
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
                     "clarifying_questions": {
                         "type": "array",
                         "maxItems": 10,

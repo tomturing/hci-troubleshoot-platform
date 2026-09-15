@@ -48,6 +48,22 @@ def test_case_context_profile_can_be_published_without_strong_producer():
     validate_kbd_publishable_signals_json(_document())
 
 
+def test_guidance_profile_accepts_declared_structured_evidence_fields():
+    document = _document("guidance_only")
+    document["semantic_entry_profile"].pop("manual_evidence_request")
+    document["semantic_entry_profile"]["manual_evidence_fields"] = [
+        {"id": "error_screenshot", "label": "安装失败截图", "input_type": "textarea", "required": True}
+    ]
+    validate_kbd_publishable_signals_json(document)
+
+
+def test_structured_evidence_field_id_is_validated():
+    document = _document("guidance_only")
+    document["semantic_entry_profile"]["manual_evidence_fields"] = [{"id": "bad-id", "label": "截图"}]
+    with pytest.raises(ValidationError, match="does not match"):
+        validate_kbd_publishable_signals_json(document)
+
+
 def test_capability_gap_cannot_bypass_producer_gate():
     with pytest.raises(ValidationError, match="至少需要 1 条生产者信号"):
         validate_kbd_publishable_signals_json(_document("capability_gap"))

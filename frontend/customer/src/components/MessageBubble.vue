@@ -72,10 +72,18 @@ const isAssistant = computed(() => props.message.role === 'assistant')
 const isDivider = computed(() => isSystem.value && props.message.content.includes('────'))
 
 interface SemanticEntryCandidate {
+  kbd_id?: string
   support_id?: string
   title?: string
   diagnosis_capability?: string
   matched_positive_anchors?: string[]
+  manual_evidence_fields?: Array<{
+    id: string
+    label: string
+    required?: boolean
+    input_type?: 'text' | 'textarea'
+    placeholder?: string
+  }>
 }
 
 interface SemanticEntryMetadata {
@@ -95,6 +103,40 @@ const semanticEntry = computed<SemanticEntryMetadata | null>(() => {
     ? { decision: String(value.decision || ''), reason: String(value.reason || ''), candidates }
     : null
 })
+
+const semanticEvidenceInputs = ref<Record<string, string>>({})
+const semanticEvidenceSubmitting = ref<string | null>(null)
+
+function semanticEvidenceKey(candidate: SemanticEntryCandidate, fieldId: string): string {
+  return `${candidate.kbd_id || candidate.support_id || candidate.title || 'semantic'}:${fieldId}`
+}
+
+async function submitSemanticEvidence(candidate: SemanticEntryCandidate) {
+  const candidateId = candidate.kbd_id || candidate.support_id
+  const fields = candidate.manual_evidence_fields || []
+  if (!candidateId || fields.length === 0 || semanticEvidenceSubmitting.value) return
+  const values = Object.fromEntries(
+    fields
+      .map(field => [field.id, (semanticEvidenceInputs.value[semanticEvidenceKey(candidate, field.id)] || '').trim()])
+      .filter(([, value]) => Boolean(value)),
+  )
+  if (Object.keys(values).length === 0) return
+  semanticEvidenceSubmitting.value = candidateId
+  try {
+    const summary = fields
+      .filter(field => values[field.id])
+      .map(field => `${field.label}：${values[field.id]}`)
+      .join('；')
+    await chatStore.sendMessage(`补充证据：${summary}`, {
+      kind: 'semantic_evidence_response',
+      candidateId,
+      values,
+      sourceMessageId: props.message.id,
+    })
+  } finally {
+    semanticEvidenceSubmitting.value = null
+  }
+}
 
 /** 已复制状态 */
 const copiedMessage = ref(false)
@@ -1160,6 +1202,22 @@ async function handleToolCallReject() {
             <div v-for="candidate in semanticEntry.candidates" :key="candidate.support_id || candidate.title" class="semantic-entry-candidate">
               <el-tag type="warning" effect="plain" size="small">案例 {{ candidate.support_id || '—' }}</el-tag>
               <span>{{ candidate.title || '语义候选' }}</span>
+              <div v-if="candidate.manual_evidence_fields?.length" class="semantic-evidence-form">
+                <p>请按字段补充信息；未填写字段会在下一轮继续保留。</p>
+                <el-input
+                  v-for="field in candidate.manual_evidence_fields"
+                  :key="field.id"
+                  v-model="semanticEvidenceInputs[semanticEvidenceKey(candidate, field.id)]"
+                  :type="field.input_type === 'textarea' ? 'textarea' : 'text'"
+                  :rows="field.input_type === 'textarea' ? 2 : undefined"
+                  :placeholder="field.placeholder || field.label"
+                >
+                  <template #prepend>{{ field.label }}{{ field.required === false ? '（可选）' : '' }}</template>
+                </el-input>
+                <el-button size="small" type="warning" :loading="semanticEvidenceSubmitting === (candidate.kbd_id || candidate.support_id)" @click="submitSemanticEvidence(candidate)">
+                  提交已填写信息
+                </el-button>
+              </div>
             </div>
           </section>
 
@@ -1815,6 +1873,17 @@ async function handleToolCallReject() {
   gap: 7px;
   font-size: 13px;
   line-height: 1.5;
+}
+.semantic-evidence-form {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  margin-top: 8px;
+}
+.semantic-evidence-form p {
+  margin: 0;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 .message-bubble {
   display: flex;
