@@ -97,8 +97,14 @@ class SemanticEntryResolveRequest(BaseModel):
     case_context: SemanticCaseContext | Annotated[str, Field(min_length=1, max_length=16000)] = Field(
         union_mode="left_to_right"
     )
-    strong_producer_status: Literal["matched", "no_match", "source_unavailable", "not_applicable"] = Field(
-        description="真实未命中为 no_match；分类没有强生产者为 not_applicable；已命中或查询不可用时禁止兜底"
+    strong_producer_status: Literal[
+        "matched", "matched_inconclusive", "no_match", "source_unavailable", "not_applicable"
+    ] = Field(
+        description=(
+            "真实未命中为 no_match；分类没有强生产者为 not_applicable；"
+            "matched_inconclusive 只允许返回 guidance_only 人工指引；"
+            "已命中或查询不可用时禁止执行型语义兜底"
+        )
     )
     top_k: int = Field(default=5, ge=1, le=10)
     expected_revisions: dict[str, int] = Field(default_factory=dict)
@@ -113,7 +119,7 @@ async def resolve_semantic_entry(request: SemanticEntryResolveRequest) -> dict[s
 
     from app.routes.playbooks import _execution_issues
 
-    if request.strong_producer_status not in {"no_match", "not_applicable"}:
+    if request.strong_producer_status not in {"no_match", "not_applicable", "matched_inconclusive"}:
         return await resolve_candidates(
             entries=[],
             context=request.case_context.model_dump()

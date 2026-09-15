@@ -1,11 +1,13 @@
 # HCI智能排障平台 - Makefile
 # 依赖管理: uv (https://docs.astral.sh/uv/)
 
-.PHONY: help install compose-check config-contract-check dev-up dev-down db-sync diagnosis-dev-keys diagnosis-sample-preflight diagnosis-sample-postgres-preflight diagnosis-lab-list diagnosis-lab-check diagnosis-lab-sync diagnosis-lab-up diagnosis-lab-status diagnosis-lab-connection diagnosis-lab-renew diagnosis-lab-online-smoke diagnosis-lab-offline-run diagnosis-lab-reset diagnosis-lab-down diagnosis-sample-e2e semantic-e2e-prepare semantic-online-up semantic-online-status semantic-online-verify semantic-online-matrix semantic-online-down semantic-offline-prepare semantic-offline-collect semantic-offline-upload semantic-offline-result semantic-offline-verify signal-v2-e2e-prepare signal-v2-online-matrix signal-v2-offline-stack signal-v2-offline-matrix signal-v2-offline-prepare signal-v2-offline-collect signal-v2-offline-upload signal-v2-offline-result signal-v2-offline-verify signal-v2-e2e-down test lint clean quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill local-deploy local-deploy-import gen-schemas schema-check build-offline-collector test-offline-collector
+.PHONY: help install compose-check compose-network compose-build-services config-contract-check dev-up dev-down db-sync diagnosis-dev-keys diagnosis-sample-preflight diagnosis-sample-postgres-preflight diagnosis-lab-list diagnosis-lab-check diagnosis-lab-sync diagnosis-lab-up diagnosis-lab-status diagnosis-lab-connection diagnosis-lab-renew diagnosis-lab-online-smoke diagnosis-lab-offline-run diagnosis-lab-reset diagnosis-lab-down diagnosis-sample-e2e semantic-e2e-prepare semantic-online-up semantic-online-status semantic-online-verify semantic-online-matrix semantic-online-down semantic-offline-prepare semantic-offline-collect semantic-offline-upload semantic-offline-result semantic-offline-verify signal-v2-e2e-prepare signal-v2-online-matrix signal-v2-offline-stack signal-v2-offline-matrix signal-v2-offline-prepare signal-v2-offline-collect signal-v2-offline-upload signal-v2-offline-result signal-v2-offline-verify signal-v2-e2e-down test lint clean quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill local-deploy local-deploy-import gen-schemas schema-check build-offline-collector test-offline-collector
 
 # Docker Compose v2 是 Docker 官方当前发行形态，也是 GitHub Runner 提供的命令。
 # 仍可通过 `make COMPOSE=docker-compose ...` 兼容仅安装 v1 的旧环境。
 COMPOSE ?= docker compose
+# 首次全量构建会同时请求 ghcr.io/astral-sh/uv；本地 Docker Engine 并发过高
+# 会使部分元数据请求超时，因此逐个构建业务服务以保持稳定。
 
 help:
 	@echo "HCI智能排障平台 - 可用命令:"
@@ -73,10 +75,20 @@ compose-check:
 		exit 1; \
 	}
 
+compose-network:
+	@docker network inspect hci-troubleshoot-platform_default >/dev/null 2>&1 \
+		|| docker network create hci-troubleshoot-platform_default
+
+compose-build-services:
+	@for service in api-gateway case-service diagnosis-service diagnosis-worker conversation-service scheduler-service kb-service agent-service customer-ui admin-ui; do \
+		echo "Building $$service..."; \
+		$(COMPOSE) --env-file .env -f deploy/docker/docker-compose.yml build $$service || exit $$?; \
+	done
+
 config-contract-check:
 	@UV_CACHE_DIR=$${TMPDIR:-/tmp}/hci-uv-cache uv run --frozen python scripts/verify/verify_config_contract.py $(if $(filter 1,$(REQUIRE_HELM)),--require-render,)
 
-dev-up: compose-check config-contract-check diagnosis-dev-keys diagnosis-sample-preflight
+dev-up: compose-check compose-network config-contract-check diagnosis-dev-keys diagnosis-sample-preflight
 	@echo "Starting PostgreSQL & Redis..."
 	$(COMPOSE) --env-file .env -f deploy/docker/docker-compose.yml up -d postgres redis
 	@echo "Waiting for PostgreSQL to be ready..."
@@ -89,7 +101,8 @@ dev-up: compose-check config-contract-check diagnosis-dev-keys diagnosis-sample-
 	}
 	$(MAKE) diagnosis-sample-postgres-preflight
 	@echo "Starting all services..."
-	$(COMPOSE) --env-file .env -f deploy/docker/docker-compose.yml up -d
+	$(MAKE) compose-build-services
+	$(COMPOSE) --env-file .env -f deploy/docker/docker-compose.yml up -d --no-build
 	@echo ""
 	@echo "服务已启动:"
 	@echo "  - API Gateway: http://localhost:8000"
