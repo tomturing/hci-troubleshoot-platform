@@ -21,6 +21,9 @@
 **HCI 智能排障平台** — AI 驱动的超融合基础设施运维故障诊断系统。
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
+- **guidance_only 语义画像 KBD 发布门禁放宽**：
+  - **根因**：KBD 发布门禁强制要求至少一条 QFK 消费者信号，导致 `guidance_only` 类型的语义画像 KBD（如案例 15936 "使用ISO镜像安装2016提示缺少计算机所需介质驱动程序"）无法发布。这类 KBD 只有 `case_context` 等受限生产者信号，设计上不进入自动执行 CDD，而是通过语义兜底路径请求人工补充证据。
+  - **修复**：在 `backend/kb-service/app/routes/admin.py` 的发布验证中，当 KBD 的 `semantic_entry_profile.diagnosis_capability == "guidance_only"` 时，跳过 QFK 消费者信号要求。
 - **INCONCLUSIVE 回复死循环修复**：
   - **根因**：`_semantic_guidance_messages()` 中 `manual_evidence_request` 列表无条件全量输出，未检查用户是否已在对话中提供了对应信息。即使用户按请求提供了 ISO 文件名、SHA1、磁盘控制器类型等信息，系统仍逐字重复同一条"请求补充证据"回复，进入死循环。工单 Q2026091523611、Q2026091524854 均复现。
   - **修复**：

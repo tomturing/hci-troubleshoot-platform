@@ -4530,7 +4530,12 @@ async def publish_kbd_maintenance_working(
         _raise_signal_validation_error(exc, signals_doc.get("signals") or [])
     payload["signals_json"] = signals_doc
     signals = signals_doc.get("signals") or []
-    if not any(
+    # 语义入口画像（guidance_only）允许仅声明 case_context 等受限生产者信号，
+    # 不强制要求 QFK 消费者信号。这类 KBD 不进入自动执行 CDD，而是通过语义兜底
+    # 路径请求人工补充证据。仅对非 guidance_only 的 KBD 强制要求至少一条 QFK 信号。
+    semantic_profile = signals_doc.get("semantic_entry_profile") or {}
+    is_guidance_only = semantic_profile.get("diagnosis_capability") == "guidance_only"
+    if not is_guidance_only and not any(
         isinstance(signal, dict)
         and (
             str((signal.get("acquire") or {}).get("tool") or "").startswith("qfk")
