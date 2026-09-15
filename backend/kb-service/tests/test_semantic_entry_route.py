@@ -66,6 +66,16 @@ async def test_admin_preview_returns_guidance_and_literal_sources_without_saving
 from fastapi import HTTPException
 
 
+def test_semantic_resolver_request_accepts_matched_inconclusive_guidance_state():
+    request = SemanticEntryResolveRequest(
+        category_id="虚拟机-001",
+        case_context="安装系统时提示缺少介质驱动程序",
+        strong_producer_status="matched_inconclusive",
+    )
+
+    assert request.strong_producer_status == "matched_inconclusive"
+
+
 @pytest.mark.asyncio
 async def test_semantic_resolver_refuses_fallback_when_strong_source_is_unavailable():
     response = await resolve_semantic_entry(

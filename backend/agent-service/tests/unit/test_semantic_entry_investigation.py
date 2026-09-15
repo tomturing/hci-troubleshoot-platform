@@ -1,5 +1,6 @@
 """在线语义入口真实编排：纯语义分类、执行白名单与多轮上下文。"""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -97,3 +98,103 @@ def test_repeated_semantic_question_is_bounded_without_counting_user_answers():
     question = "请提供蓝屏错误文字"
     assert InvestigationAgent._semantic_question_exhausted([{"role": "assistant", "content": question}] * 2, question)
     assert not InvestigationAgent._semantic_question_exhausted([{"role": "user", "content": question}] * 3, question)
+
+
+@pytest.mark.asyncio
+async def test_matched_strong_history_still_exposes_guidance_after_inconclusive_cdd(monkeypatch):
+    """无关历史任务命中不能吞掉安全的 guidance_only 人工补证据路径。"""
+
+    class Diagnostic:
+        def __init__(self, **kwargs):
+            pass
+
+        async def diagnose(self, *, candidates, **kwargs):
+            yield AgentStageUpdate(stage="checked", metadata={})
+
+        def get_result(self):
+            return SimpleNamespace(
+                is_definitive=False,
+                steps_executed=[
+                    SimpleNamespace(
+                        tool_name="qkv_task",
+                        kbd_id="strong",
+                        signal_id="task_failure",
+                        error=None,
+                        outcome="SATISFIED",
+                        match_kbd_ids={"strong"},
+                    )
+                ],
+                diagnosis_report="原 CDD 仍无法确认。",
+                conclusion_level="INCONCLUSIVE",
+                candidate_states={"strong": "INCONCLUSIVE"},
+            )
+
+    monkeypatch.setattr("app.adapters.agents.htp.investigation_agent.KBDDiagnostic", Diagnostic)
+    client = MagicMock()
+    client.get_category_playbooks = AsyncMock(
+        return_value={
+            "sops": [],
+            "snapshot_id": "snap",
+            "kbds": [
+                {
+                    "id": "strong",
+                    "support_id": "15425",
+                    "name": "历史任务候选",
+                    "executable": True,
+                    "signals": [
+                        {
+                            "id": "task_failure",
+                            "acquire": {"tool": "qkv_task", "args": {}},
+                            "orchestrate": {"phase": "diagnostic"},
+                        }
+                    ],
+                },
+                {
+                    "id": "guidance",
+                    "support_id": "15936",
+                    "name": "安装介质驱动提示",
+                    "executable": False,
+                    "signals": [
+                        {
+                            "id": "case_context",
+                            "acquire": {"tool": "qkv_case_context", "args": {}},
+                        }
+                    ],
+                    "semantic_entry_profile": {"diagnosis_capability": "guidance_only"},
+                    "resource_revision": {"revision": 1},
+                },
+            ],
+        }
+    )
+    client.resolve_semantic_entry = AsyncMock(
+        return_value={
+            "decision": "inconclusive",
+            "reason": "guidance_only",
+            "candidates": [
+                {
+                    "kbd_id": "guidance",
+                    "manual_evidence_request": ["请提供完整安装报错截图"],
+                }
+            ],
+            "next_action": {"type": "manual_evidence_request", "question": "请确认完整报错文字"},
+        }
+    )
+    registry = MagicMock()
+    registry.get_client.return_value = MagicMock()
+    agent = InvestigationAgent(ai_registry=registry, kb_client=client, tool_executor=MagicMock())
+
+    events = [
+        event
+        async for event in agent.process(
+            session_id="session",
+            case_id="case",
+            category_id="虚拟机-001",
+            messages=[{"role": "user", "content": "安装 Windows Server 2016 提示缺少介质驱动程序"}],
+        )
+    ]
+
+    request = client.resolve_semantic_entry.await_args.kwargs
+    assert request["strong_producer_status"] == "matched_inconclusive"
+    assert any(
+        isinstance(event, AgentTextChunk) and "请提供完整安装报错截图" in event.content for event in events
+    )

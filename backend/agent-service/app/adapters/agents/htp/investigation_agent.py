@@ -448,7 +448,10 @@ class InvestigationAgent(BaseAgent):
             ):
                 strong_status = "source_unavailable"
             elif any(step.match_kbd_ids for step in strong_steps):
-                strong_status = "matched"
+                # 强生产者返回过记录，但完整 CDD 在当前分支仍然不确定。历史记录或
+                # 宽泛关键字命中不能吞掉 guidance_only 的人工补证据路径；同时保留
+                # 与普通 matched 不同的状态，使服务端继续禁止 executable 语义候选。
+                strong_status = "matched_inconclusive"
             else:
                 strong_status = "no_match"
             semantic_result = await self._kb_client.resolve_semantic_entry(
