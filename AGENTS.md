@@ -23,7 +23,7 @@
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
 - **Langfuse 子路径导航丢失修复（NEXT_PUBLIC_BASE_PATH 补齐）**（PR #1035）：
   - **根因**：Langfuse (Next.js) 通过 Traefik `stripPrefix` 中间件挂载在 `/langfuse` 子路径，但容器内未配置 `NEXT_PUBLIC_BASE_PATH`，导致 Next.js 前端生成的内部链接（页面跳转、tRPC 请求）不含 `/langfuse` 前缀。首页直接访问 `/langfuse` 能命中 Ingress 规则，但点击项目/设置等页面后，浏览器 URL 变为 `/project/xxx` 或 `/api/trpc/...`，脱离 Ingress 路由范围导致导航丢失。
-  - **修复**：在 `deploy/helm/hci-platform-obs/templates/langfuse.yaml` 的 `langfuse-server` 环境变量中增加 `NEXT_PUBLIC_BASE_PATH=/langfuse`（subdomain 模式下不设置）；同步更新 readinessProbe/livenessProbe 路径为 `/langfuse/api/public/health`（`basePath` 设置后 Next.js 将 `/api/*` 路由也挂到 `/langfuse` 下）。Docker Compose 无需修改（本地 `localhost:13000` 无子路径前缀）。
+  - **修复**：在 `deploy/helm/hci-platform-obs/templates/langfuse.yaml` 的 `langfuse-server` 环境变量中增加 `NEXT_PUBLIC_BASE_PATH=/langfuse`（subdomain 模式下不设置），使 Next.js 前端生成的内部链接（页面跳转、静态资源、tRPC 请求）自动带 `/langfuse` 前缀。**注意**：Next.js `basePath` 不影响 `/api/` 路由，健康端点始终在 `/api/public/health`，探针路径保持不变。Docker Compose 无需修改（本地 `localhost:13000` 无子路径前缀）。
 - **语义入口画像级联删除与切换清理提示**（PR #1027, #1028）：
   - **背景**：`semantic_entry_profile` 与 `qkv_case_context` 信号必须成对共存（后端校验）。删除信号后画像成为孤儿，或切换唯一上下文信号时，用户不知道需要清理画像，导致保存失败。
   - **修复**：
