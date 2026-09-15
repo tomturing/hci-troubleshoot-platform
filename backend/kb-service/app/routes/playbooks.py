@@ -139,11 +139,20 @@ def _execution_issues(
                     KBD_CONTRACT_SOFT_STALE_TOTAL.labels(
                         support_id=support_id or "unknown", category=category_id or "unknown"
                     ).inc()
-    elif isinstance(generation, dict) and generation:
-        if generation.get("status") == "stale":
-            issues.append("Signal/Contract 生成输入已变化，必须重新抽取或完成人工复核")
-        if generation.get("tool_contract_revision") != current_tool_contract_revision():
-            issues.append("Signal/Contract 使用的工具契约版本已过期，必须重新编译")
+    # 发布章只证明发布当时通过门禁；正文或证据后来变更时，generation_metadata 会
+    # 显式标记 stale。该标记必须独立阻断，否则分类快照会把 KBD 宣告为 executable，
+    # 而 CDD 编译器又在运行时拒绝它，导致强生产者完整性计算出现虚假 source_unavailable。
+    if isinstance(generation, dict) and generation and generation.get("status") == "stale":
+        issues.append("Signal/Contract 生成输入已变化，必须重新抽取或完成人工复核")
+    # 仅在没有专家发布章时才用生成时的工具契约版本作兼容路径门禁；已发布 KBD
+    # 的兼容漂移由上方 publish_validation 统一处理，不能因为旧生成指纹重复阻断。
+    if (
+        not (isinstance(publish_validation, dict) and publish_validation)
+        and isinstance(generation, dict)
+        and generation
+        and generation.get("tool_contract_revision") != current_tool_contract_revision()
+    ):
+        issues.append("Signal/Contract 使用的工具契约版本已过期，必须重新编译")
     if not signals:
         issues.append("未配置关键信号")
     return issues
