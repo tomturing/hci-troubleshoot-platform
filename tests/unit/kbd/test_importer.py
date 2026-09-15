@@ -311,7 +311,7 @@ class TestPortForwardSafety:
     """测试环境解析、目标验证与进程归属的 fail-closed 契约。"""
 
     def test_resolves_argocd_staging_role_without_dev_fallback(self):
-        from kbd import importer
+        from kbd import importer, tunnel
 
         def fake_output(*args: str) -> str:
             joined = " ".join(args)
@@ -324,8 +324,15 @@ class TestPortForwardSafety:
         with (
             patch.object(importer.settings, "K8S_NAMESPACE", ""),
             patch.dict(os.environ, {}, clear=False),
-            patch.object(importer, "_kubectl_output", side_effect=fake_output),
-            patch.object(importer, "_namespace_has_service", side_effect=lambda ns: ns == "hci-staging"),
+            # ``_resolve_k8s_namespace`` is re-exported by importer, but its
+            # globals belong to kbd.tunnel.  Patch the defining module so this
+            # unit test cannot invoke the developer machine's kubectl config.
+            patch.object(tunnel, "_kubectl_output", side_effect=fake_output),
+            patch.object(
+                tunnel,
+                "_namespace_has_service",
+                side_effect=lambda ns, _service: ns == "hci-staging",
+            ),
         ):
             os.environ.pop("KBD_K8S_NAMESPACE", None)
             assert importer._resolve_k8s_namespace() == "hci-staging"

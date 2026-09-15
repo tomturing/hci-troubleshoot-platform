@@ -52,6 +52,38 @@ JACCARD_THRESHOLD = 0.6
 HISTORY_LIMIT = 10
 
 
+def _semantic_entry_metadata(raw: Any) -> dict[str, Any] | None:
+    """将语义路由结果收敛为可安全展示的客户侧消息元数据。"""
+
+    if not isinstance(raw, dict):
+        return None
+    candidates = []
+    for item in raw.get("candidates") or []:
+        if not isinstance(item, dict):
+            continue
+        support_id = str(item.get("support_id") or "").strip()
+        title = str(item.get("title") or "").strip()
+        if not support_id and not title:
+            continue
+        candidates.append(
+            {
+                "support_id": support_id,
+                "title": title,
+                "diagnosis_capability": str(item.get("diagnosis_capability") or ""),
+                "matched_positive_anchors": [
+                    str(anchor) for anchor in item.get("matched_positive_anchors") or [] if str(anchor).strip()
+                ],
+            }
+        )
+    if not candidates:
+        return None
+    return {
+        "decision": str(raw.get("decision") or ""),
+        "reason": str(raw.get("reason") or ""),
+        "candidates": candidates,
+    }
+
+
 def _with_scope_context(
     context_info: dict[str, Any] | None,
     *,
@@ -769,6 +801,10 @@ class ConversationService:
                             _stage = agent_event.get("stage", "")
                             _metadata = agent_event.get("metadata", {})
                             yield f"\x00event:stage_change:{_stage}\x00"
+                            if _stage == "semantic_entry_fallback":
+                                _semantic = _semantic_entry_metadata(_metadata)
+                                if _semantic is not None:
+                                    yield f"\x00event:metadata:{_json.dumps({'semantic_entry': _semantic}, ensure_ascii=False)}\x00"
                             if _stage == "kbd_diag_complete":
                                 # stage_change 只携带阶段名，管理端仿真无法据此判断最终
                                 # 命中了哪篇 KBD。额外发布结构化结论供结果 oracle 使用；
@@ -3434,6 +3470,10 @@ class ConversationService:
                 _stage = agent_event.get("stage", "")
                 _metadata = agent_event.get("metadata", {})
                 yield f"\x00event:stage_change:{_stage}\x00"
+                if _stage == "semantic_entry_fallback":
+                    _semantic = _semantic_entry_metadata(_metadata)
+                    if _semantic is not None:
+                        yield f"\x00event:metadata:{_json.dumps({'semantic_entry': _semantic}, ensure_ascii=False)}\x00"
                 if _stage == "kbd_diag_complete":
                     _payload = _json.dumps(_metadata, ensure_ascii=False)
                     yield f"\x00event:diagnostic_outcome:{_payload}\x00"

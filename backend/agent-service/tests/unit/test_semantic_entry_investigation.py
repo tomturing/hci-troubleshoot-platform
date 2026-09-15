@@ -126,6 +126,16 @@ def test_evidence_request_satisfied_by_user_keywords():
     assert InvestigationAgent._evidence_request_satisfied(messages, "请提供所用 ISO 的文件名、SHA1 和文件大小")
 
 
+def test_iso_mention_alone_does_not_satisfy_integrity_evidence_request():
+    messages = [
+        {"role": "user", "content": "通过 ISO 安装 Windows Server 2016 时提示缺少驱动程序"},
+    ]
+
+    assert not InvestigationAgent._evidence_request_satisfied(
+        messages, "请提供所用 ISO 的文件名、SHA1 和文件大小"
+    )
+
+
 def test_evidence_request_satisfied_controller_driver():
     """用户提到磁盘控制器和驱动时，满足对应 evidence request。"""
     messages = [
@@ -159,6 +169,8 @@ def test_guidance_filters_already_provided_evidence():
             "next_action": {"question": question},
             "candidates": [
                 {
+                    "support_id": "15936",
+                    "title": "ISO 安装缺少介质驱动程序",
                     "manual_evidence_request": [
                         "请提供所用 ISO 的文件名、SHA1 和文件大小",
                         "请提供安装失败界面的完整报错截图",
@@ -168,13 +180,12 @@ def test_guidance_filters_already_provided_evidence():
             ],
         },
     )
-    # question 已被回答（用户消息包含引号内关键词），ISO request 也已满足
-    # 只剩"截图"和"控制器"未被满足
-    assert len(result) == 1
-    assert "当前只能请求补充证据" in result[0]
-    assert "ISO" not in result[0]  # 已被用户满足，应被过滤
-    assert "截图" in result[0]  # 未满足，应保留
-    assert "控制器" in result[0]  # 未满足，应保留
+    # 缺少合法 SHA1 和文件大小时，ISO 完整性证据不能被仅有的“iso 文件名”误过滤。
+    assert any("语义案例" in item for item in result)
+    evidence = next(item for item in result if "当前只能请求补充证据" in item)
+    assert "ISO" in evidence
+    assert "截图" in evidence
+    assert "控制器" in evidence
 
 
 @pytest.mark.asyncio

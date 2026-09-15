@@ -71,6 +71,31 @@ const isSystem = computed(() => props.message.role === 'system')
 const isAssistant = computed(() => props.message.role === 'assistant')
 const isDivider = computed(() => isSystem.value && props.message.content.includes('────'))
 
+interface SemanticEntryCandidate {
+  support_id?: string
+  title?: string
+  diagnosis_capability?: string
+  matched_positive_anchors?: string[]
+}
+
+interface SemanticEntryMetadata {
+  decision?: string
+  reason?: string
+  candidates: SemanticEntryCandidate[]
+}
+
+const semanticEntry = computed<SemanticEntryMetadata | null>(() => {
+  const raw = props.message.metadata?.semantic_entry
+  if (!raw || typeof raw !== 'object') return null
+  const value = raw as Record<string, unknown>
+  const candidates = Array.isArray(value.candidates)
+    ? value.candidates.filter((candidate): candidate is SemanticEntryCandidate => Boolean(candidate && typeof candidate === 'object'))
+    : []
+  return candidates.length > 0
+    ? { decision: String(value.decision || ''), reason: String(value.reason || ''), candidates }
+    : null
+})
+
 /** 已复制状态 */
 const copiedMessage = ref(false)
 async function copyContent() {
@@ -1129,6 +1154,15 @@ async function handleToolCallReject() {
           <!-- tool_call 气泡：不渲染普通 content，下方有专用区域 -->
           <template v-if="message.metadata?.kind === 'tool_call'" />
 
+          <section v-if="semanticEntry" class="semantic-entry-card">
+            <div class="semantic-entry-card-title">🔎 语义入口已命中</div>
+            <div class="semantic-entry-card-hint">以下案例提供补证据方向，尚未确认根因。</div>
+            <div v-for="candidate in semanticEntry.candidates" :key="candidate.support_id || candidate.title" class="semantic-entry-candidate">
+              <el-tag type="warning" effect="plain" size="small">案例 {{ candidate.support_id || '—' }}</el-tag>
+              <span>{{ candidate.title || '语义候选' }}</span>
+            </div>
+          </section>
+
           <!-- qkv_vm_console 结果卡：截图采集状态与视觉观察（不渲染普通 content） -->
           <template v-else-if="message.metadata?.kind === 'vm_console_result_card'">
             <div class="vm-console-card">
@@ -1758,6 +1792,29 @@ async function handleToolCallReject() {
   border: 1px solid var(--el-border-color);
   border-radius: 4px;
   margin-top: 6px;
+}
+.semantic-entry-card {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--el-color-warning-light-5);
+  border-radius: 8px;
+  background: var(--el-color-warning-light-9);
+}
+.semantic-entry-card-title {
+  font-weight: 600;
+  color: var(--el-color-warning-dark-2);
+}
+.semantic-entry-card-hint {
+  margin: 4px 0 7px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.semantic-entry-candidate {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 13px;
+  line-height: 1.5;
 }
 .message-bubble {
   display: flex;

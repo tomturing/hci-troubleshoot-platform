@@ -1497,10 +1497,12 @@ class InvestigationAgent(BaseAgent):
         if not distinctive_bigrams:
             return False
 
-        # 合并所有用户消息，检查 bigram 命中数
+        # 合并所有用户消息，按请求自身的特征片段覆盖率判断。固定“命中 2 个”会
+        # 让只出现一个短词（例如 ISO）的原始描述误满足包含多项证据的请求。
         combined = " ".join(user_messages).lower()
         matched = sum(1 for bg in distinctive_bigrams if bg in combined)
-        return matched >= 2
+        required_matches = max(2, (len(distinctive_bigrams) * 2 + 4) // 5)
+        return matched >= required_matches
 
     @classmethod
     def _semantic_guidance_messages(cls, messages: list[dict], semantic_result: dict) -> list[str]:
@@ -1512,6 +1514,13 @@ class InvestigationAgent(BaseAgent):
             return ["补充信息后仍无法安全区分候选，已请求人工复核。"]
 
         outputs: list[str] = []
+        matched_cases = [
+            f"[{item.get('support_id') or item.get('kbd_id')}] {item.get('title') or '语义案例'}"
+            for item in semantic_result.get("candidates") or []
+            if item.get("support_id") or item.get("kbd_id")
+        ]
+        if matched_cases:
+            outputs.append("🔎 已命中语义案例：" + "；".join(dict.fromkeys(matched_cases)) + "。当前仅提供补证据指引，尚未确认根因。")
         if question and not question_answered:
             outputs.append("目前无法确认根因。" + question)
         # 过滤用户已提供的 evidence request，避免重复索要已知信息
