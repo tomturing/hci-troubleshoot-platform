@@ -494,6 +494,7 @@
     - 前端编辑器（`SemanticProfileEditor.vue`）三选一下拉、`kbdSignalTypes.ts` 类型同步，`KbdReviewView.vue` / `CategoryManageView.vue` 详情面板透出中性选项徽标。
   - **配置建议**：画像出现"无法判断 / 不适用 / 我不确定"等回退选项时，effect 应选 `neutral`；仅在语义上**确实反向**时（如"是其它产品 / 其它报错"）才用 `exclude`。
   - **设计意图**：`neutral` 答完后再让路由层走第 3 步 `clarifying_questions` / 第 4 步 `manual_evidence_request`，让候选池逐步收敛而不是一句话清零。
+  - **配套测试约定**：`SemanticProfileEditor.spec.ts` 改用 `emitted('save')` 验证 draft 持久化，而非 `(wrapper.vm as ...).draft` 直接读取组件 ref，避免 vue-tsc TS2352；同时覆盖中性 effect 的保存路径。
 
 ---
 
