@@ -179,6 +179,57 @@ async def test_profile_declared_choice_reassesses_without_text_matching():
 
 
 @pytest.mark.asyncio
+async def test_neutral_disambiguation_choice_keeps_candidate_and_advances_to_evidence_request():
+    """中性选项：既不加分也不淘汰，候选保留在池中并推进到补证据引导。
+
+    这是「答否不会归零」配置的关键回归：把 other_stage 改成 neutral 后，
+    候选被保留，gate 4（manual_evidence_request）会主动把用户引导到
+    请补充 ISO/SHA1/控制器类型 这条路径，而不是落到硬编码兜底文案。
+    """
+    profile = {
+        "semantic_recommendation": {"enabled": True, "minimum_score": 0.9, "minimum_margin": 0.1},
+        "semantic_disambiguation": [
+            {
+                "id": "installer_stage",
+                "question": "错误出现在哪个安装阶段？",
+                "choices": [
+                    {"id": "driver_selection", "label": "选择要安装的驱动程序", "effect": "support"},
+                    {"id": "other_stage", "label": "其它阶段或无法判断", "effect": "neutral"},
+                ],
+            }
+        ],
+        "manual_evidence_request": [
+            "请提供所用 ISO 的文件名、SHA1 和文件大小",
+            "请确认虚拟磁盘控制器类型以及是否已加载对应驱动",
+        ],
+    }
+    initial = await resolve_candidates(
+        entries=[entry(capability="guidance_only", **profile)],
+        context="镜像格式不支持",
+        strong_status="no_match",
+    )
+    assert initial["decision"] == "inconclusive"
+    assert initial["next_action"]["type"] == "semantic_disambiguation"
+
+    answered = await resolve_candidates(
+        entries=[entry(capability="guidance_only", **profile)],
+        context={
+            "description": "镜像格式不支持",
+            "semantic_answers": {"installer_stage": "other_stage"},
+        },
+        strong_status="no_match",
+    )
+    # 候选仍在 ranked 中，分数未被排除也未被加分
+    assert answered["decision"] == "inconclusive"
+    assert answered["reason"] == "guidance_only"
+    assert answered["candidates"], "中性选项应保留候选，不能把池清空"
+    assert answered["filtered_candidates"] == []
+    # gate 4 命中：引导用户补充证据，而不是硬编码兜底
+    assert answered["next_action"]["type"] == "manual_evidence_request"
+    assert answered["next_action"]["question"] == "请提供所用 ISO 的文件名、SHA1 和文件大小"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("version", "expected"), [("6.12.0", "executable"), ("6.9", "inconclusive"), ("", "inconclusive")]
 )

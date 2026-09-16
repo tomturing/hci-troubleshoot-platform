@@ -19,7 +19,7 @@ SEMANTIC_ENTRY_TOOL = "qkv_case_context"
 SEMANTIC_CAPABILITIES = frozenset({"executable", "guidance_only", "capability_gap"})
 EVIDENCE_FIELD_INPUT_TYPES = frozenset({"text", "textarea"})
 _EVIDENCE_FIELD_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-SEMANTIC_DISAMBIGUATION_EFFECTS = frozenset({"support", "exclude"})
+SEMANTIC_DISAMBIGUATION_EFFECTS = frozenset({"support", "exclude", "neutral"})
 STRONG_PRODUCER_TOOLS = frozenset(FRONTEND_TOOLS)
 MAX_CONTEXT_CHARS = 16000
 _TOKEN_RE = re.compile(r"[a-zA-Z0-9_./:-]+|[\u4e00-\u9fff]{2,}")
@@ -200,7 +200,7 @@ def validate_semantic_entry_profile(raw: Any) -> None:
             if not isinstance(choice.get("label"), str) or not choice["label"].strip():
                 raise ValidationError("语义澄清选项必须提供非空 label", path=[*choice_path, "label"])
             if choice.get("effect") not in SEMANTIC_DISAMBIGUATION_EFFECTS:
-                raise ValidationError("语义澄清选项 effect 仅支持 support 或 exclude", path=[*choice_path, "effect"])
+                raise ValidationError("语义澄清选项 effect 仅支持 support、exclude 或 neutral", path=[*choice_path, "effect"])
     for index, example in enumerate(profile.get("routing_examples", [])):
         _, positive, negative = lexical_profile_score(profile, example["description"])
         if bool(positive and not negative) != example["expected_match"]:

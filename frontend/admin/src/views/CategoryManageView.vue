@@ -1652,11 +1652,11 @@ onMounted(fetchCategories)
                   <el-tag
                     v-for="choice in question.choices"
                     :key="choice.id"
-                    :type="choice.effect === 'exclude' ? 'danger' : 'success'"
+                    :type="choice.effect === 'exclude' ? 'danger' : choice.effect === 'neutral' ? 'info' : 'success'"
                     effect="plain"
                     size="small"
                     style="margin-left: 6px"
-                  >{{ choice.label }}（{{ choice.effect === 'exclude' ? '排除' : '支持' }}）</el-tag>
+                  >{{ choice.label }}（{{ choice.effect === 'exclude' ? '排除' : choice.effect === 'neutral' ? '不影响' : '支持' }}）</el-tag>
                 </li>
               </ul>
             </div>

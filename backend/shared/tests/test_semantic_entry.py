@@ -64,6 +64,43 @@ def test_structured_evidence_field_id_is_validated():
         validate_kbd_publishable_signals_json(document)
 
 
+def test_disambiguation_neutral_effect_is_accepted_and_does_not_alter_match():
+    """中性选项不应被校验拒绝，也不应拉低/拉高锚点分。"""
+    document = _document("guidance_only")
+    document["semantic_entry_profile"]["semantic_disambiguation"] = [
+        {
+            "id": "installer_stage",
+            "question": "错误出现在哪个安装阶段？",
+            "choices": [
+                {"id": "driver_selection", "label": "选择要安装的驱动程序", "effect": "support"},
+                {"id": "other_stage", "label": "其它阶段或无法判断", "effect": "neutral"},
+            ],
+        }
+    ]
+    validate_kbd_publishable_signals_json(document)
+    profile = document["semantic_entry_profile"]
+    score, positives, exclusions = lexical_profile_score(profile, "备份池空间不足")
+    assert score > 0
+    assert positives == ["空间不足", "备份池"]
+    assert exclusions == []
+
+
+def test_disambiguation_invalid_effect_is_rejected():
+    document = _document("guidance_only")
+    document["semantic_entry_profile"]["semantic_disambiguation"] = [
+        {
+            "id": "installer_stage",
+            "question": "错误出现在哪个安装阶段？",
+            "choices": [
+                {"id": "driver_selection", "label": "选择要安装的驱动程序", "effect": "support"},
+                {"id": "other_stage", "label": "其它阶段", "effect": "reject"},
+            ],
+        }
+    ]
+    with pytest.raises(ValidationError, match="is not one of"):
+        validate_kbd_publishable_signals_json(document)
+
+
 def test_capability_gap_cannot_bypass_producer_gate():
     with pytest.raises(ValidationError, match="至少需要 1 条生产者信号"):
         validate_kbd_publishable_signals_json(_document("capability_gap"))

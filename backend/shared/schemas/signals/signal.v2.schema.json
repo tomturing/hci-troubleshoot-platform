@@ -193,7 +193,8 @@
                     "effect": {
                       "enum": [
                         "support",
-                        "exclude"
+                        "exclude",
+                        "neutral"
                       ]
                     }
                   },

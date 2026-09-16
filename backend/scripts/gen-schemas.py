@@ -166,7 +166,7 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                                         "properties": {
                                             "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
                                             "label": {"type": "string", "minLength": 1},
-                                            "effect": {"enum": ["support", "exclude"]},
+                                            "effect": {"enum": ["support", "exclude", "neutral"]},
                                         },
                                         "additionalProperties": False,
                                     },
