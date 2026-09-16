@@ -19,6 +19,7 @@ SEMANTIC_ENTRY_TOOL = "qkv_case_context"
 SEMANTIC_CAPABILITIES = frozenset({"executable", "guidance_only", "capability_gap"})
 EVIDENCE_FIELD_INPUT_TYPES = frozenset({"text", "textarea"})
 _EVIDENCE_FIELD_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+SEMANTIC_DISAMBIGUATION_EFFECTS = frozenset({"support", "exclude"})
 STRONG_PRODUCER_TOOLS = frozenset(FRONTEND_TOOLS)
 MAX_CONTEXT_CHARS = 16000
 _TOKEN_RE = re.compile(r"[a-zA-Z0-9_./:-]+|[\u4e00-\u9fff]{2,}")
@@ -65,6 +66,13 @@ def capability_of(raw: Any) -> str | None:
     profile = semantic_entry_profile(raw)
     value = profile.get("diagnosis_capability") if profile else None
     return str(value) if value in SEMANTIC_CAPABILITIES else None
+
+
+def semantic_recommendation_policy(profile: dict[str, Any]) -> dict[str, Any]:
+    """读取画像显式声明的高置信语义推荐策略。"""
+
+    raw = profile.get("semantic_recommendation")
+    return raw if isinstance(raw, dict) else {}
 
 
 def manual_evidence_fields(profile: dict[str, Any]) -> list[dict[str, Any]]:
@@ -151,6 +159,48 @@ def validate_semantic_entry_profile(raw: Any) -> None:
             "guidance_only 画像必须提供 manual_evidence_fields 或 manual_evidence_request，明确需要用户补充什么证据",
             path=["semantic_entry_profile", "manual_evidence_fields"],
         )
+    recommendation = semantic_recommendation_policy(profile)
+    if profile.get("semantic_recommendation") is not None and not isinstance(profile.get("semantic_recommendation"), dict):
+        raise ValidationError("semantic_entry_profile.semantic_recommendation 必须是对象", path=["semantic_entry_profile", "semantic_recommendation"])
+    if recommendation:
+        if capability != "guidance_only":
+            raise ValidationError("高置信语义推荐仅适用于 guidance_only 画像", path=["semantic_entry_profile", "semantic_recommendation"])
+        if not isinstance(recommendation.get("enabled"), bool):
+            raise ValidationError("semantic_recommendation.enabled 必须是布尔值", path=["semantic_entry_profile", "semantic_recommendation", "enabled"])
+        for key in ("minimum_score", "minimum_margin"):
+            value = recommendation.get(key)
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 1:
+                raise ValidationError(f"semantic_recommendation.{key} 必须是 0 到 1 之间的数值", path=["semantic_entry_profile", "semantic_recommendation", key])
+    disambiguation = profile.get("semantic_disambiguation", [])
+    if not isinstance(disambiguation, list):
+        raise ValidationError("semantic_entry_profile.semantic_disambiguation 必须是问题数组", path=["semantic_entry_profile", "semantic_disambiguation"])
+    seen_questions: set[str] = set()
+    for index, question in enumerate(disambiguation):
+        path = ["semantic_entry_profile", "semantic_disambiguation", index]
+        if not isinstance(question, dict):
+            raise ValidationError("语义澄清问题必须是对象", path=path)
+        question_id = str(question.get("id") or "")
+        if not _EVIDENCE_FIELD_ID_RE.fullmatch(question_id) or question_id in seen_questions:
+            raise ValidationError("语义澄清问题 id 必须唯一，且仅含小写字母、数字、下划线", path=[*path, "id"])
+        seen_questions.add(question_id)
+        if not isinstance(question.get("question"), str) or not question["question"].strip():
+            raise ValidationError("语义澄清问题必须提供非空 question", path=[*path, "question"])
+        choices = question.get("choices")
+        if not isinstance(choices, list) or len(choices) < 2:
+            raise ValidationError("语义澄清问题至少需要两个选项", path=[*path, "choices"])
+        seen_choices: set[str] = set()
+        for choice_index, choice in enumerate(choices):
+            choice_path = [*path, "choices", choice_index]
+            if not isinstance(choice, dict):
+                raise ValidationError("语义澄清选项必须是对象", path=choice_path)
+            choice_id = str(choice.get("id") or "")
+            if not _EVIDENCE_FIELD_ID_RE.fullmatch(choice_id) or choice_id in seen_choices:
+                raise ValidationError("语义澄清选项 id 必须唯一，且仅含小写字母、数字、下划线", path=[*choice_path, "id"])
+            seen_choices.add(choice_id)
+            if not isinstance(choice.get("label"), str) or not choice["label"].strip():
+                raise ValidationError("语义澄清选项必须提供非空 label", path=[*choice_path, "label"])
+            if choice.get("effect") not in SEMANTIC_DISAMBIGUATION_EFFECTS:
+                raise ValidationError("语义澄清选项 effect 仅支持 support 或 exclude", path=[*choice_path, "effect"])
     for index, example in enumerate(profile.get("routing_examples", [])):
         _, positive, negative = lexical_profile_score(profile, example["description"])
         if bool(positive and not negative) != example["expected_match"]:

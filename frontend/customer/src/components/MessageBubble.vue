@@ -90,6 +90,7 @@ interface SemanticEntryMetadata {
   decision?: string
   reason?: string
   candidates: SemanticEntryCandidate[]
+  next_action?: { type: 'semantic_disambiguation'; question_id: string; question: string; choices: Array<{ id: string; label: string }> } | null
 }
 
 const semanticEntry = computed<SemanticEntryMetadata | null>(() => {
@@ -100,7 +101,7 @@ const semanticEntry = computed<SemanticEntryMetadata | null>(() => {
     ? value.candidates.filter((candidate): candidate is SemanticEntryCandidate => Boolean(candidate && typeof candidate === 'object'))
     : []
   return candidates.length > 0
-    ? { decision: String(value.decision || ''), reason: String(value.reason || ''), candidates }
+    ? { decision: String(value.decision || ''), reason: String(value.reason || ''), candidates, next_action: value.next_action as SemanticEntryMetadata['next_action'] }
     : null
 })
 
@@ -135,6 +136,22 @@ async function submitSemanticEvidence(candidate: SemanticEntryCandidate) {
     })
   } finally {
     semanticEvidenceSubmitting.value = null
+  }
+}
+
+const semanticClarificationSubmitting = ref(false)
+async function submitSemanticClarification(questionId: string, choiceId: string, label: string) {
+  if (semanticClarificationSubmitting.value) return
+  semanticClarificationSubmitting.value = true
+  try {
+    await chatStore.sendMessage(label, {
+      kind: 'semantic_clarification_response',
+      questionId,
+      choiceId,
+      sourceMessageId: props.message.id,
+    })
+  } finally {
+    semanticClarificationSubmitting.value = false
   }
 }
 
@@ -1219,6 +1236,16 @@ async function handleToolCallReject() {
                 </el-button>
               </div>
             </div>
+            <div v-if="semanticEntry.next_action?.type === 'semantic_disambiguation'" class="semantic-disambiguation">
+              <p>{{ semanticEntry.next_action.question }}</p>
+              <el-button
+                v-for="choice in semanticEntry.next_action.choices"
+                :key="choice.id"
+                size="small"
+                :loading="semanticClarificationSubmitting"
+                @click="submitSemanticClarification(semanticEntry.next_action!.question_id, choice.id, choice.label)"
+              >{{ choice.label }}</el-button>
+            </div>
           </section>
 
           <!-- qkv_vm_console 结果卡：截图采集状态与视觉观察（不渲染普通 content） -->
@@ -1885,6 +1912,8 @@ async function handleToolCallReject() {
   color: var(--el-text-color-secondary);
   font-size: 12px;
 }
+.semantic-disambiguation { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; }
+.semantic-disambiguation p { flex-basis: 100%; margin: 0; font-size: 13px; }
 .message-bubble {
   display: flex;
   gap: 10px;

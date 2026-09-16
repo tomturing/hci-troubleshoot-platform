@@ -360,6 +360,9 @@ class InvestigationAgent(BaseAgent):
                     if str(item.get("id")) in candidate_ids and item.get("executable") is True
                 ]
                 semantic_preselected = bool(raw_cases)
+            if (semantic_result or {}).get("decision") == "semantic_recommendation":
+                yield AgentTextChunk(content=self._semantic_recommendation_message(semantic_result or {}))
+                return
             if not raw_cases:
                 question = ((semantic_result or {}).get("next_action") or {}).get("question")
                 if self._semantic_question_exhausted(messages, question):
@@ -538,6 +541,9 @@ class InvestigationAgent(BaseAgent):
             )
             semantic_candidates = (semantic_result or {}).get("candidates") or []
             candidate_ids = {str(item.get("kbd_id")) for item in semantic_candidates}
+            if (semantic_result or {}).get("decision") == "semantic_recommendation":
+                yield AgentTextChunk(content=self._semantic_recommendation_message(semantic_result or {}))
+                return
             if (semantic_result or {}).get("decision") == "executable" and candidate_ids:
                 selected = [
                     item
@@ -1581,6 +1587,25 @@ class InvestigationAgent(BaseAgent):
         return outputs
 
     @staticmethod
+    def _semantic_recommendation_message(semantic_result: dict) -> str:
+        """呈现高置信语义推荐，明确它不是已验证的现场根因。"""
+
+        candidate = next(
+            (item for item in semantic_result.get("candidates") or [] if isinstance(item, dict)),
+            {},
+        )
+        support_id = str(candidate.get("support_id") or candidate.get("kbd_id") or "—")
+        title = str(candidate.get("title") or "语义案例")
+        anchors = "、".join(str(item) for item in candidate.get("matched_positive_anchors") or [] if str(item).strip())
+        score = candidate.get("recommendation_confidence")
+        confidence = f"（匹配置信度 {float(score):.0%}）" if isinstance(score, (int, float)) else ""
+        return (
+            f"🔎 高置信语义推荐：[{support_id}] {title}{confidence}。"
+            f"匹配依据：{anchors or '工单症状画像'}。"
+            "该结论来自工单描述的语义匹配，未经过现场采集验证；建议优先按此案例处理。"
+        )
+
+    @staticmethod
     def _semantic_guidance_pending(messages: list[dict]) -> bool:
         """检测上一轮已发出补证据请求且客户随后提供了新事实。"""
 
@@ -1627,8 +1652,20 @@ class InvestigationAgent(BaseAgent):
         if len(description) > 16000:
             description = description[:8000] + "\n" + description[-7999:]
         # 只透传环境已知字段；不从语义推导目标或版本。
+        semantic_answers: dict[str, str] = {}
+        for message in messages:
+            metadata = message.get("metadata") if isinstance(message, dict) else None
+            if message.get("role") != "user" or not isinstance(metadata, dict):
+                continue
+            if metadata.get("kind") != "semantic_clarification_response":
+                continue
+            question_id = str(metadata.get("questionId") or "")
+            choice_id = str(metadata.get("choiceId") or "")
+            if question_id and choice_id:
+                semantic_answers[question_id] = choice_id
         return {
             "description": description,
+            "semantic_answers": semantic_answers,
             **{
                 key: str(value)
                 for key, value in (environment or {}).items()

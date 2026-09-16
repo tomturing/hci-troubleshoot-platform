@@ -91,11 +91,29 @@ def _semantic_entry_metadata(raw: Any) -> dict[str, Any] | None:
         )
     if not candidates:
         return None
-    return {
+    next_action = raw.get("next_action")
+    safe_next_action = None
+    if isinstance(next_action, dict) and next_action.get("type") == "semantic_disambiguation":
+        choices = [
+            {"id": str(choice.get("id") or ""), "label": str(choice.get("label") or "")}
+            for choice in next_action.get("choices") or []
+            if isinstance(choice, dict) and str(choice.get("id") or "").strip() and str(choice.get("label") or "").strip()
+        ]
+        if choices and str(next_action.get("question_id") or "").strip() and str(next_action.get("question") or "").strip():
+            safe_next_action = {
+                "type": "semantic_disambiguation",
+                "question_id": str(next_action["question_id"]),
+                "question": str(next_action["question"]),
+                "choices": choices,
+            }
+    metadata = {
         "decision": str(raw.get("decision") or ""),
         "reason": str(raw.get("reason") or ""),
         "candidates": candidates,
     }
+    if safe_next_action is not None:
+        metadata["next_action"] = safe_next_action
+    return metadata
 
 
 def _with_scope_context(

@@ -33,6 +33,16 @@ function addEvidenceField() {
   const fields = draft.value.manual_evidence_fields ||= []
   fields.push({ id: '', label: '', required: true, input_type: 'text', placeholder: '' })
 }
+function recommendationPolicy() {
+  return draft.value.semantic_recommendation ||= { enabled: false, minimum_score: 0.75, minimum_margin: 0.15 }
+}
+function addDisambiguationQuestion() {
+  const questions = draft.value.semantic_disambiguation ||= []
+  questions.push({ id: '', question: '', choices: [{ id: '', label: '', effect: 'support' }, { id: '', label: '', effect: 'exclude' }] })
+}
+function addDisambiguationChoice(question: NonNullable<Profile['semantic_disambiguation']>[number]) {
+  question.choices.push({ id: '', label: '', effect: 'support' })
+}
 function cleanDraft(): Profile {
   const result: Profile = JSON.parse(JSON.stringify(draft.value))
   for (const field of fields) result[field.key] = splitLines((result[field.key] || []).join('\n'))
@@ -77,6 +87,32 @@ async function runPreview() {
         <el-button @click="draft.manual_evidence_fields?.splice(index, 1)">删除</el-button>
       </div>
       <el-button @click="addEvidenceField">添加结构化字段</el-button>
+    </el-form-item>
+    <el-form-item label="高置信语义推荐">
+      <small>仅展示基于工单描述的推荐，不代表现场验证根因。第一名必须达到阈值且领先第二名达到分差才会触发。</small>
+      <el-checkbox v-model="recommendationPolicy().enabled">允许展示高置信推荐</el-checkbox>
+      <div v-if="recommendationPolicy().enabled" class="recommendation-policy-row">
+        <el-input-number v-model="recommendationPolicy().minimum_score" :min="0" :max="1" :step="0.05" />
+        <span>最低分</span>
+        <el-input-number v-model="recommendationPolicy().minimum_margin" :min="0" :max="1" :step="0.05" />
+        <span>与第二名最低分差</span>
+      </div>
+    </el-form-item>
+    <el-form-item label="语义澄清问题">
+      <small>当推荐门槛未满足时，客户从此处声明的选项中选择。选项只影响语义候选判断，不会作为执行变量。</small>
+      <div v-for="(item, index) in draft.semantic_disambiguation || []" :key="index" class="disambiguation-question">
+        <el-input v-model="item.id" placeholder="question_id" />
+        <el-input v-model="item.question" placeholder="需要向客户确认的问题" />
+        <div v-for="(choice, choiceIndex) in item.choices" :key="choiceIndex" class="disambiguation-choice">
+          <el-input v-model="choice.id" placeholder="choice_id" />
+          <el-input v-model="choice.label" placeholder="客户可见答案" />
+          <el-select v-model="choice.effect"><el-option label="支持该案例" value="support" /><el-option label="排除该案例" value="exclude" /></el-select>
+          <el-button @click="item.choices.splice(choiceIndex, 1)">删除</el-button>
+        </div>
+        <el-button @click="addDisambiguationChoice(item)">添加选项</el-button>
+        <el-button @click="draft.semantic_disambiguation?.splice(index, 1)">删除问题</el-button>
+      </div>
+      <el-button @click="addDisambiguationQuestion">添加澄清问题</el-button>
     </el-form-item>
     <el-collapse v-model="expandedSections">
       <el-collapse-item title="原文关联与正反例：随画像版本保存，发布时重新校验" name="validation">
@@ -129,4 +165,7 @@ small { color: var(--el-text-color-secondary); }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; }
 .actions { display: flex; justify-content: flex-end; margin-top: 16px; }
 .evidence-field-row { display: grid; grid-template-columns: 1fr 1.5fr 120px auto auto; gap: 8px; width: 100%; margin: 8px 0; }
+.recommendation-policy-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.disambiguation-question { width: 100%; border: 1px solid var(--el-border-color); border-radius: 6px; padding: 10px; margin: 8px 0; display: grid; gap: 8px; }
+.disambiguation-choice { display: grid; grid-template-columns: 1fr 2fr 140px auto; gap: 8px; }
 </style>
