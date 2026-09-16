@@ -32,6 +32,13 @@ export interface SignalsDoc {
     exclusion_anchors?: string[]
     scope?: string | string[]
     manual_evidence_request?: string[]
+    manual_evidence_fields?: Array<{
+      id: string
+      label: string
+      required?: boolean
+      input_type?: 'text' | 'textarea'
+      placeholder?: string
+    }>
     clarifying_questions?: string[]
     source_refs?: string[]
     source_evidence?: { field_path: string; source_ref: 'problem_description' | 'alert_info' | 'steps_text'; quote: string; source_sha256: string }[]

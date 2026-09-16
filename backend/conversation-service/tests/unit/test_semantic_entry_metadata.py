@@ -15,6 +15,9 @@ def test_semantic_entry_metadata_keeps_only_display_safe_candidate_fields():
                     "diagnosis_capability": "guidance_only",
                     "matched_positive_anchors": ["缺少介质驱动程序"],
                     "manual_evidence_request": ["不应作为卡片元数据透传"],
+                    "manual_evidence_fields": [
+                        {"id": "controller_type", "label": "控制器类型", "required": True, "input_type": "text"}
+                    ],
                 }
             ],
         }
@@ -25,10 +28,14 @@ def test_semantic_entry_metadata_keeps_only_display_safe_candidate_fields():
         "reason": "guidance_only",
         "candidates": [
             {
+                "kbd_id": "",
                 "support_id": "15936",
                 "title": "ISO 安装缺少介质驱动程序",
                 "diagnosis_capability": "guidance_only",
                 "matched_positive_anchors": ["缺少介质驱动程序"],
+                "manual_evidence_fields": [
+                    {"id": "controller_type", "label": "控制器类型", "required": True, "input_type": "text", "placeholder": ""}
+                ],
             }
         ],
     }

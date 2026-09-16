@@ -1504,6 +1504,33 @@ class InvestigationAgent(BaseAgent):
         required_matches = max(2, (len(distinctive_bigrams) * 2 + 4) // 5)
         return matched >= required_matches
 
+    @staticmethod
+    def _structured_evidence_values(messages: list[dict], candidate: dict) -> dict[str, str]:
+        """只接受客户侧结构化表单提交的值，不从自由文本或模型推断字段。"""
+
+        candidate_id = str(candidate.get("kbd_id") or candidate.get("support_id") or "")
+        allowed_ids = {
+            str(field.get("id"))
+            for field in candidate.get("manual_evidence_fields") or []
+            if isinstance(field, dict) and str(field.get("id") or "").strip()
+        }
+        values: dict[str, str] = {}
+        for message in messages:
+            metadata = message.get("metadata") if isinstance(message, dict) else None
+            if message.get("role") != "user" or not isinstance(metadata, dict):
+                continue
+            if metadata.get("kind") != "semantic_evidence_response":
+                continue
+            if str(metadata.get("candidateId") or "") != candidate_id:
+                continue
+            submitted = metadata.get("values")
+            if not isinstance(submitted, dict):
+                continue
+            for field_id, value in submitted.items():
+                if str(field_id) in allowed_ids and isinstance(value, str) and value.strip():
+                    values[str(field_id)] = value.strip()
+        return values
+
     @classmethod
     def _semantic_guidance_messages(cls, messages: list[dict], semantic_result: dict) -> list[str]:
         """构造下一轮人工补证据文本，避免重复提问或混入 CDD 报告。"""
@@ -1523,16 +1550,34 @@ class InvestigationAgent(BaseAgent):
             outputs.append("🔎 已命中语义案例：" + "；".join(dict.fromkeys(matched_cases)) + "。当前仅提供补证据指引，尚未确认根因。")
         if question and not question_answered:
             outputs.append("目前无法确认根因。" + question)
-        # 过滤用户已提供的 evidence request，避免重复索要已知信息
-        requests = [
-            request.strip()
-            for item in semantic_result.get("candidates") or []
-            for request in (item.get("manual_evidence_request") or [])
-            if isinstance(request, str) and request.strip()
-            and not cls._evidence_request_satisfied(messages, request.strip())
-        ]
+        requests: list[str] = []
+        completed_structured_profiles = 0
+        for item in semantic_result.get("candidates") or []:
+            fields = [field for field in item.get("manual_evidence_fields") or [] if isinstance(field, dict)]
+            if fields:
+                values = cls._structured_evidence_values(messages, item)
+                missing = [
+                    str(field.get("label") or "").strip()
+                    for field in fields
+                    if field.get("required", True) and not values.get(str(field.get("id") or ""))
+                ]
+                if missing:
+                    requests.append("请通过补证据表单填写：" + "、".join(missing))
+                else:
+                    completed_structured_profiles += 1
+                continue
+            # 兼容尚未迁移为结构化字段的旧画像；不会把自由文本推断为结构化事实。
+            requests.extend(
+                request.strip()
+                for request in (item.get("manual_evidence_request") or [])
+                if isinstance(request, str)
+                and request.strip()
+                and not cls._evidence_request_satisfied(messages, request.strip())
+            )
         if requests:
             outputs.append("当前只能请求补充证据：" + "；".join(dict.fromkeys(requests)))
+        elif completed_structured_profiles:
+            outputs.append("已收到画像要求的结构化证据；该案例没有自动验证消费者，已提交人工复核。")
         return outputs
 
     @staticmethod

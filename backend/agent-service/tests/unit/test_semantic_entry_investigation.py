@@ -156,6 +156,61 @@ def test_evidence_request_not_satisfied_when_no_match():
     assert not InvestigationAgent._evidence_request_satisfied(messages, "请提供安装失败界面的完整报错截图")
 
 
+def test_structured_evidence_uses_only_matching_customer_form_submission():
+    candidate = {
+        "kbd_id": "15936",
+        "manual_evidence_fields": [
+            {"id": "controller_type", "label": "控制器类型"},
+            {"id": "driver_loaded", "label": "驱动已加载"},
+        ],
+    }
+    messages = [
+        {"role": "user", "content": "VirtIO，已加载"},
+        {
+            "role": "user",
+            "content": "补充证据",
+            "metadata": {
+                "kind": "semantic_evidence_response",
+                "candidateId": "15936",
+                "values": {"controller_type": "VirtIO", "driver_loaded": "已加载", "untrusted": "忽略"},
+            },
+        },
+    ]
+    assert InvestigationAgent._structured_evidence_values(messages, candidate) == {
+        "controller_type": "VirtIO",
+        "driver_loaded": "已加载",
+    }
+
+
+def test_structured_evidence_guidance_requests_only_missing_declared_fields():
+    result = InvestigationAgent._semantic_guidance_messages(
+        [
+            {
+                "role": "user",
+                "content": "补充证据",
+                "metadata": {
+                    "kind": "semantic_evidence_response",
+                    "candidateId": "223",
+                    "values": {"controller_type": "VirtIO", "driver_loaded": "已加载"},
+                },
+            }
+        ],
+        {
+            "candidates": [
+                {
+                    "kbd_id": "223",
+                    "manual_evidence_fields": [
+                        {"id": "controller_type", "label": "控制器类型"},
+                        {"id": "driver_loaded", "label": "驱动加载状态"},
+                        {"id": "iso_filename", "label": "ISO 文件名"},
+                    ],
+                }
+            ]
+        },
+    )
+    assert result[-1] == "当前只能请求补充证据：请通过补证据表单填写：ISO 文件名"
+
+
 def test_guidance_filters_already_provided_evidence():
     """用户已提供的 evidence request 不应重复出现在 guidance 输出中。"""
     question = '当前报错是否为“缺少介质驱动程序”？'

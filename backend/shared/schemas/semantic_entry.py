@@ -17,6 +17,8 @@ from shared.schemas.acquirer_args import CONDITIONAL_PRODUCERS, FRONTEND_TOOLS
 
 SEMANTIC_ENTRY_TOOL = "qkv_case_context"
 SEMANTIC_CAPABILITIES = frozenset({"executable", "guidance_only", "capability_gap"})
+EVIDENCE_FIELD_INPUT_TYPES = frozenset({"text", "textarea"})
+_EVIDENCE_FIELD_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 STRONG_PRODUCER_TOOLS = frozenset(FRONTEND_TOOLS)
 MAX_CONTEXT_CHARS = 16000
 _TOKEN_RE = re.compile(r"[a-zA-Z0-9_./:-]+|[\u4e00-\u9fff]{2,}")
@@ -63,6 +65,13 @@ def capability_of(raw: Any) -> str | None:
     profile = semantic_entry_profile(raw)
     value = profile.get("diagnosis_capability") if profile else None
     return str(value) if value in SEMANTIC_CAPABILITIES else None
+
+
+def manual_evidence_fields(profile: dict[str, Any]) -> list[dict[str, Any]]:
+    """返回画像声明的、可由客户侧表单采集的人工证据字段。"""
+
+    fields = profile.get("manual_evidence_fields")
+    return fields if isinstance(fields, list) else []
 
 
 def validate_semantic_entry_profile(raw: Any) -> None:
@@ -117,12 +126,30 @@ def validate_semantic_entry_profile(raw: Any) -> None:
             raise ValidationError(
                 f"semantic_entry_profile.{field} 必须是字符串数组", path=["semantic_entry_profile", field]
             )
+    evidence_fields = manual_evidence_fields(profile)
+    if profile.get("manual_evidence_fields") is not None and not isinstance(profile.get("manual_evidence_fields"), list):
+        raise ValidationError("semantic_entry_profile.manual_evidence_fields 必须是字段数组", path=["semantic_entry_profile", "manual_evidence_fields"])
+    seen_field_ids: set[str] = set()
+    for index, field in enumerate(evidence_fields):
+        path = ["semantic_entry_profile", "manual_evidence_fields", index]
+        if not isinstance(field, dict):
+            raise ValidationError("人工证据字段必须是对象", path=path)
+        field_id = str(field.get("id") or "")
+        if not _EVIDENCE_FIELD_ID_RE.fullmatch(field_id) or field_id in seen_field_ids:
+            raise ValidationError("人工证据字段 id 必须唯一，且仅含小写字母、数字、下划线", path=[*path, "id"])
+        seen_field_ids.add(field_id)
+        if not isinstance(field.get("label"), str) or not field["label"].strip():
+            raise ValidationError("人工证据字段必须提供非空 label", path=[*path, "label"])
+        if not isinstance(field.get("required", True), bool):
+            raise ValidationError("人工证据字段 required 必须是布尔值", path=[*path, "required"])
+        if field.get("input_type", "text") not in EVIDENCE_FIELD_INPUT_TYPES:
+            raise ValidationError("人工证据字段 input_type 仅支持 text 或 textarea", path=[*path, "input_type"])
     if capability == "guidance_only" and not any(
         str(item).strip() for item in profile.get("manual_evidence_request") or []
-    ):
+    ) and not evidence_fields:
         raise ValidationError(
-            "guidance_only 画像必须提供 manual_evidence_request，明确需要用户补充什么证据",
-            path=["semantic_entry_profile", "manual_evidence_request"],
+            "guidance_only 画像必须提供 manual_evidence_fields 或 manual_evidence_request，明确需要用户补充什么证据",
+            path=["semantic_entry_profile", "manual_evidence_fields"],
         )
     for index, example in enumerate(profile.get("routing_examples", [])):
         _, positive, negative = lexical_profile_score(profile, example["description"])

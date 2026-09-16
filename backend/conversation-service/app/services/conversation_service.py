@@ -67,11 +67,25 @@ def _semantic_entry_metadata(raw: Any) -> dict[str, Any] | None:
             continue
         candidates.append(
             {
+                "kbd_id": str(item.get("kbd_id") or ""),
                 "support_id": support_id,
                 "title": title,
                 "diagnosis_capability": str(item.get("diagnosis_capability") or ""),
                 "matched_positive_anchors": [
                     str(anchor) for anchor in item.get("matched_positive_anchors") or [] if str(anchor).strip()
+                ],
+                "manual_evidence_fields": [
+                    {
+                        "id": str(field.get("id") or ""),
+                        "label": str(field.get("label") or ""),
+                        "required": bool(field.get("required", True)),
+                        "input_type": str(field.get("input_type") or "text"),
+                        "placeholder": str(field.get("placeholder") or ""),
+                    }
+                    for field in item.get("manual_evidence_fields") or []
+                    if isinstance(field, dict)
+                    and str(field.get("id") or "").strip()
+                    and str(field.get("label") or "").strip()
                 ],
             }
         )
@@ -686,7 +700,10 @@ class ConversationService:
             tool_msg_iter = iter(reconstructed_tool_messages)
             for msg, msg_type in combined_messages:
                 if msg_type == "text":
-                    history_messages.append({"role": msg.role.value, "content": msg.content})
+                    history_message = {"role": msg.role.value, "content": msg.content}
+                    if msg.role.value == "user" and isinstance(msg.metadata_, dict):
+                        history_message["metadata"] = msg.metadata_
+                    history_messages.append(history_message)
                 else:
                     # 工具消息按迭代器顺序插入
                     try:

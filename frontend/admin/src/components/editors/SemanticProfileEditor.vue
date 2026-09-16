@@ -29,6 +29,10 @@ function updateField(key: typeof fields[number]['key'], value: string) { draft.v
 function updateScope(key: typeof scopeFields[number]['key'], value: string) {
   draft.value.applicability = { ...draft.value.applicability, [key]: value.split('\n') }
 }
+function addEvidenceField() {
+  const fields = draft.value.manual_evidence_fields ||= []
+  fields.push({ id: '', label: '', required: true, input_type: 'text', placeholder: '' })
+}
 function cleanDraft(): Profile {
   const result: Profile = JSON.parse(JSON.stringify(draft.value))
   for (const field of fields) result[field.key] = splitLines((result[field.key] || []).join('\n'))
@@ -36,7 +40,7 @@ function cleanDraft(): Profile {
   return result
 }
 const valid = computed(() => draft.value.canonical_symptoms.some(item => item.trim()) && draft.value.positive_anchors.some(item => item.trim()) &&
-  (draft.value.diagnosis_capability !== 'guidance_only' || draft.value.manual_evidence_request?.some(item => item.trim())))
+  (draft.value.diagnosis_capability !== 'guidance_only' || draft.value.manual_evidence_request?.some(item => item.trim()) || draft.value.manual_evidence_fields?.some(item => item.id.trim() && item.label.trim())))
 const context = ref({ description: '', error_text: '', product: '', product_version: '', component: '', object_type: '', operation: '' })
 const result = ref<Record<string, any> | null>(null)
 const previewing = ref(false)
@@ -62,6 +66,17 @@ async function runPreview() {
     <el-form-item v-for="field in fields" :key="field.key" :label="field.label">
       <el-input :model-value="(draft[field.key] || []).join('\n')" type="textarea" :rows="2" :placeholder="field.hint" @update:model-value="updateField(field.key, $event)" />
       <small>{{ field.hint }}</small>
+    </el-form-item>
+    <el-form-item label="结构化补证据字段">
+      <small>推荐用于仅人工指引案例。字段 ID 是稳定英文标识；客户侧按字段提交，运行时只认结构化提交，不猜测自由文本。</small>
+      <div v-for="(field, index) in draft.manual_evidence_fields || []" :key="index" class="evidence-field-row">
+        <el-input v-model="field.id" placeholder="field_id，例如 error_screenshot" />
+        <el-input v-model="field.label" placeholder="客户可见字段名称" />
+        <el-select v-model="field.input_type"><el-option label="单行文本" value="text" /><el-option label="多行文本" value="textarea" /></el-select>
+        <el-checkbox v-model="field.required">必填</el-checkbox>
+        <el-button @click="draft.manual_evidence_fields?.splice(index, 1)">删除</el-button>
+      </div>
+      <el-button @click="addEvidenceField">添加结构化字段</el-button>
     </el-form-item>
     <el-collapse v-model="expandedSections">
       <el-collapse-item title="原文关联与正反例：随画像版本保存，发布时重新校验" name="validation">
@@ -113,4 +128,5 @@ async function runPreview() {
 small { color: var(--el-text-color-secondary); }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; }
 .actions { display: flex; justify-content: flex-end; margin-top: 16px; }
+.evidence-field-row { display: grid; grid-template-columns: 1fr 1.5fr 120px auto auto; gap: 8px; width: 100%; margin: 8px 0; }
 </style>
