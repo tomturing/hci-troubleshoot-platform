@@ -60,32 +60,14 @@ jobs:
       deploy_services: ${{ steps.image-plan.outputs.deploy_services || '' }}
       has_deploy_services: ${{ steps.image-plan.outputs.has_deploy_services || 'false' }}
       db_migrate: ${{ steps.image-plan.outputs.db_migrate || 'false' }}
-      # push to main 时检测是否来自 PR squash merge；若是则 unit/integration 测试
-      # 已在 PR CI 通过，无需重复执行，节省 ~5 分钟。
-      from_pr_merge: ${{ steps.pr-merge-detect.outputs.from_pr_merge || 'false' }}
+      # 主干后端门禁层（Lint/unit-tests/integration-tests/security-tests）的启动
+      # 条件；默认 true 保证任何缺省/非主干事件都按完整回归处理。
+      backend_gate_required: ${{ steps.main-test-plan.outputs.required || 'true' }}
+      backend_gate_reason: ${{ steps.main-test-plan.outputs.reason || '非主干 push 事件，按完整后端回归处理' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
-
-      # push to main 时检测是否来自 PR squash merge。GitHub squash merge 的 commit
-      # message 格式固定为 "<title> (#<number>)"，用此特征判断。如果是 PR 合并，
-      # unit-tests/integration-tests 已在 PR CI 通过，push 时跳过重复执行。
-      - name: 检测 push 是否来自 PR 合并
-        id: pr-merge-detect
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          COMMIT_MSG=$(git log -1 --pretty=%s)
-          if echo "$COMMIT_MSG" | grep -qE '\(#[0-9]+\)$'; then
-            PR_NUM=$(echo "$COMMIT_MSG" | grep -oE '\(#[0-9]+\)$' | tr -d '(#)')
-            echo "检测到 PR squash merge：PR #$PR_NUM"
-            echo "from_pr_merge=true" >> $GITHUB_OUTPUT
-            echo "pr_number=$PR_NUM" >> $GITHUB_OUTPUT
-          else
-            echo "非 PR 合并提交（直接 push 或 merge commit），需要运行完整测试"
-            echo "from_pr_merge=false" >> $GITHUB_OUTPUT
-          fi
-
       - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad
         id: filter
         with:
@@ -128,10 +110,12 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'scripts/ci/resolve_release_baseline.py'
               - 'scripts/ci/resolve_image_build_plan.py'
+              - 'scripts/ci/resolve_main_test_scope.py'
               - 'scripts/ci/check_digest_pin_exempt.py'
               - 'scripts/ci/update_hci_sim_promotion.py'
               - 'scripts/ci/test_resolve_release_baseline.py'
               - 'scripts/ci/test_resolve_image_build_plan.py'
+              - 'scripts/ci/test_resolve_main_test_scope.py'
               - 'scripts/ci/test_check_digest_pin_exempt.py'
               - 'scripts/ci/test_update_hci_sim_promotion.py'
               - 'scripts/ci/test_ci_image_publication.py'
@@ -154,8 +138,10 @@ jobs:
             scripts/ci/resolve_image_build_plan.py \
             scripts/ci/check_digest_pin_exempt.py \
             scripts/ci/update_hci_sim_promotion.py \
+            scripts/ci/resolve_main_test_scope.py \
             scripts/ci/test_resolve_release_baseline.py \
             scripts/ci/test_resolve_image_build_plan.py \
+            scripts/ci/test_resolve_main_test_scope.py \
             scripts/ci/test_check_digest_pin_exempt.py \
             scripts/ci/test_update_hci_sim_promotion.py \
             scripts/ci/test_ci_image_publication.py \
@@ -166,8 +152,10 @@ jobs:
             scripts/ci/resolve_image_build_plan.py \
             scripts/ci/check_digest_pin_exempt.py \
             scripts/ci/update_hci_sim_promotion.py \
+            scripts/ci/resolve_main_test_scope.py \
             scripts/ci/test_resolve_release_baseline.py \
             scripts/ci/test_resolve_image_build_plan.py \
+            scripts/ci/test_resolve_main_test_scope.py \
             scripts/ci/test_check_digest_pin_exempt.py \
             scripts/ci/test_update_hci_sim_promotion.py \
             scripts/ci/test_ci_image_publication.py \
@@ -180,6 +168,7 @@ jobs:
             scripts/ci/test_update_hci_sim_promotion.py \
             scripts/ci/test_ci_image_publication.py \
             scripts/ci/test_resolve_pr_frontend_targets.py \
+            scripts/ci/test_resolve_main_test_scope.py \
             -q
 
       # 确定性前端改动判定（覆盖 dorny/paths-filter 的 frontend 输出）。
@@ -274,6 +263,30 @@ jobs:
           GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci/resolve_image_build_plan.py
+
+      # 镜像构建已按影响闭包收敛，后端门禁层此前仍是每次 main push 无条件全量，
+      # 而发布链（prepare → 镜像构建 → 非生产晋级）又把 Lint/unit/integration/
+      # security 的 success 作为前置：只改 admin UI 的 push 也要为 8 个后端服务的
+      # 完整回归多等约 4 分钟，而这批回归的输入完全没有变化。
+      #
+      # diff 起点取"最近一次成功发布基线"而不是相邻 commit：被后续 push 取代的
+      # 那一轮变更（上一轮 run 未完成就到达新 push）必须继续计入变更清单，否则
+      # 未回归的后端改动会被误判为无需回归。判定本身是白名单 + 失败关闭。
+      - name: 解析主干后端门禁影响范围
+        id: main-test-plan
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          BASE_SHA: ${{ steps.release-baseline.outputs.base_sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if ! git -c core.quotepath=false diff --name-only "${BASE_SHA:-}" "$HEAD_SHA" > /tmp/main-changed-files.txt; then
+            echo "::warning::无法生成主干变更清单（base=${BASE_SHA:-<empty>}），回退完整后端回归"
+            : > /tmp/main-changed-files.txt
+          fi
+          echo "基线：${BASE_SHA:-<empty>} → ${HEAD_SHA}，变更文件数：$(wc -l < /tmp/main-changed-files.txt | tr -d ' ')"
+          python3 scripts/ci/resolve_main_test_scope.py \
+            --changed-files /tmp/main-changed-files.txt \
+            --github-output "$GITHUB_OUTPUT"
 
       - name: 检查是否跳过文档门禁
         id: skip-check
@@ -415,7 +428,7 @@ jobs:
     needs: [changes]
     if: |
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.backend_gate_required == 'true') ||
       github.event_name == 'merge_group' ||
       (github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true')
     steps:
@@ -444,11 +457,9 @@ jobs:
     needs: [changes]
     env:
       CI_TRACE_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-frontend-check
-    # PR 合并到 main 时跳过：前端检查已在 PR CI 通过，避免重复运行。
-    # 直接 push / workflow_dispatch 仍运行作为安全兜底。
     if: |
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.from_pr_merge != 'true') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       (github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true')
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -782,12 +793,10 @@ jobs:
     env:
       HCI_TESTING: "1"
       CI_TRACE_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-unit-tests
-    # push to main 且来自 PR squash merge 时跳过：测试已在 PR CI 通过，避免重复执行。
-    # 直接 push / workflow_dispatch / merge_group 仍运行完整测试作为安全兜底。
     if: |
       (
         github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.from_pr_merge != 'true') ||
+        (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.backend_gate_required == 'true') ||
         github.event_name == 'merge_group' ||
         (github.event_name == 'pull_request' && (needs.changes.outputs.backend == 'true' || needs.changes.outputs.unit_test_mode == 'full'))
       )
@@ -927,11 +936,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [changes]
-    # push to main 且来自 PR squash merge 时跳过：测试已在 PR CI 通过，避免重复执行。
     if: |
       (
         github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.from_pr_merge != 'true') ||
+        (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.backend_gate_required == 'true') ||
         github.event_name == 'merge_group' ||
         (github.event_name == 'pull_request' && needs.changes.outputs.unit_test_mode == 'full')
       )
@@ -989,7 +997,7 @@ jobs:
     if: |
       (
         github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.backend_gate_required == 'true') ||
         github.event_name == 'merge_group' ||
         (github.event_name == 'pull_request' && needs.changes.outputs.unit_test_mode == 'full')
       )
@@ -1015,12 +1023,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: [changes, unit-tests, integration-tests, security-tests]
-    # from_pr_merge 时 unit-tests/integration-tests 被跳过（'skipped'），视为通过。
+    # backend_gate_required != 'true' 表示本轮变更不进入后端门禁输入，三个测试 job
+    # 按设计 skipped；这种情况下 skipped 不是失败证据缺失，不得阻断发布元数据。
     if: |
-      always() && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
-      && (needs.unit-tests.result == 'success' || needs.unit-tests.result == 'skipped' || needs.changes.outputs.from_pr_merge == 'true')
-      && (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped' || needs.changes.outputs.from_pr_merge == 'true')
-      && needs.security-tests.result == 'success'
+      always() &&
+      (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') &&
+      (
+        needs.changes.outputs.backend_gate_required != 'true' ||
+        (needs.unit-tests.result == 'success' && needs.integration-tests.result == 'success' && needs.security-tests.result == 'success')
+      )
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
@@ -1057,12 +1068,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: [changes, unit-tests, integration-tests, security-tests]
-    # from_pr_merge 时 unit-tests/integration-tests 被跳过（'skipped'），视为通过。
+    # 与 release-metadata 保持同一判定：本轮变更不进入后端门禁输入时，三个测试
+    # job 按设计 skipped，发布前置条件由 changes 的影响范围证据承担。
     if: |
-      always() && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
-      && (needs.unit-tests.result == 'success' || needs.unit-tests.result == 'skipped' || needs.changes.outputs.from_pr_merge == 'true')
-      && (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped' || needs.changes.outputs.from_pr_merge == 'true')
-      && needs.security-tests.result == 'success'
+      always() &&
+      (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') &&
+      (
+        needs.changes.outputs.backend_gate_required != 'true' ||
+        (needs.unit-tests.result == 'success' && needs.integration-tests.result == 'success' && needs.security-tests.result == 'success')
+      )
     outputs:
       image_tag: ${{ steps.tag.outputs.tag }}
       image_matrix: ${{ needs.changes.outputs.image_matrix }}

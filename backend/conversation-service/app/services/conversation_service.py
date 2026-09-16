@@ -90,6 +90,11 @@ def _semantic_entry_metadata(raw: Any) -> dict[str, Any] | None:
         conclusion = str(item.get("recommendation_conclusion") or "").strip()
         if conclusion:
             candidate["recommendation_conclusion"] = conclusion[:2000]
+        # 高置信语义推荐按强信号口径直接展示已审核案例的根因与解决方案原文，
+        # 二者必须成对透传；否则客户只能看到根因，拿不到处理建议。
+        solution = str(item.get("recommendation_solution") or "").strip()
+        if solution:
+            candidate["recommendation_solution"] = solution[:3000]
         facts = [
             {"question": str(fact.get("question") or ""), "answer": str(fact.get("answer") or "")}
             for fact in item.get("recommendation_facts") or []

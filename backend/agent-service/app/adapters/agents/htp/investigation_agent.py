@@ -1611,9 +1611,9 @@ class InvestigationAgent(BaseAgent):
         if facts:
             parts.append(f"**澄清确认**：{facts}。")
         if conclusion:
-            parts.append(f"**推荐结论**：{conclusion}")
+            parts.append(f"**根因（原始文本）**：\n{conclusion}")
         if solution:
-            parts.append(f"**建议处理**：\n{solution}")
+            parts.append(f"**解决方案（原始文本）**：\n{solution}")
         parts.append("本结论来自已发布案例与工单描述的匹配，未经过现场采集验证；可补充资料用于后续核验。")
         return "\n\n".join(parts)
 

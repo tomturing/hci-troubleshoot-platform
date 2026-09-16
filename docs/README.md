@@ -2,7 +2,7 @@
 status: active
 category: meta
 audience: all
-last_updated: 2026-08-11
+last_updated: 2026-09-16
 owner: team
 update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑达成）必须更新第一屏
 ---
@@ -80,6 +80,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | CI 最小激活与快速门禁 | ✅ 已实施：hci-sim runtime/Bridge/Manifest 按变更分流；后端测试解除 Helm 无效等待；Schema 与 Lint 共用依赖；PR 不再构建 Windows exe。真实 Hosted Runner P50/P95 需后续采集。 | 2026-08-07 |
 | CI 发布链路手动补偿闭环 | ✅ 已实施：`workflow_dispatch` 通过 `promote_target` 显式选择 dev/staging/both；仅 main 可晋级；晋级前后逐服务核验环境仓库 tag，并在 Actions Summary 留存证据。 | 2026-08-07 |
 | CI 发布链路按影响范围收敛 | ✅ 已实施：main push 动态构建 Dockerfile 实际输入影响的镜像，db-migrate job 级跳过，环境仓库仅更新已构建服务；文档治理复用既有 runner，所有 job 有超时，第三方 action/tool 已固定，P50/P95 报告仅手动运行。 | 2026-08-07 |
+| CI 主干后端门禁按影响范围收敛 | ✅ 已实施：main push 变更全部落在 `frontend/`、`docs/` 与根级说明文档内时跳过 Lint/unit/integration/security 整层（失败关闭，diff 起点为最近一次成功发布基线），纯前端 push 端到端由约 7 分钟降到镜像构建量级。后端变更按服务集合收敛（含覆盖率策略调整）留待二期。 | 2026-09-16 |
 | hci-sim KBD 27123 纵向样板与生产化差距审查 | 🟡 27123 revision 25 的 Admin→Agent→K3s Bridge→Runtime→Result 已通过；平台生产交付保持 BLOCKED，下一阶段转入 Bundle 工厂化 | 2026-08-11 |
 
 **当前关注点（2026-08-20）**：KBD CDD 使用“分类完整候选 + 主动 acquisition 调度 + 确定性证据门禁”，不使用 KBD 向量 `top_k`、早停到 2 篇或最高频采集器筛选。真实与仿真必须保持诊断等价：`sim-ssh` 只把现场采集切换到 hci-sim Bundle，TestRun 的目标 KBD/revision 不能成为候选答案。Q2026082002685 的 `PARTIAL` 来自 27123 Bundle 未覆盖同分类 30880 所需 acquisition；PR #857 通过单 KBD 过滤绕开缺口，已按[仿真诊断等价性与 CDD 全候选修正方案](solution/agent/events/2026-08-20-仿真诊断等价性与CDD全候选修正方案.md)、[任务](task/agent/events/2026-08-20-仿真诊断等价性与CDD全候选修正任务.md)和[验证复盘](verify/events/2026-08-20-Q2026082002685仿真CDD全候选问题复盘.md)纠正。

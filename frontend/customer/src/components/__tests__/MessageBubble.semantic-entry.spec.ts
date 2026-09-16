@@ -40,6 +40,42 @@ describe('MessageBubble semantic entry', () => {
     expect(wrapper.text()).toContain('ISO 安装缺少介质驱动程序')
   })
 
+  it('renders reviewed root cause and solution verbatim for a semantic recommendation', async () => {
+    const MessageBubble = (await import('@/components/MessageBubble.vue')).default
+    const wrapper = shallowMount(MessageBubble, {
+      props: {
+        message: {
+          id: 'semantic-recommendation',
+          role: 'assistant',
+          content: '',
+          timestamp: new Date(),
+          metadata: {
+            semantic_entry: {
+              decision: 'semantic_recommendation',
+              reason: 'semantic_recommendation',
+              candidates: [
+                {
+                  kbd_id: '223',
+                  support_id: '15936',
+                  title: 'ISO 安装缺少介质驱动程序',
+                  recommendation_conclusion: '安装镜像不完整或缺少磁盘控制器驱动',
+                  recommendation_solution: '更换经校验的完整安装镜像，并加载 VirtIO 磁盘控制器驱动',
+                  recommendation_facts: [{ question: '错误是否发生在选择要安装的驱动程序界面？', answer: '是' }],
+                },
+              ],
+            },
+          },
+        },
+      },
+      global: { stubs: { CommandBlock: true, InteractiveOptions: true } },
+    })
+
+    const text = wrapper.text()
+    expect(text).toContain('根因（原始文本）：安装镜像不完整或缺少磁盘控制器驱动')
+    expect(text).toContain('解决方案（原始文本）：更换经校验的完整安装镜像，并加载 VirtIO 磁盘控制器驱动')
+    expect(text).not.toContain('推荐结论：')
+  })
+
   it('submits only the profile-declared structured evidence values', async () => {
     const MessageBubble = (await import('@/components/MessageBubble.vue')).default
     const wrapper = shallowMount(MessageBubble, {
