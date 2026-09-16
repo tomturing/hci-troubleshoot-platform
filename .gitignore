@@ -84,6 +84,7 @@ deploy/gitops/local/*.yml
 
 # Coverage
 .coverage
+coverage.xml
 htmlcov/
 .pytest_cache/
 .vk/

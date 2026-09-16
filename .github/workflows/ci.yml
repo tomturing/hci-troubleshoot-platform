@@ -50,6 +50,9 @@ jobs:
       frontend_scope: ${{ steps.pr-frontend-plan.outputs.scope || 'full' }}
       frontend_reason: ${{ steps.pr-frontend-plan.outputs.reason || '非 PR 事件运行完整前端回归' }}
       platform_helm: ${{ steps.filter.outputs.platform_helm }}
+      # 部署配置契约与 Go 运行时验证各自的输入判定，见下方 filters 定义。
+      deploy_config: ${{ steps.filter.outputs.deploy_config }}
+      go_code: ${{ steps.filter.outputs.go_code }}
       docs: ${{ steps.filter.outputs.docs }}
       module_docs: ${{ steps.filter.outputs.module_docs }}
       unit_test_mode: ${{ steps.pr-unit-plan.outputs.mode || 'full' }}
@@ -96,6 +99,20 @@ jobs:
               - '!.github/**'
             platform_helm:
               - 'deploy/helm/hci-platform/**'
+            # `config-contract-check` 读取的全部输入：契约文件、环境变量样例、
+            # Compose、Helm Chart 与校验器自身。deploy/** 不在 backend filter 内，
+            # 因此 PR 上这类变更此前既跳过 Lint 也跳过 unit-tests（零校验）。
+            deploy_config:
+              - '.env.example'
+              - 'deploy/config/**'
+              - 'deploy/docker/**'
+              - 'deploy/helm/hci-platform/**'
+              - 'scripts/verify/verify_config_contract.py'
+            # Go 运行时验证的输入：hci_sim/** 与 offline-collector/** 同样不在
+            # backend filter 内，此前这类 PR 没有任何 job 验证 Go 代码。
+            go_code:
+              - 'hci_sim/**'
+              - 'backend/diagnosis-service/offline-collector/**'
             docs:
               - 'docs/**'
               - 'scripts/ci/check_docs_naming.py'
@@ -119,6 +136,10 @@ jobs:
               - 'scripts/ci/test_check_digest_pin_exempt.py'
               - 'scripts/ci/test_update_hci_sim_promotion.py'
               - 'scripts/ci/test_ci_image_publication.py'
+              - 'scripts/ci/resolve_pr_fast_test_targets.py'
+              - 'scripts/ci/test_resolve_pr_fast_test_targets.py'
+              - 'scripts/ci/resolve_pr_frontend_targets.py'
+              - 'scripts/ci/test_resolve_pr_frontend_targets.py'
               - 'hci_sim/Dockerfile'
               - 'deploy/gitops/argo-apps/local/hci-sim-dev.yaml'
               - 'deploy/gitops/argo-apps/cloud/hci-sim-staging.yaml'
@@ -146,7 +167,9 @@ jobs:
             scripts/ci/test_update_hci_sim_promotion.py \
             scripts/ci/test_ci_image_publication.py \
             scripts/ci/resolve_pr_frontend_targets.py \
-            scripts/ci/test_resolve_pr_frontend_targets.py
+            scripts/ci/test_resolve_pr_frontend_targets.py \
+            scripts/ci/resolve_pr_fast_test_targets.py \
+            scripts/ci/test_resolve_pr_fast_test_targets.py
           uvx ruff format --check \
             scripts/ci/resolve_release_baseline.py \
             scripts/ci/resolve_image_build_plan.py \
@@ -160,7 +183,9 @@ jobs:
             scripts/ci/test_update_hci_sim_promotion.py \
             scripts/ci/test_ci_image_publication.py \
             scripts/ci/resolve_pr_frontend_targets.py \
-            scripts/ci/test_resolve_pr_frontend_targets.py
+            scripts/ci/test_resolve_pr_frontend_targets.py \
+            scripts/ci/resolve_pr_fast_test_targets.py \
+            scripts/ci/test_resolve_pr_fast_test_targets.py
           uv run --no-project --with pytest --with pytest-xdist pytest \
             scripts/ci/test_resolve_release_baseline.py \
             scripts/ci/test_resolve_image_build_plan.py \
@@ -169,6 +194,7 @@ jobs:
             scripts/ci/test_ci_image_publication.py \
             scripts/ci/test_resolve_pr_frontend_targets.py \
             scripts/ci/test_resolve_main_test_scope.py \
+            scripts/ci/test_resolve_pr_fast_test_targets.py \
             -q
 
       # 确定性前端改动判定（覆盖 dorny/paths-filter 的 frontend 输出）。
@@ -798,19 +824,15 @@ jobs:
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.backend_gate_required == 'true') ||
         github.event_name == 'merge_group' ||
-        (github.event_name == 'pull_request' && (needs.changes.outputs.backend == 'true' || needs.changes.outputs.unit_test_mode == 'full'))
+        (github.event_name == 'pull_request' && (needs.changes.outputs.backend == 'true' || needs.changes.outputs.unit_test_mode == 'full')) ||
+        # 部署配置的输入在 deploy/ 侧，不在 backend filter 内：这类 PR 的
+        # unit_test_mode 为 none，job 只需执行「校验部署配置契约」这一步，
+        # 其余步骤各自的 if 会按 mode 跳过。该 job 名称是必需状态检查，
+        # 契约必须挂在它上面才能真正阻断合并。
+        needs.changes.outputs.deploy_config == 'true'
       )
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-
-      - name: 安装 Go
-        if: github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full'
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26.5"
-          cache-dependency-path: |
-            backend/diagnosis-service/offline-collector/go.mod
-            hci_sim/go.mod
 
       - name: 安装 uv
         uses: astral-sh/setup-uv@caf0cab7a618c569241d31dcd442f54681755d39a
@@ -844,7 +866,10 @@ jobs:
 
           STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           echo "trace_id=${CI_TRACE_ID} mode=targeted reason=${TEST_REASON} targets=${TARGETS[*]}"
-          timeout 20s uv run pytest "${TARGETS[@]}" -q --no-cov -m "not integration and not slow"
+          # 收敛手段是范围而不是时间上界，上界只用于防止挂起。注意快速路径不带
+          # --cov：完整路径里 kb-service 的 58s 全部来自覆盖率追踪放大（jieba 词典
+          # 模块 35k 行字面量），无插桩时该套件仅约 0.3s。
+          timeout 240s uv run pytest "${TARGETS[@]}" -q --no-cov -m "not integration and not slow"
           FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           {
             echo "### PR 快速单元测试"
@@ -860,38 +885,58 @@ jobs:
         if: github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full'
         run: |
           # 各服务 app/ 包名相同，pytest 单进程 sys.modules 会跨服务污染
-          # 分进程运行保证各自 sys.modules 隔离，--cov-append 合并覆盖率
+          # 分进程运行保证各自 sys.modules 隔离，--cov-append 合并覆盖率。
+          #
+          # 三处实测结论（本机同一用例集合对照）：
+          # 1) 覆盖率报告只在最后一批生成：--cov-append 已把数据累积进 .coverage，
+          #    前 7 批重复渲染 xml/term-missing 是纯开销，codecov 消费的只是最后一次
+          #    产出的 coverage.xml。
+          # 2) addopts 默认 -n auto，但这些套件的固定成本（worker 启动 + 每个 worker
+          #    重复导入与 conftest）高于并行收益，除 agent-service 外 -n0 都更快：
+          #    tests/unit 1.95↔3.08 | api-gateway 8.00↔11.92 | case-service 0.58↔1.74
+          #    conversation 1.35↔2.47 | kb-service 1.94↔2.97 | diagnosis 9.34↔11.69
+          #    scheduler 0.71↔2.00（左 = -n0，右 = -n auto，单位秒）；agent-service
+          #    4.57↔4.33 为平局，保留默认并行。若某套件在 CI 上反向变慢，删掉该行的
+          #    -n0 即可回到默认。
+          # 3) jieba 的 HMM 词典模块 finalseg/prob_emit.py 是 35226 行字面量：无插桩
+          #    导入 0.01s，但在 coverage 追踪下需 25s（本机实测），CI 上该套件曾为此
+          #    多付约 55s。jieba 属三方库、本不计入 backend 覆盖率，故把该文件移出
+          #    插桩运行，单独用 --no-cov 验证分词契约。
           uv run pytest tests/unit/ \
-            -x -q \
-            --cov=backend --cov-report=xml --cov-report=term-missing \
+            -n0 -x -q \
+            --cov=backend --cov-append \
             -m "not integration and not slow"
           uv run pytest backend/api-gateway/tests/unit/ \
-            -x -q \
-            --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
+            -n0 -x -q \
+            --cov=backend --cov-append \
             -m "not integration and not slow"
           uv run pytest backend/agent-service/tests/unit/ \
             -x -q \
-            --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
+            --cov=backend --cov-append \
             -m "not integration and not slow"
           uv run pytest backend/case-service/tests/unit/ \
-            -x -q \
-            --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
+            -n0 -x -q \
+            --cov=backend --cov-append \
             -m "not integration and not slow"
           uv run pytest backend/conversation-service/tests/unit/ \
-            -x -q \
-            --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
+            -n0 -x -q \
+            --cov=backend --cov-append \
             -m "not integration and not slow"
           uv run pytest backend/kb-service/tests/ \
-            -x -q \
-            --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
+            --ignore=backend/kb-service/tests/test_jieba_hci.py \
+            -n0 -x -q \
+            --cov=backend --cov-append \
+            -m "not integration and not slow"
+          uv run pytest backend/kb-service/tests/test_jieba_hci.py \
+            -n0 -x -q --no-cov \
             -m "not integration and not slow"
           uv run pytest backend/diagnosis-service/tests/unit/ \
-            -x -q \
-            --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
+            -n0 -x -q \
+            --cov=backend --cov-append \
             -m "not integration and not slow"
-          # 最后一批：合并所有覆盖率后统一检查基线（≥60%），避免分批检查造成误报
+          # 最后一批：渲染报告并合并所有覆盖率后统一检查基线（≥60%），避免分批检查造成误报
           uv run pytest backend/scheduler-service/tests/unit/ \
-            -x -q \
+            -n0 -x -q \
             --cov=backend --cov-report=xml --cov-report=term-missing --cov-append \
             --cov-fail-under=60 \
             -m "not integration and not slow"
@@ -907,8 +952,42 @@ jobs:
       - name: 校验部署配置契约
         run: REQUIRE_HELM=1 make config-contract-check
 
+      - name: 上传覆盖率报告
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238
+        if: always() && (github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full')
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+
+  go-checks:
+    # Go 验证独立成 job：它原本挂在 unit-tests 内（安装 Go 14s + hci_sim 33s +
+    # offline-collector 4s ≈ 51s 实测），既不使用 uv 也不使用 .venv，却让 Python
+    # 回归的关键路径为它排队。拆出后两者并行推进，unit-tests 不再支付这 51s。
+    #
+    # 触发条件只取决于 Go 输入：hci_sim/** 与 offline-collector/** 都不在 backend
+    # filter 内，此前这类 PR 既不启动 unit-tests 也没有任何 Go 校验（零门禁），
+    # merge_group 保持无条件执行，与 unit-tests 的合并队列语义一致：进队列的变更
+    # 不做范围收敛。
+    name: Go 运行时验证
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [changes]
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'merge_group' ||
+      needs.changes.outputs.go_code == 'true'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+          cache-dependency-path: |
+            backend/diagnosis-service/offline-collector/go.mod
+            hci_sim/go.mod
+
       - name: 验证 Diagnosis Sample Lab（诊断样例实验室）Go Runtime
-        if: github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full'
         working-directory: hci_sim
         run: |
           go test -p 4 ./...
@@ -916,20 +995,12 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -o /tmp/hci-sim-diagnosis-lab ./cmd/hci-sim
 
       - name: 运行离线采集 Go 运行时测试
-        if: github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full'
         working-directory: backend/diagnosis-service/offline-collector
         run: |
           go test -p 4 ./...
           go vet ./...
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags="-s -w -buildid=" -o /tmp/hci-collect-linux-amd64 .
           test "$(sha256sum /tmp/hci-collect-linux-amd64 | cut -d' ' -f1)" = "$(sha256sum ../resources/bin/hci-collect-linux-amd64 | cut -d' ' -f1)"
-
-      - name: 上传覆盖率报告
-        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238
-        if: always() && (github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full')
-        with:
-          file: ./coverage.xml
-          fail_ci_if_error: false
 
   integration-tests:
     name: integration-tests
@@ -1022,12 +1093,15 @@ jobs:
     name: 发布元数据产物
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [changes, unit-tests, integration-tests, security-tests]
+    needs: [changes, unit-tests, integration-tests, security-tests, go-checks]
     # backend_gate_required != 'true' 表示本轮变更不进入后端门禁输入，三个测试 job
     # 按设计 skipped；这种情况下 skipped 不是失败证据缺失，不得阻断发布元数据。
+    # go-checks 只在 Go 输入变更时执行（skipped 表示本轮没有 Go 变更），因此它与
+    # 后端门禁层取不同判定：跑过就必须成功，没跑不构成阻断理由。
     if: |
       always() &&
       (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') &&
+      (needs.go-checks.result == 'success' || needs.go-checks.result == 'skipped') &&
       (
         needs.changes.outputs.backend_gate_required != 'true' ||
         (needs.unit-tests.result == 'success' && needs.integration-tests.result == 'success' && needs.security-tests.result == 'success')
@@ -1067,12 +1141,14 @@ jobs:
     name: 准备构建元数据
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [changes, unit-tests, integration-tests, security-tests]
+    needs: [changes, unit-tests, integration-tests, security-tests, go-checks]
     # 与 release-metadata 保持同一判定：本轮变更不进入后端门禁输入时，三个测试
-    # job 按设计 skipped，发布前置条件由 changes 的影响范围证据承担。
+    # job 按设计 skipped，发布前置条件由 changes 的影响范围证据承担。go-checks
+    # 同理：只有 Go 输入变更时才会执行，执行了就必须成功。
     if: |
       always() &&
       (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') &&
+      (needs.go-checks.result == 'success' || needs.go-checks.result == 'skipped') &&
       (
         needs.changes.outputs.backend_gate_required != 'true' ||
         (needs.unit-tests.result == 'success' && needs.integration-tests.result == 'success' && needs.security-tests.result == 'success')
