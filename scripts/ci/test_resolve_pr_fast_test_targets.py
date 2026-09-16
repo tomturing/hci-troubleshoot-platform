@@ -161,6 +161,27 @@ def test_audited_signal_fast_path_survives_shared_prefix(repo_root: Path) -> Non
     assert plan.targets == SIGNAL_FAST_TEST_TARGETS
 
 
+def test_signal_change_with_unknown_shared_file_falls_back_to_full(repo_root: Path) -> None:
+    """信号白名单混入白名单外的共享代码时，快速路径失效，必须完整回归。"""
+    changed = [
+        "backend/shared/signals/ai_extractor.py",
+        "backend/shared/observability/otel.py",
+    ]
+    assert resolve_test_plan(changed, repo_root).mode == "full"
+
+
+def test_too_many_direct_test_targets_falls_back_to_full(repo_root: Path) -> None:
+    """直接改动的散装测试文件数超过 MAX_FAST_TARGETS 时，收集成本高于完整回归。
+
+    服务内的测试改动按目录收敛，只有根 tests/ 下的测试文件逐个计为目标，
+    因此这里必须用根目录测试才能触达上限。
+    """
+    changed = [f"tests/unit/test_case_{i}.py" for i in range(9)]
+    plan = resolve_test_plan(changed, repo_root)
+    assert plan.mode == "full"
+    assert plan.targets == ()
+
+
 # ── 映射与仓库现状的一致性守护 ────────────────────────────────────
 
 
