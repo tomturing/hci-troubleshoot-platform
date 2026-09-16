@@ -65,8 +65,7 @@ def _semantic_entry_metadata(raw: Any) -> dict[str, Any] | None:
         title = str(item.get("title") or "").strip()
         if not support_id and not title:
             continue
-        candidates.append(
-            {
+        candidate = {
                 "kbd_id": str(item.get("kbd_id") or ""),
                 "support_id": support_id,
                 "title": title,
@@ -88,7 +87,17 @@ def _semantic_entry_metadata(raw: Any) -> dict[str, Any] | None:
                     and str(field.get("label") or "").strip()
                 ],
             }
-        )
+        conclusion = str(item.get("recommendation_conclusion") or "").strip()
+        if conclusion:
+            candidate["recommendation_conclusion"] = conclusion[:2000]
+        facts = [
+            {"question": str(fact.get("question") or ""), "answer": str(fact.get("answer") or "")}
+            for fact in item.get("recommendation_facts") or []
+            if isinstance(fact, dict) and str(fact.get("question") or "").strip() and str(fact.get("answer") or "").strip()
+        ]
+        if facts:
+            candidate["recommendation_facts"] = facts
+        candidates.append(candidate)
     if not candidates:
         return None
     next_action = raw.get("next_action")

@@ -135,18 +135,21 @@ async def test_guidance_candidate_exposes_declared_structured_evidence_fields():
 
 @pytest.mark.asyncio
 async def test_high_confidence_guidance_profile_returns_unverified_semantic_recommendation():
+    candidate = entry(
+        capability="guidance_only",
+        semantic_recommendation={"enabled": True, "minimum_score": 0.1, "minimum_margin": 0.1},
+    )
+    candidate["root_cause"] = "镜像不完整或缺少控制器驱动"
+    candidate["solution"] = "更换经校验的安装镜像"
     result = await resolve_candidates(
-        entries=[
-            entry(
-                capability="guidance_only",
-                semantic_recommendation={"enabled": True, "minimum_score": 0.1, "minimum_margin": 0.1},
-            )
-        ],
+        entries=[candidate],
         context="创建虚拟机时镜像格式不支持",
         strong_status="matched_inconclusive",
     )
     assert result["decision"] == "semantic_recommendation"
     assert result["candidates"][0]["recommendation_confidence"] >= 0.1
+    assert result["candidates"][0]["recommendation_conclusion"] == "镜像不完整或缺少控制器驱动"
+    assert result["candidates"][0]["recommendation_solution"] == "更换经校验的安装镜像"
 
 
 @pytest.mark.asyncio
