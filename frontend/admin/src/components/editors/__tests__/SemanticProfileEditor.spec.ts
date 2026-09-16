@@ -77,10 +77,11 @@ describe('语义画像编辑与预览', () => {
     expect(client.post.mock.calls[1][1]).toEqual({ product_version: '6.12', context: {} })
   })
 
-  it('语义澄清选项 effect 下拉同时提供支持、排除、不影响三类', async () => {
+  it('语义澄清选项 effect 下拉同时提供支持、排除、中性三类', async () => {
     const profile = {
       ...initial,
       diagnosis_capability: 'guidance_only' as const,
+      manual_evidence_request: ['请提供所用 ISO 的文件名、SHA1 和文件大小'],
       semantic_disambiguation: [
         {
           id: 'installer_stage',
@@ -99,9 +100,12 @@ describe('语义画像编辑与预览', () => {
     await flushPromises()
     const selects = wrapper.findAll('.disambiguation-choice .el-select')
     expect(selects.length).toBe(2)
-    // 中性选项不应破坏渲染：两个 select 都成功 mount，且当前 draft 仍可保存
-    const draftAfterMount = (wrapper.vm as { draft: { semantic_disambiguation: unknown[] } }).draft
-    expect(draftAfterMount.semantic_disambiguation[0].choices).toHaveLength(2)
+    // 中性选项不应破坏渲染：两个 select 都成功 mount，保存路径仍能保留中性 effect
+    const saveButton = wrapper.findAll('button').find(button => button.text().includes('保存画像'))!
+    await saveButton.trigger('click')
+    const saved = wrapper.emitted('save')?.[0]?.[0] as { semantic_disambiguation: Array<{ choices: Array<{ effect: string }> }> }
+    expect(saved.semantic_disambiguation[0].choices).toHaveLength(2)
+    expect(saved.semantic_disambiguation[0].choices.map(choice => choice.effect)).toEqual(['support', 'neutral'])
     wrapper.unmount()
   })
 })
