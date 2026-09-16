@@ -1,5 +1,64 @@
 # Changelog
 
+## [2.29.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.28.0...v2.29.0) (2026-09-16)
+
+
+### ✨ 新功能
+
+* **admin:** 优化 QKV 产出变量处理默认行为为断言判断与关键字匹配 ([#1008](https://github.com/tomturing/hci-troubleshoot-platform/issues/1008)) ([9b665a4](https://github.com/tomturing/hci-troubleshoot-platform/commit/9b665a4a0d8a2b2e16c7dc01906ac6825795a4ec))
+* Bundle 迁移功能完整实现 ([#1023](https://github.com/tomturing/hci-troubleshoot-platform/issues/1023)) ([f18e4c8](https://github.com/tomturing/hci-troubleshoot-platform/commit/f18e4c8195ba969d1381756e53382d78032ac2fa))
+* **kbd:** 增加 PostgreSQL 自动端口转发守护与连接前置检查 ([#1043](https://github.com/tomturing/hci-troubleshoot-platform/issues/1043)) ([e8dbe55](https://github.com/tomturing/hci-troubleshoot-platform/commit/e8dbe554d928fe3f9e064d82a231781b9726681e))
+* **kb:** 增强 JSON 取值路径门禁拦截与验证 Agent 友好自愈闭环 ([#1007](https://github.com/tomturing/hci-troubleshoot-platform/issues/1007)) ([4d133b0](https://github.com/tomturing/hci-troubleshoot-platform/commit/4d133b0c5f81684cd6b7c31a13302693ac933196))
+* **semantic:** 语义澄清支持中性选项 + 路由层回归 + 编辑器三选一 ([#1054](https://github.com/tomturing/hci-troubleshoot-platform/issues/1054)) ([f069385](https://github.com/tomturing/hci-troubleshoot-platform/commit/f069385d02d74e9d261688725d176fd5c4f86395))
+* 为语义兜底路径添加诊断日志 ([#1041](https://github.com/tomturing/hci-troubleshoot-platform/issues/1041)) ([cc26f4d](https://github.com/tomturing/hci-troubleshoot-platform/commit/cc26f4d2774360f094ab15bb14f7cceb3a871e3d))
+* 完善语义信号诊断与仿真闭环 ([#1010](https://github.com/tomturing/hci-troubleshoot-platform/issues/1010)) ([54b8d4e](https://github.com/tomturing/hci-troubleshoot-platform/commit/54b8d4eeb39e6dd1b163933a635af948758d0e33))
+* 实现 Bundle 工厂版本自动迁移机制 ([#1018](https://github.com/tomturing/hci-troubleshoot-platform/issues/1018)) ([dfdf184](https://github.com/tomturing/hci-troubleshoot-platform/commit/dfdf184819df289820df3bc460b907d41777d76c))
+* 展示语义命中案例并完善证据推进 ([#1044](https://github.com/tomturing/hci-troubleshoot-platform/issues/1044)) ([07a236d](https://github.com/tomturing/hci-troubleshoot-platform/commit/07a236d21b615b43dd0f03a112bf07fd7a087f8f))
+* 展示语义推荐结论与建议 ([#1050](https://github.com/tomturing/hci-troubleshoot-platform/issues/1050)) ([476ef83](https://github.com/tomturing/hci-troubleshoot-platform/commit/476ef8336cfc344256407ce287300e130c7ed1ef))
+* 扩展模板实例库支持Signal资产阅览并对齐console审计菜单 ([#1001](https://github.com/tomturing/hci-troubleshoot-platform/issues/1001)) ([08e12ef](https://github.com/tomturing/hci-troubleshoot-platform/commit/08e12efc3d38d5ea20b112f40ef88d1e56108280))
+* 支持 QKV 生产者信号断言判断中引用变量 ([#1029](https://github.com/tomturing/hci-troubleshoot-platform/issues/1029)) ([4cf4ad3](https://github.com/tomturing/hci-troubleshoot-platform/commit/4cf4ad3b712abaa3aff64cf24a25576ba43df4ed))
+* 添加 Admin UI Bundle 批量迁移功能 ([#1019](https://github.com/tomturing/hci-troubleshoot-platform/issues/1019)) ([0e14a60](https://github.com/tomturing/hci-troubleshoot-platform/commit/0e14a60ec509e9ed333f9c110976e913137e6f23))
+* 添加信号匹配器评估详细日志记录 ([#1022](https://github.com/tomturing/hci-troubleshoot-platform/issues/1022)) ([dc720ce](https://github.com/tomturing/hci-troubleshoot-platform/commit/dc720ceaa056e4e77e016ac1caa5adc05e05e164))
+* 生产者信号qkv_alert与qkv_task自动派生DATE变量支持日志按天检索 ([#1002](https://github.com/tomturing/hci-troubleshoot-platform/issues/1002)) ([6954bae](https://github.com/tomturing/hci-troubleshoot-platform/commit/6954bae10ceb04bb86d908c0f82898ea5d059f9d))
+* 画像驱动的高置信语义推荐与澄清 ([#1049](https://github.com/tomturing/hci-troubleshoot-platform/issues/1049)) ([c94b784](https://github.com/tomturing/hci-troubleshoot-platform/commit/c94b78407946e4bdcb5775573df59b0eb1b19269))
+* 画像驱动结构化补证据 ([#1048](https://github.com/tomturing/hci-troubleshoot-platform/issues/1048)) ([cde463d](https://github.com/tomturing/hci-troubleshoot-platform/commit/cde463de9238bee07b7374aebdb81547acd8a6c4))
+* 补齐语义入口画像详情只读预览并修复 KBD 列宽恢复 ([#1051](https://github.com/tomturing/hci-troubleshoot-platform/issues/1051)) ([f487ea9](https://github.com/tomturing/hci-troubleshoot-platform/commit/f487ea9ec322c4d71e5d0721a369dddc2a83b1c6))
+* 语义入口画像级联删除与切换清理提示 ([#1027](https://github.com/tomturing/hci-troubleshoot-platform/issues/1027)) ([6e866d9](https://github.com/tomturing/hci-troubleshoot-platform/commit/6e866d95c5127380d3c46781af789b5d2b9f1019))
+
+
+### 🐛 Bug 修复
+
+* **admin:** SemanticProfileEditor.spec.ts 移除不安全 vm 类型断言 ([#1055](https://github.com/tomturing/hci-troubleshoot-platform/issues/1055)) ([379bf89](https://github.com/tomturing/hci-troubleshoot-platform/commit/379bf894ffab2cbb3d69904f5f90966ae9d05eb7))
+* **agent:** 增强 BridgeRelayExecutor 启动退避重试与运行时双检锁惰性自愈 ([#1009](https://github.com/tomturing/hci-troubleshoot-platform/issues/1009)) ([720af9a](https://github.com/tomturing/hci-troubleshoot-platform/commit/720af9a4397f0d446b8249b9a3e9954b3d5507c1))
+* Bundle 工厂编译日志选择器时保留变量占位符 ([#1017](https://github.com/tomturing/hci-troubleshoot-platform/issues/1017)) ([662187f](https://github.com/tomturing/hci-troubleshoot-platform/commit/662187f775de1b79cbfda9c80f1d350176bef807))
+* **ci:** 前端 vitest 超时阈值放宽至 20s 根治低配 runner 临界抖动（V-016） ([#1013](https://github.com/tomturing/hci-troubleshoot-platform/issues/1013)) ([6117d55](https://github.com/tomturing/hci-troubleshoot-platform/commit/6117d55cf271694565f7016d3075eeacc6caeb3c))
+* **config:** 契约登记 TERMINAL_BRIDGE_UPSTREAM 修复 config-contract-check（D-027 后续） ([#1015](https://github.com/tomturing/hci-troubleshoot-platform/issues/1015)) ([b06649e](https://github.com/tomturing/hci-troubleshoot-platform/commit/b06649ecbe3d40d04cf0a70b55cbe7cd0275dc7c))
+* **db:** 关键信号资产表 trace_id 加列补 DEFAULT 修复 staging 同步卡死 ([#1004](https://github.com/tomturing/hci-troubleshoot-platform/issues/1004)) ([8dc8eb5](https://github.com/tomturing/hci-troubleshoot-platform/commit/8dc8eb551efbb87662be1b877da91ae1ac4f7519))
+* **helm:** admin-ui 注入 TERMINAL_BRIDGE_UPSTREAM 修复 K3s nginx 启动期 crashloop（D-027） ([#1014](https://github.com/tomturing/hci-troubleshoot-platform/issues/1014)) ([e2b9b63](https://github.com/tomturing/hci-troubleshoot-platform/commit/e2b9b63ac7823d81248d7286397f0958cdbf1a95))
+* INCONCLUSIVE 回复死循环——过滤已满足的 evidence request 与循环中断 ([#1040](https://github.com/tomturing/hci-troubleshoot-platform/issues/1040)) ([e563978](https://github.com/tomturing/hci-troubleshoot-platform/commit/e56397820303ae50c3d6bb4fbcab211d40ca2cc4))
+* **kbd:** 修复生产者信号END自动派生DATE变量依赖校验与持久化归一 ([#1006](https://github.com/tomturing/hci-troubleshoot-platform/issues/1006)) ([b16696a](https://github.com/tomturing/hci-troubleshoot-platform/commit/b16696a51e081497005da10b4a0d2f468e3880d4))
+* Langfuse 子路径导航丢失——补齐 NEXT_PUBLIC_BASE_PATH 与探针路径对齐 ([#1035](https://github.com/tomturing/hci-troubleshoot-platform/issues/1035)) ([1f97c31](https://github.com/tomturing/hci-troubleshoot-platform/commit/1f97c3123c760545e4ec73a3ff64bfa1364d986a))
+* QFK 日志时间窗口变量占位符被 T→空格替换破坏为 {{DA E}} ([#1025](https://github.com/tomturing/hci-troubleshoot-platform/issues/1025)) ([6e0b36d](https://github.com/tomturing/hci-troubleshoot-platform/commit/6e0b36dbba773eac0fc307ab7170c63535946613))
+* 主干后端门禁按影响范围收敛并补齐语义推荐根因与解决方案展示 ([#1052](https://github.com/tomturing/hci-troubleshoot-platform/issues/1052)) ([17a1822](https://github.com/tomturing/hci-troubleshoot-platform/commit/17a1822d436277118245c8cf47fb1429d5459c80))
+* 从 produces[].extract.rows.include 提取 qfk_log filter_keywords ([#1020](https://github.com/tomturing/hci-troubleshoot-platform/issues/1020)) ([cb1b46b](https://github.com/tomturing/hci-troubleshoot-platform/commit/cb1b46b6bf80aaf5d79487e681727bd252c86d2a))
+* 保留强信号未决时的人工语义指引 ([#1032](https://github.com/tomturing/hci-troubleshoot-platform/issues/1032)) ([ec5f828](https://github.com/tomturing/hci-troubleshoot-platform/commit/ec5f828a321c205a8b3bc7a199465618d75780bd))
+* 信号类型切换时初始化必填字段避免验证错误 ([#1031](https://github.com/tomturing/hci-troubleshoot-platform/issues/1031)) ([0bc1d2f](https://github.com/tomturing/hci-troubleshoot-platform/commit/0bc1d2fc89658ffc21522630c88ad56a36d159fa))
+* 修复 KBD 信号编译验证时 DATE 和 ABSOLUTE_TIME 变量缺少示例值的问题 ([#1016](https://github.com/tomturing/hci-troubleshoot-platform/issues/1016)) ([35a1b5e](https://github.com/tomturing/hci-troubleshoot-platform/commit/35a1b5e479f4cd5c3eed86c2437002ae9f96bd8e))
+* 修复信号抽取 LLM 超时链路倒置导致 KB Service unavailable 误报 ([#1034](https://github.com/tomturing/hci-troubleshoot-platform/issues/1034)) ([1bb6602](https://github.com/tomturing/hci-troubleshoot-platform/commit/1bb6602c1b3a817c5be02fc3d5584648f852e91a))
+* 切换信号类型时保留切换后的新信号而非删除 ([#1028](https://github.com/tomturing/hci-troubleshoot-platform/issues/1028)) ([1748e87](https://github.com/tomturing/hci-troubleshoot-platform/commit/1748e8758488199faa4133f57d6afea222dfa659))
+* 回退 Langfuse 探针路径——Next.js basePath 不影响 /api/ 路由 ([#1036](https://github.com/tomturing/hci-troubleshoot-platform/issues/1036)) ([3a004d0](https://github.com/tomturing/hci-troubleshoot-platform/commit/3a004d0adcba19b6a3d48fb0a358bc98ab4a703a))
+* 忽略已剪枝强信号的完整性误判 ([#1038](https://github.com/tomturing/hci-troubleshoot-platform/issues/1038)) ([924718d](https://github.com/tomturing/hci-troubleshoot-platform/commit/924718d30a90a83c14213f1426560fe0ab4200a2))
+* 排除过期 KBD 的强信号门禁 ([#1037](https://github.com/tomturing/hci-troubleshoot-platform/issues/1037)) ([ee31a41](https://github.com/tomturing/hci-troubleshoot-platform/commit/ee31a4184d483e810a02def9fdb41a10ce18fc52))
+* 放宽 guidance_only 语义画像 KBD 的发布门禁 ([#1042](https://github.com/tomturing/hci-troubleshoot-platform/issues/1042)) ([05f2c9e](https://github.com/tomturing/hci-troubleshoot-platform/commit/05f2c9e50d900849875083791b446caa716067fc))
+* 注册 Bundle 迁移路由到 diagnosis-service main.py ([#1021](https://github.com/tomturing/hci-troubleshoot-platform/issues/1021)) ([8ba9218](https://github.com/tomturing/hci-troubleshoot-platform/commit/8ba921836f7a15ec7e6bad3d6ecece1cd7ee564a))
+* 添加 bundle-migration 路由代理到 API Gateway ([#1024](https://github.com/tomturing/hci-troubleshoot-platform/issues/1024)) ([e5c7dad](https://github.com/tomturing/hci-troubleshoot-platform/commit/e5c7dad02efcf056f11a3903d2520b2b6e633815))
+* 续接语义补证据并幂等记录诊断项 ([#1039](https://github.com/tomturing/hci-troubleshoot-platform/issues/1039)) ([fdf55cf](https://github.com/tomturing/hci-troubleshoot-platform/commit/fdf55cfb7f5804df715eb4360dfe5e2d3bbc300d))
+
+
+### 📝 文档
+
+* 稳定本地启动并补充语义入口说明 ([#1033](https://github.com/tomturing/hci-troubleshoot-platform/issues/1033)) ([0ed4b5f](https://github.com/tomturing/hci-troubleshoot-platform/commit/0ed4b5ffb145116067c90cbdc6fe224b97de95dd))
+
 ## [2.28.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.27.0...v2.28.0) (2026-09-04)
 
 
