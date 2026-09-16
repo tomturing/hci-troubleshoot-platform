@@ -84,6 +84,8 @@ interface SemanticEntryCandidate {
     input_type?: 'text' | 'textarea'
     placeholder?: string
   }>
+  recommendation_conclusion?: string
+  recommendation_facts?: Array<{ question: string; answer: string }>
 }
 
 interface SemanticEntryMetadata {
@@ -1219,7 +1221,12 @@ async function handleToolCallReject() {
             <div v-for="candidate in semanticEntry.candidates" :key="candidate.support_id || candidate.title" class="semantic-entry-candidate">
               <el-tag type="warning" effect="plain" size="small">案例 {{ candidate.support_id || '—' }}</el-tag>
               <span>{{ candidate.title || '语义候选' }}</span>
-              <div v-if="candidate.manual_evidence_fields?.length" class="semantic-evidence-form">
+              <div v-if="semanticEntry.decision === 'semantic_recommendation'" class="semantic-recommendation-summary">
+                <p v-if="candidate.recommendation_facts?.length">澄清确认：{{ candidate.recommendation_facts.map(item => `${item.question}：${item.answer}`).join('；') }}</p>
+                <p v-if="candidate.recommendation_conclusion">推荐结论：{{ candidate.recommendation_conclusion }}</p>
+                <p>可选核验资料可在后续补充，不影响当前推荐结论。</p>
+              </div>
+              <div v-else-if="candidate.manual_evidence_fields?.length" class="semantic-evidence-form">
                 <p>请按字段补充信息；未填写字段会在下一轮继续保留。</p>
                 <el-input
                   v-for="field in candidate.manual_evidence_fields"
@@ -1914,6 +1921,8 @@ async function handleToolCallReject() {
 }
 .semantic-disambiguation { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; }
 .semantic-disambiguation p { flex-basis: 100%; margin: 0; font-size: 13px; }
+.semantic-recommendation-summary { width: 100%; margin-top: 8px; font-size: 13px; }
+.semantic-recommendation-summary p { margin: 4px 0; }
 .message-bubble {
   display: flex;
   gap: 10px;

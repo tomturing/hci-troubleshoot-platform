@@ -1597,13 +1597,25 @@ class InvestigationAgent(BaseAgent):
         support_id = str(candidate.get("support_id") or candidate.get("kbd_id") or "—")
         title = str(candidate.get("title") or "语义案例")
         anchors = "、".join(str(item) for item in candidate.get("matched_positive_anchors") or [] if str(item).strip())
-        score = candidate.get("recommendation_confidence")
-        confidence = f"（匹配置信度 {float(score):.0%}）" if isinstance(score, (int, float)) else ""
-        return (
-            f"🔎 高置信语义推荐：[{support_id}] {title}{confidence}。"
-            f"匹配依据：{anchors or '工单症状画像'}。"
-            "该结论来自工单描述的语义匹配，未经过现场采集验证；建议优先按此案例处理。"
+        facts = "；".join(
+            f"{item.get('question')}：{item.get('answer')}"
+            for item in candidate.get("recommendation_facts") or []
+            if isinstance(item, dict) and item.get("question") and item.get("answer")
         )
+        conclusion = str(candidate.get("recommendation_conclusion") or "").strip()
+        solution = str(candidate.get("recommendation_solution") or "").strip()
+        parts = [
+            f"## 高置信语义推荐：[{support_id}] {title}",
+            f"**匹配依据**：{anchors or '工单症状画像'}。",
+        ]
+        if facts:
+            parts.append(f"**澄清确认**：{facts}。")
+        if conclusion:
+            parts.append(f"**推荐结论**：{conclusion}")
+        if solution:
+            parts.append(f"**建议处理**：\n{solution}")
+        parts.append("本结论来自已发布案例与工单描述的匹配，未经过现场采集验证；可补充资料用于后续核验。")
+        return "\n\n".join(parts)
 
     @staticmethod
     def _semantic_guidance_pending(messages: list[dict]) -> bool:

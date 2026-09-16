@@ -279,7 +279,7 @@ async def _resolve(entries, context, segments, strong_status, embed, namespace, 
     # “语义推荐”。它不等于现场验证结论，因此不进入 CDD 的 definitive/S4 状态。
     all_candidates = [candidate for _, _, candidate in ranked]
     if all_candidates and strong_status in {"no_match", "not_applicable", "matched_inconclusive"}:
-        top = all_candidates[0]
+        top_entry, _top_profile, top = ranked[0]
         policy = top.get("semantic_recommendation") or {}
         runner_up_score = all_candidates[1]["score"] if len(all_candidates) > 1 else 0.0
         margin = top["score"] - runner_up_score if len(all_candidates) > 1 else 1.0
@@ -291,6 +291,18 @@ async def _resolve(entries, context, segments, strong_status, embed, namespace, 
         ):
             top["recommendation_confidence"] = round(top["score"], 6)
             top["recommendation_margin"] = round(margin, 6)
+            top["recommendation_conclusion"] = str(top_entry.get("root_cause") or "").strip()[:2000]
+            top["recommendation_solution"] = str(top_entry.get("solution") or "").strip()[:3000]
+            facts = []
+            for question in top.get("semantic_disambiguation", []):
+                answer = semantic_answers.get(str(question.get("id") or ""))
+                choice = next(
+                    (item for item in question.get("choices", []) if isinstance(item, dict) and item.get("id") == answer),
+                    None,
+                )
+                if choice is not None:
+                    facts.append({"question": str(question.get("question") or ""), "answer": str(choice.get("label") or "")})
+            top["recommendation_facts"] = facts
             result.update(
                 decision="semantic_recommendation",
                 reason="semantic_recommendation",
