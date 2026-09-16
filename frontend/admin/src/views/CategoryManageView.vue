@@ -109,6 +109,45 @@ const listLoading = ref(false)
 const listLoadError = ref<string | null>(null) // 列表加载失败消息
 
 // ──────────────────────────────────────────────────────────────────────────────
+// 语义入口画像（v2 signals 文档顶层字段，与 qkv_case_context 成对出现）
+// ──────────────────────────────────────────────────────────────────────────────
+interface SemanticEvidenceField {
+  id: string
+  label: string
+  required?: boolean
+  input_type?: string
+  placeholder?: string
+}
+
+interface SemanticDisambiguationQuestion {
+  id: string
+  question: string
+  choices: Array<{ id: string; label: string; effect: string }>
+}
+
+interface SemanticEntryProfile {
+  schema_version: number
+  diagnosis_capability: string
+  canonical_symptoms?: string[]
+  positive_anchors?: string[]
+  exclusion_anchors?: string[]
+  manual_evidence_request?: string[]
+  manual_evidence_fields?: SemanticEvidenceField[]
+  semantic_recommendation?: { enabled: boolean; minimum_score: number; minimum_margin: number }
+  semantic_disambiguation?: SemanticDisambiguationQuestion[]
+  clarifying_questions?: string[]
+  routing_examples?: Array<{ description: string; expected_match: boolean }>
+  source_evidence?: Array<{ field_path: string; source_ref: string; quote: string }>
+  applicability?: Record<string, string[]>
+}
+
+interface KbdSignalsDoc {
+  signals?: Array<Record<string, any>>
+  semantic_entry_profile?: SemanticEntryProfile
+  verification_contract?: { variables?: Record<string, { type?: string; description?: string }> }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // 响应式状态：详情弹窗
 // ──────────────────────────────────────────────────────────────────────────────
 const detailDialogVisible = ref(false)
@@ -118,6 +157,8 @@ const detailKbdEntry = ref<{
   title: string
   content_md: string
   hit_count: number
+  status?: string
+  signals_json?: KbdSignalsDoc
 } | null>(null)
 const detailSopEntry = ref<{
   id: number
@@ -127,6 +168,110 @@ const detailSopEntry = ref<{
 } | null>(null)
 const detailLoading = ref(false)
 const detailHtml = ref('')
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 详情弹窗：语义入口画像视图（只读呈现，编辑统一在 KBD 条目管理页）
+// ──────────────────────────────────────────────────────────────────────────────
+function signalToolOf(signal: Record<string, any> | undefined | null): string {
+  return String(signal?.acquire?.tool || '')
+}
+
+const detailSemanticProfile = computed<SemanticEntryProfile | null>(() => {
+  const profile = detailKbdEntry.value?.signals_json?.semantic_entry_profile
+  return profile && typeof profile === 'object' ? profile : null
+})
+
+const detailSemanticConsumers = computed(() =>
+  (detailKbdEntry.value?.signals_json?.signals || []).filter((signal) => signalToolOf(signal).startsWith('qfk')),
+)
+
+// 消费者命令模板里引用的 {{变量}}，必须由用户填写或来自已授权对象范围
+const detailSemanticRequiredInputs = computed(() => {
+  const doc = detailKbdEntry.value?.signals_json
+  const declared = doc?.verification_contract?.variables || {}
+  const required = new Set<string>()
+  for (const signal of doc?.signals || []) {
+    if (signalToolOf(signal) === 'qkv_case_context') continue
+    for (const match of JSON.stringify(signal?.acquire?.args || {}).matchAll(/\{\{([A-Z][A-Z0-9_]*)\}\}/g)) {
+      required.add(match[1])
+    }
+  }
+  return [...required].sort().map((name) => ({
+    name,
+    type: declared[name]?.type || '未声明',
+    description: declared[name]?.description || '缺少输入契约，发布门禁应阻断。',
+  }))
+})
+
+const detailSemanticEvidenceFields = computed<SemanticEvidenceField[]>(
+  () => detailSemanticProfile.value?.manual_evidence_fields || [],
+)
+
+const detailSemanticScope = computed(() =>
+  Object.entries(detailSemanticProfile.value?.applicability || {})
+    .filter(([, values]) => Array.isArray(values) && values.length > 0)
+    .map(([field, values]) => ({ field, label: semanticScopeLabel(field), values })),
+)
+
+const detailSemanticDisambiguation = computed<SemanticDisambiguationQuestion[]>(
+  () => detailSemanticProfile.value?.semantic_disambiguation || [],
+)
+
+const detailSemanticClarifyingQuestions = computed(() => detailSemanticProfile.value?.clarifying_questions || [])
+
+const detailSemanticRoutingExamples = computed(() => detailSemanticProfile.value?.routing_examples || [])
+
+const detailSemanticSourceEvidence = computed(() => detailSemanticProfile.value?.source_evidence || [])
+
+const detailSemanticRecommendation = computed(() => detailSemanticProfile.value?.semantic_recommendation || null)
+
+const SEMANTIC_SCOPE_LABELS: Record<string, string> = {
+  product: '产品',
+  product_version: '版本',
+  component: '组件',
+  object_type: '对象类型',
+  operation: '操作',
+}
+
+const SEMANTIC_EVIDENCE_FIELD_LABELS: Record<string, string> = {
+  canonical_symptoms: '标准症状',
+  positive_anchors: '正向锚点',
+  exclusion_anchors: '排除锚点',
+  manual_evidence_request: '补充证据请求',
+  manual_evidence_fields: '补证据字段',
+  clarifying_questions: '澄清问题',
+  semantic_disambiguation: '澄清选项',
+}
+
+const SEMANTIC_SOURCE_SECTION_LABELS: Record<string, string> = {
+  problem_description: '问题描述',
+  alert_info: '告警信息',
+  steps_text: '处理步骤',
+}
+
+function semanticScopeLabel(key: string): string {
+  return SEMANTIC_SCOPE_LABELS[key] || key
+}
+
+function semanticEvidencePathLabel(path: string): string {
+  const [field, index] = String(path || '').split('.')
+  const label = SEMANTIC_EVIDENCE_FIELD_LABELS[field] || field
+  return index === undefined || index === '' ? label : `${label} #${Number(index) + 1}`
+}
+
+function semanticSourceSectionLabel(ref: string): string {
+  return SEMANTIC_SOURCE_SECTION_LABELS[ref] || ref
+}
+
+function semanticCapabilityLabel(value?: string): string {
+  return ({ executable: '可执行诊断', guidance_only: '仅人工指引', capability_gap: '能力缺口' } as Record<string, string>)[
+    value || ''
+  ] || '未声明'
+}
+
+function semanticInputTypeLabel(value?: string): string {
+  return value === 'textarea' ? '多行文本' : '单行文本'
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 响应式状态：YAML 导入
@@ -1365,6 +1510,199 @@ onMounted(fetchCategories)
             <span>案例ID: {{ detailKbdEntry.support_id }}</span>
             <span>命中次数: {{ detailKbdEntry.hit_count || 0 }}</span>
           </div>
+
+          <!-- 语义入口画像：仅在任务／告警／弹框均未命中时按工单描述参与候选 -->
+          <section v-if="detailSemanticProfile" class="semantic-entry-contract">
+            <el-alert
+              type="info"
+              :closable="false"
+              show-icon
+              :title="`语义入口契约：${semanticCapabilityLabel(detailSemanticProfile.diagnosis_capability)}。仅在任务、告警、弹框均确认未命中后，才按工单描述参与候选。`"
+            />
+            <el-descriptions :column="2" border size="small" class="semantic-entry-summary">
+              <el-descriptions-item label="入口信号">
+                <code>qkv_case_context</code>（只读取工单事实，不执行命令、不推断目标）
+              </el-descriptions-item>
+              <el-descriptions-item label="诊断能力">
+                <el-tag
+                  :type="detailSemanticProfile.diagnosis_capability === 'executable' ? 'success' : 'warning'"
+                  size="small"
+                >
+                  {{ semanticCapabilityLabel(detailSemanticProfile.diagnosis_capability) }}
+                </el-tag>
+              </el-descriptions-item>
+              <el-descriptions-item label="标准症状" :span="2">
+                <template v-if="detailSemanticProfile.canonical_symptoms?.length">
+                  <el-tag
+                    v-for="item in detailSemanticProfile.canonical_symptoms"
+                    :key="item"
+                    size="small"
+                    style="margin: 0 6px 4px 0"
+                  >{{ item }}</el-tag>
+                </template>
+                <span v-else class="text-muted">未配置</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="正向锚点">
+                <template v-if="detailSemanticProfile.positive_anchors?.length">
+                  <el-tag
+                    v-for="item in detailSemanticProfile.positive_anchors"
+                    :key="item"
+                    type="success"
+                    effect="plain"
+                    size="small"
+                    style="margin: 0 6px 4px 0"
+                  >{{ item }}</el-tag>
+                </template>
+                <span v-else class="text-muted">未配置</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="排除锚点">
+                <template v-if="detailSemanticProfile.exclusion_anchors?.length">
+                  <el-tag
+                    v-for="item in detailSemanticProfile.exclusion_anchors"
+                    :key="item"
+                    type="danger"
+                    effect="plain"
+                    size="small"
+                    style="margin: 0 6px 4px 0"
+                  >{{ item }}</el-tag>
+                </template>
+                <span v-else>无</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="适用范围" :span="2">
+                <template v-if="detailSemanticScope.length">
+                  <div v-for="scope in detailSemanticScope" :key="scope.field" class="semantic-scope-row">
+                    <span class="semantic-scope-key">{{ scope.label }}</span>
+                    <el-tag v-for="item in scope.values" :key="item" type="info" effect="plain" size="small">{{ item }}</el-tag>
+                  </div>
+                </template>
+                <span v-else class="text-muted">不限（留空表示适用所有产品与版本）</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="后续消费者采集" :span="2">
+                <template v-if="detailSemanticConsumers.length">
+                  <el-tag
+                    v-for="signal in detailSemanticConsumers"
+                    :key="signal.id"
+                    type="primary"
+                    effect="plain"
+                    size="small"
+                    style="margin: 0 6px 4px 0"
+                  >{{ signal.id }} · {{ signalToolOf(signal) }}</el-tag>
+                </template>
+                <span v-else class="text-muted">无可执行消费者：本案例不进入自动执行链路，命中后只请求人工补充证据。</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="高置信语义推荐" :span="2">
+                <template v-if="detailSemanticRecommendation?.enabled">
+                  <el-tag type="success" effect="plain" size="small">已启用</el-tag>
+                  <span class="text-muted" style="margin-left: 8px">
+                    第一名达 {{ detailSemanticRecommendation.minimum_score }} 分且领先第二名 {{ detailSemanticRecommendation.minimum_margin }} 分才展示推荐（仅为方向建议，不是根因结论）。
+                  </span>
+                </template>
+                <span v-else class="text-muted">未启用（不主动展示推荐，仅按澄清问题收敛候选）</span>
+              </el-descriptions-item>
+            </el-descriptions>
+
+            <div v-if="detailSemanticConsumers.length" class="semantic-entry-inputs">
+              <strong>语义命中后的必填输入</strong>
+              <span class="field-hint">这些值只能由用户填写或从已授权对象范围选择；入口信号不会自行推断。</span>
+              <el-table
+                :data="detailSemanticRequiredInputs"
+                size="small"
+                border
+                empty-text="本样例的消费者不依赖额外目标变量"
+              >
+                <el-table-column prop="name" label="变量" width="140">
+                  <template #default="{ row }"><code>{{ row.name }}</code></template>
+                </el-table-column>
+                <el-table-column prop="type" label="类型" width="110" />
+                <el-table-column prop="description" label="填写方式" />
+              </el-table>
+            </div>
+
+            <div v-if="detailSemanticEvidenceFields.length" class="semantic-entry-inputs">
+              <strong>结构化补证据字段</strong>
+              <span class="field-hint">客户侧按字段提交，运行时只认结构化提交，不猜测自由文本。</span>
+              <el-table :data="detailSemanticEvidenceFields" size="small" border>
+                <el-table-column prop="label" label="客户可见字段" min-width="160">
+                  <template #default="{ row }">
+                    {{ row.label }}
+                    <code class="semantic-field-id">{{ row.id }}</code>
+                  </template>
+                </el-table-column>
+                <el-table-column label="是否必填" width="100">
+                  <template #default="{ row }">{{ row.required === false ? '选填' : '必填' }}</template>
+                </el-table-column>
+                <el-table-column label="填写方式" width="110">
+                  <template #default="{ row }">{{ semanticInputTypeLabel(row.input_type) }}</template>
+                </el-table-column>
+                <el-table-column prop="placeholder" label="输入提示" />
+              </el-table>
+            </div>
+
+            <div v-if="detailSemanticProfile.manual_evidence_request?.length" class="semantic-entry-inputs">
+              <strong>未命中或信息不足时，请补充</strong>
+              <ul><li v-for="item in detailSemanticProfile.manual_evidence_request" :key="item">{{ item }}</li></ul>
+            </div>
+
+            <div v-if="detailSemanticDisambiguation.length" class="semantic-entry-inputs">
+              <strong>语义澄清问题</strong>
+              <span class="field-hint">推荐门槛未满足时启用；选项只影响候选收敛方向，不会作为执行变量。</span>
+              <ul class="semantic-question-list">
+                <li v-for="question in detailSemanticDisambiguation" :key="question.id">
+                  {{ question.question }}
+                  <el-tag
+                    v-for="choice in question.choices"
+                    :key="choice.id"
+                    :type="choice.effect === 'exclude' ? 'danger' : 'success'"
+                    effect="plain"
+                    size="small"
+                    style="margin-left: 6px"
+                  >{{ choice.label }}（{{ choice.effect === 'exclude' ? '排除' : '支持' }}）</el-tag>
+                </li>
+              </ul>
+            </div>
+
+            <div v-if="detailSemanticClarifyingQuestions.length" class="semantic-entry-inputs">
+              <strong>多篇都像时先问什么</strong>
+              <span class="field-hint">每行一个有区分力的问题，运行时一次只问一组。</span>
+              <ul><li v-for="item in detailSemanticClarifyingQuestions" :key="item">{{ item }}</li></ul>
+            </div>
+
+            <el-collapse
+              v-if="detailSemanticRoutingExamples.length || detailSemanticSourceEvidence.length"
+              class="semantic-profile-audit"
+            >
+              <el-collapse-item
+                v-if="detailSemanticRoutingExamples.length"
+                :title="`画像回归正反例（${detailSemanticRoutingExamples.length}）：只校验文字筛选，不证明根因`"
+                name="routing"
+              >
+                <ul>
+                  <li v-for="(example, index) in detailSemanticRoutingExamples" :key="index">
+                    <el-tag :type="example.expected_match ? 'success' : 'danger'" effect="plain" size="small">
+                      {{ example.expected_match ? '应进入候选' : '应被排除' }}
+                    </el-tag>
+                    <span class="semantic-example-text">{{ example.description }}</span>
+                  </li>
+                </ul>
+              </el-collapse-item>
+              <el-collapse-item
+                v-if="detailSemanticSourceEvidence.length"
+                :title="`原文依据关联（${detailSemanticSourceEvidence.length}）：发布时逐字回查，正文改动即失效`"
+                name="evidence"
+              >
+                <el-table :data="detailSemanticSourceEvidence" size="small" border>
+                  <el-table-column label="画像字段" width="170">
+                    <template #default="{ row }">{{ semanticEvidencePathLabel(row.field_path) }}</template>
+                  </el-table-column>
+                  <el-table-column label="原文章节" width="120">
+                    <template #default="{ row }">{{ semanticSourceSectionLabel(row.source_ref) }}</template>
+                  </el-table-column>
+                  <el-table-column prop="quote" label="引用原文" />
+                </el-table>
+              </el-collapse-item>
+            </el-collapse>
+          </section>
+
           <!-- KBD 内容渲染 -->
           <div class="kbd-content" v-html="detailHtml"></div>
         </template>
@@ -1796,6 +2134,87 @@ onMounted(fetchCategories)
 
 .kbd-content :deep(strong) {
   font-weight: 600;
+}
+
+/* ── 语义入口画像（只读呈现，展示口径与 KBD 条目管理页一致） ── */
+.semantic-entry-contract {
+  margin: 0 0 16px;
+  padding: 12px;
+  border: 1px solid var(--el-color-info-light-5);
+  border-radius: 6px;
+  background: var(--el-color-info-light-9);
+}
+
+.semantic-entry-summary {
+  margin-top: 10px;
+}
+
+.semantic-entry-inputs {
+  margin-top: 12px;
+}
+
+.semantic-entry-inputs > strong {
+  display: inline-block;
+  margin-right: 8px;
+  font-size: 13px;
+}
+
+.semantic-entry-inputs .field-hint {
+  display: inline;
+  margin: 0;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.semantic-entry-inputs ul {
+  margin: 6px 0 0;
+  padding-left: 20px;
+  color: var(--el-text-color-regular);
+}
+
+.semantic-scope-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.semantic-scope-key {
+  min-width: 110px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.semantic-field-id {
+  margin-left: 6px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.semantic-question-list li {
+  margin: 6px 0;
+}
+
+.semantic-profile-audit {
+  margin-top: 12px;
+}
+
+.semantic-profile-audit ul {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.semantic-profile-audit li {
+  margin: 4px 0;
+}
+
+.semantic-example-text {
+  margin-left: 8px;
+  color: var(--el-text-color-regular);
+}
+
+.text-muted {
+  color: var(--el-text-color-secondary);
 }
 
 .hit-count-cell {
