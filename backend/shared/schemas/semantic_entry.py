@@ -67,6 +67,13 @@ def capability_of(raw: Any) -> str | None:
     return str(value) if value in SEMANTIC_CAPABILITIES else None
 
 
+def semantic_recommendation_policy(profile: dict[str, Any]) -> dict[str, Any]:
+    """读取画像显式声明的高置信语义推荐策略。"""
+
+    raw = profile.get("semantic_recommendation")
+    return raw if isinstance(raw, dict) else {}
+
+
 def manual_evidence_fields(profile: dict[str, Any]) -> list[dict[str, Any]]:
     """返回画像声明的、可由客户侧表单采集的人工证据字段。"""
 
@@ -151,6 +158,18 @@ def validate_semantic_entry_profile(raw: Any) -> None:
             "guidance_only 画像必须提供 manual_evidence_fields 或 manual_evidence_request，明确需要用户补充什么证据",
             path=["semantic_entry_profile", "manual_evidence_fields"],
         )
+    recommendation = semantic_recommendation_policy(profile)
+    if profile.get("semantic_recommendation") is not None and not isinstance(profile.get("semantic_recommendation"), dict):
+        raise ValidationError("semantic_entry_profile.semantic_recommendation 必须是对象", path=["semantic_entry_profile", "semantic_recommendation"])
+    if recommendation:
+        if capability != "guidance_only":
+            raise ValidationError("高置信语义推荐仅适用于 guidance_only 画像", path=["semantic_entry_profile", "semantic_recommendation"])
+        if not isinstance(recommendation.get("enabled"), bool):
+            raise ValidationError("semantic_recommendation.enabled 必须是布尔值", path=["semantic_entry_profile", "semantic_recommendation", "enabled"])
+        for key in ("minimum_score", "minimum_margin"):
+            value = recommendation.get(key)
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 1:
+                raise ValidationError(f"semantic_recommendation.{key} 必须是 0 到 1 之间的数值", path=["semantic_entry_profile", "semantic_recommendation", key])
     for index, example in enumerate(profile.get("routing_examples", [])):
         _, positive, negative = lexical_profile_score(profile, example["description"])
         if bool(positive and not negative) != example["expected_match"]:

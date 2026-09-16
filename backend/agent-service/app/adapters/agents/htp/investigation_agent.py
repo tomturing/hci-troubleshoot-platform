@@ -360,6 +360,9 @@ class InvestigationAgent(BaseAgent):
                     if str(item.get("id")) in candidate_ids and item.get("executable") is True
                 ]
                 semantic_preselected = bool(raw_cases)
+            if (semantic_result or {}).get("decision") == "semantic_recommendation":
+                yield AgentTextChunk(content=self._semantic_recommendation_message(semantic_result or {}))
+                return
             if not raw_cases:
                 question = ((semantic_result or {}).get("next_action") or {}).get("question")
                 if self._semantic_question_exhausted(messages, question):
@@ -538,6 +541,9 @@ class InvestigationAgent(BaseAgent):
             )
             semantic_candidates = (semantic_result or {}).get("candidates") or []
             candidate_ids = {str(item.get("kbd_id")) for item in semantic_candidates}
+            if (semantic_result or {}).get("decision") == "semantic_recommendation":
+                yield AgentTextChunk(content=self._semantic_recommendation_message(semantic_result or {}))
+                return
             if (semantic_result or {}).get("decision") == "executable" and candidate_ids:
                 selected = [
                     item
@@ -1579,6 +1585,25 @@ class InvestigationAgent(BaseAgent):
         elif completed_structured_profiles:
             outputs.append("已收到画像要求的结构化证据；该案例没有自动验证消费者，已提交人工复核。")
         return outputs
+
+    @staticmethod
+    def _semantic_recommendation_message(semantic_result: dict) -> str:
+        """呈现高置信语义推荐，明确它不是已验证的现场根因。"""
+
+        candidate = next(
+            (item for item in semantic_result.get("candidates") or [] if isinstance(item, dict)),
+            {},
+        )
+        support_id = str(candidate.get("support_id") or candidate.get("kbd_id") or "—")
+        title = str(candidate.get("title") or "语义案例")
+        anchors = "、".join(str(item) for item in candidate.get("matched_positive_anchors") or [] if str(item).strip())
+        score = candidate.get("recommendation_confidence")
+        confidence = f"（匹配置信度 {float(score):.0%}）" if isinstance(score, (int, float)) else ""
+        return (
+            f"🔎 高置信语义推荐：[{support_id}] {title}{confidence}。"
+            f"匹配依据：{anchors or '工单症状画像'}。"
+            "该结论来自工单描述的语义匹配，未经过现场采集验证；建议优先按此案例处理。"
+        )
 
     @staticmethod
     def _semantic_guidance_pending(messages: list[dict]) -> bool:

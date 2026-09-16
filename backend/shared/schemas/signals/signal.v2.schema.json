@@ -129,6 +129,30 @@
             "additionalProperties": false
           }
         },
+        "semantic_recommendation": {
+          "type": "object",
+          "required": [
+            "enabled",
+            "minimum_score",
+            "minimum_margin"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "minimum_score": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "minimum_margin": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "additionalProperties": false
+        },
         "clarifying_questions": {
           "type": "array",
           "maxItems": 10,

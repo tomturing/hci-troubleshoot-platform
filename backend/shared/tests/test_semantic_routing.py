@@ -134,6 +134,22 @@ async def test_guidance_candidate_exposes_declared_structured_evidence_fields():
 
 
 @pytest.mark.asyncio
+async def test_high_confidence_guidance_profile_returns_unverified_semantic_recommendation():
+    result = await resolve_candidates(
+        entries=[
+            entry(
+                capability="guidance_only",
+                semantic_recommendation={"enabled": True, "minimum_score": 0.1, "minimum_margin": 0.1},
+            )
+        ],
+        context="创建虚拟机时镜像格式不支持",
+        strong_status="matched_inconclusive",
+    )
+    assert result["decision"] == "semantic_recommendation"
+    assert result["candidates"][0]["recommendation_confidence"] >= 0.1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("version", "expected"), [("6.12.0", "executable"), ("6.9", "inconclusive"), ("", "inconclusive")]
 )

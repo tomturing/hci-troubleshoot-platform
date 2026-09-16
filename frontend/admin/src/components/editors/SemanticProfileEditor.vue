@@ -33,6 +33,9 @@ function addEvidenceField() {
   const fields = draft.value.manual_evidence_fields ||= []
   fields.push({ id: '', label: '', required: true, input_type: 'text', placeholder: '' })
 }
+function recommendationPolicy() {
+  return draft.value.semantic_recommendation ||= { enabled: false, minimum_score: 0.75, minimum_margin: 0.15 }
+}
 function cleanDraft(): Profile {
   const result: Profile = JSON.parse(JSON.stringify(draft.value))
   for (const field of fields) result[field.key] = splitLines((result[field.key] || []).join('\n'))
@@ -77,6 +80,16 @@ async function runPreview() {
         <el-button @click="draft.manual_evidence_fields?.splice(index, 1)">删除</el-button>
       </div>
       <el-button @click="addEvidenceField">添加结构化字段</el-button>
+    </el-form-item>
+    <el-form-item label="高置信语义推荐">
+      <small>仅展示基于工单描述的推荐，不代表现场验证根因。第一名必须达到阈值且领先第二名达到分差才会触发。</small>
+      <el-checkbox v-model="recommendationPolicy().enabled">允许展示高置信推荐</el-checkbox>
+      <div v-if="recommendationPolicy().enabled" class="recommendation-policy-row">
+        <el-input-number v-model="recommendationPolicy().minimum_score" :min="0" :max="1" :step="0.05" />
+        <span>最低分</span>
+        <el-input-number v-model="recommendationPolicy().minimum_margin" :min="0" :max="1" :step="0.05" />
+        <span>与第二名最低分差</span>
+      </div>
     </el-form-item>
     <el-collapse v-model="expandedSections">
       <el-collapse-item title="原文关联与正反例：随画像版本保存，发布时重新校验" name="validation">
@@ -129,4 +142,5 @@ small { color: var(--el-text-color-secondary); }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; }
 .actions { display: flex; justify-content: flex-end; margin-top: 16px; }
 .evidence-field-row { display: grid; grid-template-columns: 1fr 1.5fr 120px auto auto; gap: 8px; width: 100%; margin: 8px 0; }
+.recommendation-policy-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 </style>

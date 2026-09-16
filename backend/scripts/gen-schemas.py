@@ -139,6 +139,16 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                             "additionalProperties": False,
                         },
                     },
+                    "semantic_recommendation": {
+                        "type": "object",
+                        "required": ["enabled", "minimum_score", "minimum_margin"],
+                        "properties": {
+                            "enabled": {"type": "boolean"},
+                            "minimum_score": {"type": "number", "minimum": 0, "maximum": 1},
+                            "minimum_margin": {"type": "number", "minimum": 0, "maximum": 1},
+                        },
+                        "additionalProperties": False,
+                    },
                     "clarifying_questions": {
                         "type": "array",
                         "maxItems": 10,

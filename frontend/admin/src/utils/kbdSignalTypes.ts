@@ -39,6 +39,7 @@ export interface SignalsDoc {
       input_type?: 'text' | 'textarea'
       placeholder?: string
     }>
+    semantic_recommendation?: { enabled: boolean; minimum_score: number; minimum_margin: number }
     clarifying_questions?: string[]
     source_refs?: string[]
     source_evidence?: { field_path: string; source_ref: 'problem_description' | 'alert_info' | 'steps_text'; quote: string; source_sha256: string }[]

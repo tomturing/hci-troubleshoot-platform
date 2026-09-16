@@ -24,6 +24,7 @@ from shared.schemas.semantic_entry import (
     profile_text,
     semantic_context_text,
     semantic_entry_profile,
+    semantic_recommendation_policy,
     semantic_segment_weights,
 )
 
@@ -40,6 +41,7 @@ REASON_LABELS = {
     "missing_description": "缺少当前故障描述",
     "ambiguous_candidates": "相似候选过多，需先补充区分信息",
     "guidance_only": "仅能提供人工补证据指引，不能自动确认根因",
+    "semantic_recommendation": "最高分语义画像满足推荐门槛，属于未验证的处理建议",
     "capability_gap": "当前平台没有可信验证能力",
     "consumer_not_executable": "消费者未通过执行契约检查",
     "exclusion_anchor_hit": "描述命中不适用条件",
@@ -202,6 +204,7 @@ async def _resolve(entries, context, segments, strong_status, embed, namespace, 
                     "applicability": profile.get("applicability", {}),
                     "manual_evidence_request": profile.get("manual_evidence_request", []),
                     "manual_evidence_fields": profile.get("manual_evidence_fields", []),
+                    "semantic_recommendation": semantic_recommendation_policy(profile),
                     "score_parts": {"anchor_score": score},
                 },
             )
@@ -255,6 +258,28 @@ async def _resolve(entries, context, segments, strong_status, embed, namespace, 
     guidance = [candidate for _, _, candidate in ranked if candidate["diagnosis_capability"] == "guidance_only"]
     result["candidate_count"] = total_executable or total_guidance
     result["candidates"] = (executable or guidance)[: max(1, min(top_k, 10))]
+    # 只有画像显式允许、最高分足够高且与所有其它语义候选拉开差距时，才给出
+    # “语义推荐”。它不等于现场验证结论，因此不进入 CDD 的 definitive/S4 状态。
+    all_candidates = [candidate for _, _, candidate in ranked]
+    if all_candidates and strong_status in {"no_match", "not_applicable", "matched_inconclusive"}:
+        top = all_candidates[0]
+        policy = top.get("semantic_recommendation") or {}
+        runner_up_score = all_candidates[1]["score"] if len(all_candidates) > 1 else 0.0
+        margin = top["score"] - runner_up_score if len(all_candidates) > 1 else 1.0
+        if (
+            top["diagnosis_capability"] == "guidance_only"
+            and policy.get("enabled") is True
+            and top["score"] >= float(policy["minimum_score"])
+            and margin >= float(policy["minimum_margin"])
+        ):
+            top["recommendation_confidence"] = round(top["score"], 6)
+            top["recommendation_margin"] = round(margin, 6)
+            result.update(
+                decision="semantic_recommendation",
+                reason="semantic_recommendation",
+                candidates=[top],
+            )
+            return result
     if executable and total_executable <= MAX_EXECUTION_CANDIDATES:
         result.update(
             decision="executable",
