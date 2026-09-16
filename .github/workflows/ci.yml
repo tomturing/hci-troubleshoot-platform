@@ -819,16 +819,20 @@ jobs:
     env:
       HCI_TESTING: "1"
       CI_TRACE_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}-unit-tests
+    # 部署配置的输入在 deploy/ 侧，不在 backend filter 内：这类 PR 的
+    # unit_test_mode 为 none，job 只需执行「校验部署配置契约」这一步，
+    # 其余步骤各自的 if 会按 mode 跳过。该 job 名称是必需状态检查，
+    # 契约必须挂在它上面才能真正阻断合并。
+    #
+    # 注意：`if: |` 是 YAML 块标量，其中的 `#` 不是注释而是表达式字符串的一部分，
+    # 会让 GitHub 表达式词法分析失败并导致整个工作流文件失效（所有 job 都不执行、
+    # 必需状态检查永远停在 Expected）。说明只能写在 `if:` 之前。
     if: |
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.backend_gate_required == 'true') ||
         github.event_name == 'merge_group' ||
         (github.event_name == 'pull_request' && (needs.changes.outputs.backend == 'true' || needs.changes.outputs.unit_test_mode == 'full')) ||
-        # 部署配置的输入在 deploy/ 侧，不在 backend filter 内：这类 PR 的
-        # unit_test_mode 为 none，job 只需执行「校验部署配置契约」这一步，
-        # 其余步骤各自的 if 会按 mode 跳过。该 job 名称是必需状态检查，
-        # 契约必须挂在它上面才能真正阻断合并。
         needs.changes.outputs.deploy_config == 'true'
       )
     steps:
