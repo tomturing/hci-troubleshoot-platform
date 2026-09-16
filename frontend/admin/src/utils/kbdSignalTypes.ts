@@ -43,7 +43,7 @@ export interface SignalsDoc {
     semantic_disambiguation?: Array<{
       id: string
       question: string
-      choices: Array<{ id: string; label: string; effect: 'support' | 'exclude' }>
+      choices: Array<{ id: string; label: string; effect: 'support' | 'exclude' | 'neutral' }>
     }>
     clarifying_questions?: string[]
     source_refs?: string[]

@@ -106,7 +106,11 @@ async function runPreview() {
         <div v-for="(choice, choiceIndex) in item.choices" :key="choiceIndex" class="disambiguation-choice">
           <el-input v-model="choice.id" placeholder="choice_id" />
           <el-input v-model="choice.label" placeholder="客户可见答案" />
-          <el-select v-model="choice.effect"><el-option label="支持该案例" value="support" /><el-option label="排除该案例" value="exclude" /></el-select>
+          <el-select v-model="choice.effect">
+            <el-option label="支持该案例" value="support" />
+            <el-option label="排除该案例" value="exclude" />
+            <el-option label="不影响（保留候选）" value="neutral" />
+          </el-select>
           <el-button @click="item.choices.splice(choiceIndex, 1)">删除</el-button>
         </div>
         <el-button @click="addDisambiguationChoice(item)">添加选项</el-button>

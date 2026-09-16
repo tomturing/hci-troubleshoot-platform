@@ -485,6 +485,16 @@
     - 后端：`_normalize_qkv_records` 函数新增 tool 参数，对于 qkv_dialog 自动识别并解析原始日志文本，调用 `_extract_from_dialog_log` 提取 request_id、end 等信息。
     - 前端：`SignalDryRunDialog.vue` 验证逻辑新增 tool 类型判断，当 `tool.value === 'qkv_dialog'` 时允许原始文本输入，直接传给后端处理。
 
+- **语义澄清 `semantic_disambiguation` 支持中性选项（neutral）**：
+  - **背景**：澄清题选项 `effect` 此前只有 `support` / `exclude` 两种。当画像为 `guidance_only` 或唯一候选时，用户回复"否 / 无法判断"如果被设计方标记为 `exclude`，**唯一候选直接出池 → 候选池清空 → 既无可问的题也无证据请求 → 兜底文案**。
+  - **修复**：
+    - 路由层（`backend/shared/schemas/semantic_routing.py`）新增 `neutral` effect：既不加分也不剔除，仅记录用户回答。
+    - 校验层 + JSON Schema（`signal.v2.schema.json`）+ 生成脚本（`gen-schemas.py`）同步把 `effect` 枚举扩为 `support | exclude | neutral`。
+    - 测试夹具（`test_semantic_entry.py` / `test_semantic_routing.py`）覆盖三 effect。
+    - 前端编辑器（`SemanticProfileEditor.vue`）三选一下拉、`kbdSignalTypes.ts` 类型同步，`KbdReviewView.vue` / `CategoryManageView.vue` 详情面板透出中性选项徽标。
+  - **配置建议**：画像出现"无法判断 / 不适用 / 我不确定"等回退选项时，effect 应选 `neutral`；仅在语义上**确实反向**时（如"是其它产品 / 其它报错"）才用 `exclude`。
+  - **设计意图**：`neutral` 答完后再让路由层走第 3 步 `clarifying_questions` / 第 4 步 `manual_evidence_request`，让候选池逐步收敛而不是一句话清零。
+
 ---
 
 ## 2. 技术栈

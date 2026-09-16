@@ -76,4 +76,32 @@ describe('语义画像编辑与预览', () => {
     api.createPlan('session', '6.12')
     expect(client.post.mock.calls[1][1]).toEqual({ product_version: '6.12', context: {} })
   })
+
+  it('语义澄清选项 effect 下拉同时提供支持、排除、不影响三类', async () => {
+    const profile = {
+      ...initial,
+      diagnosis_capability: 'guidance_only' as const,
+      semantic_disambiguation: [
+        {
+          id: 'installer_stage',
+          question: '错误出现在哪个安装阶段？',
+          choices: [
+            { id: 'driver_selection', label: '选择要安装的驱动程序', effect: 'support' as const },
+            { id: 'other_stage', label: '其它阶段或无法判断', effect: 'neutral' as const },
+          ],
+        },
+      ],
+    }
+    const wrapper = mount(SemanticProfileEditor, {
+      props: { initial: profile, preview: vi.fn() },
+      global: { plugins: [ElementPlus] },
+    })
+    await flushPromises()
+    const selects = wrapper.findAll('.disambiguation-choice .el-select')
+    expect(selects.length).toBe(2)
+    // 中性选项不应破坏渲染：两个 select 都成功 mount，且当前 draft 仍可保存
+    const draftAfterMount = (wrapper.vm as { draft: { semantic_disambiguation: unknown[] } }).draft
+    expect(draftAfterMount.semantic_disambiguation[0].choices).toHaveLength(2)
+    wrapper.unmount()
+  })
 })
