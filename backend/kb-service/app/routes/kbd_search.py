@@ -87,6 +87,7 @@ class SemanticCaseContext(BaseModel):
     product: str | None = Field(default=None, max_length=120)
     product_version: str | None = Field(default=None, max_length=120)
     component: str | None = Field(default=None, max_length=120)
+    semantic_answers: dict[str, str] = Field(default_factory=dict)
 
 
 class SemanticEntryResolveRequest(BaseModel):

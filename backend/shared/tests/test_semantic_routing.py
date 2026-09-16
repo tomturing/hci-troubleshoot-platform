@@ -150,6 +150,32 @@ async def test_high_confidence_guidance_profile_returns_unverified_semantic_reco
 
 
 @pytest.mark.asyncio
+async def test_profile_declared_choice_reassesses_without_text_matching():
+    profile = {
+        "semantic_recommendation": {"enabled": True, "minimum_score": 0.9, "minimum_margin": 0.1},
+        "semantic_disambiguation": [
+            {
+                "id": "installer_stage",
+                "question": "错误出现在哪个安装阶段？",
+                "choices": [
+                    {"id": "driver_selection", "label": "选择要安装的驱动程序", "effect": "support"},
+                    {"id": "other_stage", "label": "其它阶段", "effect": "exclude"},
+                ],
+            }
+        ],
+    }
+    initial = await resolve_candidates(entries=[entry(capability="guidance_only", **profile)], context="镜像格式不支持", strong_status="no_match")
+    assert initial["decision"] == "inconclusive"
+    assert initial["next_action"]["type"] == "semantic_disambiguation"
+    resolved = await resolve_candidates(
+        entries=[entry(capability="guidance_only", **profile)],
+        context={"description": "镜像格式不支持", "semantic_answers": {"installer_stage": "driver_selection"}},
+        strong_status="no_match",
+    )
+    assert resolved["decision"] == "semantic_recommendation"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("version", "expected"), [("6.12.0", "executable"), ("6.9", "inconclusive"), ("", "inconclusive")]
 )

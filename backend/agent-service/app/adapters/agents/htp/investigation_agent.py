@@ -1652,8 +1652,20 @@ class InvestigationAgent(BaseAgent):
         if len(description) > 16000:
             description = description[:8000] + "\n" + description[-7999:]
         # 只透传环境已知字段；不从语义推导目标或版本。
+        semantic_answers: dict[str, str] = {}
+        for message in messages:
+            metadata = message.get("metadata") if isinstance(message, dict) else None
+            if message.get("role") != "user" or not isinstance(metadata, dict):
+                continue
+            if metadata.get("kind") != "semantic_clarification_response":
+                continue
+            question_id = str(metadata.get("questionId") or "")
+            choice_id = str(metadata.get("choiceId") or "")
+            if question_id and choice_id:
+                semantic_answers[question_id] = choice_id
         return {
             "description": description,
+            "semantic_answers": semantic_answers,
             **{
                 key: str(value)
                 for key, value in (environment or {}).items()

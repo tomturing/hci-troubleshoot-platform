@@ -166,6 +166,8 @@ async def _resolve(entries, context, segments, strong_status, embed, namespace, 
         )
         return result
     text = semantic_context_text(context)
+    semantic_answers = context.get("semantic_answers", {}) if isinstance(context, dict) else {}
+    semantic_answers = semantic_answers if isinstance(semantic_answers, dict) else {}
     ranked = []
     for entry in entries:
         profile = semantic_entry_profile(entry.get("signals_json"))
@@ -179,6 +181,19 @@ async def _resolve(entries, context, segments, strong_status, embed, namespace, 
         if capability == "executable" and entry.get("executable") is False:
             rejected = "consumer_not_executable"
         score, hits, excluded = lexical_profile_score(profile, text)
+        clarification_questions = [item for item in profile.get("semantic_disambiguation", []) if isinstance(item, dict)]
+        answered_question_ids = set()
+        for question in clarification_questions:
+            question_id = str(question.get("id") or "")
+            answer = str(semantic_answers.get(question_id) or "")
+            if not answer:
+                continue
+            answered_question_ids.add(question_id)
+            choice = next((item for item in question.get("choices", []) if isinstance(item, dict) and item.get("id") == answer), None)
+            if choice is not None and choice.get("effect") == "exclude":
+                rejected = "clarification_excluded"
+            elif choice is not None and choice.get("effect") == "support":
+                score = min(1.0, score + 0.35)
         rejected = rejected or ("exclusion_anchor_hit" if excluded else "positive_anchor_missing" if not hits else None)
         identity = {
             "kbd_id": str(entry["id"]),
@@ -205,6 +220,8 @@ async def _resolve(entries, context, segments, strong_status, embed, namespace, 
                     "manual_evidence_request": profile.get("manual_evidence_request", []),
                     "manual_evidence_fields": profile.get("manual_evidence_fields", []),
                     "semantic_recommendation": semantic_recommendation_policy(profile),
+                    "semantic_disambiguation": clarification_questions,
+                    "answered_semantic_questions": sorted(answered_question_ids),
                     "score_parts": {"anchor_score": score},
                 },
             )
@@ -286,6 +303,29 @@ async def _resolve(entries, context, segments, strong_status, embed, namespace, 
             reason="strong_producer_absent" if strong_status == "not_applicable" else "strong_producer_no_match",
         )
     else:
+        disambiguation = next(
+            (
+                question
+                for _, _, candidate in ranked
+                for question in candidate.get("semantic_disambiguation", [])
+                if str(question.get("id") or "") not in semantic_answers
+            ),
+            None,
+        )
+        if disambiguation:
+            result.update(
+                reason="ambiguous_candidates",
+                next_action={
+                    "type": "semantic_disambiguation",
+                    "question_id": disambiguation["id"],
+                    "question": disambiguation["question"],
+                    "choices": [
+                        {"id": choice["id"], "label": choice["label"]}
+                        for choice in disambiguation["choices"]
+                    ],
+                },
+            )
+            return result
         questions = [
             question
             for _, profile, _ in ranked

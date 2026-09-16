@@ -149,6 +149,32 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                         },
                         "additionalProperties": False,
                     },
+                    "semantic_disambiguation": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["id", "question", "choices"],
+                            "properties": {
+                                "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+                                "question": {"type": "string", "minLength": 1},
+                                "choices": {
+                                    "type": "array",
+                                    "minItems": 2,
+                                    "items": {
+                                        "type": "object",
+                                        "required": ["id", "label", "effect"],
+                                        "properties": {
+                                            "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+                                            "label": {"type": "string", "minLength": 1},
+                                            "effect": {"enum": ["support", "exclude"]},
+                                        },
+                                        "additionalProperties": False,
+                                    },
+                                },
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
                     "clarifying_questions": {
                         "type": "array",
                         "maxItems": 10,
