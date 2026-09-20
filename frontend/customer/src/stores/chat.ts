@@ -19,6 +19,7 @@ import {
 } from '@/utils/execOutputFilter'
 import { normalizeToolEvent } from '@/utils/toolEvent'
 import { navigateToOfflineDiagnosis } from '@/utils/offlineDiagnosis'
+import { ensureAcliReady, type AcliSyncResult } from '@/services/acliManager'
 
 // 开发环境专用日志（生产环境自动禁用）
 const isDev = import.meta.env.DEV
@@ -96,15 +97,21 @@ export const useChatStore = defineStore('chat', () => {
   const BRIDGE_LOG_MAX_DELAY = 30_000
   const BRIDGE_LOG_OUTBOX_KEY = `hci_bridge_log_outbox_${clientId}`
   try {
-    const persisted = JSON.parse(localStorage.getItem(BRIDGE_LOG_OUTBOX_KEY) || '[]')
-    if (Array.isArray(persisted)) bridgeLogBuffer = persisted
+    if (typeof localStorage !== 'undefined') {
+      const persisted = JSON.parse(localStorage.getItem(BRIDGE_LOG_OUTBOX_KEY) || '[]')
+      if (Array.isArray(persisted)) bridgeLogBuffer = persisted
+    }
   } catch {
-    localStorage.removeItem(BRIDGE_LOG_OUTBOX_KEY)
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(BRIDGE_LOG_OUTBOX_KEY)
+    }
   }
 
   function persistBridgeLogOutbox(): void {
     try {
-      localStorage.setItem(BRIDGE_LOG_OUTBOX_KEY, JSON.stringify(bridgeLogBuffer))
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(BRIDGE_LOG_OUTBOX_KEY, JSON.stringify(bridgeLogBuffer))
+      }
     } catch (error) {
       const stats = getBridgeLogStats()
       setBridgeLogStats({ ...stats, lastError: `outbox_persist_failed: ${String(error)}`.slice(0, 200) })
@@ -215,7 +222,7 @@ export const useChatStore = defineStore('chat', () => {
 
   // P1-5: 浏览器关闭前保存 pending 日志到 localStorage（断网保护）
   function savePendingLogs() {
-    if (bridgeLogBuffer.length > 0) {
+    if (typeof localStorage !== 'undefined' && bridgeLogBuffer.length > 0) {
       try {
         localStorage.setItem('hci_pending_bridge_logs', JSON.stringify(bridgeLogBuffer))
         console.log('已保存 pending 日志到 localStorage:', bridgeLogBuffer.length, '条')
@@ -227,6 +234,7 @@ export const useChatStore = defineStore('chat', () => {
 
   // P1-5: 页面加载时恢复 pending 日志
   function restorePendingLogs() {
+    if (typeof localStorage === 'undefined') return
     try {
       const pending = localStorage.getItem('hci_pending_bridge_logs')
       if (pending) {
@@ -234,7 +242,7 @@ export const useChatStore = defineStore('chat', () => {
         bridgeLogBuffer = logs.concat(bridgeLogBuffer)
         localStorage.removeItem('hci_pending_bridge_logs')
         console.log('已恢复 pending 日志:', logs.length, '条')
-        if (bridgeLogTimer === null) {
+        if (bridgeLogTimer === null && typeof window !== 'undefined') {
           bridgeLogTimer = window.setTimeout(flushBridgeLogs, 1000) // 1s 后重试
         }
       }
@@ -460,11 +468,11 @@ export const useChatStore = defineStore('chat', () => {
   /** 自动执行模式，持久化到 localStorage；只影响服务端签发的结构化工具事件 */
   const AUTO_EXEC_MODE_KEY = 'hci_auto_execute_mode'
   const AUTO_EXEC_VALID_MODES = ['off', 'safe-only', 'aggressive'] as const
-  const _storedMode = localStorage.getItem(AUTO_EXEC_MODE_KEY)
+  const _storedMode = typeof localStorage !== 'undefined' ? localStorage.getItem(AUTO_EXEC_MODE_KEY) : null
   const autoExecuteMode = ref<'off' | 'safe-only' | 'aggressive'>(
     AUTO_EXEC_VALID_MODES.includes(_storedMode as 'off' | 'safe-only' | 'aggressive')
       ? (_storedMode as 'off' | 'safe-only' | 'aggressive')
-      : 'off',
+      : 'off'
   )
   // === 环境数据采集状态 ===
   const collectionState = ref<'idle' | 'collecting' | 'success' | 'error'>('idle')
@@ -1586,7 +1594,9 @@ export const useChatStore = defineStore('chat', () => {
    */
   function setAutoExecuteMode(mode: 'off' | 'safe-only' | 'aggressive') {
     autoExecuteMode.value = mode
-    localStorage.setItem(AUTO_EXEC_MODE_KEY, mode)
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(AUTO_EXEC_MODE_KEY, mode)
+    }
     devLog('AUTO-EXEC', `模式切换为 ${mode}`)
   }
 
@@ -1833,6 +1843,7 @@ export const useChatStore = defineStore('chat', () => {
         clearStabilityTimer()
         sshConnectionState.value = 'connected'
         resolve()
+        checkAndSyncAcli().catch(() => {})
       }
 
       // 清理旧连接
@@ -2030,6 +2041,30 @@ export const useChatStore = defineStore('chat', () => {
     pendingExecCallbacks.clear()
     execBuffers.clear()
     execOutputFilters.clear()
+  }
+
+  /**
+   * 检测并自动更新当前 SSH 目标集群上的 acli 工具
+   */
+  async function checkAndSyncAcli(options?: { force?: boolean }): Promise<AcliSyncResult | null> {
+    if (!sshWebSocket.value || sshConnectionState.value !== 'connected') {
+      devLog('acli', 'SSH 未连接，跳过 acli 检测')
+      return null
+    }
+    const caseId = sshCurrentConfig.value?.caseId || 'terminal-global'
+    devLog('acli', '开始后台检测 acli 状态...', { caseId })
+    try {
+      const result = await ensureAcliReady(
+        sshWebSocket.value,
+        caseId,
+        (p) => devLog('acli', p.text),
+        options,
+      )
+      return result
+    } catch (e: any) {
+      console.warn('[chatStore] acli 检测/同步异常:', e)
+      return null
+    }
   }
 
   /**
@@ -3121,6 +3156,7 @@ export const useChatStore = defineStore('chat', () => {
     sshCommandConsumer,
     connectSSH,
     disconnectSSH,
+    checkAndSyncAcli,
     forwardBridgeLog,
     importBridgeLogsToCase,
     sendSSHCommand,
