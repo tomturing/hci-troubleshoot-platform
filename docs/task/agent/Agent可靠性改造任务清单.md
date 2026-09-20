@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-08-31
+last_updated: 2026-09-20
 related_prs:
   - PR #474: invoke() 重试 + tool_calls 清理 + skill 可观测 + 报告模板简化 + solution 格式合并
 owner: team
@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-09-20 | v3.74 | **客户端 SSH 与 acli 状态管理安全加固**：`chat.ts` 补充 `typeof localStorage !== 'undefined'` 防御性保护消除单测环境异常；在 SSH 连接就绪后异步触发 `checkAndSyncAcli` 自动就绪自检 | [acli自动检测与安装更新方案](../../solution/custom-ui/events/2026-09-20-acli自动检测与安装更新方案.md) |
 | 2026-08-31 | v3.73 | **完成 SOP 未解决切换 KBD 的生产闭环**：新增继续 SOP/切换 KBD 去向卡、一次性 `request_id`、Conversation/SopExecution 行锁与原子状态迁移；切换后 Agent 读取权威 `aborted` 状态并立即进入同分类 KBD，无可执行 KBD 时保持人工升级。补齐防重放、旧 SOP 快照、阻塞交互、消息顺序、前端点击和刷新协议回归。 | [SOP 未解决切换 KBD 闭环需求](../../requirement/events/2026-08-31-SOP未解决切换KBD闭环需求.md) |
 | 2026-08-20 | v3.72 | **修复 CDD PARTIAL 报告丢失已命中参考案例**：多 KBD 场景下，即使 Conclusion Gate 因其他候选未决而保持 `PARTIAL`，报告也必须明确列出全部必要信号已满足的参考案例及现场证据；禁止泄露根因/解决方案，并从未确认列表中排除已支持候选。 | [仿真诊断等价性与CDD全候选修正任务](events/2026-08-20-仿真诊断等价性与CDD全候选修正任务.md) |
 | 2026-08-20 | v3.71 | **恢复仿真与真实环境的 CDD 诊断等价性**：S0 分类后，real/sim 均加载分类内全部已发布且可执行 KBD，并复用相同的 CDD 归约和 Conclusion Gate；仿真唯一替换点是 acquisition provider，由 hci-sim Bundle 返回模拟现场数据。删除 TestRun `support_id/kbd_revision` 对候选集的答案绑定及其错误拦截，禁止测试答案泄漏。分类完整采集面和 Bundle freshness 属于 hci-sim 数据契约，不能用候选过滤、ERROR 降级或放宽 Gate 掩盖。 | [仿真诊断等价性与CDD全候选修正任务](events/2026-08-20-仿真诊断等价性与CDD全候选修正任务.md) |

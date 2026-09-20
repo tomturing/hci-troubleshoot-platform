@@ -32,6 +32,7 @@ import {
 import { createApiClient, createCaseApi, createEnvironmentApi } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
 import { parseClusterOutput } from '@/utils/parseCluster'
+import { ensureAcliReady } from '@/services/acliManager'
 import SshFormSection from './SshFormSection.vue'
 
 const chatStore = useChatStore()
@@ -380,6 +381,23 @@ async function runSshAndCreateCase() {
         reject(new Error('WebSocket 连接失败'))
       }
     })
+
+    // ===== 步骤 1.5: 检查与自动安装 acli 工具 =====
+    addLog('info', '正在检查集群 acli 工具链状态...')
+    try {
+      const acliRes = await ensureAcliReady(
+        tempSocket!,
+        'ssh-create-temp',
+        (p) => addLog(p.type, p.text),
+      )
+      if (acliRes.status === 'installed') {
+        addLog('success', `acli 工具已自动安装就绪 (${acliRes.version || '最新版本'})`)
+      } else if (acliRes.status === 'up_to_date') {
+        addLog('success', `acli 工具已就绪 (${acliRes.version || '最新版本'})`)
+      }
+    } catch (e: any) {
+      addLog('warn', `acli 检测/安装提示: ${e.message}`)
+    }
 
     // ===== 步骤 2: 创建工单（先创建，再采集）=====
     addLog('info', '正在创建工单...')

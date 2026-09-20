@@ -85,6 +85,8 @@ export interface TerminalWsMessage {
   | 'exec_stderr'  // 双通道：隔离通道 stderr
   | 'bridge_log'   // terminal_bridge 结构化回采日志（OBS-TERMINAL-BRIDGE-001）
   | 'vm_console_result'  // qkv_vm_console 固定操作元数据结果（不含图片字节）
+  | 'acli_sync_progress' // acli 检查/安装进度反馈
+  | 'acli_sync_result'   // acli 检查/安装最终结果
   case_id?: string
   output?: string
   message?: string
@@ -106,6 +108,13 @@ export interface TerminalWsMessage {
   timed_out?: boolean
   cancelled?: boolean
   error_type?: string
+  // acli_sync 专用字段
+  status?: string
+  architecture?: string
+  current_version?: string
+  latest_version?: string
+  available_mb?: number
+  required_mb?: number
   // WebSocket 保活心跳字段
   ping?: number     // 服务端发送心跳时间戳（Unix 毫秒）
   // bridge_log 消息的负载（结构化日志条目）
@@ -223,6 +232,25 @@ export function buildDisconnectMessage(caseId: string): string {
   return JSON.stringify({
     type: 'ssh_disconnect',
     case_id: caseId,
+  })
+}
+
+export interface AcliSyncOptions {
+  force?: boolean
+  minDiskMb?: number
+  acliUrl?: string
+}
+
+/**
+ * 构建 acli_sync 消息（检测与自动更新 acli 工具）
+ */
+export function buildAcliSyncMessage(caseId: string, options?: AcliSyncOptions): string {
+  return JSON.stringify({
+    type: 'acli_sync',
+    case_id: caseId,
+    force: options?.force || false,
+    min_disk_mb: options?.minDiskMb || 100,
+    acli_url: options?.acliUrl || undefined,
   })
 }
 

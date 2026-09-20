@@ -184,6 +184,11 @@ type InMessage struct {
 	Resume         bool           `json:"resume"`         // P0-2: 浏览器重连时发送 resume 信号，触发历史日志回放  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
 	OutputFilters  []OutputFilter `json:"output_filters"` // 平台定义的安全逐行筛选，不执行 shell/正则
 
+	// ── acli_sync 专用字段 ──
+	Force     bool   `json:"force"`              // 强制重新安装/更新
+	MinDiskMB int    `json:"min_disk_mb"`        // 最小剩余磁盘要求（默认 100MB）
+	AcliURL   string `json:"acli_url,omitempty"` // 可选自定义下载链接
+
 	// ── WebSocket 保活（ping/pong）专用字段 ──
 	Pong int64 `json:"pong,omitempty"` // 客户端回复心跳时间戳（回显服务端 ping 值）
 
@@ -244,6 +249,14 @@ type OutMessage struct {
 	SHA256       string `json:"sha256,omitempty"`        // 解码后原始 PPM 的 SHA-256
 	SizeBytes    int64  `json:"size_bytes,omitempty"`    // 解码后原始 PPM 字节数
 	UploadStatus string `json:"upload_status,omitempty"` // uploaded | artifact_upload_disabled | upload_failed | not_applicable
+
+	// ── acli_sync 专用字段 ──
+	Status         string `json:"status,omitempty"` // up_to_date | installed | disk_space_insufficient | error | checking | downloading | uploading | installing
+	Architecture   string `json:"architecture,omitempty"`
+	CurrentVersion string `json:"current_version,omitempty"`
+	LatestVersion  string `json:"latest_version,omitempty"`
+	AvailableMB    int64  `json:"available_mb,omitempty"`
+	RequiredMB     int64  `json:"required_mb,omitempty"`
 
 	// ── WebSocket 保活（ping/pong）专用字段 ──
 	Ping int64 `json:"ping,omitempty"` // 服务端发送心跳时间戳（Unix毫秒），客户端需回复 pong
@@ -1989,6 +2002,374 @@ func uploadVMConsolePPM(parent context.Context, captureID, caseID string, data [
 	return vmConsoleUploadFailed, fmt.Errorf("制品服务返回 HTTP %d", response.StatusCode)
 }
 
+// ── acli 自动检查与更新（acli_sync）──────────────────────────────────────────
+
+const (
+	defaultAcliDownloadURLX86 = "http://acli.sangfor.com.cn:1110/api/public/download/4jotgyfk/latest?architecture=x86_64&api_key=QRlZXabZ8sOrFKtgs1VIfkHJZYQ3QNrcETXgsJaiX9Svz1pjFj"
+	defaultAcliDownloadURLARM = "http://acli.sangfor.com.cn:1110/api/public/download/4jotgyfk/latest?architecture=aarch64&api_key=QRlZXabZ8sOrFKtgs1VIfkHJZYQ3QNrcETXgsJaiX9Svz1pjFj"
+	defaultMinDiskMB          = 100
+)
+
+func (s *SSHSession) runQuickCommand(ctx context.Context, cmd string) (string, int, error) {
+	session, err := s.client.NewSession()
+	if err != nil {
+		return "", -1, err
+	}
+	defer session.Close()
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	session.Stdout = &stdoutBuf
+	session.Stderr = &stderrBuf
+
+	done := make(chan error, 1)
+	go func() {
+		done <- session.Run(cmd)
+	}()
+
+	select {
+	case <-ctx.Done():
+		_ = session.Signal(ssh.SIGKILL)
+		return "", -1, ctx.Err()
+	case err := <-done:
+		exitCode := 0
+		if err != nil {
+			var exitErr *ssh.ExitError
+			if errors.As(err, &exitErr) {
+				exitCode = exitErr.ExitStatus()
+			} else {
+				exitCode = -1
+			}
+		}
+		output := stdoutBuf.String()
+		if output == "" && stderrBuf.Len() > 0 {
+			output = stderrBuf.String()
+		}
+		return strings.TrimSpace(output), exitCode, err
+	}
+}
+
+func (s *SSHSession) uploadStream(ctx context.Context, destPath string, reader io.Reader, mode string) error {
+	session, err := s.client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+
+	session.Stdin = reader
+	tmpFile := fmt.Sprintf("%s.tmp.%d", destPath, time.Now().UnixNano())
+	cmd := fmt.Sprintf("cat > '%s' && mv -f '%s' '%s' && chmod %s '%s'", tmpFile, tmpFile, destPath, mode, destPath)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- session.Run(cmd)
+	}()
+
+	select {
+	case <-ctx.Done():
+		_ = session.Signal(ssh.SIGKILL)
+		return ctx.Err()
+	case err := <-done:
+		return err
+	}
+}
+
+func parseAcliVersion(output string) (version string, buildTime string) {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	reVer := regexp.MustCompile(`^\d+\.\d+(\.\d+)?`)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "build ") {
+			buildTime = strings.TrimSpace(strings.TrimPrefix(line, "build "))
+		} else if version == "" && reVer.MatchString(line) {
+			version = line
+		}
+	}
+	return version, buildTime
+}
+
+func probeAcliLatest(ctx context.Context, targetArch, customURL string) (filename string, buildTime string, downloadURL string, err error) {
+	downloadURL = customURL
+	if downloadURL == "" {
+		if targetArch == "aarch64" {
+			downloadURL = defaultAcliDownloadURLARM
+		} else {
+			downloadURL = defaultAcliDownloadURLX86
+		}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return "", "", downloadURL, err
+	}
+	req.Header.Set("Range", "bytes=0-0")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", downloadURL, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return "", "", downloadURL, fmt.Errorf("下载源返回 HTTP %d", resp.StatusCode)
+	}
+
+	cd := resp.Header.Get("Content-Disposition")
+	if idx := strings.Index(cd, "filename="); idx != -1 {
+		val := strings.Trim(strings.TrimSpace(cd[idx+len("filename="):]), `"'`)
+		filename = val
+	}
+
+	re := regexp.MustCompile(`_(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})\.acli`)
+	match := re.FindStringSubmatch(filename)
+	if len(match) == 5 {
+		buildTime = fmt.Sprintf("%s %s:%s:%s", match[1], match[2], match[3], match[4])
+	}
+
+	return filename, buildTime, downloadURL, nil
+}
+
+func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
+	s, key := b.resolveSession(msg)
+	if s == nil && msg.CaseID != "" {
+		s = b.get(sessionKey(msg.CaseID, ""))
+	}
+	if s == nil {
+		sendMsg(ws, OutMessage{
+			Type:    "acli_sync_result",
+			CaseID:  msg.CaseID,
+			Status:  "error",
+			Message: "SSH 会话不存在（需先 ssh_connect）",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	sendMsg(ws, OutMessage{
+		Type:    "acli_sync_progress",
+		CaseID:  msg.CaseID,
+		Status:  "checking",
+		Message: "正在检测 HCI 硬件架构与当前 acli 状态...",
+	})
+
+	// 1. 判定架构
+	archOut, exitCode, err := s.runQuickCommand(ctx, "uname -m")
+	if err != nil || exitCode != 0 {
+		sendMsg(ws, OutMessage{
+			Type:    "acli_sync_result",
+			CaseID:  msg.CaseID,
+			Status:  "error",
+			Message: fmt.Sprintf("获取系统架构失败 (code=%d): %v", exitCode, err),
+		})
+		return
+	}
+
+	arch := strings.ToLower(strings.TrimSpace(archOut))
+	targetArch := "x86_64"
+	if strings.Contains(arch, "aarch64") || strings.Contains(arch, "arm64") {
+		targetArch = "aarch64"
+	} else if !strings.Contains(arch, "x86_64") && !strings.Contains(arch, "amd64") {
+		sendMsg(ws, OutMessage{
+			Type:         "acli_sync_result",
+			CaseID:       msg.CaseID,
+			Status:       "error",
+			Architecture: arch,
+			Message:      fmt.Sprintf("暂不支持的硬件架构: %s", arch),
+		})
+		return
+	}
+
+	// 2. 检测当前 acli 安装情况
+	versionCmd := `export PATH="$PATH:/sf/bin:/sf/sbin:/usr/sbin:/usr/local/bin"; acli --version`
+	verOut, verCode, _ := s.runQuickCommand(ctx, versionCmd)
+	currentVer, currentBuild := "", ""
+	if verCode == 0 {
+		currentVer, currentBuild = parseAcliVersion(verOut)
+	}
+
+	// 3. 探测最新官方包元数据
+	remoteFilename, remoteBuild, downloadURL, probeErr := probeAcliLatest(ctx, targetArch, msg.AcliURL)
+	if probeErr != nil {
+		log.Printf("[Bridge] acli 官方源探测失败: %v", probeErr)
+	}
+
+	// 4. 版本判定
+	needInstall := false
+	if currentVer == "" {
+		needInstall = true
+		log.Printf("[Bridge] HCI 未安装 acli，需要安装 (arch=%s)", targetArch)
+	} else if msg.Force {
+		needInstall = true
+		log.Printf("[Bridge] 收到 force 标记，强制重新安装 acli (arch=%s)", targetArch)
+	} else if remoteBuild != "" && currentBuild != "" && currentBuild < remoteBuild {
+		needInstall = true
+		log.Printf("[Bridge] acli 当前版本落后 (当前: %s, 远端: %s)，需要更新", currentBuild, remoteBuild)
+	}
+
+	if !needInstall {
+		log.Printf("[Bridge] acli 已就绪且为最新 (ver=%s build=%s)", currentVer, currentBuild)
+		sendMsg(ws, OutMessage{
+			Type:           "acli_sync_result",
+			CaseID:         msg.CaseID,
+			Status:         "up_to_date",
+			Architecture:   targetArch,
+			CurrentVersion: currentVer,
+			LatestVersion:  remoteBuild,
+			Detail:         fmt.Sprintf("%s (build %s)", currentVer, currentBuild),
+			Message:        "acli 工具已就绪且为最新版本",
+		})
+		return
+	}
+
+	// 5. 校验 /sf/data/local 可用磁盘空间
+	sendMsg(ws, OutMessage{
+		Type:    "acli_sync_progress",
+		CaseID:  msg.CaseID,
+		Status:  "checking_disk",
+		Message: "正在校验 /sf/data/local 目录可用空间...",
+	})
+
+	spaceOut, spaceCode, spaceErr := s.runQuickCommand(ctx, "df -P -m /sf/data/local | tail -1 | awk '{print $4}'")
+	var availableMB int64 = 0
+	if spaceCode == 0 && spaceErr == nil {
+		availableMB, _ = strconv.ParseInt(strings.TrimSpace(spaceOut), 10, 64)
+	}
+
+	minDiskMB := defaultMinDiskMB
+	if msg.MinDiskMB > 0 {
+		minDiskMB = msg.MinDiskMB
+	}
+
+	if availableMB > 0 && availableMB < int64(minDiskMB) {
+		log.Printf("[Bridge] /sf/data/local 空间不足: 当前 %d MB, 要求 %d MB", availableMB, minDiskMB)
+		sendMsg(ws, OutMessage{
+			Type:         "acli_sync_result",
+			CaseID:       msg.CaseID,
+			Status:       "disk_space_insufficient",
+			Architecture: targetArch,
+			AvailableMB:  availableMB,
+			RequiredMB:   int64(minDiskMB),
+			Message:      fmt.Sprintf("/sf/data/local 目录可用空间不足（当前: %d MB, 最低需要: %d MB），请清理空间后重试", availableMB, minDiskMB),
+		})
+		return
+	}
+
+	// 6. 下载安装包
+	sendMsg(ws, OutMessage{
+		Type:         "acli_sync_progress",
+		CaseID:       msg.CaseID,
+		Status:       "downloading",
+		Architecture: targetArch,
+		Message:      fmt.Sprintf("正在从官方源下载 acli 安装包 (%s)...", targetArch),
+	})
+
+	dlReq, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		sendMsg(ws, OutMessage{
+			Type:    "acli_sync_result",
+			CaseID:  msg.CaseID,
+			Status:  "error",
+			Message: "创建下载请求失败: " + err.Error(),
+		})
+		return
+	}
+
+	httpClient := &http.Client{Timeout: 90 * time.Second}
+	dlResp, err := httpClient.Do(dlReq)
+	if err != nil {
+		sendMsg(ws, OutMessage{
+			Type:    "acli_sync_result",
+			CaseID:  msg.CaseID,
+			Status:  "error",
+			Message: "下载 acli 安装包失败: " + err.Error(),
+		})
+		return
+	}
+	defer dlResp.Body.Close()
+
+	if dlResp.StatusCode != http.StatusOK && dlResp.StatusCode != http.StatusPartialContent {
+		sendMsg(ws, OutMessage{
+			Type:    "acli_sync_result",
+			CaseID:  msg.CaseID,
+			Status:  "error",
+			Message: fmt.Sprintf("下载源返回 HTTP %d", dlResp.StatusCode),
+		})
+		return
+	}
+
+	// 确定目标文件路径
+	if remoteFilename == "" {
+		remoteFilename = fmt.Sprintf("acli-installer_%s.acli", targetArch)
+	}
+	destPath := fmt.Sprintf("/sf/data/local/%s", remoteFilename)
+
+	// 7. 上传至 /sf/data/local
+	sendMsg(ws, OutMessage{
+		Type:         "acli_sync_progress",
+		CaseID:       msg.CaseID,
+		Status:       "uploading",
+		Architecture: targetArch,
+		Message:      fmt.Sprintf("正在流式上传安装包至 %s...", destPath),
+	})
+
+	if err := s.uploadStream(ctx, destPath, dlResp.Body, "0755"); err != nil {
+		sendMsg(ws, OutMessage{
+			Type:    "acli_sync_result",
+			CaseID:  msg.CaseID,
+			Status:  "error",
+			Message: "上传 acli 安装包至 HCI 失败: " + err.Error(),
+		})
+		return
+	}
+
+	// 8. 执行集群安装
+	sendMsg(ws, OutMessage{
+		Type:         "acli_sync_progress",
+		CaseID:       msg.CaseID,
+		Status:       "installing",
+		Architecture: targetArch,
+		Message:      "正在执行 acli 集群分发安装（预计耗时 10-15 秒）...",
+	})
+
+	installCmd := fmt.Sprintf("export PATH=\"$PATH:/sf/bin:/sf/sbin:/usr/sbin:/usr/local/bin\"; '%s' --install --force", destPath)
+	installOut, installCode, installErr := s.runQuickCommand(ctx, installCmd)
+	if installErr != nil || installCode != 0 {
+		sendMsg(ws, OutMessage{
+			Type:    "acli_sync_result",
+			CaseID:  msg.CaseID,
+			Status:  "error",
+			Message: fmt.Sprintf("acli 安装命令执行失败 (code=%d): %s", installCode, installOut),
+		})
+		return
+	}
+
+	// 9. 验证安装成果
+	verifyOut, verifyCode, _ := s.runQuickCommand(ctx, versionCmd)
+	newVer, newBuild := parseAcliVersion(verifyOut)
+	if verifyCode == 0 && newVer != "" {
+		log.Printf("[Bridge] acli 安装成功且已验证: ver=%s build=%s key=%s", newVer, newBuild, key)
+		sendMsg(ws, OutMessage{
+			Type:           "acli_sync_result",
+			CaseID:         msg.CaseID,
+			Status:         "installed",
+			Architecture:   targetArch,
+			CurrentVersion: newVer,
+			LatestVersion:  newBuild,
+			Detail:         fmt.Sprintf("%s (build %s)", newVer, newBuild),
+			Message:        "acli 工具安装并集群分发成功！",
+		})
+	} else {
+		sendMsg(ws, OutMessage{
+			Type:    "acli_sync_result",
+			CaseID:  msg.CaseID,
+			Status:  "error",
+			Message: "acli 安装完成但执行 acli --version 验证失败",
+		})
+	}
+}
+
 // ── 结构化日志与回采（Observability）────────────────────────────────────────
 //
 // 设计目标（第一性原理 + 业界范式）：
@@ -3053,6 +3434,9 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			})
 			atomic.AddUint64(&promMetrics.VmConsoleOpsTotal, 1)
 			go s.runVMConsoleOp(func(result OutMessage) { sendMsg(ws, result) }, vmReq)
+
+		case "acli_sync":
+			go b.handleAcliSync(ws, msg, cui)
 		}
 	}
 }

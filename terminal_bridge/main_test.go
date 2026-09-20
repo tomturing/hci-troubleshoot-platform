@@ -1061,3 +1061,60 @@ func TestVMConsoleOpDispatchRejectsInvalidMessageOverWebSocket(t *testing.T) {
 		t.Fatalf("非法 host_node_id 应被入口拒绝: %#v", response)
 	}
 }
+
+func TestParseAcliVersion(t *testing.T) {
+	output := "1.0.0\nbuild 2026-09-02 14:34:45\n"
+	ver, build := parseAcliVersion(output)
+	if ver != "1.0.0" {
+		t.Fatalf("version = %q, want 1.0.0", ver)
+	}
+	if build != "2026-09-02 14:34:45" {
+		t.Fatalf("build = %q, want 2026-09-02 14:34:45", build)
+	}
+
+	emptyOut := "bash: acli: command not found"
+	ver2, build2 := parseAcliVersion(emptyOut)
+	if ver2 != "" || build2 != "" {
+		t.Fatalf("expected empty for command not found, got ver=%q build=%q", ver2, build2)
+	}
+}
+
+func TestAcliSyncMessageSerialization(t *testing.T) {
+	in := InMessage{
+		Type:      "acli_sync",
+		CaseID:    "case-123",
+		Force:     true,
+		MinDiskMB: 200,
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inDecoded InMessage
+	if err := json.Unmarshal(b, &inDecoded); err != nil {
+		t.Fatal(err)
+	}
+	if inDecoded.Type != "acli_sync" || !inDecoded.Force || inDecoded.MinDiskMB != 200 {
+		t.Fatalf("decoded message mismatch: %#v", inDecoded)
+	}
+
+	out := OutMessage{
+		Type:           "acli_sync_result",
+		CaseID:         "case-123",
+		Status:         "installed",
+		Architecture:   "x86_64",
+		CurrentVersion: "1.0.0",
+		AvailableMB:    500,
+	}
+	bOut, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outDecoded OutMessage
+	if err := json.Unmarshal(bOut, &outDecoded); err != nil {
+		t.Fatal(err)
+	}
+	if outDecoded.Status != "installed" || outDecoded.Architecture != "x86_64" || outDecoded.AvailableMB != 500 {
+		t.Fatalf("decoded out message mismatch: %#v", outDecoded)
+	}
+}
