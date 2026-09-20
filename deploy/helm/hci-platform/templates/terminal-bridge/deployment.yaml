@@ -49,6 +49,8 @@ spec:
               value: "/var/lib/terminal-bridge"
             - name: HCI_BRIDGE_LOG_MAX_BYTES
               value: {{ .Values.terminalBridge.logFileMaxBytes | quote }}
+            - name: HCI_BRIDGE_LOG_LEVEL
+              value: {{ .Values.terminalBridge.logLevel | default "INFO" | quote }}
             - name: HCI_BRIDGE_EXEC_TIMEOUT_SECONDS
               value: {{ .Values.terminalBridge.execTimeoutSeconds | quote }}
             - name: HCI_BRIDGE_EXEC_MAX_OUTPUT_BYTES

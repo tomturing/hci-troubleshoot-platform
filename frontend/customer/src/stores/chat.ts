@@ -92,6 +92,9 @@ export const useChatStore = defineStore('chat', () => {
   let bridgeLogBuffer: Record<string, unknown>[] = []
   let bridgeLogTimer: number | null = null
   let bridgeLogRetryCount = 0
+  // 回采日志可观测计数：dropped=无工单上下文被丢弃；fallback=按当前工单兜底归档
+  let bridgeLogDroppedCount = 0
+  let bridgeLogFallbackCount = 0
   const BRIDGE_LOG_MAX_RETRY = 5
   const BRIDGE_LOG_BASE_DELAY = 500
   const BRIDGE_LOG_MAX_DELAY = 30_000
@@ -145,7 +148,11 @@ export const useChatStore = defineStore('chat', () => {
     bridgeLogBuffer = []
 
     try {
-      await apiClient.post('/bridge-logs', { logs: batch })
+      await apiClient.post('/bridge-logs', {
+        logs: batch,
+        // 缺 case_id 的条目由后端按当前工单归档，避免启动/连接类日志整体丢失
+        fallback_case_id: currentCase.value?.case_id ?? null,
+      })
       bridgeLogRetryCount = 0 // 成功后重置重试计数
       persistBridgeLogOutbox()
       // 回采可观测性自检：成功计数暴露到 window，供巡检（消除静默成功）
@@ -185,8 +192,18 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function forwardBridgeLog(entry: Record<string, unknown>) {
-    // 仅回采带工单关联的日志，保证落库后可按工单分析
-    if (!entry.case_id) return
+    // 缺少 case_id 的日志：有当前工单时保留（回采携带 fallback_case_id 由后端归档），
+    // 完全没有工单上下文时才丢弃，且计数留痕，避免"日志凭空消失且无从察觉"。
+    if (!entry.case_id) {
+      if (!currentCase.value?.case_id) {
+        bridgeLogDroppedCount += 1
+        if (bridgeLogDroppedCount % 50 === 0) {
+          console.warn(`[bridge-log] 已丢弃 ${bridgeLogDroppedCount} 条无工单上下文的回采日志`)
+        }
+        return
+      }
+      bridgeLogFallbackCount += 1
+    }
     bridgeLogBuffer.push(entry)
     persistBridgeLogOutbox()
     // C 修复：同步写入近期缓冲，供工单创建后将临时会话日志迁移到真实工单
@@ -346,6 +363,113 @@ export const useChatStore = defineStore('chat', () => {
 
   // 诊断阶段（S0~S6）
   const diagnosticStage = ref<string>('S0')
+
+  // 诊断未完成时提示用户上传本地 bridge 日志：自动回采依赖浏览器在线，
+  // 断网/页面关闭时桥侧证据会缺失，手动上传是兜底补采通道。
+  const bridgeLogUploadHint = ref(false)
+
+  /** 标记诊断未完成（步数耗尽/熔断/结果缺失），触发"上传本地日志"提示。 */
+  function markDiagnosticIncomplete(reason: string): void {
+    bridgeLogUploadHint.value = true
+    console.warn('[bridge-log] 诊断未完成，建议上传本地日志补采:', reason)
+  }
+
+  /** 清除上传提示（用户已上传或忽略后调用）。 */
+  function clearBridgeLogUploadHint(): void {
+    bridgeLogUploadHint.value = false
+  }
+
+  /**
+   * 上报浏览器侧未捕获异常 / 未处理的 Promise 拒绝。
+   *
+   * 此前前端异常只存在于用户浏览器控制台，排障时完全不可见；
+   * 现在统一以 service_name=customer-ui 的日志回采落库，可按工单检索。
+   */
+  function reportClientError(source: string, error: unknown): void {
+    try {
+      const detail = error instanceof Error
+        ? { message: error.message, stack: (error.stack || '').slice(0, 2000) }
+        : { message: String(error), stack: '' }
+      forwardBridgeLog({
+        type: 'client_log',
+        level: 'ERROR',
+        service: 'customer-ui',
+        'service.name': 'customer-ui',
+        event: 'client.error',
+        message: `[${source}] ${detail.message}`.slice(0, 1000),
+        case_id: currentCase.value?.case_id || undefined,
+        conversation_id: conversationId.value || undefined,
+        extra: {
+          source,
+          stack: detail.stack,
+          url: typeof window !== 'undefined' ? window.location.href : '',
+        },
+      })
+    } catch (e) {
+      console.warn('[client-log] 上报失败:', e)
+    }
+  }
+
+  // 全局异常捕获（仅浏览器环境注册一次）
+  if (typeof window !== 'undefined') {
+    window.addEventListener('error', (event: ErrorEvent) => {
+      reportClientError('window.onerror', event.error || event.message)
+    })
+    window.addEventListener('unhandledrejection', (event: PromiseRejectionEvent) => {
+      reportClientError('unhandledrejection', event.reason)
+    })
+  }
+
+  /**
+   * 上传本地 terminal_bridge 日志文件（JSONL）补采到云端。
+   *
+   * @param files 用户选择的本地日志文件（bridge-*.log）
+   * @returns 上传结果统计
+   */
+  async function uploadBridgeLogs(files: File[]): Promise<{
+    ok: boolean
+    message: string
+    accepted?: number
+    duplicates?: number
+    skipped?: number
+    invalid?: number
+  }> {
+    if (!files.length) return { ok: false, message: '未选择日志文件' }
+
+    const payloadFiles: { name: string; content: string }[] = []
+    for (const file of files) {
+      try {
+        payloadFiles.push({ name: file.name, content: await file.text() })
+      } catch (e) {
+        return { ok: false, message: `读取文件 ${file.name} 失败：${String(e)}` }
+      }
+    }
+
+    try {
+      const res = await apiClient.post('/bridge-logs/upload', {
+        case_id: currentCase.value?.case_id ?? null,
+        files: payloadFiles,
+      })
+      const data = res.data as Record<string, any>
+      return {
+        ok: Boolean(data?.ok),
+        message: `已上传 ${payloadFiles.length} 个文件：新增 ${data?.accepted ?? 0} 条，重复 ${data?.duplicates ?? 0} 条，跳过 ${data?.skipped ?? 0} 条，无效 ${data?.invalid ?? 0} 条`,
+        accepted: data?.accepted,
+        duplicates: data?.duplicates,
+        skipped: data?.skipped,
+        invalid: data?.invalid,
+      }
+    } catch (e: any) {
+      const status = e?.response?.status
+      if (status === 404) {
+        return { ok: false, message: '日志上传入口已关闭，请联系平台管理员' }
+      }
+      if (status === 413) {
+        return { ok: false, message: '日志文件过大，请先压缩或拆分后重试' }
+      }
+      return { ok: false, message: `上传失败：${e?.response?.data?.detail || e?.message || String(e)}` }
+    }
+  }
 
   // 终端面板状态
   const showTerminalSidebar = ref(false)
@@ -1016,7 +1140,20 @@ export const useChatStore = defineStore('chat', () => {
                     caseId, execId, command, nodeIp, container, traceId, traceparent, convId, toolCallId,
                     timeoutSeconds, Array.isArray(outputFilters) ? outputFilters as OutputFilterSpec[] : undefined,
                   )
-                  sshWebSocket.value.send(wsMsg)
+                  try {
+                    sshWebSocket.value.send(wsMsg)
+                  } catch (sendError) {
+                    // 发送失败必须立即回传：否则后端空等到 blpop 超时，且工具卡片永久 running。
+                    pendingExecCallbacks.delete(execId)
+                    waitResult.catch(() => { }) // 兜底消费，避免未处理的 Promise 拒绝
+                    const message = sendError instanceof Error ? sendError.message : String(sendError)
+                    devLog('agent_exec_command', '命令发送失败', { execId, error: message })
+                    postExecResult(convId, execId, message, -1, 'send_failed', undefined, message,
+                      { traceId, traceparent, errorType: 'ws_send_failed' }).catch((e) => {
+                        console.warn('[agent_exec_command] postExecResult 失败:', e)
+                      })
+                    continue
+                  }
                   devLog('agent_exec_command', '命令已发送到 Bridge', { execId, nodeIp, container })
                   // Bridge 是权威超时源；浏览器额外预留 5 秒供结果传输与调度。
                   waitResult
@@ -1024,9 +1161,17 @@ export const useChatStore = defineStore('chat', () => {
                       devLog('agent_exec_command', '执行完成', { execId, exitCode: result.exitCode })
                       return postExecResult(convId, execId, result.output, result.exitCode, undefined, result.stdout, result.stderr, result)
                     })
-                    .catch(() => {
-                      devLog('agent_exec_command', '执行超时', { execId })
-                      return postExecResult(convId, execId, 'timeout', -1, 'timeout', undefined, undefined, { traceId, traceparent, timedOut: true, errorType: 'browser_wait_timeout' })
+                    .catch((error: unknown) => {
+                      // 语义化失败原因：区分未连接 / 等待超时，避免云端只看到 -1
+                      const failureType = resolveExecFailureType(error)
+                      const message = error instanceof Error ? error.message : '执行失败'
+                      devLog('agent_exec_command', '执行失败', { execId, failureType })
+                      return postExecResult(
+                        convId, execId, message, -1,
+                        failureType === 'wait_timeout' ? 'timeout' : failureType,
+                        undefined, message,
+                        { traceId, traceparent, timedOut: failureType === 'wait_timeout', errorType: failureType },
+                      )
                     })
                   continue
                 }
@@ -1159,11 +1304,28 @@ export const useChatStore = defineStore('chat', () => {
                   traceparent,
                   conversationId: convId,
                 })
-                sshWebSocket.value.send(wsMsg)
+                try {
+                  sshWebSocket.value.send(wsMsg)
+                } catch (sendError) {
+                  pendingVmConsoleCallbacks.delete(execId)
+                  waitResult.catch(() => { })
+                  devLog('vm_console_op', '固定操作发送失败', { execId, error: String(sendError) })
+                  postVmConsoleResult(convId, { captureId, execId, operation, exitCode: -1, errorType: 'ws_send_failed' }, traceparent)
+                    .catch((e) => console.warn('[vm_console_op] 结果回传失败:', e))
+                  continue
+                }
                 devLog('vm_console_op', '固定操作已发送到 Bridge', { execId, operation })
                 waitResult
                   .then((result) => postVmConsoleResult(convId, result, traceparent))
-                  .catch(() => postVmConsoleResult(convId, { captureId, execId, operation, exitCode: -1, errorType: 'browser_wait_timeout', timedOut: true }, traceparent))
+                  .catch((error: unknown) => {
+                    // 语义化失败：区分未连接与等待超时，避免所有失败都归为 timeout
+                    const failureType = resolveExecFailureType(error)
+                    return postVmConsoleResult(convId, {
+                      captureId, execId, operation, exitCode: -1,
+                      errorType: failureType === 'wait_timeout' ? 'browser_wait_timeout' : failureType,
+                      timedOut: failureType === 'wait_timeout',
+                    }, traceparent)
+                  })
                   .catch((e) => console.warn('[vm_console_op] 结果回传失败:', e))
               } catch (e) {
                 console.warn('[vm_console_op] 处理失败:', e)
@@ -1199,6 +1361,8 @@ export const useChatStore = defineStore('chat', () => {
             status: 'failed',
             error: event.error || '执行流已结束，但未收到对应的执行结果；请重新发起诊断。',
           }
+          // 结果缺失即提示补采本地日志：自动回采可能未覆盖桥侧证据
+          markDiagnosticIncomplete('tool_result_missing')
         }
       }
       const idx = getAiMsgIndex()
@@ -1271,7 +1435,21 @@ export const useChatStore = defineStore('chat', () => {
       pending.timeoutSeconds,
       pending.outputFilters,
     )
-    sshWebSocket.value.send(wsMsg)
+    try {
+      sshWebSocket.value.send(wsMsg)
+    } catch (sendError) {
+      // 发送失败立即回传，避免后端空等 blpop 超时、卡片永久 running
+      pendingExecCallbacks.delete(execId)
+      waitResult.catch(() => { })
+      const message = sendError instanceof Error ? sendError.message : String(sendError)
+      devLog('confirmAgentExec', '命令发送失败', { execId, error: message })
+      await postExecResult(
+        pending.convId, execId, message, -1, 'send_failed',
+        undefined, message, { errorType: 'ws_send_failed' },
+      )
+      resumeOpsAgentStream()
+      return
+    }
     devLog('confirmAgentExec', '命令已发送到 Bridge', { execId, nodeIp: pending.nodeIp, container: pending.container })
 
     // 结果回传与流程继续
@@ -1283,11 +1461,16 @@ export const useChatStore = defineStore('chat', () => {
           undefined, result.stdout, result.stderr, result,
         )
       })
-      .catch(() => {
-        devLog('confirmAgentExec', '执行超时', { execId })
+      .catch((error: unknown) => {
+        // 语义化失败原因：区分未连接 / 等待超时，避免所有失败都归为 timeout
+        const failureType = resolveExecFailureType(error)
+        const message = error instanceof Error ? error.message : '执行失败'
+        devLog('confirmAgentExec', '执行失败', { execId, failureType })
         return postExecResult(
-          pending.convId, execId, 'timeout', -1, 'timeout',
-          undefined, undefined, { timedOut: true, errorType: 'browser_wait_timeout' },
+          pending.convId, execId, message, -1,
+          failureType === 'wait_timeout' ? 'timeout' : failureType,
+          undefined, message,
+          { timedOut: failureType === 'wait_timeout', errorType: failureType },
         )
       })
       .finally(() => resumeOpsAgentStream())
@@ -1415,6 +1598,8 @@ export const useChatStore = defineStore('chat', () => {
             status: 'failed',
             error: event.error || '执行流已结束，但未收到对应的执行结果；请重新发起诊断。',
           }
+          // 结果缺失即提示补采本地日志：自动回采可能未覆盖桥侧证据
+          markDiagnosticIncomplete('tool_result_missing')
         }
       }
       const idx = getAiMsgIndex()
@@ -2068,6 +2253,36 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
+   * 执行失败的语义化错误：errorType 会随 exec-result 回传云端，
+   * 使「命令没有结果」可被判别为具体原因（未连接 / 发送失败 / 等待超时 / 拒绝）。
+   * 取值需与后端 exec-result 的 error_type 枚举保持一致。
+   */
+  class ExecFailureError extends Error {
+    readonly errorType: ExecFailureType
+    constructor(errorType: ExecFailureType, message: string) {
+      super(message)
+      this.name = 'ExecFailureError'
+      this.errorType = errorType
+    }
+  }
+
+  /** 前端可判别的执行失败类型枚举。 */
+  type ExecFailureType =
+    | 'ws_not_connected'
+    | 'ssh_not_connected'
+    | 'ws_send_failed'
+    | 'wait_timeout'
+    | 'user_rejected'
+    | 'risk_rejected'
+    | 'unknown'
+
+  /** 从任意异常中提取 error_type，保证回传不丢语义。 */
+  function resolveExecFailureType(error: unknown): ExecFailureType {
+    if (error instanceof ExecFailureError) return error.errorType
+    return 'unknown'
+  }
+
+  /**
    * 等待 exec_result WebSocket 消息（带超时）
    * 用于 agent_exec_command SSE 事件处理
    *
@@ -2082,14 +2297,15 @@ export const useChatStore = defineStore('chat', () => {
     return new Promise((resolve, reject) => {
       // 检查 SSH 连接状态
       if (sshConnectionState.value !== 'connected' || !sshWebSocket.value) {
-        reject(new Error('SSH 未连接'))
+        // 语义化失败：未连接必须可判别，否则云端只看到 exit_code=-1（工单 Q2026092010235 教训）
+        reject(new ExecFailureError('ssh_not_connected', 'SSH/Bridge 未连接，命令未下发'))
         return
       }
 
       // 设置超时
       const timeoutId = window.setTimeout(() => {
         pendingExecCallbacks.delete(execId)
-        reject(new Error(`等待 exec_result 超时（${timeoutMs / 1000}s）`))
+        reject(new ExecFailureError('wait_timeout', `等待 exec_result 超时（${timeoutMs / 1000}s）`))
       }, timeoutMs)
 
       // 注册回调
@@ -2105,12 +2321,12 @@ export const useChatStore = defineStore('chat', () => {
   function waitForVmConsoleResult(execId: string, timeoutMs: number): Promise<VmConsoleResult> {
     return new Promise((resolve, reject) => {
       if (sshConnectionState.value !== 'connected' || !sshWebSocket.value) {
-        reject(new Error('SSH 未连接'))
+        reject(new ExecFailureError('ssh_not_connected', 'SSH/Bridge 未连接，控制台操作未下发'))
         return
       }
       const timeoutId = window.setTimeout(() => {
         pendingVmConsoleCallbacks.delete(execId)
-        reject(new Error(`等待 vm_console_result 超时（${timeoutMs / 1000}s）`))
+        reject(new ExecFailureError('wait_timeout', `等待 vm_console_result 超时（${timeoutMs / 1000}s）`))
       }, timeoutMs)
       pendingVmConsoleCallbacks.set(execId, { resolve, reject, timeoutId })
       devLog('SSH', '等待 vm_console_result', { execId, timeoutMs })
@@ -3092,6 +3308,13 @@ export const useChatStore = defineStore('chat', () => {
     isCaseClosed,
     // 诊断阶段
     diagnosticStage,
+    // 本地日志补采（诊断未完成时的兜底通道）
+    bridgeLogUploadHint,
+    markDiagnosticIncomplete,
+    clearBridgeLogUploadHint,
+    uploadBridgeLogs,
+    // 浏览器侧异常上报
+    reportClientError,
     showAssistantSelector,
     assistants,
     selectedAssistant,

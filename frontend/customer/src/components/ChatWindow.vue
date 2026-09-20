@@ -9,6 +9,7 @@ import ConfirmDialog from './ConfirmDialog.vue'
 import InteractiveRequestCard from './InteractiveRequestCard.vue'
 import DiagnosticProgress from './DiagnosticProgress.vue'
 import CaseCreateDialog from './CaseCreateDialog.vue'
+import BridgeLogUploader from './BridgeLogUploader.vue'
 import EnvironmentSummary from './EnvironmentSummary.vue'
 
 const chatStore = useChatStore()
@@ -235,6 +236,9 @@ function handleQuoteToChat(content: string) {
 
     <!-- SSH 集成创建工单对话框 -->
     <CaseCreateDialog :bridge-status="chatStore.caseCreateDialogBridgeStatus" />
+
+    <!-- 本地 bridge 日志补采入口（诊断未完成时主动提醒） -->
+    <BridgeLogUploader />
 
     <!-- 消息区域 -->
     <!-- AI 助手选择器（v2.2：对话界面顶部，始终可见）-->

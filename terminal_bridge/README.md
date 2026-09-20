@@ -95,8 +95,10 @@ terminalBridge:
 | `--listen-address` | `HCI_BRIDGE_LISTEN_ADDRESS` | 监听 IP |
 | `--port` | `HCI_BRIDGE_PORT` | 监听端口，默认 `9999` |
 | `--allowed-origins` | `HCI_BRIDGE_ALLOWED_ORIGINS` | 逗号分隔 Origin；支持 `*`、`same-origin` |
-| — | `HCI_BRIDGE_LOG_DIR` | 本地回放日志目录 |
-| — | `HCI_BRIDGE_LOG_MAX_BYTES` | 单个 `bridge.log` 最大字节数，默认 64 MiB |
+| — | `HCI_BRIDGE_LOG_DIR` | 本地日志目录，**优先级最高**；设置后覆盖桌面默认目录 |
+| — | `HCI_BRIDGE_LOG_MAX_BYTES` | 单个日志文件最大字节数，默认 64 MiB，超限轮转为 `*.log.1` |
+| — | `HCI_BRIDGE_LOG_TO_DESKTOP` | desktop 模式桌面落盘开关，设为 `false`/`0`/`no` 关闭，默认开启 |
+| — | `HCI_BRIDGE_LOG_LEVEL` | 日志级别阈值 `DEBUG`/`INFO`/`WARN`/`ERROR`，默认 `INFO` |
 | — | `PLATFORM_ARTIFACT_URL` | 虚拟机控制台截图 PPM 直传的制品服务基址（conversation-service）；**未配置时 `capture_baseline` fail-closed 返回 `artifact_upload_disabled`，不降级 base64 over WS** |
 | — | `PLATFORM_INTERNAL_API_TOKEN` | PPM 直传的内部 Bearer Token（`INTERNAL_API_TOKEN` 对端校验） |
 
@@ -122,6 +124,62 @@ terminalBridge:
 Ingress 保留 `/terminal-bridge` 前缀，因此浏览器侧对应端点为 `/terminal-bridge/status`、`/terminal-bridge/metrics` 等。
 
 readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一定可 SSH 连通；目标连通性由每次 `ssh_connect` 的结果和 `bridge_ssh_connection_errors_total` 体现。
+
+## 本地日志（排障证据源）
+
+自动回采链路为 `bridge → WebSocket → 浏览器 → 后端`，**强依赖浏览器在线**；断网 / 页面关闭 /
+回采失败时桥侧证据会整体丢失，诊断失败将无法定因（工单 Q2026092010235）。因此 desktop 模式
+默认在**用户桌面**落盘全量 JSONL 日志，作为兜底证据源。
+
+### 落盘位置
+
+| 场景 | 目录 | 来源标识 |
+|---|---|---|
+| 显式指定 | `$HCI_BRIDGE_LOG_DIR` | `env:HCI_BRIDGE_LOG_DIR` |
+| desktop 默认 | `<桌面>/HCI-TerminalBridge-Logs/`（兼容中文系统 `桌面`） | `desktop` |
+| 桌面不可用 | `%LOCALAPPDATA%/HCI/TerminalBridge/Logs` 或可执行文件同级 `logs/` | `fallback:appdata` |
+| cluster 模式 | 由 Helm 注入 `HCI_BRIDGE_LOG_DIR`（Pod 内） | `env:HCI_BRIDGE_LOG_DIR` |
+
+最终路径在启动事件 `bridge.startup` 与 `/status` 的 `log_path`、`log_dir_source` 中自证，
+排障时无需猜测"日志到底在哪"。
+
+### 文件名与轮转
+
+- 文件名：`bridge-<YYYYMMDD>-<实例ID前8位>.log`（一个进程一个文件，重启后新建）。
+- 轮转：超过 `HCI_BRIDGE_LOG_MAX_BYTES` 后重命名为 `*.log.1` 并新建空文件。
+- 重启续接：启动时回放最近一次运行的日志文件到内存缓冲，供晚连接的浏览器补收。
+
+### 多工单隔离与关联
+
+一个 bridge 可同时服务多个工单；日志为**单文件 + 字段隔离**：
+
+- 每条日志携带 `case_id / conversation_id / exec_id / tool_call_id / trace_id / node_ip`；
+- 同一工单的 `exec.request → exec.start → exec.done` 通过 `exec_id` 串联，并与后端 `trace_id` 打通；
+- 云端按 `case_id` 归档检索；手动上传时未带 `case_id` 的条目继承上传时绑定的工单。
+
+### 事件字典
+
+| 事件 | 级别 | 说明 |
+|---|---|---|
+| `bridge.startup` | INFO | 启动，含版本/模式/监听地址/日志路径/日志级别 |
+| `bridge.connected` | INFO | 浏览器 WebSocket 连接建立 |
+| `bridge.disconnected` | WARN | 浏览器断开（断连窗口内的命令结果会丢失） |
+| `ws.send_failed` | ERROR | 出站消息发送失败（结果回不去浏览器） |
+| `ssh.connected` | INFO | SSH 认证成功 |
+| `ssh.output` | INFO | 终端输出回采 |
+| `exec.request` / `exec.start` | INFO | 收到/开始执行命令 |
+| `exec.done` | INFO/ERROR | 执行完成，含 `exit_code`、`error_type`、`stderr_preview` |
+| `exec.timeout` | ERROR | 命令超时（显式事件，可独立检索） |
+| `exec.rejected` | ERROR | 命令被拒绝（缺 `exec_id`/`command` 等，含 `error_type`） |
+| `exec.session_missing` | ERROR | SSH 会话不存在 |
+| `log.dropped` | WARN | 回采队列溢出等导致的日志丢弃（限频上报） |
+| `client.error` | ERROR | Custom-UI 浏览器未捕获异常（`service.name=customer-ui`） |
+
+### 上传本地日志
+
+自动回采缺失时，可在 Custom-UI 点击「上传本地日志」，选择桌面
+`HCI-TerminalBridge-Logs/bridge-*.log` 上传补采；云端按 `event_id` 去重，重复上传不产生重复数据。
+该入口受后端开关 `bridgeLogs.uploadEnabled` 控制，自动回采稳定后可整体关闭。
 
 ## WebSocket 消息协议
 

@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     # 推导：(128K - 4096出力 - 533静态段 - 1728历史20条) × (32K/128K) × 1.5 ≈ 40000
     KB_ENABLED: bool = True  # 是否启用 KB 注入（可通过环境变量动态关闭）
 
+    # terminal_bridge 本地日志手动上传补采开关。
+    # 自动回采（bridge → WebSocket → 浏览器 → 后端）稳定后可整体关闭该兜底入口。
+    BRIDGE_LOG_UPLOAD_ENABLED: bool = True
+
     # Scheduler 配置（用于真实 Pod 分配链路）
     SCHEDULER_SERVICE_URL: str = "http://scheduler-service:8003"
     SCHEDULER_ALLOCATE_TIMEOUT_SEC: int = 8

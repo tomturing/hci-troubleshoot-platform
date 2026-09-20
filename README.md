@@ -4,6 +4,18 @@
 
 HCI 环境 AI 故障诊断平台。微服务架构 + S0-S6 六阶段诊断状态机 + 双轨知识检索（SOP + RAG）。
 
+### 可观测性与日志治理（2026-09-20）
+
+- **terminal_bridge 本地日志**：desktop 模式默认在用户桌面 `HCI-TerminalBridge-Logs/` 落盘全量 JSONL，
+  按 `case_id`/`exec_id` 隔离与关联，自动回采断链时仍可定位根因。
+- **日志上传补采入口**：诊断未完成时 Custom-UI 提示上传本地日志，云端按 `event_id` 去重落库；
+  入口受 `bridgeLogs.uploadEnabled` 开关控制，自动回采稳定后可关闭。
+- **失败语义化**：执行结果回传强制携带 `error_type`（未连接/发送失败/等待超时/熔断等），
+  熔断拒绝也产出终态 `tool_result`，杜绝工具卡片永久 running。
+  详见 [需求](docs/requirement/events/2026-09-20-terminal_bridge日志治理与上传补采需求.md)、
+  [方案](docs/solution/events/2026-09-20-terminal_bridge日志治理与上传补采方案.md)、
+  [任务](docs/task/events/2026-09-20-terminal_bridge日志治理与上传补采任务.md)。
+
 ### v2.23.0 当前里程碑（2026-08-06）
 
 - **KBD 错误链路与日志可观测性整改**：Signal 校验错误返回稳定错误码/字段定位；网关记录下游非 2xx 并透传诊断 ID；共享异常处理、HTTP 指标、结构化日志和管理台错误协议统一。详见 [整改方案](docs/solution/events/2026-08-06-KBD关键信号错误链路与日志可观测性整改方案.md) 与 [整改任务](docs/task/events/2026-08-06-KBD关键信号错误链路与日志可观测性整改任务.md)。

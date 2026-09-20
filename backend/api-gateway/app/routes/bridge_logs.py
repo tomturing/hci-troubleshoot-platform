@@ -52,6 +52,45 @@ async def proxy_bridge_logs(request: Request):
                 extra={"event": "gateway_bridge_logs_proxy_error", "error": str(exc)},
             )
             from fastapi import HTTPException
+
+            raise HTTPException(
+                status_code=503,
+                detail="Conversation service unavailable",
+            )
+
+
+@router.post("/upload")
+async def proxy_bridge_logs_upload(request: Request):
+    """代理本地日志手动上传补采请求到 conversation-service。
+
+    鉴权策略与批量回采一致：有 Authorization 透传，无则注入占位符 token。
+    """
+    payload = await request.json()
+    headers = {}
+    auth = request.headers.get("Authorization")
+    if auth:
+        headers["Authorization"] = auth
+    else:
+        headers["Authorization"] = "Bearer client-session-placeholder-token"
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        try:
+            response = await client.post(
+                f"{CONVERSATION_SERVICE_URL}/api/bridge-logs/upload",
+                json=payload,
+                headers=headers,
+            )
+            return JSONResponse(
+                content=response.json(),
+                status_code=response.status_code,
+            )
+        except httpx.RequestError as exc:
+            logger.error(
+                f"gateway_bridge_logs_proxy_error: {exc}",
+                extra={"event": "gateway_bridge_logs_proxy_error", "error": str(exc)},
+            )
+            from fastapi import HTTPException
+
             raise HTTPException(
                 status_code=503,
                 detail="Conversation service unavailable",

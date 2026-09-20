@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -880,6 +881,11 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestCont
 	if timedOut {
 		exitCode = -1
 		errorType = "timeout"
+		// 超时显式成事件：此前只体现在 exec.done 的 timed_out 字段里，排障时无法独立检索。
+		blogContext(ctx, "ERROR", "exec.timeout", "命令执行超时", req, map[string]any{
+			"exec_id": req.ExecID, "error_type": "timeout",
+			"timeout_seconds": timeout.Seconds(), "stdout_len": stdoutCapture.total,
+		})
 	} else if waitErr != nil {
 		if exitErr, ok := waitErr.(*ssh.ExitError); ok {
 			exitCode = exitErr.ExitStatus()
@@ -943,6 +949,8 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestCont
 		"stdout_truncated":       stdoutCapture.truncated,
 		"stderr_truncated":       stderrCapture.truncated,
 		"timed_out":              timedOut,
+		// 失败语义留痕：非零/超时时保留 stderr 预览，避免日志只有 exit_code=-1 而无任何原因
+		"stderr_preview": truncateString(stderrCapture.String(), 512),
 	})
 
 	resultCtx, resultSpan := otel.Tracer("terminal_bridge").Start(ctx, "terminal_bridge.websocket.result.send",
@@ -2427,6 +2435,9 @@ type LogHub struct {
 	subs            map[*websocket.Conn]*bridgeSubscriber
 	logFile         *os.File
 	logPath         string
+	logDir          string // 本地日志目录（desktop 模式默认为用户桌面）
+	logDirSource    string // 目录来源：env:HCI_BRIDGE_LOG_DIR / desktop / fallback:* / disabled:*
+	minLevel        int    // 日志级别阈值（0=DEBUG 1=INFO 2=WARN 3=ERROR）
 	logFileBytes    int64
 	maxLogFileBytes int64
 	instanceID      string
@@ -2457,44 +2468,267 @@ func newLogHub() *LogHub {
 		subs:            make(map[*websocket.Conn]*bridgeSubscriber),
 		maxLogFileBytes: int64(envIntOrDefault("HCI_BRIDGE_LOG_MAX_BYTES", 64*1024*1024)),
 		instanceID:      newBridgeInstanceID(),
+		minLevel:        parseLogLevel(envOrDefault("HCI_BRIDGE_LOG_LEVEL", "INFO")),
 	}
-	// 本地持久化（重启回放）：best-effort，受 HCI_BRIDGE_LOG_DIR 控制。
-	if dir := os.Getenv("HCI_BRIDGE_LOG_DIR"); dir != "" {
-		_ = os.MkdirAll(dir, 0o755)
-		logPath := filepath.Join(dir, "bridge.log")
-		h.logPath = logPath
-		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
-			h.logFile = f
-			if info, statErr := f.Stat(); statErr == nil {
-				h.logFileBytes = info.Size()
-			}
-		}
 
-		// P0-3: 进程重启时回放本地日志文件
-		if replayFile, err := os.Open(logPath); err == nil {
-			defer replayFile.Close()
-			scanner := bufio.NewScanner(replayFile)
-			replayCount := 0
-			for scanner.Scan() {
-				line := scanner.Text()
-				var entry logEntry
-				if err := json.Unmarshal([]byte(line), &entry); err == nil {
-					if len(h.ring) >= h.cap {
-						h.ring = h.ring[1:]
-					}
-					h.ring = append(h.ring, entry)
-					if entry.Seq > h.seq {
-						h.seq = entry.Seq
-					}
-					replayCount++
-				}
-			}
-			if replayCount > 0 {
-				log.Printf("[Bridge] 进程重启回放: 从 %s 加载 %d 条历史日志", logPath, replayCount)
-			}
-		}
+	// 本地持久化（重启回放）：best-effort。
+	// 目录优先级：HCI_BRIDGE_LOG_DIR > desktop 模式默认桌面目录 > 不落盘。
+	// desktop 模式默认落盘的原因：云端回采依赖浏览器在线，断网/页面关闭/Diagnostics 中断时
+	// 桥侧证据会整体丢失（工单 Q2026092010235 正是因此无法定因），本地全量日志是兜底证据源。
+	dir, source := "", ""
+	if envDir := strings.TrimSpace(os.Getenv("HCI_BRIDGE_LOG_DIR")); envDir != "" {
+		dir, source = envDir, "env:HCI_BRIDGE_LOG_DIR"
+	} else if !desktopLogDisabled() && envOrDefault("HCI_BRIDGE_MODE", desktopMode) == desktopMode {
+		dir, source = resolveDesktopLogDir()
+	} else {
+		source = "disabled:mode_cluster"
+	}
+	h.logDirSource = source
+	if dir != "" {
+		h.enableLocalLogFile(dir, source)
 	}
 	return h
+}
+
+// parseLogLevel 把级别名转换为权重（DEBUG<INFO<WARN<ERROR），未知级别按 INFO 处理。
+func parseLogLevel(level string) int {
+	switch strings.ToUpper(strings.TrimSpace(level)) {
+	case "DEBUG":
+		return 0
+	case "WARN", "WARNING":
+		return 2
+	case "ERROR":
+		return 3
+	default:
+		return 1
+	}
+}
+
+// droppedLogEmittedAt 记录上一次 log.dropped 的写入时间（纳秒），用于限频避免日志风暴。
+var droppedLogEmittedAt int64
+
+// markDroppedLogEmitted 以 5 秒为窗口限频，返回本次是否允许写入 log.dropped。
+func markDroppedLogEmitted() bool {
+	now := time.Now().UnixNano()
+	last := atomic.LoadInt64(&droppedLogEmittedAt)
+	if last != 0 && now-last < 5*time.Second {
+		return false
+	}
+	return atomic.CompareAndSwapInt64(&droppedLogEmittedAt, last, now)
+}
+
+// desktopLogDisabled 判断是否通过 HCI_BRIDGE_LOG_TO_DESKTOP=false 显式关闭桌面落盘。
+func desktopLogDisabled() bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("HCI_BRIDGE_LOG_TO_DESKTOP")))
+	return value == "false" || value == "0" || value == "no"
+}
+
+// levelEnabled 判断该级别是否满足阈值，用于降低本地日志与回采噪声。
+func (h *LogHub) levelEnabled(level string) bool {
+	if h.minLevel <= 0 {
+		return true
+	}
+	return parseLogLevel(level) >= h.minLevel
+}
+
+// logLevelName 返回当前阈值名称，供启动日志与 /status 自证。
+func (h *LogHub) logLevelName() string {
+	switch h.minLevel {
+	case 0:
+		return "DEBUG"
+	case 2:
+		return "WARN"
+	case 3:
+		return "ERROR"
+	default:
+		return "INFO"
+	}
+}
+
+// resolveDesktopLogDir 解析 desktop 模式默认日志目录：优先用户桌面（兼容中文系统"桌面"），
+// 桌面不可用时回退应用数据目录，再回退可执行文件同级 logs 目录。
+// 返回目录与来源标识；桌面候选要求目录已存在，避免在用户目录凭空创建中文目录。
+func resolveDesktopLogDir() (string, string) {
+	var desktopCandidates []string
+	if runtime.GOOS == "windows" {
+		if userProfile := strings.TrimSpace(os.Getenv("USERPROFILE")); userProfile != "" {
+			desktopCandidates = append(desktopCandidates,
+				filepath.Join(userProfile, "Desktop"),
+				filepath.Join(userProfile, "桌面"),
+			)
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		desktopCandidates = append(desktopCandidates,
+			filepath.Join(home, "Desktop"),
+			filepath.Join(home, "桌面"),
+		)
+	}
+	for _, candidate := range desktopCandidates {
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return filepath.Join(candidate, "HCI-TerminalBridge-Logs"), "desktop"
+		}
+	}
+
+	// 回退：应用数据目录 → 可执行文件同级目录
+	var fallbacks []string
+	if runtime.GOOS == "windows" {
+		if localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); localAppData != "" {
+			fallbacks = append(fallbacks, filepath.Join(localAppData, "HCI", "TerminalBridge", "Logs"))
+		}
+	}
+	if cacheDir, err := os.UserCacheDir(); err == nil && cacheDir != "" {
+		fallbacks = append(fallbacks, filepath.Join(cacheDir, "HCI", "TerminalBridge", "Logs"))
+	}
+	if exe, err := os.Executable(); err == nil {
+		fallbacks = append(fallbacks, filepath.Join(filepath.Dir(exe), "logs"))
+	}
+	for _, candidate := range fallbacks {
+		if err := os.MkdirAll(candidate, 0o755); err == nil {
+			return candidate, "fallback:appdata"
+		}
+	}
+	return "", "disabled:no_writable_dir"
+}
+
+// enableLocalLogFile 打开本地日志文件并回放上一次运行的日志（进程重启续接）。
+func (h *LogHub) enableLocalLogFile(dir, source string) {
+	if dir == "" {
+		return
+	}
+	h.mu.Lock()
+	if h.logFile != nil {
+		h.mu.Unlock()
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		h.logDirSource = "disabled:mkdir_failed"
+		h.mu.Unlock()
+		return
+	}
+	logPath := filepath.Join(dir, h.logFileNameLocked())
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		h.logDirSource = "disabled:open_failed"
+		h.mu.Unlock()
+		return
+	}
+	h.logDir, h.logPath, h.logDirSource = dir, logPath, source
+	h.logFile = f
+	if info, statErr := f.Stat(); statErr == nil {
+		h.logFileBytes = info.Size()
+	}
+	h.mu.Unlock()
+
+	// 回放上一次运行的日志（锁外执行，避免 publish 重入死锁）
+	if replayed := h.replayLocalLogFile(dir, logPath); replayed > 0 {
+		log.Printf("[Bridge] 进程重启回放: 从 %s 加载 %d 条历史日志", logPath, replayed)
+	}
+}
+
+// disableLocalFile 关闭本地落盘（cluster 模式不应写桌面目录）。
+func (h *LogHub) disableLocalFile() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.logFile != nil {
+		_ = h.logFile.Close()
+		h.logFile = nil
+	}
+	h.logPath, h.logDir = "", ""
+}
+
+// applyRuntimeMode 在 flag 解析后校正落盘策略：env 显式指定优先，
+// desktop 模式启用桌面落盘，cluster 模式关闭桌面落盘。
+func (h *LogHub) applyRuntimeMode(mode string) {
+	if strings.TrimSpace(os.Getenv("HCI_BRIDGE_LOG_DIR")) != "" {
+		return
+	}
+	if mode == desktopMode && h.logDirSource == "disabled:mode_cluster" && !desktopLogDisabled() {
+		dir, source := resolveDesktopLogDir()
+		h.enableLocalLogFile(dir, source)
+		return
+	}
+	if mode == clusterMode && strings.HasPrefix(h.logDirSource, "desktop") {
+		h.disableLocalFile()
+		h.logDirSource = "disabled:mode_cluster"
+	}
+}
+
+// logFileNameLocked 生成本次运行的日志文件名：bridge-<日期>-<实例前8位>.log
+func (h *LogHub) logFileNameLocked() string {
+	suffix := h.instanceID
+	if len(suffix) > 8 {
+		suffix = suffix[:8]
+	}
+	return fmt.Sprintf("bridge-%s-%s.log", time.Now().Format("20060102"), suffix)
+}
+
+// replayLocalLogFile 回放上一次运行的日志文件到环形缓冲，返回回放条数。
+func (h *LogHub) replayLocalLogFile(dir, currentPath string) int {
+	path := latestBridgeLogFile(dir, currentPath)
+	if path == "" {
+		return 0
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	replayCount := 0
+	for scanner.Scan() {
+		var entry logEntry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			continue
+		}
+		h.mu.Lock()
+		if len(h.ring) >= h.cap {
+			h.ring = h.ring[1:]
+		}
+		h.ring = append(h.ring, entry)
+		if entry.Seq > h.seq {
+			h.seq = entry.Seq
+		}
+		h.mu.Unlock()
+		replayCount++
+	}
+	if replayCount > 0 {
+		atomic.AddUint64(&promMetrics.LogsReplayedTotal, uint64(replayCount))
+	}
+	return replayCount
+}
+
+// latestBridgeLogFile 选取目录内最近修改的 bridge-*.log（排除当前运行文件）。
+func latestBridgeLogFile(dir, exclude string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	best := ""
+	var bestMod time.Time
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, "bridge-") || !strings.HasSuffix(name, ".log") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if path == exclude {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if best == "" || info.ModTime().After(bestMod) {
+			best, bestMod = path, info.ModTime()
+		}
+	}
+	return best
 }
 
 func (h *LogHub) rotateLogFileLocked(nextEntryBytes int64) error {
@@ -2521,6 +2755,11 @@ func (h *LogHub) rotateLogFileLocked(nextEntryBytes int64) error {
 
 func (h *LogHub) publish(e logEntry) logEntry {
 	h.mu.Lock()
+	// 级别阈值过滤：低于阈值的日志不落盘、不回采（HCI_BRIDGE_LOG_LEVEL 控制）
+	if !h.levelEnabled(e.Level) {
+		h.mu.Unlock()
+		return e
+	}
 	h.seq++
 	e.Seq = h.seq
 	e.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
@@ -2532,6 +2771,7 @@ func (h *LogHub) publish(e logEntry) logEntry {
 	e.DeploymentEnvironment = envOrDefault("HCI_DEPLOYMENT_ENVIRONMENT", "local")
 	if len(h.ring) >= h.cap {
 		h.ring = h.ring[1:]
+		atomic.AddUint64(&promMetrics.LogsDroppedTotal, 1)
 	}
 	h.ring = append(h.ring, e)
 	if h.logFile != nil {
@@ -2570,11 +2810,21 @@ func (h *LogHub) publish(e logEntry) logEntry {
 
 func (h *LogHub) enqueue(sub *bridgeSubscriber, e logEntry) {
 	sub.mu.Lock()
-	defer sub.mu.Unlock()
 	if len(sub.pending) >= 2000 {
 		sub.pending = sub.pending[1:]
+		sub.mu.Unlock()
+		// 待重传队列溢出：显式记录 log.dropped，避免日志无声消失。
+		// 注意：enqueue 处于 publish 持锁路径上，此处只能异步记录，否则 publish 重入死锁。
+		atomic.AddUint64(&promMetrics.LogsDroppedTotal, 1)
+		if markDroppedLogEmitted() {
+			go blog("WARN", "log.dropped", "回采队列溢出，丢弃最早一条日志", e.TraceID, e.CaseID, e.NodeIP, "", map[string]any{
+				"reason": "pending_overflow", "event_id": e.EventID, "seq": e.Seq,
+			})
+		}
+		return
 	}
 	sub.pending = append(sub.pending, e)
+	sub.mu.Unlock()
 }
 
 // flushSubscriber 把待重传缓冲经 bridge_log 推给浏览器；连接断开则保留待下次重传。
@@ -2655,10 +2905,14 @@ func (h *LogHub) removeSubscriber(conn *websocket.Conn) {
 }
 
 type logHubStatus struct {
-	BufferedLogs int   `json:"buffered_logs"`
-	Subscribers  int   `json:"subscribers"`
-	PendingLogs  int   `json:"pending_logs"`
-	LogFileBytes int64 `json:"log_file_bytes"`
+	BufferedLogs int    `json:"buffered_logs"`
+	Subscribers  int    `json:"subscribers"`
+	PendingLogs  int    `json:"pending_logs"`
+	LogFileBytes int64  `json:"log_file_bytes"`
+	LogDir       string `json:"log_dir"`
+	LogPath      string `json:"log_path"`
+	LogDirSource string `json:"log_dir_source"`
+	LogLevel     string `json:"log_level"`
 }
 
 func (h *LogHub) status() logHubStatus {
@@ -2669,6 +2923,11 @@ func (h *LogHub) status() logHubStatus {
 		BufferedLogs: len(h.ring),
 		Subscribers:  len(h.subs),
 		LogFileBytes: h.logFileBytes,
+		// 暴露落盘位置：排障与日志上传入口都要据此定位本地文件
+		LogDir:       h.logDir,
+		LogPath:      h.logPath,
+		LogDirSource: h.logDirSource,
+		LogLevel:     logHub.logLevelName(),
 	}
 	for _, sub := range h.subs {
 		sub.mu.Lock()
@@ -2691,6 +2950,9 @@ func (bridgeLogWriter) Write(p []byte) (int, error) {
 	case strings.Contains(upper, "WARNING"), strings.Contains(upper, "WARN"):
 		level = "WARN"
 	}
+	if !logHub.levelEnabled(level) {
+		return len(p), nil
+	}
 	event := "bridge.log"
 	msg := line
 	if idx := strings.Index(line, "[Bridge] "); idx >= 0 {
@@ -2711,6 +2973,9 @@ func (bridgeLogWriter) Write(p []byte) (int, error) {
 
 // blog 记录带上下文（trace/case/node/custom_ui）的结构化日志并回采。
 func blog(level, event, msg, traceID, caseID, nodeIP, customUI string, extra map[string]any) {
+	if !logHub.levelEnabled(level) {
+		return
+	}
 	e := logEntry{
 		Level:    normalizeLogLevel(level),
 		Service:  "terminal_bridge",
@@ -2729,6 +2994,9 @@ func blog(level, event, msg, traceID, caseID, nodeIP, customUI string, extra map
 }
 
 func blogContext(ctx context.Context, level, event, message string, req execRequestContext, extra map[string]any) {
+	if !logHub.levelEnabled(level) {
+		return
+	}
 	spanContext := trace.SpanContextFromContext(ctx)
 	e := logEntry{
 		Level: normalizeLogLevel(level), Service: "terminal_bridge", Event: event,
@@ -3004,7 +3272,11 @@ func sendWebSocketRaw(ws *websocket.Conn, payload string) error {
 func sendMsg(ws *websocket.Conn, msg OutMessage) {
 	data, _ := json.Marshal(msg)
 	if err := sendWebSocketRaw(ws, string(data)); err != nil {
-		log.Printf("[Bridge] WebSocket 发送失败: type=%s case=%s err=%v", msg.Type, msg.CaseID, err)
+		// 发送失败 = 结果回不去浏览器：必须显式记录，否则表现为"命令没有结果"却无任何线索。
+		blog("ERROR", "ws.send_failed", "WebSocket 发送失败", msg.TraceID, msg.CaseID, "", msg.CustomUI, map[string]any{
+			"out_type": msg.Type, "exec_id": msg.ExecID, "error": err.Error(),
+		})
+		atomic.AddUint64(&promMetrics.LogsCollectErrors, 1)
 	}
 }
 
@@ -3053,7 +3325,10 @@ func (t *ownedSessionTracker) drain() map[string]*SSHSession {
 
 func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 	cui := customUIHost(customUI)
-	log.Printf("[Bridge] 浏览器已连接: origin=%s custom_ui=%s remote=%s", customUI, cui, ws.RemoteAddr())
+	// 连接建立即留痕：浏览器是否在线决定了命令能否下发，是"命令没结果"类问题的第一判据。
+	blog("INFO", "bridge.connected", "浏览器已连接", "", "", "", cui, map[string]any{
+		"origin": customUI, "custom_ui": cui, "remote": ws.RemoteAddr().String(),
+	})
 	// 注册回采订阅者（按连接归属 custom_ui）
 	sub := logHub.addSubscriber(ws, cui)
 	// ownedSessions 追踪 ssh_connect 显式创建的会话
@@ -3079,7 +3354,10 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 	defer func() {
 		pingCancel() // 停止心跳 goroutine
 		<-pingDone   // 等待心跳 goroutine 退出
-		log.Printf("[Bridge] 浏览器已断开: custom_ui=%s remote=%s", cui, ws.RemoteAddr())
+		// 断开留痕（含原因）：断连窗口内的命令结果会丢失，是"未收到执行结果"的高频根因。
+		blog("WARN", "bridge.disconnected", "浏览器已断开", "", sub.caseID, "", cui, map[string]any{
+			"custom_ui": cui, "remote": ws.RemoteAddr().String(), "reason": "connection_closed",
+		})
 		logHub.removeSubscriber(ws)
 		websocketWriteLocks.Delete(ws)
 		for key, owned := range ownedSessions.drain() {
@@ -3243,6 +3521,11 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				continue
 			}
 			if msg.ExecID == "" {
+				// 参数缺失属"命令被拒绝"：此前只回消息不打日志，云端完全无痕。
+				blog("ERROR", "exec.rejected", "命令被拒绝：缺少 exec_id 参数", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					"error_type": "missing_exec_id", "channel": "marker", "node_ip": msg.NodeIP,
+					"container": msg.Container, "cmd_len": len(msg.Command),
+				})
 				sendMsg(ws, OutMessage{
 					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
 					Output: "缺少 exec_id 参数", ExitCode: -1,
@@ -3251,6 +3534,10 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				continue
 			}
 			if msg.Command == "" {
+				blog("ERROR", "exec.rejected", "命令被拒绝：缺少 command 参数", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					"error_type": "missing_command", "channel": "marker", "exec_id": msg.ExecID,
+					"node_ip": msg.NodeIP, "container": msg.Container,
+				})
 				sendMsg(ws, OutMessage{
 					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
 					Output: "缺少 command 参数", ExitCode: -1,
@@ -3344,6 +3631,10 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				continue
 			}
 			if msg.ExecID == "" {
+				blog("ERROR", "exec.rejected", "命令被拒绝：缺少 exec_id 参数", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					"error_type": "missing_exec_id", "channel": "isolated", "node_ip": msg.NodeIP,
+					"container": msg.Container, "cmd_len": len(msg.Command),
+				})
 				sendMsg(ws, OutMessage{
 					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
 					Stderr: "缺少 exec_id 参数", ExitCode: -1,
@@ -3352,6 +3643,10 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				continue
 			}
 			if msg.Command == "" {
+				blog("ERROR", "exec.rejected", "命令被拒绝：缺少 command 参数", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					"error_type": "missing_command", "channel": "isolated", "exec_id": msg.ExecID,
+					"node_ip": msg.NodeIP, "container": msg.Container,
+				})
 				sendMsg(ws, OutMessage{
 					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
 					Stderr: "缺少 command 参数", ExitCode: -1,
@@ -3534,6 +3829,7 @@ var (
 		LogsCollectedTotal  uint64
 		LogsCollectErrors   uint64
 		LogsReplayedTotal   uint64
+		LogsDroppedTotal    uint64
 		ExecCommandsTotal   uint64
 		ExecCommandErrors   uint64
 		SshConnectionsTotal uint64
@@ -3564,6 +3860,10 @@ bridge_logs_collect_errors_total %d
 # HELP bridge_logs_replayed_total Total logs replayed on resume/restart
 # TYPE bridge_logs_replayed_total counter
 bridge_logs_replayed_total %d
+
+# HELP bridge_logs_dropped_total Total logs dropped by ring buffer or pending queue
+# TYPE bridge_logs_dropped_total counter
+bridge_logs_dropped_total %d
 
 # HELP bridge_exec_commands_total Total commands executed
 # TYPE bridge_exec_commands_total counter
@@ -3624,6 +3924,7 @@ bridge_log_file_bytes %d
 		atomic.LoadUint64(&promMetrics.LogsCollectedTotal),
 		atomic.LoadUint64(&promMetrics.LogsCollectErrors),
 		atomic.LoadUint64(&promMetrics.LogsReplayedTotal),
+		atomic.LoadUint64(&promMetrics.LogsDroppedTotal),
 		atomic.LoadUint64(&promMetrics.ExecCommandsTotal),
 		atomic.LoadUint64(&promMetrics.ExecCommandErrors),
 		atomic.LoadUint64(&promMetrics.SshConnectionsTotal),
@@ -3764,6 +4065,24 @@ func main() {
 	// 把所有标准库日志重定向为结构化日志并回采（统一可观测性）
 	log.SetOutput(bridgeLogWriter{})
 	log.SetFlags(0)
+
+	// 按运行模式校正落盘策略，并记录启动事件：日志路径必须可自证，
+	// 否则排障时无法回答"日志到底写在哪"（工单 Q2026092010235 的直接教训）。
+	logHub.applyRuntimeMode(config.Mode)
+	blog("INFO", "bridge.startup", "terminal_bridge 已启动", "", "", "", "", map[string]any{
+		"version":        getVersion(),
+		"commit":         CommitID,
+		"built":          BuildTime,
+		"mode":           config.Mode,
+		"listen":         config.address(),
+		"allowed_origins": config.AllowedOriginsRaw,
+		"log_dir":        logHub.logDir,
+		"log_path":       logHub.logPath,
+		"log_dir_source": logHub.logDirSource,
+		"log_level":      logHub.logLevelName(),
+		"pid":            os.Getpid(),
+		"goos":           runtime.GOOS,
+	})
 	shutdownTelemetry, telemetryErr := initTelemetry(context.Background())
 	if telemetryErr != nil {
 		log.Printf("[Bridge] ERROR: OpenTelemetry 初始化失败: %v", telemetryErr)

@@ -1502,6 +1502,22 @@ class ReactEngine:
             error = f"[circuit_breaker] 工具 {tool_name} 近期频繁失败，已被服务端临时熔断隔离，请 60 秒后再试。"
             result = f"工具执行失败: {error}"
 
+            # 熔断拒绝必须先向前端产出终态 tool_result（对齐其它失败分支）：
+            # 此前只 yield ToolResultEvent（仅供 LLM 消费），SSE 无 tool_result 事件，
+            # 前端卡片永久停留在 running，SSE 结束时被兜底判为「执行流已结束，但未收到执行结果」。
+            yield AgentStageUpdate(
+                stage="tool_result",
+                metadata={
+                    "exec_id": exec_id,
+                    "tool_name": tool_name,
+                    "status": "failed",
+                    "result": None,
+                    "error": "工具已被熔断隔离，暂不可执行，请稍后重试。",
+                    "error_type": "circuit_open",
+                    "duration_ms": 0,
+                },
+            )
+
             if self._audit:
                 try:
                     await self._audit.write(
