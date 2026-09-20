@@ -1118,4 +1118,3 @@ func TestAcliSyncMessageSerialization(t *testing.T) {
 		t.Fatalf("decoded out message mismatch: %#v", outDecoded)
 	}
 }
-

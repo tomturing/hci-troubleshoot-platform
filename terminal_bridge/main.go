@@ -185,9 +185,9 @@ type InMessage struct {
 	OutputFilters  []OutputFilter `json:"output_filters"` // 平台定义的安全逐行筛选，不执行 shell/正则
 
 	// ── acli_sync 专用字段 ──
-	Force          bool           `json:"force"`            // 强制重新安装/更新
-	MinDiskMB      int            `json:"min_disk_mb"`       // 最小剩余磁盘要求（默认 100MB）
-	AcliURL        string         `json:"acli_url,omitempty"`// 可选自定义下载链接
+	Force     bool   `json:"force"`              // 强制重新安装/更新
+	MinDiskMB int    `json:"min_disk_mb"`        // 最小剩余磁盘要求（默认 100MB）
+	AcliURL   string `json:"acli_url,omitempty"` // 可选自定义下载链接
 
 	// ── WebSocket 保活（ping/pong）专用字段 ──
 	Pong int64 `json:"pong,omitempty"` // 客户端回复心跳时间戳（回显服务端 ping 值）
