@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, onBeforeUnmount } from 'vue'
+import { ElMessage } from 'element-plus'
 import type { ChatMessage } from '@/stores/chat'
 import { useChatStore } from '@/stores/chat'
 import { renderMarkdown, isCommandLanguage } from '@/utils/markdown'
@@ -687,7 +688,9 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
           metadata: { kind: 'interactive_response', selectedOptionId: optionId },
         })
       } else {
-        console.warn('[interactive] 工具确认提交失败:', resp.status)
+        const errorMsg = `工具授权提交失败 (${resp.status})，请稍后重试`
+        console.warn('[interactive]', errorMsg)
+        ElMessage.error(errorMsg)
       }
     } finally {
       interactiveSubmitting.value = false
@@ -751,7 +754,9 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
         chatStore.resumeOpsAgentStream()
       }
     } else {
-      console.warn('[interactive] 提交失败:', resp.status)
+      const errorMsg = `提交失败 (${resp.status})，请稍后重试`
+      console.warn('[interactive]', errorMsg)
+      ElMessage.error(errorMsg)
     }
   } finally {
     interactiveSubmitting.value = false
@@ -828,7 +833,9 @@ async function handleInteractiveFreeText() {
         chatStore.resumeOpsAgentStream()
       }
     } else {
-      console.warn('[interactive] 自由文本提交失败:', resp.status)
+      const errorMsg = `提交失败 (${resp.status})，请稍后重试`
+      console.warn('[interactive]', errorMsg)
+      ElMessage.error(errorMsg)
     }
   } finally {
     interactiveSubmitting.value = false

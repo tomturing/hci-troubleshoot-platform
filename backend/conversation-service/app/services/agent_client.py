@@ -35,8 +35,18 @@ class AgentClient:
     使调用方切换成本最小化。
     """
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, internal_token: str | None = None) -> None:
         self._base_url = base_url.rstrip("/")
+        self._internal_token = internal_token
+
+    def _get_headers(self, extra_headers: dict[str, str] | None = None) -> dict[str, str]:
+        """构建包含鉴权和基础元数据的请求头"""
+        headers = {"Content-Type": "application/json"}
+        if self._internal_token:
+            headers["Authorization"] = f"Bearer {self._internal_token}"
+        if extra_headers:
+            headers.update(extra_headers)
+        return headers
 
     async def stream(
         self,
@@ -87,7 +97,7 @@ class AgentClient:
         # 强行注入 traceparent 头以避免 Starlette streaming 异步迭代器中 ContextVars 丢失导致 Trace 分叉
         active_trace_id = get_current_trace_id() or secrets.token_hex(16)
         span_id = secrets.token_hex(8)
-        headers = {"traceparent": f"00-{active_trace_id}-{span_id}-01", "Content-Type": "application/json"}
+        headers = self._get_headers({"traceparent": f"00-{active_trace_id}-{span_id}-01"})
 
         try:
             async with (
@@ -163,6 +173,7 @@ class AgentClient:
                         "request_id": request_id,
                         "outcome": outcome,
                     },
+                    headers=self._get_headers(),
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -185,7 +196,7 @@ class AgentClient:
         """
         url = f"{self._base_url}/v1/agent/resume-stream/{session_id}"
         try:
-            async with httpx.AsyncClient(timeout=None) as client, client.stream("GET", url) as resp:
+            async with httpx.AsyncClient(timeout=None) as client, client.stream("GET", url, headers=self._get_headers()) as resp:
                 if resp.status_code != 200:
                     logger.warning(
                         event="agent_client_resume_error",
@@ -246,6 +257,7 @@ class AgentClient:
                         "authorized_by": authorized_by,
                         "exec_id": exec_id,
                     },
+                    headers=self._get_headers(),
                 )
                 resp.raise_for_status()
                 data = resp.json()

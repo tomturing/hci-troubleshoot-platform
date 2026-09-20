@@ -3187,19 +3187,8 @@ class ConversationService:
             success = await self._submit_vm_console_wake_decision(
                 conversation_id, outcome, metadata
             )
-        elif self._agent_client is None:
-            logger.warning(
-                event="interactive_response_no_client",
-                message="submit_interactive_response: AgentClient 未注入，跳过",
-                conversation_id=str(conversation_id),
-                kind=kind,
-                request_id=request_id,
-            )
-            return False
-
-        # 按 kind 分叉路由
         elif kind in ("variable_input", "variable_confirm"):
-            # ── SOP 变量输入/确认路径 ──
+            # ── SOP 变量输入/确认路径（直接写入数据库变量池，无需 agent-service 客户端）──
             if not metadata or "variable_name" not in metadata:
                 logger.warning(
                     event="sop_variable_response_missing_metadata",
@@ -3281,6 +3270,15 @@ class ConversationService:
                 return False
 
         elif kind == "tool_confirm":
+            if self._agent_client is None:
+                logger.warning(
+                    event="interactive_response_no_client",
+                    message="tool_confirm: AgentClient 未注入，跳过",
+                    conversation_id=str(conversation_id),
+                    kind=kind,
+                    request_id=request_id,
+                )
+                return False
             # ── ReAct 确认回路（T-AGT-03）────────────────────────────────────────────
             confirmed = bool(outcome.get("confirmed", False))
             authorized_by = outcome.get("authorized_by", "user")
@@ -3378,6 +3376,15 @@ class ConversationService:
             )
         else:
             # ── ACP 路径（ops-agent SOP/信息确认卡）──────────────────────────────────
+            if self._agent_client is None:
+                logger.warning(
+                    event="interactive_response_no_client",
+                    message="submit_interactive_response: AgentClient 未注入，跳过",
+                    conversation_id=str(conversation_id),
+                    kind=kind,
+                    request_id=request_id,
+                )
+                return False
             try:
                 success = await self._agent_client.submit_interactive_response(
                     acp_session_id=acp_session_id,

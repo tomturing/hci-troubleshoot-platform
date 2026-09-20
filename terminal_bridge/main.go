@@ -1284,11 +1284,18 @@ func buildSSHError(err error) (string, string) {
 func wrapContainerCommand(command, container string) string {
 	container = strings.TrimSpace(container)
 	if container == "" || container == "host" {
+		trimmed := strings.TrimSpace(command)
+		if strings.HasPrefix(trimmed, "container_exec ") && !strings.Contains(trimmed, " -d") {
+			command = trimmed + " -d"
+		}
+		if !strings.Contains(command, "export PATH=") && (strings.Contains(command, "acli") || strings.Contains(command, "smartctl") || strings.Contains(command, "container_exec")) {
+			return "export PATH=\"$PATH:/sf/bin:/sf/sbin:/usr/sbin:/usr/local/bin\"; " + command
+		}
 		return command
 	}
 	// 对命令中的单引号做转义
 	escaped := strings.ReplaceAll(command, "'", "'\\''")
-	return fmt.Sprintf("container_exec -n %s -c '%s'", container, escaped)
+	return fmt.Sprintf("container_exec -n %s -c '%s' -d", container, escaped)
 }
 
 // ── 虚拟机控制台截图固定操作通道（vm_console_op）─────────────────────────────

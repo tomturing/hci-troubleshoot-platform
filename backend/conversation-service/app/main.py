@@ -157,7 +157,10 @@ async def lifespan(app: FastAPI):
     # [PR-B] 初始化 AgentClient（委托推理给 agent-service）
     agent_client: AgentClient | None = None
     if settings.AGENT_SERVICE_ENABLED:
-        agent_client = AgentClient(settings.AGENT_SERVICE_URL)
+        agent_client = AgentClient(
+            settings.AGENT_SERVICE_URL,
+            internal_token=settings.INTERNAL_API_TOKEN,
+        )
         logger.info(
             event="agent_client_initialized",
             message=f"AgentClient 已初始化，目标: {settings.AGENT_SERVICE_URL}",
