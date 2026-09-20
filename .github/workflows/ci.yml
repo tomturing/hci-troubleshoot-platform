@@ -873,7 +873,22 @@ jobs:
           # 收敛手段是范围而不是时间上界，上界只用于防止挂起。注意快速路径不带
           # --cov：完整路径里 kb-service 的 58s 全部来自覆盖率追踪放大（jieba 词典
           # 模块 35k 行字面量），无插桩时该套件仅约 0.3s。
-          timeout 240s uv run pytest "${TARGETS[@]}" -q --no-cov -m "not integration and not slow"
+          #
+          # 每个目标必须独立成进程：各后端服务都以 `app` 作为顶层包名，且存在同名
+          # 测试模块（如 api-gateway 与 conversation-service 都有 tests/unit/
+          # test_bridge_logs.py）。合并进一个 pytest 进程时，先收集的服务会把
+          # sys.modules['app'] 占为己有，后续服务要么 import file mismatch，
+          # 要么导入到别的服务的 app 包（表现为 Table already defined、
+          # ModuleNotFoundError: app.tools 等与本次变更无关的伪失败）。
+          FAILED_TARGET=""
+          for TARGET in "${TARGETS[@]}"; do
+            echo "::group::pytest ${TARGET}"
+            if ! timeout 240s uv run pytest "$TARGET" -q --no-cov -m "not integration and not slow"; then
+              FAILED_TARGET="$TARGET"
+              echo "::error::快速单元测试失败：${TARGET}"
+            fi
+            echo "::endgroup::"
+          done
           FINISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           {
             echo "### PR 快速单元测试"
@@ -884,6 +899,10 @@ jobs:
             echo "- 结束：${FINISHED_AT}"
             echo "- 目标：\`${TARGETS[*]}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [[ -n "$FAILED_TARGET" ]]; then
+            echo "快速单元测试失败目标：${FAILED_TARGET}"
+            exit 1
+          fi
 
       - name: 运行完整单元测试（含覆盖率）
         if: github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full'

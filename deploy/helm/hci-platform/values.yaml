@@ -410,6 +410,12 @@ customerUI:
       cpu: "100m"
       memory: "64Mi"
 
+# ======================== terminal_bridge 日志治理 ==========================
+# uploadEnabled：Custom-UI「上传本地日志」兜底入口开关。
+# 自动回采（bridge → WebSocket → 浏览器 → 后端）稳定后可置为 false 整体屏蔽该入口。
+bridgeLogs:
+  uploadEnabled: true
+
 # ======================== Terminal Bridge ===================================
 # 本地 K3s 端到端联调时启用；生产/云端默认关闭，继续使用 Windows 桌面客户端。
 terminalBridge:
@@ -424,6 +430,8 @@ terminalBridge:
   logStorageSizeLimit: "256Mi"
   # bridge.log 达到 64 MiB 后滚动为 bridge.log.1，避免 Pod 临时盘被持续写满。
   logFileMaxBytes: "67108864"
+  # 日志级别阈值：DEBUG/INFO/WARN/ERROR。桌面排障需要细节时可临时调为 DEBUG。
+  logLevel: "INFO"
   execTimeoutSeconds: 120
   execMaxOutputBytes: 4194304
   artifactRetentionDays: 30
@@ -593,6 +601,9 @@ observability:
     image: grafana/loki:latest
     storage: 2Gi
     storageClass: local-path
+    # 日志保留期（小时）：显式声明，避免依赖镜像默认导致排障时历史日志已被回收。
+    # 336h = 14 天，覆盖跨周末的工单复盘窗口。
+    retentionHours: 336
     resources:
       requests:
         cpu: "50m"

@@ -11,11 +11,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from app.routes.bridge_logs import (
+    MAX_UPLOAD_FILE_BYTES,
     BridgeLogBatch,
     BridgeLogEntry,
+    BridgeLogUploadFile,
+    BridgeLogUploadRequest,
     _check_session_or_internal,
     _parse_event_time,
     ingest_bridge_logs,
+    upload_bridge_logs,
 )
 from fastapi import HTTPException
 
@@ -265,3 +269,180 @@ class TestIngestBridgeLogs:
 
         assert exc_info.value.status_code == 503
         assert "数据库未就绪" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_ingest_uses_fallback_case_id_for_entries_without_case(self):
+        """条目缺 case_id 时按 fallback_case_id 归档，不再整体丢弃。"""
+        body = BridgeLogBatch(
+            logs=[BridgeLogEntry(level="INFO", event="bridge.startup", message="started")],
+            fallback_case_id="Q2026092010235",
+        )
+
+        mock_session = AsyncMock()
+        mock_db_manager = MagicMock()
+
+        async def _gen():
+            yield mock_session
+
+        mock_db_manager.get_session.return_value = _gen()
+
+        with (
+            patch("app.routes.bridge_logs._db_manager", mock_db_manager),
+            patch("app.routes.bridge_logs._check_session_or_internal", return_value="customer"),
+        ):
+            result = await ingest_bridge_logs(body, authorization="Bearer client-session-placeholder-token")
+
+        assert result == {"ok": True, "accepted": 1, "duplicates": 0, "skipped": 0}
+        args, _ = mock_session.execute.call_args
+        assert args[1]["case_id"] == "Q2026092010235"
+
+
+class TestUploadBridgeLogs:
+    """本地日志手动上传补采接口测试"""
+
+    @staticmethod
+    def _build_db(rowcount_sequence: list[int]) -> tuple[MagicMock, AsyncMock]:
+        """构造按调用顺序返回 rowcount 的会话 mock（0 表示被去重）。"""
+        mock_session = AsyncMock()
+        results = []
+        for rowcount in rowcount_sequence:
+            result = MagicMock()
+            result.rowcount = rowcount
+            results.append(result)
+        mock_session.execute = AsyncMock(side_effect=results)
+        mock_db_manager = MagicMock()
+
+        async def _gen():
+            yield mock_session
+
+        mock_db_manager.get_session.return_value = _gen()
+        return mock_db_manager, mock_session
+
+    @pytest.mark.asyncio
+    async def test_upload_parses_jsonl_and_binds_case(self):
+        """JSONL 逐行解析：条目自带 case_id 优先，缺省继承上传绑定工单。"""
+        content = "\n".join(
+            [
+                '{"event":"exec.done","message":"done","case_id":"Q001","level":"INFO"}',
+                '{"event":"bridge.connected","message":"connected"}',
+                "not-json-line",
+            ]
+        )
+        body = BridgeLogUploadRequest(
+            case_id="Q2026092010235",
+            files=[
+                BridgeLogUploadFile(name="bridge-20260920-abcd1234.log", content=content),
+            ],
+        )
+        mock_db_manager, mock_session = self._build_db([1, 1])
+
+        with (
+            patch("app.routes.bridge_logs._db_manager", mock_db_manager),
+            patch("app.routes.bridge_logs._check_session_or_internal", return_value="customer"),
+            patch("app.routes.bridge_logs.settings") as mock_settings,
+        ):
+            mock_settings.BRIDGE_LOG_UPLOAD_ENABLED = True
+            result = await upload_bridge_logs(body, authorization="Bearer client-session-placeholder-token")
+
+        assert result["ok"] is True
+        assert result["accepted"] == 2
+        assert result["invalid"] == 1
+        assert result["files"][0]["name"] == "bridge-20260920-abcd1234.log"
+
+        first_params = mock_session.execute.call_args_list[0].args[1]
+        second_params = mock_session.execute.call_args_list[1].args[1]
+        assert first_params["case_id"] == "Q001"
+        assert second_params["case_id"] == "Q2026092010235"
+        # 上传来源留痕，便于区分自动回采与手动补采
+        assert '"source": "manual_upload"' in second_params["extra"]
+
+    @pytest.mark.asyncio
+    async def test_upload_deduplicates_repeated_upload(self):
+        """重复上传同一文件：ON CONFLICT 命中后计入 duplicates，不重复落库。"""
+        content = (
+            '{"event":"exec.done","message":"done","case_id":"Q001","event_id":"11111111-1111-1111-1111-111111111111"}'
+        )
+        body = BridgeLogUploadRequest(
+            case_id="Q001",
+            files=[
+                BridgeLogUploadFile(name="bridge.log", content=content),
+            ],
+        )
+        mock_db_manager, _ = self._build_db([0])
+
+        with (
+            patch("app.routes.bridge_logs._db_manager", mock_db_manager),
+            patch("app.routes.bridge_logs._check_session_or_internal", return_value="customer"),
+            patch("app.routes.bridge_logs.settings") as mock_settings,
+        ):
+            mock_settings.BRIDGE_LOG_UPLOAD_ENABLED = True
+            result = await upload_bridge_logs(body, authorization="Bearer client-session-placeholder-token")
+
+        assert result["duplicates"] == 1
+        assert result["accepted"] == 0
+
+    @pytest.mark.asyncio
+    async def test_upload_reports_invalid_lines(self):
+        """非法 JSON 行计入 invalid，不得导致整批上传失败。"""
+        body = BridgeLogUploadRequest(
+            case_id="Q001",
+            files=[
+                BridgeLogUploadFile(name="bridge.log", content="{broken\n"),
+            ],
+        )
+        mock_db_manager, _ = self._build_db([1])
+
+        with (
+            patch("app.routes.bridge_logs._db_manager", mock_db_manager),
+            patch("app.routes.bridge_logs._check_session_or_internal", return_value="customer"),
+            patch("app.routes.bridge_logs.settings") as mock_settings,
+        ):
+            mock_settings.BRIDGE_LOG_UPLOAD_ENABLED = True
+            result = await upload_bridge_logs(body, authorization="Bearer client-session-placeholder-token")
+
+        assert result["ok"] is True
+        assert result["invalid"] == 1
+
+    @pytest.mark.asyncio
+    async def test_upload_returns_404_when_disabled(self):
+        """开关关闭时入口不可用（前端据此隐藏上传入口）"""
+        body = BridgeLogUploadRequest(
+            case_id="Q001",
+            files=[
+                BridgeLogUploadFile(name="bridge.log", content='{"event":"exec.done"}'),
+            ],
+        )
+
+        with (
+            patch("app.routes.bridge_logs._check_session_or_internal", return_value="customer"),
+            patch("app.routes.bridge_logs.settings") as mock_settings,
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            mock_settings.BRIDGE_LOG_UPLOAD_ENABLED = False
+            await upload_bridge_logs(body, authorization="Bearer client-session-placeholder-token")
+
+        assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_upload_rejects_oversized_file(self):
+        """超过体积上限的文件被拒绝，避免请求被大文件拖垮"""
+        body = BridgeLogUploadRequest(
+            case_id="Q001",
+            files=[
+                BridgeLogUploadFile(name="bridge.log", content="x" * (MAX_UPLOAD_FILE_BYTES + 1)),
+            ],
+        )
+
+        # 注意：_db_manager 必须提供真实异步会话，否则 `async for` 不会进入循环体
+        mock_db_manager, _ = self._build_db([1])
+
+        with (
+            patch("app.routes.bridge_logs._db_manager", mock_db_manager),
+            patch("app.routes.bridge_logs._check_session_or_internal", return_value="customer"),
+            patch("app.routes.bridge_logs.settings") as mock_settings,
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            mock_settings.BRIDGE_LOG_UPLOAD_ENABLED = True
+            await upload_bridge_logs(body, authorization="Bearer client-session-placeholder-token")
+
+        assert exc_info.value.status_code == 413

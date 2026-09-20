@@ -76,6 +76,9 @@ spec:
             # pydantic-ai C 大脑启用开关
             - name: PYDANTIC_AI_ENABLED
               value: {{ .Values.conversationService.pydanticAiEnabled | default "false" | quote }}
+            # terminal_bridge 本地日志手动上传补采开关（自动回采稳定后可关闭该兜底入口）
+            - name: BRIDGE_LOG_UPLOAD_ENABLED
+              value: {{ (.Values.bridgeLogs | default dict).uploadEnabled | default true | quote }}
             # 比 Bridge 权威超时多 60 秒，覆盖浏览器与 Agent 的两级传输余量。
             - name: AGENT_EXEC_STATE_TTL_SECONDS
               value: {{ add .Values.terminalBridge.execTimeoutSeconds 60 | quote }}
