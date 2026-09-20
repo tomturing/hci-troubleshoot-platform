@@ -2511,7 +2511,7 @@ var droppedLogEmittedAt int64
 func markDroppedLogEmitted() bool {
 	now := time.Now().UnixNano()
 	last := atomic.LoadInt64(&droppedLogEmittedAt)
-	if last != 0 && now-last < 5*time.Second {
+	if last != 0 && now-last < int64(5*time.Second) {
 		return false
 	}
 	return atomic.CompareAndSwapInt64(&droppedLogEmittedAt, last, now)
@@ -4070,18 +4070,18 @@ func main() {
 	// 否则排障时无法回答"日志到底写在哪"（工单 Q2026092010235 的直接教训）。
 	logHub.applyRuntimeMode(config.Mode)
 	blog("INFO", "bridge.startup", "terminal_bridge 已启动", "", "", "", "", map[string]any{
-		"version":        getVersion(),
-		"commit":         CommitID,
-		"built":          BuildTime,
-		"mode":           config.Mode,
-		"listen":         config.address(),
+		"version":         getVersion(),
+		"commit":          CommitID,
+		"built":           BuildTime,
+		"mode":            config.Mode,
+		"listen":          config.address(),
 		"allowed_origins": config.AllowedOriginsRaw,
-		"log_dir":        logHub.logDir,
-		"log_path":       logHub.logPath,
-		"log_dir_source": logHub.logDirSource,
-		"log_level":      logHub.logLevelName(),
-		"pid":            os.Getpid(),
-		"goos":           runtime.GOOS,
+		"log_dir":         logHub.logDir,
+		"log_path":        logHub.logPath,
+		"log_dir_source":  logHub.logDirSource,
+		"log_level":       logHub.logLevelName(),
+		"pid":             os.Getpid(),
+		"goos":            runtime.GOOS,
 	})
 	shutdownTelemetry, telemetryErr := initTelemetry(context.Background())
 	if telemetryErr != nil {

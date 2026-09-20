@@ -108,7 +108,7 @@ func TestReplayLocalLogFileRestoresRing(t *testing.T) {
 	if err := os.WriteFile(previous, []byte(content), 0o600); err != nil {
 		t.Fatalf("写入历史日志失败: %v", err)
 	}
-	h := &LogHub{cap: 10, subs: map[string]*bridgeSubscriber{}}
+	h := &LogHub{cap: 10}
 	current := filepath.Join(dir, "bridge-20260102-bbbbbbbb.log")
 	if err := os.WriteFile(current, []byte(""), 0o600); err != nil {
 		t.Fatalf("写入当前日志失败: %v", err)
