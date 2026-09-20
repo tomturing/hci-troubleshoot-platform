@@ -21,6 +21,16 @@
 **HCI 智能排障平台** — AI 驱动的超融合基础设施运维故障诊断系统。
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
+- **工单 Q2026092053425 排障交互卡片无响应与容器执行失败修复**：
+  - **根因**：
+    - **点击交互无反应与超时取消**：`conversation-service` 转发用户交互确认到 `agent-service` 时漏传内部 `Authorization` Token，导致 401 失败并在前端静默吞咽，最终 Redis 等待 120 秒超时判定为操作已取消；
+    - **容器/宿主机命令执行异常**：`terminal_bridge` 缺少容器非交互式伪终端参数 `-d`（报 `input is not a terminal`），且非交互 SSH 宿主机缺省 PATH 未包含 `/sf/bin:/sf/sbin`（报 `acli: command not found`）；
+    - **告警已输入仍强制弹出变量填写**：SOP ID=4 变量声明 Markdown 表格列对齐错位，导致 `alert_logs` 被误解析为 `user_input` 且生成悬空依赖 `告警原始数据`。
+  - **修复**：
+    - `AgentClient` 初始化及交互/恢复请求统一补齐 `Authorization` 头部；
+    - 前端 `MessageBubble.vue` 增加统一 `ElMessage.error` 失败反馈与错误捕获；
+    - `terminal_bridge/main.go` 在 `wrapContainerCommand` 统一追加 `-d` 与环境 PATH；
+    - `backend/shared` 扩展中文策略别名支持，并订正数据库 SOP 4 的 `content_md` 与 `variable_schema`。
 - **guidance_only 语义画像 KBD 发布门禁放宽**：
   - **根因**：KBD 发布门禁强制要求至少一条 QFK 消费者信号，导致 `guidance_only` 类型的语义画像 KBD（如案例 15936 "使用ISO镜像安装2016提示缺少计算机所需介质驱动程序"）无法发布。这类 KBD 只有 `case_context` 等受限生产者信号，设计上不进入自动执行 CDD，而是通过语义兜底路径请求人工补充证据。
   - **修复**：在 `backend/kb-service/app/routes/admin.py` 的发布验证中，当 KBD 的 `semantic_entry_profile.diagnosis_capability == "guidance_only"` 时，跳过 QFK 消费者信号要求。

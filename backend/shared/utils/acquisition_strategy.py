@@ -100,6 +100,15 @@ _ALIAS_MAP: dict[str, str] = {
     "derived": STRATEGY_DERIVED,
     # json_extract（无简写）
     "json_extract": STRATEGY_JSON_EXTRACT,
+    # 中文别名支持（避免 SOP 作者输入中文时意外降级为 user_input）
+    "工具调用": STRATEGY_TOOL_CALL,
+    "工具": STRATEGY_TOOL_CALL,
+    "技能调用": STRATEGY_SKILL_CALL,
+    "技能": STRATEGY_SKILL_CALL,
+    "用户输入": STRATEGY_USER_INPUT,
+    "用户确认": STRATEGY_USER_CONFIRM,
+    "环境注入": STRATEGY_ENV_INJECTION,
+    "派生": STRATEGY_DERIVED,
 }
 
 # ──────────────────────────────────────────────────────────────────────────────

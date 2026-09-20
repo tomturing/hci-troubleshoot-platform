@@ -323,3 +323,31 @@ class TestExtractAcquisitionTool:
         """env:node_ip 中的 node_ip 不返回为 acquisition_tool"""
         var_def = {"acquisition_strategy": "env:node_ip"}
         assert extract_acquisition_tool(var_def) is None
+
+
+class TestChineseAliases:
+    """测试中文策略别名解析"""
+
+    def test_chinese_tool_call(self):
+        result = parse_strategy("工具调用")
+        assert result.strategy == STRATEGY_TOOL_CALL
+        result2 = parse_strategy("工具:acli_exec")
+        assert result2.strategy == STRATEGY_TOOL_CALL
+        assert result2.parameter == "acli_exec"
+
+    def test_chinese_skill_call(self):
+        result = parse_strategy("技能调用:hci-alert-parsing")
+        assert result.strategy == STRATEGY_SKILL_CALL
+        assert result.parameter == "hci-alert-parsing"
+        result2 = parse_strategy("技能")
+        assert result2.strategy == STRATEGY_SKILL_CALL
+
+    def test_chinese_user_input_and_confirm(self):
+        assert parse_strategy("用户输入").strategy == STRATEGY_USER_INPUT
+        assert parse_strategy("用户确认").strategy == STRATEGY_USER_CONFIRM
+
+    def test_chinese_env_and_derived(self):
+        assert parse_strategy("环境注入:node_ip").strategy == STRATEGY_ENV_INJECTION
+        assert parse_strategy("环境注入:node_ip").parameter == "node_ip"
+        assert parse_strategy("派生").strategy == STRATEGY_DERIVED
+
