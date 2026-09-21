@@ -92,11 +92,13 @@ async function readJson(response: Response): Promise<Record<string, unknown>> {
   return body && typeof body === 'object' ? body as Record<string, unknown> : {}
 }
 
+const internalToken = localStorage.getItem('internalToken') || import.meta.env.VITE_INTERNAL_API_TOKEN || 'hci-dev-internal-token'
+
 async function createConversation() {
-  const query = new URLSearchParams({ case_id: props.caseId, assistant_type: 'htp-agent' })
+  const query = new URLSearchParams({ case_id: props.caseId, assistant_type: 'htp-agent', client_id: props.clientId })
   const response = await fetch(`/api/conversations/?${query}`, {
     method: 'POST',
-    headers: { 'X-Client-ID': props.clientId },
+    headers: { Authorization: `Bearer ${internalToken}` },
   })
   const body = await readJson(response)
   conversationId.value = String(body.conversation_id || '')
@@ -216,9 +218,9 @@ function waitForExec(execId: string, timeoutSeconds: number) {
 async function postExecResult(event: Record<string, unknown>, result: Record<string, unknown>) {
   const execId = String(event.execId || event.exec_id || '')
   const exitCode = Number(result.exit_code)
-  const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId.value)}/exec-result`, {
+  const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId.value)}/exec-result?client_id=${encodeURIComponent(props.clientId)}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Client-ID': props.clientId },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${internalToken}` },
     body: JSON.stringify({
       exec_id: execId,
       output: String(result.output || result.stdout || ''),
@@ -236,10 +238,10 @@ async function postExecResult(event: Record<string, unknown>, result: Record<str
 
 async function postVmConsoleResult(event: Record<string, unknown>, result: Record<string, unknown>) {
   const response = await fetch(
-    `/api/conversations/${encodeURIComponent(conversationId.value)}/vm-console-result`,
+    `/api/conversations/${encodeURIComponent(conversationId.value)}/vm-console-result?client_id=${encodeURIComponent(props.clientId)}`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Client-ID': props.clientId },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${internalToken}` },
       body: JSON.stringify({
         capture_id: String(event.captureId || ''),
         exec_id: String(event.execId || ''),
@@ -524,9 +526,9 @@ async function sendMessage(content?: string, metadata: Record<string, unknown> =
   const assistant = addMessage({ role: 'assistant', kind: 'text', content: '', status: 'running' })
   streaming.value = true
   try {
-    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId.value)}/message`, {
+    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId.value)}/message?client_id=${encodeURIComponent(props.clientId)}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Client-ID': props.clientId },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${internalToken}` },
       body: JSON.stringify({
         case_id: props.caseId,
         role: 'user',

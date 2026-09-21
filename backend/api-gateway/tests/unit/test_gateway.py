@@ -50,7 +50,11 @@ class TestGateway(unittest.TestCase):
         args, kwargs = mock_client.request.call_args
         self.assertEqual(args[0], "POST")
         self.assertIn("/api/cases/", args[1])
-        self.assertEqual(kwargs["json"], payload)
+        # client_id 已由服务端签发的身份 Cookie 覆盖，不再信任请求自报值
+        sent = kwargs["json"]
+        self.assertEqual(sent["title"], "Test Case")
+        self.assertEqual(sent["description"], "Test")
+        self.assertNotEqual(sent["client_id"], "c1")
 
     @patch("app.routes.cases.httpx.AsyncClient")
     def test_get_case_proxy(self, mock_client_cls):

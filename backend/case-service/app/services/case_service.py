@@ -120,9 +120,9 @@ class CaseService:
             return None
         return CaseResponse.model_validate(case)
 
-    async def list_cases(self, client_id: str) -> list[CaseResponse]:
-        """获取客户端的所有工单"""
-        cases = await self.repository.get_by_client_id(client_id)
+    async def list_cases(self, client_id: str, limit: int = 50, offset: int = 0) -> list[CaseResponse]:
+        """获取客户端的所有工单（支持分页）"""
+        cases = await self.repository.get_by_client_id(client_id, limit=limit, offset=offset)
         return [CaseResponse.model_validate(case) for case in cases]
 
     async def confirm_case(self, case_id: str) -> CaseResponse | None:

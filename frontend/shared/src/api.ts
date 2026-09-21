@@ -96,9 +96,12 @@ export function createCaseApi(client: AxiosInstance) {
       return client.get<CaseResponse>(`/cases/${caseId}`)
     },
 
-    /** 查询客户端的工单列表 */
-    listByClient(clientId: string) {
-      return client.get<CaseResponse[]>('/cases/', { params: { client_id: clientId } })
+    /** 查询客户端的工单列表（支持分页；limit 上限由网关强制） */
+    listByClient(clientId: string, options: { limit?: number; offset?: number } = {}) {
+      const { limit = 50, offset = 0 } = options
+      return client.get<CaseResponse[]>('/cases/', {
+        params: { client_id: clientId, limit, offset },
+      })
     },
 
     /** 确认工单 */

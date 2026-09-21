@@ -1,5 +1,9 @@
 """
 Case Routes - API路由
+
+P0 安全修复：
+- admin 端点（/all、/stats、/clients、PUT /{case_id}）要求 INTERNAL_API_TOKEN。
+- 客户端端点要求网关签名的 X-Client-ID，并校验工单归属（BOLA 防护）。
 """
 
 from datetime import datetime
@@ -16,11 +20,11 @@ from shared.models.schemas import (
 )
 
 from ..repositories.case_repo import CaseRepository
+from ..security.auth import get_client_id, require_admin_token, verify_case_ownership
 from ..services.case_service import CaseService
 
 router = APIRouter(prefix="/api/cases", tags=["cases"])
 
-# 这里需要在main.py中注入database_manager
 database_manager: DatabaseManager | None = None
 
 
@@ -52,9 +56,10 @@ async def list_all_cases(
     title: str | None = Query(None, description="按工单标题模糊筛选"),
     start_time: datetime | None = Query(None, description="开始时间"),
     end_time: datetime | None = Query(None, description="结束时间"),
+    _: None = Depends(require_admin_token),
     service: CaseService = Depends(get_case_service),
 ):
-    """[Admin] 获取所有工单列表（分页 + 筛选）"""
+    """[Admin] 获取所有工单列表（分页 + 筛选，需管理员凭证）"""
     return await service.list_all_cases(
         skip=skip,
         limit=limit,
@@ -69,17 +74,19 @@ async def list_all_cases(
 
 @router.get("/stats", response_model=CaseStatsResponse)
 async def get_case_stats(
+    _: None = Depends(require_admin_token),
     service: CaseService = Depends(get_case_service),
 ):
-    """[Admin] 获取工单统计"""
+    """[Admin] 获取工单统计（需管理员凭证）"""
     return await service.get_case_stats()
 
 
 @router.get("/clients", response_model=ClientListResponse)
 async def get_client_list(
+    _: None = Depends(require_admin_token),
     service: CaseService = Depends(get_case_service),
 ):
-    """[Admin] 获取客户端列表"""
+    """[Admin] 获取客户端列表（需管理员凭证）"""
     return await service.get_client_list()
 
 
@@ -87,14 +94,24 @@ async def get_client_list(
 
 
 @router.post("/", response_model=CaseResponse, status_code=201)
-async def create_case(case_create: CaseCreate, service: CaseService = Depends(get_case_service)):
-    """创建新工单"""
+async def create_case(
+    case_create: CaseCreate,
+    client_id: str = Depends(get_client_id),
+    service: CaseService = Depends(get_case_service),
+):
+    """创建新工单（client_id 以网关签名的身份头为准，覆盖自报值）"""
+    case_create.client_id = client_id
     return await service.create_case(case_create)
 
 
 @router.get("/{case_id}", response_model=CaseResponse)
-async def get_case(case_id: str, service: CaseService = Depends(get_case_service)):
-    """获取工单详情"""
+async def get_case(
+    case_id: str,
+    client_id: str = Depends(get_client_id),
+    service: CaseService = Depends(get_case_service),
+):
+    """获取工单详情（强制工单归属校验）"""
+    await verify_case_ownership(case_id, client_id, service.repository.session)
     case = await service.get_case(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -102,14 +119,24 @@ async def get_case(case_id: str, service: CaseService = Depends(get_case_service
 
 
 @router.get("/", response_model=list[CaseResponse])
-async def list_cases(client_id: str, service: CaseService = Depends(get_case_service)):
-    """查询工单列表"""
-    return await service.list_cases(client_id)
+async def list_cases(
+    client_id: str = Depends(get_client_id),
+    limit: int = Query(50, ge=1, le=100, description="每页数量"),
+    offset: int = Query(0, ge=0, description="偏移量"),
+    service: CaseService = Depends(get_case_service),
+):
+    """查询当前身份下的工单列表（强制分页，防止整批拉走）"""
+    return await service.list_cases(client_id, limit=limit, offset=offset)
 
 
 @router.put("/{case_id}/confirm", response_model=CaseResponse)
-async def confirm_case(case_id: str, service: CaseService = Depends(get_case_service)):
-    """确认工单"""
+async def confirm_case(
+    case_id: str,
+    client_id: str = Depends(get_client_id),
+    service: CaseService = Depends(get_case_service),
+):
+    """确认工单（强制工单归属校验）"""
+    await verify_case_ownership(case_id, client_id, service.repository.session)
     case = await service.confirm_case(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -117,8 +144,13 @@ async def confirm_case(case_id: str, service: CaseService = Depends(get_case_ser
 
 
 @router.put("/{case_id}/close", response_model=CaseResponse)
-async def close_case(case_id: str, service: CaseService = Depends(get_case_service)):
-    """关闭工单"""
+async def close_case(
+    case_id: str,
+    client_id: str = Depends(get_client_id),
+    service: CaseService = Depends(get_case_service),
+):
+    """关闭工单（强制工单归属校验）"""
+    await verify_case_ownership(case_id, client_id, service.repository.session)
     case = await service.close_case(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -129,9 +161,10 @@ async def close_case(case_id: str, service: CaseService = Depends(get_case_servi
 async def update_case(
     case_id: str,
     case_update: CaseUpdate,
+    _: None = Depends(require_admin_token),
     service: CaseService = Depends(get_case_service),
 ):
-    """[Admin] 编辑工单信息"""
+    """[Admin] 编辑工单信息（需管理员凭证）"""
     case = await service.update_case(case_id, case_update)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
