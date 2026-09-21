@@ -24,8 +24,8 @@ class Settings(BaseSettings):
     LLM_API_KEY: str = ""  # 从 hci-secrets 注入
     LLM_DEFAULT_MODEL: str = "glm-5"
     # LLM 推理参数
-    LLM_TEMPERATURE: float = 0.1       # 默认温度
-    LLM_TEMPERATURE_S0: float = 0.3    # S0 意图识别 / 通用对话
+    LLM_TEMPERATURE: float = 0.1  # 默认温度
+    LLM_TEMPERATURE_S0: float = 0.3  # S0 意图识别 / 通用对话
 
     # KB 服务配置
     KB_SERVICE_URL: str = "http://kb-service:8004"
@@ -80,6 +80,13 @@ class Settings(BaseSettings):
     # ── [PR-B] agent-service 集成配置 ───────────────────────────────────────
     AGENT_SERVICE_URL: str = "http://agent-service:8005"
     AGENT_SERVICE_ENABLED: bool = True  # false 时回退到直连 ai_registry 路径（兜底）
+
+    # ── SSE 空闲保活（治本修复反向代理 proxy_read_timeout 掐断长耗时诊断）──
+    # 长耗时诊断（如动态 skill 非流式 LLM 调用 120s×N 重试）期间 SSE 无字节输出，
+    # 反向代理（nginx proxy_read_timeout=300s）会掐断连接，导致前端 network error。
+    # 保活心跳以 SSE 注释行（':' 开头）周期推送，浏览器/前端解析器自动忽略，不进入业务事件。
+    SSE_HEARTBEAT_ENABLED: bool = True
+    SSE_HEARTBEAT_INTERVAL_SEC: float = 20.0  # 必须远小于代理空闲超时（300s），留足余量
 
     @property
     def assistant_registry(self) -> dict[str, dict[str, Any]]:

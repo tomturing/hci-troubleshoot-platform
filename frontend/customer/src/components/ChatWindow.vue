@@ -237,6 +237,23 @@ function handleQuoteToChat(content: string) {
     <!-- SSH 集成创建工单对话框 -->
     <CaseCreateDialog :bridge-status="chatStore.caseCreateDialogBridgeStatus" />
 
+    <!-- SSE 网络中断可重试提示（长耗时诊断期间连接被代理掐断时） -->
+    <el-alert
+      v-if="chatStore.sseNetworkError"
+      type="warning"
+      show-icon
+      :closable="false"
+      class="sse-network-error-banner"
+    >
+      <template #title>诊断连接中断（网络错误）</template>
+      <template #default>
+        <span>{{ chatStore.sseNetworkError.message }}，可点击重试。</span>
+        <el-button type="primary" size="small" link @click="chatStore.retryLastMessage()">
+          点击重试
+        </el-button>
+      </template>
+    </el-alert>
+
     <!-- 本地 bridge 日志补采入口（诊断未完成时主动提醒） -->
     <BridgeLogUploader />
 

@@ -33,6 +33,14 @@ HTTP_REQUESTS_TOTAL = Counter(
     labelnames=["method", "status"],
 )
 
+# SSE 空闲保活心跳发送次数（防止反向代理 proxy_read_timeout 因长耗时诊断空闲而掐断连接）。
+# stream: message（诊断主链路）/ resume（页面刷新重接续写流）。
+SSE_KEEPALIVE_TOTAL = Counter(
+    "hci_sse_keepalive_total",
+    "SSE 空闲保活心跳发送次数，反映长耗时诊断期间连接保活活动",
+    labelnames=["stream"],
+)
+
 KBD_SIGNAL_VALIDATION_TOTAL = Counter(
     "hci_kbd_signal_validation_total",
     "KBD 关键信号校验失败次数",

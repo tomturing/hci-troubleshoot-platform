@@ -14,8 +14,10 @@ from shared.clients import AIAssistantRegistry, KBClient, SchedulerClient
 from shared.database.postgres import DatabaseManager
 from shared.models.schemas import MessageCreate, MessageResponse
 from shared.observability.logger import get_logger
+from shared.observability.metrics import SSE_KEEPALIVE_TOTAL
 from shared.utils.exceptions import AIStreamError, ErrorCode, ExternalServiceError
 
+from ..config import settings
 from ..repositories.conversation_repo import ConversationRepository
 from ..security.auth import (
     check_request_size,
@@ -31,6 +33,73 @@ from .evaluate import require_admin_token
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 logger = get_logger("conversation-routes")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SSE 空闲保活：长耗时诊断期间反向代理（nginx proxy_read_timeout=300s）会因 SSE 无字节
+# 输出而掐断连接，导致前端 network error。此处以 SSE 注释行（':' 开头）周期推送心跳，
+# 浏览器 EventSource / 前端解析器自动忽略注释行，不进入业务事件。
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SSE_KEEPALIVE_SENTINEL = object()
+
+
+async def _sse_keepalive_feed(source, queue: asyncio.Queue) -> None:
+    """将源 SSE 流逐块送入队列，源结束后放入哨兵标记。"""
+    try:
+        async for chunk in source:
+            await queue.put(chunk)
+    finally:
+        await queue.put(_SSE_KEEPALIVE_SENTINEL)
+
+
+async def _sse_keepalive_beat(queue: asyncio.Queue, interval: float, stream: str) -> None:
+    """周期向队列推送 SSE 注释行（心跳），避免反向代理因空闲掐断长连接。"""
+    seq = 0
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            seq += 1
+            SSE_KEEPALIVE_TOTAL.labels(stream=stream).inc()
+            await queue.put(f": keepalive {seq}\n\n")
+    except asyncio.CancelledError:
+        pass
+
+
+async def sse_keepalive(source, interval: float, enabled: bool = True, stream: str = "message"):
+    """在源 SSE 流空闲期间插入心跳注释行，保持长连接存活（治本修复）。
+
+    - enabled=False 或 interval<=0 时透传源流（不注入心跳，便于排障/压测）。
+    - 心跳为 SSE 注释行（以 ':' 开头），前端解析器显式跳过，不污染业务事件。
+    - 源流结束或客户端断开时自动回收生产者与心跳任务，杜绝悬空协程与内存泄露。
+    """
+    logger.info(
+        event="sse_keepalive_start",
+        message="SSE 空闲保活",
+        stream=stream,
+        enabled=enabled,
+        interval_sec=interval,
+    )
+    if not enabled or interval <= 0:
+        async for chunk in source:
+            yield chunk
+        return
+
+    queue: asyncio.Queue = asyncio.Queue()
+    producer = asyncio.create_task(_sse_keepalive_feed(source, queue))
+    heartbeat = asyncio.create_task(_sse_keepalive_beat(queue, interval, stream))
+    try:
+        while True:
+            item = await queue.get()
+            if item is _SSE_KEEPALIVE_SENTINEL:
+                break
+            yield item
+    finally:
+        if not producer.done():
+            producer.cancel()
+        if not heartbeat.done():
+            heartbeat.cancel()
+        await asyncio.gather(producer, heartbeat, return_exceptions=True)
+
 
 # 全局依赖，需要在main.py中注入
 database_manager: DatabaseManager | None = None
@@ -134,7 +203,9 @@ async def get_conversations_by_case(
 
 
 @router.get("/{conversation_id}/messages", response_model=list[MessageResponse])
-async def get_messages(conversation_id: uuid.UUID, request: Request, service: ConversationService = Depends(get_conversation_service)):
+async def get_messages(
+    conversation_id: uuid.UUID, request: Request, service: ConversationService = Depends(get_conversation_service)
+):
     """获取对话消息历史"""
     # ━━ 安全修复：权限校验 ━━
     await verify_conversation_ownership(conversation_id, request, service)
@@ -381,7 +452,16 @@ async def send_message(
             if sse_pusher and external_event_queue:
                 sse_pusher.unregister_queue(str(conversation_id))
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream", background=background_tasks)
+    return StreamingResponse(
+        sse_keepalive(
+            event_generator(),
+            settings.SSE_HEARTBEAT_INTERVAL_SEC,
+            settings.SSE_HEARTBEAT_ENABLED,
+            stream="message",
+        ),
+        media_type="text/event-stream",
+        background=background_tasks,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -621,8 +701,6 @@ async def persist_tool_turn(
     return {"ok": True}
 
 
-
-
 @router.get("/{conversation_id}/resume-stream")
 async def resume_ops_agent_stream(
     conversation_id: uuid.UUID,
@@ -692,7 +770,12 @@ async def resume_ops_agent_stream(
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(
-        event_generator(),
+        sse_keepalive(
+            event_generator(),
+            settings.SSE_HEARTBEAT_INTERVAL_SEC,
+            settings.SSE_HEARTBEAT_ENABLED,
+            stream="resume",
+        ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         background=background_tasks,
