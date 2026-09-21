@@ -8,10 +8,6 @@ Skill 执行异常边界测试。
 """
 
 import httpx
-import pytest
-
-from shared.utils.exceptions import AIStreamError, ErrorCode
-
 from app.skills.errors import (
     SkillError,
     SkillLLMAuthError,
@@ -26,7 +22,7 @@ from app.skills.errors import (
     SkillOutputUnavailableError,
     classify_llm_exception,
 )
-
+from shared.utils.exceptions import AIStreamError, ErrorCode
 
 # ── LLM/提供商域：classify_llm_exception 精确归类 ──────────────────────────────
 
