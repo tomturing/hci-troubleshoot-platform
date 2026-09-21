@@ -348,6 +348,10 @@ export const useChatStore = defineStore('chat', () => {
   const showCaseTemplate = ref(false)
   const caseTemplate = ref<CaseTemplate>({ title: '', description: '' })
   const pendingUserMessage = ref('')
+  // 最近一次用户消息文本（供 SSE 网络中断后一键重试）
+  const lastUserMessageText = ref('')
+  // SSE 网络中断错误（驱动可重试提示横幅）；非网络错误时为 null
+  const sseNetworkError = ref<{ message: string } | null>(null)
   const caseCreateDialogBridgeStatus = ref<'running' | 'not-running' | 'checking'>('checking')
   const sshConnectDialogBridgeStatus = ref<'running' | 'not-running' | 'checking'>('checking')
 
@@ -909,6 +913,10 @@ export const useChatStore = defineStore('chat', () => {
       throw new Error(`无法发送消息: ${errorMsg}`)
     }
 
+    // 记录最近一次用户消息，供 SSE 网络中断后一键重试；并清除上一次网络错误提示
+    lastUserMessageText.value = content
+    sseNetworkError.value = null
+
     isStreaming.value = true
     const aiMsgId = `ai-${Date.now()}`
     messages.value.push({
@@ -1342,12 +1350,22 @@ export const useChatStore = defineStore('chat', () => {
             pendingEventType = 'message'
           } else if (line === '') {
             pendingEventType = 'message'
+          } else if (line.startsWith(':')) {
+            // SSE 注释行（心跳保活等）：前端解析器显式忽略，不进入业务事件、不污染 content
+            continue
           }
         }
       }
     } catch (e: any) {
       const idx = getAiMsgIndex()
-      if (idx !== -1 && !messages.value[idx].content) {
+      // 网络错误（连接中断 / 代理掐断）与业务错误区分：网络错误给出可重试提示
+      const isNetworkError = /(network|failed to fetch|aborterror|networkerror)/i.test(e?.message || '')
+      if (isNetworkError) {
+        sseNetworkError.value = { message: e?.message || 'network error' }
+        if (idx !== -1 && !messages.value[idx].content) {
+          messages.value[idx].content = '[AI 响应失败: 诊断连接中断（网络错误），可点击底部提示重试]'
+        }
+      } else if (idx !== -1 && !messages.value[idx].content) {
         messages.value[idx].content = `[AI 响应失败: ${e.message}]`
       }
     } finally {
@@ -1583,6 +1601,9 @@ export const useChatStore = defineStore('chat', () => {
             pendingEventType = 'message'
           } else if (line === '') {
             pendingEventType = 'message'
+          } else if (line.startsWith(':')) {
+            // SSE 注释行（心跳保活等）：前端解析器显式忽略，不进入业务事件、不污染 content
+            continue
           }
         }
       }
@@ -3297,6 +3318,19 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  /** SSE 网络中断后，用最近一次用户消息重新发起诊断（保留会话上下文）。 */
+  async function retryLastMessage() {
+    const text = lastUserMessageText.value
+    if (!text) return
+    sseNetworkError.value = null
+    try {
+      await streamAIResponse(text)
+    } catch (e: any) {
+      // streamAIResponse 内部已处理 UI 提示，这里仅避免未捕获拒绝冒泡
+      console.warn('[retryLastMessage] 重试失败:', e)
+    }
+  }
+
   return {
     messages,
     currentCase,
@@ -3313,6 +3347,9 @@ export const useChatStore = defineStore('chat', () => {
     markDiagnosticIncomplete,
     clearBridgeLogUploadHint,
     uploadBridgeLogs,
+    // SSE 网络中断可重试
+    sseNetworkError,
+    retryLastMessage,
     // 浏览器侧异常上报
     reportClientError,
     showAssistantSelector,
