@@ -7,9 +7,14 @@ import json
 from unittest.mock import AsyncMock
 
 import pytest
+from app.config import settings
 from app.main import app
 from app.models.terminal import TerminalSessionInfo, TerminalSessionStatus
 from fastapi.testclient import TestClient
+from shared.security.identity import IDENTITY_COOKIE_NAME, issue_identity
+
+# 模拟网关签发的身份 Cookie（P0 修复后身份来自服务端，不再自报 X-Client-ID）
+CID, COOKIE = issue_identity(settings.INTERNAL_API_TOKEN)
 
 pytestmark = pytest.mark.integration
 
@@ -28,7 +33,7 @@ def mock_terminal_service():
                 host="192.168.*.*",
                 port=22,
                 username="root",
-                client_id="test-client-id",
+                client_id=CID,
                 status=TerminalSessionStatus.CONNECTED,
                 created_at="2024-01-01T00:00:00Z",
             ),
@@ -42,7 +47,7 @@ def mock_terminal_service():
             host="192.168.*.*",
             port=22,
             username="root",
-            client_id="test-client-id",
+            client_id=CID,
             status=TerminalSessionStatus.CONNECTED,
             created_at="2024-01-01T00:00:00Z",
         )
@@ -66,8 +71,8 @@ def mock_redis_manager():
 
 @pytest.fixture
 def auth_headers():
-    """模拟客户端标识请求头"""
-    return {"X-Client-ID": "test-client-id"}
+    """模拟已通过网关签发的身份 Cookie（P0 修复后身份来自服务端）"""
+    return {"Cookie": f"{IDENTITY_COOKIE_NAME}={COOKIE}"}
 
 
 @pytest.fixture

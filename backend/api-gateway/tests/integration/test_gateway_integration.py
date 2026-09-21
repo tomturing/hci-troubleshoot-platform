@@ -76,7 +76,10 @@ class TestGatewayIntegration:
                 args, kwargs = mock_proxy.call_args
                 assert args[0] == "POST"
                 assert args[1] == "/"
-                assert args[2] == payload
+                # client_id 已由服务端签发的身份 Cookie 覆盖，不再信任请求自报值
+                assert args[2]["title"] == "Test Integration"
+                assert args[2]["description"] == "Proxy test"
+                assert args[2]["client_id"] != "test-client"
 
     @pytest.mark.asyncio
     async def test_conversation_proxy(self, test_app):
