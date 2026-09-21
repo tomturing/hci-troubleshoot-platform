@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     # 生产部署由 helm secrets.internalApiToken 注入，源码默认值仅用于本地开发。
     INTERNAL_API_TOKEN: str = "hci-dev-internal-token"
 
+    # 服务端签发身份 Cookie（P0 修复：防客户端自报 client_id / 越权）
+    # 密钥复用 INTERNAL_API_TOKEN，避免新增必须同步的配置项。
+    IDENTITY_COOKIE_NAME: str = "hci_client_id"
+    IDENTITY_COOKIE_SECURE: bool = False  # 生产 HTTPS 环境应设为 True
+
     # === 终端 SSH 配置 ===
     TERMINAL_ALLOW_INSECURE_HOSTS: bool = False
     TERMINAL_KNOWN_HOSTS_FILE: str = "~/.ssh/known_hosts"

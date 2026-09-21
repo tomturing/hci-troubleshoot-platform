@@ -49,11 +49,12 @@ class CaseRepository:
         result = await self.session.execute(select(Case).where(Case.case_id == case_id))
         return result.scalar_one_or_none()
 
-    async def get_by_client_id(self, client_id: str) -> list[Case]:
-        """根据client_id查询工单列表"""
-        result = await self.session.execute(
-            select(Case).where(Case.client_id == client_id).order_by(Case.created_at.desc())
-        )
+    async def get_by_client_id(self, client_id: str, limit: int | None = None, offset: int = 0) -> list[Case]:
+        """根据client_id查询工单列表（支持分页）"""
+        query = select(Case).where(Case.client_id == client_id).order_by(Case.created_at.desc())
+        if limit is not None:
+            query = query.limit(limit).offset(offset)
+        result = await self.session.execute(query)
         return list(result.scalars().all())
 
     async def update_status(

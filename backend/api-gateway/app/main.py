@@ -25,6 +25,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
 from app.middleware.error_handler import SecureErrorHandlerMiddleware  # 安全异常处理中间件
+from app.middleware.identity import IdentityMiddleware  # P0 修复：服务端身份 Cookie
 from app.routes import (
     assistants,
     audit,
@@ -178,6 +179,7 @@ register_exception_handlers(app)
 
 # 中间件 — CORS 使用显式来源列表，避免 allow_origins=["*"] + allow_credentials=True 的 RFC 6454 违规
 # 注意：中间件注册顺序很重要，从下往上执行（最后注册的最先执行）
+app.add_middleware(IdentityMiddleware)  # P0 修复：服务端身份 Cookie 签发/校验
 app.add_middleware(RequestSizeLimitMiddleware)  # 安全修复：请求体大小限制
 app.add_middleware(SecureErrorHandlerMiddleware)  # 安全修复：异常处理信息泄漏防护
 app.add_middleware(TraceIDMiddleware)
