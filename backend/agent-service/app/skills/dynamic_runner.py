@@ -22,15 +22,16 @@ from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from sqlalchemy import select
 
+from app.skills.errors import (
+    SkillAIClientError,
+    SkillLLMOutputError,
+    SkillNotFoundError,
+    SkillOutputUnavailableError,
+    SkillToolDependencyError,
+    classify_llm_exception,
+)
+
 logger = get_logger("skills.dynamic-runner")
-
-
-class DynamicSkillError(RuntimeError):
-    """动态 Skill 执行失败。"""
-
-
-class SkillNotFoundError(DynamicSkillError):
-    """Skill 不存在或未启用。"""
 
 
 @dataclass(frozen=True)
@@ -131,8 +132,8 @@ class DynamicSkillRunner:
             by_name = {row.skill_name: row for row in rows}
             row = next((by_name[name] for name in candidates if name in by_name), None)
             if row is None:
-                raise SkillNotFoundError(f"动态 Skill 不存在或未启用: {skill_name}")
-            await self._validate_allowed_tools(session, row.allowed_tools)
+                raise SkillNotFoundError(skill_name, context={"requested_name": skill_name})
+            await self._validate_allowed_tools(session, row.skill_name, row.allowed_tools)
             snapshot = await DynamicResourcePublisher(session).ensure_published(**skill_resource_payload(row))
             await session.commit()
 
@@ -147,7 +148,7 @@ class DynamicSkillRunner:
                 resource_revision=snapshot_revision_metadata(snapshot),
             )
 
-    async def _validate_allowed_tools(self, session: Any, allowed_tools: str | None) -> None:
+    async def _validate_allowed_tools(self, session: Any, skill_name: str, allowed_tools: str | None) -> None:
         """执行前校验 Skill allowed_tools 引用仍然存在且启用。"""
         if not allowed_tools:
             return
@@ -163,7 +164,11 @@ class DynamicSkillRunner:
         existing = set(result.scalars().all())
         missing = sorted(set(tool_names) - existing)
         if missing:
-            raise DynamicSkillError(f"动态 Skill allowed_tools 引用了不存在或未启用的工具: {', '.join(missing)}")
+            raise SkillToolDependencyError(
+                skill_name,
+                missing,
+                context={"allowed_tools": allowed_tools},
+            )
 
     async def execute(
         self,
@@ -180,7 +185,7 @@ class DynamicSkillRunner:
         snapshot = await self.get_active_skill(skill_name)
         ai_client = self._ai_registry.get_client(self._assistant_type)
         if ai_client is None:
-            raise DynamicSkillError(f"未找到动态 Skill 使用的 AI 客户端: {self._assistant_type}")
+            raise SkillAIClientError(self._assistant_type)
 
         trace_id = get_current_trace_id() or "unknown"
         logger.info(
@@ -231,13 +236,26 @@ class DynamicSkillRunner:
             conversation_id=conversation_id,
             case_id=case_id,
         ) as skill_obs:
-            invoke_result = await ai_client.invoke(
-                messages=messages,
-                tools=None,
-                user_id=conversation_id,
-                case_id=case_id,
-                response_format={"type": "json_object"},
-            )
+            try:
+                invoke_result = await ai_client.invoke(
+                    messages=messages,
+                    tools=None,
+                    user_id=conversation_id,
+                    case_id=case_id,
+                    response_format={"type": "json_object"},
+                )
+            except Exception as exc:
+                # LLM 调用失败 → 归入「LLM/提供商域」异常，绝不伪装成技能缺失
+                llm_err = classify_llm_exception(exc)
+                logger.error(
+                    event="dynamic_skill_llm_failed",
+                    skill_name=snapshot.skill_name,
+                    variable_name=variable_name,
+                    llm_code=llm_err.llm_code,
+                    error=str(exc),
+                    trace_id=trace_id,
+                )
+                raise llm_err from exc
             raw_content = invoke_result.content or ""
 
             if skill_obs is not None:
@@ -254,16 +272,25 @@ class DynamicSkillRunner:
                     raw_content=raw_content[:500],
                     trace_id=trace_id,
                 )
-                raise DynamicSkillError(f"动态 Skill 输出不是合法 JSON: {exc}") from exc
+                # LLM 返回非合法 JSON → LLM 输出质量问题（LLM 域），与技能配置无关
+                raise SkillLLMOutputError(detail=str(exc), context={"skill_name": snapshot.skill_name}) from exc
 
         if isinstance(parsed, dict) and parsed.get("ok") is False:
             error = parsed.get("error") or parsed.get("message") or "动态 Skill 返回失败"
-            raise DynamicSkillError(str(error))
+            # 技能执行后主动声明无法确定结果 → 技能内容/配置问题（Agent 域）
+            raise SkillOutputUnavailableError(
+                snapshot.skill_name,
+                variable_name=variable_name,
+                output_path=output_path,
+                detail=str(error),
+            )
 
         value = extract_output_value(parsed, output_path=output_path, variable_name=variable_name)
         if value is None:
-            raise DynamicSkillError(
-                f"动态 Skill {snapshot.skill_name} 未返回变量 {variable_name or output_path or '<unknown>'} 的可用值"
+            raise SkillOutputUnavailableError(
+                snapshot.skill_name,
+                variable_name=variable_name,
+                output_path=output_path,
             )
 
         await self._audit_skill_usage(

@@ -36,6 +36,12 @@ from shared.utils.acquisition_strategy import (
 )
 
 from app.memory.variable_pool.pool import VariableRequestResult
+from app.skills.errors import (
+    SkillError,
+    SkillLLMError,
+    SkillNotFoundError,
+    SkillOutputUnavailableError,
+)
 
 logger = get_logger("memory.variable-pool")
 
@@ -554,7 +560,7 @@ async def sop_request_variable(
     )
 
     # 递归解析依赖链：缺失的前置变量自动触发 JIT 获取，避免 LLM 手动逐步回溯
-    _resolve_stack = getattr(sop_request_variable, '_resolve_stack', None)
+    _resolve_stack = getattr(sop_request_variable, "_resolve_stack", None)
     if _resolve_stack is None:
         _resolve_stack = set()
         sop_request_variable._resolve_stack = _resolve_stack  # type: ignore[attr-defined]
@@ -765,6 +771,8 @@ async def sop_request_variable(
                 ),
                 "variable_name": variable_name,
                 "acquisition_skill": acquisition_tool,
+                "boundary": "agent",
+                "error_code": "sop_dynamic_skill_runner_missing",
             }
         try:
             skill_context = _unwrap_context_variables(context_variables)
@@ -792,26 +800,100 @@ async def sop_request_variable(
                     if isinstance(skill_result, dict)
                     else acquisition_tool,
                 }
-        except Exception as exc:
+        except SkillNotFoundError as exc:
+            # Agent/技能域：技能确实不存在或未启用（唯一与旧文案相符的情形）
+            logger.error(
+                event="sop_request_variable_skill_not_found",
+                variable_name=variable_name,
+                acquisition_skill=acquisition_tool,
+                error=str(exc),
+            )
+            if _should_fallback_to_user_input(var_def):
+                return await _request_user_input(
+                    var_schema=var_def,
+                    kind="variable_input",
+                    msg=f"变量 {variable_name} 自动获取失败：{exc.user_message}",
+                )
+            return {
+                "error": "sop_skill_not_found_or_disabled",
+                "message": exc.user_message,
+                "variable_name": variable_name,
+                "acquisition_skill": acquisition_tool,
+                "output_path": output_path,
+                "boundary": exc.boundary,
+                "error_code": exc.error_code,
+            }
+        except SkillLLMError as exc:
+            # LLM/提供商域：与技能配置无关，明确告知后端问题，杜绝误导
+            logger.error(
+                event="sop_request_variable_skill_llm_failed",
+                variable_name=variable_name,
+                acquisition_skill=acquisition_tool,
+                llm_code=exc.llm_code,
+                error=str(exc),
+            )
+            if _should_fallback_to_user_input(var_def):
+                return await _request_user_input(
+                    var_schema=var_def,
+                    kind="variable_input",
+                    msg=f"变量 {variable_name} 自动获取失败：{exc.user_message}",
+                )
+            return {
+                "error": "sop_skill_llm_failed",
+                "message": exc.user_message,
+                "variable_name": variable_name,
+                "acquisition_skill": acquisition_tool,
+                "output_path": output_path,
+                "boundary": exc.boundary,
+                "error_code": exc.error_code,
+                "llm_code": exc.llm_code,
+            }
+        except SkillOutputUnavailableError as exc:
+            # Agent/技能域：技能执行成功但未产出所请求的变量（指令 / output_path 配置问题）
+            logger.error(
+                event="sop_request_variable_skill_output_unavailable",
+                variable_name=variable_name,
+                acquisition_skill=acquisition_tool,
+                error=str(exc),
+            )
+            if _should_fallback_to_user_input(var_def):
+                return await _request_user_input(
+                    var_schema=var_def,
+                    kind="variable_input",
+                    msg=f"变量 {variable_name} 自动获取失败：{exc.user_message}",
+                )
+            return {
+                "error": "sop_skill_output_unavailable",
+                "message": exc.user_message,
+                "variable_name": variable_name,
+                "acquisition_skill": acquisition_tool,
+                "output_path": output_path,
+                "boundary": exc.boundary,
+                "error_code": exc.error_code,
+            }
+        except SkillError as exc:
+            # Agent/技能域兜底（工具依赖缺失、AI 客户端缺失等）
             logger.error(
                 event="sop_request_variable_skill_failed",
                 variable_name=variable_name,
                 acquisition_skill=acquisition_tool,
                 error=str(exc),
             )
-        if _should_fallback_to_user_input(var_def):
-            return await _request_user_input(
-                var_schema=var_def,
-                kind="variable_input",
-                msg=f"变量 {variable_name} 自动分析失败，请手动输入",
-            )
-        return {
-            "error": "sop_skill_variable_acquire_failed",
-            "message": f"变量 {variable_name} 声明由 Skill {acquisition_tool} 自动获取，但 Skill 不存在、未启用或输出不可用",
-            "variable_name": variable_name,
-            "acquisition_skill": acquisition_tool,
-            "output_path": output_path,
-        }
+            if _should_fallback_to_user_input(var_def):
+                return await _request_user_input(
+                    var_schema=var_def,
+                    kind="variable_input",
+                    msg=f"变量 {variable_name} 自动获取失败：{exc.user_message}",
+                )
+            return {
+                "error": "sop_skill_acquire_failed",
+                "message": exc.user_message,
+                "variable_name": variable_name,
+                "acquisition_skill": acquisition_tool,
+                "output_path": output_path,
+                "boundary": exc.boundary,
+                "error_code": exc.error_code,
+            }
 
     if strategy == STRATEGY_JSON_EXTRACT:
         import json
