@@ -1,0 +1,83 @@
+{{- /* SRC-2026-5358 止血：internal 管理面公网封禁。
+
+背景：internal 模式下主 ingress 把全部 /api 先送 customer-ui，由其 Nginx 注入
+服务端身份，网关与 diagnosis-service 的令牌校验因此被合法令牌整体穿透，
+匿名即可读写 /api/internal 管理面（采集器治理、审计、信任库、影响分析等）。
+
+设计（对抗性审查后的定稿）：
+1. 不能把 ipAllowList Middleware 挂在主 ingress 上——annotation 是 Ingress
+   级别而非 Path 级别，会把公网客户对 /api/cases 等正常功能的访问一并拒绝。
+2. 因此用独立 guard Ingress 承载 Host+PathPrefix(/api/internal) 规则：该规则
+   比主 ingress 的 Host+PathPrefix(/api) 更长，Traefik 按规则长度优先命中，
+   客户流量完全不受影响。
+3. backend 仍指向 customer-ui：中间件只负责拒绝公网源，放行行为与现状一致
+   （内网源 → customer-ui 注入身份 → 正常转发）。
+4. 仅 internal 模式需要：subdomain / oidc 模式下 /api 直达 api-gateway，
+   网关自身 Bearer/OIDC 校验有效，不存在注入穿透面。
+5. 残余风险（有意接受，后续 B1 网关身份重签根治）：内网源攻击者仍可经
+   customer-ui 注入身份访问 internal；本规则仅收窄公网暴露面。
+*/}}
+{{- if and
+      .Values.ingress.enabled
+      .Values.ingress.internalGuard.enabled
+      (ne (.Values.global.routingMode | default "path") "subdomain")
+      (eq .Values.diagnosisService.identityMode "internal") }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "hci.fullname" . }}-internal-guard
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingress-guard
+spec:
+  ipAllowList:
+    sourceRange:
+      {{- toYaml .Values.ingress.internalGuard.sourceRange | nindent 6 }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "hci.fullname" . }}-internal-guard
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingress-guard
+  annotations:
+    # 与主 ingress 保持同一 entrypoint（TLS 由 .Values.ingress.tls 决定）
+    {{- if .Values.ingress.tls }}
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    {{- else }}
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    {{- end }}
+    # 命中本规则的流量先经 ipAllowList 中间件：公网源直接 403。
+    # 注意 Ingress annotation 引用格式是「<namespace>-<name>@kubernetescrd」
+    # （连字符拼接，斜杠格式仅用于 IngressRoute spec，误用会报 does not exist）
+    traefik.ingress.kubernetes.io/router.middlewares: {{ include "hci.namespace" . }}-{{ include "hci.fullname" . }}-internal-guard@kubernetescrd
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  rules:
+    {{- /* host 提取逻辑与主 ingress 保持一字不差，保证规则落在同一 host 上 */}}
+    {{- $host := "" }}
+    {{- if .Values.global.publicUrl }}
+      {{- $host = .Values.global.publicUrl | trimPrefix "https://" | trimPrefix "http://" | regexFind "^[^/:]+" }}
+    {{- end }}
+    - {{- if $host }} host: {{ $host | quote }}
+      {{- end }}
+      http:
+        paths:
+          - path: /api/internal
+            pathType: Prefix
+            backend:
+              service:
+                name: customer-ui
+                port:
+                  number: {{ .Values.customerUI.port }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- toYaml .Values.ingress.tls | nindent 4 }}
+  {{- end }}
+{{- end }}

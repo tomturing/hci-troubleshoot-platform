@@ -975,6 +975,12 @@ jobs:
       - name: 校验部署配置契约
         run: REQUIRE_HELM=1 make config-contract-check
 
+      # SRC-2026-5358 回归门禁：internal 管理面公网封禁护栏（独立 guard
+      # Ingress + ipAllowList 中间件）必须在 chart 渲染产物中持续存在。
+      # 任何人删除 ingress-internal-guard.yaml 或关掉默认开关都会在此失败。
+      - name: 校验 internal 管理面公网封禁渲染契约
+        run: uv run python scripts/verify/verify_internal_guard.py --require-helm
+
       - name: 上传覆盖率报告
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238
         if: always() && (github.event_name != 'pull_request' || needs.changes.outputs.unit_test_mode == 'full')
