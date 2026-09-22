@@ -11,7 +11,7 @@ from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from sqlalchemy import text
 
-from app.auth import ActorContext, CaseAuthorizer
+from app.auth import CUSTOMER_ROLE, ActorContext, CaseAuthorizer
 from app.domain.session_state import (
     DiagnosisSessionStatus,
     InvalidSessionTransitionError,
@@ -27,6 +27,7 @@ logger = get_logger("diagnosis-session-service")
 
 CREATE_ROLES = frozenset(
     {
+        CUSTOMER_ROLE,
         "customer_admin",
         "field_engineer",
         "support_engineer",

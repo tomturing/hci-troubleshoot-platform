@@ -27,8 +27,12 @@ _INTERNAL_ROLES = frozenset({"platform_admin", "support_engineer", "diagnosis_wo
 # B1：网关身份重签约定。X-Actor-Roles / X-Actor-Customer-ID 由网关按服务端签发的
 # 身份 Cookie 注入，本服务只校验格式与值域，不再把"带内部令牌者"一律当作管理员。
 _ACTOR_ROLES_HEADER = "X-Actor-Roles"
+# 浏览器客户角色：经网关身份 Cookie 认证的浏览器客户统一使用该角色。
+# 平台尚无客户登录体系，因此它的权限范围与 customer_admin / field_engineer
+# 等客户侧角色一致（可读写自己的离线诊断资源），**不含任何管理面权限**。
+# 客户侧权限集合必须显式包含该角色，否则浏览器客户会被误判为无权访问。
+CUSTOMER_ROLE = "customer"
 _ACTOR_CUSTOMER_HEADER = "X-Actor-Customer-ID"
-_CUSTOMER_ROLE = "customer"
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +127,7 @@ class InternalTokenIdentityVerifier:
         """按网关注入的角色头构造身份；客户角色必须携带不可伪造的归属键。"""
 
         roles = {item for item in roles_header.replace(",", " ").split() if item}
-        if roles == {_CUSTOMER_ROLE}:
+        if roles == {CUSTOMER_ROLE}:
             customer_id = request.headers.get(_ACTOR_CUSTOMER_HEADER, "").strip()
             if not _TRUSTED_HEADER_PATTERN.fullmatch(customer_id):
                 raise DiagnosisError(
@@ -134,7 +138,7 @@ class InternalTokenIdentityVerifier:
             return ActorContext(
                 tenant_id=tenant_id,
                 user_id=actor_id,
-                roles=frozenset({_CUSTOMER_ROLE}),
+                roles=frozenset({CUSTOMER_ROLE}),
                 customer_id=customer_id,
             )
 

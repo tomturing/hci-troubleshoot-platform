@@ -7,8 +7,13 @@ from types import SimpleNamespace
 
 import app.auth as auth_module
 import pytest
-from app.auth import InternalTokenIdentityVerifier, OidcJwtIdentityVerifier
+from app.auth import CUSTOMER_ROLE, InternalTokenIdentityVerifier, OidcJwtIdentityVerifier
 from app.errors import DiagnosisError
+from app.services.collection_plan_service import PLAN_ROLES
+from app.services.collector_artifact_service import ARTIFACT_ROLES
+from app.services.diagnosis_session_service import CREATE_ROLES
+from app.services.evidence_upload_service import UPLOAD_ROLES
+from app.services.offline_analysis_service import REPORT_READ_ROLES
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
@@ -252,3 +257,23 @@ async def test_oidc_verifier_resolves_rotated_key_from_https_jwks(monkeypatch):
 
 def _base64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode()
+
+
+def test_customer_role_admitted_by_customer_side_permissions():
+    """浏览器客户角色必须被客户侧权限集合接受。
+
+    B1 把经网关身份 Cookie 认证的浏览器客户统一降级为 `customer` 角色。若客户侧
+    权限集合漏掉该角色，客户离线诊断（读场景、创建会话、上传证据、读报告）会
+    全部 403——这是 B1 合入后实测到的回归，此处固化为契约。
+    """
+
+    assert CUSTOMER_ROLE in CREATE_ROLES
+    assert CUSTOMER_ROLE in UPLOAD_ROLES
+    assert CUSTOMER_ROLE in REPORT_READ_ROLES
+
+
+def test_customer_role_excluded_from_management_permissions():
+    """同一角色不得进入管理面权限集合，否则降级形同虚设。"""
+
+    assert CUSTOMER_ROLE not in ARTIFACT_ROLES
+    assert CUSTOMER_ROLE not in PLAN_ROLES
