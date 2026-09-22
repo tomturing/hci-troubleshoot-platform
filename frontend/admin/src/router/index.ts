@@ -108,7 +108,7 @@ const router = createRouter({
       path: '/vm-console-audit',
       name: 'VmConsoleAudit',
       component: () => import('@/views/VmConsoleCaptureView.vue'),
-      meta: { title: 'console审计', icon: 'Monitor', order: 11.5 },
+      meta: { title: 'Console审计', icon: 'Monitor', order: 11.5 },
     },
   ],
 })

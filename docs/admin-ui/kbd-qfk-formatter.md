@@ -24,6 +24,15 @@ KBD 关键信号编辑器为 `qfk_system`、`qfk_vm`、`qfk_network`、`qfk_stor
 - 命令经 `bash_exec` 受控执行并全量审计；破坏性/写动作命令会在发布审查（`VarResolver` 写动作扫描）中被拦截。
 - **AI 抽取禁止生成 `qfk_var`**：该工具仅供专家在管理端维护，LLM 抽取产物中的 `qfk_var` 会被服务端强制剥离进 rejected_candidates（拒绝码 `tool_restricted`）。
 
+## 管理端 UI 细节（2026-09-23）
+
+- KBD 条目详情的「新增信号」下拉补充「变量 qfk_var」（置于 qfk 组首位）；
+  「表单编辑 → 采集类型」下拉顺序同步，且「日志检查 qfk_log」更名为「日志 qfk_log」。
+- 「采集类型」下拉高度放大（popper 全局样式 `.signal-tool-popper`，max-height 480px），
+  全部选项无需滚动即可见。注意该 popper 挂载在 body 下，须用非 scoped 全局样式命中。
+- 「console审计」菜单与页面标题统一为「Console审计」（`router/index.ts` 的 meta.title、
+  `VmConsoleCaptureView` 页头、`adminMenu.spec.ts` 断言三处同步）。
+
 ## 配套测试的编写约定
 
 var 模式开关较多，编辑器的单测需要断言某些 DOM 单元是否存在。此处有一个仅在
