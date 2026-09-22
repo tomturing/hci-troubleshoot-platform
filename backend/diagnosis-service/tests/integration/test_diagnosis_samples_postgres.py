@@ -302,8 +302,10 @@ async def test_five_samples_full_sync_publish_resources_and_reach_supported_diag
             for item in inserted.values()
             for signal in item["document"]["signals"]
             # qkv_effect 离线零执行（extract_requirements 刻意跳过），不生成采集映射；
+            # qfk_var 属在线执行原语（free shell 须受控 SSH 会话全量审计），同样被
+            # extract_requirements 拦截，不生成离线采集映射；
             # qkv_vm_console 正常生成映射（executor=vm_console_capture 的专用 Collector）。
-            if signal["acquire"]["tool"] not in {"qkv_effect", "qkv_case_context"}
+            if signal["acquire"]["tool"] not in {"qkv_effect", "qkv_case_context", "qfk_var"}
         )
         assert len(mapping_changes) == expected_mapping_count
         assert {item["candidate_json"]["source_kbd_id"] for item in mapping_changes} == set(inserted)
@@ -357,11 +359,12 @@ async def test_five_samples_full_sync_publish_resources_and_reach_supported_diag
             kbd_mappings = [dict(mapping) for mapping in mappings if int(mapping["source_kbd_id"]) == kbd_id]
             mapping_by_signal = {str(mapping["source_signal_id"]): mapping for mapping in kbd_mappings}
             # qkv_effect 离线零执行（extract_requirements 刻意跳过），不生成采集映射；
+            # qfk_var 属在线执行原语（OFFLINE_NON_ACQUISITION_TOOLS 拦截），同样无映射；
             # 映射/证据链对齐仅覆盖可采集信号，效果验证按 P2 追溯判定处理。
             acquirable_signals = [
                 signal
                 for signal in item["document"]["signals"]
-                if signal["acquire"]["tool"] not in {"qkv_effect", "qkv_case_context"}
+                if signal["acquire"]["tool"] not in {"qkv_effect", "qkv_case_context", "qfk_var"}
             ]
             assert len(mapping_by_signal) == len(acquirable_signals)
             evidence = []
