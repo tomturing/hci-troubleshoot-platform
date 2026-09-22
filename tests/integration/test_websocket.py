@@ -41,6 +41,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import fakeredis.aioredis
 import pytest
 from starlette.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 # --------------------------------------------------------------------------
 # 测试专用 Session Manager（使用 fakeredis）
@@ -180,50 +181,98 @@ def ws_app(mock_redis_manager):
     return test_app
 
 
+@pytest.fixture
+def issued_identity():
+    """网关签发的服务端签名身份，返回 (client_id, cookie_value)。
+
+    WS 路由强制要求路径 client_id 与网关签发的身份 Cookie 一致（P1 信任链），
+    因此测试必须以签发结果构造路径，不能再自报任意 client_id。
+    """
+    from app.config import settings
+    from shared.security.identity import issue_identity
+
+    return issue_identity(settings.INTERNAL_API_TOKEN)
+
+
+@pytest.fixture
+def authed_client(ws_app, issued_identity):
+    """携带网关签发身份 Cookie 的测试客户端，返回 (client, client_id)。"""
+    from shared.security.identity import IDENTITY_COOKIE_NAME
+
+    client_id, cookie_value = issued_identity
+    with TestClient(ws_app) as client:
+        client.cookies.set(IDENTITY_COOKIE_NAME, cookie_value)
+        yield client, client_id
+
+
 @pytest.mark.integration
 class TestWebSocketEndpoint:
     """WebSocket 路由行为测试"""
 
-    def test_websocket_connect_and_receive_error_for_missing_conv_id(self, ws_app):
+    def test_websocket_connect_and_receive_error_for_missing_conv_id(self, authed_client):
         """连接后发送缺少 conversation_id 的消息应收到错误回传"""
-        with TestClient(ws_app) as client, client.websocket_connect("/ws/test-client-1") as ws:
+        client, client_id = authed_client
+        with client.websocket_connect(f"/ws/{client_id}") as ws:
             ws.send_text(json.dumps({"type": "message", "content": "你好"}))
             data = json.loads(ws.receive_text())
             assert "error" in data
             assert "conversation_id" in data["error"].lower() or "missing" in data["error"].lower()
 
-    def test_websocket_connect_valid_json(self, ws_app):
+    def test_websocket_connect_valid_json(self, authed_client):
         """建立连接后服务端应接受并处理合法 JSON 消息（即使下游调用失败）"""
-        with TestClient(ws_app) as client:
-            # patch conversation-service 调用，模拟下游不可用场景
-            with patch("app.routes.websocket.httpx.AsyncClient") as MockClient:
-                mock_response = MagicMock()
-                mock_response.is_error = True
-                mock_response.status_code = 503
-                mock_client_instance = AsyncMock()
-                mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
-                mock_client_instance.__aexit__ = AsyncMock(return_value=False)
-                mock_client_instance.post = AsyncMock(return_value=mock_response)
-                MockClient.return_value = mock_client_instance
+        client, client_id = authed_client
+        # patch conversation-service 调用，模拟下游不可用场景
+        with patch("app.routes.websocket.httpx.AsyncClient") as MockClient:
+            mock_response = MagicMock()
+            mock_response.is_error = True
+            mock_response.status_code = 503
+            mock_client_instance = AsyncMock()
+            mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
+            mock_client_instance.__aexit__ = AsyncMock(return_value=False)
+            mock_client_instance.post = AsyncMock(return_value=mock_response)
+            MockClient.return_value = mock_client_instance
 
-                with client.websocket_connect("/ws/test-client-2") as ws:
-                    ws.send_text(
-                        json.dumps(
-                            {
-                                "type": "message",
-                                "conversation_id": "conv-test-123",
-                                "content": "测试消息",
-                            }
-                        )
+            with client.websocket_connect(f"/ws/{client_id}") as ws:
+                ws.send_text(
+                    json.dumps(
+                        {
+                            "type": "message",
+                            "conversation_id": "conv-test-123",
+                            "content": "测试消息",
+                        }
                     )
-                    # 接收并检查任意响应（下游不可用时不强制要求回传）
-                    with contextlib.suppress(Exception):
-                        _ = ws.receive_text(timeout=2)
+                )
+                # 接收并检查任意响应（下游不可用时不强制要求回传）
+                with contextlib.suppress(Exception):
+                    _ = ws.receive_text(timeout=2)
 
-    def test_websocket_invalid_json_is_handled(self, ws_app):
+    def test_websocket_invalid_json_is_handled(self, authed_client):
         """发送非 JSON 文本不应导致服务崩溃（连接保持活跃）"""
-        with TestClient(ws_app) as client, client.websocket_connect("/ws/test-client-3") as ws:
+        client, client_id = authed_client
+        with client.websocket_connect(f"/ws/{client_id}") as ws:
             ws.send_text("not json at all !!!!")
             # 连接应保持活跃，继续发送合法消息不报错
             ws.send_text(json.dumps({"ping": True}))
             # 如无响应也正常（invalid json 会被 continue 跳过）
+
+    # ── 身份信任链负向门禁（P1 #1065）：不得为简化测试而弱化握手校验 ──────
+
+    def test_websocket_rejects_missing_identity_cookie(self, ws_app):
+        """未持有网关签发身份 Cookie 的连接必须在握手阶段拒绝（1008）。"""
+        with TestClient(ws_app) as client:
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with client.websocket_connect("/ws/test-client-1"):
+                    pass
+            assert exc.value.code == 1008
+
+    def test_websocket_rejects_identity_mismatch(self, ws_app, issued_identity):
+        """Cookie 身份与路径 client_id 不一致时必须拒绝（冒用他人身份）。"""
+        from shared.security.identity import IDENTITY_COOKIE_NAME
+
+        _signed_client_id, cookie_value = issued_identity
+        with TestClient(ws_app) as client:
+            client.cookies.set(IDENTITY_COOKIE_NAME, cookie_value)
+            with pytest.raises(WebSocketDisconnect) as exc:
+                with client.websocket_connect("/ws/another-client"):
+                    pass
+            assert exc.value.code == 1008
