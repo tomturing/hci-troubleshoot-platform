@@ -527,6 +527,18 @@ ingress:
   annotations: {}
   tls: []
   grafanaRouterPriority: "2000"
+  # SRC-2026-5358 止血：internal 管理面公网封禁（默认开启）。
+  # internal 模式下主 ingress 把 /api 先送 customer-ui 注入服务端身份，
+  # 匿名可经此穿透访问 /api/internal 管理面。internal-guard 通过独立
+  # Ingress + Traefik ipAllowList 仅放行内网源访问 /api/internal。
+  # 注意：仅收窄公网暴露面，内网源残余风险由网关身份重签（后续 PR）根治；
+  # subdomain / oidc 模式下 /api 直达网关，自身校验有效，无需此护栏。
+  internalGuard:
+    enabled: true
+    sourceRange:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
 
 # ======================== Phase 3: ReAct 引擎配置 ==============================
 # SCP 平台 API 地址（用于调用 SCP 工具获取 VM/存储/网络信息）
