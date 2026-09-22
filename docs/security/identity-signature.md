@@ -176,15 +176,39 @@ PYTHONPATH=api-gateway:backend uv run pytest backend/tests/unit/test_gateway_aut
 
 确认 `Authorization: Bearer <INTERNAL_API_TOKEN>` 是否与部署的 `secrets.internalApiToken` 一致。
 
-## 残留风险（P1，非本次范围）
+## P1 扩面加固（2026-09-22）
 
-- `download_vm_console_artifact` 网关路由仍无 `require_user`（下游用占位 token 伪鉴权，
-  artifact_id 为 UUID），建议 P1 补 `require_user`；
-- `exec-result` / `vm-console-*` 下游保留占位 token 兜底（内部伪鉴权，非报告利用点），建议 P1 移除；
-- 历史匿名工单未绑定身份，建议 P1 引入客户登录并迁移孤儿数据。
+P0 仅覆盖报告点名的 `cases` / `environments` / `terminal` / `conversations` 四族路由。
+P1 将同源信任模型扩展到全部网关路由，并对 admin 控制面升级门禁：
+
+| 路由族 | P1 门禁 | 调用方兼容性 |
+|---|---|---|
+| `/api/assistants`、`/api/audit-logs*` | `require_user` | 浏览器自动携带身份 Cookie，无感 |
+| `/api/v1/kb/search`、`/api/v1/kb/sop/match`（客户对话链路） | `require_user` | 同上 |
+| `/api/v1/signals/*`（试运行） | `require_user` | 同上 |
+| `/api/hci-sim/*` 控制面（bundle 编译/发布/激活/回滚、TestRun） | `require_admin` | admin 前端统一携带 INTERNAL_API_TOKEN，零改动 |
+| kb 管理家族：categories / catalogs / kbd / signal-assets / vm-console / sop、`kb/ingest`、`kb/documents*` | `require_admin` | 同上（下游 kb-service 本就要求 INTERNAL_API_TOKEN，网关此前自注入 Token 形成匿名旁路，现已封堵） |
+| `WebSocket /ws/{client_id}` | 握手身份一致性校验 | 前端已无网关 WS 调用方；修复 P0 同源缺陷（路径自报 client_id 会被签名转发） |
+
+**设计边界**：`require_user` 对匿名 HTTP 请求不产生 401——IdentityMiddleware 会对无 Cookie
+访客自动签发身份（无登录模型的既定取舍）。user 级门禁的价值是强制请求携带可验签的可信身份；
+**真正的安全边界是 `require_admin` 族与下游归属校验**。待客户登录体系（P1 后续）落地后，
+user 级门禁可一键切换为真实用户语义。
+
+## 残留风险（P1 后续）
+
+- `exec-result` / `vm-console-*` 下游保留占位 token 兜底（内部伪鉴权，非报告利用点）；
+  移除前必须先让 agent 终端流切换 `INTERNAL_API_TOKEN`；
+- `/api/diagnosis-*`（含 internal 端点）与 `/api/bridge-logs` 收紧前需确认运维脚本与
+  已分发 `terminal_bridge.exe` 的凭证注入方式（否则会中断自动上传）；
+- `IDENTITY_COOKIE_SECURE` 生产 HTTPS 需置 True（当前默认 False，影响 http 直连调试）；
+- 历史匿名工单未绑定身份，待客户登录体系落地后迁移孤儿数据。
 
 ## 变更历史
 
 - 2026-08-25：初始版本，网关重签客户端 `X-Client-ID`（**方案不充分，已被 SRC-2026-5356 击穿**）
 - 2026-09-21：P0 修复——网关签发服务端签名身份 Cookie（`hci_client_id`），彻底忽略客户端自报头；
   cases/environments/terminal 路由加 `require_user`/`require_admin`；case-service 强化归属校验与强制 limit
+- 2026-09-22：P1 扩面——assistants/audit/kb-search/signal-dry-run 加 `require_user`；
+  hci-sim 控制面与 kb 管理家族（categories/catalogs/kbd/signal-assets/vm-console/sop）加 `require_admin`；
+  WebSocket 握手改为校验网关签发身份 Cookie 与路径 client_id 一致，堵住自报身份签名转发通道

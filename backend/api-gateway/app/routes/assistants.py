@@ -6,10 +6,11 @@ Assistants Routes - AI助手API路由 (v2.1)
 """
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from shared.observability.logger import get_logger
 
 from app.config import settings
+from app.security.gateway_auth import require_user
 
 logger = get_logger("gateway-assistants")
 
@@ -17,7 +18,7 @@ router = APIRouter(prefix="/api/assistants", tags=["assistants"])
 
 
 @router.get("/")
-async def list_assistants():
+async def list_assistants(_: str = Depends(require_user)):
     """
     获取可用的AI助手列表（v2.1 结构化响应）
 

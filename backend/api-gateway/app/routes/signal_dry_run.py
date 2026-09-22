@@ -13,13 +13,16 @@ import time
 import uuid
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from shared.observability.logger import get_logger
 
 from app.config import settings
+from app.security.gateway_auth import require_user
 
-router = APIRouter(prefix="/api/v1", tags=["signal-dry-run"])
+# Signal 试运行为专家工作流入口：要求服务端签发的身份 Cookie（admin 令牌同样放行），
+# 堵住匿名触发大模型试运行/写验证资产的通道（P1 安全加固）
+router = APIRouter(prefix="/api/v1", tags=["signal-dry-run"], dependencies=[Depends(require_user)])
 logger = get_logger("gateway-signal-dry-run")
 
 
@@ -111,7 +114,9 @@ async def _resolve_authoritative_dataset(payload: dict, request: Request) -> dic
         raise HTTPException(status_code=422, detail="试运行数据集不存在或不再可用")
     body = response.json()
     candidates = body.get("datasets") if isinstance(body, dict) else None
-    selected = next((item for item in candidates or [] if isinstance(item, dict) and item.get("source_ref") == source_ref), None)
+    selected = next(
+        (item for item in candidates or [] if isinstance(item, dict) and item.get("source_ref") == source_ref), None
+    )
     if selected is None:
         raise HTTPException(status_code=422, detail="试运行数据集与 Signal、Bundle 或来源不匹配")
     resolved = dict(payload)
@@ -198,7 +203,9 @@ async def _preview(payload: dict, request: Request) -> JSONResponse:
             headers[name] = value
     try:
         async with httpx.AsyncClient(timeout=65.0) as client:
-            response = await client.post(f"{settings.AGENT_SERVICE_URL}/internal/signal-dry-run", json=payload, headers=headers)
+            response = await client.post(
+                f"{settings.AGENT_SERVICE_URL}/internal/signal-dry-run", json=payload, headers=headers
+            )
     except httpx.RequestError as exc:
         logger.error(event="signal_dry_run_upstream_unavailable", error=str(exc))
         raise HTTPException(status_code=503, detail="试运行服务暂不可用") from exc
@@ -284,7 +291,8 @@ async def save_verified_preview_to_bundle(bundle_digest: str, request: Request) 
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 f"{settings.HCI_SIM_URL.rstrip('/')}/v1/control-plane/bundles/{bundle_digest}/verification-assets",
-                json={"asset": asset, "reason": "保存 Signal 试运行验证资产"}, headers=headers,
+                json={"asset": asset, "reason": "保存 Signal 试运行验证资产"},
+                headers=headers,
             )
     except httpx.RequestError as exc:
         logger.error(event="verification_asset_upstream_unavailable", error=str(exc), bundle_digest=bundle_digest)
@@ -358,7 +366,9 @@ async def save_verified_preview_to_package(request: Request) -> JSONResponse:
             "evidence_lines": preview_body.get("evidence_lines") or [],
         },
         "downstream_result": {},
-        "model": str(raw_response.get("model") or "deterministic") if isinstance(raw_response, dict) else "deterministic",
+        "model": str(raw_response.get("model") or "deterministic")
+        if isinstance(raw_response, dict)
+        else "deterministic",
         "prompt_revision": package_context.get("prompt_revision"),
         "contract_version": preview_body.get("config_revision"),
         "run_id": preview_body.get("trace_id"),
