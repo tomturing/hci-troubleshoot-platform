@@ -166,4 +166,4 @@ tests:
       # helm unittest 默认 release 名为 RELEASE-NAME（CI: helm unittest deploy/helm/hci-platform --strict）
       - equal:
           path: metadata.annotations["traefik.ingress.kubernetes.io/router.middlewares"]
-          value: hci-staging-RELEASE-NAME-internal-guard@kubernetescrd
+          value: hci-staging-RELEASE-NAME-admin-guard@kubernetescrd
