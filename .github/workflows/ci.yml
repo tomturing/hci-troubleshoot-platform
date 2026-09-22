@@ -57,6 +57,9 @@ jobs:
       module_docs: ${{ steps.filter.outputs.module_docs }}
       unit_test_mode: ${{ steps.pr-unit-plan.outputs.mode || 'full' }}
       unit_test_targets: ${{ steps.pr-unit-plan.outputs.targets || '' }}
+      # 集成/安全门禁自守输出：修改了对应测试就必须执行对应门禁（见 integration-plan step）。
+      integration_tests_changed: ${{ steps.integration-plan.outputs.changed || 'false' }}
+      security_tests_changed: ${{ steps.integration-plan.outputs.security_changed || 'false' }}
       unit_test_reason: ${{ steps.pr-unit-plan.outputs.reason || '非 PR 事件运行完整回归' }}
       image_matrix: ${{ steps.image-plan.outputs.matrix || '[]' }}
       has_images: ${{ steps.image-plan.outputs.has_images || 'false' }}
@@ -233,6 +236,36 @@ jobs:
           python3 scripts/ci/resolve_pr_fast_test_targets.py \
             --changed-files /tmp/pr-changed-files.txt \
             --github-output "$GITHUB_OUTPUT"
+
+      # 集成测试门禁自守：修了集成测试，就必须跑集成测试。
+      # 根因：`resolve_pr_fast_test_targets.py` 只按「服务目录 → 测试目录」映射识别
+      # Python 测试，根级 tests/integration/** 不在其映射内，对纯集成测试改动会
+      # 输出 mode=none；integration-tests 又挂在 unit_test_mode == 'full' 上，
+      # 于是「改集成测试的 PR 反而没有任何集成门禁」。
+      # 后果实证：#1065/#1066 的 WS 身份信任链回归（tests/integration/
+      # test_websocket.py）在 PR 阶段被跳过，合入 main 后才由 push 事件暴露为
+      # 持续 FAILURE。此处对这类改动单独判定，代价仅落在触及集成测试的 PR 上。
+      - name: 解析集成测试改动范围
+        id: integration-plan
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git -c core.quotepath=false diff --name-only \
+              "${{ github.event.pull_request.base.sha }}" \
+              "${{ github.event.pull_request.head.sha }}" > /tmp/pr-integration-files.txt
+          else
+            : > /tmp/pr-integration-files.txt
+          fi
+          if grep -qE '^(tests/integration/|backend/[^/]+/tests/integration/)' /tmp/pr-integration-files.txt; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+          # security-tests 走 tests/security/**，同样不在上述脚本的映射内。
+          if grep -qE '^(tests/security/|backend/[^/]+/tests/security/)' /tmp/pr-integration-files.txt; then
+            echo "security_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "security_changed=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: 输出 PR 单元测试计划
         if: github.event_name == 'pull_request'
@@ -1041,7 +1074,10 @@ jobs:
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.backend_gate_required == 'true') ||
         github.event_name == 'merge_group' ||
-        (github.event_name == 'pull_request' && needs.changes.outputs.unit_test_mode == 'full')
+        (github.event_name == 'pull_request' && needs.changes.outputs.unit_test_mode == 'full') ||
+        # 集成门禁自守：PR 触及集成测试时无条件执行，避免快速单测计划（mode 可为
+        # targeted/none）把整条集成测试门禁静默关掉。
+        (github.event_name == 'pull_request' && needs.changes.outputs.integration_tests_changed == 'true')
       )
 
     services:
@@ -1099,7 +1135,9 @@ jobs:
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.backend_gate_required == 'true') ||
         github.event_name == 'merge_group' ||
-        (github.event_name == 'pull_request' && needs.changes.outputs.unit_test_mode == 'full')
+        (github.event_name == 'pull_request' && needs.changes.outputs.unit_test_mode == 'full') ||
+        # 安全门禁自守：PR 触及 tests/security/** 时无条件执行（同 integration-tests 的成因）。
+        (github.event_name == 'pull_request' && needs.changes.outputs.security_tests_changed == 'true')
       )
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
