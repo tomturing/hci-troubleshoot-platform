@@ -12,7 +12,7 @@ api-gateway，身份改由网关依据服务端签发的身份 Cookie 重签。
 2. customer 前端 nginx.conf 不得再注入 Authorization / X-Tenant-ID / X-Actor-ID；
 3. 主 ingress 的 /api 必须直达 api-gateway（非 customer-ui）；
 4. admin-ui Ingress 的公网封禁开关默认关闭；开启后必须按**连字符格式**
-   引用 internal-guard 中间件（斜杠格式会让 Traefik 静默回退，封禁失效）。
+   引用独立的 admin-guard 中间件（斜杠格式会让 Traefik 静默回退，封禁失效）。
 
 用法：
     uv run python scripts/verify/verify_identity_resign.py
@@ -175,8 +175,8 @@ def verify(root: Path, require_helm: bool = False) -> list[str]:
         annotation = (admin_guard.get("metadata", {}).get("annotations", {}) or {}).get(
             "traefik.ingress.kubernetes.io/router.middlewares", ""
         )
-        if not annotation.endswith("-internal-guard@kubernetescrd"):
-            errors.append(f"管理入口未按连字符格式绑定 internal-guard 中间件：annotation={annotation!r}")
+        if not annotation.endswith("-admin-guard@kubernetescrd"):
+            errors.append(f"管理入口未按连字符格式绑定 admin-guard 中间件：annotation={annotation!r}")
         elif "/" in annotation.split("@")[0]:
             errors.append(f"管理入口中间件引用误用斜杠格式（Traefik 会静默回退）：{annotation!r}")
         else:
