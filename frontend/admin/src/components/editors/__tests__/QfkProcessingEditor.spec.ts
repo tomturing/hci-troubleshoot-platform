@@ -366,3 +366,62 @@ describe('QfkProcessingEditor 两步处理交互', () => {
     expect((wrapper.vm as any).extractDefaultValueMode).toBe('boolean')
   })
 })
+
+describe('QfkProcessingEditor var 模式（qfk_var 专属）', () => {
+  const varProduces = [
+    { name: 'NVME_COUNT', type: 'string', extract: { type: 'text', rows: { mode: 'all' }, cardinality: 'exactly_one', source: 'stdout', value_mode: 'string' } },
+  ]
+
+  function varProps(overrides: Record<string, any> = {}) {
+    return { mode: 'produces' as const, variant: 'var' as const, match: null, produces: varProduces, ...overrides }
+  }
+
+  it('砍掉模式 radio，默认渲染产出单元且不渲染匹配单元', () => {
+    const wrapper = mountEditor(varProps())
+
+    expect(wrapper.findComponent({ name: 'ElRadioGroup' }).exists()).toBe(false)
+    expect(wrapper.text()).toContain('qfk_var 默认产出变量')
+    expect(wrapper.text()).toContain('stdout 全文写入变量池')
+    expect(wrapper.find('[data-output-mode="produces"]').exists()).toBe(true)
+    expect(wrapper.find('[data-output-mode="keyword"]').exists()).toBe(false)
+    expect(wrapper.find('[data-variant="var"]').exists()).toBe(true)
+  })
+
+  it('启用可选匹配后发出带默认取值契约的 match，父层回传后与产出单元共存', async () => {
+    const wrapper = mountEditor(varProps())
+
+    const toggle = wrapper.get('[data-variant="var"]').findComponent({ name: 'ElSwitch' })
+    toggle.vm.$emit('change', true)
+    await wrapper.vm.$nextTick()
+
+    const emittedMatch = wrapper.emitted('update:match')?.at(-1)?.[0] as Record<string, any>
+    expect(emittedMatch.type).toBe('keyword')
+    expect(emittedMatch.expected).toBe(true)
+    expect(emittedMatch.extract).toMatchObject({ type: 'text', cardinality: 'all', source: 'stdout' })
+
+    await wrapper.setProps({ match: emittedMatch })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-output-mode="produces"]').exists()).toBe(true)
+    expect(wrapper.find('[data-output-mode="keyword"]').exists()).toBe(true)
+    // shallowMount 下 el-tag 被打桩，改为断言匹配单元头部存在
+    expect(wrapper.get('[data-output-mode="keyword"] .unit-header').exists()).toBe(true)
+  })
+
+  it('关闭可选匹配后发出 match=null，产出单元保持渲染', async () => {
+    const wrapper = mountEditor(varProps({ match: { type: 'keyword', pattern: 'ok', mode: 'or', expected: true } }))
+
+    const toggle = wrapper.get('[data-variant="var"]').findComponent({ name: 'ElSwitch' })
+    expect(toggle.props('modelValue')).toBe(true)
+
+    toggle.vm.$emit('change', false)
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.emitted('update:match')?.at(-1)?.[0]).toBeNull()
+  })
+
+  it('standard 模式不渲染 var 开关行', () => {
+    const wrapper = mountEditor({ mode: 'produces', match: null, produces: varProduces })
+
+    expect(wrapper.find('[data-variant="var"]').exists()).toBe(false)
+  })
+})

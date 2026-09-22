@@ -33,6 +33,8 @@ def build_capability_descriptors() -> list[dict[str, Any]]:
         # 效果验证生产者虽属条件型，但严格只读（观测全部委派只读原语），
         # 且先决变量随期望锚点动态声明，不固定为 HOST/VM_ID。
         is_effect_producer = capability_id == "qkv_effect"
+        # qfk_var：通用变量采集原语（free shell），强制产出变量、匹配判定可选附加。
+        is_free_shell = capability_id == "qfk_var"
         supported_matchers = (
             []
             if is_frontend or is_conditional_producer or is_context_input
@@ -47,6 +49,8 @@ def build_capability_descriptors() -> list[dict[str, Any]]:
             if is_frontend
             else "conditional_producer"
             if is_conditional_producer
+            else "producer"
+            if is_free_shell
             else "consumer"
         )
         descriptors.append(
@@ -62,10 +66,14 @@ def build_capability_descriptors() -> list[dict[str, Any]]:
                 "verification_status": "contract_only",
                 "safety": {
                     "declarative_only": True,
-                    "free_shell": False,
+                    # 仅 qfk_var 允许专家指定的完整 shell 模板（free shell）；
+                    # 其余后端信号一律结构化命令，无 shell 解释面。
+                    "free_shell": is_free_shell,
                     # 截图阶段近似只读；近黑后的 sendkey down 属受控 Guest 交互，
                     # 不是只读操作，须运行时人工确认。qkv_effect 严格只读。
-                    "read_only_intent": is_context_input or is_effect_producer or not is_conditional_producer,
+                    # qfk_var 的命令由专家指定，不承诺只读意图。
+                    "read_only_intent": (is_context_input or is_effect_producer or not is_conditional_producer)
+                    and not is_free_shell,
                     "controlled_interaction": is_conditional_producer and not is_effect_producer,
                     "conditional": is_conditional_producer,
                     # qkv_effect 的先决变量随期望锚点动态声明（发布门禁校验来源可达），
@@ -94,6 +102,13 @@ def build_capability_descriptors() -> list[dict[str, Any]]:
                         "基线截图近似只读，唤醒重截（sendkey down）为受控交互且每诊断运行最多一次"
                     ]
                     if is_conditional_producer
+                    else [
+                        "专家维护的通用命令原语：必须配置 orchestrate.produces（默认产出变量），"
+                        "match 为可选附加判定；命令支持管道/重定向与 {{VAR}} 输入变量；"
+                        "仅允许专家在管理端维护，LLM 抽取禁止生成；"
+                        "变量值运行时统一 shlex.quote 渲染，命令全量审计"
+                    ]
+                    if is_free_shell
                     else []
                 ),
                 "catalog": (

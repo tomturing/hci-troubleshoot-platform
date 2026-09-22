@@ -132,7 +132,7 @@ EXTRACT_SIGNALS_MAX_TOKENS = max(2048, int(os.environ.get("EXTRACT_SIGNALS_MAX_T
 _EXTRACT_PROMPT_NAME = "kbd_extract_signals_v2"
 
 # ─── 封闭采集器词表（acquirer 必须取自此处）─────────────────────────────────
-# QKV（生产者，3 方法）+ QFK（消费者，8 个 namespace）
+# QKV（生产者，3 方法）+ QFK（消费者，9 个 namespace）
 # display_name 标准命名（勿擅自修改以免造成误解）：
 #   qkv_alert - 前端信号-告警查询
 #   qkv_task  - 前端信号-任务查询
@@ -145,6 +145,7 @@ _EXTRACT_PROMPT_NAME = "kbd_extract_signals_v2"
 #   qfk_storage  - 后端信号-存储相关操作
 #   qfk_hardware - 后端信号-硬件相关操作
 #   qfk_platform - 后端信号-平台相关操作
+#   qfk_var      - 后端信号-变量采集（专家维护，LLM 抽取禁止生成）
 ACQUIRER_CATALOG: dict[str, str] = {
     "qkv_alert": "前端信号-告警查询：acli alert get，产出 host/vm/target/alert_type/end 等",
     "qkv_task": "前端信号-任务查询：acli task get，产出 status/host/vm/errcode_tracing/request_id 等",
@@ -171,6 +172,11 @@ ACQUIRER_CATALOG: dict[str, str] = {
     "qfk_storage": "后端信号-存储相关操作：acli storage <command>（如 asan disk list），使用声明式取值后再判定",
     "qfk_hardware": "后端信号-硬件相关操作：acli hardware <command>，使用声明式取值后再判定",
     "qfk_platform": "后端信号-平台相关操作：acli platform <command>，使用声明式取值后再判定",
+    "qfk_var": (
+        "变量采集原语：在目标主机执行专家指定的任意命令（shell/acli 均可，支持管道/重定向/"
+        "{{VAR}} 输入变量），默认把 stdout/stderr/exit_code 取值写入产出变量；"
+        "仅供专家在管理端维护，LLM 抽取禁止生成（服务端强制剥离）"
+    ),
 }
 
 # ─── 默认变量池 schema（produces/requires 引用的变量名集合）───────────────────
@@ -191,7 +197,7 @@ _EXTERNAL_BMC_EVENT_RE = re.compile(
 _CONFIG_FILE_EXTENSION_RE = re.compile(r"\.(?:cfg|conf|ini|json|ya?ml)$", re.IGNORECASE)
 VALID_MATCHER_TYPES = {"keyword", "regex", "state", "boolean", "threshold", "delta", "trend", "exists"}
 VALID_VARIABLE_TYPES = {"string", "integer", "number", "boolean", "array"}
-REJECT_REASON_CODES = frozenset({"write_signal", "not_exists", "run_failed"})
+REJECT_REASON_CODES = frozenset({"write_signal", "not_exists", "run_failed", "tool_restricted"})
 
 # ADR-2：{{VAR}} 大写占位符正则（单一真相源；运行期校验用）
 _PLACEHOLDER_RE = re.compile(r"\{\{([A-Z][A-Z0-9_]*(?:\.[A-Z0-9_]+)*)\}\}")
@@ -1575,6 +1581,16 @@ def _validate_and_collect_signals(
         acquire = s.get("acquire") or {}
         tool = str(acquire.get("tool") or "")
         args = acquire.get("args") or {}
+        if tool == "qfk_var":
+            # Q3 门禁：qfk_var 是专家维护的通用命令原语（free shell），LLM 抽取
+            # 不允许自动生成——命令必须来自 KBD 原文证据且经专家复核，避免模型
+            # 自由发明现场命令。剥离进 rejected_candidates 供专家审计。
+            reject(s, "tool_restricted", "qfk_var 仅允许专家在管理端维护；AI 抽取禁止自动生成该信号")
+            logger.warning(
+                "extract_signals 拒绝 LLM 生成的 qfk_var 信号 source=%s",
+                source_id,
+            )
+            continue
         args_ok, _ = validate_acquire_args(tool, args) if tool in ACQUIRER_CATALOG else (False, None)
         if args_ok:
             catalog_violation = _qfk_catalog_violation(tool, args)

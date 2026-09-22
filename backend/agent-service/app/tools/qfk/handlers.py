@@ -8,6 +8,7 @@ QFK 信号处理器
 - service      → ServiceHandler（acli service <container> <name> <action>）
 - system       → GenericSubCommandHandler
 - vm/network/storage/hardware/platform → GenericSubCommandHandler
+- var          → VarHandler（qfk_var：free shell 通用变量采集原语，命令原样下发）
 
 字段映射（与 acquirer_args 契约一致）：
 - command      → acli <namespace> <command>
@@ -425,6 +426,33 @@ class GenericSubCommandHandler(BackendSignalHandler):
         return [" ".join(parts)]
 
 
+class VarHandler(BackendSignalHandler):
+    """qfk_var：通用变量采集原语（free shell）。
+
+    与领域 QFK 的本质差异：
+    - command 是专家维护的完整命令模板（shell/acli 均可），原样下发，
+      允许管道/重定向/换行等 shell 语法——不做 acli 包装与字符黑名单；
+    - 运行期注入防护由变量渲染层承担：{{VAR}} 变量值在进入 QFK 前统一
+      shlex.quote（kbd_differential._resolve_args），模板本身不展开执行；
+    - 输入变量经 stdin 字段可选注入（进入 QFK 前已渲染完毕）。
+    """
+
+    def build_commands(self, signal: BackendSignal) -> list[str]:
+        command = (signal.command or "").strip()
+        if not command:
+            raise CommandBuildError("qfk_var 必须在 command 中提供执行命令")
+        if "\x00" in command:
+            raise CommandBuildError("qfk_var 命令包含非法 NUL 字符")
+        if signal.stdin is not None and "\x00" in signal.stdin:
+            raise CommandBuildError("qfk_var stdin 包含非法 NUL 字符")
+        # 命令原样返回：经 engine 以 bash_exec 通道执行（非 acli_exec）。
+        # stdin 通过 printf 管道注入：内容（已含渲染后的变量值）整体 shlex.quote，
+        # 不依赖 terminal_bridge 的 stdin 透传能力，行为在任意 shell 下一致。
+        if signal.stdin is not None:
+            return [f"printf %s {shlex.quote(signal.stdin)} | {{ {command}; }}"]
+        return [command]
+
+
 # ─── 命名空间路由 ──────────────────────────────────────────────────────────────
 class HandlerRegistry:
     """按 namespace 字符串路由到对应处理器。"""
@@ -438,6 +466,7 @@ class HandlerRegistry:
         "storage": GenericSubCommandHandler,
         "hardware": GenericSubCommandHandler,
         "platform": GenericSubCommandHandler,
+        "var": VarHandler,
     }
 
     @classmethod

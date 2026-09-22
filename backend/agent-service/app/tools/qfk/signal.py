@@ -2,9 +2,9 @@
 BackendSignal — QFK 后端排查信号（v2 扁平运行时模型）
 
 字段命名与 acquirer_args 契约及 signals_json v2 完全一致：
-- namespace    对应 acquirer 名称（log/service/system/vm/network/storage/hardware/platform）
+- namespace    对应 acquirer 名称（log/service/system/vm/network/storage/hardware/platform/var）
 - host         Terminal Bridge/SSH 的目标主机路由（不拼入 aCLI 命令）
-- command      acli <namespace> <command>
+- command      acli <namespace> <command>；qfk_var 时为完整 shell 命令模板（可含 {{VAR}}）
 - file/path/source_family/parser  qfk_log 的日志源 Catalog 定位与解析
 - time_window  qfk_log 的绝对 -t（相对时间在进入 QFK 前解析）
 - service/action qfk_service 的 <container> <name> <action>
@@ -13,6 +13,7 @@ BackendSignal — QFK 后端排查信号（v2 扁平运行时模型）
 - instruction  匹配说明
 - match_mode   or/and/not
 - expected     True=期望命中，False=期望不命中（取反语义）
+- stdin/keep_on_failure  qfk_var 专属：标准输入内容 / 非零退出时仍对 stderr/exit_code 取值
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from shared.schemas.acquirer_args import (
     DEFAULT_SIGNAL_TIMEOUT_SECONDS,
     VALID_SYSTEM_CONTAINERS,
     normalize_qfk_system_args,
+    normalize_qfk_var_args,
 )
 from shared.schemas.log_source_catalog import (
     LOG_PARSERS,
@@ -100,6 +102,17 @@ class BackendSignal(BaseModel):
             "警告：有副作用的写命令（rm/kill/sed -i 等）严禁使用此选项。"
         ),
     )
+    stdin: str | None = Field(
+        default=None,
+        description="qfk_var 可选：作为命令标准输入写入的内容（可含 {{VAR}}，进入 QFK 前已渲染）",
+    )
+    keep_on_failure: bool = Field(
+        default=False,
+        description=(
+            "qfk_var 专属：命令非零退出时仍对 stderr/exit_code 执行取值落变量"
+            "（stdout 取值仍禁写）；False 时沿用全局门禁：非零退出 = QFK_COMMAND_FAILED"
+        ),
+    )
 
     # ─── 校验 ─────────────────────────────────────────────────────────────────
     @model_validator(mode="after")
@@ -128,6 +141,24 @@ class BackendSignal(BaseModel):
             self.command = normalized["command"]
             self.command_args = normalized["command_args"]
             self.resource_keyword = None
+        if self.namespace == "var":
+            # qfk_var：完整 shell 命令模板，复用 shared 层结构校验
+            # （命令必填/NUL 检查/stdin 与 keep_on_failure 类型规整）。
+            try:
+                normalized = normalize_qfk_var_args(
+                    {
+                        "command": self.command,
+                        **({"stdin": self.stdin} if self.stdin is not None else {}),
+                        **({"keep_on_failure": self.keep_on_failure} if self.keep_on_failure else {}),
+                    }
+                )
+            except ValueError as exc:
+                raise ValueError(str(exc)) from exc
+            self.command = normalized["command"]
+            self.stdin = normalized.get("stdin")
+            self.keep_on_failure = bool(normalized.get("keep_on_failure", False))
+            if self.container or self.cluster or self.formatter or self.command_args:
+                raise ValueError("qfk_var 不支持 container/cluster/formatter/command_args 字段")
         if self.match_mode not in VALID_MATCH_MODES:
             raise ValueError(f"match_mode 必须是 {VALID_MATCH_MODES} 之一，收到: {self.match_mode}")
         if self.namespace == "system" and self.container and self.container not in VALID_SYSTEM_CONTAINERS:

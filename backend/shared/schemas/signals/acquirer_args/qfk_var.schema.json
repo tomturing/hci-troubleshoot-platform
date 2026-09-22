@@ -1,0 +1,36 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "timeout": {
+      "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/common_args.schema.json#/properties/timeout"
+    },
+    "command": {
+      "type": "string",
+      "description": "完整执行命令（可含 {{VAR}} 输入变量、shell 管道/重定向；acli 命令亦按原样执行，无需 acli 前缀约束）"
+    },
+    "host": {
+      "type": "string",
+      "description": "采集目标主机/作用域（如 {{HOST}}），特殊值 cluster 表示遍历集群"
+    },
+    "stdin": {
+      "type": "string",
+      "description": "可选：作为命令标准输入写入的内容（可含 {{VAR}}）；缺省不发送 stdin"
+    },
+    "keep_on_failure": {
+      "type": "boolean",
+      "default": false,
+      "description": "命令非零退出时仍对 stderr/exit_code 执行取值落变量（stdout 取值仍禁写）；缺省 False 时沿用全局门禁：非零退出 = 执行故障，不取值不落池"
+    },
+    "instruction": {
+      "type": "string",
+      "description": "信号语义说明（acli 调用的人类可读解释）"
+    }
+  },
+  "required": [
+    "command"
+  ],
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://hci-troubleshoot/schemas/signals/acquirer_args/qfk_var.schema.json",
+  "title": "acquire.args for qfk_var"
+}

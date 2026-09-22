@@ -2,7 +2,7 @@
 -- Seed 数据：QKV/QFK 关键信号工具定义
 -- Version : 20260820
 -- Issue   : T-TOOL-QKV-QFK-001
--- 说明    : 插入 13 条工具定义记录（QKV 3个直接生产者 + 2个条件型生产者[视觉/效果验证] + QFK 8个）
+-- 说明    : 插入 14 条工具定义记录（QKV 3个直接生产者 + 2个条件型生产者[视觉/效果验证] + QFK 9个）
 -- 幂等键  : tool_name（ON CONFLICT DO NOTHING，禁止覆盖管理员治理结果）
 --
 -- 统一定义（display_name 标准命名，勿擅自修改以免造成误解）：
@@ -19,6 +19,7 @@
 --   qfk_storage  - 后端信号-存储相关操作
 --   qfk_hardware - 后端信号-硬件相关操作
 --   qfk_platform - 后端信号-平台相关操作
+--   qfk_var      - 后端信号-变量采集（专家维护的 free shell 原语，LLM 抽取禁止生成）
 -- ============================================================
 
 -- ─── QKV 前端信号（生产者）─────────────────────────────────────
@@ -752,6 +753,60 @@ INSERT INTO tool_definition (
     }',
     '[{"command": "cluster status", "matcher": {"type": "state", "pattern": "healthy", "expected": true}}]',
     1,
+    true
+) ON CONFLICT (tool_name) DO NOTHING;
+
+-- QFK.var: 后端信号-变量采集（专家维护的通用变量采集原语）
+-- 说明：qfk_var 是 free shell 命令原语（shell/acli 均可，经 bash_exec 执行并全量审计），
+-- 默认把 stdout 全文写入产出变量，可选取值 stderr/exit_code。仅允许专家在管理端维护，
+-- LLM 抽取禁止生成（服务端强制剥离进 rejected_candidates，拒绝码 tool_restricted）。
+-- 代码契约唯一事实源：backend/shared/schemas/acquirer_args.py 的 ACQUIRER_ARGS_SCHEMA。
+INSERT INTO tool_definition (
+    tool_name, display_name, category, description,
+    usage_template, parameters_schema, examples, risk_level, is_active
+) VALUES (
+    'qfk_var',
+    '后端信号-变量采集',
+    'qfk',
+    '变量采集原语：在目标主机执行专家指定的任意命令（shell/acli 均可，支持管道/重定向/{{VAR}} 输入变量），默认把命令 stdout 全文写入产出变量，可选取值 stderr/exit_code；命令经受控 bash_exec 会话执行并全量审计。仅供专家在管理端维护，LLM 抽取禁止生成（服务端强制剥离进 rejected_candidates）。',
+    '{{command}}',
+    '{
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "完整执行命令（可含 {{VAR}} 输入变量、shell 管道/重定向；acli 命令亦按原样执行，无需 acli 前缀约束）"
+            },
+            "timeout": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 300,
+                "default": 60,
+                "description": "采集/执行超时（秒，1-300）；QKV/QFK 通用"
+            },
+            "host": {
+                "type": "string",
+                "description": "采集目标主机/作用域（如 {{HOST}}），由运行时目标节点解析"
+            },
+            "stdin": {
+                "type": "string",
+                "description": "可选：作为命令标准输入写入的内容（可含 {{VAR}}）；缺省不发送 stdin"
+            },
+            "keep_on_failure": {
+                "type": "boolean",
+                "default": false,
+                "description": "命令非零退出时仍对 stderr/exit_code 执行取值落变量（stdout 取值仍禁写）；缺省 false 时沿用全局门禁：非零退出 = 执行故障，不取值不落池"
+            }
+        },
+        "required": ["command"]
+    }',
+    '[
+        {"command": "acli system lsblk", "host": "{{HOST}}", "timeout": 60},
+        {"command": "nvme list | grep -c nvme", "timeout": 30},
+        {"command": "tail -50 /sf/log/sfvt_vtpdaemon.log", "timeout": 60, "stdin": null, "keep_on_failure": false}
+    ]',
+    2,
     true
 ) ON CONFLICT (tool_name) DO NOTHING;
 

@@ -2430,6 +2430,28 @@ function buildSignalForTool(tool: string, previous?: SignalV2): SignalV2 {
   if (['qfk_hardware', 'qfk_network', 'qfk_platform', 'qfk_storage', 'qfk_vm'].includes(tool) && !args.command) {
     args.command = ''
   }
+  // qfk_var：专家维护的变量采集原语（free shell）。command 是完整命令模板；
+  // 默认必产出一条变量草稿，match=null（判定可选，不默认启用）。
+  if (tool === 'qfk_var') {
+    args.command = typeof oldArgs.command === 'string' ? oldArgs.command : ''
+    return {
+      id: previous?.id || createSignalId(),
+      role: previous?.role || 'should',
+      acquire: { tool, args },
+      match: null,
+      orchestrate: {
+        phase: previous?.orchestrate?.phase || 'diagnostic',
+        produces: [{
+          name: '',
+          type: 'string',
+          extract: { type: 'text', rows: { mode: 'all' }, cardinality: 'exactly_one', source: 'stdout', value_mode: 'string' },
+        }],
+        requires: [],
+      },
+      provenance: { ...(previous?.provenance || {}), category: 'backend', needs_review: true },
+      review: { require_human_confirm: true },
+    }
+  }
   return {
     id: previous?.id || createSignalId(),
     role: previous?.role || 'should',
@@ -2565,6 +2587,8 @@ function qfkCommandText(signal: SignalV2): string {
 }
 
 function qfkCommandHasPipeline(signal: SignalV2): boolean {
+  // qfk_var 的 free shell 命令允许管道/重定向（核心特性），不受 QFK 安全转换门禁约束。
+  if (sigTool(signal) === 'qfk_var') return false
   return qfkCommandText(signal).includes('|')
 }
 
@@ -3051,7 +3075,7 @@ function setQfkOutputMode(mode: 'keyword' | 'produces') {
   draft.match = { type: 'keyword', pattern: '', mode: 'or', expected: true }
 }
 
-function setQfkMatch(match: Record<string, any>): void {
+function setQfkMatch(match: Record<string, any> | null): void {
   signalEditDraft.value.match = match
 }
 
@@ -3059,6 +3083,23 @@ function setQfkProduces(produces: Array<Record<string, any>>): void {
   signalEditDraft.value.orchestrate = signalEditDraft.value.orchestrate || {}
   signalEditDraft.value.orchestrate.produces = produces
 }
+
+// qfk_var 专属：【产出变量】输入框与 produces[0].name 双向绑定（var 默认必产出单变量）。
+const varProduceName = computed({
+  get: () => String(signalEditDraft.value.orchestrate?.produces?.[0]?.name || ''),
+  set: (value: string) => {
+    const draft = signalEditDraft.value
+    draft.orchestrate = draft.orchestrate || {}
+    if (!Array.isArray(draft.orchestrate.produces) || draft.orchestrate.produces.length === 0) {
+      draft.orchestrate.produces = [{
+        name: '',
+        type: 'string',
+        extract: { type: 'text', rows: { mode: 'all' }, cardinality: 'exactly_one', source: 'stdout', value_mode: 'string' },
+      }]
+    }
+    draft.orchestrate.produces[0] = { ...draft.orchestrate.produces[0], name: value }
+  },
+})
 
 function cancelEditSignal() {
   const editingSignalId = String(signalEditDraft.value.id || '')
@@ -3411,10 +3452,21 @@ async function saveSignalEdit() {
     if (!tryApplySignalJson(true)) return
   }
   if (isBackendSig(signalEditDraft.value)) {
+    const isVarSignal = sigTool(signalEditDraft.value) === 'qfk_var'
     const produces = signalEditDraft.value.orchestrate?.produces || []
     const hasProduces = produces.some((item: any) => String(item?.name || '').trim())
     const hasMatch = Boolean(signalEditDraft.value.match)
-    if (hasProduces === hasMatch) {
+    if (isVarSignal) {
+      // qfk_var：产出变量必需，匹配判定可选、允许与产出共存（豁免二选一门禁）。
+      if (!hasProduces) {
+        ElMessage.error('qfk_var 必须配置产出变量：请在「产出变量」输入框填写大写变量名')
+        return
+      }
+      if (!String(signalEditDraft.value.acquire?.args?.command || '').trim()) {
+        ElMessage.error('qfk_var 必须填写执行命令（完整 shell 命令，可含管道/重定向）')
+        return
+      }
+    } else if (hasProduces === hasMatch) {
       ElMessage.error('执行结果处理配置冲突：请在“匹配模式”和“产出变量”中二选一，并删除另一种模式的配置')
       return
     }
@@ -5790,10 +5842,19 @@ onUnmounted(() => clearBatchPollTimer())
                     <div class="signal-row"><span class="signal-k">说明</span><el-input v-model="signalEditDraft.acquire.args.instruction" size="small" placeholder="信号说明，如 镜像文件占用检查" /></div>
                     <div class="field-hint">信号语义说明：用自然语言描述这个检查/采集做什么（如「镜像文件占用检查」），是人类可读标题，不是匹配条件</div>
                     <div class="signal-row"><span class="signal-k">证据作用</span><el-select v-model="signalEditDraft.role" size="small"><el-option label="必要证据（必须满足）" value="must" /><el-option label="增强证据（按门槛满足）" value="should" /><el-option label="排除证据（出现即排除）" value="exclude" /><el-option label="上下文证据（执行但不参与结论）" value="context" /></el-select></div>
-                    <div class="signal-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" filterable @change="onSignalToolChange"><el-option label="日志检查 qfk_log" value="qfk_log" /><el-option label="系统 qfk_system" value="qfk_system" /><el-option label="服务 qfk_service" value="qfk_service" /><el-option label="虚拟机 qfk_vm" value="qfk_vm" /><el-option label="网络 qfk_network" value="qfk_network" /><el-option label="存储 qfk_storage" value="qfk_storage" /><el-option label="硬件 qfk_hardware" value="qfk_hardware" /><el-option label="平台 qfk_platform" value="qfk_platform" /></el-select></div>
+                    <div class="signal-row"><span class="signal-k">采集类型</span><el-select :model-value="sigTool(signalEditDraft)" size="small" filterable @change="onSignalToolChange"><el-option label="日志检查 qfk_log" value="qfk_log" /><el-option label="系统 qfk_system" value="qfk_system" /><el-option label="服务 qfk_service" value="qfk_service" /><el-option label="虚拟机 qfk_vm" value="qfk_vm" /><el-option label="网络 qfk_network" value="qfk_network" /><el-option label="存储 qfk_storage" value="qfk_storage" /><el-option label="硬件 qfk_hardware" value="qfk_hardware" /><el-option label="平台 qfk_platform" value="qfk_platform" /><el-option label="变量 qfk_var" value="qfk_var" /></el-select></div>
                     <div class="signal-row"><span class="signal-k">主机</span><el-input v-model="signalEditDraft.acquire.args.host" size="small" placeholder="{{HOST}} 或固定主机名/IP" /></div>
                     <div class="field-hint" v-pre>Terminal Bridge 通过此主机选择 SSH 会话；它不是 aCLI 参数。要遍历集群，请在下方启用“集群执行”。</div>
                   <!-- 容器与执行命令：位于输入/输出契约之前，先明确命令在哪里、执行什么。 -->
+                  <template v-if="sigTool(signalEditDraft) === 'qfk_var'">
+                    <div class="signal-row"><span class="signal-k">产出变量</span><el-input v-model="varProduceName" size="small" placeholder="如 NVME_COUNT（大写字母/数字/下划线）" /></div>
+                    <div class="field-hint">命令 stdout 全文（去除首尾空白）写入该变量；取值来源可在下方处理单元中选择 stderr/exit_code。变量名仅限大写字母、数字、下划线，且不能以数字开头。</div>
+                    <div class="signal-row"><span class="signal-k">执行命令</span><el-input v-model="signalEditDraft.acquire.args.command" type="textarea" :rows="2" size="small" placeholder="完整命令，如 acli system lsblk 或 nvme list | grep -c nvme（支持管道/重定向）" /></div>
+                    <div class="field-hint" v-pre>shell 与 acli 命令均可，支持 {{VAR}} 输入变量、管道与重定向；按原样经受控 bash_exec 会话执行并全量审计，破坏性/写动作命令会在发布审查被拦截。</div>
+                    <div class="signal-row"><span class="signal-k">标准输入</span><el-input v-model="signalEditDraft.acquire.args.stdin" size="small" placeholder="可选：写入命令 stdin 的内容（支持变量占位符）" /></div>
+                    <div class="signal-row"><span class="signal-k">失败取值</span><el-switch v-model="signalEditDraft.acquire.args.keep_on_failure" size="small" active-text="非零退出仍取 stderr/exit_code" /></div>
+                    <div class="field-hint">默认关闭：非零退出 = 执行故障，不取值不落池；开启后仅 stderr/exit_code 取值落变量，stdout 保持禁写，并走终端故障哨兵二次安全门。</div>
+                  </template>
                   <template v-if="sigTool(signalEditDraft) === 'qfk_system'">
                     <div class="signal-row"><span class="signal-k">容器</span>
                       <el-select v-model="signalEditDraft.acquire.args.container" size="small" placeholder="host">
@@ -5889,7 +5950,7 @@ onUnmounted(() => clearBatchPollTimer())
                   <div class="field-hint" v-pre>根据主机、命令参数、筛选条件中的 {{变量名}} 自动生成，只读展示。</div>
                   <div class="signal-row"><span class="signal-k">超时时间</span><el-input-number v-model="signalEditDraft.acquire.args.timeout" :min="1" :max="300" size="small" /> 秒</div>
                   <div class="field-hint">命令在 terminal bridge 上的最大实际执行时间，范围 1–300 秒；超时后桥会停止命令并返回 timeout。</div>
-                  <div v-if="sigTool(signalEditDraft).startsWith('qfk_')" class="signal-row">
+                  <div v-if="sigTool(signalEditDraft).startsWith('qfk_') && sigTool(signalEditDraft) !== 'qfk_var'" class="signal-row">
                     <span class="signal-k">只读容错</span>
                     <div class="signal-v">
                       <el-switch
@@ -5899,7 +5960,7 @@ onUnmounted(() => clearBatchPollTimer())
                       />
                     </div>
                   </div>
-                  <div v-if="sigTool(signalEditDraft).startsWith('qfk_')" class="field-hint">
+                  <div v-if="sigTool(signalEditDraft).startsWith('qfk_') && sigTool(signalEditDraft) !== 'qfk_var'" class="field-hint">
                     开启后，当 cat/grep 等只读命令因探测对象不存在返回非零退出码（如 exit 1）时，视为否定证据（未命中排除候选），避免门禁误死锁；默认由只读白名单自动推导。
                   </div>
                   <template v-if="sigTool(signalEditDraft) === 'qfk_log'">
@@ -5907,6 +5968,7 @@ onUnmounted(() => clearBatchPollTimer())
                   </template>
                   <QfkProcessingEditor
                     :mode="qfkOutputMode(signalEditDraft)"
+                    :variant="sigTool(signalEditDraft) === 'qfk_var' ? 'var' : 'standard'"
                     :match="signalEditDraft.match"
                     :produces="signalEditDraft.orchestrate.produces || []"
                     :allowed-matcher-types="sigTool(signalEditDraft) === 'qfk_log'

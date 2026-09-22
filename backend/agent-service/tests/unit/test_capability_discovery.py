@@ -24,7 +24,7 @@ def test_runtime_discovery_reports_all_registered_handlers_as_degraded_without_e
     document = capability_routes.runtime_capability_document()
     capabilities = {item["capability_id"]: item for item in document["capabilities"]}
 
-    assert document["count"] == 13
+    assert document["count"] == 14  # QKV 5 个 + QFK 9 个（qfk_var 变量采集原语注册后）
     assert set(capabilities) == {
         "qkv_alert",
         "qkv_task",
