@@ -75,6 +75,16 @@ def _parameterize_argv(tool: str, argv: list[str]) -> tuple[list[str], dict[str,
             template[index] = runtime_placeholder
             continue
         if "{{" in token or "}}" in token:
+            if tool == "qfk_var":
+                # qfk_var 的整条命令是单 token：内置运行时变量做子串替换；
+                # 替换后仍含占位符的 {{VAR}} 离线模式无法渲染，保持拒绝。
+                replaced = token
+                for placeholder, field in _RUNTIME_PLACEHOLDERS.items():
+                    replaced = replaced.replace(placeholder, field)
+                if "{{" in replaced or "}}" in replaced:
+                    raise ValueError(f"离线采集命令包含无法映射的运行时变量: {token}")
+                template[index] = replaced
+                continue
             raise ValueError(f"离线采集命令包含无法映射的运行时变量: {token}")
         field = positional_fields.get(index) or option_value_indexes.get(index)
         if not field:
@@ -115,6 +125,10 @@ def _resolver_input(
     if not tool.startswith("qfk_"):
         raise ValueError(f"KBD 采集工具不在 QKV/QFK 契约内: {tool}")
     namespace = tool.removeprefix("qfk_")
+    if namespace == "var":
+        # 专家维护的变量采集原语：整条 shell 命令原样交由 VarResolver 编译
+        # （free shell 不做 acli 分词），输出为纯文本命令输出。
+        return "var", normalized, "command_output"
     resolver_id = "domain" if namespace in {"vm", "network", "storage", "hardware", "platform"} else namespace
     if resolver_id not in {"log", "service", "system", "domain"}:
         raise ValueError(f"不支持的 QFK 采集工具: {tool}")

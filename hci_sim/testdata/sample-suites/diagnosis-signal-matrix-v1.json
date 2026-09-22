@@ -127,6 +127,10 @@
       "variables": {},
       "expected_conclusion": "硬件趋势命中且平台排除项未命中，KBD 获得支持。",
       "signals": {
+        "var_kvm_mem_context": {
+          "positive_output": "83456\n",
+          "negative_output": "0\n"
+        },
         "hardware_alert_context": {
           "positive_output": "{\"data\":[{\"id\":\"{{ALERT_ID}}\",\"type\":\"硬件温度异常告警\",\"hardware_type\":\"gpu\",\"host\":\"{{HOST}}\",\"end\":\"{{END}}\"}]}\n",
           "negative_output": "{\"data\":[]}\n"
