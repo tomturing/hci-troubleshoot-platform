@@ -25,7 +25,7 @@ metadata:
           .Values.adminUI.ingress.internalGuard.enabled
           (ne (.Values.global.routingMode | default "path") "subdomain")
           (eq .Values.diagnosisService.identityMode "internal") }}
-    traefik.ingress.kubernetes.io/router.middlewares: {{ include "hci.namespace" . }}-{{ include "hci.fullname" . }}-internal-guard@kubernetescrd
+    traefik.ingress.kubernetes.io/router.middlewares: {{ include "hci.namespace" . }}-{{ include "hci.fullname" . }}-admin-guard@kubernetescrd
     {{- end }}
     {{- with .Values.adminUI.ingress.annotations }}
     {{- toYaml . | nindent 4 }}

@@ -495,10 +495,15 @@ adminUI:
     annotations: {}
     tls: []
     # internalGuard: 管理入口公网封禁（B1）。默认关闭以保持既有访问方式；
-    # 内网管理面部署建议开启——开启后 Admin UI 入口仅允许 ingress.internalGuard.sourceRange
-    # 内的源访问（复用 internal-guard 的 ipAllowList Middleware）。
+    # 内网管理面部署建议开启——开启后 Admin UI 入口仅允许独立 admin-guard 的
+    # ipAllowList 源访问。
     internalGuard:
       enabled: false
+      # B3（SRC-2026-5358 残余）：admin 管理面独立的 ipAllowList 源范围。
+      # 留空时回退到 ingress.internalGuard.sourceRange（与 4443 共用默认值）；
+      # 配置后 admin-ui 入口仅允许该范围内的源访问，可与 4443 公网封禁策略
+      # 独立收紧到极小暴露面（如仅办公网出口 IP），不影响 4443。
+      sourceRange: []
     # TLS 配置（可选）
     # tls:
     #   - secretName: admin-tls

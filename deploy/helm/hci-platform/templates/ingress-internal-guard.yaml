@@ -81,3 +81,33 @@ spec:
     {{- toYaml .Values.ingress.tls | nindent 4 }}
   {{- end }}
 {{- end }}
+---
+{{- /* B3（SRC-2026-5358 残余）：admin-ui 独立的 internalGuard sourceRange。
+  与 4443 的 internal-guard 解耦，使 admin 管理面的 ipAllowList 可独立收紧到
+  极小暴露面（如仅办公网出口），而不影响 4443 公网 /api/internal 的封禁策略。
+  未配置 adminUI.ingress.internalGuard.sourceRange 时回退到 ingress.internalGuard.sourceRange，
+  保持既有行为兼容。 */}}
+{{- if and
+      .Values.ingress.enabled
+      .Values.adminUI.ingress.enabled
+      .Values.adminUI.ingress.internalGuard.enabled
+      (ne (.Values.global.routingMode | default "path") "subdomain")
+      (eq .Values.diagnosisService.identityMode "internal") }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "hci.fullname" . }}-admin-guard
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingress-guard
+spec:
+  ipAllowList:
+    sourceRange:
+      {{- $adminSrc := .Values.adminUI.ingress.internalGuard.sourceRange }}
+      {{- if $adminSrc }}
+      {{- toYaml $adminSrc | nindent 6 }}
+      {{- else }}
+      {{- toYaml .Values.ingress.internalGuard.sourceRange | nindent 6 }}
+      {{- end }}
+{{- end }}
