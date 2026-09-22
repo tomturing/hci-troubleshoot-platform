@@ -21,7 +21,7 @@ def make_request(headers: dict[str, str]):
 
 @pytest.mark.asyncio
 async def test_internal_token_builds_fixed_privileged_actor():
-    """有效内部令牌生成固定角色，调用方不能通过头自提权。"""
+    """直连内部调用方（无角色头）沿用固定内部角色。"""
 
     verifier = InternalTokenIdentityVerifier("secret-token")
     actor = await verifier.verify(
@@ -30,7 +30,6 @@ async def test_internal_token_builds_fixed_privileged_actor():
                 "Authorization": "Bearer secret-token",
                 "X-Tenant-ID": "tenant-a",
                 "X-Actor-ID": "api-gateway",
-                "X-Actor-Roles": "superuser",
             }
         )
     )
@@ -38,7 +37,80 @@ async def test_internal_token_builds_fixed_privileged_actor():
     assert actor.tenant_id == "tenant-a"
     assert actor.user_id == "api-gateway"
     assert actor.roles == frozenset({"platform_admin", "support_engineer", "diagnosis_worker"})
-    assert "superuser" not in actor.roles
+
+
+@pytest.mark.asyncio
+async def test_unsupported_actor_roles_header_is_rejected():
+    """非受支持角色头一律拒绝，不得静默升级为内部管理员。"""
+
+    verifier = InternalTokenIdentityVerifier("secret-token")
+    with pytest.raises(DiagnosisError) as exc_info:
+        await verifier.verify(
+            make_request(
+                {
+                    "Authorization": "Bearer secret-token",
+                    "X-Tenant-ID": "tenant-a",
+                    "X-Actor-ID": "api-gateway",
+                    "X-Actor-Roles": "superuser",
+                }
+            )
+        )
+
+    assert exc_info.value.code == "INVALID_ACTOR_CONTEXT"
+    assert exc_info.value.http_status == 422
+
+
+@pytest.mark.asyncio
+async def test_supplied_internal_roles_are_limited_to_allowlist():
+    """管理员角色头只能落在内部角色白名单内，不得包含白名单外角色。"""
+
+    verifier = InternalTokenIdentityVerifier("secret-token")
+    actor = await verifier.verify(
+        make_request(
+            {
+                "Authorization": "Bearer secret-token",
+                "X-Tenant-ID": "tenant-a",
+                "X-Actor-ID": "gateway-admin",
+                "X-Actor-Roles": "support_engineer, superuser",
+            }
+        )
+    )
+
+    assert actor.roles == frozenset({"support_engineer"})
+
+
+@pytest.mark.asyncio
+async def test_customer_role_requires_unforgeable_owner_key():
+    """客户角色必须携带网关签发的归属键，缺失一律拒绝。"""
+
+    verifier = InternalTokenIdentityVerifier("secret-token")
+    actor = await verifier.verify(
+        make_request(
+            {
+                "Authorization": "Bearer secret-token",
+                "X-Tenant-ID": "default",
+                "X-Actor-ID": "cust-1a2b3c",
+                "X-Actor-Roles": "customer",
+                "X-Actor-Customer-ID": "1a2b3c",
+            }
+        )
+    )
+
+    assert actor.roles == frozenset({"customer"})
+    assert actor.customer_id == "1a2b3c"
+
+    with pytest.raises(DiagnosisError) as exc_info:
+        await verifier.verify(
+            make_request(
+                {
+                    "Authorization": "Bearer secret-token",
+                    "X-Tenant-ID": "default",
+                    "X-Actor-ID": "cust-1a2b3c",
+                    "X-Actor-Roles": "customer",
+                }
+            )
+        )
+    assert exc_info.value.code == "INVALID_ACTOR_CONTEXT"
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,7 @@ templates:
   - ingress.yaml
   - admin-ui/ingress.yaml
 tests:
-  - it: "internal 模式下 Customer API 先经过 Customer UI Nginx"
+  - it: "internal 模式下 Customer API 直达网关（B1：不再经 Customer UI 注入身份）"
     template: ingress.yaml
     set:
       global.routingMode: "path"
@@ -22,7 +22,7 @@ tests:
           value: /api
       - equal:
           path: spec.rules[0].http.paths[1].backend.service.name
-          value: customer-ui
+          value: api-gateway
 
   - it: "OIDC 模式下 Customer API 保持直达 Gateway"
     template: ingress.yaml
