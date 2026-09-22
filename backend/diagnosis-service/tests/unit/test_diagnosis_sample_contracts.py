@@ -52,6 +52,9 @@ def _matched_evidence(signal: dict) -> object:
     if matcher_type == "threshold":
         if (matcher.get("extract") or {}).get("delimiter") == ",":
             return "Filesystem,Use%\n/sf/log,83%\n"
+        # qfk_var 的 stdout 是 awk 求和结果（纯数字单值），与命令输出形态一致
+        if signal["acquire"]["tool"] == "qfk_var":
+            return "83456\n"
         return "Filesystem Use%\n/sf/log 83%\n"
     if matcher_type == "delta":
         if signal["acquire"]["tool"] == "qfk_storage":
@@ -106,9 +109,45 @@ def test_five_samples_compile_every_signal_into_offline_collectors():
                 matcher=signal.get("match"),
                 produces=(signal.get("orchestrate") or {}).get("produces") or [],
             )
-            assert compiled.command_template.startswith("acli ")
+            if tool == "qfk_var":
+                # qfk_var 走 bash_exec：free shell 命令整体 shlex.quote，无 acli 前缀。
+                assert compiled.command_template.startswith("'ps -eo rss,comm")
+            else:
+                assert compiled.command_template.startswith("acli ")
             assert "{{" not in compiled.command_template
             assert compiled.resolution_status.value in {"verified", "needs_probe"}
+
+
+def test_qfk_var_compiles_free_shell_command_for_offline_collector():
+    """qfk_var 离线编译：整条命令 shlex.quote 为单 token，内置占位符做子串替换。"""
+    compiled = compile_signal_acquisition(
+        tool="qfk_var",
+        args={"command": "ps -eo rss,comm | awk '$2 ~ /qemu/ {s+=$1} END {print s+0}'", "host": "{{HOST}}"},
+        matcher=None,
+        produces=[{"name": "KVM_MEM_RSS_KB", "type": "integer", "extract": {"type": "text", "rows": {"mode": "all"}, "source": "stdout", "cardinality": "first", "value_mode": "integer"}}],
+    )
+
+    assert compiled.tool == "qfk_var"
+    assert compiled.query_type == "command_output"
+    assert compiled.command_template.startswith("'ps -eo rss,comm")
+    assert "{{" not in compiled.command_template
+    assert compiled.resolution_status.value == "verified"
+
+
+def test_qfk_var_inline_runtime_placeholder_is_substituted():
+    """命令内联 {{HOST}} 做子串替换；不可渲染变量保持拒绝。"""
+    compiled = compile_signal_acquisition(
+        tool="qfk_var",
+        args={"command": "ssh {{HOST}} 'nvme list | grep -c nvme'"},
+    )
+    # shlex 对内嵌单引号做安全转义拼接（'"'"'），保证 bash_exec 语义不被破坏
+    assert compiled.command_template == "'ssh {target_id} '\"'\"'nvme list | grep -c nvme'\"'\"''"
+
+    with pytest.raises(ValueError, match="无法映射的运行时变量"):
+        compile_signal_acquisition(
+            tool="qfk_var",
+            args={"command": "echo {{LOCAL_ONLY_VAR}}"},
+        )
 
 
 def test_semantic_entry_capability_variants_have_explicit_offline_gate():

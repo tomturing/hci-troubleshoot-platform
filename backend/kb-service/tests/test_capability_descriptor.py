@@ -9,9 +9,9 @@ from shared.schemas.capability_descriptor import capability_descriptor_document,
 
 
 def test_signal_tool_taxonomy_has_one_authoritative_partition():
-    assert len(EXECUTABLE_SIGNAL_TOOLS) == 13
+    assert len(EXECUTABLE_SIGNAL_TOOLS) == 14
     assert len(AUTO_MODELING_SIGNAL_TOOLS) == 12
-    assert {"qkv_effect"} == EXPERT_MAINTAINED_SIGNAL_TOOLS
+    assert {"qkv_effect", "qfk_var"} == EXPERT_MAINTAINED_SIGNAL_TOOLS
     assert {"qkv_case_context"} == CONTEXT_INPUTS
     assert AUTO_MODELING_SIGNAL_TOOLS | EXPERT_MAINTAINED_SIGNAL_TOOLS == EXECUTABLE_SIGNAL_TOOLS
     assert AUTO_MODELING_SIGNAL_TOOLS.isdisjoint(EXPERT_MAINTAINED_SIGNAL_TOOLS)
@@ -22,7 +22,7 @@ def test_descriptor_is_code_generated_and_does_not_claim_runtime_deployment():
     document = capability_descriptor_document()
 
     assert document["source"] == "code"
-    assert document["count"] == 14
+    assert document["count"] == 15
     assert {item["capability_id"] for item in document["capabilities"]} >= {
         "qkv_alert",
         "qkv_task",

@@ -552,6 +552,75 @@ class ServiceResolver:
         )
 
 
+class VarResolver:
+    """qfk_var：通用变量采集原语（free shell）。
+
+    与领域 Resolver 的差异：
+    - 不编译 acli argv：command 是专家维护的完整 shell 模板（可含管道/重定向），
+      整条命令作为单元素 argv_template 传递，由 agent-service 以 bash_exec 执行；
+    - 变量值注入防护在运行时渲染层（kbd_differential._resolve_shell_template
+      的 shlex.quote），Bundle 期保留 {{VAR}} 占位符供画像渲染；
+    - 结构校验之外复用 kbd_signal_safety 的写动作扫描：qfk_var 允许专家指定
+      任意命令结构，但破坏性/写动作命令在发布与 Bundle 审查一律拦截。
+    """
+
+    resolver_id = "var"
+
+    def compile(self, intent: SignalIntent) -> ResolutionPlan:
+        args = dict(intent.args)
+        command = str(args.get("command") or "").strip()
+        if not command:
+            return _blocked(intent, [_issue("VAR_COMMAND_REQUIRED", "qfk_var 必须提供非空 command", field="command")])
+        if "\x00" in command:
+            return _blocked(intent, [_issue("VAR_COMMAND_INVALID", "qfk_var.command 包含非法 NUL 字符", field="command")])
+        # 写动作扫描（破坏性 block / 其余写动作 require confirm 由上层 review 决定）：
+        # 构造最小 signal 视图复用统一扫描器，保证与发布审查同一口径。
+        from shared.schemas.kbd_signal_safety import signal_write_operation_command
+
+        probe_signal = {"acquire": {"tool": intent.tool or "qfk_var", "args": args}}
+        write_command = signal_write_operation_command(probe_signal)
+        if write_command:
+            return _blocked(
+                intent,
+                [
+                    _issue(
+                        "VAR_WRITE_OPERATION",
+                        f"qfk_var 命令命中明确写动作: {write_command}（破坏性/写动作命令须走变更流程，不得作为诊断采集信号）",
+                        field="command",
+                    )
+                ],
+            )
+        args["command"] = command
+        return ResolutionPlan(
+            resolver_id=self.resolver_id,
+            tool=intent.tool or "qfk_var",
+            canonical_args=args,
+            # 单元素 argv_template：整条 shell 命令（含管道），不经 shlex 分词。
+            argv_template=[command],
+            catalog_version="variable-catalog",
+        )
+
+    def resolve(self, plan: ResolutionPlan, context: dict[str, Any] | None = None) -> ResolvedAcquisition:
+        if plan.status is ResolutionStatus.BLOCKED:
+            return ResolvedAcquisition(
+                resolver_id=self.resolver_id,
+                tool=plan.tool,
+                status=ResolutionStatus.BLOCKED,
+                catalog_version=plan.catalog_version,
+                issues=plan.issues,
+            )
+        command = plan.argv_template[0] if plan.argv_template else str(plan.canonical_args.get("command") or "")
+        return ResolvedAcquisition(
+            resolver_id=self.resolver_id,
+            tool=plan.tool,
+            status=ResolutionStatus.VERIFIED,
+            argv=[command],
+            command=command,
+            resolution_rule="var-free-shell",
+            catalog_version=plan.catalog_version,
+        )
+
+
 class QkvResolver:
     resolver_id = "qkv"
 

@@ -105,6 +105,9 @@ def _resolver_id(tool: str) -> str | None:
         return "qkv"
     if tool == "qfk_log":
         return "log"
+    if tool == "qfk_var":
+        # 专家维护的变量采集原语：free shell 命令整条编译，不做 acli 分词。
+        return "var"
     if tool == "qfk_system":
         return "system"
     if tool == "qfk_service":

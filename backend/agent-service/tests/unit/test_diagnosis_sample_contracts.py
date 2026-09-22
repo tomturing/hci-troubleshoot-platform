@@ -46,6 +46,9 @@ def _matched_output(signal: dict) -> str:
     if matcher_type == "threshold":
         if (matcher.get("extract") or {}).get("delimiter") == ",":
             return "Filesystem,Use%\n/sf/log,83%\n"
+        # qfk_var 的 stdout 是 awk 求和结果（纯数字单值），与命令输出形态一致
+        if signal["acquire"]["tool"] == "qfk_var":
+            return "83456\n"
         return "Filesystem Use%\n/sf/log 83%\n"
     if matcher_type == "delta":
         if signal["acquire"]["tool"] == "qfk_storage":

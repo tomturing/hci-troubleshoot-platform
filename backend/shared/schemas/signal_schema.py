@@ -919,17 +919,44 @@ def _validate_qfk_match_or_produces(raw: Any) -> None:
         if not isinstance(tool, str) or not tool.startswith("qfk_"):
             continue
         command = str(((signal.get("acquire") or {}).get("args") or {}).get("command") or "")
-        if "|" in command:
+        is_var_signal = tool == "qfk_var"
+        if not is_var_signal and "|" in command:
+            # qfk_var 豁免管道禁令：其 command 是专家可信的完整 shell 模板，
+            # 管道/重定向是合法语义；其他 qfk_* 命令仍一律走结构化 extract。
             raise ValidationError(
                 f"signals[{index}] 的 command 禁止保存 shell 管道；请先转换为结构化 extract",
                 path=["signals", index, "acquire", "args", "command"],
             )
-        has_match = isinstance(matcher, dict)
-        if has_match == has_produces:
-            raise ValidationError(
-                f"signals[{index}] 的 {tool} 必须且只能配置“关键字判定(match)”或“产出变量(orchestrate.produces)”之一",
-                path=["signals", index, "match"],
-            )
+        if is_var_signal:
+            # qfk_var：产出变量是默认且必需的行为；匹配判定是可选附加，
+            # 允许 match 与 produces 共存（生产变量 + 附加结论）。
+            if not has_produces:
+                raise ValidationError(
+                    f"signals[{index}] 的 qfk_var 必须配置产出变量(orchestrate.produces)",
+                    path=["signals", index, "orchestrate", "produces"],
+                )
+            # keep_on_failure 只放行"失败时的 stderr/exit_code 续采"；命令失败时
+            # stdout 可能为空或半截输出，不可信，一律禁写。
+            if bool(((signal.get("acquire") or {}).get("args") or {}).get("keep_on_failure")):
+                for produce_index, produce in enumerate(produces):
+                    source = (
+                        str((produce.get("extract") or {}).get("source") or "stdout")
+                        if isinstance(produce, dict)
+                        else "stdout"
+                    )
+                    if source == "stdout":
+                        raise ValidationError(
+                            f"signals[{index}].orchestrate.produces[{produce_index}] 在 keep_on_failure=true 时"
+                            "禁止 stdout 取值（命令失败时 stdout 不可信）；如需采集错误信息请改用 stderr/exit_code 来源",
+                            path=["signals", index, "orchestrate", "produces", produce_index, "extract", "source"],
+                        )
+        else:
+            has_match = isinstance(matcher, dict)
+            if has_match == has_produces:
+                raise ValidationError(
+                    f"signals[{index}] 的 {tool} 必须且只能配置“关键字判定(match)”或“产出变量(orchestrate.produces)”之一",
+                    path=["signals", index, "match"],
+                )
         if isinstance(matcher, dict):
             if not isinstance(matcher.get("extract"), dict):
                 raise ValidationError(

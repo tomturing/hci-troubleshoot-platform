@@ -319,7 +319,9 @@ async def _qfk_exec_impl(
                 trace_id=get_current_trace_id(),
             ) as observation:
                 exec_res = await executor.execute(
-                    tool_name="acli_exec",
+                    # qfk_var 命令是完整 shell 模板（可含管道/重定向，acli 亦为普通
+                    # 可执行文件），走 bash_exec 直接执行；其余 QFK 仍固定 acli_exec。
+                    tool_name="bash_exec" if signal.namespace == "var" else "acli_exec",
                     args=tool_args,
                     conversation_id=conversation_id,
                     node_ip=node_ip,
@@ -436,14 +438,21 @@ async def _qfk_exec_impl(
     failed = next((result for result in results if result.exit_code not in (0, None)), None)
     if failed is not None:
         combined = f"{failed.stdout or ''}\n{failed.stderr or ''}".strip()
-        if signal.nonzero_exit_as_negative:
+        # qfk_var keep_on_failure：命令失败时仍允许对 stderr/exit_code 取值落变量
+        # （stdout 取值在发布门禁层已禁止），用于"采集错误信息本身"的信号场景。
+        is_var_keep_on_failure = signal.namespace == "var" and signal.keep_on_failure
+        if signal.nonzero_exit_as_negative or is_var_keep_on_failure:
             # 二次安全门：即便声明了容错模式，也不能让终端会话缺失/桥未运行的
             # 错误输出穿透进入 Matcher（否则 match_mode="not" 信号会假阳性命中）。
             is_real_terminal_failure = any(s in combined for s in terminal_failure_sentinels)
             if not is_real_terminal_failure:
                 logger.info(
                     event="qfk_nonzero_as_negative",
-                    message="只读探针非零退出被视为否定证据，继续进入 Matcher",
+                    message=(
+                        "qfk_var keep_on_failure 放行：继续对 stderr/exit_code 取值（stdout 禁写）"
+                        if is_var_keep_on_failure
+                        else "只读探针非零退出被视为否定证据，继续进入 Matcher"
+                    ),
                     namespace=signal.namespace,
                     exit_code=failed.exit_code,
                     stderr_bytes=len((failed.stderr or "").encode("utf-8", errors="replace")),
@@ -500,6 +509,12 @@ async def _qfk_exec_impl(
     if requested_sources:
         try:
             for source in requested_sources:
+                if source == "exit_code":
+                    # qfk_var 退出码事实：直接取自执行结果，不经 Redis 完整输出通道。
+                    complete_outputs[source] = "\n".join(
+                        str(result.exit_code) for result in results if result.exit_code is not None
+                    )
+                    continue
                 if source not in {"stdout", "stderr"}:
                     raise QFKExtractionError("QFK_EXTRACT_INVALID_SPEC", f"不支持的输出来源: {source}")
                 complete_outputs[source] = "\n".join(

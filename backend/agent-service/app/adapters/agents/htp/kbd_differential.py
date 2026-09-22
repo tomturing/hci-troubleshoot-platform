@@ -10,6 +10,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import shlex
 import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
@@ -1891,7 +1892,15 @@ class KBDDiagnostic:
                     exec_id=exec_id,
                     required_output_sources=required_output_sources,
                     output_filters=output_filters,
-                    execution_mode="produce" if produces else "match",
+                    execution_mode=(
+                        # qfk_var：配置了附加判定时走 match 求值（变量落池与判定共存，
+                        # engine 的 QFK_PRODUCER_MATCH_CONFLICT 保护仍约束其余 QFK）；
+                        # 纯生产（无 match）保持 produce 语义。
+                        "match"
+                        if bsignal.namespace == "var" and isinstance(matcher, dict)
+                        else "produce" if produces
+                        else "match"
+                    ),
                     ai_client=self._ai_registry.get_client(self._assistant_type),
                     db_session_factory=self._db_session_factory,
                 )
@@ -1918,6 +1927,10 @@ class KBDDiagnostic:
                     )
                     if not ok:
                         return res.raw_output, extract_error, None, None
+                    if isinstance(matcher, dict):
+                        # qfk_var：变量已落池，继续执行附加判定（match 与 produces
+                        # 共存语义：默认产出变量，可选附加结论）。
+                        return res.raw_output, None, res.matched, res.ai_value
                     # 产出变量模式只关心命令是否成功且结果是否已写入变量池，不再进行 matcher 判定。
                     return res.raw_output, None, True, None
                 # qfk_exec 是全部 Matcher 的唯一求值入口；配置 Extract 时它会从
@@ -2050,6 +2063,21 @@ class KBDDiagnostic:
         if isinstance(value, dict):
             return {key: cls._resolve_template_value(item, variable_pool) for key, item in value.items()}
         return value
+
+    @staticmethod
+    def _resolve_shell_template(template: str, variables: dict[str, Any]) -> str:
+        """qfk_var 专用渲染：``{{VAR}}`` 变量值 shlex.quote 后嵌入 shell 模板。
+
+        与 _resolve_args 相同的合并与大小写不敏感语义；未命中的占位符保留原样，
+        由 requires 一致性校验在保存门禁拦截，绝不把裸值送进 shell。
+        """
+        lower_merged = {key.lower(): value for key, value in (variables or {}).items()}
+
+        def _rep(match: re.Match[str]) -> str:
+            name = match.group(1).strip().lower()
+            return shlex.quote(str(lower_merged[name])) if name in lower_merged else match.group(0)
+
+        return _PLACEHOLDER_RE.sub(_rep, template)
 
     @staticmethod
     def _qkv_values_from_context(
@@ -2218,8 +2246,22 @@ class KBDDiagnostic:
         namespace = parts[1]  # log/service/system/vm/...
 
         args = step.tool_args_template or {}
+        if namespace == "var":
+            # qfk_var 注入防护核心（方案 §3.5）：command/stdin 是完整 shell 模板，
+            # 必须先从通用渲染中剥离，改为"quote 渲染"——变量值经 shlex.quote 后
+            # 嵌入模板，杜绝运行期数据逃逸引号上下文执行任意命令。通用裸渲染会把
+            # 命中占位符替换为裸值，双重渲染会让未命中占位符丢失 quote 语义，故跳过。
+            args = dict(args)
+            shell_fields = {key: args.pop(key) for key in ("command", "stdin") if key in args}
+        else:
+            shell_fields = {}
         if variables is not None:
             args = self._resolve_template_value(args, variables)
+        for key, raw in shell_fields.items():
+            if isinstance(raw, str):
+                args[key] = self._resolve_shell_template(raw, variables or {})
+            else:
+                args[key] = raw
 
         # 获取 matcher
         matcher = step.matcher
@@ -2292,6 +2334,11 @@ class KBDDiagnostic:
         if namespace == "service":
             signal_data["service"] = args.get("service") or args.get("resource_keyword")
             signal_data["action"] = args.get("action") or args.get("command") or "status"
+
+        # qfk_var 专属：stdin（进入 QFK 前已渲染变量）与失败续采开关透传。
+        if namespace == "var":
+            signal_data["stdin"] = args.get("stdin")
+            signal_data["keep_on_failure"] = bool(args.get("keep_on_failure", False))
 
         try:
             return BackendSignal.from_dict(signal_data)

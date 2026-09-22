@@ -411,7 +411,8 @@
             "qfk_network",
             "qfk_storage",
             "qfk_hardware",
-            "qfk_platform"
+            "qfk_platform",
+            "qfk_var"
           ]
         },
         "args": {
@@ -681,6 +682,25 @@
             "properties": {
               "args": {
                 "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qfk_platform.schema.json"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tool": {
+                "const": "qfk_var"
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "then": {
+            "properties": {
+              "args": {
+                "$ref": "https://hci-troubleshoot/schemas/signals/acquirer_args/qfk_var.schema.json"
               }
             }
           }

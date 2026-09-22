@@ -15,6 +15,8 @@ export type QfkOutputMode = 'keyword' | 'produces'
 
 const props = defineProps<{
   mode: QfkOutputMode
+  /** standard：QFK 消费者既有「匹配/产出」二选一模式；var：qfk_var 专属（默认必产出 + 匹配可选共存） */
+  variant?: 'standard' | 'var'
   match?: Record<string, any> | null
   produces?: Array<Record<string, any>>
   allowedMatcherTypes?: string[]
@@ -22,13 +24,20 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:mode': [value: QfkOutputMode]
-  'update:match': [value: Record<string, any>]
+  'update:match': [value: Record<string, any> | null]
   'update:produces': [value: Array<Record<string, any>>]
   'dry-run': []
 }>()
 
 const matchValue = computed(() => props.match || defaultMatch())
 const producesValue = computed(() => props.produces || [])
+// var 模式：match 允许为 null（未启用判定）；standard 模式恒有 match。
+const hasMatch = computed(() => props.match != null && Object.keys(props.match).length > 0)
+// 匹配单元渲染：standard 由模式决定；var 由「可选开关是否启用」决定。
+const showMatchUnit = computed(() => props.mode === 'keyword' || (props.variant === 'var' && hasMatch.value))
+// 产出单元渲染：standard 产出模式下渲染；var 模式恒渲染（默认必产出）。
+const showProducesUnit = computed(() => props.mode === 'produces')
+const isVar = computed(() => props.variant === 'var')
 
 // 编辑态身份只用于 Vue 渲染，不写入产出变量契约，避免字段编辑触发节点重建。
 const produceKeys = new WeakMap<object, number>()
@@ -75,6 +84,11 @@ function setMatch(value: Record<string, any>): void {
   emit('update:match', value)
 }
 
+// var 模式专属：启用判定时补一份带默认取值的 matcher；关闭时清空（match=null，仍保持产出变量）。
+function toggleVarMatch(enabled: boolean | string | number): void {
+  emit('update:match', enabled ? defaultMatch() : null)
+}
+
 function setMatchExtract(value: Record<string, any>): void {
   emit('update:match', { ...matchValue.value, extract: value })
 }
@@ -109,11 +123,11 @@ function removeProduce(index: number): void {
           <el-icon><InfoFilled /></el-icon>
           <span>执行结果处理</span>
         </div>
-        <div class="processing-subtitle">两种模式使用相同的取值组件、步骤顺序、字段样式和状态反馈。</div>
+        <div class="processing-subtitle">{{ isVar ? 'qfk_var 默认产出变量：stdout 取值写入变量池；匹配判定为可选项，可与产出共存。' : '两种模式使用相同的取值组件、步骤顺序、字段样式和状态反馈。' }}</div>
       </div>
       <div class="processing-header-actions">
         <el-button text type="primary" size="small" :icon="VideoPlay" @click="emit('dry-run')">试运行</el-button>
-        <el-radio-group :model-value="mode" size="small" @change="setMode">
+        <el-radio-group v-if="!isVar" :model-value="mode" size="small" @change="setMode">
           <el-radio-button value="keyword">匹配模式</el-radio-button>
           <el-radio-button value="produces">产出变量</el-radio-button>
         </el-radio-group>
@@ -130,7 +144,7 @@ function removeProduce(index: number): void {
         <span class="stage-number">2</span>
         <span>
           <strong>{{ mode === 'keyword' ? '再判断' : '再产出' }}</strong>
-          <small>{{ mode === 'keyword' ? '输出 True / False' : '校验后写入变量池' }}</small>
+          <small>{{ isVar ? 'stdout 全文写入变量池；可启用下方可选匹配判定' : mode === 'keyword' ? '输出 True / False' : '校验后写入变量池' }}</small>
         </span>
       </div>
     </div>
@@ -140,11 +154,13 @@ function removeProduce(index: number): void {
       type="warning"
       :closable="false"
       show-icon
-      title="命令执行失败或超时时立即停止：不取值、不判断，也不写入变量池。"
+      :title="isVar
+        ? '默认命令非零退出即停止：不取值、不写入变量池；stderr/exit_code 取值需在高级选项开启 keep_on_failure（stdout 仍禁写）。'
+        : '命令执行失败或超时时立即停止：不取值、不判断，也不写入变量池。'"
     />
 
-    <div v-if="mode === 'keyword'" class="processing-unit" data-output-mode="keyword">
-      <div class="unit-header"><span>处理单元</span><el-tag size="small" effect="plain">匹配模式</el-tag></div>
+    <div v-if="showMatchUnit" class="processing-unit" data-output-mode="keyword">
+      <div class="unit-header"><span>处理单元</span><el-tag size="small" effect="plain">{{ isVar ? '匹配模式（可选）' : '匹配模式' }}</el-tag></div>
 
       <section class="processing-step">
         <div class="step-header"><span class="stage-number">1</span><div><strong>第一步：取值</strong><small>取得供第二步判断使用的数据</small></div></div>
@@ -177,7 +193,7 @@ function removeProduce(index: number): void {
       </section>
     </div>
 
-    <template v-else>
+    <template v-if="showProducesUnit">
       <div
         v-for="(produce, index) in producesValue"
         :key="getProduceKey(produce)"
@@ -235,6 +251,13 @@ function removeProduce(index: number): void {
         添加变量（创建新的“取值 → 产出”处理单元）
       </el-button>
     </template>
+
+    <!-- var 模式专属：匹配判定为可选项，与产出变量共存 -->
+    <div v-if="isVar" class="var-optional-match" data-variant="var">
+      <el-switch :model-value="hasMatch" size="small" @change="toggleVarMatch" />
+      <span class="var-optional-match-label">启用匹配判定（可选）</span>
+      <small class="var-optional-match-hint">默认仅产出变量；启用后额外输出 True/False 匹配结论，与产出变量共存</small>
+    </div>
   </div>
 </template>
 
@@ -363,6 +386,18 @@ function removeProduce(index: number): void {
   line-height: 26px;
 }
 .add-processing-unit { width: 100%; margin-top: 12px; }
+.var-optional-match {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px dashed var(--el-border-color);
+  border-radius: 6px;
+  background: var(--el-bg-color);
+}
+.var-optional-match-label { color: var(--el-text-color-primary); font-size: 13px; font-weight: 600; }
+.var-optional-match-hint { color: var(--el-text-color-secondary); font-size: 12px; }
 .processing-control { width: 100%; }
 .processing-control :deep(.el-select__selected-item),
 .processing-control :deep(.el-input__inner) { font-size: 13px; }

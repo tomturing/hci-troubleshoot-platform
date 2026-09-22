@@ -39,7 +39,7 @@ async def test_get_all_templates_caching():
     # 首次调用
     t1 = await SignalAssetService.get_all_templates(mock_session)
     assert "qkv_task" in t1
-    assert len(t1) == 13
+    assert len(t1) == 14
     assert t1["qkv_task"]["contract_source"] == "shared.schemas.acquirer_args"
     assert t1["qkv_task"]["acquire_schema"]["required"] == ["keyword"]
     assert "qkv_case_context" not in t1

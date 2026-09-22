@@ -6,7 +6,13 @@ import pytest
 from app.tools.acli import executor as executor_module
 from app.tools.acli.executor import ExecResult
 from app.tools.qfk import engine
-from app.tools.qfk.handlers import GenericSubCommandHandler, LogKeywordHandler
+from app.tools.qfk.handlers import (
+    CommandBuildError,
+    GenericSubCommandHandler,
+    HandlerRegistry,
+    LogKeywordHandler,
+    VarHandler,
+)
 from app.tools.qfk.matcher import evaluate_matcher
 from app.tools.qfk.signal import BackendSignal
 
@@ -853,5 +859,77 @@ def test_log_handler_cleans_leading_comma_request_id():
     assert len(commands) == 1
     assert "-i a678d3fb5fdf2af4e78e6dae896a06e2" in commands[0]
     assert "-i ,a678d3fb" not in commands[0]
+
+
+# ─── qfk_var：通用变量采集原语（free shell） ──────────────────────────────────
+
+
+def test_var_handler_returns_command_verbatim():
+    """命令原样下发：管道/重定向不经任何改写，由 bash_exec 通道执行。"""
+    sig = BackendSignal(namespace="var", command="nvme list | grep -c nvme")
+
+    commands = VarHandler().build_commands(sig)
+
+    assert commands == ["nvme list | grep -c nvme"]
+
+
+def test_var_handler_wraps_stdin_with_printf_pipeline():
+    """stdin 经 shlex.quote 注入 printf 管道，命令体在花括号分组内原样保留。"""
+    sig = BackendSignal(
+        namespace="var",
+        command="cat /proc/sys/vm/swappiness",
+        stdin="hello world; rm -rf /tmp/x",
+    )
+
+    command = VarHandler().build_commands(sig)[0]
+
+    assert command.startswith("printf %s ")
+    assert "'hello world; rm -rf /tmp/x'" in command
+    assert command.endswith("| { cat /proc/sys/vm/swappiness; }")
+
+
+def test_var_model_rejects_empty_and_nul_command():
+    """第一道防线：BackendSignal 模型校验（复用 shared 层 normalize）。"""
+    with pytest.raises(ValueError, match="非空 command"):
+        BackendSignal(namespace="var", command="   ")
+
+    with pytest.raises(ValueError, match="NUL"):
+        BackendSignal(namespace="var", command="ps\x00 aux")
+
+    with pytest.raises(ValueError, match="NUL"):
+        BackendSignal(namespace="var", command="cat", stdin="a\x00b")
+
+
+def test_var_handler_defense_in_depth_rejects_bad_command():
+    """第二道防线：绕过模型校验（model_construct）后 handler 自身仍拒绝坏命令。"""
+    with pytest.raises(CommandBuildError, match="提供执行命令"):
+        VarHandler().build_commands(BackendSignal.model_construct(namespace="var", command="   "))
+
+    with pytest.raises(CommandBuildError, match="NUL"):
+        VarHandler().build_commands(BackendSignal.model_construct(namespace="var", command="ps\x00 aux"))
+
+    with pytest.raises(CommandBuildError, match="NUL"):
+        VarHandler().build_commands(
+            BackendSignal.model_construct(namespace="var", command="cat", stdin="a\x00b"),
+        )
+
+
+def test_var_signal_rejects_domain_only_fields():
+    """qfk_var 不支持领域 QFK 的专属字段（container/cluster/formatter/command_args）。"""
+    with pytest.raises(ValueError, match="qfk_var 不支持"):
+        BackendSignal(namespace="var", command="lsblk", container="host")
+
+    with pytest.raises(ValueError, match="qfk_var 不支持"):
+        BackendSignal(namespace="var", command="lsblk", formatter="json")
+
+
+def test_var_signal_keeps_on_failure_flag():
+    sig = BackendSignal(namespace="var", command="cat /sf/log/missing.log", keep_on_failure=True)
+
+    assert sig.keep_on_failure is True
+
+
+def test_registry_routes_var_namespace_to_var_handler():
+    assert isinstance(HandlerRegistry.get("var"), VarHandler)
 
 

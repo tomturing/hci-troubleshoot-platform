@@ -1064,6 +1064,48 @@ WITH sample_rows (
               },
               "provenance": {"category": "backend", "method": "sql_sample", "source_section": "steps_text", "confidence": 1.0, "risk": 0, "needs_review": false, "evidence": "平台信息用于补充诊断上下文。", "source_refs": ["kbd:steps_text"]},
               "review": {"require_human_confirm": false, "notes": "产出变量使用声明式 JSON 取值。"}
+            },
+            {
+              "id": "var_kvm_mem_context",
+              "role": "context",
+              "acquire": {
+                "tool": "qfk_var",
+                "args": {
+                  "command": "ps -eo rss,comm | awk '$2 ~ /qemu/ {s+=$1} END {print s+0}'",
+                  "host": "{{HOST}}",
+                  "stdin": "",
+                  "keep_on_failure": false,
+                  "timeout": 60,
+                  "instruction": "统计宿主机 QEMU 进程常驻内存总量（KB）"
+                }
+              },
+              "match": {
+                "type": "threshold",
+                "expected": true,
+                "value": 0,
+                "operator": ">",
+                "aggregation": "max",
+                "extract": {
+                  "type": "text",
+                  "rows": {"mode": "all"},
+                  "cardinality": "first",
+                  "source": "stdout",
+                  "value_mode": "integer"
+                }
+              },
+              "orchestrate": {
+                "phase": "diagnostic",
+                "requires": ["HOST"],
+                "produces": [
+                  {
+                    "name": "KVM_MEM_RSS_KB",
+                    "type": "integer",
+                    "extract": {"type": "text", "rows": {"mode": "all"}, "source": "stdout", "cardinality": "first", "value_mode": "integer"}
+                  }
+                ]
+              },
+              "provenance": {"category": "backend", "method": "sql_sample", "source_section": "steps_text", "confidence": 1.0, "risk": 0, "needs_review": false, "evidence": "KBD 原文记录通过 ps/awk 管道统计 QEMU 内存占用。", "source_refs": ["kbd:steps_text"]},
+              "review": {"require_human_confirm": false, "notes": "qfk_var 默认产出变量，并附加阈值判定（match 与 produces 共存语义）。"}
             }
           ],
           "rejected_candidates": [],
@@ -1076,14 +1118,14 @@ WITH sample_rows (
               "must": ["hardware_trend_must"],
               "should": ["hardware_alert_context"],
               "exclude": ["platform_unsupported_exclude"],
-              "context": ["platform_info_context"],
+              "context": ["platform_info_context", "var_kvm_mem_context"],
               "minimum_should": 1,
               "on_missing_must": "inconclusive"
             }
           }
         }
         $signals$::jsonb,
-        '["qkv_alert", "qfk_hardware", "qfk_platform"]'::jsonb
+        '["qkv_alert", "qfk_hardware", "qfk_platform", "qfk_var"]'::jsonb
     )
 ),
 resolved_rows AS (

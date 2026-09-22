@@ -613,6 +613,39 @@ ACQUIRER_ARGS_SCHEMA: dict[str, dict[str, Any]] = {
         },
         "required": ["command"],
     },
+    # qfk_var：通用变量采集原语（唯一 free_shell 后端信号）。
+    # 专家在管理端指定任意命令（shell/acli 均可、支持管道/重定向/输入变量），
+    # 默认把 stdout/stderr 取值写入产出变量；仅供专家维护，LLM 抽取禁止生成。
+    # 注入防护边界：command 模板来自可信专家，不做 shell 字符黑名单；
+    # 运行时对 {{VAR}} 变量值统一 shlex.quote，杜绝运行期数据逃逸引号上下文。
+    "qfk_var": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "timeout": COMMON_ARGS["timeout"],
+            "command": {
+                "type": "string",
+                "description": (
+                    "完整执行命令（可含 {{VAR}} 输入变量、shell 管道/重定向；"
+                    "acli 命令亦按原样执行，无需 acli 前缀约束）"
+                ),
+            },
+            "host": _TARGET_DIMENSIONS["host"],
+            "stdin": {
+                "type": "string",
+                "description": "可选：作为命令标准输入写入的内容（可含 {{VAR}}）；缺省不发送 stdin",
+            },
+            "keep_on_failure": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "命令非零退出时仍对 stderr/exit_code 执行取值落变量（stdout 取值仍禁写）；"
+                    "缺省 False 时沿用全局门禁：非零退出 = 执行故障，不取值不落池"
+                ),
+            },
+        },
+        "required": ["command"],
+    },
 }
 
 # aCLI 的 formatter 是全局参数，适用于所有领域命令，并且必须位于 namespace 前。
@@ -652,11 +685,14 @@ CONTEXT_INPUTS: set[str] = {"qkv_case_context"}
 BACKEND_TOOLS: set[str] = set(ACQUIRER_ARGS_SCHEMA) - FRONTEND_TOOLS - CONDITIONAL_PRODUCERS - CONTEXT_INPUTS
 EXECUTABLE_SIGNAL_TOOLS: frozenset[str] = frozenset(FRONTEND_TOOLS | CONDITIONAL_PRODUCERS | BACKEND_TOOLS)
 # 自动建模只覆盖能够从 KBD 原始事实安全推导的能力。qkv_effect 的期望锚点由
-# 专家在处置语义明确后维护；qkv_case_context 由语义画像生成器确定性补建。
-EXPERT_MAINTAINED_SIGNAL_TOOLS: frozenset[str] = frozenset({"qkv_effect"})
+# 专家在处置语义明确后维护；qkv_case_context 由语义画像生成器确定性补建；
+# qfk_var 是 free shell 通用命令原语，命令必须来自专家在管理端的手工维护
+# （LLM 抽取禁止生成，服务端在 extract_signals 强制剥离进 rejected_candidates）。
+EXPERT_MAINTAINED_SIGNAL_TOOLS: frozenset[str] = frozenset({"qkv_effect", "qfk_var"})
 AUTO_MODELING_SIGNAL_TOOLS: frozenset[str] = frozenset(EXECUTABLE_SIGNAL_TOOLS - EXPERT_MAINTAINED_SIGNAL_TOOLS)
 # 离线证据包只负责采集现场事实。工单上下文已经随工单提交；效果验证依赖处置后
-# 的时间窗口和重复观测，不能伪装成一次性离线采集项。
+# 的时间窗口和重复观测，不能伪装成一次性离线采集项。qfk_var 属在线执行原语
+# （free shell 命令须在受控 SSH 会话中执行并全量审计），同样不得进入离线采集项。
 OFFLINE_NON_ACQUISITION_TOOLS: frozenset[str] = frozenset(CONTEXT_INPUTS | EXPERT_MAINTAINED_SIGNAL_TOOLS)
 
 # 诊断运行开始前可由工单、资产上下文或受控用户输入提供的变量。生成、发布门禁、
@@ -847,6 +883,47 @@ def normalize_qfk_system_args(args: Any) -> dict[str, Any]:
         raise ValueError("qfk_system.command_args 包含空值或命令注入类非法字符")
     normalized["command"] = command_tokens[0]
     normalized["command_args"] = command_args
+    return normalized
+
+
+def normalize_qfk_var_args(args: Any) -> dict[str, Any]:
+    """规范 qfk_var 的通用命令输入：命令必填、剥离空可选字段、校验占位符规范。
+
+    qfk_var 的 command 是完整命令字符串（shell/acli 均可、允许管道/重定向），
+    因此不适用 qfk_* 的 shell 字符黑名单；这里只做结构性校验：
+    - command 必须是非空字符串，且不含无法进入 shell 的 NUL 字符；
+    - stdin 若提供必须是字符串，空串按缺省剥离；
+    - keep_on_failure 若提供必须是布尔值。
+    变量值注入防护不在模板层：运行时渲染（kbd_differential/engine）对
+    {{VAR}} 变量值统一 shlex.quote 后再拼入 shell 上下文。
+    """
+
+    if not isinstance(args, dict):
+        raise ValueError("acquire.args 必须是对象")
+    normalized = copy.deepcopy(args)
+
+    command = normalized.get("command")
+    if not isinstance(command, str) or not command.strip():
+        raise ValueError("qfk_var 必须提供非空 command")
+    if "\x00" in command:
+        raise ValueError("qfk_var.command 包含非法 NUL 字符")
+    normalized["command"] = command.strip()
+
+    stdin = normalized.get("stdin")
+    if stdin is None:
+        normalized.pop("stdin", None)
+    elif not isinstance(stdin, str):
+        raise ValueError("qfk_var.stdin 必须是字符串")
+    elif "\x00" in stdin:
+        raise ValueError("qfk_var.stdin 包含非法 NUL 字符")
+    elif not stdin:
+        normalized.pop("stdin", None)
+
+    keep_on_failure = normalized.get("keep_on_failure")
+    if keep_on_failure is None:
+        normalized.pop("keep_on_failure", None)
+    elif not isinstance(keep_on_failure, bool):
+        raise ValueError("qfk_var.keep_on_failure 必须是布尔值")
     return normalized
 
 
@@ -1115,7 +1192,16 @@ def validate_acquire_args(tool: str, args: Any) -> tuple[bool, str | None]:
         except ValueError as exc:
             return False, str(exc)
 
-    if tool.startswith("qfk_"):
+    if tool == "qfk_var":
+        # qfk_var 的 command 允许 shell 管道/重定向（专家可信模板），不做字符黑名单；
+        # 仅做结构性校验。变量值注入防护由运行时渲染层 shlex.quote 承担。
+        try:
+            normalize_qfk_var_args(args)
+        except ValueError as exc:
+            return False, str(exc)
+
+    # qfk_var 豁免注入字符黑名单：其 command 是完整 shell 语义模板（含管道/分号等合法语法）。
+    if tool.startswith("qfk_") and tool != "qfk_var":
         for field in ("command", "resource_keyword", "service", "action"):
             value = args.get(field)
             if isinstance(value, str) and _contains_illegal_command_chars(value):
