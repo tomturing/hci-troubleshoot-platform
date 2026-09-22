@@ -4,6 +4,8 @@ templates:
   - configmap.yaml
   - customer-ui/deployment.yaml
   - admin-ui/deployment.yaml
+  - ingress.yaml
+  - admin-ui/ingress.yaml
 tests:
   - it: "Secret 派生服务端 Bearer Header"
     template: secret.yaml
@@ -25,7 +27,7 @@ tests:
           path: data.DIAGNOSIS_IDENTITY_MODE
           value: "oidc"
 
-  - it: "internal 模式为 Customer UI 注入服务端身份"
+  - it: "internal 模式不再为 Customer UI 注入服务端身份（B1）"
     template: customer-ui/deployment.yaml
     set:
       diagnosisService.enabled: true
@@ -34,24 +36,18 @@ tests:
       diagnosisService.internalIdentity.customerActorId: "staging-customer-ui"
       global.namespace: "hci-staging"
     asserts:
-      - contains:
+      - notContains:
           path: spec.template.spec.containers[0].env
           content:
             name: CUSTOMER_API_AUTHORIZATION
-            valueFrom:
-              secretKeyRef:
-                name: hci-secrets
-                key: INTERNAL_API_AUTHORIZATION
-      - contains:
+      - notContains:
           path: spec.template.spec.containers[0].env
           content:
             name: CUSTOMER_API_TENANT_ID
-            value: staging-tenant
-      - contains:
+      - notContains:
           path: spec.template.spec.containers[0].env
           content:
             name: CUSTOMER_API_ACTOR_ID
-            value: staging-customer-ui
       - contains:
           path: spec.template.spec.containers[0].env
           content:
@@ -62,7 +58,7 @@ tests:
           content:
             name: DIAGNOSIS_SERVICE_UPSTREAM
             value: http://diagnosis-service.hci-staging.svc.cluster.local:8008
-      - isNotNull:
+      - isNull:
           path: spec.template.metadata.annotations["checksum/diagnosis-internal-auth"]
 
   - it: "internal 模式为 Admin UI 注入服务端身份"
@@ -130,3 +126,44 @@ tests:
             name: ADMIN_API_AUTHORIZATION
       - isNull:
           path: spec.template.metadata.annotations
+
+  - it: "internal 模式 API 流量直达网关，不再经 Customer UI 代理（B1）"
+    template: ingress.yaml
+    set:
+      ingress.enabled: true
+      diagnosisService.enabled: true
+      diagnosisService.identityMode: "internal"
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.name
+          value: diagnosis-service
+      - equal:
+          path: spec.rules[0].http.paths[1].backend.service.name
+          value: api-gateway
+
+  - it: "管理入口公网封禁默认关闭，开启后引用 internal-guard 中间件（B1）"
+    template: admin-ui/ingress.yaml
+    set:
+      ingress.enabled: true
+      adminUI.ingress.enabled: true
+      diagnosisService.enabled: true
+      diagnosisService.identityMode: "internal"
+      global.namespace: "hci-staging"
+    asserts:
+      - isNull:
+          path: metadata.annotations["traefik.ingress.kubernetes.io/router.middlewares"]
+
+  - it: "开启 adminUI.ingress.internalGuard 后按连字符格式引用中间件"
+    template: admin-ui/ingress.yaml
+    set:
+      ingress.enabled: true
+      adminUI.ingress.enabled: true
+      adminUI.ingress.internalGuard.enabled: true
+      diagnosisService.enabled: true
+      diagnosisService.identityMode: "internal"
+      global.namespace: "hci-staging"
+    asserts:
+      # helm unittest 默认 release 名为 RELEASE-NAME（CI: helm unittest deploy/helm/hci-platform --strict）
+      - equal:
+          path: metadata.annotations["traefik.ingress.kubernetes.io/router.middlewares"]
+          value: hci-staging-RELEASE-NAME-internal-guard@kubernetescrd

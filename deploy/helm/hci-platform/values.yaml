@@ -354,7 +354,7 @@ diagnosisService:
   # 同一环境共用 tenant_id 以保证客户工作台与管理台看到同一批诊断资源，actor_id 用于审计区分。
   internalIdentity:
     tenantId: "hci-platform"
-    customerActorId: "customer-ui"
+    # B1：customerActorId 已移除——Customer UI 不再注入服务端身份。
     adminActorId: "admin-ui"
   oidcIssuer: ""
   oidcAudience: ""
@@ -494,6 +494,11 @@ adminUI:
     host: ""
     annotations: {}
     tls: []
+    # internalGuard: 管理入口公网封禁（B1）。默认关闭以保持既有访问方式；
+    # 内网管理面部署建议开启——开启后 Admin UI 入口仅允许 ingress.internalGuard.sourceRange
+    # 内的源访问（复用 internal-guard 的 ipAllowList Middleware）。
+    internalGuard:
+      enabled: false
     # TLS 配置（可选）
     # tls:
     #   - secretName: admin-tls

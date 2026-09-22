@@ -24,6 +24,12 @@ from app.errors import DiagnosisError
 _TRUSTED_HEADER_PATTERN = re.compile(r"^[A-Za-z0-9._:@-]{1,128}$")
 _INTERNAL_ROLES = frozenset({"platform_admin", "support_engineer", "diagnosis_worker"})
 
+# B1：网关身份重签约定。X-Actor-Roles / X-Actor-Customer-ID 由网关按服务端签发的
+# 身份 Cookie 注入，本服务只校验格式与值域，不再把"带内部令牌者"一律当作管理员。
+_ACTOR_ROLES_HEADER = "X-Actor-Roles"
+_ACTOR_CUSTOMER_HEADER = "X-Actor-Customer-ID"
+_CUSTOMER_ROLE = "customer"
+
 
 @dataclass(frozen=True, slots=True)
 class ActorContext:
@@ -98,7 +104,48 @@ class InternalTokenIdentityVerifier:
                 message="X-Actor-ID 格式不合法",
                 http_status=422,
             )
-        return ActorContext(tenant_id=tenant_id, user_id=actor_id, roles=_INTERNAL_ROLES)
+
+        roles_header = request.headers.get(_ACTOR_ROLES_HEADER, "").strip()
+        if not roles_header:
+            # 兼容直连本服务的既有内部调用方（hci-sim / diagnosis-worker / 迁移工具）：
+            # 这些调用方持有内部令牌且运行在集群内，维持原有内部角色语义。
+            return ActorContext(tenant_id=tenant_id, user_id=actor_id, roles=_INTERNAL_ROLES)
+        return self._actor_from_roles_header(request, tenant_id=tenant_id, actor_id=actor_id, roles_header=roles_header)
+
+    def _actor_from_roles_header(
+        self,
+        request: Request,
+        *,
+        tenant_id: str,
+        actor_id: str,
+        roles_header: str,
+    ) -> ActorContext:
+        """按网关注入的角色头构造身份；客户角色必须携带不可伪造的归属键。"""
+
+        roles = {item for item in roles_header.replace(",", " ").split() if item}
+        if roles == {_CUSTOMER_ROLE}:
+            customer_id = request.headers.get(_ACTOR_CUSTOMER_HEADER, "").strip()
+            if not _TRUSTED_HEADER_PATTERN.fullmatch(customer_id):
+                raise DiagnosisError(
+                    code="INVALID_ACTOR_CONTEXT",
+                    message="客户身份必须提供合法的 X-Actor-Customer-ID",
+                    http_status=422,
+                )
+            return ActorContext(
+                tenant_id=tenant_id,
+                user_id=actor_id,
+                roles=frozenset({_CUSTOMER_ROLE}),
+                customer_id=customer_id,
+            )
+
+        elevated = roles & _INTERNAL_ROLES
+        if not elevated:
+            raise DiagnosisError(
+                code="INVALID_ACTOR_CONTEXT",
+                message="X-Actor-Roles 不是受支持的角色",
+                http_status=422,
+            )
+        return ActorContext(tenant_id=tenant_id, user_id=actor_id, roles=frozenset(elevated))
 
 
 class OidcJwtIdentityVerifier:
@@ -276,15 +323,19 @@ class InternalCaseAuthorizer:
             statement = text('SELECT 1 FROM "case" WHERE case_id = :case_id LIMIT 1')
             params = {"case_id": case_id}
         else:
-            customer_id = actor.customer_id or actor.tenant_id
+            # 匿名自服务体系下，工单归属键是 case.client_id（网关签发的 Cookie 身份，
+            # 32 位十六进制）；customer_id 为选填的客户档案维度（OIDC/CRM 场景），
+            # 两者任一命中即视为归属，缺失时统一按不存在处理（不泄露资源存在性）。
+            owner_key = actor.customer_id or actor.tenant_id
             statement = text(
                 """
                 SELECT 1 FROM "case"
-                WHERE case_id = :case_id AND customer_id::text = :customer_id
+                WHERE case_id = :case_id
+                  AND (client_id = :owner_key OR customer_id::text = :owner_key)
                 LIMIT 1
                 """
             )
-            params = {"case_id": case_id, "customer_id": customer_id}
+            params = {"case_id": case_id, "owner_key": owner_key}
         result = await self._session.execute(statement, params)
         if result.scalar_one_or_none() is None:
             raise DiagnosisError(

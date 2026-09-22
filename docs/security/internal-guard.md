@@ -43,12 +43,17 @@ Traefik 的 `router.middlewares` annotation 是 **Ingress 级别**而非 Path �
   （请求仍 200，封禁完全失效，且不易察觉）。
 - guard 必须与主 ingress **同 host**：host 不一致时 Traefik 不会命中 guard。
 
-## 3. 残余风险（有意接受）
+## 3. 残余风险（B1 落地后的现状）
+
+> B1（[网关身份重签](./identity-resign.md)）已删除 customer-ui 的 Nginx 身份注入，
+> 并将 `/api` 收回 api-gateway：匿名不再能通过 customer-ui 获得管理员身份，
+> `/api/internal/*` 已由网关 `require_admin` 收敛。下表为**更新后**的残余风险。
 
 | 风险 | 说明 | 后续根治 |
 | --- | --- | --- |
-| 内网源攻击者仍可经 customer-ui 注入身份访问 internal | ipAllowList 只收窄公网暴露面 | B1：网关身份 Cookie 重签 + 删除 Nginx 注入 |
-| `/api/diagnosis-sessions` 等非 internal 前缀仍暴露 | 客户离线诊断功能依赖这些路径，封禁会断功能 | B1：网关重签真实客户身份 |
+| ~~内网源攻击者仍可经 customer-ui 注入身份访问 internal~~ | **B1 已根治**：注入已删除，`/api/internal/*` 需管理员凭证 | 已完成 |
+| ~~`/api/diagnosis-sessions` 等非 internal 前缀仍暴露~~ | **B1 已根治**：客户身份由网关按 Cookie 重签为 `customer` 角色并做工单归属校验 | 已完成 |
+| admin-ui Nginx 仍为 `/api` 注入服务端身份 | 管理端暂无独立登录凭证，"能访问 Admin UI 入口"即等同管理员 | 新增 `adminUI.ingress.internalGuard`（默认关闭）可收内网；根治靠管理员认证 + admin 域名收敛 |
 | `ingress.internalGuard.enabled=false` 可整体关闭 | 关闭操作会同时失去 CI 渲染断言保护（断言按开关通过属预期） | 变更评审约束 |
 
 ## 4. 验证记录（2026-09-22，本机 staging）
@@ -73,6 +78,7 @@ Traefik 的 `router.middlewares` annotation 是 **Ingress 级别**而非 Path �
 
 ## 6. 后续路线
 
-1. **A2** 轮换 `INTERNAL_API_TOKEN`（secret 更新 + 全部消费方滚动）；
-2. **B1** 网关 diagnosis 代理接入身份 Cookie 重签（与删除 Nginx 注入同一 PR）；
-3. **B3** admin 域名收敛 + 管理员认证（P1）。
+1. ~~**A2** 轮换 `INTERNAL_API_TOKEN`（secret 更新 + 全部消费方滚动）~~ ✅ 已完成；
+2. ~~**B1** 网关 diagnosis 代理接入身份 Cookie 重签（与删除 Nginx 注入同一 PR）~~
+   ✅ 已完成，见 [网关身份重签](./identity-resign.md)；
+3. **B3** admin 域名收敛 + 管理员认证（P1）：消除"网络可达性 = 管理权限"。

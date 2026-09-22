@@ -404,10 +404,8 @@ services:
       - DNS_RESOLVER=127.0.0.11
       - TERMINAL_BRIDGE_URL=${TERMINAL_BRIDGE_URL:-}
       - TERMINAL_BRIDGE_EXEC_TIMEOUT_SECONDS=${TERMINAL_BRIDGE_EXEC_TIMEOUT_SECONDS:-120}
-      # 本地客户入口由 Nginx 服务端注入开发身份，禁止把内部令牌打包进浏览器静态资源。
-      - CUSTOMER_API_AUTHORIZATION=Bearer ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
-      - CUSTOMER_API_TENANT_ID=${DIAGNOSIS_DEV_TENANT_ID:-local-admin}
-      - CUSTOMER_API_ACTOR_ID=${DIAGNOSIS_DEV_CUSTOMER_ACTOR_ID:-customer-ui}
+      # B1（SRC-2026-5358）：Customer UI 不再注入服务端身份。客户身份由 API Gateway
+      # 依据服务端签发的身份 Cookie 重签，与 K8s 部署行为保持一致。
     build:
       context: ../..
       dockerfile: frontend/customer/Dockerfile

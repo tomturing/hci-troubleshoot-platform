@@ -12,6 +12,21 @@ metadata:
     # 部署后需在 Traefik 中启用 TLS: --entryPoints.web.http.tls=true
     # 或在云厂商 LB 层配置 TLS termination
     traefik.ingress.kubernetes.io/router.entrypoints: {{ .Values.adminUI.ingress.entrypoint | default "web" }}
+    {{- /*
+      B1（SRC-2026-5358）：管理面公网封禁开关（默认关闭）。
+      Admin UI Nginx 会为 /api 注入服务端身份令牌，因此"能访问 Admin UI 入口"
+      即等同管理员。开启后整条管理入口仅允许内网源访问，复用 internal-guard
+      的 ipAllowList Middleware（Middleware 仅在非 subdomain + internal 模式渲染，
+      故条件必须与 guard 模板完全一致，避免引用不存在的 Middleware）。
+    */}}
+    {{- if and
+          .Values.ingress.enabled
+          .Values.ingress.internalGuard.enabled
+          .Values.adminUI.ingress.internalGuard.enabled
+          (ne (.Values.global.routingMode | default "path") "subdomain")
+          (eq .Values.diagnosisService.identityMode "internal") }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ include "hci.namespace" . }}-{{ include "hci.fullname" . }}-internal-guard@kubernetescrd
+    {{- end }}
     {{- with .Values.adminUI.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

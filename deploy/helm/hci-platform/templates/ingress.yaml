@@ -89,21 +89,17 @@ spec:
                 port:
                   number: {{ .Values.diagnosisService.port }}
           {{- end }}
-          # internal 离线诊断必须先经过 Customer UI Nginx 注入服务端身份；
-          # 其他模式保持直达 API Gateway，避免无必要的代理跳转。
+          # B1（SRC-2026-5358）：API 流量一律直达 API Gateway。
+          # 此前 internal 模式把 /api 先送 Customer UI 由 Nginx 注入服务端身份，
+          # 使匿名请求经该代理即获得内部管理员身份（越权根因）。身份现由网关
+          # 依据服务端签发的身份 Cookie 重签，Customer UI 不再参与身份注入。
           - path: /api
             pathType: Prefix
             backend:
               service:
-                {{- if and .Values.diagnosisService.enabled (eq .Values.diagnosisService.identityMode "internal") }}
-                name: customer-ui
-                port:
-                  number: {{ .Values.customerUI.port }}
-                {{- else }}
                 name: api-gateway
                 port:
                   number: {{ .Values.apiGateway.port }}
-                {{- end }}
           # WebSocket
           - path: /ws
             pathType: Prefix

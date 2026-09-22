@@ -219,10 +219,8 @@ helm_equivalents:
     external_secret: true
   DIAGNOSIS_DEV_TENANT_ID:
     value_paths: [diagnosisService.internalIdentity.tenantId]
-    template_env: [CUSTOMER_API_TENANT_ID, ADMIN_API_TENANT_ID]
-  DIAGNOSIS_DEV_CUSTOMER_ACTOR_ID:
-    value_paths: [diagnosisService.internalIdentity.customerActorId]
-    template_env: [CUSTOMER_API_ACTOR_ID]
+    # B1：Customer UI 不再注入服务端身份，租户仅保留 Admin UI 侧等价项。
+    template_env: [ADMIN_API_TENANT_ID]
   DIAGNOSIS_DEV_ACTOR_ID:
     value_paths: [diagnosisService.internalIdentity.adminActorId]
     template_env: [ADMIN_API_ACTOR_ID]
@@ -256,9 +254,6 @@ helm_only_runtime:
   - SSE_HEARTBEAT_ENABLED
   - SSE_HEARTBEAT_INTERVAL_SEC
   - CONFIRM_TIMEOUT_SEC
-  - CUSTOMER_API_ACTOR_ID
-  - CUSTOMER_API_AUTHORIZATION
-  - CUSTOMER_API_TENANT_ID
   - DEV_URL
   - DIAGNOSIS_OBJECT_STORAGE_MODE
   - DIAGNOSIS_OBJECT_STORAGE_ROOT
