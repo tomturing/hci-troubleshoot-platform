@@ -16,7 +16,7 @@ from shared.signals.extractor import QFKExtractionError, extract_value
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import ActorContext
+from app.auth import CUSTOMER_ROLE, ActorContext
 from app.config import settings
 from app.errors import DiagnosisError
 from app.schemas.evidence_lifecycle import EvidenceQueryRequest, ReportReviewRequest
@@ -28,7 +28,15 @@ CONCLUSION_POLICY_VERSION = "conclusion-policy-v1"
 REPORT_SCHEMA_VERSION = "diagnosis-report-v1"
 ANALYSIS_ROLES = frozenset({"support_engineer", "domain_expert", "platform_admin", "diagnosis_worker"})
 REPORT_READ_ROLES = frozenset(
-    {"customer_admin", "field_engineer", "support_engineer", "domain_expert", "platform_admin", "diagnosis_worker"}
+    {
+        CUSTOMER_ROLE,
+        "customer_admin",
+        "field_engineer",
+        "support_engineer",
+        "domain_expert",
+        "platform_admin",
+        "diagnosis_worker",
+    }
 )
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _VARIABLE_PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z][A-Za-z0-9_.]*)\}\}")

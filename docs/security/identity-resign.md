@@ -50,6 +50,13 @@ internal 模式下主 ingress 把全部 `/api` 先送 customer-ui，由
 - `platform_admin` / `support_engineer` / `diagnosis_worker`：仅校验工单存在性。
 - **兼容**：直连 diagnosis-service 的既有内部调用方（hci-sim、diagnosis-worker、
   迁移工具）不发送 `X-Actor-Roles`，维持三角色语义不变。
+- **客户侧权限集合必须显式包含 `customer`**：平台尚无客户登录体系，浏览器客户
+  经网关重签后只剩这一个角色，因此凡是把 `customer_admin` / `field_engineer`
+  当作"客户可用"的权限集合（`CREATE_ROLES`、`UPLOAD_ROLES`、`REPORT_READ_ROLES`、
+  `list_available_scenarios` 与删除状态读取），都必须同时接受 `customer`，否则客户
+  离线诊断会整体 403（B1 合入后实测回归，已由 `test_auth.py` 固化为契约）。
+- **管理面权限集合不得包含 `customer`**：`ARTIFACT_ROLES` / `PLAN_ROLES` /
+  `TRUST_ROLES` 等保持内部角色专属，降级才有意义。
 
 ## 5. 行为变化
 

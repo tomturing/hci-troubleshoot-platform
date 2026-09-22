@@ -13,14 +13,22 @@ from shared.observability.otel import get_current_trace_id
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import ActorContext
+from app.auth import CUSTOMER_ROLE, ActorContext
 from app.config import settings
 from app.errors import DiagnosisError
 from app.schemas.evidence_lifecycle import UploadSessionCreate
 from app.services.object_storage import LocalObjectStorage
 
 UPLOAD_ROLES = frozenset(
-    {"customer_admin", "field_engineer", "support_engineer", "domain_expert", "platform_admin", "diagnosis_worker"}
+    {
+        CUSTOMER_ROLE,
+        "customer_admin",
+        "field_engineer",
+        "support_engineer",
+        "domain_expert",
+        "platform_admin",
+        "diagnosis_worker",
+    }
 )
 
 
