@@ -354,7 +354,7 @@ diagnosisService:
   # 同一环境共用 tenant_id 以保证客户工作台与管理台看到同一批诊断资源，actor_id 用于审计区分。
   internalIdentity:
     tenantId: "hci-platform"
-    customerActorId: "customer-ui"
+    # B1：customerActorId 已移除——Customer UI 不再注入服务端身份。
     adminActorId: "admin-ui"
   oidcIssuer: ""
   oidcAudience: ""

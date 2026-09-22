@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     HCI_SIM_PUBLISHER_ACTOR_ID: str = "bundle-factory-publisher"
     DIAGNOSIS_SERVICE_URL: str = "http://diagnosis-service:8008"
     DIAGNOSIS_IDENTITY_MODE: str = "internal"
+    # internal 模式下网关代表浏览器调用方重签内部身份时使用的租户标识。
+    # 必须与 chart `diagnosisService.internalIdentity.tenantId` 保持一致，
+    # 否则浏览器发起的诊断请求会被下游判为租户上下文非法（422）。
+    DIAGNOSIS_INTERNAL_TENANT_ID: str = "hci-platform"
 
     # 内部服务间 API 鉴权 Token；同时用作出口身份签名的 HMAC 密钥
     # （见 shared/security/signature.py），必须与 conversation-service 同值。
