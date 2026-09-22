@@ -403,8 +403,10 @@ describe('QfkProcessingEditor var 模式（qfk_var 专属）', () => {
     await wrapper.vm.$nextTick()
     expect(wrapper.find('[data-output-mode="produces"]').exists()).toBe(true)
     expect(wrapper.find('[data-output-mode="keyword"]').exists()).toBe(true)
-    // shallowMount 下 el-tag 被打桩，改为断言匹配单元头部存在
-    expect(wrapper.get('[data-output-mode="keyword"] .unit-header').exists()).toBe(true)
+    // shallowMount 下 el-tag 被打桩，改为断言匹配单元头部存在。
+    // 注意：必须用 find() 而非 get()——后者返回 Omit<DOMWrapper,"exists">，
+    // 调用 .exists() 会触发 TS2339 类型错误（仅 admin 完整 vue-tsc 构建期才暴露）。
+    expect(wrapper.find('[data-output-mode="keyword"] .unit-header').exists()).toBe(true)
   })
 
   it('关闭可选匹配后发出 match=null，产出单元保持渲染', async () => {

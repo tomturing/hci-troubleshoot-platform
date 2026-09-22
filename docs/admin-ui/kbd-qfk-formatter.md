@@ -23,3 +23,25 @@ KBD 关键信号编辑器为 `qfk_system`、`qfk_vm`、`qfk_network`、`qfk_stor
 - 默认命令非零退出即停止（不取值、不落池）；可开启 `keep_on_failure` 使 `stderr`/`exit_code` 取值落变量（stdout 保持禁写），并走终端故障哨兵二次安全门。
 - 命令经 `bash_exec` 受控执行并全量审计；破坏性/写动作命令会在发布审查（`VarResolver` 写动作扫描）中被拦截。
 - **AI 抽取禁止生成 `qfk_var`**：该工具仅供专家在管理端维护，LLM 抽取产物中的 `qfk_var` 会被服务端强制剥离进 rejected_candidates（拒绝码 `tool_restricted`）。
+
+## 配套测试的编写约定
+
+var 模式开关较多，编辑器的单测需要断言某些 DOM 单元是否存在。此处有一个仅在
+**admin 完整 `vue-tsc -b` 构建期**才暴露的类型陷阱：
+
+```ts
+expect(wrapper.find('[data-output-mode="keyword"]').exists()).toBe(true)      // ✅
+expect(wrapper.get('[data-output-mode="keyword"]').exists()).toBe(true)       // ❌ TS2339
+```
+
+`get()` 的返回值类型是 `Omit<DOMWrapper<Element>, "exists">`（语义上一定存在，故不提供
+`exists`），对其调用 `.exists()` 会触发
+`TS2339: Property 'exists' does not exist on type 'Omit<DOMWrapper<Element>, "exists">'`。
+
+该断言运行期是成立的（`vitest` 单测全绿），因此容易被忽略；但管理台 image 构建脚本为
+`vue-tsc -b && vite build`，类型错误会让构建失败。写"元素是否存在"类断言一律用 `find()`，
+确需断言"必须存在"时直接用 `get()` 本身即足够，不要再叠加 `.exists()`。
+
+> 校验提醒：PR 阶段的前端门禁按影响范围收敛，可能不执行 admin 的完整构建；合入 main 后的
+> push 事件会构建全量工作区。因此本地改动过 `frontend/admin` 后，请自行执行
+> `frontend/admin: pnpm build`（含类型检查）确认。
