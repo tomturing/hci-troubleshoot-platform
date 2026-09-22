@@ -10,7 +10,7 @@ from shared.observability.otel import get_current_trace_id
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import ActorContext
+from app.auth import CUSTOMER_ROLE, ActorContext
 from app.errors import DiagnosisError
 from app.models.collection_profile_definition import CollectionProfileDefinitionEntity
 from app.models.collector_definition import CollectorDefinition
@@ -40,6 +40,7 @@ class CollectionProfileService:
         from shared.schemas.semantic_routing import resolve_candidates
 
         if not actor.has_any_role(
+            CUSTOMER_ROLE,
             "customer_admin",
             "field_engineer",
             "support_engineer",
@@ -244,6 +245,7 @@ class CollectionProfileService:
         """列出客户可创建诊断会话的已审批、已启用且已发布画像。"""
 
         allowed_roles = {
+            CUSTOMER_ROLE,
             "customer_admin",
             "field_engineer",
             "support_engineer",

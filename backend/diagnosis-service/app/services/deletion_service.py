@@ -9,7 +9,7 @@ from shared.observability.otel import get_current_trace_id
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import ActorContext
+from app.auth import CUSTOMER_ROLE, ActorContext
 from app.errors import DiagnosisError
 from app.services.object_storage import LocalObjectStorage
 
@@ -24,7 +24,7 @@ class DiagnosisDeletionService:
     async def request(self, *, actor: ActorContext, session_id: str, reason: str) -> dict[str, Any]:
         """幂等创建删除任务；任一 Bundle 有 Legal Hold 时默认拒绝。"""
 
-        if not actor.has_any_role("customer_admin", "platform_admin"):
+        if not actor.has_any_role(CUSTOMER_ROLE, "customer_admin", "platform_admin"):
             raise DiagnosisError(code="FORBIDDEN", message="当前角色无权删除诊断数据", http_status=403)
         result = await self._session.execute(
             text(
@@ -202,7 +202,12 @@ class DiagnosisDeletionService:
         """读取本租户删除状态。"""
 
         if not actor.has_any_role(
-            "customer_admin", "support_engineer", "domain_expert", "platform_admin", "diagnosis_worker"
+            CUSTOMER_ROLE,
+            "customer_admin",
+            "support_engineer",
+            "domain_expert",
+            "platform_admin",
+            "diagnosis_worker",
         ):
             raise DiagnosisError(code="FORBIDDEN", message="当前角色无权读取删除状态", http_status=403)
         result = await self._session.execute(
