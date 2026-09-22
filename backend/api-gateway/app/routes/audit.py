@@ -5,11 +5,12 @@ Audit Logs Routes - API Gateway Proxy
 """
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from shared.observability.logger import get_logger
 
 from app.config import settings
+from app.security.gateway_auth import require_user
 
 router = APIRouter(prefix="/api/audit-logs", tags=["audit"])
 
@@ -44,16 +45,16 @@ async def proxy_request(
 
 
 @router.get("")
-async def list_audit_logs(request: Request):
-    """查询工具调用审计日志"""
+async def list_audit_logs(request: Request, _: str = Depends(require_user)):
+    """查询工具调用审计日志（要求服务端签发身份，审计数据不对匿名开放）"""
     params = dict(request.query_params)
     response = await proxy_request("GET", "", params=params)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
 @router.get("/prompts")
-async def list_prompt_audit_logs(request: Request):
-    """查询 Prompt 审计日志"""
+async def list_prompt_audit_logs(request: Request, _: str = Depends(require_user)):
+    """查询 Prompt 审计日志（要求服务端签发身份）"""
     params = dict(request.query_params)
     response = await proxy_request("GET", "/prompts", params=params)
     return JSONResponse(content=response.json(), status_code=response.status_code)

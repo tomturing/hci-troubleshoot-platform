@@ -17,6 +17,15 @@ if _svc not in sys.path:
 from app.main import app
 
 
+def _admin_client() -> TestClient:
+    """hci-sim 控制面已强制 INTERNAL_API_TOKEN（P1 加固），测试模拟 admin 前端携带令牌。"""
+    from app.config import settings
+
+    client = TestClient(app)
+    client.headers.update({"Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}"})
+    return client
+
+
 def _result_summary(**overrides):
     value = {
         "conversation_id": "00000000-0000-0000-0000-000000027123",
@@ -38,7 +47,7 @@ def _result_summary(**overrides):
 
 
 def test_bundle_factory_reads_c1_and_injects_compiler_identity():
-    client = TestClient(app)
+    client = _admin_client()
     capability = {
         "support_id": "27123",
         "status": "ready_for_artifact_binding",
@@ -53,9 +62,10 @@ def test_bundle_factory_reads_c1_and_injects_compiler_identity():
         },
     }
     runtime_response = JSONResponse({"bundle": {"digest": "sha256:bundle", "status": "draft"}}, status_code=201)
-    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=httpx.Response(200, json=capability))) as c1_get, patch(
-        "app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)
-    ) as runtime_post:
+    with (
+        patch("httpx.AsyncClient.get", new=AsyncMock(return_value=httpx.Response(200, json=capability))) as c1_get,
+        patch("app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)) as runtime_post,
+    ):
         response = client.post("/api/hci-sim/v1/control-plane/bundles", json={"support_id": "27123"})
 
     assert response.status_code == 201
@@ -67,7 +77,7 @@ def test_bundle_factory_reads_c1_and_injects_compiler_identity():
 
 
 def test_fixture_asset_actions_use_server_mapped_identity_and_trace_id():
-    client = TestClient(app)
+    client = _admin_client()
     runtime_response = JSONResponse({"asset": {"asset_key": "qkv_task.template", "revision": 2}}, status_code=200)
     with patch("app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)) as runtime_post:
         created = client.post(
@@ -93,11 +103,12 @@ def test_fixture_asset_actions_use_server_mapped_identity_and_trace_id():
 
 
 def test_bundle_factory_rejects_c1_gap_without_compiling():
-    client = TestClient(app)
+    client = _admin_client()
     capability = {"support_id": "27123", "status": "capability_gap", "capability_gaps": [{"code": "KBD_NOT_PUBLISHED"}]}
-    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=httpx.Response(200, json=capability))), patch(
-        "app.routes.simulations._post", new=AsyncMock()
-    ) as runtime_post:
+    with (
+        patch("httpx.AsyncClient.get", new=AsyncMock(return_value=httpx.Response(200, json=capability))),
+        patch("app.routes.simulations._post", new=AsyncMock()) as runtime_post,
+    ):
         response = client.post("/api/hci-sim/v1/control-plane/bundles", json={"support_id": "27123"})
 
     assert response.status_code == 409
@@ -105,7 +116,7 @@ def test_bundle_factory_rejects_c1_gap_without_compiling():
 
 
 def test_bundle_factory_rejects_working_package_bound_to_old_release():
-    client = TestClient(app)
+    client = _admin_client()
     requested = "sha256:" + "a" * 64
     capability = {
         "support_id": "27123",
@@ -116,12 +127,16 @@ def test_bundle_factory_rejects_working_package_bound_to_old_release():
             "package_snapshot_digest": "sha256:" + "b" * 64,
         },
     }
-    with patch(
-        "app.routes.simulations._resolve_package_context",
-        new=AsyncMock(return_value={"support_id": "27123", "kbd_revision": 25, "package_snapshot_digest": requested}),
-    ), patch("httpx.AsyncClient.get", new=AsyncMock(return_value=httpx.Response(200, json=capability))), patch(
-        "app.routes.simulations._post", new=AsyncMock()
-    ) as runtime_post:
+    with (
+        patch(
+            "app.routes.simulations._resolve_package_context",
+            new=AsyncMock(
+                return_value={"support_id": "27123", "kbd_revision": 25, "package_snapshot_digest": requested}
+            ),
+        ),
+        patch("httpx.AsyncClient.get", new=AsyncMock(return_value=httpx.Response(200, json=capability))),
+        patch("app.routes.simulations._post", new=AsyncMock()) as runtime_post,
+    ):
         response = client.post(
             "/api/hci-sim/v1/control-plane/bundles",
             json={"support_id": "27123", "package_snapshot_digest": requested},
@@ -133,13 +148,16 @@ def test_bundle_factory_rejects_working_package_bound_to_old_release():
 
 
 def test_bundle_factory_actions_use_server_mapped_split_roles():
-    client = TestClient(app)
+    client = _admin_client()
     runtime_response = JSONResponse({"bundle": {"digest": "sha256:bundle", "status": "validated"}}, status_code=200)
     with patch("app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)) as runtime_post:
-        assert client.post(
-            "/api/hci-sim/v1/control-plane/bundles/sha256:bundle/revise",
-            json={"manifest": {}, "reason": "专家修订"},
-        ).status_code == 200
+        assert (
+            client.post(
+                "/api/hci-sim/v1/control-plane/bundles/sha256:bundle/revise",
+                json={"manifest": {}, "reason": "专家修订"},
+            ).status_code
+            == 200
+        )
         assert runtime_post.await_args.kwargs["actor_role"] == "expert"
         assert runtime_post.await_args.kwargs["actor_purpose"] == "edit"
         assert client.post("/api/hci-sim/v1/control-plane/bundles/sha256:bundle/approve-expert").status_code == 200
@@ -150,21 +168,24 @@ def test_bundle_factory_actions_use_server_mapped_split_roles():
 
 
 def test_internal_fast_publish_and_digest_activation_use_expert_identity():
-    client = TestClient(app)
+    client = _admin_client()
     runtime_response = JSONResponse({"runtime_activation": {"status": "active"}}, status_code=200)
     with patch("app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)) as runtime_post:
         assert client.post("/api/hci-sim/v1/control-plane/bundles/sha256:bundle/fast-publish").status_code == 200
         assert runtime_post.await_args.kwargs["actor_role"] == "expert"
-        assert client.post(
-            "/api/hci-sim/v1/control-plane/activations/27123/activate",
-            json={"bundle_digest": "sha256:bundle"},
-        ).status_code == 200
+        assert (
+            client.post(
+                "/api/hci-sim/v1/control-plane/activations/27123/activate",
+                json={"bundle_digest": "sha256:bundle"},
+            ).status_code
+            == 200
+        )
         assert runtime_post.await_args.kwargs["actor_role"] == "expert"
 
 
 def test_bundle_retirement_uses_expert_identity_and_trace_id():
     """归档请求只能经 Gateway 固定为专家身份，且必须传递调用链。"""
-    client = TestClient(app)
+    client = _admin_client()
     runtime_response = JSONResponse({"bundle": {"digest": "sha256:bundle", "status": "retired"}}, status_code=200)
     with patch("app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)) as runtime_post:
         response = client.post("/api/hci-sim/v1/control-plane/bundles/sha256:bundle/retire")
@@ -178,7 +199,7 @@ def test_bundle_retirement_uses_expert_identity_and_trace_id():
 
 def test_bundle_rollback_uses_server_mapped_publisher_identity():
     """浏览器只能请求回退，不得决定 Runtime 的控制面身份。"""
-    client = TestClient(app)
+    client = _admin_client()
     runtime_response = JSONResponse({"runtime_activation": {"status": "active"}}, status_code=200)
     with patch("app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)) as runtime_post:
         response = client.post("/api/hci-sim/v1/control-plane/activations/27123/rollback")
@@ -191,7 +212,7 @@ def test_bundle_rollback_uses_server_mapped_publisher_identity():
 
 
 def test_bundle_rollback_rejects_invalid_support_id():
-    client = TestClient(app)
+    client = _admin_client()
     with patch("app.routes.simulations._post", new=AsyncMock()) as runtime_post:
         response = client.post("/api/hci-sim/v1/control-plane/activations/not-a-kbd/rollback")
 
@@ -200,12 +221,13 @@ def test_bundle_rollback_rejects_invalid_support_id():
 
 
 def test_simulation_test_run_binds_platform_case_before_runtime():
-    client = TestClient(app)
+    client = _admin_client()
     case_response = JSONResponse({"case_id": "Q2026081100001", "status": "created"}, status_code=201)
     runtime_response = JSONResponse({"test_run_id": "run-27123", "status": "preparing"}, status_code=200)
-    with patch("app.routes.simulations._case_request", new=AsyncMock(return_value=case_response)) as case_request, patch(
-        "app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)
-    ) as runtime_post:
+    with (
+        patch("app.routes.simulations._case_request", new=AsyncMock(return_value=case_response)) as case_request,
+        patch("app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)) as runtime_post,
+    ):
         response = client.post(
             "/api/hci-sim/v1/simulations/test-runs",
             json={
@@ -227,12 +249,13 @@ def test_simulation_test_run_binds_platform_case_before_runtime():
 
 def test_simulation_test_run_retry_reuses_existing_case():
     """重试同一 TestRun 不得创建第二个 Case 导致 Runtime 绑定冲突。"""
-    client = TestClient(app)
+    client = _admin_client()
     existing_case = JSONResponse({"case_id": "Q2026081100001", "status": "created"}, status_code=200)
     runtime_response = JSONResponse({"test_run_id": "run-27123", "status": "leased"}, status_code=200)
-    with patch("app.routes.simulations._case_request", new=AsyncMock(return_value=existing_case)) as case_request, patch(
-        "app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)
-    ) as runtime_post:
+    with (
+        patch("app.routes.simulations._case_request", new=AsyncMock(return_value=existing_case)) as case_request,
+        patch("app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)) as runtime_post,
+    ):
         response = client.post(
             "/api/hci-sim/v1/simulations/test-runs",
             json={
@@ -253,7 +276,7 @@ def test_simulation_test_run_retry_reuses_existing_case():
 
 def test_simulation_result_digest_is_generated_from_canonical_summary():
     """HTTP 浏览器只提交结构化摘要，Gateway 生成确定性 digest。"""
-    client = TestClient(app)
+    client = _admin_client()
     runtime_response = JSONResponse({"status": "passed"}, status_code=200)
     summary = _result_summary(command_count=3)
     canonical = json.dumps(summary, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -280,7 +303,7 @@ def test_simulation_result_digest_is_generated_from_canonical_summary():
 
 def test_simulation_result_rejects_browser_supplied_digest():
     """客户端不得绕过 Gateway 提交自声明摘要。"""
-    client = TestClient(app)
+    client = _admin_client()
     response = client.post(
         "/api/hci-sim/v1/simulations/test-runs/run-27123/result",
         json={"report_summary": {}, "report_digest": "sha256:fake"},
@@ -291,7 +314,7 @@ def test_simulation_result_rejects_browser_supplied_digest():
 
 def test_simulation_result_rejects_unbounded_summary_fields():
     """摘要不能成为存放命令原文、Lease 或环境数据的旁路。"""
-    client = TestClient(app)
+    client = _admin_client()
     response = client.post(
         "/api/hci-sim/v1/simulations/test-runs/run-27123/result",
         json={"report_summary": {"raw_output": "secret"}},
@@ -302,7 +325,7 @@ def test_simulation_result_rejects_unbounded_summary_fields():
 
 def test_simulation_result_rejects_invalid_summary_types():
     """白名单字段也必须满足强类型和范围约束。"""
-    client = TestClient(app)
+    client = _admin_client()
     response = client.post(
         "/api/hci-sim/v1/simulations/test-runs/run-27123/result",
         json={
@@ -319,7 +342,7 @@ def test_simulation_result_rejects_invalid_summary_types():
 
 
 def test_simulation_result_rejects_false_positive_passed_outcome():
-    client = TestClient(app)
+    client = _admin_client()
     response = client.post(
         "/api/hci-sim/v1/simulations/test-runs/run-27123/result",
         json={
@@ -334,7 +357,7 @@ def test_simulation_result_rejects_false_positive_passed_outcome():
 
 
 def test_simulation_result_rejects_definitive_but_wrong_kbd():
-    client = TestClient(app)
+    client = _admin_client()
     response = client.post(
         "/api/hci-sim/v1/simulations/test-runs/run-27123/result",
         json={
@@ -347,7 +370,7 @@ def test_simulation_result_rejects_definitive_but_wrong_kbd():
 
 
 def test_simulation_result_accepts_structured_inconclusive_without_commands():
-    client = TestClient(app)
+    client = _admin_client()
     runtime_response = JSONResponse({"status": "inconclusive"}, status_code=200)
     with patch("app.routes.simulations._post", new=AsyncMock(return_value=runtime_response)):
         response = client.post(
@@ -369,7 +392,7 @@ def test_simulation_result_accepts_structured_inconclusive_without_commands():
 
 def test_dry_run_datasets_accept_expert_prefixed_signal_ids():
     """专家工作稿生成的 expert_* 信号与 AI 抽取的 sig_* 信号都必须能拉取试运行数据集。"""
-    client = TestClient(app)
+    client = _admin_client()
     runtime_response = JSONResponse({"datasets": []}, status_code=200)
     with patch("app.routes.simulations._get", new=AsyncMock(return_value=runtime_response)) as runtime_get:
         for signal_id in ("sig_qfk_001", "expert_1787108982945_03ec9aba7fb2"):
@@ -383,7 +406,7 @@ def test_dry_run_datasets_accept_expert_prefixed_signal_ids():
 
 def test_dry_run_datasets_reject_signal_ids_outside_charset():
     """白名单只约束字符集与长度，防止查询串注入；不校验业务前缀。"""
-    client = TestClient(app)
+    client = _admin_client()
     with patch("app.routes.simulations._get", new=AsyncMock()) as runtime_get:
         for signal_id in ("sig_1 x", "信号1", ""):
             response = client.get(
@@ -397,7 +420,7 @@ def test_dry_run_datasets_reject_signal_ids_outside_charset():
 
 def test_create_bundle_draft_passes_kbd_revision_to_kb_service():
     """验证创建 Bundle Draft 时透传 kbd_revision 到 kb-service 解析指定工作稿。"""
-    client = TestClient(app)
+    client = _admin_client()
     cap_data = {
         "status": "ready_for_artifact_binding",
         "resolved": {
@@ -409,8 +432,10 @@ def test_create_bundle_draft_passes_kbd_revision_to_kb_service():
     cap_resp = AsyncMock(status_code=200, json=lambda: cap_data)
     runtime_resp = JSONResponse({"bundle": {"digest": "sha256:test"}}, status_code=201)
 
-    with patch("httpx.AsyncClient.get", new=AsyncMock(return_value=cap_resp)) as mock_kb_get, \
-         patch("app.routes.simulations._post", new=AsyncMock(return_value=runtime_resp)) as mock_post:
+    with (
+        patch("httpx.AsyncClient.get", new=AsyncMock(return_value=cap_resp)) as mock_kb_get,
+        patch("app.routes.simulations._post", new=AsyncMock(return_value=runtime_resp)) as mock_post,
+    ):
         response = client.post(
             "/api/hci-sim/v1/control-plane/bundles",
             json={"support_id": "41446", "kbd_revision": 23},

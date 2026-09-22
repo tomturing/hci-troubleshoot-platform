@@ -21,12 +21,15 @@ if _expect != _actual:
         sys.path.remove(_svc)
     sys.path.insert(0, _svc)
 
+from app.config import settings
 from app.main import app
 
 
 class TestGateway(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
+        # kbd 管理家族已强制 INTERNAL_API_TOKEN（P1 加固）；admin 令牌对用户级路由同样兼容
+        self.client.headers.update({"Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}"})
 
     @patch("app.routes.cases.httpx.AsyncClient")
     def test_create_case_proxy(self, mock_client_cls):

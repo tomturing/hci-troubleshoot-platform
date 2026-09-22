@@ -8,11 +8,12 @@ import json
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from shared.observability.logger import get_logger
 
 from app.config import settings
+from app.security.gateway_auth import require_admin, require_user
 
 router = APIRouter(prefix="/api/v1/kb", tags=["kb"])
 logger = get_logger("gateway-kb")
@@ -64,16 +65,16 @@ def _internal_auth_headers() -> dict:
 
 
 @router.post("/search")
-async def search(request: Request):
-    """混合检索（BM25 + 向量 RRF 融合）"""
+async def search(request: Request, _: str = Depends(require_user)):
+    """混合检索（BM25 + 向量 RRF 融合）；客户对话链路，凭服务端签发身份访问"""
     body = await request.json()
     response = await proxy_request("POST", "/search", payload=body)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
 @router.post("/sop/match")
-async def sop_match(request: Request):
-    """SOP 关键词精确匹配"""
+async def sop_match(request: Request, _: str = Depends(require_user)):
+    """SOP 关键词精确匹配；客户对话链路，凭服务端签发身份访问"""
     body = await request.json()
     response = await proxy_request("POST", "/sop/match", payload=body)
     return JSONResponse(content=response.json(), status_code=response.status_code)
@@ -83,8 +84,8 @@ async def sop_match(request: Request):
 
 
 @router.post("/ingest")
-async def ingest(request: Request):
-    """文档摄入（SHA256 幂等）"""
+async def ingest(request: Request, _: None = Depends(require_admin)):
+    """文档摄入（SHA256 幂等）；管理操作，要求 INTERNAL_API_TOKEN"""
     body = await request.json()
     headers = _forward_headers(request)
     response = await proxy_request("POST", "/ingest", payload=body, headers=headers)
@@ -92,8 +93,8 @@ async def ingest(request: Request):
 
 
 @router.post("/sop/import")
-async def sop_import(request: Request):
-    """SOP 节点批量导入"""
+async def sop_import(request: Request, _: None = Depends(require_admin)):
+    """SOP 节点批量导入；管理操作，要求 INTERNAL_API_TOKEN"""
     body = await request.json()
     headers = _forward_headers(request)
     response = await proxy_request("POST", "/sop/import", payload=body, headers=headers)
@@ -104,24 +105,24 @@ async def sop_import(request: Request):
 
 
 @router.get("/documents")
-async def list_documents(request: Request):
-    """文档列表"""
+async def list_documents(request: Request, _: None = Depends(require_admin)):
+    """文档列表；管理操作，要求 INTERNAL_API_TOKEN"""
     headers = _forward_headers(request)
     response = await proxy_request("GET", "/documents", params=dict(request.query_params), headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
 @router.get("/documents/{doc_id}")
-async def get_document(doc_id: int, request: Request):
-    """获取文档详情"""
+async def get_document(doc_id: int, request: Request, _: None = Depends(require_admin)):
+    """获取文档详情；管理操作，要求 INTERNAL_API_TOKEN"""
     headers = _forward_headers(request)
     response = await proxy_request("GET", f"/documents/{doc_id}", headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
 @router.patch("/documents/{doc_id}")
-async def update_document_status(doc_id: int, request: Request):
-    """更新文档状态"""
+async def update_document_status(doc_id: int, request: Request, _: None = Depends(require_admin)):
+    """更新文档状态；管理操作，要求 INTERNAL_API_TOKEN"""
     body = await request.json()
     headers = _forward_headers(request)
     response = await proxy_request("PATCH", f"/documents/{doc_id}", payload=body, headers=headers)
@@ -129,8 +130,8 @@ async def update_document_status(doc_id: int, request: Request):
 
 
 @router.delete("/documents/{doc_id}")
-async def delete_document(doc_id: int, request: Request):
-    """删除文档"""
+async def delete_document(doc_id: int, request: Request, _: None = Depends(require_admin)):
+    """删除文档；管理操作，要求 INTERNAL_API_TOKEN"""
     headers = _forward_headers(request)
     response = await proxy_request("DELETE", f"/documents/{doc_id}", headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
@@ -138,7 +139,11 @@ async def delete_document(doc_id: int, request: Request):
 
 # ============ 分类管理代理（admin 前端使用 /api/kb/categories 前缀） ============
 
-categories_router = APIRouter(prefix="/api/kb/categories", tags=["kb-categories"])
+# 分类管理全家族为 admin 专属（网关侧自注入内部 Token 代理下游，历史上匿名可用，
+# P1 起强制 INTERNAL_API_TOKEN；admin 前端统一携带令牌，零改动）
+categories_router = APIRouter(
+    prefix="/api/kb/categories", tags=["kb-categories"], dependencies=[Depends(require_admin)]
+)
 
 
 @categories_router.get("")
@@ -258,7 +263,7 @@ async def category_export_proxy(request: Request):
 
 
 # ============ Resolution Catalogs 代理（admin 前端使用 /api/kb/catalogs 前缀） ============
-catalogs_router = APIRouter(prefix="/api/kb/catalogs", tags=["kb-catalogs"])
+catalogs_router = APIRouter(prefix="/api/kb/catalogs", tags=["kb-catalogs"], dependencies=[Depends(require_admin)])
 
 
 @catalogs_router.get("")
@@ -301,7 +306,7 @@ KBD_SERVICE_URL = f"{settings.KB_SERVICE_URL}/api/admin/kbd"
 
 # qkv_vm_console 截图会话审计查询（§7.3）：代理到 kb-service 管理端只读路由。
 VM_CONSOLE_SERVICE_URL = f"{settings.KB_SERVICE_URL}/api/admin/vm-console"
-vm_console_router = APIRouter(prefix="/api/v1/vm-console", tags=["vm-console"])
+vm_console_router = APIRouter(prefix="/api/v1/vm-console", tags=["vm-console"], dependencies=[Depends(require_admin)])
 
 
 @vm_console_router.get("/captures")
@@ -328,7 +333,9 @@ async def vm_console_captures_proxy(request: Request):
 
 # 关键信号建模资产管理（模板库 + 最佳实践黄金实例）：代理到 kb-service 管理端只读路由。
 SIGNAL_ASSETS_SERVICE_URL = f"{settings.KB_SERVICE_URL}/api/admin/signal-assets"
-signal_assets_router = APIRouter(prefix="/api/v1/signal-assets", tags=["signal-assets"])
+signal_assets_router = APIRouter(
+    prefix="/api/v1/signal-assets", tags=["signal-assets"], dependencies=[Depends(require_admin)]
+)
 
 
 @signal_assets_router.get("/templates")
@@ -439,7 +446,7 @@ async def signal_failure_detail_proxy(request: Request, failure_id: int):
     return JSONResponse(content=body, status_code=response.status_code)
 
 
-kbd_router = APIRouter(prefix="/api/v1/kbd", tags=["kbd"])
+kbd_router = APIRouter(prefix="/api/v1/kbd", tags=["kbd"], dependencies=[Depends(require_admin)])
 
 
 async def _kbd_proxy(
@@ -882,7 +889,7 @@ async def kbd_semantic_preview_proxy(kbd_id: int, request: Request):
 
 SOP_ADMIN_SERVICE_URL = f"{settings.KB_SERVICE_URL}/api/admin/sop"
 SOP_TREE_SERVICE_URL = f"{settings.KB_SERVICE_URL}/api/sop"  # 决策树端点（非 admin 路由）
-sop_admin_router = APIRouter(prefix="/api/v1/sop", tags=["sop-admin"])
+sop_admin_router = APIRouter(prefix="/api/v1/sop", tags=["sop-admin"], dependencies=[Depends(require_admin)])
 
 
 async def _sop_proxy(
