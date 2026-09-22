@@ -19,6 +19,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 from shared.models.schemas import WebSocketMessage
 from shared.observability.logger import get_logger
+from shared.security.identity import IDENTITY_COOKIE_NAME, verify_identity
 from shared.security.signature import CLIENT_ID_PATTERN, sign_client_identity
 
 from app.config import settings
@@ -42,6 +43,19 @@ def set_session_manager(sm: SessionManager):
 @router.websocket("/ws/{client_id}")
 async def websocket_endpoint(websocket: WebSocket, client_id: str):
     """WebSocket连接端点"""
+    # 身份信任链（P1）：与 P0 的 HTTP 路由对齐，client_id 必须与网关签发的
+    # 身份 Cookie 一致，拒绝握手前未认证/冒用他人身份的连接。
+    # 否则旧实现会为路径自报的任意 client_id 签名转发，形成 IDOR 通道。
+    cookie_client_id = verify_identity(websocket.cookies.get(IDENTITY_COOKIE_NAME), settings.INTERNAL_API_TOKEN)
+    if not cookie_client_id or cookie_client_id != client_id:
+        logger.warning(
+            event="websocket_identity_rejected",
+            message="WebSocket rejected: identity cookie missing or mismatched",
+            claimed_client_id=client_id,
+        )
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
+
     await websocket.accept()
 
     # client_id 格式校验：拒绝畸形标识符（下游以其做归属比对）
@@ -70,7 +84,9 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     errors = e.errors()[:5]
                     # 构造更有帮助的错误消息，包含缺失字段名
                     missing_fields = [err["loc"][-1] for err in errors if err.get("type") == "missing"]
-                    error_msg = f"missing required field: {', '.join(missing_fields)}" if missing_fields else "invalid_schema"
+                    error_msg = (
+                        f"missing required field: {', '.join(missing_fields)}" if missing_fields else "invalid_schema"
+                    )
                     logger.warning(
                         event="websocket_invalid_schema",
                         message="Invalid message schema",
@@ -115,11 +131,15 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                                 status_code=response.status_code,
                                 error=error_content.decode(errors="replace")[:200],
                             )
-                            await websocket.send_text(json.dumps({
-                                "error": "upstream_rejected",
-                                "status_code": response.status_code,
-                                "message": "上游服务拒绝请求（无权访问或会话不存在）",
-                            }))
+                            await websocket.send_text(
+                                json.dumps(
+                                    {
+                                        "error": "upstream_rejected",
+                                        "status_code": response.status_code,
+                                        "message": "上游服务拒绝请求（无权访问或会话不存在）",
+                                    }
+                                )
+                            )
                             continue
 
                         # 流式返回AI响应
@@ -144,5 +164,7 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                 error_type=type(e).__name__,
             )
             with contextlib.suppress(Exception):
-                await websocket.send_text(json.dumps({"error": "internal_error", "message": "服务暂时不可用，请稍后重试"}))
+                await websocket.send_text(
+                    json.dumps({"error": "internal_error", "message": "服务暂时不可用，请稍后重试"})
+                )
             await session_manager.close_session(client_id)

@@ -13,13 +13,16 @@ import re
 import uuid
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from app.config import settings
 from app.routes.signal_dry_run import _resolve_package_context
+from app.security.gateway_auth import require_admin
 
-router = APIRouter(prefix="/api/hci-sim", tags=["hci-sim"])
+# hci-sim 控制面为管理员专属能力（bundle 编译/发布/激活/回滚、TestRun 管理），
+# admin 前端统一携带 INTERNAL_API_TOKEN，匿名浏览器一律 403（P1 安全加固）
+router = APIRouter(prefix="/api/hci-sim", tags=["hci-sim"], dependencies=[Depends(require_admin)])
 
 
 def _trace_id(request: Request) -> str:
@@ -35,9 +38,7 @@ def _actor_id(role: str, purpose: str | None = None) -> str:
     actors = {
         "compiler": settings.HCI_SIM_COMPILER_ACTOR_ID,
         "expert": (
-            settings.HCI_SIM_EXPERT_EDITOR_ACTOR_ID
-            if purpose == "edit"
-            else settings.HCI_SIM_EXPERT_REVIEWER_ACTOR_ID
+            settings.HCI_SIM_EXPERT_EDITOR_ACTOR_ID if purpose == "edit" else settings.HCI_SIM_EXPERT_REVIEWER_ACTOR_ID
         ),
         "security": settings.HCI_SIM_SECURITY_ACTOR_ID,
         "publisher": settings.HCI_SIM_PUBLISHER_ACTOR_ID,
@@ -405,9 +406,7 @@ async def create_test_run(request: Request) -> JSONResponse:
     environment_context = dict(runtime_payload.get("environment_context") or {})
     environment_context["case_id"] = case_id
     runtime_payload["environment_context"] = environment_context
-    runtime_response = await _post(
-        "/v1/simulations/test-runs", runtime_payload, request.headers.get("Idempotency-Key")
-    )
+    runtime_response = await _post("/v1/simulations/test-runs", runtime_payload, request.headers.get("Idempotency-Key"))
     if runtime_response.status_code >= 400:
         if created_case:
             with contextlib.suppress(HTTPException):
