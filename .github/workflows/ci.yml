@@ -1069,14 +1069,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [changes]
+    # 集成门禁自守：PR 触及集成测试时无条件执行，避免快速单测计划（mode 可为
+    # targeted/none）把整条集成测试门禁静默关掉。
     if: |
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.backend_gate_required == 'true') ||
         github.event_name == 'merge_group' ||
         (github.event_name == 'pull_request' && needs.changes.outputs.unit_test_mode == 'full') ||
-        # 集成门禁自守：PR 触及集成测试时无条件执行，避免快速单测计划（mode 可为
-        # targeted/none）把整条集成测试门禁静默关掉。
         (github.event_name == 'pull_request' && needs.changes.outputs.integration_tests_changed == 'true')
       )
 
@@ -1130,13 +1130,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [changes]
+    # 安全门禁自守：PR 触及 tests/security/** 时无条件执行（成因同 integration-tests）。
     if: |
       (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.backend_gate_required == 'true') ||
         github.event_name == 'merge_group' ||
         (github.event_name == 'pull_request' && needs.changes.outputs.unit_test_mode == 'full') ||
-        # 安全门禁自守：PR 触及 tests/security/** 时无条件执行（同 integration-tests 的成因）。
         (github.event_name == 'pull_request' && needs.changes.outputs.security_tests_changed == 'true')
       )
     steps:
