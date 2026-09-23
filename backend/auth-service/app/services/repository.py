@@ -30,7 +30,9 @@ async def get_roles(session: AsyncSession, user_id: Any) -> list[str]:
     # 角色权威存储于 user.roles（jsonb），与 unified schema 一致；
     # 旧 user_role 规范化表未实际建表，统一以 user.roles 为准（阶段1.x 修复阶段0 缺陷）。
     res = await session.execute(
-        text('SELECT roles FROM "user" WHERE user_id = :uid::uuid'),
+        # CAST 而非 :: —— SQLAlchemy text() 里 `::` 会与绑定参数解析冲突，
+        # 经 asyncpg 下发后出现 "syntax error at or near ':'"（线上登录 500 的根因）。
+        text('SELECT roles FROM "user" WHERE user_id = CAST(:uid AS uuid)'),
         {"uid": user_id},
     )
     row = res.scalar_one_or_none()
