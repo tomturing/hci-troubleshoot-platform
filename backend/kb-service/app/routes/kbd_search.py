@@ -104,11 +104,14 @@ class SemanticEntryResolveRequest(BaseModel):
         description=(
             "真实未命中为 no_match；分类没有强生产者为 not_applicable；"
             "matched_inconclusive 只允许返回 guidance_only 人工指引；"
-            "已命中或查询不可用时禁止执行型语义兜底"
+            "已命中或查询不可用时禁止执行型语义兜底；启用参考模式可返回未验证案例"
         )
     )
     top_k: int = Field(default=5, ge=1, le=10)
     expected_revisions: dict[str, int] = Field(default_factory=dict)
+    include_reference_cases: bool = False
+    excluded_kbd_ids: list[str] = Field(default_factory=list, max_length=10000)
+    recommendation_only: bool = False
 
 
 @router.post("/kbd/semantic-entry/resolve")
@@ -120,7 +123,9 @@ async def resolve_semantic_entry(request: SemanticEntryResolveRequest) -> dict[s
 
     from app.routes.playbooks import _execution_issues
 
-    if request.strong_producer_status not in {"no_match", "not_applicable", "matched_inconclusive"}:
+    if not request.include_reference_cases and request.strong_producer_status not in {
+        "no_match", "not_applicable", "matched_inconclusive"
+    }:
         return await resolve_candidates(
             entries=[],
             context=request.case_context.model_dump()
@@ -184,6 +189,9 @@ async def resolve_semantic_entry(request: SemanticEntryResolveRequest) -> dict[s
             if _embedding_service
             else "",
             top_k=request.top_k,
+            include_reference_cases=request.include_reference_cases,
+            excluded_kbd_ids=request.excluded_kbd_ids,
+            recommendation_only=request.recommendation_only,
         )
         # 运行时使用的精确修订进入现有审计，停用／回滚不会归属到错误版本。
         for candidate in resolved["candidates"]:

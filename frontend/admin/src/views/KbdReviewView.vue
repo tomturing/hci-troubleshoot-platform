@@ -3305,7 +3305,9 @@ function deleteSignal(index: number) {
     && Number(policy.minimum_should || 0) > Math.max(0, (policy.should || []).length - 1)
   const impact = [
     `“${role}”将从 Agent 的验证规则中同步移除。`,
-    isLastMust ? '删除后可以先保存工作稿，但发布前必须把至少一条可执行信号设为“必要证据”。' : '',
+    signalList.value.length === 1
+      ? '删除最后一条信号后，可发布为仅案例推荐；按标题和问题描述检索，不自动确认根因。'
+      : isLastMust ? '保留自动诊断信号时，发布前必须把至少一条可执行信号设为“必要证据”。' : '',
     thresholdWillChange ? '增强证据门槛会自动收敛，避免要求已删除的信号。' : '',
     '原始 KBD 正文和截图证据不会删除。',
   ].filter(Boolean).join('\n\n')
@@ -4999,6 +5001,11 @@ onUnmounted(() => clearBatchPollTimer())
             </div>
           </div>
 
+          <el-alert
+            v-if="signalList.length === 0 && !activeSemanticProfile"
+            type="info" :closable="false" show-icon
+            title="仅案例推荐：无信号案例也可审核发布，按标题和问题描述匹配。无需填写语义画像；不会自动确认根因或生成采集资源。抽取异常与待复核拒绝候选仍需先处理。"
+          />
           <section v-if="activeSemanticProfile" class="semantic-entry-contract">
             <div class="semantic-entry-header">
               <el-alert

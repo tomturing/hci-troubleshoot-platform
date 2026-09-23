@@ -10,7 +10,7 @@ owner: team
 
 # Agent 可靠性改造任务清单
 
-> **关联方案** → [Agent可靠性三方案对比分析](../../solution/agent/Agent可靠性三方案对比分析.md)
+> **关联方案** → [Agent可靠性三方案对比分析](../../solution/agent/02-架构设计/Agent可靠性三方案对比分析.md)
 >
 > **执行策略**："方案 C 为魂，方案 B 为骨，方案 A 为理"融合落地。
 > 方案 C 的领域模型是目标终态，方案 B 的渐进路线是执行手册，方案 A 的第一性原理是决策防偏指南。
@@ -26,9 +26,9 @@ owner: team
 | 2026-08-07 | v3.70 | **Shared Resolution Runtime 首个纵向切片**：新增 Log/System/Domain/Service/Qkv/Variable 六类 Resolver、Git Catalog、QFK/QKV verified gate 与 resolution audit snapshot。QKV keyword 使用 canonical-first、审核 alias 与有界 fallback；日志候选目录 retry 和只读归档检查已接入。生产 path probe、SQLite handler、通用 executor gate、tar.zst 与跨版本 replay 继续列为未完成项。 | [统一解析运行时与 Resolver 分层任务](events/2026-08-07-关键信号统一解析运行时与Resolver分层任务.md) |
 | 2026-08-07 | v3.68 | **QFK 取值—判断—产出公共契约**：数值 Matcher 先消费经逐字回查的 AI `number`/`array<number>`，非数值 Matcher 保持后置证据提取；Produce 与 Matcher 共用同一候选/AI 提取器并保持原子变量写入，Catalog 不支持的直接 predicate 仍 fail closed。 | [QFK 取值判断产出统一执行契约与 AI 数值提取方案](../../solution/events/2026-08-07-QFK取值判断产出统一执行契约与AI数值提取方案.md) |
 | 2026-08-06 | v3.68 | **QKV/QFK 关键词参数类型契约收敛**：Prompt v2.3 明确 QKV `acquire.args.keyword` 为单个 string，数组仅用于 QFK `match.pattern` 或 `extract.rows.include/exclude`；共享门禁新增 `QKV_KEYWORD_MUST_BE_STRING`，多任务动作拆成多条 Candidate。 | [QKV 关键词类型契约收敛方案](../../solution/knowledge-base/events/2026-08-06-KBD信号QKV关键词类型契约收敛方案.md) |
-| 2026-08-06 | v3.67 | **hci-sim C2 Artifact Registry 安全边界**：新增 Artifact metadata/scan/Expert+Security 双角色审批/revocation、Bundle payload digest 与 `version`、stale outbox。Compiler 不再信任调用方“已批准”声明，必须经 Registry 校验 ID/digest/status；真实 Artifact、OCI/S3、KMS、生产 PostgreSQL CAS/outbox worker 未接入，不得将参考内存实现视为环境验证。 | [C2 验证报告](../../verify/hci-sim/events/hci-sim阶段C2获批Artifact与不可变BundleRegistry验证报告.md) |
-| 2026-08-06 | v3.66 | **hci-sim C–E 控制面契约**：新增 Agent Test Bundle/Run metadata Schema 与控制面参考内核。编译输入/Bundle/Lease/Run 按 digest 与 revision 冻结，审批/审计、stale、idempotency、差分/mutation/容量串线停止均 fail-closed；原始 Artifact 与 Lease 明文不入库。真实 Bridge/Agent Runner、持久 CAS 与环境验收仍待接入，不把代码级基础冒充生产验证。 | [C–E 控制面代码级实施验证报告](../../verify/hci-sim/events/hci-sim阶段C-E控制面代码级实施验证报告.md) |
-| 2026-08-07 | v3.69 | **hci-sim C3 两步人工验收与 CI 配置收敛**：Custom UI 增加 `sim-ssh` 仿真租约入口；C1 capability → synthetic positive-minimal Bundle → hci-sim 的 dev 两步验收脚本只允许 27736/34164 并对 capability gap fail-closed。移除不具备合并门禁价值且依赖外部 GitHub Models 的 `doc-review-agent` pull_request workflow，保留文档命名和模块文档同步检查。 | [C3 两步人工验收闭环验证报告](../../verify/hci-sim/events/hci-sim阶段C3两步人工验收闭环验证报告.md) |
+| 2026-08-06 | v3.67 | **hci-sim C2 Artifact Registry 安全边界**：新增 Artifact metadata/scan/Expert+Security 双角色审批/revocation、Bundle payload digest 与 `version`、stale outbox。Compiler 不再信任调用方“已批准”声明，必须经 Registry 校验 ID/digest/status；真实 Artifact、OCI/S3、KMS、生产 PostgreSQL CAS/outbox worker 未接入，不得将参考内存实现视为环境验证。 | [C2 验证报告](../../verify/hci-sim/events/2026-08-06-hci-sim阶段C2获批Artifact与不可变BundleRegistry验证报告.md) |
+| 2026-08-06 | v3.66 | **hci-sim C–E 控制面契约**：新增 Agent Test Bundle/Run metadata Schema 与控制面参考内核。编译输入/Bundle/Lease/Run 按 digest 与 revision 冻结，审批/审计、stale、idempotency、差分/mutation/容量串线停止均 fail-closed；原始 Artifact 与 Lease 明文不入库。真实 Bridge/Agent Runner、持久 CAS 与环境验收仍待接入，不把代码级基础冒充生产验证。 | [C–E 控制面代码级实施验证报告](../../verify/hci-sim/events/2026-08-06-hci-sim阶段C-E控制面代码级实施验证报告.md) |
+| 2026-08-07 | v3.69 | **hci-sim C3 两步人工验收与 CI 配置收敛**：Custom UI 增加 `sim-ssh` 仿真租约入口；C1 capability → synthetic positive-minimal Bundle → hci-sim 的 dev 两步验收脚本只允许 27736/34164 并对 capability gap fail-closed。移除不具备合并门禁价值且依赖外部 GitHub Models 的 `doc-review-agent` pull_request workflow，保留文档命名和模块文档同步检查。 | [C3 两步人工验收闭环验证报告](../../verify/hci-sim/events/2026-08-06-hci-sim阶段C3两步人工验收闭环验证报告.md) |
 | 2026-08-05 | v3.65 | **QFK 统一过滤取值输出契约**：Agent 对文本候选行使用 `same_record` 语义，包含/排除分别支持 AND/OR；`qfk_log` 只从 `extract.rows.include` 派生 aCLI 粗筛，`qfk_service` 运行时仅允许 status。非零 exit code 无条件阻断 Matcher/变量写入，执行失败不再冒充业务 False。已增加 qfk_log/system/service/vm 四类从 Schema、Handler、Fake Executor 到 Match/变量池的完整契约矩阵。 | [KBD 关键信号统一过滤、取值与输出方案](../../solution/knowledge-base/events/2026-08-05-KBD关键信号统一过滤取值与输出方案.md) |
 | 2026-08-05 | v3.64 | **QFK 完整输出受控 AI 提取**：确定性 ValueExtract/Matcher 先选定真实候选行，AI 仅返回候选原文已有的字面量及物理引用行；服务端逐字回查，候选超限或调用/JSON/类型/溯源失败均 Fail Closed。Matcher evidence 与 produces 共用同一实现，produces 先全量验证再原子写变量池。 | [QFK 完整输出 AI 提取方案](../../solution/agent/events/2026-08-05-QFK完整输出AI提取方案.md) |
 | 2026-08-04 | v3.63 | **QFK 白盒日志定位与 AND 判定收敛**：`qfk_log` 按已解析 `END` 的月内日号定位白盒 `vt` 目录，`END` 未解析时显式回退 `/sf/log`；keyword AND 使用 OR 命令预筛并由后端对完整输出做最终 AND 判定，命令预览复用运行时规则。 | PR #672 |
@@ -61,8 +61,8 @@ owner: team
 | 2026-07-29 | v3.36 | **Terminal Bridge 真实入口 P0 修复**：删除普通 Markdown `CommandBlock → ssh_input` 自动执行旁路；S0 在 LLM 前拒绝显式命令执行请求并阻断无工具证据的伪造输出；Alloy 固化资源、探针、指标抓取与流水线告警。状态：自动化回归已启动，真实 S1/ReAct 正向与 S0/Markdown 负向验收通过前不得宣称完整可观测，也不得进入 hci-sim。 |
 | 2026-07-28 | v3.35 | **KBD 关键信号结果用户化与 ps 输出契约修正**：主报告改为检查说明/状态/结果/结构化产出，技术 ID 与原始输出留在审计层；golden chain 使用 `ps -p PID -o cmd=` 产出 CMD，并固定旧 PID include 会过滤 cmd 输出的反例。关联：[KBD关键信号结果展示与ps输出提取方案](../../solution/events/2026-07-28-KBD关键信号结果展示与ps输出提取方案.md) |
 | 2026-07-28 | v3.34 | **S0 分类稳定身份与原子推进**：修复工单 `Q2026072855923` 中 VM 名被当成分类、点击③却进入存储-020 的复合错误；Agent 候选与 active 分类交集，UI 回传 category code，Conversation 保留原 optionId 并原子提交 category/S1。关联：[S0 分类稳定身份协议与候选治理方案](../../solution/events/2026-07-28-S0分类稳定身份协议与候选治理方案.md) |
-| 2026-07-28 | v3.33 | **KBD 大输出聚合副本与 exec-result 纵深防御**：修复旧 terminal_bridge 的 40 MB `output` 绕过 stdout/stderr 筛选并导致 Gateway OOM；UI 统一重建兼容 output，Gateway 增加 JSON 解析前 2 MiB 门禁，Conversation 增加 256 KiB 契约并修复 yield Session 被提前关闭。关联工单 `Q2026072785259`；关联：[KBD27123三信号执行闭环方案](../../solution/hci-sim/events/KBD27123三信号执行闭环方案.md)。 |
-| 2026-07-27 | v3.32 | **KBD 三信号执行闭环**：QKV 必须显式现场 acquisition；QFK 大输出字面量筛选前移到 terminal_bridge；统一工具卡片 args/result/status、exec_id 持久化和流中断终态；KBD 27123 修正为定向三步变量链。关联：[KBD27123三信号执行闭环方案](../../solution/hci-sim/events/KBD27123三信号执行闭环方案.md)。 |
+| 2026-07-28 | v3.33 | **KBD 大输出聚合副本与 exec-result 纵深防御**：修复旧 terminal_bridge 的 40 MB `output` 绕过 stdout/stderr 筛选并导致 Gateway OOM；UI 统一重建兼容 output，Gateway 增加 JSON 解析前 2 MiB 门禁，Conversation 增加 256 KiB 契约并修复 yield Session 被提前关闭。关联工单 `Q2026072785259`；关联：[KBD27123三信号执行闭环方案](../../solution/events/2026-07-27-KBD27123三信号执行闭环方案.md)。 |
+| 2026-07-27 | v3.32 | **KBD 三信号执行闭环**：QKV 必须显式现场 acquisition；QFK 大输出字面量筛选前移到 terminal_bridge；统一工具卡片 args/result/status、exec_id 持久化和流中断终态；KBD 27123 修正为定向三步变量链。关联：[KBD27123三信号执行闭环方案](../../solution/events/2026-07-27-KBD27123三信号执行闭环方案.md)。 |
 | 2026-07-27 | v3.31 | **QFK 非 JSON 完整输出行列提取**：新增受控 text extract、stdout/stderr 完整缓存读取、稳定错误码和 Fail Closed；KB 增加 grep/awk/cut 确定性转换；requires 从占位符推导；管理端提供简化审核 UI。关联：[QFK非JSON结果行列提取方案](../../solution/events/2026-07-27-QFK非JSON结果行列提取方案.md)。 |
 | 2026-07-27 | v3.30 | **QFK 产出变量、宿主机执行与超时链路（PR #622）**：① QFK `match` 与 `orchestrate.produces` 强制二选一，产出结果写入变量池；② `qfk_system.container=host` 直接在宿主机执行；③ timeout 从 Agent 透传至 terminal bridge，并在独立 SSH session 超时后关闭会话。 |
 | 2026-07-26 | v3.29 | **v2 信号契约分层解包与容错解析（PR #620）**：① `kbd_model.py` 的 `kbd_from_dict()` 增加 dict 信封解包容错，支持兼容 API 标准 list 与 DB 原始 dict 形态；② 配合 kb-service 检索接口剥离存储信封，透出规范 `List[Signal]` 数组；③ 新增架构选型文档《关键信号数据结构选型分析与分层治理方案》 |
@@ -119,9 +119,9 @@ owner: team
 | 2026-06-14 | v4.0 | **SOP长命令截断治理与LLM纠错架构（PR #466）**：① `executor.py` 大输出截断前无损暂存 Redis `cmd_cache:{exec_id}`（1800秒），`ExecResult` 追加 `exec_id`；② 退出码 127/command not found 含 python 时自动纠错重写；③ `01_tool_definitions.sql` 为 `acli_exec/bash_exec` 添加禁用 Python 与截断过滤建议提示；④ 变量池新增 `json_extract` 策略，支持 `jsonpath-ng.ext`（含 `&` AND 过滤）从缓存/截断数据提取子变量；⑤ 新增 `acquisition_strategy.py` 公共解析器，统一"实体_动作"及冒号简写规则；⑥ `sop_execution.py` 创建执行实例时自动注入原始事实源（含 `alert_logs`）到变量池。详见 [SOP长命令截断治理与LLM纠错架构设计.md](../../solution/events/2026-06-14-SOP长命令截断治理与LLM纠错架构设计.md) |
 | 2026-06-15 | v4.1 | **SOP 技能工具绑定修正与变量门禁范围优化（PR #470）**：① `database/seeds/03_skill_definitions.sql` 中 `hci-alert-parsing`/`hci-task-parsing` 的 `allowed_tools` 由 `'bash'` 修正为 `'bash_exec'`；② `nav.py` 中 `find_missing_guarded_variables_for_node_window` 优化为非叶子节点时仅检测当前节点本身受控变量，不再提前拦截子分支变量；③ kb-service 新增 `validate_variable_schema_dependencies` 校验器，在 SOP 发布及变量 schema 更新时检查依赖的工具/技能是否注册且启用，缺失时抛出 422 并返回 `ValidationIssue` 列表。详见 [SOP发布与变量更新依赖校验设计.md](../../solution/knowledge-base/sop-agent/SOP发布与变量更新依赖校验设计.md) |
 | 2026-06-15 | v4.2 | **诊断自动流转与推理步数限制优化（PR #471）**：① `conversation_service.py` 在 S0 拦截后将 Assistant 分类确认文案追加到 `history_messages`，使大模型知晓阶段已确认，避免重复寒暄输出触发 `invoke_result.content is not None` 终止规则导致流程停顿；② `react_engine.py` 常数 `MAX_STEPS` 与 `investigation_agent.py` 参数 `max_iterations` 从 15 步上调至 40 步，给予复杂 SOP 或断线重连后重复命令运行的充足步骤预算 |
-| 2026-06-21 | v4.3 | **Skill 调用失效修复（PR #475）**：① `get_sop_node`/`sop_advance` 返回体新增 `preferred_next_steps` 字段，当节点有未就绪 `skill_call/tool_call` 变量时嵌入显式推荐行动（Contextual Nudge）；② 变量门禁分层设计，新增「软推荐」层覆盖 `skill_call/tool_call` 类型；③ S0/S1 系统提示词种子数据新增「变量采集规范」，强制要求优先调用 `sop_request_variable`。详见 [skill调用失效根因分析与改进方案.md](../../solution/agent/skill调用失效根因分析与改进方案.md) |
-| 2026-06-21 | v4.4 | **ConfirmService 初始化与 REACT_ENABLED 解耦（PR #476）**：① `main.py` 中 ConfirmService 初始化不再依赖 REACT_ENABLED 开关，只要 Redis 可用即启用；② 修复 InvestigationAgent SOP 轨道内嵌 ReactEngine 因 confirm_service=None 导致所有 risk≥2 工具被 fail-closed 拒绝执行的问题；③ 增加详细的可观测性日志（confirm_service_initialized/confirm_service_skipped）。详见 [skill调用失效改进后恶化根因与闭环方案.md](../../solution/agent/skill调用失效改进后恶化根因与闭环方案.md) |
-| 2026-07-09 | v4.5 | **QKV/QFK 双核信号架构重构（PR #498）**：① 建立 KeySignal 抽象基类，统一 FrontendSignal（前端信号/生产者）与 BackendSignal（后端信号/消费者）的架构体系；② 实现 SignalExtractor 从 KBD/SOP 自然语言文本提取结构化信号；③ 实现 VariablePool 变量池管理生产者-消费者模式，前端信号提取 host/vm/time 等变量，后端信号通过 ${variable} 占位符消费；④ 自动类型判别机制 KeySignal.from_dict() 根据信号类别路由到派生类；⑤ 彻底废弃历史命名 QKVSignal/KeySignal（后端专用），统一为语义清晰的新架构。详见 [关键信号基类设计.md](../../solution/agent/02-架构设计/关键信号基类设计.md) 和 [关键信号架构迁移指南.md](../../solution/agent/02-架构设计/关键信号架构迁移指南.md) |
+| 2026-06-21 | v4.3 | **Skill 调用失效修复（PR #475）**：① `get_sop_node`/`sop_advance` 返回体新增 `preferred_next_steps` 字段，当节点有未就绪 `skill_call/tool_call` 变量时嵌入显式推荐行动（Contextual Nudge）；② 变量门禁分层设计，新增「软推荐」层覆盖 `skill_call/tool_call` 类型；③ S0/S1 系统提示词种子数据新增「变量采集规范」，强制要求优先调用 `sop_request_variable`。详见 [skill调用失效根因分析与改进方案.md](../../solution/agent/02-架构设计/skill调用失效根因分析与改进方案.md) |
+| 2026-06-21 | v4.4 | **ConfirmService 初始化与 REACT_ENABLED 解耦（PR #476）**：① `main.py` 中 ConfirmService 初始化不再依赖 REACT_ENABLED 开关，只要 Redis 可用即启用；② 修复 InvestigationAgent SOP 轨道内嵌 ReactEngine 因 confirm_service=None 导致所有 risk≥2 工具被 fail-closed 拒绝执行的问题；③ 增加详细的可观测性日志（confirm_service_initialized/confirm_service_skipped）。详见 [skill调用失效改进后恶化根因与闭环方案.md](../../solution/agent/02-架构设计/skill调用失效改进后恶化根因与闭环方案.md) |
+| 2026-07-09 | v4.5 | **QKV/QFK 双核信号架构重构（PR #498）**：① 建立 KeySignal 抽象基类，统一 FrontendSignal（前端信号/生产者）与 BackendSignal（后端信号/消费者）的架构体系；② 实现 SignalExtractor 从 KBD/SOP 自然语言文本提取结构化信号；③ 实现 VariablePool 变量池管理生产者-消费者模式，前端信号提取 host/vm/time 等变量，后端信号通过 ${variable} 占位符消费；④ 自动类型判别机制 KeySignal.from_dict() 根据信号类别路由到派生类；⑤ 彻底废弃历史命名 QKVSignal/KeySignal（后端专用），统一为语义清晰的新架构。详见 [关键信号基类设计.md](../../solution/knowledge-base/关键信号架构设计.md) 和 [关键信号架构迁移指南.md](../../solution/knowledge-base/关键信号架构设计.md) |
 
 ---
 
@@ -598,13 +598,13 @@ owner: team
 
 ## 文档关联
 
-- **方案分析** → [Agent可靠性三方案对比分析](../../solution/agent/Agent可靠性三方案对比分析.md)
+- **方案分析** → [Agent可靠性三方案对比分析](../../solution/agent/02-架构设计/Agent可靠性三方案对比分析.md)
 - **三份原始方案草稿**：
-  - [agent_problems_solution.md](../../solution/agent/agent_problems_solution.md)（方案 A）
-  - [agent_reliability_solution.md](../../solution/agent/agent_reliability_solution.md)（方案 B）
-  - [排障Agent可靠性整体解决方案.md](../../solution/agent/排障Agent可靠性整体解决方案.md)（方案 C）
-- **现行 Agent 设计** → [agent设计.md](../../solution/agent/agent设计.md)
-- **工具设计** → [agent工具设计.md](../../solution/agent/agent工具设计.md)
+  - `agent_problems_solution.md`（方案 A 原草稿当前仓库未保留，摘要见上方方案分析）
+  - `agent_reliability_solution.md`（方案 B 原草稿当前仓库未保留，摘要见上方方案分析）
+  - [排障Agent可靠性整体解决方案.md](../../solution/agent/02-架构设计/排障Agent可靠性整体解决方案.md)（方案 C）
+- **现行 Agent 设计** → [agent设计.md](../../solution/agent/02-架构设计/agent设计.md)
+- **工具设计** → [agent工具设计.md](../../solution/agent/02-架构设计/agent工具设计.md)
 - QFK handlers/signal/kbd_differential 更新
 
 ---
@@ -627,7 +627,7 @@ owner: team
 - [x] 仅 `DEFINITIVE` 可进入 S4；工具错误、缺变量和未决候选不能输出 KBD 根因或方案。
 - [x] KBD 27123 golden case 和 agent-service 单元回归覆盖新不变量。
 
-详细设计见 [KBD 主动诊断信号调度与证据闭环算法设计](../../solution/knowledge-base/events/2026-07-26-KBD主动诊断信号调度与证据闭环算法设计.md)。
+详细设计见 [KBD 主动诊断信号调度与证据闭环算法设计](../../solution/knowledge-base/KBD证据诊断与CDD闭环设计.md)。
 
 ## 2026-07-28 · Terminal Bridge P0 端到端可观测性与执行结果调优数据面
 
@@ -662,4 +662,3 @@ owner: team
 - [x] **修复**：三处 `trace_id` 统一补 `DEFAULT 'migration:20260904000000'`。Atlas 生成的 DDL 变为 `ADD COLUMN trace_id character varying(64) NOT NULL DEFAULT 'migration:20260904000000'`，PostgreSQL 用默认值回填存量行后加列成功；新写入仍由应用显式传入 W3C traceparent，不依赖该默认值。待 dev / staging / prod 全部完成加列后，可移除该 DEFAULT，Atlas 会自动收敛为纯 `NOT NULL`。
 - [x] **验证**：用同一镜像跑 Atlas dry-run，确认加列语句携带 DEFAULT；在 `atlas_dev` 临时库做 67 行对照实验，无 DEFAULT 复现 `contains null values` 报错，带 DEFAULT 执行成功且 67 行全部回填为 `migration:20260904000000`。
 - [x] **附带发现（未修，需另立任务）**：`database/atlas-migrations/` 已被 `scripts/ci/resolve_image_build_plan.py` 纳入镜像构建触发路径，但 `Dockerfile.migrations` 仅 `COPY database/data-migrations/`，该目录下所有迁移（含 PR #1000 配套的 `20260904000002_add_signal_asset_trace_id.sql`）从未打进镜像、从未执行，形成"改了会触发构建、构建了却不生效"的陷阱。
-

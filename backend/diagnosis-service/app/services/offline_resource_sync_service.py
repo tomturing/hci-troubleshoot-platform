@@ -98,15 +98,15 @@ def resolve_scenario(kbd: dict[str, Any]) -> str | None:
 def offline_diagnosis_capability(kbd: dict[str, Any]) -> str:
     """语义入口的三档能力必须在离线资源同步处再次强制执行。
 
-    guidance_only/capability_gap 可以保留为已发布知识，但绝不能生成采集画像、
+    reference_only/guidance_only/capability_gap 可以保留为已发布知识，但绝不能生成采集画像、
     采集计划或下载制品。
     """
+    from shared.schemas.semantic_entry import capability_of
+
     signals = kbd.get("signals_json") or {}
     if not isinstance(signals, dict):
         return "executable"
-    profile = signals.get("semantic_entry_profile") or {}
-    value = profile.get("diagnosis_capability") if isinstance(profile, dict) else None
-    return value if value in {"executable", "guidance_only", "capability_gap"} else "executable"
+    return capability_of(signals) or "executable"
 
 
 def resolve_target_scope(requirements: list[dict[str, Any]], tool: str, command_template: str) -> str:
@@ -1011,7 +1011,7 @@ class OfflineResourceSyncService:
                     }
                 )
                 continue
-            if scenario in impacted_scenarios:
+            if scenario in impacted_scenarios and offline_diagnosis_capability(kbd) == "executable":
                 scenario_kbds[scenario].append(kbd)
                 requirements.extend(extract_requirements(kbd))
 

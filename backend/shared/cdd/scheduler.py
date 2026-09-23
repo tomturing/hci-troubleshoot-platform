@@ -38,6 +38,7 @@ class ActiveDiagnosticScheduler:
         self.plan = plan
         self.weights = weights or SchedulerWeights()
         self.completed: set[str] = set()
+        self.completed_refs: set[str] = set()
 
     @staticmethod
     def _active(assessment: CandidateAssessment) -> bool:
@@ -48,19 +49,33 @@ class ActiveDiagnosticScheduler:
         acquisition: Acquisition,
         assessments: dict[str, CandidateAssessment],
     ):
-        return [ref for ref in acquisition.signal_refs if self._active(assessments[ref.kbd_id])]
+        return [
+            ref for ref in acquisition.signal_refs
+            if self._active(assessments[ref.kbd_id]) and ref.ref_id not in self.completed_refs
+        ]
+
+    def ready_refs(self, acquisition, assessments, available_variables, available_by_candidate=None):
+        """同一采集模板可跨案例复用，但依赖只能由本案例变量解锁。"""
+        refs = self._linked_active_refs(acquisition, assessments)
+        if available_by_candidate is None:
+            return refs if acquisition.requires.issubset({name.lower() for name in available_variables}) else []
+        return [
+            ref for ref in refs
+            if set(ref.requires).issubset(available_by_candidate.get(ref.kbd_id, set()))
+        ]
 
     def executable(
         self,
         assessments: dict[str, CandidateAssessment],
         available_variables: set[str],
+        available_by_candidate: dict[str, set[str]] | None = None,
     ) -> list[Acquisition]:
         available = {name.lower() for name in available_variables}
         result: list[Acquisition] = []
         for key, acquisition in self.plan.acquisitions.items():
             if key in self.completed or not self._linked_active_refs(acquisition, assessments):
                 continue
-            if acquisition.requires.issubset(available):
+            if self.ready_refs(acquisition, assessments, available, available_by_candidate):
                 result.append(acquisition)
         return result
 
@@ -107,8 +122,12 @@ class ActiveDiagnosticScheduler:
         self,
         assessments: dict[str, CandidateAssessment],
         available_variables: set[str],
+        available_by_candidate: dict[str, set[str]] | None = None,
     ) -> tuple[Acquisition, AcquisitionScore] | None:
-        ranked = [(item, self.score(item, assessments)) for item in self.executable(assessments, available_variables)]
+        ranked = [
+            (item, self.score(item, assessments))
+            for item in self.executable(assessments, available_variables, available_by_candidate)
+        ]
         if not ranked:
             return None
         ranked.sort(
@@ -122,8 +141,12 @@ class ActiveDiagnosticScheduler:
         )
         return ranked[0]
 
-    def mark_completed(self, acquisition: Acquisition) -> None:
-        self.completed.add(acquisition.template_key)
+    def mark_completed(self, acquisition: Acquisition, ref_ids: set[str] | None = None) -> None:
+        """按 SignalRef 完成；其它案例的同模板采集可能仍在等待自己的变量。"""
+        all_refs = {ref.ref_id for ref in acquisition.signal_refs}
+        self.completed_refs.update(all_refs if ref_ids is None else ref_ids)
+        if all_refs.issubset(self.completed_refs):
+            self.completed.add(acquisition.template_key)
 
     def remaining_signal_refs(self, assessments: dict[str, CandidateAssessment]):
         for acquisition in self.plan.acquisitions.values():

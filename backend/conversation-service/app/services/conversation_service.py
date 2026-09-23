@@ -95,6 +95,11 @@ def _semantic_entry_metadata(raw: Any) -> dict[str, Any] | None:
         solution = str(item.get("recommendation_solution") or "").strip()
         if solution:
             candidate["recommendation_solution"] = solution[:3000]
+        if raw.get("decision") == "case_recommendations":
+            candidate["verified"] = False
+            candidate["problem_excerpt"] = str(item.get("problem_excerpt") or "")[:1500]
+            revision = item.get("resource_revision") or {}
+            candidate["resource_revision"] = {"revision": revision.get("revision")}
         facts = [
             {"question": str(fact.get("question") or ""), "answer": str(fact.get("answer") or "")}
             for fact in item.get("recommendation_facts") or []

@@ -3,6 +3,21 @@
 from app.services.conversation_service import _semantic_entry_metadata
 
 
+def test_title_recommendation_cannot_claim_verification_in_customer_metadata():
+    metadata = _semantic_entry_metadata({
+        "decision": "case_recommendations", "candidates": [{
+            "kbd_id": "1", "title": "缺少介质驱动程序", "verified": True,
+            "problem_excerpt": "安装系统报错", "recommendation_solution": "历史建议",
+            "resource_revision": {"revision": 8}, "command": "untrusted command",
+        }],
+    })
+    candidate = metadata["candidates"][0]
+    assert candidate["verified"] is False
+    assert candidate["problem_excerpt"] == "安装系统报错"
+    assert candidate["resource_revision"] == {"revision": 8}
+    assert "command" not in candidate
+
+
 def test_semantic_entry_metadata_keeps_only_display_safe_candidate_fields():
     metadata = _semantic_entry_metadata(
         {

@@ -691,9 +691,9 @@ onBeforeUnmount(stopPolling)
         </el-form-item>
       </el-form>
       <el-collapse>
-        <el-collapse-item title="没有可自动采集的场景？查看人工补证据指引" name="manual-advice">
+        <el-collapse-item title="没有可自动采集的场景？查看相关案例和补证据指引" name="manual-advice">
           <p>该入口只提供排查方向，不生成采集器，也不输出已确认根因。请先在上方填写当前故障现象。</p>
-          <el-button :loading="adviceBusy" @click="loadAdviceCategories">加载已发布的人工指引分类</el-button>
+          <el-button :loading="adviceBusy" @click="loadAdviceCategories">加载已发布的参考案例分类</el-button>
           <el-select v-model="adviceCategory" placeholder="选择问题所属分类">
             <el-option v-for="item in adviceCategories" :key="item.category_id" :label="item.display_name" :value="item.category_id" />
           </el-select>
@@ -701,7 +701,13 @@ onBeforeUnmount(stopPolling)
           <template v-if="adviceResult">
             <el-alert type="info" :closable="false" :title="adviceResult.reason_text || adviceResult.reason" />
             <p v-if="adviceResult.next_action">{{ adviceResult.next_action.question }}</p>
-            <el-table :data="adviceResult.candidates || []"><el-table-column prop="title" label="可能方向" /><el-table-column prop="manual_evidence_request" label="需要补充的证据" /></el-table>
+            <el-table :data="adviceResult.candidates || []">
+              <el-table-column prop="title" label="相关历史案例（未验证）" />
+              <el-table-column prop="problem_excerpt" label="案例问题描述" />
+              <el-table-column prop="recommendation_conclusion" label="历史案例根因" />
+              <el-table-column prop="recommendation_solution" label="参考处理方法（需核对适用条件）" />
+              <el-table-column prop="manual_evidence_request" label="需要补充的证据" />
+            </el-table>
           </template>
         </el-collapse-item>
       </el-collapse>

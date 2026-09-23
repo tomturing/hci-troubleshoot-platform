@@ -31,7 +31,8 @@ class _SessionContext:
 
 
 @pytest.mark.asyncio
-async def test_approve_clears_stale_embedding_when_provider_fails():
+@pytest.mark.parametrize("reference_only", [False, True])
+async def test_approve_clears_stale_embedding_when_provider_fails(reference_only):
     source_row = {
         "id": 7,
         "title": "虚拟机镜像异常",
@@ -82,6 +83,8 @@ async def test_approve_clears_stale_embedding_when_provider_fails():
         "ai_category_id": None,
         "lock_version": 4,
     }
+    if reference_only:
+        source_row["signals_json"] = {"schema_version": 2, "signals": []}
     published_at = datetime.now(UTC)
     updated_row = {"id": 7, "status": "published", "embedding": None, "published_at": published_at}
     published_entry = SimpleNamespace(working_revision_id=2)
@@ -135,6 +138,9 @@ async def test_approve_clears_stale_embedding_when_provider_fails():
     assert params["expected_lock_version"] == 4
     assert params["tsv_text"] == "虚拟机 镜像 异常"
     assert response.embedding_generated is False
+    if reference_only:
+        import json
+        assert json.loads(params["signals_json"])["signals"] == []
     assert published_entry.working_revision_id is None
     write_session.commit.assert_awaited_once()
 

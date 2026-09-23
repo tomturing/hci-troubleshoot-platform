@@ -86,6 +86,8 @@ interface SemanticEntryCandidate {
     placeholder?: string
   }>
   recommendation_conclusion?: string
+  problem_excerpt?: string
+  resource_revision?: { revision?: number }
   recommendation_solution?: string
   recommendation_facts?: Array<{ question: string; answer: string }>
 }
@@ -1224,16 +1226,18 @@ async function handleToolCallReject() {
           <template v-if="message.metadata?.kind === 'tool_call'" />
 
           <section v-if="semanticEntry" class="semantic-entry-card">
-            <div class="semantic-entry-card-title">🔎 语义入口已命中</div>
-            <div class="semantic-entry-card-hint">以下案例提供补证据方向，尚未确认根因。</div>
+            <div class="semantic-entry-card-title">{{ semanticEntry.decision === 'case_recommendations' ? '🔎 相关历史案例' : '🔎 语义入口已命中' }}</div>
+            <div class="semantic-entry-card-hint">以下案例仅供参考，尚未通过现场验证确认当前根因。</div>
             <div v-for="candidate in semanticEntry.candidates" :key="candidate.support_id || candidate.title" class="semantic-entry-candidate">
               <el-tag type="warning" effect="plain" size="small">案例 {{ candidate.support_id || '—' }}</el-tag>
               <span>{{ candidate.title || '语义候选' }}</span>
-              <div v-if="semanticEntry.decision === 'semantic_recommendation'" class="semantic-recommendation-summary">
+              <div v-if="['semantic_recommendation', 'case_recommendations'].includes(semanticEntry.decision || '')" class="semantic-recommendation-summary">
+                <p v-if="candidate.problem_excerpt"><strong>案例问题描述</strong>：{{ candidate.problem_excerpt }}</p>
+                <p v-if="candidate.resource_revision?.revision">发布修订：{{ candidate.resource_revision.revision }}</p>
                 <p v-if="candidate.recommendation_facts?.length">澄清确认：{{ candidate.recommendation_facts.map(item => `${item.question}：${item.answer}`).join('；') }}</p>
-                <p v-if="candidate.recommendation_conclusion"><strong>根因（原始文本）</strong>：{{ candidate.recommendation_conclusion }}</p>
+                <p v-if="candidate.recommendation_conclusion"><strong>历史案例根因</strong>：{{ candidate.recommendation_conclusion }}</p>
                 <p v-if="candidate.recommendation_solution"><strong>解决方案（原始文本）</strong>：{{ candidate.recommendation_solution }}</p>
-                <p>可选核验资料可在后续补充，不影响当前推荐结论。</p>
+                <p>请核对案例适用条件；文字相似不代表当前现场根因已确认。</p>
               </div>
               <div v-else-if="candidate.manual_evidence_fields?.length" class="semantic-evidence-form">
                 <p>请按字段补充信息；未填写字段会在下一轮继续保留。</p>
