@@ -52,6 +52,7 @@ SERVICE_TEST_SCOPES = {
     "kb-service": "backend/kb-service/tests",
     "diagnosis-service": "backend/diagnosis-service/tests/unit",
     "scheduler-service": "backend/scheduler-service/tests/unit",
+    "auth-service": "backend/auth-service/app/tests",
 }
 
 GLOBAL_DEPENDENCY_PREFIXES = (

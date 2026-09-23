@@ -990,6 +990,10 @@ jobs:
             -n0 -x -q \
             --cov=backend --cov-append \
             -m "not integration and not slow"
+          uv run pytest backend/auth-service/app/tests/ \
+            -n0 -x -q \
+            --cov=backend --cov-append \
+            -m "not integration and not slow"
           # 最后一批：渲染报告并合并所有覆盖率后统一检查基线（≥60%），避免分批检查造成误报
           uv run pytest backend/scheduler-service/tests/unit/ \
             -n0 -x -q \

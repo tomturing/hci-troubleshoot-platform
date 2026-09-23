@@ -56,6 +56,8 @@ class Settings(BaseSettings):
     # === 统一认证（阶段1：网关验签 auth-service 签发的 RS256 JWT）===
     # auth-service 的 JWKS 公钥端点；网关缓存公钥验签，auth-service 短暂不可用不影响已登录用户
     AUTH_JWKS_URL: str = "http://auth-service:8007/.well-known/jwks.json"
+    # auth-service 控制面地址；网关转发 /api/auth/*（登录等）到此服务
+    AUTH_SERVICE_URL: str = "http://auth-service:8007"
     AUTH_JWT_ISSUER: str = "hci-auth-service"
     AUTH_JWT_AUD_ADMIN: str = "hci-admin"
     # admin 路径是否强制 JWT 登录（关闭=兼容 INTERNAL_API_TOKEN 现状；开启=共享令牌不再赋予 admin）

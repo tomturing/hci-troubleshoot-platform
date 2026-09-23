@@ -794,3 +794,21 @@ evalService:
     limits:
       cpu: "500m"
       memory: "256Mi"
+
+# ======================== Auth Service =======================================
+authService:
+  # 统一认证服务（阶段1.x）：账号密码登录 + RS256/JWKS 签发，网关验签后注入 admin 身份。
+  # 默认启用；staging 使用启动期临时 RSA 密钥即可运行，生产必须由密钥管理注入 AUTH_RSA_PRIVATE_KEY_PEM。
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: auth-service
+    tag: latest
+  port: 8007
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "96Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"

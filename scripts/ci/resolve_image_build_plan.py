@@ -33,6 +33,7 @@ BACKEND_SERVICES = (
     ("diagnosis-service", "backend/diagnosis-service/Dockerfile", "diagnosisService"),
     ("scheduler-service", "backend/scheduler-service/Dockerfile", "schedulerService"),
     ("kb-service", "backend/kb-service/Dockerfile", "kbService"),
+    ("auth-service", "backend/auth-service/Dockerfile", "authService"),
 )
 FRONTEND_SERVICES = (
     ("customer-ui", "frontend/customer/Dockerfile", "customerUI"),

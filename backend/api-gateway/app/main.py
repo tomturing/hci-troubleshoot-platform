@@ -29,6 +29,7 @@ from app.middleware.identity import IdentityMiddleware  # P0 修复：服务端�
 from app.routes import (
     assistants,
     audit,
+    auth,
     bridge_logs,
     capabilities,
     cases,
@@ -223,6 +224,7 @@ app.include_router(bridge_logs.router)
 app.include_router(simulations.router)
 app.include_router(signal_dry_run.router)
 app.include_router(diagnosis.router)
+app.include_router(auth.router)
 
 
 @app.get("/metrics")
