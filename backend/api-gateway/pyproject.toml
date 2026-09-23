@@ -21,7 +21,12 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi",
     "opentelemetry-instrumentation-httpx",
     "opentelemetry-instrumentation-logging",
+    "cryptography>=42.0",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = [".", ".."]
+testpaths = ["app/tests"]
 
 [tool.uv]
 virtual = true
