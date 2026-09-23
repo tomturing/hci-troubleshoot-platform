@@ -141,6 +141,8 @@ jobs:
               - 'scripts/ci/test_ci_image_publication.py'
               - 'scripts/ci/resolve_pr_fast_test_targets.py'
               - 'scripts/ci/test_resolve_pr_fast_test_targets.py'
+              - 'scripts/ci/test_env_repo_sync_contract.py'
+              - 'scripts/ops/sync-env-repo-tags.sh'
               - 'scripts/ci/resolve_pr_frontend_targets.py'
               - 'scripts/ci/test_resolve_pr_frontend_targets.py'
               - 'hci_sim/Dockerfile'
@@ -172,7 +174,8 @@ jobs:
             scripts/ci/resolve_pr_frontend_targets.py \
             scripts/ci/test_resolve_pr_frontend_targets.py \
             scripts/ci/resolve_pr_fast_test_targets.py \
-            scripts/ci/test_resolve_pr_fast_test_targets.py
+            scripts/ci/test_resolve_pr_fast_test_targets.py \
+            scripts/ci/test_env_repo_sync_contract.py
           uvx ruff format --check \
             scripts/ci/resolve_release_baseline.py \
             scripts/ci/resolve_image_build_plan.py \
@@ -188,7 +191,8 @@ jobs:
             scripts/ci/resolve_pr_frontend_targets.py \
             scripts/ci/test_resolve_pr_frontend_targets.py \
             scripts/ci/resolve_pr_fast_test_targets.py \
-            scripts/ci/test_resolve_pr_fast_test_targets.py
+            scripts/ci/test_resolve_pr_fast_test_targets.py \
+            scripts/ci/test_env_repo_sync_contract.py
           uv run --no-project --with pytest --with pytest-xdist pytest \
             scripts/ci/test_resolve_release_baseline.py \
             scripts/ci/test_resolve_image_build_plan.py \
@@ -198,6 +202,7 @@ jobs:
             scripts/ci/test_resolve_pr_frontend_targets.py \
             scripts/ci/test_resolve_main_test_scope.py \
             scripts/ci/test_resolve_pr_fast_test_targets.py \
+            scripts/ci/test_env_repo_sync_contract.py \
             -q
 
       # 确定性前端改动判定（覆盖 dorny/paths-filter 的 frontend 输出）。
