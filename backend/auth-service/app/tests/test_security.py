@@ -97,9 +97,12 @@ def test_get_roles_reads_user_jsonb():
 
     roles = asyncio.run(get_roles(session, "11111111-1111-1111-1111-111111111111"))
     assert roles == ["platform_admin", "support_engineer"]
-    # 绑定参数应带 ::uuid 类型转换，避免 asyncpg 类型不匹配
+    # 绑定参数的类型转换必须用 CAST(...)：text() 里的 `::` 会与 :param 解析冲突，
+    # 经 asyncpg 下发后报 "syntax error at or near ':'"（线上登录 500 的根因）。
     executed_sql = session.execute.call_args.args[0].text
-    assert 'SELECT roles FROM "user"' in executed_sql and "::uuid" in executed_sql
+    assert 'SELECT roles FROM "user"' in executed_sql
+    assert "CAST(:uid AS uuid)" in executed_sql
+    assert "::" not in executed_sql
 
 
 def test_get_roles_empty():
