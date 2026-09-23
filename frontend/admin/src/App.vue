@@ -1,11 +1,20 @@
 <script setup lang="ts">
 import { useRouter, useRoute } from 'vue-router'
 import { buildMenuItems, resolveMenuIcon } from './utils/adminMenu'
+import { isAuthenticated, logout } from '@/utils/auth'
 
 const router = useRouter()
 const route = useRoute()
 
 const menuItems = buildMenuItems(router.getRoutes())
+
+function goLogin() {
+  router.push('/login')
+}
+function onLogout() {
+  logout()
+  router.push('/login')
+}
 </script>
 
 <template>
