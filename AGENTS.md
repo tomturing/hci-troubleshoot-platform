@@ -13,6 +13,7 @@
 
 1. `AGENTS.md` — 项目层规范。本文件是 Claude Code / Codex / Gemini / Copilot 等 Agent 的统一入口。
 2. `docs/deploy/pitfalls/_index.md` 或 `docs/verify/pitfalls/_index.md` — 按任务场景读取对应避坑指南索引，再读取具体指南。
+3. 涉及 KBD、关键信号、语义推荐或审核发布时，从 [KBD 与关键信号文档入口](docs/solution/knowledge-base/README.md) 按职责读取现行主文档；旧路径仅作兼容跳转，历史方案不作为当前执行规范。
 
 ---
 
@@ -856,4 +857,3 @@ def correct():
 - **根因**：`markdownify` 在将嵌套列表内的截图 span 转为 blockquote 时，携带了 CommonMark 规范的列表缩进（属于样式信息），污染了 content_md，导致前端解析失败
 - **修复**：data-pipeline 改为只取语义文本（新增 `_html_to_semantic_text` 作为唯一权威提取器），content_md 不再由 pipeline 生成，改由后端 `rebuild_content_md()` 统一渲染——截图块格式由单一权威函数保证，彻底根除 markdownify 缩进污染
 - **结论**：data-pipeline 必须对输出做**格式规范化**（只输出语义文本 + `![img:N]` 占位符），任何来自 markdownify 或源 HTML 的"意外格式"都不应透传到 content_md
-

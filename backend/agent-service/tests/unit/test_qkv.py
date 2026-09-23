@@ -874,6 +874,7 @@ async def test_qkv_to_variable_pool_auto_derives_date():
     agent._conversation_id = ""
     agent._case_id = ""
     agent._db_session_factory = None
+    agent._active_kbd_id = None
 
     signal = {
         "acquire": {"tool": "qkv_task", "args": {"keyword": "delete"}},

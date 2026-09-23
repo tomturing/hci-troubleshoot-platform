@@ -14,6 +14,29 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
+@pytest.mark.asyncio
+async def test_offline_reference_only_case_is_visible_without_creating_collection(monkeypatch):
+    from app.services.offline_resource_sync_service import extract_requirements, offline_diagnosis_capability
+
+    content = {
+        "id": 1, "title": "安装系统提示缺少介质驱动程序", "category_id": "vm",
+        "solution": "已审核处理方法", "signals_json": {"schema_version": 2, "signals": []},
+    }
+    snapshot = SimpleNamespace(status="published", resource_name="1", revision=3, checksum="frozen", content=content)
+    loader = SimpleNamespace(list_active=AsyncMock(return_value=[snapshot]))
+    monkeypatch.setattr("app.services.collection_profile_service.DynamicResourceLoader", lambda _: loader)
+    session = AsyncMock()
+    service = CollectionProfileService(session)
+    actor = ActorContext(tenant_id="t", user_id="u", roles=frozenset({"customer_admin"}))
+    assert await service.semantic_advice(actor=actor) == [{"category_id": "vm", "display_name": "vm"}]
+    result = await service.semantic_advice(actor=actor, category_id="vm", context={"description": "缺少介质驱动程序"})
+    assert result["decision"] == "case_recommendations"
+    assert result["candidates"][0]["verified"] is False
+    assert offline_diagnosis_capability(content) == "reference_only"
+    assert extract_requirements(content) == []
+    session.execute.assert_not_called()
+
+
 def test_customer_scenario_api_only_returns_safe_profile_metadata():
     """客户接口只返回场景显示信息和版本，不暴露 Collector 命令。"""
 

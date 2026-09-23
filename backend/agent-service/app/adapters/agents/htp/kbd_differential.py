@@ -18,7 +18,6 @@ from typing import Any
 
 from shared.cdd import (
     ActiveDiagnosticScheduler,
-    CandidateState,
     ConclusionLevel,
     SignalOutcome,
     apply_scope_results,
@@ -229,6 +228,8 @@ class KBDDiagnostic:
         self._variable_pool: dict[str, Any] = {}
         self._variable_pool_priority: dict[str, int] = {}
         self._variable_pool_conflicts: set[str] = set()
+        self._candidate_pools: dict[str, tuple[dict[str, Any], dict[str, int], set[str]]] = {}
+        self._active_kbd_id: str | None = None
         # 一次 QKV 命令可服务多个 SignalRef；这里只缓存物理采集输出，不缓存任何
         # Signal 的 produces 或 output_processing 结果，防止代表信号污染其它引用。
         self._qkv_shared_outputs: dict[str, str] = {}
@@ -238,6 +239,12 @@ class KBDDiagnostic:
     def get_result(self) -> KBDDiagResult | None:
         """获取最近一次 diagnose() 调用的结果（调用前返回 None）。"""
         return self._result
+
+    def _activate_candidate_pool(self, kbd_id: str) -> None:
+        """变量属于案例；同名 HOST/VM 不能在不同故障假设之间合并。"""
+        state = self._candidate_pools.setdefault(kbd_id, ({}, {}, set()))
+        self._variable_pool, self._variable_pool_priority, self._variable_pool_conflicts = state
+        self._active_kbd_id = kbd_id
 
     def _set_pool_var(self, name: str, value: Any, *, producer_priority: int | None = None) -> None:
         """写入会话变量池（黑板）的规范化入口。
@@ -282,6 +289,7 @@ class KBDDiagnostic:
             self._variable_pool_conflicts.add(key)
             logger.warning(
                 event="variable_pool_conflict",
+                kbd_id=self._active_kbd_id,
                 name=name,
                 key=key,
                 existing_value_preview=smart_truncate(str(old_value), max_chars=160),
@@ -299,6 +307,7 @@ class KBDDiagnostic:
             value_preview = value_preview + "...(截断)"
         logger.info(
             event="variable_pool_update",
+            kbd_id=self._active_kbd_id,
             name=name,
             key=key,
             value_preview=value_preview,
@@ -331,6 +340,11 @@ class KBDDiagnostic:
         assessments = initial_assessments(plan)
         scope_results = apply_scope_results(plan, assessments, env_context)
         scheduler = ActiveDiagnosticScheduler(plan)
+        # 同一模板在不同案例可绑定不同现场对象；只缓存实际参数/处理契约一致的执行。
+        acquisition_results: dict[str, tuple[Any, dict[str, tuple[Any, int | None]]]] = {}
+        for kbd in ordered:
+            self._candidate_pools[kbd.id] = ({}, {}, set())
+        external_variables = {str(key).lower() for key in env_context}
         steps_executed: list[StepResult] = []
         if self._diagnostic_item_client and self._conversation_id:
             hypotheses_data = [
@@ -372,27 +386,38 @@ class KBDDiagnostic:
 
         while True:
             reduce_candidates(plan, assessments)
-            available = {str(key).lower() for key in env_context} | set(self._variable_pool)
-            selected = scheduler.choose(assessments, available)
+            available_by_candidate = {
+                kbd_id: (external_variables | set(pool)) - conflicts
+                for kbd_id, (pool, _priorities, conflicts) in self._candidate_pools.items()
+            }
+            selected = scheduler.choose(assessments, external_variables, available_by_candidate)
             if selected is None:
                 break
             acquisition, score = selected
-            active_refs = [
-                ref for ref in acquisition.signal_refs if assessments[ref.kbd_id].state is CandidateState.CANDIDATE
-            ]
+            active_refs = scheduler.ready_refs(acquisition, assessments, external_variables, available_by_candidate)
             if not active_refs:
                 scheduler.mark_completed(acquisition)
                 continue
             representative = sorted(active_refs, key=lambda ref: ref.ref_id)[0]
+            self._activate_candidate_pool(representative.kbd_id)
             resolved_args = self._resolve_args(acquisition.args_template, env_context, self._variable_pool)
-            runtime_key = json.dumps(
-                {
-                    "template_key": acquisition.template_key,
-                    "resolved": self._acquisition_key(acquisition.tool_name, resolved_args, env_context),
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            )
+
+            def execution_key(ref, _acquisition=acquisition):
+                pool = self._candidate_pools[ref.kbd_id][0]
+                args = self._resolve_args(_acquisition.args_template, env_context, pool)
+                material = {
+                    "template_key": _acquisition.template_key,
+                    "resolved": self._acquisition_key(_acquisition.tool_name, args, env_context),
+                }
+                if not _acquisition.tool_name.startswith("qkv_"):
+                    # QFK 引擎同时执行后处理，只能复用相同处理契约及其输入的最终结果。
+                    material["processing"] = [ref.signal.get("match"), (ref.signal.get("orchestrate") or {}).get("produces")]
+                    context = {str(key).lower(): value for key, value in env_context.items()} | pool
+                    material["processing_inputs"] = {name: context.get(name) for name in ref.requires}
+                return json.dumps(material, sort_keys=True, separators=(",", ":"), default=str)
+
+            runtime_key = execution_key(representative)
+            active_refs = [ref for ref in active_refs if execution_key(ref) == runtime_key]
             exec_id = self._stable_acquisition_exec_id(session_id, runtime_key)
             unresolved = self._unresolved_placeholders(resolved_args)
             blocked_reason = None
@@ -445,7 +470,10 @@ class KBDDiagnostic:
             error: str | None = blocked_reason
             pre_matched: bool | None = None
             ai_value: Any | None = None
-            if not blocked_reason:
+            produced_snapshot: dict[str, tuple[Any, int | None]] = {}
+            if not blocked_reason and runtime_key in acquisition_results:
+                (raw_output, error, pre_matched, ai_value), produced_snapshot = acquisition_results[runtime_key]
+            elif not blocked_reason:
                 step = KBDStep(
                     tool_name=acquisition.tool_name,
                     tool_args_template=resolved_args,
@@ -462,8 +490,14 @@ class KBDDiagnostic:
                     )
                 except Exception as exc:
                     error = str(exc)
+                produced_snapshot = {
+                    name: (self._variable_pool[name], self._variable_pool_priority.get(name))
+                    for name in representative.produces if name in self._variable_pool
+                } if error is None else {}
+                acquisition_results[runtime_key] = ((raw_output, error, pre_matched, ai_value), produced_snapshot)
 
             for ref in active_refs:
+                self._activate_candidate_pool(ref.kbd_id)
                 evaluation_id = self._stable_evaluation_id(exec_id, ref.ref_id)
                 ref_raw_output = raw_output
                 ref_error = error
@@ -480,6 +514,9 @@ class KBDDiagnostic:
                         session_id,
                         exec_id,
                     )
+                elif not blocked_reason and error is None:
+                    for name, (value, priority) in produced_snapshot.items():
+                        self._set_pool_var(name, value, producer_priority=priority)
                 outcome = (
                     SignalOutcome.BLOCKED
                     if blocked_reason
@@ -547,16 +584,17 @@ class KBDDiagnostic:
                             else "error"
                         ),
                     )
-            scheduler.mark_completed(acquisition)
+            scheduler.mark_completed(acquisition, {ref.ref_id for ref in active_refs})
 
         # No executable acquisition remains. Preserve unresolved evidence as BLOCKED.
         for ref in list(scheduler.remaining_signal_refs(assessments)):
             if ref.ref_id in assessments[ref.kbd_id].signal_outcomes:
                 continue
+            self._activate_candidate_pool(ref.kbd_id)
             args = self._resolve_args(
                 (ref.signal.get("acquire") or {}).get("args") or {}, env_context, self._variable_pool
             )
-            missing = sorted(set(ref.requires) - ({str(key).lower() for key in env_context} | set(self._variable_pool)))
+            missing = sorted(set(ref.requires) - ((external_variables | set(self._variable_pool)) - self._variable_pool_conflicts))
             runtime_key = self._acquisition_key(_acquire_tool(ref.signal), args, env_context)
             exec_id = self._stable_acquisition_exec_id(session_id, runtime_key)
             evaluation_id = self._stable_evaluation_id(exec_id, ref.ref_id)

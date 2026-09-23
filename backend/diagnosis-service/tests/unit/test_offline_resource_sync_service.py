@@ -1,16 +1,41 @@
 """KBD 与 Tool Registry 驱动离线资源同步的纯规则测试。"""
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 from app.domain.collector_security import validate_collector_contract
 from app.errors import DiagnosisError
 from app.schemas.collector_definition import CollectorDefinitionWrite
 from app.services.offline_resource_sync_service import (
+    OfflineResourceSyncService,
     build_tool_collector_candidate,
     extract_requirements,
     normalize_acquirer,
     resolve_scenario,
     resolve_target_scope,
 )
+
+
+@pytest.mark.asyncio
+async def test_reference_only_sync_disables_old_profile_without_creating_empty_resources():
+    session = AsyncMock()
+    empty_rows = MagicMock()
+    empty_rows.mappings.return_value.all.return_value = []
+    session.execute.return_value = empty_rows
+    service = OfflineResourceSyncService(session)
+    service._load_published_kbds = AsyncMock(return_value=[{
+        "id": 1, "category_id": "vm", "title": "缺少介质驱动程序",
+        "signals_json": {"schema_version": 2, "signals": []},
+    }])
+    service._active_profile_scenarios = AsyncMock(return_value={"vm"})
+    service._load_active_signal_tools = AsyncMock(return_value={})
+    service._active_resource = AsyncMock(return_value=(3, {"scenario": "vm"}))
+    service._resource_governance = AsyncMock(return_value={"generation_metadata": {"source_kbd_ids": [1]}})
+    summary, _validations, changes = await service._build_changes(
+        revision_rows=[], tool_revision_rows=[], target_cursor=4, target_tool_cursor=0, full=True,
+    )
+    assert summary["offline_eligible_kbd_count"] == 0
+    assert [(change["resource_type"], change["change_type"]) for change in changes] == [("collection_profile", "disable")]
 
 
 def make_tool(**overrides):

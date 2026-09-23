@@ -61,7 +61,7 @@ class CollectionProfileService:
                 )
                 for snapshot in snapshots
                 if snapshot.content.get("category_id")
-                and capability_of(snapshot.content.get("signals_json")) == "guidance_only"
+                and capability_of(snapshot.content.get("signals_json")) in {"guidance_only", "reference_only"}
             }
             return [{"category_id": key, "display_name": value} for key, value in sorted(categories.items())]
         entries = [
@@ -74,7 +74,8 @@ class CollectionProfileService:
             if snapshot.content.get("category_id") == category_id
         ]
         route = await resolve_candidates(
-            entries=entries, context=context, strong_status="not_applicable", mode="offline_advice"
+            entries=entries, context=context, strong_status="not_applicable", mode="offline_advice",
+            include_reference_cases=True,
         )
         # 采集前没有强证据结果，遇到强入口只能要求正常采集。
         if route["decision"] == "executable":

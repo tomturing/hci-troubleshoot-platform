@@ -225,6 +225,14 @@ def review_signal_document(
 
     signals = document.get("signals") if isinstance(document.get("signals"), list) else []
     if not signals:
+        if feature is SignalReviewFeature.PUBLISH:
+            try:
+                validate_kbd_publishable_signals_json(document)
+            except ValidationError as exc:
+                return SignalReviewResult(
+                    feature=feature, status=SignalReviewStatus.BLOCKED, signal_count=0,
+                    issues=[_review_issue("SIGNAL_SCHEMA_INVALID", exc.message)],
+                )
         return SignalReviewResult(
             feature=feature,
             status=SignalReviewStatus.EMPTY,

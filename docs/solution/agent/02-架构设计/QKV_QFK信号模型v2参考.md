@@ -1,413 +1,49 @@
 ---
-status: superseded
-category: solution
-audience: developer
-last_updated: 2026-07-27
+status: active
+category: meta
+audience: all
+last_updated: 2026-09-23
 owner: team
 ---
 
-# QKV/QFK 信号模型 v2 参考（迁移阅读）
+# QKV/QFK 信号模型 v2 参考（迁移阅读） — 阅读入口已整合
 
-> **此文档不再是现行字段权威。** 当前参数、枚举和默认值以
-> [acquirer_args.py](../../../../backend/shared/schemas/acquirer_args.py)、
-> `signal.v2.schema.json` 与 [关键信号架构设计](../../knowledge-base/关键信号架构设计.md)
-> 为准。本文保留 v2 迁移背景和历史示例，不应用于新增配置。
+本路径仅保留旧链接兼容，不再维护正文或字段示例。
 
-> 版本：v2.1 ｜ 日期：2026-07-27
-> 权威契约：`backend/shared/schemas/signals/signal.v2.schema.json`
-> 校验入口：`backend/shared/schemas/signal_schema.py :: validate_signals_json`（保存 KBD 条目时强制校验，失败返回 HTTP 422）
->
-> 本文与 `signal.v2.schema.json` **逐字段对齐**，供运营 / SRE 编写 `signals_json` 时直接对照。姊妹文档：[QKV_QFK信号配置操作指南.md](./QKV_QFK信号配置操作指南.md)（面向配置步骤）。
+- **当前文档**：[关键信号架构设计](../../knowledge-base/关键信号架构设计.md)。
+- **完整导航**：[KBD 与关键信号文档入口](../../knowledge-base/README.md)。
+- **历史原文**：[2026-09-23 整理前快照](../../../archive/kbd-signals-2026-09-23/solution/agent/02-架构设计/QKV_QFK信号模型v2参考.md)，仅供追溯，不作为现行配置依据。
 
 ## 变更历史
 
-| 日期 | 版本 | 变更内容 | 关联事件文档 |
-|------|------|---------|------------|
-| 2026-07-27 | v2.1 | QFK produces 增加与 path 互斥的 text extract；补充完整 stdout/stderr、Fail Closed、输入变量自动推导与安全管道边界 | [QFK非JSON结果行列提取方案](../../events/2026-07-27-QFK非JSON结果行列提取方案.md) |
-| 2026-07-24 | v2.0 | v2 嵌套信号模型逐字段参考初版 | — |
-
----
-
-## 1. 模型总览
-
-`signals_json` 是 KBD 条目（知识库差分条目）的一个字段，描述"**如何采集信号 + 如何判定对错**"。v2 采用**嵌套文档模型**：一个信号 = 一个"采集 + 判定"单元，整段文档形如：
-
-```jsonc
-{
-  "schema_version": 2,   // 固定为 2；缺失或非 2 直接 422
-  "signals": [ /* 信号数组，每个元素见 §2 / §3 */ ]
-}
-```
-
-每个信号由五段组成，**仅 `acquire` 必填**，其余按需：
-
-| 段 | 必填 | 作用 | 典型使用者 |
-|----|------|------|-----------|
-| `acquire` | **是** | 采集：用哪个工具（`tool`）+ 参数（`args`） | 全部 |
-| `match` | 否（可 `null`） | 判定：把采集文本与 `pattern` 比对 | 后端 QFK |
-| `orchestrate` | 否 | 编排：本信号产出哪些变量（`produces`）、依赖哪些变量（`requires`），以及 QKV 输出后的可选处理（`output_processing`） | QKV/QFK |
-| `provenance` | 否 | 来源：信号是前端 / 后端产生、置信度、风险 | 全部 |
-| `review` | 否（`require_human_confirm` 必填） | 复核：是否需人工确认后才生效 | 全部 |
-
----
-
-## 2. 逐行注释的完整示例
-
-### 2.1 QKV 信号（前端，带 `produces` 产出变量）
-
-```jsonc
-{
-  "id": "s_vm_boot_failed",        // 可选：信号唯一标识，便于引用 / 调试
-  "acquire": {                      // 【必填】采集段
-    "tool": "qkv_task",             // 采集工具枚举（见 §4.1）；QKV 直接生产者三选一：qkv_alert / qkv_task / qkv_dialog；另含条件型视觉生产者 qkv_vm_console
-    "args": {                       // 该 tool 的参数对象（字段见 §4.2）
-      "keyword": "启动虚拟机",       // QKV 采集关键词（acli task get -k 的检索词，非自由描述）
-      "is_failed": true,            // qkv_task 专属：仅取失败任务（等价于 acli -s failed）
-      "limit": 100,                 // 翻页上限，默认 100
-      "timeout": 10,                // 采集超时（秒），默认 10
-      "instruction": "提取启动虚拟机失败的任务" // 人类可读语义说明
-    }
-  },
-  "match": null,                    // QKV 通常只采集不判定，置 null 或省略本段
-  "orchestrate": {                  // 编排段：把采集结果字段提升为变量
-    "produces": [                   // 产出变量数组
-      { "name": "HOST", "path": "host|hostname|hostid" }, // 变量名 + JSON 路径（| 多路径容错）
-      { "name": "VM_ID", "path": "vm_id|vmid" },
-      { "name": "TASK_ID", "path": "task_id" }
-    ],
-    "output_processing": [          // 可选：对本信号已投影输出继续处理，不创建新的 qkv_var 信号
-      {
-        "id": "extract-vm-name",
-        "mode": "derive",
-        "input": "{{DESCRIPTION}}",
-        "operation": "feature_extract",
-        "feature": "vm_name",
-        "target_variable": "VM_NAME"
-      }
-    ],
-    "requires": []                  // 本信号依赖的变量（QKV 一般为空）
-  },
-  "provenance": {                   // 来源段
-    "category": "frontend",         // frontend=前端(QKV) / backend=后端(QFK)
-    "method": "acli task get",      // 采集方法
-    "confidence": 0.9,              // 置信度 0~1
-    "risk": 0.3,                    // 风险 0~1
-    "needs_review": false,          // 是否需复核
-    "evidence": "QKV 任务查询"       // 证据说明
-  },
-  "review": {                       // 复核段
-    "require_human_confirm": false, // 【必填】是否需人工确认后才生效
-    "notes": ""                     // 复核备注（可选）
-  }
-}
-```
-
-### 2.2 QFK 信号（后端，带 `match` 判定 + 依赖变量）
-
-```jsonc
-{
-  "id": "s_qcow2_lock",             // 可选标识
-  "acquire": {                      // 【必填】采集段
-    "tool": "qfk_system",           // 后端工具（见 §4.1）：qfk_log/system/service/vm/network/storage/hardware/platform
-    "args": {
-      "command": "lsof",            // acli system 子命令（qfk_system 必填）
-      "host": "{{HOST}}",           // 目标主机，取变量池；特殊值 "cluster" 表示遍历集群
-      "resource_keyword": "overlay2/docker", // 资源 / 主题选择器（注意：非匹配词！见 §6）
-      "container": "asv-con",       // qfk_system 专属默认容器
-      "timeout": 30,                // 超时秒
-      "instruction": "检查 qcow2 镜像是否被占用"
-    }
-  },
-  "match": {                        // 判定段（后端核心）
-    "type": "regex",                // 判定类型：keyword / regex（见 §5）
-    "pattern": "vm-disk|\\.qcow2",  // 匹配内容（keyword=关键词；regex=正则）
-    "mode": "or",                   // 多词逻辑：or / and / not
-    "expected": true                // 期望命中：true=应出现；false=应不出现
-  },
-  "orchestrate": {
-    "produces": [],                 // 后端信号一般不再产出变量
-    "requires": ["HOST"]            // 依赖前面 QKV 产出的 HOST 变量
-  },
-  "provenance": {
-    "category": "backend",
-    "method": "acli system lsof",
-    "confidence": 0.85,
-    "risk": 0.5,
-    "needs_review": false,
-    "evidence": "QFK 系统检查"
-  },
-  "review": {
-    "require_human_confirm": false,
-    "notes": ""
-  }
-}
-```
-
----
-
-## 3. 字段要点表
-
-> 通用约束：除顶层 `signals` 数组内每个对象，以及 `match` 之外，所有对象均 `additionalProperties: false`——**出现未声明字段即 422**。
-
-### 3.1 顶层
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `schema_version` | `const 2` | 是 | 固定为 `2`，否则校验失败 |
-| `signals` | `array<signal>` | 是 | 信号数组，至少 1 个 |
-
-### 3.2 signal（数组元素）
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `id` | string | 否 | 信号唯一标识 |
-| `acquire` | object | **是** | 采集段（见 §3.3） |
-| `match` | object \| null | 否 | 判定段（见 §3.4），可省略或 `null` |
-| `orchestrate` | object | 否 | 编排段（见 §3.5） |
-| `provenance` | object | 否 | 来源段（见 §3.6） |
-| `review` | object | 否 | 复核段（见 §3.7） |
-
-### 3.3 acquire（采集段，必填）
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `tool` | enum(11) | **是** | 采集工具（见 §4.1） |
-| `args` | object | **是** | 参数；按 `tool` 选对应的 `acquirer_args/<tool>.schema.json` 校验（见 §4.2） |
-
-### 3.4 match（判定段）
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `type` | string | **是** | 判定类型：`keyword` / `regex` / `state` / `threshold` / `json_path` / `exists` |
-| `pattern` | string | **是** | 匹配内容（`keyword`=关键词；`regex`=正则串） |
-| `mode` | string | **是** | 多词逻辑：`or` / `and` / `not` |
-| `expected` | boolean | **是** | 期望结果：`true`=应出现；`false`=应不出现 |
-
-> QFK 必须在 `match` 与非空 `orchestrate.produces` 之间严格二选一；产出变量模式的 `match` 必须为 `null`。
-
-### 3.5 orchestrate（编排段）
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `phase` | string | 否 | 编排阶段标记 |
-| `action` | string | 否 | 动作 |
-| `source` | string | 否 | 来源 |
-| `target` | string | 否 | 目标 |
-| `container` | string | 否 | 容器 |
-| `produces` | `array<{name, type?, path?或extract?}>` | 否 | 产出变量；JSON 用 `path`，非 JSON 用 `extract`，二者互斥 |
-| `requires` | `array<string>` | 否 | QFK 从 args/extract 中 `{{VAR}}` 自动推导；取自上游 `produces` |
-| `output_processing` | `array<OutputProcessing>` | 否 | 仅 QKV 使用；对 `produces` 投影后的记录做可选确定性转换、提取或断言，不新增采集信号 |
-
-`output_processing` 的详细契约、白名单操作、单记录基数和 AI 兜底边界见[QKV 输出后处理设计与实现方案](../../knowledge-base/events/2026-08-25-QKV输出后处理设计与实现方案.md)。
-
-#### text extract
-
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `type` | const `text` | 必填 | 受控文本提取，不执行 Shell |
-| `include` / `exclude` | string[] | `[]` | 包含/不包含的字面量子串 |
-| `include_mode` | all/any | all | 多个 include 的 AND/OR 关系 |
-| `case_sensitive` | boolean | true | 是否区分大小写 |
-| `column_mode` | whole/index/from_index | whole | 整行、第 N 列、从第 N 列到末尾 |
-| `column` | integer ≥ 1 | — | index/from_index 时必填，列号从 1 开始 |
-| `delimiter` | whitespace/单字符 | whitespace | 连续空白或安全单字符分隔 |
-| `cardinality` | exactly_one/first/last/all | exactly_one | 匹配行数量策略 |
-| `source` | stdout/stderr | stdout | 物理输出来源，不混流 |
-
-```json
-{
-  "name": "KVM_PID",
-  "type": "integer",
-  "extract": {
-    "type": "text",
-    "include": ["-id {{VM}}"],
-    "column": 2,
-    "column_mode": "index"
-  }
-}
-```
-
-展示输出可以截断，变量提取不可以：截断时按 `exec_id` 读取 Redis 完整物理流；缓存缺失、超限、零/多匹配、列越界或类型转换失败均停止变量写入。
-
-### 3.6 provenance（来源段）
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `category` | enum(frontend/backend) | 否 | 信号来源类别 |
-| `method` | string | 否 | 采集方法 |
-| `source_section` | string | 否 | 来源段落 |
-| `confidence` | number | 否 | 置信度 0~1 |
-| `risk` | number | 否 | 风险 0~1 |
-| `needs_review` | boolean | 否 | 是否需要复核 |
-| `evidence` | string | 否 | 证据说明 |
-
-### 3.7 review（复核段）
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `require_human_confirm` | boolean | **是** | 是否需人工确认后才生效 |
-| `notes` | string | 否 | 复核备注 |
-
----
-
-## 4. acquire.tool 枚举与 args 字段
-
-### 4.1 枚举（共 12 个）
-
-- **前端 QKV（3 种直接生产者）**：`qkv_alert` / `qkv_task` / `qkv_dialog`
-- **前端 QKV（1 种条件型实时视觉生产者）**：`qkv_vm_console`（虚拟机控制台截图；必须先具备可信 `HOST` 与 `VM_ID` 才可执行，见《虚拟机控制台视觉生产者信号设计与需求》）
-- **后端 QFK**：`qfk_log` / `qfk_service` / `qfk_system` / `qfk_vm` / `qfk_network` / `qfk_storage` / `qfk_hardware` / `qfk_platform`
-
-### 4.2 各 tool 的 `args` 字段表
-
-> 通用字段（所有 tool 均含）：`timeout`(int, 默认 10, 采集/执行超时秒)、`instruction`(str, 语义说明)。
-> 所有 `args` 对象均 `additionalProperties: false`——拼写错字段（如把 `host` 写成 `hostname`）会 422。
-
-**qkv_alert**（acli alert get -k）
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `keyword` | string | **是** | 采集关键词（acli alert get -k） |
-| `limit` | int | 否 | 翻页上限，默认 100 |
-| `alert_type` | string | 否 | 告警类型过滤 |
-
-**qkv_task**（acli task get -k）
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `keyword` | string | **是** | 采集关键词（acli task get -k） |
-| `limit` | int | 否 | 翻页上限，默认 100 |
-| `is_failed` | boolean | 否 | 仅取失败任务（默认 false，等价于 -s failed） |
-
-**qkv_dialog**（弹框日志定位型变量生产者）
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `keyword` | string | **是** | 页面弹框原文或稳定片段 |
-| `limit` | int | 否 | 结构化候选结果上限 |
-| `paths` | string[] | 否 | 固定为 `/sf/log/today`、`/sf/log/today/vt` 的一个或两个 |
-| `context_lines` | int | 否 | 上下文行数，0–10，默认 2 |
-
-**qkv_vm_console**（条件型实时视觉生产者：虚拟机控制台截图）
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `host` | string | **是** | 仅允许 `{{HOST}}` 或系统规范化节点标识；执行时 Inventory 校验 |
-| `vm_id` | string | **是** | 仅允许 `{{VM_ID}}` 或精确数值 VMID；不接受模糊 VM 名称 |
-| `capture_mode` | enum | 否 | 固定 `baseline_then_optional_wake`（基线截图，近黑时经人工确认唤醒重截） |
-| `timeout` | int | 否 | 1–60 秒（有意偏离公共 1–300：快速失败型采集） |
-
-> 不接受 `command` / `monitor_command` / `path` / `key` 等自由字段（422）。以 `qkv_vm_console`
-> 为唯一生产者的 KBD，必须在 `verification_contract.variables` 声明 `HOST`、`VM_ID` 外部来源；
-> 截图产出 `VM_CONSOLE_STATE` / `VM_CONSOLE_SUMMARY` / `VM_CONSOLE_CONFIDENCE` / `VM_CONSOLE_ARTIFACT_ID` 供 QFK 与验证契约消费。
-
-目标 HCI/aCLI 没有独立 dialog API。运行时在当前主控两个固定目录执行 `acli log get -k`，
-过滤 audit 自观测后提取 END、REQUEST_ID/trace_id、HOST；对应失败任务存在时优先用 qkv_task。
-
-**qfk_log**（统一 `acli log get`）
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `file` | string | 条件必填 | 常规 `/sf/log` 检索必填安全 basename；request_id 辅助域可省略 |
-| `time_window` | string | 否 | HCI 时区绝对时间或 `{{ABSOLUTE_TIME}}`；禁止 `now/-1h` |
-| `path` | string | 否 | 常规日志仅 `/sf/log`；`/sf/data/local` 仅可与 request_id 同时使用 |
-| `source_family` | string | 否 | `auto/whitebox/blackbox/vn_blackbox/pod` |
-| `parser` | string | 否 | 留空由 Catalog 选择 |
-| `request_id` | string | 否 | 调用链 ID（`-i`） |
-| `context_lines` | int | 否 | 上下文行，0–50 |
-| `include_archives` | bool | 否 | 搜索 `.gz`；需要 `archive_precheck=verified` |
-| `host` | string | 否 | 目标主机（变量池；`cluster`=遍历集群） |
-| `resource_keyword` | string | 否 | 资源选择器（非匹配词，见 §6） |
-
-blackbox 不拆成 `qfk_blackbox`。普通文本支持 keyword/regex/state/exists，数值支持
-threshold，周期快照支持 delta/trend + metric。完整设计见
-[qfk_log统一日志采集解析与判定设计](qfk_log统一日志采集解析与判定设计.md)。
-
-**qfk_service**（acli service <container> <name> <command>）
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `resource_keyword` | string | 否 | **服务名选择器**（acli service <container> <name> 的 `<name>`；改名消歧，非匹配词） |
-| `container` | string | 否 | 服务容器，默认 `asv`（可选 asv/vn/...） |
-| `command` | string | 否 | 操作子命令，如 `status` / `restart` |
-
-**qfk_system**（acli --container <c> --host {{HOST}} system <command>）
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `command` | string | **是** | 系统命令，如 `lsof` / `ps auxf` / `lsblk` / `iostat` / `smartctl` |
-| `container` | string | 否 | 执行容器，默认 `asv-con` |
-| `host` | string | 否 | 目标主机（`cluster`=遍历集群） |
-| `resource_keyword` | string | 否 | 资源/主题选择器，如 `overlay2/docker` |
-
-**qfk_vm / qfk_network / qfk_storage / qfk_hardware / qfk_platform**
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `command` | string | **是** | 对应 acli 子命令（如 `vm list`、`network <cmd>`、`storage asan disk list`、`hardware <cmd>`、`platform <cmd>`） |
-| `host` | string | 否 | 目标主机（`cluster`=遍历集群） |
-| `resource_keyword` | string | 否 | 资源名选择器（如虚拟机名） |
-
----
-
-## 5. 判定器 match 说明
-
-### 5.1 字段含义
-
-- `type`：判定算法。`keyword`=子串包含；`regex`=正则匹配。
-- `pattern`：匹配内容。`keyword` 时为关键词；`regex` 时为正则串（忽略大小写）。
-- `mode`：多词组合逻辑，仅对「多个关键词」有意义（见 §5.2）。
-- `expected`：期望值。`true`=文本应命中；`false`=文本不应命中（取反）。
-
-### 5.2 mode（多词逻辑）
-
-| 模式 | 说明 |
-|------|------|
-| `or` | 任一关键词命中即判定为真 |
-| `and` | 全部关键词都命中才判定为真 |
-| `not` | 所有关键词都不出现才判定为真 |
-
-### 5.3 match 字段范围（已修复）
-
-`backend/agent-service/app/tools/qfk/matcher.py` 的 `evaluate_matcher` **已实现 6 类**：`keyword`、`regex`、`state`、`threshold`、`json_path`、`exists`。
-
-> ✅ **已修复（2026-07-24）**：`signal.v2.schema.json` 的 `match` 段已扩宽 —— `additionalProperties: false` 同时允许 `value`/`operator`/`path`/`expected_value`。`type` 为自由字符串（已知匹配器：keyword/regex/state/threshold/json_path/exists），`mode` 为自由字符串（已知：or/and/not；历史 fixture 的 `any` 运行时等同 or）。**目前 6 类判定均可在保存校验中通过**。注意：`threshold` 的 `value` 在 schema 中为可选，但运行时若缺 `value`/`operator` 会判定为"未知(None)"，建议始终显式给出。
-
-多关键词 OR 匹配的安全写法：使用 `regex` + 正则或（`"pattern": "kw1|kw2"`），或 `keyword` + 列表（`pattern: ["kw1","kw2"]`，运行时接受；schema 当前按 string 校验，列表写法以运行时为准）。
-
----
-
-## 6. 关键字语义消歧（极易配错）
-
-v2 里有**三个名字相近但语义完全不同**的字段，混淆会导致"采集错对象"或"判定恒真/恒假"：
-
-| 字段 | 属于 | 语义 | 示例 |
-|------|------|------|------|
-| `acquire.args.keyword` | 仅 QKV | **采集检索词**（acli `<task\|dialog\|alert>` get -k 的参数），用于"拉取哪些记录" | `"启动虚拟机"` |
-| `acquire.args.resource_keyword` | 仅 QFK | **资源/主题选择器**（acli 的 `<name>`/资源定位），**不是匹配词** | `"vtpdaemon"`、`"overlay2/docker"` |
-| `match.pattern` | 仅 QFK | **匹配词（唯一权威）**：判定采集文本里"该不该出现"的词 | `"vm-disk\|\\.qcow2"` |
-
-要点：
-- QFK 的"该不该命中"只由 `match.pattern` 决定；`resource_keyword` 只决定"查哪个资源"，不参与判定。
-- QKV 的 `keyword` 是"检索词"，决定采到哪些原始记录，与 QFK 的 `match.pattern` 不是一回事。
-- 选错 QKV 生产者类型（如给"开机失败"用 `qkv_alert`）会查错子系统、返回空，信号恒假——准确性第一杀手（详见操作指南 §2.3）。
-
----
-
-## 7. 校验与常见错误
-
-保存 KBD 条目时 `validate_signals_json` 强制校验；`additionalProperties: false` 会拒绝一切未声明字段与顶层 `keyword` 等回归写法。
-
-| 现象 | 原因 | 解决 |
-|------|------|------|
-| 422：`'schema_version' is a required property` | 漏写或写成 1 | 顶层加 `"schema_version": 2` |
-| 422：`'acquire' is a required property` | 少了 acquire 段 | 每个信号必须含 `acquire` |
-| 422：`'tool' must be one of [...]` | tool 写错/用了 v1 的 `qkv.task`（点号） | 用下划线枚举 `qkv_task` 等 11 个 |
-| 422：`Additional properties are not allowed ('keyword' was unexpected）` | 把 v1 扁平字段（顶层 `keyword`/`matcher`）搬进 v2 | 改为 `acquire.args.*` 与 `match.*` |
-| 422：QKV 缺 `keyword` | qkv_* 的 `args.keyword` 必填 | 补 `args.keyword` |
-| 判定恒真/恒假 | `match.pattern` 与 `resource_keyword` 混淆 | 参照 §6 区分 |
-| 多关键词被拒 | 用 `keyword`+列表但 schema 仅接受 string | 改用 `regex`+`|` 或等 schema 放开（§5.3） |
-
----
-
-*文档结束。与 `signal.v2.schema.json` 对齐；如发现契约已更新请以 schema 文件为准并同步本文。*
+| 日期 | 变更 |
+|---|---|
+| 2026-09-23 | 合并重复主题，保留旧路径与章节定位；后续修改当前文档。 |
+
+<!-- 兼容整理前章节定位；实际内容见上方当前文档。 -->
+<a id="qkvqfk-信号模型-v2-参考迁移阅读"></a>
+<a id="变更历史"></a>
+<a id="1-模型总览"></a>
+<a id="2-逐行注释的完整示例"></a>
+<a id="21-qkv-信号前端带-produces-产出变量"></a>
+<a id="22-qfk-信号后端带-match-判定--依赖变量"></a>
+<a id="3-字段要点表"></a>
+<a id="31-顶层"></a>
+<a id="32-signal数组元素"></a>
+<a id="33-acquire采集段必填"></a>
+<a id="34-match判定段"></a>
+<a id="35-orchestrate编排段"></a>
+<a id="text-extract"></a>
+<a id="36-provenance来源段"></a>
+<a id="37-review复核段"></a>
+<a id="4-acquiretool-枚举与-args-字段"></a>
+<a id="41-枚举共-12-个"></a>
+<a id="42-各-tool-的-args-字段表"></a>
+<a id="5-判定器-match-说明"></a>
+<a id="51-字段含义"></a>
+<a id="52-mode多词逻辑"></a>
+<a id="53-match-字段范围已修复"></a>
+<a id="6-关键字语义消歧极易配错"></a>
+<a id="7-校验与常见错误"></a>
+
+请阅读上方当前文档；这里不再重复维护旧章节。

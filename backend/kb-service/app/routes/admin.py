@@ -102,9 +102,11 @@ def _load_signals_json(raw: Any) -> dict:
         try:
             document = json.loads(raw)
         except json.JSONDecodeError:
-            return {}
+            return {"schema_version": 2, "signals": raw}
     else:
-        document = raw or {}
+        document = raw
+    if document is None or document == {} or document == []:
+        return {"schema_version": 2, "signals": []}
     # 旧 UI 把 qfk_system.container=host 当成 Terminal Bridge 执行域。新契约
     # 中 container 只表示 aCLI --container；host 的等价表达是省略该字段。读取
     # 即归一，使专家下一次保存自然完成无损迁移，且旧 published 文档仍可消费。
@@ -116,7 +118,7 @@ def _load_signals_json(raw: Any) -> dict:
             args = acquire.get("args")
             if isinstance(args, dict) and args.get("container") == "host":
                 args.pop("container", None)
-    return document if isinstance(document, dict) else {}
+    return document if isinstance(document, dict) else {"schema_version": 2, "signals": document}
 
 
 def _signals_for_response(raw: Any) -> dict:
@@ -192,6 +194,23 @@ def _validate_kbd_publishable_signals_json(raw: Any) -> None:
     normalize_derived_date_variables(raw)
     validate_kbd_read_only_signals_json(raw)
     validate_kbd_publishable_signals_json(raw)
+
+
+def _require_kbd_consumer_or_reference(document: dict[str, Any]) -> None:
+    """首次、维护和重新发布共用同一消费者覆盖门禁。"""
+    from shared.schemas.semantic_entry import capability_of
+
+    if capability_of(document) in {"guidance_only", "reference_only"}:
+        return
+    if not any(
+        isinstance(signal, dict)
+        and (
+            str((signal.get("acquire") or {}).get("tool") or "").startswith("qfk")
+            or (signal.get("provenance") or {}).get("category") == "backend"
+        )
+        for signal in document.get("signals") or []
+    ):
+        raise HTTPException(status_code=422, detail="可执行诊断至少需要一条消费者 QFK 信号；无信号案例可发布为仅案例推荐")
 
 
 def _humanize_signal_validation_error(error: jsonschema.ValidationError, signals: list[Any]) -> dict[str, Any]:
@@ -2713,14 +2732,17 @@ async def review_kbd_signals(request: Request, kbd_id: int) -> dict[str, Any]:
                 }
             )
     if not signals:
-        issues.append(
-            {
-                "level": "error",
-                "code": "KBD_SIGNALS_MISSING",
-                "location": "signals_json",
-                "message": "缺少关键信号，请先抽取或人工新增",
-            }
-        )
+        runtime_capability_verified = False
+        try:
+            _validate_kbd_publishable_signals_json(signals_doc)
+        except jsonschema.ValidationError as exc:
+            issues.append(_humanize_signal_validation_error(exc, []))
+        else:
+            platform_status.append({
+                "code": "KBD_REFERENCE_ONLY", "level": "info", "expert_action_required": False,
+                "blocks_publish": False,
+                "message": "无信号案例发布后按标题和问题描述参与推荐，不自动确认根因或生成采集资源。",
+            })
     else:
         for issue in expert_editor_issues(signals_doc):
             issues.append(
@@ -2734,10 +2756,13 @@ async def review_kbd_signals(request: Request, kbd_id: int) -> dict[str, Any]:
             )
         try:
             _validate_kbd_publishable_signals_json(signals_doc)
+            _require_kbd_consumer_or_reference(signals_doc)
         except jsonschema.ValidationError as exc:
             human_issue = _humanize_signal_validation_error(exc, signals)
             if not any(issue["code"] == human_issue["code"] for issue in issues):
                 issues.append(human_issue)
+        except HTTPException as exc:
+            issues.append({"level": "error", "code": "KBD_CONSUMER_MISSING", "location": "关键信号", "message": str(exc.detail)})
 
         used_tools: set[str] = set()
         for index, signal in enumerate(signals):
@@ -2987,16 +3012,11 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
             )
 
         # ADR-1 + ADR-3：审核前置门
-        # 门 1：signals_json 非空（无关键信号 → CDD 不可执行）
-        # 直接切 v2 列形态（RFC §7）：signals_json 现为 {schema_version, signals} 对象，
-        # 需先解包为信号列表再判空。
+        # 无信号可发布为参考知识；可执行诊断仍由共享发布契约严格校验。
+        # 空值规范化为 v2 空信号文档，非法文档仍由发布审查拒绝。
         _signals_doc = _load_signals_json(row["signals_json"]) or {}
-        _raw_signals = _signals_doc.get("signals", [])
-        if not _raw_signals:
-            raise HTTPException(
-                status_code=422,
-                detail=f"KBD 条目 {kbd_id} 缺少关键信号（signals_json 为空），请先调用 /extract-signals 抽取后再审核",
-            )
+        if not str(row["title"] or "").strip():
+            raise HTTPException(status_code=422, detail="案例标题不能为空")
         # 统一最低门禁：发布前先经过 Agent 最终执行使用的 Shared Resolution
         # Runtime。后续发布级 Schema、专家角色和消费者覆盖规则只做加严。
         publish_review = review_signal_document(
@@ -3016,24 +3036,7 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
             _signals_doc = _prepare_expert_publish_signals(_signals_doc)
         except jsonschema.ValidationError as exc:
             _raise_signal_validation_error(exc, _signals_doc.get("signals") or [])
-        _raw_signals = _signals_doc.get("signals", [])
-        # 门 1.5：至少含 1 条消费者(backend)信号，否则 CDD 无法执行差异消除（§9）
-        # v2 原生判定：acquire.tool 以 qfk 开头 或 provenance.category==backend
-        _has_consumer = any(
-            isinstance(s, dict)
-            and (
-                (s.get("acquire") or {}).get("tool", "").startswith("qfk")
-                or (s.get("provenance") or {}).get("category") == "backend"
-            )
-            for s in _raw_signals
-        )
-        from shared.schemas.semantic_entry import capability_of
-
-        if not _has_consumer and capability_of(_signals_doc) != "guidance_only":
-            raise HTTPException(
-                status_code=422,
-                detail=f"KBD 条目 {kbd_id} 缺少消费者(backend)信号，CDD 无法进行差异诊断消除，请补充至少 1 条 QFK 消费者信号后再审核",
-            )
+        _require_kbd_consumer_or_reference(_signals_doc)
         # 门 2：category_id 与 ai_category_id 同步（根治孤儿 KBD）
         # 优先采用人工确认的分类（审核详情弹窗“确认分类”下拉框），
         # fallback 到 DB 已有值；保证发布后 category_id 一定有值。
@@ -4529,21 +4532,7 @@ async def publish_kbd_maintenance_working(
     except jsonschema.ValidationError as exc:
         _raise_signal_validation_error(exc, signals_doc.get("signals") or [])
     payload["signals_json"] = signals_doc
-    signals = signals_doc.get("signals") or []
-    # 语义入口画像（guidance_only）允许仅声明 case_context 等受限生产者信号，
-    # 不强制要求 QFK 消费者信号。这类 KBD 不进入自动执行 CDD，而是通过语义兜底
-    # 路径请求人工补充证据。仅对非 guidance_only 的 KBD 强制要求至少一条 QFK 信号。
-    semantic_profile = signals_doc.get("semantic_entry_profile") or {}
-    is_guidance_only = semantic_profile.get("diagnosis_capability") == "guidance_only"
-    if not is_guidance_only and not any(
-        isinstance(signal, dict)
-        and (
-            str((signal.get("acquire") or {}).get("tool") or "").startswith("qfk")
-            or (signal.get("provenance") or {}).get("category") == "backend"
-        )
-        for signal in signals
-    ):
-        raise HTTPException(status_code=422, detail="至少需要一条消费者 QFK 信号")
+    _require_kbd_consumer_or_reference(signals_doc)
     effective_category_id = payload.get("category_id") or payload.get("ai_category_id")
     if not effective_category_id:
         raise HTTPException(status_code=422, detail="请先确认分类")
@@ -5002,16 +4991,13 @@ async def republish_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReq
         if not content_md:
             raise HTTPException(status_code=400, detail=f"KBD 条目 {kbd_id} 缺少 content_md")
         _republish_doc = _load_signals_json(row["signals_json"]) or {}
-        _republish_signals = _republish_doc.get("signals", [])
-        if not _republish_signals:
-            raise HTTPException(
-                status_code=422,
-                detail=f"KBD 条目 {kbd_id} 缺少关键信号，禁止重新发布",
-            )
+        if not str(row["title"] or "").strip():
+            raise HTTPException(status_code=422, detail="案例标题不能为空")
         try:
             _republish_doc = _prepare_expert_publish_signals(_republish_doc)
         except jsonschema.ValidationError as exc:
             _raise_signal_validation_error(exc, _republish_doc.get("signals") or [])
+        _require_kbd_consumer_or_reference(_republish_doc)
         embedding_text = build_kbd_embedding_text(
             title=row["title"],
             problem_description=row["problem_description"],

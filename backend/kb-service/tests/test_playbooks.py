@@ -40,6 +40,36 @@ class _SessionContext:
 
 
 @pytest.mark.asyncio
+async def test_inventory_reference_uses_frozen_title_and_never_becomes_executable():
+    entry = SimpleNamespace(
+        id=1, support_id="15936", title="未发布的维护标题", category_id="vm", status="published",
+        signals_json={"schema_version": 2, "signals": []},
+    )
+    frozen = SimpleNamespace(status="published", content={
+        "title": "缺少介质驱动程序", "category_id": "vm", "status": "published",
+        "solution": "已发布建议", "signals_json": {"schema_version": 2, "signals": []},
+    })
+    session = SimpleNamespace(
+        execute=AsyncMock(side_effect=[_ScalarResult([]), _ScalarResult([entry])]), commit=AsyncMock(),
+    )
+    db = SimpleNamespace(async_session_factory=lambda: _SessionContext(session))
+    loader = MagicMock()
+    loader.get_active = AsyncMock(return_value=frozen)
+    with (
+        patch.object(playbooks, "_db_manager", db),
+        patch.object(playbooks, "DynamicResourceLoader", return_value=loader),
+        patch.object(playbooks, "snapshot_revision_metadata", return_value={"revision": 8}),
+    ):
+        result = await playbooks.get_category_playbooks("vm")
+    case = result["kbds"][0]
+    assert case["title"] == "缺少介质驱动程序"
+    assert case["solution"] == "已发布建议"
+    assert case["recommendable"] is True
+    assert case["executable"] is False
+    assert case["diagnosis_capability"] == "reference_only"
+
+
+@pytest.mark.asyncio
 async def test_inventory_returns_published_kbd_without_embedding_gate():
     signal = {
         "id": "sig_001",

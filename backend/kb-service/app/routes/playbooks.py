@@ -60,6 +60,8 @@ def _execution_issues(
     issues: list[str] = []
     validation_document = document or {"schema_version": 2, "signals": signals}
     semantic_capability = capability_of(validation_document)
+    if semantic_capability == "reference_only":
+        return ["仅案例推荐：无现场验证信号，不进入自动执行 CDD"]
     if semantic_capability == "guidance_only":
         return ["语义入口为 guidance_only：仅可请求人工补充证据，不进入自动执行 CDD"]
     if semantic_capability == "capability_gap":
@@ -214,11 +216,13 @@ async def get_category_playbooks(
             frozen_document = frozen.get("signals_json") if isinstance(frozen.get("signals_json"), dict) else {}
             is_semantic = bool(
                 raw_signal_doc.get("semantic_entry_profile") or frozen_document.get("semantic_entry_profile")
+                or ("signals_json" in frozen and capability_of(frozen_document) == "reference_only")
+                or capability_of(raw_signal_doc) == "reference_only"
             )
             if is_semantic:
                 if getattr(snapshot, "status", "") != "published" or frozen.get("category_id") != category_id:
                     continue
-                raw_signal_doc = frozen.get("signals_json") or {}
+                raw_signal_doc = frozen.get("signals_json") or {"schema_version": 2, "signals": []}
                 signals = raw_signal_doc.get("signals") or []
             verification_contract = raw_signal_doc.get("verification_contract") or {}
             generation_metadata = raw_signal_doc.get("generation_metadata") or {}
@@ -249,6 +253,7 @@ async def get_category_playbooks(
                     "publish_validation": publish_validation,
                     "semantic_entry_profile": semantic_profile,
                     "diagnosis_capability": capability_of(raw_signal_doc) or "executable",
+                    "recommendable": capability_of(raw_signal_doc) in {"reference_only", "guidance_only"} or not issues,
                     "root_cause": frozen.get("root_cause") if is_semantic else kbd.root_cause,
                     "solution": frozen.get("solution") if is_semantic else kbd.solution,
                     "problem_description": frozen.get("problem_description")

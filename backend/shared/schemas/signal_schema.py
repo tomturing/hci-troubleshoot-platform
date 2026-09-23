@@ -529,6 +529,13 @@ def validate_kbd_publishable_signals_json(raw: Any) -> None:
 
     validate_publishable_signals_json(raw)
     signals = raw.get("signals") if isinstance(raw, dict) else None
+    if not signals:
+        if capability_of(raw) == "reference_only":
+            return
+        raise ValidationError(
+            "无信号案例存在未处理的抽取异常或拒绝候选，请先复核；不能自动降级为案例推荐",
+            path=["signals"],
+        )
     tools = [
         str((signal.get("acquire") or {}).get("tool") or "") for signal in signals or [] if isinstance(signal, dict)
     ]
