@@ -133,8 +133,15 @@ async def authenticate_by_password(
 
         if row is None:
             await _write_audit(
-                session, user_id=None, realm=realm, action="login",
-                result="denied", identifier=identifier, ip=ip, ua=ua, trace_id=trace_id,
+                session,
+                user_id=None,
+                realm=realm,
+                action="login",
+                result="denied",
+                identifier=identifier,
+                ip=ip,
+                ua=ua,
+                trace_id=trace_id,
             )
             await session.commit()
             raise AuthError("invalid_credentials")
@@ -143,9 +150,16 @@ async def authenticate_by_password(
         locked_until = row["locked_until"]
         if locked_until is not None and locked_until.timestamp() > time.time():
             await _write_audit(
-                session, user_id=row["user_id"], realm=realm, action="login",
-                result="denied", identifier=identifier, ip=ip, ua=ua,
-                credential_id=row["credential_id"], trace_id=trace_id,
+                session,
+                user_id=row["user_id"],
+                realm=realm,
+                action="login",
+                result="denied",
+                identifier=identifier,
+                ip=ip,
+                ua=ua,
+                credential_id=row["credential_id"],
+                trace_id=trace_id,
             )
             await session.commit()
             raise AuthError("locked")
@@ -157,9 +171,16 @@ async def authenticate_by_password(
                 {"cid": row["credential_id"]},
             )
             await _write_audit(
-                session, user_id=row["user_id"], realm=realm, action="login",
-                result="failed", identifier=identifier, ip=ip, ua=ua,
-                credential_id=row["credential_id"], trace_id=trace_id,
+                session,
+                user_id=row["user_id"],
+                realm=realm,
+                action="login",
+                result="failed",
+                identifier=identifier,
+                ip=ip,
+                ua=ua,
+                credential_id=row["credential_id"],
+                trace_id=trace_id,
             )
             await session.commit()
             raise AuthError("invalid_credentials")
@@ -177,27 +198,42 @@ async def authenticate_by_password(
         if not validate_roles(realm, roles):
             # 角色越权（数据异常），拒绝签发，记录告警
             await _write_audit(
-                session, user_id=row["user_id"], realm=realm, action="login",
-                result="denied", identifier=identifier, ip=ip, ua=ua,
-                credential_id=row["credential_id"], trace_id=trace_id,
+                session,
+                user_id=row["user_id"],
+                realm=realm,
+                action="login",
+                result="denied",
+                identifier=identifier,
+                ip=ip,
+                ua=ua,
+                credential_id=row["credential_id"],
+                trace_id=trace_id,
             )
             await session.commit()
             raise AuthError("role_violation")
 
-        ttl = (
-            settings.ACCESS_TOKEN_TTL_ADMIN
-            if realm == "admin"
-            else settings.ACCESS_TOKEN_TTL_CUSTOMER
-        )
+        ttl = settings.ACCESS_TOKEN_TTL_ADMIN if realm == "admin" else settings.ACCESS_TOKEN_TTL_CUSTOMER
         expires_at = time.time() + ttl
         await _write_audit(
-            session, user_id=row["user_id"], realm=realm, action="login",
-            result="success", identifier=identifier, ip=ip, ua=ua,
-            credential_id=row["credential_id"], trace_id=trace_id,
+            session,
+            user_id=row["user_id"],
+            realm=realm,
+            action="login",
+            result="success",
+            identifier=identifier,
+            ip=ip,
+            ua=ua,
+            credential_id=row["credential_id"],
+            trace_id=trace_id,
         )
         await _write_session(
-            session, user_id=row["user_id"], realm=realm,
-            token_version=row["token_version"], ip=ip, ua=ua, expires_at=expires_at,
+            session,
+            user_id=row["user_id"],
+            realm=realm,
+            token_version=row["token_version"],
+            ip=ip,
+            ua=ua,
+            expires_at=expires_at,
         )
         await session.commit()
 

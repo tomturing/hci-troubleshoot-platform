@@ -28,9 +28,7 @@ def _load_or_generate() -> rsa.RSAPrivateKey:
     if pem:
         _PRIVATE_KEY = serialization.load_pem_private_key(pem.encode(), password=None)
         return _PRIVATE_KEY
-    logger.warning(
-        "AUTH_RSA_PRIVATE_KEY_PEM 未配置，生成临时内存 RSA 密钥（重启即失效，禁止用于生产）"
-    )
+    logger.warning("AUTH_RSA_PRIVATE_KEY_PEM 未配置，生成临时内存 RSA 密钥（重启即失效，禁止用于生产）")
     _PRIVATE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     return _PRIVATE_KEY
 

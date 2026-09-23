@@ -11,7 +11,7 @@ import base64
 import json
 import secrets
 import time
-from typing import Iterable
+from collections.abc import Iterable
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding

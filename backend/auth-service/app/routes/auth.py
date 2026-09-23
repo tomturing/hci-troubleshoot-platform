@@ -40,29 +40,48 @@ def _client_meta(request: Request) -> tuple[str | None, str | None]:
 @router.post("/api/auth/customer/login", response_model=LoginResponse)
 async def customer_login(req: LoginRequest, request: Request, response: Response):
     return await _login(
-        "customer", settings.JWT_AUD_CUSTOMER,
-        settings.ACCESS_TOKEN_TTL_CUSTOMER, "hci_cust_session", req, request, response,
+        "customer",
+        settings.JWT_AUD_CUSTOMER,
+        settings.ACCESS_TOKEN_TTL_CUSTOMER,
+        "hci_cust_session",
+        req,
+        request,
+        response,
     )
 
 
 @router.post("/api/auth/admin/login", response_model=LoginResponse)
 async def admin_login(req: LoginRequest, request: Request, response: Response):
     return await _login(
-        "admin", settings.JWT_AUD_ADMIN,
-        settings.ACCESS_TOKEN_TTL_ADMIN, "hci_admin_session", req, request, response,
+        "admin",
+        settings.JWT_AUD_ADMIN,
+        settings.ACCESS_TOKEN_TTL_ADMIN,
+        "hci_admin_session",
+        req,
+        request,
+        response,
     )
 
 
 async def _login(
-    realm: str, aud: str, ttl: int, cookie_name: str,
-    req: LoginRequest, request: Request, response: Response,
+    realm: str,
+    aud: str,
+    ttl: int,
+    cookie_name: str,
+    req: LoginRequest,
+    request: Request,
+    response: Response,
 ) -> LoginResponse:
     ip, ua = _client_meta(request)
     trace_id = request.headers.get("X-Trace-Id", str(uuid.uuid4()))
     try:
         result = await authenticate_by_password(
-            realm=realm, identifier=req.identifier, password=req.password,
-            ip=ip, ua=ua, trace_id=trace_id,
+            realm=realm,
+            identifier=req.identifier,
+            password=req.password,
+            ip=ip,
+            ua=ua,
+            trace_id=trace_id,
         )
     except AuthError as exc:
         detail = {
@@ -82,8 +101,13 @@ async def _login(
         ttl=ttl,
     )
     response.set_cookie(
-        cookie_name, token, httponly=True, secure=True,
-        samesite="lax", max_age=ttl, path="/",
+        cookie_name,
+        token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=ttl,
+        path="/",
     )
     return LoginResponse(access_token=token, expires_in=ttl)
 
@@ -91,4 +115,5 @@ async def _login(
 @router.get("/.well-known/jwks.json")
 async def jwks():
     from app.security.keys import get_jwks
+
     return get_jwks()

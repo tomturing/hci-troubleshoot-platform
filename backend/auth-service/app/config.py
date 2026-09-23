@@ -33,7 +33,7 @@ try:
         JWT_AUD_CUSTOMER: str = "hci-customer"
         JWT_AUD_ADMIN: str = "hci-admin"
         ACCESS_TOKEN_TTL_CUSTOMER: int = 60 * 60 * 24 * 7  # 7 天
-        ACCESS_TOKEN_TTL_ADMIN: int = 60 * 60 * 4          # 4 小时（短时效，配合 token_version）
+        ACCESS_TOKEN_TTL_ADMIN: int = 60 * 60 * 4  # 4 小时（短时效，配合 token_version）
 
         ADMIN_ROLES: frozenset[str] = frozenset({"platform_admin", "support_engineer", "diagnosis_worker"})
         CUSTOMER_ROLES: frozenset[str] = frozenset({"customer"})
@@ -41,6 +41,7 @@ try:
         REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 except ImportError:  # pragma: no cover - 精简环境降级路径
+
     class Settings:
         """os.getenv 降级实现（无 pydantic-settings 时）。"""
 

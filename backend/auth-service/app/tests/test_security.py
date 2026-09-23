@@ -32,8 +32,12 @@ def _decode_and_verify(token: str) -> dict:
 
 def test_jwt_sign_and_verify():
     token = jwt_mod.issue_token(
-        user_id="u-1", realm="admin", roles=["platform_admin"],
-        aud="hci-admin", token_version=3, ttl=3600,
+        user_id="u-1",
+        realm="admin",
+        roles=["platform_admin"],
+        aud="hci-admin",
+        token_version=3,
+        ttl=3600,
     )
     payload = _decode_and_verify(token)
     assert payload["sub"] == "u-1"
@@ -49,8 +53,12 @@ def test_jwt_sign_and_verify():
 
 def test_jwt_expired_token():
     token = jwt_mod.issue_token(
-        user_id="u-2", realm="customer", roles=["customer"],
-        aud="hci-customer", token_version=1, ttl=-10,
+        user_id="u-2",
+        realm="customer",
+        roles=["customer"],
+        aud="hci-customer",
+        token_version=1,
+        ttl=-10,
     )
     payload = _decode_and_verify(token)
     assert payload["exp"] < time.time()

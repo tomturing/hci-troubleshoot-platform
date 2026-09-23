@@ -15,11 +15,10 @@ from shared.observability.logger import get_logger
 from shared.observability.otel import init_telemetry, instrument_app
 from shared.utils.exception_handlers import register_exception_handlers
 
-from app.config import settings
-from app.routes import auth
-
 # 触发 repository 模块级 engine 初始化
 import app.services.repository  # noqa: F401
+from app.config import settings
+from app.routes import auth
 
 init_telemetry(settings.SERVICE_NAME)
 logger = get_logger(settings.SERVICE_NAME, settings.LOG_LEVEL)
