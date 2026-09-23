@@ -202,7 +202,7 @@ jobs:
             scripts/ci/test_resolve_pr_frontend_targets.py \
             scripts/ci/test_resolve_main_test_scope.py \
             scripts/ci/test_resolve_pr_fast_test_targets.py \
-            scripts/ci/test_env_repo_sync_contract.py
+            scripts/ci/test_env_repo_sync_contract.py \
             -q
 
       # 确定性前端改动判定（覆盖 dorny/paths-filter 的 frontend 输出）。
