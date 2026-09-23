@@ -1,0 +1,79 @@
+{{- if .Values.authService.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "auth-service" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  replicas: {{ .Values.authService.replicaCount }}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "auth-service" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hci.podLabels" (dict "name" "auth-service" "Release" .Release "Chart" .Chart) | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.authService.port | quote }}
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "auth-service") | nindent 6 }}
+      containers:
+        - name: auth-service
+          image: {{ include "hci.image" (dict "global" .Values.global "image" .Values.authService.image) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "hci.workloadContainerSecurityContext" . | nindent 10 }}
+          ports:
+            - containerPort: {{ .Values.authService.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: hci-common-config
+            - secretRef:
+                name: hci-secrets
+          env:
+            - name: SERVICE_NAME
+              value: "auth-service"
+            - name: SERVICE_PORT
+              value: {{ .Values.authService.port | quote }}
+            - name: DATABASE_URL
+              value: {{ printf "postgresql+asyncpg://%s:%s@%s:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+            - name: AUTH_RSA_PRIVATE_KEY_PEM
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: AUTH_RSA_PRIVATE_KEY_PEM
+                  optional: true
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: {{ .Values.authService.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: {{ .Values.authService.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: {{ .Values.authService.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          resources:
+            {{- toYaml .Values.authService.resources | nindent 12 }}
+{{- end }}

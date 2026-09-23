@@ -27,11 +27,14 @@ def validate_roles(realm: str, roles: list[str]) -> bool:
 
 
 async def get_roles(session: AsyncSession, user_id: Any) -> list[str]:
+    # 角色权威存储于 user.roles（jsonb），与 unified schema 一致；
+    # 旧 user_role 规范化表未实际建表，统一以 user.roles 为准（阶段1.x 修复阶段0 缺陷）。
     res = await session.execute(
-        text("SELECT role FROM user_role WHERE user_id = :uid"),
+        text('SELECT roles FROM "user" WHERE user_id = :uid::uuid'),
         {"uid": user_id},
     )
-    return [r[0] for r in res.all()]
+    row = res.scalar_one_or_none()
+    return list(row) if row else []
 
 
 async def _write_audit(

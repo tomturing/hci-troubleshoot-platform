@@ -5,6 +5,7 @@ import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import 'element-plus/dist/index.css'
 import App from './App.vue'
 import router from './router'
+import { setupAuthFetch } from '@/utils/auth'
 
 const app = createApp(App)
 app.use(createPinia())
@@ -18,5 +19,7 @@ for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
     app.component(key.toLowerCase(), component)
   }
 }
+
+setupAuthFetch()
 
 app.mount('#app')

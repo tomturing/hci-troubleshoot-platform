@@ -33,6 +33,10 @@ const menuItems = buildMenuItems(router.getRoutes())
     <el-container>
       <el-header class="admin-header">
         <span class="page-title">{{ route.meta?.title || '管理控制台' }}</span>
+        <span class="header-actions" style="margin-left:auto;display:flex;gap:8px;align-items:center;">
+          <el-button v-if="isAuthenticated()" size="small" @click="onLogout">退出登录</el-button>
+          <el-button v-else size="small" type="primary" @click="goLogin">登录</el-button>
+        </span>
       </el-header>
       <el-main class="admin-main">
         <router-view />

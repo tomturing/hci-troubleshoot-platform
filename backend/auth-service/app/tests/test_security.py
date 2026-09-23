@@ -5,9 +5,11 @@
 即与下游 OidcJwtIdentityVerifier（RS256+JWKS）契约兼容。
 """
 
+import asyncio
 import base64
 import json
 import time
+from unittest.mock import AsyncMock, MagicMock
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -15,7 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from app.security import jwt as jwt_mod
 from app.security.keys import get_jwks, get_kid, get_private_key
 from app.security.password import hash_password, verify_password
-from app.services.repository import validate_roles
+from app.services.repository import get_roles, validate_roles
 
 
 def _b64url_decode(seg: str) -> bytes:
@@ -84,3 +86,26 @@ def test_jwks_export():
     assert key["kty"] == "RSA"
     assert key["alg"] == "RS256"
     assert {"kid", "n", "e", "use"} <= set(key.keys())
+
+
+def test_get_roles_reads_user_jsonb():
+    """角色权威存于 user.roles（jsonb），get_roles 应直接读取而非 user_role 表。"""
+    session = AsyncMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = ["platform_admin", "support_engineer"]
+    session.execute.return_value = result
+
+    roles = asyncio.run(get_roles(session, "11111111-1111-1111-1111-111111111111"))
+    assert roles == ["platform_admin", "support_engineer"]
+    # 绑定参数应带 ::uuid 类型转换，避免 asyncpg 类型不匹配
+    executed_sql = session.execute.call_args.args[0].text
+    assert 'SELECT roles FROM "user"' in executed_sql and "::uuid" in executed_sql
+
+
+def test_get_roles_empty():
+    session = AsyncMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    session.execute.return_value = result
+
+    assert asyncio.run(get_roles(session, "missing")) == []

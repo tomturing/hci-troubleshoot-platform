@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { isAuthenticated } from '@/utils/auth'
 
 const router = createRouter({
   // base 与 vite.config.ts 的 base 保持一致（挂载在 /admin/ 子路径）
@@ -110,7 +111,21 @@ const router = createRouter({
       component: () => import('@/views/VmConsoleCaptureView.vue'),
       meta: { title: 'Console审计', icon: 'Monitor', order: 11.5 },
     },
+    {
+      path: '/login',
+      name: 'Login',
+      component: () => import('@/views/LoginView.vue'),
+      meta: { title: '登录', public: true },
+    },
   ],
+})
+
+router.beforeEach((to: any) => {
+  // 软着陆：已登录访问登录页则跳仪表盘；暂不强制全局登录（兼容 AUTHN_ENFORCE_ADMIN=false 现状）
+  if (to.path === '/login' && isAuthenticated()) {
+    return { path: '/dashboard' }
+  }
+  return true
 })
 
 export default router
