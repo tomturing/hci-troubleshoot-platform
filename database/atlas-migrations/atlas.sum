@@ -1,4 +1,4 @@
-h1:e+IAVoCRf5+2CFUj4nXaxpe/jZ4I/ixzBA4nJ6/GAaM=
+h1:xLhQ30nHKXQHY2giuYy3ixEEzlZRvzst3X0NQokNTq4=
 20260525000000_kbd_structured_sections.sql h1:HK5p3/VudQhI6ZupzyZ3PEt00fqqLt5ExEovpDym/jc=
 20260526000000_create_sop_execution.sql h1:qAmFaHEbjh9R4eRIjcMM4QLx6wPw/LCDwvPoxBRXHlQ=
 20260526100000_add_variable_schema_to_sop_document.sql h1:tJjimwpXh/VwAAP1zWChXMgkuzjiK8WV+W55JO7BY/w=
@@ -31,4 +31,9 @@ h1:e+IAVoCRf5+2CFUj4nXaxpe/jZ4I/ixzBA4nJ6/GAaM=
 20260813000000_drop_orphan_agent_test_tables.sql h1:52tlDoluaROCSyXRFM1P9zUzPPrx2XzRvSVQbcKvbuw=
 20260817000000_fix_p0p1_schema_defects.sql h1:c2di7Uj8yTE8pnSEcH9ZrGCiBiKcq/Sedh7fvzQV5/g=
 20260827000000_seed_ai_processing_prompt.sql h1:5U/XEc7zNWZ3D3ToKup0OWHDelCDO8jeIyfSqLQRpa8=
-20260901000000_kbd_version_governance.sql h1:XORubQ0Su16DYEb2afI3+wbKzZpeaPLEVR7R+iAu7P8=
+20260901000000_kbd_version_governance.sql h1:TQOIy3F9Z4otRfEBAOJTNYm32aRbVwCRv8prHQd7VD4=
+20260904000000_add_signal_modeling_assets.sql h1:/feE7kARI5shyYBrRV802MH9Em/5LMjntgxQuW1pVS0=
+20260904000001_seed_multi_agent_extract_prompts.sql h1:YZIOsF6X7+fVxPt4R9FBXfhv8//dMfC+ioEXQT1dxLo=
+20260904000002_add_signal_asset_trace_id.sql h1:RLkW3OG8iWFWtPThlVPg/kw/dr00WNMX7987G7qyv/0=
+20260907000000_align_signal_modeling_pipeline_contract.sql h1:3PU4t3wkxMk4Mtnz1REZNYs5Mxdsh6Ke6Cd2Zd4FpAw=
+20260923000000_authn_unified_subject_credential.sql h1:YXpc/9/HhFZzfTxTxRh23lNV9xfO5G/afUIizQ5n+nc=
