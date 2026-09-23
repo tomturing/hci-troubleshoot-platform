@@ -2,7 +2,7 @@
 status: active
 category: meta
 audience: all
-last_updated: 2026-09-16
+last_updated: 2026-09-23
 owner: team
 update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑达成）必须更新第一屏
 ---
@@ -18,25 +18,25 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 
 ### 系统是什么
 
-**HCI 排障助手 = 双轨知识注入 + 三级 Fallback + 六阶段诊断状态机**
+**HCI 排障助手按已确认分类选择知识，现场证据决定自动诊断结论。**
 
+```text
+用户问题 → 确认分类
+  ├─ 有 SOP 且未放弃：继续 SOP 排查
+  └─ 无 SOP / 已明确回退：同分类 KBD
+       ├─ 强信号与后续验证 → CDD 证据门禁 → 满足条件才确诊
+       └─ 无可执行信号或证据不足 → 受控语义验证 / 未验证案例推荐
 ```
-用户描述故障
-   ↓
-[双轨知识检索]
-   ├── SOP 轨道：症状匹配 SOP 手册 → 注入「SOP排障流程」→ AI 按步骤执行
-   └── KB 轨道：语义检索历史案例  → 注入「历史案例参考」→ AI 提取假设
 
-[三级 Fallback]
-   SOP 命中 > 案例命中 > 机制推理（标注【机制推理】，不拒绝回答）
-
-[六阶段诊断]
-   S0 意图识别 → S1 故障定位 → S2 假设生成 → S3 验证执行 → S4 根因确认 → S6 验证闭环
-```
+**KBD、信号、语义推荐、审核发布统一从 [知识库主题入口](solution/knowledge-base/README.md) 阅读。** 没有可用知识或证据时，不自动生成知识库外命令或虚构已确认根因。
 
 ### 当前阶段
 
-> ⚠️ **此处需在每个工作循环完成后更新（owner: team）**
+> 当前工作区：无信号案例发布与标题推荐已完成本地实现和定向测试；文档已按主题收敛。尚未提交、部署或进行真实检索准确率评测。
+
+<details>
+<summary>历史里程碑记录（原记录时间点，不代表本次部署状态）</summary>
+
 
 | 里程碑 | 状态 | 完成日期 |
 |--------|------|---------|
@@ -83,15 +83,21 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | CI 主干后端门禁按影响范围收敛 | ✅ 已实施：main push 变更全部落在 `frontend/`、`docs/` 与根级说明文档内时跳过 Lint/unit/integration/security 整层（失败关闭，diff 起点为最近一次成功发布基线），纯前端 push 端到端由约 7 分钟降到镜像构建量级。后端变更按服务集合收敛（含覆盖率策略调整）留待二期。 | 2026-09-16 |
 | hci-sim KBD 27123 纵向样板与生产化差距审查 | 🟡 27123 revision 25 的 Admin→Agent→K3s Bridge→Runtime→Result 已通过；平台生产交付保持 BLOCKED，下一阶段转入 Bundle 工厂化 | 2026-08-11 |
 
-**当前关注点（2026-08-20）**：KBD CDD 使用“分类完整候选 + 主动 acquisition 调度 + 确定性证据门禁”，不使用 KBD 向量 `top_k`、早停到 2 篇或最高频采集器筛选。真实与仿真必须保持诊断等价：`sim-ssh` 只把现场采集切换到 hci-sim Bundle，TestRun 的目标 KBD/revision 不能成为候选答案。Q2026082002685 的 `PARTIAL` 来自 27123 Bundle 未覆盖同分类 30880 所需 acquisition；PR #857 通过单 KBD 过滤绕开缺口，已按[仿真诊断等价性与 CDD 全候选修正方案](solution/agent/events/2026-08-20-仿真诊断等价性与CDD全候选修正方案.md)、[任务](task/agent/events/2026-08-20-仿真诊断等价性与CDD全候选修正任务.md)和[验证复盘](verify/events/2026-08-20-Q2026082002685仿真CDD全候选问题复盘.md)纠正。
+</details>
 
-### 2026-08-10 三组 hci-sim 重构事件文档
+**当前关注点（2026-09-23）**：区分知识推荐与现场确诊；保留 SOP 优先、强信号验证和分类完整候选，不用标题相似度覆盖反证。当前规范从[知识库主题入口](solution/knowledge-base/README.md)查询，实施及待验收项见[知识库任务](task/knowledge-base/知识库任务.md)。
+
+<details>
+<summary>2026-08-10 hci-sim 重构事件记录</summary>
+
 
 | 组别 | 当前状态 | 需求 | 方案 | 任务 | 验证 |
 |---|---|---|---|---|---|
 | K3s 受管 terminal_bridge | ✅ 27123 Agent E2E 已通过受管单副本 Bridge；多副本/容量属于 P2 | [需求](requirement/events/2026-08-10-K3s受管terminal_bridge启用需求.md) | [方案](solution/events/2026-08-10-K3s受管terminal_bridge启用方案.md) | [任务](task/events/2026-08-10-K3s受管terminal_bridge启用任务.md) | [验证](verify/events/2026-08-10-K3s受管terminal_bridge启用验证.md) |
-| hci_sim 独立数据库 | 🟡 Run/Bundle/Result/outbox 与权限隔离已通过；主库 15 张空旧表 contract/drop 和恢复演练待独立完成 | [需求](requirement/hci-sim/events/hci_sim独立数据库隔离需求.md) | [方案](solution/hci-sim/events/2026-08-10-hci_sim独立数据库隔离方案.md) | [任务](task/hci-sim/events/2026-08-10-hci_sim独立数据库隔离任务.md) | [验证](verify/hci-sim/events/2026-08-10-hci_sim独立数据库隔离验证.md) |
+| hci_sim 独立数据库 | 🟡 Run/Bundle/Result/outbox 与权限隔离已通过；主库 15 张空旧表 contract/drop 和恢复演练待独立完成 | [需求](requirement/hci-sim/events/2026-08-10-hci_sim独立数据库隔离需求.md) | [方案](solution/hci-sim/events/2026-08-10-hci_sim独立数据库隔离方案.md) | [任务](task/hci-sim/events/2026-08-10-hci_sim独立数据库隔离任务.md) | [验证](verify/hci-sim/events/2026-08-10-hci_sim独立数据库隔离验证.md) |
 | 仿真测试迁移与 Agent context | ✅ 27123 的持久化 context、真实 Case/Conversation、Agent 命令和 Result E2E 已通过；其他 KBD 按 Bundle gate 判定 | [需求](requirement/events/2026-08-10-仿真测试迁移与Agent上下文绑定需求.md) | [方案](solution/events/2026-08-10-仿真测试迁移与Agent上下文绑定方案.md) | [任务](task/events/2026-08-10-仿真测试迁移与Agent上下文绑定任务.md) | [验证](verify/events/2026-08-10-仿真测试迁移与Agent上下文绑定验证.md) |
+
+</details>
 
 ### 冷启动阅读路径
 
@@ -120,7 +126,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | [solution/agent/02-架构设计/agent设计.md](solution/agent/02-架构设计/agent设计.md) | AI 助手架构、Pod 池调度、AI协议设计 |
 | [solution/hci-sim/README.md](solution/hci-sim/README.md) | hci-sim A～E 目标架构、严格依赖和当前 proposed 状态 |
 | [hci_sim/README.md](../hci_sim/README.md) | hci-sim 现行全量源码设计说明（代码/数据库/部署/CI/验收入口） |
-| [solution/knowledge-base/知识库设计.md](solution/knowledge-base/知识库设计.md) | RAG 摄入 + 检索流水线、KBD + SOP 两轨 |
+| [solution/knowledge-base/README.md](solution/knowledge-base/README.md) | KBD/SOP、信号契约、CDD、语义推荐、审核操作和生产的统一入口 |
 | [solution/knowledge-base/关键信号架构设计.md](solution/knowledge-base/关键信号架构设计.md) | 信号职责、运行契约、验收矩阵与专项文档导航 |
 | [solution/custom-ui/客户端设计.md](solution/custom-ui/客户端设计.md) | WebSocket 生命周期、UI 状态机、aClient 采集 |
 | [solution/case/工单设计.md](solution/case/工单设计.md) | 工单生命周期、Case 状态机、评分触发 |
@@ -137,7 +143,7 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | [deploy/发布指南.md](deploy/发布指南.md) | 发布流程 + ArgoCD 接入 + 回滚 SOP |
 | [deploy/部署管理规范.md](deploy/部署管理规范.md) | 脚本分类体系、配置分层、密钥管理规则 |
 | [deploy/pitfalls/_index.md](deploy/pitfalls/_index.md) | 部署类避坑路由索引（AI Agent 必读） |
-| [deploy/user-guide/](deploy/user-guide/) | 终端用户使用手册（在线诊断 / 离线诊断） |
+| [user-guide/](user-guide/) | 终端用户使用手册（在线诊断 / 离线诊断） |
 
 ### 验证与测试
 
@@ -181,3 +187,9 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 | 终端普通用户使用手册 | 面向非开发者的操作结果视角文档 | [user-guide/](user-guide/) |
 | 接口契约 | 机器可读的 OpenAPI / Protobuf 契约源文件 | [contracts/](contracts/) |
 | 历史归档 | 已完成、冻结、不再演进的历史文档（只读） | [archive/README.md](archive/README.md) |
+
+## 入口变更历史
+
+| 日期 | 变更 |
+|---|---|
+| 2026-09-23 | 校正 SOP/KBD 与参考推荐的现行边界；历史里程碑折叠，增加知识库统一入口。 |

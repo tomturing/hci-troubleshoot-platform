@@ -66,6 +66,36 @@ _RETRIEVAL_CONTROL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_CATEGORY_CONTROL_RE = re.compile(
+    r"^(?:(?:我认为|我觉得|应该|应当|请|麻烦)\s*)?"
+    r"(?:归类(?:到|为)?|分类(?:到|为|是)?|改为.{0,20}分类|选择.{0,20}分类|属于.{0,30}分类)"
+)
+
+
+def _retrieval_user_text(message: dict[str, Any]) -> str:
+    """按交互类型提取故障补充，避免 S0 分类菜单和分类纠正稀释主诉。"""
+    if message.get("role") != "user" or not isinstance(message.get("content"), str):
+        return ""
+    text = message["content"].strip()
+    metadata = message.get("metadata") or {}
+    if isinstance(metadata, dict) and metadata.get("kind") == "intent_selection_response":
+        # 正常选项仅改变路由；“以上都不是”只取真实 freeText，不能拼接菜单标签。
+        if not metadata.get("isNoneOfAbove"):
+            return ""
+        free_text = metadata.get("freeText")
+        text = free_text.strip() if isinstance(free_text, str) else ""
+    if not text or _RETRIEVAL_CONTROL_RE.fullmatch(text):
+        return ""
+    # 兼容没有元数据的旧菜单消息；只去掉分类控制分句，保留同条消息中的实际报错。
+    without_marker = re.sub(r"^[①-⑳]\s*", "", text)
+    clauses = re.split(r"[，,。；;\n]", without_marker)
+    if any(_CATEGORY_CONTROL_RE.match(clause.strip()) for clause in clauses):
+        return "。".join(
+            clause.strip() for clause in clauses
+            if clause.strip() and not _CATEGORY_CONTROL_RE.match(clause.strip())
+        )
+    return text
+
 
 class InvestigationAgent(BaseAgent):
     """S1-S4 诊断调查 Agent（CDD 驱动）。
@@ -341,13 +371,14 @@ class InvestigationAgent(BaseAgent):
 
         # 3. 无 SOP 时对分类内完整可执行 KBD 集合进行证据诊断；真实/仿真语义完全一致。
         semantic_preselected = False
-        if not raw_cases and semantic_cases:
+        if not raw_cases and all_kbds:
             # 无强入口不等于查询失败；服务端再次检查整个分类快照后才允许直达语义入口。
             semantic_result = await self._kb_client.resolve_semantic_entry(
                 category_id=category_id,
                 case_context=self._build_semantic_context(messages, env_context),
                 strong_producer_status="not_applicable",
                 expected_revisions=self._semantic_revisions(all_kbds),
+                include_reference_cases=True,
             )
             yield AgentStageUpdate(
                 stage="semantic_entry_fallback", metadata=semantic_result or {"reason": "service_unavailable"}
@@ -362,6 +393,9 @@ class InvestigationAgent(BaseAgent):
                 semantic_preselected = bool(raw_cases)
             if (semantic_result or {}).get("decision") == "semantic_recommendation":
                 yield AgentTextChunk(content=self._semantic_recommendation_message(semantic_result or {}))
+                return
+            if (semantic_result or {}).get("decision") == "case_recommendations":
+                yield AgentTextChunk(content=self._case_recommendation_message(semantic_result or {}))
                 return
             if not raw_cases:
                 question = ((semantic_result or {}).get("next_action") or {}).get("question")
@@ -492,16 +526,17 @@ class InvestigationAgent(BaseAgent):
             will_enter_semantic_fallback=(
                 kbd_result is not None
                 and not kbd_result.is_definitive
-                and bool(semantic_cases)
-                and not semantic_preselected
+                and bool(all_kbds)
             ),
         )
-        if kbd_result and not kbd_result.is_definitive and semantic_cases and not semantic_preselected:
+        if kbd_result and not kbd_result.is_definitive and all_kbds:
             strong_steps = [step for step in kbd_result.steps_executed if step.tool_name in STRONG_PRODUCER_TOOLS]
             # CDD 在某条必要信号已 CONTRADICTED 后会停止该 KBD 的后续步骤；那些
             # 被正确剪枝的强生产者不能被静态声明集合误认为“查询不完整”。只对实际
             # 调度执行过的强生产者检查失败/阻断，保留任何真实执行问题的 fail-closed。
-            if (
+            if not strong_steps and semantic_preselected:
+                strong_status = "not_applicable"
+            elif (
                 not strong_steps
                 or any(
                     step.error or str(step.outcome).split(".")[-1].upper() in {"UNKNOWN", "NOT_RUN", "BLOCKED"}
@@ -516,11 +551,18 @@ class InvestigationAgent(BaseAgent):
                 strong_status = "matched_inconclusive"
             else:
                 strong_status = "no_match"
+            evidence_rejected_ids = {
+                str(kbd_id) for kbd_id, state in kbd_result.candidate_states.items()
+                if str(state).split(".")[-1].lower() == "rejected"
+            }
             semantic_result = await self._kb_client.resolve_semantic_entry(
                 category_id=category_id,
                 case_context=self._build_semantic_context(messages, env_context),
                 strong_producer_status=strong_status,
                 expected_revisions=self._semantic_revisions(all_kbds),
+                include_reference_cases=True,
+                excluded_kbd_ids=sorted(evidence_rejected_ids),
+                recommendation_only=semantic_preselected,
             )
             logger.info(
                 event="semantic_entry_fallback_result",
@@ -541,10 +583,15 @@ class InvestigationAgent(BaseAgent):
             )
             semantic_candidates = (semantic_result or {}).get("candidates") or []
             candidate_ids = {str(item.get("kbd_id")) for item in semantic_candidates}
+            if (semantic_result or {}).get("decision") == "case_recommendations":
+                # 保留现场诊断状态，参考案例不能把 PARTIAL/ERROR 改成已确诊。
+                yield AgentTextChunk(content=kbd_result.diagnosis_report)
+                yield AgentTextChunk(content="\n\n" + self._case_recommendation_message(semantic_result or {}))
+                return
             if (semantic_result or {}).get("decision") == "semantic_recommendation":
                 yield AgentTextChunk(content=self._semantic_recommendation_message(semantic_result or {}))
                 return
-            if (semantic_result or {}).get("decision") == "executable" and candidate_ids:
+            if (semantic_result or {}).get("decision") == "executable" and candidate_ids and not semantic_preselected:
                 selected = [
                     item
                     for item in semantic_cases
@@ -586,6 +633,25 @@ class InvestigationAgent(BaseAgent):
                     ):
                         yield event
                     kbd_result = self._kbd_diag.get_result()
+                    if kbd_result and not kbd_result.is_definitive:
+                        rejected_ids = set(evidence_rejected_ids)
+                        rejected_ids.update(
+                            str(kbd_id) for kbd_id, state in kbd_result.candidate_states.items()
+                            if str(state).split(".")[-1].lower() == "rejected"
+                        )
+                        reference_result = await self._kb_client.resolve_semantic_entry(
+                            category_id=category_id,
+                            case_context=self._build_semantic_context(messages, env_context),
+                            strong_producer_status=strong_status,
+                            expected_revisions=self._semantic_revisions(all_kbds),
+                            include_reference_cases=True, recommendation_only=True,
+                            excluded_kbd_ids=sorted(rejected_ids),
+                        )
+                        if (reference_result or {}).get("decision") == "case_recommendations":
+                            yield AgentStageUpdate(stage="semantic_entry_fallback", metadata=reference_result)
+                            yield AgentTextChunk(content=kbd_result.diagnosis_report)
+                            yield AgentTextChunk(content="\n\n" + self._case_recommendation_message(reference_result))
+                            return
             elif (semantic_result or {}).get("decision") == "inconclusive":
                 guidance_messages = self._semantic_guidance_messages(messages, semantic_result or {})
                 if guidance_messages:
@@ -594,6 +660,21 @@ class InvestigationAgent(BaseAgent):
                     # guidance_only/歧义候选已明确要求用户补充信息；不得继续拼接
                     # 通用 CDD 报告或升级人工卡片，否则会淹没正确的下一步动作。
                     return
+            # ── 语义兜底未返回参考推荐时，显式调用 reference_only 推荐 ─────────
+            # 当 _resolve 返回 strong_producer_first 等 decision 时，recommend_cases
+            # 可能因阈值过高而未找到匹配。此兜底确保 reference_only KBD 仍有机会被推荐。
+            semantic_decision = (semantic_result or {}).get("decision")
+            if semantic_decision not in {"case_recommendations", "semantic_recommendation"}:
+                for event in await self._build_reference_recommendation_events(
+                    all_kbds=all_kbds,
+                    kbd_result=kbd_result,
+                    category_id=category_id,
+                    messages=messages,
+                    env_context=env_context,
+                    session_id=session_id,
+                    case_id=case_id,
+                ):
+                    yield event
         if kbd_result:
             # 流式输出报告文本
             for chunk in self._split_text_chunks(kbd_result.diagnosis_report, chunk_size=100):
@@ -611,6 +692,7 @@ class InvestigationAgent(BaseAgent):
                         "steps_count": len(kbd_result.steps_executed),
                     },
                 )
+                # 确定性 CDD 已确认根因，不再追加 reference_only 推荐（减少噪音）
             else:
                 yield AgentEscalation(
                     reason=f"KBD 证据结论未达到 DEFINITIVE：{kbd_result.conclusion_level}",
@@ -1586,6 +1668,97 @@ class InvestigationAgent(BaseAgent):
             outputs.append("已收到画像要求的结构化证据；该案例没有自动验证消费者，已提交人工复核。")
         return outputs
 
+    async def _build_reference_recommendation_events(
+        self,
+        *,
+        all_kbds: list[dict],
+        kbd_result: Any,
+        category_id: str,
+        messages: list[dict],
+        env_context: dict[str, Any],
+        session_id: str,
+        case_id: str,
+    ) -> list:
+        """CDD 完成后补充 reference_only 案例推荐事件。
+
+        仅当分类内存在 reference_only KBD（无信号/无画像）时才触发 API 调用；
+        已参与 CDD 的 KBD（matched/rejected/inconclusive）一律排除，避免重复。
+        返回需要追加到事件流中的事件列表（可能为空）。
+        """
+        from shared.schemas.semantic_entry import has_strong_producer
+
+        # 1. 识别 reference_only KBD：不可执行、无画像、无强生产者信号
+        reference_only_kbds = [
+            kbd
+            for kbd in all_kbds
+            if not kbd.get("executable")
+            and not kbd.get("semantic_entry_profile")
+            and not has_strong_producer({"signals": kbd.get("signals", [])})
+        ]
+        if not reference_only_kbds:
+            return []
+
+        # 2. 排除已参与 CDD 的 KBD（避免重复展示）
+        excluded_ids: set[str] = set()
+        if kbd_result is not None:
+            excluded_ids.update(str(kbd.id) for kbd in (kbd_result.matched_kbds or []))
+            excluded_ids.update(str(kbd_id) for kbd_id in (kbd_result.candidate_states or {}))
+
+        # 3. 调用 resolve_semantic_entry 仅请求 reference 推荐
+        #    strong_producer_status="matched" 使 _resolve 快速返回 strong_producer_first，
+        #    然后 resolve_candidates 因 decision != "executable" 进入 recommend_cases 路径。
+        reference_result = await self._kb_client.resolve_semantic_entry(
+            category_id=category_id,
+            case_context=self._build_semantic_context(messages, env_context),
+            strong_producer_status="matched",
+            expected_revisions=self._semantic_revisions(all_kbds),
+            include_reference_cases=True,
+            excluded_kbd_ids=sorted(excluded_ids),
+        )
+        if not reference_result or reference_result.get("decision") != "case_recommendations":
+            return []
+        candidates = reference_result.get("candidates") or []
+        if not candidates:
+            return []
+        logger.info(
+            event="cdd_reference_recommendations",
+            message="CDD 完成后补充 reference_only 案例推荐",
+            session_id=session_id,
+            case_id=case_id,
+            reference_only_count=len(reference_only_kbds),
+            excluded_count=len(excluded_ids),
+            candidate_count=len(candidates),
+        )
+        return [
+            AgentStageUpdate(stage="reference_recommendation", metadata=reference_result),
+            AgentTextChunk(content="\n\n" + self._case_recommendation_message(reference_result)),
+        ]
+
+    @staticmethod
+    def _case_recommendation_message(result: dict) -> str:
+        """展示不可变历史案例及正文依据；绝不输出 S4 或自动执行事件。"""
+        parts = ["找到以下相关历史案例，尚未通过现场验证确认当前根因。"]
+        if result.get("strong_producer_status") == "source_unavailable":
+            parts.append("本轮现场采集不完整或失败，不能视为未命中；以下仅供参考。")
+        for item in result.get("candidates") or []:
+            identity = item.get("support_id") or item.get("kbd_id")
+            revision = (item.get("resource_revision") or {}).get("revision")
+            parts.append(f"**[{identity}] {item.get('title') or '历史案例'}**（发布修订 {revision or '—'}）")
+            if item.get("problem_excerpt"):
+                parts.append("案例问题描述：" + item["problem_excerpt"])
+            if item.get("recommendation_conclusion"):
+                parts.append("该历史案例记录的根因：" + item["recommendation_conclusion"])
+            if item.get("recommendation_solution"):
+                parts.append("该案例的处理方法（请先核对适用条件）：" + item["recommendation_solution"])
+            if item.get("applicability"):
+                parts.append("适用条件：" + "；".join(f"{key}：{'、'.join(values)}" for key, values in item["applicability"].items()))
+            if item.get("scope_warning"):
+                parts.append("适用范围信息尚不完整，请先核对产品、版本及操作场景。")
+        question = (result.get("next_action") or {}).get("question")
+        if question:
+            parts.append(question)
+        return "\n\n".join(parts)
+
     @staticmethod
     def _semantic_recommendation_message(semantic_result: dict) -> str:
         """呈现高置信语义推荐，明确它不是已验证的现场根因。"""
@@ -1652,12 +1825,7 @@ class InvestigationAgent(BaseAgent):
         """保留首条主诉与后续客户补充，跳过控制符及所有模型／工具消息。"""
         values = list(
             dict.fromkeys(
-                msg["content"].strip()
-                for msg in messages
-                if msg.get("role") == "user"
-                and isinstance(msg.get("content"), str)
-                and msg["content"].strip()
-                and not _RETRIEVAL_CONTROL_RE.fullmatch(msg["content"].strip())
+                value for msg in messages if (value := _retrieval_user_text(msg))
             )
         )
         description = "\n".join(values)
@@ -1675,14 +1843,17 @@ class InvestigationAgent(BaseAgent):
             choice_id = str(metadata.get("choiceId") or "")
             if question_id and choice_id:
                 semantic_answers[question_id] = choice_id
+        scope_context = {
+            key: str(value)
+            for key, value in (environment or {}).items()
+            if key in {"product", "product_version", "component", "object_type", "operation"} and value
+        }
+        if not scope_context.get("product_version") and (environment or {}).get("version"):
+            scope_context["product_version"] = str(environment["version"])
         return {
             "description": description,
             "semantic_answers": semantic_answers,
-            **{
-                key: str(value)
-                for key, value in (environment or {}).items()
-                if key in {"product", "product_version", "component", "object_type", "operation"} and value
-            },
+            **scope_context,
         }
 
     @staticmethod
@@ -1697,10 +1868,8 @@ class InvestigationAgent(BaseAgent):
         """
         # S0 控制符模式：菜单选项编号 / 单字确认词
         for msg in messages:  # 正序，找第一条有效 user 消息
-            if msg.get("role") == "user" and isinstance(msg.get("content"), str):
-                txt = msg["content"].strip()
-                if txt and not _RETRIEVAL_CONTROL_RE.fullmatch(txt):
-                    return txt[:500]
+            if txt := _retrieval_user_text(msg):
+                return txt[:500]
         return ""
 
     @staticmethod

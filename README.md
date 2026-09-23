@@ -26,7 +26,7 @@ HCI 环境 AI 故障诊断平台。微服务架构 + S0-S6 六阶段诊断状态
 - **KBD Proposal/Expert 学习闭环**：当前 AI Proposal 与专家工作稿通过显式 baseline 配对；专家修改按稳定关键信号计数，AI 重抽不再误记为人工修改。不可变历史继续用于模型回归、评估和运行追溯，中间工作稿不默认进入训练样本。
 - **关键信号抽取质量**：Prompt 和确定性后处理共同约束失败任务 `qkv_task`、QFK producer 下游消费、配置文件 matcher、多图证据和 120 秒默认超时；`qfk_system` 统一使用 `command + command_args`。
 - **当前阶段**：代码级修复与本地回归完成；PR 合并部署后需在 dev 对 KBD30880 重新抽取验收 `1 qkv_task + 2 qfk_system`，并观察 QKV 类型错误码。
-- **冷启动阅读路径**：[文档规范](docs/文档管理规范.md) → [QKV 关键词类型契约收敛方案](docs/solution/knowledge-base/events/2026-08-06-KBD信号QKV关键词类型契约收敛方案.md) → [QFK 完整输出 AI 提取方案](docs/solution/agent/events/2026-08-05-QFK完整输出AI提取方案.md) → [版本治理方案](docs/solution/knowledge-base/events/2026-08-03-KBD关键信号抽取反馈闭环与版本治理方案.md) → [验证指南](docs/verify/测试指南.md)。
+- **冷启动阅读路径**：[系统文档入口](docs/README.md) → [KBD 与关键信号统一入口](docs/solution/knowledge-base/README.md) → 按需阅读总览、运行流程、契约或[审核手册](docs/user-guide/KBD审核与信号配置-使用手册.md)；历史事件仅用于追溯。
 
 ### v2.1.4 更新说明（2026-06-11）
 

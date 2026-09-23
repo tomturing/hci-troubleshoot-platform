@@ -14,6 +14,27 @@ const mockStore = vi.hoisted(() => ({
 vi.mock('@/stores/chat', () => ({ useChatStore: () => mockStore }))
 
 describe('MessageBubble semantic entry', () => {
+  it('shows signal-free references without asking for fabricated evidence or marking a diagnosis', async () => {
+    const MessageBubble = (await import('@/components/MessageBubble.vue')).default
+    const wrapper = shallowMount(MessageBubble, {
+      props: { message: {
+        id: 'reference', role: 'assistant', content: '', timestamp: new Date(),
+        metadata: { semantic_entry: { decision: 'case_recommendations', candidates: [{
+          kbd_id: '1', support_id: '15936', title: '缺少介质驱动程序', diagnosis_capability: 'reference_only',
+          problem_excerpt: '安装系统报错', recommendation_solution: '已审核的参考方法',
+          resource_revision: { revision: 8 },
+        }] } },
+      } },
+      global: { stubs: { CommandBlock: true, InteractiveOptions: true } },
+    })
+    expect(wrapper.text()).toContain('相关历史案例')
+    expect(wrapper.text()).toContain('尚未通过现场验证')
+    expect(wrapper.text()).toContain('安装系统报错')
+    expect(wrapper.text()).toContain('已审核的参考方法')
+    expect(wrapper.text()).toContain('发布修订：8')
+    expect(wrapper.find('.semantic-evidence-form').exists()).toBe(false)
+  })
+
   it('renders matched support ID and title before the evidence guidance', async () => {
     const MessageBubble = (await import('@/components/MessageBubble.vue')).default
     const wrapper = shallowMount(MessageBubble, {
@@ -71,7 +92,7 @@ describe('MessageBubble semantic entry', () => {
     })
 
     const text = wrapper.text()
-    expect(text).toContain('根因（原始文本）：安装镜像不完整或缺少磁盘控制器驱动')
+    expect(text).toContain('历史案例根因：安装镜像不完整或缺少磁盘控制器驱动')
     expect(text).toContain('解决方案（原始文本）：更换经校验的完整安装镜像，并加载 VirtIO 磁盘控制器驱动')
     expect(text).not.toContain('推荐结论：')
   })

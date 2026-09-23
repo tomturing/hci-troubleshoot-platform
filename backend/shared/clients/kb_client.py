@@ -492,12 +492,16 @@ class KBClient(InternalHTTPClient):
         strong_producer_status: str,
         top_k: int = 5,
         expected_revisions: dict[str, int] | None = None,
+        include_reference_cases: bool = False,
+        excluded_kbd_ids: list[str] | None = None,
+        recommendation_only: bool = False,
     ) -> dict | None:
         """强生产者未命中或命中但 CDD 不确定时的受限语义入口候选。
 
         ``case_context`` 可为历史字符串，或包含 description/error_text/object_type/
         operation 的受控结构化上下文。此接口不会执行任何命令；source_unavailable
-        必须由服务端 fail closed，matched_inconclusive 只能返回 guidance_only。
+        的自动执行必须由服务端 fail closed；include_reference_cases 额外允许
+        未验证的案例推荐。recommendation_only 用于已经验证过画像后的只读回退。
         """
         try:
             response = await self.post(
@@ -508,6 +512,9 @@ class KBClient(InternalHTTPClient):
                     "strong_producer_status": strong_producer_status,
                     "top_k": top_k,
                     "expected_revisions": expected_revisions or {},
+                    "include_reference_cases": include_reference_cases,
+                    "excluded_kbd_ids": excluded_kbd_ids or [],
+                    "recommendation_only": recommendation_only,
                 },
             )
             response.raise_for_status()

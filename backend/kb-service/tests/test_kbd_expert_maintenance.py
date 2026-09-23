@@ -47,6 +47,23 @@ class _MappingResult:
         return self._row
 
 
+@pytest.mark.parametrize("raw", [None, {}, [], {"schema_version": 2, "signals": []}])
+def test_reference_only_publish_gate_does_not_fabricate_signals(raw):
+    from shared.schemas.semantic_entry import capability_of
+    document = admin._prepare_expert_publish_signals(raw)
+    admin._require_kbd_consumer_or_reference(document)
+    assert document["signals"] == []
+    assert document["publish_validation"]["status"] == "passed"
+    assert "semantic_entry_profile" not in document
+    assert capability_of(document) == "reference_only"
+
+
+@pytest.mark.parametrize("raw", ["not-json", {"schema_version": 2, "signals": "invalid"}, {"schema_version": 2, "signals": [], "unexpected": True}])
+def test_invalid_signal_document_cannot_be_published_as_reference(raw):
+    with pytest.raises(jsonschema.ValidationError):
+        admin._prepare_expert_publish_signals(raw)
+
+
 def _payload() -> dict:
     return {
         "support_id": "37150",
@@ -757,11 +774,14 @@ async def test_published_detail_overlays_maintenance_payload_without_changing_st
 
 
 @pytest.mark.asyncio
-async def test_maintenance_publish_applies_payload_before_atomic_runtime_switch():
+@pytest.mark.parametrize("reference_only", [False, True])
+async def test_maintenance_publish_applies_payload_before_atomic_runtime_switch(reference_only):
     """显式发布时先应用通过校验的 payload，再在同一事务切换 runtime active。"""
 
     entry = _published_entry()
     working_payload = _payload() | {"title": "已复核维护版", "content_md": "## 问题描述\n任务失败"}
+    if reference_only:
+        working_payload["signals_json"] = {"schema_version": 2, "signals": []}
     working = SimpleNamespace(
         id=21,
         payload_json=working_payload,
@@ -794,7 +814,10 @@ async def test_maintenance_publish_applies_payload_before_atomic_runtime_switch(
         validation = entry.signals_json["publish_validation"]
         assert validation["status"] == "passed"
         assert validation["tool_contract_revision"] == current_tool_contract_revision()
-        assert entry.signals_json["generation_metadata"]["tool_contract_revision"] == "3" * 64
+        if reference_only:
+            assert entry.signals_json["signals"] == []
+        else:
+            assert entry.signals_json["generation_metadata"]["tool_contract_revision"] == "3" * 64
         return {"revision": 8, "checksum": "d" * 64}
 
     async def freeze_approved_revision(*args, **kwargs):

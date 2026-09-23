@@ -156,3 +156,45 @@ async def test_resolver_uses_frozen_profile_and_audits_exact_revision(monkeypatc
         )
     )
     assert response["candidates"] == []
+
+
+@pytest.mark.asyncio
+async def test_title_recommendation_uses_published_content_not_working_copy(monkeypatch):
+    from app.routes import kbd_search
+
+    frozen = SimpleNamespace(
+        status="published", revision=8, checksum="frozen",
+        content={
+            "id": 1, "category_id": "vm", "status": "published", "support_id": "15936",
+            "title": "安装系统提示缺少介质驱动程序", "root_cause": "发布版原因", "solution": "发布版建议",
+            "signals_json": {"schema_version": 2, "signals": []},
+        },
+    )
+    loader = MagicMock()
+    loader.get_active = AsyncMock(return_value=frozen)
+    loader.get_revision = AsyncMock(return_value=frozen)
+    loader.audit_usage = AsyncMock()
+    session = AsyncMock()
+    rows = MagicMock()
+    rows.scalars.return_value.all.return_value = [SimpleNamespace(id=1, title="未发布的错误标题")]
+    session.execute.return_value = rows
+    session.__aenter__.return_value = session
+    monkeypatch.setattr(kbd_search, "_db_manager", SimpleNamespace(async_session_factory=lambda: session))
+    monkeypatch.setattr(kbd_search, "_embedding_service", None)
+    monkeypatch.setattr(kbd_search, "DynamicResourceLoader", lambda session: loader)
+    monkeypatch.setattr(kbd_search, "snapshot_revision_metadata", lambda value: {"revision": value.revision})
+    request = SemanticEntryResolveRequest(
+        category_id="vm", case_context="安装系统提示缺少介质驱动程序",
+        strong_producer_status="source_unavailable", include_reference_cases=True, expected_revisions={"1": 8},
+    )
+    result = await resolve_semantic_entry(request)
+    assert result["decision"] == "case_recommendations"
+    assert result["candidates"][0]["recommendation_solution"] == "发布版建议"
+    assert result["candidates"][0]["verified"] is False
+    loader.get_revision.assert_awaited_once_with("kbd", "1", 8)
+    request.excluded_kbd_ids = ["1"]
+    assert (await resolve_semantic_entry(request))["candidates"] == []
+    request.expected_revisions = {"1": 7}
+    with pytest.raises(HTTPException) as stale:
+        await resolve_semantic_entry(request)
+    assert stale.value.status_code == 409

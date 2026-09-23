@@ -63,6 +63,10 @@ def has_case_context_signal(raw: Any) -> bool:
 
 
 def capability_of(raw: Any) -> str | None:
+    from shared.schemas.knowledge_capability import is_reference_only
+
+    if is_reference_only(raw):
+        return "reference_only"
     profile = semantic_entry_profile(raw)
     value = profile.get("diagnosis_capability") if profile else None
     return str(value) if value in SEMANTIC_CAPABILITIES else None

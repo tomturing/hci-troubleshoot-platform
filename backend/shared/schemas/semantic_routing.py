@@ -29,10 +29,12 @@ from shared.schemas.semantic_entry import (
 )
 
 logger = get_logger("semantic-routing")
-ROUTING_VERSION = "semantic-route-v2"
+ROUTING_VERSION = "semantic-route-v3"
 MAX_EXECUTION_CANDIDATES = 3
 _VECTOR_CACHE: OrderedDict[tuple[str, str], list[list[float]]] = OrderedDict()
 REASON_LABELS = {
+    "case_recommendations": "按标题、问题描述及可选画像找到历史参考，尚未现场验证",
+    "evidence_rejected": "该案例已被本轮现场证据排除",
     "strong_producer_matched": "任务、告警或弹框已有命中，保持强证据路径",
     "strong_producer_unavailable": "强生产者查询不完整或不可用，不能当作未命中",
     "strong_producer_absent": "分类内没有强生产者入口，按客户描述选择待验证候选",
@@ -108,6 +110,9 @@ async def resolve_candidates(
     embedding_namespace: str = "",
     top_k: int = 5,
     mode: str = "online",
+    include_reference_cases: bool = False,
+    excluded_kbd_ids: list[str] | None = None,
+    recommendation_only: bool = False,
 ) -> dict[str, Any]:
     """从服务端权威分类快照选择候选，并返回可读的全部排除原因。"""
     # 可读观测仍必须去除显式密码／令牌，不把秘密交给外部向量服务。
@@ -119,7 +124,23 @@ async def resolve_candidates(
         input={"segments": segments, "strong_producer_status": strong_status},
         metadata={"mode": mode, "routing_version": ROUTING_VERSION},
     ) as observation:
-        result = await _resolve(entries, context, segments, strong_status, embed, embedding_namespace, top_k)
+        excluded = set(excluded_kbd_ids or [])
+        result = await _resolve(entries, context, segments, strong_status, embed, embedding_namespace, top_k, excluded)
+        # 现场验证资格继续使用既有强信号/画像门禁；纯知识推荐可在采集不可用时展示。
+        # 推荐不改写 CDD 状态，也不将已排除案例带回候选。
+        if include_reference_cases and (result["decision"] != "executable" or recommendation_only):
+            from shared.schemas.kbd_recommendation import recommend_cases
+
+            recommendation = await recommend_cases(
+                entries=[entry for entry in entries if str(entry["id"]) not in excluded],
+                context=context, embed=embed, namespace=embedding_namespace, top_k=top_k,
+            )
+            if recommendation:
+                recommendation["filtered_candidates"] = result["filtered_candidates"]
+                recommendation["strong_producer_status"] = strong_status
+                result = recommendation
+            elif recommendation_only:
+                result.update(decision="inconclusive", reason="no_safe_semantic_candidate", candidates=[])
         result["routing_version"] = ROUTING_VERSION
         result["reason_text"] = reason_text(result["reason"])
         result["embedding_namespace"] = embedding_namespace or None
@@ -139,7 +160,7 @@ async def resolve_candidates(
         return result
 
 
-async def _resolve(entries, context, segments, strong_status, embed, namespace, top_k):
+async def _resolve(entries, context, segments, strong_status, embed, namespace, top_k, excluded=None):
     result: dict[str, Any] = {
         "decision": "inconclusive",
         "reason": "no_safe_semantic_candidate",
@@ -170,6 +191,9 @@ async def _resolve(entries, context, segments, strong_status, embed, namespace, 
     semantic_answers = semantic_answers if isinstance(semantic_answers, dict) else {}
     ranked = []
     for entry in entries:
+        if str(entry["id"]) in (excluded or set()):
+            result["filtered_candidates"].append({"kbd_id": str(entry["id"]), "reason": "evidence_rejected"})
+            continue
         profile = semantic_entry_profile(entry.get("signals_json"))
         if not profile:
             continue

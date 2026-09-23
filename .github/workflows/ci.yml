@@ -1650,6 +1650,8 @@ jobs:
         with:
           context: .
           file: Dockerfile.migrations
+          build-args: |
+            MIRROR_MODE=off
           load: true
           push: false
           cache-from: type=gha,scope=db-migrate
