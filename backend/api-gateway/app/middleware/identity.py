@@ -95,6 +95,12 @@ class IdentityMiddleware(BaseHTTPMiddleware):
         if actor.realm == "admin" and actor.audience == settings.AUTH_JWT_AUD_ADMIN:
             request.state.is_admin = True
             request.state.auth = actor
+            request.state.client_id = actor.user_id
+            # admin 身份也要有 client_id：下游大量路由（如 /api/diagnosis-scenarios）
+            # 以 request.state.client_id 为必填身份，缺失即 401「缺少服务端签发身份」。
+            # 而上面的 Cookie 匿名身份分支在 is_admin 为真时被跳过，
+            # 若此处不补 client_id，一旦前端改为携带 JWT（含开启 AUTHN_ENFORCE_ADMIN 后），
+            # 管理台这些接口会整体 401。这里用 JWT 的 sub（管理员 user_id）作为 client_id。
         elif actor.realm == "customer":
             # 阶段2 才启用 customer JWT 登录；本期仅记录，不覆盖 Cookie client_id
             request.state.auth = actor
