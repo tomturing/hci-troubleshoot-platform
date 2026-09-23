@@ -33,6 +33,7 @@ def test_shared_change_rebuilds_all_backend_services():
     """backend/shared/ 下任意改动必须包含全部后端服务（含 kb-service）。"""
     selected = _select(["backend/shared/schemas/signal_generation.py"])
     backend_keys = {
+        "auth-service",
         "api-gateway",
         "case-service",
         "conversation-service",
@@ -48,6 +49,7 @@ def test_mirror_setup_script_change_rebuilds_all_backend_services():
     """共享镜像源脚本（deploy/docker/base/setup-mirror.sh）被全部后端 Dockerfile COPY，必须全量重建。"""
     selected = _select(["deploy/docker/base/setup-mirror.sh"])
     backend_keys = {
+        "auth-service",
         "api-gateway",
         "case-service",
         "conversation-service",

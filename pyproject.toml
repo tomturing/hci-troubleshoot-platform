@@ -52,6 +52,9 @@ dependencies = [
     "jsonschema>=4.21.0",
     # === 中文分词（KBD 全文检索）===
     "jieba==0.42.1",
+    # === 统一认证（auth-service 阶段1.x：RS256 签发/验签 + argon2id 口令哈希）===
+    "cryptography>=42.0",
+    "argon2-cffi>=23.1",
 ]
 
 [project.optional-dependencies]
