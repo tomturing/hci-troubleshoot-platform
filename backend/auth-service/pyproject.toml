@@ -17,6 +17,11 @@ dependencies = [
     "opentelemetry-sdk>=1.20",
     # 运行时 import shared.observability → otel → OTLPSpanExporter，缺此包容器启动即崩
     "opentelemetry-exporter-otlp>=1.20",
+    # shared.observability 的 otel 初始化会 import 下列 instrumentation（含 sqlalchemy）
+    "opentelemetry-instrumentation-fastapi>=0.41b0",
+    "opentelemetry-instrumentation-httpx>=0.41b0",
+    "opentelemetry-instrumentation-logging>=0.41b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.41b0",
     "prometheus-client>=0.20",
 ]
 
