@@ -129,6 +129,7 @@ service_repository() {
     diagnosisService) echo "diagnosis-service" ;;
     schedulerService) echo "scheduler-service" ;;
     kbService) echo "kb-service" ;;
+    authService) echo "auth-service" ;;
     customerUI) echo "customer-ui" ;;
     adminUI) echo "admin-ui" ;;
     terminalBridge) echo "terminal-bridge" ;;
