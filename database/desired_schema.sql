@@ -3614,3 +3614,175 @@ CREATE TRIGGER update_bundle_metadata_updated_at
     BEFORE UPDATE ON bundle_metadata
     FOR EACH ROW
     EXECUTE FUNCTION update_bundle_metadata_updated_at();
+
+-- ============================================================
+-- 认证系统（auth-service）— 统一主体 + 通用凭证
+-- 设计文档: docs/solution/events/2026-09-23-统一认证系统设计方案.md
+-- 任务文档: docs/task/events/2026-09-23-统一认证系统设计方案.md
+-- 说明: customer 与 admin 均为 user，差异仅在 realm / 凭证 / 角色；
+--       user_* = 主体域，auth_* = 认证运行时域。全部语句幂等（IF NOT EXISTS）。
+-- ============================================================
+
+-- ------------------------------------------------------------
+-- 扩展: user  [模块: auth-service]
+-- 说明: 统一主体表扩展 — 新增主体域、状态、角色、令牌版本号
+-- 用途: 认证与授权的主体载体；case.user_id 仍指向本表，工单归属链路不变
+-- ------------------------------------------------------------
+ALTER TABLE "user" ADD COLUMN IF NOT EXISTS realm         varchar(16) NOT NULL DEFAULT 'customer';
+ALTER TABLE "user" ADD COLUMN IF NOT EXISTS status        varchar(16) NOT NULL DEFAULT 'active';
+ALTER TABLE "user" ADD COLUMN IF NOT EXISTS nickname      varchar(128);
+ALTER TABLE "user" ADD COLUMN IF NOT EXISTS avatar_url    text;
+ALTER TABLE "user" ADD COLUMN IF NOT EXISTS roles         jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE "user" ADD COLUMN IF NOT EXISTS token_version int NOT NULL DEFAULT 1;
+-- admin 无端侧 client_id，放宽为可空（UNIQUE 允许多个 NULL，故 admin 行互不冲突）
+ALTER TABLE "user" ALTER COLUMN client_id DROP NOT NULL;
+
+COMMENT ON COLUMN "user".realm IS '主体域：customer（客户）/ admin（管理员）；两套认证按 realm + aud 强隔离';
+COMMENT ON COLUMN "user".status IS '账号状态：active / disabled；停用须同时递增 token_version 使已签发令牌失效';
+COMMENT ON COLUMN "user".nickname IS '显示名（客户可来自微信昵称，管理员为姓名）';
+COMMENT ON COLUMN "user".roles IS '角色数组 jsonb，如 ["platform_admin"]；DB 层无 CHECK，写入须经应用层白名单校验';
+COMMENT ON COLUMN "user".token_version IS '令牌版本号；改角色/停用/改密时 +1，使已签发 JWT 立即失效（方案 §3.8）';
+
+CREATE INDEX IF NOT EXISTS idx_user_roles ON "user" USING gin (roles);
+CREATE INDEX IF NOT EXISTS idx_user_realm_status ON "user" (realm, status);
+
+-- ------------------------------------------------------------
+-- 表: user_credential  [模块: auth-service]
+-- 说明: 通用凭证表 — 一个 user 可挂多种凭证（password / wechat / phone / oidc），1:N
+-- 用途: 认证时按 (credential_type, identifier) 定位 user；失败锁定为凭证级（密码被撞库不冻结微信登录）
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS user_credential (
+    credential_id   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         uuid NOT NULL REFERENCES "user"(user_id) ON DELETE CASCADE,
+    credential_type varchar(32)  NOT NULL,
+    identifier      varchar(255) NOT NULL,
+    secret          text,
+    extra           jsonb NOT NULL DEFAULT '{}'::jsonb,
+    failed_attempts int NOT NULL DEFAULT 0,
+    locked_until    timestamptz,
+    status          varchar(16) NOT NULL DEFAULT 'active',
+    last_used_at    timestamptz,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    trace_id        varchar(64),
+    CONSTRAINT uq_user_credential_type_identifier UNIQUE (credential_type, identifier)
+);
+
+COMMENT ON TABLE user_credential IS '通用凭证表 — 一个用户多种凭证（密码/微信/手机/OIDC），1:N；唯一性按 (类型, 标识) 隔离';
+COMMENT ON COLUMN user_credential.credential_type IS '凭证类型：password / wechat / phone / oidc ...';
+COMMENT ON COLUMN user_credential.identifier IS '凭证标识：用户名 / 微信 unionid / 手机号，与类型联合唯一';
+COMMENT ON COLUMN user_credential.secret IS '凭证密钥：password 存 argon2id 哈希，wechat 存 openid；禁止存明文口令';
+COMMENT ON COLUMN user_credential.extra IS '扩展信息：第三方 profile、MFA secret（本期预留未启用）';
+COMMENT ON COLUMN user_credential.failed_attempts IS '连续失败次数，达阈值锁定；成功登录后清零';
+COMMENT ON COLUMN user_credential.locked_until IS '锁定截止时刻，NULL 表示未锁定';
+COMMENT ON COLUMN user_credential.trace_id IS '创建该凭证的请求追踪 ID（W3C traceparent）';
+
+CREATE INDEX IF NOT EXISTS idx_user_credential_user ON user_credential (user_id);
+CREATE INDEX IF NOT EXISTS idx_user_credential_status ON user_credential (credential_type, status);
+
+-- ------------------------------------------------------------
+-- 表: auth_session  [模块: auth-service]
+-- 说明: 登录会话表 — 记录每次登录的会话，支持登出吊销、强制下线、活跃会话审计
+-- 用途: 与 SSE 长连接凭证表 session 无关（后者绑定工单，见 conversation-service）
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS auth_session (
+    session_id     uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id        uuid NOT NULL REFERENCES "user"(user_id) ON DELETE CASCADE,
+    realm          varchar(16) NOT NULL,
+    token_version  int NOT NULL DEFAULT 1,
+    refresh_hash   varchar(128),
+    ip             varchar(64),
+    user_agent     text,
+    expires_at     timestamptz NOT NULL,
+    revoked_at     timestamptz,
+    last_active_at timestamptz NOT NULL DEFAULT now(),
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    trace_id       varchar(64)
+);
+
+COMMENT ON TABLE auth_session IS '登录会话表 — 认证运行时域；与 SSE 凭证表 session（绑工单）语义不同，勿混用';
+COMMENT ON COLUMN auth_session.realm IS '登录主体域快照：customer / admin';
+COMMENT ON COLUMN auth_session.token_version IS '签发时的令牌版本号，与 user.token_version 比对实现即时失效';
+COMMENT ON COLUMN auth_session.refresh_hash IS '刷新令牌哈希（不存明文）';
+COMMENT ON COLUMN auth_session.revoked_at IS '吊销时刻，非 NULL 表示已登出或被强制下线';
+COMMENT ON COLUMN auth_session.trace_id IS '登录请求的追踪 ID';
+
+CREATE INDEX IF NOT EXISTS idx_auth_session_user ON auth_session (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_auth_session_active ON auth_session (revoked_at, expires_at);
+CREATE INDEX IF NOT EXISTS idx_auth_session_trace_id ON auth_session (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: auth_audit  [模块: auth-service]
+-- 说明: 认证安全审计 — 登录成功/失败、登出、改密、凭证变更、账号启停
+-- 用途: 安全事件追溯与异常告警（新 IP、连续失败、异地登录）
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS auth_audit (
+    audit_id    uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     uuid REFERENCES "user"(user_id) ON DELETE SET NULL,
+    realm       varchar(16),
+    action      varchar(64)  NOT NULL,
+    result      varchar(16)  NOT NULL DEFAULT 'success',
+    identifier  varchar(255),
+    ip          varchar(64),
+    user_agent  text,
+    details     jsonb NOT NULL DEFAULT '{}'::jsonb,
+    trace_id    varchar(64)  NOT NULL,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE auth_audit IS '认证安全审计 — 登录/登出/改密/凭证变更/账号启停，append-only';
+COMMENT ON COLUMN auth_audit.action IS '动作：login / logout / register / change_password / reset_credential / enable / disable';
+COMMENT ON COLUMN auth_audit.result IS '结果：success / denied / failed';
+COMMENT ON COLUMN auth_audit.identifier IS '尝试使用的凭证标识（失败场景用于溯源）';
+COMMENT ON COLUMN auth_audit.trace_id IS '请求追踪 ID';
+
+CREATE INDEX IF NOT EXISTS idx_auth_audit_user_time ON auth_audit (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_auth_audit_action_result ON auth_audit (action, result, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_auth_audit_trace_id ON auth_audit (trace_id);
+
+-- ------------------------------------------------------------
+-- 表: operation_audit  [模块: shared]
+-- 说明: 通用操作审计 — 跨模块的账号级操作追溯（对齐 diagnosis_management_audit 字段范式）
+-- 用途: 覆盖管理面全部写操作与客户端建单/上传/删除，实现「所有操作可通过账号追溯」
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS operation_audit (
+    audit_id      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_user_id uuid REFERENCES "user"(user_id) ON DELETE SET NULL,
+    actor_display varchar(128),
+    actor_realm   varchar(16),
+    actor_roles   jsonb NOT NULL DEFAULT '[]'::jsonb,
+    action        varchar(64)  NOT NULL,
+    resource_type varchar(64)  NOT NULL,
+    resource_id   varchar(128),
+    result        varchar(16)  NOT NULL DEFAULT 'success',
+    details       jsonb NOT NULL DEFAULT '{}'::jsonb,
+    trace_id      varchar(64)  NOT NULL,
+    created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE operation_audit IS '通用操作审计 — 跨模块账号级追溯，append-only；字段范式对齐 diagnosis_management_audit';
+COMMENT ON COLUMN operation_audit.actor_user_id IS '操作者账号（FK，可 join）；服务/系统操作为 NULL';
+COMMENT ON COLUMN operation_audit.actor_display IS '操作者显示快照（服务名/系统/已删除账号仍可读）';
+COMMENT ON COLUMN operation_audit.actor_realm IS '操作者主体域：customer / admin / system';
+COMMENT ON COLUMN operation_audit.result IS '结果：success / denied / failed';
+COMMENT ON COLUMN operation_audit.trace_id IS '请求追踪 ID，与日志/链路追踪关联';
+
+CREATE INDEX IF NOT EXISTS idx_operation_audit_actor_time ON operation_audit (actor_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_operation_audit_resource ON operation_audit (resource_type, resource_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_operation_audit_trace_id ON operation_audit (trace_id);
+
+-- ------------------------------------------------------------
+-- 扩展: 现有审计表补齐 actor_user_id（可空，兼容服务/系统操作）
+-- 说明: 既有 audit 表的 actor_id 为无外键字符串，无法 join 账号；补列实现历史与未来审计统一可追溯
+-- ------------------------------------------------------------
+ALTER TABLE diagnosis_management_audit ADD COLUMN IF NOT EXISTS actor_user_id uuid REFERENCES "user"(user_id) ON DELETE SET NULL;
+ALTER TABLE diagnosis_legal_hold_audit ADD COLUMN IF NOT EXISTS actor_user_id uuid REFERENCES "user"(user_id) ON DELETE SET NULL;
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS actor_user_id uuid REFERENCES "user"(user_id) ON DELETE SET NULL;
+ALTER TABLE dynamic_resource_usage_audit ADD COLUMN IF NOT EXISTS actor_user_id uuid REFERENCES "user"(user_id) ON DELETE SET NULL;
+ALTER TABLE vm_console_audit_event ADD COLUMN IF NOT EXISTS actor_user_id uuid REFERENCES "user"(user_id) ON DELETE SET NULL;
+
+COMMENT ON COLUMN diagnosis_management_audit.actor_user_id IS '操作者账号（FK）；与 actor_id 字符串快照并存，用于 join 追溯';
+COMMENT ON COLUMN vm_console_audit_event.actor_user_id IS '操作者账号（FK）；与 actor 字符串快照并存';
+
+CREATE INDEX IF NOT EXISTS idx_diagnosis_management_audit_actor_user ON diagnosis_management_audit (actor_user_id);
+CREATE INDEX IF NOT EXISTS idx_vm_console_audit_event_actor_user ON vm_console_audit_event (actor_user_id);
