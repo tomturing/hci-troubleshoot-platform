@@ -53,6 +53,18 @@ class Settings(BaseSettings):
     IDENTITY_COOKIE_NAME: str = "hci_client_id"
     IDENTITY_COOKIE_SECURE: bool = False  # 生产 HTTPS 环境应设为 True
 
+    # === 统一认证（阶段1：网关验签 auth-service 签发的 RS256 JWT）===
+    # auth-service 的 JWKS 公钥端点；网关缓存公钥验签，auth-service 短暂不可用不影响已登录用户
+    AUTH_JWKS_URL: str = "http://auth-service:8007/.well-known/jwks.json"
+    AUTH_JWT_ISSUER: str = "hci-auth-service"
+    AUTH_JWT_AUD_ADMIN: str = "hci-admin"
+    # admin 路径是否强制 JWT 登录（关闭=兼容 INTERNAL_API_TOKEN 现状；开启=共享令牌不再赋予 admin）
+    AUTHN_ENFORCE_ADMIN: bool = False
+    # admin JWT 验签成功、下游未自报租户时，网关重签身份使用的租户标识（与下游信任模型一致）
+    AUTH_DEFAULT_TENANT_ID: str = "hci-platform"
+    # JWT 验签时钟偏移容忍（秒）
+    AUTH_JWT_CLOCK_SKEW_SECONDS: int = 60
+
     # === 终端 SSH 配置 ===
     TERMINAL_ALLOW_INSECURE_HOSTS: bool = False
     TERMINAL_KNOWN_HOSTS_FILE: str = "~/.ssh/known_hosts"

@@ -121,27 +121,36 @@ def _resigned_upstream_headers(request: Request) -> dict[str, str] | JSONRespons
         )
 
     if getattr(request.state, "is_admin", False):
-        tenant_id = request.headers.get("X-Tenant-ID", "").strip()
-        actor_id = request.headers.get("X-Actor-ID", "").strip()
-        if tenant_id and not TRUSTED_CONTEXT_PATTERN.fullmatch(tenant_id):
-            return _error_response(
-                request,
-                status_code=422,
-                code="INVALID_TENANT_CONTEXT",
-                message="内部调用必须提供合法的 X-Tenant-ID",
-            )
-        if actor_id and not TRUSTED_CONTEXT_PATTERN.fullmatch(actor_id):
-            return _error_response(
-                request,
-                status_code=422,
-                code="INVALID_ACTOR_CONTEXT",
-                message="内部调用必须提供合法的 X-Actor-ID",
-            )
+        actor = getattr(request.state, "auth", None)
+        if actor is not None and actor.realm == "admin":
+            # 阶段1：admin 经 auth-service JWT 登录，使用 JWT 中的可信身份（闭环 B3 操作者可追溯）
+            tenant_id = settings.AUTH_DEFAULT_TENANT_ID
+            actor_id = actor.user_id
+            roles_header = " ".join(sorted(actor.roles))
+        else:
+            # 运维 / hci-sim 仍以自报租户 / 操作者身份执行（格式非法一律 422）
+            tenant_id = request.headers.get("X-Tenant-ID", "").strip()
+            actor_id = request.headers.get("X-Actor-ID", "").strip()
+            if tenant_id and not TRUSTED_CONTEXT_PATTERN.fullmatch(tenant_id):
+                return _error_response(
+                    request,
+                    status_code=422,
+                    code="INVALID_TENANT_CONTEXT",
+                    message="内部调用必须提供合法的 X-Tenant-ID",
+                )
+            if actor_id and not TRUSTED_CONTEXT_PATTERN.fullmatch(actor_id):
+                return _error_response(
+                    request,
+                    status_code=422,
+                    code="INVALID_ACTOR_CONTEXT",
+                    message="内部调用必须提供合法的 X-Actor-ID",
+                )
+            roles_header = _admin_actor_roles(request)
         headers = {
             "Authorization": f"Bearer {configured_token}",
             "X-Tenant-ID": tenant_id or FALLBACK_TENANT_ID,
             "X-Actor-ID": actor_id or FALLBACK_ADMIN_ACTOR_ID,
-            ACTOR_ROLES_HEADER: _admin_actor_roles(request),
+            ACTOR_ROLES_HEADER: roles_header,
         }
     else:
         headers = {

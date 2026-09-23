@@ -42,6 +42,7 @@ from app.routes import (
     terminal,
     websocket,
 )
+from app.security.jwt_verify import JwtVerifier  # 阶段1：auth-service JWT 验签
 from app.services.session import SessionManager
 from app.services.terminal import TerminalService
 
@@ -75,6 +76,15 @@ async def lifespan(app: FastAPI):
     app.state.db_manager = db_manager
     app.state.session_manager = session_manager
     app.state.terminal_service = terminal_service
+
+    # 统一认证（阶段1）：JWT 验签器，缓存 auth-service JWKS 公钥；auth-service 短暂不可用不影响已登录用户
+    jwt_verifier = JwtVerifier(
+        jwks_url=settings.AUTH_JWKS_URL,
+        issuer=settings.AUTH_JWT_ISSUER,
+        audience=settings.AUTH_JWT_AUD_ADMIN,
+        clock_skew_seconds=settings.AUTH_JWT_CLOCK_SKEW_SECONDS,
+    )
+    app.state.jwt_verifier = jwt_verifier
 
     # 兼容现有路由注入方式
     websocket.set_session_manager(session_manager)
