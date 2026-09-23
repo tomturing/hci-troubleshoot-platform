@@ -1702,7 +1702,7 @@ class InvestigationAgent(BaseAgent):
         excluded_ids: set[str] = set()
         if kbd_result is not None:
             excluded_ids.update(str(kbd.id) for kbd in (kbd_result.matched_kbds or []))
-            excluded_ids.update(str(kbd_id) for kbd_id in (kbd_result.candidate_states or {}).keys())
+            excluded_ids.update(str(kbd_id) for kbd_id in (kbd_result.candidate_states or {}))
 
         # 3. 调用 resolve_semantic_entry 仅请求 reference 推荐
         #    strong_producer_status="matched" 使 _resolve 快速返回 strong_producer_first，

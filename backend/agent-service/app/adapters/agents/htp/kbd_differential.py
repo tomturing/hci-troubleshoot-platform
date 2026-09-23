@@ -18,7 +18,6 @@ from typing import Any
 
 from shared.cdd import (
     ActiveDiagnosticScheduler,
-    CandidateState,
     ConclusionLevel,
     SignalOutcome,
     apply_scope_results,
@@ -403,14 +402,14 @@ class KBDDiagnostic:
             self._activate_candidate_pool(representative.kbd_id)
             resolved_args = self._resolve_args(acquisition.args_template, env_context, self._variable_pool)
 
-            def execution_key(ref):
+            def execution_key(ref, _acquisition=acquisition):
                 pool = self._candidate_pools[ref.kbd_id][0]
-                args = self._resolve_args(acquisition.args_template, env_context, pool)
+                args = self._resolve_args(_acquisition.args_template, env_context, pool)
                 material = {
-                    "template_key": acquisition.template_key,
-                    "resolved": self._acquisition_key(acquisition.tool_name, args, env_context),
+                    "template_key": _acquisition.template_key,
+                    "resolved": self._acquisition_key(_acquisition.tool_name, args, env_context),
                 }
-                if not acquisition.tool_name.startswith("qkv_"):
+                if not _acquisition.tool_name.startswith("qkv_"):
                     # QFK 引擎同时执行后处理，只能复用相同处理契约及其输入的最终结果。
                     material["processing"] = [ref.signal.get("match"), (ref.signal.get("orchestrate") or {}).get("produces")]
                     context = {str(key).lower(): value for key, value in env_context.items()} | pool
