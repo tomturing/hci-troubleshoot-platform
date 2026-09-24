@@ -2471,11 +2471,16 @@ async def create_review_owner(request: Request, body: CreateReviewOwnerRequest):
         raise HTTPException(status_code=503, detail="数据库未就绪")
 
     async with _db_manager.async_session_factory() as session:
-        # 检查邮箱是否已存在
-        if body.email:
+        # 将空字符串转换为 None，避免唯一约束冲突
+        email_value = body.email.strip() if body.email else None
+        if not email_value:
+            email_value = None
+
+        # 检查邮箱是否已存在（仅当邮箱不为空时）
+        if email_value:
             existing = await session.execute(
                 text("SELECT id FROM kbd_review_owner WHERE email = :email"),
-                {"email": body.email},
+                {"email": email_value},
             )
             if existing.scalar():
                 raise HTTPException(status_code=409, detail="该邮箱已被使用")
@@ -2488,7 +2493,7 @@ async def create_review_owner(request: Request, body: CreateReviewOwnerRequest):
                 RETURNING id, name, email, created_at, updated_at
                 """
             ),
-            {"name": body.name, "email": body.email},
+            {"name": body.name, "email": email_value},
         )
         row = result.mappings().first()
         await session.commit()
