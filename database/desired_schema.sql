@@ -2357,6 +2357,31 @@ CREATE INDEX IF NOT EXISTS idx_kb_category_embedding ON kb_category
 --   by_domain: {'虚拟机': 54, '网络': 23, '存储': 42, '硬件': 75, '平台': 41}
 
 -- ------------------------------------------------------------
+-- 表: kbd_review_owner  [模块: kb-service]
+-- 说明: 发布审核责任人列表 — 维护可分配的审核责任人
+-- 用途: 支持为 KBD 案例分配发布审核责任人，便于责任追踪和按责任人搜索
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS kbd_review_owner (
+    id bigserial NOT NULL,
+    name varchar(100) NOT NULL,
+    email varchar(255),
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT kbd_review_owner_pkey PRIMARY KEY (id),
+    CONSTRAINT uq_kbd_review_owner_email UNIQUE (email)
+);
+
+COMMENT ON TABLE kbd_review_owner IS '发布审核责任人列表';
+COMMENT ON COLUMN kbd_review_owner.id IS '责任人主键，自增';
+COMMENT ON COLUMN kbd_review_owner.name IS '责任人姓名';
+COMMENT ON COLUMN kbd_review_owner.email IS '责任人邮箱（可选，唯一）';
+COMMENT ON COLUMN kbd_review_owner.created_at IS '创建时间';
+COMMENT ON COLUMN kbd_review_owner.updated_at IS '最后更新时间';
+
+-- 索引: kbd_review_owner
+CREATE INDEX IF NOT EXISTS idx_kbd_review_owner_name ON kbd_review_owner (name);
+
+-- ------------------------------------------------------------
 -- 表: kbd_entry  [模块: kb-service]
 -- 说明: KBD 知识条目表 — KBD 知识条目（~600 字/条），整条 embedding，无分块
 -- 用途: 存储从深信服支持案例导入的知识条目，全生命周期管理：生产 → 审核 → 消费 → 归档
@@ -2409,7 +2434,14 @@ CREATE TABLE IF NOT EXISTS kbd_entry (
     latest_proposal_revision_id bigint,
     working_revision_id bigint,
     lock_version integer NOT NULL DEFAULT 1,  -- P1-1 修复：从 1 开始，与 collection_profile_definition 等乐观锁一致
+    -- 发布审核责任人（可空，关联 kbd_review_owner.id）
+    review_owner_id bigint,
+    -- 无法发布状态相关字段（status='unpublishable' 时填充）
+    unpublishable_at timestamptz,
+    unpublishable_by integer,
+    unpublishable_reason text,
     CONSTRAINT fk_kbd_entry_category_id FOREIGN KEY (category_id) REFERENCES kb_category (code) ON DELETE NO ACTION,
+    CONSTRAINT fk_kbd_entry_review_owner_id FOREIGN KEY (review_owner_id) REFERENCES kbd_review_owner(id) ON DELETE SET NULL,
     CONSTRAINT kbd_entry_pkey PRIMARY KEY (id)
 );
 
@@ -2449,6 +2481,10 @@ COMMENT ON COLUMN kbd_entry.updated_at IS '最后更新时间';
 COMMENT ON COLUMN kbd_entry.latest_proposal_revision_id IS '最新 LLM Proposal 的 kbd_revision.id；只作显式 head 指针，不代表已发布';
 COMMENT ON COLUMN kbd_entry.working_revision_id IS '当前专家工作稿的 kbd_revision.id；保存工作稿不得切换 runtime active';
 COMMENT ON COLUMN kbd_entry.lock_version IS '专家工作稿乐观锁版本；每次成功保存递增，避免并发覆盖';
+COMMENT ON COLUMN kbd_entry.review_owner_id IS '发布审核责任人 ID，关联 kbd_review_owner.id';
+COMMENT ON COLUMN kbd_entry.unpublishable_at IS '标记为无法发布的时间';
+COMMENT ON COLUMN kbd_entry.unpublishable_by IS '标记为无法发布的操作人 ID';
+COMMENT ON COLUMN kbd_entry.unpublishable_reason IS '无法发布的原因备注';
 
 -- 索引: kbd_entry
 -- 状态过滤
@@ -2459,6 +2495,8 @@ CREATE INDEX IF NOT EXISTS idx_kbd_entry_category ON kbd_entry (category_id) WHE
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_ai_category ON kbd_entry (ai_category_id);
 -- 发布时间排序（仅已发布）
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_published ON kbd_entry (published_at DESC) WHERE status = 'published';
+-- 发布审核责任人过滤
+CREATE INDEX IF NOT EXISTS idx_kbd_entry_review_owner ON kbd_entry (review_owner_id);
 -- 全文检索
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_tsv ON kbd_entry USING GIN (tsv);
 -- signals_json 结构查询（InvestigationAgent 检索关键信号；部分索引仅含已发布且有信号的条目）

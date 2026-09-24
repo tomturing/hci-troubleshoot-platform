@@ -198,11 +198,19 @@ class KbdEntry(Base):
     embedding_updated_at = Column(DateTime(timezone=True), nullable=True)  # 向量最后成功生成时间
 
     # ── 状态机字段 ────────────────────────────────────────────────────────────
-    status = Column(String(20), nullable=False, default="draft")  # draft/published/archived/rejected
+    status = Column(String(20), nullable=False, default="draft")  # draft/published/archived/rejected/unpublishable
     reviewer_id = Column(Integer, nullable=True)  # 审核人 ID
     reviewed_at = Column(DateTime(timezone=True), nullable=True)  # 审核时间
     review_note = Column(Text, nullable=True)  # 审核备注
     published_at = Column(DateTime(timezone=True), nullable=True)  # 发布时间
+
+    # ── 发布审核责任人 ─────────────────────────────────────────────────────────
+    review_owner_id = Column(BigInteger, nullable=True)  # 发布审核责任人 ID，关联 kbd_review_owner.id
+
+    # ── 无法发布状态相关字段 ───────────────────────────────────────────────────
+    unpublishable_at = Column(DateTime(timezone=True), nullable=True)  # 标记为无法发布的时间
+    unpublishable_by = Column(Integer, nullable=True)  # 标记为无法发布的操作人 ID
+    unpublishable_reason = Column(Text, nullable=True)  # 无法发布的原因备注
 
     # ── 命中统计（case 级去重，物化列）────────────────────────────────────────
     hit_count = Column(Integer, nullable=False, default=0)  # 有多少个唯一 case 命中此条目（S4 根因确认时 +1）
@@ -230,7 +238,7 @@ class KbdEntry(Base):
     )
 
     # 合法状态集合
-    VALID_STATUSES = frozenset({"draft", "published", "archived", "rejected"})
+    VALID_STATUSES = frozenset({"draft", "published", "archived", "rejected", "unpublishable"})
 
     # 8 大章节字段名列表（与 clean_prompt_hci.md 标准章节对应）
     SECTION_FIELDS = (

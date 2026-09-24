@@ -66,6 +66,7 @@ from shared.utils.acquisition_strategy import parse_strategy
 from sqlalchemy import select, text
 
 from app.models.kbd_entry import KbdEntry, build_kbd_embedding_text, strip_markdown
+from app.models.kbd_review_owner import KbdReviewOwner
 from app.models.kbd_revision import KbdRevision
 from app.models.sop_document import SopDocument
 from app.models.version_governance import KbdPackage
@@ -1016,21 +1017,23 @@ async def list_kbd_entries(
     sample_suite: str | None = None,
     min_confidence: float | None = None,
     max_confidence: float | None = None,
+    review_owner_id: int | None = None,
     sort_by: str = "updated_at",
     sort_order: str = "desc",
 ):
-    """查询 KBD 条目列表（分页 + 状态/分类/案例ID/标题/样例集/置信度过滤 + 排序）
+    """查询 KBD 条目列表（分页 + 状态/分类/案例ID/标题/样例集/置信度/审核责任人过滤 + 排序）
 
     Args:
         page: 页码（从 1 开始）
         page_size: 每页条数（最大 100）
-        status: 状态过滤（draft/published/rejected/archived）
+        status: 状态过滤（draft/published/rejected/archived/unpublishable）
         category_id: 按 AI 分类 ID 过滤（可选）
         support_id: 按案例 ID 精准匹配（可选）
         title_keyword: 按标题关键字模糊搜索（可选）
         sample_suite: 按 metadata.sample_suite 样例集标识精准匹配（可选）
         min_confidence: 最低置信度（可选，0-1）
         max_confidence: 最高置信度（可选，0-1）
+        review_owner_id: 按审核责任人 ID 过滤（可选）
         sort_by: 排序字段（support_id/ai_category_conf/status/updated_at/created_at）
         sort_order: 排序方向（asc/desc）
 
@@ -1047,6 +1050,7 @@ async def list_kbd_entries(
         "created_at",
         "image_count",
         "signal_count",
+        "review_owner_id",
     }
     sort_column = sort_by if sort_by in valid_sort_columns else "updated_at"
     sort_dir = "DESC" if sort_order.lower() == "desc" else "ASC"
@@ -1109,6 +1113,11 @@ async def list_kbd_entries(
             where_clauses.append("ai_category_conf <= :max_confidence")
             params["max_confidence"] = max_confidence
 
+        # 按审核责任人过滤
+        if review_owner_id is not None:
+            where_clauses.append("review_owner_id = :review_owner_id")
+            params["review_owner_id"] = review_owner_id
+
         where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
         # 查询总数
@@ -1127,7 +1136,9 @@ async def list_kbd_entries(
                    e.ai_category_conf, e.ai_category_reason,
                    e.status, e.reviewer_id, e.review_note,
                    e.hit_count, e.lock_version, e.created_at, e.updated_at,
+                   e.review_owner_id, e.unpublishable_at, e.unpublishable_by, e.unpublishable_reason,
                    c.name AS ai_category_name,
+                   ro.name AS review_owner_name,
                    COALESCE(jsonb_array_length(e.images_json), 0) AS image_count,
                    COALESCE(jsonb_array_length(
                      CASE WHEN jsonb_typeof(e.signals_json) = 'object'
@@ -1136,6 +1147,7 @@ async def list_kbd_entries(
                    ), 0) AS signal_count
             FROM kbd_entry e
             LEFT JOIN kb_category c ON c.code = e.ai_category_id
+            LEFT JOIN kbd_review_owner ro ON ro.id = e.review_owner_id
             {where_sql}
             ORDER BY {sort_column} {sort_dir}, e.id DESC
             LIMIT :limit OFFSET :offset
@@ -1174,6 +1186,13 @@ async def list_kbd_entries(
             "status": row["status"],
             "reviewer_id": row["reviewer_id"],
             "review_note": row["review_note"],
+            # 发布审核责任人
+            "review_owner_id": row["review_owner_id"],
+            "review_owner_name": row["review_owner_name"],
+            # 无法发布状态相关字段
+            "unpublishable_at": row["unpublishable_at"].isoformat() if row["unpublishable_at"] else None,
+            "unpublishable_by": row["unpublishable_by"],
+            "unpublishable_reason": row["unpublishable_reason"],
             # 批量发布是异步操作，列表页必须携带读取时版本作为提交快照，防止排队期间
             # 发生并发编辑后仍静默发布旧内容。
             "lock_version": row["lock_version"],
@@ -1250,6 +1269,68 @@ class BatchAcceptedResponse(BaseModel):
     total: int
     message: str
     trace_id: str = ""
+
+
+# ── 发布审核责任人相关模型 ────────────────────────────────────────────────────
+
+
+class CreateReviewOwnerRequest(BaseModel):
+    """创建审核责任人请求"""
+
+    name: str = Field(..., min_length=1, max_length=100, description="责任人姓名")
+    email: str | None = Field(None, max_length=255, description="责任人邮箱（可选）")
+
+
+class UpdateReviewOwnerRequest(BaseModel):
+    """更新审核责任人请求"""
+
+    name: str | None = Field(None, min_length=1, max_length=100, description="责任人姓名")
+    email: str | None = Field(None, max_length=255, description="责任人邮箱")
+
+
+class ReviewOwnerResponse(BaseModel):
+    """审核责任人响应"""
+
+    id: int
+    name: str
+    email: str | None
+    created_at: str
+    updated_at: str
+
+
+class ReviewOwnerListResponse(BaseModel):
+    """审核责任人列表响应"""
+
+    owners: list[ReviewOwnerResponse]
+    total: int
+
+
+class BatchSetReviewOwnerRequest(BatchOperationRequest):
+    """批量设置审核责任人请求"""
+
+    review_owner_id: int = Field(..., ge=1, description="审核责任人 ID")
+
+
+class BatchSetUnpublishableRequest(BatchOperationRequest):
+    """批量设为无法发布请求"""
+
+    reason: str = Field(..., min_length=1, max_length=1000, description="无法发布原因")
+
+
+class SetUnpublishableRequest(BaseModel):
+    """单条设为无法发布请求"""
+
+    reason: str = Field(..., min_length=1, max_length=1000, description="无法发布原因")
+
+
+class SetUnpublishableResponse(BaseModel):
+    """设为无法发布响应"""
+
+    success: bool
+    kbd_id: int
+    status: str
+    unpublishable_at: str
+    unpublishable_reason: str
 
 
 _BATCH_PROCESSORS: dict[str, Any] = {}
@@ -1643,7 +1724,15 @@ async def list_batch_jobs(
     _check_auth(request)
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
-    allowed_job_types = {"reanalyze_images", "reclassify", "extract_signals", "approve", "reject"}
+    allowed_job_types = {
+        "reanalyze_images",
+        "reclassify",
+        "extract_signals",
+        "approve",
+        "reject",
+        "set_review_owner",
+        "set_unpublishable",
+    }
     if job_type and job_type not in allowed_job_types:
         raise HTTPException(status_code=422, detail={"message": "不支持的批量任务类型", "job_type": job_type})
     # 页面轮询同时收敛超时残留任务，异常退出后无需等到下次部署。
@@ -2344,6 +2433,364 @@ _BATCH_PROCESSORS.update(
         "reject": _reject_one,
     }
 )
+
+
+# ── 发布审核责任人 CRUD API ─────────────────────────────────────────────────
+
+
+@kbd_router.get("/review-owners", response_model=ReviewOwnerListResponse)
+async def list_review_owners(request: Request):
+    """列表查询所有审核责任人"""
+    _check_auth(request)
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    async with _db_manager.async_session_factory() as session:
+        result = await session.execute(
+            text("SELECT id, name, email, created_at, updated_at FROM kbd_review_owner ORDER BY name")
+        )
+        rows = result.mappings().all()
+
+    owners = [
+        ReviewOwnerResponse(
+            id=row["id"],
+            name=row["name"],
+            email=row["email"],
+            created_at=row["created_at"].isoformat() if row["created_at"] else "",
+            updated_at=row["updated_at"].isoformat() if row["updated_at"] else "",
+        )
+        for row in rows
+    ]
+    return ReviewOwnerListResponse(owners=owners, total=len(owners))
+
+
+@kbd_router.post("/review-owners", response_model=ReviewOwnerResponse, status_code=201)
+async def create_review_owner(request: Request, body: CreateReviewOwnerRequest):
+    """创建审核责任人"""
+    _check_auth(request)
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    async with _db_manager.async_session_factory() as session:
+        # 检查邮箱是否已存在
+        if body.email:
+            existing = await session.execute(
+                text("SELECT id FROM kbd_review_owner WHERE email = :email"),
+                {"email": body.email},
+            )
+            if existing.scalar():
+                raise HTTPException(status_code=409, detail="该邮箱已被使用")
+
+        result = await session.execute(
+            text(
+                """
+                INSERT INTO kbd_review_owner (name, email)
+                VALUES (:name, :email)
+                RETURNING id, name, email, created_at, updated_at
+                """
+            ),
+            {"name": body.name, "email": body.email},
+        )
+        row = result.mappings().first()
+        await session.commit()
+
+    return ReviewOwnerResponse(
+        id=row["id"],
+        name=row["name"],
+        email=row["email"],
+        created_at=row["created_at"].isoformat() if row["created_at"] else "",
+        updated_at=row["updated_at"].isoformat() if row["updated_at"] else "",
+    )
+
+
+@kbd_router.put("/review-owners/{owner_id}", response_model=ReviewOwnerResponse)
+async def update_review_owner(request: Request, owner_id: int, body: UpdateReviewOwnerRequest):
+    """更新审核责任人"""
+    _check_auth(request)
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    async with _db_manager.async_session_factory() as session:
+        # 检查责任人是否存在
+        existing = await session.execute(
+            text("SELECT id FROM kbd_review_owner WHERE id = :id"),
+            {"id": owner_id},
+        )
+        if not existing.scalar():
+            raise HTTPException(status_code=404, detail="审核责任人不存在")
+
+        # 检查邮箱是否被其他责任人使用
+        if body.email:
+            email_check = await session.execute(
+                text("SELECT id FROM kbd_review_owner WHERE email = :email AND id != :id"),
+                {"email": body.email, "id": owner_id},
+            )
+            if email_check.scalar():
+                raise HTTPException(status_code=409, detail="该邮箱已被其他责任人使用")
+
+        # 构建更新字段
+        updates = []
+        params: dict[str, Any] = {"id": owner_id}
+        if body.name is not None:
+            updates.append("name = :name")
+            params["name"] = body.name
+        if body.email is not None:
+            updates.append("email = :email")
+            params["email"] = body.email
+
+        if not updates:
+            raise HTTPException(status_code=400, detail="未提供任何更新字段")
+
+        updates.append("updated_at = CURRENT_TIMESTAMP")
+        result = await session.execute(
+            text(
+                f"""
+                UPDATE kbd_review_owner
+                SET {', '.join(updates)}
+                WHERE id = :id
+                RETURNING id, name, email, created_at, updated_at
+                """
+            ),
+            params,
+        )
+        row = result.mappings().first()
+        await session.commit()
+
+    return ReviewOwnerResponse(
+        id=row["id"],
+        name=row["name"],
+        email=row["email"],
+        created_at=row["created_at"].isoformat() if row["created_at"] else "",
+        updated_at=row["updated_at"].isoformat() if row["updated_at"] else "",
+    )
+
+
+@kbd_router.delete("/review-owners/{owner_id}")
+async def delete_review_owner(request: Request, owner_id: int):
+    """删除审核责任人（关联的 KBD 的 review_owner_id 会被设置为 NULL）"""
+    _check_auth(request)
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    async with _db_manager.async_session_factory() as session:
+        # 检查责任人是否存在
+        existing = await session.execute(
+            text("SELECT id FROM kbd_review_owner WHERE id = :id"),
+            {"id": owner_id},
+        )
+        if not existing.scalar():
+            raise HTTPException(status_code=404, detail="审核责任人不存在")
+
+        # 删除责任人（外键约束会将对 kbd_entry.review_owner_id 设置为 NULL）
+        await session.execute(
+            text("DELETE FROM kbd_review_owner WHERE id = :id"),
+            {"id": owner_id},
+        )
+        await session.commit()
+
+    return {"message": "审核责任人已删除"}
+
+
+# ── 批量设置审核责任人 API ───────────────────────────────────────────────────
+
+
+async def _set_review_owner_one(
+    kbd_id: int,
+    _on_progress: Any = None,
+    _trace_id: str | None = None,
+    *,
+    request_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """批量设置审核责任人的逐条处理器"""
+    context = request_context or {}
+    review_owner_id = context.get("review_owner_id")
+
+    if _db_manager is None:
+        raise RuntimeError("数据库未就绪")
+
+    async with _db_manager.async_session_factory() as session:
+        # 检查 KBD 是否存在
+        kbd_check = await session.execute(
+            text("SELECT id FROM kbd_entry WHERE id = :id"),
+            {"id": kbd_id},
+        )
+        if not kbd_check.scalar():
+            raise ValueError(f"KBD {kbd_id} 不存在")
+
+        # 检查审核责任人是否存在
+        owner_check = await session.execute(
+            text("SELECT id FROM kbd_review_owner WHERE id = :id"),
+            {"id": review_owner_id},
+        )
+        if not owner_check.scalar():
+            raise ValueError(f"审核责任人 {review_owner_id} 不存在")
+
+        # 更新 review_owner_id
+        await session.execute(
+            text(
+                """
+                UPDATE kbd_entry
+                SET review_owner_id = :review_owner_id, updated_at = CURRENT_TIMESTAMP
+                WHERE id = :id
+                """
+            ),
+            {"review_owner_id": review_owner_id, "id": kbd_id},
+        )
+        await session.commit()
+
+    return {"kbd_id": kbd_id, "review_owner_id": review_owner_id, "status": "updated"}
+
+
+@kbd_router.post("/batch/set-review-owner", response_model=BatchAcceptedResponse)
+async def batch_set_review_owner(
+    request: Request,
+    body: BatchSetReviewOwnerRequest,
+    background_tasks: BackgroundTasks,
+):
+    """批量设置 KBD 的发布审核责任人"""
+    _check_auth(request)
+    trace_id = get_current_trace_id() or uuid4().hex
+    request_json = {
+        "review_owner_id": body.review_owner_id,
+    }
+    logger.info(
+        event="kbd_batch_set_review_owner_start",
+        count=len(body.kbd_ids),
+        review_owner_id=body.review_owner_id,
+        trace_id=trace_id,
+    )
+    return await _submit_batch_job(
+        kbd_ids=body.kbd_ids,
+        job_type="set_review_owner",
+        processor=_set_review_owner_one,
+        trace_id=trace_id,
+        background_tasks=background_tasks,
+        request_json=request_json,
+    )
+
+
+# ── 设置无法发布状态 API ─────────────────────────────────────────────────────
+
+
+async def _set_unpublishable_one(
+    kbd_id: int,
+    _on_progress: Any = None,
+    _trace_id: str | None = None,
+    *,
+    request_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """批量设为无法发布的逐条处理器"""
+    context = request_context or {}
+    reason = context.get("reason", "")
+
+    if _db_manager is None:
+        raise RuntimeError("数据库未就绪")
+
+    async with _db_manager.async_session_factory() as session:
+        # 检查 KBD 是否存在
+        kbd_check = await session.execute(
+            text("SELECT id FROM kbd_entry WHERE id = :id"),
+            {"id": kbd_id},
+        )
+        if not kbd_check.scalar():
+            raise ValueError(f"KBD {kbd_id} 不存在")
+
+        # 更新状态为 unpublishable
+        now = datetime.now(UTC)
+        await session.execute(
+            text(
+                """
+                UPDATE kbd_entry
+                SET status = 'unpublishable',
+                    unpublishable_at = :now,
+                    unpublishable_reason = :reason,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = :id
+                """
+            ),
+            {"now": now, "reason": reason, "id": kbd_id},
+        )
+        await session.commit()
+
+    return {"kbd_id": kbd_id, "status": "unpublishable", "reason": reason}
+
+
+_BATCH_PROCESSORS.update(
+    {
+        "set_review_owner": _set_review_owner_one,
+        "set_unpublishable": _set_unpublishable_one,
+    }
+)
+
+
+@kbd_router.post("/batch/set-unpublishable", response_model=BatchAcceptedResponse)
+async def batch_set_unpublishable(
+    request: Request,
+    body: BatchSetUnpublishableRequest,
+    background_tasks: BackgroundTasks,
+):
+    """批量将 KBD 设为无法发布状态"""
+    _check_auth(request)
+    trace_id = get_current_trace_id() or uuid4().hex
+    request_json = {
+        "reason": body.reason,
+    }
+    logger.info(
+        event="kbd_batch_set_unpublishable_start",
+        count=len(body.kbd_ids),
+        trace_id=trace_id,
+    )
+    return await _submit_batch_job(
+        kbd_ids=body.kbd_ids,
+        job_type="set_unpublishable",
+        processor=_set_unpublishable_one,
+        trace_id=trace_id,
+        background_tasks=background_tasks,
+        request_json=request_json,
+    )
+
+
+@kbd_router.post("/{kbd_id}/set-unpublishable", response_model=SetUnpublishableResponse)
+async def set_kbd_unpublishable(request: Request, kbd_id: int, body: SetUnpublishableRequest):
+    """将单个 KBD 设为无法发布状态"""
+    _check_auth(request)
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    async with _db_manager.async_session_factory() as session:
+        # 检查 KBD 是否存在
+        kbd_result = await session.execute(
+            text("SELECT id, status FROM kbd_entry WHERE id = :id"),
+            {"id": kbd_id},
+        )
+        kbd_row = kbd_result.mappings().first()
+        if not kbd_row:
+            raise HTTPException(status_code=404, detail=f"KBD {kbd_id} 不存在")
+
+        # 更新状态为 unpublishable
+        now = datetime.now(UTC)
+        await session.execute(
+            text(
+                """
+                UPDATE kbd_entry
+                SET status = 'unpublishable',
+                    unpublishable_at = :now,
+                    unpublishable_reason = :reason,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = :id
+                """
+            ),
+            {"now": now, "reason": body.reason, "id": kbd_id},
+        )
+        await session.commit()
+
+    return SetUnpublishableResponse(
+        success=True,
+        kbd_id=kbd_id,
+        status="unpublishable",
+        unpublishable_at=now.isoformat(),
+        unpublishable_reason=body.reason,
+    )
 
 
 @kbd_router.get("/{kbd_id}")
