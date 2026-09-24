@@ -603,6 +603,10 @@ secrets:
   extractSignalsApiKey: ""
   # 内部服务间 API 鉴权 Token
   internalApiToken: "hci-dev-internal-token"
+  # auth-service RS256 固定签名私钥（Base64(PEM) 单行，避免多行 PEM 被 values 合并截断）。
+  # 为空时 auth-service 用启动期临时密钥（仅 dev/test，重启即失效→JWKS 变更→全员掉线）。
+  # staging/prod 必须注入，并配合 authService.requirePersistentKey=true：缺失则 auth-service 拒绝启动。
+  authRsaPrivateKeyPemB64: ""
   # Ed25519 原始私钥 Base64 及其稳定 key_id；生产环境必须由密钥管理系统覆盖。
   collectorSigningPrivateKeyB64: ""
   collectorSigningKeyId: ""
@@ -798,9 +802,13 @@ evalService:
 # ======================== Auth Service =======================================
 authService:
   # 统一认证服务（阶段1.x）：账号密码登录 + RS256/JWKS 签发，网关验签后注入 admin 身份。
-  # 默认启用；staging 使用启动期临时 RSA 密钥即可运行，生产必须由密钥管理注入 AUTH_RSA_PRIVATE_KEY_PEM。
+  # 默认启用。签名私钥：dev/local 可用启动期临时密钥；staging/prod 必须注入固定私钥
+  # （secrets.authRsaPrivateKeyPemB64）并置 requirePersistentKey=true，否则重启即 JWKS 变更、已签发 JWT 全失效、全员掉线。
   enabled: true
   replicaCount: 1
+  # 强制持久私钥（fail-fast）：true 时缺私钥则 auth-service 拒绝启动，杜绝静默退化为临时密钥。
+  # dev/local 默认 false；staging/prod 由 env-repo 置 true 并注入 secrets.authRsaPrivateKeyPemB64。
+  requirePersistentKey: false
   image:
     repository: auth-service
     tag: latest

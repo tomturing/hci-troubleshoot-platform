@@ -50,6 +50,19 @@ spec:
                   name: hci-secrets
                   key: AUTH_RSA_PRIVATE_KEY_PEM
                   optional: true
+            # Base64(PEM) 单行私钥（K8s Secret 注入首选，避免多行 PEM 被 values 合并截断）
+            - name: AUTH_RSA_PRIVATE_KEY_PEM_B64
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: AUTH_RSA_PRIVATE_KEY_PEM_B64
+                  optional: true
+            # 强制持久私钥开关：true 时缺私钥则 auth-service 拒绝启动（杜绝临时密钥重启全员掉线）
+            - name: AUTH_REQUIRE_PERSISTENT_KEY
+              value: {{ .Values.authService.requirePersistentKey | default false | quote }}
+            # 部署环境标识（供 fail-fast 与日志区分 dev/staging/prod）
+            - name: ENVIRONMENT
+              value: {{ .Values.global.environment | quote }}
           livenessProbe:
             httpGet:
               path: /health/live
