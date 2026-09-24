@@ -5153,12 +5153,28 @@ onUnmounted(() => clearBatchPollTimer())
             </a>
           </el-descriptions-item>
           <el-descriptions-item label="状态">
+            <el-tooltip
+              v-if="detailEntry.status === 'unpublishable' && detailEntry.unpublishable_reason"
+              :content="detailEntry.unpublishable_reason"
+              placement="top"
+              :show-after="300"
+            >
+              <el-tag
+                type="info"
+                size="small"
+                style="cursor: help;"
+              >无法发布</el-tag>
+            </el-tooltip>
             <el-tag
+              v-else
               :type="detailEntry.status === 'published' ? 'success' :
                      detailEntry.status === 'rejected'  ? 'danger'  :
                      detailEntry.status === 'archived'  ? 'info'    : 'warning'"
               size="small"
-            >{{ detailEntry.status }}</el-tag>
+            >{{ statusLabel(detailEntry.status) }}</el-tag>
+            <div v-if="detailEntry.status === 'unpublishable' && detailEntry.unpublishable_reason" style="margin-top: 8px; color: #909399; font-size: 12px;">
+              <strong>审核备注：</strong>{{ detailEntry.unpublishable_reason }}
+            </div>
           </el-descriptions-item>
           <el-descriptions-item label="标题" :span="2">
             <strong>{{ detailEntry.title }}</strong>
