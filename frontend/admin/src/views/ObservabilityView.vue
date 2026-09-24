@@ -3,8 +3,10 @@ import { ref, onMounted, reactive, watch } from 'vue'
 import { Monitor, Document, Search, Refresh, CopyDocument, CircleCheck, Warning, Cpu, DataAnalysis } from '@element-plus/icons-vue'
 import { createApiClient } from '@hci/shared'
 import { ElMessage } from 'element-plus'
+import { getAccessToken } from '@/utils/auth'
 
-const apiClient = createApiClient('/api')
+// 管理端 axios 客户端注入登录 JWT（axios 不经 window.fetch 全局拦截器，须显式传入）
+const apiClient = createApiClient('/api', undefined, getAccessToken)
 
 // ===== 视图选项卡 =====
 const activeTab = ref('grafana')

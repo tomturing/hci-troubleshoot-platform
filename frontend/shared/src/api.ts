@@ -55,18 +55,33 @@ import type {
   OfflineResourceSyncHistory,
 } from './types'
 
-/** 创建带通用拦截器的 Axios 实例 */
-export function createApiClient(baseURL: string, clientId?: string): AxiosInstance {
+/**
+ * 创建带通用拦截器的 Axios 实例
+ *
+ * @param baseURL  API 基础路径
+ * @param clientId 客户端标识（注入 X-Client-ID，客户侧使用）
+ * @param getToken 同源身份令牌读取器（注入 Authorization: Bearer）。axios 不经 window.fetch
+ *                 全局拦截器，管理端须显式传入以携带登录 JWT；客户侧不传则继续走 Cookie 身份。
+ */
+export function createApiClient(
+  baseURL: string,
+  clientId?: string,
+  getToken?: () => string | null | undefined,
+): AxiosInstance {
   const client = axios.create({
     baseURL,
     timeout: 30000,
     headers: { 'Content-Type': 'application/json' },
   })
 
-  // 请求拦截：注入 X-Client-ID
+  // 请求拦截：注入 X-Client-ID 与同源身份令牌（管理端 JWT）
   client.interceptors.request.use((config) => {
     if (clientId) {
       config.headers['X-Client-ID'] = clientId
+    }
+    const token = getToken?.()
+    if (token) {
+      config.headers['Authorization'] = `Bearer ${token}`
     }
     return config
   })

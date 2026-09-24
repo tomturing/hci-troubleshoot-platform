@@ -92,7 +92,9 @@ async function readJson(response: Response): Promise<Record<string, unknown>> {
   return body && typeof body === 'object' ? body as Record<string, unknown> : {}
 }
 
-const internalToken = localStorage.getItem('internalToken') || import.meta.env.VITE_INTERNAL_API_TOKEN || 'hci-dev-internal-token'
+// 共享内部令牌已移除；登录 JWT 由全局 fetch 拦截器统一注入并覆盖此处构造的 Authorization 头。
+// 保留变量以兼容既有内联调用点（headers 中的 Bearer 占位，实际值由拦截器替换）。
+const internalToken = ''
 
 async function createConversation() {
   const query = new URLSearchParams({ case_id: props.caseId, assistant_type: 'htp-agent', client_id: props.clientId })

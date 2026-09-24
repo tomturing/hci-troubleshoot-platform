@@ -475,8 +475,9 @@ async function transition(asset: Asset, action: 'publish' | 'retire') {
 
 
 // 内部鉴权头（调用 API Gateway 转发 kb-service）
-const internalToken = localStorage.getItem('internalToken') || ''
-const authHeader = { Authorization: `Bearer ${internalToken}` }
+// 鉴权头由全局 fetch 拦截器（utils/auth.setupAuthFetch）统一注入登录 JWT；
+// 不再依赖 localStorage 令牌。此处保留空对象以兼容既有调用点结构。
+const authHeader: Record<string, string> = {}
 
 // 顶层主标签：'bundle' | 'signal'
 const activeTab = ref<'bundle' | 'signal'>('bundle')

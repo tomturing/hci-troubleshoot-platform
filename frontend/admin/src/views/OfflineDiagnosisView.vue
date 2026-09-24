@@ -31,17 +31,17 @@ import {
   type OfflineResourceSyncBatch,
   type SignalEvaluation,
 } from '@hci/shared'
+import { getAccessToken } from '@/utils/auth'
 
-const client = createApiClient('/api')
+// 管理端 axios 客户端注入登录 JWT（axios 不经 window.fetch 全局拦截器，须显式传入）
+const client = createApiClient('/api', undefined, getAccessToken)
 // 正式环境由同源身份层注入短期访问令牌，构建产物不得携带内部服务令牌。
 // 开发环境从构建期环境变量惰性读取，避免 token 在模块加载时一次性固化。
 const getDevelopmentToken = (): string => {
   if (!import.meta.env.DEV) return ''
-  return (
-    (import.meta.env.VITE_DIAGNOSIS_TOKEN as string | undefined) ||
-    (import.meta.env.VITE_INTERNAL_API_TOKEN as string | undefined) ||
-    ''
-  )
+  // 仅本地开发便捷：使用显式开发令牌，不再回退共享内部令牌
+  // （VITE_INTERNAL_API_TOKEN 已废弃，避免内部服务令牌进入任何构建产物）
+  return (import.meta.env.VITE_DIAGNOSIS_TOKEN as string | undefined) || ''
 }
 const usesSameOriginIdentity = import.meta.env.PROD
 const getIdentityToken = (): string | undefined => {

@@ -537,8 +537,9 @@ const editLoading = ref(false)
 // ──────────────────────────────────────────────────────────────────────────────
 // API
 // ──────────────────────────────────────────────────────────────────────────────
-const internalToken = import.meta.env.VITE_INTERNAL_API_TOKEN || 'hci-dev-internal-token'
-const authHeader = { Authorization: `Bearer ${internalToken}` }
+// 鉴权头由全局 fetch 拦截器（utils/auth.setupAuthFetch）统一注入登录 JWT；
+// 共享内部令牌已移除。diagnosisHeader 仍透传 X-Tenant-ID/X-Actor-ID（身份上下文，非认证）。
+const authHeader: Record<string, string> = {}
 const diagnosisHeader = {
   ...authHeader,
   'X-Tenant-ID': import.meta.env.VITE_DIAGNOSIS_TENANT_ID || 'default',

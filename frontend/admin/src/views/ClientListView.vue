@@ -2,8 +2,10 @@
 import { ref, onMounted } from 'vue'
 import { createApiClient, createCaseApi } from '@hci/shared'
 import type { ClientInfo } from '@hci/shared'
+import { getAccessToken } from '@/utils/auth'
 
-const apiClient = createApiClient('/api')
+// 管理端 axios 客户端注入登录 JWT（axios 不经 window.fetch 全局拦截器，须显式传入）
+const apiClient = createApiClient('/api', undefined, getAccessToken)
 const caseApi = createCaseApi(apiClient)
 
 const clients = ref<ClientInfo[]>([])

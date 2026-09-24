@@ -73,8 +73,9 @@ interface KbdListItem {
 // ──────────────────────────────────────────────────────────────────────────────
 // 鉴权头
 // ──────────────────────────────────────────────────────────────────────────────
-const internalToken = import.meta.env.VITE_INTERNAL_API_TOKEN || 'hci-dev-internal-token'
-const authHeader = { Authorization: `Bearer ${internalToken}` }
+// 鉴权头由全局 fetch 拦截器（utils/auth.setupAuthFetch）统一注入登录 JWT；
+// 共享内部令牌已移除，构建产物不再携带。此处保留空对象以兼容既有调用点结构。
+const authHeader: Record<string, string> = {}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 响应式状态

@@ -13,20 +13,20 @@ import {
 } from '@hci/shared'
 import type { CaseResponse, MessageResponse } from '@hci/shared'
 import TerminalReplay from '@/components/TerminalReplay.vue'
+import { getAccessToken } from '@/utils/auth'
 
 const route = useRoute()
 const router = useRouter()
 const caseId = route.params.caseId as string
 
-const apiClient = createApiClient('/api')
+// 管理端 axios 客户端注入登录 JWT（axios 不经 window.fetch 全局拦截器，须显式传入）
+const apiClient = createApiClient('/api', undefined, getAccessToken)
 const caseApi = createCaseApi(apiClient)
 const conversationApi = createConversationApi(apiClient)
 const promptAuditApi = createPromptAuditApi(apiClient)
 const auditLogApi = createAuditLogApi(apiClient)
-
-// 鉴权头（admin 接口需要）
-const internalToken = import.meta.env.VITE_INTERNAL_API_TOKEN || 'hci-dev-internal-token'
-const authHeader = { Authorization: `Bearer ${internalToken}` }
+// 注：原 internalToken/authHeader（共享内部令牌回退）已删除——
+// axios 由上方 getToken 注入 JWT，裸 fetch 由全局拦截器（utils/auth.setupAuthFetch）注入 JWT。
 
 const caseDetail = ref<CaseResponse | null>(null)
 const messages = ref<MessageResponse[]>([])
@@ -63,9 +63,7 @@ onMounted(async () => {
 
     // 加载对话：使用 admin 专用路由，绕过 client 身份签名校验
     // 历史路由 /conversations/case/{caseId} 需要 X-Client-ID，管理后台无此凭证
-    const convRes = await apiClient.get(`/conversations/admin/cases/${caseId}/conversations`, {
-      headers: { Authorization: `Bearer ${internalToken}` },
-    })
+    const convRes = await apiClient.get(`/conversations/admin/cases/${caseId}/conversations`)
     const conversations = convRes.data as any[]
     if (conversations.length > 0) {
       const latestConv = conversations[0]
@@ -74,7 +72,6 @@ onMounted(async () => {
       // 使用 admin 消息路由加载消息列表
       const msgRes = await apiClient.get(
         `/conversations/admin/conversations/${latestConv.conversation_id}/messages`,
-        { headers: { Authorization: `Bearer ${internalToken}` } },
       )
       messages.value = msgRes.data
 
@@ -133,7 +130,8 @@ function onTabChange(tabName: string) {
 // ── 关联 KBD 功能 ──
 async function loadKbdInfo(kbdId: number) {
   try {
-    const resp = await fetch(`/api/admin/kbd/${kbdId}`, { headers: authHeader })
+    // 裸 fetch 由全局拦截器（setupAuthFetch）自动注入登录 JWT，无需手动设置鉴权头
+    const resp = await fetch(`/api/admin/kbd/${kbdId}`)
     if (!resp.ok) return
     const data = await resp.json()
     resolvedKbdInfo.value = { id: data.id, support_id: data.support_id, title: data.title }
@@ -155,7 +153,8 @@ async function previewKbdById() {
   }
   editKbdPreviewLoading.value = true
   try {
-    const resp = await fetch(`/api/admin/kbd/${editKbdInputId.value}`, { headers: authHeader })
+    // 裸 fetch 由全局拦截器自动注入登录 JWT
+    const resp = await fetch(`/api/admin/kbd/${editKbdInputId.value}`)
     if (!resp.ok) {
       editKbdPreview.value = null
       ElMessage.warning(`未找到 KBD-${editKbdInputId.value}`)
@@ -176,7 +175,8 @@ async function saveResolvedKbd() {
   try {
     const resp = await fetch(`/api/conversations/admin/cases/${encodeURIComponent(caseId)}/resolved_kbd`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', ...authHeader },
+      // 裸 fetch 由全局拦截器自动注入登录 JWT，此处仅保留 Content-Type
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kbd_entry_id: editKbdInputId.value ?? null }),
     })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)

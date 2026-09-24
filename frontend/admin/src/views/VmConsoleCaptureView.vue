@@ -6,8 +6,9 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 
-const internalToken = localStorage.getItem('internalToken') || ''
-const authHeader = { Authorization: `Bearer ${internalToken}` }
+// 鉴权头由全局 fetch 拦截器（utils/auth.setupAuthFetch）统一注入登录 JWT；
+// 不再依赖 localStorage 令牌。此处保留空对象以兼容既有调用点结构。
+const authHeader: Record<string, string> = {}
 
 interface CaptureItem {
   capture_id: string

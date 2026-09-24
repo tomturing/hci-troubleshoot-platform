@@ -5,7 +5,7 @@ import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import 'element-plus/dist/index.css'
 import App from './App.vue'
 import router from './router'
-import { setupAuthFetch } from '@/utils/auth'
+import { setupAuthFetch, getAccessToken } from '@/utils/auth'
 
 const app = createApp(App)
 app.use(createPinia())
@@ -21,5 +21,9 @@ for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
 }
 
 setupAuthFetch()
+
+// 同源身份层：向共享 API 客户端（axios，不经 window.fetch 拦截器）及离线诊断视图暴露
+// 管理端 JWT 读取器，使所有管理端请求统一携带登录令牌（替代已移除的共享令牌回退）。
+window.__HCI_AUTH__ = { getAccessToken: () => getAccessToken() ?? undefined }
 
 app.mount('#app')

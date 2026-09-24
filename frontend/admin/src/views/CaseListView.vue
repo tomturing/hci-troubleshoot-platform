@@ -3,12 +3,14 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { createApiClient, createCaseApi, STATUS_LABELS } from '@hci/shared'
 import type { CaseResponse, CaseListResponse } from '@hci/shared'
+import { getAccessToken } from '@/utils/auth'
 import { Search, Edit, RefreshLeft } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useCategories } from '../composables/useCategories'
 
 const router = useRouter()
-const apiClient = createApiClient('/api')
+// 管理端 axios 客户端注入登录 JWT（axios 不经 window.fetch 全局拦截器，须显式传入）
+const apiClient = createApiClient('/api', undefined, getAccessToken)
 const caseApi = createCaseApi(apiClient)
 
 const tableData = ref<CaseResponse[]>([])

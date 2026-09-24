@@ -1,18 +1,18 @@
-// 管理员认证工具（阶段1.x）
+// 管理员认证工具
 //
 // 职责：
-// 1. 管理登录态（auth-service 签发的 JWT，存于 localStorage）
-// 2. 暴露 login / logout / isAuthenticated
+// 1. 管理登录态（auth-service 签发的 RS256 JWT，存于 localStorage）
+// 2. 暴露 login / logout / isAuthenticated / authHeaders / getAccessToken
 // 3. setupAuthFetch：全局注入 fetch 拦截器，自动为所有 /api 请求（登录端点除外）
-//    附带 Bearer 凭证——已登录用 JWT，未登录回退共享内部令牌（灰度兼容）。
-//    这样全站调用点无需逐一改造即可切换到 JWT 强认证。
+//    附带登录签发的 JWT，并对 401（会话失效）统一清令牌 + 跳登录页。
+//
+// 安全重构（SRC 管理台强制认证 · L1 删回退 + L3 前端守卫）：
+// - 移除共享内部令牌回退（原 FALLBACK_INTERNAL_TOKEN）：构建产物不再携带任何内部服务令牌，
+//   杜绝“前端硬编码共享令牌 → 任何人可冒充管理端”的 P0 穿透。
+// - 未登录不再伪造管理端身份，由路由守卫强制跳登录页；令牌真伪与有效期一律以服务端 JWKS 验签为准，
+//   前端过期判断仅为体验优化。
 
 const ACCESS_TOKEN_KEY = 'hci_admin_access_token'
-
-// 兜底内部令牌：未登录时使用，兼容现有网关共享令牌逻辑。
-// AUTHN_ENFORCE_ADMIN=false 时网关仍按 admin 处理；开启后回退失效，必须登录。
-const FALLBACK_INTERNAL_TOKEN =
-  (import.meta.env.VITE_INTERNAL_API_TOKEN as string | undefined) || 'hci-dev-internal-token'
 
 export interface LoginResponse {
   access_token: string
@@ -32,15 +32,63 @@ export function clearAccessToken(): void {
   localStorage.removeItem(ACCESS_TOKEN_KEY)
 }
 
-export function isAuthenticated(): boolean {
-  return !!getAccessToken()
+// 解析 JWT 载荷中的 exp（秒级时间戳）。仅用于前端过期预判（体验优化），
+// 不作为安全边界——令牌真伪与有效期一律以服务端 JWKS 验签为准。
+function getTokenExpiry(token: string): number | null {
+  try {
+    const part = token.split('.')[1]
+    if (!part) return null
+    const padded = part.replace(/-/g, '+').replace(/_/g, '/')
+    const json = decodeURIComponent(
+      atob(padded)
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join(''),
+    )
+    const exp = (JSON.parse(json) as { exp?: unknown }).exp
+    return typeof exp === 'number' ? exp : null
+  } catch {
+    return null
+  }
 }
 
-// 统一认证头：优先 JWT，未登录回退共享令牌（灰度兼容现有网关逻辑）
+// 已登录 = 存在令牌且未过期（容忍 30s 时钟偏移）。无法解析 exp 时不阻断，
+// 交由服务端 401 + fetch 拦截器兜底，避免误判把管理员挡在外面。
+export function isAuthenticated(): boolean {
+  const token = getAccessToken()
+  if (!token) return false
+  const exp = getTokenExpiry(token)
+  if (exp === null) return true
+  return exp * 1000 > Date.now() - 30_000
+}
+
+// 统一认证头：仅携带登录签发的 JWT；未登录返回空头（不再回退共享令牌）。
+// 未携带有效 JWT 的管理端请求由网关按 require_admin 拒绝（401/403）。
 export function authHeaders(): Record<string, string> {
   const token = getAccessToken()
-  const bearer = token ?? FALLBACK_INTERNAL_TOKEN
-  return { Authorization: `Bearer ${bearer}` }
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+// 结构化认证事件日志（前端可观测性）：统一 schema，便于排障与审计前端认证生命周期。
+function logAuthEvent(event: string, detail: Record<string, unknown> = {}): void {
+  // eslint-disable-next-line no-console
+  console.info(`[admin-auth] ${event}`, {
+    event,
+    traceId: (window as unknown as { __TRACE_ID__?: string }).__TRACE_ID__ || '',
+    ts: new Date().toISOString(),
+    ...detail,
+  })
+}
+
+// 跳转登录页并携带回跳地址；防重入避免并发 401 触发多次整页跳转。
+let redirectingToLogin = false
+function redirectToLogin(): void {
+  if (redirectingToLogin) return
+  if (window.location.pathname.startsWith('/login')) return
+  redirectingToLogin = true
+  const redirect = encodeURIComponent(window.location.pathname + window.location.search)
+  logAuthEvent('redirect_to_login', { from: window.location.pathname })
+  window.location.assign(`/login?redirect=${redirect}`)
 }
 
 export async function login(identifier: string, password: string): Promise<LoginResponse> {
@@ -67,9 +115,13 @@ export async function login(identifier: string, password: string): Promise<Login
 
 export function logout(): void {
   clearAccessToken()
+  logAuthEvent('logout')
+  // 登出后跳登录页并携带回跳地址，避免停留在受保护页面反复 401
+  redirectToLogin()
 }
 
-// 全局 fetch 拦截：除登录端点外，自动注入 Bearer 凭证（JWT 优先，否则共享令牌）。
+// 全局 fetch 拦截：除登录端点外，自动注入登录签发的 JWT（不再回退共享令牌）；
+// 并对 401（会话失效）统一清令牌 + 跳登录页携带回跳地址。
 // 幂等：通过标记避免 HMR 重复包装。
 export function setupAuthFetch(): void {
   if (typeof window === 'undefined') return
@@ -78,21 +130,30 @@ export function setupAuthFetch(): void {
   w.__hciAuthFetchInstalled = true
 
   const original = window.fetch.bind(window)
-  window.fetch = (input: RequestInfo | URL, init: RequestInit = {}) => {
+  window.fetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const url =
       typeof input === 'string'
         ? input
         : input instanceof URL
           ? input.href
           : (input as Request).url
+    const isAuthEndpoint = url.includes('/api/platform-auth/')
     // 登录端点由 body 携带凭证，不参与拦截注入
-    if (!url.includes('/api/platform-auth/')) {
+    if (!isAuthEndpoint) {
       const headers = new Headers(init.headers)
       const token = getAccessToken()
-      const bearer = token ?? FALLBACK_INTERNAL_TOKEN
-      headers.set('Authorization', `Bearer ${bearer}`)
+      // 仅注入真实 JWT；未登录不再伪造管理端身份（已删除共享令牌回退）
+      if (token) headers.set('Authorization', `Bearer ${token}`)
       init = { ...init, headers }
     }
-    return original(input, init)
+    const response = await original(input, init)
+    // 401 拦截：JWT 过期/被吊销 → 清令牌并跳登录页。
+    // 登录端点自身的 401（账号或密码错误）不在此处理，避免重定向死循环。
+    if (!isAuthEndpoint && response.status === 401) {
+      logAuthEvent('unauthorized', { url, status: 401 })
+      clearAccessToken()
+      redirectToLogin()
+    }
+    return response
   }
 }

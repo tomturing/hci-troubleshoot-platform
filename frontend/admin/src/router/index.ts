@@ -120,10 +120,19 @@ const router = createRouter({
   ],
 })
 
+// 路由守卫（L3 强制登录）：
+// - 公开路由（meta.public，如 /login）无需登录；已登录访问 /login 自动跳工作台避免重复登录。
+// - 受保护路由：未登录或令牌过期 → 强制跳 /login 并携带 redirect 回跳地址，登录成功后回跳。
+// 令牌真伪以服务端 JWKS 验签为准，isAuthenticated 的过期判断仅用于提前拦截、改善体验。
 router.beforeEach((to: any) => {
-  // 软着陆：已登录访问登录页则跳仪表盘；暂不强制全局登录（兼容 AUTHN_ENFORCE_ADMIN=false 现状）
-  if (to.path === '/login' && isAuthenticated()) {
-    return { path: '/dashboard' }
+  if (to.meta?.public) {
+    if (to.path === '/login' && isAuthenticated()) {
+      return { path: '/dashboard' }
+    }
+    return true
+  }
+  if (!isAuthenticated()) {
+    return { path: '/login', query: { redirect: to.fullPath } }
   }
   return true
 })
