@@ -28,7 +28,12 @@ runtime:
   authorityScope: dev_golden
   existingSecret: hci-sim-credentials
   leaseKeySecretKey: lease-hmac-key
-  controlTokenSecretKey: control-plane-token
+  # 服务间控制面令牌必须与网关引用「同名 key」：网关侧（env 仓 staging 覆盖）读
+  # hci-staging/hci-secrets.INTERNAL_API_TOKEN（canonical 共享内部令牌）；Runtime 侧
+  # 因此也引用 INTERNAL_API_TOKEN（值需与网关一致，由同一 Secret 管理域 provision）。
+  # 历史坑：曾用独立孤儿 key「control-plane-token」，轮换 INTERNAL_API_TOKEN 时该 key
+  # 被漏同步 → 网关(A)≠Runtime(B) → /api/hci-sim 控制面一律 403。统一 key 名消除双 key 漂移面。
+  controlTokenSecretKey: INTERNAL_API_TOKEN
   allowInsecureControlAPI: false
   sshHost: hci-sim.hci-sim-dev.svc
   hostKeySecretKey: ssh_host_key

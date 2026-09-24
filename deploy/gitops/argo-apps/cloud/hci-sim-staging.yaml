@@ -33,6 +33,9 @@ spec:
         runtime:
           environment: staging
           existingSecret: hci-sim-credentials
+          # 显式声明与网关引用「同名 key」INTERNAL_API_TOKEN，不依赖 chart 默认，防止二者脱钩再漂移。
+          # 详见 docs/solution/events/2026-09-24-hci-sim控制面令牌双key漂移根治.md
+          controlTokenSecretKey: INTERNAL_API_TOKEN
           authorityScope: dev_golden
           allowSyntheticPublish: false
           sshHost: hci-sim.hci-sim-staging.svc
