@@ -3,7 +3,8 @@
 
 为 /api 请求签发/校验服务端身份 Cookie，并解析管理员令牌：
 - 无有效 Cookie 时自动签发新的 server-generated client_id（HttpOnly）。
-- 解析 `Authorization: Bearer INTERNAL_API_TOKEN` 标记 is_admin。
+- 解析 `Authorization: Bearer INTERNAL_API_TOKEN` 标记 is_admin；当 `AUTHN_ENFORCE_ADMIN`
+  关闭时，该"共享令牌→admin"回退命中会写审计日志+指标，作为关后门（PR-D）前的实测判据。
 
 具体路由是否强制要求身份，由路由上的
 `Depends(require_user)` / `Depends(require_admin)` 决定；本中间件只负责
@@ -11,11 +12,16 @@
 """
 
 import hmac
+import uuid
 
+from shared.observability.logger import get_logger
+from shared.observability.metrics import AUTHZ_SHARED_TOKEN_ADMIN_TOTAL
 from shared.security.identity import IDENTITY_COOKIE_NAME, issue_identity, verify_identity
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
+
+logger = get_logger("gateway-identity")
 
 
 class IdentityMiddleware(BaseHTTPMiddleware):
@@ -64,6 +70,26 @@ class IdentityMiddleware(BaseHTTPMiddleware):
             and hmac.compare_digest(auth[7:], settings.INTERNAL_API_TOKEN)
         ):
             request.state.is_admin = True
+            # 审计埋点（PR-D 关后门实测判据，旁路观测不改鉴权行为）：
+            # 记录每一次"共享令牌被回退赋予 admin"，用于关 AUTHN_ENFORCE_ADMIN 前评估是否仍有
+            # 合法调用方依赖该后门。安全红线：绝不记录令牌本身（logger 已对 authorization/token/
+            # Bearer 脱敏，此处亦不传入 auth 头）；完整 path/IP/UA 进日志（携带唯一调用链 trace_id），
+            # 指标只按低基数 method 聚合防高基数。UA 用于区分浏览器/curl/脚本等真实调用方。
+            trace_id = request.headers.get("X-Trace-Id") or uuid.uuid4().hex
+            forwarded_for = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            client_ip = (
+                forwarded_for or request.headers.get("X-Real-IP") or (request.client.host if request.client else "")
+            )
+            AUTHZ_SHARED_TOKEN_ADMIN_TOTAL.labels(method=request.method).inc()
+            logger.warning(
+                "authz_shared_token_admin_fallback",
+                message="共享令牌经回退获得 admin 身份（AUTHN_ENFORCE_ADMIN=false，关后门判据命中）",
+                trace_id=trace_id,
+                method=request.method,
+                path=request.url.path,
+                client_ip=client_ip,
+                user_agent=request.headers.get("User-Agent", ""),
+            )
 
         response = await call_next(request)
 

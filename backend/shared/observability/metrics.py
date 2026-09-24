@@ -33,6 +33,16 @@ HTTP_REQUESTS_TOTAL = Counter(
     labelnames=["method", "status"],
 )
 
+# 鉴权/安全审计：共享令牌→admin 回退命中计数（仅在 AUTHN_ENFORCE_ADMIN 关闭期间产生）。
+# 关后门（PR-D）前的实测判据：该计数持续为 0，表明无合法调用方依赖"共享令牌自动获得 admin"，
+# 可安全翻 AUTHN_ENFORCE_ADMIN=true。完整 path/IP/UA 等取证字段仅进结构化日志，
+# 指标只按低基数 method 聚合，避免任意请求路径造成 Prometheus 高基数。
+AUTHZ_SHARED_TOKEN_ADMIN_TOTAL = Counter(
+    "hci_authz_shared_token_admin_total",
+    "共享令牌被回退赋予 admin 身份的命中次数（关后门实测判据，持续为 0=无合法依赖）",
+    labelnames=["method"],
+)
+
 # SSE 空闲保活心跳发送次数（防止反向代理 proxy_read_timeout 因长耗时诊断空闲而掐断连接）。
 # stream: message（诊断主链路）/ resume（页面刷新重接续写流）。
 SSE_KEEPALIVE_TOTAL = Counter(
