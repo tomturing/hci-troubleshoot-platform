@@ -6,8 +6,6 @@ KB Service SQLAlchemy 模型 — kbd_review_owner
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from shared.database.postgres import Base
 from sqlalchemy import BigInteger, Column, DateTime, String
 from sqlalchemy.sql import func
