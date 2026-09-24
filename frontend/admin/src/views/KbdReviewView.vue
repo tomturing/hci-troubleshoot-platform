@@ -552,9 +552,8 @@ const editLoading = ref(false)
 // ──────────────────────────────────────────────────────────────────────────────
 // API
 // ──────────────────────────────────────────────────────────────────────────────
-// 鉴权头由全局 fetch 拦截器（utils/auth.setupAuthFetch）统一注入登录 JWT；
-// 共享内部令牌已移除。diagnosisHeader 仍透传 X-Tenant-ID/X-Actor-ID（身份上下文，非认证）。
-const authHeader: Record<string, string> = {}
+const internalToken = import.meta.env.VITE_INTERNAL_API_TOKEN || 'hci-dev-internal-token'
+const authHeader = { Authorization: `Bearer ${internalToken}` }
 const diagnosisHeader = {
   ...authHeader,
   'X-Tenant-ID': import.meta.env.VITE_DIAGNOSIS_TENANT_ID || 'default',
@@ -5016,11 +5015,23 @@ onUnmounted(() => clearBatchPollTimer())
         <!-- 状态 -->
         <el-table-column label="状态" width="80" align="center" prop="status" sortable="custom">
           <template #default="{ row }">
+            <el-tooltip
+              v-if="row.status === 'unpublishable' && row.unpublishable_reason"
+              :content="row.unpublishable_reason"
+              placement="top"
+              :show-after="300"
+            >
+              <el-tag
+                type="info"
+                size="small"
+                style="cursor: help;"
+              >{{ statusLabel(row.status) }}</el-tag>
+            </el-tooltip>
             <el-tag
+              v-else
               :type="row.status === 'published' ? 'success' :
                      row.status === 'rejected'  ? 'danger'  :
-                     row.status === 'archived'  ? 'info'    :
-                     row.status === 'unpublishable' ? 'info' : 'warning'"
+                     row.status === 'archived'  ? 'info'    : 'warning'"
               size="small"
             >{{ statusLabel(row.status) }}</el-tag>
           </template>
@@ -5142,12 +5153,28 @@ onUnmounted(() => clearBatchPollTimer())
             </a>
           </el-descriptions-item>
           <el-descriptions-item label="状态">
+            <el-tooltip
+              v-if="detailEntry.status === 'unpublishable' && detailEntry.unpublishable_reason"
+              :content="detailEntry.unpublishable_reason"
+              placement="top"
+              :show-after="300"
+            >
+              <el-tag
+                type="info"
+                size="small"
+                style="cursor: help;"
+              >无法发布</el-tag>
+            </el-tooltip>
             <el-tag
+              v-else
               :type="detailEntry.status === 'published' ? 'success' :
                      detailEntry.status === 'rejected'  ? 'danger'  :
                      detailEntry.status === 'archived'  ? 'info'    : 'warning'"
               size="small"
-            >{{ detailEntry.status }}</el-tag>
+            >{{ statusLabel(detailEntry.status) }}</el-tag>
+            <div v-if="detailEntry.status === 'unpublishable' && detailEntry.unpublishable_reason" style="margin-top: 8px; color: #909399; font-size: 12px;">
+              <strong>审核备注：</strong>{{ detailEntry.unpublishable_reason }}
+            </div>
           </el-descriptions-item>
           <el-descriptions-item label="标题" :span="2">
             <strong>{{ detailEntry.title }}</strong>
