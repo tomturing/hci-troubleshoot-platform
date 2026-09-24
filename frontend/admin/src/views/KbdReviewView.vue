@@ -5015,11 +5015,23 @@ onUnmounted(() => clearBatchPollTimer())
         <!-- 状态 -->
         <el-table-column label="状态" width="80" align="center" prop="status" sortable="custom">
           <template #default="{ row }">
+            <el-tooltip
+              v-if="row.status === 'unpublishable' && row.unpublishable_reason"
+              :content="row.unpublishable_reason"
+              placement="top"
+              :show-after="300"
+            >
+              <el-tag
+                type="info"
+                size="small"
+                style="cursor: help;"
+              >{{ statusLabel(row.status) }}</el-tag>
+            </el-tooltip>
             <el-tag
+              v-else
               :type="row.status === 'published' ? 'success' :
                      row.status === 'rejected'  ? 'danger'  :
-                     row.status === 'archived'  ? 'info'    :
-                     row.status === 'unpublishable' ? 'info' : 'warning'"
+                     row.status === 'archived'  ? 'info'    : 'warning'"
               size="small"
             >{{ statusLabel(row.status) }}</el-tag>
           </template>
