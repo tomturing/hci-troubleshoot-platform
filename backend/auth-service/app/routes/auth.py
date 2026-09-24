@@ -1,7 +1,7 @@
 """认证路由：双 realm 登录端点 + JWKS 端点。
 
-- POST /api/auth/customer/login  → realm=customer，签发 aud=hci-customer
-- POST /api/auth/admin/login      → realm=admin，签发 aud=hci-admin（短时效）
+- POST /api/platform-auth/customer/login  → realm=customer，签发 aud=hci-customer
+- POST /api/platform-auth/admin/login      → realm=admin，签发 aud=hci-admin（短时效）
 - GET  /.well-known/jwks.json     → 公钥（网关/下游验签）
 
 登录结果：返回 Bearer access_token（JSON 体）+ 下发 HttpOnly Session Cookie
@@ -37,7 +37,7 @@ def _client_meta(request: Request) -> tuple[str | None, str | None]:
     return (request.client.host if request.client else None), request.headers.get("User-Agent")
 
 
-@router.post("/api/auth/customer/login", response_model=LoginResponse)
+@router.post("/api/platform-auth/customer/login", response_model=LoginResponse)
 async def customer_login(req: LoginRequest, request: Request, response: Response):
     return await _login(
         "customer",
@@ -50,7 +50,7 @@ async def customer_login(req: LoginRequest, request: Request, response: Response
     )
 
 
-@router.post("/api/auth/admin/login", response_model=LoginResponse)
+@router.post("/api/platform-auth/admin/login", response_model=LoginResponse)
 async def admin_login(req: LoginRequest, request: Request, response: Response):
     return await _login(
         "admin",

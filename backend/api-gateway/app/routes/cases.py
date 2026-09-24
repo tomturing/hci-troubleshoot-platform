@@ -38,9 +38,13 @@ MAX_PAGE_LIMIT = 100
 
 
 def _admin_headers(request: Request) -> dict:
-    """透传管理员 Authorization 头（已是 require_admin 校验过的请求）。"""
-    auth = request.headers.get("Authorization")
-    return {"Authorization": auth} if auth else {}
+    """管理员请求按网关自身身份重签下游 Authorization（不透传客户端凭证）。
+
+    下游（case-service）以 INTERNAL_API_TOKEN 校验管理员端点。若把客户端自报的
+    Authorization（登录后是 auth-service 签发的 JWT）透传下去，下游无法识别 →
+    403「管理员凭证无效」。故管理员请求一律用网关内部令牌重签。
+    """
+    return {"Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}"}
 
 
 def _signed_headers(client_id: str) -> dict:

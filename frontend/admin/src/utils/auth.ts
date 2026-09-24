@@ -45,7 +45,7 @@ export function authHeaders(): Record<string, string> {
 
 export async function login(identifier: string, password: string): Promise<LoginResponse> {
   // 登录端点本身不带 Authorization，由 body 携带凭证
-  const resp = await fetch('/api/auth/admin/login', {
+  const resp = await fetch('/api/platform-auth/admin/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ identifier, password }),
@@ -86,7 +86,7 @@ export function setupAuthFetch(): void {
           ? input.href
           : (input as Request).url
     // 登录端点由 body 携带凭证，不参与拦截注入
-    if (!url.includes('/api/auth/')) {
+    if (!url.includes('/api/platform-auth/')) {
       const headers = new Headers(init.headers)
       const token = getAccessToken()
       const bearer = token ?? FALLBACK_INTERNAL_TOKEN

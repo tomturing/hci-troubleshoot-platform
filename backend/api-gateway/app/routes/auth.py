@@ -1,6 +1,6 @@
 """认证服务反向代理（阶段1.x）。
 
-将 /api/auth/*（登录、登出等）原样转发到 auth-service。登录是公开端点，
+将 /api/platform-auth/*（登录、登出等）原样转发到 auth-service。登录是公开端点，
 不要求网关身份；网关仅做协议级透传（请求体 / 安全头 / 链路追踪），
 不向下游重签内部身份（auth-service 自身为认证边界）。
 
@@ -96,7 +96,7 @@ async def _proxy_auth_request(request: Request) -> Response:
 
 
 @router.api_route(
-    "/api/auth/{path:path}",
+    "/api/platform-auth/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
 )
 async def proxy_auth(request: Request, path: str = "") -> Response:
