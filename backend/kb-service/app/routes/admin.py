@@ -66,7 +66,6 @@ from shared.utils.acquisition_strategy import parse_strategy
 from sqlalchemy import select, text
 
 from app.models.kbd_entry import KbdEntry, build_kbd_embedding_text, strip_markdown
-from app.models.kbd_review_owner import KbdReviewOwner
 from app.models.kbd_revision import KbdRevision
 from app.models.sop_document import SopDocument
 from app.models.version_governance import KbdPackage
