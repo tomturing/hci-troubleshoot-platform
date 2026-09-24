@@ -87,7 +87,7 @@ async def sop_match(request: Request, _: str = Depends(require_user)):
 async def ingest(request: Request, _: None = Depends(require_admin)):
     """文档摄入（SHA256 幂等）；管理操作，要求 INTERNAL_API_TOKEN"""
     body = await request.json()
-    headers = _forward_headers(request)
+    headers = _internal_auth_headers()
     response = await proxy_request("POST", "/ingest", payload=body, headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
@@ -96,7 +96,7 @@ async def ingest(request: Request, _: None = Depends(require_admin)):
 async def sop_import(request: Request, _: None = Depends(require_admin)):
     """SOP 节点批量导入；管理操作，要求 INTERNAL_API_TOKEN"""
     body = await request.json()
-    headers = _forward_headers(request)
+    headers = _internal_auth_headers()
     response = await proxy_request("POST", "/sop/import", payload=body, headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
@@ -107,7 +107,7 @@ async def sop_import(request: Request, _: None = Depends(require_admin)):
 @router.get("/documents")
 async def list_documents(request: Request, _: None = Depends(require_admin)):
     """文档列表；管理操作，要求 INTERNAL_API_TOKEN"""
-    headers = _forward_headers(request)
+    headers = _internal_auth_headers()
     response = await proxy_request("GET", "/documents", params=dict(request.query_params), headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
@@ -115,7 +115,7 @@ async def list_documents(request: Request, _: None = Depends(require_admin)):
 @router.get("/documents/{doc_id}")
 async def get_document(doc_id: int, request: Request, _: None = Depends(require_admin)):
     """获取文档详情；管理操作，要求 INTERNAL_API_TOKEN"""
-    headers = _forward_headers(request)
+    headers = _internal_auth_headers()
     response = await proxy_request("GET", f"/documents/{doc_id}", headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
@@ -124,7 +124,7 @@ async def get_document(doc_id: int, request: Request, _: None = Depends(require_
 async def update_document_status(doc_id: int, request: Request, _: None = Depends(require_admin)):
     """更新文档状态；管理操作，要求 INTERNAL_API_TOKEN"""
     body = await request.json()
-    headers = _forward_headers(request)
+    headers = _internal_auth_headers()
     response = await proxy_request("PATCH", f"/documents/{doc_id}", payload=body, headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
@@ -132,7 +132,7 @@ async def update_document_status(doc_id: int, request: Request, _: None = Depend
 @router.delete("/documents/{doc_id}")
 async def delete_document(doc_id: int, request: Request, _: None = Depends(require_admin)):
     """删除文档；管理操作，要求 INTERNAL_API_TOKEN"""
-    headers = _forward_headers(request)
+    headers = _internal_auth_headers()
     response = await proxy_request("DELETE", f"/documents/{doc_id}", headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
