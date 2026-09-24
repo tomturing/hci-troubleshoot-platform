@@ -674,6 +674,77 @@ async def kbd_batch_job_retry_proxy(batch_id: str, request: Request):
     return _kbd_json_response(response)
 
 
+# ── 发布审核责任人 API ────────────────────────────────────────────────────────
+
+
+@kbd_router.get("/review-owners")
+async def kbd_review_owners_list_proxy(request: Request):
+    """列表查询审核责任人 → kb-service。"""
+
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("GET", "/review-owners", headers=headers)
+    return _kbd_json_response(response)
+
+
+@kbd_router.post("/review-owners")
+async def kbd_review_owners_create_proxy(request: Request):
+    """创建审核责任人 → kb-service。"""
+
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", "/review-owners", payload=body, headers=headers)
+    return _kbd_json_response(response)
+
+
+@kbd_router.put("/review-owners/{owner_id}")
+async def kbd_review_owners_update_proxy(owner_id: int, request: Request):
+    """更新审核责任人 → kb-service。"""
+
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("PUT", f"/review-owners/{owner_id}", payload=body, headers=headers)
+    return _kbd_json_response(response)
+
+
+@kbd_router.delete("/review-owners/{owner_id}")
+async def kbd_review_owners_delete_proxy(owner_id: int, request: Request):
+    """删除审核责任人 → kb-service。"""
+
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("DELETE", f"/review-owners/{owner_id}", headers=headers)
+    return _kbd_json_response(response)
+
+
+@kbd_router.post("/batch/set-review-owner")
+async def kbd_batch_set_review_owner_proxy(request: Request):
+    """批量设置审核责任人 → kb-service。"""
+
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", "/batch/set-review-owner", payload=body, headers=headers, timeout=300.0)
+    return _kbd_json_response(response)
+
+
+@kbd_router.post("/batch/set-unpublishable")
+async def kbd_batch_set_unpublishable_proxy(request: Request):
+    """批量设为无法发布 → kb-service。"""
+
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", "/batch/set-unpublishable", payload=body, headers=headers, timeout=300.0)
+    return _kbd_json_response(response)
+
+
+@kbd_router.post("/{kbd_id}/set-unpublishable")
+async def kbd_set_unpublishable_proxy(kbd_id: int, request: Request):
+    """单条设为无法发布 → kb-service。"""
+
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", f"/{kbd_id}/set-unpublishable", payload=body, headers=headers)
+    return _kbd_json_response(response)
+
+
 @kbd_router.get("/{kbd_id}/revisions")
 async def kbd_revisions_proxy(kbd_id: int, request: Request):
     """代理 KBD Proposal/Expert 历史与当前 runtime active 元数据。"""

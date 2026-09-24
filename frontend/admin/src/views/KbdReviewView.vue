@@ -80,6 +80,21 @@ interface KbdEntry {
   lock_version?: number
   maintenance_working?: boolean
   review_view?: 'entry' | 'maintenance_working'
+  // 发布审核责任人
+  review_owner_id?: number | null
+  review_owner_name?: string | null
+  // 无法发布状态相关
+  unpublishable_at?: string | null
+  unpublishable_by?: number | null
+  unpublishable_reason?: string | null
+}
+
+interface ReviewOwner {
+  id: number
+  name: string
+  email: string | null
+  created_at: string
+  updated_at: string
 }
 
 type SemanticEntryProfile = NonNullable<SignalsDoc['semantic_entry_profile']>
@@ -308,7 +323,7 @@ const categoryFilter = ref('')
 const statusFilter = ref('')
 
 const STATUS_MAP: Record<string, string> = {
-  draft: '待审核', published: '已发布', rejected: '已拒绝', archived: '已归档',
+  draft: '待审核', published: '已发布', rejected: '已拒绝', archived: '已归档', unpublishable: '无法发布',
 }
 function statusLabel(s: string) { return STATUS_MAP[s] || s }
 const supportIdFilter = ref('')
@@ -607,6 +622,9 @@ async function fetchPending() {
       const [minStr, maxStr] = confidenceFilter.value.split(',')
       if (minStr) params.append('min_confidence', minStr)
       if (maxStr) params.append('max_confidence', maxStr)
+    }
+    if (reviewOwnerFilter.value != null) {
+      params.append('review_owner_id', String(reviewOwnerFilter.value))
     }
     params.append('sort_by', sortBy.value)
     params.append('sort_order', sortOrder.value)
@@ -1160,7 +1178,272 @@ function batchJobTypeLabel(jobType: KbdBatchJob['job_type']): string {
     extract_signals: '批量抽取信号',
     approve: '批量通过',
     reject: '批量拒绝',
+    set_review_owner: '批量设置审核责任人',
+    set_unpublishable: '批量设为无法发布',
   }[jobType]
+}
+
+// ── 发布审核责任人相关状态 ────────────────────────────────────────────────────
+const reviewOwners = ref<ReviewOwner[]>([])
+const reviewOwnersLoading = ref(false)
+const reviewOwnersCollapsed = ref(true) // 默认收起
+const reviewOwnerFilter = ref<number | null>(null)
+const batchSetOwnerLoading = ref(false)
+const batchSetUnpublishableLoading = ref(false)
+
+// 审核责任人对话框
+const reviewOwnerDialogVisible = ref(false)
+const reviewOwnerDialogMode = ref<'create' | 'edit'>('create')
+const editingReviewOwner = ref<ReviewOwner | null>(null)
+const reviewOwnerForm = ref({
+  name: '',
+  email: '',
+})
+const reviewOwnerFormLoading = ref(false)
+
+async function fetchReviewOwners() {
+  reviewOwnersLoading.value = true
+  try {
+    const resp = await fetch('/api/v1/kbd/review-owners', {
+      headers: authHeader,
+    })
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`)
+    }
+    const data = await resp.json()
+    reviewOwners.value = data.owners || []
+  } catch (error) {
+    console.error('获取审核责任人列表失败:', error)
+    ElMessage.error('获取审核责任人列表失败')
+  } finally {
+    reviewOwnersLoading.value = false
+  }
+}
+
+function showAddOwnerDialog() {
+  reviewOwnerDialogMode.value = 'create'
+  editingReviewOwner.value = null
+  reviewOwnerForm.value = { name: '', email: '' }
+  reviewOwnerDialogVisible.value = true
+}
+
+function editOwner(owner: ReviewOwner) {
+  reviewOwnerDialogMode.value = 'edit'
+  editingReviewOwner.value = owner
+  reviewOwnerForm.value = { name: owner.name, email: owner.email || '' }
+  reviewOwnerDialogVisible.value = true
+}
+
+async function submitReviewOwner() {
+  if (!reviewOwnerForm.value.name.trim()) {
+    ElMessage.warning('请输入责任人姓名')
+    return
+  }
+
+  reviewOwnerFormLoading.value = true
+  try {
+    const url = reviewOwnerDialogMode.value === 'create'
+      ? '/api/v1/kbd/review-owners'
+      : `/api/v1/kbd/review-owners/${editingReviewOwner.value?.id}`
+    const method = reviewOwnerDialogMode.value === 'create' ? 'POST' : 'PUT'
+
+    const resp = await fetch(url, {
+      method,
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify(reviewOwnerForm.value),
+    })
+
+    if (!resp.ok) {
+      const error = await resp.json()
+      throw new Error(error.detail || `HTTP ${resp.status}`)
+    }
+
+    ElMessage.success(reviewOwnerDialogMode.value === 'create' ? '创建成功' : '更新成功')
+    reviewOwnerDialogVisible.value = false
+    await fetchReviewOwners()
+  } catch (error) {
+    console.error('保存审核责任人失败:', error)
+    ElMessage.error(`保存失败: ${error instanceof Error ? error.message : '未知错误'}`)
+  } finally {
+    reviewOwnerFormLoading.value = false
+  }
+}
+
+async function deleteOwner(owner: ReviewOwner) {
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除审核责任人"${owner.name}"吗？关联的 KBD 的审核责任人将被清空。`,
+      '删除确认',
+      { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+
+  try {
+    const resp = await fetch(`/api/v1/kbd/review-owners/${owner.id}`, {
+      method: 'DELETE',
+      headers: authHeader,
+    })
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`)
+    }
+    ElMessage.success('删除成功')
+    await fetchReviewOwners()
+  } catch (error) {
+    console.error('删除审核责任人失败:', error)
+    ElMessage.error('删除失败')
+  }
+}
+
+function getReviewOwnerName(reviewOwnerId: number | null | undefined): string {
+  if (!reviewOwnerId) return '—'
+  const owner = reviewOwners.value.find(o => o.id === reviewOwnerId)
+  return owner?.name || '—'
+}
+
+// 批量设置审核责任人对话框状态
+const batchSetOwnerDialogVisible = ref(false)
+const batchSetOwnerSelectedId = ref<number | null>(null)
+
+async function handleBatchSetReviewOwner() {
+  if (selectedEntries.value.length === 0) return
+
+  if (reviewOwners.value.length === 0) {
+    await fetchReviewOwners()
+  }
+
+  if (reviewOwners.value.length === 0) {
+    ElMessage.warning('请先添加审核责任人')
+    return
+  }
+
+  // 打开自定义对话框
+  batchSetOwnerSelectedId.value = null
+  batchSetOwnerDialogVisible.value = true
+}
+
+async function submitBatchSetReviewOwner() {
+  if (!batchSetOwnerSelectedId.value) {
+    ElMessage.warning('请选择责任人')
+    return
+  }
+
+  batchSetOwnerDialogVisible.value = false
+  batchSetOwnerLoading.value = true
+  try {
+    const resp = await fetch('/api/v1/kbd/batch/set-review-owner', {
+      method: 'POST',
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kbd_ids: selectedEntries.value.map(e => e.id),
+        review_owner_id: batchSetOwnerSelectedId.value,
+      }),
+    })
+    if (!resp.ok) {
+      const error = await resp.json()
+      throw new Error(error.detail || `HTTP ${resp.status}`)
+    }
+    const data = await resp.json()
+    ElMessage.success(`已提交批量设置审核责任人任务，批次 ID: ${data.batch_id}`)
+    rememberSubmittedBatch(data)
+    selectedEntries.value = []
+    batchTasksCollapsed.value = false
+    await loadBatchJobs()
+    await fetchPending()
+  } catch (error) {
+    console.error('批量设置审核责任人失败:', error)
+    ElMessage.error(`批量设置失败: ${error instanceof Error ? error.message : '未知错误'}`)
+  } finally {
+    batchSetOwnerLoading.value = false
+  }
+}
+
+async function handleBatchSetUnpublishable() {
+  if (selectedEntries.value.length === 0) return
+
+  let reason = ''
+  try {
+    const result = await ElMessageBox.prompt(
+      `将把已选的 ${selectedEntries.value.length} 条 KBD 标记为"无法发布"。请输入原因：`,
+      '设为无法发布',
+      {
+        confirmButtonText: '确认',
+        cancelButtonText: '取消',
+        inputType: 'textarea',
+        inputPlaceholder: '请填写无法发布的原因...',
+        inputValidator: value => String(value || '').trim() ? true : '原因不能为空',
+      }
+    )
+    reason = result.value
+  } catch {
+    return
+  }
+
+  batchSetUnpublishableLoading.value = true
+  try {
+    const resp = await fetch('/api/v1/kbd/batch/set-unpublishable', {
+      method: 'POST',
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kbd_ids: selectedEntries.value.map(e => e.id),
+        reason,
+      }),
+    })
+    if (!resp.ok) {
+      const error = await resp.json()
+      throw new Error(error.detail || `HTTP ${resp.status}`)
+    }
+    const data = await resp.json()
+    ElMessage.success(`已提交批量设为无法发布任务，批次 ID: ${data.batch_id}`)
+    rememberSubmittedBatch(data)
+    selectedEntries.value = []
+    batchTasksCollapsed.value = false
+    await loadBatchJobs()
+    await fetchPending()
+  } catch (error) {
+    console.error('批量设为无法发布失败:', error)
+    ElMessage.error(`批量设置失败: ${error instanceof Error ? error.message : '未知错误'}`)
+  } finally {
+    batchSetUnpublishableLoading.value = false
+  }
+}
+
+async function handleSetUnpublishable(row: KbdEntry) {
+  let reason = ''
+  try {
+    const result = await ElMessageBox.prompt(
+      `将把 KBD "${row.title}" 标记为"无法发布"。请输入原因：`,
+      '设为无法发布',
+      {
+        confirmButtonText: '确认',
+        cancelButtonText: '取消',
+        inputType: 'textarea',
+        inputPlaceholder: '请填写无法发布的原因...',
+        inputValidator: value => String(value || '').trim() ? true : '原因不能为空',
+      }
+    )
+    reason = result.value
+  } catch {
+    return
+  }
+
+  try {
+    const resp = await fetch(`/api/v1/kbd/${row.id}/set-unpublishable`, {
+      method: 'POST',
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    })
+    if (!resp.ok) {
+      const error = await resp.json()
+      throw new Error(error.detail || `HTTP ${resp.status}`)
+    }
+    ElMessage.success('已设为无法发布')
+    await fetchPending()
+  } catch (error) {
+    console.error('设为无法发布失败:', error)
+    ElMessage.error(`设置失败: ${error instanceof Error ? error.message : '未知错误'}`)
+  }
 }
 
 function batchJobStatusLabel(status: KbdBatchJobStatus): string {
@@ -3548,6 +3831,7 @@ function resetFilters() {
   titleKeywordFilter.value = ''
   sampleSuiteFilter.value = ''
   confidenceFilter.value = ''
+  reviewOwnerFilter.value = null
   activeCategory.value = '__all__'
   catPage.value = 1
   fetchPending()
@@ -4332,6 +4616,7 @@ onMounted(() => {
   fetchCategories()
   fetchCapabilities()
   fetchProduceVariableCatalog()
+  fetchReviewOwners()
   void loadBatchJobs()
   // 表格列注册完成后恢复用户上次拖拽的列宽
   void nextTick(restoreKbdColumnWidths)
@@ -4416,6 +4701,24 @@ onUnmounted(() => clearBatchPollTimer())
             <el-option label="已发布" value="published" />
             <el-option label="已拒绝" value="rejected" />
             <el-option label="已归档" value="archived" />
+            <el-option label="无法发布" value="unpublishable" />
+          </el-select>
+        </el-col>
+        <el-col :span="3">
+          <el-select
+            v-model="reviewOwnerFilter"
+            clearable
+            placeholder="审核责任人"
+            style="width: 100%"
+            @change="fetchPending"
+            @clear="fetchPending"
+          >
+            <el-option
+              v-for="owner in reviewOwners"
+              :key="owner.id"
+              :label="owner.name"
+              :value="owner.id"
+            />
           </el-select>
         </el-col>
         <el-col :span="2">
@@ -4428,6 +4731,48 @@ onUnmounted(() => clearBatchPollTimer())
           <span>共 <strong>{{ total }}</strong> 条</span>
         </el-col>
       </el-row>
+    </el-card>
+
+    <!-- 发布审核责任人管理：可展开/收起（默认收起） -->
+    <el-card
+      shadow="never"
+      class="review-owners-card"
+      :class="{ 'is-collapsed': reviewOwnersCollapsed }"
+    >
+      <template #header>
+        <div
+          class="review-owners-header"
+          :class="{ clickable: reviewOwnersCollapsed }"
+          @click="reviewOwnersCollapsed = !reviewOwnersCollapsed"
+        >
+          <div class="review-owners-header-title">
+            <strong>发布审核责任人</strong>
+            <el-tag size="small" type="info" style="margin-left: 8px">{{ reviewOwners.length }} 人</el-tag>
+          </div>
+          <div class="review-owners-header-actions" @click.stop>
+            <el-button type="primary" link size="small" @click="showAddOwnerDialog">+ 添加</el-button>
+            <el-button type="primary" link size="small" @click.stop="reviewOwnersCollapsed = !reviewOwnersCollapsed">
+              {{ reviewOwnersCollapsed ? '展开' : '收起' }}
+              <el-icon style="margin-left: 4px">
+                <ArrowDown v-if="reviewOwnersCollapsed" />
+                <ArrowUp v-else />
+              </el-icon>
+            </el-button>
+          </div>
+        </div>
+      </template>
+      <div v-show="!reviewOwnersCollapsed" class="review-owners-body">
+        <el-table :data="reviewOwners" size="small" v-loading="reviewOwnersLoading">
+          <el-table-column prop="name" label="姓名" width="200" />
+          <el-table-column prop="email" label="邮箱" />
+          <el-table-column label="操作" width="150" align="center">
+            <template #default="{ row }">
+              <el-button link type="primary" size="small" @click="editOwner(row)">编辑</el-button>
+              <el-button link type="danger" size="small" @click="deleteOwner(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
     </el-card>
 
     <!-- 批量任务：可展开/收起（默认收起，避免占用主视口空间） -->
@@ -4596,6 +4941,8 @@ onUnmounted(() => clearBatchPollTimer())
         <el-button type="primary" size="small" :loading="batchExtractLoading" @click="handleBatchExtractSignals">批量抽取信号</el-button>
         <el-button type="success" size="small" :loading="batchApproveLoading" @click="handleBatchApprove">批量通过</el-button>
         <el-button type="danger" size="small" :loading="batchRejectLoading" @click="handleBatchReject">批量拒绝</el-button>
+        <el-button type="info" size="small" :loading="batchSetOwnerLoading" @click="handleBatchSetReviewOwner">设置审核责任人</el-button>
+        <el-button type="warning" size="small" :loading="batchSetUnpublishableLoading" @click="handleBatchSetUnpublishable">设为无法发布</el-button>
         <el-button size="small" @click="selectedEntries = []">取消选择</el-button>
       </div>
       <el-table
@@ -4672,7 +5019,8 @@ onUnmounted(() => clearBatchPollTimer())
             <el-tag
               :type="row.status === 'published' ? 'success' :
                      row.status === 'rejected'  ? 'danger'  :
-                     row.status === 'archived'  ? 'info'    : 'warning'"
+                     row.status === 'archived'  ? 'info'    :
+                     row.status === 'unpublishable' ? 'info' : 'warning'"
               size="small"
             >{{ statusLabel(row.status) }}</el-tag>
           </template>
@@ -4704,6 +5052,12 @@ onUnmounted(() => clearBatchPollTimer())
             <span class="signal-count-consumer">{{ consumerSignalCount(row) }}</span>
           </template>
         </el-table-column>
+        <!-- 审核责任人 -->
+        <el-table-column label="审核责任人" width="120" prop="review_owner_id" sortable="custom">
+          <template #default="{ row }">
+            <span>{{ getReviewOwnerName(row.review_owner_id) }}</span>
+          </template>
+        </el-table-column>
         <!-- 操作 -->
         <el-table-column label="操作" width="260" fixed="right">
           <template #default="{ row }">
@@ -4713,6 +5067,7 @@ onUnmounted(() => clearBatchPollTimer())
             <template v-if="row.status === 'draft'">
               <el-button type="success" size="small" text @click="handleApprove(row)">通过</el-button>
               <el-button type="danger" size="small" text @click="openRejectDialog(row)">拒绝</el-button>
+              <el-button type="warning" size="small" text @click="handleSetUnpublishable(row)">无法发布</el-button>
             </template>
             <template v-else-if="row.status === 'rejected'">
               <el-button type="warning" size="small" text @click="handleRepublish(row)">重新发布</el-button>
@@ -6601,6 +6956,62 @@ onUnmounted(() => clearBatchPollTimer())
       </template>
     </el-dialog>
 
+    <!-- 审核责任人编辑对话框 -->
+    <el-dialog
+      v-model="reviewOwnerDialogVisible"
+      :title="reviewOwnerDialogMode === 'create' ? '添加审核责任人' : '编辑审核责任人'"
+      width="500px"
+    >
+      <el-form :model="reviewOwnerForm" label-width="80px">
+        <el-form-item label="姓名" required>
+          <el-input v-model="reviewOwnerForm.name" placeholder="请输入责任人姓名" maxlength="100" />
+        </el-form-item>
+        <el-form-item label="邮箱">
+          <el-input v-model="reviewOwnerForm.email" placeholder="请输入邮箱（可选）" maxlength="255" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="reviewOwnerDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="reviewOwnerFormLoading" @click="submitReviewOwner">
+          {{ reviewOwnerDialogMode === 'create' ? '创建' : '更新' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 批量设置审核责任人对话框 -->
+    <el-dialog
+      v-model="batchSetOwnerDialogVisible"
+      title="批量设置审核责任人"
+      width="500px"
+    >
+      <p style="color: #606266; margin-bottom: 12px">
+        已选择 <strong>{{ selectedEntries.length }}</strong> 条 KBD，请选择发布审核责任人：
+      </p>
+      <el-form label-width="100px">
+        <el-form-item label="审核责任人" required>
+          <el-select
+            v-model="batchSetOwnerSelectedId"
+            placeholder="请选择责任人"
+            style="width: 100%"
+            filterable
+          >
+            <el-option
+              v-for="owner in reviewOwners"
+              :key="owner.id"
+              :label="owner.name"
+              :value="owner.id"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="batchSetOwnerDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="batchSetOwnerLoading" @click="submitBatchSetReviewOwner">
+          确认设置
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- 删除是影响模型纠错样本的重要操作：原因必须由专家显式选择，正文/截图不会删除。 -->
     <el-dialog v-model="deleteSignalDialogVisible" title="删除关键信号" width="520px" :close-on-click-modal="false">
       <p class="delete-signal-hint">
@@ -6974,6 +7385,52 @@ onUnmounted(() => clearBatchPollTimer())
 
 .batch-jobs-card :deep(.el-card__body) {
   padding: 0 14px 10px;
+}
+
+.review-owners-card {
+  margin-bottom: 12px;
+  transition: all 0.2s ease-in-out;
+}
+
+.review-owners-card.is-collapsed {
+  margin-bottom: 10px;
+}
+
+.review-owners-card.is-collapsed :deep(.el-card__body) {
+  display: none !important;
+  padding: 0 !important;
+}
+
+.review-owners-card :deep(.el-card__header) {
+  padding: 10px 14px;
+}
+
+.review-owners-card :deep(.el-card__body) {
+  padding: 0 14px 10px;
+}
+
+.review-owners-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  user-select: none;
+}
+
+.review-owners-header.clickable {
+  cursor: pointer;
+}
+
+.review-owners-header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.review-owners-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .batch-jobs-header {
