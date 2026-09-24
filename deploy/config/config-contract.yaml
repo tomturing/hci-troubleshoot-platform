@@ -237,6 +237,7 @@ helm_equivalents:
 # values 路径存在性校验。这里列出刻意不做 Compose 同名映射的运行时变量，避免
 # 未来误把它们当成漏配。
 helm_only_runtime:
+  - AUTHN_ENFORCE_ADMIN
   - AUTH_RSA_PRIVATE_KEY_PEM
   - AUTH_RSA_PRIVATE_KEY_PEM_B64
   - AUTH_REQUIRE_PERSISTENT_KEY

@@ -179,6 +179,10 @@ apiGateway:
     repository: hci-api-gateway
     tag: latest
   port: 8000
+  # PR-D 管理台强认证开关：true 后共享内部令牌不再赋予 admin（必须 JWT 登录）。
+  # 默认 false 保持向后兼容；置 true 前必须先通过 PR-C 人工回归，
+  # 详见 docs/solution/events/2026-09-24-统一认证系统-PRC人工回归与PRD强认证方案.md。
+  authnEnforceAdmin: false
   # hci-sim 控制面默认关闭，环境仓库必须显式启用并通过 Secret 注入 token。
   hciSim:
     enabled: false

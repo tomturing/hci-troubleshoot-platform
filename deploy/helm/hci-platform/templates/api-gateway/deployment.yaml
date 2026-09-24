@@ -43,6 +43,9 @@ spec:
               value: "api-gateway"
             - name: SERVICE_PORT
               value: {{ .Values.apiGateway.port | quote }}
+            # PR-D：管理台强认证开关（默认 false=向后兼容；true 后共享内部令牌不再赋予 admin）
+            - name: AUTHN_ENFORCE_ADMIN
+              value: {{ .Values.apiGateway.authnEnforceAdmin | quote }}
             - name: DATABASE_URL
               # 使用 Helm 渲染时 urlquery 对密码做 URL 编码，防止密码含 @ / : # 等特殊字符导致解析错误（PIT-022）
               value: {{ printf "postgresql+asyncpg://%s:%s@%s:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
