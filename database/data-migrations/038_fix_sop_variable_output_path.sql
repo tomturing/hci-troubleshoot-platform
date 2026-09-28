@@ -19,7 +19,8 @@ BEGIN
     SELECT tree_json INTO updated_tree FROM sop_document WHERE id = sop_id;
 
     IF updated_tree IS NULL THEN
-        RAISE EXCEPTION 'SOP 文档 ID=5 不存在';
+        RAISE NOTICE 'SOP 文档 ID=5 不存在（可能是新环境或 seed 数据未包含），跳过修复';
+        RETURN;
     END IF;
 
     -- 检查 variables 数组
