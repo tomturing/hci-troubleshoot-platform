@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.30.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.29.0...v2.30.0) (2026-09-29)
+
+
+### ✨ 新功能
+
+* 添加 auth-service 容器配置和 aCLI 自动安装功能 ([#1104](https://github.com/tomturing/hci-troubleshoot-platform/issues/1104)) ([4ca96cb](https://github.com/tomturing/hci-troubleshoot-platform/commit/4ca96cbf27f1d8d24c63429a596849a97ab9011e))
+
+
+### 🐛 Bug 修复
+
+* 修复 SOP 变量配置和系统提示词（工单 Q2026092889831） ([#1102](https://github.com/tomturing/hci-troubleshoot-platform/issues/1102)) ([fc84267](https://github.com/tomturing/hci-troubleshoot-platform/commit/fc842670634587f28483ccbecd0b3acd7ceac3ca))
+
 ## [2.29.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.28.0...v2.29.0) (2026-09-24)
 
 
