@@ -1,0 +1,48 @@
+name: Migration SQL lint
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "database/data-migrations/**"
+      - ".github/workflows/migration-sql-lint.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  migration-sql-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PTAH_IMAGE: stokaro/ptah:0.11.3@sha256:6249ff98606735997fe1dcd3dcaac4aace1091e5766153c7df29387922e066c9
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: 从固定镜像提取 Ptah
+        run: |
+          container=$(docker --context default create "$PTAH_IMAGE")
+          trap 'docker --context default rm "$container"' EXIT
+          docker --context default cp "$container:/usr/local/bin/ptah" "$RUNNER_TEMP/ptah"
+          chmod +x "$RUNNER_TEMP/ptah"
+
+      - name: 检查本次变更新增或修改的数据迁移
+        env:
+          BASE_REVISION: ${{ github.event.pull_request.base.sha || 'origin/main' }}
+        run: |
+          # 从临时目录运行，避免加载部署用的 atlas.hcl；这里只做静态分析，不连接数据库。
+          cd "$RUNNER_TEMP"
+          ./ptah migrations lint \
+            --dir "$GITHUB_WORKSPACE/database/data-migrations" \
+            --dir-format atlas \
+            --git-dir "$GITHUB_WORKSPACE" \
+            --git-base "$BASE_REVISION" \
+            --dialect postgres --server-version 15 \
+            --format github-actions --fail-on error
