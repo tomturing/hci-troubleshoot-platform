@@ -260,7 +260,7 @@
     - DB Schema：`message_role` ENUM 增加 `tool_call` 和 `tool_result` 两个角色；`message` 表增加 `tool_call_id` 字段关联 tool result 到对应 tool call。
     - agent-service：`react_engine.py` 新增 `_persist_tool_turn()` 方法，每次工具执行完毕后 fire-and-forget 调用 `conversation-service` 的 `/tool-turn` 接口写入记录。
     - conversation-service：新增 `POST /api/conversations/{id}/tool-turn` 接口；修改 `history_messages` 构建逻辑，加载时包含 `tool_call/tool_result` 角色消息并正确还原为 OpenAI messages 格式；实现**滑动窗口压缩**策略（最近 10 步完整保留，更早的工具输出截断为 200 字符摘要，防止 token 爆炸）。
-    - 存量环境：`desired_extras.sql` 幂等 `ALTER TYPE` 和 `ALTER TABLE` 自动补齐旧部署。
+    - 存量环境：`data-migrations/040_preserve_legacy_extras_repairs.sql` 幂等补齐工具调用角色和字段，再由 Ptah Compat 收敛期望状态。
 
 - 前端工具栏优化：工单信息 Popover（含 ID/工单号）→ 关闭工单 → SSH终端（Monitor 图标），终端历史按钮移入 TerminalPanel header-actions
 - 环境采集命令更新：`task get -s failed -l 10`（仅失败任务）；后端字段映射已支持整数 status/urgent_type 与 Unix 时间戳（PR #285）
@@ -366,7 +366,7 @@
   - `resolve_image_build_plan.py` 将 `deploy/docker/base/` 变更视为与 `backend/shared/` 同级的全后端扩散输入。
 - **db-seed PostSync Hook UNIQUE 约束修复**（hotfix/db-seed-system-prompt-unique-constraint）：
   - `desired_schema.sql` 补齐 `system_prompt.name` 字段的 `CONSTRAINT system_prompt_name_key UNIQUE (name)` 声明，使 `ON CONFLICT (name)` 种子 SQL 可正常执行。
-  - `desired_extras.sql` 新增幂等 `DO $$` 块，存量环境（未包含该约束的旧部署）在下次 ArgoCD deploy 时自动补齐约束，无需人工干预。
+  - `desired_schema.sql` 声明该约束；存量环境由数据迁移 `040` 在 Schema 收敛前补齐，下次 ArgoCD deploy 自动执行，无需人工干预。
   - staging 环境已直接热修复数据库约束并重命名为 `system_prompt_name_key`，db-seed Job 下次重建后可正常完成。
 - **API 网关命令反馈 `exec-result` 路由与鉴权修复**：
   - 修复 API 网关 (`api-gateway`) 缺少 `/api/conversations/{conversation_id}/exec-result` 代理路由，导致前端命令执行结果无法回传的问题。
@@ -410,7 +410,7 @@
 - **Vision 超时重试**：openai SDK 的 `APITimeoutError` / `APIConnectionError` 纳入重试条件
 - **docker-compose db-migrate 声明式数据库迁移**（PR #569）：
   - 新增 `db-migrate` 服务，与 Helm `db-migrate` Job 使用相同镜像和脚本，本地修改 Schema 后通过 volume 挂载实时生效
-  - entrypoint 串联 atlas_dev 初始化 → 数据迁移 → 函数 → Atlas schema apply → 触发器 → 种子数据加载全流程
+  - entrypoint 串联 atlas_dev 初始化 → Ptah Compat Schema/数据迁移 → 种子数据加载全流程
   - 新增 `make db-sync` 目标：修改 `desired_schema.sql` 后一键同步，无需重启其他服务
   - 优化 `make dev-up` 分步执行：先迁移后启动应用服务，确保 Schema 就绪后再启动后端
   - 移除 postgres 的 `init.sql` 挂载（仅首次创建生效，已由 db-migrate 替代）；清理已废弃的 dbmate `db-sync`/`db-check` 目标
@@ -537,7 +537,7 @@ hci-troubleshoot-platform/
 │   ├── admin/                # 管理控制台                    [独立 Workspace]
 │   └── shared/               # 共享类型 + API 客户端          [⚠️ 需最先完成]
 ├── adapters/                 # CLI→OpenAI 适配器
-├── database/                 # desired_schema.sql / desired_extras.sql / seeds
+├── database/                 # desired_schema.sql / data-migrations/ / seeds
 ├── deploy/                   # Docker + Helm + 可观测性
 ├── scripts/                  # 自动化脚本
 ├── tests/                    # 根级测试
@@ -552,8 +552,8 @@ hci-troubleshoot-platform/
 - `shared/` 模块修改需最高优先级完成，其他模块依赖它
 - 每个微服务（`backend/xxx-service/`）是独立的 Workspace 单元
 - 前端双应用（`customer/` + `admin/`）可并行，但共享类型变更需先完成
-- `database/desired_schema.sql` 或 `database/desired_extras.sql` 修改必须附带迁移说明
-- **给已存在数据的表新增 `NOT NULL` 列必须带 DEFAULT**：`atlas schema apply` 会直接下发
+- `database/desired_schema.sql` 或 `database/data-migrations/` 修改必须附带迁移说明
+- **给已存在数据的表新增 `NOT NULL` 列必须带 DEFAULT**：`ptah-compat schema apply` 会直接下发
   `ADD COLUMN ... NOT NULL`，无默认值时 PostgreSQL 因存量行无法填值而整体失败
   （`column "x" contains null values`），进而阻塞 db-migrate 的 PreSync hook 与环境同步
 - **`database/atlas-migrations/` 不会被打进 db-migrate 镜像**：`Dockerfile.migrations` 只
@@ -708,8 +708,8 @@ make post-merge           # 合并后集成验证
 | 禁止操作 | 原因 |
 |---------|------|
 | 删除 `backend/shared/` 下的模型定义 | 多个服务依赖 |
-| 直接修改 `database/desired_schema.sql` 或 `database/desired_extras.sql` 而不提供迁移说明 | 生产数据安全 |
-| 给存量数据表新增 `NOT NULL` 列却不带 DEFAULT | Atlas apply 失败 → db-migrate PreSync hook 失败 → Argo CD 同步卡死 |
+| 直接修改 `database/desired_schema.sql` 或 `database/data-migrations/` 而不提供迁移说明 | 生产数据安全 |
+| 给存量数据表新增 `NOT NULL` 列却不带 DEFAULT | Ptah Compat apply 失败 → db-migrate PreSync hook 失败 → Argo CD 同步卡死 |
 | 修改 `deploy/helm/` 中的 Secret 值 | 安全敏感 |
 | 在代码中硬编码 API Key / Token | 安全规范 |
 | 修改 `pyproject.toml` 的 Python 版本要求 | 全局影响 |

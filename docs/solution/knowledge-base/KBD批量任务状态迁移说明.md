@@ -67,7 +67,7 @@ KBD 管理页的批量识图、批量重新分类、批量抽取信号、批量�
 
 ## 部署与回退
 
-部署时由声明式数据库同步应用 `database/desired_schema.sql`，随后由 `database/desired_extras.sql` 创建更新时间触发器。新接口依赖这两张表，因此应先完成数据库同步，再更新 `kb-service`、`api-gateway` 和 `admin-ui`。
+部署时由 Ptah Compat 应用 `database/desired_schema.sql`，统一管理表结构和更新时间触发器。新接口依赖这两张表，因此应先完成数据库同步，再更新 `kb-service`、`api-gateway` 和 `admin-ui`。
 
 回退旧版本应用时可以保留新增表，旧代码不会读取它们。若未来确需删除，应先确认没有审计保留要求并导出历史数据；常规版本回退不执行删表。
 

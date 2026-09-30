@@ -64,26 +64,25 @@ def test_declarative_schema_contains_model_contract():
 
     repository_root = Path(__file__).resolve().parents[4]
     schema_sql = (repository_root / "database" / "desired_schema.sql").read_text(encoding="utf-8")
-    extras_sql = (repository_root / "database" / "desired_extras.sql").read_text(encoding="utf-8")
 
     assert "CREATE TYPE diagnosis_session_status AS ENUM" in schema_sql
     assert "CREATE TABLE IF NOT EXISTS diagnosis_session" in schema_sql
     assert "CONSTRAINT uq_diagnosis_session_tenant_idempotency" in schema_sql
     assert "CONSTRAINT ck_diagnosis_session_supplement_count" in schema_sql
     assert "CONSTRAINT ck_diagnosis_session_incident_window" in schema_sql
-    assert "CREATE TRIGGER update_diagnosis_session_updated_at" in extras_sql
+    assert "CREATE TRIGGER update_diagnosis_session_updated_at" in schema_sql
     assert "CREATE TABLE IF NOT EXISTS collection_plan" in schema_sql
     assert "CREATE TABLE IF NOT EXISTS collection_plan_item" in schema_sql
     assert "CONSTRAINT uq_collection_plan_tenant_idempotency" in schema_sql
-    assert "CREATE TRIGGER update_collection_plan_updated_at" in extras_sql
+    assert "CREATE TRIGGER update_collection_plan_updated_at" in schema_sql
     assert "CREATE TABLE IF NOT EXISTS collector_definition" in schema_sql
     assert "CONSTRAINT ck_collector_definition_review_status" in schema_sql
-    assert "CREATE TRIGGER update_collector_definition_updated_at" in extras_sql
+    assert "CREATE TRIGGER update_collector_definition_updated_at" in schema_sql
     assert "CREATE TABLE IF NOT EXISTS collector_artifact" in schema_sql
     assert "CREATE TABLE IF NOT EXISTS collector_artifact_item" in schema_sql
     assert "CONSTRAINT uq_collector_artifact_tenant_idempotency" in schema_sql
     assert "public_key_base64 text NOT NULL" in schema_sql
-    assert "CREATE TRIGGER update_collector_artifact_updated_at" in extras_sql
+    assert "CREATE TRIGGER update_collector_artifact_updated_at" in schema_sql
     assert "source_kbd_id bigint" in schema_sql
     assert "source_kbd_revision integer" in schema_sql
     assert "source_signal_id varchar(128)" in schema_sql

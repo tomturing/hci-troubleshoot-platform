@@ -50,8 +50,8 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 DB_MIGRATE_PATHS = (
     "database/desired_schema.sql",
+    "database/licenses/",
     "database/atlas-migrations/",
-    "database/desired_extras.sql",
     "database/data-migrations/",
     "Dockerfile.migrations",
     "scripts/db-migrate.sh",

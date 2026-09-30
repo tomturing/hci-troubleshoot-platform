@@ -1,5 +1,8 @@
 -- Bundle 工厂版本元数据表
 -- 用于跟踪每个 Bundle 使用的工厂版本，支持自动迁移
+-- 接管后空库先创建完整 Schema，因此触发器改用 CREATE OR REPLACE（PG 14+）避免重名。
+-- runner 按 version 跳过已执行迁移，不比较 checksum：存量库保留原摘要，新库记录本文件摘要。
+-- 将来启用 checksum 校验时须显式处理该历史差异，不能直接拒绝已应用的 035。
 
 CREATE TABLE IF NOT EXISTS bundle_metadata (
     id SERIAL PRIMARY KEY,
@@ -38,7 +41,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER update_bundle_metadata_updated_at
+CREATE OR REPLACE TRIGGER update_bundle_metadata_updated_at
     BEFORE UPDATE ON bundle_metadata
     FOR EACH ROW
     EXECUTE FUNCTION update_bundle_metadata_updated_at();

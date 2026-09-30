@@ -4,12 +4,12 @@ on:
   pull_request:
     branches: [main]
     paths:
-      # 表结构变更时触发（Atlas 管理）
+      # Schema 对象变更时触发（Ptah Compat 管理）
       - "database/desired_schema.sql"
+      - "database/tests/**"
+      - "database/licenses/**"
       # Atlas 迁移与完整性哈希变化同样必须触发，避免只改 migration 绕过验证
       - "database/atlas-migrations/**"
-      # 函数/触发器变更时触发（psql 管理）
-      - "database/desired_extras.sql"
       # 数据迁移变更时触发（migration-runner 管理）
       - "database/data-migrations/**"
       # 迁移镜像 Dockerfile 变更时触发
@@ -17,6 +17,7 @@ on:
       # 入口脚本变更时触发
       - "scripts/db-migrate.sh"
       - "scripts/migration-runner.sh"
+      - ".github/workflows/db-migration-test.yml"
 
   workflow_dispatch:
 
@@ -26,7 +27,7 @@ concurrency:
 
 jobs:
   db-schema-declarative-test:
-    name: Atlas 声明式 Schema 验证
+    name: Ptah Compat 声明式 Schema 验证
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -47,79 +48,39 @@ jobs:
 
     env:
       DATABASE_URL: "postgres://hci_test:ci_test_pass@localhost:5432/hci_test?sslmode=disable"
-      # DEV_URL：独立空数据库，Atlas 用于规范化 Schema SQL
+      # DEV_URL：独立临时数据库，Ptah 用于规范化 Schema SQL、预演变更及自动清理
       DEV_URL: "postgres://hci_test:ci_test_pass@localhost:5432/atlas_dev?sslmode=disable"
 
     steps:
       - name: 检出代码
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          # 升级验证需要读取 PR 基线（手动运行时为 origin/main）。
           fetch-depth: 0
 
-      # ── Step 1: 安装 Atlas CLI + 准备 dev 数据库 ─────────────────────────
-      - name: 安装 Atlas CLI
+      # ── Step 1: 构建迁移镜像 + 准备 dev 数据库 ─────────────────────────
+      - name: 构建 Ptah Compat 迁移镜像
         run: |
-          # 与 Dockerfile.migrations 多阶段构建同源对齐（arigaio/atlas:1.1.6-community），
-          # 直接抽取镜像内 /atlas 二进制，避免依赖 atlasgo.sh 分发（该渠道已下架 1.1.6 CLI）。
-          ATLAS_IMAGE="arigaio/atlas:1.1.6-community"
-          docker create --name atlas-extract "$ATLAS_IMAGE" /dev/null
-          docker cp atlas-extract:/atlas /usr/local/bin/atlas
-          docker rm -f atlas-extract
-          chmod +x /usr/local/bin/atlas
-          atlas version
+          docker --context default build --build-arg MIRROR_MODE=off \
+            -f Dockerfile.migrations -t hci-db-migrate-verify .
+          docker --context default run --rm --entrypoint test hci-db-migrate-verify \
+            -s /usr/share/licenses/ptah/LICENSE
 
-      - name: 准备 Atlas dev 数据库
+      - name: 准备 Ptah Compat dev 数据库
         run: |
-          # 创建独立的 Atlas dev 数据库（Atlas 用于规范化 DDL，需与目标库同版本）
-          psql "$DATABASE_URL" -c "CREATE DATABASE atlas_dev;"
-          # 两个数据库都需要安装 extensions（desired_schema.sql 使用 vector 类型）
-          # hci_test（主库）：Atlas apply 时实际执行建表，需要 vector 类型
-          # atlas_dev（dev库）：Atlas 规范化 DDL 时也需要 vector 类型
-          for DB_URL in "$DATABASE_URL" "$DEV_URL"; do
-            psql "$DB_URL" -c "
-              CREATE EXTENSION IF NOT EXISTS vector;
-              CREATE EXTENSION IF NOT EXISTS pgcrypto;
-              CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
-              CREATE EXTENSION IF NOT EXISTS pg_trgm;
-            "
-          done
-          echo "✅ hci_test 和 atlas_dev 扩展安装完成"
+          # 与目标库同版本的独立临时库；扩展由期望状态管理，无需手动安装或重置。
+          psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -c "CREATE DATABASE atlas_dev;"
 
       # ── Step 2: 声明式 Schema 全量应用 ───────────────────────────────────
-      # 空库先由 Atlas 建表，再执行数据迁移和触发器；与 db-migrate.sh 的冷启动结果一致。
-      - name: 全量迁移（函数 → Atlas → 触发器）
+      # 使用真实部署入口：空库 Schema 引导 → 版本化数据迁移 → Schema 最终收敛。
+      - name: 全量迁移（Ptah Compat + 数据迁移）
         run: |
-          echo ">>> Step 2a: 应用函数"
-          psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/desired_extras.sql
-
-          echo ">>> Step 2b: Atlas schema apply"
-          atlas schema apply \
-            --url "$DATABASE_URL" \
-            --to "file://database/desired_schema.sql" \
-            --dev-url "$DEV_URL" \
-            --exclude "schema_migrations,alembic_version,atlas_schema_revisions" \
-            --auto-approve
-
-          echo ">>> Step 2c: 应用触发器"
-          psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/desired_extras.sql
-          echo "✅ Schema 全量应用成功"
-
-          # ── Step 2d: 执行数据迁移（验证 SQL 正确性）────────────────────────────
-          echo ">>> Step 2d: 执行数据迁移"
-          for MIG_FILE in database/data-migrations/*.sql; do
-            if [ -f "$MIG_FILE" ]; then
-              echo "  执行: $MIG_FILE"
-              psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f "$MIG_FILE" || {
-                echo "❌ 数据迁移失败: $MIG_FILE"
-                exit 1
-              }
-            fi
-          done
-          echo "✅ 数据迁移执行成功"
+          docker --context default run --rm --network host --user 65534:65534 \
+            -e DATABASE_URL -e DEV_URL hci-db-migrate-verify
 
       # ── Step 3: Schema 完整性验证 ─────────────────────────────────────────
       # 验证核心业务表存在，废弃表未被创建
-      # 注意：仅验证核心业务表，动态资源类表（dynamic_resource_*）和辅助表（bridge_execution_logs 等）由 Atlas 自动管理
+      # 注意：仅验证核心业务表，动态资源类表（dynamic_resource_*）和辅助表（bridge_execution_logs 等）由 Ptah Compat 自动管理
       - name: Schema 完整性检查
         run: |
           EXPECTED_TABLES=(
@@ -180,33 +141,59 @@ jobs:
           fi
           echo "✅ 所有 ${#EXPECTED_TABLES[@]} 张业务表正确，${#DEPRECATED_TABLES[@]} 张废弃表未创建"
 
-      # ── Step 4: 幂等性验证 ────────────────────────────────────────────────
-      # atlas schema diff 输出为空 → 当前 DB 与期望 Schema 完全一致 → 幂等
-      - name: 幂等性验证（atlas schema diff）
-        run: |
-          # atlas schema apply 使用 --dev-url 时会 DROP SCHEMA public CASCADE 清空 atlas_dev，
-          # 导致 pgvector 注册在 public schema 的类型对象丢失（扩展条目仍在但类型消失）。
-          # 重建 atlas_dev 数据库是最可靠的恢复方式。
-          psql "$DATABASE_URL" -c "DROP DATABASE atlas_dev;"
-          psql "$DATABASE_URL" -c "CREATE DATABASE atlas_dev;"
-          psql "$DEV_URL" -c "
-            CREATE EXTENSION IF NOT EXISTS vector;
-            CREATE EXTENSION IF NOT EXISTS pgcrypto;
-            CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
-            CREATE EXTENSION IF NOT EXISTS pg_trgm;
-          "
+      - name: 验证函数、触发器及 pgvector 行为
+        run: psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/tests/ptah-schema.sql
 
-          DIFF=$(atlas schema diff \
+      # ── Step 4: 幂等性验证 ────────────────────────────────────────────────
+      # 重复执行真实入口，再读取结构化报告的变更数量；不匹配日志文案或忽略退出码。
+      - name: 幂等性验证（ptah-compat schema diff）
+        run: |
+          docker --context default run --rm --network host --user 65534:65534 \
+            -e DATABASE_URL -e DEV_URL hci-db-migrate-verify
+          DIFF=$(docker --context default run --rm --network host --user 65534:65534 \
+            --entrypoint ptah-compat hci-db-migrate-verify schema diff \
             --from "$DATABASE_URL" \
-            --to "file://database/desired_schema.sql" \
+            --to file:///desired_schema.sql \
             --dev-url "$DEV_URL" \
             --exclude "schema_migrations,alembic_version,atlas_schema_revisions" \
-            2>&1 || true)
-
-          if [ -z "$DIFF" ] || echo "$DIFF" | grep -q "Schemas are synced"; then
-            echo "✅ 幂等性验证通过：DB 与期望 Schema 完全一致，无待变更项"
-          else
-            echo "❌ 幂等性验证失败：apply 后仍存在 diff："
-            echo "$DIFF"
+            --format '{{ len .Changes }}')
+          if [ "$DIFF" != "0" ]; then
+            echo "❌ 幂等性验证失败，待变更数量: $DIFF"
             exit 1
           fi
+          echo "✅ 幂等性验证通过：DB 与期望 Schema 完全一致，无待变更项"
+
+      - name: 从 PR 基线升级存量数据库
+        env:
+          BASE_REVISION: ${{ github.event.pull_request.base.sha || 'origin/main' }}
+        run: |
+          # 使用相邻版本的真实部署入口，避免永久只验证首次替换 Atlas 的历史基线。
+          git worktree add --detach "$RUNNER_TEMP/db-upgrade-base" "$BASE_REVISION"
+          docker --context default build --build-arg MIRROR_MODE=off \
+            -f "$RUNNER_TEMP/db-upgrade-base/Dockerfile.migrations" \
+            -t hci-db-migrate-base "$RUNNER_TEMP/db-upgrade-base"
+          psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -c "CREATE DATABASE hci_upgrade;"
+          psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -c "CREATE DATABASE hci_upgrade_dev;"
+          export DATABASE_URL="postgres://hci_test:ci_test_pass@localhost:5432/hci_upgrade?sslmode=disable"
+          export DEV_URL="postgres://hci_test:ci_test_pass@localhost:5432/hci_upgrade_dev?sslmode=disable"
+          docker --context default run --rm --network host --user 65534:65534 \
+            -e DATABASE_URL -e DEV_URL hci-db-migrate-base
+          CHECKSUM=$(psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -tAc \
+            "SELECT checksum FROM migration_history WHERE version='035';")
+          test -n "$CHECKSUM"
+          psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -c \
+            "INSERT INTO \"user\"(client_id,metadata) VALUES ('ptah-upgrade-sentinel','{\"preserve\":\"user-data\"}');"
+          docker --context default run --rm --network host --user 65534:65534 \
+            -e DATABASE_URL -e DEV_URL hci-db-migrate-verify
+          test "$CHECKSUM" = "$(psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -tAc \
+            "SELECT checksum FROM migration_history WHERE version='035';")"
+          test "$(psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -tAc \
+            "SELECT count(*) FROM \"user\" WHERE client_id='ptah-upgrade-sentinel' AND metadata='{\"preserve\":\"user-data\"}'::jsonb;")" = "1"
+          psql -X -v ON_ERROR_STOP=1 "$DATABASE_URL" -f database/tests/ptah-schema.sql
+          DIFF=$(docker --context default run --rm --network host --user 65534:65534 \
+            --entrypoint ptah-compat hci-db-migrate-verify schema diff \
+            --from "$DATABASE_URL" --to file:///desired_schema.sql --dev-url "$DEV_URL" \
+            --exclude "schema_migrations,alembic_version,atlas_schema_revisions" \
+            --format '{{ len .Changes }}')
+          test "$DIFF" = "0"
+          echo "✅ 升级保留存量数据和迁移历史，业务行为正常且 Schema diff 为零"

@@ -1,9 +1,8 @@
-
 -- ============================================================
 -- 说明：本文件是 HCI 数据库的声明式期望状态（Desired Schema）
--- 由 Atlas 工具管理，开发者修改此文件后运行 atlas migrate diff 生成迁移
+-- 由 Ptah Compat 管理（版本见 Dockerfile.migrations），修改后运行 ptah-compat schema diff 审查差异
 -- 注意：不包含 schema_migrations 表（dbmate 工具表，已废弃）
---       也不包含 atlas_schema_revisions 表（Atlas 自动管理）
+--       也不包含 atlas_schema_revisions 表（旧 Atlas 迁移记录，仅通过 --exclude 保留）
 -- ============================================================
 
 -- ============================================================
@@ -24,11 +23,13 @@
 --   vector_search: 通过 pgvector 扩展支持 1536 维向量，用于知识库语义检索和意图识别
 
 -- ============================================================
--- 扩展（由 postgres init SQL 管理，不在此处声明）
--- 依赖：uuid-ossp, pgcrypto, pg_trgm, vector
--- 见 deploy/helm/hci-platform/templates/postgres/init-configmap.yaml
--- 注意：Atlas Community 不支持在 schema 文件中声明 extensions（需要 atlas login）
+-- 扩展（与表、函数、触发器一起由期望状态管理）
+-- PostgreSQL 服务器须安装扩展二进制；安装权限见 database/README.md
 -- ============================================================
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- ============================================================
 -- 自定义 ENUM 类型
@@ -2348,6 +2349,7 @@ CREATE INDEX IF NOT EXISTS idx_kb_category_level ON kb_category (level);
 -- ⚠️  注意：IVFFlat 索引需在数据量 > 1000 行且执行 ANALYZE 后才能正常发挥效果。
 --    全新部署建库后如数据量不足，查询会自动退化为顺序扫描（不影响正确性，仅影响性能）。
 --    建议在批量导入知识库数据后执行：ANALYZE kb_category;
+-- 迁移镜像的 PTAH_POSTGRES_INDEX_STORAGE_PARAMS=1 保留 IVFFlat lists=100。
 CREATE INDEX IF NOT EXISTS idx_kb_category_embedding ON kb_category
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
@@ -2511,6 +2513,7 @@ CREATE INDEX IF NOT EXISTS idx_kbd_entry_agent_usable ON kbd_entry (category_id,
 -- D-002: 向量相似度检索索引（知识库语义检索，仅已发布条目）
 -- 部分索引：只对 status='published' 的条目建索引，减少写入/存储开销，与业务查询路径吻合。
 -- ⚠️  同 kb_category：数据量不足 1000 时效果有限，建议批量导入后执行：ANALYZE kbd_entry;
+-- 迁移镜像的 PTAH_POSTGRES_INDEX_STORAGE_PARAMS=1 保留 IVFFlat lists=100。
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_embedding ON kbd_entry
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)
     WHERE status = 'published';
@@ -3824,3 +3827,134 @@ COMMENT ON COLUMN vm_console_audit_event.actor_user_id IS '操作者账号（FK�
 
 CREATE INDEX IF NOT EXISTS idx_diagnosis_management_audit_actor_user ON diagnosis_management_audit (actor_user_id);
 CREATE INDEX IF NOT EXISTS idx_vm_console_audit_event_actor_user ON vm_console_audit_event (actor_user_id);
+
+
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION fn_update_conversation_message_count()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        UPDATE conversation SET message_count = message_count + 1
+            WHERE conversation_id = NEW.conversation_id;
+    ELSIF TG_OP = 'DELETE' THEN
+        UPDATE conversation SET message_count = GREATEST(message_count - 1, 0)
+            WHERE conversation_id = OLD.conversation_id;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION generate_case_id()
+RETURNS VARCHAR(20) AS $$
+DECLARE
+    v_today VARCHAR(8);
+    v_seq   INTEGER;
+BEGIN
+    v_today := TO_CHAR(CURRENT_DATE, 'YYYYMMDD');
+    -- 事务级排他锁（双参数，无 int32 哈希碰撞风险）：不同天并行，同天串行
+    PERFORM pg_advisory_xact_lock(hashtext('generate_case_id'), v_today::integer);
+    SELECT COALESCE(MAX(CAST(SUBSTRING(case_id FROM 10 FOR 5) AS INTEGER)), 0) + 1
+        INTO v_seq FROM "case"
+        WHERE case_id LIKE 'Q' || v_today || '%';
+    RETURN 'Q' || v_today || LPAD(v_seq::TEXT, 5, '0');
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER update_user_updated_at
+        BEFORE UPDATE ON "user"
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_customer_updated_at
+        BEFORE UPDATE ON customer
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_case_updated_at
+        BEFORE UPDATE ON "case"
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_diagnosis_session_updated_at
+        BEFORE UPDATE ON diagnosis_session
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_collection_plan_updated_at
+        BEFORE UPDATE ON collection_plan
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_collection_profile_definition_updated_at
+        BEFORE UPDATE ON collection_profile_definition
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_collector_definition_updated_at
+        BEFORE UPDATE ON collector_definition
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_collector_artifact_updated_at
+        BEFORE UPDATE ON collector_artifact
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_vm_console_capture_updated_at
+        BEFORE UPDATE ON vm_console_capture
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_effect_verification_updated_at
+        BEFORE UPDATE ON effect_verification
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_diagnosis_upload_session_updated_at
+        BEFORE UPDATE ON diagnosis_upload_session
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_diagnostic_evidence_bundle_updated_at
+        BEFORE UPDATE ON diagnostic_evidence_bundle
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_diagnosis_processing_job_updated_at
+        BEFORE UPDATE ON diagnosis_processing_job
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_offline_signal_mapping_updated_at
+        BEFORE UPDATE ON offline_signal_collector_mapping
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_supplement_plan_updated_at
+        BEFORE UPDATE ON supplement_plan
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_diagnosis_report_updated_at
+        BEFORE UPDATE ON diagnosis_report
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_diagnosis_deletion_job_updated_at
+        BEFORE UPDATE ON diagnosis_deletion_job
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_conversation_message_count
+        AFTER INSERT OR DELETE ON message
+        FOR EACH ROW EXECUTE FUNCTION fn_update_conversation_message_count();
+
+CREATE TRIGGER update_diagnostic_item_updated_at
+        BEFORE UPDATE ON diagnostic_item
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_kbd_entry_updated_at
+        BEFORE UPDATE ON kbd_entry
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_kbd_batch_job_updated_at
+        BEFORE UPDATE ON kbd_batch_job
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_kbd_batch_job_item_updated_at
+        BEFORE UPDATE ON kbd_batch_job_item
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_sop_document_updated_at
+        BEFORE UPDATE ON sop_document
+        FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

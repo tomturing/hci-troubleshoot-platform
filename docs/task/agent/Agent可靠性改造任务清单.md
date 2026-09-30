@@ -529,6 +529,7 @@ owner: team
 ### T4-3 Fact Store 从 Redis 迁移到 PostgreSQL 【P3】
 
 - **文件**：`backend/shared/models/`、`database/` 迁移脚本
+- **迁移入口**：`db-migrate` 使用 Ptah Compat 管理完整 Schema（版本见 `Dockerfile.migrations`），迁移顺序与存量数据保留见[验证说明](../../../database/README.md)。
 - **前提**：阶段二的 Redis Fact Store 已稳定运行 ≥ 2 周
 - **任务**：
   - [x] 新增 `fact` 表（见方案 C §12.1 数据模型）

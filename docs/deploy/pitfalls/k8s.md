@@ -959,7 +959,8 @@ kubectl exec -n hci-dev postgres-0 -- env PGPASSWORD=xxx psql -U hci_admin -d hc
 ```
 
 **修复方法**：
-在 `database/desired_extras.sql` 头部添加幂等清理块，在触发器创建前先 DROP 遗留对象：
+遗留对象清理由 `database/data-migrations/040_preserve_legacy_extras_repairs.sql` 保留，
+在 Ptah Compat 收敛完整 Schema 前先 DROP 遗留对象：
 ```sql
 -- 清理遗留触发器（顺序不可颠倒：先 DROP 触发器，再 DROP 函数）
 DROP TRIGGER IF EXISTS update_message_count_on_insert ON message;
@@ -970,7 +971,7 @@ DROP FUNCTION IF EXISTS update_conversation_message_count();
 
 **预防**：
 - 切换迁移体系时，必须在新迁移脚本中显式 DROP 旧体系创建的所有数据库对象
-- `desired_extras.sql` 的幂等清理块涵盖所有已知遗留对象，下次 ArgoCD deploy 自动清理
+- 数据迁移 `040` 清理原 extras 管理的遗留对象，下次 ArgoCD deploy 自动执行
 
 ---
 
@@ -1301,7 +1302,7 @@ kubectl delete job -n argocd <failed-hook-job-name>
 - 现象不对称："打开编辑弹窗正常，点保存才 500"--因为 GET 详情用原生 SQL 不查新列，PATCH 保存用 ORM 查全列
 
 **根本原因**：
-`scripts/db-migrate.sh`（ArgoCD PreSync Hook 入口）只执行 `atlas schema apply --to desired_schema.sql`（声明式差量同步），**不执行** `atlas migrate apply`（版本化迁移）。因此 `desired_schema.sql` 是数据库 schema 的唯一 SSOT：
+`scripts/db-migrate.sh`（ArgoCD PreSync Hook 入口）执行数据迁移后用 `ptah-compat schema apply` 收敛 `desired_schema.sql`，**不回放** `atlas-migrations/` 历史 Schema 迁移。因此 `desired_schema.sql` 是数据库 schema 的唯一 SSOT：
 - ORM 模型定义了列 `X`，但 `desired_schema.sql` 没声明列 `X` -> 数据库无此列
 - ORM `select(Model)` 生成 `SELECT ... X ...` -> PostgreSQL 报 `column "X" does not exist` -> 500
 - 原生 SQL（`text("SELECT a, b FROM ...")`）不包含列 `X` -> 正常
@@ -1321,10 +1322,10 @@ grep -rn "<列名> = Column" backend/<service>/app/models/
 ```
 
 **修复方法**：
-在 `desired_schema.sql` 对应表定义补齐：①列定义 ②`COMMENT ON COLUMN` ③索引（若有）。下次 ArgoCD Sync 触发 db-migrate PreSync Job，`atlas schema apply` 自动补列，无需手动改库。
+在 `desired_schema.sql` 对应表定义补齐：①列定义 ②`COMMENT ON COLUMN` ③索引（若有）。下次 ArgoCD Sync 触发 db-migrate PreSync Job，`ptah-compat schema apply` 自动补列，无需手动改库。
 
 **预防**：
-- 改 ORM 模型新增/删除列时，**必须三处同步**：①ORM 模型 ②`desired_schema.sql`（声明式 SSOT）③`atlas-migrations/`（版本化迁移，如需留存变更记录）
+- 改 ORM 模型新增/删除列时，**必须同步** ORM 模型与 `desired_schema.sql`（声明式 SSOT）；需要修复数据时另加 `data-migrations/` 文件
 - `desired_schema.sql` 是运行时数据库 schema 的**唯一权威**；`atlas-migrations/` 仅作为变更历史留存，不被 db-migrate.sh 应用
 - Code Review 重点：PR 同时含 `models/*.py` 与 `atlas-migrations/` 但**不含** `desired_schema.sql` 时，高度怀疑漏改
 
