@@ -7,16 +7,16 @@ templates:
   - ingress.yaml
   - admin-ui/ingress.yaml
 tests:
-  - it: "Secret 派生服务端 Bearer Header"
+  - it: "PR-D②关后门：Secret 不再派生服务端 Bearer Header"
     template: secret.yaml
     set:
       diagnosisService.enabled: true
       diagnosisService.identityMode: "internal"
       secrets.internalApiToken: "test-internal-token"
     asserts:
-      - equal:
+      # 锁定：INTERNAL_API_AUTHORIZATION 共享令牌键已删除，禁止后门回归。
+      - isNull:
           path: stringData.INTERNAL_API_AUTHORIZATION
-          value: "Bearer test-internal-token"
 
   - it: "Gateway 身份模式显式跟随 Diagnosis Service"
     template: configmap.yaml
@@ -70,14 +70,11 @@ tests:
       diagnosisService.internalIdentity.adminActorId: "staging-admin-ui"
       global.namespace: "hci-staging"
     asserts:
-      - contains:
+      # PR-D②关后门：锁定 ADMIN_API_AUTHORIZATION（共享令牌）env 不再注入。
+      - notContains:
           path: spec.template.spec.containers[0].env
           content:
             name: ADMIN_API_AUTHORIZATION
-            valueFrom:
-              secretKeyRef:
-                name: hci-secrets
-                key: INTERNAL_API_AUTHORIZATION
       - contains:
           path: spec.template.spec.containers[0].env
           content:
