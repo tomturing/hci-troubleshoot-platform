@@ -22,7 +22,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 from shared.database.postgres import DatabaseManager
 from shared.database.redis import RedisManager
@@ -31,6 +31,9 @@ from shared.observability.otel import get_current_trace_id
 from sqlalchemy import text
 
 from ..config import settings
+from ..security.auth import authenticate_request, verify_conversation_ownership
+from ..services.conversation_service import ConversationService
+from .conversations import get_conversation_service
 
 logger = get_logger("agent-exec-routes")
 router = APIRouter(tags=["agent-exec"])
@@ -84,29 +87,9 @@ def _check_internal_auth(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Token 无效")
 
 
-def _check_user_session(authorization: str | None = Header(default=None)) -> str:
-    """验证用户 Session Token（/api/* 接口使用）
-
-    Args:
-        authorization: Bearer Token 头
-
-    Returns:
-        用户 ID（从 Token 中提取）
-
-    Raises:
-        HTTPException: Token 无效或缺失
-    """
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="缺少 Bearer Token")
-
-    token = authorization[7:].strip()
-    # TODO: 实现用户 Session 验证（当前 MVP 使用简化验证）
-    # 生产环境需调用 case-service 或 api-gateway 的 Session 验证接口
-    if len(token) < 10:
-        raise HTTPException(status_code=401, detail="Token 无效")
-
-    # 返回临时用户 ID（后续替换为真实用户信息）
-    return "user-placeholder"
+# 注：exec-result / vm-console-result 等 /api/* 路由不再依赖占位 Session 桩，
+# 改由调用方（api-gateway）签名的 X-Client-ID 经 verify_conversation_ownership
+# 做会话归属校验（防 IDOR），详见本文件 submit_exec_result。
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -377,12 +360,16 @@ def _effective_stream_bytes(reported_bytes: int | None, content: str | None) -> 
 async def submit_exec_result(
     conversation_id: uuid.UUID,
     body: ExecResultRequest,
-    user_id: str = Depends(_check_user_session),
+    request: Request,
+    service: ConversationService = Depends(get_conversation_service),
 ):
     """回传执行结果（前端 → conversation-service）。
 
+    会话归属校验（SRC L2）：仅会话归属 client 可回传结果（防 IDOR）。
+    身份来自网关以 INTERNAL_API_TOKEN HMAC 签名的 X-Client-ID 头，不再依赖占位 Session。
+
     流程：
-      1. 验证用户 Session Token
+      1. 校验会话归属（签名 X-Client-ID vs 会话所属 case 的 client_id）
       2. 验证 exec_id 对应的 Redis key 存在
       3. 写入 Redis 队列：LPUSH exec_result:{exec_id} {json}
       4. 删除 pending key：DEL exec:{exec_id}
@@ -391,11 +378,15 @@ async def submit_exec_result(
     Args:
         conversation_id: 会话 ID
         body: 执行结果（exec_id、output、exit_code）
-        user_id: 用户 ID（从 Token 提取）
+        request: FastAPI 请求（读取网关签名的身份头）
+        service: 会话服务（归属校验用）
 
     Returns:
         回传结果（exec_id、状态）
     """
+    await verify_conversation_ownership(conversation_id, request, service)
+    client_id = await authenticate_request(request)
+    user_id = client_id or "anonymous"
     if _redis_manager is None or _redis_manager.client is None:
         raise HTTPException(status_code=503, detail="Redis 服务未就绪")
 

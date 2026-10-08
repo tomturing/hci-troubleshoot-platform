@@ -22,8 +22,10 @@ function loadVmConsoleThumbnail(artifactId: string) {
   vmConsoleThumbnails.value[artifactId] = ''
   const convId = chatStore.conversationId
   if (!convId) return
+  // 身份靠服务端签发的 HttpOnly Cookie（同源自动携带），网关 require_user 校验后签名注入 X-Client-ID，
+  // 下游 conversation-service 做工单归属校验；不再使用 MVP 阶段的占位符 token。
   fetch(`/api/conversations/${convId}/vm-console-artifacts/${artifactId}`, {
-    headers: { Authorization: `Bearer ${localStorage.getItem('clientSessionToken') || 'client-session-placeholder-token'}` },
+    credentials: 'same-origin',
   })
     .then(async (resp) => {
       if (!resp.ok) return

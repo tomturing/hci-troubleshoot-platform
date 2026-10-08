@@ -1,9 +1,16 @@
 """
-测试 bridge_logs 回采接口 - 鉴权弱化对齐 customer 路由 + 落库逻辑
+测试 bridge_logs 回采接口 - L2 加固后的归属校验 + 落库逻辑
 
 覆盖：
-  - _check_session_or_internal 鉴权（internal token / 占位符 token / JWT / 拒绝）
-  - ingest_bridge_logs 落库（skip 无 case_id / insert 有效条目）
+  - _is_internal_caller：内部直连令牌判定
+  - _assert_case_owned / _verify_batch_ownership：工单归属校验（403 防护）
+  - _authenticate_batch：internal / 签名 / 匿名三条分支
+  - ingest_bridge_logs：落库（skip 无 case_id / insert 有效条目）、归属失败 403 传播
+  - upload_bridge_logs：JSONL 解析、去重、体积上限、开关关闭、归属失败 403
+
+说明：历史占位符 token 与 `_check_session_or_internal` 桩鉴权已在 SRC L2 修复中移除，
+customer 前端经网关携带签名 X-Client-ID 做工单归属校验；内部服务直连用
+Bearer <INTERNAL_API_TOKEN> 旁路。
 """
 
 from datetime import UTC, datetime
@@ -16,87 +23,142 @@ from app.routes.bridge_logs import (
     BridgeLogEntry,
     BridgeLogUploadFile,
     BridgeLogUploadRequest,
-    _check_session_or_internal,
+    _assert_case_owned,
+    _authenticate_batch,
+    _is_internal_caller,
     _parse_event_time,
+    _verify_batch_ownership,
     ingest_bridge_logs,
     upload_bridge_logs,
 )
 from fastapi import HTTPException
 
 
-class TestCheckSessionOrInternal:
-    """鉴权函数 _check_session_or_internal 测试"""
+def _fake_request() -> MagicMock:
+    """构造占位 Request（authenticate_request 已被各测试 patch，不读取其内容）。"""
+    return MagicMock()
+
+
+class TestIsInternalCaller:
+    """内部直连令牌判定测试。"""
 
     def test_accepts_internal_token(self):
-        """INTERNAL_API_TOKEN 通过，返回 'internal'"""
         with patch("app.routes.bridge_logs.settings") as mock_settings:
             mock_settings.INTERNAL_API_TOKEN = "hci-dev-internal-token"
-            result = _check_session_or_internal("Bearer hci-dev-internal-token")
-            assert result == "internal"
+            assert _is_internal_caller("Bearer hci-dev-internal-token") is True
 
-    def test_accepts_placeholder_token(self):
-        """占位符 token 通过，返回 'customer'（对齐 exec-result 路由）"""
+    def test_rejects_placeholder_token(self):
+        """历史占位符 token 不再是合法凭证。"""
         with patch("app.routes.bridge_logs.settings") as mock_settings:
             mock_settings.INTERNAL_API_TOKEN = "hci-dev-internal-token"
-            result = _check_session_or_internal("Bearer client-session-placeholder-token")
-            assert result == "customer"
+            assert _is_internal_caller("Bearer client-session-placeholder-token") is False
 
-    def test_accepts_valid_jwt(self):
-        """3 段 JWT 解析 sub 字段成功，返回用户标识"""
-        import base64
-        import json
-
-        payload = {"sub": "user-abc-123"}
-        payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
-        token = f"header.{payload_b64}.signature"
-
+    @pytest.mark.parametrize("auth", [None, "", "Basic abc123", "Bearer ", "Bearer wrong-token"])
+    def test_rejects_non_internal(self, auth):
         with patch("app.routes.bridge_logs.settings") as mock_settings:
             mock_settings.INTERNAL_API_TOKEN = "hci-dev-internal-token"
-            result = _check_session_or_internal(f"Bearer {token}")
-            assert result == "user-abc-123"
+            assert _is_internal_caller(auth) is False
 
-    def test_rejects_missing_token(self):
-        """无 Authorization 头 -> 401"""
+
+class TestAssertCaseOwned:
+    """单工单归属校验测试。"""
+
+    @staticmethod
+    def _session(fetchone_value):
+        session = AsyncMock()
+        res = MagicMock()
+        res.fetchone.return_value = fetchone_value
+        session.execute.return_value = res
+        return session
+
+    @pytest.mark.asyncio
+    async def test_passes_when_owner_matches(self):
+        await _assert_case_owned(self._session(("cust-A",)), "Q001", "cust-A")
+
+    @pytest.mark.asyncio
+    async def test_forbidden_when_owner_mismatch(self):
         with pytest.raises(HTTPException) as exc_info:
-            _check_session_or_internal(None)
-        assert exc_info.value.status_code == 401
-        assert "缺少 Bearer Token" in exc_info.value.detail
+            await _assert_case_owned(self._session(("cust-B",)), "Q001", "cust-A")
+        assert exc_info.value.status_code == 403
 
-    def test_rejects_non_bearer(self):
-        """非 Bearer 前缀 -> 401"""
+    @pytest.mark.asyncio
+    async def test_forbidden_when_case_missing(self):
         with pytest.raises(HTTPException) as exc_info:
-            _check_session_or_internal("Basic abc123")
-        assert exc_info.value.status_code == 401
+            await _assert_case_owned(self._session(None), "Q001", "cust-A")
+        assert exc_info.value.status_code == 403
 
-    def test_rejects_empty_token(self):
-        """Bearer 后空串 -> 401"""
-        with pytest.raises(HTTPException) as exc_info:
-            _check_session_or_internal("Bearer ")
-        assert exc_info.value.status_code == 401
 
-    def test_rejects_invalid_token(self):
-        """非 internal / 非占位符 / 非 3 段 JWT 的非法 token -> 401"""
-        with patch("app.routes.bridge_logs.settings") as mock_settings:
-            mock_settings.INTERNAL_API_TOKEN = "hci-dev-internal-token"
-            with pytest.raises(HTTPException) as exc_info:
-                _check_session_or_internal("Bearer some-random-invalid-token")
-            assert exc_info.value.status_code == 401
-            assert "Token 无效" in exc_info.value.detail
+class TestVerifyBatchOwnership:
+    """批量回采写库前归属校验测试。"""
 
-    def test_rejects_jwt_without_identity(self):
-        """3 段 JWT 但无 sub/user_id/user -> 401"""
-        import base64
-        import json
+    @pytest.mark.asyncio
+    async def test_checks_all_distinct_cases(self):
+        body = BridgeLogBatch(
+            logs=[
+                BridgeLogEntry(case_id="Q001", event="exec.done", message="a"),
+                BridgeLogEntry(case_id="Q002", event="exec.done", message="b"),
+                BridgeLogEntry(case_id="Q001", event="exec.done", message="dup"),
+            ],
+            fallback_case_id="Q000",
+        )
+        mock_db_manager = MagicMock()
 
-        payload = {"foo": "bar"}  # 无身份字段
-        payload_b64 = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
-        token = f"header.{payload_b64}.signature"
+        async def _gen():
+            yield AsyncMock()
 
-        with patch("app.routes.bridge_logs.settings") as mock_settings:
-            mock_settings.INTERNAL_API_TOKEN = "hci-dev-internal-token"
-            with pytest.raises(HTTPException) as exc_info:
-                _check_session_or_internal(f"Bearer {token}")
-            assert exc_info.value.status_code == 401
+        mock_db_manager.get_session.return_value = _gen()
+        with (
+            patch("app.routes.bridge_logs._db_manager", mock_db_manager),
+            patch("app.routes.bridge_logs._assert_case_owned", new=AsyncMock()) as mock_assert,
+        ):
+            await _verify_batch_ownership(body, "cust-A")
+        checked = {call.args[1] for call in mock_assert.await_args_list}
+        assert checked == {"Q000", "Q001", "Q002"}
+
+    @pytest.mark.asyncio
+    async def test_no_cases_skips(self):
+        body = BridgeLogBatch(logs=[])
+        with patch("app.routes.bridge_logs._assert_case_owned", new=AsyncMock()) as mock_assert:
+            await _verify_batch_ownership(body, "cust-A")
+        mock_assert.assert_not_awaited()
+
+
+class TestAuthenticateBatch:
+    """回采鉴权编排测试。"""
+
+    @pytest.mark.asyncio
+    async def test_internal_bypasses_signature(self):
+        body = BridgeLogBatch(logs=[])
+        with (
+            patch("app.routes.bridge_logs.settings") as mock_settings,
+            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock()) as mock_auth,
+        ):
+            mock_settings.INTERNAL_API_TOKEN = "internal-token"
+            user_id = await _authenticate_batch(body, _fake_request(), "Bearer internal-token")
+        assert user_id == "internal"
+        mock_auth.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_signed_client_verifies_ownership(self):
+        body = BridgeLogBatch(logs=[BridgeLogEntry(case_id="Q001", event="e", message="m")])
+        with (
+            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value="cust-A")),
+            patch("app.routes.bridge_logs._verify_batch_ownership", new=AsyncMock()) as mock_verify,
+        ):
+            user_id = await _authenticate_batch(body, _fake_request(), None)
+        assert user_id == "cust-A"
+        mock_verify.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_anonymous_transitional_skips_ownership(self):
+        body = BridgeLogBatch(logs=[BridgeLogEntry(case_id="Q001", event="e", message="m")])
+        with (
+            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value=None)),
+            patch("app.routes.bridge_logs._verify_batch_ownership", new=AsyncMock()) as mock_verify,
+        ):
+            user_id = await _authenticate_batch(body, _fake_request(), None)
+        assert user_id == "anonymous"
+        mock_verify.assert_not_awaited()
 
 
 class TestParseEventTime:
@@ -120,7 +182,17 @@ class TestParseEventTime:
 
 
 class TestIngestBridgeLogs:
-    """ingest_bridge_logs 落库逻辑测试"""
+    """ingest_bridge_logs 落库逻辑测试（过渡模式匿名，跳过归属）。"""
+
+    @staticmethod
+    def _db_manager(mock_session):
+        mock_db_manager = MagicMock()
+
+        async def _gen():
+            yield mock_session
+
+        mock_db_manager.get_session.return_value = _gen()
+        return mock_db_manager
 
     @pytest.mark.asyncio
     async def test_ingest_skips_entries_without_case_id(self):
@@ -133,22 +205,13 @@ class TestIngestBridgeLogs:
         )
 
         mock_session = AsyncMock()
-        mock_db_manager = MagicMock()
-        mock_db_manager.get_session = MagicMock()
-
-        async def _gen():
-            yield mock_session
-
-        mock_db_manager.get_session.return_value = _gen()
-
         with (
-            patch("app.routes.bridge_logs._db_manager", mock_db_manager),
-            patch("app.routes.bridge_logs._check_session_or_internal", return_value="customer"),
+            patch("app.routes.bridge_logs._db_manager", self._db_manager(mock_session)),
+            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value=None)),
         ):
-            result = await ingest_bridge_logs(body, authorization="Bearer client-session-placeholder-token")
+            result = await ingest_bridge_logs(body, _fake_request(), authorization=None)
 
         assert result == {"ok": True, "accepted": 1, "duplicates": 0, "skipped": 1}
-        # 只有 1 条（有 case_id 的）执行了 INSERT
         assert mock_session.execute.call_count == 1
         mock_session.commit.assert_called_once()
 
@@ -171,19 +234,11 @@ class TestIngestBridgeLogs:
         )
 
         mock_session = AsyncMock()
-        mock_db_manager = MagicMock()
-        mock_db_manager.get_session = MagicMock()
-
-        async def _gen():
-            yield mock_session
-
-        mock_db_manager.get_session.return_value = _gen()
-
         with (
-            patch("app.routes.bridge_logs._db_manager", mock_db_manager),
-            patch("app.routes.bridge_logs._check_session_or_internal", return_value="customer"),
+            patch("app.routes.bridge_logs._db_manager", self._db_manager(mock_session)),
+            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value=None)),
         ):
-            result = await ingest_bridge_logs(body, authorization="Bearer client-session-placeholder-token")
+            result = await ingest_bridge_logs(body, _fake_request(), authorization=None)
 
         assert result == {"ok": True, "accepted": 1, "duplicates": 0, "skipped": 0}
         assert mock_session.execute.call_count == 1
@@ -212,18 +267,11 @@ class TestIngestBridgeLogs:
         )
 
         mock_session = AsyncMock()
-        mock_db_manager = MagicMock()
-
-        async def _gen():
-            yield mock_session
-
-        mock_db_manager.get_session.return_value = _gen()
-
         with (
-            patch("app.routes.bridge_logs._db_manager", mock_db_manager),
-            patch("app.routes.bridge_logs._check_session_or_internal", return_value="customer"),
+            patch("app.routes.bridge_logs._db_manager", self._db_manager(mock_session)),
+            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value=None)),
         ):
-            result = await ingest_bridge_logs(body, authorization="Bearer client-session-placeholder-token")
+            result = await ingest_bridge_logs(body, _fake_request(), authorization=None)
 
         assert result == {"ok": True, "accepted": 2, "duplicates": 0, "skipped": 1}
         assert mock_session.execute.call_count == 2
@@ -240,18 +288,11 @@ class TestIngestBridgeLogs:
         duplicate_result = MagicMock(rowcount=0)
         mock_session = AsyncMock()
         mock_session.execute.return_value = duplicate_result
-        mock_db_manager = MagicMock()
-
-        async def _gen():
-            yield mock_session
-
-        mock_db_manager.get_session.return_value = _gen()
-
         with (
-            patch("app.routes.bridge_logs._db_manager", mock_db_manager),
-            patch("app.routes.bridge_logs._check_session_or_internal", return_value="customer"),
+            patch("app.routes.bridge_logs._db_manager", self._db_manager(mock_session)),
+            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value=None)),
         ):
-            result = await ingest_bridge_logs(body, authorization="Bearer client-session-placeholder-token")
+            result = await ingest_bridge_logs(body, _fake_request(), authorization=None)
 
         assert result == {"ok": True, "accepted": 0, "duplicates": 1, "skipped": 0}
 
@@ -262,10 +303,10 @@ class TestIngestBridgeLogs:
 
         with (
             patch("app.routes.bridge_logs._db_manager", None),
-            patch("app.routes.bridge_logs._check_session_or_internal", return_value="customer"),
+            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value=None)),
             pytest.raises(HTTPException) as exc_info,
         ):
-            await ingest_bridge_logs(body, authorization="Bearer client-session-placeholder-token")
+            await ingest_bridge_logs(body, _fake_request(), authorization=None)
 
         assert exc_info.value.status_code == 503
         assert "数据库未就绪" in exc_info.value.detail
@@ -279,22 +320,53 @@ class TestIngestBridgeLogs:
         )
 
         mock_session = AsyncMock()
-        mock_db_manager = MagicMock()
-
-        async def _gen():
-            yield mock_session
-
-        mock_db_manager.get_session.return_value = _gen()
-
         with (
-            patch("app.routes.bridge_logs._db_manager", mock_db_manager),
-            patch("app.routes.bridge_logs._check_session_or_internal", return_value="customer"),
+            patch("app.routes.bridge_logs._db_manager", self._db_manager(mock_session)),
+            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value=None)),
         ):
-            result = await ingest_bridge_logs(body, authorization="Bearer client-session-placeholder-token")
+            result = await ingest_bridge_logs(body, _fake_request(), authorization=None)
 
         assert result == {"ok": True, "accepted": 1, "duplicates": 0, "skipped": 0}
         args, _ = mock_session.execute.call_args
         assert args[1]["case_id"] == "Q2026092010235"
+
+    @pytest.mark.asyncio
+    async def test_ingest_forbidden_before_insert_when_ownership_fails(self):
+        """签名身份归属校验失败时 403，且在写库前抛出（不落库）。"""
+        body = BridgeLogBatch(logs=[BridgeLogEntry(case_id="Q001", event="exec.done", message="x")])
+
+        mock_session = AsyncMock()
+        with (
+            patch("app.routes.bridge_logs._db_manager", self._db_manager(mock_session)),
+            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value="attacker")),
+            patch(
+                "app.routes.bridge_logs._verify_batch_ownership",
+                new=AsyncMock(side_effect=HTTPException(status_code=403, detail="无权操作此工单的日志")),
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await ingest_bridge_logs(body, _fake_request(), authorization=None)
+
+        assert exc_info.value.status_code == 403
+        mock_session.execute.assert_not_called()
+        mock_session.commit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ingest_internal_token_bypasses_ownership(self):
+        """内部直连令牌旁路归属校验，正常落库。"""
+        body = BridgeLogBatch(logs=[BridgeLogEntry(case_id="Q001", event="exec.done", message="x")])
+
+        mock_session = AsyncMock()
+        with (
+            patch("app.routes.bridge_logs._db_manager", self._db_manager(mock_session)),
+            patch("app.routes.bridge_logs._is_internal_caller", return_value=True),
+            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock()) as mock_auth,
+        ):
+            result = await ingest_bridge_logs(body, _fake_request(), authorization="Bearer internal-token")
+
+        assert result["ok"] is True
+        assert result["accepted"] == 1
+        mock_auth.assert_not_awaited()
 
 
 class TestUploadBridgeLogs:
@@ -338,11 +410,11 @@ class TestUploadBridgeLogs:
 
         with (
             patch("app.routes.bridge_logs._db_manager", mock_db_manager),
-            patch("app.routes.bridge_logs._check_session_or_internal", return_value="customer"),
+            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value=None)),
             patch("app.routes.bridge_logs.settings") as mock_settings,
         ):
             mock_settings.BRIDGE_LOG_UPLOAD_ENABLED = True
-            result = await upload_bridge_logs(body, authorization="Bearer client-session-placeholder-token")
+            result = await upload_bridge_logs(body, _fake_request(), authorization=None)
 
         assert result["ok"] is True
         assert result["accepted"] == 2
@@ -372,11 +444,11 @@ class TestUploadBridgeLogs:
 
         with (
             patch("app.routes.bridge_logs._db_manager", mock_db_manager),
-            patch("app.routes.bridge_logs._check_session_or_internal", return_value="customer"),
+            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value=None)),
             patch("app.routes.bridge_logs.settings") as mock_settings,
         ):
             mock_settings.BRIDGE_LOG_UPLOAD_ENABLED = True
-            result = await upload_bridge_logs(body, authorization="Bearer client-session-placeholder-token")
+            result = await upload_bridge_logs(body, _fake_request(), authorization=None)
 
         assert result["duplicates"] == 1
         assert result["accepted"] == 0
@@ -394,11 +466,11 @@ class TestUploadBridgeLogs:
 
         with (
             patch("app.routes.bridge_logs._db_manager", mock_db_manager),
-            patch("app.routes.bridge_logs._check_session_or_internal", return_value="customer"),
+            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value=None)),
             patch("app.routes.bridge_logs.settings") as mock_settings,
         ):
             mock_settings.BRIDGE_LOG_UPLOAD_ENABLED = True
-            result = await upload_bridge_logs(body, authorization="Bearer client-session-placeholder-token")
+            result = await upload_bridge_logs(body, _fake_request(), authorization=None)
 
         assert result["ok"] is True
         assert result["invalid"] == 1
@@ -414,12 +486,12 @@ class TestUploadBridgeLogs:
         )
 
         with (
-            patch("app.routes.bridge_logs._check_session_or_internal", return_value="customer"),
+            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value=None)),
             patch("app.routes.bridge_logs.settings") as mock_settings,
             pytest.raises(HTTPException) as exc_info,
         ):
             mock_settings.BRIDGE_LOG_UPLOAD_ENABLED = False
-            await upload_bridge_logs(body, authorization="Bearer client-session-placeholder-token")
+            await upload_bridge_logs(body, _fake_request(), authorization=None)
 
         assert exc_info.value.status_code == 404
 
@@ -438,11 +510,40 @@ class TestUploadBridgeLogs:
 
         with (
             patch("app.routes.bridge_logs._db_manager", mock_db_manager),
-            patch("app.routes.bridge_logs._check_session_or_internal", return_value="customer"),
+            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value=None)),
             patch("app.routes.bridge_logs.settings") as mock_settings,
             pytest.raises(HTTPException) as exc_info,
         ):
             mock_settings.BRIDGE_LOG_UPLOAD_ENABLED = True
-            await upload_bridge_logs(body, authorization="Bearer client-session-placeholder-token")
+            await upload_bridge_logs(body, _fake_request(), authorization=None)
 
         assert exc_info.value.status_code == 413
+
+    @pytest.mark.asyncio
+    async def test_upload_forbidden_and_rolls_back_when_ownership_fails(self):
+        """签名身份对绑定工单无归属时 403，写库前抛出、不提交（整单回滚不落库）。"""
+        content = '{"event":"exec.done","message":"done","case_id":"Q001"}'
+        body = BridgeLogUploadRequest(
+            case_id="Q001",
+            files=[
+                BridgeLogUploadFile(name="bridge.log", content=content),
+            ],
+        )
+        mock_db_manager, mock_session = self._build_db([1])
+
+        with (
+            patch("app.routes.bridge_logs._db_manager", mock_db_manager),
+            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value="attacker")),
+            patch(
+                "app.routes.bridge_logs._assert_case_owned",
+                new=AsyncMock(side_effect=HTTPException(status_code=403, detail="无权操作此工单的日志")),
+            ),
+            patch("app.routes.bridge_logs.settings") as mock_settings,
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            mock_settings.BRIDGE_LOG_UPLOAD_ENABLED = True
+            await upload_bridge_logs(body, _fake_request(), authorization=None)
+
+        assert exc_info.value.status_code == 403
+        mock_session.execute.assert_not_called()
+        mock_session.commit.assert_not_called()
