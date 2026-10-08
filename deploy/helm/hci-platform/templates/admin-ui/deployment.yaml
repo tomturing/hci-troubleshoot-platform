@@ -57,11 +57,8 @@ spec:
               value: "http://127.0.0.1:9999"
               {{- end }}
             {{- if and .Values.diagnosisService.enabled (eq .Values.diagnosisService.identityMode "internal") }}
-            - name: ADMIN_API_AUTHORIZATION
-              valueFrom:
-                secretKeyRef:
-                  name: hci-secrets
-                  key: INTERNAL_API_AUTHORIZATION
+            # PR-D 关后门：删除 ADMIN_API_AUTHORIZATION（共享令牌）注入——nginx 已改透传 $http_authorization，
+            # 该 env 及其 secret 键 INTERNAL_API_AUTHORIZATION 均已无消费方。TENANT/ACTOR 收敛属 PR-D③。
             - name: ADMIN_API_TENANT_ID
               value: {{ required "diagnosisService internal 模式必须配置 diagnosisService.internalIdentity.tenantId" .Values.diagnosisService.internalIdentity.tenantId | quote }}
             - name: ADMIN_API_ACTOR_ID
