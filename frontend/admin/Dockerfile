@@ -44,8 +44,6 @@ RUN rm -f /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
 # 默认保持原始浏览器身份头；Docker Compose（本地容器编排）可在服务端覆盖为开发身份。
 # 值中的 Nginx 变量经过 envsubst 单次替换后保留给 Nginx 请求阶段解析。
 ENV ADMIN_API_AUTHORIZATION=\$http_authorization \
-    ADMIN_API_TENANT_ID=\$http_x_tenant_id \
-    ADMIN_API_ACTOR_ID=\$http_x_actor_id \
     API_GATEWAY_UPSTREAM=http://api-gateway:8000 \
     DIAGNOSIS_SERVICE_UPSTREAM=http://diagnosis-service:8008 \
     TERMINAL_BRIDGE_UPSTREAM=http://host.docker.internal:9999

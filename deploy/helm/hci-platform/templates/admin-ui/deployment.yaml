@@ -13,10 +13,8 @@ spec:
       {{- include "hci.selectorLabels" (dict "name" "admin-ui" "Release" .Release) | nindent 6 }}
   template:
     metadata:
-      {{- if and .Values.diagnosisService.enabled (eq .Values.diagnosisService.identityMode "internal") }}
-      annotations:
-        checksum/diagnosis-internal-auth: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
-      {{- end }}
+      {{- /* 安全重构 L1：管理台身份上下文改由网关从 admin JWT 派生（X-Tenant-ID/X-Actor-ID），
+             Admin UI 不再注入内部诊断身份，故移除随内部令牌轮换的滚动重启注解。 */}}
       labels:
         {{- include "hci.podLabels" (dict "name" "admin-ui" "Release" .Release "Chart" .Chart) | nindent 8 }}
     spec:
@@ -56,14 +54,9 @@ spec:
               {{- else }}
               value: "http://127.0.0.1:9999"
               {{- end }}
-            {{- if and .Values.diagnosisService.enabled (eq .Values.diagnosisService.identityMode "internal") }}
-            # PR-D 关后门：删除 ADMIN_API_AUTHORIZATION（共享令牌）注入——nginx 已改透传 $http_authorization，
-            # 该 env 及其 secret 键 INTERNAL_API_AUTHORIZATION 均已无消费方。TENANT/ACTOR 收敛属 PR-D③。
-            - name: ADMIN_API_TENANT_ID
-              value: {{ required "diagnosisService internal 模式必须配置 diagnosisService.internalIdentity.tenantId" .Values.diagnosisService.internalIdentity.tenantId | quote }}
-            - name: ADMIN_API_ACTOR_ID
-              value: {{ required "diagnosisService internal 模式必须配置 diagnosisService.internalIdentity.adminActorId" .Values.diagnosisService.internalIdentity.adminActorId | quote }}
-            {{- end }}
+            {{- /* 安全重构 L1：删除 ADMIN_API_TENANT_ID/ADMIN_API_ACTOR_ID 注入——管理台身份
+                   上下文唯一来源收敛为网关对 admin JWT 的派生（X-Tenant-ID/X-Actor-ID），
+                   Nginx 不再静态写死、也不以 $http_* 透传客户端头。见 docs/security/identity-resign.md §6。 */}}
           ports:
             - containerPort: {{ .Values.adminUI.port }}
               protocol: TCP

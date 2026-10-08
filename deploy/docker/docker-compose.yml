@@ -445,9 +445,9 @@ services:
       # Admin 仿真页面固定使用同源 /terminal-bridge；Nginx 在本地转发到桌面 Bridge。
       - TERMINAL_BRIDGE_UPSTREAM=http://host.docker.internal:9999
       # 本地管理入口由 Nginx 服务端注入开发身份，禁止把内部令牌打包进浏览器静态资源。
+      # 安全重构 L1：删除 ADMIN_API_TENANT_ID/ADMIN_API_ACTOR_ID——管理台身份上下文改由网关从
+      # admin JWT 派生，Nginx 不再注入/透传 X-Tenant-ID/X-Actor-ID（与集群 Helm 形态保持一致）。
       - ADMIN_API_AUTHORIZATION=Bearer ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
-      - ADMIN_API_TENANT_ID=${DIAGNOSIS_DEV_TENANT_ID:-local-admin}
-      - ADMIN_API_ACTOR_ID=${DIAGNOSIS_DEV_ACTOR_ID:-admin-ui}
     build:
       context: ../..
       dockerfile: frontend/admin/Dockerfile

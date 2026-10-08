@@ -17,18 +17,35 @@ from app.routes.diagnosis import (
     MAX_CONTROL_PLANE_BODY_BYTES,
     router,
 )
+from app.security.jwt_verify import GatewayActor
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from shared.security.identity import IDENTITY_COOKIE_NAME, issue_identity
 
 
-def build_client() -> TestClient:
-    """构造带身份中间件的诊断代理测试应用。"""
+def build_client(jwt_verifier=None) -> TestClient:
+    """构造带身份中间件的诊断代理测试应用。
+
+    传入 `jwt_verifier` 时挂到 `app.state.jwt_verifier`，模拟阶段1 admin JWT 验签边界：
+    中间件对非共享令牌的 Bearer 调用 `verifier.verify(request)` 取得可信 GatewayActor。
+    """
 
     app = FastAPI()
     app.add_middleware(IdentityMiddleware)
     app.include_router(router)
+    if jwt_verifier is not None:
+        app.state.jwt_verifier = jwt_verifier
     return TestClient(app)
+
+
+class _FakeJwtVerifier:
+    """返回固定 GatewayActor 的测试验签替身（仅实现 verify(request)，不做真实 RS256 校验）。"""
+
+    def __init__(self, actor: GatewayActor):
+        self._actor = actor
+
+    async def verify(self, request):  # noqa: ARG002 - 与真实 JwtVerifier.verify(request) 契约一致
+        return self._actor
 
 
 def admin_headers(**extra: str) -> dict[str, str]:
@@ -300,3 +317,40 @@ def test_oidc_mode_forwards_token_but_never_browser_identity_headers(mock_client
     assert upstream_headers["Authorization"] == "Bearer signed.oidc.token"
     assert "X-Tenant-ID" not in upstream_headers
     assert "X-Actor-ID" not in upstream_headers
+
+
+@patch("app.routes.diagnosis.httpx.AsyncClient")
+def test_admin_jwt_realm_derives_tenant_and_actor_ignoring_self_report(mock_client_cls):
+    """安全重构 L1：admin JWT 登录时，网关从可信 GatewayActor 派生租户/操作者，
+    完全忽略浏览器自报的 X-Tenant-ID / X-Actor-ID（杜绝身份伪造）。
+
+    对应 nginx 删除静态注入后，身份上下文唯一来源收敛为网关对 admin JWT 的派生
+    （routes/diagnosis.py：realm=admin → AUTH_DEFAULT_TENANT_ID + user_id）。
+    """
+
+    actor = GatewayActor(
+        user_id="admin-1",
+        realm="admin",
+        roles=frozenset({"platform_admin"}),
+        audience=settings.AUTH_JWT_AUD_ADMIN,
+    )
+    client = AsyncMock()
+    mock_client_cls.return_value.__aenter__.return_value = client
+    client.request.return_value = mock_upstream()
+
+    response = build_client(jwt_verifier=_FakeJwtVerifier(actor)).get(
+        "/api/internal/collectors",
+        headers={
+            "Authorization": "Bearer signed.admin.jwt",
+            "X-Tenant-ID": "attacker-tenant",
+            "X-Actor-ID": "attacker-actor",
+        },
+    )
+
+    assert response.status_code == 200
+    upstream_headers = client.request.call_args.kwargs["headers"]
+    # 派生自 JWT 的可信身份，而非浏览器自报头
+    assert upstream_headers["X-Tenant-ID"] == settings.AUTH_DEFAULT_TENANT_ID
+    assert upstream_headers["X-Actor-ID"] == "admin-1"
+    assert upstream_headers["X-Tenant-ID"] != "attacker-tenant"
+    assert upstream_headers["X-Actor-ID"] != "attacker-actor"

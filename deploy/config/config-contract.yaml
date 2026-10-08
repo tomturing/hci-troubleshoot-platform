@@ -217,13 +217,9 @@ helm_equivalents:
   OIDC_PUBLIC_KEY_PEM_B64:
     value_paths: [diagnosisService.existingCredentialsSecret]
     external_secret: true
-  DIAGNOSIS_DEV_TENANT_ID:
-    value_paths: [diagnosisService.internalIdentity.tenantId]
-    # B1：Customer UI 不再注入服务端身份，租户仅保留 Admin UI 侧等价项。
-    template_env: [ADMIN_API_TENANT_ID]
-  DIAGNOSIS_DEV_ACTOR_ID:
-    value_paths: [diagnosisService.internalIdentity.adminActorId]
-    template_env: [ADMIN_API_ACTOR_ID]
+  # 安全重构 L1：DIAGNOSIS_DEV_TENANT_ID/DIAGNOSIS_DEV_ACTOR_ID（→ADMIN_API_TENANT_ID/ACTOR_ID）
+  # 已删除——管理台身份上下文改由网关从 admin JWT 派生，Nginx/Compose 不再注入这两项，
+  # 故其 .env.example/Compose/Helm 全链路一并移除（见 docs/security/identity-resign.md §6）。
   MIGRATION_DATABASE_URL:
     value_paths: [config.postgresHost, config.postgresDb, config.postgresUser, secrets.postgresPassword]
     template_env: [DATABASE_URL]
@@ -245,8 +241,6 @@ helm_only_runtime:
   - AI_COMPLETIONS_PATH
   - ACLI_CATALOG_PATH
   - ACLI_UNKNOWN_COMMAND_POLICY
-  - ADMIN_API_ACTOR_ID
-  - ADMIN_API_TENANT_ID
   - AGENT_EXEC_RESULT_TIMEOUT_SECONDS
   - AGENT_EXEC_STATE_TTL_SECONDS
   - API_GATEWAY_UPSTREAM
