@@ -53,6 +53,7 @@ Traefik 的 `router.middlewares` annotation 是 **Ingress 级别**而非 Path �
 | --- | --- | --- |
 | ~~内网源攻击者仍可经 customer-ui 注入身份访问 internal~~ | **B1 已根治**：注入已删除，`/api/internal/*` 需管理员凭证 | 已完成 |
 | ~~`/api/diagnosis-sessions` 等非 internal 前缀仍暴露~~ | **B1 已根治**：客户身份由网关按 Cookie 重签为 `customer` 角色并做工单归属校验 | 已完成 |
+| ~~`/api/diagnosis-scenarios`（及 `semantic-advice`）仍匿名可读~~ | **已根治**：api-gateway 路由加 `require_authenticated`；identity 中间件对「无 Cookie 且无 Bearer 令牌」的纯匿名请求停止自动签发身份 → 匿名 401，持会话 Cookie 的合法客户与管理员不受影响。此为 SRC-2026-5358 受影响清单中唯一残留的匿名可读项 | 已完成 |
 | admin-ui Nginx 仍为 `/api` 注入服务端身份 | 管理端暂无独立登录凭证，"能访问 Admin UI 入口"即等同管理员 | 新增 `adminUI.ingress.internalGuard`（默认关闭）可收内网；根治靠管理员认证 + admin 域名收敛 |
 | `ingress.internalGuard.enabled=false` 可整体关闭 | 关闭操作会同时失去 CI 渲染断言保护（断言按开关通过属预期） | 变更评审约束 |
 
@@ -62,6 +63,8 @@ Traefik 的 `router.middlewares` annotation 是 **Ingress 级别**而非 Path �
   `GET /api/internal/collectors` → **403**；
 - 恢复 RFC1918 白名单：同请求 → **200**（内网行为不变）；
 - 客户主链路回归：首页 200、`/api/cases` 307（P0 身份 Cookie 重定向，正常）。
+- SRC-2026-5358 唯一残留闭环：匿名 `GET /api/diagnosis-scenarios` → **401**（修复前为 200）；
+  持会话 Cookie 的客户 `GET /api/diagnosis-scenarios` 仍 → **200**（客户 UI 不受影响）。
 
 ## 5. CI 门禁
 
@@ -82,3 +85,6 @@ Traefik 的 `router.middlewares` annotation 是 **Ingress 级别**而非 Path �
 2. ~~**B1** 网关 diagnosis 代理接入身份 Cookie 重签（与删除 Nginx 注入同一 PR）~~
    ✅ 已完成，见 [网关身份重签](./identity-resign.md)；
 3. **B3** admin 域名收敛 + 管理员认证（P1）：消除"网络可达性 = 管理权限"。
+4. ~~**SRC-2026-5358 残留** `/api/diagnosis-scenarios` 匿名可读~~ ✅ 已完成：
+   api-gateway 路由加 `require_authenticated`，identity 中间件对「无 Cookie 且无 Bearer」的
+   纯匿名请求停止自动签发身份。

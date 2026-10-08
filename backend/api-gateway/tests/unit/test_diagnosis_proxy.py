@@ -19,6 +19,7 @@ from app.routes.diagnosis import (
 )
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from shared.security.identity import IDENTITY_COOKIE_NAME, issue_identity
 
 
 def build_client() -> TestClient:
@@ -98,15 +99,17 @@ def test_admin_supplied_roles_are_limited_to_internal_allowlist(mock_client_cls)
 
 @patch("app.routes.diagnosis.httpx.AsyncClient")
 def test_customer_identity_is_derived_from_cookie_and_ignores_self_reported_context(mock_client_cls):
-    """普通访客身份只能来自 Cookie；自报租户、操作者、角色一律不得提权。"""
+    """普通访客身份只能来自 Cookie；自报租户、操作者、角色、client_id 一律不得提权。"""
 
     client = AsyncMock()
     mock_client_cls.return_value.__aenter__.return_value = client
     client.request.return_value = mock_upstream(content=b"[]")
 
+    cid, cookie_value = issue_identity(settings.INTERNAL_API_TOKEN)
     response = build_client().get(
         "/api/diagnosis-scenarios",
         headers={
+            "Cookie": f"{IDENTITY_COOKIE_NAME}={cookie_value}",
             "X-Tenant-ID": "attacker-tenant",
             "X-Actor-ID": "platform_admin",
             ACTOR_ROLES_HEADER: "platform_admin",
@@ -120,7 +123,8 @@ def test_customer_identity_is_derived_from_cookie_and_ignores_self_reported_cont
     assert upstream_headers["X-Tenant-ID"] == "default"
     assert upstream_headers[ACTOR_ROLES_HEADER] == "customer"
     assert upstream_headers["X-Actor-ID"].startswith("cust-")
-    assert upstream_headers[ACTOR_CUSTOMER_HEADER] == upstream_headers["X-Actor-ID"].removeprefix("cust-")
+    assert upstream_headers[ACTOR_CUSTOMER_HEADER] == cid
+    assert upstream_headers[ACTOR_CUSTOMER_HEADER] != "someone-else"
     assert upstream_headers["X-Actor-ID"] != "platform_admin"
 
 
@@ -145,14 +149,38 @@ def test_customer_cannot_reach_bundle_migration(mock_client_cls):
 
 
 @patch("app.routes.diagnosis.httpx.AsyncClient")
-def test_anonymous_visitor_is_auto_issued_customer_identity(mock_client_cls):
-    """匿名访客由中间件签发身份后按客户身份代理，保持自服务排障形态。"""
+def test_anonymous_cannot_read_diagnosis_scenarios_catalog(mock_client_cls):
+    """SRC-2026-5358 残留项闭环：无会话 Cookie 的匿名请求不得读取场景目录，返回 401。"""
+
+    response = build_client().get("/api/diagnosis-scenarios")
+
+    assert response.status_code == 401
+    mock_client_cls.assert_not_called()
+
+
+@patch("app.routes.diagnosis.httpx.AsyncClient")
+def test_anonymous_cannot_read_semantic_advice(mock_client_cls):
+    """SRC-2026-5358 残留项闭环：匿名不得读取 /semantic-advice。"""
+
+    response = build_client().get("/api/diagnosis-scenarios/semantic-advice")
+
+    assert response.status_code == 401
+    mock_client_cls.assert_not_called()
+
+
+@patch("app.routes.diagnosis.httpx.AsyncClient")
+def test_customer_with_session_cookie_can_read_diagnosis_scenarios(mock_client_cls):
+    """持有会话 Cookie 的合法客户仍可读取场景目录（不破坏客户 UI）。"""
 
     client = AsyncMock()
     mock_client_cls.return_value.__aenter__.return_value = client
     client.request.return_value = mock_upstream(content=b"[]")
 
-    response = build_client().get("/api/diagnosis-scenarios")
+    _, cookie_value = issue_identity(settings.INTERNAL_API_TOKEN)
+    response = build_client().get(
+        "/api/diagnosis-scenarios",
+        headers={"Cookie": f"{IDENTITY_COOKIE_NAME}={cookie_value}"},
+    )
 
     assert response.status_code == 200
     upstream_headers = client.request.call_args.kwargs["headers"]
