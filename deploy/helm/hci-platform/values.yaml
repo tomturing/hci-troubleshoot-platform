@@ -354,12 +354,9 @@ diagnosisService:
     tag: latest
   port: 8008
   identityMode: "internal"
-  # internal 模式由 Customer/Admin Nginx 在服务端注入统一内部身份；令牌只从 hci-secrets 读取。
-  # 同一环境共用 tenant_id 以保证客户工作台与管理台看到同一批诊断资源，actor_id 用于审计区分。
-  internalIdentity:
-    tenantId: "hci-platform"
-    # B1：customerActorId 已移除——Customer UI 不再注入服务端身份。
-    adminActorId: "admin-ui"
+  # 安全重构 L1：internalIdentity.tenantId/adminActorId 已删除——管理台身份上下文（X-Tenant-ID/
+  # X-Actor-ID）不再由 Admin Nginx 静态注入，改由 api-gateway 从 admin JWT 派生
+  # （AUTH_DEFAULT_TENANT_ID + sub）。B1 起 Customer UI 亦不注入服务端身份。
   oidcIssuer: ""
   oidcAudience: ""
   oidcJwksUrl: ""

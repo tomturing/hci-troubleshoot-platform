@@ -61,11 +61,12 @@ tests:
       - isNull:
           path: spec.template.metadata.annotations["checksum/diagnosis-internal-auth"]
 
-  - it: "internal 模式为 Admin UI 注入服务端身份"
+  - it: "安全重构 L1：Admin UI 不再注入任何服务端身份上下文（含 internal 模式）"
     template: admin-ui/deployment.yaml
     set:
       diagnosisService.enabled: true
       diagnosisService.identityMode: "internal"
+      # 即便显式设置历史身份值，模板也不得再注入——锁定防回退（透传/静态写死都不允许）。
       diagnosisService.internalIdentity.tenantId: "staging-tenant"
       diagnosisService.internalIdentity.adminActorId: "staging-admin-ui"
       global.namespace: "hci-staging"
@@ -75,16 +76,16 @@ tests:
           path: spec.template.spec.containers[0].env
           content:
             name: ADMIN_API_AUTHORIZATION
-      - contains:
+      # 安全重构 L1：X-Tenant-ID/X-Actor-ID 由网关从 admin JWT 派生，Admin UI 不再注入。
+      - notContains:
           path: spec.template.spec.containers[0].env
           content:
             name: ADMIN_API_TENANT_ID
-            value: staging-tenant
-      - contains:
+      - notContains:
           path: spec.template.spec.containers[0].env
           content:
             name: ADMIN_API_ACTOR_ID
-            value: staging-admin-ui
+      # 仍透传浏览器 Authorization（登录签发的 JWT），身份上下文交网关派生。
       - contains:
           path: spec.template.spec.containers[0].env
           content:
@@ -95,7 +96,7 @@ tests:
           content:
             name: DIAGNOSIS_SERVICE_UPSTREAM
             value: http://diagnosis-service.hci-staging.svc.cluster.local:8008
-      - isNotNull:
+      - isNull:
           path: spec.template.metadata.annotations["checksum/diagnosis-internal-auth"]
 
   - it: "OIDC 模式不覆盖 Customer UI 浏览器身份"

@@ -19,10 +19,16 @@ api-gateway，身份改由网关依据服务端签发的身份 Cookie 重签。
    （`_check_user_session` / `_check_session_or_internal`）。此项不依赖 helm，
    无条件执行，防止「桩鉴权看似正常、实则 IDOR 防护被悄悄移除」的静默回退。
 
-   注：admin-ui nginx 目前仍静态注入 Authorization/X-Tenant-ID/X-Actor-ID，
-   属残留 P1(B3)（管理员域名收敛 + 管理员认证），不在本 L2 修复范围，故本脚本
-   的注入检查仅覆盖 customer 侧；admin 侧收敛完成后应将 `frontend/admin/nginx.conf`
-   并入场景 2 的同款静态检查。
+6. SRC-L1 防回退守卫：管理台身份上下文收敛后，admin-ui 的 nginx 不得再以
+   `proxy_set_header` 静态写死或以 `$http_*` 透传 X-Tenant-ID / X-Actor-ID /
+   X-User-ID（唯一可信来源是 api-gateway 对 admin JWT 的派生），admin-ui Deployment
+   亦不得再注入 `ADMIN_API_*` 身份 env。此项与 customer 侧同款：透传客户端身份头
+   比静态注入更危险（把浏览器伪造能力重新引入），故 nginx 检查为无条件静态守卫，
+   Deployment env 前缀守卫依赖 helm 渲染。
+
+   注：admin nginx 仍保留 `proxy_set_header Authorization $http_authorization;`
+   （透明转发浏览器登录签发的 JWT，属正当用途），故 admin 侧静态检查仅禁止
+   身份上下文头（X-Tenant-ID / X-Actor-ID / X-User-ID），不含 Authorization。
 
 用法：
     uv run python scripts/verify/verify_identity_resign.py
@@ -46,6 +52,14 @@ TRACE_ID = uuid.uuid4().hex
 
 INJECTION_HEADERS = ("proxy_set_header Authorization", "proxy_set_header X-Tenant-ID", "proxy_set_header X-Actor-ID")
 INJECTION_ENV_PREFIXES = ("CUSTOMER_API_",)
+
+# SRC-L1：admin nginx 保留 Authorization 透传（浏览器 JWT 正当用途），仅禁止身份上下文头注入
+ADMIN_INJECTION_HEADERS = (
+    "proxy_set_header X-Tenant-ID",
+    "proxy_set_header X-Actor-ID",
+    "proxy_set_header X-User-ID",
+)
+ADMIN_INJECTION_ENV_PREFIXES = ("ADMIN_API_",)
 
 # SRC-L2 防回退：占位符 token 字面量与已删除的桩鉴权函数不得在生产源码复活
 PLACEHOLDER_LITERAL = "client-session-placeholder-token"
@@ -97,6 +111,25 @@ def verify_src_l2_no_regression(root: Path, errors: list[str]) -> None:
         log("OK", f"SRC-L2 防回退：生产源码无占位符 token / 桩鉴权函数（扫描 {scanned} 个文件）")
 
 
+def verify_src_l1_admin_nginx(root: Path, errors: list[str]) -> None:
+    """SRC-L1 静态守卫：admin nginx 不得注入 X-Tenant-ID / X-Actor-ID 身份头。
+
+    管理台身份上下文唯一来源为 api-gateway 对 admin JWT 的派生；nginx 静态写死或
+    以 `$http_*` 透传客户端身份头都会引入伪造风险（透传比静态注入更危险）。
+    不依赖 helm，无条件执行。Authorization 透传（浏览器 JWT）属正当用途，不在此禁止之列。
+    """
+
+    admin_nginx = root / "frontend/admin/nginx.conf"
+    if not admin_nginx.exists():
+        errors.append(f"未找到 {admin_nginx}，无法校验管理台身份注入是否已删除")
+        return
+    leaked = [item for item in ADMIN_INJECTION_HEADERS if item in admin_nginx.read_text(encoding="utf-8")]
+    if leaked:
+        errors.append(f"admin nginx.conf 仍存在身份上下文注入指令（L1 必须删除）：{leaked}")
+    else:
+        log("OK", "admin nginx.conf 已无 X-Tenant-ID / X-Actor-ID 注入（Authorization 透传保留）")
+
+
 def helm_render(root: Path, release: str, extra_sets: list[str]) -> str:
     """执行 helm template 并返回渲染产物文本。"""
 
@@ -142,6 +175,17 @@ def find_by_name(documents: list[dict[str, Any]], kind: str, name_suffix: str) -
     return None
 
 
+def leaked_env_names(deploy: dict[str, Any], prefixes: tuple[str, ...]) -> list[str]:
+    """返回 Deployment 容器 env 中命中指定前缀的名称列表。"""
+    containers = deploy.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+    return [
+        env.get("name")
+        for container in containers
+        for env in (container.get("env") or [])
+        if str(env.get("name", "")).startswith(prefixes)
+    ]
+
+
 def verify(root: Path, require_helm: bool = False) -> list[str]:
     """执行全部断言，返回错误列表（空 = 通过）。"""
 
@@ -161,6 +205,9 @@ def verify(root: Path, require_helm: bool = False) -> list[str]:
     # ── 静态检查 2：SRC-L2 占位符 token / 桩鉴权函数防回退（不依赖 helm）──
     verify_src_l2_no_regression(root, errors)
 
+    # ── 静态检查 3：SRC-L1 admin nginx 身份上下文头注入防回退（不依赖 helm）──
+    verify_src_l1_admin_nginx(root, errors)
+
     if not shutil.which("helm"):
         if require_helm:
             errors.append("CI 要求 Helm 渲染校验，但未安装 helm")
@@ -176,17 +223,22 @@ def verify(root: Path, require_helm: bool = False) -> list[str]:
     if customer_deploy is None:
         errors.append("未渲染 customer-ui Deployment，无法校验注入 env")
     else:
-        containers = customer_deploy.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
-        leaked_env = [
-            env.get("name")
-            for container in containers
-            for env in (container.get("env") or [])
-            if str(env.get("name", "")).startswith(INJECTION_ENV_PREFIXES)
-        ]
+        leaked_env = leaked_env_names(customer_deploy, INJECTION_ENV_PREFIXES)
         if leaked_env:
             errors.append(f"customer-ui Deployment 仍注入服务端身份 env：{leaked_env}")
         else:
             log("OK", "customer-ui Deployment 已无身份注入 env")
+
+    # ── 场景 1b：SRC-L1 admin-ui 不得注入 ADMIN_API_* 身份 env ─────────
+    admin_deploy = find_by_name(documents, "Deployment", "admin-ui")
+    if admin_deploy is None:
+        errors.append("未渲染 admin-ui Deployment，无法校验 L1 身份注入 env")
+    else:
+        leaked_admin_env = leaked_env_names(admin_deploy, ADMIN_INJECTION_ENV_PREFIXES)
+        if leaked_admin_env:
+            errors.append(f"admin-ui Deployment 仍注入服务端身份 env（L1 必须删除）：{leaked_admin_env}")
+        else:
+            log("OK", "admin-ui Deployment 已无 ADMIN_API_* 身份注入 env")
 
     # ── 场景 2：/api 必须直达网关 ────────────────────────────────────
     main_ingress = find_by_name(documents, "Ingress", "hci-ingress")
