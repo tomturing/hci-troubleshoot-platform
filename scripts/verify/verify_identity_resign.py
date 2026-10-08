@@ -13,6 +13,16 @@ api-gateway，身份改由网关依据服务端签发的身份 Cookie 重签。
 3. 主 ingress 的 /api 必须直达 api-gateway（非 customer-ui）；
 4. admin-ui Ingress 的公网封禁开关默认关闭；开启后必须按**连字符格式**
    引用独立的 admin-guard 中间件（斜杠格式会让 Traefik 静默回退，封禁失效）。
+5. SRC-L2 防回退静态守卫：conversation-service 的客户写入路由（exec-result /
+   vm-console-* / bridge-logs）改为「网关签名 X-Client-ID + 工单归属校验」后，
+   生产源码不得再出现历史占位符 token 字面量，也不得复活已删除的桩鉴权函数
+   （`_check_user_session` / `_check_session_or_internal`）。此项不依赖 helm，
+   无条件执行，防止「桩鉴权看似正常、实则 IDOR 防护被悄悄移除」的静默回退。
+
+   注：admin-ui nginx 目前仍静态注入 Authorization/X-Tenant-ID/X-Actor-ID，
+   属残留 P1(B3)（管理员域名收敛 + 管理员认证），不在本 L2 修复范围，故本脚本
+   的注入检查仅覆盖 customer 侧；admin 侧收敛完成后应将 `frontend/admin/nginx.conf`
+   并入场景 2 的同款静态检查。
 
 用法：
     uv run python scripts/verify/verify_identity_resign.py
@@ -37,10 +47,54 @@ TRACE_ID = uuid.uuid4().hex
 INJECTION_HEADERS = ("proxy_set_header Authorization", "proxy_set_header X-Tenant-ID", "proxy_set_header X-Actor-ID")
 INJECTION_ENV_PREFIXES = ("CUSTOMER_API_",)
 
+# SRC-L2 防回退：占位符 token 字面量与已删除的桩鉴权函数不得在生产源码复活
+PLACEHOLDER_LITERAL = "client-session-placeholder-token"
+FORBIDDEN_STUB_DEFS = ("def _check_user_session", "def _check_session_or_internal")
+SRC_L2_DIRS = (
+    "backend/api-gateway/app",
+    "backend/conversation-service/app",
+    "frontend/customer/src",
+    "frontend/admin/src",
+)
+SRC_L2_SUFFIXES = (".py", ".vue", ".ts", ".js")
+
 
 def log(level: str, message: str) -> None:
     """带调用链的结构化日志行。"""
     print(f"[{TRACE_ID}] {level}  {message}")
+
+
+def verify_src_l2_no_regression(root: Path, errors: list[str]) -> None:
+    """SRC-L2 静态守卫：占位符 token / 桩鉴权函数不得出现在生产源码。
+
+    不依赖 helm，无条件执行。仅扫描 app/src 生产目录（不含 tests / docs），
+    因此负向断言测试中作为字符串出现的占位符不会被误判。
+    """
+
+    placeholder_hits: list[str] = []
+    stub_hits: list[str] = []
+    scanned = 0
+    for rel_dir in SRC_L2_DIRS:
+        base = root / rel_dir
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*"):
+            if not (path.is_file() and path.suffix in SRC_L2_SUFFIXES):
+                continue
+            scanned += 1
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if PLACEHOLDER_LITERAL in text:
+                placeholder_hits.append(str(path.relative_to(root)))
+            for stub in FORBIDDEN_STUB_DEFS:
+                if stub in text:
+                    stub_hits.append(f"{path.relative_to(root)}: {stub}")
+
+    if placeholder_hits:
+        errors.append(f"SRC-L2 占位符 token 在生产源码复发（身份桩鉴权可能回退）：{placeholder_hits}")
+    elif stub_hits:
+        errors.append(f"SRC-L2 已删除的桩鉴权函数在生产源码复活：{stub_hits}")
+    else:
+        log("OK", f"SRC-L2 防回退：生产源码无占位符 token / 桩鉴权函数（扫描 {scanned} 个文件）")
 
 
 def helm_render(root: Path, release: str, extra_sets: list[str]) -> str:
@@ -103,6 +157,9 @@ def verify(root: Path, require_helm: bool = False) -> list[str]:
             errors.append(f"customer nginx.conf 仍存在身份注入指令（B1 必须删除）：{leaked}")
         else:
             log("OK", "customer nginx.conf 已无身份注入指令")
+
+    # ── 静态检查 2：SRC-L2 占位符 token / 桩鉴权函数防回退（不依赖 helm）──
+    verify_src_l2_no_regression(root, errors)
 
     if not shutil.which("helm"):
         if require_helm:

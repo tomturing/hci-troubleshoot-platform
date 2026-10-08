@@ -195,12 +195,48 @@ P1 将同源信任模型扩展到全部网关路由，并对 admin 控制面升�
 **真正的安全边界是 `require_admin` 族与下游归属校验**。待客户登录体系（P1 后续）落地后，
 user 级门禁可一键切换为真实用户语义。
 
+## SRC-L2 技术债修复（2026-10-08）
+
+P0/P1 已覆盖读侧与 admin 控制面，但 **conversation-service 的客户写入路由**仍停留在
+MVP 的「桩鉴权」：网关对 `exec-result` / `vm-console-*` 注入固定占位符 token，下游
+`_check_user_session` / `_check_session_or_internal` 只做长度校验，`bridge-logs` 直接
+信任自报/占位身份。这些凭据与真实身份解耦，构成 IDOR 与越权回采面。本次将其收敛到与
+读侧一致的**签名信任链**：
+
+| 路由 | 上游（网关） | 下游（conversation-service）归属校验 |
+|---|---|---|
+| `POST /api/conversations/{id}/exec-result` | 已有 `require_user`，删除占位符兜底，改为透传 + 签名 `X-Client-ID` | `verify_conversation_ownership`（会话→case→client_id 比对） |
+| `POST /api/conversations/{id}/vm-console-result` | 同上 | `verify_conversation_ownership` |
+| `GET /api/conversations/{id}/vm-console-artifacts/{artifact}` | **新增** `require_user`（此前匿名可达）+ 签名注入 | `verify_conversation_ownership` + 记审计（actor=user:{client_id}） |
+| `POST /api/bridge-logs`（批量） | **新增** `require_user` + 签名注入，删除占位符兜底 | `_verify_batch_ownership` 校验 `{fallback_case_id ∪ entry.case_id}` 全量归属 |
+| `POST /api/bridge-logs/upload`（手动补采） | 同上 | 绑定工单先校验 + 逐条惰性归属（`owned_cache` 去重） |
+
+要点：
+
+- **归属校验凭据 = 网关签名 `X-Client-ID`**，与 `Authorization` 完全解耦；网关出口统一
+  剥离用户可伪造的 `X-Client-ID` / `X-Client-Signature`，用 `INTERNAL_API_TOKEN` HMAC 重签。
+- **内部直连旁路**：bridge-logs 保留 `Authorization: Bearer <INTERNAL_API_TOKEN>` 分支（返回
+  `internal`、跳过归属），供集群内/离线场景使用；前端经网关一律走签名归属。exec-result /
+  vm-console 无内部直连调用方，未保留旁路。
+- **写库前校验、失败整单回滚**：归属 403 在事务 commit 之前抛出，越权条目不落库。
+- **过渡语义不变**：`STRICT_IDENTITY_SIGNATURE=false` 时未签名请求 → `authenticate_request`
+  返回 None → 匿名放行且跳过归属比对（存量兼容）；`=true` 时无签名 → 401。
+- **admin 兼容**：`require_user` 在 `is_admin` 且带 `?client_id=` 时放行，管理台读侧不受影响。
+- **前端**：`MessageBubble.vue` 控制台缩略图下载移除占位 `Authorization`，改依赖同源身份
+  Cookie（浏览器自动携带，网关 `require_user` 校验）。
+- **防回退守卫**：`scripts/verify/verify_identity_resign.py` 增加 SRC-L2 静态检查——生产
+  源码（`api-gateway/app`、`conversation-service/app`、两前端 `src`）不得再出现占位符 token
+  字面量，亦不得复活已删除的桩鉴权函数定义。
+
 ## 残留风险（P1 后续）
 
-- `exec-result` / `vm-console-*` 下游保留占位 token 兜底（内部伪鉴权，非报告利用点）；
-  移除前必须先让 agent 终端流切换 `INTERNAL_API_TOKEN`；
-- `/api/diagnosis-*`（含 internal 端点）与 `/api/bridge-logs` 收紧前需确认运维脚本与
-  已分发 `terminal_bridge.exe` 的凭证注入方式（否则会中断自动上传）；
+- `/api/diagnosis-*`（含 internal 端点）收紧前需确认运维脚本与已分发 `terminal_bridge.exe`
+  的凭证注入方式（否则会中断自动上传）；`/api/bridge-logs` 已于 SRC-L2 收敛为
+  网关签名归属（批量/上传均 `require_user` + 工单归属，保留内部令牌旁路）；
+- `exec-result` / `vm-console-*` 占位 token 兜底已于 SRC-L2 移除，下游改 `verify_conversation_ownership`；
+- admin-ui `nginx.conf` 仍静态注入 `Authorization` / `X-Tenant-ID` / `X-Actor-ID`（残留 P1 B3：
+  管理员域名收敛 + 管理员认证），收敛完成后须把 `frontend/admin/nginx.conf` 并入
+  `verify_identity_resign.py` 场景 2 的同款注入检查；
 - `IDENTITY_COOKIE_SECURE` 生产 HTTPS 需置 True（当前默认 False，影响 http 直连调试）；
 - 历史匿名工单未绑定身份，待客户登录体系落地后迁移孤儿数据。
 
@@ -212,3 +248,9 @@ user 级门禁可一键切换为真实用户语义。
 - 2026-09-22：P1 扩面——assistants/audit/kb-search/signal-dry-run 加 `require_user`；
   hci-sim 控制面与 kb 管理家族（categories/catalogs/kbd/signal-assets/vm-console/sop）加 `require_admin`；
   WebSocket 握手改为校验网关签发身份 Cookie 与路径 client_id 一致，堵住自报身份签名转发通道
+- 2026-10-08：SRC-L2 技术债修复——conversation-service 客户写入路由（exec-result / vm-console-result /
+  vm-console-artifacts 下载 / bridge-logs 批量 / bridge-logs upload）移除占位 token 与桩鉴权
+  （`_check_user_session` / `_check_session_or_internal`），统一改为网关签名 `X-Client-ID` + 工单/会话
+  归属校验（防 IDOR）；网关 vm-console-artifacts 下载与 bridge-logs 补 `require_user`；前端
+  `MessageBubble.vue` 移除占位 Authorization 改依赖同源 Cookie；`verify_identity_resign.py` 增加 SRC-L2
+  静态防回退守卫（admin-ui nginx 注入属 P1 B3 残项，暂未纳入）

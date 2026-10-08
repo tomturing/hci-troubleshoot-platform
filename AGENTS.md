@@ -371,6 +371,7 @@
 - **API 网关命令反馈 `exec-result` 路由与鉴权修复**：
   - 修复 API 网关 (`api-gateway`) 缺少 `/api/conversations/{conversation_id}/exec-result` 代理路由，导致前端命令执行结果无法回传的问题。
   - 支持对不携带 Bearer 鉴权头的客户侧匿名请求，在网关层自动填充 `Bearer client-session-placeholder-token` 进行安全绕过，契合 `conversation-service` 端 MVP 阶段的临时鉴权需求。
+  - **【已移除 · SRC-L2 2026-10-08】** 上述占位符 token 兜底与 `exec-result` / `vm-console-*` / `bridge-logs` 的客户写入路由桩鉴权（`_check_user_session` / `_check_session_or_internal`）已全部移除，改为「网关签名 `X-Client-ID` + conversation-service 工单/会话归属校验」（防 IDOR）。`bridge-logs` 与 `vm-console-artifacts` 下载补 `require_user`；`scripts/verify/verify_identity_resign.py` 增加静态防回退守卫。详见 `docs/security/identity-signature.md` 的「SRC-L2 技术债修复」章节。**切勿再引入固定占位 token。**
 - **IP 格式校验放宽与工具执行结果截断修复**：
   - 修复 `react_engine.py` 参数前置校验，对包含 `ip` 的参数（如 `node_ip`）在没有显式声明 `format: ipv4` 时同时兼容主机名/节点名（如 `SVR_aCloud_670`），解决部分命令因主机名校验失败而报错的问题。
   - 修复 `react_engine.py` 在参数校验失败时未向前端发送 `tool_result` 事件导致控制台悬挂卡在“正在等待输出...”的 Bug。

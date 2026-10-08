@@ -1,9 +1,10 @@
 """
 测试 api-gateway bridge_logs 代理路由
 
-覆盖：
+覆盖（SRC L2 修复后：移除占位符 token 兜底，改为 require_user + HMAC 签名身份）：
   - payload 转发
-  - 占位符 token 注入
+  - 出口注入 HMAC 签名 X-Client-ID / X-Client-Signature（不再注入占位符 token）
+  - 剥离用户可伪造的身份头
   - 现有 Authorization 透传
   - 上游错误透传
 """
@@ -60,8 +61,8 @@ class TestBridgeLogsProxy(unittest.TestCase):
         self.assertIn("logs", kwargs["json"])
 
     @patch("app.routes.bridge_logs.httpx.AsyncClient")
-    def test_proxy_bridge_logs_injects_placeholder_token(self, mock_client_cls):
-        """无 Authorization 时注入占位符 token"""
+    def test_proxy_bridge_logs_signs_client_identity(self, mock_client_cls):
+        """匿名经网关回采：出口注入 HMAC 签名 X-Client-ID，不再注入占位符 token"""
         mock_client = AsyncMock()
         mock_client_cls.return_value.__aenter__.return_value = mock_client
         mock_response = MagicMock()
@@ -75,10 +76,41 @@ class TestBridgeLogsProxy(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 202)
-        # 验证注入了占位符 token
         args, kwargs = mock_client.post.call_args
         headers = kwargs.get("headers", {})
-        self.assertEqual(headers.get("Authorization"), "Bearer client-session-placeholder-token")
+        # 网关基于服务端 Cookie 的 client_id 重签注入归属凭据
+        self.assertTrue(headers.get("X-Client-ID"))
+        self.assertIn(".", headers.get("X-Client-Signature", ""))
+        # 绝不注入历史占位符 token
+        self.assertNotEqual(headers.get("Authorization"), "Bearer client-session-placeholder-token")
+        self.assertIsNone(headers.get("Authorization"))
+
+    @patch("app.routes.bridge_logs.httpx.AsyncClient")
+    def test_proxy_bridge_logs_strips_forged_identity_headers(self, mock_client_cls):
+        """用户自报的 X-Client-ID / X-Client-Signature 被剥离并以网关签名覆盖"""
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.status_code = 202
+        mock_response.json.return_value = {"ok": True, "accepted": 1, "skipped": 0}
+        mock_client.post.return_value = mock_response
+
+        forged_id = "victim-client-id"
+        response = self.client.post(
+            "/api/bridge-logs",
+            json={"logs": [{"case_id": "Q001", "event": "test"}]},
+            headers={
+                "X-Client-ID": forged_id,
+                "X-Client-Signature": "0000.deadbeef",
+            },
+        )
+
+        self.assertEqual(response.status_code, 202)
+        args, kwargs = mock_client.post.call_args
+        headers = kwargs.get("headers", {})
+        # 出口身份必须来自网关签名，而非用户伪造值
+        self.assertNotEqual(headers.get("X-Client-ID"), forged_id)
+        self.assertNotEqual(headers.get("X-Client-Signature"), "0000.deadbeef")
 
     @patch("app.routes.bridge_logs.httpx.AsyncClient")
     def test_proxy_bridge_logs_forwards_existing_auth(self, mock_client_cls):

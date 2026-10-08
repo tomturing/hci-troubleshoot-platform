@@ -35,7 +35,9 @@ from shared.observability.otel import get_current_trace_id
 from shared.vision.near_black import analyze_ppm_near_black
 from sqlalchemy import text
 
-from app.routes.agent_exec import _check_user_session
+from ..security.auth import authenticate_request, verify_conversation_ownership
+from ..services.conversation_service import ConversationService
+from .conversations import get_conversation_service
 
 logger = get_logger("vm-console-routes")
 router = APIRouter(tags=["vm-console"])
@@ -74,14 +76,18 @@ async def _insert_audit_event(
             conversation_id = None
             if capture_id:
                 row = (
-                    await session.execute(
-                        text(
-                            "SELECT case_id, conversation_id::text FROM vm_console_capture "
-                            "WHERE capture_id = CAST(:capture_id AS uuid)"
-                        ),
-                        {"capture_id": capture_id},
+                    (
+                        await session.execute(
+                            text(
+                                "SELECT case_id, conversation_id::text FROM vm_console_capture "
+                                "WHERE capture_id = CAST(:capture_id AS uuid)"
+                            ),
+                            {"capture_id": capture_id},
+                        )
                     )
-                ).mappings().first()
+                    .mappings()
+                    .first()
+                )
                 if row:
                     case_id = row["case_id"]
                     conversation_id = row["conversation_id"]
@@ -133,7 +139,11 @@ async def _db_manager_get_conversation(capture_id: str) -> str | None:
 
 def _check_internal_auth(request: Request) -> None:
     auth_header = request.headers.get("Authorization", "")
-    if not INTERNAL_API_TOKEN or not auth_header.startswith("Bearer ") or auth_header.split(" ", 1)[1] != INTERNAL_API_TOKEN:
+    if (
+        not INTERNAL_API_TOKEN
+        or not auth_header.startswith("Bearer ")
+        or auth_header.split(" ", 1)[1] != INTERNAL_API_TOKEN
+    ):
         raise HTTPException(status_code=401, detail="内部 Token 无效")
 
 
@@ -193,9 +203,7 @@ async def push_vm_console_op(request: Request, conversation_id: uuid.UUID, body:
     }
     sse_pusher = getattr(request.app.state, "sse_pusher", None)
     if sse_pusher:
-        await sse_pusher.push_event(
-            conversation_id=str(conversation_id), event_type="vm_console_op", data=event_data
-        )
+        await sse_pusher.push_event(conversation_id=str(conversation_id), event_type="vm_console_op", data=event_data)
     else:
         logger.warning("vm_console_sse_pusher_unavailable", exec_id=body.exec_id)
     logger.info(
@@ -247,7 +255,9 @@ async def upload_vm_console_artifact(
     quality = analyze_ppm_near_black(body)
     if not quality.get("parse_ok"):
         VM_CONSOLE_SECURITY_REJECTION_TOTAL.labels(reason="image_invalid", mode="online").inc()
-        raise HTTPException(status_code=400, detail=f"制品不是合法 P6 PPM（IMAGE_INVALID）: {quality.get('parse_error')}")
+        raise HTTPException(
+            status_code=400, detail=f"制品不是合法 P6 PPM（IMAGE_INVALID）: {quality.get('parse_error')}"
+        )
 
     artifact_id = uuid.uuid4()
     _ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
@@ -305,9 +315,14 @@ async def upload_vm_console_artifact(
         await session.commit()
 
     await _insert_audit_event(
-        capture_id=str(capture_id), event_type="upload_completed",
-        detail={"sha256": actual_sha256, "size_bytes": len(body), "role": role,
-                "near_black": bool(quality.get("near_black"))},
+        capture_id=str(capture_id),
+        event_type="upload_completed",
+        detail={
+            "sha256": actual_sha256,
+            "size_bytes": len(body),
+            "role": role,
+            "near_black": bool(quality.get("near_black")),
+        },
     )
     VM_CONSOLE_ARTIFACT_BYTES_TOTAL.labels(kind="ppm", mode="online").inc(len(body))
     VM_CONSOLE_NEAR_BLACK_TOTAL.labels(near_black=str(bool(quality.get("near_black"))).lower(), mode="online").inc()
@@ -356,13 +371,17 @@ async def download_vm_console_artifact(request: Request, artifact_id: uuid.UUID)
         raise HTTPException(status_code=503, detail="数据库未就绪")
     async with _db_manager.async_session_factory() as session:
         row = (
-            await session.execute(
-                text(
-                    "SELECT storage_ref, media_type FROM vm_console_capture_artifact WHERE artifact_id = CAST(:id AS uuid)"
-                ),
-                {"id": str(artifact_id)},
+            (
+                await session.execute(
+                    text(
+                        "SELECT storage_ref, media_type FROM vm_console_capture_artifact WHERE artifact_id = CAST(:id AS uuid)"
+                    ),
+                    {"id": str(artifact_id)},
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
         # 查看原图必须单独记审计（§6.2）：读取方与时间落在制品记录上。
         await session.execute(
             text(
@@ -381,7 +400,9 @@ async def download_vm_console_artifact(request: Request, artifact_id: uuid.UUID)
     if not path.is_file():
         raise HTTPException(status_code=410, detail="制品文件已过期或不可用")
     await _insert_audit_event(
-        capture_id=None, event_type="artifact_read", actor="internal:agent-service",
+        capture_id=None,
+        event_type="artifact_read",
+        actor="internal:agent-service",
         detail={"artifact_id": str(artifact_id), "purpose": "vision_extraction"},
     )
     return Response(content=path.read_bytes(), media_type=str(row["media_type"]))
@@ -456,8 +477,17 @@ class VmConsoleResultRequest(BaseModel):
 
 
 @router.post("/api/conversations/{conversation_id}/vm-console-result")
-async def submit_vm_console_result(conversation_id: uuid.UUID, body: VmConsoleResultRequest):
-    """前端把 Bridge 的 vm_console_result 元数据回传；合并制品信息后入 Redis。"""
+async def submit_vm_console_result(
+    conversation_id: uuid.UUID,
+    body: VmConsoleResultRequest,
+    request: Request,
+    service: ConversationService = Depends(get_conversation_service),
+):
+    """前端把 Bridge 的 vm_console_result 元数据回传；合并制品信息后入 Redis。
+
+    会话归属校验：仅会话归属 client 可回传（防 IDOR）。
+    """
+    await verify_conversation_ownership(conversation_id, request, service)
 
     if _redis_manager is None or _redis_manager.client is None:
         raise HTTPException(status_code=503, detail="Redis 服务未就绪")
@@ -468,19 +498,23 @@ async def submit_vm_console_result(conversation_id: uuid.UUID, body: VmConsoleRe
         try:
             async with _db_manager.async_session_factory() as session:
                 row = (
-                    await session.execute(
-                        text(
-                            """
+                    (
+                        await session.execute(
+                            text(
+                                """
                             SELECT a.artifact_id::text, a.sha256, c.quality_metrics
                             FROM vm_console_capture_artifact a
                             JOIN vm_console_capture c ON c.capture_id = a.capture_id
                             WHERE a.capture_id = CAST(:capture_id AS uuid)
                             ORDER BY a.created_at DESC LIMIT 1
                             """
-                        ),
-                        {"capture_id": body.capture_id},
+                            ),
+                            {"capture_id": body.capture_id},
+                        )
                     )
-                ).mappings().first()
+                    .mappings()
+                    .first()
+                )
                 if row:
                     payload["artifact_id"] = row["artifact_id"]
                     payload["sha256"] = row["sha256"]
@@ -490,9 +524,7 @@ async def submit_vm_console_result(conversation_id: uuid.UUID, body: VmConsoleRe
         except Exception as exc:
             logger.warning("vm_console_result_merge_failed", error=str(exc), capture_id=body.capture_id)
 
-    await _redis_manager.client.lpush(
-        f"vm_console_result:{body.exec_id}", json.dumps(payload, ensure_ascii=False)
-    )
+    await _redis_manager.client.lpush(f"vm_console_result:{body.exec_id}", json.dumps(payload, ensure_ascii=False))
     await _redis_manager.client.expire(f"vm_console_result:{body.exec_id}", 300)
     await _redis_manager.client.delete(f"vm_console_op:{body.exec_id}")
     logger.info(
@@ -524,9 +556,7 @@ class VmConsoleObservationRequest(BaseModel):
 
 
 @router.post("/internal/conversations/{conversation_id}/vm-console-observation", status_code=202)
-async def push_vm_console_observation(
-    request: Request, conversation_id: uuid.UUID, body: VmConsoleObservationRequest
-):
+async def push_vm_console_observation(request: Request, conversation_id: uuid.UUID, body: VmConsoleObservationRequest):
     """把视觉观察结果推送到客户端（完成态结果卡数据源）。"""
 
     _check_internal_auth(request)
@@ -555,29 +585,37 @@ async def download_vm_console_thumbnail(
     request: Request,
     conversation_id: uuid.UUID,
     artifact_id: uuid.UUID,
-    user_id: str = Depends(_check_user_session),
+    service: ConversationService = Depends(get_conversation_service),
 ):
     """授权缩略图下载（§6.2：短时签名访问 + 查看原图单独记审计）。
 
-    仅允许下载属于当前会话的制品；每次访问更新 last_read_at/last_read_by。
+    仅允许下载属于当前会话归属 client 的制品（会话归属校验防跨客户下载）；
+    每次访问更新 last_read_at/last_read_by。
     """
+    await verify_conversation_ownership(conversation_id, request, service)
+    client_id = await authenticate_request(request)
+    user_id = client_id or "anonymous"
 
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
     async with _db_manager.async_session_factory() as session:
         row = (
-            await session.execute(
-                text(
-                    """
+            (
+                await session.execute(
+                    text(
+                        """
                     SELECT a.storage_ref, a.media_type, c.conversation_id::text
                     FROM vm_console_capture_artifact a
                     JOIN vm_console_capture c ON c.capture_id = a.capture_id
                     WHERE a.artifact_id = CAST(:artifact_id AS uuid)
                     """
-                ),
-                {"artifact_id": str(artifact_id)},
+                    ),
+                    {"artifact_id": str(artifact_id)},
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
         if row is None or str(row["conversation_id"]) != str(conversation_id):
             raise HTTPException(status_code=404, detail="制品不存在或不属于当前会话")
         await session.execute(
@@ -595,8 +633,9 @@ async def download_vm_console_thumbnail(
     if not path.is_file():
         raise HTTPException(status_code=410, detail="制品文件已过期或不可用")
     await _insert_audit_event(
-        capture_id=None, event_type="artifact_read", actor=f"user:{user_id}",
-        detail={"artifact_id": str(artifact_id), "conversation_id": str(conversation_id),
-                "purpose": "thumbnail"},
+        capture_id=None,
+        event_type="artifact_read",
+        actor=f"user:{user_id}",
+        detail={"artifact_id": str(artifact_id), "conversation_id": str(conversation_id), "purpose": "thumbnail"},
     )
     return Response(content=path.read_bytes(), media_type=str(row["media_type"]))

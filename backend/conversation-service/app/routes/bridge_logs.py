@@ -10,30 +10,31 @@ terminal_bridge 日志回采接口 - 统一工单关联的日志落库
   - docs/solution/events/2026-07-20-terminal-bridge回采链路断裂根因分析.md
   - OBS-TERMINAL-BRIDGE-001
 
-鉴权（对齐现有 customer 路由 MVP 策略）：
-  - 必须携带 Authorization: Bearer <session_token>
-  - 接受 INTERNAL_API_TOKEN（内部服务调用）或占位符 token（customer 前端经网关兜底注入），
-    对齐 agent_exec.py 的 _check_user_session 与 conversations.py 的 exec-result 路由强度；
-  - 兼容既有 3 段 JWT 路径（解析 sub/user_id/user 用于审计）；
-  - 缺失 / 非法一律 401；user_id 写入日志用于审计。
+鉴权（SRC L2 加固，2026-10-08）：
+  - customer 前端经 api-gateway：网关强制 require_user（服务端身份 Cookie）并注入
+    HMAC 签名 X-Client-ID，本服务据此做工单归属校验（_verify_batch_ownership /
+    _assert_case_owned），归属不符即 403；历史占位符 token 已彻底移除。
+  - 集群内服务直连（agent-service 等）：Authorization: Bearer <INTERNAL_API_TOKEN>
+    旁路归属校验。
+  - 严格模式（STRICT_IDENTITY_SIGNATURE=true）无签名一律 401；过渡模式放行并匿名审计。
 """
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import uuid
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from shared.database.postgres import DatabaseManager
 from shared.observability.logger import get_logger
 from sqlalchemy import text
 
 from ..config import settings
+from ..security.auth import authenticate_request
 
 logger = get_logger("bridge-logs-routes")
 router = APIRouter(tags=["bridge-logs"])
@@ -47,21 +48,9 @@ def set_dependencies(db: DatabaseManager) -> None:
     _db_manager = db
 
 
-def _decode_jwt_payload(token: str) -> dict:
-    """解码 JWT payload（不做签名校验），失败抛 401。"""
-    parts = token.split(".")
-    if len(parts) != 3:
-        raise HTTPException(status_code=401, detail="Token 格式无效")
-    try:
-        payload_b64 = parts[1]
-        payload_b64 += "=" * (-len(payload_b64) % 4)
-        return json.loads(base64.urlsafe_b64decode(payload_b64))
-    except Exception:
-        raise HTTPException(status_code=401, detail="Token 解析失败")
-
-
-# customer 前端经网关兜底注入的占位符 token（对齐 conversations.py exec-result 路由）
-_PLACEHOLDER_TOKEN = "client-session-placeholder-token"
+# 鉴权模型（SRC L2 加固）：customer 前端经网关走签名 X-Client-ID 归属校验
+# （_verify_batch_ownership / _assert_case_owned），彻底移除历史占位符 token；
+# 集群内服务直连可用 Bearer <INTERNAL_API_TOKEN> 旁路归属校验。
 
 
 def _parse_event_time(value: str | None) -> datetime | None:
@@ -86,41 +75,55 @@ def _parse_event_time(value: str | None) -> datetime | None:
     return parsed
 
 
-def _check_session_or_internal(authorization: str | None = Header(default=None)) -> str:
-    """回采接口鉴权（对齐现有 customer 路由 MVP 策略）。
+def _is_internal_caller(authorization: str | None) -> bool:
+    """内部服务直连判定：Authorization: Bearer <INTERNAL_API_TOKEN>。
 
-    接受：
-      - INTERNAL_API_TOKEN：内部服务调用（agent-service 等直接调用）
-      - 占位符 token：customer 前端经 api-gateway 兜底注入（无真实 session 体系时的 MVP 路径）
-      - 3 段 JWT：兼容既有携带真实 session 的调用，解析 sub/user_id/user 用于审计
-
-    返回用户标识（user_id），供日志审计。任何非法情况均返回 401。
+    仅集群内服务（如 agent-service）直连本服务时使用；customer 前端经网关
+    访问走签名 X-Client-ID 归属校验，不携带此令牌。
     """
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="缺少 Bearer Token")
-    token = authorization[7:].strip()
-    if not token:
-        raise HTTPException(status_code=401, detail="Token 无效")
+        return False
+    return authorization[7:].strip() == settings.INTERNAL_API_TOKEN
 
-    # 1) 内部服务 token（服务间直接调用）
-    if token == settings.INTERNAL_API_TOKEN:
+
+async def _assert_case_owned(session, case_id: str, client_id: str) -> None:
+    """校验单个 case 归属 client；不符即 403（复用本服务参数化查询先例）。"""
+    res = await session.execute(text('SELECT client_id FROM "case" WHERE case_id = :case_id'), {"case_id": case_id})
+    row = res.fetchone()
+    owner = row[0] if row else None
+    if owner is None or owner != client_id:
+        logger.warning(event="bridge_log_ownership_forbidden", case_id=str(case_id), client_id=client_id)
+        raise HTTPException(status_code=403, detail="无权操作此工单的日志")
+
+
+async def _verify_batch_ownership(body: BridgeLogBatch, client_id: str) -> None:
+    """写库前校验 batch 内全部 case_id（含 fallback）归属当前 client；不符即 403。
+
+    仅当网关已签名 X-Client-ID（authenticate_request 返回非 None）时执行；
+    过渡模式（无签名）下跳过，与既有 customer 路由保持一致。
+    """
+    case_ids = {body.fallback_case_id}
+    case_ids |= {entry.case_id for entry in body.logs}
+    case_ids.discard(None)
+    if not case_ids or _db_manager is None:
+        return
+    async for session in _db_manager.get_session():
+        for case_id in case_ids:
+            await _assert_case_owned(session, case_id, client_id)
+
+
+async def _authenticate_batch(body: BridgeLogBatch, request: Request, authorization: str | None) -> str:
+    """回采鉴权 + 工单归属校验（见模块头鉴权模型）。
+
+    返回用于审计的 user_id："internal"（内部直连）| client_id（签名通过）|
+    "anonymous"（过渡模式无签名）。
+    """
+    if _is_internal_caller(authorization):
         return "internal"
-
-    # 2) 占位符 token（customer 前端经网关兜底，对齐 exec-result 路由）
-    if token == _PLACEHOLDER_TOKEN:
-        return "customer"
-
-    # 3) 兼容既有 JWT 路径：3 段 JWT 解析 sub/user_id/user 用于审计
-    if token.count(".") == 2:
-        try:
-            payload = _decode_jwt_payload(token)
-            uid = payload.get("sub") or payload.get("user_id") or payload.get("user")
-            if uid:
-                return str(uid)
-        except HTTPException:
-            pass
-
-    raise HTTPException(status_code=401, detail="Token 无效")
+    client_id = await authenticate_request(request)
+    if client_id is not None:
+        await _verify_batch_ownership(body, client_id)
+    return client_id or "anonymous"
 
 
 class BridgeLogEntry(BaseModel):
@@ -316,6 +319,7 @@ def _coerce_upload_entry(raw: dict[str, Any]) -> BridgeLogEntry | None:
 @router.post("/api/bridge-logs")
 async def ingest_bridge_logs(
     body: BridgeLogBatch,
+    request: Request,
     authorization: str | None = Header(default=None),
 ):
     """批量回采 terminal_bridge 结构化执行日志（前端 → conversation-service）。
@@ -323,14 +327,19 @@ async def ingest_bridge_logs(
     所有条目必须携带 case_id（无 case_id 的日志在浏览器端已被过滤，此处再次校验），
     落库到 bridge_execution_logs，供端到端可观测性与工单复盘。
 
+    鉴权与归属（SRC L2）：customer 前端经网关携带签名 X-Client-ID，写库前校验
+    全部 case_id 归属当前 client（不符 403）；集群内服务直连可用
+    Bearer <INTERNAL_API_TOKEN> 旁路归属校验。
+
     Args:
         body: 批量日志（logs）
-        authorization: 用户 Session Token（真实鉴权）
+        request: FastAPI 请求（读取网关签名的身份头）
+        authorization: 内部服务令牌（可选，仅服务直连）
 
     Returns:
         ok / 接收条数 / 跳过条数
     """
-    user_id = _check_session_or_internal(authorization)
+    user_id = await _authenticate_batch(body, request, authorization)
 
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
@@ -367,6 +376,7 @@ async def ingest_bridge_logs(
 @router.post("/api/bridge-logs/upload")
 async def upload_bridge_logs(
     body: BridgeLogUploadRequest,
+    request: Request,
     authorization: str | None = Header(default=None),
 ):
     """手动上传本地 terminal_bridge 日志并补采落库（自动回采不可用时的兜底通道）。
@@ -378,14 +388,26 @@ async def upload_bridge_logs(
     工单归属：条目自带 case_id 时以条目为准；缺失则继承请求中的 case_id，
     实现"一个 bridge 服务多个工单"的场景下按工单归档。
 
+    鉴权与归属（SRC L2）：customer 前端经网关携带签名 X-Client-ID，逐条校验有效
+    case_id（条目自带或继承请求级）归属当前 client，不符即 403 整单拒绝（写库前
+    校验、事务未提交 → 整体回滚不落库）；集群内服务直连可用 Bearer <INTERNAL_API_TOKEN> 旁路。
+
     Args:
         body: 上传请求（绑定工单 + 文件列表）
-        authorization: 用户 Session Token
+        request: FastAPI 请求（读取网关签名的身份头）
+        authorization: 内部服务令牌（可选，仅服务直连）
 
     Returns:
         ok / upload_id / 各文件与总计的 accepted/duplicates/skipped/invalid 统计
     """
-    user_id = _check_session_or_internal(authorization)
+    if _is_internal_caller(authorization):
+        user_id = "internal"
+        enforce_ownership = False
+        client_id: str | None = None
+    else:
+        client_id = await authenticate_request(request)
+        enforce_ownership = client_id is not None
+        user_id = client_id or "anonymous"
 
     # 功能开关：自动回采稳定后可整体屏蔽手动上传入口（Helm: bridgeLogs.uploadEnabled）
     if not getattr(settings, "BRIDGE_LOG_UPLOAD_ENABLED", True):
@@ -401,7 +423,12 @@ async def upload_bridge_logs(
     files_summary: list[dict[str, Any]] = []
     total = {"accepted": 0, "duplicates": 0, "skipped": 0, "invalid": 0}
 
+    owned_cache: set[str] = set()
     async for session in _db_manager.get_session():
+        # 归属校验：请求级绑定工单先行校验（不符 403，事务未提交 → 整单回滚不落库）
+        if enforce_ownership and body.case_id:
+            await _assert_case_owned(session, body.case_id, client_id)
+            owned_cache.add(body.case_id)
         for upload_file in body.files:
             raw_bytes = len(upload_file.content.encode("utf-8"))
             if raw_bytes > MAX_UPLOAD_FILE_BYTES:
@@ -432,6 +459,13 @@ async def upload_bridge_logs(
                 # 上传时未指定实例 ID 的条目，用请求级实例 ID 补全，保证后续去重可用
                 if not entry.bridge_instance_id and body.bridge_instance_id:
                     entry.bridge_instance_id = body.bridge_instance_id
+
+                # 归属校验：条目自带 case_id 可能指向他人工单，写库前惰性校验（按 case 去重）
+                if enforce_ownership:
+                    effective_case = entry.case_id or body.case_id
+                    if effective_case and effective_case not in owned_cache:
+                        await _assert_case_owned(session, effective_case, client_id)
+                        owned_cache.add(effective_case)
 
                 outcome = await _insert_entry(
                     session,

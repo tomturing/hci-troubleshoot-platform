@@ -245,12 +245,9 @@ async def submit_exec_result(conversation_id: str, request: Request, client_id: 
     """回传命令执行结果"""
     payload = await _read_json_body_limited(request, MAX_EXEC_RESULT_BODY_BYTES)
     headers = {}
-    auth = request.headers.get("Authorization")
-    if auth:
+    # 归属校验改由下游基于网关注入的签名 X-Client-ID 完成；透传 Authorization 仅为兼容，不再注入占位 Token
+    if auth := request.headers.get("Authorization"):
         headers["Authorization"] = auth
-    else:
-        # 兜底注入 MVP 阶段临时 Token，绕过下游会话鉴权
-        headers["Authorization"] = "Bearer client-session-placeholder-token"
     if traceparent := request.headers.get("traceparent"):
         headers["traceparent"] = traceparent
     if tracestate := request.headers.get("tracestate"):
@@ -267,12 +264,9 @@ async def submit_vm_console_result(conversation_id: str, request: Request, clien
     """回传虚拟机控制台截图元数据结果（qkv_vm_console；不含图片字节）。"""
     payload = await _read_json_body_limited(request, MAX_EXEC_RESULT_BODY_BYTES)
     headers = {}
-    auth = request.headers.get("Authorization")
-    if auth:
+    # 归属校验改由下游基于网关注入的签名 X-Client-ID 完成；透传 Authorization 仅为兼容，不再注入占位 Token
+    if auth := request.headers.get("Authorization"):
         headers["Authorization"] = auth
-    else:
-        # 兜底注入 MVP 阶段临时 Token，绕过下游会话鉴权（对齐 exec-result）
-        headers["Authorization"] = "Bearer client-session-placeholder-token"
     if traceparent := request.headers.get("traceparent"):
         headers["traceparent"] = traceparent
 
@@ -283,14 +277,17 @@ async def submit_vm_console_result(conversation_id: str, request: Request, clien
 
 
 @router.get("/{conversation_id}/vm-console-artifacts/{artifact_id}")
-async def download_vm_console_artifact(conversation_id: str, artifact_id: str, request: Request):
-    """授权下载控制台截图制品（会话鉴权在 conversation-service 完成并记审计）。"""
+async def download_vm_console_artifact(
+    conversation_id: str, artifact_id: str, request: Request, client_id: str = Depends(require_user)
+):
+    """授权下载控制台截图制品（网关 require_user 鉴权并签名注入 X-Client-ID，下游 conversation-service 校验归属并记审计）。"""
     headers = {}
+    # 归属校验改由下游基于网关注入的签名 X-Client-ID 完成；透传 Authorization 仅为兼容，不再注入占位 Token
     if auth := request.headers.get("Authorization"):
         headers["Authorization"] = auth
-    else:
-        headers["Authorization"] = "Bearer client-session-placeholder-token"
-    response = await proxy_request("GET", f"/{conversation_id}/vm-console-artifacts/{artifact_id}", headers=headers)
+    response = await proxy_request(
+        "GET", f"/{conversation_id}/vm-console-artifacts/{artifact_id}", headers=headers, client_id=client_id
+    )
     media_type = response.headers.get("content-type", "application/octet-stream")
     return Response(content=response.content, status_code=response.status_code, media_type=media_type)
 
