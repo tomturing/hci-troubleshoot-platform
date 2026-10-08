@@ -58,7 +58,12 @@ class IdentityMiddleware(BaseHTTPMiddleware):
                 cid = verify_identity(cookie, settings.INTERNAL_API_TOKEN)
                 if cid:
                     request.state.client_id = cid
-                else:
+                elif not path.startswith("/api/diagnosis-scenarios") or auth.startswith("Bearer "):
+                    # 非 /api/diagnosis-scenarios 的普通 /api 路径、或携带管理面 Bearer 令牌的调用方
+                    # 仍按原行为自动签发 client_id（后者用于通过下游「缺 client_id 即 401」校验）。
+                    # 唯独「无 Cookie 且无 Bearer 令牌」的纯匿名请求访问 /api/diagnosis-scenarios* 时
+                    # 不签发身份 → client_id 保持 None → 网关路由的 require_authenticated 返回 401，
+                    # 关闭 SRC-2026-5358 报告中的匿名可读场景目录残留项。
                     cid, cookie_value = issue_identity(settings.INTERNAL_API_TOKEN)
                     request.state.client_id = cid
                     request.state._issue_cookie = cookie_value

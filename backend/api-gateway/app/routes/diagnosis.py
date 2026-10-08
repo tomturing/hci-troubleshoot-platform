@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse, Response
 from shared.observability.logger import get_logger
 
 from app.config import settings
-from app.security.gateway_auth import require_admin
+from app.security.gateway_auth import require_admin, require_authenticated
 
 router = APIRouter(tags=["diagnosis-proxy"])
 logger = get_logger("gateway-diagnosis-proxy")
@@ -235,12 +235,24 @@ async def _proxy_diagnosis_request(request: Request) -> Response:
 
 # ---- 用户面：客户离线诊断自服务链路（身份由 Cookie 派生为 customer 角色）----
 @router.api_route("/api/diagnosis-sessions", methods=["POST"])
-@router.api_route("/api/diagnosis-scenarios", methods=["GET"])
-@router.api_route("/api/diagnosis-scenarios/semantic-advice", methods=["GET", "POST"])
+@router.api_route(
+    "/api/diagnosis-scenarios",
+    methods=["GET"],
+    dependencies=[Depends(require_authenticated)],
+)
+@router.api_route(
+    "/api/diagnosis-scenarios/semantic-advice",
+    methods=["GET", "POST"],
+    dependencies=[Depends(require_authenticated)],
+)
 @router.api_route("/api/diagnosis-sessions/{path:path}", methods=["GET"])
 @router.api_route("/api/diagnosis-sessions/{path:path}", methods=["POST"])
 async def proxy_diagnosis_user_plane(request: Request, path: str = "") -> Response:
-    """代理客户侧离线诊断接口；不接收证据大文件。"""
+    """代理客户侧离线诊断接口；不接收证据大文件。
+
+    `/api/diagnosis-scenarios*` 要求已登录客户会话（require_user），杜绝 SRC-2026-5358
+    报告的匿名可读场景目录；持有会话 Cookie 的合法客户不受影响。
+    """
 
     return await _proxy_diagnosis_request(request)
 

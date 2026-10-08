@@ -29,3 +29,17 @@ async def require_admin(request: Request) -> None:
     """强制管理员凭证（INTERNAL_API_TOKEN）。"""
     if not getattr(request.state, "is_admin", False):
         raise HTTPException(status_code=403, detail="需要管理员凭证")
+
+
+async def require_authenticated(request: Request) -> None:
+    """要求已认证身份：管理员令牌，或已签发的客户会话 Cookie。
+
+    用于面向客户但仍不得匿名可读的接口（如 /api/diagnosis-scenarios）：
+    匿名（无 Cookie 且非管理员）一律 401；持有会话 Cookie 的合法客户、
+    以及管理员均可通行。
+    """
+    if getattr(request.state, "is_admin", False):
+        return
+    if getattr(request.state, "client_id", None):
+        return
+    raise HTTPException(status_code=401, detail="未认证：缺少有效身份 Cookie")
