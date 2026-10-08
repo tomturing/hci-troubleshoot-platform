@@ -2581,7 +2581,7 @@ export const useChatStore = defineStore('chat', () => {
 
   // === SSH 连接状态（创建工单时） ===
   // 注意：状态名称使用 acli_* 而非 acll_* 避免混淆
-  const sshCreationPhase = ref<'idle' | 'connecting' | 'connected' | 'acli_check' | 'collecting' | 'done' | 'error' | 'acli_not_found'>('idle')
+  const sshCreationPhase = ref<'idle' | 'connecting' | 'connected' | 'acli_check' | 'acli_installing' | 'collecting' | 'done' | 'error' | 'acli_not_found'>('idle')
   const sshCreationError = ref<{ message: string; detail: string } | null>(null)
   const acliAvailable = ref<boolean | null>(null)
   const sshCreationSocket = ref<WebSocket | null>(null)
@@ -2919,9 +2919,61 @@ export const useChatStore = defineStore('chat', () => {
               )
 
               if (acliCheckResult.output.includes('__HCI_ACLI_MISSING__')) {
-                acliAvailable.value = false
-                sshCreationPhase.value = 'acli_not_found'
-                appendSshCreationLog('warn', 'acli', '目标主机未安装 acli，跳过环境采集')
+                appendSshCreationLog('warn', 'acli', '目标主机未安装 acli，尝试自动安装...')
+                sshCreationPhase.value = 'acli_installing'
+
+                // 自动调用 acli_sync 安装 aCLI
+                try {
+                  const installResult = await ensureAcliReady(
+                    socket,
+                    'ssh-create-temp',
+                    (progress) => {
+                      appendSshCreationLog('info', 'acli', progress.text, { status: progress.status })
+                    },
+                    { force: false },
+                  )
+
+                  if (installResult.status === 'installed' || installResult.status === 'up_to_date') {
+                    acliAvailable.value = true
+                    sshCreationPhase.value = 'collecting'
+                    appendSshCreationLog('info', 'acli', 'acli 安装成功，开始采集环境数据', {
+                      version: installResult.version,
+                      architecture: installResult.architecture,
+                    })
+
+                    // 安装成功后继续采集环境数据
+                    for (const command of COLLECT_COMMANDS) {
+                      const result = await runBridgeCommand(command.label, command.cmd)
+                      if (result.exitCode !== 0) {
+                        throw buildCommandError(command.label, result.output, result.exitCode)
+                      }
+                      collectBuffer[command.name] = result.output
+                      appendSshCreationLog('info', 'collect', '采集命令执行完成', {
+                        command: command.name,
+                        outputLength: result.output.length,
+                      })
+                    }
+
+                    await submitCollectedData(caseId, collectBuffer)
+                    appendSshCreationLog('info', 'collect', '环境数据已提交到 Environment API', {
+                      cluster: Boolean(collectBuffer.cluster),
+                      alert: Boolean(collectBuffer.alert),
+                      task: Boolean(collectBuffer.task),
+                    })
+                    await collectEnvironmentData(caseId)
+                    appendSshCreationLog('info', 'collect', '环境上下文刷新完成', {
+                      caseId,
+                    })
+                  } else {
+                    acliAvailable.value = false
+                    sshCreationPhase.value = 'acli_not_found'
+                    appendSshCreationLog('error', 'acli', `acli 安装失败: ${installResult.message || installResult.status}`)
+                  }
+                } catch (installError) {
+                  acliAvailable.value = false
+                  sshCreationPhase.value = 'acli_not_found'
+                  appendSshCreationLog('error', 'acli', `acli 自动安装异常: ${installError instanceof Error ? installError.message : String(installError)}`)
+                }
               } else if (acliCheckResult.output.includes('__HCI_ACLI_OK__')) {
                 acliAvailable.value = true
                 sshCreationPhase.value = 'collecting'

@@ -119,6 +119,28 @@ services:
     networks:
       - hci-troubleshoot-platform_default
 
+  auth-service:
+    build:
+      context: ../..
+      dockerfile: backend/auth-service/Dockerfile
+    container_name: hci-auth-service
+    environment:
+      PYTHONPATH: /app
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://hci_admin:dev_password_123@postgres:5432/hci_troubleshoot}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../../backend/auth-service:/app
+      - ../../backend/shared:/app/shared
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8007 --reload
+    networks:
+      - hci-troubleshoot-platform_default
+
   case-service:
     build:
       context: ../..
