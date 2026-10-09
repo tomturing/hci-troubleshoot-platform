@@ -290,9 +290,12 @@ async def test_kbd_sync_publish_and_batch_rollback_are_auditable():
             if item["resource_type"] == "collector"
             and item["candidate_json"].get("collector_id", "").startswith("kbd_qfk_log_")
         )
-        # 命令由 Shared Resolver + Catalog 编译，不依赖 Tool 的展示模板。
-        assert qfk_collector["command_template"].startswith("acli log get -E -k {keyword} -f {file}")
-        assert "journalctl" not in qfk_collector["command_template"]
+        # SRC-2026-5358 修复建议：采集器 command_template 属执行面敏感配置，响应不再返回
+        # 模板原文，仅返回脱敏占位与 sha256 哈希，后端执行仍按事实源解析。
+        assert qfk_collector["command_template_redacted"] is True
+        assert qfk_collector["command_template"] == "<REDACTED: 执行面敏感配置，由后端按需解析>"
+        assert qfk_collector["command_template_hash"]
+        assert "journalctl" not in qfk_collector["command_template_hash"]
         assert qfk_collector["managed_by"] == "kbd_sync"
         assert qfk_collector["generation_metadata"]["tool_name"] == "qfk_log"
         assert qfk_collector["generation_metadata"]["resolution_catalog_version"]
