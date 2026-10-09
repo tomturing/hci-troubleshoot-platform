@@ -1,5 +1,6 @@
 """Collector（采集器）定义和审批契约。"""
 
+import hashlib
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
@@ -112,6 +113,8 @@ class CollectorDefinitionResponse(BaseModel):
     platform: str
     executor: str
     command_template: str
+    command_template_redacted: bool = True
+    command_template_hash: str | None = None
     parameter_schema: dict[str, Any]
     risk_level: str
     timeout_seconds: int
@@ -140,7 +143,11 @@ class CollectorDefinitionResponse(BaseModel):
             description=entity.description,
             platform=entity.platform,
             executor=entity.executor,
-            command_template=entity.command_template,
+            # SRC-2026-5358 修复建议：command_template 属执行面敏感配置，响应不返回原文，
+            # 改为脱敏占位 + sha256 哈希；后端执行时仍按事实源实体解析，不经此响应。
+            command_template="<REDACTED: 执行面敏感配置，由后端按需解析>",
+            command_template_redacted=True,
+            command_template_hash=hashlib.sha256(entity.command_template.encode("utf-8")).hexdigest(),
             parameter_schema=dict(entity.parameter_schema or {}),
             risk_level=entity.risk_level,
             timeout_seconds=entity.timeout_seconds,

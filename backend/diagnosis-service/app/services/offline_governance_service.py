@@ -174,10 +174,10 @@ class OfflineGovernanceService:
             for item in missing
         ]
         return {
+            # SRC-2026-5358 修复建议：KBD 内部工单的 support_id 与 title 属内部敏感字段，
+            # 即使平台管理员调用也不向响应返回，避免内部工单信息外泄。
             "kbd": {
                 "kbd_id": kbd["id"],
-                "support_id": kbd["support_id"],
-                "title": kbd["title"],
                 "category_id": kbd["category_id"],
                 "status": kbd["status"],
                 "updated_at": kbd["updated_at"],
