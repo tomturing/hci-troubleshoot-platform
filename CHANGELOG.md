@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.30.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.29.0...v2.30.0) (2026-10-08)
+
+
+### ✨ 新功能
+
+* 添加 auth-service 容器配置和 aCLI 自动安装功能 ([#1104](https://github.com/tomturing/hci-troubleshoot-platform/issues/1104)) ([4ca96cb](https://github.com/tomturing/hci-troubleshoot-platform/commit/4ca96cbf27f1d8d24c63429a596849a97ab9011e))
+
+
+### 🐛 Bug 修复
+
+* **api-gateway:** 闭环 SRC-2026-5358 残留项，/api/diagnosis-scenarios 不再匿名可读 ([#1110](https://github.com/tomturing/hci-troubleshoot-platform/issues/1110)) ([bbef24e](https://github.com/tomturing/hci-troubleshoot-platform/commit/bbef24e31ff7a646ea75044383a903c166022c5b))
+* **deploy:** PR-D②清理 ADMIN_API_AUTHORIZATION 共享令牌后门注入 ([#1101](https://github.com/tomturing/hci-troubleshoot-platform/issues/1101)) ([96c73ab](https://github.com/tomturing/hci-troubleshoot-platform/commit/96c73ab2a17d50cd37b575c68ae020a59fee678f))
+* **deps:** 后端服务补 sqlalchemy[asyncio],修复 greenlet 缺失导致启动崩溃 ([#1109](https://github.com/tomturing/hci-troubleshoot-platform/issues/1109)) ([7884a3c](https://github.com/tomturing/hci-troubleshoot-platform/commit/7884a3c84460a8a1021ed2eaaebc7b80b01f06e4))
+* **security:** SRC-L2 移除占位符 Token 并将客户写入路由改为签名归属校验 ([#1111](https://github.com/tomturing/hci-troubleshoot-platform/issues/1111)) ([6b01eaf](https://github.com/tomturing/hci-troubleshoot-platform/commit/6b01eaf8d2f283450d488c48491d9b76b182018b))
+* 修复 SOP 变量配置和系统提示词（工单 Q2026092889831） ([#1102](https://github.com/tomturing/hci-troubleshoot-platform/issues/1102)) ([fc84267](https://github.com/tomturing/hci-troubleshoot-platform/commit/fc842670634587f28483ccbecd0b3acd7ceac3ca))
+
+
+### 📝 文档
+
+* 回填 SRC-L1/L3 任务阶段5-7 与 staging 运行态验证结论 ([#1113](https://github.com/tomturing/hci-troubleshoot-platform/issues/1113)) ([5e614b1](https://github.com/tomturing/hci-troubleshoot-platform/commit/5e614b14aba7f89d7e02bebdd4a29d4dbb3c137b))
+
 ## [2.29.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.28.0...v2.29.0) (2026-09-24)
 
 
