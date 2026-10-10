@@ -196,3 +196,60 @@ class TestChatCompletionStreamIntegration:
                 pass
 
         assert exc_info.value.code == ErrorCode.AI_RATE_LIMITED
+
+    @pytest.mark.asyncio
+    async def test_stream_trailing_empty_choices_usage_chunk_with_mock(self, openclaw_client):
+        """回归：OpenAI 兼容网关（阿里云 MaaS compatible-mode）在流末尾下发
+        choices=[] 且仅携带 usage 的收尾块，不得触发 IndexError 把已收到
+        首 token 的有效响应误判为「模型不可用」（对应工单 Q2026101007500）。"""
+        sse_lines = [
+            "data: " + json.dumps({"choices": [{"delta": {"content": "分类"}}]}),
+            "data: " + json.dumps({"choices": [{"delta": {"content": "结果"}}]}),
+            # 收尾块：choices 为空数组，仅携带 usage（旧代码在此处 [0] 越界抛 IndexError）
+            "data: "
+            + json.dumps(
+                {
+                    "choices": [],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                }
+            ),
+            "data: [DONE]",
+        ]
+        mock_response = MockStreamResponse(200, sse_lines)
+        mock_cm = MockStreamContextManager(mock_response)
+
+        openclaw_client.client.stream = MagicMock(return_value=mock_cm)
+
+        chunks = []
+        async for chunk in openclaw_client.chat_completion_stream(
+            messages=[{"role": "user", "content": "test"}],
+            user_id="test-user",
+        ):
+            chunks.append(chunk)
+
+        # 有效内容完整透传，且收尾块不抛异常
+        assert chunks == ["分类", "结果"]
+
+    @pytest.mark.asyncio
+    async def test_stream_reasoning_only_empty_choices_with_mock(self, openclaw_client):
+        """回归：reasoning 模型先输出思维链（content 为空），随后出现 choices=[]
+        收尾块时，仍应正常结束不抛异常。"""
+        sse_lines = [
+            "data: " + json.dumps({"choices": [{"delta": {"reasoning_content": "思考中"}}]}),
+            "data: " + json.dumps({"choices": [{"delta": {"content": "答案"}}]}),
+            "data: " + json.dumps({"choices": [], "usage": {"total_tokens": 3}}),
+            "data: [DONE]",
+        ]
+        mock_response = MockStreamResponse(200, sse_lines)
+        mock_cm = MockStreamContextManager(mock_response)
+
+        openclaw_client.client.stream = MagicMock(return_value=mock_cm)
+
+        chunks = []
+        async for chunk in openclaw_client.chat_completion_stream(
+            messages=[{"role": "user", "content": "test"}],
+            user_id="test-user",
+        ):
+            chunks.append(chunk)
+
+        assert chunks == ["答案"]

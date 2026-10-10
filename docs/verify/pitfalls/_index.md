@@ -2,7 +2,7 @@
 status: active
 category: verify
 audience: agent
-last_updated: 2026-08-04
+last_updated: 2026-10-10
 owner: team
 update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变更
 ---
@@ -15,7 +15,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 > 2. 再写入对应分类文件  
 > 3. 同一 commit/PR 提交，不允许分开提交  
 >
-> **下一个可用编号：V-018**（旧格式延续：PIT-042）
+> **下一个可用编号：V-019**（旧格式延续：PIT-042）
 
 ---
 
@@ -29,7 +29,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 | 编写/审查 Python（ORM/异常/数据类） | [python.md](python.md) | PIT-003, PIT-004, PIT-009, PIT-040, PIT-041 |
 | 编写/审查前端（pnpm/Vue/Dockerfile） | [frontend.md](frontend.md) | PIT-005, PIT-023, PIT-025, PIT-028, PIT-029, V-001, V-002, V-003, V-005, V-007, V-016 |
 | 调试 Dispatcher/状态机/幂等资源 | [dispatcher.md](dispatcher.md) | PIT-006, PIT-007, PIT-008, V-017 |
-| OpenClaw 401/崩溃/WebSocket/AI 超时 | [openclaw.md](openclaw.md) | PIT-010, PIT-013, PIT-026, PIT-027, PIT-030, PIT-032, PIT-035 |
+| OpenClaw 401/崩溃/WebSocket/AI 超时 | [openclaw.md](openclaw.md) | PIT-010, PIT-013, PIT-026, PIT-027, PIT-030, PIT-032, PIT-035, V-018 |
 
 ---
 
@@ -56,6 +56,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 | V-014 | debugging.md | 仿真场景标签不得充当 KBD 候选答案；Bundle 必须覆盖分类完整采集面 |
 | V-015 | debugging.md | 离线 producer 必须用与 Collector 一致的结构化证据形态取值 |
 | V-017 | dispatcher.md | SOP 自动取值漏传 conversation_id + 泛化 except 吞真实原因，失败应转人工不得模型兜底 |
+| V-018 | openclaw.md | SSE 流末尾 choices=[] 收尾块触发 IndexError，误报「分类模型暂时不可用」（模型其实已返回内容） |
 | V-016 | frontend.md | CI 低配 runner 上 vitest 默认 5s 超时导致重挂载用例临界抖动 |
 | PIT-004 | python.md | Pydantic 验证 |
 | PIT-005 | frontend.md | pnpm workspace |
