@@ -89,6 +89,19 @@ async def get_client_list(request: Request, _: None = Depends(require_admin)):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@router.get("/admin/{case_id}")
+async def admin_get_case(case_id: str, request: Request, _: None = Depends(require_admin)):
+    """[Admin] 获取任意工单详情（要求管理员凭证，归属校验不适用）。
+
+    管理后台无客户 client_id，客户端路由 GET /{case_id} 会因归属不匹配统一 404，
+    故 admin 详情走本专用端点，以 INTERNAL_API_TOKEN 重签下游（与 /all 同权）。
+    """
+    response = await proxy_request("GET", f"/admin/{case_id}", headers=_admin_headers(request))
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 # ============ 客户端路由 ============
 
 

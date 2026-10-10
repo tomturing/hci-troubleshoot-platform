@@ -90,6 +90,23 @@ async def get_client_list(
     return await service.get_client_list()
 
 
+@router.get("/admin/{case_id}", response_model=CaseResponse)
+async def admin_get_case(
+    case_id: str,
+    _: None = Depends(require_admin_token),
+    service: CaseService = Depends(get_case_service),
+):
+    """[Admin] 获取任意工单详情（需管理员凭证，不做归属校验）。
+
+    管理后台无客户 client_id 身份，客户端路由 GET /{case_id} 的归属校验
+    会将 admin 请求统一 404，故 admin 详情必须走本专用端点（与 /all 同权）。
+    """
+    case = await service.get_case(case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return case
+
+
 # ============ 客户端路由 ============
 
 

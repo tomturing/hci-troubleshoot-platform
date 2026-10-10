@@ -217,3 +217,61 @@ class TestGatewayIntegration:
                 # 验证 metric 被记录
                 mock_metric.assert_called_once()
                 mock_metric_instance.inc.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_admin_case_detail_requires_admin(self, test_app):
+        """测试 admin 工单详情未携带管理员凭证被拒（不可借道读任意工单）"""
+        async with (
+            test_app.router.lifespan_context(test_app),
+            httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
+        ):
+            response = await client.get("/api/cases/admin/Q123")
+            assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_admin_case_detail_proxy(self, test_app):
+        """测试 admin 工单详情走专用路由并以内部令牌重签（修复归属校验 404 回归）"""
+        from app.config import settings
+        from app.security.gateway_auth import require_admin
+
+        with patch("app.routes.cases.proxy_request") as mock_proxy:
+            mock_proxy.return_value = httpx.Response(
+                200, json={"case_id": "Q123", "status": "created", "client_id": "client-random-abc"}
+            )
+            test_app.dependency_overrides[require_admin] = lambda: None
+            try:
+                async with (
+                    test_app.router.lifespan_context(test_app),
+                    httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
+                ):
+                    response = await client.get("/api/cases/admin/Q123")
+            finally:
+                test_app.dependency_overrides.pop(require_admin, None)
+
+            assert response.status_code == 200
+            mock_proxy.assert_called_once()
+            args, kwargs = mock_proxy.call_args
+            assert args[0] == "GET"
+            assert args[1] == "/admin/Q123"
+            # 管理员请求必须按网关内部令牌重签，而非透传浏览器 JWT
+            assert kwargs["headers"]["Authorization"] == f"Bearer {settings.INTERNAL_API_TOKEN}"
+
+    @pytest.mark.asyncio
+    async def test_admin_case_detail_not_found_passthrough(self, test_app):
+        """测试 admin 工单详情 404 语义透传"""
+        from app.security.gateway_auth import require_admin
+
+        with patch("app.routes.cases.proxy_request") as mock_proxy:
+            mock_proxy.return_value = httpx.Response(404, json={"detail": "Case not found"})
+            test_app.dependency_overrides[require_admin] = lambda: None
+            try:
+                async with (
+                    test_app.router.lifespan_context(test_app),
+                    httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
+                ):
+                    response = await client.get("/api/cases/admin/Q-NOPE")
+            finally:
+                test_app.dependency_overrides.pop(require_admin, None)
+
+            assert response.status_code == 404
+            assert response.json()["detail"] == "Case not found"
