@@ -15,6 +15,7 @@ import uuid
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
+from shared.security.signature import sign_client_identity
 
 from app.config import settings
 from app.routes.signal_dry_run import _resolve_package_context
@@ -23,6 +24,11 @@ from app.security.gateway_auth import require_admin
 # hci-sim 控制面为管理员专属能力（bundle 编译/发布/激活/回滚、TestRun 管理），
 # admin 前端统一携带 INTERNAL_API_TOKEN，匿名浏览器一律 403（P1 安全加固）
 router = APIRouter(prefix="/api/hci-sim", tags=["hci-sim"], dependencies=[Depends(require_admin)])
+
+# 仿真测试工单归属到独立的服务客户身份（与真实客户隔离），网关以 HMAC 重签该身份
+# 调用 case-service 的客户侧路由（get_client_id 要求有效签名身份头）；#1116/#1118 收紧
+# case-service 鉴权后，若此处不注入身份头，case-service 会 401 并原样透传给前端。
+HCI_SIM_ADMIN_CLIENT_ID = "hci-sim-admin"
 
 
 def _trace_id(request: Request) -> str:
@@ -78,11 +84,20 @@ async def _post(
 
 
 async def _case_request(method: str, path: str, payload: dict | None = None) -> JSONResponse:
-    """调用平台 Case Service，保留其结构化错误响应。"""
+    """调用平台 Case Service，保留其结构化错误响应。
+
+    以 hci-sim-admin 的服务间身份（HMAC 重签）调用：case-service 客户侧路由
+    用 get_client_id 校验签名身份头，缺失/无效即 401；仿真测试工单统一归属到
+    独立的 hci-sim-admin 客户身份，与真实客户隔离。
+    """
     url = f"{settings.CASE_SERVICE_URL.rstrip('/')}/api/cases{path}"
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            kwargs = {"headers": {"Content-Type": "application/json"}}
+            headers = {
+                "Content-Type": "application/json",
+                **sign_client_identity(HCI_SIM_ADMIN_CLIENT_ID, settings.INTERNAL_API_TOKEN),
+            }
+            kwargs: dict = {"headers": headers}
             if payload is not None:
                 kwargs["json"] = payload
             response = await client.request(method, url, **kwargs)
@@ -385,7 +400,7 @@ async def create_test_run(request: Request) -> JSONResponse:
         case_response = await _case_request("GET", f"/{requested_case_id}")
     else:
         case_payload = {
-            "client_id": str(payload.get("client_id") or "hci-sim-admin").strip(),
+            "client_id": str(payload.get("client_id") or HCI_SIM_ADMIN_CLIENT_ID).strip(),
             "title": title,
             "description": description,
             "assistant_type": payload.get("assistant_type") or "htp-agent",
