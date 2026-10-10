@@ -4,7 +4,7 @@ KB Service — 分类基线管理及可视化编辑器单元测试
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from app.models.kb_category import KbCategory
@@ -317,3 +317,128 @@ def test_parse_baseline_yaml_intermediate_derived_code_allowed():
     codes = {record["code"] for record in records}
     assert "虚拟机-L2-虚拟机集群内或跨集群迁移失败" in codes
     assert "虚拟机-L1" in codes  # 域节点派生形态同样放行
+
+
+# ─── 手动入口护栏测试（#1129 后续：堵住漂移入口）──────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_create_rejects_nonconforming_code():
+    """手动传入不合规 code（非『前缀-纯数字』结尾）必须被硬拒绝，从入口堵住漂移。"""
+    mock_db = MagicMock()
+    mock_session = AsyncMock()
+    mock_session.__aenter__.return_value = mock_session
+    mock_db.async_session_factory.return_value = mock_session
+
+    repo = CategoryRepository(mock_db)
+    with pytest.raises(ValueError, match="不符合形态契约"):
+        await repo.create(
+            name="坏编码分类",
+            domain="虚拟机",
+            parent_id=None,
+            code="坏编码分类",  # 不合规：无『-数字』结尾
+            keywords=[],
+        )
+    # 尚未触达冲突/落库，不应写入
+    mock_session.add.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_create_accepts_valid_leaf_code():
+    """手动传入合规叶子 code（『前缀-纯数字』结尾）应正常创建。"""
+    mock_db = MagicMock()
+    mock_session = AsyncMock()
+    mock_session.__aenter__.return_value = mock_session
+    mock_db.async_session_factory.return_value = mock_session
+
+    mock_conflict_res = MagicMock()
+    mock_conflict_res.scalar_one_or_none.return_value = None  # 无冲突
+    mock_session.execute.side_effect = [mock_conflict_res]
+
+    repo = CategoryRepository(mock_db)
+    category = await repo.create(
+        name="FC存储",
+        domain="虚拟机",
+        parent_id=None,
+        code="虚拟机-099",  # 合规叶子形态
+        keywords=[],
+    )
+    assert category.code == "虚拟机-099"
+    assert category.level == 1
+    mock_session.add.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_delete_emits_parent_degeneration_warning():
+    """删除叶子致原父退化为『无子的中间层』时，记录退化告警（不阻断删除）。"""
+    mock_db = MagicMock()
+    mock_session = AsyncMock()
+    mock_session.__aenter__.return_value = mock_session
+    mock_db.async_session_factory.return_value = mock_session
+
+    target = mock_category(20, "虚拟机-005", "虚拟机开机失败", 2, 10, "虚拟机", ["虚拟机", "虚拟机开机失败"])
+    old_parent = mock_category(10, "虚拟机-L2-分组", "分组", 1, None, "虚拟机", ["虚拟机", "分组"])
+
+    res_target = MagicMock()
+    res_target.scalar_one_or_none.return_value = target
+    res_children = MagicMock()
+    res_children.first.return_value = None  # 无子，可删
+    res_sop = MagicMock()
+    res_sop.first.return_value = None
+    res_kbd = MagicMock()
+    res_kbd.first.return_value = None
+    res_parent_obj = MagicMock()
+    res_parent_obj.scalar_one_or_none.return_value = old_parent
+    res_has_child = MagicMock()
+    res_has_child.first.return_value = None  # 父无子 → 退化
+
+    mock_session.execute.side_effect = [
+        res_target,
+        res_children,
+        res_sop,
+        res_kbd,
+        res_parent_obj,
+        res_has_child,
+    ]
+
+    with patch("app.repositories.category_repo.logger") as mock_logger:
+        repo = CategoryRepository(mock_db)
+        result = await repo.delete(code="虚拟机-005")
+        assert result is True
+        warn_calls = [
+            c for c in mock_logger.warning.call_args_list if c.kwargs.get("event") == "repo_category_parent_degenerated"
+        ]
+        assert warn_calls, "退化告警事件未触发"
+
+
+@pytest.mark.anyio
+async def test_update_parent_recursive_emits_parent_degeneration_warning():
+    """拖拽使原父退化为『无子的中间层』时，记录退化告警（不阻断移动）。"""
+    mock_db = MagicMock()
+    mock_session = AsyncMock()
+    mock_session.__aenter__.return_value = mock_session
+    mock_db.async_session_factory.return_value = mock_session
+
+    target = mock_category(20, "存储-001", "FC存储", 2, 10, "存储", ["存储", "FC存储"])
+    new_parent = mock_category(30, "虚拟机-L1", "虚拟机", 1, None, "虚拟机", ["虚拟机"])
+    old_parent = mock_category(10, "存储-L2-分组", "分组", 1, None, "存储", ["存储", "分组"])
+
+    res_target = MagicMock()
+    res_target.scalar_one_or_none.return_value = target
+    res_cycle = MagicMock()
+    res_cycle.scalar_one_or_none.return_value = None  # 新父为 L1，无环
+    res_parent = MagicMock()
+    res_parent.scalar_one_or_none.return_value = new_parent
+    res_all_cats = MagicMock()
+    res_all_cats.scalars.return_value.all.return_value = [target, new_parent, old_parent]
+
+    mock_session.execute.side_effect = [res_target, res_cycle, res_parent, res_all_cats]
+
+    with patch("app.repositories.category_repo.logger") as mock_logger:
+        repo = CategoryRepository(mock_db)
+        updated = await repo.update_parent_recursive(code="存储-001", new_parent_id=30)
+        assert updated.parent_id == 30
+        warn_calls = [
+            c for c in mock_logger.warning.call_args_list if c.kwargs.get("event") == "repo_category_parent_degenerated"
+        ]
+        assert warn_calls, "退化告警事件未触发"
