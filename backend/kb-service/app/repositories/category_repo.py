@@ -787,6 +787,13 @@ class CategoryRepository:
                         break
                     seq += 1
             else:
+                # 手动输入的 code 必须符合形态契约（『前缀-纯数字』结尾，叶子或中间层形态），
+                # 否则拒绝进入，从入口堵住漂移（契约见 shared/utils/category_code.py）
+                if not is_leaf_code(code):
+                    raise ValueError(
+                        f"分类编码 '{code}' 不符合形态契约（须为『前缀-纯数字』结尾，"
+                        f"如 虚拟机-015 或 虚拟机-L2-分组），已拒绝创建。"
+                    )
                 # 检查用户输入的 code 是否冲突
                 conflict_result = await session.execute(select(KbCategory.id).where(KbCategory.code == code))
                 if conflict_result.scalar_one_or_none() is not None:
@@ -853,8 +860,28 @@ class CategoryRepository:
                 raise ValueError("无法删除该分类：该分类已被已发布的 KBD 案例引用。")
 
             # 5. 执行物理删除
+            old_parent_id = category.parent_id
             await session.delete(category)
             await session.commit()
+
+            # 退化护栏：若原父节点因子节点被删而变为「无子的中间层」（即退化成隐形叶子），
+            # 记录告警事件（不阻断删除，合法删除仍允许，但需被巡检 E1 捕获）
+            if old_parent_id is not None:
+                parent_obj = (
+                    await session.execute(select(KbCategory).where(KbCategory.id == old_parent_id))
+                ).scalar_one_or_none()
+                if parent_obj is not None:
+                    has_child = (
+                        await session.execute(select(KbCategory.id).where(KbCategory.parent_id == old_parent_id))
+                    ).first()
+                    if has_child is None and not is_leaf_code(parent_obj.code):
+                        logger.warning(
+                            event="repo_category_parent_degenerated",
+                            parent_id=old_parent_id,
+                            parent_code=parent_obj.code,
+                            removed_child_code=code,
+                            trace_id=trace_id,
+                        )
 
             logger.info(
                 event="repo_delete_category_success",
@@ -916,6 +943,7 @@ class CategoryRepository:
                 raise ValueError("拖拽后分类深度超出最大限制 (L4)")
 
             # 4. 更新当前节点
+            old_parent_id = category.parent_id  # 移动前的原父，用于退化护栏
             category.parent_id = new_parent_id
             category.level = new_level
             category.domain = new_domain
@@ -942,6 +970,19 @@ class CategoryRepository:
                     recurse_update(child)
 
             recurse_update(category)
+
+            # 退化护栏：若原父节点（非新父）因子节点被移走而变为「无子的中间层」，
+            # 记录告警事件（不阻断移动，合法操作仍允许，但需被巡检 E1 捕获）
+            if old_parent_id is not None and old_parent_id != new_parent_id:
+                old_parent = next((c for c in all_cats if c.id == old_parent_id), None)
+                if old_parent is not None and not is_leaf_code(old_parent.code) and not children_map.get(old_parent_id):
+                    logger.warning(
+                        event="repo_category_parent_degenerated",
+                        parent_id=old_parent_id,
+                        parent_code=old_parent.code,
+                        moved_child_code=code,
+                        trace_id=trace_id,
+                    )
 
             await session.commit()
             await session.refresh(category)
