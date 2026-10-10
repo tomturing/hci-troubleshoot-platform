@@ -18,6 +18,53 @@ K3s 调试模式：Custom UI → /terminal-bridge → terminal_bridge Pod → SS
 
 生产/云端 Helm 默认关闭 Pod 模式，仍由客户 Windows 本地 Bridge 发起 SSH 流量。只有确认 K3s Pod 网络能直连目标 HCI 后台的 dev/local 环境才应启用集群模式。
 
+## 端口冲突自愈（仅桌面模式）
+
+客户 Windows 桌面历史上因 `9999` 被占用而“双击打不开”（`ListenAndServe` 直接 `log.Fatal` 崩溃）。
+现在启动时对默认端口做**分类处置**，仅当端口为默认 `9999` 且未显式指定 `--port`/`HCI_BRIDGE_PORT`
+时启用（`desktop` 模式）：
+
+```text
+bind(9999)
+├─ 成功 → 正常提供服务
+└─ 被占用(EADDRINUSE)：
+    ├─ 9999 上是「存活 Bridge」(GET /health/live 返回 status:ok)
+    │     └─ 是 → 幂等退出(exit 0)：本机已有 Bridge 在跑，无需重复启动（双击/没退净场景）
+    └─ 否（陌生进程占用）→ bind(备用 47324)
+          ├─ 成功 → 回退提供服务，记录 bridge.backup_port_activated
+          └─ 失败 → fail-fast：打印占用地址 + best-effort 占用 PID + 处置指引，exit≠0
+```
+
+- **备用端口 `47324`**：位于注册端口区（1024–49151）、IANA 未分配、低于 Windows 出站动态端口下界
+  `49152`（不会被 OS 临时征用），数字无规律、避开常见已知端口。Go 端与前端探测共用这一对常量。
+- **浏览器侧对齐**：customer-ui 桌面模式连接前先探测 `9999 → 47324` 两个**已知端口**，以收到
+  Bridge 的 `bridge_hello` 握手回包为准判定“对端确实是 Bridge”（不能只看 WS 能否 open，否则会误连
+  占用主端口的陌生进程），命中即缓存端口。因此**无需服务端端口发现通道**。
+- **不改动范围**：cluster 同源 `/terminal-bridge`、docker/admin 的 `host.docker.internal:9999`、
+  Helm `terminalBridge.port=9999` 等部署期固定值不变；显式自定义端口冲突直接 fail-fast，不扩散回退。
+
+### Windows 现场处置指引
+
+排查端口占用（PowerShell / CMD）：
+
+```bat
+:: 1) 查看系统动态端口区间（确认 47324 不在其中，默认下界应为 49152）
+netsh int ipv4 show dynamicport tcp
+
+:: 2) 定位占用主/备端口的进程 PID（最后一列为 PID）
+netstat -ano | findstr :9999
+netstat -ano | findstr :47324
+
+:: 3) 查看被系统/Hyper-V 保留的端口段，确认备用端口可用
+netsh int ipv4 show excludedportrange protocol=tcp
+
+:: 4) 按 PID 结束遗留的 terminal_bridge 进程（确认为本应用后再操作）
+taskkill /PID <PID> /F
+```
+
+fail-fast 退出时，日志与 `bridge.port_conflict` 事件会给出占用地址与尽力探测到的占用 PID，
+并提示上述 `netstat`/`lsof` 命令；Linux/WSL 下对应 `lsof -nP -iTCP:9999 -sTCP:LISTEN`。
+
 ## hci-sim C3 仿真租约
 
 Custom UI 的“仿真租约”认证会发送 `auth_type=lease`、`execution_mode=sim-ssh`、`password=htp2.*` 和可选 `test_run_id`。Bridge 只透传 Lease，不解析或记录 token；只有完整上下文才会被标记为 simulation。开发验收由 `scripts/hci-sim/two-step-acceptance.sh <KBD_ID>` 生成连接字段，不能将普通密码或主机名当作仿真认证。
@@ -162,6 +209,10 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | 事件 | 级别 | 说明 |
 |---|---|---|
 | `bridge.startup` | INFO | 启动，含版本/模式/监听地址/日志路径/日志级别 |
+| `bridge.listening` | INFO | 监听就绪，`listen`/`port` 自证最终生效端口（可能已是备用端口） |
+| `bridge.already_running` | INFO | 检测到本机已有存活 Bridge，本次幂等退出（重复启动/未退净） |
+| `bridge.backup_port_activated` | WARN | 主端口被陌生进程占用，已回退至备用端口 47324 |
+| `bridge.port_conflict` | ERROR | 主备端口均不可用，fail-fast 退出，含占用地址与 best-effort 占用 PID |
 | `bridge.connected` | INFO | 浏览器 WebSocket 连接建立 |
 | `bridge.disconnected` | WARN | 浏览器断开（断连窗口内的命令结果会丢失） |
 | `ws.send_failed` | ERROR | 出站消息发送失败（结果回不去浏览器） |
@@ -200,6 +251,7 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 
 | type | 说明 |
 |---|---|
+| `bridge_hello` | 连接握手首包：携带版本，供浏览器端口冲突探测确认对端确为 terminal_bridge（旧客户端忽略未知类型） |
 | `ssh_connected` / `ssh_disconnected` / `ssh_error` | SSH 会话生命周期 |
 | `ssh_output` | 交互终端输出流 |
 | `exec_stdout` / `exec_stderr` / `exec_result` | Agent 命令执行生命周期和最终结果 |

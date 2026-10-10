@@ -7,7 +7,13 @@
  */
 
 const DEFAULT_BRIDGE_URL = 'ws://localhost:9999'
+// 桌面模式下与 terminal_bridge Go 端内置常量一致的两个已知端口：
+// 主端口被陌生进程占用时 Bridge 会回退到备用端口，浏览器只需探测这两个端口即可定位，
+// 无需服务端端口发现通道。
+const PRIMARY_BRIDGE_PORT = 9999
+const BACKUP_BRIDGE_PORT = 47324
 const BRIDGE_CHECK_TIMEOUT = 1500
+const BRIDGE_PROBE_TIMEOUT = 1500
 const DEFAULT_BRIDGE_EXEC_TIMEOUT_SECONDS = 120
 const BRIDGE_RESULT_TRANSPORT_GRACE_SECONDS = 15
 
@@ -20,17 +26,16 @@ declare global {
   }
 }
 
-/**
- * 获取当前 Bridge WebSocket 地址。
- * Helm 通过 nginx 的 runtime-config.js 注入集群路径；未配置时保持 Windows localhost 行为。
- */
-export function getBridgeUrl(): string {
-  const configured =
-    typeof window === 'undefined'
-      ? ''
-      : window.__HCI_RUNTIME_CONFIG__?.terminalBridgeUrl?.trim() || ''
-  if (!configured) return DEFAULT_BRIDGE_URL
+// 桌面模式端口探测结果缓存：记住“上一次确认存活的 Bridge 地址”，
+// 让后续连接与错误文案复用同一端口，避免每次双端口探测。cluster（有注入配置）不写缓存。
+let bridgeUrlCache: string | null = null
 
+function readConfiguredBridgeUrl(): string {
+  if (typeof window === 'undefined') return ''
+  return window.__HCI_RUNTIME_CONFIG__?.terminalBridgeUrl?.trim() || ''
+}
+
+function normalizeConfiguredBridgeUrl(configured: string): string {
   if (configured.startsWith('/')) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     return `${protocol}//${window.location.host}${configured}`
@@ -38,6 +43,100 @@ export function getBridgeUrl(): string {
   if (configured.startsWith('https://')) return `wss://${configured.slice('https://'.length)}`
   if (configured.startsWith('http://')) return `ws://${configured.slice('http://'.length)}`
   return configured
+}
+
+function desktopBridgeUrl(port: number): string {
+  return `ws://localhost:${port}`
+}
+
+/**
+ * 同步获取当前 Bridge WebSocket 地址。
+ * - 注入配置（cluster）：原样解析，行为不变。
+ * - 桌面：优先返回探测缓存（上一次确认存活的端口），否则回退默认 9999，
+ *   保持既有“期望 9999”的错误文案与同步签名，供 `${getBridgeUrl()}` 类调用点使用。
+ */
+export function getBridgeUrl(): string {
+  const configured = readConfiguredBridgeUrl()
+  if (configured) return normalizeConfiguredBridgeUrl(configured)
+  return bridgeUrlCache ?? DEFAULT_BRIDGE_URL
+}
+
+/** 清除桌面探测缓存（连接确认失效或需要重新发现端口时调用）。 */
+export function resetBridgeUrlCache(): void {
+  bridgeUrlCache = null
+}
+
+/** 从 WebSocket 消息中解析 type 字段（非 JSON 或缺字段返回空串）。 */
+function parseBridgeMessageType(data: unknown): string {
+  if (typeof data !== 'string') return ''
+  try {
+    const parsed = JSON.parse(data) as { type?: unknown }
+    return typeof parsed?.type === 'string' ? parsed.type : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 探测给定地址上是否为“存活的 terminal_bridge”。
+ * 关键：不能只看 WS 能否 open（占用主端口的陌生进程同样能让 WS 打开），
+ * 必须收到 Bridge 可识别的回包（连接即下发的 bridge_hello，或 ping/pong/bridge_ready）
+ * 才判定为存活 Bridge。任何超时/错误/关闭均视为非存活。
+ */
+function probeLiveBridge(url: string, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false
+    let ws: WebSocket
+    try {
+      ws = new WebSocket(url)
+    } catch {
+      resolve(false)
+      return
+    }
+    const finish = (live: boolean) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      try {
+        if (ws && typeof ws.close === 'function') ws.close()
+      } catch { /* 忽略关闭异常 */ }
+      resolve(live)
+    }
+    const timer = setTimeout(() => finish(false), timeoutMs)
+    ws.onmessage = (event) => {
+      const type = parseBridgeMessageType(event?.data)
+      if (type === 'bridge_hello' || type === 'ping' || type === 'pong' || type === 'bridge_ready') {
+        finish(true)
+      }
+    }
+    ws.onerror = () => finish(false)
+    ws.onclose = () => finish(false)
+  })
+}
+
+/**
+ * 解析桌面模式下 Bridge 的真实地址：
+ * - 有注入配置（cluster）→ 原样返回，零探测，行为不变。
+ * - 命中缓存 → 直接返回（避免重复双端口探测）。
+ * - 否则按主 9999 → 备 47324 顺序探测“存活 Bridge”，命中即缓存；都不可用则返回默认 9999
+ *   但**不缓存**（保持既有报错文案，且下次仍会重新发现）。
+ */
+export async function resolveBridgeUrl(): Promise<string> {
+  const configured = readConfiguredBridgeUrl()
+  if (configured) return normalizeConfiguredBridgeUrl(configured)
+  if (bridgeUrlCache) return bridgeUrlCache
+
+  const primary = desktopBridgeUrl(PRIMARY_BRIDGE_PORT)
+  if (await probeLiveBridge(primary, BRIDGE_PROBE_TIMEOUT)) {
+    bridgeUrlCache = primary
+    return primary
+  }
+  const backup = desktopBridgeUrl(BACKUP_BRIDGE_PORT)
+  if (await probeLiveBridge(backup, BRIDGE_PROBE_TIMEOUT)) {
+    bridgeUrlCache = backup
+    return backup
+  }
+  return DEFAULT_BRIDGE_URL
 }
 
 /**
@@ -77,6 +176,7 @@ export interface TerminalWsMessage {
   | 'ssh_disconnected'
   | 'ssh_output'
   | 'ssh_error'
+  | 'bridge_hello' // 连接握手首包：供端口冲突探测识别对端确为 terminal_bridge
   | 'ping'         // WebSocket 保活心跳（服务端发送）
   | 'pong'
   | 'bridge_ready'
@@ -137,27 +237,15 @@ export interface OutputFilterSpec {
 }
 
 /**
- * 检测当前配置的 Bridge 是否在运行
- * 通过尝试建立 WebSocket 连接来判断
+ * 检测当前配置的 Bridge 是否在运行。
+ * 先经 resolveBridgeUrl 定位真实端口（桌面双端口探测/缓存），再以“存活 Bridge”
+ * 回包为准确认；若目标已不可用则清除缓存，下次重新发现端口。
  */
-export function checkBridgeRunning(): Promise<boolean> {
-  return new Promise((resolve) => {
-    const probe = new WebSocket(getBridgeUrl())
-    const timer = setTimeout(() => {
-      probe.close()
-      resolve(false)
-    }, BRIDGE_CHECK_TIMEOUT)
-
-    probe.onopen = () => {
-      clearTimeout(timer)
-      probe.close()
-      resolve(true)
-    }
-    probe.onerror = () => {
-      clearTimeout(timer)
-      resolve(false)
-    }
-  })
+export async function checkBridgeRunning(): Promise<boolean> {
+  const url = await resolveBridgeUrl()
+  const live = await probeLiveBridge(url, BRIDGE_CHECK_TIMEOUT)
+  if (!live) resetBridgeUrlCache()
+  return live
 }
 
 /**
@@ -166,24 +254,10 @@ export function checkBridgeRunning(): Promise<boolean> {
  * 供 CaseCreateDialog 和 SshConnectDialog 共用
  */
 export async function checkBridgeBeforeOpen(timeoutMs = 3000): Promise<'running' | 'not-running'> {
-  return new Promise((resolve) => {
-    const probe = new WebSocket(getBridgeUrl())
-    const timer = setTimeout(() => {
-      probe.close()
-      resolve('not-running')
-    }, timeoutMs)
-
-    probe.onopen = () => {
-      clearTimeout(timer)
-      probe.close()
-      resolve('running')
-    }
-    probe.onerror = () => {
-      clearTimeout(timer)
-      probe.close()
-      resolve('not-running')
-    }
-  })
+  const url = await resolveBridgeUrl()
+  const live = await probeLiveBridge(url, timeoutMs)
+  if (!live) resetBridgeUrlCache()
+  return live ? 'running' : 'not-running'
 }
 
 /**
