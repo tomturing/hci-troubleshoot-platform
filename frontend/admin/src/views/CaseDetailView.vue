@@ -133,7 +133,8 @@ function onTabChange(tabName: string) {
 async function loadKbdInfo(kbdId: number) {
   try {
     // 裸 fetch 由全局拦截器（setupAuthFetch）自动注入登录 JWT，无需手动设置鉴权头
-    const resp = await fetch(`/api/admin/kbd/${kbdId}`)
+    // 网关 KBD 管理面真实路径为 /api/v1/kbd/{id}（require_admin）；/api/admin/* 在网关不存在
+    const resp = await fetch(`/api/v1/kbd/${kbdId}`)
     if (!resp.ok) return
     const data = await resp.json()
     resolvedKbdInfo.value = { id: data.id, support_id: data.support_id, title: data.title }
@@ -155,8 +156,8 @@ async function previewKbdById() {
   }
   editKbdPreviewLoading.value = true
   try {
-    // 裸 fetch 由全局拦截器自动注入登录 JWT
-    const resp = await fetch(`/api/admin/kbd/${editKbdInputId.value}`)
+    // 裸 fetch 由全局拦截器自动注入登录 JWT（网关 KBD 管理面路径为 /api/v1/kbd/{id}）
+    const resp = await fetch(`/api/v1/kbd/${editKbdInputId.value}`)
     if (!resp.ok) {
       editKbdPreview.value = null
       ElMessage.warning(`未找到 KBD-${editKbdInputId.value}`)
