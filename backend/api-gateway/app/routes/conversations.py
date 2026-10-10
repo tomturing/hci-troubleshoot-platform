@@ -16,7 +16,7 @@ P0 修复（2026-09）：client_id 不再来自用户自报的 X-Client-ID，而
 import json
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from shared.observability.logger import get_logger
 from shared.security.signature import sign_client_identity
@@ -167,20 +167,15 @@ async def get_conversation(conversation_id: str, client_id: str = Depends(requir
 async def admin_get_conversations_by_case(
     case_id: str,
     _: None = Depends(require_admin),
-    authorization: str | None = Header(default=None),
 ):
     """
     [Admin] 查询指定工单的所有对话列表（绕过 client 身份签名）
 
-    透传 Authorization: Bearer INTERNAL_API_TOKEN 到 conversation-service，
-    由下游的 require_admin_token 依赖完成校验。
-    管理后台专用，不携带 X-Client-ID，不限制工单归属。
+    下游 conversation-service 的 admin 路由以 INTERNAL_API_TOKEN（require_admin_token）
+    校验，故网关必须按自身身份重签下游 Authorization，不可透传前端 admin JWT：
+    #1112 删除共享令牌回退后 admin-ui 改用真实 JWT，透传会导致下游 403。
     """
-    headers = {}
-    if authorization:
-        headers["Authorization"] = authorization
-    else:
-        headers["Authorization"] = f"Bearer {settings.INTERNAL_API_TOKEN}"
+    headers = {"Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}"}
     response = await proxy_request("GET", f"/admin/cases/{case_id}/conversations", headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
@@ -189,19 +184,15 @@ async def admin_get_conversations_by_case(
 async def admin_get_messages(
     conversation_id: str,
     _: None = Depends(require_admin),
-    authorization: str | None = Header(default=None),
 ):
     """
     [Admin] 查询指定会话的消息历史（绕过 client 身份签名）
 
-    透传 Authorization: Bearer INTERNAL_API_TOKEN 到 conversation-service，
-    由下游的 require_admin_token 依赖完成校验。
+    下游 conversation-service 的 admin 路由以 INTERNAL_API_TOKEN（require_admin_token）
+    校验，故网关必须按自身身份重签下游 Authorization，不可透传前端 admin JWT：
+    #1112 删除共享令牌回退后 admin-ui 改用真实 JWT，透传会导致下游 403。
     """
-    headers = {}
-    if authorization:
-        headers["Authorization"] = authorization
-    else:
-        headers["Authorization"] = f"Bearer {settings.INTERNAL_API_TOKEN}"
+    headers = {"Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}"}
     response = await proxy_request("GET", f"/admin/conversations/{conversation_id}/messages", headers=headers)
     return JSONResponse(content=response.json(), status_code=response.status_code)
 

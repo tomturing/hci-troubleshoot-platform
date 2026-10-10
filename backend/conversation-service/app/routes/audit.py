@@ -50,7 +50,11 @@ async def list_audit_logs(
 
     # 动态过滤条件
     if session_id:
-        stmt = stmt.where(ToolAuditLog.session_id == session_id)
+        # v6.2 重构后 tool_audit_log 表废弃，ToolAuditLog 别名指向 tool_result 表；
+        # 该表以 conversation_id 关联会话（无 session_id 列）。前端按会话过滤时传入的
+        # session_id 实际为 conversation_id，故此处按 conversation_id 列查询，避免
+        # AttributeError（ToolResult 无 session_id 属性）导致 500。
+        stmt = stmt.where(ToolAuditLog.conversation_id == session_id)
     if tool_name:
         stmt = stmt.where(ToolAuditLog.tool_name == tool_name)
     if risk_level is not None:
@@ -68,7 +72,7 @@ async def list_audit_logs(
         "items": [
             {
                 "id": log.id,
-                "session_id": log.session_id,
+                "session_id": str(log.conversation_id),
                 "tool_name": log.tool_name,
                 "tool_args": log.tool_args,
                 "risk_level": log.risk_level,
