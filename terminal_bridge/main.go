@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -48,10 +49,15 @@ import (
 
 const (
 	defaultWSPort        = 9999
+	backupWSPort         = 47324 // 主端口被陌生进程占用时的固定回退端口；与前端探测的已知端口一致
 	desktopMode          = "desktop"
 	clusterMode          = "cluster"
 	websocketPingInteval = 30 * time.Second // WebSocket 心跳间隔：每 30 秒发送 ping，防止空闲超时断开
 )
+
+// portBindRetryAttempts 端口被短暂占用（如崩溃重启后的 TIME_WAIT）时的 bind 重试次数；
+// 配合 listenWithRetry 的指数退避抹平时序抖动，避免可恢复的瞬时占用直接判为失败。
+const portBindRetryAttempts = 3
 
 type runtimeConfig struct {
 	Mode              string
@@ -131,6 +137,150 @@ func normalizeRuntimeConfig(mode, listenAddress string, port int, allowedOrigins
 
 func (c runtimeConfig) address() string {
 	return net.JoinHostPort(c.ListenAddress, strconv.Itoa(c.Port))
+}
+
+// isAddressInUse 判断 bind 错误是否为"端口已被占用"。跨平台匹配 Go 对 socket
+// 错误的封装文案：Unix 为 "address already in use"，Windows 为
+// "Only one usage of each socket address ..."。命中才走占用分类与回退逻辑。
+func isAddressInUse(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "address already in use") ||
+		strings.Contains(message, "only one usage of each socket address")
+}
+
+// listenWithRetry 建立 TCP 监听，对可恢复的"端口占用"做有限次指数退避重试，
+// 抹平崩溃重启后的 TIME_WAIT 短暂占用；非占用类错误立即返回不重试。
+func listenWithRetry(network, address string, attempts int) (net.Listener, error) {
+	var lastErr error
+	delay := 200 * time.Millisecond
+	for attempt := 0; attempt < attempts; attempt++ {
+		listener, err := net.Listen(network, address)
+		if err == nil {
+			return listener, nil
+		}
+		lastErr = err
+		if !isAddressInUse(err) {
+			return nil, err
+		}
+		if attempt < attempts-1 {
+			time.Sleep(delay)
+			delay *= 2
+		}
+	}
+	return nil, lastErr
+}
+
+// isLiveBridge 探测给定地址上是否已有一个存活的 terminal_bridge。
+// 通过 Bridge 自带的 /health/live 端点判定，用于把"重复启动/上一个没退净"
+// 与"陌生进程占用端口"区分开。任何探测失败都安全地视为"非存活 Bridge"。
+func isLiveBridge(address string) bool {
+	client := &http.Client{Timeout: 800 * time.Millisecond}
+	resp, err := client.Get("http://" + address + "/health/live")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	return fmt.Sprint(payload["status"]) == "ok"
+}
+
+// findPortHolders 尽力探测占用某 TCP 端口的进程 PID，仅用于 fail-fast 诊断提示。
+// 跨平台 best-effort：任何失败都返回空切片，绝不阻断启动主流程。
+func findPortHolders(port int) []string {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("netstat", "-ano", "-p", "tcp")
+	default:
+		cmd = exec.Command("sh", "-c", "lsof -nP -iTCP:"+strconv.Itoa(port)+" -sTCP:LISTEN")
+	}
+	output, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	portSuffix := ":" + strconv.Itoa(port)
+	seen := make(map[string]struct{})
+	holders := make([]string, 0, 4)
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		matched := strings.Contains(line, portSuffix)
+		if !matched {
+			continue
+		}
+		var pid string
+		if runtime.GOOS == "windows" {
+			// netstat: Proto Local Foreign State PID —— PID 取行末字段
+			if !strings.Contains(strings.ToUpper(line), "LISTENING") {
+				continue
+			}
+			pid = fields[len(fields)-1]
+		} else {
+			// lsof: COMMAND PID USER ... —— PID 取第二字段
+			if len(fields) < 2 {
+				continue
+			}
+			pid = fields[1]
+		}
+		if pid == "" || pid == "PID" {
+			continue
+		}
+		if _, dup := seen[pid]; !dup {
+			seen[pid] = struct{}{}
+			holders = append(holders, pid)
+		}
+	}
+	return holders
+}
+
+// acquireListener 按"主端口 → 存活检测幂等 → 备用端口回退 → fail-fast"策略确定监听器。
+// allowBackup 为真（默认端口的桌面模式）时，主端口被陌生进程占用则回退到 backupWSPort；
+// 否则或主备皆占时返回错误，由调用方输出诊断并退出。返回值 resolved 为最终生效配置（端口
+// 可能已切到备用），alreadyRunning 表示同机已有存活 Bridge（应幂等退出而非报错）。
+func acquireListener(config runtimeConfig, allowBackup bool) (listener net.Listener, resolved runtimeConfig, alreadyRunning bool, err error) {
+	resolved = config
+	listener, err = listenWithRetry("tcp", config.address(), portBindRetryAttempts)
+	if err == nil {
+		return listener, resolved, false, nil
+	}
+	if !isAddressInUse(err) {
+		return nil, resolved, false, err
+	}
+
+	// 主端口被占用：先判断占用者是否为存活的 Bridge（重复启动场景）。
+	if isLiveBridge(config.address()) {
+		return nil, resolved, true, nil
+	}
+
+	if allowBackup && config.Port != backupWSPort {
+		backupConfig := config
+		backupConfig.Port = backupWSPort
+		backupListener, backupErr := listenWithRetry("tcp", backupConfig.address(), portBindRetryAttempts)
+		if backupErr == nil {
+			return backupListener, backupConfig, false, nil
+		}
+		if isAddressInUse(backupErr) {
+			return nil, resolved, false, fmt.Errorf("主端口 %d 与备用端口 %d 均被占用: %w", config.Port, backupWSPort, backupErr)
+		}
+		return nil, resolved, false, backupErr
+	}
+
+	return nil, resolved, false, fmt.Errorf("端口 %d 被其他进程占用: %w", config.Port, err)
 }
 
 func (c runtimeConfig) originAllowed(origin, requestHost string) bool {
@@ -3331,6 +3481,9 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 	})
 	// 注册回采订阅者（按连接归属 custom_ui）
 	sub := logHub.addSubscriber(ws, cui)
+	// 连接握手首包：让浏览器可快速识别"对端确实是 terminal_bridge"，
+	// 用于端口冲突探测（避免误连占用主端口的陌生进程）。旧客户端会忽略未知类型。
+	sendMsg(ws, OutMessage{Type: "bridge_hello", Message: getVersion(), CustomUI: cui})
 	// ownedSessions 追踪 ssh_connect 显式创建的会话
 	ownedSessions := newOwnedSessionTracker()
 
@@ -4096,16 +4249,56 @@ func main() {
 		}
 	}()
 
+	// 端口自愈：仅默认端口的桌面模式启用 9999↔47324 双端口回退；显式自定义端口或
+	// cluster 模式（同源/受管 Service）只绑该端口，冲突即 fail-fast，避免与浏览器
+	// 探测契约（只认 9999/47324 两个已知端口）脱节。
+	allowBackup := config.Mode == desktopMode && config.Port == defaultWSPort
+	listener, resolved, alreadyRunning, listenErr := acquireListener(config, allowBackup)
+	if listenErr != nil {
+		holders := findPortHolders(config.Port)
+		blog("ERROR", "bridge.port_conflict", "监听端口被占用，启动失败", "", "", "", "", map[string]any{
+			"requested_listen": config.address(),
+			"port":             config.Port,
+			"allow_backup":     allowBackup,
+			"holder_pids":      holders,
+			"error":            listenErr.Error(),
+		})
+		if len(holders) > 0 {
+			log.Printf("[Bridge] 端口 %d 被进程 PID=%s 占用；可用 'netstat -ano | findstr :%d' (Windows) 或 'lsof -nP -iTCP:%d -sTCP:LISTEN' 定位并处置", config.Port, strings.Join(holders, ","), config.Port, config.Port)
+		}
+		log.Fatalf("[Bridge] 启动失败: %v", listenErr)
+	}
+	if alreadyRunning {
+		// 同机已有一个存活 Bridge：这是"双击重复启动/上一个没退净"，非故障，幂等退出。
+		blog("INFO", "bridge.already_running", "检测到本机已有存活的 terminal_bridge，无需重复启动", "", "", "", "", map[string]any{
+			"listen": config.address(),
+			"pid":    os.Getpid(),
+		})
+		log.Printf("[Bridge] 检测到本机 %s 已有存活的 terminal_bridge，本次启动幂等退出（无需重复打开）", config.address())
+		return
+	}
+
 	server := &http.Server{
-		Addr:              config.address(),
-		Handler:           newHTTPHandler(bridge, config),
+		Addr:              resolved.address(),
+		Handler:           newHTTPHandler(bridge, resolved),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	if resolved.Port != config.Port {
+		blog("WARN", "bridge.backup_port_activated", "主端口被占用，已回退至备用端口", "", "", "", "", map[string]any{
+			"primary_port": config.Port,
+			"backup_port":  resolved.Port,
+			"listen":       resolved.address(),
+		})
+	}
+	blog("INFO", "bridge.listening", "terminal_bridge 监听已就绪", "", "", "", "", map[string]any{
+		"listen": resolved.address(),
+		"port":   resolved.Port,
+	})
 	log.Printf("[Bridge] HCI SSH Bridge 已启动: version=%s commit=%s built=%s mode=%s listen=ws://%s",
-		getVersion(), CommitID, BuildTime, config.Mode, config.address())
-	log.Printf("[Bridge] Origin 策略已启用: allowed_origins=%s；结构化日志与状态指标已开启", config.AllowedOriginsRaw)
+		getVersion(), CommitID, BuildTime, resolved.Mode, resolved.address())
+	log.Printf("[Bridge] Origin 策略已启用: allowed_origins=%s；结构化日志与状态指标已开启", resolved.AllowedOriginsRaw)
 
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal("[Bridge] 启动失败: ", err)
 	}
 }

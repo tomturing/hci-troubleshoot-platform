@@ -22,6 +22,13 @@
 **HCI 智能排障平台** — AI 驱动的超融合基础设施运维故障诊断系统。
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
+- **terminal_bridge 桌面端口冲突自愈（主 9999 + 备 47324）**：
+  - **根因**：客户 Windows 桌面环境端口 `9999` 被占用时，`terminal_bridge/main.go` 的 `main()` 中 `server.ListenAndServe()` 返回 EADDRINUSE 直接 `log.Fatal` 崩溃退出——无预检、无占用者识别、无友好诊断、无回退；最常见的「上一个 Bridge 没退净/双击重复启动」被当成陌生错误崩溃，表现为“双击打不开”。
+  - **修复**：
+    - Go 端新增 `acquireListener`：主端口 bind 失败后分类处置——`/health/live` 探测到存活 Bridge则**幂等退出**（exit 0）；被陌生进程占用则回退到固定备端口 `47324`（IANA 未分配、低于 Windows 出站动态端口下界 49152）；主备皆占则 **fail-fast**输出占用地址 + best-effort 占用 PID + `netstat`/`lsof` 处置指引并 exit≠0；`listenWithRetry` 指数退避抹平崩溃重启后的 TIME_WAIT；仅默认端口的桌面模式启用回退，显式自定义端口/cluster 只绑该端口不扩散。
+    - WS `handle()` 连接即下发 `bridge_hello` 握手首包；新增 `bridge.listening`/`bridge.already_running`/`bridge.backup_port_activated`/`bridge.port_conflict` 结构化日志事件。
+    - 前端 `frontend/customer/src/api/terminal.ts` 新增 `resolveBridgeUrl`：桌面模式探测 `9999 → 47324` 两个已知端口，以收到 `bridge_hello` 回包为准判定“对端确实是 Bridge”（不能只看 WS 能否 open，避免误连陌生进程），命中即缓存；`checkBridgeRunning`/`checkBridgeBeforeOpen` 接入并在失效时清缓存；cluster 注入配置零探测、nginx/helm/docker 单端口零改动。
+    - 测试守护：`terminal_bridge/port_recovery_test.go` 覆盖占用判定/退避重试/存活识别/幂等退出/主备回退/自定义端口不扩散/fail-fast；`terminal.spec.ts` 新增双端口探测 6 例并保留 `getBridgeUrl` 默认回归。
 - **工单 Q2026092053425 排障交互卡片无响应与容器执行失败修复**：
   - **根因**：
     - **点击交互无反应与超时取消**：`conversation-service` 转发用户交互确认到 `agent-service` 时漏传内部 `Authorization` Token，导致 401 失败并在前端静默吞咽，最终 Redis 等待 120 秒超时判定为操作已取消；
