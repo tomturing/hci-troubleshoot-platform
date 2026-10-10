@@ -39,18 +39,25 @@ data-pipeline/kbd/seed_categories.py — 从 YAML 导入分类数据到 kb_categ
 输出：
   导入统计：新增/更新/跳过/错误
 """
+
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Any
 
 import asyncpg
 import yaml
+
+# 叶子节点 code 形态契约：前缀 + '-<纯数字>' 结尾。
+# 与 backend/shared/utils/category_code.py 的 LEAF_CODE_RE 保持一致（本脚本独立
+# 运行，不依赖 backend/shared），修改时必须同步两处。
+LEAF_CODE_RE = re.compile(r"^[一-鿿A-Za-z0-9-]+-\d+$")
 
 # 项目根目录
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -109,8 +116,13 @@ def parse_category_data(categories: list[dict[str, Any]]) -> list[dict[str, Any]
         categories: YAML 原始分类列表
 
     Returns:
-        解析后的记录列表，按层级排序（确保父节点先插入）
+        (records, errors) 元组：
+        - records: 解析后的记录列表，按层级排序（确保父节点先插入）
+        - errors: 叶节点编码契约校验错误；非空时调用方必须终止导入（fail-fast）。
+          叶子 id 不合规会导致该分类被下游 S0 过滤，成为"管理页可见、AI 不可选"
+          的隐形分类（Q2026101026818 复盘）。
     """
+    errors: list[str] = []
     # ─── 第一阶段：推断并创建 L1 域节点 ─────────────────────────────────────
     domains: set[str] = set()
     for cat in categories:
@@ -120,16 +132,18 @@ def parse_category_data(categories: list[dict[str, Any]]) -> list[dict[str, Any]
     for domain in sorted(domains):
         if not domain:
             continue
-        l1_records.append({
-            "code": f"{domain}-L1",
-            "name": domain,
-            "domain": domain,
-            "path_labels": json.dumps([domain], ensure_ascii=False),
-            "level": 1,
-            "parent_code": None,
-            "source": "baseline_yaml",
-            "version": "1.0",
-        })
+        l1_records.append(
+            {
+                "code": f"{domain}-L1",
+                "name": domain,
+                "domain": domain,
+                "path_labels": json.dumps([domain], ensure_ascii=False),
+                "level": 1,
+                "parent_code": None,
+                "source": "baseline_yaml",
+                "version": "1.0",
+            }
+        )
 
     # ─── 第二阶段：提取并生成中间层节点（L2 分组节点）──────────────────────
     # 从 L3/L4 叶节点的 path 中提取中间路径（path[:-1]）
@@ -166,8 +180,20 @@ def parse_category_data(categories: list[dict[str, Any]]) -> list[dict[str, Any]
     intermediate_records = list(intermediate_paths.values())
     logger.info("提取中间层节点: %d 条", len(intermediate_records))
 
+    # 中间层 code 由 path 派生（末段中文），不匹配叶子形态属已知设计，仅告警不阻断；
+    # 若某中间层因数据漂移退化为叶子（子分类全部缺失），会形成隐形分类，由
+    # scripts/verify/verify_kb_category_tree.py 巡检收敛。
+    nonconforming_derived = sorted(rec["code"] for rec in intermediate_records if not LEAF_CODE_RE.match(rec["code"]))
+    if nonconforming_derived:
+        logger.warning(
+            "检测到 %d 个 path 派生形态的中间层 code（非叶子形态，属已知设计，不阻断）: %s",
+            len(nonconforming_derived),
+            ", ".join(nonconforming_derived[:10]),
+        )
+
     # ─── 第三阶段：解析叶节点（L2-L4）──────────────────────────────────────
     leaf_records: list[dict[str, Any]] = []
+    seen_leaf_codes: set[str] = set()
 
     for cat in categories:
         code = cat.get("id", "")
@@ -176,22 +202,39 @@ def parse_category_data(categories: list[dict[str, Any]]) -> list[dict[str, Any]
         path = cat.get("path", [])
         level = len(path)
 
-        leaf_records.append({
-            "code": code,
-            "name": name,
-            "domain": domain,
-            "path_labels": json.dumps(path, ensure_ascii=False),
-            "level": level,
-            "parent_code": None,
-            "source": "baseline_yaml",
-            "version": "1.0",
-        })
+        # 叶子 id 编码契约校验（fail-fast）：不合规 id 导入后会被下游 S0 过滤
+        if not code:
+            errors.append("叶节点缺少 id 字段")
+            continue
+        if not LEAF_CODE_RE.match(code):
+            errors.append(
+                f"叶节点 id '{code}' 不符合叶子编码契约（须以 '-<纯数字>' 结尾，"
+                f"契约见 backend/shared/utils/category_code.py）"
+            )
+            continue
+        if code in seen_leaf_codes:
+            errors.append(f"叶节点 id '{code}' 重复，同一编码只能对应一个叶节点")
+            continue
+        seen_leaf_codes.add(code)
+
+        leaf_records.append(
+            {
+                "code": code,
+                "name": name,
+                "domain": domain,
+                "path_labels": json.dumps(path, ensure_ascii=False),
+                "level": level,
+                "parent_code": None,
+                "source": "baseline_yaml",
+                "version": "1.0",
+            }
+        )
 
     # ─── 第四阶段：合并并按层级排序 ───────────────────────────────────────
     all_records = l1_records + intermediate_records + leaf_records
     all_records.sort(key=lambda r: r["level"])
 
-    return all_records
+    return all_records, errors
 
 
 async def get_db_pool(database_url: str) -> asyncpg.Pool:
@@ -219,9 +262,7 @@ async def check_existing_categories(pool: asyncpg.Pool) -> dict[str, int]:
     Returns:
         {code: id} 映射表
     """
-    rows = await pool.fetch(
-        "SELECT id, code FROM kb_category WHERE code IS NOT NULL"
-    )
+    rows = await pool.fetch("SELECT id, code FROM kb_category WHERE code IS NOT NULL")
     return {row["code"]: row["id"] for row in rows}
 
 
@@ -237,19 +278,13 @@ async def build_parent_mapping(pool: asyncpg.Pool) -> dict[str, int]:
     Returns:
         {path_str: id} 映射表
     """
-    rows = await pool.fetch(
-        "SELECT id, path_labels FROM kb_category WHERE path_labels IS NOT NULL"
-    )
+    rows = await pool.fetch("SELECT id, path_labels FROM kb_category WHERE path_labels IS NOT NULL")
     mapping = {}
     for row in rows:
         path_labels_raw = row["path_labels"]
         if path_labels_raw:
             # asyncpg 返回 JSONB 为字符串，需解析为 Python list
-            path_labels = (
-                json.loads(path_labels_raw)
-                if isinstance(path_labels_raw, str)
-                else path_labels_raw
-            )
+            path_labels = json.loads(path_labels_raw) if isinstance(path_labels_raw, str) else path_labels_raw
             # 序列化为 JSON 字符串作为 key
             path_str = json.dumps(path_labels, ensure_ascii=False)
             mapping[path_str] = row["id"]
@@ -283,9 +318,7 @@ async def seed_categories(
     if force and existing and not dry_run:
         # 删除已有数据
         logger.warning("强制模式：删除 %d 条已有分类记录", len(existing))
-        await pool.execute(
-            "DELETE FROM kb_category WHERE code IS NOT NULL"
-        )
+        await pool.execute("DELETE FROM kb_category WHERE code IS NOT NULL")
         existing = {}
 
     # 第一阶段：导入所有节点（parent_id 暂为 NULL）
@@ -367,7 +400,10 @@ async def seed_categories(
 
     logger.info(
         "导入完成: created=%d, updated=%d, skipped=%d, error=%d",
-        stats["created"], stats["updated"], stats["skipped"], stats["error"],
+        stats["created"],
+        stats["updated"],
+        stats["skipped"],
+        stats["error"],
     )
     return stats
 
@@ -429,6 +465,7 @@ async def main() -> None:
     if not database_url:
         # 从环境变量或 .env 文件读取
         import os
+
         database_url = os.environ.get("DATABASE_URL")
         if not database_url:
             # 尝试从 .env 文件读取
@@ -448,8 +485,13 @@ async def main() -> None:
     # 读取 YAML 数据
     categories = load_yaml_data(args.yaml_path)
 
-    # 解析分类数据
-    records = parse_category_data(categories)
+    # 解析分类数据（含叶子编码契约 fail-fast 校验）
+    records, parse_errors = parse_category_data(categories)
+    if parse_errors:
+        for err in parse_errors:
+            logger.error("分类基线校验失败: %s", err)
+        logger.error("共 %d 条校验错误，终止导入（fail-fast）", len(parse_errors))
+        sys.exit(1)
     logger.info("解析完成，共 %d 条记录，按层级排序", len(records))
 
     # 统计各层级数量

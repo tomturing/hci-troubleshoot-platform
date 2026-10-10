@@ -454,3 +454,65 @@ class TestTriageAgentProcess:
             "虚拟机-003",
             "__none__",
         ]
+
+
+# ─── 分类 code 形态契约测试（Q2026101026818 复盘：防隐形分类）────────────────
+
+
+def test_format_categories_keeps_nonconforming_leaf_codes():
+    """数据漂移产生的非标准形态叶子（leaf_only 已放行）不得从 S0 Prompt 静默隐形。"""
+    text = TriageAgent._format_categories(
+        {
+            "虚拟机": [
+                {"code": "虚拟机-017", "name": "虚拟机跨集群热迁移失败"},
+                {"code": "虚拟机-L2-虚拟机集群内或跨集群迁移失败", "name": "虚拟机集群内或跨集群迁移失败"},
+            ]
+        }
+    )
+
+    assert "虚拟机-017" in text
+    assert "虚拟机-L2-虚拟机集群内或跨集群迁移失败" in text
+
+
+def test_parse_intent_result_accepts_nonconforming_code():
+    """模型选中非标准形态 code 时由 cat_map 权威校验，不得因正则形态被拒。"""
+    TriageAgent._categories_cache = {
+        "虚拟机": [
+            {"code": "虚拟机-L2-虚拟机集群内或跨集群迁移失败", "name": "虚拟机集群内或跨集群迁移失败"},
+        ]
+    }
+
+    result = TriageAgent._parse_intent_result("故障分类：虚拟机-L2-虚拟机集群内或跨集群迁移失败")
+
+    assert result.category_id == "虚拟机-L2-虚拟机集群内或跨集群迁移失败"
+    assert result.category_name == "虚拟机集群内或跨集群迁移失败"
+    assert result.needs_confirmation is True
+
+
+def test_parse_intent_result_still_rejects_unregistered_codes():
+    """放宽形态约束后，未注册 code 仍被 cat_map 权威拒绝（防资源名误识别回归）。"""
+    TriageAgent._categories_cache = {
+        "虚拟机": [{"code": "虚拟机-001", "name": "虚拟机创建失败"}],
+    }
+
+    result = TriageAgent._parse_intent_result("故障分类：ubu-sus-25.2")
+
+    assert result.category_id is None
+    assert result.candidates == []
+
+
+def test_deterministic_candidates_include_nonconforming_leaf():
+    """确定性兜底候选同样放行非标准形态叶子，不再静默剔除。"""
+    TriageAgent._categories_cache = {
+        "虚拟机": [
+            {"code": "虚拟机-L2-虚拟机集群内或跨集群迁移失败", "name": "虚拟机集群内或跨集群迁移失败"},
+        ]
+    }
+
+    result = TriageAgent._deterministic_candidates(
+        [{"role": "user", "content": "跨集群迁移虚拟机失败"}],
+        {},
+    )
+
+    assert result.needs_confirmation is True
+    assert result.candidates[0]["code"] == "虚拟机-L2-虚拟机集群内或跨集群迁移失败"

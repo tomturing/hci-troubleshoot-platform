@@ -268,3 +268,52 @@ async def test_get_all_leaf_only_filter():
     assert len(leaf_result) == 3
     assert all("-L" not in c.code for c in leaf_result)  # 无中间节点编码
     assert all(c.code in ("虚拟机-001", "虚拟机-002", "存储-001") for c in leaf_result)
+
+
+# ─── 基线解析编码契约测试（Q2026101026818 复盘：防隐形分类）──────────────────
+
+
+def test_parse_baseline_yaml_rejects_nonconforming_leaf_id():
+    """叶子 id 不符合 '-<纯数字>' 契约时 fail-fast（导入终止，防隐形分类）。"""
+    records, errors = CategoryRepository._parse_baseline_yaml(
+        [
+            {"id": "虚拟机-ABC", "domain": "虚拟机", "label": "坏编码分类", "path": ["虚拟机", "坏编码分类"]},
+            {"id": "虚拟机-001", "domain": "虚拟机", "label": "正常分类", "path": ["虚拟机", "正常分类"]},
+        ]
+    )
+
+    assert errors, "坏 id 必须产生解析错误"
+    assert any("虚拟机-ABC" in err for err in errors)
+    assert all(record["code"] != "虚拟机-ABC" for record in records)
+    assert any(record["code"] == "虚拟机-001" for record in records)
+
+
+def test_parse_baseline_yaml_rejects_duplicate_leaf_id():
+    """重复叶子 id 必须产生解析错误，同一编码只能对应一个叶节点。"""
+    _records, errors = CategoryRepository._parse_baseline_yaml(
+        [
+            {"id": "虚拟机-001", "domain": "虚拟机", "label": "分类A", "path": ["虚拟机", "分类A"]},
+            {"id": "虚拟机-001", "domain": "虚拟机", "label": "分类B", "path": ["虚拟机", "分类B"]},
+        ]
+    )
+
+    assert any("重复" in err for err in errors)
+
+
+def test_parse_baseline_yaml_intermediate_derived_code_allowed():
+    """中间层 code 由 path 派生（末段中文）属已知形态，不阻断导入。"""
+    records, errors = CategoryRepository._parse_baseline_yaml(
+        [
+            {
+                "id": "虚拟机-017",
+                "domain": "虚拟机",
+                "label": "虚拟机跨集群热迁移失败",
+                "path": ["虚拟机", "虚拟机集群内或跨集群迁移失败", "虚拟机跨集群热迁移失败"],
+            }
+        ]
+    )
+
+    assert errors == []
+    codes = {record["code"] for record in records}
+    assert "虚拟机-L2-虚拟机集群内或跨集群迁移失败" in codes
+    assert "虚拟机-L1" in codes  # 域节点派生形态同样放行
