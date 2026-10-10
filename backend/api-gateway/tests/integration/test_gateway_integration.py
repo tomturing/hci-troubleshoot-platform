@@ -329,3 +329,62 @@ class TestGatewayIntegration:
         data = response.json()
         assert data["total"] == 1
         assert data["operations"][0]["case_id"] == "Q123"
+
+    @pytest.mark.asyncio
+    async def test_admin_conversations_requires_admin(self, test_app):
+        """测试 admin 对话列表未携带管理员凭证被拒（不可借道读任意工单对话）"""
+        async with (
+            test_app.router.lifespan_context(test_app),
+            httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
+        ):
+            response = await client.get("/api/conversations/admin/cases/Q123/conversations")
+            assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_admin_conversations_resigns_internal_token(self, test_app):
+        """测试 admin 对话列表以 INTERNAL_API_TOKEN 重签下游（修复透传 admin JWT 致下游 403 回归）"""
+        from app.config import settings
+        from app.security.gateway_auth import require_admin
+
+        with patch("app.routes.conversations.proxy_request") as mock_proxy:
+            mock_proxy.return_value = httpx.Response(200, json=[])
+            test_app.dependency_overrides[require_admin] = lambda: None
+            try:
+                async with (
+                    test_app.router.lifespan_context(test_app),
+                    httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
+                ):
+                    response = await client.get("/api/conversations/admin/cases/Q123/conversations")
+            finally:
+                test_app.dependency_overrides.pop(require_admin, None)
+
+            assert response.status_code == 200
+            mock_proxy.assert_called_once()
+            args, kwargs = mock_proxy.call_args
+            assert args[0] == "GET"
+            # 网关必须以 INTERNAL_API_TOKEN 重签下游，不可透传前端 admin JWT
+            assert kwargs["headers"]["Authorization"] == f"Bearer {settings.INTERNAL_API_TOKEN}"
+
+    @pytest.mark.asyncio
+    async def test_admin_messages_resigns_internal_token(self, test_app):
+        """测试 admin 消息历史同样以 INTERNAL_API_TOKEN 重签下游"""
+        from app.config import settings
+        from app.security.gateway_auth import require_admin
+
+        with patch("app.routes.conversations.proxy_request") as mock_proxy:
+            mock_proxy.return_value = httpx.Response(200, json=[])
+            test_app.dependency_overrides[require_admin] = lambda: None
+            try:
+                async with (
+                    test_app.router.lifespan_context(test_app),
+                    httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
+                ):
+                    response = await client.get("/api/conversations/admin/conversations/conv-1/messages")
+            finally:
+                test_app.dependency_overrides.pop(require_admin, None)
+
+            assert response.status_code == 200
+            mock_proxy.assert_called_once()
+            args, kwargs = mock_proxy.call_args
+            assert args[0] == "GET"
+            assert kwargs["headers"]["Authorization"] == f"Bearer {settings.INTERNAL_API_TOKEN}"
