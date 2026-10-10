@@ -38,12 +38,15 @@ def _kb_client(tool: str = "acli_exec") -> AsyncMock:
     return kb_client
 
 
-def _sop_client() -> AsyncMock:
+def _sop_client(
+    pending_variable_name: str | None = None,
+    context_variables: dict | None = None,
+) -> AsyncMock:
     client = AsyncMock()
     client.get_execution.return_value = {
         "current_node_id": "n-1",
-        "context_variables": {},
-        "pending_variable_name": None,
+        "context_variables": context_variables or {},
+        "pending_variable_name": pending_variable_name,
     }
     return client
 
@@ -139,3 +142,94 @@ def test_classify_tool_result_error_mapping():
 
     assert _classify_tool_result_error(_Res()) == "tool_error"
     assert _classify_tool_result_error({}) == "empty_value"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# device_absent（V-017 §4）：盘符为空/内核无此设备，区别于命令缺失/工具能力缺失
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_classify_acquisition_error_device_absent():
+    for text in (
+        "smartctl: Unable to open /dev/sdb: No such device",
+        "cannot open /dev/sdb: No such device or address",
+        "目标磁盘不存在",
+    ):
+        assert _classify_acquisition_error(RuntimeError(text)) == "device_absent", text
+    # 反例：命令本身缺失仍归工具能力缺失，不得误判为设备缺失
+    assert _classify_acquisition_error(RuntimeError("acli: command not found")) == "tool_capability_missing"
+
+
+def test_classify_tool_result_error_device_absent():
+    # 退出码非零但语义是"盘没了"→ 优先归 device_absent，不得笼统归 tool_error
+    assert (
+        _classify_tool_result_error({"error": "Unable to open /dev/sdb: No such device", "exit_code": 1})
+        == "device_absent"
+    )
+
+    class _MissingDisk:
+        exit_code = 1
+        stderr = ""
+        stdout = "Smartctl open device: /dev/sddc failed: No such device"
+        timed_out = False
+
+    assert _classify_tool_result_error(_MissingDisk()) == "device_absent"
+
+
+@pytest.mark.asyncio
+async def test_tool_call_device_absent_escalates_with_precise_error_type():
+    # 采集设备已摘除 → 失败即接管转人工，文案携带精确 device_absent 判别
+    executor = AsyncMock()
+    executor.execute.return_value = {"error": "Unable to open /dev/sdb: No such device"}
+
+    result = await _request(executor)
+
+    assert isinstance(result, VariableRequestResult)
+    assert result.needs_input is True
+    assert "device_absent" in result.message
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 失败即接管「维持 pending」回归（V-017 §3.2：人工超时/未补值不伪造、不推进）
+# ─────────────────────────────────────────────────────────────────────────
+
+
+async def _request_with_client(executor, sop_client):
+    conversation_id = str(uuid.uuid4())
+    return await sop_request_variable(
+        "disk_dev",
+        reason="定位坏道盘",
+        conversation_id=conversation_id,
+        sop_document_id=4,
+        kb_client=_kb_client(),
+        conversation_sop_client=sop_client,
+        tool_executor=executor,
+    )
+
+
+@pytest.mark.asyncio
+async def test_pending_variable_without_value_stays_pending_no_fabrication():
+    # 模拟人工超时：变量处于 pending 且上下文仍无值 → 再次请求仍转人工，绝不伪造 ok/数值
+    executor = AsyncMock()
+    executor.execute.return_value = {}  # 取值为空
+    client = _sop_client(pending_variable_name="disk_dev", context_variables={})
+
+    result = await _request_with_client(executor, client)
+
+    assert isinstance(result, VariableRequestResult)
+    assert result.needs_input is True
+    assert not isinstance(result, dict) or result.get("ok") is not True
+
+
+@pytest.mark.asyncio
+async def test_human_provided_value_resumes_from_cache():
+    # 模拟人工补值续跑：上下文已有值 → 缓存命中直接返回 ok，不再弹框
+    client = _sop_client(
+        pending_variable_name="disk_dev",
+        context_variables={"disk_dev": {"value": "/dev/sdb"}},
+    )
+
+    result = await _request_with_client(AsyncMock(), client)
+
+    assert isinstance(result, dict)
+    assert result == {"ok": True, "value": "/dev/sdb", "source": "cached", "message": "变量 disk_dev 已有值：/dev/sdb"}

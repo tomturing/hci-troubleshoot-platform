@@ -838,14 +838,22 @@ func (s *SSHSession) checkMarkers(output string) (*ExecListener, int, bool) {
 }
 
 // classifyExecFailure 依据命令输出与退出码归类失败语义，禁止压缩为笼统 unknown_error（配合 V-017）。
-// 采集镜像工具能力缺失（如 jq 无 ONIGURUMA、命令/盘符不存在）归为 tool_capability_missing，
-// 其余非零退出归为 nonzero_exit（exit 0 返回空串表示成功）。
+// 采集镜像工具能力缺失（如 jq 无 ONIGURUMA、命令不存在）归为 tool_capability_missing，
+// 目标盘符在内核中不存在/已摘除归为 device_absent（§4），其余非零退出归为 nonzero_exit（exit 0 返回空串表示成功）。
 func classifyExecFailure(exitCode int, stdoutAndStderr string) string {
 	if exitCode == 0 {
 		return ""
 	}
 	lowered := strings.ToLower(stdoutAndStderr)
 	switch {
+	case strings.Contains(lowered, "no such device"),
+		strings.Contains(lowered, "cannot open /dev/"),
+		strings.Contains(lowered, "unable to open /dev/"),
+		strings.Contains(lowered, "not a block device"),
+		strings.Contains(lowered, "no such disk"),
+		strings.Contains(lowered, "设备不存在"),
+		strings.Contains(lowered, "磁盘不存在"):
+		return "device_absent"
 	case strings.Contains(lowered, "oniguruma"),
 		strings.Contains(lowered, "regex could not be compiled"),
 		strings.Contains(lowered, "invalid oniguruma"),
@@ -856,6 +864,31 @@ func classifyExecFailure(exitCode int, stdoutAndStderr string) string {
 	default:
 		return "nonzero_exit"
 	}
+}
+
+// devPathRe 提取命令中引用的 /dev/<name> 设备令牌（盘符或分区）。
+var devPathRe = regexp.MustCompile(`/dev/([A-Za-z0-9_.]+)`)
+
+// deviceAbsentFromProbe 依据原始命令引用的 /dev 设备与现场 lsblk 整盘清单交叉比对，
+// 判别“命令引用的盘符在内核中不存在/已摘除”。lsblk -dno NAME 只列整盘，故用“整盘名是引用令牌前缀”
+// 兼容分区（sdb1 命中 sdb、nvme0n1p2 命中 nvme0n1）。仅当命令确实引用了 /dev 设备、
+// 且全部引用盘符均未命中时判定缺失；任一命中即返回非缺失，避免误报。
+func deviceAbsentFromProbe(command, lsblkOutput string) (absent bool, referenced []string) {
+	matches := devPathRe.FindAllStringSubmatch(command, -1)
+	names := strings.Fields(lsblkOutput)
+	for _, m := range matches {
+		token := m[1]
+		if token == "" {
+			continue
+		}
+		referenced = append(referenced, token)
+		for _, d := range names {
+			if d != "" && strings.HasPrefix(token, d) {
+				return false, referenced // 至少一个引用盘符现场存在 → 非设备缺失
+			}
+		}
+	}
+	return len(referenced) > 0, referenced
 }
 
 // probeLevel 根据探测结果选择日志级别（成功 INFO，失败 WARN）。
@@ -988,6 +1021,20 @@ func runUnreachabilityProbes(ctx context.Context, s *SSHSession, req execRequest
 		blogContext(ctx, probeLevel(lsblkOK), "probe.field.lsblk", "现场盘符探测", req, map[string]any{
 			"ok": lsblkOK, "exit_code": lsblkCode, "devices": truncateString(lsblkOut, 256), "artifact_id": artifactID,
 		})
+
+		// 5.5 设备存在性判别：命令引用的 /dev 盘符若全部不在现场 lsblk 整盘清单中 → device_absent（§4/§5）。
+		if lsblkOK {
+			if devAbsent, referenced := deviceAbsentFromProbe(req.Command, lsblkOut); devAbsent {
+				span.AddEvent("probe.device_absent", trace.WithAttributes(
+					attribute.String("probe.device.referenced", strings.Join(referenced, ",")),
+				))
+				blogContext(ctx, "WARN", "probe.conclusion", "辅助探测结论：设备不存在/已摘除", req, map[string]any{
+					"conclusion": "device_absent", "referenced_devices": referenced,
+					"lsblk_devices": truncateString(lsblkOut, 256), "artifact_id": artifactID,
+				})
+				return
+			}
+		}
 
 		blogContext(ctx, "INFO", "probe.conclusion", "辅助探测结论", req, map[string]any{
 			"conclusion": "network_reachable_tools_checked", "acli_ok": acliOK, "jq_ok": jqOK,
