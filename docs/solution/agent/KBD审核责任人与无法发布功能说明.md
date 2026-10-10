@@ -168,12 +168,30 @@ chmod +x test_review_owner_feature.sh
 4. 支持审核责任人变更历史记录
 5. 添加无法发布原因的标准化选项（下拉选择 + 自定义输入）
 
+## Schema 部署须知（防止约束漂移）
+
+> **重要**：本环境的数据库 Schema 由 `db-migrate` PreSync Hook 依据
+> `database/desired_schema.sql`（atlas schema apply，声明式差量）与
+> `database/desired_extras.sql`（psql，重建函数/触发器/检查约束）重建/同步，
+> **不消费** `database/atlas-migrations/*.sql`。因此任何表结构或约束变更必须同时改这两份文件，
+> 仅加 `atlas-migrations` 迁移文件不会生效。
+
+- `kbd_batch_job` 的 `ck_kbd_batch_job_type` 检查约束枚举了所有允许的批量任务类型；
+  新增批量任务类型时，**必须**在 `desired_schema.sql` 与 `desired_extras.sql` 两处同时加入，
+  否则 `db-migrate` 下次运行会用旧约束覆盖线上，导致新任务类型插入即报
+  `CheckViolationError: violates check constraint "ck_kbd_batch_job_type"`（HTTP 500）。
+- 当前允许的 7 种类型：`reanalyze_images`、`reclassify`、`extract_signals`、`approve`、`reject`、
+  `set_review_owner`、`set_unpublishable`。
+- 代码侧允许类型集合见 `backend/kb-service/app/routes/admin.py` 的 `allowed_job_types` 与
+  `_BATCH_PROCESSORS`，需与上面约束保持一致。
+
 ## 相关文件
 
 ### 后端
-- `database/atlas-migrations/20260924000000_add_review_owner_and_unpublishable.sql` - 数据库迁移
-- `database/atlas-migrations/20260924000001_update_batch_job_type_constraint.sql` - 约束更新
-- `database/desired_schema.sql` - Schema 定义
+- `database/desired_schema.sql` - Schema 定义（含 `ck_kbd_batch_job_type` 约束，真源之一）
+- `database/desired_extras.sql` - 函数/触发器/约束重建（含 `ck_kbd_batch_job_type` 约束，真源之一）
+- `database/atlas-migrations/20260924000000_add_review_owner_and_unpublishable.sql` - 历史迁移（部署不消费）
+- `database/atlas-migrations/20260924000001_update_batch_job_type_constraint.sql` - 历史迁移（部署不消费）
 - `backend/kb-service/app/models/kbd_review_owner.py` - 审核责任人模型
 - `backend/kb-service/app/models/kbd_entry.py` - KBD 条目模型（更新）
 - `backend/kb-service/app/routes/admin.py` - API 路由
