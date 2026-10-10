@@ -39,9 +39,25 @@ spec:
                     -U "${POSTGRES_USER}" \
                     "${POSTGRES_DB}" | gzip > "${BACKUP_FILE}"
                   echo "Backup completed: ${BACKUP_FILE}"
-                  # 清理 30 天前的旧备份
-                  find /backup -name "*.sql.gz" -mtime +30 -delete
-                  echo "Old backups cleaned up"
+                  # 分级保留(GFS): 半年总上限 + 日/周/月分级
+                  KEEP_DAILY={{ ($backup.retention | default dict).daily | default 30 }}
+                  KEEP_TOTAL={{ ($backup.retention | default dict).totalDays | default 180 }}
+                  # 1) 超过总保留期(半年)的备份直接删除
+                  find /backup -name "*.sql.gz" -mtime +${KEEP_TOTAL} -delete
+                  # 2) daily~total 之间的，仅保留「周日」与「每月1号」锚点备份
+                  now=$(date +%s)
+                  for f in /backup/*.sql.gz; do
+                    [ -e "$f" ] || continue
+                    age=$(( (now - $(date -r "$f" +%s)) / 86400 ))
+                    if [ "$age" -gt "$KEEP_DAILY" ]; then
+                      dow=$(date -r "$f" +%w)
+                      dom=$(date -r "$f" +%d)
+                      if [ "$dow" != "0" ] && [ "$dom" != "01" ]; then
+                        rm -f "$f"
+                      fi
+                    fi
+                  done
+                  echo "Old backups cleaned (GFS: daily<=${KEEP_DAILY}d, weekly/monthly<=${KEEP_TOTAL}d)"
               env:
                 - name: POSTGRES_USER
                   valueFrom:

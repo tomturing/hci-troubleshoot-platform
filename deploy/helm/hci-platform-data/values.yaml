@@ -29,6 +29,9 @@ postgres:
     enabled: true
     schedule: "0 2 * * *"
     hostPath: "/srv/hci/backups/postgres"
+    retention:
+      daily: 30        # 每日全量备份的短期保留天数（≤ daily 天全部保留）
+      totalDays: 180   # 半年总保留上限（> totalDays 天硬删；daily~totalDays 之间仅保留周日与每月1号锚点）
 
 # ======================== Redis =============================================
 redis:
