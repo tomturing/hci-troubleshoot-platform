@@ -265,7 +265,8 @@ DO $$ BEGIN
       (job_type)::text = ANY (
         (ARRAY[
           'reanalyze_images'::varchar, 'reclassify'::varchar, 'extract_signals'::varchar,
-          'approve'::varchar, 'reject'::varchar
+          'approve'::varchar, 'reject'::varchar,
+          'set_review_owner'::varchar, 'set_unpublishable'::varchar
         ])::text[]
       )
     );

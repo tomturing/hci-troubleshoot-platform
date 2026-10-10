@@ -2556,7 +2556,9 @@ CREATE TABLE IF NOT EXISTS kbd_batch_job (
                     'reclassify'::varchar,
                     'extract_signals'::varchar,
                     'approve'::varchar,
-                    'reject'::varchar
+                    'reject'::varchar,
+                    'set_review_owner'::varchar,
+                    'set_unpublishable'::varchar
                 ])::text[]
             )
         ),
