@@ -33,6 +33,7 @@ from typing import Any
 from shared.clients import AIAssistantRegistry, KBClient
 from shared.models.information import EvidenceBundle
 from shared.observability.logger import get_logger
+from shared.utils.category_code import LEAF_CODE_RE, find_nonconforming_codes
 
 from app.config import settings
 from app.domain.agent_port import (
@@ -385,10 +386,20 @@ class TriageAgent(BaseAgent):
         scored: list[tuple[int, str, str]] = []
         for domain, items in (cls._categories_cache or {}).items():
             domain_score = 2 if domain and domain.lower() in combined else 0
+            # 与 _format_categories 同一契约：不合规 code 放行参与打分并告警，
+            # 不静默剔除（防数据漂移导致的隐形分类）。
+            nonconforming = find_nonconforming_codes(items)
+            if nonconforming:
+                logger.warning(
+                    event="triage_fallback_nonconforming_code",
+                    message=f"确定性候选包含 {len(nonconforming)} 个非标准形态 code 的分类，已放行参与打分",
+                    domain=domain,
+                    codes=nonconforming,
+                )
             for item in items:
                 code = str(item.get("code") or "")
                 name = str(item.get("name") or "")
-                if not code or not name or not cls._LEAF_CODE_RE.match(code):
+                if not code or not name:
                     continue
                 score = domain_score
                 if name.lower() in combined:
@@ -550,29 +561,37 @@ class TriageAgent(BaseAgent):
                 return str(fact.get("value", ""))
         return ""
 
-    # 叶子节点 code 格式正则：允许多级前缀（如 虚拟机-L2-001、硬件-003）
-    # Unicode 转义避免 encoding 风险
-    _LEAF_CODE_RE = re.compile(r"^[一-鿿A-Za-z0-9-]+-\d+$")
+    # 叶子节点 code 形态契约：收口到 shared/utils/category_code.py（与 kb-service
+    # 导入校验共用同一正则）；类属性保留以兼容既有调用方与测试。
+    _LEAF_CODE_RE = LEAF_CODE_RE
 
     @staticmethod
     def _format_categories(categories: dict[str, list[dict]]) -> str:
         """将分类字典格式化为 Prompt 中的文本块。
 
-        防御性过滤：仅保留符合叶子节点 code 格式的分类（前缀-纯数字）。
-        排除中间节点（如 硬件-L2-硬盘），防止 LLM 命中非叶子分类。
+        输入来自 kb-service ``leaf_only`` 查询（无子节点的节点才会到达此处）。
+        code 形态仅作辅助探针：不符合叶子形态的条目**放行并聚合告警**，不静默
+        剔除——否则数据漂移产生的"叶子形态中间层节点"会从 S0 隐形（管理页可见、
+        AI 永远不可选，Q2026101026818 复盘）。形态异常由导入校验与巡检脚本收敛。
         """
         lines: list[str] = []
         for domain, items in categories.items():
-            if items:
-                # 过滤出叶子节点（code 格式为 前缀-纯数字）
-                valid_items = [item for item in items if TriageAgent._LEAF_CODE_RE.match(item.get("code", ""))]
-                if valid_items:
-                    lines.append(f"### {domain}域（{len(valid_items)}个）")
-                    for item in valid_items:  # 免除截断限制，向大模型呈现全部叶子分类
-                        code = item.get("code", "")
-                        name = item.get("name", "")
-                        if code and name:
-                            lines.append(f"- {code} {name}")
+            valid_items = [item for item in items if item.get("code") and item.get("name")]
+            if not valid_items:
+                continue
+            # code 形态异常的叶子节点：放行进 Prompt（leaf_only 已保证无子节点），
+            # 告警暴露漂移，供运维通过 verify_kb_category_tree 定位修复。
+            nonconforming = find_nonconforming_codes(valid_items)
+            if nonconforming:
+                logger.warning(
+                    event="triage_categories_nonconforming_code",
+                    message=f"{domain} 域存在 {len(nonconforming)} 个非标准形态 code 的分类，已放行并告警",
+                    domain=domain,
+                    codes=nonconforming,
+                )
+            lines.append(f"### {domain}域（{len(valid_items)}个）")
+            for item in valid_items:  # 免除截断限制，向大模型呈现全部叶子分类
+                lines.append(f"- {item.get('code', '')} {item.get('name', '')}")
         return "\n".join(lines)
 
     @classmethod
@@ -594,8 +613,9 @@ class TriageAgent(BaseAgent):
         """把模型提出的分类收敛到权威分类字典。
 
         模型回复是不可信文本：只解析明确的“确认分类”标记或独立候选行，禁止
-        扫描判断依据全文。任何不在当前启用分类字典中的编码一律拒绝，避免把
-        ``ubu-sus-25.2`` 一类资源名称误识别为故障分类。
+        扫描判断依据全文。捕获形态不强制 ``-<数字>`` 结尾（兼容数据漂移期的
+        非标准形态叶子），但任何不在当前启用分类字典中的编码一律由 cat_map
+        权威拒绝，避免把 ``ubu-sus-25.2`` 一类资源名称误识别为故障分类。
         """
         cat_map = cls._get_active_categories_map()
         if not cat_map:
@@ -608,12 +628,10 @@ class TriageAgent(BaseAgent):
             )
 
         candidate_pattern = re.compile(
-            r"^[\t ]*[①②③④][\t ]*([一-鿿A-Za-z0-9-]+-\d+)(?:[\t ]+[^\r\n]+)?[\t ]*$",
+            r"^[\t ]*[①②③④][\t ]*([一-鿿A-Za-z0-9-]+)(?:[\t ]+[^\r\n]+)?[\t ]*$",
             re.MULTILINE,
         )
-        confirmed_pattern = re.compile(
-            r"(?:已确认故障分类|故障分类)[：:][\t ]*([一-鿿A-Za-z0-9-]+-\d+)(?:[\t ]+[^\r\n]+)?"
-        )
+        confirmed_pattern = re.compile(r"(?:已确认故障分类|故障分类)[：:][\t ]*([一-鿿A-Za-z0-9-]+)(?:[\t ]+[^\r\n]+)?")
 
         candidate_codes = candidate_pattern.findall(reply)
         confirmed_match = confirmed_pattern.search(reply)

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
+from shared.utils.category_code import is_leaf_code
 from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
@@ -348,7 +349,12 @@ class CategoryRepository:
 
         # ── Phase 3: 解析叶节点（YAML 原始 198 条）──────────────────────────
         # 字段映射：id→code, label→name（兼容旧格式 name），path→path_labels, len(path)→level
+        # 叶子 id 必须符合编码契约（前缀-纯数字结尾），不合规即 fail-fast 终止导入：
+        # 否则该叶子会因 code 形态被下游 S0 过滤，成为"管理页可见、AI 不可选"的隐形分类
+        # （Q2026101026818 复盘）。中间层 code 由 path 派生（末段中文），属已知形态，
+        # 由 import_from_yaml 统一告警、不在此阻断。
         leaf_records: list[dict[str, Any]] = []
+        seen_leaf_codes: set[str] = set()
         for idx, cat in enumerate(categories_data):
             path = cat.get("path", [])
             if not isinstance(path, list):
@@ -360,9 +366,19 @@ class CategoryRepository:
             if not code:
                 parse_errors.append(f"第 {idx + 1} 条记录缺少 id 字段")
                 continue
+            if not is_leaf_code(code):
+                parse_errors.append(
+                    f"第 {idx + 1} 条记录（{code}）id 不符合叶子编码契约（须以 '-<纯数字>' 结尾，"
+                    f"契约见 shared/utils/category_code.py）"
+                )
+                continue
+            if code in seen_leaf_codes:
+                parse_errors.append(f"第 {idx + 1} 条记录（{code}）id 重复，同一编码只能对应一个叶节点")
+                continue
             if not name:
                 parse_errors.append(f"第 {idx + 1} 条记录（{code}）缺少 label/name 字段")
                 continue
+            seen_leaf_codes.add(code)
             level = len(path)
             leaf_records.append(
                 {
@@ -465,6 +481,19 @@ class CategoryRepository:
                 "details": details,
             }
         total = len(all_records)
+
+        # 域节点/中间层 code 由 path 派生（末段为中文或 L1 后缀），不匹配叶子形态
+        # 属已知设计，不阻断导入；但记录清单供巡检对照——若某中间层因数据漂移退化
+        # 为叶子（子分类全部缺失），它会被 leaf_only 放行且 code 异常，正是隐形分类
+        # 的来源形态（Q2026101026818 复盘）。
+        nonconforming_derived = sorted(rec["code"] for rec in all_records if not is_leaf_code(rec["code"]))
+        if nonconforming_derived:
+            logger.warning(
+                event="repo_import_derived_nonconforming_code",
+                message=f"{len(nonconforming_derived)} 个域/中间层节点 code 为 path 派生形态（非叶子形态），属已知设计",
+                codes=nonconforming_derived,
+                trace_id=trace_id,
+            )
 
         logger.info(
             event="repo_import_start",
