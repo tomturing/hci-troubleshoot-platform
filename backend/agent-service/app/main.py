@@ -652,6 +652,32 @@ class CompositeToolExecutor:
                     }
             else:
                 return {"error": f"SOP 工具 {tool_name} 未实现"}
+        elif tool_def.category == "qkv":
+            # 修复 F：qkv_* 采集工具在 SOP 受控链路上统一路由到 qkv_exec（复用 BridgeRelayExecutor）。
+            # 旧行为为“工具类别 qkv 无对应执行器”直接把错误交回模型→触发手工兜底（V-017）。
+            if effective_conversation_id is None:
+                return {"error": f"缺少 conversation_id，无法执行 qkv 工具 {tool_name}"}
+            from app.tools.qkv.engine import qkv_exec
+            from app.tools.qkv.signal import FrontendSignal
+
+            signal_payload = dict(args or {})
+            # tool_name 形如 qkv_alert/qkv_task/qkv_dialog：若 args 未显式声明 query，从工具名补齐
+            if not signal_payload.get("query") and "_" in tool_name:
+                signal_payload["query"] = tool_name.split("_", 1)[1]
+            try:
+                fsignal = FrontendSignal.from_dict(signal_payload)
+            except Exception as exc:
+                return {
+                    "error": f"qkv 信号构造失败: {exc}",
+                    "tool_name": tool_name,
+                    "error_type": "contract_error",
+                }
+            return await qkv_exec(
+                signal=fsignal,
+                conversation_id=str(effective_conversation_id),
+                node_ip=signal_payload.get("node_ip"),
+                exec_id=signal_payload.get("exec_id"),
+            )
         else:
             return {"error": f"工具类别 {tool_def.category} 无对应执行器"}
 

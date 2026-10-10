@@ -23,7 +23,11 @@ from typing import Any
 
 from shared.clients import KBClient
 from shared.observability.logger import get_logger
-from shared.utils.acquisition_strategy import parse_strategy
+from shared.utils.acquisition_strategy import (
+    STRATEGY_SKILL_CALL,
+    STRATEGY_TOOL_CALL,
+    parse_strategy,
+)
 
 from app.tools.sop.client import ConversationSopClient
 from app.tools.sop.command_intent import normalize_sop_commands
@@ -377,7 +381,11 @@ def _merge_extracted_variables(
     return merged
 
 
-SOFT_PREFERRED_STRATEGIES = {"skill_call", "tool_call"}
+# 软推荐策略：由引擎/上游自动派生、无需人工或受控采集工具补值的策略。
+# tool_call/skill_call 已从软推荐升级为硬阻断（见修复 B「守卫门+失败即接管」），
+# 声明为这两类来源的变量必须经 sop_request_variable 走受控采集链路，
+# 模型不得用裸 bash_exec/acli_exec/qkv_* 即兴替代（V-017 根因）。
+SOFT_PREFERRED_STRATEGIES = {"llm_inference", "agent_pass", "sop_default"}
 
 
 def _find_missing_guarded_variables(
@@ -387,8 +395,11 @@ def _find_missing_guarded_variables(
     """找出进入节点前必须先按来源策略获取的缺失变量。
 
     返回 (hard_blocked, soft_hints) 元组：
-      - hard_blocked: 需要强阻断的缺失变量（is_guarded 包含 env_injection/user_input/user_confirm）
-      - soft_hints: 属于软推荐（skill_call/tool_call）且缺失的变量
+      - hard_blocked: 需要强阻断的缺失变量。守卫门覆盖全部需受控采集的声明变量：
+          * is_guarded（env_injection/user_input/user_confirm）
+          * tool_call/skill_call（有受控采集工具/技能的声明变量）——由软推荐升级为硬阻断，
+            使模型无法绕过 sop_request_variable 手工兜底（修复 B）。
+      - soft_hints: 仅提示、不阻断的派生/自动策略缺失变量（llm_inference/agent_pass/sop_default）。
     """
     hard_blocked: list[dict[str, Any]] = []
     soft_hints: list[dict[str, Any]] = []
@@ -399,12 +410,31 @@ def _find_missing_guarded_variables(
             continue
         if _has_variable_value(context_variables, name):
             continue
-        # 统一使用公共解析器判断是否受守护
-        if parse_strategy(raw_strategy).is_guarded:
+        # 统一使用公共解析器归一策略（兼容冒号参数 / 中文别名 / 简写）
+        parsed = parse_strategy(raw_strategy)
+        strategy = parsed.strategy
+        if parsed.is_guarded:
             hard_blocked.append(variable)
-        elif raw_strategy in SOFT_PREFERRED_STRATEGIES:
+        elif strategy in (STRATEGY_TOOL_CALL, STRATEGY_SKILL_CALL):
+            # 声明由受控工具/技能采集但未解析 → 守卫门硬阻断，强制走 sop_request_variable
+            hard_blocked.append(variable)
+        elif strategy in SOFT_PREFERRED_STRATEGIES:
             soft_hints.append(variable)
     return hard_blocked, soft_hints
+
+
+def _is_conclusion_node(node: dict[str, Any], node_type: str | None) -> bool:
+    """判断节点是否为"终局结论"节点（方案/叶结论）——需要反幻觉门守护。
+
+    结论节点会向客户输出定性/定量判定，若关键声明变量未采集/未人工确认，
+    绝不允许推进并生成具体数值结论（修复 C）。
+    """
+    if node_type in ("solution", "leaf"):
+        return True
+    children = node.get("children", []) or []
+    is_leaf = not children
+    # 非叶分支不算结论；叶节点携带 solution / diagnosis 判定即为结论节点
+    return is_leaf and bool(node.get("solution") or node.get("diagnosis"))
 
 
 def find_missing_guarded_variables_for_node_window(
@@ -579,12 +609,63 @@ async def sop_advance(
 
         required_variables = _build_required_variables(target_node, variable_schema)
         effective_variables: dict[str, Any] = {}
-        if required_variables:
+        is_conclusion = _is_conclusion_node(target_node, actual_node_type)
+
+        # 修复 C：终局结论反幻觉门——推进到 solution/叶结论节点时，除目标节点自身引用变量外，
+        # 还纳入“当前节点窗口”声明的证据变量，避免带着未采集/未人工确认的变量直接下结论。
+        guard_required: list[dict[str, Any]] = list(required_variables)
+        seen_guard_names = {v.get("name") for v in guard_required}
+        if is_conclusion:
+            current_node_id = ((await conversation_sop_client.get_execution(uuid.UUID(conversation_id))) or {}).get(
+                "current_node_id"
+            ) or "n-1"
+            current_node = _find_node_in_tree(tree_json, current_node_id)
+            if current_node is not None:
+                for var in _build_required_variables(current_node, variable_schema):
+                    vname = var.get("name")
+                    if vname and vname not in seen_guard_names:
+                        guard_required.append(var)
+                        seen_guard_names.add(vname)
+
+        if guard_required:
             execution = await conversation_sop_client.get_execution(uuid.UUID(conversation_id))
             context_variables = (execution or {}).get("context_variables", {}) or {}
             effective_variables = _merge_extracted_variables(context_variables, variables_extracted)
-            missing_variables, soft_hints = _find_missing_guarded_variables(required_variables, effective_variables)
+            missing_variables, soft_hints = _find_missing_guarded_variables(guard_required, effective_variables)
             if missing_variables:
+                first_missing = missing_variables[0]
+                if is_conclusion:
+                    # 结论节点存在未解析/未确认的声明变量 → 硬阻断，禁止生成定量结论/具体数值
+                    logger.info(
+                        event="sop_advance_conclusion_blocked_unresolved_variables",
+                        conversation_id=conversation_id,
+                        sop_document_id=sop_document_id,
+                        target_node_id=target_node_id,
+                        missing_variables=[v.get("name") for v in missing_variables],
+                    )
+                    return {
+                        "ok": False,
+                        "error": "sop_conclusion_blocked_unresolved_variables",
+                        "message": (
+                            f"该步受阻：结论节点 {target_node_id} 依赖的变量 "
+                            f"{', '.join(str(v.get('name')) for v in missing_variables)} 尚未按声明来源采集/人工确认。"
+                            "在关键证据变量未就绪前，严禁推进结论或输出任何具体数值/定量判定。"
+                            "请先调用 sop_request_variable 走受控采集；若客观无法采集，引擎将自动转人工确认。"
+                        ),
+                        "target_node_id": target_node_id,
+                        "missing_variables": missing_variables,
+                        "escalation": "human_confirm",
+                        "next_tool_call": {
+                            "tool_name": "sop_request_variable",
+                            "args": {
+                                "variable_name": first_missing.get("name"),
+                                "reason": (
+                                    first_missing.get("description")
+                                    or f"得出 SOP 结论节点 {target_node_id} 前必须先确认该变量"
+                                ),
+                            },
+                        },
+                    }
                 logger.info(
                     event="sop_advance_blocked_by_missing_variables",
                     conversation_id=conversation_id,
@@ -592,7 +673,6 @@ async def sop_advance(
                     target_node_id=target_node_id,
                     missing_variables=[v.get("name") for v in missing_variables],
                 )
-                first_missing = missing_variables[0]
                 return {
                     "ok": False,
                     "error": "missing_required_variables",
