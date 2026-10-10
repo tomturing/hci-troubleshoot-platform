@@ -233,6 +233,40 @@ kubectl exec -n hci-troubleshoot <openclaw-pod> -- sh -lc \
 
 ---
 
+## V-018：SSE 流末尾 choices=[] 收尾块触发 IndexError，误报「分类模型暂时不可用」
+
+**现象：** 工单（如 Q2026101007500）S0 意图识别弹出：
+> `分类模型暂时不可用，已根据故障描述和现场事实生成候选，请人工确认。`
+
+但 agent-service 日志显示模型其实**已正常返回内容**（`got_first_token: true`），随后：
+```
+event=ai_exception  error_message="list index out of range"  got_first_token=true  retriable=false
+event=triage_llm_fallback  detail="type=IndexError, message=list index out of range"
+```
+
+**根因（不是模型/服务不可用）：** `backend/shared/clients/ai_client.py` 的 `chat_completion_stream`
+解析 SSE chunk 时写作 `data.get("choices", [{}])[0]`。该默认值 `[{}]` **只在 `choices` 键缺失时生效**；
+而 OpenAI 兼容网关（阿里云 MaaS compatible-mode 等）会在流末尾额外下发一个 `choices: []`（空数组）、
+仅携带 `usage` 的收尾块，于是 `[][0]` 抛 `IndexError`。异常逃逸出仅捕获 `json.JSONDecodeError` 的内层
+`try`，因 `got_first_token=true` 不可重试，被转成 `AIStreamError(INTERNAL_ERROR)`，最终被 triage_agent
+的 `except` 兜底为「模型不可用」——**把一条已经拿到有效回复的请求白白丢弃**。
+
+**修复：** 对空 `choices` 取空 delta，保留 usage 采集，不越界：
+```python
+choices = data.get("choices") or []
+delta = choices[0].get("delta", {}) if choices else {}
+```
+非流式 `invoke` 路径的 `data.get("choices", [{}])[0]` 存在同类隐患，一并加固。
+
+**防回归：** `backend/agent-service/tests/unit/test_chat_completion_stream.py` 新增
+`test_stream_trailing_empty_choices_usage_chunk_with_mock`、
+`test_stream_reasoning_only_empty_choices_with_mock`，覆盖含 `choices=[]` 收尾块的流式解析。
+
+**通用教训：** 解析外部 API 返回的数组字段时，`dict.get(key, [default])[0]` 只在「键缺失」时兜底，
+无法防「键存在但值为空数组」；对不可信上游必须显式判空后再索引。
+
+---
+
 ## OpenClaw 配置快速恢复（迁自 network-service-check.md §九）
 
 **适用场景：** Pod 重启/崩溃后需要快速验证 openclaw.json 配置完整性并恢复服务。

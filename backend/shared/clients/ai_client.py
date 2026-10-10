@@ -308,7 +308,14 @@ class OpenClawAssistant:
 
                         try:
                             data = json.loads(data_str)
-                            delta = data.get("choices", [{}])[0].get("delta", {})
+                            # OpenAI 兼容网关（如阿里云 MaaS compatible-mode）会在流末尾
+                            # 额外下发一个仅携带 usage、choices 为空数组 [] 的收尾块。
+                            # 若沿用 data.get("choices", [{}])[0]，默认值只在 choices 键缺失
+                            # 时生效，choices=[] 会命中 [0] 触发 IndexError，导致整条已收到
+                            # 首 token 的有效响应被误判为「模型不可用」。此处对空 choices 取
+                            # 空 delta，并保留下方 usage 采集逻辑。
+                            choices = data.get("choices") or []
+                            delta = choices[0].get("delta", {}) if choices else {}
                             content = delta.get("content", "")
                             # GLM-5 等 reasoning 模型会先输出 reasoning_content（思维链），
                             # 此时 content 为空。需要同时检测 reasoning_content，
@@ -802,7 +809,10 @@ class OpenClawAssistant:
                         )
 
                     data = response.json()
-                    choice = data.get("choices", [{}])[0]
+                    # 防御空 choices（如内容审查拦截等异常响应）导致 [0] 越界，
+                    # 与流式路径保持一致的容错契约。
+                    choices = data.get("choices") or []
+                    choice = choices[0] if choices else {}
                     message = choice.get("message", {})
 
                     usage = data.get("usage") or {}
