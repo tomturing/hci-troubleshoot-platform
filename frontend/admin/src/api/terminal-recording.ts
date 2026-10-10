@@ -180,7 +180,10 @@ export async function listOperations(
   if (options?.limit) params.set('limit', String(options.limit))
   if (options?.offset) params.set('offset', String(options.offset))
 
-  const response = await fetch(`${API_BASE}/api/terminal/operations?${params}`)
+  // admin 专用路由：客户端路由 /api/terminal/operations 的工单归属校验对
+  // 管理台派生身份必然不匹配（无客户 Cookie）→ 403，回放须走 admin 端点。
+  // 鉴权头由全局 fetch 拦截器（utils/auth.setupAuthFetch）注入登录 JWT。
+  const response = await fetch(`${API_BASE}/api/terminal/admin/operations?${params}`)
 
   if (!response.ok) {
     const error = await response.text()

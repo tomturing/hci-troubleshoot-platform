@@ -275,3 +275,57 @@ class TestGatewayIntegration:
 
             assert response.status_code == 404
             assert response.json()["detail"] == "Case not found"
+
+    @pytest.mark.asyncio
+    async def test_admin_terminal_operations_requires_admin(self, test_app):
+        """测试 admin 终端操作记录未携带管理员凭证被拒（不可借道读任意工单终端数据）"""
+        async with (
+            test_app.router.lifespan_context(test_app),
+            httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
+        ):
+            response = await client.get("/api/terminal/admin/operations?case_id=Q123")
+            assert response.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_admin_terminal_operations_without_ownership_check(self, test_app):
+        """测试 admin 终端操作记录不执行工单归属校验（修复 admin 回放 403 回归）"""
+        from app.routes.terminal import get_terminal_service
+        from app.security.gateway_auth import require_admin
+
+        stub_operations = [
+            {
+                "id": 1,
+                "case_id": "Q123",
+                "seq_number": 1,
+                "direction": "input",
+                "command": "ls",
+                "content": "ls\r\n",
+                "exit_code": None,
+                "diagnostic_stage": None,
+                "created_at": "2026-10-10T00:00:00",
+            }
+        ]
+
+        class _StubTerminalService:
+            async def list_operations(self, **kwargs):
+                # admin 通道不应传 client_id，也不应做归属校验
+                assert "case_id" in kwargs
+                return 1, stub_operations
+
+        test_app.dependency_overrides[require_admin] = lambda: None
+        test_app.dependency_overrides[get_terminal_service] = lambda: _StubTerminalService()
+        try:
+            async with (
+                test_app.router.lifespan_context(test_app),
+                httpx.AsyncClient(transport=ASGITransport(app=test_app), base_url=self.BASE_URL) as client,
+            ):
+                # 不携带任何客户身份 Cookie，仅 admin 通道自身放行
+                response = await client.get("/api/terminal/admin/operations?case_id=Q123")
+        finally:
+            test_app.dependency_overrides.pop(require_admin, None)
+            test_app.dependency_overrides.pop(get_terminal_service, None)
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 1
+        assert data["operations"][0]["case_id"] == "Q123"

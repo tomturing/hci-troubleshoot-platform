@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from shared.security.signature import sign_client_identity
 
 from app.config import settings
-from app.security.gateway_auth import require_user
+from app.security.gateway_auth import require_admin, require_user
 
 from ..models.terminal import (
     OperationDirection,
@@ -224,6 +224,44 @@ async def list_operations(
         )
         return TerminalOperationListResponse(total=total, operations=operations)
 
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"查询操作记录失败: {e}")
+
+
+@router.get("/admin/operations", response_model=TerminalOperationListResponse)
+async def admin_list_operations(
+    case_id: str = Query(..., description="工单 ID"),
+    stage: str | None = Query(default=None, description="诊断阶段过滤"),
+    search: str | None = Query(default=None, description="关键词搜索"),
+    direction: OperationDirection | None = Query(default=None, description="方向过滤"),
+    order: str = Query(default="asc", description="排序方向"),
+    limit: int = Query(default=100, ge=1, le=1000, description="返回数量限制"),
+    offset: int = Query(default=0, ge=0, description="偏移量"),
+    _: None = Depends(require_admin),
+    service: TerminalService = Depends(get_terminal_service),
+):
+    """[Admin] 查询任意工单的终端操作记录（要求管理员 JWT，不做归属校验）。
+
+    管理后台无客户身份 Cookie，客户端路由 GET /operations 的工单归属校验
+    （verify_case_owner）对 admin 派生身份必然不匹配 → 403「无权访问该工单的
+    终端数据」，管理台终端历史 Tab 因此不可用。admin 回放走本专用端点
+    （与 /api/cases/all 同权：require_admin + 全量可读）。
+    """
+    try:
+        total, operations = await service.list_operations(
+            case_id=case_id,
+            stage=stage,
+            search=search,
+            direction=direction,
+            order=order,
+            limit=limit,
+            offset=offset,
+        )
+        return TerminalOperationListResponse(total=total, operations=operations)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
