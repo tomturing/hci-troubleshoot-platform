@@ -145,6 +145,11 @@ export function createCaseApi(client: AxiosInstance) {
       return client.get<CaseListResponse>('/cases/all', { params })
     },
 
+    /** [Admin] 获取任意工单详情（admin 专用路由，不执行客户归属校验） */
+    getByIdAdmin(caseId: string) {
+      return client.get<CaseResponse>(`/cases/admin/${caseId}`)
+    },
+
     /** [Admin] 编辑工单 */
     update(caseId: string, data: CaseUpdate) {
       return client.put<CaseResponse>(`/cases/${caseId}`, data)

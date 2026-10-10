@@ -58,7 +58,9 @@ const editKbdSaving = ref(false)
 onMounted(async () => {
   try {
     // 加载工单详情
-    const caseRes = await caseApi.getById(caseId)
+    // 加载工单详情：使用 admin 专用路由，绕过客户归属校验
+    // 客户端路由 /cases/{caseId} 以派生 client_id 做归属校验，管理后台无客户身份会统一 404
+    const caseRes = await caseApi.getByIdAdmin(caseId)
     caseDetail.value = caseRes.data
 
     // 加载对话：使用 admin 专用路由，绕过 client 身份签名校验
