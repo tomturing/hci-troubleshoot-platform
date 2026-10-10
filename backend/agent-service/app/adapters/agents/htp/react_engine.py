@@ -589,6 +589,9 @@ class ReactEngine:
                     # 若 LLM 输出已包含明确的诊断结论标记，说明推理已完成，
                     # 幻觉检测的假阳性（如引用了来自 SOP 上下文而非工具执行的数据源）
                     # 不应触发 re-run。re-run 会增加 5-15s 延迟且常产出更差的输出。
+                    # 例外（修复 C「数字类断言必须携带证据来源」）：即使已给出结论，
+                    # 只要检测到无法在工具输出中溯源的具体数值（ungrounded_numbers），
+                    # 仍必须触发一次带"删除无来源数值"约束的 re-run，杜绝编造定量结论。
                     conclusion_markers = [
                         "排障结论", "根因已确认", "根因确认", "排障闭环",
                         "修复方案", "诊断结论", "根因定位",
@@ -596,15 +599,22 @@ class ReactEngine:
                     has_conclusion = any(
                         m in (invoke_result.content or "") for m in conclusion_markers
                     )
-                    if has_conclusion:
+                    ungrounded_numbers = detection_report.get("ungrounded_numbers") or []
+                    if has_conclusion and not ungrounded_numbers:
                         logger.info(
                             "hallucination_rerun_skipped",
-                            "检测到幻觉但输出已包含结论，跳过 re-run，由二次检测追加警告",
+                            "检测到幻觉但输出已包含结论且无未溯源数值，跳过 re-run，由二次检测追加警告",
                         )
                     else:
-                        logger.warning(
-                            "hallucination_detected_before_report", "最终报告生成前检测到幻觉，尝试重新生成一次 (Re-run)..."
-                        )
+                        if has_conclusion and ungrounded_numbers:
+                            logger.warning(
+                                "hallucination_ungrounded_numbers_on_conclusion",
+                                f"结论输出中检测到无证据来源的数值 {ungrounded_numbers}，强制触发数值溯源 re-run",
+                            )
+                        else:
+                            logger.warning(
+                                "hallucination_detected_before_report", "最终报告生成前检测到幻觉，尝试重新生成一次 (Re-run)..."
+                            )
                         try:
                             # 反幻觉自我检查指令已数据库化（prompt 管理 → s4_react_antihallucination_v1）
                             antihallucination_prompt = await self._load_prompt(

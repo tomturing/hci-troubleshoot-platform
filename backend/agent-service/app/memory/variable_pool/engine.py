@@ -51,10 +51,44 @@ _TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z][A-Za-z0-9_.]*)\}\}|\{([A-Z
 _EXACT_TEMPLATE_PLACEHOLDER_RE = re.compile(r"^\{\{([A-Za-z][A-Za-z0-9_.]*)\}\}|\{([A-Za-z][A-Za-z0-9_.]*)\}$")
 
 
-def _should_fallback_to_user_input(var_def: dict[str, Any]) -> bool:
-    """仅在变量声明显式允许时，自动来源失败才转人工输入。"""
-    fallback = var_def.get("fallback_strategy") or var_def.get("fallback")
-    return fallback in ("user_input", "manual", "ask_user")
+def _classify_acquisition_error(exc: Exception) -> str:
+    """把采集异常归一为可判别的 error_type，禁止大而全、模糊归一的分类（V-017）。"""
+    text = str(exc).lower()
+    if "conversation_id" in text or "缺少 conversation" in text or "missing 1 required" in text:
+        return "contract_error"
+    if "oniguruma" in text or "command not found" in text or "not available" in text:
+        return "tool_capability_missing"
+    if "timeout" in text or "timed out" in text or "超时" in text:
+        return "timeout"
+    if "unreachable" in text or "connection" in text or "refused" in text or "不可达" in text or "拒绝" in text:
+        return "node_unreachable"
+    if "无对应执行器" in text or "executor_unavailable" in text or ("executor" in text and "未初始化" in text):
+        return "executor_unavailable"
+    if isinstance(exc, (TypeError, ValueError)):
+        return "contract_error"
+    return "tool_error"
+
+
+def _classify_tool_result_error(tool_result: Any) -> str:
+    """工具已执行但未取到值时的 error_type 归类。"""
+    if isinstance(tool_result, dict):
+        err_text = str(tool_result.get("error", "")).lower()
+    else:
+        err_text = str(getattr(tool_result, "stderr", "") or "").lower()
+    if "conversation_id" in err_text or "缺少 conversation" in err_text:
+        return "contract_error"
+    if "oniguruma" in err_text or "command not found" in err_text or "not available" in err_text:
+        return "tool_capability_missing"
+    if bool(getattr(tool_result, "timed_out", False)) or bool(getattr(tool_result, "timeout", False)):
+        return "timeout"
+    if "timeout" in err_text or "timed out" in err_text:
+        return "timeout"
+    if "unreachable" in err_text or "connection" in err_text or "refused" in err_text:
+        return "node_unreachable"
+    exit_code = getattr(tool_result, "exit_code", None)
+    if isinstance(exit_code, int) and exit_code != 0:
+        return "tool_error"
+    return "empty_value"
 
 
 def _read_path(payload: Any, path: str) -> Any:
@@ -646,21 +680,16 @@ async def sop_request_variable(
             variable_name=variable_name,
             conversation_id=conversation_id,
         )
-        if _should_fallback_to_user_input(var_def):
-            return await _request_user_input(
-                var_schema=var_def,
-                kind="variable_input",
-                msg=f"变量 {variable_name} 未能从环境上下文获取，请手动输入",
-            )
-        return {
-            "error": "sop_env_variable_missing",
-            "message": (
-                f"变量 {variable_name} 声明为 {var_def.get('acquisition_strategy')}，但 SOP 初始化阶段未注入。"
-                "请检查环境采集、变量声明或动态 Skill/Tool 配置。"
+        # 失败即接管：环境上下文未注入即视为采集无法完成，一律转人工补值，
+        # 绝不把泛化 error 交回模型触发手工兜底（修复 B「一律转人工弹框」）。
+        return await _request_user_input(
+            var_schema=var_def,
+            kind="variable_input",
+            msg=(
+                f"变量 {variable_name} 声明为 {var_def.get('acquisition_strategy')}，"
+                "但环境上下文未注入、无法自动取值。请人工提供该变量值或确认后继续。"
             ),
-            "variable_name": variable_name,
-            "strategy": strategy,
-        }
+        )
 
     if strategy == STRATEGY_SOP_DEFAULT:
         # sop_default 类变量：直接读 variable_schema.default_value 或冒号参数（如 sop:NONE）
@@ -683,11 +712,20 @@ async def sop_request_variable(
     if strategy == STRATEGY_DERIVED:
         expression = var_def.get("expression") or var_def.get("derived_expression")
         if not expression:
-            return {
-                "error": "sop_derived_expression_missing",
-                "message": f"变量 {variable_name} 声明为 derived，但未配置 expression",
-                "variable_name": variable_name,
-            }
+            # 配置缺失也属于“无法自动产出确定值”，失败即接管转人工，不交回模型
+            logger.error(
+                event="sop_request_variable_derived_expression_missing",
+                variable_name=variable_name,
+                conversation_id=conversation_id,
+            )
+            return await _request_user_input(
+                var_schema=var_def,
+                kind="variable_input",
+                msg=(
+                    f"变量 {variable_name} 声明为 derived 但未配置 expression，无法自动派生。"
+                    "请人工提供该变量值或确认后继续。"
+                ),
+            )
         try:
             derived_value = _evaluate_derived_expression(str(expression), context_variables)
             if derived_value is not None:
@@ -704,76 +742,130 @@ async def sop_request_variable(
                 expression=str(expression),
                 error=str(exc),
             )
-        if _should_fallback_to_user_input(var_def):
-            return await _request_user_input(
-                var_schema=var_def,
-                kind="variable_input",
-                msg=f"变量 {variable_name} 派生计算失败，请手动输入",
-            )
-        return {
-            "error": "sop_derived_variable_acquire_failed",
-            "message": f"变量 {variable_name} 声明由 derived 表达式计算，但表达式无法产出确定值",
-            "variable_name": variable_name,
-            "expression": str(expression),
-        }
+        # 失败即接管：派生表达式无法产出确定值 → 一律转人工，不交回模型
+        logger.info(
+            event="sop_request_variable_escalate_to_human",
+            conversation_id=conversation_id,
+            variable_name=variable_name,
+            error_type="derived_unresolved",
+        )
+        return await _request_user_input(
+            var_schema=var_def,
+            kind="variable_input",
+            msg=(
+                f"变量 {variable_name} 声明由 derived 表达式计算，但表达式无法产出确定值。"
+                "请人工提供该变量值或确认后继续。"
+            ),
+        )
 
     if strategy == STRATEGY_TOOL_CALL and acquisition_tool:
-        # tool_call 策略（含 tool:xxx 冒号简写）：自动调用指定工具获取变量值（DC-02）
-        if tool_executor is not None:
-            try:
-                tool_args = var_def.get("acquisition_args") or var_def.get("acquisition_args_template") or {}
-                tool_args = _render_args_template(tool_args, context_variables)
-                tool_result = await tool_executor.execute(acquisition_tool, tool_args)
-                acquired_value = _extract_value(tool_result, variable_name, output_path)
-                if acquired_value is not None:
-                    logger.info(
-                        event="sop_request_variable_tool_acquired",
-                        variable_name=variable_name,
-                        acquisition_tool=acquisition_tool,
-                        rendered_arg_keys=sorted(tool_args.keys()) if isinstance(tool_args, dict) else None,
-                    )
-                    # 写回变量池，后续依赖变量可直接从池中读取
-                    await _persist_variable(conversation_sop_client, conversation_id, variable_name, acquired_value)
-                    return {"ok": True, "value": acquired_value, "source": "tool_call"}
-            except Exception as exc:
-                logger.error(
-                    event="sop_request_variable_tool_failed",
-                    variable_name=variable_name,
-                    acquisition_tool=acquisition_tool,
-                    error=str(exc),
-                )
-        else:
+        # tool_call 策略（含 tool:xxx 冒号简写）：由引擎经受控通道自动调用指定工具获取变量值（DC-02）。
+        # 修复 V-017：
+        #   1. 必须向执行器透传 conversation_id，否则命令永远不下发；
+        #   2. 采集失败一律"失败即接管"转人工弹框，绝不把控制权交回模型即兴敲命令。
+        acquired_value: Any = None
+        failure_reason = ""
+        error_type = "empty_value"
+        if tool_executor is None:
+            failure_reason = f"工具执行器未初始化（{acquisition_tool}）"
+            error_type = "executor_unavailable"
             logger.error(
                 event="sop_request_variable_tool_no_executor",
                 variable_name=variable_name,
                 acquisition_tool=acquisition_tool,
+                conversation_id=conversation_id,
+                error_type=error_type,
             )
-        if _should_fallback_to_user_input(var_def):
-            return await _request_user_input(
-                var_schema=var_def,
-                kind="variable_input",
-                msg=f"变量 {variable_name} 自动获取失败，请手动输入",
+        else:
+            try:
+                tool_args = var_def.get("acquisition_args") or var_def.get("acquisition_args_template") or {}
+                tool_args = _render_args_template(tool_args, context_variables)
+                # 透传 conversation_id（CompositeToolExecutor / BridgeRelayExecutor 均需此关键字参数）
+                tool_result = await tool_executor.execute(
+                    acquisition_tool, tool_args, conversation_id=conversation_id
+                )
+                acquired_value = _extract_value(tool_result, variable_name, output_path)
+            except (TypeError, ValueError) as exc:
+                # 参数契约错误（如缺 conversation_id）、模板渲染缺前置变量等
+                failure_reason = str(exc)
+                error_type = _classify_acquisition_error(exc)
+                logger.error(
+                    event="sop_request_variable_tool_failed",
+                    variable_name=variable_name,
+                    acquisition_tool=acquisition_tool,
+                    conversation_id=conversation_id,
+                    error_type=error_type,
+                    error=str(exc),
+                )
+            except Exception as exc:
+                failure_reason = str(exc)
+                error_type = _classify_acquisition_error(exc)
+                logger.error(
+                    event="sop_request_variable_tool_failed",
+                    variable_name=variable_name,
+                    acquisition_tool=acquisition_tool,
+                    conversation_id=conversation_id,
+                    error_type=error_type,
+                    error=str(exc),
+                )
+        if acquired_value is not None:
+            logger.info(
+                event="sop_request_variable_tool_acquired",
+                variable_name=variable_name,
+                acquisition_tool=acquisition_tool,
             )
-        return {
-            "error": "sop_tool_variable_acquire_failed",
-            "message": f"变量 {variable_name} 声明由工具 {acquisition_tool} 自动获取，但工具执行或取值失败",
-            "variable_name": variable_name,
-            "acquisition_tool": acquisition_tool,
-        }
+            # 写回变量池，后续依赖变量可直接从池中读取
+            await _persist_variable(conversation_sop_client, conversation_id, variable_name, acquired_value)
+            return {"ok": True, "value": acquired_value, "source": "tool_call"}
+        # 工具执行成功但未取到值：按返回值归类
+        if not failure_reason:
+            failure_reason = f"工具 {acquisition_tool} 已执行但取值为空"
+            error_type = _classify_tool_result_error(locals().get("tool_result"))
+        logger.info(
+            event="sop_request_variable_escalate_to_human",
+            conversation_id=conversation_id,
+            variable_name=variable_name,
+            acquisition_tool=acquisition_tool,
+            error_type=error_type,
+        )
+        return await _request_user_input(
+            var_schema=var_def,
+            kind="variable_input",
+            msg=(
+                f"变量 {variable_name} 无法自动获取（{error_type}）：{failure_reason}。"
+                "请人工提供该变量值或确认后继续。"
+            ),
+        )
 
     if strategy == STRATEGY_SKILL_CALL and acquisition_tool:
         # skill_call 策略（含 skill:xxx 冒号简写）：执行数据库动态 Skill 计算变量值
+        # 失败即接管：以下任一采集失败均一律转人工弹框，绝不将泛化 error 交回模型触发手工兜底。
+        async def _escalate_skill(msg: str, error_type: str) -> VariableRequestResult:
+            logger.info(
+                event="sop_request_variable_escalate_to_human",
+                conversation_id=conversation_id,
+                variable_name=variable_name,
+                acquisition_skill=acquisition_tool,
+                error_type=error_type,
+            )
+            return await _request_user_input(
+                var_schema=var_def,
+                kind="variable_input",
+                msg=msg,
+            )
+
         if skill_runner is None:
-            return {
-                "error": "sop_dynamic_skill_runner_missing",
-                "message": (
-                    f"变量 {variable_name} 声明由 Skill {acquisition_tool} 获取，但运行时未注入 DynamicSkillRunner"
-                ),
-                "variable_name": variable_name,
-                "acquisition_skill": acquisition_tool,
-                "boundary": "agent",
-                "error_code": "sop_dynamic_skill_runner_missing",
-            }
+            logger.error(
+                event="sop_request_variable_skill_runner_missing",
+                variable_name=variable_name,
+                acquisition_skill=acquisition_tool,
+                conversation_id=conversation_id,
+                error_type="executor_unavailable",
+            )
+            return await _escalate_skill(
+                f"变量 {variable_name} 声明由 Skill {acquisition_tool} 获取，但运行时未注入 DynamicSkillRunner，无法自动取值。请人工提供该变量值或确认后继续。",
+                "executor_unavailable",
+            )
         try:
             skill_context = _unwrap_context_variables(context_variables)
             skill_result = await skill_runner.execute(
@@ -800,119 +892,100 @@ async def sop_request_variable(
                     if isinstance(skill_result, dict)
                     else acquisition_tool,
                 }
+            # Skill 执行成功但未取到值 → 失败即接管转人工
+            return await _escalate_skill(
+                f"变量 {variable_name} 由 Skill {acquisition_tool} 执行成功但未产出取值，无法自动获取。请人工提供该变量值或确认后继续。",
+                "empty_value",
+            )
         except SkillNotFoundError as exc:
-            # Agent/技能域：技能确实不存在或未启用（唯一与旧文案相符的情形）
+            # Agent/技能域：技能确实不存在或未启用
             logger.error(
                 event="sop_request_variable_skill_not_found",
                 variable_name=variable_name,
                 acquisition_skill=acquisition_tool,
+                error_type="tool_capability_missing",
                 error=str(exc),
             )
-            if _should_fallback_to_user_input(var_def):
-                return await _request_user_input(
-                    var_schema=var_def,
-                    kind="variable_input",
-                    msg=f"变量 {variable_name} 自动获取失败：{exc.user_message}",
-                )
-            return {
-                "error": "sop_skill_not_found_or_disabled",
-                "message": exc.user_message,
-                "variable_name": variable_name,
-                "acquisition_skill": acquisition_tool,
-                "output_path": output_path,
-                "boundary": exc.boundary,
-                "error_code": exc.error_code,
-            }
+            return await _escalate_skill(
+                f"变量 {variable_name} 自动获取失败（tool_capability_missing：{exc.user_message}）。请人工提供该变量值或确认后继续。",
+                "tool_capability_missing",
+            )
         except SkillLLMError as exc:
-            # LLM/提供商域：与技能配置无关，明确告知后端问题，杜绝误导
+            # LLM/提供商域：与技能配置无关，明确告知后端问题
             logger.error(
                 event="sop_request_variable_skill_llm_failed",
                 variable_name=variable_name,
                 acquisition_skill=acquisition_tool,
                 llm_code=exc.llm_code,
+                error_type="tool_error",
                 error=str(exc),
             )
-            if _should_fallback_to_user_input(var_def):
-                return await _request_user_input(
-                    var_schema=var_def,
-                    kind="variable_input",
-                    msg=f"变量 {variable_name} 自动获取失败：{exc.user_message}",
-                )
-            return {
-                "error": "sop_skill_llm_failed",
-                "message": exc.user_message,
-                "variable_name": variable_name,
-                "acquisition_skill": acquisition_tool,
-                "output_path": output_path,
-                "boundary": exc.boundary,
-                "error_code": exc.error_code,
-                "llm_code": exc.llm_code,
-            }
+            return await _escalate_skill(
+                f"变量 {variable_name} 自动获取失败（skill_llm_failed：{exc.user_message}）。请人工提供该变量值或确认后继续。",
+                "tool_error",
+            )
         except SkillOutputUnavailableError as exc:
             # Agent/技能域：技能执行成功但未产出所请求的变量（指令 / output_path 配置问题）
             logger.error(
                 event="sop_request_variable_skill_output_unavailable",
                 variable_name=variable_name,
                 acquisition_skill=acquisition_tool,
+                error_type="empty_value",
                 error=str(exc),
             )
-            if _should_fallback_to_user_input(var_def):
-                return await _request_user_input(
-                    var_schema=var_def,
-                    kind="variable_input",
-                    msg=f"变量 {variable_name} 自动获取失败：{exc.user_message}",
-                )
-            return {
-                "error": "sop_skill_output_unavailable",
-                "message": exc.user_message,
-                "variable_name": variable_name,
-                "acquisition_skill": acquisition_tool,
-                "output_path": output_path,
-                "boundary": exc.boundary,
-                "error_code": exc.error_code,
-            }
+            return await _escalate_skill(
+                f"变量 {variable_name} 自动获取失败（skill_output_unavailable：{exc.user_message}）。请人工提供该变量值或确认后继续。",
+                "empty_value",
+            )
         except SkillError as exc:
             # Agent/技能域兜底（工具依赖缺失、AI 客户端缺失等）
             logger.error(
                 event="sop_request_variable_skill_failed",
                 variable_name=variable_name,
                 acquisition_skill=acquisition_tool,
+                error_type=_classify_acquisition_error(exc),
                 error=str(exc),
             )
-            if _should_fallback_to_user_input(var_def):
-                return await _request_user_input(
-                    var_schema=var_def,
-                    kind="variable_input",
-                    msg=f"变量 {variable_name} 自动获取失败：{exc.user_message}",
-                )
-            return {
-                "error": "sop_skill_acquire_failed",
-                "message": exc.user_message,
-                "variable_name": variable_name,
-                "acquisition_skill": acquisition_tool,
-                "output_path": output_path,
-                "boundary": exc.boundary,
-                "error_code": exc.error_code,
-            }
+            return await _escalate_skill(
+                f"变量 {variable_name} 自动获取失败（skill_failed：{exc.user_message}）。请人工提供该变量值或确认后继续。",
+                _classify_acquisition_error(exc),
+            )
 
     if strategy == STRATEGY_JSON_EXTRACT:
         import json
 
+        # 失败即接管：json_extract 任何采集/配置失败均转人工弹框，不交回模型；
+        # 保留“前置依赖未就绪”的引导返回（该引导指向 sop_request_variable 受控工具，非手工命令）。
+        async def _escalate_json(msg: str, error_type: str) -> VariableRequestResult:
+            logger.info(
+                event="sop_request_variable_escalate_to_human",
+                conversation_id=conversation_id,
+                variable_name=variable_name,
+                error_type=error_type,
+            )
+            return await _request_user_input(
+                var_schema=var_def,
+                kind="variable_input",
+                msg=(f"变量 {variable_name} 无法自动提取（{error_type}：{msg}）。请人工提供该变量值或确认后继续。"),
+            )
+
         try:
             from jsonpath_ng.ext import parse as jsonpath_parse
         except ImportError:
-            return {
-                "error": "json_extract_dependency_missing",
-                "message": "json_extract 策略需要 jsonpath-ng 依赖，请在 pyproject.toml 中添加 jsonpath-ng>=1.6",
-            }
+            return await _escalate_json(
+                "json_extract 依赖 jsonpath-ng 未安装", "tool_capability_missing"
+            )
 
         # 1. 检验 depends_on 前置依赖
         if not depends_on:
-            return {"error": f"变量 {variable_name} 的策略为 json_extract，必须声明 depends_on 依赖的父变量名"}
+            return await _escalate_json(
+                f"变量 {variable_name} 的策略为 json_extract，但未声明 depends_on 父变量", "contract_error"
+            )
 
         dependency_name = depends_on[0]
         dependency_payload = context_variables.get(dependency_name)
         if not dependency_payload:
+            # 流程引导（非失败）：告知先调用 sop_request_variable 采集依赖，仍属受控链路，保留返回
             return {
                 "error": "sop_variable_dependency_missing",
                 "message": f"变量 {variable_name} 的 json_extract 前置依赖 {dependency_name} 尚未就绪，请先调用 sop_request_variable(variable_name='{dependency_name}')",
@@ -958,43 +1031,41 @@ async def sop_request_variable(
             )
 
         if not raw_data_str:
-            return {"error": f"前置依赖 {dependency_name} 的数据内容为空，json_extract 失败"}
+            return await _escalate_json(f"前置依赖 {dependency_name} 的数据内容为空", "empty_value")
 
         # 4. 解析 JSON
         try:
             json_data = json.loads(raw_data_str)
         except json.JSONDecodeError as je:
-            return {"error": f"依赖变量 {dependency_name} 的输出非合法 JSON: {str(je)}"}
+            return await _escalate_json(f"依赖变量 {dependency_name} 的输出非合法 JSON: {str(je)}", "tool_error")
 
         # 5. 渲染 expression 中的变量占位符
         expression_str = var_def.get("expression", "")
         if not expression_str:
-            return {"error": f"变量 {variable_name} 的 json_extract 策略必须指定 expression（JSONPath）"}
+            return await _escalate_json("json_extract 策略未指定 expression（JSONPath）", "contract_error")
 
         unwrapped_ctx = _unwrap_context_variables(context_variables)
         try:
             expression_str = expression_str.format(**unwrapped_ctx)
         except KeyError as ke:
-            return {"error": f"expression 占位符 {ke} 对应的上下文变量未就绪"}
+            return await _escalate_json(f"expression 占位符 {ke} 对应的上下文变量未就绪", "contract_error")
 
         # 6. JSONPath 匹配
         try:
             jsonpath_expr = jsonpath_parse(expression_str)
         except Exception as parse_err:
-            return {"error": f"JSONPath 表达式语法错误: {expression_str} — {str(parse_err)}"}
+            return await _escalate_json(f"JSONPath 表达式语法错误: {expression_str} — {str(parse_err)}", "contract_error")
 
         matches = [m.value for m in jsonpath_expr.find(json_data)]
 
         if not matches:
-            return {
-                "error": "json_extract_no_match",
-                "message": (
+            return await _escalate_json(
+                (
                     f"在 {dependency_name} 的{'完整' if exec_id_for_cache else '截断'}数据中，"
-                    f"使用 JSONPath `{expression_str}` 未匹配到任何结果。"
-                    "请检查 node_hostname/disk_name 等过滤变量是否与数据中字段名完全一致。"
+                    f"使用 JSONPath `{expression_str}` 未匹配到任何结果"
                 ),
-                "expression": expression_str,
-            }
+                "empty_value",
+            )
 
         extracted_value = matches[0]
         logger.info(
@@ -1010,7 +1081,7 @@ async def sop_request_variable(
         options: list[dict] = []
         if acquisition_tool and tool_executor is not None:
             try:
-                candidates_result = await tool_executor.execute(acquisition_tool, {})
+                candidates_result = await tool_executor.execute(acquisition_tool, {}, conversation_id=conversation_id)
                 if isinstance(candidates_result, list):
                     options = [{"optionId": str(item), "name": str(item)} for item in candidates_result]
                 elif isinstance(candidates_result, dict) and "items" in candidates_result:

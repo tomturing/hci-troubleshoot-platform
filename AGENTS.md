@@ -22,6 +22,15 @@
 **HCI 智能排障平台** — AI 驱动的超融合基础设施运维故障诊断系统。
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
+- **工单 Q2026100812343「硬盘坏道」SOP 编排执行门禁加固与 terminal_bridge 可观测性增强**（详见 `docs/solution/agent/SOP编排执行门禁约束设计与需求.md`、`docs/solution/terminal-bridge-observability-enhancement.md`、避坑 `docs/verify/pitfalls/dispatcher.md` V-017）：
+  - **根因**：SOP 引擎变量自动取值链路 `engine.py` 的 `tool_call` 策略调用 `tool_executor.execute(...)` 时**未透传 `conversation_id`**，`BridgeRelayExecutor` 因缺上下文全线静默失败；而泛化 `except Exception` 又把真实原因吞成笼统错误。变量未解析的 `tool_call/skill_call` 仅作为 `soft_hints` 不硬阻断（`is_guarded` 只覆盖 `env_injection/user_input/user_confirm`），于是引擎把控制权交回模型，模型在客户生产环境即兴手工敲 `acli_exec/bash_exec/qkv_*`，并在关键变量（`disk_dev` 空、`check_meth` 未取得）未确认时产出带幻觉的定量结论（臆造 `8001563222016 字节`）。
+  - **修复**：
+    - **A 取值链路**：`engine.py` `tool_call` 显式透传 `conversation_id`；新增 `_classify_acquisition_error`/`_classify_tool_result_error` 按异常类型分流精确 `error_type`（contract_error/tool_capability_missing/timeout/node_unreachable/executor_unavailable/tool_error），不再伪装成笼统取值失败。
+    - **B 守卫门 + 失败即接管**：`nav.py` `_find_missing_guarded_variables` 用 `parse_strategy` 归一后把 `tool_call/skill_call` 从 `soft_hints` 提升为 `hard_blocked`（对裸工具调用返回 `sop_variable_gate_blocked`→`next_tool_call=sop_request_variable`）；`engine.py` `env_injection/derived/skill_call/json_extract` 失败分支删除 `_should_fallback_to_user_input` 门，一律 `_request_user_input(...)` 转人工弹框，绝不交回模型。
+    - **C 终局反幻觉门**：`nav.py` 新增 `_is_conclusion_node`，`sop_advance` 进入 solution/叶结论节点时把当前节点窗口未解析声明变量并入阻断集，返回 `sop_conclusion_blocked_unresolved_variables`（禁止数值结论+转人工）；`react_engine.py` 终局检测升级为：结论含 `ungrounded_numbers`（无证据来源数值）也强制触发溯源 re-run。
+    - **D/E terminal_bridge 观测**：`main.go` `ExecResult` 加 `ErrorType`；新增 `classifyExecFailure`（jq ONIGURUMA/command not found→`tool_capability_missing`）；标记模式结果消费者以 ERROR 级落 `error_type`；新增 `runUnreachabilityProbes`（TCP:22/SSH 握手/bridge `/health/live`/`acli --version`/jq ONIGURUMA/lsblk，各自 `event=probe.*` 结构化日志，用 `context.WithoutCancel` 防 goroutine 被取消）；`upload_failed` 日志补 `capture_id`+`upload_status`。
+    - **F 环境/存量数据**：`main.py` `CompositeToolExecutor` 补 `qkv` 分类路由到 `qkv_exec`（原落到「无对应执行器」）；数据迁移 `database/data-migrations/040_sop_disk_badtrack_align_and_fallback.sql` 以 `variable_schema` 为事实源重编译 SOP#4 `tree_json` 的 `source`（消除残留中文别名「工具调用」），为链路根变量（`alert_logs/node_ip/asan_disks/disk_dev`）声明 `fallback_strategy="user_input"`。
+  - **测试守护**：`engine` 单测覆盖 `tool_call` 必须携带 `conversation_id`（缺失即 `contract_error`）、异常 `error_type` 分流、失败转人工；门禁单测覆盖 `tool_call/skill_call` 未解析时裸工具被 `sop_variable_gate_blocked`、`sop_advance` 结论节点被 `sop_conclusion_blocked_unresolved_variables` 阻断；`terminal_bridge` Go 测试覆盖 `classifyExecFailure` 分类与 `probe.*`/`upload_failed` 结构化字段。
 - **terminal_bridge 桌面端口冲突自愈（主 9999 + 备 47324）**：
   - **根因**：客户 Windows 桌面环境端口 `9999` 被占用时，`terminal_bridge/main.go` 的 `main()` 中 `server.ListenAndServe()` 返回 EADDRINUSE 直接 `log.Fatal` 崩溃退出——无预检、无占用者识别、无友好诊断、无回退；最常见的「上一个 Bridge 没退净/双击重复启动」被当成陌生错误崩溃，表现为“双击打不开”。
   - **修复**：

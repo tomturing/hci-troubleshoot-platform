@@ -67,6 +67,9 @@ type runtimeConfig struct {
 	AllowedOriginsRaw string
 }
 
+// bridgeSelfPort 记录启动时最终生效的监听端口，供对端不可达辅助探测回查 bridge 自身 /health/live（修复 E）。
+var bridgeSelfPort int
+
 func envOrDefault(name, fallback string) string {
 	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
 		return value
@@ -512,6 +515,9 @@ type ExecResult struct {
 	Output   string
 	ExitCode int
 	Timeout  bool
+	// ErrorType 失败语义分类（禁止压缩为笼统 unknown_error）：
+	// timeout | nonzero_exit | tool_capability_missing 等，供 bridge_execution_logs 复盘判别。
+	ErrorType string
 }
 
 // ── SSH 会话 ──────────────────────────────────────────────────────────────────
@@ -831,6 +837,165 @@ func (s *SSHSession) checkMarkers(output string) (*ExecListener, int, bool) {
 	return nil, 0, false
 }
 
+// classifyExecFailure 依据命令输出与退出码归类失败语义，禁止压缩为笼统 unknown_error（配合 V-017）。
+// 采集镜像工具能力缺失（如 jq 无 ONIGURUMA、命令/盘符不存在）归为 tool_capability_missing，
+// 其余非零退出归为 nonzero_exit（exit 0 返回空串表示成功）。
+func classifyExecFailure(exitCode int, stdoutAndStderr string) string {
+	if exitCode == 0 {
+		return ""
+	}
+	lowered := strings.ToLower(stdoutAndStderr)
+	switch {
+	case strings.Contains(lowered, "oniguruma"),
+		strings.Contains(lowered, "regex could not be compiled"),
+		strings.Contains(lowered, "invalid oniguruma"),
+		strings.Contains(lowered, "command not found"),
+		strings.Contains(lowered, "not found"),
+		strings.Contains(lowered, "no such file or directory"):
+		return "tool_capability_missing"
+	default:
+		return "nonzero_exit"
+	}
+}
+
+// probeLevel 根据探测结果选择日志级别（成功 INFO，失败 WARN）。
+func probeLevel(ok bool) string {
+	if ok {
+		return "INFO"
+	}
+	return "WARN"
+}
+
+// probeRemote 在已建立的 SSH 连接上执行一条只读探测命令，返回 (合并输出, 退出码)。
+// 探测失败不得 panic，统一以非零退出码返回供上层判别。
+func probeRemote(client *ssh.Client, command string) (string, int) {
+	session, err := client.NewSession()
+	if err != nil {
+		return "new_session_failed: " + err.Error(), -1
+	}
+	defer session.Close()
+	out, err := session.CombinedOutput(command)
+	code := 0
+	if err != nil {
+		if ee, ok := err.(*ssh.ExitError); ok {
+			code = ee.ExitStatus()
+		} else {
+			code = -1
+		}
+	}
+	return string(out), code
+}
+
+// runUnreachabilityProbes 在命令超时/对端建会话失败/SSH 等待失败时，触发一组廉价辅助探测，
+// 各自落 blogContext(event=probe.*) 与 OTel span event，为复盘区分“网络不可达 / 认证失败 /
+// 设备不存在 / 工具缺失 / 命令超时”提供可判别依据（修复 E）。
+// 探测以独立 goroutine 异步运行、自带短超时，绝不阻塞主结果回传；任何探测异常都安全降级为一条记录。
+func runUnreachabilityProbes(ctx context.Context, s *SSHSession, req execRequestContext, artifactID string) {
+	go func() {
+		// 主 exec ctx 在 execCommandIsolated 返回时会被 cancel，探测 goroutine 必须使用去耦合的
+		// 派生上下文（保留 trace 值、忽略取消），并自带总体超时，否则 DialContext 会因取消立即失败。
+		probeCtx, probeCancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+		defer probeCancel()
+		ctx = probeCtx
+
+		defer func() {
+			if r := recover(); r != nil {
+				blogContext(ctx, "WARN", "probe.error", "辅助探测异常", req, map[string]any{
+					"panic": fmt.Sprintf("%v", r), "artifact_id": artifactID,
+				})
+			}
+		}()
+
+		span := trace.SpanFromContext(ctx)
+
+		// 1. node_ip:22 TCP 可达性
+		tcpTarget := s.address
+		dialer := net.Dialer{Timeout: 3 * time.Second}
+		tcpConn, tcpErr := dialer.DialContext(ctx, "tcp", tcpTarget)
+		tcpOK := tcpErr == nil
+		tcpDetail := "reachable"
+		if !tcpOK {
+			tcpDetail = tcpErr.Error()
+		} else {
+			_ = tcpConn.Close()
+		}
+		span.AddEvent("probe.tcp_reachability", trace.WithAttributes(
+			attribute.Bool("probe.tcp.ok", tcpOK),
+			attribute.String("probe.tcp.target", tcpTarget),
+		))
+		blogContext(ctx, probeLevel(tcpOK), "probe.tcp_reachability", "TCP:22 可达性探测", req, map[string]any{
+			"target": tcpTarget, "ok": tcpOK, "detail": tcpDetail, "artifact_id": artifactID,
+		})
+		if !tcpOK {
+			blogContext(ctx, "ERROR", "probe.conclusion", "辅助探测结论：网络不可达", req, map[string]any{
+				"conclusion": "network_unreachable", "artifact_id": artifactID,
+			})
+			return
+		}
+
+		// 2. SSH banner/kex 握手（克隆配置并收紧超时，避免污染主会话或长时间阻塞）
+		cfg := *s.clientConfig
+		cfg.Timeout = 5 * time.Second
+		sshClient, sshErr := ssh.Dial("tcp", tcpTarget, &cfg)
+		sshOK := sshErr == nil
+		sshDetail := "handshake_ok"
+		authFailed := sshErr != nil && strings.Contains(strings.ToLower(sshErr.Error()), "unable to authenticate")
+		if !sshOK {
+			sshDetail = sshErr.Error()
+		}
+		span.AddEvent("probe.ssh_handshake", trace.WithAttributes(attribute.Bool("probe.ssh.ok", sshOK)))
+		blogContext(ctx, probeLevel(sshOK), "probe.ssh_handshake", "SSH 握手探测", req, map[string]any{
+			"target": tcpTarget, "ok": sshOK, "auth_failed": authFailed, "detail": sshDetail, "artifact_id": artifactID,
+		})
+		if !sshOK {
+			conclusion := "ssh_unreachable"
+			if authFailed {
+				conclusion = "auth_failed"
+			}
+			blogContext(ctx, "ERROR", "probe.conclusion", "辅助探测结论", req, map[string]any{
+				"conclusion": conclusion, "artifact_id": artifactID,
+			})
+			return
+		}
+		defer sshClient.Close()
+
+		// 3. bridge 自身 /health/live（区分“bridge 自身故障”与“目标节点故障”）
+		if bridgeSelfPort > 0 {
+			selfAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(bridgeSelfPort))
+			bridgeOK := isLiveBridge(selfAddr)
+			blogContext(ctx, probeLevel(bridgeOK), "probe.bridge_health", "Bridge 自身存活探测", req, map[string]any{
+				"target": selfAddr, "ok": bridgeOK, "artifact_id": artifactID,
+			})
+		}
+
+		// 4. 工具能力探测：acli / jq ONIGURUMA（佐证“工具缺失”而非“设备不可达”）
+		acliOut, acliCode := probeRemote(sshClient, "command -v acli >/dev/null 2>&1 && acli --version 2>&1 || echo __ACLI_ABSENT__")
+		acliOK := acliCode == 0 && !strings.Contains(acliOut, "__ACLI_ABSENT__")
+		blogContext(ctx, probeLevel(acliOK), "probe.tool_capability.acli", "acli 工具能力探测", req, map[string]any{
+			"ok": acliOK, "exit_code": acliCode, "detail": truncateString(acliOut, 256), "artifact_id": artifactID,
+		})
+
+		jqOut, jqCode := probeRemote(sshClient, `jq --version 2>&1 || echo __JQ_ABSENT__; echo 1 | jq -R 'test("a")' 2>&1 || true`)
+		jqOK := jqCode == 0 && !strings.Contains(jqOut, "__JQ_ABSENT__")
+		jqHasOniguruma := strings.Contains(strings.ToLower(jqOut), "oniguruma")
+		blogContext(ctx, probeLevel(jqOK), "probe.tool_capability.jq", "jq 工具能力/ONIGURUMA 探测", req, map[string]any{
+			"ok": jqOK, "oniguruma": jqHasOniguruma, "exit_code": jqCode, "detail": truncateString(jqOut, 256), "artifact_id": artifactID,
+		})
+
+		// 5. 最小现场探测：lsblk 盘符清单，佐证“设备已摘除/不存在”
+		lsblkOut, lsblkCode := probeRemote(sshClient, "lsblk -dno NAME 2>&1 || echo __LSBLK_ABSENT__")
+		lsblkOK := lsblkCode == 0 && !strings.Contains(lsblkOut, "__LSBLK_ABSENT__")
+		blogContext(ctx, probeLevel(lsblkOK), "probe.field.lsblk", "现场盘符探测", req, map[string]any{
+			"ok": lsblkOK, "exit_code": lsblkCode, "devices": truncateString(lsblkOut, 256), "artifact_id": artifactID,
+		})
+
+		blogContext(ctx, "INFO", "probe.conclusion", "辅助探测结论", req, map[string]any{
+			"conclusion": "network_reachable_tools_checked", "acli_ok": acliOK, "jq_ok": jqOK,
+			"jq_oniguruma": jqHasOniguruma, "lsblk_ok": lsblkOK, "artifact_id": artifactID,
+		})
+	}()
+}
+
 func (s *SSHSession) execCommand(command, execID string, timeout time.Duration) <-chan ExecResult {
 	resultChan := make(chan ExecResult, 1)
 
@@ -851,7 +1016,7 @@ func (s *SSHSession) execCommand(command, execID string, timeout time.Duration) 
 				output := l.OutputBuf.String()
 				delete(s.listeners, execID)
 				s.listenersMu.Unlock()
-				resultChan <- ExecResult{Output: output, ExitCode: -1, Timeout: true}
+				resultChan <- ExecResult{Output: output, ExitCode: -1, Timeout: true, ErrorType: "timeout"}
 			} else {
 				s.listenersMu.Unlock()
 			}
@@ -1039,11 +1204,20 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestCont
 	} else if waitErr != nil {
 		if exitErr, ok := waitErr.(*ssh.ExitError); ok {
 			exitCode = exitErr.ExitStatus()
-			errorType = "nonzero_exit"
+			// 非零退出：按 stderr/输出细分语义，禁止一律 nonzero_exit（如 jq 缺 ONIGURUMA→tool_capability_missing）
+			if classified := classifyExecFailure(exitCode, stderrCapture.String()+"\n"+stdoutCapture.String()); classified != "nonzero_exit" {
+				errorType = classified
+			} else {
+				errorType = "nonzero_exit"
+			}
 		} else {
 			exitCode = -1
 			errorType = "ssh_wait_failed"
 		}
+	}
+	// 修复 E：对端不可达/超时/建会话失败时触发一组廉价辅助探测，为复盘提供可判别依据。
+	if timedOut || errorType == "session_creation_failed" || errorType == "ssh_wait_failed" {
+		runUnreachabilityProbes(ctx, s, req, artifactID)
 	}
 	if exitCode != 0 {
 		atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
@@ -1359,13 +1533,14 @@ func (s *SSHSession) on_output_start(
 						output = strings.TrimSpace(output)
 					}
 
+					markerErrType := classifyExecFailure(exitCode, output)
 					sendMsg(ws, OutMessage{
 						Type: "exec_result", CaseID: caseID, ExecID: listener.ExecID,
-						Output: output, ExitCode: exitCode,
+						Output: output, ExitCode: exitCode, ErrorType: markerErrType,
 					})
 					s.unregisterExecListener(listener.ExecID)
 					select {
-					case listener.ResultChan <- ExecResult{Output: output, ExitCode: exitCode}:
+					case listener.ResultChan <- ExecResult{Output: output, ExitCode: exitCode, ErrorType: markerErrType}:
 					default:
 					}
 				}
@@ -2075,6 +2250,7 @@ func (s *SSHSession) captureBaselineSteps(
 	if uploadErr != nil {
 		blogContext(ctx, "ERROR", "vm_console.upload_failed", "PPM 直传失败", logReq, map[string]any{
 			"error": uploadErr.Error(), "sha256": result.SHA256, "size_bytes": result.SizeBytes,
+			"capture_id": req.CaptureID, "upload_status": uploadStatus,
 		})
 	} else {
 		blogContext(ctx, "INFO", "vm_console.upload_done", "PPM 直传完成", logReq, map[string]any{
@@ -3722,8 +3898,17 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				}
 				outLen := len(output)
 				exitInfo := fmt.Sprintf("exit=%d", exitCode)
+				errType := result.ErrorType
+				if errType == "" && !result.Timeout {
+					errType = classifyExecFailure(exitCode, output)
+				}
 				if result.Timeout {
+					errType = "timeout"
 					exitInfo = "exit=TIMEOUT"
+				}
+				logLevel := "INFO"
+				if result.Timeout || exitCode != 0 {
+					logLevel = "ERROR"
 				}
 
 				// P0-1: 增强日志完整性 - 回采命令执行的完整输出
@@ -3732,20 +3917,22 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 					"exec_id":          msg.ExecID,
 					"exit_code":        exitCode,
 					"timeout":          result.Timeout,
+					"error_type":       errType,
 					"output_len":       outLen,
 					"output_sha256":    commandSHA256(output),
 					"command_redacted": redactCommand(wrappedCmd),
 					"command_sha256":   commandSHA256(wrappedCmd),
 				})
 
-				blog("INFO", "exec.done", "命令执行完成", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-					"exec_id": msg.ExecID, "exit_code": exitCode, "timeout": result.Timeout, "output_len": outLen,
+				blog(logLevel, "exec.done", "命令执行完成", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					"exec_id": msg.ExecID, "exit_code": exitCode, "timeout": result.Timeout,
+					"error_type": errType, "output_len": outLen,
 				})
-				log.Printf("[Bridge] EXEC_DONE: exec_id=%s node=%s %s output_len=%d",
-					msg.ExecID, msg.NodeIP, exitInfo, outLen)
+				log.Printf("[Bridge] EXEC_DONE: exec_id=%s node=%s %s error_type=%s output_len=%d",
+					msg.ExecID, msg.NodeIP, exitInfo, errType, outLen)
 				sendMsg(ws, OutMessage{
 					Type: "exec_result", CaseID: msg.CaseID, ExecID: msg.ExecID,
-					Output: output, ExitCode: exitCode,
+					Output: output, ExitCode: exitCode, ErrorType: errType,
 					TraceID: msg.TraceID, CustomUI: cui,
 				})
 			}()
@@ -4294,6 +4481,7 @@ func main() {
 		"listen": resolved.address(),
 		"port":   resolved.Port,
 	})
+	bridgeSelfPort = resolved.Port // 供对端不可达辅助探测回查自身 /health/live（修复 E）
 	log.Printf("[Bridge] HCI SSH Bridge 已启动: version=%s commit=%s built=%s mode=%s listen=ws://%s",
 		getVersion(), CommitID, BuildTime, resolved.Mode, resolved.address())
 	log.Printf("[Bridge] Origin 策略已启用: allowed_origins=%s；结构化日志与状态指标已开启", resolved.AllowedOriginsRaw)

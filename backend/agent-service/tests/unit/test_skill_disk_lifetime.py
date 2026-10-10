@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from app.memory.variable_pool.engine import sop_request_variable
+from app.memory.variable_pool.pool import VariableRequestResult
 
 
 @pytest.mark.asyncio
@@ -84,8 +85,11 @@ async def test_sop_request_variable_skill_call_requires_dynamic_runner():
         conversation_sop_client=conversation_sop_client,
     )
 
-    assert isinstance(res, dict)
-    assert res["error"] == "sop_dynamic_skill_runner_missing"
+    # 修复 B「失败即接管」：skill_runner 缺失时不得把 dict 错误交回模型即兴兜底，
+    # 而是引擎接管终态、一律转人工弹框（阻塞等待）。
+    assert isinstance(res, VariableRequestResult)
+    assert res.needs_input is True
+    assert res.variable_name == "node_ip"
 
 
 @pytest.mark.asyncio
@@ -138,8 +142,11 @@ async def test_sop_request_variable_env_strategy():
         conversation_sop_client=conversation_sop_client_missing,
     )
 
-    assert isinstance(res_missing, dict)
-    assert res_missing["error"] == "sop_env_variable_missing"
+    # 修复 B「一律转人工弹框」：env 变量未注入即视为采集无法完成，引擎接管转人工，
+    # 不再返回 sop_env_variable_missing 泛化错误（V-017 模型兜底根因）。
+    assert isinstance(res_missing, VariableRequestResult)
+    assert res_missing.needs_input is True
+    assert res_missing.variable_name == "node_ip"
 
 
 @pytest.mark.asyncio
@@ -289,6 +296,8 @@ async def test_sop_request_variable_tool_call_renders_args_template_and_extracts
             "node_ip": "SVR_aCloud_670",
             "reason": "采集 sda SMART 原始信息",
         },
+        # 修复 A：tool_call 取值必须向执行器透传 conversation_id（否则 BridgeRelayExecutor 永远不下发）
+        conversation_id="c09eefb0-3bc7-4ad5-9909-8f00a3856763",
     )
 
 
@@ -413,8 +422,11 @@ async def test_sop_request_variable_derived_unknown_fails_loud():
         conversation_sop_client=conversation_sop_client,
     )
 
-    assert isinstance(res, dict)
-    assert res["error"] == "sop_derived_variable_acquire_failed"
+    # 修复 B「失败即接管」：derived 表达式无法产出确定值（unknown 未定义）时，
+    # 不得把 dict 错误交回模型，而是转人工确认（保留“响亮失败”：结构化 error 日志 + 人工升级）。
+    assert isinstance(res, VariableRequestResult)
+    assert res.needs_input is True
+    assert res.variable_name == "is_sys_disk"
 
 
 @pytest.mark.asyncio

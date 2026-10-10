@@ -93,6 +93,8 @@ async def test_get_sop_node_defaults_naked_command_to_host():
 
 @pytest.mark.asyncio
 async def test_sop_advance_blocks_missing_user_input_variable():
+    # n-1-1 是带 diagnosis 的叶子节点（结论节点），缺守卫变量 is_sys_disk(user_input) 时，
+    # 修复 C 的终局反幻觉门以 sop_conclusion_blocked_unresolved_variables 硬阻断（禁止带幻觉数值下结论）。
     conversation_id = str(uuid.uuid4())
     conversation_sop_client = AsyncMock()
     conversation_sop_client.get_execution.return_value = {"context_variables": {}}
@@ -107,7 +109,8 @@ async def test_sop_advance_blocks_missing_user_input_variable():
     )
 
     assert result["ok"] is False
-    assert result["error"] == "missing_required_variables"
+    assert result["error"] == "sop_conclusion_blocked_unresolved_variables"
+    assert result["escalation"] == "human_confirm"
     assert result["missing_variables"][0]["name"] == "is_sys_disk"
     assert result["next_tool_call"]["tool_name"] == "sop_request_variable"
     conversation_sop_client.advance.assert_not_awaited()
@@ -187,7 +190,10 @@ async def test_get_sop_node_preferred_next_steps():
 
 
 @pytest.mark.asyncio
-async def test_sop_advance_preferred_next_steps():
+async def test_sop_advance_blocks_unresolved_skill_call_variable():
+    # 修复 B：skill_call(check_meth) 由软推荐升级为硬阻断。n-1-2 是带 diagnosis 的叶子（结论）节点，
+    # 未采集 check_meth 时严禁推进结论——旧行为（ok=True + preferred_next_steps）会把控制权交回模型，
+    # 正是 Q2026100812343 复盘的根因，故改为断言硬阻断转人工。
     conversation_id = str(uuid.uuid4())
     conversation_sop_client = AsyncMock()
     conversation_sop_client.get_execution.return_value = {
@@ -195,7 +201,6 @@ async def test_sop_advance_preferred_next_steps():
     }
     conversation_sop_client.advance.return_value = {"ok": True}
 
-    # 推进到 n-1-2 节点，check_meth (skill_call) 未在 context_variables 中，应该返回 preferred_next_steps
     result = await sop_advance(
         target_node_id="n-1-2",
         reasoning="推进到普通检查",
@@ -204,9 +209,47 @@ async def test_sop_advance_preferred_next_steps():
         kb_client=_kb_client(),
         conversation_sop_client=conversation_sop_client,
     )
-    assert result["ok"] is True
-    assert len(result["preferred_next_steps"]) == 1
-    hint = result["preferred_next_steps"][0]
-    assert hint["tool"] == "sop_request_variable"
-    assert hint["args"]["variable_name"] == "check_meth"
+    assert result["ok"] is False
+    assert result["error"] == "sop_conclusion_blocked_unresolved_variables"
+    assert result["missing_variables"][0]["name"] == "check_meth"
+    assert result["next_tool_call"]["tool_name"] == "sop_request_variable"
+    conversation_sop_client.advance.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sop_advance_blocks_non_conclusion_branch_missing_required_variables():
+    # 非结论（branch）节点缺守卫变量时仍走通用 missing_required_variables 分支，验证两类错误并存。
+    conversation_id = str(uuid.uuid4())
+    branch_tree = {
+        "node_id": "n-1",
+        "title": "根",
+        "children": [
+            {
+                "node_id": "n-1-1",
+                "title": "分支：{is_sys_disk}",
+                "children": [{"node_id": "n-1-1-1", "title": "子", "children": []}],
+            }
+        ],
+    }
+    kb_client = AsyncMock()
+    kb_client.get_sop_tree.return_value = {"tree": branch_tree}
+    kb_client.get_sop_document.return_value = {
+        "variable_schema": [
+            {"name": "is_sys_disk", "type": "boolean", "acquisition_strategy": "user_input"}
+        ]
+    }
+    conversation_sop_client = AsyncMock()
+    conversation_sop_client.get_execution.return_value = {"context_variables": {}}
+
+    result = await sop_advance(
+        target_node_id="n-1-1",
+        reasoning="进入分支",
+        conversation_id=conversation_id,
+        sop_document_id=2,
+        kb_client=kb_client,
+        conversation_sop_client=conversation_sop_client,
+    )
+    assert result["ok"] is False
+    assert result["error"] == "missing_required_variables"
+    assert result["missing_variables"][0]["name"] == "is_sys_disk"
 
