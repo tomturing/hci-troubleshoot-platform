@@ -47,6 +47,38 @@ tracer = trace.get_tracer(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 反幻觉硬拦截契约（V-017 §3.3：缺证据来源的定量结论一律拦截，不再仅追加“待验证”标注）
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 结论语境标记：命中即视为“已给出诊断/排障结论”，此时若仍有无来源数值必须硬拦截。
+CONCLUSION_MARKERS: tuple[str, ...] = (
+    "排障结论", "根因已确认", "根因确认", "排障闭环",
+    "修复方案", "诊断结论", "根因定位",
+)
+
+# 硬拦截后替换受控输出文本：不伪造数值，转为“受阻 + 已转人工确认”的受控状态。
+UNGROUNDED_CONCLUSION_BLOCK_TEXT: str = (
+    "【该步受阻：证据不足，已转人工确认】\n"
+    "本轮结论包含无法从工具输出中溯源的具体数值，依据 SOP 编排执行门禁予以拦截，"
+    "不输出未经证实的定量结论。请通过 sop_request_variable 补齐关键变量，"
+    "或人工提供证据来源后再生成结论。"
+)
+
+
+def ungrounded_conclusion_block(content: str | None, report: dict) -> bool:
+    """判定本轮输出是否应触发反幻觉硬拦截（§3.3 缺证据即拦截）。
+
+    条件：幻觉检测报告检出无法溯源的数值（ungrounded_numbers），且输出处于结论语境
+    （命中 CONCLUSION_MARKERS）。此时即便模型自评“待验证”也不放行，必须拦截直出。
+    """
+    ungrounded = report.get("ungrounded_numbers") or []
+    if not ungrounded:
+        return False
+    text = content or ""
+    return any(marker in text for marker in CONCLUSION_MARKERS)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ToolCallValidator 和 ToolResultEnvelope 数据结构与校验器定义
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -592,10 +624,7 @@ class ReactEngine:
                     # 例外（修复 C「数字类断言必须携带证据来源」）：即使已给出结论，
                     # 只要检测到无法在工具输出中溯源的具体数值（ungrounded_numbers），
                     # 仍必须触发一次带"删除无来源数值"约束的 re-run，杜绝编造定量结论。
-                    conclusion_markers = [
-                        "排障结论", "根因已确认", "根因确认", "排障闭环",
-                        "修复方案", "诊断结论", "根因定位",
-                    ]
+                    conclusion_markers = list(CONCLUSION_MARKERS)
                     has_conclusion = any(
                         m in (invoke_result.content or "") for m in conclusion_markers
                     )
@@ -688,6 +717,31 @@ class ReactEngine:
                             ).inc()
                         except Exception as met_err:
                             logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
+
+                # 反幻觉硬拦截（V-017 §3.3 缺证据即拦截）：re-run 后若结论仍含无法溯源的定量数值，
+                # 在直出前拦截——将定量结论替换为受控状态文本（不伪造、不直出无证据数字），
+                # 并转人工确认。置于流式输出之前，避免幻觉数值先抵达用户再事后追注。
+                gate_report = detector.detect(
+                    llm_text=invoke_result.content or "",
+                    executed_tools=executed_tool_names,
+                    tool_outputs=tool_results_list,
+                )
+                if ungrounded_conclusion_block(invoke_result.content, gate_report):
+                    logger.error(
+                        event="hallucination_hard_blocked_ungrounded_numbers",
+                        session_id=session_id,
+                        case_id=case_id,
+                        ungrounded_numbers=gate_report.get("ungrounded_numbers"),
+                    )
+                    try:
+                        from app.services.metrics import AGENT_HALLUCINATION_DETECTED_TOTAL
+
+                        AGENT_HALLUCINATION_DETECTED_TOTAL.labels(
+                            hallucination_type="ungrounded_number_hard_blocked"
+                        ).inc()
+                    except Exception as met_err:
+                        logger.warning("metrics_record_failed", f"记录硬拦截 metrics 失败: {met_err}")
+                    invoke_result.content = UNGROUNDED_CONCLUSION_BLOCK_TEXT
 
                 # 流式输出最终文字回复（直接从 invoke_result.content 分块 yield，
                 # 不再重复调用 LLM 流式 API。invoke() 已经返回了完整的诊断结论文本，

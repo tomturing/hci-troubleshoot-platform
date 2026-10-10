@@ -51,11 +51,36 @@ _TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z][A-Za-z0-9_.]*)\}\}|\{([A-Z
 _EXACT_TEMPLATE_PLACEHOLDER_RE = re.compile(r"^\{\{([A-Za-z][A-Za-z0-9_.]*)\}\}|\{([A-Za-z][A-Za-z0-9_.]*)\}$")
 
 
+# 设备缺失（盘符为空/内核无此设备）判别标记：区别于“命令/工具缺失”，
+# 用于 Q2026100812343 场景中已摘除磁盘的准确归类（V-017 §4 device_absent）。
+_DEVICE_ABSENT_MARKERS: tuple[str, ...] = (
+    "no such device",
+    "cannot open /dev/",
+    "unable to open /dev/",
+    "device does not exist",
+    "not a valid device",
+    "unable to detect device type",
+    "no such disk",
+    "设备不存在",
+    "找不到设备",
+    "磁盘不存在",
+    "盘符不存在",
+)
+
+
+def _is_device_absent(text: str) -> bool:
+    """判断工具输出/异常文本是否表征“目标设备不存在/已摘除”。"""
+    lowered = text.lower()
+    return any(marker in lowered for marker in _DEVICE_ABSENT_MARKERS)
+
+
 def _classify_acquisition_error(exc: Exception) -> str:
     """把采集异常归一为可判别的 error_type，禁止大而全、模糊归一的分类（V-017）。"""
     text = str(exc).lower()
     if "conversation_id" in text or "缺少 conversation" in text or "missing 1 required" in text:
         return "contract_error"
+    if _is_device_absent(text):
+        return "device_absent"
     if "oniguruma" in text or "command not found" in text or "not available" in text:
         return "tool_capability_missing"
     if "timeout" in text or "timed out" in text or "超时" in text:
@@ -73,10 +98,15 @@ def _classify_tool_result_error(tool_result: Any) -> str:
     """工具已执行但未取到值时的 error_type 归类。"""
     if isinstance(tool_result, dict):
         err_text = str(tool_result.get("error", "")).lower()
+        out_text = str(tool_result.get("stdout", tool_result.get("output", "")) or "").lower()
     else:
         err_text = str(getattr(tool_result, "stderr", "") or "").lower()
+        out_text = str(getattr(tool_result, "stdout", "") or "").lower()
     if "conversation_id" in err_text or "缺少 conversation" in err_text:
         return "contract_error"
+    # 设备缺失判别早于工具能力/退出码，准确区分“盘没了”与“命令没跑成”（§4 device_absent）
+    if _is_device_absent(err_text) or _is_device_absent(out_text):
+        return "device_absent"
     if "oniguruma" in err_text or "command not found" in err_text or "not available" in err_text:
         return "tool_capability_missing"
     if bool(getattr(tool_result, "timed_out", False)) or bool(getattr(tool_result, "timeout", False)):

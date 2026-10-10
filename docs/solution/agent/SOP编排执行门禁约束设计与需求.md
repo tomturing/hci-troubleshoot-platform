@@ -74,6 +74,10 @@ sop_request_variable(variable)
 当当前节点窗口存在**未解析或未人工确认**的声明变量时：
 - `sop_advance` 推进到 solution/叶结论节点 → 硬阻断，返回结构化 `sop_conclusion_blocked_unresolved_variables`。
 - 结论生成禁止"定量数值/百分比/字节数"等无证据来源断言；数字断言必须绑定工具输出证据，缺证据即拦截。
+  - 落地（升级自"仅 re-run + 追加待验证标注"）：`react_engine` 在**流式输出前**对（re-run 后的）内容复检，
+    `ungrounded_conclusion_block()` 判定「结论语境命中 `CONCLUSION_MARKERS` 且存在无法溯源数值」即硬拦截，
+    将整段定量结论替换为受控文本 `UNGROUNDED_CONCLUSION_BLOCK_TEXT`（不含任何数字），记 `hallucination_hard_blocked_ungrounded_numbers`
+    错误事件与 `ungrounded_number_hard_blocked` 指标，杜绝幻觉数值先抵达用户。
 - 引擎改输出受控状态："该步受阻：原因=<证据>；已转人工确认"。
 
 ## 4. 精确错误分类（禁止模糊归一）
@@ -83,7 +87,7 @@ sop_request_variable(variable)
 | `contract_error` | 缺 `conversation_id` / 参数契约错误（如 TypeError） | engine |
 | `node_unreachable` / `timeout` | 目标节点连接失败 / 命令超时 | terminal_bridge |
 | `tool_capability_missing` | `jq` 缺 ONIGURUMA、`acli` 不在 PATH 等 | terminal_bridge |
-| `device_absent` | 盘符为空 / 内核无此设备（本例） | bridge 探测 |
+| `device_absent` | 盘符为空 / 内核无此设备（本例：已摘除盘） | engine `_classify_*` + bridge `classifyExecFailure` + lsblk 探测 |
 | `empty_value` | 工具执行成功但取值为空（如 `-k 磁盘` 无命中） | engine |
 | `executor_unavailable` | 类别无对应执行器（qkv） | engine |
 
@@ -97,10 +101,11 @@ sop_request_variable(variable)
   `artifact_id` 回传记录，不得静默。`hci-staging` 应用日志未入 Loki，故以 `bridge_execution_logs` 为权威事实源。
 - **辅助探测（req3）**：命令超时 / SSH 连接失败 / 目标无响应时，触发一组廉价探测并各记 `event=probe.*`：
   1. `node_ip:22` TCP 可达；2. SSH banner/kex；3. bridge `/health/live`；4. 工具能力（`acli --version`、`jq --version` 含 oniguruma）；
-  5. 现场最小探测（`lsblk` 是否含目标盘符，佐证 `device_absent`）。探测结果用于区分网络不可达 / 认证失败 / 设备不存在 / 工具缺失 / 命令超时。
+  5. 现场最小探测（`lsblk` 整盘清单与命令引用的 `/dev` 盘符交叉比对，全部未命中即产出 `probe.conclusion=device_absent`，佐证盘已摘除）。探测结果用于区分网络不可达 / 认证失败 / 设备不存在 / 工具缺失 / 命令超时。
 
 ## 6. 环境与存量数据（req4 P2）
-- 采集镜像 `jq` 换带 ONIGURUMA 构建；不可即时修镜像时，SOP 采集模板规避 `test()/match()`（下推 `-k` 粗筛）。
+- **采集镜像 `jq`**：本仓库可控的采集/模拟镜像为 `hci_sim`（Alpine，`acli` 由 `hci-sim` 符号链接、并承载 bridge 下发命令的 SSH 服务端）。已在其运行层 `apk add --no-cache jq`（Alpine `jq` 默认链接 OnigURUMA），使 `jq ... test()/match()` 在本镜像内可用，规避 `tool_capability_missing`。
+  **真实客户节点的 `jq` 由客户环境提供、不受本仓库构建控制**；对其唯一可行治理为「探测判别（`probe.tool_capability.jq.oniguruma`）+ `classifyExecFailure` 归 `tool_capability_missing` + SOP 采集模板下推 `-k` 粗筛规避 `test()/match()`」。
 - 链路根变量 `alert_logs/node_ip/asan_disks/disk_dev` 声明 `fallback_strategy="user_input"`。
 - 重编译 SOP#4 `tree_json`，使 `alert_logs.source` 与 `variable_schema` 对齐；新增 `database/data-migrations/` 迁移（带唯一调用链）。
 
@@ -112,8 +117,10 @@ sop_request_variable(variable)
 5. 单测 + Go 测试 + Q2026100812343 回归用例通过。
 
 ## 8. 落点索引
-- `backend/agent-service/app/memory/variable_pool/engine.py`（A/B/§3.2/§4）
+- `backend/agent-service/app/memory/variable_pool/engine.py`（A/B/§3.2/§4，含 `device_absent` 分类与 `_is_device_absent`）
+- `backend/agent-service/app/adapters/agents/htp/react_engine.py`（§3.3 反幻觉硬拦截：`ungrounded_conclusion_block`/`CONCLUSION_MARKERS`/`UNGROUNDED_CONCLUSION_BLOCK_TEXT`）
 - `backend/agent-service/app/adapters/agents/htp/sop_tools.py`、`app/tools/sop/nav.py`（B/§3.1/§3.3）
-- `terminal_bridge/main.go`（D/E）
+- `terminal_bridge/main.go`（D/E，含 `classifyExecFailure` 的 `device_absent` 与 `deviceAbsentFromProbe` lsblk 交叉判别）
+- `hci_sim/Dockerfile`（§6 采集/模拟镜像带 OnigURUMA 的 jq）
 - `database/data-migrations/`（F）
 - 避坑：`docs/verify/pitfalls/dispatcher.md`（V-017）；观测：`docs/solution/observability/2026-08-17-诊断链路日志契约与门禁加固.md`

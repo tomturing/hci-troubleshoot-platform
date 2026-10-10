@@ -22,6 +22,9 @@ LABEL org.opencontainers.image.revision="${SOURCE_SHA}" \
       org.opencontainers.image.version="${IMAGE_TAG}"
 
 RUN addgroup -g 1000 hci-sim && adduser -D -H -u 1000 -G hci-sim hci-sim
+# 采集/模拟运行环境提供带 OnigURUMA 正则支持的 jq（Alpine jq 默认链接 oniguruma），
+# 使经 bridge 下发的 `jq ... test()/match()` 采集命令在本镜像内可用，规避 tool_capability_missing（V-017 §6）。
+RUN apk add --no-cache jq
 COPY --from=builder /out/hci-sim /usr/local/bin/hci-sim
 RUN ln -s /usr/local/bin/hci-sim /usr/local/bin/acli \
     && ln -s /usr/local/bin/hci-sim /usr/local/bin/vtpsh
