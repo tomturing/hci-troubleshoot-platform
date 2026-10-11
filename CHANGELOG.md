@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.31.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.30.0...v2.31.0) (2026-10-11)
+
+
+### ✨ 新功能
+
+* **kb:** 分类基线命名规范治理与叶子统一（解A 角色无关统一 ID） ([#1132](https://github.com/tomturing/hci-troubleshoot-platform/issues/1132)) ([83389c1](https://github.com/tomturing/hci-troubleshoot-platform/commit/83389c1ad9227dba038cdf0cadbbb4499c2dc518))
+* **terminal_bridge:** 桌面端口冲突自愈 主 9999 + 备 47324 ([#1120](https://github.com/tomturing/hci-troubleshoot-platform/issues/1120)) ([74c6c24](https://github.com/tomturing/hci-troubleshoot-platform/commit/74c6c2492463194be8c5e313e67cad6f91193390))
+
+
+### 🐛 Bug 修复
+
+* **ai-client:** 修复 SSE 流末尾 choices=[] 收尾块触发 IndexError 误报模型不可用 ([#1128](https://github.com/tomturing/hci-troubleshoot-platform/issues/1128)) ([8714a7c](https://github.com/tomturing/hci-troubleshoot-platform/commit/8714a7c9da7a88a20e2b61e3983a9b7e9222a53f))
+* **api-gateway:** 修复管理台仿真测试创建 TestRun 401 回归 ([#1124](https://github.com/tomturing/hci-troubleshoot-platform/issues/1124)) ([b8ced62](https://github.com/tomturing/hci-troubleshoot-platform/commit/b8ced622a0d8992cb62b50f602f7def231b140e4))
+* **api-gateway:** 管理台终端历史与关联 KBD 预览改走 admin 真实路径 ([#1118](https://github.com/tomturing/hci-troubleshoot-platform/issues/1118)) ([2d9a70a](https://github.com/tomturing/hci-troubleshoot-platform/commit/2d9a70aa8f725662b8ecbffde44860b853e20422))
+* **case-service:** 管理台工单详情改走 admin 专用端点修复归属校验 404 ([#1116](https://github.com/tomturing/hci-troubleshoot-platform/issues/1116)) ([cc76158](https://github.com/tomturing/hci-troubleshoot-platform/commit/cc76158f97867d9721085527aa2a35b059ec3671))
+* **conversation-service:** 修复管理台详情页对话 403 与审计日志 500 回归 ([#1119](https://github.com/tomturing/hci-troubleshoot-platform/issues/1119)) ([8163a5c](https://github.com/tomturing/hci-troubleshoot-platform/commit/8163a5c0561760bfc87d814f06dcec97c0b759ec))
+* **diagnosis-service:** 内部管理面响应脱敏采集器模板与KBD内部字段 ([#1114](https://github.com/tomturing/hci-troubleshoot-platform/issues/1114)) ([9062388](https://github.com/tomturing/hci-troubleshoot-platform/commit/9062388b158adb238f5cfa8f40af70cdc646cb22))
+* **kb:** 分类手动入口补 code 合规校验与退化护栏 ([#1130](https://github.com/tomturing/hci-troubleshoot-platform/issues/1130)) ([9f73fe8](https://github.com/tomturing/hci-troubleshoot-platform/commit/9f73fe8ad2fa9efc11e46994597cd09fa276d897))
+* **ops:** PostgreSQL 备份升级为 GFS 分级保留 + 半年上限 ([#1131](https://github.com/tomturing/hci-troubleshoot-platform/issues/1131)) ([12a7dec](https://github.com/tomturing/hci-troubleshoot-platform/commit/12a7dec7bd1f5f5678a1fe1380f6959f161cace3))
+* **s0:** 分类 code 形态契约收口与漂移自愈，消除隐形分类 ([#1129](https://github.com/tomturing/hci-troubleshoot-platform/issues/1129)) ([382ce73](https://github.com/tomturing/hci-troubleshoot-platform/commit/382ce7366d158603714e64e2fc73e174b50562c0))
+* **sop:** 编排执行门禁加固 + terminal_bridge 可观测性增强 (Q2026100812343) ([#1122](https://github.com/tomturing/hci-troubleshoot-platform/issues/1122)) ([10cdc6c](https://github.com/tomturing/hci-troubleshoot-platform/commit/10cdc6c1e4aaf8d62a00d25a27c03d1c9f8b8557))
+* **sop:** 落实 SOP 编排门禁设计文档遗漏项 (device_absent/jq/硬拦截) ([#1125](https://github.com/tomturing/hci-troubleshoot-platform/issues/1125)) ([f683868](https://github.com/tomturing/hci-troubleshoot-platform/commit/f683868d330258721e8863f1d867fc1d54e618c7))
+* 修复 kbd_batch_job job_type 约束缺失 set_review_owner/set_unpublishable 导致批量设置审核责任人报错 ([#1117](https://github.com/tomturing/hci-troubleshoot-platform/issues/1117)) ([dd9f9ba](https://github.com/tomturing/hci-troubleshoot-platform/commit/dd9f9ba92cca2dea0f3109fb48dc1a1254b6b287))
+
 ## [2.30.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.29.0...v2.30.0) (2026-10-08)
 
 
