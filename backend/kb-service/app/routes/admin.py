@@ -69,6 +69,7 @@ from app.models.kbd_entry import KbdEntry, build_kbd_embedding_text, strip_markd
 from app.models.kbd_revision import KbdRevision
 from app.models.sop_document import SopDocument
 from app.models.version_governance import KbdPackage
+from app.repositories.category_repo import is_category_leaf
 from app.schemas.sop_template import ValidationIssue
 from app.services.kbd_mutation_guard import PublishedKbdMutationError, require_mutable_kbd
 from app.services.kbd_review_metadata import build_review_metadata, normalize_change_annotations
@@ -3537,6 +3538,20 @@ async def approve_kbd_entry(request: Request, kbd_id: int, body: KbdApproveReque
             raise HTTPException(
                 status_code=422,
                 detail=f"KBD 条目 {kbd_id} 缺少分类（category_id 与 ai_category_id 均为空），请先抽取分类后再审核",
+            )
+        # 写入门禁：KBD 只能绑定叶子分类（解A：分组/多子节点不可直挂）。
+        # 阻断「已发布 KBD 错挂在分组上」的回潮——历史上 85 条曾因此脱离叶子检索锚点。
+        if not await is_category_leaf(session, effective_category_id):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "KBD_CATEGORY_NOT_LEAF",
+                    "message": (
+                        f"分类 {effective_category_id!r} 不存在或为分组节点（含子分类）；"
+                        "KBD 只能挂到叶子分类，请改选其下的具体叶子后再发布。"
+                    ),
+                    "field_path": ["category_id"],
+                },
             )
         embedding_text = build_kbd_embedding_text(
             title=row["title"],

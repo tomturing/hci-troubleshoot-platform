@@ -44,6 +44,30 @@ if TYPE_CHECKING:
 logger = get_logger("kb-service-category-repo")
 
 
+async def is_category_leaf(session: AsyncSession, code: str) -> bool:
+    """判断 ``code`` 是否为**可绑定叶子**：分类存在且无子节点（NOT EXISTS parent_id）。
+
+    解A 下叶子/分组纯由结构判定，与 code 文法正交。KBD/SOP 只能绑定叶子，
+    绑定不存在的 code 或绑到有子节点的分组都返回 False。
+    与 ``get_all(leaf_only=True)`` 使用同一 NOT EXISTS 规则，保持单一事实源。
+    """
+    row = await session.execute(
+        text(
+            """
+            SELECT
+                EXISTS(SELECT 1 FROM kb_category WHERE code = :code)                AS cat_exists,
+                NOT EXISTS(
+                    SELECT 1 FROM kb_category ch
+                     WHERE ch.parent_id = (SELECT id FROM kb_category c WHERE c.code = :code)
+                )                                                                    AS is_leaf
+            """
+        ),
+        {"code": code},
+    )
+    m = row.mappings().first()
+    return bool(m and m["cat_exists"] and m["is_leaf"])
+
+
 class CategoryRepository:
     """分类数据访问层"""
 

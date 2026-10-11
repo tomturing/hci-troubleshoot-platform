@@ -22,6 +22,7 @@ from shared.observability.logger import get_logger
 from sqlalchemy import select
 
 from app.models.sop_document import SopDocument
+from app.repositories.category_repo import is_category_leaf
 
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
@@ -152,6 +153,20 @@ async def ingest_sop_document(request: Request, body: SopIngestRequest):
     )
 
     async with _db_manager.async_session_factory() as session:
+        # 写入门禁：SOP 若指定分类，只能绑定叶子（解A：分组/多子节点不可直挂）。
+        # 本校验覆盖下方三处 category_id 写入（幂等更新 / upsert / 新建）。
+        if body.category_id and not await is_category_leaf(session, body.category_id):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "SOP_CATEGORY_NOT_LEAF",
+                    "message": (
+                        f"分类 {body.category_id!r} 不存在或为分组节点（含子分类）；"
+                        "SOP 只能挂到叶子分类。"
+                    ),
+                    "field_path": ["category_id"],
+                },
+            )
         # 1. 幂等检查：docx_hash 去重
         if body.docx_hash:
             result = await session.execute(select(SopDocument).where(SopDocument.docx_hash == body.docx_hash))
