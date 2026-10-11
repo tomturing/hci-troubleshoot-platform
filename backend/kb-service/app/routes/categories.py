@@ -93,6 +93,10 @@ class CategoryParentUpdateRequest(BaseModel):
     """分类父节点及层级更新请求"""
 
     parent_id: int | None = Field(..., description="新父分类 ID，传入 None 表示作为根节点")
+    sibling_order: list[str] | None = Field(
+        None,
+        description="目标父下重排后的子节点 code 全序；提供时把拖拽顺序物化为整域 code（解A：顺序即序号）",
+    )
 
 
 # ---- 路由 ----
@@ -512,18 +516,21 @@ async def update_category_parent(
         event="update_category_parent_route",
         code=code,
         new_parent_id=body.parent_id,
+        sibling_order=body.sibling_order,
     )
 
     try:
-        category = await _category_service.update_parent_recursive(
+        category, reseq = await _category_service.update_parent_and_resequence(
             code=code,
             new_parent_id=body.parent_id,
+            sibling_order=body.sibling_order,
         )
         if not category:
             raise HTTPException(status_code=404, detail=f"分类 {code} 不存在")
         return {
             "success": True,
             "category": category.to_dict(),
+            "resequence": reseq,
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

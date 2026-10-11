@@ -458,14 +458,22 @@ function handleAllowDrop(draggingNode: any, dropNode: any, type: string) {
 // 拖拽释放后，异步与后端级联通信
 async function handleNodeDrop(draggingNode: any, dropNode: any, dropType: string) {
   loading.value = true
-  let newParentId: number | null = null
 
-  if (dropType === 'inner') {
-    newParentId = dropNode.data.id_in_db ?? dropNode.data.id
-  } else {
-    // 'before' or 'after' -> 和目标节点平级，采用目标节点的 parent_id
-    newParentId = dropNode.data.parent_id
-  }
+  // 目标父节点：inner -> dropNode 本身；before/after -> dropNode 的父
+  const destParentNode: any = dropType === 'inner' ? dropNode : dropNode.parent
+  const newParentId: number | null =
+    destParentNode?.data?.id_in_db ?? destParentNode?.data?.id ?? null
+
+  // 拖拽后 el-tree 已把 draggingNode 落到目标父的 childNodes，按新顺序取子节点 code 全序，
+  // 作为 sibling_order 交给后端把「视觉顺序」物化为 code（解A：同级顺序即序号）。
+  const siblingOrder: string[] = (destParentNode?.childNodes ?? [])
+    .map((n: any) => n.data?.code)
+    .filter((c: any): c is string => !!c)
+
+  // 记录选中节点的稳定 DB id：重排会改写整域 code，只能用 id 复位选中/详情
+  const prevSelId: number | string | null = selectedCategory.value
+    ? selectedCategory.value.id_in_db ?? selectedCategory.value.id
+    : null
 
   try {
     const resp = await fetch(`/api/kb/categories/${encodeURIComponent(draggingNode.data.code)}/parent`, {
@@ -474,24 +482,34 @@ async function handleNodeDrop(draggingNode: any, dropNode: any, dropType: string
         'Content-Type': 'application/json',
         ...authHeader,
       },
-      body: JSON.stringify({ parent_id: newParentId })
+      body: JSON.stringify({ parent_id: newParentId, sibling_order: siblingOrder })
     })
 
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}))
-      throw new Error(err.detail || `HTTP ${resp.status}`)
+      throw new Error(typeof err?.detail === 'string' ? err.detail : (err?.detail?.message || `HTTP ${resp.status}`))
     }
 
-    ElMessage.success('拖拽调整成功，级联层级已同步更新')
+    const payload = await resp.json().catch(() => ({}))
+    const reseq = payload?.resequence
+    if (reseq && reseq.changed > 0) {
+      ElMessage.success(`拖拽成功：已按新顺序重排 ${reseq.changed} 个分类编码`)
+    } else {
+      ElMessage.success('拖拽调整成功，级联层级已同步更新')
+    }
+
     await fetchCategories()
-    
-    // 如果当前选中的分类恰好是被拖拽的分类，同步更新其在详情中的显示
-    if (selectedCategory.value && selectedCategory.value.code === draggingNode.data.code) {
+
+    // 重排后整域 code 变化，按稳定 id 复位选中与详情面板
+    if (prevSelId != null) {
       const updated = domainGroups.value
         .flatMap(g => g.categories)
-        .find(c => c.code === draggingNode.data.code)
+        .find(c => (c.id_in_db ?? c.id) === prevSelId)
       if (updated) {
         selectedCategory.value = updated
+        fetchPublishedList(updated.code)
+      } else {
+        selectedCategory.value = null
       }
     }
   } catch (e: any) {

@@ -16,12 +16,14 @@ KB Service — 分类数据访问层
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING, Any
 
 import yaml
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from shared.utils.category_code import (
+    SEQ_PAD_WIDTH,
     is_domain_root_code,
     is_node_code,
     is_valid_category_code,
@@ -1049,3 +1051,205 @@ class CategoryRepository:
                 trace_id=trace_id,
             )
             return category
+
+    async def resequence_domain(
+        self,
+        domain: str,
+        parent_id: int | None,
+        sibling_order: list[str] | None,
+    ) -> dict[str, Any]:
+        """拖拽重排：按目标父节点的新兄弟顺序，对整个域跑一次前序 DFS 重排 code。
+
+        解A 铁律——同级顺序即 code（``{域}-{序号}``）。拖拽改变视觉顺序后，必须把
+        该顺序物化回 code，否则刷新会按 code 字典序弹回原形。因此：以 ``parent_id``
+        下的 ``sibling_order`` 覆盖该父的子女顺序（其余父按当前 code 序），整域 DFS
+        重新编号，并在**同一事务**内用唯一临时码规避「置换碰撞」（新码常等于别的节点旧码）。
+
+        关键：``parent_id`` 走整型主键引用 ``kb_category.id``，重排 code 不动父子结构，
+        故 level / path_labels / parent_id 均不变（无需重建）；只需同步 remap 下游引用：
+        ``kbd_entry.category_id`` / ``kbd_entry.ai_category_id`` / ``sop_document.category_id``
+        / ``conversation.category_id``（旧码→新码；悬空者置 NULL）。
+
+        Args:
+            domain: 一级技术域（如 虚拟机）
+            parent_id: 目标父节点 DB id（用于定位要覆盖顺序的那个父）
+            sibling_order: 该父下重排后的子节点 code 全序（须与其现有子节点集合完全一致）
+
+        Returns:
+            {success, domain, changed, mapping:[{old,new}], trace_id}
+        """
+        trace_id = get_current_trace_id()
+        async with self._db.async_session_factory() as session:
+            rows = (
+                (
+                    await session.execute(
+                        text("SELECT id, code, parent_id FROM kb_category WHERE domain = :d AND code IS NOT NULL"),
+                        {"d": domain},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            if not rows:
+                raise ValueError(f"域 '{domain}' 无分类节点")
+
+            def _seq(code: str | None) -> int:
+                m = re.search(r"(\d+)$", code or "")
+                return int(m.group(1)) if m else 0
+
+            by_id = {r["id"]: r for r in rows}
+            children: dict[Any, list[int]] = {}
+            for r in rows:
+                children.setdefault(r["parent_id"], []).append(r["id"])
+
+            # 目标父的新兄弟顺序覆盖（校验其子节点集合一致，防前端伪造/漏项）
+            order_override: dict[int, list[str]] = {}
+            if parent_id is not None and sibling_order is not None:
+                cur_child_codes = {by_id[c]["code"] for c in children.get(parent_id, [])}
+                want = list(sibling_order)
+                if len(want) != len(set(want)):
+                    raise ValueError("兄弟顺序存在重复 code")
+                if set(want) != cur_child_codes:
+                    raise ValueError(
+                        f"兄弟顺序与目标父实际子节点不一致：期望 {sorted(cur_child_codes)}，收到 {sorted(want)}"
+                    )
+                order_override[parent_id] = want
+
+            def _child_sorted(pid: Any) -> list[int]:
+                ids = children.get(pid, [])
+                ov = order_override.get(pid)
+                if ov is not None:
+                    return sorted(ids, key=lambda x: ov.index(by_id[x]["code"]))
+                return sorted(ids, key=lambda x: _seq(by_id[x]["code"]))
+
+            root_ids = [r["id"] for r in rows if r["parent_id"] is None]
+
+            new_code_by_id: dict[int, str] = {}
+            counter = 0
+
+            def dfs(nid: int) -> None:
+                nonlocal counter
+                code = by_id[nid]["code"]
+                if code.endswith("-L1"):
+                    # 域根保持 {域}-L1（结构特殊节点，不占序号）
+                    new_code_by_id[nid] = code
+                else:
+                    counter += 1
+                    new_code_by_id[nid] = f"{domain}-{counter:0{SEQ_PAD_WIDTH}d}"
+                for cid in _child_sorted(nid):
+                    dfs(cid)
+
+            # root_ids 是整型主键列表，需经 by_id 转 code 再取序号排序
+            for rid in sorted(root_ids, key=lambda i: _seq(by_id[i]["code"])):
+                dfs(rid)
+
+            mapping = [(by_id[i]["code"], new_code_by_id[i], i) for i in new_code_by_id]
+            changed = [(o, n, i) for o, n, i in mapping if o != n]
+            if not changed:
+                logger.info(event="repo_resequence_domain_noop", domain=domain, trace_id=trace_id)
+                return {"success": True, "domain": domain, "changed": 0, "mapping": [], "trace_id": trace_id}
+
+            # 捕获将被暂摘的 FK / CHECK 原始定义，以便原样重建（环境若无则不新增）
+            async def _constraint_def(table: str, name: str) -> str | None:
+                return (
+                    await session.execute(
+                        text(
+                            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                            "WHERE conrelid = CAST(:t AS regclass) AND conname = :n"
+                        ),
+                        {"t": table, "n": name},
+                    )
+                ).scalar()
+
+            fk_kbd = await _constraint_def("kbd_entry", "fk_kbd_entry_category_id")
+            fk_sop = await _constraint_def("sop_document", "fk_sop_document_category_id")
+            fmt_check = await _constraint_def("kb_category", "kb_category_code_format")
+
+            # 暂摘引用 code 的两个外键 + 格式 CHECK（临时码不合规）；parent_id 走 id 不受影响
+            await session.execute(text("ALTER TABLE kbd_entry DROP CONSTRAINT IF EXISTS fk_kbd_entry_category_id"))
+            await session.execute(
+                text("ALTER TABLE sop_document DROP CONSTRAINT IF EXISTS fk_sop_document_category_id")
+            )
+            await session.execute(text("ALTER TABLE kb_category DROP CONSTRAINT IF EXISTS kb_category_code_format"))
+
+            # A: 本域全部转唯一临时码，规避置换碰撞
+            await session.execute(
+                text("UPDATE kb_category SET code = '__tmp__' || id::text WHERE domain = :d"), {"d": domain}
+            )
+            # B: 建临时映射表（旧码 / 新码 / id），随事务提交自动 DROP
+            await session.execute(
+                text("CREATE TEMP TABLE renum_map(old_code text, new_code text, id int) ON COMMIT DROP")
+            )
+            await session.execute(
+                text("INSERT INTO renum_map(old_code, new_code, id) VALUES (:o, :n, :i)"),
+                [{"o": o, "n": n, "i": i} for o, n, i in mapping],
+            )
+            # C: 临时码 -> 新码（按 id）
+            await session.execute(text("UPDATE kb_category k SET code = m.new_code FROM renum_map m WHERE k.id = m.id"))
+            # D: 4 个 varchar 引用列 旧码 -> 新码（旧码带域前缀，天然只命中本域引用）
+            for tbl, col in (
+                ("kbd_entry", "category_id"),
+                ("kbd_entry", "ai_category_id"),
+                ("sop_document", "category_id"),
+                ("conversation", "category_id"),
+            ):
+                await session.execute(
+                    text(f"UPDATE {tbl} x SET {col} = m.new_code FROM renum_map m WHERE x.{col} = m.old_code")
+                )
+            # E: 悬空引用置 NULL（重加 FK 前必须；无 FK 的两列一并清理）
+            await session.execute(
+                text(
+                    "UPDATE kbd_entry k SET category_id = NULL WHERE k.category_id IS NOT NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM kb_category c WHERE c.code = k.category_id)"
+                )
+            )
+            await session.execute(
+                text(
+                    "UPDATE sop_document s SET category_id = NULL WHERE s.category_id IS NOT NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM kb_category c WHERE c.code = s.category_id)"
+                )
+            )
+            await session.execute(
+                text(
+                    "UPDATE kbd_entry k SET ai_category_id = NULL WHERE k.ai_category_id IS NOT NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM kb_category c WHERE c.code = k.ai_category_id)"
+                )
+            )
+            await session.execute(
+                text(
+                    "UPDATE conversation cv SET category_id = NULL WHERE cv.category_id IS NOT NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM kb_category c WHERE c.code = cv.category_id)"
+                )
+            )
+
+            # F: 原样重建约束（环境若有才重建；FK 先 NOT VALID 再 VALIDATE 自校验）
+            if fmt_check:
+                await session.execute(
+                    text("ALTER TABLE kb_category ADD CONSTRAINT kb_category_code_format " + fmt_check)
+                )
+            if fk_kbd:
+                await session.execute(
+                    text("ALTER TABLE kbd_entry ADD CONSTRAINT fk_kbd_entry_category_id " + fk_kbd + " NOT VALID")
+                )
+                await session.execute(text("ALTER TABLE kbd_entry VALIDATE CONSTRAINT fk_kbd_entry_category_id"))
+            if fk_sop:
+                await session.execute(
+                    text("ALTER TABLE sop_document ADD CONSTRAINT fk_sop_document_category_id " + fk_sop + " NOT VALID")
+                )
+                await session.execute(text("ALTER TABLE sop_document VALIDATE CONSTRAINT fk_sop_document_category_id"))
+
+            await session.commit()
+            logger.info(
+                event="repo_resequence_domain_success",
+                domain=domain,
+                parent_id=parent_id,
+                changed=len(changed),
+                trace_id=trace_id,
+            )
+            return {
+                "success": True,
+                "domain": domain,
+                "changed": len(changed),
+                "mapping": [{"old": o, "new": n} for o, n, _ in changed],
+                "trace_id": trace_id,
+            }

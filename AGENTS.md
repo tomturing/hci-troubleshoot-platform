@@ -22,6 +22,10 @@
 **HCI 智能排障平台** — AI 驱动的超融合基础设施运维故障诊断系统。
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
+- **分类树拖拽重排即时物化 code（解A「顺序即序号」落地）**（详见 `docs/solution/admin-ui/events/2026-10-11-分类树拖拽重排即时物化code方案.md`）：
+  - **根因**：解A 铁律「同级顺序即 code，无独立 sort 字段」下，`CategoryManageView.vue` 的 `sortTreeNodes` 每次 refetch 按 `code.localeCompare` 重排；而 `handleNodeDrop` 只发 `{parent_id}` 不改 code、不带位置 → 拖出来的视觉顺序与 code 无关，刷新即被拍回原形，表现为「拖拽完全无效果」。
+  - **修复**：`category_repo.py` 新增 `resequence_domain`（前序 DFS 按目标父新兄弟序整域重编号，单事务内用唯一临时码 `__tmp__||id` 规避置换碰撞 + 摘/重建 FK·CHECK + remap 4 个 varchar 引用列 + 悬空置 NULL）；`category_service.py` 新增 `update_parent_and_resequence`（先换父后重排，两步分提交）；`categories.py` `CategoryParentUpdateRequest` 扩 `sibling_order`、返回 `resequence`；前端 `handleNodeDrop` 读目标父 `childNodes` 新兄弟 code 全序下发，重排后按稳定 `id_in_db` 复位选中。
+  - **测试守护**：`test_categories.py` 新增 `test_resequence_materializes_group_adjacency`（组随子树相邻、序号连续）、`test_resequence_noop_when_already_canonical`（合规即 changed=0 不写库）、`test_resequence_rejects_sibling_order_mismatch`（`sibling_order` 缺项即抛错）。
 - **工单 Q2026100812343「硬盘坏道」SOP 编排执行门禁加固与 terminal_bridge 可观测性增强**（详见 `docs/solution/agent/SOP编排执行门禁约束设计与需求.md`、`docs/solution/terminal-bridge-observability-enhancement.md`、避坑 `docs/verify/pitfalls/dispatcher.md` V-017）：
   - **根因**：SOP 引擎变量自动取值链路 `engine.py` 的 `tool_call` 策略调用 `tool_executor.execute(...)` 时**未透传 `conversation_id`**，`BridgeRelayExecutor` 因缺上下文全线静默失败；而泛化 `except Exception` 又把真实原因吞成笼统错误。变量未解析的 `tool_call/skill_call` 仅作为 `soft_hints` 不硬阻断（`is_guarded` 只覆盖 `env_injection/user_input/user_confirm`），于是引擎把控制权交回模型，模型在客户生产环境即兴手工敲 `acli_exec/bash_exec/qkv_*`，并在关键变量（`disk_dev` 空、`check_meth` 未取得）未确认时产出带幻觉的定量结论（臆造 `8001563222016 字节`）。
   - **修复**：

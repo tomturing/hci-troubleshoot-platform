@@ -526,3 +526,89 @@ async def test_resolve_category_subtree_codes_falls_back_to_self():
 
     codes = await _resolve_category_subtree_codes(session, "虚拟机-099")
     assert codes == ["虚拟机-099"]
+
+
+# ─── 拖拽重排 resequence_domain（解A：顺序即序号，拖拽物化为 code）──────────
+
+
+def _fake_resequence_session(rows: list[dict]):
+    """构造一个按 SQL 分发的假 session（resequence 大量原生 SQL/DDL 均走 execute）。"""
+
+    async def _exec(query, params=None):
+        q = str(getattr(query, "text", query))
+        if "SELECT id, code, parent_id FROM kb_category WHERE domain" in q:
+            res = MagicMock()
+            res.mappings.return_value.all.return_value = rows
+            return res
+        if "pg_get_constraintdef" in q:
+            res = MagicMock()
+            res.scalar.return_value = None  # 模拟环境无 FK/CHECK（与 staging 一致）
+            return res
+        return MagicMock()  # 其余 DDL/DML
+
+    mock_db = MagicMock()
+    mock_session = AsyncMock()
+    mock_session.__aenter__.return_value = mock_session
+    mock_session.execute = _exec
+    mock_db.async_session_factory.return_value = mock_session
+    return mock_db
+
+
+@pytest.mark.anyio
+async def test_resequence_materializes_group_adjacency():
+    """拖拽重排：分组随其子树整块前移，新 code 使「组紧跟子」相邻（顺序物化为序号）。"""
+    # 顶层子 [A(001),B(002),C(003)]，其中 A 带一个子 004
+    rows = [
+        {"id": 1, "code": "虚拟机-L1", "parent_id": None},
+        {"id": 2, "code": "虚拟机-001", "parent_id": 1},
+        {"id": 3, "code": "虚拟机-002", "parent_id": 1},
+        {"id": 4, "code": "虚拟机-003", "parent_id": 1},
+        {"id": 5, "code": "虚拟机-004", "parent_id": 2},
+    ]
+    repo = CategoryRepository(_fake_resequence_session(rows))
+    # 顶层新序：C 最先，其后 A(连子)，最后 B
+    result = await repo.resequence_domain(
+        domain="虚拟机",
+        parent_id=1,
+        sibling_order=["虚拟机-003", "虚拟机-001", "虚拟机-002"],
+    )
+    got = {m["old"]: m["new"] for m in result["mapping"]}
+    assert result["changed"] == 4
+    assert got == {
+        "虚拟机-003": "虚拟机-001",  # C 前移为首
+        "虚拟机-001": "虚拟机-002",  # A 紧跟其后
+        "虚拟机-004": "虚拟机-003",  # A 的子随 A 相邻
+        "虚拟机-002": "虚拟机-004",  # B 垫后
+    }
+
+
+@pytest.mark.anyio
+async def test_resequence_noop_when_already_canonical():
+    """树已合规（组紧跟子、序号连续）且无 sibling_order 时，重排为空操作，不落任何改写。"""
+    rows = [
+        {"id": 1, "code": "虚拟机-L1", "parent_id": None},
+        {"id": 2, "code": "虚拟机-001", "parent_id": 1},
+        {"id": 3, "code": "虚拟机-002", "parent_id": 2},  # 001 的子，紧邻
+        {"id": 4, "code": "虚拟机-003", "parent_id": 1},
+    ]
+    repo = CategoryRepository(_fake_resequence_session(rows))
+    result = await repo.resequence_domain(domain="虚拟机", parent_id=None, sibling_order=None)
+    assert result == {"success": True, "domain": "虚拟机", "changed": 0, "mapping": [], "trace_id": result["trace_id"]}
+
+
+@pytest.mark.anyio
+async def test_resequence_rejects_sibling_order_mismatch():
+    """sibling_order 与目标父实际子节点集合不一致时 fail-fast（防伪造/漏项）。"""
+    rows = [
+        {"id": 1, "code": "虚拟机-L1", "parent_id": None},
+        {"id": 2, "code": "虚拟机-001", "parent_id": 1},
+        {"id": 3, "code": "虚拟机-002", "parent_id": 1},
+        {"id": 4, "code": "虚拟机-003", "parent_id": 1},
+    ]
+    repo = CategoryRepository(_fake_resequence_session(rows))
+    with pytest.raises(ValueError, match="兄弟顺序与目标父实际子节点不一致"):
+        await repo.resequence_domain(
+            domain="虚拟机",
+            parent_id=1,
+            sibling_order=["虚拟机-001", "虚拟机-002"],  # 缺 003
+        )
