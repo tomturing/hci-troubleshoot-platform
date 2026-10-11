@@ -2314,6 +2314,12 @@ CREATE TABLE IF NOT EXISTS kb_category (
     hit_count integer DEFAULT 0,
     is_active boolean DEFAULT true,
     CONSTRAINT fk_kb_category_parent_id FOREIGN KEY (parent_id) REFERENCES kb_category (id) ON DELETE NO ACTION,
+    CONSTRAINT kb_category_code_format CHECK (
+        code IS NULL
+        OR domain = '测试'
+        OR code ~ '^[^-]+-L1$'
+        OR code ~ '^[^-]+-[0-9]+$'
+    ),
     CONSTRAINT kb_category_pkey PRIMARY KEY (id)
 );
 
@@ -2326,7 +2332,7 @@ COMMENT ON COLUMN kb_category.keywords IS '关键词数组，用于关键词匹�
 COMMENT ON COLUMN kb_category.source IS '数据来源：manual（手动录入）/ baseline_yaml（YAML 导入）/ baseline_yaml_intermediate（YAML 导入中间节点）';
 COMMENT ON COLUMN kb_category.version IS '数据版本';
 COMMENT ON COLUMN kb_category.created_at IS '创建时间';
-COMMENT ON COLUMN kb_category.code IS '分类编码（UNIQUE），对应 YAML id，如"虚拟机-003"。L1 域节点格式为"{domain}-L1"，中间节点格式为"{domain}-L{level}-{name}"。注意：ORM 字段 String(32) 是历史 Bug，目标 VARCHAR(64)，迁移时需 ALTER';
+COMMENT ON COLUMN kb_category.code IS '分类编码（UNIQUE），解A 角色无关统一 ID 文法，唯一事实源 backend/shared/utils/category_code.py。域根固定为"{domain}-L1"（parent_id 恒 NULL、永不叶子）；其余所有节点（叶子与分组一视同仁）统一"{domain}-{3位序号}"（如"虚拟机-017"），每域共享一个序号空间。叶子/分组不由 code 决定，而由结构性 NOT EXISTS(parent_id) 判定。CHECK 约束 kb_category_code_format 强制 code 仅为 NULL、{domain}-L1 或 {domain}-{纯数字}（已废弃 {domain}-L{level}-{序号} 与 {domain}-L{level}-{名称}）；但对 domain='测试' 的合成/隔离分类（E2E 与集成测试脚手架，从不进入生产分类与 S0 路由）予以豁免。ORM 字段 String(32) 是历史 Bug，目标 VARCHAR(64)，迁移时需 ALTER';
 COMMENT ON COLUMN kb_category.domain IS '一级技术域：虚拟机 / 网络 / 存储 / 硬件 / 平台';
 COMMENT ON COLUMN kb_category.path_labels IS '完整路径数组，如 ["虚拟机", "虚拟机创建", "虚拟机创建失败"]';
 COMMENT ON COLUMN kb_category.embedding IS '意图识别向量（1536 维），用于 S0 阶段语义匹配';

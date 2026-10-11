@@ -458,6 +458,71 @@ class CategoryRepository:
         all_records.sort(key=lambda r: r["level"])
         return all_records, parse_errors
 
+    @staticmethod
+    def _parse_baseline_fulltree(categories_data: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+        """解析 **v2.0 全树显式码格式**（`code/name/domain/level/parent/path`）。
+
+        与 v1.0 叶子清单解析器 `_parse_baseline_yaml` 的根本区别：**忠实照抄显式 code，
+        绝不重推导、重编号**——因此能无损回导一份反映拖拽重排结果的 DB 快照（分组节点的
+        精确码与同级顺序均原样保留）。父关系仍由 Phase 2 按 `path_labels` 反查建立。
+
+        校验：code 必填且合法形态、不重复；name/path 必填；域根 parent 必为空、
+        非域根的 parent（若声明）必须存在于基线 code 集合。不施加扁平化校验（DB 为事实源，
+        快照应忠实回导）。
+        """
+        parse_errors: list[str] = []
+        records: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        all_codes = {str(c.get("code") or "") for c in categories_data}
+
+        for idx, cat in enumerate(categories_data):
+            code = str(cat.get("code") or "")
+            name = cat.get("name") or cat.get("label") or ""
+            domain = cat.get("domain") or (split_domain(code) if code else "")
+            path = cat.get("path")
+            if not code:
+                parse_errors.append(f"第 {idx + 1} 条记录缺少 code 字段")
+                continue
+            if not is_valid_category_code(code):
+                parse_errors.append(validate_code(code) or f"第 {idx + 1} 条（{code}）code 非法形态")
+                continue
+            if code in seen:
+                parse_errors.append(f"第 {idx + 1} 条（{code}）code 重复")
+                continue
+            seen.add(code)
+            if not name:
+                parse_errors.append(f"第 {idx + 1} 条（{code}）缺少 name 字段")
+                continue
+            if not isinstance(path, list) or not path:
+                parse_errors.append(f"第 {idx + 1} 条（{code}）path 缺失或非数组")
+                continue
+
+            parent = cat.get("parent")
+            level_raw = cat.get("level")
+            if is_domain_root_code(code):
+                level = 1
+                if parent not in (None, "", "null"):
+                    parse_errors.append(f"域根 {code} 的 parent 应为空，实际 {parent!r}")
+            else:
+                level = int(level_raw) if level_raw is not None else len(path)
+                if parent and str(parent) not in all_codes:
+                    parse_errors.append(f"节点 {code} 的 parent {parent!r} 不在基线 code 集合中")
+
+            records.append(
+                {
+                    "code": code,
+                    "name": name,
+                    "domain": domain,
+                    "path_labels": list(path),
+                    "level": level,
+                    "source": "baseline_yaml",
+                }
+            )
+
+        # 按 level 排序，保证父先于子（Phase 2 以 path 反查，排序仅为稳定性与可读）
+        records.sort(key=lambda r: r["level"])
+        return records, parse_errors
+
     async def import_from_yaml(
         self,
         content: bytes,
@@ -533,8 +598,14 @@ class CategoryRepository:
             _existing_result = await session.execute(select(KbCategory.code))
             existing_codes = {row[0] for row in _existing_result.fetchall() if row[0]}
 
-        # ── 四阶段解析：生成完整节点列表（L1 + 中间层 + 叶节点）──────────────
-        all_records, parse_errors = self._parse_baseline_yaml(raw_categories, existing_codes)
+        # ── 格式自动识别 + 解析：生成完整节点列表（L1 + 中间层 + 叶节点）──────
+        # v2.0 全树（条目含 `code`、无 `id`）走忠实回导通道；v1.0 叶子清单（含 `id`）保持原行为。
+        first = raw_categories[0] if raw_categories and isinstance(raw_categories[0], dict) else {}
+        is_fulltree = "code" in first and "id" not in first
+        if is_fulltree:
+            all_records, parse_errors = self._parse_baseline_fulltree(raw_categories)
+        else:
+            all_records, parse_errors = self._parse_baseline_yaml(raw_categories, existing_codes)
         if parse_errors:
             errors.extend(parse_errors)
             return {

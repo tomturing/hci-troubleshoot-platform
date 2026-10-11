@@ -57,16 +57,23 @@ def is_leaf_code(code: object) -> bool:
 
 
 def load_baseline_leaves(baseline_path: Path) -> dict[str, dict[str, Any]]:
-    """读取基线 YAML，返回 {叶子id: {label, path}} 映射（仅叶节点条目）。"""
+    """读取 v2.0 全树基线 YAML，按**结构**判定叶子，返回 {code: {label, path}}。
+
+    叶子 = 未被任何条目当作 `parent` 引用的节点；域根（`{域}-L1`）恒非叶。
+    只认 v2.0 全树（`code`+`parent`+`path`），不再兼容 v1.0 叶子清单方言（避免歧义）。
+    """
     import yaml  # noqa: PLC0415
 
     with open(baseline_path, encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
+    entries = data.get("categories", []) or []
+    parent_codes = {str(c.get("parent")) for c in entries if c.get("parent") not in (None, "", "null")}
     leaves: dict[str, dict[str, Any]] = {}
-    for cat in data.get("categories", []):
-        code = str(cat.get("id") or "")
-        if code:
-            leaves[code] = {"label": str(cat.get("label") or ""), "path": list(cat.get("path") or [])}
+    for cat in entries:
+        code = str(cat.get("code") or "")
+        if not code or code in parent_codes or code.endswith("-L1"):
+            continue
+        leaves[code] = {"label": str(cat.get("name") or cat.get("label") or ""), "path": list(cat.get("path") or [])}
     return leaves
 
 
@@ -191,7 +198,31 @@ def run_self_test() -> int:
     missing2, inactive2, mismatch2 = find_baseline_drift({"虚拟机-017": baseline["虚拟机-017"]}, drifted)
     assert missing2 == [] and inactive2 == ["虚拟机-017"] and mismatch2 == ["虚拟机-017"]
 
-    log("INFO", "self-test 通过：隐形分类识别 / 基线缺失 / 停用 / path 漂移判定均符合预期")
+    # v2.0 全树读取器：按结构判叶（域根/分组非叶，叶子=无子节点）
+    import tempfile  # noqa: PLC0415
+
+    fulltree_yaml = (
+        'version: "2.0"\ntotal: 4\ncategories:\n'
+        "- code: 虚拟机-L1\n  name: 虚拟机\n  domain: 虚拟机\n  level: 1\n  parent: null\n  path: [虚拟机]\n"
+        "- code: 虚拟机-001\n  name: 迁移失败\n  domain: 虚拟机\n  level: 2\n  parent: 虚拟机-L1\n"
+        "  path: [虚拟机, 迁移失败]\n"
+        "- code: 虚拟机-002\n  name: 热迁移\n  domain: 虚拟机\n  level: 3\n  parent: 虚拟机-001\n"
+        "  path: [虚拟机, 迁移失败, 热迁移]\n"
+        "- code: 虚拟机-003\n  name: 冷启动\n  domain: 虚拟机\n  level: 2\n  parent: 虚拟机-L1\n"
+        "  path: [虚拟机, 冷启动]\n"
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", encoding="utf-8", delete=False) as tf:
+        tf.write(fulltree_yaml)
+        tmp_path = Path(tf.name)
+    try:
+        leaves = load_baseline_leaves(tmp_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    # 域根 虚拟机-L1 与分组 虚拟机-001 均非叶；叶子 = 002（被 001 之下）、003
+    assert set(leaves) == {"虚拟机-002", "虚拟机-003"}, leaves
+    assert leaves["虚拟机-002"]["path"] == ["虚拟机", "迁移失败", "热迁移"], leaves["虚拟机-002"]
+
+    log("INFO", "self-test 通过：隐形分类识别 / 基线缺失 / 停用 / path 漂移 / v2.0 结构判叶均符合预期")
     return 0
 
 

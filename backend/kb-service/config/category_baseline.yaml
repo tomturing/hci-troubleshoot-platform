@@ -1,1503 +1,2831 @@
-# HCI 云平台故障分类基准 - 扁平化 YAML
-# 来源: 云计算-结构图-AI-全.mm
-# 生成日期: 2026-03-06
-# 用途: 案例库 ETL 分类 Pipeline 的分类基准
+# ─────────────────────────────────────────────────────────────────────────────
+# HCI 云平台故障分类基线（category_baseline）—— 分类基线唯一权威定义
+# ─────────────────────────────────────────────────────────────────────────────
+# 本文件是 kb_category 分类树的【全树快照】：由线上 DB 导出，反映最新拖拽重排结果。
+# ⚠️ 请勿手工编辑：改序请在分类管理页拖拽（即时物化 code），再运行
+#    `uv run python scripts/refresh_category_baseline.py` 从 DB 重生成并提交本文件。
 #
-# 字段说明:
-#   id      - 唯一分类编码，格式 <DOMAIN>-<SEQ>
-#   domain  - 一级技术域（中文）
-#   label   - 自描述的分类标签（可直接用作 AI prompt 的分类名称）
-#   path    - 从技术域到分类标签的完整路径（面包屑，供上下文理解）
+# 【code 命名文法（解A：角色无关统一 ID）】
+#   1. 域根（每域唯一）：`{域}-L1`（如 `虚拟机-L1`）。parent 恒为 null，永不是叶子。
+#   2. 其余所有节点（分组与叶子一视同仁）：`{域}-{3 位补零序号}`（如 `虚拟机-021`），
+#      每域共享一个独立序号空间；同级顺序即序号（拖拽重排会整域 DFS 重编号）。
+#   3. 叶子 vs 分组：纯由树结构（有无子节点）判定，与 code 形态正交。
+#   4. DB 侧由 CHECK 约束 `kb_category_code_format` 强制本文法（见 desired_schema.sql）。
 #
-# 注意事项:
-#   - 中间层逻辑分组节点（如"虚拟机生命周期"/"可靠性管理"）已被移除
-#   - 硬盘排障决策树已折叠为 3 个分类节点（单盘/多盘/全盘）
-#   - 叶节点名称已标准化（修正大小写、去除 HTML 实体、补语义前缀）
-#   - 网络/存储/平台 各域已补全，本文件覆盖 虚拟机/网络/存储/硬件/平台 5 个域
+# 【字段】code=编码 / name=名称 / domain=一级域 / level=层级 / parent=父 code / path=完整路径
 
-version: "1.0"
-source: 云计算-结构图-AI-全.mm
-generated: "2026-03-06"
-total: 198
+version: "2.0"
+source: "kb_category 全树快照（DB 导出，解A DFS 重排）"
+generated: "2026-10-11"
 
+total: 316
 categories:
-
-  - id: 虚拟机-001
-    domain: 虚拟机
-    label: 虚拟机创建失败
-    path:
-      - 虚拟机
-      - 虚拟机创建
-      - 虚拟机创建失败
-
-  - id: 虚拟机-002
-    domain: 虚拟机
-    label: 虚拟机删除失败
-    path:
-      - 虚拟机
-      - 虚拟机删除
-      - 虚拟机删除失败
-
-  - id: 虚拟机-003
-    domain: 虚拟机
-    label: 虚拟机开机失败
-    path:
-      - 虚拟机
-      - 虚拟机开机失败
-
-  - id: 虚拟机-004
-    domain: 虚拟机
-    label: 虚拟机关机失败
-    path:
-      - 虚拟机
-      - 虚拟机关机失败
-
-  - id: 虚拟机-005
-    domain: 虚拟机
-    label: 虚拟机重启失败
-    path:
-      - 虚拟机
-      - 虚拟机重启失败
-
-  - id: 虚拟机-006
-    domain: 虚拟机
-    label: 虚拟机导入失败
-    path:
-      - 虚拟机
-      - 虚拟机导入
-      - 虚拟机导入失败
-
-  - id: 虚拟机-007
-    domain: 虚拟机
-    label: 虚拟机导出失败
-    path:
-      - 虚拟机
-      - 虚拟机导出
-      - 虚拟机导出失败
-
-  - id: 虚拟机-008
-    domain: 虚拟机
-    label: 虚拟机克隆失败
-    path:
-      - 虚拟机
-      - 虚拟机克隆
-      - 虚拟机克隆失败
-
-  - id: 虚拟机-009
-    domain: 虚拟机
-    label: 虚拟机异常挂起
-    path:
-      - 虚拟机
-      - 虚拟机异常挂起
-
-  - id: 虚拟机-010
-    domain: 虚拟机
-    label: 虚拟机模板创建失败
-    path:
-      - 虚拟机
-      - 虚拟机模板创建失败
-
-  - id: 虚拟机-011
-    domain: 虚拟机
-    label: 虚拟机模板更新失败
-    path:
-      - 虚拟机
-      - 虚拟机模板更新失败
-
-  - id: 虚拟机-012
-    domain: 虚拟机
-    label: 虚拟机模版派生失败
-    path:
-      - 虚拟机
-      - 虚拟机模版派生失败
-
-  - id: 虚拟机-013
-    domain: 虚拟机
-    label: 虚拟机模板转换失败
-    path:
-      - 虚拟机
-      - 虚拟机模板转换失败
-
-  - id: 虚拟机-014
-    domain: 虚拟机
-    label: 虚拟机scmt迁移失败
-    path:
-      - 虚拟机
-      - 虚拟机scmt迁移失败
-
-  - id: 虚拟机-015
-    domain: 虚拟机
-    label: 虚拟机集群内热迁移失败（跨存储）
-    path:
-      - 虚拟机
-      - 虚拟机集群内或跨集群迁移失败
-      - 虚拟机集群内热迁移失败（跨存储）
-
-  - id: 虚拟机-016
-    domain: 虚拟机
-    label: 虚拟机集群内热迁移失败（同存储）
-    path:
-      - 虚拟机
-      - 虚拟机集群内或跨集群迁移失败
-      - 虚拟机集群内热迁移失败（同存储）
-
-  - id: 虚拟机-017
-    domain: 虚拟机
-    label: 虚拟机跨集群热迁移失败
-    path:
-      - 虚拟机
-      - 虚拟机集群内或跨集群迁移失败
-      - 虚拟机跨集群热迁移失败
-
-  - id: 虚拟机-018
-    domain: 虚拟机
-    label: 虚拟机集群内冷迁移失败（跨存储）
-    path:
-      - 虚拟机
-      - 虚拟机集群内或跨集群迁移失败
-      - 虚拟机集群内冷迁移失败（跨存储）
-
-  - id: 虚拟机-019
-    domain: 虚拟机
-    label: 虚拟机集群内冷迁移失败（同存储）
-    path:
-      - 虚拟机
-      - 虚拟机集群内或跨集群迁移失败
-      - 虚拟机集群内冷迁移失败（同存储）
-
-  - id: 虚拟机-020
-    domain: 虚拟机
-    label: 虚拟机跨集群冷迁移失败
-    path:
-      - 虚拟机
-      - 虚拟机集群内或跨集群迁移失败
-      - 虚拟机跨集群冷迁移失败
-
-  - id: 虚拟机-021
-    domain: 虚拟机
-    label: 虚拟机vmware纳管迁移失败
-    path:
-      - 虚拟机
-      - 虚拟机vmware纳管迁移失败
-
-  - id: 虚拟机-022
-    domain: 虚拟机
-    label: 虚拟机磁盘分配方式卡住
-    path:
-      - 虚拟机
-      - 虚拟机磁盘分配方式卡住
-
-  - id: 虚拟机-023
-    domain: 虚拟机
-    label: 虚拟机硬件资源热添加和DRX不生效
-    path:
-      - 虚拟机
-      - 虚拟机硬件资源热添加和DRX不生效
-
-  - id: 虚拟机-024
-    domain: 虚拟机
-    label: 虚拟机快照失败
-    path:
-      - 虚拟机
-      - 虚拟机快照失败
-
-  - id: 虚拟机-025
-    domain: 虚拟机
-    label: 虚拟机快照合并或删除失败
-    path:
-      - 虚拟机
-      - 虚拟机快照合并或删除失败
-
-  - id: 虚拟机-026
-    domain: 虚拟机
-    label: 虚拟机快照恢复失败
-    path:
-      - 虚拟机
-      - 虚拟机快照恢复失败
-
-  - id: 虚拟机-027
-    domain: 虚拟机
-    label: 虚拟机备份创建失败
-    path:
-      - 虚拟机
-      - 虚拟机备份创建失败
-
-  - id: 虚拟机-028
-    domain: 虚拟机
-    label: 虚拟机备份合并或删除失败
-    path:
-      - 虚拟机
-      - 虚拟机备份合并或删除失败
-
-  - id: 虚拟机-029
-    domain: 虚拟机
-    label: 虚拟机备份恢复失败
-    path:
-      - 虚拟机
-      - 虚拟机备份恢复失败
-
-  - id: 虚拟机-030
-    domain: 虚拟机
-    label: 虚拟机备份文件找回失败
-    path:
-      - 虚拟机
-      - 虚拟机备份文件找回失败
-
-  - id: 虚拟机-031
-    domain: 虚拟机
-    label: 集群资源调度DRS失败
-    path:
-      - 虚拟机
-      - 集群资源调度DRS失败
-
-  - id: 虚拟机-032
-    domain: 虚拟机
-    label: 虚拟机HA不达预期
-    path:
-      - 虚拟机
-      - 虚拟机HA不达预期
-
-  - id: 虚拟机-033
-    domain: 虚拟机
-    label: 虚拟机异常HA
-    path:
-      - 虚拟机
-      - 虚拟机异常HA
-
-  - id: 虚拟机-034
-    domain: 虚拟机
-    label: 虚拟机性能优化工具(vmtools)安装卸载异常
-    path:
-      - 虚拟机
-      - 性能优化工具安装卸载异常
-
-  - id: 虚拟机-035
-    domain: 虚拟机
-    label: 虚拟机性能优化工具(vmtools)报表透传异常
-    path:
-      - 虚拟机
-      - 性能优化工具报表透传异常
-
-  - id: 虚拟机-036
-    domain: 虚拟机
-    label: 虚拟机整体卡慢
-    path:
-      - 虚拟机
-      - 虚拟机整体卡慢
-
-  - id: 虚拟机-037
-    domain: 虚拟机
-    label: 虚拟机内部业务卡慢
-    path:
-      - 虚拟机
-      - 虚拟机内部业务卡慢
-
-  - id: 虚拟机-038
-    domain: 虚拟机
-    label: 虚拟机IO读写慢
-    path:
-      - 虚拟机
-      - 虚拟机IO读写慢
-
-  - id: 虚拟机-039
-    domain: 虚拟机
-    label: 虚拟机卡死无响应
-    path:
-      - 虚拟机
-      - 虚拟机卡死无响应
-
-  - id: 虚拟机-040
-    domain: 虚拟机
-    label: 虚拟机图形化界面启动失败
-    path:
-      - 虚拟机
-      - 虚拟机图形化界面启动失败
-
-  - id: 虚拟机-041
-    domain: 虚拟机
-    label: 虚拟机内部黑屏
-    path:
-      - 虚拟机
-      - 虚拟机内部黑屏
-
-  - id: 虚拟机-042
-    domain: 虚拟机
-    label: 虚拟机内部蓝屏
-    path:
-      - 虚拟机
-      - 虚拟机内部蓝屏
-
-  - id: 虚拟机-043
-    domain: 虚拟机
-    label: 虚拟机内部软件使用异常
-    path:
-      - 虚拟机
-      - 虚拟机内部软件使用异常
-
-  - id: 虚拟机-044
-    domain: 虚拟机
-    label: 虚拟机内部空间或文件系统异常
-    path:
-      - 虚拟机
-      - 虚拟机内部空间或文件系统异常
-
-  - id: 虚拟机-045
-    domain: 虚拟机
-    label: 虚拟机密码重置
-    path:
-      - 虚拟机
-      - 虚拟机密码重置
-
-  - id: 虚拟机-046
-    domain: 虚拟机
-    label: 虚拟机自动登录失败
-    path:
-      - 虚拟机
-      - 虚拟机自动登录失败
-
-  - id: 虚拟机-047
-    domain: 虚拟机
-    label: 虚拟机中勒索病毒
-    path:
-      - 虚拟机
-      - 虚拟机中勒索病毒？？？？
-
-  - id: 虚拟机-048
-    domain: 虚拟机
-    label: 虚拟机数据丢失
-    path:
-      - 虚拟机
-      - 虚拟机数据丢失
-
-  - id: 虚拟机-049
-    domain: 虚拟机
-    label: 虚拟机网络丢包或不通
-    path:
-      - 虚拟机
-      - 虚拟机网络丢包或不通
-
-  - id: 虚拟机-050
-    domain: 虚拟机
-    label: 虚拟机网络延时高
-    path:
-      - 虚拟机
-      - 虚拟机网络延时高
-
-  - id: 虚拟机-051
-    domain: 虚拟机
-    label: 虚拟机网络IP地址冲突
-    path:
-      - 虚拟机
-      - 虚拟机地址冲突
-
-  - id: 虚拟机-052
-    domain: 虚拟机
-    label: 虚拟机CPU或内存占用过高告警
-    path:
-      - 虚拟机
-      - 虚拟机cpu或内存占用过高
-
-  - id: 虚拟机-053
-    domain: 虚拟机
-    label: 虚拟机网络流量或Session过高告警
-    path:
-      - 虚拟机
-      - 虚拟机网络流量或session过高异常
-
-  - id: 虚拟机-054
-    domain: 虚拟机
-    label: 虚拟机显存占用过高告警
-    path:
-      - 虚拟机
-      - 虚拟机显存占用过高
-
-  - id: 网络-001
-    domain: 网络
-    label: 主机网口顺序识别异常（乱序）
-    path:
-      - 网络
-      - 网口乱序
-
-  - id: 网络-002
-    domain: 网络
-    label: 主机网口创建失败
-    path:
-      - 网络
-      - 网口创建失败
-
-  - id: 网络-003
-    domain: 网络
-    label: 主机网口功能复用失败
-    path:
-      - 网络
-      - 网口功能复用失败
-
-  - id: 网络-004
-    domain: 网络
-    label: 主机网口编辑失败
-    path:
-      - 网络
-      - 网口编辑失败
-
-  - id: 网络-005
-    domain: 网络
-    label: 主机网口删除失败（含聚合口/子接口）
-    path:
-      - 网络
-      - 网口删除失败（如聚合口删除，子接口删除等）
-
-  - id: 网络-006
-    domain: 网络
-    label: 主机管理网丢包或不通
-    path:
-      - 网络
-      - 管理网丢包或不通（包括组播不通、主机网关不通告警）
-
-  - id: 网络-007
-    domain: 网络
-    label: 主机vxlan网络丢包或不通
-    path:
-      - 网络
-      - vxlan丢包或不通（包括大包不通）
-
-  - id: 网络-008
-    domain: 网络
-    label: 主机存储网丢包或不通
-    path:
-      - 网络
-      - 存储网丢包或不通
-
-  - id: 网络-009
-    domain: 网络
-    label: 主机网口丢包告警
-    path:
-      - 网络
-      - 网口丢包告警
-
-  - id: 网络-010
-    domain: 网络
-    label: 主机网口错误包告警
-    path:
-      - 网络
-      - 网口错误包告警
-
-  - id: 网络-011
-    domain: 网络
-    label: 主机网口地址冲突告警
-    path:
-      - 网络
-      - 网口地址冲突告警
-
-  - id: 网络-012
-    domain: 网络
-    label: 主机网络协议告警（STP/LLDP）
-    path:
-      - 网络
-      - 网络协议告警（stp、lldp）
-
-  - id: 网络-013
-    domain: 网络
-    label: 主机网卡工作异常
-    path:
-      - 网络
-      - 主机网卡工作异常
-
-  - id: 网络-014
-    domain: 网络
-    label: 主机存储网口中断核使用率过高告警
-    path:
-      - 网络
-      - 存储网口中断核使用率过高
-
-  - id: 网络-015
-    domain: 网络
-    label: 主机网卡流量异常告警
-    path:
-      - 网络
-      - 主机网卡流量异常
-
-  - id: 网络-016
-    domain: 网络
-    label: 虚拟网络拓扑设备创建失败
-    path:
-      - 网络
-      - 网络拓扑设备创建失败
-
-  - id: 网络-017
-    domain: 网络
-    label: 虚拟网络拓扑设备编辑失败
-    path:
-      - 网络
-      - 网络拓扑设备编辑失败
-
-  - id: 网络-018
-    domain: 网络
-    label: 虚拟网络拓扑设备删除失败
-    path:
-      - 网络
-      - 网络拓扑设备删除失败
-
-  - id: 网络-019
-    domain: 网络
-    label: 分布式防火墙策略配置不达预期
-    path:
-      - 网络
-      - 分布式防火墙
-      - 分布式防火墙配置不达预期
-
-  - id: 网络-020
-    domain: 网络
-    label: 流量镜像配置不达预期
-    path:
-      - 网络
-      - 流量镜像
-      - 流量镜像配置不达预期
-
-  - id: 网络-021
-    domain: 网络
-    label: 网络连通性探测异常
-    path:
-      - 网络
-      - 连通性探测异常
-
-  - id: 网络-022
-    domain: 网络
-    label: 虚拟路由器运行失败告警
-    path:
-      - 网络
-      - 虚拟路由器运行失败
-
-  - id: 网络-023
-    domain: 网络
-    label: 虚拟网络服务异常告警
-    path:
-      - 网络
-      - 虚拟网络服务异常
-
-  - id: 存储-001
-    domain: 存储
-    label: 虚拟存储创建失败
-    path:
-      - 存储
-      - 虚拟存储创建失败
-
-  - id: 存储-002
-    domain: 存储
-    label: 虚拟存储删除失败
-    path:
-      - 存储
-      - 虚拟存储删除失败
-
-  - id: 存储-003
-    domain: 存储
-    label: 虚拟存储扩容失败
-    path:
-      - 存储
-      - 虚拟存储扩容失败
-
-  - id: 存储-004
-    domain: 存储
-    label: 虚拟存储缩容失败
-    path:
-      - 存储
-      - 虚拟存储缩容失败
-
-  - id: 存储-005
-    domain: 存储
-    label: 磁盘隔离失败
-    path:
-      - 存储
-      - 磁盘隔离失败
-
-  - id: 存储-006
-    domain: 存储
-    label: 磁盘替换失败
-    path:
-      - 存储
-      - 磁盘替换失败
-
-  - id: 存储-007
-    domain: 存储
-    label: 虚拟存储IO性能测试不达预期
-    path:
-      - 存储
-      - 虚拟存储性能测试不达预期
-
-  - id: 存储-008
-    domain: 存储
-    label: 数据同步失败或卡住
-    path:
-      - 存储
-      - 数据同步失败或卡住
-
-  - id: 存储-009
-    domain: 存储
-    label: 数据副本失控或脑裂
-    path:
-      - 存储
-      - 数据副本指控或脑裂
-
-  - id: 存储-010
-    domain: 存储
-    label: 数据副本一半可用
-    path:
-      - 存储
-      - 数据副本一半可用
-
-  - id: 存储-011
-    domain: 存储
-    label: 数据重建失败或卡住
-    path:
-      - 存储
-      - 数据重建失败或卡住
-
-  - id: 存储-012
-    domain: 存储
-    label: 数据平衡失败或卡住
-    path:
-      - 存储
-      - 数据平衡失败或卡住
-
-  - id: 存储-013
-    domain: 存储
-    label: 数据平衡不达预期
-    path:
-      - 存储
-      - 数据平衡不达预期
-
-  - id: 存储-014
-    domain: 存储
-    label: 虚拟存储仲裁节点相关
-    path:
-      - 存储
-      - 虚拟存储仲裁节点相关
-
-  - id: 存储-015
-    domain: 存储
-    label: 卡慢盘
-    path:
-      - 存储
-      - 卡慢盘
-
-  - id: 存储-016
-    domain: 存储
-    label: 磁盘非企业级告警
-    path:
-      - 存储
-      - 磁盘非企业级告警
-
-  - id: 存储-017
-    domain: 存储
-    label: 磁盘服务异常
-    path:
-      - 存储
-      - 磁盘服务异常
-
-  - id: 存储-018
-    domain: 存储
-    label: 虚拟存储空间不足或满或高
-    path:
-      - 存储
-      - 虚拟存储空间不足或满或高
-
-  - id: 存储-019
-    domain: 存储
-    label: 虚拟存储状态异常（离线、服务异常、服务未启动等）
-    path:
-      - 存储
-      - 虚拟存储状态异常（离线、服务异常、服务未启动等）
-
-  - id: 存储-020
-    domain: 存储
-    label: 虚拟存储性能告警（io繁忙告警、io时延过高）
-    path:
-      - 存储
-      - 虚拟存储性能告警（io繁忙告警、io时延过高）
-
-  - id: 存储-021
-    domain: 存储
-    label: FC存储添加失败或不识别
-    path:
-      - 存储
-      - FC
-      - FC存储添加失败或不识别
-
-  - id: 存储-022
-    domain: 存储
-    label: FC存储删除失败
-    path:
-      - 存储
-      - FC
-      - FC存储删除失败
-
-  - id: 存储-023
-    domain: 存储
-    label: FC存储状态离线
-    path:
-      - 存储
-      - FC
-      - FC存储状态离线
-
-  - id: 存储-024
-    domain: 存储
-    label: FC存储部分主机无法访问
-    path:
-      - 存储
-      - FC
-      - FC存储部分主机无法访问
-
-  - id: 存储-025
-    domain: 存储
-    label: FC存储空间不足或满或高
-    path:
-      - 存储
-      - FC
-      - FC存储空间不足或满或高
-
-  - id: 存储-026
-    domain: 存储
-    label: FC存储多路径异常
-    path:
-      - 存储
-      - FC
-      - FC存储多路径异常
-
-  - id: 存储-027
-    domain: 存储
-    label: FC存储数据块重用
-    path:
-      - 存储
-      - FC
-      - FC存储数据块重用
-
-  - id: 存储-028
-    domain: 存储
-    label: FC存储性能告警（io繁忙告警、io时延过高）
-    path:
-      - 存储
-      - FC
-      - FC存储性能告警（io繁忙告警、io时延过高）
-
-  - id: 存储-029
-    domain: 存储
-    label: ISCSI存储添加失败或不识别
-    path:
-      - 存储
-      - ISCSI
-      - ISCSI存储添加失败或不识别
-
-  - id: 存储-030
-    domain: 存储
-    label: ISCSI存储删除失败
-    path:
-      - 存储
-      - ISCSI
-      - ISCSI存储删除失败
-
-  - id: 存储-031
-    domain: 存储
-    label: ISCSI存储状态离线
-    path:
-      - 存储
-      - ISCSI
-      - ISCSI存储状态离线
-
-  - id: 存储-032
-    domain: 存储
-    label: ISCSI存储部分主机无法访问
-    path:
-      - 存储
-      - ISCSI
-      - ISCSI存储部分主机无法访问
-
-  - id: 存储-033
-    domain: 存储
-    label: ISCSI存储空间不足或满或高
-    path:
-      - 存储
-      - ISCSI
-      - ISCSI存储空间不足或满或高
-
-  - id: 存储-034
-    domain: 存储
-    label: ISCSI存储多路径异常
-    path:
-      - 存储
-      - ISCSI
-      - ISCSI存储多路径异常
-
-  - id: 存储-035
-    domain: 存储
-    label: ISCSI存储数据块重用
-    path:
-      - 存储
-      - ISCSI
-      - ISCSI存储数据块重用
-
-  - id: 存储-036
-    domain: 存储
-    label: ISCSI存储性能告警（io繁忙告警、io时延过高）
-    path:
-      - 存储
-      - ISCSI
-      - ISCSI存储性能告警（io繁忙告警、io时延过高）
-
-  - id: 存储-037
-    domain: 存储
-    label: NFS存储添加失败或不识别
-    path:
-      - 存储
-      - NFS
-      - NFS存储添加失败或不识别
-
-  - id: 存储-038
-    domain: 存储
-    label: NFS存储删除失败
-    path:
-      - 存储
-      - NFS
-      - NFS存储删除失败
-
-  - id: 存储-039
-    domain: 存储
-    label: NFS存储状态离线
-    path:
-      - 存储
-      - NFS
-      - NFS存储状态离线
-
-  - id: 存储-040
-    domain: 存储
-    label: NFS存储空间不足或满或高
-    path:
-      - 存储
-      - NFS
-      - NFS存储空间不足或满或高
-
-  - id: 存储-041
-    domain: 存储
-    label: NFS存储性能告警（io繁忙告警、io时延过高）
-    path:
-      - 存储
-      - NFS
-      - NFS存储性能告警（io繁忙告警、io时延过高）
-
-  - id: 存储-042
-    domain: 存储
-    label: 本地存储添加失败或不识别
-    path:
-      - 存储
-      - 本地存储
-      - 本地存储添加失败或不识别
-
-  - id: 存储-043
-    domain: 存储
-    label: 本地存储删除失败
-    path:
-      - 存储
-      - 本地存储
-      - 本地存储删除失败
-
-  - id: 存储-044
-    domain: 存储
-    label: 本地存储状态离线
-    path:
-      - 存储
-      - 本地存储
-      - 本地存储状态离线
-
-  - id: 存储-045
-    domain: 存储
-    label: 本地存储空间不足或满或高
-    path:
-      - 存储
-      - 本地存储
-      - 本地存储空间不足或满或高
-
-  - id: 存储-046
-    domain: 存储
-    label: 本地存储性能告警（io繁忙告警、io时延过高）
-    path:
-      - 存储
-      - 本地存储
-      - 本地存储性能告警（io繁忙告警、io时延过高）
-
-  - id: 硬件-001
-    domain: 硬件
-    label: 风扇异响或风扇转速异常
-    path:
-      - 硬件
-      - 风扇
-      - 风扇异响或风扇转速异常
-
-  - id: 硬件-002
-    domain: 硬件
-    label: 电源温度高
-    path:
-      - 硬件
-      - 电源
-      - 电源温度高
-
-  - id: 硬件-003
-    domain: 硬件
-    label: 电源模块亮黄灯
-    path:
-      - 硬件
-      - 电源
-      - 电源模块亮黄灯
-
-  - id: 硬件-004
-    domain: 硬件
-    label: 电源模块亮红灯
-    path:
-      - 硬件
-      - 电源
-      - 电源模块亮红灯
-
-  - id: 硬件-005
-    domain: 硬件
-    label: 电源模块不亮灯
-    path:
-      - 硬件
-      - 电源
-      - 电源模块不亮灯
-
-  - id: 硬件-006
-    domain: 硬件
-    label: 主板异常
-    path:
-      - 硬件
-      - 主板
-
-  - id: 硬件-007
-    domain: 硬件
-    label: CPU降频
-    path:
-      - 硬件
-      - CPU
-      - CPU降频
-
-  - id: 硬件-008
-    domain: 硬件
-    label: CPU超频
-    path:
-      - 硬件
-      - CPU
-      - CPU超频
-
-  - id: 硬件-009
-    domain: 硬件
-    label: CPU微码版本过低
-    path:
-      - 硬件
-      - CPU
-      - 微码版本低
-
-  - id: 硬件-010
-    domain: 硬件
-    label: 微码版本升级失败
-    path:
-      - 硬件
-      - CPU
-      - 微码版本升级失败
-
-  - id: 硬件-011
-    domain: 硬件
-    label: CPU温度高
-    path:
-      - 硬件
-      - CPU
-      - CPU温度高
-
-  - id: 硬件-012
-    domain: 硬件
-    label: 内存ECC故障
-    path:
-      - 硬件
-      - 内存
-      - 内存ECC故障
-
-  - id: 硬件-013
-    domain: 硬件
-    label: 内存降频
-    path:
-      - 硬件
-      - 内存
-      - 内存降频
-
-  - id: 硬件-014
-    domain: 硬件
-    label: 网卡固件版本过低
-    path:
-      - 硬件
-      - 网卡
-      - 网卡固件低
-
-  - id: 硬件-015
-    domain: 硬件
-    label: 网卡固件升级失败
-    path:
-      - 硬件
-      - 网卡
-      - 网卡固件升级失败
-
-  - id: 硬件-016
-    domain: 硬件
-    label: 网卡离线或不识别
-    path:
-      - 硬件
-      - 网卡
-      - 网卡离线或不识别
-
-  - id: 硬件-017
-    domain: 硬件
-    label: 网口不亮或离线
-    path:
-      - 硬件
-      - 网卡
-      - 网口不亮或离线
-
-  - id: 硬件-018
-    domain: 硬件
-    label: 网口降速
-    path:
-      - 硬件
-      - 网卡
-      - 网口降速
-
-  - id: 硬件-019
-    domain: 硬件
-    label: 光模块异常
-    path:
-      - 硬件
-      - 网卡
-      - 光模块异常
-
-  - id: 硬件-020
-    domain: 硬件
-    label: 硬盘离线或不识别（单盘）
-    path:
-      - 硬件
-      - 硬盘
-      - 硬盘离线或不识别
-      - 硬盘离线或不识别（单盘）
-
-  - id: 硬件-021
-    domain: 硬件
-    label: 硬盘离线或不识别（多盘）
-    path:
-      - 硬件
-      - 硬盘
-      - 硬盘离线或不识别
-      - 硬盘离线或不识别（多盘）
-
-  - id: 硬件-022
-    domain: 硬件
-    label: 硬盘离线或不识别（全盘）
-    path:
-      - 硬件
-      - 硬盘
-      - 硬盘离线或不识别
-      - 硬盘离线或不识别（全盘）
-
-  - id: 硬件-023
-    domain: 硬件
-    label: 硬盘坏道
-    path:
-      - 硬件
-      - 硬盘
-      - 硬盘坏道
-
-  - id: 硬件-024
-    domain: 硬件
-    label: 硬盘寿命到期
-    path:
-      - 硬件
-      - 硬盘
-      - 硬盘寿命到期
-
-  - id: 硬件-025
-    domain: 硬件
-    label: 硬盘固件升级异常
-    path:
-      - 硬件
-      - 硬盘
-      - 硬盘固件升级异常
-
-  - id: 硬件-026
-    domain: 硬件
-    label: 硬盘固件不兼容
-    path:
-      - 硬件
-      - 硬盘
-      - 硬盘固件不兼容
-
-  - id: 硬件-027
-    domain: 硬件
-    label: 硬盘黄灯异常
-    path:
-      - 硬件
-      - 硬盘
-      - 硬盘黄灯异常
-
-  - id: 硬件-028
-    domain: 硬件
-    label: 硬盘红灯异常
-    path:
-      - 硬件
-      - 硬盘
-      - 硬盘红灯异常
-
-  - id: 硬件-029
-    domain: 硬件
-    label: BIOS版本升级失败
-    path:
-      - 硬件
-      - BIOS
-      - bios版本升级失败
-
-  - id: 硬件-030
-    domain: 硬件
-    label: BIOS无法进入
-    path:
-      - 硬件
-      - BIOS
-      - bios无法进入
-
-  - id: 硬件-031
-    domain: 硬件
-    label: RAID卡控制器异常
-    path:
-      - 硬件
-      - RAID卡
-      - raid卡控制器异常
-
-  - id: 硬件-032
-    domain: 硬件
-    label: RAID卡不识别
-    path:
-      - 硬件
-      - RAID卡
-      - raid卡不识别
-
-  - id: 硬件-033
-    domain: 硬件
-    label: RAID卡固件升级异常
-    path:
-      - 硬件
-      - RAID卡
-      - raid卡固件升级异常
-
-  - id: 硬件-034
-    domain: 硬件
-    label: RAID卡固件不兼容
-    path:
-      - 硬件
-      - RAID卡
-      - raid卡固件不兼容
-
-  - id: 硬件-035
-    domain: 硬件
-    label: 带外管理(IPMI/BMC)无法登录
-    path:
-      - 硬件
-      - IPMI或BMC
-      - 带外管理无法登录
-
-  - id: 硬件-036
-    domain: 硬件
-    label: 带外管理(IPMI/BMC)升级异常
-    path:
-      - 硬件
-      - IPMI或BMC
-      - 带外管理升级异常
-
-  - id: 硬件-037
-    domain: 硬件
-    label: 带外管理(IPMI/BMC)监控硬件信息异常
-    path:
-      - 硬件
-      - IPMI或BMC
-      - 监控硬件信息异常
-
-  - id: 硬件-038
-    domain: 硬件
-    label: 带外管理(IPMI/BMC)监控日志告警异常
-    path:
-      - 硬件
-      - IPMI或BMC
-      - 监控日志告警异常
-
-  - id: 硬件-039
-    domain: 硬件
-    label: 服务器面板亮黄灯
-    path:
-      - 硬件
-      - 服务器整机
-      - 服务器面板亮黄灯
-
-  - id: 硬件-040
-    domain: 硬件
-    label: 服务器面板亮红灯
-    path:
-      - 硬件
-      - 服务器整机
-      - 服务器面板亮红灯
-
-  - id: 硬件-041
-    domain: 硬件
-    label: 显卡不识别
-    path:
-      - 硬件
-      - 显卡
-      - 显卡不识别
-
-  - id: 硬件-042
-    domain: 硬件
-    label: 盒子开机失败
-    path:
-      - 硬件
-      - 客户机硬件
-      - 盒子开机失败
-
-  - id: 硬件-043
-    domain: 硬件
-    label: 盒子协助返修
-    path:
-      - 硬件
-      - 客户机硬件
-      - 盒子协助返修
-
-  - id: 硬件-044
-    domain: 硬件
-    label: 盒子刷机
-    path:
-      - 硬件
-      - 客户机硬件
-      - 盒子刷机
-
-  - id: 硬件-045
-    domain: 硬件
-    label: 盒子USB接口故障
-    path:
-      - 硬件
-      - 客户机硬件
-      - 盒子USB接口故障
-
-  - id: 平台-001
-    domain: 平台
-    label: 主机安装或重装失败
-    path:
-      - 平台
-      - 主机安装
-      - 主机安装或重装失败
-
-  - id: 平台-002
-    domain: 平台
-    label: 主机扩容失败
-    path:
-      - 平台
-      - 主机扩容
-      - 主机扩容失败
-
-  - id: 平台-003
-    domain: 平台
-    label: 主机删除失败
-    path:
-      - 平台
-      - 主机删除
-      - 主机删除失败
-
-  - id: 平台-004
-    domain: 平台
-    label: 系统盘或主机替换失败
-    path:
-      - 平台
-      - 系统盘或主机替换
-      - 系统盘或主机替换失败
-
-  - id: 平台-005
-    domain: 平台
-    label: 主机离线或异常重启
-    path:
-      - 平台
-      - 主机离线或异常重启
-
-  - id: 平台-006
-    domain: 平台
-    label: 主机系统分区空间不足
-    path:
-      - 平台
-      - 主机分区空间不足
-
-  - id: 平台-007
-    domain: 平台
-    label: UsbKey授权更新失败
-    path:
-      - 平台
-      - UsbKey授权更新失败
-
-  - id: 平台-008
-    domain: 平台
-    label: 云图授权更新失败
-    path:
-      - 平台
-      - 云图授权更新失败
-
-  - id: 平台-009
-    domain: 平台
-    label: 账号密码重置失败
-    path:
-      - 平台
-      - 集群账号密码管理
-      - 账号密码重置失败
-
-  - id: 平台-010
-    domain: 平台
-    label: 版本升级前检测失败
-    path:
-      - 平台
-      - 版本升级前检测失败
-
-  - id: 平台-011
-    domain: 平台
-    label: 版本升级失败
-    path:
-      - 平台
-      - 版本升级失败
-
-  - id: 平台-012
-    domain: 平台
-    label: 补丁升级前检测失败
-    path:
-      - 平台
-      - 补丁升级前检测失败
-
-  - id: 平台-013
-    domain: 平台
-    label: 补丁升级失败
-    path:
-      - 平台
-      - 补丁升级失败
-
-  - id: 平台-014
-    domain: 平台
-    label: 集群一键检测检测项异常
-    path:
-      - 平台
-      - 集群一键检测检测项异常
-
-  - id: 平台-015
-    domain: 平台
-    label: 纪元巡检工具使用异常
-    path:
-      - 平台
-      - 纪元巡检工具使用异常
-
-  - id: 平台-016
-    domain: 平台
-    label: 纪元巡检检查项异常
-    path:
-      - 平台
-      - 纪元巡检检查项异常
-
-  - id: 平台-017
-    domain: 平台
-    label: 集群纳管VMware异常
-    path:
-      - 平台
-      - VMware主机
-      - 集群纳管VMware异常
-
-  - id: 平台-018
-    domain: 平台
-    label: 控制台登录失败
-    path:
-      - 平台
-      - 控制台登录
-      - 控制台登录失败
-
-  - id: 平台-019
-    domain: 平台
-    label: 控制台卡慢
-    path:
-      - 平台
-      - 控制台登录
-      - 控制台卡慢
-
-  - id: 平台-020
-    domain: 平台
-    label: 主机CPU或内存使用率过高告警
-    path:
-      - 平台
-      - 主机CPU或内存使用率过高
-
-  - id: 平台-021
-    domain: 平台
-    label: 主机交换分区占用过高告警
-    path:
-      - 平台
-      - 主机交换分区占用过高
-
-  - id: 平台-022
-    domain: 平台
-    label: 主机CPU或内存配置比占用过高告警
-    path:
-      - 平台
-      - 主机CPU或内存配置比占用过高
-
-  - id: 平台-023
-    domain: 平台
-    label: 集群系统盘备份配置异常告警
-    path:
-      - 平台
-      - 集群系统盘备份配置异常
-
-  - id: 平台-024
-    domain: 平台
-    label: 集群与NTP服务器通信异常告警
-    path:
-      - 平台
-      - 集群与NTP服务器通信异常
-
-  - id: 平台-025
-    domain: 平台
-    label: 序列号过期告警
-    path:
-      - 平台
-      - 序列号过期告警
-
-  - id: 平台-026
-    domain: 平台
-    label: 序列号Key状态异常告警
-    path:
-      - 平台
-      - 序列号key状态异常
-
-  - id: 平台-027
-    domain: 平台
-    label: HA预留资源不足告警
-    path:
-      - 平台
-      - ha预留资源不足
-
-  - id: 平台-028
-    domain: 平台
-    label: 集群无可用显卡告警
-    path:
-      - 平台
-      - 集群无可用显卡告警
-
-  - id: 平台-029
-    domain: 平台
-    label: 邮件告警配置异常
-    path:
-      - 平台
-      - 邮件告警相关
-
-  - id: 平台-030
-    domain: 平台
-    label: 短信告警配置异常
-    path:
-      - 平台
-      - 短信告警相关
+- code: 存储-L1
+  name: 存储
+  domain: 存储
+  level: 1
+  parent: null
+  path:
+  - 存储
+- code: 存储-001
+  name: 虚拟存储
+  domain: 存储
+  level: 2
+  parent: 存储-L1
+  path:
+  - 存储
+  - 虚拟存储
+- code: 存储-028
+  name: FC
+  domain: 存储
+  level: 2
+  parent: 存储-L1
+  path:
+  - 存储
+  - FC
+- code: 存储-040
+  name: ISCSI
+  domain: 存储
+  level: 2
+  parent: 存储-L1
+  path:
+  - 存储
+  - ISCSI
+- code: 存储-052
+  name: NFS
+  domain: 存储
+  level: 2
+  parent: 存储-L1
+  path:
+  - 存储
+  - NFS
+- code: 存储-058
+  name: 本地存储
+  domain: 存储
+  level: 2
+  parent: 存储-L1
+  path:
+  - 存储
+  - 本地存储
+- code: 存储-002
+  name: 虚拟存储创建失败
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 虚拟存储创建失败
+- code: 存储-003
+  name: 虚拟存储删除失败
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 虚拟存储删除失败
+- code: 存储-004
+  name: 虚拟存储扩容失败
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 虚拟存储扩容失败
+- code: 存储-005
+  name: 虚拟存储缩容失败
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 虚拟存储缩容失败
+- code: 存储-006
+  name: 磁盘隔离失败
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 磁盘隔离失败
+- code: 存储-007
+  name: 磁盘替换失败
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 磁盘替换失败
+- code: 存储-008
+  name: 虚拟存储IO性能测试不达预期
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 虚拟存储IO性能测试不达预期
+- code: 存储-009
+  name: 数据同步失败或卡住
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 数据同步失败或卡住
+- code: 存储-010
+  name: 数据副本失控或脑裂
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 数据副本失控或脑裂
+- code: 存储-011
+  name: 数据副本一半可用
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 数据副本一半可用
+- code: 存储-012
+  name: 数据重建失败或卡住
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 数据重建失败或卡住
+- code: 存储-013
+  name: 数据平衡失败或卡住
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 数据平衡失败或卡住
+- code: 存储-014
+  name: 数据平衡不达预期
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 数据平衡不达预期
+- code: 存储-015
+  name: 虚拟存储仲裁节点相关
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 虚拟存储仲裁节点相关
+- code: 存储-016
+  name: 卡慢盘
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 卡慢盘
+- code: 存储-017
+  name: 磁盘非企业级告警
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 磁盘非企业级告警
+- code: 存储-018
+  name: 磁盘服务异常
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 磁盘服务异常
+- code: 存储-019
+  name: 虚拟存储空间不足或满或高
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 虚拟存储空间不足或满或高
+- code: 存储-020
+  name: 虚拟存储状态异常（离线、服务异常、服务未启动等）
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 虚拟存储状态异常（离线、服务异常、服务未启动等）
+- code: 存储-021
+  name: 虚拟存储性能告警（io繁忙告警、io时延过高）
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 虚拟存储性能告警（io繁忙告警、io时延过高）
+- code: 存储-022
+  name: SSD分层服务未启动
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - SSD分层服务未启动
+- code: 存储-023
+  name: 虚拟机磁盘时延过高
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 虚拟机磁盘时延过高
+- code: 存储-024
+  name: 存储状态异常
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 存储状态异常
+- code: 存储-025
+  name: 存储时延告警
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 存储时延告警
+- code: 存储-026
+  name: 存储IO繁忙告警
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 存储IO繁忙告警
+- code: 存储-027
+  name: 存储掉线告警
+  domain: 存储
+  level: 3
+  parent: 存储-001
+  path:
+  - 存储
+  - 虚拟存储
+  - 存储掉线告警
+- code: 存储-029
+  name: FC存储添加失败或不识别
+  domain: 存储
+  level: 3
+  parent: 存储-028
+  path:
+  - 存储
+  - FC
+  - FC存储添加失败或不识别
+- code: 存储-030
+  name: FC存储删除失败
+  domain: 存储
+  level: 3
+  parent: 存储-028
+  path:
+  - 存储
+  - FC
+  - FC存储删除失败
+- code: 存储-031
+  name: FC存储状态离线
+  domain: 存储
+  level: 3
+  parent: 存储-028
+  path:
+  - 存储
+  - FC
+  - FC存储状态离线
+- code: 存储-032
+  name: FC存储部分主机无法访问
+  domain: 存储
+  level: 3
+  parent: 存储-028
+  path:
+  - 存储
+  - FC
+  - FC存储部分主机无法访问
+- code: 存储-033
+  name: FC存储空间不足或满或高
+  domain: 存储
+  level: 3
+  parent: 存储-028
+  path:
+  - 存储
+  - FC
+  - FC存储空间不足或满或高
+- code: 存储-034
+  name: FC存储多路径异常
+  domain: 存储
+  level: 3
+  parent: 存储-028
+  path:
+  - 存储
+  - FC
+  - FC存储多路径异常
+- code: 存储-035
+  name: FC存储数据块重用
+  domain: 存储
+  level: 3
+  parent: 存储-028
+  path:
+  - 存储
+  - FC
+  - FC存储数据块重用
+- code: 存储-036
+  name: FC存储性能告警（io繁忙告警、io时延过高）
+  domain: 存储
+  level: 3
+  parent: 存储-028
+  path:
+  - 存储
+  - FC
+  - FC存储性能告警（io繁忙告警、io时延过高）
+- code: 存储-037
+  name: 存储IO繁忙告警
+  domain: 存储
+  level: 3
+  parent: 存储-028
+  path:
+  - 存储
+  - FC
+  - 存储IO繁忙告警
+- code: 存储-038
+  name: 只剩一个主机可以访问外置存储
+  domain: 存储
+  level: 3
+  parent: 存储-028
+  path:
+  - 存储
+  - FC
+  - 只剩一个主机可以访问外置存储
+- code: 存储-039
+  name: 存储数据损坏
+  domain: 存储
+  level: 3
+  parent: 存储-028
+  path:
+  - 存储
+  - FC
+  - 存储数据损坏
+- code: 存储-041
+  name: ISCSI存储添加失败或不识别
+  domain: 存储
+  level: 3
+  parent: 存储-040
+  path:
+  - 存储
+  - ISCSI
+  - ISCSI存储添加失败或不识别
+- code: 存储-042
+  name: ISCSI存储删除失败
+  domain: 存储
+  level: 3
+  parent: 存储-040
+  path:
+  - 存储
+  - ISCSI
+  - ISCSI存储删除失败
+- code: 存储-043
+  name: ISCSI存储状态离线
+  domain: 存储
+  level: 3
+  parent: 存储-040
+  path:
+  - 存储
+  - ISCSI
+  - ISCSI存储状态离线
+- code: 存储-044
+  name: ISCSI存储部分主机无法访问
+  domain: 存储
+  level: 3
+  parent: 存储-040
+  path:
+  - 存储
+  - ISCSI
+  - ISCSI存储部分主机无法访问
+- code: 存储-045
+  name: ISCSI存储空间不足或满或高
+  domain: 存储
+  level: 3
+  parent: 存储-040
+  path:
+  - 存储
+  - ISCSI
+  - ISCSI存储空间不足或满或高
+- code: 存储-046
+  name: ISCSI存储多路径异常
+  domain: 存储
+  level: 3
+  parent: 存储-040
+  path:
+  - 存储
+  - ISCSI
+  - ISCSI存储多路径异常
+- code: 存储-047
+  name: ISCSI存储数据块重用
+  domain: 存储
+  level: 3
+  parent: 存储-040
+  path:
+  - 存储
+  - ISCSI
+  - ISCSI存储数据块重用
+- code: 存储-048
+  name: ISCSI存储性能告警（io繁忙告警、io时延过高）
+  domain: 存储
+  level: 3
+  parent: 存储-040
+  path:
+  - 存储
+  - ISCSI
+  - ISCSI存储性能告警（io繁忙告警、io时延过高）
+- code: 存储-049
+  name: 存储IO繁忙告警
+  domain: 存储
+  level: 3
+  parent: 存储-040
+  path:
+  - 存储
+  - ISCSI
+  - 存储IO繁忙告警
+- code: 存储-050
+  name: 只剩一个主机可以访问外置存储
+  domain: 存储
+  level: 3
+  parent: 存储-040
+  path:
+  - 存储
+  - ISCSI
+  - 只剩一个主机可以访问外置存储
+- code: 存储-051
+  name: 存储数据损坏
+  domain: 存储
+  level: 3
+  parent: 存储-040
+  path:
+  - 存储
+  - ISCSI
+  - 存储数据损坏
+- code: 存储-053
+  name: NFS存储添加失败或不识别
+  domain: 存储
+  level: 3
+  parent: 存储-052
+  path:
+  - 存储
+  - NFS
+  - NFS存储添加失败或不识别
+- code: 存储-054
+  name: NFS存储删除失败
+  domain: 存储
+  level: 3
+  parent: 存储-052
+  path:
+  - 存储
+  - NFS
+  - NFS存储删除失败
+- code: 存储-055
+  name: NFS存储状态离线
+  domain: 存储
+  level: 3
+  parent: 存储-052
+  path:
+  - 存储
+  - NFS
+  - NFS存储状态离线
+- code: 存储-056
+  name: NFS存储空间不足或满或高
+  domain: 存储
+  level: 3
+  parent: 存储-052
+  path:
+  - 存储
+  - NFS
+  - NFS存储空间不足或满或高
+- code: 存储-057
+  name: NFS存储性能告警（io繁忙告警、io时延过高）
+  domain: 存储
+  level: 3
+  parent: 存储-052
+  path:
+  - 存储
+  - NFS
+  - NFS存储性能告警（io繁忙告警、io时延过高）
+- code: 存储-059
+  name: 本地存储添加失败或不识别
+  domain: 存储
+  level: 3
+  parent: 存储-058
+  path:
+  - 存储
+  - 本地存储
+  - 本地存储添加失败或不识别
+- code: 存储-060
+  name: 本地存储删除失败
+  domain: 存储
+  level: 3
+  parent: 存储-058
+  path:
+  - 存储
+  - 本地存储
+  - 本地存储删除失败
+- code: 存储-061
+  name: 本地存储状态离线
+  domain: 存储
+  level: 3
+  parent: 存储-058
+  path:
+  - 存储
+  - 本地存储
+  - 本地存储状态离线
+- code: 存储-062
+  name: 本地存储空间不足或满或高
+  domain: 存储
+  level: 3
+  parent: 存储-058
+  path:
+  - 存储
+  - 本地存储
+  - 本地存储空间不足或满或高
+- code: 存储-063
+  name: 本地存储性能告警（io繁忙告警、io时延过高）
+  domain: 存储
+  level: 3
+  parent: 存储-058
+  path:
+  - 存储
+  - 本地存储
+  - 本地存储性能告警（io繁忙告警、io时延过高）
+- code: 平台-L1
+  name: 平台
+  domain: 平台
+  level: 1
+  parent: null
+  path:
+  - 平台
+- code: 平台-001
+  name: 集群纳管VMware异常
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 集群纳管VMware异常
+- code: 平台-002
+  name: 主机CPU或内存使用率过高告警
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 主机CPU或内存使用率过高告警
+- code: 平台-003
+  name: 主机交换分区占用过高告警
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 主机交换分区占用过高告警
+- code: 平台-004
+  name: 主机CPU或内存配置比占用过高告警
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 主机CPU或内存配置比占用过高告警
+- code: 平台-005
+  name: 集群系统盘备份配置异常告警
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 集群系统盘备份配置异常告警
+- code: 平台-006
+  name: 集群与NTP服务器通信异常告警
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 集群与NTP服务器通信异常告警
+- code: 平台-007
+  name: 序列号过期告警
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 序列号过期告警
+- code: 平台-008
+  name: 序列号Key状态异常告警
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 序列号Key状态异常告警
+- code: 平台-009
+  name: HA预留资源不足告警
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - HA预留资源不足告警
+- code: 平台-010
+  name: 集群无可用显卡告警
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 集群无可用显卡告警
+- code: 平台-011
+  name: 邮件告警配置异常
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 邮件告警配置异常
+- code: 平台-012
+  name: 短信告警配置异常
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 短信告警配置异常
+- code: 平台-013
+  name: 物理主机
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 物理主机
+- code: 平台-020
+  name: 授权管理
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 授权管理
+- code: 平台-023
+  name: 版本升级
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 版本升级
+- code: 平台-026
+  name: 补丁升级
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 补丁升级
+- code: 平台-029
+  name: 集群检测
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 集群检测
+- code: 平台-033
+  name: 主机内存告警
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 主机内存告警
+- code: 平台-034
+  name: 主机配置CPU告警
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 主机配置CPU告警
+- code: 平台-035
+  name: 主机系统分区异常
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 主机系统分区异常
+- code: 平台-036
+  name: 计算内存不足告警
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 计算内存不足告警
+- code: 平台-037
+  name: 主机系统盘亚健康
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 主机系统盘亚健康
+- code: 平台-038
+  name: 免key序列号异常
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 免key序列号异常
+- code: 平台-039
+  name: 平台与NTP服务器通信异常
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 平台与NTP服务器通信异常
+- code: 平台-040
+  name: 控制台登录
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 控制台登录
+- code: 平台-043
+  name: 集群账号密码管理
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 集群账号密码管理
+- code: 平台-014
+  name: 主机安装或重装失败
+  domain: 平台
+  level: 3
+  parent: 平台-013
+  path:
+  - 平台
+  - 物理主机
+  - 主机安装或重装失败
+- code: 平台-015
+  name: 主机扩容失败
+  domain: 平台
+  level: 3
+  parent: 平台-013
+  path:
+  - 平台
+  - 物理主机
+  - 主机扩容失败
+- code: 平台-016
+  name: 主机删除失败
+  domain: 平台
+  level: 3
+  parent: 平台-013
+  path:
+  - 平台
+  - 物理主机
+  - 主机删除失败
+- code: 平台-017
+  name: 系统盘或主机替换失败
+  domain: 平台
+  level: 3
+  parent: 平台-013
+  path:
+  - 平台
+  - 物理主机
+  - 系统盘或主机替换失败
+- code: 平台-018
+  name: 主机离线或异常重启
+  domain: 平台
+  level: 3
+  parent: 平台-013
+  path:
+  - 平台
+  - 物理主机
+  - 主机离线或异常重启
+- code: 平台-019
+  name: 主机系统分区空间不足
+  domain: 平台
+  level: 3
+  parent: 平台-013
+  path:
+  - 平台
+  - 物理主机
+  - 主机系统分区空间不足
+- code: 平台-021
+  name: UsbKey授权更新失败
+  domain: 平台
+  level: 3
+  parent: 平台-020
+  path:
+  - 平台
+  - 授权管理
+  - UsbKey授权更新失败
+- code: 平台-022
+  name: 云图授权更新失败
+  domain: 平台
+  level: 3
+  parent: 平台-020
+  path:
+  - 平台
+  - 授权管理
+  - 云图授权更新失败
+- code: 平台-024
+  name: 版本升级前检测失败
+  domain: 平台
+  level: 3
+  parent: 平台-023
+  path:
+  - 平台
+  - 版本升级
+  - 版本升级前检测失败
+- code: 平台-025
+  name: 版本升级失败
+  domain: 平台
+  level: 3
+  parent: 平台-023
+  path:
+  - 平台
+  - 版本升级
+  - 版本升级失败
+- code: 平台-027
+  name: 补丁升级前检测失败
+  domain: 平台
+  level: 3
+  parent: 平台-026
+  path:
+  - 平台
+  - 补丁升级
+  - 补丁升级前检测失败
+- code: 平台-028
+  name: 补丁升级失败
+  domain: 平台
+  level: 3
+  parent: 平台-026
+  path:
+  - 平台
+  - 补丁升级
+  - 补丁升级失败
+- code: 平台-030
+  name: 集群一键检测检测项异常
+  domain: 平台
+  level: 3
+  parent: 平台-029
+  path:
+  - 平台
+  - 集群检测
+  - 集群一键检测检测项异常
+- code: 平台-031
+  name: 纪元巡检工具使用异常
+  domain: 平台
+  level: 3
+  parent: 平台-029
+  path:
+  - 平台
+  - 集群检测
+  - 纪元巡检工具使用异常
+- code: 平台-032
+  name: 纪元巡检检查项异常
+  domain: 平台
+  level: 3
+  parent: 平台-029
+  path:
+  - 平台
+  - 集群检测
+  - 纪元巡检检查项异常
+- code: 平台-041
+  name: 控制台登录失败
+  domain: 平台
+  level: 3
+  parent: 平台-040
+  path:
+  - 平台
+  - 控制台登录
+  - 控制台登录失败
+- code: 平台-042
+  name: 控制台卡慢
+  domain: 平台
+  level: 3
+  parent: 平台-040
+  path:
+  - 平台
+  - 控制台登录
+  - 控制台卡慢
+- code: 平台-044
+  name: 账号密码重置失败
+  domain: 平台
+  level: 3
+  parent: 平台-043
+  path:
+  - 平台
+  - 集群账号密码管理
+  - 账号密码重置失败
+- code: 平台-045
+  name: 集群账号权限异常
+  domain: 平台
+  level: 3
+  parent: 平台-043
+  path:
+  - 平台
+  - 集群账号密码管理
+  - 集群账号权限异常
+- code: 硬件-L1
+  name: 硬件
+  domain: 硬件
+  level: 1
+  parent: null
+  path:
+  - 硬件
+- code: 硬件-001
+  name: 风扇异响或风扇转速异常
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - 风扇异响或风扇转速异常
+- code: 硬件-002
+  name: 主板异常
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - 主板异常
+- code: 硬件-003
+  name: 显卡不识别
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - 显卡不识别
+- code: 硬件-004
+  name: 客户机硬件
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - 客户机硬件
+- code: 硬件-008
+  name: BIOS
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - BIOS
+- code: 硬件-011
+  name: CPU
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - CPU
+- code: 硬件-017
+  name: IPMI或BMC
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - IPMI或BMC
+- code: 硬件-022
+  name: RAID卡
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - RAID卡
+- code: 硬件-027
+  name: 内存
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - 内存
+- code: 硬件-036
+  name: 服务器整机
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - 服务器整机
+- code: 硬件-039
+  name: 电源
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - 电源
+- code: 硬件-044
+  name: 硬盘
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - 硬盘
+- code: 硬件-056
+  name: 网卡
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - 网卡
+- code: 硬件-005
+  name: 盒子开机失败
+  domain: 硬件
+  level: 3
+  parent: 硬件-004
+  path:
+  - 硬件
+  - 客户机硬件
+  - 盒子开机失败
+- code: 硬件-006
+  name: 盒子刷机
+  domain: 硬件
+  level: 3
+  parent: 硬件-004
+  path:
+  - 硬件
+  - 客户机硬件
+  - 盒子刷机
+- code: 硬件-007
+  name: 盒子usb接口故障
+  domain: 硬件
+  level: 3
+  parent: 硬件-004
+  path:
+  - 硬件
+  - 客户机硬件
+  - 盒子usb接口故障
+- code: 硬件-009
+  name: BIOS版本升级失败
+  domain: 硬件
+  level: 3
+  parent: 硬件-008
+  path:
+  - 硬件
+  - BIOS
+  - BIOS版本升级失败
+- code: 硬件-010
+  name: BIOS无法进入
+  domain: 硬件
+  level: 3
+  parent: 硬件-008
+  path:
+  - 硬件
+  - BIOS
+  - BIOS无法进入
+- code: 硬件-012
+  name: CPU温度高
+  domain: 硬件
+  level: 3
+  parent: 硬件-011
+  path:
+  - 硬件
+  - CPU
+  - CPU温度高
+- code: 硬件-013
+  name: CPU降频
+  domain: 硬件
+  level: 3
+  parent: 硬件-011
+  path:
+  - 硬件
+  - CPU
+  - CPU降频
+- code: 硬件-014
+  name: CPU超频
+  domain: 硬件
+  level: 3
+  parent: 硬件-011
+  path:
+  - 硬件
+  - CPU
+  - CPU超频
+- code: 硬件-015
+  name: CPU微码
+  domain: 硬件
+  level: 3
+  parent: 硬件-011
+  path:
+  - 硬件
+  - CPU
+  - CPU微码版本过低
+- code: 硬件-016
+  name: CPU损坏
+  domain: 硬件
+  level: 3
+  parent: 硬件-011
+  path:
+  - 硬件
+  - CPU
+  - 微码版本升级失败
+- code: 硬件-018
+  name: 带外管理(IPMI/BMC)无法登录
+  domain: 硬件
+  level: 3
+  parent: 硬件-017
+  path:
+  - 硬件
+  - IPMI或BMC
+  - 带外管理(IPMI/BMC)无法登录
+- code: 硬件-019
+  name: 带外管理(IPMI/BMC)升级异常
+  domain: 硬件
+  level: 3
+  parent: 硬件-017
+  path:
+  - 硬件
+  - IPMI或BMC
+  - 带外管理(IPMI/BMC)升级异常
+- code: 硬件-020
+  name: 带外管理(IPMI/BMC)监控硬件信息异常
+  domain: 硬件
+  level: 3
+  parent: 硬件-017
+  path:
+  - 硬件
+  - IPMI或BMC
+  - 带外管理(IPMI/BMC)监控硬件信息异常
+- code: 硬件-021
+  name: 带外管理(IPMI/BMC)监控日志告警异常
+  domain: 硬件
+  level: 3
+  parent: 硬件-017
+  path:
+  - 硬件
+  - IPMI或BMC
+  - 带外管理(IPMI/BMC)监控日志告警异常
+- code: 硬件-023
+  name: RAID卡控制器异常
+  domain: 硬件
+  level: 3
+  parent: 硬件-022
+  path:
+  - 硬件
+  - RAID卡
+  - RAID卡控制器异常
+- code: 硬件-024
+  name: RAID卡不识别
+  domain: 硬件
+  level: 3
+  parent: 硬件-022
+  path:
+  - 硬件
+  - RAID卡
+  - RAID卡不识别
+- code: 硬件-025
+  name: RAID卡固件升级异常
+  domain: 硬件
+  level: 3
+  parent: 硬件-022
+  path:
+  - 硬件
+  - RAID卡
+  - RAID卡固件升级异常
+- code: 硬件-026
+  name: RAID卡固件不兼容
+  domain: 硬件
+  level: 3
+  parent: 硬件-022
+  path:
+  - 硬件
+  - RAID卡
+  - RAID卡固件不兼容
+- code: 硬件-028
+  name: 内存ECC故障
+  domain: 硬件
+  level: 3
+  parent: 硬件-027
+  path:
+  - 硬件
+  - 内存
+  - 内存ECC故障
+- code: 硬件-029
+  name: 内存降频
+  domain: 硬件
+  level: 3
+  parent: 硬件-027
+  path:
+  - 硬件
+  - 内存
+  - 内存降频
+- code: 硬件-030
+  name: 物理内存识别异常
+  domain: 硬件
+  level: 3
+  parent: 硬件-027
+  path:
+  - 硬件
+  - 内存
+  - 物理内存识别异常
+- code: 硬件-032
+  name: 盒子开机失败
+  domain: 硬件
+  level: 3
+  parent: null
+  path:
+  - 硬件
+  - 客户机硬件
+  - 盒子开机失败
+- code: 硬件-033
+  name: 盒子协助返修
+  domain: 硬件
+  level: 3
+  parent: null
+  path:
+  - 硬件
+  - 客户机硬件
+  - 盒子协助返修
+- code: 硬件-034
+  name: 盒子刷机
+  domain: 硬件
+  level: 3
+  parent: null
+  path:
+  - 硬件
+  - 客户机硬件
+  - 盒子刷机
+- code: 硬件-035
+  name: 盒子USB接口故障
+  domain: 硬件
+  level: 3
+  parent: null
+  path:
+  - 硬件
+  - 客户机硬件
+  - 盒子USB接口故障
+- code: 硬件-037
+  name: 服务器面板亮黄灯
+  domain: 硬件
+  level: 3
+  parent: 硬件-036
+  path:
+  - 硬件
+  - 服务器整机
+  - 服务器面板亮黄灯
+- code: 硬件-038
+  name: 服务器面板亮红灯
+  domain: 硬件
+  level: 3
+  parent: 硬件-036
+  path:
+  - 硬件
+  - 服务器整机
+  - 服务器面板亮红灯
+- code: 硬件-040
+  name: 电源温度高
+  domain: 硬件
+  level: 3
+  parent: 硬件-039
+  path:
+  - 硬件
+  - 电源
+  - 电源温度高
+- code: 硬件-041
+  name: 电源模块亮黄灯
+  domain: 硬件
+  level: 3
+  parent: 硬件-039
+  path:
+  - 硬件
+  - 电源
+  - 电源模块亮黄灯
+- code: 硬件-042
+  name: 电源模块亮红灯
+  domain: 硬件
+  level: 3
+  parent: 硬件-039
+  path:
+  - 硬件
+  - 电源
+  - 电源模块亮红灯
+- code: 硬件-043
+  name: 电源模块不亮灯
+  domain: 硬件
+  level: 3
+  parent: 硬件-039
+  path:
+  - 硬件
+  - 电源
+  - 电源模块不亮灯
+- code: 硬件-045
+  name: 硬盘坏道
+  domain: 硬件
+  level: 3
+  parent: 硬件-044
+  path:
+  - 硬件
+  - 硬盘
+  - 硬盘坏道
+- code: 硬件-046
+  name: 硬盘寿命到期
+  domain: 硬件
+  level: 3
+  parent: 硬件-044
+  path:
+  - 硬件
+  - 硬盘
+  - 硬盘寿命到期
+- code: 硬件-047
+  name: 硬盘固件升级异常
+  domain: 硬件
+  level: 3
+  parent: 硬件-044
+  path:
+  - 硬件
+  - 硬盘
+  - 硬盘固件升级异常
+- code: 硬件-048
+  name: 硬盘固件不兼容
+  domain: 硬件
+  level: 3
+  parent: 硬件-044
+  path:
+  - 硬件
+  - 硬盘
+  - 硬盘固件不兼容
+- code: 硬件-049
+  name: 硬盘黄灯异常
+  domain: 硬件
+  level: 3
+  parent: 硬件-044
+  path:
+  - 硬件
+  - 硬盘
+  - 硬盘黄灯异常
+- code: 硬件-050
+  name: 硬盘红灯异常
+  domain: 硬件
+  level: 3
+  parent: 硬件-044
+  path:
+  - 硬件
+  - 硬盘
+  - 硬盘红灯异常
+- code: 硬件-051
+  name: 磁盘损坏告警
+  domain: 硬件
+  level: 3
+  parent: 硬件-044
+  path:
+  - 硬件
+  - 硬盘
+  - 磁盘损坏告警
+- code: 硬件-052
+  name: 硬盘离线或不识别
+  domain: 硬件
+  level: 3
+  parent: 硬件-044
+  path:
+  - 硬件
+  - 硬盘
+  - 硬盘离线或不识别
+- code: 硬件-057
+  name: 网卡固件版本过低
+  domain: 硬件
+  level: 3
+  parent: 硬件-056
+  path:
+  - 硬件
+  - 网卡
+  - 网卡固件版本过低
+- code: 硬件-058
+  name: 网卡固件升级失败
+  domain: 硬件
+  level: 3
+  parent: 硬件-056
+  path:
+  - 硬件
+  - 网卡
+  - 网卡固件升级失败
+- code: 硬件-059
+  name: 网卡离线或不识别
+  domain: 硬件
+  level: 3
+  parent: 硬件-056
+  path:
+  - 硬件
+  - 网卡
+  - 网卡离线或不识别
+- code: 硬件-060
+  name: 网口不亮或离线
+  domain: 硬件
+  level: 3
+  parent: 硬件-056
+  path:
+  - 硬件
+  - 网卡
+  - 网口不亮或离线
+- code: 硬件-061
+  name: 网口降速
+  domain: 硬件
+  level: 3
+  parent: 硬件-056
+  path:
+  - 硬件
+  - 网卡
+  - 网口降速
+- code: 硬件-062
+  name: 光模块异常
+  domain: 硬件
+  level: 3
+  parent: 硬件-056
+  path:
+  - 硬件
+  - 网卡
+  - 光模块异常
+- code: 硬件-053
+  name: 硬盘离线或不识别（单盘）
+  domain: 硬件
+  level: 4
+  parent: 硬件-052
+  path:
+  - 硬件
+  - 硬盘
+  - 硬盘离线或不识别
+  - 硬盘离线或不识别（单盘）
+- code: 硬件-054
+  name: 硬盘离线或不识别（多盘）
+  domain: 硬件
+  level: 4
+  parent: 硬件-052
+  path:
+  - 硬件
+  - 硬盘
+  - 硬盘离线或不识别
+  - 硬盘离线或不识别（多盘）
+- code: 硬件-055
+  name: 硬盘离线或不识别（全盘）
+  domain: 硬件
+  level: 4
+  parent: 硬件-052
+  path:
+  - 硬件
+  - 硬盘
+  - 硬盘离线或不识别
+  - 硬盘离线或不识别（全盘）
+- code: 网络-L1
+  name: 网络
+  domain: 网络
+  level: 1
+  parent: null
+  path:
+  - 网络
+- code: 网络-001
+  name: 主机网络
+  domain: 网络
+  level: 2
+  parent: 网络-L1
+  path:
+  - 网络
+  - 主机网络
+- code: 网络-023
+  name: 虚拟网络
+  domain: 网络
+  level: 2
+  parent: 网络-L1
+  path:
+  - 网络
+  - 虚拟网络
+- code: 网络-002
+  name: 主机网口顺序识别异常（乱序）
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 主机网口顺序识别异常（乱序）
+- code: 网络-003
+  name: 主机网口创建失败
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 主机网口创建失败
+- code: 网络-004
+  name: 主机网口功能复用失败
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 主机网口功能复用失败
+- code: 网络-005
+  name: 主机网口编辑失败
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 主机网口编辑失败
+- code: 网络-006
+  name: 主机网口删除失败（含聚合口/子接口）
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 主机网口删除失败（含聚合口/子接口）
+- code: 网络-007
+  name: 主机管理网丢包或不通
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 主机管理网丢包或不通
+- code: 网络-008
+  name: 主机vxlan网络丢包或不通
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 主机vxlan网络丢包或不通
+- code: 网络-009
+  name: 主机存储网丢包或不通
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 主机存储网丢包或不通
+- code: 网络-010
+  name: 主机网口丢包告警
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 主机网口丢包告警
+- code: 网络-011
+  name: 主机网口错误包告警
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 主机网口错误包告警
+- code: 网络-012
+  name: 主机网口地址冲突告警
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 主机网口地址冲突告警
+- code: 网络-013
+  name: 主机网络协议告警（STP/LLDP）
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 主机网络协议告警（STP/LLDP）
+- code: 网络-014
+  name: 主机网卡工作异常
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 主机网卡工作异常
+- code: 网络-015
+  name: 主机存储网口中断核使用率过高告警
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 主机存储网口中断核使用率过高告警
+- code: 网络-016
+  name: 主机网卡流量异常告警
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 主机网卡流量异常告警
+- code: 网络-017
+  name: 主机网关不通告警
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 主机网关不通告警
+- code: 网络-018
+  name: 主机网口与对端设备网口配置不匹配
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 主机网口与对端设备网口配置不匹配
+- code: 网络-019
+  name: 网络亚健康告警
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 网络亚健康告警
+- code: 网络-020
+  name: 网口掉线告警
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 网口掉线告警
+- code: 网络-021
+  name: 存储通信口复用功能存在异常
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 存储通信口复用功能存在异常
+- code: 网络-022
+  name: 网卡驱动兼容告警
+  domain: 网络
+  level: 3
+  parent: 网络-001
+  path:
+  - 网络
+  - 主机网络
+  - 网卡驱动兼容告警
+- code: 网络-024
+  name: 虚拟网络拓扑设备创建失败
+  domain: 网络
+  level: 3
+  parent: 网络-023
+  path:
+  - 网络
+  - 虚拟网络
+  - 虚拟网络拓扑设备创建失败
+- code: 网络-025
+  name: 虚拟网络拓扑设备编辑失败
+  domain: 网络
+  level: 3
+  parent: 网络-023
+  path:
+  - 网络
+  - 虚拟网络
+  - 虚拟网络拓扑设备编辑失败
+- code: 网络-026
+  name: 虚拟网络拓扑设备删除失败
+  domain: 网络
+  level: 3
+  parent: 网络-023
+  path:
+  - 网络
+  - 虚拟网络
+  - 虚拟网络拓扑设备删除失败
+- code: 网络-027
+  name: 分布式防火墙策略配置不达预期
+  domain: 网络
+  level: 3
+  parent: 网络-023
+  path:
+  - 网络
+  - 虚拟网络
+  - 分布式防火墙策略配置不达预期
+- code: 网络-028
+  name: 流量镜像配置不达预期
+  domain: 网络
+  level: 3
+  parent: 网络-023
+  path:
+  - 网络
+  - 虚拟网络
+  - 流量镜像配置不达预期
+- code: 网络-029
+  name: 网络连通性探测异常
+  domain: 网络
+  level: 3
+  parent: 网络-023
+  path:
+  - 网络
+  - 虚拟网络
+  - 网络连通性探测异常
+- code: 网络-030
+  name: 虚拟路由器运行失败告警
+  domain: 网络
+  level: 3
+  parent: 网络-023
+  path:
+  - 网络
+  - 虚拟网络
+  - 虚拟路由器运行失败告警
+- code: 网络-031
+  name: 虚拟网络服务异常告警
+  domain: 网络
+  level: 3
+  parent: 网络-023
+  path:
+  - 网络
+  - 虚拟网络
+  - 虚拟网络服务异常告警
+- code: 网络-032
+  name: 网口FDB数量超过上限
+  domain: 网络
+  level: 3
+  parent: 网络-023
+  path:
+  - 网络
+  - 虚拟网络
+  - 网口FDB数量超过上限
+- code: 网络-033
+  name: 反接管网口失败
+  domain: 网络
+  level: 3
+  parent: 网络-023
+  path:
+  - 网络
+  - 虚拟网络
+  - 反接管网口失败
+- code: 网络-034
+  name: 接管网口失败
+  domain: 网络
+  level: 3
+  parent: 网络-023
+  path:
+  - 网络
+  - 虚拟网络
+  - 接管网口失败
+- code: 网络-035
+  name: 虚拟网络设备与外部网络不通
+  domain: 网络
+  level: 3
+  parent: 网络-023
+  path:
+  - 网络
+  - 虚拟网络
+  - 虚拟网络设备与外部网络不通
+- code: 网络-036
+  name: 网络配置下发失败
+  domain: 网络
+  level: 3
+  parent: 网络-023
+  path:
+  - 网络
+  - 虚拟网络
+  - 网络配置下发失败
+- code: 网络-037
+  name: 网络转发服务session过高告警
+  domain: 网络
+  level: 3
+  parent: 网络-023
+  path:
+  - 网络
+  - 虚拟网络
+  - 网络转发服务session过高告警
+- code: 虚拟机-L1
+  name: 虚拟机
+  domain: 虚拟机
+  level: 1
+  parent: null
+  path:
+  - 虚拟机
+- code: 虚拟机-001
+  name: 虚拟机创建失败
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机创建失败
+- code: 虚拟机-002
+  name: 虚拟机删除失败
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机删除失败
+- code: 虚拟机-003
+  name: 虚拟机开机失败
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机开机失败
+- code: 虚拟机-004
+  name: 虚拟机关机失败
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机关机失败
+- code: 虚拟机-005
+  name: 虚拟机重启失败
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机重启失败
+- code: 虚拟机-006
+  name: 虚拟机导入失败
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机导入失败
+- code: 虚拟机-007
+  name: 虚拟机导出失败
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机导出失败
+- code: 虚拟机-008
+  name: 虚拟机克隆失败
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机克隆失败
+- code: 虚拟机-009
+  name: 虚拟机异常挂起
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机异常挂起
+- code: 虚拟机-010
+  name: 虚拟机异常关机重启
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机异常关机重启
+- code: 虚拟机-011
+  name: 虚拟机异常HA
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机异常HA
+- code: 虚拟机-012
+  name: 虚拟机迁移
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机迁移
+- code: 虚拟机-023
+  name: 虚拟机模版
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机模版
+- code: 虚拟机-028
+  name: 虚拟机快照
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机快照
+- code: 虚拟机-032
+  name: 虚拟机备份
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机备份
+- code: 虚拟机-037
+  name: 虚拟机磁盘分配方式卡住
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机磁盘分配方式卡住
+- code: 虚拟机-038
+  name: 虚拟机硬件资源热添加和DRX不生效
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机硬件资源热添加和DRX不生效
+- code: 虚拟机-039
+  name: 集群资源调度DRS失败
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 集群资源调度DRS失败
+- code: 虚拟机-040
+  name: 虚拟机HA不达预期
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机HA不达预期
+- code: 虚拟机-041
+  name: 虚拟机内部软件使用异常
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机内部软件使用异常
+- code: 虚拟机-042
+  name: 虚拟机内部空间或文件系统异常
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机内部空间或文件系统异常
+- code: 虚拟机-043
+  name: 虚拟机密码重置
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机密码重置
+- code: 虚拟机-044
+  name: 虚拟机CPU或内存占用过高告警
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机CPU或内存占用过高告警
+- code: 虚拟机-045
+  name: 虚拟机网络流量或Session过高告警
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机网络流量或Session过高告警
+- code: 虚拟机-046
+  name: 虚拟机显存占用过高告警
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机显存占用过高告警
+- code: 虚拟机-047
+  name: 虚拟机添加磁盘内部识别异常
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机添加磁盘内部识别异常
+- code: 虚拟机-048
+  name: 虚拟机使用体验
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+- code: 虚拟机-102
+  name: HA预留资源不足
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - HA预留资源不足
+- code: 虚拟机-103
+  name: 虚拟机CPU告警
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机CPU告警
+- code: 虚拟机-104
+  name: 虚拟机磁盘时延过高
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机磁盘时延过高
+- code: 虚拟机-105
+  name: 虚拟机镜像文件损坏告警
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机镜像文件损坏告警
+- code: 虚拟机-013
+  name: 虚拟机scmt迁移失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-012
+  path:
+  - 虚拟机
+  - 虚拟机迁移
+  - 虚拟机scmt迁移失败
+- code: 虚拟机-014
+  name: 虚拟机vmware纳管迁移失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-012
+  path:
+  - 虚拟机
+  - 虚拟机迁移
+  - 虚拟机vmware纳管迁移失败
+- code: 虚拟机-015
+  name: 虚拟机集群内或跨集群迁移失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-012
+  path:
+  - 虚拟机
+  - 虚拟机迁移
+  - 虚拟机集群内或跨集群迁移失败
+- code: 虚拟机-022
+  name: convert工具迁移失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-012
+  path:
+  - 虚拟机
+  - 虚拟机迁移
+  - convert工具迁移失败
+- code: 虚拟机-024
+  name: 虚拟机模板创建失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-023
+  path:
+  - 虚拟机
+  - 虚拟机模版
+  - 虚拟机模板创建失败
+- code: 虚拟机-025
+  name: 虚拟机模板更新失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-023
+  path:
+  - 虚拟机
+  - 虚拟机模版
+  - 虚拟机模板更新失败
+- code: 虚拟机-026
+  name: 虚拟机模版派生失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-023
+  path:
+  - 虚拟机
+  - 虚拟机模版
+  - 虚拟机模版派生失败
+- code: 虚拟机-027
+  name: 虚拟机模板转换失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-023
+  path:
+  - 虚拟机
+  - 虚拟机模版
+  - 虚拟机模板转换失败
+- code: 虚拟机-029
+  name: 虚拟机快照失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-028
+  path:
+  - 虚拟机
+  - 虚拟机快照
+  - 虚拟机快照失败
+- code: 虚拟机-030
+  name: 虚拟机快照合并或删除失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-028
+  path:
+  - 虚拟机
+  - 虚拟机快照
+  - 虚拟机快照合并或删除失败
+- code: 虚拟机-031
+  name: 虚拟机快照恢复失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-028
+  path:
+  - 虚拟机
+  - 虚拟机快照
+  - 虚拟机快照恢复失败
+- code: 虚拟机-033
+  name: 虚拟机备份创建失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-032
+  path:
+  - 虚拟机
+  - 虚拟机备份
+  - 虚拟机备份创建失败
+- code: 虚拟机-034
+  name: 虚拟机备份合并或删除失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-032
+  path:
+  - 虚拟机
+  - 虚拟机备份
+  - 虚拟机备份合并或删除失败
+- code: 虚拟机-035
+  name: 虚拟机备份恢复失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-032
+  path:
+  - 虚拟机
+  - 虚拟机备份
+  - 虚拟机备份恢复失败
+- code: 虚拟机-036
+  name: 虚拟机备份文件找回失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-032
+  path:
+  - 虚拟机
+  - 虚拟机备份
+  - 虚拟机备份文件找回失败
+- code: 虚拟机-049
+  name: 虚拟机中勒索病毒
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-048
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 虚拟机中勒索病毒
+- code: 虚拟机-054
+  name: 虚拟机数据丢失
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-048
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 虚拟机数据丢失
+- code: 虚拟机-055
+  name: 进不去系统OS或桌面
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-048
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 进不去系统OS或桌面
+- code: 虚拟机-060
+  name: 操作或使用卡慢
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-048
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 操作或使用卡慢
+- code: 虚拟机-065
+  name: 内部软件使用异常
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-048
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 内部软件使用异常
+- code: 虚拟机-070
+  name: 性能优化工具或agent组件异常
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-048
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 性能优化工具或agent组件异常
+- code: 虚拟机-076
+  name: OS系统桌面显示异常
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-048
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - OS系统桌面显示异常
+- code: 虚拟机-080
+  name: OS虚拟硬件资源及使用率异常
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-048
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - OS虚拟硬件资源及使用率异常
+- code: 虚拟机-085
+  name: 音视频功能使用异常
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-048
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 音视频功能使用异常
+- code: 虚拟机-088
+  name: VDC策略组相关功能异常
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-048
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - VDC策略组相关功能异常
+- code: 虚拟机-016
+  name: 虚拟机集群内热迁移失败（跨存储）
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-015
+  path:
+  - 虚拟机
+  - 虚拟机迁移
+  - 虚拟机集群内或跨集群迁移失败
+  - 虚拟机集群内热迁移失败（跨存储）
+- code: 虚拟机-017
+  name: 虚拟机集群内热迁移失败（同存储）
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-015
+  path:
+  - 虚拟机
+  - 虚拟机迁移
+  - 虚拟机集群内或跨集群迁移失败
+  - 虚拟机集群内热迁移失败（同存储）
+- code: 虚拟机-018
+  name: 虚拟机跨集群热迁移失败
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-015
+  path:
+  - 虚拟机
+  - 虚拟机迁移
+  - 虚拟机集群内或跨集群迁移失败
+  - 虚拟机跨集群热迁移失败
+- code: 虚拟机-019
+  name: 虚拟机集群内冷迁移失败（跨存储）
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-015
+  path:
+  - 虚拟机
+  - 虚拟机迁移
+  - 虚拟机集群内或跨集群迁移失败
+  - 虚拟机集群内冷迁移失败（跨存储）
+- code: 虚拟机-020
+  name: 虚拟机集群内冷迁移失败（同存储）
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-015
+  path:
+  - 虚拟机
+  - 虚拟机迁移
+  - 虚拟机集群内或跨集群迁移失败
+  - 虚拟机集群内冷迁移失败（同存储）
+- code: 虚拟机-021
+  name: 虚拟机跨集群冷迁移失败
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-015
+  path:
+  - 虚拟机
+  - 虚拟机迁移
+  - 虚拟机集群内或跨集群迁移失败
+  - 虚拟机跨集群冷迁移失败
+- code: 虚拟机-050
+  name: 虚拟机网络丢包或不通
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-049
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 虚拟机中勒索病毒
+  - 虚拟机网络丢包或不通
+- code: 虚拟机-051
+  name: 虚拟机网络延时高
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-049
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 虚拟机中勒索病毒
+  - 虚拟机网络延时高
+- code: 虚拟机-052
+  name: 虚拟机网络IP地址冲突
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-049
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 虚拟机中勒索病毒
+  - 虚拟机网络IP地址冲突
+- code: 虚拟机-053
+  name: 虚拟机网卡状态异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-049
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 虚拟机中勒索病毒
+  - 虚拟机网卡状态异常
+- code: 虚拟机-056
+  name: 虚拟机图形化界面启动失败
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-055
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 进不去系统OS或桌面
+  - 虚拟机图形化界面启动失败
+- code: 虚拟机-057
+  name: 虚拟机内部黑屏
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-055
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 进不去系统OS或桌面
+  - 虚拟机内部黑屏
+- code: 虚拟机-058
+  name: 虚拟机内部蓝屏
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-055
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 进不去系统OS或桌面
+  - 虚拟机内部蓝屏
+- code: 虚拟机-059
+  name: 虚拟机自动登录失败
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-055
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 进不去系统OS或桌面
+  - 虚拟机自动登录失败
+- code: 虚拟机-061
+  name: 虚拟机整体卡慢
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-060
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 操作或使用卡慢
+  - 虚拟机整体卡慢
+- code: 虚拟机-062
+  name: 虚拟机内部业务卡慢
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-060
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 操作或使用卡慢
+  - 虚拟机内部业务卡慢
+- code: 虚拟机-063
+  name: 虚拟机IO读写慢
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-060
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 操作或使用卡慢
+  - 虚拟机IO读写慢
+- code: 虚拟机-064
+  name: 虚拟机卡死无响应
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-060
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 操作或使用卡慢
+  - 虚拟机卡死无响应
+- code: 虚拟机-066
+  name: 软件安装或卸载失败
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-065
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 内部软件使用异常
+  - 软件安装或卸载失败
+- code: 虚拟机-067
+  name: 软件使用异常或闪退或卡死
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-065
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 内部软件使用异常
+  - 软件使用异常或闪退或卡死
+- code: 虚拟机-068
+  name: OS系统软件或自身组件异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-065
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 内部软件使用异常
+  - OS系统软件或自身组件异常
+- code: 虚拟机-069
+  name: 极域软件使用异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-065
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 内部软件使用异常
+  - 极域软件使用异常
+- code: 虚拟机-071
+  name: 虚拟机性能优化工具(vmtools)安装卸载异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-070
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 性能优化工具或agent组件异常
+  - 虚拟机性能优化工具(vmtools)安装卸载异常
+- code: 虚拟机-072
+  name: 虚拟机性能优化工具(vmtools)报表透传异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-070
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 性能优化工具或agent组件异常
+  - 虚拟机性能优化工具(vmtools)报表透传异常
+- code: 虚拟机-073
+  name: agent安装卸载失败
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-070
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 性能优化工具或agent组件异常
+  - agent安装卸载失败
+- code: 虚拟机-074
+  name: agent状态异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-070
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 性能优化工具或agent组件异常
+  - agent状态异常
+- code: 虚拟机-075
+  name: agent报表透传异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-070
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 性能优化工具或agent组件异常
+  - agent报表透传异常
+- code: 虚拟机-077
+  name: OS桌面屏幕分辨率或缩放异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-076
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - OS系统桌面显示异常
+  - OS桌面屏幕分辨率或缩放异常
+- code: 虚拟机-078
+  name: OS桌面屏幕花屏或闪烁或有条纹
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-076
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - OS系统桌面显示异常
+  - OS桌面屏幕花屏或闪烁或有条纹
+- code: 虚拟机-079
+  name: OS桌面屏幕保护程序或锁屏异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-076
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - OS系统桌面显示异常
+  - OS桌面屏幕保护程序或锁屏异常
+- code: 虚拟机-081
+  name: CPU或内存使用率异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-080
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - OS虚拟硬件资源及使用率异常
+  - CPU或内存使用率异常
+- code: 虚拟机-082
+  name: 磁盘空间不足或占用异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-080
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - OS虚拟硬件资源及使用率异常
+  - 磁盘空间不足或占用异常
+- code: 虚拟机-083
+  name: 虚拟机显存使用率异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-080
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - OS虚拟硬件资源及使用率异常
+  - 虚拟机显存使用率异常
+- code: 虚拟机-084
+  name: 扩容磁盘异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-080
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - OS虚拟硬件资源及使用率异常
+  - 扩容磁盘异常
+- code: 虚拟机-086
+  name: 虚拟机音频异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-085
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 音视频功能使用异常
+  - 虚拟机音频异常
+- code: 虚拟机-087
+  name: 虚拟机视频播放异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-085
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 音视频功能使用异常
+  - 虚拟机视频播放异常
+- code: 虚拟机-089
+  name: 防截屏功能异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-088
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - VDC策略组相关功能异常
+  - 防截屏功能异常
+- code: 虚拟机-090
+  name: 屏幕水印异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-088
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - VDC策略组相关功能异常
+  - 屏幕水印异常
+- code: 虚拟机-091
+  name: 外发审计功能异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-088
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - VDC策略组相关功能异常
+  - 外发审计功能异常
+- code: 虚拟机-092
+  name: 远程协助异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-088
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - VDC策略组相关功能异常
+  - 远程协助异常
+- code: 虚拟机-093
+  name: 软件分发异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-088
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - VDC策略组相关功能异常
+  - 软件分发异常
+- code: 虚拟机-094
+  name: 关机一体化异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-088
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - VDC策略组相关功能异常
+  - 关机一体化异常
+- code: 虚拟机-095
+  name: 虚拟机加域失败
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-088
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - VDC策略组相关功能异常
+  - 虚拟机加域失败
+- code: 虚拟机-096
+  name: 应用管控异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-088
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - VDC策略组相关功能异常
+  - 应用管控异常
+- code: 虚拟机-097
+  name: 剪切板或拷贝异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-088
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - VDC策略组相关功能异常
+  - 剪切板或拷贝异常
+- code: 虚拟机-098
+  name: 磁盘映射异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-088
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - VDC策略组相关功能异常
+  - 磁盘映射异常
+- code: 虚拟机-099
+  name: 企业云盘或共享盘异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-088
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - VDC策略组相关功能异常
+  - 企业云盘或共享盘异常
+- code: 虚拟机-100
+  name: 文件拷贝异常或传输慢
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-088
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - VDC策略组相关功能异常
+  - 文件拷贝异常或传输慢
+- code: 虚拟机-101
+  name: UPM用户配置重定向异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-088
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - VDC策略组相关功能异常
+  - UPM用户配置重定向异常

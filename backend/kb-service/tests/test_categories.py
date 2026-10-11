@@ -481,8 +481,8 @@ async def test_update_parent_recursive_emits_parent_degeneration_warning():
 # ─── 导出/筛选分组信息完整性回归（本次需求：三处均清晰含分组）─────────────
 
 
-def test_export_yaml_emits_only_leaves_with_grouping_path():
-    """导出仅落叶子，分组层级由每条叶子的 path 数组完整承载；且分组不入列防往返污染。"""
+def test_export_yaml_emits_full_tree_v2():
+    """导出为 v2.0 全树：域根+分组+叶子全部入列，以显式 code+parent 忠实承载结构。"""
     import yaml as _yaml
     from app.routes.categories import _generate_export_yaml
 
@@ -492,12 +492,74 @@ def test_export_yaml_emits_only_leaves_with_grouping_path():
 
     out = _generate_export_yaml([parent, grp, leaf])
     data = _yaml.safe_load(out)
-    ids = {item["id"] for item in data["categories"]}
-    # 域根与分组均不入列（否则导入侧会将其当叶子重建、打平污染）
-    assert ids == {"虚拟机-002"}
-    assert data["total"] == 1
-    # 分组信息通过 path 清晰可还原
-    assert data["categories"][0]["path"] == ["虚拟机", "迁移类", "跨集群迁移失败"]
+    assert data["version"] == "2.0"
+    assert data["total"] == 3
+    by_code = {c["code"]: c for c in data["categories"]}
+    # 全树：域根/分组/叶子均在列，parent 为父 code
+    assert set(by_code) == {"虚拟机-L1", "虚拟机-001", "虚拟机-002"}
+    assert by_code["虚拟机-L1"]["parent"] is None
+    assert by_code["虚拟机-001"]["parent"] == "虚拟机-L1"
+    assert by_code["虚拟机-002"]["parent"] == "虚拟机-001"
+    assert by_code["虚拟机-002"]["path"] == ["虚拟机", "迁移类", "跨集群迁移失败"]
+
+
+def test_parse_baseline_fulltree_preserves_explicit_codes():
+    """v2.0 全树解析：照抄显式 code不重编号；域根 level 强制为 1。"""
+    cats = [
+        {"code": "虚拟机-L1", "name": "虚拟机", "domain": "虚拟机", "level": 1, "parent": None, "path": ["虚拟机"]},
+        {"code": "虚拟机-001", "name": "迁移类", "domain": "虚拟机", "level": 2, "parent": "虚拟机-L1", "path": ["虚拟机", "迁移类"]},
+        {"code": "虚拟机-021", "name": "坏道", "domain": "虚拟机", "level": 3, "parent": "虚拟机-001", "path": ["虚拟机", "迁移类", "坏道"]},
+    ]
+    records, errors = CategoryRepository._parse_baseline_fulltree(cats)
+    assert errors == []
+    codes = {r["code"] for r in records}
+    # 021 原样保留（不被重编号为 002），拖拽重排结果无损回导
+    assert codes == {"虚拟机-L1", "虚拟机-001", "虚拟机-021"}
+    root = next(r for r in records if r["code"] == "虚拟机-L1")
+    assert root["level"] == 1
+
+
+def test_parse_baseline_fulltree_rejects_bad_inputs():
+    """全树解析拒绝：非法 code 形态 / 重复 code / parent 悬空 / 域根 parent 非空。"""
+    _r, e1 = CategoryRepository._parse_baseline_fulltree(
+        [{"code": "虚拟机-L2-坏道", "name": "x", "domain": "虚拟机", "path": ["虚拟机", "x"]}]
+    )
+    assert e1
+    _r, e2 = CategoryRepository._parse_baseline_fulltree(
+        [
+            {"code": "虚拟机-001", "name": "a", "domain": "虚拟机", "path": ["虚拟机", "a"]},
+            {"code": "虚拟机-001", "name": "b", "domain": "虚拟机", "path": ["虚拟机", "b"]},
+        ]
+    )
+    assert any("重复" in x for x in e2)
+    _r, e3 = CategoryRepository._parse_baseline_fulltree(
+        [{"code": "虚拟机-001", "name": "a", "domain": "虚拟机", "parent": "虚拟机-999", "path": ["虚拟机", "a"]}]
+    )
+    assert any("parent" in x for x in e3)
+    _r, e4 = CategoryRepository._parse_baseline_fulltree(
+        [{"code": "虚拟机-L1", "name": "虚拟机", "domain": "虚拟机", "parent": "虚拟机-001", "path": ["虚拟机"]}]
+    )
+    assert any("域根" in x for x in e4)
+
+
+def test_baseline_render_parse_roundtrip_lossless():
+    """render → parse 往返无损：code/path 完全保留（基线快照可回导的根基）。"""
+    import yaml as _yaml
+    from shared.utils.category_baseline import render_baseline_yaml
+
+    nodes = [
+        {"code": "虚拟机-L1", "name": "虚拟机", "domain": "虚拟机", "level": 1, "parent": None, "path": ["虚拟机"]},
+        {"code": "虚拟机-001", "name": "迁移类", "domain": "虚拟机", "level": 2, "parent": "虚拟机-L1", "path": ["虚拟机", "迁移类"]},
+        {"code": "虚拟机-002", "name": "坏道", "domain": "虚拟机", "level": 3, "parent": "虚拟机-001", "path": ["虚拟机", "迁移类", "坏道"]},
+        {"code": "硬件-L1", "name": "硬件", "domain": "硬件", "level": 1, "parent": None, "path": ["硬件"]},
+    ]
+    out = render_baseline_yaml(nodes, generated="2026-10-11")
+    data = _yaml.safe_load(out)
+    records, errors = CategoryRepository._parse_baseline_fulltree(data["categories"])
+    assert errors == []
+    src = {n["code"]: n["path"] for n in nodes}
+    got = {r["code"]: r["path_labels"] for r in records}
+    assert src == got
 
 
 @pytest.mark.anyio
