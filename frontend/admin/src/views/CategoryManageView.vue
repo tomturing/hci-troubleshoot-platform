@@ -394,6 +394,27 @@ const globalCategoryTree = computed<KbCategory[]>(() => {
   return roots
 })
 
+// ──────────────────────────────────────────────────────────────────────────────
+// 树展开状态持久化：锚定在稳定 DB id（id_in_db）上——解A 拖拽重排只改写 code、
+// 从不改 DB 主键，故以 id 记录展开集合可跨「拖拽/增删改/选中切换/组件重挂载」
+// 保持原样：没动的分支该折叠的折叠、该展开的展开，不再被 default-expand-all 强制全开。
+// ──────────────────────────────────────────────────────────────────────────────
+const expandedKeys = ref<(number | string)[]>([])
+let treeInitExpandedSeeded = false
+
+function handleNodeExpand(node: any) {
+  const k = node?.data?.id_in_db ?? node?.data?.id
+  if (k != null && !expandedKeys.value.includes(k)) {
+    expandedKeys.value = [...expandedKeys.value, k]
+  }
+}
+
+function handleNodeCollapse(node: any) {
+  const k = node?.data?.id_in_db ?? node?.data?.id
+  if (k == null) return
+  expandedKeys.value = expandedKeys.value.filter((x) => x !== k)
+}
+
 // 选中分类时的关联子树
 const selectedSubtree = computed(() => {
   if (!selectedCategory.value) return []
@@ -740,6 +761,15 @@ async function fetchCategories() {
       categories,
     }))
     totalCategories.value = domainGroups.value.reduce((sum, g) => sum + g.count, 0)
+
+    // 首次加载：仅默认展开 5 个域根（L1），露出各域一级子节点概览；
+    // 之后 expandedKeys 完全由用户手动展开/折叠维护，跨 fetchCategories 不再重置，
+    // 从而保留折叠偏好（解A 重排不改 id，旧展开键仍命中同一节点）。
+    if (!treeInitExpandedSeeded) {
+      const all = domainGroups.value.flatMap((g) => g.categories)
+      expandedKeys.value = all.filter((c) => c.level === 1).map((c) => c.id_in_db ?? c.id)
+      treeInitExpandedSeeded = true
+    }
 
     // 计算统计
     const allCategories = domainGroups.value.flatMap((g) => g.categories)
@@ -1157,15 +1187,17 @@ onMounted(fetchCategories)
           <div class="tree-scroll-wrapper">
             <el-tree
               :data="globalCategoryTree"
-              node-key="code"
+              node-key="id_in_db"
               :props="{ label: 'name', children: 'children' }"
-              default-expand-all
+              :default-expanded-keys="expandedKeys"
               highlight-current
               draggable
               :allow-drag="handleAllowDrag"
               :allow-drop="handleAllowDrop"
               @node-drop="handleNodeDrop"
               @node-click="handleNodeClick"
+              @node-expand="handleNodeExpand"
+              @node-collapse="handleNodeCollapse"
             >
               <template #default="{ node, data }: { node: any; data: any }">
                 <div class="custom-tree-node" :class="{ 'is-selected': selectedCategory?.code === data.code }">
