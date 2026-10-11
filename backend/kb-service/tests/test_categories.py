@@ -12,6 +12,7 @@ from app.repositories.category_repo import CategoryRepository
 from app.routes.categories import router
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from shared.utils.category_code import is_valid_category_code
 
 _VALID_TOKEN = "hci-dev-internal-token"
 _AUTH_HEADER = {"Authorization": f"Bearer {_VALID_TOKEN}"}
@@ -64,12 +65,12 @@ async def test_category_creation_with_parent():
     mock_parent_res = MagicMock()
     mock_parent_res.scalar_one_or_none.return_value = parent_cat
 
-    # 模拟执行 SELECT 查询候选 code 是否冲突（返回 None 表示无冲突）
-    mock_conflict_res = MagicMock()
-    mock_conflict_res.scalar_one_or_none.return_value = None
+    # 模拟 SELECT KbCategory.code 加载现有 code（供解 A 序号分配避让）
+    mock_codes_res = MagicMock()
+    mock_codes_res.fetchall.return_value = [("虚拟机-L1",)]
 
-    # 配置 mock_session 执行返回值流
-    mock_session.execute.side_effect = [mock_parent_res, mock_conflict_res]
+    # 配置 mock_session 执行返回值流：先查父、再查现有 code
+    mock_session.execute.side_effect = [mock_parent_res, mock_codes_res]
 
     repo = CategoryRepository(mock_db)
     category = await repo.create(
@@ -86,7 +87,8 @@ async def test_category_creation_with_parent():
     assert category.domain == "虚拟机"
     assert category.path_labels == ["虚拟机", "FC存储"]
     assert category.parent_id == 10
-    assert category.code == "虚拟机-L2-001"  # 自动生成
+    # 解 A：自动按域分配 {域}-{序号}（本域暂无节点序号，取 001；域根 -L1 不占序号空间）
+    assert category.code == "虚拟机-001"  # 自动生成
 
     mock_session.add.assert_called_once()
     mock_session.commit.assert_called_once()
@@ -300,23 +302,50 @@ def test_parse_baseline_yaml_rejects_duplicate_leaf_id():
     assert any("重复" in err for err in errors)
 
 
-def test_parse_baseline_yaml_intermediate_derived_code_allowed():
-    """中间层 code 由 path 派生（末段中文）属已知形态，不阻断导入。"""
+def test_parse_baseline_yaml_intermediate_generates_node_form_code():
+    """解 A：中间层分组由 path 派生，其 code 统一为 {域}-{序号}，绝不出现名称/层级形式。"""
+    # 同一分组下两个叶子（child_count=2）→ 不触发扁平化，分组合法保留
     records, errors = CategoryRepository._parse_baseline_yaml(
         [
             {
                 "id": "虚拟机-017",
                 "domain": "虚拟机",
-                "label": "虚拟机跨集群热迁移失败",
-                "path": ["虚拟机", "虚拟机集群内或跨集群迁移失败", "虚拟机跨集群热迁移失败"],
-            }
+                "label": "跨集群热迁移失败",
+                "path": ["虚拟机", "迁移类", "跨集群热迁移失败"],
+            },
+            {
+                "id": "虚拟机-018",
+                "domain": "虚拟机",
+                "label": "冷迁移失败",
+                "path": ["虚拟机", "迁移类", "冷迁移失败"],
+            },
         ]
     )
 
     assert errors == []
     codes = {record["code"] for record in records}
-    assert "虚拟机-L2-虚拟机集群内或跨集群迁移失败" in codes
-    assert "虚拟机-L1" in codes  # 域节点派生形态同样放行
+    # 域根 + 1 个中间层分组 + 2 个叶子 = 4 个节点
+    assert "虚拟机-L1" in codes  # 域根特殊形态
+    assert "虚拟机-017" in codes and "虚拟机-018" in codes  # 叶子
+    assert len(codes) == 4
+    # 所有产物均为解 A 合法形态；绝不出现旧名称形式（-L2-中文）或层级形式（-L3-序号）
+    assert all(is_valid_category_code(code) for code in codes)
+    assert not any("-L2-" in code or "-L3-" in code for code in codes)
+
+
+def test_parse_baseline_yaml_flatten_blocks_single_child_group():
+    """需求2 扁平化检验：一个分组下只有 1 个子节点时拦截报错。"""
+    _records, errors = CategoryRepository._parse_baseline_yaml(
+        [
+            {
+                "id": "虚拟机-017",
+                "domain": "虚拟机",
+                "label": "跨集群热迁移失败",
+                "path": ["虚拟机", "唯一单子分组", "跨集群热迁移失败"],
+            }
+        ]
+    )
+    assert any("扁平化" in err or "只有 1 个子节点" in err for err in errors)
 
 
 # ─── 手动入口护栏测试（#1129 后续：堵住漂移入口）──────────────────────────────
@@ -324,14 +353,19 @@ def test_parse_baseline_yaml_intermediate_derived_code_allowed():
 
 @pytest.mark.anyio
 async def test_create_rejects_nonconforming_code():
-    """手动传入不合规 code（非『前缀-纯数字』结尾）必须被硬拒绝，从入口堵住漂移。"""
+    """手动传入不合规 code（名称/层级/无序号形式）必须被硬拒绝，从入口堵住漂移。"""
     mock_db = MagicMock()
     mock_session = AsyncMock()
     mock_session.__aenter__.return_value = mock_session
     mock_db.async_session_factory.return_value = mock_session
 
+    # parent_id=None 走 level=1 分支；仅一次 SELECT KbCategory.code（返回空）
+    mock_codes_res = MagicMock()
+    mock_codes_res.fetchall.return_value = []
+    mock_session.execute.side_effect = [mock_codes_res]
+
     repo = CategoryRepository(mock_db)
-    with pytest.raises(ValueError, match="不符合形态契约"):
+    with pytest.raises(ValueError, match="不符合命名规范"):
         await repo.create(
             name="坏编码分类",
             domain="虚拟机",
@@ -351,9 +385,9 @@ async def test_create_accepts_valid_leaf_code():
     mock_session.__aenter__.return_value = mock_session
     mock_db.async_session_factory.return_value = mock_session
 
-    mock_conflict_res = MagicMock()
-    mock_conflict_res.scalar_one_or_none.return_value = None  # 无冲突
-    mock_session.execute.side_effect = [mock_conflict_res]
+    mock_codes_res = MagicMock()
+    mock_codes_res.fetchall.return_value = []  # 099 尚未占用
+    mock_session.execute.side_effect = [mock_codes_res]
 
     repo = CategoryRepository(mock_db)
     category = await repo.create(
@@ -442,3 +476,53 @@ async def test_update_parent_recursive_emits_parent_degeneration_warning():
             c for c in mock_logger.warning.call_args_list if c.kwargs.get("event") == "repo_category_parent_degenerated"
         ]
         assert warn_calls, "退化告警事件未触发"
+
+
+# ─── 导出/筛选分组信息完整性回归（本次需求：三处均清晰含分组）─────────────
+
+
+def test_export_yaml_emits_only_leaves_with_grouping_path():
+    """导出仅落叶子，分组层级由每条叶子的 path 数组完整承载；且分组不入列防往返污染。"""
+    import yaml as _yaml
+    from app.routes.categories import _generate_export_yaml
+
+    parent = mock_category(1, "虚拟机-L1", "虚拟机", 1, None, "虚拟机", ["虚拟机"])
+    grp = mock_category(2, "虚拟机-001", "迁移类", 2, 1, "虚拟机", ["虚拟机", "迁移类"])
+    leaf = mock_category(3, "虚拟机-002", "跨集群迁移失败", 3, 2, "虚拟机", ["虚拟机", "迁移类", "跨集群迁移失败"])
+
+    out = _generate_export_yaml([parent, grp, leaf])
+    data = _yaml.safe_load(out)
+    ids = {item["id"] for item in data["categories"]}
+    # 域根与分组均不入列（否则导入侧会将其当叶子重建、打平污染）
+    assert ids == {"虚拟机-002"}
+    assert data["total"] == 1
+    # 分组信息通过 path 清晰可还原
+    assert data["categories"][0]["path"] == ["虚拟机", "迁移类", "跨集群迁移失败"]
+
+
+@pytest.mark.anyio
+async def test_resolve_category_subtree_codes_expands_descendants():
+    """选中分组时递归展开子树，命中其后代叶子（供级联筛选）。"""
+    from app.routes.admin import _resolve_category_subtree_codes
+
+    session = AsyncMock()
+    res = MagicMock()
+    res.fetchall.return_value = [("虚拟机-001",), ("虚拟机-002",), ("虚拟机-003",)]
+    session.execute.return_value = res
+
+    codes = await _resolve_category_subtree_codes(session, "虚拟机-001")
+    assert set(codes) == {"虚拟机-001", "虚拟机-002", "虚拟机-003"}
+
+
+@pytest.mark.anyio
+async def test_resolve_category_subtree_codes_falls_back_to_self():
+    """查不到时回退为自身 code，保证叶子选择行为不变。"""
+    from app.routes.admin import _resolve_category_subtree_codes
+
+    session = AsyncMock()
+    res = MagicMock()
+    res.fetchall.return_value = []
+    session.execute.return_value = res
+
+    codes = await _resolve_category_subtree_codes(session, "虚拟机-099")
+    assert codes == ["虚拟机-099"]

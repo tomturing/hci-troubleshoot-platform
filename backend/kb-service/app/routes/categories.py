@@ -385,34 +385,44 @@ def _generate_export_yaml(categories: list) -> str:
     """
     import yaml  # noqa: PLC0415
 
+    # 结构性叶子判定（与需求2 权威一致）：叶子 = 未被任何节点当作 parent_id 引用的节点。
+    # 解 A 下分组节点也拥有合法 code（{域}-{序号}），若与叶子一并导出，会被导入侧
+    # _parse_baseline_yaml 当作叶子重建、把中间层打平污染分类树。因此导出只落叶子，
+    # 分组层级完全由每条叶子的 path 数组（域 / 分组 / ... / 叶子）承载并可被导入还原。
+    all_ids = {c.id for c in categories}
+    parent_ids = {c.parent_id for c in categories if c.parent_id is not None}
+    leaf_ids = all_ids - parent_ids
+
+    # 构建分类列表（仅叶子；无业务编码的节点跳过）
+    category_items = []
+    for cat in categories:
+        if not cat.code or cat.id not in leaf_ids:
+            continue
+        item = {
+            "id": cat.code,
+            "domain": cat.domain or "未分类",
+            "label": cat.name,
+            # path 完整记录分组路径，是导出侧承载「分组信息」的唯一事实源
+            "path": cat.path_labels or [cat.domain or "未分类", cat.name],
+        }
+        category_items.append(item)
+
     # 构建头部注释
     header_lines = [
         "# HCI 云平台故障分类基准",
         "# 来源: kb_category 表导出",
         f"# 导出日期: {datetime.now(UTC).strftime('%Y-%m-%d')}",
         "# 用途: 分类管理导出备份",
+        "# 说明: 仅导出叶子节点; 每条 path 数组记录完整分组路径(域 / 分组 / ... / 叶子),",
+        "#       分组层级据此清晰呈现并可被导入还原; 分组节点本身不入列以防往返污染",
         "",
         'version: "1.0"',
         "source: kb_category_export",
         f'generated: "{datetime.now(UTC).strftime("%Y-%m-%d")}"',
-        f"total: {len(categories)}",
+        f"total: {len(category_items)}",
         "",
         "categories:",
     ]
-
-    # 构建分类列表
-    category_items = []
-    for cat in categories:
-        if not cat.code:
-            # 无业务编码的分类跳过（通常是 L1 域节点）
-            continue
-        item = {
-            "id": cat.code,
-            "domain": cat.domain or "未分类",
-            "label": cat.name,
-            "path": cat.path_labels or [cat.domain or "未分类", cat.name],
-        }
-        category_items.append(item)
 
     # 使用 yaml.dump 生成 YAML 内容（不包含 categories 键，因为我们已经手动添加了）
     yaml_body = yaml.dump(category_items, allow_unicode=True, default_flow_style=False, sort_keys=False)

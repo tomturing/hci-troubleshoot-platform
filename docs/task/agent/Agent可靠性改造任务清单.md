@@ -662,3 +662,9 @@ owner: team
 - [x] **修复**：三处 `trace_id` 统一补 `DEFAULT 'migration:20260904000000'`。Atlas 生成的 DDL 变为 `ADD COLUMN trace_id character varying(64) NOT NULL DEFAULT 'migration:20260904000000'`，PostgreSQL 用默认值回填存量行后加列成功；新写入仍由应用显式传入 W3C traceparent，不依赖该默认值。待 dev / staging / prod 全部完成加列后，可移除该 DEFAULT，Atlas 会自动收敛为纯 `NOT NULL`。
 - [x] **验证**：用同一镜像跑 Atlas dry-run，确认加列语句携带 DEFAULT；在 `atlas_dev` 临时库做 67 行对照实验，无 DEFAULT 复现 `contains null values` 报错，带 DEFAULT 执行成功且 67 行全部回填为 `migration:20260904000000`。
 - [x] **附带发现（未修，需另立任务）**：`database/atlas-migrations/` 已被 `scripts/ci/resolve_image_build_plan.py` 纳入镜像构建触发路径，但 `Dockerfile.migrations` 仅 `COPY database/data-migrations/`，该目录下所有迁移（含 PR #1000 配套的 `20260904000002_add_signal_asset_trace_id.sql`）从未打进镜像、从未执行，形成"改了会触发构建、构建了却不生效"的陷阱。
+
+## 分类基线解A：`kb_category.code` 文法 DB CHECK（2026-10-11）
+
+- [x] **需求**：`database/desired_schema.sql` 为 `kb_category` 新增 `kb_category_code_format CHECK (code IS NULL OR code ~ '^[^-]+-L1$' OR code ~ '^[^-]+-[0-9]+$')`，并订正 code 列注释为解A 角色无关统一 ID 文法（旧注释仍为 `-L{级}-{name}`）。
+- [x] **顺序安全**：CHECK 仅约束 code 文法不管叶子绑定，与重分类解耦；由 `db-migrate.sh` Step1 先跑 `041` 清洗存量数据，Step3 才由 atlas 声明式收敛 CHECK（存量已合规才能通过）。CI 空库建表即带 CHECK，`041` 自然 no-op；无 kb_category 的 SQL 种子不会误伤。
+- [x] **验证**：对 live staging 事务内跑 `041` 后 ROLLBACK 演练，确认非合规 code=0 且悬空=0，即 CHECK 可无违规施加。方案见 `docs/solution/knowledge-base/events/2026-10-11-分类基线命名规范治理与叶子统一(解A)方案.md`。

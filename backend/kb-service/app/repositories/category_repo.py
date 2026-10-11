@@ -21,7 +21,14 @@ from typing import TYPE_CHECKING, Any
 import yaml
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
-from shared.utils.category_code import is_leaf_code
+from shared.utils.category_code import (
+    is_domain_root_code,
+    is_node_code,
+    is_valid_category_code,
+    next_node_code,
+    split_domain,
+    validate_code,
+)
 from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
@@ -286,28 +293,34 @@ class CategoryRepository:
     @staticmethod
     def _parse_baseline_yaml(
         categories_data: list[dict[str, Any]],
+        existing_codes: set[str] | None = None,
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        """将 category_baseline.yaml 的叶节点列表展开为完整节点列表。
+        """将 category_baseline.yaml 的叶节点列表展开为完整节点列表（解 A 命名文法）。
 
         基准 YAML 只包含叶节点（格式：id/label/domain/path），level 隐含于 path 长度中。
-        本方法实现四阶段解析，与 data-pipeline/kbd/seed_categories.py 逻辑等价：
-          Phase 1: 从 domain 字段推断并生成 L1 域节点（code 格式：<domain>-L1）
-          Phase 2: 从 L3/L4 叶节点 path 提取中间层节点（code 格式：<domain>-L<n>-<path最后元素>）
+        四阶段解析：
+          Phase 1: 从 domain 推断 L1 域节点（code = <domain>-L1，保留特殊形态）
+          Phase 2: 从 L3+ 叶节点 path 提取中间层节点；其 code 采用解 A
+                   「角色无关统一 ID」= <domain>-<纯数字序号>，与叶子共享同一序号
+                   空间，从本批次叶子 id 与 existing_codes 的该域最大序号之上连续分配，
+                   绝不把层级/名称编码进 code。
           Phase 3: 解析叶节点（id→code, label→name, len(path)→level, path→path_labels）
           Phase 4: 按 level 排序，确保父节点先于子节点写入
 
-        中间层节点 code 规则与 data-pipeline/kbd/seed_categories.py 保持一致：
-          <domain>-L<depth>-<sub_path[-1]>，相同 path 永远生成相同 code（幂等安全）。
+        校验（强门禁）：
+          - 叶子 id 必须为合法「普通节点」形态（<域>-<数字>），否则 fail-fast；
+          - 扁平化检验：若某中间层分组只有 1 个直接子节点，判为违规并拦截，
+            要求先在基线中消除单层级（需求2）。
 
         Args:
             categories_data: YAML 中的 categories 列表（原始格式）
+            existing_codes: 数据库现有 code 集合，用于序号分配避让（可为空）
 
         Returns:
-            (records, parse_errors) 元组：
-              records: 按 level 升序排列的记录列表
-              parse_errors: 解析过程中发现的字段错误（非空则导入应终止）
+            (records, parse_errors) 元组
         """
         parse_errors: list[str] = []
+        existing_codes = existing_codes or set()
 
         # ── Phase 1: 推断 L1 域节点 ──────────────────────────────────────────
         domains: dict[str, dict[str, Any]] = {}
@@ -323,53 +336,38 @@ class CategoryRepository:
                     "source": "baseline_yaml",
                 }
 
-        # ── Phase 2: 从 path 提取中间层节点（L3+ 叶节点才有中间层）──────────
-        # 例如 path=['虚拟机','FC','FC存储添加失败'] → 中间层 ['虚拟机','FC']
-        # code 规则：<domain>-L<depth>-<路径最后元素>，与 seed_categories.py 保持一致
-        intermediate: dict[str, dict[str, Any]] = {}
-        for cat in categories_data:
-            path = cat.get("path", [])
-            if not isinstance(path, list):  # 非 list 类型在 Phase 3 统一报错
-                continue
-            domain: str = cat.get("domain", "")
-            level: int = len(path)
-            if level >= 3:
-                for depth in range(2, level):
-                    sub_path = path[:depth]
-                    path_key = json.dumps(sub_path, ensure_ascii=False)
-                    if path_key not in intermediate:
-                        intermediate[path_key] = {
-                            "code": f"{domain}-L{depth}-{sub_path[-1]}",
-                            "name": sub_path[-1],
-                            "domain": domain,
-                            "path_labels": sub_path,
-                            "level": depth,
-                            "source": "baseline_yaml",
-                        }
-
-        # ── Phase 3: 解析叶节点（YAML 原始 198 条）──────────────────────────
-        # 字段映射：id→code, label→name（兼容旧格式 name），path→path_labels, len(path)→level
-        # 叶子 id 必须符合编码契约（前缀-纯数字结尾），不合规即 fail-fast 终止导入：
-        # 否则该叶子会因 code 形态被下游 S0 过滤，成为"管理页可见、AI 不可选"的隐形分类
-        # （Q2026101026818 复盘）。中间层 code 由 path 派生（末段中文），属已知形态，
-        # 由 import_from_yaml 统一告警、不在此阻断。
+        # ── Phase 3: 先解析叶节点（校验 id 形态 + 收集各域已占序号）───────────
         leaf_records: list[dict[str, Any]] = []
         seen_leaf_codes: set[str] = set()
+        # 每域下一个可用序号起点：max(existing_codes 该域序号, 本批次叶子 id 序号)
+        seq_floor: dict[str, int] = {}
+
+        def _bump_floor(domain: str, code: str) -> None:
+            if is_node_code(code) and split_domain(code) == domain:
+                cur = int(code.rsplit("-", 1)[1])
+                if cur >= seq_floor.get(domain, 0):
+                    seq_floor[domain] = cur
+
+        for code in existing_codes:
+            dom = split_domain(code)
+            if dom:
+                _bump_floor(dom, code)
+
         for idx, cat in enumerate(categories_data):
             path = cat.get("path", [])
             if not isinstance(path, list):
                 parse_errors.append(f"第 {idx + 1} 条记录 path 字段非 list 类型（实际: {type(path).__name__}）")
                 continue
             code = cat.get("id", "")
-            name = cat.get("label") or cat.get("name", "")  # 兼容旧格式
+            name = cat.get("label") or cat.get("name", "")
             domain = cat.get("domain", "")
             if not code:
                 parse_errors.append(f"第 {idx + 1} 条记录缺少 id 字段")
                 continue
-            if not is_leaf_code(code):
+            if not is_node_code(code):
+                violation = validate_code(code)
                 parse_errors.append(
-                    f"第 {idx + 1} 条记录（{code}）id 不符合叶子编码契约（须以 '-<纯数字>' 结尾，"
-                    f"契约见 shared/utils/category_code.py）"
+                    violation or f"第 {idx + 1} 条记录（{code}）id 不是合法『普通节点』形态（应为 '{{域}}-<数字序号>'）"
                 )
                 continue
             if code in seen_leaf_codes:
@@ -379,20 +377,66 @@ class CategoryRepository:
                 parse_errors.append(f"第 {idx + 1} 条记录（{code}）缺少 label/name 字段")
                 continue
             seen_leaf_codes.add(code)
-            level = len(path)
+            _bump_floor(domain, code)
             leaf_records.append(
                 {
                     "code": code,
                     "name": name,
                     "domain": domain,
                     "path_labels": path,
-                    "level": level,
+                    "level": len(path),
+                    "source": "baseline_yaml",
+                }
+            )
+
+        # ── Phase 2: 生成中间层分组节点（解 A 序号形式，确定性编号）──────────
+        # 去重收集所有中间层 path（前缀），按 (domain, depth, path) 稳定排序后连续编号。
+        intermediate_paths: dict[tuple[str, tuple[str, ...]], None] = {}
+        for rec in leaf_records:
+            path = rec["path_labels"]
+            domain = rec["domain"]
+            for depth in range(2, len(path)):
+                intermediate_paths.setdefault((domain, tuple(path[:depth])), None)
+
+        # 叶子按 path 索引，用于统计每个中间层的直接子节点数（扁平化检验）
+        leaf_paths = [tuple(r["path_labels"]) for r in leaf_records]
+        intermediate_sorted = sorted(intermediate_paths.keys(), key=lambda k: (k[0], len(k[1]), k[1]))
+        intermediate_records: list[dict[str, Any]] = []
+        for domain, sub_path in intermediate_sorted:
+            # code 唯一性由序号分配保证；名称仅存 name 字段
+            seq_floor.setdefault(domain, 0)
+            nxt = seq_floor.get(domain, 0) + 1
+            while f"{domain}-{nxt:03d}" in existing_codes or f"{domain}-{nxt:03d}" in seen_leaf_codes:
+                nxt += 1
+            code = f"{domain}-{nxt:03d}"
+            seq_floor[domain] = nxt
+            # 直接子节点 = 叶子(路径 = sub_path + 1 段) 或 中间层(下一深度以 sub_path 为前缀)
+            child_count = sum(
+                1 for lp in leaf_paths if len(lp) == len(sub_path) + 1 and lp[: len(sub_path)] == sub_path
+            )
+            child_count += sum(
+                1
+                for (d2, ip) in intermediate_paths
+                if d2 == domain and len(ip) == len(sub_path) + 1 and ip[: len(sub_path)] == sub_path
+            )
+            if child_count == 1:
+                parse_errors.append(
+                    f"分组节点 '{' > '.join(sub_path)}' 下只有 1 个子节点，违反扁平化规则；"
+                    f"请在基线中删除该单层级分组，由唯一子节点直接挂到其父节点。"
+                )
+            intermediate_records.append(
+                {
+                    "code": code,
+                    "name": sub_path[-1],
+                    "domain": domain,
+                    "path_labels": list(sub_path),
+                    "level": len(sub_path),
                     "source": "baseline_yaml",
                 }
             )
 
         # ── Phase 4: 合并并按 level 排序（父节点先于子节点写入）──────────────
-        all_records = list(domains.values()) + list(intermediate.values()) + leaf_records
+        all_records = list(domains.values()) + intermediate_records + leaf_records
         all_records.sort(key=lambda r: r["level"])
         return all_records, parse_errors
 
@@ -466,8 +510,13 @@ class CategoryRepository:
         raw_categories = data["categories"]
         yaml_count = len(raw_categories)
 
+        # ── 先加载现有 code，供中间层序号分配避让（防与存量/manual 撞号）───
+        async with self._db.async_session_factory() as session:
+            _existing_result = await session.execute(select(KbCategory.code))
+            existing_codes = {row[0] for row in _existing_result.fetchall() if row[0]}
+
         # ── 四阶段解析：生成完整节点列表（L1 + 中间层 + 叶节点）──────────────
-        all_records, parse_errors = self._parse_baseline_yaml(raw_categories)
+        all_records, parse_errors = self._parse_baseline_yaml(raw_categories, existing_codes)
         if parse_errors:
             errors.extend(parse_errors)
             return {
@@ -482,18 +531,23 @@ class CategoryRepository:
             }
         total = len(all_records)
 
-        # 域节点/中间层 code 由 path 派生（末段为中文或 L1 后缀），不匹配叶子形态
-        # 属已知设计，不阻断导入；但记录清单供巡检对照——若某中间层因数据漂移退化
-        # 为叶子（子分类全部缺失），它会被 leaf_only 放行且 code 异常，正是隐形分类
-        # 的来源形态（Q2026101026818 复盘）。
-        nonconforming_derived = sorted(rec["code"] for rec in all_records if not is_leaf_code(rec["code"]))
-        if nonconforming_derived:
-            logger.warning(
-                event="repo_import_derived_nonconforming_code",
-                message=f"{len(nonconforming_derived)} 个域/中间层节点 code 为 path 派生形态（非叶子形态），属已知设计",
-                codes=nonconforming_derived,
-                trace_id=trace_id,
+        # 解 A 下所有节点 code 均为合法形态（域根 {域}-L1 或普通节点 {域}-{序号}）；
+        # 若解析产物出现非法形态，说明文法被绕过，必须拦截并告警（防隐形分类）。
+        malformed_derived = sorted(rec["code"] for rec in all_records if not is_valid_category_code(rec["code"]))
+        if malformed_derived:
+            errors.append(
+                f"解析产物存在非法 code 形态：{malformed_derived}（应仅域根 '{{域}}-L1' 或普通节点 '{{域}}-<序号>'）"
             )
+            return {
+                "success": False,
+                "dry_run": dry_run,
+                "yaml_categories": yaml_count,
+                "total": 0,
+                "created": 0,
+                "updated": 0,
+                "errors": errors,
+                "details": details,
+            }
 
         logger.info(
             event="repo_import_start",
@@ -775,28 +829,23 @@ class CategoryRepository:
             if level > 4:
                 raise ValueError("分类深度超出最大限制 (L4)")
 
-            # 3. 确定 code (自动生成或使用用户输入)
+            # 3. 确定 code —— 解 A「角色无关统一 ID」：所有节点（叶子/分组）一律
+            #    {域}-{纯数字序号}，每域一个共享序号空间；叶子/分组由结构判定，
+            #    绝不把层级/名称编码进不可变 code。
+            existing_codes_result = await session.execute(select(KbCategory.code))
+            existing_codes = {row[0] for row in existing_codes_result.fetchall() if row[0]}
             if not code:
-                # 按照 <domain>-L<level>-<seq> 规则生成，防止重名
-                seq = 1
-                while True:
-                    candidate = f"{domain}-L{level}-{seq:03d}"
-                    conflict_result = await session.execute(select(KbCategory.id).where(KbCategory.code == candidate))
-                    if conflict_result.scalar_one_or_none() is None:
-                        code = candidate
-                        break
-                    seq += 1
+                # 新增自动按序分配该域下一个序号
+                code = next_node_code(domain, existing_codes)
             else:
-                # 手动输入的 code 必须符合形态契约（『前缀-纯数字』结尾，叶子或中间层形态），
-                # 否则拒绝进入，从入口堵住漂移（契约见 shared/utils/category_code.py）
-                if not is_leaf_code(code):
+                # 用户显式输入的 code 必须是合法「普通节点」形态（{域}-{纯数字}），
+                # 否则从入口堵住名称形式 / 层级形式漂移（契约见 shared/utils/category_code.py）
+                violation = validate_code(code)
+                if violation is not None or not is_node_code(code):
                     raise ValueError(
-                        f"分类编码 '{code}' 不符合形态契约（须为『前缀-纯数字』结尾，"
-                        f"如 虚拟机-015 或 虚拟机-L2-分组），已拒绝创建。"
+                        violation or f"分类编码 '{code}' 不合法，须为 '{{域}}-<纯数字序号>' 形式（如 虚拟机-017）"
                     )
-                # 检查用户输入的 code 是否冲突
-                conflict_result = await session.execute(select(KbCategory.id).where(KbCategory.code == code))
-                if conflict_result.scalar_one_or_none() is not None:
+                if code in existing_codes:
                     raise ValueError(f"分类编码 '{code}' 已存在")
 
             # 4. 创建分类对象并落库
@@ -874,7 +923,7 @@ class CategoryRepository:
                     has_child = (
                         await session.execute(select(KbCategory.id).where(KbCategory.parent_id == old_parent_id))
                     ).first()
-                    if has_child is None and not is_leaf_code(parent_obj.code):
+                    if has_child is None and not is_domain_root_code(parent_obj.code):
                         logger.warning(
                             event="repo_category_parent_degenerated",
                             parent_id=old_parent_id,
@@ -975,7 +1024,11 @@ class CategoryRepository:
             # 记录告警事件（不阻断移动，合法操作仍允许，但需被巡检 E1 捕获）
             if old_parent_id is not None and old_parent_id != new_parent_id:
                 old_parent = next((c for c in all_cats if c.id == old_parent_id), None)
-                if old_parent is not None and not is_leaf_code(old_parent.code) and not children_map.get(old_parent_id):
+                if (
+                    old_parent is not None
+                    and not is_domain_root_code(old_parent.code)
+                    and not children_map.get(old_parent_id)
+                ):
                     logger.warning(
                         event="repo_category_parent_degenerated",
                         parent_id=old_parent_id,
