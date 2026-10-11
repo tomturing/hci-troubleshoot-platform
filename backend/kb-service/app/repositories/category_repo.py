@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 import yaml
@@ -38,6 +39,7 @@ from app.models.kb_category import KbCategory
 
 if TYPE_CHECKING:
     from shared.database.postgres import DatabaseManager
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = get_logger("kb-service-category-repo")
 
@@ -47,6 +49,20 @@ class CategoryRepository:
 
     def __init__(self, db_manager: DatabaseManager):
         self._db = db_manager
+
+    @asynccontextmanager
+    async def _acquire_session(self, ext_session: AsyncSession | None):
+        """统一事务边界：传入 ``ext_session`` 则**复用外部 session**（不拥有提交权，
+        由调用方统一 commit）；否则自开新 session 并拥有提交权。
+
+        yield ``(session, owns_commit)``，方法内部据此决定是否 commit，从而让
+        “单换父”/“单重排”/“换父+重排”共享同一套写入内核与单一提交点。
+        """
+        if ext_session is not None:
+            yield ext_session, False
+        else:
+            async with self._db.async_session_factory() as own:
+                yield own, True
 
     async def get_all(self, *, leaf_only: bool = False) -> list[KbCategory]:
         """获取所有分类（按 level + domain 排序），含 KBD/SOP 统计
@@ -946,117 +962,138 @@ class CategoryRepository:
         code: str,
         new_parent_id: int | None,
     ) -> KbCategory | None:
-        """级联更新父节点关系（包含防环校验、level、domain、path_labels 自动重组）"""
+        """级联更新父节点关系（公开薄封装：自开事务 + 提交）。
+
+        与 `move_and_resequence` 共用 `_do_update_parent` 内核，保证单换父与
+        “换父+重排”原子路径逻辑一致。
+        """
         trace_id = get_current_trace_id()
         async with self._db.async_session_factory() as session:
-            # 1. 查询当前节点
-            result = await session.execute(select(KbCategory).where(KbCategory.code == code))
-            category = result.scalar_one_or_none()
-            if not category:
-                raise ValueError("分类不存在")
-
-            # 2. 防环校验 (避免拖入自身或自身的子孙节点中)
-            if new_parent_id is not None:
-                if new_parent_id == category.id:
-                    raise ValueError("无法将节点拖拽到其自身下")
-
-                curr_parent_id = new_parent_id
-                visited = set()
-                while curr_parent_id is not None:
-                    if curr_parent_id in visited:
-                        raise ValueError("分类层级存在循环引用")
-                    visited.add(curr_parent_id)
-
-                    if curr_parent_id == category.id:
-                        raise ValueError("无法将节点拖拽到其自身的子分类下")
-
-                    parent_parent_res = await session.execute(
-                        select(KbCategory.parent_id).where(KbCategory.id == curr_parent_id)
-                    )
-                    curr_parent_id = parent_parent_res.scalar_one_or_none()
-
-            # 3. 计算新的 level, domain, path_labels
-            if new_parent_id is not None:
-                parent_result = await session.execute(select(KbCategory).where(KbCategory.id == new_parent_id))
-                parent = parent_result.scalar_one_or_none()
-                if not parent:
-                    raise ValueError("指定的新父节点不存在")
-
-                new_level = parent.level + 1
-                new_domain = parent.domain
-                new_path_labels = (parent.path_labels or []) + [category.name]
-            else:
-                new_level = 1
-                new_domain = category.domain or category.name
-                new_path_labels = [category.name]
-
-            if new_level > 4:
-                raise ValueError("拖拽后分类深度超出最大限制 (L4)")
-
-            # 4. 更新当前节点
-            old_parent_id = category.parent_id  # 移动前的原父，用于退化护栏
-            category.parent_id = new_parent_id
-            category.level = new_level
-            category.domain = new_domain
-            category.path_labels = new_path_labels
-
-            # 5. 递归查询并级联更新所有子孙节点
-            all_res = await session.execute(select(KbCategory))
-            all_cats = all_res.scalars().all()
-
-            from collections import defaultdict
-
-            children_map = defaultdict(list)
-            for cat in all_cats:
-                if cat.parent_id is not None:
-                    children_map[cat.parent_id].append(cat)
-
-            def recurse_update(parent_cat: KbCategory):
-                for child in children_map[parent_cat.id]:
-                    child.level = parent_cat.level + 1
-                    child.domain = parent_cat.domain
-                    child.path_labels = (parent_cat.path_labels or []) + [child.name]
-                    if child.level > 4:
-                        raise ValueError(f"子分类 '{child.name}' 级联层级深度超出最大限制 (L4)")
-                    recurse_update(child)
-
-            recurse_update(category)
-
-            # 退化护栏：若原父节点（非新父）因子节点被移走而变为「无子的中间层」，
-            # 记录告警事件（不阻断移动，合法操作仍允许，但需被巡检 E1 捕获）
-            if old_parent_id is not None and old_parent_id != new_parent_id:
-                old_parent = next((c for c in all_cats if c.id == old_parent_id), None)
-                if (
-                    old_parent is not None
-                    and not is_domain_root_code(old_parent.code)
-                    and not children_map.get(old_parent_id)
-                ):
-                    logger.warning(
-                        event="repo_category_parent_degenerated",
-                        parent_id=old_parent_id,
-                        parent_code=old_parent.code,
-                        moved_child_code=code,
-                        trace_id=trace_id,
-                    )
-
+            category = await self._do_update_parent(session, code, new_parent_id, trace_id)
             await session.commit()
             await session.refresh(category)
-
-            logger.info(
-                event="repo_update_parent_recursive_success",
-                code=code,
-                new_parent_id=new_parent_id,
-                category_level=new_level,
-                domain=new_domain,
-                trace_id=trace_id,
-            )
             return category
+
+    async def _do_update_parent(
+        self,
+        session: Any,
+        code: str,
+        new_parent_id: int | None,
+        trace_id: str,
+    ) -> KbCategory:
+        """在**给定 session** 内级联更新父节点（防环 / level / domain / path_labels 重组）。
+
+        只 flush 不 commit，以便同一事务内后续（如 `_do_resequence`）能读到最新父子结构。
+        """
+        # 1. 查询当前节点
+        result = await session.execute(select(KbCategory).where(KbCategory.code == code))
+        category = result.scalar_one_or_none()
+        if not category:
+            raise ValueError("分类不存在")
+
+        # 2. 防环校验 (避免拖入自身或自身的子孙节点中)
+        if new_parent_id is not None:
+            if new_parent_id == category.id:
+                raise ValueError("无法将节点拖拽到其自身下")
+
+            curr_parent_id = new_parent_id
+            visited = set()
+            while curr_parent_id is not None:
+                if curr_parent_id in visited:
+                    raise ValueError("分类层级存在循环引用")
+                visited.add(curr_parent_id)
+
+                if curr_parent_id == category.id:
+                    raise ValueError("无法将节点拖拽到其自身的子分类下")
+
+                parent_parent_res = await session.execute(
+                    select(KbCategory.parent_id).where(KbCategory.id == curr_parent_id)
+                )
+                curr_parent_id = parent_parent_res.scalar_one_or_none()
+
+        # 3. 计算新的 level, domain, path_labels
+        if new_parent_id is not None:
+            parent_result = await session.execute(select(KbCategory).where(KbCategory.id == new_parent_id))
+            parent = parent_result.scalar_one_or_none()
+            if not parent:
+                raise ValueError("指定的新父节点不存在")
+
+            new_level = parent.level + 1
+            new_domain = parent.domain
+            new_path_labels = (parent.path_labels or []) + [category.name]
+        else:
+            new_level = 1
+            new_domain = category.domain or category.name
+            new_path_labels = [category.name]
+
+        if new_level > 4:
+            raise ValueError("拖拽后分类深度超出最大限制 (L4)")
+
+        # 4. 更新当前节点
+        old_parent_id = category.parent_id  # 移动前的原父，用于退化护栏
+        category.parent_id = new_parent_id
+        category.level = new_level
+        category.domain = new_domain
+        category.path_labels = new_path_labels
+
+        # 5. 递归查询并级联更新所有子孙节点
+        all_res = await session.execute(select(KbCategory))
+        all_cats = all_res.scalars().all()
+
+        from collections import defaultdict
+
+        children_map = defaultdict(list)
+        for cat in all_cats:
+            if cat.parent_id is not None:
+                children_map[cat.parent_id].append(cat)
+
+        def recurse_update(parent_cat: KbCategory):
+            for child in children_map[parent_cat.id]:
+                child.level = parent_cat.level + 1
+                child.domain = parent_cat.domain
+                child.path_labels = (parent_cat.path_labels or []) + [child.name]
+                if child.level > 4:
+                    raise ValueError(f"子分类 '{child.name}' 级联层级深度超出最大限制 (L4)")
+                recurse_update(child)
+
+        recurse_update(category)
+
+        # 退化护栏：若原父节点（非新父）因子节点被移走而变为「无子的中间层」，
+        # 记录告警事件（不阻断移动，合法操作仍允许，但需被巡检 E1 捕获）
+        if old_parent_id is not None and old_parent_id != new_parent_id:
+            old_parent = next((c for c in all_cats if c.id == old_parent_id), None)
+            if (
+                old_parent is not None
+                and not is_domain_root_code(old_parent.code)
+                and not children_map.get(old_parent_id)
+            ):
+                logger.warning(
+                    event="repo_category_parent_degenerated",
+                    parent_id=old_parent_id,
+                    parent_code=old_parent.code,
+                    moved_child_code=code,
+                    trace_id=trace_id,
+                )
+
+        # 不 commit，仅 flush 使同事务后续可读；调用方控制提交边界
+        await session.flush()
+        logger.info(
+            event="repo_update_parent_recursive_success",
+            code=code,
+            new_parent_id=new_parent_id,
+            category_level=new_level,
+            domain=new_domain,
+            trace_id=trace_id,
+        )
+        return category
 
     async def resequence_domain(
         self,
         domain: str,
         parent_id: int | None,
         sibling_order: list[str] | None,
+        *,
+        ext_session: AsyncSession | None = None,
     ) -> dict[str, Any]:
         """拖拽重排：按目标父节点的新兄弟顺序，对整个域跑一次前序 DFS 重排 code。
 
@@ -1085,7 +1122,7 @@ class CategoryRepository:
             {success, domain, changed, mapping:[{old,new}], trace_id}
         """
         trace_id = get_current_trace_id()
-        async with self._db.async_session_factory() as session:
+        async with self._acquire_session(ext_session) as (session, owns_commit):
             rows = (
                 (
                     await session.execute(
@@ -1258,7 +1295,8 @@ class CategoryRepository:
                 )
                 await session.execute(text("ALTER TABLE sop_document VALIDATE CONSTRAINT fk_sop_document_category_id"))
 
-            await session.commit()
+            if owns_commit:
+                await session.commit()
             logger.info(
                 event="repo_resequence_domain_success",
                 domain=domain,
@@ -1273,3 +1311,46 @@ class CategoryRepository:
                 "mapping": [{"old": o, "new": n} for o, n, _ in changed],
                 "trace_id": trace_id,
             }
+
+    async def move_and_resequence(
+        self,
+        code: str,
+        new_parent_id: int | None,
+        sibling_order: list[str] | None,
+    ) -> tuple[KbCategory | None, dict | None]:
+        """拖拽落点的**单事务原子**编排：换父（结构/层级/路径）+ 按新兄弟序重排整域 code。
+
+        与旧版“两步分提交”不同：两个子操作共享**同一个 session 与唯一 commit**，
+        任一环节抛错则整体回滚，杜绝“换父成功但顺序未物化”的部分成功态。
+
+        流程：`_do_update_parent`（flush 不提交）→ 同事务内 `resequence_domain(ext_session=...)`
+        （复用 session、不单独提交）→ **一次 commit** → 失效缓存后按稳定 id 重取最新 code。
+
+        Returns:
+            (被拖拽节点的最新快照, resequence 结果或 None)
+        """
+        trace_id = get_current_trace_id()
+        async with self._db.async_session_factory() as session:
+            # 1) 换父：同事务内 flush（使 resequence 读到最新父子结构），不提交
+            category = await self._do_update_parent(session, code, new_parent_id, trace_id)
+            # 2) 重排：复用同一 session（owns_commit=False），失败则随外层 async with 回滚
+            reseq: dict | None = None
+            if sibling_order is not None:
+                reseq = await self.resequence_domain(
+                    domain=category.domain,
+                    parent_id=new_parent_id,
+                    sibling_order=sibling_order,
+                    ext_session=session,
+                )
+            # 3) 唯一提交点：换父与重排原子生效（或原子回滚）
+            await session.commit()
+            # 重排用 raw SQL 绕过 ORM，提交后按主键 refresh 取回新 code
+            await session.refresh(category)
+            logger.info(
+                event="repo_move_and_resequence_commit",
+                code=code,
+                new_parent_id=new_parent_id,
+                resequence_changed=(reseq or {}).get("changed"),
+                trace_id=trace_id,
+            )
+            return category, reseq

@@ -413,32 +413,19 @@ class CategoryService:
         new_parent_id: int | None,
         sibling_order: list[str] | None,
     ) -> tuple[KbCategory | None, dict | None]:
-        """拖拽落点后：先换父（结构/层级/路径），再按新兄弟序重排整域 code。
+        """拖拽落点后：单事务原子地换父 + 按新兄弟序重排整域 code。
 
-        两步分提交：第一步 update_parent_recursive 只改 parent_id/level/path（已验证）；
-        第二步 resequence_domain 把拖拽顺序物化为 code 并 remap 下游引用。若重排
-        失败，最坏情况仅为“换父成功但顺序未物化”，不破坏数据完整性。
+        下沉到 repo.move_and_resequence：换父与重排共享同一 session 与唯一 commit，
+        任一环节失败整体回滚，不再存在“换父成功但顺序未物化”的部分成功窗口。
 
         Returns:
-            (被拖拽节点的最新 KbCategory或 None, resequence 结果或 None)
+            (被拖拽节点的最新快照或 None, resequence 结果或 None)
         """
-        category = await self._repo.update_parent_recursive(
+        category, reseq = await self._repo.move_and_resequence(
             code=code,
             new_parent_id=new_parent_id,
+            sibling_order=sibling_order,
         )
-        if not category:
-            return None, None
-        moved_id = category.id
-        reseq: dict | None = None
-        if sibling_order is not None:
-            reseq = await self._repo.resequence_domain(
-                domain=category.domain,
-                parent_id=new_parent_id,
-                sibling_order=sibling_order,
-            )
-            # 重排后被拖拽节点的 code 可能已变，按稳定 id 重取最新快照
-            refreshed = await self._repo.get_by_id(moved_id)
-            if refreshed:
-                category = refreshed
-        await self._refresh_cache()
+        if category:
+            await self._refresh_cache()
         return category, reseq

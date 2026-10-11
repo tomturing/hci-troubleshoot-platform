@@ -664,3 +664,79 @@ async def test_resequence_remaps_all_code_referencing_columns():
     assert "selected_category = NULL" not in joined
     # 3) 有 FK 的 kbd/sop 悬空清理必须保留（重加 FK 前自校验）
     assert "UPDATE kbd_entry k SET category_id = NULL" in joined
+
+
+# ─── 拖拽重排单事务原子性 move_and_resequence（消除两步分提交的部分成功态）──
+
+
+class _RecordingSession:
+    """一个可记录的假 session（异步上下文），只统计 commit/flush/refresh 调用次数，
+    用于断言 move_and_resequence 的事务边界（唯一提交 / 失败不提交）。"""
+
+    def __init__(self) -> None:
+        self.commits = 0
+        self.flushes = 0
+        self.refreshes = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def commit(self):
+        self.commits += 1
+
+    async def flush(self):
+        self.flushes += 1
+
+    async def refresh(self, obj):
+        self.refreshes += 1
+
+
+@pytest.mark.anyio
+async def test_move_and_resequence_rolls_back_when_resequence_fails():
+    """重排校验失败时，共享事务**从未 commit**——证明换父不会单独落库，整体回滚。"""
+    cat = mock_category(20, "虚拟机-001", "FC存储", 2, 10, "虚拟机", ["虚拟机", "FC存储"])
+    session = _RecordingSession()
+    db = MagicMock()
+    db.async_session_factory.return_value = session
+    repo = CategoryRepository(db)
+
+    with (
+        patch.object(CategoryRepository, "_do_update_parent", AsyncMock(return_value=cat)),
+        patch.object(
+            CategoryRepository,
+            "resequence_domain",
+            AsyncMock(side_effect=ValueError("兄弟顺序与目标父实际子节点不一致")),
+        ),
+    ):
+        with pytest.raises(ValueError, match="兄弟顺序与目标父实际子节点不一致"):
+            await repo.move_and_resequence(code="虚拟机-001", new_parent_id=10, sibling_order=["虚拟机-001"])
+
+    assert session.commits == 0  # 关键：失败即整体回滚，无部分提交
+
+
+@pytest.mark.anyio
+async def test_move_and_resequence_commits_once_on_shared_session():
+    """成功时：唯一一次 commit；且 resequence_domain 复用与换父**同一个 session**（ext_session）。"""
+    cat = mock_category(20, "虚拟机-001", "FC存储", 2, 10, "虚拟机", ["虚拟机", "FC存储"])
+    reseq_ret = {"success": True, "domain": "虚拟机", "changed": 2, "mapping": [], "trace_id": "t"}
+    session = _RecordingSession()
+    db = MagicMock()
+    db.async_session_factory.return_value = session
+    repo = CategoryRepository(db)
+
+    with (
+        patch.object(CategoryRepository, "_do_update_parent", AsyncMock(return_value=cat)),
+        patch.object(CategoryRepository, "resequence_domain", AsyncMock(return_value=reseq_ret)) as mock_reseq,
+    ):
+        category, reseq = await repo.move_and_resequence(
+            code="虚拟机-001", new_parent_id=10, sibling_order=["虚拟机-001", "虚拟机-002"]
+        )
+
+    assert session.commits == 1  # 单一提交点：换父+重排原子生效
+    assert category is cat
+    assert reseq == reseq_ret
+    # resequence_domain 以 ext_session 复用同一 session，不会另开事务/自行 commit
+    assert mock_reseq.await_args.kwargs["ext_session"] is session
