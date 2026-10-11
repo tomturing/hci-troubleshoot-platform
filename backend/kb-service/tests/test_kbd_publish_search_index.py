@@ -104,6 +104,8 @@ async def test_approve_clears_stale_embedding_when_provider_fails(reference_only
         patch.object(admin, "_db_manager", db),
         patch.object(admin, "_embedding_service", embedding),
         patch.object(admin, "segment", return_value="虚拟机 镜像 异常"),
+        # 叶子绑定写入门禁与本用例（embedding 清理）正交：假定分类合法叶子，放行至发布主流程。
+        patch.object(admin, "is_category_leaf", AsyncMock(return_value=True)),
         patch.object(
             admin,
             "_freeze_approved_expert_revision",
