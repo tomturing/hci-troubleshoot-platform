@@ -35,6 +35,28 @@ export function extractNodes(data: { domains?: Record<string, RawCategoryNode[]>
   return Object.values(domains).flat()
 }
 
+// 收集「目标节点自身 + 其祖先链」的稳定主键（id_in_db），供 el-tree 的
+// default-expanded-keys 使用：分类树不再 default-expand-all 后，选中某个深层
+// 节点时需展开其祖先才能让它可见，而其余分支仍尊重用户既有折叠偏好。
+// 沿 parent_id(DB 主键) → id_in_db 逐级上溯，seen 集合防御环状脏数据。
+export function collectAncestorPathKeys(
+  nodes: { id_in_db: number | string; parent_id: number | string | null }[],
+  targetKey: number | string | null | undefined,
+): (number | string)[] {
+  if (targetKey == null) return []
+  const byId = new Map<number | string, { parent_id: number | string | null }>()
+  nodes.forEach((n) => byId.set(n.id_in_db, n))
+  const keys: (number | string)[] = []
+  const seen = new Set<number | string>()
+  let cur: number | string | null = targetKey
+  while (cur != null && byId.has(cur) && !seen.has(cur)) {
+    seen.add(cur)
+    keys.push(cur)
+    cur = byId.get(cur)?.parent_id ?? null
+  }
+  return keys
+}
+
 export function flattenOptions(nodes: RawCategoryNode[]): CategoryOption[] {
   return nodes
     .map((n) => ({

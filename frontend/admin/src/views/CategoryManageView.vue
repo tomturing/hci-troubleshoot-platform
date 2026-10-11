@@ -5,6 +5,7 @@ import { Histogram, Upload, Download, WarningFilled, Plus, Edit, Delete, VideoPl
 import { marked } from 'marked'
 import DOMPurify, { type Config as DOMPurifyConfig } from 'dompurify'
 import type { UploadFile, UploadRawFile, UploadInstance } from 'element-plus'
+import { collectAncestorPathKeys } from '@/composables/useCategories'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 类型定义（适配 kb_category 表结构）
@@ -415,6 +416,16 @@ function handleNodeCollapse(node: any) {
   expandedKeys.value = expandedKeys.value.filter((x) => x !== k)
 }
 
+// 选中某分类时：把其祖先链（及自身）并入 expandedKeys，确保子树不再默认全开时，
+// 选中节点仍能在「相关分支树」中可见（其余分支尊重用户既有折叠偏好）。
+function expandAncestorsOf(cat: any) {
+  const all = domainGroups.value.flatMap((g) => g.categories) as any[]
+  const targetKey = cat?.id_in_db ?? cat?.id
+  const pathKeys = collectAncestorPathKeys(all, targetKey)
+  const toAdd = pathKeys.filter((k) => k != null && !expandedKeys.value.includes(k))
+  if (toAdd.length) expandedKeys.value = [...expandedKeys.value, ...toAdd]
+}
+
 // 选中分类时的关联子树
 const selectedSubtree = computed(() => {
   if (!selectedCategory.value) return []
@@ -792,6 +803,8 @@ async function fetchCategories() {
 function selectCategory(cat: KbCategory) {
   selectedCategory.value = cat
   editForm.is_active = cat.is_active
+  // 子树不再 default-expand-all：显式展开选中项的祖先链以保证可见
+  expandAncestorsOf(cat)
   // 加载已发布 SOP/KBD 列表
   fetchPublishedList(cat.code)
 }
@@ -1358,16 +1371,18 @@ onMounted(fetchCategories)
             <div class="tree-scroll-wrapper is-subtree">
               <el-tree
                 :data="selectedSubtree"
-                node-key="code"
+                node-key="id_in_db"
                 :props="{ label: 'name', children: 'children' }"
-                default-expand-all
+                :default-expanded-keys="expandedKeys"
                 highlight-current
                 draggable
                 :allow-drag="handleAllowDrag"
                 :allow-drop="handleAllowDrop"
                 @node-drop="handleNodeDrop"
                 @node-click="handleNodeClick"
-                :current-node-key="selectedCategory.code"
+                @node-expand="handleNodeExpand"
+                @node-collapse="handleNodeCollapse"
+                :current-node-key="selectedCategory.id_in_db ?? selectedCategory.id"
               >
                 <template #default="{ node, data }: { node: any; data: any }">
                   <div class="custom-tree-node" :class="{ 'is-selected': selectedCategory?.code === data.code }">

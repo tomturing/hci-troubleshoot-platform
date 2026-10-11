@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildCategoryTree, flattenOptions, type RawCategoryNode } from '../useCategories'
+import { buildCategoryTree, collectAncestorPathKeys, flattenOptions, type RawCategoryNode } from '../useCategories'
 
 // 模拟后端 grouped=true 返回：虚拟机域根(id=1) → 迁移类分组(id=2) → 两个叶子(id=3,4)
 const nodes: RawCategoryNode[] = [
@@ -38,5 +38,30 @@ describe('flattenOptions', () => {
     const flat = flattenOptions(nodes)
     expect(flat.map((o) => o.code)).toEqual(['虚拟机-001', '虚拟机-002', '虚拟机-003', '虚拟机-L1'])
     expect(flat[0].path_labels).toEqual(['虚拟机', '迁移类'])
+  })
+})
+
+describe('collectAncestorPathKeys（子树取消全展开后，选中项祖先链展开）', () => {
+  it('叶子返回 自身 → 父 → 域根 的稳定主键链', () => {
+    // id=3(热迁移失败) → id=2(迁移类) → id=1(虚拟机域根)
+    expect(collectAncestorPathKeys(nodes, 3)).toEqual([3, 2, 1])
+  })
+
+  it('域根自身返回仅含根的单元素', () => {
+    expect(collectAncestorPathKeys(nodes, 1)).toEqual([1])
+  })
+
+  it('targetKey 为空或不在节点集时返回空数组（不伪造展开）', () => {
+    expect(collectAncestorPathKeys(nodes, null)).toEqual([])
+    expect(collectAncestorPathKeys(nodes, undefined)).toEqual([])
+    expect(collectAncestorPathKeys(nodes, 999)).toEqual([])
+  })
+
+  it('环状脏数据不导致死循环（seen 集合防御）', () => {
+    const cyclic: RawCategoryNode[] = [
+      { code: 'A', name: 'A', level: 2, id_in_db: 10, parent_id: 11, path_labels: ['A'] },
+      { code: 'B', name: 'B', level: 2, id_in_db: 11, parent_id: 10, path_labels: ['B'] },
+    ]
+    expect(collectAncestorPathKeys(cyclic, 10)).toEqual([10, 11])
   })
 })
