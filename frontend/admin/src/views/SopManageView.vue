@@ -80,7 +80,7 @@ interface TreeDataResponse {
   tree_validation_status: string
 }
 
-const { categoryOptions, categoriesLoading, fetchCategories } = useCategories()
+const { categoryTree, leafCategoryOptions, categoriesLoading, fetchCategories } = useCategories()
 
 // ─── 响应式状态 ───
 const loading = ref(false)
@@ -615,25 +615,20 @@ onMounted(() => {
           </el-select>
         </el-col>
         <el-col :span="6">
-          <el-select
+          <el-tree-select
             v-model="categoryFilter"
+            :data="categoryTree"
+            node-key="code"
+            :props="{ label: 'label', children: 'children' }"
             filterable
             clearable
             placeholder="按分类筛选"
             style="width: 100%"
             :loading="categoriesLoading"
+            :render-after-expand="false"
+            check-strictly
             @change="fetchDocuments"
-          >
-            <el-option
-              v-for="cat in categoryOptions"
-              :key="cat.code"
-              :value="cat.code"
-              :label="`${cat.code}  ${cat.name}`"
-            >
-              <span style="font-family:monospace;color:#606266;font-size:12px">{{ cat.code }}</span>
-              <span style="margin-left:8px;color:#909399;font-size:12px">{{ cat.name }}</span>
-            </el-option>
-          </el-select>
+          />
         </el-col>
         <el-col :span="4">
           <div class="filter-btn-group">
@@ -873,12 +868,12 @@ onMounted(() => {
               filterable
               clearable
               allow-create
-              placeholder="选择或搜索分类（如 虚拟机-003）"
+              placeholder="选择或搜索分类（仅叶子，如 虚拟机-003）"
               style="width: 100%"
               :loading="categoriesLoading"
             >
               <el-option
-                v-for="cat in categoryOptions"
+                v-for="cat in leafCategoryOptions"
                 :key="cat.code"
                 :value="cat.code"
                 :label="`${cat.code}  ${cat.name}`"
@@ -962,12 +957,12 @@ onMounted(() => {
             filterable
             clearable
             allow-create
-            placeholder="选择或搜索分类（可选，后续可编辑）"
+            placeholder="选择或搜索分类（仅叶子，可选，后续可编辑）"
             style="width: 100%"
             :loading="categoriesLoading"
           >
             <el-option
-              v-for="cat in categoryOptions"
+              v-for="cat in leafCategoryOptions"
               :key="cat.code"
               :value="cat.code"
               :label="`${cat.code}  ${cat.name}`"

@@ -75,8 +75,6 @@ def set_dependencies(db: DatabaseManager) -> None:
     _db_manager = db
 
 
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # POST /api/kb/classify — LLM 分类路由（KBD 生产流水线使用）
 # ─────────────────────────────────────────────────────────────────────────────
@@ -117,14 +115,22 @@ _KBD_CLASSIFY_PROMPT_NAME = "kbd_classify_v1"
 
 
 async def fetch_categories_for_classify(db_manager: DatabaseManager) -> list[dict]:
-    """从 kb_category 表读取所有活跃分类节点（用于 LLM 分类）"""
+    """从 kb_category 表读取所有活跃的**叶子**分类节点（用于 LLM 分类）。
+
+    叶子权威判定＝结构性 NOT EXISTS（无子节点），不依赖 code 形态：
+    分组/域根节点不作为可归类目标（KBD 必须归到叶子，否则下游按叶子精确匹配会查不到，
+    即分类-意图死锁）。
+    """
     async with db_manager.async_session_factory() as session:
         result = await session.execute(
             text(
                 """
                 SELECT code, name, domain, path_labels
-                FROM kb_category
+                FROM kb_category c
                 WHERE code IS NOT NULL AND is_active = TRUE
+                  AND NOT EXISTS (
+                      SELECT 1 FROM kb_category c2 WHERE c2.parent_id = c.id
+                  )
                 ORDER BY domain, code
                 """
             )
@@ -185,6 +191,7 @@ async def call_llm(prompt: str, *, prompt_revision: str = "") -> dict:
     )
 
     try:
+
         async def _call():
             return await client.chat.completions.create(
                 model=LLM_MODEL,

@@ -210,7 +210,9 @@ def _require_kbd_consumer_or_reference(document: dict[str, Any]) -> None:
         )
         for signal in document.get("signals") or []
     ):
-        raise HTTPException(status_code=422, detail="可执行诊断至少需要一条消费者 QFK 信号；无信号案例可发布为仅案例推荐")
+        raise HTTPException(
+            status_code=422, detail="可执行诊断至少需要一条消费者 QFK 信号；无信号案例可发布为仅案例推荐"
+        )
 
 
 def _humanize_signal_validation_error(error: jsonschema.ValidationError, signals: list[Any]) -> dict[str, Any]:
@@ -1004,6 +1006,32 @@ async def kbd_category_stats(
     }
 
 
+async def _resolve_category_subtree_codes(session, code: str) -> list[str]:
+    """给定分类 code，返回其自身 + 全部后代节点 code（按 parent_id 递归展开子树）。
+
+    解 A 下 code 不再编码层级角色，分组与叶子共享 {域}-{序号} 文法；KBD/SOP 均挂叶子。
+    为使「筛选下拉选中分组」能级联命中其子树叶子上的记录（而非精确等值匹配返回空），
+    必须按 parent_id 递归展开。查不到时回退为自身 code，保证叶子选择行为不变。
+    """
+    result = await session.execute(
+        text(
+            """
+            WITH RECURSIVE subtree AS (
+                SELECT id, code FROM kb_category WHERE code = :code
+                UNION ALL
+                SELECT c.id, c.code
+                FROM kb_category c
+                JOIN subtree s ON c.parent_id = s.id
+            )
+            SELECT code FROM subtree
+            """
+        ),
+        {"code": code},
+    )
+    codes = [row[0] for row in result.fetchall() if row[0]]
+    return codes or [code]
+
+
 @kbd_router.get("/pending")
 async def list_kbd_entries(
     request: Request,
@@ -1086,8 +1114,15 @@ async def list_kbd_entries(
             if category_id == "__uncategorized__":
                 where_clauses.append("ai_category_id IS NULL")
             else:
-                where_clauses.append("(ai_category_id = :category_id OR category_id = :category_id)")
-                params["category_id"] = category_id
+                # 选中分组时级联展开子树，命中挂在其叶子上的 KBD（选中叶子时子树=自身，行为不变）
+                cat_codes = await _resolve_category_subtree_codes(session, category_id)
+                keys = []
+                for _i, _c in enumerate(cat_codes):
+                    _k = f"cat_{_i}"
+                    params[_k] = _c
+                    keys.append(f":{_k}")
+                _in = ", ".join(keys)
+                where_clauses.append(f"(ai_category_id IN ({_in}) OR category_id IN ({_in}))")
 
         # 按案例 ID 精准匹配
         if support_id:
@@ -2550,7 +2585,7 @@ async def update_review_owner(request: Request, owner_id: int, body: UpdateRevie
             text(
                 f"""
                 UPDATE kbd_review_owner
-                SET {', '.join(updates)}
+                SET {", ".join(updates)}
                 WHERE id = :id
                 RETURNING id, name, email, created_at, updated_at
                 """
@@ -3189,11 +3224,15 @@ async def review_kbd_signals(request: Request, kbd_id: int) -> dict[str, Any]:
         except jsonschema.ValidationError as exc:
             issues.append(_humanize_signal_validation_error(exc, []))
         else:
-            platform_status.append({
-                "code": "KBD_REFERENCE_ONLY", "level": "info", "expert_action_required": False,
-                "blocks_publish": False,
-                "message": "无信号案例发布后按标题和问题描述参与推荐，不自动确认根因或生成采集资源。",
-            })
+            platform_status.append(
+                {
+                    "code": "KBD_REFERENCE_ONLY",
+                    "level": "info",
+                    "expert_action_required": False,
+                    "blocks_publish": False,
+                    "message": "无信号案例发布后按标题和问题描述参与推荐，不自动确认根因或生成采集资源。",
+                }
+            )
     else:
         for issue in expert_editor_issues(signals_doc):
             issues.append(
@@ -3213,7 +3252,9 @@ async def review_kbd_signals(request: Request, kbd_id: int) -> dict[str, Any]:
             if not any(issue["code"] == human_issue["code"] for issue in issues):
                 issues.append(human_issue)
         except HTTPException as exc:
-            issues.append({"level": "error", "code": "KBD_CONSUMER_MISSING", "location": "关键信号", "message": str(exc.detail)})
+            issues.append(
+                {"level": "error", "code": "KBD_CONSUMER_MISSING", "location": "关键信号", "message": str(exc.detail)}
+            )
 
         used_tools: set[str] = set()
         for index, signal in enumerate(signals):
@@ -4256,8 +4297,14 @@ async def list_sop_documents(
             where_clauses.append("status = :status")
             params["status"] = status
         if category_id:
-            where_clauses.append("category_id = :category_id")
-            params["category_id"] = category_id
+            # 选中分组时级联展开子树，命中挂在其叶子上的 SOP（选中叶子时子树=自身，行为不变）
+            cat_codes = await _resolve_category_subtree_codes(session, category_id)
+            keys = []
+            for _i, _c in enumerate(cat_codes):
+                _k = f"scat_{_i}"
+                params[_k] = _c
+                keys.append(f":{_k}")
+            where_clauses.append(f"category_id IN ({', '.join(keys)})")
 
         where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 

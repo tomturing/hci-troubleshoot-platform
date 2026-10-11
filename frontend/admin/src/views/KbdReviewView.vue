@@ -435,7 +435,7 @@ function handleCatPageChange(p: number) {
   fetchPending()
 }
 
-const { categoryOptions, categoriesLoading, fetchCategories } = useCategories()
+const { categoryTree, leafCategoryOptions, categoriesLoading, fetchCategories } = useCategories()
 
 // 详情弹窗
 const detailDialogVisible = ref(false)
@@ -4665,26 +4665,20 @@ onUnmounted(() => clearBatchPollTimer())
           />
         </el-col>
         <el-col :span="3">
-          <el-select
+          <el-tree-select
             v-model="categoryFilter"
+            :data="categoryTree"
+            node-key="code"
+            :props="{ label: 'label', children: 'children' }"
             filterable
-            allow-create
             clearable
             placeholder="分类筛选"
             style="width: 100%"
             :loading="categoriesLoading"
+            :render-after-expand="false"
+            check-strictly
             @change="fetchPending"
-          >
-            <el-option
-              v-for="cat in categoryOptions"
-              :key="cat.code"
-              :value="cat.code"
-              :label="`${cat.code}  ${cat.name}`"
-            >
-              <span style="font-family:monospace;color:#606266;font-size:12px">{{ cat.code }}</span>
-              <span style="margin-left:8px;color:#909399;font-size:12px">{{ cat.name }}</span>
-            </el-option>
-          </el-select>
+          />
         </el-col>
         <el-col :span="3">
           <el-select v-model="confidenceFilter" clearable placeholder="置信度" style="width: 100%" @change="fetchPending">
@@ -5214,13 +5208,13 @@ onUnmounted(() => clearBatchPollTimer())
               size="small"
               filterable
               clearable
-              placeholder="选择或搜索分类（如 虚拟机-001）"
+              placeholder="选择或搜索分类（仅叶子，如 虚拟机-001）"
               style="width: 280px"
               :loading="categoriesLoading"
               :disabled="!canEditCurrent"
             >
               <el-option
-                v-for="cat in categoryOptions"
+                v-for="cat in leafCategoryOptions"
                 :key="cat.code"
                 :value="cat.code"
                 :label="`${cat.code}  ${cat.name}`"
@@ -7183,12 +7177,12 @@ onUnmounted(() => clearBatchPollTimer())
             v-model="editCategoryId"
             filterable
             clearable
-            placeholder="选择或搜索分类（如 虚拟机-001）"
+            placeholder="选择或搜索分类（仅叶子，如 虚拟机-001）"
             style="width: 300px"
             :loading="categoriesLoading"
           >
             <el-option
-              v-for="cat in categoryOptions"
+              v-for="cat in leafCategoryOptions"
               :key="cat.code"
               :value="cat.code"
               :label="`${cat.code}  ${cat.name}`"

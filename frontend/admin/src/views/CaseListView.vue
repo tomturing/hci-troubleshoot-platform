@@ -180,7 +180,7 @@ async function handleSaveEdit() {
   }
 }
 
-const { categoryOptions, categoriesLoading, fetchCategories } = useCategories()
+const { leafCategoryOptions, categoriesLoading, fetchCategories } = useCategories()
 
 onMounted(() => {
   loadData()
@@ -333,12 +333,12 @@ onMounted(() => {
             filterable
             clearable
             allow-create
-            placeholder="选择或搜索分类（可选）"
+            placeholder="选择或搜索分类（仅叶子，可选）"
             style="width: 100%"
             :loading="categoriesLoading"
           >
             <el-option
-              v-for="cat in categoryOptions"
+              v-for="cat in leafCategoryOptions"
               :key="cat.code"
               :value="cat.code"
               :label="`${cat.code}  ${cat.name}`"
