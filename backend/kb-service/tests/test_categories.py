@@ -532,10 +532,16 @@ async def test_resolve_category_subtree_codes_falls_back_to_self():
 
 
 def _fake_resequence_session(rows: list[dict]):
-    """构造一个按 SQL 分发的假 session（resequence 大量原生 SQL/DDL 均走 execute）。"""
+    """构造一个按 SQL 分发的假 session（resequence 大量原生 SQL/DDL 均走 execute）。
+
+    同时把执行过的 SQL 文本记录到 ``mock_db.executed_sql``，供断言 remap 覆盖列清单。
+    """
+
+    executed_sql: list[str] = []
 
     async def _exec(query, params=None):
         q = str(getattr(query, "text", query))
+        executed_sql.append(q)
         if "SELECT id, code, parent_id FROM kb_category WHERE domain" in q:
             res = MagicMock()
             res.mappings.return_value.all.return_value = rows
@@ -547,6 +553,7 @@ def _fake_resequence_session(rows: list[dict]):
         return MagicMock()  # 其余 DDL/DML
 
     mock_db = MagicMock()
+    mock_db.executed_sql = executed_sql
     mock_session = AsyncMock()
     mock_session.__aenter__.return_value = mock_session
     mock_session.execute = _exec
@@ -612,3 +619,48 @@ async def test_resequence_rejects_sibling_order_mismatch():
             parent_id=1,
             sibling_order=["虚拟机-001", "虚拟机-002"],  # 缺 003
         )
+
+
+@pytest.mark.anyio
+async def test_resequence_remaps_all_code_referencing_columns():
+    """重排发生时，remap 必须覆盖全库按 code 引用分类的列（含采集映射 category_scope
+    与诊断快照列），且悬空置 NULL 仅限有 FK 的 kbd/sop/conversation 列（不触碰含通配
+    ``*`` 的 category_scope、也不破坏诊断历史快照）。"""
+    rows = [
+        {"id": 1, "code": "虚拟机-L1", "parent_id": None},
+        {"id": 2, "code": "虚拟机-001", "parent_id": 1},
+        {"id": 3, "code": "虚拟机-002", "parent_id": 1},
+        {"id": 4, "code": "虚拟机-003", "parent_id": 1},
+        {"id": 5, "code": "虚拟机-004", "parent_id": 2},
+    ]
+    mock_db = _fake_resequence_session(rows)
+    repo = CategoryRepository(mock_db)
+    result = await repo.resequence_domain(
+        domain="虚拟机",
+        parent_id=1,
+        sibling_order=["虚拟机-003", "虚拟机-001", "虚拟机-002"],
+    )
+    assert result["changed"] > 0
+    joined = "\n".join(mock_db.executed_sql)
+    # 1) 所有按 code 引用的列均需产生 remap UPDATE
+    for tbl, col in (
+        ("kbd_entry", "category_id"),
+        ("kbd_entry", "ai_category_id"),
+        ("sop_document", "category_id"),
+        ("conversation", "category_id"),
+        ("offline_signal_collector_mapping", "category_scope"),
+        ("diagnosis_candidate", "category_id"),
+        ("diagnosis_run", "resolved_category"),
+        ("diagnosis_run", "selected_category"),
+        ("diagnosis_session", "resolved_category"),
+        ("diagnosis_session", "selected_category"),
+    ):
+        assert f"UPDATE {tbl} x SET {col} = m.new_code FROM renum_map m WHERE x.{col} = m.old_code" in joined, (
+            f"缺失 remap: {tbl}.{col}"
+        )
+    # 2) 悬空置 NULL 不得越界：category_scope / 诊断列不能被动
+    assert "category_scope = NULL" not in joined
+    assert "resolved_category = NULL" not in joined
+    assert "selected_category = NULL" not in joined
+    # 3) 有 FK 的 kbd/sop 悬空清理必须保留（重加 FK 前自校验）
+    assert "UPDATE kbd_entry k SET category_id = NULL" in joined

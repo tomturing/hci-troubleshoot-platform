@@ -1066,9 +1066,15 @@ class CategoryRepository:
         重新编号，并在**同一事务**内用唯一临时码规避「置换碰撞」（新码常等于别的节点旧码）。
 
         关键：``parent_id`` 走整型主键引用 ``kb_category.id``，重排 code 不动父子结构，
-        故 level / path_labels / parent_id 均不变（无需重建）；只需同步 remap 下游引用：
-        ``kbd_entry.category_id`` / ``kbd_entry.ai_category_id`` / ``sop_document.category_id``
-        / ``conversation.category_id``（旧码→新码；悬空者置 NULL）。
+        故 level / path_labels / parent_id 均不变（无需重建）；只需同步 remap **全库按
+        code 引用分类的列**（旧码→新码）：有 FK 的 ``kbd_entry.category_id`` /
+        ``sop_document.category_id``（并重加 FK 前清悬空），无 FK 但存 code 的
+        ``kbd_entry.ai_category_id`` / ``conversation.category_id`` /
+        ``offline_signal_collector_mapping.category_scope``（含通配 ``*``）/
+        ``diagnosis_candidate.category_id`` / ``diagnosis_run.resolved_category`` /
+        ``diagnosis_run.selected_category`` / ``diagnosis_session.resolved_category`` /
+        ``diagnosis_session.selected_category``。存 label/域名而非 code 的列（category_l1/l2、
+        active_cases/case.category、signal_*、tool_definition.category）不在范围。
 
         Args:
             domain: 一级技术域（如 虚拟机）
@@ -1186,12 +1192,26 @@ class CategoryRepository:
             )
             # C: 临时码 -> 新码（按 id）
             await session.execute(text("UPDATE kb_category k SET code = m.new_code FROM renum_map m WHERE k.id = m.id"))
-            # D: 4 个 varchar 引用列 旧码 -> 新码（旧码带域前缀，天然只命中本域引用）
+            # D: 所有按 code 引用分类的 varchar 列 旧码 -> 新码（旧码带域前缀，天然只命中本域引用）。
+            # 清单以「全库按 kb_category.code 引用点」为事实源穷举（非仅 FK 列）：
+            #   - 有 FK：kbd_entry.category_id / sop_document.category_id（重加 FK 前须清悬空，见 E）
+            #   - 无 FK 但存 code：kbd_entry.ai_category_id / conversation.category_id /
+            #     offline_signal_collector_mapping.category_scope（含通配 '*'，remap 用 = old_code 天然不命中，安全）/
+            #     diagnosis_candidate.category_id / diagnosis_run.resolved_category / diagnosis_run.selected_category /
+            #     diagnosis_session.resolved_category / diagnosis_session.selected_category（诊断快照，无 FK，命中即改，不做悬空清理）
+            # 注：conversation.category_l1/l2、active_cases/case.category、signal_*、tool_definition.category 存的是域名/label，
+            #     重排不改 name/label，故不在此清单。
             for tbl, col in (
                 ("kbd_entry", "category_id"),
                 ("kbd_entry", "ai_category_id"),
                 ("sop_document", "category_id"),
                 ("conversation", "category_id"),
+                ("offline_signal_collector_mapping", "category_scope"),
+                ("diagnosis_candidate", "category_id"),
+                ("diagnosis_run", "resolved_category"),
+                ("diagnosis_run", "selected_category"),
+                ("diagnosis_session", "resolved_category"),
+                ("diagnosis_session", "selected_category"),
             ):
                 await session.execute(
                     text(f"UPDATE {tbl} x SET {col} = m.new_code FROM renum_map m WHERE x.{col} = m.old_code")
