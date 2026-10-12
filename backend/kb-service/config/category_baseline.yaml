@@ -18,7 +18,7 @@ version: "2.0"
 source: "kb_category 全树快照（DB 导出，解A DFS 重排）"
 generated: "2026-10-12"
 
-total: 300
+total: 297
 categories:
 - code: 存储-L1
   name: 存储
@@ -596,103 +596,7 @@ categories:
   parent: null
   path:
   - 平台
-- code: 平台-001
-  name: 集群纳管VMware异常
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 集群纳管VMware异常
 - code: 平台-002
-  name: 主机CPU或内存使用率过高告警
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 主机CPU或内存使用率过高告警
-- code: 平台-003
-  name: 主机交换分区占用过高告警
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 主机交换分区占用过高告警
-- code: 平台-004
-  name: 主机CPU或内存配置比占用过高告警
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 主机CPU或内存配置比占用过高告警
-- code: 平台-005
-  name: 集群系统盘备份配置异常告警
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 集群系统盘备份配置异常告警
-- code: 平台-006
-  name: 集群与NTP服务器通信异常告警
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 集群与NTP服务器通信异常告警
-- code: 平台-007
-  name: 序列号过期告警
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 序列号过期告警
-- code: 平台-008
-  name: 序列号Key状态异常告警
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 序列号Key状态异常告警
-- code: 平台-009
-  name: HA预留资源不足告警
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - HA预留资源不足告警
-- code: 平台-010
-  name: 集群无可用显卡告警
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 集群无可用显卡告警
-- code: 平台-011
-  name: 邮件告警配置异常
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 邮件告警配置异常
-- code: 平台-012
-  name: 短信告警配置异常
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 短信告警配置异常
-- code: 平台-013
   name: 物理主机
   domain: 平台
   level: 2
@@ -700,7 +604,7 @@ categories:
   path:
   - 平台
   - 物理主机
-- code: 平台-020
+- code: 平台-009
   name: 授权管理
   domain: 平台
   level: 2
@@ -708,7 +612,7 @@ categories:
   path:
   - 平台
   - 授权管理
-- code: 平台-023
+- code: 平台-012
   name: 版本升级
   domain: 平台
   level: 2
@@ -716,7 +620,7 @@ categories:
   path:
   - 平台
   - 版本升级
-- code: 平台-026
+- code: 平台-015
   name: 补丁升级
   domain: 平台
   level: 2
@@ -724,7 +628,7 @@ categories:
   path:
   - 平台
   - 补丁升级
-- code: 平台-029
+- code: 平台-018
   name: 集群检测
   domain: 平台
   level: 2
@@ -732,71 +636,7 @@ categories:
   path:
   - 平台
   - 集群检测
-- code: 平台-033
-  name: 主机内存告警
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 主机内存告警
-- code: 平台-034
-  name: 主机配置CPU告警
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 主机配置CPU告警
-- code: 平台-035
-  name: 主机系统分区异常
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 主机系统分区异常
-- code: 平台-036
-  name: 计算内存不足告警
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 计算内存不足告警
-- code: 平台-037
-  name: 主机系统盘亚健康
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 主机系统盘亚健康
-- code: 平台-038
-  name: 免key序列号异常
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 免key序列号异常
-- code: 平台-039
-  name: 平台与NTP服务器通信异常
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 平台与NTP服务器通信异常
-- code: 平台-040
-  name: 控制台登录
-  domain: 平台
-  level: 2
-  parent: 平台-L1
-  path:
-  - 平台
-  - 控制台登录
-- code: 平台-043
+- code: 平台-022
   name: 集群账号密码管理
   domain: 平台
   level: 2
@@ -804,177 +644,371 @@ categories:
   path:
   - 平台
   - 集群账号密码管理
-- code: 平台-014
+- code: 平台-025
+  name: 集群纳管VMware异常
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 集群纳管VMware异常
+- code: 平台-026
+  name: 控制台登录
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 控制台登录
+- code: 平台-029
+  name: 告警通知
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 告警通知
+- code: 平台-032
+  name: 平台告警
+  domain: 平台
+  level: 2
+  parent: 平台-L1
+  path:
+  - 平台
+  - 平台告警
+- code: 平台-003
   name: 主机安装或重装失败
   domain: 平台
   level: 3
-  parent: 平台-013
+  parent: 平台-002
   path:
   - 平台
   - 物理主机
   - 主机安装或重装失败
-- code: 平台-015
+- code: 平台-004
   name: 主机扩容失败
   domain: 平台
   level: 3
-  parent: 平台-013
+  parent: 平台-002
   path:
   - 平台
   - 物理主机
   - 主机扩容失败
-- code: 平台-016
+- code: 平台-005
   name: 主机删除失败
   domain: 平台
   level: 3
-  parent: 平台-013
+  parent: 平台-002
   path:
   - 平台
   - 物理主机
   - 主机删除失败
-- code: 平台-017
+- code: 平台-006
   name: 系统盘或主机替换失败
   domain: 平台
   level: 3
-  parent: 平台-013
+  parent: 平台-002
   path:
   - 平台
   - 物理主机
   - 系统盘或主机替换失败
-- code: 平台-018
+- code: 平台-007
   name: 主机离线或异常重启
   domain: 平台
   level: 3
-  parent: 平台-013
+  parent: 平台-002
   path:
   - 平台
   - 物理主机
   - 主机离线或异常重启
-- code: 平台-019
+- code: 平台-008
   name: 主机系统分区空间不足
   domain: 平台
   level: 3
-  parent: 平台-013
+  parent: 平台-002
   path:
   - 平台
   - 物理主机
   - 主机系统分区空间不足
-- code: 平台-021
+- code: 平台-010
   name: UsbKey授权更新失败
   domain: 平台
   level: 3
-  parent: 平台-020
+  parent: 平台-009
   path:
   - 平台
   - 授权管理
   - UsbKey授权更新失败
-- code: 平台-022
+- code: 平台-011
   name: 云图授权更新失败
   domain: 平台
   level: 3
-  parent: 平台-020
+  parent: 平台-009
   path:
   - 平台
   - 授权管理
   - 云图授权更新失败
-- code: 平台-024
+- code: 平台-013
   name: 版本升级前检测失败
   domain: 平台
   level: 3
-  parent: 平台-023
+  parent: 平台-012
   path:
   - 平台
   - 版本升级
   - 版本升级前检测失败
-- code: 平台-025
+- code: 平台-014
   name: 版本升级失败
   domain: 平台
   level: 3
-  parent: 平台-023
+  parent: 平台-012
   path:
   - 平台
   - 版本升级
   - 版本升级失败
-- code: 平台-027
+- code: 平台-016
   name: 补丁升级前检测失败
   domain: 平台
   level: 3
-  parent: 平台-026
+  parent: 平台-015
   path:
   - 平台
   - 补丁升级
   - 补丁升级前检测失败
-- code: 平台-028
+- code: 平台-017
   name: 补丁升级失败
+  domain: 平台
+  level: 3
+  parent: 平台-015
+  path:
+  - 平台
+  - 补丁升级
+  - 补丁升级失败
+- code: 平台-019
+  name: 集群一键检测检测项异常
+  domain: 平台
+  level: 3
+  parent: 平台-018
+  path:
+  - 平台
+  - 集群检测
+  - 集群一键检测检测项异常
+- code: 平台-020
+  name: 纪元巡检工具使用异常
+  domain: 平台
+  level: 3
+  parent: 平台-018
+  path:
+  - 平台
+  - 集群检测
+  - 纪元巡检工具使用异常
+- code: 平台-021
+  name: 纪元巡检检查项异常
+  domain: 平台
+  level: 3
+  parent: 平台-018
+  path:
+  - 平台
+  - 集群检测
+  - 纪元巡检检查项异常
+- code: 平台-023
+  name: 账号密码重置失败
+  domain: 平台
+  level: 3
+  parent: 平台-022
+  path:
+  - 平台
+  - 集群账号密码管理
+  - 账号密码重置失败
+- code: 平台-024
+  name: 集群账号权限异常
+  domain: 平台
+  level: 3
+  parent: 平台-022
+  path:
+  - 平台
+  - 集群账号密码管理
+  - 集群账号权限异常
+- code: 平台-027
+  name: 控制台登录失败
   domain: 平台
   level: 3
   parent: 平台-026
   path:
   - 平台
-  - 补丁升级
-  - 补丁升级失败
-- code: 平台-030
-  name: 集群一键检测检测项异常
-  domain: 平台
-  level: 3
-  parent: 平台-029
-  path:
-  - 平台
-  - 集群检测
-  - 集群一键检测检测项异常
-- code: 平台-031
-  name: 纪元巡检工具使用异常
-  domain: 平台
-  level: 3
-  parent: 平台-029
-  path:
-  - 平台
-  - 集群检测
-  - 纪元巡检工具使用异常
-- code: 平台-032
-  name: 纪元巡检检查项异常
-  domain: 平台
-  level: 3
-  parent: 平台-029
-  path:
-  - 平台
-  - 集群检测
-  - 纪元巡检检查项异常
-- code: 平台-041
-  name: 控制台登录失败
-  domain: 平台
-  level: 3
-  parent: 平台-040
-  path:
-  - 平台
   - 控制台登录
   - 控制台登录失败
-- code: 平台-042
+- code: 平台-028
   name: 控制台卡慢
   domain: 平台
   level: 3
-  parent: 平台-040
+  parent: 平台-026
   path:
   - 平台
   - 控制台登录
   - 控制台卡慢
+- code: 平台-030
+  name: 邮件告警配置异常
+  domain: 平台
+  level: 3
+  parent: 平台-029
+  path:
+  - 平台
+  - 告警通知
+  - 邮件告警配置异常
+- code: 平台-031
+  name: 短信告警配置异常
+  domain: 平台
+  level: 3
+  parent: 平台-029
+  path:
+  - 平台
+  - 告警通知
+  - 短信告警配置异常
+- code: 平台-033
+  name: 主机系统分区异常
+  domain: 平台
+  level: 3
+  parent: 平台-032
+  path:
+  - 平台
+  - 平台告警
+  - 主机系统分区异常
+- code: 平台-034
+  name: 主机配置CPU告警
+  domain: 平台
+  level: 3
+  parent: 平台-032
+  path:
+  - 平台
+  - 平台告警
+  - 主机配置CPU告警
+- code: 平台-035
+  name: 主机配置内存告警
+  domain: 平台
+  level: 3
+  parent: 平台-032
+  path:
+  - 平台
+  - 平台告警
+  - 主机配置内存告警
+- code: 平台-036
+  name: 主机CPU告警
+  domain: 平台
+  level: 3
+  parent: 平台-032
+  path:
+  - 平台
+  - 平台告警
+  - 主机CPU告警
+- code: 平台-037
+  name: 主机内存告警
+  domain: 平台
+  level: 3
+  parent: 平台-032
+  path:
+  - 平台
+  - 平台告警
+  - 主机内存告警
+- code: 平台-038
+  name: 计算内存不足告警
+  domain: 平台
+  level: 3
+  parent: 平台-032
+  path:
+  - 平台
+  - 平台告警
+  - 计算内存不足告警
+- code: 平台-039
+  name: 内存交换分区告警
+  domain: 平台
+  level: 3
+  parent: 平台-032
+  path:
+  - 平台
+  - 平台告警
+  - 内存交换分区告警
+- code: 平台-040
+  name: 主机系统盘亚健康
+  domain: 平台
+  level: 3
+  parent: 平台-032
+  path:
+  - 平台
+  - 平台告警
+  - 主机系统盘亚健康
+- code: 平台-041
+  name: 系统盘的配置存储空间不足
+  domain: 平台
+  level: 3
+  parent: 平台-032
+  path:
+  - 平台
+  - 平台告警
+  - 系统盘的配置存储空间不足
+- code: 平台-042
+  name: 序列号过期告警
+  domain: 平台
+  level: 3
+  parent: 平台-032
+  path:
+  - 平台
+  - 平台告警
+  - 序列号过期告警
+- code: 平台-043
+  name: 组件授权信息异常
+  domain: 平台
+  level: 3
+  parent: 平台-032
+  path:
+  - 平台
+  - 平台告警
+  - 组件授权信息异常
 - code: 平台-044
-  name: 账号密码重置失败
+  name: 免key序列号异常
   domain: 平台
   level: 3
-  parent: 平台-043
+  parent: 平台-032
   path:
   - 平台
-  - 集群账号密码管理
-  - 账号密码重置失败
+  - 平台告警
+  - 免key序列号异常
 - code: 平台-045
-  name: 集群账号权限异常
+  name: 序列号Key状态异常告警
   domain: 平台
   level: 3
-  parent: 平台-043
+  parent: 平台-032
   path:
   - 平台
-  - 集群账号密码管理
-  - 集群账号权限异常
+  - 平台告警
+  - 序列号Key状态异常告警
+- code: 平台-046
+  name: 集群无可用显卡告警
+  domain: 平台
+  level: 3
+  parent: 平台-032
+  path:
+  - 平台
+  - 平台告警
+  - 集群无可用显卡告警
+- code: 平台-047
+  name: 主机显卡异常告警
+  domain: 平台
+  level: 3
+  parent: 平台-032
+  path:
+  - 平台
+  - 平台告警
+  - 主机显卡异常告警
+- code: 平台-048
+  name: 平台与NTP服务器通信异常
+  domain: 平台
+  level: 3
+  parent: 平台-032
+  path:
+  - 平台
+  - 平台告警
+  - 平台与NTP服务器通信异常
 - code: 硬件-L1
   name: 硬件
   domain: 硬件
@@ -991,78 +1025,6 @@ categories:
   - 硬件
   - 风扇异响或风扇转速异常
 - code: 硬件-002
-  name: 主板异常
-  domain: 硬件
-  level: 2
-  parent: 硬件-L1
-  path:
-  - 硬件
-  - 主板异常
-- code: 硬件-003
-  name: 显卡不识别
-  domain: 硬件
-  level: 2
-  parent: 硬件-L1
-  path:
-  - 硬件
-  - 显卡不识别
-- code: 硬件-004
-  name: 客户机硬件
-  domain: 硬件
-  level: 2
-  parent: 硬件-L1
-  path:
-  - 硬件
-  - 客户机硬件
-- code: 硬件-008
-  name: BIOS
-  domain: 硬件
-  level: 2
-  parent: 硬件-L1
-  path:
-  - 硬件
-  - BIOS
-- code: 硬件-011
-  name: CPU
-  domain: 硬件
-  level: 2
-  parent: 硬件-L1
-  path:
-  - 硬件
-  - CPU
-- code: 硬件-017
-  name: IPMI或BMC
-  domain: 硬件
-  level: 2
-  parent: 硬件-L1
-  path:
-  - 硬件
-  - IPMI或BMC
-- code: 硬件-022
-  name: RAID卡
-  domain: 硬件
-  level: 2
-  parent: 硬件-L1
-  path:
-  - 硬件
-  - RAID卡
-- code: 硬件-027
-  name: 内存
-  domain: 硬件
-  level: 2
-  parent: 硬件-L1
-  path:
-  - 硬件
-  - 内存
-- code: 硬件-036
-  name: 服务器整机
-  domain: 硬件
-  level: 2
-  parent: 硬件-L1
-  path:
-  - 硬件
-  - 服务器整机
-- code: 硬件-039
   name: 电源
   domain: 硬件
   level: 2
@@ -1070,15 +1032,31 @@ categories:
   path:
   - 硬件
   - 电源
-- code: 硬件-044
-  name: 硬盘
+- code: 硬件-005
+  name: 主板异常
   domain: 硬件
   level: 2
   parent: 硬件-L1
   path:
   - 硬件
-  - 硬盘
-- code: 硬件-056
+  - 主板异常
+- code: 硬件-006
+  name: CPU
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - CPU
+- code: 硬件-012
+  name: 内存
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - 内存
+- code: 硬件-016
   name: 网卡
   domain: 硬件
   level: 2
@@ -1086,441 +1064,422 @@ categories:
   path:
   - 硬件
   - 网卡
-- code: 硬件-005
-  name: 盒子开机失败
-  domain: 硬件
-  level: 3
-  parent: 硬件-004
-  path:
-  - 硬件
-  - 客户机硬件
-  - 盒子开机失败
-- code: 硬件-006
-  name: 盒子刷机
-  domain: 硬件
-  level: 3
-  parent: 硬件-004
-  path:
-  - 硬件
-  - 客户机硬件
-  - 盒子刷机
-- code: 硬件-007
-  name: 盒子usb接口故障
-  domain: 硬件
-  level: 3
-  parent: 硬件-004
-  path:
-  - 硬件
-  - 客户机硬件
-  - 盒子usb接口故障
-- code: 硬件-009
-  name: BIOS版本升级失败
-  domain: 硬件
-  level: 3
-  parent: 硬件-008
-  path:
-  - 硬件
-  - BIOS
-  - BIOS版本升级失败
-- code: 硬件-010
-  name: BIOS无法进入
-  domain: 硬件
-  level: 3
-  parent: 硬件-008
-  path:
-  - 硬件
-  - BIOS
-  - BIOS无法进入
-- code: 硬件-012
-  name: CPU温度高
-  domain: 硬件
-  level: 3
-  parent: 硬件-011
-  path:
-  - 硬件
-  - CPU
-  - CPU温度高
-- code: 硬件-013
-  name: CPU降频
-  domain: 硬件
-  level: 3
-  parent: 硬件-011
-  path:
-  - 硬件
-  - CPU
-  - CPU降频
-- code: 硬件-014
-  name: CPU超频
-  domain: 硬件
-  level: 3
-  parent: 硬件-011
-  path:
-  - 硬件
-  - CPU
-  - CPU超频
-- code: 硬件-015
-  name: CPU微码
-  domain: 硬件
-  level: 3
-  parent: 硬件-011
-  path:
-  - 硬件
-  - CPU
-  - CPU微码
-- code: 硬件-016
-  name: CPU损坏
-  domain: 硬件
-  level: 3
-  parent: 硬件-011
-  path:
-  - 硬件
-  - CPU
-  - CPU损坏
-- code: 硬件-018
-  name: 带外管理(IPMI/BMC)无法登录
-  domain: 硬件
-  level: 3
-  parent: 硬件-017
-  path:
-  - 硬件
-  - IPMI或BMC
-  - 带外管理(IPMI/BMC)无法登录
-- code: 硬件-019
-  name: 带外管理(IPMI/BMC)升级异常
-  domain: 硬件
-  level: 3
-  parent: 硬件-017
-  path:
-  - 硬件
-  - IPMI或BMC
-  - 带外管理(IPMI/BMC)升级异常
-- code: 硬件-020
-  name: 带外管理(IPMI/BMC)监控硬件信息异常
-  domain: 硬件
-  level: 3
-  parent: 硬件-017
-  path:
-  - 硬件
-  - IPMI或BMC
-  - 带外管理(IPMI/BMC)监控硬件信息异常
-- code: 硬件-021
-  name: 带外管理(IPMI/BMC)监控日志告警异常
-  domain: 硬件
-  level: 3
-  parent: 硬件-017
-  path:
-  - 硬件
-  - IPMI或BMC
-  - 带外管理(IPMI/BMC)监控日志告警异常
 - code: 硬件-023
-  name: RAID卡控制器异常
+  name: 硬盘
   domain: 硬件
-  level: 3
-  parent: 硬件-022
+  level: 2
+  parent: 硬件-L1
   path:
   - 硬件
-  - RAID卡
-  - RAID卡控制器异常
-- code: 硬件-024
-  name: RAID卡不识别
-  domain: 硬件
-  level: 3
-  parent: 硬件-022
-  path:
-  - 硬件
-  - RAID卡
-  - RAID卡不识别
-- code: 硬件-025
-  name: RAID卡固件升级异常
-  domain: 硬件
-  level: 3
-  parent: 硬件-022
-  path:
-  - 硬件
-  - RAID卡
-  - RAID卡固件升级异常
-- code: 硬件-026
-  name: RAID卡固件不兼容
-  domain: 硬件
-  level: 3
-  parent: 硬件-022
-  path:
-  - 硬件
-  - RAID卡
-  - RAID卡固件不兼容
-- code: 硬件-028
-  name: 内存ECC故障
-  domain: 硬件
-  level: 3
-  parent: 硬件-027
-  path:
-  - 硬件
-  - 内存
-  - 内存ECC故障
-- code: 硬件-029
-  name: 内存降频
-  domain: 硬件
-  level: 3
-  parent: 硬件-027
-  path:
-  - 硬件
-  - 内存
-  - 内存降频
-- code: 硬件-030
-  name: 物理内存识别异常
-  domain: 硬件
-  level: 3
-  parent: 硬件-027
-  path:
-  - 硬件
-  - 内存
-  - 物理内存识别异常
+  - 硬盘
 - code: 硬件-032
-  name: 盒子开机失败
+  name: BIOS
   domain: 硬件
-  level: 3
-  parent: null
+  level: 2
+  parent: 硬件-L1
   path:
   - 硬件
-  - 客户机硬件
-  - 盒子开机失败
-- code: 硬件-033
-  name: 盒子协助返修
-  domain: 硬件
-  level: 3
-  parent: null
-  path:
-  - 硬件
-  - 客户机硬件
-  - 盒子协助返修
-- code: 硬件-034
-  name: 盒子刷机
-  domain: 硬件
-  level: 3
-  parent: null
-  path:
-  - 硬件
-  - 客户机硬件
-  - 盒子刷机
+  - BIOS
 - code: 硬件-035
-  name: 盒子USB接口故障
+  name: RAID卡
   domain: 硬件
-  level: 3
-  parent: null
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - RAID卡
+- code: 硬件-040
+  name: IPMI或BMC
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - IPMI或BMC
+- code: 硬件-045
+  name: 服务器整机
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - 服务器整机
+- code: 硬件-048
+  name: 显卡不识别
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
+  path:
+  - 硬件
+  - 显卡不识别
+- code: 硬件-049
+  name: 客户机硬件
+  domain: 硬件
+  level: 2
+  parent: 硬件-L1
   path:
   - 硬件
   - 客户机硬件
-  - 盒子USB接口故障
-- code: 硬件-037
-  name: 服务器面板亮黄灯
-  domain: 硬件
-  level: 3
-  parent: 硬件-036
-  path:
-  - 硬件
-  - 服务器整机
-  - 服务器面板亮黄灯
-- code: 硬件-038
-  name: 服务器面板亮红灯
-  domain: 硬件
-  level: 3
-  parent: 硬件-036
-  path:
-  - 硬件
-  - 服务器整机
-  - 服务器面板亮红灯
-- code: 硬件-040
+- code: 硬件-003
   name: 电源温度高
   domain: 硬件
   level: 3
-  parent: 硬件-039
+  parent: 硬件-002
   path:
   - 硬件
   - 电源
   - 电源温度高
-- code: 硬件-041
-  name: 电源模块亮黄灯
+- code: 硬件-004
+  name: 电源模块指示灯异常
   domain: 硬件
   level: 3
-  parent: 硬件-039
+  parent: 硬件-002
   path:
   - 硬件
   - 电源
-  - 电源模块亮黄灯
-- code: 硬件-042
-  name: 电源模块亮红灯
+  - 电源模块指示灯异常
+- code: 硬件-007
+  name: CPU降频
   domain: 硬件
   level: 3
-  parent: 硬件-039
+  parent: 硬件-006
   path:
   - 硬件
-  - 电源
-  - 电源模块亮红灯
-- code: 硬件-043
-  name: 电源模块不亮灯
+  - CPU
+  - CPU降频
+- code: 硬件-008
+  name: CPU超频
   domain: 硬件
   level: 3
-  parent: 硬件-039
+  parent: 硬件-006
   path:
   - 硬件
-  - 电源
-  - 电源模块不亮灯
-- code: 硬件-045
-  name: 硬盘坏道
+  - CPU
+  - CPU超频
+- code: 硬件-009
+  name: CPU微码
   domain: 硬件
   level: 3
-  parent: 硬件-044
+  parent: 硬件-006
   path:
   - 硬件
-  - 硬盘
-  - 硬盘坏道
-- code: 硬件-046
-  name: 硬盘寿命到期
+  - CPU
+  - CPU微码
+- code: 硬件-010
+  name: CPU温度
   domain: 硬件
   level: 3
-  parent: 硬件-044
+  parent: 硬件-006
   path:
   - 硬件
-  - 硬盘
-  - 硬盘寿命到期
-- code: 硬件-047
-  name: 硬盘固件升级异常
+  - CPU
+  - CPU温度
+- code: 硬件-011
+  name: CPU损坏
   domain: 硬件
   level: 3
-  parent: 硬件-044
+  parent: 硬件-006
   path:
   - 硬件
-  - 硬盘
-  - 硬盘固件升级异常
-- code: 硬件-048
-  name: 硬盘固件不兼容
+  - CPU
+  - CPU损坏
+- code: 硬件-013
+  name: 内存ECC故障
   domain: 硬件
   level: 3
-  parent: 硬件-044
+  parent: 硬件-012
   path:
   - 硬件
-  - 硬盘
-  - 硬盘固件不兼容
-- code: 硬件-049
-  name: 硬盘黄灯异常
+  - 内存
+  - 内存ECC故障
+- code: 硬件-014
+  name: 内存降频
   domain: 硬件
   level: 3
-  parent: 硬件-044
+  parent: 硬件-012
   path:
   - 硬件
-  - 硬盘
-  - 硬盘黄灯异常
-- code: 硬件-050
-  name: 硬盘红灯异常
+  - 内存
+  - 内存降频
+- code: 硬件-015
+  name: 物理内存识别异常
   domain: 硬件
   level: 3
-  parent: 硬件-044
+  parent: 硬件-012
   path:
   - 硬件
-  - 硬盘
-  - 硬盘红灯异常
-- code: 硬件-051
-  name: 磁盘损坏告警
-  domain: 硬件
-  level: 3
-  parent: 硬件-044
-  path:
-  - 硬件
-  - 硬盘
-  - 磁盘损坏告警
-- code: 硬件-052
-  name: 硬盘离线或不识别
-  domain: 硬件
-  level: 3
-  parent: 硬件-044
-  path:
-  - 硬件
-  - 硬盘
-  - 硬盘离线或不识别
-- code: 硬件-057
+  - 内存
+  - 物理内存识别异常
+- code: 硬件-017
   name: 网卡固件版本过低
   domain: 硬件
   level: 3
-  parent: 硬件-056
+  parent: 硬件-016
   path:
   - 硬件
   - 网卡
   - 网卡固件版本过低
-- code: 硬件-058
+- code: 硬件-018
   name: 网卡固件升级失败
   domain: 硬件
   level: 3
-  parent: 硬件-056
+  parent: 硬件-016
   path:
   - 硬件
   - 网卡
   - 网卡固件升级失败
-- code: 硬件-059
+- code: 硬件-019
   name: 网卡离线或不识别
   domain: 硬件
   level: 3
-  parent: 硬件-056
+  parent: 硬件-016
   path:
   - 硬件
   - 网卡
   - 网卡离线或不识别
-- code: 硬件-060
+- code: 硬件-020
   name: 网口不亮或离线
   domain: 硬件
   level: 3
-  parent: 硬件-056
+  parent: 硬件-016
   path:
   - 硬件
   - 网卡
   - 网口不亮或离线
-- code: 硬件-061
-  name: 网口降速
+- code: 硬件-021
+  name: 网口降速告警
   domain: 硬件
   level: 3
-  parent: 硬件-056
+  parent: 硬件-016
   path:
   - 硬件
   - 网卡
-  - 网口降速
-- code: 硬件-062
-  name: 光模块异常
+  - 网口降速告警
+- code: 硬件-022
+  name: 网卡光模块异常告警
   domain: 硬件
   level: 3
-  parent: 硬件-056
+  parent: 硬件-016
   path:
   - 硬件
   - 网卡
-  - 光模块异常
+  - 网卡光模块异常告警
+- code: 硬件-024
+  name: 硬盘离线或不识别
+  domain: 硬件
+  level: 3
+  parent: 硬件-023
+  path:
+  - 硬件
+  - 硬盘
+  - 硬盘离线或不识别
+- code: 硬件-025
+  name: 硬盘坏道
+  domain: 硬件
+  level: 3
+  parent: 硬件-023
+  path:
+  - 硬件
+  - 硬盘
+  - 硬盘坏道
+- code: 硬件-026
+  name: 硬盘寿命到期
+  domain: 硬件
+  level: 3
+  parent: 硬件-023
+  path:
+  - 硬件
+  - 硬盘
+  - 硬盘寿命到期
+- code: 硬件-027
+  name: 硬盘固件升级异常
+  domain: 硬件
+  level: 3
+  parent: 硬件-023
+  path:
+  - 硬件
+  - 硬盘
+  - 硬盘固件升级异常
+- code: 硬件-028
+  name: 硬盘固件不兼容
+  domain: 硬件
+  level: 3
+  parent: 硬件-023
+  path:
+  - 硬件
+  - 硬盘
+  - 硬盘固件不兼容
+- code: 硬件-029
+  name: 硬盘黄灯异常
+  domain: 硬件
+  level: 3
+  parent: 硬件-023
+  path:
+  - 硬件
+  - 硬盘
+  - 硬盘黄灯异常
+- code: 硬件-030
+  name: 硬盘红灯异常
+  domain: 硬件
+  level: 3
+  parent: 硬件-023
+  path:
+  - 硬件
+  - 硬盘
+  - 硬盘红灯异常
+- code: 硬件-031
+  name: 磁盘损坏告警
+  domain: 硬件
+  level: 3
+  parent: 硬件-023
+  path:
+  - 硬件
+  - 硬盘
+  - 磁盘损坏告警
+- code: 硬件-033
+  name: BIOS版本升级失败
+  domain: 硬件
+  level: 3
+  parent: 硬件-032
+  path:
+  - 硬件
+  - BIOS
+  - BIOS版本升级失败
+- code: 硬件-034
+  name: BIOS无法进入
+  domain: 硬件
+  level: 3
+  parent: 硬件-032
+  path:
+  - 硬件
+  - BIOS
+  - BIOS无法进入
+- code: 硬件-036
+  name: RAID卡控制器异常
+  domain: 硬件
+  level: 3
+  parent: 硬件-035
+  path:
+  - 硬件
+  - RAID卡
+  - RAID卡控制器异常
+- code: 硬件-037
+  name: RAID卡不识别
+  domain: 硬件
+  level: 3
+  parent: 硬件-035
+  path:
+  - 硬件
+  - RAID卡
+  - RAID卡不识别
+- code: 硬件-038
+  name: RAID卡固件升级异常
+  domain: 硬件
+  level: 3
+  parent: 硬件-035
+  path:
+  - 硬件
+  - RAID卡
+  - RAID卡固件升级异常
+- code: 硬件-039
+  name: RAID卡固件不兼容
+  domain: 硬件
+  level: 3
+  parent: 硬件-035
+  path:
+  - 硬件
+  - RAID卡
+  - RAID卡固件不兼容
+- code: 硬件-041
+  name: 带外管理(IPMI/BMC)无法登录
+  domain: 硬件
+  level: 3
+  parent: 硬件-040
+  path:
+  - 硬件
+  - IPMI或BMC
+  - 带外管理(IPMI/BMC)无法登录
+- code: 硬件-042
+  name: 带外管理(IPMI/BMC)升级异常
+  domain: 硬件
+  level: 3
+  parent: 硬件-040
+  path:
+  - 硬件
+  - IPMI或BMC
+  - 带外管理(IPMI/BMC)升级异常
+- code: 硬件-043
+  name: 带外管理(IPMI/BMC)监控硬件信息异常
+  domain: 硬件
+  level: 3
+  parent: 硬件-040
+  path:
+  - 硬件
+  - IPMI或BMC
+  - 带外管理(IPMI/BMC)监控硬件信息异常
+- code: 硬件-044
+  name: 带外管理(IPMI/BMC)监控日志告警异常
+  domain: 硬件
+  level: 3
+  parent: 硬件-040
+  path:
+  - 硬件
+  - IPMI或BMC
+  - 带外管理(IPMI/BMC)监控日志告警异常
+- code: 硬件-046
+  name: 服务器面板亮黄灯
+  domain: 硬件
+  level: 3
+  parent: 硬件-045
+  path:
+  - 硬件
+  - 服务器整机
+  - 服务器面板亮黄灯
+- code: 硬件-047
+  name: 服务器面板亮红灯
+  domain: 硬件
+  level: 3
+  parent: 硬件-045
+  path:
+  - 硬件
+  - 服务器整机
+  - 服务器面板亮红灯
+- code: 硬件-050
+  name: 盒子开机失败
+  domain: 硬件
+  level: 3
+  parent: 硬件-049
+  path:
+  - 硬件
+  - 客户机硬件
+  - 盒子开机失败
+- code: 硬件-051
+  name: 盒子协助返修
+  domain: 硬件
+  level: 3
+  parent: 硬件-049
+  path:
+  - 硬件
+  - 客户机硬件
+  - 盒子协助返修
+- code: 硬件-052
+  name: 盒子刷机
+  domain: 硬件
+  level: 3
+  parent: 硬件-049
+  path:
+  - 硬件
+  - 客户机硬件
+  - 盒子刷机
 - code: 硬件-053
-  name: 硬盘离线或不识别（单盘）
+  name: 盒子USB接口故障
   domain: 硬件
-  level: 4
-  parent: 硬件-052
+  level: 3
+  parent: 硬件-049
   path:
   - 硬件
-  - 硬盘
-  - 硬盘离线或不识别
-  - 硬盘离线或不识别（单盘）
-- code: 硬件-054
-  name: 硬盘离线或不识别（多盘）
-  domain: 硬件
-  level: 4
-  parent: 硬件-052
-  path:
-  - 硬件
-  - 硬盘
-  - 硬盘离线或不识别
-  - 硬盘离线或不识别（多盘）
-- code: 硬件-055
-  name: 硬盘离线或不识别（全盘）
-  domain: 硬件
-  level: 4
-  parent: 硬件-052
-  path:
-  - 硬件
-  - 硬盘
-  - 硬盘离线或不识别
-  - 硬盘离线或不识别（全盘）
+  - 客户机硬件
+  - 盒子USB接口故障
 - code: 网络-L1
   name: 网络
   domain: 网络
@@ -1994,14 +1953,6 @@ categories:
   path:
   - 虚拟机
   - 虚拟机HA
-- code: 虚拟机-039
-  name: 虚拟机内部空间或文件系统异常
-  domain: 虚拟机
-  level: 2
-  parent: 虚拟机-L1
-  path:
-  - 虚拟机
-  - 虚拟机内部空间或文件系统异常
 - code: 虚拟机-040
   name: 虚拟机使用体验
   domain: 虚拟机
@@ -2278,7 +2229,7 @@ categories:
   path:
   - 虚拟机
   - 虚拟机使用体验
-  - 文件或数据丢失
+  - 虚拟机文件或数据丢失
 - code: 虚拟机-072
   name: 虚拟机时间同步异常
   domain: 虚拟机
@@ -2378,6 +2329,42 @@ categories:
   - 虚拟机
   - 虚拟机告警
   - 虚拟机异常关机重启
+- code: 虚拟机-090
+  name: 虚拟机备份归档异常
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-028
+  path:
+  - 虚拟机
+  - 虚拟机备份
+  - 虚拟机备份归档异常
+- code: 虚拟机-091
+  name: 虚拟机备份空间异常
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-028
+  path:
+  - 虚拟机
+  - 虚拟机备份
+  - 虚拟机备份空间异常
+- code: 虚拟机-092
+  name: 备份复制失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-028
+  path:
+  - 虚拟机
+  - 虚拟机备份
+  - 备份复制失败
+- code: 虚拟机-093
+  name: 无代理备份失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-028
+  path:
+  - 虚拟机
+  - 虚拟机备份
+  - 无代理备份失败
 - code: 虚拟机-042
   name: 卡在系统启动界面或进度条不动
   domain: 虚拟机
@@ -2529,7 +2516,7 @@ categories:
   - OS系统桌面显示异常
   - OS桌面屏幕保护程序或锁屏异常
 - code: 虚拟机-061
-  name: 虚拟机性能优化工具(vmtools)安装卸载失败
+  name: 性能优化工具(vmtools)安装卸载失败
   domain: 虚拟机
   level: 4
   parent: 虚拟机-060
@@ -2537,9 +2524,9 @@ categories:
   - 虚拟机
   - 虚拟机使用体验
   - 性能优化工具或agent组件异常
-  - 虚拟机性能优化工具(vmtools)安装卸载异常
+  - 性能优化工具(vmtools)安装卸载失败
 - code: 虚拟机-062
-  name: 虚拟机性能优化工具(vmtools)报表透传异常
+  name: 性能优化工具(vmtools)报表透传异常
   domain: 虚拟机
   level: 4
   parent: 虚拟机-060
@@ -2547,7 +2534,7 @@ categories:
   - 虚拟机
   - 虚拟机使用体验
   - 性能优化工具或agent组件异常
-  - 虚拟机性能优化工具(vmtools)报表透传异常
+  - 性能优化工具(vmtools)报表透传异常
 - code: 虚拟机-063
   name: agent安装卸载失败
   domain: 虚拟机
