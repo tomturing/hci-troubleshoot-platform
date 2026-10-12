@@ -206,6 +206,14 @@ async def category_hit_proxy(code: str, request: Request):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@categories_router.post("/{code}/collapse-to-leaf")
+async def collapse_category_to_leaf_proxy(code: str, request: Request):
+    """代理「合并子分类到本节点」原子折叠请求 → kb-service（无请求体）"""
+    headers = _internal_auth_headers()
+    response = await proxy_request("POST", f"/categories/{code}/collapse-to-leaf", headers=headers)
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 @categories_router.post("/import")
 async def category_import_proxy(request: Request):
     """代理 YAML 导入请求 → kb-service（透明透传）

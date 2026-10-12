@@ -50,6 +50,7 @@ def _anon_client() -> TestClient:
     ("method", "url"),
     [
         ("get", "/api/kb/categories"),
+        ("post", "/api/kb/categories/vm-009/collapse-to-leaf"),
         ("get", "/api/kb/catalogs"),
         ("get", "/api/v1/vm-console/captures"),
         ("get", "/api/v1/signal-assets/templates"),
@@ -147,6 +148,22 @@ def test_admin_token_passes_kb_categories():
     with patch("httpx.AsyncClient.request", new=AsyncMock(return_value=downstream)):
         response = client.get("/api/kb/categories")
     assert response.status_code == 200
+
+
+def test_admin_token_proxies_collapse_to_leaf_to_kb_service():
+    """合并子分类代理路由已注册，且转发至 kb-service 的 collapse-to-leaf 下游路径。"""
+    client = TestClient(app)
+    client.headers.update(ADMIN_HEADERS)
+    downstream = httpx.Response(200, json={"success": True, "collapsed_children": 6})
+    mock = AsyncMock(return_value=downstream)
+    with patch("httpx.AsyncClient.request", new=mock):
+        response = client.post("/api/kb/categories/vm-009/collapse-to-leaf")
+    assert response.status_code == 200
+    assert response.json() == {"success": True, "collapsed_children": 6}
+    called_method = mock.call_args.args[0]
+    called_url = str(mock.call_args.args[1])
+    assert called_method == "POST"
+    assert called_url.endswith("/api/kb/categories/vm-009/collapse-to-leaf")
 
 
 def test_admin_token_passes_vm_console_captures():

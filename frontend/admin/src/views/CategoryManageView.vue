@@ -781,6 +781,7 @@ async function handleCollapseToLeaf(data: KbCategory) {
       type: 'warning',
       dangerouslyUseHTMLString: true,
       confirmButtonClass: 'el-button--danger',
+      customStyle: { width: '640px', maxWidth: '92vw' },
     })
   } catch {
     return // 用户取消
