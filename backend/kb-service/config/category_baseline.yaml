@@ -16,9 +16,9 @@
 
 version: "2.0"
 source: "kb_category 全树快照（DB 导出，解A DFS 重排）"
-generated: "2026-10-11"
+generated: "2026-10-12"
 
-total: 316
+total: 300
 categories:
 - code: 存储-L1
   name: 存储
@@ -1166,7 +1166,7 @@ categories:
   path:
   - 硬件
   - CPU
-  - CPU微码版本过低
+  - CPU微码
 - code: 硬件-016
   name: CPU损坏
   domain: 硬件
@@ -1175,7 +1175,7 @@ categories:
   path:
   - 硬件
   - CPU
-  - 微码版本升级失败
+  - CPU损坏
 - code: 硬件-018
   name: 带外管理(IPMI/BMC)无法登录
   domain: 硬件
@@ -1939,30 +1939,6 @@ categories:
   - 虚拟机
   - 虚拟机异常挂起
 - code: 虚拟机-010
-  name: 虚拟机异常关机重启
-  domain: 虚拟机
-  level: 2
-  parent: 虚拟机-L1
-  path:
-  - 虚拟机
-  - 虚拟机异常关机重启
-- code: 虚拟机-011
-  name: 虚拟机异常HA
-  domain: 虚拟机
-  level: 2
-  parent: 虚拟机-L1
-  path:
-  - 虚拟机
-  - 虚拟机异常HA
-- code: 虚拟机-012
-  name: 虚拟机迁移
-  domain: 虚拟机
-  level: 2
-  parent: 虚拟机-L1
-  path:
-  - 虚拟机
-  - 虚拟机迁移
-- code: 虚拟机-023
   name: 虚拟机模版
   domain: 虚拟机
   level: 2
@@ -1970,7 +1946,23 @@ categories:
   path:
   - 虚拟机
   - 虚拟机模版
-- code: 虚拟机-028
+- code: 虚拟机-015
+  name: 虚拟机迁移
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机迁移
+- code: 虚拟机-020
+  name: 虚拟机编辑
+  domain: 虚拟机
+  level: 2
+  parent: 虚拟机-L1
+  path:
+  - 虚拟机
+  - 虚拟机编辑
+- code: 虚拟机-024
   name: 虚拟机快照
   domain: 虚拟机
   level: 2
@@ -1978,7 +1970,7 @@ categories:
   path:
   - 虚拟机
   - 虚拟机快照
-- code: 虚拟机-032
+- code: 虚拟机-028
   name: 虚拟机备份
   domain: 虚拟机
   level: 2
@@ -1986,47 +1978,23 @@ categories:
   path:
   - 虚拟机
   - 虚拟机备份
-- code: 虚拟机-037
-  name: 虚拟机磁盘分配方式卡住
+- code: 虚拟机-033
+  name: 集群资源调度DRS
   domain: 虚拟机
   level: 2
   parent: 虚拟机-L1
   path:
   - 虚拟机
-  - 虚拟机磁盘分配方式卡住
-- code: 虚拟机-038
-  name: 虚拟机硬件资源热添加和DRX不生效
+  - 集群资源调度DRS
+- code: 虚拟机-036
+  name: 虚拟机HA
   domain: 虚拟机
   level: 2
   parent: 虚拟机-L1
   path:
   - 虚拟机
-  - 虚拟机硬件资源热添加和DRX不生效
+  - 虚拟机HA
 - code: 虚拟机-039
-  name: 集群资源调度DRS失败
-  domain: 虚拟机
-  level: 2
-  parent: 虚拟机-L1
-  path:
-  - 虚拟机
-  - 集群资源调度DRS失败
-- code: 虚拟机-040
-  name: 虚拟机HA不达预期
-  domain: 虚拟机
-  level: 2
-  parent: 虚拟机-L1
-  path:
-  - 虚拟机
-  - 虚拟机HA不达预期
-- code: 虚拟机-041
-  name: 虚拟机内部软件使用异常
-  domain: 虚拟机
-  level: 2
-  parent: 虚拟机-L1
-  path:
-  - 虚拟机
-  - 虚拟机内部软件使用异常
-- code: 虚拟机-042
   name: 虚拟机内部空间或文件系统异常
   domain: 虚拟机
   level: 2
@@ -2034,47 +2002,7 @@ categories:
   path:
   - 虚拟机
   - 虚拟机内部空间或文件系统异常
-- code: 虚拟机-043
-  name: 虚拟机密码重置
-  domain: 虚拟机
-  level: 2
-  parent: 虚拟机-L1
-  path:
-  - 虚拟机
-  - 虚拟机密码重置
-- code: 虚拟机-044
-  name: 虚拟机CPU或内存占用过高告警
-  domain: 虚拟机
-  level: 2
-  parent: 虚拟机-L1
-  path:
-  - 虚拟机
-  - 虚拟机CPU或内存占用过高告警
-- code: 虚拟机-045
-  name: 虚拟机网络流量或Session过高告警
-  domain: 虚拟机
-  level: 2
-  parent: 虚拟机-L1
-  path:
-  - 虚拟机
-  - 虚拟机网络流量或Session过高告警
-- code: 虚拟机-046
-  name: 虚拟机显存占用过高告警
-  domain: 虚拟机
-  level: 2
-  parent: 虚拟机-L1
-  path:
-  - 虚拟机
-  - 虚拟机显存占用过高告警
-- code: 虚拟机-047
-  name: 虚拟机添加磁盘内部识别异常
-  domain: 虚拟机
-  level: 2
-  parent: 虚拟机-L1
-  path:
-  - 虚拟机
-  - 虚拟机添加磁盘内部识别异常
-- code: 虚拟机-048
+- code: 虚拟机-040
   name: 虚拟机使用体验
   domain: 虚拟机
   level: 2
@@ -2082,750 +2010,671 @@ categories:
   path:
   - 虚拟机
   - 虚拟机使用体验
-- code: 虚拟机-102
-  name: HA预留资源不足
+- code: 虚拟机-081
+  name: 虚拟机告警
   domain: 虚拟机
   level: 2
   parent: 虚拟机-L1
   path:
   - 虚拟机
-  - HA预留资源不足
-- code: 虚拟机-103
-  name: 虚拟机CPU告警
-  domain: 虚拟机
-  level: 2
-  parent: 虚拟机-L1
-  path:
-  - 虚拟机
-  - 虚拟机CPU告警
-- code: 虚拟机-104
-  name: 虚拟机磁盘时延过高
-  domain: 虚拟机
-  level: 2
-  parent: 虚拟机-L1
-  path:
-  - 虚拟机
-  - 虚拟机磁盘时延过高
-- code: 虚拟机-105
-  name: 虚拟机镜像文件损坏告警
-  domain: 虚拟机
-  level: 2
-  parent: 虚拟机-L1
-  path:
-  - 虚拟机
-  - 虚拟机镜像文件损坏告警
-- code: 虚拟机-013
-  name: 虚拟机scmt迁移失败
-  domain: 虚拟机
-  level: 3
-  parent: 虚拟机-012
-  path:
-  - 虚拟机
-  - 虚拟机迁移
-  - 虚拟机scmt迁移失败
-- code: 虚拟机-014
-  name: 虚拟机vmware纳管迁移失败
-  domain: 虚拟机
-  level: 3
-  parent: 虚拟机-012
-  path:
-  - 虚拟机
-  - 虚拟机迁移
-  - 虚拟机vmware纳管迁移失败
-- code: 虚拟机-015
-  name: 虚拟机集群内或跨集群迁移失败
-  domain: 虚拟机
-  level: 3
-  parent: 虚拟机-012
-  path:
-  - 虚拟机
-  - 虚拟机迁移
-  - 虚拟机集群内或跨集群迁移失败
-- code: 虚拟机-022
-  name: convert工具迁移失败
-  domain: 虚拟机
-  level: 3
-  parent: 虚拟机-012
-  path:
-  - 虚拟机
-  - 虚拟机迁移
-  - convert工具迁移失败
-- code: 虚拟机-024
+  - 虚拟机告警
+- code: 虚拟机-011
   name: 虚拟机模板创建失败
   domain: 虚拟机
   level: 3
-  parent: 虚拟机-023
+  parent: 虚拟机-010
   path:
   - 虚拟机
   - 虚拟机模版
   - 虚拟机模板创建失败
-- code: 虚拟机-025
+- code: 虚拟机-012
   name: 虚拟机模板更新失败
   domain: 虚拟机
   level: 3
-  parent: 虚拟机-023
+  parent: 虚拟机-010
   path:
   - 虚拟机
   - 虚拟机模版
   - 虚拟机模板更新失败
-- code: 虚拟机-026
+- code: 虚拟机-013
   name: 虚拟机模版派生失败
   domain: 虚拟机
   level: 3
-  parent: 虚拟机-023
+  parent: 虚拟机-010
   path:
   - 虚拟机
   - 虚拟机模版
   - 虚拟机模版派生失败
-- code: 虚拟机-027
+- code: 虚拟机-014
   name: 虚拟机模板转换失败
   domain: 虚拟机
   level: 3
-  parent: 虚拟机-023
+  parent: 虚拟机-010
   path:
   - 虚拟机
   - 虚拟机模版
   - 虚拟机模板转换失败
-- code: 虚拟机-029
+- code: 虚拟机-016
+  name: 虚拟机scmt迁移失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-015
+  path:
+  - 虚拟机
+  - 虚拟机迁移
+  - 虚拟机scmt迁移失败
+- code: 虚拟机-017
+  name: 虚拟机集群内或跨集群迁移失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-015
+  path:
+  - 虚拟机
+  - 虚拟机迁移
+  - 虚拟机集群内或跨集群迁移失败
+- code: 虚拟机-018
+  name: 虚拟机vmware纳管迁移失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-015
+  path:
+  - 虚拟机
+  - 虚拟机迁移
+  - 虚拟机vmware纳管迁移失败
+- code: 虚拟机-019
+  name: convert工具迁移失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-015
+  path:
+  - 虚拟机
+  - 虚拟机迁移
+  - convert工具迁移失败
+- code: 虚拟机-021
+  name: 虚拟机磁盘分配方式卡住
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-020
+  path:
+  - 虚拟机
+  - 虚拟机编辑
+  - 虚拟机磁盘分配方式卡住
+- code: 虚拟机-022
+  name: 虚拟机添加磁盘内部识别异常
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-020
+  path:
+  - 虚拟机
+  - 虚拟机编辑
+  - 虚拟机添加磁盘内部识别异常
+- code: 虚拟机-023
+  name: 虚拟机硬件资源热添加和DRX不生效
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-020
+  path:
+  - 虚拟机
+  - 虚拟机编辑
+  - 虚拟机硬件资源热添加和DRX不生效
+- code: 虚拟机-025
   name: 虚拟机快照失败
   domain: 虚拟机
   level: 3
-  parent: 虚拟机-028
+  parent: 虚拟机-024
   path:
   - 虚拟机
   - 虚拟机快照
   - 虚拟机快照失败
-- code: 虚拟机-030
+- code: 虚拟机-026
   name: 虚拟机快照合并或删除失败
   domain: 虚拟机
   level: 3
-  parent: 虚拟机-028
+  parent: 虚拟机-024
   path:
   - 虚拟机
   - 虚拟机快照
   - 虚拟机快照合并或删除失败
-- code: 虚拟机-031
+- code: 虚拟机-027
   name: 虚拟机快照恢复失败
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-024
+  path:
+  - 虚拟机
+  - 虚拟机快照
+  - 虚拟机快照恢复失败
+- code: 虚拟机-029
+  name: 虚拟机备份创建失败
   domain: 虚拟机
   level: 3
   parent: 虚拟机-028
   path:
   - 虚拟机
-  - 虚拟机快照
-  - 虚拟机快照恢复失败
-- code: 虚拟机-033
-  name: 虚拟机备份创建失败
-  domain: 虚拟机
-  level: 3
-  parent: 虚拟机-032
-  path:
-  - 虚拟机
   - 虚拟机备份
   - 虚拟机备份创建失败
-- code: 虚拟机-034
+- code: 虚拟机-030
   name: 虚拟机备份合并或删除失败
   domain: 虚拟机
   level: 3
-  parent: 虚拟机-032
+  parent: 虚拟机-028
   path:
   - 虚拟机
   - 虚拟机备份
   - 虚拟机备份合并或删除失败
-- code: 虚拟机-035
+- code: 虚拟机-031
   name: 虚拟机备份恢复失败
   domain: 虚拟机
   level: 3
-  parent: 虚拟机-032
+  parent: 虚拟机-028
   path:
   - 虚拟机
   - 虚拟机备份
   - 虚拟机备份恢复失败
-- code: 虚拟机-036
+- code: 虚拟机-032
   name: 虚拟机备份文件找回失败
   domain: 虚拟机
   level: 3
-  parent: 虚拟机-032
+  parent: 虚拟机-028
   path:
   - 虚拟机
   - 虚拟机备份
   - 虚拟机备份文件找回失败
-- code: 虚拟机-049
-  name: 虚拟机网络异常
+- code: 虚拟机-034
+  name: 集群资源调度DRS失败
   domain: 虚拟机
   level: 3
-  parent: 虚拟机-048
+  parent: 虚拟机-033
   path:
   - 虚拟机
-  - 虚拟机使用体验
-  - 虚拟机网络异常
-- code: 虚拟机-054
-  name: 虚拟机数据丢失
+  - 集群资源调度DRS
+  - 集群资源调度DRS失败
+- code: 虚拟机-035
+  name: 集群资源调度DRS不均衡
   domain: 虚拟机
   level: 3
-  parent: 虚拟机-048
+  parent: 虚拟机-033
   path:
   - 虚拟机
-  - 虚拟机使用体验
-  - 虚拟机数据丢失
-- code: 虚拟机-055
+  - 集群资源调度DRS
+  - 集群资源调度DRS不均衡
+- code: 虚拟机-037
+  name: 虚拟机异常HA
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-036
+  path:
+  - 虚拟机
+  - 虚拟机HA
+  - 虚拟机异常HA
+- code: 虚拟机-038
+  name: 虚拟机HA不达预期
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-036
+  path:
+  - 虚拟机
+  - 虚拟机HA
+  - 虚拟机HA不达预期
+- code: 虚拟机-041
   name: 进不去系统OS或桌面
   domain: 虚拟机
   level: 3
-  parent: 虚拟机-048
+  parent: 虚拟机-040
   path:
   - 虚拟机
   - 虚拟机使用体验
   - 进不去系统OS或桌面
-- code: 虚拟机-060
+- code: 虚拟机-046
   name: 操作或使用卡慢
   domain: 虚拟机
   level: 3
-  parent: 虚拟机-048
+  parent: 虚拟机-040
   path:
   - 虚拟机
   - 虚拟机使用体验
   - 操作或使用卡慢
-- code: 虚拟机-065
+- code: 虚拟机-051
   name: 内部软件使用异常
   domain: 虚拟机
   level: 3
-  parent: 虚拟机-048
+  parent: 虚拟机-040
   path:
   - 虚拟机
   - 虚拟机使用体验
   - 内部软件使用异常
-- code: 虚拟机-070
-  name: 性能优化工具或agent组件异常
-  domain: 虚拟机
-  level: 3
-  parent: 虚拟机-048
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 性能优化工具或agent组件异常
-- code: 虚拟机-076
+- code: 虚拟机-056
   name: OS系统桌面显示异常
   domain: 虚拟机
   level: 3
-  parent: 虚拟机-048
+  parent: 虚拟机-040
   path:
   - 虚拟机
   - 虚拟机使用体验
   - OS系统桌面显示异常
-- code: 虚拟机-080
+- code: 虚拟机-060
+  name: 性能优化工具或agent组件异常
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-040
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 性能优化工具或agent组件异常
+- code: 虚拟机-066
   name: OS虚拟硬件资源及使用率异常
   domain: 虚拟机
   level: 3
-  parent: 虚拟机-048
+  parent: 虚拟机-040
   path:
   - 虚拟机
   - 虚拟机使用体验
   - OS虚拟硬件资源及使用率异常
-- code: 虚拟机-085
+- code: 虚拟机-071
+  name: 虚拟机文件或数据丢失
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-040
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 文件或数据丢失
+- code: 虚拟机-072
+  name: 虚拟机时间同步异常
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-040
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 虚拟机时间同步异常
+- code: 虚拟机-073
   name: 音视频功能使用异常
   domain: 虚拟机
   level: 3
-  parent: 虚拟机-048
+  parent: 虚拟机-040
   path:
   - 虚拟机
   - 虚拟机使用体验
   - 音视频功能使用异常
-- code: 虚拟机-088
-  name: VDC策略组相关功能异常
+- code: 虚拟机-076
+  name: 虚拟机网络异常
   domain: 虚拟机
   level: 3
-  parent: 虚拟机-048
+  parent: 虚拟机-040
   path:
   - 虚拟机
   - 虚拟机使用体验
-  - VDC策略组相关功能异常
-- code: 虚拟机-016
-  name: 虚拟机集群内热迁移失败（跨存储）
+  - 虚拟机网络异常
+- code: 虚拟机-082
+  name: HA预留资源不足
   domain: 虚拟机
-  level: 4
-  parent: 虚拟机-015
+  level: 3
+  parent: 虚拟机-081
   path:
   - 虚拟机
-  - 虚拟机迁移
-  - 虚拟机集群内或跨集群迁移失败
-  - 虚拟机集群内热迁移失败（跨存储）
-- code: 虚拟机-017
-  name: 虚拟机集群内热迁移失败（同存储）
+  - 虚拟机告警
+  - HA预留资源不足
+- code: 虚拟机-083
+  name: 虚拟机网络流量或Session过高告警
   domain: 虚拟机
-  level: 4
-  parent: 虚拟机-015
+  level: 3
+  parent: 虚拟机-081
   path:
   - 虚拟机
-  - 虚拟机迁移
-  - 虚拟机集群内或跨集群迁移失败
-  - 虚拟机集群内热迁移失败（同存储）
-- code: 虚拟机-018
-  name: 虚拟机跨集群热迁移失败
+  - 虚拟机告警
+  - 虚拟机网络流量或Session过高告警
+- code: 虚拟机-084
+  name: 虚拟机镜像文件损坏告警
   domain: 虚拟机
-  level: 4
-  parent: 虚拟机-015
+  level: 3
+  parent: 虚拟机-081
   path:
   - 虚拟机
-  - 虚拟机迁移
-  - 虚拟机集群内或跨集群迁移失败
-  - 虚拟机跨集群热迁移失败
-- code: 虚拟机-019
-  name: 虚拟机集群内冷迁移失败（跨存储）
+  - 虚拟机告警
+  - 虚拟机镜像文件损坏告警
+- code: 虚拟机-085
+  name: 虚拟机显存告警
   domain: 虚拟机
-  level: 4
-  parent: 虚拟机-015
+  level: 3
+  parent: 虚拟机-081
   path:
   - 虚拟机
-  - 虚拟机迁移
-  - 虚拟机集群内或跨集群迁移失败
-  - 虚拟机集群内冷迁移失败（跨存储）
-- code: 虚拟机-020
-  name: 虚拟机集群内冷迁移失败（同存储）
+  - 虚拟机告警
+  - 虚拟机显存告警
+- code: 虚拟机-086
+  name: 虚拟机内存告警
   domain: 虚拟机
-  level: 4
-  parent: 虚拟机-015
+  level: 3
+  parent: 虚拟机-081
   path:
   - 虚拟机
-  - 虚拟机迁移
-  - 虚拟机集群内或跨集群迁移失败
-  - 虚拟机集群内冷迁移失败（同存储）
-- code: 虚拟机-021
-  name: 虚拟机跨集群冷迁移失败
+  - 虚拟机告警
+  - 虚拟机内存告警
+- code: 虚拟机-087
+  name: 虚拟机CPU告警
   domain: 虚拟机
-  level: 4
-  parent: 虚拟机-015
+  level: 3
+  parent: 虚拟机-081
   path:
   - 虚拟机
-  - 虚拟机迁移
-  - 虚拟机集群内或跨集群迁移失败
-  - 虚拟机跨集群冷迁移失败
+  - 虚拟机告警
+  - 虚拟机CPU告警
+- code: 虚拟机-088
+  name: 虚拟机磁盘时延过高
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-081
+  path:
+  - 虚拟机
+  - 虚拟机告警
+  - 虚拟机磁盘时延过高
+- code: 虚拟机-089
+  name: 虚拟机异常关机重启
+  domain: 虚拟机
+  level: 3
+  parent: 虚拟机-081
+  path:
+  - 虚拟机
+  - 虚拟机告警
+  - 虚拟机异常关机重启
+- code: 虚拟机-042
+  name: 卡在系统启动界面或进度条不动
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-041
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 进不去系统OS或桌面
+  - 卡在系统启动界面或进度条不动
+- code: 虚拟机-043
+  name: 蓝屏
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-041
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 进不去系统OS或桌面
+  - 蓝屏
+- code: 虚拟机-044
+  name: 黑屏或无显示
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-041
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 进不去系统OS或桌面
+  - 黑屏或无显示
+- code: 虚拟机-045
+  name: 虚拟机自动登录失败或报错
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-041
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 进不去系统OS或桌面
+  - 虚拟机自动登录失败或报错
+- code: 虚拟机-047
+  name: 虚拟机开关机慢
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-046
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 操作或使用卡慢
+  - 虚拟机开关机慢
+- code: 虚拟机-048
+  name: 虚拟机操作或使用卡慢
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-046
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 操作或使用卡慢
+  - 虚拟机操作或使用卡慢
+- code: 虚拟机-049
+  name: 软件使用卡慢或卡死
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-046
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 操作或使用卡慢
+  - 软件使用卡慢或卡死
 - code: 虚拟机-050
-  name: 虚拟机网络丢包或不通
+  name: 虚拟机卡死或无响应
   domain: 虚拟机
   level: 4
-  parent: 虚拟机-049
+  parent: 虚拟机-046
   path:
   - 虚拟机
   - 虚拟机使用体验
-  - 虚拟机网络异常
-  - 虚拟机网络丢包或不通
-- code: 虚拟机-051
-  name: 虚拟机网络延时高
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-049
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 虚拟机网络异常
-  - 虚拟机网络延时高
+  - 操作或使用卡慢
+  - 虚拟机卡死或无响应
 - code: 虚拟机-052
-  name: 虚拟机网络IP地址冲突
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-049
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 虚拟机网络异常
-  - 虚拟机网络IP地址冲突
-- code: 虚拟机-053
-  name: 虚拟机网卡状态异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-049
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 虚拟机网络异常
-  - 虚拟机网卡状态异常
-- code: 虚拟机-056
-  name: 虚拟机图形化界面启动失败
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-055
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 进不去系统OS或桌面
-  - 虚拟机图形化界面启动失败
-- code: 虚拟机-057
-  name: 虚拟机内部黑屏
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-055
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 进不去系统OS或桌面
-  - 虚拟机内部黑屏
-- code: 虚拟机-058
-  name: 虚拟机内部蓝屏
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-055
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 进不去系统OS或桌面
-  - 虚拟机内部蓝屏
-- code: 虚拟机-059
-  name: 虚拟机自动登录失败
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-055
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 进不去系统OS或桌面
-  - 虚拟机自动登录失败
-- code: 虚拟机-061
-  name: 虚拟机整体卡慢
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-060
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 操作或使用卡慢
-  - 虚拟机整体卡慢
-- code: 虚拟机-062
-  name: 虚拟机内部业务卡慢
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-060
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 操作或使用卡慢
-  - 虚拟机内部业务卡慢
-- code: 虚拟机-063
-  name: 虚拟机IO读写慢
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-060
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 操作或使用卡慢
-  - 虚拟机IO读写慢
-- code: 虚拟机-064
-  name: 虚拟机卡死无响应
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-060
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 操作或使用卡慢
-  - 虚拟机卡死无响应
-- code: 虚拟机-066
   name: 软件安装或卸载失败
   domain: 虚拟机
   level: 4
-  parent: 虚拟机-065
+  parent: 虚拟机-051
   path:
   - 虚拟机
   - 虚拟机使用体验
   - 内部软件使用异常
   - 软件安装或卸载失败
-- code: 虚拟机-067
-  name: 软件使用异常或闪退或卡死
+- code: 虚拟机-053
+  name: 软件使用异常或闪退
   domain: 虚拟机
   level: 4
-  parent: 虚拟机-065
+  parent: 虚拟机-051
   path:
   - 虚拟机
   - 虚拟机使用体验
   - 内部软件使用异常
-  - 软件使用异常或闪退或卡死
-- code: 虚拟机-068
+  - 软件使用异常或闪退
+- code: 虚拟机-054
   name: OS系统软件或自身组件异常
   domain: 虚拟机
   level: 4
-  parent: 虚拟机-065
+  parent: 虚拟机-051
   path:
   - 虚拟机
   - 虚拟机使用体验
   - 内部软件使用异常
   - OS系统软件或自身组件异常
-- code: 虚拟机-069
+- code: 虚拟机-055
   name: 极域软件使用异常
   domain: 虚拟机
   level: 4
-  parent: 虚拟机-065
+  parent: 虚拟机-051
   path:
   - 虚拟机
   - 虚拟机使用体验
   - 内部软件使用异常
   - 极域软件使用异常
-- code: 虚拟机-071
-  name: 虚拟机性能优化工具(vmtools)安装卸载异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-070
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 性能优化工具或agent组件异常
-  - 虚拟机性能优化工具(vmtools)安装卸载异常
-- code: 虚拟机-072
-  name: 虚拟机性能优化工具(vmtools)报表透传异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-070
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 性能优化工具或agent组件异常
-  - 虚拟机性能优化工具(vmtools)报表透传异常
-- code: 虚拟机-073
-  name: agent安装卸载失败
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-070
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 性能优化工具或agent组件异常
-  - agent安装卸载失败
-- code: 虚拟机-074
-  name: agent状态异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-070
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 性能优化工具或agent组件异常
-  - agent状态异常
-- code: 虚拟机-075
-  name: agent报表透传异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-070
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 性能优化工具或agent组件异常
-  - agent报表透传异常
-- code: 虚拟机-077
+- code: 虚拟机-057
   name: OS桌面屏幕分辨率或缩放异常
   domain: 虚拟机
   level: 4
-  parent: 虚拟机-076
+  parent: 虚拟机-056
   path:
   - 虚拟机
   - 虚拟机使用体验
   - OS系统桌面显示异常
   - OS桌面屏幕分辨率或缩放异常
-- code: 虚拟机-078
+- code: 虚拟机-058
   name: OS桌面屏幕花屏或闪烁或有条纹
   domain: 虚拟机
   level: 4
-  parent: 虚拟机-076
+  parent: 虚拟机-056
   path:
   - 虚拟机
   - 虚拟机使用体验
   - OS系统桌面显示异常
   - OS桌面屏幕花屏或闪烁或有条纹
-- code: 虚拟机-079
+- code: 虚拟机-059
   name: OS桌面屏幕保护程序或锁屏异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-056
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - OS系统桌面显示异常
+  - OS桌面屏幕保护程序或锁屏异常
+- code: 虚拟机-061
+  name: 虚拟机性能优化工具(vmtools)安装卸载失败
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-060
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 性能优化工具或agent组件异常
+  - 虚拟机性能优化工具(vmtools)安装卸载异常
+- code: 虚拟机-062
+  name: 虚拟机性能优化工具(vmtools)报表透传异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-060
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 性能优化工具或agent组件异常
+  - 虚拟机性能优化工具(vmtools)报表透传异常
+- code: 虚拟机-063
+  name: agent安装卸载失败
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-060
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 性能优化工具或agent组件异常
+  - agent安装卸载失败
+- code: 虚拟机-064
+  name: agent状态异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-060
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 性能优化工具或agent组件异常
+  - agent状态异常
+- code: 虚拟机-065
+  name: agent报表透传异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-060
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 性能优化工具或agent组件异常
+  - agent报表透传异常
+- code: 虚拟机-067
+  name: CPU或内存使用率异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-066
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - OS虚拟硬件资源及使用率异常
+  - CPU或内存使用率异常
+- code: 虚拟机-068
+  name: 磁盘空间不足或占用异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-066
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - OS虚拟硬件资源及使用率异常
+  - 磁盘空间不足或占用异常
+- code: 虚拟机-069
+  name: 虚拟机显存使用率异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-066
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - OS虚拟硬件资源及使用率异常
+  - 虚拟机显存使用率异常
+- code: 虚拟机-070
+  name: 扩容磁盘异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-066
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - OS虚拟硬件资源及使用率异常
+  - 扩容磁盘异常
+- code: 虚拟机-074
+  name: 虚拟机音频异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-073
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 音视频功能使用异常
+  - 虚拟机音频异常
+- code: 虚拟机-075
+  name: 虚拟机视频播放异常
+  domain: 虚拟机
+  level: 4
+  parent: 虚拟机-073
+  path:
+  - 虚拟机
+  - 虚拟机使用体验
+  - 音视频功能使用异常
+  - 虚拟机视频播放异常
+- code: 虚拟机-077
+  name: 虚拟机网络丢包或不通
   domain: 虚拟机
   level: 4
   parent: 虚拟机-076
   path:
   - 虚拟机
   - 虚拟机使用体验
-  - OS系统桌面显示异常
-  - OS桌面屏幕保护程序或锁屏异常
-- code: 虚拟机-081
-  name: CPU或内存使用率异常
+  - 虚拟机网络异常
+  - 虚拟机网络丢包或不通
+- code: 虚拟机-078
+  name: 虚拟机网络IP地址冲突
   domain: 虚拟机
   level: 4
-  parent: 虚拟机-080
+  parent: 虚拟机-076
   path:
   - 虚拟机
   - 虚拟机使用体验
-  - OS虚拟硬件资源及使用率异常
-  - CPU或内存使用率异常
-- code: 虚拟机-082
-  name: 磁盘空间不足或占用异常
+  - 虚拟机网络异常
+  - 虚拟机网络IP地址冲突
+- code: 虚拟机-079
+  name: 虚拟机网络延时高
   domain: 虚拟机
   level: 4
-  parent: 虚拟机-080
+  parent: 虚拟机-076
   path:
   - 虚拟机
   - 虚拟机使用体验
-  - OS虚拟硬件资源及使用率异常
-  - 磁盘空间不足或占用异常
-- code: 虚拟机-083
-  name: 虚拟机显存使用率异常
+  - 虚拟机网络异常
+  - 虚拟机网络延时高
+- code: 虚拟机-080
+  name: 虚拟机网卡状态异常
   domain: 虚拟机
   level: 4
-  parent: 虚拟机-080
+  parent: 虚拟机-076
   path:
   - 虚拟机
   - 虚拟机使用体验
-  - OS虚拟硬件资源及使用率异常
-  - 虚拟机显存使用率异常
-- code: 虚拟机-084
-  name: 扩容磁盘异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-080
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - OS虚拟硬件资源及使用率异常
-  - 扩容磁盘异常
-- code: 虚拟机-086
-  name: 虚拟机音频异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-085
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 音视频功能使用异常
-  - 虚拟机音频异常
-- code: 虚拟机-087
-  name: 虚拟机视频播放异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-085
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - 音视频功能使用异常
-  - 虚拟机视频播放异常
-- code: 虚拟机-089
-  name: 防截屏功能异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-088
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - VDC策略组相关功能异常
-  - 防截屏功能异常
-- code: 虚拟机-090
-  name: 屏幕水印异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-088
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - VDC策略组相关功能异常
-  - 屏幕水印异常
-- code: 虚拟机-091
-  name: 外发审计功能异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-088
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - VDC策略组相关功能异常
-  - 外发审计功能异常
-- code: 虚拟机-092
-  name: 远程协助异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-088
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - VDC策略组相关功能异常
-  - 远程协助异常
-- code: 虚拟机-093
-  name: 软件分发异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-088
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - VDC策略组相关功能异常
-  - 软件分发异常
-- code: 虚拟机-094
-  name: 关机一体化异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-088
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - VDC策略组相关功能异常
-  - 关机一体化异常
-- code: 虚拟机-095
-  name: 虚拟机加域失败
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-088
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - VDC策略组相关功能异常
-  - 虚拟机加域失败
-- code: 虚拟机-096
-  name: 应用管控异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-088
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - VDC策略组相关功能异常
-  - 应用管控异常
-- code: 虚拟机-097
-  name: 剪切板或拷贝异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-088
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - VDC策略组相关功能异常
-  - 剪切板或拷贝异常
-- code: 虚拟机-098
-  name: 磁盘映射异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-088
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - VDC策略组相关功能异常
-  - 磁盘映射异常
-- code: 虚拟机-099
-  name: 企业云盘或共享盘异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-088
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - VDC策略组相关功能异常
-  - 企业云盘或共享盘异常
-- code: 虚拟机-100
-  name: 文件拷贝异常或传输慢
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-088
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - VDC策略组相关功能异常
-  - 文件拷贝异常或传输慢
-- code: 虚拟机-101
-  name: UPM用户配置重定向异常
-  domain: 虚拟机
-  level: 4
-  parent: 虚拟机-088
-  path:
-  - 虚拟机
-  - 虚拟机使用体验
-  - VDC策略组相关功能异常
-  - UPM用户配置重定向异常
+  - 虚拟机网络异常
+  - 虚拟机网卡状态异常
