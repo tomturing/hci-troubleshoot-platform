@@ -57,6 +57,23 @@ export function collectAncestorPathKeys(
   return keys
 }
 
+// 解析 el-tree 展开/折叠事件回调的稳定主键。
+// 【关键契约】Element Plus 的 node-expand / node-collapse 事件签名为
+// `emit('node-collapse', node.data, node, instance)`——第一个实参是节点的
+// data 数据对象本身（KbCategory），而非 Node 实例。历史实现误按 Node 实例
+// 取 `arg.data.id_in_db`，导致恒为 undefined、展开/折叠从不写回 expandedKeys，
+// 残留的旧 key 会在下次数组变化时被 defaultExpandedKeys watcher 重新展开，
+// 表现为「折叠 A 后再展开兄弟 B，A 又自动展开」。此处只认 data 对象上的
+// id_in_db（回退 id），并显式拒绝带 `.node` 包装的误传，杜绝再次踩坑。
+export function resolveCategoryNodeKey(
+  data: unknown,
+): number | string | null {
+  if (!data || typeof data !== 'object') return null
+  const d = data as { id_in_db?: number | string; id?: number | string }
+  const key = d.id_in_db ?? d.id
+  return key ?? null
+}
+
 export function flattenOptions(nodes: RawCategoryNode[]): CategoryOption[] {
   return nodes
     .map((n) => ({

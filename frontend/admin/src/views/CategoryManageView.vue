@@ -5,7 +5,7 @@ import { Histogram, Upload, Download, WarningFilled, Plus, Edit, Delete, VideoPl
 import { marked } from 'marked'
 import DOMPurify, { type Config as DOMPurifyConfig } from 'dompurify'
 import type { UploadFile, UploadRawFile, UploadInstance } from 'element-plus'
-import { collectAncestorPathKeys } from '@/composables/useCategories'
+import { collectAncestorPathKeys, resolveCategoryNodeKey } from '@/composables/useCategories'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 类型定义（适配 kb_category 表结构）
@@ -403,15 +403,19 @@ const globalCategoryTree = computed<KbCategory[]>(() => {
 const expandedKeys = ref<(number | string)[]>([])
 let treeInitExpandedSeeded = false
 
-function handleNodeExpand(node: any) {
-  const k = node?.data?.id_in_db ?? node?.data?.id
+// 【事件契约】el-tree 的 node-expand / node-collapse 第一个实参是节点 data 对象本身
+// （非 Node 实例），故直接用 resolveCategoryNodeKey 从 data 取 id_in_db 写回 expandedKeys。
+// 历史 bug：曾误按 Node 实例取 `arg.data.id_in_db` 恒为 undefined，展开/折叠沦为空操作，
+// 折叠后的分组残留在 expandedKeys 中，后续任何展开都会被 defaultExpandedKeys watcher 重新弹开。
+function handleNodeExpand(data: any) {
+  const k = resolveCategoryNodeKey(data)
   if (k != null && !expandedKeys.value.includes(k)) {
     expandedKeys.value = [...expandedKeys.value, k]
   }
 }
 
-function handleNodeCollapse(node: any) {
-  const k = node?.data?.id_in_db ?? node?.data?.id
+function handleNodeCollapse(data: any) {
+  const k = resolveCategoryNodeKey(data)
   if (k == null) return
   expandedKeys.value = expandedKeys.value.filter((x) => x !== k)
 }
