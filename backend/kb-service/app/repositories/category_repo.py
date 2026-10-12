@@ -43,6 +43,43 @@ if TYPE_CHECKING:
 
 logger = get_logger("kb-service-category-repo")
 
+# 全库「按 kb_category.code 引用分类」的列清单（与 resequence_domain 保持同一事实源，共 10 列）。
+# 折叠子树到父节点时，须把指向后代码的引用一并改绑到父码，避免删除后代后留下悬空引用。
+# 有 FK：kbd_entry.category_id / sop_document.category_id；
+# 无 FK 但存 code：其余 8 列（category_scope 含通配 '*'，等值匹配天然不命中，安全）。
+_CATEGORY_CODE_REF_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("kbd_entry", "category_id"),
+    ("kbd_entry", "ai_category_id"),
+    ("sop_document", "category_id"),
+    ("conversation", "category_id"),
+    ("offline_signal_collector_mapping", "category_scope"),
+    ("diagnosis_candidate", "category_id"),
+    ("diagnosis_run", "resolved_category"),
+    ("diagnosis_run", "selected_category"),
+    ("diagnosis_session", "resolved_category"),
+    ("diagnosis_session", "selected_category"),
+)
+
+# 递归后代 CTE 前缀（不含自身）：以 :pid 为根按 parent_id 下钻整棵子树。
+_DESCENDANTS_CTE = """
+WITH RECURSIVE d AS (
+    SELECT id, code FROM kb_category WHERE parent_id = :pid
+    UNION ALL
+    SELECT c.id, c.code FROM kb_category c JOIN d ON c.parent_id = d.id
+)
+"""
+
+
+def _build_in_clause(values: list[str], prefix: str) -> tuple[str, dict[str, str]]:
+    """把 Python 字符串列表拼成命名参数化的 ``IN (:p0, :p1, ...)``，规避 asyncpg 数组绑定差异。"""
+    keys: list[str] = []
+    params: dict[str, str] = {}
+    for i, v in enumerate(values):
+        k = f"{prefix}{i}"
+        params[k] = v
+        keys.append(f":{k}")
+    return ", ".join(keys), params
+
 
 async def is_category_leaf(session: AsyncSession, code: str) -> bool:
     """判断 ``code`` 是否为**可绑定叶子**：分类存在且无子节点（NOT EXISTS parent_id）。
@@ -1051,6 +1088,108 @@ class CategoryRepository:
                 trace_id=trace_id,
             )
             return True
+
+    async def collapse_subtree_to_leaf(self, code: str) -> dict[str, Any]:
+        """原子折叠：把 ``code`` 的整棵子树（全部后代）关联内容改绑到 ``code`` 自身，
+        再删除全部后代，使 ``code`` 由分组节点退化为叶子节点。单事务，任一校验失败整体回滚。
+
+        场景：删除叶子前先把它的相关 KBD/SOP 归并到父节点，再删叶子——但父此刻仍是分组，
+        应用层叶子门禁（is_category_leaf）会拒绝把 KBD 绑到分组，且已发布 KBD 受写保护。
+        故必须把「改绑 + 删除」合为一个原子动作：提交瞬间父自动无子→成叶子，终态合规，
+        不留「KBD 挂分组」的中间脏态。等价于 data-migrations/review_required/043 的产品化。
+
+        第一性原理：FK 为 ON DELETE NO ACTION（既不 CASCADE 也不 SET NULL），故只能先把引用
+        改到仍存在的父码（FK 全程满足）再删后代；DB 层无「KBD 必须挂叶子」约束（纯应用层规则），
+        故本方法在库内直写不受门禁阻断，但 verify 门禁保证终态不留悬空、父确成叶子。
+
+        Returns:
+            {success, code, collapsed_children, rebound: {"表.列": 影响行数}, trace_id}
+        """
+        trace_id = get_current_trace_id()
+        async with self._db.async_session_factory() as session:
+            # 1) 父节点必须存在，且不得为域根（域根折叠会摧毁整个域）
+            parent = (
+                await session.execute(select(KbCategory).where(KbCategory.code == code))
+            ).scalar_one_or_none()
+            if parent is None:
+                raise ValueError("分类不存在")
+            if is_domain_root_code(parent.code):
+                raise ValueError("域根节点不可折叠为叶子")
+
+            # 2) 递归收集全部后代（不含自身），用于空操作判定与 verify 悬空校验
+            desc_rows = (
+                (await session.execute(text(_DESCENDANTS_CTE + "SELECT id, code FROM d"), {"pid": parent.id}))
+                .mappings()
+                .all()
+            )
+            desc_codes = [r["code"] for r in desc_rows if r["code"]]
+            if not desc_rows:
+                # 已是叶子：幂等 no-op，不写库不提交
+                logger.info(event="repo_collapse_subtree_noop", code=code, trace_id=trace_id)
+                return {"success": True, "code": code, "collapsed_children": 0, "rebound": {}, "trace_id": trace_id}
+
+            # 3) 全库 10 列改绑：后代码 -> 父码（FK 列因父码存在而始终满足）
+            rebound: dict[str, int] = {}
+            for tbl, col in _CATEGORY_CODE_REF_COLUMNS:
+                res = await session.execute(
+                    text(_DESCENDANTS_CTE + f"UPDATE {tbl} x SET {col} = :parent WHERE x.{col} IN (SELECT code FROM d)"),
+                    {"pid": parent.id, "parent": code},
+                )
+                rebound[f"{tbl}.{col}"] = int(getattr(res, "rowcount", 0) or 0)
+
+            # 4) 删除全部后代（单条语句，FK NO ACTION 语句末检查，父+子同删无碍）
+            await session.execute(text(_DESCENDANTS_CTE + "DELETE FROM kb_category WHERE id IN (SELECT id FROM d)"), {"pid": parent.id})
+
+            # 5) 递归重建 level 与 path_labels（折叠后层级/路径自洽）
+            await session.execute(
+                text(
+                    """
+                    WITH RECURSIVE tree AS (
+                        SELECT id, name, parent_id, 1 AS lvl, ARRAY[name]::text[] AS names
+                          FROM kb_category WHERE parent_id IS NULL
+                        UNION ALL
+                        SELECT c.id, c.name, c.parent_id, t.lvl + 1, t.names || c.name
+                          FROM kb_category c JOIN tree t ON c.parent_id = t.id
+                    )
+                    UPDATE kb_category k SET level = tree.lvl, path_labels = to_jsonb(tree.names)
+                      FROM tree WHERE k.id = tree.id
+                    """
+                )
+            )
+
+            # 6) verify 门禁：父必须已成叶子 + 全库无引用后代码的悬空；否则抛错回滚
+            still_child = (
+                await session.execute(
+                    text("SELECT COUNT(*) FROM kb_category WHERE parent_id = :pid"), {"pid": parent.id}
+                )
+            ).scalar()
+            in_keys, in_params = _build_in_clause(desc_codes, "dc")
+            dangling_parts = " + ".join(
+                f"(SELECT COUNT(*) FROM {tbl} WHERE {col} IN ({in_keys}))" for tbl, col in _CATEGORY_CODE_REF_COLUMNS
+            )
+            dangling = (
+                await session.execute(text(f"SELECT {dangling_parts}"), in_params)
+            ).scalar()
+            if (still_child or 0) > 0:
+                raise ValueError(f"折叠校验失败：{code} 仍有 {still_child} 个子节点，未成为叶子")
+            if (dangling or 0) > 0:
+                raise ValueError(f"折叠校验失败：全库仍有 {dangling} 处引用已删子分类码（悬空）")
+
+            await session.commit()
+            logger.info(
+                event="repo_collapse_subtree_success",
+                code=code,
+                collapsed_children=len(desc_rows),
+                rebound=rebound,
+                trace_id=trace_id,
+            )
+            return {
+                "success": True,
+                "code": code,
+                "collapsed_children": len(desc_rows),
+                "rebound": rebound,
+                "trace_id": trace_id,
+            }
 
     async def update_parent_recursive(
         self,

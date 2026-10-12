@@ -74,6 +74,22 @@ export function resolveCategoryNodeKey(
   return key ?? null
 }
 
+// 统计某节点的子孙总数（含各层）与直接子节点名称清单。
+// 供「合并子分类到本节点（折叠为叶子）」确认弹框展示影响面；纯函数与组件解耦，便于单测。
+export function collectSubtreeInfo(node: {
+  code: string
+  name: string
+  children?: { code: string; name: string; children?: unknown }[]
+}): { total: number; childNames: string[] } {
+  const children = node.children ?? []
+  const childNames = children.map((c) => `${c.code} ${c.name}`)
+  let total = children.length
+  for (const c of children) {
+    total += collectSubtreeInfo(c as { code: string; name: string; children?: { code: string; name: string }[] }).total
+  }
+  return { total, childNames }
+}
+
 export function flattenOptions(nodes: RawCategoryNode[]): CategoryOption[] {
   return nodes
     .map((n) => ({

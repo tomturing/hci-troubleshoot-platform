@@ -453,6 +453,32 @@ async def delete_category(
         raise HTTPException(status_code=500, detail="删除分类失败，请重试")
 
 
+@router.post("/{code}/collapse-to-leaf")
+async def collapse_category_to_leaf(
+    request: Request,
+    code: str,
+):
+    """原子折叠：把该分类的整棵子树关联内容归并到自身，删除全部子节点，使本节点转为叶子。
+
+    用于「删除叶子前先把内容归到父节点」场景（单事务、失败整体回滚）。
+    """
+    _check_auth(request)
+
+    if _category_service is None:
+        raise HTTPException(status_code=503, detail="服务未就绪")
+
+    logger.info(event="collapse_category_to_leaf_route", code=code)
+
+    try:
+        result = await _category_service.collapse_to_leaf(code)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(event="collapse_category_to_leaf_route_failed", error=str(e))
+        raise HTTPException(status_code=500, detail="折叠子分类失败，请重试")
+
+
 @router.put("/{code}/parent")
 async def update_category_parent(
     request: Request,

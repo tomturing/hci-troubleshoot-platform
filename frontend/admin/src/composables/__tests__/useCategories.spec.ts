@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildCategoryTree, collectAncestorPathKeys, flattenOptions, resolveCategoryNodeKey, type RawCategoryNode } from '../useCategories'
+import { buildCategoryTree, collectAncestorPathKeys, collectSubtreeInfo, flattenOptions, resolveCategoryNodeKey, type RawCategoryNode } from '../useCategories'
 
 // 模拟后端 grouped=true 返回：虚拟机域根(id=1) → 迁移类分组(id=2) → 两个叶子(id=3,4)
 const nodes: RawCategoryNode[] = [
@@ -100,5 +100,36 @@ describe('resolveCategoryNodeKey（展开/折叠事件回写 expandedKeys 的稳
     expanded = [...expanded, k24!]
     expect(expanded).toEqual([1, 24])
     expect(expanded).not.toContain(20)
+  })
+})
+
+describe('collectSubtreeInfo 子树影响面统计（供「合并子分类到本节点」确认弹框）', () => {
+  it('叶子节点：total=0、childNames 为空', () => {
+    const leaf = { code: '虚拟机-011', name: '热迁移失败', children: [] }
+    expect(collectSubtreeInfo(leaf)).toEqual({ total: 0, childNames: [] })
+  })
+
+  it('分组节点：total 含各层子孙总数，childNames 仅列直接子节点', () => {
+    const group = {
+      code: '虚拟机-009',
+      name: '迁移失败',
+      children: [
+        { code: '虚拟机-010', name: '集群内热·跨存储', children: [] },
+        {
+          code: '虚拟机-011',
+          name: '集群内热·同存储',
+          children: [{ code: '虚拟机-0111', name: '孙节点', children: [] }],
+        },
+      ],
+    }
+    const res = collectSubtreeInfo(group)
+    // 直接子 2 个 + 孙 1 个 = 3
+    expect(res.total).toBe(3)
+    // childNames 只反映直接子节点（不含孙）
+    expect(res.childNames).toEqual(['虚拟机-010 集群内热·跨存储', '虚拟机-011 集群内热·同存储'])
+  })
+
+  it('children 字段缺失（undefined）时不抛错，按叶子处理', () => {
+    expect(collectSubtreeInfo({ code: 'x', name: 'y' } as never)).toEqual({ total: 0, childNames: [] })
   })
 })

@@ -393,6 +393,16 @@ class CategoryService:
             await self._refresh_cache()
         return res
 
+    async def collapse_to_leaf(self, code: str) -> dict:
+        """原子折叠子树到父节点（父转为叶子），成功后强制刷新内存缓存。
+
+        任何校验失败由 repo 抛 ValueError 向上传播（不刷缓存），保证缓存与库一致。
+        """
+        res = await self._repo.collapse_subtree_to_leaf(code)
+        if res.get("success") and res.get("collapsed_children", 0) > 0:
+            await self._refresh_cache()
+        return res
+
     async def update_parent_recursive(
         self,
         code: str,

@@ -802,3 +802,96 @@ async def test_move_and_resequence_commits_once_on_shared_session():
     assert reseq == reseq_ret
     # resequence_domain 以 ext_session 复用同一 session，不会另开事务/自行 commit
     assert mock_reseq.await_args.kwargs["ext_session"] is session
+
+
+# ─── 原子折叠子树到父节点 collapse_subtree_to_leaf（删叶子前先归并内容到父）───
+
+
+def _mk_parent_res(parent):
+    r = MagicMock()
+    r.scalar_one_or_none.return_value = parent
+    return r
+
+
+def _mk_desc_res(rows):
+    r = MagicMock()
+    r.mappings.return_value.all.return_value = rows
+    return r
+
+
+def _mk_exec_res(rowcount=0, scalar=None):
+    r = MagicMock()
+    r.rowcount = rowcount
+    r.scalar.return_value = scalar
+    return r
+
+
+def _collapse_session():
+    mock_db = MagicMock()
+    mock_session = AsyncMock()
+    mock_session.__aenter__.return_value = mock_session
+    mock_db.async_session_factory.return_value = mock_session
+    return mock_db, mock_session
+
+
+@pytest.mark.anyio
+async def test_collapse_subtree_raises_when_parent_missing():
+    """父节点不存在 → 抛 ValueError，不开事务写入、不提交。"""
+    mock_db, mock_session = _collapse_session()
+    mock_session.execute.side_effect = [_mk_parent_res(None)]
+    repo = CategoryRepository(mock_db)
+    with pytest.raises(ValueError, match="分类不存在"):
+        await repo.collapse_subtree_to_leaf("虚拟机-999")
+    mock_session.commit.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_collapse_subtree_noop_when_already_leaf():
+    """父节点无后代（已是叶子）→ 幂等 no-op，不写库不提交。"""
+    mock_db, mock_session = _collapse_session()
+    parent = mock_category(9, "虚拟机-009", "迁移失败", 3, 6, "虚拟机", ["虚拟机", "虚拟机迁移", "迁移失败"])
+    mock_session.execute.side_effect = [_mk_parent_res(parent), _mk_desc_res([])]
+    repo = CategoryRepository(mock_db)
+    res = await repo.collapse_subtree_to_leaf("虚拟机-009")
+    assert res["success"] is True
+    assert res["collapsed_children"] == 0
+    assert res["rebound"] == {}
+    mock_session.commit.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_collapse_subtree_rebinds_deletes_and_commits_once():
+    """成功路径：10 列改绑 + 删除后代 + 重建 level/path + verify 通过 → 唯一提交。"""
+    mock_db, mock_session = _collapse_session()
+    parent = mock_category(9, "虚拟机-009", "迁移失败", 3, 6, "虚拟机", ["虚拟机", "虚拟机迁移", "迁移失败"])
+    desc = [{"id": 10, "code": "虚拟机-010"}, {"id": 11, "code": "虚拟机-011"}]
+    seq = [_mk_parent_res(parent), _mk_desc_res(desc)]
+    seq += [_mk_exec_res(rowcount=1) for _ in range(10)]  # 10 列改绑
+    seq += [_mk_exec_res(), _mk_exec_res()]  # 删除后代 + 重建 level/path
+    seq += [_mk_exec_res(scalar=0), _mk_exec_res(scalar=0)]  # still_child=0, dangling=0
+    mock_session.execute.side_effect = seq
+    repo = CategoryRepository(mock_db)
+    res = await repo.collapse_subtree_to_leaf("虚拟机-009")
+    assert res["success"] is True
+    assert res["collapsed_children"] == 2
+    assert res["rebound"]["kbd_entry.category_id"] == 1
+    assert res["rebound"]["sop_document.category_id"] == 1
+    assert mock_session.commit.await_count == 1  # 单事务唯一提交点
+
+
+@pytest.mark.anyio
+async def test_collapse_subtree_rolls_back_when_dangling_detected():
+    """verify 门禁发现悬空引用 → 抛 ValueError，不提交（整体回滚）。"""
+    mock_db, mock_session = _collapse_session()
+    parent = mock_category(9, "虚拟机-009", "迁移失败", 3, 6, "虚拟机", ["虚拟机", "虚拟机迁移", "迁移失败"])
+    desc = [{"id": 10, "code": "虚拟机-010"}]
+    seq = [_mk_parent_res(parent), _mk_desc_res(desc)]
+    seq += [_mk_exec_res(rowcount=0) for _ in range(10)]  # 改绑（模拟有行漏改）
+    seq += [_mk_exec_res(), _mk_exec_res()]  # 删除 + 重建
+    seq += [_mk_exec_res(scalar=0), _mk_exec_res(scalar=5)]  # still_child=0, dangling=5 → 触发回滚
+    mock_session.execute.side_effect = seq
+    repo = CategoryRepository(mock_db)
+    with pytest.raises(ValueError, match="悬空"):
+        await repo.collapse_subtree_to_leaf("虚拟机-009")
+    mock_session.commit.assert_not_called()
+

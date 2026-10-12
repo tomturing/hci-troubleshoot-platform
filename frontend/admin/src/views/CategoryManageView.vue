@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Histogram, Upload, Download, WarningFilled, Plus, Edit, Delete, VideoPlay, VideoPause, RefreshRight, Share } from '@element-plus/icons-vue'
+import { Histogram, Upload, Download, WarningFilled, Plus, Edit, Delete, VideoPlay, VideoPause, RefreshRight, Share, FolderDelete } from '@element-plus/icons-vue'
 import { marked } from 'marked'
 import DOMPurify, { type Config as DOMPurifyConfig } from 'dompurify'
 import type { UploadFile, UploadRawFile, UploadInstance } from 'element-plus'
-import { collectAncestorPathKeys, resolveCategoryNodeKey } from '@/composables/useCategories'
+import { collectAncestorPathKeys, resolveCategoryNodeKey, collectSubtreeInfo } from '@/composables/useCategories'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 类型定义（适配 kb_category 表结构）
@@ -752,6 +752,61 @@ async function handleDelete(data: KbCategory) {
   }
 }
 
+// 合并子分类到本节点（本节点转为叶子）：高危操作，先弹详细确认框，用户确认后才执行
+async function handleCollapseToLeaf(data: KbCategory) {
+  const { total, childNames } = collectSubtreeInfo(data)
+  const kbdCount = data.published_kbd_count ?? 0
+  const sopCount = data.published_sop_count ?? 0
+  const childList = childNames.slice(0, 12).map(n => `<li>${n}</li>`).join('')
+  const moreTip = childNames.length > 12 ? `<li>… 等共 ${childNames.length} 个直接子节点</li>` : ''
+  const confirmHtml = `
+    <div style="line-height:1.7">
+      <p style="color:#e6a23c;font-weight:600;margin:0 0 8px">此操作不可撤销，请仔细核对后再确认。</p>
+      <p>将把分组节点 <b>${data.code} ${data.name}</b> 折叠为<b>叶子节点</b>，具体会：</p>
+      <ol style="padding-left:20px;margin:6px 0">
+        <li>删除其下 <b>${total}</b> 个子孙分类节点；</li>
+        <li>这些节点关联的 <b>KBD / SOP 及会话、诊断快照等全部引用</b>，统一改绑到 <b>${data.code}</b>（不会丢失、不会被置空）；</li>
+        <li>折叠后 <b>${data.code}</b> 因无子节点而自动成为叶子，合法承接上述内容。</li>
+      </ol>
+      <p>当前该分组直接统计：KBD ${kbdCount} 条 / SOP ${sopCount} 条（子树合计以折叠结果为准）。</p>
+      <p style="margin:4px 0 2px">将被删除的子分类：</p>
+      <ul style="padding-left:20px;margin:2px 0;color:#909399">${childList}${moreTip}</ul>
+      <p style="color:#f56c6c;margin:8px 0 0">⚠ 语义提醒：子分类的细分粒度（如冷/热迁移、跨/同存储）将合并丢失，后续检索只能落到本粗粒度叶子。</p>
+    </div>
+  `
+  try {
+    await ElMessageBox.confirm(confirmHtml, '合并子分类到本节点', {
+      confirmButtonText: '我已了解风险，确认合并',
+      cancelButtonText: '取消',
+      type: 'warning',
+      dangerouslyUseHTMLString: true,
+      confirmButtonClass: 'el-button--danger',
+    })
+  } catch {
+    return // 用户取消
+  }
+
+  loading.value = true
+  try {
+    const resp = await fetch(`/api/kb/categories/${encodeURIComponent(data.code)}/collapse-to-leaf`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+    })
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}))
+      throw new Error(typeof err.detail === 'string' ? err.detail : `HTTP ${resp.status}`)
+    }
+    const result = await resp.json()
+    ElMessage.success(`已合并 ${result.collapsed_children ?? total} 个子分类到「${data.name}」，本节点已转为叶子`)
+    await fetchCategories()
+  } catch (e: any) {
+    ElMessage.error(`合并子分类失败: ${e.message}`)
+  } finally {
+    loading.value = false
+  }
+}
+
+
 // ──────────────────────────────────────────────────────────────────────────────
 // 数据加载
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1256,6 +1311,15 @@ onMounted(fetchCategories)
                       :title="data.is_active ? '禁用分类' : '启用分类'"
                     />
                     <el-button
+                      v-if="data.children && data.children.length"
+                      size="small"
+                      link
+                      type="warning"
+                      :icon="FolderDelete"
+                      @click="handleCollapseToLeaf(data)"
+                      title="合并子分类到本节点（本节点转为叶子）"
+                    />
+                    <el-button
                       size="small"
                       link
                       type="danger"
@@ -1426,6 +1490,15 @@ onMounted(fetchCategories)
                         :icon="data.is_active ? VideoPause : VideoPlay"
                         @click="toggleActiveStatus(data)"
                         :title="data.is_active ? '禁用分类' : '启用分类'"
+                      />
+                      <el-button
+                        v-if="data.children && data.children.length"
+                        size="small"
+                        link
+                        type="warning"
+                        :icon="FolderDelete"
+                        @click="handleCollapseToLeaf(data)"
+                        title="合并子分类到本节点（本节点转为叶子）"
                       />
                       <el-button
                         size="small"
