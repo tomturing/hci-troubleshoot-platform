@@ -74,6 +74,25 @@ export function resolveCategoryNodeKey(
   return key ?? null
 }
 
+// 递归收集某节点及其全部子孙的稳定主键（与 resolveCategoryNodeKey 同取 id_in_db 回退 id）。
+// 【折叠被重弹的根因】Element Plus 的 default-expanded-keys watcher 在数组变化时会对每个 key
+// 调 node.expand(null, autoExpandParent=true)——展开子节点会向上冒泡自动展开父。若折叠某父节点时
+// 仅移除父 key，而其被选中/曾展开的子孙 key 仍残留在 expandedKeys 中，watcher 重跑即把子孙 expand
+// 并冒泡重开父节点，表现为「点父节点折叠箭头毫无反应」（006 有此现象、无被钉子孙的 020 正常）。
+// 折叠时连同整棵子树的 key 一并移出，即可彻底消除回弹。
+export function collectSubtreeKeys(node: unknown): (number | string)[] {
+  if (!node || typeof node !== 'object') return []
+  const n = node as { id_in_db?: number | string; id?: number | string; children?: unknown[] }
+  const keys: (number | string)[] = []
+  const self = n.id_in_db ?? n.id
+  if (self != null) keys.push(self)
+  const kids = n.children
+  if (Array.isArray(kids)) {
+    for (const c of kids) keys.push(...collectSubtreeKeys(c))
+  }
+  return keys
+}
+
 // 统计某节点的子孙总数（含各层）与直接子节点名称清单。
 // 供「合并子分类到本节点（折叠为叶子）」确认弹框展示影响面；纯函数与组件解耦，便于单测。
 export function collectSubtreeInfo(node: {

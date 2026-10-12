@@ -5,7 +5,7 @@ import { Histogram, Upload, Download, WarningFilled, Plus, Edit, Delete, VideoPl
 import { marked } from 'marked'
 import DOMPurify, { type Config as DOMPurifyConfig } from 'dompurify'
 import type { UploadFile, UploadRawFile, UploadInstance } from 'element-plus'
-import { collectAncestorPathKeys, resolveCategoryNodeKey, collectSubtreeInfo } from '@/composables/useCategories'
+import { collectAncestorPathKeys, resolveCategoryNodeKey, collectSubtreeInfo, collectSubtreeKeys } from '@/composables/useCategories'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 类型定义（适配 kb_category 表结构）
@@ -415,9 +415,12 @@ function handleNodeExpand(data: any) {
 }
 
 function handleNodeCollapse(data: any) {
-  const k = resolveCategoryNodeKey(data)
-  if (k == null) return
-  expandedKeys.value = expandedKeys.value.filter((x) => x !== k)
+  // 折叠父节点时连同其整棵子树的展开键一并移出：否则残留的被选中/曾展开子孙 key
+  // 会在 default-expanded-keys watcher 重跑时通过 node.expand(autoExpandParent=true) 冒泡把父
+  // 重新弹开（即「点 006 折叠箭头无反应」的根因；无被钉子孙的 020 则正常）。
+  const drop = new Set(collectSubtreeKeys(data))
+  if (drop.size === 0) return
+  expandedKeys.value = expandedKeys.value.filter((x) => !drop.has(x))
 }
 
 // 选中某分类时：把其祖先链（及自身）并入 expandedKeys，确保子树不再默认全开时，

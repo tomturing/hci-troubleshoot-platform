@@ -826,6 +826,12 @@ def _mk_exec_res(rowcount=0, scalar=None):
     return r
 
 
+def _mk_code_res(code):
+    r = MagicMock()
+    r.scalar_one.return_value = code
+    return r
+
+
 def _collapse_session():
     mock_db = MagicMock()
     mock_session = AsyncMock()
@@ -861,7 +867,11 @@ async def test_collapse_subtree_noop_when_already_leaf():
 
 @pytest.mark.anyio
 async def test_collapse_subtree_rebinds_deletes_and_commits_once():
-    """成功路径：10 列改绑 + 删除后代 + 重建 level/path + verify 通过 → 唯一提交。"""
+    """成功路径：10 列改绑 + 删除后代 + 重建 level/path + verify 通过 + 整域重排 → 唯一提交。
+
+    额外断言：重排在**同一事务**内以 ext_session 复用同一 session、以 sibling_order=None
+    纯消除编号空洞；返回重排后的最新 code 与 resequence 摘要；全程仅一次 commit。
+    """
     mock_db, mock_session = _collapse_session()
     parent = mock_category(9, "虚拟机-009", "迁移失败", 3, 6, "虚拟机", ["虚拟机", "虚拟机迁移", "迁移失败"])
     desc = [{"id": 10, "code": "虚拟机-010"}, {"id": 11, "code": "虚拟机-011"}]
@@ -869,14 +879,44 @@ async def test_collapse_subtree_rebinds_deletes_and_commits_once():
     seq += [_mk_exec_res(rowcount=1) for _ in range(10)]  # 10 列改绑
     seq += [_mk_exec_res(), _mk_exec_res()]  # 删除后代 + 重建 level/path
     seq += [_mk_exec_res(scalar=0), _mk_exec_res(scalar=0)]  # still_child=0, dangling=0
+    seq += [_mk_code_res("虚拟机-006")]  # 重排后按主键回取的新 code
     mock_session.execute.side_effect = seq
     repo = CategoryRepository(mock_db)
-    res = await repo.collapse_subtree_to_leaf("虚拟机-009")
+    reseq_ret = {"success": True, "domain": "虚拟机", "changed": 6, "mapping": [], "trace_id": "t"}
+    with patch.object(
+        CategoryRepository, "resequence_domain", AsyncMock(return_value=reseq_ret)
+    ) as mock_reseq:
+        res = await repo.collapse_subtree_to_leaf("虚拟机-009")
     assert res["success"] is True
     assert res["collapsed_children"] == 2
     assert res["rebound"]["kbd_entry.category_id"] == 1
     assert res["rebound"]["sop_document.category_id"] == 1
-    assert mock_session.commit.await_count == 1  # 单事务唯一提交点
+    assert res["code"] == "虚拟机-006"  # 返回重排后的最新码
+    assert res["resequence"] == reseq_ret
+    assert mock_session.commit.await_count == 1  # 单事务唯一提交点（折叠+重排原子生效）
+    assert mock_reseq.await_args.kwargs["ext_session"] is mock_session  # 复用同一 session
+    assert mock_reseq.await_args.kwargs["parent_id"] is None  # 不覆盖任何父顺序
+    assert mock_reseq.await_args.kwargs["sibling_order"] is None
+
+
+@pytest.mark.anyio
+async def test_collapse_subtree_rolls_back_when_resequence_fails():
+    """重排在唯一 commit 之前抛错 → 整体回滚（commit 从未调用），消除“内容已折叠但 code 未重排”部分态。"""
+    mock_db, mock_session = _collapse_session()
+    parent = mock_category(9, "虚拟机-009", "迁移失败", 3, 6, "虚拟机", ["虚拟机", "虚拟机迁移", "迁移失败"])
+    desc = [{"id": 10, "code": "虚拟机-010"}]
+    seq = [_mk_parent_res(parent), _mk_desc_res(desc)]
+    seq += [_mk_exec_res(rowcount=0) for _ in range(10)]  # 改绑
+    seq += [_mk_exec_res(), _mk_exec_res()]  # 删除 + 重建
+    seq += [_mk_exec_res(scalar=0), _mk_exec_res(scalar=0)]  # verify 通过
+    mock_session.execute.side_effect = seq
+    repo = CategoryRepository(mock_db)
+    with patch.object(
+        CategoryRepository, "resequence_domain", AsyncMock(side_effect=RuntimeError("重排失败"))
+    ):
+        with pytest.raises(RuntimeError, match="重排失败"):
+            await repo.collapse_subtree_to_leaf("虚拟机-009")
+    mock_session.commit.assert_not_called()
 
 
 @pytest.mark.anyio

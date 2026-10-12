@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildCategoryTree, collectAncestorPathKeys, collectSubtreeInfo, flattenOptions, resolveCategoryNodeKey, type RawCategoryNode } from '../useCategories'
+import { buildCategoryTree, collectAncestorPathKeys, collectSubtreeInfo, collectSubtreeKeys, flattenOptions, resolveCategoryNodeKey, type RawCategoryNode } from '../useCategories'
 
 // 模拟后端 grouped=true 返回：虚拟机域根(id=1) → 迁移类分组(id=2) → 两个叶子(id=3,4)
 const nodes: RawCategoryNode[] = [
@@ -131,5 +131,38 @@ describe('collectSubtreeInfo 子树影响面统计（供「合并子分类到本
 
   it('children 字段缺失（undefined）时不抛错，按叶子处理', () => {
     expect(collectSubtreeInfo({ code: 'x', name: 'y' } as never)).toEqual({ total: 0, childNames: [] })
+  })
+})
+
+describe('collectSubtreeKeys（折叠时连带清除子孙展开键，防止回弹）', () => {
+  // 模拟前端嵌套树：虚拟机-006(id_in_db=286) 下挂 009(id_in_db=11) 与 016(id_in_db=287)，
+  // 其中 009 又挂一个叶子孙(id_in_db=300)。
+  const node006 = {
+    id_in_db: 286,
+    children: [
+      { id_in_db: 11, children: [{ id_in_db: 300, children: [] }] },
+      { id_in_db: 287, children: [] },
+    ],
+  }
+
+  it('含自身与整棵子孙的稳定主键', () => {
+    expect([...collectSubtreeKeys(node006)].sort((a, b) => Number(a) - Number(b))).toEqual([11, 286, 287, 300])
+  })
+
+  it('回归：被选中的子孙 009 的 key 必须包含在折叠集内（否则会把 006 重新弹开）', () => {
+    const keys = collectSubtreeKeys(node006)
+    expect(keys).toContain(11)
+    expect(keys).toContain(300)
+  })
+
+  it('叶子节点只返回自身 key', () => {
+    expect(collectSubtreeKeys({ id_in_db: 42, children: [] })).toEqual([42])
+  })
+
+  it('id_in_db 缺失时回退 id；非对象/空值返回空集', () => {
+    expect(collectSubtreeKeys({ id: '虚拟机-009', children: [] })).toEqual(['虚拟机-009'])
+    expect(collectSubtreeKeys(null)).toEqual([])
+    expect(collectSubtreeKeys(undefined)).toEqual([])
+    expect(collectSubtreeKeys('not-an-object')).toEqual([])
   })
 })

@@ -1103,7 +1103,8 @@ class CategoryRepository:
         故本方法在库内直写不受门禁阻断，但 verify 门禁保证终态不留悬空、父确成叶子。
 
         Returns:
-            {success, code, collapsed_children, rebound: {"表.列": 影响行数}, trace_id}
+            {success, code(重排后的最新码), collapsed_children, rebound: {"表.列": 影响行数},
+             resequence: {changed, mapping:[{old,new}], ...}, trace_id}
         """
         trace_id = get_current_trace_id()
         async with self._db.async_session_factory() as session:
@@ -1175,19 +1176,42 @@ class CategoryRepository:
             if (dangling or 0) > 0:
                 raise ValueError(f"折叠校验失败：全库仍有 {dangling} 处引用已删子分类码（悬空）")
 
+            # 7) 整域重排：删除后代后同级 code 会留下编号空洞（如子节点 010~015 消失、
+            # 后续兄弟仍为 016），违反解A「同级顺序即 code、连续无空洞」。复用 resequence_domain
+            # 在同一事务内按前序 DFS 把整域重编号为连续码，并 remap 全库 10 个按 code 引用列。
+            # sibling_order=None → 不覆盖任何父的子女顺序，仅按当前相对顺序连续回填（纯消除空洞）。
+            # 注：须在唯一 commit 之前读 parent 的 id/domain（commit 后 ORM 实例过期）。
+            pid_val = parent.id
+            domain_val = parent.domain
+            reseq = await self.resequence_domain(
+                domain=domain_val,
+                parent_id=None,
+                sibling_order=None,
+                ext_session=session,
+            )
+
             await session.commit()
+
+            # 重排后父码可能变化，按稳定主键回取最新 code（与 move_and_resequence 同款做法）
+            new_code = (
+                await session.execute(select(KbCategory.code).where(KbCategory.id == pid_val))
+            ).scalar_one()
+
             logger.info(
                 event="repo_collapse_subtree_success",
                 code=code,
+                new_code=new_code,
                 collapsed_children=len(desc_rows),
                 rebound=rebound,
+                resequence_changed=reseq.get("changed"),
                 trace_id=trace_id,
             )
             return {
                 "success": True,
-                "code": code,
+                "code": new_code,
                 "collapsed_children": len(desc_rows),
                 "rebound": rebound,
+                "resequence": reseq,
                 "trace_id": trace_id,
             }
 
