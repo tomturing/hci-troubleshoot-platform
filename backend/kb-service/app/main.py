@@ -23,6 +23,7 @@ from app.routes import (
     admin,
     categories,
     classify,
+    extract_root_signal,
     extract_signals,
     hci_sim,
     health,
@@ -93,6 +94,7 @@ async def lifespan(app: FastAPI):
     route.set_dependencies(database_manager)
     classify.set_dependencies(database_manager)
     extract_signals.set_dependencies(database_manager)  # 关键信号分级抽取
+    extract_root_signal.set_dependencies(database_manager)  # 根因信号抽取（与关键信号解耦的第二轨）
     sop_ingest.set_dependencies(database_manager)  # SOP 文档入库
     categories.set_dependencies(database_manager, embedding_service)  # 分类管理路由
     hits.set_dependencies(database_manager)  # 知识命中统计路由
@@ -169,6 +171,7 @@ app.include_router(admin.kbd_router)  # KBD 审核路由
 app.include_router(admin.sop_router)  # SOP 审核路由
 app.include_router(classify.router)
 app.include_router(extract_signals.router)  # 关键信号分级抽取
+app.include_router(extract_root_signal.router)  # 根因信号抽取（kbd_entry.root_signal_json）
 app.include_router(sop_ingest.router)  # SOP 文档入库
 app.include_router(categories.router)  # 分类管理路由
 app.include_router(resolution_catalogs.router)  # Shared Resolution Catalogs 管理路由

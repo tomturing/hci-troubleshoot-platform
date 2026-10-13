@@ -35,7 +35,7 @@ const placeholdersMap: Record<string, string[]> = {
   S5: ['{root_cause}'],
   S6: [],
   KBD: ['{count}', '{categories_text}', '{title}', '{problem_desc}', '{context}'],
-  KEY: ['{title}', '{category_id}', '{problem_description}', '{alert_info}', '{steps_text}', '{root_cause}', '{solution}', '{acquirer_catalog}', '{variable_schema}'],
+  KEY: ['{title}', '{category_id}', '{category_path}', '{problem_description}', '{alert_info}', '{steps_text}', '{root_cause}', '{solution}', '{acquirer_catalog}', '{variable_schema}'],
   AI: ['{mode}', '{output_type}']
 }
 
@@ -49,7 +49,7 @@ const stages = [
   { value: 'S4', label: 'S4 根因确认报告' },
   { value: 'S5', label: 'S5 解决方案输出' },
   { value: 'KBD', label: 'KBD 分类与识图' },
-  { value: 'KEY', label: 'KEY 关键信号分级抽取' },
+  { value: 'KEY', label: 'KEY 信号抽取（关键/根因）' },
   { value: 'AI', label: 'AI 数据后处理' }
 ]
 

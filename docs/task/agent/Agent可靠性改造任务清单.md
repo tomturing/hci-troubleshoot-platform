@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-09-20
+last_updated: 2026-10-13
 related_prs:
   - PR #474: invoke() 重试 + tool_calls 清理 + skill 可观测 + 报告模板简化 + solution 格式合并
 owner: team
@@ -668,3 +668,20 @@ owner: team
 - [x] **需求**：`database/desired_schema.sql` 为 `kb_category` 新增 `kb_category_code_format CHECK (code IS NULL OR code ~ '^[^-]+-L1$' OR code ~ '^[^-]+-[0-9]+$')`，并订正 code 列注释为解A 角色无关统一 ID 文法（旧注释仍为 `-L{级}-{name}`）。
 - [x] **顺序安全**：CHECK 仅约束 code 文法不管叶子绑定，与重分类解耦；由 `db-migrate.sh` Step1 先跑 `041` 清洗存量数据，Step3 才由 atlas 声明式收敛 CHECK（存量已合规才能通过）。CI 空库建表即带 CHECK，`041` 自然 no-op；无 kb_category 的 SQL 种子不会误伤。
 - [x] **验证**：对 live staging 事务内跑 `041` 后 ROLLBACK 演练，确认非合规 code=0 且悬空=0，即 CHECK 可无违规施加。方案见 `docs/solution/knowledge-base/events/2026-10-11-分类基线命名规范治理与叶子统一(解A)方案.md`。
+
+## 根因信号：`kbd_entry.root_signal_json` 与 Prompt 种子位置纠正（2026-10-13）
+
+- [x] **Schema**：`database/desired_schema.sql` 新增 `root_signal_json jsonb` + CHECK
+  `ck_kbd_entry_root_signal_json`（仅允 `NULL` 或 jsonb object，拒绝数组/scalar 脏写）
+  + 两个 partial 索引（`match_type`、`provenance->>'needs_review'`）+ `ck_kbd_batch_job_type`
+  枚举新增 `extract_root_signal`；幂等 ALTER 版存 `database/atlas-migrations/20261013000000_add_kbd_entry_root_signal_json.sql`。
+- [x] **种子位置纠正（重要）**：根因抽取 Prompt 种子原放在 `database/atlas-migrations/`，本仓库
+  `scripts/db-migrate.sh` 只做 `atlas schema apply --to desired_schema.sql` + data-migrations +
+  `desired_extras.sql`，**从不应用 atlas-migrations**（与 2026-09-04 条目记录的同一陷阱），而 Prompt
+  种子的真实落地机制是 `database/seeds/02_system_prompts.sql`（Helm **db-seed-job** PostSync）。
+  已将该 Prompt 并入 seeds/02（`ON CONFLICT (name) DO NOTHING`）并删除错放的迁移文件；否则生产路由会因
+  `StrictPromptLoader` 找不到 Prompt 而 100% 抛 `PromptLoadError`（不静默降级是正确行为）。
+- [x] **验证**：对本地 dev 库实际施加列/CHECK/两索引，并回读确认 `kbd_extract_root_signal_v1` 已存在
+  （stage=KEY、is_active=true）；另以真实 DB + 真实 LLM 跑完四轮热加载验证（改模板即生效 / 坏模板
+  严格阻断不污染既有信号 / 恢复后 revision 回到原值），详见
+  `docs/solution/knowledge-base/根因信号抽取方案.md` §7.6。
