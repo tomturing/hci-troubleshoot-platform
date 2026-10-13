@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -368,3 +369,27 @@ class TestConflictCorpus:
         corpus = ConflictCorpus(_CORPUS_ROWS)
         signal = {"match_type": "text", "match": {"expected": []}, "acquire": None, "provenance": {}}
         assert corpus.conflicts(signal) == {"category_conflicts": 0, "global_conflicts": 0}
+
+
+class TestCrossLanguageContract:
+    """跨语言常量不漂移：Admin UI 的前置体检阈值必须等于后端硬门禁阈值。
+
+    放在后端侧是因为前端 CI 门禁用 `sparse-checkout: frontend` 的稀疏检出（见
+    .github/workflows/ci.yml 「前端门禁不消费后端源码」），前端测试拿不到本仓库源码；
+    而 unit-tests 作业为全量检出，两边文件都在。方向也符合依赖常理：后端合约作为
+    事实源去审计前端镜像值，而不是反过来。
+    """
+
+    _UI_SOURCE = "frontend/admin/src/utils/rootSignal.ts"
+
+    def test_min_root_cause_len_matches_admin_ui(self):
+        ui_file = REPO_ROOT / self._UI_SOURCE
+        assert ui_file.exists(), f"前端阈值文件缺失，无法校验跨语言契约: {ui_file}"
+        matched = re.search(
+            r"export const MIN_ROOT_CAUSE_LEN = (\d+)", ui_file.read_text(encoding="utf-8")
+        )
+        assert matched is not None, f"前端未再声明 MIN_ROOT_CAUSE_LEN，契约锚点丢失：{self._UI_SOURCE}"
+        assert int(matched.group(1)) == route.MIN_ROOT_CAUSE_LEN, (
+            "Admin UI 的「根因过短不抽取」前置体检与后端 422 门禁阈值不一致，"
+            "会出现按钮放行但接口报错的脱同步体验"
+        )

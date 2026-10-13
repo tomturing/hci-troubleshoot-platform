@@ -1,6 +1,9 @@
 // 根因信号前端纯逻辑单测（对应 src/utils/rootSignal.ts）
-import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+//
+// 注：本文件只测前端纯逻辑，**不得**读取后端源码。前端 CI 门禁是 `sparse-checkout:
+// frontend` 的稀疏检出（见 .github/workflows/ci.yml「前端门禁不消费后端源码」），
+// 任何跨语言常量一致性校验都必须放到全量检出的后端侧（见
+// backend/kb-service/tests/test_extract_root_signal_route.py::test_min_root_cause_len_matches_admin_ui）。
 import { describe, expect, it } from 'vitest'
 import {
   buildBackfillPayload,
@@ -72,21 +75,14 @@ describe('锚点渲染辅助', () => {
 })
 
 /**
- * 从当前工作目录向上定位仓库根（含 backend/ 的那一层）。
- * 不用 import.meta.url：jsdom 环境下它不是 file: 协议，fileURLToPath 会直接报错。
+ * 前端阈值在此只做钉值断言：单侧改动无法静默通过（本例先失败，提醒同步后端）。
+ * 与后端 MIN_ROOT_CAUSE_LEN 的真实跨语言一致性校验住在后端（unit-tests 为全量检出）。
  */
-function repoRoot(): string {
-  let dir = process.cwd()
-  for (let i = 0; i < 8; i += 1) {
-    if (existsSync(join(dir, 'backend'))) return dir
-    const parent = dirname(dir)
-    if (parent === dir) break
-    dir = parent
-  }
-  throw new Error('未定位到仓库根，无法校验跨语言契约')
-}
-
 describe('抽取前置体检', () => {
+  it('前端阈值钉为 30（改此值必须同步后端门禁与后端契约测试）', () => {
+    expect(MIN_ROOT_CAUSE_LEN).toBe(30)
+  })
+
   it('根因为空 / 过短给出可执行的原因', () => {
     expect(extractBlockReason('')).toBe('该 KBD 未填写根因，无法抽取根因信号')
     expect(extractBlockReason('配置不正确')).toContain('请先补全')
@@ -94,16 +90,6 @@ describe('抽取前置体检', () => {
 
   it('达标根因返回空串（放行）', () => {
     expect(extractBlockReason('df 显示 /run/lock 分区使用率 100%，占满导致虚拟机任务失败')).toBe('')
-  })
-
-  it('前端阈值必须与后端 MIN_ROOT_CAUSE_LEN 一致（跨语言契约不漂移）', () => {
-    const source = readFileSync(
-      join(repoRoot(), 'backend/kb-service/app/routes/extract_root_signal.py'),
-      'utf-8',
-    )
-    const matched = source.match(/MIN_ROOT_CAUSE_LEN\s*=\s*(\d+)/)
-    expect(matched).not.toBeNull()
-    expect(Number(matched?.[1])).toBe(MIN_ROOT_CAUSE_LEN)
   })
 })
 
