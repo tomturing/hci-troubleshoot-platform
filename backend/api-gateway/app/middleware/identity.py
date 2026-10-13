@@ -16,7 +16,13 @@ import uuid
 
 from shared.observability.logger import get_logger
 from shared.observability.metrics import AUTHZ_SHARED_TOKEN_ADMIN_TOTAL
-from shared.security.identity import IDENTITY_COOKIE_NAME, issue_identity, verify_identity
+from shared.security.identity import (
+    IDENTITY_COOKIE_NAME,
+    IDENTITY_MAX_AGE_SECONDS,
+    issue_identity,
+    refresh_identity,
+    verify_identity,
+)
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
@@ -58,6 +64,10 @@ class IdentityMiddleware(BaseHTTPMiddleware):
                 cid = verify_identity(cookie, settings.INTERNAL_API_TOKEN)
                 if cid:
                     request.state.client_id = cid
+                    # 滑动续期：验签成功也用当前时间戳重签同一 client_id 并回写 Cookie，
+                    # 令活跃会话身份永不过期，彻底消除"离线数分钟后身份轮换 → 会话归属
+                    # 校验 403「无权访问此会话」→ 网关误报上游不可用"的回归。
+                    request.state._issue_cookie = refresh_identity(cid, settings.INTERNAL_API_TOKEN)
                 elif not path.startswith("/api/diagnosis-scenarios") or auth.startswith("Bearer "):
                     # 非 /api/diagnosis-scenarios 的普通 /api 路径、或携带管理面 Bearer 令牌的调用方
                     # 仍按原行为自动签发 client_id（后者用于通过下游「缺 client_id 即 401」校验）。
@@ -105,7 +115,7 @@ class IdentityMiddleware(BaseHTTPMiddleware):
                 httponly=True,
                 samesite="lax",
                 secure=settings.IDENTITY_COOKIE_SECURE,
-                max_age=60 * 60 * 24 * 365,
+                max_age=IDENTITY_MAX_AGE_SECONDS,
                 path="/",
             )
         return response

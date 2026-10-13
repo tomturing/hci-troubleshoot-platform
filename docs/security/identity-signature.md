@@ -32,18 +32,24 @@ client_id"做资源归属校验。
 位置：`backend/shared/security/identity.py`
 
 ```python
-from shared.security.identity import issue_identity, verify_identity
+from shared.security.identity import issue_identity, refresh_identity, verify_identity
 
 # 签发：返回 (client_id, cookie_value)
 client_id, cookie = issue_identity(settings.INTERNAL_API_TOKEN)
 
-# 验签：返回 client_id 或 None（无效/过期/篡改）
+# 滑动续期：保持 client_id 不变，仅用当前时间戳重签（供中间件验签成功后回写）
+refreshed = refresh_identity(client_id, settings.INTERNAL_API_TOKEN)
+
+# 验签：返回 client_id 或 None（无效/篡改/超身份最大寿命）
 cid = verify_identity(cookie, settings.INTERNAL_API_TOKEN)
 ```
 
 - Cookie 格式：`<client_id>.<timestamp>.<hmac>`
 - `hmac = HMAC-SHA256(INTERNAL_API_TOKEN, "<timestamp>:<client_id>")`
 - `client_id` 为服务端生成的随机串（uuid4 hex），客户端不可控
+- **身份 Cookie 生命周期**：时间戳仅用于限制「Cookie 被窃取后的重放窗口」，
+  上限为 `IDENTITY_MAX_AGE_SECONDS`（默认 30 天），**不再复用出口签名的 300s 硬窗口**。
+  配合中间件滑动续期，只要用户在此窗口内有任意活动即身份绝不轮换。
 
 ### 2. 网关身份中间件（api-gateway）
 
@@ -52,14 +58,16 @@ cid = verify_identity(cookie, settings.INTERNAL_API_TOKEN)
 职责（仅对 `/api` 路径，跳过 `/api/health`、`/api/metrics`）：
 
 1. 读取 `hci_client_id` Cookie，用 `verify_identity` 验签；
-2. 验签失败（缺失/过期/篡改）→ 重新 `issue_identity` 并 `set_cookie`（HttpOnly）；
+2. 验签失败（缺失/篡改/超身份最大寿命）→ 重新 `issue_identity` 并 `set_cookie`（HttpOnly）；
+   验签**成功**→ `refresh_identity` 用当前时间戳重签**同一** client_id 并回写 Cookie（**滑动续期**），
+   令活跃会话身份永不过期；
 3. 将可信身份写入请求上下文：`request.state.client_id`（验出的 client_id）、
    `request.state.is_admin`（当 `Authorization: Bearer <INTERNAL_API_TOKEN>` 时为真）、
    `request.state.auth_scheme`；
 4. 非 `/api` 路径直接放行，不签发身份。
 
 Cookie 属性：`httponly=True`、`samesite="lax"`、`secure=IDENTITY_COOKIE_SECURE`
-（生产 HTTPS 应设 `True`）。
+（生产 HTTPS 应设 `True`）、`max_age=IDENTITY_MAX_AGE_SECONDS`。
 
 ### 3. 网关鉴权依赖（api-gateway）
 
@@ -125,9 +133,15 @@ if owner != request.state.client_id:   # 实为网关注入的可信 client_id
 
 ## 防护机制
 
-### 1. 防重放
+### 1. 防重放（两类签名窗口不同，不可混淆）
 
-签名时间戳须在 ±300 秒窗口内（`CLOCK_SKEW_SECONDS = 300`），过期拒绝。
+- **服务间出口签名**（`signature.py`，`X-Client-Signature`）：每请求重签，时间戳须在
+  ±300 秒窗口内（`CLOCK_SKEW_SECONDS = 300`），过期拒绝——一次性 nonce 语义，防集群内重放。
+- **身份 Cookie**（`identity.py`，`hci_client_id`）：长寿命会话身份，时间戳上限为
+  `IDENTITY_MAX_AGE_SECONDS`（默认 30 天），并由中间件**滑动续期**。**绝不可复用 300s 硬窗
+  口**：否则用户读长回复/跑命令离线数分钟后回来发消息，会被静默铸造新 client_id，
+  导致下游归属校验 403「无权访问此会话」，并在网关被兜底成「上游服务暂时不可用」
+  （工单 Q2026101330905 真实回归）。
 
 ### 2. 防篡改
 

@@ -144,3 +144,21 @@ PY
 **修复：** QKV 复用共享 parser 展开 JSON、文本 preview 和弹框日志；QFK 对 preview 使用完整文本取值。`truncated=true` 的文本索引保持 `UNKNOWN`。PostgreSQL 样例为每种 producer 提供可按契约解析的真实输出形态。
 
 **预防：** producer 回归同时断言实际变量、`MATCHED` 和下游依赖解锁；为 JSON、文本 preview、弹框日志、控制台观察和截断文本各保留一条测试。不要用“有可读证据”替代变量提取断言。
+
+## V-019：网关「上游服务暂时不可用」实为身份 Cookie 轮换触发的会话归属 403
+
+**症状：** 用户在工单排障对话中，第一条消息 AI 正常回复；隔几分钟再发第二条（如点确认分类）时，AI 回复固定为「上游服务暂时不可用」，刷新/重开也无法自愈。日志中 conversation-service 报 `auth_conversation_forbidden` → 403「无权访问此会话」，api-gateway 报 `POST /api/conversations/{id}/message → 403`。工单 Q2026101330905、Q2026101328057 同时命中。
+
+**根因：** 两个独立缺陷叠加：
+1. **身份静默轮换（真因）**：#1064 把 client_id 从「浏览器自持久化的 `X-Client-ID` 头」改为「服务端签名 HttpOnly Cookie `hci_client_id`」，但 `verify_identity` 复用了服务间出口签名的 `CLOCK_SKEW_SECONDS=300` 硬时间窗，且 `IdentityMiddleware` 验签成功后**从不刷新** Cookie 内嵌时间戳（无滑动续期）。于是身份从首次签发起最多只有 5 分钟总寿命；用户读长回复/跑命令离线超过 5 分钟后，下一次请求被判超窗 → 网关静默铸造全新 client_id → 工单 `case.client_id` 仍是旧 id → `verify_conversation_ownership` 判定「换了人」→ 403。
+2. **错误掩盖（放大器）**：`proxy_request_stream` 把任何非 200 上游响应一律包装成「上游服务暂时不可用」（detail 仅 `status N`），使 403 权限拒绝被伪装成上游不可用，严重误导排障方向。
+
+**修复：**
+- `shared/security/identity.py`：身份 Cookie 过期语义改为对齐浏览器 Cookie 寿命的 `IDENTITY_MAX_AGE_SECONDS`（默认 30 天），新增 `refresh_identity`（保持 client_id 不变仅刷新时间戳）；出口签名 `signature.py` 的 300s 防重放窗口**保持不变**（每请求重签，语义不同）。
+- `api-gateway/app/middleware/identity.py`：验签成功即滑动续期回写 Cookie，令活跃会话身份绝不轮换；Cookie `max_age` 对齐 `IDENTITY_MAX_AGE_SECONDS`。
+- `api-gateway/app/routes/conversations.py`：`proxy_request_stream` 按状态分类透传真因——401/403 → `SESSION_INVALID`「会话身份已失效或无权访问，请刷新页面后重新进入工单」，其他 4xx → `VALIDATION_ERROR`，5xx 才报「上游服务暂时不可用」；并记 `gateway_upstream_error` 日志含真实 status/detail。
+
+**预防：**
+- 「无登录的服务端签名身份」不得复用「每请求一次性 nonce」的短防重放窗口；身份 Cookie 必须做滑动续期或长寿命，否则任何有限空闲窗口都会被「用户走开一会儿」击穿。
+- 网关代理兜底错误**禁止**把 4xx 权限/校验类响应笼统降级为「上游不可用」，必须透传真实状态与 detail，否则可观测性反噬排障。
+- 回归测试：`tests/unit/test_security_hardening.py::TestIdentityCookieLifetime`（超 300s 仍验签通过、超 30 天/未来时间戳拒绝、refresh 保身份）、`backend/api-gateway/tests/unit/test_identity_sliding_renewal.py`（合法/陈旧 Cookie 身份不轮换 + 滑动续期）、`backend/api-gateway/tests/unit/test_conversations_upstream_error.py`（403 不再伪装为上游不可用）。

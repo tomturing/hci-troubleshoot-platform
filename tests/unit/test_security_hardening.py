@@ -19,6 +19,12 @@ if _backend not in sys.path:
 
 from pydantic import ValidationError  # noqa: E402
 from shared.models.schemas import MessageCreate, WebSocketMessage  # noqa: E402
+from shared.security.identity import (  # noqa: E402
+    IDENTITY_MAX_AGE_SECONDS,
+    issue_identity,
+    refresh_identity,
+    verify_identity,
+)
 from shared.security.signature import sign_client_identity, verify_client_identity  # noqa: E402
 
 SECRET = "unit-test-secret"
@@ -57,6 +63,58 @@ class TestIdentitySignature:
     def test_malformed_signature_rejected(self):
         bad = {"X-Client-ID": "a", "X-Client-Signature": "not-a-signature"}
         assert verify_client_identity(bad, SECRET) is None
+
+
+class TestIdentityCookieLifetime:
+    """身份 Cookie 生命周期（修复工单 Q2026101330905「上游服务暂时不可用」误报）。
+
+    与服务间出口签名不同：身份 Cookie 是长寿命会话身份，绝不能在 300s 后静默
+    轮换（否则用户离线数分钟后回来发消息会被归属校验 403 误杀）。
+    """
+
+    @staticmethod
+    def _cookie_with_ts(client_id: str, ts: int, secret: str) -> str:
+        import hashlib
+        import hmac
+
+        digest = hmac.new(secret.encode(), f"{ts}:{client_id}".encode(), hashlib.sha256).hexdigest()
+        return f"{ts}.{client_id}.{digest}"
+
+    def test_issue_and_verify_roundtrip(self):
+        client_id, cookie = issue_identity(SECRET)
+        assert verify_identity(cookie, SECRET) == client_id
+
+    def test_stale_beyond_300s_still_verifies(self):
+        """关键回归：旧 300s 硬窗口会导致离线数分钟后身份轮换，现必须仍验签通过。"""
+        client_id = "b" * 32
+        old_ts = int(time.time()) - 900  # 15 分钟前，远超旧 300s 窗口
+        cookie = self._cookie_with_ts(client_id, old_ts, SECRET)
+        assert verify_identity(cookie, SECRET) == client_id
+
+    def test_beyond_max_age_rejected(self):
+        client_id = "c" * 32
+        ancient_ts = int(time.time()) - (IDENTITY_MAX_AGE_SECONDS + 3600)
+        cookie = self._cookie_with_ts(client_id, ancient_ts, SECRET)
+        assert verify_identity(cookie, SECRET) is None
+
+    def test_future_timestamp_beyond_skew_rejected(self):
+        client_id = "d" * 32
+        future_ts = int(time.time()) + 10_000
+        cookie = self._cookie_with_ts(client_id, future_ts, SECRET)
+        assert verify_identity(cookie, SECRET) is None
+
+    def test_forged_signature_rejected(self):
+        client_id, cookie = issue_identity(SECRET)
+        assert verify_identity(cookie, "wrong-secret") is None
+        ts, cid, _sig = cookie.split(".")
+        assert verify_identity(f"{ts}.{cid}.deadbeef", SECRET) is None
+
+    def test_refresh_preserves_client_id(self):
+        """滑动续期：保持 client_id 不变、仅刷新时间戳，新 Cookie 可验签。"""
+        client_id, cookie = issue_identity(SECRET)
+        refreshed = refresh_identity(client_id, SECRET)
+        assert verify_identity(refreshed, SECRET) == client_id
+        assert int(refreshed.split(".")[0]) >= int(cookie.split(".")[0])
 
 
 class TestMessageMetadataValidation:
