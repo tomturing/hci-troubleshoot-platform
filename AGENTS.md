@@ -65,6 +65,13 @@
     - WS `handle()` 连接即下发 `bridge_hello` 握手首包；新增 `bridge.listening`/`bridge.already_running`/`bridge.backup_port_activated`/`bridge.port_conflict` 结构化日志事件。
     - 前端 `frontend/customer/src/api/terminal.ts` 新增 `resolveBridgeUrl`：桌面模式探测 `9999 → 47324` 两个已知端口，以收到 `bridge_hello` 回包为准判定“对端确实是 Bridge”（不能只看 WS 能否 open，避免误连陌生进程），命中即缓存；`checkBridgeRunning`/`checkBridgeBeforeOpen` 接入并在失效时清缓存；cluster 注入配置零探测、nginx/helm/docker 单端口零改动。
     - 测试守护：`terminal_bridge/port_recovery_test.go` 覆盖占用判定/退避重试/存活识别/幂等退出/主备回退/自定义端口不扩散/fail-fast；`terminal.spec.ts` 新增双端口探测 6 例并保留 `getBridgeUrl` 默认回归。
+- **工单 Q2026101496655「提交 node_ip 后弹框假报错『请输入值（必填）』」前端状态机修复**：
+  - **根因**：SOP 变量卡片 `handleInteractiveFreeText` 在 `POST /interactive-response` 成功（变量已写入 `sop_execution.context_variables`）后先清空输入框、再调 `chatStore.sendMessage(text, {kind:'interactive_response'})` 触发续跑；而 `chat.ts` 的 `sendMessage` 首行守卫 `if (!content.trim() || isStreaming.value) return` 在本轮 SSE 流式期间（长工具链可持续数分钟）把该触发消息**无提示静默吞掉**。于是：①`interactiveSubmitted`（纯按「弹框后是否存在 interactive_response 用户消息」推断）永远为 false，弹框不转「已提交」态；②输入框已被清空 + `isTouched=true` 组合出红字「请输入值（必填）」假报错，诱导用户反复重提（实测 3 次全部后端 200 成功）。本质是「提交结果反馈」与「续跑触发消息」两条通道耦合在同一个静默守卫上。
+  - **修复**（纯前端，后端写入链路本身无缺陷）：
+    - `chat.ts` `sendMessage` 改为返回 `Promise<boolean>`（守卫吞掉/工单关闭返回 false，真正发出返回 true），消除静默失败；既有调用方不消费返回值保持兼容。
+    - `MessageBubble.vue` 新增 `interactiveLocalSubmitted` 本地已提交标志：`/interactive-response` POST 成功即置 true（先于清空输入框），`interactiveSubmitted` 计算属性优先读本地态，不再依赖「后续触发消息是否存在」的脆弱推断；`sendMessage` 返回 `false` 时变量类卡片给 `ElMessage.info`「值已提交成功、诊断进行中」的诚实反馈，`sop_fallback` 被吞掉时给 warning 且不标记已提交（选择需可重做）；`interactiveEvent` 切换新请求时重置本地标志。`handleConfirmRecommendValue` 同步处理。
+  - **测试守护**：`MessageBubble.variable-submit.spec.ts` 新增 5 例（流式吞掉仍转已提交+提示/正常发出不重复提示/提交失败不清空输入不标已提交/历史 interactive_response 向后兼容/sop_fallback 被吞可重选）；`chat.interactive.spec.ts` 新增 `sendMessage` 返回值语义 2 例（isStreaming 时 false 且不发请求/正常流 true）。
+  - **教训：前端任何“成功后的副作用触发”若经过可能被守卫吞掉的通道，必须先把 UI 状态推进到与后端一致，再尽力触发，且吞掉时必须有用户可感知的反馈；“清空输入框”与“保留已提交态展示”绝不可先于状态确认执行。**
 - **工单 Q2026092053425 排障交互卡片无响应与容器执行失败修复**：
   - **根因**：
     - **点击交互无反应与超时取消**：`conversation-service` 转发用户交互确认到 `agent-service` 时漏传内部 `Authorization` Token，导致 401 失败并在前端静默吞咽，最终 Redis 等待 120 秒超时判定为操作已取消；

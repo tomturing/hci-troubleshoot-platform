@@ -561,9 +561,17 @@ const interactiveEvent = computed(() => {
   } | null
 })
 
+/** 本地已提交标志：后端写入成功后置 true。
+ * 不依赖“后续存在 interactive_response 消息”推断：流式期间
+ * chatStore.sendMessage 会被 isStreaming 守卫静默吞掉（工单 Q2026101496655：
+ * 用户提交 node_ip 后弹框不消失、清空输入框+已触控组合出假报错
+ * 「请输入值（必填）」，导致反复重提 3 次） */
+const interactiveLocalSubmitted = ref(false)
+
 /** 当前 interactive 气泡之后是否已有用户响应（防止重复提交） */
 const interactiveSubmitted = computed(() => {
   if (!interactiveEvent.value) return false
+  if (interactiveLocalSubmitted.value) return true
   const msgIndex = chatStore.messages.findIndex(m => m.id === props.message.id)
   if (msgIndex === -1) return false
   return chatStore.messages.slice(msgIndex + 1).some(
@@ -706,13 +714,17 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
     interactiveSubmitting.value = true
     try {
       chatStore.clearInteractiveRequest()
-      await chatStore.sendMessage(optionName, {
+      const sent = await chatStore.sendMessage(optionName, {
         kind: 'interactive_response',
         interactiveKind: 'sop_fallback',
         selectedOptionId: optionId,
         sourceRequestId: ev.requestId,
         sourceMessageId: props.message.id,
       })
+      // 流式期间被守卫吞掉时选择会丢失：不标记已提交，提示用户稍后重选
+      if (sent === false) {
+        ElMessage.warning('当前诊断仍在进行中，请稍后再选择')
+      }
     } finally {
       interactiveSubmitting.value = false
     }
@@ -738,13 +750,18 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
       }),
     })
     if (resp.ok) {
+      // 变量已写入后端变量池，立即进入已提交态，不再依赖后续触发消息是否存在
+      interactiveLocalSubmitted.value = true
       chatStore.clearInteractiveRequest()
       if (isVariable) {
         // 对于 SOP 变量输入，提交变量库后，发送一条用户消息触发后续诊断
-        await chatStore.sendMessage(optionName, {
+        const sent = await chatStore.sendMessage(optionName, {
           kind: 'interactive_response',
           selectedOptionId: optionId,
         })
+        if (sent === false) {
+          ElMessage.info('变量值已提交成功，当前诊断仍在进行中，系统将自动使用该值继续')
+        }
       } else {
         // 追加用户响应气泡（selectedOptionId 用于恢复已选高亮）
         chatStore.messages.push({
@@ -818,13 +835,20 @@ async function handleInteractiveFreeText() {
       }),
     })
     if (resp.ok) {
+      // 变量已写入后端变量池：先置本地已提交态，再清空输入框。
+      // 顺序不可颠倒：若先清空再等 sendMessage，流式期间 sendMessage
+      // 被守卫吞掉时，表单会因「输入框已清空 + isTouched」弹出假报错（Q2026101496655）
+      interactiveLocalSubmitted.value = true
       interactiveFreeText.value = ''
       chatStore.clearInteractiveRequest()
       if (isVariable) {
         // 对于 SOP 变量输入，提交变量库后，发送一条用户消息触发后续诊断
-        await chatStore.sendMessage(text, {
+        const sent = await chatStore.sendMessage(text, {
           kind: 'interactive_response',
         })
+        if (sent === false) {
+          ElMessage.info('变量值已提交成功，当前诊断仍在进行中，系统将自动使用该值继续')
+        }
       } else {
         chatStore.messages.push({
           id: `ir-resp-${Date.now()}`,
@@ -1098,6 +1122,8 @@ const isInputValid = computed(() => {
 
 // Initialize interactiveFreeText when event changes for variable_confirm
 watch(() => interactiveEvent.value, (newEv) => {
+  // 切换到新交互请求时重置本地已提交标志，避免新卡片误显示已提交
+  interactiveLocalSubmitted.value = false
   if (newEv && newEv.kind === 'variable_confirm') {
     interactiveFreeText.value = (newEv.metadata?.current_value as string) || ''
     isTouched.value = false
@@ -1128,12 +1154,18 @@ async function handleConfirmRecommendValue() {
       }),
     })
     if (resp.ok) {
+      // 推荐值已写入变量池，立即进入已提交态（同 handleInteractiveFreeText）
+      interactiveLocalSubmitted.value = true
       chatStore.clearInteractiveRequest()
-      await chatStore.sendMessage(val, {
+      const sent = await chatStore.sendMessage(val, {
         kind: 'interactive_response',
       })
+      if (sent === false) {
+        ElMessage.info('已确认推荐值，当前诊断仍在进行中，系统将自动使用该值继续')
+      }
     } else {
       console.warn('[interactive] 推荐值确认提交失败:', resp.status)
+      ElMessage.error('推荐值确认提交失败，请稍后重试')
     }
   } finally {
     interactiveSubmitting.value = false
