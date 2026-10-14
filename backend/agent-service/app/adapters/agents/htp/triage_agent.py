@@ -203,21 +203,25 @@ class TriageAgent(BaseAgent):
                 reason=f"未找到助手类型 '{assistant_type}'",
             )
 
-        # 4. 调用 LLM。先缓冲完整结果并执行证据门禁，再向用户输出；
-        # 否则流式分块一旦发出，后置校验无法撤回伪造的执行证据。
+        # 4. 调用 LLM：结构化 JSON 输出（response_format=json_object）。
+        #    把「模型文本书写风格」与「解析契约」彻底解耦——模型返回机器可读的 JSON 对象，
+        #    harness 读字段并用权威分类字典校验，不再用正则从自由文本里抠字。
+        #    换模型（glm-5 → Qwen3.8-Flash 等）时不再因 Markdown/措辞漂移而误判「无法识别」。
         full_messages = [{"role": "system", "content": system_prompt}, *messages]
-        full_reply: list[str] = []
 
         deterministic_result: IntentResult | None = None
+        structured: dict[str, Any] | None = None
+        reply_text = ""
         try:
-            async for chunk in ai_client.chat_completion_stream(
+            invoke_result = await ai_client.invoke(
                 messages=full_messages,
                 user_id=session_id,
                 case_id=case_id,
                 temperature=settings.LLM_TEMPERATURE_S0,
-            ):
-                if chunk:
-                    full_reply.append(chunk)
+                response_format={"type": "json_object"},
+            )
+            reply_text = (invoke_result.content or "").strip()
+            structured = self._extract_json_object(reply_text)
         except Exception as exc:
             logger.warning(
                 event="triage_llm_fallback",
@@ -227,13 +231,11 @@ class TriageAgent(BaseAgent):
             )
             deterministic_result = self._deterministic_candidates(messages, env_context)
 
-        # 5. 解析意图识别结果
-        reply_text = "".join(full_reply)
+        # 5. 解析分类决策（多层兜底）并组装面向用户的判断依据文本
         reply_sha256 = hashlib.sha256(reply_text.encode("utf-8")).hexdigest()
-        ungrounded_evidence_blocked = self._contains_ungrounded_execution_evidence(reply_text)
 
         # 空响应兜底：LLM 未返回任何内容时给出友好提示
-        if not reply_text.strip() and deterministic_result is None:
+        if not reply_text and deterministic_result is None:
             logger.warning(
                 event="triage_empty_response",
                 message="TriageAgent LLM 返回空响应",
@@ -247,8 +249,31 @@ class TriageAgent(BaseAgent):
             return
 
         if deterministic_result is not None:
-            yield AgentTextChunk(content="分类模型暂时不可用，已根据故障描述和现场事实生成候选，请人工确认。")
-        elif ungrounded_evidence_blocked:
+            # 兜底层①：模型不可用 → 确定性候选，仅要求人工确认，不自动确认分类
+            result = deterministic_result
+            display_text = "分类模型暂时不可用，已根据故障描述和现场事实生成候选，请人工确认。"
+        elif structured is not None:
+            # 主链路：结构化 JSON 决策 → cat_map 权威校验
+            result = self._intent_from_structured(structured)
+            if not result.category_id and not result.candidates:
+                # 兜底层②：JSON 字段未给出可用分类，回落对原始文本的归一化解析
+                result = self._parse_intent_result(reply_text)
+            display_text = self._compose_user_text(structured) or reply_text
+        else:
+            # 兜底层③：模型未按 JSON 契约返回（换模型/偶发不合规）→ 归一化文本解析安全网
+            result = self._parse_intent_result(reply_text)
+            display_text = reply_text
+            logger.warning(
+                event="intent_contract_drift",
+                message="S0 未按 JSON 契约返回结构化对象，已走归一化文本兜底解析",
+                session_id=session_id,
+                case_id=case_id,
+                reply_preview=reply_text[:200],
+            )
+
+        # 安全门禁：S0 无工具能力，判断依据中任何命令执行结果形态都属伪造证据，必须阻断透传
+        ungrounded_evidence_blocked = self._contains_ungrounded_execution_evidence(display_text)
+        if ungrounded_evidence_blocked:
             logger.error(
                 event="triage_ungrounded_execution_evidence_blocked",
                 message="S0 模型输出包含无工具证据的命令执行内容，已阻止透传",
@@ -260,11 +285,13 @@ class TriageAgent(BaseAgent):
                 content="当前仍处于故障分类阶段，系统没有执行任何命令。"
                 "检测到回复中包含未经工具结果证明的执行内容，已安全阻止；请根据下方提示继续确认故障分类。"
             )
-        else:
-            for chunk in full_reply:
-                yield AgentTextChunk(content=chunk)
+            result = IntentResult(
+                category_id=None, category_name=None, candidates=[], needs_confirmation=False
+            )
+        elif display_text:
+            yield AgentTextChunk(content=display_text + "\n\n")
 
-        result = deterministic_result or self._parse_intent_result(reply_text)
+        result = result or IntentResult(category_id=None, category_name=None, candidates=[], needs_confirmation=False)
 
         logger.info(
             event="intent_parsed",
@@ -608,14 +635,125 @@ class TriageAgent(BaseAgent):
                     cat_map[code] = name
         return cat_map
 
+    @staticmethod
+    def _extract_json_object(content: str) -> dict[str, Any] | None:
+        """从模型返回文本中稳健提取 JSON 对象。
+
+        主链路依赖 response_format=json_object，但部分模型仍可能裹上 ```json 围栏
+        或前后缀说明文字。这里按「直接解析 → 剥围栏 → 截取首个平衡 {}」三级递进，
+        任一环节得到合法 JSON 对象即返回；全部失败返回 None（交由归一化文本兜底）。
+        """
+        if not content:
+            return None
+        text = content.strip()
+
+        def _as_obj(candidate: str) -> dict[str, Any] | None:
+            try:
+                obj = json.loads(candidate)
+            except json.JSONDecodeError:
+                return None
+            return obj if isinstance(obj, dict) else None
+
+        parsed = _as_obj(text)
+        if parsed is not None:
+            return parsed
+
+        fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
+        if fenced and (parsed := _as_obj(fenced.group(1))) is not None:
+            return parsed
+
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return _as_obj(text[start : end + 1])
+        return None
+
+    def _intent_from_structured(self, structured: dict[str, Any]) -> IntentResult:
+        """把结构化 JSON 决策收敛为 IntentResult，所有分类码经 cat_map 权威校验。
+
+        契约：``{reasoning, decision, category_code, candidate_codes, clarification_question}``。
+        模型给出的任何编码若不在当前启用分类字典中一律拒绝（防幻觉/资源名误识别）。
+        """
+        cat_map = self._get_active_categories_map()
+        if not cat_map:
+            logger.warning(event="triage_category_registry_empty", message="权威分类字典为空，拒绝解析结构化分类")
+            return IntentResult(category_id=None, category_name=None, candidates=[], needs_confirmation=False)
+
+        confirmed = str(structured.get("category_code") or "").strip()
+        raw_candidates = structured.get("candidate_codes") or []
+        if isinstance(raw_candidates, str):
+            raw_candidates = [raw_candidates]
+
+        candidates: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for raw in raw_candidates:
+            code = str(raw).strip()
+            if not code or code in seen:
+                continue
+            if code not in cat_map:
+                logger.warning(
+                    event="triage_unknown_category_rejected",
+                    message=f"结构化候选含未注册分类 {code}，已拒绝",
+                    category_id=code,
+                )
+                continue
+            seen.add(code)
+            candidates.append({"code": code, "name": cat_map[code]})
+
+        if confirmed:
+            if confirmed in cat_map:
+                return IntentResult(
+                    category_id=confirmed,
+                    category_name=cat_map[confirmed],
+                    candidates=[],
+                    needs_confirmation=True,
+                )
+            logger.warning(
+                event="triage_unknown_category_rejected",
+                message=f"结构化确认含未注册分类 {confirmed}，已拒绝",
+                category_id=confirmed,
+            )
+        if candidates:
+            return IntentResult(
+                category_id=None, category_name=None, candidates=candidates[:4], needs_confirmation=True
+            )
+        return IntentResult(category_id=None, category_name=None, candidates=[], needs_confirmation=False)
+
+    @staticmethod
+    def _compose_user_text(structured: dict[str, Any]) -> str:
+        """把结构化字段拼装为面向用户展示的判断依据 + 可选澄清问题。"""
+        parts: list[str] = []
+        reasoning = str(structured.get("reasoning") or "").strip()
+        clarification = str(structured.get("clarification_question") or "").strip()
+        if reasoning:
+            parts.append(reasoning)
+        if clarification:
+            parts.append(clarification)
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _normalize_reply(reply: str) -> str:
+        """归一化模型文本：剥离 Markdown 粗体/行内代码装饰，使解析与书写风格解耦。
+
+        仅去除 ``**``（粗体）与反引号，保留单 ``*``（可能作为列表符号）。
+        """
+        return reply.replace("**", "").replace("`", "")
+
+    # 分类码 token：非空白、非中文标点、非括号的连续串（兼容中文/字母/数字/-/./L2 等形态）
+    _CODE_TOKEN = r"[^\s，,。；;：:、()（）]+"
+    # 确认标记同义词：兼容 glm-5 的「已确认故障分类」与 Qwen 的「确认分类」等漂移写法
+    _CONFIRM_MARKERS = r"(?:已确认故障分类|确认故障分类|已确认分类|确认分类|故障分类|分类结论|确认类别)"
+    # 候选行首列表符号：兼容 ①②③ 圈号、- * • 短横、1. 1、 数字编号
+    _BULLET = r"(?:[\u2460-\u2473]|[-*•]|\d+[.、)])"
+
     @classmethod
     def _parse_intent_result(cls, reply: str) -> IntentResult:
-        """把模型提出的分类收敛到权威分类字典。
+        """模型无关的归一化文本兜底解析（结构化 JSON 主链路的安全网）。
 
-        模型回复是不可信文本：只解析明确的“确认分类”标记或独立候选行，禁止
-        扫描判断依据全文。捕获形态不强制 ``-<数字>`` 结尾（兼容数据漂移期的
-        非标准形态叶子），但任何不在当前启用分类字典中的编码一律由 cat_map
-        权威拒绝，避免把 ``ubu-sus-25.2`` 一类资源名称误识别为故障分类。
+        当模型未按 JSON 契约返回时，从其自由文本里稳健提取分类码：
+          - 先剥离 Markdown 装饰（**粗体** / `code`），避免 ``*`` 破坏码提取；
+          - 确认标记兼容「已确认故障分类/确认分类/故障分类」等同义漂移写法；
+          - 候选行兼容 ①②③ / - * • / 1. 等列表符号；
+          - 任何不在启用分类字典中的编码一律由 cat_map 权威拒绝（防资源名误识别）。
         """
         cat_map = cls._get_active_categories_map()
         if not cat_map:
@@ -627,21 +765,19 @@ class TriageAgent(BaseAgent):
                 needs_confirmation=False,
             )
 
-        candidate_pattern = re.compile(
-            r"^[\t ]*[①②③④][\t ]*([一-鿿A-Za-z0-9-]+)(?:[\t ]+[^\r\n]+)?[\t ]*$",
-            re.MULTILINE,
-        )
-        confirmed_pattern = re.compile(r"(?:已确认故障分类|故障分类)[：:][\t ]*([一-鿿A-Za-z0-9-]+)(?:[\t ]+[^\r\n]+)?")
+        normalized = cls._normalize_reply(reply)
+        candidate_pattern = re.compile(rf"^[\t ]*{cls._BULLET}[\t ]*({cls._CODE_TOKEN})", re.MULTILINE)
+        confirmed_pattern = re.compile(rf"{cls._CONFIRM_MARKERS}[：:][\t ]*({cls._CODE_TOKEN})")
 
-        candidate_codes = candidate_pattern.findall(reply)
-        confirmed_match = confirmed_pattern.search(reply)
+        candidate_codes = candidate_pattern.findall(normalized)
+        confirmed_match = confirmed_pattern.search(normalized)
         proposed_codes = candidate_codes or ([confirmed_match.group(1)] if confirmed_match else [])
 
         parsed_items: list[dict[str, str]] = []
         seen_codes: set[str] = set()
         for raw_code in proposed_codes:
-            code = raw_code.strip()
-            if code in seen_codes:
+            code = raw_code.strip().strip("*_\"'")
+            if not code or code in seen_codes:
                 continue
             if code not in cat_map:
                 logger.warning(

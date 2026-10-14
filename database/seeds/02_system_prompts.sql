@@ -100,18 +100,18 @@ S6 验证闭环：确认问题已解决，记录知识$TEMPLATE$,
 
 {categories_text}
 
-输出格式要求：
-1. 先用自然语言解释判断依据（1-2 句）
-2. 如需澄清，最多提 1 个问题
-3. 有足够信息时，**必须**在末尾输出（独立一行）：
-   「已确认故障分类：{{code}} {{name}}」
-4. 或者输出候选列表供用户选择，并引导用户进行选择（包含最多 4 个推荐选项和 1 个“以上都不是”选项，独立五行）：
-   ① {{code1}} {{name1}}
-   ② {{code2}} {{name2}}
-   ③ {{code3}} {{name3}}
-   ④ {{code4}} {{name4}}
-   ⑤ 以上都不是（请补充症状描述）
-5. 确认分类之前，不做诊断推理，不引用 SOP$TEMPLATE$,
+【输出格式要求（严格遵守）】
+你必须且只能输出一个 JSON 对象，不要输出任何 JSON 之外的自然语言、Markdown 标记或代码块围栏。JSON 字段定义如下：
+{{"reasoning": "面向用户的 1-2 句判断依据，说明命中的关键实体与故障现象",
+ "decision": "confirmed 或 candidates",
+ "category_code": "decision=confirmed 时唯一确认的分类编码；否则填 null",
+ "candidate_codes": ["decision=candidates 时最多 4 个候选分类编码；否则为空数组"],
+ "clarification_question": "信息不足时向用户提出的 1 个澄清问题；否则填 null"}}
+约束：
+  - 所有分类编码必须严格来自上方【故障分类列表】，严禁捏造或使用列表外的编码
+  - 特征明确 → decision=confirmed 并填 category_code，candidate_codes 留空数组
+  - 特征模糊 → decision=candidates 并填 candidate_codes 与 clarification_question，category_code 填 null
+  - reasoning 只写判断依据，不要写诊断结论、不要引用 SOP、不要输出任何命令执行结果$TEMPLATE$,
     '1.0',
     TRUE
 ),

@@ -162,3 +162,20 @@ PY
 - 「无登录的服务端签名身份」不得复用「每请求一次性 nonce」的短防重放窗口；身份 Cookie 必须做滑动续期或长寿命，否则任何有限空闲窗口都会被「用户走开一会儿」击穿。
 - 网关代理兜底错误**禁止**把 4xx 权限/校验类响应笼统降级为「上游不可用」，必须透传真实状态与 detail，否则可观测性反噬排障。
 - 回归测试：`tests/unit/test_security_hardening.py::TestIdentityCookieLifetime`（超 300s 仍验签通过、超 30 天/未来时间戳拒绝、refresh 保身份）、`backend/api-gateway/tests/unit/test_identity_sliding_renewal.py`（合法/陈旧 Cookie 身份不轮换 + 滑动续期）、`backend/api-gateway/tests/unit/test_conversations_upstream_error.py`（403 不再伪装为上游不可用）。
+
+## V-020：S0 意图识别「已正确识别却报无法识别」——harness 解析契约对特定模型输出风格过拟合
+
+**症状：** 用户在 S0 描述故障，AI 明明已给出「确认分类：虚拟机-017 …」的正确判断，却紧接着回复「抱歉，暂时无法识别您的故障类型」。工单 Q2026101493534 复现；DB 中会话停在 `diagnostic_stage=S0`、`category_id` 为空，agent-service 日志报 `intent_parse_failed`（`reply_preview` 里其实含合法分类码）。切换到 Qwen3.8-Flash 后愈发频繁。
+
+**根因：** 旧范式是「Prompt 约定文本标记 + 下游正则抠字」——`triage_agent._parse_intent_result` 的 `confirmed_pattern` 只认字面量「已确认故障分类/故障分类」，`candidate_pattern` 只认行首 ①②③④。该契约对 glm-5 的输出习惯**隐式过拟合**（默认模型即 glm-5）。Qwen3.8-Flash 书写风格漂移：改写「**确认分类**：」（缺「故障」二字）、用 `**粗体**` 包裹分类码（`*` 不在字符类）、用 `- ` 短横线代替圈号候选行——任一即令正则提取集为空，被静默降级为「无法识别」的**假阴性**。
+
+**修复（解耦「模型文本风格」与「解析契约」，业界结构化输出范式）：**
+- **主链路**：S0 由 `chat_completion_stream` 改为 `ai_client.invoke(..., response_format={"type":"json_object"})`，Prompt 强制模型只输出 JSON 对象 `{reasoning, decision, category_code, candidate_codes, clarification_question}`；harness 读字段并经权威分类字典 `cat_map` 校验（`_extract_json_object` → `_intent_from_structured`）。面向用户展示 `reasoning`，决策走结构体，不再正则抠 Markdown。
+- **多层兜底**：JSON 解析失败 → 剥 ```` ```json ```` 围栏/截取首个 `{...}` 重试 → **模型无关归一化文本解析**（`_normalize_reply` 剥离 `**`/反引号、`_CONFIRM_MARKERS` 兼容「确认分类」等同义词、`_BULLET` 兼容 `- * • ①-⑳ 1.`）→ 确定性关键词候选 → 受控降级。故「新代码 + 旧文本 Prompt」也能靠归一化兜底正常工作，向后兼容迁移滞后。
+- **可观测性**：新增 `intent_contract_drift`（模型未按 JSON 契约返回但走了文本兜底），与真实 `intent_parse_failed`（无任何可用分类）区分。
+- **Prompt 三处同步**：`database/seeds/02_system_prompts.sql`、`database/data-migrations/045_s0_intent_structured_output_prompt.sql`、`backend/shared/utils/prompt_loader.py` mock 模板保持一致；模板 JSON 字面花括号必须写成 `{{ }}` 以通过 `str.format`。
+
+**预防：**
+- **禁止用正则解析 LLM 自由文本作为控制流依据**；需要结构化决策时用 `response_format=json_object`/function calling，让模型产出机器可读信封、harness 消费并校验结构。
+- 任何「按某个特定模型的输出习惯调出来的解析器」都是定时炸弹：换模型即回退。解析层必须**模型无关**（归一化 + 同义兼容 + 权威字典校验），并保留分层兜底与漂移告警。
+- 回归测试：`backend/agent-service/tests/unit/test_triage_agent.py` 的 `TestExtractJsonObject`/`TestIntentFromStructured`/`TestNormalizationFallback`，含真实 Qwen 漂移样本（`确认分类：**虚拟机-017 …**`、`- ` 短横线候选）与「契约漂移端到端仍弹确认卡」用例。

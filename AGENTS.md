@@ -84,6 +84,14 @@
     - 新增 `_evidence_request_satisfied()` 方法，使用字符 bigram 匹配策略（无需中文分词）检测用户消息中是否已包含 evidence request 要求的信息；`_semantic_guidance_messages()` 过滤掉已满足的请求项。
     - 新增循环中断机制：快捷路径中统计 guidance marker 出现次数，≥3 轮用户补充后仍无法推进时，输出确认收到 + 建议转人工的消息，不再重复请求。
   - **测试守护**：新增 4 个单元测试覆盖 bigram 匹配、已提供过滤、无关消息不误判等场景。
+- **S0 意图识别「已正确识别却报无法识别」JSON 结构化输出改造**（工单 Q2026101493534 复盘；详见 `docs/verify/pitfalls/debugging.md` V-020）：
+  - **根因**：旧范式是「Prompt 约定文本标记 + 下游正则抠字」——`triage_agent._parse_intent_result` 的 `confirmed_pattern` 只认字面量「已确认故障分类/故障分类」、`candidate_pattern` 只认行首 ①②③④，该契约对默认模型 glm-5 的输出习惯**隐式过拟合**。切换到 Qwen3.8-Flash 后书写风格漂移（改写「确认分类：」缺「故障」、用 `**粗体**` 包裹分类码、用 `- ` 短横线代替圈号候选行），任一即令正则提取集为空，被静默降级为「无法识别」的**假阴性**。
+  - **修复（解耦「模型文本风格」与「解析契约」）**：
+    - **主链路**：S0 由 `chat_completion_stream` 改为 `ai_client.invoke(..., response_format={"type":"json_object"})`，Prompt 强制只输出 JSON 对象 `{reasoning, decision, category_code, candidate_codes, clarification_question}`；harness 经 `_extract_json_object` → `_intent_from_structured` 读字段并用权威分类字典 `cat_map` 校验。
+    - **多层兜底**：JSON 解析失败 → 剥 ` ```json ` 围栏/截取首个 `{...}` 重试 → 模型无关归一化文本解析（`_normalize_reply` 剥离 `**`/反引号、`_CONFIRM_MARKERS` 兼容「确认分类」同义词、`_BULLET` 兼容 `- * • ①-⑳ 1.`）→ 确定性关键词候选 → 受控降级，故「新代码 + 旧文本 Prompt」也能靠归一化兜底正常工作，向后兼容迁移滞后。
+    - **可观测性**：新增 `intent_contract_drift`（模型未按 JSON 契约返回但走了文本兜底），与真实 `intent_parse_failed`（无任何可用分类）区分。
+    - **Prompt 三处同步**：`database/seeds/02_system_prompts.sql`、`database/data-migrations/045_s0_intent_structured_output_prompt.sql`、`backend/shared/utils/prompt_loader.py` mock 模板保持一致；模板 JSON 字面花括号必须写成 `{{ }}` 以通过 `str.format`。
+  - **测试守护**：`backend/agent-service/tests/unit/test_triage_agent.py` 的 `TestExtractJsonObject`/`TestIntentFromStructured`/`TestNormalizationFallback`，含真实 Qwen 漂移样本（`确认分类：**虚拟机-017 …**`、`- ` 短横线候选）与「契约漂移端到端仍弹确认卡」用例。
 - **Langfuse 子路径导航丢失修复（NEXT_PUBLIC_BASE_PATH 补齐）**（PR #1035）：
   - **根因**：Langfuse (Next.js) 通过 Traefik `stripPrefix` 中间件挂载在 `/langfuse` 子路径，但容器内未配置 `NEXT_PUBLIC_BASE_PATH`，导致 Next.js 前端生成的内部链接（页面跳转、tRPC 请求）不含 `/langfuse` 前缀。首页直接访问 `/langfuse` 能命中 Ingress 规则，但点击项目/设置等页面后，浏览器 URL 变为 `/project/xxx` 或 `/api/trpc/...`，脱离 Ingress 路由范围导致导航丢失。
   - **修复**：在 `deploy/helm/hci-platform-obs/templates/langfuse.yaml` 的 `langfuse-server` 环境变量中增加 `NEXT_PUBLIC_BASE_PATH=/langfuse`（subdomain 模式下不设置），使 Next.js 前端生成的内部链接（页面跳转、静态资源、tRPC 请求）自动带 `/langfuse` 前缀。**注意**：Next.js `basePath` 不影响 `/api/` 路由，健康端点始终在 `/api/public/health`，探针路径保持不变。Docker Compose 无需修改（本地 `localhost:13000` 无子路径前缀）。
