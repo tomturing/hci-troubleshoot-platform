@@ -294,6 +294,44 @@ describe('chat store — interactive_request 气泡行为', () => {
     })
 
     // ═══════════════════════════════════════════════════════════════════════
+    // sendMessage 返回值语义（Q2026101496655 修复：守卫吞掉时不再静默）
+    // ═══════════════════════════════════════════════════════════════════════
+    describe('sendMessage 返回值语义', () => {
+        it('流式期间被 isStreaming 守卫吞掉时返回 false 且不发起请求', async () => {
+            const { useChatStore } = await import('../chat')
+            const store = useChatStore()
+
+            store.currentCase = makeCase() as any
+            store.conversationId = 'conv-ir-1'
+            store.isStreaming = true
+
+            const fetchMock = vi.fn()
+            vi.stubGlobal('fetch', fetchMock)
+
+            const sent = await store.sendMessage('10.71.175.119', { kind: 'interactive_response' })
+
+            expect(sent).toBe(false)
+            expect(fetchMock).not.toHaveBeenCalled()
+            vi.unstubAllGlobals()
+        })
+
+        it('正常发送并读完 SSE 流后返回 true', async () => {
+            const { useChatStore } = await import('../chat')
+            const store = useChatStore()
+
+            store.currentCase = makeCase() as any
+            store.conversationId = 'conv-ir-1'
+
+            vi.stubGlobal('fetch', makeInteractiveFetchMock(makeInteractiveEvent()))
+
+            const sent = await store.sendMessage('测试消息')
+
+            expect(sent).toBe(true)
+            vi.unstubAllGlobals()
+        })
+    })
+
+    // ═══════════════════════════════════════════════════════════════════════
     // clearInteractiveRequest：清除 pendingInteractive
     // ═══════════════════════════════════════════════════════════════════════
     describe('clearInteractiveRequest', () => {

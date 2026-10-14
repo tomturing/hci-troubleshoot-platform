@@ -829,17 +829,23 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  async function sendMessage(content: string, metadata?: any) {
-    if (!content.trim() || isStreaming.value) return
+  /**
+   * 发送一条用户消息并接续 AI 流式回复。
+   * 返回是否真正发出：流式期间/工单关闭等守卫命中时返回 false，
+   * 供调用方（如交互卡片提交）感知“消息被静默吞掉”并给用户明确反馈，
+   * 避免状态机断裂（工单 Q2026101496655 教训）。
+   */
+  async function sendMessage(content: string, metadata?: any): Promise<boolean> {
+    if (!content.trim() || isStreaming.value) return false
 
     if (content.startsWith('/close')) {
       await handleCloseCase()
-      return
+      return true
     }
 
     if (isCaseClosed.value) {
       addSystemMessage('当前工单已关闭，请点击「新建工单」开始新的对话。')
-      return
+      return false
     }
 
     if (!currentCase.value) {
@@ -850,7 +856,7 @@ export const useChatStore = defineStore('chat', () => {
       const bridgeStatus = await checkBridgeBeforeOpen()
       caseCreateDialogBridgeStatus.value = bridgeStatus
       showCaseTemplate.value = true
-      return
+      return false
     }
 
     addUserMessage(content, metadata)
@@ -860,6 +866,7 @@ export const useChatStore = defineStore('chat', () => {
     }
 
     await streamAIResponse(content, metadata)
+    return true
   }
 
   async function confirmCreateCase(template: CaseTemplate) {
