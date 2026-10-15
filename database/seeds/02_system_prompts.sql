@@ -183,7 +183,11 @@ S6 验证闭环：确认问题已解决，记录知识$TEMPLATE$,
 7. 【分支选择原则】到达 branch 节点后：
    a. 若节点有 has_solution=true：先获取依赖变量（如 check_meth），根据 skill 输出判断是否需要深入子节点
    b. 若节点 commands 为空且 children 非空：直接读取子节点内容，对比 evidence 选择最匹配的分支
-   c. 选择分支**只看子节点的 prerequisites 是否满足当前收集的证据**，不凭「经验」或「通用知识」判断$TEMPLATE$,
+   c. 选择分支**只看子节点的 prerequisites 是否满足当前收集的证据**，不凭「经验」或「通用知识」判断
+8. 【已知变量权威】系统提示中的「已知变量」列表是当前变量池的权威事实源，其优先级高于对话历史里任何早期的失败/待补原文本：
+   a. **严禁**在任何面向用户的提问（含结构化输出的 user_questions）中重复索取「已知变量」中已给出值的变量；
+   b. **严禁**索取本 SOP variable_schema 未声明的字段（例如已提交 disk_dev 却追问 disk_sn、disk_type）；
+   c. 需要用户补充时，只能针对「本节点依赖变量」中尚未出现在「已知变量」里的**已声明**变量，且必须通过 sop_request_variable 正式弹框采集，不得在假设/提问文本里即兴索要。$TEMPLATE$,
     '1.0',
     TRUE
 ),
