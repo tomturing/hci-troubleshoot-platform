@@ -1,10 +1,28 @@
 {
   "scenario_id": "disk_badtrack_q2026101511258",
+  "bind_sop_document_id": 4,
   "title": "硬盘坏道交互式变量与提问落地性端到端回归",
   "description": "SOP《硬盘坏道》排障：asan_disks 采集被截断成非法 JSON → disk_dev 自动提取失败转人工 → 用户提交 disk_dev → S2 假设生成绝不允许重复索取已提交的 disk_dev，也不得凭空索要 SOP 未声明的 disk_sn/disk_type。",
   "ticket": {
     "alert_text": "检测到的硬盘（主机<172.16.100.13>，硬盘名称:5号盘）存在坏道",
     "user_first_message": "检测到的硬盘（主机<172.16.100.13>，硬盘名称:5号盘）存在坏道，帮忙看下怎么排查"
+  },
+  "seed_environment": {
+    "_comment": "向本次新建的测试工单挂真实环境事实（走 case-service 正常 environment_client 链路），消除 S0 facts=0 根因，令 qwen 确定性确认 硬件-025→S1→引擎进 SOP#4 下发命令。USE_RAW 路径：alert 型 env_data 须为 {\"alerts\":[...]}，cluster 型直接为集群 dict。",
+    "cluster": {
+      "name": "hci-prod-cluster",
+      "cluster_name": "hci-prod-cluster",
+      "node_ip": "172.16.100.13"
+    },
+    "alerts": [
+      {
+        "alarm_name": "硬盘坏道检测",
+        "host": "172.16.100.13",
+        "disk": "5号盘",
+        "severity": "major",
+        "message": "检测到的硬盘（主机<172.16.100.13>，硬盘名称:5号盘）存在坏道"
+      }
+    ]
   },
   "expect": {
     "category_code": "硬件-025",

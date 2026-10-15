@@ -1674,14 +1674,19 @@ func buildSSHError(err error) (string, string) {
 // wrapContainerCommand 根据 container 类型包装命令
 // container="host" 或空 → 原样执行
 // container="vs-cp-manager" 等 → container_exec -n <container> -c "<command>"
-func wrapContainerCommand(command, container string) string {
+// simulation=true（已认证的 sim-ssh 租约会话）→ 跳过 export PATH 前缀：
+//
+//	非交互 SSH 宿主机 PATH 不含 /sf/bin:/sf/sbin，真机必须靠该前缀找到 acli/smartctl；
+//	而 hci-sim 按 argv 字符串匹配 fixture 路由、从不 exec 真实二进制，PATH 前缀对仿真不仅无用，
+//	还会触发 hci-sim 受限 lexer「禁止 shell 操作符 ';'」→ 全线 policy_denied(exit 126)。故仿真会话下发裸命令。
+func wrapContainerCommand(command, container string, simulation bool) string {
 	container = strings.TrimSpace(container)
 	if container == "" || container == "host" {
 		trimmed := strings.TrimSpace(command)
 		if strings.HasPrefix(trimmed, "container_exec ") && !strings.Contains(trimmed, " -d") {
 			command = trimmed + " -d"
 		}
-		if !strings.Contains(command, "export PATH=") && (strings.Contains(command, "acli") || strings.Contains(command, "smartctl") || strings.Contains(command, "container_exec")) {
+		if !simulation && !strings.Contains(command, "export PATH=") && (strings.Contains(command, "acli") || strings.Contains(command, "smartctl") || strings.Contains(command, "container_exec")) {
 			return "export PATH=\"$PATH:/sf/bin:/sf/sbin:/usr/sbin:/usr/local/bin\"; " + command
 		}
 		return command
@@ -3923,7 +3928,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			}
 
 			// 包装容器命令
-			wrappedCmd := wrapContainerCommand(msg.Command, msg.Container)
+			wrappedCmd := wrapContainerCommand(msg.Command, msg.Container, s.simulation)
 			blog("INFO", "exec.start", "开始执行命令", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"exec_id": msg.ExecID, "key": key, "container": msg.Container, "cmd_len": len(wrappedCmd),
 			})
@@ -4042,7 +4047,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			}
 
 			// 包装容器命令
-			wrappedCmd := wrapContainerCommand(msg.Command, msg.Container)
+			wrappedCmd := wrapContainerCommand(msg.Command, msg.Container, s.simulation)
 			log.Printf("[Bridge] EXEC_ISOLATED_START: key=%s node=%s container=%s exec_id=%s cmd_len=%d",
 				key, msg.NodeIP, msg.Container, msg.ExecID, len(wrappedCmd))
 			commandHash := commandSHA256(wrappedCmd)

@@ -82,6 +82,11 @@
     - 前端 `MessageBubble.vue` 增加统一 `ElMessage.error` 失败反馈与错误捕获；
     - `terminal_bridge/main.go` 在 `wrapContainerCommand` 统一追加 `-d` 与环境 PATH；
     - `backend/shared` 扩展中文策略别名支持，并订正数据库 SOP 4 的 `content_md` 与 `variable_schema`。
+- **terminal_bridge 仿真会话跳过 `export PATH` 前缀（打通「硬盘坏道」live E2E 真采集到隔离 hci-sim）**（承接 Q2026092053425 的 PATH 前缀修复）：
+  - **根因**：`terminal_bridge/main.go` 的 `wrapContainerCommand` 对含 `acli`/`smartctl`/`container_exec` 的 host 命令统一前缀 `export PATH="$PATH:/sf/bin:/sf/sbin:/usr/sbin:/usr/local/bin"; `（真机非交互 SSH 修 `acli: command not found` 所必需）。但仿真租约会话（`execution_mode=sim-ssh`+`auth_type=lease`）的目标是 `hci_sim` fixture 服务器——它**按 argv 字符串匹配路由、从不 exec 真实二进制**，且其受限 lexer（`fixture.go::Lex`）拒绝一切 shell 操作符（含 `;`）。于是前缀使每条裸命令（约 41B）被包成 107B 复合串 → `policy_denied` → **全线 `exit 126`**，真采集无法回灌，SOP 停在取值步。
+  - **修复**（产品级最小改动，真实机器行为零变化）：`wrapContainerCommand` 新增 `simulation bool` 形参，两个 host 命令 exec 处理点（`s.simulation` 在作用域）传入；仅当 `simulation==false` 才加 PATH 前缀，仿真会话下发**裸命令**。容器分支（`container_exec -n ... -d`）不变。
+  - **测试守护**：`terminal_bridge/wrap_container_test.go::TestWrapContainerCommandSimulationSkipsPathPrefix`（断 `simulation=false` 保留前缀 / `=true` 返回裸命令 / 容器分支仍走 `container_exec`）。
+  - **端到端实证**：在 k3s 集群内用 `golang:1.26.6-alpine` 构建 Pod（挂载宿主机 `~/go/pkg/mod` 离线编译 `GOPROXY=off`）产出含修复的静态 linux 二进制，热替换隔离 bridge Pod 后重跑 live E2E smoke —— `exec.request` 命令为**裸串**（`acli --formatter json alert get -k 磁盘` 等，无 PATH 前缀），`exec.done` `exit_code=0`/`success=true`/`stdout_len` 367·279 真回灌，`asan_disks` 经 `jit_auto_acquire` 写入 SOP 上下文。至此「命令真经 terminal_bridge 下发到隔离 hci-sim 节点真采集输出回灌」全链路验证通过（残余仅 staging 外部模型 skill_call `AI_TIMEOUT`，非本仓代码）。
 - **guidance_only 语义画像 KBD 发布门禁放宽**：
   - **根因**：KBD 发布门禁强制要求至少一条 QFK 消费者信号，导致 `guidance_only` 类型的语义画像 KBD（如案例 15936 "使用ISO镜像安装2016提示缺少计算机所需介质驱动程序"）无法发布。这类 KBD 只有 `case_context` 等受限生产者信号，设计上不进入自动执行 CDD，而是通过语义兜底路径请求人工补充证据。
   - **修复**：在 `backend/kb-service/app/routes/admin.py` 的发布验证中，当 KBD 的 `semantic_entry_profile.diagnosis_capability == "guidance_only"` 时，跳过 QFK 消费者信号要求。

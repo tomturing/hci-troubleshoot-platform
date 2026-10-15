@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bridge-fix-build
+  namespace: hci-sim-live-e2e
+spec:
+  restartPolicy: Never
+  containers:
+    - name: build
+      image: golang:1.26.6-alpine
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          cd /src
+          export GOTOOLCHAIN=local GOFLAGS=-mod=mod GOPROXY=off GOSUMDB=off GOMODCACHE=/go/pkg/mod
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/terminal_bridge .
+          chmod 755 /out/terminal_bridge
+          echo "=== build ok, go test wrap fix ==="
+          go test -run TestWrapContainerCommand -v . 2>&1 || true
+          ls -la /out
+      volumeMounts:
+        - name: src
+          mountPath: /src
+          readOnly: true
+        - name: out
+          mountPath: /out
+        - name: gomod
+          mountPath: /go/pkg/mod
+  volumes:
+    - name: src
+      hostPath:
+        path: /aihci/hci-troubleshoot-platform/.wt/live-e2e-real-sim/terminal_bridge
+        type: Directory
+    - name: out
+      hostPath:
+        path: /aihci/hci-troubleshoot-platform/.wt/live-e2e-real-sim/evaluation/live_e2e/fixtures/disk_badtrack/bin
+        type: DirectoryOrCreate
+    - name: gomod
+      hostPath:
+        path: /home/node/go/pkg/mod
+        type: Directory

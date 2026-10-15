@@ -1,0 +1,61 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hci-sim-diskbadtrack
+  namespace: hci-sim-live-e2e
+  labels:
+    app: hci-sim-diskbadtrack
+spec:
+  containers:
+    - name: hci-sim
+      image: ghcr.io/tomturing/hci-troubleshoot-platform/hci-sim@sha256:fdcd18569ddc0199473405a788f18254d0a30c704c59429ef8ba5c0c3c4f14a9
+      command: ["/usr/local/bin/hci-sim"]
+      env:
+        - name: HCI_SIM_FIXTURE_DIR
+          value: /etc/hci-sim/bundles
+        - name: HCI_SIM_REQUIRED_BUNDLES
+          value: '{"23999":"sha256:b77e5ebc6ae40a9ce5106a25a01559c1960ec4ef5f150e3636f8351fa031ecc4"}'
+        - name: HCI_SIM_DEFAULT_SUPPORT_ID
+          value: "23999"
+        - name: HCI_SIM_ALLOW_EPHEMERAL_HOST_KEY
+          value: "true"
+        - name: HCI_SIM_SSH_LISTEN
+          value: ":2222"
+        - name: HCI_SIM_HTTP_LISTEN
+          value: ":8080"
+        - name: HCI_SIM_LEASE_HMAC_KEY
+          valueFrom:
+            secretKeyRef:
+              name: hci-sim-lease
+              key: HCI_SIM_LEASE_HMAC_KEY
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: http://tempo.hci-observability.svc.cluster.local:4318
+      volumeMounts:
+        - name: bundle
+          mountPath: /etc/hci-sim/bundles
+          readOnly: true
+      ports:
+        - containerPort: 2222
+          name: ssh
+        - containerPort: 8080
+          name: http
+  volumes:
+    - name: bundle
+      configMap:
+        name: hci-sim-bundle
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hci-sim-diskbadtrack
+  namespace: hci-sim-live-e2e
+spec:
+  selector:
+    app: hci-sim-diskbadtrack
+  ports:
+    - name: ssh
+      port: 2222
+      targetPort: 2222
+    - name: http
+      port: 8080
+      targetPort: 8080
