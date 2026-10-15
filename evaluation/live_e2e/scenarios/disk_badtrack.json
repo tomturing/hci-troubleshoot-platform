@@ -1,0 +1,32 @@
+{
+  "scenario_id": "disk_badtrack_q2026101511258",
+  "title": "硬盘坏道交互式变量与提问落地性端到端回归",
+  "description": "SOP《硬盘坏道》排障：asan_disks 采集被截断成非法 JSON → disk_dev 自动提取失败转人工 → 用户提交 disk_dev → S2 假设生成绝不允许重复索取已提交的 disk_dev，也不得凭空索要 SOP 未声明的 disk_sn/disk_type。",
+  "ticket": {
+    "alert_text": "检测到的硬盘（主机<172.16.100.13>，硬盘名称:5号盘）存在坏道",
+    "user_first_message": "检测到的硬盘（主机<172.16.100.13>，硬盘名称:5号盘）存在坏道，帮忙看下怎么排查"
+  },
+  "expect": {
+    "category_code": "硬件-025",
+    "sop_document_id": 4
+  },
+  "variables": {
+    "declared": ["alert_logs", "node_ip", "asan_disks", "disk_dev", "smart_info", "check_meth", "date"],
+    "answers": {
+      "node_ip": "172.16.100.13",
+      "disk_dev": "/dev/sde"
+    }
+  },
+  "guard_events_expected": [
+    "sop_user_questions_grounded_filter"
+  ],
+  "stub_adversarial_turn": {
+    "trigger_after_variable": "disk_dev",
+    "inject_user_questions": [
+      "请正式提交 disk_dev，当前该变量槽位仍为 needs_input 状态",
+      "请提供该盘的 disk_sn 与 disk_type 以便进一步判断"
+    ],
+    "next_state": "S2"
+  },
+  "_comment": "stub_adversarial_turn 仅在 --mode stub 下由 disk_badtrack_llm_stub 确定性注入，用于证明引擎侧 filter_ungrounded_user_questions 真的拦住（对应计划验收标准『破坏缝隙能验红』）。real 模式下不注入，仅观测真实模型输出是否被守卫约束。"
+}

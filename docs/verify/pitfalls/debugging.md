@@ -179,3 +179,26 @@ PY
 - **禁止用正则解析 LLM 自由文本作为控制流依据**；需要结构化决策时用 `response_format=json_object`/function calling，让模型产出机器可读信封、harness 消费并校验结构。
 - 任何「按某个特定模型的输出习惯调出来的解析器」都是定时炸弹：换模型即回退。解析层必须**模型无关**（归一化 + 同义兼容 + 权威字典校验），并保留分层兜底与漂移告警。
 - 回归测试：`backend/agent-service/tests/unit/test_triage_agent.py` 的 `TestExtractJsonObject`/`TestIntentFromStructured`/`TestNormalizationFallback`，含真实 Qwen 漂移样本（`确认分类：**虚拟机-017 …**`、`- ` 短横线候选）与「契约漂移端到端仍弹确认卡」用例。
+
+## V-022：挤牙膏式复发的根因是「层间契约缝隙无人覆盖」——发布前须用 Live E2E smoke 守贯穿链路
+
+**症状：** 硬盘坏道工单 Q2026101511258 的会话控制链路反复「今天修一个、明天冒一个」：#1149（前端变量提交态机）、V-020（S0 意图解析假阴性）、#1151/V-021（S2 幻觉追问）相继出现。每一次单点修复都各自补了隔离单测，但下一层缝隙又在下一次真实工单里暴露——问题不是「没测」，而是「各层各自测、缝隙没人测」。
+
+**根因：** 分层测试金字塔缺了贯穿真实代码路径的会话控制链路级（L3）验收：
+- agent-service 单测用假 `replay_runner`/桩 LLM，从不发起真实 `/interactive-response` 与变量池落库；
+- conversation-service 单测 mock 掉 agent_client，从不消费真实 SSE `event: interactive_request`；
+- 前端 jsdom 组件测（`MessageBubble.variable-submit.spec.ts`）守的是渲染态机，与后端真值不同维度。
+
+于是「SSE 事件 `kind` 契约 / 签名身份头 / 变量池 `context_variables` 写入时序 / 引擎侧过滤守卫是否真的触发」这类**跨层契约**始终处于测试盲区，只能靠线上工单挤牙膏发现。
+
+**修复（补 L3 Live E2E smoke，可复现防回潮）：**
+- `evaluation/live_e2e/`：`asserts.py`（纯逻辑：SSE 解析、交互卡归一化、user_questions 落地性、结论无溯源数值、5 条跨层不变量汇总）、`driver.py`（httpx 异步：建案→建会话→流式 SSE→遇 `variable_input` 按应答脚本提交 `/interactive-response`，**复刻 #1149 时序：先确认后端变量池落库、pending 清空再触发续跑消息**→循环至终态）、`smoke.py`（CLI，`--attempts` 多数表决治理真实 LLM 非确定性）、`scenarios/disk_badtrack.json`（场景 spec）。
+- `scripts/hci-sim/disk_badtrack_llm_stub.py`：确定性对抗 LLM 桩，把历史坏输出（重复索取已提交 `disk_dev`、凭空索要未声明 `disk_sn/disk_type`）**确定性地**注入真实 agent-service，逼 `filter_ungrounded_user_questions` 守卫**真的触发**并被断言捕获——实现验收标准『破坏缝隙能验红』。
+- `make live-e2e-disk-badtrack`（`scripts/verify/live_e2e_disk_badtrack.sh`）：全栈 compose 编排 + 端口暴露覆盖（`evaluation/live_e2e/docker-compose.live-e2e.yml`，刻意置于 evaluation/ 下不进 CI/config-contract-check）+ `trap` 收尾 teardown。
+- **断言只打结构不变量 + 守卫事件**（`agent_hallucination_detected_total{hallucination_type="ungrounded_user_question"}` 计数增量、`sop/execution.context_variables` 落库），绝不断言逐字文本——真实 LLM 输出不可复现，断言文本即假阳性/假阴性之源。
+
+**预防：**
+- 每修一个跨层挤牙膏 bug，**必须**在 `evaluation/live_e2e/asserts.py` 增/挂一条对应不变量（历史 bug ↔ 判据一一映射），否则该缝隙仍无回归守护。
+- 定位：**发布前 gate，不进每 PR CI**（依赖 docker+LLM+bridge，慢且非确定性）；其纯逻辑（解析/判定/断言/桩）脱网单测进 CI（`tests/unit/test_live_e2e_*.py`、`test_disk_badtrack_llm_stub.py`），端到端实跑在具备全栈的宿主机执行。
+- 本 L3 是后端会话链路级，不含真实浏览器渲染；#1149 那类前端态机缝隙仍由 jsdom 组件测守，如需浏览器级另起 L2 playwright。
+- 运行手册见 `docs/verify/evaluation/live-e2e-disk-badtrack.md`。
