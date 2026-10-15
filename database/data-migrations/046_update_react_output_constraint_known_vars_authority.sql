@@ -8,6 +8,8 @@
 --       +无依据需求项」无拦截；本迁移从 Prompt 侧加固（引擎侧另有确定性过滤兜底）。
 -- 影响：所有走 SOP/ReAct 诊断的输出约束（S1~S4 统一追加）。
 -- 幂等性：仅当 content_template 尚未包含【已知变量权威】时追加，可重复执行。
+--       对「该行不存在」的全新/CI 环境（prompt seed 未加载）优雅跳过：新环境由已含
+--       规则8的 database/seeds/02_system_prompts.sql 提供，本迁移仅用于拉齐存量 live 库。
 -- 唯一调用链：migration:20261015000001
 -- ============================================================================
 
@@ -28,15 +30,21 @@ BEGIN
     WHERE name = 's1_react_output_constraint_v1'
       AND content_template NOT LIKE '%【已知变量权威】%';
 
-    -- 校验：唯一调用链标记 migration:20261015000001
     IF NOT EXISTS (
+        SELECT 1 FROM system_prompt WHERE name = 's1_react_output_constraint_v1'
+    ) THEN
+        -- 行不存在（全新/CI 环境未加载 prompt seed）：由 seed 提供规则，本迁移优雅跳过。
+        RAISE NOTICE '未找到 s1_react_output_constraint_v1（空库或未导入该 prompt），跳过追加（trace_id=migration:20261015000001）';
+    ELSIF NOT EXISTS (
+        -- 校验：唯一调用链标记 migration:20261015000001（行存在却缺规则 = 追加真失败，须 fail-loud）
         SELECT 1 FROM system_prompt
         WHERE name = 's1_react_output_constraint_v1'
           AND content_template LIKE '%【已知变量权威】%'
     ) THEN
-        RAISE EXCEPTION 'migration:20261015000001 未生效：s1_react_output_constraint_v1 未包含【已知变量权威】规则（该行可能不存在）';
+        RAISE EXCEPTION 'migration:20261015000001 未生效：s1_react_output_constraint_v1 存在但未包含【已知变量权威】规则';
+    ELSE
+        RAISE NOTICE '✓ 成功更新系统提示词 s1_react_output_constraint_v1：追加【已知变量权威】规则';
     END IF;
 
-    RAISE NOTICE '✓ 成功更新系统提示词 s1_react_output_constraint_v1：追加【已知变量权威】规则';
     RAISE NOTICE '完成 046 数据迁移（trace_id=migration:20261015000001）';
 END $$;
