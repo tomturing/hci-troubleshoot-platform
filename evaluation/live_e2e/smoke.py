@@ -41,6 +41,12 @@ def _resolved_variable_names(persisted: dict[str, Any]) -> set[str]:
 
 
 def _build_config(args: argparse.Namespace) -> DriverConfig:
+    connection: dict[str, Any] | None = None
+    if args.sim:
+        conn_path = Path(args.connection) if args.connection else None
+        if conn_path is None or not Path(conn_path).is_file():
+            raise SystemExit("--sim 需要 --connection 指向 diagnosis-lab 生成的 connection.json")
+        connection = json.loads(Path(conn_path).read_text(encoding="utf-8"))
     return DriverConfig(
         case_base=args.case_base or os.getenv("LIVE_E2E_CASE_BASE", "http://case-service:8001"),
         conv_base=args.conv_base or os.getenv("LIVE_E2E_CONV_BASE", "http://conversation-service:8002"),
@@ -49,10 +55,14 @@ def _build_config(args: argparse.Namespace) -> DriverConfig:
         internal_token=args.internal_token or os.getenv("INTERNAL_API_TOKEN", ""),
         assistant_type=os.getenv("LIVE_E2E_ASSISTANT_TYPE", "htp-agent"),
         max_turns=args.max_turns,
+        sim=args.sim,
+        bridge_url=args.bridge_url or os.getenv("LIVE_E2E_BRIDGE_URL", "ws://127.0.0.1:9999"),
+        bridge_origin=args.bridge_origin or os.getenv("LIVE_E2E_BRIDGE_ORIGIN"),
+        connection=connection,
     )
 
 
-def _evaluate(spec: dict[str, Any], obs, mode: str) -> dict[str, list[str]]:
+def _evaluate(spec: dict[str, Any], obs, mode: str, sim: bool = False) -> dict[str, list[str]]:
     expect = spec.get("expect") or {}
     declared = set((spec.get("variables") or {}).get("declared") or [])
     resolved = _resolved_variable_names(obs.persisted_variables) | set(obs.submitted_variables)
@@ -68,6 +78,8 @@ def _evaluate(spec: dict[str, Any], obs, mode: str) -> dict[str, list[str]]:
         declared_variables=declared,
         guard_events=obs.guard_events,
         expect_grounding_filter=(mode == "stub"),
+        collected_exec_ids=obs.collected_exec_ids,
+        expect_real_collection=sim,
     )
 
 
@@ -84,7 +96,7 @@ async def _run(args: argparse.Namespace, spec: dict[str, Any]) -> int:
         obs = await run_scenario(config, spec, dump_dir=dump_dir / f"attempt-{i}", on_progress=lambda m: print(f"  - {m}"))
         if obs.error:
             print(f"[live-e2e] attempt {i} 驱动错误: {obs.error}", file=sys.stderr)
-        result = _evaluate(spec, obs, args.mode)
+        result = _evaluate(spec, obs, args.mode, args.sim)
         for name in result["passed"]:
             print(f"  ✓ {name}")
         for name in result["failed"]:
@@ -113,6 +125,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--client-id", dest="client_id", default=None)
     parser.add_argument("--internal-token", dest="internal_token", default=None)
     parser.add_argument("--dump-dir", dest="dump_dir", default=None)
+    # 真实采集（headless bridge relay）：命令经 terminal_bridge 真下发到 hci-sim 节点，替掉静态 answers。
+    parser.add_argument("--sim", action="store_true", default=os.getenv("LIVE_E2E_SIM") == "real",
+                        help="启用真实采集：接 agent_exec_command → bridge → hci-sim 节点 → /exec-result")
+    parser.add_argument("--bridge-url", dest="bridge_url", default=None)
+    parser.add_argument("--bridge-origin", dest="bridge_origin", default=None)
+    parser.add_argument("--connection", dest="connection", default=None,
+                        help="diagnosis-lab connection.json 路径（--sim 必需）")
     args = parser.parse_args(argv)
 
     spec_path = Path(args.scenario)

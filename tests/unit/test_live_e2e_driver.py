@@ -12,7 +12,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from evaluation.live_e2e.driver import _dispatch_sse, _scan_terminal_signals  # noqa: E402
+from evaluation.live_e2e.driver import (  # noqa: E402
+    _dispatch_sse,
+    _scan_terminal_signals,
+    merge_observed_signals,
+)
 from evaluation.live_e2e.smoke import _resolved_variable_names  # noqa: E402
 
 
@@ -53,3 +57,15 @@ def test_scan_terminal_signals_extracts_category_and_sop_id():
 def test_resolved_variable_names_only_non_empty():
     persisted = {"disk_dev": {"value": "/dev/sde"}, "node_ip": {"value": ""}, "asan_disks": "raw-text"}
     assert _resolved_variable_names(persisted) == {"disk_dev", "asan_disks"}
+
+
+def test_merge_observed_signals_keeps_candidate_selection_over_none_scan():
+    """回归守护（simrunM attempt1 假阴性）：候选点选已确证的分类码不得被 scan 返回的 None 冲掉。"""
+    # S0 走候选澄清：driver 已在交互链路记录 observed_category_code，但终态事件不再带该字段
+    assert merge_observed_signals("硬件-025", None, (None, None)) == ("硬件-025", None)
+    # 已确证的 sop id 同理不被 None 覆盖
+    assert merge_observed_signals(None, 4, (None, None)) == (None, 4)
+    # 模型直接确认分类（不经点选）：live 为空时用扫描值兜底
+    assert merge_observed_signals(None, None, ("硬件-025", 4)) == ("硬件-025", 4)
+    # 两者都有值：live 优先保留
+    assert merge_observed_signals("硬件-025", 4, ("其他-001", 9)) == ("硬件-025", 4)

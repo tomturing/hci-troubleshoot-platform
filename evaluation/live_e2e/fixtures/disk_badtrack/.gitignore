@@ -1,0 +1,5 @@
+# 运行时产物：绝不入库
+# 现签的仿真租约 token（TTL 4h，含 bundle_digest/node 绑定，属临时凭证）
+connection.json
+# 集群内构建的含修复 terminal_bridge 静态二进制（构建产物，非源码）
+bin/

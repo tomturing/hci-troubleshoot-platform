@@ -1674,7 +1674,19 @@ func buildSSHError(err error) (string, string) {
 // wrapContainerCommand 根据 container 类型包装命令
 // container="host" 或空 → 原样执行
 // container="vs-cp-manager" 等 → container_exec -n <container> -c "<command>"
-func wrapContainerCommand(command, container string) string {
+// simulation=true（已认证的 sim-ssh 租约会话）→ 一律下发「内层裸命令」，绝不 container_exec 包裹、绝不加 PATH 前缀：
+//
+//	真机非交互 SSH 宿主机 PATH 不含 /sf/bin:/sf/sbin，真机必须靠该前缀找到 acli/smartctl；
+//	而 hci-sim 按 argv 字符串匹配 fixture 路由、从不 exec 真实二进制：
+//	  1) PATH 前缀含 shell 操作符 ';'，会触发 hci-sim 受限 lexer「禁止 shell 操作符 ';'」→ policy_denied(exit 126)；
+//	  2) 容器步骤服务端已把命令包成自包含派发壳（HCI_CONTAINER=...; HCI_USER_COMMAND='<真实命令>'; ...case...esac），
+//	     若再按 container 名 container_exec 包裹，hci-sim 只看到一个 tool=container_exec 的畸形 argv → fixture_not_found(exit 127)。
+//	hci-sim 无真实容器、其 lease container 恒为 host，忠实仿真语义就是执行派发壳内层的用户命令，故解出 HCI_USER_COMMAND 裸发。
+func wrapContainerCommand(command, container string, simulation bool) string {
+	if simulation {
+		// 仿真会话：解出容器派发壳内层用户命令（无派发壳则原样），裸命令交 hci-sim 按 argv 匹配。
+		return extractContainerUserCommand(command)
+	}
 	container = strings.TrimSpace(container)
 	if container == "" || container == "host" {
 		trimmed := strings.TrimSpace(command)
@@ -1689,6 +1701,114 @@ func wrapContainerCommand(command, container string) string {
 	// 对命令中的单引号做转义
 	escaped := strings.ReplaceAll(command, "'", "'\\''")
 	return fmt.Sprintf("container_exec -n %s -c '%s' -d", container, escaped)
+}
+
+// extractContainerUserCommand 从服务端容器执行派发壳（见 agent-service container_exec.py）中
+// 解出 `HCI_USER_COMMAND=<shell 词>` 的 <shell 词>（按 shell 单/双引号与反斜杠转义规则解析一层引号）。
+// 非派发壳（不含该标记）原样返回；内层仍是派发壳则递归再解一层（防御多层包裹）。
+// 仅用于仿真会话：hci-sim 无容器、只按裸 argv 匹配 fixture，派发壳含 ';' 等操作符根本无法通过其受限 lexer。
+func extractContainerUserCommand(command string) string {
+	const marker = "HCI_USER_COMMAND="
+	idx := strings.Index(command, marker)
+	if idx < 0 {
+		return command
+	}
+	inner, ok := scanFirstShellToken(command[idx+len(marker):])
+	if !ok {
+		return command
+	}
+	if strings.Contains(inner, marker) {
+		return extractContainerUserCommand(inner)
+	}
+	return inner
+}
+
+// scanFirstShellToken 从 s 起始解析第一个 shell 词：支持单引号（内部原样）、
+// 双引号（内部 \\ 转义）与裸反斜杠转义；顶层（引号外）遇空白或 shell 操作符
+// ; | & < > ( ) 即视为该词结束（与 hci-sim 受限 lexer 一致的分词边界）。返回去引号后的内容与是否成功。
+func scanFirstShellToken(s string) (string, bool) {
+	var b strings.Builder
+	runes := []rune(s)
+	i := 0
+	// 跳过前导空白
+	for i < len(runes) && isShellSpace(runes[i]) {
+		i++
+	}
+	if i >= len(runes) {
+		return "", false
+	}
+	started := false
+	for i < len(runes) {
+		ch := runes[i]
+		// 顶层空白或 shell 操作符：已起词即为词尾，未起词则空 token
+		if isShellSpace(ch) {
+			if started {
+				return b.String(), true
+			}
+			i++
+			continue
+		}
+		if isShellOperator(ch) {
+			if started {
+				return b.String(), true
+			}
+			return "", false
+		}
+		switch ch {
+		case '\'':
+			started = true
+			i++
+			for i < len(runes) && runes[i] != '\'' {
+				b.WriteRune(runes[i])
+				i++
+			}
+			if i >= len(runes) {
+				return "", false // 单引号未闭合
+			}
+			i++ // 跳过闭合单引号；后续若紧跟 shlex 的 \' 转义或相邻引号段，由循环顶的反斜杠/单引号分支自然继续
+		case '"':
+			started = true
+			i++
+			for i < len(runes) && runes[i] != '"' {
+				// shell 双引号内仅对 $ ` " \ 与新行转义；其余反斜杠按字面保留
+				if runes[i] == '\\' && i+1 < len(runes) && strings.ContainsRune("$`\"\\\n", runes[i+1]) {
+					i++
+				}
+				b.WriteRune(runes[i])
+				i++
+			}
+			if i >= len(runes) {
+				return "", false
+			}
+			i++
+		case '\\':
+			started = true
+			if i+1 < len(runes) {
+				b.WriteRune(runes[i+1])
+				i += 2
+			} else {
+				i++
+			}
+		default:
+			started = true
+			b.WriteRune(ch)
+			i++
+		}
+	}
+	if !started || b.Len() == 0 {
+		return "", false
+	}
+	return b.String(), true
+}
+
+// isShellSpace 判断空白字符（仅处理命令传输常见的空白，不含 exotic unicode 空白）。
+func isShellSpace(ch rune) bool {
+	return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
+}
+
+// isShellOperator 判断引号外的 shell 操作符（与 hci-sim fixture.Lex 拒绝的字符集保持分词语义一致）。
+func isShellOperator(ch rune) bool {
+	return strings.ContainsRune(";|&<>()", ch)
 }
 
 // ── 虚拟机控制台截图固定操作通道（vm_console_op）─────────────────────────────
@@ -3923,7 +4043,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			}
 
 			// 包装容器命令
-			wrappedCmd := wrapContainerCommand(msg.Command, msg.Container)
+			wrappedCmd := wrapContainerCommand(msg.Command, msg.Container, s.simulation)
 			blog("INFO", "exec.start", "开始执行命令", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"exec_id": msg.ExecID, "key": key, "container": msg.Container, "cmd_len": len(wrappedCmd),
 			})
@@ -4042,7 +4162,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			}
 
 			// 包装容器命令
-			wrappedCmd := wrapContainerCommand(msg.Command, msg.Container)
+			wrappedCmd := wrapContainerCommand(msg.Command, msg.Container, s.simulation)
 			log.Printf("[Bridge] EXEC_ISOLATED_START: key=%s node=%s container=%s exec_id=%s cmd_len=%d",
 				key, msg.NodeIP, msg.Container, msg.ExecID, len(wrappedCmd))
 			commandHash := commandSHA256(wrappedCmd)

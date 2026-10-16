@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: live-e2e-bridge
+  labels:
+    app: live-e2e-bridge
+spec:
+  containers:
+    - name: bridge
+      image: ghcr.io/tomturing/hci-troubleshoot-platform/terminal-bridge:20261010-1016-f683868
+      # 用集群内构建的含修复静态二进制覆盖镜像内旧二进制（仿真会话跳过 export PATH 前缀）。
+      command: ["/opt/bridge/terminal_bridge"]
+      args: ["--mode=cluster", "--allowed-origins=*"]
+      ports:
+        - containerPort: 9999
+      env:
+        - name: HCI_BRIDGE_LOG_LEVEL
+          value: "DEBUG"
+        - name: HCI_BRIDGE_HOST_KEY_POLICY
+          value: "insecure"
+        - name: HCI_BRIDGE_LOG_DIR
+          value: "/var/lib/terminal-bridge"
+      volumeMounts:
+        - name: bridge-data
+          mountPath: /var/lib/terminal-bridge
+        - name: bridge-bin
+          mountPath: /opt/bridge
+          readOnly: true
+  volumes:
+    - name: bridge-data
+      emptyDir: {}
+    - name: bridge-bin
+      hostPath:
+        path: /aihci/hci-troubleshoot-platform/.wt/live-e2e-real-sim/evaluation/live_e2e/fixtures/disk_badtrack/bin
+        type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: live-e2e-bridge
+spec:
+  selector:
+    app: live-e2e-bridge
+  ports:
+    - port: 9999
+      targetPort: 9999

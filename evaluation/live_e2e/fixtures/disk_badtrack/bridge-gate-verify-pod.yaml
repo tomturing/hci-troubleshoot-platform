@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bridge-gate-verify
+  namespace: hci-sim-live-e2e
+spec:
+  restartPolicy: Never
+  containers:
+    - name: verify
+      image: golang:1.26.6-alpine
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          cd /src
+          export GOTOOLCHAIN=local GOFLAGS=-mod=mod GOPROXY=off GOSUMDB=off GOMODCACHE=/go/pkg/mod
+          echo "=== gofmt -w (回写本地 hostPath) ==="; gofmt -w .
+          echo "=== gofmt -l (must be empty) ==="; gofmt -l .
+          echo "=== go vet ./... ==="; go vet ./...
+          echo "=== go test ./... ==="; go test ./... 2>&1 | tail -20
+          echo "=== ALL GATE STEPS DONE ==="
+      volumeMounts:
+        - name: src
+          mountPath: /src
+        - name: gomod
+          mountPath: /go/pkg/mod
+  volumes:
+    - name: src
+      hostPath:
+        path: /aihci/hci-troubleshoot-platform/.wt/live-e2e-real-sim/terminal_bridge
+        type: Directory
+    - name: gomod
+      hostPath:
+        path: /home/node/go/pkg/mod
+        type: Directory

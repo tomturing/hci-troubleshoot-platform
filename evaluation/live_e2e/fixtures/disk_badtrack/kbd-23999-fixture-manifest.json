@@ -1,0 +1,110 @@
+{
+  "schema_version": "2.0",
+  "bundle": {
+    "digest": "sha256:b77e5ebc6ae40a9ce5106a25a01559c1960ec4ef5f150e3636f8351fa031ecc4",
+    "status": "published"
+  },
+  "kbd": {
+    "support_id": "23999",
+    "revision": 1,
+    "checksum": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "contracts": {
+    "tool_revision": "cf416e14cccccf8b5427cf3ae9e6e4d69eb56566ef49260399ce9ac12bf27c44",
+    "policy_revision": "01065eed83edb5dcdc203f57b78c1446cca0a37bd204ec2ec0849230a9b2e451"
+  },
+  "limits": {
+    "max_routes": 32,
+    "max_output_bytes_per_command": 8192,
+    "max_bundle_bytes": 65536
+  },
+  "variables": {},
+  "routes": [
+    {
+      "id": "sig-001-alert-disk-23999",
+      "signal_id": "sig_001",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:--formatter",
+        "argv": [
+          "acli",
+          "--formatter",
+          "json",
+          "alert",
+          "get",
+          "-k",
+          "磁盘"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "{\"data\": [{\"alert_id\": \"ALT-2026-7788\", \"name\": \"物理磁盘介质异常\", \"severity\": \"重要\", \"object\": \"10.0.34.7\", \"cluster\": \"HCI-Cluster-A\", \"component\": \"硬盘\", \"description\": \"物理盘 /dev/sdb（槽位 SLOT-6, SN WCT1ABCD2233）检测到坏道增长，SMART Reallocated_Sector_Ct=42、Current_Pending_Sector=17\", \"occurred_at\": \"2026-07-30 10:00:12\"}]}\n"
+      },
+      "stream": {
+        "chunk_bytes": 96
+      },
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "sig-002-asan-disk-list-23999",
+      "signal_id": "sig_002",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "acli",
+        "acquisition_key": "acli:--formatter",
+        "argv": [
+          "acli",
+          "--formatter",
+          "json",
+          "storage",
+          "asan",
+          "disk",
+          "list"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "{\"data\": [{\"host\": \"10.0.34.7\", \"device\": \"/dev/sdb\", \"slot\": \"SLOT-6\", \"sn\": \"WCT1ABCD2233\", \"model\": \"ST8000NM0055\", \"capacity\": \"7.28TB\", \"role\": \"数据盘\", \"health\": \"warning\", \"reallocated_sectors\": 42, \"pending_sectors\": 17, \"media_errors\": 9, \"power_on_hours\": 45123}]}\n"
+      },
+      "stream": {
+        "chunk_bytes": 96
+      },
+      "fault": {
+        "type": "none"
+      }
+    },
+    {
+      "id": "sig-003-smart-23999",
+      "signal_id": "sig_003",
+      "variant": "positive-realistic",
+      "route_key": {
+        "tool": "smartctl.real",
+        "acquisition_key": "smartctl.real:-a",
+        "argv": [
+          "smartctl.real",
+          "-a",
+          "/dev/sdb"
+        ],
+        "node": "SIM-HCI-NODE-01",
+        "container": "host"
+      },
+      "result": {
+        "exit_code": 0,
+        "stdout": "smartctl 7.2 2020-12-30 r5155 [x86_64-linux-5.10.0] (local build)\nCopyright (C) 2002-20, Bruce Allen, Christian Franke, www.smartmontools.org\n\n=== START OF INFORMATION SECTION ===\nModel Family:     Seagate Enterprise Capacity 3.5 HDD (HV)\nDevice Model:     ST8000NM0055-1QQ117\nSerial Number:    WCT1ABCD2233\nLU WWN Device Id: 5 000c50 0a1b2c3d4\nUser Capacity:    8,001,563,222,016 bytes [8.00 TB]\nRotation Rate:    7200 rpm\nForm Factor:      3.5 inches\n=== START OF SMART DATA SECTION ===\nSMART overall-health self-assessment test result: FAILED!\n\nID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE\n  5 Reallocated_Sector_Ct   0x0033   078   078   036    Pre-fail  Always       -       42\n187 Reported_Uncorrect      0x0032   094   094   000    Old_age   Always       -       9\n197 Current_Pending_Sector  0x0012   094   094   000    Old_age   Always       -       17\n198 Offline_Uncorrectable   0x0010   094   094   000    Old_age   Offline      -       9\n\nSMART Error Log Version: 1\nATA Error Count: 9 (device had unrecovered read errors / bad sectors)\n"
+      },
+      "stream": {
+        "chunk_bytes": 96
+      },
+      "fault": {
+        "type": "none"
+      }
+    }
+  ]
+}

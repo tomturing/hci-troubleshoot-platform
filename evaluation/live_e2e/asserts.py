@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from typing import Any
@@ -103,6 +104,59 @@ def normalize_interactive_request(data: dict[str, Any]) -> dict[str, Any] | None
 def is_variable_request(req: dict[str, Any] | None) -> bool:
     """判断归一化后的交互请求是否为 SOP 变量输入/确认卡（需 driver 用应答脚本落值）。"""
     return bool(req) and req.get("kind") in _VARIABLE_REQUEST_KINDS
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# S0 候选澄清（choice_options）纯逻辑——对应真实用户在候选清单里的点选动作。
+#
+# conversation_service 在 S0 阶段若模型给出的是「故障分类候选」而非直接确认，会下发
+# `event: metadata` 且 `data.kind == 'choice_options'`（schemaVersion=2，options[].code）。
+# 前端/用户须回传 `metadata.selectedCategoryCode`（v2 优先稳定码）方能推进 S0→S1。
+# driver 扮演前端，故必须复刻这一选择动作，否则会把「等待点选」误判为终态。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def extract_choice_options(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """从 typed 事件流中提取首个 choice_options 候选清单（无则返回空列表）。
+
+    兼容事件被包成 `{"event": "metadata", "data": {...}}` 或直接就是候选对象两种形态。
+    """
+    for ev in events or []:
+        data = ev.get("data") if isinstance(ev, dict) else None
+        if not isinstance(data, dict):
+            data = ev if isinstance(ev, dict) else None
+        if not isinstance(data, dict):
+            continue
+        kind = data.get("kind") or (data.get("metadata") or {}).get("kind")
+        if kind != "choice_options":
+            continue
+        options = data.get("options")
+        if isinstance(options, list):
+            return [o for o in options if isinstance(o, dict)]
+    return []
+
+
+def match_candidate_option(
+    options: list[dict[str, Any]], expected_code: str | None
+) -> dict[str, Any] | None:
+    """在候选清单中按期望稳定码匹配目标项（无匹配返回 None，绝不臆造）。"""
+    if not expected_code:
+        return None
+    for opt in options or []:
+        code = opt.get("code") or opt.get("optionId")
+        if isinstance(code, str) and code == expected_code:
+            return opt
+    return None
+
+
+def build_category_selection(option: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """由选中的候选项构造推进 S0→S1 的下一轮消息：返回 (content, metadata)。
+
+    content 取候选展示名（贴近真实用户回话），metadata 用 v2 稳定契约 `selectedCategoryCode`。
+    """
+    code = option.get("code") or option.get("optionId") or ""
+    label = option.get("name") or option.get("categoryName") or str(code)
+    return label, {"selectedCategoryCode": code}
 
 
 def guard_metric_fired(before: dict[str, float], after: dict[str, float], key: str) -> bool:
@@ -221,6 +275,8 @@ def evaluate_invariants(
     declared_variables: set[str],
     guard_events: set[str],
     expect_grounding_filter: bool,
+    collected_exec_ids: set[str] | None = None,
+    expect_real_collection: bool = False,
 ) -> dict[str, list[str]]:
     """汇总跨层不变量断言，返回 {passed:[...], failed[...]}。每条对应一个历史 bug 缝隙。"""
     passed: list[str] = []
@@ -245,4 +301,109 @@ def evaluate_invariants(
     if expect_grounding_filter:
         check("Guard_user_questions_filter_fired", "sop_user_questions_grounded_filter" in guard_events,
               f"guard_events={sorted(guard_events)}")
+    # V-017 真采集：真实仿真模式下必须确有命令经 bridge 下发并采集回来（而非静态 answers 蒙混）
+    if expect_real_collection:
+        check("V017_tool_call_collected", collected_exec_ids is not None and len(collected_exec_ids) >= 1,
+              f"collected_exec_ids={sorted(collected_exec_ids or [])}")
     return {"passed": passed, "failed": failed}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 真实采集链路（headless bridge relay）纯逻辑——无网络，可脱 docker 单测。
+#
+# 产品里 acli/bash 命令的唯一真实路径：agent-service → Redis → SSE `agent_exec_command`
+# → [前端/浏览器 → terminal_bridge → SSH → hci-sim 节点] → POST /exec-result → agent blpop。
+# 本 driver 用 websockets 复刻「前端 + bridge」那一端，命令真的发到 hci-sim 节点采集，
+# 从而覆盖此前静态 variables.answers 从未触碰的取值链缝隙（V-017）。以下函数负责报文构造。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def normalize_agent_exec_command(data: dict[str, Any]) -> dict[str, Any]:
+    """把 SSE `agent_exec_command` 事件（camelCase 线上字段）归一为 snake_case 采集请求。
+
+    对齐 conversation-service push_agent_exec_command 的 event_data 形状：
+    execId/toolName/command/builtCommand/container/riskLevel/nodeIp/timeout/traceId。
+    """
+    return {
+        "exec_id": data.get("execId") or data.get("exec_id") or "",
+        "tool_name": data.get("toolName") or data.get("tool_name") or "",
+        "command": data.get("builtCommand") or data.get("command") or "",
+        "original_command": data.get("originalCommand") or data.get("command") or "",
+        "container": data.get("container") or "host",
+        "risk_level": data.get("riskLevel") if data.get("riskLevel") is not None else data.get("risk_level"),
+        "node_ip": data.get("nodeIp") or data.get("node_ip"),
+        "timeout": data.get("timeout") or 15,
+        "trace_id": data.get("traceId") or data.get("trace_id"),
+        "raw": data,
+    }
+
+
+def bridge_ssh_connect_msg(connection: dict[str, Any]) -> dict[str, Any]:
+    """由 diagnosis-lab connection.json 构造 terminal_bridge 的 `ssh_connect` 报文。
+
+    对齐 hci-sim-smoke 协议：host/port/username/auth_type/password/execution_mode/test_run_id。
+    """
+    conn = connection.get("connection") or {}
+    case_id = f"SIM-KBD-{connection.get('support_id', 'live-e2e')}"
+    return {
+        "type": "ssh_connect",
+        "case_id": case_id,
+        "host": conn.get("host"),
+        "port": conn.get("port"),
+        "username": conn.get("username"),
+        "auth_type": conn.get("auth_type"),
+        "password": conn.get("password"),
+        "execution_mode": conn.get("execution_mode"),
+        "test_run_id": conn.get("test_run_id"),
+    }
+
+
+def bridge_exec_msg(command: str, exec_id: str, container: str = "host", timeout: int = 15) -> dict[str, Any]:
+    """构造 terminal_bridge 的 `ssh_exec_process` 下发报文（在已 ssh_connected 的会话上执行命令）。"""
+    return {
+        "type": "ssh_exec_process",
+        "exec_id": exec_id,
+        "command": command,
+        "container": container or "host",
+        "timeout": timeout,
+    }
+
+
+def build_exec_result_payload(
+    exec_cmd: dict[str, Any],
+    relay_result: dict[str, Any],
+) -> dict[str, Any]:
+    """把 bridge 回传的 exec_result 组装成 POST /exec-result 的 ExecResultRequest 报文。
+
+    relay_result 取自 terminal_bridge 的 exec_result 消息：stdout/stderr/exit_code/error_type。
+    严格按后端 ExecResultRequest 契约填字段：traceparent 只有符合 W3C 格式才带上，否则省略避免 422。
+    """
+    stdout = relay_result.get("stdout") or ""
+    stderr = relay_result.get("stderr") or ""
+    exit_code = int(relay_result.get("exit_code", relay_result.get("exitCode", 0)) or 0)
+    merged_output = relay_result.get("output")
+    if merged_output is None:
+        merged_output = stdout if exit_code == 0 and not stderr else (f"{stdout}{stderr}" if stderr else stdout)
+
+    def _sha(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    payload: dict[str, Any] = {
+        "exec_id": exec_cmd["exec_id"],
+        "output": merged_output,
+        "exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
+        "stdout_bytes": len(stdout.encode("utf-8")),
+        "stderr_bytes": len(stderr.encode("utf-8")),
+        "stdout_sha256": _sha(stdout),
+        "stderr_sha256": _sha(stderr),
+    }
+    if exec_cmd.get("trace_id"):
+        payload["trace_id"] = exec_cmd["trace_id"]
+    if relay_result.get("error_type"):
+        payload["error_type"] = relay_result["error_type"]
+    for key in ("duration_ms", "timed_out", "cancelled"):
+        if key in relay_result:
+            payload[key] = relay_result[key]
+    return payload
