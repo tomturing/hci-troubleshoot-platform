@@ -1,25 +1,22 @@
 // 根因信号前端纯逻辑单测（对应 src/utils/rootSignal.ts）
 //
-// 注：本文件只测前端纯逻辑，**不得**读取后端源码。前端 CI 门禁是 `sparse-checkout:
-// frontend` 的稀疏检出（见 .github/workflows/ci.yml「前端门禁不消费后端源码」），
-// 任何跨语言常量一致性校验都必须放到全量检出的后端侧（见
-// backend/kb-service/tests/test_extract_root_signal_route.py::test_min_root_cause_len_matches_admin_ui）。
+// 注：本文件只测前端纯逻辑。v2 已取消 MIN_ROOT_CAUSE_LEN 跨语言钉值（抽取输入面放开为整篇
+// KBD，根因短不再阻塞），故不再在此钉前端阈值。
 import { describe, expect, it } from 'vitest'
 import {
   buildBackfillPayload,
   conflictDisplay,
   describeBackfillResult,
   distinctivenessLevel,
-  extractBlockReason,
   formatAcquire,
   matchKeywords,
-  MIN_ROOT_CAUSE_LEN,
+  parseSignals,
 } from '../rootSignal'
 import type { RootSignal } from '../rootSignal'
 
 function signal(overrides: Record<string, any> = {}): RootSignal {
   return {
-    schema_version: 1,
+    schema_version: 2,
     role: 'root_cause',
     match_type: 'executable',
     signal_text: '/run/lock 分区被占满导致任务失败',
@@ -74,22 +71,24 @@ describe('锚点渲染辅助', () => {
   })
 })
 
-/**
- * 前端阈值在此只做钉值断言：单侧改动无法静默通过（本例先失败，提醒同步后端）。
- * 与后端 MIN_ROOT_CAUSE_LEN 的真实跨语言一致性校验住在后端（unit-tests 为全量检出）。
- */
-describe('抽取前置体检', () => {
-  it('前端阈值钉为 30（改此值必须同步后端门禁与后端契约测试）', () => {
-    expect(MIN_ROOT_CAUSE_LEN).toBe(30)
+describe('parseSignals v2 数组解析', () => {
+  it('v2 顶层数组直接逐条返回', () => {
+    const list = parseSignals([signal(), signal({ match_type: 'text', acquire: null })])
+    expect(list).toHaveLength(2)
+    expect(list[0].match_type).toBe('executable')
+    expect(list[1].match_type).toBe('text')
   })
 
-  it('根因为空 / 过短给出可执行的原因', () => {
-    expect(extractBlockReason('')).toBe('该 KBD 未填写根因，无法抽取根因信号')
-    expect(extractBlockReason('配置不正确')).toContain('请先补全')
+  it('旧 v1 单对象兜底归一为单元素数组', () => {
+    expect(parseSignals(signal())).toHaveLength(1)
   })
 
-  it('达标根因返回空串（放行）', () => {
-    expect(extractBlockReason('df 显示 /run/lock 分区使用率 100%，占满导致虚拟机任务失败')).toBe('')
+  it('空/非法输入归一为空数组（无内容则无信号）', () => {
+    expect(parseSignals(null)).toEqual([])
+    expect(parseSignals(undefined)).toEqual([])
+    expect(parseSignals([])).toEqual([])
+    expect(parseSignals('oops')).toEqual([])
+    expect(parseSignals([null, 1, signal()])).toHaveLength(1)
   })
 })
 

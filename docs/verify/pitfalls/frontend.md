@@ -24,6 +24,12 @@
   因为后端作业为全量检出且合约事实源在后端；
 - 常量跨语言镜像至少留一个钉值断言，使单侧改动无法静默通过。
 
+> **v2 退位说明（2026-10-13 根因信号重设计）**：本坑涉及的 `MIN_ROOT_CAUSE_LEN` 跨语言契约已
+> **整体废除**——根因信号抽取输入放开到整篇 `content_md` 后，根因短不再阻塞抽取，故前端
+> `MIN_ROOT_CAUSE_LEN` 钉值、`extractBlockReason` 与后端 `TestCrossLanguageContract` 均已删除，该契约不
+> 再存在。但本坑的**拓扑教训依旧成立且重要**（前端 CI 作业为 `sparse-checkout: frontend` 稀疏检出，
+> 前端侧永远不得新增 `node:fs` 读 `backend/**` 的用例），保留条目以供后续跨目录读取类测试参考。
+
 ## V-008：前端恢复/复制 Signal 不得写入 Schema 未声明的 provenance 字段
 
 **症状：** 专家点击“恢复并编辑”或“复制”后，即使已将 QFK 从“产出变量”切为“匹配模式”，保存仍返回 `422 SIGNAL_FIELD_UNSUPPORTED`，定位到 `provenance`。页面若只展示通用文案，会误以为是 matcher、产出变量或下游消费关系配置错误。

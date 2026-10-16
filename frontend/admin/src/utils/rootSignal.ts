@@ -1,9 +1,9 @@
 // ============ 根因信号（root_signal_json）前端纯逻辑 ============
-// 与关键信号（signals_json）完全解耦的第二抽取轨：一篇 KBD 只有一条**结论侧**
-// 定位锚点，用于在命中根因时唯一定位到这一篇。
-// 本模块只放可脱离 Vue 渲染的单测逻辑（判级/格式化/请求体构造），
-// 视图层（KbdReviewView.vue）负责装配与交互。
-// 后端契约事实源：backend/kb-service/app/services/root_signal_extractor.py（schema_version=1）
+// 与关键信号（signals_json）完全解耦的第二抽取轨：一篇 KBD 可有多条**结论侧**
+// 定位信号（v2 顶层数组，不限条数），用于在命中根因时快速圈定这一篇。
+// 本模块只放可脱离 Vue 渲染的单测逻辑（解析/判级/格式化/请求体构造），
+// 视图层（KbdReviewView.vue）负责装配与交互（逐条渲染信号列表）。
+// 后端契约事实源：backend/kb-service/app/services/root_signal_extractor.py（schema_version=2）
 
 export interface RootSignalAcquire {
   tool?: string
@@ -13,6 +13,7 @@ export interface RootSignalAcquire {
 
 export interface RootSignalProvenance {
   source_section?: string
+  trace_tier?: 'root_cause' | 'content' | string
   source_sha256?: string
   source_category_id?: string
   method?: string
@@ -35,7 +36,18 @@ export interface RootSignal {
   [key: string]: any
 }
 
-/** 冲突度判级：根因信号的价值就是「唯一定位」，故 0/0 与有冲突必须一眼可辨。 */
+/**
+ * 解析 root_signal_json 为信号数组（v2 兼容入口）。
+ * v2 落库为顶层数组；旧单对象/标量亦兜底归一为数组，无内容则空数组。
+ */
+export function parseSignals(raw: unknown): RootSignal[] {
+  if (!raw) return []
+  if (Array.isArray(raw)) return raw.filter((item) => item && typeof item === 'object') as RootSignal[]
+  if (typeof raw === 'object') return [raw as RootSignal]
+  return []
+}
+
+/** 冲突度判级：根因信号的价值就是「唯一定位」，故 0/0 与有冲突必须一眼可辨（按单条信号）。 */
 export type ConflictLevel = 'unextracted' | 'unique' | 'category_only' | 'ambiguous'
 
 export function distinctivenessLevel(signal?: RootSignal | null): ConflictLevel {
@@ -77,17 +89,6 @@ export function matchKeywords(signal?: RootSignal | null): string[] {
   const expected = signal?.match?.expected
   if (!Array.isArray(expected)) return []
   return expected.map((item) => String(item ?? '').trim()).filter(Boolean)
-}
-
-/** 抽取一次所需的最小根因字数，与后端 MIN_ROOT_CAUSE_LEN 同值（不符则提示而非白烧 LLM）。 */
-export const MIN_ROOT_CAUSE_LEN = 30
-
-/** 前置体检：返回不可抽取的原因，可抽取则返回空串。 */
-export function extractBlockReason(rootCause?: string | null): string {
-  const text = String(rootCause || '').trim()
-  if (!text) return '该 KBD 未填写根因，无法抽取根因信号'
-  if (text.length < MIN_ROOT_CAUSE_LEN) return `根因仅 ${text.length} 字（< ${MIN_ROOT_CAUSE_LEN}），请先补全再抽取`
-  return ''
 }
 
 export interface RootSignalBackfillForm {

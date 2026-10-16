@@ -2559,7 +2559,7 @@ async def _extract_root_signal_one(
             },
         )
     return {
-        "signals_count": 1,
+        "signals_count": int(result.get("signals_count", 0) or 0),
         "match_type": result.get("match_type"),
         "needs_review": result.get("needs_review"),
         "distinctiveness": result.get("distinctiveness"),

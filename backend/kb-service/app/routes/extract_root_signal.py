@@ -1,7 +1,7 @@
 """KB Service - 根因信号抽取路由（Root-Signal Extraction）
 
 POST /api/admin/kbd/{kbd_id}/extract-root-signal
-  - 从 kbd_entry.root_cause 抽取「唯一一条」结论侧定位锚点，写入 kbd_entry.root_signal_json
+  - 从整篇 KBD 抽取「全部可确定根因的」结论侧定位信号（不限条数），写入 kbd_entry.root_signal_json（v2 顶层数组）
   - 与关键信号抽取（/kbd/{kbd_id}/extract-signals → signals_json）完全解耦：
     不同 Prompt、不同落库列、不同门禁、不进入 CDD/发布盖章与 kbd_revision payload
   - 异步模式（默认，与 extract-signals / VISION 对齐）：立即 202 + job_id，轮询 status
@@ -75,12 +75,11 @@ _ROOT_SIGNAL_BASE_URL = (os.environ.get("ROOT_SIGNAL_BASE_URL") or os.environ.ge
 _ROOT_SIGNAL_API_KEY = (
     os.environ.get("ROOT_SIGNAL_API_KEY") or os.environ.get("EXTRACT_SIGNALS_API_KEY") or LLM_API_KEY
 )
-# 单条信号输出体量小，预算显著低于关键信号（避免长输出抖动）
-ROOT_SIGNAL_MAX_TOKENS = max(1024, int(os.environ.get("ROOT_SIGNAL_MAX_TOKENS", "4096")))
+# v2 多信号（最多 8 条）输出体量显著大于 v1 单信号，预算上调避免长输出被截断（finish_reason=length 即解析失败）
+ROOT_SIGNAL_MAX_TOKENS = max(1024, int(os.environ.get("ROOT_SIGNAL_MAX_TOKENS", "8192")))
 # 网关代理超时 240s、Governor 默认 3 次重试：单次超时必须先于网关超时落地
 _ROOT_SIGNAL_LLM_TIMEOUT = float(os.environ.get("ROOT_SIGNAL_LLM_TIMEOUT") or "60")
-# 与试点口径一致：根因过短无法承载定位锚点（治理语料是提 executable 占比的正路，不靠放宽门禁）
-MIN_ROOT_CAUSE_LEN = 30
+# v2 取消 MIN_ROOT_CAUSE_LEN 硬门：抽取输入面已放开为整篇 KBD，根因短≠无确证信号（是否可抽由门禁与实测裁决）
 # 冲突度语料缓存 TTL：全库回刷期间避免每篇重查 ~2700 行（TTL 到期后自动反映最新根因）
 _CORPUS_TTL_SECONDS = float(os.environ.get("ROOT_SIGNAL_CORPUS_TTL", "300"))
 
@@ -262,22 +261,48 @@ class RootSignalResult(BaseModel):
     match_type: str | None = None
     needs_review: bool | None = None
     distinctiveness: dict[str, int] = Field(default_factory=dict)
-    signal: dict[str, Any] | None = None
+    signals: list[dict[str, Any]] = Field(default_factory=list)
     attempts: int = 0
     signals_count: int = 0
     prompt_revision: str | None = None
     error: str | None = None
 
 
+def _render_kbd_content(row: Any) -> str:
+    """渲染供 LLM 阅读的整篇 KBD 文本。
+
+    优先取聚合渲染字段 content_md（本就是「供 LLM 上下文注入」字段）；
+    content_md 缺失时回退按章节字段拼接，保证抽取输入不为空。
+    """
+    content_md = (row["content_md"] or "").strip()
+    if content_md:
+        return content_md
+    section_labels = {
+        "problem_description": "问题描述",
+        "alert_info": "告警信息",
+        "steps_text": "有效排查步骤",
+        "root_cause": "根因",
+        "solution": "解决方案",
+        "operational_impact": "操作影响范围",
+        "recommendations": "建议与总结",
+    }
+    parts = [f"# {row['title'] or ''}"]
+    for key, label in section_labels.items():
+        text = (row[key] or "").strip()
+        if text:
+            parts.append(f"## {label}\n{text}")
+    return "\n\n".join(parts).strip()
+
+
 async def extract_root_signal_for_kbd(
     db_manager: DatabaseManager, kbd_id: int, *, corpus: ConflictCorpus | None = None
 ) -> dict[str, Any]:
-    """读取 root_cause → 热加载 Prompt → LLM 抽取 → 门禁 → 冲突度 → 写回 root_signal_json。
+    """读取整篇 KBD → 热加载 Prompt → LLM 抽取多信号 → 门禁 → 逐条冲突度 → 写回 root_signal_json 数组。
 
-    治本约束：
-    - 只读 kbd_entry.root_cause（结论侧），不读 steps_text/alert_info，与关键信号输入面互不重叠；
-    - 门禁失败不伪造、不清空：既有信号保持原值，本次以 success=false 返回原因；
-    - 写回只动 root_signal_json（AI 派生元数据），不触发 kbd_revision、不改 content_md/embedding/tsv。
+    治本约束（v2）：
+    - 输入面：抽取 Prompt 读整篇 content_md（缺失时回退章节字段拼接）；root_cause 仍单独传入供主锚溯源；
+    - 门禁失败不伪造、不清空：既有信号保持原值，本次无可用信号时以 success=false 返回原因（部分成功逐条丢弃）；
+    - 写回只动 root_signal_json（AI 派生元数据，顶层数组），不触发 kbd_revision、不改 content_md/embedding/tsv。
     """
     trace_id = get_current_trace_id()
     async with db_manager.async_session_factory() as session:
@@ -287,6 +312,13 @@ async def extract_root_signal_for_kbd(
                 KbdEntry.support_id,
                 KbdEntry.title,
                 KbdEntry.root_cause,
+                KbdEntry.content_md,
+                KbdEntry.problem_description,
+                KbdEntry.alert_info,
+                KbdEntry.steps_text,
+                KbdEntry.solution,
+                KbdEntry.operational_impact,
+                KbdEntry.recommendations,
                 KbdEntry.category_id,
                 KbdEntry.ai_category_id,
                 KbdEntry.status,
@@ -297,17 +329,8 @@ async def extract_root_signal_for_kbd(
             raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
 
         root_cause = (row["root_cause"] or "").strip()
-        if len(root_cause) < MIN_ROOT_CAUSE_LEN:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "code": "ROOT_SIGNAL_ROOT_CAUSE_TOO_SHORT",
-                    "message": (
-                        f"根因章节仅 {len(root_cause)} 字（<{MIN_ROOT_CAUSE_LEN}），"
-                        "不足以承载可现场判定的定位锚点；请先补全根因再抽取"
-                    ),
-                },
-            )
+        # v2 废除服务端 MIN_ROOT_CAUSE_LEN 硬 422 门：整篇输入后根因短≠无确证信号（是否可抽由门禁与实测裁决）。
+        kbd_content = _render_kbd_content(row)
 
         category_code = row["category_id"] or row["ai_category_id"] or ""
         category_path = category_code
@@ -332,6 +355,7 @@ async def extract_root_signal_for_kbd(
         "category_id": category_code,
         "category_path": category_path,
         "root_cause": root_cause,
+        "kbd_content": kbd_content,
     }
 
     async def _llm_call(messages: list[dict[str, str]]) -> dict[str, Any]:
@@ -346,8 +370,8 @@ async def extract_root_signal_for_kbd(
     outcome = await extract_root_signal(
         entry, prompt_template=prompt_template, llm_call=_llm_call
     )
-    signal = outcome["signal"]
-    if signal is None:
+    signals = outcome["signals"]
+    if not signals:
         logger.error(
             event="root_signal_extract_failed",
             kbd_id=kbd_id,
@@ -365,31 +389,35 @@ async def extract_root_signal_for_kbd(
             error=outcome["error"],
         ).model_dump()
 
-    # 冲突度按现场语料实测（LLM 自报的 distinctiveness 不采信）
-    conflict_corpus = corpus or await get_conflict_corpus(db_manager)
-    signal["distinctiveness"] = conflict_corpus.conflicts(signal, self_support_id=row["support_id"])
+    # 冲突度按现场语料逐条实测（LLM 自报的 distinctiveness 不采信）
+    # 显式区分「未传入语料（现取）」与「传入空语料（如单测对照，零冲突基线）」
+    conflict_corpus = corpus if corpus is not None else await get_conflict_corpus(db_manager)
+    for signal in signals:
+        signal["distinctiveness"] = conflict_corpus.conflicts(signal, self_support_id=row["support_id"])
 
     async with db_manager.async_session_factory() as session:
         await session.execute(
             text(
                 """
                 UPDATE kbd_entry
-                SET root_signal_json = CAST(:signal AS jsonb), updated_at = now()
+                SET root_signal_json = CAST(:signals AS jsonb), updated_at = now()
                 WHERE id = :kbd_id
                 """
             ),
-            {"kbd_id": kbd_id, "signal": json.dumps(signal, ensure_ascii=False)},
+            {"kbd_id": kbd_id, "signals": json.dumps(signals, ensure_ascii=False)},
         )
         await session.commit()
 
+    # 首条主锚代表本（仅供旧单信号消费方兼容展示）；完整多信号见 signals 数组
+    lead = signals[0]
     logger.info(
         event="root_signal_extract_done",
         kbd_id=kbd_id,
         support_id=row["support_id"],
         kbd_status=row["status"],
-        match_type=signal["match_type"],
-        needs_review=signal["provenance"]["needs_review"],
-        distinctiveness=signal["distinctiveness"],
+        signals_count=len(signals),
+        tiers=sorted({s["provenance"]["trace_tier"] for s in signals}),
+        needs_review=sum(1 for s in signals if s["provenance"]["needs_review"]),
         attempts=outcome["attempts"],
         prompt_revision=prompt_revision,
         corpus_size=len(conflict_corpus),
@@ -399,12 +427,12 @@ async def extract_root_signal_for_kbd(
         success=True,
         kbd_id=kbd_id,
         support_id=row["support_id"],
-        match_type=signal["match_type"],
-        needs_review=signal["provenance"]["needs_review"],
-        distinctiveness=signal["distinctiveness"],
-        signal=signal,
+        match_type=lead["match_type"],
+        needs_review=lead["provenance"]["needs_review"],
+        distinctiveness=lead["distinctiveness"],
+        signals=signals,
         attempts=outcome["attempts"],
-        signals_count=1,
+        signals_count=len(signals),
         prompt_revision=prompt_revision,
     ).model_dump()
 
@@ -412,7 +440,7 @@ async def extract_root_signal_for_kbd(
 # ─── HTTP 路由 ────────────────────────────────────────────────────────────────
 @router.post("/kbd/{kbd_id}/extract-root-signal", response_model=RootSignalResult)
 async def extract_root_signal_kbd_api(request: Request, kbd_id: int):
-    """根因信号抽取（KBD）：从 root_cause 抽取唯一结论侧定位锚点并写回 root_signal_json。
+    """根因信号抽取（KBD）：从整篇 KBD 抽取全部可确定根因的结论侧定位信号并写回 root_signal_json 数组。
 
     默认异步：立即 202 + job_id，经 GET /kbd/{kbd_id}/extract-root-signal/status 轮询；
     ?sync=true 同步返回完整结果（admin-ui 单条按钮使用，行为与 extract-signals 一致）。
@@ -477,15 +505,28 @@ async def preview_root_signal_conflicts(request: Request, kbd_id: int):
     if item is None:
         raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
     signal = item["root_signal_json"]
-    if not isinstance(signal, dict):
+    if not signal:
+        return {"kbd_id": kbd_id, "extracted": False, "distinctiveness": None}
+    # v2 落库为顶层数组（旧单对象亦兼容）：逐条按最新语料重算冲突度
+    signals = signal if isinstance(signal, list) else [signal]
+    signals = [s for s in signals if isinstance(s, dict)]
+    if not signals:
         return {"kbd_id": kbd_id, "extracted": False, "distinctiveness": None}
     corpus = await get_conflict_corpus(_db_manager)
     return {
         "kbd_id": kbd_id,
         "extracted": True,
-        "match_type": signal.get("match_type"),
-        "stored_distinctiveness": signal.get("distinctiveness"),
-        "live_distinctiveness": corpus.conflicts(signal, self_support_id=item["support_id"]),
+        "signals_count": len(signals),
+        "signals": [
+            {
+                "match_type": s.get("match_type"),
+                "trace_tier": (s.get("provenance") or {}).get("trace_tier"),
+                "needs_review": (s.get("provenance") or {}).get("needs_review"),
+                "stored_distinctiveness": s.get("distinctiveness"),
+                "live_distinctiveness": corpus.conflicts(s, self_support_id=item["support_id"]),
+            }
+            for s in signals
+        ],
         "corpus_size": len(corpus),
     }
 

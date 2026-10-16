@@ -2455,8 +2455,8 @@ CREATE TABLE IF NOT EXISTS kbd_entry (
     unpublishable_reason text,
     CONSTRAINT fk_kbd_entry_category_id FOREIGN KEY (category_id) REFERENCES kb_category (code) ON DELETE NO ACTION,
     CONSTRAINT fk_kbd_entry_review_owner_id FOREIGN KEY (review_owner_id) REFERENCES kbd_review_owner(id) ON DELETE SET NULL,
-    -- 根因信号必须是单对象（不存数组：一 KBD 一信号是硬约束）
-    CONSTRAINT ck_kbd_entry_root_signal_json CHECK (root_signal_json IS NULL OR jsonb_typeof(root_signal_json) = 'object'),
+    -- 根因信号 v2 顶层数组（不限条数；一 KBD 可有多条定位信号，不接受单对象/标量）
+    CONSTRAINT ck_kbd_entry_root_signal_json CHECK (root_signal_json IS NULL OR jsonb_typeof(root_signal_json) = 'array'),
     CONSTRAINT kbd_entry_pkey PRIMARY KEY (id)
 );
 
@@ -2473,7 +2473,7 @@ COMMENT ON COLUMN kbd_entry.operational_impact IS '操作影响范围（8 大章
 COMMENT ON COLUMN kbd_entry.is_temporary IS '是否是临时解决方案（8 大章节之一，admin 可编辑）';
 COMMENT ON COLUMN kbd_entry.recommendations IS '建议与总结（8 大章节之一，admin 可编辑）';
 COMMENT ON COLUMN kbd_entry.signals_json IS 'KBD Signal v2 文档：producer/consumer、verification_contract、不可变 generation_metadata，以及 Expert 显式发布时写入的 publish_validation；占位符 {{VAR}} 大写。非空仅表示有信号，是否可执行仍由当前发布盖章与 Agent 编译共同判定';
-COMMENT ON COLUMN kbd_entry.root_signal_json IS '根因信号 v1 单对象（结论侧唯一定位锚点，与关键信号 signals_json 完全解耦）：match_type=executable 携带 qfk_* 只读采集命令、=text 携带可溯源关键词；provenance.needs_review 钉人工复核，distinctiveness 记录冲突度；NULL 表示尚未抽取';
+COMMENT ON COLUMN kbd_entry.root_signal_json IS '根因信号 v2 顶层数组（结论侧定位信号集合，与关键信号 signals_json 完全解耦，不限条数）：每个元素 match_type=executable 携带 qfk_* 只读采集命令、=text 携带可溯源关键词；provenance.trace_tier 标主锚(root_cause)/兑底(content)，兑底强制 needs_review；distinctiveness 记录冲突度；NULL 表示尚未抽取';
 COMMENT ON COLUMN kbd_entry.images_json IS '图片视觉描述（pipeline Vision LLM 生成）；格式：[{"seq": N, "section": "field_name", "desc": "..."}]；章节字段中以 ![img:N] 标记位置，rebuild_content_md() 展开为 > **【截图说明】** 块；独立存储确保 admin 编辑章节字段后视觉信息不丢失';
 COMMENT ON COLUMN kbd_entry.content_md IS '聚合渲染 Markdown（含截图视觉描述）；由 pipeline 生成或 rebuild_content_md() 从章节字段+images_json 重建；供 LLM 上下文注入；embedding 不使用此字段（使用问题侧字段 title+problem_description+alert_info+root_cause）';
 COMMENT ON COLUMN kbd_entry.content_raw IS '纯文本内容（剔除 Markdown 格式标记和图片占位符），专供 LLM 和 RAG 检索/Embedding 使用';
@@ -2518,10 +2518,8 @@ CREATE INDEX IF NOT EXISTS idx_kbd_entry_tsv ON kbd_entry USING GIN (tsv);
 -- signals_json 结构查询（InvestigationAgent 检索关键信号；部分索引仅含已发布且有信号的条目）
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_signals ON kbd_entry USING GIN (signals_json)
     WHERE status = 'published' AND signals_json != '[]'::jsonb;
--- 根因信号审核队列：按形态（executable/text）与待复核标记过滤（仅已抽取条目建索引）
-CREATE INDEX IF NOT EXISTS idx_kbd_entry_root_signal_type ON kbd_entry ((root_signal_json ->> 'match_type'))
-    WHERE root_signal_json IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_kbd_entry_root_signal_review ON kbd_entry ((root_signal_json -> 'provenance' ->> 'needs_review'))
+-- 根因信号审核队列：v2 顶层数组，数组内「任一信号满足条件」的包含查询用 GIN(jsonb_path_ops)（仅已抽取条目建索引）
+CREATE INDEX IF NOT EXISTS idx_kbd_entry_root_signal_gin ON kbd_entry USING GIN (root_signal_json jsonb_path_ops)
     WHERE root_signal_json IS NOT NULL;
 -- images_json 结构查询（如查找含特定 section 图片的 KBD）
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_images_json ON kbd_entry USING GIN (images_json)

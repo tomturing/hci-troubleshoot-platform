@@ -1,12 +1,12 @@
 """根因信号抽取核心模块单测（test_root_signal_extractor）。
 
-覆盖：
-1. 「一 KBD 一信号」门禁：多条拒收、非对象拒收；
+v2 覆盖：
+1. 多信号门禁：接受 1..N 条数组、去重、封顶；空集拒收、非对象拒收；
 2. executable 门禁：词表外 tool 拒收、qfk_var 拒收、写操作命令拒收、args 契约拒收；
 3. text 门禁：关键词过短拒收、不可溯源降级 needs_review（不拒收）、携带 acquire 拒收；
-4. extract_root_signal 重试链路：门禁失败带原因回喂一次、仍失败返回 None（不伪造）；
-5. golden 端到端归一化（executable / text 各一条，经真实种子 SQL 模板渲染）；
-6. 冲突计数与 Prompt 种子占位符契约（与 StrictPromptLoader 同法校验）。
+4. 溯源分层：evidence 命中 root_cause=主锚、仅命中整篇=content 兑底（强制 needs_review）、整篇都溯源不到=拒收；
+5. extract_root_signal 重试链路：主锚优先、无主锚才用兑底、部分门禁失败只丢单条；
+6. golden 端到端归一化 + 冲突计数 + Prompt 种子占位符契约（与 StrictPromptLoader 同法校验）。
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from app.services.root_signal_extractor import (
     build_root_signal_prompt,
     count_root_cause_conflicts,
     extract_root_signal,
-    gate_single_signal,
+    gate_signals,
     load_prompt_template_from_sql,
     normalize_root_signal,
 )
@@ -51,27 +51,51 @@ def _raw(**overrides) -> dict:
     return base
 
 
-def _normalize(raw: dict, root_cause: str = _ROOT_CAUSE) -> tuple[dict | None, str | None]:
-    return normalize_root_signal(raw, root_cause=root_cause, category_id="虚拟机-001", prompt_revision="sha256:test")
+_CONTENT = _ROOT_CAUSE + "解决方案：删除残留 lock 文件并扩容 /run/lock 分区。"
 
 
-# ─── 1. 单信号门禁 ────────────────────────────────────────────────────────────
+def _normalize(raw: dict, root_cause: str = _ROOT_CAUSE, content: str | None = None) -> tuple[dict | None, str | None]:
+    signal, error, _tier = normalize_root_signal(
+        raw,
+        root_cause=root_cause,
+        content=content if content is not None else root_cause,
+        category_id="虚拟机-001",
+        prompt_revision="sha256:test",
+    )
+    return signal, error
 
-class TestGateSingleSignal:
-    def test_rejects_multiple_signals(self):
-        _, error = gate_single_signal({"signals": [_raw(), _raw()]})
-        assert error and "1 条" in error
+
+# ─── 1. 多信号门禁 ────────────────────────────────────────────────────────────
+
+class TestGateSignals:
+    def test_accepts_multiple_signals(self):
+        raws, error = gate_signals({"signals": [_raw(), _raw(signal_text="另一条定位信号特性")]})
+        assert error is None and len(raws) == 2
+
+    def test_dedups_by_signal_text(self):
+        dup = _raw()
+        raws, error = gate_signals({"signals": [dup, dict(dup)]})
+        assert error is None and len(raws) == 1
+
+    def test_caps_at_max_signals(self):
+        signals = [_raw(signal_text=f"特性结论 {i}") for i in range(20)]
+        raws, error = gate_signals({"signals": signals}, max_signals=8)
+        assert error is None and len(raws) == 8
 
     def test_accepts_signals_array_of_one(self):
-        raw, error = gate_single_signal({"signals": [_raw()]})
-        assert error is None and raw is not None
+        raws, error = gate_signals({"signals": [_raw()]})
+        assert error is None and len(raws) == 1
 
     def test_accepts_signal_object(self):
-        raw, error = gate_single_signal({"signal": _raw()})
-        assert error is None and raw["match_type"] == "text"
+        raws, error = gate_signals({"signal": _raw()})
+        assert error is None and raws[0]["match_type"] == "text"
+
+    def test_rejects_empty_array(self):
+        _, error = gate_signals({"signals": []})
+        assert error is not None
 
     def test_rejects_non_dict(self):
-        _, error = gate_single_signal(["not", "a", "dict"])
+        _, error = gate_signals(["not", "a", "dict"])
         assert error is not None
 
 
@@ -89,34 +113,33 @@ def _executable_raw(tool: str = "qfk_system", command: str = "df -h") -> dict:
 
 class TestExecutableGate:
     def test_tool_outside_catalog_rejected(self):
-        _, error = _normalize(_executable_raw(tool="qfk_magic"), root_cause="分区使用率100%导致加锁失败")
+        _, error = _normalize(_executable_raw(tool="qfk_magic"))
         assert error and "不在采集器词表内" in error
 
     def test_qkv_tool_rejected(self):
-        _, error = _normalize(_executable_raw(tool="qkv_alert"), root_cause="分区使用率100%")
+        _, error = _normalize(_executable_raw(tool="qkv_alert"))
         assert error and "qfk_*" in error
 
     def test_qfk_var_rejected(self):
-        _, error = _normalize(_executable_raw(tool="qfk_var"), root_cause="分区使用率100%")
+        _, error = _normalize(_executable_raw(tool="qfk_var"))
         assert error and "qfk_var" in error
 
     def test_write_command_rejected(self):
         # kill 命中写操作词表，应被只读安全门拒绝（而非 args 契约）
-        _, error = _normalize(
-            _executable_raw(command="kill"), root_cause="分区使用率100%导致加锁失败"
-        )
+        _, error = _normalize(_executable_raw(command="kill"))
         assert error and "只读安全门" in error
 
     def test_missing_required_arg_rejected(self):
         raw = _executable_raw()
         raw["acquire"]["args"] = {"host": "{{HOST}}"}  # qfk_system 必填 command
-        _, error = _normalize(raw, root_cause="分区使用率100%")
+        _, error = _normalize(raw)
         assert error and "command" in error
 
     def test_valid_executable_passes(self):
-        signal, error = _normalize(_executable_raw(), root_cause="分区使用率100%导致加锁失败")
+        signal, error = _normalize(_executable_raw())
         assert error is None
         assert signal is not None and signal["acquire"]["tool"] == "qfk_system"
+        assert signal["provenance"]["trace_tier"] == "root_cause"
 
     def test_qfk_log_fullpath_file_coerced_to_basename(self):
         # v3 试点回归：模型惯性写全路径，服务端无损降级 basename 而非烧轮次拒收
@@ -188,10 +211,17 @@ class TestTextGate:
         _, error = _normalize(raw)
         assert error and "纯数字" in error
 
-    def test_non_root_cause_source_section_rejected(self):
-        raw = _raw(provenance={**_raw()["provenance"], "source_section": "steps_text"})
+    def test_invalid_source_section_rejected(self):
+        # v2：source_section 开放为章节枚举，枚举外的值仍拒收
+        raw = _raw(provenance={**_raw()["provenance"], "source_section": "nonexistent_section"})
         _, error = _normalize(raw)
-        assert error and "root_cause" in error
+        assert error and "source_section" in error
+
+    def test_untraceable_evidence_rejected(self):
+        # 整篇都无法逐字溯源的 evidence 即拒收（绝不伪造），主锚/兑底均不命中
+        raw = _raw(provenance={**_raw()["provenance"], "evidence": "完全不存在于本文的句子XYZ"})
+        _, error = _normalize(raw, root_cause=_ROOT_CAUSE, content=_CONTENT)
+        assert error and "无法逐字溯源" in error
 
 
 # ─── 4/5. 抽取流水线（fake llm_call）─────────────────────────────────────────
@@ -225,7 +255,24 @@ ENTRY = {
     "category_id": "虚拟机-001",
     "category_path": "HCI/虚拟机/密码管理",
     "root_cause": _ROOT_CAUSE,
+    "kbd_content": _CONTENT,
 }
+
+
+def _content_only_raw() -> dict:
+    """evidence/关键词仅能在整篇兑底章节（solution）逐字命中，root_cause 中不存在。"""
+    return {
+        "match_type": "text",
+        "signal_text": "残留 lock 文件需删除",
+        "acquire": None,
+        "match": {"type": "keyword", "mode": "all", "expected": ["删除残留 lock 文件"]},
+        "provenance": {
+            "source_section": "solution",
+            "evidence": "删除残留 lock 文件",
+            "confidence": 0.6,
+            "needs_review": False,
+        },
+    }
 
 
 class TestExtractPipeline:
@@ -233,32 +280,63 @@ class TestExtractPipeline:
         llm, _ = _fake_llm({"signal": _raw()})
         outcome = await extract_root_signal(ENTRY, prompt_template=prompt_template, llm_call=llm)
         assert outcome["error"] is None and outcome["attempts"] == 1
-        signal = outcome["signal"]
-        assert signal["schema_version"] == 1 and signal["role"] == "root_cause"
-        assert signal["provenance"]["method"] == "llm_root_signal_v1"
+        assert len(outcome["signals"]) == 1
+        signal = outcome["signals"][0]
+        assert signal["schema_version"] == 2 and signal["role"] == "root_cause"
+        assert signal["provenance"]["method"] == "llm_root_signal_v2"
+        assert signal["provenance"]["trace_tier"] == "root_cause"
         assert signal["provenance"]["source_category_id"] == "虚拟机-001"
         assert signal["prompt_revision"].startswith("sha256:")
 
+    async def test_multiple_signals_all_kept(self, prompt_template):
+        second = _raw(signal_text="lock 文件持续增长至 8M", match={"type": "keyword", "mode": "all", "expected": ["check_redis_server_status.sh.lock"]})
+        llm, _ = _fake_llm({"signals": [_raw(), second]})
+        outcome = await extract_root_signal(ENTRY, prompt_template=prompt_template, llm_call=llm)
+        assert outcome["error"] is None and len(outcome["signals"]) == 2
+
+    async def test_primary_anchor_preferred_over_fallback(self, prompt_template):
+        # 同时有主锚与兑底：只采用主锚，不用兑底填充（防噪声稀释）
+        llm, _ = _fake_llm({"signals": [_raw(), _content_only_raw()]})
+        outcome = await extract_root_signal(ENTRY, prompt_template=prompt_template, llm_call=llm)
+        assert len(outcome["signals"]) == 1
+        assert outcome["signals"][0]["provenance"]["trace_tier"] == "root_cause"
+
+    async def test_fallback_only_adopted_with_needs_review(self, prompt_template):
+        # 无主锚时才采用整篇兑底，并强制 needs_review
+        llm, _ = _fake_llm({"signals": [_content_only_raw()]})
+        outcome = await extract_root_signal(ENTRY, prompt_template=prompt_template, llm_call=llm)
+        assert len(outcome["signals"]) == 1
+        sig = outcome["signals"][0]
+        assert sig["provenance"]["trace_tier"] == "content" and sig["provenance"]["needs_review"] is True
+
+    async def test_partial_gate_failure_drops_only_bad_signal(self, prompt_template):
+        # 部分成功：一条非法 + 一条合法 → 只丢非法条，保留合法条（不整篇失败）
+        bad = {"match_type": "bogus", "signal_text": "x"}
+        llm, _ = _fake_llm({"signals": [bad, _raw()]})
+        outcome = await extract_root_signal(ENTRY, prompt_template=prompt_template, llm_call=llm)
+        assert len(outcome["signals"]) == 1 and outcome["signals"][0]["schema_version"] == 2
+        assert outcome["gate_errors"]  # 非法条被记录
+
     async def test_gate_failure_retries_once_with_feedback(self, prompt_template):
-        bad = {"signals": [_raw(), _raw()]}
+        bad = {"signals": [{"match_type": "bogus", "signal_text": "x"}]}
         llm, calls = _fake_llm(bad, {"signal": _raw()})
         outcome = await extract_root_signal(ENTRY, prompt_template=prompt_template, llm_call=llm)
-        assert outcome["signal"] is not None and outcome["attempts"] == 2
+        assert outcome["signals"] and outcome["attempts"] == 2
         # 第二轮 messages 必须携带门禁失败原因回喂
         assert any("未通过服务端门禁" in m["content"] for m in calls[1])
 
-    async def test_persistent_failure_returns_none_without_fabrication(self, prompt_template):
+    async def test_persistent_failure_returns_empty_without_fabrication(self, prompt_template):
         llm, calls = _fake_llm(ValueError("boom"), ValueError("boom"))
         outcome = await extract_root_signal(ENTRY, prompt_template=prompt_template, llm_call=llm)
-        assert outcome["signal"] is None and outcome["attempts"] == 2
+        assert outcome["signals"] == [] and outcome["attempts"] == 2
         assert "LLM 调用失败" in (outcome["error"] or "")
 
-    async def test_prompt_rendering_embeds_root_cause_and_catalog(self, prompt_template):
+    async def test_prompt_rendering_embeds_content_and_catalog(self, prompt_template):
         rendered = build_root_signal_prompt(
             prompt_template,
             {**{k: ENTRY.get(k, "") for k in ROOT_SIGNAL_PLACEHOLDERS}, "acquirer_catalog": "qfk_log: 日志"},
         )
-        assert _ROOT_CAUSE in rendered and "qfk_log" in rendered and "有且仅有一条" in rendered
+        assert _ROOT_CAUSE in rendered and "qfk_log" in rendered and "不限条数" in rendered
 
 
 # ─── 6. 冲突计数与模板契约 ────────────────────────────────────────────────────

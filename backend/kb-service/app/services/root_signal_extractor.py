@@ -2,20 +2,27 @@
 
 定位与边界（详见 docs/solution/knowledge-base/根因信号抽取方案.md）：
 - 关键信号 = 「诊断叙事输入」（问题侧，S0-S3 逐步排查的 producer/consumer 信号）；
-- 根因信号 = 「结论侧定位锚点」（每篇 KBD 仅 1 条最特殊特性，用于快速圈定符合该根因
-  特性的 KBD 集合）。两者存储、Prompt、门禁、方法标识完全分离：根因信号不进
-  signals_json、不复用 _VALID_SOURCE_SECTIONS、不受 CDD/QFK producer-consumer 发布门禁约束。
+- 根因信号 = 「结论侧定位锚点」（每篇 KBD 抽取全部可确定根因的定位信号，不限条数，
+  用于快速圈定符合该根因特性的 KBD 集合）。两者存储、Prompt、门禁、方法标识完全分离：
+  根因信号不进 signals_json、不受 CDD/QFK producer-consumer 发布门禁约束。
 - 与「语义入口画像」的边界：语义入口用问题侧描述匹配用户已提交上下文；根因信号用
   结论侧特征匹配现场证据/报错文本，方向相反、字段独立，仅匹配原语可复用。
 
-双形态 contract（v1）：
+v2 契约（多信号 + 整篇输入 + 溯源分层）：
+- 输入面：抽取 Prompt 接收整篇 KBD（占位符 kbd_content），不再只读 root_cause；
+- 输出面：root_signal_json 为顶层 JSON 数组 [{signal}, ...]，单篇不限条数（门禁封顶防噪）；
+- 溯源分层（trace_tier）：信号 provenance.evidence 逐字命中 root_cause 者为「主锚」（高信任）；
+  仅命中整篇其余章节者为「兑底」，强制 needs_review 转人工复核；整篇都溯源不到即拒收；
+- 主锚优先：只要存在 root_cause 级信号就只采用主锚，不用兑底填充（防噪声稀释，实测依据见方案 §10）。
+
+双形态 contract：
 - executable：acquire.tool 取自 ACQUIRER_CATALOG 的 qfk_* 消费判定原语（禁 qfk_var），
   args 过 validate_acquire_args，且过 kbd_signal_read_only_violation 只读安全门；
-- text：无法映射采集器时降级，match.expected 为可溯源至 root_cause 原文的独特
+- text：无法映射采集器时降级，match.expected 为可溯源至所溯源章节原文的独特
   错误文本/谓词关键词，平台侧在已采集证据/告警文本/用户输入上做包含匹配。
 
 Prompt 管理与关键信号完全对齐：存于 system_prompt 表（stage='KEY'，
-name='kbd_extract_root_signal_v1'），经 StrictPromptLoader 每次抽取热加载，
+name='kbd_extract_root_signal_v2'），经 StrictPromptLoader 每次抽取热加载，
 admin-ui「KEY 关键信号分级抽取」页在线编辑即时生效。占位符契约见
 ROOT_SIGNAL_PLACEHOLDERS。
 
@@ -42,18 +49,30 @@ from app.routes.extract_signals import ACQUIRER_CATALOG, VALID_MATCHER_TYPES
 logger = get_logger("kb-service-root-signal")
 
 # ─── 常量契约 ─────────────────────────────────────────────────────────────────
-ROOT_SIGNAL_PROMPT_NAME = "kbd_extract_root_signal_v1"
-ROOT_SIGNAL_SCHEMA_VERSION = 1
-ROOT_SIGNAL_METHOD = "llm_root_signal_v1"
+ROOT_SIGNAL_PROMPT_NAME = "kbd_extract_root_signal_v2"
+ROOT_SIGNAL_SCHEMA_VERSION = 2
+ROOT_SIGNAL_METHOD = "llm_root_signal_v2"
 # Prompt 占位符契约（与种子 SQL 一致；StrictPromptLoader 同法校验）
+# v2 变更：输入面由仅 root_cause 放开为整篇 kbd_content（req#2）；root_cause 仍单独
+# 传入用于「主锚」溯源判定（不是 Prompt 占位符）。
 ROOT_SIGNAL_PLACEHOLDERS = [
     "title",
     "category_id",
     "category_path",
-    "root_cause",
+    "kbd_content",
     "acquirer_catalog",
 ]
 VALID_MATCH_TYPES = {"executable", "text"}
+# v2 允许信号出自整篇任一章节（溯源分层由 _trace_tier 决定主锚/兜底）
+VALID_SOURCE_SECTIONS = {
+    "problem_description",
+    "alert_info",
+    "steps_text",
+    "root_cause",
+    "solution",
+    "operational_impact",
+    "recommendations",
+}
 # text 型仅允许确定性包含匹配，避免 regex 之外的语义漂移
 TEXT_MATCH_TYPES = {"keyword", "regex"}
 # 关键词最短长度：低于该长度的中文/英文 token 通用度过高，无法承担「快速定位」职责
@@ -123,18 +142,35 @@ def build_root_signal_prompt(template: str, entry: dict[str, Any]) -> str:
 
 # ─── 门禁（纯函数，返回 (结果, 错误原因)）─────────────────────────────────────
 
-def gate_single_signal(payload: Any) -> tuple[dict[str, Any] | None, str | None]:
-    """LLM 必须且只能返回一条根因信号；多条即拒收（「一 KBD 一信号」硬约束）。"""
+def gate_signals(payload: Any, *, max_signals: int = 8) -> tuple[list[dict[str, Any]], str | None]:
+    """LLM 返回的根因信号集合门禁（v2：不限条数，但仍封顶防长输出噪声洪水）。
+
+    接受 `signal` 单对象、`signals` 数组或裸对象；空集即拒收；按 signal_text 去重。
+    返回 (原始信号列表, 错误原因)。
+    """
     if not isinstance(payload, dict):
-        return None, f"LLM 响应必须是 JSON 对象，实际为 {type(payload).__name__}"
-    raw = payload.get("signal")
-    if raw is None and isinstance(payload.get("signals"), list):
-        if len(payload["signals"]) != 1:
-            return None, f"必须且只能输出 1 条根因信号，实际 {len(payload['signals'])} 条"
-        raw = payload["signals"][0]
-    if not isinstance(raw, dict):
-        return None, "响应缺少 signal 对象（或 signals 长度为 1 的数组）"
-    return raw, None
+        return [], f"LLM 响应必须是 JSON 对象，实际为 {type(payload).__name__}"
+    raw_list: Any = payload.get("signals")
+    if raw_list is None:
+        single = payload.get("signal")
+        raw_list = [single] if isinstance(single, dict) else ([payload] if payload.get("match_type") else [])
+    if not isinstance(raw_list, list) or not raw_list:
+        return [], "响应缺少 signals 数组（或 signal 对象）"
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw_list:
+        if not isinstance(item, dict):
+            continue
+        key = _normalize_for_trace(str(item.get("signal_text") or ""))
+        if key and key in seen:
+            continue  # 按 signal_text 去重
+        seen.add(key)
+        out.append(item)
+        if len(out) >= max_signals:
+            break
+    if not out:
+        return [], "signals 数组无有效对象"
+    return out, None
 
 
 def coerce_acquire(acquire: Any) -> Any:
@@ -196,7 +232,7 @@ def _flatten_keywords(expected: Any) -> tuple[list[str] | None, str | None]:
     seen: set[str] = set()
 
     def _push(value: Any) -> str | None:
-        if isinstance(value, (dict, list, tuple, bool)):
+        if isinstance(value, dict | list | tuple | bool):
             return f"expected 元素必须是字符串，实际为 {type(value).__name__}: {value!r}"
         text = str(value or "").strip()
         if not text:
@@ -209,7 +245,7 @@ def _flatten_keywords(expected: Any) -> tuple[list[str] | None, str | None]:
         return None
 
     for item in expected:
-        if isinstance(item, (list, tuple)):
+        if isinstance(item, list | tuple):
             for sub in item:
                 error = _push(sub)
                 if error:
@@ -243,45 +279,74 @@ def gate_text_keywords(expected: list[str], root_cause: str) -> tuple[bool, str 
     return traceable, None
 
 
+def _trace_tier(evidence: str, root_cause: str, content: str) -> str:
+    """溯源分层：主锚（root_cause）> 兜底（整篇其余章节）> none（整篇都无法逐字溯源）。
+
+    实测依据（阶段一 n=100）：锁定 root_cause 时确证命中率 96.9%、泛化率 0%；
+    放开到整篇后增量信号 52.7% 为噪声（多为告警/步骤的现象，属关键信号地盘）。
+    故 root_cause 级为高信任主锚，content 级仅作兑底（强制人工复核）。
+    """
+    ev = _normalize_for_trace(evidence)
+    if not ev:
+        return "none"
+    if ev in _normalize_for_trace(root_cause):
+        return "root_cause"
+    if ev in _normalize_for_trace(content):
+        return "content"
+    return "none"
+
+
 def normalize_root_signal(
     raw: dict[str, Any],
     *,
     root_cause: str,
+    content: str,
     category_id: str,
     prompt_revision: str,
-) -> tuple[dict[str, Any] | None, str | None]:
-    """校验并归一化单条根因信号为 v1 契约；返回 (signal, 违规原因)。"""
+) -> tuple[dict[str, Any] | None, str | None, str]:
+    """校验并归一化单条根因信号为 v2 契约；返回 (signal, 违规原因, 溯源层级)。
+
+    tier 取 "root_cause"（主锚）/"content"（兑底）/"none"（无法溯源，拒收）。
+    """
     match_type = str(raw.get("match_type") or "")
     if match_type not in VALID_MATCH_TYPES:
-        return None, f"match_type 必须是 {sorted(VALID_MATCH_TYPES)}，实际: {match_type!r}"
+        return None, f"match_type 必须是 {sorted(VALID_MATCH_TYPES)}，实际: {match_type!r}", "none"
 
     signal_text = str(raw.get("signal_text") or "").strip()
     if not signal_text:
-        return None, "signal_text（一句话特性结论）不能为空"
+        return None, "signal_text（一句话特性结论）不能为空", "none"
 
     match = raw.get("match")
     if not isinstance(match, dict):
-        return None, "match 必须是对象"
+        return None, "match 必须是对象", "none"
     matcher_type = str(match.get("type") or "")
     allowed_types = EXECUTABLE_MATCH_TYPES if match_type == "executable" else TEXT_MATCH_TYPES
     if matcher_type not in allowed_types:
-        return None, f"{match_type} 型 match.type 必须是 {sorted(allowed_types)}，实际: {matcher_type!r}"
+        return None, f"{match_type} 型 match.type 必须是 {sorted(allowed_types)}，实际: {matcher_type!r}", "none"
     expected, error = _flatten_keywords(match.get("expected"))
     if error:
-        return None, error
+        return None, error, "none"
 
     provenance = raw.get("provenance") or {}
     if not isinstance(provenance, dict):
-        return None, "provenance 必须是对象"
-    if str(provenance.get("source_section") or "root_cause") != "root_cause":
-        return None, "根因信号的 provenance.source_section 只能是 root_cause"
+        return None, "provenance 必须是对象", "none"
+    source_section = str(provenance.get("source_section") or "")
+    if source_section not in VALID_SOURCE_SECTIONS:
+        return None, f"provenance.source_section 必须是 {sorted(VALID_SOURCE_SECTIONS)} 之一，实际: {source_section!r}", "none"
     evidence = str(provenance.get("evidence") or "").strip()
     if not evidence:
-        return None, "provenance.evidence（根因原文摘录）不能为空"
+        return None, "provenance.evidence（原文逐字摘录）不能为空", "none"
     try:
         confidence = max(0.0, min(1.0, float(provenance.get("confidence", 0.5))))
     except (TypeError, ValueError):
-        return None, f"provenance.confidence 必须是 0~1 数值: {provenance.get('confidence')!r}"
+        return None, f"provenance.confidence 必须是 0~1 数值: {provenance.get('confidence')!r}", "none"
+
+    # 溯源分层：以 evidence 逐字命中为准；整篇都溯源不到即拒收（绝不伪造）
+    tier = _trace_tier(evidence, root_cause, content)
+    if tier == "none":
+        return None, "provenance.evidence 无法逐字溯源到整篇 KBD 任一章节", "none"
+    # 主锚信号关键词逐字校 root_cause；兑底信号关键词校整篇 content
+    target_text = root_cause if tier == "root_cause" else content
 
     needs_review = bool(provenance.get("needs_review"))
     acquire: dict[str, Any] | None = None
@@ -289,17 +354,21 @@ def normalize_root_signal(
         raw = {**raw, "acquire": coerce_acquire(raw.get("acquire"))}  # 先无损归一再过门禁
         violation = gate_executable(raw)
         if violation:
-            return None, violation
+            return None, violation, "none"
         acquire = {"tool": str(raw["acquire"]["tool"]), "args": raw["acquire"].get("args") or {}}
     else:
         if raw.get("acquire"):
-            return None, "text 型不允许携带 acquire（可执行取证请改用 executable 型重新抽取）"
-        traceable, error = gate_text_keywords(expected, root_cause)
+            return None, "text 型不允许携带 acquire（可执行取证请改用 executable 型重新抽取）", "none"
+        traceable, error = gate_text_keywords(expected, target_text)
         if error:
-            return None, error
+            return None, error, "none"
         if not traceable:
             # 关键词无法逐字溯源（LLM 归一化改写）：保留信号但钉上人工复核
             needs_review = True
+
+    # 兑底层（仅靠整篇其余章节支撑）强制人工复核，绝不自动信任
+    if tier == "content":
+        needs_review = True
 
     signal: dict[str, Any] = {
         "schema_version": ROOT_SIGNAL_SCHEMA_VERSION,
@@ -314,10 +383,13 @@ def normalize_root_signal(
         },
         "distinctiveness": raw.get("distinctiveness") or {"category_conflicts": None, "global_conflicts": None},
         "provenance": {
-            "source_section": "root_cause",
-            # 抽取时的根因原文指纹：回刷后若 root_cause 被编辑，指纹不一致即信号陈旧，
+            # 信号逐字出自的真实章节（v2 不再钉死 root_cause）
+            "source_section": source_section,
+            # 溯源层级：root_cause=高信任主锚 / content=整篇兑底（已强制 needs_review）
+            "trace_tier": tier,
+            # 抽取时的整篇内容指纹：回刷后若整篇 content_md 被编辑，指纹不一致即信号陈旧，
             # 消费侧（Agent / 审核 UI）据此判定是否需重新抽取，不得把陈旧信号当现场结论。
-            "source_sha256": hashlib.sha256((root_cause or "").encode("utf-8")).hexdigest(),
+            "source_sha256": hashlib.sha256((content or root_cause or "").encode("utf-8")).hexdigest(),
             "source_category_id": category_id,
             "method": ROOT_SIGNAL_METHOD,
             "evidence": evidence,
@@ -326,7 +398,7 @@ def normalize_root_signal(
         },
         "prompt_revision": prompt_revision,
     }
-    return signal, None
+    return signal, None, tier
 
 
 # ─── 抽取流水线（LLM 调用经回调注入，便于单测与离线试点）─────────────────────
@@ -338,15 +410,16 @@ async def extract_root_signal(
     llm_call: Callable[[list[dict[str, str]]], Awaitable[Any]],
     max_attempts: int = 2,
 ) -> dict[str, Any]:
-    """对单篇 KBD 抽取唯一根因信号。
+    """对单篇 KBD 抽取全部可确定根因的信号（v2：不限条数）。
 
     Args:
-        entry: 含 title/category_id/category_path/root_cause（acquirer_catalog 由本模块注入）。
+        entry: 含 title/category_id/category_path/root_cause/kbd_content（acquirer_catalog 由本模块注入）。
         llm_call: 异步回调，接收 messages 列表，返回已解析 JSON（dict）或抛异常。
 
     Returns:
-        {"signal": dict|None, "error": str|None, "attempts": int}
-        —— 门禁失败带原因回喂重试一次；仍失败则 signal=None（绝不伪造）。
+        {"signals": list, "error": str|None, "attempts": int, "gate_errors": list}
+        —— 主锚（root_cause）优先；无主锚时才采用整篇兑底（已强制 needs_review）。
+        门禁失败带原因回喂重试一次；仍无可用信号则 signals=[]（绝不伪造）。
     """
     prompt = build_root_signal_prompt(
         prompt_template,
@@ -354,12 +427,13 @@ async def extract_root_signal(
             "title": entry.get("title") or "",
             "category_id": entry.get("category_id") or "",
             "category_path": entry.get("category_path") or entry.get("category_id") or "",
-            "root_cause": entry.get("root_cause") or "",
+            "kbd_content": entry.get("kbd_content") or entry.get("root_cause") or "",
             "acquirer_catalog": acquirer_catalog_text(),
         },
     )
     prompt_revision = "sha256:" + hashlib.sha256(prompt_template.encode("utf-8")).hexdigest()
     root_cause = entry.get("root_cause") or ""
+    content = entry.get("kbd_content") or root_cause
     category_id = entry.get("category_id") or ""
 
     feedback = ""
@@ -387,31 +461,51 @@ async def extract_root_signal(
             logger.warning(event="root_signal_llm_call_failed", attempt=attempt, error=last_error)
             continue
 
-        raw, error = gate_single_signal(payload if isinstance(payload, dict) else {"signal": payload})
+        raws, error = gate_signals(payload if isinstance(payload, dict) else {"signal": payload})
+        gate_errors: list[str] = []
+        chosen: list[dict[str, Any]] = []
         if error is None:
-            signal, error = normalize_root_signal(
-                raw or {}, root_cause=root_cause, category_id=category_id, prompt_revision=prompt_revision
-            )
-            if error is None and signal is not None:
+            primary: list[dict[str, Any]] = []
+            fallback: list[dict[str, Any]] = []
+            for raw in raws:
+                signal, sig_err, tier = normalize_root_signal(
+                    raw, root_cause=root_cause, content=content, category_id=category_id, prompt_revision=prompt_revision
+                )
+                if sig_err is not None or signal is None:
+                    gate_errors.append(sig_err or "未知门禁错误")
+                    continue
+                if tier == "root_cause":
+                    primary.append(signal)
+                elif tier == "content":
+                    fallback.append(signal)
+            # 主锚优先：只要 root_cause 级有信号就只取主锚，不用整篇兑底填充（防噪声稀释）
+            chosen = primary if primary else fallback
+            if chosen:
                 logger.info(
                     event="root_signal_extracted",
                     support_id=entry.get("support_id"),
-                    match_type=signal["match_type"],
-                    needs_review=signal["provenance"]["needs_review"],
+                    count=len(chosen),
+                    tiers=sorted({s["provenance"]["trace_tier"] for s in chosen}),
+                    needs_review=sum(1 for s in chosen if s["provenance"]["needs_review"]),
                     attempt=attempt,
                 )
-                return {"signal": signal, "error": None, "attempts": attempt}
-        last_error = error or "未知门禁错误"
+                return {"signals": chosen, "error": None, "attempts": attempt, "gate_errors": gate_errors}
+            last_error = gate_errors[0] if gate_errors else "无逐字可溯源的根因信号"
+        else:
+            last_error = error
+
         feedback = (
             f"上一轮输出未通过服务端门禁：{last_error}。"
-            "请严格遵守输出契约：只输出 1 条根因信号的 JSON 对象"
-            "（match_type=executable 时 acquire 必须使用采集器目录内的 qfk_* 工具；"
-            "match_type=text 时 expected 关键词必须逐字出现在根因原文中）。"
+            "请严格遵守输出契约：输出 1~8 条根因信号的 JSON 对象（键 signals 为数组），"
+            "每条 provenance.evidence 必须逐字出自整篇 KBD 某章节；"
+            "match_type=executable 时 acquire 必须使用采集器目录内的 qfk_* 工具；"
+            "match_type=text 时 expected 关键词必须逐字出现在所溯源章节原文中；"
+            "只抽能确定根因的信号，不抽处置动作/解决方案/泛化描述。"
         )
         logger.info(event="root_signal_gate_reject", support_id=entry.get("support_id"), attempt=attempt, reason=last_error)
 
     logger.error(event="root_signal_extraction_failed", support_id=entry.get("support_id"), reason=last_error)
-    return {"signal": None, "error": last_error, "attempts": attempts}
+    return {"signals": [], "error": last_error, "attempts": attempts, "gate_errors": []}
 
 
 # ─── 独特性（定位冲突计数）────────────────────────────────────────────────────

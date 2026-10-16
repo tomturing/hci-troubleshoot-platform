@@ -35,9 +35,9 @@ import {
   conflictDisplay,
   describeBackfillResult,
   distinctivenessLevel,
-  extractBlockReason,
   formatAcquire,
   matchKeywords,
+  parseSignals,
   type RootSignal,
 } from '@/utils/rootSignal'
 
@@ -82,9 +82,9 @@ interface KbdEntry {
   ai_category_label?: string | null
   // 关键信号集合：后端 GET 直出标准化 v2 文档 {schema_version, signals}（前端原生读 v2，RFC §7）
   signals_json?: SignalsDoc | null
-  // 根因信号（与关键信号完全解耦的第二轨）：一篇只有一条结论侧定位锚点，AI 派生元数据、不入版本
+  // 根因信号（与关键信号完全解耦的第二轨）：v2 一篇可有多条结论侧定位信号（顶层数组），AI 派生元数据、不入版本
   root_cause?: string | null
-  root_signal_json?: RootSignal | null
+  root_signal_json?: RootSignal | RootSignal[] | null
   signal_review_facts?: Record<string, { status: 'needs_review' | 'reviewed' }>
   latest_proposal_revision_id?: number | null
   working_revision_id?: number | null
@@ -1161,11 +1161,13 @@ async function handleReextractSignals(entry: KbdEntry) {
 }
 
 // ============ 根因信号（root_signal_json，与关键信号完全解耦） ============
-// 一篇 KBD 只有一条结论侧定位锚点；抽取只写 root_signal_json（AI 派生元数据），
+// v2：一篇 KBD 可有多条结论侧定位信号（顶层数组，不限条数）；抽取只写 root_signal_json（AI 派生元数据），
 // 不产生 kbd_revision、不影响发布盖章，故已发布条目同样可回刷。
 const extractRootSignalLoading = ref<number | null>(null)
 const rootSignalConflictLoading = ref(false)
-const rootSignalLiveConflict = ref<{ stored: any; live: any; corpus_size: number } | null>(null)
+// 逐条实时冲突度刷新结果（与 rootSignals 同序）+ 语料规模
+const rootSignalLiveConflicts = ref<{ live: any; stored: any }[] | null>(null)
+const rootSignalLiveCorpusSize = ref<number>(0)
 const rootSignalBackfillDialog = ref(false)
 const rootSignalBackfillLoading = ref(false)
 const rootSignalBackfillForm = ref({
@@ -1175,18 +1177,19 @@ const rootSignalBackfillForm = ref({
   limit: 100,
 })
 
-const currentRootSignal = computed<RootSignal | null>(() => detailEntry.value?.root_signal_json ?? null)
-const rootSignalConflict = computed(() => conflictDisplay(distinctivenessLevel(currentRootSignal.value)))
-const rootSignalAcquireText = computed(() => formatAcquire(currentRootSignal.value))
-const rootSignalKeywords = computed(() => matchKeywords(currentRootSignal.value))
-const rootSignalBlockReason = computed(() => extractBlockReason(detailEntry.value?.root_cause))
+const rootSignals = computed<RootSignal[]>(() => parseSignals(detailEntry.value?.root_signal_json))
+// 汇总徽标：只要任一条冲突即为不唯一定位（审核人一眼看出整篇冲突面）
+const rootSignalSummary = computed(() => {
+  const list = rootSignals.value
+  if (!list.length) return conflictDisplay('unextracted')
+  const levels = list.map((sig) => distinctivenessLevel(sig))
+  if (levels.includes('ambiguous')) return conflictDisplay('ambiguous')
+  if (levels.includes('category_only')) return conflictDisplay('category_only')
+  if (levels.includes('unique')) return conflictDisplay('unique')
+  return conflictDisplay('unextracted')
+})
 
 async function handleExtractRootSignal(entry: KbdEntry) {
-  const blocked = extractBlockReason(entry.root_cause)
-  if (blocked) {
-    ElMessage.warning({ message: blocked, duration: 0, showClose: true })
-    return
-  }
   extractRootSignalLoading.value = entry.id
   try {
     const resp = await fetch(`/api/v1/kbd/${entry.id}/extract-root-signal?sync=true`, {
@@ -1208,14 +1211,15 @@ async function handleExtractRootSignal(entry: KbdEntry) {
       return
     }
     ElMessage.success({
-      message: `根因信号已抽取：${data.match_type}｜同类冲突 ${data.distinctiveness?.category_conflicts ?? 0}／全库冲突 ${data.distinctiveness?.global_conflicts ?? 0}`,
+      message: `已抽取 ${data.signals_count ?? (data.signals?.length || 0)} 条根因信号：首条 ${data.match_type}｜同类冲突 ${data.distinctiveness?.category_conflicts ?? 0}／全库冲突 ${data.distinctiveness?.global_conflicts ?? 0}`,
       duration: 0,
       showClose: true,
     })
     if (detailEntry.value?.id === entry.id) {
       const detailResp = await fetch(`/api/v1/kbd/${entry.id}`, { headers: authHeader })
       if (detailResp.ok) detailEntry.value = await detailResp.json()
-      rootSignalLiveConflict.value = null
+      rootSignalLiveConflicts.value = null
+      rootSignalLiveCorpusSize.value = 0
     }
   } catch (err: any) {
     ElMessage.error({ message: `根因信号抽取失败：${err.message || '未知错误'}`, duration: 0, showClose: true })
@@ -1225,7 +1229,7 @@ async function handleExtractRootSignal(entry: KbdEntry) {
 }
 
 async function refreshRootSignalConflicts() {
-  if (!detailEntry.value || !currentRootSignal.value) return
+  if (!detailEntry.value || !rootSignals.value.length) return
   rootSignalConflictLoading.value = true
   try {
     const resp = await fetch(`/api/v1/kbd/${detailEntry.value.id}/root-signal-conflicts`, { headers: authHeader })
@@ -1234,14 +1238,12 @@ async function refreshRootSignalConflicts() {
       throw new Error(typeof data?.detail === 'string' ? data.detail : `HTTP ${resp.status}`)
     }
     const data = await resp.json()
-    rootSignalLiveConflict.value = {
-      stored: data.stored_distinctiveness,
-      live: data.live_distinctiveness,
-      corpus_size: data.corpus_size,
-    }
-    const liveGlobal = Number(data.live_distinctiveness?.global_conflicts ?? 0)
+    const list = Array.isArray(data.signals) ? data.signals : []
+    rootSignalLiveConflicts.value = list.map((item: any) => ({ live: item.live_distinctiveness, stored: item.stored_distinctiveness }))
+    rootSignalLiveCorpusSize.value = Number(data.corpus_size ?? 0)
+    const liveGlobal = list.reduce((acc: number, item: any) => acc + Number(item.live_distinctiveness?.global_conflicts ?? 0), 0)
     ElMessage[liveGlobal > 0 ? 'warning' : 'success']({
-      message: `按最新语料重算：全库冲突 ${liveGlobal} 条（语料 ${data.corpus_size} 篇，不回写快照）`,
+      message: `按最新语料逐条重算：全库冲突合计 ${liveGlobal} 条（语料 ${data.corpus_size} 篇，不回写快照）`,
       duration: 0,
       showClose: true,
     })
@@ -5468,17 +5470,17 @@ onUnmounted(() => clearBatchPollTimer())
           </el-descriptions>
         </div>
 
-        <!-- 根因信号面板（结论侧定位锚点，与关键信号完全解耦） -->
+        <!-- 根因信号面板（结论侧定位信号列表，与关键信号完全解耦） -->
         <div class="section-block">
           <div class="section-header-row">
-            <h4 class="section-title">根因信号（结论侧定位锚点）</h4>
+            <h4 class="section-title">根因信号（结论侧定位信号 · {{ rootSignals.length }} 条）</h4>
             <div class="section-actions">
-              <el-tag :type="rootSignalConflict.type" size="small">{{ rootSignalConflict.label }}</el-tag>
+              <el-tag :type="rootSignalSummary.type" size="small">{{ rootSignalSummary.label }}</el-tag>
               <el-button
                 size="small"
                 :loading="rootSignalConflictLoading"
-                :disabled="!currentRootSignal"
-                title="按最新全库语料重算冲突度（只读预览，不回写抽取快照）"
+                :disabled="!rootSignals.length"
+                title="按最新全库语料逐条重算冲突度（只读预览，不回写抽取快照）"
                 @click="refreshRootSignalConflicts"
               >
                 刷新冲突度
@@ -5487,56 +5489,76 @@ onUnmounted(() => clearBatchPollTimer())
                 type="warning"
                 size="small"
                 :loading="extractRootSignalLoading === detailEntry.id"
-                :disabled="!!rootSignalBlockReason"
-                :title="rootSignalBlockReason || '用最新 Prompt 从根因章节抽取根因信号（不产生新版本，不影响发布盖章）'"
+                title="用最新 Prompt 从整篇 KBD 抽取全部可确定根因的信号（不产生新版本，不影响发布盖章）"
                 @click="handleExtractRootSignal(detailEntry)"
               >
                 <el-icon style="font-size: 14px;"><Refresh /></el-icon>
-                {{ currentRootSignal ? '重新抽取' : '抽取根因信号' }}
+                {{ rootSignals.length ? '重新抽取' : '抽取根因信号' }}
               </el-button>
             </div>
           </div>
 
           <el-alert
-            v-if="!currentRootSignal"
+            v-if="!rootSignals.length"
             type="info" :closable="false" show-icon
-            :title="rootSignalBlockReason || '尚未抽取根因信号。它是结论侧锚点（一篇只有一条，理想可全库唯一定位），与下方关键信号（现象侧采集）互不替代。'"
+            title="尚未抽取根因信号。它是结论侧定位锚点（一篇可有多条，理想每条全库唯一定位），与下方关键信号（现象侧采集）互不替代。"
           />
-          <el-descriptions v-else :column="2" border size="small" class="root-signal-summary">
-            <el-descriptions-item label="锚点描述" :span="2">{{ currentRootSignal.signal_text }}</el-descriptions-item>
-            <el-descriptions-item label="形态">
-              <el-tag :type="currentRootSignal.match_type === 'executable' ? 'success' : 'info'" size="small">
-                {{ currentRootSignal.match_type === 'executable' ? 'executable（现场自动判定）' : 'text（证据流关键词包含）' }}
-              </el-tag>
-            </el-descriptions-item>
-            <el-descriptions-item label="待人工复核">
-              <el-tag v-if="currentRootSignal.provenance?.needs_review" type="warning" size="small">需复核</el-tag>
-              <span v-else>否</span>
-            </el-descriptions-item>
-            <el-descriptions-item v-if="rootSignalAcquireText" label="现场采集" :span="2">
-              <code>{{ rootSignalAcquireText }}</code>
-            </el-descriptions-item>
-            <el-descriptions-item label="判定条件" :span="2">
-              <el-tag v-for="kw in rootSignalKeywords" :key="kw" size="small" effect="plain" style="margin: 0 6px 4px 0">{{ kw }}</el-tag>
-              <span v-if="!rootSignalKeywords.length">-</span>
-              <span class="field-hint">模式 {{ currentRootSignal.match?.mode || 'all' }}／类型 {{ currentRootSignal.match?.type || 'keyword' }}</span>
-            </el-descriptions-item>
-            <el-descriptions-item label="冲突度（抽取快照）">
-              同类 {{ currentRootSignal.distinctiveness?.category_conflicts ?? '-' }} ／ 全库 {{ currentRootSignal.distinctiveness?.global_conflicts ?? '-' }}
-            </el-descriptions-item>
-            <el-descriptions-item label="冲突度（最新语料）">
-              <template v-if="rootSignalLiveConflict">
-                同类 {{ rootSignalLiveConflict.live?.category_conflicts ?? '-' }} ／ 全库 {{ rootSignalLiveConflict.live?.global_conflicts ?? '-' }}
-                <span class="field-hint">语料 {{ rootSignalLiveConflict.corpus_size }} 篇</span>
-              </template>
-              <span v-else class="field-hint">点「刷新冲突度」按最新全库语料重算</span>
-            </el-descriptions-item>
-            <el-descriptions-item label="证据原文" :span="2">{{ currentRootSignal.provenance?.evidence || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="Prompt 版本" :span="2">
-              <code>{{ currentRootSignal.prompt_revision || '-' }}</code>
-              <span class="field-hint">置信度 {{ currentRootSignal.provenance?.confidence ?? '-' }}；admin 改 Prompt 后下一次抽取即生效（热加载）</span>
-            </el-descriptions-item>
-          </el-descriptions>
+          <div v-else class="root-signal-list">
+            <el-card
+              v-for="(sig, idx) in rootSignals"
+              :key="idx"
+              class="root-signal-card"
+              shadow="never"
+              :header="'信号 ' + (idx + 1)"
+            >
+              <el-descriptions :column="2" border size="small">
+                <el-descriptions-item label="锚点描述" :span="2">{{ sig.signal_text }}</el-descriptions-item>
+                <el-descriptions-item label="形态">
+                  <el-tag :type="sig.match_type === 'executable' ? 'success' : 'info'" size="small">
+                    {{ sig.match_type === 'executable' ? 'executable（现场自动判定）' : 'text（证据流关键词包含）' }}
+                  </el-tag>
+                </el-descriptions-item>
+                <el-descriptions-item label="溯源层级">
+                  <el-tag :type="sig.provenance?.trace_tier === 'content' ? 'warning' : 'success'" size="small" effect="plain">
+                    {{ sig.provenance?.trace_tier === 'content' ? '整篇兑底（转人工复核）' : '根因主锚' }}
+                  </el-tag>
+                  <span class="field-hint">{{ sig.provenance?.source_section || '-' }}</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="待人工复核">
+                  <el-tag v-if="sig.provenance?.needs_review" type="warning" size="small">需复核</el-tag>
+                  <span v-else>否</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="冲突度">
+                  <el-tag :type="conflictDisplay(distinctivenessLevel(sig)).type" size="small" effect="plain">
+                    {{ conflictDisplay(distinctivenessLevel(sig)).label }}
+                  </el-tag>
+                </el-descriptions-item>
+                <el-descriptions-item v-if="formatAcquire(sig)" label="现场采集" :span="2">
+                  <code>{{ formatAcquire(sig) }}</code>
+                </el-descriptions-item>
+                <el-descriptions-item label="判定条件" :span="2">
+                  <el-tag v-for="kw in matchKeywords(sig)" :key="kw" size="small" effect="plain" style="margin: 0 6px 4px 0">{{ kw }}</el-tag>
+                  <span v-if="!matchKeywords(sig).length">-</span>
+                  <span class="field-hint">模式 {{ sig.match?.mode || 'all' }}／类型 {{ sig.match?.type || 'keyword' }}</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="冲突度（抽取快照）">
+                  同类 {{ sig.distinctiveness?.category_conflicts ?? '-' }} ／ 全库 {{ sig.distinctiveness?.global_conflicts ?? '-' }}
+                </el-descriptions-item>
+                <el-descriptions-item label="冲突度（最新语料）">
+                  <template v-if="rootSignalLiveConflicts && rootSignalLiveConflicts[idx]">
+                    同类 {{ rootSignalLiveConflicts[idx].live?.category_conflicts ?? '-' }} ／ 全库 {{ rootSignalLiveConflicts[idx].live?.global_conflicts ?? '-' }}
+                    <span class="field-hint">语料 {{ rootSignalLiveCorpusSize }} 篇</span>
+                  </template>
+                  <span v-else class="field-hint">点「刷新冲突度」按最新全库语料逐条重算</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="证据原文" :span="2">{{ sig.provenance?.evidence || '-' }}</el-descriptions-item>
+                <el-descriptions-item label="Prompt 版本" :span="2">
+                  <code>{{ sig.prompt_revision || '-' }}</code>
+                  <span class="field-hint">置信度 {{ sig.provenance?.confidence ?? '-' }}；admin 改 Prompt 后下一次抽取即生效（热加载）</span>
+                </el-descriptions-item>
+              </el-descriptions>
+            </el-card>
+          </div>
         </div>
 
         <!-- 关键信号面板（QKV / QFK 分组） -->
@@ -8895,10 +8917,22 @@ onUnmounted(() => clearBatchPollTimer())
 }
 
 /* 根因信号面板与回刷表单：沿用 .field-hint 字号但去掉信号表单的 94px 缩进 */
-.root-signal-summary .field-hint,
+.root-signal-list .field-hint,
 .root-signal-backfill-form .field-hint {
   margin-left: 0;
   display: block;
+}
+
+/* v2 多信号列表：每条信号一张卡片，卡片间留白区分 */
+.root-signal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.root-signal-card :deep(.el-card__header) {
+  padding: 8px 14px;
+  font-weight: 600;
+  font-size: 13px;
 }
 
 /* QKV 采集类型旁的「任务失败型/告警型」性质标注 */

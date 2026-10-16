@@ -38,6 +38,21 @@
       必须放到**全量检出**的后端测试（`TestCrossLanguageContract` 读 `rootSignal.ts` 比对 `route.MIN_ROOT_CAUSE_LEN`），
       前端侧只留钉值断言；该后端守护已用变异测试（把前端阈值改 31 → 该例失败）验证不是空跑。
       **教训：「本地全量测试全绿」不等于 CI 拓扑下可跑，写跨目录读写/幂等断言前必须先核对该 CI 作业的 checkout 与执行序列。**
+  - **v2 多信号重设计（推翻上述 v1 具体描述，以本条为准；详见方案文档 §10）**：内部评审三要求——
+    ①**不限条数**：`root_signal_json` 由 v1 单对象改为 **v2 顶层 JSON 数组**，`desired_schema.sql` CHECK
+    改为 `jsonb_typeof='array'`，v1 两个标量 partial 索引（`->>'match_type'`/`provenance->>'needs_review'`）对
+    数组失效→换 **GIN `idx_kbd_entry_root_signal_gin`（`jsonb_path_ops`）**；`gate_single_signal`→`gate_signals`
+    （接受 1..N、按 signal_text 去重、封顶 max_signals=8），**部分成功**：单条门禁失败只丢该条记 `gate_errors`。
+    ②**输入放开整篇**：抽取输入由仅 `root_cause` 改为整篇 `content_md`（缺失回退章节拼接），Prompt
+    重命名 `kbd_extract_root_signal_v1`→`_v2`、占位符 `root_cause`→`kbd_content`（`ROOT_SIGNAL_PLACEHOLDERS` 同步）；
+    ③**只抽能确证根因的信号 + 溯源分层 `trace_tier`**：evidence 逐字命中 `root_cause`＝主锚（高信任）、
+    仅命中整篇其余章节＝`content` 兑底（**强制 `needs_review=true`**）、整篇溯不到＝拒；主锚优先。
+    **已废除 `MIN_ROOT_CAUSE_LEN` 跨语言契约**（输入放开整篇后根因短不再阻塞）：前后端钉值、`extractBlockReason`
+    与 `TestCrossLanguageContract` 均删除，避坑 V-023 改写为退位记录；回刷 where 不再含 `char_length(root_cause)>=30`。
+    admin UI：`rootSignal.ts` 新增 `parseSignals`（数组/旧对象兼容），`KbdReviewView.vue` 单卡片→**信号列表**。
+    实测锁定策略（n=100×3）：S1 主锚确证命中 96.9%/噪声 3.1%/唯一定位 90.8%，S2/S3 命中 65.5%/噪声
+    34.5%（S2 增量噪声 52.7%）→ 采纳选项 B。测试：`test_root_signal_extractor.py` 36 例 +
+    `test_extract_root_signal_route.py` 13 例，后端 680 passed / admin 162 passed + `vue-tsc --noEmit` 无错。
 - **分类树拖拽重排即时物化 code（解A「顺序即序号」落地）**（详见 `docs/solution/admin-ui/events/2026-10-11-分类树拖拽重排即时物化code方案.md`）：
   - **根因**：解A 铁律「同级顺序即 code，无独立 sort 字段」下，`CategoryManageView.vue` 的 `sortTreeNodes` 每次 refetch 按 `code.localeCompare` 重排；而 `handleNodeDrop` 只发 `{parent_id}` 不改 code、不带位置 → 拖出来的视觉顺序与 code 无关，刷新即被拍回原形，表现为「拖拽完全无效果」。
   - **修复**：`category_repo.py` 新增 `resequence_domain`（前序 DFS 按目标父新兄弟序整域重编号，单事务内用唯一临时码 `__tmp__||id` 规避置换碰撞 + 摘/重建 FK·CHECK + remap **全库按 code 引用分类的列**（`kbd_entry.category_id`/`ai_category_id`、`sop_document.category_id`、`conversation.category_id`、`offline_signal_collector_mapping.category_scope`、`diagnosis_candidate/run/session` 的 code 列，共 10 列；存 label/域名的列排除）+ 悬空仅对有 FK 列置 NULL）；`category_service.py` 新增 `update_parent_and_resequence` → 下沉 `category_repo.py` 的 `move_and_resequence`（**单事务原子**：换父 `_do_update_parent` flush 不提交 + 重排 `resequence_domain(ext_session=)` 复用同一 session，**唯一 commit**，任一环节失败整体回滚，消除旧版两步分提交的“换父成功但顺序未物化”部分成功态）；`categories.py` `CategoryParentUpdateRequest` 扩 `sibling_order`、返回 `resequence`；前端 `handleNodeDrop` 读目标父 `childNodes` 新兄弟 code 全序下发，重排后按稳定 `id_in_db` 复位选中。

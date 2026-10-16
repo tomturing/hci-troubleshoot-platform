@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -44,7 +43,7 @@ _EXECUTABLE_PAYLOAD = {
         "match": {"type": "keyword", "mode": "all", "expected": ["100%"]},
         "provenance": {
             "source_section": "root_cause",
-            "evidence": "df -h /run/lock 显示使用率 100%",
+            "evidence": "使用率 100%",
             "confidence": 0.9,
             "needs_review": False,
         },
@@ -71,6 +70,7 @@ _ENTRY_ROW = {
     "support_id": "41480",
     "title": "【HCI】修改admin密码后root密码未同步",
     "root_cause": "df 显示 /run/lock 分区使用率 100%，占满导致虚拟机任务失败",
+    "content_md": "## 问题描述\nadmin 密码同步失败\n\n## 根因\ndf 显示 /run/lock 分区使用率 100%，占满导致虚拟机任务失败\n\n## 解决方案\n清理残留 lock 文件并扩容分区",
     "category_id": "虚拟机-009",
     "ai_category_id": None,
     "status": "published",
@@ -189,11 +189,14 @@ class TestExtractForKbd:
         assert calls["name"] == ROOT_SIGNAL_PROMPT_NAME
         assert calls["expected"] == list(ROOT_SIGNAL_PLACEHOLDERS)
         assert calls["consumer"] == route.CONSUMER
-        # 落库只动 root_signal_json 一列
+        # 落库只动 root_signal_json 一列（v2 顶层数组）
         assert len(updates) == 1
         assert "root_signal_json" in updates[0]["sql"] and "content_md" not in updates[0]["sql"]
-        signal = json.loads(updates[0]["params"]["signal"])
-        assert signal["schema_version"] == 1 and signal["role"] == "root_cause"
+        signals = json.loads(updates[0]["params"]["signals"])
+        assert isinstance(signals, list) and len(signals) == 1
+        signal = signals[0]
+        assert signal["schema_version"] == 2 and signal["role"] == "root_cause"
+        assert signal["provenance"]["trace_tier"] == "root_cause"
         # 冲突度来自现场语料实测，不是 LLM 自报值
         assert signal["distinctiveness"] == {"category_conflicts": 1, "global_conflicts": 1}
         assert signal["provenance"]["source_sha256"]
@@ -216,7 +219,7 @@ class TestExtractForKbd:
 
         assert result["success"] is True and result["match_type"] == "text"
         assert result["needs_review"] is False
-        assert json.loads(updates[0]["params"]["signal"])["acquire"] is None
+        assert json.loads(updates[0]["params"]["signals"])[0]["acquire"] is None
 
     async def test_gate_reject_writes_nothing_and_keeps_previous_signal(
         self, monkeypatch, prompt_template, corpus
@@ -244,7 +247,7 @@ class TestExtractForKbd:
 
         assert result["success"] is False
         assert result["attempts"] == 2
-        assert result["signal"] is None
+        assert result["signals"] == []
         assert updates == []
 
     async def test_prompt_hot_load_failure_blocks_extraction(self, monkeypatch, corpus):
@@ -268,22 +271,27 @@ class TestExtractForKbd:
             await route.extract_root_signal_for_kbd(db, 404)
         assert exc.value.status_code == 404
 
-    async def test_short_root_cause_rejected_before_llm(self, monkeypatch, prompt_template):
-        """语料不达标的正路是治理根因，不是放宽门禁（对齐 200 篇实测结论）。"""
+    async def test_short_root_cause_still_extracts_from_content(self, monkeypatch, prompt_template):
+        """v2 已取消根因长度硬门：根因短仍可读整篇抽取；仅能溯源到整篇其余章节时降为 content 兑底并强制复核。"""
         updates: list[dict[str, Any]] = []
         db = _db_factory({**_ENTRY_ROW, "root_cause": "配置不正确"}, updates)
         await _stub_loader(monkeypatch, prompt_template)
+        llm_called = {"n": 0}
 
         async def _llm(
             messages: list[dict[str, str]], *, prompt_revision: str, kbd_id: int, attempt: int
         ) -> dict[str, Any]:
-            raise AssertionError("根因过短不应调用 LLM")
+            llm_called["n"] += 1
+            return _EXECUTABLE_PAYLOAD  # evidence 只存在于 content_md（根因“配置不正确”不含）
 
         monkeypatch.setattr(route, "_call_llm_messages", _llm)
-        with pytest.raises(HTTPException) as exc:
-            await route.extract_root_signal_for_kbd(db, 1, corpus=ConflictCorpus([]))
-        assert exc.value.status_code == 422
-        assert exc.value.detail["code"] == "ROOT_SIGNAL_ROOT_CAUSE_TOO_SHORT"
+        result = await route.extract_root_signal_for_kbd(db, 1, corpus=ConflictCorpus([]))
+
+        assert llm_called["n"] >= 1  # 不再在 LLM 前被 422 拦下
+        assert result["success"] is True and result["signals_count"] == 1
+        assert result["needs_review"] is True  # content 兑底强制人工复核
+        signal = json.loads(updates[0]["params"]["signals"])[0]
+        assert signal["provenance"]["trace_tier"] == "content"
 
 
 class TestCorpusCache:
@@ -371,25 +379,6 @@ class TestConflictCorpus:
         assert corpus.conflicts(signal) == {"category_conflicts": 0, "global_conflicts": 0}
 
 
-class TestCrossLanguageContract:
-    """跨语言常量不漂移：Admin UI 的前置体检阈值必须等于后端硬门禁阈值。
+# v2 说明：原 TestCrossLanguageContract 锁定的 MIN_ROOT_CAUSE_LEN 跨语言契约已随服务端
+# 422 硬门一同废除（抽取输入面放开为整篇 KBD，根因短不再阻塞），无需再钉值。
 
-    放在后端侧是因为前端 CI 门禁用 `sparse-checkout: frontend` 的稀疏检出（见
-    .github/workflows/ci.yml 「前端门禁不消费后端源码」），前端测试拿不到本仓库源码；
-    而 unit-tests 作业为全量检出，两边文件都在。方向也符合依赖常理：后端合约作为
-    事实源去审计前端镜像值，而不是反过来。
-    """
-
-    _UI_SOURCE = "frontend/admin/src/utils/rootSignal.ts"
-
-    def test_min_root_cause_len_matches_admin_ui(self):
-        ui_file = REPO_ROOT / self._UI_SOURCE
-        assert ui_file.exists(), f"前端阈值文件缺失，无法校验跨语言契约: {ui_file}"
-        matched = re.search(
-            r"export const MIN_ROOT_CAUSE_LEN = (\d+)", ui_file.read_text(encoding="utf-8")
-        )
-        assert matched is not None, f"前端未再声明 MIN_ROOT_CAUSE_LEN，契约锚点丢失：{self._UI_SOURCE}"
-        assert int(matched.group(1)) == route.MIN_ROOT_CAUSE_LEN, (
-            "Admin UI 的「根因过短不抽取」前置体检与后端 422 门禁阈值不一致，"
-            "会出现按钮放行但接口报错的脱同步体验"
-        )
