@@ -31,6 +31,7 @@ class ErrorCode(StrEnum):
     # 网关相关错误
     GATEWAY_ERROR = "GATEWAY_ERROR"  # 网关通用错误
     STREAMING_ERROR = "STREAMING_ERROR"  # 流传输错误
+    SESSION_INVALID = "SESSION_INVALID"  # 会话身份失效/无权访问（上游 401/403），需刷新页面重进
 
     # 业务逻辑错误
     CONVERSATION_NOT_FOUND = "CONVERSATION_NOT_FOUND"

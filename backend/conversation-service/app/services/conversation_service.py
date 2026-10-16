@@ -290,7 +290,17 @@ class ConversationService:
         initial_message: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> Conversation:
-        """创建新对话"""
+        """创建新对话（幂等 ensure：若 case 已有会话则直接返回已有，避免重复建会话）"""
+        # 幂等：工单与对话 1:1，重复创建时返回已有会话，杜绝「工单存在但无会话」的孤儿状态
+        existing = await self.repository.get_conversations_by_case(case_id)
+        if existing:
+            logger.info(
+                event="conversation_ensure_existing",
+                message="Conversation already exists for case, return existing",
+                case_id=case_id,
+                conversation_id=str(existing[0].conversation_id),
+            )
+            return existing[0]
         # 查询 Case 的 trace_id，确保一案一链继承机制
         case_trace_id = None
         try:

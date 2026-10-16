@@ -945,6 +945,28 @@ class InvestigationAgent(BaseAgent):
         elif diagnostic_stage == "S4":
             response_schema = ClaimVerification
 
+        # user_questions 事实源约束所需变量集：
+        #   - resolved：变量池中已有非空值的变量（防止重复索取已提交变量）
+        #   - declared：当前 SOP variable_schema 声明的变量（识别凭空编造的需求项）
+        sop_resolved_variables: set[str] = set()
+        for _name, _info in (context_variables or {}).items():
+            _val = _info.get("value") if isinstance(_info, dict) else _info
+            if _val is not None and _val != "":
+                sop_resolved_variables.add(_name)
+        sop_declared_variables: set[str] = set()
+        if response_schema is ReasoningOutput and sop_document_id:
+            try:
+                _sop_doc = await self._kb_client.get_sop_document(sop_document_id)
+                for _v in (_sop_doc or {}).get("variable_schema") or []:
+                    if isinstance(_v, dict) and _v.get("name"):
+                        sop_declared_variables.add(_v["name"])
+            except Exception as _exc:
+                logger.warning(
+                    event="sop_declared_variables_load_failed",
+                    sop_document_id=sop_document_id,
+                    error=str(_exc),
+                )
+
         # 调用 ReactEngine.execute()，动态注入 SOP 工具
         async for event in react_engine.execute(
             session_id=session_id,
@@ -958,6 +980,8 @@ class InvestigationAgent(BaseAgent):
             tool_executor=sop_tool_executor,  # 使用 SOP 工具执行器
             sop_mode=True,  # DC-01: SOP 模式，注入 SOP 导航工具到 LLM tool list
             response_schema=response_schema,
+            sop_resolved_variables=sop_resolved_variables,
+            sop_declared_variables=sop_declared_variables,
         ):
             yield event
 

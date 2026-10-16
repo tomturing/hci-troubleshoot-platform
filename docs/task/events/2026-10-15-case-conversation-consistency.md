@@ -1,0 +1,53 @@
+---
+status: active
+category: task
+audience: developer
+last_updated: 2026-10-15
+owner: hci-dev
+---
+
+# 工单与对话一致性修复 — 任务清单
+
+## 关联方案
+[2026-10-15-case-conversation-consistency.md](../solution/events/2026-10-15-case-conversation-consistency.md)
+
+## 任务清单
+
+### T1：case_id 改用 DB 自增
+- **描述**：删除 `case_service._generate_case_id()`（random），`create_case` 改为 `case_id = await self.repository.generate_case_id()`。
+- **文件变更**：`backend/case-service/app/services/case_service.py`
+- **验收标准**：新建工单 case_id 形如 `QYYYYMMDDNNNNN` 且当天连续自增；`case_service` 不再出现 random 生成路径。
+- **依赖**：无
+- **状态**：待开始
+
+### T2：conversation 创建幂等 ensure
+- **描述**：`conversation-service` create 接口按 `case_id` 幂等（已存在则返回已有）；前端 `createConversation()` 复用该幂等接口，`completeCaseCreationFlow` / `connectSSHAndCreateCase` 创建工单后调用并失败重试 1 次。
+- **文件变更**：`backend/conversation-service/app/routes/conversations.py`、`frontend/customer/src/stores/chat.ts`
+- **验收标准**：同一 case 重复 create 返回同一 conversation_id；新建工单流程结束必有 1 条会话。
+- **依赖**：T1
+- **状态**：待开始
+
+### T3：前端 404 降级
+- **描述**：`loadConversationHistory(caseId)` 对 GET 返回 404「工单不存在」做友好提示并清理 currentCase，不裸 404 / 不抛未捕获异常。
+- **文件变更**：`frontend/customer/src/stores/chat.ts`
+- **验收标准**：访问不存在工单时 UI 显示提示，控制台无未捕获异常。
+- **依赖**：无
+- **状态**：待开始
+
+## 任务依赖图
+```
+T1 → T2 → （T3 可并行）
+```
+
+## 执行顺序建议
+1. 第一批：T1
+2. 第二批：T2、T3（可并行）
+
+## 文档更新计划
+- [ ] `docs/solution/架构设计.md` 或 case 相关设计文档变更历史（如适用）
+- [ ] `README.md` 第一屏（如涉及功能清单）
+
+## 测试计划
+- 单元测试：case_id 自增；conversation ensure 幂等。
+- 集成测试：创建工单→自动有会话；访问不存在工单→友好提示。
+- 人工测试：staging 走一遍创建工单 + 打开对话 + 访问无效工单。

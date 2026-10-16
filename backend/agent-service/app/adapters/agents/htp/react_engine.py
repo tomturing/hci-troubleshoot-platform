@@ -79,6 +79,58 @@ def ungrounded_conclusion_block(content: str | None, report: dict) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# S2/S3 假设生成 user_questions 事实源约束（工单 Q2026101511258「硬盘坏道」复盘）
+# 根因：ReasoningOutput.user_questions 是模型自由编写的字符串列表，不经变量池校验；
+# 模型会从 S1 遗留的失败原文里“续写”出对已就绪变量的重复索取（如已提交的 disk_dev），
+# 或凭空索要 SOP 未声明的派生字段（如 disk_sn/disk_type）。现有反幻觉硬拦截只覆盖
+# “结论语境 + 无溯源数值”，对“提问语境 + 无依据需求项”无拦截。
+# 对策：以变量池为权威事实源，确定性过滤 user_questions 中的幻觉追问（模型无关兜底）。
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 变量样 token：小写且至少含一个下划线（如 disk_dev/disk_sn/node_ip），
+# 规避普通中英文词与连写术语的误伤；无下划线的变量名（如 date）不参与该启发式。
+_VAR_TOKEN_RE = re.compile(r"\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b")
+
+
+def filter_ungrounded_user_questions(
+    questions: list[str],
+    resolved_variables: set[str],
+    declared_variables: set[str],
+) -> tuple[list[str], list[str]]:
+    """按变量池事实源过滤 ReasoningOutput.user_questions 中的幻觉追问。
+
+    纯函数、模型无关，便于单测。返回 (kept, dropped)：
+      - 命中「已就绪变量」（变量池中有非空值）→ 判为对已提交变量的重复索取，丢弃；
+      - 引用「既未声明也未就绪」的变量样 token → 判为凭空编造的需求项，丢弃；
+      - 其余（不含变量 token，或仅引用未就绪但已声明的合法变量）→ 保留。
+
+    Args:
+        questions: 模型给出的 user_questions 列表
+        resolved_variables: 变量池中已有非空值的变量名集合
+        declared_variables: 当前 SOP variable_schema 声明的全部变量名集合
+    """
+    # 无事实源护栏：拿不到 declared 声明集（如 variable_schema 加载失败）时不做任何过滤，
+    # 否则空 known 会把所有含变量样 token 的合法追问误删（对抗性审查发现的过杀风险）。
+    if not declared_variables:
+        return list(questions or []), []
+    known = resolved_variables | declared_variables
+    kept: list[str] = []
+    dropped: list[str] = []
+    for question in questions or []:
+        tokens = set(_VAR_TOKEN_RE.findall(question or ""))
+        # 1) 重复索取已就绪变量
+        if tokens & resolved_variables:
+            dropped.append(question)
+            continue
+        # 2) 引用未声明的变量样 token（凭空编造的字段）
+        if any(token not in known for token in tokens):
+            dropped.append(question)
+            continue
+        kept.append(question)
+    return kept, dropped
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # ToolCallValidator 和 ToolResultEnvelope 数据结构与校验器定义
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -456,6 +508,8 @@ class ReactEngine:
         tool_executor: ToolExecutor | None = None,  # T-AGT-22: 可替换工具执行器（用于 SOP 工具注入上下文）
         sop_mode: bool = False,  # DC-01: SOP 模式，用于注入 SOP 导航工具到 LLM tool list
         response_schema: type[BaseModel] | None = None,  # T3-2: 结构化输出 Schema
+        sop_resolved_variables: set[str] | None = None,  # 变量池中已就绪（有值）的变量名，用于 user_questions 事实源过滤
+        sop_declared_variables: set[str] | None = None,  # 当前 SOP variable_schema 声明的变量名，用于识别凭空编造的需求项
     ) -> AsyncGenerator[AgentEvent, None]:
         """ReAct 循环（Reason → Act → Observe）
 
@@ -703,6 +757,32 @@ class ReactEngine:
                                         AGENT_UNSUPPORTED_CLAIM_TOTAL.labels(claim_type="reasoning_output").inc()
                             except Exception as met_err:
                                 logger.warning("metrics_record_failed", f"记录 ReasoningOutput metrics 失败: {met_err}")
+                            # 事实源约束：以变量池为权威，确定性过滤 user_questions 中的幻觉追问
+                            # （重复索取已提交变量 / 凭空索要未声明字段），模型无关兜底。
+                            kept_questions, dropped_questions = filter_ungrounded_user_questions(
+                                list(getattr(parsed, "user_questions", []) or []),
+                                sop_resolved_variables or set(),
+                                sop_declared_variables or set(),
+                            )
+                            if dropped_questions:
+                                parsed.user_questions = kept_questions
+                                # 回写净化后的结构化 JSON，令后续硬拦截与流式直出均基于事实源一致内容
+                                invoke_result.content = parsed.model_dump_json()
+                                logger.warning(
+                                    event="sop_user_questions_grounded_filter",
+                                    session_id=session_id,
+                                    case_id=case_id,
+                                    dropped_count=len(dropped_questions),
+                                    dropped_questions=dropped_questions,
+                                )
+                                try:
+                                    from app.services.metrics import AGENT_HALLUCINATION_DETECTED_TOTAL
+
+                                    AGENT_HALLUCINATION_DETECTED_TOTAL.labels(
+                                        hallucination_type="ungrounded_user_question"
+                                    ).inc(len(dropped_questions))
+                                except Exception as met_err:
+                                    logger.warning("metrics_record_failed", f"记录 metrics 失败: {met_err}")
                     except Exception as e:
                         logger.warning(
                             "schema_validation_failed",

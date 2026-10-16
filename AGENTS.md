@@ -32,7 +32,7 @@
       `extras → atlas apply(desired_schema) → extras`，而 `database/desired_extras.sql` 对该 CHECK 做**无条件
       DROP + ADD**，总会覆盖 atlas 刚写好的定义；只改 `desired_schema.sql` 会使「apply 后仍有 diff」而幂等门禁失败。
       规则：**凡 extras 里无条件重建的对象（尤其枚举型 CHECK），扩值必须 `desired_schema.sql` 与 `desired_extras.sql` 同改。**
-    - **前端单测不得跨语言读后端源码**（已登记避坑 `docs/verify/pitfalls/frontend.md` V-019）：「前端检查」作业用
+    - **前端单测不得跨语言读后端源码**（已登记避坑 `docs/verify/pitfalls/frontend.md` V-023）：「前端检查」作业用
       `sparse-checkout: frontend`（作业注释明写「前端门禁不消费后端源码」），仓根只有 `frontend/`，所以
       “从 `process.cwd()` 向上找 `backend/` 再 `readFileSync`”一类用例本地全绿、CI 必炸。跨语言常量一致性校验
       必须放到**全量检出**的后端测试（`TestCrossLanguageContract` 读 `rootSignal.ts` 比对 `route.MIN_ROOT_CAUSE_LEN`），
@@ -81,6 +81,13 @@
     - WS `handle()` 连接即下发 `bridge_hello` 握手首包；新增 `bridge.listening`/`bridge.already_running`/`bridge.backup_port_activated`/`bridge.port_conflict` 结构化日志事件。
     - 前端 `frontend/customer/src/api/terminal.ts` 新增 `resolveBridgeUrl`：桌面模式探测 `9999 → 47324` 两个已知端口，以收到 `bridge_hello` 回包为准判定“对端确实是 Bridge”（不能只看 WS 能否 open，避免误连陌生进程），命中即缓存；`checkBridgeRunning`/`checkBridgeBeforeOpen` 接入并在失效时清缓存；cluster 注入配置零探测、nginx/helm/docker 单端口零改动。
     - 测试守护：`terminal_bridge/port_recovery_test.go` 覆盖占用判定/退避重试/存活识别/幂等退出/主备回退/自定义端口不扩散/fail-fast；`terminal.spec.ts` 新增双端口探测 6 例并保留 `getBridgeUrl` 默认回归。
+- **工单 Q2026101496655「提交 node_ip 后弹框假报错『请输入值（必填）』」前端状态机修复**：
+  - **根因**：SOP 变量卡片 `handleInteractiveFreeText` 在 `POST /interactive-response` 成功（变量已写入 `sop_execution.context_variables`）后先清空输入框、再调 `chatStore.sendMessage(text, {kind:'interactive_response'})` 触发续跑；而 `chat.ts` 的 `sendMessage` 首行守卫 `if (!content.trim() || isStreaming.value) return` 在本轮 SSE 流式期间（长工具链可持续数分钟）把该触发消息**无提示静默吞掉**。于是：①`interactiveSubmitted`（纯按「弹框后是否存在 interactive_response 用户消息」推断）永远为 false，弹框不转「已提交」态；②输入框已被清空 + `isTouched=true` 组合出红字「请输入值（必填）」假报错，诱导用户反复重提（实测 3 次全部后端 200 成功）。本质是「提交结果反馈」与「续跑触发消息」两条通道耦合在同一个静默守卫上。
+  - **修复**（纯前端，后端写入链路本身无缺陷）：
+    - `chat.ts` `sendMessage` 改为返回 `Promise<boolean>`（守卫吞掉/工单关闭返回 false，真正发出返回 true），消除静默失败；既有调用方不消费返回值保持兼容。
+    - `MessageBubble.vue` 新增 `interactiveLocalSubmitted` 本地已提交标志：`/interactive-response` POST 成功即置 true（先于清空输入框），`interactiveSubmitted` 计算属性优先读本地态，不再依赖「后续触发消息是否存在」的脆弱推断；`sendMessage` 返回 `false` 时变量类卡片给 `ElMessage.info`「值已提交成功、诊断进行中」的诚实反馈，`sop_fallback` 被吞掉时给 warning 且不标记已提交（选择需可重做）；`interactiveEvent` 切换新请求时重置本地标志。`handleConfirmRecommendValue` 同步处理。
+  - **测试守护**：`MessageBubble.variable-submit.spec.ts` 新增 5 例（流式吞掉仍转已提交+提示/正常发出不重复提示/提交失败不清空输入不标已提交/历史 interactive_response 向后兼容/sop_fallback 被吞可重选）；`chat.interactive.spec.ts` 新增 `sendMessage` 返回值语义 2 例（isStreaming 时 false 且不发请求/正常流 true）。
+  - **教训：前端任何“成功后的副作用触发”若经过可能被守卫吞掉的通道，必须先把 UI 状态推进到与后端一致，再尽力触发，且吞掉时必须有用户可感知的反馈；“清空输入框”与“保留已提交态展示”绝不可先于状态确认执行。**
 - **工单 Q2026092053425 排障交互卡片无响应与容器执行失败修复**：
   - **根因**：
     - **点击交互无反应与超时取消**：`conversation-service` 转发用户交互确认到 `agent-service` 时漏传内部 `Authorization` Token，导致 401 失败并在前端静默吞咽，最终 Redis 等待 120 秒超时判定为操作已取消；
@@ -100,6 +107,26 @@
     - 新增 `_evidence_request_satisfied()` 方法，使用字符 bigram 匹配策略（无需中文分词）检测用户消息中是否已包含 evidence request 要求的信息；`_semantic_guidance_messages()` 过滤掉已满足的请求项。
     - 新增循环中断机制：快捷路径中统计 guidance marker 出现次数，≥3 轮用户补充后仍无法推进时，输出确认收到 + 建议转人工的消息，不再重复请求。
   - **测试守护**：新增 4 个单元测试覆盖 bigram 匹配、已提供过滤、无关消息不误判等场景。
+- **S0 意图识别「已正确识别却报无法识别」JSON 结构化输出改造**（工单 Q2026101493534 复盘；详见 `docs/verify/pitfalls/debugging.md` V-020）：
+  - **根因**：旧范式是「Prompt 约定文本标记 + 下游正则抠字」——`triage_agent._parse_intent_result` 的 `confirmed_pattern` 只认字面量「已确认故障分类/故障分类」、`candidate_pattern` 只认行首 ①②③④，该契约对默认模型 glm-5 的输出习惯**隐式过拟合**。切换到 Qwen3.8-Flash 后书写风格漂移（改写「确认分类：」缺「故障」、用 `**粗体**` 包裹分类码、用 `- ` 短横线代替圈号候选行），任一即令正则提取集为空，被静默降级为「无法识别」的**假阴性**。
+  - **修复（解耦「模型文本风格」与「解析契约」）**：
+    - **主链路**：S0 由 `chat_completion_stream` 改为 `ai_client.invoke(..., response_format={"type":"json_object"})`，Prompt 强制只输出 JSON 对象 `{reasoning, decision, category_code, candidate_codes, clarification_question}`；harness 经 `_extract_json_object` → `_intent_from_structured` 读字段并用权威分类字典 `cat_map` 校验。
+    - **多层兜底**：JSON 解析失败 → 剥 ` ```json ` 围栏/截取首个 `{...}` 重试 → 模型无关归一化文本解析（`_normalize_reply` 剥离 `**`/反引号、`_CONFIRM_MARKERS` 兼容「确认分类」同义词、`_BULLET` 兼容 `- * • ①-⑳ 1.`）→ 确定性关键词候选 → 受控降级，故「新代码 + 旧文本 Prompt」也能靠归一化兜底正常工作，向后兼容迁移滞后。
+    - **可观测性**：新增 `intent_contract_drift`（模型未按 JSON 契约返回但走了文本兜底），与真实 `intent_parse_failed`（无任何可用分类）区分。
+    - **Prompt 三处同步**：`database/seeds/02_system_prompts.sql`、`database/data-migrations/045_s0_intent_structured_output_prompt.sql`、`backend/shared/utils/prompt_loader.py` mock 模板保持一致；模板 JSON 字面花括号必须写成 `{{ }}` 以通过 `str.format`。
+  - **测试守护**：`backend/agent-service/tests/unit/test_triage_agent.py` 的 `TestExtractJsonObject`/`TestIntentFromStructured`/`TestNormalizationFallback`，含真实 Qwen 漂移样本（`确认分类：**虚拟机-017 …**`、`- ` 短横线候选）与「契约漂移端到端仍弹确认卡」用例。
+- **工单 Q2026101511258「硬盘坏道」S2/S3 假设生成 user_questions 幻觉追问事实源约束**（避坑 V-021）：
+  - **根因**：用户已通过 SOP 变量弹框提交 `disk_dev`（后端 [conversation_service.py](backend/conversation-service/app/services/conversation_service.py) `submit_interactive_response`→[sop_execution_repository.py](backend/conversation-service/app/repositories/sop_execution_repository.py) `set_variable` 已写库、清 `pending_variable_name`、状态回 active，前端「已提交」态正确），但下一轮进入 S2 假设生成时，`ReasoningOutput.user_questions`（[shared/models/reliability.py](backend/shared/models/reliability.py)）仍续写出「请正式提交 disk_dev，该槽位仍为 needs_input」并索要硬盘坏道 SOP#4 根本未声明的 `disk_sn`/`disk_type`。本质：`user_questions` 是模型自由编写的字符串列表，**不经任何变量池/门禁校验**，模型从对话历史里 S1 阶段遗留的失败原文（asan_disks 截断、smartctl 报错、「请人工提供该变量值」）中「续写」出需求清单，而非以当前变量池为事实源；现有反幻觉硬拦截（V-017 §3.3）只覆盖「结论语境+无溯源数值」，对「提问语境+无依据需求项」无拦截，仅追加「待验证」标注仍原样抵达用户。
+  - **修复（引擎侧确定性过滤为主，Prompt 加固为辅，双层兜底）**：
+    - **引擎侧模型无关过滤**：[react_engine.py](backend/agent-service/app/adapters/agents/htp/react_engine.py) 新增纯函数 `filter_ungrounded_user_questions(questions, resolved_variables, declared_variables)`，以「已就绪变量名 + SOP 声明变量名」为事实源，剔除两类幻觉：①命中已就绪变量（重复索取已提交变量）②引用既未声明也未就绪的变量样 token（`\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b`，凭空编造字段）；**带无事实源护栏**：`declared_variables` 为空（`variable_schema` 加载失败）时整体不过滤，避免空 known 误删全部含下划线 token 的合法追问。`ReactEngine.execute` 新增 `sop_resolved_variables`/`sop_declared_variables` 参数，在 `ReasoningOutput` 校验成功后过滤并 `model_dump_json()` 回写 `invoke_result.content`，令后续硬拦截与流式直出均基于事实源一致内容，记 `sop_user_questions_grounded_filter` 日志与 `ungrounded_user_question` 指标。
+    - **上下文注入**：[investigation_agent.py](backend/agent-service/app/adapters/agents/htp/investigation_agent.py) `_process_sop_mode` 从 `context_variables` 计算已就绪变量集、从 `kb_client.get_sop_document().variable_schema` 计算已声明变量集，仅 `response_schema is ReasoningOutput` 时拉取，传入 `execute`。
+    - **Prompt 加固**：统一输出约束 `s1_react_output_constraint_v1`（S1~S4 共用）追加【已知变量权威】规则，声明「已知变量」列表优先级高于历史失败原文，严禁在 user_questions 重复索取已就绪变量或索要未声明字段；种子 [02_system_prompts.sql](database/seeds/02_system_prompts.sql) 与热更新迁移 [046_update_react_output_constraint_known_vars_authority.sql](database/data-migrations/046_update_react_output_constraint_known_vars_authority.sql)（条件追加、幂等、含校验门禁 `migration:20261015000001`）同步。
+  - **测试守护**：[test_sop_user_questions_grounding.py](backend/agent-service/tests/unit/test_sop_user_questions_grounding.py) 7 例覆盖「重复索取已就绪变量丢弃/凭空索要未声明变量丢弃/已声明未就绪变量保留/无变量 token 保留/无事实源护栏幂等/Q2026101511258 三问句端到端只剔幻觉」。
+- **硬盘坏道 Live E2E Smoke（L3 跨层契约缝隙回归，发布前 gate）**（避坑 V-022）：
+  - **根因**：Q2026101511258 会话控制链路反复挤牙膏（#1149 前端态机 / V-020 S0 解析 / V-021 S2 幻觉追问），每次单点修复各补隔离单测，但「各层各自测、层间契约缝隙无人测」——SSE `event: interactive_request` kind 契约、签名身份头、变量池 `context_variables` 写入时序、引擎侧过滤守卫是否真触发，始终处于盲区，只能靠线上工单暴露。
+  - **能力**：`evaluation/live_e2e/`（`asserts.py` 纯逻辑 SSE 解析/交互卡归一化/提问落地性/5 条不变量、`driver.py` httpx 异步驱动建案→SSE→变量交互提交（复刻 #1149「先确认后端落库再触发续跑」时序）→终态、`smoke.py` CLI + `--attempts` 多数表决、`scenarios/disk_badtrack.json`）；`scripts/hci-sim/disk_badtrack_llm_stub.py` 确定性对抗桩把历史坏输出真注入 agent-service 逼守卫触发（实现『破坏缝隙能验红』）；`scripts/verify/live_e2e_disk_badtrack.sh` + `make live-e2e-disk-badtrack` 全栈 compose 编排（端口暴露覆盖 `evaluation/live_e2e/docker-compose.live-e2e.yml` 置于 evaluation/ 下不进 CI/config-contract-check），`trap` teardown。**断言只打结构不变量 + 守卫事件**（`agent_hallucination_detected_total{hallucination_type="ungrounded_user_question"}` 计数增量、`sop/execution.context_variables` 落库），绝不断言逐字文本。
+  - **定位**：发布前 gate，不进每 PR CI（依赖 docker+LLM+bridge，慢且非确定性）；端到端实跑须在具备全栈的宿主机执行，运行手册 `docs/verify/evaluation/live-e2e-disk-badtrack.md`。
+  - **测试守护（进 CI，脱网）**：`tests/unit/test_live_e2e_asserts.py`（含 `test_evaluate_invariants_red_when_filter_bypassed` 验红）、`tests/unit/test_live_e2e_driver.py`（SSE 分派/终态扫描/已就绪变量纯逻辑）、`tests/unit/test_disk_badtrack_llm_stub.py`（桩产出的 JSON 必须能被真实 `ReasoningOutput` schema 解析）。
 - **Langfuse 子路径导航丢失修复（NEXT_PUBLIC_BASE_PATH 补齐）**（PR #1035）：
   - **根因**：Langfuse (Next.js) 通过 Traefik `stripPrefix` 中间件挂载在 `/langfuse` 子路径，但容器内未配置 `NEXT_PUBLIC_BASE_PATH`，导致 Next.js 前端生成的内部链接（页面跳转、tRPC 请求）不含 `/langfuse` 前缀。首页直接访问 `/langfuse` 能命中 Ingress 规则，但点击项目/设置等页面后，浏览器 URL 变为 `/project/xxx` 或 `/api/trpc/...`，脱离 Ingress 路由范围导致导航丢失。
   - **修复**：在 `deploy/helm/hci-platform-obs/templates/langfuse.yaml` 的 `langfuse-server` 环境变量中增加 `NEXT_PUBLIC_BASE_PATH=/langfuse`（subdomain 模式下不设置），使 Next.js 前端生成的内部链接（页面跳转、静态资源、tRPC 请求）自动带 `/langfuse` 前缀。**注意**：Next.js `basePath` 不影响 `/api/` 路由，健康端点始终在 `/api/public/health`，探针路径保持不变。Docker Compose 无需修改（本地 `localhost:13000` 无子路径前缀）。

@@ -1,0 +1,19 @@
+# 硬盘坏道 Live E2E Smoke 专用端口暴露覆盖（非破坏式：仅叠加 ports，不改动 base compose）。
+#
+# 仅由 scripts/verify/live_e2e_disk_badtrack.sh 显式 `-f` 加载；不进 dev-up、不进 CI、
+# 不被 config-contract-check 扫描（刻意置于 evaluation/ 下而非 deploy/），故对既有契约校验零影响。
+#
+# base compose 中 case/conversation/agent 只在集群内网可达（无 host 端口）。本覆盖把它们临时
+# 暴露到宿主机，使 host 侧 .venv 驱动 (evaluation/live_e2e/smoke.py) 能直连三服务：
+#   - 建案/建会话/发消息：X-Client-Signature 身份签名
+#   - 查 SOP 落库态 / agent /metrics：Bearer INTERNAL_API_TOKEN
+services:
+  case-service:
+    ports:
+      - "8001:8001"
+  conversation-service:
+    ports:
+      - "8002:8002"
+  agent-service:
+    ports:
+      - "8005:8005"

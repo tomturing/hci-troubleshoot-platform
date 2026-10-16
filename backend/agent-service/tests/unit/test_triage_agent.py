@@ -7,11 +7,20 @@ TriageAgent 单元测试
   3. process()：流程测试（mock LLM，验证 yield 事件）
 """
 
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from app.adapters.agents.htp.triage_agent import TriageAgent
 from app.domain.agent_port import AgentInteractiveRequest, AgentTextChunk
+
+
+def _invoke_result(content: str):
+    """构造一个与 OpenClawAssistant.invoke 返回契约一致的假结果。"""
+    return SimpleNamespace(content=content, tool_calls=[])
 
 # ─── _parse_intent_result 测试 ────────────────────────────────────────────────
 
@@ -281,7 +290,7 @@ class TestTriageAgentProcess:
         """S0 收到显式执行命令请求时，必须在调用 LLM 前拒绝且不输出可执行代码块。"""
         mock_registry = MagicMock()
         mock_client = MagicMock()
-        mock_client.chat_completion_stream = MagicMock()
+        mock_client.invoke = MagicMock()
         mock_registry.get_client.return_value = mock_client
 
         triage = TriageAgent(ai_registry=mock_registry, kb_client=MagicMock())
@@ -307,7 +316,7 @@ class TestTriageAgentProcess:
         assert "```bash" not in text
         assert not any(isinstance(event, AgentInteractiveRequest) for event in events)
         mock_registry.get_client.assert_not_called()
-        mock_client.chat_completion_stream.assert_not_called()
+        mock_client.invoke.assert_not_called()
 
     def test_failure_description_is_not_misclassified_as_execution_request(self):
         """描述历史故障现象不等于请求 S0 立即执行命令。"""
@@ -319,10 +328,18 @@ class TestTriageAgentProcess:
         mock_registry = MagicMock()
         mock_client = MagicMock()
 
-        async def fake_stream(messages, system=None, **kwargs):
-            yield "执行命令：`printf ...`\n```bash\nPR632_E2E_OK\nLinux\n```"
-
-        mock_client.chat_completion_stream = fake_stream
+        # 模型在结构化 reasoning 字段里伪造命令执行输出，必须被后置证据门禁阻断
+        fabricated = json.dumps(
+            {
+                "reasoning": "执行命令：`printf ...`\n```bash\nPR632_E2E_OK\nLinux\n```",
+                "decision": "confirmed",
+                "category_code": "虚拟机-003",
+                "candidate_codes": [],
+                "clarification_question": None,
+            },
+            ensure_ascii=False,
+        )
+        mock_client.invoke = AsyncMock(return_value=_invoke_result(fabricated))
         mock_registry.get_client.return_value = mock_client
         mock_kb = MagicMock()
         mock_kb.get_categories = AsyncMock(return_value=[{"code": "虚拟机-003", "name": "虚拟机开机失败"}])
@@ -366,11 +383,22 @@ class TestTriageAgentProcess:
         mock_kb = MagicMock()
         mock_kb.get_categories = AsyncMock(return_value=[{"code": "虚拟机-003", "name": "虚拟机开机失败"}])
 
-        # 模拟 chat_completion_stream 返回确认文本
-        async def fake_stream(messages, system=None, **kwargs):
-            yield "已确认故障分类：虚拟机-003 虚拟机开机失败"
+        # 模拟 invoke 返回结构化确认（JSON 契约）
+        confirmed = json.dumps(
+            {
+                "reasoning": "虚拟机启动失败，命中开机失败分类。",
+                "decision": "confirmed",
+                "category_code": "虚拟机-003",
+                "candidate_codes": [],
+                "clarification_question": None,
+            },
+            ensure_ascii=False,
+        )
 
-        mock_client.chat_completion_stream = fake_stream
+        async def fake_invoke(messages, user_id="", case_id="", temperature=None, response_format=None, **kwargs):
+            return _invoke_result(confirmed)
+
+        mock_client.invoke = fake_invoke
         mock_registry.get_client.return_value = mock_client
 
         triage = TriageAgent(ai_registry=mock_registry, kb_client=mock_kb)
@@ -415,10 +443,21 @@ class TestTriageAgentProcess:
             ]
         )
 
-        async def fake_stream(messages, system=None, **kwargs):
-            yield "可能是以下故障之一：\n① 虚拟机-001 虚拟机网络异常\n② 虚拟机-003 虚拟机开机失败\n请确认"
+        candidates_payload = json.dumps(
+            {
+                "reasoning": "描述同时涉及网络与启动，需澄清。",
+                "decision": "candidates",
+                "category_code": None,
+                "candidate_codes": ["虚拟机-001", "虚拟机-003"],
+                "clarification_question": "请问是完全无法开机还是网络不通？",
+            },
+            ensure_ascii=False,
+        )
 
-        mock_client.chat_completion_stream = fake_stream
+        async def fake_invoke(messages, user_id="", case_id="", temperature=None, response_format=None, **kwargs):
+            return _invoke_result(candidates_payload)
+
+        mock_client.invoke = fake_invoke
         mock_registry.get_client.return_value = mock_client
 
         triage = TriageAgent(ai_registry=mock_registry, kb_client=mock_kb)
@@ -516,3 +555,152 @@ def test_deterministic_candidates_include_nonconforming_leaf():
 
     assert result.needs_confirmation is True
     assert result.candidates[0]["code"] == "虚拟机-L2-虚拟机集群内或跨集群迁移失败"
+
+
+# ─── 结构化 JSON 输出主链路测试（换模型不回退的核心保障）───────────────────
+
+
+class TestExtractJsonObject:
+    """_extract_json_object：从模型返回文本稳健提取 JSON 对象。"""
+
+    def test_plain_json(self):
+        obj = TriageAgent._extract_json_object('{"decision": "confirmed", "category_code": "虚拟机-017"}')
+        assert obj == {"decision": "confirmed", "category_code": "虚拟机-017"}
+
+    def test_fenced_json(self):
+        obj = TriageAgent._extract_json_object('```json\n{"decision": "candidates", "candidate_codes": ["虚拟机-001"]}\n```')
+        assert obj is not None
+        assert obj["candidate_codes"] == ["虚拟机-001"]
+
+    def test_json_with_surrounding_prose(self):
+        obj = TriageAgent._extract_json_object('好的，结果如下：\n{"decision": "confirmed", "category_code": "存储-007"}\n以上。')
+        assert obj is not None
+        assert obj["category_code"] == "存储-007"
+
+    def test_non_json_returns_none(self):
+        assert TriageAgent._extract_json_object("这不是 JSON，只是自由文本。") is None
+        assert TriageAgent._extract_json_object("") is None
+
+    def test_json_array_not_object_returns_none(self):
+        assert TriageAgent._extract_json_object('[1, 2, 3]') is None
+
+
+class TestIntentFromStructured:
+    """_intent_from_structured：结构化决策经 cat_map 权威校验。"""
+
+    def setup_method(self):
+        self.triage = TriageAgent(ai_registry=MagicMock(), kb_client=MagicMock())
+        TriageAgent._categories_cache = {
+            "虚拟机": [
+                {"code": "虚拟机-001", "name": "虚拟机网络异常"},
+                {"code": "虚拟机-017", "name": "虚拟机集群内或跨集群迁移失败"},
+            ]
+        }
+
+    def test_confirmed(self):
+        result = self.triage._intent_from_structured(
+            {"decision": "confirmed", "category_code": "虚拟机-017", "candidate_codes": []}
+        )
+        assert result.category_id == "虚拟机-017"
+        assert result.category_name == "虚拟机集群内或跨集群迁移失败"
+        assert result.needs_confirmation is True
+
+    def test_candidates(self):
+        result = self.triage._intent_from_structured(
+            {"decision": "candidates", "category_code": None, "candidate_codes": ["虚拟机-001", "虚拟机-017"]}
+        )
+        assert result.category_id is None
+        assert [c["code"] for c in result.candidates] == ["虚拟机-001", "虚拟机-017"]
+
+    def test_unknown_code_rejected(self):
+        result = self.triage._intent_from_structured(
+            {"decision": "confirmed", "category_code": "幻觉-999", "candidate_codes": ["不存在-1"]}
+        )
+        assert result.category_id is None
+        assert result.candidates == []
+
+    def test_empty_registry_fails_closed(self):
+        TriageAgent._categories_cache = {}
+        result = self.triage._intent_from_structured({"decision": "confirmed", "category_code": "虚拟机-017"})
+        assert result.category_id is None
+        assert result.candidates == []
+
+
+class TestNormalizationFallback:
+    """_parse_intent_result：真实 Qwen 漂移样本经归一化后仍能正确提取（工单 Q2026101493534 回归）。"""
+
+    def setup_method(self):
+        self.triage = TriageAgent(ai_registry=MagicMock(), kb_client=MagicMock())
+        TriageAgent._categories_cache = {
+            "虚拟机": [
+                {"code": "虚拟机-017", "name": "虚拟机集群内或跨集群迁移失败"},
+                {"code": "虚拟机-016", "name": "虚拟机scmt迁移失败"},
+                {"code": "虚拟机-018", "name": "虚拟机vmware纳管迁移失败"},
+            ]
+        }
+
+    def test_qwen_confirm_synonym_with_bold_markdown(self):
+        """Qwen 写「确认分类：**虚拟机-017 …**」，旧正则判失败，归一化后应命中。"""
+        reply = (
+            "判断依据：用户描述的关键实体是“虚拟机跨集群迁移”，故障现象是“迁移失败”。\n\n"
+            "确认分类：**虚拟机-017 虚拟机集群内或跨集群迁移失败**"
+        )
+        result = self.triage._parse_intent_result(reply)
+        assert result.category_id == "虚拟机-017"
+        assert result.needs_confirmation is True
+
+    def test_dash_bullets_candidates(self):
+        """Qwen 用 - 短横线代替 ①②③ 候选行，应能提取全部候选码。"""
+        reply = (
+            "需要先确认迁移场景。候选分类：\n"
+            "- 虚拟机-017 虚拟机集群内或跨集群迁移失败\n"
+            "- 虚拟机-016 虚拟机scmt迁移失败\n"
+            "- 虚拟机-018 虚拟机vmware纳管迁移失败"
+        )
+        result = self.triage._parse_intent_result(reply)
+        assert [c["code"] for c in result.candidates] == ["虚拟机-017", "虚拟机-016", "虚拟机-018"]
+
+    @pytest.mark.asyncio
+    async def test_process_contract_drift_falls_back_to_interactive(self):
+        """端到端：模型未按 JSON 契约返回（返回漂移文本）时，process() 仍应弹确认卡而非「无法识别」。"""
+        mock_registry = MagicMock()
+        mock_client = MagicMock()
+        drifted = (
+            "判断依据：命中跨集群迁移失败。\n\n"
+            "确认分类：**虚拟机-017 虚拟机集群内或跨集群迁移失败**"
+        )
+
+        async def fake_invoke(messages, user_id="", case_id="", temperature=None, response_format=None, **kwargs):
+            return _invoke_result(drifted)
+
+        mock_client.invoke = fake_invoke
+        mock_registry.get_client.return_value = mock_client
+        mock_kb = MagicMock()
+        mock_kb.get_categories = AsyncMock(
+            return_value=[{"code": "虚拟机-017", "name": "虚拟机集群内或跨集群迁移失败"}]
+        )
+        triage = TriageAgent(ai_registry=mock_registry, kb_client=mock_kb)
+        TriageAgent._categories_cache = {
+            "虚拟机": [{"code": "虚拟机-017", "name": "虚拟机集群内或跨集群迁移失败"}]
+        }
+        import time
+
+        triage._categories_cache_time = time.time()
+
+        events = [
+            event
+            async for event in triage.process(
+                session_id="test-drift",
+                messages=[{"role": "user", "content": "跨集群迁移虚拟机卡在63%"}],
+                env_context={},
+                assistant_type="htp-agent",
+                case_id="Q2026101493534",
+                user_id="user-001",
+            )
+        ]
+
+        interactive = [e for e in events if isinstance(e, AgentInteractiveRequest)]
+        assert len(interactive) == 1
+        assert interactive[0].metadata.get("category_id") == "虚拟机-017"
+        text = "".join(e.content for e in events if isinstance(e, AgentTextChunk))
+        assert "暂时无法识别" not in text

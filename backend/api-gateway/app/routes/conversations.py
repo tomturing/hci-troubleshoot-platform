@@ -67,6 +67,30 @@ async def _read_json_body_limited(request: Request, max_bytes: int) -> dict:
     return payload
 
 
+def _upstream_error_payload(status_code: int, body_text: str) -> tuple[str, str, str]:
+    """把上游非 200 响应映射为（code, message, detail）。
+
+    历史缺陷：曾把所有非 200 一律包装为「上游服务暂时不可用」，掩盖了如 403
+    「无权访问此会话」这类真实原因，导致运维无法定位。现按状态分类透传。
+    """
+    # 尽量从上游 JSON 响应体提取可读 detail（FastAPI HTTPException 形如 {"detail": ...}）
+    detail = f"status {status_code}"
+    if body_text:
+        try:
+            parsed = json.loads(body_text)
+            if isinstance(parsed, dict) and isinstance(parsed.get("detail"), str):
+                detail = parsed["detail"]
+        except (json.JSONDecodeError, ValueError):
+            snippet = body_text.strip()[:200]
+            if snippet:
+                detail = f"status {status_code}: {snippet}"
+    if status_code in (401, 403):
+        return ErrorCode.SESSION_INVALID.value, "会话身份已失效或无权访问，请刷新页面后重新进入工单", detail
+    if 400 <= status_code < 500:
+        return ErrorCode.VALIDATION_ERROR.value, "请求被上游服务拒绝", detail
+    return ErrorCode.GATEWAY_ERROR.value, "上游服务暂时不可用", detail
+
+
 async def proxy_request_stream(
     method: str, path: str, payload: dict | None, headers: dict, client_id: str | None = None
 ):
@@ -82,12 +106,22 @@ async def proxy_request_stream(
                 stream_kwargs["json"] = payload
             async with client.stream(method, url, **stream_kwargs) as response:
                 if response.status_code != 200:
+                    # 读取上游错误体以提取真实原因（限制大小防大响应冲击内存）
+                    raw = (await response.aread())[:MAX_EXEC_RESULT_BODY_BYTES]
+                    try:
+                        body_text = raw.decode("utf-8", "replace")
+                    except Exception:  # noqa: BLE001 - 解码失败降级为空文本不影响分类
+                        body_text = ""
+                    logger.warning(
+                        event="gateway_upstream_error",
+                        message="Upstream returned non-200 while proxying SSE",
+                        status_code=response.status_code,
+                        url=url,
+                        body_preview=body_text[:200],
+                    )
+                    code, message, detail = _upstream_error_payload(response.status_code, body_text)
                     error_data = json.dumps(
-                        {
-                            "code": ErrorCode.GATEWAY_ERROR.value,
-                            "message": "上游服务暂时不可用",
-                            "detail": f"status {response.status_code}",
-                        },
+                        {"code": code, "message": message, "detail": detail},
                         ensure_ascii=False,
                     )
                     yield f"event: error\ndata: {error_data}\n\n".encode()

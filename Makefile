@@ -1,7 +1,7 @@
 # HCI智能排障平台 - Makefile
 # 依赖管理: uv (https://docs.astral.sh/uv/)
 
-.PHONY: help install compose-check compose-network compose-build-services config-contract-check dev-up dev-down db-sync diagnosis-dev-keys diagnosis-sample-preflight diagnosis-sample-postgres-preflight diagnosis-lab-list diagnosis-lab-check diagnosis-lab-sync diagnosis-lab-up diagnosis-lab-status diagnosis-lab-connection diagnosis-lab-renew diagnosis-lab-online-smoke diagnosis-lab-offline-run diagnosis-lab-reset diagnosis-lab-down diagnosis-sample-e2e semantic-e2e-prepare semantic-online-up semantic-online-status semantic-online-verify semantic-online-matrix semantic-online-down semantic-offline-prepare semantic-offline-collect semantic-offline-upload semantic-offline-result semantic-offline-verify signal-v2-e2e-prepare signal-v2-online-matrix signal-v2-offline-stack signal-v2-offline-matrix signal-v2-offline-prepare signal-v2-offline-collect signal-v2-offline-upload signal-v2-offline-result signal-v2-offline-verify signal-v2-e2e-down test lint clean quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill local-deploy local-deploy-import gen-schemas schema-check build-offline-collector test-offline-collector
+.PHONY: help install compose-check compose-network compose-build-services config-contract-check dev-up dev-down db-sync diagnosis-dev-keys diagnosis-sample-preflight diagnosis-sample-postgres-preflight diagnosis-lab-list diagnosis-lab-check diagnosis-lab-sync diagnosis-lab-up diagnosis-lab-status diagnosis-lab-connection diagnosis-lab-renew diagnosis-lab-online-smoke diagnosis-lab-offline-run diagnosis-lab-reset diagnosis-lab-down diagnosis-sample-e2e live-e2e-disk-badtrack semantic-e2e-prepare semantic-online-up semantic-online-status semantic-online-verify semantic-online-matrix semantic-online-down semantic-offline-prepare semantic-offline-collect semantic-offline-upload semantic-offline-result semantic-offline-verify signal-v2-e2e-prepare signal-v2-online-matrix signal-v2-offline-stack signal-v2-offline-matrix signal-v2-offline-prepare signal-v2-offline-collect signal-v2-offline-upload signal-v2-offline-result signal-v2-offline-verify signal-v2-e2e-down test lint clean quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill local-deploy local-deploy-import gen-schemas schema-check build-offline-collector test-offline-collector
 
 # Docker Compose v2 是 Docker 官方当前发行形态，也是 GitHub Runner 提供的命令。
 # 仍可通过 `make COMPOSE=docker-compose ...` 兼容仅安装 v1 的旧环境。
@@ -32,6 +32,7 @@ help:
 	@echo "  make signal-v2-offline-stack RUN_ID=... DATABASE_NAME=... - 启动隔离离线栈并全量同步资源"
 	@echo "  make signal-v2-offline-matrix RUN_ID=... DATABASE_NAME=... - 回归全量信号离线闭环"
 	@echo "  make signal-v2-offline-{prepare,collect,upload,result,verify} ... - 回归全量信号离线闭环"
+	@echo "  make live-e2e-disk-badtrack [VARIANT=truncated] [MODE=stub] [ATTEMPTS=3] - 硬盘坏道真实会话链路 Live E2E Smoke（发布前 gate，需 docker+全栈）"
 	@echo "  make test           - 运行测试 (uv run pytest)"
 	@echo "  make lint           - 代码检查 (uv run ruff)"
 	@echo "  make clean          - 清理临时文件"
@@ -176,6 +177,11 @@ diagnosis-lab-down:
 
 diagnosis-sample-e2e: diagnosis-dev-keys diagnosis-sample-preflight diagnosis-sample-postgres-preflight
 	@echo "静态与 PostgreSQL 生命周期回归通过。运行层 E2E 请在平台/Terminal Bridge 启动后按需执行 diagnosis-lab-up、online-smoke 和 offline-run。"
+
+# 硬盘坏道 Live E2E Smoke（L3，发布前 gate，非每 PR CI）：驱动真实会话链路 + 不变量断言。
+# 依赖 docker + 全栈 compose，须在具备环境的宿主机执行；VARIANT=positive|truncated，MODE=stub|real。
+live-e2e-disk-badtrack:
+	@VARIANT=$(if $(VARIANT),$(VARIANT),truncated) MODE=$(if $(MODE),$(MODE),stub) ATTEMPTS=$(if $(ATTEMPTS),$(ATTEMPTS),3) LEAVE_RUNNING=$(if $(LEAVE_RUNNING),$(LEAVE_RUNNING),0) bash scripts/verify/live_e2e_disk_badtrack.sh
 
 SEMANTIC_ONLINE := .venv/bin/python scripts/hci-sim/semantic-online-e2e.py
 SEMANTIC_OFFLINE := .venv/bin/python scripts/hci-sim/semantic-e2e-offline.py

@@ -1,6 +1,6 @@
 # 前端避坑（pnpm / TypeScript / Vue）
 
-## V-019：前端单测不得跨语言读后端源码（前端 CI 门禁是稀疏检出）
+## V-023：前端单测不得跨语言读后端源码（前端 CI 门禁是稀疏检出）
 
 **症状：** `rootSignal.spec.ts` 新增一例「跨语言契约一致性」——从 `process.cwd()` 向上寻仓根再
 `readFileSync('backend/kb-service/app/routes/extract_root_signal.py')` 比对 `MIN_ROOT_CAUSE_LEN`。
