@@ -32,32 +32,8 @@ from app.services.case_service import CaseService
 from shared.models.schemas import CaseCreate
 
 
-class TestCaseIDGeneration:
-    """工单ID生成测试"""
-
-    def test_generate_case_id_format(self):
-        """测试工单ID格式: Q + YYYYMMDD + 5位序号"""
-        mock_repo = Mock()
-        service = CaseService(mock_repo)
-
-        case_id = service._generate_case_id()
-
-        # 检查格式
-        assert case_id.startswith("Q")
-        assert len(case_id) == 14  # Q + 8位日期 + 5位序号
-        assert case_id[1:9].isdigit()  # 日期部分
-        assert case_id[9:].isdigit()  # 序号部分
-
-    def test_generate_case_id_date(self):
-        """测试工单ID包含当前日期"""
-        mock_repo = Mock()
-        service = CaseService(mock_repo)
-
-        case_id = service._generate_case_id()
-        date_part = case_id[1:9]
-
-        today = datetime.utcnow().strftime("%Y%m%d")
-        assert date_part == today
+# 注：#1153 已将 case_id 统一为 DB 自增（repository.generate_case_id()），
+# 原 TestCaseIDGeneration 针对已删除的 service._generate_case_id()，故移除。
 
 
 @pytest.mark.asyncio
@@ -73,6 +49,8 @@ class TestCaseCreation:
         mock_user = Mock()
         mock_user.user_id = "test-user-id"
         mock_repo.get_user_by_client_id = AsyncMock(return_value=mock_user)
+        # #1153 后 case_id 由 DB 函数生成，需将 repository.generate_case_id 置为可 await
+        mock_repo.generate_case_id = AsyncMock(return_value="Q20260215001")
 
         mock_case = Case(
             case_id="Q20260215001",
@@ -110,6 +88,8 @@ class TestCaseCreation:
         mock_user = Mock()
         mock_user.user_id = "test-user-id"
         mock_repo.get_user_by_client_id = AsyncMock(return_value=mock_user)
+        # #1153 后 case_id 由 DB 函数生成，需将 repository.generate_case_id 置为可 await
+        mock_repo.generate_case_id = AsyncMock(return_value="Q20260215001")
 
         mock_case = Case(
             case_id="Q20260215001",
