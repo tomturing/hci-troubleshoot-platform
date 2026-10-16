@@ -32,32 +32,62 @@ from app.services.case_service import CaseService
 from shared.models.schemas import CaseCreate
 
 
+@pytest.mark.asyncio
 class TestCaseIDGeneration:
-    """工单ID生成测试"""
+    """工单ID生成契约测试
 
-    def test_generate_case_id_format(self):
-        """测试工单ID格式: Q + YYYYMMDD + 5位序号"""
+    case_id 由 DB 函数 generate_case_id() 生成（Q + 当天日期 + 当天自增序号），
+    service 仅委托 repository.generate_case_id()，不再本地随机生成，消除孤儿工单 ID。
+    """
+
+    async def _build_service(self, expected_id: str):
+        """构造 service 与 mock repository：generate_case_id 返回期望值，其余依赖 mock 掉"""
         mock_repo = Mock()
-        service = CaseService(mock_repo)
+        mock_repo.generate_case_id = AsyncMock(return_value=expected_id)
+        mock_user = Mock()
+        mock_user.user_id = "u1"
+        mock_repo.get_user_by_client_id = AsyncMock(return_value=mock_user)
+        mock_case = Case(
+            case_id=expected_id,
+            user_id="u1",
+            client_id="c1",
+            title="t",
+            description="d",
+            status=CaseStatus.created,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        mock_repo.generate_case_id = AsyncMock(return_value="Q20260215001")
+        mock_repo.create = AsyncMock(return_value=mock_case)
+        return CaseService(mock_repo), mock_repo
 
-        case_id = service._generate_case_id()
-
-        # 检查格式
-        assert case_id.startswith("Q")
-        assert len(case_id) == 14  # Q + 8位日期 + 5位序号
-        assert case_id[1:9].isdigit()  # 日期部分
-        assert case_id[9:].isdigit()  # 序号部分
-
-    def test_generate_case_id_date(self):
-        """测试工单ID包含当前日期"""
-        mock_repo = Mock()
-        service = CaseService(mock_repo)
-
-        case_id = service._generate_case_id()
-        date_part = case_id[1:9]
-
+    async def test_case_id_format(self):
+        """create_case 返回的 case_id 必须满足格式契约：Q + 8位日期 + 5位序号（共14字符）"""
         today = datetime.utcnow().strftime("%Y%m%d")
-        assert date_part == today
+        expected_id = f"Q{today}00001"
+        service, mock_repo = await self._build_service(expected_id)
+
+        result = await service.create_case(CaseCreate(title="t", description="d", client_id="c1"))
+
+        # service 必须委托 repository 生成 case_id（而非本地随机），这是修复孤儿 ID 的核心契约
+        mock_repo.generate_case_id.assert_awaited_once()
+        assert result.case_id == expected_id
+        # 格式契约
+        assert result.case_id.startswith("Q")
+        assert len(result.case_id) == 14
+        assert result.case_id[1:9].isdigit()
+        assert result.case_id[9:].isdigit()
+
+    async def test_case_id_date_is_today(self):
+        """create_case 返回的 case_id 日期部分必须为当前日期（与 DB 自增契约一致）"""
+        today = datetime.utcnow().strftime("%Y%m%d")
+        expected_id = f"Q{today}00007"
+        service, mock_repo = await self._build_service(expected_id)
+
+        result = await service.create_case(CaseCreate(title="t", description="d", client_id="c1"))
+
+        assert result.case_id[1:9] == today
+        mock_repo.generate_case_id.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -84,6 +114,7 @@ class TestCaseCreation:
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
         )
+        mock_repo.generate_case_id = AsyncMock(return_value="Q20260215001")
         mock_repo.create = AsyncMock(return_value=mock_case)
 
         # Create service
@@ -121,6 +152,7 @@ class TestCaseCreation:
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
         )
+        mock_repo.generate_case_id = AsyncMock(return_value="Q20260215001")
         mock_repo.create = AsyncMock(return_value=mock_case)
 
         service = CaseService(mock_repo)
