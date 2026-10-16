@@ -248,6 +248,33 @@ async def _seed_case_environment(
     return failed
 
 
+async def _seed_sop_variables(
+    client: httpx.AsyncClient, config: DriverConfig, conversation_id: str, seed_vars: dict[str, str]
+) -> list[str]:
+    """在首条消息前，把易触发 LLM 自动取值（skill_call）而超时不定的派生变量直接种入 SOP 变量池。
+
+    第一性原理：agent 变量池对已存在且非空的变量会缓存命中、不再跑 skill_call（见“失败即接管维持 pending”回归）。
+    后端 `variable-response` 在 status==active（`/sop/create` 创建后即为 active）时允许不校验 pending
+    直接写入任意变量（sop_execution.py active 分支）。因此预种这些变量可绕过 staging 外部模型 MaaS 超时，
+    令「采集→下发→回灌→结论」链路确定性推进——同时是跨场景通用能力（任何场景都可声明 seed_variables）。
+    返回失败列表（空即全部写入成功）。
+    """
+    failed: list[str] = []
+    url = f"{config.conv_base}/api/conversations/{conversation_id}/sop/variable-response"
+    for name, value in (seed_vars or {}).items():
+        if not name or name.startswith("_") or value in (None, ""):
+            continue
+        resp = await client.post(
+            url,
+            json={"variable_name": name, "value": str(value), "source": "user_input"},
+            headers=_admin_headers(config),
+            timeout=config.request_timeout,
+        )
+        if resp.status_code not in (200, 201):
+            failed.append(f"{name}:{resp.status_code}:{resp.text[:80]}")
+    return failed
+
+
 async def _snapshot_guard_metrics(client: httpx.AsyncClient, config: DriverConfig) -> dict[str, float]:
     """GET agent-service /metrics，解析反幻觉守卫计数为 {样本键: 数值}。"""
     url = f"{config.agent_base}/metrics"
@@ -356,6 +383,20 @@ def _scan_terminal_signals(events: list[dict[str, Any]]) -> tuple[str | None, in
     return category, sop_id
 
 
+def merge_observed_signals(
+    live_category: str | None, live_sop_id: int | None, scanned: tuple[str | None, int | None]
+) -> tuple[str | None, int | None]:
+    """合并「交互链路已确证值」与「终态事件尽力扫描值」：已确证优先保留，缺失才用扫描兜底。
+
+    第一性原理：S0 走候选澄清时 driver 已按用户点选记录 observed_category_code，但点选确认后的 SOP
+    续跑终态事件未必再带 category_code 字段，_scan_terminal_signals 返回 None —— 若直接赋值会把正确值
+    冲成假阴性（simrunM attempt1 即此症状）。故非空优先，仅当已确证为空时用扫描值兜底，兼容「模型直接
+    确认分类、不经点选」的路径。对 sop_document_hit_id 同理。
+    """
+    scanned_category, scanned_sop_id = scanned
+    return live_category or scanned_category, live_sop_id or scanned_sop_id
+
+
 async def run_scenario(
     config: DriverConfig,
     spec: dict[str, Any],
@@ -423,6 +464,16 @@ async def run_scenario(
                 obs.error = f"直连绑定 SOP#{bind_sop} 失败 {code}: {str(body)[:200]}"
                 return obs
             note(f"SOP#{bind_sop} execution bound (跳过 S0 分类)")
+
+        # 1.6) 预种易触发 LLM 超时不定的派生变量（skill_call 产物），令链路确定性推进到结论。
+        seed_vars = spec.get("seed_variables") or {}
+        if seed_vars and obs.conversation_id:
+            seed_failed = await _seed_sop_variables(client, config, obs.conversation_id, seed_vars)
+            if seed_failed:
+                note(f"预种变量部分失败: {seed_failed}")
+            else:
+                seeded_keys = [k for k in seed_vars if k and not k.startswith("_")]
+                note(f"已预种变量以绕过 LLM 自动取值: {seeded_keys}")
 
         guard_before = await _snapshot_guard_metrics(client, config)
 
@@ -544,7 +595,12 @@ async def run_scenario(
                 obs.persisted_variables = execution.get("context_variables") or {}
                 obs.pending_variable_name = execution.get("pending_variable_name")
 
-        obs.observed_category_code, obs.sop_document_hit_id = _scan_terminal_signals(obs.events)
+        # 尽力从终态事件补全「确认分类 code / 命中 sop_document_id」，但不得覆盖已在交互链路中
+        # 确证的值：S0 走候选澄清时 driver 已按「用户点选期望分类」记录 observed_category_code（第 531 行），
+        # 而分类确认后的 SOP 续跑事件未必再带 category_code 字段，_scan 会返回 None 把它冲掉（假阴性）。
+        obs.observed_category_code, obs.sop_document_hit_id = merge_observed_signals(
+            obs.observed_category_code, obs.sop_document_hit_id, _scan_terminal_signals(obs.events)
+        )
         obs.final_user_questions = asserts.extract_user_questions(obs.final_text)
 
         if dump_dir is not None:

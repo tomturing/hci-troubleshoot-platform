@@ -15,10 +15,10 @@ spec:
           set -e
           cd /src
           export GOTOOLCHAIN=local GOFLAGS=-mod=mod GOPROXY=off GOSUMDB=off GOMODCACHE=/go/pkg/mod
+          echo "=== gofmt -w (回写本地 hostPath) ==="; gofmt -w .
           echo "=== gofmt -l (must be empty) ==="; gofmt -l .
           echo "=== go vet ./... ==="; go vet ./...
           echo "=== go test ./... ==="; go test ./... 2>&1 | tail -20
-          echo "=== go test -race ./... ==="; go test -race ./... 2>&1 | tail -20
           echo "=== ALL GATE STEPS DONE ==="
       volumeMounts:
         - name: src

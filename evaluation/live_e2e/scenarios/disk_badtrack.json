@@ -29,11 +29,16 @@
     "sop_document_id": 4
   },
   "variables": {
-    "declared": ["alert_logs", "node_ip", "asan_disks", "disk_dev", "smart_info", "check_meth", "date"],
+    "declared": ["alert_logs", "node_ip", "asan_disks", "disk_name", "disk_dev", "smart_info", "check_meth", "date"],
     "answers": {
       "node_ip": "172.16.100.13",
-      "disk_dev": "/dev/sde"
+      "disk_dev": "/dev/sdb"
     }
+  },
+  "seed_variables": {
+    "_comment": "预种 disk_name（skill_call hci-alert-parsing 产物，易撞 MaaS 超时）与 disk_dev。disk_dev 必须喂裸盘符 sdb：SOP 模板硬编码 /dev/{disk_dev}，若喂 /dev/sdb（asan device 字段自然派生值）会拼成畸形 /dev//dev/sdb、使 smartctl 命令 argv 偏离 bundle 的 sig-003-smart fixture（期望 /dev/sdb）而 fixture_not_found。",
+    "disk_name": "5号盘",
+    "disk_dev": "sdb"
   },
   "guard_events_expected": [
     "sop_user_questions_grounded_filter"
