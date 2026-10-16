@@ -31,7 +31,6 @@ from app.models.case import Case, CaseStatus
 from app.services.case_service import CaseService
 from shared.models.schemas import CaseCreate
 
-
 # 注：#1153 已将 case_id 统一为 DB 自增（repository.generate_case_id()），
 # 原 TestCaseIDGeneration 针对已删除的 service._generate_case_id()，故移除。
 
