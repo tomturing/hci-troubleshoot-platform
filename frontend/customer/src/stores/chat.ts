@@ -823,9 +823,18 @@ export const useChatStore = defineStore('chat', () => {
       if (messages.value.length === 0) {
         addSystemMessage(`工单 ${caseId} 已恢复。您可以继续描述问题，或输入 /close 关闭工单。`)
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error('加载对话历史失败', e)
-      addSystemMessage('对话历史加载失败，但您仍可以继续对话。')
+      // 精准降级：工单不存在（如 staging 数据重置/清理后前端持有过期 ID）时明确提示并清理 currentCase，
+      // 避免用户停留在「访问不存在工单」的裸 404 状态。
+      if (e?.response?.status === 404) {
+        addSystemMessage(`工单 ${caseId} 不存在或已被清理，请重新创建工单后继续。`)
+        if (currentCase.value?.case_id === caseId) {
+          currentCase.value = null
+        }
+      } else {
+        addSystemMessage('对话历史加载失败，但您仍可以继续对话。')
+      }
     }
   }
 
@@ -899,18 +908,25 @@ export const useChatStore = defineStore('chat', () => {
       console.error('[createConversation] currentCase 为空，无法创建对话')
       throw new Error('currentCase 为空，无法创建对话')
     }
-    try {
-      const assistantType = currentCase.value.assistant_type || selectedAssistant.value || undefined
-      console.log('[createConversation] 开始创建对话', { caseId: currentCase.value.case_id, assistantType })
-      const res = await conversationApi.create(currentCase.value.case_id, assistantType)
-      conversationId.value = res.data.conversation_id
-      console.log('[createConversation] 对话创建成功', { conversationId: conversationId.value })
-    } catch (e: any) {
-      const errorMsg = `创建对话失败: ${e.response?.data?.detail || e.message}`
-      console.error('[createConversation]', errorMsg, e)
-      addSystemMessage(errorMsg)
-      throw e  // 抛出错误，让调用方知道失败
+    const assistantType = currentCase.value.assistant_type || selectedAssistant.value || undefined
+    // 重试 1 次：缓解瞬时故障（如归属校验 403/网络抖动）导致的「工单存在但无会话」
+    let lastErr: any = null
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        console.log('[createConversation] 开始创建对话', { caseId: currentCase.value!.case_id, assistantType, attempt })
+        const res = await conversationApi.create(currentCase.value.case_id, assistantType)
+        conversationId.value = res.data.conversation_id
+        console.log('[createConversation] 对话创建成功', { conversationId: conversationId.value })
+        return
+      } catch (e: any) {
+        lastErr = e
+        console.warn('[createConversation] 第' + (attempt + 1) + '次创建失败，准备重试', e?.response?.data?.detail || e?.message)
+      }
     }
+    const errorMsg = `创建对话失败: ${lastErr?.response?.data?.detail || lastErr?.message}`
+    console.error('[createConversation]', errorMsg, lastErr)
+    addSystemMessage(errorMsg)
+    throw lastErr  // 抛出错误，让调用方知道失败
   }
 
   async function streamAIResponse(content: string, metadata?: any) {
