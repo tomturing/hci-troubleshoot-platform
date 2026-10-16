@@ -630,6 +630,33 @@ async def kbd_batch_extract_signals_proxy(request: Request):
     return _kbd_json_response(response)
 
 
+@kbd_router.post("/batch/extract-root-signal")
+async def kbd_batch_extract_root_signal_proxy(request: Request):
+    """批量回刷根因信号（指定 kbd_ids）→ kb-service
+
+    与关键信号完全解耦：只写 kbd_entry.root_signal_json，不产生 KBD 新版本。
+    """
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("POST", "/batch/extract-root-signal", payload=body, headers=headers, timeout=600.0)
+    return _kbd_json_response(response)
+
+
+@kbd_router.post("/batch/extract-root-signal/backfill")
+async def kbd_extract_root_signal_backfill_proxy(request: Request):
+    """按条件选待回刷 KBD 并提交一批根因信号回刷→ kb-service
+
+    全库回刷入口：响应中的 remaining 为待刷余量，返回非 0 时可继续提交下一批。
+    本端点只做选型+提交（后台异步执行），30s 超时足够。
+    """
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy(
+        "POST", "/batch/extract-root-signal/backfill", payload=body, headers=headers, timeout=30.0
+    )
+    return _kbd_json_response(response)
+
+
 @kbd_router.post("/batch/approve")
 async def kbd_batch_approve_proxy(request: Request):
     """批量审核通过 → kb-service。"""
@@ -947,6 +974,44 @@ async def kbd_extract_signals_proxy(kbd_id: int, request: Request):
     # 透传 query（?sync=true 同步模式开关），否则 kb-service 收不到 sync 而走异步 202
     response = await _kbd_proxy(
         "POST", f"/{kbd_id}/extract-signals", params=dict(request.query_params), headers=headers, timeout=240.0
+    )
+    return _kbd_json_response(response)
+
+
+@kbd_router.post("/{kbd_id}/extract-root-signal")
+async def kbd_extract_root_signal_proxy(kbd_id: int, request: Request):
+    """代理 KBD 根因信号抽取请求 → kb-service
+
+    与关键信号抽取同一范式：?sync=true 同步返回完整结果（单条按钮使用），
+    否则立即 202 + job_id，需透传 query，否则 kb-service 收不到 sync 而走异步。
+    """
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy(
+        "POST", f"/{kbd_id}/extract-root-signal", params=dict(request.query_params), headers=headers, timeout=240.0
+    )
+    return _kbd_json_response(response)
+
+
+@kbd_router.get("/{kbd_id}/extract-root-signal/status")
+async def kbd_extract_root_signal_status_proxy(kbd_id: int, request: Request):
+    """代理根因信号异步 Job 状态查询 → kb-service"""
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy(
+        "GET",
+        f"/{kbd_id}/extract-root-signal/status",
+        params=dict(request.query_params),
+        headers=headers,
+        timeout=15.0,
+    )
+    return _kbd_json_response(response)
+
+
+@kbd_router.get("/{kbd_id}/root-signal-conflicts")
+async def kbd_root_signal_conflicts_proxy(kbd_id: int, request: Request):
+    """代理根因信号冲突度只读预览（按最新语料重算，不写库）→ kb-service"""
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy(
+        "GET", f"/{kbd_id}/root-signal-conflicts", params=dict(request.query_params), headers=headers, timeout=60.0
     )
     return _kbd_json_response(response)
 

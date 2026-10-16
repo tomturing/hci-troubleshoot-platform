@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-09-20
+last_updated: 2026-10-13
 related_prs:
   - PR #474: invoke() 重试 + tool_calls 清理 + skill 可观测 + 报告模板简化 + solution 格式合并
 owner: team
@@ -668,3 +668,44 @@ owner: team
 - [x] **需求**：`database/desired_schema.sql` 为 `kb_category` 新增 `kb_category_code_format CHECK (code IS NULL OR code ~ '^[^-]+-L1$' OR code ~ '^[^-]+-[0-9]+$')`，并订正 code 列注释为解A 角色无关统一 ID 文法（旧注释仍为 `-L{级}-{name}`）。
 - [x] **顺序安全**：CHECK 仅约束 code 文法不管叶子绑定，与重分类解耦；由 `db-migrate.sh` Step1 先跑 `041` 清洗存量数据，Step3 才由 atlas 声明式收敛 CHECK（存量已合规才能通过）。CI 空库建表即带 CHECK，`041` 自然 no-op；无 kb_category 的 SQL 种子不会误伤。
 - [x] **验证**：对 live staging 事务内跑 `041` 后 ROLLBACK 演练，确认非合规 code=0 且悬空=0，即 CHECK 可无违规施加。方案见 `docs/solution/knowledge-base/events/2026-10-11-分类基线命名规范治理与叶子统一(解A)方案.md`。
+
+## 根因信号：`kbd_entry.root_signal_json` 与 Prompt 种子位置纠正（2026-10-13）
+
+- [x] **Schema**：`database/desired_schema.sql` 新增 `root_signal_json jsonb` + CHECK
+  `ck_kbd_entry_root_signal_json`（v2：仅允 `NULL` 或 `jsonb_typeof='array'`，拒绝单对象/标量脏写）
+  + **GIN 索引** `idx_kbd_entry_root_signal_gin`（`jsonb_path_ops`，替掉 v1 两个对数组失效的标量
+  partial 索引）+ `ck_kbd_batch_job_type` 枚举含 `extract_root_signal`；幂等 ALTER 版存
+  `database/atlas-migrations/20261013000000_add_kbd_entry_root_signal_json.sql`。
+- [x] **种子位置纠正（重要）**：根因抽取 Prompt 种子原放在 `database/atlas-migrations/`，本仓库
+  `scripts/db-migrate.sh` 只做 `atlas schema apply --to desired_schema.sql` + data-migrations +
+  `desired_extras.sql`，**从不应用 atlas-migrations**（与 2026-09-04 条目记录的同一陷阱），而 Prompt
+  种子的真实落地机制是 `database/seeds/02_system_prompts.sql`（Helm **db-seed-job** PostSync）。
+  已将该 Prompt 并入 seeds/02（`ON CONFLICT (name) DO NOTHING`）并删除错放的迁移文件；否则生产路由会因
+  `StrictPromptLoader` 找不到 Prompt 而 100% 抛 `PromptLoadError`（不静默降级是正确行为）。
+- [x] **验证**：对本地 dev 库实际施加列/CHECK/索引，并回读确认 `kbd_extract_root_signal_v2` 已存在
+  （stage=KEY、is_active=true）；另以真实 DB + 真实 LLM 跑完四轮热加载验证（改模板即生效 / 坏模板
+  严格阻断不污染既有信号 / 恢复后 revision 回到原值），详见
+  `docs/solution/knowledge-base/根因信号抽取方案.md` §7.6。
+
+## 根因信号 v2 多信号重设计（2026-10-13）
+
+内部评审三要求 → 落地（PR #1147 延续，本代码未合入、无存量数据，故直接改不留迁移）：
+
+- [x] **不限条数**：`root_signal_json` 由 v1 单对象改为 v2 顶层 JSON 数组；`gate_single_signal`→
+  `gate_signals`（接受 1..N、去重、封顶 max_signals=8）；冲突度/门禁逐条独立。
+- [x] **输入放开整篇**：抽取输入由仅 `root_cause` 改为整篇 `content_md`（缺失回退章节拼接，
+  辅助函数 `_render_kbd_content`）；Prompt 占位符 `root_cause`→`kbd_content`；移除服务端
+  `MIN_ROOT_CAUSE_LEN` 422 硬门。
+- [x] **只抽能确证根因的信号 + 溯源分层**：`_trace_tier` 按 evidence 逐字命中面分 root_cause
+  主锚/content 兑底/none 拒收；content 兑底强制 `needs_review=true`；主锚优先；保留禁处置/解决语义护栏。
+- [x] **部分成功语义**：`extract_root_signal` 单条门禁失败只丢该条并记 `gate_errors`，不整篇失败。
+- [x] **Schema**：CHECK `jsonb_typeof='array'` + GIN(jsonb_path_ops) 替标量索引（双事实源 desired_schema
+  + 未合并迁移同改）；迁移 dry-run 6/6。
+- [x] **审核 UI**：`rootSignal.ts` 新增 `parseSignals`；`KbdReviewView.vue` 单卡片→信号列表。
+- [x] **废除 `MIN_ROOT_CAUSE_LEN` 跨语言契约**（V-023）：前后端钉值与 `TestCrossLanguageContract` 均删除。
+- [x] **实测锁定策略**：阶段一 n=100×3 策略真实对比——S1 主锚确证命中 96.9%/噪声 3.1%/唯一
+  定位 90.8%，S2/S3 命中 65.5%/噪声 34.5%，S2 增量噪声 52.7% → 采纳选项 B（S1 主锚 + content
+  兑底转复核）。数据见 `docs/solution/knowledge-base/根因信号抽取方案.md` §10。
+- [x] **测试**：`test_root_signal_extractor.py` 36 例（多信号/去重/部分失败/tier 分层/schema=2）、
+  `test_extract_root_signal_route.py` 13 例（signals 数组写回/根因短仍读整篇/逐条冲突度）；后端
+  680 passed、前端 admin 162 passed + `vue-tsc --noEmit` 无错。

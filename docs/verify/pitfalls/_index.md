@@ -2,7 +2,7 @@
 status: active
 category: verify
 audience: agent
-last_updated: 2026-10-10
+last_updated: 2026-10-13
 owner: team
 update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变更
 ---
@@ -15,7 +15,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 > 2. 再写入对应分类文件
 > 3. 同一 commit/PR 提交，不允许分开提交
 >
-> **下一个可用编号：V-023**（旧格式延续：PIT-042）
+> **下一个可用编号：V-024**（旧格式延续：PIT-042）
 
 ---
 
@@ -27,7 +27,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 |---------|---------|---------|
 | 任何涉及进程/状态/外部服务的问题排查 | [debugging.md](debugging.md) | 原则一~六 + 工单500 + V-004、V-006、V-019、V-020、V-022 |
 | 编写/审查 Python（ORM/异常/数据类） | [python.md](python.md) | PIT-003, PIT-004, PIT-009, PIT-040, PIT-041 |
-| 编写/审查前端（pnpm/Vue/Dockerfile） | [frontend.md](frontend.md) | PIT-005, PIT-023, PIT-025, PIT-028, PIT-029, V-001, V-002, V-003, V-005, V-007, V-016 |
+| 编写/审查前端（pnpm/Vue/Dockerfile） | [frontend.md](frontend.md) | PIT-005, PIT-023, PIT-025, PIT-028, PIT-029, V-001, V-002, V-003, V-005, V-007, V-016, V-023 |
 | 调试 Dispatcher/状态机/幂等资源 | [dispatcher.md](dispatcher.md) | PIT-006, PIT-007, PIT-008, V-017, V-021 |
 | OpenClaw 401/崩溃/WebSocket/AI 超时 | [openclaw.md](openclaw.md) | PIT-010, PIT-013, PIT-026, PIT-027, PIT-030, PIT-032, PIT-035, V-018 |
 
@@ -62,6 +62,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 | V-021 | dispatcher.md | S2/S3 假设生成 user_questions 不受变量池事实源约束，重复索取已提交变量+凭空索要未声明字段（须确定性过滤+无事实源护栏） |
 | V-022 | debugging.md | 挤牙膏复发根因是「层间契约缝隙无人覆盖」，发布前须用 Live E2E smoke（evaluation/live_e2e）守贯穿链路，断言只打结构不变量+守卫事件 |
 | V-016 | frontend.md | CI 低配 runner 上 vitest 默认 5s 超时导致重挂载用例临界抖动 |
+| V-023 | frontend.md | 前端单测不得跨语言读后端源码（前端 CI 门禁为 sparse-checkout 稀疏检出） |
 | PIT-004 | python.md | Pydantic 验证 |
 | PIT-005 | frontend.md | pnpm workspace |
 | PIT-006 | dispatcher.md | 分布式锁 |

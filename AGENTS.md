@@ -22,6 +22,37 @@
 **HCI 智能排障平台** — AI 驱动的超融合基础设施运维故障诊断系统。
 
 - 用户创建工单描述故障 → AI 助手多轮对话引导排障 → 建议命令和操作步骤 → 形成可复用知识库
+- **根因信号轨阶段二落地：`kbd_entry.root_signal_json` 生产抽取 + 审核 UI + 全库回刷**（详见 `docs/solution/knowledge-base/根因信号抽取方案.md` §7）：
+  - **根因**：关键信号（`signals_json`）只描述「现场可采集的证据」，缺少结论侧「这篇 KBD 到底特殊在哪」的定位锚点，语义兜底路径因此只能按标题/分类粗匹配，同分类下多篇案例互相撞车。若把结论锚点塞进 `signals_json` 混写，会让关键信号的 v2 契约校验器被迫理解结论侧语义，两条轨同时腐化。
+  - **修复**：新建与关键信号**完全解耦**的第二抽取轨。①落库：`desired_schema.sql` 新增 `root_signal_json jsonb` + CHECK（只允许 `NULL` 或 jsonb object）+ `match_type`/`needs_review` 两个 partial 索引，并把 `extract_root_signal` 加入 `ck_kbd_batch_job_type` 枚举；该列属 **AI 派生元数据**（同 `ai_category_id`），不入 `kbd_revision`、不动 content_md/embedding/tsv，故写回路径**禁止**使用 `require_mutable_kbd`（否则 published 回刷必撞 409）。②生产链路 `app/routes/extract_root_signal.py`：`POST /kbd/{id}/extract-root-signal`（`?sync=true` 同步、否则 202+job_id）、`GET .../status`（校验 job 的 kbd_id 一致）、`GET /kbd/{id}/root-signal-conflicts`（只读回算 stored/live 冲突度，不回写）；Prompt 一律经 `StrictPromptLoader.load_and_validate` **每次热加载**（零缓存，契约不符即抛错、绝不静默降级），`prompt_revision = "sha256:"` 取自模板散列并写入产物；LLM 调用走 `call_with_llm_governance` 舱壁 + `observe_llm_generation` + `KBD_LLM_REQUESTS_TOTAL/TOKENS_TOTAL`，`max_retries=0` 且单次超时小于网关 240s。③门禁 `app/services/root_signal_extractor.py`：单信号门禁、executable 六类拒收、text 关键词扁平/去重/纯数字拒收、违规**回喂重试**、失败不写库也不清空既有信号；冲突度**不采信 LLM 自报**，一律用 `ConflictCorpus.conflicts()` 按「同一判定串 ∧ 同一采集具体资源」全库回算。④批量与回刷：`admin.py` 的 `/batch/extract-root-signal` 与 `/batch/extract-root-signal/backfill`（where 含 `char_length(root_cause)>=30`、`root_signal_json IS NULL`、可选分类前缀，并用子查询排除在飞的 pending/running 条目），单批上限 100、内部并发 8，四处枚举同步（`_submit_batch_job`/`_BATCH_PROCESSORS`/`allowed_job_types`/DB CHECK）；根因信号使用**独立** `SignalJobManager(max_concurrent=4)` 实例，避免与关键信号按 `kbd_id` 去重导致拿错 job_id/结果。⑤admin UI：`KbdReviewView.vue` 新增「根因信号（结论侧定位锚点）」面板（唯一性标签/采集方式/匹配关键词/confidence/needs_review 与全库冲突度对照）、单篇抽取按钮与全库回刷弹窗；纯逻辑抽到 `frontend/admin/src/utils/rootSignal.ts`（含与后端同值的 `MIN_ROOT_CAUSE_LEN`）；`PromptManageView.vue` 的 KEY tab 自动枚举新 Prompt 并补 `{category_path}` 占位符提示。
+  - **陷阱（种子位置）**：Prompt 种子**必须**放 `database/seeds/02_system_prompts.sql`（Helm **db-seed-job** PostSync 应用）。阶段一曾放 `database/atlas-migrations/`——该目录按仓库规范「仅 Schema」，且 `scripts/db-migrate.sh` 只做 `atlas schema apply --to desired_schema.sql` + data-migrations + `desired_extras.sql`，**从不应用 atlas-migrations**（与 2026-09-04 条目同一陷阱）；放错位置会让生产路由 100% 抛 `PromptLoadError`。故该迁移文件已删除、种子并入 seeds/02，`load_prompt_template_from_sql` 相应改为**按 Prompt 名定位**（同一文件含多个 `$TEMPLATE$` 块，不能取首个）。
+  - **测试守护**：`test_root_signal_extractor.py`（28 例：门禁/归一/回喂/golden 端到端/冲突计数口径/种子占位符契约/目录含 args 契约）；`test_extract_root_signal_route.py`（14 例：三端点契约、mock `_call_llm_messages` **显式全参数**而非 `**kwargs` 以暴露契约漂移、`TestCrossLanguageContract` 跨语言常量一致性校验）；网关 `test_p1_authz.py`（匿名 403 证路由已注册非 404 + admin 200 断言转发下游 URL 与 `?sync=true` 透传）；前端 `rootSignal.spec.ts`（14 例，含 `MIN_ROOT_CAUSE_LEN` 钉值断言）。热加载另以 `.local/verify_root_signal_hot_reload.py` 对真实 DB+LLM 四轮实测：原模板→改库即生效（revision 变化、进程未重启）→写坏占位符严格阻断且**既有信号不被污染**→恢复无残留。
+  - **CI 首轮真实暴露的两处（本地全量测试覆盖不到的拓扑差异，详见方案文档 §7.7）**：
+    - **`ck_kbd_batch_job_type` 有两个事实源，extras 才是现行赢家**：`db-migration-test.yml` 的执行序列是
+      `extras → atlas apply(desired_schema) → extras`，而 `database/desired_extras.sql` 对该 CHECK 做**无条件
+      DROP + ADD**，总会覆盖 atlas 刚写好的定义；只改 `desired_schema.sql` 会使「apply 后仍有 diff」而幂等门禁失败。
+      规则：**凡 extras 里无条件重建的对象（尤其枚举型 CHECK），扩值必须 `desired_schema.sql` 与 `desired_extras.sql` 同改。**
+    - **前端单测不得跨语言读后端源码**（已登记避坑 `docs/verify/pitfalls/frontend.md` V-023）：「前端检查」作业用
+      `sparse-checkout: frontend`（作业注释明写「前端门禁不消费后端源码」），仓根只有 `frontend/`，所以
+      “从 `process.cwd()` 向上找 `backend/` 再 `readFileSync`”一类用例本地全绿、CI 必炸。跨语言常量一致性校验
+      必须放到**全量检出**的后端测试（`TestCrossLanguageContract` 读 `rootSignal.ts` 比对 `route.MIN_ROOT_CAUSE_LEN`），
+      前端侧只留钉值断言；该后端守护已用变异测试（把前端阈值改 31 → 该例失败）验证不是空跑。
+      **教训：「本地全量测试全绿」不等于 CI 拓扑下可跑，写跨目录读写/幂等断言前必须先核对该 CI 作业的 checkout 与执行序列。**
+  - **v2 多信号重设计（推翻上述 v1 具体描述，以本条为准；详见方案文档 §10）**：内部评审三要求——
+    ①**不限条数**：`root_signal_json` 由 v1 单对象改为 **v2 顶层 JSON 数组**，`desired_schema.sql` CHECK
+    改为 `jsonb_typeof='array'`，v1 两个标量 partial 索引（`->>'match_type'`/`provenance->>'needs_review'`）对
+    数组失效→换 **GIN `idx_kbd_entry_root_signal_gin`（`jsonb_path_ops`）**；`gate_single_signal`→`gate_signals`
+    （接受 1..N、按 signal_text 去重、封顶 max_signals=8），**部分成功**：单条门禁失败只丢该条记 `gate_errors`。
+    ②**输入放开整篇**：抽取输入由仅 `root_cause` 改为整篇 `content_md`（缺失回退章节拼接），Prompt
+    重命名 `kbd_extract_root_signal_v1`→`_v2`、占位符 `root_cause`→`kbd_content`（`ROOT_SIGNAL_PLACEHOLDERS` 同步）；
+    ③**只抽能确证根因的信号 + 溯源分层 `trace_tier`**：evidence 逐字命中 `root_cause`＝主锚（高信任）、
+    仅命中整篇其余章节＝`content` 兑底（**强制 `needs_review=true`**）、整篇溯不到＝拒；主锚优先。
+    **已废除 `MIN_ROOT_CAUSE_LEN` 跨语言契约**（输入放开整篇后根因短不再阻塞）：前后端钉值、`extractBlockReason`
+    与 `TestCrossLanguageContract` 均删除，避坑 V-023 改写为退位记录；回刷 where 不再含 `char_length(root_cause)>=30`。
+    admin UI：`rootSignal.ts` 新增 `parseSignals`（数组/旧对象兼容），`KbdReviewView.vue` 单卡片→**信号列表**。
+    实测锁定策略（n=100×3）：S1 主锚确证命中 96.9%/噪声 3.1%/唯一定位 90.8%，S2/S3 命中 65.5%/噪声
+    34.5%（S2 增量噪声 52.7%）→ 采纳选项 B。测试：`test_root_signal_extractor.py` 36 例 +
+    `test_extract_root_signal_route.py` 13 例，后端 680 passed / admin 162 passed + `vue-tsc --noEmit` 无错。
 - **分类树拖拽重排即时物化 code（解A「顺序即序号」落地）**（详见 `docs/solution/admin-ui/events/2026-10-11-分类树拖拽重排即时物化code方案.md`）：
   - **根因**：解A 铁律「同级顺序即 code，无独立 sort 字段」下，`CategoryManageView.vue` 的 `sortTreeNodes` 每次 refetch 按 `code.localeCompare` 重排；而 `handleNodeDrop` 只发 `{parent_id}` 不改 code、不带位置 → 拖出来的视觉顺序与 code 无关，刷新即被拍回原形，表现为「拖拽完全无效果」。
   - **修复**：`category_repo.py` 新增 `resequence_domain`（前序 DFS 按目标父新兄弟序整域重编号，单事务内用唯一临时码 `__tmp__||id` 规避置换碰撞 + 摘/重建 FK·CHECK + remap **全库按 code 引用分类的列**（`kbd_entry.category_id`/`ai_category_id`、`sop_document.category_id`、`conversation.category_id`、`offline_signal_collector_mapping.category_scope`、`diagnosis_candidate/run/session` 的 code 列，共 10 列；存 label/域名的列排除）+ 悬空仅对有 FK 列置 NULL）；`category_service.py` 新增 `update_parent_and_resequence` → 下沉 `category_repo.py` 的 `move_and_resequence`（**单事务原子**：换父 `_do_update_parent` flush 不提交 + 重排 `resequence_domain(ext_session=)` 复用同一 session，**唯一 commit**，任一环节失败整体回滚，消除旧版两步分提交的“换父成功但顺序未物化”部分成功态）；`categories.py` `CategoryParentUpdateRequest` 扩 `sibling_order`、返回 `resequence`；前端 `handleNodeDrop` 读目标父 `childNodes` 新兄弟 code 全序下发，重排后按稳定 `id_in_db` 复位选中。

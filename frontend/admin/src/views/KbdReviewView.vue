@@ -30,6 +30,16 @@ import {
   serializeSignalForExport,
   type ImportParseSuccess,
 } from '@/utils/signalImport'
+import {
+  buildBackfillPayload,
+  conflictDisplay,
+  describeBackfillResult,
+  distinctivenessLevel,
+  formatAcquire,
+  matchKeywords,
+  parseSignals,
+  type RootSignal,
+} from '@/utils/rootSignal'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 类型定义
@@ -72,6 +82,9 @@ interface KbdEntry {
   ai_category_label?: string | null
   // 关键信号集合：后端 GET 直出标准化 v2 文档 {schema_version, signals}（前端原生读 v2，RFC §7）
   signals_json?: SignalsDoc | null
+  // 根因信号（与关键信号完全解耦的第二轨）：v2 一篇可有多条结论侧定位信号（顶层数组），AI 派生元数据、不入版本
+  root_cause?: string | null
+  root_signal_json?: RootSignal | RootSignal[] | null
   signal_review_facts?: Record<string, { status: 'needs_review' | 'reviewed' }>
   latest_proposal_revision_id?: number | null
   working_revision_id?: number | null
@@ -192,7 +205,7 @@ interface KbdBatchJobItem {
 
 interface KbdBatchJob {
   batch_id: string
-  job_type: 'reanalyze_images' | 'reclassify' | 'extract_signals' | 'approve' | 'reject'
+  job_type: 'reanalyze_images' | 'reclassify' | 'extract_signals' | 'extract_root_signal' | 'approve' | 'reject'
   status: KbdBatchJobStatus
   requested_kbd_ids: number[]
   request_json?: {
@@ -1147,6 +1160,134 @@ async function handleReextractSignals(entry: KbdEntry) {
   }
 }
 
+// ============ 根因信号（root_signal_json，与关键信号完全解耦） ============
+// v2：一篇 KBD 可有多条结论侧定位信号（顶层数组，不限条数）；抽取只写 root_signal_json（AI 派生元数据），
+// 不产生 kbd_revision、不影响发布盖章，故已发布条目同样可回刷。
+const extractRootSignalLoading = ref<number | null>(null)
+const rootSignalConflictLoading = ref(false)
+// 逐条实时冲突度刷新结果（与 rootSignals 同序）+ 语料规模
+const rootSignalLiveConflicts = ref<{ live: any; stored: any }[] | null>(null)
+const rootSignalLiveCorpusSize = ref<number>(0)
+const rootSignalBackfillDialog = ref(false)
+const rootSignalBackfillLoading = ref(false)
+const rootSignalBackfillForm = ref({
+  statusesList: ['draft', 'published'] as string[],
+  onlyMissing: true,
+  categoryPrefix: '',
+  limit: 100,
+})
+
+const rootSignals = computed<RootSignal[]>(() => parseSignals(detailEntry.value?.root_signal_json))
+// 汇总徽标：只要任一条冲突即为不唯一定位（审核人一眼看出整篇冲突面）
+const rootSignalSummary = computed(() => {
+  const list = rootSignals.value
+  if (!list.length) return conflictDisplay('unextracted')
+  const levels = list.map((sig) => distinctivenessLevel(sig))
+  if (levels.includes('ambiguous')) return conflictDisplay('ambiguous')
+  if (levels.includes('category_only')) return conflictDisplay('category_only')
+  if (levels.includes('unique')) return conflictDisplay('unique')
+  return conflictDisplay('unextracted')
+})
+
+async function handleExtractRootSignal(entry: KbdEntry) {
+  extractRootSignalLoading.value = entry.id
+  try {
+    const resp = await fetch(`/api/v1/kbd/${entry.id}/extract-root-signal?sync=true`, {
+      method: 'POST',
+      headers: authHeader,
+    })
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      const detail = data?.detail
+      throw new Error(typeof detail === 'string' ? detail : detail?.message || `HTTP ${resp.status}`)
+    }
+    if (!data.success) {
+      // 门禁未过：服务端不伪造也不清空，既有信号保持原值
+      ElMessage.error({
+        message: `根因信号未通过门禁：${data.error || '原因未知'}（原信号保留不变）`,
+        duration: 0,
+        showClose: true,
+      })
+      return
+    }
+    ElMessage.success({
+      message: `已抽取 ${data.signals_count ?? (data.signals?.length || 0)} 条根因信号：首条 ${data.match_type}｜同类冲突 ${data.distinctiveness?.category_conflicts ?? 0}／全库冲突 ${data.distinctiveness?.global_conflicts ?? 0}`,
+      duration: 0,
+      showClose: true,
+    })
+    if (detailEntry.value?.id === entry.id) {
+      const detailResp = await fetch(`/api/v1/kbd/${entry.id}`, { headers: authHeader })
+      if (detailResp.ok) detailEntry.value = await detailResp.json()
+      rootSignalLiveConflicts.value = null
+      rootSignalLiveCorpusSize.value = 0
+    }
+  } catch (err: any) {
+    ElMessage.error({ message: `根因信号抽取失败：${err.message || '未知错误'}`, duration: 0, showClose: true })
+  } finally {
+    extractRootSignalLoading.value = null
+  }
+}
+
+async function refreshRootSignalConflicts() {
+  if (!detailEntry.value || !rootSignals.value.length) return
+  rootSignalConflictLoading.value = true
+  try {
+    const resp = await fetch(`/api/v1/kbd/${detailEntry.value.id}/root-signal-conflicts`, { headers: authHeader })
+    if (!resp.ok) {
+      const data = await resp.json().catch(() => ({}))
+      throw new Error(typeof data?.detail === 'string' ? data.detail : `HTTP ${resp.status}`)
+    }
+    const data = await resp.json()
+    const list = Array.isArray(data.signals) ? data.signals : []
+    rootSignalLiveConflicts.value = list.map((item: any) => ({ live: item.live_distinctiveness, stored: item.stored_distinctiveness }))
+    rootSignalLiveCorpusSize.value = Number(data.corpus_size ?? 0)
+    const liveGlobal = list.reduce((acc: number, item: any) => acc + Number(item.live_distinctiveness?.global_conflicts ?? 0), 0)
+    ElMessage[liveGlobal > 0 ? 'warning' : 'success']({
+      message: `按最新语料逐条重算：全库冲突合计 ${liveGlobal} 条（语料 ${data.corpus_size} 篇，不回写快照）`,
+      duration: 0,
+      showClose: true,
+    })
+  } catch (err: any) {
+    ElMessage.error({ message: `冲突度刷新失败：${err.message || '未知错误'}`, duration: 0, showClose: true })
+  } finally {
+    rootSignalConflictLoading.value = false
+  }
+}
+
+async function handleRootSignalBackfill() {
+  const form = rootSignalBackfillForm.value
+  const payload = buildBackfillPayload({
+    statuses: form.statusesList,
+    onlyMissing: form.onlyMissing,
+    categoryPrefix: form.categoryPrefix,
+    limit: form.limit,
+  })
+  if (typeof payload === 'string') {
+    ElMessage.warning({ message: payload, duration: 0, showClose: true })
+    return
+  }
+  rootSignalBackfillLoading.value = true
+  try {
+    const resp = await fetch('/api/v1/kbd/batch/extract-root-signal/backfill', {
+      method: 'POST',
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      const detail = data?.detail
+      throw new Error(typeof detail === 'string' ? detail : detail?.message || `HTTP ${resp.status}`)
+    }
+    ElMessage.success({ message: describeBackfillResult(data), duration: 0, showClose: true })
+    rememberSubmittedBatch(data)
+    rootSignalBackfillDialog.value = false
+  } catch (err: any) {
+    ElMessage.error({ message: `根因信号回刷提交失败：${err.message || '未知错误'}`, duration: 0, showClose: true })
+  } finally {
+    rootSignalBackfillLoading.value = false
+  }
+}
+
 const batchReclassifyLoading = ref(false)
 const batchExtractLoading = ref(false)
 const batchReanalyzeLoading = ref(false)
@@ -1175,6 +1316,7 @@ function batchJobTypeLabel(jobType: KbdBatchJob['job_type']): string {
     reanalyze_images: '批量识图',
     reclassify: '批量重新分类',
     extract_signals: '批量抽取信号',
+    extract_root_signal: '批量回刷根因信号',
     approve: '批量通过',
     reject: '批量拒绝',
     set_review_owner: '批量设置审核责任人',
@@ -4816,6 +4958,7 @@ onUnmounted(() => clearBatchPollTimer())
               <el-option label="批量识图" value="reanalyze_images" />
               <el-option label="批量重新分类" value="reclassify" />
               <el-option label="批量抽取信号" value="extract_signals" />
+              <el-option label="批量回刷根因信号" value="extract_root_signal" />
               <el-option label="批量通过" value="approve" />
               <el-option label="批量拒绝" value="reject" />
             </el-select>
@@ -4932,6 +5075,7 @@ onUnmounted(() => clearBatchPollTimer())
         <el-button type="success" size="small" :loading="batchReanalyzeLoading" @click="handleBatchReanalyzeImages">批量识图</el-button>
         <el-button type="warning" size="small" :loading="batchReclassifyLoading" @click="handleBatchReclassify">批量重新分类</el-button>
         <el-button type="primary" size="small" :loading="batchExtractLoading" @click="handleBatchExtractSignals">批量抽取信号</el-button>
+        <el-button type="primary" size="small" plain @click="rootSignalBackfillDialog = true">根因信号回刷</el-button>
         <el-button type="success" size="small" :loading="batchApproveLoading" @click="handleBatchApprove">批量通过</el-button>
         <el-button type="danger" size="small" :loading="batchRejectLoading" @click="handleBatchReject">批量拒绝</el-button>
         <el-button type="info" size="small" :loading="batchSetOwnerLoading" @click="handleBatchSetReviewOwner">设置审核责任人</el-button>
@@ -5324,6 +5468,97 @@ onUnmounted(() => clearBatchPollTimer())
               </el-descriptions-item>
             </template>
           </el-descriptions>
+        </div>
+
+        <!-- 根因信号面板（结论侧定位信号列表，与关键信号完全解耦） -->
+        <div class="section-block">
+          <div class="section-header-row">
+            <h4 class="section-title">根因信号（结论侧定位信号 · {{ rootSignals.length }} 条）</h4>
+            <div class="section-actions">
+              <el-tag :type="rootSignalSummary.type" size="small">{{ rootSignalSummary.label }}</el-tag>
+              <el-button
+                size="small"
+                :loading="rootSignalConflictLoading"
+                :disabled="!rootSignals.length"
+                title="按最新全库语料逐条重算冲突度（只读预览，不回写抽取快照）"
+                @click="refreshRootSignalConflicts"
+              >
+                刷新冲突度
+              </el-button>
+              <el-button
+                type="warning"
+                size="small"
+                :loading="extractRootSignalLoading === detailEntry.id"
+                title="用最新 Prompt 从整篇 KBD 抽取全部可确定根因的信号（不产生新版本，不影响发布盖章）"
+                @click="handleExtractRootSignal(detailEntry)"
+              >
+                <el-icon style="font-size: 14px;"><Refresh /></el-icon>
+                {{ rootSignals.length ? '重新抽取' : '抽取根因信号' }}
+              </el-button>
+            </div>
+          </div>
+
+          <el-alert
+            v-if="!rootSignals.length"
+            type="info" :closable="false" show-icon
+            title="尚未抽取根因信号。它是结论侧定位锚点（一篇可有多条，理想每条全库唯一定位），与下方关键信号（现象侧采集）互不替代。"
+          />
+          <div v-else class="root-signal-list">
+            <el-card
+              v-for="(sig, idx) in rootSignals"
+              :key="idx"
+              class="root-signal-card"
+              shadow="never"
+              :header="'信号 ' + (idx + 1)"
+            >
+              <el-descriptions :column="2" border size="small">
+                <el-descriptions-item label="锚点描述" :span="2">{{ sig.signal_text }}</el-descriptions-item>
+                <el-descriptions-item label="形态">
+                  <el-tag :type="sig.match_type === 'executable' ? 'success' : 'info'" size="small">
+                    {{ sig.match_type === 'executable' ? 'executable（现场自动判定）' : 'text（证据流关键词包含）' }}
+                  </el-tag>
+                </el-descriptions-item>
+                <el-descriptions-item label="溯源层级">
+                  <el-tag :type="sig.provenance?.trace_tier === 'content' ? 'warning' : 'success'" size="small" effect="plain">
+                    {{ sig.provenance?.trace_tier === 'content' ? '整篇兑底（转人工复核）' : '根因主锚' }}
+                  </el-tag>
+                  <span class="field-hint">{{ sig.provenance?.source_section || '-' }}</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="待人工复核">
+                  <el-tag v-if="sig.provenance?.needs_review" type="warning" size="small">需复核</el-tag>
+                  <span v-else>否</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="冲突度">
+                  <el-tag :type="conflictDisplay(distinctivenessLevel(sig)).type" size="small" effect="plain">
+                    {{ conflictDisplay(distinctivenessLevel(sig)).label }}
+                  </el-tag>
+                </el-descriptions-item>
+                <el-descriptions-item v-if="formatAcquire(sig)" label="现场采集" :span="2">
+                  <code>{{ formatAcquire(sig) }}</code>
+                </el-descriptions-item>
+                <el-descriptions-item label="判定条件" :span="2">
+                  <el-tag v-for="kw in matchKeywords(sig)" :key="kw" size="small" effect="plain" style="margin: 0 6px 4px 0">{{ kw }}</el-tag>
+                  <span v-if="!matchKeywords(sig).length">-</span>
+                  <span class="field-hint">模式 {{ sig.match?.mode || 'all' }}／类型 {{ sig.match?.type || 'keyword' }}</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="冲突度（抽取快照）">
+                  同类 {{ sig.distinctiveness?.category_conflicts ?? '-' }} ／ 全库 {{ sig.distinctiveness?.global_conflicts ?? '-' }}
+                </el-descriptions-item>
+                <el-descriptions-item label="冲突度（最新语料）">
+                  <template v-if="rootSignalLiveConflicts && rootSignalLiveConflicts[idx]">
+                    同类 {{ rootSignalLiveConflicts[idx].live?.category_conflicts ?? '-' }} ／ 全库 {{ rootSignalLiveConflicts[idx].live?.global_conflicts ?? '-' }}
+                    <span class="field-hint">语料 {{ rootSignalLiveCorpusSize }} 篇</span>
+                  </template>
+                  <span v-else class="field-hint">点「刷新冲突度」按最新全库语料逐条重算</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="证据原文" :span="2">{{ sig.provenance?.evidence || '-' }}</el-descriptions-item>
+                <el-descriptions-item label="Prompt 版本" :span="2">
+                  <code>{{ sig.prompt_revision || '-' }}</code>
+                  <span class="field-hint">置信度 {{ sig.provenance?.confidence ?? '-' }}；admin 改 Prompt 后下一次抽取即生效（热加载）</span>
+                </el-descriptions-item>
+              </el-descriptions>
+            </el-card>
+          </div>
         </div>
 
         <!-- 关键信号面板（QKV / QFK 分组） -->
@@ -7033,6 +7268,37 @@ onUnmounted(() => clearBatchPollTimer())
       </template>
     </el-dialog>
 
+    <!-- 根因信号全库回刷：服务端选型（单批上限 100），需反复提交直至 remaining=0 -->
+    <el-dialog v-model="rootSignalBackfillDialog" title="根因信号回刷" width="620px" :close-on-click-modal="false">
+      <el-alert
+        type="info" :closable="false" show-icon
+        title="回刷只写 root_signal_json（AI 派生元数据）：不产生 KBD 新版本、不影响发布盖章，因此已发布条目也可回刷。单批上限 100 条，刷完一批可继续提交下一批，直到余量为 0。"
+      />
+      <el-form label-width="120px" class="root-signal-backfill-form">
+        <el-form-item label="回刷范围">
+          <el-checkbox-group v-model="rootSignalBackfillForm.statusesList">
+            <el-checkbox value="draft">草稿</el-checkbox>
+            <el-checkbox value="published">已发布</el-checkbox>
+          </el-checkbox-group>
+          <div class="field-hint">archive/reject 不参与线上定位，因此不在可选范围。</div>
+        </el-form-item>
+        <el-form-item label="只刷未抽取">
+          <el-switch v-model="rootSignalBackfillForm.onlyMissing" />
+          <div class="field-hint">关闭后连已抽取的一起重刷（适用于改过 Prompt 后全库重定形态，会重新烧 LLM）。</div>
+        </el-form-item>
+        <el-form-item label="分类前缀">
+          <el-input v-model="rootSignalBackfillForm.categoryPrefix" placeholder="留空则全库；如：虚拟机" clearable />
+        </el-form-item>
+        <el-form-item label="本批上限">
+          <el-input-number v-model="rootSignalBackfillForm.limit" :min="1" :max="100" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="rootSignalBackfillDialog = false">取消</el-button>
+        <el-button type="primary" :loading="rootSignalBackfillLoading" @click="handleRootSignalBackfill">提交本批</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 删除是影响模型纠错样本的重要操作：原因必须由专家显式选择，正文/截图不会删除。 -->
     <el-dialog v-model="deleteSignalDialogVisible" title="删除关键信号" width="520px" :close-on-click-modal="false">
       <p class="delete-signal-hint">
@@ -8648,6 +8914,25 @@ onUnmounted(() => clearBatchPollTimer())
   color: #909399;
   line-height: 1.4;
   margin: 2px 0 6px 94px;
+}
+
+/* 根因信号面板与回刷表单：沿用 .field-hint 字号但去掉信号表单的 94px 缩进 */
+.root-signal-list .field-hint,
+.root-signal-backfill-form .field-hint {
+  margin-left: 0;
+  display: block;
+}
+
+/* v2 多信号列表：每条信号一张卡片，卡片间留白区分 */
+.root-signal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.root-signal-card :deep(.el-card__header) {
+  padding: 8px 14px;
+  font-weight: 600;
+  font-size: 13px;
 }
 
 /* QKV 采集类型旁的「任务失败型/告警型」性质标注 */

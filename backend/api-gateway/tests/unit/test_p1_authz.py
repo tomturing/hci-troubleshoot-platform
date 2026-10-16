@@ -55,6 +55,10 @@ def _anon_client() -> TestClient:
         ("get", "/api/v1/vm-console/captures"),
         ("get", "/api/v1/signal-assets/templates"),
         ("get", "/api/v1/kbd/pending"),
+        ("post", "/api/v1/kbd/batch/extract-root-signal"),
+        ("post", "/api/v1/kbd/batch/extract-root-signal/backfill"),
+        ("post", "/api/v1/kbd/1/extract-root-signal"),
+        ("get", "/api/v1/kbd/1/root-signal-conflicts"),
         ("get", "/api/v1/sop"),
         ("post", "/api/v1/kb/ingest"),
         ("get", "/api/hci-sim/v1/control-plane/bundles"),
@@ -164,6 +168,41 @@ def test_admin_token_proxies_collapse_to_leaf_to_kb_service():
     called_url = str(mock.call_args.args[1])
     assert called_method == "POST"
     assert called_url.endswith("/api/kb/categories/vm-009/collapse-to-leaf")
+
+
+def test_admin_token_proxies_extract_root_signal_to_kb_service():
+    """根因信号抽取代理路由已注册，且 ?sync=true 透传到 kb-service 同名下游。
+
+    必要性（历史避坑）：kb-service 新增 admin 前端可达路由若漏加网关代理，
+    端点「存在但不可达」返回 404；本例把下游 URL 与 query 透传钉死为断言。
+    """
+    client = TestClient(app)
+    client.headers.update(ADMIN_HEADERS)
+    downstream = httpx.Response(200, json={"success": True, "kbd_id": 7, "match_type": "executable"})
+    mock = AsyncMock(return_value=downstream)
+    with patch("httpx.AsyncClient.request", new=mock):
+        response = client.post("/api/v1/kbd/7/extract-root-signal?sync=true")
+    assert response.status_code == 200
+    assert response.json()["match_type"] == "executable"
+    called_method = mock.call_args.args[0]
+    called_url = str(mock.call_args.args[1])
+    assert called_method == "POST"
+    assert called_url.endswith("/api/admin/kbd/7/extract-root-signal")
+    assert mock.call_args.kwargs["params"] == {"sync": "true"}
+
+
+def test_admin_token_proxies_root_signal_backfill_to_kb_service():
+    """全库回刷入口代理至 /batch/extract-root-signal/backfill（batch 段不得被当 kbd_id）。"""
+    client = TestClient(app)
+    client.headers.update(ADMIN_HEADERS)
+    downstream = httpx.Response(200, json={"batch_id": "b1", "submitted": 100, "remaining": 42})
+    mock = AsyncMock(return_value=downstream)
+    with patch("httpx.AsyncClient.request", new=mock):
+        response = client.post("/api/v1/kbd/batch/extract-root-signal/backfill", json={"limit": 100})
+    assert response.status_code == 200
+    assert response.json()["remaining"] == 42
+    called_url = str(mock.call_args.args[1])
+    assert called_url.endswith("/api/admin/kbd/batch/extract-root-signal/backfill")
 
 
 def test_admin_token_passes_vm_console_captures():

@@ -260,11 +260,15 @@ DO $$ BEGIN
         ])::text[]
       )
     );
+    -- job_type 枚举：本文件在 atlas schema apply 之后执行并**无条件重建**该 CHECK，
+    -- 因此它才是 job_type 的现行事实源；新增任务类型必须与 desired_schema.sql
+    -- 同步改这里，否则 atlas 幂等验证会报出常量不一致的 diff（CI 阻断）。
     ALTER TABLE kbd_batch_job DROP CONSTRAINT IF EXISTS ck_kbd_batch_job_type;
     ALTER TABLE kbd_batch_job ADD CONSTRAINT ck_kbd_batch_job_type CHECK (
       (job_type)::text = ANY (
         (ARRAY[
           'reanalyze_images'::varchar, 'reclassify'::varchar, 'extract_signals'::varchar,
+          'extract_root_signal'::varchar,
           'approve'::varchar, 'reject'::varchar,
           'set_review_owner'::varchar, 'set_unpublishable'::varchar
         ])::text[]

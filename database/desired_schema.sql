@@ -2410,6 +2410,13 @@ CREATE TABLE IF NOT EXISTS kbd_entry (
     -- 格式：[{"signal_category": "frontend"|"backend", "produces": [{"name": "HOST", ...}], "requires": [...], ...}]
     -- 注：旧 steps_json（扁平工具步骤）已彻底移除（ADR-1 / 迁移 20260714000000），signals_json 为唯一字段
     signals_json jsonb NOT NULL DEFAULT '[]'::jsonb,
+    -- ── 根因信号（与 signals_json 完全解耦的第二条抽取轨）─────────────────────
+    -- 单对象 v1 契约：{schema_version, role:"root_cause", match_type:"executable|text",
+    --   signal_text, acquire, match, distinctiveness, provenance, prompt_revision}
+    -- 事实源：backend/kb-service/app/services/root_signal_extractor.py
+    -- NULL = 尚未抽取；不入 kbd_revision payload（AI 派生元数据，同 ai_category_id 先例），
+    -- 故 published 条目亦可回刷本列而不产生新版本、不影响发布盖章
+    root_signal_json jsonb,
     -- 图片视觉描述（pipeline Vision LLM 生成，结构化存储，独立于 content_md）
     -- 格式：[{"seq": 0, "section": "steps_text", "desc": "TYPE: 日志截图\n..."}]
     -- 章节字段中对应位置以 ![img:N] 占位符标记；rebuild_content_md() 展开为完整 【截图说明】 块
@@ -2448,6 +2455,8 @@ CREATE TABLE IF NOT EXISTS kbd_entry (
     unpublishable_reason text,
     CONSTRAINT fk_kbd_entry_category_id FOREIGN KEY (category_id) REFERENCES kb_category (code) ON DELETE NO ACTION,
     CONSTRAINT fk_kbd_entry_review_owner_id FOREIGN KEY (review_owner_id) REFERENCES kbd_review_owner(id) ON DELETE SET NULL,
+    -- 根因信号 v2 顶层数组（不限条数；一 KBD 可有多条定位信号，不接受单对象/标量）
+    CONSTRAINT ck_kbd_entry_root_signal_json CHECK (root_signal_json IS NULL OR jsonb_typeof(root_signal_json) = 'array'),
     CONSTRAINT kbd_entry_pkey PRIMARY KEY (id)
 );
 
@@ -2464,6 +2473,7 @@ COMMENT ON COLUMN kbd_entry.operational_impact IS '操作影响范围（8 大章
 COMMENT ON COLUMN kbd_entry.is_temporary IS '是否是临时解决方案（8 大章节之一，admin 可编辑）';
 COMMENT ON COLUMN kbd_entry.recommendations IS '建议与总结（8 大章节之一，admin 可编辑）';
 COMMENT ON COLUMN kbd_entry.signals_json IS 'KBD Signal v2 文档：producer/consumer、verification_contract、不可变 generation_metadata，以及 Expert 显式发布时写入的 publish_validation；占位符 {{VAR}} 大写。非空仅表示有信号，是否可执行仍由当前发布盖章与 Agent 编译共同判定';
+COMMENT ON COLUMN kbd_entry.root_signal_json IS '根因信号 v2 顶层数组（结论侧定位信号集合，与关键信号 signals_json 完全解耦，不限条数）：每个元素 match_type=executable 携带 qfk_* 只读采集命令、=text 携带可溯源关键词；provenance.trace_tier 标主锚(root_cause)/兑底(content)，兑底强制 needs_review；distinctiveness 记录冲突度；NULL 表示尚未抽取';
 COMMENT ON COLUMN kbd_entry.images_json IS '图片视觉描述（pipeline Vision LLM 生成）；格式：[{"seq": N, "section": "field_name", "desc": "..."}]；章节字段中以 ![img:N] 标记位置，rebuild_content_md() 展开为 > **【截图说明】** 块；独立存储确保 admin 编辑章节字段后视觉信息不丢失';
 COMMENT ON COLUMN kbd_entry.content_md IS '聚合渲染 Markdown（含截图视觉描述）；由 pipeline 生成或 rebuild_content_md() 从章节字段+images_json 重建；供 LLM 上下文注入；embedding 不使用此字段（使用问题侧字段 title+problem_description+alert_info+root_cause）';
 COMMENT ON COLUMN kbd_entry.content_raw IS '纯文本内容（剔除 Markdown 格式标记和图片占位符），专供 LLM 和 RAG 检索/Embedding 使用';
@@ -2508,6 +2518,9 @@ CREATE INDEX IF NOT EXISTS idx_kbd_entry_tsv ON kbd_entry USING GIN (tsv);
 -- signals_json 结构查询（InvestigationAgent 检索关键信号；部分索引仅含已发布且有信号的条目）
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_signals ON kbd_entry USING GIN (signals_json)
     WHERE status = 'published' AND signals_json != '[]'::jsonb;
+-- 根因信号审核队列：v2 顶层数组，数组内「任一信号满足条件」的包含查询用 GIN(jsonb_path_ops)（仅已抽取条目建索引）
+CREATE INDEX IF NOT EXISTS idx_kbd_entry_root_signal_gin ON kbd_entry USING GIN (root_signal_json jsonb_path_ops)
+    WHERE root_signal_json IS NOT NULL;
 -- images_json 结构查询（如查找含特定 section 图片的 KBD）
 CREATE INDEX IF NOT EXISTS idx_kbd_entry_images_json ON kbd_entry USING GIN (images_json)
     WHERE images_json != '[]'::jsonb;
@@ -2561,6 +2574,7 @@ CREATE TABLE IF NOT EXISTS kbd_batch_job (
                     'reanalyze_images'::varchar,
                     'reclassify'::varchar,
                     'extract_signals'::varchar,
+                    'extract_root_signal'::varchar,
                     'approve'::varchar,
                     'reject'::varchar,
                     'set_review_owner'::varchar,
@@ -2602,7 +2616,7 @@ CREATE TABLE IF NOT EXISTS kbd_batch_job (
 );
 
 COMMENT ON TABLE kbd_batch_job IS 'KBD 后台批量任务；保存进度、汇总结果和链路标识，支持刷新后追踪';
-COMMENT ON COLUMN kbd_batch_job.job_type IS '任务类型：reanalyze_images（重新识图）/reclassify（重新分类）/extract_signals（重新抽取信号）/approve（审核通过）/reject（审核拒绝）';
+COMMENT ON COLUMN kbd_batch_job.job_type IS '任务类型：reanalyze_images（重新识图）/reclassify（重新分类）/extract_signals（重新抽取关键信号）/extract_root_signal（回刷根因信号）/approve（审核通过）/reject（审核拒绝）';
 COMMENT ON COLUMN kbd_batch_job.request_json IS '批量请求不可变快照；保存审核人、备注和提交时版本等恢复执行所需上下文';
 COMMENT ON COLUMN kbd_batch_job.status IS '任务状态：pending/running/completed/partial_failed/failed/interrupted';
 COMMENT ON COLUMN kbd_batch_job.interrupted_count IS '因服务或执行器中断而未完成、可重新提交的 KBD 数量';

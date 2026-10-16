@@ -1,5 +1,35 @@
 # 前端避坑（pnpm / TypeScript / Vue）
 
+## V-023：前端单测不得跨语言读后端源码（前端 CI 门禁是稀疏检出）
+
+**症状：** `rootSignal.spec.ts` 新增一例「跨语言契约一致性」——从 `process.cwd()` 向上寻仓根再
+`readFileSync('backend/kb-service/app/routes/extract_root_signal.py')` 比对 `MIN_ROOT_CAUSE_LEN`。
+本地 `pnpm --filter admin test` 全绿，推上去后 CI「前端检查（单元测试 + 构建）」却报
+`Error: 未定位到仓库根，无法校验跨语言契约`。
+
+**根因：** `ci.yml` 的 `前端检查` 作业用 `actions/checkout` + `sparse-checkout: frontend`，并明写
+「前端门禁不消费后端源码；稀疏检出缩短 hosted runner 的固定启动时间」。即该作业的仓根**只有**
+`frontend/`，任何 `backend/**` 读取在结构上必然失败。本地全量检出使之看起来“能跑”，属于典型的
+“开发环境掩盖 CI 拓扑”的静默失效。
+
+**修复：** 删除前端侧的源码扫描，只保留 `expect(MIN_ROOT_CAUSE_LEN).toBe(30)` 钉值断言；真正的
+跨语言一致性校验下沉到**全量检出**的后端侧（`test_extract_root_signal_route.py::TestCrossLanguageContract`），
+由它读前端 `rootSignal.ts` 并与 `route.MIN_ROOT_CAUSE_LEN` 比对。已用变异测试验证该守护确实有效：
+把前端阈值改 31 后该例即失败。
+
+**预防：**
+
+- 写跨目录文件读取类测试前，先查该测试所属 CI 作业的 checkout 形态（`sparse-checkout`/`path` 过滤）；
+- 前端侧不得新增 `node:fs` 读 `backend/**` 的用例；反向（后端审计前端镜像值）可接受，
+  因为后端作业为全量检出且合约事实源在后端；
+- 常量跨语言镜像至少留一个钉值断言，使单侧改动无法静默通过。
+
+> **v2 退位说明（2026-10-13 根因信号重设计）**：本坑涉及的 `MIN_ROOT_CAUSE_LEN` 跨语言契约已
+> **整体废除**——根因信号抽取输入放开到整篇 `content_md` 后，根因短不再阻塞抽取，故前端
+> `MIN_ROOT_CAUSE_LEN` 钉值、`extractBlockReason` 与后端 `TestCrossLanguageContract` 均已删除，该契约不
+> 再存在。但本坑的**拓扑教训依旧成立且重要**（前端 CI 作业为 `sparse-checkout: frontend` 稀疏检出，
+> 前端侧永远不得新增 `node:fs` 读 `backend/**` 的用例），保留条目以供后续跨目录读取类测试参考。
+
 ## V-008：前端恢复/复制 Signal 不得写入 Schema 未声明的 provenance 字段
 
 **症状：** 专家点击“恢复并编辑”或“复制”后，即使已将 QFK 从“产出变量”切为“匹配模式”，保存仍返回 `422 SIGNAL_FIELD_UNSUPPORTED`，定位到 `provenance`。页面若只展示通用文案，会误以为是 matcher、产出变量或下游消费关系配置错误。

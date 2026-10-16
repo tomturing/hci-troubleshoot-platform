@@ -1306,6 +1306,27 @@ class BatchAcceptedResponse(BaseModel):
     trace_id: str = ""
 
 
+class RootSignalBackfillRequest(BaseModel):
+    """根因信号回刷选择器（全库回刷按批驱动，单批≤ 100 沿用批量任务契约）。"""
+
+    statuses: list[str] = Field(default_factory=lambda: ["draft", "published"])
+    category_prefix: str | None = Field(None, max_length=32, description="仅回刷指定分类前缀（如「虚拟机」）")
+    only_missing: bool = Field(True, description="默认只回刷尚未抽取的条目；置 false 则连已抽取的重刷（刷新 Prompt 后全库重定形态）")
+    limit: int = Field(100, ge=1, le=100)
+
+
+class RootSignalBackfillResponse(BaseModel):
+    """回刷批次受理结果；remaining 供驱动循环判定是否继续提交下一批。"""
+
+    batch_id: UUID | None = None
+    job_type: str = "extract_root_signal"
+    status: str = "pending"
+    submitted: int = 0
+    remaining: int = 0
+    message: str = ""
+    trace_id: str = ""
+
+
 # ── 发布审核责任人相关模型 ────────────────────────────────────────────────────
 
 
@@ -1699,6 +1720,119 @@ async def batch_extract_signals(
     )
 
 
+@kbd_router.post("/batch/extract-root-signal", response_model=BatchAcceptedResponse)
+async def batch_extract_root_signal(
+    request: Request,
+    body: BatchOperationRequest,
+    background_tasks: BackgroundTasks,
+):
+    """批量回刷根因信号（写 kbd_entry.root_signal_json，不影响版本与发布盖章）。"""
+    _check_auth(request)
+    trace_id = get_current_trace_id() or uuid4().hex
+    logger.info(event="kbd_batch_extract_root_signal_start", count=len(body.kbd_ids), trace_id=trace_id)
+    return await _submit_batch_job(
+        kbd_ids=body.kbd_ids,
+        job_type="extract_root_signal",
+        processor=_extract_root_signal_one,
+        trace_id=trace_id,
+        background_tasks=background_tasks,
+    )
+
+
+@kbd_router.post("/batch/extract-root-signal/backfill", response_model=RootSignalBackfillResponse)
+async def backfill_extract_root_signal(
+    request: Request,
+    body: RootSignalBackfillRequest,
+    background_tasks: BackgroundTasks,
+):
+    """按条件选待回刷 KBD，提交一批根因信号回刷任务（全库回刷的驱动入口）。
+
+    单批上限 100（沿用 kbd_batch_job 契约），故全库回刷需反复调本端点直至 remaining=0；
+    选取时排除已有 pending/running 明细的条目，避免驱动循环时同一篇重复烧 LLM。
+    """
+    _check_auth(request)
+    # 参数校验必须早于依赖可用性检查：非法 statuses 是客户端错误，
+    # 若先撞 503 会让调用方误以为「重试即可」而反复打无效请求。
+    if not body.statuses or set(body.statuses) - {"draft", "published"}:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "ROOT_SIGNAL_BACKFILL_STATUS_INVALID",
+                "message": "回刷范围仅限 draft/published（archived/rejected/unpublishable 不参与线上定位）",
+                "statuses": body.statuses,
+            },
+        )
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+    trace_id = get_current_trace_id() or uuid4().hex
+
+    where = ["status = ANY(CAST(:statuses AS text[]))", "root_cause <> ''", "char_length(root_cause) >= 30"]
+    params: dict[str, Any] = {"statuses": list(body.statuses), "limit": body.limit}
+    if body.only_missing:
+        where.append("root_signal_json IS NULL")
+    if body.category_prefix:
+        where.append("COALESCE(category_id, ai_category_id, '') LIKE :prefix")
+        params["prefix"] = f"{body.category_prefix}%"
+    # 排除已在飞同类任务（pending/running 明细），保证驱动循环不重复消耗 LLM
+    where.append(
+        """
+        id NOT IN (
+            SELECT i.kbd_id FROM kbd_batch_job_item i
+            JOIN kbd_batch_job j ON j.batch_id = i.batch_id
+            WHERE j.job_type = 'extract_root_signal' AND i.status IN ('pending', 'running')
+        )
+        """
+    )
+
+    async with _db_manager.async_session_factory() as session:
+        id_result = await session.execute(
+            text(f"SELECT id FROM kbd_entry WHERE {' AND '.join(where)} ORDER BY id LIMIT :limit"),  # noqa: S608
+            params,
+        )
+        kbd_ids = [row[0] for row in id_result.all()]
+        remaining_params = dict(params)
+        remaining_params.pop("limit", None)
+        count_result = await session.execute(
+            text(f"SELECT COUNT(*) FROM kbd_entry WHERE {' AND '.join(where)}"),  # noqa: S608
+            remaining_params,
+        )
+        total_candidates = int(count_result.scalar() or 0)
+
+    if not kbd_ids:
+        return RootSignalBackfillResponse(
+            submitted=0, remaining=0, message="没有符合条件的待回刷 KBD"
+        )
+
+    accepted = await _submit_batch_job(
+        kbd_ids=kbd_ids,
+        job_type="extract_root_signal",
+        processor=_extract_root_signal_one,
+        trace_id=trace_id,
+        background_tasks=background_tasks,
+        request_json={
+            "statuses": list(body.statuses),
+            "only_missing": body.only_missing,
+            "category_prefix": body.category_prefix,
+        },
+    )
+    logger.info(
+        event="kbd_root_signal_backfill_submitted",
+        submitted=len(kbd_ids),
+        remaining=max(total_candidates - len(kbd_ids), 0),
+        batch_id=str(accepted.batch_id),
+        trace_id=trace_id,
+    )
+    return RootSignalBackfillResponse(
+        batch_id=accepted.batch_id,
+        job_type=accepted.job_type,
+        status=accepted.status,
+        submitted=len(kbd_ids),
+        remaining=max(total_candidates - len(kbd_ids), 0),
+        message=accepted.message,
+        trace_id=trace_id,
+    )
+
+
 @kbd_router.post("/batch/approve", response_model=BatchAcceptedResponse)
 async def batch_approve(
     request: Request,
@@ -1763,6 +1897,7 @@ async def list_batch_jobs(
         "reanalyze_images",
         "reclassify",
         "extract_signals",
+        "extract_root_signal",
         "approve",
         "reject",
         "set_review_owner",
@@ -2400,6 +2535,37 @@ async def _extract_signals_one(kbd_id: int, _on_progress: Any = None, _trace_id:
     }
 
 
+async def _extract_root_signal_one(
+    kbd_id: int, _on_progress: Any = None, _trace_id: str | None = None
+) -> dict[str, Any]:
+    """单条根因信号回刷（复用单篇执行函数）。
+
+    失败即抛，由 kbd_batch_job_item 记为 failed 并保留原因，便于“重试批次”只跑失败项；
+    任一次失败均不改动既有信号、不伪造结果（与单篇端点同一契约）。
+    """
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+    from app.routes.extract_root_signal import extract_root_signal_for_kbd
+
+    result = await extract_root_signal_for_kbd(_db_manager, kbd_id)
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "ROOT_SIGNAL_GATE_REJECTED",
+                "message": f"根因信号未通过服务端门禁：{result.get('error')}",
+                "retryable": True,
+                "attempts": result.get("attempts"),
+            },
+        )
+    return {
+        "signals_count": int(result.get("signals_count", 0) or 0),
+        "match_type": result.get("match_type"),
+        "needs_review": result.get("needs_review"),
+        "distinctiveness": result.get("distinctiveness"),
+    }
+
+
 def _internal_batch_request(path: str) -> Request:
     """构造只供进程内复用审核路由的内部认证请求。"""
 
@@ -2464,6 +2630,7 @@ _BATCH_PROCESSORS.update(
         "reanalyze_images": _reanalyze_images_one,
         "reclassify": _reclassify_one,
         "extract_signals": _extract_signals_one,
+        "extract_root_signal": _extract_root_signal_one,
         "approve": _approve_one,
         "reject": _reject_one,
     }
@@ -2857,6 +3024,7 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
                        problem_description, alert_info, steps_text, root_cause,
                        solution, operational_impact, is_temporary, recommendations,
                        signals_json, content_md, content_raw, images_json,
+                       root_signal_json,
                        metadata, category_id, ai_category_id,
                        ai_category_conf, ai_category_reason,
                        status, reviewer_id, review_note,
@@ -2929,6 +3097,8 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
         "recommendations": review_value("recommendations") or "",
         "signals_json": _signals_for_response(visible_signals_json),
         "signal_review_facts": signal_review_facts,
+        # 根因信号不在 kbd_revision payload 里（AI 派生元数据），故直接取本列而非 review_value()
+        "root_signal_json": row["root_signal_json"],
         "content_md": review_value("content_md") or "",
         "content_raw": review_value("content_raw") or "",
         "images_json": review_value("images_json") or [],
