@@ -505,6 +505,53 @@ def test_partial_report_has_one_conclusion_and_no_inconclusive_template_noise():
     assert "修复镜像格式" not in report
 
 
+def test_root_display_anchors_empty_returns_blank():
+    """轨道二解耦保证：无 text 根因锚点时不渲染任何小节（不影响既有报告）。"""
+    from app.adapters.agents.htp.kbd_model import KBD
+
+    assert KBDDiagnostic._format_root_display_anchors(KBD(id="1", support_id="1", name="x")) == ""
+    # 有但正文/关键词均空 → 仍不算锚点
+    blank = KBD(id="1", support_id="1", name="x", root_display_anchors=[{"signal_text": "  ", "keywords": [""]}])
+    assert KBDDiagnostic._format_root_display_anchors(blank) == ""
+
+
+def test_diagnostic_report_renders_root_display_anchors():
+    """命中报告（matched）应展示 text 根因人工确认锚点，且与根因/证据分区共存。"""
+    from app.adapters.agents.htp.kbd_model import KBD
+
+    kbd = KBD(
+        id="127",
+        support_id="23821",
+        name="硬盘坏道致 VM 关机",
+        root_cause="磁盘坏道",
+        root_display_anchors=[
+            {"signal_text": "SMART Reallocated_Sector_Ct 非零", "keywords": ["Reallocated", "197"]},
+        ],
+    )
+    report = KBDDiagnostic._build_diagnostic_report([kbd], [])
+
+    assert "根因特征（请人工核对）" in report
+    assert "SMART Reallocated_Sector_Ct 非零" in report
+    assert "关键词：Reallocated、197" in report
+
+
+def test_partial_report_renders_root_display_anchors():
+    """PARTIAL 报告（已命中但未定论）同样展示人工确认锚点（缩进列表态）。"""
+    from app.adapters.agents.htp.kbd_model import KBD
+
+    supported = KBD(
+        id="1",
+        support_id="18906",
+        name="导入镜像失败",
+        root_display_anchors=[{"signal_text": "qcow2 魔术头缺失", "keywords": ["QCOW"]}],
+    )
+    report = KBDDiagnostic._build_partial_report([supported], [])
+
+    assert "根因特征（请人工核对）" in report
+    assert "qcow2 魔术头缺失" in report
+    assert "关键词：QCOW" in report
+
+
 @pytest.mark.asyncio
 async def test_shared_qkv_acquisition_evaluates_each_signal_ref_independently(monkeypatch):
     """同一物理任务查询不得让第二条断言继承代表信号的处理结果。"""

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -40,7 +41,141 @@ def _signals(entry: KbdEntry) -> list[dict[str, Any]]:
     raw = entry.signals_json or []
     if isinstance(raw, dict):
         raw = raw.get("signals", [])
-    return [signal for signal in raw if isinstance(signal, dict)] if isinstance(raw, list) else []
+    signals = [signal for signal in raw if isinstance(signal, dict)] if isinstance(raw, list) else []
+    # 轨道一（#2）：executable 根因信号与关键信号同等执行/判定——并入同一信号列表，
+    # 复用全部既有 CDD 链路（compile→qfk 执行→evaluate→reduce→decide），不新增判定维度。
+    # 本函数仅在非语义 live 路径被采用（语义/frozen 路径在调用点用冻结快照覆盖 signals，不并入
+    # live 根因，保持其可复现契约）；text 根因绝不进此列表（仅作诊断报告展示锚点）。
+    for root in _root_signals(entry):
+        if str(root.get("match_type") or "") == "executable":
+            normalized = normalize_root_for_runtime(root)
+            if normalized is not None:
+                signals.append(normalized)
+    return signals
+
+
+# 根因 executable 信号并入 CDD 时统一使用的「整段标准输出」取数契约：与关键信号
+# keyword/regex 样本一致（rows=all·cardinality=all 覆盖 stdout 全文），从而复用运行时
+# evaluate_matcher 的确定性求值。
+_ROOT_WHOLE_STDOUT_EXTRACT: dict[str, Any] = {
+    "type": "text",
+    "rows": {"mode": "all"},
+    "cardinality": "all",
+    "source": "stdout",
+    "value_mode": "string",
+}
+
+# 根因 match.mode（抽取轨方言 all/any）→ 运行时 matcher.mode（求值轨方言 and/or/not）。
+# 若原样透传 all/any，evaluate_matcher 的 _normalize_mode 会落到 else→or 分支，令「全部命中」
+# 被误读为「任一命中」。故必须显式翻译。
+_ROOT_MODE_MAP = {"all": "and", "and": "and", "any": "or", "or": "or", "not": "not"}
+
+
+def _root_signals(entry: KbdEntry) -> list[dict[str, Any]]:
+    """读取 root_signal_json（v2 顶层数组，兼容 {signals:[...]} 包裹）为 dict 列表。
+
+    用 getattr 防御：既有调用方/测试可能传入无该字段的轻量对象（如 SimpleNamespace），
+    缺字段视为「无根因信号」而非抛异常，保持与关键信号读取同级的宽容度。
+    """
+    raw = getattr(entry, "root_signal_json", None) or []
+    if isinstance(raw, dict):
+        raw = raw.get("signals", [])
+    return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+
+
+def _root_signal_runtime_id(root: dict[str, Any]) -> str:
+    """为根因信号派生稳定运行时 id：优先自带 id，否则以 signal_text 指纹派生（幂等、跨请求稳定）。"""
+    base = str(root.get("id") or root.get("signal_id") or "").strip()
+    if base:
+        return base
+    digest = hashlib.sha256(str(root.get("signal_text") or "").encode("utf-8")).hexdigest()[:12]
+    return f"root_{digest}"
+
+
+def _root_match_to_cdd(match: dict[str, Any]) -> dict[str, Any] | None:
+    """把根因简单 match（{type, mode, expected:[关键词]}）转成运行时 CDD Matcher 契约。
+
+    根因抽取轨的 match 只存关键词列表，而运行时 evaluate_matcher 需要 pattern/expected 布尔/
+    extract 的完整契约，二者不可直接透传。转换仅覆盖可无损还原的 keyword/regex：
+    - keyword 单词或 any 语义：keyword matcher（逐行任一/同现即可表达）。
+    - keyword 多词 all（要求全部关键词出现、允许跨行）：逐行 records 的 and 只认同行同现，
+      无法表达跨行；改用 lookahead 正则跑整段输出（正则分支以 predicate_text 全文 + re.DOTALL 求值，
+      天然跨行），忠实复现根因「all」语义。
+    - state/boolean/threshold/exists：根因简单形不携带 value/operator 等数值契约，无法无损还原，
+      保守返回 None 丢弃（试点实测 executable 根因 100% 为 keyword，此类出现率 0%，不稀释判定）。
+    """
+    mtype = str(match.get("type") or "")
+    raw_expected = match.get("expected")
+    if isinstance(raw_expected, list):
+        tokens = [str(item).strip() for item in raw_expected if str(item).strip()]
+    elif raw_expected in (None, ""):
+        tokens = []
+    else:
+        tokens = [str(raw_expected).strip()]
+    if not tokens:
+        return None
+    mode = str(match.get("mode") or "all").lower()
+    if mtype == "keyword":
+        if len(tokens) >= 2 and mode in {"all", "and"}:
+            pattern = "".join(f"(?=.*{re.escape(token)})" for token in tokens)
+            return {"type": "regex", "pattern": pattern, "expected": True, "extract": _ROOT_WHOLE_STDOUT_EXTRACT}
+        return {
+            "type": "keyword",
+            "pattern": tokens,
+            "mode": _ROOT_MODE_MAP.get(mode, "or"),
+            "expected": True,
+            "extract": _ROOT_WHOLE_STDOUT_EXTRACT,
+        }
+    if mtype == "regex":
+        return {"type": "regex", "pattern": tokens[0], "expected": True, "extract": _ROOT_WHOLE_STDOUT_EXTRACT}
+    return None
+
+
+def normalize_root_for_runtime(root: dict[str, Any]) -> dict[str, Any] | None:
+    """把单条 executable 根因信号归一为可并入关键信号 CDD 计划的运行时信号 dict。
+
+    透传 acquire（tool/args），match 经 _root_match_to_cdd 转成运行时契约，补 provenance.category=backend
+    使 _signal_category 判为消费者（qfk_* 本就推导 backend，此处显式钉牢）；派生稳定 id 满足运行
+    时 signal_id 门禁。多余键（role/provenance 细节/distinctiveness/prompt_revision）由
+    KBDStep(extra=ignore)/compile_signal_plan 忽略。无法忠实转换（非 keyword/regex）返回 None 丢弃。
+    """
+    acquire = root.get("acquire") or {}
+    tool = str(acquire.get("tool") or "")
+    if not tool:
+        return None
+    cdd_match = _root_match_to_cdd(root.get("match") or {})
+    if cdd_match is None:
+        return None
+    return {
+        "id": _root_signal_runtime_id(root),
+        "acquire": {"tool": tool, "args": acquire.get("args") or {}},
+        "match": cdd_match,
+        "provenance": {"category": "backend"},
+    }
+
+
+def _root_display_anchors(entry: KbdEntry) -> list[dict[str, Any]]:
+    """轨道二：text 根因信号作为诊断报告「人工确认锚点」的展示载荷（绝不进 signals 列表/不入门禁）。"""
+    anchors: list[dict[str, Any]] = []
+    for root in _root_signals(entry):
+        if str(root.get("match_type") or "") != "text":
+            continue
+        match = root.get("match") or {}
+        expected = match.get("expected")
+        if isinstance(expected, list):
+            keywords = [str(item) for item in expected if str(item).strip()]
+        elif expected in (None, ""):
+            keywords = []
+        else:
+            keywords = [str(expected)]
+        anchors.append(
+            {
+                "signal_text": str(root.get("signal_text") or ""),
+                "keywords": keywords,
+                "match_type": str(match.get("type") or ""),
+            }
+        )
+    return anchors
 
 
 def _execution_issues(
@@ -59,6 +194,13 @@ def _execution_issues(
     """
     issues: list[str] = []
     validation_document = document or {"schema_version": 2, "signals": signals}
+    # 轨道一（#2）：signals 已是「关键信号 ∪ 可执行根因信号」的运行时并集，能力判定与契约
+    # 校验必须以并集为准。否则 signals_json 为空、仅由 executable 根因支撑的 KBD 会被
+    # is_reference_only 误读为「干净空文档 → reference_only」而永不进入 CDD（违背轨道一）。
+    # 仅在并集非空时覆盖 document["signals"]，保留「既无关键也无根因」空文档的 reference_only 语义；
+    # 归一后的 keyword/regex 根因信号已实测通过 validate_publishable_signals_json。
+    if isinstance(validation_document, dict) and signals and validation_document.get("signals") != signals:
+        validation_document = {**validation_document, "signals": signals}
     semantic_capability = capability_of(validation_document)
     if semantic_capability == "reference_only":
         return ["仅案例推荐：无现场验证信号，不进入自动执行 CDD"]
@@ -228,9 +370,15 @@ async def get_category_playbooks(
             generation_metadata = raw_signal_doc.get("generation_metadata") or {}
             publish_validation = raw_signal_doc.get("publish_validation") or {}
             semantic_profile = raw_signal_doc.get("semantic_entry_profile") or {}
+            # 轨道一：能力分类（diagnosis_capability/recommendable）与执行门禁必须以「关键 ∪ 可执行根因」
+            # 并集为准，使仅 executable 根因支撑的 KBD 不被空原始 signals_json 误判 reference_only。
+            # 语义/frozen 路径的 signals 已来自冻结快照（不并入 live 根因），覆盖为同值无害。
+            capability_document = (
+                {**raw_signal_doc, "signals": signals} if isinstance(raw_signal_doc, dict) and signals else raw_signal_doc
+            )
             issues = _execution_issues(
                 signals,
-                raw_signal_doc,
+                capability_document,
                 support_id=kbd.support_id,
                 category_id=kbd.category_id,
             )
@@ -248,12 +396,14 @@ async def get_category_playbooks(
                     "executable": not issues,
                     "execution_issues": issues,
                     "signals": signals,
+                    # 轨道二：text 根因仅作为诊断报告「人工确认锚点」展示，独立于 signals/门禁/召回。
+                    "root_display_anchors": _root_display_anchors(kbd),
                     "verification_contract": verification_contract,
                     "generation_metadata": generation_metadata,
                     "publish_validation": publish_validation,
                     "semantic_entry_profile": semantic_profile,
-                    "diagnosis_capability": capability_of(raw_signal_doc) or "executable",
-                    "recommendable": capability_of(raw_signal_doc) in {"reference_only", "guidance_only"} or not issues,
+                    "diagnosis_capability": capability_of(capability_document) or "executable",
+                    "recommendable": capability_of(capability_document) in {"reference_only", "guidance_only"} or not issues,
                     "root_cause": frozen.get("root_cause") if is_semantic else kbd.root_cause,
                     "solution": frozen.get("solution") if is_semantic else kbd.solution,
                     "problem_description": frozen.get("problem_description")
