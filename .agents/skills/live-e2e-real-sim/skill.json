@@ -1,0 +1,8 @@
+{
+  "name": "live-e2e-real-sim",
+  "version": "1.0.0",
+  "description": "HCI 平台「真仿真端到端」live E2E 验证 runbook - 集群内构建热替换 terminal_bridge、驱动 live_e2e smoke 真采集闭环并判票 GREEN",
+  "author": "hci-team",
+  "trigger": "当用户需要验证命令经 terminal_bridge 真下发到隔离 hci-sim 节点并真采集回灌的端到端闭环、需在 k3s 集群内构建/热替换含修复的 terminal_bridge 二进制、需绕过 flaky LLM 取值或诊断 fixture_not_found(exit127)/policy_denied(exit126)/S0 假阴性，或提到 live E2E/真仿真/端到端全绿/bridge 热替换/集群内构建/simrun 时调用",
+  "keywords": ["live-e2e", "terminal-bridge", "hci-sim", "k3s", "end-to-end", "real-sim", "fixture", "smoke"]
+}
