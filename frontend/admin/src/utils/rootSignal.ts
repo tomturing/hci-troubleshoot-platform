@@ -118,6 +118,68 @@ export function buildBackfillPayload(form: RootSignalBackfillForm): Record<strin
 }
 
 /** 回刷响应 → 人话（remaining>0 时必须告知还需继续驱动，否则用户以为已刷完）。 */
+/** 关键词 textarea 文本 ⇄ match.expected 数组（逐行、去空、去重保序）。 */
+export function splitKeywords(text: unknown): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const line of String(text ?? '').split('\n')) {
+    const kw = line.trim()
+    if (kw && !seen.has(kw)) {
+      seen.add(kw)
+      out.push(kw)
+    }
+  }
+  return out
+}
+
+/** match.expected → textarea 文本（逐行）。 */
+export function joinKeywords(expected: unknown): string {
+  if (!Array.isArray(expected)) return ''
+  return expected.map((x) => String(x ?? '')).join('\n')
+}
+
+/**
+ * 逐条编辑态 → PATCH 请求体（全量替换）。
+ * - 把 UI 辅助键 _expectedText/_argsJsonText 还原为后端契约（match.expected / acquire.args）；
+ * - text 型强制剥离 acquire（后端硬门禁会拒，前端提前挡，避免用户打完才知错）；
+ * - 采集参数 JSON 非法时返回错误串，前端据此就地提示，不打到后端 422。
+ */
+export function buildEditPayload(draft: any[]): Record<string, any> | string {
+  const signals: any[] = []
+  for (const raw of draft || []) {
+    const sig: any = JSON.parse(JSON.stringify(raw ?? {}))
+    const label = String(sig.signal_text || '').trim()
+    if (typeof sig._expectedText === 'string') {
+      sig.match = { ...(sig.match || {}), expected: splitKeywords(sig._expectedText) }
+    }
+    if (sig.match_type === 'executable' && sig.acquire && typeof sig._argsJsonText === 'string') {
+      const trimmed = sig._argsJsonText.trim()
+      if (!trimmed) {
+        sig.acquire = { ...sig.acquire, args: {} }
+      } else {
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(trimmed)
+        } catch {
+          return `信号「${label}」的采集参数不是合法 JSON`
+        }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          return `信号「${label}」的采集参数必须是 JSON 对象`
+        }
+        sig.acquire = { ...sig.acquire, args: parsed }
+      }
+    }
+    // text 型绝不携带 acquire
+    if (sig.match_type !== 'executable') sig.acquire = null
+    delete sig._expectedText
+    delete sig._argsJsonText
+    sig.schema_version = 2
+    sig.role = 'root_cause'
+    signals.push(sig)
+  }
+  return { signals }
+}
+
 export function describeBackfillResult(data: {
   submitted?: number
   remaining?: number

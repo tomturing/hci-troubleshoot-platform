@@ -58,6 +58,7 @@ def _anon_client() -> TestClient:
         ("post", "/api/v1/kbd/batch/extract-root-signal"),
         ("post", "/api/v1/kbd/batch/extract-root-signal/backfill"),
         ("post", "/api/v1/kbd/1/extract-root-signal"),
+        ("patch", "/api/v1/kbd/1/root-signal"),
         ("get", "/api/v1/kbd/1/root-signal-conflicts"),
         ("get", "/api/v1/sop"),
         ("post", "/api/v1/kb/ingest"),
@@ -203,6 +204,31 @@ def test_admin_token_proxies_root_signal_backfill_to_kb_service():
     assert response.json()["remaining"] == 42
     called_url = str(mock.call_args.args[1])
     assert called_url.endswith("/api/admin/kbd/batch/extract-root-signal/backfill")
+
+
+def test_admin_token_proxies_edit_root_signal_to_kb_service():
+    """根因信号人工编辑 PATCH 代理已注册，转发至 kb-service 同名下游（防「存在但 404」老雷）。
+
+    422 逐条违规原因须原样透传供前端定位，故下游 422 也断言不被吞成 500。
+    """
+    client = TestClient(app)
+    client.headers.update(ADMIN_HEADERS)
+    downstream = httpx.Response(200, json={"success": True, "kbd_id": 7, "signals_count": 1})
+    mock = AsyncMock(return_value=downstream)
+    with patch("httpx.AsyncClient.request", new=mock):
+        response = client.patch("/api/v1/kbd/7/root-signal", json={"signals": []})
+    assert response.status_code == 200
+    assert response.json()["signals_count"] == 1
+    assert mock.call_args.args[0] == "PATCH"
+    assert str(mock.call_args.args[1]).endswith("/api/admin/kbd/7/root-signal")
+
+    rejected = httpx.Response(
+        422, json={"detail": {"code": "ROOT_SIGNAL_NOT_CONFIRMING", "signal_text": "x", "message": "溯源未命中"}}
+    )
+    with patch("httpx.AsyncClient.request", new=AsyncMock(return_value=rejected)):
+        bad = client.patch("/api/v1/kbd/7/root-signal", json={"signals": [{"signal_text": "x"}]})
+    assert bad.status_code == 422
+    assert bad.json()["detail"]["code"] == "ROOT_SIGNAL_NOT_CONFIRMING"
 
 
 def test_admin_token_passes_vm_console_captures():

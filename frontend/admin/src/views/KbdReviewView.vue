@@ -38,6 +38,8 @@ import {
   formatAcquire,
   matchKeywords,
   parseSignals,
+  buildEditPayload,
+  joinKeywords,
   type RootSignal,
 } from '@/utils/rootSignal'
 
@@ -1227,6 +1229,84 @@ async function handleExtractRootSignal(entry: KbdEntry) {
     extractRootSignalLoading.value = null
   }
 }
+
+// ── 根因信号逐条编辑（保存即全量替换，复用抽取同一硬门禁；对齐关键信号专家编辑体验）──
+const rootSignalEditDialog = ref(false)
+const rootSignalEditSaving = ref(false)
+const rootSignalDraft = ref<any[]>([])
+
+function openRootSignalEditor() {
+  // 深拷贝当前数组 + 附 UI 辅助键（关键词逐行文本 / executable 采集参数 JSON），编辑态与落库态解耦
+  rootSignalDraft.value = rootSignals.value.map((raw) => {
+    const sig: any = JSON.parse(JSON.stringify(raw))
+    sig.match = sig.match || { type: 'keyword', mode: 'all', expected: [] }
+    sig.provenance = sig.provenance || { source_section: 'root_cause', evidence: '' }
+    sig._expectedText = joinKeywords(sig.match?.expected)
+    sig._argsJsonText = sig.acquire ? JSON.stringify(sig.acquire.args || {}, null, 2) : ''
+    return sig
+  })
+  rootSignalEditDialog.value = true
+}
+
+function addRootSignalDraft() {
+  rootSignalDraft.value.push({
+    schema_version: 2,
+    role: 'root_cause',
+    match_type: 'text',
+    signal_text: '',
+    acquire: null,
+    match: { type: 'keyword', mode: 'all', expected: [] },
+    provenance: { source_section: 'root_cause', evidence: '', needs_review: true },
+    _expectedText: '',
+    _argsJsonText: '',
+  })
+}
+
+function removeRootSignalDraft(idx: number) {
+  rootSignalDraft.value.splice(idx, 1)
+}
+
+async function saveRootSignalEdits() {
+  const entry = detailEntry.value
+  if (!entry) return
+  const payload = buildEditPayload(rootSignalDraft.value)
+  if (typeof payload === 'string') {
+    ElMessage.error({ message: payload, duration: 0, showClose: true })
+    return
+  }
+  rootSignalEditSaving.value = true
+  try {
+    const resp = await fetch(`/api/v1/kbd/${entry.id}/root-signal`, {
+      method: 'PATCH',
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const data = await resp.json().catch(() => ({}))
+    if (!resp.ok) {
+      const detail = data?.detail
+      const msg = typeof detail === 'string' ? detail : detail?.message || `HTTP ${resp.status}`
+      const which = detail && typeof detail === 'object' && detail.signal_text ? `（信号「${detail.signal_text}」）` : ''
+      ElMessage.error({ message: `根因信号校验未通过${which}：${msg}`, duration: 0, showClose: true })
+      return
+    }
+    ElMessage.success({
+      message: `已保存 ${data.signals_count ?? payload.signals.length} 条根因信号`,
+      duration: 0,
+      showClose: true,
+    })
+    // 先推进展示态再关闭（与关键信号一致：成功后拉新详情、不先清编辑态）
+    const detailResp = await fetch(`/api/v1/kbd/${entry.id}`, { headers: authHeader })
+    if (detailResp.ok) detailEntry.value = await detailResp.json()
+    rootSignalLiveConflicts.value = null
+    rootSignalLiveCorpusSize.value = 0
+    rootSignalEditDialog.value = false
+  } catch (err: any) {
+    ElMessage.error({ message: `保存根因信号失败：${err.message || '未知错误'}`, duration: 0, showClose: true })
+  } finally {
+    rootSignalEditSaving.value = false
+  }
+}
+
 
 async function refreshRootSignalConflicts() {
   if (!detailEntry.value || !rootSignals.value.length) return
@@ -5486,6 +5566,16 @@ onUnmounted(() => clearBatchPollTimer())
                 刷新冲突度
               </el-button>
               <el-button
+                size="small"
+                type="primary"
+                plain
+                :disabled="!canEditCurrent"
+                title="逐条编辑/删除/新增根因信号（保存即全量替换，后端复用抽取同一硬门禁逐条校验）"
+                @click="openRootSignalEditor"
+              >
+                编辑
+              </el-button>
+              <el-button
                 type="warning"
                 size="small"
                 :loading="extractRootSignalLoading === detailEntry.id"
@@ -7269,6 +7359,70 @@ onUnmounted(() => clearBatchPollTimer())
     </el-dialog>
 
     <!-- 根因信号全库回刷：服务端选型（单批上限 100），需反复提交直至 remaining=0 -->
+    <!-- 根因信号逐条编辑：保存即全量替换，后端复用抽取同一硬门禁逐条校验 -->
+    <el-dialog v-model="rootSignalEditDialog" title="编辑根因信号（保存即全量替换）" width="760px" :close-on-click-modal="false">
+      <el-alert
+        type="info" :closable="false" show-icon style="margin-bottom: 12px;"
+        title="关键词/证据须逐字可溯源到本 KBD 原文；executable 型采集参数须合法且只读——不合规保存会被后端逐条拒绝并回传原因。"
+      />
+      <div v-if="!rootSignalDraft.length" class="field-hint" style="margin-bottom: 12px;">暂无根因信号，点“新增一条”创建。</div>
+      <el-card
+        v-for="(sig, idx) in rootSignalDraft"
+        :key="idx"
+        shadow="never"
+        style="margin-bottom: 12px;"
+      >
+        <template #header>
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span>信号 {{ idx + 1 }}</span>
+            <el-button size="small" type="danger" plain @click="removeRootSignalDraft(idx)">删除</el-button>
+          </div>
+        </template>
+        <el-form label-width="96px" size="small">
+          <el-form-item label="锚点描述">
+            <el-input v-model="sig.signal_text" placeholder="一句话特性结论（须能确证根因）" />
+          </el-form-item>
+          <el-form-item label="形态">
+            <el-select v-model="sig.match_type" style="width: 280px;">
+              <el-option label="executable（现场自动判定）" value="executable" />
+              <el-option label="text（证据流关键词包含）" value="text" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="判定">
+            <el-select v-model="sig.match.type" style="width: 150px;">
+              <el-option label="keyword" value="keyword" />
+              <el-option label="regex" value="regex" />
+            </el-select>
+            <el-select v-model="sig.match.mode" style="width: 150px; margin-left: 8px;">
+              <el-option label="全部命中 all" value="all" />
+              <el-option label="任一命中 any" value="any" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="关键词">
+            <el-input v-model="sig._expectedText" type="textarea" :rows="2" placeholder="每行一个关键词/正则" />
+          </el-form-item>
+          <el-form-item v-if="sig.match_type === 'executable'" label="采集参数">
+            <el-input
+              v-model="sig._argsJsonText" type="textarea" :rows="4"
+              placeholder='acquire.args 的 JSON，例如 {"command":"...","timeout":30}'
+            />
+            <div class="field-hint">工具 {{ sig.acquire?.tool || '（无 acquire：改判 text 或重新抽取）' }}；仅 executable 生效。</div>
+          </el-form-item>
+          <el-form-item label="溯源章节">
+            <el-input v-model="sig.provenance.source_section" placeholder="root_cause / solution / …（信号出自的章节）" />
+          </el-form-item>
+          <el-form-item label="证据原文">
+            <el-input v-model="sig.provenance.evidence" type="textarea" :rows="2" placeholder="逐字摘自 KBD 原文的证据摘录（须能溯源，否则后端拒）" />
+          </el-form-item>
+        </el-form>
+      </el-card>
+      <template #footer>
+        <el-button size="small" @click="addRootSignalDraft">新增一条</el-button>
+        <el-button @click="rootSignalEditDialog = false">取消</el-button>
+        <el-button type="primary" :loading="rootSignalEditSaving" @click="saveRootSignalEdits">保存全部</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="rootSignalBackfillDialog" title="根因信号回刷" width="620px" :close-on-click-modal="false">
       <el-alert
         type="info" :closable="false" show-icon

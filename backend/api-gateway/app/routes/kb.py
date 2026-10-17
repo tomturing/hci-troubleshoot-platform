@@ -992,6 +992,18 @@ async def kbd_extract_root_signal_proxy(kbd_id: int, request: Request):
     return _kbd_json_response(response)
 
 
+@kbd_router.patch("/{kbd_id}/root-signal")
+async def kbd_edit_root_signal_proxy(kbd_id: int, request: Request):
+    """代理根因信号人工编辑（全量替换 root_signal_json 数组）→ kb-service
+
+    与抽取同一套硬门禁在 kb-service 侧执行；422 逐条原因经 _kbd_json_response 原样透传供前端定位。
+    """
+    body = await request.json()
+    headers = _internal_auth_headers()
+    response = await _kbd_proxy("PATCH", f"/{kbd_id}/root-signal", payload=body, headers=headers, timeout=30.0)
+    return _kbd_json_response(response)
+
+
 @kbd_router.get("/{kbd_id}/extract-root-signal/status")
 async def kbd_extract_root_signal_status_proxy(kbd_id: int, request: Request):
     """代理根因信号异步 Job 状态查询 → kb-service"""

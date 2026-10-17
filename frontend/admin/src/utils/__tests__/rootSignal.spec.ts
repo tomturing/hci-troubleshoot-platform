@@ -5,12 +5,15 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildBackfillPayload,
+  buildEditPayload,
   conflictDisplay,
   describeBackfillResult,
   distinctivenessLevel,
   formatAcquire,
+  joinKeywords,
   matchKeywords,
   parseSignals,
+  splitKeywords,
 } from '../rootSignal'
 import type { RootSignal } from '../rootSignal'
 
@@ -114,5 +117,69 @@ describe('全库回刷请求体', () => {
     expect(describeBackfillResult({ submitted: 100, remaining: 37 })).toContain('待刷余量 37')
     expect(describeBackfillResult({ submitted: 100, remaining: 0 })).toContain('全库回刷完成')
     expect(describeBackfillResult({ submitted: 0, remaining: 0 })).toContain('没有符合条件')
+  })
+})
+
+describe('关键词 textarea ⇄ expected 数组', () => {
+  it('splitKeywords 逐行、去空、去重保序', () => {
+    expect(splitKeywords('/etc/shadow\n\n旧密码哈希\n /etc/shadow ')).toEqual(['/etc/shadow', '旧密码哈希'])
+    expect(splitKeywords(null)).toEqual([])
+  })
+
+  it('joinKeywords 与 splitKeywords 对合（数组→逐行文本）', () => {
+    expect(joinKeywords(['/etc/shadow', '旧密码哈希'])).toBe('/etc/shadow\n旧密码哈希')
+    expect(splitKeywords(joinKeywords(['/a', '/b']))).toEqual(['/a', '/b'])
+    expect(joinKeywords('not-array')).toBe('')
+  })
+})
+
+describe('buildEditPayload 逐条编辑态 → PATCH 全量替换体', () => {
+  it('把 _expectedText/_argsJsonText 还原为后端契约并补 schema_version/role', () => {
+    const draft = [
+      {
+        match_type: 'executable',
+        signal_text: '/run/lock 占满',
+        acquire: { tool: 'qfk_system' },
+        match: { type: 'keyword', mode: 'all' },
+        _expectedText: '100%\nOOM',
+        _argsJsonText: '{"command":"df","command_args":["-h","/run/lock"]}',
+      },
+    ]
+    const payload = buildEditPayload(draft) as Record<string, any>
+    expect(typeof payload).toBe('object')
+    const sig = payload.signals[0]
+    expect(sig.match.expected).toEqual(['100%', 'OOM'])
+    expect(sig.acquire.args).toEqual({ command: 'df', command_args: ['-h', '/run/lock'] })
+    expect(sig.schema_version).toBe(2)
+    expect(sig.role).toBe('root_cause')
+    // UI 辅助键绝不泄漏到请求体
+    expect(sig._expectedText).toBeUndefined()
+    expect(sig._argsJsonText).toBeUndefined()
+  })
+
+  it('text 型强制剥离 acquire（后端硬门禁会拒非 executable 的采集）', () => {
+    const payload = buildEditPayload([
+      { match_type: 'text', signal_text: 'shadow 残留', acquire: { tool: 'x' }, _expectedText: '/etc/shadow' },
+    ]) as Record<string, any>
+    expect(payload.signals[0].acquire).toBeNull()
+  })
+
+  it('executable 采集参数非法 JSON 时返回中文错误串而非请求体（挡在前端就地提示）', () => {
+    const bad = buildEditPayload([
+      { match_type: 'executable', signal_text: 's', acquire: { tool: 'qfk_system' }, _argsJsonText: '{oops' },
+    ])
+    expect(typeof bad).toBe('string')
+    expect(bad).toContain('不是合法 JSON')
+    const arr = buildEditPayload([
+      { match_type: 'executable', signal_text: 's', acquire: { tool: 'qfk_system' }, _argsJsonText: '[1,2]' },
+    ])
+    expect(arr).toContain('必须是 JSON 对象')
+  })
+
+  it('executable 采集参数留空归一为空对象 args（而非报错）', () => {
+    const payload = buildEditPayload([
+      { match_type: 'executable', signal_text: 's', acquire: { tool: 'qfk_system' }, _argsJsonText: '  ' },
+    ]) as Record<string, any>
+    expect(payload.signals[0].acquire.args).toEqual({})
   })
 })

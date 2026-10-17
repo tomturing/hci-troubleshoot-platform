@@ -57,6 +57,8 @@ from app.services.root_signal_extractor import (
     ROOT_SIGNAL_PROMPT_NAME,
     ConflictCorpus,
     extract_root_signal,
+    gate_signals,
+    normalize_root_signal,
 )
 from app.services.signal_job_manager import SignalJobManager
 
@@ -529,6 +531,127 @@ async def preview_root_signal_conflicts(request: Request, kbd_id: int):
         ],
         "corpus_size": len(corpus),
     }
+
+
+# ─── 根因信号人工编辑（逐条编辑/删除/新增，复用抽取同一套硬门禁）─────────────
+class RootSignalEditRequest(BaseModel):
+    """全量替换根因信号数组：删除某条=提交不含它的数组，新增=追加一条。"""
+
+    signals: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class RootSignalEditResult(BaseModel):
+    success: bool
+    kbd_id: int
+    support_id: str | None = None
+    signals: list[dict[str, Any]] = Field(default_factory=list)
+    signals_count: int = 0
+
+
+@router.patch("/kbd/{kbd_id}/root-signal", response_model=RootSignalEditResult)
+async def edit_root_signal(request: Request, kbd_id: int, body: RootSignalEditRequest) -> RootSignalEditResult:
+    """人工编辑根因信号（逐条编辑/删除/新增）——保存即全量替换 root_signal_json 数组。
+
+    与自动抽取**同标准硬门禁**：每条先经 gate_signals 去重/封顶，再复用
+    normalize_root_signal（executable 的 qfk_* 词表/args 契约/只读安全门 +
+    溯源逐字命中；text 的 keyword/regex + 逐字溯源），任一不合即 422 拒绝，
+    绝不落非法信号；非法原因逐条回传供前端定位。写回只动 root_signal_json
+    （AI 派生元数据），不触发 kbd_revision、不改发布盖章（同回刷语义）。
+    """
+    _check_auth(request)
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="服务未就绪")
+    trace_id = get_current_trace_id()
+
+    async with _db_manager.async_session_factory() as session:
+        result = await session.execute(
+            select(
+                KbdEntry.id,
+                KbdEntry.support_id,
+                KbdEntry.title,
+                KbdEntry.root_cause,
+                KbdEntry.content_md,
+                KbdEntry.problem_description,
+                KbdEntry.alert_info,
+                KbdEntry.steps_text,
+                KbdEntry.solution,
+                KbdEntry.operational_impact,
+                KbdEntry.recommendations,
+                KbdEntry.category_id,
+                KbdEntry.ai_category_id,
+                KbdEntry.status,
+            ).where(KbdEntry.id == kbd_id)
+        )
+        row = result.mappings().first()
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"KBD 条目 {kbd_id} 不存在")
+
+    root_cause = (row["root_cause"] or "").strip()
+    kbd_content = _render_kbd_content(row)
+    category_code = row["category_id"] or row["ai_category_id"] or ""
+
+    # 空数组 = 清空根因信号（删除最后一条的合法终态）：不跑门禁直接落 []
+    signals: list[dict[str, Any]] = []
+    if body.signals:
+        gated, gate_error = gate_signals({"signals": body.signals})
+        if gate_error:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "ROOT_SIGNAL_INVALID", "message": gate_error},
+            )
+        for raw in gated:
+            signal, violation, _tier = normalize_root_signal(
+                raw,
+                root_cause=root_cause,
+                content=kbd_content,
+                category_id=category_code,
+                prompt_revision="manual-edit",
+            )
+            if violation:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "ROOT_SIGNAL_NOT_CONFIRMING",
+                        "signal_text": str(raw.get("signal_text") or ""),
+                        "message": violation,
+                    },
+                )
+            signals.append(signal)  # type: ignore[arg-type]
+
+        # 冲突度按现场语料逐条实测（与抽取一致，不采信前端自报）
+        corpus = await get_conflict_corpus(_db_manager)
+        for signal in signals:
+            signal["distinctiveness"] = corpus.conflicts(signal, self_support_id=row["support_id"])
+
+    async with _db_manager.async_session_factory() as session:
+        await session.execute(
+            text(
+                """
+                UPDATE kbd_entry
+                SET root_signal_json = CAST(:signals AS jsonb), updated_at = now()
+                WHERE id = :kbd_id
+                """
+            ),
+            {"kbd_id": kbd_id, "signals": json.dumps(signals, ensure_ascii=False)},
+        )
+        await session.commit()
+
+    logger.info(
+        event="root_signal_manual_edit",
+        trace_id=trace_id,
+        kbd_id=kbd_id,
+        support_id=row["support_id"],
+        kbd_status=row["status"],
+        signals_count=len(signals),
+        needs_review=sum(1 for s in signals if s["provenance"]["needs_review"]),
+    )
+    return RootSignalEditResult(
+        success=True,
+        kbd_id=kbd_id,
+        support_id=row["support_id"],
+        signals=signals,
+        signals_count=len(signals),
+    )
 
 
 def _check_auth(request: Request) -> None:

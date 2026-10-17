@@ -134,7 +134,8 @@ class KbdEntry(Base):
     - images_json: 图片视觉描述（[{"seq": N, "section": field, "desc": "..."}]）
       独立存储，rebuild_content_md() 展开占位符；admin 编辑章节后视觉信息不丢失
     - signals_json: 关键信号集合（producer/consumer 信号，非空时对 InvestigationAgent 可见）
-    - root_signal_json: 根因信号（结论侧定位锚点，单对象，与 signals_json 完全解耦）
+    - root_signal_json: 根因信号（结论侧定位锚点，v2 顶层 JSON 数组 0..N 条，与 signals_json 解耦存储；
+      运行时 executable 型按关键信号同等并入 CDD 信号计划执行/判定，text 型仅作诊断报告人工确认锚点展示）
     - content_md: 聚合渲染 Markdown（供展示和 LLM 上下文注入）
     - embedding: embed(title + problem_description + alert_info + root_cause)
       问题侧语义向量，不含 solution，避免答案侧污染向量空间
@@ -167,10 +168,12 @@ class KbdEntry(Base):
     # 非空时 KBD 条目对 InvestigationAgent 可见（差异诊断）
     signals_json = Column(JSONB, nullable=False, default=list)  # 关键信号集合
 
-    # ── 根因信号（与关键信号完全解耦的第二条抽取轨）──────────────────────────
-    # 单对象 v1 契约：{schema_version, role:"root_cause", match_type:"executable|text",
-    #   signal_text, acquire, match, distinctiveness, provenance, prompt_revision}
-    # 事实源：app/services/root_signal_extractor.py（一 KBD 一信号，DB CHECK 钉住仅允许对象）
+    # ── 根因信号（与关键信号解耦的第二条抽取轨；运行时按 match_type 分两轨消费）──
+    # v2 顶层数组契约：[{schema_version, role:"root_cause", match_type:"executable|text",
+    #   signal_text, acquire(executable 才有), match, distinctiveness, provenance{trace_tier,...}, prompt_revision}]
+    # 事实源：app/services/root_signal_extractor.py（一 KBD 可 0..N 条，DB CHECK 钉住顶层仅允许数组）
+    # 运行时消费（见 PR「根因信号编辑与运行时消费对齐」）：executable 并入 playbooks._signals 与关键信号
+    #   同一 CDD 计划执行/判定；text 不进门禁/不改召回，仅 playbooks 以 root_display_anchors 供诊断报告展示
     # NULL = 尚未抽取；本列是 AI 派生元数据（同 ai_category_id 先例），不入 kbd_revision payload，
     # 因此对 published 条目回刷本列不产生新版本、不影响发布盖章
     root_signal_json = Column(JSONB, nullable=True)  # 根因信号（结论侧唯一定位锚点）

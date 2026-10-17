@@ -351,6 +351,91 @@ class TestHttpSurface:
         assert exc.value.detail["code"] == "ROOT_SIGNAL_BACKFILL_STATUS_INVALID"
 
 
+class TestEditRootSignal:
+    """人工编辑端点 PATCH /kbd/{id}/root-signal：保存即全量替换，复用抽取同一硬门禁。"""
+
+    @staticmethod
+    def _stub_corpus(monkeypatch, corpus):
+        async def _corpus(db_manager: Any, *, force: bool = False) -> ConflictCorpus:
+            return corpus
+
+        monkeypatch.setattr(route, "get_conflict_corpus", _corpus)
+
+    async def test_edit_persists_valid_executable_signal(self, monkeypatch, corpus):
+        updates: list[dict[str, Any]] = []
+        monkeypatch.setattr(route, "_db_manager", _db_factory(_ENTRY_ROW, updates))
+        self._stub_corpus(monkeypatch, corpus)
+        body = route.RootSignalEditRequest(signals=[_EXECUTABLE_PAYLOAD["signal"]])
+        result = await route.edit_root_signal(
+            _make_request("PATCH", "/api/admin/kbd/1/root-signal"), 1, body
+        )
+        assert result.success is True and result.signals_count == 1
+        # 写回只动 root_signal_json 一列（v2 顶层数组），不触碰 content_md
+        assert len(updates) == 1
+        assert "root_signal_json" in updates[0]["sql"] and "content_md" not in updates[0]["sql"]
+        signal = json.loads(updates[0]["params"]["signals"])[0]
+        assert signal["schema_version"] == 2 and signal["role"] == "root_cause"
+        # 冲突度按现场语料实测（非前端自报）；prompt_revision 标记为人工编辑
+        assert signal["distinctiveness"] == {"category_conflicts": 1, "global_conflicts": 1}
+        assert signal["prompt_revision"] == "manual-edit"
+
+    async def test_edit_persists_text_signal_without_acquire(self, monkeypatch, corpus):
+        updates: list[dict[str, Any]] = []
+        entry = {**_ENTRY_ROW, "root_cause": "/etc/shadow 中残留旧密码哈希，导致 ssh 密钥认证失败"}
+        monkeypatch.setattr(route, "_db_manager", _db_factory(entry, updates))
+        self._stub_corpus(monkeypatch, corpus)
+        body = route.RootSignalEditRequest(signals=[_TEXT_PAYLOAD["signal"]])
+        result = await route.edit_root_signal(
+            _make_request("PATCH", "/api/admin/kbd/1/root-signal"), 1, body
+        )
+        assert result.signals_count == 1
+        assert json.loads(updates[0]["params"]["signals"])[0]["acquire"] is None
+
+    async def test_edit_rejects_untraceable_signal_and_writes_nothing(self, monkeypatch, corpus):
+        """对抗核心：任一信号不过硬门禁即整体 422，绝不部分落库。"""
+        updates: list[dict[str, Any]] = []
+        monkeypatch.setattr(route, "_db_manager", _db_factory(_ENTRY_ROW, updates))
+        self._stub_corpus(monkeypatch, corpus)
+        bad = json.loads(json.dumps(_TEXT_PAYLOAD["signal"]))
+        bad["provenance"]["evidence"] = "完全不存在于本 KBD 原文的伪造证据 ZZZ"
+        bad["match"]["expected"] = ["伪造证据ZZZ"]
+        with pytest.raises(HTTPException) as exc:
+            await route.edit_root_signal(
+                _make_request("PATCH", "/api/admin/kbd/1/root-signal"), 1, route.RootSignalEditRequest(signals=[bad])
+            )
+        assert exc.value.status_code == 422
+        assert exc.value.detail["code"] == "ROOT_SIGNAL_NOT_CONFIRMING"
+        assert updates == []
+
+    async def test_edit_empty_array_clears_signals(self, monkeypatch):
+        updates: list[dict[str, Any]] = []
+        monkeypatch.setattr(route, "_db_manager", _db_factory(_ENTRY_ROW, updates))
+        result = await route.edit_root_signal(
+            _make_request("PATCH", "/api/admin/kbd/1/root-signal"), 1, route.RootSignalEditRequest(signals=[])
+        )
+        assert result.signals_count == 0
+        assert json.loads(updates[0]["params"]["signals"]) == []
+
+    async def test_edit_missing_entry_returns_404(self, monkeypatch):
+        updates: list[dict[str, Any]] = []
+        monkeypatch.setattr(route, "_db_manager", _db_factory(None, updates))
+        with pytest.raises(HTTPException) as exc:
+            await route.edit_root_signal(
+                _make_request("PATCH", "/api/admin/kbd/1/root-signal"),
+                1,
+                route.RootSignalEditRequest(signals=[_TEXT_PAYLOAD["signal"]]),
+            )
+        assert exc.value.status_code == 404
+
+    async def test_edit_requires_internal_token(self):
+        anonymous = Request(
+            {"type": "http", "method": "PATCH", "path": "/api/admin/kbd/1/root-signal", "headers": []}
+        )
+        with pytest.raises(HTTPException) as exc:
+            await route.edit_root_signal(anonymous, 1, route.RootSignalEditRequest(signals=[]))
+        assert exc.value.status_code in (401, 403)
+
+
 class TestConflictCorpus:
     def test_tokens_from_acquire_resources_count_as_conflict(self):
         corpus = ConflictCorpus(_CORPUS_ROWS)
