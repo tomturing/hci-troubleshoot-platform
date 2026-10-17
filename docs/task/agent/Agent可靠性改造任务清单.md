@@ -709,3 +709,14 @@ owner: team
 - [x] **测试**：`test_root_signal_extractor.py` 36 例（多信号/去重/部分失败/tier 分层/schema=2）、
   `test_extract_root_signal_route.py` 13 例（signals 数组写回/根因短仍读整篇/逐条冲突度）；后端
   680 passed、前端 admin 162 passed + `vue-tsc --noEmit` 无错。
+
+## 根因信号运行时两轨消费（PR B，2026-10-17）
+
+承接上面 PR A（逐条编辑），本任务把根因信号接入运行时消费（agent/shared 侧）。方案详见
+`docs/solution/knowledge-base/知识库设计.md`《根因信号运行时两轨消费》与 `docs/solution/架构设计.md`《shared/cdd 根因信号两轨消费契约》。
+
+- [x] **轨道一（executable）与关键信号同等判定**：kb-service `playbooks._signals` 将 executable 根因经 `normalize_root_for_runtime` 归一（根因简单 `match` → 运行时 CDD Matcher 契约：多关键词 all → lookahead 正则跨行、mode all→and/any→or、补标准整段 stdout extract）后并入 `KBD.signals`，下游 CDD 链路零改动。
+- [x] **能力判定以并集为准（防“仅根因永不执行”退化）**：`_execution_issues` 与 `diagnosis_capability`/`recommendable` 均读「关键 ∪ executable 根因」并集，避免空 `signals_json` 但携 executable 根因的 KBD 被 `is_reference_only` 误判 reference_only。
+- [x] **轨道二（text）agent 侧报告展示**：`kbd_differential.py` 新增 `_format_root_display_anchors`，在 `_build_diagnostic_report`（命中）与 `_build_partial_report`（部分命中）渲染「根因特征（请人工核对）」小节；与判定/召回完全解耦。
+- [x] **语义边界**：Phase 1 语义/frozen（`guidance_only`/`reference_only`）路径不并入 live 根因，保持按快照可复现。
+- [x] **测试与评估**：`test_kbd_differential.py` 新增 3 例（无锚点返回空串/matched 与 partial 渲染锚点）；`backend/shared/tests/test_root_signal_runtime_cdd.py` 5 例（AND 收紧、anchors 零 SignalRef、无根因恒等）；`test_playbooks_root_signal_runtime.py` 37 例；离线 golden 回放 `evaluation/replay_runner.py` 对比基线 0 回归（分类/工具 100%）。当前评估语料与种子 KBD 均无 executable 根因信号 → 并集为恒等，定论率不漂移（收紧仅对未来填入根因的“两者都有”KBD 生效）。live E2E 定论率对比为发布前 gate，需真实服务栈，非本 PR 环境可跑。

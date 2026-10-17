@@ -40,7 +40,7 @@ owner: team
 
 | 主题 | 入口 |
 |---|---|
-| 根因信号（结论侧定位信号，与关键信号解耦的第二抽取轨；**v2 多信号数组 + 整篇输入 + 溯源分层**，已落地生产抽取与审核 UI） | [根因信号抽取方案](根因信号抽取方案.md) |
+| 根因信号（结论侧定位信号，与关键信号解耦的第二抽取轨；**v2 多信号数组 + 整篇输入 + 溯源分层**，已落地生产抽取与审核 UI；**运行时按 `match_type` 两轨消费：executable 并入关键信号同一 CDD 计划同等判定、text 仅诊断报告人工确认锚点**） | [根因信号抽取方案](根因信号抽取方案.md)；运行时消费见 [知识库设计](知识库设计.md)《根因信号运行时两轨消费》 |
 | 单 Signal 试运行、PASS 资产与 Bundle Draft | [Signal 试运行设计与运维](Signal试运行设计与运维.md) |
 | 批量任务、状态迁移、中断与重试 | [KBD 批量任务状态](KBD批量任务状态迁移说明.md) |
 | 工具参数和机器可校验示例 | [acquirer_args.py](../../../backend/shared/schemas/acquirer_args.py)、[Signal Schema](../../../backend/shared/schemas/signals/signal.v2.schema.json)、[示例](../../contracts/signal-examples.json) |

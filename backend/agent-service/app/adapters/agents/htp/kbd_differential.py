@@ -2455,6 +2455,7 @@ class KBDDiagnostic:
                 f"**根因（原始文本）**：\n{kbd.root_cause or '（无）'}\n\n"
                 f"**解决方案（原始文本）**：\n{kbd.solution or '（无）'}\n\n"
                 f"**现场证据（关键信号确认）**：\n" + ("\n".join(evidence) if evidence else "- 无")
+                + KBDDiagnostic._format_root_display_anchors(kbd)
             )
         return "\n\n".join(blocks)
 
@@ -2490,6 +2491,9 @@ class KBDDiagnostic:
                 blocks.append(
                     "  - 现场证据：\n" + "\n".join(f"    {line}" for item in evidence for line in item.splitlines())
                 )
+            anchors = KBDDiagnostic._format_root_display_anchors(kbd, indent="  - ")
+            if anchors:
+                blocks.append(anchors)
 
         pending = evaluated_kbds or []
         if pending:
@@ -2501,6 +2505,27 @@ class KBDDiagnostic:
                 reason = KBDDiagnostic._friendly_exclusion_reason(reasons)
                 blocks.append(f"- [参考案例 {support_id} - {kbd.name}]({url})：{reason}")
         return "\n".join(blocks)
+
+    @staticmethod
+    def _format_root_display_anchors(kbd: KBD, *, indent: str = "") -> str:
+        """渲染 text 根因信号的「人工确认锚点」小节（轨道二，与判定完全解耦）。
+
+        仅展示根因结论侧特征（signal_text + 关键词），供运维人工核对；不来自现场取证，
+        不参与 required/SATISFIED 判定，不影响候选状态与召回。无锚点时返回空串。
+        """
+        anchors = getattr(kbd, "root_display_anchors", None) or []
+        lines: list[str] = []
+        for anchor in anchors:
+            text = str(anchor.get("signal_text") or "").strip()
+            keywords = [str(k).strip() for k in (anchor.get("keywords") or []) if str(k).strip()]
+            if not text and not keywords:
+                continue
+            suffix = f"（关键词：{'、'.join(keywords)}）" if keywords else ""
+            lines.append(f"{indent}- {text or '（无描述）'}{suffix}")
+        if not lines:
+            return ""
+        header = f"\n\n{indent}**根因特征（请人工核对）**：" if indent == "" else f"{indent}**根因特征（请人工核对）**："
+        return header + "\n" + "\n".join(lines)
 
     @staticmethod
     def _friendly_exclusion_reason(reasons: list[str]) -> str:

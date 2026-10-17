@@ -81,6 +81,9 @@ class KBD(BaseModel):
     similarity: float = 0.0
     type: str = ""
     signals: list[dict] = Field(default_factory=list)  # v2 嵌套信号集合
+    # 轨道二：text 根因信号的「人工确认锚点」展示载荷（signal_text+关键词），仅供诊断报告渲染，
+    # 绝不进 signals/compile_signal_plan/required/SATISFIED，故不影响任何执行判定与召回。
+    root_display_anchors: list[dict] = Field(default_factory=list)
     resource_revision: dict = Field(default_factory=dict)
     verification_contract: dict = Field(default_factory=dict)
     generation_metadata: dict = Field(default_factory=dict)
@@ -123,6 +126,7 @@ def kbd_from_dict(d: dict[str, Any]) -> KBD:
         similarity=float(d.get("similarity", 0.0) or 0.0),
         type=str(d.get("type", "") or ""),
         signals=signals,
+        root_display_anchors=d.get("root_display_anchors") or [],
         resource_revision=d.get("resource_revision") or {},
         verification_contract=verification_contract,
         generation_metadata=generation_metadata,
