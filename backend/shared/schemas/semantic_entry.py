@@ -25,6 +25,9 @@ MAX_CONTEXT_CHARS = 16000
 _TOKEN_RE = re.compile(r"[a-zA-Z0-9_./:-]+|[\u4e00-\u9fff]{2,}")
 _ERROR_CODE_RE = re.compile(r"\b(?:[A-Z][A-Z0-9_]{1,31}-\d{2,}|(?:ERR|ERROR|E)\d{2,}|0x[0-9A-Fa-f]{4,})\b")
 _QUOTED_TEXT_RE = re.compile(r"[\"“‘']([^\"”’']{2,160})[\"”’']")
+# 子句分隔符：affirmative_anchor_hit 先把待匹配文本按这些字符切成子句，再在单个子句内查找锚点；
+# 因此锚点若自身含子句分隔符（跨子句），运行时永远命中不了，也会让自动生成的正反例自相矛盾。
+_CLAUSE_SPLIT_RE = re.compile(r"[，,。；;\n]")
 _OBJECT_TERMS = (
     "虚拟机",
     "VM",
@@ -370,6 +373,27 @@ def has_strong_producer(raw: Any) -> bool:
     )
 
 
+def _self_consistent_routing_examples(
+    profile: dict[str, Any], symptoms: list[str], anchors: list[str]
+) -> list[dict[str, Any]]:
+    """构造与 validate_semantic_entry_profile 复算口径一致的路由正反例。
+
+    生成端与校验端共用同一个 lexical_profile_score 复算极性，只保留「复算结果 == 期望极性」的样本，
+    确保自动画像永不因正反例自相矛盾而触发自锁门禁（「画像变更后正反例不再通过」）；
+    人工编辑的画像仍走 validate_semantic_entry_profile 的完整校验，不受此宽松化影响。
+    """
+    candidates = [
+        {"description": "；".join(symptoms[:5]), "expected_match": True},
+        {"description": "；".join(f"没有出现“{anchor}”" for anchor in anchors[:10]), "expected_match": False},
+    ]
+    kept: list[dict[str, Any]] = []
+    for example in candidates:
+        _, positive, negative = lexical_profile_score(profile, example["description"])
+        if bool(positive and not negative) == example["expected_match"]:
+            kept.append(example)
+    return kept
+
+
 def propose_semantic_profile(source: dict[str, Any], signals: list[dict[str, Any]]) -> dict[str, Any] | None:
     """从问题原文保守生成待审核画像；不使用标题中的根因或任何修复方案。"""
     if has_strong_producer({"signals": signals}) or any(
@@ -386,13 +410,23 @@ def propose_semantic_profile(source: dict[str, Any], signals: list[dict[str, Any
     ]
     if not symptoms:
         return None
-    # 锚点必须逐字来自问题描述；没有特征报错时保留原句，宁可召回窄也不编造。
-    anchors = (
-        list(
-            dict.fromkeys([*_ERROR_CODE_RE.findall("；".join(symptoms)), *_QUOTED_TEXT_RE.findall("；".join(symptoms))])
-        )
-        or symptoms[:3]
+    joined_symptoms = "；".join(symptoms)
+    # 锚点必须逐字来自问题描述；没有特征报错时退化到子句片段，宁可召回窄也不编造。
+    # 关键：锚点必须是「子句原子」——不含 ，,。；\n 等子句分隔符。跨子句锚点在运行时命中不了，
+    # 还会让下面自动生成的正例路由样本与 expected_match=True 自相矛盾，触发误判 blocked。
+    raw_anchors = list(
+        dict.fromkeys([*_ERROR_CODE_RE.findall(joined_symptoms), *_QUOTED_TEXT_RE.findall(joined_symptoms)])
     )
+    anchors = [a.strip() for a in raw_anchors if a.strip() and not _CLAUSE_SPLIT_RE.search(a)]
+    if not anchors:
+        anchors = [
+            seg.strip()
+            for seg in _CLAUSE_SPLIT_RE.split(joined_symptoms)
+            if 6 <= len(seg.strip()) <= 160
+        ]
+    # 兜底仍需非空（positive_anchors 校验要求至少一条）；若子句片段全不达标则退回整句，
+    # 由 _self_consistent_routing_examples 过滤保证不会自锁，只是召回粒度偏粗。
+    anchors = list(dict.fromkeys(anchors)) or [s.strip() for s in symptoms[:3] if s.strip()]
     executable = any(str((item.get("acquire") or {}).get("tool") or "").startswith("qfk_") for item in signals)
     profile = {
         "schema_version": 1,
@@ -406,8 +440,5 @@ def propose_semantic_profile(source: dict[str, Any], signals: list[dict[str, Any
         else ["请提供当前故障的完整报错和发生前的操作，由人工复核；平台目前没有可验证的消费者。"],
     }
     profile["source_evidence"] = profile_source_evidence(profile, source)
-    profile["routing_examples"] = [
-        {"description": "；".join(symptoms[:5]), "expected_match": True},
-        {"description": "；".join(f"没有出现“{anchor}”" for anchor in anchors[:10]), "expected_match": False},
-    ]
+    profile["routing_examples"] = _self_consistent_routing_examples(profile, symptoms, anchors)
     return profile

@@ -1,9 +1,16 @@
 import json
+import re
 from pathlib import Path
 
 import pytest
 from jsonschema import ValidationError
-from shared.schemas.semantic_entry import lexical_profile_score, normalize_case_context, semantic_segment_weights
+from shared.schemas.semantic_entry import (
+    lexical_profile_score,
+    normalize_case_context,
+    propose_semantic_profile,
+    semantic_segment_weights,
+    validate_semantic_entry_profile,
+)
 from shared.schemas.signal_schema import validate_kbd_publishable_signals_json
 
 
@@ -161,3 +168,53 @@ def test_hci_sim_semantic_entry_variants_cover_four_required_outcomes():
     assert score == 0.0 and excluded == ["网络超时"]
     assert scenarios["guidance_only_after_strong_no_match"]["expected_offline_eligible"] is False
     assert scenarios["source_unavailable_fail_closed"]["expected_online_reason"] == "strong_producer_unavailable"
+
+
+def _context_only_signals():
+    return [
+        {
+            "id": "case_context",
+            "role": "context",
+            "acquire": {"tool": "qkv_case_context", "args": {}},
+            "match": None,
+            "orchestrate": {"phase": "diagnostic", "requires": [], "produces": []},
+            "review": {"require_human_confirm": True},
+        }
+    ]
+
+
+def test_propose_semantic_profile_anchors_are_clause_atomic():
+    """回归（工单 KBD 15967）：问题描述为含中文逗号的长句时，锚点必须被子句原子化。
+
+    否则 affirmative_anchor_hit 按子句切分后无法在任何单一子句内命中跨子句锚点，
+    运行时空命中、且自动生成的正例路由样本会与 expected_match=True 自相矛盾。
+    """
+    entry = {
+        "problem_description": (
+            "Linux 虚拟机从 VMware 迁移到 aCloud 后，虚拟机内部无法识别业务网卡，"
+            "执行 ifconfig 仅显示回环口 lo ，看不到 eth0 等网卡设备。"
+        )
+    }
+    profile = propose_semantic_profile(entry, _context_only_signals())
+    assert profile is not None
+    for anchor in profile["positive_anchors"]:
+        assert not re.search(r"[，,。；\n]", anchor), f"锚点不得跨子句：{anchor}"
+
+
+def test_propose_semantic_profile_routing_examples_never_self_block():
+    """回归：自动画像的 routing_examples 必须与 validate 复算口径一致，绝不自锁。
+
+    这是 KBD 15967 抽取报 422 SIGNAL_REVIEW_BLOCKED（画像变更后正反例不再通过）的根因守护：
+    propose 生成端与 validate 校验端共用同一打分函数，自动画像不得因正反例矛盾而阻断一次正常抽取。
+    """
+    entry = {
+        "problem_description": (
+            "Linux 虚拟机从 VMware 迁移到 aCloud 后，虚拟机内部无法识别业务网卡，"
+            "执行 ifconfig 仅显示回环口 lo ，看不到 eth0 等网卡设备。问题涉及迁移后网卡驱动识别。"
+        )
+    }
+    signals = _context_only_signals()
+    profile = propose_semantic_profile(entry, signals)
+    document = {"schema_version": 2, "signals": signals, "semantic_entry_profile": profile}
+    # 不得抛「画像变更后正反例不再通过」
+    validate_semantic_entry_profile(document)

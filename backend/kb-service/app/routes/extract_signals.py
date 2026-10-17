@@ -2113,6 +2113,40 @@ async def extract_signals_for_kbd(db_manager: DatabaseManager, kbd_id: int) -> d
         )
         rejected = multi_agent_rejected + rejected
 
+    # 防退化放大：模型明确产出了候选（raw_candidate_count>0）却全部被契约/门禁拒绝（validated 空）时，
+    # 这是「模型输出不合契约」的确定性失败，必须在此唯一收口处显式失败并回传拒绝原因（供重抽/转人工），
+    # 而不是继续注入合成 case_context + 自动生成语义画像，再撞与本因无关的语义门禁，
+    # 抛出误导性的 SIGNAL_REVIEW_BLOCKED 掩盖真实原因。
+    # raw_candidate_count==0 属「模型未识别到任何候选」，保留下方 guidance_only 正常降级路径。
+    if not validated and raw_candidate_count > 0:
+        rejected_candidates = list(rejected)
+        reason_summary = "；".join(
+            f"{str(item.get('reason_code') or 'unknown')}：{str(item.get('reason') or '未提供原因')}"
+            for item in rejected_candidates[:3]
+            if isinstance(item, dict)
+        )
+        logger.warning(
+            event="extract_signals_all_candidates_rejected",
+            kbd_id=kbd_id,
+            raw_candidate_count=raw_candidate_count,
+            rejected_count=len(rejected_candidates),
+            trace_id=get_current_trace_id(),
+        )
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "SIGNAL_ALL_REJECTED",
+                "message": (
+                    f"模型产出的 {raw_candidate_count} 条候选信号全部未通过契约/门禁校验，"
+                    f"没有可审核的有效 Signal，请重新抽取或转人工确认"
+                    + (f"：{reason_summary}" if reason_summary else "")
+                ),
+                "retryable": True,
+                "rejected_count": len(rejected_candidates),
+                "rejected_candidates": rejected_candidates,
+            },
+        )
+
     from shared.schemas.semantic_entry import propose_semantic_profile
 
     semantic_profile = propose_semantic_profile(entry_data, validated)

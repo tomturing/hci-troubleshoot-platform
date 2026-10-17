@@ -40,6 +40,7 @@ import {
   parseSignals,
   type RootSignal,
 } from '@/utils/rootSignal'
+import { resolveApiErrorMessage } from '@/utils/apiError'
 
 // ──────────────────────────────────────────────────────────────────────────────
 // 类型定义
@@ -1003,7 +1004,7 @@ async function handleReanalyzeImages(entry: KbdEntry) {
     })
     if (!resp.ok) {
       const errData = await resp.json().catch(() => ({}))
-      throw new Error(errData.detail || `HTTP ${resp.status}`)
+      throw new Error(resolveApiErrorMessage(errData, resp.status))
     }
     const data = await resp.json()
     if (data.total === 0) {
@@ -1069,7 +1070,7 @@ async function handleReanalyzeSingleImage(entry: KbdEntry, seq: number) {
     })
     if (!resp.ok) {
       const errData = await resp.json().catch(() => ({}))
-      throw new Error(errData.detail || `HTTP ${resp.status}`)
+      throw new Error(resolveApiErrorMessage(errData, resp.status))
     }
     const data = await resp.json()
     ElMessage.success({
@@ -1127,7 +1128,7 @@ async function handleReextractSignals(entry: KbdEntry) {
     })
     if (!resp.ok) {
       const errData = await resp.json().catch(() => ({}))
-      throw new Error(errData.detail || `HTTP ${resp.status}`)
+      throw new Error(resolveApiErrorMessage(errData, resp.status))
     }
     const data = await resp.json()
     ElMessage.success({
