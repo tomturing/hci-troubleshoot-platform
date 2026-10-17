@@ -28,6 +28,7 @@ from app.routes.extract_signals import (
     _validate_and_collect_signals,
 )
 from app.services.signal_orchestrator import DEFAULT_SHARED_VARIABLES, VALID_CATALOG_TOOLS
+from fastapi import HTTPException
 from jsonschema import ValidationError
 from shared.resolution.review import SignalReviewFeature
 from shared.schemas.acquirer_args import EXECUTABLE_SIGNAL_TOOLS, SUPPORTED_TOOLS
@@ -603,6 +604,73 @@ def test_kbd_reextract_creates_fresh_proposal_and_clears_stale_draft_pointer(mon
     assert calls["revision"]["origin"] == "signal_reextract"
     assert calls["flushed"] is True
     assert calls["committed"] is True
+
+
+@pytest.mark.asyncio
+async def test_extract_signals_all_candidates_rejected_raises_explicit_code(monkeypatch):
+    """回归（工单 KBD 15967）：模型吐了候选却全部被契约/门禁拒绝时，必须在此唯一收口处
+    显式抛 SIGNAL_ALL_REJECTED 并回传拒绝原因，而不是退化到注入 case_context + 自动生成画像，
+    再撞与本因无关的语义门禁、抛出误导性的 SIGNAL_REVIEW_BLOCKED 掩盖真因。"""
+    entry = SimpleNamespace(
+        id=235,
+        title="Linux 虚拟机迁移后网卡无法使用",
+        problem_description="迁移后网卡无法使用",
+        alert_info="",
+        steps_text="",
+        category_id="",
+        ai_category_id="",
+        images_json=[],
+    )
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def commit(self):
+            pass
+
+        async def execute(self, *_args, **_kwargs):
+            raise AssertionError("category_id 为空时不应查询分类基线")
+
+    class FakeDb:
+        @staticmethod
+        def async_session_factory():
+            return FakeSession()
+
+    async def fake_require(_session, _kbd_id):
+        return entry
+
+    async def fake_load(_session, _name, _vars, **_kwargs):
+        return "抽取 {title}"
+
+    async def fake_call_llm(*_args, **_kwargs):
+        return {
+            "candidates": [{"id": "sig_001", "acquire": {"tool": "qfk_x"}, "match": None}],
+            "verification_contract": None,
+        }
+
+    def fake_validate(candidates, *_args, **_kwargs):
+        return [], [
+            {"signal": candidates[0], "reason_code": "schema_invalid", "reason": "None is not of type 'string'"}
+        ]
+
+    monkeypatch.setattr(extract_signals, "require_mutable_kbd", fake_require)
+    monkeypatch.setattr(extract_signals.StrictPromptLoader, "load_and_validate", fake_load)
+    monkeypatch.setattr(extract_signals, "_multi_agent_extraction_enabled", lambda: False)
+    monkeypatch.setattr(extract_signals, "_call_llm", fake_call_llm)
+    monkeypatch.setattr(extract_signals, "_validate_and_collect_signals", fake_validate)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await extract_signals.extract_signals_for_kbd(FakeDb(), 235)
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["code"] == "SIGNAL_ALL_REJECTED"
+    assert exc_info.value.detail["retryable"] is True
+    assert exc_info.value.detail["rejected_count"] == 1
+    assert "None is not of type 'string'" in exc_info.value.detail["message"]
 
 
 def test_extract_response_preserves_proposal_revision_id_for_batch_audit():

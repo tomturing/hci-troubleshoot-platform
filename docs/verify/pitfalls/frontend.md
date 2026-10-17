@@ -237,3 +237,19 @@ RUN pnpm config set onlyBuiltDependencies[0] esbuild \
 **修复：** 在 `frontend/admin/vitest.config.ts` 与 `frontend/customer/vitest.config.ts` 显式设置 `testTimeout: 20000, hookTimeout: 20000`，为慢 runner 留出 3 倍以上余量；阈值放宽只影响真挂死用例的失败时延，不影响正常套件速度。
 
 **预防测试：** 新增会完整挂载 ElementPlus（或其它全量组件库）的用例时，先确认单用例本地耗时；若本地已 >1s，应优先拆薄挂载（stub 掉无关子组件、按需注册组件）而不是依赖放宽阈值。CI 偶发超时先用 `gh run rerun <id> --failed` 复核抖动，再对比 PR run 与 push run 的并发负载差异定位资源抢占。
+
+## V-025：后端 `HTTPException.detail` 可能是结构化对象，前端不得直接渲染成 `[object Object]`
+
+**症状：** KBD 审核页点「重新抽取关键信号」失败时，红色提示只显示 `重新抽取关键信号失败：[object Object]`，
+真实原因（422 `SIGNAL_REVIEW_BLOCKED` / `SIGNAL_ALL_REJECTED` 及其 `message`/`review.issues`）被完全吞掉。
+
+**根因：** `KbdReviewView.vue` 的错误处理写 `throw new Error(errData.detail || \`HTTP ${status}\`)`。
+FastAPI 对结构化错误用 `detail={code,message,review:{...}}`（对象）返回，`new Error(对象)` 后 `${err.message}`
+即得 `[object Object]`。「重新识图 / 单张识图 / 重新抽取」三处共用同一反模式。
+
+**修复：** 抽出纯函数 `frontend/admin/src/utils/apiError.ts::resolveApiErrorMessage(errData, status)`：
+`detail` 为字符串直接用；为对象则按 `message → review.issues[].message 拼接 → JSON.stringify` 优先级取可读文案；
+皆无则回退 `HTTP ${status}`。三处 `throw` 统一改调该函数。
+
+**预防测试：** `apiError.spec.ts` 覆盖字符串/对象取 message/对象回退 issues/JSON 兜底/空 detail 五态。
+教训：凡「后端 detail 既可能是 string 又可能是 object」的通道，前端必须集中一处归一化，禁止把 unknown 直接内插进模板串。

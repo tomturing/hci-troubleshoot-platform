@@ -103,3 +103,28 @@ Candidate 引用该截图时必须进入 rejected candidates。不要把“写�
 
 **预防：** 覆盖三类回归：允许“正文 evidence + 合法诊断图 source ref”；拒绝 solution/未知/截断而未进入
 Prompt 的 source ref；KBD27736 型脱敏 Matcher 必须到达其自身的 Matcher 门禁，而不是被图片来源门禁抢先拒绝。
+
+## V-024：自动生成的语义画像正反例必须与校验端复算口径一致，且候选全拒须在收口处显式失败
+
+**症状：** 工单 KBD 15967 点「重新抽取关键信号」报 422 `SIGNAL_REVIEW_BLOCKED`，
+`review.issues` 为 `SIGNAL_SCHEMA_INVALID：画像变更后正反例不再通过`，与本因（模型输出不合契约）毫无关系，
+误导排查方向；而同一 KBD 在模型偶尔产出合规信号时又能 200 成功，表现为「时好时坏的自锁」。
+
+**根因：** 两处叠加。①`propose_semantic_profile` 在问题描述无特征报错码/引号时，把**整句**（含中文逗号 `，`）
+当作 `positive_anchors`，并据此构造正例 `routing_examples`（`expected_match=True`）。但 `affirmative_anchor_hit`
+会先把待匹配文本按 `[，,。；\n]` 切成子句、再在**单个子句内**查找锚点——跨子句的整句锚点永远命中不了，
+复算极性为 False，与 `expected_match=True` 自相矛盾，触发 `validate_semantic_entry_profile` 自锁。
+②抽取链路在候选被契约/门禁**全部拒绝**（`validated` 为空）时，仍继续注入合成 `case_context` + 自动生成画像，
+再撞上述无关的语义门禁，把「模型吐了非契约 JSON」这一确定性失败伪装成 `SIGNAL_REVIEW_BLOCKED`。
+
+**修复：** ①`propose_semantic_profile` 的锚点必须**子句原子**（不含子句分隔符）：优先取报错码/引号内的原子片段，
+无则退化到按 `[，,。；\n]` 切分的子句片段；并新增 `_self_consistent_routing_examples`——生成端与校验端共用同一个
+`lexical_profile_score` 复算极性，只保留「复算==期望」的样本，令自动画像永不因正反例矛盾自锁（人工画像仍走完整校验）。
+②在 `extract_signals_for_kbd` 唯一收口处：当 `raw_candidate_count>0 且 validated 为空` 时直接抛
+`SIGNAL_ALL_REJECTED`（带 `rejected_candidates` 原因、`retryable=True`），不再退化到自动画像；
+`raw_candidate_count==0`（模型未识别到候选）仍保留 guidance_only 正常降级。
+
+**预防测试：** `test_semantic_entry.py` 钉「含逗号长句 → 锚点子句原子 + validate 不自锁」；
+`test_signal_generation.py` 钉「候选全拒 → 显式 SIGNAL_ALL_REJECTED 且回传原因，绝不落到误导性的 SIGNAL_REVIEW_BLOCKED」。
+教训：凡「生成端产出、校验端复算」的成对逻辑，必须共用同一判定函数，否则口径漂移即自锁；
+失败要在离真因最近的收口处显式暴露，严禁用无关门禁掩盖上游契约失败。
