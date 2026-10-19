@@ -10,6 +10,7 @@ from app.services.root_signal_closure import (
     CLOSURE_DANGLING,
     CLOSURE_LITERAL,
     CLOSURE_NOT_APPLICABLE,
+    adjudicate_root_closure,
     apply_closure_fields,
     detect_hardcoded_literals,
     evaluate_root_closure,
@@ -224,3 +225,56 @@ def test_split_accepted_rejected_isomomorphic_with_key_track():
     # 决策②：拒绝候选不等于降级 text——candidate 仍是原 executable 形态，未被转 text
     assert cand["candidate"]["match_type"] == "executable"
     assert "悬空" in cand["reason"]
+
+
+# ─── adjudicate_root_closure（PR-3 抽取裁决：bootstrap 守卫 + 硬拒 + 全拒 + 回喂）───────
+def _host_root() -> dict:
+    return _exec_root(args={"command": "df", "command_args": ["-h", "/run/lock"], "host": "{{HOST}}"})
+
+
+def test_adjudicate_closed_with_producer_retained() -> None:
+    res = adjudicate_root_closure([_host_root()], [_qkv_producer("s1", ["HOST"])])
+    assert res["has_context"] is True
+    assert res["hard_reject_count"] == 0
+    assert len(res["accepted"]) == 1
+    assert res["accepted"][0]["closure_status"] == CLOSURE_CLOSED
+    assert res["rejected"] == []
+    assert res["feedback"] == ""
+    assert res["all_rejected"] is False
+
+
+def test_adjudicate_dangling_without_context_is_bootstrap_kept() -> None:
+    # 关键轨空（无 produces 上下文）：显式 {{HOST}} 悬空但走 bootstrap 保守保留，不硬拒、标 needs_review
+    res = adjudicate_root_closure([_host_root()], [])
+    assert res["has_context"] is False
+    assert res["hard_reject_count"] == 0
+    assert res["bootstrap_kept"] == [1]
+    assert len(res["accepted"]) == 1
+    assert res["accepted"][0]["closure_status"] == CLOSURE_DANGLING
+    assert res["accepted"][0]["provenance"]["needs_review"] is True
+    assert res["rejected"] == []
+    # bootstrap 保留不算全拒（避免无关键轨时误报 ROOT_SIGNAL_ALL_REJECTED）
+    assert res["all_rejected"] is False
+
+
+def test_adjudicate_dangling_with_context_is_hard_rejected() -> None:
+    # 关键轨有 produces（上下文存在）却不产 HOST → 真悬空 → 硬拒（移出 accepted，入 rejected）
+    res = adjudicate_root_closure([_host_root()], [_qkv_producer("s1", ["ETHX"])])
+    assert res["has_context"] is True
+    assert res["hard_reject_count"] == 1
+    assert res["accepted"] == []
+    assert len(res["rejected"]) == 1
+    assert res["rejected"][0]["reason_code"] == "ROOT_CLOSURE_DANGLING"
+    assert res["rejected"][0]["candidate"]["match_type"] == "executable"  # 决策②：未转 text
+    assert res["all_rejected"] is True
+    assert "HOST" in res["feedback"]
+
+
+def test_adjudicate_literal_hard_rejected_regardless_of_context() -> None:
+    # 含现场字面量（eth0）与上下文无关 → 即使无关键轨上下文也恒硬拒
+    root = _exec_root(args={"command": "ethtool", "command_args": ["-k", "eth0"]})
+    res = adjudicate_root_closure([root], [])
+    assert res["hard_reject_count"] == 1
+    assert res["rejected"][0]["reason_code"] == "ROOT_CLOSURE_LITERAL_NOT_PARAMETERIZED"
+    assert res["all_rejected"] is True
+    assert "{{" in res["feedback"]  # 反馈含标准变量占位提示

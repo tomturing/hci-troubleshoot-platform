@@ -35,7 +35,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from shared.observability.langfuse import observe_llm_generation, update_observation
 from shared.observability.logger import get_logger
-from shared.observability.metrics import KBD_LLM_REQUESTS_TOTAL, KBD_LLM_TOKENS_TOTAL
+from shared.observability.metrics import (
+    KBD_LLM_REQUESTS_TOTAL,
+    KBD_LLM_TOKENS_TOTAL,
+    ROOT_SIGNAL_CLOSURE_TOTAL,
+    ROOT_SIGNAL_REJECTED_TOTAL,
+)
 from shared.observability.otel import get_current_trace_id
 from shared.utils.prompt_loader import StrictPromptLoader
 from sqlalchemy import select, text
@@ -268,6 +273,9 @@ class RootSignalResult(BaseModel):
     signals_count: int = 0
     prompt_revision: str | None = None
     error: str | None = None
+    code: str | None = None  # 显式收口码（如 ROOT_SIGNAL_ALL_REJECTED）
+    rejected: list[dict[str, Any]] = Field(default_factory=list)  # 不可闭环的拒绝候选（入 root_signal_rejected_json）
+    closure: dict[str, Any] = Field(default_factory=dict)  # 闭包汇总（total/closed/rejected/all_rejected）
 
 
 def _render_kbd_content(row: Any) -> str:
@@ -315,6 +323,7 @@ async def extract_root_signal_for_kbd(
                 KbdEntry.title,
                 KbdEntry.root_cause,
                 KbdEntry.content_md,
+                KbdEntry.signals_json,
                 KbdEntry.problem_description,
                 KbdEntry.alert_info,
                 KbdEntry.steps_text,
@@ -369,11 +378,41 @@ async def extract_root_signal_for_kbd(
             attempt=max(1, len(messages) - 1),
         )
 
+    # 解析本 KBD 关键轨（signals_json v2 文档）作为闭包 available 池：diagnostic produces + 外部声明变量。
+    raw_signals_json = row["signals_json"]
+    if isinstance(raw_signals_json, dict):
+        key_signals = raw_signals_json.get("signals") or []
+        verification_contract = raw_signals_json.get("verification_contract")
+    elif isinstance(raw_signals_json, list):
+        key_signals = raw_signals_json  # 兼容旧列表形态
+        verification_contract = None
+    else:
+        key_signals, verification_contract = [], None
+
     outcome = await extract_root_signal(
-        entry, prompt_template=prompt_template, llm_call=_llm_call
+        entry,
+        prompt_template=prompt_template,
+        llm_call=_llm_call,
+        enforce_closure=True,
+        key_signals=key_signals,
+        verification_contract=verification_contract,
     )
-    signals = outcome["signals"]
-    if not signals:
+    signals = outcome["signals"]              # 闭包裁决后保留的 accepted（closed executable + text + bootstrap 保留）
+    rejected = outcome.get("rejected") or []  # 不可闭环的拒绝候选（落 root_signal_rejected_json）
+    all_rejected = outcome.get("all_rejected", False)
+    closure = outcome.get("closure") or {}
+
+    # 指标（§8）：closure_total 按每条 executable 四态分维；rejected_total 仅计实际被硬拒的候选。
+    # bootstrap 保留的悬空计入 dangling 态但不入 rejected 计数（未被真拒）。
+    for rec in outcome.get("closure_results") or []:
+        status = rec.get("closure_status")
+        if status in {"closed", "dangling_requires", "hardcoded_literals", "capability_missing"}:
+            ROOT_SIGNAL_CLOSURE_TOTAL.labels(status=status).inc()
+    for item in rejected:
+        ROOT_SIGNAL_REJECTED_TOTAL.labels(reason_code=item.get("reason_code") or "unknown").inc()
+
+    if not signals and not rejected:
+        # 真·无产出（LLM 无可用信号或门禁全失败）：既有信号保持原值，本次不写库
         logger.error(
             event="root_signal_extract_failed",
             kbd_id=kbd_id,
@@ -391,7 +430,45 @@ async def extract_root_signal_for_kbd(
             error=outcome["error"],
         ).model_dump()
 
-    # 冲突度按现场语料逐条实测（LLM 自报的 distinctiveness 不采信）
+    if all_rejected:
+        # 存在 executable 候选但回喂重试后仍全部不可闭环 → 显式收口 ROOT_SIGNAL_ALL_REJECTED（retryable），
+        # 绝不静默产出空数组伪装「无根因」（对齐 #1159）；落拒绝候选审计快照供人工恢复/降级，
+        # 但不清空既有 root_signal_json（治本约束：门禁失败不静默清空既有信号）。
+        async with db_manager.async_session_factory() as session:
+            await session.execute(
+                text(
+                    """
+                    UPDATE kbd_entry
+                    SET root_signal_rejected_json = CAST(:rejected AS jsonb), updated_at = now()
+                    WHERE id = :kbd_id
+                    """
+                ),
+                {"kbd_id": kbd_id, "rejected": json.dumps(rejected, ensure_ascii=False)},
+            )
+            await session.commit()
+        reason = "；".join(f"{r.get('reason_code')}: {r.get('reason')}" for r in rejected[:5])
+        logger.error(
+            event="root_signal_all_rejected",
+            kbd_id=kbd_id,
+            support_id=row["support_id"],
+            rejected_count=len(rejected),
+            attempts=outcome["attempts"],
+            reason=reason,
+            trace_id=trace_id,
+        )
+        return RootSignalResult(
+            success=False,
+            kbd_id=kbd_id,
+            support_id=row["support_id"],
+            attempts=outcome["attempts"],
+            prompt_revision=prompt_revision,
+            code="ROOT_SIGNAL_ALL_REJECTED",
+            error=f"根因候选全部不可闭环：{reason}",
+            rejected=rejected,
+            closure=closure,
+        ).model_dump()
+
+    # accepted 非空：冲突度按现场语料逐条实测（LLM 自报的 distinctiveness 不采信）
     # 显式区分「未传入语料（现取）」与「传入空语料（如单测对照，零冲突基线）」
     conflict_corpus = corpus if corpus is not None else await get_conflict_corpus(db_manager)
     for signal in signals:
@@ -402,11 +479,17 @@ async def extract_root_signal_for_kbd(
             text(
                 """
                 UPDATE kbd_entry
-                SET root_signal_json = CAST(:signals AS jsonb), updated_at = now()
+                SET root_signal_json = CAST(:signals AS jsonb),
+                    root_signal_rejected_json = CAST(:rejected AS jsonb),
+                    updated_at = now()
                 WHERE id = :kbd_id
                 """
             ),
-            {"kbd_id": kbd_id, "signals": json.dumps(signals, ensure_ascii=False)},
+            {
+                "kbd_id": kbd_id,
+                "signals": json.dumps(signals, ensure_ascii=False),
+                "rejected": json.dumps(rejected, ensure_ascii=False),
+            },
         )
         await session.commit()
 
@@ -418,6 +501,7 @@ async def extract_root_signal_for_kbd(
         support_id=row["support_id"],
         kbd_status=row["status"],
         signals_count=len(signals),
+        rejected_count=len(rejected),
         tiers=sorted({s["provenance"]["trace_tier"] for s in signals}),
         needs_review=sum(1 for s in signals if s["provenance"]["needs_review"]),
         attempts=outcome["attempts"],
@@ -433,6 +517,8 @@ async def extract_root_signal_for_kbd(
         needs_review=lead["provenance"]["needs_review"],
         distinctiveness=lead["distinctiveness"],
         signals=signals,
+        rejected=rejected,
+        closure=closure,
         attempts=outcome["attempts"],
         signals_count=len(signals),
         prompt_revision=prompt_revision,

@@ -45,6 +45,7 @@ from shared.schemas.acquirer_args import ACQUIRER_ARGS_SCHEMA, validate_acquire_
 from shared.schemas.kbd_signal_safety import kbd_signal_read_only_violation
 
 from app.routes.extract_signals import ACQUIRER_CATALOG, VALID_MATCHER_TYPES
+from app.services.root_signal_closure import adjudicate_root_closure
 
 logger = get_logger("kb-service-root-signal")
 
@@ -409,17 +410,25 @@ async def extract_root_signal(
     prompt_template: str,
     llm_call: Callable[[list[dict[str, str]]], Awaitable[Any]],
     max_attempts: int = 2,
+    enforce_closure: bool = False,
+    key_signals: Any = None,
+    verification_contract: Any = None,
+    context_whitelist: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """对单篇 KBD 抽取全部可确定根因的信号（v2：不限条数）。
 
     Args:
         entry: 含 title/category_id/category_path/root_cause/kbd_content（acquirer_catalog 由本模块注入）。
         llm_call: 异步回调，接收 messages 列表，返回已解析 JSON（dict）或抛异常。
+        enforce_closure: 开启后对可执行信号跑闭环裁决（§5.4）：硬拒项先回喂重试一轮，仍不可
+            闭环则拆为 accepted/rejected（rejected 由调用方落 root_signal_rejected_json）。
+            默认 False 保持旧行为（零回归）；key_signals 为本 KBD 关键轨 produces 池（可为空）。
 
     Returns:
-        {"signals": list, "error": str|None, "attempts": int, "gate_errors": list}
+        {"signals": accepted列表, "rejected": 拒绝候选, "error": str|None, "attempts": int,
+         "gate_errors": list, 以及 enforce_closure 时的 "closure"/"all_rejected"/"has_context"}
         —— 主锚（root_cause）优先；无主锚时才采用整篇兑底（已强制 needs_review）。
-        门禁失败带原因回喂重试一次；仍无可用信号则 signals=[]（绝不伪造）。
+        门禁失败带原因回喂重试；仍无可用信号则 signals=[]（绝不伪造）。
     """
     prompt = build_root_signal_prompt(
         prompt_template,
@@ -481,15 +490,60 @@ async def extract_root_signal(
             # 主锚优先：只要 root_cause 级有信号就只取主锚，不用整篇兑底填充（防噪声稀释）
             chosen = primary if primary else fallback
             if chosen:
+                if not enforce_closure:
+                    logger.info(
+                        event="root_signal_extracted",
+                        support_id=entry.get("support_id"),
+                        count=len(chosen),
+                        tiers=sorted({s["provenance"]["trace_tier"] for s in chosen}),
+                        needs_review=sum(1 for s in chosen if s["provenance"]["needs_review"]),
+                        attempt=attempt,
+                    )
+                    return {
+                        "signals": chosen,
+                        "rejected": [],
+                        "error": None,
+                        "attempts": attempt,
+                        "gate_errors": gate_errors,
+                    }
+                adjud = adjudicate_root_closure(
+                    chosen,
+                    key_signals,
+                    verification_contract=verification_contract,
+                    context_whitelist=context_whitelist,
+                )
+                # 硬拒项先回喂重试一轮（§11 「回喂重试」）；bootstrap 保留项不触发重试（已被保守 tolerate）
+                if adjud["hard_reject_count"] and attempt < max_attempts:
+                    feedback = adjud["feedback"]
+                    last_error = "根因信号未通过闭环校验"
+                    logger.info(
+                        event="root_signal_closure_retry",
+                        support_id=entry.get("support_id"),
+                        attempt=attempt,
+                        hard_reject=adjud["hard_reject_count"],
+                        has_context=adjud["has_context"],
+                    )
+                    continue
                 logger.info(
                     event="root_signal_extracted",
                     support_id=entry.get("support_id"),
-                    count=len(chosen),
-                    tiers=sorted({s["provenance"]["trace_tier"] for s in chosen}),
-                    needs_review=sum(1 for s in chosen if s["provenance"]["needs_review"]),
+                    count=len(adjud["accepted"]),
+                    rejected=len(adjud["rejected"]),
+                    tiers=sorted({s["provenance"]["trace_tier"] for s in adjud["accepted"]}),
+                    needs_review=sum(1 for s in adjud["accepted"] if s["provenance"]["needs_review"]),
                     attempt=attempt,
                 )
-                return {"signals": chosen, "error": None, "attempts": attempt, "gate_errors": gate_errors}
+                return {
+                    "signals": adjud["accepted"],
+                    "rejected": adjud["rejected"],
+                    "closure": adjud["summary"],
+                    "closure_results": adjud["results"],
+                    "all_rejected": adjud["all_rejected"],
+                    "has_context": adjud["has_context"],
+                    "error": None,
+                    "attempts": attempt,
+                    "gate_errors": gate_errors,
+                }
             last_error = gate_errors[0] if gate_errors else "无逐字可溯源的根因信号"
         else:
             last_error = error
@@ -505,7 +559,7 @@ async def extract_root_signal(
         logger.info(event="root_signal_gate_reject", support_id=entry.get("support_id"), attempt=attempt, reason=last_error)
 
     logger.error(event="root_signal_extraction_failed", support_id=entry.get("support_id"), reason=last_error)
-    return {"signals": [], "error": last_error, "attempts": attempts, "gate_errors": []}
+    return {"signals": [], "rejected": [], "error": last_error, "attempts": attempts, "gate_errors": []}
 
 
 # ─── 独特性（定位冲突计数）────────────────────────────────────────────────────

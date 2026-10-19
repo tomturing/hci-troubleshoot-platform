@@ -340,3 +340,124 @@ def summarize_rejections(results: Iterable[dict[str, Any]]) -> dict[str, Any]:
         # 存在 executable 候选但无一闭环 → 全拒（调用方据此在收口处显式抛 ROOT_SIGNAL_ALL_REJECTED）
         "all_rejected": bool(executable) and closed == 0,
     }
+
+
+def _build_closure_feedback(results: Iterable[dict[str, Any]], hard_reject: set[int]) -> str:
+    """将硬拒项整理为一段回喂给模型的改进反馈（参数化 / 改引已产出变量）。
+
+    仅针对**将被丢弃**的硬拒项（bootstrap 保留项不推进模型改进）；空集返回空串。
+    """
+    lines: list[str] = []
+    for record in results:
+        if record["index"] not in hard_reject:
+            continue
+        status = record.get("closure_status")
+        if status == CLOSURE_LITERAL:
+            fields = sorted({f["field"] for f in record.get("literals") or []})
+            var_hint = ", ".join(sorted({f["suggested_var"] for f in record.get("literals") or []}))
+            lines.append(
+                f"- 信号#{record['index']} 含随现场变化字面量（{fields}），请改写为 {{{{标准变量名}}}}（建议：{var_hint}）。"
+            )
+        elif status == CLOSURE_CAPABILITY:
+            lines.append(
+                f"- 信号#{record['index']} 采集工具 {record.get('tool')!r} 不在能力目录，请改用受支持工具或不抽该信号。"
+            )
+        elif status == CLOSURE_DANGLING:
+            lines.append(
+                f"- 信号#{record['index']} 依赖变量 {record.get('unresolved')} 在本 KBD 无产出来源，"
+                "请改引已由上游产出的变量、或为未产出变量补上对应采集步骤。"
+            )
+    if not lines:
+        return ""
+    header = (
+        "上一轮根因信号未通过闭环校验（可执行信号的全部依赖变量必须在同一 KBD 内有产出来源或已参数化）。"
+        "请修正以下项后重新输出完整 signals：\n"
+    )
+    return header + "\n".join(lines)
+
+
+def adjudicate_root_closure(
+    root_signals: Any,
+    key_signals: Any = None,
+    *,
+    verification_contract: Any = None,
+    context_whitelist: Iterable[str] = (),
+    capability_catalog: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """抽取装配阶段的闭包裁决（§5.4 拒绝候选 + 决策②不降级 + option-A bootstrap 保守守卫）。
+
+    在纯函数 :func:`evaluate_root_closure` 之上叠两条**抽取期**策略（三处门禁强制留 PR-4）：
+    1. **bootstrap 守卫**：本 KBD 无任何 produces/外部声明上下文（关键轨尚未就绪）时，
+       dangling 只标注保留（needs_review）、不硬拒——避免给尚无关键信号的 KBD 过拒可执行根因（假阴性）。
+       literal/capability 与上下文无关，恒可拒。
+    2. **回喂反馈**：将硬拒项的未满足变量/字面量整理为可让模型改进的一段反馈，调用方据此重试一轮。
+
+    返回 {accepted, rejected, results, summary, has_context, bootstrap_kept,
+          hard_reject_count, all_rejected, feedback}。accepted 内 executable 已附
+    closure_status/requires/resolved_by；bootstrap 保留项再标 needs_review。
+    """
+    results = evaluate_root_closure(
+        root_signals,
+        key_signals,
+        verification_contract=verification_contract,
+        context_whitelist=context_whitelist,
+        capability_catalog=capability_catalog,
+    )
+    available, _origin = _build_available_sources(key_signals, verification_contract, ())
+    has_context = bool(available)
+    by_index = {r["index"]: r for r in results}
+
+    hard_reject: set[int] = set()
+    bootstrap_kept: set[int] = set()
+    for record in results:
+        if not record.get("reject"):
+            continue
+        if record["closure_status"] == CLOSURE_DANGLING and not has_context:
+            bootstrap_kept.add(record["index"])  # 关键轨空窗：保守保留，不硬拒
+            continue
+        hard_reject.add(record["index"])
+
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for index, signal in enumerate(root_signals or [], start=1):
+        if not isinstance(signal, dict):
+            continue
+        record = by_index.get(index)
+        if record is not None and index in hard_reject:
+            rejected.append(
+                {
+                    "candidate": signal,
+                    "reason": _reason_text(record),
+                    "reason_code": record["reason_code"],
+                    "closure_status": record["closure_status"],
+                    "unresolved": record["unresolved"],
+                    "literals": record["literals"],
+                }
+            )
+            continue
+        annotated = dict(signal)
+        if record is not None and record.get("match_type") == "executable":
+            annotated["closure_status"] = record["closure_status"]
+            annotated["requires"] = record["requires"]
+            annotated["resolved_by"] = record["resolved_by"]
+            if index in bootstrap_kept:
+                provenance = dict(annotated.get("provenance") or {})
+                provenance["needs_review"] = True
+                annotated["provenance"] = provenance
+        accepted.append(annotated)
+
+    executable_total = sum(1 for r in results if r.get("match_type") == "executable")
+    # 全拒（显式收口）：存在 executable 候选且硬拒后无一被保留（closed 或 bootstrap 保留）。
+    # bootstrap 保留项仍计入 accepted（未被真拒），故会抬高保留数、避免无关键轨时误报全拒。
+    all_rejected = executable_total > 0 and (executable_total - len(hard_reject)) == 0
+    return {
+        "accepted": accepted,
+        "rejected": rejected,
+        "results": results,
+        "summary": summarize_rejections(results),
+        "has_context": has_context,
+        "bootstrap_kept": sorted(bootstrap_kept),
+        "hard_reject_count": len(hard_reject),
+        "all_rejected": all_rejected,
+        "feedback": _build_closure_feedback(results, hard_reject),
+    }

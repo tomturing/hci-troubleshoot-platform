@@ -2417,6 +2417,11 @@ CREATE TABLE IF NOT EXISTS kbd_entry (
     -- NULL = 尚未抽取；不入 kbd_revision payload（AI 派生元数据，同 ai_category_id 先例），
     -- 故 published 条目亦可回刷本列而不产生新版本、不影响发布盖章
     root_signal_json jsonb,
+    -- 根因「拒绝候选」审计快照（与关键信号 signals_json.rejected_candidates 同构）：闭包不可通过的
+    -- executable 根因候选不进 root_signal_json、也不自动降级 text（决策②），而是连同 reason/reason_code
+    -- 落本列供审核 UI 逐条呈现、发布门禁判「未处理拒绝候选」、人工恢复/显式降级。NULL = 尚无拒绝记录。
+    -- 不入 kbd_revision payload（AI 派生元数据，同 root_signal_json 先例）。
+    root_signal_rejected_json jsonb,
     -- 图片视觉描述（pipeline Vision LLM 生成，结构化存储，独立于 content_md）
     -- 格式：[{"seq": 0, "section": "steps_text", "desc": "TYPE: 日志截图\n..."}]
     -- 章节字段中对应位置以 ![img:N] 占位符标记；rebuild_content_md() 展开为完整 【截图说明】 块
@@ -2457,6 +2462,7 @@ CREATE TABLE IF NOT EXISTS kbd_entry (
     CONSTRAINT fk_kbd_entry_review_owner_id FOREIGN KEY (review_owner_id) REFERENCES kbd_review_owner(id) ON DELETE SET NULL,
     -- 根因信号 v2 顶层数组（不限条数；一 KBD 可有多条定位信号，不接受单对象/标量）
     CONSTRAINT ck_kbd_entry_root_signal_json CHECK (root_signal_json IS NULL OR jsonb_typeof(root_signal_json) = 'array'),
+    CONSTRAINT ck_kbd_entry_root_signal_rejected_json CHECK (root_signal_rejected_json IS NULL OR jsonb_typeof(root_signal_rejected_json) = 'array'),
     CONSTRAINT kbd_entry_pkey PRIMARY KEY (id)
 );
 

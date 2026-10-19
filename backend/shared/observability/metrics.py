@@ -129,6 +129,19 @@ KBD_LLM_TOKENS_TOTAL = Counter(
     labelnames=["operation", "model", "type"],
 )
 
+# 根因抽取闭环（§8）：按四态分维的闭包评估计数与不可闭环拒绝候选计数（对齐关键信号拒绝候选指标口径）。
+ROOT_SIGNAL_CLOSURE_TOTAL = Counter(
+    "hci_root_signal_closure_total",
+    "根因信号闭环评估终态计数",
+    labelnames=["status"],
+)
+
+ROOT_SIGNAL_REJECTED_TOTAL = Counter(
+    "hci_root_signal_rejected_total",
+    "根因信号不可闭环拒绝候选计数",
+    labelnames=["reason_code"],
+)
+
 OFFLINE_RESOURCE_SYNC_TOTAL = Counter(
     "hci_offline_resource_sync_total",
     "离线资源同步检测次数",

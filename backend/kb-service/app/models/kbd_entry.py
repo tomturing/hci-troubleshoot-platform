@@ -177,6 +177,10 @@ class KbdEntry(Base):
     # NULL = 尚未抽取；本列是 AI 派生元数据（同 ai_category_id 先例），不入 kbd_revision payload，
     # 因此对 published 条目回刷本列不产生新版本、不影响发布盖章
     root_signal_json = Column(JSONB, nullable=True)  # 根因信号（结论侧唯一定位锚点）
+    # 根因「拒绝候选」审计快照（与 signals_json.rejected_candidates 同构）：闭包不可通过的 executable
+    # 候选不进 root_signal_json、也不自动降级 text（决策②），落本列供审核 UI 逐条呈现与发布门禁判「未处理拒绝候选」。
+    # 同为 AI 派生元数据（不入 kbd_revision payload，同 root_signal_json 先例）；NULL = 尚无拒绝记录。
+    root_signal_rejected_json = Column(JSONB, nullable=True)  # 根因拒绝候选审计快照
 
     # ── 图片视觉描述（pipeline Vision LLM 生成，独立存储）───────────────────
     # 格式：[{"seq": 0, "section": "steps_text", "desc": "TYPE: 日志截图\n..."}]

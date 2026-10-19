@@ -65,6 +65,35 @@ _TEXT_PAYLOAD = {
     }
 }
 
+# 依赖 {{NODE_IP}} 的可执行根因（用于回喂重试：次轮改引 producer 已产出的 NODE_IP → closed）
+_EXECUTABLE_NODEIP_PAYLOAD = {
+    "signal": {
+        "match_type": "executable",
+        "signal_text": "/run/lock 分区被占满导致虚拟机任务失败",
+        "acquire": {
+            "tool": "qfk_system",
+            "args": {"command": "df", "command_args": ["-h", "/run/lock"], "host": "{{NODE_IP}}"}},
+        "match": {"type": "keyword", "mode": "all", "expected": ["100%"]},
+        "provenance": {
+            "source_section": "root_cause",
+            "evidence": "使用率 100%",
+            "confidence": 0.9,
+            "needs_review": False,
+        },
+    }
+}
+
+
+def _producer(produces: list[str]) -> dict[str, Any]:
+    """关键轨诊断生产者（qkv_task 形态）：orchestrate.produces 提供闭包可用变量池。"""
+    return {
+        "id": "s_producer",
+        "acquire": {"tool": "qkv_task", "args": {"keyword": "取节点IP", "is_failed": True}},
+        "match": None,
+        "orchestrate": {"produces": [{"name": n} for n in produces]},
+    }
+
+
 _ENTRY_ROW = {
     "id": 1,
     "support_id": "41480",
@@ -73,6 +102,7 @@ _ENTRY_ROW = {
     "content_md": "## 问题描述\nadmin 密码同步失败\n\n## 根因\ndf 显示 /run/lock 分区使用率 100%，占满导致虚拟机任务失败\n\n## 解决方案\n清理残留 lock 文件并扩容分区",
     "category_id": "虚拟机-009",
     "ai_category_id": None,
+    "signals_json": [],  # 关键轨未抽（无 produces 上下文）：闭包 bootstrap 守卫保留可执行根因为 needs_review，不硬拒
     "status": "published",
 }
 
@@ -292,6 +322,86 @@ class TestExtractForKbd:
         assert result["needs_review"] is True  # content 兑底强制人工复核
         signal = json.loads(updates[0]["params"]["signals"])[0]
         assert signal["provenance"]["trace_tier"] == "content"
+
+
+class TestClosureRouteIntegration:
+    """路由级闭环集成：三分支落库（closed 双列 / 全拒仅写拒绝审计不清既有 / 回喂重试）。"""
+
+    async def test_closed_with_producer_writes_both_columns(self, monkeypatch, prompt_template, corpus):
+        """关键轨 producer 产出 HOST → 信号的 {{HOST}} 有源 → closed，两列同事务均写。"""
+        updates: list[dict[str, Any]] = []
+        entry = {**_ENTRY_ROW, "signals_json": {"signals": [_producer(["HOST"])], "verification_contract": None}}
+        db = _db_factory(entry, updates)
+        await _stub_loader(monkeypatch, prompt_template)
+
+        async def _llm(messages, *, prompt_revision, kbd_id, attempt):
+            return _EXECUTABLE_PAYLOAD
+
+        monkeypatch.setattr(route, "_call_llm_messages", _llm)
+        result = await route.extract_root_signal_for_kbd(db, 1, corpus=corpus)
+
+        assert result["success"] is True
+        assert result["attempts"] == 1
+        assert result["closure"]["all_rejected"] is False
+        assert result["rejected"] == []
+        assert len(updates) == 1
+        sql = updates[0]["sql"]
+        assert "root_signal_json = CAST" in sql and "root_signal_rejected_json = CAST" in sql
+        signal = json.loads(updates[0]["params"]["signals"])[0]
+        assert signal["closure_status"] == "closed"
+        assert signal["provenance"]["needs_review"] is False
+        # 拒绝审计快照为空数组（非 None），与 accepted 同事务写入
+        assert json.loads(updates[0]["params"]["rejected"]) == []
+
+    async def test_all_rejected_writes_rejected_only_and_keeps_previous(self, monkeypatch, prompt_template):
+        """有上下文却仍悬空（producer 只产 NODE_IP、信号要 HOST）→硬拒→全拒：
+        仅写 root_signal_rejected_json、绝不清空 root_signal_json，显式收口 ROOT_SIGNAL_ALL_REJECTED。"""
+        updates: list[dict[str, Any]] = []
+        entry = {**_ENTRY_ROW, "signals_json": {"signals": [_producer(["NODE_IP"])], "verification_contract": None}}
+        db = _db_factory(entry, updates)
+        await _stub_loader(monkeypatch, prompt_template)
+
+        async def _llm(messages, *, prompt_revision, kbd_id, attempt):
+            return _EXECUTABLE_PAYLOAD  # 两轮都悬空 HOST → 回喂重试后仍全拒
+
+        monkeypatch.setattr(route, "_call_llm_messages", _llm)
+        result = await route.extract_root_signal_for_kbd(db, 1, corpus=ConflictCorpus([]))
+
+        assert result["success"] is False
+        assert result["code"] == "ROOT_SIGNAL_ALL_REJECTED"
+        assert result["attempts"] == 2  # 硬拒触发回喂重试一轮
+        assert len(result["rejected"]) == 1
+        assert result["rejected"][0]["reason_code"] == "ROOT_CLOSURE_DANGLING"
+        # 治本约束：全拒只落拒绝审计，UPDATE 语句不含 root_signal_json 赋值（既有信号不被清空）
+        assert len(updates) == 1
+        sql = updates[0]["sql"]
+        assert "root_signal_rejected_json = CAST" in sql
+        assert "root_signal_json = CAST" not in sql
+        # 决策②：拒绝候选不降级 text——candidate 仍是原 executable 形态
+        assert json.loads(updates[0]["params"]["rejected"])[0]["candidate"]["match_type"] == "executable"
+
+    async def test_feedback_retry_resolves_on_second_attempt(self, monkeypatch, prompt_template, corpus):
+        """首轮 {{HOST}} 无源硬拒 → 回喂重试；次轮改引 {{NODE_IP}}（producer 已产）→ closed，attempts==2。"""
+        updates: list[dict[str, Any]] = []
+        entry = {**_ENTRY_ROW, "signals_json": {"signals": [_producer(["NODE_IP"])], "verification_contract": None}}
+        db = _db_factory(entry, updates)
+        await _stub_loader(monkeypatch, prompt_template)
+        payloads = iter([_EXECUTABLE_PAYLOAD, _EXECUTABLE_NODEIP_PAYLOAD])
+        message_lengths: list[int] = []
+
+        async def _llm(messages, *, prompt_revision, kbd_id, attempt):
+            message_lengths.append(len(messages))
+            return next(payloads)
+
+        monkeypatch.setattr(route, "_call_llm_messages", _llm)
+        result = await route.extract_root_signal_for_kbd(db, 1, corpus=corpus)
+
+        assert result["success"] is True
+        assert result["attempts"] == 2
+        # 重试轮携带额外反馈消息（system+user+feedback = 3 条）
+        assert message_lengths == [2, 3]
+        signal = json.loads(updates[0]["params"]["signals"])[0]
+        assert signal["closure_status"] == "closed"
 
 
 class TestCorpusCache:
