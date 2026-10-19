@@ -158,3 +158,36 @@ orchestrate 段被跳过）。②`humanize_signal_validation_error` 在 `type` �
 「type 错误消息含 field_path/实际值/期望类型」。教训：凡契约声明为「可选但只接受具体类型」的字段，
 必须预设 LLM 会直出 null，在保存边界做确定性归一，而不是指望 Prompt 措辞或重试改好模型行为；
 拒收消息必须可定位到字段，否则「retryable」提示只会引导用户徒劳循环。
+
+## V-027：从 Prompt 侧加固关键信号抽取须「去 null 诱因 + 零花括号自检段 + 锚定完整片段」，否则热加载即崩或迁移自锁
+
+**症状：** PR #1162（V-026）已在服务端对 `orchestrate` 段做确定性 null 归一，但端到端回测仍见
+`SIGNAL_ALL_REJECTED`——模型还会直出嵌套 `match.extract` 显式 null、并把 backend 信号的
+`match` 与 `produces` 同时配置（违反 XOR 门禁）。这类候选是「生成侧本就不该产出」的形态，
+只在保存边界兜底属治标。
+
+**根因（加固本身有三个易踩的坑）：** ①`kbd_extract_signals_v2` 输出契约里保留的
+`"action": "<可选>"` 是 null 诱因，须整段删除；但同 Prompt 的 `review.notes` 写作
+`"notes": "<可选说明>"`，含子串 `<可选>`——若迁移用裸 `LIKE '%<可选>%'` 判 remove/verify，
+会误伤 notes 且 verify 永远命中不到「已清除」态而 fail-loud 回滚。②Prompt 经
+`StrictPromptLoader.load_and_validate` + `str.format` 渲染，追加的【输出前强制自检】段
+若含任何 `{`/`}` 会被当作占位符，要么撞 `PromptValidationError`（占位符集合≠既定 10 个），
+要么在 format 时抛 KeyError。③种子 `02_system_prompts.sql` 用 `ON CONFLICT (name) DO NOTHING`，
+**不改存量库**——只改 seed 对 live 环境无效，必须另起 `data-migrations/0NN` 拉齐存量。
+
+**修复：** ①seed 删掉 `"action": "<可选>", `，并在示例末追加【输出前强制自检】段
+（禁显式 null / 禁空占位数组 / backend `match`⊕`produces` 二选一 / 逐条自检），
+该段全中文零花括号不引入新占位符；version `'2.5'`→`'2.8'`。注意 live staging 观察到的版本为 `2.7`（无任何已提交迁移产出 2.6/2.7，属带外手工漂移），故本加固版本号必须取**高于 2.7 的 2.8**以免将存量库版本回退；`2.6` 因低于 live 而被排除。②`data-migrations/048`（唯一调用链
+`migration:20261019000001`）对存量库幂等拉齐：`replace(content_template, '"action": "<可选>", ', '')`
+**锚定完整片段**（含尾逗号空格）而非裸 `<可选>`；`content_template || $RULE$…$RULE$` 追加自检段
+（`NOT LIKE '%【输出前强制自检】%'` 守卫）；空库 `IF NOT EXISTS` 优雅跳过；verify 门禁同时校验
+「含自检段」且「已去 action 占位」否则 RAISE EXCEPTION。③保留 V-026 的 orchestrate 归一与
+可定位消息作为安全网——Prompt 约束非确定性，个别 null 仍可能漏网。
+
+**预防测试：** `test_system_prompt_contracts.py` 钉「seed 不含 `"action": "<可选>"`、含
+【输出前强制自检】与二选一文案、且 `"notes": "<可选说明>"` 仍在（证明只精确摘 action 未误伤 notes）」
+「迁移 048 的 `$RULE$` 追加块 `get_template_placeholders()==set()`、replace 锚定完整片段」；
+既有 `test_signal_extract_prompt_json_examples_escape_format_braces`（占位符恒等于 10 集合）作
+花括号安全网。教训：改 Prompt 输出契约时，任何「删除占位标记」的迁移都必须锚定**唯一完整片段**
+（警惕他字段含同名子串）、追加文本必须对 `str.format` 零花括号、且 seed 与 data-migration 双改
+才能让「新环境+存量库」同时生效。
