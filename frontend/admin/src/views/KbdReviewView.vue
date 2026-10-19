@@ -4867,10 +4867,10 @@ onUnmounted(() => clearBatchPollTimer())
     <!-- 过滤栏 -->
     <el-card class="filter-card" shadow="never">
       <el-row :gutter="12" align="middle" class="filter-row">
-        <el-col :span="3">
+        <el-col :span="2">
           <el-input
             v-model="supportIdFilter"
-            placeholder="按案例 ID 精准搜索"
+            placeholder="案例 ID 精准"
             clearable
             @clear="fetchPending"
             @keyup.enter="fetchPending"
@@ -4879,7 +4879,7 @@ onUnmounted(() => clearBatchPollTimer())
         <el-col :span="4">
           <el-input
             v-model="titleKeywordFilter"
-            placeholder="按标题关键字搜索"
+            placeholder="标题关键字"
             clearable
             @clear="fetchPending"
             @keyup.enter="fetchPending"
@@ -4888,7 +4888,7 @@ onUnmounted(() => clearBatchPollTimer())
         <el-col :span="3">
           <el-input
             v-model="sampleSuiteFilter"
-            placeholder="按样例集标识检索"
+            placeholder="样例集标识"
             clearable
             @clear="fetchPending"
             @keyup.enter="fetchPending"
@@ -4949,9 +4949,6 @@ onUnmounted(() => clearBatchPollTimer())
             <el-button type="primary" @click="fetchPending">搜索</el-button>
             <el-button @click="resetFilters">重置</el-button>
           </div>
-        </el-col>
-        <el-col :span="3" class="total-info">
-          <span>共 <strong>{{ total }}</strong> 条</span>
         </el-col>
       </el-row>
     </el-card>
@@ -5185,7 +5182,7 @@ onUnmounted(() => clearBatchPollTimer())
       >
         <el-table-column type="selection" width="40" />
         <!-- 案例 ID -->
-        <el-table-column label="案例 ID" width="100" prop="support_id" sortable="custom">
+        <el-table-column label="案例 ID" width="84" prop="support_id" sortable="custom">
           <template #default="{ row }">
             <span v-if="row.metadata?.is_test_sample">{{ row.support_id }}</span>
             <a v-else :href="makeSupportUrl(row.support_id)" target="_blank" rel="noopener noreferrer" class="support-link">
@@ -8050,13 +8047,6 @@ onUnmounted(() => clearBatchPollTimer())
 .filter-row :deep(.el-input),
 .filter-row :deep(.el-select) {
   width: 100%;
-}
-
-.total-info {
-  text-align: right;
-  color: #909399;
-  font-size: 14px;
-  white-space: nowrap;
 }
 
 .category-nav {
