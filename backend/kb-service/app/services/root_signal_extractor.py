@@ -45,7 +45,7 @@ from shared.schemas.acquirer_args import ACQUIRER_ARGS_SCHEMA, validate_acquire_
 from shared.schemas.kbd_signal_safety import kbd_signal_read_only_violation
 
 from app.routes.extract_signals import ACQUIRER_CATALOG, VALID_MATCHER_TYPES
-from app.services.root_signal_closure import adjudicate_root_closure
+from app.services.root_signal_closure import adjudicate_root_closure, render_available_vars_context
 
 logger = get_logger("kb-service-root-signal")
 
@@ -440,6 +440,9 @@ async def extract_root_signal(
             "acquirer_catalog": acquirer_catalog_text(),
         },
     )
+    # 注入本 KBD 现场可用变量清单（与闭包门 `_build_available_sources` 同源）：提示模型 executable
+    # 根因的 {{占位符}} 只能取自此表，引导其用 produces 变量替代写死实体/悬空引用，提升闭环自洽率。
+    prompt += render_available_vars_context(key_signals, verification_contract, context_whitelist)
     prompt_revision = "sha256:" + hashlib.sha256(prompt_template.encode("utf-8")).hexdigest()
     root_cause = entry.get("root_cause") or ""
     content = entry.get("kbd_content") or root_cause

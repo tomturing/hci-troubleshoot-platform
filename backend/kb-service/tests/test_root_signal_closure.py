@@ -14,6 +14,7 @@ from app.services.root_signal_closure import (
     apply_closure_fields,
     detect_hardcoded_literals,
     evaluate_root_closure,
+    render_available_vars_context,
     split_accepted_and_rejected,
     summarize_rejections,
 )
@@ -43,6 +44,41 @@ def _qkv_producer(signal_id, produces_names) -> dict:
 
 def _one(root, key_signals=(), **kw):
     return evaluate_root_closure([root], list(key_signals), capability_catalog=CATALOG, **kw)[0]
+
+
+# ─── PR-5：现场可用变量清单渲染（与闭包门同源，供抽取 Prompt 注入）────────────────
+def test_render_lists_producer_external_context_with_source_labels():
+    """producer/external/context 三类来源均入表且带对应溯源标注。"""
+    text = render_available_vars_context(
+        [_qkv_producer("s1", ["disk_dev"])],
+        {"variables": {"node_ip": {}}},
+        context_whitelist=["host"],
+    )
+    assert "{{DISK_DEV}}" in text and "诊断信号 s1" in text
+    assert "{{NODE_IP}}" in text and "外部声明" in text
+    assert "{{HOST}}" in text and "运行上下文" in text
+    assert "本表为空" not in text
+
+
+def test_render_empty_table_gives_bootstrap_guidance():
+    """无任何来源时输出空表引导（不列占位符，避免误导模型引用不存在的变量）。"""
+    text = render_available_vars_context([], None)
+    assert "本表为空" in text
+    assert "完全自包含" in text
+    assert "{{" not in text.split("规则：", 1)[-1].replace("{{VAR}}", "")  # 无具体变量行
+
+
+def test_render_parity_with_gate_available_set():
+    """单一事实源守护：Prompt 告知可引用的变量集 == 闭包门放行的 available 集。"""
+    producers = [_qkv_producer("s1", ["ETHX"])]
+    # 门侧：引用 produced 变量 {{ETHX}} 的 executable 根因判 closed
+    root = _exec_root(args={"command": "ls", "command_args": ["{{ETHX}}"]})
+    assert _one(root, key_signals=producers)["closure_status"] == CLOSURE_CLOSED
+    # Prompt 侧：{{ETHX}} 必在渲染清单内
+    assert "{{ETHX}}" in render_available_vars_context(producers, None)
+    # 未产出的变量：门判悬空 + Prompt 清单不含（双向一致，杜绝口径漂移）
+    assert _one(_exec_root(args={"command": "ls", "command_args": ["{{GHOST}}"]}))["closure_status"] == CLOSURE_DANGLING
+    assert "{{GHOST}}" not in render_available_vars_context(producers, None)
 
 
 # ─── 决策①：省略 host = 合法闭环（不入 requires，不误判悬空）───────────────────

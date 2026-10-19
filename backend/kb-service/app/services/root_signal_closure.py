@@ -150,6 +150,49 @@ def _build_available_sources(
     return set(origin), origin
 
 
+# 来源类别 → 变量清单行的中文溯源标注（{ref} 由具体来源填充）
+_ORIGIN_LABELS: dict[str, str] = {
+    "producer": "诊断信号 {ref}",
+    "external": "外部声明（verification_contract）",
+    "context": "运行上下文 {ref}",
+}
+
+
+def render_available_vars_context(
+    key_signals: Any,
+    verification_contract: Any,
+    context_whitelist: Iterable[str] = (),
+) -> str:
+    """渲染「本 KBD 现场可用变量清单」确定性文本块（供抽取 Prompt 注入）。
+
+    单一事实源：可用集完全取自 `_build_available_sources`（与 `evaluate_root_closure`
+    闭包门逐字一致），杜绝「Prompt 告诉模型可用、门禁却判悬空拒收」的口径漂移。
+
+    为何是渲染后追加而非模板占位符（方案 §5.5）：produces 是代码派生上下文，不应进入
+    admin 可编辑的严格占位符契约（否则已部署旧模板会撞 `PROMPT_PLACEHOLDER_MISSING` 硬失败）。
+    """
+    available, origin = _build_available_sources(key_signals, verification_contract, context_whitelist)
+    header = "\n\n# 现场可用变量清单（executable 根因的占位符只能取自此表）"
+    if not available:
+        return (
+            header
+            + "\n本表为空：关键轨尚未产出任何可引用变量，也未声明外部变量。\n"
+            + "规则：此时 executable 根因只能是完全自包含的本地命令（args 内不含任何 {{VAR}} 占位符）；"
+            + "若根因确需引用现场变量，请优先产出 text 型信号，或待关键信号补齐后重抽，"
+            + "切勿引用不存在的变量（引用表外变量必被判悬空无来源拒收）。"
+        )
+    lines = [header, "可引用变量（按来源）："]
+    for var in sorted(available):
+        kind, ref = origin[var]
+        label = _ORIGIN_LABELS.get(kind, "{ref}").format(ref=ref)
+        lines.append("- {{" + var + "}} ← " + label)
+    lines.append(
+        "规则：executable 信号 acquire.args 中出现的每个 {{VAR}} 占位符必须逐一取自上表；引用表外变量将被判"
+        + "「悬空无来源」拒收。随现场变化的设备/接口/IP/盘符等实体，若上表有对应变量必须用占位符引用，不得写死字面量。"
+    )
+    return "\n".join(lines)
+
+
 def evaluate_root_closure(
     root_signals: Any,
     key_signals: Any = None,

@@ -338,6 +338,35 @@ class TestExtractPipeline:
         )
         assert _ROOT_CAUSE in rendered and "qfk_log" in rendered and "不限条数" in rendered
 
+    async def test_available_vars_block_injected_into_prompt(self, prompt_template):
+        # PR-5：本 KBD produces/外部声明变量须出现在发给 LLM 的 user prompt，引导根因用占位符引用而非写死/悬空
+        llm, calls = _fake_llm({"schema_version": 2, "signals": []})
+        key_signals = [
+            {
+                "id": "s1",
+                "acquire": {"tool": "qkv_task", "args": {}},
+                "match": None,
+                "orchestrate": {"produces": [{"name": "disk_dev"}]},
+            }
+        ]
+        await extract_root_signal(
+            ENTRY,
+            prompt_template=prompt_template,
+            llm_call=llm,
+            key_signals=key_signals,
+            verification_contract={"variables": {"node_ip": {}}},
+        )
+        user_prompt = calls[0][1]["content"]
+        assert "现场可用变量清单" in user_prompt
+        assert "{{DISK_DEV}}" in user_prompt and "诊断信号 s1" in user_prompt
+        assert "{{NODE_IP}}" in user_prompt and "外部声明" in user_prompt
+
+    async def test_available_vars_empty_guidance_injected(self, prompt_template):
+        # 无 produces 时注入空表引导（不误导模型引用不存在的变量）
+        llm, calls = _fake_llm({"schema_version": 2, "signals": []})
+        await extract_root_signal(ENTRY, prompt_template=prompt_template, llm_call=llm, key_signals=[])
+        assert "本表为空" in calls[0][1]["content"]
+
 
 # ─── 6. 冲突计数与模板契约 ────────────────────────────────────────────────────
 
