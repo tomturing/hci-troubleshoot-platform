@@ -49,6 +49,75 @@ def test_feature_extract_and_compare_are_applied_per_record() -> None:
     assert result.assertions[0].status == "PASS"
 
 
+def test_interface_name_supports_colon_and_bracket_forms() -> None:
+    """interface_name 兼容冒号与全/半角括号两种形态（闭集扩展不得回归旧的冒号契约）。"""
+    for text, expected in (("网口：eth0", "eth0"), ("网口（eth0）", "eth0"), ("接口(ens33)", "ens33")):
+        result = apply_output_processing(
+            [{"description": text}],
+            [{
+                "id": "intf",
+                "mode": "derive",
+                "input": "{{DESCRIPTION}}",
+                "operation": "feature_extract",
+                "target_variable": "INTF",
+                "feature": "interface_name",
+            }],
+        )
+        assert result.records[0]["intf"] == expected
+
+
+def test_local_interface_name_anchors_local_port_not_alias_port() -> None:
+    """27736 报错同现「网口（channel4）」与「本地网口（eth0）」：local 锚定取根因口 eth0，不误取 channel4。"""
+    text = (
+        "设置集群IP失败，网口（channel4）添加IP别名失败：检测到IP 192.168.100.55/255.255.255.0 "
+        "与本地网口（eth0）IP 192.168.100.88/255.255.255.0）冲突，请修改后重试！"
+    )
+    result = apply_output_processing(
+        [{"description": text}],
+        [{
+            "id": "ethx",
+            "mode": "derive",
+            "input": "{{DESCRIPTION}}",
+            "operation": "feature_extract",
+            "target_variable": "ETHX",
+            "feature": "local_interface_name",
+        }],
+    )
+    assert result.records[0]["ethx"] == "eth0"
+
+
+def test_ipv4_feature_extracts_addresses() -> None:
+    """ipv4 确定性抽取报错文本中的四段十进制地址（供 IP 类根因 bundle 派生）。"""
+    text = "检测到IP 192.168.100.55/255.255.255.0 与本地网口（eth0）IP 192.168.100.88/255.255.255.0）冲突"
+    result = apply_output_processing(
+        [{"description": text}],
+        [{
+            "id": "ip",
+            "mode": "derive",
+            "input": "{{DESCRIPTION}}",
+            "operation": "feature_extract",
+            "target_variable": "IP",
+            "feature": "ipv4",
+            "cardinality": "all",
+        }],
+    )
+    assert "192.168.100.55" in result.records[0]["ip"]
+    assert "192.168.100.88" in result.records[0]["ip"]
+
+
+def test_unlisted_feature_still_rejected_after_extension() -> None:
+    """扩展封闭集后，未登记 feature 仍须 fail-closed（不新增自由文本判定）。"""
+    with pytest.raises(QKVProcessingError):
+        validate_output_processing([{
+            "id": "x",
+            "mode": "derive",
+            "input": "{{DESCRIPTION}}",
+            "operation": "feature_extract",
+            "target_variable": "Y",
+            "feature": "mac_address",
+        }])
+
+
 def test_multiple_records_do_not_silently_choose_first_value() -> None:
     with pytest.raises(QKVProcessingError, match="QFK_CARDINALITY_MISMATCH"):
         apply_output_processing(

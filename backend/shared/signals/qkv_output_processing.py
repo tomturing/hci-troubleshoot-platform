@@ -78,16 +78,32 @@ _HOST_PATTERNS = (
     re.compile(r"(?:主机|宿主机|host)\s*[（(\[【]?\s*[:：=]?\s*([A-Za-z0-9][A-Za-z0-9._-]*)", re.I),
 )
 _SUPPORTED_FEATURES = {
-    "vm_name", "vm", "host", "host_name", "disk_name", "interface_name", "error_code",
-    "source_host", "destination_host", "change_pair", "percent.current", "percentage", "percent", "number",
+    "vm_name", "vm", "host", "host_name", "disk_name", "interface_name", "local_interface_name",
+    "error_code", "source_host", "destination_host", "change_pair", "ipv4",
+    "percent.current", "percentage", "percent", "number",
 }
 _FEATURE_PATTERNS = {
     "disk_name": re.compile(r"(?:磁盘|disk)\s*(?:名称|名|name)?\s*[:：=]\s*([A-Za-z0-9][A-Za-z0-9._/-]*)", re.I),
-    "interface_name": re.compile(r"(?:网口|接口|interface)\s*(?:名称|名|name)?\s*[:：=]\s*([A-Za-z0-9][A-Za-z0-9._:-]*)", re.I),
+    # interface_name 兼容冒号/等号与全角·半角括号两种形态（`网口：eth0` / `网口（eth0）`）；
+    # 要求捕获名首字符为字母，避免把网口序号或 IP 数字误抽为接口名。
+    "interface_name": re.compile(
+        r"(?:网口|接口|网卡|interface)\s*(?:名称|名|name)?\s*(?:[（(\[【]\s*|[:：=]\s*)([A-Za-z][A-Za-z0-9._:-]*)",
+        re.I,
+    ),
+    # 报错文本常同时出现「添加别名的口」（网口（channel4））与「冲突所在的本路口」（本地网口（eth0）），
+    # 通用 interface_name 会先命中 channel4；local_interface_name 默认锁定“本地”锚点取真根因口。
+    "local_interface_name": re.compile(
+        r"(?:本地\s*(?:网口|接口|网卡)|local\s*interface(?:\s*name)?)\s*(?:名称|名|name)?\s*(?:[（(\[【]\s*|[:：=]\s*)([A-Za-z][A-Za-z0-9._:-]*)",
+        re.I,
+    ),
     "error_code": re.compile(r"(?:错误码|错误代码|error[_ -]?code|code)\s*[:：=]\s*([A-Za-z0-9._-]+)", re.I),
     "source_host": re.compile(r"(?:源主机|source[_ -]?host)\s*[:：=]\s*([A-Za-z0-9][A-Za-z0-9._-]*)", re.I),
     "destination_host": re.compile(r"(?:目标主机|目的主机|destination[_ -]?host)\s*[:：=]\s*([A-Za-z0-9][A-Za-z0-9._-]*)", re.I),
     "change_pair": re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:->|→|至|到)\s*([A-Za-z0-9][A-Za-z0-9._-]*)"),
+    # ipv4：四段十进制全格式地址，用 group(1) 捕获整串以适配 _feature_extract 的统一取组方式。
+    "ipv4": re.compile(
+        r"\b((?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3})\b"
+    ),
 }
 
 
