@@ -57,6 +57,7 @@ from app.routes.extract_signals import (
     LLM_MODEL as SIGNALS_LLM_MODEL,
 )
 from app.services.llm_runtime import call_with_llm_governance
+from app.services.root_signal_closure import adjudicate_root_closure
 from app.services.root_signal_extractor import (
     ROOT_SIGNAL_PLACEHOLDERS,
     ROOT_SIGNAL_PROMPT_NAME,
@@ -632,6 +633,8 @@ class RootSignalEditResult(BaseModel):
     support_id: str | None = None
     signals: list[dict[str, Any]] = Field(default_factory=list)
     signals_count: int = 0
+    rejected: list[dict[str, Any]] = Field(default_factory=list)  # 不可闭环的拒绝候选（已落 root_signal_rejected_json）
+    closure: dict[str, Any] = Field(default_factory=dict)  # 闭包汇总（供审核 UI 即时回显）
 
 
 @router.patch("/kbd/{kbd_id}/root-signal", response_model=RootSignalEditResult)
@@ -640,9 +643,10 @@ async def edit_root_signal(request: Request, kbd_id: int, body: RootSignalEditRe
 
     与自动抽取**同标准硬门禁**：每条先经 gate_signals 去重/封顶，再复用
     normalize_root_signal（executable 的 qfk_* 词表/args 契约/只读安全门 +
-    溯源逐字命中；text 的 keyword/regex + 逐字溯源），任一不合即 422 拒绝，
-    绝不落非法信号；非法原因逐条回传供前端定位。写回只动 root_signal_json
-    （AI 派生元数据），不触发 kbd_revision、不改发布盖章（同回刷语义）。
+    溯源逐字命中；text 的 keyword/regex + 逐字溯源），形状不合即 422 拒绝，绝不落非法信号；
+    形状合规后再过**同一闭包门** `adjudicate_root_closure`（与抽取同源、含 bootstrap 保守守卫）：
+    不可闭环的 executable 不进 root_signal_json、也不自动降级 text（决策②），而是落 root_signal_rejected_json
+    （防绕过回潮）。写回只动 root_signal_json / root_signal_rejected_json（AI 派生元数据），不触发 kbd_revision、不改发布盖章（同回刷语义）。
     """
     _check_auth(request)
     if _db_manager is None:
@@ -657,6 +661,7 @@ async def edit_root_signal(request: Request, kbd_id: int, body: RootSignalEditRe
                 KbdEntry.title,
                 KbdEntry.root_cause,
                 KbdEntry.content_md,
+                KbdEntry.signals_json,
                 KbdEntry.problem_description,
                 KbdEntry.alert_info,
                 KbdEntry.steps_text,
@@ -676,8 +681,22 @@ async def edit_root_signal(request: Request, kbd_id: int, body: RootSignalEditRe
     kbd_content = _render_kbd_content(row)
     category_code = row["category_id"] or row["ai_category_id"] or ""
 
-    # 空数组 = 清空根因信号（删除最后一条的合法终态）：不跑门禁直接落 []
+    # 关键轨 produces 上下文（闭包可用来源池），与自动抽取同源：人工编辑亦须过同一闭包门（§7 防绕过回潮）。
+    raw_signals_json = row["signals_json"]
+    if isinstance(raw_signals_json, dict):
+        key_signals = raw_signals_json.get("signals") or []
+        verification_contract = raw_signals_json.get("verification_contract")
+    elif isinstance(raw_signals_json, list):
+        key_signals = raw_signals_json  # 兼容旧列表形态
+        verification_contract = None
+    else:
+        key_signals, verification_contract = [], None
+
+    # 空数组 = 清空根因信号与拒绝审计（删除最后一条的合法终态）：不跑门禁直接落两列 []
     signals: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    closure: dict[str, Any] = {}
+    all_rejected = False
     if body.signals:
         gated, gate_error = gate_signals({"signals": body.signals})
         if gate_error:
@@ -685,6 +704,7 @@ async def edit_root_signal(request: Request, kbd_id: int, body: RootSignalEditRe
                 status_code=422,
                 detail={"code": "ROOT_SIGNAL_INVALID", "message": gate_error},
             )
+        normalized: list[dict[str, Any]] = []
         for raw in gated:
             signal, violation, _tier = normalize_root_signal(
                 raw,
@@ -702,9 +722,27 @@ async def edit_root_signal(request: Request, kbd_id: int, body: RootSignalEditRe
                         "message": violation,
                     },
                 )
-            signals.append(signal)  # type: ignore[arg-type]
+            normalized.append(signal)
 
-        # 冲突度按现场语料逐条实测（与抽取一致，不采信前端自报）
+        # 闭包门（§7 编辑即校验，防绕过回潮）：复用抽取同一 adjudicate_root_closure（含 bootstrap 保守守卫）——
+        # 不可闭环的 executable 不进 root_signal_json、也不自动降级 text（决策②），而是落 root_signal_rejected_json。
+        adjud = adjudicate_root_closure(
+            normalized,
+            key_signals,
+            verification_contract=verification_contract,
+        )
+        signals = adjud["accepted"]
+        rejected = adjud["rejected"]
+        closure = adjud["summary"]
+        all_rejected = adjud["all_rejected"]
+        for rec in adjud["results"]:
+            rec_status = rec.get("closure_status")
+            if rec_status in {"closed", "dangling_requires", "hardcoded_literals", "capability_missing"}:
+                ROOT_SIGNAL_CLOSURE_TOTAL.labels(status=rec_status).inc()
+        for item in rejected:
+            ROOT_SIGNAL_REJECTED_TOTAL.labels(reason_code=item.get("reason_code") or "unknown").inc()
+
+        # 冲突度按现场语料逐条实测（与抽取一致，不采信前端自报；仅对 accepted）
         corpus = await get_conflict_corpus(_db_manager)
         for signal in signals:
             signal["distinctiveness"] = corpus.conflicts(signal, self_support_id=row["support_id"])
@@ -714,11 +752,17 @@ async def edit_root_signal(request: Request, kbd_id: int, body: RootSignalEditRe
             text(
                 """
                 UPDATE kbd_entry
-                SET root_signal_json = CAST(:signals AS jsonb), updated_at = now()
+                SET root_signal_json = CAST(:signals AS jsonb),
+                    root_signal_rejected_json = CAST(:rejected AS jsonb),
+                    updated_at = now()
                 WHERE id = :kbd_id
                 """
             ),
-            {"kbd_id": kbd_id, "signals": json.dumps(signals, ensure_ascii=False)},
+            {
+                "kbd_id": kbd_id,
+                "signals": json.dumps(signals, ensure_ascii=False),
+                "rejected": json.dumps(rejected, ensure_ascii=False),
+            },
         )
         await session.commit()
 
@@ -729,6 +773,8 @@ async def edit_root_signal(request: Request, kbd_id: int, body: RootSignalEditRe
         support_id=row["support_id"],
         kbd_status=row["status"],
         signals_count=len(signals),
+        rejected_count=len(rejected),
+        all_rejected=all_rejected,
         needs_review=sum(1 for s in signals if s["provenance"]["needs_review"]),
     )
     return RootSignalEditResult(
@@ -737,6 +783,8 @@ async def edit_root_signal(request: Request, kbd_id: int, body: RootSignalEditRe
         support_id=row["support_id"],
         signals=signals,
         signals_count=len(signals),
+        rejected=rejected,
+        closure=closure,
     )
 
 

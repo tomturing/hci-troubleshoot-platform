@@ -33,6 +33,21 @@ export interface RootSignal {
   distinctiveness?: { category_conflicts?: number; global_conflicts?: number } | null
   provenance?: RootSignalProvenance
   prompt_revision?: string
+  // 闭环字段（PR-3/PR-4）：仅 executable 携带；text 无闭包义务可为空
+  closure_status?: 'closed' | 'dangling_requires' | 'hardcoded_literals' | 'capability_missing' | string
+  requires?: string[]
+  resolved_by?: { var?: string; by?: string; ref?: string }[]
+  [key: string]: any
+}
+
+/** 拒绝候选（root_signal_rejected_json 元素，与后端 signals_json.rejected_candidates 同构）。 */
+export interface RootSignalRejected {
+  candidate?: RootSignal
+  reason?: string
+  reason_code?: string
+  closure_status?: string
+  unresolved?: string[]
+  literals?: { field?: string; value?: string; entity?: string; suggested_var?: string }[]
   [key: string]: any
 }
 
@@ -89,6 +104,38 @@ export function matchKeywords(signal?: RootSignal | null): string[] {
   const expected = signal?.match?.expected
   if (!Array.isArray(expected)) return []
   return expected.map((item) => String(item ?? '').trim()).filter(Boolean)
+}
+
+/**
+ * 解析 root_signal_rejected_json 为拒绝候选数组（v2 顶层数组，与 accepted 分列存储）。
+ * 后端 CHECK 限 jsonb_typeof='array'，旧 null/非数组一律兑底空数组。
+ */
+export function parseRejected(raw: unknown): RootSignalRejected[] {
+  if (!raw) return []
+  if (Array.isArray(raw)) return raw.filter((item) => item && typeof item === 'object') as RootSignalRejected[]
+  return []
+}
+
+/**
+ * 闭包态 → el-tag 类型 + 中文释义（与后端 root_signal_closure 四态同源）。
+ * text 形态无闭包义务（closure_status 缺省）→ 不渲染该标签（返 null）。
+ */
+export function closureDisplay(
+  status?: string | null,
+): { type: 'success' | 'warning' | 'danger' | 'info'; label: string } | null {
+  switch (status) {
+    case 'closed':
+      return { type: 'success', label: '已闭环（现场可执行）' }
+    case 'dangling_requires':
+      return { type: 'danger', label: '变量悬空无来源' }
+    case 'hardcoded_literals':
+      return { type: 'warning', label: '含写死实体未参数化' }
+    case 'capability_missing':
+      return { type: 'danger', label: '采集能力缺失' }
+    default:
+      // text/未闭环旧数据：无闭包态，不渲染
+      return null
+  }
 }
 
 export interface RootSignalBackfillForm {

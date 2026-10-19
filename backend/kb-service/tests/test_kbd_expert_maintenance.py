@@ -716,6 +716,7 @@ async def test_published_detail_overlays_maintenance_payload_without_changing_st
         # 详情 SELECT 含 root_signal_json（AI 派生元数据，不走维护稿 overlay）；
         # 假行必须同步声明，新增列时才能靠测试暴露 fixture 与 SELECT 的偏离。
         "root_signal_json": None,
+        "root_signal_rejected_json": None,
         "solution": "旧方案",
         "operational_impact": "",
         "is_temporary": "",

@@ -235,6 +235,61 @@ async def test_signal_review_is_side_effect_free_and_separates_contract_from_run
     session.commit.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_signal_review_emits_root_closure_soft_warnings_without_blocking():
+    """§7 先软后硬：不可闭环根因 executable + 未处理拒绝候选只产 warning（blocks_publish=False），不新增 error。"""
+    session = AsyncMock()
+    session.get.return_value = SimpleNamespace(
+        id=9,
+        title="虚拟机启动失败",
+        problem_description="点击开机后任务失败",
+        root_cause="镜像被占用",
+        solution="释放占用后重试",
+        category_id="vm-001",
+        ai_category_id=None,
+        working_revision_id=2,
+        lock_version=3,
+        signals_json={
+            "schema_version": 2,
+            "signals": [
+                {
+                    "id": "sig_001",
+                    "acquire": {"tool": "qkv_task", "args": {"keyword": "虚拟机启动失败"}},
+                    "match": None,
+                    "orchestrate": {"produces": [{"name": "VM", "path": "vm"}]},
+                    "provenance": {"category": "frontend"},
+                }
+            ],
+        },
+        # 不可闭环根因（悬空）已入 accepted（bootstrap 保留）+ 一条未处理拒绝候选
+        root_signal_json=[
+            {"match_type": "executable", "signal_text": "根因X（悬空）", "closure_status": "dangling_requires"}
+        ],
+        root_signal_rejected_json=[
+            {"candidate": {"match_type": "executable"}, "reason": "悬空", "reason_code": "ROOT_CLOSURE_DANGLING"}
+        ],
+    )
+    db = _db_with_session(session)
+
+    with patch.object(admin_route, "_check_auth"), patch.object(admin_route, "_db_manager", db):
+        body = await admin_route.review_kbd_signals(MagicMock(), 9)
+
+    codes = {issue["code"]: issue for issue in body["issues"]}
+    assert "ROOT_SIGNAL_NOT_CLOSED" in codes
+    assert "ROOT_SIGNAL_UNHANDLED_REJECTED" in codes
+    # 软告警本质：两条均为 warning 且显式 blocks_publish=False，绝不伪装成硬阻断
+    assert codes["ROOT_SIGNAL_NOT_CLOSED"]["level"] == "warning"
+    assert codes["ROOT_SIGNAL_NOT_CLOSED"]["blocks_publish"] is False
+    assert codes["ROOT_SIGNAL_UNHANDLED_REJECTED"]["level"] == "warning"
+    assert codes["ROOT_SIGNAL_UNHANDLED_REJECTED"]["blocks_publish"] is False
+    # 关键：根因闭包告警不进入 error 集（仅消费者缺失是 error），证明软告警不阻断发布
+    error_codes = [issue["code"] for issue in body["issues"] if issue["level"] == "error"]
+    assert "ROOT_SIGNAL_NOT_CLOSED" not in error_codes
+    assert "ROOT_SIGNAL_UNHANDLED_REJECTED" not in error_codes
+    assert body["warning_count"] == 2
+    session.commit.assert_not_awaited()
+
+
 async def test_approval_freezes_a_distinct_expert_revision_even_when_payload_is_unchanged():
     session = AsyncMock()
     # 审批冻结现在同时记录结构化 review metadata，因此测试替身也必须具备完整

@@ -6,12 +6,14 @@ import { describe, expect, it } from 'vitest'
 import {
   buildBackfillPayload,
   buildEditPayload,
+  closureDisplay,
   conflictDisplay,
   describeBackfillResult,
   distinctivenessLevel,
   formatAcquire,
   joinKeywords,
   matchKeywords,
+  parseRejected,
   parseSignals,
   splitKeywords,
 } from '../rootSignal'
@@ -92,6 +94,53 @@ describe('parseSignals v2 数组解析', () => {
     expect(parseSignals([])).toEqual([])
     expect(parseSignals('oops')).toEqual([])
     expect(parseSignals([null, 1, signal()])).toHaveLength(1)
+  })
+})
+
+describe('closureDisplay 闭包态四态渲染', () => {
+  it('closed 绿标（现场可执行），dangling_requires/capability_missing 红标，hardcoded_literals 橙标', () => {
+    expect(closureDisplay('closed')).toEqual({ type: 'success', label: '已闭环（现场可执行）' })
+    expect(closureDisplay('dangling_requires')?.type).toBe('danger')
+    expect(closureDisplay('capability_missing')?.type).toBe('danger')
+    expect(closureDisplay('hardcoded_literals')?.type).toBe('warning')
+  })
+
+  it('text 形态/旧数据无闭包义务（缺省或空）→ 返回 null，视图不渲染该标签', () => {
+    expect(closureDisplay(undefined)).toBeNull()
+    expect(closureDisplay(null)).toBeNull()
+    expect(closureDisplay('')).toBeNull()
+    // 未知态也不臆造语义，兑底不渲染
+    expect(closureDisplay('unknown_future_state')).toBeNull()
+  })
+
+  it('executable 闭包字段经 parseSignals 原样透传，视图可据以渲染 closureDisplay', () => {
+    const [sig] = parseSignals([
+      signal({ closure_status: 'closed', requires: ['disk_dev'], resolved_by: [{ var: 'disk_dev', by: 'upstream', ref: 'asan_disks' }] }),
+    ])
+    expect(sig.closure_status).toBe('closed')
+    expect(sig.requires).toEqual(['disk_dev'])
+    expect(sig.resolved_by?.[0]?.ref).toBe('asan_disks')
+    expect(closureDisplay(sig.closure_status)?.label).toBe('已闭环（现场可执行）')
+  })
+})
+
+describe('parseRejected 拒绝候选解析', () => {
+  it('v2 顶层数组逐条返回（与 accepted 分列存储）', () => {
+    const list = parseRejected([
+      { reason_code: 'ROOT_SIGNAL_UNCLOSED', closure_status: 'dangling_requires', unresolved: ['node_ip'] },
+      { reason_code: 'ROOT_SIGNAL_HARDCODED', closure_status: 'hardcoded_literals' },
+    ])
+    expect(list).toHaveLength(2)
+    expect(list[0].unresolved).toEqual(['node_ip'])
+    expect(list[1].closure_status).toBe('hardcoded_literals')
+  })
+
+  it('null/非数组/数组内非对象项一律兑底空数组（后端 CHECK 限 jsonb_typeof=array）', () => {
+    expect(parseRejected(null)).toEqual([])
+    expect(parseRejected(undefined)).toEqual([])
+    expect(parseRejected('oops')).toEqual([])
+    expect(parseRejected({ not: 'array' })).toEqual([])
+    expect(parseRejected([null, 1, 'x', { reason_code: 'OK' }])).toHaveLength(1)
   })
 })
 

@@ -501,6 +501,42 @@ class TestEditRootSignal:
         assert result.signals_count == 1
         assert json.loads(updates[0]["params"]["signals"])[0]["acquire"] is None
 
+    async def test_edit_rejects_unclosable_with_context(self, monkeypatch, corpus):
+        """防绕过回潮：有上下文（producer 只产 NODE_IP）却悬空 HOST 的 executable → 不进 accepted、落 rejected 列。"""
+        updates: list[dict[str, Any]] = []
+        entry = {**_ENTRY_ROW, "signals_json": {"signals": [_producer(["NODE_IP"])], "verification_contract": None}}
+        monkeypatch.setattr(route, "_db_manager", _db_factory(entry, updates))
+        self._stub_corpus(monkeypatch, corpus)
+        result = await route.edit_root_signal(
+            _make_request("PATCH", "/api/admin/kbd/1/root-signal"), 1,
+            route.RootSignalEditRequest(signals=[_EXECUTABLE_PAYLOAD["signal"]]),
+        )
+        assert result.signals_count == 0
+        assert len(result.rejected) == 1
+        assert result.rejected[0]["reason_code"] == "ROOT_CLOSURE_DANGLING"
+        # 两列均写：accepted 空数组、rejected 含被拒候选；绝不把悬空 executable 塞进 root_signal_json
+        assert len(updates) == 1
+        assert "root_signal_rejected_json = CAST" in updates[0]["sql"]
+        assert json.loads(updates[0]["params"]["signals"]) == []
+        # 决策②：拒绝候选不降级 text——candidate 仍是原 executable 形态
+        assert json.loads(updates[0]["params"]["rejected"])[0]["candidate"]["match_type"] == "executable"
+
+    async def test_edit_closed_with_producer_retained(self, monkeypatch, corpus):
+        """producer 产出 HOST → 人工保存的 {{HOST}} 可执行信号 closed，留在 accepted、不进 rejected。"""
+        updates: list[dict[str, Any]] = []
+        entry = {**_ENTRY_ROW, "signals_json": {"signals": [_producer(["HOST"])], "verification_contract": None}}
+        monkeypatch.setattr(route, "_db_manager", _db_factory(entry, updates))
+        self._stub_corpus(monkeypatch, corpus)
+        result = await route.edit_root_signal(
+            _make_request("PATCH", "/api/admin/kbd/1/root-signal"), 1,
+            route.RootSignalEditRequest(signals=[_EXECUTABLE_PAYLOAD["signal"]]),
+        )
+        assert result.signals_count == 1
+        assert result.rejected == []
+        signal = json.loads(updates[0]["params"]["signals"])[0]
+        assert signal["closure_status"] == "closed"
+        assert json.loads(updates[0]["params"]["rejected"]) == []
+
     async def test_edit_rejects_untraceable_signal_and_writes_nothing(self, monkeypatch, corpus):
         """对抗核心：任一信号不过硬门禁即整体 422，绝不部分落库。"""
         updates: list[dict[str, Any]] = []

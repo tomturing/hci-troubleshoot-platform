@@ -32,15 +32,18 @@ import {
 } from '@/utils/signalImport'
 import {
   buildBackfillPayload,
+  closureDisplay,
   conflictDisplay,
   describeBackfillResult,
   distinctivenessLevel,
   formatAcquire,
   matchKeywords,
+  parseRejected,
   parseSignals,
   buildEditPayload,
   joinKeywords,
   type RootSignal,
+  type RootSignalRejected,
 } from '@/utils/rootSignal'
 import { resolveApiErrorMessage } from '@/utils/apiError'
 
@@ -88,6 +91,8 @@ interface KbdEntry {
   // 根因信号（与关键信号完全解耦的第二轨）：v2 一篇可有多条结论侧定位信号（顶层数组），AI 派生元数据、不入版本
   root_cause?: string | null
   root_signal_json?: RootSignal | RootSignal[] | null
+  // 不可闭环的 executable 拒绝候选（root_signal_rejected_json，v2 顶层数组，与 accepted 分列）：审核 UI 呈现闭环失败原因
+  root_signal_rejected_json?: RootSignalRejected[] | null
   signal_review_facts?: Record<string, { status: 'needs_review' | 'reviewed' }>
   latest_proposal_revision_id?: number | null
   working_revision_id?: number | null
@@ -1181,6 +1186,8 @@ const rootSignalBackfillForm = ref({
 })
 
 const rootSignals = computed<RootSignal[]>(() => parseSignals(detailEntry.value?.root_signal_json))
+// 拒绝候选（不可闭环的 executable）：审核人据此看到「为什么这条没能进 root_signal_json」
+const rootSignalRejecteds = computed<RootSignalRejected[]>(() => parseRejected(detailEntry.value?.root_signal_rejected_json))
 // 汇总徽标：只要任一条冲突即为不唯一定位（审核人一眼看出整篇冲突面）
 const rootSignalSummary = computed(() => {
   const list = rootSignals.value
@@ -5609,6 +5616,15 @@ onUnmounted(() => clearBatchPollTimer())
                     {{ sig.match_type === 'executable' ? 'executable（现场自动判定）' : 'text（证据流关键词包含）' }}
                   </el-tag>
                 </el-descriptions-item>
+                <el-descriptions-item v-if="closureDisplay(sig.closure_status)" label="闭环态">
+                  <el-tag :type="closureDisplay(sig.closure_status)?.type" size="small" effect="plain">
+                    {{ closureDisplay(sig.closure_status)?.label }}
+                  </el-tag>
+                </el-descriptions-item>
+                <el-descriptions-item v-if="sig.requires?.length || sig.resolved_by?.length" label="变量闭环" :span="2">
+                  <el-tag v-for="v in sig.requires" :key="v" size="small" effect="plain" style="margin: 0 6px 4px 0">{{ v }}</el-tag>
+                  <span v-if="sig.resolved_by?.length" class="field-hint">来源：<span v-for="(rb, ri) in sig.resolved_by" :key="ri">{{ rb.var }}←{{ rb.by }}{{ rb.ref ? '(' + rb.ref + ')' : '' }} </span></span>
+                </el-descriptions-item>
                 <el-descriptions-item label="溯源层级">
                   <el-tag :type="sig.provenance?.trace_tier === 'content' ? 'warning' : 'success'" size="small" effect="plain">
                     {{ sig.provenance?.trace_tier === 'content' ? '整篇兑底（转人工复核）' : '根因主锚' }}
@@ -5650,6 +5666,25 @@ onUnmounted(() => clearBatchPollTimer())
               </el-descriptions>
             </el-card>
           </div>
+
+          <!-- 拒绝候选（不可闭环的 executable）：审核人据此定位「为什么这条没进 root_signal_json」，仅审计留痕 -->
+          <el-alert
+            v-if="rootSignalRejecteds.length"
+            class="root-signal-rejected"
+            type="warning" :closable="false" show-icon
+            :title="'存在 ' + rootSignalRejecteds.length + ' 条不可闭环的 executable 候选（未纳入定位信号，仅审计留痕）'"
+          >
+            <div class="root-signal-rejected-list">
+              <div v-for="(rj, rjIdx) in rootSignalRejecteds" :key="rjIdx" class="root-signal-rejected-item">
+                <span class="rejected-anchor">{{ rj.candidate?.signal_text || '（无锚点描述）' }}</span>
+                <el-tag v-if="closureDisplay(rj.closure_status)" :type="closureDisplay(rj.closure_status)?.type" size="small" effect="plain">{{ closureDisplay(rj.closure_status)?.label }}</el-tag>
+                <el-tag v-if="rj.reason_code" type="info" size="small">{{ rj.reason_code }}</el-tag>
+                <span v-if="rj.unresolved?.length" class="field-hint">悬空变量：{{ rj.unresolved.join('、') }}</span>
+                <span v-if="rj.literals?.length" class="field-hint">写死实体：<span v-for="(lit, li) in rj.literals" :key="li">{{ lit.value }}{{ lit.suggested_var ? '→' + lit.suggested_var : '' }} </span></span>
+                <span v-if="rj.reason" class="field-hint">{{ rj.reason }}</span>
+              </div>
+            </div>
+          </el-alert>
         </div>
 
         <!-- 关键信号面板（QKV / QFK 分组） -->

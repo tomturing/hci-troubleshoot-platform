@@ -216,6 +216,8 @@ def test_kbd_entry_detail_and_revisions_real_endpoint_returns_governance_fields(
         "root_cause": "",
         # 与详情 SELECT 同构：root_signal_json 为 AI 派生元数据列，不属 revision 治理范围
         "root_signal_json": None,
+        # root_signal_rejected_json（不可闭环 executable 拒绝候选审计快照）同为 AI 派生元数据列
+        "root_signal_rejected_json": None,
         "solution": "",
         "operational_impact": "",
         "is_temporary": False,

@@ -39,6 +39,7 @@ from shared.observability.metrics import (
     KBD_SIGNAL_VALIDATION_TOTAL,
     KBD_WORKFLOW_DURATION_SECONDS,
     KBD_WORKFLOW_ITEMS_TOTAL,
+    ROOT_SIGNAL_PUBLISH_GATE_TOTAL,
 )
 from shared.observability.otel import get_current_trace_id
 from shared.resolution.review import SignalReviewFeature, review_signal_document
@@ -3024,7 +3025,7 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
                        problem_description, alert_info, steps_text, root_cause,
                        solution, operational_impact, is_temporary, recommendations,
                        signals_json, content_md, content_raw, images_json,
-                       root_signal_json,
+                       root_signal_json, root_signal_rejected_json,
                        metadata, category_id, ai_category_id,
                        ai_category_conf, ai_category_reason,
                        status, reviewer_id, review_note,
@@ -3099,6 +3100,7 @@ async def get_kbd_entry_detail(request: Request, kbd_id: int):
         "signal_review_facts": signal_review_facts,
         # 根因信号不在 kbd_revision payload 里（AI 派生元数据），故直接取本列而非 review_value()
         "root_signal_json": row["root_signal_json"],
+        "root_signal_rejected_json": row["root_signal_rejected_json"],
         "content_md": review_value("content_md") or "",
         "content_raw": review_value("content_raw") or "",
         "images_json": review_value("images_json") or [],
@@ -3494,6 +3496,38 @@ async def review_kbd_signals(request: Request, kbd_id: int) -> dict[str, Any]:
                 "code": "KBD_CATEGORY_MISSING",
                 "location": "category_id",
                 "message": "缺少人工分类和 AI 建议分类",
+            }
+        )
+
+    # 根因闭包发布门禁软告警（§7 先软后硬 + 决策②）：不可闭环的根因 executable 与未处理拒绝候选
+    # 仅产 warning issue + 指标供观测与人工处置，blocks_publish=False 不硬阻断（待实测拒绝率收敛后 PR-5 切硬 422）。
+    root_signals = getattr(kbd, "root_signal_json", None)
+    root_signals = root_signals if isinstance(root_signals, list) else []
+    for rs in root_signals:
+        if isinstance(rs, dict) and rs.get("match_type") == "executable" and rs.get("closure_status") not in (None, "closed"):
+            ROOT_SIGNAL_PUBLISH_GATE_TOTAL.labels(reason=str(rs.get("closure_status"))).inc()
+            issues.append(
+                {
+                    "level": "warning",
+                    "code": "ROOT_SIGNAL_NOT_CLOSED",
+                    "location": "根因信号",
+                    "message": f"根因信号「{rs.get('signal_text') or ''}」闭包状态为 {rs.get('closure_status')}（不可执行），建议补生产者或参数化",
+                    "blocks_publish": False,
+                    "expert_action_required": True,
+                }
+            )
+    root_rejected = getattr(kbd, "root_signal_rejected_json", None)
+    root_rejected = root_rejected if isinstance(root_rejected, list) else []
+    if root_rejected:
+        ROOT_SIGNAL_PUBLISH_GATE_TOTAL.labels(reason="unhandled_rejected").inc(len(root_rejected))
+        issues.append(
+            {
+                "level": "warning",
+                "code": "ROOT_SIGNAL_UNHANDLED_REJECTED",
+                "location": "根因信号",
+                "message": f"存在 {len(root_rejected)} 条未处理的根因拒绝候选（不可闭环、未降级），请到审核 UI 逐条处置",
+                "blocks_publish": False,
+                "expert_action_required": True,
             }
         )
 

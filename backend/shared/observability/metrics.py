@@ -142,6 +142,14 @@ ROOT_SIGNAL_REJECTED_TOTAL = Counter(
     labelnames=["reason_code"],
 )
 
+# 发布门禁根因闭包软告警（§7 先软后硬）：按原因分维，仅观测不阻断（blocks_publish=False），
+# 待实测拒绝率收敛后再切硬 422。
+ROOT_SIGNAL_PUBLISH_GATE_TOTAL = Counter(
+    "hci_root_signal_publish_gate_total",
+    "根因闭包发布门禁软告警计数",
+    labelnames=["reason"],
+)
+
 OFFLINE_RESOURCE_SYNC_TOTAL = Counter(
     "hci_offline_resource_sync_total",
     "离线资源同步检测次数",
