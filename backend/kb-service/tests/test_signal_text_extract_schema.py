@@ -298,6 +298,89 @@ def test_required_keyword_null_pattern_is_not_silently_removed_and_has_field_tar
     assert "值类型不正确" in issue["message"]
 
 
+def test_orchestrate_optional_nulls_are_normalized_to_absent_even_with_null_match():
+    """KBD 16368 实锤回归：LLM 把「action: <可选>」直出为 null，曾致整单候选全拒。
+
+    qkv 信号的 ``match: null`` 不得阻断 orchestrate 段归一；归一后必须能通过
+    v2 契约（缺失语义由抽取链路默认值如 phase=diagnostic 补齐）。
+    """
+
+    document = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "sig_001",
+                "acquire": {"tool": "qkv_task", "args": {"keyword": "跨平台迁移", "is_failed": True}},
+                "match": None,
+                "orchestrate": {
+                    "phase": "diagnostic",
+                    "action": None,
+                    "source": None,
+                    "target": None,
+                    "container": None,
+                    "produces": [{"name": "VM", "path": "vm"}],
+                    "requires": [],
+                },
+            }
+        ],
+    }
+
+    normalize_optional_matcher_nulls(document)
+    orchestrate = document["signals"][0]["orchestrate"]
+    assert not {"action", "source", "target", "container"} & set(orchestrate)
+    validate_signals_json(document)
+
+
+def test_orchestrate_phase_null_is_normalized_to_absent():
+    document = {
+        "schema_version": 2,
+        "signals": [
+            {
+                "id": "sig_phase",
+                "acquire": {"tool": "qkv_task", "args": {"keyword": "迁移"}},
+                "match": None,
+                "orchestrate": {
+                    "phase": None,
+                    "action": None,
+                    "produces": [{"name": "VM", "path": "vm"}],
+                    "requires": [],
+                },
+            }
+        ],
+    }
+
+    normalize_optional_matcher_nulls(document)
+    assert "phase" not in document["signals"][0]["orchestrate"]
+    validate_signals_json(document)
+
+
+def test_orchestrate_array_slot_null_is_not_silently_removed():
+    """produces/requires 是结构位：null 属真实错误，不能被归一默默抹平。"""
+
+    document = _qfk_produce({"name": "X", "path": "x"})
+    document["signals"][0]["orchestrate"]["produces"] = None
+
+    normalize_optional_matcher_nulls(document)
+    assert document["signals"][0]["orchestrate"]["produces"] is None
+
+
+def test_type_error_message_keeps_field_path_and_actual_value():
+    """拒收消息必须可定位：附带字段路径、实际值与期望类型，不再只报「值类型不正确」。"""
+
+    document = _qfk_produce({"name": "X", "path": "x"})
+    document["signals"][0]["orchestrate"]["phase"] = 123
+
+    with pytest.raises(ValidationError) as exc_info:
+        validate_signals_json(document)
+
+    issue = humanize_signal_validation_error(exc_info.value, document["signals"])
+    assert issue["field_path"] == "orchestrate.phase"
+    assert "orchestrate.phase" in issue["message"]
+    assert "123" in issue["message"]
+    assert "文本" in issue["message"]
+    assert issue["validation_reason"] == "123 is not of type 'string'"
+
+
 @pytest.mark.parametrize(
     "extract",
     [
@@ -355,50 +438,88 @@ def test_qfk_produce_path_and_extract_conflict_has_actionable_message():
 def test_qkv_output_processing_is_optional_and_declares_derived_producer():
     document = {
         "schema_version": 2,
-        "signals": [{
-            "id": "qkv_description_processing",
-            "acquire": {"tool": "qkv_task", "args": {"keyword": "虚拟机无法启动"}},
-            "match": None,
-            "orchestrate": {
-                "produces": [{"name": "DESCRIPTION", "path": "description", "type": "string"}],
-                    "output_processing": [{
-                        "mode": "derive",
-                        "input": "{{DESCRIPTION}}",
-                        "name": "VM_NAME",
-                        "type": "string",
-                        "extract": {"type": "feature", "feature": "vm_name", "cardinality": "exactly_one"},
-                    }],
-            },
-        }],
+        "signals": [
+            {
+                "id": "qkv_description_processing",
+                "acquire": {"tool": "qkv_task", "args": {"keyword": "虚拟机无法启动"}},
+                "match": None,
+                "orchestrate": {
+                    "produces": [{"name": "DESCRIPTION", "path": "description", "type": "string"}],
+                    "output_processing": [
+                        {
+                            "mode": "derive",
+                            "input": "{{DESCRIPTION}}",
+                            "name": "VM_NAME",
+                            "type": "string",
+                            "extract": {"type": "feature", "feature": "vm_name", "cardinality": "exactly_one"},
+                        }
+                    ],
+                },
+            }
+        ],
     }
     validate_signals_json(document)
 
-    invalid = {**document, "signals": [{**document["signals"][0], "orchestrate": {
-        **document["signals"][0]["orchestrate"],
-        "output_processing": [{"id": "bad", "mode": "derive", "input": "{{DESCRIPTION}}", "operation": "eval"}],
-    }}]}
+    invalid = {
+        **document,
+        "signals": [
+            {
+                **document["signals"][0],
+                "orchestrate": {
+                    **document["signals"][0]["orchestrate"],
+                    "output_processing": [
+                        {"id": "bad", "mode": "derive", "input": "{{DESCRIPTION}}", "operation": "eval"}
+                    ],
+                },
+            }
+        ],
+    }
     with pytest.raises(ValidationError):
         validate_signals_json(invalid)
 
-    duplicate_target = {**document, "signals": [{**document["signals"][0], "orchestrate": {
-        **document["signals"][0]["orchestrate"],
-        "output_processing": [
-                {"mode": "derive", "input": "{{DESCRIPTION}}", "name": "DESCRIPTION", "type": "string", "extract": {"type": "feature", "feature": "vm_name", "cardinality": "exactly_one"}},
+    duplicate_target = {
+        **document,
+        "signals": [
+            {
+                **document["signals"][0],
+                "orchestrate": {
+                    **document["signals"][0]["orchestrate"],
+                    "output_processing": [
+                        {
+                            "mode": "derive",
+                            "input": "{{DESCRIPTION}}",
+                            "name": "DESCRIPTION",
+                            "type": "string",
+                            "extract": {"type": "feature", "feature": "vm_name", "cardinality": "exactly_one"},
+                        },
+                    ],
+                },
+            }
         ],
-    }}]}
+    }
     with pytest.raises(ValidationError, match="派生变量重复"):
         validate_signals_json(duplicate_target)
 
-    unknown_input = {**document, "signals": [{**document["signals"][0], "orchestrate": {
-        **document["signals"][0]["orchestrate"],
-        "output_processing": [{
-                "mode": "derive",
-                "input": "{{NOT_PRODUCED}}",
-                "name": "VM_NAME",
-                "type": "string",
-                "extract": {"type": "feature", "feature": "vm_name", "cardinality": "exactly_one"},
-        }],
-    }}]}
+    unknown_input = {
+        **document,
+        "signals": [
+            {
+                **document["signals"][0],
+                "orchestrate": {
+                    **document["signals"][0]["orchestrate"],
+                    "output_processing": [
+                        {
+                            "mode": "derive",
+                            "input": "{{NOT_PRODUCED}}",
+                            "name": "VM_NAME",
+                            "type": "string",
+                            "extract": {"type": "feature", "feature": "vm_name", "cardinality": "exactly_one"},
+                        }
+                    ],
+                },
+            }
+        ],
+    }
     with pytest.raises(ValidationError, match="未声明变量"):
         validate_signals_json(unknown_input)
 
@@ -895,9 +1016,7 @@ def _vm_console_document(*, external_variables: dict | None):
 
 
 def test_vm_console_only_kbd_is_publishable_with_declared_external_targets():
-    document = _vm_console_document(
-        external_variables={"HOST": {"type": "string"}, "VM_ID": {"type": "string"}}
-    )
+    document = _vm_console_document(external_variables={"HOST": {"type": "string"}, "VM_ID": {"type": "string"}})
 
     validate_kbd_publishable_signals_json(document)
 
@@ -941,9 +1060,7 @@ def test_vm_console_only_kbd_without_target_sources_is_blocked():
 
 
 def test_vm_console_free_form_fields_are_rejected_by_schema():
-    document = _vm_console_document(
-        external_variables={"HOST": {"type": "string"}, "VM_ID": {"type": "string"}}
-    )
+    document = _vm_console_document(external_variables={"HOST": {"type": "string"}, "VM_ID": {"type": "string"}})
     document["signals"][0]["acquire"]["args"]["monitor_command"] = "screendump /tmp/x.ppm"
 
     with pytest.raises(ValidationError):
@@ -953,12 +1070,14 @@ def test_vm_console_free_form_fields_are_rejected_by_schema():
 def test_qkv_produce_paths_reject_unexecutable_nested_and_fixed_output_drift():
     task_document = {
         "schema_version": 2,
-        "signals": [{
-            "id": "task",
-            "acquire": {"tool": "qkv_task", "args": {"keyword": "启动虚拟机"}},
-            "match": None,
-            "orchestrate": {"produces": [{"name": "VM_ID", "path": "task.vm_id"}]},
-        }],
+        "signals": [
+            {
+                "id": "task",
+                "acquire": {"tool": "qkv_task", "args": {"keyword": "启动虚拟机"}},
+                "match": None,
+                "orchestrate": {"produces": [{"name": "VM_ID", "path": "task.vm_id"}]},
+            }
+        ],
     }
     with pytest.raises(ValidationError, match="扁平 JSON 字段"):
         validate_signals_json(task_document)
@@ -972,9 +1091,7 @@ def test_qkv_produce_paths_reject_unexecutable_nested_and_fixed_output_drift():
 
 
 def test_vm_console_review_passes_with_external_targets():
-    document = _vm_console_document(
-        external_variables={"HOST": {"type": "string"}, "VM_ID": {"type": "string"}}
-    )
+    document = _vm_console_document(external_variables={"HOST": {"type": "string"}, "VM_ID": {"type": "string"}})
 
     review = review_signal_document(document, feature=SignalReviewFeature.PUBLISH)
     # 占位符目标在发布期无变量上下文，resolver 报 needs_probe 属预期保留项，
@@ -1133,4 +1250,3 @@ def test_qkv_output_processing_assert_match_allows_threshold_variable_reference(
     signal = doc["signals"][0]
     requires = derive_signal_requires(signal)
     assert "THRESHOLD" not in requires
-

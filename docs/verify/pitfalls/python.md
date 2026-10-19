@@ -128,3 +128,33 @@ Prompt 的 source ref；KBD27736 型脱敏 Matcher 必须到达其自身的 Matc
 `test_signal_generation.py` 钉「候选全拒 → 显式 SIGNAL_ALL_REJECTED 且回传原因，绝不落到误导性的 SIGNAL_REVIEW_BLOCKED」。
 教训：凡「生成端产出、校验端复算」的成对逻辑，必须共用同一判定函数，否则口径漂移即自锁；
 失败要在离真因最近的收口处显式暴露，严禁用无关门禁掩盖上游契约失败。
+
+## V-026：LLM 对「<可选>」字段直出显式 null 会撞 `type: string` 致 KBD 抽取整单全拒，保存边界必须确定性归一
+
+**症状：** KBD 16368（support_id，kbd_entry.id=321）点「重新抽取关键信号」连续 15 次全部 422
+`SIGNAL_ALL_REJECTED`，文案为「执行编排的值类型不正确，请重新填写或重新选择对应类型」；
+同批次 kbd:305/308 同样中招。`retryable=True` 诱使用户反复重试，但失败是确定性的，重试无效。
+
+**根因：** 两处叠加。①Prompt 输出格式里写的是 `"action": "<可选>"`，LLM 把「可选」理解为
+可以显式输出 `null`；而 v2 契约 `signal.v2.schema.json` 的 `orchestrate.action` 是
+`{"type": "string"}`——JSON 的 null 与键缺失不同值，只要键存在就必拒。平台已有的
+「显式 null → 字段缺失」归一（`normalize_optional_matcher_nulls`）只覆盖 `match` 段，
+`orchestrate` 段是归一盲区（且旧实现对 `match: null` 的 qkv 信号直接 continue，连累同信号
+orchestrate 段被跳过）。②`humanize_signal_validation_error` 在 `type` 失败分支把
+`field_path`（orchestrate.action）和原始原因（`None is not of type 'string'`）裁掉，
+只留「值类型不正确」，专家无从定位。48h 日志统计：61 条被拒候选全部带 `orchestrate.action=null`，
+而全库已保存的 14 条带 action 键信号 0 条为 null——凡模型没吐 null 的单据全部能过，证明是
+系统性契约缝隙而非坏候选个例。
+
+**修复：** ①扩展 `normalize_optional_matcher_nulls`：`phase/action/source/target/container`
+的显式 null 归约为缺失（与 match 段同一函数、同一确定性边界，抽取/保存/发布入口自动全覆盖）；
+数组结构位 `produces/requires/output_processing` 的 null 属真实错误，**不归一**继续报错；
+两段归一改为互相独立，`match: null` 不再阻断 orchestrate 清理。②`type/anyOf/oneOf` 失败消息
+改为携带字段路径、实际值与期望类型（如「执行编排（字段路径 orchestrate.phase）的值类型不正确，
+实际值为 123，应为文本」），不泄漏 Python repr/Schema 分支列表。
+
+**预防测试：** `test_signal_text_extract_schema.py` 钉「KBD 16368 实锤形态：action/source/target/container=null
+归一后可过契约」「match=null 不阻断 orchestrate 归一」「produces=null 保留并如实拒绝」
+「type 错误消息含 field_path/实际值/期望类型」。教训：凡契约声明为「可选但只接受具体类型」的字段，
+必须预设 LLM 会直出 null，在保存边界做确定性归一，而不是指望 Prompt 措辞或重试改好模型行为；
+拒收消息必须可定位到字段，否则「retryable」提示只会引导用户徒劳循环。
