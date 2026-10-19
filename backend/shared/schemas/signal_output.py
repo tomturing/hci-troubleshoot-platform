@@ -79,3 +79,68 @@ def sync_signal_requires(signal: dict[str, Any]) -> list[str]:
     if tool.startswith("qfk_") or tool.startswith("qkv_"):
         signal.setdefault("orchestrate", {})["requires"] = requires
     return requires
+
+
+def is_diagnostic_phase(signal: dict[str, Any]) -> bool:
+    """信号是否处于 diagnostic 阶段（phase 缺省视为 diagnostic）。
+
+    仅 diagnostic 阶段的产出才对同阶段消费者可用；remediation 产出在排障时尚不存在。
+    与 ``signal_schema._collect_variable_sources`` 同源口径。
+    """
+
+    orchestrate = signal.get("orchestrate") or {}
+    return str(orchestrate.get("phase") or "diagnostic") == "diagnostic"
+
+
+def collect_signal_produces(signal: dict[str, Any]) -> set[str]:
+    """单信号产出的变量名集合（统一大写）。
+
+    - ``orchestrate.produces`` 元素：dict 取 ``alias or name``（alias 优先，与跨信号变量池写入时机一致），
+      非 dict 直接取字面量；
+    - ``qkv_*`` 生产者：产出 END 时按平台规范自动派生 DATE（qfk_log 自然日轮转必须）；
+    - ``output_processing`` 的 ``derive`` 目标（``name`` 规范字段 / ``target_variable`` 历史兼容）。
+
+    与 ``signal_schema._collect_variable_sources`` 完全同源，根因闭包与关键信号闭包共用此单一事实源。
+    """
+
+    orchestrate = signal.get("orchestrate") or {}
+    produces: set[str] = set()
+    for item in orchestrate.get("produces") or []:
+        if isinstance(item, dict):
+            effective = str(item.get("alias") or "").strip().upper() or str(item.get("name") or "").strip().upper()
+            if effective:
+                produces.add(effective)
+        elif str(item).strip():
+            produces.add(str(item).strip().upper())
+    if str((signal.get("acquire") or {}).get("tool") or "").startswith("qkv_"):
+        if "END" in produces:
+            produces.add("DATE")
+        for item in orchestrate.get("output_processing") or []:
+            if isinstance(item, dict) and item.get("mode") == "derive":
+                target = str(item.get("name") or item.get("target_variable") or "").strip().upper()
+                if target:
+                    produces.add(target)
+    return produces
+
+
+def collect_produced_vars(signals: Any) -> set[str]:
+    """聚合 diagnostic 阶段全部信号的产出变量并集（大写）。
+
+    闭包可用来源的「生产者」部分；remediation 阶段与非 dict 元素跳过。
+    """
+
+    produced: set[str] = set()
+    for signal in signals or []:
+        if isinstance(signal, dict) and is_diagnostic_phase(signal):
+            produced |= collect_signal_produces(signal)
+    return produced
+
+
+def collect_declared_external(verification_contract: Any) -> set[str]:
+    """从 ``verification_contract.variables`` 取显式外部声明变量集（大写）。
+
+    闭包可用来源的「外部声明」部分（严格口径，不含无 Contract 历史数据的兼容兜底）。
+    """
+
+    contract = verification_contract or {}
+    return {str(name).strip().upper() for name in (contract.get("variables") or {}) if str(name).strip()}

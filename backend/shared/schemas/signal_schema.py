@@ -32,7 +32,12 @@ from shared.schemas.log_source_catalog import (
 )
 from shared.schemas.semantic_entry import capability_of, has_case_context_signal, validate_semantic_entry_profile
 from shared.schemas.signal_generation import current_tool_contract_revision
-from shared.schemas.signal_output import derive_signal_requires
+from shared.schemas.signal_output import (
+    collect_declared_external,
+    collect_signal_produces,
+    derive_signal_requires,
+    is_diagnostic_phase,
+)
 from shared.signals.ai_processing import ai_processing_config, ai_processing_mode, validate_ai_processing_config
 from shared.signals.qkv_output_processing import QKVProcessingError, validate_output_processing
 
@@ -724,39 +729,20 @@ def _collect_variable_sources(raw: dict[str, Any]) -> tuple[list[tuple[str, set[
     """
 
     contract = raw.get("verification_contract") or {}
-    declared_external = {str(name).strip().upper() for name in (contract.get("variables") or {}) if str(name).strip()}
+    declared_external = collect_declared_external(contract)
     nodes: list[tuple[str, set[str], set[str]]] = []
     for index, signal in enumerate(raw.get("signals") or [], start=1):
         if not isinstance(signal, dict):
             continue
-        orchestrate = signal.get("orchestrate") or {}
-        if str(orchestrate.get("phase") or "diagnostic") != "diagnostic":
+        if not is_diagnostic_phase(signal):
             continue
+        orchestrate = signal.get("orchestrate") or {}
         signal_id = str(signal.get("id") or f"signal_{index:03d}")
         requires = {str(name).strip().upper() for name in (orchestrate.get("requires") or []) if str(name).strip()}
         # 用同一套占位符扫描覆盖 acquire、extract、matcher.value 和 produces.extract。
         # 这样即使前端未同步只读 requires，发布门禁也不会漏掉阈值变量依赖。
         requires.update(str(name).strip().upper() for name in derive_signal_requires(signal) if str(name).strip())
-        produces = set()
-        for item in orchestrate.get("produces") or []:
-            if isinstance(item, dict):
-                alias = str(item.get("alias") or "").strip().upper()
-                name = str(item.get("name") or "").strip().upper()
-                effective_name = alias or name
-                if effective_name:
-                    produces.add(effective_name)
-            elif str(item).strip():
-                produces.add(str(item).strip().upper())
-        if str((signal.get("acquire") or {}).get("tool") or "").startswith("qkv_"):
-            # 生产者信号（如 qkv_task / qkv_alert）产出 END 时，平台规范自动派生 DATE 变量供下游按天轮转检索
-            if "END" in produces:
-                produces.add("DATE")
-            for item in orchestrate.get("output_processing") or []:
-                if isinstance(item, dict) and item.get("mode") == "derive":
-                    # 同时支持 name（规范字段）和 target_variable（历史兼容）
-                    target = str(item.get("name") or item.get("target_variable") or "").strip().upper()
-                    if target:
-                        produces.add(target)
+        produces = collect_signal_produces(signal)
         nodes.append((signal_id, requires, produces))
 
     all_produced = {name for _, _, produces in nodes for name in produces}
