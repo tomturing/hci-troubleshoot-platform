@@ -58,6 +58,40 @@ _MATCHER_OPTIONAL_FIELDS = frozenset(
         "direction",
     }
 )
+# orchestrate 段的字符串型槽位（含 phase）在 v2 契约中全部可选且只接受 string；
+# LLM 常把 Prompt 里的「<可选>」理解为显式输出 null，而 JSON 的 null 与键缺失
+# 不同值，会直接被 ``type: string`` 拒绝。produces/requires/output_processing 是
+# 数组结构位，null 属真实结构错误，必须保留给校验器定位，不在此归一。
+_ORCHESTRATE_OPTIONAL_FIELDS = frozenset({"phase", "action", "source", "target", "container"})
+
+_TYPE_CN = {
+    "string": "文本",
+    "number": "数字",
+    "integer": "整数",
+    "boolean": "布尔值",
+    "array": "数组",
+    "object": "对象",
+    "null": "空值",
+}
+
+
+def _format_actual_value(value: Any) -> str:
+    """把校验失败处的实际取值渲染为专家可读的中文描述（不泄漏 Python repr）。"""
+
+    if value is None:
+        return "null（未填写）"
+    if isinstance(value, str):
+        return f"文本「{value}」"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # 数值本身就是定位信息，直接展示原值。
+        return str(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, dict)):
+        return _TYPE_CN["array" if isinstance(value, list) else "object"]
+    return _TYPE_CN.get(type(value).__name__, type(value).__name__)
+
+
 _SIGNAL_FIELD_LABELS = {
     "acquire": "采集配置",
     "acquire.args": "采集参数",
@@ -87,12 +121,17 @@ _SIGNAL_FIELD_LABELS = {
 
 
 def normalize_optional_matcher_nulls(raw: Any) -> Any:
-    """移除 Matcher 中语义上可省略的显式 ``null``，不掩盖必填字段错误。
+    """移除 Matcher/orchestrate 中语义上可省略的显式 ``null``，不掩盖必填字段错误。
 
     JSON 的 ``null`` 与字段缺失是不同值；LLM/历史快照却经常为所有可能字段
     输出 ``null``。例如 ``exists`` 不读取 ``pattern``，所以 ``pattern=null`` 应
     归约为字段缺失。若 keyword/regex/state 的 pattern 为 null，则它仍是必填
     字段错误，必须保留给校验器和专家定位，不能静默修复。
+
+    同一条确定性边界覆盖 orchestrate 段：LLM 把 Prompt 中「action: <可选>」直出
+    为 ``"action": null`` 时，v2 契约的 ``type: string`` 会拒收整条候选，导致
+    KBD 抽取全拒（SIGNAL_ALL_REJECTED）；phase/action/source/target/container
+    为 null 均归约为缺失，缺失语义由抽取链路默认值（如 phase=diagnostic）补齐。
 
     函数原地规范化并返回输入，便于抽取、保存和发布入口共用同一确定性边界。
     """
@@ -105,13 +144,21 @@ def normalize_optional_matcher_nulls(raw: Any) -> Any:
     normalize_qkv_output_processing_matchers(raw)
     signals = raw.get("signals") if isinstance(raw.get("signals"), list) else [raw]
     for signal in signals:
-        if not isinstance(signal, dict) or not isinstance(signal.get("match"), dict):
+        if not isinstance(signal, dict):
             continue
-        matcher = signal["match"]
-        required = _MATCHER_REQUIRED_FIELDS.get(str(matcher.get("type") or ""), frozenset())
-        for field in _MATCHER_OPTIONAL_FIELDS - required:
-            if matcher.get(field) is None:
-                matcher.pop(field, None)
+        # Matcher 与 orchestrate 两段归一互相独立：qkv 信号的 ``match: null`` 不得
+        # 阻断其 orchestrate 段的 null 清理。
+        if isinstance(signal.get("match"), dict):
+            matcher = signal["match"]
+            required = _MATCHER_REQUIRED_FIELDS.get(str(matcher.get("type") or ""), frozenset())
+            for field in _MATCHER_OPTIONAL_FIELDS - required:
+                if matcher.get(field) is None:
+                    matcher.pop(field, None)
+        orchestrate = signal.get("orchestrate")
+        if isinstance(orchestrate, dict):
+            for field in _ORCHESTRATE_OPTIONAL_FIELDS:
+                if orchestrate.get(field) is None:
+                    orchestrate.pop(field, None)
     return raw
 
 
@@ -301,9 +348,7 @@ def humanize_signal_validation_error(error: ValidationError, signals: list[Any])
     elif "qkv_effect usage=" in raw_message and "必须位于" in raw_message:
         field_path = "orchestrate.phase"
         field_label = "效果验证 / 执行阶段"
-        message = (
-            "效果验证用途与执行阶段不一致：症状确认应放在诊断阶段，处置效果复核应放在处置验证阶段。"
-        )
+        message = "效果验证用途与执行阶段不一致：症状确认应放在诊断阶段，处置效果复核应放在处置验证阶段。"
         code = "EFFECT_PHASE_INVALID"
     elif "缺少稳定 id" in raw_message:
         field_path = "id"
@@ -401,7 +446,16 @@ def humanize_signal_validation_error(error: ValidationError, signals: list[Any])
         message = f"{field_label}包含当前版本不支持的字段，请重新选择对应类型后保存。"
         code = "SIGNAL_FIELD_UNSUPPORTED"
     elif error.validator in {"type", "anyOf", "oneOf"}:
-        message = f"{field_label}的值类型不正确，请重新填写或重新选择对应类型。"
+        # 必须携带可定位的字段路径与实际取值：此前只报「值类型不正确」，专家无法
+        # 知道是哪个字段、实际值是什么（如 orchestrate.action 被 LLM 直出为 null）。
+        # 期望类型取自校验器声明；跨 schema 分支（anyOf/oneOf）无单一期望类型时
+        # 只展示实际值，不泄漏分支列表等 Schema 实现细节。
+        expected = error.validator_value if error.validator == "type" else None
+        expected_text = f"，应为{_TYPE_CN.get(str(expected), str(expected))}" if expected else ""
+        message = (
+            f"{field_label}（字段路径 {field_path or '未知'}）的值类型不正确"
+            f"，实际值为{_format_actual_value(error.instance)}{expected_text}；请重新填写或重新选择对应类型。"
+        )
         code = "SIGNAL_FIELD_INVALID"
     else:
         # 兜底也必须保留校验器给出的具体原因，禁止再返回“大而空”的单句提示。
