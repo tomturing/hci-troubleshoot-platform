@@ -431,8 +431,12 @@ async def extract_root_signal_for_kbd(
             error=outcome["error"],
         ).model_dump()
 
-    if all_rejected:
-        # 存在 executable 候选但回喂重试后仍全部不可闭环 → 显式收口 ROOT_SIGNAL_ALL_REJECTED（retryable），
+    # all_rejected 仅按 executable 维度判定（见 root_signal_closure.adjudicate：executable_total>0 且无一 closed），
+    # 不代表「本次零产出」：模型可能同时产出了合法的 text 根因（accepted）。故仅当一个 accepted 都没有时
+    # 才走显式收口失败分支；只要有 accepted 信号就落到下方成功写库（同时保留拒绝审计），
+    # 否则会误把好的 text 根因连同拒绝一起丢弃（工单 38819 复盘：1 条 text + 1 条悬空 DATE executable 被整单判失败）。
+    if all_rejected and not signals:
+        # 存在 executable 候选、回喂重试后仍全部不可闭环且无任何 accepted → 显式收口 ROOT_SIGNAL_ALL_REJECTED（retryable），
         # 绝不静默产出空数组伪装「无根因」（对齐 #1159）；落拒绝候选审计快照供人工恢复/降级，
         # 但不清空既有 root_signal_json（治本约束：门禁失败不静默清空既有信号）。
         async with db_manager.async_session_factory() as session:

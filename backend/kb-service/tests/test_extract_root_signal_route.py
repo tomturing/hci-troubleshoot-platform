@@ -84,6 +84,28 @@ _EXECUTABLE_NODEIP_PAYLOAD = {
 }
 
 
+# 混合产出：1 条合法 text（accepted）+ 1 条引用未产出 {{HOST}} 的 executable（悬空硬拒）
+# → 闭包层 all_rejected（仅按 executable 判）为真，但 accepted 非空，须落库 text 而非整单丢弃
+# text 的 evidence/expected 逐字取自 _ENTRY_ROW.root_cause（“/run/lock 分区使用率 100%”），否则被溯源门禁丢弃
+_MIXED_TEXT_AND_DANGLING_PAYLOAD = {
+    "signals": [
+        {
+            "match_type": "text",
+            "signal_text": "/run/lock 分区被占满导致任务失败",
+            "acquire": None,
+            "match": {"type": "keyword", "mode": "all", "expected": ["/run/lock", "占满导致虚拟机任务失败"]},
+            "provenance": {
+                "source_section": "root_cause",
+                "evidence": "/run/lock 分区使用率 100%，占满导致虚拟机任务失败",
+                "confidence": 0.85,
+                "needs_review": False,
+            },
+        },
+        _EXECUTABLE_PAYLOAD["signal"],
+    ]
+}
+
+
 def _producer(produces: list[str]) -> dict[str, Any]:
     """关键轨诊断生产者（qkv_task 形态）：orchestrate.produces 提供闭包可用变量池。"""
     return {
@@ -377,6 +399,35 @@ class TestClosureRouteIntegration:
         sql = updates[0]["sql"]
         assert "root_signal_rejected_json = CAST" in sql
         assert "root_signal_json = CAST" not in sql
+        # 决策②：拒绝候选不降级 text——candidate 仍是原 executable 形态
+        assert json.loads(updates[0]["params"]["rejected"])[0]["candidate"]["match_type"] == "executable"
+
+    async def test_all_rejected_but_text_accepted_still_persists_text(self, monkeypatch, prompt_template):
+        """回归（工单 38819）：executable 全悬空致 all_rejected=True，但同时有合法 text accepted →
+        不得整单判失败丢弃 text；应落库 root_signal_json=[text] 且写拒绝审计，success=True。"""
+        updates: list[dict[str, Any]] = []
+        entry = {**_ENTRY_ROW, "signals_json": {"signals": [_producer(["NODE_IP"])], "verification_contract": None}}
+        db = _db_factory(entry, updates)
+        await _stub_loader(monkeypatch, prompt_template)
+
+        async def _llm(messages, *, prompt_revision, kbd_id, attempt):
+            return _MIXED_TEXT_AND_DANGLING_PAYLOAD  # 每轮都产出 text + 悬空 HOST executable
+
+        monkeypatch.setattr(route, "_call_llm_messages", _llm)
+        result = await route.extract_root_signal_for_kbd(db, 1, corpus=ConflictCorpus([]))
+
+        # 闭包层仍判 executable 全拒（all_rejected=True），但 accepted 有 text → 路由不再走失败收口
+        assert result["success"] is True
+        assert result["closure"]["all_rejected"] is True
+        assert [s["match_type"] for s in result["signals"]] == ["text"]
+        assert len(result["rejected"]) == 1
+        assert result["rejected"][0]["reason_code"] == "ROOT_CLOSURE_DANGLING"
+        # 成功分支同事务写两列：accepted text 落 root_signal_json，悬空 executable 落拒绝审计
+        assert len(updates) == 1
+        sql = updates[0]["sql"]
+        assert "root_signal_json = CAST" in sql and "root_signal_rejected_json = CAST" in sql
+        saved = json.loads(updates[0]["params"]["signals"])
+        assert len(saved) == 1 and saved[0]["match_type"] == "text"
         # 决策②：拒绝候选不降级 text——candidate 仍是原 executable 形态
         assert json.loads(updates[0]["params"]["rejected"])[0]["candidate"]["match_type"] == "executable"
 
