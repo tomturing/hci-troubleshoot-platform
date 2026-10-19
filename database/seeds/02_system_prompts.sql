@@ -621,7 +621,7 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
       "role": "<must|should|exclude|context>",
       "acquire": {{"tool": "<acquire.tool，取自采集器目录>", "args": {{"...": "依据该 tool 的契约，见下方规则 6"}}}},
       "match": {{"type": "<keyword|regex|state|threshold|delta|trend|exists>", "pattern": "<匹配式>", "mode": "or|and", "expected": true, "extract": {{"type": "text", "rows": {{"mode": "all"}}, "cardinality": "all", "source": "stdout"}}}},
-      "orchestrate": {{"phase": "<diagnostic|solution>", "action": "<可选>", "produces": [{{"name": "<VAR>", "path": "<取值路径>"}}], "requires": ["<VAR>"]}},
+      "orchestrate": {{"phase": "<diagnostic|solution>", "produces": [{{"name": "<VAR>", "path": "<取值路径>"}}], "requires": ["<VAR>"]}},
       "provenance": {{"category": "frontend|backend", "source_section": "title|problem_description|alert_info|steps_text", "source_refs": ["img:0/region:img_0:r_0"], "evidence": "<逐字引用输入中的证据句或截图可见文字>", "confidence": 0.9}},
       "review": {{"require_human_confirm": false, "notes": "<可选说明>"}}
     }}
@@ -726,8 +726,14 @@ quality.needs_review=true 或 legacy_evidence_unavailable=true 的截图只能�
     "evidence_policy": {{"must": ["sig_001", "sig_002"], "should": ["sig_003"], "exclude": [], "context": [], "minimum_should": 1, "on_missing_must": "inconclusive"}}
   }}
 }}
+
+# 【输出前强制自检】（null 与二选一红线，优先级最高，逐条 Candidate 发送前必须满足）
+- 禁止显式 null：除「生产者信号或产出变量模式的 match 本身写 null」这一处外，任何可选字段要么给合法值、要么整键省略，严禁写成 null。重点：orchestrate 的 action、source、target、container 没有实际字符串值时就省略该键，不要写成 null，也不要写空字符串占位。
+- 禁止空占位数组：只取整行时 match.extract 与 produces[].extract 只写 rows，不得附带 columns 空数组、parser=null、value_key=null；确需按列提取时 parser、非空 columns 与 value_key 必须成套出现，缺任意一个就整体省略列选择相关字段。
+- backend 信号（qfk_* 且非 qfk_var）的 match 与 produces 严格二选一：判定模式配 match 且 produces 省略或为空数组；产出变量模式把 match 置 null 且 produces 非空；绝不允许 match 非空同时 produces 非空，否则违反契约被整条拒收。
+- 逐条自检后再输出：确认没有残留任何 null 或空占位、match 与 produces 是否二选一、每个 extract 只含当前形态真正需要的字段；不满足就删除冗余键或改为省略，绝不带着必被契约拒绝的写法输出。
 $TEMPLATE$,
-        '2.5',
+        '2.8',
         TRUE
     )
 ON CONFLICT (name) DO NOTHING;

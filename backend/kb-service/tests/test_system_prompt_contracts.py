@@ -36,6 +36,12 @@ _LINE_COUNT_MIGRATION_PATH = (
 _LINE_COUNT_ESCAPE_MIGRATION_PATH = (
     _REPOSITORY_ROOT / "database" / "data-migrations" / "028_escape_line_count_extract_prompt_literal.sql"
 )
+_NULL_XOR_MIGRATION_PATH = (
+    _REPOSITORY_ROOT
+    / "database"
+    / "data-migrations"
+    / "048_harden_extract_signals_prompt_null_and_xor.sql"
+)
 
 
 def _seed_template(prompt_name: str) -> str:
@@ -273,6 +279,33 @@ def test_line_count_forward_migration_restores_prompt_placeholder_contract():
     assert unsafe_literal not in repaired_template
     assert safe_literal in repaired_template
     assert StrictPromptLoader.get_template_placeholders(repaired_template) == expected_placeholders
+
+
+def test_seed_signal_prompt_hardened_against_null_and_match_produces_xor():
+    """seed 必须去掉 orchestrate 的 action null 诱因，并含【输出前强制自检】红线段。
+
+    对抗性守护：notes 的 "<可选说明>" 含 <可选> 子串，必须保留（说明 replace/verify
+    只能锚定完整片段 "action": "<可选>", ，不得用裸 <可选> 判断）。
+    """
+    template = _seed_template("kbd_extract_signals_v2")
+
+    assert '"action": "<可选>"' not in template
+    assert "【输出前强制自检】" in template
+    assert "match 与 produces 严格二选一" in template
+    # notes 的 <可选说明> 必须仍在：证明加固只精确摘除 action 占位，未误伤 notes。
+    assert '"notes": "<可选说明>"' in template
+
+
+def test_null_xor_prompt_migration_append_has_no_template_placeholders():
+    """迁移 048 追加的【输出前强制自检】段必须零花括号，避免热加载 format 引入新占位符。"""
+    migration = _NULL_XOR_MIGRATION_PATH.read_text(encoding="utf-8")
+    supplemental_rule = migration.split("|| $RULE$", 1)[1].split("$RULE$,", 1)[0]
+
+    assert "【输出前强制自检】" in supplemental_rule
+    assert "match 与 produces 严格二选一" in supplemental_rule
+    # replace 必须锚定完整片段而非裸 <可选>，否则会误删 notes 的 <可选说明>。
+    assert "replace(content_template, '\"action\": \"<可选>\", '" in migration
+    assert StrictPromptLoader.get_template_placeholders(supplemental_rule) == set()
 
 
 def test_vision_prompt_gives_task_detail_modal_task_semantic_priority():
