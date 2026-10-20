@@ -40,6 +40,7 @@ from app.adapters.agents.htp.sop_tools import (
     SopToolExecutor,
     get_sop_node,
 )
+from app.adapters.agents.htp.track_arbiter import ROOT_TRACK, resolve_track_mode, runnable_tracks
 from app.domain.agent_port import (
     AgentEscalation,
     AgentEvent,
@@ -227,6 +228,10 @@ class InvestigationAgent(BaseAgent):
         track = ""
         sop_results = []
         raw_cases: list[dict[str, Any]] = []
+        root_cases: list[dict[str, Any]] = []
+        # 根因链路独立准入标记：默认 False，仅在分类快照装载成功后按实测候选置位；
+        # SOP 恢复路径不会走到降级判定，给默认值防未来新增路径时变量未定义。
+        root_track_admissible = False
         semantic_cases: list[dict[str, Any]] = []
         all_kbds: list[dict[str, Any]] = []
         snapshot_id = ""
@@ -316,6 +321,10 @@ class InvestigationAgent(BaseAgent):
                 if kbd.get("root_executable") is True or kbd.get("root_display_anchors")
             ]
             root_executable_count = sum(1 for kbd in root_cases if kbd.get("root_executable") is True)
+            # 根因链路独立准入（两轨「完整独立、可分别单独使用」硬约束）：只要存在
+            # 可执行根因信号且当前赛马模式包含根因轨，即使关键链路无可执行候选
+            # （stale/缺失/未配置），根因链路也必须独立进入 CDD，不得被关键链路连带降级收口。
+            root_track_admissible = root_executable_count > 0 and ROOT_TRACK in runnable_tracks(resolve_track_mode())
             track = "sop" if sop_results and not sop_fallback_requested else "kbd" if all_kbds else "human_escalation"
             candidate_scope = {
                 "mode": "category_complete",
@@ -332,6 +341,7 @@ class InvestigationAgent(BaseAgent):
                 # 根因链路候选数独立上报，不得用关键链路候选数代替。
                 root_candidate_count=len(root_cases),
                 root_executable_count=root_executable_count,
+                root_track_admissible=root_track_admissible,
                 # 诊断可观测性：记录全量 KBD、语义候选、可执行候选的分布，
                 # 便于定位 guidance_only KBD 是否被正确纳入语义兜底候选。
                 total_kbd_count=len(all_kbds),
@@ -349,6 +359,8 @@ class InvestigationAgent(BaseAgent):
                     "kbd_count": len(all_kbds),
                     "executable_kbd_count": len(raw_cases),
                     "root_executable_kbd_count": root_executable_count,
+                    # 准入判定随快照下发，使「降级收口还是根因轨独立进入」可按调用链回溯。
+                    "root_track_admissible": root_track_admissible,
                     "sop_fallback_requested": sop_fallback_requested,
                     "candidate_scope": candidate_scope,
                 },
@@ -387,7 +399,9 @@ class InvestigationAgent(BaseAgent):
 
         # 3. 无 SOP 时对分类内完整可执行 KBD 集合进行证据诊断；真实/仿真语义完全一致。
         semantic_preselected = False
-        if not raw_cases and all_kbds:
+        # 关键链路无候选但根因链路独立可准入时，跳过语义兜底直入下方 diagnose_with_tracks，
+        # 让根因轨用自己的现场证据给结论，而不是用兜底文案替两条链路一起收口。
+        if not raw_cases and all_kbds and not root_track_admissible:
             # 无强入口不等于查询失败；服务端再次检查整个分类快照后才允许直达语义入口。
             semantic_result = await self._kb_client.resolve_semantic_entry(
                 category_id=category_id,
@@ -430,7 +444,7 @@ class InvestigationAgent(BaseAgent):
             yield AgentTextChunk(
                 content="当前分类没有强生产者入口，已按客户描述选择待验证候选；接下来仍须以消费者证据确认，不能仅凭相似度认定根因。"
             )
-        if not raw_cases:
+        if not raw_cases and not root_track_admissible:
             reason = (
                 f"分类 {category_id} 下没有已发布 KBD"
                 if track == "human_escalation"

@@ -25,7 +25,7 @@ from app.adapters.agents.htp.dual_track import (
 from app.adapters.agents.htp.kbd_differential import KBDDiagResult, StepResult
 from app.adapters.agents.htp.root_track import RootTrackResult, build_root_candidates
 from app.adapters.agents.htp.track_arbiter import MODE_DUAL, MODE_PROCESS_ONLY, MODE_ROOT_ONLY, MODE_SHADOW
-from app.domain.agent_port import AgentStageUpdate
+from app.domain.agent_port import AgentStageUpdate, AgentTextChunk
 from shared.cdd import CandidateState, SignalOutcome, compile_signal_plan
 from shared.cdd.candidate_reducer import initial_assessments, reduce_candidates
 from shared.cdd.kbd_model import KBD
@@ -615,3 +615,71 @@ async def test_root_only_kbd_is_supported_in_dual_even_without_process_candidate
     assert result is not None
     assert [str(kbd.id) for kbd in result.matched_kbds] == ["7"]
     assert result.candidate_states.get("7") == "SUPPORTED"
+
+
+# ── 6. 关键候选空集时的噪声音节：根因轨已准入则抑制，否则行为恒等 ───────────────
+
+
+class RealishEmptyEngine(FakeProcessEngine):
+    """模仿真实 ``KBDDiagnostic.diagnose([])``：吐兼容噪音文案并回写 INCONCLUSIVE 结果。"""
+
+    async def diagnose(self, *, candidates, **kwargs):
+        self.calls.append({"candidates": candidates, **kwargs})
+        if not candidates:
+            yield AgentTextChunk(content="未找到可执行 KBD，无法形成有据可查的诊断结论。")
+            self._result = _process_result(steps=[], level="INCONCLUSIVE", supported=[])
+            return
+        yield AgentStageUpdate(stage="kbd_diag_complete", metadata={})
+
+
+@pytest.mark.asyncio
+async def test_empty_candidates_with_root_active_suppresses_noise():
+    """编排层新开路径（关键候选空 + 根因轨准入）：结构契约保留，但噪音文案不下发。"""
+    engine = RealishEmptyEngine(None)
+    events = await _run(
+        engine,
+        candidates=[],
+        root_cases=[_root_case("7")],
+        env_context={},
+        session_id="s",
+        mode=MODE_DUAL,
+        root_engine_factory=lambda: FakeRootEngine(_root_result([_root_case("7")])),
+    )
+
+    assert len(engine.calls) == 1, "仍须调 diagnose([]) 一次：保留融合回写的结构契约"
+    noise = [e for e in events if isinstance(e, AgentTextChunk) and "未找到可执行" in e.content]
+    assert not noise, "根因轨独跑场景不得把关键链路空集文案透递给受众"
+    assert engine.get_result().is_definitive is True, "融合回写链路在空关键候选下仍须闭合"
+
+
+@pytest.mark.asyncio
+async def test_empty_candidates_without_root_keeps_identity_noise():
+    """无根因候选（退化关键单跑）：空候选噪音照旧透传，行为与改造前恒等。"""
+    engine = RealishEmptyEngine(None)
+    events = await _run(
+        engine,
+        candidates=[],
+        root_cases=[],
+        env_context={},
+        session_id="s",
+        mode=MODE_DUAL,
+    )
+
+    assert any(isinstance(e, AgentTextChunk) and "未找到可执行" in e.content for e in events)
+
+
+@pytest.mark.asyncio
+async def test_process_only_empty_candidates_keeps_identity_noise():
+    """process_only：根因轨不在模式内，即使携带根因载荷也不得抑制关键链路噪音。"""
+    engine = RealishEmptyEngine(None)
+    events = await _run(
+        engine,
+        candidates=[],
+        root_cases=[_root_case("7")],
+        env_context={},
+        session_id="s",
+        mode=MODE_PROCESS_ONLY,
+        root_engine_factory=lambda: pytest.fail("process_only 不应构造根因引擎"),
+    )
+
+    assert any(isinstance(e, AgentTextChunk) and "未找到可执行" in e.content for e in events)
