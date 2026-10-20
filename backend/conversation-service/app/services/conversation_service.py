@@ -369,6 +369,7 @@ class ConversationService:
         content: str,
         assistant_type: str | None = None,
         metadata: dict | None = None,  # 接收 metadata
+        client_id: str | None = None,  # 归属工单的已认证身份，用于直连 case-service 时自签
     ) -> AsyncGenerator[str, None]:
         """
         发送消息并获取流式回复 (v2.1: 4-Tier Prompt + KB 上下文注入)
@@ -627,7 +628,7 @@ class ConversationService:
                     return
             elif current_stage in ("S0", "S1", "S2", "S3", "S4") and self.environment_client:
                 if settings.USE_RAW_ENVIRONMENT_CONTEXT:
-                    raw_envs = await self.environment_client.get_raw_environments(case_id)
+                    raw_envs = await self.environment_client.get_raw_environments(case_id, client_id)
                     if raw_envs:
                         context_info = {
                             "is_raw": True,
@@ -643,7 +644,7 @@ class ConversationService:
                             task_count=len(context_info["task_logs"]),
                         )
                 else:
-                    env_context = await self.environment_client.get_context_info(case_id)
+                    env_context = await self.environment_client.get_context_info(case_id, client_id)
                     if env_context:
                         context_info = {
                             "env_info": env_context.env_info,

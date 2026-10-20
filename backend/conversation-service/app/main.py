@@ -137,6 +137,7 @@ async def lifespan(app: FastAPI):
     environment_client = EnvironmentClient(
         base_url=settings.CASE_SERVICE_URL,
         timeout_sec=settings.ENVIRONMENT_CONTEXT_TIMEOUT_SEC,
+        signing_secret=settings.INTERNAL_API_TOKEN,
     )
     simulation_context_client = SimulationContextClient(
         base_url=settings.HCI_SIM_URL,

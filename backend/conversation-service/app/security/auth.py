@@ -67,9 +67,13 @@ async def verify_conversation_ownership(
     conversation_id: uuid.UUID,
     request: Request,
     service,
-) -> None:
+) -> str | None:
     """
     验证当前客户端是否有权访问指定会话。
+
+    Returns:
+        验签通过的 client_id（过渡模式无签名时为 None）；供调用方复用，
+        避免路由对同一请求重复验签（如下传给服务层直连 case-service 自签）。
 
     Raises:
         HTTPException 404: 会话不存在
@@ -78,7 +82,7 @@ async def verify_conversation_ownership(
     """
     client_id = await authenticate_request(request)
     if client_id is None:
-        return  # 过渡模式：无签名时跳过归属比对
+        return None  # 过渡模式：无签名时跳过归属比对
 
     conversation = await service.get_conversation(conversation_id)
     if not conversation:
@@ -114,6 +118,7 @@ async def verify_conversation_ownership(
         case_id=conversation.case_id,
         client_id=client_id,
     )
+    return client_id
 
 
 async def verify_case_ownership(
