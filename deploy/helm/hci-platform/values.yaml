@@ -16,7 +16,7 @@ global:
   #             acli.sangfor.com.cn/grafana  → grafana
   #             ✅ 只需一条 A 记录指向服务器 IP
   #             ⚠️  admin-ui 已分离到独立 Ingress（内网隔离方案）
-  #                 详见: docs/deploy/admin-ui-internal-isolation.md
+  #                 详见: docs/deploy/AdminUI内网隔离方案.md
   #
   # "subdomain" 子域名路由（需要 DNS 通配符 *.your-domain.com）
   #             api.your-domain.com          → api-gateway

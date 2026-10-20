@@ -54,7 +54,7 @@ kubectl apply -f deploy/gitops/argo-apps/local/hci-platform-dev.yaml
 ## 多环境晋级策略（2026-09-02 修订：恢复 dev + staging 自动晋级）
 
 > **变更记录**：2026-09-01 曾将主干自动晋级收敛为仅 `dev`（PR #989，见
-> [版本封板与手动升级部署方案](../../docs/architecture/2026-09-01-版本封板与Staging和Prod手动升级部署方案.md)）。
+> [版本封板与手动升级部署方案](docs/deploy/events/2026-09-01-版本封板与Staging和Prod手动升级部署方案.md)）。
 > 现恢复 `dev` + `staging` 双环境自动晋级，`prod` 继续保持手动触发。
 
 | 触发方式 | 影响环境 | 晋级行为 |

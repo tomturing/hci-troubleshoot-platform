@@ -797,7 +797,7 @@ def build_signal_v2(mod: object, tools: list[str]) -> dict:
                     "status": {"type": "string", "const": "passed"},
                     "tool_contract_revision": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
                     "validator": {"type": "string", "const": "expert_publish_gate"},
-                    # 结构/语义指纹分级门禁（见 docs/solution/events/2026-08-13-kbd-contract-gate-structural-semantic-fingerprint-adr.md）：
+                    # 结构/语义指纹分级门禁（见 docs/solution/events/2026-08-13-KBD契约门禁结构语义指纹ADR.md）：
                     # structural_revision 变化且旧信号校验失败 = 真 breaking；semantic_revision 变化 = 兼容漂移（soft_stale）。
                     # fp_algo_version 标记指纹算法版本，避免算法升级误判全员 breaking。
                     "structural_revision": {"type": "string", "pattern": "^[0-9a-f]{64}$"},

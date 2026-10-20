@@ -28,7 +28,7 @@ update_trigger: Agent 方案新增、重构或状态变更
 | 2026-07-31 | v1.5 | 完成 KBD 专家监督与运行效果最小数据闭环：原因码/删除原因、精确 KBD runtime revision、CDD 编译与逐 Signal outcome、Capability Gap/metrics/评估导出；可信身份与 Replay/Gold/Challenger 仍保持未完成边界 | [KBD 专家监督与运行效果数据闭环方案](events/2026-07-31-KBD专家监督与运行效果数据闭环方案.md) |
 | 2026-07-30 | v1.4 | 完成 KBD 专家主路径信息分层、独立维护工作稿和 Agent Capability Runtime Discovery；明确静态 Validation、未认证审核身份与真实 Expert Gold/replay 的边界 | [KBD 专家复核与全生命周期闭环方案](events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
 | 2026-07-30 | v1.3 | 补齐 hci-real/hci-sim 双轨、Go SSH 容器运行时、K3s 独立部署与 100+ Scenario 并发设计导航 | [HCI 真实环境与 hci-sim 双轨运行时设计](../hci-sim/events/2026-07-30-HCI真实环境与hci-sim双轨运行时设计.md) |
-| 2026-07-29 | v1.2 | 新增 HCI 6.11.1_R1 + aCLI 1.0.0 实机知识基线，明确日志、配置、数据、补丁、容器、aCLI 与 QKV/QFK 的事实边界和待确认演进 | [HCI 底层目录、日志、容器与 aCLI 知识基线](02-架构设计/HCI底层目录日志容器与aCLI知识基线.md) |
+| 2026-07-29 | v1.2 | 新增 HCI 6.11.1_R1 + aCLI 1.0.0 实机知识基线，明确日志、配置、数据、补丁、容器、aCLI 与 QKV/QFK 的事实边界和待确认演进 | [HCI 底层目录、日志、容器与 aCLI 知识基线](design/HCI底层目录日志容器与aCLI知识基线.md) |
 | 2026-07-29 | v1.1 | 新增 KBD 专家复核、不可变版本、Capability Registry 与全生命周期闭环方案导航 | [KBD 专家复核与全生命周期闭环方案](events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
 
 ## 核心原则：测评先行
@@ -56,11 +56,11 @@ update_trigger: Agent 方案新增、重构或状态变更
 docs/solution/agent/
 ├── README.md                          ← 本文件
 │
-├── 01-模版与规范/                      ← 给 SOP/Tool/Skill 作者
+├── templates/                      ← 给 SOP/Tool/Skill 作者
 │   ├── agent-resource-模版.md          Tool/Skill YAML 字段说明、SOP Markdown 规范、变量声明表
 │   └── agent-能力边界与演进方向.md      Tool/Skill/SOP/ReAct/Agent 五层能力现状与扩展 Roadmap
 │
-├── 02-架构设计/                        ← 当前架构的权威设计文档
+├── design/                        ← 当前架构的权威设计文档
 │   ├── agent设计.md                    整体设计
 │   ├── agent工具设计.md                工具系统设计
 │   ├── HCI底层目录日志容器与aCLI知识基线.md HCI 实机事实、aCLI 契约与能力演进
@@ -86,7 +86,7 @@ docs/solution/agent/
 │   ├── 智能体单步交互与单步命令执行控制方案.md 单步控制
 │   └── ops-agent与hci-troubleshoot-platform关系分析.md Ops-Agent 关系
 │
-├── 03-测评与GitOps/                    ← 测评方法论、CI 门禁、GitOps 全生命周期
+├── evaluation-gitops/                    ← 测评方法论、CI 门禁、GitOps 全生命周期
 │   └── agent-测评与GitOps方案.md
 │
 ├── events/                            ← 历史设计事件（归档）
@@ -111,23 +111,23 @@ docs/solution/agent/
 
 | 我要做什么 | 看哪个 |
 |-----------|--------|
-| 写一个新的 SOP/Tool/Skill | [agent-resource-模版.md](01-模版与规范/agent-resource-模版.md) |
-| 了解某个能力为什么不支持、有什么替代方案 | [agent-能力边界与演进方向.md](01-模版与规范/agent-能力边界与演进方向.md) |
-| 搭建 CI 测评门禁 | [agent-测评与GitOps方案.md](03-测评与GitOps/agent-测评与GitOps方案.md) |
-| 理解 Agent 整体架构 | [agent设计.md](02-架构设计/agent设计.md) |
-| 理解工具系统怎么工作 | [agent工具设计.md](02-架构设计/agent工具设计.md) |
-| 核对 HCI 日志/配置/数据/容器与 aCLI 的真实契约 | [HCI底层目录日志容器与aCLI知识基线.md](02-架构设计/HCI底层目录日志容器与aCLI知识基线.md) |
-| 设计或审核 qfk_log、blackbox、日志 parser/predicate | [qfk_log统一日志采集解析与判定设计.md](02-架构设计/qfk_log统一日志采集解析与判定设计.md) |
+| 写一个新的 SOP/Tool/Skill | [agent-resource-模版.md](templates/agent-resource-模版.md) |
+| 了解某个能力为什么不支持、有什么替代方案 | [agent-能力边界与演进方向.md](templates/agent-能力边界与演进方向.md) |
+| 搭建 CI 测评门禁 | [agent-测评与GitOps方案.md](evaluation-gitops/agent-测评与GitOps方案.md) |
+| 理解 Agent 整体架构 | [agent设计.md](design/agent设计.md) |
+| 理解工具系统怎么工作 | [agent工具设计.md](design/agent工具设计.md) |
+| 核对 HCI 日志/配置/数据/容器与 aCLI 的真实契约 | [HCI底层目录日志容器与aCLI知识基线.md](design/HCI底层目录日志容器与aCLI知识基线.md) |
+| 设计或审核 qfk_log、blackbox、日志 parser/predicate | [qfk_log统一日志采集解析与判定设计.md](design/qfk_log统一日志采集解析与判定设计.md) |
 | 理解关键信号如何规范化、编译、现场解析和执行前验证 | [统一解析运行时与 Resolver 分层方案](events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md) |
-| 理解技能系统怎么工作 | [agent技能设计.md](02-架构设计/agent技能设计.md) |
-| 理解记忆与变量池怎么工作 | [agent记忆设计.md](02-架构设计/agent记忆设计.md) |
-| 理解可靠性方案 | [排障Agent可靠性整体解决方案.md](02-架构设计/排障Agent可靠性整体解决方案.md) |
-| 理解 S0 意图识别怎么路由 | [S0意图识别与Prompt解耦设计方案.md](02-架构设计/S0意图识别与Prompt解耦设计方案.md) |
-| 排查 Skill 调用失败问题 | [skill调用失效根因分析与改进方案.md](02-架构设计/skill调用失效根因分析与改进方案.md) |
-| 理解变量是怎么获取的 | [变量池获取策略架构深度分析.md](02-架构设计/变量池获取策略架构深度分析.md) |
+| 理解技能系统怎么工作 | [agent技能设计.md](design/agent技能设计.md) |
+| 理解记忆与变量池怎么工作 | [agent记忆设计.md](design/agent记忆设计.md) |
+| 理解可靠性方案 | [排障Agent可靠性整体解决方案.md](design/排障Agent可靠性整体解决方案.md) |
+| 理解 S0 意图识别怎么路由 | [S0意图识别与Prompt解耦设计方案.md](design/S0意图识别与Prompt解耦设计方案.md) |
+| 排查 Skill 调用失败问题 | [skill调用失效根因分析与改进方案.md](design/skill调用失效根因分析与改进方案.md) |
+| 理解变量是怎么获取的 | [变量池获取策略架构深度分析.md](design/变量池获取策略架构深度分析.md) |
 | 实施或审查 hci-sim 当前阶段 | [A～E 设计导航](#hci-sim-ae-设计导航)（严格按 A→E） |
 | 查看 hci-sim 历史上位设计 | [Agent 并发测试与 KBD 驱动 HCI 仿真环境方案](Agent并发测试与KBD驱动HCI仿真环境方案.md) |
 | 理解 KBD 截图、关键信号与案例验证的目标架构 | [KBD 截图证据、关键信号与可执行诊断契约方案](events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) |
 | 设计 KBD 专家复核、模型/专家双轨版本、发布生命周期与 Capability 闭环 | [KBD 专家复核、版本治理与生产消费闭环方案](events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
-| 理解 SOP 决策树与滑动窗口 | [sop决策树与滑动窗口机制实效分析.md](02-架构设计/sop决策树与滑动窗口机制实效分析.md) |
+| 理解 SOP 决策树与滑动窗口 | [sop决策树与滑动窗口机制实效分析.md](design/sop决策树与滑动窗口机制实效分析.md) |
 | 了解历史设计决策背景 | [events/](events/) |

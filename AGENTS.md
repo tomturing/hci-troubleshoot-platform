@@ -99,7 +99,7 @@
   - **折叠后整域重排（消除 code 编号空洞，承接解A）**：首版 `collapse_subtree_to_leaf` 只「改绑+删后代+重建 level/path」，**未调 `resequence_domain`**，导致删后代后同级 code 留下编号空洞（如折叠 `009` 后 `006` 兄弟显示 `007/008/009/016`、`010~015` 消失却不回填），违反解A「顺序即 code、连续无空洞」。修复：在同一事务、verify 通过后、唯一 commit **之前**复用 `resequence_domain(domain, parent_id=None, sibling_order=None, ext_session=session)`（`sibling_order=None` 不覆盖任何父序、仅按当前相对顺序整域 DFS 连续重编号 + remap 全库 10 列），折叠与重排共享唯一提交点，任一失败整体回滚；commit 后按稳定主键回取新码返回。**教训：凡改变分类存在性/顺序的写操作都必须在同事务内走 `resequence_domain` 物化 code，否则编号出现空洞即破解A 不变量。**
   - **折叠父节点被重弹修复（点 `006` 箭头无反应）**：树用 `:default-expanded-keys="expandedKeys"`（`node-key=id_in_db`）维展开态。Element Plus 的 `default-expanded-keys` watcher 在数组变化时会对每个 key 调 `node.expand(null, autoExpandParent=true)`——**展开子节点会向上冒泡自动展开父**。当选中了 `006` 子树内的节点（如刚折叠的 `009`）、其 key 残留于 `expandedKeys`；旧 `handleNodeCollapse` 仅移除父自身 key，watcher 重跑仍会对残留子孙 key 冒泡把父重新弹开（`020` 无被钉子孙故正常）。修复：`useCategories.ts` 新增纯函数 `collectSubtreeKeys(node)`（递归取自身+全子孙 `id_in_db ?? id`），`handleNodeCollapse` 改为折叠时把**整棵子树 key** 一并移出，令 watcher 无可冒泡的残留子 key。
   - **测试守护**：后端 `test_categories.py`（父不存在不提交/已叶子幂等 no-op/成功 `commit==1`+10 列改绑+**整域重排**（断 `ext_session is session`/`parent_id is None`/`sibling_order is None`）/悬空检出回滚/**重排抛错不提交回滚**）；前端 `useCategories.spec.ts`（`collectSubtreeInfo` 3 例 + `collectSubtreeKeys` 4 例含「009 回归：子孙 key 必入折叠集」）；网关 `test_p1_authz.py` 2 例（匿名 POST `/{code}/collapse-to-leaf`→403 证路由已注册非 404、admin 令牌→200 且断言转发下游 URL）。
-- **工单 Q2026100812343「硬盘坏道」SOP 编排执行门禁加固与 terminal_bridge 可观测性增强**（详见 `docs/solution/agent/SOP编排执行门禁约束设计与需求.md`、`docs/solution/terminal-bridge-observability-enhancement.md`、避坑 `docs/verify/pitfalls/dispatcher.md` V-017）：
+- **工单 Q2026100812343「硬盘坏道」SOP 编排执行门禁加固与 terminal_bridge 可观测性增强**（详见 `docs/solution/agent/SOP编排执行门禁约束设计与需求.md`、`docs/archive/2026/terminal-bridge可观测性增强方案.md`、避坑 `docs/verify/pitfalls/dispatcher.md` V-017）：
   - **根因**：SOP 引擎变量自动取值链路 `engine.py` 的 `tool_call` 策略调用 `tool_executor.execute(...)` 时**未透传 `conversation_id`**，`BridgeRelayExecutor` 因缺上下文全线静默失败；而泛化 `except Exception` 又把真实原因吞成笼统错误。变量未解析的 `tool_call/skill_call` 仅作为 `soft_hints` 不硬阻断（`is_guarded` 只覆盖 `env_injection/user_input/user_confirm`），于是引擎把控制权交回模型，模型在客户生产环境即兴手工敲 `acli_exec/bash_exec/qkv_*`，并在关键变量（`disk_dev` 空、`check_meth` 未取得）未确认时产出带幻觉的定量结论（臆造 `8001563222016 字节`）。
   - **修复**：
     - **A 取值链路**：`engine.py` `tool_call` 显式透传 `conversation_id`；新增 `_classify_acquisition_error`/`_classify_tool_result_error` 按异常类型分流精确 `error_type`（contract_error/tool_capability_missing/timeout/node_unreachable/executor_unavailable/tool_error），不再伪装成笼统取值失败。
@@ -177,7 +177,7 @@
 - **硬盘坏道 Live E2E Smoke（L3 跨层契约缝隙回归，发布前 gate）**（避坑 V-022）：
   - **根因**：Q2026101511258 会话控制链路反复挤牙膏（#1149 前端态机 / V-020 S0 解析 / V-021 S2 幻觉追问），每次单点修复各补隔离单测，但「各层各自测、层间契约缝隙无人测」——SSE `event: interactive_request` kind 契约、签名身份头、变量池 `context_variables` 写入时序、引擎侧过滤守卫是否真触发，始终处于盲区，只能靠线上工单暴露。
   - **能力**：`evaluation/live_e2e/`（`asserts.py` 纯逻辑 SSE 解析/交互卡归一化/提问落地性/5 条不变量、`driver.py` httpx 异步驱动建案→SSE→变量交互提交（复刻 #1149「先确认后端落库再触发续跑」时序）→终态、`smoke.py` CLI + `--attempts` 多数表决、`scenarios/disk_badtrack.json`）；`scripts/hci-sim/disk_badtrack_llm_stub.py` 确定性对抗桩把历史坏输出真注入 agent-service 逼守卫触发（实现『破坏缝隙能验红』）；`scripts/verify/live_e2e_disk_badtrack.sh` + `make live-e2e-disk-badtrack` 全栈 compose 编排（端口暴露覆盖 `evaluation/live_e2e/docker-compose.live-e2e.yml` 置于 evaluation/ 下不进 CI/config-contract-check），`trap` teardown。**断言只打结构不变量 + 守卫事件**（`agent_hallucination_detected_total{hallucination_type="ungrounded_user_question"}` 计数增量、`sop/execution.context_variables` 落库），绝不断言逐字文本。
-  - **定位**：发布前 gate，不进每 PR CI（依赖 docker+LLM+bridge，慢且非确定性）；端到端实跑须在具备全栈的宿主机执行，运行手册 `docs/verify/evaluation/live-e2e-disk-badtrack.md`。
+  - **定位**：发布前 gate，不进每 PR CI（依赖 docker+LLM+bridge，慢且非确定性）；端到端实跑须在具备全栈的宿主机执行，运行手册 `docs/verify/evaluation/硬盘坏道LiveE2E运行手册.md`。
   - **测试守护（进 CI，脱网）**：`tests/unit/test_live_e2e_asserts.py`（含 `test_evaluate_invariants_red_when_filter_bypassed` 验红）、`tests/unit/test_live_e2e_driver.py`（SSE 分派/终态扫描/已就绪变量纯逻辑）、`tests/unit/test_disk_badtrack_llm_stub.py`（桩产出的 JSON 必须能被真实 `ReasoningOutput` schema 解析）。
 - **Langfuse 子路径导航丢失修复（NEXT_PUBLIC_BASE_PATH 补齐）**（PR #1035）：
   - **根因**：Langfuse (Next.js) 通过 Traefik `stripPrefix` 中间件挂载在 `/langfuse` 子路径，但容器内未配置 `NEXT_PUBLIC_BASE_PATH`，导致 Next.js 前端生成的内部链接（页面跳转、tRPC 请求）不含 `/langfuse` 前缀。首页直接访问 `/langfuse` 能命中 Ingress 规则，但点击项目/设置等页面后，浏览器 URL 变为 `/project/xxx` 或 `/api/trpc/...`，脱离 Ingress 路由范围导致导航丢失。
@@ -347,7 +347,7 @@
     - 统一纳入 `system_prompt` 管理并通过 `StrictPromptLoader` 支持热加载（`kbd_signal_count_v1`, `kbd_signal_classify_v1`, `kbd_signal_model_v1`, `kbd_signal_verify_v1`）；
     - 新增标准模板库 `signal_modeling_template`、黄金最佳实践库 `signal_best_practice`（首批注入 67 个专家金标实例）和异常复盘表 `signal_failure_extraction`；
     - 验证层引入门禁反馈驱动的智能自愈回路。
-  - **文档**：`docs/solution/agent/02-架构设计/关键信号多Agent分层抽取与建模模板库设计.md`
+  - **文档**：`docs/solution/agent/design/关键信号多Agent分层抽取与建模模板库设计.md`
 - **KBD 关键信号执行结果标题加入案例 ID 标识**：
 
   - **需求**：用户反馈关键信号执行结果列表中，信号标题只有序号和检查说明，无法快速识别信号归属于哪个 KBD 案例。
@@ -384,7 +384,7 @@
   - **方案**：采用端口隔离 + 云厂商 IP 白名单。admin-ui 使用独立端口（Traefik `web` entrypoint，端口 4888 + TLS），customer-ui 继续使用 `websecure` entrypoint（端口 4443）。
   - **实施**：创建 `admin-ui-ingress` 独立 Ingress；从主 Ingress 移除 `/admin` 路径；启用 Traefik `web` entrypoint TLS；云厂商 LB 新增 8443 端口映射 + 管理员 IP 白名单。
   - **访问变更**：管理员访问 `https://acli.sangfor.com.cn:8443/`（仅管理员 IP 可达），客户访问无变化。
-  - **文档**：`docs/deploy/admin-ui-internal-isolation.md`
+  - **文档**：`docs/deploy/AdminUI内网隔离方案.md`
 - **工单 Q2026061002370 诊断执行失败修复**：
   - 数据库：`database/desired_schema.sql` 补齐 `fact.trace_id` 字段及索引，解决 `FactStore` 写入时因字段缺失导致 SQL 报错
   - Helm：`agent-service` 注入 `SCP_BASE_URL` 与 `SCP_API_KEY` 环境变量；`secret.yaml` 中渲染 `SCP_API_KEY`；在 `values.yaml` 中定义二者默认值为空以保证环境兼容性
@@ -509,7 +509,7 @@
 - **API 网关命令反馈 `exec-result` 路由与鉴权修复**：
   - 修复 API 网关 (`api-gateway`) 缺少 `/api/conversations/{conversation_id}/exec-result` 代理路由，导致前端命令执行结果无法回传的问题。
   - 支持对不携带 Bearer 鉴权头的客户侧匿名请求，在网关层自动填充 `Bearer client-session-placeholder-token` 进行安全绕过，契合 `conversation-service` 端 MVP 阶段的临时鉴权需求。
-  - **【已移除 · SRC-L2 2026-10-08】** 上述占位符 token 兜底与 `exec-result` / `vm-console-*` / `bridge-logs` 的客户写入路由桩鉴权（`_check_user_session` / `_check_session_or_internal`）已全部移除，改为「网关签名 `X-Client-ID` + conversation-service 工单/会话归属校验」（防 IDOR）。`bridge-logs` 与 `vm-console-artifacts` 下载补 `require_user`；`scripts/verify/verify_identity_resign.py` 增加静态防回退守卫。详见 `docs/security/identity-signature.md` 的「SRC-L2 技术债修复」章节。**切勿再引入固定占位 token。**
+  - **【已移除 · SRC-L2 2026-10-08】** 上述占位符 token 兜底与 `exec-result` / `vm-console-*` / `bridge-logs` 的客户写入路由桩鉴权（`_check_user_session` / `_check_session_or_internal`）已全部移除，改为「网关签名 `X-Client-ID` + conversation-service 工单/会话归属校验」（防 IDOR）。`bridge-logs` 与 `vm-console-artifacts` 下载补 `require_user`；`scripts/verify/verify_identity_resign.py` 增加静态防回退守卫。详见 `docs/solution/security/服务间身份签名与网关鉴权.md` 的「SRC-L2 技术债修复」章节。**切勿再引入固定占位 token。**
 - **IP 格式校验放宽与工具执行结果截断修复**：
   - 修复 `react_engine.py` 参数前置校验，对包含 `ip` 的参数（如 `node_ip`）在没有显式声明 `format: ipv4` 时同时兼容主机名/节点名（如 `SVR_aCloud_670`），解决部分命令因主机名校验失败而报错的问题。
   - 修复 `react_engine.py` 在参数校验失败时未向前端发送 `tool_result` 事件导致控制台悬挂卡在“正在等待输出...”的 Bug。

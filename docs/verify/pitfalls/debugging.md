@@ -201,7 +201,7 @@ PY
 - 每修一个跨层挤牙膏 bug，**必须**在 `evaluation/live_e2e/asserts.py` 增/挂一条对应不变量（历史 bug ↔ 判据一一映射），否则该缝隙仍无回归守护。
 - 定位：**发布前 gate，不进每 PR CI**（依赖 docker+LLM+bridge，慢且非确定性）；其纯逻辑（解析/判定/断言/桩）脱网单测进 CI（`tests/unit/test_live_e2e_*.py`、`test_disk_badtrack_llm_stub.py`），端到端实跑在具备全栈的宿主机执行。
 - 本 L3 是后端会话链路级，不含真实浏览器渲染；#1149 那类前端态机缝隙仍由 jsdom 组件测守，如需浏览器级另起 L2 playwright。
-- 运行手册见 `docs/verify/evaluation/live-e2e-disk-badtrack.md`。
+- 运行手册见 `../evaluation/硬盘坏道LiveE2E运行手册.md`。
 
 ## V-028：端到端仿真 harness 必须复刻「采集器过滤语义 + 变量前提 + 主键类型」，否则同时产出假绿与假红
 

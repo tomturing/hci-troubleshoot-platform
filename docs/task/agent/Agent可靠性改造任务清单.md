@@ -10,7 +10,7 @@ owner: team
 
 # Agent 可靠性改造任务清单
 
-> **关联方案** → [Agent可靠性三方案对比分析](../../solution/agent/02-架构设计/Agent可靠性三方案对比分析.md)
+> **关联方案** → [Agent可靠性三方案对比分析](../../solution/agent/design/Agent可靠性三方案对比分析.md)
 >
 > **执行策略**："方案 C 为魂，方案 B 为骨，方案 A 为理"融合落地。
 > 方案 C 的领域模型是目标终态，方案 B 的渐进路线是执行手册，方案 A 的第一性原理是决策防偏指南。
@@ -56,8 +56,8 @@ owner: team
 | 2026-07-31 | v3.41 | **KBD Expert 发布/Agent 消费一致性**：发布盖章与 LLM 生成指纹分离；Agent 优先校验当前盖章并继续 Handler/DAG 编译；END 标准化、task 锚点优先级与 df Use% 阈值改为确定性语义。qfk_system host/容器边界本轮未改。 | [KBD 发布消费一致性方案](../../solution/agent/events/2026-07-31-KBD发布消费一致性与专家审核易用性方案.md) |
 | 2026-07-30 | v3.40 | **KBD 执行 Contract 单向投影**：专家与 LLM 写路径以 `signals[].id + role` 生成 evidence policy；Agent 编译器消费持久化 Contract，不在现场反向改写知识。对绕过新写路径的历史不一致数据保持 Contract 兼容边界。 | [KBD 专家信号编辑与执行契约一致性方案](../../solution/agent/events/2026-07-30-KBD专家信号编辑与执行契约一致性方案.md) |
 | 2026-07-30 | v3.39 | **KBD Capability 运行时发现**：Agent 新增内部只读探测端点，按当前进程真实状态报告 QKV/QFK Validator、HandlerRegistry、Terminal Bridge Executor 和 usable；Gateway 与 shared Descriptor 合并，Agent 不可达时保持 unknown。该状态用于平台诊断，不再冒充专家可处理的逐 KBD 告警。 | [KBD 轻治理闭环方案](../../solution/agent/events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
-| 2026-07-30 | v3.38 | **PR #644：Signal Review 统一契约与 KBD Pipeline 收敛**：关键信号审查统一接入 Shared Resolution Runtime；KBD DAG 扩展为 FETCH→IMPORT→{CLASSIFY∥VISION}→EXTRACT_SIGNALS→REVIEW_SIGNALS；qfk/qkv、aCLI/运行时能力边界与专家复核清单同步固化。 | [Shared Resolution Runtime 与 Signal Review 设计](../../solution/agent/02-架构设计/qfk_log统一日志采集解析与判定设计.md) |
-| 2026-07-29 | v3.37 | **HCI/aCLI 实机契约审计与 PR #641 CI 收敛**：完成 HCI 6.11.1_R1 + aCLI 1.0.0 的只读知识采集；修复 Signal Schema 合法 fixture 的 `file/path` 旧写法并增加完整路径反例；形成日志、blackbox、配置、数据、补丁、容器、设备 manifest、自观测污染与能力漂移基线。运行语义改造在用户确认后分 P0-P4 实施。关联：[HCI底层目录日志容器与aCLI知识基线](../../solution/agent/02-架构设计/HCI底层目录日志容器与aCLI知识基线.md) |
+| 2026-07-30 | v3.38 | **PR #644：Signal Review 统一契约与 KBD Pipeline 收敛**：关键信号审查统一接入 Shared Resolution Runtime；KBD DAG 扩展为 FETCH→IMPORT→{CLASSIFY∥VISION}→EXTRACT_SIGNALS→REVIEW_SIGNALS；qfk/qkv、aCLI/运行时能力边界与专家复核清单同步固化。 | [Shared Resolution Runtime 与 Signal Review 设计](../../solution/agent/design/qfk_log统一日志采集解析与判定设计.md) |
+| 2026-07-29 | v3.37 | **HCI/aCLI 实机契约审计与 PR #641 CI 收敛**：完成 HCI 6.11.1_R1 + aCLI 1.0.0 的只读知识采集；修复 Signal Schema 合法 fixture 的 `file/path` 旧写法并增加完整路径反例；形成日志、blackbox、配置、数据、补丁、容器、设备 manifest、自观测污染与能力漂移基线。运行语义改造在用户确认后分 P0-P4 实施。关联：[HCI底层目录日志容器与aCLI知识基线](../../solution/agent/design/HCI底层目录日志容器与aCLI知识基线.md) |
 | 2026-07-29 | v3.36 | **Terminal Bridge 真实入口 P0 修复**：删除普通 Markdown `CommandBlock → ssh_input` 自动执行旁路；S0 在 LLM 前拒绝显式命令执行请求并阻断无工具证据的伪造输出；Alloy 固化资源、探针、指标抓取与流水线告警。状态：自动化回归已启动，真实 S1/ReAct 正向与 S0/Markdown 负向验收通过前不得宣称完整可观测，也不得进入 hci-sim。 |
 | 2026-07-28 | v3.35 | **KBD 关键信号结果用户化与 ps 输出契约修正**：主报告改为检查说明/状态/结果/结构化产出，技术 ID 与原始输出留在审计层；golden chain 使用 `ps -p PID -o cmd=` 产出 CMD，并固定旧 PID include 会过滤 cmd 输出的反例。关联：[KBD关键信号结果展示与ps输出提取方案](../../solution/events/2026-07-28-KBD关键信号结果展示与ps输出提取方案.md) |
 | 2026-07-28 | v3.34 | **S0 分类稳定身份与原子推进**：修复工单 `Q2026072855923` 中 VM 名被当成分类、点击③却进入存储-020 的复合错误；Agent 候选与 active 分类交集，UI 回传 category code，Conversation 保留原 optionId 并原子提交 category/S1。关联：[S0 分类稳定身份协议与候选治理方案](../../solution/events/2026-07-28-S0分类稳定身份协议与候选治理方案.md) |
@@ -119,8 +119,8 @@ owner: team
 | 2026-06-14 | v4.0 | **SOP长命令截断治理与LLM纠错架构（PR #466）**：① `executor.py` 大输出截断前无损暂存 Redis `cmd_cache:{exec_id}`（1800秒），`ExecResult` 追加 `exec_id`；② 退出码 127/command not found 含 python 时自动纠错重写；③ `01_tool_definitions.sql` 为 `acli_exec/bash_exec` 添加禁用 Python 与截断过滤建议提示；④ 变量池新增 `json_extract` 策略，支持 `jsonpath-ng.ext`（含 `&` AND 过滤）从缓存/截断数据提取子变量；⑤ 新增 `acquisition_strategy.py` 公共解析器，统一"实体_动作"及冒号简写规则；⑥ `sop_execution.py` 创建执行实例时自动注入原始事实源（含 `alert_logs`）到变量池。详见 [SOP长命令截断治理与LLM纠错架构设计.md](../../solution/events/2026-06-14-SOP长命令截断治理与LLM纠错架构设计.md) |
 | 2026-06-15 | v4.1 | **SOP 技能工具绑定修正与变量门禁范围优化（PR #470）**：① `database/seeds/03_skill_definitions.sql` 中 `hci-alert-parsing`/`hci-task-parsing` 的 `allowed_tools` 由 `'bash'` 修正为 `'bash_exec'`；② `nav.py` 中 `find_missing_guarded_variables_for_node_window` 优化为非叶子节点时仅检测当前节点本身受控变量，不再提前拦截子分支变量；③ kb-service 新增 `validate_variable_schema_dependencies` 校验器，在 SOP 发布及变量 schema 更新时检查依赖的工具/技能是否注册且启用，缺失时抛出 422 并返回 `ValidationIssue` 列表。详见 [SOP发布与变量更新依赖校验设计.md](../../solution/knowledge-base/sop-agent/SOP发布与变量更新依赖校验设计.md) |
 | 2026-06-15 | v4.2 | **诊断自动流转与推理步数限制优化（PR #471）**：① `conversation_service.py` 在 S0 拦截后将 Assistant 分类确认文案追加到 `history_messages`，使大模型知晓阶段已确认，避免重复寒暄输出触发 `invoke_result.content is not None` 终止规则导致流程停顿；② `react_engine.py` 常数 `MAX_STEPS` 与 `investigation_agent.py` 参数 `max_iterations` 从 15 步上调至 40 步，给予复杂 SOP 或断线重连后重复命令运行的充足步骤预算 |
-| 2026-06-21 | v4.3 | **Skill 调用失效修复（PR #475）**：① `get_sop_node`/`sop_advance` 返回体新增 `preferred_next_steps` 字段，当节点有未就绪 `skill_call/tool_call` 变量时嵌入显式推荐行动（Contextual Nudge）；② 变量门禁分层设计，新增「软推荐」层覆盖 `skill_call/tool_call` 类型；③ S0/S1 系统提示词种子数据新增「变量采集规范」，强制要求优先调用 `sop_request_variable`。详见 [skill调用失效根因分析与改进方案.md](../../solution/agent/02-架构设计/skill调用失效根因分析与改进方案.md) |
-| 2026-06-21 | v4.4 | **ConfirmService 初始化与 REACT_ENABLED 解耦（PR #476）**：① `main.py` 中 ConfirmService 初始化不再依赖 REACT_ENABLED 开关，只要 Redis 可用即启用；② 修复 InvestigationAgent SOP 轨道内嵌 ReactEngine 因 confirm_service=None 导致所有 risk≥2 工具被 fail-closed 拒绝执行的问题；③ 增加详细的可观测性日志（confirm_service_initialized/confirm_service_skipped）。详见 [skill调用失效改进后恶化根因与闭环方案.md](../../solution/agent/02-架构设计/skill调用失效改进后恶化根因与闭环方案.md) |
+| 2026-06-21 | v4.3 | **Skill 调用失效修复（PR #475）**：① `get_sop_node`/`sop_advance` 返回体新增 `preferred_next_steps` 字段，当节点有未就绪 `skill_call/tool_call` 变量时嵌入显式推荐行动（Contextual Nudge）；② 变量门禁分层设计，新增「软推荐」层覆盖 `skill_call/tool_call` 类型；③ S0/S1 系统提示词种子数据新增「变量采集规范」，强制要求优先调用 `sop_request_variable`。详见 [skill调用失效根因分析与改进方案.md](../../solution/agent/design/skill调用失效根因分析与改进方案.md) |
+| 2026-06-21 | v4.4 | **ConfirmService 初始化与 REACT_ENABLED 解耦（PR #476）**：① `main.py` 中 ConfirmService 初始化不再依赖 REACT_ENABLED 开关，只要 Redis 可用即启用；② 修复 InvestigationAgent SOP 轨道内嵌 ReactEngine 因 confirm_service=None 导致所有 risk≥2 工具被 fail-closed 拒绝执行的问题；③ 增加详细的可观测性日志（confirm_service_initialized/confirm_service_skipped）。详见 [skill调用失效改进后恶化根因与闭环方案.md](../../solution/agent/design/skill调用失效改进后恶化根因与闭环方案.md) |
 | 2026-07-09 | v4.5 | **QKV/QFK 双核信号架构重构（PR #498）**：① 建立 KeySignal 抽象基类，统一 FrontendSignal（前端信号/生产者）与 BackendSignal（后端信号/消费者）的架构体系；② 实现 SignalExtractor 从 KBD/SOP 自然语言文本提取结构化信号；③ 实现 VariablePool 变量池管理生产者-消费者模式，前端信号提取 host/vm/time 等变量，后端信号通过 ${variable} 占位符消费；④ 自动类型判别机制 KeySignal.from_dict() 根据信号类别路由到派生类；⑤ 彻底废弃历史命名 QKVSignal/KeySignal（后端专用），统一为语义清晰的新架构。详见 [关键信号基类设计.md](../../solution/knowledge-base/关键信号架构设计.md) 和 [关键信号架构迁移指南.md](../../solution/knowledge-base/关键信号架构设计.md) |
 
 ---
@@ -561,7 +561,7 @@ owner: team
 
 ## HCI/aCLI 实机契约收敛任务（2026-07-29）
 
-权威事实与决策边界见 [HCI 底层目录、日志、容器与 aCLI 知识基线](../../solution/agent/02-架构设计/HCI底层目录日志容器与aCLI知识基线.md)。本任务坚持轻治理：先修确定错误，再用设备探测和确定性验证提高自动化，不增加双审或复杂审批状态机。
+权威事实与决策边界见 [HCI 底层目录、日志、容器与 aCLI 知识基线](../../solution/agent/design/HCI底层目录日志容器与aCLI知识基线.md)。本任务坚持轻治理：先修确定错误，再用设备探测和确定性验证提高自动化，不增加双审或复杂审批状态机。
 
 | 阶段 | 任务 | 状态 | 验收标准 |
 |---|---|---|---|
@@ -598,13 +598,13 @@ owner: team
 
 ## 文档关联
 
-- **方案分析** → [Agent可靠性三方案对比分析](../../solution/agent/02-架构设计/Agent可靠性三方案对比分析.md)
+- **方案分析** → [Agent可靠性三方案对比分析](../../solution/agent/design/Agent可靠性三方案对比分析.md)
 - **三份原始方案草稿**：
   - `agent_problems_solution.md`（方案 A 原草稿当前仓库未保留，摘要见上方方案分析）
   - `agent_reliability_solution.md`（方案 B 原草稿当前仓库未保留，摘要见上方方案分析）
-  - [排障Agent可靠性整体解决方案.md](../../solution/agent/02-架构设计/排障Agent可靠性整体解决方案.md)（方案 C）
-- **现行 Agent 设计** → [agent设计.md](../../solution/agent/02-架构设计/agent设计.md)
-- **工具设计** → [agent工具设计.md](../../solution/agent/02-架构设计/agent工具设计.md)
+  - [排障Agent可靠性整体解决方案.md](../../solution/agent/design/排障Agent可靠性整体解决方案.md)（方案 C）
+- **现行 Agent 设计** → [agent设计.md](../../solution/agent/design/agent设计.md)
+- **工具设计** → [agent工具设计.md](../../solution/agent/design/agent工具设计.md)
 - QFK handlers/signal/kbd_differential 更新
 
 ---

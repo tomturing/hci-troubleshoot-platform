@@ -219,7 +219,7 @@ helm_equivalents:
     external_secret: true
   # 安全重构 L1：DIAGNOSIS_DEV_TENANT_ID/DIAGNOSIS_DEV_ACTOR_ID（→ADMIN_API_TENANT_ID/ACTOR_ID）
   # 已删除——管理台身份上下文改由网关从 admin JWT 派生，Nginx/Compose 不再注入这两项，
-  # 故其 .env.example/Compose/Helm 全链路一并移除（见 docs/security/identity-resign.md §6）。
+  # 故其 .env.example/Compose/Helm 全链路一并移除（见 docs/solution/security/网关身份重签.md §6）。
   MIGRATION_DATABASE_URL:
     value_paths: [config.postgresHost, config.postgresDb, config.postgresUser, secrets.postgresPassword]
     template_env: [DATABASE_URL]

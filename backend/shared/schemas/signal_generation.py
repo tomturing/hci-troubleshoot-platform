@@ -1,6 +1,6 @@
 """Deterministic provenance fingerprints for generated KBD signal contracts.
 
-契约门禁根治（见 docs/solution/events/2026-08-13-kbd-contract-gate-structural-semantic-fingerprint-adr.md）：
+契约门禁根治（见 docs/solution/events/2026-08-13-KBD契约门禁结构语义指纹ADR.md）：
 
 最终采用「校验器驱动」方案（第一性原理最优解）：
 

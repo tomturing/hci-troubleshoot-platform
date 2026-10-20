@@ -332,7 +332,7 @@ KBD 兜底不是“无论如何给出答案”，而是“不能证明时停止�
 - 运行审计原因码和管理端展示；
 - KBD 专项单元、契约、集成、对抗性和真实环境回归；
 - 现行全量文档 `solution/knowledge-base/知识库设计.md`、
-  `solution/agent/02-架构设计/agent设计.md`、`task/knowledge-base/知识库任务.md`；
+  `../../agent/design/agent设计.md`、`task/knowledge-base/知识库任务.md`；
 - 若新增或变更 REST API、数据库字段，再同步更新接口设计和数据库设计；
 - 工作循环完成后更新 `docs/README.md` 第一屏。
 

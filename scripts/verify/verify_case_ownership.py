@@ -16,7 +16,7 @@
    （仅报告、不改数据）。`--strict` 时异常数 > 0 则非零退出，用于运维巡检 /
    发布前门禁。
 
-归属形态依据（见 docs/security/identity-signature.md 与 staging 实测）：
+归属形态依据（见 docs/solution/security/服务间身份签名与网关鉴权.md 与 staging 实测）：
 - `client-<随机>`（历史/前端旧形态）、32-hex（当前网关 Cookie `uuid4().hex`）、
   `hci-sim-admin`（仿真系统身份）、`regression-client` 等测试种子——均为合法归属键。
 - 空串 / 纯空白 / NULL / `client-session-placeholder-token`（SRC-L2 已删除的占位

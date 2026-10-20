@@ -272,4 +272,4 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 - 校验拒绝：未知 `operation` → `operation_invalid`；`host_node_id`（`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`）、
   `vm_id`（纯数字 ≤20 位）、`capture_id`（UUID）任一非法或缺失关键字段 → `target_invalid`，均不执行任何命令。
 
-详细部署与端到端验证见 [K3s 部署指南](../docs/deploy/terminal-bridge-k3s.md)。
+详细部署与端到端验证见 [K3s 部署指南](docs/deploy/terminal_bridge-K3s双运行形态部署.md)。

@@ -4,7 +4,7 @@ data-pipeline/kbd/extract_signals.py - 关键信号分级抽取（Stage 5）
 镜像 image_proc.py 模式：离线脚本只做批量调度，LLM 工作下放到 kb-service。
 调用 POST /api/admin/kbd/{kbd_entry_id}/extract-signals，由服务端抽取并写回 signals_json。
 
-设计参考：docs/solution/agent/02-架构设计/关键信号字段级分别抽取.md §8
+设计参考：docs/solution/agent/design/关键信号字段级分别抽取.md §8
 """
 from __future__ import annotations
 

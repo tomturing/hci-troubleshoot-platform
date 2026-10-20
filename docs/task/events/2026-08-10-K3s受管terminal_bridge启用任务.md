@@ -63,7 +63,7 @@ planned → in_progress → blocked → done
 - [ ] Prometheus scrape、Loki 结构化日志和 Alert rule 配置。
 - [ ] 统一 `trace_id/test_run_id/exec_id/case_id` 关联字段；验证无 secret。
 - [ ] 编写 Pod Pending、ImagePullBackOff、Origin 403、SSH timeout、Lease reject、exec timeout Runbook。
-- [ ] 更新 `docs/deploy/terminal-bridge-k3s.md`、部署指南、发布指南和可观测性设计。
+- [ ] 更新 `../../deploy/terminal_bridge-K3s双运行形态部署.md`、部署指南、发布指南和可观测性设计。
 
 ## 7. P1：真实 dev 验收
 

@@ -175,7 +175,7 @@ bash scripts/ops/k3s-verify.sh
 | **服务设计** | [工单设计.md](docs/solution/case/工单设计.md) · [对话设计.md](docs/solution/conversation/对话设计.md) · [AI助手设计.md](docs/solution/agent/AI助手设计.md) · [知识库设计.md](docs/solution/knowledge-base/知识库设计.md) |
 | **前端设计** | [客户端设计.md](docs/solution/custom-ui/客户端设计.md) · [管理台设计.md](docs/solution/admin-ui/管理台设计.md) |
 | **部署** | [部署指南.md](docs/deploy/部署指南.md) · [部署设计.md](docs/deploy/部署设计.md) · [发布指南.md](docs/deploy/发布指南.md) · [部署管理规范.md](docs/deploy/部署管理规范.md) |
-| **测试** | [测试指南.md](docs/verify/测试指南.md) · [硬盘坏道 Live E2E Smoke 运行手册](docs/verify/evaluation/live-e2e-disk-badtrack.md) |
+| **测试** | [测试指南.md](docs/verify/测试指南.md) · [硬盘坏道 Live E2E Smoke 运行手册](docs/verify/evaluation/硬盘坏道LiveE2E运行手册.md) |
 | **需求** | [需求说明.md](docs/requirement/需求说明.md) |
 | **避坑指南** | [部署类 pitfalls](docs/deploy/pitfalls/_index.md) · [验证类 pitfalls](docs/verify/pitfalls/_index.md) |
 | **规范** | [文档管理规范.md](docs/文档管理规范.md) |

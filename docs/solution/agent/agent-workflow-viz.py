@@ -316,4 +316,4 @@ uv run python -m scripts.eval run \\
         bc_cols[3].metric("回流周期", "1-2 周", "从 Bad Case 到 CI 覆盖")
 
 st.markdown("---")
-st.caption("数据来源: [agent-resource-模版.md](01-模版与规范/agent-resource-模版.md) §3.2 | [agent-测评与GitOps方案.md](01-模版与规范/agent-测评与GitOps方案.md)")
+st.caption("数据来源: [agent-resource-模版.md](templates/agent-resource-模版.md) §3.2 | [agent-测评与GitOps方案.md](templates/agent-测评与GitOps方案.md)")

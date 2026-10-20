@@ -56,7 +56,7 @@ spec:
               {{- end }}
             {{- /* 安全重构 L1：删除 ADMIN_API_TENANT_ID/ADMIN_API_ACTOR_ID 注入——管理台身份
                    上下文唯一来源收敛为网关对 admin JWT 的派生（X-Tenant-ID/X-Actor-ID），
-                   Nginx 不再静态写死、也不以 $http_* 透传客户端头。见 docs/security/identity-resign.md §6。 */}}
+                   Nginx 不再静态写死、也不以 $http_* 透传客户端头。见 docs/solution/security/网关身份重签.md §6。 */}}
           ports:
             - containerPort: {{ .Values.adminUI.port }}
               protocol: TCP

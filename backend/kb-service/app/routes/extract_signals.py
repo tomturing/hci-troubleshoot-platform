@@ -12,7 +12,7 @@ POST /api/admin/sop/{sop_id}/extract-signals
   - 与 KBD 共用 ACQUIRER_CATALOG / DEFAULT_VARIABLE_SCHEMA / 校验 / 写回 signals_json
   - 跨文档通用（详见 docs/.../关键信号字段级分别抽取.md ADR-4）
 
-设计参考：docs/solution/agent/02-架构设计/关键信号字段级分别抽取.md
+设计参考：docs/solution/agent/design/关键信号字段级分别抽取.md
 """
 
 from __future__ import annotations

@@ -104,7 +104,7 @@ owner: team
 
 ## 9. 关联文档
 
-- [现有 K3s terminal_bridge 部署说明](../../deploy/terminal-bridge-k3s.md)
+- [现有 K3s terminal_bridge 部署说明](../../deploy/terminal_bridge-K3s双运行形态部署.md)
 - [HCI 真实/仿真双轨需求](2026-07-30-HCI真实环境与仿真环境双轨测试需求.md)
 - [本次重构方案](../../solution/events/2026-08-10-K3s受管terminal_bridge启用方案.md)
 - [本次实施任务](../../task/events/2026-08-10-K3s受管terminal_bridge启用任务.md)
