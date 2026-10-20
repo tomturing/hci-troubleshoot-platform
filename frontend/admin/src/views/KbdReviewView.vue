@@ -4870,7 +4870,7 @@ onUnmounted(() => clearBatchPollTimer())
         <el-col :span="2">
           <el-input
             v-model="supportIdFilter"
-            placeholder="案例 ID 精准"
+            placeholder="案例 ID"
             clearable
             @clear="fetchPending"
             @keyup.enter="fetchPending"
