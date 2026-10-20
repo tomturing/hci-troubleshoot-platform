@@ -520,6 +520,39 @@ class InvestigationAgent(BaseAgent):
             comp_prefix = category_id.split("-")[0]
             if comp_prefix:
                 env_ctx["components"] = [comp_prefix]
+        # 根因轨独立准入路径（关键候选空集）下确定性补齐 {{HOST}}：文档承诺「HOST 由工单/会话
+        # 提供」，但生产链路 env_context 是 {env_info, alert_logs, task_logs} 嵌套结构，没有扁平
+        # host；关键链路靠自己的 qkv 生产者出变量，纯根因 KBD（关键 0 信号）没有生产者，根因
+        # 采集会永远 BLOCKED（真 live E2E probe3 实锤：unresolved_requirements={"2762":["host"]}）。
+        # 仅在「关键候选空 + 根因轨已准入」的新开路径生效：告警/任务记录里主机集唯一才填
+        # （case-service 已权威化 host 字段），多主机歧义不猜（fail-closed，保持 BLOCKED）；
+        # 关键链路实际运行的路径绝不触及，零行为变化。
+        if not raw_cases and root_track_admissible and not any(
+            str(key).lower() == "host" for key in env_ctx
+        ):
+            host_sources = [*(env_ctx.get("alert_logs") or []), *(env_ctx.get("task_logs") or [])]
+            hosts = {
+                str(item.get("host") or "").strip() for item in host_sources if isinstance(item, dict)
+            }
+            hosts.discard("")
+            if len(hosts) == 1:
+                env_ctx["host"] = next(iter(hosts))
+                logger.info(
+                    event="root_track_env_host_derived",
+                    message="根因轨准入路径已从工单现场记录确定性补齐 HOST（主机集唯一）",
+                    session_id=session_id,
+                    case_id=case_id,
+                    category_id=category_id,
+                )
+            else:
+                logger.info(
+                    event="root_track_env_host_ambiguous",
+                    message="现场记录主机不唯一或缺失，不猜测 HOST，根因采集保持 BLOCKED 兑底",
+                    session_id=session_id,
+                    case_id=case_id,
+                    category_id=category_id,
+                    distinct_hosts=sorted(hosts),
+                )
         self._kbd_diag = KBDDiagnostic(
             ai_registry=self._ai_registry,
             tool_executor=self._tool_executor,

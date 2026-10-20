@@ -55,7 +55,9 @@ def _agent_with_case(case: dict, monkeypatch) -> tuple[InvestigationAgent, Async
     tracked: list[dict] = []
 
     async def fake_diagnose(engine, *, candidates, root_cases, **kwargs):
-        tracked.append({"candidates": candidates, "root_cases": root_cases})
+        tracked.append(
+            {"candidates": candidates, "root_cases": root_cases, "env_context": kwargs.get("env_context")}
+        )
         yield AgentStageUpdate(stage="root_diag_complete", metadata={})
 
     monkeypatch.setattr("app.adapters.agents.htp.investigation_agent.diagnose_with_tracks", fake_diagnose)
@@ -156,3 +158,100 @@ async def test_admission_flag_observability(monkeypatch):
     )
     assert snapshot.metadata["root_executable_kbd_count"] == 1
     assert snapshot.metadata["root_track_admissible"] is True
+
+
+# ── HOST 确定性派生（真 live probe3 实锤：纯根因 KBD 无生产者，{{HOST}} 永 BLOCKED）──
+
+_ALERT_ENV = {
+    "env_info": {"cluster_name": "hci-prod"},
+    "alert_logs": [{"alarm_name": "升级前检测失败", "host": "172.16.100.21"}],
+    "task_logs": [],
+}
+
+
+@pytest.mark.asyncio
+async def test_host_derived_from_unique_alert_host(monkeypatch):
+    """根因准入路径 + 现场主机集唯一：{{HOST}} 必须被确定性补齐后交给双链路编排。"""
+    monkeypatch.delenv("KB_SIGNAL_TRACK_MODE", raising=False)
+    agent, _, tracked = _agent_with_case(_root_only_case(), monkeypatch)
+
+    [
+        event
+        async for event in agent.process(
+            session_id="s",
+            category_id="平台-013",
+            messages=[{"role": "user", "content": "升级前检测报错嵌套虚拟化"}],
+            env_context=dict(_ALERT_ENV),
+        )
+    ]
+
+    assert tracked[0]["env_context"]["host"] == "172.16.100.21"
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_hosts_not_guessed(monkeypatch):
+    """多主机歧义不猜（fail-closed）：不注入 host，根因采集保持 BLOCKED 兑底。"""
+    monkeypatch.delenv("KB_SIGNAL_TRACK_MODE", raising=False)
+    agent, _, tracked = _agent_with_case(_root_only_case(), monkeypatch)
+    env = {
+        "env_info": {},
+        "alert_logs": [{"host": "10.0.0.1"}, {"host": "10.0.0.2"}],
+        "task_logs": [{"host": "10.0.0.1"}],
+    }
+
+    [
+        event
+        async for event in agent.process(
+            session_id="s",
+            category_id="平台-013",
+            messages=[{"role": "user", "content": "升级前检测报错嵌套虚拟化"}],
+            env_context=env,
+        )
+    ]
+
+    assert "host" not in tracked[0]["env_context"]
+
+
+@pytest.mark.asyncio
+async def test_existing_flat_host_key_not_overwritten(monkeypatch):
+    """会话已提供扁平 HOST（任意大小写）时不覆盖派生。"""
+    monkeypatch.delenv("KB_SIGNAL_TRACK_MODE", raising=False)
+    agent, _, tracked = _agent_with_case(_root_only_case(), monkeypatch)
+    env = {"HOST": "node-007", "alert_logs": [{"host": "172.16.100.21"}]}
+
+    [
+        event
+        async for event in agent.process(
+            session_id="s", category_id="平台-013", messages=[{"role": "user", "content": "x"}], env_context=env
+        )
+    ]
+
+    passed = tracked[0]["env_context"]
+    assert passed["HOST"] == "node-007" and "host" not in passed
+
+
+@pytest.mark.asyncio
+async def test_process_track_running_never_enriches_host(monkeypatch):
+    """关键链路实际运行（raw_cases 非空）：派生逻辑绝不触发，关键链路行为零变化。"""
+    monkeypatch.delenv("KB_SIGNAL_TRACK_MODE", raising=False)
+    case = _root_only_case()
+    case["executable"] = True
+    case["execution_issues"] = []
+    case["signals"] = [
+        {"id": "k1", "acquire": {"tool": "qkv_alert"}, "orchestrate": {"produces": [{"name": "alert_x"}]}}
+    ]
+    agent, _, tracked = _agent_with_case(case, monkeypatch)
+
+    [
+        event
+        async for event in agent.process(
+            session_id="s",
+            category_id="平台-013",
+            messages=[{"role": "user", "content": "x"}],
+            env_context=dict(_ALERT_ENV),
+        )
+    ]
+
+    assert len(tracked) == 1
+    assert "host" not in tracked[0]["env_context"], "关键链路运行时不得替它注入现场 host"
+    assert len(tracked[0]["candidates"]) == 1
