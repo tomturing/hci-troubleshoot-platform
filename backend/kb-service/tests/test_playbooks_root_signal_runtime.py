@@ -22,8 +22,25 @@ def _extract() -> dict:
     }
 
 
-def _root(match_type: str, match: dict, *, tool: str = "qfk_system", signal_text: str = "根因特征") -> dict:
+def _root(
+    match_type: str,
+    match: dict,
+    *,
+    tool: str = "qfk_system",
+    signal_text: str = "根因特征",
+    gate_version: int | None = 2,
+    gate_status: str | None = "passed",
+) -> dict:
+    """构造一条根因信号；默认带已过「最少充分集」门禁的 provenance。
+
+    gate_version=None / gate_status=None 用于构造 legacy 存量信号（运行时必须排除）。
+    """
     acquire = {"tool": tool, "args": {"command": "dmesg"}} if match_type == "executable" else None
+    provenance: dict = {"source_section": "root_cause", "trace_tier": "root_cause", "evidence": signal_text}
+    if gate_version is not None:
+        provenance["gate_version"] = gate_version
+    if gate_status is not None:
+        provenance["gate_status"] = gate_status
     return {
         "schema_version": 2,
         "role": "root_cause",
@@ -31,7 +48,7 @@ def _root(match_type: str, match: dict, *, tool: str = "qfk_system", signal_text
         "signal_text": signal_text,
         "acquire": acquire,
         "match": match,
-        "provenance": {"source_section": "root_cause", "trace_tier": "root_cause", "evidence": signal_text},
+        "provenance": provenance,
     }
 
 
@@ -113,7 +130,9 @@ def test_normalize_root_for_runtime_shape_and_stable_id():
     root = _root("executable", {"type": "keyword", "mode": "all", "expected": ["KVM_EXIT_SHUTDOWN"]})
     norm = playbooks.normalize_root_for_runtime(root)
     assert norm is not None
-    assert set(norm) == {"id", "acquire", "match", "provenance"}
+    assert set(norm) == {"id", "acquire", "match", "provenance", "track"}
+    # 证据路径标记：归约时与关键信号分路计算，晚融合互不影响
+    assert norm["track"] == "root"
     assert norm["provenance"] == {"category": "backend"}
     assert norm["acquire"] == {"tool": "qfk_system", "args": {"command": "dmesg"}}
     # 不带 role：交由 compile_signal_plan 经 _required 归为 MUST（与关键信号同等 required）
@@ -168,6 +187,55 @@ def test_signals_only_text_root_yields_empty_union():
     entry = _entry(
         signals_json={"schema_version": 2, "signals": []},
         root_signal_json=[_root("text", {"type": "keyword", "mode": "all", "expected": ["低微码"]})],
+    )
+    assert playbooks._signals(entry) == []
+
+
+# ─── 融合准入闸门：只有过「最少充分集」门禁的信号才参与判定 ────────────────
+
+
+def test_signals_excludes_legacy_root_without_gate_version():
+    """存量（无 gate_version）信号未经充分性校验，不得参与运行时。"""
+    entry = _entry(
+        signals_json={"schema_version": 2, "signals": []},
+        root_signal_json=[
+            _root(
+                "executable",
+                {"type": "keyword", "mode": "all", "expected": ["KVM_EXIT_SHUTDOWN"]},
+                gate_version=None,
+                gate_status=None,
+            )
+        ],
+    )
+    assert playbooks._signals(entry) == []
+
+
+def test_signals_excludes_gate_warning_root():
+    """疑似恒真（gate_status=warning）只留库供人工改写，不参与判定。"""
+    entry = _entry(
+        signals_json={"schema_version": 2, "signals": []},
+        root_signal_json=[
+            _root(
+                "executable",
+                {"type": "keyword", "mode": "all", "expected": ["address"]},
+                gate_version=2,
+                gate_status="warning",
+            )
+        ],
+    )
+    assert playbooks._signals(entry) == []
+
+
+def test_signals_excludes_gate_version_below_threshold():
+    entry = _entry(
+        signals_json={"schema_version": 2, "signals": []},
+        root_signal_json=[
+            _root(
+                "executable",
+                {"type": "keyword", "mode": "all", "expected": ["KVM_EXIT_SHUTDOWN"]},
+                gate_version=1,
+            )
+        ],
     )
     assert playbooks._signals(entry) == []
 

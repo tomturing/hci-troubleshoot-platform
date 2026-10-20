@@ -1,10 +1,13 @@
-"""根因信号并入 CDD 后的 AND 判定与展示解耦（PR B / #2 轨道一·二的下游语义证明）。
+"""根因信号并入 CDD 后的判定语义（轨道一·二的下游语义证明）。
 
-证明两件事（对应计划风险门禁「结论收紧」）：
-1. executable 根因与关键信号在 reduce_candidates 里以 **AND** 语义参与判定——
-   "两者都有" 的 KBD 需关键 + executable 根因全部 SATISFIED 才 SUPPORTED，仅满足其一即收紧为
-   非 SUPPORTED（这正是合入前后的定论率差异来源，且只发生在带 executable 根因信号的 KBD 上）。
-2. text 根因展示锚点（root_display_anchors）绝不产生 SignalRef、绝不改变候选状态——轨道二与判定解耦。
+证明三件事（对应当前「双路并行 + 最少充分集」设计）：
+1. executable 根因信号以 ``track=root`` 编译为 MUST，与关键信号（``track=process``）**分路归约**：
+   同路内仍是严格 AND（全部 MUST SATISFIED），跨路是 OR（任一命中即支持）；
+2. 两路互不影响：一路 MUST 被判否证不得否决另一路已命中的结论；
+3. text 根因展示锚点（root_display_anchors）绝不产生 SignalRef、绝不改变候选状态——轨道二与判定解耦。
+
+历史对照：旧版并集实现把两路信号混在同一条 MUST 链上，一条根因信号判错就把整篇 KBD 判死；
+本文件的 ``test_process_track_hit_is_sufficient_even_when_root_unrun`` 钉住了这一行为不再回退。
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ def _key_signal() -> dict:
 
 
 def _normalized_root_signal() -> dict:
-    """normalize_root_for_runtime 的产物形态（keyword 单词 → runtime matcher）。"""
+    """normalize_root_for_runtime 的产物形态（keyword 单词 → runtime matcher + track 标记）。"""
     return {
         "id": "root_deadbeefcafe",
         "acquire": {"tool": "qfk_system", "args": {"command": "dmesg"}},
@@ -43,6 +46,7 @@ def _normalized_root_signal() -> dict:
             "extract": _EXTRACT,
         },
         "provenance": {"category": "backend"},
+        "track": "root",
     }
 
 
@@ -86,10 +90,14 @@ def test_display_anchor_produces_no_signal_ref():
     assert all(ref.signal_id != "低微码致 VM 关机" for ref in with_anchor.signals.values())
 
 
-def test_partial_satisfaction_tightens_to_not_supported():
-    """仅关键信号 SATISFIED、executable 根因未跑 → finalize 不得 SUPPORTED（结论收紧的直接证据）。"""
+def test_process_track_hit_is_sufficient_even_when_root_unrun():
+    """双路并行：关键路命中即可支持，不再要求根因路也执行完（跨路 OR）。
+
+    旧并集实现下该场景是 INCONCLUSIVE（AND 收紧）；v2 改成两路各自独立求值、
+    任一路 SUPPORTED 即支持，因为根因信号路本身就是「另一种定位策略」而非前置条件。
+    """
     kbd = kbd_from_dict(_kbd_dict())
-    plan = compile_signal_plan([kbd], snapshot_id="tighten")
+    plan = compile_signal_plan([kbd], snapshot_id="dual-or")
     assessments = initial_assessments(plan)
     by_signal = {ref.signal_id: ref for ref in plan.signals.values() if ref.kbd_id == "7"}
 
@@ -97,8 +105,12 @@ def test_partial_satisfaction_tightens_to_not_supported():
     # executable 根因保持未跑（NOT_RUN）
     reduce_candidates(plan, assessments, finalize=True)
 
-    assert assessments["7"].state is CandidateState.INCONCLUSIVE
-    assert decide_conclusion(assessments).level.value != "definitive"
+    assert assessments["7"].track_states == {
+        "process": CandidateState.SUPPORTED,
+        "root": CandidateState.INCONCLUSIVE,
+    }
+    assert assessments["7"].state is CandidateState.SUPPORTED
+    assert decide_conclusion(assessments).level.value == "DEFINITIVE"
 
 
 def test_full_satisfaction_supported():

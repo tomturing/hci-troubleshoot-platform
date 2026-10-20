@@ -191,3 +191,33 @@ orchestrate 段被跳过）。②`humanize_signal_validation_error` 在 `type` �
 花括号安全网。教训：改 Prompt 输出契约时，任何「删除占位标记」的迁移都必须锚定**唯一完整片段**
 （警惕他字段含同名子串）、追加文本必须对 `str.format` 零花括号、且 seed 与 data-migration 双改
 才能让「新环境+存量库」同时生效。
+
+## V-029：剪枝/去重的「集合包含」不等于语义蕴含——忽略匹配模式会把 REJECTED 剪成 SUPPORTED
+
+**症状：** 根因信号 L3 最少性门禁（`gate_minimality`）首版以「candidate 的 `match.expected` 是
+stronger 的严格子集 → candidate 冗余」为规则剪信号。单测全绿（用例全是 `mode=all`），但真实
+数据里 `mode=any` 一样合法：`any[A]` 被 `any[A,B]` 严格包含时，`any[A,B]` 只要命中 B 即成立，
+而 `any[A]` 并不成立。剪掉 `any[A]` 后，本应由「A 未出现」否证的现场不再有任何 MUST 被
+`CONTRADICTED` → 判定从 REJECTED 翻成 SUPPORTED（把该排除的 KBD 判为命中）。
+
+**根因：** 两条独立的语义漏洞叠加。①把「判据集合的包含关系」当成「成立条件的蕴含关系」，
+而 `all` 才是「全部关键词必须出现」的合取形态（强），`any` 是析取（弱）：`any` 的超集不蕴含
+子集。②同环节「证据子串」规则只按 evidence 长度排序，未校验判据方向，会剪掉「证据短但判据
+更严」的信号（同样降低判别力）。这两类错误的共同点是**剪枝让判定变松**，且都只在混合
+`mode`/混合判据强度的真实数据上暴露。
+
+**修复：** `_finding_stronger` 的每条规则显式带上方向守卫——规则 1（判据严格子集）要求
+`stronger.mode == "all"`；规则 2（运行时等价）要求判据集合**与** `mode` 均相同且采集一致；
+规则 3（证据覆盖）要求 `candidate.tokens ⊆ stronger.tokens` 且 `stronger.mode == "all"`；
+规则 4（双形态）只剪 text（text 根本不进运行时判定，剪它不影响任何结论）。
+原则：**剪枝必须证明「被剪项在逻辑上更弱」，不能只证明「它更短」**；无法证明时保留（L3 是
+成本优化，误剪是正确性事故）。同时 `gate_sufficiency` 的 `argv-only command` 判定改为取
+`posixpath.basename`（LLM 常写 `/usr/bin/ps`，裸名比对会漏网）。
+
+**预防测试：** `test_root_signal_extractor.py::TestGateMinimality` 新增三例钉死方向性——
+`test_any_mode_superset_never_prunes_subset`（any 超集不剪子集）、
+`test_all_mode_superset_prunes_any_mode_subset`（all 超集可剪 any 子集）、
+`test_stronger_judgement_with_shorter_evidence_is_kept`（证据短但判据更严不得剪），
+以及 `test_argv_only_command_matches_absolute_path_basename`。教训：写任何「去重/剪枝/合并」
+规则前，先写出被剪项的**逻辑弱于**保留项的证明；证明依赖的语义维度（此处是 `mode`）必须
+出现在条件里，否则单测只会验证你想到的那一种形态。

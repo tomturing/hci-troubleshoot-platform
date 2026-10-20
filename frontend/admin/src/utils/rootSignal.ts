@@ -43,12 +43,32 @@ export interface RootSignal {
 /** 拒绝候选（root_signal_rejected_json 元素，与后端 signals_json.rejected_candidates 同构）。 */
 export interface RootSignalRejected {
   candidate?: RootSignal
+  /** L3 剪枝项直接带 signal_text（无 candidate 包体） */
+  signal_text?: string
   reason?: string
   reason_code?: string
+  /** 被哪条更强信号覆盖（仅 reason_code=redundant_with_stronger_signal） */
+  redundant_with?: string
   closure_status?: string
   unresolved?: string[]
   literals?: { field?: string; value?: string; entity?: string; suggested_var?: string }[]
   [key: string]: any
+}
+
+/**
+ * 审计条目的展示锚点：闭环拒绝候选在 candidate.signal_text，L3 剪枝项直接带 signal_text。
+ * 两者同列共存，故取值必须兼容两种形态，否则剪枝项在 UI 全是「无锚点描述」。
+ */
+export function rejectedAnchor(item: RootSignalRejected): string {
+  return String(item?.candidate?.signal_text || item?.signal_text || '')
+}
+
+/**
+ * 审计条目类型：剪枝（合法但同篇冗余）与硬拒（不可闭环）语义不同，
+ * 混在一起展示会让审核人误判「这条信号不可用」。
+ */
+export function rejectedKind(item: RootSignalRejected): 'pruned' | 'rejected' {
+  return item?.reason_code === 'redundant_with_stronger_signal' ? 'pruned' : 'rejected'
 }
 
 /**

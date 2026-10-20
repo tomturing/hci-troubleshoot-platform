@@ -106,3 +106,23 @@ AGENT_REASONING_STEPS_TOTAL = Counter(
 AGENT_RESOLUTION_STEPS = Histogram(
     "agent_resolution_steps", "Number of steps taken to resolve a case", buckets=[5, 10, 15, 20, 30, 50, 100]
 )
+
+# ─── 7. 双路信号判定统计（关键路 process / 根因路 root）────────────────────
+
+# 每条信号按「证据路 × 结果」计数：分路计算命中率（SATISFIED）与恒不命中率
+# （CONTRADICTED/NOT_APPLICABLE），是「哪条策略更有效」的直接度量。
+KBD_SIGNAL_TRACK_OUTCOME_TOTAL = Counter(
+    "kbd_signal_track_outcome_total",
+    "KBD signal outcomes split by evidence track and result",
+    labelnames=["track", "outcome", "tool"],
+)
+
+# 候选按融合结果计数：可区分「仅关键路命中」「仅根因路命中」「两路都命中」
+# 与「旧并集 AND 会判死、双路 OR 救回」的场景，用于举证双路改造的增量收益。
+KBD_CANDIDATE_FUSION_TOTAL = Counter(
+    "kbd_candidate_fusion_total",
+    "KBD candidate fused state split by per-track states",
+    # active_tracks：参与结论的 track 集合（由模式推导），用于区分
+    # 「另一路不参与融合」与「另一路未跑完」。
+    labelnames=["fusion_mode", "state", "track_states", "active_tracks"],
+)

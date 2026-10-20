@@ -19,7 +19,9 @@ from app.services.root_signal_extractor import (
     build_root_signal_prompt,
     count_root_cause_conflicts,
     extract_root_signal,
+    gate_minimality,
     gate_signals,
+    gate_sufficiency,
     load_prompt_template_from_sql,
     normalize_root_signal,
 )
@@ -289,10 +291,32 @@ class TestExtractPipeline:
         assert signal["prompt_revision"].startswith("sha256:")
 
     async def test_multiple_signals_all_kept(self, prompt_template):
-        second = _raw(signal_text="lock 文件持续增长至 8M", match={"type": "keyword", "mode": "all", "expected": ["check_redis_server_status.sh.lock"]})
+        # 两条落在根因链的不同环节（链路结构），最少性门禁不得剪
+        second = _raw(
+            signal_text="lock 文件持续增长触发脚本加锁失败",
+            match={"type": "keyword", "mode": "all", "expected": ["加锁失败"]},
+            provenance={
+                "source_section": "root_cause",
+                "evidence": "导致脚本执行加锁失败",
+                "confidence": 0.8,
+                "needs_review": False,
+            },
+        )
         llm, _ = _fake_llm({"signals": [_raw(), second]})
         outcome = await extract_root_signal(ENTRY, prompt_template=prompt_template, llm_call=llm)
         assert outcome["error"] is None and len(outcome["signals"]) == 2
+
+    async def test_subsumed_signal_pruned_by_minimality(self, prompt_template):
+        # 后者的判据是前者严格子集 → L3 最少性剪枝（非拒绝，进 pruned 审计）
+        second = _raw(
+            signal_text="只有 lock 文件",
+            match={"type": "keyword", "mode": "all", "expected": ["check_redis_server_status.sh.lock"]},
+        )
+        llm, _ = _fake_llm({"signals": [_raw(), second]})
+        outcome = await extract_root_signal(ENTRY, prompt_template=prompt_template, llm_call=llm)
+        assert outcome["error"] is None and len(outcome["signals"]) == 1
+        assert outcome["pruned"][0]["reason_code"] == "redundant_with_stronger_signal"
+        assert outcome["pruned"][0]["redundant_with"] == "/run/lock 分区被 lock 文件占满"
 
     async def test_primary_anchor_preferred_over_fallback(self, prompt_template):
         # 同时有主锚与兑底：只采用主锚，不用兑底填充（防噪声稀释）
@@ -416,3 +440,197 @@ class TestConflictsAndTemplate:
         assert "qfk_log" in text and "args 契约" in text
         assert "command*" in text  # qfk_system 必填字段带 * 标记
         assert "qfk_var" not in text
+
+
+# ─── 7. L2 充分性门禁（gate_sufficiency）───────────────────────────────────────
+
+
+class TestGateSufficiency:
+    """充分性：判据必须能排除至少一个竞争案例（健康态或同分类其他 KBD）。
+
+    设计取舍：拒收仅限「确定性零判别力」，疑似恒真只降级人工复核（宁可降级，不可误杀）。
+    """
+
+    def test_all_generic_error_tokens_rejected(self):
+        reason, warnings = gate_sufficiency({"match": {"type": "keyword", "expected": ["error", "failed"]}})
+        assert reason is not None and "充分性" in reason
+        assert warnings == []
+
+    def test_mixed_generic_and_specific_passes(self):
+        # 只要有一条判据能排除竞争案例就不得误杀
+        reason, warnings = gate_sufficiency(
+            {"match": {"type": "keyword", "expected": ["error", "KVM_EXIT_SHUTDOWN"]}}
+        )
+        assert reason is None and warnings == []
+
+    def test_argv_only_command_with_sentence_rejected(self):
+        # ps/ss 类只输出进程/连接元数据，不可能出现句子级现象 → 恒不命中
+        reason, _ = gate_sufficiency(
+            {
+                "acquire": {"args": {"command": "ps -ef"}},
+                "match": {"type": "keyword", "expected": ["process is in uninterruptible sleep"]},
+            }
+        )
+        assert reason is not None and "元数据" in reason
+
+    def test_argv_only_command_with_short_token_passes(self):
+        reason, warnings = gate_sufficiency(
+            {
+                "acquire": {"args": {"command": "ss -lntp"}},
+                "match": {"type": "keyword", "expected": ["21001"]},
+            }
+        )
+        assert reason is None and warnings == []
+
+    def test_config_field_tokens_warn_not_reject(self):
+        reason, warnings = gate_sufficiency({"match": {"type": "keyword", "expected": ["address", "netmask"]}})
+        assert reason is None and warnings == ["likely_always_true"]
+
+    def test_expected_is_normalized_before_matching(self):
+        # 尾随冒号/等号/空白不影响通用串判定
+        reason, _ = gate_sufficiency({"match": {"type": "keyword", "expected": ["error:", "failed="]}})
+        assert reason is not None
+
+    def test_empty_expected_is_not_judged_here(self):
+        # 非空数组属结构门禁（_flatten_keywords）职责，这里不重复判
+        assert gate_sufficiency({"match": {"type": "keyword", "expected": []}}) == (None, [])
+
+
+# ─── 8. L3 最少性门禁（gate_minimality）─────────────────────────────────────
+
+
+def _prune_signal(
+    signal_text: str,
+    expected: list[str],
+    evidence: str,
+    *,
+    match_type: str = "executable",
+) -> dict:
+    return {
+        "match_type": match_type,
+        "signal_text": signal_text,
+        "acquire": {"tool": "qfk_system", "args": {"command": "df"}} if match_type == "executable" else None,
+        "match": {"type": "keyword", "mode": "all", "expected": expected},
+        "provenance": {"evidence": evidence},
+    }
+
+
+class TestGateMinimality:
+    def test_stronger_judgement_subsumes_weaker_tokens(self):
+        strong = _prune_signal("分区满且路径固定", ["100%", "/run/lock"], "占满 /run/lock 分区（使用率 100%）")
+        weak = _prune_signal("使用率 100%", ["100%"], "占满 /run/lock 分区（使用率 100%）")
+        kept, dropped = gate_minimality([weak, strong])
+        assert [s["signal_text"] for s in kept] == ["分区满且路径固定"]
+        assert dropped[0]["reason_code"] == "redundant_with_stronger_signal"
+        assert dropped[0]["redundant_with"] == "分区满且路径固定"
+
+    def test_evidence_substring_drops_upstream_phenomenon(self):
+        # 后者证据是前者证据的子串 → 同一环节的上下游 → 剪上游
+        downstream = _prune_signal(
+            "加锁失败导致改密回调失败", ["/run/lock"], "占满 /run/lock 分区，导致脚本执行加锁失败"
+        )
+        upstream = _prune_signal("分区被占满", ["/run/lock"], "占满 /run/lock 分区")
+        kept, dropped = gate_minimality([upstream, downstream])
+        assert [s["signal_text"] for s in kept] == ["加锁失败导致改密回调失败"]
+        assert len(dropped) == 1
+
+    def test_different_chain_links_are_both_kept(self):
+        # 不同环节（链）绝不剪：这是「确需多条时必须是链」的服务端兑现
+        a = _prune_signal("网卡协商速率仅 100M", ["Speed: 100Mb/s"], "ethtool eth0 显示 Speed: 100Mb/s")
+        b = _prune_signal("bond 仅剩 1 个成员", ["bond0"], "cat /proc/net/bonding/bond0 只有一块 slave")
+        kept, dropped = gate_minimality([a, b])
+        assert len(kept) == 2 and dropped == []
+
+    def test_dual_form_keeps_executable_drops_text(self):
+        # 同一判据两形态：executable 信息严格更多（能现场取证），必须留 executable
+        exe = _prune_signal("/run/lock 分区使用率 100%", ["100%", "/run/lock"], "占满 /run/lock 分区（使用率 100%）")
+        txt = _prune_signal(
+            "/run/lock 分区使用率 100%，导致任务失败",
+            ["100%", "/run/lock"],
+            "占满 /run/lock 分区（使用率 100%），导致虚拟机任务失败",
+            match_type="text",
+        )
+        kept, dropped = gate_minimality([txt, exe])
+        assert [s["match_type"] for s in kept] == ["executable"]
+        assert dropped[0]["redundant_with"] == "/run/lock 分区使用率 100%"
+
+    def test_output_keeps_original_order(self):
+        a = _prune_signal("文本判据", ["aaa"], "alpha evidence", match_type="text")
+        b = _prune_signal("可执行判据", ["bbb"], "beta evidence")
+        kept, dropped = gate_minimality([a, b])
+        assert [s["signal_text"] for s in kept] == ["文本判据", "可执行判据"]
+        assert dropped == []
+
+    def test_any_mode_superset_never_prunes_subset(self):
+        # 对抗性回归：stronger 是 any 形态时，命中任一关键词即成立，
+        # 剪掉子集判据会让「本应被否证」的现场变成「通过」→ 必须两条都保留。
+        weak = _prune_signal("分区满", ["100%"], "占满 /run/lock 分区（使用率 100%）")
+        strong = _prune_signal(
+            "分区满或路径异常",
+            ["100%", "/run/lock"],
+            "占满 /run/lock 分区（使用率 100%）",
+        )
+        for signal in (weak, strong):
+            signal["match"]["mode"] = "any"
+        kept, dropped = gate_minimality([weak, strong])
+        assert len(kept) == 2 and dropped == []
+
+    def test_all_mode_superset_prunes_any_mode_subset(self):
+        # all 形态全中必然隐含 any 形态命中 → 剪 any 是安全的
+        weak = _prune_signal("分区满", ["100%"], "占满 /run/lock 分区（使用率 100%）")
+        weak["match"]["mode"] = "any"
+        strong = _prune_signal("分区满且路径固定", ["100%", "/run/lock"], "占满 /run/lock 分区（使用率 100%）")
+        kept, dropped = gate_minimality([weak, strong])
+        assert [s["signal_text"] for s in kept] == ["分区满且路径固定"]
+        assert dropped[0]["redundant_with"] == "分区满且路径固定"
+
+    def test_stronger_judgement_with_shorter_evidence_is_kept(self):
+        # 对抗性回归：证据短但判据更严的信号不得因「证据子串」被剪（会降低判别力）
+        strict = _prune_signal("分区满且路径固定", ["100%", "/run/lock"], "占满 /run/lock 分区")
+        loose = _prune_signal("分区使用率异常", ["100%"], "占满 /run/lock 分区，导致任务失败")
+        kept, dropped = gate_minimality([strict, loose])
+        assert len(kept) == 2 and dropped == []
+
+    def test_argv_only_command_matches_absolute_path_basename(self):
+        # LLM 常写绝对路径：只比对裸命令名会漏掉「ps 不可能输出句子级现象」的拒收
+        signal = _prune_signal("改密回调一直被锁", ["waiting for lock"], "ps 显示进程在等待锁")
+        signal["acquire"]["args"]["command"] = "/usr/bin/ps -ef"
+        violation, warnings = gate_sufficiency(signal)
+        assert violation and "ps" in violation
+        assert warnings == []
+
+
+# ─── 9. 归一化写入 gate 版本/结论（运行时准入依据）──────────────────────────
+
+
+class TestGateProvenance:
+    def test_passed_signal_carries_gate_version_and_status(self):
+        signal, error = _normalize(_raw())
+        assert error is None
+        assert signal["provenance"]["gate_version"] == 2
+        assert signal["provenance"]["gate_status"] == "passed"
+        assert signal["provenance"]["gate_warnings"] == []
+
+    def test_config_field_predicate_marks_warning_and_forces_review(self):
+        raw = _executable_raw()
+        raw["match"]["expected"] = ["address"]
+        signal, error = _normalize(raw)
+        assert error is None
+        assert signal["provenance"]["gate_status"] == "warning"
+        assert signal["provenance"]["gate_warnings"] == ["likely_always_true"]
+        assert signal["provenance"]["needs_review"] is True
+
+    def test_all_generic_error_tokens_rejected_at_normalize(self):
+        raw = _executable_raw()
+        raw["match"]["expected"] = ["error", "failed"]
+        signal, error = _normalize(raw)
+        assert signal is None
+        assert "充分性" in error
+
+    def test_non_keyword_executable_predicate_rejected(self):
+        # 运行时只支持 keyword/regex 求值；threshold/state 等一律拒收，不得入库后永不生效
+        raw = _executable_raw()
+        raw["match"] = {"type": "threshold", "mode": "all", "expected": ["80"]}
+        signal, error = _normalize(raw)
+        assert signal is None
+        assert "match.type" in error

@@ -1770,7 +1770,9 @@ async def backfill_extract_root_signal(
     where = ["status = ANY(CAST(:statuses AS text[]))", "root_cause <> ''", "char_length(root_cause) >= 30"]
     params: dict[str, Any] = {"statuses": list(body.statuses), "limit": body.limit}
     if body.only_missing:
-        where.append("root_signal_json IS NULL")
+        # 「缺信号」包含两种形态：从未抽取（NULL）与抽取后门禁全灭（空数组）。
+        # 后者是 v2 多信号 + 最少充分集的常见结果，只按 IS NULL 会永久漏刷。
+        where.append("(root_signal_json IS NULL OR jsonb_array_length(root_signal_json) = 0)")
     if body.category_prefix:
         where.append("COALESCE(category_id, ai_category_id, '') LIKE :prefix")
         params["prefix"] = f"{body.category_prefix}%"

@@ -106,6 +106,44 @@ _MIXED_TEXT_AND_DANGLING_PAYLOAD = {
 }
 
 
+# 两条可执行根因：弱判据 {"100%"} 是强判据 {"100%", "/run/lock"} 的严格子集 → L3 必剪弱留强。
+# 两条 evidence 均可逐字溯源到 _ENTRY_ROW.root_cause，故均过形状/溯源门禁，只由最少性决定去留。
+_MINIMALITY_PAYLOAD = {
+    "signals": [
+        {
+            "match_type": "executable",
+            "signal_text": "/run/lock 分区使用率 100% 且分区被占满",
+            "acquire": {
+                "tool": "qfk_system",
+                "args": {"command": "df", "command_args": ["-h", "/run/lock"], "host": "{{HOST}}"},
+            },
+            "match": {"type": "keyword", "mode": "all", "expected": ["100%", "/run/lock"]},
+            "provenance": {
+                "source_section": "root_cause",
+                "evidence": "df 显示 /run/lock 分区使用率 100%",
+                "confidence": 0.9,
+                "needs_review": False,
+            },
+        },
+        {
+            "match_type": "executable",
+            "signal_text": "/run/lock 分区使用率 100%",
+            "acquire": {
+                "tool": "qfk_system",
+                "args": {"command": "df", "command_args": ["-h", "/run/lock"], "host": "{{HOST}}"},
+            },
+            "match": {"type": "keyword", "mode": "all", "expected": ["100%"]},
+            "provenance": {
+                "source_section": "root_cause",
+                "evidence": "分区使用率 100%",
+                "confidence": 0.9,
+                "needs_review": False,
+            },
+        },
+    ]
+}
+
+
 def _producer(produces: list[str]) -> dict[str, Any]:
     """关键轨诊断生产者（qkv_task 形态）：orchestrate.produces 提供闭包可用变量池。"""
     return {
@@ -454,6 +492,33 @@ class TestClosureRouteIntegration:
         signal = json.loads(updates[0]["params"]["signals"])[0]
         assert signal["closure_status"] == "closed"
 
+    async def test_pruned_signals_persisted_into_rejected_audit(self, monkeypatch, prompt_template):
+        """L3 剪枝不静默删信号：被冗余剪掉的候选必 落 root_signal_rejected_json（reason_code 区分）。
+
+        与「拒绝」区分：剪枝项本身合法可闭环，只是同篇内被判据更强的信号完全蕴含。
+        若只写 accepted、不写剪枝，审核人无法解释「LLM 明明给了 2 条、库里只剩 1 条」。
+        """
+        updates: list[dict[str, Any]] = []
+        db = _db_factory({**_ENTRY_ROW, "signals_json": {"signals": [_producer(["HOST"])], "verification_contract": None}}, updates)
+        await _stub_loader(monkeypatch, prompt_template)
+
+        async def _llm(messages, *, prompt_revision, kbd_id, attempt):
+            return _MINIMALITY_PAYLOAD
+
+        monkeypatch.setattr(route, "_call_llm_messages", _llm)
+        result = await route.extract_root_signal_for_kbd(db, 1, corpus=ConflictCorpus([]))
+
+        assert result["success"] is True
+        assert result["signals_count"] == 1
+        saved = json.loads(updates[0]["params"]["signals"])
+        assert len(saved) == 1
+        # 保留的是判据更完整的强信号
+        assert set(saved[0]["match"]["expected"]) == {"100%", "/run/lock"}
+        audit = json.loads(updates[0]["params"]["rejected"])
+        assert len(audit) == 1
+        assert audit[0]["reason_code"] == "redundant_with_stronger_signal"
+        assert audit[0]["redundant_with"] == saved[0]["signal_text"]
+
 
 class TestCorpusCache:
     async def test_corpus_ttl_avoids_repeat_query(self, monkeypatch):
@@ -603,6 +668,23 @@ class TestEditRootSignal:
         assert exc.value.status_code == 422
         assert exc.value.detail["code"] == "ROOT_SIGNAL_NOT_CONFIRMING"
         assert updates == []
+
+    async def test_edit_applies_minimality_and_audits_pruned(self, monkeypatch, corpus):
+        """人工编辑与抽取同标准：一次提交冗余双条时剪弱留强，且剪枝项落拒绝审计（不 422）。"""
+        updates: list[dict[str, Any]] = []
+        entry = {**_ENTRY_ROW, "signals_json": {"signals": [_producer(["HOST"])], "verification_contract": None}}
+        monkeypatch.setattr(route, "_db_manager", _db_factory(entry, updates))
+        self._stub_corpus(monkeypatch, corpus)
+        body = route.RootSignalEditRequest(signals=_MINIMALITY_PAYLOAD["signals"])
+        result = await route.edit_root_signal(
+            _make_request("PATCH", "/api/admin/kbd/1/root-signal"), 1, body
+        )
+        assert result.signals_count == 1
+        assert set(result.signals[0]["match"]["expected"]) == {"100%", "/run/lock"}
+        assert len(result.rejected) == 1
+        assert result.rejected[0]["reason_code"] == "redundant_with_stronger_signal"
+        audit = json.loads(updates[0]["params"]["rejected"])
+        assert len(audit) == 1 and audit[0]["redundant_with"] == result.signals[0]["signal_text"]
 
     async def test_edit_empty_array_clears_signals(self, monkeypatch):
         updates: list[dict[str, Any]] = []

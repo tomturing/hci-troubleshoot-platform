@@ -39,6 +39,7 @@ from shared.observability.metrics import (
     KBD_LLM_REQUESTS_TOTAL,
     KBD_LLM_TOKENS_TOTAL,
     ROOT_SIGNAL_CLOSURE_TOTAL,
+    ROOT_SIGNAL_PRUNED_TOTAL,
     ROOT_SIGNAL_REJECTED_TOTAL,
 )
 from shared.observability.otel import get_current_trace_id
@@ -63,6 +64,7 @@ from app.services.root_signal_extractor import (
     ROOT_SIGNAL_PROMPT_NAME,
     ConflictCorpus,
     extract_root_signal,
+    gate_minimality,
     gate_signals,
     normalize_root_signal,
 )
@@ -400,8 +402,12 @@ async def extract_root_signal_for_kbd(
     )
     signals = outcome["signals"]              # 闭包裁决后保留的 accepted（closed executable + text + bootstrap 保留）
     rejected = outcome.get("rejected") or []  # 不可闭环的拒绝候选（落 root_signal_rejected_json）
+    # L3 剪枝项同样是「人工需要知道的信号去向」：新增门禁不能静默删信号。
+    # 与 rejected 合写入同一审计列（reason_code 区分），但指标独立计量。
+    pruned = outcome.get("pruned") or []
     all_rejected = outcome.get("all_rejected", False)
     closure = outcome.get("closure") or {}
+    rejected_for_audit = [*rejected, *pruned]
 
     # 指标（§8）：closure_total 按每条 executable 四态分维；rejected_total 仅计实际被硬拒的候选。
     # bootstrap 保留的悬空计入 dangling 态但不入 rejected 计数（未被真拒）。
@@ -411,6 +417,8 @@ async def extract_root_signal_for_kbd(
             ROOT_SIGNAL_CLOSURE_TOTAL.labels(status=status).inc()
     for item in rejected:
         ROOT_SIGNAL_REJECTED_TOTAL.labels(reason_code=item.get("reason_code") or "unknown").inc()
+    for item in pruned:
+        ROOT_SIGNAL_PRUNED_TOTAL.labels(reason_code=item.get("reason_code") or "unknown").inc()
 
     if not signals and not rejected:
         # 真·无产出（LLM 无可用信号或门禁全失败）：既有信号保持原值，本次不写库
@@ -448,7 +456,7 @@ async def extract_root_signal_for_kbd(
                     WHERE id = :kbd_id
                     """
                 ),
-                {"kbd_id": kbd_id, "rejected": json.dumps(rejected, ensure_ascii=False)},
+                {"kbd_id": kbd_id, "rejected": json.dumps(rejected_for_audit, ensure_ascii=False)},
             )
             await session.commit()
         reason = "；".join(f"{r.get('reason_code')}: {r.get('reason')}" for r in rejected[:5])
@@ -493,7 +501,7 @@ async def extract_root_signal_for_kbd(
             {
                 "kbd_id": kbd_id,
                 "signals": json.dumps(signals, ensure_ascii=False),
-                "rejected": json.dumps(rejected, ensure_ascii=False),
+                "rejected": json.dumps(rejected_for_audit, ensure_ascii=False),
             },
         )
         await session.commit()
@@ -507,6 +515,7 @@ async def extract_root_signal_for_kbd(
         kbd_status=row["status"],
         signals_count=len(signals),
         rejected_count=len(rejected),
+        pruned_count=len(pruned),
         tiers=sorted({s["provenance"]["trace_tier"] for s in signals}),
         needs_review=sum(1 for s in signals if s["provenance"]["needs_review"]),
         attempts=outcome["attempts"],
@@ -522,7 +531,8 @@ async def extract_root_signal_for_kbd(
         needs_review=lead["provenance"]["needs_review"],
         distinctiveness=lead["distinctiveness"],
         signals=signals,
-        rejected=rejected,
+        # 与落库审计列同口径（拒绝 + 剪枝），否则 API 看到的“去向”少于库里留的痕迹。
+        rejected=rejected_for_audit,
         closure=closure,
         attempts=outcome["attempts"],
         signals_count=len(signals),
@@ -699,6 +709,7 @@ async def edit_root_signal(request: Request, kbd_id: int, body: RootSignalEditRe
     # 空数组 = 清空根因信号与拒绝审计（删除最后一条的合法终态）：不跑门禁直接落两列 []
     signals: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
+    pruned: list[dict[str, Any]] = []
     closure: dict[str, Any] = {}
     all_rejected = False
     if body.signals:
@@ -746,6 +757,15 @@ async def edit_root_signal(request: Request, kbd_id: int, body: RootSignalEditRe
         for item in rejected:
             ROOT_SIGNAL_REJECTED_TOTAL.labels(reason_code=item.get("reason_code") or "unknown").inc()
 
+        # L3 最少性（与抽取同标准）：人工一次提交多条时仍要求「最少充分集」。
+        # 冗余项不静默丢弃（落拒绝审计），但**不 422**：人工显式提交的冗余是可用但低效的，
+        # 硬拒会让「先保存再逐步精简」的工作流无法进行。
+        if signals:
+            signals, pruned = gate_minimality(signals)
+            for item in pruned:
+                ROOT_SIGNAL_PRUNED_TOTAL.labels(reason_code=item.get("reason_code") or "unknown").inc()
+            rejected = [*rejected, *pruned]
+
         # 冲突度按现场语料逐条实测（与抽取一致，不采信前端自报；仅对 accepted）
         corpus = await get_conflict_corpus(_db_manager)
         for signal in signals:
@@ -778,6 +798,7 @@ async def edit_root_signal(request: Request, kbd_id: int, body: RootSignalEditRe
         kbd_status=row["status"],
         signals_count=len(signals),
         rejected_count=len(rejected),
+        pruned_count=len(pruned),
         all_rejected=all_rejected,
         needs_review=sum(1 for s in signals if s["provenance"]["needs_review"]),
     )

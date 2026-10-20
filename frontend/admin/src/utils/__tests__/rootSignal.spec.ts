@@ -15,6 +15,8 @@ import {
   matchKeywords,
   parseRejected,
   parseSignals,
+  rejectedAnchor,
+  rejectedKind,
   splitKeywords,
 } from '../rootSignal'
 import type { RootSignal } from '../rootSignal'
@@ -230,5 +232,30 @@ describe('buildEditPayload 逐条编辑态 → PATCH 全量替换体', () => {
       { match_type: 'executable', signal_text: 's', acquire: { tool: 'qfk_system' }, _argsJsonText: '  ' },
     ]) as Record<string, any>
     expect(payload.signals[0].acquire.args).toEqual({})
+  })
+})
+
+describe('审计条目的展示归一分（硬拒 vs L3 剪枝）', () => {
+  it('闭环拒绝候选取 candidate.signal_text 作为锚点', () => {
+    expect(rejectedAnchor({ candidate: signal(), reason_code: 'ROOT_CLOSURE_DANGLING' })).toBe(
+      '/run/lock 分区被占满导致任务失败',
+    )
+  })
+
+  it('L3 剪枝项无 candidate 包体时回退到自身 signal_text（否则 UI 全是「无锚点描述」）', () => {
+    expect(
+      rejectedAnchor({ signal_text: '弱判据信号', reason_code: 'redundant_with_stronger_signal', redundant_with: '强判据' }),
+    ).toBe('弱判据信号')
+  })
+
+  it('两者都缺失时返回空串，交由视图层统一回退文案', () => {
+    expect(rejectedAnchor({})).toBe('')
+    expect(rejectedAnchor({ candidate: {} as any })).toBe('')
+  })
+
+  it('redundant_with_stronger_signal 判为 pruned，其余一律 rejected', () => {
+    expect(rejectedKind({ reason_code: 'redundant_with_stronger_signal' })).toBe('pruned')
+    expect(rejectedKind({ reason_code: 'ROOT_CLOSURE_DANGLING' })).toBe('rejected')
+    expect(rejectedKind({})).toBe('rejected')
   })
 })

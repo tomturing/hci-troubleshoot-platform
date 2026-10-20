@@ -142,6 +142,14 @@ ROOT_SIGNAL_REJECTED_TOTAL = Counter(
     labelnames=["reason_code"],
 )
 
+# L3 最少性剪枝（与「拒绝」分开计量）：信号本身合法且可闭环，只是同篇内被判据更强的
+# 信号完全蕴含。计入拒绝会让「门禁失败率」被结构性剪枝污染，故独立成指标。
+ROOT_SIGNAL_PRUNED_TOTAL = Counter(
+    "hci_root_signal_pruned_total",
+    "根因信号最少性剪枝计数",
+    labelnames=["reason_code"],
+)
+
 # 发布门禁根因闭包软告警（§7 先软后硬）：按原因分维，仅观测不阻断（blocks_publish=False），
 # 待实测拒绝率收敛后再切硬 422。
 ROOT_SIGNAL_PUBLISH_GATE_TOTAL = Counter(

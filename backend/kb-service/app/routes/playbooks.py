@@ -42,16 +42,37 @@ def _signals(entry: KbdEntry) -> list[dict[str, Any]]:
     if isinstance(raw, dict):
         raw = raw.get("signals", [])
     signals = [signal for signal in raw if isinstance(signal, dict)] if isinstance(raw, list) else []
-    # 轨道一（#2）：executable 根因信号与关键信号同等执行/判定——并入同一信号列表，
-    # 复用全部既有 CDD 链路（compile→qfk 执行→evaluate→reduce→decide），不新增判定维度。
-    # 本函数仅在非语义 live 路径被采用（语义/frozen 路径在调用点用冻结快照覆盖 signals，不并入
-    # live 根因，保持其可复现契约）；text 根因绝不进此列表（仅作诊断报告展示锚点）。
+    # 轨道一：可执行根因信号以 track="root" 进入同一计划，但归约时按 track 各算一份，
+    # 与关键信号（track=process）互不影响（见 shared/cdd/fusion.py）。
+    # 本函数仅在非语义 live 路径被采用（语义/frozen 路径在调用点用冻结快照覆盖 signals，
+    # 保持其可复现契约）；text 根因绝不进此列表（仅作诊断报告展示锚点）。
     for root in _root_signals(entry):
-        if str(root.get("match_type") or "") == "executable":
-            normalized = normalize_root_for_runtime(root)
-            if normalized is not None:
-                signals.append(normalized)
+        if str(root.get("match_type") or "") != "executable":
+            continue
+        # 融合准入闸门：只有经「最少充分集」门禁（gate_version>=2 且 gate_status=passed）产出的
+        # 信号才参与判定。存量信号未经充分性校验（实测含恒真判据），在 OR 融合下会变成万能匹配；
+        # 疑似恒真的 warning 信号同样只留库供审核，待人工改写为偏离态后再重抽生效。
+        if _root_gate_version(root) < ROOT_SIGNAL_RUNTIME_GATE_VERSION:
+            continue
+        if str((root.get("provenance") or {}).get("gate_status") or "") != "passed":
+            continue
+        normalized = normalize_root_for_runtime(root)
+        if normalized is not None:
+            signals.append(normalized)
     return signals
+
+
+# 根因信号参与运行时判定所需的最低门禁版本。抽取侧写入 provenance.gate_version；
+# 缺失或低于该值视为 legacy，不参与采集与判定，重抽后自动升级。
+ROOT_SIGNAL_RUNTIME_GATE_VERSION = 2
+
+
+def _root_gate_version(root: dict[str, Any]) -> int:
+    provenance = root.get("provenance") or {}
+    try:
+        return int(provenance.get("gate_version") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 # 根因 executable 信号并入 CDD 时统一使用的「整段标准输出」取数契约：与关键信号
@@ -151,6 +172,8 @@ def normalize_root_for_runtime(root: dict[str, Any]) -> dict[str, Any] | None:
         "acquire": {"tool": tool, "args": acquire.get("args") or {}},
         "match": cdd_match,
         "provenance": {"category": "backend"},
+        # 证据路径标记：归约时与 process 路分开计算，晚融合互不影响。
+        "track": "root",
     }
 
 
@@ -200,7 +223,18 @@ def _execution_issues(
     # 仅在并集非空时覆盖 document["signals"]，保留「既无关键也无根因」空文档的 reference_only 语义；
     # 归一后的 keyword/regex 根因信号已实测通过 validate_publishable_signals_json。
     if isinstance(validation_document, dict) and signals and validation_document.get("signals") != signals:
-        validation_document = {**validation_document, "signals": signals}
+        # track 是运行时证据路径标记（process/root），不属发布契约：signal schema 是
+        # additionalProperties=false，若直接拿去校验会把合法运行时计划误判为破坏性变更。
+        # 在进入校验器前确定性剥离，与 normalize_optional_matcher_nulls 同一类边界归一。
+        validation_document = {
+            **validation_document,
+            "signals": [
+                {key: value for key, value in signal.items() if key != "track"}
+                if isinstance(signal, dict)
+                else signal
+                for signal in signals
+            ],
+        }
     semantic_capability = capability_of(validation_document)
     if semantic_capability == "reference_only":
         return ["仅案例推荐：无现场验证信号，不进入自动执行 CDD"]

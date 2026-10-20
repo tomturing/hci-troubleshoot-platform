@@ -236,6 +236,9 @@ def compile_signal_plan(
                     produces.add("date")
                 produces.update(_names(processing_derived_variables(orchestrate.get("output_processing"))))
             ref_id = f"{kbd.id}/{revision}/{signal_id}"
+            # 证据路径标记：关键信号缺省 process，可执行根因信号由 kb-service 显式写 root。
+            # 同一 tool+args 的跨路信号仍会归入同一 Acquisition（采集去重），但归约时按 track 各算一份。
+            track = str(signal.get("track") or "process").strip().lower() or "process"
             ref = SignalRef(
                 ref_id=ref_id,
                 kbd_id=kbd.id,
@@ -250,6 +253,7 @@ def compile_signal_plan(
                 produces=tuple(sorted(produces)),
                 phase=phase,
                 matcher_fingerprint=_fingerprint(signal.get("match")),
+                track=track,
             )
             signals[ref_id] = ref
             acquire = signal.get("acquire") or {}

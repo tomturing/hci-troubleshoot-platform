@@ -69,6 +69,9 @@ class SignalRef:
     produces: tuple[str, ...]
     phase: str
     matcher_fingerprint: str
+    # 证据路径：process=关键信号，root=可执行根因信号。缺省 process 保证既有调用方零改动。
+    # 两路各自独立归约、独立下结论，互不影响（见 fusion.py）。
+    track: str = "process"
 
 
 @dataclass
@@ -132,6 +135,12 @@ class CandidateAssessment:
     scope_state: str = "APPLICABLE"
     signal_outcomes: dict[str, SignalOutcome] = field(default_factory=dict)
     reasons: list[str] = field(default_factory=list)
+    # 分路归约结果：同一 KBD 的关键路与根因路各自算一份，最终由 fusion.fuse_track_states 合并。
+    # 仅 track_states 非空时 state 才是融合结果；空字典表示「单路（改造前）语义」。
+    track_states: dict[str, CandidateState] = field(default_factory=dict)
+    track_reasons: dict[str, list[str]] = field(default_factory=dict)
+    # 该 track 被拒的原因：must=本路必需证据被否证，exclude=排除项成立（跨路否决）。
+    track_rejected_by: dict[str, str] = field(default_factory=dict)
 
     @property
     def verdict(self) -> CaseVerdict:

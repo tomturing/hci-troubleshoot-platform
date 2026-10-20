@@ -44,7 +44,7 @@ from shared.observability.logger import get_logger
 from shared.schemas.acquirer_args import ACQUIRER_ARGS_SCHEMA, validate_acquire_args
 from shared.schemas.kbd_signal_safety import kbd_signal_read_only_violation
 
-from app.routes.extract_signals import ACQUIRER_CATALOG, VALID_MATCHER_TYPES
+from app.routes.extract_signals import ACQUIRER_CATALOG
 from app.services.root_signal_closure import adjudicate_root_closure, render_available_vars_context
 
 logger = get_logger("kb-service-root-signal")
@@ -81,7 +81,11 @@ MIN_KEYWORD_LEN = 4
 # 纯数字/分隔符关键词（如 0.95、6.11）无区分度，必须搭配语境词（如 HCI 6.11.1）才可用
 _WEAK_KEYWORD_RE = re.compile(r"^[\d._:%\-]+$")
 # executable 型可用 matcher 类型收敛到「结论判定」语义子集
-EXECUTABLE_MATCH_TYPES = VALID_MATCHER_TYPES & {"keyword", "regex", "state", "boolean", "threshold", "exists"}
+# executable 只接受运行时可**无损还原**的谓词类型。
+# 运行时转换（kb-service/routes/playbooks.py::_root_match_to_cdd）只能把 keyword/regex 忠实
+# 还原为 CDD Matcher；state/boolean/threshold/exists 会被静默丢弃 → “落库成功但判定零作用”。
+# 为守住“落库即有效”，这里直接拒收非 keyword/regex，回喂后由模型改用可表达形态。
+EXECUTABLE_MATCH_TYPES = {"keyword", "regex"}
 
 
 def _normalize_for_trace(text: str) -> str:
@@ -141,7 +145,225 @@ def build_root_signal_prompt(template: str, entry: dict[str, Any]) -> str:
     return template.format(**{key: entry[key] for key in ROOT_SIGNAL_PLACEHOLDERS})
 
 
-# ─── 门禁（纯函数，返回 (结果, 错误原因)）─────────────────────────────────────
+# ─── 门禁（纯函数，返回 (结果, 错误原因)）─────────────────────────────────
+
+# 「最少充分集」门禁版本：v2 起同时校验可求值（闭环方案）与充分性（本模块）。
+# 运行时准入要求 gate_version>=2 且 gate_status=='passed'，未达标的存量信号不参与判定。
+SUFFICIENCY_GATE_VERSION = 2
+
+# L2-a 零判别力通用错误串：任何 KBD 的现场日志都可能出现，既排除不了健康态、
+# 也排除不了同分类兄弟篇。仅当一条信号的**全部**关键词都落在该集合时拒收。
+_GENERIC_ERROR_TOKENS = frozenset(
+    {
+        "error",
+        "failed",
+        "failure",
+        "exception",
+        "timeout",
+        "timed out",
+        "not found",
+        "no such file",
+        "permission denied",
+        "cannot allocate memory",
+        "out of memory",
+        "unknown error",
+        "lock",
+        "busy",
+        "unavailable",
+        "aborted",
+        "denied",
+        "warning",
+    }
+)
+
+# L2-b 只输出 argv / 连接元数据的命令：stdout 不可能出现句子级现象描述。
+_ARGV_ONLY_COMMANDS = frozenset({"ps", "ss", "netstat", "lsof", "top"})
+
+# L2-c 配置字段名与正常取值：在任何一台正常机器上都成立，单独作为判据即恒真。
+_CONFIG_FIELD_TOKENS = frozenset(
+    {
+        "address",
+        "netmask",
+        "gateway",
+        "dns",
+        "mask",
+        "mtu",
+        "vlan",
+        "nested",
+        "enabled",
+        "disabled",
+        "true",
+        "false",
+        "yes",
+        "no",
+        "on",
+        "off",
+    }
+)
+
+
+def gate_sufficiency(signal: dict[str, Any]) -> tuple[str | None, list[str]]:
+    """L2 充分性门禁（确定性规则，不做语义判断）。
+
+    Returns:
+        (拒收原因, 警告列表)：拒收原因非 None 表示**确定性无判别力**，必须丢弃；
+        警告列表非空（如 ``likely_always_true``）表示疑似恒真，保留但强制人工复核，
+        且不得授予运行时准入（见 normalize_root_signal 的 gate_status）。
+
+    三条规则都只覆盖「可枚举的确定性形态」，语义层面的判别力仍由人工复核兜底：
+    规则设计的取舍是「宁可降级人工，不可误杀正确判据」。
+    """
+    match = signal.get("match") or {}
+    expected = [str(item).strip() for item in (match.get("expected") or []) if str(item).strip()]
+    if not expected:
+        return None, []
+    # 只剥「分隔符与空白」：不能用 rstrip(r":=\s")——str.rstrip 的参数是字符集合，
+    # 反斜杠与字母 s 会被当成可剥字符，把 "address" 误削成 "addres"。
+    tokens = [item.casefold().rstrip(":= \t\r\n") for item in expected]
+    acquire = signal.get("acquire") or {}
+    # 取首个参数段的 basename：LLM 常写绝对路径（/usr/bin/ps），只比对裸命令名会漏网。
+    command = posixpath.basename(
+        str((acquire.get("args") or {}).get("command") or "").strip().casefold().split(" ")[0]
+    )
+
+    # L2-a：全部为通用错误串 → 零判别力。
+    if all(token in _GENERIC_ERROR_TOKENS for token in tokens):
+        return (
+            "match.expected 全部为通用错误串，无法排除健康态与其他故障（充分性不成立）: " + ", ".join(expected),
+            [],
+        )
+    # L2-b：argv-only 命令不可能产出句子级现象 → 恒不命中。
+    if command in _ARGV_ONLY_COMMANDS and any(" " in token and len(token) > 10 for token in tokens):
+        return (
+            f"acquire.args.command={command} 的输出只含进程/连接元数据，不可能出现句子级描述: "
+            + ", ".join(expected),
+            [],
+        )
+    # L2-c：全部为配置字段名/正常取值 → 疑似恒真，降级人工复核。
+    if all(token in _CONFIG_FIELD_TOKENS for token in tokens):
+        return None, ["likely_always_true"]
+    return None, []
+
+
+def gate_minimality(signals: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """L3 最少性门禁：剪除同篇内可被更强信号蕴含的冗余。
+
+    只处理两种确定性冗余（保守剪枝，绝不删除「链上不同环节」）：
+    1. expected 集合包含：后者判据完全覆盖前者 → 前者冗余；
+    2. evidence 逐字包含：后者证据是前者证据的子串 → 同一环节的上下游 → 前者冗余。
+
+    评估顺序按「信息量从多到少」：形态优先（executable 先于 text，可现场取证），
+    同形态内证据更完整、判据更多者先成为 stronger。这样「被覆盖的更弱判据」
+    只会在成为 candidate 时被剪，不需要回删已保留项。
+    返回顺序仍保持调用方原序，避免影响 UI 展示。
+    """
+    # 排序只影响「谁先成为 stronger」，不改变输出顺序。
+    order = sorted(
+        range(len(signals)),
+        key=lambda idx: (
+            0 if signals[idx].get("match_type") == "executable" else 1,
+            -len(_normalize_for_trace((signals[idx].get("provenance") or {}).get("evidence") or "")),
+            -len(_expected_tokens(signals[idx])),
+            idx,
+        ),
+    )
+    kept_idx: list[int] = []
+    dropped: list[dict[str, str]] = []
+    for idx in order:
+        signal = signals[idx]
+        stronger = _finding_stronger(signal, [signals[kept] for kept in kept_idx])
+        if stronger is None:
+            kept_idx.append(idx)
+            continue
+        dropped.append(
+            {
+                "signal_text": str(signal.get("signal_text") or ""),
+                "reason_code": "redundant_with_stronger_signal",
+                "redundant_with": str(stronger.get("signal_text") or ""),
+            }
+        )
+    return [signals[idx] for idx in sorted(kept_idx)], dropped
+
+
+def _match_mode(signal: dict[str, Any]) -> str:
+    """判据模式：all=全部关键词都出现才成立，any=任一出现即成立。"""
+    return str((signal.get("match") or {}).get("mode") or "all").strip().casefold()
+
+
+def _finding_stronger(candidate: dict[str, Any], kept: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """返回使 candidate 冗余的更强信号；方向必须统一为「candidate 被 stronger 覆盖」。
+
+    对抗性约束：剪枝**不得降低判别力**。candidate 的判据即使是 stronger 的子集，也只在
+    stronger 为 ``all`` 形态时才被蕴含——``any`` 形态命中任一关键词即成立，剪掉子集判据
+    会让「本应被否证」的现场变成「通过」（把 REJECTED 误升为 SUPPORTED）。
+    """
+    candidate_tokens = _expected_tokens(candidate)
+    candidate_evidence = _normalize_for_trace((candidate.get("provenance") or {}).get("evidence") or "")
+    candidate_mode = _match_mode(candidate)
+    for stronger in kept:
+        stronger_tokens = _expected_tokens(stronger)
+        stronger_mode = _match_mode(stronger)
+        # 规则 1：candidate 的判据是本条严格子集 → 它排除的情况被完全覆盖。
+        # 必须用严格子集：集合相等时谁更弱无法判定，交给「同时采集参数」规则处理。
+        # 必须 stronger=all：any 形态不蕴含任何更弱的判据集合。
+        if (
+            candidate_tokens
+            and stronger_tokens
+            and candidate_tokens < stronger_tokens
+            and stronger_mode == "all"
+        ):
+            return stronger
+        # 规则 2：判据、形态与采集完全相同 → 运行时完全等价的重复信号。
+        if (
+            candidate_tokens
+            and candidate_tokens == stronger_tokens
+            and candidate_mode == stronger_mode
+            and _same_acquire(candidate, stronger)
+        ):
+            return stronger
+        stronger_evidence = _normalize_for_trace((stronger.get("provenance") or {}).get("evidence") or "")
+        # 规则 3：判据被 stronger 覆盖（含相等）、采集相同、证据是 stronger 证据的子串
+        # → 同一环节的上下游，证据更短者信息更少。
+        # 判据方向必须先成立：否则剪掉的是「证据短但判据更严」的信号，属降级事故。
+        if (
+            candidate_tokens
+            and stronger_tokens
+            and candidate_tokens <= stronger_tokens
+            and stronger_mode == "all"
+            and _same_acquire(candidate, stronger)
+            and candidate_evidence
+            and stronger_evidence
+            and candidate_evidence != stronger_evidence
+            and candidate_evidence in stronger_evidence
+        ):
+            return stronger
+        # 规则 4：双形态同一判据——text 把 executable 的证据扩写成句子。
+        # executable 已由排序先入 kept，此处剪 text（能现场取证的形态信息严格更 多）。
+        if (
+            candidate.get("match_type") == "text"
+            and stronger.get("match_type") == "executable"
+            and candidate_tokens <= stronger_tokens
+            and candidate_evidence
+            and stronger_evidence
+            and stronger_evidence in candidate_evidence
+        ):
+            return stronger
+    return None
+
+
+def _same_acquire(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    """采集参数是否一致（text 型两侧均为空 → 视为一致，由判据去重）。"""
+    return (left.get("acquire") or {}) == (right.get("acquire") or {})
+
+
+def _expected_tokens(signal: dict[str, Any]) -> set[str]:
+    match = signal.get("match") or {}
+    return {
+        str(item).strip().casefold()
+        for item in (match.get("expected") or [])
+        if str(item).strip()
+    }
+
 
 def gate_signals(payload: Any, *, max_signals: int = 8) -> tuple[list[dict[str, Any]], str | None]:
     """LLM 返回的根因信号集合门禁（v2：不限条数，但仍封顶防长输出噪声洪水）。
@@ -371,6 +593,20 @@ def normalize_root_signal(
     if tier == "content":
         needs_review = True
 
+    # L2 充分性门禁：确定性无判别力直接拒收；疑似恒真保留但禁止运行时准入。
+    # 放在形态/溯源门禁之后，保证报错优先暴露「形状不合法」而非「判别力不足」。
+    sufficiency_violation, sufficiency_warnings = gate_sufficiency(
+        {
+            "match_type": match_type,
+            "acquire": raw.get("acquire"),
+            "match": {"type": matcher_type, "mode": str(match.get("mode") or "all"), "expected": expected},
+        }
+    )
+    if sufficiency_violation:
+        return None, sufficiency_violation, "none"
+    if sufficiency_warnings:
+        needs_review = True
+
     signal: dict[str, Any] = {
         "schema_version": ROOT_SIGNAL_SCHEMA_VERSION,
         "role": "root_cause",
@@ -396,6 +632,11 @@ def normalize_root_signal(
             "evidence": evidence,
             "confidence": confidence,
             "needs_review": needs_review,
+            # 门禁版本与结论：运行时只接受 gate_version>=2 且 gate_status=='passed' 的信号。
+            # warning = 疑似恒真（如仅靠配置字段名/正常值判定），必须人工改写成偏离态后才生效。
+            "gate_version": SUFFICIENCY_GATE_VERSION,
+            "gate_status": "warning" if sufficiency_warnings else "passed",
+            "gate_warnings": sufficiency_warnings,
         },
         "prompt_revision": prompt_revision,
     }
@@ -492,23 +733,12 @@ async def extract_root_signal(
                     fallback.append(signal)
             # 主锚优先：只要 root_cause 级有信号就只取主锚，不用整篇兑底填充（防噪声稀释）
             chosen = primary if primary else fallback
-            if chosen:
-                if not enforce_closure:
-                    logger.info(
-                        event="root_signal_extracted",
-                        support_id=entry.get("support_id"),
-                        count=len(chosen),
-                        tiers=sorted({s["provenance"]["trace_tier"] for s in chosen}),
-                        needs_review=sum(1 for s in chosen if s["provenance"]["needs_review"]),
-                        attempt=attempt,
-                    )
-                    return {
-                        "signals": chosen,
-                        "rejected": [],
-                        "error": None,
-                        "attempts": attempt,
-                        "gate_errors": gate_errors,
-                    }
+            # 剪枝不改变「充分性」，只降低审核与采集成本，因此不计入 gate_errors（不是拒绝）。
+            pruned: list[dict[str, str]] = []
+            if chosen and enforce_closure:
+                # 闭环裁决必须先于最少性剪枝：闭环决定「这条信号能不能用」（硬拒/回喂重试），
+                # 剪枝只处理「多条都合法但判据冗余」。顺序颠倒会让悬空信号在闭环看到之前
+                # 就被剪掉——既丢失拒绝审计，也让回喂重试失效。
                 adjud = adjudicate_root_closure(
                     chosen,
                     key_signals,
@@ -527,22 +757,45 @@ async def extract_root_signal(
                         has_context=adjud["has_context"],
                     )
                     continue
+                accepted = adjud["accepted"]
+                # L3 最少性：剪除同篇内可被更强信号蕴含的冗余（同环节上下游 / 判据被完全覆盖）。
+                if accepted:
+                    accepted, pruned = gate_minimality(accepted)
                 logger.info(
                     event="root_signal_extracted",
                     support_id=entry.get("support_id"),
-                    count=len(adjud["accepted"]),
+                    count=len(accepted),
                     rejected=len(adjud["rejected"]),
-                    tiers=sorted({s["provenance"]["trace_tier"] for s in adjud["accepted"]}),
-                    needs_review=sum(1 for s in adjud["accepted"] if s["provenance"]["needs_review"]),
+                    tiers=sorted({s["provenance"]["trace_tier"] for s in accepted}),
+                    needs_review=sum(1 for s in accepted if s["provenance"]["needs_review"]),
                     attempt=attempt,
                 )
                 return {
-                    "signals": adjud["accepted"],
+                    "signals": accepted,
                     "rejected": adjud["rejected"],
+                    "pruned": pruned,
                     "closure": adjud["summary"],
                     "closure_results": adjud["results"],
                     "all_rejected": adjud["all_rejected"],
                     "has_context": adjud["has_context"],
+                    "error": None,
+                    "attempts": attempt,
+                    "gate_errors": gate_errors,
+                }
+            if chosen:
+                chosen, pruned = gate_minimality(chosen)
+                logger.info(
+                    event="root_signal_extracted",
+                    support_id=entry.get("support_id"),
+                    count=len(chosen),
+                    tiers=sorted({s["provenance"]["trace_tier"] for s in chosen}),
+                    needs_review=sum(1 for s in chosen if s["provenance"]["needs_review"]),
+                    attempt=attempt,
+                )
+                return {
+                    "signals": chosen,
+                    "rejected": [],
+                    "pruned": pruned,
                     "error": None,
                     "attempts": attempt,
                     "gate_errors": gate_errors,

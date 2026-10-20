@@ -40,6 +40,8 @@ import {
   matchKeywords,
   parseRejected,
   parseSignals,
+  rejectedAnchor,
+  rejectedKind,
   buildEditPayload,
   joinKeywords,
   type RootSignal,
@@ -1188,6 +1190,18 @@ const rootSignalBackfillForm = ref({
 const rootSignals = computed<RootSignal[]>(() => parseSignals(detailEntry.value?.root_signal_json))
 // 拒绝候选（不可闭环的 executable）：审核人据此看到「为什么这条没能进 root_signal_json」
 const rootSignalRejecteds = computed<RootSignalRejected[]>(() => parseRejected(detailEntry.value?.root_signal_rejected_json))
+// 审计横幅：硬拒（不可闭环）与 L3 剪枝（同篇冗余）必须分开计数，
+// 否则审核人会把「合法但冗余」误读成「信号不可用」。
+const rootSignalRejectedSummary = computed(() => {
+  const items = rootSignalRejecteds.value
+  if (!items.length) return ''
+  const pruned = items.filter((item) => rejectedKind(item) === 'pruned').length
+  const rejected = items.length - pruned
+  const parts: string[] = []
+  if (rejected) parts.push(`${rejected} 条不可闭环`)
+  if (pruned) parts.push(`${pruned} 条同篇冗余已剪枝`)
+  return `存在 ${items.length} 条未纳入定位信号的候选（${parts.join('／')}），仅审计留痕`
+})
 // 汇总徽标：只要任一条冲突即为不唯一定位（审核人一眼看出整篇冲突面）
 const rootSignalSummary = computed(() => {
   const list = rootSignals.value
@@ -5664,18 +5678,20 @@ onUnmounted(() => clearBatchPollTimer())
             </el-card>
           </div>
 
-          <!-- 拒绝候选（不可闭环的 executable）：审核人据此定位「为什么这条没进 root_signal_json」，仅审计留痕 -->
+          <!-- 未纳入的候选：硬拒（不可闭环）与 L3 剪枝（同篇冗余）同列审计留痕 -->
           <el-alert
             v-if="rootSignalRejecteds.length"
             class="root-signal-rejected"
             type="warning" :closable="false" show-icon
-            :title="'存在 ' + rootSignalRejecteds.length + ' 条不可闭环的 executable 候选（未纳入定位信号，仅审计留痕）'"
+            :title="rootSignalRejectedSummary"
           >
             <div class="root-signal-rejected-list">
               <div v-for="(rj, rjIdx) in rootSignalRejecteds" :key="rjIdx" class="root-signal-rejected-item">
-                <span class="rejected-anchor">{{ rj.candidate?.signal_text || '（无锚点描述）' }}</span>
+                <span class="rejected-anchor">{{ rejectedAnchor(rj) || '（无锚点描述）' }}</span>
+                <el-tag v-if="rejectedKind(rj) === 'pruned'" type="info" size="small" effect="plain">同篇冗余（已剪枝）</el-tag>
                 <el-tag v-if="closureDisplay(rj.closure_status)" :type="closureDisplay(rj.closure_status)?.type" size="small" effect="plain">{{ closureDisplay(rj.closure_status)?.label }}</el-tag>
                 <el-tag v-if="rj.reason_code" type="info" size="small">{{ rj.reason_code }}</el-tag>
+                <span v-if="rj.redundant_with" class="field-hint">被更强信号覆盖：{{ rj.redundant_with }}</span>
                 <span v-if="rj.unresolved?.length" class="field-hint">悬空变量：{{ rj.unresolved.join('、') }}</span>
                 <span v-if="rj.literals?.length" class="field-hint">写死实体：<span v-for="(lit, li) in rj.literals" :key="li">{{ lit.value }}{{ lit.suggested_var ? '→' + lit.suggested_var : '' }} </span></span>
                 <span v-if="rj.reason" class="field-hint">{{ rj.reason }}</span>
