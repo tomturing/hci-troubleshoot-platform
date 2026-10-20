@@ -15,7 +15,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 > 2. 再写入对应分类文件
 > 3. 同一 commit/PR 提交，不允许分开提交
 >
-> **下一个可用编号：V-030**（旧格式延续：PIT-042）
+> **下一个可用编号：V-033**（旧格式延续：PIT-042）
 
 ---
 
@@ -26,7 +26,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 | 触发场景 | 读取文件 | 当前条目 |
 |---------|---------|---------|
 | 任何涉及进程/状态/外部服务的问题排查 | [debugging.md](debugging.md) | 原则一~ 六 + 工单500 + V-004、V-006、V-019、V-020、V-022、V-028 |
-| 编写/审查 Python（ORM/异常/数据类） | [python.md](python.md) | PIT-003, PIT-004, PIT-009, PIT-040, PIT-041, V-024, V-026, V-027, V-029 |
+| 编写/审查 Python（ORM/异常/数据类） | [python.md](python.md) | PIT-003, PIT-004, PIT-009, PIT-040, PIT-041, V-024, V-026, V-027, V-029, V-030, V-031, V-032 |
 | 编写/审查前端（pnpm/Vue/Dockerfile） | [frontend.md](frontend.md) | PIT-005, PIT-023, PIT-025, PIT-028, PIT-029, V-001, V-002, V-003, V-005, V-007, V-016, V-023, V-025 |
 | 调试 Dispatcher/状态机/幂等资源 | [dispatcher.md](dispatcher.md) | PIT-006, PIT-007, PIT-008, V-017, V-021 |
 | OpenClaw 401/崩溃/WebSocket/AI 超时 | [openclaw.md](openclaw.md) | PIT-010, PIT-013, PIT-026, PIT-027, PIT-030, PIT-032, PIT-035, V-018 |
@@ -68,7 +68,10 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 | V-026 | python.md | LLM 对「<可选>」字段直出显式 null 会撞 type:string 致 KBD 抽取整单全拒，保存边界必须确定性归一且拒收消息可定位到字段 |
 | V-027 | python.md | 从 Prompt 侧加固关键信号抽取须「去 null 诱因 + 零花括号自检段 + 锚定完整片段」，否则热加载即崩或迁移自锁（notes 含 <可选> 子串、seed 不改存量库） |
 | V-028 | debugging.md | 端到端仿真 harness 必须复刻采集器过滤语义、变量前提与主键类型，否则同时产出假绿（健康态误命中）与假红（变量缺失直接 BLOCKED） |
-| V-029 | python.md | 剪枝/去重的「集合包含」不等于语义蕴含：忽略 match.mode 会把 REJECTED 剪成 SUPPORTED，剪枝前必须证明被剪项逻辑更弱 |
+| V-029 | python.md | 剪枝/去重的「集合包含」不等于语义蕴含：忽略 match.mode 会 把 REJECTED 剪成 SUPPORTED，剪枝前必须证明被剪项逻辑更弱 |
+| V-030 | python.md | 第二套计划不得继承第一套链路的发布门禁契约（verification_contract / publish_validation），否则编译期 references missing signal 全灭 |
+| V-031 | python.md | 淘汰一条策略必须「删模块即可」：共享内核不得承载任一策略的专属字段，候选构造下沉到编排层 |
+| V-032 | python.md | 测试替身必须复刻基类同步/异步形态（_build_partial_report 是同步 staticmethod），否则会把 fake 违约误判为产品缺陷 |
 | PIT-004 | python.md | Pydantic 验证 |
 | PIT-005 | frontend.md | pnpm workspace |
 | PIT-006 | dispatcher.md | 分布式锁 |

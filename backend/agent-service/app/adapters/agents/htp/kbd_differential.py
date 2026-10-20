@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import ipaddress
 import json
-import os
 import re
 import shlex
 import uuid
@@ -27,7 +26,6 @@ from shared.cdd import (
     decide_conclusion,
 )
 from shared.cdd.candidate_reducer import initial_assessments, reduce_candidates
-from shared.cdd.fusion import FUSION_MODES, FUSION_ROOT_OR_PROCESS, active_fusion_tracks
 from shared.cdd.kbd_model import KBD, KBDStep, _acquire_tool, _signal_category
 from shared.clients import AIAssistantRegistry
 from shared.observability.logger import get_logger
@@ -41,19 +39,8 @@ from app.domain.agent_port import (
     AgentStageUpdate,
     AgentTextChunk,
 )
-from app.services.metrics import KBD_CANDIDATE_FUSION_TOTAL, KBD_SIGNAL_TRACK_OUTCOME_TOTAL
 
 logger = get_logger("kbd-differential")
-
-
-def _fusion_mode() -> str:
-    """读取双路融合模式（进程环境变量，默认 root_or_process）。
-
-    process_only = 恢复改造前单路行为（回滚开关）；shadow = 结论只用关键路但根因路照常求值。
-    非法值回落默认，避免一个错误的环境变量把诊断链路整体打挂。
-    """
-    mode = str(os.environ.get("KB_SIGNAL_FUSION_MODE") or FUSION_ROOT_OR_PROCESS).strip().lower()
-    return mode if mode in FUSION_MODES else FUSION_ROOT_OR_PROCESS
 
 
 def _tool_contract_checker(tool: str, signal: dict[str, Any]) -> str | None:
@@ -351,8 +338,6 @@ class KBDDiagnostic:
         ordered = sorted(candidates, key=lambda k: (k.support_id or str(k.id), str(k.id)))
         plan = compile_signal_plan(ordered, snapshot_id=snapshot_id, tool_contract_checker=_tool_contract_checker)
         assessments = initial_assessments(plan)
-        # 双路融合模式在单次诊断内恒定，避免循环中反复读环境变量造成同一会话行为漂移。
-        fusion_mode = _fusion_mode()
         scope_results = apply_scope_results(plan, assessments, env_context)
         scheduler = ActiveDiagnosticScheduler(plan)
         # 同一模板在不同案例可绑定不同现场对象；只缓存实际参数/处理契约一致的执行。
@@ -400,7 +385,7 @@ class KBDDiagnostic:
         )
 
         while True:
-            reduce_candidates(plan, assessments, fusion_mode=fusion_mode)
+            reduce_candidates(plan, assessments)
             available_by_candidate = {
                 kbd_id: (external_variables | set(pool)) - conflicts
                 for kbd_id, (pool, _priorities, conflicts) in self._candidate_pools.items()
@@ -629,7 +614,7 @@ class KBDDiagnostic:
             steps_executed.append(result)
             yield AgentStageUpdate(stage="tool_result", metadata=self._tool_result_metadata(result))
 
-        reduce_candidates(plan, assessments, finalize=True, fusion_mode=fusion_mode)
+        reduce_candidates(plan, assessments, finalize=True)
         decision = decide_conclusion(assessments)
         supported = [plan.candidates[kbd_id] for kbd_id in decision.supported_ids]
         definitive = decision.level is ConclusionLevel.DEFINITIVE
@@ -714,9 +699,7 @@ class KBDDiagnostic:
             session_id=session_id,
             decision=decision,
             environment=env_context,
-            fusion_mode=fusion_mode,
         )
-        self._record_signal_track_metrics(plan, assessments, fusion_mode)
 
         logger.info(
             event="kbd_diagnostic_conclusion",
@@ -729,16 +712,6 @@ class KBDDiagnostic:
             supported_support_ids=[kbd.support_id or str(kbd.id) for kbd in supported],
             candidate_states={kbd_id: item.state.value for kbd_id, item in assessments.items()},
             candidate_reasons={kbd_id: list(item.reasons) for kbd_id, item in assessments.items()},
-            # 分路结果：用于区分「关键路命中」「根因路命中」「两路都命中」与
-            # 「某路被排除项否决」，是双路并行策略效果度量的最小粒度。
-            candidate_track_states={
-                kbd_id: {track: state.value for track, state in item.track_states.items()}
-                for kbd_id, item in assessments.items()
-            },
-            signal_fusion_mode=fusion_mode,
-            # 参与结论的 track 集合（由模式推导，与 fuse_track_states 同源）：
-            # 使「partial 是因为另一路未跑完」与「另一路不参与」可区分。
-            signal_fusion_active_tracks=list(active_fusion_tracks(fusion_mode)),
         )
 
         yield AgentStageUpdate(
@@ -761,37 +734,6 @@ class KBDDiagnostic:
             },
         )
 
-    @staticmethod
-    def _record_signal_track_metrics(plan: Any, assessments: dict[str, Any], fusion_mode: str) -> None:
-        """按证据路记录信号结果与融合结论，供分路命中率/增量收益度量。
-
-        与 DB 审计解耦：即使审计表不可写，指标仍能反映双路效果。
-        指标失败绝不影响客户排障主流程。
-        """
-        try:
-            refs_by_kbd: dict[str, list] = {}
-            for ref in plan.signals.values():
-                refs_by_kbd.setdefault(ref.kbd_id, []).append(ref)
-            for kbd_id, assessment in assessments.items():
-                for ref in refs_by_kbd.get(kbd_id, []):
-                    outcome = assessment.signal_outcomes.get(ref.ref_id, SignalOutcome.NOT_RUN)
-                    KBD_SIGNAL_TRACK_OUTCOME_TOTAL.labels(
-                        track=ref.track,
-                        outcome=outcome.value,
-                        tool=_acquire_tool(ref.signal) or "unknown",
-                    ).inc()
-                states = "+".join(
-                    f"{track}={state.value}" for track, state in sorted(assessment.track_states.items())
-                )
-                KBD_CANDIDATE_FUSION_TOTAL.labels(
-                    fusion_mode=fusion_mode,
-                    state=assessment.state.value,
-                    track_states=states or "none",
-                    active_tracks="+".join(active_fusion_tracks(fusion_mode)),
-                ).inc()
-        except Exception as exc:
-            logger.warning(event="kbd_signal_track_metrics_failed", error=str(exc))
-
     async def _audit_kbd_runtime_outcomes(
         self,
         *,
@@ -801,7 +743,6 @@ class KBDDiagnostic:
         session_id: str,
         decision: Any,
         environment: dict[str, Any],
-        fusion_mode: str,
     ) -> None:
         """按精确 KBD resource revision 写入运行结果，供评估和失败模式聚合使用。
 
@@ -864,8 +805,6 @@ class KBDDiagnostic:
                             {
                                 "signal_ref_id": ref.ref_id,
                                 "signal_id": ref.signal_id,
-                                # 双路并行：每条信号属于哪条路，用于按路聚合命中率与误杀率。
-                                "track": ref.track,
                                 "tool": _acquire_tool(ref.signal),
                                 "role": ref.evidence_role.value,
                                 "outcome": outcome.value,
@@ -913,13 +852,9 @@ class KBDDiagnostic:
                             output_payload={
                                 "conclusion_level": decision.level.value,
                                 "candidate_state": assessment.state.value,
-                                "track_states": {
-                                    track: state.value for track, state in assessment.track_states.items()
-                                },
-                                "fusion_mode": fusion_mode,
                                 "compile_status": "failed" if compile_errors else "passed",
                                 "signal_outcomes": [
-                                    {key: row[key] for key in ("signal_id", "track", "outcome", "failure_mode")}
+                                    {key: row[key] for key in ("signal_id", "outcome", "failure_mode")}
                                     for row in signal_rows
                                 ],
                             },
@@ -931,10 +866,6 @@ class KBDDiagnostic:
                                 "snapshot_id": plan.snapshot_id,
                                 "candidate_state": assessment.state.value,
                                 "conclusion_level": decision.level.value,
-                                "track_states": {
-                                    track: state.value for track, state in assessment.track_states.items()
-                                },
-                                "fusion_mode": fusion_mode,
                                 "compile": {
                                     "status": "failed" if compile_errors else "passed",
                                     "compiler": "agent-service.cdd.plan_compiler",
@@ -2524,7 +2455,6 @@ class KBDDiagnostic:
                 f"**根因（原始文本）**：\n{kbd.root_cause or '（无）'}\n\n"
                 f"**解决方案（原始文本）**：\n{kbd.solution or '（无）'}\n\n"
                 f"**现场证据（关键信号确认）**：\n" + ("\n".join(evidence) if evidence else "- 无")
-                + KBDDiagnostic._format_root_display_anchors(kbd)
             )
         return "\n\n".join(blocks)
 
@@ -2560,9 +2490,6 @@ class KBDDiagnostic:
                 blocks.append(
                     "  - 现场证据：\n" + "\n".join(f"    {line}" for item in evidence for line in item.splitlines())
                 )
-            anchors = KBDDiagnostic._format_root_display_anchors(kbd, indent="  - ")
-            if anchors:
-                blocks.append(anchors)
 
         pending = evaluated_kbds or []
         if pending:
@@ -2574,27 +2501,6 @@ class KBDDiagnostic:
                 reason = KBDDiagnostic._friendly_exclusion_reason(reasons)
                 blocks.append(f"- [参考案例 {support_id} - {kbd.name}]({url})：{reason}")
         return "\n".join(blocks)
-
-    @staticmethod
-    def _format_root_display_anchors(kbd: KBD, *, indent: str = "") -> str:
-        """渲染 text 根因信号的「人工确认锚点」小节（轨道二，与判定完全解耦）。
-
-        仅展示根因结论侧特征（signal_text + 关键词），供运维人工核对；不来自现场取证，
-        不参与 required/SATISFIED 判定，不影响候选状态与召回。无锚点时返回空串。
-        """
-        anchors = getattr(kbd, "root_display_anchors", None) or []
-        lines: list[str] = []
-        for anchor in anchors:
-            text = str(anchor.get("signal_text") or "").strip()
-            keywords = [str(k).strip() for k in (anchor.get("keywords") or []) if str(k).strip()]
-            if not text and not keywords:
-                continue
-            suffix = f"（关键词：{'、'.join(keywords)}）" if keywords else ""
-            lines.append(f"{indent}- {text or '（无描述）'}{suffix}")
-        if not lines:
-            return ""
-        header = f"\n\n{indent}**根因特征（请人工核对）**：" if indent == "" else f"{indent}**根因特征（请人工核对）**："
-        return header + "\n" + "\n".join(lines)
 
     @staticmethod
     def _friendly_exclusion_reason(reasons: list[str]) -> str:

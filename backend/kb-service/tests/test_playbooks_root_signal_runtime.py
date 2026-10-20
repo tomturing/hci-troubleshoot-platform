@@ -1,15 +1,48 @@
-"""根因信号运行时两轨消费测试（PR B / #2）。
+"""关键信号链路的零侵入证明 + 根因链路的独立装配证明。
 
-轨道一：executable 根因信号与关键信号同等并入 CDD 信号计划（仅非语义 live 路径）；
-轨道二：text 根因信号仅作诊断报告「人工确认锚点」展示，绝不进 signals/门禁/召回。
+本文件回答两个架构问题（与被测实现的历史包袱无关）：
+
+1. **删除根因链路会怎样？** —— ``playbooks.py`` 中根因链路只有一行
+   ``**build_root_track_payload(kbd)``。移除它只会让 ``root_*`` 字段消失，
+   其余字段逐字不变。故本文件用「同一 KBD 有无根因信号的序列化结果 diff
+   必须为空」来钉死这一点。
+2. **根因链路会不会偷偷改变关键链路的结论？** —— 不会：``_signals`` 只读
+   ``signals_json``，``_execution_issues`` 只吃关键信号文档，根因信号从不
+   进入这两条路径。
+
+根因信号自身的归一/门禁/锚点逻辑在 ``test_root_signal_track.py`` 中测试。
 """
+
+from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from app.routes import playbooks
-from shared.signals.matcher import evaluate_matcher
+
+KEY_FIELDS = (
+    "id",
+    "kbd_id",
+    "support_id",
+    "name",
+    "title",
+    "category_id",
+    "status",
+    "executable",
+    "execution_issues",
+    "signals",
+    "verification_contract",
+    "generation_metadata",
+    "publish_validation",
+    "semantic_entry_profile",
+    "diagnosis_capability",
+    "recommendable",
+    "root_cause",
+    "solution",
+    "problem_description",
+    "resource_revision",
+)
 
 
 def _extract() -> dict:
@@ -22,6 +55,14 @@ def _extract() -> dict:
     }
 
 
+def _key_signal() -> dict:
+    return {
+        "id": "k1",
+        "acquire": {"tool": "qfk_system", "args": {"command": "dmesg"}},
+        "match": {"type": "keyword", "pattern": "core dump", "mode": "or", "expected": True, "extract": _extract()},
+    }
+
+
 def _root(
     match_type: str,
     match: dict,
@@ -31,10 +72,6 @@ def _root(
     gate_version: int | None = 2,
     gate_status: str | None = "passed",
 ) -> dict:
-    """构造一条根因信号；默认带已过「最少充分集」门禁的 provenance。
-
-    gate_version=None / gate_status=None 用于构造 legacy 存量信号（运行时必须排除）。
-    """
     acquire = {"tool": tool, "args": {"command": "dmesg"}} if match_type == "executable" else None
     provenance: dict = {"source_section": "root_cause", "trace_tier": "root_cause", "evidence": signal_text}
     if gate_version is not None:
@@ -61,246 +98,60 @@ def _entry(*, signals_json=None, root_signal_json=None) -> SimpleNamespace:
         status="published",
         signals_json=signals_json if signals_json is not None else {"schema_version": 2, "signals": []},
         root_signal_json=root_signal_json if root_signal_json is not None else [],
+        root_cause="RC",
+        solution="SOL",
+        problem_description="PD",
     )
 
 
-# ─── 轨道一：根因简单 match → 运行时 CDD Matcher 契约转换 ──────────────────────
-
-
-def test_root_match_single_keyword_stays_keyword_with_runtime_mode():
-    cdd = playbooks._root_match_to_cdd({"type": "keyword", "mode": "all", "expected": ["KVM_EXIT_SHUTDOWN"]})
-    assert cdd["type"] == "keyword"
-    assert cdd["pattern"] == ["KVM_EXIT_SHUTDOWN"]
-    # 根因 all → 运行时 and（绝不能原样透传 all，否则 _normalize_mode 落到 else→or）
-    assert cdd["mode"] == "and"
-    assert cdd["expected"] is True
-    assert cdd["extract"] == _extract()
-
-
-def test_root_match_any_maps_to_or():
-    cdd = playbooks._root_match_to_cdd({"type": "keyword", "mode": "any", "expected": ["alpha", "beta"]})
-    assert cdd["type"] == "keyword"
-    assert cdd["mode"] == "or"
-
-
-def test_root_match_multi_keyword_all_becomes_lookahead_regex():
-    cdd = playbooks._root_match_to_cdd({"type": "keyword", "mode": "all", "expected": ["invalid MAC address", "probe failed"]})
-    assert cdd["type"] == "regex"
-    assert cdd["expected"] is True
-    assert cdd["extract"] == _extract()
-    # 两个关键词都要在 pattern（转义后）里出现
-    assert "invalid\\ MAC\\ address" in cdd["pattern"]
-    assert "probe\\ failed" in cdd["pattern"]
-
-
-def test_root_match_non_convertible_numeric_type_dropped():
-    # 试点实测 executable 根因 100% keyword；数值型无法无损还原，保守丢弃
-    assert playbooks._root_match_to_cdd({"type": "threshold", "mode": "all", "expected": ["80%"]}) is None
-    assert playbooks._root_match_to_cdd({"type": "keyword", "mode": "all", "expected": []}) is None
-
-
-def test_root_match_regex_passthrough_with_whole_stdout_extract():
-    cdd = playbooks._root_match_to_cdd({"type": "regex", "mode": "all", "expected": ["->\\s+/proc/\\d+/maps"]})
-    assert cdd == {"type": "regex", "pattern": "->\\s+/proc/\\d+/maps", "expected": True, "extract": _extract()}
-
-
-# ─── 轨道一：忠实性——转换后的 matcher 在真实 evaluate_matcher 上跨行判定正确 ────
-
-
-@pytest.mark.parametrize(
-    "output,expected",
-    [
-        # 两个关键词分布在不同行，all 语义要求整段输出全部出现 → 命中
-        ("header line\nixgbe: probe failed here\neth0 invalid MAC address detected", True),
-        # 缺少其中一个 → 不误判命中（这正是逐行 keyword.and 会错、正则跨行才对的关键场景）
-        ("only invalid MAC address here, nothing about probe", False),
-    ],
-)
-def test_multi_keyword_all_faithfully_evaluates_across_lines(output, expected):
-    cdd = playbooks._root_match_to_cdd(
-        {"type": "keyword", "mode": "all", "expected": ["invalid MAC address", "ixgbe: probe failed"]}
-    )
-    assert evaluate_matcher(cdd, output).matched is expected
-
-
-# ─── 轨道一：normalize_root_for_runtime 归一结果 ───────────────────────────────
-
-
-def test_normalize_root_for_runtime_shape_and_stable_id():
-    root = _root("executable", {"type": "keyword", "mode": "all", "expected": ["KVM_EXIT_SHUTDOWN"]})
-    norm = playbooks.normalize_root_for_runtime(root)
-    assert norm is not None
-    assert set(norm) == {"id", "acquire", "match", "provenance", "track"}
-    # 证据路径标记：归约时与关键信号分路计算，晚融合互不影响
-    assert norm["track"] == "root"
-    assert norm["provenance"] == {"category": "backend"}
-    assert norm["acquire"] == {"tool": "qfk_system", "args": {"command": "dmesg"}}
-    # 不带 role：交由 compile_signal_plan 经 _required 归为 MUST（与关键信号同等 required）
-    assert "role" not in norm
-    # id 派生稳定且带 root_ 前缀，避免与关键信号 id 碰撞
-    assert norm["id"].startswith("root_")
-    assert norm["id"] == playbooks.normalize_root_for_runtime(root)["id"]
-
-
-def test_normalize_root_for_runtime_drops_non_convertible_and_missing_tool():
-    assert playbooks.normalize_root_for_runtime(_root("executable", {"type": "threshold", "mode": "all", "expected": ["x"]})) is None
-    no_tool = _root("executable", {"type": "keyword", "mode": "all", "expected": ["x"]})
-    no_tool["acquire"] = {"tool": "", "args": {}}
-    assert playbooks.normalize_root_for_runtime(no_tool) is None
-
-
-# ─── 轨道一：_signals 并集（仅 executable 根因进列表，text 不进） ───────────────
-
-
-def test_signals_unions_executable_root_but_excludes_text_root():
-    key_signal = {
-        "id": "k1",
-        "acquire": {"tool": "qfk_system", "args": {"command": "dmesg"}},
-        "match": {"type": "keyword", "pattern": "core dump", "mode": "or", "expected": True, "extract": _extract()},
-    }
+# ── 1. _signals 只读关键信号 ────────────────────────────────────────────────
+def test_signals_never_unions_root_signals():
     entry = _entry(
-        signals_json={"schema_version": 2, "signals": [key_signal]},
-        root_signal_json=[
-            _root("executable", {"type": "keyword", "mode": "all", "expected": ["KVM_EXIT_SHUTDOWN"]}, signal_text="可执行根因"),
-            _root("text", {"type": "keyword", "mode": "all", "expected": ["低微码"]}, signal_text="文本根因"),
-        ],
-    )
-    merged = playbooks._signals(entry)
-    ids = [s["id"] for s in merged]
-    assert "k1" in ids
-    assert any(i.startswith("root_") for i in ids)
-    assert len(merged) == 2  # 关键 1 + 可执行根因 1；text 不进
-    # text 根因关键词绝不出现在并集里
-    assert not any("低微码" in str(s) for s in merged)
-
-
-def test_signals_only_executable_root_kbd_is_nonempty():
-    entry = _entry(
-        signals_json={"schema_version": 2, "signals": []},
+        signals_json={"schema_version": 2, "signals": [_key_signal()]},
         root_signal_json=[_root("executable", {"type": "keyword", "mode": "all", "expected": ["KVM_EXIT_SHUTDOWN"]})],
     )
-    merged = playbooks._signals(entry)
-    assert len(merged) == 1 and merged[0]["id"].startswith("root_")
+    assert playbooks._signals(entry) == [_key_signal()]
 
 
-def test_signals_only_text_root_yields_empty_union():
+def test_signals_empty_when_only_root_present():
+    """仅有根因信号的 KBD 对关键链路而言仍是「无信号」——不因根因而变可执行。"""
     entry = _entry(
-        signals_json={"schema_version": 2, "signals": []},
-        root_signal_json=[_root("text", {"type": "keyword", "mode": "all", "expected": ["低微码"]})],
+        root_signal_json=[_root("executable", {"type": "keyword", "mode": "all", "expected": ["KVM_EXIT_SHUTDOWN"]})]
     )
     assert playbooks._signals(entry) == []
 
 
-# ─── 融合准入闸门：只有过「最少充分集」门禁的信号才参与判定 ────────────────
-
-
-def test_signals_excludes_legacy_root_without_gate_version():
-    """存量（无 gate_version）信号未经充分性校验，不得参与运行时。"""
-    entry = _entry(
-        signals_json={"schema_version": 2, "signals": []},
-        root_signal_json=[
-            _root(
-                "executable",
-                {"type": "keyword", "mode": "all", "expected": ["KVM_EXIT_SHUTDOWN"]},
-                gate_version=None,
-                gate_status=None,
-            )
-        ],
-    )
+def test_signals_tolerates_non_dict_signals_json():
+    entry = _entry(signals_json=["garbage"], root_signal_json=[])
     assert playbooks._signals(entry) == []
 
 
-def test_signals_excludes_gate_warning_root():
-    """疑似恒真（gate_status=warning）只留库供人工改写，不参与判定。"""
+# ── 2. _execution_issues 不因根因信号改变 ───────────────────────────────────
+def test_execution_issues_ignore_root_signals_for_key_track():
+    """仅有可执行根因的 KBD：关键链路仍判不可执行（根因可执行性只体现在 root_*）。"""
     entry = _entry(
-        signals_json={"schema_version": 2, "signals": []},
-        root_signal_json=[
-            _root(
-                "executable",
-                {"type": "keyword", "mode": "all", "expected": ["address"]},
-                gate_version=2,
-                gate_status="warning",
-            )
-        ],
+        root_signal_json=[_root("executable", {"type": "keyword", "mode": "all", "expected": ["KVM_EXIT_SHUTDOWN"]})]
     )
-    assert playbooks._signals(entry) == []
-
-
-def test_signals_excludes_gate_version_below_threshold():
-    entry = _entry(
-        signals_json={"schema_version": 2, "signals": []},
-        root_signal_json=[
-            _root(
-                "executable",
-                {"type": "keyword", "mode": "all", "expected": ["KVM_EXIT_SHUTDOWN"]},
-                gate_version=1,
-            )
-        ],
+    issues = playbooks._execution_issues(
+        playbooks._signals(entry), entry.signals_json, support_id="S1", category_id="虚拟机-001"
     )
-    assert playbooks._signals(entry) == []
+    assert issues
 
 
-# ─── 轨道一：三态门禁（_execution_issues） ─────────────────────────────────────
-
-
-def test_execution_gate_only_executable_root_is_executable():
-    """仅根因 KBD：并集含合法 qfk executable → 不再报「未配置关键信号」，可执行。"""
-    entry = _entry(
-        signals_json={"schema_version": 2, "signals": []},
+def test_execution_issues_identical_with_or_without_root_signals():
+    key_doc = {"schema_version": 2, "signals": [_key_signal()]}
+    with_root = _entry(
+        signals_json=key_doc,
         root_signal_json=[_root("executable", {"type": "keyword", "mode": "all", "expected": ["KVM_EXIT_SHUTDOWN"]})],
     )
-    signals = playbooks._signals(entry)
-    issues = playbooks._execution_issues(signals, {"schema_version": 2, "signals": []})
-    assert issues == []
-
-
-def test_execution_gate_both_kind_union_executable():
-    key_signal = {
-        "id": "k1",
-        "acquire": {"tool": "qfk_system", "args": {"command": "dmesg"}},
-        "match": {"type": "keyword", "pattern": "core dump", "mode": "or", "expected": True, "extract": _extract()},
-    }
-    entry = _entry(
-        signals_json={"schema_version": 2, "signals": [key_signal]},
-        root_signal_json=[_root("executable", {"type": "keyword", "mode": "all", "expected": ["KVM_EXIT_SHUTDOWN"]})],
+    without_root = _entry(signals_json=key_doc)
+    kwargs = {"support_id": "S1", "category_id": "虚拟机-001"}
+    assert playbooks._execution_issues(playbooks._signals(with_root), with_root.signals_json, **kwargs) == (
+        playbooks._execution_issues(playbooks._signals(without_root), without_root.signals_json, **kwargs)
     )
-    issues = playbooks._execution_issues(playbooks._signals(entry), {"schema_version": 2, "signals": [key_signal]})
-    assert issues == []
 
 
-def test_execution_gate_text_only_root_not_executable():
-    """text 根因仅为展示锚点、不并入 signals，故有效运行时信号仍为空 → 非可执行。
-
-    此时空原始文档命中 is_reference_only 前置早退（“仅案例推荐：无现场验证信号”），
-    它比“未配置关键信号”更精确地表达“无可验证现场信号”语义；两路均阻断自动执行。
-    """
-    entry = _entry(
-        signals_json={"schema_version": 2, "signals": []},
-        root_signal_json=[_root("text", {"type": "keyword", "mode": "all", "expected": ["低微码"]})],
-    )
-    signals = playbooks._signals(entry)
-    assert signals == []  # text 根因绝不进并集
-    issues = playbooks._execution_issues(signals, {"schema_version": 2, "signals": []})
-    assert issues  # 非空即不可执行
-    assert any("不进入自动执行" in item or "未配置关键信号" in item for item in issues)
-
-
-# ─── 轨道二：text 根因展示锚点 ─────────────────────────────────────────────────
-
-
-def test_root_display_anchors_extracts_text_only():
-    entry = _entry(
-        root_signal_json=[
-            _root("text", {"type": "keyword", "mode": "all", "expected": ["低微码", "KVM_EXIT_SHUTDOWN"]}, signal_text="低微码致VM关机"),
-            _root("executable", {"type": "keyword", "mode": "all", "expected": ["x"]}, signal_text="可执行根因"),
-        ]
-    )
-    anchors = playbooks._root_display_anchors(entry)
-    assert len(anchors) == 1
-    assert anchors[0]["signal_text"] == "低微码致VM关机"
-    assert anchors[0]["keywords"] == ["低微码", "KVM_EXIT_SHUTDOWN"]
-
-
+# ── 3. 序列化载荷：零侵入 + root_* 纯新增 ───────────────────────────────────
 class _ScalarResult:
     def __init__(self, rows):
         self._rows = rows
@@ -323,59 +174,100 @@ class _SessionContext:
         return False
 
 
-@pytest.mark.asyncio
-async def test_serialized_payload_exposes_display_anchor_without_touching_signals():
-    key_signal = {
-        "id": "k1",
-        "acquire": {"tool": "qfk_system", "args": {"command": "dmesg"}},
-        "match": {"type": "keyword", "pattern": "core dump", "mode": "or", "expected": True, "extract": _extract()},
-    }
-    entry = SimpleNamespace(
-        id=1,
-        support_id="S1",
-        title="T",
-        category_id="虚拟机-001",
-        status="published",
-        signals_json={"schema_version": 2, "signals": [key_signal]},
-        root_signal_json=[_root("text", {"type": "keyword", "mode": "all", "expected": ["低微码"]}, signal_text="低微码致VM关机")],
-        root_cause="RC",
-        solution="SOL",
-        problem_description="PD",
-    )
+async def _serialize(entry: SimpleNamespace, *, frozen=None) -> dict:
+    """走真实路由装配（db / 资源加载器均已 mock）。"""
     session = SimpleNamespace(
         execute=AsyncMock(side_effect=[_ScalarResult([]), _ScalarResult([entry])]), commit=AsyncMock()
     )
     db = SimpleNamespace(async_session_factory=lambda: _SessionContext(session))
     loader = MagicMock()
-    loader.get_active = AsyncMock(return_value=SimpleNamespace())
+    loader.get_active = AsyncMock(return_value=frozen or SimpleNamespace())
     with (
         patch.object(playbooks, "_db_manager", db),
         patch.object(playbooks, "DynamicResourceLoader", return_value=loader),
         patch.object(playbooks, "snapshot_revision_metadata", return_value={"revision": 4}),
     ):
-        response = await playbooks.get_category_playbooks("虚拟机-001")
-    case = response["kbds"][0]
-    assert case["root_display_anchors"] == [{"signal_text": "低微码致VM关机", "keywords": ["低微码"], "match_type": "keyword"}]
-    # 关键：text 锚点绝不进 signals（不参与 compile/required/SATISFIED）
-    assert case["signals"] == [key_signal]
+        response = await playbooks.get_category_playbooks(entry.category_id)
+    return response["kbds"][0]
 
 
 @pytest.mark.asyncio
-async def test_semantic_frozen_path_does_not_union_live_root():
-    """Phase 1 语义/frozen 路径读取冻结快照 signals，绝不并入 live 根因，保持可复现契约。"""
-    entry = SimpleNamespace(
-        id=1,
-        support_id="15936",
-        title="live 工作稿",
-        category_id="vm",
-        status="published",
-        signals_json={"schema_version": 2, "signals": []},
-        # live 根因含一条 executable——语义路径必须忽略它
-        root_signal_json=[_root("executable", {"type": "keyword", "mode": "all", "expected": ["KVM_EXIT_SHUTDOWN"]})],
-        root_cause="live rc",
-        solution="live sol",
-        problem_description="live pd",
+async def test_payload_exposes_full_root_track_fields():
+    entry = _entry(
+        signals_json={"schema_version": 2, "signals": [_key_signal()]},
+        root_signal_json=[
+            _root("executable", {"type": "keyword", "mode": "all", "expected": ["KVM_EXIT_SHUTDOWN"]}, signal_text="关机"),
+            _root("text", {"type": "keyword", "mode": "all", "expected": ["低微码"]}, signal_text="低微码致VM关机"),
+        ],
     )
+    case = await _serialize(entry)
+
+    assert case["root_executable"] is True
+    assert case["root_recommendable"] is True
+    assert case["root_diagnosis_capability"] == "executable"
+    assert case["root_execution_issues"] == []
+    assert case["root_snapshot_id"].startswith("rootsig-")
+    assert case["root_signal_stats"] == {"total": 2, "executable": 1, "text": 1, "gated_out": 0}
+    # 运行时形态不带 track 标记（轨道选择属于编排层）
+    assert set(case["root_signals"][0]) == {"id", "acquire", "match", "provenance"}
+    # text 锚点为独立字段
+    assert case["root_display_anchors"] == [{"signal_text": "低微码致VM关机", "keywords": ["低微码"], "match_type": "keyword"}]
+
+
+@pytest.mark.asyncio
+async def test_key_fields_are_byte_identical_with_or_without_root_signals():
+    """零侵入的强证明：只切换 root_signal_json，20 个关键字段逐字不变。"""
+    signals_json = {"schema_version": 2, "signals": [_key_signal()]}
+    baseline = await _serialize(_entry(signals_json=signals_json))
+    with_roots = await _serialize(
+        _entry(
+            signals_json=signals_json,
+            root_signal_json=[
+                _root("executable", {"type": "keyword", "mode": "all", "expected": ["KVM_EXIT_SHUTDOWN"]}),
+                _root("text", {"type": "keyword", "mode": "all", "expected": ["低微码"]}),
+            ],
+        )
+    )
+    for field in KEY_FIELDS:
+        assert with_roots[field] == baseline[field], f"关键信号字段被根因信号污染: {field}"
+
+    # 反向：新增字段全部 root_ 前缀，且 baseline 也具备（结构恒等，仅取值不同）
+    extra_new = set(with_roots) - set(baseline)
+    assert extra_new == set()
+    assert all(key.startswith("root_") for key in with_roots if key not in KEY_FIELDS)
+
+
+@pytest.mark.asyncio
+async def test_text_anchor_never_leaks_into_signals():
+    entry = _entry(
+        signals_json={"schema_version": 2, "signals": [_key_signal()]},
+        root_signal_json=[_root("text", {"type": "keyword", "mode": "all", "expected": ["低微码"]})],
+    )
+    case = await _serialize(entry)
+    assert case["signals"] == [_key_signal()]
+    assert not any("低微码" in str(signal) for signal in case["signals"])
+
+
+@pytest.mark.asyncio
+async def test_executable_root_never_leaks_into_signals():
+    entry = _entry(
+        signals_json={"schema_version": 2, "signals": [_key_signal()]},
+        root_signal_json=[_root("executable", {"type": "keyword", "mode": "all", "expected": ["KVM_EXIT_SHUTDOWN"]})],
+    )
+    case = await _serialize(entry)
+    assert case["signals"] == [_key_signal()]
+    assert not any(str(signal.get("id", "")).startswith("root_") for signal in case["signals"])
+
+
+@pytest.mark.asyncio
+async def test_semantic_frozen_path_ignores_live_root_signals():
+    """语义冻结路径的关键字段来自冻结快照，live 根因信号不改变它。"""
+    live = _entry(
+        signals_json={"schema_version": 2, "signals": []},
+        root_signal_json=[_root("executable", {"type": "keyword", "mode": "all", "expected": ["KVM_EXIT_SHUTDOWN"]})],
+    )
+    live.category_id = "vm"
+    live.support_id = "15936"
     frozen = SimpleNamespace(
         status="published",
         content={
@@ -390,19 +282,19 @@ async def test_semantic_frozen_path_does_not_union_live_root():
             },
         },
     )
-    session = SimpleNamespace(
-        execute=AsyncMock(side_effect=[_ScalarResult([]), _ScalarResult([entry])]), commit=AsyncMock()
-    )
-    db = SimpleNamespace(async_session_factory=lambda: _SessionContext(session))
-    loader = MagicMock()
-    loader.get_active = AsyncMock(return_value=frozen)
-    with (
-        patch.object(playbooks, "_db_manager", db),
-        patch.object(playbooks, "DynamicResourceLoader", return_value=loader),
-        patch.object(playbooks, "snapshot_revision_metadata", return_value={"revision": 8}),
-    ):
-        response = await playbooks.get_category_playbooks("vm")
-    case = response["kbds"][0]
-    # 语义冻结路径 signals 来自 frozen（空），live executable 根因未被并入
-    assert not any(str(s.get("id", "")).startswith("root_") for s in case["signals"])
+    case = await _serialize(live, frozen=frozen)
+
+    # 关键字段来自冻结快照
+    assert case["signals"] == []
+    assert case["name"] == "冻结标题"
     assert case["executable"] is False
+    # root_* 描述 live 根因（不参与语义路径判定）
+    assert case["root_executable"] is True
+
+
+def test_playbooks_root_hook_is_single_expansion():
+    """装配点必须只有一处展开：便于淘汰时一行删除。"""
+    import inspect
+
+    source = inspect.getsource(playbooks)
+    assert source.count("build_root_track_payload(") == 1

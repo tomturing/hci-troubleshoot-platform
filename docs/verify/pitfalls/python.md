@@ -221,3 +221,66 @@ stronger 的严格子集 → candidate 冗余」为规则剪信号。单测全�
 以及 `test_argv_only_command_matches_absolute_path_basename`。教训：写任何「去重/剪枝/合并」
 规则前，先写出被剪项的**逻辑弱于**保留项的证明；证明依赖的语义维度（此处是 `mode`）必须
 出现在条件里，否则单测只会验证你想到的那一种形态。
+
+## V-030：第二套计划不得继承第一套链路的发布门禁契约，否则编译期全灭
+
+**症状：** 新增根因链路时，把 kb-service 下发的 KBD 载荷（含 `signals_json` 的
+`verification_contract` / `generation_metadata` / `publish_validation`）原样交给第二套计划，
+只把 `signals` 换成根因信号。单测用的假载荷契约恰好为空或指向根因信号，全绿；真实 staging
+数据下 3 个可执行根因 KBD **100% 编译失败**：`verification contract references missing signal: k1`、
+`expert publish validation status is invalid`、`undeclared external variables` → 所有根因候选
+`NOT_EXECUTABLE`，新链路静默零收益。
+
+**根因：** `compile_signal_plan` 用 `verification_contract` 校验「引用的 signal_id 是否都在本计划」，
+并检查发布校验状态。该契约描述的是**第一套信号集合**的发布门禁，与第二套计划无关；把它带过去，
+等于要求第二套计划同时满足第一套的引用闭包与发布状态。这是「跨链路元数据纠缠」，与信号本身无关。
+
+**修复：** 在编排层构造第二套候选时**显式清空**三个发布门禁字段：
+`model_copy(update={"signals": root_signals, "verification_contract": {}, "generation_metadata": {}, "publish_validation": {}})`。
+并用**反事实**验证必要性：保留契约 → 真实数据全部编译失败；清空 → `compile_errors={}`、refs/acquisitions 正常。
+原则：凡「把同一批对象送进第二套校验器」，必须逐一确认每个字段的**归属校验器**，不能默认透传。
+
+**预防测试：** `test_root_track.py::test_build_root_candidates_replaces_signals_and_strips_key_metadata`
+（断言三个字段为空且输入载荷未被修改）+ `test_initial_assessments_of_root_plan_are_not_key_plan`
+（两套计划 signal_id 集合不相交）。教训：跨链路复用数据对象时，先列出「哪些字段属于哪条链路的校验语义」，
+不属于本链路的一律清空，而不是等编译错误逐个豁免。
+
+## V-031：淘汰一条策略必须「删模块即可」——共享内核不得承载任一策略的专属字段
+
+**症状：** 为根因信号在 `shared/cdd/kbd_model.py::KBD` 增加 `root_display_anchors` 等字段，并在
+`plan_compiler` / `candidate_reducer` 增加 track 维度。功能可用、测试全绿，但两条链路从此
+**无法独立淘汰**：删根因要改共享内核、改归约逻辑、改关键链路诊断器；且共享模型被迫理解
+「根因」这一业务概念，两条链路的缺陷相互传染。
+
+**根因：** 把「策略维度的数据/语义」放进了「两条策略共用的内核」。共享内核的最小契约应是
+「KBD 有 signals，信号可编译、可归约、可出结论」，而不是「KBD 有哪几条策略的证据」。
+
+**修复：** 共享内核字节回到引入第二套策略之前（`git diff <base> -- backend/shared/cdd` 为空）；
+第二套策略的候选在**编排层**用 `model_copy` 构造（只替换 `signals`），展示字段由编排层自己的
+纯渲染模块接收（零 `shared` 依赖）；两条链路各自调用同一套纯函数，互不感知对方。
+
+**预防测试：** `test_signal_track_isolation.py` 四类守护——共享内核源码无根因 token、
+`KBD.model_fields` 无 `root_*`、依赖方向单向（根因模块可依赖关键链路，反向禁止）、
+**删除根因模块后关键链路仍可导入**。教训：判断「是否真的独立」，不看有没有开关，
+而看「删掉一条的代码后，另一条是否还能 import、还能跑、还能测」。
+
+## V-032：测试替身（fake）必须严格复刻基类的同步/异步形态，否则会把 fake 违约误判为产品缺陷
+
+**症状：** e2e 脚本继承生产诊断器，只替换物理采集边界，同时把 PARTIAL 报告入口
+`_build_partial_report` 写成 `async def`（因为同类的 `_generate_report` 是 async）。生产代码按基类
+契约**同步**调用它，拿到的是 coroutine，直到报告字符串拼接阶段才抛
+`TypeError: unsupported operand type(s) for +: 'coroutine' and 'str'`。现场看起来像「生产代码漏 await」，
+于是给产品代码加了 `await` → 单测立刻炸 `object str can't be used in 'await' expression`。
+
+**根因：** 同一个基类里两个同类入口的异步形态**不同**：`_generate_report` 是 `async def` 方法，
+`_build_partial_report` 是**同步 `@staticmethod`**（`kbd_differential.py` 内同步调用）。测试替身凭直觉
+统一写成 async，违约后错误在很远的下游才暴露，归因指向了错误的方向。
+
+**修复：** ①测试替身严格复刻基类签名（部分报告用普通 `def`）；②产品代码按基类契约调用，不因
+fake 的形态而改动；③用 `inspect.iscoroutinefunction` 钉死契约
+（`test_report_entry_points_contract_matches_base_class`：`_generate_report` 为真、
+`_build_partial_report` 为假）；④回归钉子用 `MagicMock` 而非 `AsyncMock`——真被 `await` 会立刻
+`TypeError`，比事后断言更早失败。
+
+**教训：** 当「测试替身 + 生产代码」出现形态冲突时，先确认**基类契约**（源码里怎么定义、怎么调用），
+再判断是谁违约；不要用修改产品代码去迁就 fake。

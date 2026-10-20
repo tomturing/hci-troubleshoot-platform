@@ -32,6 +32,7 @@ from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from shared.schemas.semantic_entry import STRONG_PRODUCER_TOOLS
 
+from app.adapters.agents.htp.dual_track import diagnose_with_tracks
 from app.adapters.agents.htp.kbd_differential import KBDDiagnostic
 from app.adapters.agents.htp.react_engine import ReactEngine
 from app.adapters.agents.htp.sop_tools import (
@@ -304,6 +305,17 @@ class InvestigationAgent(BaseAgent):
                 if kbd.get("executable") is True
                 and (not kbd.get("semantic_entry_profile") or has_strong_producer({"signals": kbd.get("signals", [])}))
             ]
+            # 根因链路候选集：由 kb-service 的 root_signal_track 独立判定，不复用关键信号的
+            # executable 过滤——两者是同一目标的两种并行策略，准入条件必须各自成立。
+            # 其中「可执行根因信号」（root_executable）与「text 锚点」是两个独立通道：
+            # 前者进入第二套计划参与判定，后者只用于报告人工核对；text-only 的 KBD 通常
+            # root_executable=False，若用同一个过滤条件会把它的特征永久排除在报告之外。
+            root_cases = [
+                kbd
+                for kbd in all_kbds
+                if kbd.get("root_executable") is True or kbd.get("root_display_anchors")
+            ]
+            root_executable_count = sum(1 for kbd in root_cases if kbd.get("root_executable") is True)
             track = "sop" if sop_results and not sop_fallback_requested else "kbd" if all_kbds else "human_escalation"
             candidate_scope = {
                 "mode": "category_complete",
@@ -317,6 +329,9 @@ class InvestigationAgent(BaseAgent):
                 snapshot_id=snapshot_id,
                 execution_mode=execution_mode,
                 candidate_count=len(raw_cases),
+                # 根因链路候选数独立上报，不得用关键链路候选数代替。
+                root_candidate_count=len(root_cases),
+                root_executable_count=root_executable_count,
                 # 诊断可观测性：记录全量 KBD、语义候选、可执行候选的分布，
                 # 便于定位 guidance_only KBD 是否被正确纳入语义兜底候选。
                 total_kbd_count=len(all_kbds),
@@ -333,6 +348,7 @@ class InvestigationAgent(BaseAgent):
                     "sop_count": len(sop_results),
                     "kbd_count": len(all_kbds),
                     "executable_kbd_count": len(raw_cases),
+                    "root_executable_kbd_count": root_executable_count,
                     "sop_fallback_requested": sop_fallback_requested,
                     "candidate_scope": candidate_scope,
                 },
@@ -500,8 +516,10 @@ class InvestigationAgent(BaseAgent):
             db_session_factory=self._db_session_factory,  # prompt 管理：KBD 诊断的 judge/report Prompt 走 DB
         )
 
-        async for event in self._kbd_diag.diagnose(
+        async for event in diagnose_with_tracks(
+            self._kbd_diag,
             candidates=candidates,
+            root_cases=root_cases,
             env_context=env_ctx,
             session_id=session_id,
             user_id=user_id,
@@ -624,8 +642,16 @@ class InvestigationAgent(BaseAgent):
                         assistant_type=assistant_type,
                         db_session_factory=self._db_session_factory,
                     )
-                    async for event in self._kbd_diag.diagnose(
+                    root_scope_cases = [
+                        item
+                        for item in semantic_cases
+                        if str(item.get("id")) in candidate_ids
+                        and (item.get("root_executable") is True or item.get("root_display_anchors"))
+                    ]
+                    async for event in diagnose_with_tracks(
+                        self._kbd_diag,
                         candidates=[kbd_from_dict(item) for item in selected],
+                        root_cases=root_scope_cases,
                         env_context=env_ctx,
                         session_id=session_id,
                         user_id=user_id,

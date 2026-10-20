@@ -67,9 +67,10 @@ DEFAULT_DSN = os.environ.get("E2E_DSN") or os.environ.get("DATABASE_URL") or ""
 
 
 def _emit_runtime_signals() -> int:
-    """stdin: [{row}] → stdout: {kbd_id: {signals, anchors, verification_contract}}。"""
+    """stdin: [{row}] → stdout: {kbd_id: {signals, root_payload, verification_contract}}。"""
     rows = json.load(sys.stdin)
     from app.routes import playbooks  # noqa: PLC0415
+    from app.services.root_signal_track import build_root_track_payload  # noqa: PLC0415
 
     out: dict[str, Any] = {}
     for row in rows:
@@ -83,12 +84,15 @@ def _emit_runtime_signals() -> int:
             root_signal_json=row.get("root_signal_json") or [],
         )
         signals_json = entry.signals_json if isinstance(entry.signals_json, dict) else {}
+        root_payload = build_root_track_payload(entry)
         out[str(row["id"])] = {
+            # 关键信号链路载荷（与根因完全无关）
             "signals": playbooks._signals(entry),
-            "anchors": playbooks._root_display_anchors(entry),
             "verification_contract": signals_json.get("verification_contract") or {},
+            # 根因信号链路载荷：kb-service 独立装配后原样下发，agent 端不自行拼装
+            "root_payload": root_payload,
             # 准入观测：哪些根因信号被闸门挡在外面，用于解释"S5 未盖章不命中"。
-            "root_admitted": sum(1 for item in playbooks._signals(entry) if str(item.get("track") or "") == "root"),
+            "root_admitted": len(root_payload["root_signals"]),
         }
     json.dump(out, sys.stdout, ensure_ascii=False)
     return 0
@@ -208,14 +212,12 @@ def _target_logs() -> dict[str, str]:
 
 
 def _make_diagnostic(world: World, mode: str):
+    """构造关键/根因两个仿真诊断器（只替换物理采集边界）。"""
     from app.adapters.agents.htp.kbd_differential import KBDDiagnostic  # noqa: PLC0415
+    from app.adapters.agents.htp.root_track import RootTrackDiagnostic  # noqa: PLC0415
 
-    class SimulatedDiagnostic(KBDDiagnostic):
-        """只在采集执行边界替换为仿真输出，其余全部走生产代码。"""
-
-        def __init__(self) -> None:
-            super().__init__(ai_registry=None, tool_executor=None, conversation_id="e2e-session", case_id="E2E")
-            self.track_snapshot: dict[str, Any] = {}
+    class _SimulatedAcquire:
+        """采集边界替身：qkv 生产者按任务列表语义、qfk 按仿真 stdout。"""
 
         async def _execute_acquirer(
             self,
@@ -250,33 +252,34 @@ def _make_diagnostic(world: World, mode: str):
             args = self._resolve_args(step.tool_args_template, env_context, self._variable_pool)
             return world.stdout(acquirer, args), None, None, None
 
+    class SimulatedDiagnostic(_SimulatedAcquire, KBDDiagnostic):
+        """只在采集执行边界替换为仿真输出，其余全部走生产代码。"""
+
+        def __init__(self) -> None:
+            super().__init__(ai_registry=None, tool_executor=None, conversation_id="e2e-session", case_id="E2E")
+
         async def _generate_report(self, *args, **kwargs):  # noqa: ANN002, ANN003
             # 报告文案与判定结论无关，且会调用 LLM；e2e 只举证判定链路。
             return "[e2e] 结论由 CDD 状态机门禁生成，报告正文从略。"
 
-        def _record_signal_track_metrics(self, plan, assessments, fusion_mode):
-            self.track_snapshot = {
-                "fusion_mode": fusion_mode,
-                "candidate_track_states": {
-                    kbd_id: {track: state.value for track, state in item.track_states.items()}
-                    for kbd_id, item in assessments.items()
-                },
-                "signal_outcomes": {
-                    kbd_id: {
-                        ref.signal_id: (
-                            item.signal_outcomes.get(ref.ref_id).value
-                            if item.signal_outcomes.get(ref.ref_id) is not None
-                            else "NOT_RUN"
-                        )
-                        for ref in plan.signals.values()
-                        if ref.kbd_id == kbd_id
-                    }
-                    for kbd_id, item in assessments.items()
-                },
-            }
+    class SimulatedRootDiagnostic(_SimulatedAcquire, RootTrackDiagnostic):
+        """根因链路使用**独立实例**，与关键链路的变量池/采集缓存互不可见。"""
 
-    os.environ["KB_SIGNAL_FUSION_MODE"] = mode
-    return SimulatedDiagnostic()
+        def __init__(self) -> None:
+            super().__init__(ai_registry=None, tool_executor=None, conversation_id="e2e-session", case_id="E2E")
+
+        async def _generate_report(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return "[e2e] 根因链路结论由 CDD 状态机门禁生成，报告正文从略。"
+
+        def _build_partial_report(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            # 必须与基类一致：``KBDDiagnostic._build_partial_report`` 是同步 staticmethod。
+            # 首版在这里写成 async，导致根因链路照契约同步调用时拿到 coroutine，
+            # 报告拼接阶段才炸——fake 写错形态会污染"产品缺陷"的判断。
+            return "[e2e] 根因链路部分结论，报告正文从略。"
+
+    # 模式由 diagnose_with_tracks 的显式参数传入，不写进程级环境变量（避免用例间串味）。
+    os.environ["KB_SIGNAL_TRACK_MODE"] = mode
+    return SimulatedDiagnostic(), SimulatedRootDiagnostic
 
 
 @dataclass
@@ -294,6 +297,7 @@ class RunResult:
 async def _run_case(
     case: dict[str, Any], mode: str, pool: dict[str, str], runtime: dict[str, Any]
 ) -> RunResult:
+    from app.adapters.agents.htp.dual_track import diagnose_with_tracks  # noqa: PLC0415
     from shared.cdd.kbd_model import kbd_from_dict  # noqa: PLC0415
 
     world = World(
@@ -303,7 +307,7 @@ async def _run_case(
         logs=case.get("logs") or {},
         pool=pool,
     )
-    diag = _make_diagnostic(world, mode)
+    diag, root_factory = _make_diagnostic(world, mode)
     candidates = [
         kbd_from_dict(
             {
@@ -314,11 +318,27 @@ async def _run_case(
                 "root_cause": row.get("root_cause") or "",
                 "solution": row.get("solution") or "",
                 "signals": runtime[row["id"]]["signals"],
-                "root_display_anchors": runtime[row["id"]]["anchors"],
                 "verification_contract": runtime[row["id"]]["verification_contract"],
                 "resource_revision": {"revision": 1},
             }
         )
+        for row in case["rows"]
+    ]
+    # 根因候选保持 kb-service 下发的原始载荷：编排层负责构造根因形态，
+    # 共享内核的 KBD 不认识 root_* 字段。
+    root_cases = [
+        {
+            "id": row["id"],
+            "support_id": row["support_id"],
+            "name": row.get("title") or "",
+            "category_id": row.get("category_id") or "",
+            "root_cause": row.get("root_cause") or "",
+            "solution": row.get("solution") or "",
+            "signals": runtime[row["id"]]["signals"],
+            "verification_contract": runtime[row["id"]]["verification_contract"],
+            "resource_revision": {"revision": 1},
+            **runtime[row["id"]]["root_payload"],
+        }
         for row in case["rows"]
     ]
     env_context = {
@@ -326,26 +346,40 @@ async def _run_case(
         "components": ["虚拟机"],
         **(case.get("env") or {}),
     }
-    complete: dict[str, Any] = {}
-    states: dict[str, str] = {}
-    async for event in diag.diagnose(candidates, env_context, session_id="e2e-session"):
-        stage = getattr(event, "stage", "")
-        if stage == "kbd_diag_running":
-            # 逐候选最终态在收尾事件里；complete 事件只给分批名单。
-            states.update(getattr(event, "metadata", {}).get("candidate_states") or {})
-        elif stage == "kbd_diag_complete":
-            complete = event.metadata
-    snap = diag.track_snapshot
+    async for _event in diagnose_with_tracks(
+        diag,
+        candidates=candidates,
+        root_cases=root_cases,
+        env_context=env_context,
+        session_id="e2e-session",
+        mode=mode,
+        root_engine_factory=root_factory,
+    ):
+        pass
+    result = diag.get_result()
     return RunResult(
         scenario=case["name"],
         mode=mode,
-        supported=list(complete.get("supported_kbds") or []),
-        states=states,
-        tracks=snap.get("candidate_track_states") or {},
-        signal_outcomes=snap.get("signal_outcomes") or {},
-        conclusion=str(complete.get("conclusion_level") or "UNKNOWN"),
+        supported=[str(kbd.id) for kbd in (result.matched_kbds if result else [])],
+        states=dict(result.candidate_states) if result else {},
+        tracks={},
+        signal_outcomes={},
+        conclusion=str(result.conclusion_level) if result else "NONE",
         trace=world.calls,
     )
+
+
+def _load_rows_file(path: str) -> list[dict[str, Any]]:
+    """离线行数据（staging 导出的 JSON 数组），用于无 DSN 的可重复复现。"""
+    rows = json.loads(Path(path).read_text(encoding="utf-8"))
+    for row in rows:
+        row["id"] = str(row["id"])
+        row["support_id"] = str(row["support_id"])
+        for key in ("signals_json", "root_signal_json"):
+            value = row.get(key)
+            if isinstance(value, str):
+                row[key] = json.loads(value)
+    return rows
 
 
 # ─── 主流程 ──────────────────────────────────────────────────────────────────
@@ -381,24 +415,28 @@ async def _load_rows(dsn: str, category: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _portable(values: dict[str, Any]) -> str:
-    return json.dumps(values, ensure_ascii=False)
-
-
 def main() -> int:
     if STAGE_SIGNALS_FLAG in sys.argv:
         return _emit_runtime_signals()
 
     parser = argparse.ArgumentParser(description="信号双路并行端到端实测")
     parser.add_argument("--dsn", default=DEFAULT_DSN)
+    parser.add_argument(
+        "--rows-file",
+        default="",
+        help="离线行数据 JSON（staging 导出），用于无 DSN 的可重复复现",
+    )
     parser.add_argument("--category", default="虚拟机-018")
     parser.add_argument("--target", default="627")
     parser.add_argument("--json-out", default="")
     args = parser.parse_args()
-    if not args.dsn:
-        raise SystemExit("缺少数据库 DSN：请传 --dsn 或设置 E2E_DSN / DATABASE_URL 环境变量")
 
-    rows = asyncio.run(_load_rows(args.dsn, args.category))
+    if args.rows_file:
+        rows = _load_rows_file(args.rows_file)
+    else:
+        if not args.dsn:
+            raise SystemExit("缺少数据库 DSN：请传 --dsn 或 --rows-file，或设置 E2E_DSN / DATABASE_URL")
+        rows = asyncio.run(_load_rows(args.dsn, args.category))
     if not rows:
         raise SystemExit(f"分类 {args.category} 没有已发布 KBD")
     runtime = _load_runtime_signals(
@@ -431,6 +469,9 @@ def main() -> int:
             "name": "S1_故障态_两路证据齐",
             "task_present": True,
             "tasks": TASK_MIGRATE_FAILED,
+            # root_only 不执行 qkv 生产者，现场上下文（主机/日期）必须由工单提供；
+            # 这与生产语义一致：根因链路只靠自己拿到的外部变量，绝不从关键链路偷值。
+            "env": {"HOST": "10.20.30.41", "DATE": "2026-10-20"},
             "logs": _target_logs(),
             "default_log": HEALTHY,
         },
@@ -470,7 +511,8 @@ def main() -> int:
 
     results: list[RunResult] = []
     for case in cases:
-        for mode in ("root_or_process", "root_only", "process_only"):
+        # 四模式全覆盖：两条链路各自单跑 + 影子赛马 + 融合上线。
+        for mode in ("process_only", "shadow", "dual", "root_only"):
             results.append(asyncio.run(_run_case({**case, "rows": rows}, mode, pool, runtime)))
 
     # S5：存量未盖章 → 准入闸门必须把它挡在运行时之外。
@@ -518,28 +560,34 @@ def main() -> int:
     )
 
     # ─── 输出举证表 ───
-    print("\n| 场景 | 融合模式 | 结论 | 命中 KBD | 目标状态 | 目标分路状态 |")
-    print("| --- | --- | --- | --- | --- | --- |")
+    print("\n| 场景 | 模式 | 结论 | 命中 KBD | 目标状态 |")
+    print("| --- | --- | --- | --- | --- |")
     for item in results:
         tgt_state = item.states.get(target_id, "-")
-        tracks = item.tracks.get(target_id) or {}
         print(
             f"| {item.scenario} | {item.mode} | {item.conclusion} | "
-            f"{','.join(item.supported) or '—'} | {tgt_state} | {_portable(tracks)} |"
+            f"{','.join(item.supported) or '—'} | {tgt_state} |"
         )
 
     def _hit(scenario: str, mode: str) -> bool:
         return any(item.scenario == scenario and item.mode == mode and target_id in item.supported for item in results)
 
     checks = {
-        "S1 三模式均命中目标": all(_hit("S1_故障态_两路证据齐", m) for m in ("root_or_process", "root_only", "process_only")),
+        "S1 四模式均命中目标": all(
+            _hit("S1_故障态_两路证据齐", m) for m in ("process_only", "shadow", "dual", "root_only")
+        ),
         "S2 关键路判死不命中": not _hit("S2_关键路判死_根因路命中", "process_only"),
         "S2 根因路可独立命中": _hit("S2_关键路判死_根因路命中", "root_only"),
-        "S2 默认融合命中": _hit("S2_关键路判死_根因路命中", "root_or_process"),
-        "S3 健康态不命中": not any(_hit("S3_健康态_仅通用噪声", m) for m in ("root_or_process", "root_only", "process_only")),
-        "S4 兄弟篇特征不误命中目标": not any(_hit("S4_兄弟篇特征", m) for m in ("root_or_process", "root_only")),
+        "S2 融合模式命中": _hit("S2_关键路判死_根因路命中", "dual"),
+        "S2 shadow 不改变线上结论": not _hit("S2_关键路判死_根因路命中", "shadow"),
+        "S3 健康态不命中": not any(
+            _hit("S3_健康态_仅通用噪声", m) for m in ("process_only", "shadow", "dual", "root_only")
+        ),
+        "S4 兄弟篇特征不误命中目标": not any(
+            _hit("S4_兄弟篇特征", m) for m in ("process_only", "shadow", "dual", "root_only")
+        ),
         "S4 兄弟篇自身被正确命中": any(
-            item.scenario == "S4_兄弟篇特征" and item.mode == "root_or_process" and {"202", "305"} & set(item.supported)
+            item.scenario == "S4_兄弟篇特征" and item.mode == "dual" and {"202", "305"} & set(item.supported)
             for item in results
         ),
         "S5 未盖章信号不准入": satisfied,

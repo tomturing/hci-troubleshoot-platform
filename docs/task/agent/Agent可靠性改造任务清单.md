@@ -712,6 +712,10 @@ owner: team
 
 ## 根因信号运行时两轨消费（PR B，2026-10-17）
 
+> **⚠️ 本节方案已于 2026-10-20 被推翻并废除**（用户硬约束：根因信号不得影响关键信号整条链路）。
+> 现行方案见 `docs/solution/knowledge-base/知识库设计.md`《根因信号运行时：两条独立链路 + 晚融合仲裁》。
+> 本节仅作历史记录保留，其中「并入 `KBD.signals`」已下线，勿按本节实施。
+
 承接上面 PR A（逐条编辑），本任务把根因信号接入运行时消费（agent/shared 侧）。方案详见
 `docs/solution/knowledge-base/知识库设计.md`《根因信号运行时两轨消费》与 `docs/solution/架构设计.md`《shared/cdd 根因信号两轨消费契约》。
 
