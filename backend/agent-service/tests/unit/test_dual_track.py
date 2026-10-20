@@ -528,3 +528,90 @@ def test_track_run_summary_is_json_safe():
 
 def test_fusion_evidence_empty_when_no_fusion():
     assert fusion_evidence(None) == ""
+
+
+# ── 9. 赛马度量：两条链路同指标同口径 ──────────────────────────────────
+class _RecordingCounter:
+    def __init__(self) -> None:
+        self.labels_list: list[dict] = []
+
+    def labels(self, **kwargs):
+        self.labels_list.append(kwargs)
+        return self
+
+    def inc(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_dual_mode_records_process_signal_metrics(monkeypatch):
+    """赛马必须同口径：关键链路的信号结果也要带 track=process 写入同一指标。
+
+    根因链路在 ``root_track._record_root_metrics`` 里写 ``track=root``；若关键链路
+    不写，上线后就只能比较候选级结论、无法比较信号级命中率，淘汰决策会缺一半数据。
+    """
+    from app.adapters.agents.htp import dual_track as dual_track_module
+
+    counter = _RecordingCounter()
+    monkeypatch.setattr(dual_track_module, "KBD_SIGNAL_TRACK_OUTCOME_TOTAL", counter)
+
+    engine = FakeProcessEngine(_process_result(steps=[_step("7", "k1", SignalOutcome.SATISFIED)]))
+    await _run(
+        engine,
+        candidates=[_kbd("7")],
+        root_cases=[_root_case("7")],
+        env_context={},
+        session_id="s",
+        mode=MODE_DUAL,
+        root_engine_factory=lambda: FakeRootEngine(_root_result([_root_case("7")])),
+    )
+
+    assert counter.labels_list == [
+        {"track": "process", "outcome": SignalOutcome.SATISFIED.value, "tool": "qfk_system"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_process_only_does_not_emit_process_signal_metrics(monkeypatch):
+    """单跑关键链路时不为度量额外复算（关键链路的信号审计仍落 DB）。"""
+    from app.adapters.agents.htp import dual_track as dual_track_module
+
+    counter = _RecordingCounter()
+    monkeypatch.setattr(dual_track_module, "KBD_SIGNAL_TRACK_OUTCOME_TOTAL", counter)
+
+    engine = FakeProcessEngine(_process_result(steps=[_step()]))
+    await _run(
+        engine,
+        candidates=[_kbd("7")],
+        root_cases=[_root_case("7")],
+        env_context={},
+        session_id="s",
+        mode=MODE_PROCESS_ONLY,
+    )
+
+    assert counter.labels_list == []
+
+
+# ── 10. 只有根因信号的 KBD（关键路无候选）─────────────────────────────────
+@pytest.mark.asyncio
+async def test_root_only_kbd_is_supported_in_dual_even_without_process_candidates():
+    """只有根因信号、没有关键信号的 KBD，在 dual 下也必须能被命中。
+
+    关键路候选为空是合法现场（KBD 尚未抽关键信号）；若融合只看关键候选集合，
+    这类 KBD 会被永久排除，违背「两条链路可分别单独使用」。
+    """
+    engine = FakeProcessEngine(_process_result(steps=[], level="INCONCLUSIVE", supported=[]))
+    await _run(
+        engine,
+        candidates=[],
+        root_cases=[_root_case("7")],
+        env_context={},
+        session_id="s",
+        mode=MODE_DUAL,
+        root_engine_factory=lambda: FakeRootEngine(_root_result([_root_case("7")])),
+    )
+
+    result = engine.get_result()
+    assert result is not None
+    assert [str(kbd.id) for kbd in result.matched_kbds] == ["7"]
+    assert result.candidate_states.get("7") == "SUPPORTED"

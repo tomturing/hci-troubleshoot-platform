@@ -27,12 +27,17 @@ from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from shared.cdd import CandidateAssessment, SignalPlan, apply_scope_results, compile_signal_plan
+from shared.cdd import CandidateAssessment, SignalOutcome, SignalPlan, apply_scope_results, compile_signal_plan
 from shared.cdd.candidate_reducer import initial_assessments, reduce_candidates
 from shared.cdd.kbd_model import KBD
 from shared.observability.logger import get_logger
 
-from app.adapters.agents.htp.kbd_differential import KBDDiagnostic, KBDDiagResult, _tool_contract_checker
+from app.adapters.agents.htp.kbd_differential import (
+    KBDDiagnostic,
+    KBDDiagResult,
+    _acquire_tool,
+    _tool_contract_checker,
+)
 from app.adapters.agents.htp.root_display import append_anchors_to_report, build_anchor_entries
 from app.adapters.agents.htp.root_track import (
     ROOT_TRACK,
@@ -54,7 +59,7 @@ from app.adapters.agents.htp.track_arbiter import (
     runnable_tracks,
 )
 from app.domain.agent_port import AgentEvent
-from app.services.metrics import KBD_CANDIDATE_FUSION_TOTAL
+from app.services.metrics import KBD_CANDIDATE_FUSION_TOTAL, KBD_SIGNAL_TRACK_OUTCOME_TOTAL
 
 logger = get_logger("kbd-dual-track")
 
@@ -233,6 +238,9 @@ async def diagnose_with_tracks(
                     list(getattr(process_result, "steps_executed", []) or []),
                     snapshot_id=snapshot_id,
                 )
+                # 赛马必须同口径：两条链路的信号结果写同一指标（track 标签区分）。
+                # 只在复算已发生时打点，process_only 不为度量额外复算关键链路。
+                _record_process_metrics(process_plan, process_assessments)
 
     # ── 根因链路 ───────────────────────────────────────────────────────────
     if root_track_active:
@@ -365,6 +373,31 @@ def _fused_report_section(fusion: FusionOutcome, process_result: KBDDiagResult) 
         lines.append(f"- 两路结论相反（需人工复核）：{', '.join(fusion.conflicts)}")
     lines.append("- 说明：两条链路各自独立取证，以上差异用于策略赛马评估，不代表现场证据互相否定。")
     return "\n".join(lines)
+
+
+def _record_process_metrics(plan: SignalPlan, assessments: dict[str, CandidateAssessment]) -> None:
+    """关键链路信号级打点（与根因链路同一指标、同一口径）。
+
+    只在 ``dual``/``shadow`` 且存在根因候选时调用：此时关键链路的 plan/assessments
+    已为融合而复算完成，打点是零额外成本。``process_only`` 不为度量复算关键链路
+    （该模式的信号结果仍写入 ``kbd_runtime_signal_outcome`` 审计表）。
+
+    指标失败绝不影响排障主流程（与两条链路同一容错契约）。
+    """
+    try:
+        refs_by_kbd: dict[str, list[Any]] = {}
+        for ref in plan.signals.values():
+            refs_by_kbd.setdefault(ref.kbd_id, []).append(ref)
+        for kbd_id, assessment in assessments.items():
+            for ref in refs_by_kbd.get(kbd_id, []):
+                outcome = assessment.signal_outcomes.get(ref.ref_id, SignalOutcome.NOT_RUN)
+                KBD_SIGNAL_TRACK_OUTCOME_TOTAL.labels(
+                    track=PROCESS_TRACK,
+                    outcome=outcome.value,
+                    tool=_acquire_tool(ref.signal) or "unknown",
+                ).inc()
+    except Exception as exc:
+        logger.warning(event="kbd_process_track_metrics_failed", error=str(exc))
 
 
 def _record_fusion_metrics(fusion: FusionOutcome) -> None:
