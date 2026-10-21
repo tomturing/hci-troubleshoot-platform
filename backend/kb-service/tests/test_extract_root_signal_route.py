@@ -617,25 +617,53 @@ class TestEditRootSignal:
         assert result.signals_count == 1
         assert json.loads(updates[0]["params"]["signals"])[0]["acquire"] is None
 
-    async def test_edit_rejects_unclosable_with_context(self, monkeypatch, corpus):
-        """防绕过回潮：有上下文（producer 只产 NODE_IP）却悬空 HOST 的 executable → 不进 accepted、落 rejected 列。"""
+    async def test_edit_all_rejected_keeps_previous_signals(self, monkeypatch, corpus):
+        """防绕过回潮 + 防静默清空：有上下文（producer 只产 NODE_IP）却悬空 HOST 的 executable
+        全部不可闭环时，只落 rejected 列并 422，**绝不把 root_signal_json 写成空数组**。
+
+        修复前的缺陷：该分支会 UPDATE root_signal_json = []，把专家原有的好信号静默抹掉；
+        「清空」这一意图由 body.signals == [] 单独表达（见下方 clear 用例）。
+        """
+        updates: list[dict[str, Any]] = []
+        entry = {**_ENTRY_ROW, "signals_json": {"signals": [_producer(["NODE_IP"])], "verification_contract": None}}
+        monkeypatch.setattr(route, "_db_manager", _db_factory(entry, updates))
+        self._stub_corpus(monkeypatch, corpus)
+        with pytest.raises(HTTPException) as exc:
+            await route.edit_root_signal(
+                _make_request("PATCH", "/api/admin/kbd/1/root-signal"), 1,
+                route.RootSignalEditRequest(signals=[_EXECUTABLE_PAYLOAD["signal"]]),
+            )
+        assert exc.value.status_code == 422
+        assert exc.value.detail["code"] == "ROOT_SIGNAL_ALL_REJECTED"
+        assert exc.value.detail["retryable"] is True
+        assert len(exc.value.detail["rejected"]) == 1
+        assert exc.value.detail["rejected"][0]["reason_code"] == "ROOT_CLOSURE_DANGLING"
+        # 只写拒绝审计一列：root_signal_json 一个字都不动，既有信号保持原样
+        assert len(updates) == 1
+        assert "root_signal_rejected_json = CAST" in updates[0]["sql"]
+        assert "root_signal_json" not in updates[0]["sql"]
+        # 决策②：拒绝候选不降级 text——candidate 仍是原 executable 形态
+        assert json.loads(updates[0]["params"]["rejected"])[0]["candidate"]["match_type"] == "executable"
+
+    async def test_edit_mixed_text_accepted_not_blocked_by_rejected_executable(self, monkeypatch, corpus):
+        """边界（防过度收紧）：executable 全拒但 text 被 accepted 时不得触发全拒收口。
+
+        `all_rejected` 仅按 executable 维度判定（executable_total>0 且无一 closed）；
+        只要存在 accepted text 就应正常保存，不能把好的 text 根因连同拒绝一起丢弃。
+        """
         updates: list[dict[str, Any]] = []
         entry = {**_ENTRY_ROW, "signals_json": {"signals": [_producer(["NODE_IP"])], "verification_contract": None}}
         monkeypatch.setattr(route, "_db_manager", _db_factory(entry, updates))
         self._stub_corpus(monkeypatch, corpus)
         result = await route.edit_root_signal(
             _make_request("PATCH", "/api/admin/kbd/1/root-signal"), 1,
-            route.RootSignalEditRequest(signals=[_EXECUTABLE_PAYLOAD["signal"]]),
+            route.RootSignalEditRequest(signals=_MIXED_TEXT_AND_DANGLING_PAYLOAD["signals"]),
         )
-        assert result.signals_count == 0
-        assert len(result.rejected) == 1
-        assert result.rejected[0]["reason_code"] == "ROOT_CLOSURE_DANGLING"
-        # 两列均写：accepted 空数组、rejected 含被拒候选；绝不把悬空 executable 塞进 root_signal_json
-        assert len(updates) == 1
-        assert "root_signal_rejected_json = CAST" in updates[0]["sql"]
-        assert json.loads(updates[0]["params"]["signals"]) == []
-        # 决策②：拒绝候选不降级 text——candidate 仍是原 executable 形态
-        assert json.loads(updates[0]["params"]["rejected"])[0]["candidate"]["match_type"] == "executable"
+        assert result.signals_count == 1
+        assert result.signals[0]["match_type"] == "text"
+        persisted = json.loads(updates[0]["params"]["signals"])
+        assert len(persisted) == 1 and persisted[0]["match_type"] == "text"
+        assert len(json.loads(updates[0]["params"]["rejected"])) == 1
 
     async def test_edit_closed_with_producer_retained(self, monkeypatch, corpus):
         """producer 产出 HOST → 人工保存的 {{HOST}} 可执行信号 closed，留在 accepted、不进 rejected。"""
@@ -713,6 +741,63 @@ class TestEditRootSignal:
         with pytest.raises(HTTPException) as exc:
             await route.edit_root_signal(anonymous, 1, route.RootSignalEditRequest(signals=[]))
         assert exc.value.status_code in (401, 403)
+
+
+class TestBackfillWhereClause:
+    """回刷候选筛选口径：v2 输入面已放开整篇 KBD，不得再用 root_cause 长度设门槛。
+
+    回归背景：`char_length(root_cause) >= 30` 是 v1 遗留，会让根因 <30 字的 KBD
+    永久漏出全库回刷范围（且无任何日志提示），与 extract_root_signal 的 v2 口径冲突。
+    """
+
+    async def test_backfill_where_has_no_root_cause_length_filter(self, monkeypatch):
+        from app.routes import admin
+
+        captured: list[str] = []
+
+        class _Rows:
+            def __init__(self, rows: list[Any]) -> None:
+                self._rows = rows
+
+            def all(self) -> list[Any]:
+                return self._rows
+
+            def scalar(self) -> Any:
+                return self._rows[0][0] if self._rows else 0
+
+        class _Session:
+            async def __aenter__(self) -> _Session:
+                return self
+
+            async def __aexit__(self, *exc: Any) -> bool:
+                return False
+
+            async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> _Rows:
+                captured.append(str(stmt))
+                return _Rows([[1]])
+
+        db = MagicMock()
+        db.async_session_factory = lambda: _Session()
+        monkeypatch.setattr(admin, "_db_manager", db)
+
+        async def _fake_submit(**kwargs: Any) -> Any:
+            return MagicMock(
+                batch_id="00000000-0000-0000-0000-000000000001",
+                job_type="extract_root_signal",
+                status="pending",
+                message="ok",
+            )
+
+        monkeypatch.setattr(admin, "_submit_batch_job", _fake_submit)
+        body = admin.RootSignalBackfillRequest(statuses=["published"], only_missing=True)
+        await admin.backfill_extract_root_signal(
+            _make_request(method="POST", path="/api/admin/kbd/batch/extract-root-signal/backfill"),
+            body,
+            MagicMock(),
+        )
+        selects = [sql for sql in captured if "SELECT" in sql]
+        assert selects, "回刷必须实际查询候选集"
+        assert all("char_length(root_cause)" not in sql for sql in selects)
 
 
 class TestConflictCorpus:
