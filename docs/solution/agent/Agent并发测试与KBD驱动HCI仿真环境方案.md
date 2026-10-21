@@ -14,7 +14,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |---|---|---|---|
-| 2026-07-30 | v1.1 | 补齐 hci-real/hci-sim 双轨边界、Go 容器运行时、K3s 独立部署、Scenario Lease、100+ 并发容量模型、真实 HCI Oracle 校准与安全门禁 | [HCI 真实环境与 hci-sim 双轨运行时设计](events/2026-07-30-HCI真实环境与hci-sim双轨运行时设计.md) |
+| 2026-07-30 | v1.1 | 补齐 hci-real/hci-sim 双轨边界、Go 容器运行时、K3s 独立部署、Scenario Lease、100+ 并发容量模型、真实 HCI Oracle 校准与安全门禁 | [HCI 真实环境与 hci-sim 双轨运行时设计](../hci-sim/events/2026-07-30-HCI真实环境与hci-sim双轨运行时设计.md) |
 | 2026-07-28 | v1.0 | 首版 KBD Fixture、共享 hci-sim、场景调度和 100+ 逻辑隔离方案 | [Agent 并发测试与 KBD 驱动 HCI 仿真环境需求](../../requirement/events/2026-07-28-Agent并发测试与KBD驱动HCI仿真环境需求.md) |
 
 ## 0. 先回答最容易混淆的问题

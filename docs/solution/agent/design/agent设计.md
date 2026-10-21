@@ -9,7 +9,7 @@ owner: team
 # Agent Service 设计文档
 
 > **文档目的**：描述 agent-service 的架构设计、核心抽象与各 Agent 实现。  
-> **关联文档**：[agent基类设计.md](./agent基类设计.md) | [架构设计.md](../架构设计.md) | [对话设计.md](../conversation/对话设计.md)
+> **关联文档**：[agent基类设计.md](./agent基类设计.md) | [架构设计.md](../../架构设计.md) | [对话设计.md](../../conversation/对话设计.md)
 
 ---
 
@@ -237,7 +237,7 @@ session_new(conv_id)
 - 支持 `AgentInteractiveRequest`（_ops/request_input → 前端 SOP 操作卡）
 - 不可达时 raise `AgentUnavailableError` → AgentRouter 降级到 htp 实现
 
-设计文档：[2026-05-08-ops-agent方案E-ACP-REST接口设计与实现.md](./events/2026-05-08-ops-agent方案E-ACP-REST接口设计与实现.md)
+设计文档：[2026-05-08-ops-agent方案E-ACP-REST接口设计与实现.md](../events/2026-05-08-ops-agent方案E-ACP-REST接口设计与实现.md)
 
 ### 6.2 PaiAgentAdapter（pydantic-ai）
 
@@ -1448,7 +1448,7 @@ Executor：只执行 verified 的 ResolvedAcquisition
 | 2026-08-04 | v6.2 | KBD 运行时复用共享只读边界，历史 solution/明确写动作 Signal 在调度前 fail closed；SOP 处置节点授权语义保持不变 | [KBD 关键信号只读边界方案](../../knowledge-base/events/2026-08-04-KBD关键信号只读边界方案.md) |
 | 2026-07-27 | v6.1 | 修正 KBD “不主动获取值”的过期描述；补充 QKV/QFK 现场 acquisition、变量池、边缘字面量筛选、256 KiB Fail Closed 与统一工具生命周期设计 | [KBD27123三信号执行闭环方案](../../events/2026-07-27-KBD27123三信号执行闭环方案.md) |
 | 2026-06-01 | v6.0 | 清理僵尸组件：删除 IntentAgent（@deprecated）和 DiagnosticAgent（零调用），更新 AgentRouter v4.3 架构（S0→TriageAgent, S1-S4→InvestigationAgent, S5→RemediationAgent） | — |
-| 2026-06-01 | v5.9 | TriageAgent S0 意图识别三缺陷修复：① 废除直接确认路径，所有情况统一走 AgentInteractiveRequest（缺陷二）；② 增加解析失败兜底，提示用户重新描述（缺陷三）；③ `_format_categories()` 增加 code 格式校验过滤中间节点；④ `_parse_intent_result()` 正则修复（Unicode 转义+半角冒号兼容） | [./events/2026-06-01-S0意图识别三大缺陷根因与改进方案.md](./events/2026-06-01-S0意图识别三大缺陷根因与改进方案.md) |
+| 2026-06-01 | v5.9 | TriageAgent S0 意图识别三缺陷修复：① 废除直接确认路径，所有情况统一走 AgentInteractiveRequest（缺陷二）；② 增加解析失败兜底，提示用户重新描述（缺陷三）；③ `_format_categories()` 增加 code 格式校验过滤中间节点；④ `_parse_intent_result()` 正则修复（Unicode 转义+半角冒号兼容） | [./events/2026-06-01-S0意图识别三大缺陷根因与改进方案.md](../events/2026-06-01-S0意图识别三大缺陷根因与改进方案.md) |
 | 2026-05-29 | v5.8 | 补齐 agent-service Helm deployment.yaml 中 DATABASE_URL 环境变量配置（此前缺失导致数据库认证失败）；统一 config.py 默认值与其他服务一致 |
 | 2026-05-29 | v5.7 | 修复 `main.py` lifespan 中 `db_manager.get_session()` 错误用法：AsyncGenerator 不支持 async with，改用 `async_session_factory()` |
 | 2026-05-29 | v5.6 | 修复 `react_engine.py` 导入路径：`VariableRequestResult` 从 `sop_tools.py` 迁移至 `memory/variable_pool.py`（PR #341），修正 import 语句解决 ImportError

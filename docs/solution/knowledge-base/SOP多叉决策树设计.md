@@ -455,4 +455,4 @@ ORDER BY doc_count ASC;
    - LLM 可以直接以结构化 JSON 形式访问 `prerequisites`、`diagnosis.page_methods`、`solution.quick_recovery` 等字段
    - 集成方式：`@agent.tool async def get_sop_node(...) -> SOPNode`，pydantic-ai 自动序列化并传递给 LLM
    - 验证时间：2026-05-19（已确认 GLMClient 使用 `AsyncOpenAI(base_url=...)` 接入 GLM，OpenAI-compatible，pydantic-ai 零适配成本接入）
-   - 相关文档：[大脑可选-集成重设计方案.md §十一](../agent/大脑可选-集成重设计方案.md)
+   - 相关文档：[大脑可选-集成重设计方案.md §十一](../agent/design/大脑可选-集成重设计方案.md)

@@ -9,9 +9,9 @@ update_trigger: agent工具设计 v2.0 落地实现（T-TOOL-05/06/07 已完成�
 
 # 任务清单：Agent 工具体系 v2.0
 
-> 关联方案：[agent工具设计.md](../../solution/agent/agent工具设计.md)（**必读，理解决策背景后再开发**）  
+> 关联方案：[agent工具设计.md](../../solution/agent/design/agent工具设计.md)（**必读，理解决策背景后再开发**）  
 > 最新任务事件：[bash_exec 容器化契约与工具调用前置校验任务](../events/2026-06-11-bash_exec容器化契约与工具调用前置校验任务.md)
-> 关联方案：[agent设计.md](../../solution/agent/agent设计.md) §十（目录结构）  
+> 关联方案：[agent设计.md](../../solution/agent/design/agent设计.md) §十（目录结构）  
 > 项目根目录：`/mnt/d/aihci/hci-troubleshoot-platform/`
 
 ---

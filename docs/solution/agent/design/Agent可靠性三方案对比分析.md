@@ -270,7 +270,7 @@ Fact Store、AgentEvent v2、ToolExecution 表、ClaimVerifier——每一个都
 
 ## 八、关联文档
 
-- **任务清单** → [Agent可靠性改造任务清单](../../task/agent/Agent可靠性改造任务清单.md)
+- **任务清单** → [Agent可靠性改造任务清单](../../../task/agent/Agent可靠性改造任务清单.md)
 - **现行 Agent 设计** → [agent设计.md](./agent设计.md)
 - **工具设计** → [agent工具设计.md](./agent工具设计.md)
 - **SOP 机制分析** → [sop决策树与滑动窗口机制实效分析.md](./sop决策树与滑动窗口机制实效分析.md)

@@ -9,7 +9,7 @@ update_trigger: agent-service 重构/修复/新功能迭代
 
 # 任务清单：Agent Service
 
-> 关联方案：[agent设计.md](../../solution/agent/agent设计.md)  
+> 关联方案：[agent设计.md](../../solution/agent/design/agent设计.md)  
 > 本文件为任务总览索引，详细实现规格见 `events/` 下各子文件。
 
 ---
@@ -83,7 +83,7 @@ update_trigger: agent-service 重构/修复/新功能迭代
 
 ## P3 新功能：SOP 执行引擎（多叉决策树 + 导航工具化）
 
-> 关联方案：[agent设计.md §12.6–§12.7](../../solution/agent/agent设计.md)  
+> 关联方案：[agent设计.md §12.6–§12.7](../../solution/agent/design/agent设计.md)  
 > 详细规格分两块：数据库 + 核心引擎 + 变量池
 
 ### 里程碑 M1：数据库层（前置，无代码依赖）

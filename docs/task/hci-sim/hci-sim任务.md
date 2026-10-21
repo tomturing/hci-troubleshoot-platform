@@ -1,7 +1,7 @@
 # hci-sim 仿真运行时 · 全量任务
 
 > 本文为 hci-sim 子模块的现行全量任务说明，事件化阶段任务见同目录 `events/`。
-> 设计侧见 [solution/hci-sim/hci-sim设计.md](../solution/hci-sim/hci-sim设计.md)。
+> 设计侧见 [solution/hci-sim/hci-sim设计.md](../../solution/hci-sim/hci-sim设计.md)。
 
 ## 1. 实施边界（对抗性审查结论）
 
