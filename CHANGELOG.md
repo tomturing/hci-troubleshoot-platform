@@ -1,5 +1,84 @@
 # Changelog
 
+## [2.31.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.30.0...v2.31.0) (2026-10-21)
+
+
+### ✨ 新功能
+
+* **admin-ui:** 分类基线统一为 v2.0 全树快照，DB 为事实源消除拖拽漂移 ([#1137](https://github.com/tomturing/hci-troubleshoot-platform/issues/1137)) ([ebf7e96](https://github.com/tomturing/hci-troubleshoot-platform/commit/ebf7e96414b2e5b7e46d765d18ef53721b5f776d))
+* **admin-ui:** 分类树新增「合并子分类到本节点」原子折叠为叶子 ([#1141](https://github.com/tomturing/hci-troubleshoot-platform/issues/1141)) ([6a92dae](https://github.com/tomturing/hci-troubleshoot-platform/commit/6a92dae2e8f5e5be5f9852a8d48187c804f2ceaf))
+* **kb-service:** 根因信号轨阶段二落地（生产抽取+审核UI+全库回刷） ([#1147](https://github.com/tomturing/hci-troubleshoot-platform/issues/1147)) ([4f35817](https://github.com/tomturing/hci-troubleshoot-platform/commit/4f35817c48129e97ef095bbdc1b5646420fe8bde))
+* **kbd:** 关键信号抽取 Prompt 侧加固——去 null 诱因 + 禁空占位 + match/produces 二选一 ([#1164](https://github.com/tomturing/hci-troubleshoot-platform/issues/1164)) ([229a584](https://github.com/tomturing/hci-troubleshoot-platform/commit/229a584fc495ba58a9686e510e30050e5cd59158))
+* **kbd:** 根因信号接入运行时两轨消费（PR B / [#2](https://github.com/tomturing/hci-troubleshoot-platform/issues/2)） ([#1161](https://github.com/tomturing/hci-troubleshoot-platform/issues/1161)) ([4dbc3ae](https://github.com/tomturing/hci-troubleshoot-platform/commit/4dbc3aef211ad538b029f2e0fd11b7f0698eceba))
+* **kbd:** 根因信号逐条编辑 + 修正陈旧 docstring ([#1160](https://github.com/tomturing/hci-troubleshoot-platform/issues/1160)) ([a0b3bf2](https://github.com/tomturing/hci-troubleshoot-platform/commit/a0b3bf22cd4fa34b220f13af7d520d9228b7afa7))
+* **kb:** 分类基线命名规范治理与叶子统一（解A 角色无关统一 ID） ([#1132](https://github.com/tomturing/hci-troubleshoot-platform/issues/1132)) ([83389c1](https://github.com/tomturing/hci-troubleshoot-platform/commit/83389c1ad9227dba038cdf0cadbbb4499c2dc518))
+* **kb:** 分类树拖拽重排即时物化 code（解A 顺序即序号落地） ([#1133](https://github.com/tomturing/hci-troubleshoot-platform/issues/1133)) ([865175e](https://github.com/tomturing/hci-troubleshoot-platform/commit/865175e0d74884da04e288bf78ca0a57eabc969d))
+* **kb:** 根因抽取闭环 PR-1 底座——evaluate_root_closure 纯函数 + 四态分级 ([#1163](https://github.com/tomturing/hci-troubleshoot-platform/issues/1163)) ([d1338b0](https://github.com/tomturing/hci-troubleshoot-platform/commit/d1338b055855bc0914c1a22b02222d930639b6f2))
+* **kb:** 根因抽取闭环 PR-2 文本抽取底座——_FEATURE_PATTERNS 扩 interface_name 括号形态 + 新增 local_interface_name/ipv4 ([#1165](https://github.com/tomturing/hci-troubleshoot-platform/issues/1165)) ([6891ba3](https://github.com/tomturing/hci-troubleshoot-platform/commit/6891ba3326be0ca3e5e702a2f4274fe4d7795fa6))
+* **kb:** 根因抽取闭环 PR-3（option-A 渐进安全）——闭包裁决接入 + 拒绝候选落库 + 全拒显式收口 ([#1166](https://github.com/tomturing/hci-troubleshoot-platform/issues/1166)) ([a73d0b0](https://github.com/tomturing/hci-troubleshoot-platform/commit/a73d0b0bf5260b0d2ef90581e89031c266e9c9a7))
+* **kb:** 根因抽取闭环 PR-4——编辑端闭包硬切分 + 发布门禁软告警 + 审核UI闭包/拒绝候选呈现 + 存量只读审计 ([#1167](https://github.com/tomturing/hci-troubleshoot-platform/issues/1167)) ([b4c5893](https://github.com/tomturing/hci-troubleshoot-platform/commit/b4c5893202488b25a706292770558919c2620f72))
+* **kb:** 根因抽取闭环 PR-5——Prompt 侧注入本 KBD produces 清单提升闭环自洽率 ([#1168](https://github.com/tomturing/hci-troubleshoot-platform/issues/1168)) ([7c04f75](https://github.com/tomturing/hci-troubleshoot-platform/commit/7c04f75347e99d74f49e74f9be72bb17f11b0693))
+* **live-e2e:** 硬盘坏道 L3 Live E2E Smoke 守跨层契约缝隙，杜绝挤牙膏 (V-022) ([#1152](https://github.com/tomturing/hci-troubleshoot-platform/issues/1152)) ([1108cde](https://github.com/tomturing/hci-troubleshoot-platform/commit/1108cdedfbc848fa243c4eaaa39ea59b03761396))
+* **signal:** 关键信号与根因信号双路并行 + 最少充分集判据体系 ([cf9abc8](https://github.com/tomturing/hci-troubleshoot-platform/commit/cf9abc85db458d8486a9084b71a1969cc9adf2d5))
+* **signal:** 关键信号与根因信号双路并行 + 最少充分集判据体系 ([#1172](https://github.com/tomturing/hci-troubleshoot-platform/issues/1172)) ([cf9abc8](https://github.com/tomturing/hci-troubleshoot-platform/commit/cf9abc85db458d8486a9084b71a1969cc9adf2d5))
+* **signal:** 补齐关键链路的信号级赛马指标，并修正淘汰路径的方向性表述 ([#1174](https://github.com/tomturing/hci-troubleshoot-platform/issues/1174)) ([6a579ec](https://github.com/tomturing/hci-troubleshoot-platform/commit/6a579eca41672340fac36b3dc8f873be23e88f8b))
+* **terminal_bridge:** 桌面端口冲突自愈 主 9999 + 备 47324 ([#1120](https://github.com/tomturing/hci-troubleshoot-platform/issues/1120)) ([74c6c24](https://github.com/tomturing/hci-troubleshoot-platform/commit/74c6c2492463194be8c5e313e67cad6f91193390))
+* 打通硬盘坏道 live E2E 真采集，terminal_bridge 仿真会话跳过 PATH 前缀 ([#1154](https://github.com/tomturing/hci-troubleshoot-platform/issues/1154)) ([d8b743f](https://github.com/tomturing/hci-troubleshoot-platform/commit/d8b743ffffe1c8578e52403813a0507d446d2df3))
+
+
+### 🐛 Bug 修复
+
+* **admin-ui,kb-service:** 折叠后整域重排消除 code 空洞 + 修复父节点折叠被重弹 ([#1143](https://github.com/tomturing/hci-troubleshoot-platform/issues/1143)) ([921ccbf](https://github.com/tomturing/hci-troubleshoot-platform/commit/921ccbff19daeb22398accfbdd45a4d2776ce4c5))
+* **admin-ui:** KBD 列表搜索栏去横向滚动条并精简文案与案例ID宽度 ([#1170](https://github.com/tomturing/hci-troubleshoot-platform/issues/1170)) ([4852902](https://github.com/tomturing/hci-troubleshoot-platform/commit/4852902eae8f8d0786e8f5ebcf7aaec94b83ec4a))
+* **admin-ui:** KBD 列表案例 ID 输入框占位符仅保留「案例 ID」 ([#1171](https://github.com/tomturing/hci-troubleshoot-platform/issues/1171)) ([11378eb](https://github.com/tomturing/hci-troubleshoot-platform/commit/11378eb56ca91bf5f23dd4a1fb97a9d6126c6c79))
+* **admin-ui:** 修正分类树展开/折叠事件回写空操作致折叠分组被同步重弹 ([#1140](https://github.com/tomturing/hci-troubleshoot-platform/issues/1140)) ([6083eda](https://github.com/tomturing/hci-troubleshoot-platform/commit/6083edab5ce46a164a9321cb4b0703cd454f2583))
+* **admin-ui:** 分类「相关分支子树」纳入展开态持久化，消除点击即全展开 ([#1138](https://github.com/tomturing/hci-troubleshoot-platform/issues/1138)) ([e197bac](https://github.com/tomturing/hci-troubleshoot-platform/commit/e197bac3a48368582987bbee25cba50c493f27ec))
+* **admin-ui:** 分类树折叠展开状态跨拖拽/点击持久化，不再被强制全开 ([#1136](https://github.com/tomturing/hci-troubleshoot-platform/issues/1136)) ([e8c5618](https://github.com/tomturing/hci-troubleshoot-platform/commit/e8c56187221fb5fc616dc5476336583600df0bb4))
+* **agent:** 根因轨准入路径 HOST 确定性派生（probe3 实锤第 4 层缺口） ([#1178](https://github.com/tomturing/hci-troubleshoot-platform/issues/1178)) ([9c5fa7b](https://github.com/tomturing/hci-troubleshoot-platform/commit/9c5fa7b549becd2bde4008706fed53ee0a3f2d0f))
+* **agent:** 根因轨编排层独立准入，修复真 live E2E 实锤三缺陷 ([#1177](https://github.com/tomturing/hci-troubleshoot-platform/issues/1177)) ([b43cf42](https://github.com/tomturing/hci-troubleshoot-platform/commit/b43cf4265cf5e558e697f7f69b56b1ac981d894d))
+* **ai-client:** 修复 SSE 流末尾 choices=[] 收尾块触发 IndexError 误报模型不可用 ([#1128](https://github.com/tomturing/hci-troubleshoot-platform/issues/1128)) ([8714a7c](https://github.com/tomturing/hci-troubleshoot-platform/commit/8714a7c9da7a88a20e2b61e3983a9b7e9222a53f))
+* **api-gateway:** 修复管理台仿真测试创建 TestRun 401 回归 ([#1124](https://github.com/tomturing/hci-troubleshoot-platform/issues/1124)) ([b8ced62](https://github.com/tomturing/hci-troubleshoot-platform/commit/b8ced622a0d8992cb62b50f602f7def231b140e4))
+* **api-gateway:** 管理台终端历史与关联 KBD 预览改走 admin 真实路径 ([#1118](https://github.com/tomturing/hci-troubleshoot-platform/issues/1118)) ([2d9a70a](https://github.com/tomturing/hci-troubleshoot-platform/commit/2d9a70aa8f725662b8ecbffde44860b853e20422))
+* **api-gateway:** 补 collapse-to-leaf 网关代理路由，修复合并子分类点击 404 ([#1142](https://github.com/tomturing/hci-troubleshoot-platform/issues/1142)) ([5db0aea](https://github.com/tomturing/hci-troubleshoot-platform/commit/5db0aea4042b4b627d69b5dd0368d0f687143cbf))
+* **case-service:** 管理台工单详情改走 admin 专用端点修复归属校验 404 ([#1116](https://github.com/tomturing/hci-troubleshoot-platform/issues/1116)) ([cc76158](https://github.com/tomturing/hci-troubleshoot-platform/commit/cc76158f97867d9721085527aa2a35b059ec3671))
+* **ci:** compose 显式声明 db-migrate 的 MIRROR_MODE，修复海外 Runner 的 apk 404 ([#1182](https://github.com/tomturing/hci-troubleshoot-platform/issues/1182)) ([8026913](https://github.com/tomturing/hci-troubleshoot-platform/commit/8026913cdbe2c707dc7582128ea33ef30487f936))
+* **conversation-service:** 修复管理台详情页对话 403 与审计日志 500 回归 ([#1119](https://github.com/tomturing/hci-troubleshoot-platform/issues/1119)) ([8163a5c](https://github.com/tomturing/hci-troubleshoot-platform/commit/8163a5c0561760bfc87d814f06dcec97c0b759ec))
+* **conversation:** 直连 case-service 补 HMAC 身份签名，修复 env_context 恒空 ([#1179](https://github.com/tomturing/hci-troubleshoot-platform/issues/1179)) ([7297533](https://github.com/tomturing/hci-troubleshoot-platform/commit/729753378f185d49de0201a948fc330020b15d7e))
+* **customer-ui:** 根治SOP变量弹框提交后假报错与重复提交（Q2026101496655） ([#1149](https://github.com/tomturing/hci-troubleshoot-platform/issues/1149)) ([812b8a9](https://github.com/tomturing/hci-troubleshoot-platform/commit/812b8a9c90f5a1704b76e8c66b98dcb8ef3995d6))
+* **diagnosis-service:** 内部管理面响应脱敏采集器模板与KBD内部字段 ([#1114](https://github.com/tomturing/hci-troubleshoot-platform/issues/1114)) ([9062388](https://github.com/tomturing/hci-troubleshoot-platform/commit/9062388b158adb238f5cfa8f40af70cdc646cb22))
+* **kb-service:** 修复 KBD 关键信号抽取候选全拒退化掩盖真因与画像自锁 ([#1159](https://github.com/tomturing/hci-troubleshoot-platform/issues/1159)) ([0acee9a](https://github.com/tomturing/hci-troubleshoot-platform/commit/0acee9a2149b80afd687bb4383d2a5536ef0b313))
+* **kb-service:** 关键信号 orchestrate 显式 null 归一 + 契约拒收消息可定位（KBD 16368） ([#1162](https://github.com/tomturing/hci-troubleshoot-platform/issues/1162)) ([a5db7f0](https://github.com/tomturing/hci-troubleshoot-platform/commit/a5db7f0e16179b315455f4331f10f4e4d141e61d))
+* **kb-service:** 已发布KBD分类审计与6条定向纠绑迁移(044,review_required) ([#1146](https://github.com/tomturing/hci-troubleshoot-platform/issues/1146)) ([a3dce36](https://github.com/tomturing/hci-troubleshoot-platform/commit/a3dce3671543799381d6ad39e4c709b7f8358307))
+* **kb:** 分类手动入口补 code 合规校验与退化护栏 ([#1130](https://github.com/tomturing/hci-troubleshoot-platform/issues/1130)) ([9f73fe8](https://github.com/tomturing/hci-troubleshoot-platform/commit/9f73fe8ad2fa9efc11e46994597cd09fa276d897))
+* **kb:** 分类重排 remap 补全采集映射与诊断链路的 code 引用列 ([#1134](https://github.com/tomturing/hci-troubleshoot-platform/issues/1134)) ([9288605](https://github.com/tomturing/hci-troubleshoot-platform/commit/9288605ffe290e56d27f7d1695d4374fa57c70d0))
+* **kb:** 根因信号人工编辑全拒不再静默清空既有信号 + 移除回刷 root_cause 长度门槛 ([#1180](https://github.com/tomturing/hci-troubleshoot-platform/issues/1180)) ([f68989d](https://github.com/tomturing/hci-troubleshoot-platform/commit/f68989dd9c621a20620abb375824d2e604108e4d))
+* **kb:** 根因抽取全拒收口不得丢弃同批 accepted text 信号 ([#1169](https://github.com/tomturing/hci-troubleshoot-platform/issues/1169)) ([b04a283](https://github.com/tomturing/hci-troubleshoot-platform/commit/b04a283fb56cf14d70ff2d6efeebfd0d307d8659))
+* **kb:** 错挂分组的 KBD 重分类 + 叶子绑定写入门禁防回潮 ([#1139](https://github.com/tomturing/hci-troubleshoot-platform/issues/1139)) ([f5e1b06](https://github.com/tomturing/hci-troubleshoot-platform/commit/f5e1b0686982f23ae00018c8a600008dfef0cdb2))
+* **ops:** PostgreSQL 备份升级为 GFS 分级保留 + 半年上限 ([#1131](https://github.com/tomturing/hci-troubleshoot-platform/issues/1131)) ([12a7dec](https://github.com/tomturing/hci-troubleshoot-platform/commit/12a7dec7bd1f5f5678a1fe1380f6959f161cace3))
+* S0 意图识别改用 JSON 结构化输出解耦模型风格与解析契约 ([#1150](https://github.com/tomturing/hci-troubleshoot-platform/issues/1150)) ([3b10696](https://github.com/tomturing/hci-troubleshoot-platform/commit/3b10696fc24c61216b1f62f604aa8eccc62c96d4))
+* **s0:** 分类 code 形态契约收口与漂移自愈，消除隐形分类 ([#1129](https://github.com/tomturing/hci-troubleshoot-platform/issues/1129)) ([382ce73](https://github.com/tomturing/hci-troubleshoot-platform/commit/382ce7366d158603714e64e2fc73e174b50562c0))
+* **security:** 根治匿名身份Cookie静默轮换导致的会话归属403误报「上游服务暂时不可用」 ([#1148](https://github.com/tomturing/hci-troubleshoot-platform/issues/1148)) ([f099d90](https://github.com/tomturing/hci-troubleshoot-platform/commit/f099d904b9a05fb69f00b775cf63d8d72a0609f7))
+* **sop:** S2/S3 user_questions 事实源约束，消除硬盘坏道重复/幻觉追问 (Q2026101511258) ([#1151](https://github.com/tomturing/hci-troubleshoot-platform/issues/1151)) ([e36d922](https://github.com/tomturing/hci-troubleshoot-platform/commit/e36d922126ac2740db9c48e2158607dd369c7851))
+* **sop:** 编排执行门禁加固 + terminal_bridge 可观测性增强 (Q2026100812343) ([#1122](https://github.com/tomturing/hci-troubleshoot-platform/issues/1122)) ([10cdc6c](https://github.com/tomturing/hci-troubleshoot-platform/commit/10cdc6c1e4aaf8d62a00d25a27c03d1c9f8b8557))
+* **sop:** 落实 SOP 编排门禁设计文档遗漏项 (device_absent/jq/硬拦截) ([#1125](https://github.com/tomturing/hci-troubleshoot-platform/issues/1125)) ([f683868](https://github.com/tomturing/hci-troubleshoot-platform/commit/f683868d330258721e8863f1d867fc1d54e618c7))
+* 修复 [#1153](https://github.com/tomturing/hci-troubleshoot-platform/issues/1153) 遗留单测回归，对齐 case_id 自增契约与 create_case mock ([#1155](https://github.com/tomturing/hci-troubleshoot-platform/issues/1155)) ([5d37562](https://github.com/tomturing/hci-troubleshoot-platform/commit/5d3756227e7c00faf538d8cd774ee8f6fd218793))
+* 修复 kbd_batch_job job_type 约束缺失 set_review_owner/set_unpublishable 导致批量设置审核责任人报错 ([#1117](https://github.com/tomturing/hci-troubleshoot-platform/issues/1117)) ([dd9f9ba](https://github.com/tomturing/hci-troubleshoot-platform/commit/dd9f9ba92cca2dea0f3109fb48dc1a1254b6b287))
+* 统一 case_id 为 DB 自增并修复工单/会话一致性 ([#1153](https://github.com/tomturing/hci-troubleshoot-platform/issues/1153)) ([db30f91](https://github.com/tomturing/hci-troubleshoot-platform/commit/db30f91d563c94a366bf1f06af288b24d3616edb))
+
+
+### ♻️ 代码重构
+
+* **kb,agent,deploy:** 根因信号两轨瘦身收敛（删指纹/收敛两模式/软告警定稿/补 Helm） ([#1181](https://github.com/tomturing/hci-troubleshoot-platform/issues/1181)) ([a04a16a](https://github.com/tomturing/hci-troubleshoot-platform/commit/a04a16ab42ceecc5c9d404887a52f2cd60e376fa))
+* **kb:** 分类拖拽换父+重排合并为单事务原子（消除两步分提交的部分成功态） ([#1135](https://github.com/tomturing/hci-troubleshoot-platform/issues/1135)) ([96d6f1e](https://github.com/tomturing/hci-troubleshoot-platform/commit/96d6f1e0f6b84af1528553a8d0c240439488ba94))
+* **signal:** 根因信号与关键信号拆为两条完全独立链路，结论级晚融合 ([#1173](https://github.com/tomturing/hci-troubleshoot-platform/issues/1173)) ([1930701](https://github.com/tomturing/hci-troubleshoot-platform/commit/1930701f0360b6a876cd14698cfc5b0fc49b6e76))
+
+
+### 📝 文档
+
+* **governance:** 整理 docs 目录结构与文档命名规范 ([#1175](https://github.com/tomturing/hci-troubleshoot-platform/issues/1175)) ([0b5b5f4](https://github.com/tomturing/hci-troubleshoot-platform/commit/0b5b5f4ddb23f4aafe6d67c9315d9cab9efa7040))
+* 新增项目级技能 live-e2e-real-sim（真仿真端到端验证 runbook） ([#1158](https://github.com/tomturing/hci-troubleshoot-platform/issues/1158)) ([c2ae99b](https://github.com/tomturing/hci-troubleshoot-platform/commit/c2ae99bc173a8d7846fa9e6e1e5399d6dceabc33))
+* 知识库设计.md/架构设计.md/knowledge-base README/Agent 可靠性改造任务清单/AGENTS.md 同步。 ([4dbc3ae](https://github.com/tomturing/hci-troubleshoot-platform/commit/4dbc3aef211ad538b029f2e0fd11b7f0698eceba))
+
 ## [2.30.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.29.0...v2.30.0) (2026-10-08)
 
 
