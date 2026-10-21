@@ -1,11 +1,10 @@
-"""编排层测试：四种模式、无根因候选的恒等退化、报告与结果写回。
+"""编排层测试：两种模式、无根因候选的恒等退化、报告与结果写回。
 
 核心不变量：
 1. ``process_only``：根因链路连实例都不创建（淘汰根因链路时一行改回）；
-2. ``dual``/``shadow`` 但没有任何根因候选：完全退化为关键链路单跑，
+2. ``dual`` 但没有任何根因候选：完全退化为关键链路单跑，
    ``engine._result`` 保持原对象不变（上线双链路对绝大多数 KBD 零行为变化）；
-3. ``shadow``：两路都跑，结论只取关键链路；
-4. ``root_only``：关键链路不执行，结论与结果写回全部来自根因链路。
+3. ``dual``：两条链路都跑并融合结论。
 
 根因候选以 **kb-service 原始载荷 dict** 传入，编排层负责构造「根因形态」——
 共享内核的 ``KBD`` 因此不认识任何根因字段，淘汰根因链路无需改共享内核。
@@ -13,6 +12,7 @@
 
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -23,8 +23,8 @@ from app.adapters.agents.htp.dual_track import (
     rebuild_process_track,
 )
 from app.adapters.agents.htp.kbd_differential import KBDDiagResult, StepResult
-from app.adapters.agents.htp.root_track import RootTrackResult, build_root_candidates
-from app.adapters.agents.htp.track_arbiter import MODE_DUAL, MODE_PROCESS_ONLY, MODE_ROOT_ONLY, MODE_SHADOW
+from app.adapters.agents.htp.root_track import RootTrackDiagnostic, RootTrackResult, build_root_candidates
+from app.adapters.agents.htp.track_arbiter import MODE_DUAL, MODE_PROCESS_ONLY
 from app.domain.agent_port import AgentStageUpdate, AgentTextChunk
 from shared.cdd import CandidateState, SignalOutcome, compile_signal_plan
 from shared.cdd.candidate_reducer import initial_assessments, reduce_candidates
@@ -77,7 +77,6 @@ def _root_case(
         "signals": [_signal("k1")],
         "root_signals": [_signal("rs1", "KVM_EXIT_SHUTDOWN")] if executable else [],
         "root_executable": executable,
-        "root_snapshot_id": f"rootsig-{kbd_id}",
         "root_display_anchors": anchors or [],
         "verification_contract": {"evidence_policy": {"must": ["k1"]}},
     }
@@ -131,7 +130,7 @@ def _root_result(
         assessments=assessments,
         decision=decide_conclusion(assessments),
         kbds=models,
-        snapshot_id="rootsig-test",
+        snapshot_id="runtime",
     )
 
 
@@ -152,7 +151,6 @@ class FakeRootEngine:
     def __init__(self, result: RootTrackResult) -> None:
         self.root_result = result
         self.calls: list[dict] = []
-        # root_only 下编排层会把本结果写入 engine._result，故此处也要有 get_result。
         self._result = KBDDiagResult(
             matched_kbds=[],
             steps_executed=[],
@@ -162,8 +160,27 @@ class FakeRootEngine:
             candidate_states=result.state_map(),
         )
 
-    async def diagnose_root(self, **kwargs):
-        self.calls.append(kwargs)
+    async def diagnose_root(
+        self,
+        *,
+        candidates,
+        env_context,
+        session_id,
+        user_id,
+        snapshot_id="",
+        seed_steps=None,
+    ):
+        # 显式签名而非 **kwargs：dual_track 传错参数名时这里立即 TypeError（契约漂移守卫）。
+        self.calls.append(
+            {
+                "candidates": candidates,
+                "env_context": env_context,
+                "session_id": session_id,
+                "user_id": user_id,
+                "snapshot_id": snapshot_id,
+                "seed_steps": seed_steps,
+            }
+        )
         yield AgentStageUpdate(stage="root_diag_complete", metadata={})
 
     def get_result(self):
@@ -299,10 +316,9 @@ async def test_process_only_does_not_append_root_anchors():
     assert "根因特征（请人工核对）" not in engine.get_result().diagnosis_report
 
 
-# ── 3. 无根因候选：dual/shadow 退化为关键链路单跑 ──────────────────────────
+# ── 3. 无根因候选：dual 退化为关键链路单跑 ──────────────────────────────
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", [MODE_DUAL, MODE_SHADOW])
-async def test_without_root_candidates_degrades_to_process_only(mode):
+async def test_without_root_candidates_degrades_to_process_only():
     """上线双链路对绝大多数 KBD 必须零行为变化：连结果对象都不重建。"""
     kbd = _kbd("7")
     process_result = _process_result(steps=[_step()], report="原始报告")
@@ -320,7 +336,7 @@ async def test_without_root_candidates_degrades_to_process_only(mode):
         root_cases=[],
         env_context={"host": "10.0.0.1"},
         session_id="s",
-        mode=mode,
+        mode=MODE_DUAL,
         root_engine_factory=_factory,
     )
 
@@ -328,56 +344,7 @@ async def test_without_root_candidates_degrades_to_process_only(mode):
     assert engine.get_result() is process_result  # 同一对象，未被重建
 
 
-# ── 4. root_only：关键链路不执行 ──────────────────────────────────────────
-@pytest.mark.asyncio
-async def test_root_only_skips_process_track_and_writes_root_result():
-    kbd = _kbd("7")
-    engine = FakeProcessEngine(_process_result(steps=[_step()]))
-    root_engine = FakeRootEngine(_root_result([_root_case("7")]))
-
-    events = await _run(
-        engine,
-        candidates=[kbd],
-        root_cases=[_root_case("7")],
-        env_context={"host": "10.0.0.1"},
-        session_id="s",
-        mode=MODE_ROOT_ONLY,
-        root_engine_factory=lambda: root_engine,
-    )
-
-    assert engine.calls == []  # 关键链路根本没被调用
-    assert [e.stage for e in events] == ["root_diag_complete"]
-    assert engine.get_result() is root_engine.get_result()
-    assert root_engine.calls[0]["write_diagnostic_items"] is True
-
-
-# ── 5. shadow：两路都跑，结论只取关键链路 ────────────────────────────────
-@pytest.mark.asyncio
-async def test_shadow_runs_both_but_keeps_process_conclusion():
-    kbd = _kbd("7")
-    process_result = _process_result(steps=[_step("7", "k1", SignalOutcome.CONTRADICTED)], level="INCONCLUSIVE")
-    engine = FakeProcessEngine(process_result)
-    root_engine = FakeRootEngine(_root_result([_root_case("7")], SignalOutcome.SATISFIED))
-
-    events = await _run(
-        engine,
-        candidates=[kbd],
-        root_cases=[_root_case("7")],
-        env_context={"host": "10.0.0.1"},
-        session_id="s",
-        mode=MODE_SHADOW,
-        root_engine_factory=lambda: root_engine,
-    )
-
-    assert len(engine.calls) == 1 and len(root_engine.calls) == 1
-    assert [e.stage for e in events] == ["kbd_diag_complete", "root_diag_complete"]
-    # 结论保持关键链路（INCONCLUSIVE），根因链路的 SUPPORTED 不影响线上判定
-    assert engine.get_result().conclusion_level == "INCONCLUSIVE"
-    # 并存时证据链归关键链路
-    assert root_engine.calls[0]["write_diagnostic_items"] is False
-
-
-# ── 6. dual：融合结论写回 ────────────────────────────────────────────────
+# ── 4. dual：融合结论写回 ────────────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_dual_fuses_and_writes_back_conclusion():
     kbd = _kbd("7")
@@ -467,6 +434,33 @@ async def test_dual_passes_seed_steps_to_root_track():
     assert root_engine.calls[0]["seed_steps"] is steps
 
 
+@pytest.mark.asyncio
+async def test_dual_passes_snapshot_id_to_root_track():
+    """两条链路必须共享同一现场快照：根因链路自算指纹已删除，漏传会拿空串。"""
+    engine = FakeProcessEngine(_process_result(steps=[_step()]))
+    root_engine = FakeRootEngine(_root_result([_root_case("7")]))
+
+    await _run(
+        engine,
+        candidates=[_kbd("7")],
+        root_cases=[_root_case("7")],
+        env_context={"host": "10.0.0.1"},
+        session_id="s",
+        mode=MODE_DUAL,
+        snapshot_id="inv-snap-1",
+        root_engine_factory=lambda: root_engine,
+    )
+    assert engine.calls[0]["snapshot_id"] == "inv-snap-1"
+    assert root_engine.calls[0]["snapshot_id"] == "inv-snap-1"
+
+
+def test_orchestrator_kwargs_match_real_root_engine_signature():
+    """契约守卫：fake 显式签名只能防单侧漂移，这里对真实类校验 dual_track 实际传参。"""
+    params = inspect.signature(RootTrackDiagnostic.diagnose_root).parameters
+    for name in ("candidates", "env_context", "session_id", "user_id", "snapshot_id", "seed_steps"):
+        assert name in params, f"真实 diagnose_root 缺少 dual_track 传入的参数：{name}"
+
+
 # ── 7. 隔离：根因链路的候选集与关键链路分开 ──────────────────────────────
 @pytest.mark.asyncio
 async def test_root_engine_receives_only_root_executable_cases():
@@ -496,7 +490,16 @@ async def test_root_failure_does_not_break_process_result(monkeypatch):
     class ExplodingRoot:
         root_result = RootTrackResult()
 
-        async def diagnose_root(self, **kwargs):
+        async def diagnose_root(
+            self,
+            *,
+            candidates,
+            env_context,
+            session_id,
+            user_id,
+            snapshot_id="",
+            seed_steps=None,
+        ):
             raise RuntimeError("root boom")
             yield  # pragma: no cover
 
@@ -594,7 +597,7 @@ async def test_process_only_does_not_emit_process_signal_metrics(monkeypatch):
 
 # ── 10. 只有根因信号的 KBD（关键路无候选）─────────────────────────────────
 @pytest.mark.asyncio
-async def test_root_only_kbd_is_supported_in_dual_even_without_process_candidates():
+async def test_root_signal_only_kbd_is_supported_in_dual_even_without_process_candidates():
     """只有根因信号、没有关键信号的 KBD，在 dual 下也必须能被命中。
 
     关键路候选为空是合法现场（KBD 尚未抽关键信号）；若融合只看关键候选集合，

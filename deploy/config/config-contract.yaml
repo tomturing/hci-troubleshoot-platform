@@ -125,6 +125,20 @@ helm_equivalents:
     value_paths: [kbService.extractSignalsFormatMaxAttempts]
   EXTRACT_SIGNALS_LLM_TIMEOUT:
     value_paths: [kbService.extractSignalsLlmTimeoutSec]
+  # 根因信号第二抽取轨（与关键信号 Prompt/门禁解耦）。均为空时回退 EXTRACT_SIGNALS_* / LLM_*，
+  # 故本地 Compose 不需单独配置（.env.example 不声明，靠回退）。
+  ROOT_SIGNAL_MODEL:
+    value_paths: [kbService.rootSignalModel]
+  ROOT_SIGNAL_BASE_URL:
+    value_paths: [kbService.rootSignalBaseUrl]
+  ROOT_SIGNAL_API_KEY:
+    value_paths: [secrets.rootSignalApiKey]
+  ROOT_SIGNAL_MAX_TOKENS:
+    value_paths: [kbService.rootSignalMaxTokens]
+  ROOT_SIGNAL_LLM_TIMEOUT:
+    value_paths: [kbService.rootSignalLlmTimeoutSec]
+  ROOT_SIGNAL_CORPUS_TTL:
+    value_paths: [kbService.rootSignalCorpusTtlSec]
   KBD_BATCH_STALE_AFTER_SECONDS:
     value_paths: [kbService.batchStaleAfterSeconds]
   LLM_ENABLE_THINKING:
@@ -141,6 +155,9 @@ helm_equivalents:
     value_paths: [agentService.llmLogprobs]
   LLM_TOP_LOGPROBS:
     value_paths: [agentService.llmTopLogprobs]
+  # 双链路运行模式：dual（默认）/ process_only；shadow / root_only 已于 2026-10-21 删除。
+  KB_SIGNAL_TRACK_MODE:
+    value_paths: [agentService.signalTrackMode]
   LLM_GLOBAL_CONCURRENCY:
     value_paths: [kbService.llmGlobalConcurrency]
   LLM_TIMEOUT:

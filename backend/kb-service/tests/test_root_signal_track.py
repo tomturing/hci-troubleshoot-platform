@@ -289,7 +289,6 @@ def test_payload_executable_kbd():
     assert payload["root_diagnosis_capability"] == "executable"
     assert payload["root_execution_issues"] == []
     assert payload["root_signal_stats"] == {"total": 1, "executable": 1, "text": 0, "gated_out": 0}
-    assert payload["root_snapshot_id"].startswith("rootsig-")
 
 
 def test_payload_text_only_kbd_is_reference_only():
@@ -307,7 +306,6 @@ def test_payload_without_roots_is_none_capability():
     assert payload["root_executable"] is False
     assert payload["root_recommendable"] is False
     assert payload["root_diagnosis_capability"] == "none"
-    assert payload["root_snapshot_id"] == "rootsig-none"
 
 
 def test_payload_counts_gated_out_signals():
@@ -320,17 +318,6 @@ def test_payload_counts_gated_out_signals():
     payload = track.build_root_track_payload(entry)
     assert payload["root_signals"] == []
     assert payload["root_signal_stats"] == {"total": 2, "executable": 0, "text": 0, "gated_out": 2}
-
-
-def test_payload_snapshot_id_stable_and_set_sensitive():
-    a = [_root("executable", {"type": "keyword", "expected": ["a"]})]
-    b = [_root("executable", {"type": "keyword", "expected": ["b"]})]
-    assert track.build_root_track_payload(_entry(root_signal_json=a))["root_snapshot_id"] == track.build_root_track_payload(
-        _entry(root_signal_json=a)
-    )["root_snapshot_id"]
-    assert track.build_root_track_payload(_entry(root_signal_json=a))["root_snapshot_id"] != track.build_root_track_payload(
-        _entry(root_signal_json=b)
-    )["root_snapshot_id"]
 
 
 def test_payload_mixed_kbd_keeps_both_tracks_visible():
