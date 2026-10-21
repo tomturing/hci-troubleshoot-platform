@@ -39,5 +39,5 @@
 | 实施或审查当前阶段 | 上表（严格按 A→E） |
 | 看用户视角（喂 KBD / 拿 Lease / 在哪验收 / 结果过没过） | [hci-sim 设计（全量）](hci-sim设计.md) |
 | 看能力缺口与优先级 / 仿真环境构造全流程图 | [能力缺口对抗性审查与仿真环境构造流程全景](hci-sim能力缺口对抗性审查与仿真环境构造流程.md) |
-| 看验证证据 | [verify/hci-sim/README.md](../verify/hci-sim/README.md) |
-| 看任务排期 | [task/hci-sim/README.md](../task/hci-sim/README.md) |
+| 看验证证据 | [verify/hci-sim/README.md](../../verify/hci-sim/README.md) |
+| 看任务排期 | [task/hci-sim/README.md](../../task/hci-sim/README.md) |

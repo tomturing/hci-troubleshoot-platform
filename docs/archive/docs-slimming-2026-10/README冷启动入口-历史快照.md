@@ -13,6 +13,8 @@ owner: team
 > 与自动生成的发布事实源 `CHANGELOG.md`（release-please）以及各主题 `events/` 事件文档重复，
 > 且自 2026-09-23 起未再更新，继续留在第一屏会让读者把过期快照误当现状。
 > 依据 `docs/文档管理规范.md` §12.3：本目录内容不作为主干依赖，只作历史追溯。
+> 原文中 12 条事件文档链接已按新位置补上 `../../` 前缀（仅路径前缀，正文未改），
+> 否则会从原来的「相对 docs/」变成失效路径。
 
 ## 里程碑记录（原记录时间点，不代表本次部署状态）
 
@@ -69,7 +71,7 @@ owner: team
 
 | 组别 | 当前状态 | 需求 | 方案 | 任务 | 验证 |
 |---|---|---|---|---|---|
-| K3s 受管 terminal_bridge | ✅ 27123 Agent E2E 已通过受管单副本 Bridge；多副本/容量属于 P2 | [需求](requirement/events/2026-08-10-K3s受管terminal_bridge启用需求.md) | [方案](solution/events/2026-08-10-K3s受管terminal_bridge启用方案.md) | [任务](task/events/2026-08-10-K3s受管terminal_bridge启用任务.md) | [验证](verify/events/2026-08-10-K3s受管terminal_bridge启用验证.md) |
-| hci_sim 独立数据库 | 🟡 Run/Bundle/Result/outbox 与权限隔离已通过；主库 15 张空旧表 contract/drop 和恢复演练待独立完成 | [需求](requirement/hci-sim/events/2026-08-10-hci_sim独立数据库隔离需求.md) | [方案](solution/hci-sim/events/2026-08-10-hci_sim独立数据库隔离方案.md) | [任务](task/hci-sim/events/2026-08-10-hci_sim独立数据库隔离任务.md) | [验证](verify/hci-sim/events/2026-08-10-hci_sim独立数据库隔离验证.md) |
-| 仿真测试迁移与 Agent context | ✅ 27123 的持久化 context、真实 Case/Conversation、Agent 命令和 Result E2E 已通过；其他 KBD 按 Bundle gate 判定 | [需求](requirement/events/2026-08-10-仿真测试迁移与Agent上下文绑定需求.md) | [方案](solution/events/2026-08-10-仿真测试迁移与Agent上下文绑定方案.md) | [任务](task/events/2026-08-10-仿真测试迁移与Agent上下文绑定任务.md) | [验证](verify/events/2026-08-10-仿真测试迁移与Agent上下文绑定验证.md) |
+| K3s 受管 terminal_bridge | ✅ 27123 Agent E2E 已通过受管单副本 Bridge；多副本/容量属于 P2 | [需求](../../requirement/events/2026-08-10-K3s受管terminal_bridge启用需求.md) | [方案](../../solution/events/2026-08-10-K3s受管terminal_bridge启用方案.md) | [任务](../../task/events/2026-08-10-K3s受管terminal_bridge启用任务.md) | [验证](../../verify/events/2026-08-10-K3s受管terminal_bridge启用验证.md) |
+| hci_sim 独立数据库 | 🟡 Run/Bundle/Result/outbox 与权限隔离已通过；主库 15 张空旧表 contract/drop 和恢复演练待独立完成 | [需求](../../requirement/hci-sim/events/2026-08-10-hci_sim独立数据库隔离需求.md) | [方案](../../solution/hci-sim/events/2026-08-10-hci_sim独立数据库隔离方案.md) | [任务](../../task/hci-sim/events/2026-08-10-hci_sim独立数据库隔离任务.md) | [验证](../../verify/hci-sim/events/2026-08-10-hci_sim独立数据库隔离验证.md) |
+| 仿真测试迁移与 Agent context | ✅ 27123 的持久化 context、真实 Case/Conversation、Agent 命令和 Result E2E 已通过；其他 KBD 按 Bundle gate 判定 | [需求](../../requirement/events/2026-08-10-仿真测试迁移与Agent上下文绑定需求.md) | [方案](../../solution/events/2026-08-10-仿真测试迁移与Agent上下文绑定方案.md) | [任务](../../task/events/2026-08-10-仿真测试迁移与Agent上下文绑定任务.md) | [验证](../../verify/events/2026-08-10-仿真测试迁移与Agent上下文绑定验证.md) |
 
