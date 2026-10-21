@@ -2,7 +2,7 @@
 status: active
 category: verify
 audience: agent
-last_updated: 2026-10-20
+last_updated: 2026-10-21
 owner: team
 update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变更
 ---
@@ -15,7 +15,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 > 2. 再写入对应分类文件
 > 3. 同一 commit/PR 提交，不允许分开提交
 >
-> **下一个可用编号：V-033**（旧格式延续：PIT-042）
+> **下一个可用编号：V-035**（旧格式延续：PIT-042）
 
 ---
 
@@ -26,7 +26,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 | 触发场景 | 读取文件 | 当前条目 |
 |---------|---------|---------|
 | 任何涉及进程/状态/外部服务的问题排查 | [debugging.md](debugging.md) | 原则一~ 六 + 工单500 + V-004、V-006、V-019、V-020、V-022、V-028 |
-| 编写/审查 Python（ORM/异常/数据类） | [python.md](python.md) | PIT-003, PIT-004, PIT-009, PIT-040, PIT-041, V-024, V-026, V-027, V-029, V-030, V-031, V-032 |
+| 编写/审查 Python（ORM/异常/数据类） | [python.md](python.md) | PIT-003, PIT-004, PIT-009, PIT-040, PIT-041, V-024, V-026, V-027, V-029, V-030, V-031, V-032, V-033, V-034 |
 | 编写/审查前端（pnpm/Vue/Dockerfile） | [frontend.md](frontend.md) | PIT-005, PIT-023, PIT-025, PIT-028, PIT-029, V-001, V-002, V-003, V-005, V-007, V-016, V-023, V-025 |
 | 调试 Dispatcher/状态机/幂等资源 | [dispatcher.md](dispatcher.md) | PIT-006, PIT-007, PIT-008, V-017, V-021 |
 | OpenClaw 401/崩溃/WebSocket/AI 超时 | [openclaw.md](openclaw.md) | PIT-010, PIT-013, PIT-026, PIT-027, PIT-030, PIT-032, PIT-035, V-018 |
@@ -35,7 +35,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 
 ## PIT 编号注册表（验证类）
 
-> 旧版全局编号注册表见 git 历史 `docs/pitfalls/_index.md`。
+> 旧版全局编号注册表见 git 历史（目录迁移前的 pitfalls 索引，现已拆为 deploy/verify 两处）。
 > 此处仅登记隶属本目录的 PIT 条目，防止新增编号重复。
 
 | 编号 | 文件 | 描述 |
@@ -73,6 +73,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 | V-031 | python.md | 淘汰一条策略必须「删模块即可」：共享内核不得承载任一策略的专属字段，候选构造下沉到编排层 |
 | V-032 | python.md | 测试替身必须复刻基类同步/异步形态（_build_partial_report 是同步 staticmethod），否则会把 fake 违约误判为产品缺陷 |
 | V-033 | python.md | 测试替身的 `**kwargs` 会吞掉调用契约漂移：删参数后单测仍全绿、真实回放即 TypeError，必须显式签名 + 真实类签名守卫 |
+| V-034 | python.md | 搬移 Markdown 或按「改动集合」扫描时基准一变引用即断：相对链接需按新位置回算，`git diff --name-only` 需 `-c core.quotePath=off` 否则中文名文档静默跳出增量门禁 |
 | PIT-004 | python.md | Pydantic 验证 |
 | PIT-005 | frontend.md | pnpm workspace |
 | PIT-006 | dispatcher.md | 分布式锁 |
