@@ -2,7 +2,7 @@
 status: active
 category: meta
 audience: all
-last_updated: 2026-09-23
+last_updated: 2026-10-21
 owner: team
 update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑达成）必须更新第一屏
 ---
@@ -35,69 +35,22 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 > 当前工作区：无信号案例发布与标题推荐已完成本地实现和定向测试；文档已按主题收敛。尚未提交、部署或进行真实检索准确率评测。
 
 <details>
-<summary>历史里程碑记录（原记录时间点，不代表本次部署状态）</summary>
-
+<summary>最近 5 个里程碑（完成日期倒序，原文逐字保留在归档快照）</summary>
 
 | 里程碑 | 状态 | 完成日期 |
 |--------|------|---------|
-| P0 系统基线修复（5段式 Prompt + 测试覆盖） | ✅ 完成 | 2026-03-23 |
-| P1 知识库重建（知识原子结构） | 🔄 进行中 | — |
-| P2 诊断状态机代码落地 | ✅ 完成 | 2026-04-07 |
-| P3 ReAct 引擎与工具接入 | ⚠️ 执行器已实现，文档待补 | — |
-| P4 工具扩展与数据管道 | 🔲 待启动 | — |
-| dashscope 多模型直连（PR #158） | ✅ 完成 | 2026-04-16 |
-| GitOps App of Apps 分层架构（PR #159） | ✅ 完成 | 2026-04-16 |
-| nginx 动态 DNS 解析修复（PR #160） | ✅ 完成 | 2026-04-17 |
-| admin 分类详情页 UI 修复：标题对齐/Markdown XSS/a11y（PR #200） | ✅ 完成 | 2026-04-22 |
-| agent-service/eval-service 服务拆分与测试覆盖（PR #309, #310） | ✅ 完成 | 2026-05-21 |
-| admin SOP 文档详情弹窗决策树高保真与自适应渲染优化 (PR #353, #355) | ✅ 完成 | 2026-05-29 |
-| KBD/QFK 安全非 JSON 行列提取与完整输出变量 | ✅ 完成 | 2026-07-27 |
-| KBD 多条历史 QFK 管道的分步修复与统一保存 | ✅ 完成 | 2026-07-27 |
-| KBD 自动执行门禁与 HTP 人工升级确认修复 | ✅ 完成 | 2026-07-27 |
-| Terminal Bridge 真实 UI 入口信任边界、Alloy 与端到端可观测性 P0 | ✅ 真实案例重验与全链路关联完成 | 2026-07-30 |
-| 运行时代码完整性防护（禁止源码热补丁覆盖镜像） | ✅ 完成 | 2026-07-27 |
-| KBD QKV/QFK 三信号执行闭环与 39 MB 大输出边缘筛选 | ✅ 代码与自动验证完成，待 PR 部署后现场复测 | 2026-07-27 |
-| KBD 关键信号结果用户化与 `ps -p PID -o cmd=` 提取契约 | ✅ 代码与 59 项自动验证完成，待修正 KBD revision 后现场复测 | 2026-07-28 |
-| KBD 截图证据与可执行诊断契约 | 🟡 126/126 来源完整；122 条自动 Proposal；4 条工程 Contract fixture 仅完成 Handler Build/Decision Replay；0/126 专家 Gold | 2026-07-29 |
-| KBD 专家复核、不可变版本与 Capability 闭环 | 🟡 静态审核、Vision/Signal 编辑、published maintenance working、统一写门禁和 Agent Runtime Discovery 已完成；可信 SSO、真实 replay、评估导出待实施；0/126 Expert Gold | 2026-07-30 |
-| KBD 专家 Signal 编辑与执行契约一致性 | ✅ 代码级完成：角色单一事实来源、编辑 Contract 自动同步、草稿/发布门禁分层；KBD30880 UI 人工验收待部署后执行，不计 Expert Gold | 2026-07-30 |
-| KBD Expert 发布与 Agent 消费一致性 | 🟡 代码级完成：独立发布盖章、Agent freshness、旧角色冲突规范化、替代证据、END 与 df Use% 修复；部署后 KBD30880/40061 真实 replay 待完成，0/126 Expert Gold | 2026-07-31 |
-| QFK 系统执行域与统一文本取值 | 🟡 代码级完成：aCLI `--container` 与 Bridge container 边界分离；Matcher/产出变量复用安全 TextExtract；真实 HCI、Admin 构建和 KBD40061 replay 待验 | 2026-07-31 |
-| KBD 专家监督与运行效果数据闭环 | 🟡 已完成可独立产生的数据：原因码/删除原因、精确 Agent runtime revision、CDD 编译/逐 Signal outcome、Capability Gap、运行指标和评估导出；可信 SSO、Replay、真实客户执行、0/126 Expert Gold、Challenger 仍未完成 | 2026-07-31 |
-| KBD 最小回放证据契约与正式专家复核启动 | 🟡 运行审计已保存不可变版本、哈希和 Terminal Bridge artifact 查找键；正式专家复核可开始积累，但 manifest 明确不可重放，0/126 Expert Gold | 2026-07-31 |
-| KBD Pipeline Stage 6 运行时契约预检 | ✅ 代码级完成：标准源码入口自动加载同 checkout 的 `backend/shared`，包含审计的完整流水线在任何生产 Stage 前预检；KBD40061 完整环境重跑待人工确认，不计 Expert Gold | 2026-07-31 |
-| KBD 截图 Evidence v3 展示与单图专家确认 | 🟡 代码级完成：正文卡片展示 OCR、Observed Facts 与语义确认状态；`reviewed_image_seqs` 只接受严格非负整数，未确认图片 Evidence 不被补写；hci-dev UI 人工验收待新镜像部署 | 2026-08-03 |
-| KBD Candidate 三态门禁与批量自查 | 🔄 专家修复/删除边界已完成；第四批 KBD32300/33510/33882/34094/34164 revisions 142～146 真实同批复验通过；后续批次继续按每批 5 篇推进 | 2026-08-04 |
-| KBD 关键信号输入边界隔离 | ✅ 代码级完成：仅诊断章节截图的原子观察可进入 Prompt；根因/方案/未知章节图片与截图上下文 fail closed，Candidate 仅能引用本轮实际输入的图片区域，不要求正文 evidence 与图片 OCR 跨来源逐字相等；KBD27736 重抽仍须专家触发 | 2026-08-04 |
-| KBD 人工复核标签三态纠偏 | ✅ 代码与自动验证完成：普通 Signal 无标签；待复核 Signal 按专家是否保存显示黄/绿；详情 API 从现有 Revision 派生，不新增数据库状态 | 2026-08-04 |
-| KBD 关键信号统一过滤、取值与输出 | ✅ 代码与自动验证完成：same_record 包含/排除独立关系、完整行/文本行列/JSON、可选 AI、Match/Produce、qfk_log 有界保存与四类完整链路矩阵；真实 HCI replay 待部署后执行 | 2026-08-05 |
-| KBD 关键信号两步处理交互统一 | ✅ 代码与自动验证完成：匹配模式和每个产出变量统一为“处理单元 → 第一步取值 → 第二步判断/产出”；取值/判定关键字独立，交互与样式由共享组件保证一致；多行关键字编辑保留输入换行，保存时按行归一化 | 2026-08-05 |
-| QKV 输出后处理 | ✅ 文档与最小确定性闭环完成：QKV 同一 Signal 内支持投影后的转换、特征提取和断言；不新增 qkv_var；AI 兜底保留受控契约 | 2026-08-25 |
-| QFK 数值 AI 取值、判断与产出统一 | ✅ 代码与自动验证完成，待 PR CI：数值 Matcher 先从确定性候选行取得经逐字回查的 AI 类型化数值，再执行 delta/trend/threshold；非数值 Matcher 保持后置证据提取，Produce 原子写入且同 Signal 变量名唯一 | 2026-08-07 |
-| hci-real/hci-sim 双轨与 100+ Agent 并发回归 | 🟡 A/B Runtime 与 C–E 控制面代码级基础已实现；C1 已对 dev 126 条 KBD 完成只读 active snapshot/Tool Contract 基线（2 条待 Artifact 绑定、4 条 Tool stale、120 条未发布），C2 已补 Artifact Gate、payload digest 和对象存储参考契约，C3 已提供 27736/34164 的 synthetic 两步 dev 闭环脚本和 Custom UI lease 入口；真实 Artifact/生产 CAS/Bridge E2E、20-repeat、真实校准与 100+ 并发仍未验证 | 2026-08-06 |
-| KBD 六阶段数据管道可靠性与可观测性 | 🟡 代码级完成：VISION/CLASSIFY 并行，EXTRACT 严格等待两者成功；状态、重试、中文 CLI 和 JSONL 排障日志已加固。真实 Provider 20 KBD 故障注入与 Redis 多副本 Job 持久化尚未验收，不得宣称批量生产稳定性已通过。 | 2026-08-06 |
-| KBD 六阶段任务管理 CLI 参数模型重构 | 🟡 统一 `task` 入口、四种互斥生命周期模式、DAG 计划和不可变 manifest 已完成代码与自动测试；published maintenance、Vision 逐图状态和真实环境验收仍待完成 | 2026-08-09 |
-| CI 最小激活与快速门禁 | ✅ 已实施：hci-sim runtime/Bridge/Manifest 按变更分流；后端测试解除 Helm 无效等待；Schema 与 Lint 共用依赖；PR 不再构建 Windows exe。真实 Hosted Runner P50/P95 需后续采集。 | 2026-08-07 |
-| CI 发布链路手动补偿闭环 | ✅ 已实施：`workflow_dispatch` 通过 `promote_target` 显式选择 dev/staging/both；仅 main 可晋级；晋级前后逐服务核验环境仓库 tag，并在 Actions Summary 留存证据。 | 2026-08-07 |
-| CI 发布链路按影响范围收敛 | ✅ 已实施：main push 动态构建 Dockerfile 实际输入影响的镜像，db-migrate job 级跳过，环境仓库仅更新已构建服务；文档治理复用既有 runner，所有 job 有超时，第三方 action/tool 已固定，P50/P95 报告仅手动运行。 | 2026-08-07 |
-| CI 主干后端门禁按影响范围收敛 | ✅ 已实施：main push 变更全部落在 `frontend/`、`docs/` 与根级说明文档内时跳过 Lint/unit/integration/security 整层（失败关闭，diff 起点为最近一次成功发布基线），纯前端 push 端到端由约 7 分钟降到镜像构建量级。后端变更按服务集合收敛（含覆盖率策略调整）留待二期。 | 2026-09-16 |
-| hci-sim KBD 27123 纵向样板与生产化差距审查 | 🟡 27123 revision 25 的 Admin→Agent→K3s Bridge→Runtime→Result 已通过；平台生产交付保持 BLOCKED，下一阶段转入 Bundle 工厂化 | 2026-08-11 |
+| CI 主干后端门禁按影响范围收敛（纯前端/文档 push 跳过整层后端门禁） | ✅ 已实施 | 2026-09-16 |
+| QKV 输出后处理（同一 Signal 内投影转换 / 特征提取 / 断言） | ✅ 文档与最小确定性闭环完成 | 2026-08-25 |
+| hci-sim KBD 27123 纵向样板与生产化差距审查 | 🟡 样板通过，平台生产交付 BLOCKED | 2026-08-11 |
+| KBD 六阶段任务管理 CLI 参数模型重构 | 🟡 代码与自动测试完成，真实环境验收待完成 | 2026-08-09 |
+| CI 发布链路按影响范围收敛 | ✅ 已实施 | 2026-08-07 |
 
+> **完整历史只看两处，本屏不再累积流水**：
+> 发布事实源 = [CHANGELOG.md](../CHANGELOG.md)（release-please 自动生成）；
+> 第一屏原记录表与 hci-sim 事件表 = [归档快照](archive/docs-slimming-2026-10/README冷启动入口-历史快照.md)（只读）。
 </details>
 
 **当前关注点（2026-09-23）**：区分知识推荐与现场确诊；保留 SOP 优先、强信号验证和分类完整候选，不用标题相似度覆盖反证。当前规范从[知识库主题入口](solution/knowledge-base/README.md)查询，实施及待验收项见[知识库任务](task/knowledge-base/知识库任务.md)。
-
-<details>
-<summary>2026-08-10 hci-sim 重构事件记录</summary>
-
-
-| 组别 | 当前状态 | 需求 | 方案 | 任务 | 验证 |
-|---|---|---|---|---|---|
-| K3s 受管 terminal_bridge | ✅ 27123 Agent E2E 已通过受管单副本 Bridge；多副本/容量属于 P2 | [需求](requirement/events/2026-08-10-K3s受管terminal_bridge启用需求.md) | [方案](solution/events/2026-08-10-K3s受管terminal_bridge启用方案.md) | [任务](task/events/2026-08-10-K3s受管terminal_bridge启用任务.md) | [验证](verify/events/2026-08-10-K3s受管terminal_bridge启用验证.md) |
-| hci_sim 独立数据库 | 🟡 Run/Bundle/Result/outbox 与权限隔离已通过；主库 15 张空旧表 contract/drop 和恢复演练待独立完成 | [需求](requirement/hci-sim/events/2026-08-10-hci_sim独立数据库隔离需求.md) | [方案](solution/hci-sim/events/2026-08-10-hci_sim独立数据库隔离方案.md) | [任务](task/hci-sim/events/2026-08-10-hci_sim独立数据库隔离任务.md) | [验证](verify/hci-sim/events/2026-08-10-hci_sim独立数据库隔离验证.md) |
-| 仿真测试迁移与 Agent context | ✅ 27123 的持久化 context、真实 Case/Conversation、Agent 命令和 Result E2E 已通过；其他 KBD 按 Bundle gate 判定 | [需求](requirement/events/2026-08-10-仿真测试迁移与Agent上下文绑定需求.md) | [方案](solution/events/2026-08-10-仿真测试迁移与Agent上下文绑定方案.md) | [任务](task/events/2026-08-10-仿真测试迁移与Agent上下文绑定任务.md) | [验证](verify/events/2026-08-10-仿真测试迁移与Agent上下文绑定验证.md) |
-
-</details>
 
 ### 冷启动阅读路径
 
@@ -192,4 +145,5 @@ update_trigger: 每个工作循环完成后（新功能上线 / 阶段里程碑�
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-21 | 第一屏瘦身：里程碑表由 44 行缩为最近 5 条并明确「完整历史看 CHANGELOG + 归档快照」，hci-sim 事件表移出（其链接改由 solution/hci-sim/README.md 承载）。 |
 | 2026-09-23 | 校正 SOP/KBD 与参考推荐的现行边界；历史里程碑折叠，增加知识库统一入口。 |

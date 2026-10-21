@@ -23,7 +23,7 @@
 
 - [三段链路稳定性设计](events/2026-08-09-hci-sim三段链路稳定性设计.md)
 - [三 PR 闭环方案](events/2026-08-10-hci-sim三PR闭环方案.md)
-- [独立数据库隔离方案](events/2026-08-10-hci_sim独立数据库隔离方案.md)
+- [独立数据库隔离方案](events/2026-08-10-hci_sim独立数据库隔离方案.md)（配套需求：[hci_sim 独立数据库隔离需求](../../requirement/hci-sim/events/2026-08-10-hci_sim独立数据库隔离需求.md)）
 - [P0–P1 27123 全链路修复方案](events/2026-08-11-hci-sim-P0-P1-27123全链路修复方案.md)
 - [生产化差距审查与 Bundle 工厂化重构基线](events/2026-08-11-hci-sim生产化差距审查与Bundle工厂化重构基线.md)
 - [HCI 真实环境与 hci-sim 双轨运行时设计](events/2026-07-30-HCI真实环境与hci-sim双轨运行时设计.md)

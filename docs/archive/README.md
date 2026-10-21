@@ -2,7 +2,7 @@
 status: active
 category: archive
 audience: all
-last_updated: 2026-04-06
+last_updated: 2026-10-21
 owner: team
 ---
 
@@ -43,6 +43,7 @@ owner: team
 
 | 归档日期 | 归档内容 | 去向 |
 |---------|---------|------|
+| 2026-10-21 | 文档瘦身 P0：外部 RAG 文章重复粘贴 17 次的去重摘录、`docs/README.md` 第一屏历史表快照 | [docs-slimming-2026-10](docs-slimming-2026-10/README.md) |
 | 2026-09-23 | KBD 总览、CDD、语义画像、审核与旧信号模型等 17 份整理前快照 | [迁移清单](kbd-signals-2026-09-23/README.md)；旧原路径保留跳转 |
 | 2026-04-06 | 已迁移文档（06-11, 13-18等）| 已迁移至 `solution/`、`deploy/`、`verify/` 目录 |
 | 2026-04-06 | 已合并文档（21-30, 35-36）| 内容已并入对应现行全量文档 |
