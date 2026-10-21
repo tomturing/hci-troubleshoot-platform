@@ -766,6 +766,44 @@ async def edit_root_signal(request: Request, kbd_id: int, body: RootSignalEditRe
                 ROOT_SIGNAL_PRUNED_TOTAL.labels(reason_code=item.get("reason_code") or "unknown").inc()
             rejected = [*rejected, *pruned]
 
+        # 全拒收口（与自动抽取同款保护，见 extract_root_signal_for_kbd 的 all_rejected 分支）：
+        # 本次提交的 executable 候选全部不可闭环且无任何 accepted 时，只落拒绝审计、
+        # **绝不清空既有 root_signal_json**，并 422 明确告知。
+        # 修复前的反例：专家把 3 条改成 3 条全悬空 → 下方 UPDATE 写 [] → 原有好信号被静默抹掉。
+        # 「清空」这一意图由 body.signals == [] 单独表达（见本函数开头的空数组分支），不需要靠全拒来达成。
+        if all_rejected and not signals:
+            async with _db_manager.async_session_factory() as session:
+                await session.execute(
+                    text(
+                        """
+                        UPDATE kbd_entry
+                        SET root_signal_rejected_json = CAST(:rejected AS jsonb), updated_at = now()
+                        WHERE id = :kbd_id
+                        """
+                    ),
+                    {"kbd_id": kbd_id, "rejected": json.dumps(rejected, ensure_ascii=False)},
+                )
+                await session.commit()
+            logger.warning(
+                event="root_signal_manual_edit_all_rejected",
+                trace_id=trace_id,
+                kbd_id=kbd_id,
+                support_id=row["support_id"],
+                rejected_count=len(rejected),
+            )
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "ROOT_SIGNAL_ALL_REJECTED",
+                    "message": (
+                        f"本次提交的 {len(rejected)} 条可执行信号均不可闭环（缺生产者/硬编码字面量/能力缺失），"
+                        "已拒绝保存；既有根因信号保持不变（如需清空请提交空数组）"
+                    ),
+                    "rejected": rejected,
+                    "retryable": True,
+                },
+            )
+
         # 冲突度按现场语料逐条实测（与抽取一致，不采信前端自报；仅对 accepted）
         corpus = await get_conflict_corpus(_db_manager)
         for signal in signals:

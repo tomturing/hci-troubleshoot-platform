@@ -229,7 +229,9 @@ async def send_message(
         StreamingResponse: SSE流，格式为 data: <chunk>\n\n
     """
     # ━━ 安全修复：权限校验 ━━
-    await verify_conversation_ownership(conversation_id, request, service)
+    # 复用归属校验解出的 client_id（不再重复验签），下传给服务层，供其直连 case-service
+    # 取环境上下文时自签 HMAC（case-service 只认网关签名身份，否则 env_context 恒 401）。
+    resolved_client_id = await verify_conversation_ownership(conversation_id, request, service)
 
     # ━━ 安全修复：请求大小检查 ━━
     content_length = request.headers.get("content-length")
@@ -339,6 +341,7 @@ async def send_message(
                 content=message.content,
                 assistant_type=message.assistant_type,  # v2.2: 支持动态切换助手
                 metadata=message.metadata,  # 传递 metadata
+                client_id=resolved_client_id,  # 下传认证身份，供直连 case-service 自签
             )
 
             # 启动两个后台并发生产者任务，绝不取消正在进行的 network stream

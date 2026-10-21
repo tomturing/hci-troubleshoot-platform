@@ -1767,7 +1767,9 @@ async def backfill_extract_root_signal(
         raise HTTPException(status_code=503, detail="数据库未就绪")
     trace_id = get_current_trace_id() or uuid4().hex
 
-    where = ["status = ANY(CAST(:statuses AS text[]))", "root_cause <> ''", "char_length(root_cause) >= 30"]
+    # v2 输入面已放开为整篇 KBD（根因短≠无确证信号），故不再以 root_cause 长度筛选候选：
+    # 历史遗留的 char_length(root_cause) >= 30 会让根因 <30 字的 KBD 永久漏出回刷范围。
+    where = ["status = ANY(CAST(:statuses AS text[]))", "root_cause <> ''"]
     params: dict[str, Any] = {"statuses": list(body.statuses), "limit": body.limit}
     if body.only_missing:
         # 「缺信号」包含两种形态：从未抽取（NULL）与抽取后门禁全灭（空数组）。

@@ -27,7 +27,14 @@ from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from shared.cdd import CandidateAssessment, SignalOutcome, SignalPlan, apply_scope_results, compile_signal_plan
+from shared.cdd import (
+    CandidateAssessment,
+    ConclusionLevel,
+    SignalOutcome,
+    SignalPlan,
+    apply_scope_results,
+    compile_signal_plan,
+)
 from shared.cdd.candidate_reducer import initial_assessments, reduce_candidates
 from shared.cdd.kbd_model import KBD
 from shared.observability.logger import get_logger
@@ -58,7 +65,7 @@ from app.adapters.agents.htp.track_arbiter import (
     resolve_track_mode,
     runnable_tracks,
 )
-from app.domain.agent_port import AgentEvent
+from app.domain.agent_port import AgentEvent, AgentTextChunk
 from app.services.metrics import KBD_CANDIDATE_FUSION_TOTAL, KBD_SIGNAL_TRACK_OUTCOME_TOTAL
 
 logger = get_logger("kbd-dual-track")
@@ -215,6 +222,11 @@ async def diagnose_with_tracks(
 
     # ── 关键链路 ───────────────────────────────────────────────────────────
     if PROCESS_TRACK in effective_tracks:
+        # 关键链路候选为空但根因轨已准入（编排层独立准入新开通的路径）：仍调
+        # diagnose([]) 一次，保留「process_result 非 None → dual 模式融合回写」的结构契约，
+        # 但抑制其「未找到可执行 KBD」噪音文案——那句措辞面向关键链路空集，在根因轨
+        # 独跑场景下发给受众只会制造“系统没有可执行知识”的假象。
+        suppress_process_noise = root_track_active and not candidates
         async for event in engine.diagnose(
             candidates=candidates,
             env_context=env_context,
@@ -222,7 +234,8 @@ async def diagnose_with_tracks(
             user_id=user_id,
             snapshot_id=snapshot_id,
         ):
-            yield event
+            if not (suppress_process_noise and isinstance(event, AgentTextChunk)):
+                yield event
         process_result = engine.get_result()
         if process_result is not None:
             summary.process_level = getattr(process_result, "conclusion_level", None)
@@ -344,7 +357,10 @@ def _apply_fused_result(
     engine._result = KBDDiagResult(
         matched_kbds=fused_supported,
         steps_executed=process_result.steps_executed,
-        is_definitive=fusion.decision.level.value == "definitive",
+        # 枚举值是大写 "DEFINITIVE"（StrEnum），历史上误与小写 "definitive" 比较使本标记恒为 False：
+        # dual 下只要发生过融合回写，编排层永远不推进 S4 而是升级人工，根因轨的确定性结论被静默吞掉。
+        # 改为枚举身份比较，不再依赖字面量大小写同步。
+        is_definitive=fusion.decision.level is ConclusionLevel.DEFINITIVE,
         diagnosis_report=report,
         conclusion_level=fusion.decision.level.value,
         candidate_states={kbd_id: item.state.value for kbd_id, item in fusion.assessments.items()},
