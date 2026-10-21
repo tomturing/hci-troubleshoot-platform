@@ -92,6 +92,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | **D-025** | k8s.md | Nginx 动态 resolver 不使用 Pod DNS search 后缀；K8s Service 上游必须使用完整 FQDN |
 | **D-026** | shell.md | 发布基线依赖可变 Actions 展示名导致服务永久缺失、每次 main push 补偿重建并产生 promotion PR 风暴 |
 | **D-027** | k8s.md | 镜像 ENV 烘焙仅本地可解析的 upstream 默认值（host.docker.internal），集群内 Nginx 启动期 [emerg] crashloop；Helm 必须按 terminalBridge.enabled 注入 FQDN 或回环占位 |
+| **D-028** | shell.md | CI 的 compose 隐式构建不继承 build-push-action 的 `MIRROR_MODE=off`，海外 Runner 走阿里云源时 `apk upgrade` 撞包 404；compose 必须显式声明 build args |
 
 ---
 

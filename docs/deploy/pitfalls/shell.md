@@ -120,3 +120,29 @@ fi
 5. 无关路径变化不得触发服务构建，构建输入选择必须有负向回归测试。
 
 **参考案例**：2026-08-18 hci-sim 的旧 `校验 hci-sim immutable GitOps digest` 名称与新自动钉入 job 不一致，导致 #813、#814、#816 连续生成。
+
+## D-028：CI 的 compose 隐式构建不继承 build-push 的镜像源参数，海外 Runner 撞 apk 404
+
+**触发场景**：`Dockerfile.migrations` 用 `ARG MIRROR_MODE=on` 把 Alpine 源换成 `mirrors.aliyun.com`（服务国内本地开发）。
+`ci.yml` 的 build-push-action 显式传 `MIRROR_MODE=off` 走官方源，但 integration-tests 的「准备诊断样例 PostgreSQL」
+走 `make db-sync → docker compose up db-migrate` **隐式构建**，而 compose 未声明 build args。
+
+**症状**：main push CI 的 integration-tests 稳定失败 `ERROR: ca-certificates-bundle-<ver>: HTTP 404: Not Found`
+（`RUN apk upgrade --no-cache` 退出码 1）；同一 commit 连续 3 次重跑均复现，而 `curl` 官方源与阿里云源该包都返回 200
+——说明不是包真的缺失，而是海外 Runner 命中阿里云 CDN 边缘节点的陈旧索引。后续镜像构建与晋级全部被跳过。
+
+**根因**：同一个 Dockerfile 的构建参数在两条 CI 路径上不同源。Dockerfile 的 ARG 默认值服务本地开发，
+CI 不能依赖它；只给 build-push-action 传参，漏掉 compose 隐式构建路径，就会让「一次偶发的镜像源同步滞后」
+变成整条 main 流水线的稳定红灯。
+
+**正确做法**：
+
+1. compose 里凡**会被 CI 隐式构建**的 `build:` 都显式声明 `args`（如 `MIRROR_MODE: ${MIRROR_MODE:-on}`），本地默认行为不变；
+   仅由 build-push-action 构建的服务当前不必重复声明，但一旦被 compose 构建就必须补；
+2. CI 里显式传与 build-push-action 一致的值（`env: MIRROR_MODE: "off"`），不依赖 ARG 默认；
+3. 排查时先区分「包真缺失」与「镜像源边缘陈旧」：直接 `curl -o /dev/null -w '%{http_code}'` 对照官方源与镜像源，
+   两者都 200 而 CI 仍 404，就是构建路径用了非预期源；
+4. `apk upgrade` 让构建依赖上游「最新包」，天然不可复现——要彻底消除需改为固定基础镜像 digest + 定期更新，
+   本轮只做路径同源修复。
+
+**参考案例**：2026-10-21 #1181 合并后 main CI 连续 3 次红，根因即 compose 路径未传 `MIRROR_MODE=off`。

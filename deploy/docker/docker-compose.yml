@@ -8,6 +8,11 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile.migrations
+      args:
+        # 与 Helm / CI 的 build-push-action 保持同源：Dockerfile.migrations 默认 MIRROR_MODE=on
+        # （阿里云源，供国内本地开发）；GitHub 托管 Runner 在海外，必须显式传 off 走官方源，
+        # 否则阿里云 CDN 边缘同步滞后时会命中 apk "HTTP 404" 而阻断构建。
+        MIRROR_MODE: ${MIRROR_MODE:-on}
     container_name: hci-db-migrate
     environment:
       # 迁移工具必须使用 libpq URL，禁止复用后端服务的 postgresql+asyncpg:// DATABASE_URL。

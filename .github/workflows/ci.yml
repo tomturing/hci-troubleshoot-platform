@@ -1120,6 +1120,11 @@ jobs:
         run: uv sync --group dev
 
       - name: 准备诊断样例 PostgreSQL
+        # make db-sync 会隐式构建 db-migrate（Dockerfile.migrations）。Runner 在海外，
+        # 必须与 build-push-action 一致地传 MIRROR_MODE=off 走官方源：阿里云 CDN 边缘
+        # 同步滞后时 apk upgrade 会命中 "HTTP 404: Not Found"（ca-certificates-bundle）而阻断构建。
+        env:
+          MIRROR_MODE: "off"
         run: |
           cp .env.example .env
           docker network inspect hci-troubleshoot-platform_default >/dev/null 2>&1 \

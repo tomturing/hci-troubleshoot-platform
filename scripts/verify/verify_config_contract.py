@@ -146,7 +146,11 @@ def main() -> int:
 
     env_names, env_errors = parse_env(env_path)
     errors.extend(env_errors)
-    compose_names = set(COMPOSE_REFERENCE.findall(compose_path.read_text(encoding="utf-8")))
+    compose_refs = set(COMPOSE_REFERENCE.findall(compose_path.read_text(encoding="utf-8")))
+    # 构建期参数（build args）不是容器运行时配置：只在镜像构建阶段生效，既不需要
+    # 在 .env.example 声明，也不进 Helm values；单独建模，不能混入运行时变量清单。
+    compose_build_args = set(contract.get("compose_build_args") or [])
+    compose_names = compose_refs - compose_build_args
     non_compose = set(contract.get("non_compose") or [])
     missing_from_env = compose_names - env_names
     if missing_from_env:
@@ -169,6 +173,14 @@ def main() -> int:
     helm_env_names = set(HELM_ENV_NAME.findall(template_text)) | set(HELM_CONFIG_KEY.findall(template_text))
     equivalents = contract.get("helm_equivalents") or {}
     helm_only = set(contract.get("helm_only_runtime") or [])
+    stray_build_args = compose_build_args - compose_refs
+    if stray_build_args:
+        errors.append("契约 compose_build_args 未被 Compose 引用: " + ", ".join(sorted(stray_build_args)))
+    misclassified_build_args = compose_build_args & (set(equivalents) | helm_only | non_compose)
+    if misclassified_build_args:
+        errors.append(
+            "compose_build_args 不应同时登记为运行时/Helm 配置: " + ", ".join(sorted(misclassified_build_args))
+        )
     overlap = set(equivalents) & helm_only
     if overlap:
         errors.append("变量不能同时登记为 Helm 等价配置和 Helm 内部变量: " + ", ".join(sorted(overlap)))
