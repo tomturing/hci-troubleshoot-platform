@@ -63,7 +63,7 @@ def test_key_track_files_do_not_reference_root_modules(filename):
 
 def test_shared_cdd_has_no_root_signal_concept():
     """共享内核不得承载根因字段：否则淘汰根因链路必须改 ``shared/cdd``。"""
-    forbidden = ("root_signal", "root_track", "root_display_anchors", "root_executable", "root_snapshot_id")
+    forbidden = ("root_signal", "root_track", "root_display_anchors", "root_executable")
     for path in (BACKEND / "shared" / "cdd").glob("*.py"):
         source = path.read_text(encoding="utf-8")
         for token in forbidden:
@@ -75,7 +75,7 @@ def test_kbd_model_exposes_only_key_signal_fields():
     from shared.cdd.kbd_model import KBD
 
     assert "signals" in KBD.model_fields
-    for field in ("root_signals", "root_executable", "root_execution_issues", "root_snapshot_id", "root_display_anchors"):
+    for field in ("root_signals", "root_executable", "root_execution_issues", "root_display_anchors"):
         assert field not in KBD.model_fields, f"KBD 不得承载根因字段 {field}"
 
 

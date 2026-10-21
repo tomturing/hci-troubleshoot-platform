@@ -72,6 +72,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 | V-030 | python.md | 第二套计划不得继承第一套链路的发布门禁契约（verification_contract / publish_validation），否则编译期 references missing signal 全灭 |
 | V-031 | python.md | 淘汰一条策略必须「删模块即可」：共享内核不得承载任一策略的专属字段，候选构造下沉到编排层 |
 | V-032 | python.md | 测试替身必须复刻基类同步/异步形态（_build_partial_report 是同步 staticmethod），否则会把 fake 违约误判为产品缺陷 |
+| V-033 | python.md | 测试替身的 `**kwargs` 会吞掉调用契约漂移：删参数后单测仍全绿、真实回放即 TypeError，必须显式签名 + 真实类签名守卫 |
 | PIT-004 | python.md | Pydantic 验证 |
 | PIT-005 | frontend.md | pnpm workspace |
 | PIT-006 | dispatcher.md | 分布式锁 |

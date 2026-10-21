@@ -63,6 +63,15 @@ data:
   # 设计约束：api-gateway 超时=240s，LLM Governor 默认重试 3 次，单次超时必须小于 80s（240÷3=80）。
   # 默认 70s → 3×70=210s < 240s，确保 kb-service 先于 api-gateway 超时并返回有意义错误。
   EXTRACT_SIGNALS_LLM_TIMEOUT: {{ .Values.kbService.extractSignalsLlmTimeoutSec | default "70.0" | quote }}
+  # ── 根因信号抽取（第二抽取轨，与关键信号 Prompt/门禁完全解耦）──
+  # 均为空时回退 EXTRACT_SIGNALS_* / LLM_*，保证两轨默认共用同一 LLM 网关。
+  ROOT_SIGNAL_MODEL: {{ .Values.kbService.rootSignalModel | default .Values.kbService.extractSignalsModel | default .Values.kbService.classifyModel | default "kimi-k2.5" | quote }}
+  ROOT_SIGNAL_BASE_URL: {{ .Values.kbService.rootSignalBaseUrl | default .Values.kbService.extractSignalsBaseUrl | quote }}
+  # 根因输出为多信号 JSON 数组；预算与超时独立于关键信号（max_retries=0，不叠加重试）。
+  ROOT_SIGNAL_MAX_TOKENS: {{ .Values.kbService.rootSignalMaxTokens | default "8192" | quote }}
+  ROOT_SIGNAL_LLM_TIMEOUT: {{ .Values.kbService.rootSignalLlmTimeoutSec | default "60.0" | quote }}
+  # 冲突度现场语料缓存 TTL（秒）；仅影响 /root-signal-conflicts 只读回算。
+  ROOT_SIGNAL_CORPUS_TTL: {{ .Values.kbService.rootSignalCorpusTtlSec | default "300" | quote }}
   # 可观测性
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.otelEndpoint | quote }}
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
@@ -89,6 +98,9 @@ data:
   # 助手选择器显示控制（auto/true/false）
   ASSISTANT_SHOW_SELECTOR: {{ .Values.config.assistantShowSelector | default "auto" | quote }}
   AI_DEFAULT_ASSISTANT_TYPE: {{ .Values.agentService.defaultAssistantType | quote }}
+  # 双链路运行模式（agent-service）：dual（默认，双链路融合）/ process_only（只跑关键链路，根因一键回滚）。
+  # 旧值 shadow / root_only 已于 2026-10-21 删除，配旧值会回落 dual 并打 signal_track_mode_unknown 告警日志。
+  KB_SIGNAL_TRACK_MODE: {{ .Values.agentService.signalTrackMode | default "dual" | quote }}
   LLM_TEMPERATURE: {{ .Values.agentService.llmTemperature | quote }}
   LLM_TEMPERATURE_S0: {{ .Values.conversationService.llmTemperatureS0 | quote }}
   LLM_TEMPERATURE_REACT: {{ .Values.agentService.llmTemperatureReact | quote }}

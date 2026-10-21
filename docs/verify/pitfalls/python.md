@@ -284,3 +284,22 @@ fake 的形态而改动；③用 `inspect.iscoroutinefunction` 钉死契约
 
 **教训：** 当「测试替身 + 生产代码」出现形态冲突时，先确认**基类契约**（源码里怎么定义、怎么调用），
 再判断是谁违约；不要用修改产品代码去迁就 fake。
+
+## V-033：测试替身的 `**kwargs` 会吞掉调用契约漂移，必须用显式签名 + 真实类签名守卫
+
+**症状：** 删除 `RootTrackDiagnostic.diagnose_root(write_diagnostic_items=...)` 参数后，agent-service
+全量单测 **948 passed 全绿**；但拿真实脚本做离线回放（`verify_signal_dual_track_e2e.py --rows-file`）
+第一轮即崩 `TypeError: diagnose_root() got an unexpected keyword argument 'write_diagnostic_items'`。
+同一处改动还漏掉了 `snapshot_id` 透传（删除根因自算指纹后，根因链路会拿空串：fake 默认空串，单测无感）。
+
+**根因：** 编排层调用的测试替身写成 `async def diagnose_root(self, **kwargs)`，`**kwargs` 把编排层传的
+任何关键字都无条件收下，**参数名与实际必需性从未被校验**。真实类删掉参数、或编排层传错参数名，
+fake 依旧“成功”，单测因此成为假绿：它验证的不是「两边契约一致」，而是「fake 什么都能吃」。
+
+**修复：** ①测试替身一律改显式关键字签名（只列编排层实际传的参数，默认值与真实类对齐）；
+②补一条 `inspect.signature(真实类.方法)` 的契约守卫（断言包含编排层传入的每个参数名），
+防「fake 与真实类同时漂移」；③删/改生产签名后必须跑一次真实链路离线回放，不能只信单测。
+
+**教训：** 凡「测试替身 + 编排层调用」的位置，`**kwargs` 一律禁止——它是假绿温床；
+单测全绿只证明「都能被接收」，不证明「调用契约能跑通」。
+

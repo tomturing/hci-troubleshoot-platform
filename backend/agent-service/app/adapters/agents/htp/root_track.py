@@ -28,18 +28,17 @@
 ``qkv_*`` 生产者写入变量池，而根因信号本身是「结论侧断言」，不含生产者，所以根因链路
 必须自己解：
 
-1. ``dual`` / ``shadow``：从关键链路已完成的 ``StepResult`` 播种同名 KBD 的变量池与物理
-   采集缓存（同一条命令只采集一次，不增加现场成本）；
-2. ``root_only``：从 ``env_context`` 派生 ``host`` / ``date`` / ``vmid`` 的缺省值，并显式
-   记录 ``derived`` / ``unresolved``。派生不出来的（如没有 VM 标识的 ``{{VMID}}``）保持
-   未解析 → 该信号 BLOCKED → 候选 INCONCLUSIVE，**绝不猜值**（猜错会把「无法判断」
-   伪装成「已排除」）。
+- 优先从关键链路已完成的 ``StepResult`` 播种同名 KBD 的变量池与物理采集缓存
+  （同一条命令只采集一次，不增加现场成本）；
+- 关键链路未产出时，从 ``env_context`` 派生 ``host`` / ``date`` / ``vmid`` 的缺省值，并显式
+  记录 ``derived`` / ``unresolved``。派生不出来的（如没有 VM 标识的 ``{{VMID}}``）保持
+  未解析 → 该信号 BLOCKED → 候选 INCONCLUSIVE，**绝不猜值**（猜错会把「无法判断」
+  伪装成「已排除」）。
 """
 
 from __future__ import annotations
 
 import datetime as _datetime
-import hashlib
 import json
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
@@ -76,7 +75,7 @@ logger = get_logger("kbd-root-track")
 ROOT_TRACK = "root"
 
 # env_context 中的候选键 → 根因信号占位符。按顺序取第一个非空值。
-# 只在 root_only / 关键链路未产出同名变量时兜底，绝不复写关键链路已产出的真实值。
+# 仅作关键链路未产出同名变量时的兜底，绝不复写关键链路已产出的真实值。
 _ENV_ALIASES: dict[str, tuple[str, ...]] = {
     "host": ("host", "node_ip", "target_host", "ip"),
     "node_ip": ("node_ip", "host"),
@@ -94,8 +93,6 @@ class RootCandidate:
     """
 
     kbd: KBD
-    # kb-service 计算的根因信号集合指纹（内容敏感），用于第二套计划的可追溯性。
-    snapshot_id: str = ""
 
 
 # 关键信号的发布门禁元数据描述的是「关键信号集合」的完整性与版本，对根因信号
@@ -125,7 +122,7 @@ def build_root_candidates(raw_cases: list[dict[str, Any]] | None) -> list[RootCa
             continue
         base = kbd_from_dict(case)
         kbd = base.model_copy(update={"signals": root_signals, **_ISOLATED_FIELDS})
-        candidates.append(RootCandidate(kbd=kbd, snapshot_id=str(case.get("root_snapshot_id") or "")))
+        candidates.append(RootCandidate(kbd=kbd))
     return candidates
 
 
@@ -246,17 +243,12 @@ class RootTrackDiagnostic(KBDDiagnostic):
         snapshot_id: str = "",
         seed_steps: list[StepResult] | None = None,
         emit_events: bool = True,
-        write_diagnostic_items: bool = False,
     ) -> AsyncGenerator[AgentEvent, None]:
         """独立执行根因链路。
 
         :param candidates: 根因候选（``RootCandidate.kbd.signals`` 已是根因信号）
         :param seed_steps: 关键链路已执行的步骤，用于复用变量与物理采集
         :param emit_events: 是否输出 ``root_diag_*`` 阶段事件（与关键链路事件名不冲突）
-        :param write_diagnostic_items: 是否写 S2/S3/S4 会话证据项。
-            ``dual`` / ``shadow`` 下必须为 False——会话证据链的所有者是关键链路，
-            根因链路只贡献结论与度量，否则同一会话会出现两份互相竞争的证据。
-            ``root_only`` 下关键链路不执行，由根因链路承担证据链。
         """
         root_models = [item.kbd for item in candidates]
         self.root_result = RootTrackResult(kbds=list(root_models))
@@ -270,7 +262,7 @@ class RootTrackDiagnostic(KBDDiagnostic):
 
         ordered = sorted(candidates, key=lambda item: (item.kbd.support_id or str(item.kbd.id), str(item.kbd.id)))
         root_models = [item.kbd for item in ordered]
-        resolved_snapshot = snapshot_id or self._snapshot_id_of(ordered)
+        resolved_snapshot = snapshot_id
         # 只编译根因信号：候选的 signals 已在构造时替换，关键链路对象不受影响。
         plan = compile_signal_plan(root_models, snapshot_id=resolved_snapshot, tool_contract_checker=_tool_contract_checker)
         assessments = initial_assessments(plan)
@@ -306,9 +298,6 @@ class RootTrackDiagnostic(KBDDiagnostic):
                     "scope_states": {kbd_id: result.state.value for kbd_id, result in scope_results.items()},
                 },
             )
-
-        if write_diagnostic_items:
-            await self._create_root_hypotheses(root_models, session_id)
 
         steps_executed: list[StepResult] = []
         while True:
@@ -410,8 +399,6 @@ class RootTrackDiagnostic(KBDDiagnostic):
                         stage="root_tool_result",
                         metadata=self._tool_result_metadata(result),
                     )
-                if write_diagnostic_items:
-                    await self._create_root_verification_step(result, len(steps_executed))
             scheduler.mark_completed(acquisition, {ref.ref_id for ref in active_refs})
 
         # 收尾：无可执行采集路径的引用如实标记 BLOCKED（变量缺失 / 无执行器）。
@@ -453,13 +440,12 @@ class RootTrackDiagnostic(KBDDiagnostic):
             supported=supported,
             steps_executed=steps_executed,
             user_id=user_id,
-            write_diagnostic_items=write_diagnostic_items,
         )
 
         self.root_result.decision = decision
         self.root_result.steps_executed = steps_executed
         self._record_root_metrics(plan, assessments, decision)
-        # 关键链路未执行（root_only）时，统一结果入口也由根因链路提供。
+        # 关键链路无任何结果时，统一结果入口由根因链路提供（仅根因信号的 KBD 走这条链路）。
         self._result = KBDDiagResult(
             matched_kbds=supported,
             steps_executed=steps_executed,
@@ -505,14 +491,6 @@ class RootTrackDiagnostic(KBDDiagnostic):
             )
 
     # ── 内部：计划与变量播种 ────────────────────────────────────────────────
-    @staticmethod
-    def _snapshot_id_of(ordered: list[RootCandidate]) -> str:
-        """根因计划快照指纹：只由根因信号集合决定，与关键信号快照解耦。"""
-        material = "|".join(
-            sorted(filter(None, (item.snapshot_id or item.kbd.id for item in ordered)))
-        )
-        return "rootsig-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
-
     def _seed_pools(
         self,
         ordered: list[KBD],
@@ -552,71 +530,6 @@ class RootTrackDiagnostic(KBDDiagnostic):
                 gaps[str(kbd.id)] = sorted(missing)
         return gaps
 
-    # ── 内部：会话证据链（仅 root_only 使用）────────────────────────────────
-    async def _create_root_hypotheses(self, ordered: list[KBD], session_id: str) -> None:
-        if not (self._diagnostic_item_client and self._conversation_id):
-            return
-        import uuid as _uuid
-
-        items = [
-            {
-                "content": {
-                    "kbd_id": kbd.id,
-                    "support_id": kbd.support_id,
-                    "kbd_name": kbd.name,
-                    "root_cause": kbd.root_cause,
-                    "evidence_track": ROOT_TRACK,
-                },
-                "status": "pending",
-            }
-            for kbd in ordered
-        ]
-        try:
-            await self._diagnostic_item_client.batch_create_items(
-                conversation_id=_uuid.UUID(self._conversation_id),
-                stage="S2",
-                type="hypothesis",
-                items_data=items,
-            )
-        except Exception as exc:  # 证据链写入失败不得影响诊断结论
-            logger.warning(event="root_track_hypotheses_failed", session_id=session_id, error=str(exc))
-
-    async def _create_root_verification_step(self, result: StepResult, seq: int) -> None:
-        if not (self._diagnostic_item_client and self._conversation_id):
-            return
-        import uuid as _uuid
-
-        status = (
-            "confirmed"
-            if result.outcome is SignalOutcome.SATISFIED
-            else "rejected"
-            if result.outcome is SignalOutcome.CONTRADICTED
-            else "error"
-        )
-        try:
-            await self._diagnostic_item_client.create_item(
-                conversation_id=_uuid.UUID(self._conversation_id),
-                stage="S3",
-                type="verification_step",
-                seq=seq,
-                content={
-                    "kbd_id": result.kbd_id,
-                    "signal_id": result.signal_id,
-                    "exec_id": result.exec_id,
-                    "evaluation_id": result.evaluation_id,
-                    "acquisition_id": result.acquisition_id,
-                    "tool_name": result.tool_name,
-                    "tool_args": result.tool_args,
-                    "raw_output": (result.raw_output or "")[:500],
-                    "error": result.error,
-                    "outcome": result.outcome.value,
-                    "evidence_track": ROOT_TRACK,
-                },
-                status=status,
-            )
-        except Exception as exc:
-            logger.warning(event="root_track_verification_step_failed", error=str(exc))
-
     # ── 内部：报告与度量 ───────────────────────────────────────────────────
     async def _render_root_report(
         self,
@@ -627,7 +540,6 @@ class RootTrackDiagnostic(KBDDiagnostic):
         supported: list[KBD],
         steps_executed: list[StepResult],
         user_id: str,
-        write_diagnostic_items: bool,
     ) -> str:
         """根因链路自己的报告。
 
@@ -657,16 +569,13 @@ class RootTrackDiagnostic(KBDDiagnostic):
                 exclusion_reasons=exclusion_reasons,
             )
         if decision.level is ConclusionLevel.DEFINITIVE:
-            report = await self._generate_report(
+            return await self._generate_report(
                 supported,
                 steps_executed,
                 evaluated_kbds=list(plan.candidates.values()),
                 user_id=user_id,
                 exclusion_reasons=exclusion_reasons,
             )
-            if write_diagnostic_items and self._diagnostic_item_client and self._conversation_id:
-                await self._create_root_root_cause_items(supported, steps_executed)
-            return report
         return await self._generate_report(
             [],
             steps_executed,
@@ -674,36 +583,6 @@ class RootTrackDiagnostic(KBDDiagnostic):
             user_id=user_id,
             exclusion_reasons=exclusion_reasons,
         )
-
-    async def _create_root_root_cause_items(self, supported: list[KBD], steps_executed: list[StepResult]) -> None:
-        if not (self._diagnostic_item_client and self._conversation_id):
-            return
-        import uuid as _uuid
-
-        for seq, kbd in enumerate(supported, start=1):
-            try:
-                await self._diagnostic_item_client.create_item(
-                    conversation_id=_uuid.UUID(self._conversation_id),
-                    stage="S4",
-                    type="root_cause",
-                    seq=seq,
-                    content={
-                        "kbd_id": kbd.id,
-                        "support_id": kbd.support_id,
-                        "kbd_name": kbd.name,
-                        "root_cause": kbd.root_cause,
-                        "solution": kbd.solution,
-                        "evidence_exec_ids": sorted({s.exec_id for s in steps_executed if s.kbd_id == kbd.id}),
-                        "evidence_evaluation_ids": sorted(
-                            {s.evaluation_id for s in steps_executed if s.kbd_id == kbd.id}
-                        ),
-                        "evidence_track": ROOT_TRACK,
-                        "is_definitive": True,
-                    },
-                    status="confirmed",
-                )
-            except Exception as exc:
-                logger.warning(event="root_track_root_cause_item_failed", error=str(exc))
 
     @staticmethod
     def _record_root_metrics(

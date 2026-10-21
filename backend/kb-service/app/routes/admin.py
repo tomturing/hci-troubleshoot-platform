@@ -3503,8 +3503,10 @@ async def review_kbd_signals(request: Request, kbd_id: int) -> dict[str, Any]:
             }
         )
 
-    # 根因闭包发布门禁软告警（§7 先软后硬 + 决策②）：不可闭环的根因 executable 与未处理拒绝候选
-    # 仅产 warning issue + 指标供观测与人工处置，blocks_publish=False 不硬阻断（待实测拒绝率收敛后 PR-5 切硬 422）。
+    # 根因闭包发布门禁软告警（决策定稿：永久软告警，2026-10-21）：不可闭环的根因 executable
+    # 与未处置拒绝候选只产 warning issue + 指标，blocks_publish=False 不硬阻断。
+    # 不切硬 422 的依据：平台无法替专家判断「该 KBD 是否真要发布」，硬切会把存量欠账变成发布阻断；
+    # 欠账由专家后续按需重抽自然收敛，观测数据见 hci_root_signal_publish_gate_total。
     root_signals = getattr(kbd, "root_signal_json", None)
     root_signals = root_signals if isinstance(root_signals, list) else []
     for rs in root_signals:

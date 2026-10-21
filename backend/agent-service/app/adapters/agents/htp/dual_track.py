@@ -56,8 +56,6 @@ from app.adapters.agents.htp.root_track import (
 from app.adapters.agents.htp.track_arbiter import (
     MODE_DUAL,
     MODE_PROCESS_ONLY,
-    MODE_ROOT_ONLY,
-    MODE_SHADOW,
     PROCESS_TRACK,
     FusionOutcome,
     conclusion_tracks,
@@ -263,8 +261,9 @@ async def diagnose_with_tracks(
             env_context=env_context,
             session_id=session_id,
             user_id=user_id,
-            # root_only 由根因链路独占会话证据链；并存时证据链归关键链路所有。
-            write_diagnostic_items=resolved_mode == MODE_ROOT_ONLY,
+            # 两条链路共享同一现场快照：根因链路不再自算指纹（已删除），
+            # 若不传则拿空串，报告/计划快照标识会与关键链路不一致。
+            snapshot_id=snapshot_id,
             seed_steps=process_result.steps_executed if process_result else None,
         ):
             yield event
@@ -276,13 +275,10 @@ async def diagnose_with_tracks(
         if root_result.decision is not None:
             summary.root_level = root_result.decision.level.value
             summary.root_supported_ids = tuple(root_result.decision.supported_ids)
-        if resolved_mode == MODE_ROOT_ONLY:
-            # root_only：关键链路没跑，根因链路的结果就是唯一结果。
-            engine._result = root_engine.get_result()
 
     # ── 结论级融合 ─────────────────────────────────────────────────────────
     fusion: FusionOutcome | None = None
-    if resolved_mode in (MODE_DUAL, MODE_SHADOW) and root_result is not None and root_result.plan is not None:
+    if resolved_mode == MODE_DUAL and root_result is not None and root_result.plan is not None:
         fusion = fuse_tracks(
             mode=resolved_mode,
             process_plan=process_plan,
@@ -304,13 +300,9 @@ async def diagnose_with_tracks(
                 + [item.kbd for item in root_candidates if item.kbd.id not in {c.id for c in candidates}],
             )
         _record_fusion_metrics(fusion)
-    elif resolved_mode == MODE_PROCESS_ONLY and process_result is not None:
-        # 纯关键链路模式：只在报告尾部保留根因 text 锚点为空（根因链路未运行）。
-        pass
 
     # text 锚点是根因链路的展示能力，由本层统一追加（关键链路文件不含该逻辑）。
-    # ``process_only`` 表示根因链路整体未运行，此时不追加任何根因内容；
-    # 其余模式（dual/shadow/root_only）都在「当前有效结果」上追加。
+    # ``process_only`` 表示根因链路整体未运行，此时不追加任何根因内容。
     anchor_entries = build_anchor_entries(root_cases)
     if resolved_mode != MODE_PROCESS_ONLY and anchor_entries:
         target = engine.get_result()
@@ -394,7 +386,7 @@ def _fused_report_section(fusion: FusionOutcome, process_result: KBDDiagResult) 
 def _record_process_metrics(plan: SignalPlan, assessments: dict[str, CandidateAssessment]) -> None:
     """关键链路信号级打点（与根因链路同一指标、同一口径）。
 
-    只在 ``dual``/``shadow`` 且存在根因候选时调用：此时关键链路的 plan/assessments
+    只在 ``dual`` 且存在根因候选时调用：此时关键链路的 plan/assessments
     已为融合而复算完成，打点是零额外成本。``process_only`` 不为度量复算关键链路
     （该模式的信号结果仍写入 ``kbd_runtime_signal_outcome`` 审计表）。
 

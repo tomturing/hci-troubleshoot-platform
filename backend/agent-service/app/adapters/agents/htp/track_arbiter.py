@@ -50,6 +50,9 @@ from shared.cdd import (
     SignalPlan,
     decide_conclusion,
 )
+from shared.observability.logger import get_logger
+
+logger = get_logger("kbd-track-arbiter")
 
 PROCESS_TRACK = "process"
 ROOT_TRACK = "root"
@@ -57,38 +60,46 @@ KNOWN_TRACKS: tuple[str, ...] = (PROCESS_TRACK, ROOT_TRACK)
 
 # 链路运行模式（进程环境变量 KB_SIGNAL_TRACK_MODE）。
 # - process_only：只跑关键链路，根因链路不实例化、不采集（零额外成本，一键回滚）；
-# - root_only   ：只跑根因链路，关键链路不实例化（用于验证根因链路能否单独成事）；
-# - shadow      ：两条链路都跑，但结论只用关键链路（赛马期最安全：根因链路产出
-#                 可比的假设结论与指标，却不影响线上判定）；
 # - dual        ：两条链路都跑并融合（默认，与 #1172 的线上语义一致）。
+#
+# 赛马期曾用 root_only（根因单跑）与 shadow（两路都跑但只采信关键路）两种实验档位，
+# 2026-10-21 按「只留能跑与能回滚两档」收敛掉（实验已完成、两者从未在生产启用）。
+# 环境变量若仍配旧值，走非法值回落 dual 并输出 signal_track_mode_unknown 告警日志。
 MODE_PROCESS_ONLY = "process_only"
-MODE_ROOT_ONLY = "root_only"
-MODE_SHADOW = "shadow"
 MODE_DUAL = "dual"
-TRACK_MODES: tuple[str, ...] = (MODE_PROCESS_ONLY, MODE_ROOT_ONLY, MODE_SHADOW, MODE_DUAL)
+TRACK_MODES: tuple[str, ...] = (MODE_PROCESS_ONLY, MODE_DUAL)
 DEFAULT_TRACK_MODE = MODE_DUAL
 TRACK_MODE_ENV = "KB_SIGNAL_TRACK_MODE"
 
 # 模式 → 真正需要执行的链路。process_only 下根因链路连实例都不创建。
 RUNNABLE_TRACKS: dict[str, tuple[str, ...]] = {
     MODE_PROCESS_ONLY: (PROCESS_TRACK,),
-    MODE_ROOT_ONLY: (ROOT_TRACK,),
-    MODE_SHADOW: (PROCESS_TRACK, ROOT_TRACK),
     MODE_DUAL: (PROCESS_TRACK, ROOT_TRACK),
 }
 
-# 模式 → 参与最终结论的链路。shadow 只让关键链路参与结论。
+# 模式 → 参与最终结论的链路。
 CONCLUSION_TRACKS: dict[str, tuple[str, ...]] = {
     MODE_PROCESS_ONLY: (PROCESS_TRACK,),
-    MODE_ROOT_ONLY: (ROOT_TRACK,),
-    MODE_SHADOW: (PROCESS_TRACK,),
     MODE_DUAL: KNOWN_TRACKS,
 }
 
 
 def resolve_track_mode(raw: str | None = None) -> str:
-    """解析链路模式；非法值回落默认，避免一个错误环境变量打挂诊断链路。"""
+    """解析链路模式；非法值回落默认，避免一个错误环境变量打挂诊断链路。
+
+    已废弃的 `shadow` / `root_only` 也走非法值回落（→ dual）——赛马实验结束后两者已删除；
+    若某环境仍配旧值，必须留一条可查的日志，避免静默改变线上判定语义（shadow 原本只采信
+    关键路，回落 dual 后变成两路融合）。
+    """
     value = str(raw if raw is not None else os.environ.get(TRACK_MODE_ENV) or "").strip().lower()
+    if value and value not in TRACK_MODES:
+        logger.warning(
+            event="signal_track_mode_unknown",
+            message="KB_SIGNAL_TRACK_MODE 取值不受支持，已回落默认模式",
+            raw=value,
+            supported=list(TRACK_MODES),
+            resolved=DEFAULT_TRACK_MODE,
+        )
     return value if value in TRACK_MODES else DEFAULT_TRACK_MODE
 
 
@@ -218,14 +229,13 @@ def fuse_tracks(
 ) -> FusionOutcome:
     """把两条链路的独立结论融合为一个最终结论（纯函数，不修改任何输入）。
 
-    ``assessments`` 只含**参与结论**的链路视图（shadow 下即等价于关键链路自身结论）；
-    ``details`` 则记录两条链路的实际观测值（含不参与结论的那一路）——赛马需要知道
-    「根因路给出了什么结论」，即使它此刻不影响线上判定。
+    ``assessments`` 只含**参与结论**的链路视图；``details`` 则记录两条链路的实际观测值
+    （含不参与结论的那一路），供审计追溯。
     """
     resolved_mode = mode if mode in TRACK_MODES else DEFAULT_TRACK_MODE
     active_tracks = conclusion_tracks(resolved_mode)
     # 观测视图（两条链路各自的实际结论）与结论视图（仅 active_tracks）必须分开：
-    # 前者是赛马数据源，后者是线上判定输入，混用会让 shadow 模式失去观测意义。
+    # 前者是审计数据源，后者是线上判定输入，混用会让「只跑不判」的观测能力失真。
     observed_process = _track_view(process_plan, process_assessments)
     observed_root = _track_view(root_plan, root_assessments)
     process_view = observed_process if PROCESS_TRACK in active_tracks else {}

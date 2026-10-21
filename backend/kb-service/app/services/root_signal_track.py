@@ -16,7 +16,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from typing import Any
 
@@ -228,7 +227,6 @@ def build_root_track_payload(entry: KbdEntry) -> dict[str, Any]:
     - ``root_display_anchors``：text 轨人工核对锚点；
     - ``root_execution_issues`` / ``root_executable`` / ``root_recommendable`` /
       ``root_diagnosis_capability``：根因链路自己的准入与能力判定；
-    - ``root_snapshot_id``：根因信号集合的稳定指纹，使根因链路的计划快照可复现；
     - ``root_signal_stats``：存量分布（总数/可执行/text/被门禁拦下），用于审核与赛马观测。
 
     设计取舍：``root_signals`` 为空时仍返回完整字段（``root_executable=False``），
@@ -251,10 +249,6 @@ def build_root_track_payload(entry: KbdEntry) -> dict[str, Any]:
     anchors = display_anchors_of(entry)
     issues = _execution_issues(normalized)
     executable = not issues
-    # 快照指纹必须覆盖归一后的**完整内容**（id + acquire + match）：只取 id 时，
-    # 关键词改了但 signal_text 未变会得到同一个快照 id，让「计划快照」失真。
-    material = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    snapshot_id = "rootsig-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:16] if normalized else "rootsig-none"
 
     if executable:
         capability = "executable"
@@ -270,7 +264,6 @@ def build_root_track_payload(entry: KbdEntry) -> dict[str, Any]:
         "root_executable": executable,
         "root_recommendable": executable or bool(anchors),
         "root_diagnosis_capability": capability,
-        "root_snapshot_id": snapshot_id,
         "root_signal_stats": {
             "total": len(all_roots),
             "executable": len(normalized),

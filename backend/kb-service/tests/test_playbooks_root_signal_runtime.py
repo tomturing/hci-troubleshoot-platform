@@ -206,7 +206,6 @@ async def test_payload_exposes_full_root_track_fields():
     assert case["root_recommendable"] is True
     assert case["root_diagnosis_capability"] == "executable"
     assert case["root_execution_issues"] == []
-    assert case["root_snapshot_id"].startswith("rootsig-")
     assert case["root_signal_stats"] == {"total": 2, "executable": 1, "text": 1, "gated_out": 0}
     # 运行时形态不带 track 标记（轨道选择属于编排层）
     assert set(case["root_signals"][0]) == {"id", "acquire", "match", "provenance"}

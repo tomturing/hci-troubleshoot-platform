@@ -3,8 +3,7 @@
 核心不变量：
 1. **恒等变换**：某条链路对该候选没有信号时「无发言权」，融合结果必须逐字等于另一条链路的结论；
 2. **纯函数**：不修改任何输入对象；
-3. **EXCLUDE 全局否决**：排除项与证据来源无关，任一路成立即整体 REJECTED；
-4. **shadow 只让关键链路参与结论**：根因链路照跑照记指标，但不影响线上判定。
+3. **EXCLUDE 全局否决**：排除项与证据来源无关，任一路成立即整体 REJECTED。
 """
 
 from __future__ import annotations
@@ -14,8 +13,6 @@ from app.adapters.agents.htp.track_arbiter import (
     DEFAULT_TRACK_MODE,
     MODE_DUAL,
     MODE_PROCESS_ONLY,
-    MODE_ROOT_ONLY,
-    MODE_SHADOW,
     PROCESS_TRACK,
     ROOT_TRACK,
     TRACK_MODE_ENV,
@@ -101,9 +98,8 @@ def test_default_mode_is_dual():
 
 
 def test_resolve_mode_reads_env(monkeypatch):
-    monkeypatch.setenv(TRACK_MODE_ENV, MODE_SHADOW)
-    assert resolve_track_mode() == MODE_SHADOW
-    assert resolve_track_mode(" ROOT_ONLY ") == MODE_ROOT_ONLY
+    monkeypatch.setenv(TRACK_MODE_ENV, MODE_PROCESS_ONLY)
+    assert resolve_track_mode() == MODE_PROCESS_ONLY
 
 
 def test_resolve_mode_falls_back_on_invalid(monkeypatch):
@@ -111,12 +107,17 @@ def test_resolve_mode_falls_back_on_invalid(monkeypatch):
     assert resolve_track_mode() == MODE_DUAL
 
 
+@pytest.mark.parametrize("legacy", ["shadow", "root_only"])
+def test_resolve_mode_falls_back_on_removed_modes(legacy, monkeypatch):
+    """赛马实验档位已删除：旧环境变量必须回落 dual，而不是当成未知值直接报错。"""
+    monkeypatch.setenv(TRACK_MODE_ENV, legacy)
+    assert resolve_track_mode() == MODE_DUAL
+
+
 @pytest.mark.parametrize(
     "mode,expected_runnable",
     [
         (MODE_PROCESS_ONLY, (PROCESS_TRACK,)),
-        (MODE_ROOT_ONLY, (ROOT_TRACK,)),
-        (MODE_SHADOW, (PROCESS_TRACK, ROOT_TRACK)),
         (MODE_DUAL, (PROCESS_TRACK, ROOT_TRACK)),
     ],
 )
@@ -128,9 +129,6 @@ def test_runnable_tracks(mode, expected_runnable):
     "mode,expected_conclusion",
     [
         (MODE_PROCESS_ONLY, (PROCESS_TRACK,)),
-        (MODE_ROOT_ONLY, (ROOT_TRACK,)),
-        # shadow：两条都跑，但结论只用关键链路
-        (MODE_SHADOW, (PROCESS_TRACK,)),
         (MODE_DUAL, (PROCESS_TRACK, ROOT_TRACK)),
     ],
 )
@@ -335,43 +333,7 @@ def test_dual_both_rejected_is_rejected():
     assert fused.details["7"].conflict is False
 
 
-# ── 6. shadow / root_only 的结论归属 ──────────────────────────────────────
-def test_shadow_ignores_root_conclusion_but_still_reports_it():
-    """shadow = 赛马最安全的观测模式：根因结论只进指标，不进判定。"""
-    kbds = [_kbd("7")]
-    process_plan, process_assessments = _state(kbds, "7", SignalOutcome.NOT_RUN, "p")
-    root_plan, root_assessments = _state(kbds, "7", SignalOutcome.SATISFIED, "r")
-
-    fused = fuse_tracks(
-        mode=MODE_SHADOW,
-        process_plan=process_plan,
-        process_assessments=process_assessments,
-        root_plan=root_plan,
-        root_assessments=root_assessments,
-    )
-    assert fused.assessments["7"].state is CandidateState.INCONCLUSIVE
-    assert fused.decision.supported_ids == ()
-    # 根因链路的结论仍然被记录，供赛马对比
-    assert fused.details["7"].root_state == CandidateState.SUPPORTED.value
-
-
-def test_root_only_ignores_process_conclusion():
-    kbds = [_kbd("7")]
-    process_plan, process_assessments = _state(kbds, "7", SignalOutcome.SATISFIED, "p")
-    root_plan, root_assessments = _state(kbds, "7", SignalOutcome.CONTRADICTED, "r")
-
-    fused = fuse_tracks(
-        mode=MODE_ROOT_ONLY,
-        process_plan=process_plan,
-        process_assessments=process_assessments,
-        root_plan=root_plan,
-        root_assessments=root_assessments,
-    )
-    assert fused.assessments["7"].state is CandidateState.REJECTED
-    assert fused.details["7"].process_state == CandidateState.SUPPORTED.value
-
-
-# ── 7. 纯函数性 & 审计载荷 ────────────────────────────────────────────────
+# ── 6. 纯函数性 & 审计载荷 ─────────────────────────────────────────────────
 def test_fusion_does_not_mutate_inputs():
     kbds = [_kbd("7")]
     process_plan, process_assessments = _state(kbds, "7", SignalOutcome.SATISFIED, "p")

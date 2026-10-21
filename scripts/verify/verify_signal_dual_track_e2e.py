@@ -17,12 +17,13 @@
 - 不验证 LLM 抽取质量（由抽取回归与 Prompt 契约测试覆盖），只验证**判定/检索链路**；
 - 仿真输出由夹具给定，不代表真实日志分布；但夹具中的关键词取自 DB 里已发布信号本身。
 
-场景矩阵（同一 diagnose 链路，仅换 KB_SIGNAL_FUSION_MODE 与仿真现场）：
-    S1 故障态（两路证据齐）      → root_or_process / root_only / process_only 均应命中
-    S2 关键路判死 + 根因路命中    → process_only 不命中；root_or_process 与 root_only 命中（核心增量举证）
+场景矩阵（同一 diagnose 链路，仅换 KB_SIGNAL_TRACK_MODE 与仿真现场；
+赛马期曾覆盖 shadow/root_only 两档实验模式，2026-10-21 已收敛删除，现行只跑两模式）：
+    S1 故障态（两路证据齐）      → process_only / dual 均应命中
+    S2 关键路判死 + 根因路命中    → process_only 不命中；dual 命中（核心增量举证）
     S3 健康态（只有通用噪声）      → 任一路都不得命中（证明不是万能匹配）
     S4 兄弟篇特征（另一篇的签名）  → 目标 KBD 不得命中（证明根因信号有判别力）
-    S5 存量未盖章（无 gate_version）→ root_only 不得命中（证明准入闸门生效）
+    S5 存量未盖章（无 gate_version）→ 准入闸门拦截（准入数=0）
 
 用法：
     E2E_DSN=postgresql://... .venv/bin/python \\
@@ -469,8 +470,8 @@ def main() -> int:
             "name": "S1_故障态_两路证据齐",
             "task_present": True,
             "tasks": TASK_MIGRATE_FAILED,
-            # root_only 不执行 qkv 生产者，现场上下文（主机/日期）必须由工单提供；
-            # 这与生产语义一致：根因链路只靠自己拿到的外部变量，绝不从关键链路偷值。
+            # 现场上下文（主机/日期）由工单提供：仿真不得从关键链路偷值，
+            # 与生产语义一致——根因链路只靠自己拿到的外部变量或关键链路已完成步骤派生。
             "env": {"HOST": "10.20.30.41", "DATE": "2026-10-20"},
             "logs": _target_logs(),
             "default_log": HEALTHY,
@@ -511,8 +512,8 @@ def main() -> int:
 
     results: list[RunResult] = []
     for case in cases:
-        # 四模式全覆盖：两条链路各自单跑 + 影子赛马 + 融合上线。
-        for mode in ("process_only", "shadow", "dual", "root_only"):
+        # 两模式全覆盖：只跑关键链路（一键回滚档） + 双链路融合（默认档）。
+        for mode in ("process_only", "dual"):
             results.append(asyncio.run(_run_case({**case, "rows": rows}, mode, pool, runtime)))
 
     # S5：存量未盖章 → 准入闸门必须把它挡在运行时之外。
@@ -549,7 +550,7 @@ def main() -> int:
     results.append(
         RunResult(
             scenario="S5_存量未盖章_准入闸门",
-            mode="root_only",
+            mode="admission",
             supported=[],
             states={},
             tracks={},
@@ -573,18 +574,12 @@ def main() -> int:
         return any(item.scenario == scenario and item.mode == mode and target_id in item.supported for item in results)
 
     checks = {
-        "S1 四模式均命中目标": all(
-            _hit("S1_故障态_两路证据齐", m) for m in ("process_only", "shadow", "dual", "root_only")
-        ),
+        "S1 两模式均命中目标": all(_hit("S1_故障态_两路证据齐", m) for m in ("process_only", "dual")),
         "S2 关键路判死不命中": not _hit("S2_关键路判死_根因路命中", "process_only"),
-        "S2 根因路可独立命中": _hit("S2_关键路判死_根因路命中", "root_only"),
         "S2 融合模式命中": _hit("S2_关键路判死_根因路命中", "dual"),
-        "S2 shadow 不改变线上结论": not _hit("S2_关键路判死_根因路命中", "shadow"),
-        "S3 健康态不命中": not any(
-            _hit("S3_健康态_仅通用噪声", m) for m in ("process_only", "shadow", "dual", "root_only")
-        ),
+        "S3 健康态不命中": not any(_hit("S3_健康态_仅通用噪声", m) for m in ("process_only", "dual")),
         "S4 兄弟篇特征不误命中目标": not any(
-            _hit("S4_兄弟篇特征", m) for m in ("process_only", "shadow", "dual", "root_only")
+            _hit("S4_兄弟篇特征", m) for m in ("process_only", "dual")
         ),
         "S4 兄弟篇自身被正确命中": any(
             item.scenario == "S4_兄弟篇特征" and item.mode == "dual" and {"202", "305"} & set(item.supported)

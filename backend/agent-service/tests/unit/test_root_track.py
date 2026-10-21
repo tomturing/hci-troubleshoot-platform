@@ -3,10 +3,10 @@
 核心不变量：
 1. **独立编译**：根因链路只把 ``RootCandidate.kbd.signals``（已由编排层替换为根因信号）
    编进第二套计划；关键信号的候选对象与关键信号的发布契约都不被传递进来；
-2. **变量自足**：``root_only`` 靠 ``env_context`` 派生 host/date；派生不出来的变量必须
-   让信号 BLOCKED（绝不猜值，否则会把「无法判断」伪装成「已排除」）；
-3. **采集复用**：``dual``/``shadow`` 下同一条命令只采集一次，根因链路复用关键链路的输出；
-4. **证据链归属**：只有 ``root_only`` 写 S2/S3/S4，并存时证据链归关键链路。
+2. **变量自足**：优先复用关键链路已产出的变量，缺失时靠 ``env_context`` 派生 host/date；
+   派生不出来的变量必须让信号 BLOCKED（绝不猜值，否则会把「无法判断」伪装成「已排除」）；
+3. **采集复用**：``dual`` 下同一条命令只采集一次，根因链路复用关键链路的输出；
+4. **证据链归属**：会话证据链永远归关键链路，根因链路不写 S2/S3/S4。
 """
 
 from __future__ import annotations
@@ -84,7 +84,6 @@ def _root_case(kbd_id: str, *, roots: list[dict] | None = None) -> dict:
         "signals": [_key_signal()],
         "root_signals": roots if roots is not None else [_root_signal()],
         "root_executable": True,
-        "root_snapshot_id": f"rootsig-{kbd_id}",
         "root_cause": "根因",
         "solution": "方案",
         "verification_contract": {"evidence_policy": {"must": ["k1"]}},
@@ -93,12 +92,9 @@ def _root_case(kbd_id: str, *, roots: list[dict] | None = None) -> dict:
     }
 
 
-def _cand(kbd_id: str, *, roots: list[dict] | None = None, snapshot_id: str | None = None) -> RootCandidate:
+def _cand(kbd_id: str, *, roots: list[dict] | None = None) -> RootCandidate:
     """构造根因候选：``kbd.signals`` 已经是根因信号。"""
-    case = _root_case(kbd_id, roots=roots)
-    if snapshot_id is not None:
-        case["root_snapshot_id"] = snapshot_id
-    return build_root_candidates([case])[0]
+    return build_root_candidates([_root_case(kbd_id, roots=roots)])[0]
 
 
 # ── 0. 根因候选构造：与共享内核/关键信号元数据隔离 ─────────────────────────
@@ -243,20 +239,7 @@ def test_iter_placeholders_tolerates_missing_acquire():
     assert _iter_placeholders({}) == []
 
 
-# ── 4. 快照指纹 ──────────────────────────────────────────────────────────
-def test_snapshot_id_depends_only_on_root_snapshot_ids():
-    a = RootTrackDiagnostic._snapshot_id_of([_cand("7")])
-    b = RootTrackDiagnostic._snapshot_id_of([_cand("7")])
-    c = RootTrackDiagnostic._snapshot_id_of([_cand("8")])
-    assert a == b
-    assert a != c
-    assert a.startswith("rootsig-")
-
-
-def test_snapshot_id_falls_back_to_kbd_id():
-    assert RootTrackDiagnostic._snapshot_id_of([_cand("9", snapshot_id="")]).startswith("rootsig-")
-
-
+# ── 4. 变量解析 ──────────────────────────────────────────────────────────
 def test_unresolved_requirements_lists_placeholder_without_source():
     kbd = _cand("7", roots=[_root_signal(host="{{VMID}}")])
     gaps = RootTrackDiagnostic._requirements_without_source([kbd.kbd], {"host": "h"}, {})
@@ -285,8 +268,8 @@ async def test_no_root_candidates_skips_without_compiling():
 
 
 @pytest.mark.asyncio
-async def test_root_only_runs_independently_and_supports_candidate():
-    """root_only：只有根因信号也能完整跑通（关键链路不参与）。"""
+async def test_root_track_runs_independently_and_supports_candidate():
+    """只有根因信号也能完整跑通（关键链路不参与）。"""
     diag = _diag()
     kbd = _cand("7")
     execute = AsyncMock(return_value=("KVM_EXIT_SHUTDOWN detected", None, None, None))
@@ -299,14 +282,13 @@ async def test_root_only_runs_independently_and_supports_candidate():
             candidates=[kbd],
             env_context={"host": "10.0.0.1"},
             session_id="s",
-            write_diagnostic_items=False,
         )
 
     assert diag.root_result.decision.supported_ids == ("7",)
     assert diag.root_result.assessments["7"].state is CandidateState.SUPPORTED
     assert diag.root_result.executed_acquisitions == 1
     assert diag.root_result.reused_acquisitions == 0
-    # 统一结果入口同步（root_only 下它是唯一结果）
+    # 统一结果入口同步（仅供根因信号的 KBD 以此为准）
     assert diag.get_result().conclusion_level == diag.root_result.decision.level.value
     assert [event.stage for event in events][0] == "root_diag_start"
     assert events[-1].stage == "root_diag_complete"
@@ -408,8 +390,8 @@ async def test_candidate_pools_are_isolated_between_kbds():
 
 
 @pytest.mark.asyncio
-async def test_diagnostic_items_not_written_in_dual_shape():
-    """并存时证据链归关键链路：根因链路即使有 client 也不写 S2/S3/S4。"""
+async def test_diagnostic_items_not_written_by_root_track():
+    """会话证据链永远归关键链路：根因链路即使有 client 也不写 S2/S3/S4。"""
     diag = _diag(diagnostic_item_client=MagicMock(), conversation_id="00000000-0000-0000-0000-000000000001")
     kbd = _cand("7")
     with (
@@ -421,55 +403,9 @@ async def test_diagnostic_items_not_written_in_dual_shape():
             candidates=[kbd],
             env_context={"host": "10.0.0.1"},
             session_id="s",
-            write_diagnostic_items=False,
         )
     assert diag._diagnostic_item_client.batch_create_items.call_count == 0
     assert diag._diagnostic_item_client.create_item.call_count == 0
-
-
-@pytest.mark.asyncio
-async def test_diagnostic_items_written_in_root_only():
-    """root_only：关键链路不在，根因链路承担证据链。"""
-    client = MagicMock()
-    client.batch_create_items = AsyncMock()
-    client.create_item = AsyncMock()
-    diag = _diag(diagnostic_item_client=client, conversation_id="00000000-0000-0000-0000-000000000001")
-    kbd = _cand("7")
-    with (
-        patch.object(diag, "_execute_acquirer", AsyncMock(return_value=("KVM_EXIT_SHUTDOWN", None, None, None))),
-        patch.object(diag, "_generate_report", AsyncMock(return_value="r")),
-    ):
-        await _run(
-            diag,
-            candidates=[kbd],
-            env_context={"host": "10.0.0.1"},
-            session_id="s",
-            write_diagnostic_items=True,
-        )
-    assert client.batch_create_items.await_count == 1
-    assert client.create_item.await_count >= 1
-    stages = {call.kwargs["stage"] for call in client.create_item.await_args_list}
-    assert "S3" in stages
-
-
-@pytest.mark.asyncio
-async def test_diagnostic_item_failure_does_not_break_diagnosis():
-    client = MagicMock()
-    client.batch_create_items = AsyncMock(side_effect=RuntimeError("db down"))
-    client.create_item = AsyncMock(side_effect=RuntimeError("db down"))
-    diag = _diag(diagnostic_item_client=client, conversation_id="00000000-0000-0000-0000-000000000001")
-    with (
-        patch.object(diag, "_execute_acquirer", AsyncMock(return_value=("KVM_EXIT_SHUTDOWN", None, None, None))),
-        patch.object(diag, "_generate_report", AsyncMock(return_value="r")),
-    ):
-        await _run(
-            diag,
-            candidates=[_cand("7")],
-            env_context={"host": "10.0.0.1"},
-            session_id="s",
-            write_diagnostic_items=True,
-        )
-    assert diag.root_result.decision.supported_ids == ("7",)
 
 
 @pytest.mark.asyncio
