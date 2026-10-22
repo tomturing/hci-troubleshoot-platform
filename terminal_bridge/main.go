@@ -360,6 +360,19 @@ type InMessage struct {
 	// create 时作为 -u 上传目标（仅 http/https，且只认官方日志服务器白名单）。
 	RemoteURL string `json:"remote_url,omitempty"`
 
+	// ── log_collect transfer（P3 段①+段②）专用字段 ──
+	// 段① 用 `tail -c +N` 从 HCI 续读到客户机；段② 按 chunk_size 切片直传平台数据面。
+	// 平台的 init / complete 由前端调用（需客户身份），bridge 只持数据面 token，
+	// 因此这里不包含任何平台控制面字段。
+	TransferSourcePath    string `json:"source_path,omitempty"`    // HCI 上的 zip 绝对路径
+	TransferPlatformURL   string `json:"platform_url,omitempty"`   // 平台根地址（http/https）
+	TransferToken         string `json:"upload_token,omitempty"`   // 平台签发的数据面 token
+	TransferChunkSize     int64  `json:"chunk_size,omitempty"`     // 分片大小（字节）
+	TransferPartCount     int    `json:"part_count,omitempty"`     // 分片总数
+	TransferTotalSize     int64  `json:"total_size,omitempty"`     // 压缩包总大小
+	TransferUploadedParts []int  `json:"uploaded_parts,omitempty"` // 平台已收到的分片（续传跳过）
+	TransferLocalPath     string `json:"local_path,omitempty"`     // 可选：客户机落地路径
+
 	// ── WebSocket 保活（ping/pong）专用字段 ──
 	Pong int64 `json:"pong,omitempty"` // 客户端回复心跳时间戳（回显服务端 ping 值）
 

@@ -483,6 +483,18 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"error": errString(err), "raw_len": len(output),
 		})
 
+	case "transfer":
+		// 传输可能持续数十分钟，不沿用 180s 的动作超时，单独给 2 小时预算。
+		transferCtx, transferCancel := context.WithTimeout(context.Background(), logCollectTransferTimeout)
+		defer transferCancel()
+		if err := b.handleLogCollectTransfer(transferCtx, ws, s, msg, cui, traceID); err != nil {
+			blog("ERROR", "log_collect.transfer", "日志包交付失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"task_id": msg.ExecID, "error": err.Error(),
+			})
+			return
+		}
+		outcome = "ok"
+
 	case "cancel":
 		output, exitCode, err := s.runCommandPty(ctx, "acli log_collect cancel", logCollectCancelTimeout)
 		status := "ok"
