@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     # 数据面 token 签名密钥；留空时由 INTERNAL_API_TOKEN 派生，避免新增必填配置。
     LOG_COLLECT_UPLOAD_SECRET: str = ""
 
+    # P3 段③：平台代传日志服务器（与 acli 插件一致，插件只认官方域名白名单）。
+    LOG_COLLECT_RELAY_URL: str = "http://acli.sangfor.com.cn:5888"
+    LOG_COLLECT_RELAY_ENABLED: bool = True
+
     model_config = ConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 

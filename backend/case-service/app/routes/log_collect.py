@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -28,6 +30,7 @@ from ..schemas.log_collect import (
 )
 from ..schemas.log_collect_errors import build_problem
 from ..security.auth import get_client_id, verify_case_ownership
+from ..services.log_collect_relay_service import LogCollectRelayService, SangforRelayClient
 from ..services.log_collect_service import (
     InvalidTransitionError,
     LogCollectService,
@@ -36,6 +39,8 @@ from ..services.log_collect_service import (
 )
 from ..services.log_collect_storage import LocalLogCollectStorage
 from ..services.log_collect_upload_service import LogCollectUploadError, LogCollectUploadService
+
+logger = logging.getLogger(__name__)
 
 
 def _problem(code: str, detail: str) -> HTTPException:
@@ -87,6 +92,32 @@ def _upload_problem(exc: LogCollectUploadError) -> HTTPException:
     problem = build_problem(exc.code, str(exc))
     problem["status"] = exc.status
     return HTTPException(status_code=exc.status, detail=problem)
+
+
+async def get_relay_service() -> LogCollectRelayService:
+    """代传服务依赖：长任务自行开 session，因此注入 session 工厂而不是单个 session。"""
+    if not database_manager:
+        raise _problem("LC-PLATFORM-006", "Database not initialized")
+    if not settings.LOG_COLLECT_RELAY_ENABLED:
+        raise _problem("LC-TRANSFER-003", "日志服务器代传功能已禁用")
+    return LogCollectRelayService(
+        database_manager.async_session_factory,
+        get_upload_storage(),
+        SangforRelayClient(settings.LOG_COLLECT_RELAY_URL),
+    )
+
+
+_relay_tasks: set[asyncio.Task] = set()
+
+
+def _on_relay_done(task: asyncio.Task) -> None:
+    """后台任务必须取走异常，否则 Python 只打印 'never retrieved' 且无业务上下文。"""
+    _relay_tasks.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("日志包代传失败 task=%s error=%s", task.get_name(), exc)
 
 
 @router.post("", response_model=LogCollectTaskResponse, status_code=201)
@@ -263,6 +294,55 @@ async def abort_upload(
     """中止上传并清理临时分片（不触碰已合并的成品）。"""
     await _owned_task(task_id, client_id, service)
     await upload_service.abort(task_id)
+
+
+# ── P3 段③：代传 5888 日志服务器（异步长任务）─────────────────────────────────
+
+
+@router.post("/{task_id}/relay", status_code=202)
+async def start_relay(
+    task_id: UUID,
+    force: bool = Query(
+        False, description="仅当上一进程崩溃导致 relay_status 卡在 running 时使用"
+    ),
+    client_id: str = Depends(get_client_id),
+    service: LogCollectService = Depends(get_log_collect_service),
+    relay_service: LogCollectRelayService = Depends(get_relay_service),
+):
+    """启动代传。
+
+    幂等：只有把 ``relay_status`` 从非 running 改成 running 的调用者才会真正执行，
+    因此重复点击或前端重试不会产生两个并发上传（20 GiB 重传代价过高）。
+    """
+    task = await _owned_task(task_id, client_id, service)
+    if not task.archive_path:
+        raise _problem("LC-TRANSFER-001", "平台尚无制品，无法代传")
+
+    started = await relay_service.trigger(task_id, force=force)
+    if started:
+        background = asyncio.create_task(relay_service.run(task_id))
+        _relay_tasks.add(background)
+        background.add_done_callback(_on_relay_done)
+    return {
+        "task_id": str(task_id),
+        "started": started,
+        "relay_status": "running" if started else task.relay_status,
+    }
+
+
+@router.get("/{task_id}/relay")
+async def get_relay_status(
+    task_id: UUID,
+    client_id: str = Depends(get_client_id),
+    service: LogCollectService = Depends(get_log_collect_service),
+    relay_service: LogCollectRelayService = Depends(get_relay_service),
+):
+    """查询代传状态与断点位置（供前端展示与人工重试判断）。"""
+    await _owned_task(task_id, client_id, service)
+    snapshot = await relay_service.snapshot(task_id)
+    if snapshot is None:
+        raise _problem(TaskNotFoundError.code, "Task not found")
+    return snapshot
 
 
 # ── 对象数据面：直连 case-service，绕过 API Gateway 的体积限制 ────────────────

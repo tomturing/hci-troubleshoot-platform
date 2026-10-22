@@ -57,6 +57,10 @@ class LogCollectTask(Base, TimestampMixin, TraceableMixin):
     relay_chunk_index = Column(Integer, nullable=True)
     relay_chunk_total = Column(Integer, nullable=True)
     relay_restarts = Column(Integer, nullable=False, default=0, server_default="0")
+    relay_chunk_size = Column(Integer, nullable=True)
+    # 代传状态与任务主状态机解耦：主状态反映业务阶段，relay_status 反映归档结果
+    relay_status = Column(String(16), nullable=False, default="none", server_default="'none'")
+    relay_updated_at = Column(DateTime(timezone=True), nullable=True)
     # 清理：平台只标记与告警，绝不自动删除，也不提供删除 API
     cleanup_state = Column(String(16), nullable=False, default="none", server_default="'none'")
     cleanup_reason = Column(String(64), nullable=True)
