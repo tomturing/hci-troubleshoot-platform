@@ -49,6 +49,14 @@ spec:
                 port:
                   number: {{ .Values.diagnosisService.port }}
           {{- end }}
+          # 日志收集分片数据面：32 MiB 分片超出网关 1 MiB 限制，直连 case-service。
+          - path: /api/direct/log-collect-uploads
+            pathType: Prefix
+            backend:
+              service:
+                name: case-service
+                port:
+                  number: {{ .Values.caseService.port }}
           # internal 离线诊断必须先经过 Admin UI Nginx 注入服务端身份。
           - path: /api
             pathType: Prefix
@@ -103,6 +111,14 @@ spec:
                 port:
                   number: {{ .Values.diagnosisService.port }}
           {{- end }}
+          # 日志收集分片数据面：32 MiB 分片超出网关 1 MiB 限制，直连 case-service。
+          - path: /api/direct/log-collect-uploads
+            pathType: Prefix
+            backend:
+              service:
+                name: case-service
+                port:
+                  number: {{ .Values.caseService.port }}
           # internal 离线诊断必须先经过 Admin UI Nginx 注入服务端身份。
           - path: /api
             pathType: Prefix

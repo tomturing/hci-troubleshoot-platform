@@ -8,16 +8,23 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from shared.database.postgres import DatabaseManager
 from sqlalchemy.exc import IntegrityError
 
+from ..config import settings
 from ..repositories.log_collect_repo import LogCollectTaskRepository
 from ..schemas.log_collect import (
     LogCollectTaskCreate,
     LogCollectTaskListResponse,
     LogCollectTaskPatch,
     LogCollectTaskResponse,
+    UploadCompleteRequest,
+    UploadCompleteResponse,
+    UploadInitRequest,
+    UploadInitResponse,
+    UploadPartResponse,
+    UploadStatusResponse,
 )
 from ..schemas.log_collect_errors import build_problem
 from ..security.auth import get_client_id, verify_case_ownership
@@ -27,6 +34,8 @@ from ..services.log_collect_service import (
     TaskConflictError,
     TaskNotFoundError,
 )
+from ..services.log_collect_storage import LocalLogCollectStorage
+from ..services.log_collect_upload_service import LogCollectUploadError, LogCollectUploadService
 
 
 def _problem(code: str, detail: str) -> HTTPException:
@@ -38,6 +47,7 @@ def _problem(code: str, detail: str) -> HTTPException:
 router = APIRouter(prefix="/api/log-collect/tasks", tags=["log-collect"])
 
 database_manager: DatabaseManager | None = None
+upload_storage: LocalLogCollectStorage | None = None
 
 
 def set_database_manager(db_manager: DatabaseManager) -> None:
@@ -46,11 +56,37 @@ def set_database_manager(db_manager: DatabaseManager) -> None:
     database_manager = db_manager
 
 
+def set_upload_storage(storage: LocalLogCollectStorage) -> None:
+    """注入分块存储（测试可替换为临时目录）。"""
+    global upload_storage
+    upload_storage = storage
+
+
+def get_upload_storage() -> LocalLogCollectStorage:
+    global upload_storage
+    if upload_storage is None:
+        upload_storage = LocalLogCollectStorage(settings.LOG_COLLECT_STORAGE_ROOT)
+    return upload_storage
+
+
 async def get_log_collect_service() -> LogCollectService:
     if not database_manager:
         raise _problem("LC-PLATFORM-006", "Database not initialized")
     async for session in database_manager.get_session():
         yield LogCollectService(LogCollectTaskRepository(session))
+
+
+async def get_upload_service(
+    service: LogCollectService = Depends(get_log_collect_service),
+) -> LogCollectUploadService:
+    return LogCollectUploadService(service.repository, get_upload_storage())
+
+
+def _upload_problem(exc: LogCollectUploadError) -> HTTPException:
+    """上传类异常沿用 RFC 7807 结构，但以异常自身的 HTTP 状态为准。"""
+    problem = build_problem(exc.code, str(exc))
+    problem["status"] = exc.status
+    return HTTPException(status_code=exc.status, detail=problem)
 
 
 @router.post("", response_model=LogCollectTaskResponse, status_code=201)
@@ -139,3 +175,128 @@ async def cancel_task(
         return await service.cancel_task(task_id, reason)
     except TaskConflictError as exc:
         raise _problem(exc.code, str(exc)) from exc
+
+
+# ── P3 段②：分块上传（控制面，经 API Gateway）────────────────────────────────
+
+
+async def _owned_task(task_id: UUID, client_id: str, service: LogCollectService):
+    try:
+        task = await service.get_task(task_id)
+    except TaskNotFoundError as exc:
+        raise _problem(TaskNotFoundError.code, "Task not found") from exc
+    await verify_case_ownership(task.case_id, client_id, service.repository.session)
+    return task
+
+
+@router.post("/{task_id}/uploads", response_model=UploadInitResponse)
+async def init_upload(
+    task_id: UUID,
+    payload: UploadInitRequest,
+    client_id: str = Depends(get_client_id),
+    service: LogCollectService = Depends(get_log_collect_service),
+    upload_service: LogCollectUploadService = Depends(get_upload_service),
+):
+    """初始化上传会话。
+
+    幂等：同一任务重复调用返回既有会话与已传分片，客户端据此跳过已传部分；
+    若声明的总大小与既有会话不一致则 409，要求显式 abort 后重建，避免续传出错包。
+    """
+    task = await _owned_task(task_id, client_id, service)
+    try:
+        return await upload_service.init(
+            task,
+            total_size=payload.total_size,
+            expected_sha256=payload.expected_sha256,
+        )
+    except LogCollectUploadError as exc:
+        raise _upload_problem(exc) from exc
+
+
+@router.get("/{task_id}/uploads", response_model=UploadStatusResponse)
+async def get_upload_status(
+    task_id: UUID,
+    client_id: str = Depends(get_client_id),
+    service: LogCollectService = Depends(get_log_collect_service),
+    upload_service: LogCollectUploadService = Depends(get_upload_service),
+):
+    """查询已上传分片，供断点续传使用。"""
+    await _owned_task(task_id, client_id, service)
+    try:
+        return await upload_service.status(task_id)
+    except LogCollectUploadError as exc:
+        raise _upload_problem(exc) from exc
+
+
+@router.post("/{task_id}/uploads/complete", response_model=UploadCompleteResponse)
+async def complete_upload(
+    task_id: UUID,
+    payload: UploadCompleteRequest,
+    client_id: str = Depends(get_client_id),
+    service: LogCollectService = Depends(get_log_collect_service),
+    upload_service: LogCollectUploadService = Depends(get_upload_service),
+):
+    """流式合并分片并落库制品元数据。
+
+    只更新 ``archive_path/archive_size/archive_sha256``，不改变任务状态：
+    状态跃迁由前端在 P3 各阶段显式 PATCH，避免与状态机互相覆盖。
+    """
+    task = await _owned_task(task_id, client_id, service)
+    try:
+        return await upload_service.complete(
+            task,
+            parts=payload.parts,
+            declared_sha256=payload.sha256,
+            declared_size=payload.size,
+        )
+    except LogCollectUploadError as exc:
+        raise _upload_problem(exc) from exc
+
+
+@router.post("/{task_id}/uploads/abort", status_code=204)
+async def abort_upload(
+    task_id: UUID,
+    client_id: str = Depends(get_client_id),
+    service: LogCollectService = Depends(get_log_collect_service),
+    upload_service: LogCollectUploadService = Depends(get_upload_service),
+) -> None:
+    """中止上传并清理临时分片（不触碰已合并的成品）。"""
+    await _owned_task(task_id, client_id, service)
+    await upload_service.abort(task_id)
+
+
+# ── 对象数据面：直连 case-service，绕过 API Gateway 的体积限制 ────────────────
+
+upload_router = APIRouter(prefix="/api/direct/log-collect-uploads", tags=["log-collect-upload"])
+
+
+@upload_router.put("/{task_id}/parts/{part_number}", response_model=UploadPartResponse)
+async def upload_part_direct(
+    task_id: UUID,
+    part_number: int,
+    request: Request,
+    upload_token: str = Header(alias="X-Upload-Token", min_length=8, max_length=256),
+    part_sha256: str | None = Header(
+        default=None, alias="X-Part-SHA256", pattern=r"^[0-9a-f]{64}$"
+    ),
+    upload_service: LogCollectUploadService = Depends(get_upload_service),
+):
+    """流式写入单个分片。
+
+    该路径**不得**配置到 API Gateway：网关默认 1 MiB、豁免 10 MiB，
+    而分片为 32 MiB。鉴权改用 init 签发的短期 token（绑定 task_id）。
+    """
+    if not upload_service.verify_token(str(task_id), upload_token):
+        raise HTTPException(
+            status_code=401,
+            detail=build_problem("LC-TRANSFER-004", "上传 token 无效或已过期"),
+        )
+    try:
+        return await upload_service.record_part(
+            task_id,
+            part_number=part_number,
+            chunks=request.stream(),
+            claimed_sha256=part_sha256,
+        )
+    except LogCollectUploadError as exc:
+        raise _upload_problem(exc) from exc

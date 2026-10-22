@@ -61,6 +61,8 @@ register_exception_handlers(app)
 app.include_router(cases.router)
 app.include_router(environments.router)
 app.include_router(log_collect.router)
+# 数据面直连：/api/direct/log-collect-uploads 必须绕过 API Gateway（1 MiB 限制）。
+app.include_router(log_collect.upload_router)
 
 
 @app.get("/metrics")

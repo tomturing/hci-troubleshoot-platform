@@ -198,3 +198,58 @@ class LogCollectTaskResponse(BaseModel):
 class LogCollectTaskListResponse(BaseModel):
     total: int
     items: list[LogCollectTaskResponse]
+
+
+# ── P3 段②：客户 PC → 平台 分块上传 ──────────────────────────────────────────
+# 会话标识即 task_id（1 任务 : 1 包 : 1 会话），因此请求/响应均不含独立 upload_id 之外的字段。
+
+
+class UploadInitRequest(BaseModel):
+    """初始化上传会话。``expected_sha256`` 可由客户端在拉取完成后计算并声明。"""
+
+    total_size: int = Field(gt=0, description="压缩包总字节数")
+    expected_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+class UploadInitResponse(BaseModel):
+    upload_id: str
+    upload_token: str = Field(description="数据面直连用的短期 token，绑定 task_id")
+    chunk_size: int
+    part_count: int
+    total_size: int
+    uploaded_parts: list[int]
+    missing_parts: list[int]
+
+
+class UploadStatusResponse(BaseModel):
+    upload_id: str
+    chunk_size: int
+    part_count: int
+    total_size: int
+    uploaded_parts: list[int]
+    missing_parts: list[int]
+
+
+class UploadPartResponse(BaseModel):
+    upload_id: str
+    part_number: int
+    size: int
+    sha256: str
+    uploaded_parts: int
+    part_count: int
+
+
+class UploadCompleteRequest(BaseModel):
+    """``parts`` 省略时按 1..part_count 顺序合并；``sha256``/``size`` 用于最终校验。"""
+
+    parts: list[int] | None = None
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    size: int | None = Field(default=None, ge=1)
+
+
+class UploadCompleteResponse(BaseModel):
+    upload_id: str
+    object_key: str
+    size: int
+    sha256: str
+    part_count: int
