@@ -337,6 +337,10 @@ type InMessage struct {
 	ToolCallID     string         `json:"tool_call_id"`
 	Resume         bool           `json:"resume"`         // P0-2: 浏览器重连时发送 resume 信号，触发历史日志回放  // 端到端链路追踪 ID（Custom-UI → Bridge → Agent 统一）
 	OutputFilters  []OutputFilter `json:"output_filters"` // 平台定义的安全逐行筛选，不执行 shell/正则
+	// Pty 强制为本次命令分配伪终端。acli 插件命令（如 log_collect）在容器内执行时会
+	// 校验 stdin 是否为 tty，非 PTY 直接报 "input is not a terminal" 且退出码仍为 0，
+	// 极易被误判成功。默认对 "acli " 开头的命令自动开启，此字段用于显式覆盖。
+	Pty bool `json:"pty,omitempty"`
 
 	// ── acli_sync 专用字段 ──
 	Force     bool   `json:"force"`              // 强制重新安装/更新
@@ -391,6 +395,10 @@ type OutMessage struct {
 	TimedOut        bool   `json:"timed_out,omitempty"`
 	Cancelled       bool   `json:"cancelled,omitempty"`
 	ErrorType       string `json:"error_type,omitempty"`
+	// PtyMode 声明本次执行的终端语义：pipe（默认，stdout/stderr 双通道）或 pty
+	// （伪终端，stderr 合并进 stdout）。下游不得把 pty 模式下"stderr 为空"解释为无错误。
+	PtyMode         string `json:"pty_mode,omitempty"`
+	StderrPtyMerged bool   `json:"stderr_pty_merged,omitempty"`
 	// 模拟执行标记只来自已认证的 sim-ssh 租约上下文，绝不从 host 名推断。
 	Simulation        bool   `json:"simulation,omitempty"`
 	ExecutionMode     string `json:"execution_mode,omitempty"`
@@ -432,6 +440,9 @@ type execRequestContext struct {
 	Command         string
 	CommandRedacted string
 	CommandSHA256   string
+	// Pty 表示本次执行使用伪终端；由 shouldUsePty 在单一入口判定后写入，
+	// 保证日志、输出语义与真实终端行为一致。
+	Pty bool
 }
 
 type boundedCapture struct {
@@ -1076,12 +1087,127 @@ func (s *SSHSession) execCommand(command, execID string, timeout time.Duration) 
 	return resultChan
 }
 
+// PTY 固定 40x160：与日志收集等 acli 插件命令的表格输出宽度匹配，避免长行被截断。
+const (
+	ptyTerminalHeight = 40
+	ptyTerminalWidth  = 160
+)
+
+// shouldUsePty 判定是否为本条命令分配伪终端。
+//
+// 第一性原理：是否需要 PTY 取决于"被执行程序是否检查 stdin 为 tty"，而不是调用方
+// 的猜测。acli 插件命令在容器内 exec 时会做该检查，非 TTY 直接失败，因此默认对
+// “acli“ 前缀命令开启；显式字段用于覆盖（例如需要在非 acli 命令上强制 PTY）。
+func shouldUsePty(command string, explicit bool) bool {
+	if explicit {
+		return true
+	}
+	trimmed := strings.TrimSpace(command)
+	return trimmed == "acli" || strings.HasPrefix(trimmed, "acli ")
+}
+
+// ptyTerminalModes 关闭回显与输出换行转换：
+//   - ECHO=0：避免输入被回显进 stdout；
+//   - OPOST=0 / ONLCR=0：禁止把 \n 改写成 \r\n，从源头减少 CRLF。
+func ptyTerminalModes() ssh.TerminalModes {
+	return ssh.TerminalModes{
+		ssh.ECHO:  0,
+		ssh.OPOST: 0,
+		ssh.ONLCR: 0,
+	}
+}
+
+// crlfNormalizingReader 把 PTY 输出的 CRLF 归一化为 LF。
+//
+// 即使关闭 ONLCR，仍可能有服务端或程序自身输出 CRLF；且 "\r\n" 可能被拆分到两次
+// Read 之间，因此必须保留末字节 \r 的待定状态，不能简单对单个 chunk 做字符串替换。
+type crlfNormalizingReader struct {
+	src     io.Reader
+	buf     []byte
+	pending bool // 上一 chunk 以 \r 结尾，等待下一字节决定是否合并为 LF
+	done    bool
+}
+
+func (r *crlfNormalizingReader) Read(p []byte) (int, error) {
+	for len(r.buf) == 0 {
+		if r.done {
+			return 0, io.EOF
+		}
+		tmp := make([]byte, 4096)
+		n, err := r.src.Read(tmp)
+		if n > 0 {
+			r.absorb(tmp[:n])
+		}
+		if err != nil {
+			r.done = true
+			r.flushPending()
+			if len(r.buf) == 0 {
+				return 0, err
+			}
+		}
+	}
+	n := copy(p, r.buf)
+	r.buf = r.buf[n:]
+	return n, nil
+}
+
+func (r *crlfNormalizingReader) absorb(chunk []byte) {
+	data := chunk
+	if r.pending {
+		r.pending = false
+		if len(data) > 0 {
+			if data[0] == '\n' {
+				r.buf = append(r.buf, '\n')
+				data = data[1:]
+			} else {
+				r.buf = append(r.buf, '\r')
+			}
+		}
+	}
+	for i := 0; i < len(data); i++ {
+		if data[i] != '\r' {
+			r.buf = append(r.buf, data[i])
+			continue
+		}
+		if i+1 < len(data) {
+			if data[i+1] == '\n' {
+				r.buf = append(r.buf, '\n')
+				i++
+			} else {
+				r.buf = append(r.buf, '\r')
+			}
+			continue
+		}
+		r.pending = true
+	}
+}
+
+// flushPending 在 EOF 时输出悬空的孤立 \r，保证不丢字节。
+func (r *crlfNormalizingReader) flushPending() {
+	if r.pending {
+		r.buf = append(r.buf, '\r')
+		r.pending = false
+	}
+}
+
+// normalizePtyOutput 对最终输出做幂等归一化（reader 已处理流式场景，这里是兜底）。
+func normalizePtyOutput(s string) string {
+	return strings.ReplaceAll(s, "\r\n", "\n")
+}
+
 // execCommandIsolated 独立建立 SSH 连接与 Session 执行命令（双通道事务执行设计）。
 // 独立连接是硬超时的必要条件：仅关闭共享连接上的 Session 时，部分 SSH 服务端会等待
 // 远端进程自然退出，导致 deadline 已触发但调用仍被阻塞；关闭独立连接才能确定性中止。
 func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestContext, requestedTimeout time.Duration, outputFilters []OutputFilter) {
 	// 模拟属性固定于连接创建时验证的认证上下文，host/DNS 名不会改变其语义。
 	sim, execMode, simBackend := s.simulation, s.executionMode, s.simulationBackend
+
+	// PTY 在单一入口判定：保证日志、输出语义与真实终端行为一致，避免各调用点各自为政。
+	req.Pty = shouldUsePty(req.Command, req.Pty)
+	ptyMode := "pipe"
+	if req.Pty {
+		ptyMode = "pty"
+	}
 
 	timeout := requestedTimeout
 	if timeout <= 0 {
@@ -1146,6 +1272,23 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestCont
 		return
 	}
 	defer session.Close()
+	// PTY 必须在 Start 之前申请。申请失败不允许降级：acli 插件在非 TTY 下会以
+	// "input is not a terminal" 失败但退出码仍为 0，降级等于把失败伪装成成功。
+	if req.Pty {
+		if err := session.RequestPty("xterm-256color", ptyTerminalHeight, ptyTerminalWidth, ptyTerminalModes()); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "pty_request_failed")
+			atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+			blogContext(ctx, "ERROR", "exec.error", "申请伪终端失败", req, map[string]any{"error": err.Error(), "error_type": "pty_request_failed"})
+			sendMsg(ws, OutMessage{
+				Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID,
+				Stderr: "申请伪终端失败（该命令必须使用 PTY）", ExitCode: -1,
+				TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID,
+				ErrorType: "pty_request_failed", PtyMode: ptyMode,
+			})
+			return
+		}
+	}
 	if s.simulation {
 		for name, value := range map[string]string{
 			"TRACEPARENT":     traceparent,
@@ -1178,14 +1321,20 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestCont
 		sendMsg(ws, OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "获取标准输出失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "stdout_pipe_failed"})
 		return
 	}
-	stderrPipe, err := session.StderrPipe()
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "stderr_pipe_failed")
-		atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
-		blogContext(ctx, "ERROR", "exec.error", "获取 StderrPipe 失败", req, map[string]any{"error": err.Error(), "error_type": "stderr_pipe_failed"})
-		sendMsg(ws, OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "获取标准错误失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "stderr_pipe_failed"})
-		return
+	// PTY 模式下服务端把 stderr 合并进同一终端流，StderrPipe 不会产生独立数据。
+	// 此时不创建 stderr 读取，并在结果中显式声明 stderr_pty_merged，避免下游把
+	// "stderr 为空"误解为"没有错误输出"。
+	var stderrPipe io.Reader
+	if !req.Pty {
+		stderrPipe, err = session.StderrPipe()
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "stderr_pipe_failed")
+			atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+			blogContext(ctx, "ERROR", "exec.error", "获取 StderrPipe 失败", req, map[string]any{"error": err.Error(), "error_type": "stderr_pipe_failed"})
+			sendMsg(ws, OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "获取标准错误失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "stderr_pipe_failed", PtyMode: ptyMode})
+			return
+		}
 	}
 
 	if err := session.Start(req.Command); err != nil {
@@ -1204,7 +1353,12 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestCont
 	stdoutStats := newStreamStats(stdoutFiltered)
 	stderrStats := newStreamStats(stderrFiltered)
 	var readers sync.WaitGroup
-	readers.Add(2)
+	stdoutReader := io.Reader(stdoutPipe)
+	if req.Pty {
+		// PTY 输出常为 CRLF，统一在读取层归一化，保证 capture 哈希与最终 stdout 一致。
+		stdoutReader = &crlfNormalizingReader{src: stdoutPipe}
+	}
+	readers.Add(1)
 	stdoutEmit := func(chunk string) {
 		sendMsg(ws, OutMessage{Type: "exec_stdout", CaseID: req.CaseID, ExecID: req.ExecID, Stdout: chunk, TraceID: traceID})
 	}
@@ -1212,14 +1366,17 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestCont
 		sendMsg(ws, OutMessage{Type: "exec_stderr", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: chunk, TraceID: traceID})
 	}
 	if stdoutFiltered {
-		go drainExecPipeFiltered(stdoutPipe, stdoutCapture, stdoutStats, stdoutEmit, &readers, "stdout", outputFilters)
+		go drainExecPipeFiltered(stdoutReader, stdoutCapture, stdoutStats, stdoutEmit, &readers, "stdout", outputFilters)
 	} else {
-		go drainExecPipe(stdoutPipe, stdoutCapture, stdoutStats, stdoutEmit, &readers)
+		go drainExecPipe(stdoutReader, stdoutCapture, stdoutStats, stdoutEmit, &readers)
 	}
-	if stderrFiltered {
-		go drainExecPipeFiltered(stderrPipe, stderrCapture, stderrStats, stderrEmit, &readers, "stderr", outputFilters)
-	} else {
-		go drainExecPipe(stderrPipe, stderrCapture, stderrStats, stderrEmit, &readers)
+	if !req.Pty {
+		readers.Add(1)
+		if stderrFiltered {
+			go drainExecPipeFiltered(stderrPipe, stderrCapture, stderrStats, stderrEmit, &readers, "stderr", outputFilters)
+		} else {
+			go drainExecPipe(stderrPipe, stderrCapture, stderrStats, stderrEmit, &readers)
+		}
 	}
 
 	waitCh := make(chan error, 1)
@@ -1277,6 +1434,7 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestCont
 		level = "ERROR"
 	}
 	span.SetAttributes(
+		attribute.Bool("exec.pty", req.Pty),
 		attribute.Int("process.exit.code", exitCode),
 		attribute.Int64("exec.duration_ms", duration.Milliseconds()),
 		attribute.Int64("stdout.bytes", stdoutCapture.total),
@@ -1320,6 +1478,7 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestCont
 		"stdout_truncated":       stdoutCapture.truncated,
 		"stderr_truncated":       stderrCapture.truncated,
 		"timed_out":              timedOut,
+		"pty":                    req.Pty,
 		// 失败语义留痕：非零/超时时保留 stderr 预览，避免日志只有 exit_code=-1 而无任何原因
 		"stderr_preview": truncateString(stderrCapture.String(), 512),
 	})
@@ -1327,9 +1486,15 @@ func (s *SSHSession) execCommandIsolated(ws *websocket.Conn, req execRequestCont
 	resultCtx, resultSpan := otel.Tracer("terminal_bridge").Start(ctx, "terminal_bridge.websocket.result.send",
 		trace.WithAttributes(attribute.String("exec.id", req.ExecID)),
 	)
+	finalStdout := stdoutCapture.String()
+	if req.Pty {
+		// reader 已归一化，此处幂等兜底，防止实现变更后 CRLF 泄漏到上层解析。
+		finalStdout = normalizePtyOutput(finalStdout)
+	}
 	sendMsg(ws, OutMessage{
 		Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID,
-		Stdout: stdoutCapture.String(), Stderr: stderrCapture.String(), ExitCode: exitCode,
+		Stdout: finalStdout, Stderr: stderrCapture.String(), ExitCode: exitCode,
+		PtyMode: ptyMode, StderrPtyMerged: req.Pty,
 		TraceID: traceID, Traceparent: traceparentFromContext(resultCtx), ArtifactID: artifactID,
 		StdoutBytes: stdoutCapture.total, StderrBytes: stderrCapture.total,
 		StdoutSHA256: stdoutCapture.SHA256(), StderrSHA256: stderrCapture.SHA256(),
@@ -4188,6 +4353,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				Traceparent: msg.Traceparent, Tracestate: msg.Tracestate, TestRunID: msg.TestRunID, NodeIP: msg.NodeIP,
 				Container: msg.Container, CustomUI: cui, Command: wrappedCmd,
 				CommandRedacted: redactCommand(wrappedCmd), CommandSHA256: commandHash,
+				Pty: msg.Pty,
 			}
 			var requestedTimeout time.Duration
 			if msg.Timeout > 0 {
