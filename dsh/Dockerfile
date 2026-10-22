@@ -1,8 +1,15 @@
-# DSH（DeepSeek Harness）Web UI 容器镜像
+# DSH（DeepSeek Harness）Web UI 容器镜像 — 二开源构建
 #
 # 上游项目：https://github.com/deepseek-ai/deepseek-harness
-# 版本锁定：0.2.1-rc.2。上游处于 developer preview 且明确声明会有破坏性变更，
-# 升级版本必须单独评审，不可跟随 latest。
+# 二开仓库：https://github.com/tomturing/deepseek-harness（工单同步 ticket-sync）
+#
+# 为什么不再直接 npm install 上游发行包：
+#   ticket-sync 是 monorepo 内新增的宿主/客户端包，未发布到 npm；
+#   `@deepseek-ai/dsh` 的 bin 通过 workspace 依赖加载这些包，
+#   只有从二开源整仓构建才能把插件装配进镜像。
+#
+# 版本锁定：0.2.1-rc.2，二开基线提交 edc3d6e6（PR #1 合并）。
+# 升级上游或二开基线时必须同步修改 DSH_REF 并单独评审。
 #
 # 三条上游契约约束（改动前请先阅读
 # docs/solution/events/2026-10-22-DSH诊断集成.md）：
@@ -15,17 +22,52 @@
 #      /__internal/token 接口读取。
 #   3. 就绪信号：该启动行由上游在 Loader 树就绪后才打印，是官方的
 #      readiness 信号，因此可作为抓取 token 的同步点。
+FROM node:22-alpine AS build
+
+# 构建容器不继承 GitHub Actions runner 的 CI 变量；显式设置让
+# root postinstall（install-lefthook.mjs）跳过，避免在 musl 上执行
+# glibc 版 lefthook 二进制。
+ENV CI=true
+
+# 源码构建需要 git；原生依赖（sharp / node-pty）优先使用 prebuild，
+# 补上编译工具链以防 musl 平台没有可用 prebuild 时回退源码编译。
+RUN apk add --no-cache git build-base python3 patch linux-headers
+
+ARG DSH_REPO=https://github.com/tomturing/deepseek-harness.git
+ARG DSH_REF=edc3d6e61eda06b1cdb053d921c3bb9024e457f3
+
+# 按 commit 浅拉取，避免 master 漂移导致镜像内容不可复现。
+RUN git init /src \
+    && cd /src \
+    && git remote add origin "${DSH_REPO}" \
+    && git fetch --depth 1 origin "${DSH_REF}" \
+    && git checkout -q FETCH_HEAD
+
+WORKDIR /src
+
+# 安装依赖并构建宿主 + 客户端 + Web 前端。
+# 只跑 build:lib / build:web，不跑完整 build，避免打入桌面端/原生发行物。
+RUN corepack enable \
+    && pnpm install --frozen-lockfile \
+    && pnpm run build:lib \
+    && pnpm run build:web
+
+# .git 对运行时无用，去掉以缩小镜像。
+RUN rm -rf /src/.git
+
 FROM node:22-alpine
 
-ARG DSH_VERSION=0.2.1-rc.2
+# 运行期保留完整 workspace（含 node_modules），保证 workspace 包与
+# ticket-sync 的解析关系与构建期一致；镜像体积换部署可靠性。
+COPY --from=build /src /opt/dsh
 
-# 上游为纯 ESM 包且无 install 脚本，不需要 build-base / python3 等原生编译工具链
-RUN npm install -g "@deepseek-ai/dsh@${DSH_VERSION}" \
-    && npm cache clean --force
+# 提供与 npm 全局安装一致的 `dsh` 命令，entrypoint 无需改动。
+RUN ln -s /opt/dsh/apps/cli/lib/bin.js /usr/local/bin/dsh \
+    && chmod 0755 /opt/dsh/apps/cli/lib/bin.js
 
 # 预建可写目录；运行时由 emptyDir / PVC 覆盖挂载
 RUN mkdir -p /work /home/dsh /run/dsh \
-    && chown -R node:node /work /home/dsh /run/dsh
+    && chown -R node:node /work /home/dsh /run/dsh /opt/dsh
 
 # 注意：CI 的构建上下文是仓库根目录（matrix.context = "."），
 # 不是本文件所在目录，因此路径必须带 dsh/ 前缀。
