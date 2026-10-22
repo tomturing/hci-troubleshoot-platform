@@ -22,6 +22,14 @@ const router = createRouter({
       meta: { title: '可观测性', icon: 'DataAnalysis', order: 4 },
     },
     {
+      // order 取 4.5，精确落在「可观测性」(4) 与「分类基线」(5) 之间；
+      // 菜单由 meta.order 排序而非数组顺序（见 utils/adminMenu.ts）
+      path: '/dsh-diagnosis',
+      name: 'DshDiagnosis',
+      component: () => import('@/views/DshDiagnosisView.vue'),
+      meta: { title: 'DSH诊断', icon: 'MagicStick', order: 4.5 },
+    },
+    {
       path: '/simulation',
       name: 'SimulationTest',
       component: () => import('@/views/SimulationTestView.vue'),
