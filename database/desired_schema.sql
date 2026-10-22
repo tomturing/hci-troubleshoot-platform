@@ -3852,3 +3852,69 @@ COMMENT ON COLUMN vm_console_audit_event.actor_user_id IS '操作者账号（FK�
 
 CREATE INDEX IF NOT EXISTS idx_diagnosis_management_audit_actor_user ON diagnosis_management_audit (actor_user_id);
 CREATE INDEX IF NOT EXISTS idx_vm_console_audit_event_actor_user ON vm_console_audit_event (actor_user_id);
+
+
+-- ------------------------------------------------------------
+-- 表: log_collect_task  [模块: case-service]
+-- 说明: 日志收集任务（工单附属）。执行发生在 terminal_bridge（云端不可达客户私网 HCI），
+--       平台只做任务登记、状态机、进度与制品元数据；ticket_no 用于 acli log_collect -s。
+-- 约束: 同一工单只允许一个活跃任务（部分唯一索引），日期跨度 ≤30 天，工单号白名单与
+--       bridge 二次校验保持一致（插件不防注入）。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS log_collect_task (
+    task_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    case_id varchar(20) NOT NULL,
+    ticket_no varchar(32) NOT NULL,
+    origin_node_ip inet NOT NULL,
+    modules text[] NOT NULL,
+    date_from date NOT NULL,
+    date_to date NOT NULL,
+    ips text[] NOT NULL,
+    extra_paths text[],
+    remote_url text,
+    status varchar(16) NOT NULL DEFAULT 'pending',
+    progress smallint NOT NULL DEFAULT 0,
+    arch varchar(16),
+    acli_version varchar(32),
+    upload_mode varchar(16),
+    archive_path text,
+    archive_size bigint,
+    archive_sha256 char(64),
+    detail jsonb NOT NULL DEFAULT '{}'::jsonb,
+    error_code varchar(64),
+    error_message text,
+    trace_id varchar(64),
+    created_by varchar(255) NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at timestamptz,
+    CONSTRAINT log_collect_task_pkey PRIMARY KEY (task_id),
+    CONSTRAINT fk_log_collect_task_case FOREIGN KEY (case_id) REFERENCES "case" (case_id) ON DELETE CASCADE,
+    CONSTRAINT ck_log_collect_ticket CHECK (ticket_no ~ '^[A-Za-z0-9_-]{1,32}$'),
+    CONSTRAINT ck_log_collect_range CHECK (date_to >= date_from AND date_to - date_from <= 30),
+    CONSTRAINT ck_log_collect_progress CHECK (progress BETWEEN 0 AND 100),
+    CONSTRAINT ck_log_collect_status CHECK (
+        status IN ('pending', 'probing', 'installing', 'collecting', 'packaging', 'uploading', 'completed', 'failed', 'cancelled')
+    ),
+    CONSTRAINT ck_log_collect_upload_mode CHECK (
+        upload_mode IS NULL OR upload_mode IN ('acli_direct', 'platform_direct', 'bridge_relay', 'none')
+    )
+);
+
+COMMENT ON TABLE log_collect_task IS '日志收集任务表 — 承载 acli log_collect 的控制面状态，执行发生在 terminal_bridge';
+COMMENT ON COLUMN log_collect_task.ticket_no IS '用户输入的 ICare 单号，作为 acli log_collect -s，直接成为产物名';
+COMMENT ON COLUMN log_collect_task.origin_node_ip IS '发起采集的 HCI 节点；acli progress 只在该节点有效，轮询必须路由回此节点';
+COMMENT ON COLUMN log_collect_task.modules IS '收集专项（acli -m 枚举）';
+COMMENT ON COLUMN log_collect_task.ips IS '目标主机；["all"] 表示所有在线节点';
+COMMENT ON COLUMN log_collect_task.status IS '任务状态机：pending/probing/installing/collecting/packaging/uploading/completed/failed/cancelled';
+COMMENT ON COLUMN log_collect_task.progress IS '总进度 0-100，来自 acli progress 的"总进度"字段';
+COMMENT ON COLUMN log_collect_task.detail IS '主机明细与上传状态等结构化进度快照';
+COMMENT ON COLUMN log_collect_task.archive_sha256 IS '压缩包 SHA-256（制品完整性校验）';
+
+CREATE INDEX IF NOT EXISTS idx_log_collect_task_case
+    ON log_collect_task (case_id, created_at DESC);
+
+-- 同一工单只允许一个活跃任务：避免同节点并发 create 互相覆盖 progress 文件与产物目录。
+CREATE UNIQUE INDEX IF NOT EXISTS uq_log_collect_task_active_case
+    ON log_collect_task (case_id)
+    WHERE status NOT IN ('completed', 'failed', 'cancelled');
