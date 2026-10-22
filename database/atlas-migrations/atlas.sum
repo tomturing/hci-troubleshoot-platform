@@ -1,4 +1,4 @@
-h1:P8a5lLaRC1a5OF4AHwhdHyAv//kyWAmbm85MZxE5mrY=
+h1:OeZTjGLLEttTM3yJ71GWpP3pMkLyga3C204sjqJK6TQ=
 20260525000000_kbd_structured_sections.sql h1:HK5p3/VudQhI6ZupzyZ3PEt00fqqLt5ExEovpDym/jc=
 20260526000000_create_sop_execution.sql h1:qAmFaHEbjh9R4eRIjcMM4QLx6wPw/LCDwvPoxBRXHlQ=
 20260526100000_add_variable_schema_to_sop_document.sql h1:tJjimwpXh/VwAAP1zWChXMgkuzjiK8WV+W55JO7BY/w=
@@ -43,3 +43,4 @@ h1:P8a5lLaRC1a5OF4AHwhdHyAv//kyWAmbm85MZxE5mrY=
 20261019000000_add_kbd_entry_root_signal_rejected_json.sql h1:tjjwNhokoL1Mu54AflQUv4Oa0rRaFGY/deGmi0H+h0I=
 20261022000000_add_log_collect_task.sql h1:aZ2FWiYogI+hyPXwqK+RRqsu+2TyJC0uYMuENvvRfGw=
 20261022000001_log_collect_delivery_fields.sql h1:EOJAMmOSQfJG9qv3QZjb6392Vc1IgVnGD5yGPvThmtU=
+20261022000002_add_log_collect_relay_status.sql h1:SPMRtQVzXT90S4/g8XYtw87YFUoQ2r+keVlDtVYsWkI=

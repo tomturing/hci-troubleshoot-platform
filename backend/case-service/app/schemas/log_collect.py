@@ -185,6 +185,11 @@ class LogCollectTaskResponse(BaseModel):
     cleanup_state: str = "none"
     cleanup_reason: str | None = None
     archive_deleted: bool = False
+    # P3 段③ 代传状态（与主状态机解耦）
+    relay_status: str = "none"
+    relay_chunk_index: int | None = None
+    relay_chunk_total: int | None = None
+    relay_restarts: int = 0
     detail: dict = Field(default_factory=dict)
     error_code: str | None = None
     error_message: str | None = None

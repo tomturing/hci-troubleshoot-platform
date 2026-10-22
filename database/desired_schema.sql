@@ -3886,6 +3886,9 @@ CREATE TABLE IF NOT EXISTS log_collect_task (
     relay_chunk_index integer,
     relay_chunk_total integer,
     relay_restarts integer NOT NULL DEFAULT 0,
+    relay_chunk_size integer,
+    relay_status varchar(16) NOT NULL DEFAULT 'none',
+    relay_updated_at timestamptz,
     cleanup_state varchar(16) NOT NULL DEFAULT 'none',
     cleanup_reason varchar(64),
     cleanup_ack_by varchar(64),
@@ -3909,7 +3912,8 @@ CREATE TABLE IF NOT EXISTS log_collect_task (
     CONSTRAINT ck_log_collect_status CHECK ((status)::text = ANY ((ARRAY['pending'::character varying, 'probing'::character varying, 'installing'::character varying, 'collecting'::character varying, 'packaging'::character varying, 'uploading'::character varying, 'completed'::character varying, 'failed'::character varying, 'cancelled'::character varying])::text[])),
     CONSTRAINT ck_log_collect_upload_mode CHECK ((upload_mode IS NULL) OR ((upload_mode)::text = ANY ((ARRAY['acli_direct'::character varying, 'bridge_relay'::character varying, 'none'::character varying])::text[]))),
     CONSTRAINT ck_log_collect_cleanup_state CHECK ((cleanup_state)::text = ANY ((ARRAY['none'::character varying, 'required'::character varying, 'acked'::character varying])::text[])),
-    CONSTRAINT ck_log_collect_pull_offset CHECK ((pull_offset_bytes IS NULL) OR (pull_offset_bytes >= 0))
+    CONSTRAINT ck_log_collect_pull_offset CHECK ((pull_offset_bytes IS NULL) OR (pull_offset_bytes >= 0)),
+    CONSTRAINT ck_log_collect_relay_status CHECK ((relay_status)::text = ANY ((ARRAY['none'::character varying, 'pending'::character varying, 'running'::character varying, 'success'::character varying, 'failed'::character varying])::text[]))
 );
 
 COMMENT ON TABLE log_collect_task IS '日志收集任务表 — 承载 acli log_collect 的控制面状态，执行发生在 terminal_bridge';
@@ -3930,6 +3934,9 @@ COMMENT ON COLUMN log_collect_task.relay_restarts IS 'P3 段③ 重新 init 次�
 COMMENT ON COLUMN log_collect_task.cleanup_state IS '清理告警状态：none/required/acked；仅作标记，绝不驱动删除';
 COMMENT ON COLUMN log_collect_task.cleanup_reason IS '触发清理告警的原因：storage_high/expired/orphan_hci/relay_failed';
 COMMENT ON COLUMN log_collect_task.archive_deleted IS '平台副本是否已被运维删除（仅记录事实，平台不自动删）';
+COMMENT ON COLUMN log_collect_task.relay_status IS 'P3 段③ 代传状态：none/pending/running/success/failed；与任务主状态机解耦';
+COMMENT ON COLUMN log_collect_task.relay_chunk_size IS 'P3 段③ 服务端返回的分片大小（10 MiB），续传时用于定位分片';
+COMMENT ON COLUMN log_collect_task.relay_updated_at IS 'P3 段③ 状态最近更新时间';
 
 CREATE INDEX IF NOT EXISTS idx_log_collect_task_case
     ON log_collect_task (case_id, created_at DESC);
