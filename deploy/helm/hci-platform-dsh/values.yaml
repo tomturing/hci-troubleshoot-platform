@@ -31,6 +31,10 @@ global:
 # hci-dsh 命名空间内的 ghcr 拉取凭证，不内置任何默认值。
 secrets:
   ghcrToken: ""
+  # LLM API Key，由环境仓库注入（与环境内其他服务共用同一个 MaaS 凭证）。
+  # 本 Chart 用它渲染 hci-dsh 命名空间内的 dsh-llm-credentials，
+  # 容器以 dsh.llm.apiKeyEnv 指定的变量名读取。
+  llmApiKey: ""
 
 # ======================== Ingress (Traefik) ==================================
 ingress:
@@ -74,8 +78,34 @@ dsh:
     pullPolicy: IfNotPresent
   # dsh 自身监听端口。固定为 127.0.0.1 上的该端口，仅本 Pod 内可达。
   port: 3080
-  # DSH 是 Agent 运行时，需要 LLM 凭证才能真正执行分析。
-  # 由环境仓库创建同名 Secret 后在此引用；留空时 DSH 可启动但无法执行分析。
+  # ======================== LLM 提供商 ======================================
+  # DSH 是 Agent 运行时，没有 LLM 就只能启动、不能干活。
+  # 本段会渲染成 $DSH_HOME/profiles/web/cordis.patch.yml
+  # （见 templates/configmap-llm.yaml），由 initContainer 播种到家目录卷。
+  #
+  # ⚠️ 下面三个取值是对目标端点的**实测结论**，不是经验推荐，改动前请重新实测：
+  #   1. api 用 openai-completions —— 端点是 /compatible-mode/v1；
+  #   2. compat.supportsDeveloperRole 必须为 false —— 端点实测拒绝 developer
+  #      角色（400: developer is not one of [system, assistant, user, tool, function]），
+  #      pi-ai 对声明了推理能力的模型默认用 developer 角色发系统提示词；
+  #   3. max_completion_tokens 端点实测接受，故**不要**覆写 maxTokensField。
+  llm:
+    enabled: true
+    # Provider ID 一旦确定就永久生效（请求、已保存会话、凭据引用都用它），
+    # 改名只能新增再删除。
+    providerId: aliyun-maas
+    # 凭证通过环境变量注入，密钥不落配置文件
+    apiKeyEnv: DSH_QWEN_API_KEY
+    api: openai-completions
+    baseUrl: ""
+    model: ""
+    # 关闭思维链。qwen3.8-flash 默认思考会让单次调用达到 70s 级，
+    # Agent 多轮调用会不可用（环境仓库既有服务也因此统一关闭思维链）。
+    # DSH 内置 qwen 思维链格式，off 会下发 enable_thinking=false（已实测端点接受）。
+    disableThinking: true
+
+  # 外部 LLM 凭据 Secret 名称（可选）。
+  # 本 Chart 已能用 secrets.llmApiKey 自动渲染 dsh-llm-credentials，通常无需设置。
   llmSecretName: ""
   resources:
     requests:

@@ -1,0 +1,47 @@
+{{/*
+DSH 的 LLM 提供商配置，渲染为 $DSH_HOME/profiles/web/cordis.patch.yml。
+
+三个 compat 取值均来自对目标端点的实测，不是经验推荐：
+- api=openai-completions：端点是 /compatible-mode/v1；
+- supportsDeveloperRole=false：端点实测拒绝 developer 角色
+  （400: developer is not one of [system, assistant, user, tool, function]），
+  而 pi-ai 对声明了推理能力的模型默认用 developer 角色承载系统提示词；
+- thinkingFormat=qwen：DSH 内置的 qwen 思维链格式，off 下发 enable_thinking=false。
+
+注意 'off' 必须加引号：YAML 1.1 会把裸 off 解析成布尔 false，
+而这里需要的是字符串键名。
+*/}}
+{{- if .Values.dsh.llm.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dsh-llm-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+data:
+  cordis.patch.yml: |
+    # 由 Helm 渲染，请勿在集群内直接修改。
+    # 真实来源：deploy/helm/hci-platform-dsh/values.yaml 的 dsh.llm
+    - id: llm-pi-ai
+      config:
+        providers:
+          {{ .Values.dsh.llm.providerId }}:
+            apiKeyEnv: {{ .Values.dsh.llm.apiKeyEnv }}
+            api: {{ .Values.dsh.llm.api }}
+            baseURL: {{ .Values.dsh.llm.baseUrl }}
+            compat:
+              supportsDeveloperRole: false
+              {{- if .Values.dsh.llm.disableThinking }}
+              thinkingFormat: qwen
+              {{- end }}
+            {{- if .Values.dsh.llm.disableThinking }}
+            reasoning: 'off'
+            {{- end }}
+            models:
+              - id: {{ .Values.dsh.llm.model }}
+                {{- if .Values.dsh.llm.disableThinking }}
+                reasoningEfforts:
+                  'off':
+                {{- end }}
+{{- end }}

@@ -31,6 +31,40 @@ spec:
         # 刻意不设置 fsGroup。原因见 values.yaml 的 customerLogs 说明：
         # /sf/log 是客户日志回收链路的共享目录，一旦 kubelet 对其误改属主，
         # 会直接破坏其他消费者。风险对称性上不值得为了便利去赌。
+      {{- if .Values.dsh.llm.enabled }}
+      initContainers:
+        # 把 GitOps 声明的 cordis.patch.yml 播种到可写的家目录卷。
+        #
+        # 为什么不直接以只读方式挂载 ConfigMap：DSH 的「设置 → 模型」页也会
+        # 写这份文件，只读挂载会让页面保存失败。用 initContainer 拷贝可兼顾两头——
+        # GitOps 是基线，运行时可改，Pod 重建后回到基线。
+        - name: seed-dsh-llm-config
+          image: "{{ .Values.global.imageRegistry }}{{ .Values.dsh.image.repository }}:{{ .Values.dsh.image.tag }}"
+          imagePullPolicy: {{ .Values.dsh.image.pullPolicy }}
+          # profile 名必须与镜像 entrypoint 里的 `dsh --profile web` 一致，
+          # 因此这里固定为 web，不做成可配项以免两处漂移。
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              mkdir -p /home/dsh/.dsh/profiles/web
+              cp /seed/cordis.patch.yml /home/dsh/.dsh/profiles/web/cordis.patch.yml
+              echo "[seed] 已播种 LLM 配置到 /home/dsh/.dsh/profiles/web/cordis.patch.yml"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: home
+              mountPath: /home/dsh
+            - name: llm-config
+              mountPath: /seed
+              readOnly: true
+      {{- end }}
       containers:
         # ── 主容器：DSH ──────────────────────────────────────────────
         - name: dsh
@@ -53,9 +87,14 @@ spec:
             {{- end }}
             - name: HOME
               value: /home/dsh
-          {{- if .Values.dsh.llmSecretName }}
-          # DSH 作为 Agent 需要 LLM 凭证才能真正执行分析；
-          # Secret 由环境仓库创建，本 Chart 不内置任何凭据。
+          {{- if and .Values.dsh.llm.enabled .Values.secrets.llmApiKey }}
+          # LLM 凭证：Secret 的键名即 dsh.llm.apiKeyEnv，
+          # cordis.patch.yml 通过 apiKeyEnv 引用它，密钥本身不进入配置文件。
+          envFrom:
+            - secretRef:
+                name: dsh-llm-credentials
+          {{- else if .Values.dsh.llmSecretName }}
+          # 预建的外部 LLM 凭证 Secret（本 Chart 不内置任何凭据）
           envFrom:
             - secretRef:
                 name: {{ .Values.dsh.llmSecretName }}
@@ -165,3 +204,9 @@ spec:
         - name: proxy-config
           configMap:
             name: dsh-proxy
+        {{- if .Values.dsh.llm.enabled }}
+        # 只交给 initContainer 读取一次，再播种到家目录卷
+        - name: llm-config
+          configMap:
+            name: dsh-llm-config
+        {{- end }}
