@@ -35,6 +35,7 @@ from app.routes import (
     cases,
     conversations,
     diagnosis,
+    dsh,
     environments,
     health,
     kb,
@@ -224,6 +225,7 @@ app.include_router(bridge_logs.router)
 app.include_router(simulations.router)
 app.include_router(signal_dry_run.router)
 app.include_router(diagnosis.router)
+app.include_router(dsh.router)
 app.include_router(auth.router)
 
 

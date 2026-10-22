@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     HCI_SIM_SECURITY_ACTOR_ID: str = "bundle-factory-security"
     HCI_SIM_PUBLISHER_ACTOR_ID: str = "bundle-factory-publisher"
     DIAGNOSIS_SERVICE_URL: str = "http://diagnosis-service:8008"
+    # === DSH（DeepSeek Harness）诊断入口 ===
+    # DSH 部署在独立 namespace，故此处必须用完整 Service FQDN，
+    # 不能用短名（短名依赖 Pod 的 DNS search 列表，跨 namespace 解析不稳定）。
+    DSH_SERVICE_URL: str = "http://dsh.hci-dsh.svc.cluster.local:8080"
+    # 对外暴露的子路径，需与 DSH chart 的 ingress.path 及 --public-url 保持一致
+    DSH_PUBLIC_PATH: str = "/dsh/"
     DIAGNOSIS_IDENTITY_MODE: str = "internal"
     # internal 模式下网关代表浏览器调用方重签内部身份时使用的租户标识。
     # 必须与 chart `diagnosisService.internalIdentity.tenantId` 保持一致，
