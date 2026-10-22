@@ -1,0 +1,45 @@
+# =============================================================================
+# ArgoCD Application: hci-platform-dsh-dev
+#
+# 目标集群：本地 WSL（local-only ArgoCD，https://kubernetes.default.svc）
+# 管理 DSH 诊断工作台（namespace: hci-dsh）
+#
+# 设计原则：
+#   - dev 环境独享 hci-dsh namespace，与云端隔离
+#   - prune: false — 禁止自动删除资源
+#   - 客户日志挂载在 dev 下刻意关闭：/sf/log 是客户侧日志回收到宿主机的目录，
+#     属于 staging/prod 特有的 hostPath，本地 WSL 并不存在该路径，
+#     开启会让 Pod 因 hostPath 找不到目录而一直 Pending。
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-dsh-dev
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "dev DSH 诊断工作台 — DeepSeek Harness（namespace: hci-dsh）"
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hci-dsh
+  sources:
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform-dsh
+      helm:
+        releaseName: hci-platform-dsh
+        valueFiles:
+          - $values/environments/dev/values.yaml
+        parameters:
+          - name: customerLogs.enabled
+            value: "false"
+    - repoURL: https://github.com/tomturing/hci-platform-env.git
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    automated:
+      prune: false      # 禁止自动删除资源
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

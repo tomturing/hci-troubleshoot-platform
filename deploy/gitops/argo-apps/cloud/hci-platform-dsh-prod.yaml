@@ -1,0 +1,38 @@
+# =============================================================================
+# ArgoCD Application: hci-platform-dsh-prod
+#
+# 目标集群：prod 集群独立 VM（192.168.0.3），ArgoCD 通过内网 API Server 管理
+# 管理 DSH 诊断工作台（namespace: hci-dsh）
+#
+# 设计原则：
+#   - 生产环境默认手动同步，防止未经审批的变更自动生效
+#   - DSH 保留完整 Agent 能力（shell / ssh / computer-use），
+#     生产启用前必须完成：LLM 凭证 Secret、NetworkPolicy 的 CNI 前提、/sf/log 挂载点确认
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-dsh-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "prod DSH 诊断工作台 — DeepSeek Harness（namespace: hci-dsh）"
+spec:
+  project: default
+  destination:
+    server: https://192.168.0.3:6443
+    namespace: hci-dsh
+  sources:
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform-dsh
+      helm:
+        releaseName: hci-platform-dsh
+        valueFiles:
+          - $values/environments/prod/values.yaml
+    - repoURL: https://github.com/tomturing/hci-platform-env.git
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    # 生产环境默认手动同步
+    syncOptions:
+      - CreateNamespace=true

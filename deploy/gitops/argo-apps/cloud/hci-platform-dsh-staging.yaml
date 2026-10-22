@@ -1,0 +1,42 @@
+# =============================================================================
+# ArgoCD Application: hci-platform-dsh-staging
+#
+# 目标集群：云端 staging 集群（kubernetes.default.svc = ArgoCD 所在集群）
+# 管理 DSH 诊断工作台（namespace: hci-dsh）：
+#   - DSH Deployment（dsh 主容器 + nginx 反代 sidecar）
+#   - Service / ConfigMap / Ingress / NetworkPolicy
+#
+# 设计原则：
+#   - DSH 具备命令执行能力，独立命名空间便于后续施加网络隔离
+#   - prune: false — 禁止自动删除，避免误删导致 DSH 会话与配置丢失
+#   - 客户日志目录 /sf/log 为 hostPath，仅在当前单节点拓扑下有效
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-dsh-staging
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "staging DSH 诊断工作台 — DeepSeek Harness（namespace: hci-dsh）"
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hci-dsh
+  sources:
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform-dsh
+      helm:
+        releaseName: hci-platform-dsh
+        valueFiles:
+          - $values/environments/staging/values.yaml
+    - repoURL: https://github.com/tomturing/hci-platform-env.git
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    automated:
+      prune: false      # 禁止自动删除资源
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
