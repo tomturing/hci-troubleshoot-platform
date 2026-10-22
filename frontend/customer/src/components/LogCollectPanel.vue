@@ -50,8 +50,6 @@ type Stage =
   | 'pulling'
   | 'uploading'
   | 'relaying'
-  // 平台已收包校验通过，但日志服务器归档尚未完成（relay 端点未上线时停在此态）
-  | 'uploaded'
   | 'done'
   | 'failed'
 
@@ -101,7 +99,6 @@ const running = computed(() =>
 
 const percent = computed(() => {
   if (stage.value === 'done') return 100
-  if (stage.value === 'uploaded') return 90
   if (stage.value === 'relaying') return 95 + Math.min(4, relayStatus.value === 'running' ? 2 : 0)
   if (stage.value === 'uploading' || stage.value === 'pulling') return 60 + Math.round(transfer.percent * 0.3)
   return Math.min(60, progress.value?.percent ?? 0) * (60 / 80)
@@ -113,7 +110,7 @@ const progressStatus = computed(() =>
 
 const stepActive = computed(() => {
   if (stage.value === 'done') return 4
-  if (stage.value === 'relaying' || stage.value === 'uploaded') return 3
+  if (stage.value === 'relaying') return 3
   if (stage.value === 'uploading' || stage.value === 'pulling') return 2
   if (stage.value === 'collecting' || stage.value === 'creating') return 1
   return 0
@@ -122,7 +119,6 @@ const stepActive = computed(() => {
 const statusText = computed(() => {
   if (stage.value === 'failed') return errorMessage.value || currentTask.value?.error_message || '任务失败'
   if (stage.value === 'done') return '日志已归档到日志服务器'
-  if (stage.value === 'uploaded') return '平台已收包校验通过，等待归档到日志服务器'
   if (stage.value === 'collecting') {
     const p = progress.value
     return p ? `${p.status}（${p.done}/${p.total}）` : '采集进行中'
@@ -332,6 +328,12 @@ async function handleStart() {
     // 用户已取消：后台流程静默退出，不再覆盖任务状态
     if (token !== runToken) return
     errorMessage.value = String(error?.message || error).slice(0, 500)
+    // 轮询超时属于"结果未知"：不替服务端写终态，否则会出现 UI 报失败、后台实际成功
+    if (error instanceof RelayPendingError) {
+      stage.value = 'failed'
+      ElMessage.warning(errorMessage.value)
+      return
+    }
     stage.value = 'failed'
     if (currentTask.value) {
       await logCollectApi
@@ -379,10 +381,24 @@ async function finishP1(task: LogCollectTask) {
   if (snapshot?.upload_state && !snapshot.upload_state.includes('成功')) {
     throw new Error(`日志服务器上传失败：${snapshot.upload_state}，可改用 P3 中转`)
   }
-  await logCollectApi.patchTask(task.task_id, { status: 'completed', progress: 100 })
+  await markCompleted(task.task_id)
   stage.value = 'done'
   cleanupTip.value = 'P1 由插件直传日志服务器；上传成功后插件会自动删除 HCI 上的压缩包，无需人工清理。'
   ElMessage.success('日志已归档到日志服务器')
+}
+
+/**
+ * 回填任务终态并同步服务端返回的任务快照。
+ *
+ * 归档/上传已经由服务端确认，PATCH 只是状态回填：即使回填失败也不能把已成功的归档翻转成失败，
+ * 因此这里只提示，不抛出。
+ */
+async function markCompleted(taskId: string) {
+  try {
+    currentTask.value = await logCollectApi.patchTask(taskId, { status: 'completed', progress: 100 })
+  } catch {
+    ElMessage.warning('日志已归档，但平台任务状态回填失败，请在任务列表确认')
+  }
 }
 
 async function runP3(ws: WebSocket, task: LogCollectTask, token: number) {
@@ -424,27 +440,14 @@ async function runP3(ws: WebSocket, task: LogCollectTask, token: number) {
     size: totalSize,
   })
 
-  // 5) 代传日志服务器（PR-3d 才上线；未上线时停在 uploaded，不谎报成功也不误标失败）
+  // 5) 代传日志服务器（/relay 幂等启动，进度与终态一律以服务端 relay_status 为准）
   stage.value = 'relaying'
-  try {
-    await logCollectApi.startRelay(task.task_id)
-  } catch (error: any) {
-    if (isRelayUnavailable(error)) {
-      currentTask.value = await logCollectApi.getTask(task.task_id)
-      stage.value = 'uploaded'
-      cleanupTip.value =
-        `平台已收包并校验通过（${completed.size} 字节），但“归档到日志服务器”能力尚未上线。\n` +
-        'HCI 上的压缩包是中转源，请保留，暂勿删除：\n' +
-        `${archivePath}`
-      ElMessage.warning('已上传平台，归档日志服务器能力尚未上线')
-      return
-    }
-    throw error
-  }
+  await logCollectApi.startRelay(task.task_id)
   await pollRelay(task.task_id, token)
   if (token !== runToken) return
 
-  currentTask.value = await logCollectApi.getTask(task.task_id)
+  // 归档成功才推进任务终态：否则任务会永久停在 uploading，并占住该工单的进行中名额
+  await markCompleted(task.task_id)
   stage.value = 'done'
   cleanupTip.value =
     `日志包已归档到日志服务器（${completed.size} 字节）。` +
@@ -454,11 +457,8 @@ async function runP3(ws: WebSocket, task: LogCollectTask, token: number) {
   ElMessage.success('日志已上传平台并归档到日志服务器')
 }
 
-/** 归档端点未部署（404/405/501）时按"能力缺失"降级，而不是当成任务失败。 */
-function isRelayUnavailable(error: any): boolean {
-  const status = error?.response?.status
-  return status === 404 || status === 405 || status === 501
-}
+/** 归档由服务端后台任务驱动，前端轮询超时只代表"结果未知"，不代表任务失败。 */
+class RelayPendingError extends Error {}
 
 async function pollRelay(taskId: string, token: number) {
   // 上限 2 小时（1440 次 × 5s）：代传是长任务，但不能无限轮询
@@ -468,11 +468,11 @@ async function pollRelay(taskId: string, token: number) {
     relayStatus.value = snapshot.relay_status
     if (snapshot.relay_status === 'success') return
     if (snapshot.relay_status === 'failed') {
-      throw new Error('归档到日志服务器失败，可在任务详情重试')
+      throw new Error('归档到日志服务器失败，错误码见平台任务记录，可据此排查')
     }
     await sleep(POLL_INTERVAL)
   }
-  throw new Error('归档到日志服务器超时（2 小时），可在任务详情重试')
+  throw new RelayPendingError('归档超过 2 小时仍在进行，平台任务状态未变更，请稍后确认结果')
 }
 
 async function handleCancel() {
