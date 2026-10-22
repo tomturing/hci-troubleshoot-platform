@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "note": "上游文档页 /commandList 与实机不一致时的权威修正表。按第一性原理：真值只存在于运行时（acli --help / acli acli command list），文档仅作补充。",
+  "verified_on": {
+    "node": "172.28.25.1",
+    "hci_version": "6.11.1_R1",
+    "acli_version": "1.0.1",
+    "verified_at": "2026-10-22T15:20:00+08:00",
+    "evidence": [
+      "acli plugins --help => 错误：未知的命令或者命名空间(plugins)",
+      "acli plugins log_collect create => 错误：未知的命令或者命名空间(plugins log_collect)",
+      "acli log_collect --help => 可用命令: cancel / create / progress",
+      "acli asys --help / acli performance_tools --help => 可直接执行（插件为顶层命名空间）",
+      "acli acli command list => 349 行核心命令；不含任何 log_collect 条目（插件命令动态注册）"
+    ]
+  },
+  "rename_prefix": [
+    {
+      "from": "acli plugins ",
+      "to": "acli ",
+      "reason": "acli 1.0.1 不存在 plugins 命名空间；插件以顶层命名空间注册（acli --help 的『可用插件』直接列出 log_collect 等）"
+    }
+  ],
+  "rename": [],
+  "remove": [
+    {
+      "command": "acli plugins log collection",
+      "reason": "历史命令形式，已变更为 acli log_collect（安装器『重要变更说明』原文）"
+    }
+  ],
+  "add": [
+    {
+      "command": "acli system qmpcmd",
+      "summary": "查询 Qemu Monitor 只读状态",
+      "risk_hint": "read",
+      "reason": "上游 2026-10-09 页面已移除，但实机 acli acli command list 不覆盖 system 子命令白名单全量，且既有平台契约（test_shared_resolution_runtime）依赖该路径。删除=把可用命令降级为未知，故显式保留。"
+    }
+  ],
+  "risk": {
+    "acli log_collect create": "write",
+    "acli log_collect cancel": "danger",
+    "acli log_collect progress": "read"
+  }
+}

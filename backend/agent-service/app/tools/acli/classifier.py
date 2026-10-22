@@ -20,10 +20,14 @@ _ACLI_RISK_RULES: list[tuple[int, re.Pattern]] = [
     (3, re.compile(r"acli\s+vm\s+delete\b")),
     (3, re.compile(r"acli\s+storage\s+\S+\s+\S*\s*(delete|remove|wipe|format|destroy)\b")),
     (3, re.compile(r"acli\s+network\s+\S+\s*(delete|remove)\b")),
+    # 日志收集取消会 kill 全集群采集进程并删除已收集的包，按破坏性动作处理。
+    (3, re.compile(r"acli\s+log_collect\s+cancel\b")),
     # 系统子命令中包裹的破坏性非 acli 写操作（如 acli system rm -rf / mkfs / dd if=）
     (3, re.compile(r"acli\s+system\b.*\b(rm\s+-rf|mkfs|fdisk|parted|format|wipe|dd\s+if=)\b")),
     (3, re.compile(r"acli\s+system\s+(rm|del|format)\b")),
     # risk=2：有副作用的写操作（confirm）
+    # 日志收集会在集群所有节点拉起采集进程并写盘，必须人工确认。
+    (2, re.compile(r"acli\s+log_collect\s+create\b")),
     # 支持两种格式：acli vm start <id> 或 acli vm <id> start
     (2, re.compile(r"acli\s+(vm|service|platform)\s+(start|stop|shutdown|restart|suspend|resume)\b")),
     (2, re.compile(r"acli\s+(vm|service|platform)\s+\S+\s+(start|stop|shutdown|restart|suspend|resume)\b")),
@@ -55,6 +59,23 @@ _BASH_RISK_RULES: list[tuple[int, re.Pattern]] = [
 ]
 
 
+def _catalog_risk_level(command: str) -> int | None:
+    """从 Catalog ``risk_hint`` 读取风险等级。
+
+    只把 write/danger 映射为更高风险；read 或未命中返回 ``None``，交由原有
+    正则与 fail-closed 逻辑判定。局部导入避免模块初始化环。
+    """
+
+    try:
+        from shared.resolution.catalog import acli_risk_hint
+
+        hint = acli_risk_hint(command.split())
+    except Exception:
+        # Catalog 不可读时不得影响主判定：保持原有 fail-closed 路径。
+        return None
+    return {"danger": 3, "write": 2}.get(hint or "")
+
+
 def classify_acli(command: str | None) -> int:
     """
     对 acli 命令进行风险分级。
@@ -84,6 +105,12 @@ def classify_acli(command: str | None) -> int:
     for risk, pattern in _ACLI_RISK_RULES:
         if pattern.search(command):
             return risk
+
+    # Catalog 的 risk_hint 只用于**提升**风险（write→2 / danger→3），绝不用于降低：
+    # risk_hint=read 时继续走原有判定，避免一条错误的 read 标注把写命令放行。
+    catalog_risk = _catalog_risk_level(stripped)
+    if catalog_risk is not None:
+        return catalog_risk
 
     # Catalog 未知不等于只读。开发/验证默认提升为 risk=2 走人工确认；生产可通过
     # ACLI_UNKNOWN_COMMAND_POLICY=deny 在语义校验阶段直接拒绝。局部导入避免模块初始化环。

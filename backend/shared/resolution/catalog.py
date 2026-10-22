@@ -132,6 +132,55 @@ def load_resolution_catalog() -> dict[str, Any]:
     return _resolution_hot.load()
 
 
+# ── acli_command_catalog.json 的 risk_hint 视图 ─────────────────────────────────
+# 权威风险来自 Catalog 的 ``risk_hint`` 字段（由 scripts/tools/sync_acli_catalog.py
+# 按命令动作 token 推导 + override 表人工修正）。这里只提供读取，不做风险推断，
+# 避免"风险判定逻辑"分散到多个模块。
+
+
+def _parse_acli_risk_hints(raw: Any) -> tuple[tuple[tuple[str, ...], str], ...] | None:
+    """把 Catalog 解析为 (命令路径 token, 风险提示) 序列；路径不含开头的 acli。"""
+    commands = raw.get("commands") if isinstance(raw, dict) else None
+    if not isinstance(commands, list):
+        return None
+    rows: list[tuple[tuple[str, ...], str]] = []
+    for item in commands:
+        if not isinstance(item, dict):
+            continue
+        command = item.get("command")
+        hint = item.get("risk_hint")
+        if not isinstance(command, str) or hint not in {"read", "write", "danger"}:
+            continue
+        tokens = tuple(command.split())
+        if len(tokens) >= 2 and tokens[0] == "acli":
+            rows.append((tokens[1:], str(hint)))
+    return tuple(rows)
+
+
+_acli_risk_hot = _HotCatalog(
+    path=ACLI_CATALOG_PATH,
+    loader=_parse_acli_risk_hints,
+    default=(),
+)
+
+
+def acli_risk_hint(tokens: list[str]) -> str | None:
+    """返回命令路径命中的风险提示（最长前缀优先）；未命中返回 ``None``。
+
+    未命中不等于只读：调用方必须按原有 fail-closed 策略处理（默认提升为需确认）。
+    """
+
+    path = tuple(tokens[1:] if tokens and tokens[0] == "acli" else tokens)
+    best: str | None = None
+    best_len = -1
+    for candidate, hint in _acli_risk_hot.load():
+        if len(path) < len(candidate) or path[: len(candidate)] != candidate:
+            continue
+        if len(candidate) > best_len:
+            best, best_len = hint, len(candidate)
+    return best
+
+
 def catalog_command_paths() -> frozenset[tuple[str, ...]]:
     paths: set[tuple[str, ...]] = set()
     for item in load_acli_catalog():

@@ -1,1356 +1,2943 @@
 {
+  "schema_version": 2,
   "source_url": "http://acli.sangfor.com.cn:6888/commandList",
-  "source_updated_at": "2026-05-20",
-  "generated_at": "2026-06-11T16:34:12.689839+00:00",
-  "hash": "e5009671d0df8ace6aaa359b0eecd30fd1946b488ad62e0b5cad27a73ab481d7",
+  "source_updated_at": "2026-10-09",
+  "generated_at": "2026-10-22T08:40:18.616668+00:00",
+  "hash": "1ca62a5c6cffd41dd801fc0a03b9c6ef31dad3d1c1f218d3505b3ea0e82e5b48",
   "commands": [
     {
       "command": "acli acli command list",
-      "summary": "展示所有的acli命令"
+      "summary": "展示所有的acli命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli acli log get",
-      "summary": "展示acli工具自身的日志"
+      "summary": "展示acli工具自身的日志",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli acli sync",
-      "summary": "同步acli命令到其他节点"
+      "summary": "同步acli命令到其他节点",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli alert get",
-      "summary": "查询告警信息"
+      "summary": "查询告警信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli alert list",
-      "summary": "展示当天去重的告警"
+      "summary": "展示当天去重的告警",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli asan_ops asan_ops",
+      "summary": "执行虚拟存储检测工具",
+      "source": "override",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli asys asys",
+      "summary": "执行系统检查工具对主机进行检测",
+      "source": "override",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli hardware configstorecli",
+      "summary": "查看、变更主机配置命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli hardware cpu microcode file list",
-      "summary": "查看cpu微码文件"
+      "summary": "查看cpu微码文件",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli hardware gpu config get",
-      "summary": "获取GPU配置信息"
+      "summary": "获取GPU配置信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli hardware gpu config list",
-      "summary": "展示GPU配置信息列表"
+      "summary": "展示GPU配置信息列表",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli hardware hostcli hostcli",
-      "summary": "管理和监控主机硬件相关命令"
+      "summary": "管理和监控主机硬件相关命令",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli hardware pcie list",
+      "summary": "查询集群 PCI 设备列表",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli hardware usb blacklist add",
+      "summary": "新增USB黑名单",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli hardware usb blacklist delete",
+      "summary": "删除USB黑名单",
+      "source": "doc",
+      "risk_hint": "danger"
     },
     {
       "command": "acli log cgroup parse",
-      "summary": "解析cgroup黑盒日志"
+      "summary": "解析cgroup黑盒日志",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli log get",
-      "summary": "获取平台日志"
+      "summary": "获取平台日志",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli log switch",
-      "summary": "日志轮转命令"
+      "summary": "日志轮转命令",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli log_collect cancel",
+      "summary": "取消日志收集任务",
+      "source": "override",
+      "risk_hint": "danger"
+    },
+    {
+      "command": "acli log_collect create",
+      "summary": "创建日志收集任务",
+      "source": "override",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli log_collect progress",
+      "summary": "查看日志采集任务的进度",
+      "source": "override",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli netdoctor netdoctor",
+      "summary": "进行网络相关问题的排障，支持诊断箱（多场景排障）和工具箱（快速工具）两种模式。",
+      "source": "override",
+      "risk_hint": "read"
     },
     {
       "command": "acli network anet config configchannel get",
-      "summary": "获取网络配置通道检测模块配置"
+      "summary": "获取网络配置通道检测模块配置",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network anet config configchannel serviceinfo list",
-      "summary": "获取网络配置通道各服务当前健康状态"
+      "summary": "获取网络配置通道各服务当前健康状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network anet config configchannel set",
-      "summary": "设置网络配置通道检测模块配置"
+      "summary": "设置网络配置通道检测模块配置",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli network anet config fullsync",
-      "summary": "执行全同步任务"
+      "summary": "执行全同步任务",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network anet config mac get",
-      "summary": "查看mac表容量"
+      "summary": "查看mac表容量",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network anet config mac set",
-      "summary": "调整mac表容量"
+      "summary": "调整mac表容量",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli network anet config nat get",
-      "summary": "查看nat表项限制"
+      "summary": "查看nat表项限制",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network anet config nat set",
-      "summary": "调整nat表项限制"
+      "summary": "调整nat表项限制",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli network anet forwarding get",
-      "summary": "查看转发核"
+      "summary": "查看转发核",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network anet forwarding set",
-      "summary": "调整转发核"
+      "summary": "调整转发核",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli network anet forwarding status",
+      "summary": "查询当前主机转发核利用率",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network anet mirror delete",
-      "summary": "删除流量镜像"
+      "summary": "删除流量镜像",
+      "source": "doc",
+      "risk_hint": "danger"
     },
     {
       "command": "acli network anet mirror get",
-      "summary": "查看流量镜像信息"
+      "summary": "查看流量镜像信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network anet mirror list",
-      "summary": "查看流量镜像列表"
+      "summary": "查看流量镜像列表",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network anet session get",
-      "summary": "查看数据面session信息"
+      "summary": "查看数据面session信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network anet vrouter get",
-      "summary": "查看虚拟路由器信息"
+      "summary": "查看虚拟路由器信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network anet vrouter list",
-      "summary": "查看虚拟路由器列表"
+      "summary": "查看虚拟路由器列表",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network anet vrouter migrate",
-      "summary": "迁移虚拟路由器"
+      "summary": "迁移虚拟路由器",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli network anet vrouter vrrp get",
-      "summary": "查看数据面vrrp信息"
+      "summary": "查看数据面vrrp信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network bond arp_interval get",
-      "summary": "获得聚合口arp活性探测频率"
+      "summary": "获得聚合口arp活性探测频率",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network bond delete",
-      "summary": "删除聚合口"
+      "summary": "删除聚合口",
+      "source": "doc",
+      "risk_hint": "danger"
     },
     {
       "command": "acli network bond get",
-      "summary": "查看聚合口信息"
+      "summary": "查看聚合口信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network bond list",
-      "summary": "查看聚合口列表"
+      "summary": "查看聚合口列表",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network bond mode get",
-      "summary": "查看聚合口组网模式"
+      "summary": "查看聚合口组网模式",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network bond set",
-      "summary": "更新聚合口"
+      "summary": "更新聚合口",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli network cli get",
+      "summary": "在 vn-agent 容器内执行 SDN cli 的只读 show 查询命令",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli network faultdomain list",
+      "summary": "查询故障域列表",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli network ip route get",
+      "summary": "获取到指定目的地址的路由信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network mgmt switch",
-      "summary": "切换管理口角色到指定网口"
+      "summary": "切换管理口角色到指定网口",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli network nettools iptables list",
+      "summary": "查询 iptables 防火墙规则列表，支持按链名、表名过滤，默认以数字形式显示",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli network nettools iptables rule check",
+      "summary": "检查 iptables 指定链上是否存在符合条件的规则，支持按协议、端口、目标动作过滤",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli network nettools netstat connection check",
+      "summary": "检查指定端口的网络连接数，支持按连接状态过滤",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli network nettools netstat list",
+      "summary": "列出网络连接和端口监听状态，支持按 TCP/UDP、监听、数字形式、进程等过滤",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli network nettools netstat port check",
+      "summary": "检查指定端口是否处于监听状态，支持 TCP/UDP 协议",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network nic down",
-      "summary": "禁用主机网口"
+      "summary": "禁用主机网口",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli network nic get",
-      "summary": "查看主机网口信息"
+      "summary": "查看主机网口信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network nic irqcpu list",
-      "summary": "展示网口中断核信息列表"
+      "summary": "展示网口中断核信息列表",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network nic list",
-      "summary": "查看主机网口列表"
+      "summary": "查看主机网口列表",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network nic lldp disable",
-      "summary": "禁用网口lldp"
+      "summary": "禁用网口lldp",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli network nic lldp enable",
-      "summary": "启用网口lldp"
+      "summary": "启用网口lldp",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli network nic lldp get",
-      "summary": "查看网口lldp"
+      "summary": "查看网口lldp",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network nic mtu get",
-      "summary": "查看网口mtu"
+      "summary": "查看网口mtu",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network nic mtu set",
-      "summary": "设置网口mtu"
+      "summary": "设置网口mtu",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli network nic queue get",
-      "summary": "查看网口队列数"
+      "summary": "查看网口队列数",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network nic queue set",
-      "summary": "设置网口队列数"
+      "summary": "设置网口队列数",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli network nic rdma disable",
-      "summary": "关闭指定厂商的指定ib网卡设备的rdma功能"
+      "summary": "关闭指定厂商的指定ib网卡设备的rdma功能",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli network nic rdma enable",
-      "summary": "开启指定厂商的指定ib网卡设备的rdma功能"
+      "summary": "开启指定厂商的指定ib网卡设备的rdma功能",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli network nic rdma get",
-      "summary": "获取指定厂商的指定ib网卡设备的信息"
+      "summary": "获取指定厂商的指定ib网卡设备的信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network nic rdma list",
-      "summary": "获取指定厂商的所有ib网卡设备"
+      "summary": "获取指定厂商的所有ib网卡设备",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli network nic rdma whitelist check",
+      "summary": "检查rdma白名单配置",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli network nic rdma whitelist set",
+      "summary": "更新rdma白名单配置",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli network nic reorder",
-      "summary": "调整网口顺序"
+      "summary": "调整网口顺序",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network nic ring get",
-      "summary": "查看当前网口环形缓冲区参数"
+      "summary": "查看当前网口环形缓冲区参数",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network nic ring set",
-      "summary": "设置当前网口环形缓冲区参数"
+      "summary": "设置当前网口环形缓冲区参数",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli network nic set",
-      "summary": "设置主机网口"
+      "summary": "设置主机网口",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli network nic up",
-      "summary": "启用主机网口"
+      "summary": "启用主机网口",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli network pfc create",
+      "summary": "创建优先级流控(PFC)配置（异步任务，返回 taskId）",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli network pfc delete",
+      "summary": "删除优先级流控(PFC)配置（异步任务，返回 taskId）",
+      "source": "doc",
+      "risk_hint": "danger"
+    },
+    {
+      "command": "acli network pfc get",
+      "summary": "查询单条优先级流控(PFC)配置（按 domainId 过滤后取首条；后端无 get-by-id 端点）",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli network pfc list",
+      "summary": "查询优先级流控(PFC)配置列表",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli network pfc set",
+      "summary": "更新优先级流控(PFC)配置（异步任务，返回 taskId）",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli network port check",
-      "summary": "检查网络端口状态"
+      "summary": "检查网络端口状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network sfd_bytools",
-      "summary": "数据面sfd_byTools.sh脚本"
+      "summary": "数据面sfd_byTools.sh脚本",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network vlink check",
-      "summary": "检查vlink配置状态"
+      "summary": "检查vlink配置状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network vxlan list",
-      "summary": "查询集群vxlan信息列表"
+      "summary": "查询集群vxlan信息列表",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli network vxlan set",
-      "summary": "更新集群VXLAN配置"
+      "summary": "更新集群VXLAN配置",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli performance_tools analyze",
+      "summary": "分析日志数据，找出系统、虚拟机大致瓶颈",
+      "source": "override",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli performance_tools check_host",
+      "summary": "检查宿主机环境信息：CPU、内存、超线程等",
+      "source": "override",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli performance_tools check_vm",
+      "summary": "检查虚拟机的状态（虚拟机配置文件、IO、MEM、CPU），同时自动检测虚拟机运行主机，必须输入虚拟机ID",
+      "source": "override",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli performance_tools check_vm_model",
+      "summary": "检测虚拟机业务模型",
+      "source": "override",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli performance_tools collect_log",
+      "summary": "收集主机性能相关日志、配置、命令运行结果",
+      "source": "override",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli performance_tools combined collect_log",
+      "summary": "以虚拟机为单位，自动监控虚拟机，自动检测虚拟机和所在主机，并将相关日志进行打包",
+      "source": "override",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli performance_tools isolate list",
+      "summary": "查看 CPU 的隔离状态",
+      "source": "override",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli performance_tools isolate only_pcpu",
+      "summary": "指定 CPU 核心隔离",
+      "source": "override",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli performance_tools isolate vs_network_irq",
+      "summary": "自动找到存储通信口网卡中断隔离",
+      "source": "override",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli performance_tools monitor clean",
+      "summary": "删除上次产生的监控数据",
+      "source": "override",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli performance_tools monitor start",
+      "summary": "监控（磁盘 IO、VS IO、虚拟机 IO、pidstat、网络）信息存储文件中",
+      "source": "override",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli performance_tools monitor status",
+      "summary": "获取监控数据状态",
+      "source": "override",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli performance_tools monitor stop",
+      "summary": "退出监控程序",
+      "source": "override",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli performance_tools shell",
+      "summary": "程序内置了一些脚本文件，当环境中不存在时可执行",
+      "source": "override",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli performance_tools unisolate",
+      "summary": "取消 CPU 隔离，还原设置；取消虚拟机隔离",
+      "source": "override",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli performance_tools update",
+      "summary": "更新程序",
+      "source": "override",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli performance_tools version",
+      "summary": "版本信息",
+      "source": "override",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli platform arbiter get",
+      "summary": "查询当前节点是否为仲裁节点",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform backup bcfg get",
-      "summary": "查看备份点配置文件{$vmid}.conf.bcfg内容"
+      "summary": "查看备份点配置文件{$vmid}.conf.bcfg内容",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform backup cbt file cbtinfo get",
-      "summary": "显示虚拟机目录下所有磁盘的CBT信息"
+      "summary": "显示虚拟机目录下所有磁盘的CBT信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform backup cbt file dump",
-      "summary": "以十六进制格式展示CBT文件内容"
+      "summary": "以十六进制格式展示CBT文件内容",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform backup cbt file verify",
-      "summary": "验证CBT文件的完整性和一致性"
+      "summary": "验证CBT文件的完整性和一致性",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform backup config get",
-      "summary": "查询备份相关配置"
+      "summary": "查询备份相关配置",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform backup config set",
-      "summary": "设置备份任务配置文件backup.json的内容"
+      "summary": "设置备份任务配置文件backup.json的内容",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli platform backup datamover config get",
-      "summary": "获取datamover配置文件内容"
+      "summary": "获取datamover配置文件内容",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform backup datamover config set",
-      "summary": "设置datamover配置文件内容"
+      "summary": "设置datamover配置文件内容",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli platform backup datamover performancedetect set",
-      "summary": "开启或关闭datamover性能瓶颈探测"
+      "summary": "开启或关闭datamover性能瓶颈探测",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli platform backup datamover performanceindicator get",
-      "summary": "查询datamover运行过程中的性能指标项和运行状态"
+      "summary": "查询datamover运行过程中的性能指标项和运行状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform backup datamover performancereport get",
-      "summary": "获取datamover运行过程中的性能瓶颈探测报告"
+      "summary": "获取datamover运行过程中的性能瓶颈探测报告",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform backup mergedata config get",
-      "summary": "查询数据合并任务配置文件merge_data.json内容"
+      "summary": "查询数据合并任务配置文件merge_data.json内容",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform backup mergedata config set",
-      "summary": "设置数据合并任务配置文件merge_data.json内容"
+      "summary": "设置数据合并任务配置文件merge_data.json内容",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli platform backup region config set",
-      "summary": "设置区域快照的运行时参数配置"
+      "summary": "设置区域快照的运行时参数配置",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli platform cfs admin status set",
+      "summary": "",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli platform cfs status",
-      "summary": "验证/cfs目录写入能力"
+      "summary": "验证/cfs目录写入能力",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli platform datareport set",
+      "summary": "设置报表数据配置",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli platform drs affinitymode disable",
+      "summary": "关闭 DRS 修复虚拟机调度策略冲突的功能。",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli platform drs affinitymode enable",
+      "summary": "开启 DRS 修复虚拟机调度策略冲突的功能，使 DRS 为不满足调度策略的虚拟机生成迁移建议。",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli platform info get",
-      "summary": "获得系统信息"
+      "summary": "获得系统信息",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli platform info system_language get",
+      "summary": "查询系统语言",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform mysql config get",
-      "summary": "获取MySQL配置"
+      "summary": "获取MySQL配置",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform mysql-manager-cli",
-      "summary": "平台mysql-manager-cli工具"
+      "summary": "平台mysql-manager-cli工具",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform node cert get",
-      "summary": "获取证书的md5值"
+      "summary": "获取证书的md5值",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform node cert list",
-      "summary": "列出节点证书"
+      "summary": "列出节点证书",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform node get",
-      "summary": "查看节点信息"
+      "summary": "查看节点信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform node list",
-      "summary": "查看节点列表"
+      "summary": "查看节点列表",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli platform patches alert get",
+      "summary": "查询补丁服务的告警信息",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli platform patches list",
+      "summary": "查询本机已打补丁列表",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli platform port list",
+      "summary": "查询平台端口列表",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform redis redis-cli",
-      "summary": "平台redis-cli工具"
+      "summary": "平台redis-cli工具",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform scheduler quota get",
-      "summary": "查询调度器配额"
+      "summary": "查询调度器配额",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform scheduler quota set",
-      "summary": "修改调度器配额"
+      "summary": "修改调度器配额",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli platform sn get",
+      "summary": "查询集群序列号和各组件授权信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform snapshot mysql get",
-      "summary": "快照数据库信息查询"
+      "summary": "快照数据库信息查询",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli platform syncvmtime get",
+      "summary": "查询集群虚拟机时间同步配置",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli platform syslog config get",
+      "summary": "查询 syslog 转发配置",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli platform system_config get",
+      "summary": "查询集群系统配置",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli platform vcpu_type list",
+      "summary": "查询集群支持的和全部 vCPU 型号",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform version get",
-      "summary": "获取平台版本"
+      "summary": "获取平台版本",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli platform version info",
+      "summary": "查询 API 版本详情",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli platform version security verify",
+      "summary": "查询平台是否为涉密版本",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli platform vssn verify",
+      "summary": "校验本机所有 VS 序列号的完整性和授权限制",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli platform vtsn keyid get",
+      "summary": "获取 USB Key ID",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli platform vtsn owner get",
+      "summary": "获取 USB Key 持有者信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli platform zookeeper zkcli",
-      "summary": "平台zkcli-c工具"
+      "summary": "平台zkcli-c工具",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli plugin cleanup",
-      "summary": "对指定插件进行清理目录和kill相关进程"
+      "summary": "对指定插件进行清理目录和kill相关进程",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli plugin info",
-      "summary": "获取指定插件信息"
+      "summary": "获取指定插件信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli plugin install",
-      "summary": "插件安装/更新"
+      "summary": "插件安装/更新",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli plugin list",
-      "summary": "获取已安装的插件列表"
+      "summary": "获取已安装的插件列表",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli plugin sync",
-      "summary": "将已安装的所有插件及配置同步到指定集群节点"
+      "summary": "将已安装的所有插件及配置同步到指定集群节点",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli plugin uninstall",
-      "summary": "插件卸载"
+      "summary": "插件卸载",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
-      "command": "acli plugins asan_ops asan_ops",
-      "summary": "执行虚拟存储检测工具"
+      "command": "acli service anet kafka-consumer-groups get",
+      "summary": "查询 Kafka 消费者组的详细信息，包括 topic、partition、offset、lag 等",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
-      "command": "acli plugins asys asys",
-      "summary": "执行系统检查工具对主机进行检测"
-    },
-    {
-      "command": "acli plugins log_collect cancel",
-      "summary": "取消日志收集任务"
-    },
-    {
-      "command": "acli plugins log_collect create",
-      "summary": "创建日志收集任务"
-    },
-    {
-      "command": "acli plugins log_collect progress",
-      "summary": "查看日志采集任务的进度"
-    },
-    {
-      "command": "acli plugins netdoctor netdoctor",
-      "summary": "进行网络相关问题的排障，支持诊断箱（多场景排障）和工具箱（快速工具）两种模式。"
-    },
-    {
-      "command": "acli plugins performance_tools analyze",
-      "summary": "分析日志数据，找出系统、虚拟机大致瓶颈"
-    },
-    {
-      "command": "acli plugins performance_tools check_host",
-      "summary": "检查宿主机环境信息：CPU、内存、超线程等"
-    },
-    {
-      "command": "acli plugins performance_tools check_vm",
-      "summary": "检查虚拟机的状态（虚拟机配置文件、IO、MEM、CPU），同时自动检测虚拟机运行主机，必须输入虚拟机ID"
-    },
-    {
-      "command": "acli plugins performance_tools check_vm_model",
-      "summary": "检测虚拟机业务模型"
-    },
-    {
-      "command": "acli plugins performance_tools collect_log",
-      "summary": "收集主机性能相关日志、配置、命令运行结果"
-    },
-    {
-      "command": "acli plugins performance_tools combined collect_log",
-      "summary": "以虚拟机为单位，自动监控虚拟机，自动检测虚拟机和所在主机，并将相关日志进行打包"
-    },
-    {
-      "command": "acli plugins performance_tools isolate list",
-      "summary": "查看 CPU 的隔离状态"
-    },
-    {
-      "command": "acli plugins performance_tools isolate only_pcpu",
-      "summary": "指定 CPU 核心隔离"
-    },
-    {
-      "command": "acli plugins performance_tools isolate vs_network_irq",
-      "summary": "自动找到存储通信口网卡中断隔离"
-    },
-    {
-      "command": "acli plugins performance_tools monitor clean",
-      "summary": "删除上次产生的监控数据"
-    },
-    {
-      "command": "acli plugins performance_tools monitor start",
-      "summary": "监控（磁盘 IO、VS IO、虚拟机 IO、pidstat、网络）信息存储文件中"
-    },
-    {
-      "command": "acli plugins performance_tools monitor status",
-      "summary": "获取监控数据状态"
-    },
-    {
-      "command": "acli plugins performance_tools monitor stop",
-      "summary": "退出监控程序"
-    },
-    {
-      "command": "acli plugins performance_tools shell",
-      "summary": "程序内置了一些脚本文件，当环境中不存在时可执行"
-    },
-    {
-      "command": "acli plugins performance_tools unisolate",
-      "summary": "取消 CPU 隔离，还原设置；取消虚拟机隔离"
-    },
-    {
-      "command": "acli plugins performance_tools update",
-      "summary": "更新程序"
-    },
-    {
-      "command": "acli plugins performance_tools version",
-      "summary": "版本信息"
-    },
-    {
-      "command": "acli plugins vm_start vm_start",
-      "summary": "虚拟机开机失败检测"
-    },
-    {
-      "command": "acli plugins vm_suspend vm_suspend",
-      "summary": "虚拟机挂起检测"
+      "command": "acli service anet sdn status",
+      "summary": "查询 SDN（软件定义网络）服务的运行状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service anet vn-cluster-service-api rps disable",
-      "summary": "禁用主机负载均衡RPS"
+      "summary": "禁用主机负载均衡RPS",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service anet vn-cluster-service-api rps enable",
-      "summary": "启用主机负载均衡RPS"
+      "summary": "启用主机负载均衡RPS",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service anet vn-cluster-service-api rps status",
-      "summary": "获取主机负载均衡RPS启用状态"
+      "summary": "获取主机负载均衡RPS启用状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service anet vn-manager-service-api restart",
-      "summary": "重启vn-manager-service-api服务"
+      "summary": "重启vn-manager-service-api服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service anet vn-manager-service-api start",
-      "summary": "启动vn-manager-service-api服务"
+      "summary": "启动vn-manager-service-api服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service anet vn-manager-service-api status",
-      "summary": "查看vn-manager-service-api服务状态"
+      "summary": "查看vn-manager-service-api服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service anet vn-manager-service-api stop",
-      "summary": "停止vn-manager-service-api服务"
+      "summary": "停止vn-manager-service-api服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service anet vn-node-agent-api restart",
-      "summary": "重启vn-node-agent-api服务"
+      "summary": "重启vn-node-agent-api服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service anet vn-node-agent-api start",
-      "summary": "启动vn-node-agent-api服务"
+      "summary": "启动vn-node-agent-api服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service anet vn-node-agent-api status",
-      "summary": "查看vn-node-agent-api服务状态"
+      "summary": "查看vn-node-agent-api服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service anet vn-node-agent-api stop",
-      "summary": "停止vn-node-agent-api服务"
+      "summary": "停止vn-node-agent-api服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv apache2 restart",
-      "summary": "重启apache2服务"
+      "summary": "重启apache2服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv apache2 start",
-      "summary": "启动apache2服务"
+      "summary": "启动apache2服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv apache2 status",
-      "summary": "查看apache2服务状态"
+      "summary": "查看apache2服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv apache2 stop",
-      "summary": "停止apache2服务"
+      "summary": "停止apache2服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv authorize_client restart",
-      "summary": "重启authorize_client服务"
+      "summary": "重启authorize_client服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv authorize_client start",
-      "summary": "启动authorize_client服务"
+      "summary": "启动authorize_client服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv authorize_client status",
-      "summary": "查看authorize_client服务状态"
+      "summary": "查看authorize_client服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv authorize_client stop",
-      "summary": "停止authorize_client服务"
+      "summary": "停止authorize_client服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv authorize_server restart",
-      "summary": "重启authorize_server服务"
+      "summary": "重启authorize_server服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv authorize_server start",
-      "summary": "启动authorize_server服务"
+      "summary": "启动authorize_server服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv authorize_server status",
-      "summary": "查看authorize_server服务状态"
+      "summary": "查看authorize_server服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv authorize_server stop",
-      "summary": "停止authorize_server服务"
+      "summary": "停止authorize_server服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv corosync restart",
-      "summary": "重启corosync服务"
+      "summary": "重启corosync服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv corosync start",
-      "summary": "启动corosync服务"
+      "summary": "启动corosync服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv corosync status",
-      "summary": "查看corosync服务状态"
+      "summary": "查看corosync服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv corosync stop",
-      "summary": "停止corosync服务"
+      "summary": "停止corosync服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv exporter restart",
-      "summary": "重启exporter服务"
+      "summary": "重启exporter服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv exporter start",
-      "summary": "启动exporter服务"
+      "summary": "启动exporter服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv exporter status",
-      "summary": "查看exporter服务状态"
+      "summary": "查看exporter服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv exporter stop",
-      "summary": "停止exporter服务"
+      "summary": "停止exporter服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv loadman config get",
-      "summary": "获取loadman服务配置"
+      "summary": "获取loadman服务配置",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv loadman config set",
-      "summary": "更新loadman服务配置"
+      "summary": "更新loadman服务配置",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv loadman maintenance get",
-      "summary": "获取过载保护功能相关维护信息"
+      "summary": "获取过载保护功能相关维护信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv loadman maintenance set",
-      "summary": "过载保护功能相关维护操作"
+      "summary": "过载保护功能相关维护操作",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv loadman restart",
-      "summary": "重启loadman服务"
+      "summary": "重启loadman服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv loadman start",
-      "summary": "启动loadman服务"
+      "summary": "启动loadman服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv loadman status",
-      "summary": "查询loadman服务状态"
+      "summary": "查询loadman服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv loadman stop",
-      "summary": "停止loadman服务"
+      "summary": "停止loadman服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv mgmt-node-agent-api get",
-      "summary": "请求mgmt-node-agent-api获取接口数据"
+      "summary": "请求mgmt-node-agent-api获取接口数据",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv mgmt-node-agent-api restart",
-      "summary": "重启mgmt-node-agent-api服务"
+      "summary": "重启mgmt-node-agent-api服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv mgmt-node-agent-api start",
-      "summary": "启动mgmt-node-agent-api服务"
+      "summary": "启动mgmt-node-agent-api服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv mgmt-node-agent-api status",
-      "summary": "查看mgmt-node-agent-api服务运行状态"
+      "summary": "查看mgmt-node-agent-api服务运行状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv mgmt-node-agent-api stop",
-      "summary": "停止mgmt-node-agent-api服务"
+      "summary": "停止mgmt-node-agent-api服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv mgmt-node-agent-periodic restart",
-      "summary": "重启mgmt-node-agent-periodic服务"
+      "summary": "重启mgmt-node-agent-periodic服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv mgmt-node-agent-periodic start",
-      "summary": "启动mgmt-node-agent-periodic服务"
+      "summary": "启动mgmt-node-agent-periodic服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv mgmt-node-agent-periodic status",
-      "summary": "查看mgmt-node-agent-periodic服务运行状态"
+      "summary": "查看mgmt-node-agent-periodic服务运行状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv mgmt-node-agent-periodic stop",
-      "summary": "停止mgmt-node-agent-periodic服务"
+      "summary": "停止mgmt-node-agent-periodic服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv mysql restart",
-      "summary": "重启mysql服务"
+      "summary": "重启mysql服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv mysql start",
-      "summary": "启动mysql服务"
+      "summary": "启动mysql服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv mysql status",
-      "summary": "查看mysql服务状态"
+      "summary": "查看mysql服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv mysql stop",
-      "summary": "停止mysql服务"
+      "summary": "停止mysql服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv mysql-managerd restart",
-      "summary": "重启mysql-managerd服务"
+      "summary": "重启mysql-managerd服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv mysql-managerd start",
-      "summary": "启动mysql-managerd服务"
+      "summary": "启动mysql-managerd服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv mysql-managerd status",
-      "summary": "查看mysql-managerd服务状态"
+      "summary": "查看mysql-managerd服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv mysql-managerd stop",
-      "summary": "停止mysql-managerd服务"
+      "summary": "停止mysql-managerd服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv perl-services restart",
-      "summary": "重启基础的perl相关的服务"
+      "summary": "重启基础的perl相关的服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv pmxcfs restart",
-      "summary": "重启pmxcfs服务"
+      "summary": "重启pmxcfs服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv pmxcfs start",
-      "summary": "启动pmxcfs服务"
+      "summary": "启动pmxcfs服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv pmxcfs status",
-      "summary": "查看pmxcfs服务状态"
+      "summary": "查看pmxcfs服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv pmxcfs stop",
-      "summary": "停止pmxcfs服务"
+      "summary": "停止pmxcfs服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv redis restart",
-      "summary": "重启redis服务"
+      "summary": "重启redis服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv redis start",
-      "summary": "启动redis服务"
+      "summary": "启动redis服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv redis status",
-      "summary": "查看redis服务状态"
+      "summary": "查看redis服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv redis stop",
-      "summary": "停止redis服务"
+      "summary": "停止redis服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv rrdcached restart",
-      "summary": "重启rrdcached服务"
+      "summary": "重启rrdcached服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv rrdcached start",
-      "summary": "启动rrdcached服务"
+      "summary": "启动rrdcached服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv rrdcached status",
-      "summary": "查看rrdcached服务状态"
+      "summary": "查看rrdcached服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv rrdcached stop",
-      "summary": "停止rrdcached服务"
+      "summary": "停止rrdcached服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv rsyncd restart",
-      "summary": "重启rsyncd服务"
+      "summary": "重启rsyncd服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv rsyncd start",
-      "summary": "启动rsyncd服务"
+      "summary": "启动rsyncd服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv rsyncd status",
-      "summary": "查看rsyncd服务状态"
+      "summary": "查看rsyncd服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv rsyncd stop",
-      "summary": "停止rsyncd服务"
+      "summary": "停止rsyncd服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv sangfor_waf restart",
-      "summary": "重启sangfor_waf服务"
+      "summary": "重启sangfor_waf服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv sangfor_waf start",
-      "summary": "启动sangfor_waf服务"
+      "summary": "启动sangfor_waf服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv sangfor_waf status",
-      "summary": "查看sangfor_waf服务状态"
+      "summary": "查看sangfor_waf服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv sangfor_waf stop",
-      "summary": "停止sangfor_waf服务"
+      "summary": "停止sangfor_waf服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtpalertd restart",
-      "summary": "重启vtpalertd服务"
+      "summary": "重启vtpalertd服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtpalertd start",
-      "summary": "启动vtpalertd服务"
+      "summary": "启动vtpalertd服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtpalertd status",
-      "summary": "查看vtpalertd服务状态"
+      "summary": "查看vtpalertd服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv vtpalertd stop",
-      "summary": "停止vtpalertd服务"
+      "summary": "停止vtpalertd服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtpcron restart",
-      "summary": "重启vtpcron服务"
+      "summary": "重启vtpcron服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtpcron start",
-      "summary": "启动vtpcron服务"
+      "summary": "启动vtpcron服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtpcron status",
-      "summary": "查看vtpcron服务状态"
+      "summary": "查看vtpcron服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv vtpcron stop",
-      "summary": "停止vtpcron服务"
+      "summary": "停止vtpcron服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtpdaemon opqueue config get",
-      "summary": "获取进程操作队列配置"
+      "summary": "获取进程操作队列配置",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv vtpdaemon opqueue config set",
-      "summary": "设置进程操作队列配置"
+      "summary": "设置进程操作队列配置",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtpdaemon restart",
-      "summary": "重启vtpdaemon服务"
+      "summary": "重启vtpdaemon服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtpdaemon start",
-      "summary": "启动vtpdaemon服务"
+      "summary": "启动vtpdaemon服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtpdaemon status",
-      "summary": "查看vtpdaemon服务状态"
+      "summary": "查看vtpdaemon服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv vtpdaemon stop",
-      "summary": "停止vtpdaemon服务"
+      "summary": "停止vtpdaemon服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtplogd restart",
-      "summary": "重启vtplogd服务"
+      "summary": "重启vtplogd服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtplogd start",
-      "summary": "启动vtplogd服务"
+      "summary": "启动vtplogd服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtplogd status",
-      "summary": "查看vtplogd服务状态"
+      "summary": "查看vtplogd服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv vtplogd stop",
-      "summary": "停止vtplogd服务"
+      "summary": "停止vtplogd服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtpperlproxy restart",
-      "summary": "重启vtpperlproxy服务"
+      "summary": "重启vtpperlproxy服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtpperlproxy start",
-      "summary": "启动vtpperlproxy服务"
+      "summary": "启动vtpperlproxy服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtpperlproxy status",
-      "summary": "查看vtpperlproxy服务状态"
+      "summary": "查看vtpperlproxy服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv vtpperlproxy stop",
-      "summary": "停止vtpperlproxy服务"
+      "summary": "停止vtpperlproxy服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtpstatd restart",
-      "summary": "重启vtpstatd服务"
+      "summary": "重启vtpstatd服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtpstatd start",
-      "summary": "启动vtpstatd服务"
+      "summary": "启动vtpstatd服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv vtpstatd status",
-      "summary": "查看vtpstatd服务状态"
+      "summary": "查看vtpstatd服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv vtpstatd stop",
-      "summary": "停止vtpstatd服务"
+      "summary": "停止vtpstatd服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv zk restart",
-      "summary": "重启zk服务"
+      "summary": "重启zk服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv zk start",
-      "summary": "启动zk服务"
+      "summary": "启动zk服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service asv zk status",
-      "summary": "查看zk服务状态"
+      "summary": "查看zk服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service asv zk stop",
-      "summary": "停止zk服务"
+      "summary": "停止zk服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service host hostd restart",
-      "summary": "重启hostd服务"
+      "summary": "重启hostd服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service host hostd start",
-      "summary": "启动hostd服务"
+      "summary": "启动hostd服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service host hostd status",
-      "summary": "查看hostd服务状态"
+      "summary": "查看hostd服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service host hostd stop",
-      "summary": "停止hostd服务"
+      "summary": "停止hostd服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service host lsud restart",
-      "summary": "重启lsud服务"
+      "summary": "重启lsud服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service host lsud start",
-      "summary": "启动lsud服务"
+      "summary": "启动lsud服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli service host lsud status",
-      "summary": "查看lsud服务状态"
+      "summary": "查看lsud服务状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli service host lsud stop",
-      "summary": "停止lsud服务"
+      "summary": "停止lsud服务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli storage asan brick iostat",
-      "summary": "查看brick的iostat"
+      "summary": "查看brick的iostat",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli storage asan disk list",
-      "summary": "展示虚拟存储卷的磁盘信息列表"
+      "summary": "展示虚拟存储卷的磁盘信息列表",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli storage asan disk residual clean",
-      "summary": "清理磁盘残留信息"
+      "summary": "清理磁盘残留信息",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli storage asan io_uring sqpoll disable",
+      "summary": "关闭虚拟存储卷缓存服务中io_uring的sqpoll模式",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli storage asan io_uring sqpoll enable",
+      "summary": "开启虚拟存储卷缓存服务中io_uring的sqpoll模式",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli storage asan io_uring sqpoll precheck",
+      "summary": "检查虚拟存储卷内主机是否支持开启io_uring的sqpoll特性",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli storage asan io_uring sqpoll status",
+      "summary": "查看虚拟存储卷缓存服务中io_uring的sqpoll模式状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli storage asan version get",
-      "summary": "获取VS版本号"
+      "summary": "获取VS版本号",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli storage asan volume iostat",
-      "summary": "获取虚拟存储卷iostat信息"
+      "summary": "获取虚拟存储卷iostat信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli storage asan volume list",
-      "summary": "获取虚拟存储卷信息列表"
+      "summary": "获取虚拟存储卷信息列表",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli storage asan vs_disk_scan",
-      "summary": "disk_scan.sh命令"
+      "summary": "disk_scan.sh命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli storage asan vs_hotplug",
-      "summary": "vs_hotplug.sh命令"
+      "summary": "vs_hotplug.sh命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli storage asan vs_json_rw",
-      "summary": "vs_json_rw.py命令"
+      "summary": "vs_json_rw.py命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli storage asan vs_rpc_tool",
-      "summary": "vs_rpc_tool命令"
+      "summary": "vs_rpc_tool命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli storage asan vs_tier",
-      "summary": "vs_tier_cli.py命令"
+      "summary": "vs_tier_cli.py命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli storage asan vs_update_nfs",
-      "summary": "vs_update_nfs.sh命令"
+      "summary": "vs_update_nfs.sh命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli storage asan vs_vginfo",
-      "summary": "vs_vginfo.sh命令"
+      "summary": "vs_vginfo.sh命令",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli storage backuppool list",
+      "summary": "查询备份池存储列表",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli storage display config get",
+      "summary": "获取是否展示可用空间大于等于100G的Local系统盘",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli storage display config set",
+      "summary": "设置是否展示可用空间大于等于100G的Local系统盘",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli storage fc host list",
-      "summary": "FC存储HBA设备列表信息"
+      "summary": "FC存储HBA设备列表信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli storage fc host statistics get",
-      "summary": "FC存储HBA设备相关统计信息"
+      "summary": "FC存储HBA设备相关统计信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli storage mount",
-      "summary": "查看指定存储ID的挂载信息"
+      "summary": "查看指定存储ID的挂载信息",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli storage other list",
-      "summary": "展示除虚拟存储以外的其他存储信息列表"
+      "summary": "展示除虚拟存储以外的其他存储信息列表",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli storage sffsck",
-      "summary": "sffsck命令"
+      "summary": "sffsck命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli storage umount",
-      "summary": "卸载指定存储的挂载点"
+      "summary": "卸载指定存储的挂载点",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli storage vs_status volume list",
+      "summary": "查询 VS 虚拟存储卷列表",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli storage vsmgr fault-domains list",
+      "summary": "查询指定卷的故障域列表",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli storage vsmgr host-in-volume get",
+      "summary": "查询主机是否在 VS 卷中",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli storage vsmgr ippool ip get",
+      "summary": "查询主机在指定类型 IP 池中已分配的 IP",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli storage vsmgr ippool used-net get",
+      "summary": "查询 IP 池配置的网络段",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli storage vsmgr volume get",
+      "summary": "查询 VS 虚拟存储卷详情",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli storage vsmgr volume has-stretch-volume",
+      "summary": "查询是否存在延伸卷",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system arp",
+      "summary": "查看 ARP 表（地址解析协议缓存表，只读）。",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system arping",
+      "summary": "向指定主机发送 ARP 请求以探测其在线状态",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system blkid",
+      "summary": "查询块设备的 UUID、文件系统类型及其他属性信息（只读）。",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system cat",
+      "summary": "读取并查看系统白名单内指定文件的内容",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system cgroup cpu list",
-      "summary": "列出所有cgroup目录下和cpu相关的文件"
+      "summary": "列出所有cgroup目录下和cpu相关的文件",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system cgroup cpu tree",
-      "summary": "显示cpu cgroup子系统的子组结构"
+      "summary": "显示cpu cgroup子系统的子组结构",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system cgroup get",
-      "summary": "显示指定cgroup的所有参数信息"
+      "summary": "显示指定cgroup的所有参数信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system cgroup memory tree",
-      "summary": "显示内存cgroup子系统的子组结构"
+      "summary": "显示内存cgroup子系统的子组结构",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system chkconfig",
+      "summary": "查看系统服务的运行级别配置（只读）。",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system chping",
-      "summary": "chping命令"
+      "summary": "chping命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system cpu info",
-      "summary": "系统CPU信息"
+      "summary": "系统CPU信息",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system curl",
+      "summary": "通过 acli system curl 子命令受控调用 HCI 平台服务的 GET 接口（只读），承载 KB 排障知识库中的 100 条 GET API 放通。",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system date",
-      "summary": "date命令，获取当前系统时间"
+      "summary": "date 命令，获取当前系统时间（只读）。",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system df",
-      "summary": "df命令"
+      "summary": "df命令",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system diff",
+      "summary": "比较两个文件的内容差异（只读）。",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system dig",
+      "summary": "执行 DNS 查询，获取域名的解析记录（只读）。",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system dmesg",
+      "summary": "查看内核环形缓冲区日志（只读）。",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system dmidecode",
-      "summary": "dmidecode命令"
+      "summary": "dmidecode 命令，读取并展示 DMI/SMBIOS 硬件信息（只读，禁止把 DMI 数据转储为文件）。",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system du",
-      "summary": "du命令"
+      "summary": "统计指定目录或文件的磁盘占用空间（只读）。",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system ethtool",
-      "summary": "ethtool命令"
+      "summary": "ethtool命令",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system fdisk",
+      "summary": "查看磁盘分区信息（只读）。",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system file sqlite3 backup",
+      "summary": "备份 SQLite 数据库到指定输出文件",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli system file sqlite3 integrity-check",
+      "summary": "检查 SQLite 数据库的完整性（PRAGMA integrity_check 和 quick_check）",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system file sqlite3 query",
+      "summary": "执行 SQLite 数据库 SQL 查询，支持 csv、column、list 三种输出格式",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system file test exist",
+      "summary": "检查指定路径是否存在，可指定类型为文件、目录或任意",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system file test read",
+      "summary": "检查指定文件是否可读",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system file test socket exist",
+      "summary": "检查指定 Unix socket 是否存在",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system file test write",
+      "summary": "检查指定文件是否可写",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system file touch create",
+      "summary": "创建空文件或更新已有文件的时间戳",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli system file wget download",
+      "summary": "从指定 URL 下载文件，支持超时设置、SSL 跳过、输出到文件或 stdout",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system find",
+      "summary": "在指定目录中按条件查找文件（只读）。",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system fio",
-      "summary": "fio命令"
+      "summary": "fio命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system free",
-      "summary": "free命令"
+      "summary": "free命令",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system grep",
+      "summary": "在白名单内的配置或系统文件中按关键字搜索匹配行",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system hostname",
+      "summary": "查看主机名称及域名信息（仅开放只读形式，不支持改写主机名）。",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system hosts get",
-      "summary": "获取系统主机信息"
+      "summary": "获取系统主机信息",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system hwclock",
+      "summary": "查询硬件时钟时间",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system id",
+      "summary": "查询当前用户或指定用户的身份信息（uid/gid/groups，只读）。",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system ifconfig",
+      "summary": "查看主机网卡的配置信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system iostat",
-      "summary": "iostat命令"
+      "summary": "iostat命令",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system ip",
+      "summary": "查看主机网络信息，支持只读查询地址、路由、链路及邻居信息",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system iperf3",
+      "summary": "网络带宽测量诊断工具，测量 TCP/UDP 吞吐量（只读，不改系统状态）。命令在 vs-cp-manager 容器内执行（与 vs 容器共享网络命名空间）。",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system ipmitool",
-      "summary": "ipmitool命令"
+      "summary": "ipmitool命令",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system iptables",
+      "summary": "查看系统防火墙规则（iptables，只读）。",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system kill",
-      "summary": "kill命令"
+      "summary": "kill命令",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli system lldptool",
-      "summary": "lldptool命令"
+      "summary": "lldptool命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system ls",
-      "summary": "ls命令，限制查看特定目录下的文件"
+      "summary": "列出白名单内指定目录下的文件",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system lsblk",
-      "summary": "lsblk命令"
+      "summary": "lsblk命令",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system lscpu",
+      "summary": "查看 CPU 架构信息（架构、型号、核数、线程数等，只读）。",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system lsmod",
-      "summary": "lsmod命令，用于查看内核模块"
+      "summary": "lsmod命令，用于查看内核模块",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system lsof",
-      "summary": "lsof命令"
+      "summary": "lsof命令",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system lspci",
+      "summary": "查看主机 PCI 设备信息",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system lsusb",
+      "summary": "查询 USB 设备信息",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system mcelog",
+      "summary": "查询 CPU MCE 硬件错误日志",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system md5sum",
+      "summary": "计算指定文件的 MD5 校验值（只读）。",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system memory ce_count get",
-      "summary": "获取内存的ce_count数据"
+      "summary": "获取内存的ce_count数据",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system memory dump",
-      "summary": "系统内存占用情况"
+      "summary": "系统内存占用情况",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system memory ecc_data get",
-      "summary": "获取系统内存ECC数据"
+      "summary": "获取系统内存ECC数据",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system memory info",
-      "summary": "查看系统内存详细信息"
+      "summary": "查看系统内存详细信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system memory usage get",
-      "summary": "sfd_ps_mem.py命令"
+      "summary": "sfd_ps_mem.py命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system mounts get",
-      "summary": "查看系统mounts信息"
+      "summary": "查看系统mounts信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system mpstat",
-      "summary": "mpstat命令"
+      "summary": "mpstat命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system multipath",
-      "summary": "multipath命令"
+      "summary": "multipath命令",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system multipathconfig clear",
+      "summary": "清除multipath多路径策略",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli system multipathconfig devicepolicy clear",
+      "summary": "清除指定节点上指定 vendor/product 的 device 级 multipath 自定义配置。",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli system multipathconfig devicepolicy list",
+      "summary": "列出指定节点上所有已设置 device 级 multipath 自定义配置的厂商型号、自定义参数及同型号存储列表。",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system multipathconfig devicepolicy set",
+      "summary": "设置指定节点上指定 vendor/product 的 device 级 multipath 自定义配置",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli system multipathconfig get",
+      "summary": "查询指定节点上指定存储实际生效的多路径策略。",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system multipathconfig reload",
+      "summary": "重新扫描磁盘使multipath配置生效，默认FC",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli system multipathconfig set",
+      "summary": "修改multipath多路径策略",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli system netstat",
-      "summary": "netstat命令"
+      "summary": "netstat命令",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system nslookup",
+      "summary": "执行 DNS 查询，获取域名或 IP 的解析记录（只读）。",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system numactl",
+      "summary": "查询 NUMA 拓扑和策略",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system perf",
-      "summary": "perf命令"
+      "summary": "perf命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system pidstat",
-      "summary": "pidstat命令，用于查看系统进程资源"
+      "summary": "pidstat命令，用于查看系统进程资源",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system ping",
-      "summary": "ping命令"
+      "summary": "ping命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system proc cgroup get",
-      "summary": "获取指定进程的cgroup信息"
+      "summary": "获取指定进程的cgroup信息",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system proc fuser check",
+      "summary": "查询占用指定文件或目录的进程",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system proc stack get",
-      "summary": "获取进程的栈信息"
+      "summary": "获取进程的栈信息",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system proc starttime get",
+      "summary": "查询指定进程的启动时间",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system ps",
-      "summary": "ps命令"
+      "summary": "ps命令",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system qemu-img",
+      "summary": "查询磁盘映像信息与一致性检查（只读，不修复）。",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system qmpcmd",
-      "summary": "查询 Qemu Monitor 只读状态"
+      "summary": "查询 Qemu Monitor 只读状态",
+      "source": "override",
+      "risk_hint": "read"
     },
     {
       "command": "acli system realethtool",
-      "summary": "realethtool命令"
+      "summary": "realethtool命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system rm",
-      "summary": "rm命令，限制删除特定目录下的文件"
+      "summary": "rm 命令，限制删除特定目录下的文件（仅允许删除白名单目录内的文件，禁止递归删除）。",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system route",
+      "summary": "查看系统路由表（只读）。",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system sar",
+      "summary": "收集并查看系统活动报告（CPU、内存、IO 等，只读）。",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system sensors",
-      "summary": "sensors命令，用于查看传感器收集的信息"
+      "summary": "sensors命令，用于查看传感器收集的信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system smartctl",
-      "summary": "smartctl命令"
+      "summary": "smartctl命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system smartpqi version get",
-      "summary": "获得smartpqi的版本信息"
+      "summary": "获得smartpqi的版本信息",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system ss",
+      "summary": "查看网络套接字统计信息（TCP/UDP 连接等，只读）。",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system stat",
-      "summary": "stat命令"
+      "summary": "stat命令",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system strace",
+      "summary": "strace 命令，仅支持追踪 acli 命令的系统调用（只读，不修改系统状态）。",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system tail",
+      "summary": "查看白名单内指定文件的末尾内容，支持实时跟踪",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system tcpdump",
-      "summary": "tcpdump命令"
+      "summary": "tcpdump命令",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system top",
-      "summary": "top命令，用于查看进程实时信息"
+      "summary": "top命令，用于查看进程实时信息",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system traceroute",
+      "summary": "追踪数据包到达目标主机的网络路径（只读）。",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system turbostat",
+      "summary": "查看 CPU 拓扑、频率与功耗统计信息（只读）。命令在 asv-con 容器内执行，最长执行 15 秒。",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli system uname",
-      "summary": "uname命令"
+      "summary": "uname命令",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system uniq",
+      "summary": "过滤并输出文件或输入中相邻的重复行，支持管道输入（只读）。",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system uptime",
+      "summary": "查看系统运行时间、当前时间、登录用户数与系统负载（只读）。",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system vtpclustat local-id get",
+      "summary": "获取本机在 VTP 集群中的节点 ID",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system vtpclustat online list",
+      "summary": "获取 VTP 集群中所有在线节点的列表",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system vtpclustat status",
+      "summary": "查询 VTP 集群的整体状态",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system which",
+      "summary": "查询指定命令的可执行文件路径（只读）。",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system who",
+      "summary": "查看当前登录系统的用户信息（只读）。",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli system who boot-time get",
+      "summary": "查询系统最近一次启动时间",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli task get",
-      "summary": "查询操作任务信息"
+      "summary": "查询操作任务信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli task list",
-      "summary": "展示当天的操作任务"
+      "summary": "展示当天的操作任务",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm advcfg cpu-args get",
+      "summary": "查询虚拟机CPU的自定义 qemu 开机参数",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm advcfg cpu-args set",
+      "summary": "修改虚拟机CPU的自定义 qemu 开机参数（冷编辑，仅支持关机状态下修改；ARM 平台不支持，会返回错误）",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli vm advcfg disk-args get",
+      "summary": "查询虚拟机指定磁盘的自定义 qemu 开机参数",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm advcfg disk-args list",
+      "summary": "列出虚拟机全部磁盘及自定义 qemu 开机参数",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm advcfg disk-args set",
+      "summary": "修改虚拟机磁盘的自定义 qemu 开机参数（冷编辑，仅支持关机状态下修改）",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli vm advcfg disktype get",
+      "summary": "查询虚拟机指定磁盘的驱动类型",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm advcfg disktype list",
+      "summary": "列出虚拟机全部磁盘及驱动类型（含总开关状态）",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm advcfg disktype set",
+      "summary": "修改虚拟机磁盘的驱动类型（冷编辑，仅支持关机状态下修改；不指定 --disk-id 则修改全部 ide 族磁盘）",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli vm advcfg machine-args get",
+      "summary": "查询虚拟机整机的自定义 qemu 开机参数",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm advcfg machine-args set",
+      "summary": "修改虚拟机整机的自定义 qemu 开机参数（冷编辑，仅支持关机状态下修改）",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli vm advcfg nic-args get",
+      "summary": "查询虚拟机指定网卡的自定义 qemu 开机参数",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm advcfg nic-args list",
+      "summary": "列出虚拟机全部网卡及自定义 qemu 开机参数",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm advcfg nic-args set",
+      "summary": "修改虚拟机网卡的自定义 qemu 开机参数（冷编辑，仅支持关机状态下修改）",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli vm advcfg nictype get",
+      "summary": "查询虚拟机指定网卡的型号",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm advcfg nictype list",
+      "summary": "列出虚拟机全部网卡及型号",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm advcfg nictype set",
+      "summary": "修改虚拟机指定网卡的型号（仅支持关机状态下修改）",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli vm advcfg smbios get",
+      "summary": "查询虚拟机自定义 SMBIOS 厂商信息（manufacturer）及其启用开关状态",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm advcfg smbios set",
+      "summary": "修改虚拟机自定义 SMBIOS 厂商信息（manufacturer）及启用开关（冷编辑，仅支持关机状态下修改；运行中的虚拟机将被拒绝）",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli vm advcfg wwn get",
+      "summary": "查询虚拟机指定磁盘的 WWN（磁盘唯一标识）",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm advcfg wwn list",
+      "summary": "列出虚拟机全部磁盘及 WWN",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm advcfg wwn set",
+      "summary": "修改虚拟机磁盘的 WWN（冷编辑，仅支持关机状态下修改；仅支持 virtio-scsi 总线磁盘设置非空 WWN）",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli vm config get",
-      "summary": "获取虚拟机配置信息"
+      "summary": "获取虚拟机配置信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli vm config pending delete",
-      "summary": "删除虚拟机未生效配置"
+      "summary": "删除虚拟机未生效配置",
+      "source": "doc",
+      "risk_hint": "danger"
     },
     {
       "command": "acli vm config pending get",
-      "summary": "查询虚拟机未生效配置"
+      "summary": "查询虚拟机未生效配置",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm cpu consistency get",
+      "summary": "获取CPU一致性状态，对比数据库、CFS 和 Qemu 的 CPU 插槽数、每插槽核心数和总vCPU数",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm cpu consistency set",
+      "summary": "设置CPU一致性，根据指定的插槽数和每插槽核心数修改 DB 和 CFS 配置（危险操作：会覆盖现有配置）",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli vm delete",
-      "summary": "删除虚拟机"
+      "summary": "删除虚拟机",
+      "source": "doc",
+      "risk_hint": "danger"
     },
     {
       "command": "acli vm disk aio get",
-      "summary": "查看虚拟机指定磁盘的aio信息"
+      "summary": "查看虚拟机指定磁盘的aio信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli vm disk check",
-      "summary": "使用qcow2-dump工具检查磁盘镜像是否损坏"
+      "summary": "使用qcow2-dump工具检查磁盘镜像是否损坏",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm disk consistency check",
+      "summary": "检测磁盘一致性，对比数据库和 CFS 配置的 path 和 size_gib 字段",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm disk consistency sync",
+      "summary": "同步磁盘配置，根据传入的路径和大小同时修改 CFS 和 DB（危险操作：会覆盖现有配置）",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli vm disk io_uring get",
-      "summary": "查看虚拟机io_uring的状态"
+      "summary": "查看虚拟机io_uring的状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli vm disk list",
-      "summary": "展示目标虚拟机的磁盘镜像列表"
+      "summary": "展示目标虚拟机的磁盘镜像列表",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli vm disk path get",
-      "summary": "获取虚拟机磁盘路径"
+      "summary": "获取虚拟机磁盘路径",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm dr config import",
+      "summary": "从复制存储导入虚拟机配置，读取源 VM 的 conf，按用户下发的存储映射生成磁盘映射，调用 vmman import-config 接口下发导入指令。",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli vm dr placeholder convert",
+      "summary": "将普通云主机转换为占位云主机，把复制存储中的普通云主机 VM 转成占位 VM，占位存储由用户指定，调用 vmman convert-to-placeholder 接口下发转换指令。",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm hotplug whitelist add",
+      "summary": "放通指定OS或所有未知OS的CPU/内存热添加",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli vm hotplug whitelist delete",
+      "summary": "删除指定OS的放通配置或关闭全局兜底",
+      "source": "doc",
+      "risk_hint": "danger"
+    },
+    {
+      "command": "acli vm hotplug whitelist list",
+      "summary": "查询已放通CPU/内存热添加的OS白名单及全局兜底状态",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm hotplug whitelist reset",
+      "summary": "还原所有自定义的OS白名单(出厂保留)",
+      "source": "doc",
+      "risk_hint": "write"
+    },
+    {
+      "command": "acli vm hotplug whitelist set",
+      "summary": "修改指定OS的CPU/内存热添加放通能力",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli vm int3",
-      "summary": "int3的方式dump虚拟机内存"
+      "summary": "int3的方式dump虚拟机内存",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli vm list",
-      "summary": "获取所有虚拟机信息"
+      "summary": "获取所有虚拟机信息",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm lock clean",
+      "summary": "删除特定虚拟机锁文件",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli vm lock list",
-      "summary": "展示虚拟机锁列表"
+      "summary": "展示虚拟机锁列表",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm memory consistency get",
+      "summary": "获取内存一致性状态，对比数据库、CFS 和 Qemu 的内存配置（MB）",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm memory consistency set",
+      "summary": "设置内存一致性，根据指定的内存大小修改 DB 和 CFS 配置（危险操作：会覆盖现有配置）",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli vm memory dump cancel",
-      "summary": "取消dump虚拟机内存任务"
+      "summary": "取消dump虚拟机内存任务",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli vm memory dump create",
-      "summary": "创建dump虚拟机内存任务"
+      "summary": "创建dump虚拟机内存任务",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli vm memory dump progress",
-      "summary": "查询dump虚拟机内存任务的进度"
+      "summary": "查询dump虚拟机内存任务的进度",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm nic consistency get",
+      "summary": "获取网卡一致性状态，对比 Qemu、VN、CFS、DB 的 MAC 地址和接口 ID",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm nic consistency set",
+      "summary": "设置网卡一致性，根据指定的 MAC 地址修改 VN 和 CFS 配置（危险操作：会覆盖现有配置）",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli vm nic queuecount get",
-      "summary": "获取虚拟机网卡队列数"
+      "summary": "获取虚拟机网卡队列数",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli vm nic queuecount set",
-      "summary": "更新虚拟机网卡队列数"
+      "summary": "更新虚拟机网卡队列数",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli vm sagaflow branch rollback skip",
-      "summary": "跳过sagaflow分支回滚"
+      "summary": "跳过sagaflow分支回滚",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli vm sagaflow get",
-      "summary": "查询sagaflow信息"
+      "summary": "查询sagaflow信息",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli vm sagaflow workflow rollback list",
-      "summary": "获取sagaflow工作流回滚列表"
+      "summary": "获取sagaflow工作流回滚列表",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli vm sagaflow workflow rollback set",
-      "summary": "设置sagaflow工作流回滚"
+      "summary": "设置sagaflow工作流回滚",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli vm shareddisk repair",
-      "summary": "修复共享盘扩容异常"
+      "summary": "修复共享盘扩容异常",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli vm shutdown",
-      "summary": "关闭虚拟机"
+      "summary": "关闭虚拟机",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli vm start",
-      "summary": "开启虚拟机"
+      "summary": "开启虚拟机",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli vm status get",
-      "summary": "获取虚拟机状态"
+      "summary": "获取虚拟机状态",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli vm status set",
-      "summary": "设置虚拟机状态"
+      "summary": "设置虚拟机状态",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli vm vnc all disable",
-      "summary": "禁用所有虚拟机控制台的访问权限"
+      "summary": "禁用所有虚拟机控制台的访问权限",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli vm vnc all enable",
-      "summary": "启用所有虚拟机控制台的访问权限"
+      "summary": "启用所有虚拟机控制台的访问权限",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli vm vnc clean close",
-      "summary": "关闭虚拟机控制台访问权限回收的功能"
+      "summary": "关闭虚拟机控制台访问权限回收的功能",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli vm vnc clean open",
-      "summary": "开启虚拟机控制台访问权限每日回收的功能"
+      "summary": "开启虚拟机控制台访问权限每日回收的功能",
+      "source": "doc",
+      "risk_hint": "read"
     },
     {
       "command": "acli vm vnc disable",
-      "summary": "禁用虚拟机控制台的访问权限"
+      "summary": "禁用虚拟机控制台的访问权限",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli vm vnc enable",
-      "summary": "启用虚拟机控制台的访问权限"
+      "summary": "启用虚拟机控制台的访问权限",
+      "source": "doc",
+      "risk_hint": "write"
     },
     {
       "command": "acli vm vnc get",
-      "summary": "获取虚拟机控制台的配置"
+      "summary": "获取虚拟机控制台的配置",
+      "source": "doc",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm_start vm_start",
+      "summary": "虚拟机开机失败检测",
+      "source": "override",
+      "risk_hint": "read"
+    },
+    {
+      "command": "acli vm_suspend vm_suspend",
+      "summary": "虚拟机挂起检测",
+      "source": "override",
+      "risk_hint": "read"
     }
   ]
 }
