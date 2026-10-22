@@ -347,6 +347,19 @@ type InMessage struct {
 	MinDiskMB int    `json:"min_disk_mb"`        // 最小剩余磁盘要求（默认 100MB）
 	AcliURL   string `json:"acli_url,omitempty"` // 可选自定义下载链接
 
+	// ── log_collect 专用字段 ──
+	// 参数在 bridge 侧二次校验并以单引号转义后拼命令：acli 插件本身不防注入。
+	LogAction  string   `json:"log_action,omitempty"`  // probe | create | progress | cancel
+	TicketNo   string   `json:"ticket_no,omitempty"`   // acli log_collect -s
+	Modules    []string `json:"modules,omitempty"`     // acli log_collect -m 枚举
+	DateFrom   string   `json:"date_from,omitempty"`   // YYYY-MM-DD
+	DateTo     string   `json:"date_to,omitempty"`     // YYYY-MM-DD
+	IPs        string   `json:"ips,omitempty"`         // all 或逗号分隔 IPv4
+	ExtraPaths []string `json:"extra_paths,omitempty"` // acli log_collect -p
+	// RemoteURL 在 log_collect 中语义为：probe 时作为被探测的日志服务器地址；
+	// create 时作为 -u 上传目标（仅 http/https，且只认官方日志服务器白名单）。
+	RemoteURL string `json:"remote_url,omitempty"`
+
 	// ── WebSocket 保活（ping/pong）专用字段 ──
 	Pong int64 `json:"pong,omitempty"` // 客户端回复心跳时间戳（回显服务端 ping 值）
 
@@ -419,6 +432,13 @@ type OutMessage struct {
 	LatestVersion  string `json:"latest_version,omitempty"`
 	AvailableMB    int64  `json:"available_mb,omitempty"`
 	RequiredMB     int64  `json:"required_mb,omitempty"`
+
+	// ── log_collect_result 专用字段 ──
+	// 进度与探测结果是结构化数据；RAW 保留插件原文，解析失败时前端按原文展示，
+	// 不得据此把任务判为失败（插件文案可能随版本变化）。
+	LogAction string `json:"log_action,omitempty"`
+	LogData   any    `json:"log_data,omitempty"`
+	Raw       string `json:"raw,omitempty"`
 
 	// ── WebSocket 保活（ping/pong）专用字段 ──
 	Ping int64 `json:"ping,omitempty"` // 服务端发送心跳时间戳（Unix毫秒），客户端需回复 pong
@@ -4405,6 +4425,9 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 
 		case "acli_sync":
 			go b.handleAcliSync(ws, msg, cui)
+
+		case "log_collect":
+			go b.handleLogCollect(ws, msg, cui)
 		}
 	}
 }
