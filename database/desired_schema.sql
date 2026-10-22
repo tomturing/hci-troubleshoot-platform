@@ -3880,6 +3880,19 @@ CREATE TABLE IF NOT EXISTS log_collect_task (
     archive_path text,
     archive_size bigint,
     archive_sha256 char(64),
+    pull_offset_bytes bigint,
+    pull_sha256 char(64),
+    relay_upload_id text,
+    relay_chunk_index integer,
+    relay_chunk_total integer,
+    relay_restarts integer NOT NULL DEFAULT 0,
+    cleanup_state varchar(16) NOT NULL DEFAULT 'none',
+    cleanup_reason varchar(64),
+    cleanup_ack_by varchar(64),
+    cleanup_ack_at timestamptz,
+    archive_deleted boolean NOT NULL DEFAULT false,
+    archive_deleted_at timestamptz,
+    archive_deleted_by varchar(64),
     detail jsonb NOT NULL DEFAULT '{}'::jsonb,
     error_code varchar(64),
     error_message text,
@@ -3894,7 +3907,9 @@ CREATE TABLE IF NOT EXISTS log_collect_task (
     CONSTRAINT ck_log_collect_range CHECK (date_to >= date_from AND date_to - date_from <= 30),
     CONSTRAINT ck_log_collect_progress CHECK (progress BETWEEN 0 AND 100),
     CONSTRAINT ck_log_collect_status CHECK ((status)::text = ANY ((ARRAY['pending'::character varying, 'probing'::character varying, 'installing'::character varying, 'collecting'::character varying, 'packaging'::character varying, 'uploading'::character varying, 'completed'::character varying, 'failed'::character varying, 'cancelled'::character varying])::text[])),
-    CONSTRAINT ck_log_collect_upload_mode CHECK ((upload_mode IS NULL) OR ((upload_mode)::text = ANY ((ARRAY['acli_direct'::character varying, 'platform_direct'::character varying, 'bridge_relay'::character varying, 'none'::character varying])::text[])))
+    CONSTRAINT ck_log_collect_upload_mode CHECK ((upload_mode IS NULL) OR ((upload_mode)::text = ANY ((ARRAY['acli_direct'::character varying, 'bridge_relay'::character varying, 'none'::character varying])::text[]))),
+    CONSTRAINT ck_log_collect_cleanup_state CHECK ((cleanup_state)::text = ANY ((ARRAY['none'::character varying, 'required'::character varying, 'acked'::character varying])::text[])),
+    CONSTRAINT ck_log_collect_pull_offset CHECK ((pull_offset_bytes IS NULL) OR (pull_offset_bytes >= 0))
 );
 
 COMMENT ON TABLE log_collect_task IS '日志收集任务表 — 承载 acli log_collect 的控制面状态，执行发生在 terminal_bridge';
@@ -3906,6 +3921,15 @@ COMMENT ON COLUMN log_collect_task.status IS '任务状态机：pending/probing/
 COMMENT ON COLUMN log_collect_task.progress IS '总进度 0-100，来自 acli progress 的"总进度"字段';
 COMMENT ON COLUMN log_collect_task.detail IS '主机明细与上传状态等结构化进度快照';
 COMMENT ON COLUMN log_collect_task.archive_sha256 IS '压缩包 SHA-256（制品完整性校验）';
+COMMENT ON COLUMN log_collect_task.pull_offset_bytes IS 'P3 段① 已从 HCI 拉取到客户 PC 的字节数（rsync/SFTP 续传依据）';
+COMMENT ON COLUMN log_collect_task.pull_sha256 IS 'P3 段① 完成后源包 SHA-256，用于平台侧比对';
+COMMENT ON COLUMN log_collect_task.relay_upload_id IS 'P3 段③ 日志服务器返回的 upload_id，用于判断能否续传';
+COMMENT ON COLUMN log_collect_task.relay_chunk_index IS 'P3 段③ 最后成功块下标（0 基），必须逐块写入';
+COMMENT ON COLUMN log_collect_task.relay_chunk_total IS 'P3 段③ 总块数（由服务端 chunk_size 计算）';
+COMMENT ON COLUMN log_collect_task.relay_restarts IS 'P3 段③ 重新 init 次数；>0 表示服务端不支持续传，已整包重传';
+COMMENT ON COLUMN log_collect_task.cleanup_state IS '清理告警状态：none/required/acked；仅作标记，绝不驱动删除';
+COMMENT ON COLUMN log_collect_task.cleanup_reason IS '触发清理告警的原因：storage_high/expired/orphan_hci/relay_failed';
+COMMENT ON COLUMN log_collect_task.archive_deleted IS '平台副本是否已被运维删除（仅记录事实，平台不自动删）';
 
 CREATE INDEX IF NOT EXISTS idx_log_collect_task_case
     ON log_collect_task (case_id, created_at DESC);

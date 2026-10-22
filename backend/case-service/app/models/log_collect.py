@@ -9,7 +9,18 @@
 
 from shared.database.postgres import Base
 from shared.models.base import TimestampMixin, TraceableMixin
-from sqlalchemy import BigInteger, Column, Date, DateTime, ForeignKey, SmallInteger, String, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    SmallInteger,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, INET, JSONB, UUID
 
 
@@ -38,6 +49,22 @@ class LogCollectTask(Base, TimestampMixin, TraceableMixin):
     archive_path = Column(Text, nullable=True)
     archive_size = Column(BigInteger, nullable=True)
     archive_sha256 = Column(String(64), nullable=True)
+    # P3 段①：从 HCI 拉取到客户 PC 的进度，rsync/SFTP 断点续传依据
+    pull_offset_bytes = Column(BigInteger, nullable=True)
+    pull_sha256 = Column(String(64), nullable=True)
+    # P3 段③：日志服务器（5888）分块上传的续传状态，必须逐块写入
+    relay_upload_id = Column(Text, nullable=True)
+    relay_chunk_index = Column(Integer, nullable=True)
+    relay_chunk_total = Column(Integer, nullable=True)
+    relay_restarts = Column(Integer, nullable=False, default=0, server_default="0")
+    # 清理：平台只标记与告警，绝不自动删除，也不提供删除 API
+    cleanup_state = Column(String(16), nullable=False, default="none", server_default="'none'")
+    cleanup_reason = Column(String(64), nullable=True)
+    cleanup_ack_by = Column(String(64), nullable=True)
+    cleanup_ack_at = Column(DateTime(timezone=True), nullable=True)
+    archive_deleted = Column(Boolean, nullable=False, default=False, server_default="false")
+    archive_deleted_at = Column(DateTime(timezone=True), nullable=True)
+    archive_deleted_by = Column(String(64), nullable=True)
     detail = Column(JSONB, nullable=False, default=dict)
     error_code = Column(String(64), nullable=True)
     error_message = Column(Text, nullable=True)

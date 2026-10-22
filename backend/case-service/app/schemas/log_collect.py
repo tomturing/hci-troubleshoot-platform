@@ -36,7 +36,9 @@ LogCollectModule = Literal[
     "performance",
     "core",
 ]
-UploadMode = Literal["acli_direct", "platform_direct", "bridge_relay", "none"]
+# 交付路径收敛为两条：acli_direct = P1（HCI 直传 5888），bridge_relay = P3（bridge 中转）。
+# 原 platform_direct（平台直传）对应已废弃的 P2，不再接受。
+UploadMode = Literal["acli_direct", "bridge_relay", "none"]
 
 # 活跃状态：同一工单只允许一个（与部分唯一索引一致）
 ACTIVE_STATUSES: frozenset[str] = frozenset(
@@ -179,6 +181,10 @@ class LogCollectTaskResponse(BaseModel):
     archive_path: str | None = None
     archive_size: int | None = None
     archive_sha256: str | None = None
+    # 清理提示：平台不自动删除、不提供删除 API，仅以这些字段驱动告警展示
+    cleanup_state: str = "none"
+    cleanup_reason: str | None = None
+    archive_deleted: bool = False
     detail: dict = Field(default_factory=dict)
     error_code: str | None = None
     error_message: str | None = None
