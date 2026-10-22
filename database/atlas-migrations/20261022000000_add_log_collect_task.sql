@@ -43,12 +43,9 @@ CREATE TABLE IF NOT EXISTS log_collect_task (
     CONSTRAINT ck_log_collect_ticket CHECK (ticket_no ~ '^[A-Za-z0-9_-]{1,32}$'),
     CONSTRAINT ck_log_collect_range CHECK (date_to >= date_from AND date_to - date_from <= 30),
     CONSTRAINT ck_log_collect_progress CHECK (progress BETWEEN 0 AND 100),
-    CONSTRAINT ck_log_collect_status CHECK (
-        status IN ('pending', 'probing', 'installing', 'collecting', 'packaging', 'uploading', 'completed', 'failed', 'cancelled')
-    ),
-    CONSTRAINT ck_log_collect_upload_mode CHECK (
-        upload_mode IS NULL OR upload_mode IN ('acli_direct', 'platform_direct', 'bridge_relay', 'none')
-    )
+    -- 表达式按 Atlas 规范化形式书写，保证声明式 schema apply 后 schema diff 为空（幂等）。
+    CONSTRAINT ck_log_collect_status CHECK ((status)::text = ANY ((ARRAY['pending'::character varying, 'probing'::character varying, 'installing'::character varying, 'collecting'::character varying, 'packaging'::character varying, 'uploading'::character varying, 'completed'::character varying, 'failed'::character varying, 'cancelled'::character varying])::text[])),
+    CONSTRAINT ck_log_collect_upload_mode CHECK ((upload_mode IS NULL) OR ((upload_mode)::text = ANY ((ARRAY['acli_direct'::character varying, 'platform_direct'::character varying, 'bridge_relay'::character varying, 'none'::character varying])::text[])))
 );
 
 COMMENT ON TABLE log_collect_task IS '日志收集任务表 — 承载 acli log_collect 的控制面状态，执行发生在 terminal_bridge';
@@ -73,4 +70,4 @@ CREATE INDEX IF NOT EXISTS idx_log_collect_task_case
 -- 同一工单只允许一个活跃任务：避免同节点并发 create 互相覆盖 progress 文件与产物目录。
 CREATE UNIQUE INDEX IF NOT EXISTS uq_log_collect_task_active_case
     ON log_collect_task (case_id)
-    WHERE status NOT IN ('completed', 'failed', 'cancelled');
+    WHERE ((status)::text <> ALL ((ARRAY['completed'::character varying, 'failed'::character varying, 'cancelled'::character varying])::text[]));

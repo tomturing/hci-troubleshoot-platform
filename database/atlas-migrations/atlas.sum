@@ -1,4 +1,4 @@
-h1:sz0VUtOEMLIxMxWuHSbz0r+7yNcH97dhph8I82sxnjA=
+h1:ohbSQS/y0zDTkXuSeLYoT9NCrMIIhAX78rCEca9fy0c=
 20260525000000_kbd_structured_sections.sql h1:HK5p3/VudQhI6ZupzyZ3PEt00fqqLt5ExEovpDym/jc=
 20260526000000_create_sop_execution.sql h1:qAmFaHEbjh9R4eRIjcMM4QLx6wPw/LCDwvPoxBRXHlQ=
 20260526100000_add_variable_schema_to_sop_document.sql h1:tJjimwpXh/VwAAP1zWChXMgkuzjiK8WV+W55JO7BY/w=
@@ -41,4 +41,4 @@ h1:sz0VUtOEMLIxMxWuHSbz0r+7yNcH97dhph8I82sxnjA=
 20260924000001_update_batch_job_type_constraint.sql h1:EJTaImKU8C53za/rvRVkQkw54luPd/q20vqQ8DnVLDs=
 20261013000000_add_kbd_entry_root_signal_json.sql h1:0zwjezoAG/g1d1ldbcI080BjigVG16eQm+JLul/bEOI=
 20261019000000_add_kbd_entry_root_signal_rejected_json.sql h1:tjjwNhokoL1Mu54AflQUv4Oa0rRaFGY/deGmi0H+h0I=
-20261022000000_add_log_collect_task.sql h1:MVJFxEe++33Ay1c4M5XnDe7SHYsAGszzma0N1DXh2z8=
+20261022000000_add_log_collect_task.sql h1:aZ2FWiYogI+hyPXwqK+RRqsu+2TyJC0uYMuENvvRfGw=
