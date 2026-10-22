@@ -347,23 +347,45 @@ def test_llm_candidate_gate_delegates_to_shared_signal_review():
     assert review.call_args.kwargs["feature"] is SignalReviewFeature.LLM_GENERATION
 
 
-def test_post_remediation_read_only_check_is_not_misclassified_as_write_signal():
-    candidate = {
+def _post_remediation_candidate(command: str) -> dict:
+    return {
         "id": "post-check",
         "acquire": {
             "tool": "qfk_system",
-            "args": {"command": "lspci", "command_args": ["-vvv"]},
+            "args": {"command": command, "command_args": ["-vvv"]},
         },
         "match": {"type": "keyword", "pattern": "NVMe", "expected": True},
         "orchestrate": {"phase": "solution", "produces": [], "requires": []},
         "provenance": {"evidence": "重启后执行 lspci -vvv，可看到 NVMe 控制器"},
     }
 
-    accepted, rejected = _validate_and_collect_signals([candidate], "kbd:test", enforce_kbd_read_only=True)
+
+def test_post_remediation_read_only_check_is_not_misclassified_as_write_signal():
+    """Catalog 缺失时应以 not_exists 拒绝，绝不能误判为 write_signal。
+
+    选用只读白名单内但命令快照未登记的 ``ll``：既证明只读语义被识别，
+    又不与快照中具体命令是否登记耦合（快照会随官方更新变化）。
+    """
+
+    accepted, rejected = _validate_and_collect_signals(
+        [_post_remediation_candidate("ll")], "kbd:test", enforce_kbd_read_only=True
+    )
 
     assert accepted == []
     assert rejected[0]["reason_code"] == "not_exists"
+    assert rejected[0]["reason_code"] != "write_signal"
     assert rejected[0]["signal"]["orchestrate"]["phase"] == "solution"
+
+
+def test_post_remediation_registered_read_only_check_is_accepted():
+    """已登记的只读命令（acli system lspci）不得被 KBD 只读门禁拒绝。"""
+
+    accepted, rejected = _validate_and_collect_signals(
+        [_post_remediation_candidate("lspci")], "kbd:test", enforce_kbd_read_only=True
+    )
+
+    assert [item["id"] for item in accepted] == ["post-check"]
+    assert all(item["reason_code"] != "write_signal" for item in rejected)
 
 
 @pytest.mark.parametrize(
@@ -724,7 +746,10 @@ def test_multi_agent_catalog_and_variable_contracts_have_one_consistent_surface(
     ("tool", "args", "expected_fragment"),
     [
         ("qfk_system", {"command": "cat", "command_args": ["/sf/cfg/if.d/eth0"]}, None),
-        ("qfk_system", {"command": "lspci", "command_args": []}, "不在当前 catalog"),
+        # 2026-10-22 命令快照同步后 acli system lspci 已登记，原"不在 catalog"前提失效；
+        # 正向断言改为覆盖"已登记命令放行"，负向用确定不存在的命令名。
+        ("qfk_system", {"command": "lspci", "command_args": ["-vvv"]}, None),
+        ("qfk_system", {"command": "no_such_system_command", "command_args": []}, "不在当前 catalog"),
         ("qfk_hardware", {"command": "mc info"}, "acli hardware mc info"),
         ("qfk_hardware", {"command": "web_info"}, "acli hardware web_info"),
         ("qfk_storage", {"command": "list", "resource_keyword": "disk"}, "acli storage list"),
