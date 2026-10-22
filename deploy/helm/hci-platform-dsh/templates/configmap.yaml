@@ -1,0 +1,97 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dsh-proxy
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+data:
+  # nginx 反代配置。
+  # 本文件是「DSH 为什么必须配 sidecar」的实现核心，修改前请先阅读
+  # docs/solution/events/2026-10-22-DSH诊断集成.md 的决策 1。
+  nginx.conf: |
+    worker_processes auto;
+    # 容器以非 root 运行，pid 与临时目录必须指向可写卷
+    pid /tmp/nginx.pid;
+    error_log /dev/stderr warn;
+
+    events {
+        worker_connections 1024;
+    }
+
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+        access_log /dev/stdout;
+
+        sendfile on;
+        keepalive_timeout 65;
+
+        client_body_temp_path /tmp/client_body_temp;
+        proxy_temp_path /tmp/proxy_temp;
+        fastcgi_temp_path /tmp/fastcgi_temp;
+        uwsgi_temp_path /tmp/uwsgi_temp;
+        scgi_temp_path /tmp/scgi_temp;
+
+        # 仅在客户端发起 Upgrade 时才把 Connection 改写为 upgrade，
+        # 否则保持 close，避免对普通请求误加 upgrade 头。
+        map $http_upgrade $connection_upgrade {
+            default upgrade;
+            ''      close;
+        }
+
+        server {
+            listen {{ .Values.proxy.port }};
+            server_name _;
+
+            # ── 集群内接口（不对外暴露）────────────────────────────────
+            # 这两个路径刻意不以 /dsh 开头，因此不会被 Ingress 的
+            # /dsh Prefix 规则命中，无法从公网触达，只能经 Service 访问。
+
+            # api-gateway 经此获取 DSH 的 launch token
+            location = /__internal/token {
+                default_type text/plain;
+                add_header Cache-Control "no-store" always;
+                alias /run/dsh/token;
+            }
+
+            location = /__internal/healthz {
+                access_log off;
+                default_type text/plain;
+                return 200 "ok";
+            }
+
+            # ── 对外入口 ────────────────────────────────────────────
+            # 不带斜线的 /dsh 也必须落到 /dsh/：上游只在根路径接受 token 交换。
+            location = /dsh {
+                return 302 /dsh/;
+            }
+
+            location /dsh/ {
+                # 结尾的 / 使 /dsh/foo 被代理为 /foo —— 上游只认 origin-root 路由
+                proxy_pass http://127.0.0.1:{{ .Values.dsh.port }}/;
+
+                # 上游完成 token 交换后会 302 到自身根路径。
+                # Traefik 的 stripPrefix 无法反向补前缀，故必须在这里还原。
+                proxy_redirect / /dsh/;
+
+                # 上游签发的 cookie 为 Path=/，会让会话凭据被带到 /admin/、
+                # /api/ 等同域路径；此处收拢到 /dsh/，避免凭据串域。
+                proxy_cookie_path / /dsh/;
+
+                # 必须保留浏览器侧 Host：上游按它做 Host/Origin 白名单校验
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+
+                # Agent 会话为 WebSocket 长连接流式输出
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection $connection_upgrade;
+                proxy_read_timeout 3600s;
+                proxy_send_timeout 3600s;
+                proxy_buffering off;
+            }
+        }
+    }

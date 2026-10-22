@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: dsh
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  # 指向 nginx sidecar，而非 dsh 主容器：dsh 只监听 127.0.0.1，
+  # 从 Pod 外部无法直接触达，这是刻意的最小暴露面设计。
+  ports:
+    - name: http
+      port: {{ .Values.proxy.port }}
+      targetPort: {{ .Values.proxy.port }}
+      protocol: TCP
+  selector:
+    {{- include "hci.selectorLabels" (dict "name" "dsh" "Release" .Release) | nindent 4 }}

@@ -1,0 +1,61 @@
+{{/*
+⚠️ 当前设备 CNI 为 k3s 默认 flannel，NetworkPolicy 不会被强制执行。
+本清单默认关闭（networkPolicy.enabled=false），切换到 Calico/Cilium 后启用。
+
+启用后的收敛目标：把 DSH 从「集群内任意 Pod 可访问」收敛为
+「仅 Traefik 与 api-gateway 可访问」，并在出网侧保留 DNS 与 LLM API 通路。
+*/}}
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dsh
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "dsh" "Release" .Release) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- range .Values.networkPolicy.ingressNamespaces }}
+    # Traefik 反代入站
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.proxy.port }}
+    {{- end }}
+    {{- range .Values.networkPolicy.clientNamespaces }}
+    # api-gateway 取 launch token
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.proxy.port }}
+    {{- end }}
+  egress:
+    # DNS 必须放行，否则 DSH 无法解析 LLM 服务域名
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- if .Values.networkPolicy.allowEgress }}
+    # Agent 需要调用外部 LLM API，故保留出网。
+    # 代价：DSH 仍可访问集群内其他业务服务（postgres / minio 等），
+    # 真正的收敛需要在启用本策略后进一步按目的端收窄。
+    - {}
+    {{- end }}
+{{- end }}

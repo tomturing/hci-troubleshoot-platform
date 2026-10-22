@@ -1,0 +1,46 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dsh-ingress
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+  annotations:
+    {{- if .Values.ingress.tls }}
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure,web
+    {{- else }}
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    {{- end }}
+    # 优先级需高于主站 / 回退路由，否则 /dsh 会被 customer-ui 吞掉
+    # （既有取值参考：grafana 2000、langfuse 3000）
+    traefik.ingress.kubernetes.io/router.priority: {{ .Values.ingress.routerPriority | quote }}
+    # 刻意不挂 stripPrefix 中间件。
+    # 原因：Traefik 的 stripPrefix 只处理入站请求，不会反向补前缀，
+    # 而上游在完成 token 交换后必须 302 到自身根路径，若由 Traefik 剥离前缀，
+    # 浏览器会被直接甩到域名根路径（/），链路彻底断裂。
+    # 因此前缀剥离、Location 还原、cookie Path 收拢三件事统一交给 Pod 内
+    # 的 nginx sidecar 承担，见 templates/configmap.yaml。
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  rules:
+    {{- $host := include "dsh.publicHost" . }}
+    - {{- if $host }} host: {{ $host | quote }}
+      {{- end }}
+      http:
+        paths:
+          # 只暴露 /dsh 前缀。/__internal/* 路径刻意不以 /dsh 开头，
+          # 因此不会被本规则命中，无法从公网触达。
+          - path: {{ .Values.ingress.path }}
+            pathType: Prefix
+            backend:
+              service:
+                name: dsh
+                port:
+                  number: {{ .Values.proxy.port }}
+{{- end }}

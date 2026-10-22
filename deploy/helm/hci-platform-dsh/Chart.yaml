@@ -1,0 +1,15 @@
+apiVersion: v2
+name: hci-platform-dsh
+description: |
+  HCI 智能排障平台 — DSH（DeepSeek Harness）诊断工作台。
+  由独立 ArgoCD Application hci-platform-dsh 管理，部署在独立命名空间 hci-dsh。
+
+  三条上游契约（改动前必须先读 docs/solution/events/2026-10-22-DSH诊断集成.md）：
+  1. dsh 的 Web 监听器禁止绑定 0.0.0.0，故主容器固定监听 127.0.0.1，
+     对外暴露全部交给同 Pod 的 nginx sidecar 承担。
+  2. dsh 无匿名访问模式，进入必须携带一次性 launch token，
+     该 token 由 api-gateway 经管理员鉴权后代持下发。
+  3. dsh 依赖 WebSocket 做 Agent 流式输出，反代必须转发 Upgrade。
+type: application
+version: 1.0.0
+appVersion: "0.2.1-rc.2"

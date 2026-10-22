@@ -1,0 +1,159 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dsh
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.dsh.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "hci.selectorLabels" (dict "name" "dsh" "Release" .Release) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "hci.podLabels" (dict "name" "dsh" "Release" .Release "Chart" .Chart) | nindent 8 }}
+    spec:
+      # DSH 具备命令执行能力，Pod 不需要访问 kube-apiserver，
+      # 挂上 ServiceAccount token 只会平白增加一个可被窃取的高价值凭据。
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+        # 刻意不设置 fsGroup。原因见 values.yaml 的 customerLogs 说明：
+        # /sf/log 是客户日志回收链路的共享目录，一旦 kubelet 对其误改属主，
+        # 会直接破坏其他消费者。风险对称性上不值得为了便利去赌。
+      containers:
+        # ── 主容器：DSH ──────────────────────────────────────────────
+        - name: dsh
+          image: "{{ .Values.dsh.image.repository }}:{{ .Values.dsh.image.tag }}"
+          imagePullPolicy: {{ .Values.dsh.image.pullPolicy }}
+          # 监听地址固定在 127.0.0.1：上游在配置加载期会直接拒绝
+          # 0.0.0.0 等 unspecified address，且非 loopback 绑定会触发暴露告警。
+          # 对外暴露全部由同 Pod 的 dsh-proxy 承担。
+          env:
+            - name: DSH_PORT
+              value: {{ .Values.dsh.port | quote }}
+            - name: DSH_PUBLIC_URL
+              value: {{ include "dsh.publicUrl" . | quote }}
+            {{- $host := include "dsh.publicHost" . }}
+            {{- if $host }}
+            - name: DSH_TRUSTED_HOST
+              value: {{ $host | quote }}
+            {{- end }}
+            - name: HOME
+              value: /home/dsh
+          {{- if .Values.dsh.llmSecretName }}
+          # DSH 作为 Agent 需要 LLM 凭证才能真正执行分析；
+          # Secret 由环境仓库创建，本 Chart 不内置任何凭据。
+          envFrom:
+            - secretRef:
+                name: {{ .Values.dsh.llmSecretName }}
+          {{- end }}
+          # token 是否落盘是 DSH 真正可用的标志：entrypoint 只在抓到
+          # 上游就绪行后才写入，因此它比 TCP 探活更能反映真实可用状态。
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "test -s /run/dsh/token"]
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "test -s /run/dsh/token"]
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "test -s /run/dsh/token"]
+            periodSeconds: 30
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.dsh.resources | nindent 12 }}
+          volumeMounts:
+            # 客户 HCI 故障日志压缩包：只读，DSH 据此做诊断分析
+            {{- if .Values.customerLogs.enabled }}
+            - name: customer-logs
+              mountPath: {{ .Values.customerLogs.mountPath }}
+              readOnly: true
+            {{- end }}
+            # 解压/分析临时产物
+            - name: workspace
+              mountPath: /work
+            # DSH 凭据与会话
+            - name: home
+              mountPath: /home/dsh
+            # 与 dsh-proxy 共享：本容器写 token，sidecar 读 token
+            - name: token
+              mountPath: /run/dsh
+            - name: tmp
+              mountPath: /tmp
+
+        # ── sidecar：nginx 反代 ──────────────────────────────────────
+        - name: dsh-proxy
+          image: "{{ .Values.proxy.image.repository }}:{{ .Values.proxy.image.tag }}"
+          imagePullPolicy: {{ .Values.proxy.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.proxy.port }}
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /__internal/healthz
+              port: {{ .Values.proxy.port }}
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /__internal/healthz
+              port: {{ .Values.proxy.port }}
+            periodSeconds: 30
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsUser: 101
+            runAsGroup: 101
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.proxy.resources | nindent 12 }}
+          volumeMounts:
+            - name: proxy-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+            - name: token
+              mountPath: /run/dsh
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        {{- if .Values.customerLogs.enabled }}
+        - name: customer-logs
+          hostPath:
+            path: {{ .Values.customerLogs.hostPath }}
+            type: Directory
+        {{- end }}
+        - name: workspace
+          emptyDir:
+            sizeLimit: {{ .Values.workspace.sizeLimit }}
+        - name: home
+          emptyDir:
+            sizeLimit: {{ .Values.home.sizeLimit }}
+        - name: token
+          emptyDir:
+            sizeLimit: 1Mi
+        - name: tmp
+          emptyDir: {}
+        - name: proxy-config
+          configMap:
+            name: dsh-proxy

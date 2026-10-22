@@ -1,0 +1,114 @@
+# =============================================================================
+# hci-platform-dsh — DSH（DeepSeek Harness）诊断工作台配置
+# 部署目标：namespace hci-dsh（由本 Chart 自行创建）
+#
+# 上手前必读：docs/solution/events/2026-10-22-DSH诊断集成.md
+# 该文档记录了三条不可违背的上游契约，以及本 Chart 为何采用
+# 「dsh 绑 loopback + nginx sidecar 反代」的双容器形态。
+# =============================================================================
+
+# DSH 部署的命名空间（本 Chart 自行创建）
+namespace: hci-dsh
+
+# ======================== 全局路由配置 ========================================
+global:
+  # 平台对外公开 URL（协议+域名），用于推导 dsh 的 --public-url / --trusted-host
+  # 与 Ingress 的 host。由环境仓库 environments/<env>/values.yaml 注入。
+  publicUrl: ""
+
+# ======================== Ingress (Traefik) ==================================
+ingress:
+  enabled: true
+  className: traefik
+  # /dsh 的挂载路径，必须与 api-gateway 的 DSH_PUBLIC_PATH 保持一致，
+  # 且与 dsh 的 --public-url 结尾保持一致。
+  path: /dsh
+  # 路由优先级需高于主站 / 回退路由，否则 /dsh 会被 customer-ui 吞掉
+  # （参照既有取值：grafana 2000、langfuse 3000）
+  routerPriority: "2500"
+  tls: false
+  annotations: {}
+
+# ======================== 网络隔离 ===========================================
+# ⚠️ 当前设备 CNI 为 k3s 默认 flannel，NetworkPolicy 不会被强制执行。
+# 因此默认关闭——开启只会制造「看起来生效其实没生效」的假象，比不开更危险。
+# 集群切换到 Calico/Cilium 后，将 enabled 置 true 即真正生效。
+networkPolicy:
+  enabled: false
+  # 允许访问 DSH 的命名空间：Traefik 所在命名空间（入站）
+  ingressNamespaces:
+    - kube-system
+  # 允许访问 DSH 的命名空间：api-gateway 所在命名空间（取 token）
+  clientNamespaces:
+    - hci-staging
+  # 是否放开出网（DSH 作为 Agent 需要调用外部 LLM API，默认必须放开）
+  allowEgress: true
+
+# ======================== DSH 主容器 =========================================
+dsh:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/tomturing/hci-dsh
+    tag: "0.2.1-rc.2"
+    pullPolicy: IfNotPresent
+  # dsh 自身监听端口。固定为 127.0.0.1 上的该端口，仅本 Pod 内可达。
+  port: 3080
+  # DSH 是 Agent 运行时，需要 LLM 凭证才能真正执行分析。
+  # 由环境仓库创建同名 Secret 后在此引用；留空时 DSH 可启动但无法执行分析。
+  llmSecretName: ""
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+# ======================== nginx 反代 sidecar =================================
+# 承担三件 Traefik 做不到的事：
+#   1. 剥离 /dsh 前缀（上游只认 origin-root 路由）；
+#   2. 还原上游 302 的 Location（Traefik 的 stripPrefix 无法反向补前缀）；
+#   3. 把上游 Path=/ 的 cookie 收拢到 /dsh/，避免会话凭据串到 /admin/、/api/。
+proxy:
+  image:
+    # 非 root 变体：以 101 用户运行，与 Pod 的 runAsNonRoot 基线一致
+    repository: nginxinc/nginx-unprivileged
+    tag: "1.27-alpine"
+    pullPolicy: IfNotPresent
+  # 对外与对内的统一端口（Ingress 与 Service 均指向此端口）
+  port: 8080
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# ======================== 客户故障日志挂载 ===================================
+# /sf/log 存放客户侧回收的 HCI 故障日志压缩包，DSH 以只读方式读取分析。
+#
+# 权限说明：该目录实测为 755、属主 support:support(1001)，others 已具备 r-x，
+# 因此**只读访问无需任何 securityContext 补充组配置**。
+# 同时本 Chart 刻意不在 Pod 级设置 fsGroup：只读卷理论上不会触发 chown，
+# 但一旦行为与预期不符，误改该目录属主会直接破坏整条日志回收链路，
+# 风险对称性上不值得为了便利去赌。
+customerLogs:
+  enabled: true
+  hostPath: /sf/log
+  mountPath: /data/customer-logs
+  # ⚠️ 单节点前提：hostPath 与当前节点绑定。集群扩容到多节点后，
+  # 必须改为共享存储或配合节点亲和，否则 Pod 被调度到其他节点将读不到日志。
+
+# ======================== 分析工作区 =========================================
+# DSH 解压/分析日志压缩包时的临时可写空间，随 Pod 生命周期释放。
+workspace:
+  sizeLimit: 5Gi
+
+# ======================== DSH 家目录 =========================================
+# 存放 DSH 的凭据与会话。刻意使用 emptyDir 而非 PVC：
+#   - 避免为 PVC 引入 fsGroup（会波及只读的 /sf/log，见上）；
+#   - 本方案的前端每次进入页面都重新索取 token，Pod 重建导致会话丢失
+#     不影响可用性（丢失的只是历史会话，属于已知取舍）。
+home:
+  sizeLimit: 2Gi
