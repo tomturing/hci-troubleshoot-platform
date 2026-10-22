@@ -4,6 +4,14 @@
 
 HCI 环境 AI 故障诊断平台。微服务架构 + S0-S6 六阶段诊断状态机 + 双轨知识检索（SOP + RAG）。
 
+### DSH 诊断工作台集成（2026-10-22）
+
+- **定位**：以容器服务方式部署 DSH（DeepSeek Harness `0.2.1-rc.2`），并在 Admin UI 内嵌「DSH诊断」页面（位于「可观测性」与「分类基线」之间），用于分析客户侧回收到 `/sf/log` 的 HCI 故障日志压缩包。
+- **部署形态**：独立 Chart `hci-platform-dsh` + 独立 namespace `hci-dsh` + 独立 ArgoCD Application。Pod 内为双容器：dsh 主容器绑定 `127.0.0.1:3080`（上游在加载期直接拒绝 `0.0.0.0`），对外暴露由同 Pod 的 nginx 反代 sidecar 承担。对外路径 `/dsh`。
+- **会话鉴权**：DSH 无匿名模式，进入必须携带一次性 launch token；该 token 由 api-gateway 的 `GET /api/dsh/launch`（`require_admin`）代持下发，admin-ui 仅用于 iframe 内嵌。token 每次 DSH 进程启动都会变化，故接口不缓存、实时拉取。
+- **已知边界**：NetworkPolicy 默认关闭（当前 CNI 为 k3s 默认 flannel，不强制执行，开启只会制造假象）；客户日志为 `hostPath` 只读挂载，仅在当前单节点拓扑下有效；DSH 保留完整 Agent 能力（shell / ssh / computer-use），启用前须完成 LLM 凭证 Secret 配置。
+  详见 [需求](docs/requirement/events/2026-10-22-DSH诊断集成.md)、[方案](docs/solution/events/2026-10-22-DSH诊断集成.md)、[任务](docs/task/events/2026-10-22-DSH诊断集成.md)。
+
 ### 可观测性与日志治理（2026-09-20）
 
 - **terminal_bridge 本地日志**：desktop 模式默认在用户桌面 `HCI-TerminalBridge-Logs/` 落盘全量 JSONL，
