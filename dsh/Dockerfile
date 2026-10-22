@@ -24,6 +24,11 @@
 #      readiness 信号，因此可作为抓取 token 的同步点。
 FROM node:22-alpine AS build
 
+# 构建容器不继承 GitHub Actions runner 的 CI 变量；显式设置让
+# root postinstall（install-lefthook.mjs）跳过，避免在 musl 上执行
+# glibc 版 lefthook 二进制。
+ENV CI=true
+
 # 源码构建需要 git；原生依赖（sharp / node-pty）优先使用 prebuild，
 # 补上编译工具链以防 musl 平台没有可用 prebuild 时回退源码编译。
 RUN apk add --no-cache git build-base python3 patch linux-headers
