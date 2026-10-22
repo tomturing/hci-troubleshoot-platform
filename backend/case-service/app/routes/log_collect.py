@@ -19,6 +19,7 @@ from ..schemas.log_collect import (
     LogCollectTaskPatch,
     LogCollectTaskResponse,
 )
+from ..schemas.log_collect_errors import build_problem
 from ..security.auth import get_client_id, verify_case_ownership
 from ..services.log_collect_service import (
     InvalidTransitionError,
@@ -26,6 +27,13 @@ from ..services.log_collect_service import (
     TaskConflictError,
     TaskNotFoundError,
 )
+
+
+def _problem(code: str, detail: str) -> HTTPException:
+    """把业务异常转成 RFC 7807 子集（status 由错误码目录决定）。"""
+    problem = build_problem(code, detail)
+    return HTTPException(status_code=int(problem["status"]), detail=problem)
+
 
 router = APIRouter(prefix="/api/log-collect/tasks", tags=["log-collect"])
 
@@ -40,7 +48,7 @@ def set_database_manager(db_manager: DatabaseManager) -> None:
 
 async def get_log_collect_service() -> LogCollectService:
     if not database_manager:
-        raise HTTPException(status_code=500, detail="Database not initialized")
+        raise _problem("LC-PLATFORM-006", "Database not initialized")
     async for session in database_manager.get_session():
         yield LogCollectService(LogCollectTaskRepository(session))
 
@@ -56,10 +64,10 @@ async def create_task(
     try:
         return await service.create_task(payload, client_id)
     except TaskConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _problem(exc.code, str(exc)) from exc
     except IntegrityError as exc:
         # 并发窗口内两个请求同时通过应用层检查：数据库部分唯一索引兜底。
-        raise HTTPException(status_code=409, detail="该工单已有进行中的日志收集任务") from exc
+        raise _problem("LC-PLUGIN-007", "该工单已有进行中的日志收集任务") from exc
 
 
 @router.get("", response_model=LogCollectTaskListResponse)
@@ -86,7 +94,7 @@ async def get_task(
     try:
         task = await service.get_task(task_id)
     except TaskNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Task not found") from exc
+        raise _problem(TaskNotFoundError.code, "Task not found") from exc
     await verify_case_ownership(task.case_id, client_id, service.repository.session)
     return task
 
@@ -102,12 +110,12 @@ async def update_task(
     try:
         task = await service.get_task(task_id)
     except TaskNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Task not found") from exc
+        raise _problem(TaskNotFoundError.code, "Task not found") from exc
     await verify_case_ownership(task.case_id, client_id, service.repository.session)
     try:
         return await service.update_task(task_id, patch)
     except (InvalidTransitionError, TaskConflictError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _problem(exc.code, str(exc)) from exc
 
 
 @router.post("/{task_id}/cancel", response_model=LogCollectTaskResponse)
@@ -125,9 +133,9 @@ async def cancel_task(
     try:
         task = await service.get_task(task_id)
     except TaskNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Task not found") from exc
+        raise _problem(TaskNotFoundError.code, "Task not found") from exc
     await verify_case_ownership(task.case_id, client_id, service.repository.session)
     try:
         return await service.cancel_task(task_id, reason)
     except TaskConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _problem(exc.code, str(exc)) from exc

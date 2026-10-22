@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from ..models.log_collect import LogCollectTask
 from ..repositories.log_collect_repo import LogCollectTaskRepository
@@ -35,16 +36,33 @@ _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
 }
 
 
-class TaskNotFoundError(Exception):
+class LogCollectError(Exception):
+    """带规范错误码的业务异常基类（错误码见 log_collect_error_catalog.json）。"""
+
+    code = "LC-PLATFORM-006"
+
+    def __init__(self, message: str, code: str | None = None):
+        super().__init__(message)
+        if code:
+            self.code = code
+
+
+class TaskNotFoundError(LogCollectError):
     """任务不存在（或不属于当前工单）。"""
 
+    code = "LC-PLUGIN-008"
 
-class TaskConflictError(Exception):
+
+class TaskConflictError(LogCollectError):
     """同一工单已有活跃任务，或任务已结束无法操作。"""
 
+    code = "LC-PLUGIN-007"
 
-class InvalidTransitionError(Exception):
+
+class InvalidTransitionError(LogCollectError):
     """非法状态转换或进度回退。"""
+
+    code = "LC-PLATFORM-003"
 
 
 class LogCollectService:
@@ -78,7 +96,9 @@ class LogCollectService:
             progress=0,
             detail={},
             created_by=client_id,
-            trace_id=payload.trace_id,
+            # trace_id 由平台兜底生成：前端若未传，任务仍必须有一个可贯穿
+            # 「平台 → bridge → HCI → 回采日志」的链路 ID，否则远端无法按链路定位。
+            trace_id=payload.trace_id or uuid4().hex,
         )
         return await self.repository.create(task)
 
@@ -101,7 +121,7 @@ class LogCollectService:
 
         new_progress = data.get("progress")
         if new_progress is not None and task.status not in TERMINAL_STATUSES and new_progress < task.progress:
-            raise InvalidTransitionError(f"进度不能回退：{task.progress} → {new_progress}")
+            raise InvalidTransitionError(f"进度不能回退：{task.progress} → {new_progress}", code="LC-PLATFORM-004")
 
         for key, value in data.items():
             setattr(task, key, value)
@@ -120,7 +140,7 @@ class LogCollectService:
     async def cancel_task(self, task_id, reason: str | None = None) -> LogCollectTask:
         task = await self.get_task(task_id)
         if task.status in TERMINAL_STATUSES:
-            raise TaskConflictError(f"任务已结束（{task.status}），无法取消")
+            raise TaskConflictError(f"任务已结束（{task.status}），无法取消", code="LC-PLATFORM-003")
         task.status = "cancelled"
         task.error_code = "cancelled_by_user"
         task.error_message = reason or "用户取消"

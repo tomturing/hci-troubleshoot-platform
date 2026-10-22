@@ -1,5 +1,6 @@
 """日志收集任务：状态机、业务规则与参数校验测试。"""
 
+import re
 from datetime import date
 from unittest.mock import AsyncMock, MagicMock
 
@@ -7,10 +8,12 @@ import pytest
 from app.models.log_collect import LogCollectTask
 from app.repositories.log_collect_repo import LogCollectTaskRepository
 from app.schemas.log_collect import LogCollectTaskCreate, LogCollectTaskPatch
+from app.schemas.log_collect_errors import build_problem, load_error_catalog
 from app.services.log_collect_service import (
     InvalidTransitionError,
     LogCollectService,
     TaskConflictError,
+    TaskNotFoundError,
 )
 from pydantic import ValidationError
 
@@ -100,6 +103,26 @@ class TestCreateTask:
             await service.create_task(make_payload(), "client-1")
         mock_repo.create.assert_not_called()
 
+    async def test_trace_id_generated_when_absent(self, service, mock_repo):
+        """前端未传 trace_id 时必须由平台兜底生成，保证全链路可串联。"""
+        mock_repo.get_active_by_case = AsyncMock(return_value=None)
+        mock_repo.create = AsyncMock(return_value=MagicMock(spec=LogCollectTask))
+
+        await service.create_task(make_payload(), "client-1")
+
+        task = mock_repo.create.await_args.args[0]
+        assert isinstance(task.trace_id, str)
+        assert len(task.trace_id) == 32  # W3C trace_id：32 位小写 hex
+
+    async def test_trace_id_preserved_when_provided(self, service, mock_repo):
+        mock_repo.get_active_by_case = AsyncMock(return_value=None)
+        mock_repo.create = AsyncMock(return_value=MagicMock(spec=LogCollectTask))
+
+        await service.create_task(make_payload(trace_id="a" * 32), "client-1")
+
+        task = mock_repo.create.await_args.args[0]
+        assert task.trace_id == "a" * 32
+
 
 class TestUpdateTask:
     async def test_progress_regression_rejected(self, service, mock_repo):
@@ -157,6 +180,38 @@ class TestCancelTask:
 
         with pytest.raises(TaskConflictError):
             await service.cancel_task("11111111-1111-1111-1111-111111111111")
+
+
+class TestErrorCatalog:
+    """错误码目录与 Problem Details 契约。"""
+
+    def test_code_format_and_layer_consistency(self):
+        catalog = load_error_catalog()
+        pattern = re.compile(r"^LC-(ENV|INSTALL|EXEC|PLUGIN|TRANSFER|PLATFORM)-\d{3}$")
+        for code, meta in catalog.items():
+            assert pattern.match(code), code
+            # 码前缀必须与 layer 同构，否则"看码定界"失效
+            assert code.split("-")[1] == meta["layer"], code
+
+    def test_problem_structure(self):
+        problem = build_problem("LC-PLUGIN-007", "该工单已有进行中的任务", trace_id="a" * 32)
+        assert problem["type"] == "urn:hci:log-collect:error:LC-PLUGIN-007"
+        assert problem["status"] == 409
+        assert problem["layer"] == "PLUGIN"
+        assert problem["owner"] == "platform"
+        assert problem["retryable"] == "manual"
+        assert problem["trace_id"] == "a" * 32
+
+    def test_unknown_code_falls_back(self):
+        problem = build_problem("LC-NOPE-999", "unknown")
+        assert problem["status"] == 500
+        assert problem["code"] == "LC-NOPE-999"
+
+    def test_exception_carries_code(self):
+        assert TaskNotFoundError("x").code == "LC-PLUGIN-008"
+        assert TaskConflictError("x").code == "LC-PLUGIN-007"
+        assert InvalidTransitionError("x").code == "LC-PLATFORM-003"
+        assert InvalidTransitionError("x", code="LC-PLATFORM-004").code == "LC-PLATFORM-004"
 
 
 class TestPayloadValidation:

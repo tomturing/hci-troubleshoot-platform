@@ -440,6 +440,14 @@ type OutMessage struct {
 	LogData   any    `json:"log_data,omitempty"`
 	Raw       string `json:"raw,omitempty"`
 
+	// ── 统一错误诊断字段（全链路错误码）──
+	// ErrorCode 是规范码（LC-<LAYER>-<NNN>），layer/owner/retryable 由 sendMsg 自动补全；
+	// ErrorType 保留人类可读短名，向后兼容旧前端。
+	ErrorCode      string `json:"error_code,omitempty"`
+	ErrorLayer     string `json:"error_layer,omitempty"`
+	ErrorOwner     string `json:"error_owner,omitempty"`
+	ErrorRetryable string `json:"error_retryable,omitempty"`
+
 	// ── WebSocket 保活（ping/pong）专用字段 ──
 	Ping int64 `json:"ping,omitempty"` // 服务端发送心跳时间戳（Unix毫秒），客户端需回复 pong
 }
@@ -2816,6 +2824,13 @@ func probeAcliLatest(ctx context.Context, targetArch, customURL string) (filenam
 }
 
 func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
+	// 安装链路必须可观测：远端排障需要看到架构判定、版本比较、下载、上传与安装结果。
+	traceID := strings.TrimSpace(msg.TraceID)
+	if traceID == "" {
+		traceID = "acli-sync-" + firstNonEmpty(strings.TrimSpace(msg.CaseID), "unknown")
+	}
+	msg.TraceID = traceID
+
 	s, key := b.resolveSession(msg)
 	if s == nil && msg.CaseID != "" {
 		s = b.get(sessionKey(msg.CaseID, ""))
@@ -2825,10 +2840,15 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			Type:    "acli_sync_result",
 			CaseID:  msg.CaseID,
 			Status:  "error",
-			Message: "SSH 会话不存在（需先 ssh_connect）",
+			TraceID: traceID,
+			Message: "SSH 会话不存在（需先 ssh_connect）", ErrorCode: ErrEnvSessionMissing,
 		})
+		blog("ERROR", "acli_sync.session_missing", "acli 安装缺少 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, nil)
 		return
 	}
+	blog("INFO", "acli_sync.start", "acli 检测与安装开始", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		"force": msg.Force, "min_disk_mb": msg.MinDiskMB, "custom_url": msg.AcliURL != "", "key": key,
+	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -2847,7 +2867,11 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			Type:    "acli_sync_result",
 			CaseID:  msg.CaseID,
 			Status:  "error",
-			Message: fmt.Sprintf("获取系统架构失败 (code=%d): %v", exitCode, err),
+			TraceID: traceID,
+			Message: fmt.Sprintf("获取系统架构失败 (code=%d): %v", exitCode, err), ErrorCode: ErrEnvArchProbeFailed,
+		})
+		blog("ERROR", "acli_sync.arch_probe_failed", "获取系统架构失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"exit_code": exitCode, "error": errString(err),
 		})
 		return
 	}
@@ -2862,7 +2886,11 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			CaseID:       msg.CaseID,
 			Status:       "error",
 			Architecture: arch,
-			Message:      fmt.Sprintf("暂不支持的硬件架构: %s", arch),
+			TraceID:      traceID,
+			Message:      fmt.Sprintf("暂不支持的硬件架构: %s", arch), ErrorCode: ErrEnvArchUnsupported,
+		})
+		blog("ERROR", "acli_sync.arch_unsupported", "不支持的硬件架构", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"architecture": arch,
 		})
 		return
 	}
@@ -2894,6 +2922,12 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 		log.Printf("[Bridge] acli 当前版本落后 (当前: %s, 远端: %s)，需要更新", currentBuild, remoteBuild)
 	}
 
+	blog("INFO", "acli_sync.version_check", "acli 版本判定完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		"architecture": targetArch, "current_version": currentVer, "current_build": currentBuild,
+		"remote_filename": remoteFilename, "remote_build": remoteBuild,
+		"need_install": needInstall, "force": msg.Force, "probe_error": errString(probeErr),
+	})
+
 	if !needInstall {
 		log.Printf("[Bridge] acli 已就绪且为最新 (ver=%s build=%s)", currentVer, currentBuild)
 		sendMsg(ws, OutMessage{
@@ -2903,8 +2937,12 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			Architecture:   targetArch,
 			CurrentVersion: currentVer,
 			LatestVersion:  remoteBuild,
+			TraceID:        traceID,
 			Detail:         fmt.Sprintf("%s (build %s)", currentVer, currentBuild),
 			Message:        "acli 工具已就绪且为最新版本",
+		})
+		blog("INFO", "acli_sync.up_to_date", "acli 已就绪无需安装", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"architecture": targetArch, "version": currentVer, "build": currentBuild,
 		})
 		return
 	}
@@ -2931,13 +2969,17 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 	if availableMB > 0 && availableMB < int64(minDiskMB) {
 		log.Printf("[Bridge] /sf/data/local 空间不足: 当前 %d MB, 要求 %d MB", availableMB, minDiskMB)
 		sendMsg(ws, OutMessage{
-			Type:         "acli_sync_result",
-			CaseID:       msg.CaseID,
-			Status:       "disk_space_insufficient",
+			Type:   "acli_sync_result",
+			CaseID: msg.CaseID,
+			Status: "disk_space_insufficient", ErrorCode: ErrEnvDiskLow,
 			Architecture: targetArch,
 			AvailableMB:  availableMB,
 			RequiredMB:   int64(minDiskMB),
+			TraceID:      traceID,
 			Message:      fmt.Sprintf("/sf/data/local 目录可用空间不足（当前: %d MB, 最低需要: %d MB），请清理空间后重试", availableMB, minDiskMB),
+		})
+		blog("ERROR", "acli_sync.disk_insufficient", "acli 安装前磁盘空间不足", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"available_mb": availableMB, "required_mb": minDiskMB, "key": key,
 		})
 		return
 	}
@@ -2957,7 +2999,11 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			Type:    "acli_sync_result",
 			CaseID:  msg.CaseID,
 			Status:  "error",
-			Message: "创建下载请求失败: " + err.Error(),
+			TraceID: traceID,
+			Message: "创建下载请求失败: " + err.Error(), ErrorCode: ErrInstallReqFailed,
+		})
+		blog("ERROR", "acli_sync.download_request_failed", "创建 acli 下载请求失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"error": err.Error(),
 		})
 		return
 	}
@@ -2969,7 +3015,11 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			Type:    "acli_sync_result",
 			CaseID:  msg.CaseID,
 			Status:  "error",
-			Message: "下载 acli 安装包失败: " + err.Error(),
+			TraceID: traceID,
+			Message: "下载 acli 安装包失败: " + err.Error(), ErrorCode: ErrInstallDownload,
+		})
+		blog("ERROR", "acli_sync.download_failed", "下载 acli 安装包失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"error": err.Error(), "architecture": targetArch,
 		})
 		return
 	}
@@ -2980,10 +3030,17 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			Type:    "acli_sync_result",
 			CaseID:  msg.CaseID,
 			Status:  "error",
-			Message: fmt.Sprintf("下载源返回 HTTP %d", dlResp.StatusCode),
+			TraceID: traceID,
+			Message: fmt.Sprintf("下载源返回 HTTP %d", dlResp.StatusCode), ErrorCode: ErrInstallBadStatus,
+		})
+		blog("ERROR", "acli_sync.download_bad_status", "下载源返回异常状态码", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"http_status": dlResp.StatusCode, "architecture": targetArch,
 		})
 		return
 	}
+	blog("INFO", "acli_sync.download_done", "acli 安装包下载完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		"architecture": targetArch, "content_length": dlResp.ContentLength, "filename": remoteFilename,
+	})
 
 	// 确定目标文件路径
 	if remoteFilename == "" {
@@ -3005,10 +3062,17 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			Type:    "acli_sync_result",
 			CaseID:  msg.CaseID,
 			Status:  "error",
-			Message: "上传 acli 安装包至 HCI 失败: " + err.Error(),
+			TraceID: traceID,
+			Message: "上传 acli 安装包至 HCI 失败: " + err.Error(), ErrorCode: ErrInstallUpload,
+		})
+		blog("ERROR", "acli_sync.upload_failed", "acli 安装包上传失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"dest_path": destPath, "error": err.Error(),
 		})
 		return
 	}
+	blog("INFO", "acli_sync.upload_done", "acli 安装包已上传", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		"dest_path": destPath, "architecture": targetArch,
+	})
 
 	// 8. 执行集群安装
 	sendMsg(ws, OutMessage{
@@ -3026,10 +3090,19 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			Type:    "acli_sync_result",
 			CaseID:  msg.CaseID,
 			Status:  "error",
-			Message: fmt.Sprintf("acli 安装命令执行失败 (code=%d): %s", installCode, installOut),
+			TraceID: traceID,
+			Message: fmt.Sprintf("acli 安装命令执行失败 (code=%d): %s", installCode, installOut), ErrorCode: ErrInstallExec,
+		})
+		blog("ERROR", "acli_sync.install_failed", "acli 安装命令执行失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"exit_code": installCode, "error": errString(installErr),
+			"output_preview": truncateString(installOut, 1024), "dest_path": destPath,
 		})
 		return
 	}
+	// 安装器会把 acli 分发到集群各节点，输出里含节点与耗时，保留摘要供远端核对。
+	blog("INFO", "acli_sync.install_done", "acli 集群分发安装完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		"exit_code": installCode, "output_preview": truncateString(installOut, 1024),
+	})
 
 	// 9. 验证安装成果
 	verifyOut, verifyCode, _ := s.runQuickCommand(ctx, versionCmd)
@@ -3043,15 +3116,23 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			Architecture:   targetArch,
 			CurrentVersion: newVer,
 			LatestVersion:  newBuild,
+			TraceID:        traceID,
 			Detail:         fmt.Sprintf("%s (build %s)", newVer, newBuild),
 			Message:        "acli 工具安装并集群分发成功！",
+		})
+		blog("INFO", "acli_sync.installed", "acli 安装并验证成功", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"architecture": targetArch, "version": newVer, "build": newBuild, "key": key,
 		})
 	} else {
 		sendMsg(ws, OutMessage{
 			Type:    "acli_sync_result",
 			CaseID:  msg.CaseID,
 			Status:  "error",
-			Message: "acli 安装完成但执行 acli --version 验证失败",
+			TraceID: traceID,
+			Message: "acli 安装完成但执行 acli --version 验证失败", ErrorCode: ErrInstallVerify,
+		})
+		blog("ERROR", "acli_sync.verify_failed", "acli 安装后版本验证失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"exit_code": verifyCode, "output_preview": truncateString(verifyOut, 512),
 		})
 	}
 }
@@ -3948,6 +4029,11 @@ func sendWebSocketRaw(ws *websocket.Conn, payload string) error {
 }
 
 func sendMsg(ws *websocket.Conn, msg OutMessage) {
+	// 统一错误诊断：只要带了规范错误码，就自动补齐层/责任方/可重试性，
+	// 避免每个调用点重复填写导致漂移（元数据来自 log_collect_errors.go）。
+	if msg.ErrorCode != "" && msg.ErrorLayer == "" {
+		msg.ErrorLayer, msg.ErrorOwner, msg.ErrorRetryable = logCollectErrorFields(msg.ErrorCode)
+	}
 	data, _ := json.Marshal(msg)
 	if err := sendWebSocketRaw(ws, string(data)); err != nil {
 		// 发送失败 = 结果回不去浏览器：必须显式记录，否则表现为"命令没有结果"却无任何线索。

@@ -357,6 +357,13 @@ func firstNonEmpty(values ...string) string {
 
 // handleLogCollect 处理 log_collect 消息族。
 func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string) {
+	// 链路 ID 先算：会话缺失这类失败同样要能按链路检索与聚合。
+	traceID := strings.TrimSpace(msg.TraceID)
+	if traceID == "" {
+		traceID = "lc-" + firstNonEmpty(strings.TrimSpace(msg.ExecID), "unknown")
+	}
+	msg.TraceID = traceID
+
 	s, key := b.resolveSession(msg)
 	if s == nil && msg.CaseID != "" {
 		s = b.get(sessionKey(msg.CaseID, ""))
@@ -364,8 +371,11 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 	if s == nil {
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: msg.LogAction,
-			Status: "error", ErrorType: "session_missing",
-			Message: "SSH 会话不存在（需先 ssh_connect）", CustomUI: cui,
+			Status: "error", ErrorType: "session_missing", ErrorCode: ErrEnvSessionMissing,
+			Message: "SSH 会话不存在（需先 ssh_connect）", TraceID: traceID, CustomUI: cui,
+		})
+		blog("ERROR", "log_collect.session_missing", "日志收集动作缺少 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"log_action": msg.LogAction, "task_id": msg.ExecID,
 		})
 		return
 	}
@@ -374,6 +384,21 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 	defer cancel()
 
 	action := strings.TrimSpace(msg.LogAction)
+	startedAt := time.Now()
+	outcome := "error"
+	// 统一收尾日志：任何分支（含提前 return）都会留下耗时与结果，便于远端定位。
+	defer func() {
+		blog("INFO", "log_collect.done", "日志收集动作结束", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"log_action": action, "task_id": msg.ExecID, "outcome": outcome,
+			"duration_ms": time.Since(startedAt).Milliseconds(),
+		})
+	}()
+	blog("INFO", "log_collect.start", "日志收集动作开始", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		"log_action": action, "task_id": msg.ExecID, "ticket_no": msg.TicketNo,
+		"modules": msg.Modules, "date_from": msg.DateFrom, "date_to": msg.DateTo,
+		"ips": msg.IPs, "extra_paths_count": len(msg.ExtraPaths),
+		"remote_url_set": strings.TrimSpace(msg.RemoteURL) != "",
+	})
 
 	switch action {
 	case "probe":
@@ -382,15 +407,18 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			logServer = logCollectDefaultLogServer
 		}
 		probe := s.probeLogCollectEnv(ctx, logServer)
+		outcome = "ok"
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
-			Status: "ok", LogData: probe, CustomUI: cui,
+			Status: "ok", LogData: probe, TraceID: traceID, CustomUI: cui,
 		})
-		blog("INFO", "log_collect.probe", "日志收集环境探测完成", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		blog("INFO", "log_collect.probe", "日志收集环境探测完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": probe.Architecture, "acli_installed": probe.AcliInstalled,
-			"acli_version": probe.AcliVersion, "available_mb": probe.AvailableMB,
-			"log_server_reachable": probe.LogServerReachable, "http_code": probe.LogServerHTTPCode,
-			"key": key,
+			"acli_version": probe.AcliVersion, "acli_build_time": probe.AcliBuildTime,
+			"available_mb":   probe.AvailableMB,
+			"log_server_url": probe.LogServerURL, "log_server_reachable": probe.LogServerReachable,
+			"http_code": probe.LogServerHTTPCode, "latency_ms": probe.LogServerLatencyMS,
+			"note": probe.Note, "key": key,
 		})
 
 	case "create":
@@ -398,66 +426,90 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		if errType != "" {
 			sendMsg(ws, OutMessage{
 				Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
-				Status: "error", ErrorType: errType, Message: errMsg, CustomUI: cui,
+				Status: "error", ErrorType: errType, ErrorCode: validationErrorCode(errType),
+				Message: errMsg, TraceID: traceID, CustomUI: cui,
 			})
-			blog("ERROR", "log_collect.rejected", "日志收集参数校验失败", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-				"error_type": errType, "reason": errMsg,
+			blog("ERROR", "log_collect.rejected", "日志收集参数校验失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"error_type": errType, "reason": errMsg, "ticket_no": msg.TicketNo,
 			})
 			return
 		}
 		output, exitCode, err := s.runCommandPty(ctx, command, logCollectCreateTimeout)
 		status := "ok"
+		code := ""
 		if err != nil || exitCode != 0 {
 			status = "error"
+			code = execErrorCode(err, exitCode)
+		} else {
+			outcome = "ok"
 		}
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
-			Status: status, ExitCode: exitCode, Raw: output,
+			Status: status, ExitCode: exitCode, Raw: output, ErrorCode: code,
 			Message: firstNonEmpty(errString(err), strings.TrimSpace(output)),
-			Detail:  command, CustomUI: cui,
+			Detail:  command, TraceID: traceID, CustomUI: cui,
 		})
-		blog("INFO", "log_collect.create", "日志收集任务下发", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		blog("INFO", "log_collect.create", "日志收集任务下发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"ticket_no": msg.TicketNo, "exit_code": exitCode, "error": errString(err),
-			"command": redactCommand(command),
+			"command": redactCommand(command), "output_preview": truncateString(output, 512),
 		})
 
 	case "progress":
 		output, exitCode, err := s.runCommandPty(ctx, "acli log_collect progress", logCollectProgressTimeout)
 		progress := parseLogCollectProgress(output)
 		status := "ok"
+		code := ""
 		if err != nil || exitCode != 0 {
 			status = "error"
+			code = execErrorCode(err, exitCode)
+		} else {
+			outcome = "ok"
+			if !progress.ParseOK {
+				// 解析降级不是失败：单独出码，前端展示原文，任务状态仍为进行中。
+				code = ErrPlugProgressDegr
+			}
 		}
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
-			Status: status, ExitCode: exitCode, LogData: progress, Raw: output,
-			Message: errString(err), CustomUI: cui,
+			Status: status, ExitCode: exitCode, LogData: progress, Raw: output, ErrorCode: code,
+			Message: errString(err), TraceID: traceID, CustomUI: cui,
 		})
-		blog("INFO", "log_collect.progress", "日志收集进度查询", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		blog("INFO", "log_collect.progress", "日志收集进度查询", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"parse_ok": progress.ParseOK, "percent": progress.Percent,
-			"status_text": progress.Status, "exit_code": exitCode,
+			"done": progress.Done, "total": progress.Total,
+			"status_text": progress.Status, "archive_path": progress.ArchivePath,
+			"upload_url": progress.UploadURL, "upload_state": progress.UploadState,
+			"hosts_count": len(progress.Hosts), "exit_code": exitCode,
+			"error": errString(err), "raw_len": len(output),
 		})
 
 	case "cancel":
 		output, exitCode, err := s.runCommandPty(ctx, "acli log_collect cancel", logCollectCancelTimeout)
 		status := "ok"
+		code := ""
 		if err != nil || exitCode != 0 {
 			status = "error"
+			code = ErrPlugCancelFailed
+		} else {
+			outcome = "ok"
 		}
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
-			Status: status, ExitCode: exitCode, Raw: output,
-			Message: firstNonEmpty(errString(err), strings.TrimSpace(output)), CustomUI: cui,
+			Status: status, ExitCode: exitCode, Raw: output, ErrorCode: code,
+			Message: firstNonEmpty(errString(err), strings.TrimSpace(output)),
+			TraceID: traceID, CustomUI: cui,
 		})
-		blog("WARN", "log_collect.cancel", "日志收集任务取消", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		blog("WARN", "log_collect.cancel", "日志收集任务取消", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"exit_code": exitCode, "error": errString(err),
+			"output_preview": truncateString(output, 512),
 		})
 
 	default:
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
-			Status: "error", ErrorType: "invalid_action",
-			Message: "log_action 仅支持 probe / create / progress / cancel", CustomUI: cui,
+			Status: "error", ErrorType: "invalid_action", ErrorCode: ErrPlugInvalidAction,
+			Message: "log_action 仅支持 probe / create / progress / cancel",
+			TraceID: traceID, CustomUI: cui,
 		})
 	}
 }

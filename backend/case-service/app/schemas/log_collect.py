@@ -127,10 +127,18 @@ class LogCollectTaskCreate(BaseModel):
 
 
 class LogCollectTaskPatch(BaseModel):
-    """更新任务状态/进度（由前端从 bridge 轮询结果回写）。"""
+    """更新任务状态与制品元数据。
+
+    进度语义（重要）：
+    - ``acli log_collect progress`` 的权威源在 HCI 的 ``cluster_progress.json``，
+      只要知道 ``origin_node_ip`` 就能随时重建，因此 **平台不保存实时进度**；
+    - ``progress`` / ``detail`` 只是**快照**，用于任务列表兜底展示，允许为空；
+    - 推荐只在**状态跃迁与终态**时调用本接口（每任务 ≤6 次），避免每 5 秒轮询写库
+      造成写放大，以及"平台进度与 HCI 不一致"的双源冲突。
+    """
 
     status: LogCollectStatus | None = None
-    progress: int | None = Field(default=None, ge=0, le=100)
+    progress: int | None = Field(default=None, ge=0, le=100, description="进度快照，非权威值")
     arch: str | None = Field(default=None, max_length=16)
     acli_version: str | None = Field(default=None, max_length=32)
     upload_mode: UploadMode | None = None
