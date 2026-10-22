@@ -328,6 +328,66 @@ export function buildAcliSyncMessage(caseId: string, options?: AcliSyncOptions):
   })
 }
 
+export interface LogCollectMessageOptions {
+  nodeIp?: string | null
+  container?: string | null
+  traceId?: string | null
+  ticketNo?: string
+  modules?: string[]
+  dateFrom?: string
+  dateTo?: string
+  ips?: string
+  extraPaths?: string[]
+  remoteUrl?: string
+  /** transfer / stat 专用：HCI 上的 zip 路径 */
+  sourcePath?: string
+  /** transfer 专用：平台根地址 */
+  platformUrl?: string
+  /** transfer 专用：平台签发的数据面 token */
+  uploadToken?: string
+  chunkSize?: number
+  partCount?: number
+  totalSize?: number
+  uploadedParts?: number[]
+  localPath?: string
+}
+
+/**
+ * 构建 log_collect 消息（probe / create / progress / cancel / stat / transfer）。
+ *
+ * 参数在此只做字段映射，校验由 bridge 与服务端负责：插件本身不防注入，
+ * bridge 是最后一道防线（白名单 + 单引号转义）。
+ */
+export function buildLogCollectMessage(
+  caseId: string,
+  action: 'probe' | 'create' | 'progress' | 'cancel' | 'stat' | 'transfer',
+  options: LogCollectMessageOptions = {},
+): string {
+  return JSON.stringify({
+    type: 'log_collect',
+    case_id: caseId,
+    log_action: action,
+    node_ip: options.nodeIp || undefined,
+    container: options.container || undefined,
+    trace_id: options.traceId || undefined,
+    ticket_no: options.ticketNo || undefined,
+    modules: options.modules?.length ? options.modules : undefined,
+    date_from: options.dateFrom || undefined,
+    date_to: options.dateTo || undefined,
+    ips: options.ips || undefined,
+    extra_paths: options.extraPaths?.length ? options.extraPaths : undefined,
+    remote_url: options.remoteUrl || undefined,
+    source_path: options.sourcePath || undefined,
+    platform_url: options.platformUrl || undefined,
+    upload_token: options.uploadToken || undefined,
+    chunk_size: options.chunkSize || undefined,
+    part_count: options.partCount || undefined,
+    total_size: options.totalSize || undefined,
+    uploaded_parts: options.uploadedParts?.length ? options.uploadedParts : undefined,
+    local_path: options.localPath || undefined,
+  })
+}
+
 // ===== Bridge 命令协议辅助函数 =====
 // 供 SshFlowPanel 等组件复用，避免在 store 外重复实现 marker 协议
 
