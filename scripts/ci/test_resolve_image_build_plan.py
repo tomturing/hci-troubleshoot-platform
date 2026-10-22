@@ -198,3 +198,31 @@ def test_promotion_push_does_not_rebuild_released_hci_sim(monkeypatch, tmp_path)
     assert json.loads(outputs["matrix"]) == []
     assert outputs["has_images"] == "false"
     assert outputs["db_migrate"] == "false"
+
+
+def test_dsh_change_triggers_dsh_rebuild():
+    """dsh/ 下改动必须触发 dsh 镜像构建。
+
+    否则 DSH chart 的 image.tag 永远停在初始值，Pod 会一直 ImagePullBackOff。
+    """
+    module = _load_module()
+    selected, _ = module.select_services(["dsh/docker-entrypoint.sh"], force_all=False)
+    assert "dsh" in selected
+    # deploy_key 必须存在，否则 tag 不会同步到 hci-platform-env 的 dsh.image.tag，
+    # 而 DSH 位于独立 chart，没有 tag 覆写就会一直拉取初始值。
+    deploy_keys = {service: key for service, _, key in module.ALL_SERVICES}
+    assert deploy_keys.get("dsh") == "dsh"
+
+
+def test_every_registered_service_dockerfile_exists():
+    """每个注册服务都必须指向真实存在的 Dockerfile，防止路径写错后静默不构建。"""
+    from pathlib import Path as _Path
+
+    module = _load_module()
+    repo_root = _Path(__file__).resolve().parents[2]
+    missing = [
+        f"{service} -> {dockerfile}"
+        for service, dockerfile, _ in module.ALL_SERVICES
+        if not (repo_root / dockerfile).is_file()
+    ]
+    assert not missing, f"注册的 Dockerfile 不存在: {missing}"

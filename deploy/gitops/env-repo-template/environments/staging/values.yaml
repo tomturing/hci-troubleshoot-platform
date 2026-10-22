@@ -49,3 +49,13 @@ adminUI:
   image:
     repository: admin-ui
     tag: "latest"
+
+# ======================== DSH 诊断工作台 =====================================
+# 独立 chart hci-platform-dsh，部署在独立命名空间 hci-dsh。
+# repository 必须写短名 dsh（无 hci- 前缀），与 CI 构建矩阵的服务名一致，
+# 否则会与 CI 推送地址不符导致 ImagePullBackOff。
+dsh:
+  image:
+    repository: dsh
+    tag: "latest"
+  llmSecretName: ""

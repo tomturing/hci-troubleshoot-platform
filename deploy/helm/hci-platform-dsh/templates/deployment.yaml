@@ -18,6 +18,12 @@ spec:
       # DSH 具备命令执行能力，Pod 不需要访问 kube-apiserver，
       # 挂上 ServiceAccount token 只会平白增加一个可被窃取的高价值凭据。
       automountServiceAccountToken: false
+      {{- if .Values.global.imagePullSecretName }}
+      # ghcr.io 为私有仓库（匿名拉取 401），必须挂拉取凭证；
+      # 该 Secret 由本 Chart 的 templates/secret.yaml 在 hci-dsh 内渲染。
+      imagePullSecrets:
+        - name: {{ .Values.global.imagePullSecretName }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -28,7 +34,9 @@ spec:
       containers:
         # ── 主容器：DSH ──────────────────────────────────────────────
         - name: dsh
-          image: "{{ .Values.dsh.image.repository }}:{{ .Values.dsh.image.tag }}"
+          # 完整地址 = <imageRegistry><repository>:<tag>，必须与 CI 推送地址严格一致：
+          # ghcr.io/tomturing/hci-troubleshoot-platform/dsh:<tag>
+          image: "{{ .Values.global.imageRegistry }}{{ .Values.dsh.image.repository }}:{{ .Values.dsh.image.tag }}"
           imagePullPolicy: {{ .Values.dsh.image.pullPolicy }}
           # 监听地址固定在 127.0.0.1：上游在配置加载期会直接拒绝
           # 0.0.0.0 等 unspecified address，且非 loopback 绑定会触发暴露告警。

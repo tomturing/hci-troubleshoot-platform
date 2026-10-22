@@ -43,6 +43,9 @@ OTHER_SERVICES = (
     ("terminal-bridge", "terminal_bridge/Dockerfile", "terminalBridge"),
     # hci-sim 由独立 chart 消费，不同步到 hci-platform-env。
     ("hci-sim", "hci_sim/Dockerfile", None),
+    # DSH 由独立 chart hci-platform-dsh 消费（部署在 hci-dsh 命名空间），
+    # 镜像 tag 仍需同步到 hci-platform-env 的 dsh.image.tag，故提供 deploy_key。
+    ("dsh", "dsh/Dockerfile", "dsh"),
 )
 ALL_SERVICES = BACKEND_SERVICES + FRONTEND_SERVICES + OTHER_SERVICES
 SERVICE_NAMES = tuple(service for service, _, _ in ALL_SERVICES)
@@ -185,6 +188,8 @@ def select_services(paths: Iterable[str], *, force_all: bool) -> tuple[set[str],
                     add_service(selected, "terminal-bridge")
                 elif is_under(path, "hci_sim/"):
                     add_service(selected, "hci-sim")
+                elif is_under(path, "dsh/"):
+                    add_service(selected, "dsh")
 
     return selected, db_migrate
 

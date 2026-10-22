@@ -27,7 +27,9 @@ RUN npm install -g "@deepseek-ai/dsh@${DSH_VERSION}" \
 RUN mkdir -p /work /home/dsh /run/dsh \
     && chown -R node:node /work /home/dsh /run/dsh
 
-COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+# 注意：CI 的构建上下文是仓库根目录（matrix.context = "."），
+# 不是本文件所在目录，因此路径必须带 dsh/ 前缀。
+COPY dsh/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
 
 # 固定以非 root 身份运行（node 官方镜像自带 node:node = 1000:1000）

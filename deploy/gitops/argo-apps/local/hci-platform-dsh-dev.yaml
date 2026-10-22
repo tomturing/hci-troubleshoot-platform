@@ -31,9 +31,6 @@ spec:
         releaseName: hci-platform-dsh
         valueFiles:
           - $values/environments/dev/values.yaml
-        parameters:
-          - name: customerLogs.enabled
-            value: "false"
     - repoURL: https://github.com/tomturing/hci-platform-env.git
       targetRevision: main
       ref: values

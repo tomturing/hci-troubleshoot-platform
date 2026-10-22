@@ -15,6 +15,22 @@ global:
   # 平台对外公开 URL（协议+域名），用于推导 dsh 的 --public-url / --trusted-host
   # 与 Ingress 的 host。由环境仓库 environments/<env>/values.yaml 注入。
   publicUrl: ""
+  # 私有镜像仓库前缀（须以 / 结尾），由环境仓库注入，例如
+  # "ghcr.io/tomturing/hci-troubleshoot-platform/"。
+  # DSH 镜像由本仓库 CI 构建推送，最终地址为 <imageRegistry><repository>:<tag>。
+  imageRegistry: ""
+  # ghcr.io 为私有仓库，必须提供拉取凭证。
+  # 注意：hci-platform chart 只把 credential 渲染到 hci-staging，
+  # 而 DSH 位于独立命名空间 hci-dsh，跨命名空间无法复用，
+  # 因此本 Chart 需要自行渲染同名 Secret（见 templates/secret.yaml）。
+  imagePullSecretName: ""
+  imagePullUser: ""
+
+# ======================== 敏感凭据 ===========================================
+# 由环境仓库 environments/<env>/values.yaml 注入，本 Chart 只负责用它渲染
+# hci-dsh 命名空间内的 ghcr 拉取凭证，不内置任何默认值。
+secrets:
+  ghcrToken: ""
 
 # ======================== Ingress (Traefik) ==================================
 ingress:
@@ -48,8 +64,13 @@ networkPolicy:
 dsh:
   replicaCount: 1
   image:
-    repository: ghcr.io/tomturing/hci-dsh
-    tag: "0.2.1-rc.2"
+    # ⚠️ 短名，必须与 CI 构建矩阵的服务名一致（无 hci- 前缀）。
+    # 完整地址为 <global.imageRegistry><repository>:<tag>。
+    # 若写成完整路径或加 hci- 前缀，会与 CI 推送地址不一致导致 ImagePullBackOff。
+    repository: dsh
+    # CI 同时推送 <日期-时间-sha7> 与 latest 两个 tag；
+    # 环境仓库会由 env-repo-sync 覆写为精确 tag，此处默认取 latest。
+    tag: "latest"
     pullPolicy: IfNotPresent
   # dsh 自身监听端口。固定为 127.0.0.1 上的该端口，仅本 Pod 内可达。
   port: 3080

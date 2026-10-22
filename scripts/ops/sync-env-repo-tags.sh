@@ -133,6 +133,7 @@ service_repository() {
     customerUI) echo "customer-ui" ;;
     adminUI) echo "admin-ui" ;;
     terminalBridge) echo "terminal-bridge" ;;
+    dsh) echo "dsh" ;;
     dbMigrate) echo "db-migrate" ;;
     *)
       echo "错误：未知服务 key：$1" >&2
