@@ -600,7 +600,7 @@ K3s 约 10-30s 后自动 reconcile，无需重启。
 ```yaml
 value: "postgresql+asyncpg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/..."
 ```
-密码含 `@`（如 `aihci@aclient2025`）→ URL 解析器以最后一个 `@` 为主机分隔符 → 用户名/密码被截断错误，认证失败。
+密码含 `@`（如 `P@ssw0rd`）→ URL 解析器以最后一个 `@` 为主机分隔符 → 用户名/密码被截断错误，认证失败。
 
 **修复：** 改为在 Helm 模板渲染时用 `urlquery` 编码密码：
 ```yaml
@@ -609,7 +609,7 @@ value: {{ printf "postgresql+asyncpg://%s:%s@postgres:5432/%s"
     (.Values.secrets.postgresPassword | urlquery)
     .Values.config.postgresDb | quote }}
 ```
-`aihci@aclient2025` → `aihci%40aclient2025`，asyncpg/SQLAlchemy 会正确解码。
+`P@ssw0rd` → `P%40ssw0rd`，asyncpg/SQLAlchemy 会正确解码。
 
 **规则：** 数据库密码、Redis 密码**禁止含** `@ : / # ? =` 等 URL 特殊字符，或必须在 Helm 模板中用 `urlquery` 编码后再拼 URL。
 
