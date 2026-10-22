@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, ref } from 'vue'
 import { Monitor } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 import { getClientId } from '@/utils/clientId'
 import ChatWindow from '@/components/ChatWindow.vue'
+import LogCollectPanel from '@/components/LogCollectPanel.vue'
 import SshConnectDialog from '@/components/SshConnectDialog.vue'
 
 const chatStore = useChatStore()
 const clientId = getClientId()
+const logCollectVisible = ref(false)
 
 // Bridge 下载地址：优先读环境变量，回退到相对路径
 // 部署时在 .env 中配置 VITE_BRIDGE_DOWNLOAD_URL 指向实际文件
@@ -93,6 +95,17 @@ function handleDownloadBridge() {
             ✅ 关闭工单
           </el-button>
 
+          <!-- 日志收集：需已有活跃工单（产物归档到工单） -->
+          <el-button
+            v-if="chatStore.hasActiveCase"
+            size="small"
+            round
+            class="log-collect-btn header-action-btn"
+            @click="logCollectVisible = true"
+          >
+            🗂 日志收集
+          </el-button>
+
           <!-- SSH终端按钮：点击先检测 Bridge -->
           <el-button
             size="small"
@@ -113,6 +126,13 @@ function handleDownloadBridge() {
 
     <!-- SSH 连接弹框（create-case / terminal-only 统一入口） -->
     <SshConnectDialog :bridge-status="chatStore.sshConnectDialogBridgeStatus" />
+
+    <!-- 日志收集抽屉：复用终端已建立的 SSH 会话执行 acli log_collect -->
+    <LogCollectPanel
+      v-if="chatStore.currentCase"
+      v-model="logCollectVisible"
+      :case-id="chatStore.currentCase.case_id"
+    />
 
     <!-- Bridge 未运行时的下载提示弹窗 -->
     <el-dialog

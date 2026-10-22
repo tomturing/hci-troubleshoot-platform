@@ -349,7 +349,7 @@ type InMessage struct {
 
 	// ── log_collect 专用字段 ──
 	// 参数在 bridge 侧二次校验并以单引号转义后拼命令：acli 插件本身不防注入。
-	LogAction  string   `json:"log_action,omitempty"`  // probe | create | progress | cancel
+	LogAction  string   `json:"log_action,omitempty"`  // probe | create | progress | cancel | stat | transfer
 	TicketNo   string   `json:"ticket_no,omitempty"`   // acli log_collect -s
 	Modules    []string `json:"modules,omitempty"`     // acli log_collect -m 枚举
 	DateFrom   string   `json:"date_from,omitempty"`   // YYYY-MM-DD

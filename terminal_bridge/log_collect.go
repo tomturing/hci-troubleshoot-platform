@@ -483,6 +483,35 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"error": errString(err), "raw_len": len(output),
 		})
 
+	case "stat":
+		// P3 编排需要先知道包大小才能 init 分片会话；只读单命令，走非 PTY 通道。
+		path, pathErr := normalizeArchivePath(msg.TransferSourcePath)
+		if pathErr != nil {
+			sendMsg(ws, OutMessage{
+				Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
+				Status: "error", ErrorType: "invalid_path", ErrorCode: ErrTransferArchiveMissing,
+				Message: pathErr.Error(), TraceID: traceID, CustomUI: cui,
+			})
+			return
+		}
+		output, exitCode, cmdErr := s.runQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(path)))
+		size, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64)
+		status, code := "ok", ""
+		if cmdErr != nil || exitCode != 0 || parseErr != nil {
+			status, code = "error", ErrTransferArchiveMissing
+		} else {
+			outcome = "ok"
+		}
+		sendMsg(ws, OutMessage{
+			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
+			Status: status, ExitCode: exitCode, ErrorCode: code,
+			LogData: map[string]any{"path": path, "size": size},
+			Message: firstNonEmpty(errString(cmdErr), errString(parseErr)), TraceID: traceID, CustomUI: cui,
+		})
+		blog("INFO", "log_collect.stat", "日志包大小探测", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"path": path, "size": size, "exit_code": exitCode, "error": errString(cmdErr),
+		})
+
 	case "transfer":
 		// 传输可能持续数十分钟，不沿用 180s 的动作超时，单独给 2 小时预算。
 		transferCtx, transferCancel := context.WithTimeout(context.Background(), logCollectTransferTimeout)
@@ -520,7 +549,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 			Status: "error", ErrorType: "invalid_action", ErrorCode: ErrPlugInvalidAction,
-			Message: "log_action 仅支持 probe / create / progress / cancel",
+			Message: "log_action 仅支持 probe / create / progress / cancel / stat / transfer",
 			TraceID: traceID, CustomUI: cui,
 		})
 	}

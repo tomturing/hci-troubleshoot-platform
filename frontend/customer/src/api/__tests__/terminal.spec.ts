@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   buildAgentExecProcessMessage,
+  buildLogCollectMessage,
   checkBridgeBeforeOpen,
   checkBridgeRunning,
   getBridgeExecWaitTimeoutMs,
@@ -215,5 +216,24 @@ describe('terminal_bridge 端口冲突自愈探测', () => {
     await expect(pending).resolves.toBe(false)
     // 失效后清缓存，回到默认地址文案
     expect(getBridgeUrl()).toBe('ws://localhost:9999')
+  })
+})
+
+describe('buildLogCollectMessage', () => {
+  it('stat 动作映射 source_path，供 bridge 探测包大小', () => {
+    const archive = '/sf/data/local/acli/tmp/data/log_collect/t.zip'
+    const msg = JSON.parse(
+      buildLogCollectMessage('case-1', 'stat', { sourcePath: archive, nodeIp: '10.0.0.1' }),
+    )
+    expect(msg.log_action).toBe('stat')
+    expect(msg.source_path).toBe(archive)
+    expect(msg.node_ip).toBe('10.0.0.1')
+  })
+
+  it('未传可选字段时不下发空值，避免 bridge 误判', () => {
+    const msg = JSON.parse(buildLogCollectMessage('case-1', 'progress'))
+    expect(msg.log_action).toBe('progress')
+    expect(msg.source_path).toBeUndefined()
+    expect(msg.node_ip).toBeUndefined()
   })
 })
