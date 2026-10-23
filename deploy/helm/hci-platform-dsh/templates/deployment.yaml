@@ -14,6 +14,12 @@ spec:
     metadata:
       labels:
         {{- include "hci.podLabels" (dict "name" "dsh" "Release" .Release "Chart" .Chart) | nindent 8 }}
+      annotations:
+        # 两个 ConfigMap 都只被读取一次（nginx.conf 走 subPath、LLM 配置由 initContainer 拷入），
+        # kubelet 不会把变更送进运行中的容器。把内容哈希挂在 Pod 模板上，
+        # 配置改动才能触发滚动重启，否则会出现"PR 合了、ArgoCD 同步了、行为没变"。
+        checksum/proxy-config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/llm-config: {{ include (print $.Template.BasePath "/configmap-llm.yaml") . | sha256sum }}
     spec:
       # DSH 具备命令执行能力，Pod 不需要访问 kube-apiserver，
       # 挂上 ServiceAccount token 只会平白增加一个可被窃取的高价值凭据。
