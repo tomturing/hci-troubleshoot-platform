@@ -84,7 +84,8 @@ class LogCollectService:
 
         task = LogCollectTask(
             case_id=payload.case_id,
-            ticket_no=payload.ticket_no,
+            # 工单号统一：schema 已强制 ticket_no == case_id，这里只是类型兜底
+            ticket_no=payload.ticket_no or payload.case_id,
             origin_node_ip=payload.origin_node_ip,
             modules=list(payload.modules),
             date_from=payload.date_from,

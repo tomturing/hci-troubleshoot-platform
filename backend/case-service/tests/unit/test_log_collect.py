@@ -21,7 +21,8 @@ from pydantic import ValidationError
 def make_payload(**overrides) -> LogCollectTaskCreate:
     data = {
         "case_id": "Q20261022001",
-        "ticket_no": "Q20261022002",
+        # 工单号统一为平台工单号：ticket_no 必须等于 case_id
+        "ticket_no": "Q20261022001",
         "origin_node_ip": "172.28.25.1",
         "modules": ["vm_suspend"],
         "date_from": date(2026, 10, 21),
@@ -88,7 +89,7 @@ class TestCreateTask:
 
         assert result is created
         task = mock_repo.create.await_args.args[0]
-        assert task.ticket_no == "Q20261022002"
+        assert task.ticket_no == "Q20261022001"
         assert task.status == "pending"
         assert task.progress == 0
         assert task.created_by == "client-1"
@@ -235,6 +236,22 @@ class TestPayloadValidation:
     def test_invalid_payloads(self, overrides):
         with pytest.raises(ValidationError):
             make_payload(**overrides)
+
+    def test_ticket_no_derived_from_case_id_when_omitted(self):
+        """工单号只有一个：未传 ticket_no 时自动取 case_id。"""
+        payload = LogCollectTaskCreate(
+            case_id="Q20261022001",
+            origin_node_ip="172.28.25.1",
+            modules=["vm_suspend"],
+            date_from=date(2026, 10, 21),
+            date_to=date(2026, 10, 22),
+        )
+        assert payload.ticket_no == "Q20261022001"
+
+    def test_ticket_no_must_equal_case_id(self):
+        """禁止两套工单号：显式传入不一致的 ticket_no 直接拒绝。"""
+        with pytest.raises(ValidationError, match="ticket_no 必须与 case_id 一致"):
+            make_payload(ticket_no="Q20261022002")
 
     def test_modules_deduplicated(self):
         payload = make_payload(modules=["network", "network", "vm_start"])

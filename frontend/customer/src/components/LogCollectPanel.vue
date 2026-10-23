@@ -89,7 +89,6 @@ let runToken = 0
 const form = reactive({
   modules: ['vm_suspend'] as LogCollectModule[],
   dateRange: [] as string[],
-  ticketNo: props.caseId,
   ips: 'all',
   // 发起节点：acli progress 只在该节点有效，后续轮询必须复用同一节点
   nodeIp: props.nodeIp || '',
@@ -243,10 +242,7 @@ async function handleStart() {
     ElMessage.warning('请选择时间范围')
     return
   }
-  if (!form.ticketNo.trim()) {
-    ElMessage.warning('请填写工单号')
-    return
-  }
+
   const nodeIp = (form.nodeIp || props.nodeIp || '').trim()
   if (!nodeIp) {
     ElMessage.warning('请填写发起节点地址（需与 SSH 终端连接的节点一致）')
@@ -286,7 +282,7 @@ async function handleStart() {
 
     const task = await logCollectApi.createTask({
       case_id: props.caseId,
-      ticket_no: form.ticketNo.trim(),
+      // 不传 ticket_no：服务端强制 ticket_no == case_id，避免出现两套工单号
       origin_node_ip: nodeIp,
       modules,
       date_from: form.dateRange[0],
@@ -303,7 +299,8 @@ async function handleStart() {
       'create',
       {
         nodeIp,
-        ticketNo: form.ticketNo.trim(),
+        // acli -s 与任务归属使用同一个平台工单号
+        ticketNo: props.caseId,
         modules,
         dateFrom: form.dateRange[0],
         dateTo: form.dateRange[1],
@@ -509,23 +506,12 @@ function sleep(ms: number) {
 
 watch(visible, (open) => {
   if (!open) return
-  form.ticketNo = props.caseId
   if (form.dateRange.length === 0) {
     const today = new Date()
     const from = new Date(today.getTime() - 86400000)
     form.dateRange = [formatDate(from), formatDate(today)]
   }
 })
-
-// 面板打开期间人工更换归档工单：同步 acli -s 的工单号。
-// 采集中不允许更换（"更换"按钮已禁用），避免命令与任务归属指向不同工单。
-watch(
-  () => props.caseId,
-  (caseId) => {
-    if (!caseId) return
-    form.ticketNo = caseId
-  },
-)
 
 function disableFutureDate(value: Date): boolean {
   return value.getTime() > Date.now()
@@ -593,10 +579,6 @@ onBeforeUnmount(() => {
             :disabled-date="disableFutureDate"
           />
           <div class="lc-hint">日志按天归档，将收集所选日期全天日志（最多 30 天）</div>
-        </el-form-item>
-        <el-form-item label="工单号">
-          <el-input v-model="form.ticketNo" maxlength="32" show-word-limit />
-          <div class="lc-hint">作为 acli -s 与最终压缩包名，将归档到日志服务器</div>
         </el-form-item>
         <el-form-item label="发起节点">
           <el-input v-model="form.nodeIp" placeholder="与 SSH 终端连接的 HCI 节点 IP" />

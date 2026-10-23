@@ -36,7 +36,8 @@ export type RelayStatus = 'none' | 'pending' | 'running' | 'success' | 'failed'
 
 export interface LogCollectTaskCreate {
   case_id: string
-  ticket_no: string
+  /** 工单号只有一套：省略时服务端自动取 case_id；传了不一致的值会被 422 拒绝 */
+  ticket_no?: string
   origin_node_ip: string
   modules: LogCollectModule[]
   date_from: string

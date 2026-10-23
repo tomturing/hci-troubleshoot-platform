@@ -53,9 +53,10 @@ class LogCollectTaskCreate(BaseModel):
     """创建任务请求。"""
 
     case_id: str = Field(min_length=1, max_length=20, description="关联工单")
-    ticket_no: str = Field(
+    ticket_no: str | None = Field(
+        default=None,
         pattern=r"^[A-Za-z0-9_-]{1,32}$",
-        description="ICare 单号，作为 acli log_collect -s，并成为产物名",
+        description="工单号；必须与 case_id 一致（不传则自动取 case_id）",
     )
     origin_node_ip: str = Field(min_length=1, max_length=64, description="发起采集的 HCI 节点")
     modules: list[LogCollectModule] = Field(min_length=1, description="收集专项")
@@ -125,6 +126,20 @@ class LogCollectTaskCreate(BaseModel):
             raise ValueError("结束日期不能早于开始日期")
         if (self.date_to - self.date_from).days + 1 > MAX_DATE_RANGE_DAYS:
             raise ValueError(f"收集范围不能超过 {MAX_DATE_RANGE_DAYS} 天")
+        return self
+
+    @model_validator(mode="after")
+    def _unify_ticket_no(self) -> LogCollectTaskCreate:
+        """工单号只保留一个：ticket_no 必须等于 case_id。
+
+        历史契约允许 ticket_no 填写外部 ICare 单号，导致 acli ``-s`` / 产物名与平台
+        归属工单不一致，排障时无法互相印证。统一后：未传由 case_id 派生；显式传入
+        不一致的值直接 422，避免静默改写成调用方未预期的号。
+        """
+        if self.ticket_no is None:
+            self.ticket_no = self.case_id
+        elif self.ticket_no != self.case_id:
+            raise ValueError("ticket_no 必须与 case_id 一致（工单号统一为平台工单号）")
         return self
 
 

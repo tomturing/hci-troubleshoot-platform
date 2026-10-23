@@ -17,6 +17,7 @@ const { mockStore } = vi.hoisted(() => ({
     logCollectCaseDialogVisible: true,
     logCollectCaseId: null as string | null,
     logCollectCaseLoading: false,
+    existingCases: [] as any[],
     confirmLogCollectCase: vi.fn(),
     closeLogCollectCaseDialog: vi.fn(),
   },
@@ -72,6 +73,7 @@ describe('LogCollectCaseDialog', () => {
     mockStore.confirmLogCollectCase.mockReset()
     mockStore.closeLogCollectCaseDialog.mockReset()
     mockStore.logCollectCaseLoading = false
+    mockStore.existingCases = []
   })
 
   it('格式非法时本地拦截，不调用服务端校验', async () => {
@@ -95,6 +97,22 @@ describe('LogCollectCaseDialog', () => {
 
     expect(mockStore.confirmLogCollectCase).toHaveBeenCalledWith('Q2026102300001')
     expect(wrapper.text()).toContain('工单不存在或不属于当前客户端')
+    wrapper.unmount()
+  })
+
+  it('列出当前客户端名下工单，点击即填入输入框', async () => {
+    mockStore.existingCases = [
+      { case_id: 'Q2026102300001', title: '虚拟机挂起', status: 'closed' },
+      { case_id: 'Q2026102300002', title: '存储卡慢', status: 'in_progress' },
+    ]
+    const wrapper = await mountDialog()
+
+    expect(wrapper.text()).toContain('或从我的工单中选择')
+    expect(wrapper.findAll('.lc-case-item')).toHaveLength(2)
+    expect(wrapper.text()).toContain('已关闭')
+
+    await wrapper.findAll('.lc-case-item')[1].trigger('click')
+    expect((wrapper.find('input').element as HTMLInputElement).value).toBe('Q2026102300002')
     wrapper.unmount()
   })
 
