@@ -176,6 +176,17 @@ class LogCollectTaskResponse(BaseModel):
     case_id: str
     origin_node_ip: str
     modules: list[str]
+
+    @field_validator("origin_node_ip", mode="before")
+    @classmethod
+    def _coerce_inet(cls, value):
+        """INET 列经 asyncpg 返回 IPv4Address/IPv6Address，响应契约是字符串。
+
+        不转会导致 `ResponseValidationError`（500）：Pydantic 严格模式下
+        `IPv4Address` 不是 str。这里统一在序列化前转字符串。
+        """
+        return str(value) if value is not None else value
+
     date_from: date
     date_to: date
     ips: list[str]
