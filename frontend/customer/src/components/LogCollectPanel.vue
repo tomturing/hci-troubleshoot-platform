@@ -813,7 +813,14 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <el-drawer v-model="visible" title="日志收集" size="720px" :close-on-click-modal="false">
+  <!-- direction="ltr"：抽屉从左侧滑出（默认 rtl 从右侧），与聊天区在右、操作区在左的阅读习惯一致 -->
+  <el-drawer
+    v-model="visible"
+    title="日志收集"
+    direction="ltr"
+    size="720px"
+    :close-on-click-modal="false"
+  >
     <div class="lc-body">
       <div class="lc-case-bar">
         <span class="lc-case-label">归档工单</span>

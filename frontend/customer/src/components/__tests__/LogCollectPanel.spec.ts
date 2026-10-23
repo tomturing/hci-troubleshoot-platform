@@ -141,6 +141,13 @@ describe('LogCollectPanel', () => {
     expect(probe.node_ip).toBe('172.28.25.1')
   })
 
+  it('抽屉从左侧弹出（direction=ltr）', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    expect(wrapper.html()).toContain('direction="ltr"')
+  })
+
   it('故障场景使用勾选框全量展示，不渲染下拉框', async () => {
     const wrapper = mountPanel()
     await flushPromises()
