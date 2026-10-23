@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
-import { Monitor } from '@element-plus/icons-vue'
+import { FolderOpened, Monitor } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 import { getClientId } from '@/utils/clientId'
 import ChatWindow from '@/components/ChatWindow.vue'
@@ -108,7 +108,8 @@ function handleDownloadBridge() {
             class="log-collect-btn header-action-btn"
             @click="chatStore.openLogCollect()"
           >
-            🗂 日志收集
+            <el-icon><FolderOpened /></el-icon>
+            日志收集
           </el-button>
 
           <!-- SSH终端按钮：点击先检测 Bridge -->
