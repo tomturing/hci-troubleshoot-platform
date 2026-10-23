@@ -1,0 +1,19 @@
+[project]
+name = "hci-ticket-sync"
+version = "0.1.0"
+description = "HCI 工单日志同步与解压服务（宿主机常驻）"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+ticket-sync = "app.cli:main"
+
+# S1 阶段不引入第三方依赖：FastAPI / uvicorn 留到 S2 再加快照。
+# 这样 uv sync 只需建 venv，离线环境也能跑。
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
