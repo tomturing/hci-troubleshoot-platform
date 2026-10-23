@@ -157,6 +157,32 @@ const selectedHosts = computed<string[]>({
   },
 })
 
+/**
+ * 目标主机勾选框的取值。
+ *
+ * 第一性原理：`all` 与"空数组"都必须表现为「全部勾选」，否则用户看到一屏未勾选的
+ * 主机，会以为一台都不采；反向也一致——勾满即回写 `all`，避免把 20 台 IP 拼成长串。
+ * 取消到 0 台时回写 `all`：后端契约里"空选择"= 全部，UI 不允许出现空选择歧义。
+ */
+const hostChecked = computed<string[]>({
+  get() {
+    if (!hostOptions.value.length) return []
+    const picked = selectedHosts.value
+    return picked.length ? picked : hostOptions.value.map((host) => host.ip)
+  },
+  set(value: string[]) {
+    if (!value.length) {
+      form.ips = 'all'
+      return
+    }
+    form.ips = value.length === hostOptions.value.length ? 'all' : value.join(',')
+  },
+})
+
+const allHostsChecked = computed(
+  () => hostOptions.value.length > 0 && hostChecked.value.length === hostOptions.value.length,
+)
+
 const catalogSourceText = computed(() => {
   if (prepareState.value === 'probing') return '正在从集群读取场景目录…'
   if (!probeResult.value) return '尚未读取集群目录，当前展示平台内置项'
@@ -717,22 +743,29 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-watch(visible, (open) => {
-  if (!open) return
-  if (form.dateRange.length === 0) {
-    const today = new Date()
-    const from = new Date(today.getTime() - 86400000)
-    form.dateRange = [formatDate(from), formatDate(today)]
-  }
-  // 打开即准备：把架构/acli/目录/节点清单先读回来，用户一进来就能看见可选项。
-  if (!nodeIpReady.value) {
-    prepareState.value = 'idle'
-    return
-  }
-  if (prepareState.value !== 'ready' && prepareState.value !== 'probing') {
-    void prepare({ silent: true })
-  }
-})
+// immediate 必须为 true：App.vue 用 v-if="logCollectCaseId" 挂载本组件，
+// 而 logCollectCaseId 与 logCollectVisible 在同一 tick 赋值，组件"带着 visible=true
+// 首次挂载"；非 immediate 的 watcher 看不到初始值，探测请求永远不会发出。
+watch(
+  visible,
+  (open) => {
+    if (!open) return
+    if (form.dateRange.length === 0) {
+      const today = new Date()
+      const from = new Date(today.getTime() - 86400000)
+      form.dateRange = [formatDate(from), formatDate(today)]
+    }
+    // 打开即准备：把架构/acli/目录/节点清单先读回来，用户一进来就能看见可选项。
+    if (!nodeIpReady.value) {
+      prepareState.value = 'idle'
+      return
+    }
+    if (prepareState.value !== 'ready' && prepareState.value !== 'probing') {
+      void prepare({ silent: true })
+    }
+  },
+  { immediate: true },
+)
 
 // 发起节点变了，上一轮的探测结论（目录、节点清单、P1/P3 判定）全部失效，必须重探。
 let nodeIpTimer: ReturnType<typeof setTimeout> | null = null
@@ -847,16 +880,21 @@ onBeforeUnmount(() => {
         </el-button>
       </el-alert>
 
-      <el-form :model="form" label-width="90px" :disabled="running || prepareState === 'probing'">
+      <!-- 探测期间只锁"提交"，不锁表单：用户可以先看清可填项，不必等探测结束 -->
+      <el-form :model="form" label-width="90px" :disabled="running">
         <el-form-item label="故障场景">
-          <el-select v-model="form.modules" multiple filterable collapse-tags placeholder="选择收集专项">
-            <el-option
+          <!-- 全量平铺勾选：目录最多十余项，一次看全比"点开下拉再逐项找"少两次交互 -->
+          <el-checkbox-group v-model="form.modules" class="lc-checkbox-group lc-module-group">
+            <el-checkbox
               v-for="item in moduleOptions"
               :key="item.value"
-              :label="item.label"
               :value="item.value"
-            />
-          </el-select>
+              border
+              size="small"
+            >
+              {{ item.label }}
+            </el-checkbox>
+          </el-checkbox-group>
           <div class="lc-hint">
             {{ catalogSourceText }}
             <span v-if="probeResult?.catalog_note">；{{ probeResult.catalog_note }}</span>
@@ -879,27 +917,30 @@ onBeforeUnmount(() => {
         </el-form-item>
         <el-form-item label="目标主机">
           <!-- 有集群清单就必须用清单：手填 IP 是唯一允许的降级，不是默认交互 -->
-          <el-select
-            v-if="hostOptions.length"
-            v-model="selectedHosts"
-            multiple
-            filterable
-            collapse-tags
-            class="lc-host-select"
-            placeholder="不选表示全部在线节点"
-          >
-            <el-option
-              v-for="host in hostOptions"
-              :key="host.ip"
-              :label="hostLabel(host)"
-              :value="host.ip"
-            />
-          </el-select>
+          <template v-if="hostOptions.length">
+            <div class="lc-host-head">
+              <span class="lc-host-count">共 {{ hostOptions.length }} 台在线主机</span>
+              <span class="lc-host-state">
+                {{ allHostsChecked ? '已全选（等价 all）' : `已选 ${hostChecked.length} 台` }}
+              </span>
+            </div>
+            <el-checkbox-group v-model="hostChecked" class="lc-checkbox-group lc-host-group">
+              <el-checkbox
+                v-for="host in hostOptions"
+                :key="host.ip"
+                :value="host.ip"
+                border
+                size="small"
+              >
+                {{ hostLabel(host) }}
+              </el-checkbox>
+            </el-checkbox-group>
+          </template>
           <el-input v-else v-model="form.ips" placeholder="all 表示全部在线节点，或逗号分隔 IP" />
           <div class="lc-hint">
             {{
               hostOptions.length
-                ? '默认全部在线节点；只选部分主机时按所选范围收集'
+                ? '不勾选任何主机 = 全部在线节点；勾选全部同样等价于 all'
                 : '未获取到节点清单，请按 acli -i 格式手填 IP'
             }}
           </div>
@@ -1032,7 +1073,31 @@ onBeforeUnmount(() => {
 .lc-prepare {
   margin-bottom: 12px;
 }
-.lc-host-select {
+/* 勾选组：全量平铺、自动换行；长标签（IP+名称+主控）允许折行，不再被下拉宽度截断 */
+.lc-checkbox-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   width: 100%;
+}
+.lc-checkbox-group :deep(.el-checkbox) {
+  margin-right: 0;
+  height: auto;
+  min-height: 24px;
+  padding: 2px 10px;
+}
+.lc-checkbox-group :deep(.el-checkbox__label) {
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+  word-break: break-all;
+}
+.lc-host-head {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.5;
 }
 </style>

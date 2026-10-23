@@ -372,3 +372,36 @@ func TestParseLogCollectNodeListDegrade(t *testing.T) {
 		t.Fatalf("应去重并过滤非法 IP，实际：%+v", hosts)
 	}
 }
+
+// TestSessionByNodeIP 覆盖"会话键含工单号、采集按节点复用"的回退规则。
+// 现场问题：用户在 SSH 终端或旧工单下登录过（键为 terminal-only@IP / 旧工单@IP），
+// 换到新工单采集时精确键失配，直接报 session_missing（LC-ENV-006）；
+// 而界面此时显示"已连接"，自相矛盾。
+func TestSessionByNodeIP(t *testing.T) {
+	target := &SSHSession{}
+	prefixTrap := &SSHSession{}
+	other := &SSHSession{}
+	bridge := &Bridge{sessions: map[string]*SSHSession{
+		"terminal-only@172.28.25.1":     target,
+		"Q2026101401684@172.28.25.11":   prefixTrap, // 与前缀相同的另一台主机，不得被误命中
+		"Q2026101401684@172.28.25.20":   other,
+	}}
+
+	got, key := bridge.sessionByNodeIP("172.28.25.1")
+	if got != target {
+		t.Fatalf("应按节点 IP 复用会话，实际 got=%v key=%s", got, key)
+	}
+	if key != "terminal-only@172.28.25.1" {
+		t.Fatalf("应返回命中的原始键，实际：%s", key)
+	}
+
+	if got, _ := bridge.sessionByNodeIP("172.28.25.11"); got != prefixTrap {
+		t.Fatal("前缀相同的主机必须精确匹配")
+	}
+	if got, _ := bridge.sessionByNodeIP("172.28.25.99"); got != nil {
+		t.Fatal("不存在的节点必须返回 nil，由调用方报 session_missing")
+	}
+	if got, _ := bridge.sessionByNodeIP("  "); got != nil {
+		t.Fatal("空节点不得命中任何会话")
+	}
+}

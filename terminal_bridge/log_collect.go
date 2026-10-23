@@ -539,6 +539,17 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 	if s == nil && msg.CaseID != "" {
 		s = b.get(sessionKey(msg.CaseID, ""))
 	}
+	// 回退：会话属于「操作者 + 节点」，不随工单变化。
+	// 精确键失配（例如会话是在 SSH 终端/旧工单下建立的）时按节点 IP 复用，
+	// 避免"界面显示已连接、探测却报 LC-ENV-006"的自相矛盾。
+	if s == nil {
+		if fallback, fallbackKey := b.sessionByNodeIP(msg.NodeIP); fallback != nil {
+			s, key = fallback, fallbackKey
+			blog("INFO", "log_collect.session_fallback", "日志收集复用同节点其他工单的 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"log_action": msg.LogAction, "session_key": fallbackKey,
+			})
+		}
+	}
 	if s == nil {
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: msg.LogAction,

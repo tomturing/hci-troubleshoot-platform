@@ -3906,6 +3906,29 @@ func (b *Bridge) get(key string) *SSHSession {
 	return b.sessions[key]
 }
 
+// sessionByNodeIP 在同一 bridge 实例内按节点 IP 查找任意工单下的会话。
+//
+// 为什么需要：SSH 会话的真实归属是「操作者 + 节点」，工单号只决定采集结果归档到哪张单。
+// 历史实现只按 caseID@nodeIP 精确匹配，于是"在 SSH 终端或旧工单里登录过、换到新工单再采集"
+// 会直接报 session_missing（LC-ENV-006），用户已经看到绿色"已连接"却无法采集。
+// 这里仅做读取回退，不改变会话创建语义；bridge 是单用户本地进程，不存在跨用户越权。
+func (b *Bridge) sessionByNodeIP(nodeIP string) (*SSHSession, string) {
+	nodeIP = strings.TrimSpace(nodeIP)
+	if nodeIP == "" {
+		return nil, ""
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	// 精确后缀匹配，避免 10.1.1.1 命中 10.1.1.11 这类前缀误判
+	suffix := "@" + nodeIP
+	for key, session := range b.sessions {
+		if session != nil && strings.HasSuffix(key, suffix) {
+			return session, key
+		}
+	}
+	return nil, ""
+}
+
 func (b *Bridge) set(key string, s *SSHSession) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

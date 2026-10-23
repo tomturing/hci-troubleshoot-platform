@@ -136,7 +136,11 @@ async function submit() {
     <!-- SSH 登录：与 SSH 终端共用同一模板（SshConnectSection），强依赖先登录 -->
     <div class="lc-ssh-block">
       <p class="lc-ssh-title">登录 HCI（日志收集依赖 SSH 会话）</p>
-      <SshConnectSection :bridge-status="bridgeStatus" mode="inline" />
+      <!--
+        case-id 必须传：bridge 的会话键是 caseID@nodeIP。不传时 connectSSH 会退化成
+        "terminal-only"，而日志收集面板按工单号取会话 → 必然 session_missing。
+      -->
+      <SshConnectSection :bridge-status="bridgeStatus" :case-id="caseId" mode="inline" />
       <p v-if="!sshConnected" class="lc-ssh-hint">登录成功后才能提交；发起节点会自动填充。</p>
     </div>
 
