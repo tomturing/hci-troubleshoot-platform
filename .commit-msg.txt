@@ -1,0 +1,20 @@
+fix(ticket-sync): 内层归档与同名文件冲突导致解压中断
+
+真实工单 Q2026052801304 暴露：HCI 会把日志原文件和它的压缩版一起打包，
+sf/log/blackbox/20260528/ 下同时存在 LOG_cgroup.txt 与 LOG_cgroup.txt.zip。
+原实现去掉 .zip 后缀后解压到 LOG_cgroup.txt/，与已有文件同名，mkdir 抛
+FileExistsError，整个任务在第 3 层中断。
+
+修复：
+- _target_for 检测目标被文件占用时退让为 <name>.d/，绝不覆盖原始日志；
+  若 .d 仍被文件占用则继续编号
+- _extract_any 把 mkdir 的 OSError 转为 EXTRACT_FAILED，不再抛裸异常
+- 新增 2 例测试覆盖冲突退让与目录复用
+- 设计文档补充目录契约与解压策略中的同名处理
+
+实测 Q2026052801304（52.6 MB / 4323 文件）：
+- depth=3，8 个归档，557.6 MiB，展开比 10.9x，耗时 6.0s
+- 3 处同名冲突均正确退让（LOG_cgroup.txt.d、LOG_interrupts.txt.d x2）
+- 原始 LOG_cgroup.txt（394 KB）内容未变
+
+[env:staging:aihci][agent:Qoder]

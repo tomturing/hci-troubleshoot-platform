@@ -122,16 +122,42 @@ def _target_for(archive: Path) -> Path:
 
     sp_10.46.16.71.tgz          -> sp_10.46.16.71/
     cmd-output/raid.tar.gz      -> cmd-output/raid/
+    LOG_cgroup.txt.zip          -> LOG_cgroup.txt.d/   （同名文件已存在时）
+
+    第三种情况在真实工单里普遍存在：HCI 会把日志原文件和它的压缩版一起打包，
+    LOG_cgroup.txt 与 LOG_cgroup.txt.zip 并存。若直接解到 LOG_cgroup.txt/
+    会与同名文件冲突，因此退让为 .d 目录，绝不覆盖原始日志。
     """
     name = archive.name
+    base = archive
     for suffix in ARCHIVE_SUFFIXES:
         if name.lower().endswith(suffix):
-            return archive.with_name(name[: -len(suffix)])
-    return archive.with_suffix("")
+            base = archive.with_name(name[: -len(suffix)])
+            break
+
+    if not base.exists() or base.is_dir():
+        return base
+
+    # base 已被同名文件占用：加 .d 后缀。若 .d 也被文件占用则继续编号。
+    candidate = base.with_name(base.name + ".d")
+    index = 2
+    while candidate.exists() and not candidate.is_dir():
+        candidate = base.with_name(f"{base.name}.d{index}")
+        index += 1
+    logger.warning("归档目录与已有文件同名，改用 %s", candidate.name)
+    return candidate
 
 
 async def _extract_any(archive: Path, target: Path, password: str) -> None:
-    target.mkdir(parents=True, exist_ok=True)
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # 父路径被文件占位等情况：归档结构异常，不是可恢复错误。
+        raise TicketError(
+            ErrorCode.EXTRACT_FAILED,
+            f"无法创建解压目录 {target.name}",
+            f"path={target} error={exc}",
+        ) from exc
     if archive.name.lower().endswith(".zip"):
         await _unzip(archive, target, password)
     else:

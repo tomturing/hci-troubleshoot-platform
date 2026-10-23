@@ -31,6 +31,31 @@ class TargetForTest(unittest.TestCase):
             "父目录必须保留，否则多层归档会被平铺到一起",
         )
 
+    def test_uses_d_suffix_when_same_name_file_exists(self) -> None:
+        # 真实工单里 LOG_cgroup.txt 与 LOG_cgroup.txt.zip 并存，
+        # 去掉 .zip 后会与原始日志文件同名，必须退让而不是覆盖
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            original = root / "LOG_cgroup.txt"
+            original.write_text("original-log", encoding="utf-8")
+            archive = root / "LOG_cgroup.txt.zip"
+            archive.write_bytes(b"x")
+
+            target = _target_for(archive)
+
+            self.assertEqual(target.name, "LOG_cgroup.txt.d")
+            self.assertEqual(original.read_text(encoding="utf-8"), "original-log")
+
+    def test_reuses_existing_directory(self) -> None:
+        # 目录已存在说明是同一归档的重复处理，直接复用，不加后缀
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "sp_10.0.0.1").mkdir()
+            archive = root / "sp_10.0.0.1.tgz"
+            archive.write_bytes(b"x")
+
+            self.assertEqual(_target_for(archive).name, "sp_10.0.0.1")
+
 
 class FindArchivesTest(unittest.TestCase):
     def test_ignores_symlinked_directory(self) -> None:
