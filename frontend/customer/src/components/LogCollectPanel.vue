@@ -509,7 +509,9 @@ function sendAndWait(
       resolve(data)
     })
     if (action === 'acli_sync') {
-      ws.send(buildAcliSyncMessage(props.caseId, { force: false, minDiskMb: 100 }))
+      // 与 log_collect 同一锚点：不带 node_ip 时 bridge 会去找键为 caseID 的会话，
+      // 而真实会话键是 caseID@nodeIP → 必然 session_missing（安装链路根本不会启动）。
+      ws.send(buildAcliSyncMessage(props.caseId, { force: false, minDiskMb: 100, nodeIp: nodeIp.value }))
     } else {
       // 所有动作一律锚定会话主机：nodeIp 是派生值，不存在"表单里另填一个"的可能，
       // 也就不会再出现写成空串（bridge 落到默认会话）或写成不存在节点（session_missing）。

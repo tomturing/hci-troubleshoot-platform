@@ -2505,13 +2505,16 @@ export const useChatStore = defineStore('chat', () => {
       return null
     }
     const caseId = sshCurrentConfig.value?.caseId || 'terminal-global'
-    devLog('acli', '开始后台检测 acli 状态...', { caseId })
+    // node_ip 必传：会话键是 caseID@nodeIP，缺了它 bridge 只能找键为 caseID 的会话，
+    // 必然 session_missing（历史上 acli 因此从未被自动安装）。
+    const nodeIp = sshCurrentConfig.value?.host
+    devLog('acli', '开始后台检测 acli 状态...', { caseId, nodeIp })
     try {
       const result = await ensureAcliReady(
         sshWebSocket.value,
         caseId,
         (p) => devLog('acli', p.text),
-        options,
+        { ...options, nodeIp },
       )
       return result
     } catch (e: any) {

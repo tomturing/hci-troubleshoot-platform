@@ -1118,3 +1118,38 @@ func TestAcliSyncMessageSerialization(t *testing.T) {
 		t.Fatalf("decoded out message mismatch: %#v", outDecoded)
 	}
 }
+
+// acli_sync 曾因为不带 node_ip 而恒定 session_missing：会话键是 caseID@nodeIP，
+// 而旧逻辑只找键为 caseID 的会话。这里锁定三层兜底与"不猜节点"的边界。
+func TestResolveAcliSyncSessionFallsBackToOnlySession(t *testing.T) {
+	b := &Bridge{sessions: map[string]*SSHSession{
+		"Q2026101401684@172.28.24.129": {address: "172.28.24.129:22"},
+	}}
+
+	// 1) 带 node_ip：精确命中
+	if s, key := b.resolveAcliSyncSession(InMessage{CaseID: "Q2026101401684", NodeIP: "172.28.24.129"}); s == nil {
+		t.Fatalf("node_ip 精确匹配失败")
+	} else if key != "Q2026101401684@172.28.24.129" {
+		t.Fatalf("精确匹配键不符: %s", key)
+	}
+
+	// 2) 不带 node_ip：线上故障场景，必须兜底到该工单唯一会话
+	s, key := b.resolveAcliSyncSession(InMessage{CaseID: "Q2026101401684"})
+	if s == nil {
+		t.Fatalf("缺少 node_ip 时未兜底到唯一会话")
+	}
+	if key != "Q2026101401684@172.28.24.129" {
+		t.Fatalf("兜底会话键不符: %s", key)
+	}
+
+	// 3) 同工单两条会话且不带 node_ip：宁可不装，也不猜节点
+	b.sessions["Q2026101401684@172.28.24.130"] = &SSHSession{address: "172.28.24.130:22"}
+	if s, _ := b.resolveAcliSyncSession(InMessage{CaseID: "Q2026101401684"}); s != nil {
+		t.Fatalf("多会话时不应猜测节点")
+	}
+
+	// 4) 不串工单
+	if s, _ := b.resolveAcliSyncSession(InMessage{CaseID: "Q2026101499999"}); s != nil {
+		t.Fatalf("不应命中其它工单的会话")
+	}
+}

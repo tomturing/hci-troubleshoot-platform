@@ -321,6 +321,14 @@ export interface AcliSyncOptions {
   force?: boolean
   minDiskMb?: number
   acliUrl?: string
+  /**
+   * 目标节点 IP（会话键 `caseID@nodeIP` 的后半段）。
+   *
+   * 必须传：bridge 的 `resolveSession` 在 node_ip 为空时只会去找键为 `caseID` 的会话，
+   * 而 ssh_connect 落库的键是 `caseID@IP`，于是 acli_sync 必然 `session_missing`——
+   * 表现为「环境没有 acli 却永远不安装、也看不到任何下载日志」。
+   */
+  nodeIp?: string
 }
 
 /**
@@ -333,6 +341,7 @@ export function buildAcliSyncMessage(caseId: string, options?: AcliSyncOptions):
     force: options?.force || false,
     min_disk_mb: options?.minDiskMb || 100,
     acli_url: options?.acliUrl || undefined,
+    node_ip: options?.nodeIp || undefined,
   })
 }
 

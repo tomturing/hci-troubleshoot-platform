@@ -2844,10 +2844,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 	}
 	msg.TraceID = traceID
 
-	s, key := b.resolveSession(msg)
-	if s == nil && msg.CaseID != "" {
-		s = b.get(sessionKey(msg.CaseID, ""))
-	}
+	s, key := b.resolveAcliSyncSession(msg)
 	if s == nil {
 		sendMsg(ws, OutMessage{
 			Type:    "acli_sync_result",
@@ -4022,6 +4019,60 @@ func (b *Bridge) resolveSession(msg InMessage) (*SSHSession, string) {
 		return s, defaultKey
 	}
 	return nil, ""
+}
+
+// resolveAcliSyncSession 解析 acli 安装要落到哪条 SSH 会话。
+//
+// 兜底顺序与 log_collect 保持一致：精确键 → 按 node_ip 后缀 → 按会话实际地址 →
+// 本工单唯一会话。
+//
+// 为什么必须兜底：历史上这里只做「键为 caseID」的默认匹配，而 ssh_connect 落库的键是
+// `caseID@nodeIP`，只要调用方没带 node_ip 就恒定 session_missing——表现为
+// 「环境明明没装 acli，却从来没有下载/安装日志」，链路根本没启动过。
+func (b *Bridge) resolveAcliSyncSession(msg InMessage) (*SSHSession, string) {
+	if s, key := b.resolveSession(msg); s != nil {
+		return s, key
+	}
+	if msg.NodeIP != "" {
+		if s, key := b.sessionByNodeIP(msg.NodeIP); s != nil {
+			log.Printf("[Bridge] resolveAcliSyncSession: 按节点 IP 复用会话 key=%s", key)
+			return s, key
+		}
+		if s, key := b.sessionByAddressHost(msg.NodeIP); s != nil {
+			log.Printf("[Bridge] resolveAcliSyncSession: 按会话实际地址复用 key=%s", key)
+			return s, key
+		}
+	}
+	if s, key := b.onlySessionForCase(msg.CaseID); s != nil {
+		log.Printf("[Bridge] resolveAcliSyncSession: 工单唯一会话兜底 key=%s", key)
+		return s, key
+	}
+	return nil, ""
+}
+
+// onlySessionForCase 返回该工单唯一的 SSH 会话；有多条时返回 nil（宁可不装，也不猜节点）。
+func (b *Bridge) onlySessionForCase(caseID string) (*SSHSession, string) {
+	caseID = strings.TrimSpace(caseID)
+	if caseID == "" {
+		return nil, ""
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var (
+		found    *SSHSession
+		foundKey string
+	)
+	prefix := caseID + "@"
+	for key, session := range b.sessions {
+		if session == nil || (key != caseID && !strings.HasPrefix(key, prefix)) {
+			continue
+		}
+		if found != nil {
+			return nil, ""
+		}
+		found, foundKey = session, key
+	}
+	return found, foundKey
 }
 
 // autoConnectNode 使用已保存的认证信息自动连接新节点

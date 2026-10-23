@@ -20,6 +20,13 @@ describe('acliManager', () => {
     expect(msg.acli_url).toBe('http://custom/url')
   })
 
+  // 回归：bridge 的会话键是 caseID@nodeIP，消息里缺 node_ip 时旧逻辑只找键为 caseID 的会话，
+  // 结果恒定 session_missing —— 未装 acli 的环境从来没有下载/安装日志。
+  it('带上 node_ip，避免 bridge 解析不到 caseID@nodeIP 会话', () => {
+    const msg = JSON.parse(buildAcliSyncMessage('case-300', { nodeIp: '172.28.24.129' }))
+    expect(msg.node_ip).toBe('172.28.24.129')
+  })
+
   it('收到 acli_sync_result(up_to_date) 时成功 resolve 并报告日志', async () => {
     const listeners: Record<string, Function[]> = {}
     const mockSocket = {
