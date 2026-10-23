@@ -151,6 +151,33 @@ customerLogs:
   # ⚠️ 单节点前提：hostPath 与当前节点绑定。集群扩容到多节点后，
   # 必须改为共享存储或配合节点亲和，否则 Pod 被调度到其他节点将读不到日志。
 
+# ======================== 工单日志同步 ======================================
+# 「输入工单号 → 从 0.2 同步 → 递归解压 → 设为工作区」的产物目录。
+# 刻意用独立 hostPath，而不是复用下面的 workspace(emptyDir 5Gi)：
+#   - 工单解到叶子后体积可达压缩包的 20 倍（实测 7MB→139.8MB），
+#     5Gi 会被瞬间写满，而 sizeLimit 触顶会让 kubelet 驱逐 Pod；
+#   - /sf/log 是只读且属主为 support，既不能写，写坏还会断掉日志回收链路。
+# ⚠️ 宿主机必须先预置属主：install -d -m 0750 -o 1000 -g 1000 /sf/tickets
+tickets:
+  enabled: true
+  hostPath: /sf/tickets
+  mountPath: /data/tickets
+  # 传输实现：http（0.2 只读静态服务，推荐）/ ssh（退路）/ local（测试）
+  syncer: http
+  sourceUrl: http://192.168.0.2:8081
+  # 容量护栏（字节）：单工单上限 20GiB、展开比上界 20x、
+  # 单工单解压上限 400GiB、剩余红线 60GiB、本地总量上限 400GiB。
+  maxTicketBytes: 21474836480
+  expansionFactor: 20
+  maxExtractBytes: 429496729600
+  minFreeBytes: 64424509440
+  maxTotalBytes: 429496729600
+  maxFiles: 50000
+  maxDepth: 4
+  keepTickets: 3
+  # zip 密码走 Secret（key: defaultPassword），不写进 values。
+  passwordSecretName: dsh-ticket-archive
+
 # ======================== 分析工作区 =========================================
 # DSH 解压/分析日志压缩包时的临时可写空间，随 Pod 生命周期释放。
 workspace:

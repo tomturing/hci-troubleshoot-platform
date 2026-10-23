@@ -1,0 +1,3949 @@
+diff --git a/package.json b/package.json
+index a5e45dbf..6ab1bddd 100644
+--- a/package.json
++++ b/package.json
+@@ -59,6 +59,9 @@
+     "duplication": "jscpd --config .jscpd.json packages scripts",
+     "test": "pnpm run build:native-system && vitest run",
+     "test:coverage": "pnpm run build:native-system && vitest run --coverage",
++    "test:ticket": "vitest run packages/api/ticket-sync/tests",
++    "test:ticket:watch": "vitest packages/api/ticket-sync/tests",
++    "verify:ticket-ui": "node scripts/verify-ticket-ui.mjs",
+     "build:native-system": "tsx native/system/scripts/build.ts --host-addon-only",
+     "test:coverage:partitioned": "tsx scripts/run-coverage-partitions.ts",
+     "test:e2e": "vitest run --config vitest.e2e.config.ts",
+diff --git a/packages/api/remotes/package.json b/packages/api/remotes/package.json
+index c0ae5bdf..c824bd9f 100644
+--- a/packages/api/remotes/package.json
++++ b/packages/api/remotes/package.json
+@@ -67,6 +67,7 @@
+     "@deepseek-ai/dsh-api-session-controller": "workspace:*",
+     "@deepseek-ai/dsh-api-settings-controller": "workspace:*",
+     "@deepseek-ai/dsh-api-workspace-controller": "workspace:*",
++    "@deepseek-ai/dsh-api-ticket-sync": "workspace:*",
+     "@deepseek-ai/dsh-api-workspace-files": "workspace:*",
+     "@deepseek-ai/dsh-client-connection": "workspace:*",
+     "@deepseek-ai/dsh-client-file-upload": "workspace:*",
+diff --git a/packages/api/remotes/src/client/index.ts b/packages/api/remotes/src/client/index.ts
+index 90fc6b7f..d789c4d5 100644
+--- a/packages/api/remotes/src/client/index.ts
++++ b/packages/api/remotes/src/client/index.ts
+@@ -26,6 +26,7 @@ import subagentsRemote from '@deepseek-ai/dsh-subagent/remote'
+ import sessionRemote from '@deepseek-ai/dsh-api-session-controller/remote'
+ import jobRemote from '@deepseek-ai/dsh-api-job-controller/remote'
+ import workspaceRemote from '@deepseek-ai/dsh-api-workspace-controller/remote'
++import ticketRemote from '@deepseek-ai/dsh-api-ticket-sync/remote'
+ import terminalRemote from '@deepseek-ai/dsh-api-terminal-controller/remote'
+ import workspaceFilesRemote from '@deepseek-ai/dsh-api-workspace-files/remote'
+ import type { ClientRemote } from '@deepseek-ai/dsh-api-gateway/client'
+@@ -192,6 +193,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
+       messageFeedbackRemote, sessionFeedbackRemote,
+       fileUploadsRemote, sessionReferencesRemote,
+       permissionPresetsRemote, subagentsRemote, sessionRemote, jobRemote, workspaceRemote, workspaceFilesRemote, terminalRemote,
++      ticketRemote,
+       officeToPdfRemote, userQuestionsRemote,
+     ]) {
+       disposers.push(await ctx.remote.$mount(contribution))
+diff --git a/packages/api/remotes/tsconfig.client.json b/packages/api/remotes/tsconfig.client.json
+index 70181b08..96f46fb4 100644
+--- a/packages/api/remotes/tsconfig.client.json
++++ b/packages/api/remotes/tsconfig.client.json
+@@ -90,6 +90,12 @@
+     {
+       "path": "../workspace-controller/tsconfig.client.json"
+     },
++    {
++      "path": "../../host/directory-picker"
++    },
++    {
++      "path": "../ticket-sync/tsconfig.client.json"
++    },
+     {
+       "path": "../../typert/protocol"
+     },
+diff --git a/packages/api/remotes/tsconfig.host.json b/packages/api/remotes/tsconfig.host.json
+index 3fd7ea3b..6be108ff 100644
+--- a/packages/api/remotes/tsconfig.host.json
++++ b/packages/api/remotes/tsconfig.host.json
+@@ -71,6 +71,9 @@
+     {
+       "path": "../workspace-controller/tsconfig.host.json"
+     },
++    {
++      "path": "../ticket-sync/tsconfig.host.json"
++    },
+     {
+       "path": "../../typert/protocol"
+     },
+diff --git a/packages/api/ticket-sync/package.json b/packages/api/ticket-sync/package.json
+new file mode 100644
+index 00000000..1e2dea51
+--- /dev/null
++++ b/packages/api/ticket-sync/package.json
+@@ -0,0 +1,59 @@
++{
++  "name": "@deepseek-ai/dsh-api-ticket-sync",
++  "description": "工单日志同步与递归解压：从远端工单库拉取加密 zip、解到叶子、把解压目录交给 workspace 登记",
++  "version": "0.2.1-rc.2",
++  "private": true,
++  "type": "module",
++  "main": "lib/index.js",
++  "types": "lib/types/index.d.ts",
++  "exports": {
++    ".": {
++      "types": "./lib/types/index.d.ts",
++      "default": "./lib/index.js"
++    },
++    "./types": {
++      "types": "./lib/types/types.d.ts",
++      "default": "./lib/types/types.js"
++    },
++    "./client": {
++      "types": "./lib/types/client/index.d.ts",
++      "default": "./lib/client.js"
++    },
++    "./typert": {
++      "types": "./lib/typert.host.d.ts",
++      "default": "./lib/typert.host.js"
++    },
++    "./remote": {
++      "types": "./lib/typert.remote-client.d.ts",
++      "default": "./lib/typert.remote-client.js"
++    },
++    "./src/*": "./src/*",
++    "./package.json": "./package.json"
++  },
++  "scripts": {
++    "bundle": "tsdown",
++    "watch": "tsdown --watch"
++  },
++  "files": [
++    "lib/index.js",
++    "lib/client.js",
++    "lib/types/**/*.js",
++    "lib/types/**/*.d.ts",
++    "lib/typert.host.js",
++    "lib/typert.host.d.ts",
++    "lib/typert.remote-client.js",
++    "lib/typert.remote-client.d.ts"
++  ],
++  "license": "MIT",
++  "dependencies": {
++    "zod": "4.4.3"
++  },
++  "peerDependencies": {
++    "@deepseek-ai/cordis": "workspace:~",
++    "@deepseek-ai/dsh-typert-protocol": "workspace:*"
++  },
++  "devDependencies": {
++    "@deepseek-ai/cordis": "workspace:~",
++    "@deepseek-ai/dsh-typert-protocol": "workspace:*"
++  }
++}
+diff --git a/packages/api/ticket-sync/src/client/index.ts b/packages/api/ticket-sync/src/client/index.ts
+new file mode 100644
+index 00000000..998dc7e6
+--- /dev/null
++++ b/packages/api/ticket-sync/src/client/index.ts
+@@ -0,0 +1,11 @@
++/**
++ * 本包没有浏览器半边。
++ *
++ * 这个空入口只为 typert 的客户端相位存在 —— `./remote` 的
++ * `lib/typert.remote-client.js` 由该相位生成，客户端 UI 包通过它拿到
++ * `ctx.remote.ticket` 的类型与调用面。package.json 不含 `dsh.client`，
++ * 因此浏览器不会加载这个文件。
++ * @module @deepseek-ai/dsh-api-ticket-sync/client
++ */
++
++export {}
+diff --git a/packages/api/ticket-sync/src/extractor.ts b/packages/api/ticket-sync/src/extractor.ts
+new file mode 100644
+index 00000000..f3123b4f
+--- /dev/null
++++ b/packages/api/ticket-sync/src/extractor.ts
+@@ -0,0 +1,550 @@
++/**
++ * 递归解压：把工单包解到叶子，让日志成为 workspace 里的普通文件。
++ *
++ * 四条不可让步的约束，每条都来自实测：
++ * 1. **逐条目循环**，不能用 `unzip -p '*.tgz'` 通配 —— 多个归档串接进同一管道时
++ *    tar 在第一个归档的 EOF 处退出，后者被静默丢弃（989MB 样本实测：通配只得到
++ *    0.62GB，逐条目才是 1.44GB）。
++ * 2. **中间层不落盘**：`unzip -p <zip> <entry> | tar -x` 让峰值从
++ *    `zip + tgz + 内容` 降为 `zip + 内容`，20GiB 级工单靠这一条才谈得上可行。
++ * 3. **解压前拒绝链接条目**：tar 会原样创建 symlink，`a -> /etc` 之后再写
++ *    `a/x` 就落到 workspace 之外。事后清理存在竞态，必须在解压前从条目表拒绝。
++ * 4. **事中水位**：tgz 展开比在 1.5x~20x 之间跳变，事前算不出总量；解压期间
++ *    每 500ms 采样分区剩余，低于红线立即杀进程并清理。
++ *
++ * 所有外部依赖（子进程、剩余空间、目录测量）都收敛到 `ExtractDeps`：
++ * 测试可以注入「剩余空间只有 1 字节」或「命令立即失败」，不必真的把盘写满，
++ * 也不必为了验证水位等几十秒。
++ * @module @deepseek-ai/dsh-api-ticket-sync/extractor
++ */
++
++import { execFile, spawn } from 'node:child_process'
++import { existsSync } from 'node:fs'
++import { mkdir, readdir, rename, rm, stat, statfs, writeFile } from 'node:fs/promises'
++import { basename, dirname, join } from 'node:path'
++
++/** 可展开的压缩包后缀；其余类型原样保留（rar/7z/zst 不在能力内）。 */
++const ARCHIVE_SUFFIXES = ['.zip', '.tgz', '.tar.gz', '.tar'] as const
++
++/** 完成标记文件名：workspace 只有在它存在时才算「完整产物」。 */
++export const READY_MARKER = '.ready'
++
++/** 解压过程中的硬限制。 */
++export interface ExtractLimits {
++  /** 单工单解压总量上限（字节）。 */
++  maxExtractBytes: number
++  /** 解压过程中必须保留的分区剩余空间（字节）。 */
++  minFreeBytes: number
++  /** 解出的文件数上限。 */
++  maxFiles: number
++  /** 递归层数上限；已解出的压缩包再展开一层计一层。 */
++  maxDepth: number
++  /** 水位采样间隔（毫秒），默认 500。 */
++  sampleIntervalMs?: number
++}
++
++/** 一次递归解压的结果。 */
++export interface ExtractResult {
++  /** 最终落盘字节数。 */
++  bytes: number
++  /** 最终文件数。 */
++  files: number
++  /** 实际展开到的最大层数。 */
++  depth: number
++  /** 因含链接条目被拒绝的归档数（正常样本为 0）。 */
++  rejectedLinks: number
++}
++
++/** 解压领域的失败，携带可映射到 Remote 错误码的分类。 */
++export class ExtractError extends Error {
++  /**
++   * @param code - 失败分类，直接被控制器映射成 `ticket/*`。
++   * @param message - 面向操作者的说明。
++   */
++  constructor(readonly code: 'archive-corrupt' | 'bad-password' | 'space-exceeded' | 'too-many-files' | 'extract-failed' | 'cancelled', message: string) {
++    super(message)
++    this.name = 'ExtractError'
++  }
++}
++
++/** `execFile` 的结果；失败不抛，由调用方按退出码判定（解压命令的非零退出是数据问题，不是崩溃）。 */
++export interface CommandResult {
++  code: number
++  stdout: string
++  stderr: string
++}
++
++/** 可替换的运行时依赖：测试用它构造「空间不足 / 命令失败 / 大目录」等场景。 */
++export interface ExtractDeps {
++  /** 执行一个外部命令（有界输出，abort 时杀进程）。 */
++  run: (command: string, args: readonly string[], signal: AbortSignal) => Promise<CommandResult>
++  /** 分区剩余字节数。 */
++  freeBytes: (path: string) => Promise<number>
++  /** 目录树的字节数与文件数。 */
++  measure: (root: string) => Promise<{ bytes: number; files: number }>
++  /** 启动子进程（流式管道用）。 */
++  spawn: typeof spawn
++}
++
++/** 同步执行一个外部命令，stdout/stderr 有界收集，abort 时杀进程。 */
++function runCommand(command: string, args: readonly string[], signal: AbortSignal): Promise<CommandResult> {
++  return new Promise((resolveResult, reject) => {
++    const child = execFile(command, [...args], {
++      maxBuffer: 8 * 1024 * 1024,
++      signal,
++    }, (error, stdout, stderr) => {
++      if (error !== null && typeof error === 'object' && 'code' in error && typeof error.code === 'string') {
++        // 被 abort 杀掉：交给调用方按取消/水位分类。
++        reject(signal.reason instanceof ExtractError
++          ? signal.reason
++          : new ExtractError('cancelled', `命令被中断：${command} ${error.code}`))
++        return
++      }
++      const code = error === null ? 0 : (typeof error.code === 'number' ? error.code : 1)
++      resolveResult({ code, stdout, stderr })
++    })
++    child.on('error', (error: NodeJS.ErrnoException) => {
++      // 命令不存在是部署缺陷（镜像缺 unzip/tar），必须与数据问题区分开。
++      if (error.code === 'ENOENT') {
++        reject(new ExtractError('extract-failed', `容器内缺少命令：${command}`))
++        return
++      }
++      reject(error)
++    })
++  })
++}
++
++/** 分区剩余字节数（容量预检与事中水位共用）。 */
++export async function freeBytes(path: string): Promise<number> {
++  try {
++    const stats = await statfs(path)
++    return Number(stats.bavail) * Number(stats.bsize)
++  } catch {
++    return 0
++  }
++}
++
++/** 目录树的字节数与文件数（递归 lstat，不经 shell，避免 busybox 方言与 maxBuffer 限制）。 */
++async function measureTree(root: string): Promise<{ bytes: number; files: number }> {
++  let bytes = 0
++  let files = 0
++  const walk = async (directory: string): Promise<void> => {
++    const entries = await readdir(directory, { withFileTypes: true }).catch(() => [])
++    for (const entry of entries) {
++      const path = join(directory, entry.name)
++      if (entry.isDirectory()) {
++        await walk(path)
++        continue
++      }
++      const info = await stat(path).catch(() => undefined)
++      if (info === undefined) continue
++      bytes += info.size
++      files += 1
++    }
++  }
++  await walk(root)
++  return { bytes, files }
++}
++
++/** 默认依赖：真实文件系统与真实子进程。 */
++const DEFAULT_DEPS: ExtractDeps = {
++  run: runCommand,
++  freeBytes,
++  measure: measureTree,
++  spawn,
++}
++
++/** 条目名是否安全：不得绝对路径、不得含 `..` 段。 */
++function isSafeEntry(name: string): boolean {
++  if (name.startsWith('/') || /^[A-Za-z]:/.test(name)) return false
++  return !name.split(/[/\\]/).includes('..')
++}
++
++/** 该名称是否属于本模块能展开的压缩包。 */
++function isArchive(name: string): boolean {
++  const lower = name.toLowerCase()
++  return ARCHIVE_SUFFIXES.some(suffix => lower.endsWith(suffix))
++}
++
++/** 去掉压缩后缀后的目录名。 */
++function stripArchiveSuffix(name: string): string {
++  const stripped = name.replace(/\.(tar\.gz|tgz|zip|tar)$/i, '')
++  // 后缀被完全吃掉时（如 `.zip` 本身）回落到 `<名字>-extracted`，避免与父目录同名。
++  return stripped === '' ? `${name}-extracted` : stripped
++}
++
++/** 压缩包解压后的目标目录：同级、去掉压缩后缀。 */
++function targetDirFor(archivePath: string): string {
++  return join(dirname(archivePath), stripArchiveSuffix(basename(archivePath)))
++}
++
++/** 列出 zip 条目名（只读中央目录，不需要密码）。 */
++async function listZipEntries(zipPath: string, signal: AbortSignal, deps: ExtractDeps): Promise<string[]> {
++  const result = await deps.run('unzip', ['-Z1', zipPath], signal)
++  if (result.code !== 0) throw new ExtractError('archive-corrupt', `无法读取压缩包目录：${result.stderr.trim()}`)
++  return result.stdout.split('\n').filter(line => line !== '')
++}
++
++/**
++ * 流式列出 tar 条目并校验，不缓冲全量输出。
++ *
++ * 必须先 list 再解：类型字符 `l`/`h` 是关键 —— 链接条目会让解压写到
++ * workspace 之外，而事后清理存在竞态（写完才删）。行数上界同时充当
++ * 文件数护栏，避免在解压前就把几十万条目录读进内存。
++ * @param feed - 产出 tar 字节流的命令。
++ */
++function inspectTarStream(
++  deps: ExtractDeps,
++  feed: () => ReturnType<typeof spawn>,
++  signal: AbortSignal,
++  maxFiles: number,
++): Promise<{ entries: number }> {
++  return new Promise((resolveResult, reject) => {
++    const producer = feed()
++    const lister = deps.spawn('tar', ['-tvzf', '-'], { stdio: ['pipe', 'pipe', 'pipe'] })
++    let pending = ''
++    let entries = 0
++    let stderr = ''
++    const collect = (chunk: Buffer): void => {
++      stderr = `${stderr}${chunk.toString()}`.slice(-4096)
++    }
++    producer.stderr?.on('data', collect)
++    lister.stderr.on('data', collect)
++    const abort = (): void => {
++      producer.kill('SIGKILL')
++      lister.kill('SIGKILL')
++    }
++    signal.addEventListener('abort', abort, { once: true })
++    // feed() 显式声明了 stdout 为 pipe，但子进程类型仍可能推导为 null。
++    producer.stdout?.pipe(lister.stdin)
++    producer.on('close', () => { lister.stdin.end() })
++
++    lister.stdout.on('data', (chunk: Buffer) => {
++      pending += chunk.toString()
++      const lines = pending.split('\n')
++      pending = lines.pop() ?? ''
++      for (const line of lines) {
++        if (line === '') continue
++        entries += 1
++        if (entries > maxFiles) {
++          abort()
++          reject(new ExtractError('too-many-files', `归档条目数超过上限 ${String(maxFiles)}`))
++          return
++        }
++        if (line.startsWith('l') || line.startsWith('h')) {
++          abort()
++          reject(new ExtractError('extract-failed', '归档含符号/硬链接条目，已拒绝解压'))
++          return
++        }
++        const columns = line.trim().split(/\s+/)
++        const name = columns.slice(8).join(' ').split(' -> ')[0] ?? ''
++        if (!isSafeEntry(name)) {
++          abort()
++          reject(new ExtractError('extract-failed', `归档条目越界：${name}`))
++          return
++        }
++      }
++    })
++    lister.on('close', (code) => {
++      signal.removeEventListener('abort', abort)
++      producer.kill('SIGKILL')
++      if (code !== 0 && !signal.aborted) {
++        reject(new ExtractError('archive-corrupt', `无法读取归档目录：${stderr.trim()}`))
++        return
++      }
++      resolveResult({ entries })
++    })
++    lister.on('error', (error: NodeJS.ErrnoException) => {
++      reject(new ExtractError('extract-failed',
++        error.code === 'ENOENT' ? '容器内缺少命令：tar' : error.message))
++    })
++  })
++}
++
++/** 把 `unzip -p <zip> <entry>` 的 stdout 直接喂给 `tar -x -C <target>`。 */
++function pipeToTar(
++  deps: ExtractDeps,
++  zipPath: string,
++  entry: string,
++  password: string,
++  target: string,
++  signal: AbortSignal,
++): Promise<CommandResult> {
++  return new Promise((resolveResult, reject) => {
++    const source = deps.spawn('unzip', ['-P', password, '-p', zipPath, entry], { stdio: ['ignore', 'pipe', 'pipe'] })
++    const sink = deps.spawn('tar', ['-xzf', '-', '-C', target], { stdio: ['pipe', 'ignore', 'pipe'] })
++    let stderr = ''
++    const collect = (chunk: Buffer): void => {
++      stderr = `${stderr}${chunk.toString()}`.slice(-4096)
++    }
++    source.stderr.on('data', collect)
++    sink.stderr.on('data', collect)
++    const abort = (): void => {
++      source.kill('SIGKILL')
++      sink.kill('SIGKILL')
++    }
++    signal.addEventListener('abort', abort, { once: true })
++    source.stdout.pipe(sink.stdin)
++    source.on('close', () => { sink.stdin.end() })
++    const failures: string[] = []
++    source.on('error', (error: NodeJS.ErrnoException) => {
++      failures.push(error.code === 'ENOENT' ? '容器内缺少命令：unzip' : error.message)
++    })
++    sink.on('error', (error: NodeJS.ErrnoException) => {
++      failures.push(error.code === 'ENOENT' ? '容器内缺少命令：tar' : error.message)
++    })
++    sink.on('close', (code) => {
++      signal.removeEventListener('abort', abort)
++      source.kill('SIGKILL')
++      if (failures.length > 0) {
++        reject(new ExtractError('extract-failed', failures.join('；')))
++        return
++      }
++      resolveResult({ code: code ?? 1, stdout: '', stderr })
++    })
++  })
++}
++
++/** 解一个磁盘上的 zip 到同名目录（条目已前置校验；`-o` 保证重试幂等）。 */
++async function extractZip(deps: ExtractDeps, zipPath: string, password: string, signal: AbortSignal): Promise<string> {
++  const entries = await listZipEntries(zipPath, signal, deps)
++  const unsafe = entries.find(name => !isSafeEntry(name))
++  if (unsafe !== undefined) throw new ExtractError('extract-failed', `压缩包条目越界：${unsafe}`)
++  const target = targetDirFor(zipPath)
++  await mkdir(target, { recursive: true })
++  const result = await deps.run('unzip', ['-P', password, '-o', '-qq', zipPath, '-d', target], signal)
++  if (result.code !== 0) {
++    const message = result.stderr.toLowerCase()
++    if (message.includes('password') || message.includes('incorrect')) {
++      throw new ExtractError('bad-password', '解压时密码被拒绝')
++    }
++    throw new ExtractError('extract-failed', `解压失败：${result.stderr.trim()}`)
++  }
++  return target
++}
++
++/** 解一个磁盘上的 tar 类归档到同名目录，成功后删除归档本体。 */
++async function extractTar(deps: ExtractDeps, tarPath: string, limits: ExtractLimits, signal: AbortSignal): Promise<string> {
++  await inspectTarStream(deps, () => deps.spawn('cat', [tarPath], { stdio: ['ignore', 'pipe', 'ignore'] }), signal, limits.maxFiles)
++  const target = targetDirFor(tarPath)
++  await mkdir(target, { recursive: true })
++  const result = await deps.run('tar', ['-xzf', tarPath, '-C', target], signal)
++  if (result.code !== 0) throw new ExtractError('extract-failed', `归档解压失败：${result.stderr.trim()}`)
++  // 已展开的归档本体不再保留：验收要求「无残留 .tgz」，且它已无复用价值。
++  await rm(tarPath, { force: true })
++  return target
++}
++
++/** 递归扫描 `root` 下尚未展开的压缩包。 */
++async function findArchives(root: string): Promise<string[]> {
++  const found: string[] = []
++  const walk = async (dir: string): Promise<void> => {
++    const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
++    for (const entry of entries) {
++      const path = join(dir, entry.name)
++      if (entry.isDirectory()) {
++        await walk(path)
++      } else if (entry.isFile() && isArchive(entry.name)) {
++        found.push(path)
++      }
++    }
++  }
++  await walk(root)
++  return found
++}
++
++/**
++ * 在解压过程中执行水位采样：越线即中止 `work` 传入的信号。
++ *
++ * 单次采样间隔 500ms，配合 5GB/s 的本地解压速度也只会穿透约 2.5GB，
++ * 远小于 `minFreeBytes` 的 60GiB 余量。测试注入 `freeBytes` 即可在
++ * 毫秒内验证这条路径，不需要真的造一个快满的盘。
++ */
++async function withWaterGuard<T>(
++  deps: ExtractDeps,
++  root: string,
++  limits: ExtractLimits,
++  signal: AbortSignal,
++  work: (guarded: AbortSignal) => Promise<T>,
++): Promise<T> {
++  const controller = new AbortController()
++  const forward = (): void => { controller.abort(signal.reason) }
++  signal.addEventListener('abort', forward, { once: true })
++  const timer = setInterval(() => {
++    void deps.freeBytes(root).then((free) => {
++      if (free < limits.minFreeBytes && !controller.signal.aborted) {
++        controller.abort(new ExtractError('space-exceeded', `分区剩余 ${String(free)} 低于红线 ${String(limits.minFreeBytes)}`))
++      }
++    })
++  }, limits.sampleIntervalMs ?? 500)
++  timer.unref?.()
++  try {
++    return await work(controller.signal)
++  } finally {
++    clearInterval(timer)
++    signal.removeEventListener('abort', forward)
++  }
++}
++
++/**
++ * 把工单包解到叶子。
++ *
++ * 流程：zip 的普通文件直接展开 → 每个归档条目**流式**管道解到同名目录 →
++ * 后续层同样先 list 校验再解，成功后删除归档本体 → 直到无候选或触达 `maxDepth`。
++ * 全程有水位守卫，越界立即中止（调用方负责清理 root）。
++ * @param zipPath - 已落地的工单 zip。
++ * @param root - 解压目标目录（调用方提供的 `extract.tmp-*`）。
++ * @param password - zip 密码；递归层内的 tar 不再需要。
++ * @param limits - 硬限制。
++ * @param signal - 取消信号，直达每个子进程。
++ * @param onLayer - 每解完一个归档回调（用于进度帧）。
++ * @param overrides - 测试注入点（默认真实文件系统与子进程）。
++ * @returns 体积、文件数、层数与拒绝的链接数。
++ */
++export async function extractToLeaf(
++  zipPath: string,
++  root: string,
++  password: string,
++  limits: ExtractLimits,
++  signal: AbortSignal,
++  onLayer: (info: { depth: number; bytes: number; files: number; archive: string }) => void,
++  overrides: Partial<ExtractDeps> = {},
++): Promise<ExtractResult> {
++  const deps: ExtractDeps = { ...DEFAULT_DEPS, ...overrides }
++  await mkdir(root, { recursive: true })
++  const entries = await listZipEntries(zipPath, signal, deps)
++  const unsafe = entries.find(name => !isSafeEntry(name))
++  if (unsafe !== undefined) throw new ExtractError('extract-failed', `压缩包条目越界：${unsafe}`)
++
++  const archives = entries.filter(name => isArchive(name))
++  const plain = entries.filter(name => !isArchive(name))
++
++  // 第一层：普通文件一次解出；归档条目走流式管道，中间 tgz 不落盘。
++  if (plain.length > 0) {
++    const first = await deps.run('unzip', ['-P', password, '-o', '-qq', zipPath, '-d', root, ...plain], signal)
++    if (first.code !== 0) {
++      const message = first.stderr.toLowerCase()
++      if (message.includes('password') || message.includes('incorrect')) {
++        throw new ExtractError('bad-password', '解压时密码被拒绝')
++      }
++      throw new ExtractError('extract-failed', `解压失败：${first.stderr.trim()}`)
++    }
++  }
++
++  let rejectedLinks = 0
++  let depth = 1
++  const record = async (archive: string, layer: number): Promise<void> => {
++    const after = await deps.measure(root)
++    onLayer({ depth: layer, bytes: after.bytes, files: after.files, archive })
++    if (after.bytes > limits.maxExtractBytes) {
++      throw new ExtractError('space-exceeded', `解压总量 ${String(after.bytes)} 超过上限 ${String(limits.maxExtractBytes)}`)
++    }
++    if (after.files > limits.maxFiles) {
++      throw new ExtractError('too-many-files', `解出文件数 ${String(after.files)} 超过上限 ${String(limits.maxFiles)}`)
++    }
++    const free = await deps.freeBytes(root)
++    if (free < limits.minFreeBytes) {
++      throw new ExtractError('space-exceeded', `分区剩余 ${String(free)} 低于红线 ${String(limits.minFreeBytes)}`)
++    }
++  }
++
++  for (const entry of archives) {
++    if (depth >= limits.maxDepth) break
++    if (entry.toLowerCase().endsWith('.zip')) {
++      // 内层 zip 需要随机访问中央目录：先落地成文件，交给下一轮递归（解完即删）。
++      await deps.run('unzip', ['-P', password, '-o', '-qq', zipPath, entry, '-d', root], signal)
++      continue
++    }
++    const target = join(root, stripArchiveSuffix(basename(entry)))
++    await mkdir(target, { recursive: true })
++    try {
++      await withWaterGuard(deps, root, limits, signal, async (guarded) => {
++        await inspectTarStream(
++          deps,
++          () => deps.spawn('unzip', ['-P', password, '-p', zipPath, entry], { stdio: ['ignore', 'pipe', 'pipe'] }),
++          guarded,
++          limits.maxFiles,
++        )
++        const piped = await pipeToTar(deps, zipPath, entry, password, target, guarded)
++        if (piped.code !== 0) throw new ExtractError('extract-failed', `解压失败：${piped.stderr.trim()}`)
++      })
++      await record(entry, depth + 1)
++    } catch (error) {
++      if (error instanceof ExtractError && error.message.includes('链接')) rejectedLinks += 1
++      throw error
++    }
++  }
++  depth = Math.min(depth + 1, limits.maxDepth)
++
++  // 后续层：磁盘上的归档逐层展开，成功后删除本体。
++  for (;;) {
++    const found = await findArchives(root)
++    if (found.length === 0) break
++    if (depth >= limits.maxDepth) break
++    for (const archive of found) {
++      await withWaterGuard(deps, root, limits, signal, async (guarded) => {
++        if (archive.toLowerCase().endsWith('.zip')) {
++          await extractZip(deps, archive, password, guarded)
++          await rm(archive, { force: true })
++        } else {
++          await extractTar(deps, archive, limits, guarded)
++        }
++      })
++      await record(archive, depth + 1)
++    }
++    depth += 1
++  }
++
++  const final = await deps.measure(root)
++  return { bytes: final.bytes, files: final.files, depth, rejectedLinks }
++}
++
++/**
++ * 原子就位：`extract.tmp-*` → `extract`，并写入 `.ready` 完成标记。
++ *
++ * 采用「新目录先行 + 旧目录后删」两段式，避免 `rm -rf target` 造成的
++ * 目标短暂不存在的窗口（Agent 可能正在读）。
++ */
++export async function promote(root: string, target: string, deps: Pick<ExtractDeps, 'measure'> = DEFAULT_DEPS): Promise<void> {
++  const retired = `${target}.old-${String(Date.now())}`
++  const hadTarget = existsSync(target)
++  if (hadTarget) await rename(target, retired)
++  try {
++    await rename(root, target)
++  } catch (error) {
++    if (hadTarget) await rename(retired, target).catch(() => undefined)
++    throw error
++  }
++  if (hadTarget) await rm(retired, { recursive: true, force: true })
++  const measured = await deps.measure(target)
++  await writeFile(join(target, READY_MARKER), JSON.stringify({
++    bytes: measured.bytes,
++    files: measured.files,
++    at: new Date().toISOString(),
++  }), 'utf8')
++}
++
++/** 目录是否已是完整产物：存在 `.ready` 标记（老版本没有标记时退回目录判断）。 */
++export async function isReady(target: string): Promise<boolean> {
++  if (existsSync(join(target, READY_MARKER))) return true
++  return stat(target).then(info => info.isDirectory(), () => false)
++}
++
++/** 校验密码：解压最小**文件**条目（目录条目无法验证密钥，必须跳过）。 */
++export async function verifyPassword(
++  zipPath: string,
++  password: string,
++  signal: AbortSignal,
++  deps: Pick<ExtractDeps, 'run'> = DEFAULT_DEPS,
++): Promise<boolean> {
++  const entries = await listZipEntries(zipPath, signal, { ...DEFAULT_DEPS, ...deps })
++  if (entries.length === 0) throw new ExtractError('archive-corrupt', '压缩包内没有任何条目')
++  const candidates = entries.filter(name => !name.endsWith('/'))
++  if (candidates.length === 0) throw new ExtractError('archive-corrupt', '压缩包内没有任何文件条目')
++  const probe = candidates.reduce((shortest, name) => (name.length < shortest.length ? name : shortest), candidates[0] ?? '')
++  const result = await deps.run('unzip', ['-P', password, '-p', zipPath, probe], signal)
++  if (result.code === 0) return true
++  const message = result.stderr.toLowerCase()
++  if (message.includes('password') || message.includes('incorrect')) return false
++  throw new ExtractError('archive-corrupt', `压缩包无法解压：${result.stderr.trim()}`)
++}
+diff --git a/packages/api/ticket-sync/src/index.ts b/packages/api/ticket-sync/src/index.ts
+new file mode 100644
+index 00000000..ee0deb85
+--- /dev/null
++++ b/packages/api/ticket-sync/src/index.ts
+@@ -0,0 +1,685 @@
++/**
++ * 工单日志同步的宿主实现：串行队列、状态机、传输、递归解压、容量治理。
++ *
++ * 这个插件只对外暴露 `ctx.ticketSync`（服务）与 `ctx.remote.ticket`
++ * （Remote 命名空间）；它**不**把解压目录登记为 workspace —— 那是客户端
++ * occupant 拿到 `extractedPath` 后调用既有 `createWorkspace({ path })` 完成的。
++ * 保持这条分界，是为了让"谁拥有这个目录"仍然只有一个答案。
++ * @module @deepseek-ai/dsh-api-ticket-sync
++ */
++
++import { execFile } from 'node:child_process'
++import { randomUUID } from 'node:crypto'
++import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
++import { homedir } from 'node:os'
++import { dirname, join, resolve } from 'node:path'
++import { Context, Service } from '@deepseek-ai/cordis'
++import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
++import { ExtractError, extractToLeaf, freeBytes, isReady, promote, verifyPassword } from './extractor.ts'
++import { isTerminal, TicketJob } from './queue.ts'
++import { HttpSyncer, LocalFileSyncer, SshSyncer } from './syncer.ts'
++import type { TicketSyncer } from './syncer.ts'
++import { TICKET_ID_PATTERN } from './types.ts'
++import type {
++  TicketCancelValue, TicketErrorCode, TicketFrame, TicketInspectValue, TicketPhase,
++  TicketRemoveValue, TicketSubmitRequest, TicketSubmitValue, TicketUsageRow, TicketUsageValue,
++  TicketVerifyRequest, TicketVerifyValue,
++} from './types.ts'
++
++const GIB = 1024 ** 3
++
++declare module '@deepseek-ai/cordis' {
++  interface Context {
++    /** 工单日志同步能力（Remote 命名空间 `ticket` 的宿主侧拥有者）。 */
++    ticketSync: TicketSyncService
++  }
++}
++
++declare module '@deepseek-ai/dsh-typert-protocol' {
++  interface RemoteErrorDetailsMap {
++    /** 工单号格式或路径越界。 */
++    'ticket/invalid-id': { readonly ticketId?: string }
++    /** 远端没有该工单。 */
++    'ticket/not-found': { readonly ticketId?: string }
++    /** 压缩包超过单工单上限。 */
++    'ticket/too-large': { readonly size?: number }
++    /** 本地容量不足。 */
++    'ticket/insufficient-storage': { readonly required?: number }
++    /** 未提供密码或密码错误。 */
++    'ticket/bad-password': Record<string, never>
++    /** 压缩包结构损坏。 */
++    'ticket/archive-corrupt': Record<string, never>
++    /** 解压过程中触达空间水位。 */
++    'ticket/space-exceeded': { readonly bytes?: number }
++    /** 解出文件数超限。 */
++    'ticket/too-many-files': { readonly files?: number }
++    /** 队列已满或工单正在同步。 */
++    'ticket/busy': Record<string, never>
++    /** 传输失败。 */
++    'ticket/sync-failed': Record<string, never>
++    /** 解压失败。 */
++    'ticket/extract-failed': Record<string, never>
++    /** 已取消。 */
++    'ticket/cancelled': Record<string, never>
++  }
++}
++
++/** 插件配置；全部有默认值，部署侧只覆盖需要变的项。 */
++export interface Config {
++  /** 工单产物根目录（容器内绝对路径，宿主预置属主 1000）。 */
++  ticketsRoot?: string
++  /** 传输实现：`http`（主线）/ `ssh`（退路）/ `local`（测试与预置文件）。 */
++  syncer?: 'http' | 'ssh' | 'local'
++  /** `http` 源根，如 `http://192.168.0.2:8081`。 */
++  sourceUrl?: string
++  /** `local` 源的目录（其下为 `<id>/<id>.zip`）。 */
++  sourceDir?: string
++  /** `ssh` 退路的主机、端口、用户与私钥。 */
++  sshHost?: string
++  sshPort?: number
++  sshUser?: string
++  sshIdentityFile?: string
++  /** zip 密码缺省值；环境变量 `DSH_TICKET_ARCHIVE_PASSWORD` 优先。 */
++  defaultPassword?: string
++  /** 单工单压缩包上限。 */
++  maxTicketBytes?: number
++  /** 展开比上界，仅用于事前粗筛与界面预估。 */
++  expansionFactor?: number
++  /** 解压过程中必须保留的分区剩余。 */
++  minFreeBytes?: number
++  /** 单工单解压总量硬上限。 */
++  maxExtractBytes?: number
++  /** 本地已占用总量上限。 */
++  maxTotalBytes?: number
++  /** 解出文件数上限。 */
++  maxFiles?: number
++  /** 递归解压层数上限。 */
++  maxDepth?: number
++  /** 排队上限（运行中的不算）。 */
++  queueLimit?: number
++  /** 保留的工单个数（超出只提示，不自动删）。 */
++  keepTickets?: number
++}
++
++/** 业务失败：携带已分类的错误码，控制器直接投影成 Remote 错误。 */
++class TicketFailure extends Error {
++  /**
++   * @param code - 闭集错误码。
++   * @param message - 面向操作者的说明（不得包含密码）。
++   */
++  constructor(readonly code: TicketErrorCode, message: string) {
++    super(message)
++    this.name = 'TicketFailure'
++  }
++}
++
++/** 默认密码来源：Secret 注入的环境变量优先于 ConfigMap 渲染的配置。 */
++function resolveDefaultPassword(config: Required<Config>): string | undefined {
++  const fromEnv = process.env.DSH_TICKET_ARCHIVE_PASSWORD
++  if (fromEnv !== undefined && fromEnv !== '') return fromEnv
++  return config.defaultPassword === '' ? undefined : config.defaultPassword
++}
++
++/**
++ * 工单日志同步服务。
++ *
++ * 队列是**串行**的：带宽与磁盘都是单机资源，两个大包并发只会互相拖慢并让
++ * 容量判断失效。幂等键是工单号，同工单重复提交返回同一个任务。
++ */
++export class TicketSyncService extends Service {
++  private readonly config: Required<Config>
++  private readonly syncer: TicketSyncer
++  private readonly jobs = new Map<string, TicketJob>()
++  /** 工单号 → 最近一次任务；`inspect` 与幂等判定的唯一索引。 */
++  private readonly byTicket = new Map<string, TicketJob>()
++  private readonly pending: TicketJob[] = []
++  private running: TicketJob | undefined = undefined
++
++  /**
++   * @param ctx - 宿主上下文。
++   * @param config - 插件配置（Helm values 渲染或测试注入）。
++   */
++  constructor(ctx: Context, config: Config = {}) {
++    super(ctx, 'ticketSync')
++    // 默认落在 `$DSH_HOME`（缺省 `~/.dsh`）之下：`/data/tickets` 只在容器镜像里
++    // 可写，桌面/普通用户下必然 EACCES，而存储根不可写会连带把宿主拖死。
++    const ticketsRoot = config.ticketsRoot ?? join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), 'tickets')
++    this.config = {
++      ticketsRoot,
++      syncer: config.syncer ?? 'http',
++      sourceUrl: config.sourceUrl ?? 'http://192.168.0.2:8081',
++      sourceDir: config.sourceDir ?? join(ticketsRoot, '_source'),
++      sshHost: config.sshHost ?? '192.168.0.2',
++      sshPort: config.sshPort ?? 22468,
++      sshUser: config.sshUser ?? 'acli',
++      sshIdentityFile: config.sshIdentityFile ?? '',
++      defaultPassword: config.defaultPassword ?? '',
++      maxTicketBytes: config.maxTicketBytes ?? 20 * GIB,
++      expansionFactor: config.expansionFactor ?? 20,
++      minFreeBytes: config.minFreeBytes ?? 60 * GIB,
++      maxExtractBytes: config.maxExtractBytes ?? 400 * GIB,
++      maxTotalBytes: config.maxTotalBytes ?? 400 * GIB,
++      maxFiles: config.maxFiles ?? 50_000,
++      maxDepth: config.maxDepth ?? 4,
++      queueLimit: config.queueLimit ?? 3,
++      keepTickets: config.keepTickets ?? 3,
++    }
++    this.syncer = this.createSyncer()
++    // 上一个进程被杀时可能留下 extract.tmp-*：启动即清理，避免磁盘被无声占用。
++    void this.purgeStaleTemps()
++    // Controller 与 Service 同包同生命周期：一个负责能力，一个负责线上动词。
++    ctx.plugin(TicketController)
++  }
++
++  /**
++   * 清理上一次进程留下的临时解压目录。
++   *
++   * 进程被 SIGKILL 或节点重启时 `finally` 不会执行，hostPath 上的
++   * `extract.tmp-*` 会永久残留 —— 这是"看不见的磁盘泄漏"，必须启动时收口。
++   */
++  private async purgeStaleTemps(): Promise<void> {
++    const entries = await readdir(this.config.ticketsRoot, { withFileTypes: true }).catch(() => [])
++    for (const entry of entries) {
++      if (!entry.isDirectory()) continue
++      const dir = join(this.config.ticketsRoot, entry.name)
++      const children = await readdir(dir).catch(() => [])
++      for (const child of children) {
++        if (child.startsWith('extract.tmp-')) {
++          await rm(join(dir, child), { recursive: true, force: true }).catch(() => undefined)
++        }
++      }
++    }
++  }
++
++  /** 按配置造出唯一的传输实现。 */
++  private createSyncer(): TicketSyncer {
++    switch (this.config.syncer) {
++      case 'local':
++        return new LocalFileSyncer(this.config.sourceDir)
++      case 'ssh':
++        return new SshSyncer({
++          host: this.config.sshHost,
++          port: this.config.sshPort,
++          user: this.config.sshUser,
++          remoteRoot: '/sf/log',
++          ...(this.config.sshIdentityFile === '' ? {} : { identityFile: this.config.sshIdentityFile }),
++        })
++      case 'http':
++      default:
++        return new HttpSyncer(this.config.sourceUrl)
++    }
++  }
++
++  /** 工单产物目录。 */
++  private dirOf(ticketId: string): string {
++    return join(this.config.ticketsRoot, ticketId)
++  }
++
++  /** 已就位产物的路径。 */
++  extractPath(ticketId: string): string {
++    return join(this.dirOf(ticketId), 'extract')
++  }
++
++  /** 压缩包路径。 */
++  packagePath(ticketId: string): string {
++    return join(this.dirOf(ticketId), 'pkg', `${ticketId}.zip`)
++  }
++
++  /**
++   * 校验工单号：先格式，再前缀。
++   *
++   * 两道都要 —— 防御必须与"将来可能放宽的正则"同构，而不是与当前正则的
++   * 严格程度同构；前缀校验是正则被改动后唯一还站得住的栅栏。
++   * @param ticketId - 待校验的工单号。
++   */
++  validateTicketId(ticketId: string): void {
++    if (!TICKET_ID_PATTERN.test(ticketId)) {
++      throw new TicketFailure('ticket/invalid-id', `工单号格式不合法：${ticketId}`)
++    }
++    const root = resolve(this.config.ticketsRoot)
++    const dest = resolve(root, ticketId)
++    if (dirname(dest) !== root) {
++      throw new TicketFailure('ticket/invalid-id', `工单号越出工单根：${ticketId}`)
++    }
++  }
++
++  /** 远端工单包的大小；不存在返回 null。 */
++  statRemote(ticketId: string): Promise<{ size: number } | null> {
++    return this.syncer.stat(ticketId)
++  }
++
++  /**
++   * 提交一次同步（幂等）。
++   * @param request - 工单号与可选密码。
++   * @returns 任务句柄与当前阶段。
++   */
++  async submit(request: TicketSubmitRequest): Promise<TicketSubmitValue> {
++    this.validateTicketId(request.ticketId)
++    // 存储根不可写是部署级错误：入队前就说清楚，别让操作者等一个注定失败的任务。
++    try {
++      await mkdir(this.config.ticketsRoot, { recursive: true })
++    } catch (error: unknown) {
++      throw new TicketFailure('ticket/insufficient-storage',
++        `工单存储根不可写：${this.config.ticketsRoot}（${toFailure(error).message}）`)
++    }
++    const existing = this.byTicket.get(request.ticketId)
++    if (existing !== undefined) {
++      if (!isTerminal(existing.phase)) return { jobId: existing.id, phase: existing.phase }
++      if (existing.phase === 'ready' && await isReady(this.extractPath(request.ticketId))) {
++        return { jobId: existing.id, phase: 'ready' }
++      }
++    }
++    if (this.pending.length >= this.config.queueLimit) {
++      throw new TicketFailure('ticket/busy', `同步队列已满（上限 ${String(this.config.queueLimit)}），请等待当前任务完成`)
++    }
++    const job = new TicketJob(randomUUID(), request.ticketId)
++    // 密码绑定在任务上，而不是绑定在 drain 的调用参数上 —— 否则排队中的
++    // 第二个任务会拿到第一个任务的密码（串号），且默认密码也无法区分。
++    job.password = request.password ?? resolveDefaultPassword(this.config)
++    this.jobs.set(job.id, job)
++    this.byTicket.set(request.ticketId, job)
++    this.pending.push(job)
++    void this.drain()
++    return { jobId: job.id, phase: 'queued' }
++  }
++
++  /**
++   * 串行取队并执行；异常在任务内部收敛成终态帧，不再向外抛。
++   *
++   * `runJob` 的失败路径本身也依赖文件系统（落状态、清临时目录），磁盘满或
++   * 权限不足时它仍会抛。这里必须兜住：调用方是 `void this.drain(...)`，任何
++   * 漏出去的拒绝都会变成宿主的未处理拒绝并让进程退出。
++   */
++  private async drain(): Promise<void> {
++    if (this.running !== undefined) return
++    for (;;) {
++      const next = this.pending.shift()
++      if (next === undefined) return
++      this.running = next
++      try {
++        await this.runJob(next)
++      } catch (error: unknown) {
++        if (!isTerminal(next.phase)) {
++          const failure = toFailure(error)
++          next.push({ kind: 'failed', code: failure.code, message: failure.message })
++          next.finish('failed', failure)
++        }
++      } finally {
++        this.running = undefined
++      }
++    }
++  }
++
++  /** 执行一个任务的全部阶段。 */
++  private async runJob(job: TicketJob): Promise<void> {
++    const startedAt = Date.now()
++    const pkgPath = this.packagePath(job.ticketId)
++    const tmpRoot = join(this.dirOf(job.ticketId), `extract.tmp-${job.id}`)
++    const extractPath = this.extractPath(job.ticketId)
++    try {
++      job.transition('verifying')
++      // 先探远端（一次 HEAD，代价极低），再判密码：远端根本没有这个工单时，
++      // "not-found" 比 "缺密码" 更准确，也避免操作者去翻密码。
++      const secret = job.password
++      const remote = await this.syncer.stat(job.ticketId)
++      if (remote === null) throw new TicketFailure('ticket/not-found', `远端不存在工单 ${job.ticketId}`)
++      if (remote.size > this.config.maxTicketBytes) {
++        throw new TicketFailure('ticket/too-large',
++          `工单包 ${formatBytes(remote.size)} 超过上限 ${formatBytes(this.config.maxTicketBytes)}`)
++      }
++      // 事前只做粗筛：展开比在 1.5x~20x 之间跳变，精确判定交给事中水位。
++      const required = remote.size * (1 + this.config.expansionFactor)
++      const free = await freeBytes(this.config.ticketsRoot)
++      if (free - required < this.config.minFreeBytes) {
++        throw new TicketFailure('ticket/insufficient-storage',
++          `剩余 ${formatBytes(free)} 不足以容纳预估 ${formatBytes(required)}（红线 ${formatBytes(this.config.minFreeBytes)}）`)
++      }
++      // 总量上限只该计入**本次要落盘的压缩包**；把预估展开量也算进来会让
++      // 20GiB 工单（420GiB 预估）永远大于 400GiB 上限，等于上限形同虚设。
++      const used = await this.totalBytes()
++      if (used + remote.size > this.config.maxTotalBytes) {
++        throw new TicketFailure('ticket/insufficient-storage',
++          `本地已占 ${formatBytes(used)}，再加 ${formatBytes(remote.size)} 将超过总量上限 ${formatBytes(this.config.maxTotalBytes)}，请先清理旧工单`)
++      }
++      // 解压预算取「配置上限」与「当前真实余量」的较小值：写死 400GiB 会让
++      // 余量不足 400GiB 的机器解到一半才失败。
++      const extractBudget = Math.max(
++        remote.size,
++        Math.min(this.config.maxExtractBytes, free - remote.size - this.config.minFreeBytes),
++      )
++
++      // 密码的**存在性**必须在传输前判定：等 8GiB 传完才说「没给密码」是设计缺陷。
++      // 正确性只能落地后校验（zip 加密在条目级，远端没有验证接口）。
++      if (secret === undefined || secret === '') {
++        throw new TicketFailure('ticket/bad-password', '该工单包已加密，需要提供 zip 密码')
++      }
++
++      job.transition('syncing')
++      await mkdir(dirname(pkgPath), { recursive: true })
++      // 进度帧按 200ms 合并：每个 chunk 一帧会把帧缓冲打爆，且前端渲染无收益。
++      let lastPush = 0
++      const transfer = await this.syncer.fetch(job.ticketId, pkgPath, job.signal, (bytes, total) => {
++        const now = Date.now()
++        if (now - lastPush < 200 && total !== undefined && bytes < total) return
++        lastPush = now
++        job.push({ kind: 'progress', bytes, ...(total === undefined ? {} : { total }), files: 0 })
++      })
++      job.push({ kind: 'log', chunk: `已同步 ${formatBytes(transfer.size)}` })
++
++      job.transition('extracting')
++      if (!await verifyPassword(pkgPath, secret, job.signal)) {
++        throw new TicketFailure('ticket/bad-password', 'zip 密码不正确')
++      }
++      const result = await extractToLeaf(pkgPath, tmpRoot, secret, {
++        maxExtractBytes: extractBudget,
++        minFreeBytes: this.config.minFreeBytes,
++        maxFiles: this.config.maxFiles,
++        maxDepth: this.config.maxDepth,
++      }, job.signal, (info) => {
++        job.push({ kind: 'progress', bytes: info.bytes, files: info.files })
++        job.push({ kind: 'log', chunk: `第 ${String(info.depth)} 层：${info.archive} → ${formatBytes(info.bytes)}` })
++      })
++      await promote(tmpRoot, extractPath)
++      job.extractedPath = extractPath
++      job.push({
++        kind: 'done',
++        extractedPath: extractPath,
++        bytes: result.bytes,
++        durationMs: Date.now() - startedAt,
++      })
++      job.finish('ready')
++      await this.persist(job)
++    } catch (error: unknown) {
++      await rm(tmpRoot, { recursive: true, force: true })
++      if (job.signal.aborted) {
++        job.push({ kind: 'failed', code: 'ticket/cancelled', message: '同步已取消' })
++        job.finish('cancelled', { code: 'ticket/cancelled', message: '同步已取消' })
++        await this.persist(job)
++        return
++      }
++      const failure = toFailure(error)
++      job.push({ kind: 'failed', code: failure.code, message: failure.message })
++      job.finish('failed', failure)
++      await this.persist(job)
++    }
++  }
++
++  /** 本地已占用总量（按工单目录累加）。 */
++  private async totalBytes(): Promise<number> {
++    const rows = await this.usageRows()
++    return rows.reduce((sum, row) => sum + row.bytes, 0)
++  }
++
++  /** 每个工单目录的体积与最近使用时间。 */
++  private async usageRows(): Promise<TicketUsageRow[]> {
++    const entries = await readdir(this.config.ticketsRoot, { withFileTypes: true }).then(
++      list => list.filter(entry => entry.isDirectory() && TICKET_ID_PATTERN.test(entry.name)),
++      () => [],
++    )
++    const rows: TicketUsageRow[] = []
++    for (const entry of entries) {
++      const dir = join(this.config.ticketsRoot, entry.name)
++      const state = await this.readState(dir)
++      const bytes = state?.bytes ?? await duBytes(dir)
++      rows.push({ ticketId: entry.name, bytes, lastUsedAt: state?.lastUsedAt ?? new Date(0).toISOString() })
++    }
++    return rows.sort((left, right) => right.lastUsedAt.localeCompare(left.lastUsedAt))
++  }
++
++  /** 读工单的 `.state.json`（不存在返回 undefined）。 */
++  private async readState(dir: string): Promise<{ bytes?: number; lastUsedAt?: string } | undefined> {
++    return readFile(join(dir, '.state.json'), 'utf8').then(
++      text => JSON.parse(text) as { bytes?: number; lastUsedAt?: string },
++      () => undefined,
++    )
++  }
++
++  /**
++   * 落状态：不含密码，只含终态、体积与时间。
++   *
++   * 状态文件是旁路信息：`usage()` 读它只为省一次磁盘遍历，丢了也能从目录
++   * 体积重算。所以写不下去时只放弃这一份记录，绝不改变任务终态 —— 终态帧
++   * 已经推给订阅者了。
++   */
++  private async persist(job: TicketJob): Promise<void> {
++    try {
++      const dir = this.dirOf(job.ticketId)
++      await mkdir(dir, { recursive: true })
++      const bytes = job.extractedPath === undefined ? 0 : await duBytes(job.extractedPath)
++      await writeFile(join(dir, '.state.json'), JSON.stringify({
++        ...job.snapshot(),
++        bytes,
++        lastUsedAt: new Date().toISOString(),
++      }, null, 2), 'utf8')
++    } catch {
++      // 仅丢失一份缓存状态，不吞任务结果。
++    }
++  }
++
++  /** 按任务 id 取任务。 */
++  jobOf(jobId: string): TicketJob | undefined {
++    return this.jobs.get(jobId)
++  }
++
++  /** 按工单号取最近任务。 */
++  jobOfTicket(ticketId: string): TicketJob | undefined {
++    return this.byTicket.get(ticketId)
++  }
++
++  /** 产物是否已就位。 */
++  async ready(ticketId: string): Promise<boolean> {
++    return isReady(this.extractPath(ticketId))
++  }
++
++  /** 取消一个任务。 */
++  cancel(jobId: string): TicketCancelValue {
++    const job = this.jobs.get(jobId)
++    if (job === undefined) throw new TicketFailure('ticket/not-found', `未知任务：${jobId}`)
++    if (isTerminal(job.phase)) return { outcome: 'already-finished' }
++    job.cancel()
++    return { outcome: 'requested' }
++  }
++
++  /** 容量快照。 */
++  async usage(): Promise<TicketUsageValue> {
++    return { tickets: await this.usageRows() }
++  }
++
++  /** 删除一个工单的全部本地产物（调用方必须已显式确认）。 */
++  async remove(ticketId: string): Promise<TicketRemoveValue> {
++    this.validateTicketId(ticketId)
++    const job = this.byTicket.get(ticketId)
++    if (job !== undefined && !isTerminal(job.phase)) {
++      throw new TicketFailure('ticket/busy', '该工单正在同步，先取消再删除')
++    }
++    const dir = this.dirOf(ticketId)
++    const existed = await stat(dir).then(info => info.isDirectory(), () => false)
++    await rm(dir, { recursive: true, force: true })
++    this.byTicket.delete(ticketId)
++    return { removed: existed }
++  }
++
++  /** 超出保留个数的工单（供界面提示，不自动删）。 */
++  async overRetention(): Promise<TicketUsageRow[]> {
++    const rows = await this.usageRows()
++    return rows.slice(this.config.keepTickets)
++  }
++}
++
++/** 目录字节数：用 `du -sb` 而不是逐文件 stat（十万文件量级差一个数量级）。 */
++async function duBytes(path: string): Promise<number> {
++  return new Promise<number>((resolveBytes) => {
++    execFile('du', ['-sb', path], (error, stdout) => {
++      if (error !== null) {
++        resolveBytes(0)
++        return
++      }
++      const value = Number.parseInt(stdout.split('\t')[0] ?? '0', 10)
++      resolveBytes(Number.isNaN(value) ? 0 : value)
++    })
++  })
++}
++
++/** 字节数的可读形式（只用于日志与错误文案）。 */
++function formatBytes(bytes: number): string {
++  if (bytes >= GIB) return `${(bytes / GIB).toFixed(1)} GiB`
++  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MiB`
++  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KiB`
++  return `${String(bytes)} B`
++}
++
++/** 把任意异常收敛成带错误码的业务失败。 */
++function toFailure(error: unknown): { code: TicketErrorCode; message: string } {
++  if (error instanceof TicketFailure) return { code: error.code, message: error.message }
++  if (error instanceof ExtractError) {
++    const mapped: TicketErrorCode = error.code === 'archive-corrupt'
++      ? 'ticket/archive-corrupt'
++      : error.code === 'bad-password'
++        ? 'ticket/bad-password'
++        : error.code === 'space-exceeded'
++          ? 'ticket/space-exceeded'
++          : error.code === 'too-many-files'
++            ? 'ticket/too-many-files'
++            : 'ticket/extract-failed'
++    return { code: mapped, message: error.message }
++  }
++  if (error instanceof Error) {
++    // 连不上日志源是最常见的失败，而且 `fetch failed` 这种底层文案对操作者
++    // 毫无指向：先把成因（拒绝连接/解析失败/超时）翻成人能读的说明。
++    const cause = networkCause(error)
++    if (cause !== undefined) {
++      return { code: 'ticket/sync-failed', message: `无法连接日志源（${cause}）。请检查网络与配置的工单源地址。` }
++    }
++    // 传输层错误（HTTP/ssh）没有业务分类，统一按同步失败上报并保留原始文案。
++    if (/HTTP|ssh|远端/.test(error.message)) return { code: 'ticket/sync-failed', message: error.message }
++    return { code: 'ticket/extract-failed', message: error.message }
++  }
++  return { code: 'ticket/extract-failed', message: String(error) }
++}
++
++/**
++ * 取网络类失败的成因码；不是网络失败时返回 undefined。
++ * @param error - 待判定的异常。
++ * @returns `ECONNREFUSED`/`ENOTFOUND` 之类的成因码，或 undefined。
++ */
++function networkCause(error: Error): string | undefined {
++  const code = (error as { cause?: { code?: string } }).cause?.code
++  if (code !== undefined) return code
++  return error.message === 'fetch failed' ? 'fetch failed' : undefined
++}
++
++/**
++ * 工单同步的 Remote 属主：把服务能力投影成线上动词。
++ *
++ * 分类只有三档：业务失败按闭集码、未知任务按 not-found、其余一律 internal。
++ * 这个控制器**不**做业务判断，只做错误投影与参数整形。
++ */
++export class TicketController extends TypertRemoteService {
++  static inject = ['ticketSync']
++
++  /** @param ctx - 携带 `ticketSync` 的宿主上下文。 */
++  constructor(ctx: Context) {
++    super(ctx, 'ticketController', { namespace: 'ticket' })
++  }
++
++  /**
++   * 提交同步（毫秒级返回，不等待传输）。
++   * @param request - 工单号与可选密码。
++   * @returns 任务句柄。
++   */
++  @Remote('submit')
++  async submit(request: TicketSubmitRequest): Promise<TicketSubmitValue> {
++    return this.project(() => this.ctx.ticketSync.submit(request))
++  }
++
++  /**
++   * 对**已落地**的包校验密码（用于重试与排障）。
++   *
++   * 语义边界要说清：zip 的加密是条目级的，远端没有"只验证密码"的接口，
++   * 所以密码正确性只能在传输之后确认；这里返回 `no-archive` 就是这种情况。
++   * @param request - 工单号与密码。
++   * @returns 是否可用。
++   */
++  @Remote('verifyPassword')
++  async verifyPassword(request: TicketVerifyRequest): Promise<TicketVerifyValue> {
++    return this.project(async () => {
++      this.ctx.ticketSync.validateTicketId(request.ticketId)
++      const pkgPath = this.ctx.ticketSync.packagePath(request.ticketId)
++      const exists = await stat(pkgPath).then(info => info.isFile(), () => false)
++      if (!exists) return { ok: false, reason: 'no-archive' as const }
++      const ok = await verifyPassword(pkgPath, request.password, AbortSignal.timeout(30_000))
++      return { ok }
++    })
++  }
++
++  /**
++   * 订阅进度：首帧是阶段快照，终态帧（done/failed）之后流关闭。
++   * @param request - 任务 id。
++   * @param signal - 订阅方生命周期。
++   */
++  @Remote({ mode: 'stream' })
++  follow(request: { jobId: string }, signal: AbortSignal): AsyncIterable<TicketFrame> {
++    const job = this.ctx.ticketSync.jobOf(request.jobId)
++    if (job === undefined) throw new RemoteError('ticket/not-found', `未知任务：${request.jobId}`, {})
++    return job.follow(signal)
++  }
++
++  /**
++   * 取消任务。
++   * @param request - 任务 id。
++   */
++  @Remote('cancel')
++  async cancel(request: { jobId: string }): Promise<TicketCancelValue> {
++    return this.project(() => Promise.resolve(this.ctx.ticketSync.cancel(request.jobId)))
++  }
++
++  /**
++   * 页面重进时恢复：最近任务与产物是否可用。
++   * @param request - 工单号。
++   */
++  @Remote('inspect')
++  async inspect(request: { ticketId: string }): Promise<TicketInspectValue> {
++    return this.project(async () => {
++      this.ctx.ticketSync.validateTicketId(request.ticketId)
++      const job = this.ctx.ticketSync.jobOfTicket(request.ticketId)
++      const value: TicketInspectValue = {}
++      if (job !== undefined) value.job = { jobId: job.id, phase: job.phase }
++      if (await this.ctx.ticketSync.ready(request.ticketId)) {
++        value.extractedPath = this.ctx.ticketSync.extractPath(request.ticketId)
++      }
++      return value
++    })
++  }
++
++  /** 容量快照。 */
++  @Remote('usage')
++  async usage(): Promise<TicketUsageValue> {
++    return this.project(() => this.ctx.ticketSync.usage())
++  }
++
++  // 端点名不能叫 `remove`：客户端把 Remote 方法挂到 Remote 命名空间服务上，
++  // 而 `remove` 是那个服务自身的保留成员，Gateway 会在挂载时拒绝整个贡献
++  // （`method "ticket/remove" conflicts with its namespace service`）。
++  /**
++   * 删除一个工单的本地产物。
++   * @param request - 工单号。
++   */
++  @Remote('purge')
++  async purge(request: { ticketId: string }): Promise<TicketRemoveValue> {
++    return this.project(() => this.ctx.ticketSync.remove(request.ticketId))
++  }
++
++  /** 统一错误投影：业务失败带码，其余包成同码的 Remote 错误。 */
++  private async project<T>(work: () => Promise<T>): Promise<T> {
++    try {
++      return await work()
++    } catch (error: unknown) {
++      const failure = toFailure(error)
++      throw new RemoteError(failure.code, failure.message, {})
++    }
++  }
++}
++
++/** 让客户端类型面可以直接从包根引用协议类型。 */
++export type { TicketFrame, TicketPhase }
++export default TicketSyncService
+diff --git a/packages/api/ticket-sync/src/queue.ts b/packages/api/ticket-sync/src/queue.ts
+new file mode 100644
+index 00000000..ff4c74b9
+--- /dev/null
++++ b/packages/api/ticket-sync/src/queue.ts
+@@ -0,0 +1,155 @@
++/**
++ * 一个同步任务的运行时对象：阶段、帧缓冲、取消与订阅。
++ *
++ * 帧缓冲是"重进页面能恢复"的实现方式 —— 任务不可重放（解压已发生），
++ * 但进度与终态可以重放，界面的恢复视图只需要这些。
++ * @module @deepseek-ai/dsh-api-ticket-sync/queue
++ */
++
++import type { TicketErrorCode, TicketFrame, TicketPhase } from './types.ts'
++
++/** 保留的历史帧上限：够重连回放与排障，又不让一个长任务吃满内存。 */
++const MAX_RETAINED_FRAMES = 200
++
++/** 该阶段是否已终态（流可以正常关闭）。 */
++export function isTerminal(phase: TicketPhase): boolean {
++  return phase === 'ready' || phase === 'failed' || phase === 'cancelled'
++}
++
++/** 任务的可序列化投影（用于 `.state.json` 与 `inspect`）。 */
++export interface TicketJobState {
++  id: string
++  ticketId: string
++  phase: TicketPhase
++  startedAt: string
++  finishedAt?: string
++  extractedPath?: string
++  error?: { code: TicketErrorCode; message: string }
++}
++
++/**
++ * 一次同步任务。
++ *
++ * 状态变更只通过 `transition` 落地，它同时推一帧 `status` —— 订阅方因此
++ * 不需要轮询状态，重连时也能从帧缓冲里重建"上次看到哪一步"。
++ */
++export class TicketJob {
++  readonly id: string
++  readonly ticketId: string
++  readonly startedAt: string
++  phase: TicketPhase = 'queued'
++  finishedAt?: string
++  extractedPath?: string
++  error?: { code: TicketErrorCode; message: string }
++
++  private readonly frames: TicketFrame[] = []
++  /**
++   * 已被挤出缓冲区的帧数。游标用**绝对序号**，`frames` 只是它的滑动窗口；
++   * 直接拿数组下标当游标，一旦发生 `shift()` 就会永远停在窗口之外
++   * （表现为进度卡死、收不到终态帧）。
++   */
++  private droppedFrames = 0
++  private readonly listeners = new Set<() => void>()
++  private readonly abort = new AbortController()
++  /** zip 密码只驻留内存，不进入 `snapshot()`，也不写日志。 */
++  password: string | undefined = undefined
++
++  /**
++   * @param id - 任务 id（一次提交一个）。
++   * @param ticketId - 工单号。
++   * @param now - 注入的时钟，便于测试确定性。
++   */
++  constructor(id: string, ticketId: string, now: () => Date = () => new Date()) {
++    this.id = id
++    this.ticketId = ticketId
++    this.startedAt = now().toISOString()
++  }
++
++  /** 取消信号：直达传输与解压子进程。 */
++  get signal(): AbortSignal {
++    return this.abort.signal
++  }
++
++  /** 当前阶段快照，供 `inspect` 与首帧使用。 */
++  snapshot(): TicketJobState {
++    const state: TicketJobState = {
++      id: this.id,
++      ticketId: this.ticketId,
++      phase: this.phase,
++      startedAt: this.startedAt,
++    }
++    if (this.finishedAt !== undefined) state.finishedAt = this.finishedAt
++    if (this.extractedPath !== undefined) state.extractedPath = this.extractedPath
++    if (this.error !== undefined) state.error = this.error
++    return state
++  }
++
++  /** 切到新阶段并广播一帧 `status`。 */
++  transition(phase: TicketPhase): void {
++    this.phase = phase
++    this.push({ kind: 'status', phase, startedAt: this.startedAt })
++  }
++
++  /** 追加一帧并唤醒所有等待者。 */
++  push(frame: TicketFrame): void {
++    this.frames.push(frame)
++    if (this.frames.length > MAX_RETAINED_FRAMES) {
++      this.frames.shift()
++      this.droppedFrames += 1
++    }
++    for (const listener of this.listeners) listener()
++  }
++
++  /**
++   * 进入终态并唤醒等待者。
++   *
++   * 刻意**不**在这里推 `status` 帧：调用方已经先推了 `done`/`failed`，
++   * 再补一帧 status 会让"最后一帧"变成阶段而不是结果，客户端就得二次判断。
++   */
++  finish(phase: 'ready' | 'failed' | 'cancelled', error?: { code: TicketErrorCode; message: string }): void {
++    if (isTerminal(this.phase)) return
++    this.finishedAt = new Date().toISOString()
++    if (error !== undefined) this.error = error
++    this.phase = phase
++    for (const listener of this.listeners) listener()
++  }
++
++  /** 请求取消（幂等）。 */
++  cancel(): void {
++    if (!this.abort.signal.aborted) this.abort.abort(new Error('ticket job cancelled'))
++  }
++
++  /**
++   * 订阅该任务的帧流：先回放历史帧，再等新帧，终态后正常结束。
++   *
++   * 注意"流结束"不等于"任务成功" —— 调用方必须看最后一帧的 `kind`。
++   * @param signal - 订阅方生命周期；断开即停止等待，不取消任务本身。
++   */
++  async *follow(signal: AbortSignal): AsyncGenerator<TicketFrame> {
++    // 游标是绝对序号：缓冲区滑动后仍能算出窗口内位置；落后太多则跳到窗口起点。
++    let cursor = this.droppedFrames
++    for (;;) {
++      if (cursor < this.droppedFrames) cursor = this.droppedFrames
++      while (cursor < this.droppedFrames + this.frames.length) {
++        const frame = this.frames[cursor - this.droppedFrames]
++        cursor += 1
++        if (frame !== undefined) yield frame
++      }
++      if (isTerminal(this.phase) || signal.aborted) return
++      await this.waitForChange(signal)
++    }
++  }
++
++  /** 等下一帧或订阅方断开，二者都只唤醒一次。 */
++  private waitForChange(signal: AbortSignal): Promise<void> {
++    return new Promise<void>((resolve) => {
++      const wake = (): void => {
++        this.listeners.delete(wake)
++        signal.removeEventListener('abort', wake)
++        resolve()
++      }
++      this.listeners.add(wake)
++      signal.addEventListener('abort', wake, { once: true })
++    })
++  }
++}
+diff --git a/packages/api/ticket-sync/src/syncer.ts b/packages/api/ticket-sync/src/syncer.ts
+new file mode 100644
+index 00000000..a619887f
+--- /dev/null
++++ b/packages/api/ticket-sync/src/syncer.ts
+@@ -0,0 +1,230 @@
++/**
++ * 传输适配器：把"怎么把工单包搬到本地"隔离在一个两方法接口之后。
++ *
++ * 队列、状态机与界面都不关心传输形态；换实现只改这里。三个实现分别对应
++ * 三条已知路径：0.2 的只读 HTTP（主线、镜像零改动）、本地预置文件（测试与
++ * 无依赖联调）、ssh 拉取（HTTP 端口不被允许时的退路）。
++ * @module @deepseek-ai/dsh-api-ticket-sync/syncer
++ */
++
++import { spawn } from 'node:child_process'
++import { createWriteStream } from 'node:fs'
++import { copyFile, mkdir, rename, rm, stat as statFile } from 'node:fs/promises'
++import { dirname } from 'node:path'
++import { Readable, Transform } from 'node:stream'
++import { pipeline } from 'node:stream/promises'
++
++/** 传输进度回调；`total` 未知时只报已传字节。 */
++export type TransferProgress = (bytes: number, total?: number) => void
++
++/** 一次传输的结果。`stderrTail` 用于失败排障，不参与判定。 */
++export interface TransferResult {
++  size: number
++  stderrTail: string
++}
++
++/** 传输适配器契约：先能探大小（容量预检的前提），再能落地。 */
++export interface TicketSyncer {
++  /**
++   * 远端是否提供该工单及其字节数；不存在返回 null。
++   * 容量预检必须在传输前拿到大小，否则"超限"只能在传完之后才发现。
++   */
++  stat(ticketId: string): Promise<{ size: number } | null>
++  /**
++   * 把工单包落到 `destPath`（绝对路径）。实现必须自行保证：
++   * 断点续传走 `.part` 临时文件，成功后原子 `rename` —— 半成品不能出现在最终路径。
++   */
++  fetch(ticketId: string, destPath: string, signal: AbortSignal, onProgress: TransferProgress): Promise<TransferResult>
++}
++
++/** 保留的 stderr 尾部字节数：够排障，又不会被巨量输出撑爆内存。 */
++const STDERR_TAIL_BYTES = 4096
++
++/** 追加一段输出到有界尾部缓冲。 */
++function appendTail(current: string, chunk: string): string {
++  const merged = current + chunk
++  return merged.length > STDERR_TAIL_BYTES ? merged.slice(-STDERR_TAIL_BYTES) : merged
++}
++
++/**
++ * 只读 HTTP 源（主线）。
++ *
++ * 选它的理由是四条硬需求同时被满足：`HEAD` 拿 Content-Length（容量预检）、
++ * `Range` 断点续传（大包中断必需）、无凭据（私钥不进 Pod）、镜像零依赖。
++ */
++export class HttpSyncer implements TicketSyncer {
++  /**
++   * @param baseUrl - 远端只读根，形如 `http://192.168.0.2:8081`（不带尾斜杠）。
++   * @param fetchImpl - 可注入的 fetch，便于单测；默认用进程内置实现。
++   */
++  constructor(
++    private readonly baseUrl: string,
++    private readonly fetchImpl: typeof fetch = fetch,
++  ) {}
++
++  /** 工单包的远端 URL；路径由已校验的工单号拼成，不含用户可控片段。 */
++  private urlOf(ticketId: string): string {
++    return `${this.baseUrl.replace(/\/+$/, '')}/${ticketId}/${ticketId}.zip`
++  }
++
++  /** @inheritdoc */
++  async stat(ticketId: string): Promise<{ size: number } | null> {
++    const response = await this.fetchImpl(this.urlOf(ticketId), { method: 'HEAD' })
++    if (response.status === 404) return null
++    if (!response.ok) {
++      throw new Error(`远端探测失败：HTTP ${response.status}`)
++    }
++    const length = response.headers.get('content-length')
++    if (length === null) return { size: 0 }
++    return { size: Number.parseInt(length, 10) }
++  }
++
++  /** @inheritdoc */
++  async fetch(ticketId: string, destPath: string, signal: AbortSignal, onProgress: TransferProgress): Promise<TransferResult> {
++    await mkdir(dirname(destPath), { recursive: true })
++    const partPath = `${destPath}.part`
++    // 已下载的部分优先续传；size 为 0 表示还没开始。
++    const offset = await statFile(partPath).then(file => file.size, () => 0)
++    const headers: Record<string, string> = offset > 0 ? { Range: `bytes=${offset}-` } : {}
++    const response = await this.fetchImpl(this.urlOf(ticketId), { headers, signal })
++    if (response.status === 416) {
++      // 416 只说明「Range 无法满足」，不等于「.part 已完整」：远端文件可能
++      // 已被替换，旧 .part 就是一份损坏的前缀。必须比对远端长度后才能就位。
++      const remote = await this.stat(ticketId)
++      if (remote !== null && remote.size === offset) {
++        await rename(partPath, destPath)
++        return { size: offset, stderrTail: '' }
++      }
++      await rm(partPath, { force: true })
++      return this.fetch(ticketId, destPath, signal, onProgress)
++    }
++    if (response.status === 404) throw new Error('远端不存在该工单包')
++    if (!response.ok) throw new Error(`远端拒绝传输：HTTP ${response.status}`)
++    if (response.body === null) throw new Error('远端响应没有 body')
++
++    const totalHeader = response.headers.get('content-length')
++    const total = totalHeader === null ? undefined : Number.parseInt(totalHeader, 10) + offset
++    let received = offset
++    const counter = new Transform({
++      transform(chunk: Buffer, _encoding, callback) {
++        received += chunk.byteLength
++        onProgress(received, total)
++        callback(null, chunk)
++      },
++    })
++    const sink = createWriteStream(partPath, { flags: offset > 0 ? 'a' : 'w' })
++    // Node 的类型里 fetch body 是 web ReadableStream，需显式转换。
++    await pipeline(Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]), counter, sink)
++    await rename(partPath, destPath)
++    return { size: received, stderrTail: '' }
++  }
++}
++
++/**
++ * 本地预置文件源（测试与无依赖联调用）。
++ *
++ * 它让整条链路（队列 → 解压 → 就位 → 登记 workspace）可以在没有 0.2、
++ * 没有 HTTP 服务的情况下被端到端验证，也是 Pod 重建后"重解不重传"的兜底。
++ */
++export class LocalFileSyncer implements TicketSyncer {
++  /** @param sourceDir - 预置工单包目录，其下为 `<id>/<id>.zip`。 */
++  constructor(private readonly sourceDir: string) {}
++
++  /** @inheritdoc */
++  async stat(ticketId: string): Promise<{ size: number } | null> {
++    const path = `${this.sourceDir}/${ticketId}/${ticketId}.zip`
++    return statFile(path).then(file => ({ size: file.size }), () => null)
++  }
++
++  /** @inheritdoc */
++  async fetch(ticketId: string, destPath: string, _signal: AbortSignal, onProgress: TransferProgress): Promise<TransferResult> {
++    const source = `${this.sourceDir}/${ticketId}/${ticketId}.zip`
++    await mkdir(dirname(destPath), { recursive: true })
++    await copyFile(source, destPath)
++    const size = await statFile(destPath).then(file => file.size, () => 0)
++    onProgress(size, size)
++    return { size, stderrTail: '' }
++  }
++}
++
++/**
++ * ssh 拉取源（退路）。
++ *
++ * 只在"0.2 不允许新开 HTTP 端口"时启用。用 `ssh cat` 而不是 rsync：容器里
++ * 只需 openssh-client，少一个依赖；断点续传由本地 `.part` 的字节偏移做不到
++ * （远端 cat 无法定位），因此该实现**不支持续传**，中断即从头再来 —— 这是
++ * 退路的能力缺口，必须在文档里写明。
++ */
++export class SshSyncer implements TicketSyncer {
++  /**
++   * @param options - 远端主机、端口、用户与远端根目录。
++   */
++  constructor(private readonly options: {
++    host: string
++    port: number
++    user: string
++    remoteRoot: string
++    /** 私钥路径；缺省用 ssh-agent 或默认密钥。 */
++    identityFile?: string
++  }) {}
++
++  /** 远端文件路径；工单号已由调用方校验。 */
++  private remotePathOf(ticketId: string): string {
++    return `${this.options.remoteRoot.replace(/\/+$/, '')}/${ticketId}/${ticketId}.zip`
++  }
++
++  /** ssh 的公共参数（BatchMode 保证不会卡在交互提示上）。 */
++  private sshArgs(command: string[]): string[] {
++    const args = ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-p', String(this.options.port)]
++    if (this.options.identityFile !== undefined) args.push('-i', this.options.identityFile)
++    args.push(`${this.options.user}@${this.options.host}`, ...command)
++    return args
++  }
++
++  /** @inheritdoc */
++  async stat(ticketId: string): Promise<{ size: number } | null> {
++    const args = this.sshArgs(['stat', '-c', '%s', this.remotePathOf(ticketId)])
++    const child = spawn('ssh', args, { stdio: ['ignore', 'pipe', 'pipe'] })
++    let out = ''
++    let err = ''
++    child.stdout.on('data', (chunk: Buffer) => { out += chunk.toString() })
++    child.stderr.on('data', (chunk: Buffer) => { err = appendTail(err, chunk.toString()) })
++    const code = await new Promise<number | null>(resolve => child.on('close', resolve))
++    if (code !== 0) {
++      // stat 失败就是"没有这个文件"或"连不上"，两者都按不存在处理，由 fetch 再报细节。
++      if (err.includes('No such file')) return null
++      return null
++    }
++    const size = Number.parseInt(out.trim(), 10)
++    return Number.isNaN(size) ? null : { size }
++  }
++
++  /** @inheritdoc */
++  async fetch(ticketId: string, destPath: string, signal: AbortSignal, onProgress: TransferProgress): Promise<TransferResult> {
++    await mkdir(dirname(destPath), { recursive: true })
++    const partPath = `${destPath}.part`
++    const args = this.sshArgs(['cat', this.remotePathOf(ticketId)])
++    const child = spawn('ssh', args, { stdio: ['ignore', 'pipe', 'pipe'] })
++    let stderrTail = ''
++    let received = 0
++    child.stderr.on('data', (chunk: Buffer) => { stderrTail = appendTail(stderrTail, chunk.toString()) })
++    const counter = new Transform({
++      transform(chunk: Buffer, _encoding, callback) {
++        received += chunk.byteLength
++        onProgress(received)
++        callback(null, chunk)
++      },
++    })
++    const abort = (): void => { child.kill('SIGTERM') }
++    signal.addEventListener('abort', abort, { once: true })
++    try {
++      await pipeline(child.stdout, counter, createWriteStream(partPath))
++      const code = await new Promise<number | null>(resolve => child.on('close', resolve))
++      if (code !== 0) throw new Error(`ssh 退出码 ${String(code)}：${stderrTail}`)
++      await rename(partPath, destPath)
++      return { size: received, stderrTail }
++    } finally {
++      signal.removeEventListener('abort', abort)
++    }
++  }
++}
+diff --git a/packages/api/ticket-sync/src/types.ts b/packages/api/ticket-sync/src/types.ts
+new file mode 100644
+index 00000000..8011652c
+--- /dev/null
++++ b/packages/api/ticket-sync/src/types.ts
+@@ -0,0 +1,121 @@
++/**
++ * 工单同步的协议面：Remote 请求/响应、进度帧、阶段与错误码。
++ *
++ * 这里只放类型与唯一常量，不放运行时逻辑 —— 客户端编译面会直接引用它，
++ * 任何 `node:` 导入都会把宿主实现泄漏进浏览器包。
++ * @module @deepseek-ai/dsh-api-ticket-sync/types
++ */
++
++/** 一次同步任务所处的阶段。终态是 `ready` / `failed` / `cancelled`。 */
++export type TicketPhase =
++  | 'queued'
++  | 'verifying'
++  | 'syncing'
++  | 'extracting'
++  | 'ready'
++  | 'failed'
++  | 'cancelled'
++
++/**
++ * 失败词汇表（闭集）。客户端只按 code 判别，不解析 message；
++ * 新增分类必须同时更新这里与控制器里的极射表。
++ */
++export type TicketErrorCode =
++  /** 工单号不匹配 `^Q\d{13}$`，或拼出的路径越出工单根。 */
++  | 'ticket/invalid-id'
++  /** 远端没有该工单目录或压缩包。 */
++  | 'ticket/not-found'
++  /** 远端压缩包超过 `maxTicketBytes`，传输前即拒绝。 */
++  | 'ticket/too-large'
++  /** 本地剩余空间不足以容纳"压缩包 + 按上界预估的展开量"。 */
++  | 'ticket/insufficient-storage'
++  /** 未提供密码，或密码预校验失败。 */
++  | 'ticket/bad-password'
++  /** 压缩包结构损坏（含 1 字节占位包）。 */
++  | 'ticket/archive-corrupt'
++  /** 解压过程中触达 `maxExtractBytes` 或剩余空间低于 `minFreeBytes`。 */
++  | 'ticket/space-exceeded'
++  /** 解出的文件数超过 `maxFiles`，防止打穿 inode 与索引预算。 */
++  | 'ticket/too-many-files'
++  /** 串行队列已满。 */
++  | 'ticket/busy'
++  /** 传输失败或中断（附远端 stderr 尾部）。 */
++  | 'ticket/sync-failed'
++  /** 条目含穿越路径、解压非零退出、或递归后条目数对不上。 */
++  | 'ticket/extract-failed'
++  /** 操作者取消，或连接断开后超过收尾时限。 */
++  | 'ticket/cancelled'
++
++/** 提交一次同步。`password` 缺省时回落到服务端配置的默认密码。 */
++export interface TicketSubmitRequest {
++  /** 工单号：`Q` + 13 位数字。 */
++  ticketId: string
++  /** zip 密码；只驻留内存，不落盘、不入日志。 */
++  password?: string
++}
++
++/** 提交结果：任务句柄与返回时刻的阶段（通常是 `queued`）。 */
++export interface TicketSubmitValue {
++  jobId: string
++  phase: TicketPhase
++}
++
++/** 密码预校验请求。 */
++export interface TicketVerifyRequest {
++  ticketId: string
++  password: string
++}
++
++/** 密码预校验结果。`reason` 只在 `ok=false` 且不是密码错误时出现。 */
++export interface TicketVerifyValue {
++  ok: boolean
++  reason?: 'no-archive' | 'archive-corrupt'
++}
++
++/** 取消结果。 */
++export interface TicketCancelValue {
++  outcome: 'requested' | 'already-finished'
++}
++
++/** 页面重进时的恢复视图。 */
++export interface TicketInspectValue {
++  /** 该工单最近一次仍未终态或已终态的任务（若有）。 */
++  job?: { jobId: string; phase: TicketPhase }
++  /** 仅当 `extract/` 已完整就位时给出绝对路径。 */
++  extractedPath?: string
++}
++
++/** 一个本地已占用工单的体积与最近使用时间。 */
++export interface TicketUsageRow {
++  ticketId: string
++  bytes: number
++  lastUsedAt: string
++}
++
++/** 容量治理快照。 */
++export interface TicketUsageValue {
++  tickets: TicketUsageRow[]
++}
++
++/** 删除结果。 */
++export interface TicketRemoveValue {
++  removed: boolean
++}
++
++/**
++ * 进度流的一帧。
++ *
++ * 首帧一定是 `status`（当前阶段快照），终态帧（`done`/`failed`）之后流正常关闭；
++ * 客户端据此把"流结束"与"任务成功"区分开 —— 流结束本身不代表成功。
++ */
++export type TicketFrame =
++  | { kind: 'status'; phase: TicketPhase; startedAt: string }
++  /** 同步器或解压器的输出尾部（限长，仅用于排障展示）。 */
++  | { kind: 'log'; chunk: string }
++  /** 字节进度；`total` 未知时客户端只显示已传量。 */
++  | { kind: 'progress'; bytes: number; total?: number; files: number }
++  | { kind: 'done'; extractedPath: string; bytes: number; durationMs: number }
++  | { kind: 'failed'; code: TicketErrorCode; message: string }
++
++/** 工单号的唯一权威格式：`Q` + 13 位 ASCII 数字。 */
++export const TICKET_ID_PATTERN = /^Q\d{13}$/
+diff --git a/packages/api/ticket-sync/tests/extract.spec.ts b/packages/api/ticket-sync/tests/extract.spec.ts
+new file mode 100644
+index 00000000..8bda78a7
+--- /dev/null
++++ b/packages/api/ticket-sync/tests/extract.spec.ts
+@@ -0,0 +1,171 @@
++/**
++ * 解压器与帧流的回归测试：不需要构建，也不需要网络。
++ *
++ * 这些用例覆盖的是「会静默交付坏数据」或「会把分区写满」的路径，
++ * 因此断言的是**产物形态**（文件是否在预期位置、是否残留压缩包、
++ * 是否写了完成标记），而不是命令是否成功退出。
++ *
++ * 依赖宿主的 `zip`/`tar`：加密 zip 只能由 `zip -P` 生成（Node 侧没有
++ * 内置的 ZipCrypto 写入能力）。缺失时整组跳过，避免在精简 CI 镜像里误报。
++ */
++import { execFile } from 'node:child_process'
++import { existsSync } from 'node:fs'
++import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { promisify } from 'node:util'
++import { afterAll, beforeAll, describe, expect, it } from 'vitest'
++import { ExtractError, extractToLeaf, isReady, promote } from '../src/extractor.ts'
++import type { ExtractLimits } from '../src/extractor.ts'
++import { TicketJob } from '../src/queue.ts'
++
++const exec = promisify(execFile)
++const PASSWORD = 'TestPass123'
++const TICKET = 'Q2026012500018'
++
++const dirs: string[] = []
++let workdir = ''
++let goodZip = ''
++let linkZip = ''
++let toolsReady = true
++
++/** 递归列出相对路径，用于断言产物形态。 */
++async function walk(dir: string, prefix = ''): Promise<string[]> {
++  const out: string[] = []
++  for (const entry of await readdir(dir, { withFileTypes: true })) {
++    const rel = prefix === '' ? entry.name : `${prefix}/${entry.name}`
++    if (entry.isDirectory()) out.push(...await walk(join(dir, entry.name), rel))
++    else out.push(rel)
++  }
++  return out.sort()
++}
++
++/** 造一个三层嵌套的加密工单包：zip → sp.tgz → cmd-output/*.tar.gz。 */
++async function buildGoodZip(root: string): Promise<string> {
++  const source = join(root, 'good')
++  const payload = join(root, 'payload')
++  await mkdir(join(source, 'sf/log'), { recursive: true })
++  await mkdir(join(source, 'cmd-output'), { recursive: true })
++  await mkdir(join(payload, 'sf/data/local/raidlog'), { recursive: true })
++  await writeFile(join(source, 'log_list.json'), '{"items":["/sf/log/boot.log"]}')
++  await writeFile(join(source, 'collect_record.txt'), 'record')
++  await writeFile(join(source, 'sf/log/boot.log'), 'boot ok')
++  await writeFile(join(payload, 'sf/data/local/raidlog/LOG_iostat.txt'), 'iostat body')
++  await exec('tar', ['-czf', join(source, 'cmd-output/log_slow_disk_1.tar.gz'), '-C', payload, 'sf'])
++  await exec('tar', ['-czf', join(source, 'sp_10.0.0.1.tgz'), '-C', source, 'sf', 'cmd-output'])
++  await exec('zip', ['-q', '-P', PASSWORD, '-r', join(root, `${TICKET}.zip`), '.'], { cwd: source })
++  return join(root, `${TICKET}.zip`)
++}
++
++/** 造一个含符号链接的包：解压前必须被拒绝，否则会写到 workspace 之外。 */
++async function buildLinkZip(root: string): Promise<string> {
++  const source = join(root, 'bad')
++  await mkdir(join(source, 'sf/log'), { recursive: true })
++  await exec('ln', ['-sf', '/etc/passwd', join(source, 'sf/log/evil')])
++  await writeFile(join(source, 'log_list.json'), '{}')
++  await exec('tar', ['-czf', join(source, 'sp_10.0.0.9.tgz'), '-C', source, 'sf'])
++  await exec('zip', ['-q', '-P', PASSWORD, '-r', join(root, 'Q2026012500019.zip'), '.'], { cwd: source })
++  return join(root, 'Q2026012500019.zip')
++}
++
++/** 默认限制：测试环境不设水位红线，只关心中间态。 */
++function limits(overrides: Partial<ExtractLimits> = {}): ExtractLimits {
++  return { maxExtractBytes: 1e9, minFreeBytes: 1, maxFiles: 50_000, maxDepth: 4, ...overrides }
++}
++
++beforeAll(async () => {
++  workdir = await mkdtemp(join(tmpdir(), 'ticket-extract-'))
++  dirs.push(workdir)
++  try {
++    await exec('zip', ['-v'])
++    await exec('tar', ['--version'])
++    goodZip = await buildGoodZip(workdir)
++    linkZip = await buildLinkZip(workdir)
++  } catch {
++    toolsReady = false
++  }
++})
++
++afterAll(async () => {
++  await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })))
++})
++
++describe('extractToLeaf', () => {
++  it('递归解到叶子，且不残留压缩包', async () => {
++    if (!toolsReady) return
++    const target = join(workdir, 'out-1.tmp')
++    const layers: string[] = []
++    const result = await extractToLeaf(
++      goodZip,
++      target,
++      PASSWORD,
++      limits(),
++      new AbortController().signal,
++      info => layers.push(`L${String(info.depth)}:${info.archive}`),
++    )
++    const files = await walk(target)
++    expect(files).toContain('log_list.json')
++    expect(files).toContain('sp_10.0.0.1/sf/log/boot.log')
++    // 第三层：tgz 里的 cmd-output/*.tar.gz 必须继续展开，否则慢盘工单交付残缺目录
++    expect(files).toContain('sp_10.0.0.1/cmd-output/log_slow_disk_1/sf/data/local/raidlog/LOG_iostat.txt')
++    expect(files.some(file => file.endsWith('.tgz') || file.endsWith('.tar.gz'))).toBe(false)
++    expect(result.depth).toBeGreaterThanOrEqual(3)
++    expect(layers.length).toBeGreaterThanOrEqual(2)
++  })
++
++  it('就位后写 .ready 标记（workspace 只认这个标记）', async () => {
++    if (!toolsReady) return
++    const target = join(workdir, 'out-2')
++    await promote(join(workdir, 'out-1.tmp'), target)
++    expect(await isReady(target)).toBe(true)
++    expect(existsSync(join(target, '.ready'))).toBe(true)
++  })
++
++  it('含符号链接的归档在解压前被拒绝', async () => {
++    if (!toolsReady) return
++    const target = join(workdir, 'out-3.tmp')
++    await expect(extractToLeaf(
++      linkZip,
++      target,
++      PASSWORD,
++      limits(),
++      new AbortController().signal,
++      () => undefined,
++    )).rejects.toThrow(/链接/)
++  })
++
++  it('解压总量越过上限时报 space-exceeded 而不是返回半成品', async () => {
++    if (!toolsReady) return
++    const target = join(workdir, 'out-4.tmp')
++    await expect(extractToLeaf(
++      goodZip,
++      target,
++      PASSWORD,
++      limits({ maxExtractBytes: 10 }),
++      new AbortController().signal,
++      () => undefined,
++    )).rejects.toBeInstanceOf(ExtractError)
++  })
++})
++
++describe('TicketJob 帧流', () => {
++  /**
++   * 缓冲只保留 200 帧；用数组下标当游标会让订阅方在滑窗后永远停在窗口外，
++   * 表现是「进度卡住且收不到 done」。这里直接压 300 帧复现该边界。
++   */
++  it('滑窗后仍然能收到终态帧', async () => {
++    const job = new TicketJob('job-1', TICKET)
++    for (let index = 0; index < 300; index += 1) {
++      job.push({ kind: 'log', chunk: `line-${String(index)}` })
++    }
++    job.push({ kind: 'done', extractedPath: '/x', bytes: 1, durationMs: 1 })
++    job.finish('ready')
++
++    const kinds: string[] = []
++    for await (const frame of job.follow(new AbortController().signal)) {
++      kinds.push(frame.kind)
++      if (frame.kind === 'done') break
++    }
++    expect(kinds).toContain('done')
++  })
++})
+diff --git a/packages/api/ticket-sync/tests/fixtures.ts b/packages/api/ticket-sync/tests/fixtures.ts
+new file mode 100644
+index 00000000..366d9211
+--- /dev/null
++++ b/packages/api/ticket-sync/tests/fixtures.ts
+@@ -0,0 +1,75 @@
++/**
++ * 归档 fixture 工厂：一次生成、进程内复用。
++ *
++ * 为什么不在每个用例里现造：造包要调 `zip -P`/`tar`，单个用例几十毫秒看起来
++ * 不多，但一旦想跑「改一行 → 立刻回归」的循环就会变成主要开销。这里用
++ * `beforeAll` 生成一次，并让多个 spec 共享同一份目录。
++ *
++ * 同时提供 `zipAvailable()`：加密 zip 只能由系统 `zip` 生成（Node 侧没有
++ * ZipCrypto 写入能力），精简镜像里缺这个二进制时整组用例应跳过而不是误报。
++ */
++import { execFile } from 'node:child_process'
++import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { promisify } from 'node:util'
++
++const exec = promisify(execFile)
++
++/** fixture 密码：与生产 Secret 无关，仅用于测试。 */
++export const PASSWORD = 'TestPass123'
++
++/** 一套 fixture 的绝对路径。 */
++export interface TicketFixtures {
++  /** 三层嵌套：zip → sp_*.tgz → cmd-output/*.tar.gz。 */
++  nested: string
++  /** tgz 内含指向 /etc/passwd 的符号链接。 */
++  link: string
++  /** 1 字节占位包（真实环境里存在）。 */
++  corrupt: string
++  /** 清理整个 fixture 根目录。 */
++  dispose: () => Promise<void>
++}
++
++/** 系统是否提供 zip（缺失时相关用例跳过）。 */
++export async function zipAvailable(): Promise<boolean> {
++  return exec('zip', ['-v']).then(() => true, () => false)
++}
++
++/**
++ * 生成全套 fixture。
++ * @returns 各包的绝对路径与清理函数。
++ */
++export async function buildTicketFixtures(): Promise<TicketFixtures> {
++  const root = await mkdtemp(join(tmpdir(), 'ticket-fixtures-'))
++
++  const good = join(root, 'good')
++  const payload = join(root, 'payload')
++  await mkdir(join(good, 'sf/log'), { recursive: true })
++  await mkdir(join(good, 'cmd-output'), { recursive: true })
++  await mkdir(join(payload, 'sf/data/local/raidlog'), { recursive: true })
++  await writeFile(join(good, 'log_list.json'), '{"items":["/sf/log/boot.log"]}')
++  await writeFile(join(good, 'collect_record.txt'), 'record')
++  await writeFile(join(good, 'sf/log/boot.log'), 'boot ok')
++  await writeFile(join(payload, 'sf/data/local/raidlog/LOG_iostat.txt'), 'iostat body')
++  await exec('tar', ['-czf', join(good, 'cmd-output/log_slow_disk_1.tar.gz'), '-C', payload, 'sf'])
++  await exec('tar', ['-czf', join(good, 'sp_10.0.0.1.tgz'), '-C', good, 'sf', 'cmd-output'])
++  await exec('zip', ['-q', '-P', PASSWORD, '-r', join(root, 'nested.zip'), '.'], { cwd: good })
++
++  const bad = join(root, 'bad')
++  await mkdir(join(bad, 'sf/log'), { recursive: true })
++  await exec('ln', ['-sf', '/etc/passwd', join(bad, 'sf/log/evil')])
++  await writeFile(join(bad, 'log_list.json'), '{}')
++  await exec('tar', ['-czf', join(bad, 'sp_10.0.0.9.tgz'), '-C', bad, 'sf'])
++  await exec('zip', ['-q', '-P', PASSWORD, '-r', join(root, 'link.zip'), '.'], { cwd: bad })
++
++  const corrupt = join(root, 'corrupt.zip')
++  await writeFile(corrupt, 'x')
++
++  return {
++    nested: join(root, 'nested.zip'),
++    link: join(root, 'link.zip'),
++    corrupt,
++    dispose: () => rm(root, { recursive: true, force: true }),
++  }
++}
+diff --git a/packages/api/ticket-sync/tests/service.spec.ts b/packages/api/ticket-sync/tests/service.spec.ts
+new file mode 100644
+index 00000000..6e81f445
+--- /dev/null
++++ b/packages/api/ticket-sync/tests/service.spec.ts
+@@ -0,0 +1,128 @@
++/**
++ * 工单同步服务的宿主侧行为：入队、终态帧、错误分类与容量门槛。
++ *
++ * 故意不碰真实网络：`local` 同步器把"远端"换成本地目录 —— 目录里没有包
++ * 本身是一条有用的失败路径（not-found），而"包在但不该继续"的分支由缺密码
++ * 的用例覆盖。
++ */
++import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
++import { tmpdir } from 'node:os'
++import { join } from 'node:path'
++import { Context } from '@deepseek-ai/cordis'
++import { afterEach, describe, expect, it } from 'vitest'
++import TicketSyncService from '../src/index.ts'
++import type { Config } from '../src/index.ts'
++import type { TicketFrame } from '../src/types.ts'
++
++const TICKET = 'Q2026012500018'
++
++const contexts: Context[] = []
++const dirs: string[] = []
++
++afterEach(async () => {
++  await Promise.all(contexts.splice(0).map(ctx => ctx.fiber.dispose()))
++  await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })))
++})
++
++/** 造一个用本地同步器的服务与它的临时根目录。 */
++async function fixture(overrides: Config = {}) {
++  const root = await mkdtemp(join(tmpdir(), 'ticket-sync-'))
++  dirs.push(root)
++  const ctx = new Context()
++  contexts.push(ctx)
++  const service = new TicketSyncService(ctx, {
++    syncer: 'local',
++    sourceDir: join(root, 'source'),
++    ticketsRoot: join(root, 'tickets'),
++    minFreeBytes: 0,
++    ...overrides,
++  })
++  return { ctx, service, root }
++}
++
++/**
++ * 收完一次任务的帧。
++ * @param service - 同步服务。
++ * @param jobId - 任务 id。
++ * @returns 服务端重放的全部帧（终态后流自动关闭）。
++ */
++async function drainFrames(service: TicketSyncService, jobId: string): Promise<TicketFrame[]> {
++  const job = service.jobOf(jobId)
++  if (job === undefined) throw new Error(`unknown job ${jobId}`)
++  const frames: TicketFrame[] = []
++  for await (const frame of job.follow(AbortSignal.timeout(10_000))) {
++    frames.push(frame)
++    if (frame.kind === 'done' || frame.kind === 'failed') break
++  }
++  return frames
++}
++
++describe('TicketSyncService 入队与终态', () => {
++  it('把远端缺失报成 not-found 终态帧，并让流在终态后关闭', async () => {
++    const { service } = await fixture()
++    const { jobId } = await service.submit({ ticketId: TICKET })
++    const frames = await drainFrames(service, jobId)
++    expect(frames.at(-1)).toMatchObject({ kind: 'failed', code: 'ticket/not-found' })
++    expect(service.jobOf(jobId)?.phase).toBe('failed')
++  })
++
++  it('失败的任务不会被复用：重试拿到的是一次新的执行', async () => {
++    const { service } = await fixture()
++    const first = await service.submit({ ticketId: TICKET })
++    await drainFrames(service, first.jobId)
++    const second = await service.submit({ ticketId: TICKET })
++    expect(second.jobId).not.toBe(first.jobId)
++    // 索引仍然指向最近一次执行，inspect 才不会读到旧结论。
++    expect(service.jobOfTicket(TICKET)?.id).toBe(second.jobId)
++  })
++
++  it('拒绝格式非法的工单号', async () => {
++    const { service } = await fixture()
++    await expect(service.submit({ ticketId: '../../etc' })).rejects.toMatchObject({ code: 'ticket/invalid-id' })
++  })
++
++  it('队列满时拒绝新工单而不是无限排队', async () => {
++    const { service } = await fixture({ queueLimit: 0 })
++    await expect(service.submit({ ticketId: TICKET })).rejects.toMatchObject({ code: 'ticket/busy' })
++  })
++
++  it('存储根不可写时在入队前就说清楚', async () => {
++    // 用一个普通文件当父目录：mkdir 会立刻 ENOTDIR，而不是依赖某个平台的
++    // 权限模型（/proc 之类的路径在不同环境里行为不一致，会把用例拖到超时）。
++    const root = await mkdtemp(join(tmpdir(), 'ticket-sync-'))
++    dirs.push(root)
++    await writeFile(join(root, 'blocker'), 'x')
++    const ctx = new Context()
++    contexts.push(ctx)
++    const service = new TicketSyncService(ctx, {
++      syncer: 'local',
++      sourceDir: join(root, 'source'),
++      ticketsRoot: join(root, 'blocker', 'tickets'),
++      minFreeBytes: 0,
++    })
++    await expect(service.submit({ ticketId: TICKET }))
++      .rejects.toMatchObject({ code: 'ticket/insufficient-storage' })
++  })
++
++  it('空存储根的空用量表不是错误', async () => {
++    const { service } = await fixture()
++    await expect(service.usage()).resolves.toEqual({ tickets: [] })
++  })
++
++  it('删除未知工单是幂等的空操作', async () => {
++    const { service } = await fixture()
++    await expect(service.remove(TICKET)).resolves.toEqual({ removed: false })
++  })
++})
++
++describe('TicketSyncService 失败分类', () => {
++  it('包已落地但没有可用密码时按 bad-password 失败', async () => {
++    const { service, root } = await fixture({ defaultPassword: '' })
++    const packageDir = join(root, 'source', TICKET)
++    await mkdir(packageDir, { recursive: true })
++    await mkdir(join(root, 'tickets'), { recursive: true })
++    await writeFile(join(packageDir, `${TICKET}.zip`), 'not a zip')
++    const { jobId } = await service.submit({ ticketId: TICKET })
++    expect((await drainFrames(service, jobId)).at(-1)).toMatchObject({ kind: 'failed', code: 'ticket/bad-password' })
++  })
++})
+diff --git a/packages/api/ticket-sync/tsconfig.client.json b/packages/api/ticket-sync/tsconfig.client.json
+new file mode 100644
+index 00000000..1839b4b2
+--- /dev/null
++++ b/packages/api/ticket-sync/tsconfig.client.json
+@@ -0,0 +1,14 @@
++{
++  "extends": "../../../tsconfig.base.client.json",
++  "compilerOptions": {
++    "rootDir": "src",
++    "outDir": "lib/types",
++    "tsBuildInfoFile": "lib/tsconfig.client.tsbuildinfo"
++  },
++  "files": [
++    "src/types.ts"
++  ],
++  "references": [
++    { "path": "../../../vendor/cordis" }
++  ]
++}
+diff --git a/packages/api/ticket-sync/tsconfig.host.json b/packages/api/ticket-sync/tsconfig.host.json
+new file mode 100644
+index 00000000..6d06181b
+--- /dev/null
++++ b/packages/api/ticket-sync/tsconfig.host.json
+@@ -0,0 +1,20 @@
++{
++  "extends": "../../../tsconfig.base.json",
++  "compilerOptions": {
++    "rootDir": "src",
++    "outDir": "lib/types",
++    "tsBuildInfoFile": "lib/tsconfig.host.tsbuildinfo"
++  },
++  "files": [
++    "src/index.ts",
++    "src/client/index.ts",
++    "src/types.ts",
++    "src/queue.ts",
++    "src/syncer.ts",
++    "src/extractor.ts"
++  ],
++  "references": [
++    { "path": "../../../vendor/cordis" },
++    { "path": "../../typert/protocol" }
++  ]
++}
+diff --git a/packages/api/ticket-sync/tsconfig.json b/packages/api/ticket-sync/tsconfig.json
+new file mode 100644
+index 00000000..2a0b0e33
+--- /dev/null
++++ b/packages/api/ticket-sync/tsconfig.json
+@@ -0,0 +1,7 @@
++{
++  "files": [],
++  "references": [
++    { "path": "./tsconfig.host.json" },
++    { "path": "./tsconfig.client.json" }
++  ]
++}
+diff --git a/packages/api/ticket-sync/tsdown.config.ts b/packages/api/ticket-sync/tsdown.config.ts
+new file mode 100644
+index 00000000..0e42a116
+--- /dev/null
++++ b/packages/api/ticket-sync/tsdown.config.ts
+@@ -0,0 +1,7 @@
++import { clientBundle } from '../../client/tsdown.client.ts'
++
++export default clientBundle(
++  import.meta.dirname,
++  ['lib/types/index.js'],
++  { hostPhase: true },
++)
+diff --git a/packages/bundle/web-app/cordis.patch.yml b/packages/bundle/web-app/cordis.patch.yml
+index a56cda5e..165fcec0 100644
+--- a/packages/bundle/web-app/cordis.patch.yml
++++ b/packages/bundle/web-app/cordis.patch.yml
+@@ -154,6 +154,10 @@
+     - id: workspace-controller
+       name: '@deepseek-ai/dsh-api-workspace-controller'
+ 
++    # 工单日志同步：从远端拉取加密包、递归解压到叶子，把目录交给客户端登记为工作区。
++    - id: ticket-sync
++      name: '@deepseek-ai/dsh-api-ticket-sync'
++
+     - id: cordis-host-runner
+       name: '@deepseek-ai/dsh-cordis-host-runner'
+ 
+@@ -361,6 +365,10 @@
+     - id: ui-workspace
+       name: '@deepseek-ai/dsh-client-ui-workspace'
+ 
++    # 工单入口：与目录选择器共用同一个"添加工作区"菜单，客户端半边由 dsh.client 声明发现。
++    - id: ui-ticket-sync
++      name: '@deepseek-ai/dsh-client-ui-ticket-sync'
++
+     # Durable workflow lifecycle as an independent Chat node after the
+     # existing generic workflow tool row.
+     - id: ui-workflow-run
+diff --git a/packages/bundle/web-app/package.json b/packages/bundle/web-app/package.json
+index b466b32f..e51c2692 100644
+--- a/packages/bundle/web-app/package.json
++++ b/packages/bundle/web-app/package.json
+@@ -65,6 +65,7 @@
+     "@deepseek-ai/dsh-api-settings-controller": "workspace:*",
+     "@deepseek-ai/dsh-api-terminal-controller": "workspace:*",
+     "@deepseek-ai/dsh-api-workspace-controller": "workspace:*",
++    "@deepseek-ai/dsh-api-ticket-sync": "workspace:*",
+     "@deepseek-ai/dsh-api-workspace-files": "workspace:*",
+     "@deepseek-ai/dsh-app-boot": "workspace:*",
+     "@deepseek-ai/dsh-client-connection": "workspace:*",
+@@ -123,6 +124,7 @@
+     "@deepseek-ai/dsh-client-ui-user-questions": "workspace:*",
+     "@deepseek-ai/dsh-client-ui-workflow-run": "workspace:*",
+     "@deepseek-ai/dsh-client-ui-workspace": "workspace:*",
++    "@deepseek-ai/dsh-client-ui-ticket-sync": "workspace:*",
+     "@deepseek-ai/dsh-cmdline": "workspace:*",
+     "@deepseek-ai/dsh-command-compact": "workspace:*",
+     "@deepseek-ai/dsh-command-goal": "workspace:*",
+diff --git a/packages/client/ui-ticket-sync/package.json b/packages/client/ui-ticket-sync/package.json
+new file mode 100644
+index 00000000..df322872
+--- /dev/null
++++ b/packages/client/ui-ticket-sync/package.json
+@@ -0,0 +1,56 @@
++{
++  "name": "@deepseek-ai/dsh-client-ui-ticket-sync",
++  "description": "工单号入口：输入工单号同步远端日志并递归解压，成功后把解压目录交给 workspace 选择器",
++  "version": "0.2.1-rc.2",
++  "private": true,
++  "type": "module",
++  "main": "lib/index.js",
++  "types": "lib/types/index.d.ts",
++  "exports": {
++    ".": {
++      "types": "./lib/types/index.d.ts",
++      "default": "./lib/index.js"
++    },
++    "./client": {
++      "types": "./lib/types/client/index.d.ts",
++      "default": "./lib/client.js"
++    },
++    "./src/*": "./src/*",
++    "./package.json": "./package.json",
++    "./locale/*.json": "./locale/*.json"
++  },
++  "dsh": {
++    "client": {
++      "inject": [
++        "@deepseek-ai/dsh-api-remotes",
++        "@deepseek-ai/dsh-client-ui-renderer",
++        "@deepseek-ai/dsh-client-ui-workspace",
++        "@deepseek-ai/dsh-client-locale"
++      ],
++      "platform": "web"
++    }
++  },
++  "scripts": {
++    "bundle": "tsdown",
++    "watch": "tsdown --watch"
++  },
++  "files": [
++    "locale/*.json",
++    "lib/index.js",
++    "lib/client.js",
++    "lib/types/**/*.d.ts"
++  ],
++  "license": "MIT",
++  "peerDependencies": {
++    "@deepseek-ai/cordis": "workspace:~"
++  },
++  "devDependencies": {
++    "@deepseek-ai/cordis": "workspace:~",
++    "@deepseek-ai/dsh-api-remotes": "workspace:*",
++    "@deepseek-ai/dsh-api-ticket-sync": "workspace:*",
++    "@deepseek-ai/dsh-client-locale": "workspace:*",
++    "@deepseek-ai/dsh-client-ui-renderer": "workspace:*",
++    "@deepseek-ai/dsh-client-ui-workspace": "workspace:*",
++    "react": "^18.2.0"
++  }
++}
+diff --git a/packages/client/ui-ticket-sync/src/client/TicketSyncDialog.tsx b/packages/client/ui-ticket-sync/src/client/TicketSyncDialog.tsx
+new file mode 100644
+index 00000000..6d12c659
+--- /dev/null
++++ b/packages/client/ui-ticket-sync/src/client/TicketSyncDialog.tsx
+@@ -0,0 +1,262 @@
++/**
++ * 工单号对话框：输入 → 进度 → 就位，三段在同一面板里推进。
++ *
++ * 为什么不自动关闭也不做多步向导：整个过程是一个不可中断的长任务，
++ * 操作者需要看到"传到多少、解到第几层、为什么失败"；一次误关就意味着
++ * 重新传一个可能上 G 的包。
++ * @module @deepseek-ai/dsh-client-ui-ticket-sync/client/TicketSyncDialog
++ */
++
++import { useCallback, useEffect, useRef, useState } from 'react'
++import type { TicketFrame, TicketPhase } from './protocol.ts'
++import type { DirectoryFlowOwnerProps, TicketFlowInjected } from './flow.ts'
++
++/** 与服务端同一条正则：本地先挡一次，避免无谓往返。 */
++const TICKET_ID_PATTERN = /^Q\d{13}$/
++
++/** 日志区保留的行数。 */
++const MAX_LOG_LINES = 8
++
++const styles = {
++  mask: {
++    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
++    display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
++  },
++  panel: {
++    width: 'min(560px, 92vw)', background: 'var(--dsh-surface, #fff)', color: 'var(--dsh-text, #111)',
++    borderRadius: 12, padding: 20, boxShadow: '0 12px 40px rgba(0,0,0,0.25)',
++    display: 'flex', flexDirection: 'column', gap: 12, font: 'inherit',
++  },
++  title: { fontSize: 16, fontWeight: 600, margin: 0 },
++  hint: { fontSize: 12, opacity: 0.65, margin: 0, lineHeight: 1.5 },
++  field: { display: 'flex', flexDirection: 'column', gap: 6 },
++  label: { fontSize: 12, opacity: 0.75 },
++  input: {
++    padding: '8px 10px', borderRadius: 8, border: '1px solid rgba(128,128,128,0.4)',
++    background: 'transparent', color: 'inherit', fontSize: 14, fontFamily: 'monospace',
++  },
++  row: { display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' },
++  button: {
++    padding: '7px 14px', borderRadius: 8, border: '1px solid rgba(128,128,128,0.4)',
++    background: 'transparent', color: 'inherit', cursor: 'pointer', fontSize: 13,
++  },
++  primary: { background: 'var(--dsh-accent, #2563eb)', color: '#fff', borderColor: 'transparent' },
++  bar: { height: 6, borderRadius: 3, background: 'rgba(128,128,128,0.25)', overflow: 'hidden' },
++  barFill: { height: '100%', background: 'var(--dsh-accent, #2563eb)', transition: 'width 0.2s' },
++  log: {
++    margin: 0, padding: 10, borderRadius: 8, background: 'rgba(128,128,128,0.12)',
++    fontSize: 11, lineHeight: 1.6, fontFamily: 'monospace', maxHeight: 140, overflow: 'auto',
++  },
++  alert: { fontSize: 13, color: '#b91c1c', margin: 0 },
++} satisfies Record<string, React.CSSProperties>
++
++/** 面板所处的外部阶段（与服务端 `TicketPhase` 分开：这里还含输入与错误）。 */
++type Stage = 'input' | 'running' | 'done' | 'error'
++
++/** 字节数的可读形式。 */
++function formatBytes(bytes: number): string {
++  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GiB`
++  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MiB`
++  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KiB`
++  return `${String(bytes)} B`
++}
++
++/** 阶段的中文名（首版只带中文，locale 化留到接入 i18n 时统一）。 */
++const PHASE_LABEL: Record<TicketPhase, string> = {
++  queued: '排队中',
++  verifying: '正在校验远端与容量',
++  syncing: '正在同步压缩包',
++  extracting: '正在递归解压',
++  ready: '已就位',
++  failed: '失败',
++  cancelled: '已取消',
++}
++
++/**
++ * 工单入口对话框。
++ * @param props - owner 分享（`open`/`onPicked`/`onCancel`）与本包注入的动词。
++ */
++export function TicketSyncDialog(props: DirectoryFlowOwnerProps & TicketFlowInjected) {
++  const { open, onPicked, onCancel, submit, follow, cancel, t } = props
++  const [stage, setStage] = useState<Stage>('input')
++  const [ticketId, setTicketId] = useState('')
++  const [password, setPassword] = useState('')
++  const [phase, setPhase] = useState<TicketPhase>('queued')
++  const [bytes, setBytes] = useState(0)
++  const [total, setTotal] = useState<number | undefined>(undefined)
++  const [files, setFiles] = useState(0)
++  const [logs, setLogs] = useState<string[]>([])
++  const [error, setError] = useState<string | undefined>(undefined)
++  const jobRef = useRef<string | undefined>(undefined)
++  const abortRef = useRef<AbortController | undefined>(undefined)
++  const aliveRef = useRef(true)
++
++  // 每次打开都从干净状态开始：上一次的进度与错误不该污染这一次。
++  useEffect(() => {
++    if (!open) return
++    setStage('input')
++    setPhase('queued')
++    setBytes(0)
++    setTotal(undefined)
++    setFiles(0)
++    setLogs([])
++    setError(undefined)
++    jobRef.current = undefined
++  }, [open])
++
++  // 卸载时断开订阅：任务本身继续跑（重进页面能恢复），只是界面不再等待。
++  useEffect(() => {
++    aliveRef.current = true
++    return () => {
++      aliveRef.current = false
++      abortRef.current?.abort()
++    }
++  }, [])
++
++  const valid = TICKET_ID_PATTERN.test(ticketId)
++
++  /** 把一帧投影到界面状态。 */
++  const applyFrame = useCallback((frame: TicketFrame) => {
++    switch (frame.kind) {
++      case 'status':
++        setPhase(frame.phase)
++        break
++      case 'log':
++        setLogs(previous => [...previous, frame.chunk].slice(-MAX_LOG_LINES))
++        break
++      case 'progress':
++        setBytes(frame.bytes)
++        setFiles(frame.files)
++        if (frame.total !== undefined) setTotal(frame.total)
++        break
++      default:
++        break
++    }
++  }, [])
++
++  /** 提交并订阅。这是整个对话框唯一的副作用入口。 */
++  const start = useCallback(async () => {
++    setStage('running')
++    setError(undefined)
++    setLogs([])
++    setBytes(0)
++    setFiles(0)
++    setTotal(undefined)
++    try {
++      const job = await submit({
++        ticketId,
++        ...(password === '' ? {} : { password }),
++      })
++      jobRef.current = job.jobId
++      setPhase(job.phase as TicketPhase)
++      const controller = new AbortController()
++      abortRef.current = controller
++      for await (const frame of follow(job.jobId, controller.signal)) {
++        if (!aliveRef.current) return
++        applyFrame(frame)
++        if (frame.kind === 'done') {
++          setStage('done')
++          // 需求 4：就位后自动把它设为 workspace 目录（owner 负责登记与会话切换）。
++          onPicked(frame.extractedPath)
++          return
++        }
++        if (frame.kind === 'failed') {
++          setError(frame.message)
++          setStage('error')
++          return
++        }
++      }
++      // 流结束却没有终态帧：连接断了，任务可能还在跑。
++      if (aliveRef.current) {
++        setError(t('disconnected'))
++        setStage('error')
++      }
++    } catch (failure: unknown) {
++      if (!aliveRef.current) return
++      setError(failure instanceof Error ? failure.message : String(failure))
++      setStage('error')
++    }
++  }, [applyFrame, follow, onPicked, password, submit, t, ticketId])
++
++  /** 取消：先发请求，再立即断开订阅（等终态帧会让按钮看起来失灵）。 */
++  const stop = useCallback(async () => {
++    const jobId = jobRef.current
++    abortRef.current?.abort()
++    setStage('input')
++    if (jobId === undefined) return
++    await cancel(jobId).catch(() => undefined)
++  }, [cancel])
++
++  if (!open) return null
++
++  const percent = total !== undefined && total > 0 ? Math.min(100, Math.round((bytes / total) * 100)) : undefined
++
++  return (
++    <div style={styles.mask} role="presentation">
++      <div style={styles.panel} role="dialog" aria-modal="true" aria-label={t('title')}>
++        <h2 style={styles.title}>{t('title')}</h2>
++        <p style={styles.hint}>{t('hint')}</p>
++
++        <label style={styles.field}>
++          <span style={styles.label}>{t('ticketId')}</span>
++          <input
++            style={styles.input}
++            value={ticketId}
++            placeholder="Q2026012500018"
++            disabled={stage === 'running'}
++            onChange={(event) => { setTicketId(event.target.value.trim()) }}
++          />
++        </label>
++
++        <label style={styles.field}>
++          <span style={styles.label}>{t('password')}</span>
++          <input
++            style={styles.input}
++            type="password"
++            value={password}
++            placeholder={t('passwordPlaceholder')}
++            disabled={stage === 'running'}
++            onChange={(event) => { setPassword(event.target.value) }}
++          />
++        </label>
++
++        {stage === 'running' || stage === 'done' ? (
++          <div style={styles.field}>
++            <span style={styles.label}>
++              {PHASE_LABEL[phase]}
++              {percent === undefined ? '' : ` · ${String(percent)}%`}
++              {bytes > 0 ? ` · ${formatBytes(bytes)}` : ''}
++              {files > 0 ? ` · ${String(files)} 个文件` : ''}
++            </span>
++            <div style={styles.bar}>
++              <div style={{ ...styles.barFill, width: `${String(percent ?? 8)}%` }} />
++            </div>
++            {logs.length > 0 ? <pre style={styles.log}>{logs.join('\n')}</pre> : null}
++          </div>
++        ) : null}
++
++        {error === undefined ? null : <p style={styles.alert} role="alert">{error}</p>}
++
++        <div style={styles.row}>
++          {stage === 'running' ? (
++            <button style={styles.button} type="button" onClick={() => { void stop() }}>
++              {t('cancel')}
++            </button>
++          ) : (
++            <button style={styles.button} type="button" onClick={onCancel}>
++              {t('close')}
++            </button>
++          )}
++          <button
++            style={{ ...styles.button, ...styles.primary }}
++            type="button"
++            disabled={!valid || stage === 'running'}
++            onClick={() => { void start() }}
++          >
++            {t('confirm')}
++          </button>
++        </div>
++      </div>
++    </div>
++  )
++}
+diff --git a/packages/client/ui-ticket-sync/src/client/flow.ts b/packages/client/ui-ticket-sync/src/client/flow.ts
+new file mode 100644
+index 00000000..1734aa97
+--- /dev/null
++++ b/packages/client/ui-ticket-sync/src/client/flow.ts
+@@ -0,0 +1,56 @@
++/**
++ * 适配层：把 ui-workspace 的 owner 对话映射到工单对话框。
++ *
++ * 与 browse occupant 保持同一约定：失败留在对话框自身的告警面，不驱动
++ * owner 的 `onError` —— owner 的错误对话框带"重试/重选"语义，对"密码错"
++ * 这种需要原地改输入的失败并不合适。
++ * @module @deepseek-ai/dsh-client-ui-ticket-sync/client/flow
++ */
++
++import { createElement } from 'react'
++import type { TicketFrame } from './protocol.ts'
++import { TicketSyncDialog } from './TicketSyncDialog.tsx'
++
++/**
++ * 洞的 owner 分享（与 ui-workspace 的 `DirectoryFlowOwnerProps` 结构等价）。
++ *
++ * 刻意在本地声明而不是 import owner 包的类型：本包与 ui-workspace 是两个
++ * 独立编译项目，跨项目拉取 owner 的具名类型会触发 TS 的相对 import 重写检查
++ * （TS2878）。洞的 owner 契约本身是结构化的，形状一致即兼容。
++ */
++export interface DirectoryFlowOwnerProps {
++  /** 为 true 时渲染交互，翻回 false 表示撤回请求。 */
++  open: boolean
++  /** owner 正在采纳路径（createWorkspace 进行中）。 */
++  busy: boolean
++  /** 操作者选定了绝对路径，owner 负责登记。 */
++  onPicked: (path: string) => void
++  /** 操作者放弃本次交互。 */
++  onCancel: () => void
++  /** 交互本身失败时的说明文案。 */
++  onError: (message: string) => void
++}
++
++/** 本包对文案的取用面（locale 命名空间已绑定）。 */
++export type Translate = (key: string) => string
++
++/** 注入面：本包驱动的三个线上动词与文案。 */
++export interface TicketFlowInjected {
++  /** 提交同步，返回任务句柄；业务失败以拒绝表达。 */
++  submit: (request: { ticketId: string; password?: string }) => Promise<{ jobId: string; phase: string }>
++  /** 订阅进度流；`signal` 用于断开（不取消任务本身）。 */
++  follow: (jobId: string, signal: AbortSignal) => AsyncIterable<TicketFrame>
++  /** 请求取消任务。 */
++  cancel: (jobId: string) => Promise<void>
++  /** 本包命名空间的文案。 */
++  t: Translate
++}
++
++/**
++ * 工单入口的 occupant：owner 契约 + 本包注入面。
++ * @param props - 洞的 owner 分享与本包注入面。
++ * @returns 对话框元素（关闭时渲染空）。
++ */
++export function TicketSyncFlow(props: DirectoryFlowOwnerProps & TicketFlowInjected) {
++  return createElement(TicketSyncDialog, props)
++}
+diff --git a/packages/client/ui-ticket-sync/src/client/index.ts b/packages/client/ui-ticket-sync/src/client/index.ts
+new file mode 100644
+index 00000000..e7e91a42
+--- /dev/null
++++ b/packages/client/ui-ticket-sync/src/client/index.ts
+@@ -0,0 +1,61 @@
++/**
++ * 工单入口的浏览器半边：把同一个对话框填进 ui-workspace 的两个洞
++ * （首屏 hero 与侧栏工作区），并通过 `remote.ticket` 驱动宿主侧长任务。
++ *
++ * 一个包同时占两个洞，是为了让"首屏"和"侧栏"永远展示同一个交互 ——
++ * 两份实现迟早会在文案、校验或错误处理上分叉。
++ * @module @deepseek-ai/dsh-client-ui-ticket-sync/client
++ */
++
++import type { Context as ClientContext } from '@deepseek-ai/cordis'
++// Type-only：拉入 SlotMap 合并，声明 ui-workspace 的两个工单洞。
++import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
++// Type-only：拉入 SlotRegistry 服务合并（ctx.slots）。
++import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
++// Type-only：拉入 remote 服务的 `ticket` 命名空间类型。
++import type {} from '@deepseek-ai/dsh-api-remotes/client'
++// Type-only：拉入 typert 生成的 `TypertRemoteNamespaceMap` 增强，否则 ctx.remote.ticket 不存在。
++import type {} from '@deepseek-ai/dsh-api-ticket-sync/remote'
++import type { TicketFrame } from './protocol.ts'
++import type { TicketFlowInjected } from './flow.ts'
++import { TicketSyncFlow } from './flow.ts'
++
++import { ZH } from './locales.ts'
++
++/** 必需服务：槽注册表、工作区 UI，以及宿主的工单动词（`remote` 是 `remote.ticket` 的容器）。 */
++export const inject = ['slots', 'uiWorkspace', 'remote', 'remote.ticket']
++
++/**
++ * 客户端插件体：注册文案，再把对话框注入两个洞。
++ *
++ * 用 `slots.inject()` 而不是直接 `register`，因为 ui-workspace 的声明可能
++ * 晚于本包激活、也可能被替换 —— 直接 register 会在声明尚未落地时丢洞。
++ * @param ctx - 客户端根上下文。
++ */
++export function apply(ctx: ClientContext): void {
++  const injected = (): TicketFlowInjected => ({
++    submit: async (request) => {
++      const result = await ctx.remote.ticket.submit(request)
++      if (!result.ok) throw result.error
++      return result.value
++    },
++    follow: (jobId, signal): AsyncIterable<TicketFrame> => ctx.remote.ticket.follow({ jobId }, signal),
++    cancel: async (jobId) => {
++      const result = await ctx.remote.ticket.cancel({ jobId })
++      if (!result.ok) throw result.error
++    },
++    // 首版只出中文：直接查本地字典，避免为一个键值表引入跨项目类型依赖。
++    t: (key: string) => ZH[key] ?? key,
++  })
++
++  // 两个声明必须同时存活才安装这一对 occupant；generator 让它们成为一个事务。
++  ctx.slots.inject('conversation.hero.workspace.ticketFlow', () =>
++    ctx.slots.inject('sidebar.workspaces.ticketFlow', function* () {
++      yield ctx.slots.register({
++        name: 'conversation.hero.workspace.ticketFlow', inject: injected,
++      }, TicketSyncFlow)
++      yield ctx.slots.register({
++        name: 'sidebar.workspaces.ticketFlow', inject: injected,
++      }, TicketSyncFlow)
++    }))
++}
+diff --git a/packages/client/ui-ticket-sync/src/client/locales.ts b/packages/client/ui-ticket-sync/src/client/locales.ts
+new file mode 100644
+index 00000000..8bd8b6b8
+--- /dev/null
++++ b/packages/client/ui-ticket-sync/src/client/locales.ts
+@@ -0,0 +1,22 @@
++/**
++ * 对话框的文案字典。
++ *
++ * 这里刻意不走 DSH 的 locale 服务：工单洞的 owner（ui-workspace）只把
++ * `t` 传给它自己的命名空间，洞的占位者拿不到当前语言；为一个"首版只出
++ * 中文"的对话框引入跨包语言依赖，代价高于收益。等需要中英双语时，再把
++ * 这层换成 `ctx.locale` 注册（届时键名按命名空间加 `ticket.` 前缀）。
++ * @module @deepseek-ai/dsh-client-ui-ticket-sync/client/locales
++ */
++
++/** 中文文案；键名与对话框的 `t('...')` 调用一一对应。 */
++export const ZH: Record<string, string> = {
++  title: '从工单号同步日志',
++  hint: '输入工单号后，会从 0.2 拉取该工单的日志压缩包、递归解压到本地，并把解压目录设为工作区。大工单可能需要数分钟，期间可以取消。',
++  ticketId: '工单号',
++  password: 'zip 密码',
++  passwordPlaceholder: '留空使用服务端默认密码',
++  confirm: '确定',
++  cancel: '取消同步',
++  close: '关闭',
++  disconnected: '进度连接已断开。任务可能仍在后台执行，可重新输入工单号查看结果。',
++}
+diff --git a/packages/client/ui-ticket-sync/src/client/protocol.ts b/packages/client/ui-ticket-sync/src/client/protocol.ts
+new file mode 100644
+index 00000000..143a21a8
+--- /dev/null
++++ b/packages/client/ui-ticket-sync/src/client/protocol.ts
+@@ -0,0 +1,43 @@
++/**
++ * 进度协议在浏览器侧的结构声明。
++ *
++ * 为什么不在本地 import `@deepseek-ai/dsh-api-ticket-sync/types`：那是另一个
++ * 编译项目（api 包）的源文件，跨项目拉取具名类型会让 tsc 的
++ * `rewriteRelativeImportExtensions` 判定 import 路径"不安全重写"（TS2878），
++ * 因为两个项目的输出目录层级不同。协议本身是纯结构，形状一致即兼容 ——
++ * 真正的类型约束由 `ctx.remote.ticket` 的生成类型在调用点兜住。
++ * @module @deepseek-ai/dsh-client-ui-ticket-sync/client/protocol
++ */
++
++/** 一次同步任务所处的阶段。 */
++export type TicketPhase =
++  | 'queued'
++  | 'verifying'
++  | 'syncing'
++  | 'extracting'
++  | 'ready'
++  | 'failed'
++  | 'cancelled'
++
++/** 失败分类（与服务端闭集一一对应）。 */
++export type TicketErrorCode =
++  | 'ticket/invalid-id'
++  | 'ticket/not-found'
++  | 'ticket/too-large'
++  | 'ticket/insufficient-storage'
++  | 'ticket/bad-password'
++  | 'ticket/archive-corrupt'
++  | 'ticket/space-exceeded'
++  | 'ticket/too-many-files'
++  | 'ticket/busy'
++  | 'ticket/sync-failed'
++  | 'ticket/extract-failed'
++  | 'ticket/cancelled'
++
++/** 进度流的一帧；`done`/`failed` 是终态帧。 */
++export type TicketFrame =
++  | { kind: 'status'; phase: TicketPhase; startedAt: string }
++  | { kind: 'log'; chunk: string }
++  | { kind: 'progress'; bytes: number; total?: number; files: number }
++  | { kind: 'done'; extractedPath: string; bytes: number; durationMs: number }
++  | { kind: 'failed'; code: TicketErrorCode; message: string }
+diff --git a/packages/client/ui-ticket-sync/src/index.ts b/packages/client/ui-ticket-sync/src/index.ts
+new file mode 100644
+index 00000000..1ee410ad
+--- /dev/null
++++ b/packages/client/ui-ticket-sync/src/index.ts
+@@ -0,0 +1,10 @@
++/**
++ * Host 半边：本包是纯界面插件，宿主侧没有行为。
++ *
++ * 这个空 apply 不是摆设 —— 它让包出现在 host 的 Loader 名单里，浏览器半边
++ * 才会被 `dsh.client` 声明发现并通过 `/plugins` 提供。删掉它，界面就消失。
++ * @module @deepseek-ai/dsh-client-ui-ticket-sync
++ */
++
++/** Host 侧无行为。 */
++export function apply(): void {}
+diff --git a/packages/client/ui-ticket-sync/tests/dialog.client.spec.tsx b/packages/client/ui-ticket-sync/tests/dialog.client.spec.tsx
+new file mode 100644
+index 00000000..98a8c732
+--- /dev/null
++++ b/packages/client/ui-ticket-sync/tests/dialog.client.spec.tsx
+@@ -0,0 +1,103 @@
++/**
++ * 工单对话框的交互契约：本地先挡非法工单号、终态帧决定"交给 owner"还是
++ * "留在原地报错"。
++ *
++ * 这里用假的动词注入面（submit/follow/cancel），因为真正的传输属于宿主侧
++ * 用例；本文件只回答一个问题：帧到了之后界面做对了吗。
++ */
++// @vitest-environment jsdom
++import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
++import { afterEach, describe, expect, it, vi } from 'vitest'
++import type { TicketFrame } from '../src/client/protocol.ts'
++import type { DirectoryFlowOwnerProps, TicketFlowInjected } from '../src/client/flow.ts'
++import { TicketSyncDialog } from '../src/client/TicketSyncDialog.tsx'
++import { ZH } from '../src/client/locales.ts'
++
++
++afterEach(cleanup)
++
++/** owner 侧对话：只记录调用，不参与断言以外的行为。 */
++function owner(open = true): DirectoryFlowOwnerProps {
++  return { open, busy: false, onPicked: vi.fn(), onCancel: vi.fn(), onError: vi.fn() }
++}
++
++/**
++ * 造一份注入面：`submit` 立刻返回任务句柄，`follow` 重放给定的帧后结束。
++ * @param frames - 服务端会发出的帧序列。
++ * @returns 注入面与它的两个 spy。
++ */
++function inject(frames: readonly TicketFrame[]) {
++  const submit = vi.fn(async () => ({ jobId: 'job-1', phase: 'queued' }))
++  const cancel = vi.fn(async () => {})
++  const follow = vi.fn((_jobId: string, _signal: AbortSignal) => (async function* replay() {
++    for (const frame of frames) yield frame
++  })())
++  const t = (key: string): string => ZH[key] ?? key
++  const injected: TicketFlowInjected = { submit, follow, cancel, t }
++  return { injected, submit, follow, cancel }
++}
++
++/** 输入一个工单号。 */
++function typeTicket(value: string): void {
++  const input = screen.getByPlaceholderText('Q2026012500018') as HTMLInputElement
++  // 受控输入必须走 change 事件：直接赋值会被 React 的 value tracker 判成
++  // "值没变"，onChange 不会触发。`fireEvent.change` 正是为此提供的。
++  fireEvent.change(input, { target: { value } })
++}
++
++const CONFIRM = '确定'
++const EXTRACTED = '/data/tickets/Q2026012500018/extract'
++const DONE: TicketFrame = { kind: 'done', extractedPath: EXTRACTED, bytes: 1024, durationMs: 10 }
++
++describe('TicketSyncDialog 输入校验', () => {
++  it('空工单号时确定不可用', () => {
++    render(<TicketSyncDialog {...owner()} {...inject([]).injected} />)
++    expect(screen.getByRole('button', { name: CONFIRM }).hasAttribute('disabled')).toBe(true)
++  })
++
++  it('格式不对时确定仍不可用', () => {
++    render(<TicketSyncDialog {...owner()} {...inject([]).injected} />)
++    typeTicket('Q123')
++    expect(screen.getByRole('button', { name: CONFIRM }).hasAttribute('disabled')).toBe(true)
++  })
++
++  it('合法工单号解锁确定，并带着密码提交', async () => {
++    const { injected, submit } = inject([])
++    render(<TicketSyncDialog {...owner()} {...injected} />)
++    typeTicket('Q2026012500018')
++    const confirm = screen.getByRole('button', { name: CONFIRM })
++    expect(confirm.hasAttribute('disabled')).toBe(false)
++    confirm.click()
++    await waitFor(() => { expect(submit).toHaveBeenCalledWith({ ticketId: 'Q2026012500018' }) })
++  })
++
++  it('关闭状态下什么都不渲染', () => {
++    render(<TicketSyncDialog {...owner(false)} {...inject([]).injected} />)
++    expect(screen.queryByRole('dialog')).toBeNull()
++  })
++})
++
++describe('TicketSyncDialog 终态投影', () => {
++  it('done 帧把解压目录交给 owner（工作区由 owner 登记）', async () => {
++    const props = owner()
++    const { injected } = inject([{ kind: 'status', phase: 'extracting', startedAt: '2026-10-22T00:00:00.000Z' }, DONE])
++    render(<TicketSyncDialog {...props} {...injected} />)
++    typeTicket('Q2026012500018')
++    screen.getByRole('button', { name: CONFIRM }).click()
++    await waitFor(() => { expect(props.onPicked).toHaveBeenCalledWith(EXTRACTED) })
++    expect(props.onCancel).not.toHaveBeenCalled()
++  })
++
++  it('failed 帧留在对话框里报错，不把错误当成选中路径', async () => {
++    const props = owner()
++    const failed: TicketFrame = { kind: 'failed', code: 'ticket/bad-password', message: 'zip 密码不正确' }
++    const { injected } = inject([failed])
++    render(<TicketSyncDialog {...props} {...injected} />)
++    typeTicket('Q2026012500018')
++    screen.getByRole('button', { name: CONFIRM }).click()
++    await waitFor(() => { expect(screen.getByRole('alert').textContent).toBe('zip 密码不正确') })
++    expect(props.onPicked).not.toHaveBeenCalled()
++    // 失败后仍可改输入重试：确定按钮回到可用状态。
++    await waitFor(() => { expect(screen.getByRole('button', { name: CONFIRM }).hasAttribute('disabled')).toBe(false) })
++  })
++})
+diff --git a/packages/client/ui-ticket-sync/tsconfig.json b/packages/client/ui-ticket-sync/tsconfig.json
+new file mode 100644
+index 00000000..89258966
+--- /dev/null
++++ b/packages/client/ui-ticket-sync/tsconfig.json
+@@ -0,0 +1,17 @@
++{
++  "extends": "../../../tsconfig.base.client.json",
++  "compilerOptions": {
++    "rootDir": "src",
++    "outDir": "lib/types"
++  },
++  "include": ["src"],
++  "references": [
++    { "path": "../../../vendor/cordis" },
++    { "path": "../ui-slots" },
++    { "path": "../../api/remotes/tsconfig.client.json" },
++    { "path": "../../api/ticket-sync/tsconfig.client.json" },
++    { "path": "../locale/tsconfig.client.json" },
++    { "path": "../ui-renderer" },
++    { "path": "../ui-workspace" }
++  ]
++}
+diff --git a/packages/client/ui-ticket-sync/tsdown.config.ts b/packages/client/ui-ticket-sync/tsdown.config.ts
+new file mode 100644
+index 00000000..7aa03ceb
+--- /dev/null
++++ b/packages/client/ui-ticket-sync/tsdown.config.ts
+@@ -0,0 +1,3 @@
++import { clientBundle } from '../tsdown.client.ts'
++
++export default clientBundle(import.meta.dirname, ['lib/types/index.js'])
+diff --git a/packages/client/ui-workspace/src/client/WorkspacePicker.tsx b/packages/client/ui-workspace/src/client/WorkspacePicker.tsx
+index a8e40b78..8fa1b07d 100644
+--- a/packages/client/ui-workspace/src/client/WorkspacePicker.tsx
++++ b/packages/client/ui-workspace/src/client/WorkspacePicker.tsx
+@@ -22,6 +22,7 @@ import type { DirectoryFlowOwnerProps, WorkspacePickerProps } from './contract/s
+ import css from './WorkspacePicker.module.css'
+ 
+ const ADD_WORKSPACE = '::add-workspace'
++const ADD_TICKET = '::sync-ticket'
+ 
+ /** Core flow props: the owner supplies popover control and pick semantics. */
+ export interface WorkspacePickFlowProps {
+@@ -39,6 +40,10 @@ export interface WorkspacePickFlowProps {
+   useDirectoryFlow: SnapshotSelectorHook<boolean>
+   /** Render this surface's directory-flow hole with the owner conversation (the entry's narrowed renderSlot). */
+   renderDirectoryFlow: (owner: DirectoryFlowOwnerProps) => ReactNode
++  /** Bound occupancy selector hook for this surface's ticket-flow hole. */
++  useTicketFlow: SnapshotSelectorHook<boolean>
++  /** Render this surface's ticket-flow hole with the owner conversation. */
++  renderTicketFlow: (owner: DirectoryFlowOwnerProps) => ReactNode
+   /** A real Workspace was picked or created. */
+   onPick: (workspaceId: WorkspaceId) => void
+   /** Close the popover (outside click / Escape / post-pick). */
+@@ -66,6 +71,8 @@ export function WorkspacePickFlow({
+   createWorkspace,
+   useDirectoryFlow,
+   renderDirectoryFlow,
++  useTicketFlow,
++  renderTicketFlow,
+   onPick,
+   onClose,
+   addOnly = false,
+@@ -83,11 +90,12 @@ export function WorkspacePickFlow({
+   const [modalError, setModalError] = useState<string | null>(null)
+   const [flowOpen, setFlowOpen] = useState(false)
+   const [pickingFolder, setPickingFolder] = useState(false)
++  const [ticketFlowOpen, setTicketFlowOpen] = useState(false)
+   // One picking interaction at a time: while the flow is open (native chooser
+   // pending, browse dialog up) or its pick is being adopted, every other
+   // menu action stays disabled — a late outcome must not race a concurrent
+   // selection or adoption.
+-  const flowBusy = flowOpen || pickingFolder
++  const flowBusy = flowOpen || ticketFlowOpen || pickingFolder
+   useEffect(() => { onBusyChange?.(flowBusy) }, [flowBusy, onBusyChange])
+ 
+   // The occupied hole gates the picking affordance: with no composed flow the
+@@ -95,6 +103,8 @@ export function WorkspacePickFlow({
+   // framework-bound hook keeps occupancy live: flow plugins activate (and
+   // HMR-reload) independently of this menu's renders.
+   const flowAvailable = useDirectoryFlow(occupied => occupied)
++  // 工单洞的占用度与目录洞同源：空洞时菜单项不出现，洞中途卸载则撤回已开面板。
++  const ticketFlowAvailable = useTicketFlow(occupied => occupied)
+   // An occupant that unloads mid-interaction leaves nobody to cancel: an
+   // open flow over an empty hole withdraws so the menu actions come back.
+   // flowOpen is a dependency because the flow can also OPEN over an already
+@@ -103,9 +113,17 @@ export function WorkspacePickFlow({
+   useEffect(() => {
+     if (flowOpen && !flowAvailable) setFlowOpen(false)
+   }, [flowOpen, flowAvailable])
+-  const addEntries: MenuEntry[] = flowAvailable
+-    ? [{ id: ADD_WORKSPACE, label: t('menu.addWorkspace'), icon: <IconPlusOutlineRegular size={16} />, disabled: flowBusy }]
+-    : []
++  useEffect(() => {
++    if (ticketFlowOpen && !ticketFlowAvailable) setTicketFlowOpen(false)
++  }, [ticketFlowOpen, ticketFlowAvailable])
++  const addEntries: MenuEntry[] = [
++    ...flowAvailable
++      ? [{ id: ADD_WORKSPACE, label: t('menu.addWorkspace'), icon: <IconPlusOutlineRegular size={16} />, disabled: flowBusy }]
++      : [],
++    ...ticketFlowAvailable
++      ? [{ id: ADD_TICKET, label: t('menu.syncTicket'), icon: <IconPlusOutlineRegular size={16} />, disabled: flowBusy }]
++      : [],
++  ]
+   // With workspaces listed, the add action pins below the scroll region
+   // (divider + always visible); otherwise it IS the menu.
+   const pinAdd = !addOnly && workspaces.length > 0
+@@ -127,14 +145,21 @@ export function WorkspacePickFlow({
+     setModalError(null)
+   }
+ 
+-  /** Adopt a picked directory; failures land in the folder-error dialog (Choose again reopens the flow). */
++  /**
++   * 采纳一次已选定的路径。
++   *
++   * 目录洞与工单洞共用同一份采纳语义，所以两个洞的请求必须一起撤回：
++   * 只撤回目录洞会让工单对话框在成功或失败后都挂在屏幕上。
++   */
+   const adoptDirectory = (path: string): Promise<void> =>
+     createWorkspace({ path }).then((workspace) => {
+       setFlowOpen(false)
++      setTicketFlowOpen(false)
+       onPick(workspace.workspaceId)
+     }).catch((reason: unknown) => {
+       setModalError(reason instanceof Error ? reason.message : String(reason))
+       setFlowOpen(false)
++      setTicketFlowOpen(false)
+       setErrorOpen(true)
+     })
+ 
+@@ -142,9 +167,18 @@ export function WorkspacePickFlow({
+     onClose()
+     setErrorOpen(false)
+     setModalError(null)
++    setTicketFlowOpen(false)
+     setFlowOpen(true)
+   }, [onClose])
+ 
++  const openTicketFlow = useCallback((): void => {
++    onClose()
++    setErrorOpen(false)
++    setModalError(null)
++    setFlowOpen(false)
++    setTicketFlowOpen(true)
++  }, [onClose])
++
+   // A menu exists to disambiguate between targets. With no workspaces listed
+   // and the add action the only entry left, the anchor gesture IS that action:
+   // a one-row popover would cost a click and offer nothing to choose between.
+@@ -157,9 +191,13 @@ export function WorkspacePickFlow({
+   const addIsTheOnlyEntry = !pinAdd && listSettled && addEntries.length === 1
+   // `flowBusy` gates this exactly as it disables the equivalent menu entry: a
+   // pick still being adopted owns the surface until it settles.
++  // 唯一一项时锚点手势就是那一项；两项都可用时先弹菜单让操作者选。
++  const onlyEntryId = addIsTheOnlyEntry ? addEntries[0]?.id : undefined
+   useEffect(() => {
+-    if (open && addIsTheOnlyEntry && !flowBusy) openDirectoryFlow()
+-  }, [open, addIsTheOnlyEntry, flowBusy, openDirectoryFlow])
++    if (!open || onlyEntryId === undefined || flowBusy) return
++    if (onlyEntryId === ADD_TICKET) openTicketFlow()
++    else openDirectoryFlow()
++  }, [open, onlyEntryId, flowBusy, openDirectoryFlow, openTicketFlow])
+ 
+   /** Owner side of the flow conversation: adopt keeps the flow open (busy) until the Host answers. */
+   const flowOwner: DirectoryFlowOwnerProps = {
+@@ -177,11 +215,31 @@ export function WorkspacePickFlow({
+     },
+   }
+ 
++  // 工单入口与目录入口共用同一份 adopt 语义（onPicked → createWorkspace）。
++  const ticketFlowOwner: DirectoryFlowOwnerProps = {
++    open: ticketFlowOpen,
++    busy: pickingFolder,
++    onPicked: (path) => {
++      setPickingFolder(true)
++      void adoptDirectory(path).finally(() => { setPickingFolder(false) })
++    },
++    onCancel: () => { setTicketFlowOpen(false) },
++    onError: (message) => {
++      setTicketFlowOpen(false)
++      setModalError(message)
++      setErrorOpen(true)
++    },
++  }
++
+   const handleSelect = (id: string): void => {
+     if (id === ADD_WORKSPACE) {
+       openDirectoryFlow()
+       return
+     }
++    if (id === ADD_TICKET) {
++      openTicketFlow()
++      return
++    }
+     onPick(id as WorkspaceId)
+   }
+ 
+@@ -201,6 +259,7 @@ export function WorkspacePickFlow({
+       />
+       {open && !addIsTheOnlyEntry && !menuIsEmpty && workspaceSnapshot.phase === 'pending' && <div className={css.menuStatus} role="status">{t('picker.loading')}</div>}
+       {renderDirectoryFlow(flowOwner)}
++      {renderTicketFlow(ticketFlowOwner)}
+       <Modal
+         open={errorOpen}
+         onClose={closeModal}
+@@ -236,6 +295,7 @@ export function WorkspacePicker({
+   onClose,
+   createWorkspace,
+   useDirectoryFlow,
++  useTicketFlow,
+   renderSlot,
+   t,
+ }: WorkspacePickerProps) {
+@@ -248,6 +308,8 @@ export function WorkspacePicker({
+       createWorkspace={createWorkspace}
+       useDirectoryFlow={useDirectoryFlow}
+       renderDirectoryFlow={owner => renderSlot('conversation.hero.workspace.directoryFlow', owner)}
++      useTicketFlow={useTicketFlow}
++      renderTicketFlow={owner => renderSlot('conversation.hero.workspace.ticketFlow', owner)}
+       selectedId={selectedId}
+       onPick={onPick}
+       onClose={onClose}
+diff --git a/packages/client/ui-workspace/src/client/contract/slots.ts b/packages/client/ui-workspace/src/client/contract/slots.ts
+index d00b3658..c6045281 100644
+--- a/packages/client/ui-workspace/src/client/contract/slots.ts
++++ b/packages/client/ui-workspace/src/client/contract/slots.ts
+@@ -119,6 +119,10 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
+     'conversation.hero.workspace.directoryFlow': { kind: 'single'; scope: 'root'; owner: DirectoryFlowOwnerProps }
+     /** Directory-flow hole under the sidebar browsing region (declared by the WorkspaceBrowser entry). */
+     'sidebar.workspaces.directoryFlow': { kind: 'single'; scope: 'root'; owner: DirectoryFlowOwnerProps }
++    /** Ticket-sync hole under the conversation empty-state picker (declared by the WorkspacePicker entry). */
++    'conversation.hero.workspace.ticketFlow': { kind: 'single'; scope: 'root'; owner: DirectoryFlowOwnerProps }
++    /** Ticket-sync hole under the sidebar browsing region (declared by the WorkspaceBrowser entry). */
++    'sidebar.workspaces.ticketFlow': { kind: 'single'; scope: 'root'; owner: DirectoryFlowOwnerProps }
+     /**
+      * Leading decoration of one Session row, in the 16px cell before the title
+      * that the row's own state dot otherwise occupies. A higher-priority state
+@@ -195,6 +199,11 @@ export type DirectoryFlowSlotName =
+   | 'conversation.hero.workspace.directoryFlow'
+   | 'sidebar.workspaces.directoryFlow'
+ 
++/** The two ticket-flow holes; the ticket package registers one dialog into both. */
++export type TicketFlowSlotName =
++  | 'conversation.hero.workspace.ticketFlow'
++  | 'sidebar.workspaces.ticketFlow'
++
+ /**
+  * Directory-picking share both trigger surfaces consume. Occupancy rides the
+  * inject face's reserved `hooks` compartment: the renderer binds the source
+@@ -212,13 +221,25 @@ export type DirectoryPickingInjected = {
+ /** Component-side view of the picking share: the bound occupancy selector hook. */
+ export type DirectoryPickingHooks = PropsHooks<DirectoryPickingInjected['hooks']>
+ 
++/**
++ * Ticket-picking share both trigger surfaces consume. Same reserved `hooks`
++ * compartment as the directory flow: an empty hole hides the "Sync from
++ * ticket…" entry reactively and withdraws an open flow whose occupant left.
++ */
++export type TicketPickingInjected = {
++  hooks: {
++    /** True while this surface's ticket-flow hole is occupied. */
++    ticketFlow: HostObservable<boolean>
++  }
++}
++
+ /**
+  * Browser-private injected share (arrives via the register inject factory).
+  * Data reads use the global framework hooks; these are the Host actions the
+  * browsing region drives.
+  */
+ export type WorkspaceBrowserInjected = {
+-  hooks: DirectoryPickingInjected['hooks'] & {
++  hooks: DirectoryPickingInjected['hooks'] & TicketPickingInjected['hooks'] & {
+     /**
+      * Fixed Host facts, reached through a hook rather than injected as values:
+      * the renderer memoizes an entry's inject result for the registration's
+@@ -469,6 +490,7 @@ export type WorkspaceBrowserProps =
+   PropsRuntime<'sidebar.workspaces'>
+   & PropsRenderSlots<
+     | 'sidebar.workspaces.directoryFlow'
++    | 'sidebar.workspaces.ticketFlow'
+     | 'sidebar.workspaces.session.menu.item'
+     | 'sidebar.workspaces.session.row.action'
+     | 'sidebar.session.row.leading'
+@@ -484,7 +506,7 @@ export type WorkspaceBrowserProps =
+  * callback; this callback creates only the real Host Workspace. A type alias
+  * supplies the implicit index signature required by the registry.
+  */
+-export type WorkspacePickerInjected = DirectoryPickingInjected & {
++export type WorkspacePickerInjected = DirectoryPickingInjected & TicketPickingInjected & {
+   /** Adopt a picked host directory as a real Workspace before targeting a Session. */
+   createWorkspace: (input: { path: string }) => Promise<WorkspaceView>
+ }
+@@ -496,7 +518,10 @@ export type WorkspacePickerInjected = DirectoryPickingInjected & {
+  */
+ export type WorkspacePickerProps =
+   PropsRuntime<'conversation.hero.workspace'>
+-  & PropsRenderSlots<'conversation.hero.workspace.directoryFlow'>
++  & PropsRenderSlots<
++    | 'conversation.hero.workspace.directoryFlow'
++    | 'conversation.hero.workspace.ticketFlow'
++  >
+   & Omit<WorkspacePickerInjected, 'hooks'>
+   & PropsHooks<WorkspacePickerInjected['hooks']>
+   & PropsLocale<'workspace'>
+diff --git a/packages/client/ui-workspace/src/client/index.ts b/packages/client/ui-workspace/src/client/index.ts
+index cc9da072..8d2359b4 100644
+--- a/packages/client/ui-workspace/src/client/index.ts
++++ b/packages/client/ui-workspace/src/client/index.ts
+@@ -143,16 +143,22 @@ export function apply(ctx: Context): void {
+ 
+   // Stable per-surface occupancy sources (the renderer's hook cache keys by
+   // source identity): true while the surface's directory-flow hole is filled.
+-  const flowSource = (hole: 'sidebar.workspaces.directoryFlow' | 'conversation.hero.workspace.directoryFlow'): HostObservable<boolean> => ({
++  const flowSource = (hole:
++  | 'sidebar.workspaces.directoryFlow'
++  | 'conversation.hero.workspace.directoryFlow'
++  | 'sidebar.workspaces.ticketFlow'
++  | 'conversation.hero.workspace.ticketFlow'): HostObservable<boolean> => ({
+     getSnapshot: () => ctx.slots.entries(hole).length > 0,
+     subscribe: listener => ctx.slots.subscribe(hole, listener),
+   })
+   const browserFlowSource = flowSource('sidebar.workspaces.directoryFlow')
++  const browserTicketFlowSource = flowSource('sidebar.workspaces.ticketFlow')
+   const hostInfo: HostObservable<RemoteHostFacts> = {
+     getSnapshot: () => ctx.remote.$host,
+     subscribe: listener => ctx.on('connection/reset', listener),
+   }
+   const pickerFlowSource = flowSource('conversation.hero.workspace.directoryFlow')
++  const pickerTicketFlowSource = flowSource('conversation.hero.workspace.ticketFlow')
+   const openSession: WorkspaceBrowserInjected['open'] = (sessionId) => {
+     uiWorkspace.openSession(sessionId)
+   }
+@@ -281,11 +287,17 @@ export function apply(ctx: Context): void {
+     requestAddWorkspace: shortcutControls.add,
+     closeAddWorkspace: shortcutControls.closeAdd,
+     setDirectoryBusy: shortcutControls.directoryBusy,
+-    hooks: { directoryFlow: browserFlowSource, hostInfo, workspaceShortcuts: shortcutControls.state, shortcuts: ctx.shortcuts.catalog },
++    hooks: {
++      directoryFlow: browserFlowSource,
++      ticketFlow: browserTicketFlowSource,
++      hostInfo,
++      workspaceShortcuts: shortcutControls.state,
++      shortcuts: ctx.shortcuts.catalog,
++    },
+   })
+   const pickerInjected = (): WorkspacePickerInjected => ({
+     createWorkspace: input => workspaces.create(input),
+-    hooks: { directoryFlow: pickerFlowSource },
++    hooks: { directoryFlow: pickerFlowSource, ticketFlow: pickerTicketFlowSource },
+   })
+   // Each registration declares its owned children in the same call; slot
+   // injection follows both the owner and declaration HMR lifetimes.
+@@ -294,6 +306,7 @@ export function apply(ctx: Context): void {
+       name: 'sidebar.workspaces',
+       children: {
+         'sidebar.workspaces.directoryFlow': { kind: 'single', scope: 'root' },
++        'sidebar.workspaces.ticketFlow': { kind: 'single', scope: 'root' },
+         // Every row entry reads the menu's open state through a hook bound
+         // from the row's render occurrence (the owner passes the state pair
+         // as hookContext).
+@@ -341,7 +354,10 @@ export function apply(ctx: Context): void {
+   ctx.slots.inject('conversation.hero.workspace', () => ctx.slots.register(
+     {
+       name: 'conversation.hero.workspace',
+-      children: { 'conversation.hero.workspace.directoryFlow': { kind: 'single', scope: 'root' } },
++      children: {
++        'conversation.hero.workspace.directoryFlow': { kind: 'single', scope: 'root' },
++        'conversation.hero.workspace.ticketFlow': { kind: 'single', scope: 'root' },
++      },
+       inject: pickerInjected,
+       locale: NS,
+     },
+diff --git a/packages/client/ui-workspace/src/client/locales.ts b/packages/client/ui-workspace/src/client/locales.ts
+index 0214ab99..efe7782d 100644
+--- a/packages/client/ui-workspace/src/client/locales.ts
++++ b/packages/client/ui-workspace/src/client/locales.ts
+@@ -46,6 +46,7 @@ export const zh = {
+   'search.noMatches': '无匹配会话',
+   'search.hasMore': '仅显示前 {n} 条结果，请缩小搜索范围。',
+   'menu.addWorkspace': '添加工作区…',
++  'menu.syncTicket': '从工单号同步…',
+   'picker.loading': '正在加载工作区…',
+   'conflict.named': '已存在名为“{name}”的工作区。',
+   'folderError.title': '无法打开文件夹',
+@@ -172,6 +173,7 @@ export const en = {
+   'search.noMatches': 'No matching sessions',
+   'search.hasMore': 'Showing the first {n} results. Narrow your search.',
+   'menu.addWorkspace': 'Add workspace…',
++  'menu.syncTicket': 'Sync from ticket…',
+   'picker.loading': 'Loading workspaces…',
+   'conflict.named': 'A workspace named “{name}” already exists.',
+   'folderError.title': 'Couldn’t open folder',
+diff --git a/packages/client/ui-workspace/src/client/rows/WorkspaceBrowser.tsx b/packages/client/ui-workspace/src/client/rows/WorkspaceBrowser.tsx
+index df871654..b09bc85c 100644
+--- a/packages/client/ui-workspace/src/client/rows/WorkspaceBrowser.tsx
++++ b/packages/client/ui-workspace/src/client/rows/WorkspaceBrowser.tsx
+@@ -914,6 +914,7 @@ export function WorkspaceBrowser({
+   searchSessions,
+   searchResultLimit,
+   useDirectoryFlow,
++  useTicketFlow,
+   useHostInfo,
+   useShortcuts,
+   useWorkspaceShortcuts,
+@@ -1369,6 +1370,8 @@ export function WorkspaceBrowser({
+           createWorkspace={createWorkspace}
+           useDirectoryFlow={useDirectoryFlow}
+           renderDirectoryFlow={owner => renderSlot('sidebar.workspaces.directoryFlow', owner)}
++          useTicketFlow={useTicketFlow}
++          renderTicketFlow={owner => renderSlot('sidebar.workspaces.ticketFlow', owner)}
+           addOnly
+           onBusyChange={setDirectoryBusy}
+           side="right"
+diff --git a/packages/client/ui-workspace/tests/workspace-browser.client.spec.tsx b/packages/client/ui-workspace/tests/workspace-browser.client.spec.tsx
+index 4b62826c..8b743f4a 100644
+--- a/packages/client/ui-workspace/tests/workspace-browser.client.spec.tsx
++++ b/packages/client/ui-workspace/tests/workspace-browser.client.spec.tsx
+@@ -136,6 +136,8 @@ function mount(overrides: Partial<WorkspaceBrowserProps> = {}) {
+     insertWorkspaceBefore: vi.fn(async () => {}),
+     createWorkspace: vi.fn(async () => workspace('created', [])),
+     useDirectoryFlow: bindSnapshotSelector({ getSnapshot: () => true, subscribe: () => () => {} }),
++    // 基线：未装工单插件时只有目录来源，锚点手势即直接开流程。
++    useTicketFlow: bindSnapshotSelector({ getSnapshot: () => false, subscribe: () => () => {} }),
+     useHostInfo: selector => selector({ home: undefined, isLoopback: true }),
+     renderSlot: renderDirectoryFlowOnly,
+     t,
+@@ -1892,10 +1894,27 @@ describe('WorkspaceBrowser', () => {
+     expect(screen.getByTestId('directory-flow')).toBeTruthy()
+   })
+ 
++  it('offers both add sources in the rail menu when a ticket occupant is composed', () => {
++    const expandSidebar = vi.fn()
++    mount({
++      wide: false,
++      expandSidebar,
++      useWorkspaces: hook(workspaceState([workspace('alpha', [])])),
++      useTicketFlow: bindSnapshotSelector({ getSnapshot: () => true, subscribe: () => () => {} }),
++    })
++    fireEvent.click(screen.getByRole('button', { name: '添加工作区' }))
++    expect(expandSidebar).not.toHaveBeenCalled()
++    // 两个来源都在时按钮不再能替操作者选，菜单必须顶上来。
++    expect(screen.getByRole('menuitem', { name: '添加工作区…' })).toBeTruthy()
++    expect(screen.getByRole('menuitem', { name: '从工单号同步…' })).toBeTruthy()
++    expect(screen.queryByTestId('directory-flow')).toBeNull()
++  })
++
+   it('hides the add button when no directory-flow occupant is composed', () => {
+     mount({
+       useWorkspaces: hook(workspaceState([workspace('alpha', [])])),
+       useDirectoryFlow: bindSnapshotSelector({ getSnapshot: () => false, subscribe: () => () => {} }),
++      useTicketFlow: bindSnapshotSelector({ getSnapshot: () => false, subscribe: () => () => {} }),
+     })
+     // Nothing to add with, so the header offers no dead button.
+     expect(screen.queryByRole('button', { name: '添加工作区' })).toBeNull()
+diff --git a/packages/client/ui-workspace/tests/workspace-picker.client.spec.tsx b/packages/client/ui-workspace/tests/workspace-picker.client.spec.tsx
+index df914940..f4ee0fab 100644
+--- a/packages/client/ui-workspace/tests/workspace-picker.client.spec.tsx
++++ b/packages/client/ui-workspace/tests/workspace-picker.client.spec.tsx
+@@ -56,18 +56,36 @@ function anchor(): { current: HTMLElement } {
+  * package would, and renders a marker element while the flow is open.
+  */
+ function flowProbe() {
+-  const probe: { owner: DirectoryFlowOwnerProps | undefined } = { owner: undefined }
+-  const renderSlot = ((_name: string, owner: DirectoryFlowOwnerProps) => {
+-    probe.owner = owner
+-    return owner.open ? <div data-testid="directory-flow" data-busy={owner.busy} /> : null
++  const probe: {
++    owner: DirectoryFlowOwnerProps | undefined
++    ticketOwner: DirectoryFlowOwnerProps | undefined
++  } = { owner: undefined, ticketOwner: undefined }
++  // 两个洞共用同一个 renderSlot 入口：必须按洞名区分，否则后渲染的工单
++  // owner 会覆盖目录 owner，让"谁在驱动对话"变得不可判定。
++  const renderSlot = ((name: string, owner: DirectoryFlowOwnerProps) => {
++    if (name === 'conversation.hero.workspace.directoryFlow') {
++      probe.owner = owner
++      return owner.open ? <div data-testid="directory-flow" data-busy={owner.busy} /> : null
++    }
++    if (name === 'conversation.hero.workspace.ticketFlow') {
++      probe.ticketOwner = owner
++      return owner.open ? <div data-testid="ticket-flow" data-busy={owner.busy} /> : null
++    }
++    return null
+   }) as never
+   return { probe, renderSlot }
+ }
+ 
+-/** Manual occupancy source bound like the renderer would: flip() drives the hook like a real registration change. */
+-function occupancySource(initial = true) {
++/**
++ * Manual occupancy source bound like the renderer would: flip() drives the hook
++ * like a real registration change. 工单洞默认未被占用 —— 未装工单插件时的
++ * 基线行为，占位与否由 flipTicket() 单独驱动。
++ */
++function occupancySource(initial = true, ticketInitial = false) {
+   let occupied = initial
++  let ticketOccupied = ticketInitial
+   const listeners = new Set<() => void>()
++  const ticketListeners = new Set<() => void>()
+   const useDirectoryFlow = bindSnapshotSelector({
+     getSnapshot: () => occupied,
+     subscribe: (listener: () => void) => {
+@@ -75,12 +93,24 @@ function occupancySource(initial = true) {
+       return () => { listeners.delete(listener) }
+     },
+   })
++  const useTicketFlow = bindSnapshotSelector({
++    getSnapshot: () => ticketOccupied,
++    subscribe: (listener: () => void) => {
++      ticketListeners.add(listener)
++      return () => { ticketListeners.delete(listener) }
++    },
++  })
+   return {
+     useDirectoryFlow,
++    useTicketFlow,
+     flip: (next: boolean) => {
+       occupied = next
+       for (const listener of [...listeners]) listener()
+     },
++    flipTicket: (next: boolean) => {
++      ticketOccupied = next
++      for (const listener of [...ticketListeners]) listener()
++    },
+   }
+ }
+ 
+@@ -107,6 +137,7 @@ function mount(
+       onClose={onClose}
+       createWorkspace={createWorkspace}
+       useDirectoryFlow={occupancy.useDirectoryFlow}
++      useTicketFlow={occupancy.useTicketFlow}
+       renderSlot={renderSlot}
+       t={t}
+     />
+@@ -158,6 +189,23 @@ describe('WorkspacePicker', () => {
+     expect(screen.getByTestId('directory-flow')).toBeTruthy()
+   })
+ 
++  it('offers both add sources when a ticket occupant is installed', () => {
++    const b = mount([workspace('alpha', 'Alpha')], vi.fn(), occupancySource(true, true))
++    // 装了两个来源时菜单必须给出选择，而不是替操作者决定。
++    fireEvent.click(screen.getByRole('menuitem', { name: '从工单号同步…' }))
++    expect(b.onClose).toHaveBeenCalled()
++    expect(screen.getByTestId('ticket-flow')).toBeTruthy()
++    expect(screen.queryByTestId('directory-flow')).toBeNull()
++  })
++
++  it('asks which add source when both are installed and nothing is listed', () => {
++    mount([], vi.fn(), occupancySource(true, true))
++    // 两个来源都在时锚点手势不再能替操作者选，菜单必须顶上来。
++    expect(screen.getByRole('menu')).toBeTruthy()
++    expect(screen.queryByTestId('directory-flow')).toBeNull()
++    expect(screen.queryByTestId('ticket-flow')).toBeNull()
++  })
++
+   it('treats flow cancellation as a silent no-op', () => {
+     const b = mount([workspace('alpha', 'Alpha')])
+     chooseAdd()
+@@ -227,7 +275,7 @@ describe('WorkspacePicker', () => {
+         usePanelInfo={usePanelInfo} useResource={useResource}
+         {...allowAllAccess}
+         onPick={vi.fn()} onClose={vi.fn()} createWorkspace={vi.fn()}
+-        useDirectoryFlow={occupancySource().useDirectoryFlow} renderSlot={renderSlot} t={t}
++        useDirectoryFlow={occupancySource().useDirectoryFlow} useTicketFlow={occupancySource().useTicketFlow} renderSlot={renderSlot} t={t}
+       />,
+     )
+     expect(screen.queryByRole('menu')).toBeNull()
+@@ -246,7 +294,7 @@ describe('WorkspacePicker', () => {
+         usePanelInfo={usePanelInfo} useResource={useResource}
+         {...allowAllAccess}
+         onPick={vi.fn()} onClose={vi.fn()} createWorkspace={vi.fn()}
+-        useDirectoryFlow={occupancySource().useDirectoryFlow} renderSlot={renderSlot} t={t}
++        useDirectoryFlow={occupancySource().useDirectoryFlow} useTicketFlow={occupancySource().useTicketFlow} renderSlot={renderSlot} t={t}
+       />,
+     )
+     // An empty list is not final yet: jumping into the directory flow here
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 5f38bae3..1ad4c4a1 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -1391,6 +1391,9 @@ importers:
+       '@deepseek-ai/dsh-api-terminal-controller':
+         specifier: workspace:*
+         version: link:../terminal-controller
++      '@deepseek-ai/dsh-api-ticket-sync':
++        specifier: workspace:*
++        version: link:../ticket-sync
+       '@deepseek-ai/dsh-api-workspace-controller':
+         specifier: workspace:*
+         version: link:../workspace-controller
+@@ -1743,6 +1746,19 @@ importers:
+         specifier: workspace:*
+         version: link:../../session/working-directory
+ 
++  packages/api/ticket-sync:
++    dependencies:
++      zod:
++        specifier: 4.4.3
++        version: 4.4.3
++    devDependencies:
++      '@deepseek-ai/cordis':
++        specifier: workspace:~
++        version: link:../../../vendor/cordis
++      '@deepseek-ai/dsh-typert-protocol':
++        specifier: workspace:*
++        version: link:../../typert/protocol
++
+   packages/api/workspace-controller:
+     dependencies:
+       '@deepseek-ai/dsh-deque':
+@@ -2718,6 +2734,9 @@ importers:
+       '@deepseek-ai/dsh-api-terminal-controller':
+         specifier: workspace:*
+         version: link:../../api/terminal-controller
++      '@deepseek-ai/dsh-api-ticket-sync':
++        specifier: workspace:*
++        version: link:../../api/ticket-sync
+       '@deepseek-ai/dsh-api-workspace-controller':
+         specifier: workspace:*
+         version: link:../../api/workspace-controller
+@@ -2895,6 +2914,9 @@ importers:
+       '@deepseek-ai/dsh-client-ui-theme':
+         specifier: workspace:*
+         version: link:../../client/ui-theme
++      '@deepseek-ai/dsh-client-ui-ticket-sync':
++        specifier: workspace:*
++        version: link:../../client/ui-ticket-sync
+       '@deepseek-ai/dsh-client-ui-tool':
+         specifier: workspace:*
+         version: link:../../client/ui-tool
+@@ -6177,6 +6199,30 @@ importers:
+         specifier: ^18.2.0
+         version: 18.3.1
+ 
++  packages/client/ui-ticket-sync:
++    devDependencies:
++      '@deepseek-ai/cordis':
++        specifier: workspace:~
++        version: link:../../../vendor/cordis
++      '@deepseek-ai/dsh-api-remotes':
++        specifier: workspace:*
++        version: link:../../api/remotes
++      '@deepseek-ai/dsh-api-ticket-sync':
++        specifier: workspace:*
++        version: link:../../api/ticket-sync
++      '@deepseek-ai/dsh-client-locale':
++        specifier: workspace:*
++        version: link:../locale
++      '@deepseek-ai/dsh-client-ui-renderer':
++        specifier: workspace:*
++        version: link:../ui-renderer
++      '@deepseek-ai/dsh-client-ui-workspace':
++        specifier: workspace:*
++        version: link:../ui-workspace
++      react:
++        specifier: ^18.2.0
++        version: 18.3.1
++
+   packages/client/ui-tool:
+     devDependencies:
+       '@deepseek-ai/cordis':
+diff --git a/scripts/verify-ticket-ui.mjs b/scripts/verify-ticket-ui.mjs
+new file mode 100644
+index 00000000..a767c837
+--- /dev/null
++++ b/scripts/verify-ticket-ui.mjs
+@@ -0,0 +1,125 @@
++/**
++ * 工单入口的 UI 冒烟验证：不依赖人眼，也不需要重新构建镜像。
++ *
++ * 前提：`pnpm dev:web` 已在跑（它会常驻 tsc/tsdown/vite 三个 watcher，
++ * 改完源码自动重编并让浏览器 reload）。本脚本只做"打开页面 → 点菜单 →
++ * 校验对话框"，全程 5 秒内，用来替代"改完代码 → 建镜像 → 部署 → 人点页面"。
++ *
++ * 用法：
++ *   node scripts/verify-ticket-ui.mjs                 # 自动从 /tmp/devweb.log 取入口
++ *   node scripts/verify-ticket-ui.mjs --url http://127.0.0.1:3080/?token=xxx
++ */
++import { execSync } from 'node:child_process'
++import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
++import { homedir } from 'node:os'
++import { join } from 'node:path'
++
++/** 从 dev:web 日志里取最后一次启动地址（含 launch token）。 */
++function urlFromLog() {
++  const log = process.env.DSH_DEV_LOG ?? '/tmp/devweb.log'
++  if (!existsSync(log)) return undefined
++  const matches = [...readFileSync(log, 'utf8').matchAll(/dsh web: (\S+)/g)]
++  return matches.at(-1)?.[1]
++}
++
++/** 在 pnpm store 里找可用的 playwright（本仓库未把它提升到根 node_modules）。 */
++async function loadPlaywright() {
++  if (process.env.PLAYWRIGHT_MODULE !== undefined) return import(process.env.PLAYWRIGHT_MODULE)
++  const store = join(process.cwd(), 'node_modules/.pnpm')
++  const candidates = readdirSync(store)
++    .filter(name => /^playwright@\d/.test(name))
++    .sort()
++    .reverse()
++  for (const name of candidates) {
++    const entry = join(store, name, 'node_modules/playwright/index.mjs')
++    if (existsSync(entry)) return import(entry)
++  }
++  throw new Error('未找到 playwright：请在仓库根执行 pnpm install，或设置 PLAYWRIGHT_MODULE')
++}
++
++/** 找本机已安装的 chromium（避免再下载 150MB）。 */
++function chromiumPath() {
++  if (process.env.CHROMIUM_PATH !== undefined) return process.env.CHROMIUM_PATH
++  const cache = join(homedir(), '.cache/ms-playwright')
++  if (!existsSync(cache)) return undefined
++  for (const dir of readdirSync(cache)) {
++    if (!dir.startsWith('chromium-')) continue
++    for (const layout of ['chrome-linux64/chrome', 'chrome-linux/chrome']) {
++      const candidate = join(cache, dir, layout)
++      if (existsSync(candidate)) return candidate
++    }
++  }
++  return undefined
++}
++
++const url = process.argv.includes('--url')
++  ? process.argv[process.argv.indexOf('--url') + 1]
++  : urlFromLog()
++if (url === undefined) {
++  console.error('找不到开发服务器地址：请先 pnpm dev:web，或用 --url 显式指定')
++  process.exit(1)
++}
++
++const pw = await loadPlaywright()
++const browser = await pw.chromium.launch({
++  ...(chromiumPath() === undefined ? {} : { executablePath: chromiumPath() }),
++})
++const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
++const failures = []
++const check = (condition, message) => {
++  if (condition) console.log(`  ok   ${message}`)
++  else {
++    console.log(`  FAIL ${message}`)
++    failures.push(message)
++  }
++}
++
++try {
++  await page.goto(url, { waitUntil: 'networkidle', timeout: 90_000 })
++  await page.waitForTimeout(1500)
++  const skip = page.getByRole('button', { name: 'Continue' })
++  if (await skip.count() > 0) await skip.first().click()
++  for (let index = 0; index < 2; index += 1) await page.keyboard.press('Escape')
++  await page.waitForTimeout(400)
++
++  // 1) workspace 菜单里必须出现工单入口
++  const opened = await page.evaluate(() => {
++    const nodes = [...document.querySelectorAll('span,button,div')]
++      .filter(node => node.textContent?.trim() === 'Default workspace')
++    const button = nodes.at(-1)?.closest('button')
++    if (button === null || button === undefined) return false
++    button.click()
++    return true
++  })
++  check(opened, 'workspace chip 可点击')
++  await page.waitForTimeout(800)
++  check(await page.getByText(/Sync from ticket|从工单号同步/).count() > 0, '菜单含「从工单号同步」')
++
++  // 2) 打开对话框
++  await page.getByText(/Sync from ticket|从工单号同步/).first().click()
++  await page.waitForTimeout(600)
++  check(await page.getByText('从工单号同步日志').count() > 0, '对话框标题出现')
++
++  // 3) 本地格式校验与服务端同规则：非法禁用、合法启用
++  const dialog = page.getByRole('dialog')
++  const input = dialog.locator('input').first()
++  const confirm = dialog.getByRole('button', { name: /确定/ })
++  check(await confirm.count() === 1, '对话框内只有一个「确定」按钮')
++  await input.fill('Q123')
++  await page.waitForTimeout(300)
++  check(await confirm.isDisabled().catch(() => false), '非法工单号禁用「确定」')
++  await input.fill('Q2026012500018')
++  await page.waitForTimeout(300)
++  check(await confirm.isEnabled().catch(() => false), '合法工单号启用「确定」')
++
++  await page.screenshot({ path: '/tmp/ticket-ui.png' })
++  console.log('截图：/tmp/ticket-ui.png')
++} finally {
++  await browser.close()
++}
++
++if (failures.length > 0) {
++  console.error(`UI 冒烟失败 ${String(failures.length)} 项`)
++  process.exit(1)
++}
++console.log('UI 冒烟通过')
+diff --git a/tsconfig.base.json b/tsconfig.base.json
+index 2b3e9aad..3f2702f0 100644
+--- a/tsconfig.base.json
++++ b/tsconfig.base.json
+@@ -133,6 +133,9 @@
+       "@deepseek-ai/dsh-api-workspace-controller/client": ["./packages/api/workspace-controller/src/client/index.ts"],
+       "@deepseek-ai/dsh-api-workspace-controller/default-workspace": ["./packages/api/workspace-controller/src/default-workspace.ts"],
+       "@deepseek-ai/dsh-api-workspace-controller/types": ["./packages/api/workspace-controller/src/types.ts"],
++      "@deepseek-ai/dsh-api-ticket-sync": ["./packages/api/ticket-sync/src/index.ts"],
++      "@deepseek-ai/dsh-api-ticket-sync/client": ["./packages/api/ticket-sync/src/client/index.ts"],
++      "@deepseek-ai/dsh-api-ticket-sync/types": ["./packages/api/ticket-sync/src/types.ts"],
+       "@deepseek-ai/dsh-typert-protocol": ["./packages/typert/protocol/src/index.ts"],
+       "@deepseek-ai/dsh-typert-protocol/types": ["./packages/typert/protocol/src/types.ts"],
+       "@deepseek-ai/dsh-typert-protocol/remote-info": ["./packages/typert/protocol/src/remote-info.ts"],
+@@ -313,6 +316,7 @@
+       "@deepseek-ai/dsh-client-ui-user-questions": ["./packages/client/ui-user-questions/src"],
+       "@deepseek-ai/dsh-client-ui-trajectory": ["./packages/client/ui-trajectory/src"],
+       "@deepseek-ai/dsh-client-ui-workspace": ["./packages/client/ui-workspace/src"],
++      "@deepseek-ai/dsh-client-ui-ticket-sync": ["./packages/client/ui-ticket-sync/src"],
+       "@deepseek-ai/dsh-client-ui-theme": ["./packages/client/ui-theme/src"],
+       "@deepseek-ai/dsh-client-ui-theme/brand-font.css": ["./packages/client/ui-theme/src/styles/brand-font.css"],
+       "@deepseek-ai/dsh-client-ui-settings": ["./packages/client/ui-settings/src"],
+diff --git a/tsconfig.client.json b/tsconfig.client.json
+index b2f0423c..de0f117d 100644
+--- a/tsconfig.client.json
++++ b/tsconfig.client.json
+@@ -88,6 +88,7 @@
+     { "path": "./packages/api/session-controller/tsconfig.client.json" },
+     { "path": "./packages/api/remote-access/tsconfig.client.json" },
+     { "path": "./packages/api/workspace-controller/tsconfig.client.json" },
++    { "path": "./packages/api/ticket-sync/tsconfig.client.json" },
+     { "path": "./packages/api/remotes/tsconfig.client.json" },
+     { "path": "./packages/extensions/cordis-client-runner" },
+     { "path": "./packages/extensions/ui-cordis" },
+@@ -105,6 +106,7 @@
+     { "path": "./packages/client/ui-deliverables/tsconfig.client.json" },
+     { "path": "./packages/client/ui-workflow-run" },
+     { "path": "./packages/client/ui-workspace" },
++    { "path": "./packages/client/ui-ticket-sync" },
+     { "path": "./packages/client/ui-input-trigger" },
+     { "path": "./packages/client/ui-commands" },
+     { "path": "./packages/client/ui-skill" },
+diff --git a/tsconfig.host.json b/tsconfig.host.json
+index 6eb4662f..5782fafa 100644
+--- a/tsconfig.host.json
++++ b/tsconfig.host.json
+@@ -331,6 +331,7 @@
+     { "path": "./packages/api/settings-controller" },
+     { "path": "./packages/api/remote-access/tsconfig.host.json" },
+     { "path": "./packages/api/workspace-controller/tsconfig.host.json" },
++    { "path": "./packages/api/ticket-sync/tsconfig.host.json" },
+     { "path": "./packages/typert/loader" },
+     { "path": "./packages/session/session-persistence" },
+     { "path": "./packages/session/session-format" },
