@@ -41,7 +41,31 @@ data:
             models:
               - id: {{ .Values.dsh.llm.model }}
                 {{- if .Values.dsh.llm.disableThinking }}
+                # ⚠️ 只声明 'off' 会让整条路由不可用：dsh-llm-pi-ai 要求
+                # reasoningEfforts 至少提供一个 'off' 之外的档位
+                # （否则 "offers no level beyond off"），失败信息还会被
+                # compat 校验覆盖成「supportsDeveloperRole 没有模型支持」，
+                # 极难定位。这里声明一个可选档位以满足契约，
+                # 默认仍由 provider 级 reasoning: 'off' 关闭思维链。
                 reasoningEfforts:
                   'off':
+                  'high': 'high'
                 {{- end }}
+    {{- if and .Values.dsh.llm.providerId .Values.dsh.llm.model }}
+    # 新会话的默认模型路由。
+    #
+    # 上游 @deepseek-ai/dsh-base 把 agent-default-model 固定为
+    # provider=deepseek-official / model=deepseek-flash，该路由要求凭据服务里
+    # 存在 DEEPSEEK_API_KEY。本部署只提供上面声明的 aliyun-maas 路由，
+    # 不覆盖此行会让每个新建会话直接以
+    # `llm-deepseek: no API key for provider route "deepseek-official"` 失败——
+    # 且该失败发生在首轮，与「用户选了哪个模型」无关，极易被误判成 LLM 密钥没配。
+    #
+    # ⚠️ patch 是「整段替换 config」而非深合并（见 dsh-base README），
+    # 因此 provider / model 必须成对重述，不能只写其中一个。
+    - id: agent-default-model
+      config:
+        provider: {{ .Values.dsh.llm.providerId }}
+        model: {{ .Values.dsh.llm.model }}
+    {{- end }}
 {{- end }}
