@@ -141,7 +141,7 @@ async function submit() {
         "terminal-only"，而日志收集面板按工单号取会话 → 必然 session_missing。
       -->
       <SshConnectSection :bridge-status="bridgeStatus" :case-id="caseId" mode="inline" />
-      <p v-if="!sshConnected" class="lc-ssh-hint">登录成功后才能提交；发起节点会自动填充。</p>
+      <p v-if="!sshConnected" class="lc-ssh-hint">登录成功后才能提交；发起节点取自已连接的 SSH 会话。</p>
     </div>
 
     <p v-if="errorMessage" class="lc-case-error">{{ errorMessage }}</p>

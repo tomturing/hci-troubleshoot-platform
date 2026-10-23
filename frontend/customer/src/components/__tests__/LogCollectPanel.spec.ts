@@ -34,6 +34,8 @@ const { sentMessages, fakeSocket, mockStore } = vi.hoisted(() => {
     fakeSocket: socket,
     mockStore: {
       lastSshHost: '',
+      sshConnectionState: 'disconnected' as 'disconnected' | 'connected',
+      sshCurrentConfig: null as null | { host: string; port: number; username: string },
       logCollectActiveTask: null,
       openLogCollectCaseDialog: vi.fn(),
       // 抽屉宽度与历史工单共用同一真值
@@ -139,6 +141,32 @@ describe('LogCollectPanel', () => {
   beforeEach(() => {
     sentMessages.length = 0
     fakeSocket.readyState = 1
+    mockStore.lastSshHost = ''
+    mockStore.sshConnectionState = 'disconnected'
+    mockStore.sshCurrentConfig = null
+  })
+
+  // 回归：发起节点曾是可编辑输入框，用户改成另一个 IP 后 bridge 按 caseID@nodeIP 查不到会话
+  // （session_missing）。它是"当前 SSH 会话连的那台机器"，只能展示，不能改。
+  it('发起节点以只读事实展示，取自当前 SSH 会话而非输入', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '10.10.1.21', port: 22, username: 'root' }
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    await flushPromises()
+
+    const fact = wrapper.find('.lc-node-fact')
+    expect(fact.exists()).toBe(true)
+    expect(fact.find('.lc-node-fact-value').text()).toBe('10.10.1.21')
+    expect(fact.text()).toContain('当前 SSH 会话')
+
+    // 会话主机是唯一真值：即使调用方传了另一个 nodeIp，也不能拿它去探测
+    const probe = sentMessages
+      .map((raw) => JSON.parse(raw))
+      .find((message) => message.log_action === 'probe')
+    expect(probe?.node_ip).toBe('10.10.1.21')
   })
 
   it('带 visible=true 首次挂载即发出 probe（回归：immediate watcher）', async () => {

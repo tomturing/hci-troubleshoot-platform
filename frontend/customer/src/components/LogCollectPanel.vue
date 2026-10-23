@@ -141,21 +141,22 @@ const form = reactive({
   modules: ['vm_suspend'] as LogCollectModule[],
   dateRange: [] as string[],
   ips: 'all',
-  // 发起节点：acli progress 只在该节点有效，后续轮询必须复用同一节点
-  // 优先取显式传入的 nodeIp，其次复用最近一次成功登录的 SSH 主机
-  nodeIp: props.nodeIp || chatStore.lastSshHost || '',
 })
 
-// SSH 登录成功后自动带出发起节点（方案 §4.A/§7）：
-// 仅在用户尚未手填、或当前值仍是上一次自动填充值时覆盖，避免冲掉人工修改。
-watch(
-  () => chatStore.lastSshHost,
-  (host, previous) => {
-    if (!host) return
-    const current = form.nodeIp.trim()
-    if (!current || current === (previous ?? '')) form.nodeIp = host
-  },
-)
+/**
+ * 发起节点 = 当前 SSH 会话的目标主机，是既成事实，不是用户输入。
+ *
+ * 第一性原理：bridge 的会话键是 `caseID@nodeIP`，一切 bridge 动作都必须路由回
+ * 「pty 正在运行的那台机器」。用户无法通过填一个 IP 去"连上"另一台机器——
+ * 手填与真实会话不一致时只会得到 session_missing（LC-ENV-006）。
+ * 因此唯一真值只能来自会话本身，UI 只做展示，不提供编辑入口。
+ */
+const sessionHost = computed(() => {
+  const live = chatStore.sshConnectionState === 'connected' ? chatStore.sshCurrentConfig?.host : ''
+  return (live || chatStore.lastSshHost || '').trim()
+})
+// 会话主机优先；props.nodeIp 仅作为调用方显式指定时的兜底（当前 App.vue 不传）
+const nodeIp = computed(() => (sessionHost.value || props.nodeIp || '').trim())
 
 // ── 准备阶段（打开面板即探测，避免用户填完表单才发现环境不可用）────────────
 const moduleOptions = ref<ModuleOption[]>([...BUILTIN_MODULES])
@@ -165,7 +166,7 @@ const prepareError = ref('')
 // 准备令牌：节点 IP 变更会重探，旧探测结果不得覆盖新结果
 let prepareToken = 0
 
-const nodeIpReady = computed(() => Boolean((form.nodeIp || props.nodeIp || '').trim()))
+const nodeIpReady = computed(() => Boolean(nodeIp.value))
 
 /**
  * 目标主机选择器与 form.ips 的双向桥。
@@ -248,10 +249,10 @@ function applyCatalog(data: ProbeResult) {
  */
 async function prepare(options: { silent?: boolean } = {}): Promise<boolean> {
   if (prepareState.value === 'probing') return false
-  const nodeIp = (form.nodeIp || props.nodeIp || '').trim()
-  if (!nodeIp) {
+  const targetNode = nodeIp.value
+  if (!targetNode) {
     prepareState.value = 'failed'
-    prepareError.value = '请先填写发起节点地址'
+    prepareError.value = '请先在 SSH 终端连接 HCI 节点'
     return false
   }
   const token = ++prepareToken
@@ -259,7 +260,7 @@ async function prepare(options: { silent?: boolean } = {}): Promise<boolean> {
   prepareError.value = ''
   try {
     const ws = await openSocket()
-    const probe = await sendAndWait(ws, 'probe', { remoteUrl: RELAY_URL, nodeIp }, 90000)
+    const probe = await sendAndWait(ws, 'probe', { remoteUrl: RELAY_URL, nodeIp: targetNode }, 90000)
     if (token !== prepareToken) return false
     if (probe.status !== 'ok') {
       throw new Error(probe.message || '环境探测失败，请确认已在 SSH 终端连接 HCI')
@@ -413,12 +414,12 @@ function sendAndWait(
     if (action === 'acli_sync') {
       ws.send(buildAcliSyncMessage(props.caseId, { force: false, minDiskMb: 100 }))
     } else {
-      // props.nodeIp 可能为空（复用已登录 SSH 会话的场景）：此时必须回落到表单里的节点，
-      // 否则会把 nodeIp 覆盖成空串，bridge 只能落到默认会话，探测与创建会跨节点。
+      // 所有动作一律锚定会话主机：nodeIp 是派生值，不存在"表单里另填一个"的可能，
+      // 也就不会再出现写成空串（bridge 落到默认会话）或写成不存在节点（session_missing）。
       ws.send(
         buildLogCollectMessage(props.caseId, action, {
           ...(options as any),
-          nodeIp: props.nodeIp || (options.nodeIp as string) || form.nodeIp,
+          nodeIp: nodeIp.value,
         }),
       )
     }
@@ -525,7 +526,7 @@ async function refreshProgress(silent = false) {
 
     if (!pollingBridgeProgress && socket?.readyState === WebSocket.OPEN) {
       try {
-        const result = await sendAndWait(socket, 'progress', { nodeIp: form.nodeIp }, 15000)
+        const result = await sendAndWait(socket, 'progress', {}, 15000)
         if (result.status === 'error') throw new Error(result.message || 'bridge 进度查询失败')
         const snapshot = result.log_data as ProgressSnapshot | null
         if (snapshot) progress.value = snapshot
@@ -570,9 +571,9 @@ async function handleStart() {
     return
   }
 
-  const nodeIp = (form.nodeIp || props.nodeIp || '').trim()
-  if (!nodeIp) {
-    ElMessage.warning('请填写发起节点地址（需与 SSH 终端连接的节点一致）')
+  const targetNode = nodeIp.value
+  if (!targetNode) {
+    ElMessage.warning('请先在 SSH 终端连接 HCI 节点')
     return
   }
 
@@ -582,8 +583,6 @@ async function handleStart() {
   currentTask.value = null
   progress.value = null
   relayStatus.value = 'none'
-  // 校验通过后回填：后续所有 bridge 动作都必须锚定同一节点，否则会落到默认会话
-  form.nodeIp = nodeIp
   const token = ++runToken
 
   let ws: WebSocket
@@ -615,7 +614,7 @@ async function handleStart() {
       task = await logCollectApi.createTask({
         case_id: props.caseId,
         // 工单号只有一个：acli -s、产物名与任务归属都使用 case_id
-        origin_node_ip: nodeIp,
+        origin_node_ip: targetNode,
         modules,
         date_from: form.dateRange[0],
         date_to: form.dateRange[1],
@@ -642,7 +641,7 @@ async function handleStart() {
       ws,
       'create',
       {
-        nodeIp,
+        nodeIp: targetNode,
         // acli -s 与任务归属使用同一个平台工单号
         ticketNo: props.caseId,
         modules,
@@ -709,7 +708,7 @@ async function pollUntilCollected(ws: WebSocket, token: number): Promise<boolean
   try {
     for (let attempt = 0; attempt < 720; attempt++) {
       if (token !== runToken) return false
-      const result = await sendAndWait(ws, 'progress', { nodeIp: form.nodeIp }, 60000)
+      const result = await sendAndWait(ws, 'progress', {}, 60000)
       // bridge 明确报错（如会话已断开）必须立刻上抛：
       // 早先这里只读 log_data，错误结果会被当成"还没有进度"，面板空转一小时仍显示 0%。
       if (result.status === 'error') {
@@ -760,7 +759,7 @@ async function runP3(ws: WebSocket, task: LogCollectTask, token: number) {
   if (!archivePath) throw new Error('未获取到压缩包路径，无法中转')
 
   // 1) 取包大小（init 需要 total_size）
-  const statResult = await sendAndWait(ws, 'stat', { sourcePath: archivePath, nodeIp: form.nodeIp }, 30000)
+  const statResult = await sendAndWait(ws, 'stat', { sourcePath: archivePath }, 30000)
   if (statResult.status !== 'ok') throw new Error(statResult.message || '读取压缩包大小失败')
   const totalSize = Number(statResult.log_data?.size || 0)
   if (totalSize <= 0) throw new Error('压缩包大小异常')
@@ -775,7 +774,6 @@ async function runP3(ws: WebSocket, task: LogCollectTask, token: number) {
     ws,
     'transfer',
     {
-      nodeIp: form.nodeIp,
       sourcePath: archivePath,
       platformUrl: window.location.origin,
       uploadToken: session.upload_token,
@@ -848,7 +846,7 @@ async function handleCancel() {
   runToken++
   await logCollectApi.cancelTask(currentTask.value.task_id, '用户取消').catch(() => undefined)
   if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(buildLogCollectMessage(props.caseId, 'cancel', { nodeIp: form.nodeIp || props.nodeIp }))
+    socket.send(buildLogCollectMessage(props.caseId, 'cancel', {}))
   }
   progress.value = null
   relayStatus.value = 'none'
@@ -885,12 +883,16 @@ watch(
   { immediate: true },
 )
 
-// 发起节点变了，上一轮的探测结论（目录、节点清单、P1/P3 判定）全部失效，必须重探。
+// 会话主机变了（重新登录到另一台节点），上一轮的探测结论（目录、节点清单、P1/P3 判定）
+// 全部失效，必须重探。派生值只会在会话切换时变化，防抖仅用于合并登录过程中的多次写入。
 let nodeIpTimer: ReturnType<typeof setTimeout> | null = null
 watch(
-  () => form.nodeIp,
+  nodeIp,
   (value) => {
-    if (!visible.value || !value.trim()) return
+    if (!visible.value || !value) return
+    // 采集中换节点属于异常操作：此时重探只会把展示值改成另一台机器，
+    // 而运行中的任务仍锚在旧节点（handleStart 已捕获 targetNode），反而制造错配。
+    if (running.value) return
     if (nodeIpTimer) clearTimeout(nodeIpTimer)
     nodeIpTimer = setTimeout(() => {
       probeResult.value = null
@@ -1007,7 +1009,7 @@ onBeforeUnmount(() => {
         type="info"
         :closable="false"
         show-icon
-        title="请先在 SSH 终端连接 HCI 节点，或填写发起节点地址；连接后才能读取场景目录与节点清单"
+        title="请先在 SSH 终端连接 HCI 节点；连接后才能读取场景目录与节点清单"
       />
       <el-alert
         v-else-if="prepareState === 'probing'"
@@ -1062,8 +1064,20 @@ onBeforeUnmount(() => {
           <div class="lc-hint">日志按天归档，将收集所选日期全天日志（最多 30 天）</div>
         </el-form-item>
         <el-form-item label="发起节点">
-          <el-input v-model="form.nodeIp" placeholder="与 SSH 终端连接的 HCI 节点 IP" />
-          <div class="lc-hint">acli 进度只在该节点有效，取消与进度查询都会路由回此节点</div>
+          <!--
+            只读展示：发起节点就是当前 SSH 会话连的那台机器，用户改不动、也不该改。
+            acli 进度只在该节点有效，会话键是 caseID@nodeIP，手填不一致只会落到不存在的会话。
+          -->
+          <div class="lc-node-fact">
+            <template v-if="nodeIp">
+              <span class="lc-node-fact-value">{{ nodeIp }}</span>
+              <el-tag size="small" type="info" effect="plain">当前 SSH 会话</el-tag>
+            </template>
+            <span v-else class="lc-node-fact-empty">未连接 SSH 会话</span>
+          </div>
+          <div class="lc-hint">
+            取自已登录的 SSH 终端，采集、进度查询与取消都会路由回此节点；换节点请重新登录 SSH
+          </div>
         </el-form-item>
         <el-form-item label="目标主机">
           <!-- 有集群清单就必须用清单：手填 IP 是唯一允许的降级，不是默认交互 -->
@@ -1214,6 +1228,22 @@ onBeforeUnmount(() => {
   color: var(--el-text-color-secondary);
   line-height: 1.5;
   margin-top: 4px;
+}
+/* 发起节点是事实展示，不是输入框：用等宽字体弱化"可编辑"暗示 */
+.lc-node-fact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+.lc-node-fact-value {
+  font-family: var(--el-font-family-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 13px;
+  color: var(--el-text-color-primary);
+}
+.lc-node-fact-empty {
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
 }
 .lc-progress {
   display: flex;
