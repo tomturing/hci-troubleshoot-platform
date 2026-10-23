@@ -102,6 +102,9 @@ jobs:
               - '!.github/**'
             platform_helm:
               - 'deploy/helm/hci-platform/**'
+              # DSH 是独立 chart，由 ArgoCD 以 selfHeal 直推集群；一旦渲染坏了
+              # 没有人工拦截的机会，必须在 CI 里先渲一遍。
+              - 'deploy/helm/hci-platform-dsh/**'
             # `config-contract-check` 读取的全部输入：契约文件、环境变量样例、
             # Compose、Helm Chart 与校验器自身。deploy/** 不在 backend filter 内，
             # 因此 PR 上这类变更此前既跳过 Lint 也跳过 unit-tests（零校验）。
@@ -721,6 +724,7 @@ jobs:
       - name: Helm lint
         run: |
           helm lint deploy/helm/hci-platform
+          helm lint deploy/helm/hci-platform-dsh
           if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
             helm lint deploy/helm/hci-sim
           fi
@@ -746,6 +750,18 @@ jobs:
 
           if [ ! -s /tmp/hci-platform-rendered.yaml ]; then
             echo "Helm 渲染结果为空"
+            exit 1
+          fi
+
+          # DSH chart：只验证可渲染与非空，镜像坐标等由部署时注入
+          helm template dsh deploy/helm/hci-platform-dsh \
+            --set global.publicUrl=https://ci.example.com \
+            --set global.imagePullUser=ci \
+            --set secrets.ghcrToken=ci-only-not-a-real-token \
+            >/tmp/hci-platform-dsh-rendered.yaml
+
+          if [ ! -s /tmp/hci-platform-dsh-rendered.yaml ]; then
+            echo "DSH chart 渲染结果为空"
             exit 1
           fi
 

@@ -132,6 +132,12 @@ spec:
               mountPath: {{ .Values.customerLogs.mountPath }}
               readOnly: true
             {{- end }}
+            {{- if .Values.tickets.enabled }}
+            # 宿主机同步服务解压后的工单目录树（/sf/tickets/<工单号>/）
+            - name: tickets
+              mountPath: {{ .Values.tickets.mountPath }}
+              readOnly: {{ .Values.tickets.readOnly }}
+            {{- end }}
             # 解压/分析临时产物
             - name: workspace
               mountPath: /work
@@ -188,6 +194,14 @@ spec:
         - name: customer-logs
           hostPath:
             path: {{ .Values.customerLogs.hostPath }}
+            type: Directory
+        {{- end }}
+        {{- if .Values.tickets.enabled }}
+        # 刻意不用 DirectoryOrCreate：kubelet 创建出来的是 root:root 755，
+        # 宿主机上的同步服务（node）之后将写不进去。目录必须先由服务创建。
+        - name: tickets
+          hostPath:
+            path: {{ .Values.tickets.hostPath }}
             type: Directory
         {{- end }}
         - name: workspace
