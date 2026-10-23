@@ -219,6 +219,22 @@ const allHostsChecked = computed(
   () => hostOptions.value.length > 0 && hostChecked.value.length === hostOptions.value.length,
 )
 
+/**
+ * 手填兜底提示：必须同时回答"为什么没有清单"和"该填什么"。
+ *
+ * 第一性原理：用户能填的值只有三种——all、单个 IP、英文逗号分隔的 IP，
+ * 因此提示直接给格式与示例，而不是让用户去猜 acli 的参数名（-i 是内部契约，不该出现在界面）。
+ * 对抗性审查：节点清单的唯一来源是 `acli platform node list`，acli 未安装时清单必然为空；
+ * 不说明这一点，用户会把"平台读不到节点"误判成平台故障。
+ */
+const manualHostHint = computed(() => {
+  const format = 'all（全部在线节点）或英文逗号分隔的 IP，如 172.28.25.2,172.28.25.3'
+  if (probeResult.value && !probeResult.value.acli_installed) {
+    return `acli 未安装，无法自动读取节点清单；可手填 ${format}，开始收集时会先安装 acli`
+  }
+  return `未读取到节点清单，可手填 ${format}`
+})
+
 const catalogSourceText = computed(() => {
   if (prepareState.value === 'probing') return '正在从集群读取场景目录…'
   if (!probeResult.value) return '尚未读取集群目录，当前展示平台内置项'
@@ -856,6 +872,14 @@ async function confirmInstall(ws: WebSocket) {
   const result = await sendAndWait(ws, 'acli_sync', {}, 300000)
   if (result.status === 'error') throw new Error(result.message || 'acli 安装失败')
   probeResult.value = { ...(probeResult.value as ProbeResult), acli_installed: true }
+  // 安装成功后必须重探：节点清单与场景目录只有 acli 可用后才读得到，
+  // 不重探会让用户"装完 acli 仍看到读不到节点清单"，误判为安装无效。
+  const refreshed = await prepare({ silent: true })
+  if (!refreshed && prepareState.value === 'failed') {
+    // 重探失败不改写安装结果，也不让面板停在红色错误态：采集仍可继续（-i all 合法）
+    prepareState.value = 'ready'
+    prepareError.value = ''
+  }
 }
 
 async function pollUntilCollected(ws: WebSocket, token: number): Promise<boolean> {
@@ -1343,13 +1367,9 @@ onBeforeUnmount(() => {
                 </el-checkbox>
               </el-checkbox-group>
             </template>
-            <el-input v-else v-model="form.ips" placeholder="all 表示全部在线节点，或逗号分隔 IP" />
+            <el-input v-else v-model="form.ips" placeholder="all，或英文逗号分隔的节点 IP" />
             <div class="lc-hint">
-              {{
-                hostOptions.length
-                  ? '不勾选任何主机 = 全部在线节点；勾选全部同样等价于 all'
-                  : '未获取到节点清单，请按 acli -i 格式手填 IP'
-              }}
+              {{ hostOptions.length ? '不勾选任何主机 = 全部在线节点；勾选全部同样等价于 all' : manualHostHint }}
             </div>
           </el-form-item>
         </el-form>
