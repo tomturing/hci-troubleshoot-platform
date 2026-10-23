@@ -52,11 +52,9 @@ MAX_DATE_RANGE_DAYS = 30
 class LogCollectTaskCreate(BaseModel):
     """创建任务请求。"""
 
-    case_id: str = Field(min_length=1, max_length=20, description="关联工单")
-    ticket_no: str | None = Field(
-        default=None,
-        pattern=r"^[A-Za-z0-9_-]{1,32}$",
-        description="工单号；必须与 case_id 一致（不传则自动取 case_id）",
+    case_id: str = Field(
+        pattern=r"^Q[0-9]{8}[0-9]{5}$",
+        description="关联工单号（Q + 8 位日期 + 5 位序号），同时作为 acli -s",
     )
     origin_node_ip: str = Field(min_length=1, max_length=64, description="发起采集的 HCI 节点")
     modules: list[LogCollectModule] = Field(min_length=1, description="收集专项")
@@ -128,19 +126,15 @@ class LogCollectTaskCreate(BaseModel):
             raise ValueError(f"收集范围不能超过 {MAX_DATE_RANGE_DAYS} 天")
         return self
 
-    @model_validator(mode="after")
-    def _unify_ticket_no(self) -> LogCollectTaskCreate:
-        """工单号只保留一个：ticket_no 必须等于 case_id。
-
-        历史契约允许 ticket_no 填写外部 ICare 单号，导致 acli ``-s`` / 产物名与平台
-        归属工单不一致，排障时无法互相印证。统一后：未传由 case_id 派生；显式传入
-        不一致的值直接 422，避免静默改写成调用方未预期的号。
-        """
-        if self.ticket_no is None:
-            self.ticket_no = self.case_id
-        elif self.ticket_no != self.case_id:
-            raise ValueError("ticket_no 必须与 case_id 一致（工单号统一为平台工单号）")
-        return self
+    @field_validator("case_id")
+    @classmethod
+    def _validate_case_id_date(cls, value: str) -> str:
+        """日期段必须真实存在（20261032 这类"格式合法但日期非法"的号要拒绝）。"""
+        try:
+            datetime.strptime(value[1:9], "%Y%m%d")
+        except ValueError as exc:
+            raise ValueError("工单号中的日期不合法，应为 Q + YYYYMMDD + 5 位序号") from exc
+        return value
 
 
 class LogCollectTaskPatch(BaseModel):
@@ -180,7 +174,6 @@ class LogCollectTaskResponse(BaseModel):
 
     task_id: UUID
     case_id: str
-    ticket_no: str
     origin_node_ip: str
     modules: list[str]
     date_from: date

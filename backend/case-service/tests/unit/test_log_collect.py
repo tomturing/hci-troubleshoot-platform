@@ -20,9 +20,9 @@ from pydantic import ValidationError
 
 def make_payload(**overrides) -> LogCollectTaskCreate:
     data = {
-        "case_id": "Q20261022001",
+        "case_id": "Q2026102200001",
         # 工单号统一为平台工单号：ticket_no 必须等于 case_id
-        "ticket_no": "Q20261022001",
+        "ticket_no": "Q2026102200001",
         "origin_node_ip": "172.28.25.1",
         "modules": ["vm_suspend"],
         "date_from": date(2026, 10, 21),
@@ -89,7 +89,7 @@ class TestCreateTask:
 
         assert result is created
         task = mock_repo.create.await_args.args[0]
-        assert task.ticket_no == "Q20261022001"
+        assert task.case_id == "Q2026102200001"
         assert task.status == "pending"
         assert task.progress == 0
         assert task.created_by == "client-1"
@@ -219,9 +219,9 @@ class TestPayloadValidation:
     @pytest.mark.parametrize(
         "overrides",
         [
-            {"ticket_no": "Q1;rm -rf /"},
-            {"ticket_no": "Q1 2"},
-            {"ticket_no": "A" * 33},
+            {"case_id": "Q1;rm -rf /"},
+            {"case_id": "Q20261022 0001"},
+            {"case_id": "Q20261022000011"},
             {"origin_node_ip": "not-an-ip"},
             {"ips": ["1.2.3.999"]},
             {"ips": ["1.1.1.1;id"]},
@@ -237,21 +237,15 @@ class TestPayloadValidation:
         with pytest.raises(ValidationError):
             make_payload(**overrides)
 
-    def test_ticket_no_derived_from_case_id_when_omitted(self):
-        """工单号只有一个：未传 ticket_no 时自动取 case_id。"""
-        payload = LogCollectTaskCreate(
-            case_id="Q20261022001",
-            origin_node_ip="172.28.25.1",
-            modules=["vm_suspend"],
-            date_from=date(2026, 10, 21),
-            date_to=date(2026, 10, 22),
-        )
-        assert payload.ticket_no == "Q20261022001"
+    def test_case_id_accepts_manual_number(self):
+        """用户指定的工单号（Q + 8 位日期 + 5 位序号）可直接用于日志任务。"""
+        payload = make_payload(case_id="Q2026101401684")
+        assert payload.case_id == "Q2026101401684"
 
-    def test_ticket_no_must_equal_case_id(self):
-        """禁止两套工单号：显式传入不一致的 ticket_no 直接拒绝。"""
-        with pytest.raises(ValidationError, match="ticket_no 必须与 case_id 一致"):
-            make_payload(ticket_no="Q20261022002")
+    def test_case_id_rejects_invalid_calendar_date(self):
+        """格式合法但日期不存在（2026-13-32）必须拒绝。"""
+        with pytest.raises(ValidationError, match="日期不合法"):
+            make_payload(case_id="Q2026133200001")
 
     def test_modules_deduplicated(self):
         payload = make_payload(modules=["network", "network", "vm_start"])

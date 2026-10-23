@@ -54,9 +54,22 @@ class TaskNotFoundError(LogCollectError):
 
 
 class TaskConflictError(LogCollectError):
-    """同一工单已有活跃任务，或任务已结束无法操作。"""
+    """同一工单已有活跃任务，或任务已结束无法操作。
+
+    ``active_task`` 供路由层生成 409 摘要（状态/进度/是否本人），
+    让前端直接展示"查看任务状态"而不必再查一次。
+    """
 
     code = "LC-PLUGIN-007"
+
+    def __init__(
+        self,
+        message: str,
+        active_task: LogCollectTask | None = None,
+        code: str | None = None,
+    ):
+        super().__init__(message, code=code)
+        self.active_task = active_task
 
 
 class InvalidTransitionError(LogCollectError):
@@ -80,12 +93,14 @@ class LogCollectService:
         # 应用层先判一次（友好报错），数据库部分唯一索引兜底并发。
         active = await self.repository.get_active_by_case(payload.case_id)
         if active is not None:
-            raise TaskConflictError(f"工单 {payload.case_id} 已有进行中的日志收集任务：{active.task_id}")
+            raise TaskConflictError(
+                f"工单 {payload.case_id} 已有进行中的日志收集任务：{active.task_id}",
+                active_task=active,
+            )
 
         task = LogCollectTask(
+            # 工单号只有一个：acli -s、产物名与任务归属全部使用 case_id
             case_id=payload.case_id,
-            # 工单号统一：schema 已强制 ticket_no == case_id，这里只是类型兜底
-            ticket_no=payload.ticket_no or payload.case_id,
             origin_node_ip=payload.origin_node_ip,
             modules=list(payload.modules),
             date_from=payload.date_from,
@@ -109,8 +124,15 @@ class LogCollectService:
             raise TaskNotFoundError(str(task_id))
         return task
 
-    async def list_tasks(self, case_id: str, *, limit: int = 20, offset: int = 0):
-        return await self.repository.list_by_case(case_id, limit=limit, offset=offset)
+    async def list_tasks(
+        self,
+        case_id: str,
+        *,
+        created_by: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ):
+        return await self.repository.list_by_case(case_id, created_by=created_by, limit=limit, offset=offset)
 
     async def update_task(self, task_id, patch: LogCollectTaskPatch) -> LogCollectTask:
         task = await self.get_task(task_id)

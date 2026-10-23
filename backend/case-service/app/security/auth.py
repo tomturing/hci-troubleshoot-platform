@@ -38,6 +38,18 @@ async def verify_case_ownership(case_id: str, client_id: str, session) -> None:
         raise HTTPException(status_code=404, detail="Case not found")
 
 
+async def verify_case_exists(case_id: str, session) -> None:
+    """只校验工单存在（不校验归属）。
+
+    日志收集允许用户指定一个已存在的工单号（可能属于其他客户端）：任务本身按
+    ``created_by`` 隔离，不复用也不修改工单业务数据。工单不存在仍返回 404，
+    避免在平台里凭空挂任务。
+    """
+    res = await session.execute(text('SELECT 1 FROM "case" WHERE case_id = :cid'), {"cid": case_id})
+    if res.fetchone() is None:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+
 def require_admin_token(authorization: str | None = Header(default=None)):
     """Admin 端点鉴权：要求 Authorization: Bearer INTERNAL_API_TOKEN（防时序侧信道）。"""
     if not authorization or not authorization.startswith("Bearer "):

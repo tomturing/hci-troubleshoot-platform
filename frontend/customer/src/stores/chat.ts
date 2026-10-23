@@ -8,6 +8,7 @@ import { createApiClient, createCaseApi, createConversationApi, createAssistantA
 import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse, EnvironmentResponse, EnvironmentContextResponse, EnvType } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
 import { createEvaluateApi } from '@/api/evaluate'
+import { logCollectApi, type ActiveTaskSummary } from '@/api/logCollect'
 import { checkBridgeRunning, checkBridgeBeforeOpen, createBridgeSocket, getBridgeUrl, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, buildVmConsoleOpMessage, parseAgentExecResult, type BridgeStatus, type TerminalWsMessage, type OutputFilterSpec } from '@/api/terminal'
 import {
   appendExecOutput as appendFilteredExecOutput,
@@ -631,6 +632,10 @@ export const useChatStore = defineStore('chat', () => {
   const logCollectManualCaseId = ref<string | null>(null)
   const logCollectCaseDialogVisible = ref(false)
   const logCollectCaseLoading = ref(false)
+  // 409 冲突：服务端返回的活跃任务摘要（状态/进度/是否本人）
+  const logCollectActiveTask = ref<ActiveTaskSummary | null>(null)
+  // 接管查看：刷新/重进后要恢复的任务 ID（面板据此轮询平台状态）
+  const logCollectResumeTaskId = ref<string | null>(null)
   const logCollectGuideDismissedCaseId = ref<string | null>(readDismissedLogCollectCase())
 
   function readDismissedLogCollectCase(): string | null {
@@ -682,9 +687,9 @@ export const useChatStore = defineStore('chat', () => {
   /**
    * 校验并绑定人工指定的工单号。
    *
-   * 只允许当前客户端名下工单：服务端 `verify_case_ownership` 对"不存在"与"非归属"
-   * 统一返回 404，因此前端也无法区分两者——这正是要的（不给枚举他人资源的信号）。
-   * 已关闭工单允许绑定：补采日志归档到结单工单是合规诉求，任务本身不改工单状态。
+   * 语义（方案 A）：工单已存在（含属于其他客户端）→ 直接复用；不存在 → 用该号建档。
+   * 因此这里不再做"归属校验"：日志任务是 append-only 子资源，按创建者隔离，
+   * 不复用也不修改工单的聊天内容。格式与日期由服务端强校验（Q + 8 位日期 + 5 位序号）。
    */
   async function confirmLogCollectCase(rawCaseId: string): Promise<void> {
     const caseId = rawCaseId.trim()
@@ -692,8 +697,7 @@ export const useChatStore = defineStore('chat', () => {
 
     logCollectCaseLoading.value = true
     try {
-      const res = await caseApi.getById(caseId)
-      const resolved = res.data.case_id
+      const resolved = (await logCollectApi.resolveCase(caseId)).case_id
       logCollectManualCaseId.value = resolved
       logCollectCaseId.value = resolved
       logCollectCaseDialogVisible.value = false
@@ -702,19 +706,26 @@ export const useChatStore = defineStore('chat', () => {
       const status = e?.response?.status
       const detail = e?.response?.data?.detail
       const detailText = typeof detail === 'string' ? detail : ''
-      if (status === 404 || status === 403) {
-        throw new Error('工单不存在或不属于当前客户端')
+      if (status === 422) {
+        throw new Error(detailText || '工单号格式不正确，应为 Q + 8 位日期 + 5 位序号')
       }
       if (status === 401) {
         throw new Error('身份已失效，请刷新页面后重试')
       }
-      if (status === 422) {
-        throw new Error(detailText || '工单号格式不正确')
-      }
-      throw new Error(detailText || '工单校验失败，请稍后重试')
+      throw new Error(detailText || '工单解析失败，请稍后重试')
     } finally {
       logCollectCaseLoading.value = false
     }
+  }
+
+  /** 接管查看已有任务（409 后"查看任务状态"或刷新恢复）。 */
+  function openLogCollectForTask(taskId: string): void {
+    logCollectResumeTaskId.value = taskId
+    logCollectVisible.value = true
+  }
+
+  function setLogCollectActiveTask(task: ActiveTaskSummary | null): void {
+    logCollectActiveTask.value = task
   }
 
   function dismissLogCollectGuide(): void {
@@ -3536,9 +3547,13 @@ export const useChatStore = defineStore('chat', () => {
     logCollectCaseId,
     logCollectCaseDialogVisible,
     logCollectCaseLoading,
+    logCollectActiveTask,
+    logCollectResumeTaskId,
     showLogCollectGuide,
     openLogCollect,
     closeLogCollect,
+    openLogCollectForTask,
+    setLogCollectActiveTask,
     openLogCollectCaseDialog,
     closeLogCollectCaseDialog,
     confirmLogCollectCase,

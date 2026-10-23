@@ -67,7 +67,7 @@ def service(storage, repo):
 def make_task(total_size: int = 20, sha256: str | None = None):
     task = SimpleNamespace(
         task_id=uuid4(),
-        case_id="Q20261022001",
+        case_id="Q2026102200001",
         archive_path=None,
         archive_size=None,
         archive_sha256=None,
@@ -125,7 +125,7 @@ async def test_merge_is_sequential_and_atomic(storage):
     size, digest, key = await storage.merge(
         upload_id="u4",
         part_numbers=[1, 2, 3],
-        case_id="Q20261022001",
+        case_id="Q2026102200001",
         task_id="t1",
         max_bytes=1024,
     )
@@ -133,8 +133,8 @@ async def test_merge_is_sequential_and_atomic(storage):
     merged = b"".join(parts)
     assert size == len(merged)
     assert digest == hashlib.sha256(merged).hexdigest()
-    assert key == "Q20261022001/t1.zip"
-    assert storage.object_path("Q20261022001", "t1").read_bytes() == merged
+    assert key == "Q2026102200001/t1.zip"
+    assert storage.object_path("Q2026102200001", "t1").read_bytes() == merged
     # 不存在半成品
     assert not list(storage.objects_root.rglob("*.tmp"))
 

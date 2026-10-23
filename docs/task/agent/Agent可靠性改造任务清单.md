@@ -754,3 +754,16 @@ owner: team
   `watch(props.caseId)` 同步 acli `-s` 的工单号，防止命令与任务归属指向不同工单。
 - [x] **测试**：`chat.log-collect-case.spec.ts` 5 例（无单弹框/有单直开/404 提示/指定成功复用/
   活跃工单优先）、`LogCollectCaseDialog.spec.ts` 3 例（格式拦截/失败提示/取消）；customer 全量 160 passed。
+
+## 日志收集工单号：用户指定 + 跨客户端复用（方案 A，2026-10-23）
+
+> 关联：`frontend/customer/src/stores/chat.ts`、`docs/solution/case/工单设计.md` §6.1
+
+- [x] **工单号格式**：与自动生成规则一致 `^Q\d{8}\d{5}$`，日期本地 + 服务端双重校验；
+  store `confirmLogCollectCase` 改调 `logCollectApi.resolveCase`（不再要求工单归属）。
+- [x] **复用/建档语义**：`POST /api/cases/resolve` 已存在则复用，不存在则按该号建档
+  （`metadata.source=log_collect`）；并发由主键冲突兜底。
+- [x] **任务按创建者隔离**：`logCollectActiveTask` 保存 409 摘要（脱敏），
+  `logCollectResumeTaskId` + `openLogCollectForTask` 支持"查看任务状态"接管为只读轮询。
+- [x] **测试**：store 6 例（含 resolve 422、接管）、对话框 4 例（格式/列表/取消）；
+  customer 全量 162 passed。

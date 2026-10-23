@@ -42,9 +42,12 @@ BEGIN
     v_today := TO_CHAR(CURRENT_DATE, 'YYYYMMDD');
     -- 事务级排他锁（双参数，无 int32 哈希碰撞风险）：不同天并行，同天串行
     PERFORM pg_advisory_xact_lock(hashtext('generate_case_id'), v_today::integer);
-    SELECT COALESCE(MAX(CAST(SUBSTRING(case_id FROM 10 FOR 5) AS INTEGER)), 0) + 1
+    -- 只统计"本日 + Q + 纯数字序号(5~6 位)"的号：
+    -- 1) 用户可手工指定当天的号，必须参与 MAX 顺延，避免自动号与手工号碰撞；
+    -- 2) 非本日/非数字格式不能进入 CAST，否则一个异常号会让当天所有自动建单 500。
+    SELECT COALESCE(MAX(SUBSTRING(case_id FROM 10)::INTEGER), 0) + 1
         INTO v_seq FROM "case"
-        WHERE case_id LIKE 'Q' || v_today || '%';
+        WHERE case_id ~ ('^Q' || v_today || '[0-9]{5,6}$');
     RETURN 'Q' || v_today || LPAD(v_seq::TEXT, 5, '0');
 END;
 $$ LANGUAGE plpgsql;

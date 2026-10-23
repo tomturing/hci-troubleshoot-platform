@@ -9,6 +9,7 @@ P0 安全修复：
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field, field_validator
 from shared.database.postgres import DatabaseManager
 from shared.models.schemas import (
     CaseCreate,
@@ -119,6 +120,41 @@ async def create_case(
     """创建新工单（client_id 以网关签名的身份头为准，覆盖自报值）"""
     case_create.client_id = client_id
     return await service.create_case(case_create)
+
+
+class CaseResolveRequest(BaseModel):
+    """日志收集入口的工单号解析请求。"""
+
+    case_id: str = Field(
+        ...,
+        pattern=r"^Q[0-9]{8}[0-9]{5}$",
+        description="工单号（Q + 8 位日期 + 5 位序号，如 Q2026101401684）",
+    )
+
+    @field_validator("case_id")
+    @classmethod
+    def _validate_date(cls, value: str) -> str:
+        """日期段必须真实存在（格式合法但 20261032 这类号要拒绝）。"""
+        try:
+            datetime.strptime(value[1:9], "%Y%m%d")
+        except ValueError as exc:
+            raise ValueError("工单号中的日期不合法，应为 Q + YYYYMMDD + 5 位序号") from exc
+        return value
+
+
+@router.post("/resolve")
+async def resolve_case(
+    payload: CaseResolveRequest,
+    client_id: str = Depends(get_client_id),
+    service: CaseService = Depends(get_case_service),
+):
+    """日志收集：按工单号解析，不存在则用该号建档（幂等）。
+
+    与 `POST /` 的区别：这里允许工单已存在（可能属于其他客户端），只返回
+    `{case_id, created}`，不返回标题/描述，避免跨客户端泄露工单内容。
+    """
+    case_id, created = await service.resolve_case_for_log_collect(payload.case_id, client_id)
+    return {"case_id": case_id, "created": created}
 
 
 @router.get("/{case_id}", response_model=CaseResponse)

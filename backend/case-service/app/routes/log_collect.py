@@ -29,7 +29,7 @@ from ..schemas.log_collect import (
     UploadStatusResponse,
 )
 from ..schemas.log_collect_errors import build_problem
-from ..security.auth import get_client_id, verify_case_ownership
+from ..security.auth import get_client_id, verify_case_exists
 from ..services.log_collect_relay_service import LogCollectRelayService, SangforRelayClient
 from ..services.log_collect_service import (
     InvalidTransitionError,
@@ -43,10 +43,31 @@ from ..services.log_collect_upload_service import LogCollectUploadError, LogColl
 logger = logging.getLogger(__name__)
 
 
-def _problem(code: str, detail: str) -> HTTPException:
-    """把业务异常转成 RFC 7807 子集（status 由错误码目录决定）。"""
+def _problem(code: str, detail: str, **extra) -> HTTPException:
+    """把业务异常转成 RFC 7807 子集（status 由错误码目录决定）。
+
+    ``extra`` 用于 409 这类需要携带结构化上下文（active_task）的场景。
+    """
     problem = build_problem(code, detail)
+    problem.update(extra)
     return HTTPException(status_code=int(problem["status"]), detail=problem)
+
+
+def _active_task_summary(task, client_id: str) -> dict | None:
+    """409 附带的活跃任务摘要（跨客户端脱敏）。
+
+    只暴露"有任务、进行到哪、是不是本人"，不暴露 origin_node_ip / ips /
+    archive_path：这些是采集目标与制品位置，跨客户端可见会构成信息泄露。
+    """
+    if task is None:
+        return None
+    return {
+        "task_id": str(task.task_id),
+        "status": task.status,
+        "progress": task.progress,
+        "created_by_me": task.created_by == client_id,
+        "created_at": task.created_at.isoformat() if task.created_at else None,
+    }
 
 
 router = APIRouter(prefix="/api/log-collect/tasks", tags=["log-collect"])
@@ -126,14 +147,22 @@ async def create_task(
     client_id: str = Depends(get_client_id),
     service: LogCollectService = Depends(get_log_collect_service),
 ):
-    """创建日志收集任务（同一工单只允许一个活跃任务）。"""
-    await verify_case_ownership(payload.case_id, client_id, service.repository.session)
+    """创建日志收集任务（同一工单只允许一个活跃任务）。
+
+    只校验工单存在：允许跨客户端复用同一工单号（方案 A），任务按 created_by 隔离。
+    """
+    await verify_case_exists(payload.case_id, service.repository.session)
     try:
         return await service.create_task(payload, client_id)
     except TaskConflictError as exc:
-        raise _problem(exc.code, str(exc)) from exc
+        raise _problem(
+            exc.code,
+            str(exc),
+            active_task=_active_task_summary(exc.active_task, client_id),
+        ) from exc
     except IntegrityError as exc:
         # 并发窗口内两个请求同时通过应用层检查：数据库部分唯一索引兜底。
+        # 这里不查活跃任务（session 已失效），前端可用"查看任务状态"重新拉取。
         raise _problem("LC-PLUGIN-007", "该工单已有进行中的日志收集任务") from exc
 
 
@@ -145,9 +174,9 @@ async def list_tasks(
     client_id: str = Depends(get_client_id),
     service: LogCollectService = Depends(get_log_collect_service),
 ):
-    """按工单查询任务列表（倒序）。"""
-    await verify_case_ownership(case_id, client_id, service.repository.session)
-    items, total = await service.list_tasks(case_id, limit=limit, offset=offset)
+    """按工单查询任务列表（倒序），只返回当前身份创建的任务。"""
+    await verify_case_exists(case_id, service.repository.session)
+    items, total = await service.list_tasks(case_id, created_by=client_id, limit=limit, offset=offset)
     return {"total": total, "items": items}
 
 
@@ -157,13 +186,8 @@ async def get_task(
     client_id: str = Depends(get_client_id),
     service: LogCollectService = Depends(get_log_collect_service),
 ):
-    """查询单个任务。"""
-    try:
-        task = await service.get_task(task_id)
-    except TaskNotFoundError as exc:
-        raise _problem(TaskNotFoundError.code, "Task not found") from exc
-    await verify_case_ownership(task.case_id, client_id, service.repository.session)
-    return task
+    """查询单个任务（仅任务创建者可见）。"""
+    return await _owned_task(task_id, client_id, service)
 
 
 @router.patch("/{task_id}", response_model=LogCollectTaskResponse)
@@ -174,11 +198,7 @@ async def update_task(
     service: LogCollectService = Depends(get_log_collect_service),
 ):
     """回写状态/进度/制品元数据（由前端从 bridge 轮询结果上报）。"""
-    try:
-        task = await service.get_task(task_id)
-    except TaskNotFoundError as exc:
-        raise _problem(TaskNotFoundError.code, "Task not found") from exc
-    await verify_case_ownership(task.case_id, client_id, service.repository.session)
+    await _owned_task(task_id, client_id, service)
     try:
         return await service.update_task(task_id, patch)
     except (InvalidTransitionError, TaskConflictError) as exc:
@@ -197,11 +217,7 @@ async def cancel_task(
     注意：本接口只改平台状态；真正终止采集必须由前端经 bridge 执行
     ``acli log_collect cancel``（会 kill 集群采集进程并删除已收集的包）。
     """
-    try:
-        task = await service.get_task(task_id)
-    except TaskNotFoundError as exc:
-        raise _problem(TaskNotFoundError.code, "Task not found") from exc
-    await verify_case_ownership(task.case_id, client_id, service.repository.session)
+    await _owned_task(task_id, client_id, service)
     try:
         return await service.cancel_task(task_id, reason)
     except TaskConflictError as exc:
@@ -212,11 +228,17 @@ async def cancel_task(
 
 
 async def _owned_task(task_id: UUID, client_id: str, service: LogCollectService):
+    """任务按创建者鉴权：跨客户端复用同一工单号时，彼此不可见/不可操作。
+
+    与工单归属解耦后，同一 case_id 下可以同时存在多个客户端各自的任务；
+    非创建者统一 404，避免泄露任务存在性。
+    """
     try:
         task = await service.get_task(task_id)
     except TaskNotFoundError as exc:
         raise _problem(TaskNotFoundError.code, "Task not found") from exc
-    await verify_case_ownership(task.case_id, client_id, service.repository.session)
+    if task.created_by != client_id:
+        raise _problem(TaskNotFoundError.code, "Task not found")
     return task
 
 
@@ -302,9 +324,7 @@ async def abort_upload(
 @router.post("/{task_id}/relay", status_code=202)
 async def start_relay(
     task_id: UUID,
-    force: bool = Query(
-        False, description="仅当上一进程崩溃导致 relay_status 卡在 running 时使用"
-    ),
+    force: bool = Query(False, description="仅当上一进程崩溃导致 relay_status 卡在 running 时使用"),
     client_id: str = Depends(get_client_id),
     service: LogCollectService = Depends(get_log_collect_service),
     relay_service: LogCollectRelayService = Depends(get_relay_service),
@@ -356,9 +376,7 @@ async def upload_part_direct(
     part_number: int,
     request: Request,
     upload_token: str = Header(alias="X-Upload-Token", min_length=8, max_length=256),
-    part_sha256: str | None = Header(
-        default=None, alias="X-Part-SHA256", pattern=r"^[0-9a-f]{64}$"
-    ),
+    part_sha256: str | None = Header(default=None, alias="X-Part-SHA256", pattern=r"^[0-9a-f]{64}$"),
     upload_service: LogCollectUploadService = Depends(get_upload_service),
 ):
     """流式写入单个分片。
