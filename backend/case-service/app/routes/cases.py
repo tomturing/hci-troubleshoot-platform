@@ -151,10 +151,13 @@ async def resolve_case(
     """日志收集：按工单号解析，不存在则用该号建档（幂等）。
 
     与 `POST /` 的区别：这里允许工单已存在（可能属于其他客户端），只返回
-    `{case_id, created}`，不返回标题/描述，避免跨客户端泄露工单内容。
+    `{case_id, created, owned}`，不返回标题/描述，避免跨客户端泄露工单内容。
+
+    `owned=False` 表示该工单号属于其他身份：采集可以照常进行，但日志回采与
+    终端录像回放会被会话/会话服务按归属拒绝，前端据此提前提示用户。
     """
-    case_id, created = await service.resolve_case_for_log_collect(payload.case_id, client_id)
-    return {"case_id": case_id, "created": created}
+    case_id, created, owned = await service.resolve_case_for_log_collect(payload.case_id, client_id)
+    return {"case_id": case_id, "created": created, "owned": owned}
 
 
 @router.get("/{case_id}", response_model=CaseResponse)

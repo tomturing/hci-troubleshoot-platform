@@ -178,6 +178,34 @@ describe('chat store - bridge-logs 回采', () => {
     expect(stats?.lastSuccessAt).toBeDefined()
   })
 
+  it('服务端逐条过滤越权工单时，forbidden 计入 dropped 而非 ingested', async () => {
+    // 2026-10-23 staging：整批 403 改为逐条过滤后，被拒条目不会体现在 accepted 里，
+    // 统计若仍按 batch.length 记 ingested 会把“被丢弃”误报成“已入库”。
+    mockPost.mockResolvedValue({
+      data: { ok: true, accepted: 1, duplicates: 0, skipped: 0, forbidden: 2 },
+    })
+    const { useChatStore } = await import('../chat')
+    const store = useChatStore()
+    store.currentCase = { case_id: 'Q001' } as never
+
+    for (const msg of ['a', 'b', 'c']) {
+      store.forwardBridgeLog({
+        case_id: 'Q2026101401684',
+        level: 'INFO',
+        event: 'ssh.output',
+        message: msg,
+      })
+    }
+    await vi.advanceTimersByTimeAsync(600)
+    await vi.runOnlyPendingTimersAsync()
+
+    const stats = getStats()
+    expect(stats?.successes).toBe(1)
+    expect(stats?.ingested).toBe(1)
+    expect(stats?.dropped).toBe(2)
+    expect(stats?.lastError).toContain('forbidden_cases_dropped')
+  })
+
   it('flushBridgeLogs 失败时指数退避重试（最多 5 次）', async () => {
     mockPost.mockRejectedValue(new Error('network error'))
     const { useChatStore } = await import('../chat')

@@ -111,20 +111,25 @@ class CaseService:
 
         return CaseResponse.model_validate(created_case)
 
-    async def resolve_case_for_log_collect(self, case_id: str, client_id: str) -> tuple[str, bool]:
+    async def resolve_case_for_log_collect(self, case_id: str, client_id: str) -> tuple[str, bool, bool]:
         """日志收集专用：按工单号解析，不存在则用该号建档。
 
         语义（方案 A，允许跨客户端复用）：
-        - 已存在：**不校验归属**，直接复用；返回 ``created=False``；
-        - 不存在：用该号创建一张仅承载日志任务的工单，返回 ``created=True``；
+        - 已存在：**不校验归属**，直接复用；返回 ``created=False``，并用 ``owned`` 标记
+          该工单是否属于当前 ``client_id``；
+        - 不存在：用该号创建一张仅承载日志任务的工单，返回 ``created=True``、``owned=True``；
         - 并发：两个请求同时 resolve 同一号时，主键冲突的一方视为"已存在"。
 
+        为什么需要 ``owned``：日志与终端录像的写入都要求 ``case.client_id == 当前身份``，
+        跨身份复用的工单号可以使采集本身成功，但回采/回放必然被归属校验拒绝。
+        把归属信号交给调用方，才能在不破坏"用外部工单号补采"的前提下提前提示用户。
+
         注意：已存在时不返回工单内容（可能属于其他客户端的聊天工单），
-        调用方只应拿到 ``case_id`` 与是否新建。
+        调用方只应拿到 ``case_id``、是否新建与归属标记。
         """
         existing = await self.repository.get_by_id(case_id)
         if existing is not None:
-            return existing.case_id, False
+            return existing.case_id, False, existing.client_id == client_id
 
         try:
             await self.create_case(
@@ -141,8 +146,10 @@ class CaseService:
             # 并发窗口内另一方已创建同号工单：回滚后按"已存在"处理
             await self.repository.session.rollback()
             logger.info(event="case_resolve_race", case_id=case_id, client_id=client_id)
-            return case_id, False
-        return case_id, True
+            # 对方建的同号工单可能属于其他客户端，重新确认归属而非默认本人
+            raced = await self.repository.get_by_id(case_id)
+            return case_id, False, raced is not None and raced.client_id == client_id
+        return case_id, True, True
 
     async def get_case(self, case_id: str) -> CaseResponse | None:
         """获取工单详情"""

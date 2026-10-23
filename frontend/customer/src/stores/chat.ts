@@ -161,20 +161,30 @@ export const useChatStore = defineStore('chat', () => {
     const batch = pending
 
     try {
-      await apiClient.post('/bridge-logs', {
+      const res = await apiClient.post('/bridge-logs', {
         logs: batch,
         // 缺 case_id 的条目由后端按当前工单归档，避免启动/连接类日志整体丢失
         fallback_case_id: currentCase.value?.case_id ?? null,
       })
       bridgeLogRetryCount = 0 // 成功后重置重试计数
       persistBridgeLogOutbox()
+      // 服务端逐条过滤越权工单：被拒的条目不在 ingested 里，必须单独计入 dropped，
+      // 否则统计会把"被丢弃"误报成"已入库"（消除静默丢失）
+      const forbiddenCount = Number((res as { data?: { forbidden?: number } })?.data?.forbidden ?? 0)
       // 回采可观测性自检：成功计数暴露到 window，供巡检（消除静默成功）
       const stats = getBridgeLogStats()
       setBridgeLogStats({
         ...stats,
         successes: (stats.successes || 0) + 1,
-        ingested: (stats.ingested || 0) + batch.length,
+        ingested: (stats.ingested || 0) + Math.max(batch.length - forbiddenCount, 0),
+        dropped: (stats.dropped || 0) + forbiddenCount,
         lastSuccessAt: new Date().toISOString(),
+        ...(forbiddenCount > 0
+          ? {
+              lastError: `forbidden_cases_dropped: ${forbiddenCount}`,
+              lastErrorAt: new Date().toISOString(),
+            }
+          : {}),
       })
     } catch (e) {
       // P1-5: 增强异常处理 - 指数退避重试 + 最大重试次数
@@ -683,6 +693,9 @@ export const useChatStore = defineStore('chat', () => {
   const logCollectCaseId = ref<string | null>(null)
   // 人工指定过的工单：无活跃工单时再次打开沿用，避免重复输入
   const logCollectManualCaseId = ref<string | null>(null)
+  // 绑定的工单是否属于当前身份：false 时日志回采/录像回放会被归属校验拒绝。
+  // 采集本身仍允许（运维可能需要用外部单号补采），但面板必须先给出前置提示。
+  const logCollectCaseOwned = ref<boolean | null>(null)
   const logCollectCaseDialogVisible = ref(false)
   const logCollectCaseLoading = ref(false)
   // 409 冲突：服务端返回的活跃任务摘要（状态/进度/是否本人）
@@ -740,6 +753,8 @@ export const useChatStore = defineStore('chat', () => {
 
     if (hasActiveCase.value && currentCase.value?.case_id) {
       logCollectCaseId.value = currentCase.value.case_id
+      // 当前活跃工单必然是本人名下的，归属一定成立
+      logCollectCaseOwned.value = true
       logCollectVisible.value = true
       return
     }
@@ -776,9 +791,11 @@ export const useChatStore = defineStore('chat', () => {
 
     logCollectCaseLoading.value = true
     try {
-      const resolved = (await logCollectApi.resolveCase(caseId)).case_id
-      logCollectManualCaseId.value = resolved
-      logCollectCaseId.value = resolved
+      const result = await logCollectApi.resolveCase(caseId)
+      logCollectManualCaseId.value = result.case_id
+      logCollectCaseId.value = result.case_id
+      // 旧后端不返回 owned：按"未知"处理为已归属，不误报
+      logCollectCaseOwned.value = result.owned !== false
       logCollectCaseDialogVisible.value = false
       logCollectVisible.value = true
     } catch (e: any) {
@@ -3628,6 +3645,7 @@ export const useChatStore = defineStore('chat', () => {
     logCollectVisible,
     sidePanelWidth,
     logCollectCaseId,
+    logCollectCaseOwned,
     logCollectCaseDialogVisible,
     logCollectCaseLoading,
     logCollectActiveTask,

@@ -177,4 +177,39 @@ describe('chat store - 日志收集人工指定工单号', () => {
     expect(store.logCollectResumeTaskId).toBe('11111111-1111-1111-1111-111111111111')
     expect(store.logCollectVisible).toBe(true)
   })
+
+  it('复用了他人工单（owned=false）→ 绑定但标记未归属，供面板提示', async () => {
+    const { useChatStore } = await import('../chat')
+    const store = useChatStore()
+    mockResolveCase.mockResolvedValue({
+      case_id: 'Q2026101401684',
+      created: false,
+      owned: false,
+    })
+
+    store.sshConnectionState = 'connected'
+    store.openLogCollect()
+    await store.confirmLogCollectCase('Q2026101401684')
+
+    // 采集仍允许（运维需用外部单号补采），但必须暴露"日志回不去"的事实
+    expect(store.logCollectCaseId).toBe('Q2026101401684')
+    expect(store.logCollectVisible).toBe(true)
+    expect(store.logCollectCaseOwned).toBe(false)
+  })
+
+  it('本人名的工单（owned=true）→ 不显示未归属提示', async () => {
+    const { useChatStore } = await import('../chat')
+    const store = useChatStore()
+    mockResolveCase.mockResolvedValue({
+      case_id: 'Q2026102300009',
+      created: false,
+      owned: true,
+    })
+
+    store.sshConnectionState = 'connected'
+    store.openLogCollect()
+    await store.confirmLogCollectCase('Q2026102300009')
+
+    expect(store.logCollectCaseOwned).toBe(true)
+  })
 })

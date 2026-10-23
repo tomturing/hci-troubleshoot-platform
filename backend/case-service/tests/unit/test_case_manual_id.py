@@ -6,9 +6,9 @@
 
 1. 指定号优先于自动生成；
 2. 不指定仍走自动生成（行为不变）；
-3. resolve 已存在工单时**不**创建、不泄露内容；
+3. resolve 已存在工单时**不**创建、不泄露内容，并用 ``owned`` 暴露归属；
 4. resolve 不存在时用该号建档；
-5. 并发下主键冲突视为"已存在"，事务回滚。
+5. 并发下主键冲突视为"已存在"，归属以库内实际纪录重新确认为准。
 """
 
 from datetime import UTC, datetime
@@ -102,23 +102,33 @@ async def test_auto_generated_when_case_id_omitted(service):
 
 
 async def test_resolve_existing_case_reuses_without_leaking(service):
-    """已存在工单直接复用：返回 created=False，且不创建、不返回工单内容。"""
+    """已存在工单直接复用：created=False，且不创建、不返回工单内容。"""
     svc, repo = service
     repo.get_by_id = AsyncMock(return_value=make_case("Q2026101401684", client_id="client-b"))
 
-    case_id, created = await svc.resolve_case_for_log_collect("Q2026101401684", "client-a")
+    case_id, created, owned = await svc.resolve_case_for_log_collect("Q2026101401684", "client-a")
 
-    assert (case_id, created) == ("Q2026101401684", False)
+    assert (case_id, created, owned) == ("Q2026101401684", False, False)
     repo.create.assert_not_called()
 
 
+async def test_resolve_existing_own_case_reports_owned(service):
+    """已存在但属主就是当前身份：owned=True，日志回采不会被归属校验拒绝。"""
+    svc, repo = service
+    repo.get_by_id = AsyncMock(return_value=make_case("Q2026101401684", client_id="client-a"))
+
+    case_id, created, owned = await svc.resolve_case_for_log_collect("Q2026101401684", "client-a")
+
+    assert (case_id, created, owned) == ("Q2026101401684", False, True)
+
+
 async def test_resolve_creates_case_when_missing(service):
-    """不存在时按用户指定的号建档，created=True。"""
+    """不存在时按用户指定的号建档，created=True 且归属本人。"""
     svc, repo = service
 
-    case_id, created = await svc.resolve_case_for_log_collect("Q2026101401684", "client-a")
+    case_id, created, owned = await svc.resolve_case_for_log_collect("Q2026101401684", "client-a")
 
-    assert (case_id, created) == ("Q2026101401684", True)
+    assert (case_id, created, owned) == ("Q2026101401684", True, True)
     created_case = repo.create.await_args.args[0]
     assert created_case.case_id == "Q2026101401684"
     assert created_case.client_id == "client-a"
@@ -126,11 +136,13 @@ async def test_resolve_creates_case_when_missing(service):
 
 
 async def test_resolve_race_treated_as_existing(service):
-    """并发下主键冲突：回滚并视为已存在，不向调用方抛错。"""
+    """并发下主键冲突：回滚并视为已存在，归属按库内实际纪录重新确认。"""
     svc, repo = service
     repo.create = AsyncMock(side_effect=IntegrityError("insert", {}, Exception("dup")))
+    # 第一次查询（create 前）不可见；冲突后重新查询拿到的是对方建的工单
+    repo.get_by_id = AsyncMock(side_effect=[None, make_case("Q2026101401684", client_id="client-b")])
 
-    case_id, created = await svc.resolve_case_for_log_collect("Q2026101401684", "client-a")
+    case_id, created, owned = await svc.resolve_case_for_log_collect("Q2026101401684", "client-a")
 
-    assert (case_id, created) == ("Q2026101401684", False)
+    assert (case_id, created, owned) == ("Q2026101401684", False, False)
     repo.session.rollback.assert_awaited_once()

@@ -115,6 +115,8 @@ export interface RelaySnapshot {
 export interface ResolveCaseResult {
   case_id: string
   created: boolean
+  /** 该工单是否属于当前身份；false 时日志回传与录像回放会被归属校验拒绝 */
+  owned?: boolean
 }
 
 /** 409 时服务端附带的活跃任务摘要（跨客户端已脱敏） */

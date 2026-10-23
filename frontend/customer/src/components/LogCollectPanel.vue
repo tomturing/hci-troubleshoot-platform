@@ -1176,6 +1176,16 @@ onBeforeUnmount(() => {
         </el-button>
       </div>
 
+      <!-- 跨身份复用他人工单：采集不阻断，但日志回传/录像回放必定被归属校验拒绝 -->
+      <el-alert
+        v-if="chatStore.logCollectCaseOwned === false"
+        type="warning"
+        :closable="false"
+        show-icon
+        title="该工单属于其他会话身份"
+        description="采集可以继续，但日志回传与终端录像回放会被平台按归属拒绝；建议换用本人名下的工单号，或直接用当前工单重新采集。"
+      />
+
       <!--
         结果态优先：已完成是平台上的既成事实，先把结论摆出来；
         重新收集只是可选项，不是默认动作。
