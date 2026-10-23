@@ -1,0 +1,35 @@
+[Unit]
+Description=HCI 工单日志同步服务（用户级，无需 root）
+Documentation=https://github.com/tomturing/hci-troubleshoot-platform/tree/main/tools/ticket-sync
+# 刻意不写 After/Wants=network-online.target：用户管理器里没有这个目标，
+# 写只会得到一条无意义的依赖。服务启动时若 192.168.0.4 尚未就绪，
+# uvicorn 绑定失败即退出，由 Restart=always 每 3 秒重试兜住。
+
+[Service]
+Type=simple
+# 代码与虚拟环境在用户数据目录，配置在用户配置目录，均与系统单元（/opt、/etc）等价。
+WorkingDirectory=%h/.local/share/hci-ticket-sync
+EnvironmentFile=%h/.config/hci-ticket-sync/ticket-sync.env
+# env 文件允许省略监听项（代码里有同名默认值），但 ExecStart 的 ${VAR} 展开
+# 不会去看代码默认值，缺了就是空字符串。这里先给默认，env 文件可覆盖。
+Environment=TICKET_LISTEN_HOST=192.168.0.4
+Environment=TICKET_LISTEN_PORT=18080
+
+# 重启后内存里的任务表已丢失，.tmp 里的半成品不会再有人处理，必须清空。
+ExecStartPre=/bin/sh -c 'rm -rf /sf/tickets/.tmp/* 2>/dev/null || true'
+
+# 运行身份由用户管理器决定（当前登录用户 node），恰好满足 /sf/tickets 属主 node:node。
+ExecStart=%h/.local/share/hci-ticket-sync/.venv/bin/uvicorn app.main:app \
+    --host ${TICKET_LISTEN_HOST} \
+    --port ${TICKET_LISTEN_PORT} \
+    --no-access-log
+
+Restart=always
+RestartSec=3
+
+# 服务只需要写 /sf/tickets 与读配置，不需要任何提权能力。
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

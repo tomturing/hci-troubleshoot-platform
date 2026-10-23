@@ -11,6 +11,10 @@ User=node
 Group=node
 WorkingDirectory=/opt/hci-ticket-sync
 EnvironmentFile=/etc/hci-ticket-sync/ticket-sync.env
+# env 文件允许省略监听项（代码里有同名默认值），但 ExecStart 的 ${VAR} 展开
+# 不会去看代码默认值，缺了就是空字符串。这里先给默认，env 文件可覆盖。
+Environment=TICKET_LISTEN_HOST=192.168.0.4
+Environment=TICKET_LISTEN_PORT=18080
 
 # 重启后内存里的任务表已丢失，.tmp 里的半成品不会再有人处理，必须清空。
 ExecStartPre=/bin/sh -c 'rm -rf /sf/tickets/.tmp/* 2>/dev/null || true'
