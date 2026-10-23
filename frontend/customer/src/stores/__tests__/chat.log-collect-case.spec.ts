@@ -90,16 +90,30 @@ describe('chat store - 日志收集人工指定工单号', () => {
     expect(store.logCollectCaseId).toBe(null)
   })
 
-  it('有活跃工单时直接开面板，并以当前工单为准', async () => {
+  it('有活跃工单且已登录 SSH 时直接开面板，并以当前工单为准', async () => {
     const { useChatStore } = await import('../chat')
     const store = useChatStore()
     store.currentCase = { case_id: 'Q2026102300001', status: 'in_progress' } as any
+    store.sshConnectionState = 'connected'
 
     store.openLogCollect()
 
     expect(store.logCollectVisible).toBe(true)
     expect(store.logCollectCaseDialogVisible).toBe(false)
     expect(store.logCollectCaseId).toBe('Q2026102300001')
+  })
+
+  it('未登录 SSH 时即使有活跃工单也先开弹框（强制登录）', async () => {
+    const { useChatStore } = await import('../chat')
+    const store = useChatStore()
+    store.currentCase = { case_id: 'Q2026102300003', status: 'in_progress' } as any
+
+    store.openLogCollect()
+
+    expect(store.logCollectCaseDialogVisible).toBe(true)
+    expect(store.logCollectVisible).toBe(false)
+    // 预填当前工单号，减少一次输入
+    expect(store.logCollectCaseId).toBe('Q2026102300003')
   })
 
   it('服务端拒绝格式（422）→ 提示格式错误，不绑定、不开面板', async () => {
@@ -122,6 +136,7 @@ describe('chat store - 日志收集人工指定工单号', () => {
     const store = useChatStore()
     mockResolveCase.mockResolvedValue({ case_id: 'Q2026101401684', created: true })
 
+    store.sshConnectionState = 'connected'
     store.openLogCollect()
     await store.confirmLogCollectCase('  Q2026101401684  ')
 
@@ -142,6 +157,7 @@ describe('chat store - 日志收集人工指定工单号', () => {
     const store = useChatStore()
     mockResolveCase.mockResolvedValue({ case_id: 'Q2026101401684', created: false })
 
+    store.sshConnectionState = 'connected'
     store.openLogCollect()
     await store.confirmLogCollectCase('Q2026101401684')
     store.closeLogCollect()

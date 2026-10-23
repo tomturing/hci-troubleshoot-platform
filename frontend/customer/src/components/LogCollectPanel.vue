@@ -91,8 +91,20 @@ const form = reactive({
   dateRange: [] as string[],
   ips: 'all',
   // 发起节点：acli progress 只在该节点有效，后续轮询必须复用同一节点
-  nodeIp: props.nodeIp || '',
+  // 优先取显式传入的 nodeIp，其次复用最近一次成功登录的 SSH 主机
+  nodeIp: props.nodeIp || chatStore.lastSshHost || '',
 })
+
+// SSH 登录成功后自动带出发起节点（方案 §4.A/§7）：
+// 仅在用户尚未手填、或当前值仍是上一次自动填充值时覆盖，避免冲掉人工修改。
+watch(
+  () => chatStore.lastSshHost,
+  (host, previous) => {
+    if (!host) return
+    const current = form.nodeIp.trim()
+    if (!current || current === (previous ?? '')) form.nodeIp = host
+  },
+)
 
 const running = computed(() =>
   ['probing', 'installing', 'creating', 'collecting', 'pulling', 'uploading', 'relaying'].includes(stage.value),
