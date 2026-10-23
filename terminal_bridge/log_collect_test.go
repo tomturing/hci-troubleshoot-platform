@@ -381,11 +381,10 @@ func TestSessionByNodeIP(t *testing.T) {
 	target := &SSHSession{}
 	prefixTrap := &SSHSession{}
 	other := &SSHSession{}
-	bridge := &Bridge{sessions: map[string]*SSHSession{
-		"terminal-only@172.28.25.1":     target,
-		"Q2026101401684@172.28.25.11":   prefixTrap, // 与前缀相同的另一台主机，不得被误命中
-		"Q2026101401684@172.28.25.20":   other,
-	}}
+	bridge := &Bridge{sessions: map[string]*SSHSession{}}
+	bridge.sessions["terminal-only@172.28.25.1"] = target
+	bridge.sessions["Q2026101401684@172.28.25.11"] = prefixTrap // 前缀相同的另一台主机，不得被误命中
+	bridge.sessions["Q2026101401684@172.28.25.20"] = other
 
 	got, key := bridge.sessionByNodeIP("172.28.25.1")
 	if got != target {
