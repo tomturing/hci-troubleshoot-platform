@@ -21,9 +21,11 @@ import {
   type LogCollectTask,
   type RelayStatus,
 } from '@/api/logCollect'
+import { useChatStore } from '@/stores/chat'
 
 const props = defineProps<{ caseId: string; nodeIp?: string }>()
 const visible = defineModel<boolean>({ required: true })
+const chatStore = useChatStore()
 
 const RELAY_URL = 'http://acli.sangfor.com.cn:5888'
 const POLL_INTERVAL = 5000
@@ -515,6 +517,16 @@ watch(visible, (open) => {
   }
 })
 
+// 面板打开期间人工更换归档工单：同步 acli -s 的工单号。
+// 采集中不允许更换（"更换"按钮已禁用），避免命令与任务归属指向不同工单。
+watch(
+  () => props.caseId,
+  (caseId) => {
+    if (!caseId) return
+    form.ticketNo = caseId
+  },
+)
+
 function disableFutureDate(value: Date): boolean {
   return value.getTime() > Date.now()
 }
@@ -538,6 +550,20 @@ onBeforeUnmount(() => {
 <template>
   <el-drawer v-model="visible" title="日志收集" size="720px" :close-on-click-modal="false">
     <div class="lc-body">
+      <div class="lc-case-bar">
+        <span class="lc-case-label">归档工单</span>
+        <span class="lc-case-value">{{ caseId }}</span>
+        <el-button
+          size="small"
+          text
+          type="primary"
+          :disabled="running"
+          @click="chatStore.openLogCollectCaseDialog()"
+        >
+          更换
+        </el-button>
+      </div>
+
       <el-descriptions v-if="probeResult" :column="2" border size="small" class="lc-probe">
         <el-descriptions-item label="架构">{{ probeResult.architecture }}</el-descriptions-item>
         <el-descriptions-item label="acli">
@@ -615,6 +641,22 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+.lc-case-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--el-fill-color-light);
+  font-size: 13px;
+}
+.lc-case-label {
+  color: var(--el-text-color-secondary);
+}
+.lc-case-value {
+  font-weight: 600;
+  color: var(--el-color-primary);
 }
 .lc-hint {
   font-size: 12px;

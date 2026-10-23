@@ -4,6 +4,7 @@ import { Monitor } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 import { getClientId } from '@/utils/clientId'
 import ChatWindow from '@/components/ChatWindow.vue'
+import LogCollectCaseDialog from '@/components/LogCollectCaseDialog.vue'
 import LogCollectPanel from '@/components/LogCollectPanel.vue'
 import SshConnectDialog from '@/components/SshConnectDialog.vue'
 
@@ -100,9 +101,8 @@ function handleDownloadBridge() {
             ✅ 关闭工单
           </el-button>
 
-          <!-- 日志收集：需已有活跃工单（产物归档到工单） -->
+          <!-- 日志收集：常驻入口；无活跃工单时由对话框要求手工指定工单号 -->
           <el-button
-            v-if="chatStore.hasActiveCase"
             size="small"
             round
             class="log-collect-btn header-action-btn"
@@ -134,10 +134,13 @@ function handleDownloadBridge() {
 
     <!-- 日志收集抽屉：复用终端已建立的 SSH 会话执行 acli log_collect -->
     <LogCollectPanel
-      v-if="chatStore.currentCase"
+      v-if="chatStore.logCollectCaseId"
       v-model="logCollectVisible"
-      :case-id="chatStore.currentCase.case_id"
+      :case-id="chatStore.logCollectCaseId"
     />
+
+    <!-- 无活跃工单时人工指定归档工单号 -->
+    <LogCollectCaseDialog />
 
     <!-- Bridge 未运行时的下载提示弹窗 -->
     <el-dialog

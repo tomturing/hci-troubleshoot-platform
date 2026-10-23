@@ -737,3 +737,20 @@ owner: team
   组件内状态会在路由刷新与工单恢复后丢失，导致引导重复或入口消失。
 - [x] **测试**：`chat.log-collect-guide.spec.ts` 4 例（无工单/关闭工单/按单 dismiss/换单重现）、
   `LogCollectEntryCard.spec.ts` 3 例（渲染条件、文案、dismiss 后隐藏）；customer 全量 152 passed。
+
+## 日志收集入口常驻 + 人工指定工单号（2026-10-23）
+
+> 关联：`frontend/customer/src/stores/chat.ts`、`docs/solution/custom-ui/客户端设计.md` §5.7
+
+- [x] **入口常驻**：`App.vue` 的「日志收集」去掉 `v-if="hasActiveCase"`。实测线上无工单时
+  header 只剩「工单信息 / SSH终端」（`hasActiveCase` 同时控制「关闭工单」），用户反馈"没有新增按钮"。
+- [x] **store 增加绑定状态**：`logCollectCaseId`（本次面板绑定）、`logCollectManualCaseId`
+  （人工指定值，无活跃工单时沿用）、`logCollectCaseDialogVisible` / `logCollectCaseLoading`；
+  `openLogCollect()` 按「活跃工单 > 上次人工指定 > 弹框」分流。
+- [x] **人工指定工单号**：新增 `LogCollectCaseDialog`，格式校验后调 `GET /api/cases/{case_id}`
+  做归属校验；404/403 统一提示"工单不存在或不属于当前客户端"（不泄露存在性），
+  已结单工单允许指定。
+- [x] **面板可更换工单**：`LogCollectPanel` 顶部展示归档工单并可更换；采集中禁用，
+  `watch(props.caseId)` 同步 acli `-s` 的工单号，防止命令与任务归属指向不同工单。
+- [x] **测试**：`chat.log-collect-case.spec.ts` 5 例（无单弹框/有单直开/404 提示/指定成功复用/
+  活跃工单优先）、`LogCollectCaseDialog.spec.ts` 3 例（格式拦截/失败提示/取消）；customer 全量 160 passed。
