@@ -31,6 +31,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"runtime/debug"
 
@@ -45,6 +46,8 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 	"golang.org/x/net/websocket"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 )
 
 const (
@@ -2920,16 +2923,29 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 	}
 
 	// 4. 版本判定
+	//
+	// 只比日期，不比时分秒：current_build 来自 `acli --version` 的编译时间，
+	// remote_build 来自安装包文件名 `_YYYY-MM-DD_HH-MM-SS` 的打包时间，两者不同源
+	// （实测同一版本相差 1h45m）。逐秒比较会让 need_install 恒为 true——每次登录都重下
+	// 20MB 并向集群所有节点分发安装一次。代价：同一天发两个包不会自动升级，需要 force。
 	needInstall := false
-	if currentVer == "" {
+	switch {
+	case currentVer == "":
 		needInstall = true
-		log.Printf("[Bridge] HCI 未安装 acli，需要安装 (arch=%s)", targetArch)
-	} else if msg.Force {
+		blog("INFO", "acli_sync.not_installed", "HCI 未安装 acli，需要安装", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"architecture": targetArch,
+		})
+	case msg.Force:
 		needInstall = true
-		log.Printf("[Bridge] 收到 force 标记，强制重新安装 acli (arch=%s)", targetArch)
-	} else if remoteBuild != "" && currentBuild != "" && currentBuild < remoteBuild {
+		blog("INFO", "acli_sync.force_install", "收到 force 标记，强制重新安装 acli", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"architecture": targetArch,
+		})
+	case remoteBuild != "" && currentBuild != "" && !sameBuildDate(currentBuild, remoteBuild):
 		needInstall = true
-		log.Printf("[Bridge] acli 当前版本落后 (当前: %s, 远端: %s)，需要更新", currentBuild, remoteBuild)
+		blog("INFO", "acli_sync.version_outdated", "acli 版本落后，需要更新", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"current_build": currentBuild, "remote_build": remoteBuild,
+			"current_date": buildDate(currentBuild), "remote_date": buildDate(remoteBuild),
+		})
 	}
 
 	blog("INFO", "acli_sync.version_check", "acli 版本判定完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
@@ -2939,7 +2955,9 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 	})
 
 	if !needInstall {
-		log.Printf("[Bridge] acli 已就绪且为最新 (ver=%s build=%s)", currentVer, currentBuild)
+		blog("INFO", "acli_sync.up_to_date", "acli 已就绪且为最新", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"version": currentVer, "build": currentBuild,
+		})
 		sendMsg(ws, OutMessage{
 			Type:           "acli_sync_result",
 			CaseID:         msg.CaseID,
@@ -3105,13 +3123,13 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 		})
 		blog("ERROR", "acli_sync.install_failed", "acli 安装命令执行失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"exit_code": installCode, "error": errString(installErr),
-			"output_preview": truncateString(installOut, 1024), "dest_path": destPath,
+			"output_preview": formatOutputPreview(installOut, 1024, 768), "dest_path": destPath,
 		})
 		return
 	}
 	// 安装器会把 acli 分发到集群各节点，输出里含节点与耗时，保留摘要供远端核对。
 	blog("INFO", "acli_sync.install_done", "acli 集群分发安装完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-		"exit_code": installCode, "output_preview": truncateString(installOut, 1024),
+		"exit_code": installCode, "output_preview": formatOutputPreview(installOut, 1024, 768),
 	})
 
 	// 9. 验证安装成果
@@ -3142,7 +3160,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			Message: "acli 安装完成但执行 acli --version 验证失败", ErrorCode: ErrInstallVerify,
 		})
 		blog("ERROR", "acli_sync.verify_failed", "acli 安装后版本验证失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-			"exit_code": verifyCode, "output_preview": truncateString(verifyOut, 512),
+			"exit_code": verifyCode, "output_preview": formatOutputPreview(verifyOut, 512, 512),
 		})
 	}
 }
@@ -4906,6 +4924,70 @@ func newHTTPHandler(bridge *Bridge, config runtimeConfig) http.Handler {
 	}
 	mux.Handle("/", bridge.corsWebSocketHandler(config))
 	return mux
+}
+
+// buildDate 取版本时间的日期部分（YYYY-MM-DD）；长度不足时原样返回。
+func buildDate(ts string) string {
+	ts = strings.TrimSpace(ts)
+	if len(ts) >= 10 {
+		return ts[:10]
+	}
+	return ts
+}
+
+// sameBuildDate 判断两个版本时间是否属于同一天。
+//
+// 为什么只比日期：current_build 是 `acli --version` 的编译时间，remote_build 是安装包
+// 文件名里的打包时间，两者不同源；同一版本常常相差 1~2 小时，逐秒比较会永远判定落后，
+// 于是每次登录都重下安装包并向全集群分发安装。
+//
+// 代价（有意接受）：同一天内发布两个包不会自动升级，需要 force 或等跨天后重新登录。
+func sameBuildDate(current, remote string) bool {
+	cur, rem := strings.TrimSpace(current), strings.TrimSpace(remote)
+	if cur == "" || rem == "" {
+		return false
+	}
+	if len(cur) < 10 || len(rem) < 10 {
+		return cur == rem
+	}
+	return cur[:10] == rem[:10]
+}
+
+// normalizeOutputText 把命令输出规整为合法 UTF-8。
+//
+// acli 安装器在部分版本按本地代码页输出（GBK），原始字节直接进 JSON 会被编码成 U+FFFD，
+// 排障时关键报错变成一串"�"。这里先校验 UTF-8，不合法再按 GB18030（GBK 超集）解码。
+func normalizeOutputText(raw string) string {
+	if raw == "" || utf8.ValidString(raw) {
+		return raw
+	}
+	decoded, _, err := transform.String(simplifiedchinese.GB18030.NewDecoder(), raw)
+	if err != nil || decoded == "" {
+		return strings.ToValidUTF8(raw, "\uFFFD")
+	}
+	return decoded
+}
+
+// truncateKeepTail 头尾都保留：安装/校验的结论（成功与否、节点数、失败原因）都在输出尾部，
+// 只截头部恰好丢掉最需要的信息。
+func truncateKeepTail(s string, headBytes, tailBytes int) string {
+	if headBytes < 0 || tailBytes < 0 || len(s) <= headBytes+tailBytes {
+		return s
+	}
+	head := s[:headBytes]
+	for len(head) > 0 && !utf8.ValidString(head) {
+		head = head[:len(head)-1]
+	}
+	tail := s[len(s)-tailBytes:]
+	for len(tail) > 0 && !utf8.ValidString(tail) {
+		tail = tail[1:]
+	}
+	return head + fmt.Sprintf("\n…[省略 %d 字节]…\n", len(s)-len(head)-len(tail)) + tail
+}
+
+// formatOutputPreview 预览统一出口：先修编码，再按头尾保留截断。
+func formatOutputPreview(raw string, headBytes, tailBytes int) string {
+	return truncateKeepTail(normalizeOutputText(raw), headBytes, tailBytes)
 }
 
 // truncateString 截断字符串到指定长度
