@@ -7,6 +7,7 @@ import { ref, computed, nextTick } from 'vue'
 import { createApiClient, createCaseApi, createConversationApi, createAssistantApi, createEnvironmentApi } from '@hci/shared'
 import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse, EnvironmentResponse, EnvironmentContextResponse, EnvType } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
+import { getDefaultPanelWidth } from '@/utils/panelWidth'
 import { createEvaluateApi } from '@/api/evaluate'
 import { logCollectApi, type ActiveTaskSummary } from '@/api/logCollect'
 import { checkBridgeRunning, checkBridgeBeforeOpen, createBridgeSocket, getBridgeUrl, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, buildVmConsoleOpMessage, parseAgentExecResult, type BridgeStatus, type TerminalWsMessage, type OutputFilterSpec } from '@/api/terminal'
@@ -361,6 +362,14 @@ export const useChatStore = defineStore('chat', () => {
   const historyMessages = ref<ChatMessage[]>([])
   const historyCase = ref<CaseResponse | null>(null)
   const historyLoading = ref(false)
+  /**
+   * 左右侧边抽屉的统一宽度（px）。
+   *
+   * 第一性原理：同一侧的抽屉是同一块"辅助操作区"，宽度必须只有一个真值；
+   * 各抽屉各自持有一份宽度，用户拖过其中一个之后另一个就对不齐了。
+   * 目前由「历史工单」与「日志收集」共用，拖拽任意一个都会同步。
+   */
+  const sidePanelWidth = ref(getDefaultPanelWidth())
 
   // 评分卡状态
   const showRatingCard = ref(false)
@@ -3573,6 +3582,7 @@ export const useChatStore = defineStore('chat', () => {
     diagnosticStage,
     // 日志收集（HCI 侧 acli log_collect）
     logCollectVisible,
+    sidePanelWidth,
     logCollectCaseId,
     logCollectCaseDialogVisible,
     logCollectCaseLoading,

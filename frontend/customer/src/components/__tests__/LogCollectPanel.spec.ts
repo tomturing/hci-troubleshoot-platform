@@ -36,6 +36,8 @@ const { sentMessages, fakeSocket, mockStore } = vi.hoisted(() => {
       lastSshHost: '',
       logCollectActiveTask: null,
       openLogCollectCaseDialog: vi.fn(),
+      // 抽屉宽度与历史工单共用同一真值
+      sidePanelWidth: 510,
     },
   }
 })
@@ -99,7 +101,20 @@ function mountPanel() {
       props: { caseId: 'Q2026102300001', nodeIp: '172.28.25.1', modelValue: true },
       global: {
         stubs: {
-          ElDrawer: passthrough('ElDrawer'),
+          // 抽屉本体渲染 header/default/footer 三个插槽，便于断言头部动作
+          ElDrawer: {
+            name: 'ElDrawer',
+            props: ['modelValue', 'direction', 'size', 'modalClass'],
+            emits: ['update:modelValue', 'close'],
+            setup(props: any, { slots }: any) {
+              return () =>
+                h('div', { class: 'drawer-stub', 'data-direction': props.direction, 'data-size': props.size }, [
+                  h('div', { class: 'drawer-stub-header' }, slots.header?.()),
+                  slots.default?.(),
+                  slots.footer?.(),
+                ])
+            },
+          },
           ElForm: passthrough('ElForm'),
           ElFormItem: passthrough('ElFormItem'),
           ElAlert: passthrough('ElAlert'),
@@ -141,11 +156,23 @@ describe('LogCollectPanel', () => {
     expect(probe.node_ip).toBe('172.28.25.1')
   })
 
-  it('抽屉从左侧弹出（direction=ltr）', async () => {
+  it('抽屉从左侧弹出，宽度取自共享真值', async () => {
     const wrapper = mountPanel()
     await flushPromises()
 
-    expect(wrapper.html()).toContain('direction="ltr"')
+    const drawer = wrapper.find('.drawer-stub')
+    expect(drawer.attributes('data-direction')).toBe('ltr')
+    expect(drawer.attributes('data-size')).toBe('510px')
+  })
+
+  it('抽屉头部提供「刷新进度」与「钉住」入口', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    const header = wrapper.find('.drawer-stub-header')
+    expect(header.text()).toContain('日志收集')
+    expect(header.text()).toContain('刷新进度')
+    expect(header.text()).toContain('钉住')
   })
 
   it('故障场景使用勾选框全量展示，不渲染下拉框', async () => {

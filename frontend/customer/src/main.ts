@@ -2,6 +2,8 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
+// 三个侧边抽屉（历史工单 / SSH 终端 / 日志收集）共用的外观与拖拽样式
+import '@/styles/workspace-drawer.css'
 import { isOfflineDiagnosisPath } from '@/utils/offlineDiagnosis'
 
 async function bootstrap() {

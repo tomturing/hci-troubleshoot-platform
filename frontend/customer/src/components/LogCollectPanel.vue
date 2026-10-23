@@ -27,6 +27,36 @@ const props = defineProps<{ caseId: string; nodeIp?: string }>()
 const visible = defineModel<boolean>({ required: true })
 const chatStore = useChatStore()
 
+// ── 抽屉行为（与历史工单/SSH 终端一致）────────────────────────────────────
+const pinned = ref(false)
+
+/** 拖拽右边缘调整宽度：写入共享宽度，历史工单抽屉同步变化 */
+function startResize(e: MouseEvent) {
+  e.preventDefault()
+  const startX = e.clientX
+  const startWidth = chatStore.sidePanelWidth
+  const onMove = (ev: MouseEvent) => {
+    chatStore.sidePanelWidth = Math.max(
+      300,
+      Math.min(window.innerWidth * 0.8, startWidth + (ev.clientX - startX)),
+    )
+  }
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+  }
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
+
+/** 关闭抽屉时暂停平台快照轮询，避免面板不可见还在后台请求 */
+function handleDrawerClose() {
+  if (resumeTimer) {
+    clearInterval(resumeTimer)
+    resumeTimer = null
+  }
+}
+
 const RELAY_URL = 'http://acli.sangfor.com.cn:5888'
 const POLL_INTERVAL = 5000
 
@@ -457,6 +487,81 @@ function resumeActiveTask(): void {
   if (active) void resumeTask(active.task_id)
 }
 
+// ── 手动刷新 + 自动刷新 ────────────────────────────────────────────────────
+const refreshingProgress = ref(false)
+const lastRefreshAt = ref<Date | null>(null)
+// 主流程正在向 bridge 轮询进度时，手动刷新只读平台快照，避免抢占 waiter
+let pollingBridgeProgress = false
+
+const lastRefreshText = computed(() => {
+  if (!lastRefreshAt.value) return ''
+  const hh = String(lastRefreshAt.value.getHours()).padStart(2, '0')
+  const mm = String(lastRefreshAt.value.getMinutes()).padStart(2, '0')
+  const ss = String(lastRefreshAt.value.getSeconds()).padStart(2, '0')
+  return `更新于 ${hh}:${mm}:${ss}`
+})
+
+/**
+ * 查询任务进度。
+ *
+ * 两个信息源必须分开看：
+ * - 平台快照（GET 任务）：任务状态机、错误原因，任何客户端都能查；
+ * - bridge 实时进度：acli 的百分比只有节点侧知道，平台不落库。
+ * 主流程正在轮询 bridge 时只刷新平台快照，防止两个 'progress' 请求互相覆盖 waiter。
+ */
+async function refreshProgress(silent = false) {
+  if (refreshingProgress.value) return
+  const taskId = currentTask.value?.task_id || resumedTaskId.value
+  if (!taskId) {
+    if (!silent) ElMessage.info('当前没有可查询的采集任务')
+    return
+  }
+  refreshingProgress.value = true
+  try {
+    const latest = await logCollectApi.getTask(taskId)
+    currentTask.value = latest
+    stage.value = TASK_STATUS_STAGE[latest.status] ?? stage.value
+    if (latest.error_message) errorMessage.value = latest.error_message
+
+    if (!pollingBridgeProgress && socket?.readyState === WebSocket.OPEN) {
+      try {
+        const result = await sendAndWait(socket, 'progress', { nodeIp: form.nodeIp }, 15000)
+        if (result.status === 'error') throw new Error(result.message || 'bridge 进度查询失败')
+        const snapshot = result.log_data as ProgressSnapshot | null
+        if (snapshot) progress.value = snapshot
+      } catch (bridgeError: any) {
+        // 平台状态已刷新，bridge 不可用只做提示，不否定整个查询
+        if (!silent) ElMessage.warning(`节点侧进度不可用：${bridgeError.message}`)
+      }
+    }
+    lastRefreshAt.value = new Date()
+    if (!silent) ElMessage.success('已刷新任务进度')
+  } catch (e: any) {
+    if (!silent) {
+      ElMessage.error(
+        e?.response?.status === 404 ? '任务不存在或不属于当前客户端' : '任务进度查询失败',
+      )
+    }
+  } finally {
+    refreshingProgress.value = false
+  }
+}
+
+/** 打开面板时接管本工单进行中的任务：换页/重开也能看到实时状态。 */
+async function maybeResumeRunningTask() {
+  if (currentTask.value) return
+  try {
+    const list = await logCollectApi.listTasks(props.caseId, 5)
+    const running = list.items?.find((item) => !TERMINAL_TASK_STATUSES.includes(item.status))
+    if (running) {
+      await resumeTask(running.task_id)
+      ElMessage.info('已接管进行中的采集任务，进度每 5 秒自动刷新')
+    }
+  } catch {
+    // 接管失败不影响新任务下发
+  }
+}
+
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 
 async function handleStart() {
@@ -600,18 +705,29 @@ async function confirmInstall(ws: WebSocket) {
 
 async function pollUntilCollected(ws: WebSocket, token: number): Promise<boolean> {
   // 采集上限 1 小时（720 次 × 5s）：超时明确失败，避免面板无限转圈。
-  for (let attempt = 0; attempt < 720; attempt++) {
-    if (token !== runToken) return false
-    const result = await sendAndWait(ws, 'progress', { nodeIp: form.nodeIp }, 60000)
-    const snapshot = result.log_data as ProgressSnapshot | null
-    if (snapshot) {
-      progress.value = snapshot
-      if (snapshot.percent >= 80 || snapshot.status.includes('完成')) return true
-      if (snapshot.status.includes('失败')) return false
+  pollingBridgeProgress = true
+  try {
+    for (let attempt = 0; attempt < 720; attempt++) {
+      if (token !== runToken) return false
+      const result = await sendAndWait(ws, 'progress', { nodeIp: form.nodeIp }, 60000)
+      // bridge 明确报错（如会话已断开）必须立刻上抛：
+      // 早先这里只读 log_data，错误结果会被当成"还没有进度"，面板空转一小时仍显示 0%。
+      if (result.status === 'error') {
+        throw new Error(result.message || '节点侧进度查询失败')
+      }
+      const snapshot = result.log_data as ProgressSnapshot | null
+      if (snapshot) {
+        progress.value = snapshot
+        lastRefreshAt.value = new Date()
+        if (snapshot.percent >= 80 || snapshot.status.includes('完成')) return true
+        if (snapshot.status.includes('失败')) return false
+      }
+      await sleep(POLL_INTERVAL)
     }
-    await sleep(POLL_INTERVAL)
+    return false
+  } finally {
+    pollingBridgeProgress = false
   }
-  return false
 }
 
 async function finishP1(task: LogCollectTask) {
@@ -763,6 +879,8 @@ watch(
     if (prepareState.value !== 'ready' && prepareState.value !== 'probing') {
       void prepare({ silent: true })
     }
+    // 重开面板时接管进行中的任务，避免"关掉再打开就看不到进度"
+    void maybeResumeRunningTask()
   },
   { immediate: true },
 )
@@ -813,15 +931,40 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <!-- direction="ltr"：抽屉从左侧滑出（默认 rtl 从右侧），与聊天区在右、操作区在左的阅读习惯一致 -->
+  <!--
+    与「历史工单」「SSH 终端」抽屉完全对齐：左侧滑出、共享宽度、可拖拽调宽、
+    支持钉住（钉住后点击外部不再回缩，仅切掉遮罩）、点外部/ESC 关闭。
+  -->
   <el-drawer
     v-model="visible"
-    title="日志收集"
     direction="ltr"
-    size="720px"
-    :close-on-click-modal="false"
+    :size="`${chatStore.sidePanelWidth}px`"
+    :append-to-body="true"
+    :modal="true"
+    :lock-scroll="!pinned"
+    :close-on-click-modal="!pinned"
+    :close-on-press-escape="!pinned"
+    :with-header="true"
+    :modal-class="pinned ? 'drawer-unblocked-overlay' : ''"
+    class="workspace-drawer"
+    @close="handleDrawerClose"
   >
-    <div class="lc-body">
+    <div class="drawer-resize-handle drawer-resize-right" @mousedown="startResize"></div>
+    <template #header>
+      <div class="drawer-header">
+        <span class="drawer-title">日志收集</span>
+        <div class="drawer-actions">
+          <span v-if="lastRefreshText" class="lc-refresh-time">{{ lastRefreshText }}</span>
+          <el-button text size="small" :loading="refreshingProgress" @click="refreshProgress()">
+            刷新进度
+          </el-button>
+          <el-button text size="small" @click="pinned = !pinned">
+            {{ pinned ? '取消钉住' : '钉住' }}
+          </el-button>
+        </div>
+      </div>
+    </template>
+    <div class="drawer-body-content lc-body">
       <div class="lc-case-bar">
         <span class="lc-case-label">归档工单</span>
         <span class="lc-case-value">{{ caseId }}</span>
@@ -1015,6 +1158,16 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  /* 抽屉 body 由全局样式设为 overflow:hidden，内容超高时必须自己滚 */
+  overflow-y: auto;
+  height: 100%;
+  box-sizing: border-box;
+}
+.lc-refresh-time {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-right: 4px;
+  white-space: nowrap;
 }
 .lc-case-bar {
   display: flex;

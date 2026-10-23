@@ -12,6 +12,8 @@ import CaseCreateDialog from './CaseCreateDialog.vue'
 import BridgeLogUploader from './BridgeLogUploader.vue'
 import LogCollectEntryCard from './LogCollectEntryCard.vue'
 import EnvironmentSummary from './EnvironmentSummary.vue'
+// 抽屉宽度算法唯一来源
+import { getDefaultPanelWidth } from '@/utils/panelWidth'
 
 const chatStore = useChatStore()
 const inputText = ref('')
@@ -20,7 +22,7 @@ const assistantInputRef = ref<{ focus: () => void } | null>(null)
 const terminalPinned = ref(false)
 const historyPinned = ref(false)
 const terminalPanelWidth = ref(getDefaultPanelWidth())
-const historyPanelWidth = ref(getDefaultPanelWidth())
+// 历史工单与日志收集共用同一宽度真值（store），拖拽任一侧都对齐
 const showTerminalReplayDialog = ref(false)
 const terminalReplayCaseId = ref<string | null>(null)
 
@@ -43,9 +45,9 @@ const startResizeTerminal = (e: MouseEvent) => {
 const startResizeHistory = (e: MouseEvent) => {
   e.preventDefault()
   const startX = e.clientX
-  const startWidth = historyPanelWidth.value
+  const startWidth = chatStore.sidePanelWidth
   const onMouseMove = (moveE: MouseEvent) => {
-    historyPanelWidth.value = Math.max(300, Math.min(window.innerWidth * 0.8, startWidth + (moveE.clientX - startX)))
+    chatStore.sidePanelWidth = Math.max(300, Math.min(window.innerWidth * 0.8, startWidth + (moveE.clientX - startX)))
   }
   const onMouseUp = () => {
     document.removeEventListener('mousemove', onMouseMove)
@@ -112,7 +114,7 @@ onMounted(() => {
       terminalPanelWidth.value = getDefaultPanelWidth()
     }
     if (!chatStore.showHistoryDrawer) {
-      historyPanelWidth.value = getDefaultPanelWidth()
+      chatStore.sidePanelWidth = getDefaultPanelWidth()
     }
   }
   onResize()
@@ -124,17 +126,6 @@ onBeforeUnmount(() => {
   const handler = (window as Window & { __hciPanelResizeHandler?: () => void }).__hciPanelResizeHandler
   if (handler) window.removeEventListener('resize', handler)
 })
-
-function getDefaultPanelWidth(): number {
-  if (typeof window === 'undefined') return 510
-  const appMaxWidth = 900
-  // Each side gets half of the remaining blank space
-  const sideBlankSpace = Math.max((window.innerWidth - appMaxWidth) / 2, 0)
-  // If the screen is too narrow, just take 85% of screen
-  const target = sideBlankSpace >= 300 ? sideBlankSpace : window.innerWidth * 0.85
-  // We constrain it to a min of 400 and max of 50% to not dominate small screens
-  return Math.max(400, Math.round(target))
-}
 
 /** 状态中文映射 */
 function statusLabel(status: string): string {
@@ -350,7 +341,7 @@ function handleQuoteToChat(content: string) {
     <el-drawer
       v-model="chatStore.showHistoryDrawer"
       direction="ltr"
-      :size="`${historyPanelWidth}px`"
+      :size="`${chatStore.sidePanelWidth}px`"
       :append-to-body="true"
       :modal="true"
       :lock-scroll="!historyPinned"
@@ -743,70 +734,10 @@ function handleQuoteToChat(content: string) {
   font-size: 11px;
 }
 
-.workspace-drawer :deep(.el-drawer) {
-  display: flex;
-  flex-direction: column;
-}
-
-.workspace-drawer :deep(.el-drawer__body) {
-  flex: 1;
-  overflow: hidden;
-  padding: 12px 16px;
-}
-
-.workspace-drawer :deep(.el-drawer__header) {
-  margin-bottom: 0;
-  padding: 16px;
-  border-bottom: 1px solid #f0f2f5;
-}
-
-.drawer-body-content {
-  height: 100%;
-}
-
-/* 拖拽调整手柄 */
-.drawer-resize-handle {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 8px;
-  cursor: col-resize;
-  z-index: 100;
-  transition: background-color 0.2s;
-}
-.drawer-resize-handle:hover,
-.drawer-resize-handle:active {
-  background-color: rgba(64, 158, 255, 0.2);
-}
-.drawer-resize-left {
-  left: 0;
-}
-.drawer-resize-right {
-  right: 0;
-}
-
+/* 终端面板内部布局（其余抽屉外观已抽到 styles/workspace-drawer.css） */
 .terminal-content {
   display: flex;
   flex-direction: column;
-}
-
-.drawer-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-}
-
-.drawer-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: #303133;
-}
-
-.drawer-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
 }
 
 /* 终端回放弹窗样式 */
@@ -822,14 +753,3 @@ function handleQuoteToChat(content: string) {
 
 </style>
 
-<style>
-/* 全局透传点击事件：当钉住时，取消全屏遮罩及背景色 */
-.drawer-unblocked-overlay {
-  pointer-events: none !important;
-  background-color: transparent !important;
-}
-.drawer-unblocked-overlay .el-drawer {
-  pointer-events: auto !important;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.1);
-}
-</style>
