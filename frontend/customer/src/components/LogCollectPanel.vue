@@ -100,6 +100,7 @@ const running = computed(() =>
 
 const percent = computed(() => {
   if (stage.value === 'done') return 100
+  if (resumedTaskId.value) return currentTask.value?.progress ?? 0
   if (stage.value === 'relaying') return 95 + Math.min(4, relayStatus.value === 'running' ? 2 : 0)
   if (stage.value === 'uploading' || stage.value === 'pulling') return 60 + Math.round(transfer.percent * 0.3)
   return Math.min(60, progress.value?.percent ?? 0) * (60 / 80)
@@ -235,6 +236,68 @@ function sendAndWait(
   })
 }
 
+// ── 已有任务接管（409 后"查看任务状态" / 刷新恢复）─────────────────────────
+const resumedTaskId = ref<string | null>(null)
+let resumeTimer: ReturnType<typeof setInterval> | null = null
+
+const TASK_STATUS_STAGE: Record<string, Stage> = {
+  pending: 'creating',
+  probing: 'probing',
+  installing: 'installing',
+  collecting: 'collecting',
+  packaging: 'collecting',
+  uploading: 'uploading',
+  completed: 'done',
+  failed: 'failed',
+  cancelled: 'failed',
+}
+
+const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'cancelled']
+
+/**
+ * 轮询平台快照展示已有任务。
+ *
+ * 不驱动 bridge：任务可能是其他客户端发起的（同一工单号），这里只读状态；
+ * 若是本人任务，平台快照足以展示阶段/进度与失败原因。
+ */
+async function resumeTask(taskId: string) {
+  try {
+    const task = await logCollectApi.getTask(taskId)
+    currentTask.value = task
+    resumedTaskId.value = taskId
+    stage.value = TASK_STATUS_STAGE[task.status] ?? 'idle'
+    if (task.error_message) errorMessage.value = task.error_message
+
+    if (resumeTimer) clearInterval(resumeTimer)
+    resumeTimer = setInterval(async () => {
+      try {
+        const latest = await logCollectApi.getTask(taskId)
+        currentTask.value = latest
+        stage.value = TASK_STATUS_STAGE[latest.status] ?? 'idle'
+        if (TERMINAL_TASK_STATUSES.includes(latest.status) && resumeTimer) {
+          clearInterval(resumeTimer)
+          resumeTimer = null
+        }
+      } catch {
+        if (resumeTimer) {
+          clearInterval(resumeTimer)
+          resumeTimer = null
+        }
+      }
+    }, POLL_INTERVAL)
+  } catch (e: any) {
+    ElMessage.error(
+      e?.response?.status === 404 ? '任务不存在或不属于当前客户端' : '任务状态加载失败',
+    )
+  }
+}
+
+/** 409 后点"查看任务状态"：把面板切到只读接管模式。 */
+function resumeActiveTask(): void {
+  const active = chatStore.logCollectActiveTask
+  if (active) void resumeTask(active.task_id)
+}
+
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 
 async function handleStart() {
@@ -280,17 +343,31 @@ async function handleStart() {
 
     pathMode.value = probeResult.value.log_server_reachable ? 'P1' : 'P3'
 
-    const task = await logCollectApi.createTask({
-      case_id: props.caseId,
-      // 不传 ticket_no：服务端强制 ticket_no == case_id，避免出现两套工单号
-      origin_node_ip: nodeIp,
-      modules,
-      date_from: form.dateRange[0],
-      date_to: form.dateRange[1],
-      ips: form.ips.split(',').map((s) => s.trim()).filter(Boolean),
-      remote_url: pathMode.value === 'P1' ? RELAY_URL : undefined,
-      trace_id: `lc-${props.caseId}-${Date.now()}`,
-    })
+    let task: LogCollectTask
+    try {
+      task = await logCollectApi.createTask({
+        case_id: props.caseId,
+        // 工单号只有一个：acli -s、产物名与任务归属都使用 case_id
+        origin_node_ip: nodeIp,
+        modules,
+        date_from: form.dateRange[0],
+        date_to: form.dateRange[1],
+        ips: form.ips.split(',').map((s) => s.trim()).filter(Boolean),
+        remote_url: pathMode.value === 'P1' ? RELAY_URL : undefined,
+        trace_id: `lc-${props.caseId}-${Date.now()}`,
+      })
+    } catch (createError: any) {
+      if (createError?.response?.status === 409) {
+        // 冲突不是失败：不改任务状态，停在 idle 让用户点"查看任务状态"
+        const problem = createError.response.data?.detail ?? {}
+        chatStore.setLogCollectActiveTask(problem.active_task ?? null)
+        stage.value = 'idle'
+        errorMessage.value = problem.title || '该工单已有进行中的日志收集任务'
+        ElMessage.warning(errorMessage.value)
+        return
+      }
+      throw createError
+    }
     currentTask.value = task
 
     stage.value = 'creating'
@@ -527,6 +604,10 @@ function formatDate(value: Date): string {
 onBeforeUnmount(() => {
   // 让仍在运行的后台轮询退出，避免组件卸载后继续改状态
   runToken++
+  if (resumeTimer) {
+    clearInterval(resumeTimer)
+    resumeTimer = null
+  }
   waiters.clear()
   socket?.close()
   socket = null
@@ -589,6 +670,26 @@ onBeforeUnmount(() => {
         </el-form-item>
       </el-form>
 
+      <!-- 409：同一工单已有进行中的任务。冲突不是失败，提供"查看任务状态" -->
+      <div v-if="chatStore.logCollectActiveTask" class="lc-conflict">
+        <div class="lc-conflict-body">
+          <p class="lc-conflict-title">{{ errorMessage || '该工单已有进行中的日志收集任务' }}</p>
+          <p class="lc-conflict-meta">
+            状态：{{ chatStore.logCollectActiveTask.status }}
+            · 进度：{{ chatStore.logCollectActiveTask.progress }}%
+            <span v-if="!chatStore.logCollectActiveTask.created_by_me">· 由其他客户端发起</span>
+          </p>
+        </div>
+        <el-button
+          v-if="chatStore.logCollectActiveTask.created_by_me"
+          size="small"
+          type="primary"
+          @click="resumeActiveTask()"
+        >
+          查看任务状态
+        </el-button>
+      </div>
+
       <div v-if="running || stage === 'done' || stage === 'failed'" class="lc-progress">
         <el-steps :active="stepActive" finish-status="success" simple>
           <el-step title="探测" />
@@ -639,6 +740,30 @@ onBeforeUnmount(() => {
 .lc-case-value {
   font-weight: 600;
   color: var(--el-color-primary);
+}
+.lc-conflict {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--el-color-warning-light-5);
+  border-radius: 6px;
+  background: var(--el-color-warning-light-9);
+}
+.lc-conflict-body {
+  flex: 1;
+  min-width: 0;
+}
+.lc-conflict-title {
+  margin: 0 0 2px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--el-color-warning-dark-2);
+}
+.lc-conflict-meta {
+  margin: 0;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 .lc-hint {
   font-size: 12px;

@@ -51,7 +51,6 @@ export interface LogCollectTaskCreate {
 export interface LogCollectTask {
   task_id: string
   case_id: string
-  ticket_no: string
   origin_node_ip: string
   modules: string[]
   date_from: string
@@ -103,7 +102,30 @@ export interface RelaySnapshot {
   archive_path?: string | null
 }
 
+export interface ResolveCaseResult {
+  case_id: string
+  created: boolean
+}
+
+/** 409 时服务端附带的活跃任务摘要（跨客户端已脱敏） */
+export interface ActiveTaskSummary {
+  task_id: string
+  status: LogCollectStatus
+  progress: number
+  created_by_me: boolean
+  created_at: string | null
+}
+
 export const logCollectApi = {
+  /**
+   * 按工单号解析日志收集的目标工单：已存在则复用，不存在则按该号建档。
+   * 工单格式由服务端强校验（Q + 8 位日期 + 5 位序号）。
+   */
+  async resolveCase(caseId: string): Promise<ResolveCaseResult> {
+    const { data } = await client.post('/cases/resolve', { case_id: caseId })
+    return data
+  },
+
   async createTask(payload: LogCollectTaskCreate): Promise<LogCollectTask> {
     const { data } = await client.post('/log-collect/tasks', payload)
     return data

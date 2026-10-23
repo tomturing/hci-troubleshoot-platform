@@ -34,8 +34,22 @@ function statusText(status: string): string {
   return STATUS_TEXT[status] || status
 }
 
-// 与服务端 case_id 长度上限一致（LogCollectTaskCreate.case_id max_length=20）
-const CASE_ID_PATTERN = /^[A-Za-z0-9_-]{1,20}$/
+// 与自动生成规则一致：Q + 8 位日期 + 5 位序号
+const CASE_ID_PATTERN = /^Q\d{8}\d{5}$/
+
+/** 日期段必须真实存在（20261032 这类"格式合法但日期非法"的号本地就拦掉）。 */
+function isValidCaseId(value: string): boolean {
+  if (!CASE_ID_PATTERN.test(value)) return false
+  const year = Number(value.slice(1, 5))
+  const month = Number(value.slice(5, 7))
+  const day = Number(value.slice(7, 9))
+  const parsed = new Date(Date.UTC(year, month - 1, day))
+  return (
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day
+  )
+}
 
 watch(
   () => chatStore.logCollectCaseDialogVisible,
@@ -70,8 +84,8 @@ async function submit() {
     @close="chatStore.closeLogCollectCaseDialog()"
   >
     <p class="lc-case-tip">
-      日志包必须归档到平台工单。请输入<b>当前客户端名下</b>的平台工单号（如 Q2026102300001），
-      不是 ICare 单号。
+      输入一个平台工单号（如 Q2026101401684）。<b>已存在会自动复用，不存在会按该号建档</b>，
+      日志收集只追加任务，不影响该工单的聊天内容。
     </p>
     <el-input
       v-model="caseId"

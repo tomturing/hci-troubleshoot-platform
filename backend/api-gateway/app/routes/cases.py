@@ -114,6 +114,17 @@ async def create_case(request: Request, client_id: str = Depends(require_user)):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@router.post("/resolve")
+async def resolve_case(request: Request, client_id: str = Depends(require_user)):
+    """日志收集：按工单号解析，不存在则用该号建档。
+
+    下游只返回 ``{case_id, created}``，不返回工单内容（可能属于其他客户端）。
+    """
+    payload = await request.json()
+    response = await proxy_request("POST", "/resolve", payload, headers=_signed_headers(client_id))
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 @router.get("/{case_id}")
 async def get_case(case_id: str, client_id: str = Depends(require_user)):
     """获取工单详情（归属校验在 case-service 完成）"""

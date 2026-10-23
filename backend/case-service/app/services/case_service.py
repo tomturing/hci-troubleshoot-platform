@@ -15,6 +15,7 @@ from shared.models.schemas import (
 )
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
+from sqlalchemy.exc import IntegrityError
 
 from ..models.case import Case, CaseStatus
 from ..repositories.case_repo import CaseRepository
@@ -56,11 +57,14 @@ class CaseService:
     def __init__(self, repository: CaseRepository):
         self.repository = repository
 
-    async def create_case(self, case_create: CaseCreate) -> CaseResponse:
-        """创建新工单"""
-        # case_id 由 DB 函数 generate_case_id() 生成：Q + 当天日期 + 当天自增序号（与 schema 注释契约一致），
-        # 替代原先的 random.randint 实现，避免随机预占不回收 / 碰撞导致的孤儿工单 ID。
-        case_id = await self.repository.generate_case_id()
+    async def create_case(self, case_create: CaseCreate, *, metadata: dict | None = None) -> CaseResponse:
+        """创建新工单。
+
+        ``case_id`` 可显式指定（格式由 CaseCreate 校验）；不传则由
+        ``generate_case_id()`` 生成（Q + 当天日期 + 当天自增序号）。
+        ``metadata`` 用于标注建单来源（如日志收集入口 source=log_collect）。
+        """
+        case_id = case_create.case_id or await self.repository.generate_case_id()
         trace_id = get_current_trace_id()
 
         # 获取或创建用户
@@ -92,6 +96,7 @@ class CaseService:
             assistant_type=case_create.assistant_type or "htp-agent",
             category=category,
             trace_id=trace_id,
+            metadata=metadata or {},
         )
 
         created_case = await self.repository.create(case)
@@ -105,6 +110,39 @@ class CaseService:
         )
 
         return CaseResponse.model_validate(created_case)
+
+    async def resolve_case_for_log_collect(self, case_id: str, client_id: str) -> tuple[str, bool]:
+        """日志收集专用：按工单号解析，不存在则用该号建档。
+
+        语义（方案 A，允许跨客户端复用）：
+        - 已存在：**不校验归属**，直接复用；返回 ``created=False``；
+        - 不存在：用该号创建一张仅承载日志任务的工单，返回 ``created=True``；
+        - 并发：两个请求同时 resolve 同一号时，主键冲突的一方视为"已存在"。
+
+        注意：已存在时不返回工单内容（可能属于其他客户端的聊天工单），
+        调用方只应拿到 ``case_id`` 与是否新建。
+        """
+        existing = await self.repository.get_by_id(case_id)
+        if existing is not None:
+            return existing.case_id, False
+
+        try:
+            await self.create_case(
+                CaseCreate(
+                    client_id=client_id,
+                    title=f"日志收集任务 {case_id}",
+                    description="由日志收集入口创建，仅承载日志采集任务",
+                    assistant_type="htp-agent",
+                    case_id=case_id,
+                ),
+                metadata={"source": "log_collect"},
+            )
+        except IntegrityError:
+            # 并发窗口内另一方已创建同号工单：回滚后按"已存在"处理
+            await self.repository.session.rollback()
+            logger.info(event="case_resolve_race", case_id=case_id, client_id=client_id)
+            return case_id, False
+        return case_id, True
 
     async def get_case(self, case_id: str) -> CaseResponse | None:
         """获取工单详情"""

@@ -173,7 +173,11 @@ CREATE TABLE IF NOT EXISTS "case" (
     trace_id varchar(64),
     CONSTRAINT fk_case_user_id FOREIGN KEY (user_id) REFERENCES "user" (user_id) ON DELETE CASCADE,
     CONSTRAINT fk_case_customer_id FOREIGN KEY (customer_id) REFERENCES customer (customer_id) ON DELETE SET NULL,
-    CONSTRAINT case_pkey PRIMARY KEY (case_id)
+    CONSTRAINT case_pkey PRIMARY KEY (case_id),
+    -- 工单号格式与自动生成规则一致：Q + 8 位日期 + 5 位序号。
+    -- 允许用户指定该号（API 层限 5 位）；库层放宽到 6 位，避免同日序号溢出 99999 时
+    -- 自动生成与 CHECK 互相打架。
+    CONSTRAINT ck_case_id_format CHECK (case_id ~ '^Q[0-9]{8}[0-9]{5,6}$')
 );
 
 COMMENT ON TABLE "case" IS '工单表 — 排障工单是整个平台的核心业务实体，记录一次完整的客户问题从提交到关闭的全生命周期';
@@ -3857,14 +3861,13 @@ CREATE INDEX IF NOT EXISTS idx_vm_console_audit_event_actor_user ON vm_console_a
 -- ------------------------------------------------------------
 -- 表: log_collect_task  [模块: case-service]
 -- 说明: 日志收集任务（工单附属）。执行发生在 terminal_bridge（云端不可达客户私网 HCI），
---       平台只做任务登记、状态机、进度与制品元数据；ticket_no 用于 acli log_collect -s。
--- 约束: 同一工单只允许一个活跃任务（部分唯一索引），日期跨度 ≤30 天，工单号白名单与
---       bridge 二次校验保持一致（插件不防注入）。
+--       平台只做任务登记、状态机、进度与制品元数据；acli log_collect -s 直接使用 case_id。
+-- 约束: 同一工单只允许一个活跃任务（部分唯一索引），日期跨度 ≤30 天；任务归属按 created_by
+--       鉴权（允许跨客户端复用同一工单号，仅追加日志任务，不修改工单业务数据）。
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS log_collect_task (
     task_id uuid NOT NULL DEFAULT gen_random_uuid(),
     case_id varchar(20) NOT NULL,
-    ticket_no varchar(32) NOT NULL,
     origin_node_ip inet NOT NULL,
     modules text[] NOT NULL,
     date_from date NOT NULL,
@@ -3906,7 +3909,6 @@ CREATE TABLE IF NOT EXISTS log_collect_task (
     finished_at timestamptz,
     CONSTRAINT log_collect_task_pkey PRIMARY KEY (task_id),
     CONSTRAINT fk_log_collect_task_case FOREIGN KEY (case_id) REFERENCES "case" (case_id) ON DELETE CASCADE,
-    CONSTRAINT ck_log_collect_ticket CHECK (ticket_no ~ '^[A-Za-z0-9_-]{1,32}$'),
     CONSTRAINT ck_log_collect_range CHECK (date_to >= date_from AND date_to - date_from <= 30),
     CONSTRAINT ck_log_collect_progress CHECK (progress BETWEEN 0 AND 100),
     CONSTRAINT ck_log_collect_status CHECK ((status)::text = ANY ((ARRAY['pending'::character varying, 'probing'::character varying, 'installing'::character varying, 'collecting'::character varying, 'packaging'::character varying, 'uploading'::character varying, 'completed'::character varying, 'failed'::character varying, 'cancelled'::character varying])::text[])),
@@ -3917,7 +3919,7 @@ CREATE TABLE IF NOT EXISTS log_collect_task (
 );
 
 COMMENT ON TABLE log_collect_task IS '日志收集任务表 — 承载 acli log_collect 的控制面状态，执行发生在 terminal_bridge';
-COMMENT ON COLUMN log_collect_task.ticket_no IS '用户输入的 ICare 单号，作为 acli log_collect -s，直接成为产物名';
+COMMENT ON COLUMN log_collect_task.case_id IS '工单号，同时作为 acli log_collect -s 与产物名；全平台只有一个工单号';
 COMMENT ON COLUMN log_collect_task.origin_node_ip IS '发起采集的 HCI 节点；acli progress 只在该节点有效，轮询必须路由回此节点';
 COMMENT ON COLUMN log_collect_task.modules IS '收集专项（acli -m 枚举）';
 COMMENT ON COLUMN log_collect_task.ips IS '目标主机；["all"] 表示所有在线节点';

@@ -39,14 +39,28 @@ class LogCollectTaskRepository:
         )
         return result.scalar_one_or_none()
 
-    async def list_by_case(self, case_id: str, *, limit: int = 20, offset: int = 0) -> tuple[list[LogCollectTask], int]:
-        total_result = await self.session.execute(
-            select(func.count()).select_from(LogCollectTask).where(LogCollectTask.case_id == case_id)
-        )
+    async def list_by_case(
+        self,
+        case_id: str,
+        *,
+        created_by: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[LogCollectTask], int]:
+        """按工单查询任务。
+
+        ``created_by`` 非空时只返回该身份创建的任务：同一工单号可能被多个客户端
+        复用（日志收集入口允许跨客户端指定），任务详情按创建者隔离。
+        """
+        filters = [LogCollectTask.case_id == case_id]
+        if created_by is not None:
+            filters.append(LogCollectTask.created_by == created_by)
+
+        total_result = await self.session.execute(select(func.count()).select_from(LogCollectTask).where(*filters))
         total = int(total_result.scalar_one() or 0)
         result = await self.session.execute(
             select(LogCollectTask)
-            .where(LogCollectTask.case_id == case_id)
+            .where(*filters)
             .order_by(LogCollectTask.created_at.desc())
             .limit(limit)
             .offset(offset)

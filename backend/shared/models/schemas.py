@@ -27,12 +27,24 @@ _CLIENT_ID_PATTERN = r"^[A-Za-z0-9_-]{1,128}$"
 # 即视为注入攻击。注意 test_run_id 不在此列——sim-ssh 仿真链路依赖它
 # （conversation_service.send_message_stream_only 的 execution_mode=="sim-ssh"
 # 分支），属于合法用户字段。
-METADATA_FORBIDDEN_KEYS = frozenset({
-    "bash_command", "acli_args", "ssh_host", "ssh_credentials",
-    "ssh_password", "ssh_private_key", "passphrase",
-    "api_key", "token", "password", "secret", "credentials",
-    "pod_endpoint", "internal_token",
-})
+METADATA_FORBIDDEN_KEYS = frozenset(
+    {
+        "bash_command",
+        "acli_args",
+        "ssh_host",
+        "ssh_credentials",
+        "ssh_password",
+        "ssh_private_key",
+        "passphrase",
+        "api_key",
+        "token",
+        "password",
+        "secret",
+        "credentials",
+        "pod_endpoint",
+        "internal_token",
+    }
+)
 
 # execution_mode 合法值：safe-only 为默认保守模式，sim-ssh 为仿真
 # SSH 排障链路（SimulationContextClient 会做二次校验，见
@@ -87,7 +99,7 @@ class MessageRole(StrEnum):
     SYSTEM = "system"
     COMMAND = "command"
     # ReAct 工具调用轮次角色（用于跨轮次持久化 ReAct 历史，见 OpenAI Function Calling 规范）
-    TOOL_CALL = "tool_call"    # AI 发起的工具调用请求（含 tool_calls JSON）
+    TOOL_CALL = "tool_call"  # AI 发起的工具调用请求（含 tool_calls JSON）
     TOOL_RESULT = "tool_result"  # 工具执行结果（通过 tool_call_id 关联对应的 tool_call 消息）
 
 
@@ -98,6 +110,25 @@ class CaseCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200, description="工单标题")
     description: str | None = Field(None, max_length=10000, description="工单描述")
     assistant_type: str | None = Field(None, pattern=r"^[a-z-]{3,20}$", description="AI助手类型")
+    # 用户指定工单号：格式与自动生成规则一致（Q + 8 位日期 + 5 位序号）。
+    # 不传则由 generate_case_id() 生成；传了且已存在由调用方决定 409 或复用。
+    case_id: str | None = Field(
+        default=None,
+        pattern=r"^Q[0-9]{8}[0-9]{5}$",
+        description="可选工单号，Q + 8 位日期 + 5 位序号（如 Q2026101401684）",
+    )
+
+    @field_validator("case_id")
+    @classmethod
+    def _validate_case_id_date(cls, value: str | None) -> str | None:
+        """校验工单号中的日期段真实存在（20261032 这类格式合法但日期非法必须拒绝）。"""
+        if value is None:
+            return value
+        try:
+            datetime.strptime(value[1:9], "%Y%m%d")
+        except ValueError as exc:
+            raise ValueError("工单号中的日期不合法，应为 Q + YYYYMMDD + 5 位序号") from exc
+        return value
 
     @field_validator("title", "description")
     @classmethod
@@ -274,6 +305,7 @@ class WebSocketMessage(BaseModel):
 # KB 服务契约模型（F-3）
 # ──────────────────────────────────────────────
 
+
 class KBIngestPayload(BaseModel):
     """KB 文档导入请求（case-service -> kb-service）"""
 
@@ -295,6 +327,7 @@ class KBSearchResponse(BaseModel):
 # ──────────────────────────────────────────────
 # Scheduler 服务契约模型（G-1）
 # ──────────────────────────────────────────────
+
 
 class PodAllocationResponse(BaseModel):
     """Pod 分配响应（scheduler-service -> api-gateway/case-service）"""
@@ -332,6 +365,7 @@ class PoolStatusResponse(BaseModel):
 # ──────────────────────────────────────────────
 # Environment 服务契约模型（Custom-UI 数据采集）
 # ──────────────────────────────────────────────
+
 
 class EnvType(StrEnum):
     """环境数据类型枚举"""

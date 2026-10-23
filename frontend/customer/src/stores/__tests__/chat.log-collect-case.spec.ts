@@ -12,7 +12,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
-const { mockGetById } = vi.hoisted(() => ({ mockGetById: vi.fn() }))
+const { mockGetById, mockResolveCase } = vi.hoisted(() => ({
+  mockGetById: vi.fn(),
+  mockResolveCase: vi.fn(),
+}))
 
 vi.mock('@hci/shared', () => ({
   createApiClient: () => ({
@@ -46,6 +49,9 @@ vi.mock('@hci/shared', () => ({
 
 vi.mock('@/utils/clientId', () => ({ getClientId: () => 'test-client-id' }))
 vi.mock('@/api/evaluate', () => ({ createEvaluateApi: () => ({}) }))
+vi.mock('@/api/logCollect', () => ({
+  logCollectApi: { resolveCase: mockResolveCase },
+}))
 vi.mock('@/api/terminal', () => ({
   checkBridgeRunning: vi.fn().mockResolvedValue(false),
   checkBridgeBeforeOpen: vi.fn().mockResolvedValue('not-running'),
@@ -62,15 +68,11 @@ vi.mock('@/api/terminal', () => ({
   parseJsonOutput: vi.fn(),
 }))
 
-function caseResponse(caseId: string) {
-  return { data: { case_id: caseId, client_id: 'test-client-id', status: 'closed' } }
-}
-
 describe('chat store - 日志收集人工指定工单号', () => {
   beforeEach(() => {
     localStorage.clear()
     setActivePinia(createPinia())
-    mockGetById.mockReset()
+    mockResolveCase.mockReset()
   })
 
   afterEach(() => {
@@ -100,31 +102,31 @@ describe('chat store - 日志收集人工指定工单号', () => {
     expect(store.logCollectCaseId).toBe('Q2026102300001')
   })
 
-  it('指定他人工单（服务端 404）→ 统一提示，不绑定、不开面板', async () => {
+  it('服务端拒绝格式（422）→ 提示格式错误，不绑定、不开面板', async () => {
     const { useChatStore } = await import('../chat')
     const store = useChatStore()
-    mockGetById.mockRejectedValue({ response: { status: 404, data: { detail: 'Case not found' } } })
+    mockResolveCase.mockRejectedValue({
+      response: { status: 422, data: { detail: '工单号中的日期不合法' } },
+    })
 
     store.openLogCollect()
-    await expect(store.confirmLogCollectCase('Q2026102300099')).rejects.toThrow(
-      '工单不存在或不属于当前客户端',
-    )
+    await expect(store.confirmLogCollectCase('Q2026133200001')).rejects.toThrow('日期不合法')
 
     expect(store.logCollectCaseId).toBe(null)
     expect(store.logCollectVisible).toBe(false)
     expect(store.logCollectCaseDialogVisible).toBe(true)
   })
 
-  it('指定名下已结单工单成功 → 绑定并打开面板，再次打开沿用不重复输入', async () => {
+  it('工单号不存在时由服务端建档（created=true）→ 绑定并打开面板', async () => {
     const { useChatStore } = await import('../chat')
     const store = useChatStore()
-    mockGetById.mockResolvedValue(caseResponse('Q2026102300001'))
+    mockResolveCase.mockResolvedValue({ case_id: 'Q2026101401684', created: true })
 
     store.openLogCollect()
-    await store.confirmLogCollectCase('  Q2026102300001  ')
+    await store.confirmLogCollectCase('  Q2026101401684  ')
 
-    expect(mockGetById).toHaveBeenCalledWith('Q2026102300001')
-    expect(store.logCollectCaseId).toBe('Q2026102300001')
+    expect(mockResolveCase).toHaveBeenCalledWith('Q2026101401684')
+    expect(store.logCollectCaseId).toBe('Q2026101401684')
     expect(store.logCollectVisible).toBe(true)
     expect(store.logCollectCaseDialogVisible).toBe(false)
 
@@ -138,15 +140,25 @@ describe('chat store - 日志收集人工指定工单号', () => {
   it('历史手工指定不会覆盖当前活跃工单', async () => {
     const { useChatStore } = await import('../chat')
     const store = useChatStore()
-    mockGetById.mockResolvedValue(caseResponse('Q2026102300001'))
+    mockResolveCase.mockResolvedValue({ case_id: 'Q2026101401684', created: false })
 
     store.openLogCollect()
-    await store.confirmLogCollectCase('Q2026102300001')
+    await store.confirmLogCollectCase('Q2026101401684')
     store.closeLogCollect()
 
     store.currentCase = { case_id: 'Q2026102300002', status: 'in_progress' } as any
     store.openLogCollect()
 
     expect(store.logCollectCaseId).toBe('Q2026102300002')
+  })
+
+  it('409 后接管查看：openLogCollectForTask 设置 resumeTaskId 并打开面板', async () => {
+    const { useChatStore } = await import('../chat')
+    const store = useChatStore()
+
+    store.openLogCollectForTask('11111111-1111-1111-1111-111111111111')
+
+    expect(store.logCollectResumeTaskId).toBe('11111111-1111-1111-1111-111111111111')
+    expect(store.logCollectVisible).toBe(true)
   })
 })

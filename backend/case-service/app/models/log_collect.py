@@ -31,8 +31,7 @@ class LogCollectTask(Base, TimestampMixin, TraceableMixin):
 
     task_id = Column(UUID(as_uuid=True), primary_key=True, server_default="gen_random_uuid()")
     case_id = Column(String(20), ForeignKey("case.case_id", ondelete="CASCADE"), nullable=False, index=True)
-    # 用户输入的 ICare 单号，直接作为 acli log_collect -s，并成为产物名
-    ticket_no = Column(String(32), nullable=False)
+    # 全平台只有一个工单号：acli log_collect -s 与产物名都直接用 case_id
     # 发起采集的节点：progress 只反映该节点的本地视图
     origin_node_ip = Column(INET, nullable=False)
     modules = Column(ARRAY(Text), nullable=False)
