@@ -2267,6 +2267,9 @@ export const useChatStore = defineStore('chat', () => {
           private_key: config.privateKey,
           passphrase: config.passphrase,
           case_id: config.caseId,
+          // 与日志收集的查找键对齐：bridge 用 caseID@nodeIP 存会话，
+          // 不传 node_ip 时只能用 caseID，日志收集必然查不到（LC-ENV-006）。
+          node_ip: config.host.trim(),
         }))
       }
 

@@ -3929,6 +3929,33 @@ func (b *Bridge) sessionByNodeIP(nodeIP string) (*SSHSession, string) {
 	return nil, ""
 }
 
+// sessionByAddressHost 按会话实际连到的主机名/IP 匹配。
+//
+// 为什么需要：`ssh_connect` 历史上不带 node_ip，会话键只落成 `caseID`（没有 @IP），
+// 于是"在 SSH 终端里连好、命令都能跑"的情况下，日志收集按 `caseID@nodeIP` 仍然查不到。
+// 会话对象的 address 记录了真实目标地址，用它兜底可以覆盖这类存量会话。
+func (b *Bridge) sessionByAddressHost(nodeIP string) (*SSHSession, string) {
+	nodeIP = strings.TrimSpace(nodeIP)
+	if nodeIP == "" {
+		return nil, ""
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for key, session := range b.sessions {
+		if session == nil {
+			continue
+		}
+		host, _, err := net.SplitHostPort(session.address)
+		if err != nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(host), nodeIP) {
+			return session, key
+		}
+	}
+	return nil, ""
+}
+
 func (b *Bridge) set(key string, s *SSHSession) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

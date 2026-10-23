@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   buildAgentExecProcessMessage,
+  buildConnectMessage,
   buildLogCollectMessage,
   checkBridgeBeforeOpen,
   checkBridgeRunning,
@@ -235,5 +236,24 @@ describe('buildLogCollectMessage', () => {
     expect(msg.log_action).toBe('progress')
     expect(msg.source_path).toBeUndefined()
     expect(msg.node_ip).toBeUndefined()
+  })
+})
+
+describe('buildConnectMessage', () => {
+  it('ssh_connect 必须带 node_ip，保证会话键与会话查找键一致', () => {
+    const msg = JSON.parse(
+      buildConnectMessage({
+        host: '172.28.25.1',
+        port: 22,
+        username: 'acli',
+        auth_type: 'password',
+        password: 'x',
+        case_id: 'terminal-only',
+        node_ip: '172.28.25.1',
+      }),
+    )
+    expect(msg.type).toBe('ssh_connect')
+    expect(msg.node_ip).toBe('172.28.25.1')
+    expect(msg.case_id).toBe('terminal-only')
   })
 })

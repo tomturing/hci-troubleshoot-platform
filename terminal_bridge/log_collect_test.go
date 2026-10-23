@@ -404,3 +404,31 @@ func TestSessionByNodeIP(t *testing.T) {
 		t.Fatal("空节点不得命中任何会话")
 	}
 }
+
+// TestSessionByAddressHost 覆盖"会话键里不含 IP"的存量场景。
+// ssh_connect 历史上不带 node_ip，键只剩 caseID；此时日志收集按 caseID@nodeIP
+// 查不到，必须能回退到"会话实际连的主机地址"。
+func TestSessionByAddressHost(t *testing.T) {
+	legacy := &SSHSession{address: "172.28.25.1:22"}
+	otherPort := &SSHSession{address: "172.28.25.7:2222"}
+	bridge := &Bridge{sessions: map[string]*SSHSession{}}
+	// 键故意不带 @IP，复现现场：终端连好了，但键只有 caseID
+	bridge.sessions["terminal-only"] = legacy
+	bridge.sessions["Q2026101401684@172.28.25.7"] = otherPort
+
+	got, key := bridge.sessionByAddressHost("172.28.25.1")
+	if got != legacy || key != "terminal-only" {
+		t.Fatalf("应按会话地址命中存量会话，实际 got=%v key=%s", got, key)
+	}
+	if got, _ := bridge.sessionByAddressHost(" 172.28.25.7 "); got != otherPort {
+		t.Fatal("地址匹配应忽略首尾空格与端口差异")
+	}
+	if got, _ := bridge.sessionByAddressHost("172.28.25.99"); got != nil {
+		t.Fatal("未连接过的主机必须返回 nil")
+	}
+	// 无 address 的空会话不得被误命中
+	bridge.sessions["broken"] = &SSHSession{}
+	if got, _ := bridge.sessionByAddressHost(""); got != nil {
+		t.Fatal("空节点不得命中")
+	}
+}

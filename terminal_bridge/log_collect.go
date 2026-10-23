@@ -546,7 +546,17 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		if fallback, fallbackKey := b.sessionByNodeIP(msg.NodeIP); fallback != nil {
 			s, key = fallback, fallbackKey
 			blog("INFO", "log_collect.session_fallback", "日志收集复用同节点其他工单的 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-				"log_action": msg.LogAction, "session_key": fallbackKey,
+				"log_action": msg.LogAction, "session_key": fallbackKey, "match": "node_ip_suffix",
+			})
+		}
+	}
+	// 再回退：会话键可能压根不含 IP（ssh_connect 历史上不带 node_ip，键只剩 caseID），
+	// 此时按会话实际连到的主机地址匹配，"终端里能跑 acli、日志收集却说没会话"才能消除。
+	if s == nil {
+		if fallback, fallbackKey := b.sessionByAddressHost(msg.NodeIP); fallback != nil {
+			s, key = fallback, fallbackKey
+			blog("INFO", "log_collect.session_fallback", "日志收集按会话目标地址复用 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"log_action": msg.LogAction, "session_key": fallbackKey, "match": "address_host",
 			})
 		}
 	}

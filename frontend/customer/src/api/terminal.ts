@@ -168,6 +168,14 @@ export interface SshConnectOptions {
   private_key?: string
   passphrase?: string
   case_id?: string
+  /**
+   * 目标节点标识（通常等于 host）。
+   *
+   * bridge 的会话键是 `caseID@nodeIP`，而 ssh_connect 历史上不带 node_ip，
+   * 会话只能落成 `caseID`；日志收集按 `caseID@nodeIP` 查找就永远查不到。
+   * 这里显式带上，让"建会话"和"用会话"用同一把键。
+   */
+  node_ip?: string
 }
 
 export interface TerminalWsMessage {
