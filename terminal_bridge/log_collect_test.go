@@ -257,3 +257,118 @@ func TestInMessageLogCollectFields(t *testing.T) {
 		t.Fatalf("上传地址解析错误：%q", msg.RemoteURL)
 	}
 }
+
+// TestParseLogCollectModuleCatalog 用实机 help 原文验证场景目录解析。
+// 对抗性审查要点：枚举值按两列排版（一行两个），且尾部带 "--help 未定义参数" 的报错行。
+func TestParseLogCollectModuleCatalog(t *testing.T) {
+	help := `用法: acli log_collect create [命令参数]
+
+描述:
+  create                                创建日志收集任务
+
+命令参数:
+  -s|--save-filename=STRING             必要参数，收集文件命名（无需文件后缀），使用icare单号，示例：Q2025052718316
+  -m|--modules=STRING                   日志收集专项，使用英文逗号拼接指定的专项，示例：-m vm_suspend,network
+                                        可供选择的专项，不设置则默认other，枚举值：
+                                          vm_suspend（虚拟机挂起专项）              vm_start（虚拟机开机失败专项）
+                                          host_offline（主机离线专项）              network（网络专项）
+                                          storage（虚拟存储专项）                    slowdisk（卡慢盘专项，单天收集时间约4min）
+                                          performance（性能专项）                    core（core文件专项）
+                                          system（中台专项）                          other（默认收集专项，不收集上述n个场景日志）
+  -d|--date-range=STRING                指定日期范围（使用英文逗号拼接起始日期，结束日期）
+
+说明:
+  -s 为必要参数，后续Icare单号
+
+示例1: 收集网络专项
+  acli log_collect create -s Q2025052777777 -m network -i 1.1.1.1 -d 2025-06-25,2025-06-28
+错误: 未定义参数: --help
+`
+	options := parseLogCollectModuleCatalog(help)
+	if len(options) != 10 {
+		t.Fatalf("应解析出 10 个场景，实际 %d 个：%+v", len(options), options)
+	}
+	wantOrder := []string{"vm_suspend", "vm_start", "host_offline", "network", "storage", "slowdisk", "performance", "core", "system", "other"}
+	for i, want := range wantOrder {
+		if options[i].Value != want {
+			t.Fatalf("第 %d 项应为 %s，实际 %s", i, want, options[i].Value)
+		}
+		if options[i].Label == "" {
+			t.Fatalf("场景 %s 缺少中文标签", want)
+		}
+	}
+	if options[5].Label != "卡慢盘专项，单天收集时间约4min" {
+		t.Fatalf("slowdisk 标签解析错误：%q", options[5].Label)
+	}
+}
+
+// TestParseLogCollectModuleCatalogFallback 覆盖 help 改版/无枚举时的降级信号。
+func TestParseLogCollectModuleCatalogFallback(t *testing.T) {
+	cases := []string{"", "命令不存在", "用法: acli log_collect create\n  -m|--modules=STRING 日志专项\n"}
+	for _, raw := range cases {
+		if got := parseLogCollectModuleCatalog(raw); len(got) != 0 {
+			t.Fatalf("无枚举段落时应返回空（触发内置回退），实际：%+v", got)
+		}
+	}
+	if got := builtinLogCollectModules(); len(got) != 10 {
+		t.Fatalf("内置目录应覆盖全部 10 个场景，实际 %d 个", len(got))
+	}
+}
+
+// TestParseLogCollectNodeList 用实机 JSON 原文验证节点清单解析。
+func TestParseLogCollectNodeList(t *testing.T) {
+	raw := `Sanfor:/aSV/host-80615f1e94e4(HOST-OS) /sf # 
+{
+  "data": [
+    {
+      "alert": "0",
+      "controller": 1,
+      "id": "host-80615f1e883a",
+      "ip": "172.28.25.4",
+      "master": 0,
+      "name": "SVR_aCloud_682",
+      "status": 1
+    },
+    {
+      "alert": "0",
+      "controller": 1,
+      "id": "host-80615f1e94a6",
+      "ip": "172.28.25.3",
+      "master": 0,
+      "name": "SVR_aCloud_681",
+      "status": 1
+    },
+    {
+      "alert": "0",
+      "controller": 1,
+      "id": "host-80615f1e94e4",
+      "ip": "172.28.25.2",
+      "master": 1,
+      "name": "SVR_aCloud_680",
+      "status": 1
+    }
+  ]
+}`
+	hosts := parseLogCollectNodeList(raw)
+	if len(hosts) != 3 {
+		t.Fatalf("应解析出 3 个节点，实际 %d 个：%+v", len(hosts), hosts)
+	}
+	if hosts[0].IP != "172.28.25.4" || hosts[0].Name != "SVR_aCloud_682" || hosts[0].Master {
+		t.Fatalf("首个节点解析错误：%+v", hosts[0])
+	}
+	if !hosts[2].Master || hosts[2].IP != "172.28.25.2" {
+		t.Fatalf("master 标记解析错误：%+v", hosts[2])
+	}
+}
+
+// TestParseLogCollectNodeListDegrade 覆盖脏输出与非法 IP：只降级，不 panic、不污染清单。
+func TestParseLogCollectNodeListDegrade(t *testing.T) {
+	if got := parseLogCollectNodeList("error: command not found"); len(got) != 0 {
+		t.Fatalf("非 JSON 应返回空，实际：%+v", got)
+	}
+	raw := `{"data":[{"ip":"172.28.25.9","name":"a"},{"ip":"172.28.25.9","name":"dup"},{"ip":"not-an-ip","name":"bad"}]}`
+	hosts := parseLogCollectNodeList(raw)
+	if len(hosts) != 1 || hosts[0].IP != "172.28.25.9" {
+		t.Fatalf("应去重并过滤非法 IP，实际：%+v", hosts)
+	}
+}

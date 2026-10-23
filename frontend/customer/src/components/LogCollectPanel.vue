@@ -30,17 +30,31 @@ const chatStore = useChatStore()
 const RELAY_URL = 'http://acli.sangfor.com.cn:5888'
 const POLL_INTERVAL = 5000
 
-const MODULES: Array<{ value: LogCollectModule; label: string }> = [
-  { value: 'vm_suspend', label: '虚拟机挂起/关机异常' },
-  { value: 'vm_start', label: '虚拟机启动异常' },
-  { value: 'host_offline', label: '主机离线' },
-  { value: 'slowdisk', label: '存储卡慢盘' },
-  { value: 'storage', label: '虚拟存储异常' },
-  { value: 'network', label: '网络异常' },
-  { value: 'performance', label: '性能问题' },
-  { value: 'system', label: '中台/管理面' },
-  { value: 'core', label: '宕机 core 文件' },
-  { value: 'other', label: '其他（通用采集）' },
+interface ModuleOption {
+  value: LogCollectModule
+  label: string
+}
+
+interface HostOption {
+  ip: string
+  name?: string
+  master?: boolean
+}
+
+// 内置场景目录：文案与 acli 1.0.1 帮助一致。
+// 第一性原理：目录真源在集群（acli help），这里只是「探测失败也要能用」的兜底，
+// 正常路径会被 probe 返回的 modules 覆盖。
+const BUILTIN_MODULES: ModuleOption[] = [
+  { value: 'vm_suspend', label: '虚拟机挂起专项' },
+  { value: 'vm_start', label: '虚拟机开机失败专项' },
+  { value: 'host_offline', label: '主机离线专项' },
+  { value: 'network', label: '网络专项' },
+  { value: 'storage', label: '虚拟存储专项' },
+  { value: 'slowdisk', label: '卡慢盘专项' },
+  { value: 'performance', label: '性能专项' },
+  { value: 'core', label: 'core 文件专项' },
+  { value: 'system', label: '中台专项' },
+  { value: 'other', label: '默认收集专项（不收集上述场景日志）' },
 ]
 
 type Stage =
@@ -62,7 +76,14 @@ interface ProbeResult {
   available_mb: number
   log_server_reachable: boolean
   http_code: number
+  // 以下字段由 bridge 从目标集群读取；缺省表示探测降级，前端必须能继续工作
+  modules?: ModuleOption[]
+  hosts?: HostOption[]
+  catalog_source?: 'acli_help' | 'platform_default'
+  catalog_note?: string
 }
+
+type PrepareState = 'idle' | 'probing' | 'ready' | 'failed'
 
 interface ProgressSnapshot {
   status: string
@@ -105,6 +126,101 @@ watch(
     if (!current || current === (previous ?? '')) form.nodeIp = host
   },
 )
+
+// ── 准备阶段（打开面板即探测，避免用户填完表单才发现环境不可用）────────────
+const moduleOptions = ref<ModuleOption[]>([...BUILTIN_MODULES])
+const hostOptions = ref<HostOption[]>([])
+const prepareState = ref<PrepareState>('idle')
+const prepareError = ref('')
+// 准备令牌：节点 IP 变更会重探，旧探测结果不得覆盖新结果
+let prepareToken = 0
+
+const nodeIpReady = computed(() => Boolean((form.nodeIp || props.nodeIp || '').trim()))
+
+/**
+ * 目标主机选择器与 form.ips 的双向桥。
+ *
+ * 第一性原理：后端契约是字符串（`all` 或逗号分隔），前端要的是多选；
+ * 二者只保留一个真值（form.ips），空数组语义固定为 all，避免"空选"被误读成"不采集"。
+ */
+const selectedHosts = computed<string[]>({
+  get() {
+    const raw = form.ips.trim()
+    if (!raw || raw === 'all') return []
+    return raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+  },
+  set(value: string[]) {
+    form.ips = value.length ? value.join(',') : 'all'
+  },
+})
+
+const catalogSourceText = computed(() => {
+  if (prepareState.value === 'probing') return '正在从集群读取场景目录…'
+  if (!probeResult.value) return '尚未读取集群目录，当前展示平台内置项'
+  return probeResult.value.catalog_source === 'acli_help'
+    ? '目录来自集群 acli'
+    : '平台内置目录（集群未返回目录）'
+})
+
+/** 节点下拉文案：IP 是必选值，名称与主控标记只做辅助识别。 */
+function hostLabel(host: HostOption): string {
+  const base = host.name ? `${host.ip}（${host.name}）` : host.ip
+  return host.master ? `${base} · 主控` : base
+}
+
+/** 用探测结果覆盖目录与节点清单；场景目录以集群为准，内置目录只做兜底。 */
+function applyCatalog(data: ProbeResult) {
+  moduleOptions.value = data.modules?.length ? data.modules : [...BUILTIN_MODULES]
+  hostOptions.value = data.hosts ?? []
+  // 目录收敛后清掉已不存在的场景，否则提交时会被 create 判为非法枚举
+  const valid = new Set(moduleOptions.value.map((item) => item.value))
+  form.modules = form.modules.filter((value) => valid.has(value))
+  // 收敛后为空会让用户误以为"没有可选项"，回落到目录首项（集群目录首项即最常用专项）
+  if (!form.modules.length && moduleOptions.value.length > 0) {
+    form.modules = [moduleOptions.value[0].value]
+  }
+}
+
+/**
+ * 准备阶段：读取架构、acli、可用空间、日志服务器连通性，以及场景目录与节点清单。
+ *
+ * 对抗性审查：探测失败不等于不能收集——主机清单为空时回退手填 IP，
+ * 因此这里只记录失败原因，不阻断后续表单编辑。
+ */
+async function prepare(options: { silent?: boolean } = {}): Promise<boolean> {
+  if (prepareState.value === 'probing') return false
+  const nodeIp = (form.nodeIp || props.nodeIp || '').trim()
+  if (!nodeIp) {
+    prepareState.value = 'failed'
+    prepareError.value = '请先填写发起节点地址'
+    return false
+  }
+  const token = ++prepareToken
+  prepareState.value = 'probing'
+  prepareError.value = ''
+  try {
+    const ws = await openSocket()
+    const probe = await sendAndWait(ws, 'probe', { remoteUrl: RELAY_URL, nodeIp }, 90000)
+    if (token !== prepareToken) return false
+    if (probe.status !== 'ok') {
+      throw new Error(probe.message || '环境探测失败，请确认已在 SSH 终端连接 HCI')
+    }
+    const data = probe.log_data as ProbeResult
+    probeResult.value = data
+    applyCatalog(data)
+    prepareState.value = 'ready'
+    return true
+  } catch (error: any) {
+    if (token !== prepareToken) return false
+    prepareState.value = 'failed'
+    prepareError.value = String(error?.message || error).slice(0, 200)
+    if (!options.silent) ElMessage.error(prepareError.value)
+    return false
+  }
+}
 
 const running = computed(() =>
   ['probing', 'installing', 'creating', 'collecting', 'pulling', 'uploading', 'relaying'].includes(stage.value),
@@ -241,8 +357,13 @@ function sendAndWait(
     if (action === 'acli_sync') {
       ws.send(buildAcliSyncMessage(props.caseId, { force: false, minDiskMb: 100 }))
     } else {
+      // props.nodeIp 可能为空（复用已登录 SSH 会话的场景）：此时必须回落到表单里的节点，
+      // 否则会把 nodeIp 覆盖成空串，bridge 只能落到默认会话，探测与创建会跨节点。
       ws.send(
-        buildLogCollectMessage(props.caseId, action, { ...(options as any), nodeIp: props.nodeIp }),
+        buildLogCollectMessage(props.caseId, action, {
+          ...(options as any),
+          nodeIp: props.nodeIp || (options.nodeIp as string) || form.nodeIp,
+        }),
       )
     }
   })
@@ -345,9 +466,12 @@ async function handleStart() {
   const modules = form.modules.length ? form.modules : (['other'] as LogCollectModule[])
   stage.value = 'probing'
   try {
-    const probe = await sendAndWait(ws, 'probe', { remoteUrl: RELAY_URL, nodeIp }, 60000)
-    if (probe.status !== 'ok') throw new Error(probe.message || '环境探测失败，请确认已在 SSH 终端连接 HCI')
-    probeResult.value = probe.log_data as ProbeResult
+    // 复用准备阶段的探测结果：打开面板时已经读过集群，这里再探一次纯属浪费，
+    // 且会重复触发 acli help 解析。仅在未准备/准备失败时现场补探。
+    if (prepareState.value !== 'ready' || !probeResult.value) {
+      const ready = await prepare({ silent: true })
+      if (!ready || !probeResult.value) throw new Error(prepareError.value || '环境准备失败')
+    }
 
     if (!probeResult.value.acli_installed) {
       await confirmInstall(ws)
@@ -600,7 +724,30 @@ watch(visible, (open) => {
     const from = new Date(today.getTime() - 86400000)
     form.dateRange = [formatDate(from), formatDate(today)]
   }
+  // 打开即准备：把架构/acli/目录/节点清单先读回来，用户一进来就能看见可选项。
+  if (!nodeIpReady.value) {
+    prepareState.value = 'idle'
+    return
+  }
+  if (prepareState.value !== 'ready' && prepareState.value !== 'probing') {
+    void prepare({ silent: true })
+  }
 })
+
+// 发起节点变了，上一轮的探测结论（目录、节点清单、P1/P3 判定）全部失效，必须重探。
+let nodeIpTimer: ReturnType<typeof setTimeout> | null = null
+watch(
+  () => form.nodeIp,
+  (value) => {
+    if (!visible.value || !value.trim()) return
+    if (nodeIpTimer) clearTimeout(nodeIpTimer)
+    nodeIpTimer = setTimeout(() => {
+      probeResult.value = null
+      prepareState.value = 'idle'
+      void prepare({ silent: true })
+    }, 500)
+  },
+)
 
 function disableFutureDate(value: Date): boolean {
   return value.getTime() > Date.now()
@@ -616,6 +763,12 @@ function formatDate(value: Date): string {
 onBeforeUnmount(() => {
   // 让仍在运行的后台轮询退出，避免组件卸载后继续改状态
   runToken++
+  // 准备阶段的令牌与定时器同样要失效，否则重探会在卸载后回写状态
+  prepareToken++
+  if (nodeIpTimer) {
+    clearTimeout(nodeIpTimer)
+    nodeIpTimer = null
+  }
   if (resumeTimer) {
     clearInterval(resumeTimer)
     resumeTimer = null
@@ -654,13 +807,60 @@ onBeforeUnmount(() => {
           </el-tag>
         </el-descriptions-item>
         <el-descriptions-item label="可用空间">{{ probeResult.available_mb }} MB</el-descriptions-item>
+        <el-descriptions-item label="场景目录">
+          <el-tag size="small" :type="probeResult.catalog_source === 'acli_help' ? 'success' : 'info'">
+            {{ catalogSourceText }}
+          </el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="可采节点">
+          {{ probeResult.hosts?.length ? `${probeResult.hosts.length} 个` : '未获取' }}
+        </el-descriptions-item>
       </el-descriptions>
 
-      <el-form :model="form" label-width="90px" :disabled="running">
+      <!-- 准备状态的唯一出口：用户在填表之前就能看见"能不能收、可选什么" -->
+      <el-alert
+        v-if="!nodeIpReady"
+        class="lc-prepare"
+        type="info"
+        :closable="false"
+        show-icon
+        title="请先在 SSH 终端连接 HCI 节点，或填写发起节点地址；连接后才能读取场景目录与节点清单"
+      />
+      <el-alert
+        v-else-if="prepareState === 'probing'"
+        class="lc-prepare"
+        type="info"
+        :closable="false"
+        show-icon
+        title="正在读取集群环境：架构 / acli / 场景目录 / 节点清单…"
+      />
+      <el-alert
+        v-else-if="prepareState === 'failed'"
+        class="lc-prepare"
+        type="error"
+        :closable="false"
+        show-icon
+        :title="`环境准备失败：${prepareError}`"
+      >
+        <el-button size="small" text type="primary" :disabled="running" @click="prepare()">
+          重新读取
+        </el-button>
+      </el-alert>
+
+      <el-form :model="form" label-width="90px" :disabled="running || prepareState === 'probing'">
         <el-form-item label="故障场景">
-          <el-select v-model="form.modules" multiple collapse-tags placeholder="选择收集专项">
-            <el-option v-for="item in MODULES" :key="item.value" :label="item.label" :value="item.value" />
+          <el-select v-model="form.modules" multiple filterable collapse-tags placeholder="选择收集专项">
+            <el-option
+              v-for="item in moduleOptions"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            />
           </el-select>
+          <div class="lc-hint">
+            {{ catalogSourceText }}
+            <span v-if="probeResult?.catalog_note">；{{ probeResult.catalog_note }}</span>
+          </div>
         </el-form-item>
         <el-form-item label="时间范围">
           <el-date-picker
@@ -678,7 +878,31 @@ onBeforeUnmount(() => {
           <div class="lc-hint">acli 进度只在该节点有效，取消与进度查询都会路由回此节点</div>
         </el-form-item>
         <el-form-item label="目标主机">
-          <el-input v-model="form.ips" placeholder="all 表示全部在线节点，或逗号分隔 IP" />
+          <!-- 有集群清单就必须用清单：手填 IP 是唯一允许的降级，不是默认交互 -->
+          <el-select
+            v-if="hostOptions.length"
+            v-model="selectedHosts"
+            multiple
+            filterable
+            collapse-tags
+            class="lc-host-select"
+            placeholder="不选表示全部在线节点"
+          >
+            <el-option
+              v-for="host in hostOptions"
+              :key="host.ip"
+              :label="hostLabel(host)"
+              :value="host.ip"
+            />
+          </el-select>
+          <el-input v-else v-model="form.ips" placeholder="all 表示全部在线节点，或逗号分隔 IP" />
+          <div class="lc-hint">
+            {{
+              hostOptions.length
+                ? '默认全部在线节点；只选部分主机时按所选范围收集'
+                : '未获取到节点清单，请按 acli -i 格式手填 IP'
+            }}
+          </div>
         </el-form-item>
       </el-form>
 
@@ -725,7 +949,14 @@ onBeforeUnmount(() => {
 
     <template #footer>
       <el-button @click="visible = false">关闭</el-button>
-      <el-button v-if="!running" type="primary" @click="handleStart">开始收集</el-button>
+      <el-button
+        v-if="!running"
+        type="primary"
+        :disabled="prepareState === 'probing'"
+        @click="handleStart"
+      >
+        {{ prepareState === 'probing' ? '正在读取环境…' : '开始收集' }}
+      </el-button>
       <el-button v-else type="danger" plain @click="handleCancel">取消</el-button>
     </template>
   </el-drawer>
@@ -797,5 +1028,11 @@ onBeforeUnmount(() => {
 }
 .lc-cleanup {
   white-space: pre-wrap;
+}
+.lc-prepare {
+  margin-bottom: 12px;
+}
+.lc-host-select {
+  width: 100%;
 }
 </style>

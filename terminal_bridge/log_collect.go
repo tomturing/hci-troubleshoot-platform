@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -47,6 +48,54 @@ var logCollectModules = map[string]bool{
 	"core":         true,
 }
 
+// logCollectModuleOption 是前端下拉的一项：value 为 -m 的取值，label 为人工可读文案。
+type logCollectModuleOption struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+// logCollectHostOption 是 acli 上报的节点清单项。
+// 第一性原理：目标主机必须来自被采集集群的事实，而不是让用户凭记忆手填 IP。
+type logCollectHostOption struct {
+	IP     string `json:"ip"`
+	Name   string `json:"name,omitempty"`
+	Master bool   `json:"master,omitempty"`
+}
+
+// logCollectModuleLabels 是平台内置场景目录，文案取自 acli 1.0.1 帮助原文。
+// 对抗性审查：help 解析可能因插件升级改版而失败，内置目录保证下拉永远有可选项，
+// 而不是把「探测失败」变成「无法收集」。
+var logCollectModuleLabels = map[string]string{
+	"vm_suspend":   "虚拟机挂起专项",
+	"vm_start":     "虚拟机开机失败专项",
+	"host_offline": "主机离线专项",
+	"network":      "网络专项",
+	"storage":      "虚拟存储专项",
+	"slowdisk":     "卡慢盘专项",
+	"performance":  "性能专项",
+	"core":         "core 文件专项",
+	"system":       "中台专项",
+	"other":        "默认收集专项（不收集上述场景日志）",
+}
+
+// logCollectModuleCatalogOrder 固定内置目录顺序，避免 map 迭代导致下拉顺序抖动。
+var logCollectModuleCatalogOrder = []string{
+	"vm_suspend", "vm_start", "host_offline", "network", "storage",
+	"slowdisk", "performance", "core", "system", "other",
+}
+
+// logCollectAcliPathEnv 是 acli 的固定调用前缀：容器 PATH 不含 /sf/bin，
+// 且插件位于 /sf/data/local/acli，缺一不可。
+const logCollectAcliPathEnv = `export PATH="$PATH:/sf/bin:/sf/sbin:/usr/sbin:/usr/local/bin";`
+
+func builtinLogCollectModules() []logCollectModuleOption {
+	options := make([]logCollectModuleOption, 0, len(logCollectModuleCatalogOrder))
+	for _, value := range logCollectModuleCatalogOrder {
+		options = append(options, logCollectModuleOption{Value: value, Label: logCollectModuleLabels[value]})
+	}
+	return options
+}
+
 var (
 	logCollectTicketRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 	logCollectDateRe   = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
@@ -55,6 +104,9 @@ var (
 	logCollectPathRe     = regexp.MustCompile(`^/[A-Za-z0-9_./-]+$`)
 	logCollectProgressRe = regexp.MustCompile(`^总进度：(\d+)% - (\d+)/(\d+)`)
 	logCollectHostLineRe = regexp.MustCompile(`^(\d{1,3}(?:\.\d{1,3}){3})\s+(收集完成|收集中|收集失败)\s+(\d+%|-)`)
+	// 实机 help 把枚举值按两列排版（同一行出现两个「名称（标签）」），
+	// 因此必须全量扫描而不是逐行只取首个匹配。
+	logCollectModuleOptionRe = regexp.MustCompile(`([a-z][a-z_]+)（([^）]{1,40})）`)
 )
 
 // shellQuote 用单引号包裹并按 POSIX 规则转义内部单引号。
@@ -225,7 +277,12 @@ type logCollectProbeResult struct {
 	LogServerReachable bool   `json:"log_server_reachable"`
 	LogServerHTTPCode  int    `json:"log_server_http_code"`
 	LogServerLatencyMS int64  `json:"log_server_latency_ms"`
-	Note               string `json:"note,omitempty"`
+	// 准备阶段的事实来源：场景目录与节点清单都必须由被采集集群给出，不能硬编码在前端。
+	Modules       []logCollectModuleOption `json:"modules"`
+	Hosts         []logCollectHostOption   `json:"hosts"`
+	CatalogSource string                   `json:"catalog_source"`
+	CatalogNote   string                   `json:"catalog_note,omitempty"`
+	Note          string                   `json:"note,omitempty"`
 }
 
 // probeLogCollectEnv 采集架构、acli 版本、磁盘余量与日志服务器连通性。
@@ -236,11 +293,13 @@ func (s *SSHSession) probeLogCollectEnv(ctx context.Context, logServerURL string
 	archOut, _, _ := s.runCommandPty(ctx, "uname -m", 10*time.Second)
 	result.Architecture = strings.TrimSpace(archOut)
 
-	versionOut, _, _ := s.runCommandPty(ctx,
-		`export PATH="$PATH:/sf/bin:/sf/sbin:/usr/sbin:/usr/local/bin"; acli --version`,
-		10*time.Second)
+	versionOut, _, _ := s.runCommandPty(ctx, logCollectAcliPathEnv+" acli --version", 10*time.Second)
 	result.AcliVersion, result.AcliBuildTime = parseAcliVersion(versionOut)
 	result.AcliInstalled = result.AcliVersion != ""
+
+	// 场景目录与节点清单必须在 curl 之前采集：日志服务器不可达（P3 路径）是常态，
+	// 早期 return 不能把它们一起丢掉。
+	s.probeLogCollectCatalog(ctx, &result)
 
 	spaceOut, _, _ := s.runCommandPty(ctx, "df -P -m /sf/data/local | tail -1 | awk '{print $4}'", 10*time.Second)
 	result.AvailableMB, _ = strconv.ParseInt(strings.TrimSpace(spaceOut), 10, 64)
@@ -265,6 +324,118 @@ func (s *SSHSession) probeLogCollectEnv(ctx context.Context, logServerURL string
 	// 401/403 也证明网络可达：只有连接失败或 5xx 才视为不可达。
 	result.LogServerReachable = result.LogServerHTTPCode >= 200 && result.LogServerHTTPCode < 500
 	return result
+}
+
+// probeLogCollectCatalog 采集「场景目录」与「节点清单」，供前端准备阶段渲染。
+//
+// 第一性原理：可选场景与可采主机是集群的事实，不是前端常量；只能从 acli 读。
+// 对抗性审查：这两项任何失败都不得阻断收集，只做降级——目录回退内置文案，
+// 主机清单留空并提示手填，避免"探测不到就完全不能用"。
+func (s *SSHSession) probeLogCollectCatalog(ctx context.Context, result *logCollectProbeResult) {
+	if !result.AcliInstalled {
+		result.Modules = builtinLogCollectModules()
+		result.CatalogSource = "platform_default"
+		result.CatalogNote = "acli 未安装，使用平台内置场景目录"
+		return
+	}
+
+	// 实机验证：`acli log_collect create --help` 会以 exit code 1 结束
+	// （插件把 --help 判为未定义参数），但正文已完整打印，因此只认输出内容、不认退出码。
+	helpOut, _, _ := s.runCommandPty(ctx, logCollectAcliPathEnv+" acli log_collect create --help", 8*time.Second)
+	if modules := parseLogCollectModuleCatalog(helpOut); len(modules) > 0 {
+		result.Modules = modules
+		result.CatalogSource = "acli_help"
+	} else {
+		result.Modules = builtinLogCollectModules()
+		result.CatalogSource = "platform_default"
+		result.CatalogNote = "acli 帮助解析失败，使用平台内置场景目录"
+	}
+
+	nodeOut, _, _ := s.runCommandPty(ctx, logCollectAcliPathEnv+" acli --formatter json platform node list", 8*time.Second)
+	result.Hosts = parseLogCollectNodeList(nodeOut)
+	if len(result.Hosts) == 0 {
+		result.CatalogNote = appendProbeNote(result.CatalogNote, "节点清单获取失败，可手动填写 IP")
+	}
+}
+
+// appendProbeNote 拼接提示文案，避免用空串拼出多余分隔符。
+func appendProbeNote(current, extra string) string {
+	if strings.TrimSpace(current) == "" {
+		return extra
+	}
+	return current + "；" + extra
+}
+
+// parseLogCollectModuleCatalog 从 help 文本提取场景枚举。
+//
+// 对抗性审查：实机 help 把枚举值按两列排版（同一行有两个「名称（标签）」），
+// 且正文里还夹着示例命令，因此只解析「枚举值」到「说明」之间的段落并全量扫描。
+func parseLogCollectModuleCatalog(raw string) []logCollectModuleOption {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	block := raw
+	idx := strings.Index(block, "枚举值")
+	if idx < 0 {
+		// 文案改版时不做猜测，交给调用方回退内置目录。
+		return nil
+	}
+	block = block[idx:]
+	if end := strings.Index(block, "说明"); end >= 0 {
+		block = block[:end]
+	}
+
+	seen := make(map[string]bool, len(logCollectModules))
+	options := make([]logCollectModuleOption, 0, len(logCollectModules))
+	for _, match := range logCollectModuleOptionRe.FindAllStringSubmatch(block, -1) {
+		value := match[1]
+		// 白名单之外的枚举不展示：否则前端可选、执行时却被 create 拒绝，体验更差。
+		if !logCollectModules[value] || seen[value] {
+			continue
+		}
+		seen[value] = true
+		options = append(options, logCollectModuleOption{
+			Value: value,
+			Label: strings.TrimSpace(match[2]),
+		})
+	}
+	return options
+}
+
+// parseLogCollectNodeList 解析 `acli --formatter json platform node list` 的输出。
+// PTY 可能混入提示符或告警，因此只截取最外层 JSON 对象；失败返回 nil。
+func parseLogCollectNodeList(raw string) []logCollectHostOption {
+	start := strings.Index(raw, "{")
+	end := strings.LastIndex(raw, "}")
+	if start < 0 || end <= start {
+		return nil
+	}
+	var payload struct {
+		Data []struct {
+			IP     string `json:"ip"`
+			Name   string `json:"name"`
+			Master int    `json:"master"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(raw[start:end+1]), &payload); err != nil {
+		return nil
+	}
+
+	seen := make(map[string]bool, len(payload.Data))
+	hosts := make([]logCollectHostOption, 0, len(payload.Data))
+	for _, node := range payload.Data {
+		ip := strings.TrimSpace(node.IP)
+		if !logCollectIPv4Re.MatchString(ip) || seen[ip] {
+			continue
+		}
+		seen[ip] = true
+		hosts = append(hosts, logCollectHostOption{
+			IP:     ip,
+			Name:   strings.TrimSpace(node.Name),
+			Master: node.Master == 1,
+		})
+	}
+	return hosts
 }
 
 // logCollectProgress 是 acli log_collect progress 的结构化视图。
@@ -418,6 +589,8 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"available_mb":   probe.AvailableMB,
 			"log_server_url": probe.LogServerURL, "log_server_reachable": probe.LogServerReachable,
 			"http_code": probe.LogServerHTTPCode, "latency_ms": probe.LogServerLatencyMS,
+			"catalog_source": probe.CatalogSource, "modules_count": len(probe.Modules),
+			"hosts_count": len(probe.Hosts), "catalog_note": probe.CatalogNote,
 			"note": probe.Note, "key": key,
 		})
 
