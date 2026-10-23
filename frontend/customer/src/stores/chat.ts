@@ -617,11 +617,20 @@ export const useChatStore = defineStore('chat', () => {
     return currentCase.value !== null && !hasActiveCase.value
   })
 
-  // === 日志收集入口（建单后一次性引导 + header 常驻入口）===
-  // 设计取舍：引导卡片只在当前工单未 dismiss 时出现，避免每次刷新都打扰；
-  // 但 header 的「日志收集」按钮保留，否则用户点"暂不需要"后会失去唯一入口。
+  // === 日志收集入口（常驻 + 建单后一次性引导 + 人工指定工单号）===
+  // 设计取舍：
+  // 1) 入口常驻：日志任务必须挂在平台工单上，但"没有活跃工单"不等于"不能采集"，
+  //    因此按钮不随 currentCase 消失，无活跃工单时改为让用户手工指定工单号；
+  // 2) 引导卡片仍只在当前工单未 dismiss 时出现，避免每次刷新都打扰；
+  // 3) 人工指定的工单号只用于面板绑定，归属校验始终由服务端完成（404 统一吞掉存在性）。
   const LOG_COLLECT_GUIDE_KEY = 'hci.logCollectGuide.dismissedCaseId'
   const logCollectVisible = ref(false)
+  // 本次面板绑定的工单：决定 case_id 归属与 acli -s 参数
+  const logCollectCaseId = ref<string | null>(null)
+  // 人工指定过的工单：无活跃工单时再次打开沿用，避免重复输入
+  const logCollectManualCaseId = ref<string | null>(null)
+  const logCollectCaseDialogVisible = ref(false)
+  const logCollectCaseLoading = ref(false)
   const logCollectGuideDismissedCaseId = ref<string | null>(readDismissedLogCollectCase())
 
   function readDismissedLogCollectCase(): string | null {
@@ -638,12 +647,74 @@ export const useChatStore = defineStore('chat', () => {
     return Boolean(hasActiveCase.value && caseId && logCollectGuideDismissedCaseId.value !== caseId)
   })
 
+  /**
+   * 打开日志收集面板。
+   *
+   * 优先级：当前活跃工单 > 上次人工指定的工单 > 弹框要求输入工单号。
+   * 有活跃工单时一律以它为准，避免面板停留在上一次手动指定的旧工单上。
+   */
   function openLogCollect(): void {
-    logCollectVisible.value = true
+    if (hasActiveCase.value && currentCase.value?.case_id) {
+      logCollectCaseId.value = currentCase.value.case_id
+      logCollectVisible.value = true
+      return
+    }
+    if (logCollectManualCaseId.value) {
+      logCollectCaseId.value = logCollectManualCaseId.value
+      logCollectVisible.value = true
+      return
+    }
+    logCollectCaseDialogVisible.value = true
   }
 
   function closeLogCollect(): void {
     logCollectVisible.value = false
+  }
+
+  function openLogCollectCaseDialog(): void {
+    logCollectCaseDialogVisible.value = true
+  }
+
+  function closeLogCollectCaseDialog(): void {
+    logCollectCaseDialogVisible.value = false
+  }
+
+  /**
+   * 校验并绑定人工指定的工单号。
+   *
+   * 只允许当前客户端名下工单：服务端 `verify_case_ownership` 对"不存在"与"非归属"
+   * 统一返回 404，因此前端也无法区分两者——这正是要的（不给枚举他人资源的信号）。
+   * 已关闭工单允许绑定：补采日志归档到结单工单是合规诉求，任务本身不改工单状态。
+   */
+  async function confirmLogCollectCase(rawCaseId: string): Promise<void> {
+    const caseId = rawCaseId.trim()
+    if (!caseId) throw new Error('请输入工单号')
+
+    logCollectCaseLoading.value = true
+    try {
+      const res = await caseApi.getById(caseId)
+      const resolved = res.data.case_id
+      logCollectManualCaseId.value = resolved
+      logCollectCaseId.value = resolved
+      logCollectCaseDialogVisible.value = false
+      logCollectVisible.value = true
+    } catch (e: any) {
+      const status = e?.response?.status
+      const detail = e?.response?.data?.detail
+      const detailText = typeof detail === 'string' ? detail : ''
+      if (status === 404 || status === 403) {
+        throw new Error('工单不存在或不属于当前客户端')
+      }
+      if (status === 401) {
+        throw new Error('身份已失效，请刷新页面后重试')
+      }
+      if (status === 422) {
+        throw new Error(detailText || '工单号格式不正确')
+      }
+      throw new Error(detailText || '工单校验失败，请稍后重试')
+    } finally {
+      logCollectCaseLoading.value = false
+    }
   }
 
   function dismissLogCollectGuide(): void {
@@ -1708,6 +1779,9 @@ export const useChatStore = defineStore('chat', () => {
     try {
       const res = await caseApi.close(currentCase.value.case_id, { close_reason: 'user_command' })
       currentCase.value = res.data
+      // 面板绑定随工单关闭失效（App 侧 v-if 会卸载抽屉）；人工指定的值保留，
+      // 以便用户主动对已结单工单补采日志。
+      logCollectCaseId.value = null
       addSystemMessage(`工单 ${res.data.case_id} 已关闭。发送新消息开启新工单。`)
       const convId = conversationId.value
       conversationId.value = null
@@ -3459,9 +3533,15 @@ export const useChatStore = defineStore('chat', () => {
     diagnosticStage,
     // 日志收集（HCI 侧 acli log_collect）
     logCollectVisible,
+    logCollectCaseId,
+    logCollectCaseDialogVisible,
+    logCollectCaseLoading,
     showLogCollectGuide,
     openLogCollect,
     closeLogCollect,
+    openLogCollectCaseDialog,
+    closeLogCollectCaseDialog,
+    confirmLogCollectCase,
     dismissLogCollectGuide,
     // 本地日志补采（诊断未完成时的兜底通道）
     bridgeLogUploadHint,
