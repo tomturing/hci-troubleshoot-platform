@@ -38,8 +38,13 @@ ENV CI=true
 
 WORKDIR /src
 
-# patch 相对上游 tag 生成，版本必须与 ARG 一致，否则 apply 失败（这是期望的失败）。
-RUN git clone --depth 1 --branch "v${DSH_VERSION}" https://github.com/deepseek-ai/deepseek-harness .
+# ARG 在 FROM 之前声明只对 `FROM` 行可见，进入构建阶段必须重新声明一次；
+# 否则 `${DSH_VERSION}` 展开为空，命令变成 `--branch v`（CI 实际踩过）。
+ARG DSH_VERSION
+
+# 上游 tag 带 `dsh-` 前缀（实测 refs/tags/dsh-v0.2.1-rc.2），不是裸 `v0.2.1-rc.2`。
+# patch 相对该 tag 生成，版本必须与 ARG 一致，否则 apply 失败（这是期望的失败）。
+RUN git clone --depth 1 --branch "dsh-v${DSH_VERSION}" https://github.com/deepseek-ai/deepseek-harness .
 
 COPY deploy/dsh-fork/patches/ /patches/
 RUN git apply /patches/0001-ticket-sync-and-ui-entry.patch
