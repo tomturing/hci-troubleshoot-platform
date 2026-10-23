@@ -11,6 +11,7 @@
  * - 不在卡片内直接发起采集：acli 采集需要已建立的 SSH 会话，先打开面板再由
  *   面板做 probe，失败时能给出"请先连接 HCI"的明确提示。
  */
+import { FolderOpened } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 
 const chatStore = useChatStore()
@@ -18,7 +19,11 @@ const chatStore = useChatStore()
 
 <template>
   <div v-if="chatStore.showLogCollectGuide" class="log-collect-guide">
-    <div class="guide-icon">🗂</div>
+    <!--
+      不用 emoji：🗂（U+1F5C2）默认是文本呈现，Windows 会回退到 Segoe UI Symbol 的单色字形，
+      16~22px 下糊成一个黑块（Edge 实测）。SVG 图标不依赖系统 emoji 字体，跨平台一致。
+    -->
+    <el-icon class="guide-icon"><FolderOpened /></el-icon>
     <div class="guide-body">
       <p class="guide-title">需要采集 HCI 侧日志？</p>
       <p class="guide-desc">
@@ -45,8 +50,10 @@ const chatStore = useChatStore()
 }
 
 .guide-icon {
+  flex: none;
   font-size: 22px;
   line-height: 1.2;
+  color: var(--el-color-primary);
 }
 
 .guide-body {
