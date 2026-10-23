@@ -98,7 +98,7 @@ class JobRegistry:
         self._slots = asyncio.Semaphore(cfg.concurrency)
         self._lock = asyncio.Lock()
 
-    async def create(self, ticket_id: str) -> Job:
+    async def create(self, ticket_id: str, request_id: str = "-") -> Job:
         async with self._lock:
             existing = self.jobs.get(ticket_id)
             if existing is not None and existing.phase in RUNNING_PHASES:
@@ -114,8 +114,10 @@ class JobRegistry:
             )
             self.jobs[ticket_id] = job
 
+        # request_id 一路带进任务日志，一次点击就能串起受理与执行两段。
         logger.info(
-            "ticket=%s job=%s 受理 排队中 当前任务数=%d",
+            "request_id=%s ticket=%s job=%s 受理 排队中 当前任务数=%d",
+            request_id,
             ticket_id,
             job.job_id,
             len(self.jobs),
@@ -261,7 +263,9 @@ class JobCreatePayload(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    ticket_id: str = Field(alias="ticketId", min_length=1, max_length=32)
+    # 不设长度约束：过短或超长同样由 validate_ticket_id 统一判为 400
+    # invalid-ticket-id，避免一部分非法输入走 FastAPI 的 422，前端要多判一种。
+    ticket_id: str = Field(alias="ticketId")
 
 
 @asynccontextmanager
@@ -285,10 +289,18 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    for job in list(registry.jobs.values()):
-        if job.task is not None and not job.task.done():
-            job.task.cancel()
-    logger.info("服务退出")
+    pending = [
+        job.task
+        for job in list(registry.jobs.values())
+        if job.task is not None and not job.task.done()
+    ]
+    for task in pending:
+        task.cancel()
+    if pending:
+        # 必须等取消真正落地：kill 子进程是在 CancelledError 处理里完成的，
+        # 不等就直接关事件循环，会留下仍在写盘的 rsync/unzip 孤儿进程。
+        await asyncio.wait(pending, timeout=10)
+    logger.info("服务退出 已终止任务数=%d", len(pending))
 
 
 app = FastAPI(title="HCI 工单日志同步", version=VERSION, lifespan=lifespan)
@@ -298,6 +310,7 @@ app = FastAPI(title="HCI 工单日志同步", version=VERSION, lifespan=lifespan
 async def request_trace(request: Request, call_next):
     """为每个请求生成调用链 ID，便于把一次点击串成完整路径。"""
     request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+    request.state.request_id = request_id
     started = time.monotonic()
 
     response = await call_next(request)
@@ -331,7 +344,7 @@ async def create_job(payload: JobCreatePayload, request: Request):
     ticket_id = validate_ticket_id(payload.ticket_id)
 
     try:
-        job = await registry.create(ticket_id)
+        job = await registry.create(ticket_id, request.state.request_id)
     except JobConflict:
         return JSONResponse(
             status_code=409,

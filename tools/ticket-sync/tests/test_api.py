@@ -55,6 +55,13 @@ class ApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error"], "invalid-ticket-id")
 
+    async def test_overlong_ticket_id_rejected(self) -> None:
+        # 不设请求体长度上限，就是为了让超长输入同样落到 400 invalid-ticket-id，
+        # 而不是混入 FastAPI 的 422。
+        response = await self.client.post("/jobs", json={"ticketId": "Q" + "1" * 40})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "invalid-ticket-id")
+
     async def test_unknown_job_returns_404(self) -> None:
         response = await self.client.get("/jobs/Q2026010100000")
         self.assertEqual(response.status_code, 404)
