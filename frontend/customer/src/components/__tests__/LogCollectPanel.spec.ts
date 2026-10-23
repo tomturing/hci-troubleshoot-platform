@@ -294,6 +294,41 @@ describe('LogCollectPanel', () => {
     expect(wrapper.text()).toContain('已全选')
   })
 
+  // 回归：节点清单唯一来源是 `acli platform node list`，acli 未安装时清单必然为空。
+  // 旧文案「请按 acli -i 格式手填 IP」把内部参数名写给用户，既没说清原因，也没给可照抄的格式。
+  it('acli 未安装导致清单为空时，提示给的是原因与填写格式，不是内部参数名', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'probe',
+        status: 'ok',
+        log_data: {
+          architecture: 'aarch64',
+          acli_installed: false,
+          acli_version: '',
+          available_mb: 61020,
+          log_server_reachable: true,
+          http_code: 200,
+          catalog_source: 'platform_default',
+          modules: [{ value: 'vm_suspend', label: '虚拟机挂起专项' }],
+          hosts: [],
+        },
+      }),
+    })
+    await flushPromises()
+
+    const hint = wrapper.findAll('.lc-hint').map((node) => node.text()).join(' | ')
+    expect(hint).not.toContain('acli -i')
+    // 必须给出可直接照抄的示例，而不是让用户猜格式
+    expect(hint).toContain('172.28.25.2,172.28.25.3')
+    // 必须说清"为什么没有清单"，避免用户误判为平台故障
+    expect(hint).toContain('acli 未安装')
+  })
+
   // 回归：任务状态的真值在平台。完成后关掉抽屉再打开，曾经退回空白表单，用户会以为必须重收。
   it('平台已有已完成任务时优先展示完成结果，而不是默认让用户重新收集', async () => {
     vi.mocked(logCollectApi.listTasks).mockResolvedValue({
