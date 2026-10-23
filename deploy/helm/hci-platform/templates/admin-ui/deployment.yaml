@@ -54,6 +54,10 @@ spec:
               {{- else }}
               value: "http://127.0.0.1:9999"
               {{- end }}
+            # 工单日志同步服务跑在宿主机（systemd + uvicorn），没有集群内 Service，
+            # 因此 nginx 反代按节点 IP 直连；地址随环境不同，由 values 覆盖。
+            - name: TICKET_SYNC_UPSTREAM
+              value: {{ .Values.adminUI.ticketSyncUpstream | default "http://192.168.0.4:18080" | quote }}
             {{- /* 安全重构 L1：删除 ADMIN_API_TENANT_ID/ADMIN_API_ACTOR_ID 注入——管理台身份
                    上下文唯一来源收敛为网关对 admin JWT 的派生（X-Tenant-ID/X-Actor-ID），
                    Nginx 不再静态写死、也不以 $http_* 透传客户端头。见 docs/solution/security/网关身份重签.md §6。 */}}

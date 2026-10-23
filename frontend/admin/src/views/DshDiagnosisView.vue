@@ -1,8 +1,20 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Refresh } from '@element-plus/icons-vue'
 import { createApiClient } from '@hci/shared'
 import { getAccessToken } from '@/utils/auth'
+import {
+  PHASE_TEXT,
+  TICKET_ID_PATTERN,
+  cancelSyncJob,
+  createSyncJob,
+  errorText,
+  fetchPercent,
+  fetchSyncJob,
+  isRunning,
+  mib,
+  type SyncJob,
+} from '@/api/ticketSync'
 
 // 管理端 axios 客户端注入登录 JWT（axios 不经 window.fetch 全局拦截器，须显式传入）
 const apiClient = createApiClient('/api', undefined, getAccessToken)
@@ -44,10 +56,172 @@ async function loadDshUrl() {
 }
 
 onMounted(loadDshUrl)
+
+// ==========================================
+// 工单日志同步
+// ==========================================
+// 服务端状态全在内存，一次同步大约 6 秒（50 MiB 工单），因此用 2s 轮询即可，
+// 不必上 SSE。轮询只在任务推进期间开，结束后立刻停，不留空转定时器。
+const POLL_INTERVAL_MS = 2000
+
+const ticketInput = ref('')
+const activeTicket = ref('')
+const job = ref<SyncJob | null>(null)
+const syncBusy = ref(false)
+const syncTip = ref('')
+let pollTimer: number | null = null
+
+const running = computed(() => isRunning(job.value?.phase))
+const percent = computed(() => (job.value ? fetchPercent(job.value) : 0))
+const tagType = computed(() => {
+  const phase = job.value?.phase
+  if (phase === 'ready') return 'success'
+  if (phase === 'failed') return 'danger'
+  if (phase === 'cancelled') return 'info'
+  return 'warning'
+})
+
+function stopPolling() {
+  if (pollTimer !== null) {
+    window.clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+function startPolling() {
+  stopPolling()
+  pollTimer = window.setInterval(refresh, POLL_INTERVAL_MS)
+}
+
+async function refresh() {
+  const ticketId = activeTicket.value
+  if (!ticketId) return
+  try {
+    const latest = await fetchSyncJob(ticketId)
+    // 用户已切换工单时丢弃过期响应，否则旧任务会覆盖新任务的进度
+    if (activeTicket.value !== ticketId) return
+    job.value = latest
+    // 服务重启后任务表为空（404 → null），此时没有可跟进的对象
+    if (latest === null || !isRunning(latest.phase)) stopPolling()
+  } catch {
+    // 单次查询失败不终止轮询：宿主机短暂不可达之后仍可能恢复
+  }
+}
+
+function handleApiError(error: any) {
+  const status = error?.response?.status
+  if (status === 409) {
+    syncTip.value = '该工单正在同步中，请等待完成'
+    return
+  }
+  const code = error?.response?.data?.error
+  if (code) {
+    syncTip.value = errorText(code, error?.response?.data?.message ?? null)
+    return
+  }
+  syncTip.value = '无法连接同步服务，请确认宿主机上的同步服务已启动'
+}
+
+async function startSync() {
+  const ticketId = ticketInput.value.trim()
+  if (!TICKET_ID_PATTERN.test(ticketId)) {
+    syncTip.value = '工单号格式错误，应为 Q + 13 位数字'
+    return
+  }
+
+  syncTip.value = ''
+  syncBusy.value = true
+  stopPolling()
+  activeTicket.value = ticketId
+  job.value = null
+  try {
+    await createSyncJob(ticketId)
+    // 受理后立即取一次状态，不必先等满一个轮询周期
+    await refresh()
+    if (running.value) startPolling()
+  } catch (error: any) {
+    handleApiError(error)
+  } finally {
+    syncBusy.value = false
+  }
+}
+
+async function cancelSync() {
+  const ticketId = activeTicket.value
+  if (!ticketId) return
+  syncBusy.value = true
+  try {
+    await cancelSyncJob(ticketId)
+    await refresh()
+  } catch (error: any) {
+    handleApiError(error)
+  } finally {
+    syncBusy.value = false
+  }
+}
+
+onUnmounted(stopPolling)
 </script>
 
 <template>
   <div class="dsh-container">
+    <el-card class="sync-card">
+      <div class="sync-bar">
+        <span class="sync-title">工单日志同步</span>
+        <el-input
+          v-model="ticketInput"
+          class="sync-input"
+          placeholder="Q + 13 位数字，例如 Q2026052801304"
+          :disabled="running"
+          clearable
+          @keyup.enter="startSync"
+        />
+        <el-button type="primary" :loading="syncBusy" :disabled="running" @click="startSync">
+          同步日志
+        </el-button>
+        <el-button v-if="running" type="danger" plain @click="cancelSync">取消</el-button>
+      </div>
+
+      <div v-if="job" class="sync-status">
+        <el-tag :type="tagType" size="small">{{ PHASE_TEXT[job.phase] }}</el-tag>
+        <span class="sync-meta">工单 {{ job.ticketId }}</span>
+
+        <template v-if="job.phase === 'fetching'">
+          <el-progress
+            v-if="job.totalBytes > 0"
+            :percentage="percent"
+            :stroke-width="10"
+            class="sync-progress"
+          />
+          <span class="sync-meta">
+            {{ mib(job.receivedBytes) }}
+            <template v-if="job.totalBytes > 0"> / {{ mib(job.totalBytes) }}</template>
+          </span>
+        </template>
+
+        <template v-else-if="job.phase === 'extracting'">
+          <span class="sync-meta">已解压 {{ mib(job.extractedBytes) }} · {{ job.fileCount }} 个文件</span>
+          <span v-if="job.currentArchive" class="sync-archive">{{ job.currentArchive }}</span>
+        </template>
+
+        <span v-else-if="job.phase === 'ready'" class="sync-meta">
+          共 {{ job.fileCount }} 个文件 · {{ mib(job.extractedBytes) }}，可在下方 DSH 中选择该工单目录
+        </span>
+
+        <span v-else-if="job.phase === 'failed'" class="sync-error">
+          {{ errorText(job.errorCode, job.message) }}
+        </span>
+      </div>
+
+      <el-alert
+        v-if="syncTip"
+        type="warning"
+        :closable="false"
+        class="sync-tip"
+        :description="syncTip"
+      />
+    </el-card>
+
     <el-card class="dsh-card">
       <div v-loading="dshLoading" class="dsh-content">
         <div class="dsh-actions-bar">
@@ -101,6 +275,63 @@ onMounted(loadDshUrl)
   border-radius: 8px;
 }
 
+/* 同步卡片与 DSH 卡片同宽，只多一条操作条，不抢占 iframe 的竖向空间 */
+.sync-card {
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+
+.sync-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sync-title {
+  font-size: 14px;
+  color: #606266;
+  font-weight: 500;
+  flex: none;
+}
+
+.sync-input {
+  max-width: 320px;
+}
+
+.sync-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.sync-meta {
+  font-size: 13px;
+  color: #606266;
+}
+
+.sync-archive {
+  font-size: 12px;
+  color: #909399;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 420px;
+}
+
+.sync-error {
+  font-size: 13px;
+  color: #f56c6c;
+}
+
+.sync-progress {
+  width: 220px;
+}
+
+.sync-tip {
+  margin-top: 12px;
+}
+
 .dsh-content {
   min-height: 620px;
 }
@@ -124,8 +355,8 @@ onMounted(loadDshUrl)
 
 .iframe-wrapper {
   width: 100%;
-  height: calc(100vh - 260px);
-  min-height: 520px;
+  height: calc(100vh - 375px);
+  min-height: 480px;
   margin-top: 12px;
   border: 1px solid #dcdfe6;
   border-radius: 6px;

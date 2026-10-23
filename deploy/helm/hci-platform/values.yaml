@@ -489,6 +489,9 @@ adminUI:
     repository: hci-admin-ui
     tag: latest
   port: 80
+  # 工单日志同步服务在宿主机上（systemd + uvicorn :18080），没有集群内 Service。
+  # nginx 按此地址直连；换环境时改成对应节点 IP，不需要重新构建镜像。
+  ticketSyncUpstream: "http://192.168.0.4:18080"
   resources:
     requests:
       cpu: "10m"

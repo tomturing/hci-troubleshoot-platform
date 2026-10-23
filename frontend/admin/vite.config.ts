@@ -23,6 +23,13 @@ export default defineConfig(({ mode }) => {
           target: env.VITE_DEV_API_TARGET || 'http://localhost:8000',
           changeOrigin: true,
         },
+        '/ticket-sync': {
+          // 本地开发时同步服务跑在本机 18080；生产由 admin-ui 的 nginx 反代，
+          // 两边都把 /ticket-sync 前缀剥掉，后端始终看到 /jobs。
+          target: env.VITE_DEV_TICKET_SYNC_TARGET || 'http://127.0.0.1:18080',
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/ticket-sync/, ''),
+        },
       },
     },
   }

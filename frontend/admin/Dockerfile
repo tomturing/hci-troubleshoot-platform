@@ -43,10 +43,12 @@ RUN rm -f /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
 
 # 默认保持原始浏览器身份头；Docker Compose（本地容器编排）可在服务端覆盖为开发身份。
 # 值中的 Nginx 变量经过 envsubst 单次替换后保留给 Nginx 请求阶段解析。
+# TICKET_SYNC_UPSTREAM 指向宿主机的工单日志同步服务（不在集群内），集群部署由 chart 覆盖。
 ENV ADMIN_API_AUTHORIZATION=\$http_authorization \
     API_GATEWAY_UPSTREAM=http://api-gateway:8000 \
     DIAGNOSIS_SERVICE_UPSTREAM=http://diagnosis-service:8008 \
-    TERMINAL_BRIDGE_UPSTREAM=http://host.docker.internal:9999
+    TERMINAL_BRIDGE_UPSTREAM=http://host.docker.internal:9999 \
+    TICKET_SYNC_UPSTREAM=http://192.168.0.4:18080
 
 COPY --from=build /app/admin/dist /usr/share/nginx/html
 COPY frontend/admin/nginx.conf /etc/nginx/templates/default.conf.template
