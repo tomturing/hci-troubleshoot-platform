@@ -16,6 +16,17 @@ const props = defineProps<{
 
 const chatStore = useChatStore()
 
+/**
+ * 弹框内「取消」按钮的请求：只负责关框。
+ *
+ * 清理会话与 create-case 的离线诊断导航统一由 el-dialog 的 @close 单点执行，
+ * 这样按钮点击与右上角 X / ESC 走完全相同的收尾路径，不会重复断开或重复导航。
+ * （历史缺陷：抽取 SshConnectSection 后该事件无人监听，按钮点了没有任何反应。）
+ */
+function handleCancelRequest() {
+  chatStore.sshFlowDialogVisible = false
+}
+
 async function handleCancelled() {
   // 未建立连接时取消：清理正在连接的 bridge 会话；已连接则保持，避免误断终端
   if (chatStore.sshConnectionState !== 'connected') {
@@ -42,6 +53,7 @@ async function handleCancelled() {
       mode="dialog"
       :case-id="chatStore.sshFlowDialogCaseId"
       auto-close
+      @cancelled="handleCancelRequest"
     />
   </el-dialog>
 </template>

@@ -195,6 +195,7 @@ export interface TerminalWsMessage {
   | 'vm_console_result'  // qkv_vm_console 固定操作元数据结果（不含图片字节）
   | 'acli_sync_progress' // acli 检查/安装进度反馈
   | 'acli_sync_result'   // acli 检查/安装最终结果
+  | 'ssh_input_rejected' // 输入无法路由到 SSH 会话（bridge 侧已留痕，前端提示用户）
   case_id?: string
   output?: string
   message?: string
@@ -287,23 +288,31 @@ export function buildConnectMessage(options: SshConnectOptions): string {
 
 /**
  * 构建 ssh_inject_command 消息（AI 助手注入命令，不带 \n，等客户回车确认）
+ *
+ * nodeIp 必带（与 ssh_connect 里的 node_ip 同值）：bridge 的会话键是
+ * `caseID@nodeIP`，不带 node_ip 时只能靠兜底匹配，多节点场景下可能落到错误会话。
  */
-export function buildInjectCommandMessage(caseId: string, command: string): string {
+export function buildInjectCommandMessage(caseId: string, command: string, nodeIp?: string | null): string {
   return JSON.stringify({
     type: 'ssh_inject_command',
     case_id: caseId,
     command,
+    node_ip: nodeIp || undefined,
   })
 }
 
 /**
  * 构建 ssh_input 消息（键盘输入，包含回车）
+ *
+ * nodeIp 必带：会话键含 IP，缺省会退化到兜底匹配（历史缺陷：bridge 只查
+ * caseID 导致输入被静默丢弃，界面表现为"打字毫无反应"）。
  */
-export function buildInputMessage(caseId: string, data: string): string {
+export function buildInputMessage(caseId: string, data: string, nodeIp?: string | null): string {
   return JSON.stringify({
     type: 'ssh_input',
     case_id: caseId,
     data,
+    node_ip: nodeIp || undefined,
   })
 }
 

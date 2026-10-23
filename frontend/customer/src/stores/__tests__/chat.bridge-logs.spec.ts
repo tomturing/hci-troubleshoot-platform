@@ -96,16 +96,38 @@ describe('chat store - bridge-logs 回采', () => {
     clearStats()
   })
 
-  it('forwardBridgeLog 丢弃无 case_id 的条目（不触发上报）', async () => {
+  it('forwardBridgeLog 无工单上下文时暂存，不立即上报（也不再丢弃）', async () => {
     const { useChatStore } = await import('../chat')
     const store = useChatStore()
 
     // forwardBridgeLog 是 store 暴露的方法
-    store.forwardBridgeLog({ level: 'INFO', event: 'exec.start', message: 'no case' })
+    store.forwardBridgeLog({ level: 'INFO', event: 'bridge.startup', message: 'no case' })
 
-    // 无 case_id 不应触发 POST；推进 fake timer 确保 flush 不发生
+    // 无 case_id 不能立刻上报（服务端会判越权），但必须留在暂存区
     await vi.advanceTimersByTimeAsync(1000)
     expect(mockPost).not.toHaveBeenCalled()
+  })
+
+  it('工单建立后回填暂存的无工单上下文日志（bridge.startup 等最关键的证据）', async () => {
+    const { nextTick } = await import('vue')
+    const { useChatStore } = await import('../chat')
+    const store = useChatStore()
+
+    store.forwardBridgeLog({ level: 'INFO', event: 'bridge.startup', message: 'startup' })
+    store.forwardBridgeLog({ level: 'INFO', event: 'bridge.connected', message: 'connected' })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(mockPost).not.toHaveBeenCalled()
+
+    // 工单建立 → watch 触发回填
+    store.currentCase = { case_id: 'Q2026101401683' } as never
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(600)
+    await vi.runOnlyPendingTimersAsync()
+
+    expect(mockPost).toHaveBeenCalled()
+    const payload = mockPost.mock.calls.at(-1)?.[1] as { logs: Record<string, unknown>[] }
+    expect(payload.logs.map((l) => l.event)).toEqual(['bridge.startup', 'bridge.connected'])
+    expect(payload.logs.every((l) => l.case_id === 'Q2026101401683')).toBe(true)
   })
 
   it('forwardBridgeLog + flushBridgeLogs 将带 case_id 的条目 POST 到 /bridge-logs', async () => {

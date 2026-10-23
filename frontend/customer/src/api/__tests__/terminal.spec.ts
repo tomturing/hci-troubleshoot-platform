@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildAgentExecProcessMessage,
   buildConnectMessage,
+  buildInjectCommandMessage,
+  buildInputMessage,
   buildLogCollectMessage,
   checkBridgeBeforeOpen,
   checkBridgeRunning,
@@ -255,5 +257,31 @@ describe('buildConnectMessage', () => {
     expect(msg.type).toBe('ssh_connect')
     expect(msg.node_ip).toBe('172.28.25.1')
     expect(msg.case_id).toBe('terminal-only')
+  })
+})
+
+describe('buildInputMessage / buildInjectCommandMessage', () => {
+  // 会话键是 caseID@nodeIP：输入报文不带 node_ip 时，bridge 只能靠兜底匹配，
+  // 历史上更因为只查 caseID 导致输入被静默丢弃。
+  it('ssh_input 必须携带与 ssh_connect 一致的 node_ip', () => {
+    const msg = JSON.parse(buildInputMessage('Q2026101401683', 'ls\n', '172.28.24.129'))
+    expect(msg.type).toBe('ssh_input')
+    expect(msg.case_id).toBe('Q2026101401683')
+    expect(msg.node_ip).toBe('172.28.24.129')
+    expect(msg.data).toBe('ls\n')
+  })
+
+  it('ssh_inject_command 同样携带 node_ip', () => {
+    const msg = JSON.parse(buildInjectCommandMessage('Q2026101401683', 'acli env', '172.28.24.129'))
+    expect(msg.type).toBe('ssh_inject_command')
+    expect(msg.command).toBe('acli env')
+    expect(msg.node_ip).toBe('172.28.24.129')
+  })
+
+  it('未提供 node_ip 时字段缺省（保持对旧 bridge 的兼容）', () => {
+    const input = JSON.parse(buildInputMessage('Q1', 'ls\n'))
+    expect(input.node_ip).toBeUndefined()
+    const inject = JSON.parse(buildInjectCommandMessage('Q1', 'ls'))
+    expect(inject.node_ip).toBeUndefined()
   })
 })

@@ -56,6 +56,9 @@ const (
 	desktopMode          = "desktop"
 	clusterMode          = "cluster"
 	websocketPingInteval = 30 * time.Second // WebSocket 心跳间隔：每 30 秒发送 ping，防止空闲超时断开
+	// inputRejectNoticeInterval 输入无法路由时的提示节流窗口：
+	// 用户连按回车会连续产生同样失败，留痕一次足够，避免刷屏与刷库。
+	inputRejectNoticeInterval = 3 * time.Second
 )
 
 // portBindRetryAttempts 端口被短暂占用（如崩溃重启后的 TIME_WAIT）时的 bind 重试次数；
@@ -3211,6 +3214,13 @@ type bridgeSubscriber struct {
 	mu       sync.Mutex
 	pending  []logEntry // 断网/重启期间的待重传缓冲（有界）
 	flushing bool
+	// bornSeq 订阅建立时的全局 seq 水位：早于它的都是「本连接订阅之前」发生的事件，
+	// 从未实时推给过本连接，正是需要回放的那批（bridge.startup 等）。
+	bornSeq uint64
+	// replayedThrough 已回放到本连接的最大 seq（只对 < bornSeq 的历史段有意义），
+	// 保证同一连接多次 setCase（ssh_connect → resume）只增量回放。
+	// 两个字段的所有读写都在 h.mu 下进行。
+	replayedThrough uint64
 }
 
 // LogHub 全局日志中枢：结构化落盘 + 环形缓冲 + 多订阅者回采。
@@ -3655,22 +3665,48 @@ func (h *LogHub) flushSubscriber(sub *bridgeSubscriber) {
 func (h *LogHub) addSubscriber(conn *websocket.Conn, customUI string) *bridgeSubscriber {
 	sub := &bridgeSubscriber{conn: conn, customUI: customUI}
 	h.mu.Lock()
+	// 记录订阅水位：这是区分"实时推送过"与"订阅前发生、只能靠回放补"的唯一依据。
+	sub.bornSeq = h.seq + 1
 	h.subs[conn] = sub
 	h.mu.Unlock()
 	return sub
 }
 
+// emptyCaseReplayWindow 无工单上下文事件的回放时间窗。
+//
+// 为什么需要：`bridge.startup` / `listening` / `WebSocket_请求` / `connected` /
+// `disconnected` 这些事件没有 case_id，且往往发生在浏览器订阅之前（进程刚起、
+// 探测连接、真正连接建立的那一瞬），publish 时没有订阅者接收。历史回放条件只有
+// `e.CaseID == caseID`，把它们全部排除 —— 于是"Bridge 起不来/连不上"这类最需要
+// 证据的场景，库里一条记录都没有（实测一次会话漏采 14 条）。这里按时间窗补回。
+const emptyCaseReplayWindow = 5 * time.Minute
+
+// logEntryBefore 判断事件时间是否早于 cutoff；时间解析失败按"未超窗"处理，宁可多回放。
+func logEntryBefore(e logEntry, cutoff time.Time) bool {
+	ts, err := time.Parse(time.RFC3339Nano, e.Timestamp)
+	if err != nil {
+		return false
+	}
+	return ts.Before(cutoff)
+}
+
 // setCase 标记订阅者归属工单，并回放该工单近期日志（重连/晚加入可重传）。
+//
+// 回放口径：本工单全部事件 + 窗口内无工单上下文的事件，且跳过已投递过的 seq。
+// 库侧有 (bridge_instance_id, seq) 与 event_id 唯一索引 + 入库 ON CONFLICT DO NOTHING，
+// 因此重复回放是幂等的，不会产生脏数据。
 func (h *LogHub) setCase(sub *bridgeSubscriber, caseID string) {
 	h.mu.Lock()
+	if sub.caseID != caseID {
+		// 切换归属工单时重置历史游标，避免新工单的历史被旧游标挡掉。
+		sub.replayedThrough = 0
+	}
 	sub.caseID = caseID
-	var replay []logEntry
-	if caseID != "" {
-		for _, e := range h.ring {
-			if e.CaseID == caseID {
-				replay = append(replay, e)
-			}
-		}
+	replay := h.replayForCaseLocked(sub, caseID, time.Now().UTC())
+	// 回放入队必须仍在 h.mu 内：enqueue 会推进 deliveredThrough，该字段与 publish
+	// 共享同一把锁（锁序恒为 h.mu → sub.mu），放到锁外会引入数据竞争。
+	for _, e := range replay {
+		h.enqueue(sub, e)
 	}
 	h.mu.Unlock()
 
@@ -3679,10 +3715,41 @@ func (h *LogHub) setCase(sub *bridgeSubscriber, caseID string) {
 		atomic.AddUint64(&promMetrics.LogsReplayedTotal, uint64(len(replay)))
 	}
 
-	for _, e := range replay {
-		h.enqueue(sub, e)
-	}
 	go h.flushSubscriber(sub)
+}
+
+// replayForCaseLocked 挑选需要回放给该订阅者的条目（调用方必须已持 h.mu）。
+//
+// 独立成函数是为了能被单测直接覆盖——回放口径是"日志缺失"类缺陷的唯一裁决点，
+// 只靠集成验证太脆。
+func (h *LogHub) replayForCaseLocked(sub *bridgeSubscriber, caseID string, now time.Time) []logEntry {
+	if caseID == "" || sub == nil {
+		return nil
+	}
+	cutoff := now.Add(-emptyCaseReplayWindow)
+	var replay []logEntry
+	var scannedThrough uint64
+	for _, e := range h.ring {
+		// 订阅之后产生的事件已经实时推送过，重复回放只会制造重复入库；
+		// 订阅之前的事件才是"没人收到过"的那批，按工单归属与时间窗筛选。
+		if e.Seq >= sub.bornSeq {
+			continue
+		}
+		if e.Seq <= sub.replayedThrough {
+			continue
+		}
+		if e.Seq > scannedThrough {
+			scannedThrough = e.Seq
+		}
+		if e.CaseID == caseID || (e.CaseID == "" && !logEntryBefore(e, cutoff)) {
+			replay = append(replay, e)
+		}
+	}
+	// 窗口外的历史也一并跳过，避免每次 setCase 都重新扫一遍同一批陈旧事件。
+	if scannedThrough > sub.replayedThrough {
+		sub.replayedThrough = scannedThrough
+	}
+	return replay
 }
 
 func (h *LogHub) removeSubscriber(conn *websocket.Conn) {
@@ -3901,6 +3968,14 @@ func sessionKey(caseID, nodeIP string) string {
 	return caseID + "@" + nodeIP
 }
 
+// sessionKeyCase 从会话键里取回工单号（`caseID@nodeIP` → `caseID`）。
+func sessionKeyCase(key string) string {
+	if idx := strings.Index(key, "@"); idx >= 0 {
+		return key[:idx]
+	}
+	return key
+}
+
 type Bridge struct {
 	mu       sync.Mutex
 	sessions map[string]*SSHSession // key: caseID@nodeIP
@@ -4068,6 +4143,43 @@ func (b *Bridge) resolveAcliSyncSession(msg InMessage) (*SSHSession, string) {
 	return nil, ""
 }
 
+// resolveInputSession 解析键盘输入 / AI 命令注入要落到哪条 SSH 会话。
+//
+// 为什么不能沿用 resolveSession：`ssh_connect` 带 node_ip 后会话键是 `caseID@nodeIP`
+// （#1229 为对齐日志收集而改），而输入侧历史上只查 `caseID`，于是查不到就直接返回，
+// 表现为「界面绿色已连接、打字回车毫无反应、日志里也干干净净」。
+//
+// 输入不触发自动建连（建连属于 exec 的语义），只做只读解析；
+// 顺序：精确键 → 本连接最近一次 ssh_connect 的会话 → 本工单唯一会话（多节点时不猜）。
+func (b *Bridge) resolveInputSession(msg InMessage, activeKey string, ownedSessions *ownedSessionTracker) (*SSHSession, string) {
+	if s, key := b.resolveSession(msg); s != nil {
+		return s, key
+	}
+	// 同一块终端：输入天然属于本连接刚建立的那个会话，即便消息里没带 node_ip。
+	if activeKey != "" && (msg.CaseID == "" || sessionKeyCase(activeKey) == msg.CaseID) {
+		if s := b.get(activeKey); s != nil {
+			log.Printf("[Bridge] resolveInputSession: 命中本连接活动会话 key=%s", activeKey)
+			return s, activeKey
+		}
+	}
+	// 本连接自己建立的会话优先于全局猜测，避免多工单并行时打错节点。
+	if msg.CaseID != "" {
+		for key, session := range ownedSessions.sessionsSnapshot() {
+			if session != nil && (key == msg.CaseID || strings.HasPrefix(key, msg.CaseID+"@")) {
+				if current := b.get(key); current == session {
+					log.Printf("[Bridge] resolveInputSession: 命中本连接所属工单会话 key=%s", key)
+					return session, key
+				}
+			}
+		}
+	}
+	if s, key := b.onlySessionForCase(msg.CaseID); s != nil {
+		log.Printf("[Bridge] resolveInputSession: 工单唯一会话兜底 key=%s", key)
+		return s, key
+	}
+	return nil, ""
+}
+
 // onlySessionForCase 返回该工单唯一的 SSH 会话；有多条时返回 nil（宁可不装，也不猜节点）。
 func (b *Bridge) onlySessionForCase(caseID string) (*SSHSession, string) {
 	caseID = strings.TrimSpace(caseID)
@@ -4211,6 +4323,17 @@ func (t *ownedSessionTracker) drainCase(caseID string) map[string]*SSHSession {
 	return sessions
 }
 
+// sessionsSnapshot 返回当前连接所拥有会话的浅拷贝，供只读遍历（持锁时间最短）。
+func (t *ownedSessionTracker) sessionsSnapshot() map[string]*SSHSession {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	snapshot := make(map[string]*SSHSession, len(t.sessions))
+	for key, session := range t.sessions {
+		snapshot[key] = session
+	}
+	return snapshot
+}
+
 func (t *ownedSessionTracker) drain() map[string]*SSHSession {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -4221,12 +4344,13 @@ func (t *ownedSessionTracker) drain() map[string]*SSHSession {
 
 func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 	cui := customUIHost(customUI)
+	// 订阅必须先于 blog：否则"浏览器已连接"这条事件发生时本连接还不在 h.subs 里，
+	// 它自己的处理函数都收不到，浏览器也就永远无法把它回采入库（实测丢过 14 条同类事件）。
+	sub := logHub.addSubscriber(ws, cui)
 	// 连接建立即留痕：浏览器是否在线决定了命令能否下发，是"命令没结果"类问题的第一判据。
 	blog("INFO", "bridge.connected", "浏览器已连接", "", "", "", cui, map[string]any{
 		"origin": customUI, "custom_ui": cui, "remote": ws.RemoteAddr().String(),
 	})
-	// 注册回采订阅者（按连接归属 custom_ui）
-	sub := logHub.addSubscriber(ws, cui)
 	// 连接握手首包：让浏览器可快速识别"对端确实是 terminal_bridge"，
 	// 用于端口冲突探测（避免误连占用主端口的陌生进程）。旧客户端会忽略未知类型。
 	sendMsg(ws, OutMessage{Type: "bridge_hello", Message: getVersion(), CustomUI: cui})
@@ -4270,6 +4394,12 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 		// 浏览器断开后立即清理凭据缓存，缩短密码/私钥在内存中的生命周期。
 		b.clearLastAuth(sub.caseID)
 	}()
+
+	// activeKey 记录本连接最近一次 ssh_connect 建立的会话键（含 @nodeIP）。
+	// 键盘输入属于"这条连接的这块终端"，用它兜底比按全局 caseID 猜更可靠。
+	var activeKey string
+	// 输入被丢弃的提示节流：用户连按回车时不必重复回包刷屏。
+	var lastInputRejectAt time.Time
 
 	for {
 		var raw string
@@ -4336,6 +4466,8 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			connectSpan.End()
 			atomic.AddUint64(&promMetrics.SshConnectionsTotal, 1)
 			ownedSessions.set(key, session)
+			// 本连接的键盘输入默认落到刚建立的这个会话（键含 @nodeIP）
+			activeKey = key
 			// 保存认证信息，供后续自动连接其他节点使用
 			b.setLastAuth(msg.CaseID, msg)
 			// 归属工单并回放近期日志（异常重传）
@@ -4353,17 +4485,50 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			})
 
 		case "ssh_input":
-			// 输入默认路由到 caseID 对应的会话
-			defaultKey := sessionKey(msg.CaseID, "")
-			if s := b.get(defaultKey); s != nil {
-				s.send(msg.Data)
+			s, key := b.resolveInputSession(msg, activeKey, ownedSessions)
+			if s == nil {
+				// 以前这里查不到会话就静默返回，表现为"字打进去了、什么都不到、日志也干净"。
+				// 现在必须留痕：先入库，再（节流）提示前端，避免再次无声无息。
+				if lastInputRejectAt.IsZero() || time.Since(lastInputRejectAt) >= inputRejectNoticeInterval {
+					lastInputRejectAt = time.Now()
+					blog("ERROR", "ssh_input.session_missing", "SSH 会话不存在，键盘输入已丢弃", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+						"input_type": "ssh_input", "active_key": activeKey,
+						"exact_key": sessionKey(msg.CaseID, msg.NodeIP), "data_len": len(msg.Data),
+					})
+					sendMsg(ws, OutMessage{
+						Type:    "ssh_input_rejected",
+						CaseID:  msg.CaseID,
+						Message: "SSH 会话不存在，输入未送达远端（请重新连接终端）",
+					})
+				}
+				continue
 			}
+			if key != sessionKey(msg.CaseID, "") && key != sessionKey(msg.CaseID, msg.NodeIP) {
+				log.Printf("[Bridge] ssh_input 兜底命中会话: case=%s key=%s active=%s", msg.CaseID, key, activeKey)
+			}
+			s.send(msg.Data)
 
 		case "ssh_inject_command":
-			defaultKey := sessionKey(msg.CaseID, "")
-			if s := b.get(defaultKey); s != nil {
-				s.injectCommand(msg.Command)
+			s, key := b.resolveInputSession(msg, activeKey, ownedSessions)
+			if s == nil {
+				if lastInputRejectAt.IsZero() || time.Since(lastInputRejectAt) >= inputRejectNoticeInterval {
+					lastInputRejectAt = time.Now()
+					blog("ERROR", "ssh_input.session_missing", "SSH 会话不存在，命令注入已丢弃", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+						"input_type": "ssh_inject_command", "active_key": activeKey,
+						"exact_key": sessionKey(msg.CaseID, msg.NodeIP),
+					})
+					sendMsg(ws, OutMessage{
+						Type:    "ssh_input_rejected",
+						CaseID:  msg.CaseID,
+						Message: "SSH 会话不存在，命令未送达远端（请重新连接终端）",
+					})
+				}
+				continue
 			}
+			if key != sessionKey(msg.CaseID, "") && key != sessionKey(msg.CaseID, msg.NodeIP) {
+				log.Printf("[Bridge] ssh_inject_command 兜底命中会话: case=%s key=%s active=%s", msg.CaseID, key, activeKey)
+			}
+			s.injectCommand(msg.Command)
 
 		case "resume":
 			// P0-2: 浏览器重连时触发历史日志回放

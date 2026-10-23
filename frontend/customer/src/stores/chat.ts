@@ -3,7 +3,7 @@
  */
 
 import { defineStore } from 'pinia'
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, watch } from 'vue'
 import { createApiClient, createCaseApi, createConversationApi, createAssistantApi, createEnvironmentApi } from '@hci/shared'
 import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse, EnvironmentResponse, EnvironmentContextResponse, EnvType } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
@@ -94,8 +94,7 @@ export const useChatStore = defineStore('chat', () => {
   let bridgeLogBuffer: Record<string, unknown>[] = []
   let bridgeLogTimer: number | null = null
   let bridgeLogRetryCount = 0
-  // 回采日志可观测计数：dropped=无工单上下文被丢弃；fallback=按当前工单兜底归档
-  let bridgeLogDroppedCount = 0
+  // 回采日志可观测计数：deferred=无工单上下文被暂存；fallback=按当前工单兜底归档
   let bridgeLogFallbackCount = 0
   const BRIDGE_LOG_MAX_RETRY = 5
   const BRIDGE_LOG_BASE_DELAY = 500
@@ -125,6 +124,14 @@ export const useChatStore = defineStore('chat', () => {
   // C 修复：保留近期回采日志的环形缓冲，供工单创建后将临时会话（ssh-create-temp）日志迁移到真实工单
   let recentBridgeLogs: Record<string, unknown>[] = []
   const RECENT_BRIDGE_LOGS_CAP = 2000
+
+  // 无工单上下文的事件暂存区：`bridge.startup` / `bridge.connected` / `WebSocket_请求`
+  // 这类生命周期日志往往发生在"创建工单之前"，历史实现直接丢弃，导致 Bridge 起不来/
+  // 连不上时库里一条证据都没有。这里先按时间窗暂存，工单建立后立即回填。
+  let orphanBridgeLogs: { entry: Record<string, unknown>; at: number }[] = []
+  const ORPHAN_BRIDGE_LOGS_CAP = 500
+  const ORPHAN_BRIDGE_LOG_TTL_MS = 30 * 60 * 1000
+  let bridgeLogDeferredCount = 0
 
   // 回采可观测性自检：成功/失败计数暴露到 window，供巡检（消除静默失败/成功）
   interface BridgeLogStats {
@@ -245,21 +252,8 @@ export const useChatStore = defineStore('chat', () => {
     return currentCase.value?.case_id || ''
   }
 
-  function forwardBridgeLog(entry: Record<string, unknown>) {
-    // 伪/缺失 case_id：有当前工单时归到当前工单，完全没有工单上下文时才丢弃，
-    // 且计数留痕，避免"日志凭空消失且无从察觉"。
-    const caseId = normalizeBridgeLogCaseId(entry)
-    if (!caseId) {
-      bridgeLogDroppedCount += 1
-      if (bridgeLogDroppedCount % 50 === 0) {
-        console.warn(`[bridge-log] 已丢弃 ${bridgeLogDroppedCount} 条无工单上下文的回采日志`)
-      }
-      return
-    }
-    if (entry.case_id !== caseId) {
-      bridgeLogFallbackCount += 1
-    }
-    const normalized = entry.case_id === caseId ? entry : { ...entry, case_id: caseId }
+  /** 把一条日志放进上报队列（已确定 case_id）。 */
+  function enqueueBridgeLog(normalized: Record<string, unknown>) {
     bridgeLogBuffer.push(normalized)
     persistBridgeLogOutbox()
     // C 修复：同步写入近期缓冲，供工单创建后将临时会话日志迁移到真实工单
@@ -268,6 +262,46 @@ export const useChatStore = defineStore('chat', () => {
       recentBridgeLogs.splice(0, recentBridgeLogs.length - RECENT_BRIDGE_LOGS_CAP)
     }
     if (bridgeLogTimer === null) bridgeLogTimer = window.setTimeout(flushBridgeLogs, 500)
+  }
+
+  function forwardBridgeLog(entry: Record<string, unknown>) {
+    // 伪/缺失 case_id：有当前工单时归到当前工单；完全没有工单上下文时先暂存，
+    // 等工单建立后回填（bridge.startup/connected 这类关键事件正是这种形态，
+    // 直接丢弃会让"Bridge 未运行/连不上"在库里零证据）。
+    const caseId = normalizeBridgeLogCaseId(entry)
+    if (!caseId) {
+      bridgeLogDeferredCount += 1
+      orphanBridgeLogs.push({ entry, at: Date.now() })
+      if (orphanBridgeLogs.length > ORPHAN_BRIDGE_LOGS_CAP) {
+        orphanBridgeLogs.splice(0, orphanBridgeLogs.length - ORPHAN_BRIDGE_LOGS_CAP)
+      }
+      if (bridgeLogDeferredCount % 50 === 0) {
+        console.warn(`[bridge-log] 已暂存 ${bridgeLogDeferredCount} 条无工单上下文的回采日志，等待工单建立后回填`)
+      }
+      return
+    }
+    if (entry.case_id !== caseId) {
+      bridgeLogFallbackCount += 1
+    }
+    enqueueBridgeLog(entry.case_id === caseId ? entry : { ...entry, case_id: caseId })
+  }
+
+  /**
+   * 工单建立后回填暂存的无工单上下文日志。
+   *
+   * 只回填 TTL 内的条目，避免把半小时前的陈旧事件塞进新工单（时间线会被打乱）；
+   * event_id/seq 原样保留，服务端有唯一索引 + ON CONFLICT DO NOTHING，重复回填幂等。
+   */
+  function adoptOrphanBridgeLogs(caseId: string) {
+    if (!caseId || orphanBridgeLogs.length === 0) return
+    const now = Date.now()
+    const fresh = orphanBridgeLogs.filter((item) => now - item.at <= ORPHAN_BRIDGE_LOG_TTL_MS)
+    orphanBridgeLogs = []
+    if (fresh.length === 0) return
+    for (const item of fresh) {
+      enqueueBridgeLog({ ...item.entry, case_id: caseId })
+    }
+    console.log(`[bridge-log] 工单 ${caseId} 建立后回填 ${fresh.length} 条无工单上下文的日志`)
   }
 
   // C 修复：将临时会话（fromCaseId）已采集的回采日志，以真实工单（toCaseId）重新落库，
@@ -365,6 +399,14 @@ export const useChatStore = defineStore('chat', () => {
   // 状态
   const messages = ref<ChatMessage[]>([])
   const currentCase = ref<CaseResponse | null>(null)
+  // 工单一旦建立，立刻把建单前暂存的生命周期日志（bridge.startup / connected 等）回填，
+  // 否则"Bridge 没起来"的证据恰好落在建单之前，永远进不了库。
+  watch(
+    () => currentCase.value?.case_id,
+    (caseId) => {
+      if (caseId) adoptOrphanBridgeLogs(caseId)
+    },
+  )
   const conversationId = ref<string | null>(null)
   const isLoading = ref(false)
   const isStreaming = ref(false)
@@ -558,6 +600,9 @@ export const useChatStore = defineStore('chat', () => {
   const sshOutputBuffer = ref<string>('')
   const sshCommandConsumer = ref<'terminal' | 'collection' | null>(null)
   const sshTerminalOutputEvent = ref<string>('')
+  // 终端提示（非流式输出）：如 bridge 回包"输入无法路由到会话"。
+  // 带唯一后缀刷新，保证相同文案也能触发下一次 watch。
+  const sshTerminalNotice = ref<{ text: string; at: number } | null>(null)
 
   // === Agent 命令执行结果等待队列 ===
   // 用于 waitForExecResult 函数，存储 execId → resolve 回调
@@ -2384,6 +2429,14 @@ export const useChatStore = defineStore('chat', () => {
           if (sshCommandConsumer.value) {
             sshTerminalOutputEvent.value = msg.output
           }
+        } else if (msg.type === 'ssh_input_rejected') {
+          // 输入无法路由到会话：只提示，绝不能走 failConnect——
+          // 否则 bridge 的一条拒绝回包会把已经连上的终端直接踢掉。
+          devLog('SSH', 'ERROR: 输入被 bridge 拒绝', { message: msg.message })
+          sshTerminalNotice.value = {
+            text: msg.message || 'SSH 会话不存在，输入未送达远端（请重新连接终端）',
+            at: Date.now(),
+          }
         } else if (msg.type === 'ssh_error') {
           devLog('SSH', 'ERROR: 收到错误', { message: msg.message })
           clearSshAuthTimer()
@@ -2756,7 +2809,12 @@ export const useChatStore = defineStore('chat', () => {
     }
     devLog('SSH', '发送命令', { command, consumer })
     sshCommandConsumer.value = consumer
-    sshWebSocket.value.send(buildInputMessage(sshCurrentConfig.value?.caseId || '', `${command}\n`))
+    // node_ip 与 ssh_connect 保持一致：bridge 按 caseID@nodeIP 存会话，缺了就只剩兜底匹配。
+    sshWebSocket.value.send(buildInputMessage(
+      sshCurrentConfig.value?.caseId || '',
+      `${command}\n`,
+      sshCurrentConfig.value?.host,
+    ))
   }
 
   /** 采集环境数据（SSH 连接成功后自动调用或手动触发） */
@@ -3154,7 +3212,7 @@ export const useChatStore = defineStore('chat', () => {
                 command: name,
                 timeoutMs,
               })
-              socket.send(buildInputMessage(caseId, buildBridgeCommandPayload(command, marker)))
+              socket.send(buildInputMessage(caseId, buildBridgeCommandPayload(command, marker), sshConfig.host))
             })
           }
 
@@ -3735,6 +3793,7 @@ export const useChatStore = defineStore('chat', () => {
     sshErrorMessage,
     sshOutputBuffer,
     sshTerminalOutputEvent,
+    sshTerminalNotice,
     sshCommandConsumer,
     connectSSH,
     disconnectSSH,

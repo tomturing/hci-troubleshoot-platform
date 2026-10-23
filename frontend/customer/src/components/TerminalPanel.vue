@@ -129,6 +129,16 @@ watch(
   },
 )
 
+// 监听 bridge 提示（如"输入无法路由到会话"）：写进终端，避免出现"点了毫无反应"的观感。
+// 与 ssh_error 严格区分——这里只是提示，不改变连接状态。
+watch(
+  () => chatStore.sshTerminalNotice,
+  (notice) => {
+    if (!notice?.text) return
+    writeTerminal(`\n[Bridge] ${notice.text}\n`)
+  },
+)
+
 // 监听命令注入
 watch(
   () => chatStore.terminalInputCommand,
