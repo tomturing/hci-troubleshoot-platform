@@ -15,7 +15,6 @@ import argparse
 import asyncio
 import logging
 import os
-import re
 import shutil
 import sys
 import time
@@ -25,13 +24,10 @@ from pathlib import Path
 from .config import Config
 from .extractor import extract
 from .fetcher import fetch
-from .models import ErrorCode, TicketError
+from .models import ErrorCode, TicketError, validate_ticket_id
 from .publisher import cleanup_workspace, prune_trash, publish
 
 logger = logging.getLogger("ticket-sync")
-
-# 工单号唯一合法形态：Q + 13 位数字。服务端强制校验，不接受任何路径字符。
-TICKET_RE = re.compile(r"^Q\d{13}$")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -58,14 +54,7 @@ def main(argv: list[str] | None = None) -> int:
 
 async def _run(args: argparse.Namespace) -> int:
     cfg = Config.from_env(args.env_file)
-    ticket_id = args.ticket_id.strip()
-
-    if not TICKET_RE.match(ticket_id):
-        raise TicketError(
-            ErrorCode.INVALID_TICKET_ID,
-            "工单号格式错误，应为 Q + 13 位数字",
-            f"input={ticket_id!r}",
-        )
+    ticket_id = validate_ticket_id(args.ticket_id)
 
     job_id = uuid.uuid4().hex[:8]
     final_dir = cfg.root / ticket_id

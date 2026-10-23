@@ -3,7 +3,10 @@ name = "hci-ticket-sync"
 version = "0.1.0"
 description = "HCI 工单日志同步与解压服务（宿主机常驻）"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "fastapi>=0.161.1",
+    "uvicorn>=0.54.0",
+]
 
 [project.scripts]
 ticket-sync = "app.cli:main"
@@ -17,3 +20,9 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+]

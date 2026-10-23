@@ -20,6 +20,8 @@ DEFAULT_MIN_FREE_BYTES = 60 * 1024**3
 DEFAULT_MAX_FILES = 50_000
 # 实测最深 3 层，留一层余量。
 DEFAULT_MAX_DEPTH = 4
+# 单块磁盘上并发更高只会互相拖慢，2 是吞吐与响应性的折中。
+DEFAULT_CONCURRENCY = 2
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,7 @@ class Config:
     min_free_bytes: int
     max_files: int
     max_depth: int
+    concurrency: int
 
     @property
     def source(self) -> str:
@@ -85,6 +88,7 @@ class Config:
             min_free_bytes=int(optional("TICKET_MIN_FREE_BYTES", str(DEFAULT_MIN_FREE_BYTES))),
             max_files=int(optional("TICKET_MAX_FILES", str(DEFAULT_MAX_FILES))),
             max_depth=int(optional("TICKET_MAX_DEPTH", str(DEFAULT_MAX_DEPTH))),
+            concurrency=int(optional("TICKET_CONCURRENCY", str(DEFAULT_CONCURRENCY))),
         )
 
 

@@ -110,11 +110,18 @@ async def fetch(
     if proc.stdout is None or proc.stderr is None:
         raise TicketError(ErrorCode.SSH_FAILED, "无法建立 rsync 管道")
 
-    await asyncio.gather(
-        _pump(proc.stdout, handle_progress),
-        _pump(proc.stderr, handle_stderr),
-    )
-    code = await proc.wait()
+    try:
+        await asyncio.gather(
+            _pump(proc.stdout, handle_progress),
+            _pump(proc.stderr, handle_stderr),
+        )
+        code = await proc.wait()
+    except asyncio.CancelledError:
+        # 取消时被取消的是等待方，rsync 本身不会退出，会继续在后台吞噬带宽
+        # 和磁盘。必须显式终止并回收，避免留下孤儿进程。
+        proc.kill()
+        await proc.wait()
+        raise
 
     if code != 0:
         stderr_text = "\n".join(stderr_lines)

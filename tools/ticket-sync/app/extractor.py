@@ -35,6 +35,7 @@ async def extract(
     cfg: Config,
     job_id: str,
     on_progress: Callable[[ExtractStats], None] | None = None,
+    on_archive: Callable[[str], None] | None = None,
 ) -> ExtractStats:
     """把 archive 解压到 work_dir，返回统计。
 
@@ -45,6 +46,7 @@ async def extract(
     # 第一层：工单 zip 直接解到 work_dir 根，不额外套目录。
     # 实测归档根就是 log_list.json，套一层会让用户在选择器里多点一次。
     logger.info("ticket=%s job=%s phase=extracting depth=1 开始解压顶层归档", ticket_id, job_id)
+    _notify_archive(on_archive, archive.name)
     await _unzip(archive, work_dir, cfg.archive_password)
     archive.unlink(missing_ok=True)  # 归档不再需要，先删掉腾空间
     stats.archives += 1
@@ -68,13 +70,15 @@ async def extract(
         depth += 1
         for nested in pending:
             target = _target_for(nested)
+            relative = str(nested.relative_to(work_dir))
             logger.info(
                 "ticket=%s job=%s depth=%d 解压 %s",
                 ticket_id,
                 job_id,
                 depth,
-                nested.relative_to(work_dir),
+                relative,
             )
+            _notify_archive(on_archive, relative)
             await _extract_any(nested, target, cfg.archive_password)
             nested.unlink(missing_ok=True)
             stats.archives += 1
@@ -101,6 +105,11 @@ def _notify(callback: Callable[[ExtractStats], None] | None, stats: ExtractStats
         callback(stats)
 
 
+def _notify_archive(callback: Callable[[str], None] | None, name: str) -> None:
+    if callback is not None:
+        callback(name)
+
+
 def _find_archives(root: Path) -> list[Path]:
     """扫描待处理的归档。不跟随符号链接目录，避免遍历到根目录之外。"""
     found: list[Path] = []
@@ -122,16 +131,42 @@ def _target_for(archive: Path) -> Path:
 
     sp_10.46.16.71.tgz          -> sp_10.46.16.71/
     cmd-output/raid.tar.gz      -> cmd-output/raid/
+    LOG_cgroup.txt.zip          -> LOG_cgroup.txt.d/   （同名文件已存在时）
+
+    第三种情况在真实工单里普遍存在：HCI 会把日志原文件和它的压缩版一起打包，
+    LOG_cgroup.txt 与 LOG_cgroup.txt.zip 并存。若直接解到 LOG_cgroup.txt/
+    会与同名文件冲突，因此退让为 .d 目录，绝不覆盖原始日志。
     """
     name = archive.name
+    base = archive
     for suffix in ARCHIVE_SUFFIXES:
         if name.lower().endswith(suffix):
-            return archive.with_name(name[: -len(suffix)])
-    return archive.with_suffix("")
+            base = archive.with_name(name[: -len(suffix)])
+            break
+
+    if not base.exists() or base.is_dir():
+        return base
+
+    # base 已被同名文件占用：加 .d 后缀。若 .d 也被文件占用则继续编号。
+    candidate = base.with_name(base.name + ".d")
+    index = 2
+    while candidate.exists() and not candidate.is_dir():
+        candidate = base.with_name(f"{base.name}.d{index}")
+        index += 1
+    logger.warning("归档目录与已有文件同名，改用 %s", candidate.name)
+    return candidate
 
 
 async def _extract_any(archive: Path, target: Path, password: str) -> None:
-    target.mkdir(parents=True, exist_ok=True)
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # 父路径被文件占位等情况：归档结构异常，不是可恢复错误。
+        raise TicketError(
+            ErrorCode.EXTRACT_FAILED,
+            f"无法创建解压目录 {target.name}",
+            f"path={target} error={exc}",
+        ) from exc
     if archive.name.lower().endswith(".zip"):
         await _unzip(archive, target, password)
     else:
@@ -153,7 +188,7 @@ async def _unzip(archive: Path, target: Path, password: str) -> None:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    stdout, stderr = await _communicate(proc)
     code = proc.returncode or 0
     # Info-ZIP 用 1 表示"有警告但已解压"，属于可接受范围。
     if code in (0, 1):
@@ -183,7 +218,7 @@ async def _untar(archive: Path, target: Path) -> None:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    _, stderr = await proc.communicate()
+    _, stderr = await _communicate(proc)
     code = proc.returncode or 0
     if code == 0:
         return
@@ -194,6 +229,20 @@ async def _untar(archive: Path, target: Path) -> None:
         "解压归档失败",
         f"tar exit={code} archive={archive.name} stderr={text[:800]}",
     )
+
+
+async def _communicate(proc: asyncio.subprocess.Process) -> tuple[bytes, bytes]:
+    """等待子进程结束，并把取消传递下去。
+
+    任务被取消时抛给我们的只是 CancelledError，解压进程本身仍在运行；
+    不显式 kill 会留下孤儿进程继续写磁盘，而它的目标目录马上就会被清理。
+    """
+    try:
+        return await proc.communicate()
+    except asyncio.CancelledError:
+        proc.kill()
+        await proc.wait()
+        raise
 
 
 def _classify_unzip(code: int, stderr: str) -> ErrorCode:
