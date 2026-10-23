@@ -1,11 +1,7 @@
 {{/*
-DSH 运行期补丁文件，渲染为 $DSH_HOME/profiles/web/cordis.patch.yml。
+DSH 的 LLM 提供商配置，渲染为 $DSH_HOME/profiles/web/cordis.patch.yml。
 
-为什么一个 ConfigMap 里同时放 LLM 与工单同步：
-上游只认 profile 目录下的**单个** `cordis.patch.yml`，entrypoint/initContainer
-也只播种这一个文件；拆成两个 ConfigMap 反而需要额外的合并逻辑。
-
-LLM 三个 compat 取值均来自对目标端点的实测，不是经验推荐：
+三个 compat 取值均来自对目标端点的实测，不是经验推荐：
 - api=openai-completions：端点是 /compatible-mode/v1；
 - supportsDeveloperRole=false：端点实测拒绝 developer 角色
   （400: developer is not one of [system, assistant, user, tool, function]），
@@ -15,7 +11,7 @@ LLM 三个 compat 取值均来自对目标端点的实测，不是经验推荐�
 注意 'off' 必须加引号：YAML 1.1 会把裸 off 解析成布尔 false，
 而这里需要的是字符串键名。
 */}}
-{{- if or .Values.dsh.llm.enabled .Values.tickets.enabled }}
+{{- if .Values.dsh.llm.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -26,8 +22,7 @@ metadata:
 data:
   cordis.patch.yml: |
     # 由 Helm 渲染，请勿在集群内直接修改。
-    # 真实来源：deploy/helm/hci-platform-dsh/values.yaml
-{{- if .Values.dsh.llm.enabled }}
+    # 真实来源：deploy/helm/hci-platform-dsh/values.yaml 的 dsh.llm
     - id: llm-pi-ai
       config:
         providers:
@@ -49,22 +44,4 @@ data:
                 reasoningEfforts:
                   'off':
                 {{- end }}
-{{- end }}
-{{- if .Values.tickets.enabled }}
-    # 工单同步：不注入 config 时插件会用 $DSH_HOME/tickets（emptyDir 2Gi），
-    # 与 hostPath /data/tickets 完全不搭界 —— 这层映射是必需的，不是可选优化。
-    - id: ticket-sync
-      config:
-        ticketsRoot: {{ .Values.tickets.mountPath }}
-        syncer: {{ .Values.tickets.syncer }}
-        sourceUrl: {{ .Values.tickets.sourceUrl }}
-        maxTicketBytes: {{ int64 .Values.tickets.maxTicketBytes }}
-        expansionFactor: {{ int64 .Values.tickets.expansionFactor }}
-        maxExtractBytes: {{ int64 .Values.tickets.maxExtractBytes }}
-        minFreeBytes: {{ int64 .Values.tickets.minFreeBytes }}
-        maxTotalBytes: {{ int64 .Values.tickets.maxTotalBytes }}
-        maxFiles: {{ .Values.tickets.maxFiles }}
-        maxDepth: {{ .Values.tickets.maxDepth }}
-        keepTickets: {{ .Values.tickets.keepTickets }}
-{{- end }}
 {{- end }}

@@ -7,11 +7,6 @@ metadata:
     {{- include "hci.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.dsh.replicaCount }}
-  # 工单产物落在 hostPath 上，且「同一时刻只能有一个写者」：滚动更新默认会
-  # 先起新 Pod 再停旧 Pod，两个进程会同时写 /sf/tickets/<id> 互相踩目录。
-  # Recreate 用短暂中断换掉这个竞态（replicaCount 恒为 1）。
-  strategy:
-    type: Recreate
   selector:
     matchLabels:
       {{- include "hci.selectorLabels" (dict "name" "dsh" "Release" .Release) | nindent 6 }}
@@ -36,7 +31,7 @@ spec:
         # 刻意不设置 fsGroup。原因见 values.yaml 的 customerLogs 说明：
         # /sf/log 是客户日志回收链路的共享目录，一旦 kubelet 对其误改属主，
         # 会直接破坏其他消费者。风险对称性上不值得为了便利去赌。
-      {{- if or .Values.dsh.llm.enabled .Values.tickets.enabled }}
+      {{- if .Values.dsh.llm.enabled }}
       initContainers:
         # 把 GitOps 声明的 cordis.patch.yml 播种到可写的家目录卷。
         #
@@ -104,15 +99,6 @@ spec:
             - secretRef:
                 name: {{ .Values.dsh.llmSecretName }}
           {{- end }}
-            {{- if .Values.tickets.enabled }}
-            # 工单包 zip 密码：只进进程内存，DSH 不写盘也不打日志。
-            - name: DSH_TICKET_ARCHIVE_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.tickets.passwordSecretName }}
-                  key: defaultPassword
-                  optional: true
-            {{- end }}
           # token 是否落盘是 DSH 真正可用的标志：entrypoint 只在抓到
           # 上游就绪行后才写入，因此它比 TCP 探活更能反映真实可用状态。
           startupProbe:
@@ -145,11 +131,6 @@ spec:
             - name: customer-logs
               mountPath: {{ .Values.customerLogs.mountPath }}
               readOnly: true
-            {{- end }}
-            {{- if .Values.tickets.enabled }}
-            # 工单日志产物（可写，独立卷；属主 1000 由宿主机预置）
-            - name: tickets
-              mountPath: {{ .Values.tickets.mountPath }}
             {{- end }}
             # 解压/分析临时产物
             - name: workspace
@@ -209,12 +190,6 @@ spec:
             path: {{ .Values.customerLogs.hostPath }}
             type: Directory
         {{- end }}
-        {{- if .Values.tickets.enabled }}
-        - name: tickets
-          hostPath:
-            path: {{ .Values.tickets.hostPath }}
-            type: Directory
-        {{- end }}
         - name: workspace
           emptyDir:
             sizeLimit: {{ .Values.workspace.sizeLimit }}
@@ -229,9 +204,8 @@ spec:
         - name: proxy-config
           configMap:
             name: dsh-proxy
-        {{- if or .Values.dsh.llm.enabled .Values.tickets.enabled }}
-        # 只交给 initContainer 读取一次，再播种到家目录卷。
-        # 工单同步的 ticketsRoot 等参数与 LLM 配置共用同一份 cordis.patch.yml。
+        {{- if .Values.dsh.llm.enabled }}
+        # 只交给 initContainer 读取一次，再播种到家目录卷
         - name: llm-config
           configMap:
             name: dsh-llm-config

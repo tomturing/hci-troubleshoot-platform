@@ -127,3 +127,6 @@ hci_sim/database.test
 
 # conversation-service 在线控制台截图制品由运行时目录或持久卷管理，不提交本地 PPM。
 backend/conversation-service/data/vm-console-artifacts/
+
+# 本地 worktree 副本（用于比对上游代码），不入库。
+.wt/
