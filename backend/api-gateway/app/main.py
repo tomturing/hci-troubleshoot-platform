@@ -39,6 +39,7 @@ from app.routes import (
     environments,
     health,
     kb,
+    log_collect,
     signal_dry_run,
     simulations,
     terminal,
@@ -223,6 +224,7 @@ app.include_router(health.router)
 app.include_router(capabilities.router)
 app.include_router(bridge_logs.router)
 app.include_router(simulations.router)
+app.include_router(log_collect.router)
 app.include_router(signal_dry_run.router)
 app.include_router(diagnosis.router)
 app.include_router(dsh.router)

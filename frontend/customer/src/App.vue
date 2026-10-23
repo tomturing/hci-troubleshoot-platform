@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted } from 'vue'
 import { Monitor } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 import { getClientId } from '@/utils/clientId'
@@ -9,7 +9,12 @@ import SshConnectDialog from '@/components/SshConnectDialog.vue'
 
 const chatStore = useChatStore()
 const clientId = getClientId()
-const logCollectVisible = ref(false)
+// 抽屉开合收敛到 store：建单后的引导卡片也通过同一状态打开面板，
+// 避免 App.vue 与 ChatWindow 各持一份本地 ref 导致两处入口行为不一致。
+const logCollectVisible = computed({
+  get: () => chatStore.logCollectVisible,
+  set: (visible: boolean) => (visible ? chatStore.openLogCollect() : chatStore.closeLogCollect()),
+})
 
 // Bridge 下载地址：优先读环境变量，回退到相对路径
 // 部署时在 .env 中配置 VITE_BRIDGE_DOWNLOAD_URL 指向实际文件
@@ -101,7 +106,7 @@ function handleDownloadBridge() {
             size="small"
             round
             class="log-collect-btn header-action-btn"
-            @click="logCollectVisible = true"
+            @click="chatStore.openLogCollect()"
           >
             🗂 日志收集
           </el-button>

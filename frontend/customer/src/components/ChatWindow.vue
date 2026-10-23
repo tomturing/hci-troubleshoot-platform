@@ -10,6 +10,7 @@ import InteractiveRequestCard from './InteractiveRequestCard.vue'
 import DiagnosticProgress from './DiagnosticProgress.vue'
 import CaseCreateDialog from './CaseCreateDialog.vue'
 import BridgeLogUploader from './BridgeLogUploader.vue'
+import LogCollectEntryCard from './LogCollectEntryCard.vue'
 import EnvironmentSummary from './EnvironmentSummary.vue'
 
 const chatStore = useChatStore()
@@ -253,6 +254,9 @@ function handleQuoteToChat(content: string) {
         </el-button>
       </template>
     </el-alert>
+
+    <!-- 日志收集引导（建单后一次性出现；关闭后仍可从 header 入口进入） -->
+    <LogCollectEntryCard />
 
     <!-- 本地 bridge 日志补采入口（诊断未完成时主动提醒） -->
     <BridgeLogUploader />

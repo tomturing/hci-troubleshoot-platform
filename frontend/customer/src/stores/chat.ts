@@ -617,6 +617,46 @@ export const useChatStore = defineStore('chat', () => {
     return currentCase.value !== null && !hasActiveCase.value
   })
 
+  // === 日志收集入口（建单后一次性引导 + header 常驻入口）===
+  // 设计取舍：引导卡片只在当前工单未 dismiss 时出现，避免每次刷新都打扰；
+  // 但 header 的「日志收集」按钮保留，否则用户点"暂不需要"后会失去唯一入口。
+  const LOG_COLLECT_GUIDE_KEY = 'hci.logCollectGuide.dismissedCaseId'
+  const logCollectVisible = ref(false)
+  const logCollectGuideDismissedCaseId = ref<string | null>(readDismissedLogCollectCase())
+
+  function readDismissedLogCollectCase(): string | null {
+    try {
+      return localStorage.getItem(LOG_COLLECT_GUIDE_KEY)
+    } catch {
+      // 隐私模式 / 禁用本地存储：仅影响引导去重，不影响功能
+      return null
+    }
+  }
+
+  const showLogCollectGuide = computed(() => {
+    const caseId = currentCase.value?.case_id
+    return Boolean(hasActiveCase.value && caseId && logCollectGuideDismissedCaseId.value !== caseId)
+  })
+
+  function openLogCollect(): void {
+    logCollectVisible.value = true
+  }
+
+  function closeLogCollect(): void {
+    logCollectVisible.value = false
+  }
+
+  function dismissLogCollectGuide(): void {
+    const caseId = currentCase.value?.case_id
+    if (!caseId) return
+    logCollectGuideDismissedCaseId.value = caseId
+    try {
+      localStorage.setItem(LOG_COLLECT_GUIDE_KEY, caseId)
+    } catch {
+      // 存储不可用时退化为当前会话内不再展示
+    }
+  }
+
   /** 获取可用 AI 助手列表（v2.1：从响应获取显示决策）*/
   async function fetchAssistants() {
     try {
@@ -3417,6 +3457,12 @@ export const useChatStore = defineStore('chat', () => {
     isCaseClosed,
     // 诊断阶段
     diagnosticStage,
+    // 日志收集（HCI 侧 acli log_collect）
+    logCollectVisible,
+    showLogCollectGuide,
+    openLogCollect,
+    closeLogCollect,
+    dismissLogCollectGuide,
     // 本地日志补采（诊断未完成时的兜底通道）
     bridgeLogUploadHint,
     markDiagnosticIncomplete,
