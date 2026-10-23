@@ -79,8 +79,11 @@ data:
                 # /api/ 等同域路径；此处收拢到 /dsh/，避免凭据串域。
                 proxy_cookie_path / /dsh/;
 
-                # 必须保留浏览器侧 Host：上游按它做 Host/Origin 白名单校验
-                proxy_set_header Host $host;
+                # 必须保留浏览器侧 Host：上游按它做 Host/Origin 白名单校验。
+                # 用 $http_host 而不是 $host：后者会丢掉端口，上游拼出的期望 Origin
+                # 变成 https://host，而浏览器实际发的是 https://host:4888，
+                # 于是所有带 Origin 的请求（WS mux、RPC）一律 403。
+                proxy_set_header Host $http_host;
                 proxy_set_header X-Real-IP $remote_addr;
                 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                 proxy_set_header X-Forwarded-Proto $scheme;
