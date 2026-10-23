@@ -15,15 +15,45 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-CATALOG_PATH = (
-    Path(__file__).resolve().parents[3] / "shared" / "resolution" / "catalogs" / "log_collect_error_catalog.json"
-)
+from shared.observability.logger import get_logger
+
+logger = get_logger("case-service")
+
+_CATALOG_RELATIVE = Path("shared") / "resolution" / "catalogs" / "log_collect_error_catalog.json"
+
+
+def _resolve_catalog_path() -> Path:
+    """兼容两种目录布局：仓库内 `backend/` 与镜像内 `/app/`。
+
+    仓库布局：`backend/case-service/app/schemas/` → 向上第 3 层是 `backend/`；
+    镜像布局：`/app/app/schemas/` → 向上第 3 层是 `/`（错误）。固定层数必然在
+    其中一种布局下失效，这里统一逐级向上查找。
+    """
+    here = Path(__file__).resolve()
+    for base in here.parents:
+        candidate = base / _CATALOG_RELATIVE
+        if candidate.is_file():
+            return candidate
+    # 都没找到时返回仓库布局路径，仅用于错误信息/测试
+    return here.parents[3] / _CATALOG_RELATIVE
+
+
+CATALOG_PATH = _resolve_catalog_path()
 
 
 @lru_cache(maxsize=1)
 def load_error_catalog() -> dict[str, dict[str, Any]]:
-    """返回 code → 元数据映射（进程内缓存）。"""
-    raw = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+    """返回 code → 元数据映射（进程内缓存）。
+
+    目录文件缺失/损坏时不抛异常：错误码目录只是展示元数据，缺失应降级为通用
+    Problem（`build_problem` 已有 unknown 分支），否则 409/4xx 会变成 500。
+    staging 曾因镜像内路径少一层 `/app` 触发此问题。
+    """
+    try:
+        raw = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("错误码目录不可用，降级为通用错误结构: %s (%s)", CATALOG_PATH, exc)
+        return {}
     return {str(item["code"]): item for item in raw["errors"]}
 
 
