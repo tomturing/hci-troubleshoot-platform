@@ -18,12 +18,19 @@ const { mockStore } = vi.hoisted(() => ({
     logCollectCaseId: null as string | null,
     logCollectCaseLoading: false,
     existingCases: [] as any[],
+    // 弹框强依赖 SSH 会话：默认已登录，未登录路径单独用例覆盖
+    sshConnectionState: 'connected' as 'disconnected' | 'connecting' | 'connected' | 'error',
     confirmLogCollectCase: vi.fn(),
     closeLogCollectCaseDialog: vi.fn(),
   },
 }))
 
 vi.mock('@/stores/chat', () => ({ useChatStore: () => mockStore }))
+
+// 弹框内部做 bridge 前置探测，测试环境不连真实 bridge
+vi.mock('@/api/terminal', () => ({
+  checkBridgeBeforeOpen: vi.fn().mockResolvedValue('running'),
+}))
 
 const ElDialogStub = {
   setup(_: any, { slots }: any) {
@@ -44,9 +51,15 @@ const ElInputStub = {
 }
 
 const ElButtonStub = {
+  props: ['disabled'],
   emits: ['click'],
-  setup(_: any, { emit, slots }: any) {
-    return () => h('button', { onClick: () => emit('click') }, slots.default?.())
+  setup(props: any, { emit, slots }: any) {
+    return () =>
+      h(
+        'button',
+        { disabled: props.disabled, onClick: () => emit('click') },
+        slots.default?.(),
+      )
   },
 }
 
@@ -58,6 +71,8 @@ async function mountDialog() {
         'el-dialog': ElDialogStub,
         'el-input': ElInputStub,
         'el-button': ElButtonStub,
+        // 内嵌 SSH 登录区的行为由 SshConnectSection 自身测试覆盖
+        SshConnectSection: true,
       },
     },
   })
@@ -74,6 +89,7 @@ describe('LogCollectCaseDialog', () => {
     mockStore.closeLogCollectCaseDialog.mockReset()
     mockStore.logCollectCaseLoading = false
     mockStore.existingCases = []
+    mockStore.sshConnectionState = 'connected'
   })
 
   it('格式非法时本地拦截，不调用服务端校验', async () => {
@@ -124,6 +140,23 @@ describe('LogCollectCaseDialog', () => {
     await cancel!.trigger('click')
 
     expect(mockStore.closeLogCollectCaseDialog).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('未登录 SSH 时「确定」禁用，且点击不会发起服务端校验', async () => {
+    mockStore.sshConnectionState = 'disconnected'
+    const wrapper = await mountDialog()
+
+    const confirm = wrapper.findAll('button').find((b: any) => b.text().includes('确定'))
+    expect(confirm!.attributes('disabled')).toBeDefined()
+
+    await wrapper.find('input').setValue('Q2026102300001')
+    await clickConfirm(wrapper)
+    await wrapper.vm.$nextTick()
+
+    // 浏览器不会向 disabled 按钮派发 click，submit 因此不会被触发
+    expect(mockStore.confirmLogCollectCase).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('登录成功后才能提交')
     wrapper.unmount()
   })
 })

@@ -636,6 +636,21 @@ export const useChatStore = defineStore('chat', () => {
   const logCollectActiveTask = ref<ActiveTaskSummary | null>(null)
   // 接管查看：刷新/重进后要恢复的任务 ID（面板据此轮询平台状态）
   const logCollectResumeTaskId = ref<string | null>(null)
+  // 最近一次成功登录的 HCI 主机（面板「发起节点」自动填充；不含任何凭据）
+  const lastSshHost = ref<string>(readLastSshHost())
+
+  function readLastSshHost(): string {
+    try {
+      const raw = JSON.parse(localStorage.getItem('hci_last_ssh_config') || '{}')
+      return typeof raw.host === 'string' ? raw.host : ''
+    } catch {
+      return ''
+    }
+  }
+
+  function setLastSshHost(host: string): void {
+    lastSshHost.value = host
+  }
   const logCollectGuideDismissedCaseId = ref<string | null>(readDismissedLogCollectCase())
 
   function readDismissedLogCollectCase(): string | null {
@@ -659,6 +674,17 @@ export const useChatStore = defineStore('chat', () => {
    * 有活跃工单时一律以它为准，避免面板停留在上一次手动指定的旧工单上。
    */
   function openLogCollect(): void {
+    // 日志收集依赖 SSH 会话：未连接时一律先走弹框（内含统一 SSH 登录区），
+    // 避免用户打开面板后卡在"环境探测失败"。
+    if (sshConnectionState.value !== 'connected') {
+      if (!logCollectCaseId.value && currentCase.value?.case_id) {
+        // 预填当前工单号，减少一次输入
+        logCollectCaseId.value = currentCase.value.case_id
+      }
+      logCollectCaseDialogVisible.value = true
+      return
+    }
+
     if (hasActiveCase.value && currentCase.value?.case_id) {
       logCollectCaseId.value = currentCase.value.case_id
       logCollectVisible.value = true
@@ -3549,6 +3575,8 @@ export const useChatStore = defineStore('chat', () => {
     logCollectCaseLoading,
     logCollectActiveTask,
     logCollectResumeTaskId,
+    lastSshHost,
+    setLastSshHost,
     showLogCollectGuide,
     openLogCollect,
     closeLogCollect,

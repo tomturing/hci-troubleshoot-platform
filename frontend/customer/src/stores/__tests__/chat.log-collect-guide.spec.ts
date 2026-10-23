@@ -105,6 +105,8 @@ describe('chat store - 日志收集引导', () => {
     expect(localStorage.getItem(GUIDE_DISMISS_KEY)).toBe('Q2026102200001')
 
     // 引导关闭只影响引导本身，header 入口仍必须可用
+    // 入口现在强依赖 SSH 会话，这里模拟已登录状态以验证"直接进面板"路径
+    store.sshConnectionState = 'connected'
     store.openLogCollect()
     expect(store.logCollectVisible).toBe(true)
     store.closeLogCollect()

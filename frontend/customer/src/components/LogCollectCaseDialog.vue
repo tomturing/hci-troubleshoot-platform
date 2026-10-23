@@ -11,11 +11,27 @@
  */
 import { computed, ref, watch } from 'vue'
 import { useChatStore } from '@/stores/chat'
+import { checkBridgeBeforeOpen } from '@/api/terminal'
+import SshConnectSection from './SshConnectSection.vue'
 
 const chatStore = useChatStore()
 
 const caseId = ref('')
 const errorMessage = ref('')
+const bridgeStatus = ref<'running' | 'not-running' | 'checking'>('checking')
+
+const sshConnected = computed(() => chatStore.sshConnectionState === 'connected')
+
+/** 与 SSH 终端一致的 bridge 前置检测（3s 超时），已连接时跳过。 */
+async function detectBridge() {
+  if (sshConnected.value) return
+  bridgeStatus.value = 'checking'
+  try {
+    bridgeStatus.value = (await checkBridgeBeforeOpen()) === 'running' ? 'running' : 'not-running'
+  } catch {
+    bridgeStatus.value = 'not-running'
+  }
+}
 
 // 直接列出当前客户端名下的最近工单（含已关闭），避免用户手输时把外部 ICare 单号
 // 或别的环境的号填进来。列表来源是 initialize 已加载的 existingCases，不额外发请求。
@@ -57,14 +73,19 @@ watch(
     if (!open) return
     caseId.value = chatStore.logCollectCaseId ?? ''
     errorMessage.value = ''
+    void detectBridge()
   },
 )
 
 async function submit() {
   errorMessage.value = ''
+  if (!sshConnected.value) {
+    errorMessage.value = '请先登录 SSH（日志收集需要复用 SSH 会话）'
+    return
+  }
   const value = caseId.value.trim()
-  if (!CASE_ID_PATTERN.test(value)) {
-    errorMessage.value = '工单号格式不正确（字母/数字/下划线/短横线，最长 20 位）'
+  if (!isValidCaseId(value)) {
+    errorMessage.value = '工单号格式不正确，应为 Q + 8 位日期 + 5 位序号（如 Q2026101401684）'
     return
   }
   try {
@@ -79,7 +100,7 @@ async function submit() {
   <el-dialog
     :model-value="chatStore.logCollectCaseDialogVisible"
     title="指定工单号"
-    width="440px"
+    width="560px"
     :close-on-click-modal="false"
     @close="chatStore.closeLogCollectCaseDialog()"
   >
@@ -112,6 +133,13 @@ async function submit() {
     </div>
     <p v-else class="lc-case-hint">当前客户端暂无历史工单，请先在对话中创建工单。</p>
 
+    <!-- SSH 登录：与 SSH 终端共用同一模板（SshConnectSection），强依赖先登录 -->
+    <div class="lc-ssh-block">
+      <p class="lc-ssh-title">登录 HCI（日志收集依赖 SSH 会话）</p>
+      <SshConnectSection :bridge-status="bridgeStatus" mode="inline" />
+      <p v-if="!sshConnected" class="lc-ssh-hint">登录成功后才能提交；发起节点会自动填充。</p>
+    </div>
+
     <p v-if="errorMessage" class="lc-case-error">{{ errorMessage }}</p>
     <p class="lc-case-hint">
       换设备或清理过浏览器缓存时，旧工单可能不属于当前客户端，需要在原浏览器中操作。
@@ -119,7 +147,13 @@ async function submit() {
     </p>
     <template #footer>
       <el-button @click="chatStore.closeLogCollectCaseDialog()">取消</el-button>
-      <el-button type="primary" :loading="chatStore.logCollectCaseLoading" @click="submit">
+      <el-button
+        type="primary"
+        :loading="chatStore.logCollectCaseLoading"
+        :disabled="!sshConnected"
+        :title="sshConnected ? '' : '请先登录 SSH'"
+        @click="submit"
+      >
         确定
       </el-button>
     </template>
@@ -200,5 +234,30 @@ async function submit() {
 .lc-case-item-status {
   flex-shrink: 0;
   color: #909399;
+}
+
+.lc-ssh-block {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px dashed #e4e7ed;
+}
+
+.lc-ssh-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.lc-ssh-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: #e6a23c;
+}
+
+/* 内嵌 SSH 表单后弹框变高：正文滚动，按钮固定在 footer */
+:deep(.el-dialog__body) {
+  max-height: 70vh;
+  overflow-y: auto;
 }
 </style>
