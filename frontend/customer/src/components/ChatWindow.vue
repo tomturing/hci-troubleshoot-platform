@@ -162,7 +162,8 @@ function openTerminalReplay() {
 
 /** 从 TerminalPanel 打开当前工单的终端历史回放 */
 function openCurrentCaseTerminalHistory() {
-  const caseId = chatStore.currentCase?.case_id ?? null
+  // 优先当前聊天工单，其次日志收集绑定的工单：无聊天工单时用户也能看采集会话的回放
+  const caseId = chatStore.currentCase?.case_id ?? chatStore.logCollectCaseId ?? null
   if (caseId) {
     terminalReplayCaseId.value = caseId
     showTerminalReplayDialog.value = true

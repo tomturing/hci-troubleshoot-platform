@@ -11,6 +11,7 @@
  * - 用于排障复盘和审计回放
  */
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { ElMessage } from 'element-plus'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
 import 'xterm/css/xterm.css'
@@ -91,6 +92,28 @@ const connectingLabel = computed(() => {
 const caseId = computed(() => chatStore.currentCase?.case_id || 'default')
 
 const errorMessage = computed(() => chatStore.sshErrorMessage)
+
+// 终端录像按工单归档：优先当前聊天工单，其次日志收集绑定的工单。
+// 日志收集在没有聊天工单时会按用户指定的工单号建档/复用，采集会话的录像同样
+// 挂在该工单上；只看 currentCase 会让"日志收集已建单"的用户仍点击无反应。
+// 按钮保持可点（点了必须给出原因），而不是静默 return 让人以为功能坏了。
+const historyCaseId = computed(
+  () => chatStore.currentCase?.case_id || chatStore.logCollectCaseId || '',
+)
+const hasCaseContext = computed(() => Boolean(historyCaseId.value))
+const historyHint = computed(() =>
+  hasCaseContext.value
+    ? '查看终端回放历史'
+    : '终端历史按工单归档，请先创建工单或在日志收集中指定工单号',
+)
+
+function openTerminalHistory() {
+  if (!hasCaseContext.value) {
+    ElMessage.warning('终端历史按工单归档，请先创建工单或在日志收集中指定工单号后再查看')
+    return
+  }
+  emit('open-terminal-history')
+}
 
 let xterm: Terminal | null = null
 let fitAddon: FitAddon | null = null
@@ -373,7 +396,6 @@ onBeforeUnmount(() => {
   <div class="terminal-panel">
     <div class="terminal-header">
       <div class="header-left">
-        <span class="header-title">SSH 终端</span>
         <el-tag v-if="isConnected" size="small" type="success" effect="plain">已连接</el-tag>
         <el-tag v-else-if="isConnecting" size="small" type="warning" effect="plain">{{ connectingLabel }}</el-tag>
         <el-tag v-else-if="isError" size="small" type="danger" effect="plain">连接错误</el-tag>
@@ -396,9 +418,9 @@ onBeforeUnmount(() => {
         <el-button text size="small" @click="copyLatestOutput">复制本次输出</el-button>
         <el-button text size="small" @click="sendLatestOutputToAssistant">发送到助手</el-button>
         <el-button text size="small" @click="clearOutput">清空</el-button>
-        <el-tooltip :content="terminalState === 'A' ? '请先创建工单后再查看终端历史' : '查看终端回放历史'" placement="top">
+        <el-tooltip :content="historyHint" placement="top">
           <span>
-            <el-button text size="small" :disabled="terminalState === 'A'" @click="emit('open-terminal-history')">📹 终端历史</el-button>
+            <el-button text size="small" @click="openTerminalHistory">📹 终端历史</el-button>
           </span>
         </el-tooltip>
         <el-button text size="small" @click="closePanel">✕</el-button>
@@ -499,12 +521,6 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.header-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #e0e0e0;
 }
 
 .header-actions {

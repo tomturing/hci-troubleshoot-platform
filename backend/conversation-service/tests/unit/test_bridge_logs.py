@@ -3,9 +3,10 @@
 
 覆盖：
   - _is_internal_caller：内部直连令牌判定
-  - _assert_case_owned / _verify_batch_ownership：工单归属校验（403 防护）
+  - _assert_case_owned：单工单归属校验（手动上传整单 403 防护）
+  - _verify_batch_ownership：批量回采逐条归属判定（返回越权 case 集合，不再整批 403）
   - _authenticate_batch：internal / 签名 / 匿名三条分支
-  - ingest_bridge_logs：落库（skip 无 case_id / insert 有效条目）、归属失败 403 传播
+  - ingest_bridge_logs：落库（skip 无 case_id / 跳过越权条目 / insert 有效条目）
   - upload_bridge_logs：JSONL 解析、去重、体积上限、开关关闭、归属失败 403
 
 说明：历史占位符 token 与 `_check_session_or_internal` 桩鉴权已在 SRC L2 修复中移除，
@@ -89,10 +90,11 @@ class TestAssertCaseOwned:
 
 
 class TestVerifyBatchOwnership:
-    """批量回采写库前归属校验测试。"""
+    """批量回采归属校验测试（越权 case 逐条标出，不再整批 403）。"""
 
     @pytest.mark.asyncio
-    async def test_checks_all_distinct_cases(self):
+    async def test_returns_forbidden_cases_instead_of_rejecting_batch(self):
+        """越权/不存在的 case 只进 forbidden 集合，合法 case 不受影响。"""
         body = BridgeLogBatch(
             logs=[
                 BridgeLogEntry(case_id="Q001", event="exec.done", message="a"),
@@ -101,26 +103,32 @@ class TestVerifyBatchOwnership:
             ],
             fallback_case_id="Q000",
         )
+        owners = {"Q000": "cust-A", "Q001": "cust-B"}  # Q002 在 case 表不存在
+        session = AsyncMock()
+
+        async def _execute(_stmt, params):
+            result = MagicMock()
+            owner = owners.get(params["case_id"])
+            result.fetchone.return_value = (owner,) if owner else None
+            return result
+
+        session.execute = AsyncMock(side_effect=_execute)
         mock_db_manager = MagicMock()
 
         async def _gen():
-            yield AsyncMock()
+            yield session
 
         mock_db_manager.get_session.return_value = _gen()
-        with (
-            patch("app.routes.bridge_logs._db_manager", mock_db_manager),
-            patch("app.routes.bridge_logs._assert_case_owned", new=AsyncMock()) as mock_assert,
-        ):
-            await _verify_batch_ownership(body, "cust-A")
-        checked = {call.args[1] for call in mock_assert.await_args_list}
-        assert checked == {"Q000", "Q001", "Q002"}
+        with patch("app.routes.bridge_logs._db_manager", mock_db_manager):
+            forbidden = await _verify_batch_ownership(body, "cust-A")
+
+        assert forbidden == {"Q001", "Q002"}
 
     @pytest.mark.asyncio
     async def test_no_cases_skips(self):
         body = BridgeLogBatch(logs=[])
-        with patch("app.routes.bridge_logs._assert_case_owned", new=AsyncMock()) as mock_assert:
-            await _verify_batch_ownership(body, "cust-A")
-        mock_assert.assert_not_awaited()
+        with patch("app.routes.bridge_logs._db_manager", None):
+            assert await _verify_batch_ownership(body, "cust-A") == set()
 
 
 class TestAuthenticateBatch:
@@ -134,8 +142,9 @@ class TestAuthenticateBatch:
             patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock()) as mock_auth,
         ):
             mock_settings.INTERNAL_API_TOKEN = "internal-token"
-            user_id = await _authenticate_batch(body, _fake_request(), "Bearer internal-token")
+            user_id, forbidden = await _authenticate_batch(body, _fake_request(), "Bearer internal-token")
         assert user_id == "internal"
+        assert forbidden == set()
         mock_auth.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -143,10 +152,13 @@ class TestAuthenticateBatch:
         body = BridgeLogBatch(logs=[BridgeLogEntry(case_id="Q001", event="e", message="m")])
         with (
             patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value="cust-A")),
-            patch("app.routes.bridge_logs._verify_batch_ownership", new=AsyncMock()) as mock_verify,
+            patch(
+                "app.routes.bridge_logs._verify_batch_ownership", new=AsyncMock(return_value={"Q001"})
+            ) as mock_verify,
         ):
-            user_id = await _authenticate_batch(body, _fake_request(), None)
+            user_id, forbidden = await _authenticate_batch(body, _fake_request(), None)
         assert user_id == "cust-A"
+        assert forbidden == {"Q001"}
         mock_verify.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -156,8 +168,9 @@ class TestAuthenticateBatch:
             patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value=None)),
             patch("app.routes.bridge_logs._verify_batch_ownership", new=AsyncMock()) as mock_verify,
         ):
-            user_id = await _authenticate_batch(body, _fake_request(), None)
+            user_id, forbidden = await _authenticate_batch(body, _fake_request(), None)
         assert user_id == "anonymous"
+        assert forbidden == set()
         mock_verify.assert_not_awaited()
 
 
@@ -211,7 +224,7 @@ class TestIngestBridgeLogs:
         ):
             result = await ingest_bridge_logs(body, _fake_request(), authorization=None)
 
-        assert result == {"ok": True, "accepted": 1, "duplicates": 0, "skipped": 1}
+        assert result == {"ok": True, "accepted": 1, "duplicates": 0, "skipped": 1, "forbidden": 0}
         assert mock_session.execute.call_count == 1
         mock_session.commit.assert_called_once()
 
@@ -240,7 +253,7 @@ class TestIngestBridgeLogs:
         ):
             result = await ingest_bridge_logs(body, _fake_request(), authorization=None)
 
-        assert result == {"ok": True, "accepted": 1, "duplicates": 0, "skipped": 0}
+        assert result == {"ok": True, "accepted": 1, "duplicates": 0, "skipped": 0, "forbidden": 0}
         assert mock_session.execute.call_count == 1
 
         # 验证 INSERT 参数（session.execute(text(...), params) 为位置参数调用）
@@ -273,7 +286,7 @@ class TestIngestBridgeLogs:
         ):
             result = await ingest_bridge_logs(body, _fake_request(), authorization=None)
 
-        assert result == {"ok": True, "accepted": 2, "duplicates": 0, "skipped": 1}
+        assert result == {"ok": True, "accepted": 2, "duplicates": 0, "skipped": 1, "forbidden": 0}
         assert mock_session.execute.call_count == 2
         first_params = mock_session.execute.call_args_list[0].args[1]
         second_params = mock_session.execute.call_args_list[1].args[1]
@@ -294,7 +307,7 @@ class TestIngestBridgeLogs:
         ):
             result = await ingest_bridge_logs(body, _fake_request(), authorization=None)
 
-        assert result == {"ok": True, "accepted": 0, "duplicates": 1, "skipped": 0}
+        assert result == {"ok": True, "accepted": 0, "duplicates": 1, "skipped": 0, "forbidden": 0}
 
     @pytest.mark.asyncio
     async def test_ingest_returns_503_when_db_not_ready(self):
@@ -326,30 +339,34 @@ class TestIngestBridgeLogs:
         ):
             result = await ingest_bridge_logs(body, _fake_request(), authorization=None)
 
-        assert result == {"ok": True, "accepted": 1, "duplicates": 0, "skipped": 0}
+        assert result == {"ok": True, "accepted": 1, "duplicates": 0, "skipped": 0, "forbidden": 0}
         args, _ = mock_session.execute.call_args
         assert args[1]["case_id"] == "Q2026092010235"
 
     @pytest.mark.asyncio
-    async def test_ingest_forbidden_before_insert_when_ownership_fails(self):
-        """签名身份归属校验失败时 403，且在写库前抛出（不落库）。"""
-        body = BridgeLogBatch(logs=[BridgeLogEntry(case_id="Q001", event="exec.done", message="x")])
+    async def test_ingest_skips_forbidden_case_without_blocking_legal_entries(self):
+        """越权 case 的条目被跳过，同批次合法条目正常落库（不得整批 403）。"""
+        body = BridgeLogBatch(
+            logs=[
+                BridgeLogEntry(case_id="Q001", event="exec.done", message="attacker"),
+                BridgeLogEntry(case_id="Q002", event="exec.done", message="mine"),
+            ]
+        )
 
         mock_session = AsyncMock()
         with (
             patch("app.routes.bridge_logs._db_manager", self._db_manager(mock_session)),
-            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value="attacker")),
+            patch("app.routes.bridge_logs.authenticate_request", new=AsyncMock(return_value="cust-A")),
             patch(
                 "app.routes.bridge_logs._verify_batch_ownership",
-                new=AsyncMock(side_effect=HTTPException(status_code=403, detail="无权操作此工单的日志")),
+                new=AsyncMock(return_value={"Q001"}),
             ),
-            pytest.raises(HTTPException) as exc_info,
         ):
-            await ingest_bridge_logs(body, _fake_request(), authorization=None)
+            result = await ingest_bridge_logs(body, _fake_request(), authorization=None)
 
-        assert exc_info.value.status_code == 403
-        mock_session.execute.assert_not_called()
-        mock_session.commit.assert_not_called()
+        assert result == {"ok": True, "accepted": 1, "duplicates": 0, "skipped": 0, "forbidden": 1}
+        args, _ = mock_session.execute.call_args
+        assert args[1]["case_id"] == "Q002"
 
     @pytest.mark.asyncio
     async def test_ingest_internal_token_bypasses_ownership(self):

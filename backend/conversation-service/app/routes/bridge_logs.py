@@ -10,10 +10,12 @@ terminal_bridge 日志回采接口 - 统一工单关联的日志落库
   - docs/solution/events/2026-07-20-terminal-bridge回采链路断裂根因分析.md
   - OBS-TERMINAL-BRIDGE-001
 
-鉴权（SRC L2 加固，2026-10-08）：
+鉴权（SRC L2 加固，2026-10-08；回采可用性修复 2026-10-23）：
   - customer 前端经 api-gateway：网关强制 require_user（服务端身份 Cookie）并注入
-    HMAC 签名 X-Client-ID，本服务据此做工单归属校验（_verify_batch_ownership /
-    _assert_case_owned），归属不符即 403；历史占位符 token 已彻底移除。
+    HMAC 签名 X-Client-ID，本服务据此做工单归属校验：
+      * 批量回采（_verify_batch_ownership）逐条过滤，越权/不存在的 case 跳过不写；
+      * 手动上传（_assert_case_owned）整单 403（单次显式动作，整单拒绝语义清晰）。
+    历史占位符 token 已彻底移除。
   - 集群内服务直连（agent-service 等）：Authorization: Bearer <INTERNAL_API_TOKEN>
     旁路归属校验。
   - 严格模式（STRICT_IDENTITY_SIGNATURE=true）无签名一律 401；过渡模式放行并匿名审计。
@@ -96,34 +98,52 @@ async def _assert_case_owned(session, case_id: str, client_id: str) -> None:
         raise HTTPException(status_code=403, detail="无权操作此工单的日志")
 
 
-async def _verify_batch_ownership(body: BridgeLogBatch, client_id: str) -> None:
-    """写库前校验 batch 内全部 case_id（含 fallback）归属当前 client；不符即 403。
+async def _verify_batch_ownership(body: BridgeLogBatch, client_id: str) -> set[str]:
+    """返回 batch 内不属于当前 client 的 case_id 集合（不做整批拒绝）。
 
-    仅当网关已签名 X-Client-ID（authenticate_request 返回非 None）时执行；
-    过渡模式（无签名）下跳过，与既有 customer 路由保持一致。
+    安全边界：越权 case 的日志一律不写入；但不因为单条越权 case 拒绝整批。
+    历史实现在此直接抛 403，导致两个后果（2026-10-23 staging 实测）：
+      - 无工单终端会话的日志自带伪工单号 `terminal-only`（case 表必然查不到），
+        于是一次无工单 SSH 连接就让该浏览器的每次回采都 403；
+      - 浏览器持有的任一越权工单号（换身份/测试数据）同样毒化整批，
+        连带同批次内的合法工单日志一起被丢弃，日志通道永久失效（连续 72h 零落库）。
+    逐条判定 + 跳过越权条目，既满足「不写入他人工单」的安全目标，
+    又不会让一条脏数据打掉整条可观测链路。
     """
     case_ids = {body.fallback_case_id}
     case_ids |= {entry.case_id for entry in body.logs}
     case_ids.discard(None)
     if not case_ids or _db_manager is None:
-        return
+        return set()
+    forbidden: set[str] = set()
     async for session in _db_manager.get_session():
         for case_id in case_ids:
-            await _assert_case_owned(session, case_id, client_id)
+            res = await session.execute(
+                text('SELECT client_id FROM "case" WHERE case_id = :case_id'), {"case_id": case_id}
+            )
+            row = res.fetchone()
+            owner = row[0] if row else None
+            if owner is None or owner != client_id:
+                logger.warning(event="bridge_log_ownership_forbidden", case_id=str(case_id), client_id=client_id)
+                forbidden.add(case_id)
+    return forbidden
 
 
-async def _authenticate_batch(body: BridgeLogBatch, request: Request, authorization: str | None) -> str:
-    """回采鉴权 + 工单归属校验（见模块头鉴权模型）。
+async def _authenticate_batch(
+    body: BridgeLogBatch, request: Request, authorization: str | None
+) -> tuple[str, set[str]]:
+    """回采鉴权 + 工单归属判定（见模块头鉴权模型）。
 
-    返回用于审计的 user_id："internal"（内部直连）| client_id（签名通过）|
-    "anonymous"（过渡模式无签名）。
+    返回 (审计用 user_id, 不可写入的 case_id 集合)：
+      - "internal"（内部直连）/ client_id（签名通过）/ "anonymous"（过渡模式无签名）；
+      - internal 与过渡模式不做归属过滤（集合为空）。
     """
     if _is_internal_caller(authorization):
-        return "internal"
+        return "internal", set()
     client_id = await authenticate_request(request)
-    if client_id is not None:
-        await _verify_batch_ownership(body, client_id)
-    return client_id or "anonymous"
+    if client_id is None:
+        return "anonymous", set()
+    return client_id, await _verify_batch_ownership(body, client_id)
 
 
 class BridgeLogEntry(BaseModel):
@@ -327,8 +347,8 @@ async def ingest_bridge_logs(
     所有条目必须携带 case_id（无 case_id 的日志在浏览器端已被过滤，此处再次校验），
     落库到 bridge_execution_logs，供端到端可观测性与工单复盘。
 
-    鉴权与归属（SRC L2）：customer 前端经网关携带签名 X-Client-ID，写库前校验
-    全部 case_id 归属当前 client（不符 403）；集群内服务直连可用
+    鉴权与归属（SRC L2）：customer 前端经网关携带签名 X-Client-ID；越权 case 的
+    条目被跳过（计入 forbidden），其余条目正常落库；集群内服务直连可用
     Bearer <INTERNAL_API_TOKEN> 旁路归属校验。
 
     Args:
@@ -339,7 +359,7 @@ async def ingest_bridge_logs(
     Returns:
         ok / 接收条数 / 跳过条数
     """
-    user_id = await _authenticate_batch(body, request, authorization)
+    user_id, forbidden_cases = await _authenticate_batch(body, request, authorization)
 
     if _db_manager is None:
         raise HTTPException(status_code=503, detail="数据库未就绪")
@@ -347,8 +367,14 @@ async def ingest_bridge_logs(
     accepted = 0
     duplicates = 0
     skipped = 0
+    forbidden = 0
     async for session in _db_manager.get_session():
         for entry in body.logs:
+            # 越权 case 的日志直接跳过：不写入、不拖累同批次的合法日志
+            effective_case = entry.case_id or body.fallback_case_id
+            if effective_case and effective_case in forbidden_cases:
+                forbidden += 1
+                continue
             outcome = await _insert_entry(
                 session,
                 entry,
@@ -369,8 +395,15 @@ async def ingest_bridge_logs(
         accepted=accepted,
         skipped=skipped,
         duplicates=duplicates,
+        forbidden=forbidden,
     )
-    return {"ok": True, "accepted": accepted, "duplicates": duplicates, "skipped": skipped}
+    return {
+        "ok": True,
+        "accepted": accepted,
+        "duplicates": duplicates,
+        "skipped": skipped,
+        "forbidden": forbidden,
+    }
 
 
 @router.post("/api/bridge-logs/upload")

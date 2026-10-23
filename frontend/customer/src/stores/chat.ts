@@ -146,8 +146,19 @@ export const useChatStore = defineStore('chat', () => {
   async function flushBridgeLogs() {
     bridgeLogTimer = null
     if (bridgeLogBuffer.length === 0) return
-    const batch = bridgeLogBuffer
+    // 发送前统一归一 case_id：outbox 从 localStorage 恢复时可能夹带伪工单号
+    // （terminal-only）或旧工单条目，不能让它们把合法条目一起拖下水。
+    const pending: Record<string, unknown>[] = []
+    for (const entry of bridgeLogBuffer) {
+      const caseId = normalizeBridgeLogCaseId(entry)
+      if (caseId) pending.push({ ...entry, case_id: caseId })
+    }
     bridgeLogBuffer = []
+    if (pending.length === 0) {
+      persistBridgeLogOutbox()
+      return
+    }
+    const batch = pending
 
     try {
       await apiClient.post('/bridge-logs', {
@@ -167,6 +178,26 @@ export const useChatStore = defineStore('chat', () => {
       })
     } catch (e) {
       // P1-5: 增强异常处理 - 指数退避重试 + 最大重试次数
+      const status = (e as { response?: { status?: number } })?.response?.status
+      // 4xx（除限流/超时）是永久性错误：同一批重试多少次都不会成功，
+      // 反而会把后续产生的合法日志长期堵在缓冲区里（2026-10-23 staging 实测：
+      // 一次越权 case_id 引发的 403 持续数天，任何日志都无法落库）。
+      const permanentError =
+        typeof status === 'number' && status >= 400 && status < 500 && status !== 408 && status !== 429
+      if (permanentError) {
+        const stats = getBridgeLogStats()
+        setBridgeLogStats({
+          ...stats,
+          failures: (stats.failures || 0) + 1,
+          dropped: (stats.dropped || 0) + batch.length,
+          lastError: `http_${status}: ${String(e).slice(0, 180)}`,
+          lastErrorAt: new Date().toISOString(),
+        })
+        console.error(`日志回采被拒（HTTP ${status}），丢弃本批 ${batch.length} 条，避免阻塞后续回采`)
+        bridgeLogRetryCount = 0
+        persistBridgeLogOutbox()
+        return
+      }
       bridgeLogRetryCount++
       // 回采可观测性自检：失败计数暴露到 window，供巡检（消除静默失败，根因见回采链路断裂分析）
       const stats = getBridgeLogStats()
@@ -193,23 +224,36 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // 前端约定的伪工单号：无工单 SSH 会话（terminal-only）与旧终端的 default 占位。
+  // 它们不是真实工单，直接上报会被服务端归属校验判为越权，导致整批日志被拒。
+  const PSEUDO_CASE_IDS = new Set(['terminal-only', 'default'])
+
+  /** 把条目的 case_id 归一为真实工单号；返回空串表示当前没有可归档的工单上下文。 */
+  function normalizeBridgeLogCaseId(entry: Record<string, unknown>): string {
+    const raw = typeof entry.case_id === 'string' ? entry.case_id.trim() : ''
+    if (raw && !PSEUDO_CASE_IDS.has(raw)) return raw
+    return currentCase.value?.case_id || ''
+  }
+
   function forwardBridgeLog(entry: Record<string, unknown>) {
-    // 缺少 case_id 的日志：有当前工单时保留（回采携带 fallback_case_id 由后端归档），
-    // 完全没有工单上下文时才丢弃，且计数留痕，避免"日志凭空消失且无从察觉"。
-    if (!entry.case_id) {
-      if (!currentCase.value?.case_id) {
-        bridgeLogDroppedCount += 1
-        if (bridgeLogDroppedCount % 50 === 0) {
-          console.warn(`[bridge-log] 已丢弃 ${bridgeLogDroppedCount} 条无工单上下文的回采日志`)
-        }
-        return
+    // 伪/缺失 case_id：有当前工单时归到当前工单，完全没有工单上下文时才丢弃，
+    // 且计数留痕，避免"日志凭空消失且无从察觉"。
+    const caseId = normalizeBridgeLogCaseId(entry)
+    if (!caseId) {
+      bridgeLogDroppedCount += 1
+      if (bridgeLogDroppedCount % 50 === 0) {
+        console.warn(`[bridge-log] 已丢弃 ${bridgeLogDroppedCount} 条无工单上下文的回采日志`)
       }
+      return
+    }
+    if (entry.case_id !== caseId) {
       bridgeLogFallbackCount += 1
     }
-    bridgeLogBuffer.push(entry)
+    const normalized = entry.case_id === caseId ? entry : { ...entry, case_id: caseId }
+    bridgeLogBuffer.push(normalized)
     persistBridgeLogOutbox()
     // C 修复：同步写入近期缓冲，供工单创建后将临时会话日志迁移到真实工单
-    recentBridgeLogs.push(entry)
+    recentBridgeLogs.push(normalized)
     if (recentBridgeLogs.length > RECENT_BRIDGE_LOGS_CAP) {
       recentBridgeLogs.splice(0, recentBridgeLogs.length - RECENT_BRIDGE_LOGS_CAP)
     }

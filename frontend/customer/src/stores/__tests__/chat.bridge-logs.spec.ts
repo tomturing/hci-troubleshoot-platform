@@ -3,8 +3,10 @@
  *
  * 覆盖回采链路修复（OBS-TERMINAL-BRIDGE-001 / 工单 Q2026072055042）：
  * - forwardBridgeLog 丢弃无 case_id 的条目
+ * - forwardBridgeLog 把 terminal-only 伪工单归一为当前工单
  * - flushBridgeLogs POST 到 /bridge-logs 端点
  * - flushBridgeLogs 失败时指数退避重试
+ * - flushBridgeLogs 遇 4xx 永久错误立即丢弃（不重试、不阻塞后续日志）
  * - flushBridgeLogs 超过最大重试后丢弃 + 暴露 __bridgeLogStats 可观测信号
  * - flushBridgeLogs 成功时暴露 __bridgeLogStats 成功计数
  */
@@ -80,6 +82,8 @@ vi.mock('@/api/terminal', () => ({
 describe('chat store - bridge-logs 回采', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    // 清空调用记录：store 模块级状态与 mock 会被后续用例复用，不清会串号
+    mockPost.mockClear()
     mockPost.mockResolvedValue({ data: {} })
     vi.useFakeTimers()
     // 清理 window.__bridgeLogStats
@@ -120,6 +124,43 @@ describe('chat store - bridge-logs 回采', () => {
     const [, payload] = bridgeCalls[0]
     expect(payload.logs).toHaveLength(1)
     expect(payload.logs[0].case_id).toBe('Q001')
+  })
+
+  it('forwardBridgeLog 把 terminal-only 伪工单归一为当前工单', async () => {
+    const { useChatStore } = await import('../chat')
+    const store = useChatStore()
+    // 无工单 SSH 会话的日志带伪工单号，直接上报会被服务端归属校验判为越权
+    store.currentCase = { case_id: 'Q001' } as never
+
+    store.forwardBridgeLog({ case_id: 'terminal-only', level: 'INFO', event: 'ssh.output', message: 'x' })
+    await vi.advanceTimersByTimeAsync(600)
+    await vi.runOnlyPendingTimersAsync()
+
+    const bridgeCalls = mockPost.mock.calls.filter((c) => c[0] === '/bridge-logs')
+    expect(bridgeCalls).toHaveLength(1)
+    expect(bridgeCalls[0][1].logs[0].case_id).toBe('Q001')
+  })
+
+  it('flushBridgeLogs 遇 4xx 永久错误立即丢弃本批且不重试', async () => {
+    mockPost.mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 403'), {
+        response: { status: 403, data: { detail: '无权操作此工单的日志' } },
+      }),
+    )
+    const { useChatStore } = await import('../chat')
+    const store = useChatStore()
+
+    store.forwardBridgeLog({ case_id: 'Q001', level: 'INFO', event: 'exec.start', message: 'ok' })
+    await vi.advanceTimersByTimeAsync(600)
+    await vi.runOnlyPendingTimersAsync()
+
+    // 只尝试一次：永久错误重试不可能成功，继续重试只会堵死后续日志
+    const bridgeCalls = mockPost.mock.calls.filter((c) => c[0] === '/bridge-logs')
+    expect(bridgeCalls).toHaveLength(1)
+    const stats = getStats()
+    expect(stats?.failures).toBe(1)
+    expect(stats?.dropped).toBe(1)
+    expect(stats?.lastError).toContain('http_403')
   })
 
   it('flushBridgeLogs 成功时暴露 __bridgeLogStats 成功计数', async () => {
