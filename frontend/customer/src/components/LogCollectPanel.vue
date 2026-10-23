@@ -270,35 +270,53 @@ const resultSizeText = computed(() => {
   return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb.toFixed(1)} MB`
 })
 
+/**
+ * 交付路径的判定口径。
+ *
+ * `upload_mode` 是后补字段：2026-10-23 之前完成的任务没有它（DB 为 NULL），
+ * 直接按枚举展示会出现「交付路径：未记录 / 归档状态：none」这种内部值泄漏。
+ * P1 创建时一定带 `remote_url`，用它兜底即可区分 P1 与「未知」，且只用于展示、不回写。
+ */
+const resultMode = computed<'acli_direct' | 'bridge_relay' | ''>(() => {
+  const task = resultTask.value
+  if (!task) return ''
+  if (task.upload_mode === 'acli_direct' || task.upload_mode === 'bridge_relay') return task.upload_mode
+  return task.remote_url ? 'acli_direct' : ''
+})
+
 const resultDeliveryText = computed(() => {
-  const mode = resultTask.value?.upload_mode
-  if (mode === 'acli_direct') return 'P1 直传日志服务器'
-  if (mode === 'bridge_relay') return 'P3 经平台中转'
+  if (resultMode.value === 'acli_direct') return 'P1 直传日志服务器'
+  if (resultMode.value === 'bridge_relay') return 'P3 经平台中转'
   return '未记录'
 })
 
 const resultArchiveText = computed(() => {
   const task = resultTask.value
   if (!task) return ''
-  if (task.upload_mode === 'acli_direct') return '已由插件直传日志服务器'
+  if (resultMode.value === 'acli_direct') return '已由插件直传日志服务器'
   if (task.relay_status === 'success') return '已归档到日志服务器'
-  return `归档状态：${task.relay_status}`
+  if (task.relay_status === 'failed') return '归档失败（详见平台任务记录）'
+  return '未记录'
 })
 
 const resultArtifactText = computed(() => {
   const task = resultTask.value
   if (!task) return ''
   if (task.archive_deleted) return 'HCI 上的压缩包已清理'
-  return task.archive_path || '未记录'
+  if (task.archive_path) return task.archive_path
+  return resultMode.value === 'acli_direct' ? '由插件上传后自动清理，路径未记录' : '未记录'
 })
 
 const resultCleanupTip = computed(() => {
   const task = resultTask.value
-  if (!task || task.archive_deleted || !task.archive_path) return ''
-  if (task.upload_mode === 'acli_direct') {
+  if (!task || task.archive_deleted) return ''
+  if (resultMode.value === 'acli_direct') {
     return 'P1 由插件直传日志服务器，上传成功后插件会自动删除 HCI 上的压缩包，无需人工清理。'
   }
-  return `平台不自动删除 HCI 上的采集包，请在节点上自行清理：rm -f ${task.archive_path}（不要删除 /sf/data/local/acli/plugins 与 tasks 目录）`
+  if (resultMode.value === 'bridge_relay' && task.archive_path) {
+    return `平台不自动删除 HCI 上的采集包，请在节点上自行清理：rm -f ${task.archive_path}（不要删除 /sf/data/local/acli/plugins 与 tasks 目录）`
+  }
+  return ''
 })
 
 /** 节点下拉文案：IP 是必选值，名称与主控标记只做辅助识别。 */

@@ -58,6 +58,8 @@ export interface LogCollectTask {
   ips: string[]
   status: LogCollectStatus
   progress: number
+  /** P1 直传时创建即带上传地址；老记录没有 upload_mode，用它兜底判定交付路径 */
+  remote_url?: string | null
   arch?: string | null
   acli_version?: string | null
   /** 交付路径：acli_direct = P1 直传日志服务器；bridge_relay = P3 经平台中转 */

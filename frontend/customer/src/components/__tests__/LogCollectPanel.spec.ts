@@ -356,4 +356,33 @@ describe('LogCollectPanel', () => {
     expect(wrapper.find('.lc-progress').exists()).toBe(true)
     wrapper.unmount()
   })
+
+  // 2026-10-23 之前完成的任务没有 upload_mode/archive_path（字段是后补的），
+  // 结果态必须按 remote_url 兜底成 P1，而不是把内部枚举 none 摆给用户。
+  it('老记录缺 upload_mode 时按 remote_url 兜底展示 P1，不暴露内部枚举', async () => {
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({
+      total: 1,
+      items: [
+        taskFixture({
+          upload_mode: null,
+          archive_path: null,
+          archive_size: null,
+          archive_sha256: null,
+          relay_status: 'none',
+          remote_url: 'http://acli.sangfor.com.cn:5888',
+        }),
+      ],
+    })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    const text = wrapper.find('.lc-result').text()
+    expect(text).toContain('P1 直传日志服务器')
+    expect(text).toContain('已由插件直传日志服务器')
+    expect(text).toContain('由插件上传后自动清理')
+    expect(text).not.toContain('none')
+    wrapper.unmount()
+  })
 })
