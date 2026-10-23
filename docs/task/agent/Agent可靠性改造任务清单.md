@@ -724,3 +724,16 @@ owner: team
 - [x] **轨道二（text）agent 侧报告展示**：`kbd_differential.py` 新增 `_format_root_display_anchors`，在 `_build_diagnostic_report`（命中）与 `_build_partial_report`（部分命中）渲染「根因特征（请人工核对）」小节；与判定/召回完全解耦。
 - [x] **语义边界**：Phase 1 语义/frozen（`guidance_only`/`reference_only`）路径不并入 live 根因，保持按快照可复现。
 - [x] **测试与评估**：`test_kbd_differential.py` 新增 3 例（无锚点返回空串/matched 与 partial 渲染锚点）；`backend/shared/tests/test_root_signal_runtime_cdd.py` 5 例（AND 收紧、anchors 零 SignalRef、无根因恒等）；`test_playbooks_root_signal_runtime.py` 37 例；离线 golden 回放 `evaluation/replay_runner.py` 对比基线 0 回归（分类/工具 100%）。当前评估语料与种子 KBD 均无 executable 根因信号 → 并集为恒等，定论率不漂移（收紧仅对未来填入根因的“两者都有”KBD 生效）。live E2E 定论率对比为发布前 gate，需真实服务栈，非本 PR 环境可跑。
+
+## 客户端 store 日志收集入口状态收敛（2026-10-22）
+
+> 关联：`frontend/customer/src/stores/chat.ts`、`docs/solution/custom-ui/客户端设计.md` §5.7
+
+- [x] **抽屉开合收敛到 store**：新增 `logCollectVisible` / `openLogCollect` / `closeLogCollect`，
+  替代 `App.vue` 内部 `ref`；建单引导卡片与 header 按钮共用同一状态，避免两处入口行为分叉。
+- [x] **建单后一次性引导**：新增 `showLogCollectGuide` 与按 `case_id` 落 localStorage 的
+  `dismissLogCollectGuide`；「暂不需要」只关闭引导，不关闭功能，换新工单重新出现。
+- [x] **为什么记在 store 而不是组件**：入口可见性依赖 `currentCase` 生命周期（创建/关闭/恢复），
+  组件内状态会在路由刷新与工单恢复后丢失，导致引导重复或入口消失。
+- [x] **测试**：`chat.log-collect-guide.spec.ts` 4 例（无工单/关闭工单/按单 dismiss/换单重现）、
+  `LogCollectEntryCard.spec.ts` 3 例（渲染条件、文案、dismiss 后隐藏）；customer 全量 152 passed。
