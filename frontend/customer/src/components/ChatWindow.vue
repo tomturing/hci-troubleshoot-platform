@@ -12,6 +12,8 @@ import CaseCreateDialog from './CaseCreateDialog.vue'
 import BridgeLogUploader from './BridgeLogUploader.vue'
 import LogCollectEntryCard from './LogCollectEntryCard.vue'
 import EnvironmentSummary from './EnvironmentSummary.vue'
+// 抽屉宽度算法收敛到单一来源，日志收集抽屉复用同一份，保证左右抽屉等宽
+import { getDefaultPanelWidth } from '@/utils/panelWidth'
 
 const chatStore = useChatStore()
 const inputText = ref('')
@@ -125,16 +127,7 @@ onBeforeUnmount(() => {
   if (handler) window.removeEventListener('resize', handler)
 })
 
-function getDefaultPanelWidth(): number {
-  if (typeof window === 'undefined') return 510
-  const appMaxWidth = 900
-  // Each side gets half of the remaining blank space
-  const sideBlankSpace = Math.max((window.innerWidth - appMaxWidth) / 2, 0)
-  // If the screen is too narrow, just take 85% of screen
-  const target = sideBlankSpace >= 300 ? sideBlankSpace : window.innerWidth * 0.85
-  // We constrain it to a min of 400 and max of 50% to not dominate small screens
-  return Math.max(400, Math.round(target))
-}
+
 
 /** 状态中文映射 */
 function statusLabel(status: string): string {

@@ -7,7 +7,7 @@
  *  2. 20 GiB 不走浏览器：分片由 bridge 直传 `/api/direct/...`；
  *  3. 平台不做任何自动清理：结束后只提示路径与命令，由用户自行清理。
  */
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   buildAcliSyncMessage,
@@ -22,10 +22,17 @@ import {
   type RelayStatus,
 } from '@/api/logCollect'
 import { useChatStore } from '@/stores/chat'
+import { getDefaultPanelWidth } from '@/utils/panelWidth'
 
 const props = defineProps<{ caseId: string; nodeIp?: string }>()
 const visible = defineModel<boolean>({ required: true })
 const chatStore = useChatStore()
+
+// 与「历史工单」抽屉共用同一宽度算法：左右两侧抽屉等宽，视觉才对齐
+const drawerWidth = ref(getDefaultPanelWidth())
+function syncDrawerWidth() {
+  drawerWidth.value = getDefaultPanelWidth()
+}
 
 const RELAY_URL = 'http://acli.sangfor.com.cn:5888'
 const POLL_INTERVAL = 5000
@@ -793,7 +800,13 @@ function formatDate(value: Date): string {
   return `${year}-${month}-${day}`
 }
 
+onMounted(() => {
+  // 视口变化时重算宽度，避免窗口缩放后抽屉仍按旧视口宽度展示
+  window.addEventListener('resize', syncDrawerWidth)
+})
+
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', syncDrawerWidth)
   // 让仍在运行的后台轮询退出，避免组件卸载后继续改状态
   runToken++
   // 准备阶段的令牌与定时器同样要失效，否则重探会在卸载后回写状态
@@ -818,7 +831,7 @@ onBeforeUnmount(() => {
     v-model="visible"
     title="日志收集"
     direction="ltr"
-    size="720px"
+    :size="`${drawerWidth}px`"
     :close-on-click-modal="false"
   >
     <div class="lc-body">
