@@ -129,6 +129,11 @@ const stage = ref<Stage>('idle')
 const probeResult = ref<ProbeResult | null>(null)
 const pathMode = ref<'P1' | 'P3' | ''>('')
 const currentTask = ref<LogCollectTask | null>(null)
+// 面板视图：form = 新建收集；result = 该工单已完成收集的只读结果
+const viewMode = ref<'form' | 'result'>('form')
+const resultTask = ref<LogCollectTask | null>(null)
+// 该工单历史任务总数：用于告知"已完成是既成事实，可以重新收集但不是必须"
+const historyTotal = ref(0)
 const progress = ref<ProgressSnapshot | null>(null)
 const transfer = reactive({ stage: '', percent: 0, pulled: 0, uploadedParts: 0, partCount: 0, sha256: '' })
 const relayStatus = ref<RelayStatus>('none')
@@ -220,6 +225,80 @@ const catalogSourceText = computed(() => {
   return probeResult.value.catalog_source === 'acli_help'
     ? '目录来自集群 acli'
     : '平台内置目录（集群未返回目录）'
+})
+
+// ── 结果态文案（全部由平台任务记录派生，不做本地推断）──────────────────────
+
+/** 专项文案：优先用本次探测到的集群目录，缺失时回落平台内置。 */
+function moduleLabelOf(value: string): string {
+  const hit =
+    moduleOptions.value.find((item) => item.value === value) ??
+    BUILTIN_MODULES.find((item) => item.value === value)
+  return hit?.label ?? value
+}
+
+const resultFinishedText = computed(() => {
+  const raw = resultTask.value?.finished_at || resultTask.value?.updated_at
+  if (!raw) return '时间未记录'
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) return '时间未记录'
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+})
+
+const resultModulesText = computed(() => {
+  const modules = resultTask.value?.modules ?? []
+  return modules.length ? modules.map(moduleLabelOf).join('、') : '未记录'
+})
+
+const resultRangeText = computed(() => {
+  const task = resultTask.value
+  if (!task) return ''
+  return task.date_from === task.date_to ? task.date_from : `${task.date_from} ~ ${task.date_to}`
+})
+
+const resultHostsText = computed(() => {
+  const ips = resultTask.value?.ips ?? []
+  if (!ips.length || ips.includes('all')) return '全部在线节点'
+  return `${ips.length} 台（${ips.join('、')}）`
+})
+
+const resultSizeText = computed(() => {
+  const size = resultTask.value?.archive_size
+  if (!size) return '未记录'
+  const mb = size / 1024 / 1024
+  return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb.toFixed(1)} MB`
+})
+
+const resultDeliveryText = computed(() => {
+  const mode = resultTask.value?.upload_mode
+  if (mode === 'acli_direct') return 'P1 直传日志服务器'
+  if (mode === 'bridge_relay') return 'P3 经平台中转'
+  return '未记录'
+})
+
+const resultArchiveText = computed(() => {
+  const task = resultTask.value
+  if (!task) return ''
+  if (task.upload_mode === 'acli_direct') return '已由插件直传日志服务器'
+  if (task.relay_status === 'success') return '已归档到日志服务器'
+  return `归档状态：${task.relay_status}`
+})
+
+const resultArtifactText = computed(() => {
+  const task = resultTask.value
+  if (!task) return ''
+  if (task.archive_deleted) return 'HCI 上的压缩包已清理'
+  return task.archive_path || '未记录'
+})
+
+const resultCleanupTip = computed(() => {
+  const task = resultTask.value
+  if (!task || task.archive_deleted || !task.archive_path) return ''
+  if (task.upload_mode === 'acli_direct') {
+    return 'P1 由插件直传日志服务器，上传成功后插件会自动删除 HCI 上的压缩包，无需人工清理。'
+  }
+  return `平台不自动删除 HCI 上的采集包，请在节点上自行清理：rm -f ${task.archive_path}（不要删除 /sf/data/local/acli/plugins 与 tasks 目录）`
 })
 
 /** 节点下拉文案：IP 是必选值，名称与主控标记只做辅助识别。 */
@@ -548,19 +627,76 @@ async function refreshProgress(silent = false) {
   }
 }
 
-/** 打开面板时接管本工单进行中的任务：换页/重开也能看到实时状态。 */
-async function maybeResumeRunningTask() {
-  if (currentTask.value) return
+/**
+ * 打开面板时以平台任务为准恢复现场。
+ *
+ * 第一性原理：任务状态的真值在平台（log_collect_task 表），不在前端内存。
+ * 早先只恢复了"进行中"的任务，完成后一关抽屉再打开就退回空白表单，
+ * 用户会以为必须再收一次——这既违背事实，也容易造成重复采集。
+ * 因此恢复顺序固定为：进行中 → 最近一次已完成 → 空白表单（可重新收集）。
+ */
+async function restoreTaskState(force = false) {
+  if (!force && (currentTask.value || viewMode.value === 'result')) return
   try {
-    const list = await logCollectApi.listTasks(props.caseId, 5)
-    const running = list.items?.find((item) => !TERMINAL_TASK_STATUSES.includes(item.status))
+    const list = await logCollectApi.listTasks(props.caseId, 10)
+    historyTotal.value = list.total ?? list.items?.length ?? 0
+    const items = list.items ?? []
+    const running = items.find((item) => !TERMINAL_TASK_STATUSES.includes(item.status))
     if (running) {
+      viewMode.value = 'form'
       await resumeTask(running.task_id)
       ElMessage.info('已接管进行中的采集任务，进度每 5 秒自动刷新')
+      return
     }
+    // 已完成优先展示：这是用户最需要看到的结果（收了什么、什么时候收的、包在哪）
+    const completed = items.find((item) => item.status === 'completed')
+    if (completed) {
+      showResult(completed)
+      return
+    }
+    if (viewMode.value === 'result') viewMode.value = 'form'
   } catch {
-    // 接管失败不影响新任务下发
+    // 恢复失败不影响新任务下发
   }
+}
+
+/** 切到结果态：只读展示平台上的完成记录，不参与 bridge 轮询。 */
+function showResult(task: LogCollectTask) {
+  resultTask.value = task
+  currentTask.value = task
+  viewMode.value = 'result'
+  stage.value = 'done'
+  progress.value = null
+  relayStatus.value = 'none'
+  cleanupTip.value = ''
+  errorMessage.value = ''
+}
+
+/**
+ * 重新收集：回到表单，并用上一次的参数预填。
+ *
+ * 覆盖是常态（同一故障再发一次），预填省掉重复选择；但场景必须收敛到当前目录，
+ * 否则提交时会被 create 判为非法枚举。
+ */
+function startRecollect() {
+  const last = resultTask.value
+  viewMode.value = 'form'
+  stage.value = 'idle'
+  currentTask.value = null
+  resumedTaskId.value = null
+  progress.value = null
+  relayStatus.value = 'none'
+  cleanupTip.value = ''
+  errorMessage.value = ''
+  if (last) {
+    form.dateRange = [last.date_from, last.date_to]
+    const ips = last.ips ?? []
+    form.ips = !ips.length || ips.includes('all') ? 'all' : ips.join(',')
+    const valid = new Set<string>(moduleOptions.value.map((item) => item.value))
+    const picked = (last.modules ?? []).filter((value) => valid.has(value))
+    if (picked.length) form.modules = picked as LogCollectModule[]
+  }
+  if (prepareState.value !== 'ready') void prepare({ silent: true })
 }
 
 // ── 主流程 ──────────────────────────────────────────────────────────────────
@@ -734,7 +870,10 @@ async function finishP1(task: LogCollectTask) {
   if (snapshot?.upload_state && !snapshot.upload_state.includes('成功')) {
     throw new Error(`日志服务器上传失败：${snapshot.upload_state}，可改用 P3 中转`)
   }
-  await markCompleted(task.task_id)
+  await markCompleted(task.task_id, {
+    upload_mode: 'acli_direct',
+    archive_path: snapshot?.archive_path || undefined,
+  })
   stage.value = 'done'
   cleanupTip.value = 'P1 由插件直传日志服务器；上传成功后插件会自动删除 HCI 上的压缩包，无需人工清理。'
   ElMessage.success('日志已归档到日志服务器')
@@ -746,9 +885,16 @@ async function finishP1(task: LogCollectTask) {
  * 归档/上传已经由服务端确认，PATCH 只是状态回填：即使回填失败也不能把已成功的归档翻转成失败，
  * 因此这里只提示，不抛出。
  */
-async function markCompleted(taskId: string) {
+async function markCompleted(taskId: string, extra: Partial<LogCollectTask> = {}) {
   try {
-    currentTask.value = await logCollectApi.patchTask(taskId, { status: 'completed', progress: 100 })
+    currentTask.value = await logCollectApi.patchTask(taskId, {
+      status: 'completed',
+      progress: 100,
+      ...extra,
+    })
+    // 完成即切结果态：同一份展示既服务"刚收完"，也服务"关掉抽屉再打开"，
+    // 避免内存态与平台态两套 UI 各说一套。
+    if (currentTask.value) showResult(currentTask.value)
   } catch {
     ElMessage.warning('日志已归档，但平台任务状态回填失败，请在任务列表确认')
   }
@@ -799,7 +945,13 @@ async function runP3(ws: WebSocket, task: LogCollectTask, token: number) {
   if (token !== runToken) return
 
   // 归档成功才推进任务终态：否则任务会永久停在 uploading，并占住该工单的进行中名额
-  await markCompleted(task.task_id)
+  await markCompleted(task.task_id, {
+    upload_mode: 'bridge_relay',
+    archive_path: archivePath,
+    archive_size: completed.size,
+    // sha256 有 64 位小写十六进制格式约束，格式不符时宁可不写，避免整条 PATCH 被 422 拒绝
+    archive_sha256: /^[0-9a-f]{64}$/.test(completed.sha256 || '') ? completed.sha256 : undefined,
+  })
   stage.value = 'done'
   cleanupTip.value =
     `日志包已归档到日志服务器（${completed.size} 字节）。` +
@@ -878,9 +1030,28 @@ watch(
       void prepare({ silent: true })
     }
     // 重开面板时接管进行中的任务，避免"关掉再打开就看不到进度"
-    void maybeResumeRunningTask()
+    void restoreTaskState()
   },
   { immediate: true },
+)
+
+// 换工单 = 换上下文：App.vue 以 v-if 挂载本组件，换单只更新 props，不重建实例，
+// 因此必须显式作废上一单的完成态、任务与探测结论，否则会把 A 单的完成结果展示给 B 单。
+watch(
+  () => props.caseId,
+  () => {
+    viewMode.value = 'form'
+    resultTask.value = null
+    currentTask.value = null
+    resumedTaskId.value = null
+    historyTotal.value = 0
+    probeResult.value = null
+    prepareState.value = 'idle'
+    stage.value = 'idle'
+    cleanupTip.value = ''
+    errorMessage.value = ''
+    if (visible.value) void restoreTaskState(true)
+  },
 )
 
 // 会话主机变了（重新登录到另一台节点），上一轮的探测结论（目录、节点清单、P1/P3 判定）
@@ -956,8 +1127,14 @@ onBeforeUnmount(() => {
       <div class="drawer-header">
         <span class="drawer-title">日志收集</span>
         <div class="drawer-actions">
-          <span v-if="lastRefreshText" class="lc-refresh-time">{{ lastRefreshText }}</span>
-          <el-button text size="small" :loading="refreshingProgress" @click="refreshProgress()">
+          <span v-if="viewMode === 'form' && lastRefreshText" class="lc-refresh-time">{{ lastRefreshText }}</span>
+          <el-button
+            v-if="viewMode === 'form'"
+            text
+            size="small"
+            :loading="refreshingProgress"
+            @click="refreshProgress()"
+          >
             刷新进度
           </el-button>
           <el-button text size="small" @click="pinned = !pinned">
@@ -981,188 +1158,230 @@ onBeforeUnmount(() => {
         </el-button>
       </div>
 
-      <el-descriptions v-if="probeResult" :column="2" border size="small" class="lc-probe">
-        <el-descriptions-item label="架构">{{ probeResult.architecture }}</el-descriptions-item>
-        <el-descriptions-item label="acli">
-          {{ probeResult.acli_installed ? probeResult.acli_version : '未安装' }}
-        </el-descriptions-item>
-        <el-descriptions-item label="交付路径">
-          <el-tag :type="probeResult.log_server_reachable ? 'success' : 'warning'" size="small">
-            {{ probeResult.log_server_reachable ? 'P1 直传日志服务器' : 'P3 经平台中转' }}
-          </el-tag>
-        </el-descriptions-item>
-        <el-descriptions-item label="可用空间">{{ probeResult.available_mb }} MB</el-descriptions-item>
-        <el-descriptions-item label="场景目录">
-          <el-tag size="small" :type="probeResult.catalog_source === 'acli_help' ? 'success' : 'info'">
-            {{ catalogSourceText }}
-          </el-tag>
-        </el-descriptions-item>
-        <el-descriptions-item label="可采节点">
-          {{ probeResult.hosts?.length ? `${probeResult.hosts.length} 个` : '未获取' }}
-        </el-descriptions-item>
-      </el-descriptions>
+      <!--
+        结果态优先：已完成是平台上的既成事实，先把结论摆出来；
+        重新收集只是可选项，不是默认动作。
+      -->
+      <div v-if="viewMode === 'result' && resultTask" class="lc-result">
+        <el-alert
+          type="success"
+          :closable="false"
+          show-icon
+          :title="`该工单已完成日志收集（${resultFinishedText}）`"
+          description="以下是平台记录的上一次收集结果；如需再次采集，点右下角「重新收集」。"
+        />
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item label="发起节点">{{ resultTask.origin_node_ip }}</el-descriptions-item>
+          <el-descriptions-item label="交付路径">{{ resultDeliveryText }}</el-descriptions-item>
+          <el-descriptions-item label="收集场景">{{ resultModulesText }}</el-descriptions-item>
+          <el-descriptions-item label="时间范围">{{ resultRangeText }}</el-descriptions-item>
+          <el-descriptions-item label="目标主机">{{ resultHostsText }}</el-descriptions-item>
+          <el-descriptions-item label="压缩包大小">{{ resultSizeText }}</el-descriptions-item>
+          <el-descriptions-item label="归档状态">{{ resultArchiveText }}</el-descriptions-item>
+          <el-descriptions-item label="产物位置">{{ resultArtifactText }}</el-descriptions-item>
+        </el-descriptions>
+        <el-alert
+          v-if="resultCleanupTip"
+          :title="resultCleanupTip"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="lc-cleanup"
+        />
+        <p class="lc-hint">
+          当前客户端在本工单下共 {{ historyTotal }} 条收集记录；已完成的任务不会被覆盖，重新收集会新建一条任务。
+        </p>
+      </div>
 
-      <!-- 准备状态的唯一出口：用户在填表之前就能看见"能不能收、可选什么" -->
-      <el-alert
-        v-if="!nodeIpReady"
-        class="lc-prepare"
-        type="info"
-        :closable="false"
-        show-icon
-        title="请先在 SSH 终端连接 HCI 节点；连接后才能读取场景目录与节点清单"
-      />
-      <el-alert
-        v-else-if="prepareState === 'probing'"
-        class="lc-prepare"
-        type="info"
-        :closable="false"
-        show-icon
-        title="正在读取集群环境：架构 / acli / 场景目录 / 节点清单…"
-      />
-      <el-alert
-        v-else-if="prepareState === 'failed'"
-        class="lc-prepare"
-        type="error"
-        :closable="false"
-        show-icon
-        :title="`环境准备失败：${prepareError}`"
-      >
-        <el-button size="small" text type="primary" :disabled="running" @click="prepare()">
-          重新读取
-        </el-button>
-      </el-alert>
+      <template v-else>
+        <el-descriptions v-if="probeResult" :column="2" border size="small" class="lc-probe">
+          <el-descriptions-item label="架构">{{ probeResult.architecture }}</el-descriptions-item>
+          <el-descriptions-item label="acli">
+            {{ probeResult.acli_installed ? probeResult.acli_version : '未安装' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="交付路径">
+            <el-tag :type="probeResult.log_server_reachable ? 'success' : 'warning'" size="small">
+              {{ probeResult.log_server_reachable ? 'P1 直传日志服务器' : 'P3 经平台中转' }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="可用空间">{{ probeResult.available_mb }} MB</el-descriptions-item>
+          <el-descriptions-item label="场景目录">
+            <el-tag size="small" :type="probeResult.catalog_source === 'acli_help' ? 'success' : 'info'">
+              {{ catalogSourceText }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="可采节点">
+            {{ probeResult.hosts?.length ? `${probeResult.hosts.length} 个` : '未获取' }}
+          </el-descriptions-item>
+        </el-descriptions>
 
-      <!-- 探测期间只锁"提交"，不锁表单：用户可以先看清可填项，不必等探测结束 -->
-      <el-form :model="form" label-width="90px" :disabled="running">
-        <el-form-item label="故障场景">
-          <!-- 全量平铺勾选：目录最多十余项，一次看全比"点开下拉再逐项找"少两次交互 -->
-          <el-checkbox-group v-model="form.modules" class="lc-checkbox-group lc-module-group">
-            <el-checkbox
-              v-for="item in moduleOptions"
-              :key="item.value"
-              :value="item.value"
-              border
-              size="small"
-            >
-              {{ item.label }}
-            </el-checkbox>
-          </el-checkbox-group>
-          <div class="lc-hint">
-            {{ catalogSourceText }}
-            <span v-if="probeResult?.catalog_note">；{{ probeResult.catalog_note }}</span>
-          </div>
-        </el-form-item>
-        <el-form-item label="时间范围">
-          <el-date-picker
-            v-model="form.dateRange"
-            type="daterange"
-            value-format="YYYY-MM-DD"
-            start-placeholder="开始日期"
-            end-placeholder="结束日期"
-            :disabled-date="disableFutureDate"
-          />
-          <div class="lc-hint">日志按天归档，将收集所选日期全天日志（最多 30 天）</div>
-        </el-form-item>
-        <el-form-item label="发起节点">
-          <!--
-            只读展示：发起节点就是当前 SSH 会话连的那台机器，用户改不动、也不该改。
-            acli 进度只在该节点有效，会话键是 caseID@nodeIP，手填不一致只会落到不存在的会话。
-          -->
-          <div class="lc-node-fact">
-            <template v-if="nodeIp">
-              <span class="lc-node-fact-value">{{ nodeIp }}</span>
-              <el-tag size="small" type="info" effect="plain">当前 SSH 会话</el-tag>
-            </template>
-            <span v-else class="lc-node-fact-empty">未连接 SSH 会话</span>
-          </div>
-          <div class="lc-hint">
-            取自已登录的 SSH 终端，采集、进度查询与取消都会路由回此节点；换节点请重新登录 SSH
-          </div>
-        </el-form-item>
-        <el-form-item label="目标主机">
-          <!-- 有集群清单就必须用清单：手填 IP 是唯一允许的降级，不是默认交互 -->
-          <template v-if="hostOptions.length">
-            <div class="lc-host-head">
-              <span class="lc-host-count">共 {{ hostOptions.length }} 台在线主机</span>
-              <span class="lc-host-state">
-                {{ allHostsChecked ? '已全选（等价 all）' : `已选 ${hostChecked.length} 台` }}
-              </span>
-            </div>
-            <el-checkbox-group v-model="hostChecked" class="lc-checkbox-group lc-host-group">
+        <!-- 准备状态的唯一出口：用户在填表之前就能看见"能不能收、可选什么" -->
+        <el-alert
+          v-if="!nodeIpReady"
+          class="lc-prepare"
+          type="info"
+          :closable="false"
+          show-icon
+          title="请先在 SSH 终端连接 HCI 节点；连接后才能读取场景目录与节点清单"
+        />
+        <el-alert
+          v-else-if="prepareState === 'probing'"
+          class="lc-prepare"
+          type="info"
+          :closable="false"
+          show-icon
+          title="正在读取集群环境：架构 / acli / 场景目录 / 节点清单…"
+        />
+        <el-alert
+          v-else-if="prepareState === 'failed'"
+          class="lc-prepare"
+          type="error"
+          :closable="false"
+          show-icon
+          :title="`环境准备失败：${prepareError}`"
+        >
+          <el-button size="small" text type="primary" :disabled="running" @click="prepare()">
+            重新读取
+          </el-button>
+        </el-alert>
+
+        <!-- 探测期间只锁"提交"，不锁表单：用户可以先看清可填项，不必等探测结束 -->
+        <el-form :model="form" label-width="90px" :disabled="running">
+          <el-form-item label="故障场景">
+            <!-- 全量平铺勾选：目录最多十余项，一次看全比"点开下拉再逐项找"少两次交互 -->
+            <el-checkbox-group v-model="form.modules" class="lc-checkbox-group lc-module-group">
               <el-checkbox
-                v-for="host in hostOptions"
-                :key="host.ip"
-                :value="host.ip"
+                v-for="item in moduleOptions"
+                :key="item.value"
+                :value="item.value"
                 border
                 size="small"
               >
-                {{ hostLabel(host) }}
+                {{ item.label }}
               </el-checkbox>
             </el-checkbox-group>
-          </template>
-          <el-input v-else v-model="form.ips" placeholder="all 表示全部在线节点，或逗号分隔 IP" />
-          <div class="lc-hint">
-            {{
-              hostOptions.length
-                ? '不勾选任何主机 = 全部在线节点；勾选全部同样等价于 all'
-                : '未获取到节点清单，请按 acli -i 格式手填 IP'
-            }}
+            <div class="lc-hint">
+              {{ catalogSourceText }}
+              <span v-if="probeResult?.catalog_note">；{{ probeResult.catalog_note }}</span>
+            </div>
+          </el-form-item>
+          <el-form-item label="时间范围">
+            <el-date-picker
+              v-model="form.dateRange"
+              type="daterange"
+              value-format="YYYY-MM-DD"
+              start-placeholder="开始日期"
+              end-placeholder="结束日期"
+              :disabled-date="disableFutureDate"
+            />
+            <div class="lc-hint">日志按天归档，将收集所选日期全天日志（最多 30 天）</div>
+          </el-form-item>
+          <el-form-item label="发起节点">
+            <!--
+              只读展示：发起节点就是当前 SSH 会话连的那台机器，用户改不动、也不该改。
+              acli 进度只在该节点有效，会话键是 caseID@nodeIP，手填不一致只会落到不存在的会话。
+            -->
+            <div class="lc-node-fact">
+              <template v-if="nodeIp">
+                <span class="lc-node-fact-value">{{ nodeIp }}</span>
+                <el-tag size="small" type="info" effect="plain">当前 SSH 会话</el-tag>
+              </template>
+              <span v-else class="lc-node-fact-empty">未连接 SSH 会话</span>
+            </div>
+            <div class="lc-hint">
+              取自已登录的 SSH 终端，采集、进度查询与取消都会路由回此节点；换节点请重新登录 SSH
+            </div>
+          </el-form-item>
+          <el-form-item label="目标主机">
+            <!-- 有集群清单就必须用清单：手填 IP 是唯一允许的降级，不是默认交互 -->
+            <template v-if="hostOptions.length">
+              <div class="lc-host-head">
+                <span class="lc-host-count">共 {{ hostOptions.length }} 台在线主机</span>
+                <span class="lc-host-state">
+                  {{ allHostsChecked ? '已全选（等价 all）' : `已选 ${hostChecked.length} 台` }}
+                </span>
+              </div>
+              <el-checkbox-group v-model="hostChecked" class="lc-checkbox-group lc-host-group">
+                <el-checkbox
+                  v-for="host in hostOptions"
+                  :key="host.ip"
+                  :value="host.ip"
+                  border
+                  size="small"
+                >
+                  {{ hostLabel(host) }}
+                </el-checkbox>
+              </el-checkbox-group>
+            </template>
+            <el-input v-else v-model="form.ips" placeholder="all 表示全部在线节点，或逗号分隔 IP" />
+            <div class="lc-hint">
+              {{
+                hostOptions.length
+                  ? '不勾选任何主机 = 全部在线节点；勾选全部同样等价于 all'
+                  : '未获取到节点清单，请按 acli -i 格式手填 IP'
+              }}
+            </div>
+          </el-form-item>
+        </el-form>
+
+        <!-- 409：同一工单已有进行中的任务。冲突不是失败，提供"查看任务状态" -->
+        <div v-if="chatStore.logCollectActiveTask" class="lc-conflict">
+          <div class="lc-conflict-body">
+            <p class="lc-conflict-title">{{ errorMessage || '该工单已有进行中的日志收集任务' }}</p>
+            <p class="lc-conflict-meta">
+              状态：{{ chatStore.logCollectActiveTask.status }}
+              · 进度：{{ chatStore.logCollectActiveTask.progress }}%
+              <span v-if="!chatStore.logCollectActiveTask.created_by_me">· 由其他客户端发起</span>
+            </p>
           </div>
-        </el-form-item>
-      </el-form>
-
-      <!-- 409：同一工单已有进行中的任务。冲突不是失败，提供"查看任务状态" -->
-      <div v-if="chatStore.logCollectActiveTask" class="lc-conflict">
-        <div class="lc-conflict-body">
-          <p class="lc-conflict-title">{{ errorMessage || '该工单已有进行中的日志收集任务' }}</p>
-          <p class="lc-conflict-meta">
-            状态：{{ chatStore.logCollectActiveTask.status }}
-            · 进度：{{ chatStore.logCollectActiveTask.progress }}%
-            <span v-if="!chatStore.logCollectActiveTask.created_by_me">· 由其他客户端发起</span>
-          </p>
+          <el-button
+            v-if="chatStore.logCollectActiveTask.created_by_me"
+            size="small"
+            type="primary"
+            @click="resumeActiveTask()"
+          >
+            查看任务状态
+          </el-button>
         </div>
-        <el-button
-          v-if="chatStore.logCollectActiveTask.created_by_me"
-          size="small"
-          type="primary"
-          @click="resumeActiveTask()"
-        >
-          查看任务状态
-        </el-button>
-      </div>
 
-      <div v-if="running || stage === 'done' || stage === 'failed'" class="lc-progress">
-        <el-steps :active="stepActive" finish-status="success" simple>
-          <el-step title="探测" />
-          <el-step title="采集" />
-          <el-step title="上传" />
-          <el-step title="归档" />
-        </el-steps>
-        <el-progress :percentage="percent" :status="progressStatus" />
-        <div class="lc-status">{{ statusText }}</div>
-      </div>
+        <div v-if="running || stage === 'done' || stage === 'failed'" class="lc-progress">
+          <el-steps :active="stepActive" finish-status="success" simple>
+            <el-step title="探测" />
+            <el-step title="采集" />
+            <el-step title="上传" />
+            <el-step title="归档" />
+          </el-steps>
+          <el-progress :percentage="percent" :status="progressStatus" />
+          <div class="lc-status">{{ statusText }}</div>
+        </div>
 
-      <el-alert
-        v-if="cleanupTip"
-        :title="cleanupTip"
-        type="warning"
-        :closable="false"
-        show-icon
-        class="lc-cleanup"
-      />
+        <el-alert
+          v-if="cleanupTip"
+          :title="cleanupTip"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="lc-cleanup"
+        />
+      </template>
     </div>
 
     <template #footer>
       <el-button @click="visible = false">关闭</el-button>
-      <el-button
-        v-if="!running"
-        type="primary"
-        :disabled="prepareState === 'probing'"
-        @click="handleStart"
-      >
-        {{ prepareState === 'probing' ? '正在读取环境…' : '开始收集' }}
-      </el-button>
-      <el-button v-else type="danger" plain @click="handleCancel">取消</el-button>
+      <template v-if="viewMode === 'result'">
+        <el-button type="primary" @click="startRecollect">重新收集</el-button>
+      </template>
+      <template v-else>
+        <el-button
+          v-if="!running"
+          type="primary"
+          :disabled="prepareState === 'probing'"
+          @click="handleStart"
+        >
+          {{ prepareState === 'probing' ? '正在读取环境…' : '开始收集' }}
+        </el-button>
+        <el-button v-else type="danger" plain @click="handleCancel">取消</el-button>
+      </template>
     </template>
   </el-drawer>
 </template>
@@ -1222,6 +1441,11 @@ onBeforeUnmount(() => {
   margin: 0;
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+.lc-result {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 .lc-hint {
   font-size: 12px;

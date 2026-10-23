@@ -58,6 +58,10 @@ export interface LogCollectTask {
   ips: string[]
   status: LogCollectStatus
   progress: number
+  arch?: string | null
+  acli_version?: string | null
+  /** 交付路径：acli_direct = P1 直传日志服务器；bridge_relay = P3 经平台中转 */
+  upload_mode?: 'acli_direct' | 'bridge_relay' | 'none' | null
   archive_path?: string | null
   archive_size?: number | null
   archive_sha256?: string | null
@@ -70,6 +74,10 @@ export interface LogCollectTask {
   relay_restarts: number
   error_code?: string | null
   error_message?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+  /** 终态落库时间：完成态展示"什么时候收完的"必须用它，不能用本地内存时间 */
+  finished_at?: string | null
 }
 
 export interface UploadInitResult {

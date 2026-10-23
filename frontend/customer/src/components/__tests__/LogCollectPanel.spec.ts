@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { h } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import LogCollectPanel from '@/components/LogCollectPanel.vue'
+import { logCollectApi, type LogCollectTask } from '@/api/logCollect'
 
 const { sentMessages, fakeSocket, mockStore } = vi.hoisted(() => {
   const sent: string[] = []
@@ -79,6 +80,15 @@ const passthrough = (name: string, tag = 'div') => ({
   },
 })
 
+// ElAlert 的 title 是属性而非插槽，透传桩会丢掉它；这里显式渲染出来，
+// 否则"完成态"一类文案无法在测试里断言。
+const ElAlert = {
+  props: ['title'],
+  setup(props: any, { slots }: any) {
+    return () => h('div', { class: 'alert-stub' }, [props.title, slots.default?.()])
+  },
+}
+
 // 只把结构相关的组件渲染成可断言的 DOM，其余保持透传
 const ElCheckboxGroup = {
   props: ['modelValue'],
@@ -119,7 +129,7 @@ function mountPanel() {
           },
           ElForm: passthrough('ElForm'),
           ElFormItem: passthrough('ElFormItem'),
-          ElAlert: passthrough('ElAlert'),
+          ElAlert,
           ElDescriptions: passthrough('ElDescriptions'),
           ElDescriptionsItem: passthrough('ElDescriptionsItem'),
           ElTag: passthrough('ElTag'),
@@ -144,6 +154,36 @@ describe('LogCollectPanel', () => {
     mockStore.lastSshHost = ''
     mockStore.sshConnectionState = 'disconnected'
     mockStore.sshCurrentConfig = null
+    // 默认"该工单没有任何历史任务"，需要历史的任务用例自行 mock
+    vi.mocked(logCollectApi.listTasks).mockReset()
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 0, items: [] })
+    vi.mocked(logCollectApi.getTask).mockReset()
+  })
+
+  const taskFixture = (patch: Partial<LogCollectTask> = {}): LogCollectTask => ({
+    task_id: 'task-1',
+    case_id: 'Q2026102300001',
+    origin_node_ip: '172.28.25.1',
+    modules: ['vm_suspend'],
+    date_from: '2026-10-20',
+    date_to: '2026-10-21',
+    ips: ['all'],
+    status: 'completed',
+    progress: 100,
+    arch: 'x86_64',
+    acli_version: '1.0.0',
+    upload_mode: 'bridge_relay',
+    archive_path: '/sf/data/local/acli/tasks/Q2026102300001.tar.gz',
+    archive_size: 104857600,
+    archive_sha256: 'a'.repeat(64),
+    cleanup_state: 'none',
+    archive_deleted: false,
+    relay_status: 'success',
+    relay_restarts: 0,
+    created_at: '2026-10-22T07:00:00Z',
+    updated_at: '2026-10-22T08:30:00Z',
+    finished_at: '2026-10-22T08:30:00Z',
+    ...patch,
   })
 
   // 回归：发起节点曾是可编辑输入框，用户改成另一个 IP 后 bridge 按 caseID@nodeIP 查不到会话
@@ -252,5 +292,68 @@ describe('LogCollectPanel', () => {
     expect(hostGroup.text()).toContain('主控')
     // 全选时后端契约仍是 all，界面必须显示"已全选"
     expect(wrapper.text()).toContain('已全选')
+  })
+
+  // 回归：任务状态的真值在平台。完成后关掉抽屉再打开，曾经退回空白表单，用户会以为必须重收。
+  it('平台已有已完成任务时优先展示完成结果，而不是默认让用户重新收集', async () => {
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({
+      total: 2,
+      items: [taskFixture()],
+    })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    const result = wrapper.find('.lc-result')
+    expect(result.exists()).toBe(true)
+    expect(result.text()).toContain('已完成日志收集')
+    expect(result.text()).toContain('P3 经平台中转')
+    expect(result.text()).toContain('全部在线节点')
+    expect(result.text()).toContain('虚拟机挂起专项')
+    expect(result.text()).toContain('/sf/data/local/acli/tasks/Q2026102300001.tar.gz')
+
+    const labels = wrapper.findAll('button').map((button) => button.text())
+    expect(labels).toContain('重新收集')
+    // 完成态下不应把"再收一次"当成默认动作
+    expect(labels).not.toContain('开始收集')
+    wrapper.unmount()
+  })
+
+  it('结果态点「重新收集」回到表单，并保留重新收集入口', async () => {
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [taskFixture()] })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    const button = wrapper.findAll('button').find((item) => item.text() === '重新收集')
+    expect(button).toBeTruthy()
+    await button!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.lc-result').exists()).toBe(false)
+    expect(wrapper.find('.lc-module-group').exists()).toBe(true)
+    // 回到表单后会立刻重新探测，按钮文案可能是"正在读取环境…"
+    const labels = wrapper.findAll('button').map((item) => item.text())
+    expect(labels.some((text) => text.includes('开始收集') || text.includes('正在读取环境'))).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('有进行中任务时优先接管，即使该工单已存在完成记录', async () => {
+    const running = taskFixture({ task_id: 'task-running', status: 'collecting', progress: 42, finished_at: null })
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({
+      total: 2,
+      items: [running, taskFixture()],
+    })
+    vi.mocked(logCollectApi.getTask).mockResolvedValue(running)
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    expect(wrapper.find('.lc-result').exists()).toBe(false)
+    expect(wrapper.find('.lc-progress').exists()).toBe(true)
+    wrapper.unmount()
   })
 })
