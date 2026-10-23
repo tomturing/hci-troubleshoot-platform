@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 
 
@@ -49,6 +50,31 @@ class TicketError(Exception):
 
     def __str__(self) -> str:
         return f"[{self.code}] {self.message}"
+
+
+# 工单号唯一合法形态：Q + 13 位数字（Q + YYYYMMDD + 5 位当天序号）。
+# 与 case-service 的 generate_case_id() 及 LogCollectTaskCreate 契约一致。
+TICKET_PATTERN = r"^Q\d{13}$"
+TICKET_RE = re.compile(TICKET_PATTERN)
+
+# 任务处于这些阶段时视为“仍在跑”：重复提交拒绝，取消才有意义。
+RUNNING_PHASES = frozenset({Phase.QUEUED, Phase.FETCHING, Phase.EXTRACTING})
+
+
+def validate_ticket_id(value: str) -> str:
+    """校验并归一化工单号。
+
+    服务端强制该规则，不接受任何路径分隔符或通配符，使 ticket_id 可以
+    安全地拼接进 /sf/log 与 /sf/tickets 路径，不需要再做二次转义。
+    """
+    candidate = value.strip()
+    if not TICKET_RE.match(candidate):
+        raise TicketError(
+            ErrorCode.INVALID_TICKET_ID,
+            "工单号格式错误，应为 Q + 13 位数字",
+            f"input={value!r}",
+        )
+    return candidate
 
 
 class ExtractStats:

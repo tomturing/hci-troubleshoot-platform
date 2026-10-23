@@ -1,0 +1,32 @@
+[Unit]
+Description=HCI 工单日志同步服务
+Documentation=docs/solution/events/2026-10-23-工单日志宿主机同步服务.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 硬要求：/sf/tickets 属主是 node:node，换其他身份要么写不进，要么 DSH 读不了。
+User=node
+Group=node
+WorkingDirectory=/opt/hci-ticket-sync
+EnvironmentFile=/etc/hci-ticket-sync/ticket-sync.env
+
+# 重启后内存里的任务表已丢失，.tmp 里的半成品不会再有人处理，必须清空。
+ExecStartPre=/bin/sh -c 'rm -rf /sf/tickets/.tmp/* 2>/dev/null || true'
+
+# $TICKET_LISTEN_HOST / $TICKET_LISTEN_PORT 由 EnvironmentFile 提供。
+ExecStart=/opt/hci-ticket-sync/.venv/bin/uvicorn app.main:app \
+    --host ${TICKET_LISTEN_HOST} \
+    --port ${TICKET_LISTEN_PORT} \
+    --no-access-log
+
+Restart=always
+RestartSec=3
+
+# 服务只需要写 /sf/tickets 与读配置，不需要任何提权能力。
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
