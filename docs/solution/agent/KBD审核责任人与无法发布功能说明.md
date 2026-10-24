@@ -90,7 +90,7 @@
 2. **kbd_entry 表新增字段**
    - review_owner_id: 审核责任人 ID（外键）
    - unpublishable_at: 标记为无法发布的时间
-   - unpublishable_by: 操作人 ID
+   - unpublishable_by: **预留字段，当前恒为 NULL**。`_set_unpublishable_one()` 只写 `status` / `unpublishable_at` / `unpublishable_reason`，不写该列；且该接口仅校验内部服务 Token（`_check_auth`），链路中不存在用户身份来源，故无法填充。待「操作人身份」体系统一后再启用，详见 [数据库Schema审查与修复方案](../数据库Schema审查与修复方案.md) §3.1 / §3.2。
    - unpublishable_reason: 无法发布原因
 
 ### API 端点
