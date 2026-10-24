@@ -36,6 +36,7 @@ database/
   data-migrations/             ← 版本化数据迁移（DML，详见下文）
     001_xxx.sql
     002_yyy.sql
+    review_required/           ← 需专家签字后手工应用的迁移（runner 不扫描）
   hci-sim-migrations/          ← hci_sim 独立库 Schema 入口（与主库互不扫描）
   seeds/                       ← 业务种子数据（与迁移工具无关）
     01_tool_definitions.sql    ← 初始化 tool_definition 表
@@ -86,6 +87,15 @@ git add database/desired_schema.sql
 | Step 4 | 重建触发器 | `desired_extras.sql`（再次全量） |
 
 `Dockerfile.migrations` 只 COPY 上述四个输入 + 两个脚本，**不打包任何迁移版本目录**。
+
+> **`data-migrations/review_required/` 不会被自动执行**：`migration-runner.sh` 只匹配
+> `/data-migrations/*.sql` 顶层 glob，子目录不在扫描范围内。该目录存放**不可自动回退**
+> 的业务数据重分类/重挂载迁移，必须由领域专家逐条核对后手工执行：
+> `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f <file>.sql`。
+>
+> 当前待签字项：`042`（分组节点上的 KBD 按关键词逐条重挂到叶子，并修正「虚拟机-049」
+> 命名错配）、`043`（vm009 分组折叠为叶子）、`044`（已发布 KBD 重新归类）。
+> 未执行不影响部署链路，但这些 KBD 的分类归属会保持现状。
 
 ### CI 自动验证（`db-migration-test.yml`）
 
