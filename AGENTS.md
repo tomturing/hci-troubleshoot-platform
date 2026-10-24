@@ -159,6 +159,14 @@ hci-troubleshoot-platform/
 **必须在同一 commit/PR 中**同步更新 `docs/`、`README.md`、`AGENTS.md` 或 `CLAUDE.md` 至少一项。
 否则 CI `docs-governance` job 失败，PR 无法合并。
 
+映射规则由 `scripts/ci/check_module_doc_sync.py` 的 `MODULE_MAPPINGS` 定义，按声明顺序
+`startswith` 取**第一个**命中项，因此更具体的前缀/精确文件名必须写在宽泛前缀之前。
+`database/` 下除 `database/seeds/`（种子数据是 Prompt/工具定义，实质属 agent-service，
+走 agent 文档）外，一律映射到 `docs/solution/数据库设计.md` 或 `docs/task/数据库任务.md`。
+**不要为具体文件另设指向其他模块文档的特例**（如曾有的 `database/desired_schema.sql`
+→ agent 文档）：它会静默遮蔽宽泛规则，导致改 schema 时门禁拒绝正确的设计文档。
+回归测试：`tests/unit/test_module_doc_sync_mapping.py`。
+
 #### 分支与 PR 流程
 - main 分支有保护规则，**禁止直接推送**，必须通过 PR
 - 提交流程：创建 feature/hotfix 分支 → 推送远程 → 创建 PR → CI 全绿后合并

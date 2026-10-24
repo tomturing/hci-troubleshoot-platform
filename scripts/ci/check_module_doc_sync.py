@@ -5,25 +5,36 @@
 规则：当 PR 修改了某个服务/模块的代码文件时，对应的设计文档或任务文档也应更新。
 若代码有实质性变更但无对应文档更新，则输出提示并以 exit(1) 阻断合并。
 
-代码模块 → 对应文档 映射：
-  backend/case-service/         → solution/case/工单设计.md              + task/case/工单任务.md
-  backend/conversation-service/ → solution/conversation/对话设计.md       + task/conversation/对话任务.md
-  backend/kb-service/           → solution/knowledge-base/知识库设计.md   + task/knowledge-base/知识库任务.md
-  backend/agent-service/        → solution/agent/design/agent设计.md      + task/agent/agent任务.md
-  backend/scheduler-service/    → solution/agent/design/agent设计.md      + task/agent/agent任务.md
-  backend/api-gateway/          → solution/架构设计.md                   + task/架构任务.md
-  backend/shared/               → solution/架构设计.md                   （共享库影响全局架构）
-  frontend/customer/            → solution/custom-ui/客户端设计.md         + task/custom-ui/custom-ui任务.md
-  frontend/admin/               → solution/admin-ui/管理台设计.md          + task/admin-ui/admin-ui任务.md
-  database/                     → solution/数据库设计.md                 + task/数据库任务.md
+代码模块 → 对应文档 映射（完整清单以 MODULE_MAPPINGS 为唯一事实源）：
+  backend/case-service/         → solution/case/工单设计.md                + task/case/工单任务.md
+  backend/conversation-service/ → solution/conversation/对话设计.md         + task/agent/Agent可靠性改造任务清单.md
+  backend/kb-service/           → solution/knowledge-base/知识库设计.md     + task/knowledge-base/知识库任务.md
+  backend/agent-service/        → solution/agent/design/agent设计.md        + task/agent/Agent可靠性改造任务清单.md
+  backend/scheduler-service/    → solution/agent/design/agent设计.md        + task/agent/Agent可靠性改造任务清单.md
+  backend/api-gateway/          → solution/架构设计.md                     + task/架构任务.md
+  backend/shared/               → solution/架构设计.md                     （共享库影响全局架构）
+  frontend/admin/               → solution/admin-ui/管理台设计.md           + task/admin-ui/管理台任务.md
+  database/                     → solution/数据库设计.md                   + task/数据库任务.md
+  database/seeds/               → solution/agent/design/agent工具设计.md    + task/agent/Agent可靠性改造任务清单.md
   deploy/helm/                  → deploy/部署设计.md
+
+  另有若干「精确文件/目录」级映射（如 backend/shared/utils/prompt_loader.py、
+  backend/shared/models/audit.py、frontend/customer/src/stores/、
+  frontend/admin/src/views/ToolManageView.vue 等）指向 agent 文档，详见 MODULE_MAPPINGS。
+
+匹配优先级：按 MODULE_MAPPINGS 声明顺序取**第一个**命中项（startswith），因此更具体的
+前缀/精确文件名必须写在更宽泛的前缀之前，否则会被遮蔽且不报错。回归测试见
+ tests/unit/test_module_doc_sync_mapping.py。
+
+已知缺口：frontend/customer/ 目前没有通用映射（仅有上述个别文件/目录级映射），
+  未列出的 customer 端文件变更不会触发文档门禁。
 
 旁路：
   - PR 描述包含 [skip doc-sync]
   - PR 含 doc-update-exempt 标签（CI 设置 DOC_SYNC_BYPASS=1）
 
 用法：
-  BASE_SHA=xxx HEAD_SHA=yyy python scripts/check_module_doc_sync.py
+  BASE_SHA=xxx HEAD_SHA=yyy python scripts/ci/check_module_doc_sync.py
 """
 
 import os
@@ -194,13 +205,9 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
         solution_doc="docs/solution/agent/design/agent工具设计.md",
         task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
     ),
-    # desired_schema.sql 属于 agent 可靠性整改闭环（本项目无迁移版本目录，已 2026-10-24 删除）
-    ModuleMapping(
-        code_prefix="database/desired_schema.sql",
-        display_name="数据库 schema（database/desired_schema.sql）",
-        solution_doc="docs/solution/agent/design/agent工具设计.md",
-        task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
-    ),
+    # 注意：desired_schema.sql 不设单独映射，走下面的通用 database/ 规则（→ 数据库设计.md）。
+    # 历史上有一条特例（#415 引入）把它指向 agent 文档，因 startswith 取首个命中而遮蔽了通用规则，
+    # 导致改 schema 时门禁不认真正的数据库设计文档。除 seeds 外的 database/ 一律走通用规则。
     ModuleMapping(
         code_prefix="database/",
         display_name="数据库（database）",
@@ -251,6 +258,18 @@ def is_meaningful_change(fpath: str, mapping: ModuleMapping) -> bool:
     return True
 
 
+def resolve_mapping(fpath: str) -> ModuleMapping | None:
+    """解析单个文件命中的映射；未命中返回 None。
+
+    按 MODULE_MAPPINGS 声明顺序取**第一个**命中项（startswith + 有意义变更），
+    因此更具体的前缀/精确文件名必须声明在更宽泛的前缀之前。
+    """
+    for mapping in MODULE_MAPPINGS:
+        if fpath.startswith(mapping.code_prefix) and is_meaningful_change(fpath, mapping):
+            return mapping
+    return None
+
+
 def check_bypass() -> bool:
     """检查是否命中任一旁路条件"""
     # 标签旁路（CI 注入 DOC_SYNC_BYPASS=1）
@@ -282,12 +301,12 @@ def main() -> None:
     # code_prefix → (mapping, [有意义变更的代码文件])
     touched: dict[str, tuple[ModuleMapping, list[str]]] = {}
     for fpath in changed_files:
-        for mapping in MODULE_MAPPINGS:
-            if fpath.startswith(mapping.code_prefix) and is_meaningful_change(fpath, mapping):
-                if mapping.code_prefix not in touched:
-                    touched[mapping.code_prefix] = (mapping, [])
-                touched[mapping.code_prefix][1].append(fpath)
-                break
+        mapping = resolve_mapping(fpath)
+        if mapping is None:
+            continue
+        if mapping.code_prefix not in touched:
+            touched[mapping.code_prefix] = (mapping, [])
+        touched[mapping.code_prefix][1].append(fpath)
 
     if not touched:
         print("未检测到需要文档同步的模块改动（仅测试/配置变更）")
