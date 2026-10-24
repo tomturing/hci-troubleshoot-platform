@@ -206,3 +206,40 @@ def test_partial_workflow_failure_still_records_hci_sim_service_baseline(monkeyp
     assert module.main() == 0
     assert "status=completed" in endpoints[0]
     assert json.loads(outputs["service_baselines"])["hci-sim"] == source_sha
+
+
+def test_skips_run_whose_jobs_api_fails(monkeypatch):
+    """单个 run 的 jobs 接口 502 时必须跳过，而不是让整条发布链失败。"""
+    module = _load_module()
+    broken_sha = "d" * 40
+    good_sha = "a" * 40
+    current_sha = "b" * 40
+    fallback_sha = "c" * 40
+
+    def fake_gh_json(endpoint):
+        if "/runs?" in endpoint:
+            return {
+                "workflow_runs": [
+                    {"id": 501, "head_sha": broken_sha, "conclusion": "success"},
+                    {"id": 502, "head_sha": good_sha, "conclusion": "success"},
+                ]
+            }
+        if "/runs/501/jobs" in endpoint:
+            raise module.GitHubApiError("HTTP 502 Server Error")
+        return {
+            "jobs": [
+                {"name": "构建并推送镜像（customer-ui）", "conclusion": "success"},
+                {"name": "晋级非生产环境", "conclusion": "success"},
+            ]
+        }
+
+    outputs = {}
+    monkeypatch.setattr(module, "gh_json", fake_gh_json)
+    monkeypatch.setattr(module, "write_output", outputs.__setitem__)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "tomturing/hci-troubleshoot-platform")
+    monkeypatch.setenv("CURRENT_SHA", current_sha)
+    monkeypatch.setenv("EVENT_BEFORE", fallback_sha)
+
+    assert module.main() == 0
+    # 坏 run 被跳过，基线落到下一个可读的成功运行
+    assert outputs["base_sha"] == good_sha
