@@ -21,6 +21,7 @@ from ..config import settings
 from ..repositories.conversation_repo import ConversationRepository
 from ..security.auth import (
     check_request_size,
+    require_admin_token,
     sanitize_message_content,
     verify_case_ownership,
     verify_conversation_ownership,
@@ -29,7 +30,6 @@ from ..services.agent_client import AgentClient
 from ..services.conversation_service import ConversationService
 from ..services.environment_client import EnvironmentClient
 from ..services.simulation_context_client import SimulationContextClient
-from .evaluate import require_admin_token
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 logger = get_logger("conversation-routes")

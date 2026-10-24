@@ -42,7 +42,6 @@ vi.mock('@hci/shared', () => ({
 }))
 
 vi.mock('@/utils/clientId', () => ({ getClientId: () => 'test-client-id' }))
-vi.mock('@/api/evaluate', () => ({ createEvaluateApi: () => ({}) }))
 vi.mock('@/api/terminal', () => ({
   checkBridgeRunning: vi.fn().mockResolvedValue(false),
   checkBridgeBeforeOpen: vi.fn().mockResolvedValue('not-running'),

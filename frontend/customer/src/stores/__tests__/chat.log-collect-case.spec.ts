@@ -48,7 +48,6 @@ vi.mock('@hci/shared', () => ({
 }))
 
 vi.mock('@/utils/clientId', () => ({ getClientId: () => 'test-client-id' }))
-vi.mock('@/api/evaluate', () => ({ createEvaluateApi: () => ({}) }))
 vi.mock('@/api/logCollect', () => ({
   logCollectApi: { resolveCase: mockResolveCase },
 }))

@@ -8,7 +8,6 @@ import { createApiClient, createCaseApi, createConversationApi, createAssistantA
 import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse, EnvironmentResponse, EnvironmentContextResponse, EnvType } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
 import { getDefaultPanelWidth } from '@/utils/panelWidth'
-import { createEvaluateApi } from '@/api/evaluate'
 import { logCollectApi, type ActiveTaskSummary } from '@/api/logCollect'
 import { checkBridgeRunning, checkBridgeBeforeOpen, createBridgeSocket, getBridgeUrl, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, buildVmConsoleOpMessage, parseAgentExecResult, type BridgeStatus, type TerminalWsMessage, type OutputFilterSpec } from '@/api/terminal'
 import {
@@ -87,7 +86,6 @@ export const useChatStore = defineStore('chat', () => {
   const caseApi = createCaseApi(apiClient)
   const conversationApi = createConversationApi(apiClient)
   const assistantApi = createAssistantApi(apiClient)
-  const evaluateApi = createEvaluateApi(apiClient)
   const environmentApi = createEnvironmentApi(apiClient)
 
   // terminal_bridge 日志回采缓冲（批量上报到 /api/bridge-logs，异常重传）
@@ -466,10 +464,6 @@ export const useChatStore = defineStore('chat', () => {
    * 目前由「历史工单」与「日志收集」共用，拖拽任意一个都会同步。
    */
   const sidePanelWidth = ref(getDefaultPanelWidth())
-
-  // 评分卡状态
-  const showRatingCard = ref(false)
-  const ratingConversationId = ref<string | null>(null)
 
   // 诊断阶段（S0~S6）
   const diagnosticStage = ref<string>('S0')
@@ -1935,15 +1929,10 @@ export const useChatStore = defineStore('chat', () => {
       // 以便用户主动对已结单工单补采日志。
       logCollectCaseId.value = null
       addSystemMessage(`工单 ${res.data.case_id} 已关闭。发送新消息开启新工单。`)
-      const convId = conversationId.value
       conversationId.value = null
       // 重置诊断阶段 + 清除交互卡片
       diagnosticStage.value = 'S0'
       pendingInteractive.value = null
-      if (convId) {
-        ratingConversationId.value = convId
-        showRatingCard.value = true
-      }
     } catch (e: any) {
       addSystemMessage(`关闭工单失败: ${e.response?.data?.detail || e.message}`)
     }
@@ -2049,29 +2038,6 @@ export const useChatStore = defineStore('chat', () => {
       content,
       timestamp: new Date(),
     })
-  }
-
-  function closeRatingCard() {
-    showRatingCard.value = false
-    ratingConversationId.value = null
-  }
-
-  async function submitRating(score: number) {
-    if (!ratingConversationId.value) {
-      closeRatingCard()
-      return
-    }
-    try {
-      await evaluateApi.submit(ratingConversationId.value, { score })
-    } catch (e) {
-      console.warn('评分提交失败:', e)
-    } finally {
-      closeRatingCard()
-    }
-  }
-
-  function skipRating() {
-    closeRatingCard()
   }
 
   /** 发送命令到终端（CommandBlock 手动模式调用，仅填充输入框） */
@@ -3755,11 +3721,6 @@ export const useChatStore = defineStore('chat', () => {
     closeHistoryDrawer,
     loadHistoryMessages,
     switchToCase,
-    showRatingCard,
-    ratingConversationId,
-    submitRating,
-    skipRating,
-    closeRatingCard,
     // 终端
     showTerminalSidebar,
     terminalInputCommand,

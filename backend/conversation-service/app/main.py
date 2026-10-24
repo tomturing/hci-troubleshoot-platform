@@ -26,7 +26,6 @@ from app.routes import (
     conversations,
     diagnostic_item,
     effect_verification,
-    evaluate,
     skill_definition,
     sop_execution,
     system_prompt,
@@ -190,7 +189,6 @@ async def lifespan(app: FastAPI):
         agent_client=agent_client,
         sim_context_client=simulation_context_client,
     )
-    evaluate.set_database_manager(database_manager)
     audit_route.set_audit_database_manager(database_manager)
     sop_execution.set_dependencies(database_manager, kb_client, environment_client)
     diagnostic_item.set_dependencies(database_manager)
@@ -241,7 +239,6 @@ register_exception_handlers(app)
 
 # 注册路由
 app.include_router(conversations.router)
-app.include_router(evaluate.router)
 app.include_router(audit_route.router)
 app.include_router(sop_execution.router)
 app.include_router(diagnostic_item.router)

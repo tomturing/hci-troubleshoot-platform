@@ -2,7 +2,6 @@
 import { ref, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import MessageBubble from './MessageBubble.vue'
-import RatingCard from './RatingCard.vue'
 import TerminalPanel from './TerminalPanel.vue'
 import TerminalReplay from './TerminalReplay.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
@@ -296,15 +295,6 @@ function handleQuoteToChat(content: string) {
         <el-icon class="is-loading"><i class="el-icon-loading" /></el-icon>
         <span>处理中...</span>
       </div>
-
-      <!-- 评分卡 -->
-      <RatingCard
-        :visible="chatStore.showRatingCard"
-        :conversation-id="chatStore.ratingConversationId"
-        @submit="chatStore.submitRating"
-        @skip="chatStore.skipRating"
-        @close="chatStore.closeRatingCard"
-      />
     </div>
 
     <!-- SSH 终端抽屉 -->

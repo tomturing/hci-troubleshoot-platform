@@ -13,9 +13,10 @@
 """
 
 import re
+import secrets
 import uuid
 
-from fastapi import HTTPException, Request
+from fastapi import Header, HTTPException, Request, status
 from shared.observability.logger import get_logger
 from shared.security.signature import verify_client_identity
 from sqlalchemy import text
@@ -184,3 +185,21 @@ def check_request_size(content_length: int, max_size_mb: int = 1) -> None:
             status_code=413,
             detail=f"请求体过大，最大允许 {max_size_mb}MB",
         )
+
+
+def require_admin_token(authorization: str | None = Header(default=None)) -> None:
+    """FastAPI 依赖：校验管理员 token（Bearer INTERNAL_API_TOKEN）。
+
+    原定义在 `routes/evaluate.py`，因评分体系废弃而迁移至此：该依赖仍被
+    `routes/conversations.py` 的三个管理端点（如 resolved_kbd 修正）使用。
+
+    安全约束：空 token 直接拒绝；使用常数时间比较防时序侧信道。
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="缺少 Bearer Token")
+
+    token = authorization[7:].strip()
+    if not token or not settings.INTERNAL_API_TOKEN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权限访问管理员接口")
+    if not secrets.compare_digest(token, settings.INTERNAL_API_TOKEN):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权限访问管理员接口")

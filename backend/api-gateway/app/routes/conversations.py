@@ -323,18 +323,3 @@ async def resume_stream(conversation_id: str, request: Request, client_id: str =
     return await proxy_request_stream(
         "GET", f"/{conversation_id}/resume-stream", payload=None, headers={}, client_id=client_id
     )
-
-
-@router.post("/{conversation_id}/evaluate")
-async def submit_evaluation(conversation_id: str, request: Request, client_id: str = Depends(require_user)):
-    """提交用户评分"""
-    payload = await request.json()
-    response = await proxy_request("POST", f"/{conversation_id}/evaluate", payload=payload, client_id=client_id)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
-
-
-@router.get("/{conversation_id}/evaluation")
-async def get_evaluation(conversation_id: str, request: Request, client_id: str = Depends(require_user)):
-    """获取对话的评分信息"""
-    response = await proxy_request("GET", f"/{conversation_id}/evaluation", client_id=client_id)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
