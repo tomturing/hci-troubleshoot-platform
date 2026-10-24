@@ -98,7 +98,10 @@ CREATE TABLE IF NOT EXISTS effect_verification_check (
 
 COMMENT ON TABLE effect_verification_check IS '效果验证每次观测判定记录（append-only 时间线）；与 effect_verification 一对多';
 
-CREATE INDEX IF NOT EXISTS idx_effect_check_verification ON effect_verification_check (verification_id, check_seq);
+-- (verification_id, check_seq) 查询由 uq_effect_check_seq 唯一索引承担，此处不再重复建普通索引。
+-- 注意：本文件在 CI 中是逐个 `psql -f` 全量执行（晚于 atlas apply），若此处保留该索引，
+-- 会让「atlas apply 后仍存在 diff」的幂等性验证失败；生产环境由 migration_history 按
+-- version 跳过、不校验 checksum，故修改本文件不会重跑。
 
 -- diagnostic_item.type 无 CHECK 约束；新增 effect_verification 类型值仅更新注释。
 -- 注释文本必须与 desired_schema.sql 完全一致（Atlas 幂等性验证按字节比对）。

@@ -137,8 +137,7 @@ COMMENT ON COLUMN customer.trace_id IS '创建该客户记录的请求追踪 ID�
 -- 索引: customer
 -- 客户名称模糊查询
 CREATE INDEX IF NOT EXISTS idx_customer_name ON customer (name);
--- 编码精确查询（数据导入幂等）
-CREATE INDEX IF NOT EXISTS idx_customer_code ON customer (code);
+-- 编码精确查询（数据导入幂等）—— 由表级 UNIQUE(code) 的唯一索引承担，无需额外普通索引
 -- 产品版本维度统计
 CREATE INDEX IF NOT EXISTS idx_customer_product_version ON customer (product_version);
 -- 区域维度统计
@@ -457,8 +456,7 @@ COMMENT ON COLUMN collection_plan_item.collector_parameters IS '由已发布采�
 COMMENT ON COLUMN collection_plan_item.condition_snapshot IS 'conditional 采集项的受控条件快照';
 COMMENT ON COLUMN collection_plan_item.trace_id IS '计划生成请求的 W3C Trace ID';
 
-CREATE INDEX IF NOT EXISTS idx_collection_plan_item_plan_sequence
-    ON collection_plan_item (plan_id, sequence);
+-- (plan_id, sequence) 查询由 uq_collection_plan_item_sequence 唯一索引承担，不再重复建普通索引
 CREATE INDEX IF NOT EXISTS idx_collection_plan_item_trace_id
     ON collection_plan_item (trace_id);
 
@@ -637,8 +635,7 @@ COMMENT ON COLUMN collector_artifact_item.collector_revision IS '生成制品时
 COMMENT ON COLUMN collector_artifact_item.rendered_command IS '通过参数 Schema 校验并 Shell 转义后的最终只读命令';
 COMMENT ON COLUMN collector_artifact_item.trace_id IS '制品生成请求的 W3C Trace ID';
 
-CREATE INDEX IF NOT EXISTS idx_collector_artifact_item_artifact_sequence
-    ON collector_artifact_item (artifact_id, sequence);
+-- (artifact_id, sequence) 查询由 uq_collector_artifact_item_sequence 唯一索引承担，不再重复建普通索引
 CREATE INDEX IF NOT EXISTS idx_collector_artifact_item_plan_item
     ON collector_artifact_item (plan_item_id);
 CREATE INDEX IF NOT EXISTS idx_collector_artifact_item_trace_id
@@ -921,8 +918,7 @@ COMMENT ON COLUMN evidence_item.trace_id IS '标准化任务的 W3C Trace ID';
 
 CREATE INDEX IF NOT EXISTS idx_evidence_item_tenant_session
     ON evidence_item (tenant_id, session_id, collector_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_evidence_item_bundle
-    ON evidence_item (bundle_id, source_path);
+-- (bundle_id, source_path) 查询由 uq_evidence_item_bundle_source 唯一索引承担，不再重复建普通索引
 CREATE INDEX IF NOT EXISTS idx_evidence_item_trace_id
     ON evidence_item (trace_id);
 
@@ -1161,8 +1157,7 @@ COMMENT ON TABLE offline_resource_sync_change IS
 COMMENT ON COLUMN offline_resource_sync_change.before_governance_json IS
     '变更前的 managed_by/generation_metadata 治理快照，确保回滚不只恢复 active revision';
 
-CREATE INDEX IF NOT EXISTS idx_offline_resource_sync_change_batch
-    ON offline_resource_sync_change (batch_id, resource_type, resource_name);
+-- (batch_id, resource_type, resource_name) 查询由 uq_offline_resource_sync_change_resource 唯一索引承担，不再重复建普通索引
 
 -- ------------------------------------------------------------
 -- 表: offline_resource_sync_event  [模块: diagnosis-service]
@@ -1200,8 +1195,7 @@ CREATE TABLE IF NOT EXISTS offline_resource_sync_event (
 COMMENT ON TABLE offline_resource_sync_event IS
     '追加式同步审计事件；每次预检、发布、拒绝和回滚的开始及结果均留痕，禁止更新或删除';
 
-CREATE INDEX IF NOT EXISTS idx_offline_resource_sync_event_batch
-    ON offline_resource_sync_event (batch_id, event_sequence);
+-- (batch_id, event_sequence) 查询由 uq_offline_resource_sync_event_sequence 唯一索引承担，不再重复建普通索引
 CREATE INDEX IF NOT EXISTS idx_offline_resource_sync_event_trace
     ON offline_resource_sync_event (trace_id);
 
@@ -1705,8 +1699,7 @@ COMMENT ON COLUMN conversation.sop_document_id IS 'S1 阶段按 category_id 命�
 COMMENT ON COLUMN conversation.resolved_kbd_entry_id IS 'S4 根因确认后，AI 推断该 case 对应的 KBD 叶节点 ID（FK → kbd_entry.id）；NULL 表示新问题未收录或尚未到达 S4。admin-UI 可手动修正（修正时重新计算相关 hit_count）';
 
 -- 索引: conversation
--- 工单会话查询
-CREATE INDEX IF NOT EXISTS idx_conversation_case_id ON conversation (case_id);
+-- 工单会话查询由 idx_conversation_case_started (case_id, started_at DESC) 的最左前缀承担
 -- Pod 维度统计
 CREATE INDEX IF NOT EXISTS idx_conversation_pod_id ON conversation (pod_id);
 -- 助手类型统计
@@ -1836,8 +1829,7 @@ COMMENT ON COLUMN diagnostic_item.updated_at IS '最后更新时间（状态变�
 COMMENT ON COLUMN diagnostic_item.trace_id IS '写入该条目的请求 trace ID';
 
 -- 索引: diagnostic_item
--- 核心查询：按会话 + 类型 + 序号获取诊断条目（Prompt 构建路径）
-CREATE INDEX IF NOT EXISTS idx_diagnostic_item_conv_type ON diagnostic_item (conversation_id, "type", seq);
+-- 核心查询：按会话 + 类型 + 序号获取诊断条目（Prompt 构建路径）—— 由 uq_diagnostic_item_conv_type_seq 唯一索引承担
 -- 按阶段汇总：查某会话 S2 阶段所有内容
 CREATE INDEX IF NOT EXISTS idx_diagnostic_item_conv_stage ON diagnostic_item (conversation_id, stage);
 -- 状态统计：如'所有会话中被排除的假设比例'
@@ -2344,8 +2336,7 @@ COMMENT ON COLUMN kb_category.hit_count IS '命中计数，S0 确认分类后 +1
 COMMENT ON COLUMN kb_category.is_active IS '是否启用，可用于禁用某些分类';
 
 -- 索引: kb_category
--- 分类编码查询
-CREATE INDEX IF NOT EXISTS idx_kb_category_code ON kb_category (code);
+-- 分类编码查询 —— 由表级 UNIQUE(code) 的唯一索引承担，无需额外普通索引
 -- 父子关系查询
 CREATE INDEX IF NOT EXISTS idx_kb_category_parent ON kb_category (parent_id);
 -- 层级过滤
@@ -3362,7 +3353,7 @@ COMMENT ON TABLE effect_verification_check IS '效果验证每次观测判定记
 COMMENT ON COLUMN effect_verification_check.observation_fingerprint IS '受控观测输出 SHA-256；用于跨次进展比较';
 COMMENT ON COLUMN effect_verification_check.progress_state IS 'baseline/in_progress/stalled/inconclusive/achieved';
 
-CREATE INDEX IF NOT EXISTS idx_effect_check_verification ON effect_verification_check (verification_id, check_seq);
+-- (verification_id, check_seq) 查询由 uq_effect_check_seq 唯一索引承担，不再重复建普通索引
 
 -- ------------------------------------------------------------
 -- 表: fact  [模块: agent-service]
