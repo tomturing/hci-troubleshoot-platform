@@ -1,5 +1,78 @@
 # Changelog
 
+## [2.32.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.31.0...v2.32.0) (2026-10-24)
+
+
+### ✨ 新功能
+
+* aCLI 命令快照双源同步并接入 risk_hint 风险分级 ([#1188](https://github.com/tomturing/hci-troubleshoot-platform/issues/1188)) ([99271ce](https://github.com/tomturing/hci-troubleshoot-platform/commit/99271ce447b256b154a38107605b699c73a44a57))
+* **bridge:** acli 命令强制分配伪终端（PTY） ([#1189](https://github.com/tomturing/hci-troubleshoot-platform/issues/1189)) ([99b6ea4](https://github.com/tomturing/hci-troubleshoot-platform/commit/99b6ea44cf04f78e396732976eddb65d4c45ed78))
+* **bridge:** 新增 acli log_collect 执行通道（探测/创建/进度/取消） ([#1191](https://github.com/tomturing/hci-troubleshoot-platform/issues/1191)) ([739cbf4](https://github.com/tomturing/hci-troubleshoot-platform/commit/739cbf4481ebc54e4782902536b7795e2d4f2bbe))
+* **bridge:** 新增日志包拉取与分块上传（P3 段①+段②） ([#1198](https://github.com/tomturing/hci-troubleshoot-platform/issues/1198)) ([7157675](https://github.com/tomturing/hci-troubleshoot-platform/commit/71576758df878dea8e50f0bf5ed6543bc00819de))
+* **case:** 收敛日志收集交付路径并补充大文件续传字段 ([#1194](https://github.com/tomturing/hci-troubleshoot-platform/issues/1194)) ([b62389f](https://github.com/tomturing/hci-troubleshoot-platform/commit/b62389f243e9f302148598cf4f40da9440e4d0a9))
+* **case:** 新增日志包代传 5888（P3 段③） ([#1200](https://github.com/tomturing/hci-troubleshoot-platform/issues/1200)) ([6b5f1ad](https://github.com/tomturing/hci-troubleshoot-platform/commit/6b5f1ad3b37e5a7f0aec46b4b8d4ca90fd2b66f2))
+* **case:** 新增日志收集任务控制面（表/状态机/API） ([#1192](https://github.com/tomturing/hci-troubleshoot-platform/issues/1192)) ([2f02f6f](https://github.com/tomturing/hci-troubleshoot-platform/commit/2f02f6ffb7edde500d5a74f26d6ada38dc893d96))
+* **case:** 新增日志收集分块上传接口（P3 段②） ([#1197](https://github.com/tomturing/hci-troubleshoot-platform/issues/1197)) ([ada2028](https://github.com/tomturing/hci-troubleshoot-platform/commit/ada2028aa77f405c52cdc5f390fac05f371feeaa))
+* **customer:** 新增日志收集面板与安装确认框（PR-3c） ([#1201](https://github.com/tomturing/hci-troubleshoot-platform/issues/1201)) ([35e5545](https://github.com/tomturing/hci-troubleshoot-platform/commit/35e5545d2ef5f1cf8a122c1338534fab8b403f25))
+* **customer:** 日志收集入口常驻并支持人工指定工单号 ([#1209](https://github.com/tomturing/hci-troubleshoot-platform/issues/1209)) ([72c73ef](https://github.com/tomturing/hci-troubleshoot-platform/commit/72c73ef9b63bc4849422f133941a7d68e00d685f))
+* **customer:** 日志收集完成态优先展示，重开面板不再默认要求重新收集 ([#1233](https://github.com/tomturing/hci-troubleshoot-platform/issues/1233)) ([12deaa4](https://github.com/tomturing/hci-troubleshoot-platform/commit/12deaa4aa36e5f45fceac5581e9f81a7a7881cbe))
+* **customer:** 日志收集抽屉对齐历史工单/SSH终端，并补进度查询与自动刷新 ([#1231](https://github.com/tomturing/hci-troubleshoot-platform/issues/1231)) ([c0b1749](https://github.com/tomturing/hci-troubleshoot-platform/commit/c0b1749577ba5e505378900af7b706ca19f2000f))
+* **dsh:** 从二开源构建镜像以装配 ticket-sync ([#1202](https://github.com/tomturing/hci-troubleshoot-platform/issues/1202)) ([d26653d](https://github.com/tomturing/hci-troubleshoot-platform/commit/d26653d44cd3cc8dd9d094fe26b6c0d5911a5b84))
+* **dsh:** 只读挂载工单日志产物并纳入 CI 校验（S4） ([#1218](https://github.com/tomturing/hci-troubleshoot-platform/issues/1218)) ([90ee98b](https://github.com/tomturing/hci-troubleshoot-platform/commit/90ee98b5a7944876e56d7b9543c9481101750ace))
+* **log-collect:** 工单号统一为平台 case_id，禁止两套号 ([#1210](https://github.com/tomturing/hci-troubleshoot-platform/issues/1210)) ([b8194c0](https://github.com/tomturing/hci-troubleshoot-platform/commit/b8194c0a9874fc1539952458aab58a283780d1ba))
+* **log-collect:** 支持用户指定工单号并在日志收集中复用/建档 ([#1214](https://github.com/tomturing/hci-troubleshoot-platform/issues/1214)) ([e56612b](https://github.com/tomturing/hci-troubleshoot-platform/commit/e56612bb1d98b79cce1f185e7dcae5ff75c17a01))
+* **log-collect:** 补齐网关控制面代理并新增建单后日志收集引导 ([#1205](https://github.com/tomturing/hci-troubleshoot-platform/issues/1205)) ([c3cb163](https://github.com/tomturing/hci-troubleshoot-platform/commit/c3cb16383c3e253b40604a5d7a4527647ceebef6))
+* **terminal-bridge,customer-ui:** 日志收集场景目录与节点清单改由集群提供 ([#1225](https://github.com/tomturing/hci-troubleshoot-platform/issues/1225)) ([6fba8ce](https://github.com/tomturing/hci-troubleshoot-platform/commit/6fba8ce0cff791772e29a8be1c23169b1e500f6d))
+* **ticket-sync:** admin-ui 增加同步入口与进度轮询（S2b） ([#1215](https://github.com/tomturing/hci-troubleshoot-platform/issues/1215)) ([fc77545](https://github.com/tomturing/hci-troubleshoot-platform/commit/fc7754528d1d5b61b81e8bb26e3250f4b92392b4))
+* **ticket-sync:** FastAPI 同步服务 S2a（受理 / 进度 / 取消） ([#1213](https://github.com/tomturing/hci-troubleshoot-platform/issues/1213)) ([d0de6d1](https://github.com/tomturing/hci-troubleshoot-platform/commit/d0de6d1ff0b6c2c6a476cbb8be49d64e5c5a661c))
+* **ticket-sync:** 工单日志同步内核 S1（拉取 + 分层解压 + 原子发布） ([#1211](https://github.com/tomturing/hci-troubleshoot-platform/issues/1211)) ([067555f](https://github.com/tomturing/hci-troubleshoot-platform/commit/067555fa1de38a50ba1f4c42b54ee0f15c12dceb))
+* **ticket-sync:** 无 root 的用户级 systemd 安装（S3） ([#1219](https://github.com/tomturing/hci-troubleshoot-platform/issues/1219)) ([b05e72f](https://github.com/tomturing/hci-troubleshoot-platform/commit/b05e72f41bdff9e04c14ef14f917be03b3128474))
+* 为 DSH 接入 LLM 提供商（阿里 MaaS qwen3.8-flash） ([#1187](https://github.com/tomturing/hci-troubleshoot-platform/issues/1187)) ([7ff8b8b](https://github.com/tomturing/hci-troubleshoot-platform/commit/7ff8b8b8fce8985188aae03442757ef1f2f42d74))
+* 部署 DSH 诊断工作台并在 admin-ui 内嵌「DSH诊断」页面 ([#1185](https://github.com/tomturing/hci-troubleshoot-platform/issues/1185)) ([0c21122](https://github.com/tomturing/hci-troubleshoot-platform/commit/0c21122d4bd17e04591d010f535ad34deacc193e))
+
+
+### 🐛 Bug 修复
+
+* **acli:** 版本按日期比较、事件名去变量、安装输出修编码并保留结论 ([#1241](https://github.com/tomturing/hci-troubleshoot-platform/issues/1241)) ([f5cf846](https://github.com/tomturing/hci-troubleshoot-platform/commit/f5cf846b2589b2c6b8d5d540b63e02724aa6ed06))
+* **acli:** 补齐 acli_sync 的 node_ip 与会话兜底，修复从未安装成功 ([#1239](https://github.com/tomturing/hci-troubleshoot-platform/issues/1239)) ([e39d11d](https://github.com/tomturing/hci-troubleshoot-platform/commit/e39d11d2f27fbb522917734bd9fd5c06981c1159))
+* **bridge-logs:** 越权工单逐条过滤，修复日志回采整批 403 静默失效 ([#1236](https://github.com/tomturing/hci-troubleshoot-platform/issues/1236)) ([4752c19](https://github.com/tomturing/hci-troubleshoot-platform/commit/4752c19d84c595588120e7b27947396a865f0580))
+* **case-resolve:** 日志收集工单解析返回 owned，跨身份复用提前告警 ([#1237](https://github.com/tomturing/hci-troubleshoot-platform/issues/1237)) ([e63aca6](https://github.com/tomturing/hci-troubleshoot-platform/commit/e63aca62e99f60011fcab81f8e2a5c5c71dc7ae6))
+* **customer:** 发起节点改为只读事实，取自已登录的 SSH 会话 ([#1232](https://github.com/tomturing/hci-troubleshoot-platform/issues/1232)) ([470b689](https://github.com/tomturing/hci-troubleshoot-platform/commit/470b689aaec740870d32be08248f8f4ed1164c9b))
+* **customer:** 客服端图标统一改用 SVG 组件，修复 Windows 空白/黑块图标 ([#1247](https://github.com/tomturing/hci-troubleshoot-platform/issues/1247)) ([819a315](https://github.com/tomturing/hci-troubleshoot-platform/commit/819a315531a974ecab3955ca613f8bb4d5b0d3dc))
+* **customer:** 收敛日志收集面板归档终态 ([#1204](https://github.com/tomturing/hci-troubleshoot-platform/issues/1204)) ([000bf97](https://github.com/tomturing/hci-troubleshoot-platform/commit/000bf976376605f91fbb167f0c43c3df8ed74309))
+* **customer:** 日志收集图标改用 SVG，修复 Windows/Edge 显示黑块 ([#1243](https://github.com/tomturing/hci-troubleshoot-platform/issues/1243)) ([c20cfa9](https://github.com/tomturing/hci-troubleshoot-platform/commit/c20cfa9251dd407c82900f71d19f11df3eac39c5))
+* **customer:** 日志收集结果态对老记录兜底交付路径，不暴露内部枚举 ([#1235](https://github.com/tomturing/hci-troubleshoot-platform/issues/1235)) ([7211fa5](https://github.com/tomturing/hci-troubleshoot-platform/commit/7211fa52712655137254b6d9cd3f1d5b9d933cbd))
+* **customer:** 环境数据状态徽标改为自绘，修复图标与文字被压成两行 ([#1252](https://github.com/tomturing/hci-troubleshoot-platform/issues/1252)) ([46fa5c4](https://github.com/tomturing/hci-troubleshoot-platform/commit/46fa5c44ca36d47a8a335823e62839d272090a73))
+* **customer:** 环境数据状态按真实数据判定，修复"已采集却无数据"与空色块 ([#1250](https://github.com/tomturing/hci-troubleshoot-platform/issues/1250)) ([434328c](https://github.com/tomturing/hci-troubleshoot-platform/commit/434328cd87e8f542fd77d29a2b5304205b7c7d02))
+* **customer:** 顶栏四个入口按钮统一底色，消除四种背景并存 ([#1249](https://github.com/tomturing/hci-troubleshoot-platform/issues/1249)) ([8ac8642](https://github.com/tomturing/hci-troubleshoot-platform/commit/8ac8642cbddb9409f999e174bf75964605e5e229))
+* **dsh:** 修复工单同步链路可用性并补齐秒级验证回路 ([#1206](https://github.com/tomturing/hci-troubleshoot-platform/issues/1206)) ([d6bfc2d](https://github.com/tomturing/hci-troubleshoot-platform/commit/d6bfc2d970d2ec3b2fb211e7b6994f0e17b3506d))
+* **dsh:** 修正新会话默认模型路由，避免首轮对话即失败 ([#1224](https://github.com/tomturing/hci-troubleshoot-platform/issues/1224)) ([c2caa3f](https://github.com/tomturing/hci-troubleshoot-platform/commit/c2caa3f967f16471f0c27b798c4b1e7a45e7aa2b))
+* **dsh:** 修正镜像构建的上游 tag 与 ARG 作用域 ([#1207](https://github.com/tomturing/hci-troubleshoot-platform/issues/1207)) ([69e14ce](https://github.com/tomturing/hci-troubleshoot-platform/commit/69e14cef0ba99889800408a9047006d613d68efa))
+* **dsh:** 反代保留 Host 端口，修复 RPC/WebSocket 全量 403 ([#1220](https://github.com/tomturing/hci-troubleshoot-platform/issues/1220)) ([3060f41](https://github.com/tomturing/hci-troubleshoot-platform/commit/3060f411a9dab43418a230721135530090448599))
+* **dsh:** 配置变更触发滚动重启，消除"合并了没生效" ([#1223](https://github.com/tomturing/hci-troubleshoot-platform/issues/1223)) ([aef99bd](https://github.com/tomturing/hci-troubleshoot-platform/commit/aef99bd7317cd95035658ff7ef1b2c005bf9b595))
+* **log-collect:** 响应模型将 INET 列序列化为字符串 ([#1216](https://github.com/tomturing/hci-troubleshoot-platform/issues/1216)) ([539bfa3](https://github.com/tomturing/hci-troubleshoot-platform/commit/539bfa31b0e4a0aa536e321fd431ebc503792ae8))
+* **log-collect:** 对齐 SSH 会话键，消除"终端能跑 acli 但采集无会话" ([#1229](https://github.com/tomturing/hci-troubleshoot-platform/issues/1229)) ([78a5d90](https://github.com/tomturing/hci-troubleshoot-platform/commit/78a5d909cc3da1fa34f7d86dca3b176636e98340))
+* **log-collect:** 节点清单为空时给出可执行提示，并在安装 acli 后重探 ([#1244](https://github.com/tomturing/hci-troubleshoot-platform/issues/1244)) ([023546d](https://github.com/tomturing/hci-troubleshoot-platform/commit/023546dac888c03fe7c9f8150b0fc68ab488d716))
+* **log-collect:** 错误码目录兼容镜像布局并在缺失时降级 ([#1217](https://github.com/tomturing/hci-troubleshoot-platform/issues/1217)) ([aa09bec](https://github.com/tomturing/hci-troubleshoot-platform/commit/aa09bec00256b6a8fd357f794a3b15849dadf364))
+* **log-collect:** 面板打开即探测生效、会话按节点复用、场景与主机改勾选 ([#1227](https://github.com/tomturing/hci-troubleshoot-platform/issues/1227)) ([d2241e0](https://github.com/tomturing/hci-troubleshoot-platform/commit/d2241e0c297dd5d58021a7faf728c4e5e08c1334))
+* **security:** 移除仓库内明文凭据并新增安全基线 ([#1196](https://github.com/tomturing/hci-troubleshoot-platform/issues/1196)) ([67ec6d8](https://github.com/tomturing/hci-troubleshoot-platform/commit/67ec6d86186c9dd5d104fee83ee5d370712fab66))
+* **terminal:** 修复 SSH 输入被静默丢弃与空工单日志丢失 ([#1245](https://github.com/tomturing/hci-troubleshoot-platform/issues/1245)) ([131e42b](https://github.com/tomturing/hci-troubleshoot-platform/commit/131e42b21713196a352dfe4e0994f5c9ab9a2021))
+* **ticket-sync:** 内层归档与同名文件冲突导致解压中断 ([#1212](https://github.com/tomturing/hci-troubleshoot-platform/issues/1212)) ([db45d7e](https://github.com/tomturing/hci-troubleshoot-platform/commit/db45d7e45265cd935935951f7c6d3e615392ba0e))
+* 修复 DSH 镜像发布链路（ImagePullBackOff） ([#1186](https://github.com/tomturing/hci-troubleshoot-platform/issues/1186)) ([fc5357c](https://github.com/tomturing/hci-troubleshoot-platform/commit/fc5357c0f81996af570c93f609d3a2d1032c9a64))
+
+
+### ♻️ 代码重构
+
+* **customer:** 抽取 SshConnectSection 作为唯一 SSH 登录模板 ([#1221](https://github.com/tomturing/hci-troubleshoot-platform/issues/1221)) ([41cca3c](https://github.com/tomturing/hci-troubleshoot-platform/commit/41cca3ca364fc42bee7e259d0b9f96daa556013e))
+* 三域瘦身 —— 删死目录与死服务、修三处事实源断链 ([#1248](https://github.com/tomturing/hci-troubleshoot-platform/issues/1248)) ([6a429aa](https://github.com/tomturing/hci-troubleshoot-platform/commit/6a429aa6cd3bf3b053019a635f8f08d2851d2ed8))
+
+
+### 📝 文档
+
+* **bridge-logs:** 修正回采事件的落库时间线，区分"本人单正常/越权单整批被拒" ([#1238](https://github.com/tomturing/hci-troubleshoot-platform/issues/1238)) ([7649554](https://github.com/tomturing/hci-troubleshoot-platform/commit/76495548eae9d73a28db3cd7cc6bdf3d0de6975e))
+* **log-collect:** 回填 5888 续传语义实测结论 ([#1195](https://github.com/tomturing/hci-troubleshoot-platform/issues/1195)) ([a9c1b35](https://github.com/tomturing/hci-troubleshoot-platform/commit/a9c1b351e3584dbe041d21e45046782ed486c56c))
+* 文档瘦身 P0——AGENTS.md 注入成本 −85.6%、清理 RAG 粘贴事故、第一屏回到 30 秒 ([#1183](https://github.com/tomturing/hci-troubleshoot-platform/issues/1183)) ([035e7ad](https://github.com/tomturing/hci-troubleshoot-platform/commit/035e7ad9455a1702cc85e57dbece7acfc9cc473e))
+
 ## [2.31.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.30.0...v2.31.0) (2026-10-21)
 
 
