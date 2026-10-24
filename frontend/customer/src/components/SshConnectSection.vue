@@ -258,9 +258,9 @@ const isDialog = computed(() => props.mode === 'dialog')
         <p class="bridge-desc">请下载并启动 terminal_bridge.exe，然后点击「重新检测」</p>
       </el-alert>
 
-      <!-- 仅 Windows 下载：单一入口，避免标题与按钮语义重复 -->
+      <!-- 仅 Windows 下载：单一入口，按钮占满整块，避免"小按钮 + 右侧留白"的失衡 -->
       <div class="bridge-download">
-        <el-button type="primary" size="small" @click="handleDownloadBridge">
+        <el-button type="primary" class="bridge-download-action" @click="handleDownloadBridge">
           <el-icon><Download /></el-icon>
           下载 Bridge 工具（Windows）
         </el-button>
@@ -355,10 +355,16 @@ const isDialog = computed(() => props.mode === 'dialog')
   color: #6b5b00;
 }
 .bridge-download {
-  padding: 12px 16px;
+  padding: 10px;
   background: #f5f7fa;
   border-radius: 8px;
   margin-bottom: 16px;
+}
+/* 块内只有一个动作：按钮占满整块，消除"小按钮 + 右侧空白"的失衡观感 */
+.bridge-download-action {
+  width: 100%;
+  height: 40px;
+  font-size: 14px;
 }
 .bridge-refresh {
   text-align: center;
@@ -408,7 +414,6 @@ const isDialog = computed(() => props.mode === 'dialog')
   gap: 8px;
   margin-top: 16px;
 }
-.bridge-download-title,
 .ssh-success-text {
   display: inline-flex;
   align-items: center;
