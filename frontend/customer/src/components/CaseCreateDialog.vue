@@ -664,12 +664,11 @@ onBeforeUnmount(() => {
         </p>
       </el-alert>
 
-      <!-- 仅 Windows 下载 -->
+      <!-- 仅 Windows 下载：单一入口，避免标题与按钮语义重复 -->
       <div class="bridge-download">
-        <p class="bridge-download-title"><el-icon><Download /></el-icon>下载 Bridge 工具（Windows）</p>
         <el-button type="primary" size="small" @click="handleDownloadBridge">
           <el-icon><Download /></el-icon>
-          下载 Windows 版
+          下载 Bridge 工具（Windows）
         </el-button>
       </div>
 
@@ -943,11 +942,6 @@ onBeforeUnmount(() => {
   background: #f5f7fa;
   border-radius: 8px;
   margin-bottom: 16px;
-}
-
-.bridge-download p {
-  margin-bottom: 12px;
-  font-weight: 500;
 }
 
 .bridge-refresh {
