@@ -86,8 +86,9 @@ const acknowledged = ref(false)
 const riskLevel = computed(() => props.event.risk_level)
 const countdown = ref(props.event.timeout_seconds)
 
+// 弹框标题走 el-dialog 纯文本 title，图标由风险等级 el-alert 承担，不再拼 emoji
 const riskTitle = computed(() =>
-  riskLevel.value === 3 ? '⛔ 高危操作确认' : '⚠️ 高风险操作确认'
+  riskLevel.value === 3 ? '高危操作确认' : '高风险操作确认'
 )
 
 const formattedArgs = computed(() =>

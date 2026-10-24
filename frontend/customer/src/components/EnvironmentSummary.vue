@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { Bell, Box, CircleCheck, CircleClose, Tickets, WarningFilled } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 
 const chatStore = useChatStore()
@@ -143,9 +144,9 @@ function getProcessType(process?: string): 'done' | 'failed' | 'queued' | 'cance
     <!-- 折叠状态 -->
     <div class="card-header" @click="expanded = !expanded">
       <div class="header-left">
-        <span class="card-icon">📦</span>
+        <el-icon class="card-icon"><Box /></el-icon>
         <span class="card-title">环境数据（已采集）</span>
-        <el-tag v-if="collectionState === 'success'" size="small" type="success" effect="plain">✅</el-tag>
+        <el-tag v-if="collectionState === 'success'" size="small" type="success" effect="plain" :icon="CircleCheck" />
         <el-tag v-else-if="collectionState === 'collecting'" size="small" type="warning" effect="plain">采集中</el-tag>
         <el-tag v-else-if="collectionState === 'error'" size="small" type="danger" effect="plain">失败</el-tag>
       </div>
@@ -166,7 +167,7 @@ function getProcessType(process?: string): 'done' | 'failed' | 'queued' | 'cance
       <!-- 集群信息 -->
       <div class="detail-section" v-if="chatStore.environmentContext?.env_info">
         <div class="section-header">
-          <span class="section-icon">📦</span>
+          <el-icon class="section-icon"><Box /></el-icon>
           <span class="section-title">集群信息</span>
         </div>
         <div class="section-content">
@@ -195,7 +196,7 @@ function getProcessType(process?: string): 'done' | 'failed' | 'queued' | 'cance
       <!-- 告警列表 -->
       <div class="detail-section" v-if="chatStore.environmentContext?.alert_logs?.length > 0">
         <div class="section-header">
-          <span class="section-icon">🔔</span>
+          <el-icon class="section-icon"><Bell /></el-icon>
           <span class="section-title">告警列表 ({{ chatStore.environmentContext.alert_logs.length }} 条活跃)</span>
         </div>
         <div class="section-content">
@@ -223,7 +224,7 @@ function getProcessType(process?: string): 'done' | 'failed' | 'queued' | 'cance
       <!-- 任务状态 -->
       <div class="detail-section" v-if="chatStore.environmentContext?.task_logs?.length > 0">
         <div class="section-header">
-          <span class="section-icon">📋</span>
+          <el-icon class="section-icon"><Tickets /></el-icon>
           <span class="section-title">任务状态 (最近 {{ chatStore.environmentContext.task_logs.length }} 条)</span>
         </div>
         <div class="section-content">
@@ -235,11 +236,13 @@ function getProcessType(process?: string): 'done' | 'failed' | 'queued' | 'cance
             <!-- 基于 process 字段决定状态展示方式 -->
             <!-- 完成：绿色对勾图标 + 文字 -->
             <span v-if="getProcessType(task.process) === 'done'" class="task-status task-status-done">
-              ✅ 完成
+              <el-icon><CircleCheck /></el-icon>
+              完成
             </span>
             <!-- 失败：红色 × 图标 + 文字 -->
             <span v-else-if="getProcessType(task.process) === 'failed'" class="task-status task-status-failed">
-              ❌ 失败
+              <el-icon><CircleClose /></el-icon>
+              失败
             </span>
             <!-- 排队中：纯文字 -->
             <span v-else-if="getProcessType(task.process) === 'queued'" class="task-status task-status-text">
@@ -299,7 +302,7 @@ function getProcessType(process?: string): 'done' | 'failed' | 'queued' | 'cance
   <!-- 无数据提示 -->
   <div class="env-no-data" v-else-if="chatStore.currentCase && chatStore.hasActiveCase">
     <div class="no-data-content">
-      <span class="no-data-icon">⚠️</span>
+      <el-icon class="no-data-icon"><WarningFilled /></el-icon>
       <span class="no-data-title">未采集环境数据</span>
       <p class="no-data-desc">
         您可以：
@@ -444,6 +447,19 @@ function getProcessType(process?: string): 'done' | 'failed' | 'queued' | 'cance
 
 .task-status-text {
   color: #909399;
+}
+
+/* 图标统一为 SVG（不依赖系统 emoji 字形），与文字基线对齐 */
+.card-icon,
+.section-icon,
+.no-data-icon,
+.task-status {
+  display: inline-flex;
+  align-items: center;
+}
+
+.task-status {
+  gap: 4px;
 }
 
 /* 进度条 */

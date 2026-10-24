@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { Check } from '@element-plus/icons-vue'
 
 /**
  * 诊断阶段进度条组件
@@ -47,7 +48,7 @@ const isMobile = computed(() => typeof window !== 'undefined' && window.innerWid
         }"
       >
         <div class="node-circle">
-          <span v-if="i - 1 < stageIndex" class="check-icon">✓</span>
+          <el-icon v-if="i - 1 < stageIndex" class="check-icon"><Check /></el-icon>
           <span v-else class="node-number">{{ i }}</span>
         </div>
         <div class="node-label">{{ stageLabels[i - 1] }}</div>

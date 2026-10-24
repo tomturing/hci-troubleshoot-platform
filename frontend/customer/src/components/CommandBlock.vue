@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { CopyDocument, InfoFilled, Upload } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 
 /**
@@ -146,7 +147,7 @@ function toggleDescription() {
           class="action-btn"
           @click="toggleDescription"
         >
-          <el-icon><i class="el-icon-info-filled" /></el-icon>
+          <el-icon><InfoFilled /></el-icon>
           <span>{{ isExpanded ? '收起' : '说明' }}</span>
         </el-button>
         <el-button
@@ -155,7 +156,7 @@ function toggleDescription() {
           class="action-btn"
           @click="copyCommand"
         >
-          <el-icon><i class="el-icon-copy-document" /></el-icon>
+          <el-icon><CopyDocument /></el-icon>
           <span>{{ isCopied ? '已复制' : '复制' }}</span>
         </el-button>
 
@@ -165,7 +166,7 @@ function toggleDescription() {
           class="send-btn"
           @click="sendToTerminal"
         >
-          <el-icon><i class="el-icon-upload2" /></el-icon>
+          <el-icon><Upload /></el-icon>
           <span>发送到终端</span>
         </el-button>
       </div>

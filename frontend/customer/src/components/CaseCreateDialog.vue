@@ -15,6 +15,7 @@
  */
 import { ref, reactive, watch, computed, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
+import { ArrowDown, ArrowUp, CircleCheckFilled, Download, Loading, Monitor, Refresh, Warning } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 import { navigateToOfflineDiagnosis } from '@/utils/offlineDiagnosis'
 import { checkBridgeBeforeOpen } from '@/api/terminal'
@@ -656,7 +657,7 @@ onBeforeUnmount(() => {
     <div v-if="viewState === 'bridge-guide'" class="bridge-guide-section">
       <el-alert type="warning" :closable="false" class="bridge-alert">
         <template #title>
-          <strong>⚠️ 检测到 Bridge 工具未运行</strong>
+          <strong>检测到 Bridge 工具未运行</strong>
         </template>
         <p class="bridge-desc">
           需要先在本机启动 Bridge 工具才能进行 SSH 连接
@@ -665,16 +666,18 @@ onBeforeUnmount(() => {
 
       <!-- 仅 Windows 下载 -->
       <div class="bridge-download">
-        <p>📥 下载 Bridge 工具（Windows）</p>
+        <p class="bridge-download-title"><el-icon><Download /></el-icon>下载 Bridge 工具（Windows）</p>
         <el-button type="primary" size="small" @click="handleDownloadBridge">
-          ⬇ 下载 Windows 版
+          <el-icon><Download /></el-icon>
+          下载 Windows 版
         </el-button>
       </div>
 
       <div class="bridge-refresh">
         <p>已下载并启动？</p>
         <el-button :loading="recheckingBridge" @click="handleRefreshBridge">
-          🔄 已运行 Bridge 工具，点击刷新
+          <el-icon><Refresh /></el-icon>
+          已运行 Bridge 工具，点击刷新
         </el-button>
       </div>
 
@@ -682,7 +685,8 @@ onBeforeUnmount(() => {
       <div class="dialog-actions">
         <el-tooltip content="若无 SSH，自动化能力将大大降低" placement="top">
           <el-button class="btn-no-ssh" @click="handleNoSSHCreate">
-            ⚠️ 无 SSH 创建工单
+            <el-icon><Warning /></el-icon>
+            无 SSH 创建工单
           </el-button>
         </el-tooltip>
         <el-button @click="handleCancel">取消</el-button>
@@ -729,7 +733,7 @@ onBeforeUnmount(() => {
 
       <!-- 分隔线 -->
       <div class="section-divider">
-        <span>🖥 SSH 连接（认证后自动采集环境数据）</span>
+        <span class="section-divider-title"><el-icon><Monitor /></el-icon>SSH 连接（认证后自动采集环境数据）</span>
       </div>
 
       <!-- SSH 表单 -->
@@ -743,11 +747,13 @@ onBeforeUnmount(() => {
       <!-- 操作按钮 -->
       <div class="dialog-actions">
         <el-button type="primary" class="btn-connect" @click="runSshAndCreateCase">
-          🖥 连接 SSH 并创建工单
+          <el-icon><Monitor /></el-icon>
+          连接 SSH 并创建工单
         </el-button>
         <el-tooltip content="若无 SSH，自动化能力将大大降低" placement="top">
           <el-button class="btn-no-ssh" @click="handleNoSSHCreate">
-            ⚠️ 无 SSH 创建工单
+            <el-icon><Warning /></el-icon>
+            无 SSH 创建工单
           </el-button>
         </el-tooltip>
         <el-button @click="handleCancel">取消</el-button>
@@ -765,7 +771,7 @@ onBeforeUnmount(() => {
 
       <!-- 当前阶段描述 -->
       <div class="phase-desc">
-        <el-icon class="is-loading spin-icon"><i class="el-icon-loading" /></el-icon>
+        <el-icon class="is-loading spin-icon"><Loading /></el-icon>
         <span v-if="currentStep === 0">正在 SSH 认证...</span>
         <span v-else-if="currentStep === 1">正在创建工单...</span>
         <span v-else-if="currentStep === 2">正在采集环境数据...</span>
@@ -776,7 +782,11 @@ onBeforeUnmount(() => {
       <div v-if="logs.length > 0" class="log-panel">
         <div class="log-header" @click="logsExpanded = !logsExpanded">
           <span class="log-title">日志（{{ logs.length }} 条）</span>
-          <el-button text size="small">{{ logsExpanded ? '▲ 折叠' : '▼ 展开' }}</el-button>
+          <el-button text size="small" class="log-toggle-btn">
+            <el-icon v-if="logsExpanded"><ArrowUp /></el-icon>
+            <el-icon v-else><ArrowDown /></el-icon>
+            {{ logsExpanded ? '折叠' : '展开' }}
+          </el-button>
         </div>
         <div v-if="logsExpanded" class="log-list">
           <div
@@ -801,7 +811,7 @@ onBeforeUnmount(() => {
     <div v-else-if="viewState === 'error-auth'" class="error-section">
       <el-alert type="error" :closable="false">
         <template #title>
-          <strong>❌ SSH 认证失败</strong>
+          <strong>SSH 认证失败</strong>
         </template>
         <p class="error-detail">
           原因：{{ errorMessage }}<br />
@@ -810,10 +820,14 @@ onBeforeUnmount(() => {
       </el-alert>
 
       <div class="dialog-actions">
-        <el-button type="primary" @click="handleRetry">🔄 重试</el-button>
+        <el-button type="primary" @click="handleRetry">
+          <el-icon><Refresh /></el-icon>
+          重试
+        </el-button>
         <el-tooltip content="若无 SSH，自动化能力将大大降低" placement="top">
           <el-button class="btn-no-ssh" @click="handleNoSSHCreate">
-            ⚠️ 无 SSH 创建工单
+            <el-icon><Warning /></el-icon>
+            无 SSH 创建工单
           </el-button>
         </el-tooltip>
       </div>
@@ -823,7 +837,7 @@ onBeforeUnmount(() => {
     <div v-else-if="viewState === 'error-collect'" class="error-section">
       <el-alert type="error" :closable="false">
         <template #title>
-          <strong>❌ 环境采集失败</strong>
+          <strong>环境采集失败</strong>
         </template>
         <p class="error-detail">
           原因：{{ errorMessage }}<br />
@@ -832,10 +846,14 @@ onBeforeUnmount(() => {
       </el-alert>
 
       <div class="dialog-actions">
-        <el-button type="primary" @click="handleRetryCollection">🔄 重试采集</el-button>
+        <el-button type="primary" @click="handleRetryCollection">
+          <el-icon><Refresh /></el-icon>
+          重试采集
+        </el-button>
         <el-tooltip content="继续创建工单，但无环境数据" placement="top">
           <el-button class="btn-no-ssh" @click="handleNoSSHCreate">
-            ⚠️ 无 SSH 创建工单
+            <el-icon><Warning /></el-icon>
+            无 SSH 创建工单
           </el-button>
         </el-tooltip>
       </div>
@@ -844,7 +862,11 @@ onBeforeUnmount(() => {
       <div v-if="logs.length > 0" class="log-panel">
         <div class="log-header" @click="logsExpanded = !logsExpanded">
           <span class="log-title">日志（{{ logs.length }} 条）</span>
-          <el-button text size="small">{{ logsExpanded ? '▲ 折叠' : '▼ 展开' }}</el-button>
+          <el-button text size="small" class="log-toggle-btn">
+            <el-icon v-if="logsExpanded"><ArrowUp /></el-icon>
+            <el-icon v-else><ArrowDown /></el-icon>
+            {{ logsExpanded ? '折叠' : '展开' }}
+          </el-button>
         </div>
         <div v-if="logsExpanded" class="log-list">
           <div
@@ -869,8 +891,8 @@ onBeforeUnmount(() => {
       </el-steps>
 
       <div class="success-message">
-        <el-icon color="#67c23a" size="24"><i class="el-icon-success" /></el-icon>
-        <p class="success-title">✅ 工单创建成功，环境数据已入库</p>
+        <el-icon color="#67c23a" :size="24"><CircleCheckFilled /></el-icon>
+        <p class="success-title">工单创建成功，环境数据已入库</p>
         <p class="success-case-id">工单号：{{ createdCaseId }}</p>
         <p class="success-hint">即将进入 AI 对话... (2s)</p>
       </div>
@@ -879,7 +901,11 @@ onBeforeUnmount(() => {
       <div v-if="logs.length > 0" class="log-panel">
         <div class="log-header" @click="logsExpanded = !logsExpanded">
           <span class="log-title">日志（{{ logs.length }} 条）</span>
-          <el-button text size="small">{{ logsExpanded ? '▲ 折叠' : '▼ 展开' }}</el-button>
+          <el-button text size="small" class="log-toggle-btn">
+            <el-icon v-if="logsExpanded"><ArrowUp /></el-icon>
+            <el-icon v-else><ArrowDown /></el-icon>
+            {{ logsExpanded ? '折叠' : '展开' }}
+          </el-button>
         </div>
         <div v-if="logsExpanded" class="log-list">
           <div
@@ -949,6 +975,20 @@ onBeforeUnmount(() => {
   border-top: 1px solid #e4e7ed;
   font-weight: 500;
   color: #606266;
+}
+
+/* 图标与文字的统一样式：图标走 SVG，不再依赖系统 emoji 字形 */
+.bridge-download-title,
+.section-divider-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.log-toggle-btn :deep(span) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 /* ===== 进度 ===== */

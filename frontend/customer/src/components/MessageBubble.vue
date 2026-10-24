@@ -1,6 +1,22 @@
 <script setup lang="ts">
 import { computed, ref, watch, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
+// 气泡内图标统一使用 Element Plus 图标组件（内联 SVG），不依赖终端用户系统 emoji 字体
+import {
+  Aim,
+  ArrowDown,
+  ArrowRight,
+  Document,
+  EditPen,
+  InfoFilled,
+  Monitor,
+  QuestionFilled,
+  Search,
+  Select,
+  Setting,
+  Tools,
+  Warning,
+} from '@element-plus/icons-vue'
 import type { ChatMessage } from '@/stores/chat'
 import { useChatStore } from '@/stores/chat'
 import { renderMarkdown, isCommandLanguage } from '@/utils/markdown'
@@ -1260,7 +1276,10 @@ async function handleToolCallReject() {
           <template v-if="message.metadata?.kind === 'tool_call'" />
 
           <section v-if="semanticEntry" class="semantic-entry-card">
-            <div class="semantic-entry-card-title">{{ semanticEntry.decision === 'case_recommendations' ? '🔎 相关历史案例' : '🔎 语义入口已命中' }}</div>
+            <div class="semantic-entry-card-title">
+              <el-icon><Search /></el-icon>
+              {{ semanticEntry.decision === 'case_recommendations' ? '相关历史案例' : '语义入口已命中' }}
+            </div>
             <div class="semantic-entry-card-hint">以下案例仅供参考，尚未通过现场验证确认当前根因。</div>
             <div v-for="candidate in semanticEntry.candidates" :key="candidate.support_id || candidate.title" class="semantic-entry-candidate">
               <el-tag type="warning" effect="plain" size="small">案例 {{ candidate.support_id || '—' }}</el-tag>
@@ -1305,7 +1324,10 @@ async function handleToolCallReject() {
           <!-- qkv_vm_console 结果卡：截图采集状态与视觉观察（不渲染普通 content） -->
           <template v-else-if="message.metadata?.kind === 'vm_console_result_card'">
             <div class="vm-console-card">
-              <div class="vm-console-card-title">🖥️ 控制台截图观察</div>
+              <div class="vm-console-card-title">
+                <el-icon><Monitor /></el-icon>
+                控制台截图观察
+              </div>
               <template v-if="message.metadata?.phase === 'completed'">
                 <div class="vm-console-row">
                   <span class="vm-console-label">画面状态</span>
@@ -1319,7 +1341,8 @@ async function handleToolCallReject() {
                   {{ message.metadata?.summary }}
                 </div>
                 <div v-if="message.metadata?.needsHumanReview" class="vm-console-review-hint">
-                  ⚠ 视觉观察置信度不足或存在冲突，已标记人工复核；该观察不能单独作为根因结论。
+                  <el-icon><Warning /></el-icon>
+                  <span>视觉观察置信度不足或存在冲突，已标记人工复核；该观察不能单独作为根因结论。</span>
                 </div>
                 <div v-if="message.metadata?.errorCode" class="vm-console-error">
                   截图流程异常：{{ message.metadata?.errorCode }}
@@ -1343,7 +1366,10 @@ async function handleToolCallReject() {
           <!-- qkv_effect 结果卡：效果验证三态判定（achieved/not_achieved/inconclusive） -->
           <template v-else-if="message.metadata?.kind === 'effect_result_card'">
             <div class="vm-console-card">
-              <div class="vm-console-card-title">🎯 操作效果复核</div>
+              <div class="vm-console-card-title">
+                <el-icon><Aim /></el-icon>
+                操作效果复核
+              </div>
               <div class="vm-console-row">
                 <span class="vm-console-label">复核判定</span>
                 <el-tag :type="effectVerdictTagType(String(message.metadata?.verdict || 'inconclusive'))" size="small">
@@ -1355,10 +1381,12 @@ async function handleToolCallReject() {
                 </span>
               </div>
               <div v-if="String(message.metadata?.verdict) === 'not_achieved'" class="vm-console-review-hint">
-                ⚠ 操作已执行但未达到预期效果：已生成显式事实，建议返回重新诊断定位原因。
+                <el-icon><Warning /></el-icon>
+                <span>操作已执行但未达到预期效果：已生成显式事实，建议返回重新诊断定位原因。</span>
               </div>
               <div v-else-if="String(message.metadata?.verdict) === 'inconclusive'" class="vm-console-review-hint">
-                ⚠ 观察不足以确认效果（{{ message.metadata?.errorCode || '窗口耗尽或观测不可用' }}）：请人工核实，平台不代为断言。
+                <el-icon><Warning /></el-icon>
+                <span>观察不足以确认效果（{{ message.metadata?.errorCode || '窗口耗尽或观测不可用' }}）：请人工核实，平台不代为断言。</span>
               </div>
               <div v-else class="vm-console-summary">复核窗口内观测到预期状态已达成；是否关闭工单仍由您确认。</div>
             </div>
@@ -1382,7 +1410,7 @@ async function handleToolCallReject() {
                 <el-collapse-item name="reasoning">
                   <template #title>
                     <div class="reasoning-title-bar">
-                      <span class="reasoning-icon">ⓘ</span>
+                      <el-icon class="reasoning-icon"><InfoFilled /></el-icon>
                       <span class="reasoning-label">诊断依据摘要</span>
                     </div>
                   </template>
@@ -1426,7 +1454,10 @@ async function handleToolCallReject() {
         <div v-if="interactiveEvent" class="interactive-bubble">
           <!-- Branch 1: variable_input -->
           <template v-if="interactiveEvent.kind === 'variable_input'">
-            <div class="interactive-title">📋 请输入变量值</div>
+            <div class="interactive-title">
+              <el-icon><EditPen /></el-icon>
+              请输入变量值
+            </div>
             <div class="ir-field">
               <span class="ir-label">变量名称</span>
               <code class="ir-route">{{ interactiveEvent.metadata?.variable_name }}</code>
@@ -1466,7 +1497,10 @@ async function handleToolCallReject() {
 
           <!-- Branch 2: variable_confirm -->
           <template v-else-if="interactiveEvent.kind === 'variable_confirm'">
-            <div class="interactive-title">📋 请确认变量值</div>
+            <div class="interactive-title">
+              <el-icon><Select /></el-icon>
+              请确认变量值
+            </div>
             <div class="ir-field">
               <span class="ir-label">变量名称</span>
               <code class="ir-route">{{ interactiveEvent.metadata?.variable_name }}</code>
@@ -1539,7 +1573,10 @@ async function handleToolCallReject() {
 
           <!-- Branch: vm_console_wake_confirm（控制台近黑唤醒确认卡） -->
           <template v-else-if="interactiveEvent.kind === 'vm_console_wake_confirm'">
-            <div class="interactive-title">🖥️ 控制台截图接近黑屏</div>
+            <div class="interactive-title">
+              <el-icon><Monitor /></el-icon>
+              控制台截图接近黑屏
+            </div>
             <div class="ir-field">
               <p class="ir-question">
                 {{ interactiveEvent.message || '首张控制台截图接近黑屏。是否向虚拟机发送一次"向下方向键"尝试唤醒后重新截图？此操作可能改变虚拟机当前界面的焦点或选择，但不会发送任意命令。' }}
@@ -1576,7 +1613,9 @@ async function handleToolCallReject() {
           <template v-else>
             <!-- 标题 -->
             <div class="interactive-title">
-              {{ interactiveEvent.title || (interactiveEvent.kind === 'sop_step' ? '📋 SOP 操作步骤确认' : '❓ 信息确认') }}
+              <el-icon v-if="interactiveEvent.kind === 'sop_step'"><Document /></el-icon>
+              <el-icon v-else><QuestionFilled /></el-icon>
+              {{ interactiveEvent.title || (interactiveEvent.kind === 'sop_step' ? 'SOP 操作步骤确认' : '信息确认') }}
             </div>
 
             <!-- SOP 卡：展示路径/目标/预期/操作指引 -->
@@ -1675,7 +1714,7 @@ async function handleToolCallReject() {
           <!-- Card Header -->
           <div class="tool-call-header">
             <div class="tool-call-header-title">
-              <span class="tool-call-icon">⚙️</span>
+              <el-icon class="tool-call-icon"><Setting /></el-icon>
               <span class="tool-name">{{ toolCallEvent.tool_name }}</span>
               <span class="exec-id-label">({{ toolCallEvent.exec_id.substring(0, 8) }})</span>
             </div>
@@ -1706,8 +1745,14 @@ async function handleToolCallReject() {
             <!-- Parameters Collapsible Panel -->
             <div class="collapsible-section">
               <div class="collapsible-header" @click="isParamsCollapsed = !isParamsCollapsed">
-                <span>🔧 参数列表</span>
-                <span class="collapse-arrow">{{ isParamsCollapsed ? '▶' : '▼' }}</span>
+                <span class="collapse-title">
+                  <el-icon><Tools /></el-icon>
+                  参数列表
+                </span>
+                <el-icon class="collapse-arrow">
+                  <ArrowRight v-if="isParamsCollapsed" />
+                  <ArrowDown v-else />
+                </el-icon>
               </div>
               <div v-show="!isParamsCollapsed" class="collapsible-content params-json">
                 <pre><code>{{ JSON.stringify(toolCallEvent.args, null, 2) }}</code></pre>
@@ -1717,8 +1762,14 @@ async function handleToolCallReject() {
             <!-- Terminal Output Panel (Only show if running, success, or failed) -->
             <div class="collapsible-section" v-if="['running', 'success', 'failed'].includes(toolCallEvent.status)">
               <div class="collapsible-header" @click="isTerminalCollapsed = !isTerminalCollapsed">
-                <span>🖥️ 执行日志 / 终端回显</span>
-                <span class="collapse-arrow">{{ isTerminalCollapsed ? '▶' : '▼' }}</span>
+                <span class="collapse-title">
+                  <el-icon><Monitor /></el-icon>
+                  执行日志 / 终端回显
+                </span>
+                <el-icon class="collapse-arrow">
+                  <ArrowRight v-if="isTerminalCollapsed" />
+                  <ArrowDown v-else />
+                </el-icon>
               </div>
               <div v-show="!isTerminalCollapsed" class="collapsible-content terminal-console">
                 <template v-if="toolCallEvent.result">
@@ -1766,7 +1817,7 @@ async function handleToolCallReject() {
         <div v-if="execConfirmEvent" class="exec-confirm-bubble">
           <!-- 标题 -->
           <div class="exec-confirm-title">
-            <span class="exec-confirm-icon">⚠️</span>
+            <el-icon class="exec-confirm-icon"><Warning /></el-icon>
             Agent 请求执行以下命令
           </div>
 
@@ -1894,6 +1945,9 @@ async function handleToolCallReject() {
   padding: 8px 0;
 }
 .vm-console-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-weight: 600;
   margin-bottom: 6px;
 }
@@ -1916,6 +1970,9 @@ async function handleToolCallReject() {
   margin: 4px 0;
 }
 .vm-console-review-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   font-size: 12px;
   color: var(--el-color-warning);
   margin: 4px 0;
@@ -1940,6 +1997,9 @@ async function handleToolCallReject() {
   background: var(--el-color-warning-light-9);
 }
 .semantic-entry-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-weight: 600;
   color: var(--el-color-warning-dark-2);
 }
@@ -2444,6 +2504,9 @@ async function handleToolCallReject() {
 }
 
 .interactive-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-weight: 600;
   font-size: 14px;
   color: #303133;
@@ -2518,6 +2581,9 @@ async function handleToolCallReject() {
 }
 
 .exec-confirm-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-weight: 600;
   font-size: 14px;
   color: #303133;
@@ -2527,7 +2593,7 @@ async function handleToolCallReject() {
 }
 
 .exec-confirm-icon {
-  margin-right: 6px;
+  font-size: 16px;
 }
 
 .exec-confirm-field {
@@ -2742,6 +2808,17 @@ async function handleToolCallReject() {
 
 .collapsible-header:hover {
   background: #eef1f6;
+}
+
+.collapse-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.collapse-arrow {
+  display: inline-flex;
+  align-items: center;
 }
 
 .collapsible-content {

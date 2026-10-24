@@ -5,6 +5,7 @@
  * 供 CaseCreateDialog 和 SshConnectDialog 复用
  */
 import { ref, watch, computed } from 'vue'
+import { InfoFilled } from '@element-plus/icons-vue'
 import type { TerminalAuthType } from '@/api/terminal'
 
 // Props: 接收外部表单数据
@@ -150,7 +151,8 @@ loadSavedSshConfig()
 
       <!-- 自动填充提示 -->
       <p v-if="hasAutoFill" class="ssh-autofill-hint">
-        💡 上次成功连接的信息已自动填充
+        <el-icon><InfoFilled /></el-icon>
+        上次成功连接的信息已自动填充
       </p>
     </el-form>
   </div>
@@ -197,6 +199,9 @@ loadSavedSshConfig()
 }
 
 .ssh-autofill-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   color: #909399;
   margin: 8px 0 0;

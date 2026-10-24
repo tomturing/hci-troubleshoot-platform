@@ -11,6 +11,7 @@
  * - 复制/引用功能
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick, type Ref } from 'vue'
+import { ArrowLeft, ArrowRight, VideoPause, VideoPlay } from '@element-plus/icons-vue'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
 import 'xterm/css/xterm.css'
@@ -472,10 +473,20 @@ watch(() => props.caseId, () => {
     <!-- 时间轴控制 -->
     <div v-if="viewMode === 'timeline'" class="timeline-control">
       <el-button-group>
-        <el-button :disabled="currentIndex <= 0" @click="prevOperation">◀</el-button>
-        <el-button v-if="isPlaying" type="primary" @click="pause">⏸ 暂停</el-button>
-        <el-button v-else type="primary" :disabled="currentIndex >= totalOps - 1" @click="play">▶ 播放</el-button>
-        <el-button :disabled="currentIndex >= totalOps - 1" @click="nextOperation">▶</el-button>
+        <el-button :disabled="currentIndex <= 0" @click="prevOperation">
+          <el-icon><ArrowLeft /></el-icon>
+        </el-button>
+        <el-button v-if="isPlaying" type="primary" @click="pause">
+          <el-icon><VideoPause /></el-icon>
+          暂停
+        </el-button>
+        <el-button v-else type="primary" :disabled="currentIndex >= totalOps - 1" @click="play">
+          <el-icon><VideoPlay /></el-icon>
+          播放
+        </el-button>
+        <el-button :disabled="currentIndex >= totalOps - 1" @click="nextOperation">
+          <el-icon><ArrowRight /></el-icon>
+        </el-button>
       </el-button-group>
 
       <el-select v-model="speed" style="width: 80px">

@@ -12,6 +12,7 @@
  */
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Close, Monitor, VideoCamera } from '@element-plus/icons-vue'
 import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
 import 'xterm/css/xterm.css'
@@ -419,9 +420,9 @@ onBeforeUnmount(() => {
           placeholder="自动执行"
           @change="chatStore.setAutoExecuteMode($event)"
         >
-          <el-option value="off" label="🔴 关闭自动执行" />
-          <el-option value="safe-only" label="🟢 安全模式" />
-          <el-option value="aggressive" label="🟠 激进模式 ⚠️" />
+          <el-option value="off" label="关闭自动执行" />
+          <el-option value="safe-only" label="安全模式" />
+          <el-option value="aggressive" label="激进模式（有风险）" />
         </el-select>
       </div>
       <div class="header-actions">
@@ -430,10 +431,15 @@ onBeforeUnmount(() => {
         <el-button text size="small" @click="clearOutput">清空</el-button>
         <el-tooltip :content="historyHint" placement="top">
           <span>
-            <el-button text size="small" @click="openTerminalHistory">📹 终端历史</el-button>
+            <el-button text size="small" @click="openTerminalHistory">
+              <el-icon><VideoCamera /></el-icon>
+              终端历史
+            </el-button>
           </span>
         </el-tooltip>
-        <el-button text size="small" @click="closePanel">✕</el-button>
+        <el-button text size="small" @click="closePanel">
+          <el-icon><Close /></el-icon>
+        </el-button>
       </div>
     </div>
 
@@ -447,7 +453,8 @@ onBeforeUnmount(() => {
         class="btn-connect-ssh"
         @click="handleConnectAndCreate"
       >
-        {{ checkingBridge ? '正在检测 Bridge...' : '🖥 连接 SSH 并创建工单' }}
+        <el-icon><Monitor /></el-icon>
+        {{ checkingBridge ? '正在检测 Bridge...' : '连接 SSH 并创建工单' }}
       </el-button>
       <p class="connect-hint">点击后检测 Bridge 并打开工单创建弹框</p>
     </div>
@@ -461,7 +468,8 @@ onBeforeUnmount(() => {
         class="btn-connect-ssh"
         @click="handleOpenSshDialog"
       >
-        {{ checkingBridge ? '正在检测 Bridge...' : (isConnecting ? '正在连接...' : '🖥 连接 SSH') }}
+        <el-icon><Monitor /></el-icon>
+        {{ checkingBridge ? '正在检测 Bridge...' : (isConnecting ? '正在连接...' : '连接 SSH') }}
       </el-button>
       <p v-if="isError" class="connect-error">{{ errorMessage }}</p>
       <p class="connect-hint">点击后检测 Bridge 并打开 SSH 连接弹框</p>

@@ -163,8 +163,9 @@ const selectedOptionId = ref<string | null>(null)
 /** _meta 展平字段（来自 BrainInteractiveRequest.metadata，含 route / operationGoal 等） */
 const meta = computed(() => props.event.metadata ?? {})
 
+// 弹框标题走 el-dialog 的纯文本 title，不放 emoji（避免依赖终端系统 emoji 字体）
 const cardTitle = computed(() =>
-  props.event.title || (props.event.kind === 'sop_step' ? '📋 SOP 操作步骤确认' : '❓ 信息确认')
+  props.event.title || (props.event.kind === 'sop_step' ? 'SOP 操作步骤确认' : '信息确认')
 )
 
 /** SOP 卡的用户反馈引导文本：优先取 metadata.feedbackRequest，其次 prompt */

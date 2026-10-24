@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
-import { FolderOpened, Monitor } from '@element-plus/icons-vue'
+import { Finished, FolderOpened, Monitor, Tickets } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 import { getClientId } from '@/utils/clientId'
 import ChatWindow from '@/components/ChatWindow.vue'
@@ -63,7 +63,8 @@ function handleDownloadBridge() {
                 round
                 class="case-info-btn"
               >
-                📋 工单信息
+                <el-icon><Tickets /></el-icon>
+                工单信息
               </el-button>
             </template>
             <div class="case-info-popover">
@@ -85,7 +86,8 @@ function handleDownloadBridge() {
                 style="width: 100%"
                 @click="chatStore.openHistoryDrawer()"
               >
-                📋 查看历史工单
+                <el-icon><Tickets /></el-icon>
+                查看历史工单
               </el-button>
             </div>
           </el-popover>
@@ -98,7 +100,8 @@ function handleDownloadBridge() {
             class="close-btn"
             @click="chatStore.handleCloseCase()"
           >
-            ✅ 关闭工单
+            <el-icon><Finished /></el-icon>
+            关闭工单
           </el-button>
 
           <!-- 日志收集：常驻入口；无活跃工单时由对话框要求手工指定工单号 -->
@@ -152,7 +155,7 @@ function handleDownloadBridge() {
       class="bridge-dialog"
     >
       <div class="bridge-prompt">
-        <div class="bridge-icon">🖥️</div>
+        <el-icon class="bridge-icon"><Monitor /></el-icon>
         <p class="bridge-title">生效 SSH 终端插件</p>
         <p class="bridge-desc">
           SSH 终端需要本地 Bridge 组件（2.5M）支持，检测到当前未运行。<br />
@@ -162,7 +165,7 @@ function handleDownloadBridge() {
       <template #footer>
         <el-button @click="chatStore.closeBridgeDownload()">取消</el-button>
         <el-button type="primary" class="bridge-download-btn" @click="handleDownloadBridge">
-          <el-icon><i class="el-icon-folder-opened" /></el-icon>
+          <el-icon><FolderOpened /></el-icon>
           下载并打开
         </el-button>
       </template>
@@ -320,6 +323,7 @@ body {
 .bridge-icon {
   font-size: 48px;
   margin-bottom: 12px;
+  color: var(--el-color-primary);
 }
 
 .bridge-title {

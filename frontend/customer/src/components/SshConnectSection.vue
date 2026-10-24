@@ -11,6 +11,7 @@
  */
 import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
+import { CircleCheck, CircleCheckFilled, Download, Loading, Refresh } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 import { checkBridgeBeforeOpen, type TerminalAuthType } from '@/api/terminal'
 import SshFormSection from './SshFormSection.vue'
@@ -252,21 +253,23 @@ const isDialog = computed(() => props.mode === 'dialog')
     <div v-else-if="viewState === 'bridge-guide'" class="bridge-guide-section">
       <el-alert type="warning" :closable="false" class="bridge-alert">
         <template #title>
-          <strong>⚠️ SSH Bridge 未运行</strong>
+          <strong>SSH Bridge 未运行</strong>
         </template>
         <p class="bridge-desc">请下载并启动 terminal_bridge.exe，然后点击「重新检测」</p>
       </el-alert>
 
       <div class="bridge-download">
-        <p>📥 下载 Bridge 工具（Windows）</p>
+        <p class="bridge-download-title"><el-icon><Download /></el-icon>下载 Bridge 工具（Windows）</p>
         <el-button type="primary" size="small" @click="handleDownloadBridge">
-          ⬇ 下载 Windows 版
+          <el-icon><Download /></el-icon>
+          下载 Windows 版
         </el-button>
       </div>
 
       <div class="bridge-refresh">
         <el-button :loading="checkingBridge" @click="handleRefreshBridge">
-          🔄 已运行 Bridge 工具，点击刷新
+          <el-icon><Refresh /></el-icon>
+          已运行 Bridge 工具，点击刷新
         </el-button>
       </div>
 
@@ -293,14 +296,14 @@ const isDialog = computed(() => props.mode === 'dialog')
     <!-- ===== 进度 ===== -->
     <div v-else-if="viewState === 'progress'" class="progress-section">
       <p class="progress-text">正在连接 SSH...</p>
-      <el-icon class="is-loading spin-icon"><i class="el-icon-loading" /></el-icon>
+      <el-icon class="is-loading spin-icon"><Loading /></el-icon>
     </div>
 
     <!-- ===== 错误 ===== -->
     <div v-else-if="viewState === 'error'" class="error-section">
       <el-alert type="error" :closable="false">
         <template #title>
-          <strong>❌ SSH 连接失败</strong>
+          <strong>SSH 连接失败</strong>
         </template>
         <p class="error-detail">{{ errorMessage }}</p>
       </el-alert>
@@ -313,8 +316,8 @@ const isDialog = computed(() => props.mode === 'dialog')
 
     <!-- ===== 成功（dialog 自动收起前）===== -->
     <div v-else-if="viewState === 'success'" class="success-section">
-      <el-icon color="#67c23a" size="24"><i class="el-icon-success" /></el-icon>
-      <p>✅ SSH 连接成功，终端已打开</p>
+      <el-icon color="#67c23a" :size="24"><CircleCheckFilled /></el-icon>
+      <p class="ssh-success-text"><el-icon><CircleCheck /></el-icon>SSH 连接成功，终端已打开</p>
     </div>
   </div>
 </template>
@@ -408,5 +411,11 @@ const isDialog = computed(() => props.mode === 'dialog')
   justify-content: flex-end;
   gap: 8px;
   margin-top: 16px;
+}
+.bridge-download-title,
+.ssh-success-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 </style>
