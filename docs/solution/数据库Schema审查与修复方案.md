@@ -250,6 +250,21 @@ conversation_id=f"dry-run:{trace_id}",
 
 `docs/solution/agent/KBD审核责任人与无法发布功能说明.md` 原称 `unpublishable_by` 为「操作人 ID」，与实际（恒为 NULL、无写入路径）不符，已改为如实描述。
 
+#### 3. 清理 10 个冗余索引
+
+用 `pg_stat_user_indexes` 在 staging（统计累积 47 天、从未重置）核查，得到 **229 个 `idx_scan = 0`** 的索引。**但这一证据不足以判死**——决定性反例：`kbd_entry` 共 13 个索引，7 个在用（`kbd_entry_pkey` 19376 次、`idx_kbd_entry_ai_category` 7128 次等），6 个零扫描，而零扫描里包括向量索引 `idx_kbd_entry_embedding`——它 0 次扫描是因为 `embedding` 列当前全为 NULL（功能未启用），不是索引无用。同理 staging 流量不代表生产，管理员/月度功能可能从不在此触发。
+
+改用**与负载无关**的判据：索引的语义是为某个访问路径提供有序结构；若两个索引的**列组合、列顺序、谓词三者完全相同**，则它们能服务的查询集合完全相等，多出的那个是纯机械冗余。
+
+| 类别 | 数量 | 判据 |
+|---|---|---|
+| 与既有 UNIQUE 约束完全重合 | 9 | 同表、同列、同顺序、同谓词；唯一索引可完全替代同列普通索引 |
+| 是另一索引的最左前缀 | 1 | `conversation(case_id)` ⊂ `conversation(case_id, started_at DESC)` |
+
+**收益定性**：索引 354 → 344，释放约 450 KB。空间收益很小；真实价值是消除声明式 Schema 的自我重复（否则后人会误以为两个索引各有用）与减少写入时的索引维护。典型成因是「先为查询建普通索引，后为幂等/去重补上同列 UNIQUE，旧索引无人回收」。
+
+**执行方式**：只删 `desired_schema.sql` 的声明行，由 atlas 自动 `DROP INDEX`（索引可重建、不动数据）；每处删除点保留一行说明，防止重复添加；`deploy/helm/*/init-configmap.yaml` 两份引导脚本同步删除 `idx_conversation_case_id`（该脚本本身也已声明覆盖索引，无窗口期）。`data-migrations/032` 中的历史声明不改（已执行过，改历史文件会破坏 checksum）。已同步在 `数据库设计.md` §8.1 固化「禁止重复索引」原则。
+
 ### 阶段一（原计划）：删除 `kbd_entry.unpublishable_by` —— 本次**不执行**
 
 原判为「零风险直接删」，复核后**降级为「需产品决策」**，理由：
