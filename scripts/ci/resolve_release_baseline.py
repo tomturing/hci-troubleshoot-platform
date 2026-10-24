@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Iterable
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -95,17 +96,36 @@ def successful_service_baselines(jobs: object) -> set[str]:
     return released
 
 
-def gh_json(endpoint: str) -> dict[str, object]:
-    result = subprocess.run(
-        ["gh", "api", endpoint],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    payload = json.loads(result.stdout)
-    if not isinstance(payload, dict):
-        raise ValueError(f"GitHub API 返回非对象：{endpoint}")
-    return payload
+class GitHubApiError(RuntimeError):
+    """单个 GitHub API 端点读取失败（含重试后仍失败）。"""
+
+
+def gh_json(endpoint: str, *, attempts: int = 3) -> dict[str, object]:
+    """调用 GitHub API，对瞬时失败做有限重试。
+
+    为什么必须容错：GitHub 会对个别 run 的 jobs 接口持续返回 HTTP 502
+    （2026-10-24 实测某个 run 连续数分钟 502，换 per_page 无效）。旧实现用
+    check=True 且零重试，一个坏 run 就让整条主干发布链（镜像构建 + 晋级）被
+    跳过。这里改为有限重试，并把最终失败包装成 GitHubApiError，由调用方决定
+    跳过该 run 还是整体失败。
+    """
+    last_error = ""
+    for attempt in range(1, attempts + 1):
+        result = subprocess.run(
+            ["gh", "api", endpoint],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            payload = json.loads(result.stdout)
+            if not isinstance(payload, dict):
+                raise ValueError(f"GitHub API 返回非对象：{endpoint}")
+            return payload
+        last_error = (result.stderr or result.stdout).strip() or f"exit {result.returncode}"
+        if attempt < attempts:
+            time.sleep(2 * attempt)
+    raise GitHubApiError(f"GitHub API 读取失败：{endpoint}（{last_error}）")
 
 
 def write_output(name: str, value: str) -> None:
@@ -143,7 +163,13 @@ def main() -> int:
         run_id = run.get("id")
         if not run_id:
             continue
-        jobs_payload = gh_json(f"repos/{repository}/actions/runs/{run_id}/jobs?per_page=100")
+        try:
+            jobs_payload = gh_json(f"repos/{repository}/actions/runs/{run_id}/jobs?per_page=100")
+        except GitHubApiError as exc:
+            # 单个 run 的 jobs 接口 502 不应阻断整条发布：跳过该 run 继续向更早的
+            # 成功运行回溯。最坏情况回落到 EVENT_BEFORE，仍能建立合法基线。
+            print(f"警告：跳过不可读的运行 {run_id}：{exc}", file=sys.stderr)
+            continue
         jobs = jobs_payload.get("jobs", [])
         if is_successful_release(jobs):
             successful_release_heads.add(str(run.get("head_sha", "")))
