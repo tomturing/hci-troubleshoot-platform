@@ -391,7 +391,9 @@ draft -> validated -> approved -> published
 
 “改造”按现有物理表计算，不把逻辑重命名重复计数。`fixture.bundle` 演进为 `BundleBuild`、`fixture.bundle_activation` 演进为 `BundleActive`，第一阶段保留物理表名以降低切换风险，兼容窗口结束后再执行重命名或建立同义视图。
 
-仓库还存在一组历史 Atlas 迁移曾创建的 15 张主库 `agent_test_*` 表。`20260813000000_drop_orphan_agent_test_tables.sql` 已明确删除它们；若某环境尚未执行该迁移，应先执行并完成行数、外键、备份恢复校验。这 15 张表不再计入当前 64 张 desired schema，也不应在新方案中重新创建。
+仓库还存在一组历史 Atlas 迁移曾创建的 15 张主库 `agent_test_*` 表。它们已从 `desired_schema.sql` 移除；`scripts/db-migrate.sh` 的 Step 3 是 `atlas schema apply --to desired_schema.sql --auto-approve`（声明式 destructive 收敛，历史上曾将 26 张旧表收敛为 17 张期望表），故存量库中这 15 张表会在下一次 db-migrate 时**自动 DROP**，无需任何手工迁移。`.github/workflows/db-migration-test.yml` 以 DEPRECATED 断言（不存在才通过）守卫其不得重建。
+
+> 原 `atlas-migrations/20260813000000_drop_orphan_agent_test_tables.sql` 已随该目录于 2026-10-24 整体删除（该目录从未被执行，属虚假信号）。**不要**再去寻找或手工执行它；如需确认清理结果，用 `SELECT to_regclass('public.agent_test_scenario');` 探测是否仍存在。这 15 张表不再计入当前 64 张 desired schema，也不应在新方案中重新创建。
 
 逐张名单如下（全部属于主库历史孤儿表，不是 hci-sim 当前运行表）：
 
