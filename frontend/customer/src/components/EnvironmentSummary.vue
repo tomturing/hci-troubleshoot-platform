@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { Bell, Box, CircleCheck, CircleClose, Tickets, WarningFilled } from '@element-plus/icons-vue'
+import { Bell, Box, CircleCheck, CircleClose, Loading, Tickets, WarningFilled } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 
 const chatStore = useChatStore()
@@ -115,8 +115,53 @@ const summaryText = computed(() => {
   return parts.join(' | ')
 })
 
-// 采集状态
+// 采集状态（注意：'success' 只代表采集请求成功返回，不代表真的有数据）
 const collectionState = computed(() => chatStore.collectionState)
+
+/** 单个 env_info 字段是否算"有值"：空串、null、"未知" 都是后端未采集到的占位 */
+function hasValue(v: unknown): boolean {
+  if (v === null || v === undefined) return false
+  if (typeof v === 'string') return v.trim() !== '' && v !== '未知'
+  if (Array.isArray(v)) return v.length > 0
+  return true
+}
+
+/**
+ * 是否真的采到了数据。
+ * 只看 collectionState 会把"接口 200 但 env_info 全是未知"显示成已采集，
+ * 标题写「已采集」而正文写「暂未采集」，自相矛盾。
+ */
+const hasUsableData = computed(() => {
+  const ctx = chatStore.environmentContext
+  if (!ctx) return false
+  if (ctx.env_info && Object.keys(ctx.env_info).some((k) => hasValue((ctx.env_info as Record<string, unknown>)[k]))) {
+    return true
+  }
+  // 告警/任务非空同样说明采到了内容；为空数组则说明确实没有记录
+  return (ctx.alert_logs?.length ?? 0) > 0 || (ctx.task_logs?.length ?? 0) > 0
+})
+
+/** 展示状态：把"请求成功但没有数据"降级成 empty，四个状态与标题、标签一一对应 */
+const displayState = computed<'collected' | 'collecting' | 'failed' | 'empty'>(() => {
+  if (collectionState.value === 'collecting') return 'collecting'
+  if (collectionState.value === 'error') return 'failed'
+  // idle 也可能已经有数据（页面刷新后 collectionState 会重置），所以按数据判断
+  return hasUsableData.value ? 'collected' : 'empty'
+})
+
+/** 状态标签：图标 + 文字，避免只放一个图标导致出现无法理解的空色块 */
+const stateTag = computed(() => {
+  switch (displayState.value) {
+    case 'collecting':
+      return { type: 'warning' as const, icon: Loading, label: '采集中' }
+    case 'failed':
+      return { type: 'danger' as const, icon: CircleClose, label: '采集失败' }
+    case 'collected':
+      return { type: 'success' as const, icon: CircleCheck, label: '已采集' }
+    default:
+      return { type: 'info' as const, icon: WarningFilled, label: '暂无数据' }
+  }
+})
 
 /**
  * 解析 process 字段，返回展示类型
@@ -145,10 +190,12 @@ function getProcessType(process?: string): 'done' | 'failed' | 'queued' | 'cance
     <div class="card-header" @click="expanded = !expanded">
       <div class="header-left">
         <el-icon class="card-icon"><Box /></el-icon>
-        <span class="card-title">环境数据（已采集）</span>
-        <el-tag v-if="collectionState === 'success'" size="small" type="success" effect="plain" :icon="CircleCheck" />
-        <el-tag v-else-if="collectionState === 'collecting'" size="small" type="warning" effect="plain">采集中</el-tag>
-        <el-tag v-else-if="collectionState === 'error'" size="small" type="danger" effect="plain">失败</el-tag>
+        <span class="card-title">环境数据</span>
+        <!-- 状态由"是否真有数据"决定，并且必须带文字，不能只放一个图标 -->
+        <el-tag size="small" :type="stateTag.type" effect="plain">
+          <el-icon><component :is="stateTag.icon" /></el-icon>
+          {{ stateTag.label }}
+        </el-tag>
       </div>
       <div class="header-right">
         <el-button text size="small" @click.stop="expanded = !expanded">
@@ -350,6 +397,11 @@ function getProcessType(process?: string): 'done' | 'failed' | 'queued' | 'cance
   font-size: 14px;
   font-weight: 500;
   color: #303133;
+}
+
+/* 状态标签内图标与文字之间补一点间距 */
+.header-left :deep(.el-tag .el-icon) {
+  margin-right: 4px;
 }
 
 .card-summary {
