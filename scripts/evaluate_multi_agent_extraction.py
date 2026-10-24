@@ -37,9 +37,9 @@ PROMPT_NAMES = (
     "kbd_signal_model_v1",
     "kbd_signal_verify_v1",
 )
-DEFAULT_PROMPT_MIGRATION = (
-    PROJECT_ROOT / "database" / "atlas-migrations" / "20260904000001_seed_multi_agent_extract_prompts.sql"
-)
+# Prompt 的权威位置：count/classify 在种子文件，model/verify 的 1.2 版在 data-migrations/050。
+# 原 database/atlas-migrations/20260904000001_*.sql 已于 2026-10-24 删除（该目录从不被执行）。
+DEFAULT_PROMPT_SOURCE = PROJECT_ROOT / "database" / "seeds" / "02_system_prompts.sql"
 
 
 def _json_signals(value: Any) -> list[dict[str, Any]]:
@@ -340,7 +340,14 @@ def main() -> None:
     parser.add_argument("--input", help="离线 JSON 输入；提供后不读取数据库 KBD")
     parser.add_argument("--output", default="/tmp/signal-multi-agent-evaluation.json")
     parser.add_argument("--limit", type=int)
-    parser.add_argument("--prompt-migration", help=f"候选 Prompt 迁移文件，PR 验证建议使用：{DEFAULT_PROMPT_MIGRATION}")
+    parser.add_argument(
+        "--prompt-migration",
+        help=(
+            "候选 Prompt 所在的 SQL 文件（含 $TEMPLATE$ 块）。"
+            f"count/classify 见 {DEFAULT_PROMPT_SOURCE}；"
+            "model/verify 见 data-migrations/050_restore_json_extract_path_contract.sql"
+        ),
+    )
     parser.add_argument("--write-db", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if not args.database_url:

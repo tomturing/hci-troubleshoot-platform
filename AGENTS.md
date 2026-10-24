@@ -42,7 +42,7 @@
 **数据库与迁移**
 
 1. 凡 `database/desired_extras.sql` 中**无条件重建**的对象（枚举型 CHECK 尤甚），扩值必须 `desired_schema.sql` 与 `desired_extras.sql` **同改**：CI 执行序列是 `extras → atlas apply → extras`，只改 schema 必然残留 diff。
-2. Prompt 种子**必须**放 `database/seeds/02_system_prompts.sql`（由 Helm db-seed-job PostSync 应用）。`database/atlas-migrations/` 从不被 `scripts/db-migrate.sh` 应用，放错位置会让生产路由 100% 抛 `PromptLoadError`。
+2. Prompt 种子**必须**放 `database/seeds/02_system_prompts.sql`（由 Helm db-seed-job PostSync 应用）。迁移链路只应用 `seeds/`、`data-migrations/`、`desired_schema.sql`、`desired_extras.sql` 四类输入，放错位置会让生产路由 100% 抛 `PromptLoadError`。
 3. AI 派生元数据列（`root_signal_json`、`ai_category_id`）不入 `kbd_revision`、不动 content_md/embedding/tsv，写回路径**禁止**使用 `require_mutable_kbd`（published 回刷必撞 409）。
 
 **服务契约与网关**
@@ -135,9 +135,10 @@ hci-troubleshoot-platform/
 - **给已存在数据的表新增 `NOT NULL` 列必须带 DEFAULT**：`atlas schema apply` 会直接下发
   `ADD COLUMN ... NOT NULL`，无默认值时 PostgreSQL 因存量行无法填值而整体失败
   （`column "x" contains null values`），进而阻塞 db-migrate 的 PreSync hook 与环境同步
-- **`database/atlas-migrations/` 不会被打进 db-migrate 镜像**：`Dockerfile.migrations` 只
-  `COPY database/data-migrations/`，写在该目录的迁移不会执行。存量兼容逻辑要么落在
-  `database/data-migrations/`，要么直接表达在 `desired_schema.sql` 的列定义上
+- **本项目无 Schema 迁移版本目录**：`atlas.hcl` 未配置 `migration_dir`，`atlas migrate *`
+  命令无效；`database/atlas-migrations/` 已于 2026-10-24 整体删除（具体依据见
+  `database/README.md`）。存量兼容逻辑要么落在 `database/data-migrations/`，要么直接
+  表达在 `desired_schema.sql` 的列定义上；变更历史由 Git 承载，禁止重建该目录
 
 ---
 

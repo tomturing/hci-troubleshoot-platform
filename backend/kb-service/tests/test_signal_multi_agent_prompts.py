@@ -5,15 +5,17 @@ backend/kb-service/tests/test_signal_multi_agent_prompts.py
 
 from pathlib import Path
 
+from shared.schemas.acquirer_args import AUTO_MODELING_SIGNAL_TOOLS
 from shared.utils.prompt_loader import StrictPromptLoader
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_MIGRATION_PATH = _REPO_ROOT / "database" / "atlas-migrations" / "20260904000001_seed_multi_agent_extract_prompts.sql"
-_ALIGNMENT_PATH = _REPO_ROOT / "database" / "atlas-migrations" / "20260907000000_align_signal_modeling_pipeline_contract.sql"
+# Prompt 的权威位置：种子文件（Helm db-seed-job PostSync 加载，ON CONFLICT DO NOTHING）
+# 四个 Agent 的当前最终版均在此；存量库升级路径见 data-migrations/050。
+_SEEDS_PATH = _REPO_ROOT / "database" / "seeds" / "02_system_prompts.sql"
 
 
-def _load_prompt_template_from_migration(prompt_name: str) -> str:
-    content = _MIGRATION_PATH.read_text(encoding="utf-8")
+def _load_prompt_template(source: Path, prompt_name: str) -> str:
+    content = source.read_text(encoding="utf-8")
     marker = f"'{prompt_name}',"
     start_pos = content.index(marker)
     template_start = content.index("$TEMPLATE$", start_pos) + len("$TEMPLATE$")
@@ -23,7 +25,7 @@ def _load_prompt_template_from_migration(prompt_name: str) -> str:
 
 def test_count_agent_prompt_placeholders_and_contracts():
     """验证计数 Agent 提示词占位符与角色解耦契约"""
-    template = _load_prompt_template_from_migration("kbd_signal_count_v1")
+    template = _load_prompt_template(_SEEDS_PATH, "kbd_signal_count_v1")
     placeholders = StrictPromptLoader.get_template_placeholders(template)
 
     assert placeholders == {"composite_text", "steps_text"}
@@ -36,7 +38,7 @@ def test_count_agent_prompt_placeholders_and_contracts():
 
 def test_classify_agent_prompt_placeholders_and_contracts():
     """验证分类 Agent 提示词占位符与双重视角对抗审查契约"""
-    template = _load_prompt_template_from_migration("kbd_signal_classify_v1")
+    template = _load_prompt_template(_SEEDS_PATH, "kbd_signal_classify_v1")
     placeholders = StrictPromptLoader.get_template_placeholders(template)
 
     assert placeholders == {
@@ -57,7 +59,7 @@ def test_classify_agent_prompt_placeholders_and_contracts():
 
 def test_model_agent_prompt_placeholders_and_contracts():
     """验证建模 Agent 提示词占位符与最佳实践注入契约"""
-    template = _load_prompt_template_from_migration("kbd_signal_model_v1")
+    template = _load_prompt_template(_SEEDS_PATH, "kbd_signal_model_v1")
     placeholders = StrictPromptLoader.get_template_placeholders(template)
 
     assert placeholders == {
@@ -78,7 +80,7 @@ def test_model_agent_prompt_placeholders_and_contracts():
 
 def test_verify_agent_prompt_placeholders_and_contracts():
     """验证裁判 Agent 提示词占位符与门禁自愈契约"""
-    template = _load_prompt_template_from_migration("kbd_signal_verify_v1")
+    template = _load_prompt_template(_SEEDS_PATH, "kbd_signal_verify_v1")
     placeholders = StrictPromptLoader.get_template_placeholders(template)
 
     assert placeholders == {
@@ -95,10 +97,16 @@ def test_verify_agent_prompt_placeholders_and_contracts():
     assert "verification_status" in template
 
 
-def test_alignment_migration_removes_effect_from_auto_catalog_and_preserves_history():
-    migration = _ALIGNMENT_PATH.read_text(encoding="utf-8")
+def test_auto_modeling_catalog_excludes_effect_and_schema_preserves_history():
+    """自动建模工具词表契约：qkv_effect 不得进入。
 
-    assert "12 种可自动建模采集工具" in migration
-    assert "不得生成 qkv_effect" in migration
-    assert "ON DELETE SET NULL" in migration
-    assert "uq_signal_best_practice_source_checksum_signal" in migration
+    该契约的代码事实源是 shared.schemas.acquirer_args.AUTO_MODELING_SIGNAL_TOOLS，
+    signal_orchestrator 以它为 VALID_CATALOG_TOOLS 校验分类结果；
+    表结构侧由 desired_schema.sql 的 ON DELETE SET NULL 保留建模模板血缘。
+    """
+    assert len(AUTO_MODELING_SIGNAL_TOOLS) == 12
+    assert "qkv_effect" not in AUTO_MODELING_SIGNAL_TOOLS
+
+    schema = (_REPO_ROOT / "database" / "desired_schema.sql").read_text(encoding="utf-8")
+    assert "ON DELETE SET NULL" in schema
+    assert "uq_signal_best_practice_source_checksum_signal" in schema

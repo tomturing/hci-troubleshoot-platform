@@ -4,10 +4,8 @@ on:
   pull_request:
     branches: [main]
     paths:
-      # 表结构变更时触发（Atlas 管理）
+      # 表结构变更时触发（Atlas 声明式管理，无迁移版本目录）
       - "database/desired_schema.sql"
-      # Atlas 迁移与完整性哈希变化同样必须触发，避免只改 migration 绕过验证
-      - "database/atlas-migrations/**"
       # 函数/触发器变更时触发（psql 管理）
       - "database/desired_extras.sql"
       # 数据迁移变更时触发（migration-runner 管理）
@@ -138,8 +136,7 @@ jobs:
             "raw_cases" "knowledge_atoms" "prompt_audit" "sop_chunk"
             # hci-sim 已迁至独立库（database/hci-sim-migrations/000001_control_plane.sql，
             # 以 control_plane/fixture/artifact/audit schema 重建等价表），主库 agent_test_*
-            # 为迁移遗留孤儿表，backend 零引用，已从 desired_schema.sql 删除并由
-            # atlas-migrations/20260813000000_drop_orphan_agent_test_tables.sql 清理。
+            # 为迁移遗留孤儿表，backend 零引用，已从 desired_schema.sql 删除。
             "agent_test_scenario" "agent_test_fixture_bundle"
             "agent_test_fixture_dependency" "agent_test_fixture_provenance"
             "agent_test_fixture_approval" "agent_test_fixture_audit"

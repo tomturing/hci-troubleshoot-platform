@@ -152,7 +152,7 @@ Promtail 已于 2026-03-02 结束生命周期。实际 `hci-platform-obs` Chart 
 
 权威 Schema：`database/desired_schema.sql`。
 
-Atlas 迁移：`database/atlas-migrations/20260727000000_terminal_bridge_observability_p0.sql`。
+Schema 变更：全部表/列/索引已合入 `database/desired_schema.sql`（本项目无迁移版本目录，原 `atlas-migrations/` 已于 2026-10-24 删除）。
 
 迁移只新增表、列和索引，全部使用 `IF NOT EXISTS`，不删除存量数据。回滚应用版本时可保留新增字段和 Artifact 表；如必须物理回滚，应先导出 Artifact，再删除新索引、表和列。
 

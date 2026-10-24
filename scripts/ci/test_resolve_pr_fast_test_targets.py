@@ -115,7 +115,7 @@ def test_shared_dependency_falls_back_to_full(repo_root: Path) -> None:
 
 def test_database_schema_change_falls_back_to_full(repo_root: Path) -> None:
     """schema/迁移是全服务共享输入：此前被判 none，job 变绿却零验证。"""
-    plan = resolve_test_plan(["database/atlas-migrations/20260916000001_add_x.sql"], repo_root)
+    plan = resolve_test_plan(["database/data-migrations/050_add_x.sql"], repo_root)
     assert plan.mode == "full"
     assert plan.targets == ()
 

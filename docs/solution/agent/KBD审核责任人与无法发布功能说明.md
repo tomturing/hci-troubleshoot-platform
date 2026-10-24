@@ -172,9 +172,9 @@ chmod +x test_review_owner_feature.sh
 
 > **重要**：本环境的数据库 Schema 由 `db-migrate` PreSync Hook 依据
 > `database/desired_schema.sql`（atlas schema apply，声明式差量）与
-> `database/desired_extras.sql`（psql，重建函数/触发器/检查约束）重建/同步，
-> **不消费** `database/atlas-migrations/*.sql`。因此任何表结构或约束变更必须同时改这两份文件，
-> 仅加 `atlas-migrations` 迁移文件不会生效。
+> `database/desired_extras.sql`（psql，重建函数/触发器/检查约束）重建/同步。
+> 本项目**不存在**迁移版本目录（`atlas.hcl` 无 `migration_dir`），因此任何表结构或约束
+> 变更必须同时改上面两份文件，只写一个迁移文件不会生效。
 
 - `kbd_batch_job` 的 `ck_kbd_batch_job_type` 检查约束枚举了所有允许的批量任务类型；
   新增批量任务类型时，**必须**在 `desired_schema.sql` 与 `desired_extras.sql` 两处同时加入，
@@ -189,10 +189,7 @@ chmod +x test_review_owner_feature.sh
 
 ### 后端
 - `database/desired_schema.sql` - Schema 定义（含 `ck_kbd_batch_job_type` 约束，真源之一）
-- `database/desired_extras.sql` - 函数/触发器/约束重建（含 `ck_kbd_batch_job_type` 约束，真源之一）
-- `database/atlas-migrations/20260924000000_add_review_owner_and_unpublishable.sql` - 历史迁移（部署不消费）
-- `database/atlas-migrations/20260924000001_update_batch_job_type_constraint.sql` - 历史迁移（部署不消费）
-- `backend/kb-service/app/models/kbd_review_owner.py` - 审核责任人模型
+- `database/desired_extras.sql` - 函数/触发器/约束重建（含 `ck_kbd_batch_job_type` 约束，真源之一 ）
 - `backend/kb-service/app/models/kbd_entry.py` - KBD 条目模型（更新）
 - `backend/kb-service/app/routes/admin.py` - API 路由
 - `backend/api-gateway/app/routes/kb.py` - API 网关路由

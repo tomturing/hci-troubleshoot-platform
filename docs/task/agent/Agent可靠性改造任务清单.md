@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-10-13
+last_updated: 2026-10-24
 related_prs:
   - PR #474: invoke() 重试 + tool_calls 清理 + skill 可观测 + 报告模板简化 + solution 格式合并
 owner: team
@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-10-24 | v3.75 | **修复多 Agent Prompt 事实源断链与文档门禁失效**：① **Prompt 缺失（生产必崩）**：`signal_orchestrator.py:295` 硬编码加载 `kbd_signal_count_v1`（分类、建模、验证同理），但这 4 个 Prompt 的唯一 SQL 定义长期只存在于 `database/atlas-migrations/`（`atlas.hcl` 无 `migration_dir`，`db-migrate.sh` 全链路不执行该目录，故已于本日整体删除 47 文件），生产库调抽取必抛 `PromptLoadError`；现将 count/classify 迁入 `database/seeds/02_system_prompts.sql`（种子为新库完整基线，存量库走 `data-migrations/`）并补齐 4 条 `prompt_slot`。② **门禁丢失**：`data-migrations/034` 将 `kbd_signal_model_v1`/`kbd_signal_verify_v1` 升到 1.1 时，相对同源 1.0 逐行比对各丢失一条约束（建模缺「JSON 取值路径契约（严苛门禁）」、验证缺「修复 JSON 取值路径错误」），按「已执行迁移永不修改、变更走 Forward Fix」铁律新增 `050_restore_json_extract_path_contract.sql` 升至 1.2 补回，Prompt 契约测试统一指向种子以覆盖四个 Agent 的最终版。③ **文档门禁失效**：`scripts/ci/check_module_doc_sync.py` 的 20 条 ModuleMapping 中 11 条指向不存在的文档（`docs/solution/agent/agent工具设计.md` 漏 `design/` 中间层、`AI助手设计.md` 已改名），这些模块的 docs-governance 长期只能靠 `[skip doc-sync]` 绕过；已全部修正为现存路径。 | [知识库设计](../../solution/knowledge-base/知识库设计.md) |
 | 2026-09-20 | v3.74 | **客户端 SSH 与 acli 状态管理安全加固**：`chat.ts` 补充 `typeof localStorage !== 'undefined'` 防御性保护消除单测环境异常；在 SSH 连接就绪后异步触发 `checkAndSyncAcli` 自动就绪自检 | [acli自动检测与安装更新方案](../../solution/custom-ui/events/2026-09-20-acli自动检测与安装更新方案.md) |
 | 2026-08-31 | v3.73 | **完成 SOP 未解决切换 KBD 的生产闭环**：新增继续 SOP/切换 KBD 去向卡、一次性 `request_id`、Conversation/SopExecution 行锁与原子状态迁移；切换后 Agent 读取权威 `aborted` 状态并立即进入同分类 KBD，无可执行 KBD 时保持人工升级。补齐防重放、旧 SOP 快照、阻塞交互、消息顺序、前端点击和刷新协议回归。 | [SOP 未解决切换 KBD 闭环需求](../../requirement/events/2026-08-31-SOP未解决切换KBD闭环需求.md) |
 | 2026-08-20 | v3.72 | **修复 CDD PARTIAL 报告丢失已命中参考案例**：多 KBD 场景下，即使 Conclusion Gate 因其他候选未决而保持 `PARTIAL`，报告也必须明确列出全部必要信号已满足的参考案例及现场证据；禁止泄露根因/解决方案，并从未确认列表中排除已支持候选。 | [仿真诊断等价性与CDD全候选修正任务](events/2026-08-20-仿真诊断等价性与CDD全候选修正任务.md) |

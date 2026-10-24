@@ -77,7 +77,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | **D-010** | k8s.md | nginx:alpine templates 机制 + emptyDir + fsGroup 三要素缺一导致白屏 |
 | **D-011** | k8s.md | ArgoCD PreSync/PostSync Hook Job 失败后长期残留污染 Application Health，hook-delete-policy 必须包含 HookFailed |
 | **D-012** | shell.md | GitHub Actions ci.yml 无路径过滤导致局部变更 PR（如仅改 Helm）触发全套 CI（>10min）；uv/pnpm/helm-unittest 三处缓存缺失为主要浪费点；详见 `docs/deploy/events/2026-07-09-CI检查超时分析与优化方案.md` |
-| **D-013** | k8s.md | desired_schema.sql 声明式 schema 与 ORM 模型不同步导致 ORM 查询 500（db-migrate.sh 只应用 desired_schema.sql，不应用 atlas-migrations 版本化迁移）|
+| **D-013** | k8s.md | desired_schema.sql 声明式 schema 与 ORM 模型不同步导致 ORM 查询 500（db-migrate.sh 只应用 desired_schema.sql，无迁移版本目录可依赖）|
 | **D-014** | k8s.md | db-seed 种子 SQL `$TEMPLATE$` dollar-quote 闭定界符后漏逗号导致 PostSync Hook Job 失败（syntax error at '1.0'）|
 | **D-015** | k8s.md | Dockerfile COPY 使用仓库根相对路径但构建脚本传入子目录 context，导致发送超大上下文后 COPY 路径不存在 |
 | **D-016** | shell.md | `set -o pipefail` 下 `producer | grep -q` 因 SIGPIPE 返回假失败，镜像导入后验证误报不存在 |

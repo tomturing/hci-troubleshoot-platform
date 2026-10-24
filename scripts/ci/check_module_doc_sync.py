@@ -9,8 +9,8 @@
   backend/case-service/         → solution/case/工单设计.md              + task/case/工单任务.md
   backend/conversation-service/ → solution/conversation/对话设计.md       + task/conversation/对话任务.md
   backend/kb-service/           → solution/knowledge-base/知识库设计.md   + task/knowledge-base/知识库任务.md
-  backend/agent-service/        → solution/agent/AI助手设计.md            + task/agent/agent任务.md
-  backend/scheduler-service/    → solution/agent/AI助手设计.md           + task/agent/agent任务.md
+  backend/agent-service/        → solution/agent/design/agent设计.md      + task/agent/agent任务.md
+  backend/scheduler-service/    → solution/agent/design/agent设计.md      + task/agent/agent任务.md
   backend/api-gateway/          → solution/架构设计.md                   + task/架构任务.md
   backend/shared/               → solution/架构设计.md                   （共享库影响全局架构）
   frontend/customer/            → solution/custom-ui/客户端设计.md         + task/custom-ui/custom-ui任务.md
@@ -87,7 +87,7 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
     ModuleMapping(
         code_prefix="backend/agent-service/app/tools/acli/",
         display_name="Agent 服务 acli 工具（agent-service/app/tools/acli）",
-        solution_doc="docs/solution/agent/agent工具设计.md",
+        solution_doc="docs/solution/agent/design/agent工具设计.md",
         task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
         exempt_paths=(
             "/tests/", "/test/", "/__pycache__/",
@@ -101,13 +101,13 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
     ModuleMapping(
         code_prefix="backend/agent-service/",
         display_name="Agent 服务（agent-service）",
-        solution_doc="docs/solution/agent/AI助手设计.md",
+        solution_doc="docs/solution/agent/design/agent设计.md",
         task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
     ),
     ModuleMapping(
         code_prefix="backend/scheduler-service/",
         display_name="AI 调度服务（scheduler-service）",
-        solution_doc="docs/solution/agent/AI助手设计.md",
+        solution_doc="docs/solution/agent/design/agent设计.md",
         task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
     ),
     ModuleMapping(
@@ -120,7 +120,7 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
     ModuleMapping(
         code_prefix="backend/shared/utils/prompt_loader.py",
         display_name="共享库 prompt_loader（backend/shared/utils/prompt_loader.py）",
-        solution_doc="docs/solution/agent/agent工具设计.md",
+        solution_doc="docs/solution/agent/design/agent工具设计.md",
         task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
     ),
     # audit.py 新增审计模型，属于 agent 可靠性整改闭环
@@ -140,14 +140,14 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
     ModuleMapping(
         code_prefix="frontend/customer/src/utils/commandRisk.ts",
         display_name="客户端 UI（frontend/customer/src/utils/commandRisk.ts）",
-        solution_doc="docs/solution/agent/agent工具设计.md",
+        solution_doc="docs/solution/agent/design/agent工具设计.md",
         task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
     ),
     # frontend/customer 的 interactive-request/exec_id 改造属于 agent 可靠性整改闭环
     ModuleMapping(
         code_prefix="frontend/customer/src/components/InteractiveRequestCard.vue",
         display_name="客户端 UI InteractiveRequestCard（frontend/customer/src/components/InteractiveRequestCard.vue）",
-        solution_doc="docs/solution/agent/agent工具设计.md",
+        solution_doc="docs/solution/agent/design/agent工具设计.md",
         task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
         exempt_paths=(
             "/tests/", "/test/", "/__pycache__/",
@@ -156,7 +156,7 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
     ModuleMapping(
         code_prefix="frontend/customer/src/components/MessageBubble.vue",
         display_name="客户端 UI MessageBubble（frontend/customer/src/components/MessageBubble.vue）",
-        solution_doc="docs/solution/agent/agent工具设计.md",
+        solution_doc="docs/solution/agent/design/agent工具设计.md",
         task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
         exempt_paths=(
             "/tests/", "/test/", "/__pycache__/",
@@ -165,7 +165,7 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
     ModuleMapping(
         code_prefix="frontend/customer/src/stores/",
         display_name="客户端 UI stores（frontend/customer/src/stores/）",
-        solution_doc="docs/solution/agent/agent工具设计.md",
+        solution_doc="docs/solution/agent/design/agent工具设计.md",
         task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
         exempt_paths=(
             "/tests/", "/test/", "/__pycache__/",
@@ -178,7 +178,7 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
     ModuleMapping(
         code_prefix="frontend/admin/src/views/ToolManageView.vue",
         display_name="管理台 UI（frontend/admin/src/views/ToolManageView.vue）",
-        solution_doc="docs/solution/agent/agent工具设计.md",
+        solution_doc="docs/solution/agent/design/agent工具设计.md",
         task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
     ),
     ModuleMapping(
@@ -191,20 +191,14 @@ MODULE_MAPPINGS: list[ModuleMapping] = [
     ModuleMapping(
         code_prefix="database/seeds/",
         display_name="数据库种子数据（database/seeds/）",
-        solution_doc="docs/solution/agent/agent工具设计.md",
+        solution_doc="docs/solution/agent/design/agent工具设计.md",
         task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
     ),
-    # desired_schema.sql 和 atlas-migrations 属于 agent 可靠性整改闭环
-    ModuleMapping(
-        code_prefix="database/atlas-migrations/",
-        display_name="数据库迁移脚本（database/atlas-migrations/）",
-        solution_doc="docs/solution/数据库设计.md",
-        task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
-    ),
+    # desired_schema.sql 属于 agent 可靠性整改闭环（本项目无迁移版本目录，已 2026-10-24 删除）
     ModuleMapping(
         code_prefix="database/desired_schema.sql",
         display_name="数据库 schema（database/desired_schema.sql）",
-        solution_doc="docs/solution/agent/agent工具设计.md",
+        solution_doc="docs/solution/agent/design/agent工具设计.md",
         task_doc="docs/task/agent/Agent可靠性改造任务清单.md",
     ),
     ModuleMapping(

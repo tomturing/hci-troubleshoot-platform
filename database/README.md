@@ -1,38 +1,55 @@
 # 数据库迁移管理
 
-## 唯一权威工具：Atlas（自 v6.3 起）
+## 管理模式：Atlas 声明式（无迁移版本链）
 
-本项目使用 [Atlas](https://atlasgo.io) 声明式管理数据库 Schema 版本。
+本项目使用 [Atlas](https://atlasgo.io) **声明式**管理数据库 Schema：
+`database/desired_schema.sql` 描述期望状态，`atlas schema apply` 计算差量并收敛。
 
-> ⚠️ **dbmate 迁移链已于 2026-04-08 彻底废弃。**
-> `database/migrations/` 下的文件仅作历史档案，不再被任何 K8s Job 执行。
-> 所有 schema 变更必须：
+> ⚠️ **本项目不存在 Schema 迁移版本链。**
+> `atlas.hcl` 的三个 env 均为 `src = "file://database/desired_schema.sql"`，
+> 未配置 `migration_dir`，因此 `atlas migrate diff/apply/lint/status` 等增量模式命令
+> **对本项目无效**。`database/atlas-migrations/` 已于 2026-10-24 整体删除（历史见下）。
+>
+> 所有 Schema 变更只需两步：
 > 1. 修改 `database/desired_schema.sql`（期望状态，唯一权威）
-> 2. 运行 `atlas migrate diff` 生成迁移文件
-> 3. 提交 PR，CI 自动验证
+> 2. 提交 PR，CI 自动验证（`db-migration-test.yml`）
+
+### 变更历史
+
+| 日期 | 事件 |
+|---|---|
+| 2026-04-08 | dbmate 增量迁移链废弃，切换 Atlas 声明式 |
+| 2026-04-09 | 首次删除 `atlas-migrations/`（增量模式遗留死代码） |
+| 2026-05-25 起 | 该目录按本文档旧版「Atlas 工作流」说明被重新创建并累积 46 个文件 |
+| 2026-10-24 | 二次删除 `atlas-migrations/`（47 文件），并重写本文档以根断再生 |
+
+删除依据：`Dockerfile.migrations`、`scripts/db-migrate.sh`、`db-migration-test.yml`、
+`atlas.hcl` 四处均**不执行**该目录内 SQL；其唯一效果是触发镜像构建与 CI 验证的
+**虚假信号**（改了会触发、构建了却不生效）。变更记录已由 Git 历史承载，无需另存副本。
 
 ## 目录结构
 
 ```
 database/
   desired_schema.sql           ← 期望 Schema（唯一权威，Atlas 声明式管理）
-  desired_extras.sql            ← 函数/触发器（psql 幂等执行）
-  data-migrations/              ← 版本化数据迁移（新增，详见下文）
+  desired_extras.sql           ← 函数/触发器（psql 幂等执行）
+  data-migrations/             ← 版本化数据迁移（DML，详见下文）
     001_xxx.sql
     002_yyy.sql
-  atlas-migrations/             ← Atlas 迁移文件目录（仅 Schema）
-    20260408000000_baseline.sql ← baseline（接管时快照）
-    atlas.sum                   ← 完整性校验文件（禁止手动修改）
-  seeds/                        ← 业务种子数据（与迁移工具无关）
-    01_tool_definitions.sql     ← 初始化 tool_definition 表
-    02_system_prompts.sql       ← 初始化 system_prompt 表
-    03_skill_definitions.sql    ← 初始化 skill_definition 表
+  hci-sim-migrations/          ← hci_sim 独立库 Schema 入口（与主库互不扫描）
+  seeds/                       ← 业务种子数据（与迁移工具无关）
+    01_tool_definitions.sql    ← 初始化 tool_definition 表
+    02_system_prompts.sql      ← 初始化 system_prompt 表
+    03_skill_definitions.sql   ← 初始化 skill_definition 表
+    04_kbd_diagnosis_samples.sql ← 显式标记的诊断测试 KBD 草稿
 
 docs/archive/db-migrations-history/
-  migrations/                   ← 历史 dbmate 迁移文件（只读归档，v6.3 前）
+  migrations/                  ← 历史 dbmate 迁移文件（只读归档，v6.3 前）
 ```
 
-## Atlas 工作流
+> 无 `atlas-migrations/`：本项目不维护 Schema 迁移版本链，见上文「变更历史」。
+
+## Atlas 工作流（声明式）
 
 ### 修改 Schema（新增表/字段/索引）
 
@@ -40,68 +57,76 @@ docs/archive/db-migrations-history/
 # 1. 修改期望 schema（唯一权威入口）
 vim database/desired_schema.sql
 
-# 2. 生成迁移文件（需本地 postgres 容器运行）
+# 2. 本地预览与当前 DB 的差量（不写入）
 export DATABASE_URL="postgres://postgres:postgres@localhost:5432/hci_dev?sslmode=disable"
-atlas migrate diff --env local <migration-name>
-
-# 3. 审查生成的迁移文件
-cat database/atlas-migrations/<新文件>.sql
-
-# 4. 提交（迁移文件 + desired_schema.sql 必须同一 commit）
-git add database/desired_schema.sql database/atlas-migrations/
-```
-
-### 本地应用迁移
-
-```bash
-# 应用所有待执行迁移
-atlas migrate apply --env local
-
-# 查看迁移状态
-atlas migrate status --env local
-
-# 验证 schema 与 desired_schema.sql 一致
+export DEV_URL="postgres://postgres:postgres@localhost:5432/atlas_dev?sslmode=disable"
 atlas schema diff --env local
+
+# 3. 应用到本地 DB
+atlas schema apply --env local --auto-approve
+
+# 4. 提交（只改 desired_schema.sql，无需生成迁移文件）
+git add database/desired_schema.sql
 ```
 
-### CI 自动验证
+> `desired_schema.sql` 定义表/列/索引/约束；`desired_extras.sql` 定义函数与触发器。
+> **两者必须同步修改** —— db-migrate 链路是 `extras → schema apply → extras`，
+> 只在其中一处修改会导致 Atlas 幂等验证报「apply 后仍存在 diff」。
 
-CI 流程自动执行：
-1. `atlas migrate lint` — 检测破坏性变更
-2. 全量执行 baseline + 所有迁移文件
-3. 验证最终 schema 与 `desired_schema.sql` 一致
+### 部署链路实际执行顺序
+
+`scripts/db-migrate.sh`（`Dockerfile.migrations` 打包为迁移镜像）：
+
+| 步骤 | 动作 | 输入 |
+|---|---|---|
+| Step 0 | 空库引导（仅全新库执行） | `desired_schema.sql` |
+| Step 1 | 数据迁移（migration-runner，版本化幂等） | `data-migrations/*.sql` |
+| Step 2 | 应用函数 | `desired_extras.sql` |
+| Step 3 | 声明式 Schema 收敛 | `desired_schema.sql` |
+| Step 4 | 重建触发器 | `desired_extras.sql`（再次全量） |
+
+`Dockerfile.migrations` 只 COPY 上述四个输入 + 两个脚本，**不打包任何迁移版本目录**。
+
+### CI 自动验证（`db-migration-test.yml`）
+
+1. 空库 `atlas schema apply` 全量建表
+2. 按序执行 `data-migrations/*.sql`（验证 SQL 正确性）
+3. 断言核心业务表存在、废弃表不存在
+4. `atlas schema diff` 输出为空 → 幂等性通过
 
 ## 幂等性规范（强制）
 
-所有迁移脚本**必须可安全重复执行**：
+`desired_extras.sql` 与 `data-migrations/*.sql` **必须可安全重复执行**：
 
 | 操作类型 | 要求 |
 |----------|------|
 | `CREATE TABLE` | 必须加 `IF NOT EXISTS` |
 | `ALTER TABLE ADD COLUMN` | 必须加 `IF NOT EXISTS` |
 | `CREATE INDEX` | 必须加 `IF NOT EXISTS` |
+| `CREATE FUNCTION` | 使用 `CREATE OR REPLACE` |
 | `CREATE TRIGGER` | `DROP TRIGGER IF EXISTS` 后再创建 |
 | `DROP TABLE` | 必须加 `IF EXISTS` |
 
 ## 铁律
 
-1. **平台库 desired_schema.sql 是唯一权威** — `hci_troubleshoot` 表结构以此为准；`hci_sim` 只认 `hci-sim-migrations/`，两者不可交叉扫描
-2. **已提交的 Atlas 迁移文件永远不修改** — 如需修订，新建迁移文件
-3. **atlas.sum 禁止手动修改** — 由 `atlas migrate hash` 自动生成
-4. **migrations/ 目录只读归档** — 禁止新增 dbmate 文件
-5. **desired_schema.sql + atlas-migrations/ 必须同一 commit 提交**
+1. **desired_schema.sql 是唯一权威** — `hci_troubleshoot` 表结构以此为准；`hci_sim` 只认 `hci-sim-migrations/`，两者不可交叉扫描
+2. **desired_schema.sql 与 desired_extras.sql 必须同步修改** — 否则 CI 幂等验证失败
+3. **data-migrations/ 已执行文件永不修改** — 变更走 Forward Fix，新增文件递增版本号
+4. **禁止新增 Schema 迁移版本目录** — 变更历史由 Git 承载，不再维护 `atlas-migrations/` 副本
+5. **数据库 migrations/ 目录只读归档** — 禁止新增 dbmate 文件
 
 ## 多环境说明
 
-- **全新 DB**（测试/本地）：`atlas migrate apply --env local`（从 baseline 开始全量执行）
-- **已有 DB**（存量 dev/staging/prod）：`atlas migrate apply --env prod --baseline 20260408000000`（baseline 跳过，从后续迁移开始）
-- **CI 环境**：`atlas migrate apply --env ci`（全量执行，每次 PR 验证）
+- **全新 DB**（测试/本地）：`atlas schema apply --env local`（全量建表）
+- **已有 DB**（存量 dev/staging/prod）：同一命令，Atlas 自动计算差量收敛，无需 baseline
+- **生产变更**：只能通过 K8s `db-migrate` Job（ArgoCD PreSync Hook），禁止本地 apply
+- **CI 环境**：`db-migration-test.yml` 在空库上全量 apply 并验证幂等
 
 ## hci-sim 控制面 Schema（阶段 C/D）
 
 `hci_sim` 数据库的控制面 metadata 按 `control_plane`、`fixture`、`artifact`、`audit` schema 管理：Scenario、不可变 Fixture Bundle、依赖、provenance、审批、审计、TestRun、Attempt、Event、Result 和 Runtime capability。它们只保存精确 revision、受控对象 URI、digest/哈希、状态与审计关联；**禁止**保存原始客户 Artifact、任意外部 URL 或可重放的 Lease 明文。真实 Artifact 进入具备审批、版本与保留策略的对象存储，Runtime 只能读取 `published` Bundle。
 
-当前主库中的 `public.agent_test_*` 是迁移前存量兼容源，复制脚本默认只 inventory；完成 copy/verify/switch 和观察窗口前不得 DROP。独立迁移入口为 `database/hci-sim-migrations/000001_control_plane.sql`，不由平台 Atlas Job 执行。
+主库 `public.agent_test_*` 已从 `desired_schema.sql` 移除，且 `db-migration-test.yml` 将其中 15 张表列为 DEPRECATED 断言（不存在才通过）；backend 代码零引用。独立迁移入口为 `database/hci-sim-migrations/000001_control_plane.sql`，不由平台 Atlas Job 执行。
 
 > **历史说明**：`schema_migrations` 表为旧 dbmate 工具表（已废弃）。Atlas 使用 `atlas_schema_revisions` 表跟踪版本。
 

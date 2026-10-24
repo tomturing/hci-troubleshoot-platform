@@ -14,7 +14,7 @@ from app.services.signal_orchestrator import (
 )
 
 from scripts.evaluate_multi_agent_extraction import (
-    DEFAULT_PROMPT_MIGRATION,
+    DEFAULT_PROMPT_SOURCE,
     PROMPT_NAMES,
     _agreement_status,
     _build_summary,
@@ -82,7 +82,7 @@ def test_evaluator_signal_diff_preserves_duplicate_gold_labels():
 
 def test_evaluator_loads_candidate_prompts_from_current_pr_migration():
     """PR 效果验证必须使用候选 Prompt，而不是误用 staging 旧版本。"""
-    prompts = _load_candidate_prompts(DEFAULT_PROMPT_MIGRATION)
+    prompts = _load_candidate_prompts(DEFAULT_PROMPT_SOURCE)
 
     assert set(prompts) == set(PROMPT_NAMES)
     assert 'time_window: "{{DATE}}"' in prompts["kbd_signal_model_v1"]
