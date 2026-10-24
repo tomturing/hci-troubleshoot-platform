@@ -277,6 +277,7 @@ test:
 	uv run pytest backend/conversation-service/tests/ -q
 	uv run pytest backend/scheduler-service/tests/ -q
 	uv run pytest backend/shared/tests/ -q
+	uv run pytest backend/auth-service/app/tests/ -q
 	uv run pytest backend/agent-service/tests/unit/ -q
 	uv run pytest backend/agent-service/tests/integration/test_qfk_signal_contract_matrix.py -q
 	uv run pytest backend/kb-service/tests/ -q

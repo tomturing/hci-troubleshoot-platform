@@ -1,6 +1,6 @@
 # HCI 智能排障平台
 
-> 版本 **v2.23.0**（以 `pyproject.toml` 为准）· 2026-08-07
+> 版本以 [`pyproject.toml`](./pyproject.toml) 为唯一来源，由 release-please 自动维护；请勿在本文件硬编码版本号。
 
 HCI 环境 AI 故障诊断平台。微服务架构 + S0-S6 六阶段诊断状态机 + 双轨知识检索（SOP + RAG）。
 

@@ -10,6 +10,7 @@
 """
 
 import re
+import sys
 
 # 直接复制 classifier.py 的核心函数进行测试（避免模块导入问题）
 

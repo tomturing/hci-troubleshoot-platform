@@ -91,31 +91,45 @@
 
 ```
 hci-troubleshoot-platform/
-├── backend/
-│   ├── api-gateway/          # 流量入口、路由代理、WebSocket  [独立 Workspace]
-│   ├── case-service/         # 工单全生命周期 CRUD + 状态机    [独立 Workspace]
-│   ├── conversation-service/ # 对话管理、SSE 流式            [独立 Workspace]
-│   ├── scheduler-service/    # Pod 热备池调度                [独立 Workspace]
-│   └── shared/               # 共享代码（models, utils, db）  [⚠️ 需最先完成]
+├── backend/                      # 10 个微服务 + shared，各服务自带 pyproject.toml
+│   ├── api-gateway/              # 流量入口、路由代理、WebSocket
+│   ├── agent-service/            # Agent 执行引擎：工具调用、技能、effect 验证
+│   ├── diagnosis-service/        # 诊断会话状态机、证据包、报告生成
+│   ├── kb-service/               # 知识库：KBD 条目、审核、信号抽取、SOP
+│   ├── conversation-service/     # 对话管理、SSE 流式
+│   ├── case-service/             # 工单全生命周期 CRUD + 状态机
+│   ├── scheduler-service/        # Pod 热备池调度
+│   ├── auth-service/             # 认证鉴权（JWT 签发与校验）
+│   ├── eval-service/             # 质量评估
+│   └── shared/                   # 共享代码（models, utils, db, security）[⚠️ 需最先完成]
 ├── frontend/
-│   ├── customer/             # 客户端对话 UI                 [独立 Workspace]
-│   ├── admin/                # 管理控制台                    [独立 Workspace]
-│   └── shared/               # 共享类型 + API 客户端          [⚠️ 需最先完成]
-├── adapters/                 # CLI→OpenAI 适配器
-├── database/                 # desired_schema.sql / desired_extras.sql / seeds
-├── deploy/                   # Docker + Helm + 可观测性
-├── scripts/                  # 自动化脚本
-├── tests/                    # 根级测试
-├── docs/                     # 设计文档
-├── AGENTS.md                 # 本文件（项目规范，提交 git）
-├── CLAUDE.md                 # → AGENTS.md（符号链接）
-└── CLAUDE.local.md           # 个人本地配置（不提交 git）
+│   ├── customer/                 # 客户端对话 UI
+│   ├── admin/                    # 管理控制台
+│   └── shared/                   # 共享类型 + API 客户端 [⚠️ 需最先完成]
+├── data-pipeline/                # 离线/批量知识生产层（产出可审核的知识 Proposal）
+├── hci_sim/                      # 仿真环境（独立控制面数据库）
+├── terminal_bridge/              # SSH Bridge（Go；桌面端与 K3s 共用同一套源码）
+├── dsh/                          # DSH（DeepSeek Harness）Web UI 容器镜像
+├── evaluation/                   # 评估脚本 + golden tickets + live E2E
+├── skills/                       # 排障技能 Markdown（任务解析、告警解析等）
+├── tools/ticket-sync/            # 工单同步工具
+├── database/                     # desired_schema.sql / desired_extras.sql / seeds
+├── deploy/                       # Docker + Helm + 可观测性
+├── scripts/                      # 自动化脚本
+├── tests/                        # 根级跨服务测试
+├── docs/                         # 设计文档
+├── AGENTS.md                     # 本文件（项目规范，提交 git）
+├── CLAUDE.md                     # → AGENTS.md（符号链接）
+└── CLAUDE.local.md               # 个人本地配置（不提交 git）
 ```
+
+> 各后端服务虽有独立 `pyproject.toml`，但根 `[tool.uv]` **未启用 workspace 成员解析**
+> （服务间 httpx/fastapi 版本未统一），因此依赖需按服务分别同步。
 
 ### 模块所有权规则
 
 - `shared/` 模块修改需最高优先级完成，其他模块依赖它
-- 每个微服务（`backend/xxx-service/`）是独立的 Workspace 单元
+- 每个微服务（`backend/xxx-service/`）有独立 `pyproject.toml`
 - 前端双应用（`customer/` + `admin/`）可并行，但共享类型变更需先完成
 - `database/desired_schema.sql` 或 `database/desired_extras.sql` 修改必须附带迁移说明
 - **给已存在数据的表新增 `NOT NULL` 列必须带 DEFAULT**：`atlas schema apply` 会直接下发
