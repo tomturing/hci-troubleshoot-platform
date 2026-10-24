@@ -92,15 +92,6 @@ async def ingest(request: Request, _: None = Depends(require_admin)):
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
-@router.post("/sop/import")
-async def sop_import(request: Request, _: None = Depends(require_admin)):
-    """SOP 节点批量导入；管理操作，要求 INTERNAL_API_TOKEN"""
-    body = await request.json()
-    headers = _internal_auth_headers()
-    response = await proxy_request("POST", "/sop/import", payload=body, headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
-
-
 # ============ 管理接口（需 Internal Token）============
 
 

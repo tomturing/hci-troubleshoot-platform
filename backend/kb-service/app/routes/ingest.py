@@ -1,11 +1,7 @@
 """
 KB Service — 文档入库路由
 
-POST /api/kb/sop/import
-  - 调用方：管理员（手动导入 SOP 技能节点）
-  - 批量写入 kb_sop_node
-
-POST /api/kbd/ingest
+POST /api/kb/kbd/ingest
   - 调用方：data-pipeline/kbd/ 数据流水线
   - 写入 kbd_entry 表（深信服案例原始数据）
   - 幂等：support_id 唯一性校验
@@ -44,28 +40,6 @@ def set_dependencies(db: DatabaseManager, embedding: EmbeddingService) -> None:
     _embedding_service = embedding
 
 
-# ---- 请求/响应模型 ----
-
-
-class SopNodeImportItem(BaseModel):
-    """单个 SOP 节点导入项"""
-
-    skill_id: str = Field(..., max_length=100)
-    node_name: str = Field(..., max_length=200)
-    parent_id: int | None = None
-    keywords: list[str] = Field(..., min_length=1)
-    file_path: str | None = None
-    content: str | None = None
-    level: int = Field(1, ge=1, le=2)
-    sort_order: int = 0
-
-
-class SopImportRequest(BaseModel):
-    """批量 SOP 节点导入请求"""
-
-    nodes: list[SopNodeImportItem] = Field(..., min_length=1)
-
-
 def _check_auth(request: Request) -> None:
     """验证内部服务 Token（Bearer Token）"""
     from app.config import settings
@@ -76,45 +50,6 @@ def _check_auth(request: Request) -> None:
     token = auth_header.split(" ", 1)[1]
     if token != settings.INTERNAL_API_TOKEN:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token 无效")
-
-
-# ---- 路由 ----
-
-
-@router.post("/sop/import", status_code=status.HTTP_201_CREATED)
-async def import_sop_nodes(request: Request, body: SopImportRequest):
-    """批量导入 SOP 节点到 kb_sop_node
-
-    调用方：管理员手动导入、data-pipeline/kbd ETL 脚本
-    """
-    _check_auth(request)
-
-    if _db_manager is None:
-        raise HTTPException(status_code=503, detail="数据库未就绪")
-
-    from app.models.sop_node import KBSopNode
-
-    logger.info(event="sop_import_request", node_count=len(body.nodes))
-
-    async with _db_manager.async_session_factory() as session:
-        created = 0
-        for node in body.nodes:
-            sop_node = KBSopNode(
-                skill_id=node.skill_id,
-                node_name=node.node_name,
-                parent_id=node.parent_id,
-                keywords=node.keywords,
-                file_path=node.file_path,
-                content=node.content,
-                level=node.level,
-                sort_order=node.sort_order,
-            )
-            session.add(sop_node)
-            created += 1
-        await session.commit()
-
-    logger.info(event="sop_import_completed", created=created)
-    return {"created": created, "total": len(body.nodes)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

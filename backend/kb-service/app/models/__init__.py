@@ -5,12 +5,10 @@ from .kbd_entry import KbdEntry
 from .kbd_revision import KbdRevision
 from .signal_assets import SignalBestPractice, SignalFailureExtraction, SignalModelingTemplate
 from .sop_document import SopDocument
-from .sop_node import KBSopNode
 from .version_governance import KbdPackage, PackageSnapshot, VerificationAsset
 
 __all__ = [
     "KbCategory",
-    "KBSopNode",
     "KbdEntry",
     "KbdRevision",
     "KbdPackage",
