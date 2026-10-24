@@ -86,12 +86,21 @@ describe('环境数据卡片的状态展示', () => {
     expect((await mountCard()).find('.header-left').text()).toContain('采集失败')
   })
 
-  it('状态标签必须带文字，不允许出现只有图标的空色块', async () => {
+  it('状态徽标必须带文字，不允许出现只有图标的空色块', async () => {
     const wrapper = await mountCard()
-    // 测试环境未注册 Element Plus，el-tag 保持原生标签名
-    const tag = wrapper.find('.header-left el-tag')
-    expect(tag.exists()).toBe(true)
-    // 标签内必须有可见文字（图标是 svg，不算文字）
-    expect(tag.text().trim().length).toBeGreaterThan(0)
+    const chip = wrapper.find('.header-left .state-chip')
+    expect(chip.exists()).toBe(true)
+    // 徽标内必须有可见文字（图标是 svg，不算文字）
+    expect(chip.text().trim().length).toBeGreaterThan(0)
+  })
+
+  it('状态徽标用自绘结构，图标与文字是两个并排的 flex item', async () => {
+    const wrapper = await mountCard()
+    const chip = wrapper.find('.header-left .state-chip')
+    // 图标有独立 class，文字被 span 包裹：两者作为 flex item 并排，不会被块级图标顶到下一行
+    expect(chip.find('.state-chip-icon').exists()).toBe(true)
+    expect(chip.find('span').exists()).toBe(true)
+    // 不允许再出现 el-tag（它在 flex 行里会被收缩，内部会折行并溢出边框）
+    expect(wrapper.find('.header-left el-tag').exists()).toBe(false)
   })
 })
