@@ -61,7 +61,7 @@ function handleDownloadBridge() {
               <el-button
                 size="small"
                 round
-                class="case-info-btn"
+                class="header-btn case-info-btn"
               >
                 <el-icon><Tickets /></el-icon>
                 工单信息
@@ -97,7 +97,7 @@ function handleDownloadBridge() {
             v-if="chatStore.hasActiveCase"
             size="small"
             round
-            class="close-btn"
+            class="header-btn close-btn"
             @click="chatStore.handleCloseCase()"
           >
             <el-icon><Finished /></el-icon>
@@ -108,7 +108,7 @@ function handleDownloadBridge() {
           <el-button
             size="small"
             round
-            class="log-collect-btn header-action-btn"
+            class="header-btn log-collect-btn header-action-btn"
             @click="chatStore.openLogCollect()"
           >
             <el-icon><FolderOpened /></el-icon>
@@ -119,7 +119,7 @@ function handleDownloadBridge() {
           <el-button
             size="small"
             round
-            class="terminal-btn header-action-btn"
+            class="header-btn terminal-btn header-action-btn"
             :loading="chatStore.bridgeStatus === 'checking'"
             @click="chatStore.checkAndOpenTerminal()"
           >
@@ -262,49 +262,44 @@ body {
   font-style: italic;
 }
 
-.case-info-btn {
-  background: rgba(255, 255, 255, 0.2) !important;
-  border: 1px solid rgba(255, 255, 255, 0.3) !important;
-  color: #fff !important;
+/*
+ * 顶栏按钮统一规范（工单信息 / 关闭工单 / 日志收集 / SSH终端 共用）
+ *
+ * 为什么用实色白底而不是半透明白：
+ * 顶栏背景是 #409eff → #337ecc 的横向渐变，半透明层叠在渐变上，
+ * 同一个 rgba 值在左右两侧会合成出不同的颜色——即使四个按钮写的是同一个
+ * rgba，肉眼看到的仍是四种底色。只有实色才真正一致。
+ */
+.header-btn {
+  background: #ffffff !important;
+  border: 1px solid #ffffff !important;
+  color: #2b6cb0 !important;
   font-size: 12px !important;
+  font-weight: 500 !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
-.case-info-btn:hover {
-  background: rgba(255, 255, 255, 0.35) !important;
+/* 悬停色只绑定 :hover。不要绑定 :focus / :focus-visible：
+   按钮被点过以后会保留焦点，Element Plus 也会给 :focus 上 hover 色，
+   结果就是"点过的那个按钮一直和另外三个颜色不一样"。 */
+.header-btn:hover {
+  background: #ecf5ff !important;
+  border-color: #ecf5ff !important;
+  color: #2b6cb0 !important;
 }
 
-.terminal-btn {
-  background: rgba(103, 194, 58, 0.3) !important;
-  border: 1px solid rgba(103, 194, 58, 0.5) !important;
-  color: #fff !important;
-  font-size: 12px !important;
+/* 键盘可达性只加描边：白色描边在蓝色顶栏上足够可见，且不改变底色。
+   Element Plus 自身的 :focus 着色不带 !important，压不过上面的白底 !important，
+   所以点过的按钮移开鼠标后仍会回到白色。 */
+.header-btn:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 2px;
 }
 
-.terminal-btn:hover {
-  background: rgba(103, 194, 58, 0.5) !important;
-}
-
-.terminal-btn :deep(.el-icon) {
-  margin-right: 4px;
-}
-
-.header-action-btn :deep(span) {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.close-btn {
-  background: rgba(255, 255, 255, 0.9) !important;
-  border: 1px solid rgba(255, 255, 255, 0.8) !important;
-  color: #337ecc !important;
-  font-size: 12px !important;
-  font-weight: 600 !important;
-}
-
-.close-btn:hover {
-  background: #fff !important;
-  color: #409eff !important;
+/* 图标与文字间距统一交给 el-button 自身渲染，避免个别按钮多 4px 造成不齐 */
+.header-btn .el-icon {
+  margin-right: 0;
 }
 
 .app-main {
