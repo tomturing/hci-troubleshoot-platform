@@ -149,17 +149,17 @@ const displayState = computed<'collected' | 'collecting' | 'failed' | 'empty'>((
   return hasUsableData.value ? 'collected' : 'empty'
 })
 
-/** 状态标签：图标 + 文字，避免只放一个图标导致出现无法理解的空色块 */
+/** 状态徽标：图标 + 文字（文字必须存在，否则只剩一个看不懂的色块） */
 const stateTag = computed(() => {
   switch (displayState.value) {
     case 'collecting':
-      return { type: 'warning' as const, icon: Loading, label: '采集中' }
+      return { icon: Loading, label: '采集中' }
     case 'failed':
-      return { type: 'danger' as const, icon: CircleClose, label: '采集失败' }
+      return { icon: CircleClose, label: '采集失败' }
     case 'collected':
-      return { type: 'success' as const, icon: CircleCheck, label: '已采集' }
+      return { icon: CircleCheck, label: '已采集' }
     default:
-      return { type: 'info' as const, icon: WarningFilled, label: '暂无数据' }
+      return { icon: WarningFilled, label: '暂无数据' }
   }
 })
 
@@ -191,11 +191,12 @@ function getProcessType(process?: string): 'done' | 'failed' | 'queued' | 'cance
       <div class="header-left">
         <el-icon class="card-icon"><Box /></el-icon>
         <span class="card-title">环境数据</span>
-        <!-- 状态由"是否真有数据"决定，并且必须带文字，不能只放一个图标 -->
-        <el-tag size="small" :type="stateTag.type" effect="plain">
-          <el-icon><component :is="stateTag.icon" /></el-icon>
-          {{ stateTag.label }}
-        </el-tag>
+        <!-- 状态由"是否真有数据"决定；用自绘徽标而不是 el-tag：
+             el-tag 在 flex 行里会被收缩，内部图标与文字会折成两行并溢出到固定高度之外 -->
+        <span class="state-chip" :class="`state-chip--${displayState}`">
+          <el-icon class="state-chip-icon"><component :is="stateTag.icon" /></el-icon>
+          <span>{{ stateTag.label }}</span>
+        </span>
       </div>
       <div class="header-right">
         <el-button text size="small" @click.stop="expanded = !expanded">
@@ -399,9 +400,51 @@ function getProcessType(process?: string): 'done' | 'failed' | 'queued' | 'cance
   color: #303133;
 }
 
-/* 状态标签内图标与文字之间补一点间距 */
-.header-left :deep(.el-tag .el-icon) {
-  margin-right: 4px;
+/*
+ * 状态徽标：inline-flex + nowrap + flex-shrink:0
+ * 不用 el-tag 的原因：它在 flex 行里会被收缩，内部「图标 + 文字」会折成两行，
+ * 而 el-tag 高度固定，第二行会溢出到边框外面（看起来像被横线穿过）。
+ */
+.state-chip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  border: 1px solid;
+  border-radius: 4px;
+}
+
+.state-chip-icon {
+  font-size: 12px;
+}
+
+.state-chip--collected {
+  color: #529b2e;
+  background: #f0f9eb;
+  border-color: #e1f3d8;
+}
+
+.state-chip--collecting {
+  color: #b88230;
+  background: #fdf6ec;
+  border-color: #faecd8;
+}
+
+.state-chip--failed {
+  color: #c45656;
+  background: #fef0f0;
+  border-color: #fde2e2;
+}
+
+.state-chip--empty {
+  color: #909399;
+  background: #f4f4f5;
+  border-color: #e9e9eb;
 }
 
 .card-summary {
