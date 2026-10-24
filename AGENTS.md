@@ -100,7 +100,6 @@ hci-troubleshoot-platform/
 │   ├── case-service/             # 工单全生命周期 CRUD + 状态机
 │   ├── scheduler-service/        # Pod 热备池调度
 │   ├── auth-service/             # 认证鉴权（JWT 签发与校验）
-│   ├── eval-service/             # 质量评估
 │   └── shared/                   # 共享代码（models, utils, db, security）[⚠️ 需最先完成]
 ├── frontend/
 │   ├── customer/                 # 客户端对话 UI

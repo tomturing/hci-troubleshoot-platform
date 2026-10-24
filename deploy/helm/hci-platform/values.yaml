@@ -809,22 +809,6 @@ langfuse:
   # 信号抽取需要审核 Prompt 与 JSON；内容仍会先经过密钥、Token 等敏感字段脱敏。
   captureExtractSignalsContent: true
 
-# ======================== Eval Service ======================================
-evalService:
-  replicaCount: 1
-  image:
-    repository: eval-service
-    tag: latest
-  port: 8007
-  prometheusUrl: "http://prometheus:9090"
-  resources:
-    requests:
-      cpu: "50m"
-      memory: "96Mi"
-    limits:
-      cpu: "500m"
-      memory: "256Mi"
-
 # ======================== Auth Service =======================================
 authService:
   # 统一认证服务（阶段1.x）：账号密码登录 + RS256/JWKS 签发，网关验签后注入 admin 身份。

@@ -25,7 +25,6 @@ SERVICE_NAMES = (
     "case-service",
     "conversation-service",
     "agent-service",
-    "eval-service",
     "diagnosis-service",
     "scheduler-service",
     "kb-service",

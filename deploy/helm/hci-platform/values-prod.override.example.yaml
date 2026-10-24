@@ -61,10 +61,6 @@ diagnosisService:
   allowedOrigins: "https://customer.example.com,https://admin.example.com"
   image:
     tag: "2026.03.02-1"
-evalService:
-  image:
-    tag: "2026.03.02-1"
-
 secrets:
   postgresPassword: "<replace-strong-password>"
   llmApiKey: "<replace-llm-api-key>"

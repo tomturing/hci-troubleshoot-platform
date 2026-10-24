@@ -15,7 +15,8 @@
 - 内部服务 Bearer Token（承载令牌）身份验证；
 - OpenTelemetry、结构化日志和 Prometheus 指标。
 
-服务默认监听 `8008`，避免与现有 eval-service（评测服务）`8007` 端口冲突。
+服务默认监听 `8008`。该端口号最初是为了避开 eval-service（评测服务）的 `8007`；eval-service 已于
+2026-10-24 退役（零流量、功能已由 conversation-service 承载），但 `8008` 保持不变，避免影响既有部署配置。
 Docker Compose（本地容器编排）直接启用；Helm（Kubernetes 包模板）中的
 `diagnosisService.enabled` 默认关闭，配置正式身份和签名密钥后再按环境启用。
 Helm 将签名私钥放在 `diagnosis-service-signing` 专用 Secret（密钥对象）中，

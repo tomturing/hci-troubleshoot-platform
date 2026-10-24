@@ -31,7 +31,6 @@ spec:
                   - scheduler-service
                   - kb-service
                   - agent-service
-                  - eval-service
                   - diagnosis-service
                   - diagnosis-worker
       ports:

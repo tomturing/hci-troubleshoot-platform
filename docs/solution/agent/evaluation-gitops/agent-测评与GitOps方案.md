@@ -1018,7 +1018,7 @@ for md_file in sops_dir.glob("*.md"):
 
 | 信号 | 来源 | 含义 |
 |------|------|------|
-| **用户低评分** | `eval-service` — `POST /api/conversations/{id}/evaluate` | 用户主动打 1-2 星 |
+| **用户低评分** | `conversation-service` — `POST /api/conversations/{id}/evaluate` | 用户主动打 1-2 星 |
 | **工单未解决** | `case-service` — `close_reason = 'unresolved'` | 排障没解决问题 |
 | **Agent 异常终止** | `react_engine` — `MAX_STEPS` 耗尽或异常退出 | Agent 推理失败 |
 | **SOP 未命中** | `react_engine` — SOP 路由回到 fallback 模式 | 本应匹配的 SOP 没命中 |

@@ -125,7 +125,6 @@ service_repository() {
     caseService) echo "case-service" ;;
     conversationService) echo "conversation-service" ;;
     agentService) echo "agent-service" ;;
-    evalService) echo "eval-service" ;;
     diagnosisService) echo "diagnosis-service" ;;
     schedulerService) echo "scheduler-service" ;;
     kbService) echo "kb-service" ;;

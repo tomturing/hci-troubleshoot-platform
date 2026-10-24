@@ -38,7 +38,6 @@ def test_shared_change_rebuilds_all_backend_services():
         "case-service",
         "conversation-service",
         "agent-service",
-        "eval-service",
         "scheduler-service",
         "kb-service",
     }
@@ -54,7 +53,6 @@ def test_mirror_setup_script_change_rebuilds_all_backend_services():
         "case-service",
         "conversation-service",
         "agent-service",
-        "eval-service",
         "scheduler-service",
         "kb-service",
     }
