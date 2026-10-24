@@ -448,27 +448,6 @@ async def lifespan(app: FastAPI):
     logger.info(event="service_stopped", message=f"{settings.SERVICE_NAME} 已停止")
 
 
-# ── 辅助类：审计服务（简单文件日志实现）─────────────────────────────────────────────
-
-
-class FileAuditService:
-    """简单的文件审计服务（ReAct 工具执行日志）
-
-    生产环境应替换为：
-    - 写入数据库（audit_logs 表）
-    - 写入 Loki 日志系统
-    """
-
-    async def write(self, audit_id: str, **kwargs) -> None:
-        """写入审计日志"""
-        logger.info(
-            f"Audit: id={audit_id} session={kwargs.get('session_id')} "
-            f"tool={kwargs.get('tool_name')} risk={kwargs.get('risk_level')} "
-            f"duration={kwargs.get('duration_ms')}ms "
-            f"authorized_by={kwargs.get('authorized_by', 'N/A')}"
-        )
-
-
 class CompositeToolExecutor:
     """复合工具执行器：合并 SCP、Acli 和 SOP 客户端
 

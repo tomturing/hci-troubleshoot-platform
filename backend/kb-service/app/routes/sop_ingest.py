@@ -13,7 +13,6 @@ POST /api/sop/ingest
 
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -71,60 +70,6 @@ class SopIngestResponse(BaseModel):
     success: bool = Field(..., description="操作是否成功")
     document_id: int = Field(..., description="文档 ID")
     status: str = Field(..., description="文档状态")
-
-
-# ---- 章节分块逻辑 ----
-
-
-def split_by_chapters(content_md: str) -> list[tuple[str, str]]:
-    """按 Markdown 章节（## 或 ###）分割内容
-
-    Args:
-        content_md: Markdown 全文
-
-    Returns:
-        list of (chapter_title, content) tuples
-        每个元素包含章节标题和该章节的内容（到下一个标题之前）
-    """
-    # 匹配 ## 或 ### 标题行
-    # 正则：捕获标题级别和标题文本
-    pattern = r"^(#{2,3})\s+(.+)$"
-
-    lines = content_md.split("\n")
-    chunks: list[tuple[str, str]] = []
-
-    current_title = "概述"  # 默认标题（文档开头部分）
-    current_content_lines: list[str] = []
-    found_first_heading = False
-
-    for line in lines:
-        match = re.match(pattern, line)
-        if match:
-            # 遇到新标题，保存前一个章节
-            if current_content_lines:
-                content = "\n".join(current_content_lines).strip()
-                if content:
-                    chunks.append((current_title, content))
-
-            # 开始新章节
-            current_title = match.group(2).strip()
-            current_content_lines = [line]  # 包含标题行本身
-            found_first_heading = True
-        else:
-            current_content_lines.append(line)
-
-    # 保存最后一个章节
-    if current_content_lines:
-        content = "\n".join(current_content_lines).strip()
-        if content:
-            chunks.append((current_title, content))
-
-    # 如果没有找到任何标题，整个文档作为一个 chunk
-    if not found_first_heading and chunks:
-        # 已经在上面处理了，无需额外操作
-        pass
-
-    return chunks
 
 
 # ---- 路由 ----
@@ -217,7 +162,7 @@ async def ingest_sop_document(request: Request, body: SopIngestRequest):
                     status=existing_by_source.status,
                 )
 
-                # hash 不同（内容已更新）：upsert 文档内容 + 重建 chunks + 重置为 draft
+                # hash 不同（内容已更新）：upsert 文档内容 + 清空决策树 + 重置为 draft
                 old_hash = existing_by_source.docx_hash
                 existing_by_source.title = body.title
                 existing_by_source.content_md = body.content_md

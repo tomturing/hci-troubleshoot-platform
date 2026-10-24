@@ -140,18 +140,6 @@ class EffectVerificationIntent(BaseModel):
         return stripped
 
 
-def verification_intent_from(acquisition: ResolvedAcquisition) -> EffectVerificationIntent | None:
-    """从 verified acquisition 还原 Verification Intent；还原失败即拒绝执行。"""
-
-    payload = (acquisition.evidence or {}).get("verification_intent")
-    if not isinstance(payload, dict):
-        return None
-    try:
-        return EffectVerificationIntent.model_validate(payload)
-    except PydanticValidationError:
-        return None
-
-
 def _substitute_placeholders(
     value: Any,
     variables: dict[str, Any],

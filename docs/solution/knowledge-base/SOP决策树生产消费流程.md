@@ -118,10 +118,11 @@ python -m kbd.import_sop --dir /path/to/sop_docs/ --category-id "虚拟机-001"
 ┌─────────────────────────────────────────────────┐
 │ POST /api/sop/ingest (sop_ingest.py)           │
 │                                                 │
-│ 1. 幂等检查（docx_hash / source_id）            │
-│ 2. 创建 sop_document 记录（status=draft）       │
-│ 3. split_by_chapters() 按章节分块               │
-│ 4. 批量写入 sop_chunk 表                        │
+│ 1. 分类校验（category_id 必须是叶子节点）        │
+│ 2. docx_hash 幂等检查                           │
+│ 3. source_id 幂等检查（hash 变更则 upsert，      │
+│    清空 tree_json 并重置 status=draft）          │
+│ 4. 创建 sop_document 记录（status=draft）       │
 └─────────────────────────────────────────────────┘
 ```
 
@@ -129,8 +130,9 @@ python -m kbd.import_sop --dir /path/to/sop_docs/ --category-id "虚拟机-001"
 
 | 表 | 字段 | 说明 |
 |---|---|---|
-| `sop_document` | id, title, content_md, category_id, status | 文档元数据 + 完整 Markdown |
-| `sop_chunk` | document_id, chunk_index, chapter_title, content | 按章节分块（供 RAG 检索） |
+| `sop_document` | id, title, content_md, category_id, status | 文档元数据 + 完整 Markdown（整篇存储） |
+
+> SOP 不做章节分块：消费侧走 `tree_json` 决策树（发布时生成），而非 chunk 级 RAG 检索。
 
 ---
 

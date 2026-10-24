@@ -90,8 +90,3 @@ def build_problem(code: str, detail: str, trace_id: str | None = None) -> dict[s
         "detail": detail,
         "trace_id": trace_id,
     }
-
-
-def error_status(code: str, fallback: int = 500) -> int:
-    meta = load_error_catalog().get(code)
-    return int(meta["http_status"]) if meta else fallback

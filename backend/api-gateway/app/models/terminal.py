@@ -166,15 +166,3 @@ class TerminalOperationListResponse(BaseModel):
 
     total: int = Field(..., description="总记录数")
     operations: list[TerminalOperationResponse] = Field(default_factory=list, description="操作列表")
-
-
-class TerminalOperationQuery(BaseModel):
-    """终端操作查询参数"""
-
-    case_id: str = Field(..., description="工单 ID")
-    stage: str | None = Field(default=None, description="诊断阶段过滤")
-    search: str | None = Field(default=None, description="关键词搜索")
-    direction: OperationDirection | None = Field(default=None, description="方向过滤")
-    order: str = Field(default="asc", description="排序方向 asc/desc")
-    limit: int = Field(default=100, ge=1, le=1000, description="返回数量限制")
-    offset: int = Field(default=0, ge=0, description="偏移量")

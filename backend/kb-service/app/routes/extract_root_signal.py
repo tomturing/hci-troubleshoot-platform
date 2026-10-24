@@ -106,10 +106,6 @@ def set_dependencies(db_manager: DatabaseManager) -> None:
     _db_manager = db_manager
 
 
-def get_root_signal_job_manager() -> SignalJobManager:
-    return _root_signal_jobs
-
-
 # ─── 冲突度语料（进程内 TTL 缓存）─────────────────────────────────────────────
 _corpus_cache: tuple[float, ConflictCorpus] | None = None
 _corpus_lock = asyncio.Lock()

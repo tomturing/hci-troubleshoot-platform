@@ -82,12 +82,6 @@ def set_database_manager(db_manager: DatabaseManager) -> None:
     database_manager = db_manager
 
 
-def set_upload_storage(storage: LocalLogCollectStorage) -> None:
-    """注入分块存储（测试可替换为临时目录）。"""
-    global upload_storage
-    upload_storage = storage
-
-
 def get_upload_storage() -> LocalLogCollectStorage:
     global upload_storage
     if upload_storage is None:

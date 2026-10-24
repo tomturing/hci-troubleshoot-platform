@@ -842,13 +842,6 @@ def _signal_match_tokens(signal: dict[str, Any]) -> list[str]:
     return tokens
 
 
-def signal_hits_root_cause(signal: dict[str, Any], root_cause_text: str) -> bool:
-    """判定根因信号的词面是否全部命中某篇 KBD 的根因原文（包含匹配近似现场判定）。"""
-    normalized = _normalize_for_trace(root_cause_text)
-    keywords = [_normalize_for_trace(token) for token in _signal_match_tokens(signal)]
-    return bool(keywords) and all(k in normalized for k in keywords)
-
-
 def count_root_cause_conflicts(
     signal: dict[str, Any],
     corpus: dict[str, tuple[str, str]],

@@ -950,14 +950,6 @@ async def _publish_sop_revision(session, document_id: int, trace_id: str | None)
     return snapshot_revision_metadata(snapshot)
 
 
-class DocumentUpdateRequest(BaseModel):
-    """文档状态更新请求（已废弃，保留向后兼容）"""
-
-    status: str | None = None  # draft/under_review/approved/published/rejected/archived
-    review_note: str | None = None
-    reviewer: str | None = None
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # KBD 条目列表查询接口（kbd_entry 表）
 # ─────────────────────────────────────────────────────────────────────────────

@@ -208,24 +208,3 @@ async def insert_check_record(
         },
     )
     await session.commit()
-
-
-async def get_verification_record(session: AsyncSession, verification_id: str) -> dict[str, Any] | None:
-    result = await session.execute(
-        text(
-            """
-            SELECT verification_id::text, tenant_id, case_id, diagnosis_run_id,
-                   conversation_id::text, signal_id, usage, action_exec_id,
-                   expectation_snapshot, target_verification, status, verdict,
-                   verdict_vocabulary_revision, recheck_count, next_check_at,
-                   error_code, error_summary,
-                   source_kbd_id, source_kbd_revision, tool_catalog_revision,
-                   trace_id, created_at, updated_at, completed_at
-            FROM effect_verification
-            WHERE verification_id = CAST(:verification_id AS uuid)
-            """
-        ),
-        {"verification_id": verification_id},
-    )
-    row = result.mappings().first()
-    return dict(row) if row else None

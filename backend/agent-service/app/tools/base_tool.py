@@ -22,18 +22,7 @@ ToolDefinition：描述单个工具的元数据模型，供工具注册表（TOO
   qfk     : QFK 后端信号谓词工具（处理由 KBD/SOP 提炼出来的标准化后端信号并进行 True/False 布尔判定）
 """
 
-from enum import StrEnum
-
 from pydantic import BaseModel
-
-
-class ToolCategory(StrEnum):
-    """工具类别枚举"""
-    SCP = "scp"       # 云端直接调用 SCP REST API
-    ACLI = "acli"     # 通过 bridge relay 执行 acli 命令
-    SOP = "sop"       # 本地执行，SOP 导航引擎
-    QKV = "qkv"       # 前端信号（生产者）
-    QFK = "qfk"       # 后端信号（消费者）
 
 
 class ToolDefinition(BaseModel):

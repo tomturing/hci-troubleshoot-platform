@@ -10,7 +10,6 @@ import json
 import re
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -82,15 +81,6 @@ class CaseStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
-class CloseReason(StrEnum):
-    """工单关闭原因"""
-
-    USER_COMMAND = "user_command"  # 用户主动输入命令关闭
-    TIMEOUT = "timeout"  # 超时自动关闭
-    ABANDON = "abandon"  # 用户放弃/断开连接
-    ADMIN_CLOSE = "admin_close"  # 管理员强制关闭
-
-
 class MessageRole(StrEnum):
     """消息角色"""
 
@@ -138,12 +128,6 @@ class CaseCreate(BaseModel):
             v = v.replace("\x00", "")
             v = re.sub(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]", "", v)
         return v
-
-
-class CaseCloseRequest(BaseModel):
-    """关闭工单请求"""
-
-    close_reason: CloseReason | None = Field(None, description="关闭原因：user_command/timeout/abandon/admin_close")
 
 
 class CaseUpdate(BaseModel):
@@ -306,60 +290,12 @@ class WebSocketMessage(BaseModel):
 # ──────────────────────────────────────────────
 
 
-class KBIngestPayload(BaseModel):
-    """KB 文档导入请求（case-service -> kb-service）"""
-
-    title: str = Field(..., min_length=1, max_length=500, description="文档标题")
-    content_md: str = Field(..., max_length=200000, description="Markdown 格式正文")
-    source_id: str | None = Field(None, pattern=_SAFE_ID_PATTERN, description="来源 ID，如工单 ID")
-    source_type: Literal["kb", "sop", "realtime"] = Field("realtime", description="数据来源类型")
-    yaml_meta: dict = Field(default_factory=dict, description="附加元数据（YAML 格式解析后）")
-
-
 class KBSearchResponse(BaseModel):
     """KB 语义搜索响应"""
 
     chunks: list[dict] = Field(default_factory=list, description="命中文档片段列表")
     total: int = Field(0, description="命中总数")
     query_time_ms: float = Field(0.0, description="查询耗时（ms）")
-
-
-# ──────────────────────────────────────────────
-# Scheduler 服务契约模型（G-1）
-# ──────────────────────────────────────────────
-
-
-class PodAllocationResponse(BaseModel):
-    """Pod 分配响应（scheduler-service -> api-gateway/case-service）"""
-
-    allocated: bool = Field(..., description="是否成功分配")
-    pod_name: str | None = Field(None, description="分配的 Pod 名称")
-    pod_ip: str | None = Field(None, description="分配的 Pod IP")
-    assistant_type: str | None = Field(None, description="AI 助手类型（htp-agent/ops-agent/pai-agent）")
-    case_id: str | None = Field(None, description="绑定的工单 ID")
-    error: str | None = Field(None, max_length=500, description="失败原因（allocated=false 时填充）")
-
-
-class PodReleaseResponse(BaseModel):
-    """Pod 释放响应（scheduler-service -> api-gateway/case-service）"""
-
-    released: bool = Field(..., description="是否成功释放")
-    pod_name: str | None = Field(None, description="已释放的 Pod 名称")
-    error: str | None = Field(None, description="失败原因（released=false 时填充）")
-
-
-class PoolStatusResponse(BaseModel):
-    """Pod 池状态响应（scheduler-service health/metrics 使用）"""
-
-    assistant_type: str = Field(..., description="AI 助手类型")
-    idle: int = Field(0, description="空闲 Pod 数")
-    active: int = Field(0, description="活跃（已分配）Pod 数")
-    total: int = Field(0, description="总 Pod 数（idle + active）")
-
-    @property
-    def is_exhausted(self) -> bool:
-        """池是否耗尽（无空闲且有活跃 Pod，可能存在资源泄漏）"""
-        return self.idle == 0 and self.active > 0
 
 
 # ──────────────────────────────────────────────

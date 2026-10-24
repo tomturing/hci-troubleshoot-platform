@@ -822,13 +822,6 @@ def validate_qkv_produce_contract(tool: str, produces: Any) -> tuple[bool, str |
 QKV_KEYWORD_TYPE_ERROR_CODE = "QKV_KEYWORD_MUST_BE_STRING"
 
 
-def get_args_schema(tool: str) -> dict[str, Any] | None:
-    """返回某 acquirer 的 args schema（深拷贝，防止调用方篡改注册表）。"""
-
-    schema = ACQUIRER_ARGS_SCHEMA.get(tool)
-    return copy.deepcopy(schema) if schema else None
-
-
 def _check_type(value: Any, expected: str) -> bool:
     """对齐 JSON Schema 基础类型。"""
     if expected == "integer":
