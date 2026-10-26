@@ -59,6 +59,17 @@ const (
 	// inputRejectNoticeInterval 输入无法路由时的提示节流窗口：
 	// 用户连按回车会连续产生同样失败，留痕一次足够，避免刷屏与刷库。
 	inputRejectNoticeInterval = 3 * time.Second
+
+	// sshDialTimeout 是 SSH 建连超时（等价于原 ClientConfig.Timeout；改为显式建连后需要自带）。
+	sshDialTimeout = 12 * time.Second
+	// tcpKeepAlivePeriod 是 TCP 层保活周期：让中间设备看到这条连接一直在活动。
+	tcpKeepAlivePeriod = 30 * time.Second
+	// sshKeepAliveProbeTimeout 是单次应用层探测的等待上限。
+	// SSH mux 在半开连接上写可能永久阻塞，不能无限等，否则保活 goroutine 自己卡死。
+	sshKeepAliveProbeTimeout = 10 * time.Second
+	// sshKeepAliveIntervalDefault 是应用层探测间隔（秒）。
+	// 可用 HCI_BRIDGE_SSH_KEEPALIVE_SECONDS 覆盖，<=0 表示关闭应用层探测。
+	sshKeepAliveIntervalDefault = 30
 )
 
 // portBindRetryAttempts 端口被短暂占用（如崩溃重启后的 TIME_WAIT）时的 bind 重试次数；
@@ -594,6 +605,8 @@ type SSHSession struct {
 	simulation        bool
 	executionMode     string
 	simulationBackend string
+	// done 在 close() 时关闭，用于让保活 goroutine 立即退出（不靠轮询 closed 标志）。
+	done chan struct{}
 }
 
 func isSimulationLeaseCredential(msg InMessage) bool {
@@ -635,7 +648,8 @@ func newSSHSession(msg InMessage) (*SSHSession, error) {
 		return nil, err
 	}
 
-	addr := fmt.Sprintf("%s:%d", strings.TrimSpace(msg.Host), port)
+	// JoinHostPort 而非 "%s:%d"：显式 net.Dial 后 IPv6 字面量必须带方括号，否则解析必失败。
+	addr := net.JoinHostPort(strings.TrimSpace(msg.Host), strconv.Itoa(port))
 	hostKeyCallback, err := buildHostKeyCallback(addr)
 	if err != nil {
 		return nil, fmt.Errorf("初始化 SSH 主机指纹校验失败: %w", err)
@@ -644,13 +658,26 @@ func newSSHSession(msg InMessage) (*SSHSession, error) {
 		User:            username,
 		Auth:            authMethods,
 		HostKeyCallback: hostKeyCallback,
-		Timeout:         12 * time.Second,
+		Timeout:         sshDialTimeout,
 	}
 
-	client, err := ssh.Dial("tcp", addr, clientConfig)
+	// 显式建连而非 ssh.Dial：Dial 内部使用 net.DialTimeout，无法指定 TCP keepalive 周期。
+	// 终端空闲时这条连接没有任何字节流动，防火墙/NAT 老化映射后会静默丢包；
+	// 打开 TCP keepalive 至少让内核定期发探测包，让中间设备维持映射。
+	rawConn, err := net.DialTimeout("tcp", addr, sshDialTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("建立 SSH 连接失败: %w", err)
 	}
+	if tcpConn, ok := rawConn.(*net.TCPConn); ok {
+		_ = tcpConn.SetKeepAlive(true)
+		_ = tcpConn.SetKeepAlivePeriod(tcpKeepAlivePeriod)
+	}
+	sshConn, chans, reqs, err := ssh.NewClientConn(rawConn, addr, clientConfig)
+	if err != nil {
+		_ = rawConn.Close()
+		return nil, fmt.Errorf("建立 SSH 连接失败: %w", err)
+	}
+	client := ssh.NewClient(sshConn, chans, reqs)
 	session, err := client.NewSession()
 	if err != nil {
 		_ = client.Close()
@@ -663,6 +690,7 @@ func newSSHSession(msg InMessage) (*SSHSession, error) {
 		clientConfig: clientConfig,
 		address:      addr,
 		session:      session,
+		done:         make(chan struct{}),
 		listeners:    make(map[string]*ExecListener),
 		simulation:   simulation,
 		executionMode: func() string {
@@ -1854,6 +1882,10 @@ func (s *SSHSession) close() {
 		return
 	}
 	s.closed = true
+	// 关闭 done 让保活 goroutine 立刻退出；closed 已保证这里只会执行一次。
+	if s.done != nil {
+		close(s.done)
+	}
 	stdin := s.stdin
 	s.stdin = nil
 	session := s.session
@@ -1870,6 +1902,73 @@ func (s *SSHSession) close() {
 	}
 	if client != nil {
 		_ = client.Close()
+	}
+}
+
+// sshKeepAliveInterval 返回应用层保活间隔。
+// 可用 HCI_BRIDGE_SSH_KEEPALIVE_SECONDS 调整；设为 <=0 表示关闭应用层探测（仅保留 TCP keepalive）。
+func sshKeepAliveInterval() time.Duration {
+	return time.Duration(envIntOrDefault("HCI_BRIDGE_SSH_KEEPALIVE_SECONDS", sshKeepAliveIntervalDefault)) * time.Second
+}
+
+// startKeepAlive 启动 SSH 应用层保活探测。
+//
+// 为什么必须自己做：Bridge 与 HCI 节点之间通常隔着防火墙/NAT/负载均衡，
+// 终端空闲时这条 SSH 连接上一个字节都不流，映射老化后连接会被静默丢弃；
+// 而 x/crypto/ssh 自身不做任何探测，半开连接要等到下一次业务写入才暴露，
+// 现场表现为「终端看着还在、一敲命令就卡住、日志收集报会话不存在」。
+//
+// 探测失败即 close()：关闭会让 pty 读循环立刻 EOF，走既有的 onExit 清理链路
+// （移除会话 + 通知前端），不新增第二条清理路径，避免状态双写。
+func (s *SSHSession) startKeepAlive(interval time.Duration) {
+	// done 为空的是测试里手工构造的会话：没有退出信号，就不启动 goroutine，避免泄漏。
+	if interval <= 0 || s.done == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.done:
+				return
+			case <-ticker.C:
+				if err := s.probeKeepAlive(); err != nil {
+					blog("WARN", "ssh.keepalive_failed", "SSH 保活探测失败，会话判定失效", "", s.caseID, "", "", map[string]any{
+						"address": s.address, "error": err.Error(),
+					})
+					s.close()
+					return
+				}
+			}
+		}
+	}()
+}
+
+// probeKeepAlive 发送 keepalive@openssh.com 全局请求。
+//
+// 判定口径：只有传输层错误才算连接失效。服务端不认识该请求会回 REQUEST_FAILURE，
+// SendRequest 返回 wantReply=false 与 nil error，属于正常「链路活着」的证据。
+func (s *SSHSession) probeKeepAlive() error {
+	s.mu.Lock()
+	client := s.client
+	s.mu.Unlock()
+	if client == nil {
+		return errors.New("ssh client 已关闭")
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		return err
+	case <-s.done:
+		return errors.New("会话已关闭")
+	case <-time.After(sshKeepAliveProbeTimeout):
+		// 半开连接上写操作可能永久阻塞：超时即判定链路失效，不能让保活自身卡死。
+		return fmt.Errorf("保活探测 %.0fs 无响应", sshKeepAliveProbeTimeout.Seconds())
 	}
 }
 
@@ -4078,6 +4177,31 @@ func (b *Bridge) clearLastAuth(caseID string) {
 	delete(b.lastAuth, caseID)
 }
 
+// sessionCount 返回当前存活会话数。
+//
+// 用途：日志收集报 session_missing 时区分两件本质不同的事——
+// 数量为 0 说明连接生命周期已结束（断连/远端退出），数量 >0 说明是键或地址没对上。
+func (b *Bridge) sessionCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.sessions)
+}
+
+// sessionKeyList 返回当前会话键快照（最多 limit 个，0 表示不限）。
+// 键形如 `caseID@nodeIP`，是判断「会话在、但键不匹配」的唯一客观依据。
+func (b *Bridge) sessionKeyList(limit int) []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	keys := make([]string, 0, len(b.sessions))
+	for key := range b.sessions {
+		if limit > 0 && len(keys) >= limit {
+			break
+		}
+		keys = append(keys, key)
+	}
+	return keys
+}
+
 type bridgeStatus struct {
 	ActiveSessions  int `json:"active_sessions"`
 	CachedAuthCases int `json:"cached_auth_cases"`
@@ -4253,6 +4377,8 @@ func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg InMessage, ownedSession
 	b.set(key, session)
 	ownedSessions.set(key, session)
 	atomic.AddUint64(&promMetrics.SshConnectionsTotal, 1)
+	// 自动连接的节点会话同样要保活：它常被日志采集挑中，长跑期间最容易撞上半开连接。
+	session.startKeepAlive(sshKeepAliveInterval())
 
 	go session.on_output_start(ws, stdout, msg.CaseID, func() {
 		b.remove(key)
@@ -4467,6 +4593,8 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			connectSpan.End()
 			atomic.AddUint64(&promMetrics.SshConnectionsTotal, 1)
 			ownedSessions.set(key, session)
+			// 启动应用层保活：终端空闲、日志采集长跑期间都要能尽早发现半开连接。
+			session.startKeepAlive(sshKeepAliveInterval())
 			// 本连接的键盘输入默认落到刚建立的这个会话（键含 @nodeIP）
 			activeKey = key
 			// 保存认证信息，供后续自动连接其他节点使用

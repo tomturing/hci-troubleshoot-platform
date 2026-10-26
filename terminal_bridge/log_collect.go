@@ -609,6 +609,11 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		})
 		blog("ERROR", "log_collect.session_missing", "日志收集动作缺少 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"log_action": msg.LogAction, "task_id": msg.ExecID,
+			// 定性字段：会话数为 0 = 连接生命周期已结束；会话数 >0 但键对不上 = 路由/键问题。
+			// 历史日志只有 action + task_id，两种情况看起来一模一样，只能靠猜。
+			"requested_key":   sessionKey(msg.CaseID, msg.NodeIP),
+			"active_sessions": b.sessionCount(),
+			"session_keys":    b.sessionKeyList(8),
 		})
 		return
 	}

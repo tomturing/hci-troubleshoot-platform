@@ -3346,6 +3346,9 @@ export const useChatStore = defineStore('chat', () => {
               auth_type: 'password',
               password: sshConfig.password,
               case_id: caseId,
+              // 与 connectSSH 保持同一把会话键：bridge 按 caseID@nodeIP 存会话，
+              // 这里不传就只剩 caseID，日志收集按 IP 查找只能靠 address 兜底，极易 session_missing。
+              node_ip: sshConfig.host.trim(),
             })
             devLog('SSH-CREATE', '发送 SSH 连接命令', { host: sshConfig.host, port: sshConfig.port, caseId })
             socket.send(connectMsg)

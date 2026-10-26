@@ -130,6 +130,9 @@ interface ProgressSnapshot {
 }
 
 const stage = ref<Stage>('idle')
+// 失败发生在第几步：stage 变成 failed 之后，阶段条必须停在真实位置，
+// 否则无论在哪一步挂掉都只亮「探测」，看起来像根本没开始。
+const failedStep = ref(0)
 const probeResult = ref<ProbeResult | null>(null)
 const pathMode = ref<'P1' | 'P3' | ''>('')
 const currentTask = ref<LogCollectTask | null>(null)
@@ -159,10 +162,16 @@ const form = reactive({
  * 「pty 正在运行的那台机器」。用户无法通过填一个 IP 去"连上"另一台机器——
  * 手填与真实会话不一致时只会得到 session_missing（LC-ENV-006）。
  * 因此唯一真值只能来自会话本身，UI 只做展示，不提供编辑入口。
+ *
+ * 对抗性审查：`lastSshHost` 是 localStorage 里的「上一次连过的主机」，跨刷新、跨重登都保留。
+ * 它只能用于预填登录表单，绝不能当作「当前会话存在」——早先 sessionHost 在断线时回退到它，
+ * 界面于是继续显示「172.x 当前 SSH 会话」，用户点开始收集必然收到 session_missing。
  */
+const sshConnected = computed(() => chatStore.sshConnectionState === 'connected')
+
 const sessionHost = computed(() => {
-  const live = chatStore.sshConnectionState === 'connected' ? chatStore.sshCurrentConfig?.host : ''
-  return (live || chatStore.lastSshHost || '').trim()
+  if (!sshConnected.value) return ''
+  return (chatStore.sshCurrentConfig?.host || '').trim()
 })
 // 会话主机优先；props.nodeIp 仅作为调用方显式指定时的兜底（当前 App.vue 不传）
 const nodeIp = computed(() => (sessionHost.value || props.nodeIp || '').trim())
@@ -443,6 +452,8 @@ const progressStatus = computed(() =>
 
 const stepActive = computed(() => {
   if (stage.value === 'done') return 4
+  // 失败时回到失败发生的那一步：早先这里落到 return 0，所有失败都显示「卡在探测」。
+  if (stage.value === 'failed') return failedStep.value
   if (stage.value === 'relaying') return 3
   if (stage.value === 'uploading' || stage.value === 'pulling') return 2
   if (stage.value === 'collecting' || stage.value === 'creating') return 1
@@ -672,7 +683,11 @@ async function refreshProgress(silent = false) {
     stage.value = TASK_STATUS_STAGE[latest.status] ?? stage.value
     if (latest.error_message) errorMessage.value = latest.error_message
 
-    if (!pollingBridgeProgress && socket?.readyState === WebSocket.OPEN) {
+    // SSH 已断开时不再发必然失败（必得 session_missing）的 bridge 查询：
+    // 平台快照仍然有效，节点侧进度只能暂时留空。
+    if (!sshConnected.value) {
+      if (!silent) ElMessage.warning('SSH 会话已断开，节点侧进度不可用；已刷新平台任务状态')
+    } else if (!pollingBridgeProgress && socket?.readyState === WebSocket.OPEN) {
       try {
         const result = await sendAndWait(socket, 'progress', {}, 15000)
         if (result.status === 'error') throw new Error(result.message || 'bridge 进度查询失败')
@@ -776,6 +791,14 @@ async function handleStart() {
     return
   }
 
+  // 会话必须先活着。openLogCollect 只在「打开面板那一刻」校验过，
+  // 面板开着期间 SSH 可能已经断开，此时任何 bridge 动作都只会拿到 session_missing——
+  // 与其把注定失败的请求发出去，不如当场告诉用户去重连。
+  if (!sshConnected.value) {
+    ElMessage.warning('SSH 会话已断开，请先在 SSH 终端重新连接节点')
+    return
+  }
+
   const targetNode = nodeIp.value
   if (!targetNode) {
     ElMessage.warning('请先在 SSH 终端连接 HCI 节点')
@@ -784,6 +807,7 @@ async function handleStart() {
 
   cleanupTip.value = ''
   errorMessage.value = ''
+  failedStep.value = 0
   transfer.sha256 = ''
   currentTask.value = null
   progress.value = null
@@ -875,6 +899,9 @@ async function handleStart() {
     // 用户已取消：后台流程静默退出，不再覆盖任务状态
     if (token !== runToken) return
     errorMessage.value = String(error?.message || error).slice(0, 500)
+    // 必须在改 stage 之前取：stepActive 一旦看到 failed 就会返回 failedStep 本身，
+    // 顺序颠倒会让它永远停在第一步。放在这里可同时覆盖"结果未知"与普通失败两条分支。
+    failedStep.value = stepActive.value
     // 轮询超时属于"结果未知"：不替服务端写终态，否则会出现 UI 报失败、后台实际成功
     if (error instanceof RelayPendingError) {
       stage.value = 'failed'
@@ -1448,7 +1475,12 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-if="running || stage === 'done' || stage === 'failed'" class="lc-progress">
-          <el-steps :active="stepActive" finish-status="success" simple>
+          <el-steps
+            :active="stepActive"
+            finish-status="success"
+            :process-status="stage === 'failed' ? 'error' : 'process'"
+            simple
+          >
             <el-step title="探测" />
             <el-step title="采集" />
             <el-step title="上传" />
