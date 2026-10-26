@@ -408,6 +408,29 @@ func TestSessionByNodeIP(t *testing.T) {
 // 回归：cancel 曾经漏传 node_ip，精确键与 node_ip 两级回退全部失效，直接 session_missing，
 // 结果是平台显示已取消、节点上采集任务仍在跑，后续 create 被插件互斥拒绝。
 // 本工单只有一条 SSH 会话时，必须能兜底命中。
+func TestClassifyLogCollectNodeState(t *testing.T) {
+	cases := []struct {
+		name     string
+		progress logCollectProgress
+		want     string
+	}{
+		{"进行中", logCollectProgress{Status: "收集任务进行中！"}, logCollectNodeRunning},
+		{"已完成", logCollectProgress{Status: "收集任务已完成！", ArchivePath: "/x.zip"}, logCollectNodeCompleted},
+		// 回归：异常结束既不含"完成"也不含"失败"，早期前端因此空转到 1 小时超时
+		{"异常结束", logCollectProgress{Status: "收集任务异常结束！"}, logCollectNodeAbnormal},
+		{"收集失败", logCollectProgress{Status: "收集失败"}, logCollectNodeAbnormal},
+		{"无任务", logCollectProgress{Status: "收集任务不存在！"}, logCollectNodeNone},
+		{"状态行缺失但仍在跑", logCollectProgress{Hosts: []logCollectHost{{IP: "10.0.0.1", Status: "收集中"}}}, logCollectNodeRunning},
+		// 识别不了就不动平台状态，绝不按猜测去 cancel 节点任务
+		{"完全无法识别", logCollectProgress{}, logCollectNodeUnknown},
+	}
+	for _, tc := range cases {
+		if got := classifyLogCollectNodeState(tc.progress); got != tc.want {
+			t.Fatalf("%s: got %s want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestResolveLogCollectSessionFallsBackToOnlySession(t *testing.T) {
 	single := &SSHSession{address: "192.168.33.89:22"}
 	bridge := &Bridge{sessions: map[string]*SSHSession{"Q2026102601505@192.168.33.89": single}}
