@@ -30,7 +30,9 @@ _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "collecting": frozenset({"packaging", "uploading", "completed", "failed", "cancelled"}),
     "packaging": frozenset({"uploading", "completed", "failed", "cancelled"}),
     "uploading": frozenset({"completed", "failed", "cancelled"}),
-    "completed": frozenset(),
+    # 纠正（correct）：平台已归档，但完成判定不可信（典型是同 ticket 的历史任务报告）。
+    # 只在前端判定"完成态不可信"时，由用户显式点击触发，且会清空该任务的产物记录。
+    "completed": frozenset({"collecting"}),
     # 接管（adopt）：平台已判失败/取消，但节点上任务仍在跑。
     # 节点是唯一真相源，允许把投影改回收集中，继续跟进；不做自动重试，避免重复采集。
     "failed": frozenset({"collecting"}),
@@ -157,11 +159,33 @@ class LogCollectService:
                 # 完成即 100%：插件 final 阶段偶发未刷新 progress，平台侧做确定性收敛。
                 task.progress = 100
         elif target_status == "collecting" and task.status in TERMINAL_STATUSES:
-            # 接管：终态是"平台投影"，节点仍在跑时可以被覆盖。
-            # 必须清掉上次的失败痕迹，否则界面一边显示"采集中"一边显示旧错误原因。
+            # 接管 / 纠正：终态是"平台投影"，节点仍在跑时可以被覆盖。
+            if task.status == "completed":
+                # 原完成记录里的产物未必属于本次任务（同 ticket 重复 create 会拿到上一次的报告），
+                # 继续挂着会变成"采集中却显示产物位置"的新误导。清空产物字段，原值留审计；
+                # 注意：只改 DB 投影，节点与日志服务器上的压缩包一律不删。
+                audit = (
+                    f"原完成记录已按节点态纠正：archive_path={task.archive_path}, "
+                    f"archive_size={task.archive_size}, archive_sha256={task.archive_sha256}, "
+                    f"relay_status={task.relay_status}"
+                )
+                task.archive_path = None
+                task.archive_size = None
+                task.archive_sha256 = None
+                task.relay_status = "none"
+                task.relay_chunk_index = None
+                task.relay_chunk_total = None
+                task.relay_restarts = 0
+                task.cleanup_state = "none"
+                task.cleanup_reason = None
+                task.error_code = "corrected_by_node"
+                task.error_message = audit
+            else:
+                # 接管失败/取消的任务：清掉上次的失败痕迹，
+                # 否则界面会一边显示"采集中"一边显示旧错误原因。
+                task.error_code = None
+                task.error_message = None
             task.finished_at = None
-            task.error_code = None
-            task.error_message = None
         task.updated_at = datetime.now(UTC)
 
         await self.repository.flush()

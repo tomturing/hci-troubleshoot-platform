@@ -458,6 +458,48 @@ describe('LogCollectPanel', () => {
     wrapper.unmount()
   })
 
+  // 回归：进度阶段条原先渲染在表单最底部，抽屉内容一长（探测表 + 表单 + 对账提示）
+  // 就得往下滚才能看见"到哪一步了"，等于看不到。位置必须在集群信息表格之后、表单之前。
+  it('阶段条位于集群信息表格之后、收集表单之前', async () => {
+    const running = taskFixture({ task_id: 'task-running', status: 'collecting', progress: 42, finished_at: null })
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [running] })
+    vi.mocked(logCollectApi.getTask).mockResolvedValue(running)
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    // 先把集群信息表格渲染出来
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'probe',
+        status: 'ok',
+        log_data: {
+          architecture: 'x86_64',
+          acli_installed: true,
+          acli_version: '1.0.1',
+          available_mb: 10240,
+          log_server_reachable: true,
+          http_code: 200,
+          catalog_source: 'acli_help',
+          modules: [{ value: 'vm_suspend', label: '虚拟机挂起专项' }],
+          hosts: [],
+        },
+      }),
+    })
+    await flushPromises()
+
+    const probeTable = wrapper.find('.lc-probe').element
+    const progress = wrapper.find('.lc-progress').element
+    const formGroup = wrapper.find('.lc-module-group').element
+
+    // 表格 → 阶段条 → 表单，顺序不能颠倒
+    expect(probeTable.compareDocumentPosition(progress) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(progress.compareDocumentPosition(formGroup) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    wrapper.unmount()
+  })
+
   // 2026-10-23 之前完成的任务没有 upload_mode/archive_path（字段是后补的），
   // 结果态必须按 remote_url 兜底成 P1，而不是把内部枚举 none 摆给用户。
   it('老记录缺 upload_mode 时按 remote_url 兜底展示 P1，不暴露内部枚举', async () => {

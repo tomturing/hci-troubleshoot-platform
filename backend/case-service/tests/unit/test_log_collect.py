@@ -59,6 +59,8 @@ class TestStatusMachine:
             # 接管：节点仍在跑时，平台的失败/取消投影允许被覆盖回采集中
             ("failed", "collecting"),
             ("cancelled", "collecting"),
+            # 纠正：完成判定不可信（历史任务报告）时，允许用户显式改回采集中
+            ("completed", "collecting"),
         ],
     )
     def test_allowed(self, current, target):
@@ -67,7 +69,8 @@ class TestStatusMachine:
     @pytest.mark.parametrize(
         ("current", "target"),
         [
-            ("completed", "collecting"),  # 已归档不可复活（包已上传，接管没有意义）
+            ("completed", "uploading"),  # 归档后不能退到上传阶段，只能整条纠正
+            ("completed", "failed"),
             ("failed", "pending"),
             ("pending", "uploading"),  # 不能跳过采集
             ("uploading", "collecting"),  # 不能倒退阶段

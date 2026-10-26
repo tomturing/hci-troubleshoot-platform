@@ -35,8 +35,14 @@ export interface SyncInput {
   taskCreatedAt?: number
   /** 节点 progress 里的采集总数 */
   progressTotal?: number
-  /** 探测到的在线节点数 */
-  hostsCount?: number
+  /**
+   * 本次任务实际的目标节点数：`ips` 含 all 时取集群在线数，否则取 `ips.length`。
+   *
+   * 不能拿"集群在线节点数"当基准：任务可以只选 1 台（`ips=['172.28.24.130']`），
+   * 而历史报告里的 total 是上一次 all（3 台）。基准取错会让假完成照样通过校验
+   * ——工单 Q2026101401683 的 19:55 就是 3 对 3 通过、但本次只采 1 台。
+   */
+  expectedHosts?: number
 }
 
 export type SyncActionKind =
@@ -46,11 +52,18 @@ export type SyncActionKind =
   | 'patch_completed'
   | 'patch_failed'
   | 'warn_node_busy'
+  /** 平台已归档但节点仍在跑：提示冲突，必要时允许"以节点为准纠正" */
+  | 'warn_completed_conflict'
 
 export interface SyncAction {
   action: SyncActionKind
   /** 判定依据，直接进提示文案与日志，避免"为什么给出这个建议"无从追溯 */
   reason: string
+  /**
+   * 仅 warn_completed_conflict 使用：为 true 时才允许把 completed 纠正回 collecting。
+   * 默认不自动执行——纠正会清掉本条任务的产物记录，必须由用户显式确认。
+   */
+  canCorrect?: boolean
 }
 
 const ACTIVE_STATUSES = new Set(['pending', 'probing', 'installing', 'collecting', 'packaging', 'uploading'])
@@ -64,23 +77,42 @@ const ARCHIVE_FRESHNESS_TOLERANCE_SEC = 60
  *
  * 对抗性审查：同 ticket 重复 create 时 acli 会返回**上一次任务**的完成报告
  * （实测 done=1/total=1，而集群有 3 个节点）。只看 status/percent 会把旧报告当成本次完成，
- * 于是平台写 completed、节点其实还在跑。两条硬判据：
+ * 于是平台写 completed、节点其实还在跑。三条硬判据：
  *   1. 包 mtime 必须晚于本次任务创建时间；
- *   2. progress 的 total 必须与探测到的节点数一致（拿不到任一侧就不作为否决条件）。
+ *   2. progress 的 total 必须与**本次任务的目标节点数**一致；
+ *   3. 两条时间/规模证据都拿不到时不信任——无法确认归属的完成，不能落终态。
  */
-export function isCompletionTrustworthy(input: SyncInput): { ok: boolean; reason: string } {
+export function isCompletionTrustworthy(input: SyncInput): {
+  ok: boolean
+  reason: string
+  /**
+   * 是否拿到了"明确证伪"的证据（包早于任务、total 与目标数不符、完成态却没包路径）。
+   *
+   * 与"无法确认"必须区分：`refuted=true` 才允许把已完成纠正回采集中；
+   * 只是缺证据（旧 bridge 没回传 mtime 且 total 缺失）时只提示、不给按钮——
+   * 误把真归档改回采集的代价，比多等一次刷新大得多。
+   */
+  refuted?: boolean
+} {
   if (!input.archivePath) {
-    return { ok: false, reason: '节点报告完成但没有压缩包路径' }
+    // 缺字段不等于数据矛盾（历史记录可能没落路径），归入"无法确认"而不是"证伪"
+    return { ok: false, refuted: false, reason: '完成态没有压缩包路径，无法核对' }
   }
-  if (input.archiveMTime && input.taskCreatedAt) {
-    if (input.archiveMTime < input.taskCreatedAt - ARCHIVE_FRESHNESS_TOLERANCE_SEC) {
-      return { ok: false, reason: '压缩包早于本次任务创建时间，判定为历史任务报告' }
+  const hasMTimeEvidence = Boolean(input.archiveMTime && input.taskCreatedAt)
+  const hasScaleEvidence = Boolean(input.progressTotal && input.expectedHosts)
+  if (!hasMTimeEvidence && !hasScaleEvidence) {
+    return { ok: false, refuted: false, reason: '缺少压缩包时间与采集总数，无法确认完成归属' }
+  }
+  if (hasMTimeEvidence) {
+    if ((input.archiveMTime as number) < (input.taskCreatedAt as number) - ARCHIVE_FRESHNESS_TOLERANCE_SEC) {
+      return { ok: false, refuted: true, reason: '压缩包早于本次任务创建时间，判定为历史任务报告' }
     }
   }
-  if (input.progressTotal && input.hostsCount && input.progressTotal !== input.hostsCount) {
+  if (hasScaleEvidence && input.progressTotal !== input.expectedHosts) {
     return {
       ok: false,
-      reason: `采集总数 ${input.progressTotal} 与在线节点数 ${input.hostsCount} 不一致，判定为历史任务报告`,
+      refuted: true,
+      reason: `采集总数 ${input.progressTotal} 与本次任务目标节点数 ${input.expectedHosts} 不一致，判定为历史任务报告`,
     }
   }
   return { ok: true, reason: '完成态通过校验' }
@@ -114,8 +146,35 @@ export function decideNodeSync(input: SyncInput): SyncAction {
 
   if (TERMINAL_STATUSES.has(platformStatus)) {
     if (platformStatus === 'completed') {
-      // 已完成是最终归档态，不再因节点变化而回退
-      return { action: 'none', reason: '平台已归档，保持现状' }
+      // 归档态默认不动，但"节点仍在跑"必须先分清是哪种情况：
+      //   - 完成判据全过 → 是完成之后又发起的新任务，归档无误，只提示；
+      //   - 判据不过 → 平台完成是假完成（历史报告），允许用户以节点为准纠正。
+      if (nodeState === 'running') {
+        const trust = isCompletionTrustworthy(input)
+        if (trust.ok) {
+          return {
+            action: 'warn_completed_conflict',
+            canCorrect: false,
+            reason: '平台已归档，节点上有新的采集任务在运行',
+          }
+        }
+        // 只有拿到明确证伪证据才允许纠正；"无法确认"只提示
+        return {
+          action: 'warn_completed_conflict',
+          canCorrect: trust.refuted === true,
+          reason: trust.refuted
+            ? `平台完成判定不可信（${trust.reason}），节点任务仍在运行`
+            : `平台完成判定无法确认（${trust.reason}），节点任务仍在运行`,
+        }
+      }
+      if (nodeState === 'abnormal') {
+        return {
+          action: 'warn_completed_conflict',
+          canCorrect: false,
+          reason: '平台已归档，但节点任务异常结束，建议核对归档产物',
+        }
+      }
+      return { action: 'none', reason: '平台已归档，节点无任务' }
     }
     // failed / cancelled：节点仍在跑 → 接管；节点异常 → 清理后重试；节点干净 → 已对齐
     if (nodeState === 'running') {
@@ -197,6 +256,10 @@ export function buildSyncNotice(action: SyncAction): string {
       return `已按节点状态修正为完成：${action.reason}`
     case 'patch_failed':
       return `已按节点状态修正为失败：${action.reason}`
+    case 'warn_completed_conflict':
+      return action.canCorrect
+        ? `${action.reason}。可点「以节点为准纠正」把平台状态改回采集中并继续跟进（不会删除节点或日志服务器上的压缩包）。`
+        : action.reason
     default:
       return action.reason
   }

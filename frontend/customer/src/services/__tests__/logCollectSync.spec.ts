@@ -14,7 +14,7 @@ describe('isCompletionTrustworthy', () => {
         archiveMTime: FRESH_MTIME,
         taskCreatedAt: TASK_CREATED,
         progressTotal: 3,
-        hostsCount: 3,
+        expectedHosts: 3,
       }).ok,
     ).toBe(true)
   })
@@ -35,14 +35,73 @@ describe('isCompletionTrustworthy', () => {
       nodeState: 'completed',
       archivePath: '/sf/data/local/acli/tmp/data/log_collect/Q1.zip',
       progressTotal: 1,
-      hostsCount: 3,
+      expectedHosts: 3,
     })
     expect(result.ok).toBe(false)
     expect(result.reason).toContain('不一致')
   })
 })
 
+describe('isCompletionTrustworthy 目标节点数基准', () => {
+  // 现场 Q2026101401683 的 19:55：任务只选 1 台，progress 却是上一次 all（3 台）的报告。
+  // 用"集群在线数"当基准会 3 对 3 通过，必须用本次任务的目标节点数。
+  it('total=3 但本次只选 1 台 → 不可信', () => {
+    const result = isCompletionTrustworthy({
+      nodeState: 'completed',
+      archivePath: '/sf/.../Q2026101401683.zip',
+      progressTotal: 3,
+      expectedHosts: 1,
+    })
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain('目标节点数')
+  })
+
+  it('缺少包时间与采集总数时不可信，但不算"证伪"', () => {
+    const result = isCompletionTrustworthy({
+      nodeState: 'completed',
+      archivePath: '/sf/.../Q.zip',
+    })
+    expect(result.ok).toBe(false)
+    expect(result.refuted).toBe(false)
+    expect(result.reason).toContain('无法确认完成归属')
+  })
+
+  it('完成态没有包路径属于"无法核对"，不算证伪', () => {
+    const result = isCompletionTrustworthy({ nodeState: 'completed' })
+    expect(result.ok).toBe(false)
+    expect(result.refuted).toBe(false)
+  })
+})
+
 describe('decideNodeSync', () => {
+  it('平台已归档但节点仍在跑、且完成判定不可信 → 允许纠正', () => {
+    const action = decideNodeSync({
+      platformStatus: 'completed',
+      nodeState: 'running',
+      archivePath: '/sf/.../Q.zip',
+      progressTotal: 3,
+      expectedHosts: 1,
+    })
+    expect(action.action).toBe('warn_completed_conflict')
+    expect(action.canCorrect).toBe(true)
+    expect(buildSyncNotice(action)).toContain('以节点为准纠正')
+  })
+
+  it('平台已归档、节点有新的采集任务但判据全过 → 只提示不给纠正按钮', () => {
+    const action = decideNodeSync({
+      platformStatus: 'completed',
+      nodeState: 'running',
+      archivePath: '/sf/.../Q.zip',
+      archiveMTime: FRESH_MTIME,
+      taskCreatedAt: TASK_CREATED,
+      progressTotal: 1,
+      expectedHosts: 1,
+    })
+    expect(action.action).toBe('warn_completed_conflict')
+    expect(action.canCorrect).toBe(false)
+    expect(buildSyncNotice(action)).not.toContain('以节点为准纠正')
+  })
+
   it('采集中的假完成（历史报告）不落终态，只继续等待', () => {
     const action = decideNodeSync({
       platformStatus: 'collecting',
@@ -94,8 +153,16 @@ describe('decideNodeSync', () => {
     expect(decideNodeSync({ platformStatus: 'failed', nodeState: 'none' }).action).toBe('none')
   })
 
-  it('平台已归档时不因节点变化回退', () => {
-    expect(decideNodeSync({ platformStatus: 'completed', nodeState: 'running' }).action).toBe('none')
+  it('平台已归档 + 节点Running 但无证据 → 只提示，不给纠正按钮', () => {
+    const action = decideNodeSync({ platformStatus: 'completed', nodeState: 'running' })
+    expect(action.action).toBe('warn_completed_conflict')
+    expect(action.canCorrect).toBe(false)
+  })
+
+  it('平台已归档 + 节点异常结束 → 提示核对产物，不提供纠正', () => {
+    const action = decideNodeSync({ platformStatus: 'completed', nodeState: 'abnormal' })
+    expect(action.action).toBe('warn_completed_conflict')
+    expect(action.canCorrect).toBeFalsy()
   })
 
   it('平台上没有任务但节点有游离任务 → 提示', () => {

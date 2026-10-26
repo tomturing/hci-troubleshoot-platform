@@ -157,7 +157,7 @@ const progress = ref<ProgressSnapshot | null>(null)
 // 对账提示：用于告诉用户"节点态与平台态不一致、下一步该做什么"
 const nodeSyncHint = ref('')
 // 僵尸任务/游离任务的一键动作（取消并重试 / 接管），空串表示无需处理
-const nodeAction = ref<'' | 'cancel_retry' | 'adopt'>('')
+const nodeAction = ref<'' | 'cancel_retry' | 'adopt' | 'correct'>('')
 const transfer = reactive({ stage: '', percent: 0, pulled: 0, uploadedParts: 0, partCount: 0, sha256: '' })
 const relayStatus = ref<RelayStatus>('none')
 const cleanupTip = ref('')
@@ -914,7 +914,7 @@ async function handleStart() {
   } catch (error: any) {
     // 用户已取消：后台流程静默退出，不再覆盖任务状态
     if (token !== runToken) return
-    errorMessage.value = String(error?.message || error).slice(0, 500)
+    errorMessage.value = stripAnsi(String(error?.message || error)).slice(0, 500)
     // 必须在改 stage 之前取：stepActive 一旦看到 failed 就会返回 failedStep 本身，
     // 顺序颠倒会让它永远停在第一步。放在这里可同时覆盖"结果未知"与普通失败两条分支。
     failedStep.value = stepActive.value
@@ -956,6 +956,25 @@ async function confirmInstall(ws: WebSocket) {
     prepareState.value = 'ready'
     prepareError.value = ''
   }
+}
+
+/**
+ * 本次任务的目标节点数：完成判据的基准。
+ *
+ * 不能用"集群在线节点数"——任务可以只选 1 台，而历史报告里的 total 是上一次 all（3 台），
+ * 基准取错会让假完成照样通过（工单 Q2026101401683 的 19:55 就是 3 对 3 通过、实际只采 1 台）。
+ */
+function expectedHostCount(): number {
+  const ips = currentTask.value?.ips ?? []
+  const isAll = ips.length === 0 || ips.includes('all')
+  if (isAll) return probeResult.value?.hosts?.length ?? 0
+  return ips.length
+}
+
+/** 去掉终端 ANSI 转义：bridge 的原始输出会带 `\x1b[31mFATA\x1b[0m` 这类颜色码 */
+function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\u001b\[[0-9;]*m/g, '')
 }
 
 function taskCreatedAtSec(): number | undefined {
@@ -1000,16 +1019,19 @@ async function syncNodeState(options: { applyPatches?: boolean; silent?: boolean
     archiveMTime: snapshot.archive_mtime,
     taskCreatedAt: taskCreatedAtSec(),
     progressTotal: snapshot.total,
-    hostsCount: probeResult.value?.hosts?.length,
+    expectedHosts: expectedHostCount(),
   })
 
-  // 只有需要用户决策时才亮按钮：接管（节点还在跑）与清理（节点异常/游离）
+  // 只有需要用户决策时才亮按钮：
+  // 接管（节点还在跑）、清理（节点异常/游离）、纠正（平台已归档但完成判定不可信）
   nodeAction.value =
     action.action === 'adopt'
       ? 'adopt'
       : action.action === 'cancel_retry' || action.action === 'warn_node_busy'
         ? 'cancel_retry'
-        : ''
+        : action.action === 'warn_completed_conflict' && action.canCorrect
+          ? 'correct'
+          : ''
   nodeSyncHint.value = buildSyncNotice(action)
 
   if (options.applyPatches && currentTask.value) {
@@ -1071,7 +1093,52 @@ async function adoptNodeTask() {
     await resumeTaskFlow(ws, currentTask.value ?? task, token)
   } catch (error: any) {
     if (token !== runToken) return
-    errorMessage.value = String(error?.message || error).slice(0, 500)
+    errorMessage.value = stripAnsi(String(error?.message || error)).slice(0, 500)
+    failedStep.value = stepActive.value
+    stage.value = 'failed'
+    ElMessage.error(errorMessage.value)
+  }
+}
+
+/**
+ * 「以节点为准纠正」：平台已归档，但完成判定不可信（典型是同 ticket 的历史报告）。
+ *
+ * 后端只放开 completed → collecting 这一条边；纠正会清空本条任务的产物记录
+ * （原值写入 error_message 留审计），但不会删除节点或日志服务器上的压缩包。
+ */
+async function correctFromNode() {
+  const task = currentTask.value
+  if (!task) return
+  try {
+    await ElMessageBox.confirm(
+      '将把本条任务改回「采集中」并清除它的产物记录（节点与日志服务器上的压缩包不会被删除）。' +
+        '仅用于平台完成判定失真、节点任务仍在运行的情况。是否继续？',
+      '以节点为准纠正',
+      { type: 'warning', confirmButtonText: '纠正', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  let ws: WebSocket
+  try {
+    ws = await openSocket()
+  } catch (error: any) {
+    ElMessage.error(error.message)
+    return
+  }
+  const token = ++runToken
+  try {
+    stage.value = 'collecting'
+    currentTask.value = await logCollectApi.patchTask(task.task_id, { status: 'collecting' })
+    resultTask.value = null
+    viewMode.value = 'form'
+    nodeAction.value = ''
+    nodeSyncHint.value = ''
+    ElMessage.success('已按节点状态改回采集中，继续跟进进度')
+    await resumeTaskFlow(ws, currentTask.value ?? task, token)
+  } catch (error: any) {
+    if (token !== runToken) return
+    errorMessage.value = stripAnsi(String(error?.message || error)).slice(0, 500)
     failedStep.value = stepActive.value
     stage.value = 'failed'
     ElMessage.error(errorMessage.value)
@@ -1130,7 +1197,7 @@ async function pollUntilCollected(ws: WebSocket, token: number): Promise<boolean
             archiveMTime: snapshot.archive_mtime,
             taskCreatedAt: taskCreatedAtSec(),
             progressTotal: snapshot.total,
-            hostsCount: probeResult.value?.hosts?.length,
+            expectedHosts: expectedHostCount(),
           })
           if (trust.ok) return true
           // 不可信就继续轮询：节点把上一次任务的完成报告又打印了一遍
@@ -1546,6 +1613,28 @@ onBeforeUnmount(() => {
           </el-button>
         </div>
 
+        <!--
+          进度状态紧跟集群信息表格：采集一开跑，用户第一眼要看的就是"到哪一步了/为什么失败"，
+          原先放在表单最底部，抽屉内容一长就要往下滚才能看到，等于看不到。
+          注意不要挪进上面 probeResult 的 v-if 里：探测失败（probeResult 为空）时任务仍可能存在，
+          状态块必须照常显示，否则失败原因会整块消失。
+        -->
+        <div v-if="running || stage === 'done' || stage === 'failed'" class="lc-progress">
+          <el-steps
+            :active="stepActive"
+            finish-status="success"
+            :process-status="stage === 'failed' ? 'error' : 'process'"
+            simple
+          >
+            <el-step title="探测" />
+            <el-step title="采集" />
+            <el-step title="上传" />
+            <el-step title="归档" />
+          </el-steps>
+          <el-progress :percentage="percent" :status="progressStatus" />
+          <div class="lc-status">{{ statusText }}</div>
+        </div>
+
         <!-- 准备状态的唯一出口：用户在填表之前就能看见"能不能收、可选什么" -->
         <el-alert
           v-if="!nodeIpReady"
@@ -1671,22 +1760,6 @@ onBeforeUnmount(() => {
           </el-button>
         </div>
 
-        <div v-if="running || stage === 'done' || stage === 'failed'" class="lc-progress">
-          <el-steps
-            :active="stepActive"
-            finish-status="success"
-            :process-status="stage === 'failed' ? 'error' : 'process'"
-            simple
-          >
-            <el-step title="探测" />
-            <el-step title="采集" />
-            <el-step title="上传" />
-            <el-step title="归档" />
-          </el-steps>
-          <el-progress :percentage="percent" :status="progressStatus" />
-          <div class="lc-status">{{ statusText }}</div>
-        </div>
-
         <!--
           两端对账结论：节点是唯一真相源，平台只是投影。
           不一致时这里给出唯一出口——接管（节点还在跑）或取消并重试（节点异常），
@@ -1706,6 +1779,9 @@ onBeforeUnmount(() => {
             </el-button>
             <el-button v-if="nodeAction === 'cancel_retry'" size="small" type="danger" plain @click="cancelAndRetry">
               取消并重试
+            </el-button>
+            <el-button v-if="nodeAction === 'correct'" size="small" type="warning" plain @click="correctFromNode">
+              以节点为准纠正
             </el-button>
           </div>
         </el-alert>

@@ -140,6 +140,9 @@ var (
 	// 额外收集路径只允许绝对路径，并禁止 shell 元字符与空白（插件会直接拼命令）。
 	logCollectPathRe     = regexp.MustCompile(`^/[A-Za-z0-9_./-]+$`)
 	logCollectProgressRe = regexp.MustCompile(`^总进度：(\d+)% - (\d+)/(\d+)`)
+	// logCollectAnsiRe 匹配终端颜色/样式转义。acli 失败时会输出 `\x1b[31mFATA\x1b[0m...`，
+	// 不清洗会让状态行前缀带转义、解析失配，前端也会把乱码直接展示给用户。
+	logCollectAnsiRe     = regexp.MustCompile("\u001b\\[[0-9;]*m")
 	logCollectHostLineRe = regexp.MustCompile(`^(\d{1,3}(?:\.\d{1,3}){3})\s+(收集完成|收集中|收集失败)\s+(\d+%|-)`)
 	// 实机 help 把枚举值按两列排版（同一行出现两个「名称（标签）」），
 	// 因此必须全量扫描而不是逐行只取首个匹配。
@@ -594,6 +597,14 @@ func parseLogCollectProgress(raw string) logCollectProgress {
 	return result
 }
 
+// stripAnsi 去掉终端转义序列：保留可读文本，避免解析与展示被颜色码污染。
+func stripAnsi(text string) string {
+	if text == "" {
+		return text
+	}
+	return logCollectAnsiRe.ReplaceAllString(text, "")
+}
+
 func errString(err error) string {
 	if err == nil {
 		return ""
@@ -746,7 +757,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		})
 		blog("INFO", "log_collect.create", "日志收集任务下发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"ticket_no": msg.TicketNo, "exit_code": exitCode, "error": errString(err),
-			"command": redactCommand(command), "output_preview": truncateString(output, 512),
+			"command": redactCommand(command), "output_preview": stripAnsi(truncateString(output, 512)),
 		})
 
 	case "progress":
@@ -851,7 +862,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		})
 		blog("WARN", "log_collect.cancel", "日志收集任务取消", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"exit_code": exitCode, "error": errString(err),
-			"output_preview": truncateString(output, 512),
+			"output_preview": stripAnsi(truncateString(output, 512)),
 		})
 
 	default:

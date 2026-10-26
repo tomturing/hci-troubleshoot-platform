@@ -408,6 +408,26 @@ func TestSessionByNodeIP(t *testing.T) {
 // 回归：cancel 曾经漏传 node_ip，精确键与 node_ip 两级回退全部失效，直接 session_missing，
 // 结果是平台显示已取消、节点上采集任务仍在跑，后续 create 被插件互斥拒绝。
 // 本工单只有一条 SSH 会话时，必须能兜底命中。
+// 回归：acli 失败输出带颜色码（`\x1b[31mFATA\x1b[0m...`），
+// 不清洗会污染状态行匹配，也会把乱码直接展示到面板。
+func TestStripAnsi(t *testing.T) {
+	raw := "\u001b[31mFATA\u001b[0m[0000] execing command in container: command terminated with exit code 1"
+	cleaned := stripAnsi(raw)
+	if strings.Contains(cleaned, "\u001b") {
+		t.Fatalf("转义序列未清除：%q", cleaned)
+	}
+	if !strings.HasPrefix(cleaned, "FATA[0000]") {
+		t.Fatalf("清洗后内容异常：%q", cleaned)
+	}
+
+	// 带颜色的状态行清洗后必须仍能被归一化识别
+	status := stripAnsi("状态：\u001b[31m收集任务异常结束！\u001b[0m")
+	got := classifyLogCollectNodeState(logCollectProgress{Status: strings.TrimPrefix(status, "状态：")})
+	if got != logCollectNodeAbnormal {
+		t.Fatalf("带 ANSI 的状态行应识别为 abnormal，实际 %s", got)
+	}
+}
+
 func TestClassifyLogCollectNodeState(t *testing.T) {
 	cases := []struct {
 		name     string
