@@ -2009,22 +2009,36 @@ onBeforeUnmount(() => {
         />
       </template>
 
-    <!-- 底部操作条：原先挂在 el-drawer 的 #footer 插槽，面板化后是普通区块，粘在面板底部 -->
-    <div class="lc-footer">
-      <template v-if="viewMode === 'result'">
-        <el-button type="primary" @click="startRecollect">重新收集</el-button>
-      </template>
-      <template v-else>
-        <el-button
-          v-if="!running"
-          type="primary"
-          :disabled="prepareState === 'probing'"
-          @click="handleStart"
-        >
-          {{ prepareState === 'probing' ? '正在读取环境…' : '开始收集' }}
-        </el-button>
-        <el-button v-else type="danger" plain @click="handleCancel">取消</el-button>
-      </template>
+    <!--
+      底部操作区：与中央会话、SSH 终端同构（hint 行 + 36px 控件行 + 按钮组），
+      规范在 styles/panel-composer.css。这里没有输入控件，控件行留给状态摘要。
+    -->
+    <div class="panel-composer lc-composer">
+      <div class="panel-composer__hint">
+        <template v-if="viewMode === 'result'">
+          上次采集 {{ resultFinishedText }} · 本工单共 {{ historyTotal }} 条记录
+        </template>
+        <template v-else-if="lastRefreshText">{{ lastRefreshText }}</template>
+        <template v-else>选择时间范围与采集模块后开始收集</template>
+      </div>
+      <div class="panel-composer__body">
+        <div class="panel-composer__actions">
+          <template v-if="viewMode === 'result'">
+            <el-button type="primary" @click="startRecollect">重新收集</el-button>
+          </template>
+          <template v-else>
+            <el-button
+              v-if="!running"
+              type="primary"
+              :disabled="prepareState === 'probing'"
+              @click="handleStart"
+            >
+              {{ prepareState === 'probing' ? '正在读取环境…' : '开始收集' }}
+            </el-button>
+            <el-button v-else type="danger" plain @click="handleCancel">取消</el-button>
+          </template>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -2046,21 +2060,16 @@ onBeforeUnmount(() => {
 }
 
 /*
- * 底部操作条贴底：内容不足时靠 margin-top:auto 顶到底部，
+ * 底部操作区贴底：内容不足时靠 margin-top:auto 顶到底部，
  * 内容溢出时靠 sticky 继续钉在可视区底部。
+ * 左右负 margin 抵消 .lc-panel 的 padding，让底条通栏贴边（与中央、终端一致）。
  */
-.lc-footer {
+.lc-composer {
   position: sticky;
   bottom: -12px;
   z-index: 1;
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin: -4px -16px -12px;
+  margin: 0 -16px -12px;
   margin-top: auto;
-  padding: 10px 16px;
-  background: #fff;
-  border-top: 1px solid #e4e7ed;
 }
 .lc-refresh-time {
   font-size: 12px;

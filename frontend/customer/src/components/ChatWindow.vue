@@ -206,37 +206,44 @@ function handleQuoteToChat(content: string) {
     </el-dialog>
 
     <!--
-      输入区域：灰底上的一张白色输入卡片。
-      早先是「通栏白底 + 中间一个扁输入框」，宽屏下两侧各留几百 px 纯白，
-      输入框本身只有一个 1px 灰边，看起来又小又飘。
+      底部操作区：结构与左右面板完全一致（hint 行 + 36px 控件行 + 按钮组），
+      规范在 styles/panel-composer.css。三块面板并排时底边、输入框、按钮必须齐平。
     -->
-    <div class="input-area">
-      <div class="input-inner">
-        <div class="input-tips" v-if="chatStore.currentCase && chatStore.hasActiveCase">
+    <div class="panel-composer">
+      <div class="panel-composer__hint">
+        <template v-if="chatStore.currentCase && !chatStore.hasActiveCase">
+          当前工单已关闭，新建工单后可继续对话
+        </template>
+        <template v-else-if="chatStore.currentCase">
           输入 <code>/close</code> 关闭当前工单
-        </div>
-        <div v-if="chatStore.currentCase && !chatStore.hasActiveCase" class="closed-bar">
-          <span>当前工单已关闭</span>
-          <el-button type="primary" size="small" @click="chatStore.startNewConversation()">
+        </template>
+        <template v-else>描述您遇到的问题，我会帮您创建工单</template>
+      </div>
+      <div class="panel-composer__body">
+        <el-input
+          ref="assistantInputRef"
+          v-model="inputText"
+          class="panel-composer__field"
+          type="textarea"
+          :rows="1"
+          :placeholder="chatStore.isCaseClosed ? '工单已关闭，请点击「新建工单」' : '描述您遇到的问题...'"
+          :disabled="chatStore.isStreaming || chatStore.isCaseClosed"
+          @keydown="handleKeydown"
+        />
+        <div class="panel-composer__actions">
+          <el-button
+            v-if="chatStore.currentCase && !chatStore.hasActiveCase"
+            type="primary"
+            @click="chatStore.startNewConversation()"
+          >
             新建工单
           </el-button>
-        </div>
-        <div class="input-card">
-          <el-input
-            ref="assistantInputRef"
-            v-model="inputText"
-            type="textarea"
-            :autosize="{ minRows: 1, maxRows: 4 }"
-            :placeholder="chatStore.isCaseClosed ? '工单已关闭，请点击「新建工单」' : '描述您遇到的问题...'"
-            :disabled="chatStore.isStreaming || chatStore.isCaseClosed"
-            @keydown="handleKeydown"
-          />
           <el-button
+            v-else
             type="primary"
             :loading="chatStore.isStreaming"
             :disabled="!inputText.trim() || chatStore.isStreaming"
             @click="handleSend"
-            class="send-btn"
           >
             发送
           </el-button>
@@ -275,8 +282,8 @@ function handleQuoteToChat(content: string) {
   min-height: 0;
 }
 
-/* 输入区是通栏灰底，卡片内部自己限宽 */
-.chat-window > .input-area {
+/* 底部操作区是通栏底条，内部控件行自己限宽到 860 */
+.chat-window > .panel-composer {
   max-width: none;
 }
 
@@ -349,87 +356,16 @@ function handleQuoteToChat(content: string) {
   font-size: 13px;
 }
 
-.input-area {
-  flex: 0 0 auto;
-  /* 与消息区同底色：底栏是一块呼吸区，输入卡片浮在上面 */
-  background: #f0f2f5;
-  border-top: 1px solid #e4e7ed;
-  padding: 12px 16px 16px;
-}
-
 /*
- * 输入列与消息列严格同宽（860）：内容列限宽只作用在这一层，外壳仍是通栏灰底。
- * 留 900 会让输入卡比上面的引导卡/气泡每边宽 20px，看起来"底下那块凸出来"。
+ * 底部操作区的结构、高度、字号、按钮规格统一在 styles/panel-composer.css，
+ * 这里只保留「与中央内容列同宽」这一条布局规则（其他面板是通栏，不需要）。
  */
-.input-inner {
+.panel-composer .panel-composer__body,
+.panel-composer .panel-composer__hint {
   width: 100%;
   max-width: min(var(--ws-center-max, 900px), 860px);
-  margin: 0 auto;
-}
-
-/* 白色卡片：圆角 + 边框 + 聚焦光晕，让输入区成为有边界的对象 */
-.input-card {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  padding: 8px 8px 8px 12px;
-  background: #fff;
-  border: 1px solid #dcdfe6;
-  border-radius: 12px;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
-}
-
-.input-card:focus-within {
-  border-color: #409eff;
-  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.12);
-}
-
-.input-card :deep(.el-textarea) {
-  flex: 1;
-}
-
-/* 边框交给卡片，textarea 自身去边框去阴影，避免"框套框" */
-.input-card :deep(.el-textarea__inner) {
-  border: none;
-  box-shadow: none;
-  background: transparent;
-  padding: 6px 2px;
-  resize: none;
-  font-size: 14px;
-  line-height: 1.6;
-}
-
-.input-tips {
-  font-size: 12px;
-  color: #909399;
-  margin: 0 0 8px 2px;
-}
-
-.input-tips code {
-  background: #f0f2f5;
-  padding: 2px 6px;
-  border-radius: 3px;
-  font-family: monospace;
-  color: #409eff;
-}
-
-.closed-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  padding: 8px 12px;
-  background: #f0f2f5;
-  border-radius: 6px;
-  color: #909399;
-  font-size: 14px;
-}
-
-/* 发送按钮与输入卡片同高：34px 贴合单行文本，多行时靠 flex-end 底对齐 */
-.send-btn {
-  height: 34px;
-  min-width: 68px;
-  border-radius: 8px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /* 未关闭工单对话框 */

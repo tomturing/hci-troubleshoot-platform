@@ -274,7 +274,9 @@ describe('LogCollectPanel', () => {
 
     expect(wrapper.find('.drawer-stub').exists()).toBe(false)
     expect(wrapper.find('.lc-panel').exists()).toBe(true)
-    expect(wrapper.find('.lc-footer').exists()).toBe(true)
+    // 底部操作区走全局统一规范（.panel-composer），不再自造 .lc-footer
+    expect(wrapper.find('.lc-footer').exists()).toBe(false)
+    expect(wrapper.find('.panel-composer').exists()).toBe(true)
   })
 
   it('工具条提供「刷新进度」入口，「关闭」由外壳的收起按钮承担', async () => {
