@@ -152,6 +152,7 @@ jobs:
               # docs 增量门禁脚本：改动它必须跑其回归测试（中文路径解析曾长期空转）
               - 'scripts/ci/check_docs_rot.py'
               - 'scripts/ci/test_check_docs_rot_changed_only.py'
+              - 'scripts/ci/test_check_docs_rot_semantics.py'
               - 'scripts/ci/check_docs_naming.py'
               - 'scripts/ci/test_check_docs_naming.py'
               - 'scripts/ci/check_docs_frontmatter.py'
@@ -190,6 +191,7 @@ jobs:
             scripts/ci/test_resolve_pr_fast_test_targets.py \
             scripts/ci/test_env_repo_sync_contract.py \
             scripts/ci/test_check_docs_rot_changed_only.py \
+            scripts/ci/test_check_docs_rot_semantics.py \
             scripts/ci/check_docs_rot.py \
             scripts/ci/check_docs_naming.py \
             scripts/ci/test_check_docs_naming.py \
@@ -213,6 +215,7 @@ jobs:
             scripts/ci/test_resolve_pr_fast_test_targets.py \
             scripts/ci/test_env_repo_sync_contract.py \
             scripts/ci/test_check_docs_rot_changed_only.py \
+            scripts/ci/test_check_docs_rot_semantics.py \
             scripts/ci/check_docs_rot.py \
             scripts/ci/check_docs_naming.py \
             scripts/ci/test_check_docs_naming.py \
@@ -229,6 +232,7 @@ jobs:
             scripts/ci/test_resolve_pr_fast_test_targets.py \
             scripts/ci/test_env_repo_sync_contract.py \
             scripts/ci/test_check_docs_rot_changed_only.py \
+            scripts/ci/test_check_docs_rot_semantics.py \
             scripts/ci/test_check_docs_naming.py \
             scripts/ci/test_check_docs_frontmatter.py \
             -q
@@ -504,15 +508,20 @@ jobs:
       # 是腐化的硬证据，必须阻断合并。
       # 分级策略：
       #   - C6 密钥泄露：永远阻断（安全红线，不区分存量/增量）
-      #   - C1/C2/C3 失效引用：仅阻断本次 PR 引入的新问题（--changed-only），存量只警告
-      # 对抗性审查：存量问题不阻断，避免现有 PR 永远无法合并导致治理卡死。
+      #   - C1/C2/C3 现行全量文档层（Wave 3 已归零）：不论是否本次改动一律
+      #     阻断（--current-blocking）——读者会照着现行文档动手，该层的一条
+      #     失效引用就是真实故障，不再允许「只警告」漂回存量；
+      #   - C1/C2/C3 事件层/归档层：仍只按本次改动行阻断，存量只警告——它们是
+      #     史料，为 CI 变绿而改写等于伪造历史（规范 §8.3）。
+      # 对抗性审查：现行层升阻断的前提是该层实测为 0，否则本步会让所有 PR
+      # 卡死；归零过程与口径见 docs/solution/events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md。
       - name: 文档腐化硬门禁（失效引用+密钥泄露）
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 scripts/ci/check_docs_rot.py --changed-only
+          python3 scripts/ci/check_docs_rot.py --changed-only --current-blocking
           ROT_EXIT=$?
           # 密钥泄露（C6）已在脚本内强制退出 1；此处仅传播失效引用的阻断结果
           exit $ROT_EXIT
