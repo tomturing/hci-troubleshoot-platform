@@ -678,4 +678,42 @@ describe('LogCollectPanel', () => {
     expect(completed).toHaveLength(1)
     wrapper.unmount()
   })
+
+  /**
+   * 现场反馈（2026-10-26 22:40）：刷新页面重新登录后接管进行中任务，
+   * 只能看到「采集 0%」，表单里的故障场景/时间范围/目标主机全是空默认值，
+   * 用户无法确认"这次到底下发了什么"。
+   *
+   * 平台任务里一直存着 modules / date_from / date_to / ips，缺的是接管时的回填。
+   */
+  it('接管进行中任务时把平台记录的下发参数回填到表单', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.24.129', port: 22, username: 'admin' }
+    const live = taskFixture({
+      task_id: 'task-live',
+      status: 'collecting',
+      progress: 0,
+      finished_at: null,
+      archive_path: null,
+      upload_mode: null,
+      // 与现场一致：只选 1 台，而表单默认是 all（会显示"已全选"）
+      modules: ['vm_start'],
+      date_from: '2026-10-25',
+      date_to: '2026-10-26',
+      ips: ['172.28.24.131'],
+    })
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [live] })
+    vi.mocked(logCollectApi.getTask).mockResolvedValue(live)
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await flushPromises()
+
+    // 目标主机不能再停留在默认的 all
+    expect(wrapper.text()).not.toContain('已全选')
+    // 必须明确告诉用户：这些参数来自平台任务记录，而不是待填草稿
+    expect(wrapper.text()).toContain('参数来自平台任务记录')
+    wrapper.unmount()
+  })
 })

@@ -175,7 +175,10 @@ export function decideNodeSync(input: SyncInput): SyncAction {
     if (nodeState === 'running' || nodeState === 'abnormal') {
       return {
         action: 'warn_node_busy',
-        reason: nodeState === 'running' ? '节点上存在游离的采集任务' : '节点上存在异常结束的任务',
+        reason:
+          nodeState === 'running'
+            ? '节点上存在非本平台下发的采集任务（只能读进度/主机，模块与时间范围无法获取）'
+            : '节点上存在异常结束的任务',
         ownership,
       }
     }

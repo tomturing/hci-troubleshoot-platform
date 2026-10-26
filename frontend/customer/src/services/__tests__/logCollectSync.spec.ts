@@ -125,8 +125,11 @@ describe('decideNodeSync 节点态直映射', () => {
     expect(decideNodeSync({ platformStatus: 'collecting', nodeState: 'unknown' }).action).toBe('none')
   })
 
-  it('平台上无任务记录、节点有游离任务 → 提示占用', () => {
-    expect(decideNodeSync({ platformStatus: null, nodeState: 'running' }).action).toBe('warn_node_busy')
+  it('平台上无任务记录、节点有游离任务 → 提示占用，并说明信息不可得', () => {
+    const action = decideNodeSync({ platformStatus: null, nodeState: 'running' })
+    expect(action.action).toBe('warn_node_busy')
+    // 非平台下发的任务，acli 报告里没有模块与时间范围，必须提前说清楚
+    expect(action.reason).toContain('非本平台下发')
   })
 })
 

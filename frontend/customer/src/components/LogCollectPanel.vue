@@ -656,6 +656,10 @@ async function resumeTask(taskId: string) {
     resumedTaskId.value = taskId
     // 基线跟着任务走：关面板 / 换浏览器 / 重启后接管，仍能判断报告归属
     baselineReportHash.value = String((task.detail ?? {})['baseline_report_hash'] ?? '')
+    // 关键：把"这次下发到底收了什么"回填到表单。
+    // 平台记录里一直有 modules / 时间范围 / 目标主机，但旧实现接管时只更新进度，
+    // 表单仍是空白默认值 → 用户只能看到"采集 0%"，看不到收集内容。
+    applyTaskToForm(task)
     stage.value = TASK_STATUS_STAGE[task.status] ?? 'idle'
     if (task.error_message) errorMessage.value = task.error_message
     // 进面板即对账：平台快照可能停在旧投影上（节点仍在跑、或早已异常结束）
@@ -827,6 +831,24 @@ function showResult(task: LogCollectTask) {
  * 覆盖是常态（同一故障再发一次），预填省掉重复选择；但场景必须收敛到当前目录，
  * 否则提交时会被 create 判为非法枚举。
  */
+/**
+ * 把「平台任务记录」回填到表单。
+ *
+ * 平台在 create 时已经存下 modules / date_from / date_to / ips，
+ * 但这只是数据库里的事实，用户接管任务时必须能在界面上看见——
+ * 「只显示进度、看不到这次到底收了什么」是 2026-10-26 现场的直接反馈。
+ *
+ * 这里只做赋值、不做裁剪：模块清单要等探测回来才知道哪些合法，
+ * applyCatalog 拿到目录后会过滤非法值，避免在探测前把合法模块误删。
+ */
+function applyTaskToForm(task: LogCollectTask) {
+  if (task.date_from && task.date_to) form.dateRange = [task.date_from, task.date_to]
+  const ips = task.ips ?? []
+  // 空数组与 all 同义：都表示"集群全部在线节点"
+  form.ips = !ips.length || ips.includes('all') ? 'all' : ips.join(',')
+  if (task.modules?.length) form.modules = [...task.modules] as LogCollectModule[]
+}
+
 function startRecollect() {
   const last = resultTask.value
   viewMode.value = 'form'
@@ -844,14 +866,7 @@ function startRecollect() {
   relayStatus.value = 'none'
   cleanupTip.value = ''
   errorMessage.value = ''
-  if (last) {
-    form.dateRange = [last.date_from, last.date_to]
-    const ips = last.ips ?? []
-    form.ips = !ips.length || ips.includes('all') ? 'all' : ips.join(',')
-    const valid = new Set<string>(moduleOptions.value.map((item) => item.value))
-    const picked = (last.modules ?? []).filter((value) => valid.has(value))
-    if (picked.length) form.modules = picked as LogCollectModule[]
-  }
+  if (last) applyTaskToForm(last)
   if (prepareState.value !== 'ready') void prepare({ silent: true })
 }
 
@@ -1780,6 +1795,19 @@ onBeforeUnmount(() => {
           <el-progress :percentage="percent" :status="progressStatus" />
           <div class="lc-status">{{ statusText }}</div>
         </div>
+
+        <!--
+          接管态说明：下面的表单此时展示的是「平台记录的下发参数」，不是待填草稿。
+          不加这句话，用户会以为表单被"清空"了——实际是从来没回填过。
+        -->
+        <el-alert
+          v-if="resumedTaskId && running"
+          class="lc-prepare"
+          type="info"
+          :closable="false"
+          show-icon
+          :title="`以下参数来自平台任务记录（发起节点 ${currentTask?.origin_node_ip ?? '—'}）：任务进行中不可修改，结束后可「重新收集」`"
+        />
 
         <!-- 准备状态的唯一出口：用户在填表之前就能看见"能不能收、可选什么" -->
         <el-alert
