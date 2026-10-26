@@ -122,6 +122,7 @@ jobs:
             docs:
               - 'docs/**'
               - 'scripts/ci/check_docs_naming.py'
+              - 'scripts/ci/check_docs_frontmatter.py'
             module_docs:
               - 'backend/**'
               - 'frontend/**'
@@ -153,6 +154,8 @@ jobs:
               - 'scripts/ci/test_check_docs_rot_changed_only.py'
               - 'scripts/ci/check_docs_naming.py'
               - 'scripts/ci/test_check_docs_naming.py'
+              - 'scripts/ci/check_docs_frontmatter.py'
+              - 'scripts/ci/test_check_docs_frontmatter.py'
               - 'hci_sim/Dockerfile'
               - 'deploy/gitops/argo-apps/local/hci-sim-dev.yaml'
               - 'deploy/gitops/argo-apps/cloud/hci-sim-staging.yaml'
@@ -189,7 +192,9 @@ jobs:
             scripts/ci/test_check_docs_rot_changed_only.py \
             scripts/ci/check_docs_rot.py \
             scripts/ci/check_docs_naming.py \
-            scripts/ci/test_check_docs_naming.py
+            scripts/ci/test_check_docs_naming.py \
+            scripts/ci/check_docs_frontmatter.py \
+            scripts/ci/test_check_docs_frontmatter.py
           uvx ruff format --check \
             scripts/ci/resolve_release_baseline.py \
             scripts/ci/resolve_image_build_plan.py \
@@ -210,7 +215,9 @@ jobs:
             scripts/ci/test_check_docs_rot_changed_only.py \
             scripts/ci/check_docs_rot.py \
             scripts/ci/check_docs_naming.py \
-            scripts/ci/test_check_docs_naming.py
+            scripts/ci/test_check_docs_naming.py \
+            scripts/ci/check_docs_frontmatter.py \
+            scripts/ci/test_check_docs_frontmatter.py
           uv run --no-project --with pytest --with pytest-xdist pytest \
             scripts/ci/test_resolve_release_baseline.py \
             scripts/ci/test_resolve_image_build_plan.py \
@@ -223,6 +230,7 @@ jobs:
             scripts/ci/test_env_repo_sync_contract.py \
             scripts/ci/test_check_docs_rot_changed_only.py \
             scripts/ci/test_check_docs_naming.py \
+            scripts/ci/test_check_docs_frontmatter.py \
             -q
 
       # 确定性前端改动判定（覆盖 dorny/paths-filter 的 frontend 输出）。
@@ -469,6 +477,17 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           NAMING_BYPASS: ${{ contains(github.event.pull_request.labels.*.name, 'naming-approved') && '1' || '0' }}
         run: python3 scripts/ci/check_docs_naming.py
+
+      # §7.3 frontmatter 契约的强校验。
+      # 第一性原理：frontmatter 的唯一用途是让读者（含 Agent）按
+      # status / category / audience 机械过滤文档。缺字段或用词表外的值，
+      # 过滤会**静默漏掉**该文档——读者以为已看全，实际少看了几篇。
+      # 所以这里不设建议级通道，不合规即阻断。
+      # 跑 --full 而非增量：全量只有 200 余篇小文件（毫秒级），而增量检查只能
+      # 保证「新改的合规」，从没被碰过的坏文档会永远逃过检查。
+      - name: 文档 frontmatter 规范（阻断）
+        if: github.event_name == 'pull_request' && steps.filter.outputs.docs == 'true'
+        run: python3 scripts/ci/check_docs_frontmatter.py --full
 
       - name: 模块文档同步（信息性）
         if: github.event_name == 'pull_request' && steps.filter.outputs.module_docs == 'true'
