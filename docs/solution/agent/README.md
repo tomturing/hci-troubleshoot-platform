@@ -2,7 +2,7 @@
 status: active
 category: solution
 audience: all
-last_updated: 2026-08-20
+last_updated: 2026-10-26
 owner: team
 update_trigger: Agent 方案新增、重构或状态变更
 ---
@@ -15,6 +15,7 @@ update_trigger: Agent 方案新增、重构或状态变更
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |---|---|---|---|
+| 2026-10-26 | v1.15 | 文档瘦身 P1：`ops-agent/`（描述另一个仓的内部实现）与 `pydantic-agent/`（描述第三方框架 pydantic-ai 源码）共 18 篇 / 12,874 行移出本目录，归档至 [agent-external-2026-10](../../archive/agent-external-2026-10/README.md)。本目录现行文档由 82 篇收敛为 64 篇；本仓对这两个外部实现的权威描述改为适配器代码（`ops_agent_adapter.py` / `pai_agent_adapter.py`）与本目录 `design/agent设计.md` 的选型段。 | - |
 | 2026-08-20 | v1.14 | 《KB与信号高依赖的局限性分析与改进方向》升级 V1.1：新增第五章「信号生产成本分析与降本方向」，回应"写信号像写伪代码"痛点——单条 40~100 行/20+ 字段/无复用/无自助 dry-run 的成本分解，及 P0 自助 dry-run 与输出锚定 pattern 生成等降本提案。 | - |
 | 2026-08-20 | v1.13 | 新增《KB与信号高依赖的局限性分析与改进方向》架构分析讨论稿：经代码核实的 KB-first + fail-closed 能力边界调研，提出知识回流、未命中率度量、advisory 探索层等改进方向（均未采纳，待评审）。 | - |
 | 2026-08-07 | v1.12 | 实施统一解析运行时首个纵向切片并完成 aCLI 在线 Catalog 336/336 一致性和真实 HCI 代表性只读测评；保留生产 path-probe 硬门禁、tar.gz Handler 和不可变运行审计为进行中。 | [Runtime 代码与真实 HCI 能力测评](../../verify/events/2026-08-07-SharedResolutionRuntime代码与真实HCI能力测评.md) |
@@ -89,10 +90,17 @@ docs/solution/agent/
 ├── evaluation-gitops/                    ← 测评方法论、CI 门禁、GitOps 全生命周期
 │   └── agent-测评与GitOps方案.md
 │
-├── events/                            ← 历史设计事件（归档）
-├── ops-agent/                         ← Ops-Agent 外部子项目
-└── pydantic-agent/                    ← pydantic-ai 框架分析（参考）
+└── events/                            ← 历史设计事件（归档）
 ```
+
+> 原 `ops-agent/`（12 篇）与 `pydantic-agent/`（6 篇）已于 2026-10-26 归档至
+> [archive/agent-external-2026-10](../../archive/agent-external-2026-10/README.md)。
+> 判据：这两组文档描述的是**另一个仓库**与**第三方框架**的内部实现，本仓无权也无力维护，
+> 留在 `solution/` 会让读者把"别人家的设计"误当"本仓现行权威"。
+> 本仓对它们的权威契约在代码里：`backend/agent-service/app/adapters/agents/ops/ops_agent_adapter.py`、
+> `backend/agent-service/app/adapters/agents/pai/pai_agent_adapter.py`。
+> 仅"本仓与 ops-agent 的关系"这一主题仍属本仓关切，见
+> [ops-agent与hci-troubleshoot-platform关系分析.md](design/ops-agent与hci-troubleshoot-platform关系分析.md)。
 
 ## hci-sim A～E 设计导航
 

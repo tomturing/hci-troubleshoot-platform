@@ -2,7 +2,7 @@
 status: active
 category: archive
 audience: all
-last_updated: 2026-10-21
+last_updated: 2026-10-26
 owner: team
 ---
 
@@ -19,6 +19,7 @@ owner: team
 | 你想找什么 | 去哪里看 | 说明 |
 |-----------|---------|------|
 | **KBD/信号整理前原文** | [2026-09-23 快照与迁移清单](kbd-signals-2026-09-23/README.md) | 已整合主题的完整历史正文；当前规则从知识库统一入口读取 |
+| **ops-agent / pydantic-ai 实现描述** | [2026-10-26 外部实现归档](agent-external-2026-10/README.md) | 描述的是其他仓/第三方框架，本仓现行契约以适配器代码为准 |
 | **当前有效文档** | `docs/README.md` | 冷启动入口 |
 | **架构决策历史** | `solution/events/` | 方案事件文档 |
 | **部署决策历史** | `deploy/events/` | 部署事件文档 |
@@ -43,6 +44,7 @@ owner: team
 
 | 归档日期 | 归档内容 | 去向 |
 |---------|---------|------|
+| 2026-10-26 | 文档瘦身 P1：`solution/agent/` 下「另一个仓（ops-agent）」与「第三方框架（pydantic-ai）」的实现描述 18 篇 / 12,874 行 | [agent-external-2026-10](agent-external-2026-10/README.md) |
 | 2026-10-21 | 文档瘦身 P0：外部 RAG 文章重复粘贴 17 次的去重摘录、`docs/README.md` 第一屏历史表快照 | [docs-slimming-2026-10](docs-slimming-2026-10/README.md) |
 | 2026-09-23 | KBD 总览、CDD、语义画像、审核与旧信号模型等 17 份整理前快照 | [迁移清单](kbd-signals-2026-09-23/README.md)；旧原路径保留跳转 |
 | 2026-04-06 | 已迁移文档（06-11, 13-18等）| 已迁移至 `solution/`、`deploy/`、`verify/` 目录 |
