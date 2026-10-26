@@ -1,7 +1,7 @@
 ---
 status: active
-category: frontend
-audience: engineer
+category: solution
+audience: developer
 last_updated: 2026-08-06
 owner: team
 ---

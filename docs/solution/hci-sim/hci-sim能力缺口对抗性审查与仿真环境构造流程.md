@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: active
 category: solution
 audience: product, architect, developer, qa, sre
 last_updated: 2026-08-17

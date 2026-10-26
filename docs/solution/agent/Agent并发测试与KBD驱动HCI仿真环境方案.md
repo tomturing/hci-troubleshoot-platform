@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: active
 category: solution
 audience: architect, developer, tester, operator
 last_updated: 2026-07-30
