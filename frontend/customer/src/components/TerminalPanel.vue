@@ -174,7 +174,7 @@ watch(isConnected, async (connected) => {
   // double rAF：等待浏览器完成布局后再 fit，避免 Drawer 动画期间取到错误尺寸
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
-      if (fitAddon) fitAddon.fit()
+      fitTerminal()
     })
   })
 })
@@ -185,9 +185,10 @@ function initTerminal() {
   xterm = new Terminal({
     convertEol: true,
     disableStdin: true,
-    fontFamily: 'Consolas, Monaco, monospace',
+    // 等宽字体栈：优先现代终端字体，缺失时逐级回退，避免不同机器行高漂移
+    fontFamily: "'JetBrains Mono', 'Cascadia Mono', Consolas, Monaco, 'Courier New', monospace",
     fontSize: 13,
-    lineHeight: 1.35,
+    lineHeight: 1.3,
     cursorBlink: false,
     theme: {
       background: '#1e1e1e',
@@ -210,21 +211,41 @@ function initTerminal() {
       brightCyan: '#56b6c2',
       brightWhite: '#ffffff',
     },
-    scrollback: 2000,
+    // 采集/安装日志动辄数百行，2000 行会把前面的安装告警挤出可见历史
+    scrollback: 5000,
   })
   fitAddon = new FitAddon()
   xterm.loadAddon(fitAddon)
   xterm.open(terminalContainer.value)
-  fitAddon.fit()
+  fitTerminal()
 
   if (fullOutputText.value) {
     xterm.write(normalizeTerminalText(fullOutputText.value))
   }
 
   resizeObserver = new ResizeObserver(() => {
-    if (fitAddon) fitAddon.fit()
+    fitTerminal()
   })
   resizeObserver.observe(terminalContainer.value)
+}
+
+/**
+ * 计算并应用终端的列数与行数。
+ *
+ * 为什么不能只调 `fitAddon.fit()`：xterm 的字符高度是浮点值，FitAddon 按浮点算行数，
+ * 渲染时却按整像素铺行，实测内容会比容器高出一行的一部分（本机 779px vs 771px）。
+ * 多出来的部分被 `overflow: hidden` 裁掉，观感就是"终端最后一行被输入区压住/切半"。
+ * 这里 fit 之后核对一次实际高度，超出就少一行——少一行几乎不可见，被裁半行非常刺眼。
+ */
+function fitTerminal() {
+  if (!fitAddon || !xterm || !terminalContainer.value) return
+  fitAddon.fit()
+  const host = terminalContainer.value.querySelector('.xterm') as HTMLElement | null
+  const screen = terminalContainer.value.querySelector('.xterm-screen') as HTMLElement | null
+  if (!host || !screen || xterm.rows <= 2) return
+  if (screen.offsetHeight > host.clientHeight) {
+    xterm.resize(xterm.cols, xterm.rows - 1)
+  }
 }
 
 function disposeTerminal() {
@@ -480,36 +501,38 @@ onBeforeUnmount(() => {
       <div ref="terminalContainer" class="terminal-canvas" />
     </div>
 
+    <!-- 输入区与快捷键提示合并为一块：省下一整行 + 一条分隔线，把高度让给终端本体 -->
     <div class="terminal-input-area">
-      <span class="prompt-symbol">$</span>
-      <el-input
-        ref="terminalInputRef"
-        v-model="localInput"
-        type="textarea"
-        :autosize="{ minRows: 1, maxRows: 4 }"
-        placeholder="输入命令或从命令卡片发送..."
-        class="terminal-input"
-        @keydown="handleKeydown"
-        :disabled="!isConnected"
-      />
-      <el-button
-        type="primary"
-        size="small"
-        class="execute-btn terminal-action-btn"
-        :disabled="!localInput.trim() || !isConnected"
-        @click="executeCommand"
-      >
-        执行
-      </el-button>
-      <el-button size="small" class="terminal-action-btn" :disabled="!localInput" @click="clearInput">清空</el-button>
-    </div>
-
-    <div class="terminal-footer">
-      <span v-if="!isConnected">请先点击『连接 SSH』按钮</span>
-      <span v-else>
-        Enter 执行 · Shift+Enter 换行 ·
-        <el-link type="primary" :underline="false" @click="disconnectSsh">断开连接</el-link>
-      </span>
+      <div class="terminal-input-row">
+        <span class="prompt-symbol">$</span>
+        <el-input
+          ref="terminalInputRef"
+          v-model="localInput"
+          type="textarea"
+          :autosize="{ minRows: 1, maxRows: 4 }"
+          placeholder="输入命令或从命令卡片发送..."
+          class="terminal-input"
+          @keydown="handleKeydown"
+          :disabled="!isConnected"
+        />
+        <el-button
+          type="primary"
+          size="small"
+          class="execute-btn terminal-action-btn"
+          :disabled="!localInput.trim() || !isConnected"
+          @click="executeCommand"
+        >
+          执行
+        </el-button>
+        <el-button size="small" class="terminal-action-btn" :disabled="!localInput" @click="clearInput">清空</el-button>
+      </div>
+      <div class="terminal-hint">
+        <span v-if="!isConnected">请先点击『连接 SSH』按钮</span>
+        <span v-else>
+          Enter 执行 · Shift+Enter 换行 ·
+          <el-link type="primary" :underline="false" @click="disconnectSsh">断开连接</el-link>
+        </span>
+      </div>
     </div>
   </div>
 </template>
@@ -523,13 +546,18 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
-  min-height: 400px;
+  /* 原为 min-height: 400px：矮视口下面板撑破抽屉，底部输入区/提示会被裁掉。
+     flex 链路已由 min-height: 0 保证可收缩，这里不再设下限。 */
+  min-height: 0;
 }
 
 .terminal-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* 抽屉宽度可拖到很窄（默认约 400px）：不换行会把"复制本次输出"等按钮顶出抽屉被裁掉 */
+  flex-wrap: wrap;
+  gap: 6px 8px;
   padding: 10px 12px;
   background: #2d2d2d;
   border-bottom: 1px solid #333;
@@ -539,16 +567,23 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .header-actions {
   display: flex;
   align-items: center;
   gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  margin-left: auto;
 }
 
 .header-actions :deep(.el-button) {
   color: #9cdcfe;
+  /* 五个动作挤在默认 400px 抽屉里：收紧内边距与字号，保证换行后仍是一行 */
+  padding: 0 6px;
+  font-size: 12px;
 }
 
 /* 自动执行模式下拉 */
@@ -599,7 +634,8 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;           /* 允许 flex-item 缩小到内容以下，防止撑破父容器 */
   background: #1e1e1e;
-  padding: 10px 10px 0 10px;
+  /* 四边都留安全边距：底部 padding 曾为 0，最后一行会贴着输入区，观感就是"被输入框压住" */
+  padding: 12px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -612,7 +648,8 @@ onBeforeUnmount(() => {
   border: 1px solid #333;
   border-radius: 6px;
   overflow: hidden;
-  padding: 8px;
+  box-sizing: border-box;
+  padding: 10px 12px;
 }
 
 .terminal-canvas :deep(.xterm) {
@@ -626,11 +663,26 @@ onBeforeUnmount(() => {
 
 .terminal-input-area {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 10px 12px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px 8px;
   background: #252526;
   border-top: 1px solid #333;
+}
+
+.terminal-input-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  /* 窄抽屉下输入框被两枚按钮挤到不足一行字宽，宁可让按钮换行 */
+  flex-wrap: wrap;
+}
+
+.terminal-hint {
+  padding-left: 18px;      /* 与 $ 提示符对齐 */
+  color: #8a8a8a;
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .prompt-symbol {
@@ -644,7 +696,8 @@ onBeforeUnmount(() => {
 }
 
 .terminal-input {
-  flex: 1;
+  flex: 1 1 140px;
+  min-width: 0;            /* 允许缩到内容以下，否则长 placeholder 会把按钮顶出抽屉 */
 }
 
 .terminal-input :deep(.el-textarea__inner) {
@@ -664,12 +717,23 @@ onBeforeUnmount(() => {
   padding: 0;
 }
 
-.terminal-footer {
-  padding: 6px 12px;
-  border-top: 1px solid #333;
-  background: #1f1f1f;
-  color: #909399;
-  font-size: 12px;
+/* 终端滚动条：默认样式在深色背景上过亮，收窄并降饱和 */
+.terminal-canvas :deep(.xterm-viewport) {
+  scrollbar-width: thin;
+  scrollbar-color: #4a4a4a transparent;
+}
+
+.terminal-canvas :deep(.xterm-viewport)::-webkit-scrollbar {
+  width: 8px;
+}
+
+.terminal-canvas :deep(.xterm-viewport)::-webkit-scrollbar-thumb {
+  background: #4a4a4a;
+  border-radius: 4px;
+}
+
+.terminal-canvas :deep(.xterm-viewport)::-webkit-scrollbar-thumb:hover {
+  background: #5c5c5c;
 }
 
 @media (max-width: 768px) {

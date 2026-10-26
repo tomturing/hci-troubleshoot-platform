@@ -2535,6 +2535,19 @@ export const useChatStore = defineStore('chat', () => {
         (p) => devLog('acli', p.text),
         { ...options, nodeIp },
       )
+      if (result?.status === 'installed') {
+        // 第一性原理：bash 把解析过的命令路径缓存在 hash 表里。安装器替换（甚至挪走）
+        // 可执行文件后，已存在的 shell 仍会 exec 旧路径，于是报
+        // "acli: No such file or directory"，只有新 shell 才会重查 PATH——
+        // 用户看到的现象就是"必须重连终端"。这里补上缺失的生效动作：让活着的 shell 失效缓存。
+        // 环境采集用的是同一个输入通道，抢过来会把采集命令的输出错路由到终端
+        if (showTerminalSidebar.value && sshCommandConsumer.value !== 'collection') {
+          devLog('acli', '安装已替换 acli 可执行文件，正在对当前终端执行 hash -r 使其立即生效')
+          sendSSHCommand('hash -r', 'terminal')
+        } else {
+          devLog('acli', '若终端内执行 acli 提示 No such file or directory，执行 hash -r 或重连终端即可，无需重装')
+        }
+      }
       return result
     } catch (e: any) {
       console.warn('[chatStore] acli 检测/同步异常:', e)

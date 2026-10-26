@@ -205,3 +205,9 @@ X-Client-ID: {client_id}
 | `frontend/customer/src/components/TerminalPanel.vue` | 新增 SSH 登录表单、终端输出区 |
 | `frontend/customer/src/components/ChatWindow.vue` | 新增侧边栏抽屉 |
 | `frontend/customer/src/App.vue` | 新增终端入口按钮 |
+
+## 更新记录
+
+- **2026-10-26 显示优化**：快捷键提示并入输入区（删除独立 footer）、终端画布四边留白、
+  `fit()` 后按实际高度兜底减行（消除最后一行被裁半行的现象）、窄抽屉下头部与输入区允许换行。
+  详见 [终端显示优化与 acli 安装生效](../events/2026-10-26-终端显示优化与acli安装生效.md)。
