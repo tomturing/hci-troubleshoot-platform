@@ -434,6 +434,66 @@ def list_changed_md_files(base: str, head: str = "HEAD", cwd: Path | None = None
     return [p for p in result.stdout.split("\0") if p]
 
 
+def list_content_changed_md_files(base: str, head: str = "HEAD", cwd: Path | None = None) -> set[str]:
+    """返回 base..head 之间「确实有行内容变化」的 Markdown 文件集（仓库相对路径）。
+
+    存在的理由：相似度 100% 的 rename 在 `git diff` 里只输出 `rename from/to`，
+    **不产生 hunk 头**（没有 `+++ b/` 行），于是行号解析根本看不到它。
+    实测一次「18 个纯改名 + 9 个内容改动」的文档 PR：改动文件 26 个，
+    hunk 头只有 9 个——若直接拿改动文件全集去和 hunk 头做相等断言，
+    正常的纯改名会被误判成「路径 quoting 回归」而 fail-closed。
+
+    `--numstat -z` 一次给出三样东西，正好够用：
+
+    1. 每个文件的新增/删除行数 → 0/0 即纯改名，天然排除；
+    2. `-z` 不做任何 quoting，中文路径原样输出（同 `list_changed_md_files`）；
+    3. rename 项的路径字段为空，其后紧跟「旧路径」与「新路径」两个 NUL 段，
+       取新路径段才是改名后的位置。
+    """
+    result = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--numstat",
+            "-z",
+            "--diff-filter=d",
+            base,
+            head,
+            "--",
+            "*.md",
+        ],
+        cwd=cwd or ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    parts = result.stdout.split("\0")
+    changed: set[str] = set()
+    i = 0
+    while i < len(parts):
+        seg = parts[i]
+        if not seg:
+            i += 1
+            continue
+        fields = seg.split("\t")
+        if len(fields) < 3:
+            i += 1
+            continue
+        added, deleted, path = fields[0], fields[1], fields[2]
+        if path:
+            if added != "0" or deleted != "0":
+                changed.add(path)
+            i += 1
+        else:
+            # rename/copy：路径被拆到后续两个 NUL 段，new 段才是改名后的路径
+            if i + 2 < len(parts):
+                new_path = parts[i + 2]
+                if new_path and (added != "0" or deleted != "0"):
+                    changed.add(new_path)
+            i += 3
+    return changed
+
+
 def list_changed_md_lines(base: str, head: str = "HEAD", cwd: Path | None = None) -> dict[str, set[int]]:
     """返回 {仓库相对路径: 本次新增/修改后的行号集合}。
 
@@ -548,13 +608,17 @@ def main() -> None:
                     f"{len(changed_files)} 不一致（疑似路径 quoting 回归）"
                 )
             lines_map = list_changed_md_lines(base)
-            # 两个解析器（`-z` 文件名 / hunk 头路径）必须看到同一批文件。
-            # 不一致即说明 hunk 头里的路径被 quoting 污染，此时行号映射不可信，
-            # 必须 fail-closed——否则会退化成「全部算存量 → 只警告不阻断」。
-            if set(lines_map) != set(changed_rel):
+            content_changed = list_content_changed_md_files(base)
+            # 两个解析器必须覆盖同一批「有内容变化」的文件。
+            # 断言对象是 numstat 的「真有几行变化」集合而非改动文件全集：
+            # 纯 rename 不产生 hunk 头，天然没有行号可归因，不应被视为丢文件。
+            # 若 hunk 头路径被 quoting 污染，它会变成一个不在 changed_rel 里的
+            # 野指针，下面的相等断言依旧会 fail-closed。
+            if set(lines_map) != content_changed:
                 raise RuntimeError(
-                    f"行号解析看到的文件集（{len(lines_map)}）与文件名解析"
-                    f"（{len(changed_rel)}）不一致（疑似 hunk 头路径 quoting 回归）"
+                    f"行号解析看到的文件集（{len(lines_map)}）与 numstat 报告的"
+                    f"「有内容变化」文件集（{len(content_changed)}）"
+                    f"不一致（疑似 hunk 头路径 quoting 回归）"
                 )
             files = matched
             changed_lines = lines_map

@@ -2,7 +2,7 @@
 
 > 文档版本：2026-05-  
 > 适用分支：`ops-agent/feature-hci`、`hci-troubleshoot-platform/feature/ops-agent-interactive-ui`  
-> 关联设计文档：[events/2026-05-08-ops-agent方案E-ACP-REST接口设计与实现.md](../events/2026-05-08-ops-agent方案E-ACP-REST接口设计与实现.md)
+> 关联设计文档：[events/2026-05-08-ops-agent方案E-ACP-REST接口设计与实现.md](../../../solution/agent/events/2026-05-08-ops-agent方案E-ACP-REST接口设计与实现.md)
 
 ---
 
@@ -935,7 +935,7 @@ EOF
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
-| 2026-05-13 | v1.1 | 修复进程重启后 LLM 上下文丢失（per-session trajectory_dir） | [2026-05-13-ops-agent刷新后上下文丢失根因分析与修复方案.md](../events/2026-05-13-ops-agent刷新后上下文丢失根因分析与修复方案.md) |
+| 2026-05-13 | v1.1 | 修复进程重启后 LLM 上下文丢失（per-session trajectory_dir） | [2026-05-13-ops-agent刷新后上下文丢失根因分析与修复方案.md](../../../solution/agent/events/2026-05-13-ops-agent刷新后上下文丢失根因分析与修复方案.md) |
 
 ---
 
