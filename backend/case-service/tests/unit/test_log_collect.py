@@ -56,6 +56,9 @@ class TestStatusMachine:
             ("collecting", "completed"),  # 无上传场景允许跳步
             ("collecting", "failed"),
             ("pending", "cancelled"),
+            # 接管：节点仍在跑时，平台的失败/取消投影允许被覆盖回采集中
+            ("failed", "collecting"),
+            ("cancelled", "collecting"),
         ],
     )
     def test_allowed(self, current, target):
@@ -64,9 +67,8 @@ class TestStatusMachine:
     @pytest.mark.parametrize(
         ("current", "target"),
         [
-            ("completed", "collecting"),  # 终态不可复活
+            ("completed", "collecting"),  # 已归档不可复活（包已上传，接管没有意义）
             ("failed", "pending"),
-            ("cancelled", "collecting"),
             ("pending", "uploading"),  # 不能跳过采集
             ("uploading", "collecting"),  # 不能倒退阶段
         ],

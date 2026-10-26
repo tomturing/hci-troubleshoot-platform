@@ -31,8 +31,10 @@ _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "packaging": frozenset({"uploading", "completed", "failed", "cancelled"}),
     "uploading": frozenset({"completed", "failed", "cancelled"}),
     "completed": frozenset(),
-    "failed": frozenset(),
-    "cancelled": frozenset(),
+    # 接管（adopt）：平台已判失败/取消，但节点上任务仍在跑。
+    # 节点是唯一真相源，允许把投影改回收集中，继续跟进；不做自动重试，避免重复采集。
+    "failed": frozenset({"collecting"}),
+    "cancelled": frozenset({"collecting"}),
 }
 
 
@@ -154,6 +156,12 @@ class LogCollectService:
             if target_status == "completed":
                 # 完成即 100%：插件 final 阶段偶发未刷新 progress，平台侧做确定性收敛。
                 task.progress = 100
+        elif target_status == "collecting" and task.status in TERMINAL_STATUSES:
+            # 接管：终态是"平台投影"，节点仍在跑时可以被覆盖。
+            # 必须清掉上次的失败痕迹，否则界面一边显示"采集中"一边显示旧错误原因。
+            task.finished_at = None
+            task.error_code = None
+            task.error_message = None
         task.updated_at = datetime.now(UTC)
 
         await self.repository.flush()

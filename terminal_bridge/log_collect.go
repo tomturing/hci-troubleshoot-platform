@@ -493,6 +493,49 @@ type logCollectProgress struct {
 	UploadState string           `json:"upload_state,omitempty"`
 	ParseOK     bool             `json:"parse_ok"`
 	Raw         string           `json:"raw"`
+	// NodeState 是归一化后的节点态（none/running/completed/abnormal/unknown）。
+	// 节点是任务状态的唯一真相源，但插件只给中文文案，平台无法直接拿它做状态机判断；
+	// 归一化放在 bridge 侧，避免每个前端各自实现一套字符串匹配。
+	NodeState string `json:"node_state"`
+	// ArchiveMTime 是压缩包的最后修改时间（Unix 秒）。
+	// 同一 ticket 重复 create 时 acli 会返回上一次任务的完成报告，仅看 percent/status 会误判完成；
+	// 包 mtime 早于本次任务创建时间即可判定为历史数据。
+	ArchiveMTime int64 `json:"archive_mtime,omitempty"`
+}
+
+const (
+	logCollectNodeNone      = "none"
+	logCollectNodeRunning   = "running"
+	logCollectNodeCompleted = "completed"
+	logCollectNodeAbnormal  = "abnormal"
+	logCollectNodeUnknown   = "unknown"
+)
+
+// classifyLogCollectNodeState 把插件的中文状态行归一为可做状态机判断的枚举。
+//
+// 对抗性审查：识别不了的一律 unknown——宁可不动平台状态，也不要按猜测去 cancel 节点任务。
+// 「异常结束」必须单列：它既不含"完成"也不含"失败"，早期前端因此既不判完成也不判失败，
+// 只能空转到 1 小时超时。
+func classifyLogCollectNodeState(progress logCollectProgress) string {
+	status := strings.TrimSpace(progress.Status)
+	switch {
+	case strings.Contains(status, "异常结束"), strings.Contains(status, "失败"), strings.Contains(status, "错误"):
+		return logCollectNodeAbnormal
+	case strings.Contains(status, "完成"):
+		return logCollectNodeCompleted
+	case strings.Contains(status, "进行中"), strings.Contains(status, "收集中"),
+		strings.Contains(status, "上传中"), strings.Contains(status, "打包"), strings.Contains(status, "准备"):
+		return logCollectNodeRunning
+	// 实机无任务文案是「收集任务不存在！」（见 TestParseLogCollectProgress 样本）
+	case strings.Contains(status, "不存在"), strings.Contains(status, "无任务"),
+		strings.Contains(status, "暂无"), strings.Contains(status, "没有正在"):
+		return logCollectNodeNone
+	}
+	// 状态行缺失时用可观测信号兜底：有进度或有节点明细，说明任务存在且仍在推进。
+	if progress.Percent > 0 || len(progress.Hosts) > 0 || progress.Done > 0 {
+		return logCollectNodeRunning
+	}
+	return logCollectNodeUnknown
 }
 
 type logCollectHost struct {
@@ -709,6 +752,19 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 	case "progress":
 		output, exitCode, err := s.runCommandPty(ctx, "acli log_collect progress", logCollectProgressTimeout)
 		progress := parseLogCollectProgress(output)
+		progress.NodeState = classifyLogCollectNodeState(progress)
+		// 完成态要能自证"包是本次任务产出的"：同 ticket 的重复 create 会返回历史报告，
+		// 包 mtime 早于本次任务创建时间即可判定为旧数据（比较留给前端，bridge 只提供事实）。
+		if progress.ArchivePath != "" {
+			if archivePath, pathErr := normalizeArchivePath(progress.ArchivePath); pathErr == nil {
+				mtimeCmd := fmt.Sprintf("stat -c %%Y %s", shellQuote(archivePath))
+				if mtimeOut, mtimeCode, mtimeErr := s.runQuickCommand(ctx, mtimeCmd); mtimeErr == nil && mtimeCode == 0 {
+					if mtime, atoiErr := strconv.ParseInt(strings.TrimSpace(mtimeOut), 10, 64); atoiErr == nil {
+						progress.ArchiveMTime = mtime
+					}
+				}
+			}
+		}
 		status := "ok"
 		code := ""
 		if err != nil || exitCode != 0 {
@@ -731,6 +787,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"done": progress.Done, "total": progress.Total,
 			"status_text": progress.Status, "archive_path": progress.ArchivePath,
 			"upload_url": progress.UploadURL, "upload_state": progress.UploadState,
+			"node_state": progress.NodeState, "archive_mtime": progress.ArchiveMTime,
 			"hosts_count": len(progress.Hosts), "exit_code": exitCode,
 			"error": errString(err), "raw_len": len(output),
 		})
