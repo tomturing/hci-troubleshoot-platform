@@ -1,7 +1,11 @@
 """
 KB Routes - API Gateway Proxy
-将 /api/v1/kb/* 代理到 kb-service:8004/api/kb/*
+将 /api/kb/categories 等管理代理转发到 kb-service:8004/api/kb/*
 将 /api/v1/kbd/* 代理到 kb-service:8004/api/admin/kbd/*
+将 /api/v1/sop/* 代理到 kb-service:8004/api/admin/sop/*
+
+注：网关根级 /api/v1/kb/* 代理已于 2026-10-26 整族删除（下游端点从未实现），
+详见下方说明注释。
 """
 
 import json
@@ -13,9 +17,8 @@ from fastapi.responses import JSONResponse, Response
 from shared.observability.logger import get_logger
 
 from app.config import settings
-from app.security.gateway_auth import require_admin, require_user
+from app.security.gateway_auth import require_admin
 
-router = APIRouter(prefix="/api/v1/kb", tags=["kb"])
 logger = get_logger("gateway-kb")
 
 KB_SERVICE_URL = f"{settings.KB_SERVICE_URL}/api/kb"
@@ -61,71 +64,21 @@ def _internal_auth_headers() -> dict:
     return {"Authorization": f"Bearer {str(token).strip()}"}
 
 
-# ============ 搜索接口（公开）============
-
-
-@router.post("/search")
-async def search(request: Request, _: str = Depends(require_user)):
-    """混合检索（BM25 + 向量 RRF 融合）；客户对话链路，凭服务端签发身份访问"""
-    body = await request.json()
-    response = await proxy_request("POST", "/search", payload=body)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
-
-
-@router.post("/sop/match")
-async def sop_match(request: Request, _: str = Depends(require_user)):
-    """SOP 关键词精确匹配；客户对话链路，凭服务端签发身份访问"""
-    body = await request.json()
-    response = await proxy_request("POST", "/sop/match", payload=body)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
-
-
-# ============ 写入接口（需 Internal Token）============
-
-
-@router.post("/ingest")
-async def ingest(request: Request, _: None = Depends(require_admin)):
-    """文档摄入（SHA256 幂等）；管理操作，要求 INTERNAL_API_TOKEN"""
-    body = await request.json()
-    headers = _internal_auth_headers()
-    response = await proxy_request("POST", "/ingest", payload=body, headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
-
-
-# ============ 管理接口（需 Internal Token）============
-
-
-@router.get("/documents")
-async def list_documents(request: Request, _: None = Depends(require_admin)):
-    """文档列表；管理操作，要求 INTERNAL_API_TOKEN"""
-    headers = _internal_auth_headers()
-    response = await proxy_request("GET", "/documents", params=dict(request.query_params), headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
-
-
-@router.get("/documents/{doc_id}")
-async def get_document(doc_id: int, request: Request, _: None = Depends(require_admin)):
-    """获取文档详情；管理操作，要求 INTERNAL_API_TOKEN"""
-    headers = _internal_auth_headers()
-    response = await proxy_request("GET", f"/documents/{doc_id}", headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
-
-
-@router.patch("/documents/{doc_id}")
-async def update_document_status(doc_id: int, request: Request, _: None = Depends(require_admin)):
-    """更新文档状态；管理操作，要求 INTERNAL_API_TOKEN"""
-    body = await request.json()
-    headers = _internal_auth_headers()
-    response = await proxy_request("PATCH", f"/documents/{doc_id}", payload=body, headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
-
-
-@router.delete("/documents/{doc_id}")
-async def delete_document(doc_id: int, request: Request, _: None = Depends(require_admin)):
-    """删除文档；管理操作，要求 INTERNAL_API_TOKEN"""
-    headers = _internal_auth_headers()
-    response = await proxy_request("DELETE", f"/documents/{doc_id}", headers=headers)
-    return JSONResponse(content=response.json(), status_code=response.status_code)
+# ============ 2026-10-26：已删除 7 条从未落地的 /api/v1/kb 代理 ============
+#
+# 原 /api/v1/kb 下的 search、sop/match、ingest、documents(GET/PATCH/DELETE) 全部
+# 转发到 kb-service 的 /api/kb/{同名路径}，但这 7 个下游端点**从未实现**：
+#
+#   - 根级 search：kb-service 只有 GET /api/kb/kbd/search
+#   - sop/match、reindex：kb-service 中零路由
+#   - documents*：kb-service 中零路由（只有 {document_id} 路径参数，属 SOP 专属）
+#   - 根级 ingest：整个 kb-service 唯一的根级 /ingest 属于 /api/sop 前缀（SOP 上传）
+#
+# 保留它们只会制造“功能存在”的假象：请求必然 404（下游无此路由），且代理层还会
+# 对非 JSON 响应体调 response.json() 再抛一次。真实能力由 kbd_* / sop_* 家族提供。
+# 若要恢复，必须**先实现下游端点**，而不是只加代理层。
+#
+# 对外影响：前端（admin/customer）零调用；调用方仅有已同步修改的运维脚本。
 
 
 # ============ 分类管理代理（admin 前端使用 /api/kb/categories 前缀） ============

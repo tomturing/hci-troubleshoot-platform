@@ -380,27 +380,28 @@ if kill -0 $PF2_PID 2>/dev/null; then
     FAIL=$((FAIL + 1))
   fi
 
-  # ---- 5.7 KB 文档列表（GET /api/v1/kb/documents）----
-  KB_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${API2}/api/v1/kb/documents" 2>/dev/null || echo "000")
-  # 401 = 接口存在但需要 Bearer Token（admin 保护，属正常行为）
-  if [[ "${KB_CODE}" == "200" || "${KB_CODE}" == "401" || "${KB_CODE}" == "422" ]]; then
-    ok "KB 文档列表接口可达: HTTP ${KB_CODE}"
+  # ---- 5.7 KB 分类代理路由已注册（GET /api/kb/categories）----
+  # 历史背景：2026-10-26 删除了 /api/v1/kb/{search,ingest,documents,sop/match,reindex,stats}
+  # 七条代理——它们转发到的 kb-service 下游端点从未实现，校验必然 404 假失败。
+  # 现改为校验真实存在的 admin 族路由：匿名应得 401/403（鉴权拦截），
+  # 得到 404 则说明网关路由本身缺失（即“端点存在但不可达”回归）。
+  KB_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${API2}/api/kb/categories" 2>/dev/null || echo "000")
+  if [[ "${KB_CODE}" == "401" || "${KB_CODE}" == "403" ]]; then
+    ok "KB 分类代理路由可达: HTTP ${KB_CODE}（鉴权拦截，非 404）"
     PASS=$((PASS + 1))
   else
-    fail "KB 文档列表失败: HTTP ${KB_CODE}"
+    fail "KB 分类代理路由异常: HTTP ${KB_CODE}（404 = 网关路由缺失）"
     FAIL=$((FAIL + 1))
   fi
 
-  # ---- 5.8 KB 搜索（POST /api/v1/kb/search）----
-  KB_SEARCH_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-    "${API2}/api/v1/kb/search" \
-    -H "Content-Type: application/json" \
-    -d '{"query":"测试查询","top_k":3}' 2>/dev/null || echo "000")
-  if [[ "${KB_SEARCH_CODE}" == "200" || "${KB_SEARCH_CODE}" == "422" ]]; then
-    ok "KB 搜索接口可达: HTTP ${KB_SEARCH_CODE}"
+  # ---- 5.8 KBD 审核代理路由已注册（GET /api/v1/kbd/pending）----
+  # 同上：只验证网关路由注册（匿名 401/403），不假设下游匿名可访问。
+  KB_SEARCH_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${API2}/api/v1/kbd/pending" 2>/dev/null || echo "000")
+  if [[ "${KB_SEARCH_CODE}" == "401" || "${KB_SEARCH_CODE}" == "403" ]]; then
+    ok "KBD 审核代理路由可达: HTTP ${KB_SEARCH_CODE}（鉴权拦截，非 404）"
     PASS=$((PASS + 1))
   else
-    fail "KB 搜索失败: HTTP ${KB_SEARCH_CODE}"
+    fail "KBD 审核代理路由异常: HTTP ${KB_SEARCH_CODE}（404 = 网关路由缺失）"
     FAIL=$((FAIL + 1))
   fi
 

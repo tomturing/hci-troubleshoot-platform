@@ -1,7 +1,7 @@
 """P1 网关鉴权加固测试。
 
 覆盖 2026-09-22 P1 批次接入 require_user / require_admin 的路由族：
-- assistants / audit-logs / kb（search、sop/match 用户级；管理家族 admin 级）
+- assistants / audit-logs（用户级）/ kb 管理家族（admin 级）
 - signal dry-run（用户级）/ hci-sim 控制面（admin 级）
 - WebSocket 握手身份一致性（Cookie 身份必须与路径 client_id 一致）
 
@@ -61,7 +61,6 @@ def _anon_client() -> TestClient:
         ("patch", "/api/v1/kbd/1/root-signal"),
         ("get", "/api/v1/kbd/1/root-signal-conflicts"),
         ("get", "/api/v1/sop"),
-        ("post", "/api/v1/kb/ingest"),
         ("get", "/api/hci-sim/v1/control-plane/bundles"),
     ],
 )
@@ -82,14 +81,6 @@ def test_anonymous_first_visit_gets_issued_identity_and_passes_assistants():
     assert response.status_code == 200
     # 身份已由网关签发（Set-Cookie），后续请求即可信
     assert "hci_client_id" in response.headers.get("set-cookie", "")
-
-
-def test_anonymous_first_visit_passes_kb_search():
-    client = _anon_client()
-    downstream = httpx.Response(200, json={"results": []})
-    with patch("httpx.AsyncClient.request", new=AsyncMock(return_value=downstream)):
-        response = client.post("/api/v1/kb/search", json={"query": "cpu"})
-    assert response.status_code == 200
 
 
 def test_anonymous_first_visit_passes_audit_logs():
@@ -123,14 +114,6 @@ def test_user_cookie_passes_audit_logs():
     downstream = httpx.Response(200, json=[])
     with patch("httpx.AsyncClient.request", new=AsyncMock(return_value=downstream)):
         response = client.get("/api/audit-logs")
-    assert response.status_code == 200
-
-
-def test_user_cookie_passes_kb_search():
-    client = _user_client()
-    downstream = httpx.Response(200, json={"results": []})
-    with patch("httpx.AsyncClient.request", new=AsyncMock(return_value=downstream)):
-        response = client.post("/api/v1/kb/search", json={"query": "cpu"})
     assert response.status_code == 200
 
 
