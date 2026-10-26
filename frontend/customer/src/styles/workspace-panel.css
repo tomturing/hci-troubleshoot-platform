@@ -1,0 +1,36 @@
+/**
+ * 工作区侧边面板的补充样式（全局）。
+ *
+ * 面板外壳自身的布局在 PanelShell.vue（scoped）；这里只放两类规则：
+ * 跨组件复用、且必须穿透 Element Plus 内部结构的。
+ *
+ * 历史说明：上一版这里叫 workspace-drawer.css，服务的是 el-drawer 形态；
+ * 面板化之后抽屉相关的「遮罩穿透 / 边拖手柄 / 抽屉 header」全部失效，已删除。
+ */
+
+/*
+ * 描述表兜底：字段名不允许折行，值允许在长串处断行。
+ * 即使列数判断失误，也不会再出现「发/起/节/点」逐字竖排。
+ *
+ * 另外必须把表格宽度钉成 100%：Element Plus 的 descriptions 是 auto 布局，
+ * 内容短时整张表只有内容那么宽，面板里会留下一条突兀的右侧空白。
+ */
+.lc-panel .el-descriptions__table {
+  width: 100%;
+}
+
+.lc-panel .el-descriptions__label {
+  width: 96px;
+  white-space: nowrap;
+}
+
+.lc-panel .el-descriptions__content {
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* 终端面板贴边即可，圆角在分栏里会露出背景色缝隙 */
+.panel-body .terminal-panel {
+  border-radius: 0;
+  border: none;
+}

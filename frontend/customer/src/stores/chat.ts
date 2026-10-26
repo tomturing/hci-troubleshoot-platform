@@ -763,6 +763,36 @@ export const useChatStore = defineStore('chat', () => {
   /** 右侧是否被占用：SSH 终端。 */
   const isRightPanelOpen = computed(() => showTerminalSidebar.value)
 
+  /**
+   * 左侧面板当前页签。
+   *
+   * 面板化之后左栏是一个常驻面板（折叠成图标条），页签决定展开后显示哪一块；
+   * 与 logCollectVisible/showHistoryDrawer 并存，是为了让已有的打开/关闭
+   * 动作（含"无会话时先弹 SSH 框"这类分支）不需要重写。
+   */
+  const leftPanelTab = ref<'log' | 'history'>('log')
+
+  /** 终端历史回放：从右栏终端或左侧历史工单都能触发，状态放 store 才能共享 */
+  const showTerminalReplay = ref(false)
+  const terminalReplayCaseId = ref<string | null>(null)
+
+  function openTerminalReplay(caseId: string | null): void {
+    if (!caseId) return
+    terminalReplayCaseId.value = caseId
+    showTerminalReplay.value = true
+  }
+
+  function closeTerminalReplay(): void {
+    showTerminalReplay.value = false
+    terminalReplayCaseId.value = null
+  }
+
+  /** 折叠左面板但保留页签记忆：下次点图标条回到同一块内容 */
+  function collapseLeftPanel(): void {
+    logCollectVisible.value = false
+    showHistoryDrawer.value = false
+  }
+
   /** 三态布局求解结果，是 App 外壳与三个抽屉的唯一宽度真值。 */
   const workspaceLayout = computed(() =>
     resolveWorkspaceLayout({
@@ -900,6 +930,7 @@ export const useChatStore = defineStore('chat', () => {
       logCollectCaseDialogVisible.value = false
       // 面板打开即占用左栏，同侧的历史工单必须让位
       showHistoryDrawer.value = false
+      leftPanelTab.value = 'log'
       logCollectVisible.value = true
     } catch (e: any) {
       const status = e?.response?.status
@@ -921,6 +952,7 @@ export const useChatStore = defineStore('chat', () => {
   function openLogCollectForTask(taskId: string): void {
     logCollectResumeTaskId.value = taskId
     showHistoryDrawer.value = false
+    leftPanelTab.value = 'log'
     logCollectVisible.value = true
   }
 
@@ -2015,6 +2047,7 @@ export const useChatStore = defineStore('chat', () => {
   async function openHistoryDrawer() {
     // 左侧互斥：历史工单与日志收集不能同时占用左栏
     logCollectVisible.value = false
+    leftPanelTab.value = 'history'
     showHistoryDrawer.value = true
     try {
       const res = await caseApi.listByClient(clientId)
@@ -3753,13 +3786,19 @@ export const useChatStore = defineStore('chat', () => {
     diagnosticStage,
     // 日志收集（HCI 侧 acli log_collect）
     logCollectVisible,
-    // 工作区三栏布局（中央 / 左抽屉 / 右终端）
+    // 工作区三栏布局（中央 / 左面板 / 右面板）
     viewportWidth,
     workspaceLayout,
     leftPanelWidth,
     rightPanelWidth,
     isLeftPanelOpen,
     isRightPanelOpen,
+    leftPanelTab,
+    collapseLeftPanel,
+    showTerminalReplay,
+    terminalReplayCaseId,
+    openTerminalReplay,
+    closeTerminalReplay,
     setViewportWidth,
     setLeftPanelPreferred,
     setRightPanelPreferred,

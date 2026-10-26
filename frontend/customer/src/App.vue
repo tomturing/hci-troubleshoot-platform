@@ -4,28 +4,76 @@ import { Finished, FolderOpened, Monitor, Tickets } from '@element-plus/icons-vu
 import { useChatStore } from '@/stores/chat'
 import { getClientId } from '@/utils/clientId'
 import ChatWindow from '@/components/ChatWindow.vue'
+import HistoryPanel from '@/components/HistoryPanel.vue'
 import LogCollectCaseDialog from '@/components/LogCollectCaseDialog.vue'
 import LogCollectPanel from '@/components/LogCollectPanel.vue'
+import PanelShell from '@/components/PanelShell.vue'
 import SshConnectDialog from '@/components/SshConnectDialog.vue'
+import TerminalPanel from '@/components/TerminalPanel.vue'
 
 const chatStore = useChatStore()
 const clientId = getClientId()
 
 /**
- * 工作区外壳的三态让位。
+ * 工作区外壳。
  *
- * 为什么不用 grid 三列：三个抽屉仍是 el-drawer（fixed + append-to-body），
- * 它们不在文档流里；让位只能用"主区留出同宽 padding"表达，
- * 数值与抽屉宽度同源（都来自 chatStore.workspaceLayout），所以不会错位。
+ * 三块内容是 flex 兄弟节点（面板 / 会话 / 面板），宽度直接来自求解器：
+ * 没有抽屉、没有主区 padding 让位、没有遮罩穿透的 hack。
+ * 外壳只提供一个变量——中央内容列的可读宽度上限。
  */
-const shellStyle = computed(() => {
-  const layout = chatStore.workspaceLayout
-  return {
-    '--ws-left': `${layout.leftOffset}px`,
-    '--ws-right': `${layout.rightOffset}px`,
-    '--ws-center-max': `${layout.centerMaxWidth}px`,
+const shellStyle = computed(() => ({
+  '--ws-center-max': `${chatStore.workspaceLayout.centerMaxWidth}px`,
+}))
+
+/** 窄屏降级：面板改为覆盖式，此时才需要遮罩 */
+const isOverlayMode = computed(() => chatStore.workspaceLayout.mode === 'overlay')
+
+/**
+ * 拖拽调宽：只写"偏好宽度"，由求解器重新算当前宽度。
+ *
+ * 直接写当前宽度会在窗口变窄后留下一个越界固定值，把中央会话挤到不可读；
+ * 写偏好则始终能被 clamp 回合法区间。
+ */
+function startPanelResize(side: 'left' | 'right', e: MouseEvent) {
+  e.preventDefault()
+  const startX = e.clientX
+  const startWidth = side === 'left' ? chatStore.leftPanelWidth : chatStore.rightPanelWidth
+  const apply = side === 'left' ? chatStore.setLeftPanelPreferred : chatStore.setRightPanelPreferred
+  chatStore.setPanelResizing(true)
+  const onMouseUp = () => {
+    chatStore.setPanelResizing(false)
+    document.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('mouseup', onMouseUp)
   }
-})
+  const onMouseMove = (moveE: MouseEvent) => {
+    // 鼠标在窗口外松开时收不到 mouseup，靠按键状态兜底复位，否则过渡会被永久关闭
+    if (moveE.buttons === 0) {
+      onMouseUp()
+      return
+    }
+    // 左侧手柄往右拖是变宽，右侧手柄往左拖是变宽
+    const delta = side === 'left' ? moveE.clientX - startX : startX - moveE.clientX
+    apply(startWidth + delta)
+  }
+  document.addEventListener('mousemove', onMouseMove)
+  document.addEventListener('mouseup', onMouseUp)
+}
+
+/** 窄屏覆盖态点空白处：先收右侧（终端在上层），没有再收左侧 */
+function collapseOverlayPanel() {
+  if (chatStore.isRightPanelOpen) {
+    chatStore.closeTerminalSidebar()
+    return
+  }
+  chatStore.collapseLeftPanel()
+}
+
+/** 从右栏终端打开当前工单的终端历史回放 */
+function openCurrentCaseTerminalHistory() {
+  // 优先当前聊天工单，其次日志收集绑定的工单：无聊天工单时也能看采集会话的回放
+  const caseId = chatStore.currentCase?.case_id ?? chatStore.logCollectCaseId ?? null
+  chatStore.openTerminalReplay(caseId)
+}
 
 // 视口变化时重新求解；rAF 合并同一帧内的连续 resize，避免布局抖动
 const viewportResizing = ref(false)
@@ -95,7 +143,6 @@ function handleDownloadBridge() {
     :class="{ 'is-resizing': chatStore.isPanelResizing || viewportResizing }"
     :style="shellStyle"
   >
-    <div class="app-container">
     <header
       class="app-header"
       :class="{ 'is-compact': chatStore.workspaceLayout.centerMaxWidth <= 620 }"
@@ -181,19 +228,111 @@ function handleDownloadBridge() {
         </div>
       </div>
     </header>
-    <main class="app-main">
-      <ChatWindow />
-    </main>
 
-    <!-- SSH 连接弹框（create-case / terminal-only 统一入口） -->
+    <!-- 三栏：左面板 / 中央会话 / 右终端。全部是 flex 子项，无抽屉、无遮罩穿透 -->
+    <div class="workspace-body">
+      <PanelShell
+        side="left"
+        :open="chatStore.isLeftPanelOpen"
+        :width="chatStore.leftPanelWidth"
+        :overlay="isOverlayMode"
+        :resizing="chatStore.isPanelResizing"
+        @collapse="chatStore.collapseLeftPanel()"
+        @resize-start="startPanelResize('left', $event)"
+      >
+        <template #rail>
+          <el-tooltip content="日志收集" placement="right" :show-after="400">
+            <button
+              type="button"
+              class="rail-btn"
+              :class="{ 'is-active': chatStore.leftPanelTab === 'log' }"
+              @click="chatStore.openLogCollect()"
+            >
+              <el-icon><FolderOpened /></el-icon>
+            </button>
+          </el-tooltip>
+          <el-tooltip content="历史工单" placement="right" :show-after="400">
+            <button
+              type="button"
+              class="rail-btn"
+              :class="{ 'is-active': chatStore.leftPanelTab === 'history' }"
+              @click="chatStore.openHistoryDrawer()"
+            >
+              <el-icon><Tickets /></el-icon>
+            </button>
+          </el-tooltip>
+        </template>
+        <template #title>
+          <el-icon><component :is="chatStore.leftPanelTab === 'log' ? FolderOpened : Tickets" /></el-icon>
+          <span>{{ chatStore.leftPanelTab === 'log' ? '日志收集' : '历史工单' }}</span>
+        </template>
+
+        <!-- v-show 保留实例：收起再展开不该重新探测环境，更不该断开 SSH 会话 -->
+        <LogCollectPanel
+          v-if="chatStore.logCollectCaseId"
+          v-show="chatStore.logCollectVisible"
+          v-model="logCollectVisible"
+          :case-id="chatStore.logCollectCaseId"
+        />
+        <HistoryPanel
+          v-if="chatStore.leftPanelTab === 'history'"
+          v-show="chatStore.showHistoryDrawer"
+        />
+      </PanelShell>
+
+      <main class="app-main">
+        <!--
+          中央会话的标题栏：高度与两侧面板的 panel-head 一致（48px），
+          三栏顶部形成一条贯通的分隔线。之前中央没有这一条，
+          双开时两侧 48px、中间直接是消息区，看起来就是「两边大、中间小」。
+        -->
+        <div class="main-head">
+          <div class="main-head-inner">
+            <span class="main-head-title">
+              {{ chatStore.currentCase?.case_id || '未绑定工单' }}
+            </span>
+            <span v-if="chatStore.currentCase?.title" class="main-head-sub">
+              {{ chatStore.currentCase.title }}
+            </span>
+          </div>
+        </div>
+        <ChatWindow />
+      </main>
+
+      <PanelShell
+        side="right"
+        :open="chatStore.isRightPanelOpen"
+        :width="chatStore.rightPanelWidth"
+        :overlay="isOverlayMode"
+        :resizing="chatStore.isPanelResizing"
+        @collapse="chatStore.closeTerminalSidebar()"
+        @resize-start="startPanelResize('right', $event)"
+      >
+        <template #rail>
+          <el-tooltip content="SSH 终端" placement="left" :show-after="400">
+            <button type="button" class="rail-btn" @click="chatStore.checkAndOpenTerminal()">
+              <el-icon><Monitor /></el-icon>
+            </button>
+          </el-tooltip>
+        </template>
+        <template #title>
+          <el-icon><Monitor /></el-icon>
+          <span>SSH 终端</span>
+        </template>
+
+        <TerminalPanel @open-terminal-history="openCurrentCaseTerminalHistory" />
+      </PanelShell>
+    </div>
+
+    <!-- 窄屏降级：面板覆盖在中央区之上，点空白处收起 -->
+    <div
+      v-if="isOverlayMode && (chatStore.isLeftPanelOpen || chatStore.isRightPanelOpen)"
+      class="panel-scrim"
+      @click="collapseOverlayPanel()"
+    ></div>
+
+<!-- SSH 连接弹框（create-case / terminal-only 统一入口） -->
     <SshConnectDialog :bridge-status="chatStore.sshConnectDialogBridgeStatus" />
-
-    <!-- 日志收集抽屉：复用终端已建立的 SSH 会话执行 acli log_collect -->
-    <LogCollectPanel
-      v-if="chatStore.logCollectCaseId"
-      v-model="logCollectVisible"
-      :case-id="chatStore.logCollectCaseId"
-    />
 
     <!-- 无活跃工单时人工指定归档工单号 -->
     <LogCollectCaseDialog />
@@ -222,8 +361,6 @@ function handleDownloadBridge() {
         </el-button>
       </template>
     </el-dialog>
-
-    </div>
   </div>
 </template>
 
@@ -243,50 +380,88 @@ body {
 
 <style scoped>
 /*
- * 工作区外壳：三态让位。
+ * 工作区外壳：顶部通栏应用栏 + 下方三栏。
  *
- * 三个抽屉仍是 el-drawer（fixed + append-to-body），不在文档流里，
- * 因此"推挤"只能用等宽 padding 表达；padding 值与抽屉宽度同源，
- * 都来自 chatStore.workspaceLayout，所以不会出现缝隙或重叠。
+ * 三栏是 flex 兄弟节点，宽度由求解器直接给出；面板收窄/展开走宽度过渡，
+ * 中央区自然吃到剩余空间——不需要再给主区补 padding 去"模拟"推挤。
  */
 .workspace-shell {
   height: 100vh;
   box-sizing: border-box;
-  padding-left: var(--ws-left, 0px);
-  padding-right: var(--ws-right, 0px);
-  /* 与 el-drawer 滑入时长/曲线对齐，避免抽屉已到位而主区还在移动 */
-  transition:
-    padding-left 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-    padding-right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-/* 拖拽调宽时必须逐帧跟手，过渡会让主区滞后于手柄 */
-.workspace-shell.is-resizing {
-  transition: none;
-}
-
-/*
- * 容器铺满，可读宽度由内部内容块限宽。
- *
- * 曾经把 max-width 加在这一层：视口 1920、只开一个抽屉时，容器固定 900 居中，
- * 两侧各露出 250px 页面底色；由于顶栏渐变、聊天区底色都跟着容器走，
- * 视觉上就是「两块白色空白带」，看起来像布局没撑满。现在改为：
- * 容器吃满可用宽度（顶栏通栏），`.header-content` 与聊天内容各自限宽居中，
- * 留白依旧存在但不再表现为「两块空白」。
- */
-.app-container {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  background: #f5f7fa;
+}
+
+.workspace-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+  align-items: stretch;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #f0f2f5;
+}
+
+/* 与 PanelShell 的 .panel-head 同高，三栏顶部对齐 */
+.main-head {
+  flex: 0 0 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  background: #fff;
+  border-bottom: 1px solid #e4e7ed;
+}
+
+.main-head-inner {
   width: 100%;
+  max-width: var(--ws-center-max, 900px);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
 }
 
+.main-head-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+  white-space: nowrap;
+}
+
+.main-head-sub {
+  font-size: 13px;
+  color: #909399;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 窄屏覆盖态的遮罩：唯一还会出现遮罩的场景 */
+.panel-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 29;
+  background: rgba(0, 0, 0, 0.35);
+}
+
 .app-header {
+  /* 通栏应用栏：横跨三栏，三块内容共享一条顶栏，不存在"两边大中间小" */
+  flex: 0 0 auto;
   background: linear-gradient(135deg, #409eff, #337ecc);
   color: #fff;
   padding: 12px 24px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  z-index: 1;
 }
 
 .header-content {

@@ -266,24 +266,27 @@ describe('LogCollectPanel', () => {
     expect(probe.node_ip).toBe('172.28.25.1')
   })
 
-  it('抽屉从左侧弹出，宽度取自工作区求解结果', async () => {
+  // 面板化之后外壳（标题/收起/拖拽）由 PanelShell 负责，
+  // 本组件只渲染内容——再出现 el-drawer 就说明有人把抽屉外壳加回来了。
+  it('不再自带抽屉外壳，只渲染面板内容', async () => {
     const wrapper = mountPanel()
     await flushPromises()
 
-    const drawer = wrapper.find('.drawer-stub')
-    expect(drawer.attributes('data-direction')).toBe('ltr')
-    expect(drawer.attributes('data-size')).toBe('520px')
+    expect(wrapper.find('.drawer-stub').exists()).toBe(false)
+    expect(wrapper.find('.lc-panel').exists()).toBe(true)
+    expect(wrapper.find('.lc-footer').exists()).toBe(true)
   })
 
-  it('抽屉头部提供「刷新进度」与「关闭」入口（钉住随推挤布局一并移除）', async () => {
+  it('工具条提供「刷新进度」入口，「关闭」由外壳的收起按钮承担', async () => {
     const wrapper = mountPanel()
     await flushPromises()
 
-    const header = wrapper.find('.drawer-stub-header')
-    expect(header.text()).toContain('日志收集')
-    expect(header.text()).toContain('刷新进度')
-    expect(header.text()).toContain('关闭')
-    expect(header.text()).not.toContain('钉住')
+    const bar = wrapper.find('.lc-case-bar')
+    expect(bar.text()).toContain('归档工单')
+    expect(bar.text()).toContain('刷新进度')
+    // 收起动作由 PanelShell 提供，组件内不该再出现"关闭"按钮导致两个入口
+    expect(bar.text()).not.toContain('关闭')
+    expect(bar.text()).not.toContain('钉住')
   })
 
   // 回归：两抽屉同时展开时左栏被压到 500px 上下，
