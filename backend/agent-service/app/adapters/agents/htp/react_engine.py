@@ -1939,6 +1939,10 @@ class ReactEngine:
                 custom_input=not result.options,
                 metadata={
                     "variable_name": result.variable_name,
+                    # 展示名与描述一并下发给前端：变量名受标识符约束（如 qemu_log_path），
+                    # 直接呈现给用户可读性差；前端按 display_name -> description 首句 -> name 兜底。
+                    "display_name": var_schema.get("display_name"),
+                    "description": var_schema.get("description"),
                     "validation_pattern": var_schema.get("validation_pattern"),
                     "variable_type": var_schema.get("type", "string"),
                     "required": var_schema.get("required", True),

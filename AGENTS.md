@@ -487,3 +487,21 @@ kb-service（生产）/ agent-service（消费）/ conversation-service（消费
 - **根因**：SOP#2/#3/#5 的变量表「依赖」列被写成自然语言，且 22 个章节级变量因 4 列表头无法表达采集工具，解析后全部是 `tool_call + acquisition_tool=NULL`；运行时两者都静默降级为人工弹框，其中一个还写出了永远不会被消费的野键 `任务原始数据`。
 - **二次复发原因**：#1149（前端已提交态）与 #1151（后端 `user_questions` 幻觉过滤）修的是"变量已写入但 UI/模型说谎"这条链路，而本次是"变量从未写对"，两次补丁天然治不到。
 - **结论**：变量声明是跨服务契约，必须有值对象 + 三道闸；靠"下游修症状"永远追不上"上游自由写入"。
+
+### 10.5 变量提交后的续跑契约
+
+`POST /api/conversations/{id}/interactive-response` 对 `variable_input` / `variable_confirm`
+**只写变量池，不触发推理**。原因是该会话上一轮的 SSE 连接已结束，后端无法主动推送。
+
+因此：
+
+- 路由必须返回 `should_resume: true`，调用方不得把 HTTP 200 当成"已继续"；
+- 前端必须保证"续跑消息一定发出去"：`chatStore.sendMessage` 在 `isStreaming` 时返回
+  `false`，调用方**必须等流结束（`resumeAfterStreamIdle`）后重发**，不能只弹一句"系统会自动继续"；
+- 用户提交记录必须落库（`add_message` 需要 `trace_id`），否则事后无法对账。
+
+### 10.6 变量卡片的展示名
+
+变量名受标识符约束，直接展示给用户可读性差。卡片标题按
+`display_name → description 首句 → variable_name` 渲染，`display_name` 由
+SOP 作者显式定义（迁移 053 为存量批量补齐）。这只是展示层约定，不改变命名与提交语义。

@@ -984,7 +984,19 @@ async def sop_request_variable(
                 reason=reason,
                 conversation_id=conversation_id,
             )
-            acquired_value = _extract_value(skill_result, variable_name, "value")
+            # 优先按 SOP 声明的 output_path 提取（与 tool_call 语义一致）；
+            # 未命中时回退到既有 Skill 约定 {"value": ...}，避免存量技能失效。
+            acquired_value = _extract_value(skill_result, variable_name, output_path or "value")
+            if acquired_value is None and output_path:
+                acquired_value = _extract_value(skill_result, variable_name, "value")
+                if acquired_value is not None:
+                    logger.info(
+                        event="sop_request_variable_skill_output_path_fallback",
+                        message="output_path 未命中，回退到技能约定的 value 字段",
+                        variable_name=variable_name,
+                        acquisition_skill=acquisition_tool,
+                        output_path=output_path,
+                    )
             if acquired_value is not None:
                 logger.info(
                     event="sop_request_variable_skill_executed",

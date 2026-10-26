@@ -73,7 +73,26 @@ path_template   -> 由变量池渲染（/sf/log/{task_day}/sfvt_qemu_{vmid}.log�
 
 首批种子：`hci_common_vt_diag`（22 个虚拟机排障通用变量，见 052 迁移）。
 
-## 5. 存量整改（051）
+## 4.1 提交后续跑闭环（"填了还在问"的最后一环）
+
+变量提交后**后端不会自动续跑**：`/interactive-response` 只负责写变量池，
+该会话上一轮的 SSE 连接已结束，后端无法主动推送。历史实现有两个断裂点：
+
+| 断裂点 | 现象 | 修复 |
+|---|---|---|
+| `chatStore.sendMessage` 在 `isStreaming` 时直接 `return false` | 用户提交瞬间流未收尾 → 续跑消息被静默吞掉，界面停住 | 前端 `resumeAfterStreamIdle`：轮询等流结束（上限 60s）后**真正重发** |
+| 路由只返回 `{"ok": true}` | 调用方把 HTTP 200 当成"已继续" | 返回 `should_resume`，明确区分"已写库"与"已继续" |
+| `add_message` 漏传 `trace_id` | TypeError 被 `except` 吞成 WARNING，用户提交记录从未落库 | 补 `trace_id=request_id`，并改为 ERROR 结构化日志 |
+
+## 4.2 卡片可读性（命名自由的代价）
+
+变量名受标识符约束，`qemu_log_path` 直接展示给用户可读性差。契约支持
+`display_name`，前端按 `display_name → description 首句 → variable_name` 渲染，
+迁移 053 为存量变量批量补齐（截断规则：全角/半角括号、分号、句号取首段）。
+
+注意：这只影响展示，不改变任何命名或提交语义。
+
+## 5. 存量整改（051/053）
 
 | SOP | 整改前 | 整改后 |
 |---|---|---|
@@ -81,7 +100,7 @@ path_template   -> 由变量池渲染（/sf/log/{task_day}/sfvt_qemu_{vmid}.log�
 | #3 虚拟机开机失败 | 22 处 `tool_call` 缺工具 + `task_logs` 整行列错位 | save/publish 均 0 error |
 | #4 硬盘坏道 | 已被 040 整改，0 违规 | 不动（合规样板） |
 | #5 内存条ECC | 3 处 `skill_call` 缺 `output_path` + 1 处 `json_extract` 缺依赖 | save/publish 均 0 error |
-| #1 虚拟机开机失败排查流程（draft） | 缺 `task_day` 声明，机器无法安全推断 | 未纳入本批，发布前需作者按包重写 |
+| #1 虚拟机开机失败排查流程（draft） | 缺 `task_day` 声明 + 24 处未声明采集工具 | 补齐 `task_day`（derived）后与 #2/#3 同批整改，现 0 error |
 
 整改规则分三类，不做"看起来能过"的兜底：
 
@@ -92,6 +111,12 @@ path_template   -> 由变量池渲染（/sf/log/{task_day}/sfvt_qemu_{vmid}.log�
 ## 6. 验收
 
 ```bash
+# 真实数据驱动的运行时闭环（不需要起全套服务）
+python scripts/verify/sop_variable_runtime_e2e.py --schema-file /tmp/sop3_schema.json
+
+# 任意环境的契约巡检（退出码非 0 即阻断）
+DATABASE_URL=... python scripts/verify/sop_variable_contract_check.py --status published
+
 # 契约与合并规则
 PYTHONPATH=backend python -m pytest backend/shared/tests/test_sop_variable_spec.py -q
 cd backend/kb-service && PYTHONPATH=.:../.. python -m pytest tests/test_variable_pack.py tests/test_sop_publish_dependencies.py -q
@@ -110,10 +135,13 @@ sed 's/^COMMIT;$/ROLLBACK;/' database/data-migrations/051_sop_variable_contract_
 - [ ] 请求未声明变量返回 error 且**不产生** `interactive_request` 消息
 - [ ] `path_template` 变量不再出现人工输入卡片
 - [ ] `context_variables` 的键 100% ∈ schema 声明集
+- [ ] 变量提交后**确实发生第二轮推理**（`sendMessage` 被调用第二次），而不是只有一句提示
+- [ ] 卡片标题显示可读文案，不直接暴露 `qemu_log_path` 这类技术名
 
 ## 7. 已知边界
 
-- 路径类变量依赖 `task_day`/`vmid` 已声明；缺声明的 SOP（如 #1）无法自动推断，必须人工补齐。
+- 路径类变量依赖 `task_day`/`vmid` 已声明。SOP#1 原本缺 `task_day`，已按 SOP#3 的既有约定
+  补为 `derived: split(task_date, '-').2`；后续新增 SOP 若用到 `{task_day}` 需自行声明。
 - 10 个"人工确认类"变量（`host_ip` / `pci_address` / `vm_disk_path` 等）**没有采集命令可依**，
   SOP 正文只把它们当命令参数使用。当前以 `user_input` + 明确 `description` 落地，
   若后续要自动化，需由 SOP 作者补充真实采集命令后再改为 `tool_call`。

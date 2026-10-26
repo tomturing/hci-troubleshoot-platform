@@ -95,13 +95,45 @@ FROM (
     FROM sop_document doc
     CROSS JOIN LATERAL jsonb_array_elements(doc.variable_schema) WITH ORDINALITY AS item(v, ord)
     LEFT JOIN _var_fix f ON f.name = item.v ->> 'name'
-    WHERE doc.id IN (2, 3, 5)
+    WHERE doc.id IN (1, 2, 3, 5)
       AND doc.variable_schema IS NOT NULL
       AND jsonb_typeof(doc.variable_schema) = 'array'
     GROUP BY doc.id
 ) sub
 WHERE d.id = sub.id
   AND d.variable_schema IS DISTINCT FROM sub.new_schema;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- A1. 补齐 task_day 派生声明
+--     日志路径模板依赖 {task_day}；SOP#1 声明了 task_date 却漏了 task_day，
+--     机器无法安全推断「日」的提取方式，这里按 SOP#3 的既有约定补齐：
+--     task_day = split(task_date, '-').2
+-- ──────────────────────────────────────────────────────────────────────────────
+UPDATE sop_document d
+SET variable_schema = d.variable_schema || jsonb_build_array(
+        jsonb_build_object(
+            'name', 'task_day',
+            'type', 'string',
+            'required', true,
+            'acquisition_strategy', 'derived',
+            'expression', 'split(task_date, ''-'').2',
+            'depends_on', jsonb_build_array('task_date'),
+            'description', '日（日期），从task_date提取，格式为dd',
+            'display_name', '日',
+            'auto_generated', false
+        )
+    ),
+    updated_at = NOW()
+WHERE d.id IN (1, 2, 3, 5)
+  AND d.variable_schema IS NOT NULL
+  AND EXISTS (
+      SELECT 1 FROM jsonb_array_elements(d.variable_schema) v
+      WHERE v ->> 'name' = 'task_date'
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM jsonb_array_elements(d.variable_schema) v
+      WHERE v ->> 'name' = 'task_day'
+  );
 
 -- ──────────────────────────────────────────────────────────────────────────────
 -- A2. sop_default 必须带 default_value（固定路径常量）
@@ -121,7 +153,7 @@ SET variable_schema = (
         FROM jsonb_array_elements(d.variable_schema) WITH ORDINALITY AS item(v, ord)
     ),
     updated_at = NOW()
-WHERE d.id IN (2, 3)
+WHERE d.id IN (1, 2, 3)
   AND d.variable_schema IS NOT NULL
   AND EXISTS (
       SELECT 1 FROM jsonb_array_elements(d.variable_schema) v
@@ -231,7 +263,7 @@ SET variable_schema = (
         FROM jsonb_array_elements(d.variable_schema) WITH ORDINALITY AS item(v, ord)
     ),
     updated_at = NOW()
-WHERE d.id IN (2, 3, 5)
+WHERE d.id IN (1, 2, 3, 5)
   AND d.variable_schema IS NOT NULL
   AND EXISTS (
       SELECT 1 FROM jsonb_array_elements(d.variable_schema) v
@@ -310,7 +342,7 @@ SET tree_json = jsonb_set(
         true
     ),
     updated_at = NOW()
-WHERE d.id IN (2, 3, 5)
+WHERE d.id IN (1, 2, 3, 5)
   AND d.tree_json -> 'variables' IS NOT NULL
   AND jsonb_typeof(d.tree_json -> 'variables') = 'array'
   AND EXISTS (
@@ -339,7 +371,7 @@ BEGIN
     FROM sop_document d
     CROSS JOIN LATERAL jsonb_array_elements(d.variable_schema) v
     CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(v -> 'depends_on', '[]'::jsonb)) AS dep(dep_name)
-    WHERE d.id IN (2, 3, 5)
+    WHERE d.id IN (1, 2, 3, 5)
       AND NOT EXISTS (
           SELECT 1 FROM jsonb_array_elements(d.variable_schema) sv
           WHERE sv ->> 'name' = dep.dep_name

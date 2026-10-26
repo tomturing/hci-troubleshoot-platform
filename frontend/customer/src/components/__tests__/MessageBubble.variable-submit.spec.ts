@@ -25,6 +25,7 @@ const { mockSendMessage, mockStore, mockElMessage } = vi.hoisted(() => {
     mockStore: {
       messages: [] as any[],
       isLoading: false,
+      isStreaming: false,
       conversationId: 'conv-var-1',
       sendMessage,
       clearInteractiveRequest: vi.fn(),
@@ -100,10 +101,12 @@ describe('MessageBubble 变量卡片提交状态（Q2026101496655 回归）', ()
     mockSendMessage.mockResolvedValue(true)
   })
 
-  it('提交成功但触发消息被流式守卫吞掉（sendMessage 返回 false）时，弹框仍进入已提交态并提示', async () => {
+  it('被流式守卫吞掉时必须等流结束后真正重发，而不是只提示"系统会自动继续"', async () => {
     const msg = variableInputMessage()
     mockStore.messages = [msg]
-    mockSendMessage.mockResolvedValue(false) // 模拟 isStreaming 吞掉
+    // 首次被 isStreaming 守卫吞掉，流结束后第二次发送成功
+    mockSendMessage.mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    mockStore.isStreaming = false // 轮询时立即判定流已结束
     const fetchMock = stubFetch(200)
 
     const wrapper = await mountBubble(msg)
@@ -118,12 +121,44 @@ describe('MessageBubble 变量卡片提交状态（Q2026101496655 回归）', ()
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(setup.interactiveSubmitted).toBe(true)
     expect(mockElMessage.info).toHaveBeenCalledWith(
-      expect.stringContaining('变量值已提交成功'),
+      expect.stringContaining('等待当前诊断轮次结束后自动继续'),
     )
+    // 关键：续跑必须真的发生第二次（Q2026102600003 的"填了还在问"根因）
+    expect(mockSendMessage).toHaveBeenCalledTimes(2)
+
     // 表单被「已提交」标签替换，不再渲染输入框与假报错
     const html = wrapper.html()
     expect(html).toContain('已提交')
     expect(html).not.toContain('请输入值（必填）')
+    wrapper.unmount()
+  })
+
+  it('卡片标题按 display_name -> description 首句 -> variable_name 兜底', async () => {
+    const msg = variableInputMessage('req-var-label')
+    Object.assign(msg.metadata.event.metadata, {
+      variable_name: 'qemu_log_path',
+      display_name: 'QEMU 日志路径',
+      description: 'QEMU 日志路径；由 task_day + vmid 推导',
+    })
+    mockStore.messages = [msg]
+
+    const wrapper = await mountBubble(msg)
+    const setup = (wrapper.getCurrentComponent() as any).setupState
+    expect(setup.interactiveVariableLabel).toBe('QEMU 日志路径')
+    wrapper.unmount()
+  })
+
+  it('缺少 display_name 时标题退化为 description 首句', async () => {
+    const msg = variableInputMessage('req-var-label2')
+    Object.assign(msg.metadata.event.metadata, {
+      variable_name: 'cert_path',
+      description: '证书文件绝对路径；用于 acli system md5sum 校验',
+    })
+    mockStore.messages = [msg]
+
+    const wrapper = await mountBubble(msg)
+    const setup = (wrapper.getCurrentComponent() as any).setupState
+    expect(setup.interactiveVariableLabel).toBe('证书文件绝对路径')
     wrapper.unmount()
   })
 
