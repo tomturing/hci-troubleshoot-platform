@@ -88,6 +88,43 @@ var logCollectModuleCatalogOrder = []string{
 // 且插件位于 /sf/data/local/acli，缺一不可。
 const logCollectAcliPathEnv = `export PATH="$PATH:/sf/bin:/sf/sbin:/usr/sbin:/usr/local/bin";`
 
+// logCollectAcliCandidates 是 acli 二进制的解析顺序（HCI 官方入口在前）。
+//
+// 第一性原理：PATH 只能"追加"，而 sshd 非交互会话的默认 PATH
+// （/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin）排在我们的追加项之前。
+// 一旦节点上存在两份 acli（旧版落在 /usr/local/bin 等目录），`acli --version` 命中的是旧版，
+// 于是面板显示的版本与运维在登录 shell 里手敲的结果不一致，且无法自证。
+// 因此版本探测按绝对路径解析，并把真正命中的路径一起回传。
+var logCollectAcliCandidates = []string{"/sf/bin/acli", "/sf/sbin/acli"}
+
+// buildAcliVersionCommand 生成既解析二进制路径、又输出原始版本的两段式命令。
+//
+// 输出契约（parseAcliVersion / parseAcliBinary 依赖）：
+//
+//	__ACLI_BIN__=/sf/bin/acli
+//	1.0.1
+//	build 2026-09-15 21:00:04
+//
+// 候选都不存在时才回落 `command -v acli`，最后输出 __ACLI_ABSENT__，
+// 保证"未安装"的判定口径与旧实现一致（不会被误判成已安装）。
+// probe 与 acli_sync 复用同一命令：显示值与安装判定必须同源，否则会出现
+// "面板显示 1.0.1 但系统判定落后而反复重装"。
+func buildAcliVersionCommand() string {
+	candidates := strings.Join(logCollectAcliCandidates, " ")
+	return logCollectAcliPathEnv + ` for p in ` + candidates + `; do if [ -x "$p" ]; then v=$("$p" --version 2>&1); if [ -n "$v" ]; then printf '__ACLI_BIN__=%s\n' "$p"; printf '%s\n' "$v"; exit 0; fi; fi; done; b=$(command -v acli 2>/dev/null); if [ -n "$b" ]; then printf '__ACLI_BIN__=%s\n' "$b"; acli --version 2>&1; else echo __ACLI_ABSENT__; fi`
+}
+
+// parseAcliBinary 从探测输出中取出实际命中的 acli 路径；取不到返回空串。
+func parseAcliBinary(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "__ACLI_BIN__=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "__ACLI_BIN__="))
+		}
+	}
+	return ""
+}
+
 func builtinLogCollectModules() []logCollectModuleOption {
 	options := make([]logCollectModuleOption, 0, len(logCollectModuleCatalogOrder))
 	for _, value := range logCollectModuleCatalogOrder {
@@ -268,10 +305,13 @@ func (s *SSHSession) runCommandPty(ctx context.Context, command string, timeout 
 
 // logCollectProbeResult 是前端确认安装与选择上传方式所需的最小事实集合。
 type logCollectProbeResult struct {
-	Architecture       string `json:"architecture"`
-	AcliInstalled      bool   `json:"acli_installed"`
-	AcliVersion        string `json:"acli_version"`
-	AcliBuildTime      string `json:"acli_build_time"`
+	Architecture  string `json:"architecture"`
+	AcliInstalled bool   `json:"acli_installed"`
+	AcliVersion   string `json:"acli_version"`
+	AcliBuildTime string `json:"acli_build_time"`
+	// AcliBinary 是本次探测真正命中的 acli 路径：多份 acli 共存时，仅凭版本号无法判断
+	// "面板显示的值"与"运维手敲的值"为何不同，路径是唯一可自证的事实。
+	AcliBinary         string `json:"acli_binary,omitempty"`
 	AvailableMB        int64  `json:"available_mb"`
 	LogServerURL       string `json:"log_server_url"`
 	LogServerReachable bool   `json:"log_server_reachable"`
@@ -293,8 +333,9 @@ func (s *SSHSession) probeLogCollectEnv(ctx context.Context, logServerURL string
 	archOut, _, _ := s.runCommandPty(ctx, "uname -m", 10*time.Second)
 	result.Architecture = strings.TrimSpace(archOut)
 
-	versionOut, _, _ := s.runCommandPty(ctx, logCollectAcliPathEnv+" acli --version", 10*time.Second)
+	versionOut, _, _ := s.runCommandPty(ctx, buildAcliVersionCommand(), 10*time.Second)
 	result.AcliVersion, result.AcliBuildTime = parseAcliVersion(versionOut)
+	result.AcliBinary = parseAcliBinary(versionOut)
 	result.AcliInstalled = result.AcliVersion != ""
 
 	// 场景目录与节点清单必须在 curl 之前采集：日志服务器不可达（P3 路径）是常态，
@@ -607,6 +648,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		blog("INFO", "log_collect.probe", "日志收集环境探测完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": probe.Architecture, "acli_installed": probe.AcliInstalled,
 			"acli_version": probe.AcliVersion, "acli_build_time": probe.AcliBuildTime,
+			"acli_binary":    probe.AcliBinary,
 			"available_mb":   probe.AvailableMB,
 			"log_server_url": probe.LogServerURL, "log_server_reachable": probe.LogServerReachable,
 			"http_code": probe.LogServerHTTPCode, "latency_ms": probe.LogServerLatencyMS,

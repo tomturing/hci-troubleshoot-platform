@@ -294,6 +294,72 @@ describe('LogCollectPanel', () => {
     expect(wrapper.text()).toContain('已全选')
   })
 
+  // 回归：acli 版本必须显示完整事实（版本 + 编译时间），并说明这份结论来自哪个二进制。
+  // 现场问题：面板只显示 1.0.0，运维手敲 `acli --version` 是 1.0.1，无法判断差异来源。
+  it('acli 展示版本 + build，并附上实际命中的二进制路径', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'probe',
+        status: 'ok',
+        log_data: {
+          architecture: 'aarch64',
+          acli_installed: true,
+          acli_version: '1.0.1',
+          acli_build_time: '2026-09-15 21:00:04',
+          acli_binary: '/sf/bin/acli',
+          available_mb: 60989,
+          log_server_reachable: true,
+          http_code: 200,
+          catalog_source: 'acli_help',
+          modules: [{ value: 'vm_suspend', label: '虚拟机挂起专项' }],
+          hosts: [],
+        },
+      }),
+    })
+    await flushPromises()
+
+    const probe = wrapper.find('.lc-probe')
+    expect(probe.text()).toContain('1.0.1 (build 2026-09-15 21:00:04)')
+    expect(wrapper.text()).toContain('/sf/bin/acli')
+    expect(wrapper.text()).toContain('重新探测')
+  })
+
+  it('后端未回传 build 时只显示版本号，不出现 undefined', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'probe',
+        status: 'ok',
+        log_data: {
+          architecture: 'x86_64',
+          acli_installed: true,
+          acli_version: '1.0.0',
+          available_mb: 1024,
+          log_server_reachable: false,
+          http_code: 0,
+          catalog_source: 'platform_default',
+          modules: [{ value: 'vm_suspend', label: '虚拟机挂起专项' }],
+          hosts: [],
+        },
+      }),
+    })
+    await flushPromises()
+
+    const probe = wrapper.find('.lc-probe').text()
+    expect(probe).toContain('1.0.0')
+    expect(probe).not.toContain('undefined')
+    expect(probe).not.toContain('build')
+  })
+
   // 回归：节点清单唯一来源是 `acli platform node list`，acli 未安装时清单必然为空。
   // 旧文案「请按 acli -i 格式手填 IP」把内部参数名写给用户，既没说清原因，也没给可照抄的格式。
   it('acli 未安装导致清单为空时，提示给的是原因与填写格式，不是内部参数名', async () => {

@@ -2912,12 +2912,12 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 	}
 
 	// 2. 检测当前 acli 安装情况
-	versionCmd := `export PATH="$PATH:/sf/bin:/sf/sbin:/usr/sbin:/usr/local/bin"; acli --version`
-	verOut, verCode, _ := s.runQuickCommand(ctx, versionCmd)
-	currentVer, currentBuild := "", ""
-	if verCode == 0 {
-		currentVer, currentBuild = parseAcliVersion(verOut)
-	}
+	// 与日志收集面板的 probe 共用同一命令：版本判定与界面展示必须同源，
+	// 否则会出现「面板显示 1.0.1 却每次登录都判定落后并重装」的错位。
+	versionCmd := buildAcliVersionCommand()
+	verOut, _, _ := s.runQuickCommand(ctx, versionCmd)
+	currentVer, currentBuild := parseAcliVersion(verOut)
+	currentBinary := parseAcliBinary(verOut)
 
 	// 3. 探测最新官方包元数据
 	remoteFilename, remoteBuild, downloadURL, probeErr := probeAcliLatest(ctx, targetArch, msg.AcliURL)
@@ -2953,6 +2953,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 
 	blog("INFO", "acli_sync.version_check", "acli 版本判定完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"architecture": targetArch, "current_version": currentVer, "current_build": currentBuild,
+		"current_binary":  currentBinary,
 		"remote_filename": remoteFilename, "remote_build": remoteBuild,
 		"need_install": needInstall, "force": msg.Force, "probe_error": errString(probeErr),
 	})
