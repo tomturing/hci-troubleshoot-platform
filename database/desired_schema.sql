@@ -2770,11 +2770,37 @@ CREATE TABLE IF NOT EXISTS sop_document (
     tree_generator_version  varchar(50)      DEFAULT 'sop-parser-v1',
     -- 变量定义字段（T-AGT-24：approve 时自动解析生成）
     variable_schema          jsonb            DEFAULT '[]'::jsonb,
+    -- 已应用的变量包引用，形如 [{"pack":"hci_common_vt_diag","version":1}]
+    -- 仅用于漂移检测与批量同步；运行时只读 variable_schema（展开后的扁平数组）
+    applied_packs            jsonb            NOT NULL DEFAULT '[]'::jsonb,
     -- 关键信号集合（跨文档通用，与 kbd_entry.signals_json 同构；抽取阶段填充；占位符 {{VAR}} 大写）
     signals_json             jsonb            NOT NULL DEFAULT '[]'::jsonb,
     CONSTRAINT fk_sop_document_category_id FOREIGN KEY (category_id) REFERENCES kb_category (code) ON DELETE NO ACTION,
     CONSTRAINT sop_document_pkey PRIMARY KEY (id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_sop_document_applied_packs ON sop_document USING GIN (applied_packs);
+
+COMMENT ON COLUMN sop_document.applied_packs IS '已应用的变量包引用列表，形如 [{"pack":"hci_common_vt_diag","version":1}]';
+
+-- SOP 变量包：可被多个 SOP 复用的命名变量集合
+-- 目的：消灭「同一份通用变量被复制粘贴到多个 SOP、改一处漏两处」的漂移缺陷。
+-- 包展开后仍写回 sop_document.variable_schema，运行时只读扁平数组，不感知包的存在。
+CREATE TABLE IF NOT EXISTS sop_variable_pack (
+    id serial NOT NULL,
+    pack_name varchar(64) NOT NULL UNIQUE,
+    version integer NOT NULL DEFAULT 1,
+    description text NOT NULL DEFAULT '',
+    variables jsonb NOT NULL DEFAULT '[]'::jsonb,
+    is_active boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT chk_sop_variable_pack_variables_array CHECK (jsonb_typeof(variables) = 'array'),
+    CONSTRAINT sop_variable_pack_pkey PRIMARY KEY (id)
+);
+
+COMMENT ON TABLE sop_variable_pack IS 'SOP 变量包：可被多个 SOP 复用的命名变量集合';
+COMMENT ON COLUMN sop_variable_pack.variables IS '变量定义数组，结构与 sop_document.variable_schema 一致';
 
 COMMENT ON TABLE sop_document IS 'SOP 文档表 — SOP 排障手册文档存储，完整 Markdown + tree_json 决策树（sop_tree 1:1 合入）';
 COMMENT ON COLUMN sop_document.id IS '文档主键，自增';
