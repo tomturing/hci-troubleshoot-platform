@@ -178,10 +178,17 @@ async def test_sop_request_variable_dependency_missing():
         conversation_sop_client=conversation_sop_client,
     )
 
-    # 依赖 smart_info 不在 variable_schema 中 → 无法自动解析，返回缺失错误
+    # 依赖 smart_info 不在 variable_schema 中 → 属于 SOP 配置错误。
+    # 行为变更（Q2026102600003）：历史上这里返回 sop_variable_dependency_missing
+    # 并附带 next_tool_call 引导模型去请求该变量，而该变量并不存在，会形成
+    # "请求未定义变量 -> 降级自由输入 -> 写入野键 -> 永远缺失"的死循环。
+    # 现在一律返回配置错误并标记 config_error，不再引导模型继续请求。
     assert isinstance(res, dict), f"expected dict, got {type(res).__name__}: {res}"
-    assert res["error"] == "sop_variable_dependency_missing"
+    assert res["error"] == "sop_schema_invalid_dependency"
     assert res["missing_dependencies"] == ["smart_info"]
+    assert res["unresolvable_dependencies"] == ["smart_info"]
+    assert res["config_error"] is True
+    assert "next_tool_call" not in res
 
 
 @pytest.mark.asyncio
