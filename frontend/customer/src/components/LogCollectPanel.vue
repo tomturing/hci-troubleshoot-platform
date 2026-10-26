@@ -21,6 +21,7 @@ import {
   type LogCollectTask,
   type RelayStatus,
 } from '@/api/logCollect'
+import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCancel'
 import { useChatStore } from '@/stores/chat'
 
 const props = defineProps<{ caseId: string; nodeIp?: string }>()
@@ -1090,7 +1091,7 @@ async function handleCancel() {
   }
   try {
     await ElMessageBox.confirm(
-      '取消只会终止平台侧任务，HCI 上的采集进程需在 SSH 终端执行 cancel。',
+      '将同时终止平台任务与 HCI 上的采集任务；已生成的压缩包不会自动清理。',
       '确认取消',
       { type: 'warning' },
     )
@@ -1098,15 +1099,31 @@ async function handleCancel() {
     // 用户点了"返回"，保持现状
     return
   }
+  const task = currentTask.value
   // 先让后台轮询退出，再改状态，避免轮询回写覆盖
   runToken++
-  await logCollectApi.cancelTask(currentTask.value.task_id, '用户取消').catch(() => undefined)
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    socket.send(buildLogCollectMessage(props.caseId, 'cancel', {}))
-  }
+
+  const result = await cancelLogCollectTask({
+    // 必须走 sendAndWait：它会给消息注入 nodeIp，而会话键是 caseID@nodeIP。
+    // 历史实现直接 socket.send({...}) 漏传 nodeIp，bridge 只能找到"键为 caseID"的会话，
+    // 于是 cancel 恒报 session_missing——平台显示已取消，节点那侧其实还在采集。
+    stopNode: async () => {
+      if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error('bridge 连接已断开')
+      return await sendAndWait(socket, 'cancel', {}, 120000)
+    },
+    cancelPlatform: () => logCollectApi.cancelTask(task.task_id, '用户取消'),
+  })
+
   progress.value = null
   relayStatus.value = 'none'
   stage.value = 'idle'
+
+  const notice = buildCancelNotice(result)
+  if (notice.level === 'success') {
+    ElMessage.success(notice.text)
+  } else {
+    ElMessage.warning(notice.text)
+  }
 }
 
 function sleep(ms: number) {

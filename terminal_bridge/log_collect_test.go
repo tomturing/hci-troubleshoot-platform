@@ -405,6 +405,43 @@ func TestSessionByNodeIP(t *testing.T) {
 	}
 }
 
+// 回归：cancel 曾经漏传 node_ip，精确键与 node_ip 两级回退全部失效，直接 session_missing，
+// 结果是平台显示已取消、节点上采集任务仍在跑，后续 create 被插件互斥拒绝。
+// 本工单只有一条 SSH 会话时，必须能兜底命中。
+func TestResolveLogCollectSessionFallsBackToOnlySession(t *testing.T) {
+	single := &SSHSession{address: "192.168.33.89:22"}
+	bridge := &Bridge{sessions: map[string]*SSHSession{"Q2026102601505@192.168.33.89": single}}
+
+	got, key, match := bridge.resolveLogCollectSession(InMessage{CaseID: "Q2026102601505", LogAction: "cancel"})
+	if got != single || key != "Q2026102601505@192.168.33.89" || match != "only_session_for_case" {
+		t.Fatalf("唯一会话应被兜底命中，实际 got=%v key=%s match=%s", got, key, match)
+	}
+
+	// 多节点时不猜：猜错会取消另一台机器上的采集任务
+	multi := &Bridge{sessions: map[string]*SSHSession{
+		"Q1@10.0.0.1": {address: "10.0.0.1:22"},
+		"Q1@10.0.0.2": {address: "10.0.0.2:22"},
+	}}
+	if got, _, _ := multi.resolveLogCollectSession(InMessage{CaseID: "Q1", LogAction: "cancel"}); got != nil {
+		t.Fatal("多节点且无 node_ip 时不得兜底，必须返回 nil 由调用方报 session_missing")
+	}
+
+	// 带了 node_ip 就走精确键，命中原因要能被日志区分
+	if got, key, match := multi.resolveLogCollectSession(InMessage{CaseID: "Q1", NodeIP: "10.0.0.2"}); got == nil || key != "Q1@10.0.0.2" || match != "exact" {
+		t.Fatalf("精确键应优先命中，实际 key=%s match=%s", key, match)
+	}
+
+	// 同节点其他工单的会话：按节点复用，不应落到 only_session_for_case
+	reuse := &Bridge{sessions: map[string]*SSHSession{
+		"Q1@10.0.0.1":            {address: "10.0.0.1:22"},
+		"terminal-only@10.9.9.9": {address: "10.9.9.9:22"},
+	}}
+	got2, key2, match2 := reuse.resolveLogCollectSession(InMessage{CaseID: "Q2", NodeIP: "10.9.9.9"})
+	if got2 == nil || key2 != "terminal-only@10.9.9.9" || match2 != "node_ip_suffix" {
+		t.Fatalf("应按节点复用其他工单会话，实际 key=%s match=%s", key2, match2)
+	}
+}
+
 // TestSessionByAddressHost 覆盖"会话键里不含 IP"的存量场景。
 // ssh_connect 历史上不带 node_ip，键只剩 caseID；此时日志收集按 caseID@nodeIP
 // 查不到，必须能回退到"会话实际连的主机地址"。

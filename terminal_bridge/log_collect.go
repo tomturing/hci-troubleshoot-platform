@@ -567,6 +567,35 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// resolveLogCollectSession 解析日志收集动作要落到哪条 SSH 会话，并回传命中原因。
+//
+// 顺序不可随意调整：精确键最可信；其次是按节点复用（会话的真实归属是「操作者 + 节点」，
+// 不随工单变化）；最后才是「本工单唯一会话」。
+//
+// 最后一级是 2026-10-26 补的：cancel 这类动作曾经漏传 node_ip，前三级的 node_ip 匹配
+// 全部失效，bridge 直接回 session_missing——表现是平台已标记取消、节点上采集任务仍在跑，
+// 后续 create 被插件互斥一直拒绝。多节点时绝不猜，猜错会取消另一台机器上的任务。
+func (b *Bridge) resolveLogCollectSession(msg InMessage) (session *SSHSession, key string, match string) {
+	if s, k := b.resolveSession(msg); s != nil {
+		return s, k, "exact"
+	}
+	if msg.CaseID != "" {
+		if s := b.get(sessionKey(msg.CaseID, "")); s != nil {
+			return s, sessionKey(msg.CaseID, ""), "default_key"
+		}
+	}
+	if s, k := b.sessionByNodeIP(msg.NodeIP); s != nil {
+		return s, k, "node_ip_suffix"
+	}
+	if s, k := b.sessionByAddressHost(msg.NodeIP); s != nil {
+		return s, k, "address_host"
+	}
+	if s, k := b.onlySessionForCase(msg.CaseID); s != nil {
+		return s, k, "only_session_for_case"
+	}
+	return nil, "", ""
+}
+
 // handleLogCollect 处理 log_collect 消息族。
 func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string) {
 	// 链路 ID 先算：会话缺失这类失败同样要能按链路检索与聚合。
@@ -576,30 +605,12 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 	}
 	msg.TraceID = traceID
 
-	s, key := b.resolveSession(msg)
-	if s == nil && msg.CaseID != "" {
-		s = b.get(sessionKey(msg.CaseID, ""))
-	}
-	// 回退：会话属于「操作者 + 节点」，不随工单变化。
-	// 精确键失配（例如会话是在 SSH 终端/旧工单下建立的）时按节点 IP 复用，
-	// 避免"界面显示已连接、探测却报 LC-ENV-006"的自相矛盾。
-	if s == nil {
-		if fallback, fallbackKey := b.sessionByNodeIP(msg.NodeIP); fallback != nil {
-			s, key = fallback, fallbackKey
-			blog("INFO", "log_collect.session_fallback", "日志收集复用同节点其他工单的 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-				"log_action": msg.LogAction, "session_key": fallbackKey, "match": "node_ip_suffix",
-			})
-		}
-	}
-	// 再回退：会话键可能压根不含 IP（ssh_connect 历史上不带 node_ip，键只剩 caseID），
-	// 此时按会话实际连到的主机地址匹配，"终端里能跑 acli、日志收集却说没会话"才能消除。
-	if s == nil {
-		if fallback, fallbackKey := b.sessionByAddressHost(msg.NodeIP); fallback != nil {
-			s, key = fallback, fallbackKey
-			blog("INFO", "log_collect.session_fallback", "日志收集按会话目标地址复用 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-				"log_action": msg.LogAction, "session_key": fallbackKey, "match": "address_host",
-			})
-		}
+	s, key, match := b.resolveLogCollectSession(msg)
+	// 精确命中是常态，只有回退才留痕：日志要能回答"这条命令为什么落到了这台机器"。
+	if s != nil && match != "exact" {
+		blog("INFO", "log_collect.session_fallback", "日志收集回退复用 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"log_action": msg.LogAction, "session_key": key, "match": match,
+		})
 	}
 	if s == nil {
 		sendMsg(ws, OutMessage{
