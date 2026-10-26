@@ -23,7 +23,7 @@ Custom UI 的主界面由「中央会话 + 左侧抽屉（日志收集 / 历史�
 
 根因不是"屏幕不够宽"，而是**宽度分配没有按内容的最小宽度求解**：
 
-1. `frontend/customer/src/utils/panelWidth.ts::getDefaultPanelWidth()` 只按
+1. 旧的 `getDefaultPanelWidth()` 只按
    `(innerWidth - 900) / 2` 计算两侧留白，中央会话区在任何情况下都固定占 900px，
    抽屉只能拿"剩下的边角料"；
 2. 视口不足时该函数直接退化为 `85% 视口宽`，左右抽屉各自 85% 会互相覆盖，

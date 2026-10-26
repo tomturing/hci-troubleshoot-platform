@@ -145,8 +145,8 @@ export interface WorkspaceLayout {
 
 ### 受影响的模块
 
-- `frontend/customer/src/utils/workspaceLayout.ts`：新增求解器（替代 `panelWidth.ts`）
-- `frontend/customer/src/utils/panelWidth.ts`：删除或改为求解器别名
+- `frontend/customer/src/utils/workspaceLayout.ts`：新增求解器（替代旧宽度工具）
+- 旧宽度工具（`getDefaultPanelWidth`）：本次删除，调用点全部改为求解器结果
 - `frontend/customer/src/stores/chat.ts`：面板可见性聚合、左右偏好宽度、左侧互斥、视口宽度
 - `frontend/customer/src/App.vue`：外壳让位与 CSS 变量
 - `frontend/customer/src/components/ChatWindow.vue`：两个抽屉的 size/modal 绑定、拖拽、移除 pin
