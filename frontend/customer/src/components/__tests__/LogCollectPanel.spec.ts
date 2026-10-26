@@ -409,7 +409,7 @@ describe('LogCollectPanel', () => {
     const result = wrapper.find('.lc-result')
     expect(result.exists()).toBe(true)
     expect(result.text()).toContain('已完成日志收集')
-    expect(result.text()).toContain('P3 经平台中转')
+    expect(result.text()).toContain('P2 经平台中转')
     expect(result.text()).toContain('全部在线节点')
     expect(result.text()).toContain('虚拟机挂起专项')
     expect(result.text()).toContain('/sf/data/local/acli/tasks/Q2026102300001.tar.gz')

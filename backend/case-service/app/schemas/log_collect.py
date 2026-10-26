@@ -36,7 +36,7 @@ LogCollectModule = Literal[
     "performance",
     "core",
 ]
-# 交付路径收敛为两条：acli_direct = P1（HCI 直传 5888），bridge_relay = P3（bridge 中转）。
+# 交付路径收敛为两条：acli_direct = P1（HCI 直传 5888），bridge_relay = P2（bridge 中转）。
 # 原 platform_direct（平台直传）对应已废弃的 P2，不再接受。
 UploadMode = Literal["acli_direct", "bridge_relay", "none"]
 
@@ -204,7 +204,7 @@ class LogCollectTaskResponse(BaseModel):
     cleanup_state: str = "none"
     cleanup_reason: str | None = None
     archive_deleted: bool = False
-    # P3 段③ 代传状态（与主状态机解耦）
+    # P2 段③ 代传状态（与主状态机解耦）
     relay_status: str = "none"
     relay_chunk_index: int | None = None
     relay_chunk_total: int | None = None
@@ -224,7 +224,7 @@ class LogCollectTaskListResponse(BaseModel):
     items: list[LogCollectTaskResponse]
 
 
-# ── P3 段②：客户 PC → 平台 分块上传 ──────────────────────────────────────────
+# ── P2 段②：客户 PC → 平台 分块上传 ──────────────────────────────────────────
 # 会话标识即 task_id（1 任务 : 1 包 : 1 会话），因此请求/响应均不含独立 upload_id 之外的字段。
 
 

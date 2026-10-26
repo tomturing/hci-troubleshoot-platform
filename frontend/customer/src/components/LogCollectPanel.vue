@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 日志收集面板（acli log_collect + P1/P3 交付编排）。
+ * 日志收集面板（acli log_collect + P1/P2 交付编排）。
  *
  * 三条不可协商的约束（决定了下面的流程）：
  *  1. 执行只能发生在 bridge 的 SSH 会话内，且复用终端已建立的连接；
@@ -134,7 +134,7 @@ const stage = ref<Stage>('idle')
 // 否则无论在哪一步挂掉都只亮「探测」，看起来像根本没开始。
 const failedStep = ref(0)
 const probeResult = ref<ProbeResult | null>(null)
-const pathMode = ref<'P1' | 'P3' | ''>('')
+const pathMode = ref<'P1' | 'P2' | ''>('')
 const currentTask = ref<LogCollectTask | null>(null)
 // 面板视图：form = 新建收集；result = 该工单已完成收集的只读结果
 const viewMode = ref<'form' | 'result'>('form')
@@ -343,7 +343,7 @@ const resultMode = computed<'acli_direct' | 'bridge_relay' | ''>(() => {
 
 const resultDeliveryText = computed(() => {
   if (resultMode.value === 'acli_direct') return 'P1 直传日志服务器'
-  if (resultMode.value === 'bridge_relay') return 'P3 经平台中转'
+  if (resultMode.value === 'bridge_relay') return 'P2 经平台中转'
   return '未记录'
 })
 
@@ -836,7 +836,7 @@ async function handleStart() {
       await confirmInstall(ws)
     }
 
-    pathMode.value = probeResult.value.log_server_reachable ? 'P1' : 'P3'
+    pathMode.value = probeResult.value.log_server_reachable ? 'P1' : 'P2'
 
     let task: LogCollectTask
     try {
@@ -893,7 +893,7 @@ async function handleStart() {
     if (pathMode.value === 'P1') {
       await finishP1(task)
     } else {
-      await runP3(ws, task, token)
+      await runP2(ws, task, token)
     }
   } catch (error: any) {
     // 用户已取消：后台流程静默退出，不再覆盖任务状态
@@ -972,7 +972,7 @@ async function pollUntilCollected(ws: WebSocket, token: number): Promise<boolean
 async function finishP1(task: LogCollectTask) {
   const snapshot = progress.value
   if (snapshot?.upload_state && !snapshot.upload_state.includes('成功')) {
-    throw new Error(`日志服务器上传失败：${snapshot.upload_state}，可改用 P3 中转`)
+    throw new Error(`日志服务器上传失败：${snapshot.upload_state}，可改用 P2 中转`)
   }
   await markCompleted(task.task_id, {
     upload_mode: 'acli_direct',
@@ -1004,7 +1004,7 @@ async function markCompleted(taskId: string, extra: Partial<LogCollectTask> = {}
   }
 }
 
-async function runP3(ws: WebSocket, task: LogCollectTask, token: number) {
+async function runP2(ws: WebSocket, task: LogCollectTask, token: number) {
   const archivePath = progress.value?.archive_path || ''
   if (!archivePath) throw new Error('未获取到压缩包路径，无法中转')
 
@@ -1161,7 +1161,7 @@ watch(
   },
 )
 
-// 会话主机变了（重新登录到另一台节点），上一轮的探测结论（目录、节点清单、P1/P3 判定）
+// 会话主机变了（重新登录到另一台节点），上一轮的探测结论（目录、节点清单、P1/P2 判定）
 // 全部失效，必须重探。派生值只会在会话切换时变化，防抖仅用于合并登录过程中的多次写入。
 let nodeIpTimer: ReturnType<typeof setTimeout> | null = null
 watch(
@@ -1318,7 +1318,7 @@ onBeforeUnmount(() => {
           </el-descriptions-item>
           <el-descriptions-item label="交付路径">
             <el-tag :type="probeResult.log_server_reachable ? 'success' : 'warning'" size="small">
-              {{ probeResult.log_server_reachable ? 'P1 直传日志服务器' : 'P3 经平台中转' }}
+              {{ probeResult.log_server_reachable ? 'P1 直传日志服务器' : 'P2 经平台中转' }}
             </el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="可用空间">{{ probeResult.available_mb }} MB</el-descriptions-item>
