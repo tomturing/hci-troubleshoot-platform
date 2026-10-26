@@ -1,3 +1,11 @@
+---
+status: active
+category: verify
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # 通用排查原则
 
 ## 原则一：先确认进程/服务真正在跑

@@ -1,3 +1,11 @@
+---
+status: active
+category: verify
+audience: developer
+last_updated: 2026-10-17
+owner: team
+---
+
 # 前端避坑（pnpm / TypeScript / Vue）
 
 ## V-023：前端单测不得跨语言读后端源码（前端 CI 门禁是稀疏检出）

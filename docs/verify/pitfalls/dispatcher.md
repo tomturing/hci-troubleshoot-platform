@@ -1,3 +1,11 @@
+---
+status: active
+category: verify
+audience: developer
+last_updated: 2026-10-15
+owner: team
+---
+
 # Dispatcher / 状态机 / 幂等资源管理避坑
 
 ## PIT-006：状态机转换未加分布式锁导致重复处理

@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-26
+owner: team
+---
+
 # Task 36: 侧边栏 SSH 登录与交互终端页面
 
 ## 概述

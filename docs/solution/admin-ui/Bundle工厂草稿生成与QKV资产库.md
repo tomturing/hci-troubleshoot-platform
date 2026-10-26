@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # Bundle 工厂 KBD Draft 生成与 QKV 资产库
 
 ## 生成链路

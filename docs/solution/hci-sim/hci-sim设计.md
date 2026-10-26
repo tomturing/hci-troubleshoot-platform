@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-08-19
+owner: team
+---
+
 # hci-sim 仿真运行时 · 全量设计
 
 > 本文为 hci-sim 子模块的现行全量设计说明，事件化阶段设计见同目录 `events/`。

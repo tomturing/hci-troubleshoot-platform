@@ -1,3 +1,11 @@
+---
+status: active
+category: deploy
+audience: operator
+last_updated: 2026-10-20
+owner: team
+---
+
 # Admin UI 内网隔离方案
 
 ## 背景

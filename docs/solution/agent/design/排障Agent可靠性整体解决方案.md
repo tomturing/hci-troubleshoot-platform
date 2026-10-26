@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # 排障 Agent 可靠性整体解决方案
 
 > 本文面向 HCI 智能排障平台中长期 Agent 架构演进，目标不是修复某一个 `tool_call`、某一个交互卡片或某一个 Prompt，而是从第一性原理出发，系统性解决排障过程中信息不准确、工具调用不稳定、模型幻觉三类根问题。

@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # QKV/QFK 扩展性与配置易用性评估
 
 > 版本：v1.0

@@ -1,3 +1,11 @@
+---
+status: active
+category: deploy
+audience: operator
+last_updated: 2026-06-15
+owner: team
+---
+
 # 网络与服务异常排查专项指南
 
 > **第一原则：先用快速全景检查定位层级，再按层级深入。不要跳过这一步。**

@@ -1,3 +1,11 @@
+---
+status: active
+category: task
+audience: developer
+last_updated: 2026-08-14
+owner: team
+---
+
 # hci-sim 仿真运行时 · 任务导航
 
 > 本目录为 hci-sim 子模块的**现行全量任务分支文档**；事件化阶段任务见 [events/](events/)。

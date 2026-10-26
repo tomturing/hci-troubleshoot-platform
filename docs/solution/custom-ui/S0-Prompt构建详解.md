@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-04-24
+owner: team
+---
+
 # S0 阶段 Prompt 构建详解
 
 > 版本：v1.0 | 日期：2026-04-24 | 状态：active

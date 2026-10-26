@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-08-25
+owner: team
+---
+
 # Langfuse v3 SDK 集成修复总结
 
 ## 修改概述

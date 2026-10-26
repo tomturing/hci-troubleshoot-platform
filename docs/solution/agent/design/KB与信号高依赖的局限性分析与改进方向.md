@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-26
+owner: team
+---
+
 # Agent 对 KB 与信号高依赖的局限性分析与改进方向
 
 > 文档版本：V1.1

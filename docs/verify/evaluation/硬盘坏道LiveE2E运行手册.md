@@ -1,3 +1,11 @@
+---
+status: active
+category: verify
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # 硬盘坏道 Live E2E Smoke 运行手册（L3）
 
 ## 这是什么

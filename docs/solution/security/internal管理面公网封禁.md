@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # internal 管理面公网封禁（internal-guard）
 
 > 关联：SRC-2026-5358（`acli.sangfor.com.cn` 管理面 internal 与离线诊断域多个接口完全无鉴权）

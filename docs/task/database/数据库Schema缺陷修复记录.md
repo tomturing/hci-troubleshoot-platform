@@ -1,3 +1,11 @@
+---
+status: active
+category: task
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # 数据库 Schema P0/P1 缺陷修复记录
 
 ## 变更概述

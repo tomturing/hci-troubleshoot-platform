@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # KBD 与 Bundle 版本管理重构方案
 
 > 状态：重构提案（2026-08-31）

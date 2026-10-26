@@ -1,3 +1,11 @@
+---
+status: active
+category: task
+audience: developer
+last_updated: 2026-06-05
+owner: team
+---
+
 # HCI 智能排障平台 — Prompt 数据库化收敛与动态加载任务规划
 
 本规划用于指导“Prompt 数据库化管理及动态热生效方案”的实施与验收。本开发周期内所有任务均遵循**代码结构主导原则**与**校验报错喧闹化**要求。

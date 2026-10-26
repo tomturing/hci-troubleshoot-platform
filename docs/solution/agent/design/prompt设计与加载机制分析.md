@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # HCI 智能排障平台 — S0-S5 Prompt 设计与加载机制深度解析
 
 本篇文档从**第一性原理**出发，对 HCI 智能排障平台中 **S0 到 S5 阶段 System Prompt 的作用机理**、以及 `TriageAgent`、`InvestigationAgent` 和 `remediation_agent.py` 的**加载与动态渲染机制**进行深度剖析。

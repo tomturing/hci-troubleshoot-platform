@@ -1,3 +1,11 @@
+---
+status: active
+category: deploy
+audience: operator
+last_updated: 2026-04-26
+owner: team
+---
+
 # Grafana 避坑
 
 ## PIT-011：Grafana 登录后重定向到 localhost 导致无法访问

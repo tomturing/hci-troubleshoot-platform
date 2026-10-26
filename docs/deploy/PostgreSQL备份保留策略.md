@@ -1,3 +1,11 @@
+---
+status: active
+category: deploy
+audience: operator
+last_updated: 2026-10-20
+owner: team
+---
+
 # PostgreSQL 备份保留策略（GFS 分级 + 半年）
 
 > 关联 PR：将原先 `find ... -mtime +30 -delete` 的一刀切 30 天清理，升级为

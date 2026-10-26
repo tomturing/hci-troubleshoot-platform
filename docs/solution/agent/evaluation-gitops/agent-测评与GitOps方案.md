@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-24
+owner: team
+---
+
 # Agent 测评与 GitOps 全生命周期方案
 
 > **受众**：负责 CI/CD、质量门禁、发布流程的开发和 SRE。

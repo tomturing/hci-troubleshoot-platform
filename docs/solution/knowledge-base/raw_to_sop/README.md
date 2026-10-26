@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-07-03
+owner: team
+---
+
 # Raw Graph JSON → SOPNode Markdown 转化工具使用指南
 
 本指南详细说明了如何使用 `raw_to_sop` ETL 工具，将外部 AI 管道输出的 Raw Graph JSON（图/状态机结构）格式的数据转换为符合排障平台要求的标准决策树 Markdown，并将其录入至数据库中。

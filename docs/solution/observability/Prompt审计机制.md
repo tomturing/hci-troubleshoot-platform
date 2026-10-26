@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-04-24
+owner: team
+---
+
 # Prompt 审计机制与上下文可观测性设计
 
 > 版本：v1.0 | 日期：2026-04-24 | 状态：active

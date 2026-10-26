@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # Bundle 工厂版本自动迁移机制设计
 
 ## 背景

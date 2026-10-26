@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-25
+owner: team
+---
+
 # 数据库 Schema 审查与修复方案
 
 > 审查对象：`database/desired_schema.sql`（77 张表、1268 个字段；另有 2 个视图由 `desired_extras.sql` 定义）

@@ -1,3 +1,11 @@
+---
+status: active
+category: deploy
+audience: operator
+last_updated: 2026-10-24
+owner: team
+---
+
 # K8s / K3s / Helm 运维避坑
 
 ## D-025：Nginx 动态 resolver 不使用 Pod DNS search 后缀

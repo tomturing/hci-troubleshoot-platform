@@ -1,3 +1,11 @@
+---
+status: active
+category: verify
+audience: developer
+last_updated: 2026-10-10
+owner: team
+---
+
 # OpenClaw 避坑
 
 ## PIT-010：OpenClaw 返回 401 / 认证 token 不匹配

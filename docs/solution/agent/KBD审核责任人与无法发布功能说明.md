@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-25
+owner: team
+---
+
 # KBD 审核责任人与无法发布功能说明
 
 ## 功能概述

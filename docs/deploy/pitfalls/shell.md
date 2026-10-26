@@ -1,3 +1,11 @@
+---
+status: active
+category: deploy
+audience: operator
+last_updated: 2026-10-21
+owner: team
+---
+
 # Shell / Makefile / CI 脚本避坑
 
 ## PIT-001：here-doc 在 shell 函数内失效

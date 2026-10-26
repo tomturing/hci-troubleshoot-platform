@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # Bundle 工厂 Draft 编辑：命令参数（argv）可编辑
 
 Bundle 工厂的 draft 编辑弹窗中，每条 route 的命令参数（`route_key.argv`）现在支持在界面内直接编辑，便于修正命令中的错误参数。

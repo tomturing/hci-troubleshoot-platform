@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-07-03
+owner: team
+---
+
 # SOP 多叉决策树解析与实际 SOP 数据审计报告
 
 本报告针对 HCI 智能排障平台中 **SOP 多叉决策树** 的架构设计、数据模型、校验策略以及目前数据库中存在的实际 SOP 记录进行深入剖析。

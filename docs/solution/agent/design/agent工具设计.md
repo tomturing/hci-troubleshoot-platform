@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-21
+owner: team
+---
+
 # Agent 工具设计
 
 > 权威来源：本文件（v3.4，核心执行契约、工具管理 UI 校验、QKV/QFK Capability Descriptor、统一 qfk_log Catalog、抽取质量守门、SOP 发布联动、容器执行适配器、运行时变量来源门禁与工具注册表热刷新均已落地）。

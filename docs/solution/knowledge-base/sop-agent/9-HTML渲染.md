@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-05-18
+owner: team
+---
+
 # SOP Agent HTML渲染分析
 
 > 本文档详细分析 `sop-agent` 项目中 HTML 渲染阶段的实现设计。

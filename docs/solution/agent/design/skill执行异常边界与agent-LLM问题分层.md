@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # Skill 执行异常边界与 Agent/LLM 问题分层
 
 ## 背景与问题

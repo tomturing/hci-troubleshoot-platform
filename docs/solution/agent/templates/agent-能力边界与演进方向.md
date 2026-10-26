@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # Agent 能力边界与演进方向
 
 > 本文档分析 Tool / Skill / SOP / ReAct / Agent 五个层面的当前能力边界、

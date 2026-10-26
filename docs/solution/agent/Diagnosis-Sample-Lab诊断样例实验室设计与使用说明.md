@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-08-13
+owner: team
+---
+
 # Diagnosis Sample Lab（诊断样例实验室）设计与使用说明
 
 ## 1. 目标

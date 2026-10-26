@@ -1,3 +1,11 @@
+---
+status: active
+category: verify
+audience: developer
+last_updated: 2026-08-27
+owner: team
+---
+
 # hci-sim 仿真运行时 · 验证导航
 
 > 本目录为 hci-sim 子模块的**验证分支文档**；事件化验证见 [events/](events/)。

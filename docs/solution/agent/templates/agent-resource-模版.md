@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # Agent 资源（SOP / Tool / Skill）定义模版
 
 > **受众**：编写 SOP、Tool、Skill 的开发和运维人员。

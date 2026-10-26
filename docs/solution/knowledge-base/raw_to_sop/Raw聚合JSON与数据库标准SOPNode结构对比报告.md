@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-07-03
+owner: team
+---
+
 # Raw 聚合 JSON 与数据库标准 SOPNode 结构对比报告
 
 本报告针对 `/data-pipeline/raw/内存ECC故障.json`（Raw 聚合数据）与数据库中实际发布的 `sop_document`（`SOPNode` 标准多叉决策树）进行对比分析，揭示两者的相同点、本质差异以及平台知识管道的流转机理。

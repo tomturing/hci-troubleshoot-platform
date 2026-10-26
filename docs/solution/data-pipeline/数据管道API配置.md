@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-08-17
+owner: team
+---
+
 # data-pipeline API 配置统一说明
 
 ## 变更概述

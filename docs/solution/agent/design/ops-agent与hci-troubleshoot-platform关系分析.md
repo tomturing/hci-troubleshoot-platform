@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # ops-agent 与 hci-troubleshoot-platform 关系深度分析
 
 > 分析日期：2026-04-28  
