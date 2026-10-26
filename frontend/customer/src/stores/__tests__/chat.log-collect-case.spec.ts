@@ -212,3 +212,58 @@ describe('chat store - 日志收集人工指定工单号', () => {
     expect(store.logCollectCaseOwned).toBe(true)
   })
 })
+
+/**
+ * 覆盖态互斥：窄屏两侧面板同时铺开时，中央只剩一条缝还压着遮罩，
+ * 视觉上是三层糊在一起的块。判定必须用「两侧都开」的求解结果——
+ * 用当前 mode 判定会慢一拍（打开的瞬间还是 slide）。
+ */
+describe('chat store - 覆盖态左右互斥', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    setActivePinia(createPinia())
+  })
+
+  async function storeWith(id: string) {
+    const { useChatStore } = await import('../chat')
+    const store = useChatStore()
+    store.currentCase = { case_id: id, status: 'in_progress' } as any
+    store.sshConnectionState = 'connected'
+    return store
+  }
+
+  it('1920 并排放得下 → 双开共存', async () => {
+    const store = await storeWith('Q2026102300201')
+    store.setViewportWidth(1920)
+
+    store.openLogCollect()
+    store.openTerminalSidebar()
+
+    expect(store.logCollectVisible).toBe(true)
+    expect(store.showTerminalSidebar).toBe(true)
+  })
+
+  it('1280 双开放不下 → 开右侧自动收起左侧', async () => {
+    const store = await storeWith('Q2026102300202')
+    store.setViewportWidth(1280)
+
+    store.openLogCollect()
+    expect(store.logCollectVisible).toBe(true)
+
+    store.openTerminalSidebar()
+
+    expect(store.logCollectVisible).toBe(false)
+    expect(store.showTerminalSidebar).toBe(true)
+  })
+
+  it('1280 反方向同样互斥 → 开左侧自动收起右侧', async () => {
+    const store = await storeWith('Q2026102300203')
+    store.setViewportWidth(1280)
+    store.openTerminalSidebar()
+
+    store.openLogCollect()
+
+    expect(store.showTerminalSidebar).toBe(false)
+    expect(store.logCollectVisible).toBe(true)
+  })
+})

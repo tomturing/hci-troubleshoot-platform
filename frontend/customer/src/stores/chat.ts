@@ -808,6 +808,32 @@ export const useChatStore = defineStore('chat', () => {
   const rightPanelWidth = computed(() => workspaceLayout.value.rightWidth)
 
   /**
+   * 窄屏覆盖态强制左右互斥。
+   *
+   * 判定用「两侧都开」的求解结果，而不是当前 mode：本次打开前只有一侧，
+   * 此刻 mode 还是 slide，等另一侧真的打开才会退化成 overlay——
+   * 用当前 mode 判定等于永远慢一拍，最后就是两块面板各占 86% 叠在一起、
+   * 中央只剩一条缝还压着遮罩。
+   * 覆盖态本身就是"一次看一块"的语义；宽屏推挤得下时不受影响，可并排看日志与终端。
+   */
+  function enforceOverlayExclusive(side: 'left' | 'right'): void {
+    const bothOpen = resolveWorkspaceLayout({
+      viewport: viewportWidth.value,
+      leftOpen: true,
+      rightOpen: true,
+      leftPreferred: leftPanelPreferred.value,
+      rightPreferred: rightPanelPreferred.value,
+    })
+    if (bothOpen.mode !== 'overlay') return
+    if (side === 'left') {
+      showTerminalSidebar.value = false
+      return
+    }
+    logCollectVisible.value = false
+    showHistoryDrawer.value = false
+  }
+
+  /**
    * 是否正在拖拽调宽。
    *
    * 拖拽时主区让位必须逐帧跟手，不能吃 300ms 的过渡；
@@ -871,6 +897,8 @@ export const useChatStore = defineStore('chat', () => {
   function openLogCollect(): void {
     // 左侧只有一块位置：日志收集与历史工单互斥，否则两个抽屉会叠在同一条边上。
     showHistoryDrawer.value = false
+    // 覆盖态再与右侧终端互斥：两侧各占 86% 会把中央压成一条缝
+    enforceOverlayExclusive('left')
     // 日志收集依赖 SSH 会话：未连接时一律先走弹框（内含统一 SSH 登录区），
     // 避免用户打开面板后卡在"环境探测失败"。
     if (sshConnectionState.value !== 'connected') {
@@ -952,6 +980,7 @@ export const useChatStore = defineStore('chat', () => {
   function openLogCollectForTask(taskId: string): void {
     logCollectResumeTaskId.value = taskId
     showHistoryDrawer.value = false
+    enforceOverlayExclusive('left')
     leftPanelTab.value = 'log'
     logCollectVisible.value = true
   }
@@ -2047,6 +2076,8 @@ export const useChatStore = defineStore('chat', () => {
   async function openHistoryDrawer() {
     // 左侧互斥：历史工单与日志收集不能同时占用左栏
     logCollectVisible.value = false
+    // 覆盖态再与右侧终端互斥
+    enforceOverlayExclusive('left')
     leftPanelTab.value = 'history'
     showHistoryDrawer.value = true
     try {
@@ -2143,6 +2174,7 @@ export const useChatStore = defineStore('chat', () => {
   /** 发送命令到终端（CommandBlock 手动模式调用，仅填充输入框） */
   function sendCommandToTerminal(command: string) {
     terminalInputCommand.value = command
+    enforceOverlayExclusive('right')
     showTerminalSidebar.value = true
   }
 
@@ -2220,6 +2252,7 @@ export const useChatStore = defineStore('chat', () => {
     const running = await checkBridgeRunning()
     if (running) {
       bridgeStatus.value = 'running'
+      enforceOverlayExclusive('right')
       showTerminalSidebar.value = true
     } else {
       bridgeStatus.value = 'not_running'
@@ -2229,6 +2262,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function openTerminalSidebar() {
+    enforceOverlayExclusive('right')
     showTerminalSidebar.value = true
   }
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Finished, FolderOpened, Monitor, Tickets } from '@element-plus/icons-vue'
+import { Finished, FirstAidKit, FolderOpened, Monitor, Tickets } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 import { getClientId } from '@/utils/clientId'
 import ChatWindow from '@/components/ChatWindow.vue'
@@ -27,6 +27,16 @@ const shellStyle = computed(() => ({
 
 /** 窄屏降级：面板改为覆盖式，此时才需要遮罩 */
 const isOverlayMode = computed(() => chatStore.workspaceLayout.mode === 'overlay')
+
+/**
+ * 顶栏紧凑态。
+ *
+ * 只看视口宽度，不看中央会话宽度：顶栏是「应用框架」，横跨三栏、宽度恒定，
+ * 而 centerMaxWidth 会随面板开合在 460~900 之间变化。早先用它做判定，
+ * 结果是打开两个面板（中央 560）时顶栏按钮全部退化成图标——
+ * 明明窗口还有 1920px 可用，纯属把内容列的约束错套到了框架上。
+ */
+const isHeaderCompact = computed(() => chatStore.viewportWidth < 900)
 
 /**
  * 拖拽调宽：只写"偏好宽度"，由求解器重新算当前宽度。
@@ -143,89 +153,91 @@ function handleDownloadBridge() {
     :class="{ 'is-resizing': chatStore.isPanelResizing || viewportResizing }"
     :style="shellStyle"
   >
-    <header
-      class="app-header"
-      :class="{ 'is-compact': chatStore.workspaceLayout.centerMaxWidth <= 620 }"
-    >
-      <div class="header-content">
+    <header class="app-header" :class="{ 'is-compact': isHeaderCompact }">
+      <!-- 品牌区：通栏左对齐。顶栏横跨三栏，不跟随中央内容列限宽 -->
+      <div class="header-brand">
+        <span class="brand-mark"><el-icon><FirstAidKit /></el-icon></span>
         <h1>HCI 故障排查助手</h1>
-        <div class="header-badges">
-          <!-- 工单信息：历史工单入口 + ID/工单号展示 -->
-          <el-popover
-            placement="bottom-end"
-            :width="260"
-            trigger="click"
-          >
-            <template #reference>
-              <el-button
-                size="small"
-                round
-                class="header-btn case-info-btn"
-              >
-                <el-icon><Tickets /></el-icon>
-                工单信息
-              </el-button>
-            </template>
-            <div class="case-info-popover">
-              <div class="case-info-row">
-                <span class="case-info-label">客户端 ID</span>
-                <span class="case-info-value selectable" :title="clientId">{{ clientId }}</span>
-              </div>
-              <div v-if="chatStore.currentCase" class="case-info-row">
-                <span class="case-info-label">当前工单</span>
-                <span class="case-info-value selectable">{{ chatStore.currentCase.case_id }}</span>
-              </div>
-              <div v-else class="case-info-row">
-                <span class="case-info-label">当前工单</span>
-                <span class="case-info-value muted">暂无</span>
-              </div>
-              <el-divider style="margin: 10px 0" />
-              <el-button
-                size="small"
-                style="width: 100%"
-                @click="chatStore.openHistoryDrawer()"
-              >
-                <el-icon><Tickets /></el-icon>
-                查看历史工单
-              </el-button>
+        <span v-if="chatStore.currentCase" class="brand-case">
+          {{ chatStore.currentCase.case_id }}
+        </span>
+      </div>
+      <div class="header-badges">
+        <!-- 工单信息：历史工单入口 + ID/工单号展示 -->
+        <el-popover
+          placement="bottom-end"
+          :width="260"
+          trigger="click"
+        >
+          <template #reference>
+            <el-button
+              size="small"
+              round
+              class="header-btn case-info-btn"
+            >
+              <el-icon><Tickets /></el-icon>
+              工单信息
+            </el-button>
+          </template>
+          <div class="case-info-popover">
+            <div class="case-info-row">
+              <span class="case-info-label">客户端 ID</span>
+              <span class="case-info-value selectable" :title="clientId">{{ clientId }}</span>
             </div>
-          </el-popover>
+            <div v-if="chatStore.currentCase" class="case-info-row">
+              <span class="case-info-label">当前工单</span>
+              <span class="case-info-value selectable">{{ chatStore.currentCase.case_id }}</span>
+            </div>
+            <div v-else class="case-info-row">
+              <span class="case-info-label">当前工单</span>
+              <span class="case-info-value muted">暂无</span>
+            </div>
+            <el-divider style="margin: 10px 0" />
+            <el-button
+              size="small"
+              style="width: 100%"
+              @click="chatStore.openHistoryDrawer()"
+            >
+              <el-icon><Tickets /></el-icon>
+              查看历史工单
+            </el-button>
+          </div>
+        </el-popover>
 
-          <!-- 关闭工单 -->
-          <el-button
-            v-if="chatStore.hasActiveCase"
-            size="small"
-            round
-            class="header-btn close-btn"
-            @click="chatStore.handleCloseCase()"
-          >
-            <el-icon><Finished /></el-icon>
-            关闭工单
-          </el-button>
+        <!-- 关闭工单 -->
+        <el-button
+          v-if="chatStore.hasActiveCase"
+          size="small"
+          round
+          class="header-btn close-btn"
+          @click="chatStore.handleCloseCase()"
+        >
+          <el-icon><Finished /></el-icon>
+          关闭工单
+        </el-button>
 
-          <!-- 日志收集：常驻入口；无活跃工单时由对话框要求手工指定工单号 -->
-          <el-button
-            size="small"
-            round
-            class="header-btn log-collect-btn header-action-btn"
-            @click="chatStore.openLogCollect()"
-          >
-            <el-icon><FolderOpened /></el-icon>
-            日志收集
-          </el-button>
+        <!-- 日志收集：常驻入口；无活跃工单时由对话框要求手工指定工单号 -->
+        <el-button
+          size="small"
+          round
+          class="header-btn log-collect-btn header-action-btn"
+          @click="chatStore.openLogCollect()"
+        >
+          <el-icon><FolderOpened /></el-icon>
+          日志收集
+        </el-button>
 
-          <!-- SSH终端按钮：点击先检测 Bridge -->
-          <el-button
-            size="small"
-            round
-            class="header-btn terminal-btn header-action-btn"
-            :loading="chatStore.bridgeStatus === 'checking'"
-            @click="chatStore.checkAndOpenTerminal()"
-          >
-            <el-icon v-if="chatStore.bridgeStatus !== 'checking'"><Monitor /></el-icon>
-            SSH终端
-          </el-button>
-        </div>
+        <!-- SSH终端按钮：点击先检测 Bridge -->
+        <el-button
+          size="small"
+          round
+          class="header-btn terminal-btn header-action-btn"
+          :loading="chatStore.bridgeStatus === 'checking'"
+          @click="chatStore.checkAndOpenTerminal()"
+        >
+          <el-icon v-if="chatStore.bridgeStatus !== 'checking'"><Monitor /></el-icon>
+          SSH终端
+        </el-button>
       </div>
     </header>
 
@@ -421,10 +433,9 @@ body {
   border-bottom: 1px solid #e4e7ed;
 }
 
+/* 标题栏同属框架条：通栏左对齐，不再跟着内容列在中间'飘' */
 .main-head-inner {
   width: 100%;
-  max-width: var(--ws-center-max, 900px);
-  margin: 0 auto;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -455,33 +466,63 @@ body {
 }
 
 .app-header {
-  /* 通栏应用栏：横跨三栏，三块内容共享一条顶栏，不存在"两边大中间小" */
+  /*
+   * 通栏应用栏 = 应用框架，不是内容列。
+   *
+   * 它横跨三栏、宽度恒定，所以绝不能吃 --ws-center-max：那个变量会随面板开合
+   * 在 460~900 之间跳，顶栏会跟着忽宽忽窄，1920 屏上表现为「一大条蓝带中间
+   * 挤着一段标题+四个小圆点」。框架用固定内边距、两端对齐即可。
+   */
   flex: 0 0 auto;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 20px;
   background: linear-gradient(135deg, #409eff, #337ecc);
   color: #fff;
-  padding: 12px 24px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   z-index: 1;
 }
 
-.header-content {
+/* 品牌区：图标 + 标题 + 当前工单号，始终贴左 */
+.header-brand {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  /* 顶栏背景通栏，标题与按钮仍按可读宽度居中 */
-  width: 100%;
-  max-width: var(--ws-center-max, 900px);
-  margin: 0 auto;
+  gap: 10px;
+  min-width: 0;
 }
 
-.header-content h1 {
-  font-size: 18px;
+.brand-mark {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.18);
+  font-size: 16px;
+}
+
+.header-brand h1 {
+  font-size: 16px;
   font-weight: 600;
+  letter-spacing: 0.2px;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.brand-case {
+  flex: 0 0 auto;
+  padding: 2px 9px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.18);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 /* 按钮组永不压缩：压缩态优先让标题省略，按钮仍要完整可点 */
@@ -493,16 +534,17 @@ body {
 }
 
 /*
- * 压缩态顶栏：中央会话被两侧抽屉压到 620px 以下时，
- * 四个按钮的文字会把标题挤到不可读，甚至溢出。
- * 这里退化为纯图标（图标本体字号要单独设回去，因为它也吃 font-size）。
+ * 压缩态顶栏：只在视口确实窄（<900px）时生效，此时按钮文字会把标题挤到溢出，
+ * 退化为纯图标（图标本体字号要单独设回去，因为它也吃 font-size）。
  */
 .app-header.is-compact {
-  padding: 10px 12px;
+  height: 52px;
+  padding: 0 12px;
+  gap: 8px;
 }
 
-.app-header.is-compact .header-content h1 {
-  font-size: 15px;
+.app-header.is-compact .header-brand h1 {
+  display: none;
 }
 
 .app-header.is-compact .header-badges {
@@ -524,12 +566,6 @@ body {
   padding: 4px 12px;
   border-radius: 12px;
   font-size: 13px;
-}
-
-.header-badges {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .case-info-popover {
@@ -574,6 +610,8 @@ body {
  * 同一个 rgba 值在左右两侧会合成出不同的颜色——即使四个按钮写的是同一个
  * rgba，肉眼看到的仍是四种底色。只有实色才真正一致。
  */
+/* 顶栏按钮：不透明白底。
+   半透明底叠在 #409eff→#337ecc 渐变上，每个按钮会呈现不同深浅——看着像四种颜色。 */
 .header-btn {
   background: #ffffff !important;
   border: 1px solid #ffffff !important;

@@ -205,36 +205,42 @@ function handleQuoteToChat(content: string) {
       />
     </el-dialog>
 
-    <!-- 输入区域 -->
+    <!--
+      输入区域：灰底上的一张白色输入卡片。
+      早先是「通栏白底 + 中间一个扁输入框」，宽屏下两侧各留几百 px 纯白，
+      输入框本身只有一个 1px 灰边，看起来又小又飘。
+    -->
     <div class="input-area">
-      <div class="input-tips" v-if="chatStore.currentCase && chatStore.hasActiveCase">
-        输入 <code>/close</code> 关闭当前工单
-      </div>
-      <div v-if="chatStore.currentCase && !chatStore.hasActiveCase" class="closed-bar">
-        <span>当前工单已关闭</span>
-        <el-button type="primary" size="small" @click="chatStore.startNewConversation()">
-          新建工单
-        </el-button>
-      </div>
-      <div class="input-row">
-        <el-input
-          ref="assistantInputRef"
-          v-model="inputText"
-          type="textarea"
-          :autosize="{ minRows: 1, maxRows: 4 }"
-          :placeholder="chatStore.isCaseClosed ? '工单已关闭，请点击「新建工单」' : '描述您遇到的问题...'"
-          :disabled="chatStore.isStreaming || chatStore.isCaseClosed"
-          @keydown="handleKeydown"
-        />
-        <el-button
-          type="primary"
-          :loading="chatStore.isStreaming"
-          :disabled="!inputText.trim() || chatStore.isStreaming"
-          @click="handleSend"
-          class="send-btn"
-        >
-          发送
-        </el-button>
+      <div class="input-inner">
+        <div class="input-tips" v-if="chatStore.currentCase && chatStore.hasActiveCase">
+          输入 <code>/close</code> 关闭当前工单
+        </div>
+        <div v-if="chatStore.currentCase && !chatStore.hasActiveCase" class="closed-bar">
+          <span>当前工单已关闭</span>
+          <el-button type="primary" size="small" @click="chatStore.startNewConversation()">
+            新建工单
+          </el-button>
+        </div>
+        <div class="input-card">
+          <el-input
+            ref="assistantInputRef"
+            v-model="inputText"
+            type="textarea"
+            :autosize="{ minRows: 1, maxRows: 4 }"
+            :placeholder="chatStore.isCaseClosed ? '工单已关闭，请点击「新建工单」' : '描述您遇到的问题...'"
+            :disabled="chatStore.isStreaming || chatStore.isCaseClosed"
+            @keydown="handleKeydown"
+          />
+          <el-button
+            type="primary"
+            :loading="chatStore.isStreaming"
+            :disabled="!inputText.trim() || chatStore.isStreaming"
+            @click="handleSend"
+            class="send-btn"
+          >
+            发送
+          </el-button>
+        </div>
       </div>
     </div>
   </div>
@@ -246,6 +252,32 @@ function handleQuoteToChat(content: string) {
   flex-direction: column;
   height: 100%;
   background: #f0f2f5;
+  /* 中央是一列内容，块级子项统一居中到同一条内容列 */
+  align-items: center;
+}
+
+/*
+ * 内容列：引导卡 / 阶段条 / 环境卡 / 告警条与消息气泡共用 860。
+ *
+ * 早先这些块各自通栏（1352）、气泡却 860 居中，同一屏上宽度五花八门，
+ * 视觉上像几块互不相干的板子拼在一起。限宽放在子项上而不是外壳上，
+ * 外壳仍是通栏灰底，不会出现"两侧露页面底色"的空白带。
+ */
+.chat-window > * {
+  width: 100%;
+  max-width: 860px;
+}
+
+/* 消息区自身要滚动、吃掉剩余高度，限宽交给内部气泡 */
+.chat-window > .messages-area {
+  flex: 1;
+  max-width: none;
+  min-height: 0;
+}
+
+/* 输入区是通栏灰底，卡片内部自己限宽 */
+.chat-window > .input-area {
+  max-width: none;
 }
 
 .messages-area {
@@ -318,24 +350,59 @@ function handleQuoteToChat(content: string) {
 }
 
 .input-area {
+  flex: 0 0 auto;
+  /* 与消息区同底色：底栏是一块呼吸区，输入卡片浮在上面 */
+  background: #f0f2f5;
   border-top: 1px solid #e4e7ed;
-  background: #fff;
-  padding: 12px 16px;
+  padding: 12px 16px 16px;
 }
 
-/* 底栏通栏，输入控件与提示按可读宽度居中，避免宽屏下输入框贴边或过宽 */
-.input-tips,
-.input-row {
+/*
+ * 输入列与消息列严格同宽（860）：内容列限宽只作用在这一层，外壳仍是通栏灰底。
+ * 留 900 会让输入卡比上面的引导卡/气泡每边宽 20px，看起来"底下那块凸出来"。
+ */
+.input-inner {
   width: 100%;
-  max-width: var(--ws-center-max, 900px);
-  margin-left: auto;
-  margin-right: auto;
+  max-width: min(var(--ws-center-max, 900px), 860px);
+  margin: 0 auto;
+}
+
+/* 白色卡片：圆角 + 边框 + 聚焦光晕，让输入区成为有边界的对象 */
+.input-card {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  background: #fff;
+  border: 1px solid #dcdfe6;
+  border-radius: 12px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.input-card:focus-within {
+  border-color: #409eff;
+  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.12);
+}
+
+.input-card :deep(.el-textarea) {
+  flex: 1;
+}
+
+/* 边框交给卡片，textarea 自身去边框去阴影，避免"框套框" */
+.input-card :deep(.el-textarea__inner) {
+  border: none;
+  box-shadow: none;
+  background: transparent;
+  padding: 6px 2px;
+  resize: none;
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 .input-tips {
   font-size: 12px;
   color: #909399;
-  margin-bottom: 8px;
+  margin: 0 0 8px 2px;
 }
 
 .input-tips code {
@@ -358,19 +425,11 @@ function handleQuoteToChat(content: string) {
   font-size: 14px;
 }
 
-.input-row {
-  display: flex;
-  gap: 8px;
-  align-items: flex-end;
-}
-
-.input-row :deep(.el-textarea) {
-  flex: 1;
-}
-
+/* 发送按钮与输入卡片同高：34px 贴合单行文本，多行时靠 flex-end 底对齐 */
 .send-btn {
-  height: 40px;
-  min-width: 72px;
+  height: 34px;
+  min-width: 68px;
+  border-radius: 8px;
 }
 
 /* 未关闭工单对话框 */
