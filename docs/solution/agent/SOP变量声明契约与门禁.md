@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-26
+owner: team
+---
+
 # SOP 变量声明契约与门禁
 
 > 起因：Q2026102600003「手动填入之后，还是提示需要手动填」。同一现象已修过两次
