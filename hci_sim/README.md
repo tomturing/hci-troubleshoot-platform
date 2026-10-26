@@ -1,7 +1,7 @@
 # hci_sim · 现行全量设计说明
 
 > 适用范围：`hci_sim/` 源码目录及其关联的控制面、数据库、部署与验收链路
-> 详细阶段设计见 [`docs/solution/hci-sim/`](docs/solution/hci-sim/README.md)；任务见 [`docs/task/hci-sim/`](docs/task/hci-sim/README.md)；验证见 [`docs/verify/hci-sim/`](docs/verify/hci-sim/README.md)
+> 详细阶段设计见 [`docs/solution/hci-sim/`](../docs/solution/hci-sim/README.md)；任务见 [`docs/task/hci-sim/`](../docs/task/hci-sim/README.md)；验证见 [`docs/verify/hci-sim/`](../docs/verify/hci-sim/README.md)
 
 ---
 
@@ -147,7 +147,7 @@ Admin UI 环境构建
 
 | 维度 | 入口 |
 |---|---|
-| 设计（全量 + 阶段 A–E 事件） | [`docs/solution/hci-sim/`](docs/solution/hci-sim/README.md) |
-| 任务（全量 + 阶段 A–E 事件） | [`docs/task/hci-sim/`](docs/task/hci-sim/README.md) |
-| 验证（全量分析 + 阶段 A–E 事件） | [`docs/verify/hci-sim/`](docs/verify/hci-sim/README.md) |
-| 需求 | [`docs/requirement/hci-sim/events/`](docs/requirement/hci-sim/events/) |
+| 设计（全量 + 阶段 A–E 事件） | [`docs/solution/hci-sim/`](../docs/solution/hci-sim/README.md) |
+| 任务（全量 + 阶段 A–E 事件） | [`docs/task/hci-sim/`](../docs/task/hci-sim/README.md) |
+| 验证（全量分析 + 阶段 A–E 事件） | [`docs/verify/hci-sim/`](../docs/verify/hci-sim/README.md) |
+| 需求 | [`docs/requirement/hci-sim/events/`](../docs/requirement/hci-sim/events/) |

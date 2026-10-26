@@ -167,6 +167,19 @@ hci-troubleshoot-platform/
 → agent 文档）：它会静默遮蔽宽泛规则，导致改 schema 时门禁拒绝正确的设计文档。
 回归测试：`tests/unit/test_module_doc_sync_mapping.py`。
 
+#### 文档腐化门禁（`scripts/ci/check_docs_rot.py`）
+改文档时另有一道失效引用门禁，口径按文档层分级（五种引用豁免与完整表见
+[`docs/文档管理规范.md`](docs/文档管理规范.md) §九）：
+
+- **现行全量文档层**（非 `docs/archive/` 且路径不含 `events/` 目录段，含仓库根
+  `README.md`/`AGENTS.md`）：C1/C2/C3 不论是否本次改动**一律阻断**——该层已归零，
+  出现一条就是本次引入的故障。
+- **事件层 / 归档层**：只阻断本次改动行上的新增，存量仅警告。史料不得为了 CI 变绿而改写。
+- 豁免只认客观事实（邻近的否定语义词、`.gitignore` 命中、`status: archived` 等），
+  **不得靠堆词逃检查**；豁免条目会逐条打印供审。
+- 新增/改动 `scripts/ci/` 下的门禁脚本与测试时，必须 `grep` 自己的文件名确认已登记进
+  `ci.yml` 的 paths-filter / ruff check / ruff format / pytest 四处（未登记 = 测试永不执行，见 V-037）。
+
 #### 分支与 PR 流程
 - main 分支有保护规则，**禁止直接推送**，必须通过 PR
 - 提交流程：创建 feature/hotfix 分支 → 推送远程 → 创建 PR → CI 全绿后合并

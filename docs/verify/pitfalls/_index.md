@@ -15,7 +15,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 > 2. 再写入对应分类文件
 > 3. 同一 commit/PR 提交，不允许分开提交
 >
-> **下一个可用编号：V-037**（旧格式延续：PIT-042）
+> **下一个可用编号：V-038**（旧格式延续：PIT-042）
 
 ---
 
@@ -27,7 +27,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 |---------|---------|---------|
 | 任何涉及进程/状态/外部服务的问题排查 | [debugging.md](debugging.md) | 原则一~ 六 + 工单500 + V-004、V-006、V-019、V-020、V-022、V-028 |
 | 编写/审查 Python（ORM/异常/数据类） | [python.md](python.md) | PIT-003, PIT-004, PIT-009, PIT-040, PIT-041, V-024, V-026, V-027, V-029, V-030, V-031, V-032, V-033, V-034 |
-| 修改 docs 治理脚本 / 新增门禁检查项 | [python.md](python.md) | V-034, V-035, V-036 |
+| 修改 docs 治理脚本 / 新增门禁检查项 | [python.md](python.md) | V-034, V-035, V-036, V-037 |
 | 编写/审查前端（pnpm/Vue/Dockerfile） | [frontend.md](frontend.md) | PIT-005, PIT-023, PIT-025, PIT-028, PIT-029, V-001, V-002, V-003, V-005, V-007, V-016, V-023, V-025 |
 | 调试 Dispatcher/状态机/幂等资源 | [dispatcher.md](dispatcher.md) | PIT-006, PIT-007, PIT-008, V-017, V-021, V-035 |
 | OpenClaw 401/崩溃/WebSocket/AI 超时 | [openclaw.md](openclaw.md) | PIT-010, PIT-013, PIT-026, PIT-027, PIT-030, PIT-032, PIT-035, V-018 |
@@ -78,6 +78,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 | V-034 | python.md | 搬移 Markdown 或按「改动集合」扫描时基准一变引用即断：相对链接需按新位置回算，`git diff --name-only` 需 `-z` 否则中文名文档静默跳出增量门禁；纯改名不产生 hunk 头，行号断言需改用 `--numstat -z` 取「有内容变化」集合 |
 | V-035 | python.md | 建议级检查项触发阻断级退出会把整条门禁送上永久红灯（白名单天然滞后），然后没人再跑它；严重度必须在出口处显式分级：❌ 阻断、⚠️ 只提示 |
 | V-036 | python.md | 规范里写「必须」却没任何门禁执行等于没有该规范：203 篇现行文档中 118 篇缺 frontmatter、4 篇 status 写功能状态，半年无人发现；写下「必须」的同时必须给出执行机制，否则降级为「建议」 |
+| V-037 | python.md | 新增的门禁测试/脚本未登记进 CI 的四份显式清单（paths-filter / ruff check / ruff format / pytest）就永不执行，而输出照样「✅ 通过」；交付检查器时必须反向 grep 自己的文件名，确认命中数 == 应参与的 job 数。附带同根坑：本仓库 `select` 含 `N`，测试函数名必须 ASCII snake_case，中文语义写 docstring |
 | PIT-004 | python.md | Pydantic 验证 |
 | PIT-005 | frontend.md | pnpm workspace |
 | PIT-006 | dispatcher.md | 分布式锁 |

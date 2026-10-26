@@ -4,6 +4,18 @@
 
 HCI 环境 AI 故障诊断平台。微服务架构 + S0-S6 六阶段诊断状态机 + 双轨知识检索（SOP + RAG）。
 
+### 文档准确性治理与现行层阻断门禁（2026-10-26）
+
+- **现行全量文档已归零**：`docs/`（除 `*/events/` 与 `docs/archive/`）及仓库根 `README.md`/`AGENTS.md`
+  的失效引用从 158 条降到 **0**。自本次起，该层出现任何失效引用（死链/缺图/不存在的仓库路径）
+  **不分存量/增量一律阻断 PR**；事件层与归档层仍只按本次改动行判定，存量仅警告——
+  它们是史料，不得为了 CI 变绿而改写。
+- **门禁自身修掉五类误判**（目录导航链接、行内代码里的语法示例、同行邻近的否定语境、
+  `.gitignore` 刻意排除的路径、`status: archived` 文档），且每条豁免均逐条显式打印供审。
+- **治理脚本自己不再无人检查**：分级判定抽成纯函数，回归测试 `scripts/ci/test_check_docs_rot_semantics.py`
+  （33 项）首次登记进 `ci.yml` 的四处清单；教训记入 V-037。
+  详见 [方案](docs/solution/events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md)。
+
 ### DSH 诊断工作台集成（2026-10-22）
 
 - **定位**：以容器服务方式部署 DSH（DeepSeek Harness `0.2.1-rc.2`），并在 Admin UI 内嵌「DSH诊断」页面（位于「可观测性」与「分类基线」之间），用于分析客户侧回收到 `/sf/log` 的 HCI 故障日志压缩包。
@@ -180,7 +192,7 @@ bash scripts/ops/k3s-verify.sh
 | 分类 | 文档 |
 |------|------|
 | **架构** | [docs/solution/架构设计.md](docs/solution/架构设计.md) · [数据库设计.md](docs/solution/数据库设计.md) · [接口设计.md](docs/solution/接口设计.md) · [可观测性设计.md](docs/solution/可观测性设计.md) |
-| **服务设计** | [工单设计.md](docs/solution/case/工单设计.md) · [对话设计.md](docs/solution/conversation/对话设计.md) · [AI助手设计.md](docs/solution/agent/AI助手设计.md) · [知识库设计.md](docs/solution/knowledge-base/知识库设计.md) |
+| **服务设计** | [工单设计.md](docs/solution/case/工单设计.md) · [对话设计.md](docs/solution/conversation/对话设计.md) · [AI助手设计.md](docs/solution/agent/design/agent设计.md) · [知识库设计.md](docs/solution/knowledge-base/知识库设计.md) |
 | **前端设计** | [客户端设计.md](docs/solution/custom-ui/客户端设计.md) · [管理台设计.md](docs/solution/admin-ui/管理台设计.md) |
 | **部署** | [部署指南.md](docs/deploy/部署指南.md) · [部署设计.md](docs/deploy/部署设计.md) · [发布指南.md](docs/deploy/发布指南.md) · [部署管理规范.md](docs/deploy/部署管理规范.md) |
 | **测试** | [测试指南.md](docs/verify/测试指南.md) · [硬盘坏道 Live E2E Smoke 运行手册](docs/verify/evaluation/硬盘坏道LiveE2E运行手册.md) |
