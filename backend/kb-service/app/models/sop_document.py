@@ -9,7 +9,7 @@ tree_json：审核通过时写入（NULL = 未生成），原 sop_tree 1:1 合�
 from datetime import UTC, datetime
 
 from shared.database.postgres import Base
-from sqlalchemy import Column, DateTime, Integer, String, Text
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 
 
@@ -46,6 +46,9 @@ class SopDocument(Base):
 
     # 变量定义（T-AGT-24：approve 时自动解析生成）
     variable_schema = Column(JSONB, nullable=True, default=list)  # 变量定义列表 JSONB 数组
+    # 已应用的变量包引用，形如 [{"pack": "hci_common_vt_diag", "version": 1}]
+    # 仅用于漂移检测与批量同步；运行时只读 variable_schema（展开后的扁平数组）
+    applied_packs = Column(JSONB, nullable=False, default=list, server_default="[]")
 
     # 关键信号集合（跨文档通用，与 kbd_entry.signals_json 同构；抽取阶段填充）
     signals_json = Column(JSONB, nullable=False, default=list)  # 关键信号集合
@@ -63,3 +66,28 @@ class SopDocument(Base):
 
     def __repr__(self) -> str:
         return f"<SopDocument(id={self.id}, title={self.title[:30]}..., status={self.status})>"
+
+
+class SopVariablePack(Base):
+    """SOP 变量包：可被多个 SOP 复用的命名变量集合。
+
+    设计意图：消灭"同一份通用变量被复制粘贴到多个 SOP"的漂移缺陷。
+    包内容结构与社会 sop_document.variable_schema 完全一致，展开后仍写回
+    sop_document.variable_schema —— 运行时只读扁平数组，不感知包的存在。
+    """
+
+    __tablename__ = "sop_variable_pack"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pack_name = Column(String(64), nullable=False, unique=True)  # 包标识，如 hci_common_vt_diag
+    version = Column(Integer, nullable=False, default=1)  # 包版本，升级用于漂移检测
+    description = Column(Text, nullable=False, default="")
+    variables = Column(JSONB, nullable=False, default=list)  # 变量定义数组
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False)
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )

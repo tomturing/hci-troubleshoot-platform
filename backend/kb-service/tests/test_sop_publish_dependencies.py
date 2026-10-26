@@ -7,7 +7,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from app.routes.admin import validate_variable_schema_dependencies
+from app.routes.admin import enforce_variable_schema_contract
 from fastapi import HTTPException
 
 
@@ -22,7 +22,7 @@ async def test_validate_no_dependencies():
     ]
 
     # 应该直接通过，不抛出异常，不执行 database 查询
-    await validate_variable_schema_dependencies(mock_session, variable_schema)
+    await enforce_variable_schema_contract(mock_session, variable_schema)
     mock_session.execute.assert_not_called()
 
 
@@ -43,11 +43,16 @@ async def test_validate_all_dependencies_active():
 
     variable_schema = [
         {"name": "vm_list", "acquisition_strategy": "tool_call", "acquisition_tool": "acli_exec"},
-        {"name": "alert_info", "acquisition_strategy": "skill_call", "acquisition_tool": "hci-alert-parsing"},
+        {
+            "name": "alert_info",
+            "acquisition_strategy": "skill_call",
+            "acquisition_tool": "hci-alert-parsing",
+            "output_path": "values.info",
+        },
     ]
 
     # 应该通过校验，不抛出异常
-    await validate_variable_schema_dependencies(mock_session, variable_schema)
+    await enforce_variable_schema_contract(mock_session, variable_schema)
     assert mock_session.execute.call_count == 2
 
 
@@ -66,7 +71,7 @@ async def test_validate_missing_tool():
     ]
 
     with pytest.raises(HTTPException) as exc_info:
-        await validate_variable_schema_dependencies(mock_session, variable_schema)
+        await enforce_variable_schema_contract(mock_session, variable_schema)
 
     assert exc_info.value.status_code == 422
     detail = exc_info.value.detail
@@ -89,11 +94,16 @@ async def test_validate_missing_skill():
     mock_session.execute.return_value = mock_skill_res
 
     variable_schema = [
-        {"name": "alert_info", "acquisition_strategy": "skill_call", "acquisition_tool": "non_existent_skill"},
+        {
+            "name": "alert_info",
+            "acquisition_strategy": "skill_call",
+            "acquisition_tool": "non_existent_skill",
+            "output_path": "values.info",
+        },
     ]
 
     with pytest.raises(HTTPException) as exc_info:
-        await validate_variable_schema_dependencies(mock_session, variable_schema)
+        await enforce_variable_schema_contract(mock_session, variable_schema)
 
     assert exc_info.value.status_code == 422
     detail = exc_info.value.detail
@@ -123,11 +133,16 @@ async def test_validate_multiple_missing():
     variable_schema = [
         {"name": "vm_list", "acquisition_strategy": "tool_call", "acquisition_tool": "acli_exec"},
         {"name": "disk_status", "acquisition_strategy": "tool_call", "acquisition_tool": "non_existent_tool"},
-        {"name": "alert_info", "acquisition_strategy": "skill_call", "acquisition_tool": "non_existent_skill"},
+        {
+            "name": "alert_info",
+            "acquisition_strategy": "skill_call",
+            "acquisition_tool": "non_existent_skill",
+            "output_path": "values.info",
+        },
     ]
 
     with pytest.raises(HTTPException) as exc_info:
-        await validate_variable_schema_dependencies(mock_session, variable_schema)
+        await enforce_variable_schema_contract(mock_session, variable_schema)
 
     assert exc_info.value.status_code == 422
     detail = exc_info.value.detail
@@ -135,3 +150,33 @@ async def test_validate_multiple_missing():
     assert "non_existent_tool" in detail["missing_tools"]
     assert "non_existent_skill" in detail["missing_skills"]
     assert len(detail["validation_issues"]) == 2
+
+
+@pytest.mark.anyio
+async def test_contract_gate_rejects_undeclared_dependency_before_resource_check():
+    """结构契约必须先于资源查询生效。
+
+    历史缺陷：函数只查工具/技能注册，depends_on 悬空（"任务原始数据"）完全
+    不校验，导致 Q2026102600003 的坏配置一路发布到线上。这里锁死两点：
+      1) 悬空依赖必须 422；
+      2) 校验在触达 DB 之前就失败（不浪费连接，也说明是纯结构判定）。
+    """
+    mock_session = AsyncMock()
+    variable_schema = [
+        {
+            "name": "task_logs",
+            "acquisition_strategy": "tool_call",
+            "acquisition_tool": "acli_exec",
+            "output_path": "stdout",
+            "depends_on": ["任务原始数据"],
+        }
+    ]
+
+    with pytest.raises(HTTPException) as exc_info:
+        await enforce_variable_schema_contract(mock_session, variable_schema, mode="publish")
+
+    assert exc_info.value.status_code == 422
+    detail = exc_info.value.detail
+    assert detail["error"] == "variable_schema_contract_violation"
+    assert any(i["code"] == "SOP_VAR_DEP_NOT_IDENTIFIER" for i in detail["validation_issues"])
+    mock_session.execute.assert_not_called()

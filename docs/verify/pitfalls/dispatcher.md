@@ -35,3 +35,24 @@
 2. 过滤必须带「无事实源护栏」：拿不到 `variable_schema` 声明集（加载失败）时**整体不过滤**，否则空 known 会把所有含下划线 token 的合法追问误删。
 3. 提及已就绪变量的追问按冗余处理（可能误伤「提及但不索取」的授权类问句，属可接受的低价值损失，模型可下轮重问）；Prompt 侧同步在 `s1_react_output_constraint_v1` 追加「已知变量权威」规则从源头收敛。
 4. 教训：结构化输出（`response_schema`）的每个「需求类」字段都不能默认可信——模型会把历史错误文本当作当前事实续写，必须以运行时权威状态做模型无关校验。
+
+## V-035：SOP 变量声明无契约，任意字符串都能成为"变量"，导致"填了还要填"死循环
+
+工单 Q2026102600003 复盘：用户通过变量卡片提交「显卡切分方式不匹配或显卡资源不足」后，弹框消失、`sop_execution.context_variables` 也确实写入了，但下一轮仍在索要变量。查库发现变量池里只有 `{"任务原始数据": {...}}` —— 一个 **SOP schema 中不存在的键**，而真正的 `vmid` / `task_logs` / `hostname` 从未被写入。
+
+**完整因果链**：
+
+1. SOP#3 的 Markdown 变量表「依赖」列写的是自然语言 `任务原始数据`（应为变量名）；
+2. 解析器原样入库，`task_logs.depends_on = ["任务原始数据"]`；
+3. `sop_request_variable("task_logs")` 判为依赖悬空，返回 `next_tool_call` **引导模型去请求这个不存在的变量**；
+4. `sop_request_variable("任务原始数据")` 在 schema 中找不到、字符级 Jaccard 对中英混排恒为 0、无相似项，于是**降级为自由输入**，下发 `needs_input=True` 卡片；
+5. 用户填值写入野键，`pending_variable_name` 被清空（前端显示"已提交"），但 SOP 永远消费不到 → 下一轮继续索要。
+
+**规则**：
+
+1. 变量声明必须有值对象契约（`shared/models/sop_variable.py`），**构造即校验**：标识符、类型、策略可识别性、策略↔字段矩阵、依赖存在性、DAG 无环、重名。裸 `dict.get()` 取值一律视为缺陷。
+2. **禁止"降级自由输入"**。未声明变量必须 `fail-loud`（`sop_variable_not_defined` + `config_error=true`）。任何"找不到就让人填"的兜底，实质是把配置错误伪装成正常业务。
+3. 依赖指向未声明变量时，**不得返回 `next_tool_call` 指向该变量**——这等于把模型推进死循环。应返回 `sop_schema_invalid_dependency` 并中止。
+4. 三道闸（save / publish / runtime）必须复用同一校验器，且 **save 闸要覆盖所有写入路径**。本项目 `variable_schema` 只有 2 处写库（approve / PATCH），历史上前者只校验工具注册、后者漏检依赖，命名 `validate_variable_schema_dependencies` 却从不校验 dependencies，直接导致坏配置上线。
+5. 章节级变量表若无法表达 `acquisition_tool`，解析结果必然是 `tool_call + tool=NULL`，运行时会静默转人工。此类变量应按语义改为 `path_template` / `tool_call:xxx` / `user_input + 明确 description`，不得留空。
+6. 诊断"填了还要填"时，**先查 `sop_execution.context_variables` 的键名是否 ∈ schema 声明集**，再谈前端态机与模型幻觉。键名不匹配时，前两次修复（#1149 前端已提交态 / #1151 user_questions 过滤）都只是在给症状打补丁。
