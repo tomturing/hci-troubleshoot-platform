@@ -32,6 +32,7 @@ from shared.dynamic_resource.loader import snapshot_revision_metadata
 from shared.dynamic_resource.publisher import DynamicResourcePublisher
 from shared.models.dynamic_resource import DynamicResourceRevision
 from shared.models.skill_definition import SkillDefinitionORM
+from shared.models.sop_variable import ValidationMode, validate_variable_schema
 from shared.models.tool_definition import ToolDefinitionORM
 from shared.observability.langfuse import observe_workflow, update_observation
 from shared.observability.logger import get_logger
@@ -1304,7 +1305,9 @@ class RootSignalBackfillRequest(BaseModel):
 
     statuses: list[str] = Field(default_factory=lambda: ["draft", "published"])
     category_prefix: str | None = Field(None, max_length=32, description="仅回刷指定分类前缀（如「虚拟机」）")
-    only_missing: bool = Field(True, description="默认只回刷尚未抽取的条目；置 false 则连已抽取的重刷（刷新 Prompt 后全库重定形态）")
+    only_missing: bool = Field(
+        True, description="默认只回刷尚未抽取的条目；置 false 则连已抽取的重刷（刷新 Prompt 后全库重定形态）"
+    )
     limit: int = Field(100, ge=1, le=100)
 
 
@@ -1796,9 +1799,7 @@ async def backfill_extract_root_signal(
         total_candidates = int(count_result.scalar() or 0)
 
     if not kbd_ids:
-        return RootSignalBackfillResponse(
-            submitted=0, remaining=0, message="没有符合条件的待回刷 KBD"
-        )
+        return RootSignalBackfillResponse(submitted=0, remaining=0, message="没有符合条件的待回刷 KBD")
 
     accepted = await _submit_batch_job(
         kbd_ids=kbd_ids,
@@ -3502,7 +3503,11 @@ async def review_kbd_signals(request: Request, kbd_id: int) -> dict[str, Any]:
     root_signals = getattr(kbd, "root_signal_json", None)
     root_signals = root_signals if isinstance(root_signals, list) else []
     for rs in root_signals:
-        if isinstance(rs, dict) and rs.get("match_type") == "executable" and rs.get("closure_status") not in (None, "closed"):
+        if (
+            isinstance(rs, dict)
+            and rs.get("match_type") == "executable"
+            and rs.get("closure_status") not in (None, "closed")
+        ):
             ROOT_SIGNAL_PUBLISH_GATE_TOTAL.labels(reason=str(rs.get("closure_status"))).inc()
             issues.append(
                 {
@@ -3948,11 +3953,57 @@ class SopApproveResponse(BaseModel):
     resource_revision: dict | None = Field(default=None, description="动态资源 revision 元数据")
 
 
-async def validate_variable_schema_dependencies(session, variable_schema: list[dict]) -> None:
-    """验证变量 Schema 中声明的工具/技能可用性。
+async def enforce_variable_schema_contract(
+    session,
+    variable_schema: list[dict],
+    *,
+    mode: ValidationMode = "save",
+    document_id: int | None = None,
+) -> None:
+    """SOP 变量声明的唯一闸门（保存态与发布态共用同一套规则）。
 
-    如果存在未启用或未注册的工具/技能，抛出 422 错误。
+    历史上本函数名为 ``validate_variable_schema_dependencies``，但实际只校验
+    工具/技能是否注册，从未校验 depends_on —— 命名误导直接导致
+    Q2026102600003「任务原始数据」这类悬空依赖被放过数月。
+
+    现在分两层：
+      1) **结构契约**（shared.models.sop_variable）：变量名合法性、类型、
+         策略可识别性、策略与字段矩阵、依赖存在性、依赖成环、重名；
+      2) **资源可用性**：tool_call / skill_call 引用的工具与技能必须已注册启用。
+
+    任一层不通过即抛 422，绝不静默降级。
     """
+    # ── 第 1 层：结构契约 ────────────────────────────────────────────────────
+    report = validate_variable_schema(variable_schema, mode=mode)
+    if report.has_error:
+        logger.warning(
+            event="sop_variable_schema_contract_violation",
+            message="SOP 变量声明不满足契约，已拒绝写入",
+            document_id=document_id,
+            mode=mode,
+            error_count=len(report.errors),
+            error_codes=[issue.code for issue in report.errors],
+        )
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "variable_schema_contract_violation",
+                "message": f"SOP 变量声明不满足契约（{len(report.errors)} 项），请修正后重试。",
+                "validation_issues": [
+                    {
+                        "level": "error",
+                        "location": "变量声明",
+                        "line_number": None,
+                        "code": issue.code,
+                        "variable": issue.variable,
+                        "message": f"{issue.message}" + (f"（建议：{issue.hint}）" if issue.hint else ""),
+                    }
+                    for issue in report.errors
+                ],
+            },
+        )
+
+    # ── 第 2 层：工具/技能可用性 ─────────────────────────────────────────────
     required_tools = set()
     required_skills = set()
     for var in variable_schema:
@@ -4211,9 +4262,11 @@ async def approve_sop_document(request: Request, document_id: int, body: SopAppr
 
         # ── 短事务2：UPDATE sop_document（状态 + tree_json）────────────────────
         async with _db_manager.async_session_factory() as session:
-            # 校验工具与技能依赖（T-AGT-28）
+            # 发布态闸门：结构契约（publish 更严）+ 工具/技能可用性
+            # 历史缺陷（Q2026102600003）：此处仅校验工具/技能注册，depends_on 悬空
+            # 完全没查，导致「任务原始数据」这类坏配置一路发布到线上。
             if parse_result and not parse_result.has_error and parse_result.root_nodes:
-                await validate_variable_schema_dependencies(session, variable_defs)
+                await enforce_variable_schema_contract(session, variable_defs, mode="publish", document_id=document_id)
 
             # 决策树解析成功才设置 status = published，失败则保持 draft 并记录错误
             if parse_result and not parse_result.has_error and parse_result.root_nodes:
@@ -4784,8 +4837,8 @@ async def update_sop_variable_schema(request: Request, document_id: int, body: S
             # 标记为人工编辑（下次 approve 保留）
             current_var["auto_generated"] = False
 
-        # 校验修改后的整个 schema 依赖
-        await validate_variable_schema_dependencies(session, current_schema)
+        # 保存态闸门：校验修改后的整份 schema（结构契约 + 工具/技能可用性）
+        await enforce_variable_schema_contract(session, current_schema, mode="save")
 
         # 3. 写回数据库（不修改 status、tree_json）
         await session.execute(

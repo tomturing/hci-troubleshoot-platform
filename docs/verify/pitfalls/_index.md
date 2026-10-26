@@ -28,7 +28,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 | 任何涉及进程/状态/外部服务的问题排查 | [debugging.md](debugging.md) | 原则一~ 六 + 工单500 + V-004、V-006、V-019、V-020、V-022、V-028 |
 | 编写/审查 Python（ORM/异常/数据类） | [python.md](python.md) | PIT-003, PIT-004, PIT-009, PIT-040, PIT-041, V-024, V-026, V-027, V-029, V-030, V-031, V-032, V-033, V-034 |
 | 编写/审查前端（pnpm/Vue/Dockerfile） | [frontend.md](frontend.md) | PIT-005, PIT-023, PIT-025, PIT-028, PIT-029, V-001, V-002, V-003, V-005, V-007, V-016, V-023, V-025 |
-| 调试 Dispatcher/状态机/幂等资源 | [dispatcher.md](dispatcher.md) | PIT-006, PIT-007, PIT-008, V-017, V-021 |
+| 调试 Dispatcher/状态机/幂等资源 | [dispatcher.md](dispatcher.md) | PIT-006, PIT-007, PIT-008, V-017, V-021, V-035 |
 | OpenClaw 401/崩溃/WebSocket/AI 超时 | [openclaw.md](openclaw.md) | PIT-010, PIT-013, PIT-026, PIT-027, PIT-030, PIT-032, PIT-035, V-018 |
 
 ---
@@ -61,6 +61,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 | V-020 | debugging.md | S0 意图识别「已正确识别却报无法识别」——harness 正则解析契约对特定模型输出风格过拟合，换模型即假阴性（改用 JSON 结构化输出+归一化兜底） |
 | V-021 | dispatcher.md | S2/S3 假设生成 user_questions 不受变量池事实源约束，重复索取已提交变量+凭空索要未声明字段（须确定性过滤+无事实源护栏） |
 | V-022 | debugging.md | 挤牙膏复发根因是「层间契约缝隙无人覆盖」，发布前须用 Live E2E smoke（evaluation/live_e2e）守贯穿链路，断言只打结构不变量+守卫事件 |
+| V-035 | dispatcher.md | SOP 变量声明无契约：依赖可写自然语言、未声明变量降级为自由输入，导致写入野键后「填了还要填」（须值对象契约+三道闸+fail-loud） |
 | V-016 | frontend.md | CI 低配 runner 上 vitest 默认 5s 超时导致重挂载用例临界抖动 |
 | V-023 | frontend.md | 前端单测不得跨语言读后端源码（前端 CI 门禁为 sparse-checkout 稀疏检出） |
 | V-024 | python.md | 自动生成的语义画像正反例必须与校验端复算口径一致（子句原子锚点），候选全拒须在收口处显式失败不得退化到无关语义门禁掩盖真因 |

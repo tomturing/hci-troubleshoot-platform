@@ -15,6 +15,7 @@ SOP 变量获取策略统一解析模块
   agent_pass         / agent      / agent_pass:key_name 或 agent:key_name
   derived            / -          / derived（配合 expression 字段）
   json_extract       / -          / json_extract（配合 expression / depends_on 字段）
+  path_template      / path       / path_template（配合 expression 的 {var} 路径模板）
 
 冒号格式规则：
   strategy:parameter → 冒号左侧为策略名（全名或简写），冒号右侧为参数（acquisition_tool 或额外配置）
@@ -48,6 +49,10 @@ STRATEGY_LLM_INFERENCE = "llm_inference"
 STRATEGY_AGENT_PASS = "agent_pass"
 STRATEGY_DERIVED = "derived"
 STRATEGY_JSON_EXTRACT = "json_extract"
+# 路径/字符串模板填充：expression 为带 {var} 占位符的模板，运行时用变量池插值。
+# 典型场景：/sf/log/{task_day}/sfvt_qemu_{vmid}.log —— 语义是"由已知变量拼出来"，
+# 既不是人工输入（user_input），也不该塞进 tool_call（无采集动作）。
+STRATEGY_PATH_TEMPLATE = "path_template"
 
 # 所有合法的规范策略名集合
 ALL_STRATEGIES: frozenset[str] = frozenset(
@@ -62,6 +67,7 @@ ALL_STRATEGIES: frozenset[str] = frozenset(
         STRATEGY_AGENT_PASS,
         STRATEGY_DERIVED,
         STRATEGY_JSON_EXTRACT,
+        STRATEGY_PATH_TEMPLATE,
     }
 )
 
@@ -100,6 +106,11 @@ _ALIAS_MAP: dict[str, str] = {
     "derived": STRATEGY_DERIVED,
     # json_extract（无简写）
     "json_extract": STRATEGY_JSON_EXTRACT,
+    # path_template（路径/字符串模板填充）
+    "path_template": STRATEGY_PATH_TEMPLATE,
+    "path": STRATEGY_PATH_TEMPLATE,
+    "路径模板": STRATEGY_PATH_TEMPLATE,
+    "模板": STRATEGY_PATH_TEMPLATE,
     # 中文别名支持（避免 SOP 作者输入中文时意外降级为 user_input）
     "工具调用": STRATEGY_TOOL_CALL,
     "工具": STRATEGY_TOOL_CALL,
@@ -134,6 +145,7 @@ AUTO_STRATEGIES: frozenset[str] = frozenset(
         STRATEGY_DERIVED,
         STRATEGY_JSON_EXTRACT,
         STRATEGY_SOP_DEFAULT,
+        STRATEGY_PATH_TEMPLATE,
     }
 )
 
@@ -232,6 +244,25 @@ def parse_strategy(raw: str | None) -> ParsedStrategy:
         parameter = None
 
     return ParsedStrategy(strategy=normalized, parameter=parameter, raw=raw_stripped)
+
+
+def is_known_strategy(raw: str | None) -> bool:
+    """判断策略字符串是否被别名表明确识别（区别于"未知值被兜底成 user_input"）。
+
+    这是 SOP 变量契约校验的关键区分点：
+      - parse_strategy("工具调用").strategy == "tool_call" 且 is_known_strategy 为 True
+      - parse_strategy("随便写的").strategy == "user_input" 但 is_known_strategy 为 False
+
+    只依赖 parse_strategy 会让"写错策略"静默退化成 user_input（进而把自动采集
+    变成人工弹框），因此契约层必须用本函数显式拦截未知值。
+    """
+    if not raw:
+        # 空值属于"未声明"，由契约层按 required/strategy 缺失单独报错，
+        # 这里判定为 False 以便调用方区分。
+        return False
+    raw_stripped = raw.strip()
+    prefix = raw_stripped.partition(":")[0].strip().lower() if ":" in raw_stripped else raw_stripped.lower()
+    return prefix in _ALIAS_MAP
 
 
 def normalize_strategy(raw: str | None) -> str:

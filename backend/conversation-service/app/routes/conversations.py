@@ -657,7 +657,11 @@ async def submit_interactive_response(
             status_code=503,
             detail="AgentClient 不可用：agent-service 未启用或接口不可达",
         )
-    return {"ok": True}
+    # 变量类响应只完成了"写变量池"，必须再触发一轮 Agent 推理才能继续诊断。
+    # 显式返回 should_resume，避免调用方把 HTTP 200 误当成"已继续"
+    # （Q2026102600003：用户看到"已提交"，但没有任何后续推理）。
+    should_resume = body.kind in ("variable_input", "variable_confirm")
+    return {"ok": True, "should_resume": should_resume}
 
 
 # ── ReAct 工具调用历史跨轮次持久化 ──────────────────────────────────────────

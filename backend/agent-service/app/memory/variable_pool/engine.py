@@ -28,6 +28,7 @@ from shared.utils.acquisition_strategy import (
     STRATEGY_DERIVED,
     STRATEGY_ENV_INJECTION,
     STRATEGY_JSON_EXTRACT,
+    STRATEGY_PATH_TEMPLATE,
     STRATEGY_SKILL_CALL,
     STRATEGY_SOP_DEFAULT,
     STRATEGY_TOOL_CALL,
@@ -204,6 +205,32 @@ def _render_args_template(template: Any, context_variables: dict[str, Any]) -> A
         return _TEMPLATE_PLACEHOLDER_RE.sub(replace, value)
 
     return render(template)
+
+
+def _render_variable_template(template: str, context_variables: dict[str, Any]) -> tuple[str | None, list[str]]:
+    """用变量池渲染 path_template 的 `{var}` 模板。
+
+    与 `_render_args_template` 的差别：后者缺变量时直接抛异常，本函数把缺失项
+    收集后返回，便于上层区分"依赖未就绪"（交回模型补齐）与"配置错误"。
+
+    Returns:
+        (渲染结果, 缺失变量列表)。任一占位符未就绪时渲染结果为 None。
+    """
+    context = _unwrap_context_variables(context_variables)
+    missing: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1) or match.group(2)
+        value = _read_path(context, name)
+        if value is None or value == "":
+            missing.append(name)
+            return match.group(0)
+        return str(value)
+
+    rendered = _TEMPLATE_PLACEHOLDER_RE.sub(replace, template)
+    if missing:
+        return None, sorted(set(missing))
+    return rendered, []
 
 
 def _split_args(text: str) -> list[str]:
@@ -497,25 +524,25 @@ async def sop_request_variable(
 
     variable_schema_list = sop_doc.get("variable_schema", [])
     if not variable_schema_list:
-        # variable_schema 未定义，允许 LLM 自行处理，降级为自由输入
-        logger.warning(
+        # 已发布 SOP 必须声明变量。走到这里说明配置缺失，属于契约违规：
+        # 绝不降级成"自由输入"——那会把配置错误伪装成正常业务弹框
+        # （Q2026102600003 的直接成因之一）。
+        logger.error(
             event="sop_request_variable_schema_missing",
+            message="SOP 未声明任何变量，sop_request_variable 属于契约违规调用",
             sop_document_id=sop_document_id,
             variable_name=variable_name,
+            conversation_id=conversation_id,
         )
-        return VariableRequestResult(
-            needs_input=True,
-            variable_name=variable_name,
-            variable_schema={
-                "name": variable_name,
-                "display_name": variable_name,
-                "description": reason or f"请提供变量 {variable_name} 的值",
-                "type": "string",
-                "required": True,
-            },
-            message=f"变量 {variable_name} 需要用户提供值",
-            kind="variable_input",
-        )
+        return {
+            "error": "sop_variable_schema_missing",
+            "message": (
+                f"SOP 文档 {sop_document_id} 未声明任何变量，无法请求 {variable_name}。"
+                "这是流程配置错误，请停止向用户索要变量并上报该 SOP 需修复。"
+            ),
+            "variable_name": variable_name,
+            "config_error": True,
+        }
 
     # 查找变量定义
     var_def = None
@@ -525,40 +552,36 @@ async def sop_request_variable(
             break
 
     if var_def is None:
-        # 变量未在 schema 中定义 — 搜索相似变量名提示 LLM 使用正确名称
+        # 变量未在 schema 中定义 —— 一律 fail-loud，绝不降级为自由输入。
+        #
+        # 历史行为（已废弃）：找不到相似变量时会返回 needs_input=True，把任意
+        # 字符串（含 "任务原始数据" 这类中文描述）包装成正常的变量输入卡片。
+        # 用户填值后写入的是 schema 里不存在的键，SOP 永远消费不到，表现为
+        # "填了还要填"的死循环。中文变量名与英文变量名的字符级相似度恒为 0，
+        # 因此所有中文野变量都会 100% 走进这条死路。
+        declared_names = [v.get("name") for v in variable_schema_list if isinstance(v, dict) and v.get("name")]
         suggestions = _find_similar_variables(variable_name, variable_schema_list)
-        logger.warning(
+        logger.error(
             event="sop_request_variable_not_defined",
+            message="请求了未在 SOP Schema 中声明的变量，已拒绝（不再降级为自由输入）",
             sop_document_id=sop_document_id,
             variable_name=variable_name,
             suggestions=suggestions,
+            conversation_id=conversation_id,
         )
-        if suggestions:
-            # 有相似变量时返回结构化错误而非用户输入，让 LLM 自行修正
-            return {
-                "error": "sop_variable_not_defined",
-                "message": (
-                    f"变量 '{variable_name}' 未在 SOP Schema 中定义。"
-                    f"你可能想请求: {', '.join(suggestions[:5])}。"
-                    f"请使用 sop_request_variable 请求上面列出的正确变量名。"
-                ),
-                "variable_name": variable_name,
-                "suggested_variables": suggestions[:5],
-            }
-        # 无相似变量时才降级为自由输入
-        return VariableRequestResult(
-            needs_input=True,
-            variable_name=variable_name,
-            variable_schema={
-                "name": variable_name,
-                "display_name": variable_name,
-                "description": reason or f"请提供变量 {variable_name} 的值",
-                "type": "string",
-                "required": True,
-            },
-            message=f"变量 {variable_name} 未在 SOP Schema 中定义，需要用户提供值",
-            kind="variable_input",
-        )
+        hint_targets = suggestions[:5] or declared_names[:10]
+        return {
+            "error": "sop_variable_not_defined",
+            "message": (
+                f"变量 '{variable_name}' 未在 SOP Schema 中定义，已拒绝该请求。"
+                f"本 SOP 声明的变量为: {', '.join(hint_targets)}。"
+                "请只使用上面列出的变量名重新调用 sop_request_variable；"
+                "若确实缺少该变量，说明流程配置需要修复，请停止向用户索要。"
+            ),
+            "variable_name": variable_name,
+            "suggested_variables": hint_targets,
+            "config_error": True,
+        }
 
     # 辅助：调用 interrupt API 并返回 VariableRequestResult（阻塞等待用户输入）
     async def _request_user_input(
@@ -647,19 +670,31 @@ async def sop_request_variable(
         # 仅自动解析在 variable_schema 中有声明的依赖；未声明的仍返回 missing 错误
         resolvable_deps = [d for d in missing_deps if _find_var_def(d, variable_schema_list)]
         unresolvable_deps = [d for d in missing_deps if not _find_var_def(d, variable_schema_list)]
-        if unresolvable_deps and not resolvable_deps:
+        if unresolvable_deps:
+            # 依赖指向未声明变量 —— 这是 SOP 配置错误，不是"还差一个变量"。
+            #
+            # 历史实现返回 next_tool_call 指向该未声明变量，把模型直接推进死循环：
+            # 模型照做 -> 请求未定义变量 -> 旧逻辑降级为自由输入 -> 用户填的值写入
+            # 一个永远不会被消费的野键 -> 变量依旧缺失 -> 再问一次。
+            # Q2026102600003 的「任务原始数据」就是这条链路的产物。
+            logger.error(
+                event="sop_request_variable_schema_invalid_dependency",
+                message="变量依赖了未声明的变量，属于 SOP 配置错误",
+                conversation_id=conversation_id,
+                sop_document_id=sop_document_id,
+                variable_name=variable_name,
+                unresolvable_dependencies=unresolvable_deps,
+            )
             return {
-                "error": "sop_variable_dependency_missing",
-                "message": f"变量 {variable_name} 依赖 {', '.join(missing_deps)}，请先获取依赖变量",
+                "error": "sop_schema_invalid_dependency",
+                "message": (
+                    f"变量 {variable_name} 依赖了未声明的变量 {', '.join(unresolvable_deps)}，"
+                    "这是流程配置错误。请停止向用户索要变量，并上报该 SOP 需要修复。"
+                ),
                 "variable_name": variable_name,
                 "missing_dependencies": missing_deps,
-                "next_tool_call": {
-                    "tool_name": "sop_request_variable",
-                    "args": {
-                        "variable_name": missing_deps[0],
-                        "reason": f"变量 {variable_name} 的前置依赖",
-                    },
-                },
+                "unresolvable_dependencies": unresolvable_deps,
+                "config_error": True,
             }
 
         _resolve_stack.add(variable_name)
@@ -788,6 +823,52 @@ async def sop_request_variable(
             ),
         )
 
+    if strategy == STRATEGY_PATH_TEMPLATE:
+        # path_template：由已就绪变量填充路径/字符串模板。
+        # 典型：/sf/log/{task_day}/sfvt_qemu_{vmid}.log
+        # 这类变量既不需要采集动作（不是 tool_call），也不该让人工手抄路径。
+        template = str(var_def.get("expression") or "").strip()
+        if not template:
+            logger.error(
+                event="sop_request_variable_path_template_missing",
+                message="path_template 策略缺少 expression 模板",
+                variable_name=variable_name,
+                conversation_id=conversation_id,
+            )
+            return {
+                "error": "sop_schema_invalid_expression",
+                "message": f"变量 {variable_name} 声明为 path_template 但未配置模板，属于流程配置错误。",
+                "variable_name": variable_name,
+                "config_error": True,
+            }
+
+        rendered, missing_tokens = _render_variable_template(template, context_variables)
+        if rendered is not None:
+            logger.info(
+                event="sop_request_variable_path_template_resolved",
+                variable_name=variable_name,
+                template=template,
+            )
+            return {"ok": True, "value": rendered, "source": "path_template"}
+
+        # 模板占位符未就绪 = 依赖链未解析完，交回模型补齐前置变量（不弹人工框）
+        logger.warning(
+            event="sop_request_variable_path_template_unresolved",
+            variable_name=variable_name,
+            template=template,
+            missing_tokens=missing_tokens,
+            conversation_id=conversation_id,
+        )
+        return {
+            "error": "sop_variable_dependency_missing",
+            "message": (
+                f"变量 {variable_name} 的路径模板 {template} 依赖的 {', '.join(missing_tokens)} 尚未取值，"
+                "请先获取这些前置变量。"
+            ),
+            "variable_name": variable_name,
+            "missing_dependencies": missing_tokens,
+        }
+
     if strategy == STRATEGY_TOOL_CALL and acquisition_tool:
         # tool_call 策略（含 tool:xxx 冒号简写）：由引擎经受控通道自动调用指定工具获取变量值（DC-02）。
         # 修复 V-017：
@@ -811,9 +892,7 @@ async def sop_request_variable(
                 tool_args = var_def.get("acquisition_args") or var_def.get("acquisition_args_template") or {}
                 tool_args = _render_args_template(tool_args, context_variables)
                 # 透传 conversation_id（CompositeToolExecutor / BridgeRelayExecutor 均需此关键字参数）
-                tool_result = await tool_executor.execute(
-                    acquisition_tool, tool_args, conversation_id=conversation_id
-                )
+                tool_result = await tool_executor.execute(acquisition_tool, tool_args, conversation_id=conversation_id)
                 acquired_value = _extract_value(tool_result, variable_name, output_path)
             except (TypeError, ValueError) as exc:
                 # 参数契约错误（如缺 conversation_id）、模板渲染缺前置变量等
@@ -862,8 +941,7 @@ async def sop_request_variable(
             var_schema=var_def,
             kind="variable_input",
             msg=(
-                f"变量 {variable_name} 无法自动获取（{error_type}）：{failure_reason}。"
-                "请人工提供该变量值或确认后继续。"
+                f"变量 {variable_name} 无法自动获取（{error_type}）：{failure_reason}。请人工提供该变量值或确认后继续。"
             ),
         )
 
@@ -906,7 +984,19 @@ async def sop_request_variable(
                 reason=reason,
                 conversation_id=conversation_id,
             )
-            acquired_value = _extract_value(skill_result, variable_name, "value")
+            # 优先按 SOP 声明的 output_path 提取（与 tool_call 语义一致）；
+            # 未命中时回退到既有 Skill 约定 {"value": ...}，避免存量技能失效。
+            acquired_value = _extract_value(skill_result, variable_name, output_path or "value")
+            if acquired_value is None and output_path:
+                acquired_value = _extract_value(skill_result, variable_name, "value")
+                if acquired_value is not None:
+                    logger.info(
+                        event="sop_request_variable_skill_output_path_fallback",
+                        message="output_path 未命中，回退到技能约定的 value 字段",
+                        variable_name=variable_name,
+                        acquisition_skill=acquisition_tool,
+                        output_path=output_path,
+                    )
             if acquired_value is not None:
                 logger.info(
                     event="sop_request_variable_skill_executed",
@@ -1002,9 +1092,7 @@ async def sop_request_variable(
         try:
             from jsonpath_ng.ext import parse as jsonpath_parse
         except ImportError:
-            return await _escalate_json(
-                "json_extract 依赖 jsonpath-ng 未安装", "tool_capability_missing"
-            )
+            return await _escalate_json("json_extract 依赖 jsonpath-ng 未安装", "tool_capability_missing")
 
         # 1. 检验 depends_on 前置依赖
         if not depends_on:
@@ -1084,7 +1172,9 @@ async def sop_request_variable(
         try:
             jsonpath_expr = jsonpath_parse(expression_str)
         except Exception as parse_err:
-            return await _escalate_json(f"JSONPath 表达式语法错误: {expression_str} — {str(parse_err)}", "contract_error")
+            return await _escalate_json(
+                f"JSONPath 表达式语法错误: {expression_str} — {str(parse_err)}", "contract_error"
+            )
 
         matches = [m.value for m in jsonpath_expr.find(json_data)]
 

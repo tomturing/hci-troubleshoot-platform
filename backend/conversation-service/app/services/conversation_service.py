@@ -3259,15 +3259,36 @@ class ConversationService:
                                     case_id=conv.case_id,
                                     role=MessageRole.user,
                                     content=self._format_interactive_response_content(outcome),
+                                    # 交互响应自成一条调用链，便于与卡片 request_id 对齐追溯。
+                                    # 历史缺陷：此处漏传 trace_id 导致 TypeError 被 except 吞成
+                                    # WARNING，用户提交记录从未落库（Q2026102600003）。
+                                    trace_id=str(request_id or uuid.uuid4()),
                                     metadata={
                                         "kind": "interactive_response",
+                                        "variable_name": variable_name,
                                         "selectedOptionId": outcome.get("optionId")
                                         if outcome.get("outcome") == "selected"
                                         else None,
                                     },
                                 )
                         except Exception as msg_err:
-                            logger.warning(f"SOP 变量提交写入 user 消息失败: {msg_err}")
+                            logger.error(
+                                event="sop_variable_user_message_persist_failed",
+                                message="SOP 变量提交后写入 user 消息失败（不影响变量落库）",
+                                conversation_id=str(conversation_id),
+                                variable_name=variable_name,
+                                error=str(msg_err),
+                            )
+                        # 变量已落库 → 必须由前端立即发起下一轮诊断。
+                        # 后端不持有该会话的 SSE 连接（上一轮已结束），无法主动续跑，
+                        # 因此通过 should_resume 明确告知调用方"需要续跑"，避免前端
+                        # 再次把"已提交"当成"已继续"。
+                        logger.info(
+                            event="sop_variable_should_resume",
+                            message="变量已写入，等待调用方发起续跑",
+                            conversation_id=str(conversation_id),
+                            variable_name=variable_name,
+                        )
                         return True
                     else:
                         logger.warning(

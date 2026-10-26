@@ -827,6 +827,26 @@ async function submitInteractiveNoneInput() {
 }
 
 /** 提交自由文本 */
+/**
+ * 等待当前流式轮次结束后再触发续跑。
+ *
+ * 背景（Q2026102600003）：变量卡片由 SSE 在流式过程中下发，用户提交时
+ * `isStreaming` 往往仍为 true，`sendMessage` 会被守卫直接 return false 吞掉。
+ * 此时变量值虽已写入变量池，但没有任何后续推理，界面表现为"填了还在问"。
+ * 历史实现仅弹了一句"系统将自动使用该值继续"，而该机制并不存在。
+ *
+ * @returns 是否成功触发续跑
+ */
+async function resumeAfterStreamIdle(prompt: string, timeoutMs = 60_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (chatStore.isStreaming && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 300))
+  }
+  if (chatStore.isStreaming) return false
+  const sent = await chatStore.sendMessage(prompt, { kind: 'interactive_response' })
+  return sent !== false
+}
+
 async function handleInteractiveFreeText() {
   const text = interactiveFreeText.value.trim()
   if (!text || interactiveSubmitting.value || interactiveSubmitted.value) return
@@ -863,7 +883,13 @@ async function handleInteractiveFreeText() {
           kind: 'interactive_response',
         })
         if (sent === false) {
-          ElMessage.info('变量值已提交成功，当前诊断仍在进行中，系统将自动使用该值继续')
+          // 提交瞬间仍在流式收尾：不能只提示"系统会自动继续"，因为后端在
+          // variable_input 路径上并不主动续跑（Q2026102600003 的直接成因）。
+          ElMessage.info('变量值已提交，正在等待当前诊断轮次结束后自动继续…')
+          const resumed = await resumeAfterStreamIdle(text)
+          if (!resumed) {
+            ElMessage.warning('变量已保存，但自动续跑未触发，请重新发送任意消息以继续诊断')
+          }
         }
       } else {
         chatStore.messages.push({
@@ -1110,6 +1136,32 @@ const toolCallEvent = computed(() => {
     duration_ms?: number
     input_hash?: string
   } | null
+})
+
+/**
+ * 变量卡片标题文案。
+ *
+ * 变量名受标识符约束（`^[a-z][a-z0-9_]{0,63}$`），像 `qemu_log_path` 直接
+ * 展示给用户可读性很差。按以下优先级取最可读的一项：
+ *   display_name（SOP 作者显式定义） -> description 首句 -> variable_name（兜底）
+ *
+ * 注意：这里只影响展示，不改变任何命名或提交语义。
+ */
+const interactiveVariableLabel = computed(() => {
+  const meta = (interactiveEvent.value?.metadata ?? {}) as Record<string, unknown>
+
+  const displayName = typeof meta.display_name === 'string' ? meta.display_name.trim() : ''
+  if (displayName) return displayName
+
+  const description = typeof meta.description === 'string' ? meta.description.trim() : ''
+  if (description) {
+    // 首句截断：按中文句号/分号/英文句点/换行切分，避免整段描述挤进标题
+    const firstSentence = description.split(/[。；;\n]|\.(?=\s|$)/)[0]?.trim()
+    if (firstSentence) return firstSentence
+  }
+
+  const variableName = typeof meta.variable_name === 'string' ? meta.variable_name.trim() : ''
+  return variableName || '变量值'
 })
 
 const isInputValid = computed(() => {
@@ -1499,7 +1551,7 @@ async function handleToolCallReject() {
           <template v-else-if="interactiveEvent.kind === 'variable_confirm'">
             <div class="interactive-title">
               <el-icon><Select /></el-icon>
-              请确认变量值
+              请确认：{{ interactiveVariableLabel }}
             </div>
             <div class="ir-field">
               <span class="ir-label">变量名称</span>

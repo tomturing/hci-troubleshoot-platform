@@ -444,3 +444,64 @@ def correct():
 - **根因**：`markdownify` 在将嵌套列表内的截图 span 转为 blockquote 时，携带了 CommonMark 规范的列表缩进（属于样式信息），污染了 content_md，导致前端解析失败
 - **修复**：data-pipeline 改为只取语义文本（新增 `_html_to_semantic_text` 作为唯一权威提取器），content_md 不再由 pipeline 生成，改由后端 `rebuild_content_md()` 统一渲染——截图块格式由单一权威函数保证，彻底根除 markdownify 缩进污染
 - **结论**：data-pipeline 必须对输出做**格式规范化**（只输出语义文本 + `![img:N]` 占位符），任何来自 markdownify 或源 HTML 的"意外格式"都不应透传到 content_md
+
+## 10. SOP 变量声明契约（Variable Schema Contract）
+
+### 10.1 唯一事实源
+
+`SOP.variable_schema` 是 SOP 变量声明的**唯一事实源**，契约由
+[backend/shared/models/sop_variable.py](backend/shared/models/sop_variable.py) 定义，
+kb-service（生产）/ agent-service（消费）/ conversation-service（消费）共用。
+
+| 规则 | 说明 |
+|------|------|
+| **构造即校验** | `SopVariableSchema.parse()` 成功即代表数据可用；下游禁止再用 `var_def.get(...)` 裸取值，一律走 `SopVariableSpec` 的属性（`strategy` / `effective_tool` / `template_tokens()`） |
+| **变量名必须是标识符** | `^[a-z][a-z0-9_]{0,63}$`。中文、空格、点号一律拒绝——"任务原始数据"这类描述必须放进 `description`，不能进 `name` 或 `depends_on` |
+| **依赖必须是已声明的变量名** | `depends_on ⊆ 已声明 name` 且 DAG 无环。写自然语言描述会在保存时直接 422 |
+| **策略必须被别名表识别** | 未知策略不得静默退化成 `user_input`（`is_known_strategy()` 显式判定），否则"自动采集"会静默变成"人工弹框" |
+| **策略与字段矩阵** | `tool_call`/`skill_call`/`agent_pass` 必须有 `acquisition_tool`；`skill_call` 还必须有 `output_path`；`derived`/`json_extract`/`path_template` 必须有 `expression`；`user_input` 不得带 `depends_on`/`output_path`/`acquisition_tool` |
+| **不存在"降级自由输入"** | 运行时请求未声明变量一律返回 `sop_variable_not_defined` 并标记 `config_error`，绝不下发输入卡片。写入一个 SOP 永远不消费的野键，是本类工单的第一成因 |
+| **双事实源只允许单向上卷** | `tree_json.variables[].source` 由 `variable_schema` 单向重编译（见 040/051 迁移），禁止反向手改 |
+
+### 10.2 三道闸
+
+| 闸口 | 触发点 | 失败行为 |
+|------|--------|----------|
+| save | `POST /sop/{id}/variable-schema`（PATCH） | 422 `variable_schema_contract_violation` |
+| publish | `POST /sop/{id}/approve` | 422（publish 态额外禁止废弃变量被活跃变量依赖、禁止必需变量无取值路径） |
+| runtime | `sop_request_variable` / `sop_nav` 守卫门 | 结构化 error + `config_error=true` + ERROR 日志 |
+
+### 10.3 新增/修改 SOP 时的检查清单
+
+- [ ] 「依赖」列只写变量名，不写中文描述
+- [ ] 「来源」列写规范策略（`tool:acli_exec` / `skill:xxx` / `env:xxx` / `derived` / `path_template` / `user_input`）
+- [ ] `tool_call` 的变量必须能回答"用哪个工具、什么参数"
+- [ ] 只是路径拼接的变量用 `path_template`（如 `/sf/log/{task_day}/kernel.log`），不要写成 `tool_call`
+- [ ] `user_input` 的 `description` 必须写清"要填什么、从哪取值"
+- [ ] 导入后确认无 422，再走发布
+
+### 10.4 设计背景
+
+来自 Q2026102600003（虚拟机开机失败，用户填了变量仍被要求重填）复盘：
+
+- **根因**：SOP#2/#3/#5 的变量表「依赖」列被写成自然语言，且 22 个章节级变量因 4 列表头无法表达采集工具，解析后全部是 `tool_call + acquisition_tool=NULL`；运行时两者都静默降级为人工弹框，其中一个还写出了永远不会被消费的野键 `任务原始数据`。
+- **二次复发原因**：#1149（前端已提交态）与 #1151（后端 `user_questions` 幻觉过滤）修的是"变量已写入但 UI/模型说谎"这条链路，而本次是"变量从未写对"，两次补丁天然治不到。
+- **结论**：变量声明是跨服务契约，必须有值对象 + 三道闸；靠"下游修症状"永远追不上"上游自由写入"。
+
+### 10.5 变量提交后的续跑契约
+
+`POST /api/conversations/{id}/interactive-response` 对 `variable_input` / `variable_confirm`
+**只写变量池，不触发推理**。原因是该会话上一轮的 SSE 连接已结束，后端无法主动推送。
+
+因此：
+
+- 路由必须返回 `should_resume: true`，调用方不得把 HTTP 200 当成"已继续"；
+- 前端必须保证"续跑消息一定发出去"：`chatStore.sendMessage` 在 `isStreaming` 时返回
+  `false`，调用方**必须等流结束（`resumeAfterStreamIdle`）后重发**，不能只弹一句"系统会自动继续"；
+- 用户提交记录必须落库（`add_message` 需要 `trace_id`），否则事后无法对账。
+
+### 10.6 变量卡片的展示名
+
+变量名受标识符约束，直接展示给用户可读性差。卡片标题按
+`display_name → description 首句 → variable_name` 渲染，`display_name` 由
+SOP 作者显式定义（迁移 053 为存量批量补齐）。这只是展示层约定，不改变命名与提交语义。
