@@ -9,7 +9,7 @@
 > - [在线与离线诊断模式-KBD信号利用路径对比](../../knowledge-base/KBD证据诊断与CDD闭环设计.md)
 > - [关键信号架构落地设计](../../knowledge-base/关键信号架构设计.md)
 > - [虚拟机控制台视觉生产者信号设计与需求](../虚拟机控制台视觉生产者信号设计与需求.md)
-> - [离线诊断模式业务设计_V3.1](../离线诊断模式业务设计_V3.1.md)
+> - [离线诊断模式业务设计](../../diagnosis/离线诊断模式业务设计.md)
 > - [KBD不可绕过执行门禁与Fail-Closed兜底方案](../../knowledge-base/events/2026-08-04-KBD不可绕过执行门禁与Fail-Closed兜底方案.md)
 > - [QKV_QFK扩展性与配置易用性评估](QKV_QFK扩展性与配置易用性评估.md)（信号模板提案否决依据，见 §5.4）
 > - [关键信号统一解析运行时与Resolver分层方案](../events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md)（SignalIntent 降本解药，见 §5.3）
@@ -73,7 +73,7 @@ Fallback 行为：
 - `_conclusion`：未就绪 → `Insufficient`（confidence ≤ 0.39）；复用在线 CDD 门禁，只有 DEFINITIVE + mandatory 全齐 + 唯一 SUPPORTED 才给 `Confirmed`；
 - **替代路径仅两条**：`offline_signal_collector_mapping`（在线工具→离线 collector 的已审批映射）和 `_create_supplement` 生成的**一次**定向补采计划。没有自由发挥的证据采集。
 
-设计原则（《离线诊断模式业务设计_V3.1》）："离线数据不足时明确缺失证据并转工程师人工补充，不输出确定性根因"。
+设计原则（《离线诊断模式业务设计》）："离线数据不足时明确缺失证据并转工程师人工补充，不输出确定性根因"。
 
 ### 1.4 不存在运行时自学习闭环
 
