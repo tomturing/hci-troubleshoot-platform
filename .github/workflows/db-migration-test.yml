@@ -10,6 +10,9 @@ on:
       - "database/desired_extras.sql"
       # 数据迁移变更时触发（migration-runner 管理）
       - "database/data-migrations/**"
+      # 变量契约巡检脚本与其依赖的契约模型变更时触发
+      - "scripts/verify/sop_variable_contract_check.py"
+      - "backend/shared/models/sop_variable.py"
       # 迁移镜像 Dockerfile 变更时触发
       - "Dockerfile.migrations"
       # 入口脚本变更时触发
@@ -211,3 +214,26 @@ jobs:
             echo "$DIFF"
             exit 1
           fi
+
+      # ── Step 5: SOP 变量声明契约巡检 ──────────────────────────────────────
+      # 覆盖边界（必须写清，避免变成"假门禁"）：
+      #   database/seeds 不含 sop_document 数据，CI 空库下本步只能验证
+      #   "脚本可运行 + 契约模型可导入"，不会真正校验存量 SOP 定义。
+      #   存量数据的契约门禁由另两层承担：
+      #     1) 迁移文件内联 DO 断言（执行即校验，如 054 的收敛断言）
+      #     2) 部署后对 staging/prod 跑同一脚本（见 docs 运维命令）
+      #   一旦 seeds 引入 sop_document 样例，本步会自动从"跳过"升级为强校验。
+      - name: SOP 变量声明契约巡检
+        run: |
+          set -euo pipefail
+          SOP_COUNT=$(psql "$DATABASE_URL" -tAc \
+            "SELECT count(*) FROM sop_document WHERE variable_schema IS NOT NULL AND jsonb_typeof(variable_schema) = 'array'")
+          if [ "${SOP_COUNT:-0}" -eq 0 ]; then
+            echo "⏭️ 跳过：库中无 SOP 变量声明（seeds 不含 sop_document 样例）"
+            echo "   存量契约门禁由迁移内 DO 断言 + 部署后巡检承担"
+            exit 0
+          fi
+          echo "检测到 ${SOP_COUNT} 份 SOP 变量声明，开始契约校验"
+          uv run --no-project --with asyncpg --with pydantic \
+            python scripts/verify/sop_variable_contract_check.py \
+            --database-url "$DATABASE_URL" --status published
