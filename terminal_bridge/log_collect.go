@@ -494,15 +494,15 @@ type logCollectProgress struct {
 	Hosts       []logCollectHost `json:"hosts,omitempty"`
 	UploadURL   string           `json:"upload_url,omitempty"`
 	UploadState string           `json:"upload_state,omitempty"`
-	// ArchiveSize 是本次探测到的压缩包字节数；0 表示没量到（未生成 / 已被插件删除）。
-	// 纯展示信息，不参与完成判定。
-	ArchiveSize int64 `json:"archive_size,omitempty"`
 	ParseOK     bool             `json:"parse_ok"`
 	Raw         string           `json:"raw"`
 	// NodeState 是归一化后的节点态（none/running/completed/abnormal/unknown）。
 	// 节点是任务状态的唯一真相源，但插件只给中文文案，平台无法直接拿它做状态机判断；
 	// 归一化放在 bridge 侧，避免每个前端各自实现一套字符串匹配。
 	NodeState string `json:"node_state"`
+	// ArchiveSize 是本次探测到的压缩包字节数；0 表示没量到（未生成 / 已被插件删除）。
+	// 纯展示信息，不参与完成判定。
+	ArchiveSize int64 `json:"archive_size,omitempty"`
 }
 
 const (
