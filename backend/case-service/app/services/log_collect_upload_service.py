@@ -1,4 +1,4 @@
-"""日志收集制品分块上传（P3 段②：客户 PC → 平台）。
+"""日志收集制品分块上传（P2 段②：客户 PC → 平台）。
 
 关键设计：
 
@@ -305,7 +305,7 @@ class LogCollectUploadService:
                 f"合并后 SHA-256 不一致：期望 {expected_sha256}，实际 {digest}"
             )
 
-        # 制品元数据落库；任务状态由前端在 P3 各阶段跃迁时 PATCH，此处不改 status。
+        # 制品元数据落库；任务状态由前端在 P2 各阶段跃迁时 PATCH，此处不改 status。
         task.archive_path = object_key
         task.archive_size = size
         task.archive_sha256 = digest
