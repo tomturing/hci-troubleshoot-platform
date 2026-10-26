@@ -125,7 +125,7 @@ jobs:
             "diagnostic_item" "tool_result" "audit_log" "session"
             "system_prompt" "tool_definition" "kb_category"
             "kbd_entry" "sop_document"
-            "environment" "assistant_evaluation"
+            "environment"
             # 新增核心表（PR #613 补充）
             "kbd_image" "sop_execution" "skill_definition"
             "migration_history" "terminal_operation" "prompt_slot"
@@ -134,6 +134,10 @@ jobs:
           DEPRECATED_TABLES=(
             "kb_chunk" "kb_document" "kb_sop_node" "kb_synonym"
             "raw_cases" "knowledge_atoms" "prompt_audit" "sop_chunk"
+            # 2026-10-26（数据库设计 v7.52）：评分体系从未落地运行（写入/读取链路已于
+            # 2026-10-25 跨三个服务删除，前端评分卡一并移除，实库 0 行），表已从
+            # desired_schema.sql 整表删除，故移入废弃清单。
+            "assistant_evaluation"
             # hci-sim 已迁至独立库（database/hci-sim-migrations/000001_control_plane.sql，
             # 以 control_plane/fixture/artifact/audit schema 重建等价表），主库 agent_test_*
             # 为迁移遗留孤儿表，backend 零引用，已从 desired_schema.sql 删除。

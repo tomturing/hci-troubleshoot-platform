@@ -1586,67 +1586,10 @@ CREATE INDEX IF NOT EXISTS idx_environment_collected_at ON environment (collecte
 CREATE INDEX IF NOT EXISTS idx_environment_data_gin ON environment USING GIN (env_data);
 -- O-001: idx_environment_trace_id 已移除（环境表链路追踪通过日志/Tempo 查找，不走 DB）
 
--- ------------------------------------------------------------
--- 表: assistant_evaluation  [模块: case-service]
--- 说明: AI 助手评估表 — 以工单为粒度的双轨评分，归属 case-service
--- 用途: 用户对 AI 助手的服务质量进行评分，包含分数、反馈文本、处理时长等指标
--- ------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS assistant_evaluation (
-    evaluation_id uuid NOT NULL DEFAULT gen_random_uuid(),
-    case_id varchar(20) NOT NULL,
-    conversation_id uuid,
-    assistant_type varchar(50) NOT NULL,
-    score smallint,
-    feedback text,
-    resolution_time_seconds integer,
-    message_count integer,
-    metadata jsonb DEFAULT '{}'::jsonb,
-    close_reason varchar(20),
-    session_duration_sec integer,
-    repeat_question_count integer,
-    composite_score smallint,
-    score_breakdown jsonb,
-    calculated_at timestamptz,
-    created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
-    trace_id varchar(64),
-    CONSTRAINT fk_assistant_evaluation_case_id FOREIGN KEY (case_id) REFERENCES "case" (case_id) ON DELETE CASCADE,
-    -- D-006: 评分范围约束，防止 ORM/前端写入非法值
-    CONSTRAINT chk_assistant_evaluation_score CHECK (score IS NULL OR (score >= 1 AND score <= 5)),
-    CONSTRAINT chk_assistant_evaluation_composite_score CHECK (composite_score IS NULL OR (composite_score >= 0 AND composite_score <= 100)),
-    CONSTRAINT assistant_evaluation_pkey PRIMARY KEY (evaluation_id)
-);
-
-COMMENT ON TABLE assistant_evaluation IS 'AI 助手评估表 — 以工单为粒度的双轨评分，归属 case-service';
-COMMENT ON COLUMN assistant_evaluation.evaluation_id IS '评估主键，全局唯一';
-COMMENT ON COLUMN assistant_evaluation.case_id IS '关联工单，ON DELETE CASCADE';
-COMMENT ON COLUMN assistant_evaluation.conversation_id IS '关联会话，ON DELETE SET NULL';
-COMMENT ON COLUMN assistant_evaluation.assistant_type IS '被评估的 AI 助手类型';
-COMMENT ON COLUMN assistant_evaluation.score IS '评分，1-5 分';
-COMMENT ON COLUMN assistant_evaluation.feedback IS '用户反馈文本';
-COMMENT ON COLUMN assistant_evaluation.resolution_time_seconds IS '问题解决耗时（秒）';
-COMMENT ON COLUMN assistant_evaluation.message_count IS '对话轮次';
-COMMENT ON COLUMN assistant_evaluation.metadata IS '扩展字段';
-COMMENT ON COLUMN assistant_evaluation.close_reason IS '关闭原因冗余字段（复制自 case.close_reason），避免质量评分时 JOIN case 表。值域与 case.close_reason 保持一致：user_command / timeout / abandon / admin_close。被动信号轨道权重 20%';
-COMMENT ON COLUMN assistant_evaluation.session_duration_sec IS '会话总时长（秒），= conversation.ended_at - conversation.started_at。用于解决效率维度计算，关单时由 QualityScoreService 填入。10 分钟内解决得分高';
-COMMENT ON COLUMN assistant_evaluation.repeat_question_count IS '用户重复提问次数（冗余自 conversation.repeat_question_count），避免 JOIN。0 次=满分，>3 次=严重扣分。质量评分效率维度重要权重';
-COMMENT ON COLUMN assistant_evaluation.composite_score IS '综合质量分 0-100，由 QualityScoreService 在关单时计算并写入。双轨制：有用户主动评分时占 20% 权重；无评分时降级为三维模型（close_reason/efficiency/repeat_question）';
-COMMENT ON COLUMN assistant_evaluation.score_breakdown IS '各维度详细分解，格式：{"close_intent":90,"efficiency":70,"user_rating":80,"ai_quality":65}。close_intent=关闭意图信号分，efficiency=解决效率分，user_rating=主动评分，ai_quality=AI 质量分';
-COMMENT ON COLUMN assistant_evaluation.calculated_at IS '综合质量分计算时间，由 QualityScoreService 在写入 composite_score 时同步写入';
-COMMENT ON COLUMN assistant_evaluation.created_at IS '评估创建时间';
-COMMENT ON COLUMN assistant_evaluation.trace_id IS '创建评估的请求 trace ID';
-
--- 索引: assistant_evaluation
--- 工单评估查询
-CREATE INDEX IF NOT EXISTS idx_eval_case_id ON assistant_evaluation (case_id);
--- 助手类型统计
-CREATE INDEX IF NOT EXISTS idx_eval_assistant_type ON assistant_evaluation (assistant_type);
--- 评分统计
-CREATE INDEX IF NOT EXISTS idx_eval_score ON assistant_evaluation (score);
--- 时间排序
-CREATE INDEX IF NOT EXISTS idx_eval_created_at ON assistant_evaluation (created_at DESC);
--- O-001: idx_eval_trace_id 已移除（评估表不在请求热路径，链路追踪不需要 DB 索引）
--- 综合质量分排名统计（仅已计算）
-CREATE INDEX IF NOT EXISTS idx_eval_composite_score ON assistant_evaluation (composite_score) WHERE composite_score IS NOT NULL;
+-- 2026-10-26 (v7.52): assistant_evaluation 表已整表删除。
+-- 依据：该评分体系从未落地运行（写入/读取链路已于 2026-10-25 跨三个服务删除，
+-- 前端评分卡一并移除），实库 0 行、代码零引用。表结构、17 条列注释、
+-- 5 个索引与 conversation 外键全部移除。历史结构见 docs/solution/数据库设计.md 旧版。
 
 -- ------------------------------------------------------------
 -- 表: conversation  [模块: conversation-service]
@@ -1693,7 +1636,7 @@ COMMENT ON COLUMN conversation.message_count IS '只读字段，由触发器 upd
 COMMENT ON COLUMN conversation.metadata IS '扩展字段，存储 case_title/case_description（供 Pod 分配时注入环境变量）、context_info（S0 意图识别环境上下文）等';
 COMMENT ON COLUMN conversation.pending_confirm IS '待用户确认的工具调用快照，格式：{"audit_id":"...","tool_name":"vm_migrate","risk":"medium","cmd":"..."}。仅 risk_level>=2 且等待确认期间有值，用户确认/拒绝/超时后清空（NULL）。前端 SSE 事件驱动，此字段作为断线重连时的恢复锚点';
 COMMENT ON COLUMN conversation.pending_resolution IS '等待用户选择诊断去向的一次性交互快照；包含 kind、request_id、trace_id 和场景状态，选择后原子清空。兼容 S6 A/B/C 与 SOP 继续/转 KBD';
-COMMENT ON COLUMN conversation.repeat_question_count IS '用户重复提问次数，由 conversation-service 实时统计（Jaccard 相似度 >= 0.6 判定为重复）。质量评分效率维度的核心输入，关单时复制到 assistant_evaluation.repeat_question_count';
+COMMENT ON COLUMN conversation.repeat_question_count IS '用户重复提问次数，由 conversation-service 实时统计（Jaccard 相似度 >= 0.6 判定为重复）';
 COMMENT ON COLUMN conversation.trace_id IS '创建会话的请求 trace ID';
 COMMENT ON COLUMN conversation.sop_document_id IS 'S1 阶段按 category_id 命中的 SOP 文档 ID（FK → sop_document.id）；NULL 表示该分类无对应 SOP 或尚未到达 S1。每个 case 的首个到达 S1 的 conversation 写入此字段，断线重连产生的重复 conversation 不覆盖已写入值';
 COMMENT ON COLUMN conversation.resolved_kbd_entry_id IS 'S4 根因确认后，AI 推断该 case 对应的 KBD 叶节点 ID（FK → kbd_entry.id）；NULL 表示新问题未收录或尚未到达 S4。admin-UI 可手动修正（修正时重新计算相关 hit_count）';
@@ -1720,11 +1663,6 @@ CREATE INDEX IF NOT EXISTS idx_conversation_repeat_question ON conversation (rep
 CREATE INDEX IF NOT EXISTS idx_conversation_sop_document_id ON conversation (sop_document_id) WHERE sop_document_id IS NOT NULL;
 -- KBD 叶节点命中统计（S4 后填充）
 CREATE INDEX IF NOT EXISTS idx_conversation_resolved_kbd_entry_id ON conversation (resolved_kbd_entry_id) WHERE resolved_kbd_entry_id IS NOT NULL;
-
--- conversation 表已建立，现在添加 assistant_evaluation 的 conversation 外键
-ALTER TABLE assistant_evaluation
-    ADD CONSTRAINT fk_assistant_evaluation_conversation_id
-    FOREIGN KEY (conversation_id) REFERENCES conversation (conversation_id) ON DELETE SET NULL;
 
 -- 注意事项:
 --   * message_count 禁止代码层手动递增（会导致双重计数）
