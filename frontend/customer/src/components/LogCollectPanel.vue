@@ -103,6 +103,10 @@ interface ProbeResult {
   architecture: string
   acli_installed: boolean
   acli_version: string
+  /** acli 编译时间，bridge 一直有回传，早期前端未声明导致只显示版本号 */
+  acli_build_time?: string
+  /** 本次探测真正命中的 acli 路径：同机存在多份 acli 时，它解释「为何与手敲版本不同」 */
+  acli_binary?: string
   available_mb: number
   log_server_reachable: boolean
   http_code: number
@@ -168,6 +172,8 @@ const moduleOptions = ref<ModuleOption[]>([...BUILTIN_MODULES])
 const hostOptions = ref<HostOption[]>([])
 const prepareState = ref<PrepareState>('idle')
 const prepareError = ref('')
+// 本次探测完成的时刻：探测结论是快照（acli 可能被自动升级），界面必须显式说明"何时读的"。
+const probedAt = ref<number | null>(null)
 // 准备令牌：节点 IP 变更会重探，旧探测结果不得覆盖新结果
 let prepareToken = 0
 
@@ -234,6 +240,32 @@ const manualHostHint = computed(() => {
   }
   return `未读取到节点清单，可手填 ${format}`
 })
+
+/**
+ * 展示用 acli 版本文案：版本号 + 编译时间。
+ *
+ * 第一性原理：`acli --version` 的两行输出才是完整事实（1.0.1 / build 2026-09-15 21:00:04），
+ * 只显示主版本会让"同版本不同构建"无法区分——排障时恰恰要按 build 比对。
+ * 对抗性审查：旧后端不回传 build（字段缺省）时只显示版本号，不能显示 "build undefined"。
+ */
+const acliVersionText = computed(() => {
+  const probe = probeResult.value
+  if (!probe) return ''
+  if (!probe.acli_installed) return '未安装'
+  const build = (probe.acli_build_time || '').trim()
+  return build ? `${probe.acli_version} (build ${build})` : probe.acli_version
+})
+
+/** 探测命中的 acli 路径（悬停可见）：与手敲结果不一致时，第一眼要能看出是哪份二进制。 */
+const acliTitle = computed(() => {
+  const binary = probeResult.value?.acli_binary
+  return binary ? `实际探测的二进制：${binary}` : ''
+})
+
+/** 探测时间：面板关闭再打开会重探，用户需要知道眼前这组值是何时读的。 */
+const probedAtText = computed(() =>
+  probedAt.value ? new Date(probedAt.value).toLocaleTimeString('zh-CN', { hour12: false }) : '',
+)
 
 const catalogSourceText = computed(() => {
   if (prepareState.value === 'probing') return '正在从集群读取场景目录…'
@@ -381,6 +413,7 @@ async function prepare(options: { silent?: boolean } = {}): Promise<boolean> {
     const data = probe.log_data as ProbeResult
     probeResult.value = data
     applyCatalog(data)
+    probedAt.value = Date.now()
     prepareState.value = 'ready'
     return true
   } catch (error: any) {
@@ -1070,7 +1103,10 @@ watch(
       prepareState.value = 'idle'
       return
     }
-    if (prepareState.value !== 'ready' && prepareState.value !== 'probing') {
+    // 每次打开都重探：面板关闭时 App.vue 的 v-if 仍成立（组件不卸载），
+    // 若沿用 'ready' 就跳过探测，界面会一直显示关闭前那份快照——
+    // acli 在此期间被自动升级（1.0.0 → 1.0.1）就会造成"平台显示旧版本，终端手敲是新版本"。
+    if (prepareState.value !== 'probing') {
       void prepare({ silent: true })
     }
     // 重开面板时接管进行中的任务，避免"关掉再打开就看不到进度"
@@ -1251,7 +1287,7 @@ onBeforeUnmount(() => {
         <el-descriptions v-if="probeResult" :column="2" border size="small" class="lc-probe">
           <el-descriptions-item label="架构">{{ probeResult.architecture }}</el-descriptions-item>
           <el-descriptions-item label="acli">
-            {{ probeResult.acli_installed ? probeResult.acli_version : '未安装' }}
+            <span :title="acliTitle">{{ acliVersionText }}</span>
           </el-descriptions-item>
           <el-descriptions-item label="交付路径">
             <el-tag :type="probeResult.log_server_reachable ? 'success' : 'warning'" size="small">
@@ -1268,6 +1304,23 @@ onBeforeUnmount(() => {
             {{ probeResult.hosts?.length ? `${probeResult.hosts.length} 个` : '未获取' }}
           </el-descriptions-item>
         </el-descriptions>
+
+        <!-- 探测结论是快照：acli 可能被自动升级，面板关闭重开或点这里都要重新读一次 -->
+        <div v-if="probeResult" class="lc-probe-meta">
+          <span v-if="probedAtText">探测于 {{ probedAtText }}</span>
+          <span v-if="probeResult.acli_binary" class="lc-probe-binary" :title="probeResult.acli_binary">
+            {{ probeResult.acli_binary }}
+          </span>
+          <el-button
+            text
+            size="small"
+            type="primary"
+            :disabled="prepareState === 'probing'"
+            @click="prepare()"
+          >
+            重新探测
+          </el-button>
+        </div>
 
         <!-- 准备状态的唯一出口：用户在填表之前就能看见"能不能收、可选什么" -->
         <el-alert
@@ -1502,6 +1555,21 @@ onBeforeUnmount(() => {
   color: var(--el-text-color-secondary);
   line-height: 1.5;
   margin-top: 4px;
+}
+/* 探测元信息：时间 / 命中的二进制 / 重新探测，弱化到不抢描述表的注意力 */
+.lc-probe-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.lc-probe-binary {
+  font-family: var(--el-font-family-mono, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
 }
 /* 发起节点是事实展示，不是输入框：用等宽字体弱化"可编辑"暗示 */
 .lc-node-fact {
