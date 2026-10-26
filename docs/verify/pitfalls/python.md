@@ -501,7 +501,7 @@ paths-filter、`ruff check`、`ruff format --check`、`pytest` 四处都用**显
 - 判定逻辑从 `main()` 抽出为纯函数 `select_blocking()` / `is_current_layer()`：
   内联版本要验证「现行层存量是否阻断」，必须手工构造 git 状态（真实分支 + 改动行 +
   merge-base），成本高压之下就只能靠人肉看输出——等于没测。
-- 33 项用例改 ASCII 命名 + 中文 docstring，含逐条「不许放宽」的反向用例，以及一条
+- 全部用例（当时 33 项，含后续补的堆词逃逸边界用例现共 34 项）改 ASCII 命名 + 中文 docstring，含逐条「不许放宽」的反向用例，以及一条
   专门守护「未开 `--current-blocking` 时行为与旧版逐字一致」的用例：新开关的默认
   路径若被偷偷收紧，等同于绕过评审改了门禁。
 - 四处清单全部登记，并把硬门禁命令改为 `--changed-only --current-blocking`。

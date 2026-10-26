@@ -410,3 +410,18 @@ def test_none_changed_lines_blocks_only_current_layer():
     )
     assert [i["file"] for i in blocking] == ["docs/solution/架构设计.md"]
     assert stock == 1
+
+
+def test_same_line_negation_escapes_adjacent_bad_path(repo):
+    """规范 §九 写明：否定窗口是启发式，同一行先写一个「不存在」就能豁免邻近坏路径。
+
+    本用例不是「希望如此」，而是把这个逃逸面钉成显式行为：将来若有人收紧窗口，
+    这条用例会失败并强迫他同步改规范；若有人把窗口放大到跨行，同样会被下面
+    test_negation_word_outside_window_reported 拦住。
+    """
+    module, root = repo
+    doc = _write(root, "docs/a.md", "见 [不存在的文档](missing.md) 与路径 `scripts/not-exist-zzz.py`\n")
+    issues = module.check_repo_paths([doc])
+    assert len(issues) == 1
+    assert issues[0].get("waived")
+    assert "不存在" in issues[0]["waive_reason"]

@@ -954,11 +954,17 @@ def main() -> None:
             print(f"\n❌ 发现 {len(blocking)} 个阻断级失效引用（C1/C2/C3），PR 禁止合并")
             sys.exit(1)
         if blocking:
-            print(f"\n❌ 本次改动行引入 {len(blocking)} 个阻断级失效引用（C1/C2/C3），PR 禁止合并")
+            # 归因必须分开写：全部条目都是现行层存量时却报「本次改动行引入」，
+            # 会把一个与 PR 无关的历史缺陷算到作者头上，误导修复方向。
+            from_lines = len(blocking) - len(extra)
+            print(
+                f"\n❌ 发现 {len(blocking)} 个阻断级失效引用（C1/C2/C3）："
+                f"本次改动行 {from_lines} 个、现行层存量 {len(extra)} 个，PR 禁止合并"
+            )
             for it in blocking:
                 print(f"   {it['file']}:{it['line']}  {it['detail']}")
             if extra:
-                print(f"   其中 {len(extra)} 个位于现行全量文档层，不论是否本次改动均阻断（该层已归零）")
+                print("   其中现行全量文档层的条目不论是否本次改动均阻断（该层已归零）")
             if stock:
                 print(f"   另有 {stock} 个位于事件/归档层的其他行，属史料存量，本步不阻断")
             sys.exit(1)
