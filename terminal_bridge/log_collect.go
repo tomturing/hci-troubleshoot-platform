@@ -504,6 +504,10 @@ type logCollectProgress struct {
 	// 同一 ticket 重复 create 时 acli 会返回上一次任务的完成报告，仅看 percent/status 会误判完成；
 	// 包 mtime 早于本次任务创建时间即可判定为历史数据。
 	ArchiveMTime int64 `json:"archive_mtime,omitempty"`
+	// ArchiveExists 明确告知压缩包是否真实存在。
+	// P1 直传成功后插件会自删压缩包，stat 必然失败，此时 mtime 恒为 0；
+	// 把"包不存在"和"没查过"分开（指针区分空值），前端才不会把缺失的时间证据当成合格证据。
+	ArchiveExists *bool `json:"archive_exists,omitempty"`
 }
 
 const (
@@ -769,11 +773,16 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		if progress.ArchivePath != "" {
 			if archivePath, pathErr := normalizeArchivePath(progress.ArchivePath); pathErr == nil {
 				mtimeCmd := fmt.Sprintf("stat -c %%Y %s", shellQuote(archivePath))
+				// archiveExists 与 mtime 同源：stat 成功即"包在"，失败即"包不在"。
+				// 只要拿到路径就给出结论，让前端能区分"包已被插件删除"与"根本没法查"。
+				archiveExists := false
 				if mtimeOut, mtimeCode, mtimeErr := s.runQuickCommand(ctx, mtimeCmd); mtimeErr == nil && mtimeCode == 0 {
 					if mtime, atoiErr := strconv.ParseInt(strings.TrimSpace(mtimeOut), 10, 64); atoiErr == nil {
 						progress.ArchiveMTime = mtime
+						archiveExists = true
 					}
 				}
+				progress.ArchiveExists = &archiveExists
 			}
 		}
 		status := "ok"

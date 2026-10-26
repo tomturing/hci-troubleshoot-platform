@@ -43,6 +43,23 @@ export interface SyncInput {
    * ——工单 Q2026101401683 的 19:55 就是 3 对 3 通过、但本次只采 1 台。
    */
   expectedHosts?: number
+  /**
+   * `acli log_collect create` **下发之前**节点打的那份 progress 原文。
+   *
+   * 一次 create 不会让报告立刻刷新：下发后的第一次（甚至前几十秒）`progress`
+   * 仍是上一次任务的完成报告。报告原文是唯一能证明"这次看到的完成是新的"的证据——
+   * 2026-10-26 20:38 的假完成，两次报告的 raw 长度完全相同（2485）。
+   */
+  baselineRaw?: string
+  /** 当前这份完成报告的原文，与 baselineRaw 比较判断报告是否已刷新 */
+  currentRaw?: string
+  /**
+   * 压缩包是否真实存在：由 bridge 明确告知。
+   *
+   * P1 直传模式下插件上传成功后会自删压缩包，此时 `archiveMTime` 必然拿不到，
+   * 不能把"包不存在"误当成"时间未知"再拿规模证据放行。
+   */
+  archiveExists?: boolean
 }
 
 export type SyncActionKind =
@@ -77,20 +94,33 @@ const ARCHIVE_FRESHNESS_TOLERANCE_SEC = 60
  *
  * 对抗性审查：同 ticket 重复 create 时 acli 会返回**上一次任务**的完成报告
  * （实测 done=1/total=1，而集群有 3 个节点）。只看 status/percent 会把旧报告当成本次完成，
- * 于是平台写 completed、节点其实还在跑。三条硬判据：
- *   1. 包 mtime 必须晚于本次任务创建时间；
- *   2. progress 的 total 必须与**本次任务的目标节点数**一致；
- *   3. 两条时间/规模证据都拿不到时不信任——无法确认归属的完成，不能落终态。
+ * 于是平台写 completed、节点其实还在跑。
+ *
+ * 判据分两类，缺一不可：
+ *
+ * 一、否决（拿到即不成立，属于"明确证伪"）
+ *   1. 包时间存在且早于任务创建时间 − 容忍值；
+ *   2. total 与本次任务目标节点数不一致；
+ *   3. 报告原文与 create 前完全一致——下发后报告没刷新过，看到的必然是上一次的结论。
+ *
+ * 二、正向证据（必须至少拿到一条，否则只能算"无法确认"）
+ *   1. 报告原文已变化（说明插件为本次任务产出了新报告）；
+ *   2. 包存在且 mtime 晚于任务创建时间（包是这次写出来的）。
+ *
+ * 早先的实现把"规模证据通过"当成放行条件（OR），结果在
+ * 「同工单只收同一台主机」时 total 与 expectedHosts 恒等（1 对 1）、
+ * 而 P1 直传后压缩包被插件自删导致 mtime 恒为 0，两条判据同时失效——
+ * Q2026101401683 的 20:38 任务就是这样在 2.8 秒内被写成 completed，
+ * 而节点上实际还在 0% 采集。
  */
 export function isCompletionTrustworthy(input: SyncInput): {
   ok: boolean
   reason: string
   /**
-   * 是否拿到了"明确证伪"的证据（包早于任务、total 与目标数不符、完成态却没包路径）。
+   * 是否拿到了"明确证伪"的证据（包早于任务、total 与目标数不符、报告没刷新）。
    *
    * 与"无法确认"必须区分：`refuted=true` 才允许把已完成纠正回采集中；
-   * 只是缺证据（旧 bridge 没回传 mtime 且 total 缺失）时只提示、不给按钮——
-   * 误把真归档改回采集的代价，比多等一次刷新大得多。
+   * 只是缺证据时只提示、不给按钮——误把真归档改回采集的代价，比多等一次刷新大得多。
    */
   refuted?: boolean
 } {
@@ -98,24 +128,43 @@ export function isCompletionTrustworthy(input: SyncInput): {
     // 缺字段不等于数据矛盾（历史记录可能没落路径），归入"无法确认"而不是"证伪"
     return { ok: false, refuted: false, reason: '完成态没有压缩包路径，无法核对' }
   }
-  const hasMTimeEvidence = Boolean(input.archiveMTime && input.taskCreatedAt)
-  const hasScaleEvidence = Boolean(input.progressTotal && input.expectedHosts)
-  if (!hasMTimeEvidence && !hasScaleEvidence) {
-    return { ok: false, refuted: false, reason: '缺少压缩包时间与采集总数，无法确认完成归属' }
+
+  const hasCreatedAt = Boolean(input.taskCreatedAt)
+  // mtime 有值且包确实存在，才算拿到"包是这次写的"这条时间证据
+  const freshMTime =
+    Boolean(input.archiveMTime && hasCreatedAt) && input.archiveExists !== false
+      ? (input.archiveMTime as number)
+      : 0
+  if (freshMTime > 0 && freshMTime < (input.taskCreatedAt as number) - ARCHIVE_FRESHNESS_TOLERANCE_SEC) {
+    return { ok: false, refuted: true, reason: '压缩包早于本次任务创建时间，判定为历史任务报告' }
   }
-  if (hasMTimeEvidence) {
-    if ((input.archiveMTime as number) < (input.taskCreatedAt as number) - ARCHIVE_FRESHNESS_TOLERANCE_SEC) {
-      return { ok: false, refuted: true, reason: '压缩包早于本次任务创建时间，判定为历史任务报告' }
-    }
-  }
-  if (hasScaleEvidence && input.progressTotal !== input.expectedHosts) {
+
+  if (input.progressTotal && input.expectedHosts && input.progressTotal !== input.expectedHosts) {
     return {
       ok: false,
       refuted: true,
       reason: `采集总数 ${input.progressTotal} 与本次任务目标节点数 ${input.expectedHosts} 不一致，判定为历史任务报告`,
     }
   }
-  return { ok: true, reason: '完成态通过校验' }
+
+  const hasReportPair = Boolean(input.baselineRaw && input.currentRaw)
+  if (hasReportPair && input.baselineRaw === input.currentRaw) {
+    return {
+      ok: false,
+      refuted: true,
+      reason: '节点报告与本次任务下发前完全相同（报告未刷新），判定为上一次任务的完成报告',
+    }
+  }
+
+  const hasPositiveEvidence = (hasReportPair && input.baselineRaw !== input.currentRaw) || freshMTime > 0
+  if (!hasPositiveEvidence) {
+    return {
+      ok: false,
+      refuted: false,
+      reason: '既没有新的节点报告，也拿不到压缩包时间，无法确认完成归属',
+    }
+  }
+  return { ok: true, reason: hasReportPair ? '节点报告已刷新且规模/时间判据通过' : '压缩包时间属于本次任务' }
 }
 
 /**

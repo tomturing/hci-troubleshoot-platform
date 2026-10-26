@@ -67,6 +67,13 @@ function handleDrawerClose() {
 
 const RELAY_URL = 'http://acli.sangfor.com.cn:5888'
 const POLL_INTERVAL = 5000
+/**
+ * 「节点说完成、却拿不出归属证据」的容忍次数（6 × 5s = 30s）。
+ *
+ * 超过就停止轮询并把控制权交还用户：既不能把旧报告当成本次成果，
+ * 也不该让面板空转一小时才发现卡住。
+ */
+const UNVERIFIABLE_COMPLETED_LIMIT = 6
 
 interface ModuleOption {
   value: LogCollectModule
@@ -139,6 +146,10 @@ interface ProgressSnapshot {
   node_state?: NodeState
   /** 压缩包 mtime（Unix 秒）：用于识破「同 ticket 历史任务报告」 */
   archive_mtime?: number
+  /** 压缩包是否真实存在：P1 直传后插件会自删压缩包，mtime 必然缺失 */
+  archive_exists?: boolean
+  /** 报告原文：与 create 前的基线比较，判断报告是否已刷成本次任务 */
+  raw?: string
 }
 
 const stage = ref<Stage>('idle')
@@ -862,6 +873,11 @@ async function handleStart() {
       return
     }
 
+    // 下发前先留一份节点报告原文：create 不会让报告立刻刷新，下发后的头几次 progress
+    // 仍可能是上一次任务的完成报告。有了基线，就能靠"报告是否变化"证明完成属于本次任务。
+    // 用函数取值而不是直接读 progress.value：本函数前面刚赋过 null，TS 会把 .value 收窄成 never。
+    const baselineRaw = readProgressRaw()
+
     let task: LogCollectTask
     try {
       task = await logCollectApi.createTask({
@@ -910,7 +926,7 @@ async function handleStart() {
     // 平台任务必须随阶段推进：pending 不能直接跳到终态，否则 PATCH 会被状态机拒绝
     stage.value = 'collecting'
     currentTask.value = await logCollectApi.patchTask(task.task_id, { status: 'collecting' })
-    await resumeTaskFlow(ws, task, token)
+    await resumeTaskFlow(ws, task, token, baselineRaw)
   } catch (error: any) {
     // 用户已取消：后台流程静默退出，不再覆盖任务状态
     if (token !== runToken) return
@@ -975,6 +991,16 @@ function expectedHostCount(): number {
 function stripAnsi(text: string): string {
   // eslint-disable-next-line no-control-regex
   return text.replace(/\u001b\[[0-9;]*m/g, '')
+}
+
+/**
+ * 当前节点报告原文（基线 / 指纹用）。
+ *
+ * 独立成函数：handleStart 里刚把 `progress` 置 null，TS 的控制流分析会把
+ * `progress.value` 收窄成 never，直接在函数里读会报 TS2339。
+ */
+function readProgressRaw(): string {
+  return progress.value?.raw ?? ''
 }
 
 function taskCreatedAtSec(): number | undefined {
@@ -1063,12 +1089,17 @@ async function syncNodeState(options: { applyPatches?: boolean; silent?: boolean
 }
 
 /** 采集完成后的收尾：按任务实际的交付路径决定是等直传还是走中转 */
-async function resumeTaskFlow(ws: WebSocket, task: LogCollectTask, token: number) {
-  const collected = await pollUntilCollected(ws, token)
+async function resumeTaskFlow(
+  ws: WebSocket,
+  task: LogCollectTask,
+  token: number,
+  baselineRaw = '',
+) {
+  const collected = await pollUntilCollected(ws, token, baselineRaw)
   if (token !== runToken) return
   if (!collected) throw new Error('采集未完成')
   const isDirect = task.upload_mode === 'acli_direct' || Boolean(task.remote_url)
-  if (isDirect) await finishP1(task)
+  if (isDirect) await finishP1(task, collected)
   else await runP2(ws, task, token)
 }
 
@@ -1090,7 +1121,7 @@ async function adoptNodeTask() {
     nodeAction.value = ''
     nodeSyncHint.value = ''
     ElMessage.success('已接管节点任务，继续跟进进度')
-    await resumeTaskFlow(ws, currentTask.value ?? task, token)
+    await resumeTaskFlow(ws, currentTask.value ?? task, token, readProgressRaw())
   } catch (error: any) {
     if (token !== runToken) return
     errorMessage.value = stripAnsi(String(error?.message || error)).slice(0, 500)
@@ -1135,7 +1166,7 @@ async function correctFromNode() {
     nodeAction.value = ''
     nodeSyncHint.value = ''
     ElMessage.success('已按节点状态改回采集中，继续跟进进度')
-    await resumeTaskFlow(ws, currentTask.value ?? task, token)
+    await resumeTaskFlow(ws, currentTask.value ?? task, token, readProgressRaw())
   } catch (error: any) {
     if (token !== runToken) return
     errorMessage.value = stripAnsi(String(error?.message || error)).slice(0, 500)
@@ -1171,12 +1202,20 @@ async function cancelAndRetry() {
   await handleStart()
 }
 
-async function pollUntilCollected(ws: WebSocket, token: number): Promise<boolean> {
+async function pollUntilCollected(
+  ws: WebSocket,
+  token: number,
+  baselineRaw = '',
+): Promise<ProgressSnapshot | null> {
   // 采集上限 1 小时（720 次 × 5s）：超时明确失败，避免面板无限转圈。
   pollingBridgeProgress = true
+  // 基线缺失时退化为"首次看到的进行中报告"：之后只要出现一份不同的完成报告，就能自证归属。
+  let baseline = baselineRaw
+  // 连续"节点说完成、却拿不出归属证据"的次数：拿不到就早点交还给用户，不要空转一小时
+  let unverifiable = 0
   try {
     for (let attempt = 0; attempt < 720; attempt++) {
-      if (token !== runToken) return false
+      if (token !== runToken) return null
       const result = await sendAndWait(ws, 'progress', {}, 60000)
       // bridge 明确报错（如会话已断开）必须立刻上抛：
       // 早先这里只读 log_data，错误结果会被当成"还没有进度"，面板空转一小时仍显示 0%。
@@ -1198,27 +1237,45 @@ async function pollUntilCollected(ws: WebSocket, token: number): Promise<boolean
             taskCreatedAt: taskCreatedAtSec(),
             progressTotal: snapshot.total,
             expectedHosts: expectedHostCount(),
+            // 关键：下发后报告没刷新过（原文与基线完全相同）＝ 看到的是上一次任务的结论
+            baselineRaw: baseline,
+            currentRaw: snapshot.raw,
+            archiveExists: snapshot.archive_exists,
           })
-          if (trust.ok) return true
+          if (trust.ok) {
+            nodeSyncHint.value = ''
+            return snapshot
+          }
           // 不可信就继续轮询：节点把上一次任务的完成报告又打印了一遍
+          unverifiable += 1
           nodeSyncHint.value = `节点报告完成但不可信（${trust.reason}），继续等待本次任务`
+          if (unverifiable >= UNVERIFIABLE_COMPLETED_LIMIT) {
+            // 结果未知不等于失败：不替服务端写终态，交还给用户用「刷新进度」核对
+            throw new RelayPendingError(
+              `节点报告完成但无法确认属于本次任务（${trust.reason}）。平台状态保持「采集中」，请核对节点后点「刷新进度」`,
+            )
+          }
         } else if (nodeState === 'abnormal') {
           throw new Error(`节点任务异常结束：${snapshot.status || '原因未上报'}`)
         } else if (nodeState === 'none') {
           throw new Error('节点上已无采集任务（可能被取消或清理），请在节点上确认后重试')
+        } else {
+          if (!baseline && snapshot.raw) baseline = snapshot.raw
+          unverifiable = 0
+          nodeSyncHint.value = ''
         }
-        nodeSyncHint.value = ''
       }
       await sleep(POLL_INTERVAL)
     }
-    return false
+    return null
   } finally {
     pollingBridgeProgress = false
   }
 }
 
-async function finishP1(task: LogCollectTask) {
-  const snapshot = progress.value
+async function finishP1(task: LogCollectTask, snapshot: ProgressSnapshot | null) {
+  // 必须用"通过完成判据的那一份快照"，不能回读 progress.value：
+  // 否则上传状态/包路径可能来自另一次读取（早先就是拿旧报告的「成功」放行了假完成）。
   if (snapshot?.upload_state && !snapshot.upload_state.includes('成功')) {
     throw new Error(`日志服务器上传失败：${snapshot.upload_state}，可改用 P2 中转`)
   }

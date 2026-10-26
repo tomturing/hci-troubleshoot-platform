@@ -73,6 +73,70 @@ describe('isCompletionTrustworthy 目标节点数基准', () => {
   })
 })
 
+describe('isCompletionTrustworthy 报告指纹（2026-10-26 Q2026101401683 假完成）', () => {
+  const STALE_REPORT = '状态：收集任务已完成！\n归档状态：发送成功'
+
+  // 现场：只选 1 台，上一次报告也是 1 台 → total 与 target 恒等（1 对 1）；
+  // P1 直传后插件自删压缩包 → mtime 恒为 0。旧实现因此直接放行。
+  it('包时间缺失 + total 恰好相等 + 报告与下发前完全相同 → 证伪', () => {
+    const result = isCompletionTrustworthy({
+      nodeState: 'completed',
+      archivePath: '/sf/.../Q2026101401683.zip',
+      archiveMTime: 0,
+      archiveExists: false,
+      taskCreatedAt: TASK_CREATED,
+      progressTotal: 1,
+      expectedHosts: 1,
+      baselineRaw: STALE_REPORT,
+      currentRaw: STALE_REPORT,
+    })
+    expect(result.ok).toBe(false)
+    expect(result.refuted).toBe(true)
+    expect(result.reason).toContain('报告未刷新')
+  })
+
+  // P1 的包一定被删，所以"新报告"是这条链路唯一可用的正向证据
+  it('包时间缺失但报告已刷新 → 可信（P1 直传场景）', () => {
+    const result = isCompletionTrustworthy({
+      nodeState: 'completed',
+      archivePath: '/sf/.../Q2026101401683.zip',
+      archiveMTime: 0,
+      archiveExists: false,
+      taskCreatedAt: TASK_CREATED,
+      progressTotal: 1,
+      expectedHosts: 1,
+      baselineRaw: STALE_REPORT,
+      currentRaw: '状态：收集任务已完成！\n总进度：100% - 1/1（已收集完成/收集总数）\n总耗时：00:06:12',
+    })
+    expect(result.ok).toBe(true)
+  })
+
+  it('没有基线时不得仅凭 total 与目标数相等放行', () => {
+    const result = isCompletionTrustworthy({
+      nodeState: 'completed',
+      archivePath: '/sf/.../Q.zip',
+      archiveMTime: 0,
+      taskCreatedAt: TASK_CREATED,
+      progressTotal: 1,
+      expectedHosts: 1,
+    })
+    expect(result.ok).toBe(false)
+    // 缺证据 ≠ 证伪：不能因此给出"以节点为准纠正"的按钮
+    expect(result.refuted).toBe(false)
+  })
+
+  it('bridge 明确说包不存在时，即便带了 mtime 也不当作时间证据', () => {
+    const result = isCompletionTrustworthy({
+      nodeState: 'completed',
+      archivePath: '/sf/.../Q.zip',
+      archiveMTime: FRESH_MTIME,
+      archiveExists: false,
+      taskCreatedAt: TASK_CREATED,
+    })
+    expect(result.ok).toBe(false)
+  })
+})
+
 describe('decideNodeSync', () => {
   it('平台已归档但节点仍在跑、且完成判定不可信 → 允许纠正', () => {
     const action = decideNodeSync({

@@ -70,6 +70,7 @@ vi.mock('@/api/logCollect', () => ({
     getTask: vi.fn(),
     cancelTask: vi.fn(),
     listTasks: vi.fn(),
+    patchTask: vi.fn(),
   },
 }))
 
@@ -526,6 +527,94 @@ describe('LogCollectPanel', () => {
     expect(text).toContain('已由插件直传日志服务器')
     expect(text).toContain('由插件上传后自动清理')
     expect(text).not.toContain('none')
+    wrapper.unmount()
+  })
+
+  /**
+   * 现场回归（工单 Q2026101401683 / 2026-10-26 20:38）：
+   * 点「重新收集」后新任务 2.8 秒就被写成 completed，节点上其实还在 0% 采集。
+   * 根因是 create 之后 acli 仍打印**上一次任务**的完成报告（两次报告 raw 完全相同），
+   * 而旧判据在"包时间缺失（P1 上传后自删）+ total 恰好等于目标节点数"时直接放行。
+   *
+   * 这里锁定：下发后报告没刷新 → 绝不写 completed。
+   */
+  it('下发后节点仍打印上一次的完成报告时，不把平台写成 completed', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
+    // 上一次任务的完成报告原文：下发前后一模一样
+    const staleReport = '状态：收集任务已完成！\n归档状态：发送成功'
+    const staleSnapshot = {
+      status: '收集任务已完成！',
+      percent: 100,
+      done: 1,
+      total: 1,
+      node_state: 'completed',
+      archive_path: '/sf/data/local/acli/tmp/data/log_collect/Q2026102300001.zip',
+      // P1 直传成功后插件自删压缩包 → stat 必然失败
+      archive_mtime: 0,
+      archive_exists: false,
+      upload_state: '发送成功',
+      hosts: [{ ip: '172.28.25.1', status: '收集完成', percent: 100 }],
+      raw: staleReport,
+    }
+    const created = taskFixture({ status: 'pending', progress: 0, finished_at: null, archive_path: null })
+    vi.mocked(logCollectApi.createTask).mockResolvedValue(created)
+    vi.mocked(logCollectApi.patchTask).mockResolvedValue({ ...created, status: 'collecting' })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    // 探测：1 台主机 + P1 可达（与现场一致）
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'probe',
+        status: 'ok',
+        log_data: {
+          architecture: 'x86_64',
+          acli_installed: true,
+          acli_version: '1.0.1',
+          available_mb: 20480,
+          log_server_reachable: true,
+          http_code: 200,
+          catalog_source: 'acli_help',
+          modules: [{ value: 'network', label: '网络专项' }],
+          hosts: [{ ip: '172.28.25.1', name: 'node-1', master: true }],
+        },
+      }),
+    })
+    await flushPromises()
+
+    const start = wrapper.findAll('button').find((item) => item.text() === '开始收集')
+    expect(start).toBeTruthy()
+    await start!.trigger('click')
+    await flushPromises()
+
+    // 1) 下发前的对账读到的就是这份旧完成报告 → 它成为基线
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({ type: 'log_collect_result', log_action: 'progress', status: 'ok', log_data: staleSnapshot }),
+    })
+    await flushPromises()
+
+    // 2) create 成功
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({ type: 'log_collect_result', log_action: 'create', status: 'ok', log_data: {} }),
+    })
+    await flushPromises()
+
+    // 3) 下发后的第一次 progress —— 报告与基线完全相同
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({ type: 'log_collect_result', log_action: 'progress', status: 'ok', log_data: staleSnapshot }),
+    })
+    await flushPromises()
+
+    const completedPatches = vi
+      .mocked(logCollectApi.patchTask)
+      .mock.calls.filter(([, body]: any) => body?.status === 'completed')
+    expect(completedPatches).toHaveLength(0)
+    // 必须给出"为什么还在等"的可见理由，而不是静默卡住
+    expect(wrapper.text()).toContain('不可信')
     wrapper.unmount()
   })
 })
