@@ -1,7 +1,7 @@
 ---
 status: active
 category: solution
-audience: [developer, agent]
+audience: developer, agent
 last_updated: 2026-10-10
 owner: team
 update_trigger: SOP 编排执行门禁、失败接管与反幻觉契约变更

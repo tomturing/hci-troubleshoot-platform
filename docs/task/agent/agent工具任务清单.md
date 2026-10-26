@@ -1,7 +1,7 @@
 ---
 status: active
 category: task
-audience: developer-agent
+audience: developer, agent
 last_updated: 2026-06-12
 owner: team
 update_trigger: agent工具设计 v2.0 落地实现（T-TOOL-05/06/07 已完成）
