@@ -11,6 +11,33 @@
 
 BEGIN;
 
+-- ──────────────────────────────────────────────────────────────────────────────
+-- 自包含前置：data-migration 在 db-migrate.sh 的 Step 1 执行，而 Atlas 声明式收敛
+-- 在 Step 3。存量库升级时（Step 0 跳过），新表尚未创建，直接 INSERT 会失败并
+-- 阻塞整个 ArgoCD PreSync（实测：relation "sop_variable_pack" does not exist）。
+-- 因此本迁移必须自己保证依赖结构存在（与 desired_schema.sql 保持一致，幂等）。
+-- ──────────────────────────────────────────────────────────────────────────────
+ALTER TABLE sop_document ADD COLUMN IF NOT EXISTS applied_packs jsonb NOT NULL DEFAULT '[]'::jsonb;
+
+CREATE INDEX IF NOT EXISTS idx_sop_document_applied_packs ON sop_document USING GIN (applied_packs);
+
+CREATE TABLE IF NOT EXISTS sop_variable_pack (
+    id serial NOT NULL,
+    pack_name varchar(64) NOT NULL UNIQUE,
+    version integer NOT NULL DEFAULT 1,
+    description text NOT NULL DEFAULT '',
+    variables jsonb NOT NULL DEFAULT '[]'::jsonb,
+    is_active boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT chk_sop_variable_pack_variables_array CHECK (jsonb_typeof(variables) = 'array'),
+    CONSTRAINT sop_variable_pack_pkey PRIMARY KEY (id)
+);
+
+COMMENT ON TABLE sop_variable_pack IS 'SOP 变量包：可被多个 SOP 复用的命名变量集合';
+COMMENT ON COLUMN sop_variable_pack.variables IS '变量定义数组，结构与 sop_document.variable_schema 一致';
+COMMENT ON COLUMN sop_document.applied_packs IS '已应用的变量包引用列表，形如 [{"pack":"hci_common_vt_diag","version":1}]';
+
 INSERT INTO sop_variable_pack (pack_name, version, description, variables, is_active)
 VALUES (
     'hci_common_vt_diag',
@@ -56,7 +83,7 @@ WHERE sop_variable_pack.version < EXCLUDED.version;
 UPDATE sop_document
 SET applied_packs = jsonb_build_array(jsonb_build_object('pack', 'hci_common_vt_diag', 'version', 1)),
     updated_at = NOW()
-WHERE id IN (2, 3)
+WHERE id IN (1, 2, 3)
   AND applied_packs = '[]'::jsonb
   AND EXISTS (
       SELECT 1 FROM jsonb_array_elements(variable_schema) v
