@@ -45,6 +45,14 @@ export interface LogCollectTaskCreate {
   ips: string[]
   extra_paths?: string[]
   remote_url?: string
+  /**
+   * 下发前锚定的节点报告指纹。
+   *
+   * acli 的 progress 是 ticket 维度：同一工单重复 create 时，头几次仍会打印
+   * 上一次任务的报告。把"下发前那一份"存进任务，之后比对即可判断报告归属，
+   * 无需依赖压缩包是否还存在（P1 成功后插件会自删包）。
+   */
+  baseline_report_hash?: string
   trace_id?: string
 }
 
@@ -76,6 +84,8 @@ export interface LogCollectTask {
   relay_restarts: number
   error_code?: string | null
   error_message?: string | null
+  /** 任务附带的结构化信息，含 baseline_report_hash（下发锚定的报告指纹） */
+  detail?: Record<string, unknown> | null
   created_at?: string | null
   updated_at?: string | null
   /** 终态落库时间：完成态展示"什么时候收完的"必须用它，不能用本地内存时间 */

@@ -114,7 +114,13 @@ class LogCollectService:
             remote_url=payload.remote_url,
             status="pending",
             progress=0,
-            detail={},
+            # 下发锚定的报告指纹必须随任务落库：前端内存里的基线在关面板、
+            # 换浏览器、重启后会丢失，届时就无法判断"节点报告属于哪一次下发"。
+            detail=(
+                {"baseline_report_hash": payload.baseline_report_hash}
+                if payload.baseline_report_hash
+                else {}
+            ),
             created_by=client_id,
             # trace_id 由平台兜底生成：前端若未传，任务仍必须有一个可贯穿
             # 「平台 → bridge → HCI → 回采日志」的链路 ID，否则远端无法按链路定位。

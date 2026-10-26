@@ -26,8 +26,9 @@ import {
   buildSyncNotice,
   decideNodeSync,
   fallbackNodeState,
-  isCompletionTrustworthy,
+  hashReport,
   type NodeState,
+  type SyncAction,
 } from '@/services/logCollectSync'
 import { useChatStore } from '@/stores/chat'
 
@@ -57,23 +58,13 @@ function startResize(e: MouseEvent) {
   document.addEventListener('mouseup', onUp)
 }
 
-/** 关闭抽屉时暂停平台快照轮询，避免面板不可见还在后台请求 */
+/** 关闭抽屉时暂停自动刷新，避免面板不可见还在后台发起 SSH 命令 */
 function handleDrawerClose() {
-  if (resumeTimer) {
-    clearInterval(resumeTimer)
-    resumeTimer = null
-  }
+  stopAutoSync()
 }
 
 const RELAY_URL = 'http://acli.sangfor.com.cn:5888'
 const POLL_INTERVAL = 5000
-/**
- * 「节点说完成、却拿不出归属证据」的容忍次数（6 × 5s = 30s）。
- *
- * 超过就停止轮询并把控制权交还用户：既不能把旧报告当成本次成果，
- * 也不该让面板空转一小时才发现卡住。
- */
-const UNVERIFIABLE_COMPLETED_LIMIT = 6
 
 interface ModuleOption {
   value: LogCollectModule
@@ -144,11 +135,11 @@ interface ProgressSnapshot {
   hosts: Array<{ ip: string; status: string; percent: number }>
   /** 节点态归一化结果：none / running / completed / abnormal / unknown */
   node_state?: NodeState
-  /** 压缩包 mtime（Unix 秒）：用于识破「同 ticket 历史任务报告」 */
-  archive_mtime?: number
-  /** 压缩包是否真实存在：P1 直传后插件会自删压缩包，mtime 必然缺失 */
-  archive_exists?: boolean
-  /** 报告原文：与 create 前的基线比较，判断报告是否已刷成本次任务 */
+  /**
+   * 报告原文：与 create 前的基线比较，判断报告是否已刷成本次任务。
+   *
+   * 这是唯一可靠的归属证据——不依赖文件是否存在（P1 成功后压缩包会被插件自删）。
+   */
   raw?: string
 }
 
@@ -165,6 +156,17 @@ const resultTask = ref<LogCollectTask | null>(null)
 // 该工单历史任务总数：用于告知"已完成是既成事实，可以重新收集但不是必须"
 const historyTotal = ref(0)
 const progress = ref<ProgressSnapshot | null>(null)
+/**
+ * 本次下发的节点报告基线（报告指纹）。
+ *
+ * 第一性原理：acli 的 progress 是 **ticket 维度**的，同一工单重复 create 时
+ * 头几次读到的仍是上一次任务的报告。唯一能区分"这份报告属于哪次下发"的信号，
+ * 是"它和下发前那一份是否不同"。
+ *
+ * 基线必须跟着任务走（存 `log_collect_task.detail`），不能只活在页面内存里：
+ * 关面板、换浏览器、重启后接管任务时，内存里的基线早就没了。
+ */
+const baselineReportHash = ref('')
 // 对账提示：用于告诉用户"节点态与平台态不一致、下一步该做什么"
 const nodeSyncHint = ref('')
 // 僵尸任务/游离任务的一键动作（取消并重试 / 接管），空串表示无需处理
@@ -465,12 +467,23 @@ const running = computed(() =>
   ['probing', 'installing', 'creating', 'collecting', 'pulling', 'uploading', 'relaying'].includes(stage.value),
 )
 
+/**
+ * 进度百分比只有一个来源：节点报告。
+ *
+ * 旧实现对「接管态」读 `currentTask.progress`（平台快照）、对「自己发起的任务」
+ * 读 `progress.percent`（节点），于是同屏出现「已完成 2/2 + 进度 0%」。
+ * 平台 progress 只是投影，接管态下它可能整场都没被写过。
+ */
 const percent = computed(() => {
   if (stage.value === 'done') return 100
-  if (resumedTaskId.value) return currentTask.value?.progress ?? 0
-  if (stage.value === 'relaying') return 95 + Math.min(4, relayStatus.value === 'running' ? 2 : 0)
-  if (stage.value === 'uploading' || stage.value === 'pulling') return 60 + Math.round(transfer.percent * 0.3)
-  return Math.min(60, progress.value?.percent ?? 0) * (60 / 80)
+  const nodePercent = Math.min(100, Math.max(0, progress.value?.percent ?? 0))
+  if (stage.value === 'relaying') {
+    return Math.max(nodePercent, 95 + Math.min(4, relayStatus.value === 'running' ? 2 : 0))
+  }
+  if (stage.value === 'uploading' || stage.value === 'pulling') {
+    return Math.max(nodePercent, 60 + Math.round(transfer.percent * 0.3))
+  }
+  return nodePercent
 })
 
 const progressStatus = computed(() =>
@@ -641,33 +654,48 @@ async function resumeTask(taskId: string) {
     const task = await logCollectApi.getTask(taskId)
     currentTask.value = task
     resumedTaskId.value = taskId
+    // 基线跟着任务走：关面板 / 换浏览器 / 重启后接管，仍能判断报告归属
+    baselineReportHash.value = String((task.detail ?? {})['baseline_report_hash'] ?? '')
     stage.value = TASK_STATUS_STAGE[task.status] ?? 'idle'
     if (task.error_message) errorMessage.value = task.error_message
-    // 进面板即对账：平台快照可能停在旧投影上（节点仍在跑、或早已异常结束）。
-    // 只读地拿节点态修正平台态，用户不需要自己去 SSH 敲 progress。
-    if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true })
+    // 进面板即对账：平台快照可能停在旧投影上（节点仍在跑、或早已异常结束）
+    if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true, source: 'open' })
 
-    if (resumeTimer) clearInterval(resumeTimer)
-    resumeTimer = setInterval(async () => {
-      try {
-        const latest = await logCollectApi.getTask(taskId)
-        currentTask.value = latest
-        stage.value = TASK_STATUS_STAGE[latest.status] ?? 'idle'
-        if (TERMINAL_TASK_STATUSES.includes(latest.status) && resumeTimer) {
-          clearInterval(resumeTimer)
-          resumeTimer = null
-        }
-      } catch {
-        if (resumeTimer) {
-          clearInterval(resumeTimer)
-          resumeTimer = null
-        }
-      }
-    }, POLL_INTERVAL)
+    startAutoSync()
   } catch (e: any) {
     ElMessage.error(
       e?.response?.status === 404 ? '任务不存在或不属于当前客户端' : '任务状态加载失败',
     )
+  }
+}
+
+/**
+ * 自动刷新：与手动「刷新进度」走**同一个** syncNodeState。
+ *
+ * 旧实现的自动轮询只 `GET` 平台快照，而平台快照本身不会自己变——
+ * 于是节点早已 100%，面板还停在 0%，"自动刷新"看着像没生效。
+ * 统一入口后，自动与手动在任何时刻都得到同一个结论。
+ */
+function startAutoSync() {
+  stopAutoSync()
+  resumeTimer = setInterval(() => {
+    if (!visible.value) return
+    void triggerAutoSync()
+  }, POLL_INTERVAL)
+}
+
+function stopAutoSync() {
+  if (resumeTimer) {
+    clearInterval(resumeTimer)
+    resumeTimer = null
+  }
+}
+
+async function triggerAutoSync() {
+  const action = await syncNodeState({ applyPatches: true, silent: true, source: 'auto' })
+  // 落终态后停止轮询：节点已无任务可读，继续打就会变成空转
+  if (action && (action.action === 'patch_completed' || action.action === 'patch_failed')) {
+    stopAutoSync()
   }
 }
 
@@ -682,6 +710,8 @@ const refreshingProgress = ref(false)
 const lastRefreshAt = ref<Date | null>(null)
 // 主流程正在向 bridge 轮询进度时，手动刷新只读平台快照，避免抢占 waiter
 let pollingBridgeProgress = false
+// 对账互斥：自动轮询、手动刷新、打开面板可能同时触发，progress 请求不能并发
+let syncingNode = false
 
 const lastRefreshText = computed(() => {
   if (!lastRefreshAt.value) return ''
@@ -710,21 +740,21 @@ async function refreshProgress(silent = false) {
   try {
     const latest = await logCollectApi.getTask(taskId)
     currentTask.value = latest
+    // 基线跟着任务走：本地为空时（换端接管）从任务记录恢复
+    if (!baselineReportHash.value) baselineReportHash.value = baselineFromTask()
     stage.value = TASK_STATUS_STAGE[latest.status] ?? stage.value
     if (latest.error_message) errorMessage.value = latest.error_message
 
     if (!sshConnected.value) {
       if (!silent) ElMessage.warning('SSH 会话已断开，节点侧进度不可用；已刷新平台任务状态')
-    } else if (pollingBridgeProgress) {
-      // 主流程正在自动轮询：此时再发 progress 会抢 waiter，只更新平台快照
-      if (!silent) ElMessage.info('采集进行中，进度由自动轮询刷新')
-    } else {
-      const action = await syncNodeState({ applyPatches: true, silent })
-      if (action && !silent && !['patch_completed', 'patch_failed'].includes(action.action)) {
-        ElMessage.info(buildSyncNotice(action))
-      }
+      lastRefreshAt.value = new Date()
+      return
     }
-    lastRefreshAt.value = new Date()
+    // 与自动刷新同一个入口：任何时刻两者的结论必须一致
+    const action = await syncNodeState({ applyPatches: true, silent, source: 'manual' })
+    if (action && !silent && !['patch_completed', 'patch_failed'].includes(action.action)) {
+      ElMessage.info(buildSyncNotice(action))
+    }
     if (!silent && !nodeSyncHint.value) ElMessage.success('已刷新任务进度')
   } catch (e: any) {
     if (!silent) {
@@ -746,7 +776,16 @@ async function refreshProgress(silent = false) {
  * 因此恢复顺序固定为：进行中 → 最近一次已完成 → 空白表单（可重新收集）。
  */
 async function restoreTaskState(force = false) {
-  if (!force && (currentTask.value || viewMode.value === 'result')) return
+  if (!force && (currentTask.value || viewMode.value === 'result')) {
+    // 同一会话内重开面板：任务与基线都还在，必须把自动刷新接回来。
+    // 旧实现这里直接 return，于是「关抽屉 → 再打开」后自动刷新永久失效，
+    // 只有手动点「刷新进度」才会动。
+    if (currentTask.value && !TERMINAL_TASK_STATUSES.includes(currentTask.value.status)) {
+      startAutoSync()
+      if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true, source: 'open' })
+    }
+    return
+  }
   try {
     const list = await logCollectApi.listTasks(props.caseId, 10)
     historyTotal.value = list.total ?? list.items?.length ?? 0
@@ -795,6 +834,13 @@ function startRecollect() {
   currentTask.value = null
   resumedTaskId.value = null
   progress.value = null
+  // 重新收集 = 新一次下发：上一轮的基线 / 提示 / 时间戳全部作废。
+  // 否则新任务头几秒会拿旧基线比对，或者继续显示上一轮的"已完成"提示。
+  baselineReportHash.value = ''
+  nodeSyncHint.value = ''
+  nodeAction.value = ''
+  lastRefreshAt.value = null
+  stopAutoSync()
   relayStatus.value = 'none'
   cleanupTip.value = ''
   errorMessage.value = ''
@@ -866,17 +912,19 @@ async function handleStart() {
 
     // 前置守卫：节点上有未结束/游离任务时，create 只会被插件互斥拒绝，
     // 平台还会白留一条 failed 记录。先对账，能自动修正的直接修正，需要用户决策的当场拦住。
-    const preSync = await syncNodeState({ applyPatches: true, silent: true })
+    const preSync = await syncNodeState({ applyPatches: true, silent: true, source: 'preCreate' })
     if (preSync && ['adopt', 'cancel_retry', 'warn_node_busy'].includes(preSync.action)) {
       stage.value = 'idle'
       ElMessage.warning(buildSyncNotice(preSync))
       return
     }
 
-    // 下发前先留一份节点报告原文：create 不会让报告立刻刷新，下发后的头几次 progress
-    // 仍可能是上一次任务的完成报告。有了基线，就能靠"报告是否变化"证明完成属于本次任务。
+    // 下发前锚定基线：create 不会让报告立刻刷新，下发后的头几次 progress
+    // 仍可能是上一次任务的完成报告。指纹随任务入库（detail.baseline_report_hash），
+    // 换浏览器/重启后接管任务时仍能把"这一份报告属于哪次下发"判清楚。
     // 用函数取值而不是直接读 progress.value：本函数前面刚赋过 null，TS 会把 .value 收窄成 never。
-    const baselineRaw = readProgressRaw()
+    const baseline = readProgressHash()
+    baselineReportHash.value = baseline
 
     let task: LogCollectTask
     try {
@@ -889,6 +937,7 @@ async function handleStart() {
         date_to: form.dateRange[1],
         ips: form.ips.split(',').map((s) => s.trim()).filter(Boolean),
         remote_url: pathMode.value === 'P1' ? RELAY_URL : undefined,
+        baseline_report_hash: baseline || undefined,
         trace_id: `lc-${props.caseId}-${Date.now()}`,
       })
     } catch (createError: any) {
@@ -926,7 +975,7 @@ async function handleStart() {
     // 平台任务必须随阶段推进：pending 不能直接跳到终态，否则 PATCH 会被状态机拒绝
     stage.value = 'collecting'
     currentTask.value = await logCollectApi.patchTask(task.task_id, { status: 'collecting' })
-    await resumeTaskFlow(ws, task, token, baselineRaw)
+    await resumeTaskFlow(ws, task, token, baseline)
   } catch (error: any) {
     // 用户已取消：后台流程静默退出，不再覆盖任务状态
     if (token !== runToken) return
@@ -999,21 +1048,19 @@ function stripAnsi(text: string): string {
  * 独立成函数：handleStart 里刚把 `progress` 置 null，TS 的控制流分析会把
  * `progress.value` 收窄成 never，直接在函数里读会报 TS2339。
  */
-function readProgressRaw(): string {
-  return progress.value?.raw ?? ''
+function readProgressHash(): string {
+  return hashReport(progress.value?.raw ?? '')
 }
 
-function taskCreatedAtSec(): number | undefined {
-  const created = currentTask.value?.created_at
-  if (!created) return undefined
-  const ms = Date.parse(created)
-  return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined
-}
-
-/** 读一次节点任务快照；连接不可用或正在自动轮询时返回 null（避免并发抢通道）。 */
-async function readNodeSnapshot(timeoutMs = 20000): Promise<ProgressSnapshot | null> {
+/**
+ * 读一次节点任务快照。
+ *
+ * `force` 只给主流程（pollUntilCollected）用：它自己持有轮询权，
+ * 需要绕过 `pollingBridgeProgress` 的互斥保护；其余入口一律走互斥。
+ */
+async function readNodeSnapshot(timeoutMs = 20000, force = false): Promise<ProgressSnapshot | null> {
   if (!sshConnected.value || !socket || socket.readyState !== WebSocket.OPEN) return null
-  if (pollingBridgeProgress) return null
+  if (pollingBridgeProgress && !force) return null
   try {
     const result = await sendAndWait(socket, 'progress', {}, timeoutMs)
     if (result.status === 'error') return null
@@ -1023,69 +1070,123 @@ async function readNodeSnapshot(timeoutMs = 20000): Promise<ProgressSnapshot | n
   }
 }
 
+/** 本次任务的目标主机列表（`all` 展开为探测到的在线节点）。 */
+function targetHostList(): string[] {
+  const ips = currentTask.value?.ips ?? []
+  if (!ips.length || ips.includes('all')) return (probeResult.value?.hosts ?? []).map((host) => host.ip)
+  return ips
+}
+
+/** 任务上持久化的基线（换端接管时从 detail 恢复）。 */
+function baselineFromTask(): string {
+  return String((currentTask.value?.detail ?? {})['baseline_report_hash'] ?? '')
+}
+
+/** 当前报告相对基线的刷新状态；`undefined` 表示没有基线可比。 */
+function reportRefreshedOf(snapshot: ProgressSnapshot): boolean | undefined {
+  const baseline = baselineReportHash.value || baselineFromTask()
+  const current = hashReport(snapshot.raw ?? '')
+  if (!baseline || !current) return undefined
+  return current !== baseline
+}
+
 /**
- * 对账：节点态 → 平台态。
+ * 统一对账入口：打开面板 / 自动刷新 / 手动刷新 / 开始收集前守卫，全部走这里。
  *
- * 这是「刷新进度」「开始收集前守卫」共用的唯一入口。原则：节点是唯一真相，
- * 平台只是投影；只有完成/失败两类修正会被写回，接管与清理一律等用户确认。
+ * 第一性原理：节点是唯一真相，平台只是投影。先判「报告归属」，
+ * 归属确认后节点态直接映射平台态——不再要求完成态自证。
  */
-async function syncNodeState(options: { applyPatches?: boolean; silent?: boolean } = {}) {
-  const snapshot = await readNodeSnapshot()
-  if (!snapshot) {
-    if (!options.silent) ElMessage.warning('SSH 会话不可用，无法读取节点任务状态')
-    return null
-  }
-  progress.value = snapshot
-  lastRefreshAt.value = new Date()
+async function syncNodeState(
+  options: {
+    applyPatches?: boolean
+    silent?: boolean
+    source?: 'open' | 'auto' | 'manual' | 'preCreate'
+  } = {},
+): Promise<SyncAction | null> {
+  // 互斥：自动轮询与手动刷新可能同时落到这里，两次 progress 会互相顶掉 waiter
+  if (syncingNode) return null
+  syncingNode = true
+  try {
+    const snapshot = await readNodeSnapshot()
+    if (!snapshot) {
+      if (!options.silent) ElMessage.warning('SSH 会话不可用，无法读取节点任务状态')
+      return null
+    }
 
-  const action = decideNodeSync({
-    platformStatus: currentTask.value?.status ?? null,
-    nodeState: snapshot.node_state ?? fallbackNodeState(snapshot),
-    archivePath: snapshot.archive_path,
-    archiveMTime: snapshot.archive_mtime,
-    taskCreatedAt: taskCreatedAtSec(),
-    progressTotal: snapshot.total,
-    expectedHosts: expectedHostCount(),
-  })
+    const nodeState = snapshot.node_state ?? fallbackNodeState(snapshot)
+    const action = decideNodeSync({
+      platformStatus: currentTask.value?.status ?? null,
+      nodeState,
+      archivePath: snapshot.archive_path,
+      progressTotal: snapshot.total,
+      expectedHosts: expectedHostCount(),
+      reportRefreshed: reportRefreshedOf(snapshot),
+      reportHosts: (snapshot.hosts ?? []).map((host) => host.ip),
+      targetHosts: targetHostList(),
+    })
 
-  // 只有需要用户决策时才亮按钮：
-  // 接管（节点还在跑）、清理（节点异常/游离）、纠正（平台已归档但完成判定不可信）
-  nodeAction.value =
-    action.action === 'adopt'
-      ? 'adopt'
-      : action.action === 'cancel_retry' || action.action === 'warn_node_busy'
-        ? 'cancel_retry'
-        : action.action === 'warn_completed_conflict' && action.canCorrect
-          ? 'correct'
-          : ''
-  nodeSyncHint.value = buildSyncNotice(action)
+    // 旧报告不能拿来当展示数据：上一轮的「已完成 100%」会让面板与平台再次显示矛盾。
+    // 只刷新时间戳（证明自动刷新在跑），进度沿用上一次归属确认过的快照。
+    if (action.action !== 'wait_refresh') progress.value = snapshot
+    lastRefreshAt.value = new Date()
 
-  if (options.applyPatches && currentTask.value) {
-    if (action.action === 'patch_completed' || action.action === 'patch_failed') {
-      try {
-        const patch =
-          action.action === 'patch_completed'
-            ? {
-                status: 'completed' as const,
-                progress: 100,
-                archive_path: snapshot.archive_path || currentTask.value.archive_path || undefined,
-              }
-            : { status: 'failed' as const, error_message: action.reason }
-        currentTask.value = await logCollectApi.patchTask(currentTask.value.task_id, patch)
-        if (action.action === 'patch_completed') {
-          stage.value = 'done'
-          nodeSyncHint.value = buildSyncNotice(action)
-        } else {
-          stage.value = 'failed'
-          errorMessage.value = action.reason
+    // 只有需要用户决策时才亮按钮：接管（节点还在跑）、清理（节点异常/游离）
+    nodeAction.value =
+      action.action === 'adopt'
+        ? 'adopt'
+        : action.action === 'cancel_retry' || action.action === 'warn_node_busy'
+          ? 'cancel_retry'
+          : action.action === 'warn_completed_conflict' && action.canCorrect
+            ? 'correct'
+            : ''
+    nodeSyncHint.value = buildSyncNotice(action)
+
+    if (options.applyPatches && currentTask.value) {
+      if (action.action === 'patch_completed' || action.action === 'patch_failed') {
+        try {
+          const patch =
+            action.action === 'patch_completed'
+              ? {
+                  status: 'completed' as const,
+                  progress: 100,
+                  // 交付路径只有两种，P1 创建时必带 remote_url；补进产物记录，
+                  // 避免"已完成但 upload_mode 为空"在结果页显示成"未记录"
+                  upload_mode:
+                    currentTask.value.upload_mode ?? (currentTask.value.remote_url ? 'acli_direct' : undefined),
+                  archive_path: snapshot.archive_path || currentTask.value.archive_path || undefined,
+                }
+              : { status: 'failed' as const, error_message: action.reason }
+          currentTask.value = await logCollectApi.patchTask(currentTask.value.task_id, patch)
+          if (action.action === 'patch_completed') {
+            stage.value = 'done'
+            nodeSyncHint.value = buildSyncNotice(action)
+          } else {
+            stage.value = 'failed'
+            errorMessage.value = action.reason
+          }
+          // 已落终态：停止自动刷新，避免对着终态任务每 5s 再发一次 SSH 命令
+          stopAutoSync()
+          if (!options.silent) ElMessage.success(buildSyncNotice(action))
+        } catch (error: any) {
+          if (!options.silent) ElMessage.warning(`平台状态同步失败：${error?.message || error}`)
         }
-        if (!options.silent) ElMessage.success(buildSyncNotice(action))
-      } catch (error: any) {
-        if (!options.silent) ElMessage.warning(`平台状态同步失败：${error?.message || error}`)
+      } else if (action.action === 'none' && nodeState === 'running') {
+        // 平台进度只是投影，允许滞后；每 10% 落一次，避免 5s 一次的写放大
+        const reported = Number.isFinite(snapshot.percent) ? Math.max(0, Math.min(100, snapshot.percent)) : 0
+        const stored = currentTask.value.progress ?? 0
+        if (reported >= 100 || reported - stored >= 10) {
+          try {
+            currentTask.value = await logCollectApi.patchTask(currentTask.value.task_id, { progress: reported })
+          } catch {
+            // 投影写失败不影响节点态展示：下一次刷新会再对齐
+          }
+        }
       }
     }
+    return action
+  } finally {
+    syncingNode = false
   }
-  return action
 }
 
 /** 采集完成后的收尾：按任务实际的交付路径决定是等直传还是走中转 */
@@ -1093,9 +1194,11 @@ async function resumeTaskFlow(
   ws: WebSocket,
   task: LogCollectTask,
   token: number,
-  baselineRaw = '',
+  baseline = '',
 ) {
-  const collected = await pollUntilCollected(ws, token, baselineRaw)
+  // 主流程自己持有轮询权：先停掉接管态的自动刷新，避免两条链抢同一条 bridge 通道
+  stopAutoSync()
+  const collected = await pollUntilCollected(ws, token, baseline)
   if (token !== runToken) return
   if (!collected) throw new Error('采集未完成')
   const isDirect = task.upload_mode === 'acli_direct' || Boolean(task.remote_url)
@@ -1121,7 +1224,7 @@ async function adoptNodeTask() {
     nodeAction.value = ''
     nodeSyncHint.value = ''
     ElMessage.success('已接管节点任务，继续跟进进度')
-    await resumeTaskFlow(ws, currentTask.value ?? task, token, readProgressRaw())
+    await resumeTaskFlow(ws, currentTask.value ?? task, token, readProgressHash())
   } catch (error: any) {
     if (token !== runToken) return
     errorMessage.value = stripAnsi(String(error?.message || error)).slice(0, 500)
@@ -1166,7 +1269,7 @@ async function correctFromNode() {
     nodeAction.value = ''
     nodeSyncHint.value = ''
     ElMessage.success('已按节点状态改回采集中，继续跟进进度')
-    await resumeTaskFlow(ws, currentTask.value ?? task, token, readProgressRaw())
+    await resumeTaskFlow(ws, currentTask.value ?? task, token, readProgressHash())
   } catch (error: any) {
     if (token !== runToken) return
     errorMessage.value = stripAnsi(String(error?.message || error)).slice(0, 500)
@@ -1205,14 +1308,12 @@ async function cancelAndRetry() {
 async function pollUntilCollected(
   ws: WebSocket,
   token: number,
-  baselineRaw = '',
+  baseline = '',
 ): Promise<ProgressSnapshot | null> {
   // 采集上限 1 小时（720 次 × 5s）：超时明确失败，避免面板无限转圈。
   pollingBridgeProgress = true
-  // 基线缺失时退化为"首次看到的进行中报告"：之后只要出现一份不同的完成报告，就能自证归属。
-  let baseline = baselineRaw
-  // 连续"节点说完成、却拿不出归属证据"的次数：拿不到就早点交还给用户，不要空转一小时
-  let unverifiable = 0
+  // 基线缺失时退化为"首次看到的进行中报告"：之后出现不同的报告即可判定归属。
+  let baselineHash = baseline
   try {
     for (let attempt = 0; attempt < 720; attempt++) {
       if (token !== runToken) return null
@@ -1224,44 +1325,35 @@ async function pollUntilCollected(
       }
       const snapshot = result.log_data as ProgressSnapshot | null
       if (snapshot) {
-        progress.value = snapshot
+        // 与「刷新进度」共用同一个判定：归属 → 映射，不再另写一套完成逻辑。
+        // 这里的平台态固定按"本次采集进行中"算——主流程本身就在 collecting 上跑，
+        // 若读取 currentTask 的瞬时值，会在 patch 后把 completed 再判成"已归档"而空转。
+        const action = decideNodeSync({
+          platformStatus: 'collecting',
+          nodeState: snapshot.node_state ?? fallbackNodeState(snapshot),
+          archivePath: snapshot.archive_path,
+          progressTotal: snapshot.total,
+          expectedHosts: expectedHostCount(),
+          reportRefreshed: baselineHash ? hashReport(snapshot.raw ?? '') !== baselineHash : undefined,
+          reportHosts: (snapshot.hosts ?? []).map((host) => host.ip),
+          targetHosts: targetHostList(),
+        })
+        // 旧报告同样不能当展示数据（否则会显示上一轮的 100%）
+        if (action.action !== 'wait_refresh') progress.value = snapshot
         lastRefreshAt.value = new Date()
-        // 以节点归一化状态判定，percent 只是观测量：
-        // 早期 `percent >= 80` 直接把「历史任务报告」和「上传阶段」都当成采集完成。
-        const nodeState = snapshot.node_state ?? fallbackNodeState(snapshot)
-        if (nodeState === 'completed') {
-          const trust = isCompletionTrustworthy({
-            nodeState,
-            archivePath: snapshot.archive_path,
-            archiveMTime: snapshot.archive_mtime,
-            taskCreatedAt: taskCreatedAtSec(),
-            progressTotal: snapshot.total,
-            expectedHosts: expectedHostCount(),
-            // 关键：下发后报告没刷新过（原文与基线完全相同）＝ 看到的是上一次任务的结论
-            baselineRaw: baseline,
-            currentRaw: snapshot.raw,
-            archiveExists: snapshot.archive_exists,
-          })
-          if (trust.ok) {
-            nodeSyncHint.value = ''
-            return snapshot
-          }
-          // 不可信就继续轮询：节点把上一次任务的完成报告又打印了一遍
-          unverifiable += 1
-          nodeSyncHint.value = `节点报告完成但不可信（${trust.reason}），继续等待本次任务`
-          if (unverifiable >= UNVERIFIABLE_COMPLETED_LIMIT) {
-            // 结果未知不等于失败：不替服务端写终态，交还给用户用「刷新进度」核对
-            throw new RelayPendingError(
-              `节点报告完成但无法确认属于本次任务（${trust.reason}）。平台状态保持「采集中」，请核对节点后点「刷新进度」`,
-            )
-          }
-        } else if (nodeState === 'abnormal') {
-          throw new Error(`节点任务异常结束：${snapshot.status || '原因未上报'}`)
-        } else if (nodeState === 'none') {
-          throw new Error('节点上已无采集任务（可能被取消或清理），请在节点上确认后重试')
+        if (action.action === 'patch_completed') {
+          nodeSyncHint.value = ''
+          return snapshot
+        }
+        if (action.action === 'patch_failed') {
+          throw new Error(action.reason)
+        }
+        if (action.action === 'wait_refresh') {
+          // 仍是上一次任务的报告：不算失败、不计数，等本次任务的报告写出来
+          nodeSyncHint.value = buildSyncNotice(action)
         } else {
-          if (!baseline && snapshot.raw) baseline = snapshot.raw
-          unverifiable = 0
+          // 进行中：把当前报告记成基线（"首次进行中报告"退化路径）
+          if (!baselineHash && snapshot.raw) baselineHash = hashReport(snapshot.raw)
           nodeSyncHint.value = ''
         }
       }
@@ -1521,10 +1613,7 @@ onBeforeUnmount(() => {
     clearTimeout(nodeIpTimer)
     nodeIpTimer = null
   }
-  if (resumeTimer) {
-    clearInterval(resumeTimer)
-    resumeTimer = null
-  }
+  stopAutoSync()
   waiters.clear()
   socket?.close()
   socket = null

@@ -500,14 +500,6 @@ type logCollectProgress struct {
 	// 节点是任务状态的唯一真相源，但插件只给中文文案，平台无法直接拿它做状态机判断；
 	// 归一化放在 bridge 侧，避免每个前端各自实现一套字符串匹配。
 	NodeState string `json:"node_state"`
-	// ArchiveMTime 是压缩包的最后修改时间（Unix 秒）。
-	// 同一 ticket 重复 create 时 acli 会返回上一次任务的完成报告，仅看 percent/status 会误判完成；
-	// 包 mtime 早于本次任务创建时间即可判定为历史数据。
-	ArchiveMTime int64 `json:"archive_mtime,omitempty"`
-	// ArchiveExists 明确告知压缩包是否真实存在。
-	// P1 直传成功后插件会自删压缩包，stat 必然失败，此时 mtime 恒为 0；
-	// 把"包不存在"和"没查过"分开（指针区分空值），前端才不会把缺失的时间证据当成合格证据。
-	ArchiveExists *bool `json:"archive_exists,omitempty"`
 }
 
 const (
@@ -768,23 +760,9 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		output, exitCode, err := s.runCommandPty(ctx, "acli log_collect progress", logCollectProgressTimeout)
 		progress := parseLogCollectProgress(output)
 		progress.NodeState = classifyLogCollectNodeState(progress)
-		// 完成态要能自证"包是本次任务产出的"：同 ticket 的重复 create 会返回历史报告，
-		// 包 mtime 早于本次任务创建时间即可判定为旧数据（比较留给前端，bridge 只提供事实）。
-		if progress.ArchivePath != "" {
-			if archivePath, pathErr := normalizeArchivePath(progress.ArchivePath); pathErr == nil {
-				mtimeCmd := fmt.Sprintf("stat -c %%Y %s", shellQuote(archivePath))
-				// archiveExists 与 mtime 同源：stat 成功即"包在"，失败即"包不在"。
-				// 只要拿到路径就给出结论，让前端能区分"包已被插件删除"与"根本没法查"。
-				archiveExists := false
-				if mtimeOut, mtimeCode, mtimeErr := s.runQuickCommand(ctx, mtimeCmd); mtimeErr == nil && mtimeCode == 0 {
-					if mtime, atoiErr := strconv.ParseInt(strings.TrimSpace(mtimeOut), 10, 64); atoiErr == nil {
-						progress.ArchiveMTime = mtime
-						archiveExists = true
-					}
-				}
-				progress.ArchiveExists = &archiveExists
-			}
-		}
+		// 这里刻意**不再** stat 压缩包：P1 直传成功后插件会自删压缩包，
+		// mtime 在成功路径上必然缺失，拿它当"完成归属"证据只会把真完成判成假完成。
+		// 归属改由前端比对"下发前锚定的报告指纹"来判断，不依赖任何文件事实。
 		status := "ok"
 		code := ""
 		if err != nil || exitCode != 0 {
@@ -807,7 +785,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"done": progress.Done, "total": progress.Total,
 			"status_text": progress.Status, "archive_path": progress.ArchivePath,
 			"upload_url": progress.UploadURL, "upload_state": progress.UploadState,
-			"node_state": progress.NodeState, "archive_mtime": progress.ArchiveMTime,
+			"node_state": progress.NodeState,
 			"hosts_count": len(progress.Hosts), "exit_code": exitCode,
 			"error": errString(err), "raw_len": len(output),
 		})

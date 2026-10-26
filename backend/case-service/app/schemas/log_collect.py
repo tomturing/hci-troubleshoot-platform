@@ -63,6 +63,15 @@ class LogCollectTaskCreate(BaseModel):
     ips: list[str] = Field(default_factory=lambda: ["all"], description='目标主机；["all"] 表示全部在线节点')
     extra_paths: list[str] = Field(default_factory=list, max_length=20)
     remote_url: str | None = Field(default=None, description="上传目标（仅 http/https 官方日志服务器）")
+    baseline_report_hash: str | None = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "下发前锚定的节点报告指纹（`acli log_collect progress` 原文的 "
+            "`长度-FNV32`）。同一工单重复 create 时插件会先返回上一次任务的报告，"
+            "有该指纹才能判断报告是否已刷新成本次任务。"
+        ),
+    )
     trace_id: str | None = Field(default=None, max_length=64)
 
     @field_validator("origin_node_ip")

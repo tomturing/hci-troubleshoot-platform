@@ -1,9 +1,20 @@
 /**
  * 两端状态对齐（custom-ui ↔ HCI 上的 acli 插件任务）。
  *
- * 第一性原理：节点是任务状态的唯一真相源，平台 DB 里的任务只是"投影"。
- * 投影随时可能因异步而失真（面板关闭、网络断、插件异常结束），
- * 因此必须有一个显式的对账函数：读节点态 → 与平台态比较 → 给出唯一动作。
+ * 第一性原理（2026-10-26 重写）：
+ *   节点是任务的唯一真相源，平台 DB 里的任务只是它的**投影**。
+ *   因此这里只回答两个问题，不做任何"二次印证"：
+ *     1. 归属：眼前这份报告属于本次下发吗？—— 只认「下发锚定」的报告指纹；
+ *     2. 映射：归属确认后，节点态直接映射平台态，不再附加"完成是否可信"的条件。
+ *
+ * 为什么删掉 isCompletionTrustworthy（#1277 / #1284 的实现）：
+ *   旧模型要求"节点说完成"时必须拿出正向证据（压缩包 mtime 或报告已刷新），
+ *   而 P1 直传成功后插件会**主动删除**压缩包 → `stat` 必然失败 → mtime 恒缺失。
+ *   于是真实完成被永久判成"无法确认完成归属"，平台停在 collecting，用户被卡死
+ *   （工单 Q2026101401683：节点 100%、上传成功，面板却提示"继续等待"）。
+ *
+ * 正确方向不是"证明节点是对的"，而是"识别报告是旧的"：
+ *   只要报告不是下发前那一份，它就是本次任务的报告；此时没有理由不信它。
  *
  * 这个文件只做判定，不产生副作用，便于穷举测试状态组合。
  */
@@ -27,43 +38,39 @@ export interface SyncInput {
   /** 平台当前任务状态；为空表示平台上没有任务记录 */
   platformStatus?: PlatformStatus | null
   nodeState: NodeState
-  /** 节点上报的压缩包路径 */
+  /** 节点上报的压缩包路径（用于"节点无任务但产物已生成"这一分支） */
   archivePath?: string
-  /** 压缩包 mtime（Unix 秒），由 bridge 提供 */
-  archiveMTime?: number
-  /** 本次平台任务的创建时间（Unix 秒） */
-  taskCreatedAt?: number
   /** 节点 progress 里的采集总数 */
   progressTotal?: number
   /**
    * 本次任务实际的目标节点数：`ips` 含 all 时取集群在线数，否则取 `ips.length`。
    *
-   * 不能拿"集群在线节点数"当基准：任务可以只选 1 台（`ips=['172.28.24.130']`），
-   * 而历史报告里的 total 是上一次 all（3 台）。基准取错会让假完成照样通过校验
-   * ——工单 Q2026101401683 的 19:55 就是 3 对 3 通过、但本次只采 1 台。
+   * 只用于**否决**（旧报告的规模与本任务不符），从不用于放行。
    */
   expectedHosts?: number
   /**
-   * `acli log_collect create` **下发之前**节点打的那份 progress 原文。
+   * 报告指纹是否已刷新（与 create 前锚定的基线比较）。
    *
-   * 一次 create 不会让报告立刻刷新：下发后的第一次（甚至前几十秒）`progress`
-   * 仍是上一次任务的完成报告。报告原文是唯一能证明"这次看到的完成是新的"的证据——
-   * 2026-10-26 20:38 的假完成，两次报告的 raw 长度完全相同（2485）。
-   */
-  baselineRaw?: string
-  /** 当前这份完成报告的原文，与 baselineRaw 比较判断报告是否已刷新 */
-  currentRaw?: string
-  /**
-   * 压缩包是否真实存在：由 bridge 明确告知。
+   * - `true`：报告变了 → 必然是本次任务产出的报告；
+   * - `false`：报告与下发前逐字相同 → 一定是上一次任务的旧报告；
+   * - `undefined`：没有基线可比（历史任务、旧 bridge、基线读取失败）。
    *
-   * P1 直传模式下插件上传成功后会自删压缩包，此时 `archiveMTime` 必然拿不到，
-   * 不能把"包不存在"误当成"时间未知"再拿规模证据放行。
+   * 由调用方从 `baselineReportHash` 与当前 `raw` 计算，纯数据入参便于测试。
    */
-  archiveExists?: boolean
+  reportRefreshed?: boolean
+  /** 报告里列出的目标主机（无指纹时用于归属兜底判定） */
+  reportHosts?: string[]
+  /** 本次任务的目标主机（`ips` 展开后的实际 IP 列表） */
+  targetHosts?: string[]
 }
+
+/** 报告归属：本次任务 / 上一次任务的旧报告 / 无从判断 */
+export type Ownership = 'current' | 'stale' | 'unknown'
 
 export type SyncActionKind =
   | 'none'
+  /** 节点报告仍是下发前那份：不落任何终态，等本次任务的报告 */
+  | 'wait_refresh'
   | 'adopt'
   | 'cancel_retry'
   | 'patch_completed'
@@ -76,6 +83,8 @@ export interface SyncAction {
   action: SyncActionKind
   /** 判定依据，直接进提示文案与日志，避免"为什么给出这个建议"无从追溯 */
   reason: string
+  /** 本次判定看到的报告归属，供调用方展示"为什么在等" */
+  ownership?: Ownership
   /**
    * 仅 warn_completed_conflict 使用：为 true 时才允许把 completed 纠正回 collecting。
    * 默认不自动执行——纠正会清掉本条任务的产物记录，必须由用户显式确认。
@@ -84,91 +93,59 @@ export interface SyncAction {
 }
 
 const ACTIVE_STATUSES = new Set(['pending', 'probing', 'installing', 'collecting', 'packaging', 'uploading'])
-const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled'])
-
-/** 包先于任务创建 60 秒以上，判定为上一次任务留下的旧包（容忍时钟偏差） */
-const ARCHIVE_FRESHNESS_TOLERANCE_SEC = 60
 
 /**
- * 完成态是否可信。
+ * 报文指纹：FNV-1a 32 位 + 原文长度。
  *
- * 对抗性审查：同 ticket 重复 create 时 acli 会返回**上一次任务**的完成报告
- * （实测 done=1/total=1，而集群有 3 个节点）。只看 status/percent 会把旧报告当成本次完成，
- * 于是平台写 completed、节点其实还在跑。
- *
- * 判据分两类，缺一不可：
- *
- * 一、否决（拿到即不成立，属于"明确证伪"）
- *   1. 包时间存在且早于任务创建时间 − 容忍值；
- *   2. total 与本次任务目标节点数不一致；
- *   3. 报告原文与 create 前完全一致——下发后报告没刷新过，看到的必然是上一次的结论。
- *
- * 二、正向证据（必须至少拿到一条，否则只能算"无法确认"）
- *   1. 报告原文已变化（说明插件为本次任务产出了新报告）；
- *   2. 包存在且 mtime 晚于任务创建时间（包是这次写出来的）。
- *
- * 早先的实现把"规模证据通过"当成放行条件（OR），结果在
- * 「同工单只收同一台主机」时 total 与 expectedHosts 恒等（1 对 1）、
- * 而 P1 直传后压缩包被插件自删导致 mtime 恒为 0，两条判据同时失效——
- * Q2026101401683 的 20:38 任务就是这样在 2.8 秒内被写成 completed，
- * 而节点上实际还在 0% 采集。
+ * 用途只是"比较两次报告是否同一份"，不做安全用途，因此不需要加密散列。
+ * 带上长度可以进一步降低碰撞概率，且长度本身就是人可读的排障线索。
  */
-export function isCompletionTrustworthy(input: SyncInput): {
-  ok: boolean
-  reason: string
-  /**
-   * 是否拿到了"明确证伪"的证据（包早于任务、total 与目标数不符、报告没刷新）。
-   *
-   * 与"无法确认"必须区分：`refuted=true` 才允许把已完成纠正回采集中；
-   * 只是缺证据时只提示、不给按钮——误把真归档改回采集的代价，比多等一次刷新大得多。
-   */
-  refuted?: boolean
-} {
-  if (!input.archivePath) {
-    // 缺字段不等于数据矛盾（历史记录可能没落路径），归入"无法确认"而不是"证伪"
-    return { ok: false, refuted: false, reason: '完成态没有压缩包路径，无法核对' }
+export function hashReport(raw: string): string {
+  if (!raw) return ''
+  let hash = 0x811c9dc5
+  for (let i = 0; i < raw.length; i++) {
+    hash ^= raw.charCodeAt(i)
+    // FNV 质数 16777619，用移位避免大数乘法在某些引擎上的精度问题
+    hash = (hash + (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)) >>> 0
   }
-
-  const hasCreatedAt = Boolean(input.taskCreatedAt)
-  // mtime 有值且包确实存在，才算拿到"包是这次写的"这条时间证据
-  const freshMTime =
-    Boolean(input.archiveMTime && hasCreatedAt) && input.archiveExists !== false
-      ? (input.archiveMTime as number)
-      : 0
-  if (freshMTime > 0 && freshMTime < (input.taskCreatedAt as number) - ARCHIVE_FRESHNESS_TOLERANCE_SEC) {
-    return { ok: false, refuted: true, reason: '压缩包早于本次任务创建时间，判定为历史任务报告' }
-  }
-
-  if (input.progressTotal && input.expectedHosts && input.progressTotal !== input.expectedHosts) {
-    return {
-      ok: false,
-      refuted: true,
-      reason: `采集总数 ${input.progressTotal} 与本次任务目标节点数 ${input.expectedHosts} 不一致，判定为历史任务报告`,
-    }
-  }
-
-  const hasReportPair = Boolean(input.baselineRaw && input.currentRaw)
-  if (hasReportPair && input.baselineRaw === input.currentRaw) {
-    return {
-      ok: false,
-      refuted: true,
-      reason: '节点报告与本次任务下发前完全相同（报告未刷新），判定为上一次任务的完成报告',
-    }
-  }
-
-  const hasPositiveEvidence = (hasReportPair && input.baselineRaw !== input.currentRaw) || freshMTime > 0
-  if (!hasPositiveEvidence) {
-    return {
-      ok: false,
-      refuted: false,
-      reason: '既没有新的节点报告，也拿不到压缩包时间，无法确认完成归属',
-    }
-  }
-  return { ok: true, reason: hasReportPair ? '节点报告已刷新且规模/时间判据通过' : '压缩包时间属于本次任务' }
+  return `${raw.length}-${hash.toString(16).padStart(8, '0')}`
 }
 
 /**
- * 对账判定：给定两端状态，返回唯一应当执行的动作。
+ * 判断节点报告是否属于本次下发。
+ *
+ * 优先级：明确指纹 > 规模否决 > 主机集合否决 > 无从判断。
+ * 只有"拿到过度证据"才判 stale；信息不足时返回 unknown，由上层**按节点态为准**，
+ * 绝不因为"证明不了"就停在采集中——那正是本轮要修的故障。
+ */
+export function resolveOwnership(input: SyncInput): { ownership: Ownership; reason: string } {
+  if (input.reportRefreshed === true) {
+    return { ownership: 'current', reason: '节点报告已刷新，属于本次任务' }
+  }
+  if (input.reportRefreshed === false) {
+    return { ownership: 'stale', reason: '节点报告与下发前完全相同，仍是上一次任务的报告' }
+  }
+
+  // 没有指纹可比（历史任务 / 旧 bridge）：只用能证伪的规模与主机集合做否决
+  if (input.progressTotal && input.expectedHosts && input.progressTotal !== input.expectedHosts) {
+    return {
+      ownership: 'stale',
+      reason: `采集总数 ${input.progressTotal} 与本次目标节点数 ${input.expectedHosts} 不一致`,
+    }
+  }
+  const targetHosts = (input.targetHosts ?? []).filter((ip) => ip && ip !== 'all')
+  const reportHosts = (input.reportHosts ?? []).filter(Boolean)
+  if (reportHosts.length && targetHosts.length) {
+    const overlap = reportHosts.filter((ip) => targetHosts.includes(ip))
+    if (!overlap.length) {
+      return { ownership: 'stale', reason: '节点报告中的主机与本任务目标无交集' }
+    }
+  }
+  return { ownership: 'unknown', reason: '没有可比的下发基线，以节点态为准' }
+}
+
+/**
+ * 对账判定：给定节点报告与平台状态，返回唯一应当执行的动作。
  *
  * 幂等约定：只做"修正投影"与"清理僵尸"，绝不自动 create/重试——
  * 重复采集的代价远大于状态短暂不准。
@@ -176,10 +153,21 @@ export function isCompletionTrustworthy(input: SyncInput): {
 export function decideNodeSync(input: SyncInput): SyncAction {
   const { platformStatus, nodeState } = input
 
-  // 认不出节点态时一律不动。宁可保留不一致让用户点「刷新进度」，
+  // 认不出节点态时一律不动：宁可保留不一致让用户点「刷新进度」，
   // 也不要按猜测去 cancel 一个可能正常的采集任务。
   if (nodeState === 'unknown') {
-    return { action: 'none', reason: '节点状态无法识别，保持平台现状' }
+    return { action: 'none', reason: '节点状态无法识别，保持平台现状', ownership: 'unknown' }
+  }
+
+  const { ownership, reason: ownershipReason } = resolveOwnership(input)
+  if (ownership === 'stale') {
+    // 旧报告：不落终态、不计数、不空转，等本次任务的报告写出来。
+    // 这是"重新收集"后最常见的几秒到几十秒状态。
+    return {
+      action: 'wait_refresh',
+      reason: `${ownershipReason}，等待本次任务的报告`,
+      ownership,
+    }
   }
 
   // 平台上没有任务记录：节点有游离任务时只能提示，没有可修正的投影
@@ -188,85 +176,84 @@ export function decideNodeSync(input: SyncInput): SyncAction {
       return {
         action: 'warn_node_busy',
         reason: nodeState === 'running' ? '节点上存在游离的采集任务' : '节点上存在异常结束的任务',
+        ownership,
       }
-    }
-    return { action: 'none', reason: '两端均无任务' }
-  }
-
-  if (TERMINAL_STATUSES.has(platformStatus)) {
-    if (platformStatus === 'completed') {
-      // 归档态默认不动，但"节点仍在跑"必须先分清是哪种情况：
-      //   - 完成判据全过 → 是完成之后又发起的新任务，归档无误，只提示；
-      //   - 判据不过 → 平台完成是假完成（历史报告），允许用户以节点为准纠正。
-      if (nodeState === 'running') {
-        const trust = isCompletionTrustworthy(input)
-        if (trust.ok) {
-          return {
-            action: 'warn_completed_conflict',
-            canCorrect: false,
-            reason: '平台已归档，节点上有新的采集任务在运行',
-          }
-        }
-        // 只有拿到明确证伪证据才允许纠正；"无法确认"只提示
-        return {
-          action: 'warn_completed_conflict',
-          canCorrect: trust.refuted === true,
-          reason: trust.refuted
-            ? `平台完成判定不可信（${trust.reason}），节点任务仍在运行`
-            : `平台完成判定无法确认（${trust.reason}），节点任务仍在运行`,
-        }
-      }
-      if (nodeState === 'abnormal') {
-        return {
-          action: 'warn_completed_conflict',
-          canCorrect: false,
-          reason: '平台已归档，但节点任务异常结束，建议核对归档产物',
-        }
-      }
-      return { action: 'none', reason: '平台已归档，节点无任务' }
-    }
-    // failed / cancelled：节点仍在跑 → 接管；节点异常 → 清理后重试；节点干净 → 已对齐
-    if (nodeState === 'running') {
-      return { action: 'adopt', reason: '平台已判失败/取消，但节点任务仍在运行，可接管继续' }
-    }
-    if (nodeState === 'abnormal') {
-      return { action: 'cancel_retry', reason: '节点任务异常结束，需清理后重试' }
     }
     if (nodeState === 'completed') {
-      const trust = isCompletionTrustworthy(input)
-      if (trust.ok) {
-        return { action: 'patch_completed', reason: '节点任务已完成，修正平台终态' }
+      return {
+        action: 'none',
+        reason: '节点任务已完成，但平台上没有对应任务记录（可能已清理）',
+        ownership,
       }
-      return { action: 'cancel_retry', reason: `节点完成态不可信：${trust.reason}` }
     }
-    return { action: 'none', reason: '节点无任务，平台终态与之一致' }
+    return { action: 'none', reason: '两端均无任务', ownership }
+  }
+
+  if (platformStatus === 'completed') {
+    // 归档是既成事实：节点上的 running 只可能是"归档之后又发起了新任务"，
+    // 不自动回退，交给用户点「重新收集」。
+    if (nodeState === 'running') {
+      // 只有"报告已确认刷新"才允许用户把归档纠正回采集中：
+      // 报告没刷新时已经在上面按 wait_refresh 拦住了，这条分支的 current 意味着
+      // 归档之后节点上确实跑起了新任务，纠正与否交给用户点一次。
+      return {
+        action: 'warn_completed_conflict',
+        canCorrect: ownership === 'current',
+        reason: '平台已归档，节点上有新的采集任务在运行；如需重收请点「重新收集」',
+        ownership,
+      }
+    }
+    if (nodeState === 'abnormal') {
+      return {
+        action: 'warn_completed_conflict',
+        canCorrect: false,
+        reason: '平台已归档，但节点任务异常结束，建议核对归档产物',
+        ownership,
+      }
+    }
+    return { action: 'none', reason: '平台已归档，节点无任务', ownership }
+  }
+
+  if (platformStatus === 'failed' || platformStatus === 'cancelled') {
+    // failed / cancelled：节点仍在跑 → 接管；节点异常 → 清理后重试
+    if (nodeState === 'running') {
+      return {
+        action: 'adopt',
+        reason: '平台已判失败/取消，但节点任务仍在运行，可接管继续',
+        ownership,
+      }
+    }
+    if (nodeState === 'abnormal') {
+      return { action: 'cancel_retry', reason: '节点任务异常结束，需清理后重试', ownership }
+    }
+    if (nodeState === 'completed') {
+      return { action: 'patch_completed', reason: '节点任务已完成，修正平台终态', ownership }
+    }
+    return { action: 'none', reason: '节点无任务，平台终态与之一致', ownership }
   }
 
   if (ACTIVE_STATUSES.has(platformStatus)) {
+    // 归属已确认（或无从证伪）→ 节点说什么就是什么，不再附加任何完成判据
     if (nodeState === 'completed') {
-      const trust = isCompletionTrustworthy(input)
-      if (trust.ok) {
-        return { action: 'patch_completed', reason: '节点任务已完成且完成态可信' }
-      }
-      // 关键分支：不信任就不能落终态，否则会把历史报告当成本次成果
-      return { action: 'none', reason: `节点完成态不可信（${trust.reason}），继续等待` }
+      return { action: 'patch_completed', reason: '节点任务已完成', ownership }
     }
     if (nodeState === 'abnormal') {
-      return { action: 'patch_failed', reason: '节点任务异常结束' }
+      return { action: 'patch_failed', reason: '节点任务异常结束', ownership }
     }
     if (nodeState === 'none') {
       if (input.archivePath) {
-        const trust = isCompletionTrustworthy(input)
-        if (trust.ok) {
-          return { action: 'patch_completed', reason: '节点任务已结束且包已生成' }
-        }
+        return { action: 'patch_completed', reason: '节点任务已结束且压缩包路径已生成', ownership }
       }
-      return { action: 'patch_failed', reason: '节点上已无任务，采集中断' }
+      return { action: 'patch_failed', reason: '节点上已无任务，采集中断', ownership }
     }
-    return { action: 'none', reason: '节点任务进行中' }
+    return { action: 'none', reason: '节点任务进行中', ownership }
   }
 
-  return { action: 'none', reason: `未定义的状态组合：${platformStatus}/${nodeState}` }
+  return {
+    action: 'none',
+    reason: `未定义的状态组合：${platformStatus}/${nodeState}`,
+    ownership,
+  }
 }
 
 /**
@@ -295,6 +282,8 @@ export function fallbackNodeState(snapshot: {
 /** 对账结论 → 用户可读提示（含下一步动作） */
 export function buildSyncNotice(action: SyncAction): string {
   switch (action.action) {
+    case 'wait_refresh':
+      return `${action.reason}（进度与状态暂不更新，自动刷新会继续跟进）`
     case 'adopt':
       return `${action.reason}。可点「接管」继续采集，或「取消并重试」重新开始。`
     case 'cancel_retry':

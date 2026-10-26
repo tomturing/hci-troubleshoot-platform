@@ -118,6 +118,30 @@ class TestCreateTask:
 
         task = mock_repo.create.await_args.args[0]
         assert isinstance(task.trace_id, str)
+
+    async def test_baseline_report_hash_persisted_into_detail(self, service, mock_repo):
+        """下发锚定的报告指纹必须随任务落库。
+
+        指纹只存在前端内存里时，关面板/换浏览器/重启后接管任务就无法判断
+        「节点报告属于哪一次下发」，只能靠猜（2026-10-26 现场两次误判的根源）。
+        """
+        mock_repo.get_active_by_case = AsyncMock(return_value=None)
+        mock_repo.create = AsyncMock(return_value=MagicMock(spec=LogCollectTask))
+
+        await service.create_task(make_payload(baseline_report_hash="7843-1a2b3c4d"), "client-1")
+
+        task = mock_repo.create.await_args.args[0]
+        assert task.detail == {"baseline_report_hash": "7843-1a2b3c4d"}
+
+    async def test_detail_empty_when_baseline_absent(self, service, mock_repo):
+        """没有基线时 detail 保持空对象：不写入假指纹，前端据此退化为"按节点态为准"。"""
+        mock_repo.get_active_by_case = AsyncMock(return_value=None)
+        mock_repo.create = AsyncMock(return_value=MagicMock(spec=LogCollectTask))
+
+        await service.create_task(make_payload(), "client-1")
+
+        task = mock_repo.create.await_args.args[0]
+        assert task.detail == {}
         assert len(task.trace_id) == 32  # W3C trace_id：32 位小写 hex
 
     async def test_trace_id_preserved_when_provided(self, service, mock_repo):

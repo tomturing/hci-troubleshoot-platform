@@ -550,9 +550,6 @@ describe('LogCollectPanel', () => {
       total: 1,
       node_state: 'completed',
       archive_path: '/sf/data/local/acli/tmp/data/log_collect/Q2026102300001.zip',
-      // P1 直传成功后插件自删压缩包 → stat 必然失败
-      archive_mtime: 0,
-      archive_exists: false,
       upload_state: '发送成功',
       hosts: [{ ip: '172.28.25.1', status: '收集完成', percent: 100 }],
       raw: staleReport,
@@ -614,7 +611,71 @@ describe('LogCollectPanel', () => {
       .mock.calls.filter(([, body]: any) => body?.status === 'completed')
     expect(completedPatches).toHaveLength(0)
     // 必须给出"为什么还在等"的可见理由，而不是静默卡住
-    expect(wrapper.text()).toContain('不可信')
+    expect(wrapper.text()).toContain('上一次任务')
+    wrapper.unmount()
+  })
+
+  /**
+   * 现场回归（工单 Q2026101401683 / 2026-10-26 21:57）：
+   * 节点 100% 完成、P1 直传成功、压缩包被插件自删（拿不到任何 mtime 证据）。
+   * 旧判据要求"完成必须自证归属"，于是平台永远停在 collecting、面板提示"继续等待"。
+   * 新契约：接管态下节点报告不是下发前那份，节点说完成就是完成。
+   */
+  it('接管态下节点已完成（压缩包已被插件删除）时，自动把平台修正为 completed', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
+    const live = taskFixture({
+      task_id: 'task-live',
+      status: 'collecting',
+      progress: 0,
+      finished_at: null,
+      archive_path: null,
+      upload_mode: 'acli_direct',
+      remote_url: 'http://acli.sangfor.com.cn:5888',
+      ips: ['172.28.25.1'],
+      detail: {},
+    })
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [live] })
+    // 让 getTask 晚一拍返回：bridge socket 在 openSocket 的 onopen 之后才有值，
+    // 若接管对账早于连接建立，readNodeSnapshot 会直接返回 null（真实环境同样如此）
+    vi.mocked(logCollectApi.getTask).mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      return live
+    })
+    vi.mocked(logCollectApi.patchTask).mockResolvedValue({ ...live, status: 'completed', progress: 100 })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    await flushPromises()
+    // 对账必须真的向 bridge 发了 progress
+    expect(sentMessages.some((raw) => JSON.parse(raw).log_action === 'progress')).toBe(true)
+
+    // 接管时读到的节点报告：任务已完成，包路径还在，但包已被插件删除
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'progress',
+        status: 'ok',
+        log_data: {
+          status: '收集任务已完成！',
+          percent: 100,
+          done: 1,
+          total: 1,
+          node_state: 'completed',
+          archive_path: '/sf/data/local/acli/tmp/data/log_collect/Q2026102300001.zip',
+          upload_state: '发送成功',
+          hosts: [{ ip: '172.28.25.1', status: '收集完成', percent: 100 }],
+          raw: '状态：收集任务已完成！\n总进度：100% - 1/1\n归档状态：发送成功',
+        },
+      }),
+    })
+    await flushPromises()
+
+    const completed = vi
+      .mocked(logCollectApi.patchTask)
+      .mock.calls.filter(([, body]: any) => body?.status === 'completed')
+    expect(completed).toHaveLength(1)
     wrapper.unmount()
   })
 })
