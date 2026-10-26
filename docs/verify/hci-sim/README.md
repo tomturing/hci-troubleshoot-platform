@@ -2,14 +2,14 @@
 status: active
 category: verify
 audience: developer
-last_updated: 2026-08-27
+last_updated: 2026-10-26
 owner: team
 ---
 
 # hci-sim 仿真运行时 · 验证导航
 
 > 本目录为 hci-sim 子模块的**验证分支文档**；事件化验证见 [events/](events/)。
-> 设计侧见 [solution/hci-sim/README.md](../solution/hci-sim/README.md)，任务侧见 [task/hci-sim/README.md](../task/hci-sim/README.md)。
+> 设计侧见 [solution/hci-sim/README.md](../../solution/hci-sim/README.md)，任务侧见 [task/hci-sim/README.md](../../task/hci-sim/README.md)。
 
 ## 现行全量分析
 
@@ -46,3 +46,11 @@ owner: team
 - [KBD27123 P0 端到端验证](events/2026-07-30-KBD27123-hci-sim-P0端到端验证.md)
 - [KBD27123 三信号执行闭环验证](events/2026-07-27-KBD27123三信号执行闭环验证.md)
 - [KBD27123 环境构建持久化修复验证](events/2026-08-11-KBD27123环境构建持久化修复验证.md)
+
+## 变更历史
+
+> 本节自 2026-10-26 起补建；此前的修订轨迹见 `git log`，规范 §7.1 不要求回溯补齐。
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-10-26 | — | 设计侧/任务侧的相对链接由 `../…` 修正为 `../../…`（层级少算一层） | [文档瘦身 Wave 3 现行文档准确性治理](../../solution/events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |

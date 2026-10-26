@@ -12,6 +12,23 @@ owner: team
 
 本文档详细说明创建工单后 S0 意图识别阶段的 System Prompt 构建细节，包括 7 个 Segment 的内容来源、存储位置和注入接口。
 
+> **2026-10-26 现状校准**：上述 7-Segment 结构写于 #325 重构前，当时的拼装点是 `prompt_builder.py`（已删除）。
+> 现行 S0 System Prompt 由 `backend/agent-service/app/adapters/agents/htp/triage_agent.py` 的 `_build_s0_prompt` 拼装，
+> 内容改为数据库 `system_prompt` 表的 4 条模板 + EvidenceBundle 章节：
+>
+> | 原 Segment | 现行承载 |
+> |-----------|---------|
+> | 1 专家身份 | `base_identity_v1` |
+> | 2 S0 方法论 | `base_methodology_v1`（`{stage_desc}` = “S0 - 意图识别”）|
+> | 3 HCI 机制知识 | 已并入 `base_identity_v1` 首段一句话概述，不再单列常量 |
+> | 4 系统上下文 | `EvidenceBundle`（`_evidence_builder.build_for_intent_classification`）|
+> | 5 分类基准 | `_format_categories()` 注入 `s0_intent_recognition_v1` 的 `{categories_text}` |
+> | 6 输出格式规范 | 已并入 `s0_intent_recognition_v1` |
+> | 7 当前工单上下文 | `base_case_context_v1`（`{case_id}`）|
+>
+> 模板种子见 `database/seeds/02_system_prompts.sql`，经 `backend/shared/utils/prompt_loader.py` 的 `StrictPromptLoader` 热加载。
+> 下文各 Segment 保留的 `prompt_builder.py` 行号仅作历史定位，不再对应现行代码。
+
 ---
 
 ## Prompt 结构概览
@@ -47,7 +64,7 @@ vxlan 虚拟网络、IPMI 硬件管理、acli 诊断工具集（完整命令集�
 | 属性 | 值 |
 |------|-----|
 | **来源** | 代码常量（硬编码） |
-| **存储位置** | `backend/conversation-service/app/services/prompt_builder.py` 第101-108行 `_segment_identity()` 方法 |
+| **存储位置** | 现行：`system_prompt` 表的 `base_identity_v1`；历史：`backend/conversation-service/app/services/prompt_builder.py`（已删除，#325）第101-108行 `_segment_identity()` |
 | **注入接口** | 无（固定内容） |
 | **是否动态** | 否 |
 
@@ -73,7 +90,7 @@ vxlan 虚拟网络、IPMI 硬件管理、acli 诊断工具集（完整命令集�
 | 属性 | 值 |
 |------|-----|
 | **来源** | 代码常量（硬编码） |
-| **存储位置** | `backend/conversation-service/app/services/prompt_builder.py` 第187-209行 `_segment_s0_methodology()` 方法 |
+| **存储位置** | 现行：`system_prompt` 表的 `base_methodology_v1`；历史：`backend/conversation-service/app/services/prompt_builder.py`（已删除，#325）第187-209行 `_segment_s0_methodology()` |
 | **注入接口** | 无（固定内容） |
 | **是否动态** | 否 |
 
@@ -94,7 +111,7 @@ vxlan 虚拟网络、IPMI 硬件管理、acli 诊断工具集（完整命令集�
 | 属性 | 值 |
 |------|-----|
 | **来源** | 代码常量（硬编码保底知识） |
-| **存储位置** | `backend/conversation-service/app/services/prompt_builder.py` 第84-89行 `_MECHANISM_KNOWLEDGE` 常量 |
+| **存储位置** | 现行：已并入 `base_identity_v1`；历史：`backend/conversation-service/app/services/prompt_builder.py`（已删除，#325）第84-89行 `_MECHANISM_KNOWLEDGE` 常量 |
 | **注入接口** | 无（固定内容） |
 | **是否动态** | 否 |
 
@@ -219,7 +236,7 @@ vxlan 虚拟网络、IPMI 硬件管理、acli 诊断工具集（完整命令集�
 | 属性 | 值 |
 |------|-----|
 | **来源** | 代码常量（硬编码） |
-| **存储位置** | `backend/conversation-service/app/services/prompt_builder.py` 第294-323行 `_segment_s0_output_format()` 方法 |
+| **存储位置** | 现行：`system_prompt` 表的 `s0_intent_recognition_v1`；历史：`backend/conversation-service/app/services/prompt_builder.py`（已删除，#325）第294-323行 `_segment_s0_output_format()` |
 | **注入接口** | 无（固定内容） |
 | **是否动态** | 否 |
 
@@ -361,7 +378,8 @@ vxlan 虚拟网络、IPMI 硬件管理、acli 诊断工具集（完整命令集�
 
 | 文件 | 作用 |
 |------|------|
-| `backend/conversation-service/app/services/prompt_builder.py` | Prompt 构建逻辑 |
+| `backend/agent-service/app/adapters/agents/htp/triage_agent.py` | 现行 S0 Prompt 拼装入口 `_build_s0_prompt` |
+| `backend/conversation-service/app/services/prompt_builder.py` | 已删除（#325），原 Prompt 构建逻辑 |
 | `backend/conversation-service/app/services/conversation_service.py` | Prompt 调用入口（需修复） |
 | `backend/case-service/app/routes/environments.py` | Environment API 路由 |
 | `backend/case-service/app/services/environment_service.py` | Environment 业务逻辑 |
@@ -378,3 +396,10 @@ vxlan 虚拟网络、IPMI 硬件管理、acli 诊断工具集（完整命令集�
 |------|------|
 | 2026-04-24 | 初版创建，发现 Segment 4 问题 |
 | 2026-04-24 | 修复 Segment 4 为空问题：① 新建 EnvironmentClient 调用 context API；② conversation_service.py 注入 context_info；③ config.py 添加 CASE_SERVICE_URL 配置 |
+## 变更历史
+
+> 本节自 2026-10-26 起补建；此前的修订轨迹见 `git log`，规范 §7.1 不要求回溯补齐。
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-10-26 | — | 首屏新增现状校准：7-Segment 结构对应的 `prompt_builder.py` 已随 #325 删除，现行拼装点为 `triage_agent.py::_build_s0_prompt`（`system_prompt` 表 4 条模板 + EvidenceBundle），并给出 Segment → 现行承载映射表；4 处「存储位置」改写为「现行 + 历史」双写；相关文档表补现行入口 | [文档瘦身 Wave 3 现行文档准确性治理](../events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |

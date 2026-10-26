@@ -2,14 +2,14 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-08-14
+last_updated: 2026-10-26
 owner: team
 ---
 
 # hci-sim 仿真运行时 · 任务导航
 
 > 本目录为 hci-sim 子模块的**现行全量任务分支文档**；事件化阶段任务见 [events/](events/)。
-> 设计侧见 [solution/hci-sim/README.md](../solution/hci-sim/README.md)，验证侧见 [verify/hci-sim/README.md](../verify/hci-sim/README.md)。
+> 设计侧见 [solution/hci-sim/README.md](../../solution/hci-sim/README.md)，验证侧见 [verify/hci-sim/README.md](../../verify/hci-sim/README.md)。
 
 ## 现行全量任务
 
@@ -35,3 +35,11 @@ owner: team
 - [独立数据库隔离任务](events/2026-08-10-hci_sim独立数据库隔离任务.md)
 - [P0–P1 27123 全链路修复任务](events/2026-08-11-hci-sim-P0-P1-27123全链路修复任务.md)
 - [HCI 真实环境与仿真环境双轨测试任务](events/2026-07-30-HCI真实环境与hci-sim双轨实施任务.md)
+
+## 变更历史
+
+> 本节自 2026-10-26 起补建；此前的修订轨迹见 `git log`，规范 §7.1 不要求回溯补齐。
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-10-26 | — | 设计侧/验证侧的相对链接由 `../solution/…` 修正为 `../../solution/…`（层级少算一层） | [文档瘦身 Wave 3 现行文档准确性治理](../../solution/events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |

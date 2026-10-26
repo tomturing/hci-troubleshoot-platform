@@ -10,7 +10,7 @@ owner: team
 
 > 本文档详细分析 `sop-agent` 项目中 SOP 聚合的实现逻辑。
 >
-> 源代码位置：`/mnt/d/aihci/sop-agent/scripts/aggregate_node_sop.py`（5504 行）
+> 源代码位置：`<sop-agent>/scripts/aggregate_node_sop.py`（`sop-agent` 为独立仓库，不在本仓库内；开发机上的检出位置示例为 `/mnt/d/aihci/sop-agent/`；脚本共 5504 行）
 
 ---
 
@@ -748,11 +748,11 @@ class NodeCheckpoint:
 
 | 文件 | 说明 |
 |------|------|
-| `scripts/aggregate_node_sop.py` | 聚合主脚本 |
-| `prompt/node_sop/node_sop_batch_reduce_prompt_hci.md` | 批次归并提示词 |
-| `prompt/node_sop/node_sop_pre_group_prompt_hci.md` | 预分组提示词 |
-| `prompt/node_sop/node_sop_final_merge_plan_prompt_hci.md` | 最终合并规划提示词 |
-| `prompt/node_sop/node_sop_branch_content_prompt_hci.md` | 分支内容提示词 |
+| `<sop-agent>/scripts/aggregate_node_sop.py` | 聚合主脚本 |
+| `<sop-agent>/prompt/node_sop/node_sop_batch_reduce_prompt_hci.md` | 批次归并提示词 |
+| `<sop-agent>/prompt/node_sop/node_sop_pre_group_prompt_hci.md` | 预分组提示词 |
+| `<sop-agent>/prompt/node_sop/node_sop_final_merge_plan_prompt_hci.md` | 最终合并规划提示词 |
+| `<sop-agent>/prompt/node_sop/node_sop_branch_content_prompt_hci.md` | 分支内容提示词 |
 
 ---
 
@@ -776,3 +776,11 @@ render_sop_html.py / render_sop_docx.py
 
 *文档创建时间：2026-05-16*
 *最后更新：2026-05-16*
+
+## 变更历史
+
+> 本节自 2026-10-26 起补建；此前的修订轨迹见 `git log`，规范 §7.1 不要求回溯补齐。
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-10-26 | — | 首屏改仓库限定式（保留「脚本共 5504 行」信息）；文件清单 5 行加 `<sop-agent>/` 前缀 | [文档瘦身 Wave 3 现行文档准确性治理](../../events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |

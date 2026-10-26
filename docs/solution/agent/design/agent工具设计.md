@@ -1033,8 +1033,8 @@ async def _execute_tool_call(self, tool_name: str, tool_args: dict) -> str:
 |---|------|------|--------|
 | T1 | `terminal_bridge/main.go` | 新增 `ssh_exec_command` 消息类型（自动执行+marker捕获） | P0 |
 | T2 | `terminal_bridge/main.go` | 新增 `exec_result` 出站消息类型 | P0 |
-| T3 | `frontend/src/api/terminal.ts` | 新增 `buildExecCommandMessage(execId, command)` | P0 |
-| T4 | `frontend/src/stores/chat.ts` | 监听 SSE `agent_exec_command`，路由到 bridge，POST 结果回传 | P0 |
+| T3 | `frontend/customer/src/api/terminal.ts` | 新增 `buildExecCommandMessage(execId, command)` | P0 |
+| T4 | `frontend/customer/src/stores/chat.ts` | 监听 SSE `agent_exec_command`，路由到 bridge，POST 结果回传 | P0 |
 | T5 | `conversation-service` | 新增 `POST /internal/conversations/{id}/agent-exec`（agent→conv 内部接口） | P0 |
 | T6 | `conversation-service` | 新增 `POST /conversations/{id}/exec-result`（前端→conv 结果回传） | P0 |
 | T7 | `conversation-service` SSE | 将 `agent-exec` 请求转为 SSE `agent_exec_command` 事件推送前端 | P0 |
@@ -1146,3 +1146,11 @@ sequenceDiagram
    当前环境下，即使在工具管理页面修改了“使用命令模板”，底层的插件工具也会永远执行空命令，这使得所有的插件诊断工具当前全部处于瘫痪状态。必须进行机制层面的重新设计和修复。
    
    针对该问题，完整的重构与安全插值引擎设计方案已在 [acli插件工具命令模板机制重新设计方案.md](file:///aihci/hci-troubleshoot-platform/docs/solution/agent/acli%E6%8F%92%E4%BB%B6%E5%B7%A5%E5%85%B7%E5%91%BD%E4%BD%A4%E6%A8%A1%E6%9D%BF%E6%9C%BA%E5%88%B6%E9%87%8D%E6%96%B0%E8%AE%BE%E8%AE%A1%E6%96%B9%E6%A1%88.md) 中详细阐明，包括数据模型扩容、安全插值引擎（基于 `shlex.quote` 转义）及 Fail-Fast 校验机制的具体实现逻辑。
+
+## 变更历史
+
+> 本节自 2026-10-26 起补建；此前的修订轨迹见 `git log`，规范 §7.1 不要求回溯补齐。
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-10-26 | — | T3/T4 两处 `frontend/src/` 补全为 `frontend/customer/src/` | [文档瘦身 Wave 3 现行文档准确性治理](../../events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |

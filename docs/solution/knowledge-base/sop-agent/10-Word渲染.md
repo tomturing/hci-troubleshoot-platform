@@ -10,7 +10,7 @@ owner: team
 
 > 本文档详细分析 `sop-agent` 项目中 Word 渲染阶段的实现设计。
 >
-> 源代码位置：`/mnt/d/aihci/sop-agent/scripts/render_sop_docx.py`
+> 源代码位置：`<sop-agent>/scripts/render_sop_docx.py`（`sop-agent` 为独立仓库，不在本仓库内；开发机上的检出位置示例为 `/mnt/d/aihci/sop-agent/`）
 
 ---
 
@@ -457,3 +457,11 @@ node_sops.jsonl ───────────→ render_sop_docx.py → docx
 
 *文档创建时间：2026-05-16*
 *最后更新：2026-05-16*
+
+## 变更历史
+
+> 本节自 2026-10-26 起补建；此前的修订轨迹见 `git log`，规范 §7.1 不要求回溯补齐。
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-10-26 | — | 首屏 `render_sop_docx.py` 改仓库限定式，绝对路径降级为检出位置示例 | [文档瘦身 Wave 3 现行文档准确性治理](../../events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |

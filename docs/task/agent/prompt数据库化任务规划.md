@@ -86,7 +86,7 @@ owner: team
 ## 三、 验收标准与测试验证
 
 ### 1. 自动化单元测试 (UnitTest)
-*   编写 `tests/unit/test_prompt_loader.py`，覆盖：
+*   编写 `backend/agent-service/tests/unit/test_prompt_loader.py`，覆盖：
     *   数据正常且模板占位符契合时，正常加载并返回内容。
     *   模板中误删必填占位符时，断言抛出 `PromptValidationError` 并附带具体字段名。
     *   模板中增加无法解析的非法占位符时，断言抛出 `PromptValidationError`。
@@ -95,3 +95,11 @@ owner: team
 ### 2. 界面联调与“喧闹化”报错人工验证
 1.  **即时热更新验证**：在 Admin 页面修改 S0 模板文本（追加自定义方言输出提示），保存后在前台发起会话，模型应立即执行新模板。
 2.  **配错喧闹阻断验证**：在 Admin 页面修改 S0 模板，将 `{categories_text}` 占位符修改为拼写错误的 `{categories_text_wrong}` 并保存。在前台发送消息，前台应即时中断并显式弹出配置校验错误的红色警示卡片，证明错误暴露机制有效，无静默吞噬。
+
+## 变更历史
+
+> 本节自 2026-10-26 起补建；此前的修订轨迹见 `git log`，规范 §7.1 不要求回溯补齐。
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-10-26 | — | 旧路径 `tests/unit/test_prompt_loader.py` 补全为 `backend/agent-service/tests/unit/test_prompt_loader.py` | [文档瘦身 Wave 3 现行文档准确性治理](../../solution/events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |

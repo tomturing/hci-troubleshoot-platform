@@ -2,7 +2,7 @@
 status: active
 category: deploy
 audience: operator
-last_updated: 2026-10-24
+last_updated: 2026-10-26
 owner: team
 ---
 
@@ -758,7 +758,7 @@ spec:
       - name: ndots
         value: "1"
 ```
-本项目 openclaw Deployment 已在 [deploy/helm/hci-platform/templates/openclaw-service.yaml](deploy/helm/hci-platform/templates/openclaw-service.yaml) 固化此配置。
+本项目现行由两个服务的 Deployment 模板按 values 开关渲染此配置：`deploy/helm/hci-platform/templates/agent-service/deployment.yaml` 与 `deploy/helm/hci-platform/templates/conversation-service/deployment.yaml`（开关为 `agentService.externalDns` / `conversationService.externalDns`，缺省 `false`）。历史说明：原 openclaw Deployment 曾在 `deploy/helm/hci-platform/templates/openclaw-service.yaml`（已删除，#314 移除 OpenClaw 全部配置）中直接固化，现无对应工作负载。
 
 **修复 B（一次性修复全部 Pod，需 sudo）：**  
 在 `k8s-routing-bypass.service` 中追加规则，让 Pod 到 Clash fake-ip 段也走 table 2022（Meta TUN）：

@@ -256,7 +256,7 @@ async def execute(
 在重构代码后，必须通过自动化测试来确保设计的稳健性。
 
 ### 6.1 单元测试设计
-在 `tests/unit/test_tool_interpolation.py` 中编写如下用例：
+在 `backend/agent-service/tests/unit/test_tool_interpolation.py` 中编写如下用例：
 
 ```python
 import pytest
@@ -293,3 +293,11 @@ def test_missing_parameter_raises_error():
   ```
 - **手动演练**：
   在控制台的“工具管理页面”中修改 `acli_plugin_vm_start` 的 `usage_template`（如在后面加上 `--verbose`），触发热更新，然后在对话窗口中调用该插件工具，观察 stdout 执行的命令是否带上了 `--verbose` 标记。
+
+## 变更历史
+
+> 本节自 2026-10-26 起补建；此前的修订轨迹见 `git log`，规范 §7.1 不要求回溯补齐。
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-10-26 | — | 旧路径 `tests/unit/test_tool_interpolation.py` 补全为 `backend/agent-service/tests/unit/test_tool_interpolation.py` | [文档瘦身 Wave 3 现行文档准确性治理](../../events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |

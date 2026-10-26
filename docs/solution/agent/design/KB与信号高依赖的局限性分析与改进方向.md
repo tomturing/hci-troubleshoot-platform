@@ -266,9 +266,9 @@ KBD 解析/信号抽取历史上修过大量 bug（贪婪解析、截图丢失�
 | 三轨路由查询入口 | `backend/kb-service/app/routes/route.py`（`GET /api/kb/route`） |
 | 未命中升级人工 | `investigation_agent.py` 的 `AgentEscalation` 分支；"系统不会生成知识库外的命令或根因"话术 |
 | 机制推理死代码 | `investigation_agent.py::_process_fallback_mode` / `_build_fallback_prompt`；模板 `s4_fallback_v1`（`backend/shared/utils/prompt_loader.py`）；废弃于 commit `4e1d2474` |
-| SOP 轨道变量门禁 | `backend/agent-service/.../sop_tools.py::SopToolExecutor._check_variable_source_gate` |
-| 工具白名单与命令动态定级 | `tool_registry.load_tool_registry`；`backend/agent-service/.../acli/classifier.py::classify_acli/classify_bash` |
-| KBD 轨道信号 DAG 与结论门禁 | `backend/agent-service/.../kbd_differential.py::KBDDiagnostic`；`backend/shared/cdd/plan_compiler.py`；`backend/shared/cdd/conclusion_gate.py::decide_conclusion` |
+| SOP 轨道变量门禁 | `backend/agent-service/app/adapters/agents/htp/sop_tools.py::SopToolExecutor._check_variable_source_gate` |
+| 工具白名单与命令动态定级 | `tool_registry.load_tool_registry`；`backend/agent-service/app/tools/acli/classifier.py::classify_acli/classify_bash` |
+| KBD 轨道信号 DAG 与结论门禁 | `backend/agent-service/app/adapters/agents/htp/kbd_differential.py::KBDDiagnostic`；`backend/shared/cdd/plan_compiler.py`；`backend/shared/cdd/conclusion_gate.py::decide_conclusion` |
 | 变量置信序 | `backend/shared/models/information.py` |
 | 离线采集失败不中断 | `backend/diagnosis-service/offline-collector/collect.go` |
 | 离线 UNKNOWN / Insufficient / 一次补采 | `backend/diagnosis-service/app/services/offline_analysis_service.py`（`_evaluate_signal` / `_calculate_assessment` / `_conclusion` / `_create_supplement`） |
@@ -284,4 +284,12 @@ KBD 解析/信号抽取历史上修过大量 bug（贪婪解析、截图丢失�
 | 信号复核 Admin UI | `frontend/admin/src/views/KbdReviewView.vue` + `components/editors/`（MatcherEditor / ProducesEditor / TextExtractEditor / ValueExtractEditor / QfkProcessingEditor） |
 | 信号模板提案否决依据 | `./QKV_QFK扩展性与配置易用性评估.md` §3.3 |
 | replay/四态评估设施 | `tests/golden/kbd_cases/`（replay_scenarios 四态）；`backend/agent-service/tests/unit/test_kbd_golden_contracts.py`；`shared.cdd.replay_evaluations`；`hci_sim/testdata/kbd-27123-fixture-manifest.json` |
-| 统一解析运行时提案（proposed） | `docs/solution/agent/events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md`；`backend/shared/resolution/catalogs/{resolution_catalog,acli_command_catalog}.json` |
+| 统一解析运行时提案（proposed） | `docs/solution/agent/events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md`；`backend/shared/resolution/catalogs/resolution_catalog.json`、`backend/shared/resolution/catalogs/acli_command_catalog.json` |
+
+## 变更历史
+
+> 本节自 2026-10-26 起补建；此前的修订轨迹见 `git log`，规范 §7.1 不要求回溯补齐。
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-10-26 | — | 3 处 `backend/agent-service/.../` 省略写法展开为完整路径；`{resolution_catalog,acli_command_catalog}.json` brace 写法展开为两条完整路径 | [文档瘦身 Wave 3 现行文档准确性治理](../../events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |

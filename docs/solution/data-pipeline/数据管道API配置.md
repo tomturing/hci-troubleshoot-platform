@@ -151,7 +151,7 @@ Vision Prompt 和分类 Prompt 已从文件/硬编码迁移到数据库 `system_
 
 **改造前**：
 - 分类 Prompt：硬编码在 `backend/kb-service/app/routes/classify.py`
-- Vision Prompt：存放在 `data-pipeline/kbd/prompt/image_proc_vision_v4.txt`
+- Vision Prompt：存放在 `data-pipeline/kbd/prompt/image_proc_vision_v4.txt`（已删除，#504）
 
 **改造后**：
 - 分类 Prompt：`system_prompt` 表记录 `kbd_classify_v1`
@@ -222,7 +222,7 @@ prompt_template = await StrictPromptLoader.load_and_validate(
 
 ### 删除的文件
 
-- `data-pipeline/kbd/prompt/image_proc_vision_v4.txt`（内容已迁入数据库）
+- `data-pipeline/kbd/prompt/image_proc_vision_v4.txt`（已删除，内容已迁入数据库）
 
 ### 新增依赖
 
@@ -233,3 +233,11 @@ pillow>=10.0.0  # 图片压缩
 ```
 
 运行 `uv sync` 安装新依赖。
+
+## 变更历史
+
+> 本节自 2026-10-26 起补建；此前的修订轨迹见 `git log`，规范 §7.1 不要求回溯补齐。
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-10-26 | — | `data-pipeline/kbd/prompt/image_proc_vision_v4.txt` 标注已删除（#504，内容已迁入数据库） | [文档瘦身 Wave 3 现行文档准确性治理](../events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |

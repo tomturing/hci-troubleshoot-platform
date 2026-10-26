@@ -20,6 +20,7 @@ update_trigger: agent工具设计 v2.0 落地实现（T-TOOL-05/06/07 已完成�
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-10-26 | v1.4 | `database/seeds/tool_definition_v2.sql` 更正为曾用名，现行 `database/seeds/01_tool_definitions.sql`（#427 合并重命名）；仓库中不存在的 `scripts/db/seed_tools.py` 就地标注；`frontend/src/` 4 处补全为 `frontend/customer/src/`；`app/tools/base.py` → `app/tools/base_tool.py`；测试路径补全服务前缀（详见 [文档瘦身 Wave 3 现行文档准确性治理](../../solution/events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md)） |
 | 2026-06-12 | v1.3 | 完成 T-EXEC-05：新增 `ContainerExecAdapter/ContainerCommandBuilder`，远端 wrapper 自动探测 docker/crictl/ctr，执行事件透传 `container/original_command/built_command` |
 | 2026-06-11 | v1.2 | 新增 T-EXEC 系列任务入口：stderr 修复、bash_exec 容器化契约、执行前语义校验、aCLI catalog、工具管理与 SOP 联动校验 |
 | 2026-05-28 | v1.1 | 完成 T-TOOL-05/06/07：conversation-service 内部 API + SSE 推送机制 |
@@ -159,7 +160,7 @@ ALTER TABLE tool_definition ADD COLUMN IF NOT EXISTS tool_type TEXT NOT NULL DEF
 ### T-TOOL-10：填充 `tool_definition` 表数据（从旧 tool_registry.py 迁移）
 
 **优先级**：P0  
-**文件**：新建 `database/seeds/tool_definition_v2.sql`（或 `scripts/db/seed_tools.py`）  
+**文件**：`database/seeds/01_tool_definitions.sql`（曾用名 `database/seeds/tool_definition_v2.sql`，#427 已重命名合并；曾考虑的 `scripts/db/seed_tools.py` 在仓库中不存在，方案未采用）  
 **依赖**：T-TOOL-09 完成
 
 **背景**：v2.0 将 `tool_registry.py` 改为从 DB 加载，因此必须先在 DB 中有数据。需要将旧代码中的工具定义迁移到 `tool_definition` 表。
@@ -278,7 +279,7 @@ ON CONFLICT (tool_name) DO UPDATE SET
 ### T-TOOL-03：`frontend` 新增 `buildExecCommandMessage()`
 
 **优先级**：P0  
-**文件**：`frontend/src/api/terminal.ts`（TypeScript）  
+**文件**：`frontend/customer/src/api/terminal.ts`（TypeScript）  
 **依赖**：无
 
 **实现内容**：在 `terminal.ts` 中新增函数（参考现有 `buildBridgeCommandPayload`）：
@@ -333,10 +334,10 @@ export function parseAgentExecResult(message: unknown): {
 
 ---
 
-### T-TOOL-04：`frontend/src/stores/chat.ts` 监听 `agent_exec_command` SSE 事件
+### T-TOOL-04：`frontend/customer/src/stores/chat.ts` 监听 `agent_exec_command` SSE 事件
 
 **优先级**：P0  
-**文件**：`frontend/src/stores/chat.ts`（TypeScript）  
+**文件**：`frontend/customer/src/stores/chat.ts`（TypeScript）  
 **依赖**：T-TOOL-03，T-TOOL-05，T-TOOL-06
 
 **背景**：Agent 通过 conversation-service 下发 `agent_exec_command` SSE 事件到前端，前端需要：
@@ -546,7 +547,7 @@ sed -i 's/from app\.tools\.shell/from app.tools.acli/g' <文件>
 ### T-TOOL-20：文件重命名 `app/tools/base.py` → `app/tools/base_tool.py`
 
 **优先级**：P1（与 T-TOOL-19 同步执行）  
-**文件**：`backend/agent-service/app/tools/base.py`  
+**文件**：`backend/agent-service/app/tools/base_tool.py`  
 **依赖**：无
 
 **操作步骤**：
@@ -584,7 +585,7 @@ sed -i 's/from app\.tools\.base import/from app.tools.base_tool import/g' <文�
 - 规则按 risk 降序排列，第一个匹配获胜
 - 默认返回 1（未命中规则时，视为只读）
 
-**单元测试**（必须提供，放在 `tests/tools/test_classifier.py`）：
+**单元测试**（必须提供，放在 `backend/agent-service/tests/tools/test_classifier.py`）：
 ```python
 # 测试用例示例
 assert classify_acli("acli vm list --formatter json") == 1
@@ -945,7 +946,7 @@ class CompositeToolExecutor:
 ### T-TOOL-18：前端 `InteractiveRequestCard` 支持 `exec_confirm` 类型
 
 **优先级**：P2（T-TOOL-04 中 risk=2 可先用 `window.confirm()` 临时替代）  
-**文件**：`frontend/src/components/InteractiveRequestCard.vue`（或对应组件）  
+**文件**：`frontend/customer/src/components/InteractiveRequestCard.vue`（或对应组件）  
 **依赖**：T-TOOL-04
 
 **功能要求**：
@@ -1019,7 +1020,7 @@ class CompositeToolExecutor:
 |------|------------|
 | T-TOOL-08/09/10 | `database/desired_schema.sql`、`database/migrations/`、`database/seeds/` |
 | T-TOOL-01/02 | `terminal_bridge/main.go` |
-| T-TOOL-03/04/18 | `frontend/src/api/terminal.ts`、`frontend/src/stores/chat.ts`、`frontend/src/components/InteractiveRequestCard.vue` |
+| T-TOOL-03/04/18 | `frontend/customer/src/api/terminal.ts`、`frontend/customer/src/stores/chat.ts`、`frontend/customer/src/components/InteractiveRequestCard.vue` |
 | T-TOOL-05/06/07 | `backend/conversation-service/`（路由 + SSE 推送） |
 | T-TOOL-11 | `backend/agent-service/app/tools/acli/classifier.py`（新建） |
 | T-TOOL-12 | `backend/agent-service/app/tools/acli/executor.py`（新建） |

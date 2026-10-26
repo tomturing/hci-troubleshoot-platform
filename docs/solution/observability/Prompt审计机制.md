@@ -286,7 +286,8 @@ GRAFANA_PG_PASSWORD=dev_password_123
 | 文件 | 作用 |
 |------|------|
 | `backend/conversation-service/app/services/conversation_service.py` | Prompt构建和审计写入主逻辑 |
-| `backend/conversation-service/app/services/prompt_builder.py` | S0 Prompt 7段构建器 |
+| `backend/agent-service/app/adapters/agents/htp/triage_agent.py` | 现行 S0 Prompt 拼装入口 `_build_s0_prompt`（数据库模板 + EvidenceBundle）|
+| `backend/conversation-service/app/services/prompt_builder.py` | 已删除（#325），原 S0 Prompt 7段构建器 |
 | `backend/conversation-service/app/services/environment_client.py` | 调用 case-service 获取环境数据 |
 | `backend/case-service/app/routes/environments.py` | Environment API 路由 |
 | `backend/case-service/app/services/environment_service.py` | build_context_info() 实现 |
@@ -303,3 +304,10 @@ GRAFANA_PG_PASSWORD=dev_password_123
 | 2026-04-24 | 初版创建，完整分析数据流差异 |
 | 2026-04-24 | 新增 Grafana Prompt 审计 Dashboard |
 | 2026-04-24 | 新增 PostgreSQL 数据源配置 |
+## 变更历史
+
+> 本节自 2026-10-26 起补建；此前的修订轨迹见 `git log`，规范 §7.1 不要求回溯补齐。
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-10-26 | — | 相关文档表补现行 `triage_agent.py::_build_s0_prompt` 入口，`prompt_builder.py` 标注已删除（#325） | [文档瘦身 Wave 3 现行文档准确性治理](../events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |

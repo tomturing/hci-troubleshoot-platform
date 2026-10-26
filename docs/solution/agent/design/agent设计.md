@@ -453,9 +453,9 @@ backend/agent-service/app/
     └── agent.py                       ← POST /v1/agent/stream
 ```
 
-> **记忆与工具分层设计**（见 `docs/solution/agent/agent记忆设计.md`）：
+> **记忆与工具分层设计**（见 `docs/solution/agent/design/agent记忆设计.md`）：
 > - `memory/` = 工作记忆层：`variable_pool.py` 实现 SOP 上下文变量的 JIT 获取，以 PostgreSQL `context_variables JSONB` 为外化工作记忆存储后端（MemGPT 模式）。变量赋值策略：`env_injection`（环境注入）/ `user_input`（用户输入）/ `user_confirm`（用户确认）/ `tool_call`（工具调用）/ `llm_inference`（LLM 推断）/ `agent_pass`（Agent 传递）。
-> - `tools/` = 工具实现层：存放 LLM 通过 `tool_call` 调用的工具函数实现，与工具声明（`TOOL_REGISTRY`）分离，实现声明与实现解耦。`ToolDefinition` 从 `tools.base_tool` 统一导入，供 htp/ops/pai 各 agent 的注册表复用。`tools/acli/` 包含 `bash_exec`（通用 Linux Bash，acli 不覆盖时使用）和 `acli_exec`（HCI 专有 CLI，主力工具）两个通用执行工具，统一通过 `BridgeRelayExecutor` 经由 `terminal_bridge.exe` 中转执行（见 `docs/solution/agent/agent工具设计.md`）。`TOOL_REGISTRY` 在 v2.0 改为启动时从 `tool_definition` 数据库表加载（DB 为 SSOT，废弃代码硬编码）。
+> - `tools/` = 工具实现层：存放 LLM 通过 `tool_call` 调用的工具函数实现，与工具声明（`TOOL_REGISTRY`）分离，实现声明与实现解耦。`ToolDefinition` 从 `tools.base_tool` 统一导入，供 htp/ops/pai 各 agent 的注册表复用。`tools/acli/` 包含 `bash_exec`（通用 Linux Bash，acli 不覆盖时使用）和 `acli_exec`（HCI 专有 CLI，主力工具）两个通用执行工具，统一通过 `BridgeRelayExecutor` 经由 `terminal_bridge.exe` 中转执行（见 `docs/solution/agent/design/agent工具设计.md`）。`TOOL_REGISTRY` 在 v2.0 改为启动时从 `tool_definition` 数据库表加载（DB 为 SSOT，废弃代码硬编码）。
 > - `adapters/clients/acli_client.py` 的 asyncssh 直连路径已废弃（HCI 在客户私网，云端不可达）。所有 acli/bash 命令执行路径为：`Agent → BridgeRelayExecutor → Redis → Conversation Service SSE → Frontend → terminal_bridge.exe → SSH → HCI`。
 
 ---
@@ -575,9 +575,10 @@ LLM 输出的命令 → 结构化解析（正则/LLM 标注）→
 
 ### 12.5 深度代码分析：新发现关键问题
 
-> **分析范围**：本节基于对 `diagnostic_agent.py`、`react_engine.py`、`confirm_service.py`、`agent_router.py`、`main.py`、`routes/agent.py`、`conversation-service` 路由及前端 `chat.ts` 的完整代码走读，记录 §12.2 表格之外的额外关键问题。
+> **分析范围**：本节基于 **2026-05 代码基线（#325 重构前）** 对 `diagnostic_agent.py`、`react_engine.py`、`confirm_service.py`、`agent_router.py`、`main.py`、`routes/agent.py`、`conversation-service` 路由及前端 `chat.ts` 的完整代码走读，记录 §12.2 表格之外的额外关键问题。
 >
-> **架构澄清**：当前实际运行类为 `DiagnosticAgent` + `IntentAgent`（`agent_router.py` 使用），`InvestigationAgent` / `TriageAgent` 已写入但**尚未接入** `AgentRouter`，属于半成品重构。P1（参数名不匹配）需更正，服务可正常启动。
+> **架构澄清（当时的现状，已被 #325 推翻）**：分析时实际运行类为 `DiagnosticAgent` + `IntentAgent`（`agent_router.py` 使用），`InvestigationAgent` / `TriageAgent` 已写入但**尚未接入** `AgentRouter`，当时属于半成品重构。
+> **现行事实**：`backend/agent-service/app/main.py` 已主用 `TriageAgent`（S0）+ `InvestigationAgent`（S1-S4），`DiagnosticAgent` 类已不存在，下方 P-NEW-1/P-NEW-2 的同步迭代缺陷已在 `backend/agent-service/app/adapters/agents/htp/investigation_agent.py` 以 `async for` 修复。本小节保留为缺陷成因的历史记录，不得作为当前行动依据。
 
 #### P-NEW-1 ｜ `DiagnosticAgent` direct 模式：同步迭代异步生成器（CRITICAL）
 
@@ -587,7 +588,7 @@ LLM 输出的命令 → 结构化解析（正则/LLM 标注）→
 | **运行时影响** | 所有 htp-agent **direct 模式**请求（含 SOP 轨、KBD 轨、机制推理）在第一个字符输出前抛出 `TypeError: 'async_generator' object is not iterable`；前端收到 error SSE，无任何输出 |
 | **严重程度** | 🔴 CRITICAL——当前 SOP 消费全链路在此处即断裂 |
 | **修复** | `diagnostic_agent.py` 第 217 行：`for chunk in` → `async for chunk in` |
-| **涉及文件** | `backend/agent-service/app/adapters/agents/htp/diagnostic_agent.py` |
+| **涉及文件** | `backend/agent-service/app/adapters/agents/htp/diagnostic_agent.py`（历史路径，#325 拆分重命名为 `investigation_agent.py` / `remediation_agent.py`）|
 
 #### P-NEW-2 ｜ `DiagnosticAgent` react 模式：同步迭代异步生成器（CRITICAL）
 
@@ -597,7 +598,7 @@ LLM 输出的命令 → 结构化解析（正则/LLM 标注）→
 | **运行时影响** | 所有 `execution_mode="react"` 的 htp-agent 请求同样以 `TypeError` 终止；工具调用完全无法触发 |
 | **严重程度** | 🔴 CRITICAL——tool_call 端到端（重点 2）在此处即断裂 |
 | **修复** | `diagnostic_agent.py` 第 204 行：`for event in` → `async for event in` |
-| **涉及文件** | `backend/agent-service/app/adapters/agents/htp/diagnostic_agent.py` |
+| **涉及文件** | `backend/agent-service/app/adapters/agents/htp/diagnostic_agent.py`（历史路径，#325 拆分重命名为 `investigation_agent.py` / `remediation_agent.py`）|
 
 #### P-NEW-3 ｜ `ReactEngine` 双重执行工具（HIGH）
 
@@ -1452,7 +1453,7 @@ Executor：只执行 verified 的 ResolvedAcquisition
 | 2026-05-29 | v5.8 | 补齐 agent-service Helm deployment.yaml 中 DATABASE_URL 环境变量配置（此前缺失导致数据库认证失败）；统一 config.py 默认值与其他服务一致 |
 | 2026-05-29 | v5.7 | 修复 `main.py` lifespan 中 `db_manager.get_session()` 错误用法：AsyncGenerator 不支持 async with，改用 `async_session_factory()` |
 | 2026-05-29 | v5.6 | 修复 `react_engine.py` 导入路径：`VariableRequestResult` 从 `sop_tools.py` 迁移至 `memory/variable_pool.py`（PR #341），修正 import 语句解决 ImportError
-| 2026-05-28 | v5.4 | 新增 `app/tools/shell/`（classifier.py + executor.py），引入 `bash_exec`（通用 Linux Shell）和 `acli_exec`（HCI 专有 CLI）工具；废弃 `AcliClient._run_ssh()` 直连路径（HCI 在客户私网，云端不可达），确立 `BridgeRelayExecutor`（terminal_bridge 中转）为唯一可行执行路径；新增架构设计文档 `docs/solution/agent/agent工具设计.md` |
+| 2026-05-28 | v5.4 | 新增 `app/tools/shell/`（classifier.py + executor.py），引入 `bash_exec`（通用 Linux Shell）和 `acli_exec`（HCI 专有 CLI）工具；废弃 `AcliClient._run_ssh()` 直连路径（HCI 在客户私网，云端不可达），确立 `BridgeRelayExecutor`（terminal_bridge 中转）为唯一可行执行路径；新增架构设计文档 `docs/solution/agent/design/agent工具设计.md` |
 | 2026-05-29 | v5.5 | 工具架构 v2.0：`app/tools/shell/` → `app/tools/acli/`（bash_exec 归入 acli category）；移除旧 11 个结构化 acli 工具，由 `acli_exec` 统一替代；新增 4 个插件诊断工具（acli_plugin_vm_start/vm_suspend/netdoctor/asys）；`tool_definition` 数据库表确立为工具定义 SSOT，`tool_registry.py` 改为启动时 DB 加载器；详见 `agent工具设计.md` v2.0 |
 | 2026-06-03 | v5.3 | 目录重构：新增 `app/memory/`（工作记忆层）和 `app/tools/`（工具实现层），变量池迁移到 `memory/variable_pool.py`，SOP 工具迁移到 `tools/sop/`，`sop_tools.py` 精简为 `SopToolExecutor` 执行协调层，`ToolDefinition` 统一从 `tools.base` 导入；变量赋值策略新增 `env_injection`（原 `env_context`）、`tool_call`（原 `tool`）、`llm_inference`（原 `llm_extracted`）、`agent_pass`（新增）|
 | 2026-05-26 | v5.2 | §12.7.3 扩展双向校验（undeclared/orphan）、`user_confirm` 策略；§12.7.4 变量池深度设计（存储分层、三路合并、JIT 懒加载、KBD 下游消费者模式）|
@@ -1463,3 +1464,11 @@ Executor：只执行 verified 的 ResolvedAcquisition
 | 2026-05-23 | v2.0 | 全量重写：引入 BaseAgent、语义阶段命名（Triage/Investigation/Remediation/Closure）、六边形架构说明、重构路线图；原文件 AI助手设计.md 重命名为 agent设计.md |
 | 2026-05-21 | v1.6 | 原 AI助手设计.md：配置迁移至 dashscope 网关，移除本地 Pod 池架构 |
 | 2026-05-07 | v1.1 | 原 AI助手设计.md：重构 agent-service 目录结构 |
+
+## 变更历史
+
+> 本节自 2026-10-26 起补建；此前的修订轨迹见 `git log`，规范 §7.1 不要求回溯补齐。
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-10-26 | — | §12.5「架构澄清」订正为**当时的现状，已被 #325 推翻**，并补现行事实：`main.py` 已主用 `TriageAgent`（S0）+ `InvestigationAgent`（S1-S4）、`DiagnosticAgent` 类已不存在、P-NEW-1/P-NEW-2 的同步迭代缺陷已在 `investigation_agent.py` 以 `async for` 修复；`diagnostic_agent.py` 标注历史路径与重命名去向；`agent记忆设计.md` 路径更正到 `agent/design/` | [文档瘦身 Wave 3 现行文档准确性治理](../../events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |

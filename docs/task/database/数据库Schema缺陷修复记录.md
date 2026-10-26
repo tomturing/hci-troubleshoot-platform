@@ -10,14 +10,14 @@ owner: team
 
 ## 变更概述
 
-本文档记录 `database/atlas-migrations/20260817000000_fix_p0p1_schema_defects.sql`
+本文档记录 `database/atlas-migrations/20260817000000_fix_p0p1_schema_defects.sql`（历史路径，该目录已于 2026-10-24 整体删除，修复结果由 `database/desired_schema.sql` 承载）
 和 `database/hci-sim-migrations/000002_fix_p0p1_defects.sql` 的设计修复内容。
 
 修复方法论：**第一性原理 + 对抗性审查**（追溯到底层逻辑约束，像红队一样验证每个修复的边界条件）。
 
 ---
 
-## 主库修复（`database/atlas-migrations/20260817000000_fix_p0p1_schema_defects.sql`）
+## 主库修复（`database/atlas-migrations/20260817000000_fix_p0p1_schema_defects.sql`，历史路径，已随目录删除）
 
 ### P0-1：`terminal_operation` / `bridge_execution_logs` `case_id` 格式无约束
 
@@ -136,3 +136,11 @@ psql "$DATABASE_URL" -c "\d terminal_operation"
 psql "$DATABASE_URL" -c "\d authorization"
 psql "$DATABASE_URL" -c "\d fact"
 ```
+
+## 变更历史
+
+> 本节自 2026-10-26 起补建；此前的修订轨迹见 `git log`，规范 §7.1 不要求回溯补齐。
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-10-26 | — | 2 处 `database/atlas-migrations/20260817000000_fix_p0p1_schema_defects.sql` 标注历史路径（该目录已于 2026-10-24 整体删除，修复结果由 `database/desired_schema.sql` 承接） | [文档瘦身 Wave 3 现行文档准确性治理](../../solution/events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |

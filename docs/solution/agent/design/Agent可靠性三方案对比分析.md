@@ -10,8 +10,8 @@ owner: team
 
 > **文档说明**：本文档综合分析以下三份方案草稿的优缺点，并给出融合落地建议。
 >
-> - [agent_problems_solution.md](./agent_problems_solution.md)（三大难题一体化方案，方案 A）
-> - [agent_reliability_solution.md](./agent_reliability_solution.md)（五层防御可靠性方案，方案 B）
+> - `agent_problems_solution.md`（三大难题一体化方案，方案 A）——已删除（#484），全文见 git 历史
+> - `agent_reliability_solution.md`（五层防御可靠性方案，方案 B）——已删除（#484），全文见 git 历史
 > - [排障Agent可靠性整体解决方案.md](./排障Agent可靠性整体解决方案.md)（证据中心平台化方案，方案 C）
 
 ## 变更历史
@@ -19,6 +19,7 @@ owner: team
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
 | 2026-06-08 | v1.0 | 初版：三方案对比分析与融合落地建议 | — |
+| 2026-10-26 | v1.1 | `agent_problems_solution.md` / `agent_reliability_solution.md` 两条死链去链接化，改述为「已删除（#484），全文见 git 历史」 | [文档瘦身 Wave 3 现行文档准确性治理](../../events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |
 
 ---
 

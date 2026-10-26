@@ -2,7 +2,7 @@
 status: active
 category: verify
 audience: developer
-last_updated: 2026-10-20
+last_updated: 2026-10-26
 owner: team
 ---
 
@@ -85,13 +85,17 @@ Kubernetes 会以 root:755 创建父目录 `/home/node/.openclaw/`，导致非 r
 - `api-gateway` 日志：`POST /api/cases/ ... 500`、`JSONDecodeError: Expecting value`
 - `case-service` 日志：`UndefinedColumnError: column "close_reason" of relation "case" does not exist`
 
-**根因：** 应用代码已升级依赖 `case.close_reason` 字段，但数据库**未执行** `database/migrate_evaluation_v1.sql`。
+**根因：** 应用代码已升级依赖 `case.close_reason` 字段，但目标库 Schema 未收敛到期望状态。本仓库**不存在增量 Schema 迁移脚本**（旧文档所写的 `database/migrate_evaluation_v1.sql` 在仓库中不存在，属误记）：`close_reason` 已定义于 `database/desired_schema.sql`，由 Atlas 声明式收敛，完整流程见 [数据库迁移管理](../../../database/README.md)。
 
 **快速修复：**
 ```bash
+# 1) 先确认目标库确实缺列
+kubectl exec -n hci-troubleshoot postgres-0 -- \
+  psql -U hci_admin -d hci_troubleshoot -c "\d case"
+# 2) 收敛到期望 Schema（无迁移文件可 cat，由声明式差量计算完成）
+#    部署态走 scripts/db-migrate.sh；本地直连库可用：
 cd /aihci/hci-troubleshoot-platform
-cat database/migrate_evaluation_v1.sql \
-  | kubectl exec -i -n hci-troubleshoot postgres-0 -- psql -U hci_admin -d hci_troubleshoot
+atlas schema apply --env local --auto-approve
 ```
 
 **验证（期望返回 201）：**
