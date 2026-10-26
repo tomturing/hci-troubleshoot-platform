@@ -6,7 +6,9 @@
  * 2. bridge 已运行 → 渲染表单；
  * 3. 连接成功 → emit connected(host)，写入 lastSshHost 与本地非敏感配置；
  * 4. 连接失败 → 错误留在表单，不 emit connected；
- * 5. inline 模式下已有会话 → 直接折叠为「已连接」，不再要求登录。
+ * 5. inline 模式下已有会话 → 直接折叠为「已连接」，不再要求登录；
+ * 6. 宿主托管模式（show-connect-button=false / open-terminal=false）：
+ *    不渲染「连接」按钮，连接结果由 expose 的 connect() 回传，且不打开终端抽屉。
  *
  * 表单字段由 SshFormSection 负责，这里用 stub 直接给出一次完整快照。
  */
@@ -161,6 +163,52 @@ describe('SshConnectSection', () => {
 
     expect(wrapper.text()).toContain('已连接 10.10.1.22')
     expect(wrapper.find('.ssh-form-stub').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('宿主托管（show-connect-button=false）→ 无「连接」按钮，connect() 回传结果', async () => {
+    mockStore.connectSSH.mockResolvedValue(undefined)
+    const wrapper = await mountSection({ showConnectButton: false })
+    await flushPromises()
+
+    expect(wrapper.findAll('button').some((b) => b.text().includes('连接'))).toBe(false)
+
+    const ok = await (wrapper.vm as any).connect()
+    await flushPromises()
+
+    expect(ok).toBe(true)
+    expect(mockStore.connectSSH).toHaveBeenCalledWith(
+      expect.objectContaining({ host: '10.10.1.21', username: 'root' }),
+    )
+    expect(wrapper.text()).toContain('已连接 10.10.1.21')
+    wrapper.unmount()
+  })
+
+  it('宿主托管时 connect() 失败 → 返回 false，不 emit connected', async () => {
+    mockStore.connectSSH.mockRejectedValue(new Error('密码错误'))
+    const wrapper = await mountSection({ showConnectButton: false })
+    await flushPromises()
+
+    const ok = await (wrapper.vm as any).connect()
+    await flushPromises()
+
+    expect(ok).toBe(false)
+    expect(wrapper.emitted('connected')).toBeUndefined()
+    expect(wrapper.text()).toContain('密码错误')
+    wrapper.unmount()
+  })
+
+  it('open-terminal=false → 连接成功不打开右侧终端抽屉', async () => {
+    mockStore.connectSSH.mockResolvedValue(undefined)
+    const wrapper = await mountSection({ openTerminal: false })
+    await flushPromises()
+
+    const connectBtn = wrapper.findAll('button').find((b) => b.text().includes('连接'))!
+    await connectBtn.trigger('click')
+    await flushPromises()
+
+    expect(mockStore.setLastSshHost).toHaveBeenCalledWith('10.10.1.21')
+    expect(mockStore.openTerminalSidebar).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })

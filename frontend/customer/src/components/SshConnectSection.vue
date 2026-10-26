@@ -7,6 +7,11 @@
  * - SshConnectDialog：mode="dialog"（行为与抽取前一致，含 1.5s 自动关闭）
  * - LogCollectCaseDialog：mode="inline"（内嵌，成功后折叠为状态条）
  *
+ * 两种宿主对"谁来触发连接"的诉求不同，因此把提交入口做成可配置：
+ * - 终端弹框自带「连接」按钮，成功后自动打开右侧终端抽屉；
+ * - 日志收集弹框没有独立的「连接」按钮，由宿主的「确定」调用 expose 的 connect()
+ *   一步完成"登录 + 提交"，且不打开终端抽屉（否则用户要多关一个无关窗口）。
+ *
  * 连接状态机、bridge 引导、错误处理只在这里实现一次；字段仍由 SshFormSection 渲染。
  */
 import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue'
@@ -28,8 +33,24 @@ const props = withDefaults(
     caseId?: string | null
     /** 连接成功后是否自动收起（仅 dialog 模式使用） */
     autoClose?: boolean
+    /**
+     * 是否渲染自带的「连接」按钮。
+     * false 表示提交入口归宿主（日志收集弹框把它并进了「确定」），宿主必须调用 connect()。
+     */
+    showConnectButton?: boolean
+    /**
+     * 连接成功后是否自动打开右侧「SSH 终端」抽屉。
+     * 日志收集弹框置 false：会话已建立，界面应直接进日志收集面板。
+     */
+    openTerminal?: boolean
   }>(),
-  { mode: 'inline', caseId: null, autoClose: false },
+  {
+    mode: 'inline',
+    caseId: null,
+    autoClose: false,
+    showConnectButton: true,
+    openTerminal: true,
+  },
 )
 
 const emit = defineEmits<{
@@ -90,22 +111,29 @@ if (props.mode === 'inline' && chatStore.sshConnectionState === 'connected') {
 }
 
 // ===== SSH 连接 =====
-async function handleConnect() {
+/**
+ * 建立 SSH 会话，返回是否连通。
+ *
+ * 为什么要返回结果而不是只 emit connected：日志收集弹框必须"登录成功才继续提交"，
+ * 宿主要能 await 到布尔值再决定是否调用 confirmLogCollectCase，否则会出现
+ * "未登录也把工单绑上"的错序。字段缺失 / 连接失败的提示仍由本组件负责。
+ */
+async function connect(): Promise<boolean> {
   if (!sshForm.host.trim()) {
     ElMessage.warning('请填写主机地址')
-    return
+    return false
   }
   if (!sshForm.username.trim()) {
     ElMessage.warning('请填写用户名')
-    return
+    return false
   }
   if (authType.value === 'password' && !sshForm.password) {
     ElMessage.warning('请填写密码')
-    return
+    return false
   }
   if (authType.value === 'key' && !sshForm.privateKey) {
     ElMessage.warning('请填写私钥')
-    return
+    return false
   }
 
   viewState.value = 'progress'
@@ -142,8 +170,10 @@ async function handleConnect() {
     emitState()
     emit('connected', host)
 
-    // 与抽取前一致：连接成功后打开终端侧边栏
-    chatStore.openTerminalSidebar()
+    // 终端入口默认跟随连接动作打开；日志收集弹框显式关闭（它的下一步是面板，不是终端）
+    if (props.openTerminal) {
+      chatStore.openTerminalSidebar()
+    }
 
     if (props.mode === 'dialog' && props.autoClose) {
       clearAutoCloseTimer()
@@ -151,12 +181,21 @@ async function handleConnect() {
         chatStore.sshFlowDialogVisible = false
       }, 1500)
     }
+    return true
   } catch (e: any) {
     errorMessage.value = e.message || 'SSH 连接失败'
     viewState.value = 'error'
     emitState()
+    return false
   }
 }
+
+/** 自带「连接」按钮的点击入口：结果由状态机/区内错误态表达，不需要回传给模板 */
+function handleConnectClick() {
+  void connect()
+}
+
+defineExpose({ connect })
 
 function handleCancel() {
   clearAutoCloseTimer()
@@ -287,8 +326,9 @@ const isDialog = computed(() => props.mode === 'dialog')
         @update:auth-type="authType = $event"
       />
 
-      <div class="dialog-actions">
-        <el-button type="primary" :loading="false" @click="handleConnect">连接</el-button>
+      <!-- showConnectButton=false（日志收集弹框）：提交入口只剩宿主 footer 的「确定」 -->
+      <div v-if="showConnectButton || isDialog" class="dialog-actions">
+        <el-button v-if="showConnectButton" type="primary" @click="handleConnectClick">连接</el-button>
         <el-button v-if="isDialog" @click="handleCancel">取消</el-button>
       </div>
     </div>
@@ -317,7 +357,9 @@ const isDialog = computed(() => props.mode === 'dialog')
     <!-- ===== 成功（dialog 自动收起前）===== -->
     <div v-else-if="viewState === 'success'" class="success-section">
       <el-icon color="#67c23a" :size="24"><CircleCheckFilled /></el-icon>
-      <p class="ssh-success-text"><el-icon><CircleCheck /></el-icon>SSH 连接成功，终端已打开</p>
+      <p class="ssh-success-text">
+        <el-icon><CircleCheck /></el-icon>{{ openTerminal ? 'SSH 连接成功，终端已打开' : 'SSH 连接成功' }}
+      </p>
     </div>
   </div>
 </template>

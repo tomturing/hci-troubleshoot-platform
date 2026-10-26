@@ -8,6 +8,11 @@
  * - 归属边界不变：只允许当前客户端名下工单，校验完全交给服务端
  *   `GET /api/cases/{case_id}`（`verify_case_ownership` 对不存在/非归属统一 404）。
  *   前端不做存在性判断，避免把这里变成枚举他人工单的接口。
+ *
+ * 交互（2026-10-26 收敛为一步）：弹框内不再有独立的「连接」按钮，也不再弹右侧
+ * SSH 终端抽屉。用户填完工单号 + SSH 信息后只点「确定」：
+ *   ① 本地校验工单号 → ② 未登录则先登录（内嵌登录区就地反馈进度/失败）
+ *   → ③ 登录成功才提交工单 → ④ 直接打开左侧「日志收集」面板。
  */
 import { computed, ref, watch } from 'vue'
 import { useChatStore } from '@/stores/chat'
@@ -19,18 +24,36 @@ const chatStore = useChatStore()
 const caseId = ref('')
 const errorMessage = ref('')
 const bridgeStatus = ref<'running' | 'not-running' | 'checking'>('checking')
+/** 「确定」的进行中状态：一次点击可能包含 SSH 登录 + 工单解析两段等待 */
+const submitting = ref(false)
+/** 内嵌登录区：由「确定」驱动登录（连接按钮已移除） */
+const sshSectionRef = ref<InstanceType<typeof SshConnectSection> | null>(null)
 
 const sshConnected = computed(() => chatStore.sshConnectionState === 'connected')
 
-/** 与 SSH 终端一致的 bridge 前置检测（3s 超时），已连接时跳过。 */
-async function detectBridge() {
-  if (sshConnected.value) return
+/** 进行中的 bridge 检测：并发点击「确定」/ 打开弹框时复用同一次探测，不叠加 3s 超时 */
+let bridgeCheckPromise: Promise<void> | null = null
+
+/**
+ * 与 SSH 终端一致的 bridge 前置检测（3s 超时），已连接时跳过。
+ *
+ * 返回 Promise 是为了让「确定」能等出结论：用户填完就点下去时探测可能还在飞，
+ * 同步读 bridgeStatus 只会读到 'checking' 并误报"Bridge 未运行"。
+ */
+function detectBridge(): Promise<void> {
+  if (sshConnected.value) return Promise.resolve()
+  if (bridgeCheckPromise) return bridgeCheckPromise
   bridgeStatus.value = 'checking'
-  try {
-    bridgeStatus.value = (await checkBridgeBeforeOpen()) === 'running' ? 'running' : 'not-running'
-  } catch {
-    bridgeStatus.value = 'not-running'
-  }
+  bridgeCheckPromise = (async () => {
+    try {
+      bridgeStatus.value = (await checkBridgeBeforeOpen()) === 'running' ? 'running' : 'not-running'
+    } catch {
+      bridgeStatus.value = 'not-running'
+    } finally {
+      bridgeCheckPromise = null
+    }
+  })()
+  return bridgeCheckPromise
 }
 
 // 直接列出当前客户端名下的最近工单（含已关闭），避免用户手输时把外部 ICare 单号
@@ -77,21 +100,40 @@ watch(
   },
 )
 
+/**
+ * 「确定」= 登录 + 提交（单入口）。
+ *
+ * 顺序说明：先校验工单号再登录。bridge 的会话键是 `caseID@nodeIP`，
+ * 若带着非法工单号登录，会话会挂在一个服务端不认的键上，后续采日志必然
+ * session_missing —— 所以宁可在点下去的第一时间把工单号拦掉。
+ */
 async function submit() {
+  if (submitting.value) return
   errorMessage.value = ''
-  if (!sshConnected.value) {
-    errorMessage.value = '请先登录 SSH（日志收集需要复用 SSH 会话）'
-    return
-  }
   const value = caseId.value.trim()
   if (!isValidCaseId(value)) {
     errorMessage.value = '工单号格式不正确，应为 Q + 8 位日期 + 5 位序号（如 Q2026101401684）'
     return
   }
+
+  submitting.value = true
   try {
+    if (!sshConnected.value) {
+      // 结论未知就现探一次（用户可能刚启动 bridge）；已有 running 就不再打扰
+      if (bridgeStatus.value !== 'running') await detectBridge()
+      if (bridgeStatus.value !== 'running') {
+        errorMessage.value = 'SSH Bridge 未运行：请先下载并启动 terminal_bridge.exe，再点击「确定」'
+        return
+      }
+      // 登录失败 / 字段缺失由内嵌登录区就地提示（toast + 区内错误态），这里不重复报错
+      const ok = await sshSectionRef.value?.connect()
+      if (!ok) return
+    }
     await chatStore.confirmLogCollectCase(value)
   } catch (e: any) {
     errorMessage.value = e?.message || '工单校验失败'
+  } finally {
+    submitting.value = false
   }
 }
 </script>
@@ -139,9 +181,21 @@ async function submit() {
       <!--
         case-id 必须传：bridge 的会话键是 caseID@nodeIP。不传时 connectSSH 会退化成
         "terminal-only"，而日志收集面板按工单号取会话 → 必然 session_missing。
+
+        show-connect-button=false：去掉独立的「连接」按钮，登录与提交合并到「确定」；
+        open-terminal=false：登录成功不弹右侧 SSH 终端抽屉，直接进左侧日志收集面板。
       -->
-      <SshConnectSection :bridge-status="bridgeStatus" :case-id="caseId" mode="inline" />
-      <p v-if="!sshConnected" class="lc-ssh-hint">登录成功后才能提交；发起节点取自已连接的 SSH 会话。</p>
+      <SshConnectSection
+        ref="sshSectionRef"
+        :bridge-status="bridgeStatus"
+        :case-id="caseId"
+        mode="inline"
+        :show-connect-button="false"
+        :open-terminal="false"
+      />
+      <p v-if="!sshConnected" class="lc-ssh-hint">
+        点击「确定」会先登录 SSH，登录成功后再提交并打开日志收集；发起节点取自已连接的 SSH 会话。
+      </p>
     </div>
 
     <p v-if="errorMessage" class="lc-case-error">{{ errorMessage }}</p>
@@ -151,11 +205,10 @@ async function submit() {
     </p>
     <template #footer>
       <el-button @click="chatStore.closeLogCollectCaseDialog()">取消</el-button>
+      <!-- 不再因"未登录"禁用：点击即先登录再提交（登录失败时区内就地报错，不提交工单） -->
       <el-button
         type="primary"
-        :loading="chatStore.logCollectCaseLoading"
-        :disabled="!sshConnected"
-        :title="sshConnected ? '' : '请先登录 SSH'"
+        :loading="submitting || chatStore.logCollectCaseLoading"
         @click="submit"
       >
         确定
