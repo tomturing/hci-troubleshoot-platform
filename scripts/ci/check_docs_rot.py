@@ -16,6 +16,7 @@
 用法：
   python scripts/tools/docs_rot_scan.py [--dir docs] [--json] [--only C1,C2,C3]
 """
+
 import argparse
 import json
 import re
@@ -30,15 +31,22 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # C3: 文档中反引号包裹的仓库内路径前缀（存在性可验证）
 REPO_PATH_PREFIXES = (
-    "backend/", "frontend/", "scripts/", "deploy/", "database/",
-    "docs/", "tests/", "data-pipeline/", "hci_sim/", "evaluation/",
-    "terminal_bridge/", ".github/", "skills/", ".agents/",
+    "backend/",
+    "frontend/",
+    "scripts/",
+    "deploy/",
+    "database/",
+    "docs/",
+    "tests/",
+    "data-pipeline/",
+    "hci_sim/",
+    "evaluation/",
+    "terminal_bridge/",
+    ".github/",
+    "skills/",
+    ".agents/",
 )
-REPO_PATH_RE = re.compile(
-    r"`((?:"
-    + "|".join(re.escape(p) for p in REPO_PATH_PREFIXES)
-    + r")[^`\s]+)`"
-)
+REPO_PATH_RE = re.compile(r"`((?:" + "|".join(re.escape(p) for p in REPO_PATH_PREFIXES) + r")[^`\s]+)`")
 
 # C4: 占位符
 PLACEHOLDER_RE = re.compile(
@@ -52,12 +60,10 @@ FENCE_RE = re.compile(r"^```", re.MULTILINE)
 
 # ─────────────────────────── 工具函数 ───────────────────────────
 
+
 def is_fenced(line: str, fences: list[tuple[int, int]]) -> bool:
     """判断行号是否在代码围栏内"""
-    for start, end in fences:
-        if start <= line <= end:
-            return True
-    return False
+    return any(start <= line <= end for start, end in fences)
 
 
 def compute_fences(text: str) -> list[tuple[int, int]]:
@@ -113,12 +119,14 @@ def check_internal_links(files: list[Path]) -> list[dict]:
                 if target is None:
                     continue
                 if not target.exists():
-                    issues.append({
-                        "type": "C1",
-                        "file": str(f.relative_to(ROOT)),
-                        "line": i,
-                        "detail": f"链接目标不存在: [{raw}] -> {target.relative_to(ROOT)}",
-                    })
+                    issues.append(
+                        {
+                            "type": "C1",
+                            "file": str(f.relative_to(ROOT)),
+                            "line": i,
+                            "detail": f"链接目标不存在: [{raw}] -> {target.relative_to(ROOT)}",
+                        }
+                    )
     return issues
 
 
@@ -138,12 +146,14 @@ def check_images(files: list[Path]) -> list[dict]:
                 if target is None:
                     continue
                 if not target.exists():
-                    issues.append({
-                        "type": "C2",
-                        "file": str(f.relative_to(ROOT)),
-                        "line": i,
-                        "detail": f"图片缺失: [{raw}] -> {target.relative_to(ROOT)}",
-                    })
+                    issues.append(
+                        {
+                            "type": "C2",
+                            "file": str(f.relative_to(ROOT)),
+                            "line": i,
+                            "detail": f"图片缺失: [{raw}] -> {target.relative_to(ROOT)}",
+                        }
+                    )
     return issues
 
 
@@ -162,20 +172,43 @@ def check_repo_paths(files: list[Path]) -> list[dict]:
                 clean = p.split("#")[0].split(":")[0].strip("*/\"'()")
                 if any(ch in clean for ch in "*?<>|"):
                     continue
-                if clean.endswith((".md", ".py", ".sh", ".yaml", ".yml", ".json",
-                                   ".ts", ".vue", ".sql", ".toml", ".conf", ".go",
-                                   ".dockerfile", ".env", ".txt", ".js", ".ini")):
-                    # 仅对明确带扩展名的路径做存在性校验（避免误报目录名/示例）
-                    if not (ROOT / clean).exists() and not (ROOT / clean).is_dir():
-                        # 忽略带版本号/变量插值的路径
-                        if "$" in clean or "{{" in clean:
-                            continue
-                        issues.append({
+                # 仅对明确带扩展名的路径做存在性校验（避免误报目录名/示例）
+                if (
+                    clean.endswith(
+                        (
+                            ".md",
+                            ".py",
+                            ".sh",
+                            ".yaml",
+                            ".yml",
+                            ".json",
+                            ".ts",
+                            ".vue",
+                            ".sql",
+                            ".toml",
+                            ".conf",
+                            ".go",
+                            ".dockerfile",
+                            ".env",
+                            ".txt",
+                            ".js",
+                            ".ini",
+                        )
+                    )
+                    and not (ROOT / clean).exists()
+                    and not (ROOT / clean).is_dir()
+                ):
+                    # 忽略带版本号/变量插值的路径
+                    if "$" in clean or "{{" in clean:
+                        continue
+                    issues.append(
+                        {
                             "type": "C3",
                             "file": str(f.relative_to(ROOT)),
                             "line": i,
                             "detail": f"仓库路径不存在: `{clean}`",
-                        })
+                        }
+                    )
     return issues
 
 
@@ -187,14 +220,24 @@ def check_placeholders(files: list[Path]) -> list[dict]:
     不属于腐化。仅当标记出现在"文档自身声明未完成"的语境时才上报。
     """
     issues = []
-    # 业务术语语境下的"占位符"不视为腐化（白名单）
-    business_terms = ("{{", "}}", "![img:", "模板占位符", "图片占位符", "变量占位符",
-                      "环境变量占位符", "placeholder-token", "usage_template",
-                      "image_placeholder", "content_md", "占位符集合", "占位符格式",
-                      "占位符校验", "占位符转义", "占位符从", "占位符和候选",
-                      "占位符在 schema", "占位符 requires", "占位符 src")
-    strong_markers = ("TODO", "TBD", "FIXME", "待补充", "待完善", "待确认", "待实现",
-                      "待更新", "此处填写", "XXX", "未实现", "尚未实现", "未完成", "尚未完成")
+    # 白名单已收敛为下方的强未完成标记：仅当标记本身属于“文档声明未完成”
+    # 语义时才上报，纯业务术语（模板占位符 {{var}}、图片占位符 ![img:N]）不算腐化。
+    strong_markers = (
+        "TODO",
+        "TBD",
+        "FIXME",
+        "待补充",
+        "待完善",
+        "待确认",
+        "待实现",
+        "待更新",
+        "此处填写",
+        "XXX",
+        "未实现",
+        "尚未实现",
+        "未完成",
+        "尚未完成",
+    )
     for f in files:
         text = f.read_text(encoding="utf-8", errors="replace")
         # 忽略代码围栏内的 TODO（可能是示例代码）
@@ -204,19 +247,26 @@ def check_placeholders(files: list[Path]) -> list[dict]:
                 continue
             # 仅当出现强未完成标记时上报；纯业务术语（模板/图片占位符）不算腐化
             for m in PLACEHOLDER_RE.finditer(line):
-                if m.group(0).upper() not in ("TODO", "TBD", "FIXME", "XXX"):
-                    # 中文占位符需同时出现在强标记中才上报
-                    if not any(sm in line for sm in strong_markers):
-                        continue
-                # "xxx" 用作示例命名（env:xxx、xxx-service、xxx 命令）不算腐化
-                if m.group(0).upper() == "XXX" and re.search(r"(env|service|命令|model|plugin|route|view|api|格式|参数|字段|端口|host|path|接口|module|package|tool|skill):?xxx|xxx[-_]", line, re.IGNORECASE):
+                # 中文占位符需同时出现在强标记中才上报
+                if m.group(0).upper() not in ("TODO", "TBD", "FIXME", "XXX") and not any(
+                    sm in line for sm in strong_markers
+                ):
                     continue
-                issues.append({
-                    "type": "C4",
-                    "file": str(f.relative_to(ROOT)),
-                    "line": i,
-                    "detail": f"占位符: {m.group(0)} | {line.strip()[:80]}",
-                })
+                # "xxx" 用作示例命名（env:xxx、xxx-service、xxx 命令）不算腐化
+                if m.group(0).upper() == "XXX" and re.search(
+                    r"(env|service|命令|model|plugin|route|view|api|格式|参数|字段|端口|host|path|接口|module|package|tool|skill):?xxx|xxx[-_]",
+                    line,
+                    re.IGNORECASE,
+                ):
+                    continue
+                issues.append(
+                    {
+                        "type": "C4",
+                        "file": str(f.relative_to(ROOT)),
+                        "line": i,
+                        "detail": f"占位符: {m.group(0)} | {line.strip()[:80]}",
+                    }
+                )
     return issues
 
 
@@ -225,21 +275,25 @@ def check_empty_files(files: list[Path]) -> list[dict]:
     issues = []
     for f in files:
         text = f.read_text(encoding="utf-8", errors="replace")
-        visible = len([l for l in text.splitlines() if l.strip()])
+        visible = len([line for line in text.splitlines() if line.strip()])
         if visible == 0:
-            issues.append({
-                "type": "C5",
-                "file": str(f.relative_to(ROOT)),
-                "line": 0,
-                "detail": "空文件",
-            })
+            issues.append(
+                {
+                    "type": "C5",
+                    "file": str(f.relative_to(ROOT)),
+                    "line": 0,
+                    "detail": "空文件",
+                }
+            )
         elif visible <= 2:
-            issues.append({
-                "type": "C5",
-                "file": str(f.relative_to(ROOT)),
-                "line": 0,
-                "detail": f"极短文档（{visible} 行有效内容）: {text.strip()[:80]}",
-            })
+            issues.append(
+                {
+                    "type": "C5",
+                    "file": str(f.relative_to(ROOT)),
+                    "line": 0,
+                    "detail": f"极短文档（{visible} 行有效内容）: {text.strip()[:80]}",
+                }
+            )
     return issues
 
 
@@ -281,12 +335,14 @@ def check_secrets(files: list[Path], allowlist: set[str] | None = None) -> list[
                 matched = m.group(0)
                 if any(w in matched.lower() for w in allowlist):
                     continue
-                issues.append({
-                    "type": "C6",
-                    "file": str(f.relative_to(ROOT)),
-                    "line": i,
-                    "detail": f"疑似泄露真实密钥/凭证: {matched[:12]}***（请改用环境变量注入并立即轮换）",
-                })
+                issues.append(
+                    {
+                        "type": "C6",
+                        "file": str(f.relative_to(ROOT)),
+                        "line": i,
+                        "detail": f"疑似泄露真实密钥/凭证: {matched[:12]}***（请改用环境变量注入并立即轮换）",
+                    }
+                )
     return issues
 
 
@@ -311,12 +367,14 @@ def check_version_consistency() -> list[dict]:
     # 若声明的版本多于 1 个且与 pyproject 不一致，上报
     unique_versions = set(found.keys())
     if len(unique_versions) > 1:
-        issues.append({
-            "type": "C7",
-            "file": "README.md/AGENTS.md/CLAUDE.md",
-            "line": 0,
-            "detail": f"版本号声明不一致: {sorted(unique_versions)}（pyproject.toml 声明: {sorted(declared_versions) or '未知'}）",
-        })
+        issues.append(
+            {
+                "type": "C7",
+                "file": "README.md/AGENTS.md/CLAUDE.md",
+                "line": 0,
+                "detail": f"版本号声明不一致: {sorted(unique_versions)}（pyproject.toml 声明: {sorted(declared_versions) or '未知'}）",
+            }
+        )
     return issues
 
 
@@ -336,9 +394,7 @@ CHECKERS = {
 HARD_CATEGORIES = ("C1", "C2", "C3", "C6")
 
 
-def list_changed_md_files(
-    base: str, head: str = "HEAD", cwd: Path | None = None
-) -> list[str]:
+def list_changed_md_files(base: str, head: str = "HEAD", cwd: Path | None = None) -> list[str]:
     """列出 base..head 之间「仍然存在」的改动 Markdown 文件（仓库相对路径）。
 
     两个关键参数，缺一不可：
@@ -360,8 +416,15 @@ def list_changed_md_files(
     """
     result = subprocess.run(
         [
-            "git", "diff", "--name-only", "-z", "--diff-filter=d",
-            base, head, "--", "*.md",
+            "git",
+            "diff",
+            "--name-only",
+            "-z",
+            "--diff-filter=d",
+            base,
+            head,
+            "--",
+            "*.md",
         ],
         cwd=cwd or ROOT,
         capture_output=True,
@@ -371,9 +434,7 @@ def list_changed_md_files(
     return [p for p in result.stdout.split("\0") if p]
 
 
-def list_changed_md_lines(
-    base: str, head: str = "HEAD", cwd: Path | None = None
-) -> dict[str, set[int]]:
+def list_changed_md_lines(base: str, head: str = "HEAD", cwd: Path | None = None) -> dict[str, set[int]]:
     """返回 {仓库相对路径: 本次新增/修改后的行号集合}。
 
     用途：区分「本次改动引入的腐化」与「文档里的存量腐化」。只对前者阻断，
@@ -391,8 +452,17 @@ def list_changed_md_lines(
     """
     result = subprocess.run(
         [
-            "git", "-c", "core.quotepath=false", "diff", "--unified=0",
-            "--no-color", "--diff-filter=d", base, head, "--", "*.md",
+            "git",
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--unified=0",
+            "--no-color",
+            "--diff-filter=d",
+            base,
+            head,
+            "--",
+            "*.md",
         ],
         cwd=cwd or ROOT,
         capture_output=True,
@@ -402,9 +472,7 @@ def list_changed_md_lines(
     changed: dict[str, set[int]] = {}
     current: str | None = None
     file_re = re.compile(r"^\+\+\+ b/(?P<path>.+)$")
-    hunk_re = re.compile(
-        r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,(?P<count>\d+))? @@"
-    )
+    hunk_re = re.compile(r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,(?P<count>\d+))? @@")
     for line in result.stdout.splitlines():
         file_match = file_re.match(line)
         if file_match:
@@ -427,11 +495,13 @@ def main() -> None:
     parser.add_argument("--only", default="C1,C2,C3,C4,C5,C6,C7", help="逗号分隔的检查类别")
     parser.add_argument("--limit", type=int, default=0, help="每类最多输出条数（0 不限）")
     parser.add_argument(
-        "--changed-only", action="store_true",
+        "--changed-only",
+        action="store_true",
         help="仅检查本次 PR 改动的文件（增量门禁，阻断引入新腐化）",
     )
     parser.add_argument(
-        "--fail-on-stock", action="store_true",
+        "--fail-on-stock",
+        action="store_true",
         help="存量问题也阻断（默认仅增量问题阻断，存量只警告）",
     )
     args = parser.parse_args()
@@ -442,7 +512,8 @@ def main() -> None:
         sys.exit(1)
 
     files = sorted(
-        p for p in scan_root.rglob("*.md")
+        p
+        for p in scan_root.rglob("*.md")
         if ".git" not in p.parts
         and "node_modules" not in p.parts
         and ".venv" not in p.parts
@@ -457,7 +528,10 @@ def main() -> None:
         try:
             base = subprocess.run(
                 ["git", "merge-base", "HEAD", "origin/main"],
-                cwd=ROOT, capture_output=True, text=True, check=True,
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
             ).stdout.strip()
             # 路径解析统一走 list_changed_md_files（内部用 `-z`，详见其 docstring）。
             changed_rel = list_changed_md_files(base)
@@ -492,8 +566,7 @@ def main() -> None:
             # 这与本脚本要修的空转是同一种失效，只是换了个入口。
             print(f"❌ 无法确定本次改动的文档，增量门禁失败关闭: {e}", file=sys.stderr)
             print(
-                "   常见原因：本地缺少 origin/main（请先 git fetch），"
-                "或 git 路径解析回归。确认无改动可改用全量扫描。",
+                "   常见原因：本地缺少 origin/main（请先 git fetch），或 git 路径解析回归。确认无改动可改用全量扫描。",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -504,12 +577,10 @@ def main() -> None:
     for cat in enabled:
         if cat not in CHECKERS:
             continue
-        if cat == "C7":
-            issues = CHECKERS[cat]()  # 版本一致性检查不依赖 files 参数
-        else:
-            issues = CHECKERS[cat](files)
+        # C7 版本一致性检查不依赖 files 参数
+        issues = CHECKERS[cat]() if cat == "C7" else CHECKERS[cat](files)
         print(f"\n[{cat}] 发现 {len(issues)} 个问题")
-        shown = issues[:args.limit] if args.limit else issues
+        shown = issues[: args.limit] if args.limit else issues
         for it in shown:
             print(f"  {it['file']}:{it['line']}  {it['detail']}")
         all_issues.extend(issues)
@@ -542,27 +613,17 @@ def main() -> None:
             # 按行判断「本次引入」：只有落在新增/修改行上的才阻断。
             # 若回退全量扫描（changed_lines 为 None），无法区分来源，宁可只警告。
             introduced = [
-                i for i in rot_block
-                if changed_lines is not None
-                and i["line"] in changed_lines.get(i["file"], set())
+                i for i in rot_block if changed_lines is not None and i["line"] in changed_lines.get(i["file"], set())
             ]
             stock = len(rot_block) - len(introduced)
             if introduced:
-                print(
-                    f"\n❌ 本次改动行引入 {len(introduced)} 个阻断级失效引用"
-                    "（C1/C2/C3），PR 禁止合并"
-                )
+                print(f"\n❌ 本次改动行引入 {len(introduced)} 个阻断级失效引用（C1/C2/C3），PR 禁止合并")
                 for it in introduced:
                     print(f"   {it['file']}:{it['line']}  {it['detail']}")
                 if stock:
-                    print(
-                        f"   另有 {stock} 个位于改动文档的其他行，属存量，本步不阻断"
-                    )
+                    print(f"   另有 {stock} 个位于改动文档的其他行，属存量，本步不阻断")
                 sys.exit(1)
-            print(
-                f"\n⚠️ 发现 {len(rot_block)} 个失效引用（C1/C2/C3），"
-                "均不在本次改动行，属存量问题，仅警告不阻断"
-            )
+            print(f"\n⚠️ 发现 {len(rot_block)} 个失效引用（C1/C2/C3），均不在本次改动行，属存量问题，仅警告不阻断")
             print("   如需阻断存量：运行 --fail-on-stock；治理计划见 docs/ROADMAP 文档腐化专项")
         else:
             print(f"\n❌ 发现 {len(rot_block)} 个阻断级失效引用（C1/C2/C3），PR 禁止合并")
