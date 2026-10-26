@@ -211,7 +211,7 @@ app.include_router(cases.router)
 app.include_router(conversations.router)
 app.include_router(assistants.router)
 app.include_router(environments.router)
-app.include_router(kb.router)
+# 注：kb.router（/api/v1/kb 根代理）已于 2026-10-26 删除——其下游端点从未实现，见 routes/kb.py 顶部说明
 app.include_router(kb.categories_router)
 app.include_router(kb.catalogs_router)
 app.include_router(kb.kbd_router)
