@@ -265,12 +265,21 @@ body {
   transition: none;
 }
 
+/*
+ * 容器铺满，可读宽度由内部内容块限宽。
+ *
+ * 曾经把 max-width 加在这一层：视口 1920、只开一个抽屉时，容器固定 900 居中，
+ * 两侧各露出 250px 页面底色；由于顶栏渐变、聊天区底色都跟着容器走，
+ * 视觉上就是「两块白色空白带」，看起来像布局没撑满。现在改为：
+ * 容器吃满可用宽度（顶栏通栏），`.header-content` 与聊天内容各自限宽居中，
+ * 留白依旧存在但不再表现为「两块空白」。
+ */
 .app-container {
   display: flex;
   flex-direction: column;
   height: 100%;
-  max-width: var(--ws-center-max, 900px);
-  margin: 0 auto;
+  width: 100%;
+  min-width: 0;
 }
 
 .app-header {
@@ -285,6 +294,10 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  /* 顶栏背景通栏，标题与按钮仍按可读宽度居中 */
+  width: 100%;
+  max-width: var(--ws-center-max, 900px);
+  margin: 0 auto;
 }
 
 .header-content h1 {

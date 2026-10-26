@@ -25,8 +25,41 @@ describe('resolveWorkspaceLayout', () => {
       expect(layout.centerMaxWidth).toBe(C.centerMax)
       expect(layout.leftOffset).toBe(0)
       expect(layout.rightOffset).toBe(0)
-      expect(layout.leftWidth).toBe(0)
-      expect(layout.rightWidth).toBe(0)
+      // 抽屉宽度是「面板属性」：即使关着也要有合法值，
+      // 否则关闭动画的第一帧抽屉会被压成 0 宽（现场表现为「收窄成一个按钮后消失」）
+      expect(layout.leftWidth).toBeGreaterThan(0)
+      expect(layout.rightWidth).toBeGreaterThan(0)
+    })
+  })
+
+  describe('关闭态的抽屉宽度（退出动画前置条件）', () => {
+    it('双开→全关：两侧宽度与打开时同一量级，不会归零', () => {
+      const open = resolveWorkspaceLayout({ viewport: 1920, leftOpen: true, rightOpen: true })
+      const closed = resolveWorkspaceLayout({ viewport: 1920, leftOpen: false, rightOpen: false })
+      expect(closed.leftWidth).toBeGreaterThanOrEqual(C.leftMin)
+      expect(closed.rightWidth).toBeGreaterThanOrEqual(C.rightMin)
+      // 关闭态回到各自偏好宽度，仍落在打开态的合法区间内
+      expect(closed.leftWidth).toBe(C.leftDefault)
+      expect(closed.rightWidth).toBe(C.rightDefault)
+      expect(closed.leftWidth + closed.rightWidth).toBeLessThanOrEqual(
+        open.leftWidth + open.rightWidth,
+      )
+    })
+
+    it('只开右侧时左侧宽度仍合法：左抽屉可以用正常动画退出', () => {
+      const layout = resolveWorkspaceLayout({ viewport: 1920, leftOpen: false, rightOpen: true })
+      expect(layout.leftWidth).toBe(C.leftDefault)
+      expect(layout.leftOffset).toBe(0)
+    })
+
+    it.each(viewports)('%ipx 任何开合组合下两侧宽度都为正', (viewport) => {
+      for (const leftOpen of [true, false]) {
+        for (const rightOpen of [true, false]) {
+          const layout = resolveWorkspaceLayout({ viewport, leftOpen, rightOpen })
+          expect(layout.leftWidth).toBeGreaterThan(0)
+          expect(layout.rightWidth).toBeGreaterThan(0)
+        }
+      }
     })
   })
 
@@ -149,9 +182,10 @@ describe('resolveWorkspaceLayout', () => {
           const layout = resolveWorkspaceLayout({ viewport, leftOpen, rightOpen })
           if (layout.mode === 'overlay') continue
 
-          // 让位宽度必须等于抽屉宽度，否则抽屉会盖住或悬空
-          expect(layout.leftOffset).toBe(layout.leftWidth)
-          expect(layout.rightOffset).toBe(layout.rightWidth)
+          // 打开的一侧：让位宽度必须等于抽屉宽度，否则抽屉会盖住或悬空；
+          // 未打开的一侧：不让位（offset 恒为 0），但宽度仍保留给退出动画
+          expect(layout.leftOffset).toBe(leftOpen ? layout.leftWidth : 0)
+          expect(layout.rightOffset).toBe(rightOpen ? layout.rightWidth : 0)
           // 中央区不得越出剩余空间
           expect(layout.centerMaxWidth).toBeLessThanOrEqual(
             viewport - layout.leftOffset - layout.rightOffset,

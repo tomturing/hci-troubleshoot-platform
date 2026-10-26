@@ -474,7 +474,35 @@ function handleQuoteToChat(content: string) {
   padding: 16px;
   display: flex;
   flex-direction: column;
+  /* 背景铺满整个中央区，消息本身限宽居中：留白在气泡两侧而不是「两块白色空白带」 */
+  align-items: center;
   gap: 12px;
+}
+
+/*
+ * 单条消息/卡片限宽。中央区现在会随抽屉让位而变化（900 → 460），
+ * 光靠容器限宽在宽屏上会留下大片空白；限宽放在内容上，
+ * 宽屏保持可读行长，窄屏（<860px）自动退化为自适应。
+ *
+ * 选择器必须带到 .message-bubble：MessageBubble 自身声明了 max-width:100%，
+ * 同权重的 `> *` 会被它按加载顺序压掉，消息又会拉满整行。
+ */
+.messages-area > * {
+  width: 100%;
+}
+
+.messages-area > .message-bubble {
+  max-width: 860px;
+}
+
+/* 系统提示按文字宽度收窄：一句话撑满 860 宽的空灰条会显得整块内容没对齐 */
+.messages-area > .message-bubble.is-system {
+  width: fit-content;
+}
+
+/* 分隔线是"整行"语义，必须保持通栏，上面的 fit-content 不能作用到它 */
+.messages-area > .message-bubble.is-divider {
+  width: 100%;
 }
 
 .loading-indicator {
@@ -513,6 +541,15 @@ function handleQuoteToChat(content: string) {
   border-top: 1px solid #e4e7ed;
   background: #fff;
   padding: 12px 16px;
+}
+
+/* 底栏通栏，输入控件与提示按可读宽度居中，避免宽屏下输入框贴边或过宽 */
+.input-tips,
+.input-row {
+  width: 100%;
+  max-width: var(--ws-center-max, 900px);
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .input-tips {

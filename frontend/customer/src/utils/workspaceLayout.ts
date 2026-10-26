@@ -68,14 +68,36 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
 
-function overlayLayout(leftOpen: boolean, rightOpen: boolean, viewport: number): WorkspaceLayout {
+/**
+ * 单侧抽屉的独立宽度（与是否打开无关）。
+ *
+ * 关键：宽度是「面板属性」，不是「打开状态的结果」。早先关闭的一侧返回 0，
+ * el-drawer 的 size 是内联 width、没有过渡，于是关闭瞬间抽屉先被压成 0 宽、
+ * 再滑出去——现场看到的就是「收窄成一个按钮后凭空消失」，且左右两侧表现不一致。
+ * 这里保证任何状态下都给出一个合法宽度，退出动画才能和打开时同一个速度与方向。
+ */
+function standaloneWidth(
+  viewport: number,
+  side: 'left' | 'right',
+  preferred?: number,
+): number {
+  const c = WORKSPACE_CONSTRAINTS
+  if (side === 'left') {
+    const max = Math.min(c.leftMax, Math.max(c.leftMin, viewport - c.centerPref))
+    return Math.round(clamp(preferred ?? c.leftDefault, c.leftMin, max))
+  }
+  const max = Math.min(c.rightMax, Math.max(c.rightMin, viewport - c.centerPref))
+  return Math.round(clamp(preferred ?? c.rightDefault, c.rightMin, max))
+}
+
+function overlayLayout(viewport: number): WorkspaceLayout {
   const { overlayRatio, centerMax } = WORKSPACE_CONSTRAINTS
   // 覆盖式抽屉仍要能看清单列表格：下限 320，上限 560，避免窄屏只剩一条缝
   const width = Math.round(clamp(viewport * overlayRatio, 320, 560))
   return {
     mode: 'overlay',
-    leftWidth: leftOpen ? width : 0,
-    rightWidth: rightOpen ? width : 0,
+    leftWidth: width,
+    rightWidth: width,
     centerMaxWidth: centerMax,
     leftOffset: 0,
     rightOffset: 0,
@@ -96,12 +118,12 @@ export function resolveWorkspaceLayout(input: WorkspaceLayoutInput): WorkspaceLa
   const viewport = Math.max(0, Math.round(input.viewport || 0))
   const { leftOpen, rightOpen } = input
 
-  // 0. 无抽屉：保持现状，中央 900 居中
+  // 0. 无抽屉：中央 900 居中；两侧宽度仍按偏好给出，供退出动画使用
   if (!leftOpen && !rightOpen) {
     return {
       mode: 'expanded',
-      leftWidth: 0,
-      rightWidth: 0,
+      leftWidth: standaloneWidth(viewport, 'left', input.leftPreferred),
+      rightWidth: standaloneWidth(viewport, 'right', input.rightPreferred),
       centerMaxWidth: c.centerMax,
       leftOffset: 0,
       rightOffset: 0,
@@ -110,7 +132,7 @@ export function resolveWorkspaceLayout(input: WorkspaceLayoutInput): WorkspaceLa
 
   // 1. 窄屏：三栏与「推挤单侧」都放不下，统一降级为覆盖式
   if (viewport < c.narrowViewport) {
-    return overlayLayout(leftOpen, rightOpen, viewport)
+    return overlayLayout(viewport)
   }
 
   // 2. 双开：先按 CENTER_PREF 保留会话宽度，剩余按两侧偏好比例分配。
@@ -136,7 +158,7 @@ export function resolveWorkspaceLayout(input: WorkspaceLayoutInput): WorkspaceLa
 
     // 仍是放不下：这已经是物理约束，不再硬塞，降级为覆盖式
     if (center < c.centerFloor) {
-      return overlayLayout(leftOpen, rightOpen, viewport)
+      return overlayLayout(viewport)
     }
 
     return {
@@ -151,23 +173,22 @@ export function resolveWorkspaceLayout(input: WorkspaceLayoutInput): WorkspaceLa
 
   // 3. 单开：抽屉尽量取偏好宽度，但不许吃掉中央的 CENTER_PREF
   if (leftOpen) {
-    const max = Math.min(c.leftMax, Math.max(c.leftMin, viewport - c.centerPref))
-    const width = Math.round(clamp(input.leftPreferred ?? c.leftDefault, c.leftMin, max))
+    const width = standaloneWidth(viewport, 'left', input.leftPreferred)
     return {
       mode: 'slide',
       leftWidth: width,
-      rightWidth: 0,
+      // 右侧虽然没开，也要给出合法宽度：否则关闭右侧的同一帧里它会先被压成 0 宽
+      rightWidth: standaloneWidth(viewport, 'right', input.rightPreferred),
       centerMaxWidth: Math.min(c.centerMax, viewport - width),
       leftOffset: width,
       rightOffset: 0,
     }
   }
 
-  const max = Math.min(c.rightMax, Math.max(c.rightMin, viewport - c.centerPref))
-  const width = Math.round(clamp(input.rightPreferred ?? c.rightDefault, c.rightMin, max))
+  const width = standaloneWidth(viewport, 'right', input.rightPreferred)
   return {
     mode: 'slide',
-    leftWidth: 0,
+    leftWidth: standaloneWidth(viewport, 'left', input.leftPreferred),
     rightWidth: width,
     centerMaxWidth: Math.min(c.centerMax, viewport - width),
     leftOffset: 0,
