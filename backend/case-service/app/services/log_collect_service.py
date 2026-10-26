@@ -150,6 +150,10 @@ class LogCollectService:
         if new_progress is not None and task.status not in TERMINAL_STATUSES and new_progress < task.progress:
             raise InvalidTransitionError(f"进度不能回退：{task.progress} → {new_progress}", code="LC-PLATFORM-004")
 
+        # 必须先把旧状态存下来：下面的 setattr 会把 task.status 直接改成目标值，
+        # 之后再用 task.status 判断"是不是从终态复活"永远为假，接管/纠正分支会变成死代码。
+        previous_status = task.status
+
         for key, value in data.items():
             setattr(task, key, value)
 
@@ -158,9 +162,9 @@ class LogCollectService:
             if target_status == "completed":
                 # 完成即 100%：插件 final 阶段偶发未刷新 progress，平台侧做确定性收敛。
                 task.progress = 100
-        elif target_status == "collecting" and task.status in TERMINAL_STATUSES:
+        elif target_status == "collecting" and previous_status in TERMINAL_STATUSES:
             # 接管 / 纠正：终态是"平台投影"，节点仍在跑时可以被覆盖。
-            if task.status == "completed":
+            if previous_status == "completed":
                 # 原完成记录里的产物未必属于本次任务（同 ticket 重复 create 会拿到上一次的报告），
                 # 继续挂着会变成"采集中却显示产物位置"的新误导。清空产物字段，原值留审计；
                 # 注意：只改 DB 投影，节点与日志服务器上的压缩包一律不删。
