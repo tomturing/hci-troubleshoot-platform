@@ -218,7 +218,7 @@ async def cancel_task(
         raise _problem(exc.code, str(exc)) from exc
 
 
-# ── P3 段②：分块上传（控制面，经 API Gateway）────────────────────────────────
+# ── P2 段②：分块上传（控制面，经 API Gateway）────────────────────────────────
 
 
 async def _owned_task(task_id: UUID, client_id: str, service: LogCollectService):
@@ -286,7 +286,7 @@ async def complete_upload(
     """流式合并分片并落库制品元数据。
 
     只更新 ``archive_path/archive_size/archive_sha256``，不改变任务状态：
-    状态跃迁由前端在 P3 各阶段显式 PATCH，避免与状态机互相覆盖。
+    状态跃迁由前端在 P2 各阶段显式 PATCH，避免与状态机互相覆盖。
     """
     task = await _owned_task(task_id, client_id, service)
     try:
@@ -312,7 +312,7 @@ async def abort_upload(
     await upload_service.abort(task_id)
 
 
-# ── P3 段③：代传 5888 日志服务器（异步长任务）─────────────────────────────────
+# ── P2 段③：代传 5888 日志服务器（异步长任务）─────────────────────────────────
 
 
 @router.post("/{task_id}/relay", status_code=202)

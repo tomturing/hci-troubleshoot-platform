@@ -62,7 +62,7 @@ export interface LogCollectTask {
   remote_url?: string | null
   arch?: string | null
   acli_version?: string | null
-  /** 交付路径：acli_direct = P1 直传日志服务器；bridge_relay = P3 经平台中转 */
+  /** 交付路径：acli_direct = P1 直传日志服务器；bridge_relay = P2 经平台中转 */
   upload_mode?: 'acli_direct' | 'bridge_relay' | 'none' | null
   archive_path?: string | null
   archive_size?: number | null
