@@ -91,6 +91,19 @@ const passthrough = (name: string, tag = 'div') => ({
   },
 })
 
+// label 是属性而非插槽，纯透传桩会把它丢掉，导致"字段顺序 / 字段文案"无法断言
+const ElDescriptionsItem = {
+  name: 'ElDescriptionsItem',
+  props: ['label'],
+  setup(props: any, { slots }: any) {
+    return () =>
+      h('div', { class: 'desc-item' }, [
+        h('span', { class: 'desc-label' }, props.label),
+        h('span', { class: 'desc-val' }, slots.default?.()),
+      ])
+  },
+}
+
 // ElAlert 的 title 是属性而非插槽，透传桩会丢掉它；这里显式渲染出来，
 // 否则"完成态"一类文案无法在测试里断言。
 const ElAlert = {
@@ -158,7 +171,7 @@ function mountPanel() {
                 )
             },
           },
-          ElDescriptionsItem: passthrough('ElDescriptionsItem'),
+          ElDescriptionsItem,
           ElTag: passthrough('ElTag'),
           ElInput: passthrough('ElInput'),
           ElDatePicker: passthrough('ElDatePicker'),
@@ -489,6 +502,48 @@ describe('LogCollectPanel', () => {
     expect(labels).toContain('重新收集')
     // 完成态下不应把"再收一次"当成默认动作
     expect(labels).not.toContain('开始收集')
+    wrapper.unmount()
+  })
+
+  // 现场反馈：产物位置是长路径，排在右列会把行高撑成两行且右侧留白；
+  // 换成「产物位置在左、归档状态在右」后路径靠左读，短文案收口在右。
+  it('结果态字段顺序把产物位置排在归档状态之前', async () => {
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [taskFixture()] })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    const labels = wrapper.findAll('.desc-label').map((node) => node.text())
+    expect(labels.slice(-2)).toEqual(['产物位置', '归档状态'])
+    // 大小正常展示成 MB，不再落到「未记录」
+    expect(wrapper.text()).toContain('100.0 MB')
+    wrapper.unmount()
+  })
+
+  // P1 的大小只能在上传窗口内 stat 到，插件删包后就永久缺失；
+  // 文案必须说明原因，否则用户会以为平台漏采。
+  it('P1 直传未量到压缩包大小时给出原因文案', async () => {
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({
+      total: 1,
+      items: [
+        taskFixture({
+          upload_mode: 'acli_direct',
+          remote_url: 'http://172.28.25.1:5888/upload',
+          archive_path: '/sf/data/local/acli/tmp/data/log_collect/Q2026102300001.zip',
+          archive_size: null,
+          archive_sha256: null,
+          relay_status: 'none',
+        }),
+      ],
+    })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    const sizeItem = wrapper.findAll('.desc-item').find((node) => node.text().includes('压缩包大小'))
+    expect(sizeItem?.text()).toContain('未记录（直传后压缩包已删除）')
     wrapper.unmount()
   })
 

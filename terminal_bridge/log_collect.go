@@ -494,6 +494,9 @@ type logCollectProgress struct {
 	Hosts       []logCollectHost `json:"hosts,omitempty"`
 	UploadURL   string           `json:"upload_url,omitempty"`
 	UploadState string           `json:"upload_state,omitempty"`
+	// ArchiveSize 是本次探测到的压缩包字节数；0 表示没量到（未生成 / 已被插件删除）。
+	// 纯展示信息，不参与完成判定。
+	ArchiveSize int64 `json:"archive_size,omitempty"`
 	ParseOK     bool             `json:"parse_ok"`
 	Raw         string           `json:"raw"`
 	// NodeState 是归一化后的节点态（none/running/completed/abnormal/unknown）。
@@ -591,6 +594,30 @@ func parseLogCollectProgress(raw string) logCollectProgress {
 	}
 	result.ParseOK = result.Status != "" || result.Percent > 0 || result.ArchivePath != ""
 	return result
+}
+
+// probeLogCollectArchiveSize 量一次压缩包字节数，量不到返回 0。
+//
+// 时机敏感：P1 直传成功后插件会立刻删除压缩包，只有上传窗口内的轮询能拿到值。
+// 失败是常态（包还没生成、已被删除、路径未通过规范化），一律返回 0，
+// 由前端显示「未记录」，不产生错误也不阻断进度查询。
+func probeLogCollectArchiveSize(ctx context.Context, s *SSHSession, rawPath string) int64 {
+	if s == nil || strings.TrimSpace(rawPath) == "" {
+		return 0
+	}
+	path, err := normalizeArchivePath(rawPath)
+	if err != nil {
+		return 0
+	}
+	output, exitCode, cmdErr := s.runQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(path)))
+	if cmdErr != nil || exitCode != 0 {
+		return 0
+	}
+	size, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64)
+	if parseErr != nil || size <= 0 {
+		return 0
+	}
+	return size
 }
 
 // stripAnsi 去掉终端转义序列：保留可读文本，避免解析与展示被颜色码污染。
@@ -760,9 +787,14 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		output, exitCode, err := s.runCommandPty(ctx, "acli log_collect progress", logCollectProgressTimeout)
 		progress := parseLogCollectProgress(output)
 		progress.NodeState = classifyLogCollectNodeState(progress)
-		// 这里刻意**不再** stat 压缩包：P1 直传成功后插件会自删压缩包，
-		// mtime 在成功路径上必然缺失，拿它当"完成归属"证据只会把真完成判成假完成。
+		// 这里刻意**不用** stat 结果判断"完成归属"：P1 直传成功后插件会自删压缩包，
+		// mtime 在成功路径上必然缺失，拿它当归属证据只会把真完成判成假完成。
 		// 归属改由前端比对"下发前锚定的报告指纹"来判断，不依赖任何文件事实。
+		//
+		// 但压缩包大小没有别的来源：插件 progress 不打印大小，平台侧只有 P2 分片合并时
+		// 才知道字节数，P1 直传的记录因此长期显示「未记录」。这里只补一个纯信息字段，
+		// 量不到就留 0，不参与任何状态判断。
+		progress.ArchiveSize = probeLogCollectArchiveSize(ctx, s, progress.ArchivePath)
 		status := "ok"
 		code := ""
 		if err != nil || exitCode != 0 {
@@ -786,8 +818,9 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"status_text": progress.Status, "archive_path": progress.ArchivePath,
 			"upload_url": progress.UploadURL, "upload_state": progress.UploadState,
 			"node_state":  progress.NodeState,
-			"hosts_count": len(progress.Hosts), "exit_code": exitCode,
-			"error": errString(err), "raw_len": len(output),
+			"hosts_count": len(progress.Hosts), "archive_size": progress.ArchiveSize,
+			"exit_code": exitCode,
+			"error":     errString(err), "raw_len": len(output),
 		})
 
 	case "stat":
