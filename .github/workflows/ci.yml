@@ -165,6 +165,8 @@ jobs:
       - name: 验证镜像构建与晋级协议
         if: steps.filter.outputs.release_ci == 'true'
         run: |
+          # check_docs_rot.py 本体也纳入 ruff：此前它从未被覆盖（SIM110/SIM102/SIM108/E741/F841）。
+          # 注：本块是 shell 续行命令，列表中间不可插入 # 注释（会提前结束命令）。
           uvx ruff check \
             scripts/ci/resolve_release_baseline.py \
             scripts/ci/resolve_image_build_plan.py \
@@ -182,7 +184,8 @@ jobs:
             scripts/ci/resolve_pr_fast_test_targets.py \
             scripts/ci/test_resolve_pr_fast_test_targets.py \
             scripts/ci/test_env_repo_sync_contract.py \
-            scripts/ci/test_check_docs_rot_changed_only.py
+            scripts/ci/test_check_docs_rot_changed_only.py \
+            scripts/ci/check_docs_rot.py
           uvx ruff format --check \
             scripts/ci/resolve_release_baseline.py \
             scripts/ci/resolve_image_build_plan.py \
@@ -200,7 +203,8 @@ jobs:
             scripts/ci/resolve_pr_fast_test_targets.py \
             scripts/ci/test_resolve_pr_fast_test_targets.py \
             scripts/ci/test_env_repo_sync_contract.py \
-            scripts/ci/test_check_docs_rot_changed_only.py
+            scripts/ci/test_check_docs_rot_changed_only.py \
+            scripts/ci/check_docs_rot.py
           uv run --no-project --with pytest --with pytest-xdist pytest \
             scripts/ci/test_resolve_release_baseline.py \
             scripts/ci/test_resolve_image_build_plan.py \
