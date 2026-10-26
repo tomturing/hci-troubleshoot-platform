@@ -481,6 +481,8 @@ const percent = computed(() => {
     return Math.max(nodePercent, 95 + Math.min(4, relayStatus.value === 'running' ? 2 : 0))
   }
   if (stage.value === 'uploading' || stage.value === 'pulling') {
+    // P1 直传没有分片进度，只能用节点自己的百分比，避免出现 60% 起跳的假进度
+    if (isDirectDelivery.value && stage.value === 'uploading') return nodePercent
     return Math.max(nodePercent, 60 + Math.round(transfer.percent * 0.3))
   }
   return nodePercent
@@ -500,6 +502,16 @@ const stepActive = computed(() => {
   return 0
 })
 
+/**
+ * P1 直传：包由节点上的插件直接发给日志服务器，平台拿不到分片进度。
+ *
+ * 它决定了「上传」这一步该用什么文案与进度来源：直传看节点的 upload_state，
+ * P2 中转才看平台的 transfer 分片。
+ */
+const isDirectDelivery = computed(
+  () => currentTask.value?.upload_mode === 'acli_direct' || Boolean(currentTask.value?.remote_url),
+)
+
 const statusText = computed(() => {
   if (stage.value === 'failed') return errorMessage.value || currentTask.value?.error_message || '任务失败'
   if (stage.value === 'done') return '日志已归档到日志服务器'
@@ -508,7 +520,13 @@ const statusText = computed(() => {
     return p ? `${p.status}（${p.done}/${p.total}）` : '采集进行中'
   }
   if (stage.value === 'pulling') return `正在从 HCI 拉取：${transfer.pulled} 字节`
-  if (stage.value === 'uploading') return `正在上传平台：${transfer.uploadedParts}/${transfer.partCount} 片`
+  if (stage.value === 'uploading') {
+    if (isDirectDelivery.value) {
+      const p = progress.value
+      return `正在发送到日志服务器：${p?.upload_state || '发送中'}（${p?.percent ?? 0}%）`
+    }
+    return `正在上传平台：${transfer.uploadedParts}/${transfer.partCount} 片`
+  }
   if (stage.value === 'relaying') return `正在归档到日志服务器：${relayStatus.value}`
   return ''
 })
@@ -1092,6 +1110,19 @@ function targetHostList(): string[] {
   return ips
 }
 
+/**
+ * 把节点上报的「发送/上传」阶段映射到步骤条。
+ *
+ * 现场（Q2026101401683 / 23:22）：acli 在把包发给日志服务器时仍输出
+ * 「收集任务进行中！总进度 85%」，并在这个百分比上停留 30 多秒；
+ * 步骤条却一直停在「采集」，用户以为采集卡死，而节点其实是在上传。
+ * `upload_state`（发送中 / 成功 / 失败）是节点自己给出的阶段信号，用它点亮「上传」。
+ */
+function applyNodeStage(snapshot: ProgressSnapshot) {
+  if (stage.value !== 'collecting') return
+  if (/发送中|上传中/.test(snapshot.upload_state ?? '')) stage.value = 'uploading'
+}
+
 /** 任务上持久化的基线（换端接管时从 detail 恢复）。 */
 function baselineFromTask(): string {
   return String((currentTask.value?.detail ?? {})['baseline_report_hash'] ?? '')
@@ -1142,7 +1173,10 @@ async function syncNodeState(
 
     // 旧报告不能拿来当展示数据：上一轮的「已完成 100%」会让面板与平台再次显示矛盾。
     // 只刷新时间戳（证明自动刷新在跑），进度沿用上一次归属确认过的快照。
-    if (action.action !== 'wait_refresh') progress.value = snapshot
+    if (action.action !== 'wait_refresh') {
+      progress.value = snapshot
+      applyNodeStage(snapshot)
+    }
     lastRefreshAt.value = new Date()
 
     // 只有需要用户决策时才亮按钮：接管（节点还在跑）、清理（节点异常/游离）
@@ -1354,7 +1388,10 @@ async function pollUntilCollected(
           targetHosts: targetHostList(),
         })
         // 旧报告同样不能当展示数据（否则会显示上一轮的 100%）
-        if (action.action !== 'wait_refresh') progress.value = snapshot
+        if (action.action !== 'wait_refresh') {
+          progress.value = snapshot
+          applyNodeStage(snapshot)
+        }
         lastRefreshAt.value = new Date()
         if (action.action === 'patch_completed') {
           nodeSyncHint.value = ''

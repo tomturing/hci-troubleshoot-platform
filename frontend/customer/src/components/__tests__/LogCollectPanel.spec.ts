@@ -716,4 +716,65 @@ describe('LogCollectPanel', () => {
     expect(wrapper.text()).toContain('参数来自平台任务记录')
     wrapper.unmount()
   })
+
+  /**
+   * 现场（Q2026101401683 / 2026-10-26 23:22）：P1 直传把包发给日志服务器期间，
+   * acli 仍输出「收集任务进行中！总进度 85%」并停留 30 多秒，步骤条却停在「采集」，
+   * 用户以为采集卡死——实际节点已经在发送了。
+   *
+   * 契约：upload_state 出现「发送中」时必须切到「上传」步骤并显示发送状态。
+   */
+  it('P1 直传进入发送阶段时步骤条切到「上传」，不再停在采集 85%', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
+    const live = taskFixture({
+      task_id: 'task-live',
+      status: 'collecting',
+      progress: 0,
+      finished_at: null,
+      archive_path: null,
+      upload_mode: 'acli_direct',
+      remote_url: 'http://acli.sangfor.com.cn:5888',
+      ips: ['172.28.25.1', '172.28.25.2'],
+      detail: {},
+    })
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [live] })
+    vi.mocked(logCollectApi.getTask).mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      return live
+    })
+    vi.mocked(logCollectApi.patchTask).mockResolvedValue({ ...live, progress: 85 })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    await flushPromises()
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'progress',
+        status: 'ok',
+        log_data: {
+          status: '收集任务进行中！',
+          percent: 85,
+          done: 2,
+          total: 2,
+          node_state: 'running',
+          upload_state: '发送中',
+          archive_path: '/sf/data/local/acli/tmp/data/log_collect/Q2026102300001.zip',
+          hosts: [
+            { ip: '172.28.25.1', status: '收集完成', percent: 100 },
+            { ip: '172.28.25.2', status: '收集完成', percent: 100 },
+          ],
+          raw: '状态：收集任务进行中！\n总进度：85% - 2/2\n日志发送中',
+        },
+      }),
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('正在发送到日志服务器')
+    expect(wrapper.text()).toContain('发送中')
+    wrapper.unmount()
+  })
 })
