@@ -969,7 +969,7 @@ def main() -> None:
                 print(f"   另有 {stock} 个位于事件/归档层的其他行，属史料存量，本步不阻断")
             sys.exit(1)
         print(f"\n⚠️ 发现 {len(rot_block)} 个失效引用（C1/C2/C3），均不在本次改动行且不属于现行层，仅警告不阻断")
-        print("   治理口径见 docs/solution/events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md")
+        print("   治理口径见 docs/文档管理规范.md §8.3.2（事件层分诊与「不清零」决定）、§九（豁免与阻断分级）")
 
     print("\n✅ 门禁通过（无新增密钥泄露与失效引用）")
     sys.exit(0)
