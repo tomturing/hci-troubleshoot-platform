@@ -785,7 +785,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"done": progress.Done, "total": progress.Total,
 			"status_text": progress.Status, "archive_path": progress.ArchivePath,
 			"upload_url": progress.UploadURL, "upload_state": progress.UploadState,
-			"node_state": progress.NodeState,
+			"node_state":  progress.NodeState,
 			"hosts_count": len(progress.Hosts), "exit_code": exitCode,
 			"error": errString(err), "raw_len": len(output),
 		})
