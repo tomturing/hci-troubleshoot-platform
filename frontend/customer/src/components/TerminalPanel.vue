@@ -223,10 +223,23 @@ function initTerminal() {
     xterm.write(normalizeTerminalText(fullOutputText.value))
   }
 
+  // 抽屉宽度现在会随三栏布局连续变化（拖拽 / 主区让位过渡），
+  // 每帧都 fit 会让 xterm 反复 reflow 并闪烁；合并到 60ms 一次。
   resizeObserver = new ResizeObserver(() => {
-    fitTerminal()
+    scheduleFit()
   })
   resizeObserver.observe(terminalContainer.value)
+}
+
+let fitTimer: number | null = null
+
+/** 合并连续尺寸变化后再 fit，避免宽度动画期间的逐帧重排 */
+function scheduleFit() {
+  if (fitTimer !== null) window.clearTimeout(fitTimer)
+  fitTimer = window.setTimeout(() => {
+    fitTimer = null
+    fitTerminal()
+  }, 60)
 }
 
 /**
@@ -249,6 +262,10 @@ function fitTerminal() {
 }
 
 function disposeTerminal() {
+  if (fitTimer !== null) {
+    window.clearTimeout(fitTimer)
+    fitTimer = null
+  }
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null

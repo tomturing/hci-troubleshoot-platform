@@ -39,8 +39,18 @@ const { sentMessages, fakeSocket, mockStore } = vi.hoisted(() => {
       sshCurrentConfig: null as null | { host: string; port: number; username: string },
       logCollectActiveTask: null,
       openLogCollectCaseDialog: vi.fn(),
-      // 抽屉宽度与历史工单共用同一真值
-      sidePanelWidth: 510,
+      // 抽屉宽度由工作区布局求解器给出，面板只读不再自持
+      leftPanelWidth: 520,
+      workspaceLayout: {
+        mode: 'slide' as const,
+        leftWidth: 520,
+        rightWidth: 0,
+        centerMaxWidth: 900,
+        leftOffset: 520,
+        rightOffset: 0,
+      },
+      setLeftPanelPreferred: vi.fn(),
+      setPanelResizing: vi.fn(),
     },
   }
 })
@@ -131,7 +141,23 @@ function mountPanel() {
           ElForm: passthrough('ElForm'),
           ElFormItem: passthrough('ElFormItem'),
           ElAlert,
-          ElDescriptions: passthrough('ElDescriptions'),
+          // 描述表要断言列数：窄抽屉必须退成单列，字段名才不会逐字竖排
+          ElDescriptions: {
+            name: 'ElDescriptions',
+            props: ['column'],
+            setup(props: any, { attrs, slots }: any) {
+              return () =>
+                h(
+                  'div',
+                  {
+                    ...attrs,
+                    class: ['desc-stub', attrs.class],
+                    'data-column': String(props.column),
+                  },
+                  slots.default?.(),
+                )
+            },
+          },
           ElDescriptionsItem: passthrough('ElDescriptionsItem'),
           ElTag: passthrough('ElTag'),
           ElInput: passthrough('ElInput'),
@@ -155,6 +181,8 @@ describe('LogCollectPanel', () => {
     mockStore.lastSshHost = ''
     mockStore.sshConnectionState = 'disconnected'
     mockStore.sshCurrentConfig = null
+    // 抽屉宽度用例会改写，逐例复位，避免用例间互相污染
+    mockStore.leftPanelWidth = 520
     // 默认"该工单没有任何历史任务"，需要历史的任务用例自行 mock
     vi.mocked(logCollectApi.listTasks).mockReset()
     vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 0, items: [] })
@@ -225,23 +253,65 @@ describe('LogCollectPanel', () => {
     expect(probe.node_ip).toBe('172.28.25.1')
   })
 
-  it('抽屉从左侧弹出，宽度取自共享真值', async () => {
+  it('抽屉从左侧弹出，宽度取自工作区求解结果', async () => {
     const wrapper = mountPanel()
     await flushPromises()
 
     const drawer = wrapper.find('.drawer-stub')
     expect(drawer.attributes('data-direction')).toBe('ltr')
-    expect(drawer.attributes('data-size')).toBe('510px')
+    expect(drawer.attributes('data-size')).toBe('520px')
   })
 
-  it('抽屉头部提供「刷新进度」与「钉住」入口', async () => {
+  it('抽屉头部提供「刷新进度」与「关闭」入口（钉住随推挤布局一并移除）', async () => {
     const wrapper = mountPanel()
     await flushPromises()
 
     const header = wrapper.find('.drawer-stub-header')
     expect(header.text()).toContain('日志收集')
     expect(header.text()).toContain('刷新进度')
-    expect(header.text()).toContain('钉住')
+    expect(header.text()).toContain('关闭')
+    expect(header.text()).not.toContain('钉住')
+  })
+
+  // 回归：两抽屉同时展开时左栏被压到 500px 上下，
+  // descriptions 固定 2 列会把「发起节点」压成一字一行。列数必须跟随抽屉宽度。
+  it('描述表列数随抽屉宽度切换：窄容器单列、宽容器两列', async () => {
+    const probeResult = {
+      architecture: 'x86_64',
+      acli_installed: true,
+      acli_version: '1.0.0',
+      available_mb: 1024,
+      hosts: [],
+    }
+    // 描述表只在 probe 成功后渲染：先推一帧探测结果，再断言列数
+    const mountAndProbe = async (width: number) => {
+      mockStore.leftPanelWidth = width
+      const wrapper = mountPanel()
+      await flushPromises()
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      fakeSocket.onmessage?.({
+        data: JSON.stringify({
+          type: 'log_collect_result',
+          log_action: 'probe',
+          status: 'ok',
+          log_data: probeResult,
+        }),
+      })
+      await flushPromises()
+      return wrapper
+    }
+
+    const narrow = await mountAndProbe(460)
+    const narrowDescs = narrow.findAll('.desc-stub')
+    expect(narrowDescs).toHaveLength(1)
+    expect(narrowDescs[0].attributes('data-column')).toBe('1')
+    narrow.unmount()
+
+    const wide = await mountAndProbe(620)
+    const wideDescs = wide.findAll('.desc-stub')
+    expect(wideDescs).toHaveLength(1)
+    expect(wideDescs[0].attributes('data-column')).toBe('2')
+    wide.unmount()
   })
 
   it('故障场景使用勾选框全量展示，不渲染下拉框', async () => {

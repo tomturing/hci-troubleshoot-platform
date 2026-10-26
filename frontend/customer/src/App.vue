@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Finished, FolderOpened, Monitor, Tickets } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 import { getClientId } from '@/utils/clientId'
@@ -10,6 +10,41 @@ import SshConnectDialog from '@/components/SshConnectDialog.vue'
 
 const chatStore = useChatStore()
 const clientId = getClientId()
+
+/**
+ * 工作区外壳的三态让位。
+ *
+ * 为什么不用 grid 三列：三个抽屉仍是 el-drawer（fixed + append-to-body），
+ * 它们不在文档流里；让位只能用"主区留出同宽 padding"表达，
+ * 数值与抽屉宽度同源（都来自 chatStore.workspaceLayout），所以不会错位。
+ */
+const shellStyle = computed(() => {
+  const layout = chatStore.workspaceLayout
+  return {
+    '--ws-left': `${layout.leftOffset}px`,
+    '--ws-right': `${layout.rightOffset}px`,
+    '--ws-center-max': `${layout.centerMaxWidth}px`,
+  }
+})
+
+// 视口变化时重新求解；rAF 合并同一帧内的连续 resize，避免布局抖动
+const viewportResizing = ref(false)
+let resizeFrame = 0
+let resizeIdleTimer = 0
+function handleViewportResize() {
+  // 拖动窗口边缘时抽屉宽度是瞬变的（el-drawer 的 size 没有过渡），
+  // 若主区让位仍跑 300ms 过渡，两者会持续错位，所以窗口 resize 期间也关掉过渡。
+  viewportResizing.value = true
+  if (resizeIdleTimer) window.clearTimeout(resizeIdleTimer)
+  resizeIdleTimer = window.setTimeout(() => {
+    viewportResizing.value = false
+  }, 160)
+  if (resizeFrame) return
+  resizeFrame = requestAnimationFrame(() => {
+    resizeFrame = 0
+    chatStore.setViewportWidth(window.innerWidth)
+  })
+}
 // 抽屉开合收敛到 store：建单后的引导卡片也通过同一状态打开面板，
 // 避免 App.vue 与 ChatWindow 各持一份本地 ref 导致两处入口行为不一致。
 const logCollectVisible = computed({
@@ -23,7 +58,16 @@ const BRIDGE_DOWNLOAD_URL =
   import.meta.env.VITE_BRIDGE_DOWNLOAD_URL || '/downloads/terminal_bridge.exe'
 
 onMounted(() => {
+  // 首帧就要有正确的视口宽度，否则抽屉会按 SSR 兜底值布局一次再跳变
+  chatStore.setViewportWidth(window.innerWidth)
   chatStore.initialize()
+  window.addEventListener('resize', handleViewportResize)
+})
+
+onBeforeUnmount(() => {
+  if (resizeFrame) cancelAnimationFrame(resizeFrame)
+  if (resizeIdleTimer) window.clearTimeout(resizeIdleTimer)
+  window.removeEventListener('resize', handleViewportResize)
 })
 
 /**
@@ -46,8 +90,16 @@ function handleDownloadBridge() {
 </script>
 
 <template>
-  <div class="app-container">
-    <header class="app-header">
+  <div
+    class="workspace-shell"
+    :class="{ 'is-resizing': chatStore.isPanelResizing || viewportResizing }"
+    :style="shellStyle"
+  >
+    <div class="app-container">
+    <header
+      class="app-header"
+      :class="{ 'is-compact': chatStore.workspaceLayout.centerMaxWidth <= 620 }"
+    >
       <div class="header-content">
         <h1>HCI 故障排查助手</h1>
         <div class="header-badges">
@@ -171,6 +223,7 @@ function handleDownloadBridge() {
       </template>
     </el-dialog>
 
+    </div>
   </div>
 </template>
 
@@ -189,11 +242,34 @@ body {
 </style>
 
 <style scoped>
+/*
+ * 工作区外壳：三态让位。
+ *
+ * 三个抽屉仍是 el-drawer（fixed + append-to-body），不在文档流里，
+ * 因此"推挤"只能用等宽 padding 表达；padding 值与抽屉宽度同源，
+ * 都来自 chatStore.workspaceLayout，所以不会出现缝隙或重叠。
+ */
+.workspace-shell {
+  height: 100vh;
+  box-sizing: border-box;
+  padding-left: var(--ws-left, 0px);
+  padding-right: var(--ws-right, 0px);
+  /* 与 el-drawer 滑入时长/曲线对齐，避免抽屉已到位而主区还在移动 */
+  transition:
+    padding-left 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    padding-right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 拖拽调宽时必须逐帧跟手，过渡会让主区滞后于手柄 */
+.workspace-shell.is-resizing {
+  transition: none;
+}
+
 .app-container {
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  max-width: 900px;
+  height: 100%;
+  max-width: var(--ws-center-max, 900px);
   margin: 0 auto;
 }
 
@@ -208,11 +284,51 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
 }
 
 .header-content h1 {
   font-size: 18px;
   font-weight: 600;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 按钮组永不压缩：压缩态优先让标题省略，按钮仍要完整可点 */
+.header-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/*
+ * 压缩态顶栏：中央会话被两侧抽屉压到 620px 以下时，
+ * 四个按钮的文字会把标题挤到不可读，甚至溢出。
+ * 这里退化为纯图标（图标本体字号要单独设回去，因为它也吃 font-size）。
+ */
+.app-header.is-compact {
+  padding: 10px 12px;
+}
+
+.app-header.is-compact .header-content h1 {
+  font-size: 15px;
+}
+
+.app-header.is-compact .header-badges {
+  gap: 6px;
+}
+
+.app-header.is-compact .header-badges .el-button {
+  font-size: 0 !important;
+  padding: 6px 8px !important;
+}
+
+.app-header.is-compact .header-badges .el-button .el-icon {
+  font-size: 14px !important;
+  margin-right: 0 !important;
 }
 
 .case-badge {

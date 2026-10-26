@@ -70,13 +70,41 @@
   gap: 2px;
 }
 
-/* 钉住时取消全屏遮罩与背景色，但仍然拦截抽屉内的点击 */
-.drawer-unblocked-overlay {
+/*
+ * 推挤态（slide / compressed）：
+ *
+ * 抽屉与主区左右分列、互不遮挡，此时遮罩的唯一作用是拦截点击，
+ * 而"一边看 AI 建议一边执行命令"恰恰要求主区可点——所以遮罩必须透明且穿透。
+ * 旧实现把它绑在「钉住」开关上，等于让用户手动把默认行为改回来；
+ * 现在推挤态是默认，覆盖态（窄屏降级）才恢复遮罩。
+ */
+.drawer-push-overlay {
   pointer-events: none !important;
   background-color: transparent !important;
 }
 
-.drawer-unblocked-overlay .el-drawer {
+.drawer-push-overlay .el-drawer {
   pointer-events: auto !important;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.1);
+}
+
+/*
+ * 描述表兜底：字段名不允许折行，值允许在长串处断行。
+ * 即使列数判断失误，也不会再出现「发/起/节/点」逐字竖排。
+ *
+ * 另外必须把表格宽度钉成 100%：Element Plus 的 descriptions 是 auto 布局，
+ * 内容短时整张表只有内容那么宽，抽屉里会留下一条突兀的右侧空白。
+ */
+.workspace-drawer .el-descriptions__table {
+  width: 100%;
+}
+
+.workspace-drawer .el-descriptions__label {
+  width: 96px;
+  white-space: nowrap;
+}
+
+.workspace-drawer .el-descriptions__content {
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }

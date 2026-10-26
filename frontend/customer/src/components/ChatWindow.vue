@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, watch, onMounted } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import MessageBubble from './MessageBubble.vue'
 import TerminalPanel from './TerminalPanel.vue'
@@ -11,50 +11,55 @@ import CaseCreateDialog from './CaseCreateDialog.vue'
 import BridgeLogUploader from './BridgeLogUploader.vue'
 import LogCollectEntryCard from './LogCollectEntryCard.vue'
 import EnvironmentSummary from './EnvironmentSummary.vue'
-// 抽屉宽度算法唯一来源
-import { getDefaultPanelWidth } from '@/utils/panelWidth'
 
 const chatStore = useChatStore()
 const inputText = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
 const assistantInputRef = ref<{ focus: () => void } | null>(null)
-const terminalPinned = ref(false)
-const historyPinned = ref(false)
-const terminalPanelWidth = ref(getDefaultPanelWidth())
-// 历史工单与日志收集共用同一宽度真值（store），拖拽任一侧都对齐
 const showTerminalReplayDialog = ref(false)
 const terminalReplayCaseId = ref<string | null>(null)
 
-// 拖拽调整抽屉宽度
-const startResizeTerminal = (e: MouseEvent) => {
+/**
+ * 只有降级为覆盖态才需要遮罩。
+ *
+ * 推挤态下抽屉与主区左右分列、互不遮挡，再盖一层半透明遮罩只会
+ * 让"一边看 AI 建议一边敲命令"这个核心场景变得不可点。
+ */
+const isOverlayMode = computed(() => chatStore.workspaceLayout.mode === 'overlay')
+
+/**
+ * 拖拽调宽：只写"偏好宽度"，由求解器重新算当前宽度。
+ *
+ * 直接写当前宽度会在窗口变窄后留下一个越界固定值，把中央会话挤到不可读；
+ * 写偏好则始终能被 clamp 回合法区间。
+ */
+function startResize(side: 'left' | 'right', e: MouseEvent) {
   e.preventDefault()
   const startX = e.clientX
-  const startWidth = terminalPanelWidth.value
-  const onMouseMove = (moveE: MouseEvent) => {
-    terminalPanelWidth.value = Math.max(300, Math.min(window.innerWidth * 0.8, startWidth - (moveE.clientX - startX)))
-  }
+  const startWidth = side === 'left' ? chatStore.leftPanelWidth : chatStore.rightPanelWidth
+  const apply = side === 'left' ? chatStore.setLeftPanelPreferred : chatStore.setRightPanelPreferred
+  chatStore.setPanelResizing(true)
   const onMouseUp = () => {
+    chatStore.setPanelResizing(false)
     document.removeEventListener('mousemove', onMouseMove)
     document.removeEventListener('mouseup', onMouseUp)
+  }
+  const onMouseMove = (moveE: MouseEvent) => {
+    // 鼠标在窗口外松开时收不到 mouseup，靠按键状态兜底复位，否则过渡会被永久关闭
+    if (moveE.buttons === 0) {
+      onMouseUp()
+      return
+    }
+    // 左侧手柄往右拖是变宽，右侧手柄往左拖是变宽
+    const delta = side === 'left' ? moveE.clientX - startX : startX - moveE.clientX
+    apply(startWidth + delta)
   }
   document.addEventListener('mousemove', onMouseMove)
   document.addEventListener('mouseup', onMouseUp)
 }
 
-const startResizeHistory = (e: MouseEvent) => {
-  e.preventDefault()
-  const startX = e.clientX
-  const startWidth = chatStore.sidePanelWidth
-  const onMouseMove = (moveE: MouseEvent) => {
-    chatStore.sidePanelWidth = Math.max(300, Math.min(window.innerWidth * 0.8, startWidth + (moveE.clientX - startX)))
-  }
-  const onMouseUp = () => {
-    document.removeEventListener('mousemove', onMouseMove)
-    document.removeEventListener('mouseup', onMouseUp)
-  }
-  document.addEventListener('mousemove', onMouseMove)
-  document.addEventListener('mouseup', onMouseUp)
-}
+const startResizeTerminal = (e: MouseEvent) => startResize('right', e)
+const startResizeHistory = (e: MouseEvent) => startResize('left', e)
 
 /** 发送消息 */
 async function handleSend() {
@@ -106,25 +111,6 @@ watch(
 )
 
 onMounted(scrollToBottom)
-
-onMounted(() => {
-  const onResize = () => {
-    if (!chatStore.showTerminalSidebar) {
-      terminalPanelWidth.value = getDefaultPanelWidth()
-    }
-    if (!chatStore.showHistoryDrawer) {
-      chatStore.sidePanelWidth = getDefaultPanelWidth()
-    }
-  }
-  onResize()
-  window.addEventListener('resize', onResize)
-  ;(window as Window & { __hciPanelResizeHandler?: () => void }).__hciPanelResizeHandler = onResize
-})
-
-onBeforeUnmount(() => {
-  const handler = (window as Window & { __hciPanelResizeHandler?: () => void }).__hciPanelResizeHandler
-  if (handler) window.removeEventListener('resize', handler)
-})
 
 /** 状态中文映射 */
 function statusLabel(status: string): string {
@@ -301,25 +287,29 @@ function handleQuoteToChat(content: string) {
     <el-drawer
       v-model="chatStore.showTerminalSidebar"
       direction="rtl"
-      :size="`${terminalPanelWidth}px`"
+      :size="`${chatStore.rightPanelWidth}px`"
       :append-to-body="true"
       :modal="true"
-      :lock-scroll="!terminalPinned"
-      :close-on-click-modal="!terminalPinned"
-      :close-on-press-escape="!terminalPinned"
+      :lock-scroll="isOverlayMode"
+      :close-on-click-modal="isOverlayMode"
+      :close-on-press-escape="true"
       :with-header="true"
-      :modal-class="terminalPinned ? 'drawer-unblocked-overlay' : ''"
+      :show-close="false"
+      :modal-class="isOverlayMode ? '' : 'drawer-push-overlay'"
       class="workspace-drawer"
       @close="chatStore.closeTerminalSidebar()"
     >
-      <div class="drawer-resize-handle drawer-resize-left" @mousedown="startResizeTerminal"></div>
+      <!-- 覆盖态宽度由降级规则决定，拖拽无效，手柄不出现以免误导 -->
+      <div
+        v-if="!isOverlayMode"
+        class="drawer-resize-handle drawer-resize-left"
+        @mousedown="startResizeTerminal"
+      ></div>
       <template #header>
         <div class="drawer-header">
           <span class="drawer-title">SSH 终端</span>
           <div class="drawer-actions">
-            <el-button text size="small" @click="terminalPinned = !terminalPinned">
-              {{ terminalPinned ? '取消钉住' : '钉住' }}
-            </el-button>
+            <el-button text size="small" @click="chatStore.closeTerminalSidebar()">关闭</el-button>
           </div>
         </div>
       </template>
@@ -332,25 +322,28 @@ function handleQuoteToChat(content: string) {
     <el-drawer
       v-model="chatStore.showHistoryDrawer"
       direction="ltr"
-      :size="`${chatStore.sidePanelWidth}px`"
+      :size="`${chatStore.leftPanelWidth}px`"
       :append-to-body="true"
       :modal="true"
-      :lock-scroll="!historyPinned"
-      :close-on-click-modal="!historyPinned"
-      :close-on-press-escape="!historyPinned"
+      :lock-scroll="isOverlayMode"
+      :close-on-click-modal="isOverlayMode"
+      :close-on-press-escape="true"
       :with-header="true"
-      :modal-class="historyPinned ? 'drawer-unblocked-overlay' : ''"
+      :show-close="false"
+      :modal-class="isOverlayMode ? '' : 'drawer-push-overlay'"
       class="workspace-drawer"
       @close="chatStore.closeHistoryDrawer()"
     >
-      <div class="drawer-resize-handle drawer-resize-right" @mousedown="startResizeHistory"></div>
+      <div
+        v-if="!isOverlayMode"
+        class="drawer-resize-handle drawer-resize-right"
+        @mousedown="startResizeHistory"
+      ></div>
       <template #header>
         <div class="drawer-header">
           <span class="drawer-title">历史工单</span>
           <div class="drawer-actions">
-            <el-button text size="small" @click="historyPinned = !historyPinned">
-              {{ historyPinned ? '取消钉住' : '钉住' }}
-            </el-button>
+            <el-button text size="small" @click="chatStore.closeHistoryDrawer()">关闭</el-button>
           </div>
         </div>
       </template>

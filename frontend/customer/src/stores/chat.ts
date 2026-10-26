@@ -7,7 +7,12 @@ import { ref, computed, nextTick, watch } from 'vue'
 import { createApiClient, createCaseApi, createConversationApi, createAssistantApi, createEnvironmentApi } from '@hci/shared'
 import type { CaseResponse, MessageResponse, AssistantInfo, AssistantsResponse, EnvironmentResponse, EnvironmentContextResponse, EnvType } from '@hci/shared'
 import { getClientId } from '@/utils/clientId'
-import { getDefaultPanelWidth } from '@/utils/panelWidth'
+import {
+  WORKSPACE_CONSTRAINTS,
+  leftWidthRange,
+  resolveWorkspaceLayout,
+  rightWidthRange,
+} from '@/utils/workspaceLayout'
 import { logCollectApi, type ActiveTaskSummary } from '@/api/logCollect'
 import { checkBridgeRunning, checkBridgeBeforeOpen, createBridgeSocket, getBridgeUrl, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, buildVmConsoleOpMessage, parseAgentExecResult, type BridgeStatus, type TerminalWsMessage, type OutputFilterSpec } from '@/api/terminal'
 import {
@@ -456,14 +461,8 @@ export const useChatStore = defineStore('chat', () => {
   const historyMessages = ref<ChatMessage[]>([])
   const historyCase = ref<CaseResponse | null>(null)
   const historyLoading = ref(false)
-  /**
-   * 左右侧边抽屉的统一宽度（px）。
-   *
-   * 第一性原理：同一侧的抽屉是同一块"辅助操作区"，宽度必须只有一个真值；
-   * 各抽屉各自持有一份宽度，用户拖过其中一个之后另一个就对不齐了。
-   * 目前由「历史工单」与「日志收集」共用，拖拽任意一个都会同步。
-   */
-  const sidePanelWidth = ref(getDefaultPanelWidth())
+  // 侧边抽屉宽度不在这里单独维护：它由「视口宽度 + 抽屉开合状态 + 用户偏好」
+  // 三者在 workspaceLayout 中统一求解，见下方「工作区三栏布局」小节。
 
   // 诊断阶段（S0~S6）
   const diagnosticStage = ref<string>('S0')
@@ -744,6 +743,67 @@ export const useChatStore = defineStore('chat', () => {
   // 最近一次成功登录的 HCI 主机（面板「发起节点」自动填充；不含任何凭据）
   const lastSshHost = ref<string>(readLastSshHost())
 
+  // === 工作区三栏布局（中央会话 / 左侧抽屉 / 右侧终端）===
+  /**
+   * 视口宽度。布局必须知道可用像素总量，窗口变化时重新求解；
+   * 旧实现用「(视口 - 900) / 2」并把结果写成固定值，窗口一变就失真。
+   */
+  const viewportWidth = ref(typeof window === 'undefined' ? 1920 : window.innerWidth)
+  /**
+   * 用户拖拽后的偏好宽度。
+   *
+   * 只记录"偏好"，不直接记录"当前宽度"：窗口变窄时求解器仍能把抽屉收进可用区间，
+   * 而不是让一个越界的固定值把中央会话挤到不可读。
+   */
+  const leftPanelPreferred = ref<number>(WORKSPACE_CONSTRAINTS.leftDefault)
+  const rightPanelPreferred = ref<number>(WORKSPACE_CONSTRAINTS.rightDefault)
+
+  /** 左侧是否被占用：日志收集与历史工单互斥，同一时刻只允许一个。 */
+  const isLeftPanelOpen = computed(() => logCollectVisible.value || showHistoryDrawer.value)
+  /** 右侧是否被占用：SSH 终端。 */
+  const isRightPanelOpen = computed(() => showTerminalSidebar.value)
+
+  /** 三态布局求解结果，是 App 外壳与三个抽屉的唯一宽度真值。 */
+  const workspaceLayout = computed(() =>
+    resolveWorkspaceLayout({
+      viewport: viewportWidth.value,
+      leftOpen: isLeftPanelOpen.value,
+      rightOpen: isRightPanelOpen.value,
+      leftPreferred: leftPanelPreferred.value,
+      rightPreferred: rightPanelPreferred.value,
+    }),
+  )
+
+  const leftPanelWidth = computed(() => workspaceLayout.value.leftWidth)
+  const rightPanelWidth = computed(() => workspaceLayout.value.rightWidth)
+
+  /**
+   * 是否正在拖拽调宽。
+   *
+   * 拖拽时主区让位必须逐帧跟手，不能吃 300ms 的过渡；
+   * 由拖拽方置位，App 外壳据此关掉 padding 过渡。
+   */
+  const isPanelResizing = ref(false)
+
+  function setPanelResizing(resizing: boolean): void {
+    isPanelResizing.value = resizing
+  }
+
+  function setViewportWidth(width: number): void {
+    viewportWidth.value = Math.max(0, Math.round(width))
+  }
+
+  /** 拖拽只写偏好宽度，并 clamp 到当前视口的合法区间（与求解器常量同源）。 */
+  function setLeftPanelPreferred(width: number): void {
+    const range = leftWidthRange(viewportWidth.value)
+    leftPanelPreferred.value = Math.round(Math.min(range.max, Math.max(range.min, width)))
+  }
+
+  function setRightPanelPreferred(width: number): void {
+    const range = rightWidthRange(viewportWidth.value)
+    rightPanelPreferred.value = Math.round(Math.min(range.max, Math.max(range.min, width)))
+  }
+
   function readLastSshHost(): string {
     try {
       const raw = JSON.parse(localStorage.getItem('hci_last_ssh_config') || '{}')
@@ -779,6 +839,8 @@ export const useChatStore = defineStore('chat', () => {
    * 有活跃工单时一律以它为准，避免面板停留在上一次手动指定的旧工单上。
    */
   function openLogCollect(): void {
+    // 左侧只有一块位置：日志收集与历史工单互斥，否则两个抽屉会叠在同一条边上。
+    showHistoryDrawer.value = false
     // 日志收集依赖 SSH 会话：未连接时一律先走弹框（内含统一 SSH 登录区），
     // 避免用户打开面板后卡在"环境探测失败"。
     if (sshConnectionState.value !== 'connected') {
@@ -836,6 +898,8 @@ export const useChatStore = defineStore('chat', () => {
       // 旧后端不返回 owned：按"未知"处理为已归属，不误报
       logCollectCaseOwned.value = result.owned !== false
       logCollectCaseDialogVisible.value = false
+      // 面板打开即占用左栏，同侧的历史工单必须让位
+      showHistoryDrawer.value = false
       logCollectVisible.value = true
     } catch (e: any) {
       const status = e?.response?.status
@@ -856,6 +920,7 @@ export const useChatStore = defineStore('chat', () => {
   /** 接管查看已有任务（409 后"查看任务状态"或刷新恢复）。 */
   function openLogCollectForTask(taskId: string): void {
     logCollectResumeTaskId.value = taskId
+    showHistoryDrawer.value = false
     logCollectVisible.value = true
   }
 
@@ -1948,6 +2013,8 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   async function openHistoryDrawer() {
+    // 左侧互斥：历史工单与日志收集不能同时占用左栏
+    logCollectVisible.value = false
     showHistoryDrawer.value = true
     try {
       const res = await caseApi.listByClient(clientId)
@@ -3686,7 +3753,18 @@ export const useChatStore = defineStore('chat', () => {
     diagnosticStage,
     // 日志收集（HCI 侧 acli log_collect）
     logCollectVisible,
-    sidePanelWidth,
+    // 工作区三栏布局（中央 / 左抽屉 / 右终端）
+    viewportWidth,
+    workspaceLayout,
+    leftPanelWidth,
+    rightPanelWidth,
+    isLeftPanelOpen,
+    isRightPanelOpen,
+    setViewportWidth,
+    setLeftPanelPreferred,
+    setRightPanelPreferred,
+    isPanelResizing,
+    setPanelResizing,
     logCollectCaseId,
     logCollectCaseOwned,
     logCollectCaseDialogVisible,

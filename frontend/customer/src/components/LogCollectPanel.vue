@@ -37,22 +37,39 @@ const visible = defineModel<boolean>({ required: true })
 const chatStore = useChatStore()
 
 // ── 抽屉行为（与历史工单/SSH 终端一致）────────────────────────────────────
-const pinned = ref(false)
+/** 只有窄屏降级时才需要遮罩；推挤态抽屉与主区互不遮挡 */
+const isOverlayMode = computed(() => chatStore.workspaceLayout.mode === 'overlay')
 
-/** 拖拽右边缘调整宽度：写入共享宽度，历史工单抽屉同步变化 */
+/**
+ * 描述表列数随抽屉宽度切换。
+ *
+ * el-descriptions 的列数是 JS 属性，CSS 容器查询改不动；而抽屉宽度本身就是
+ * 唯一真值，直接用它判断比再挂一个 ResizeObserver 更可靠。
+ * 560px 是「96px 字段名 + 值不折行」两列的下限，低于它必须退成单列。
+ */
+const descColumns = computed(() => (chatStore.leftPanelWidth >= 560 ? 2 : 1))
+
+/** 表单标签：窄容器下置顶，避免标签列继续吃掉本就不多的内容宽度 */
+const formLabelPosition = computed(() => (chatStore.leftPanelWidth < 480 ? 'top' : 'right'))
+
+/** 拖拽右边缘调整宽度：只写左侧偏好宽度，由求解器重新分配 */
 function startResize(e: MouseEvent) {
   e.preventDefault()
   const startX = e.clientX
-  const startWidth = chatStore.sidePanelWidth
-  const onMove = (ev: MouseEvent) => {
-    chatStore.sidePanelWidth = Math.max(
-      300,
-      Math.min(window.innerWidth * 0.8, startWidth + (ev.clientX - startX)),
-    )
-  }
+  const startWidth = chatStore.leftPanelWidth
+  chatStore.setPanelResizing(true)
   const onUp = () => {
+    chatStore.setPanelResizing(false)
     document.removeEventListener('mousemove', onMove)
     document.removeEventListener('mouseup', onUp)
+  }
+  const onMove = (ev: MouseEvent) => {
+    // 鼠标在窗口外松开时收不到 mouseup，靠按键状态兜底复位
+    if (ev.buttons === 0) {
+      onUp()
+      return
+    }
+    chatStore.setLeftPanelPreferred(startWidth + (ev.clientX - startX))
   }
   document.addEventListener('mousemove', onMove)
   document.addEventListener('mouseup', onUp)
@@ -1684,18 +1701,20 @@ onBeforeUnmount(() => {
   <el-drawer
     v-model="visible"
     direction="ltr"
-    :size="`${chatStore.sidePanelWidth}px`"
+    :size="`${chatStore.leftPanelWidth}px`"
     :append-to-body="true"
     :modal="true"
-    :lock-scroll="!pinned"
-    :close-on-click-modal="!pinned"
-    :close-on-press-escape="!pinned"
+    :lock-scroll="isOverlayMode"
+    :close-on-click-modal="isOverlayMode"
+    :close-on-press-escape="true"
     :with-header="true"
-    :modal-class="pinned ? 'drawer-unblocked-overlay' : ''"
+    :show-close="false"
+    :modal-class="isOverlayMode ? '' : 'drawer-push-overlay'"
     class="workspace-drawer"
     @close="handleDrawerClose"
   >
-    <div class="drawer-resize-handle drawer-resize-right" @mousedown="startResize"></div>
+    <!-- 覆盖态宽度由降级规则决定，拖拽无效，手柄不出现以免误导 -->
+    <div v-if="!isOverlayMode" class="drawer-resize-handle drawer-resize-right" @mousedown="startResize"></div>
     <template #header>
       <div class="drawer-header">
         <span class="drawer-title">日志收集</span>
@@ -1710,9 +1729,7 @@ onBeforeUnmount(() => {
           >
             刷新进度
           </el-button>
-          <el-button text size="small" @click="pinned = !pinned">
-            {{ pinned ? '取消钉住' : '钉住' }}
-          </el-button>
+          <el-button text size="small" @click="visible = false">关闭</el-button>
         </div>
       </div>
     </template>
@@ -1753,7 +1770,7 @@ onBeforeUnmount(() => {
           :title="`该工单已完成日志收集（${resultFinishedText}）`"
           description="以下是平台记录的上一次收集结果；如需再次采集，点右下角「重新收集」。"
         />
-        <el-descriptions :column="2" border size="small">
+        <el-descriptions :column="descColumns" border size="small">
           <el-descriptions-item label="发起节点">{{ resultTask.origin_node_ip }}</el-descriptions-item>
           <el-descriptions-item label="交付路径">{{ resultDeliveryText }}</el-descriptions-item>
           <el-descriptions-item label="收集场景">{{ resultModulesText }}</el-descriptions-item>
@@ -1777,7 +1794,7 @@ onBeforeUnmount(() => {
       </div>
 
       <template v-else>
-        <el-descriptions v-if="probeResult" :column="2" border size="small" class="lc-probe">
+        <el-descriptions v-if="probeResult" :column="descColumns" border size="small" class="lc-probe">
           <el-descriptions-item label="架构">{{ probeResult.architecture }}</el-descriptions-item>
           <el-descriptions-item label="acli">
             <span :title="acliTitle">{{ acliVersionText }}</span>
@@ -1881,7 +1898,12 @@ onBeforeUnmount(() => {
         </el-alert>
 
         <!-- 探测期间只锁"提交"，不锁表单：用户可以先看清可填项，不必等探测结束 -->
-        <el-form :model="form" label-width="90px" :disabled="running">
+        <el-form
+          :model="form"
+          :label-position="formLabelPosition"
+          label-width="90px"
+          :disabled="running"
+        >
           <el-form-item label="故障场景">
             <!-- 全量平铺勾选：目录最多十余项，一次看全比"点开下拉再逐项找"少两次交互 -->
             <el-checkbox-group v-model="form.modules" class="lc-checkbox-group lc-module-group">
