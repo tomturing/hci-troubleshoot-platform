@@ -755,8 +755,14 @@ export const useChatStore = defineStore('chat', () => {
    * 只记录"偏好"，不直接记录"当前宽度"：窗口变窄时求解器仍能把抽屉收进可用区间，
    * 而不是让一个越界的固定值把中央会话挤到不可读。
    */
-  const leftPanelPreferred = ref<number>(WORKSPACE_CONSTRAINTS.leftDefault)
-  const rightPanelPreferred = ref<number>(WORKSPACE_CONSTRAINTS.rightDefault)
+  /**
+   * 用户拖拽后的偏好宽度；null = 用户没拖过，由求解器按视口比例给默认值。
+   *
+   * 这里必须是 null 而不是 520/720：一旦预填固定值，求解器就永远拿不到
+   * 「未拖拽」这个信号，1920 屏单开时中央会稳定拿走 1400、留一整片空灰。
+   */
+  const leftPanelPreferred = ref<number | null>(null)
+  const rightPanelPreferred = ref<number | null>(null)
 
   /** 左侧是否被占用：日志收集与历史工单互斥，同一时刻只允许一个。 */
   const isLeftPanelOpen = computed(() => logCollectVisible.value || showHistoryDrawer.value)
@@ -799,8 +805,8 @@ export const useChatStore = defineStore('chat', () => {
       viewport: viewportWidth.value,
       leftOpen: isLeftPanelOpen.value,
       rightOpen: isRightPanelOpen.value,
-      leftPreferred: leftPanelPreferred.value,
-      rightPreferred: rightPanelPreferred.value,
+      leftPreferred: leftPanelPreferred.value ?? undefined,
+      rightPreferred: rightPanelPreferred.value ?? undefined,
     }),
   )
 
@@ -821,8 +827,8 @@ export const useChatStore = defineStore('chat', () => {
       viewport: viewportWidth.value,
       leftOpen: true,
       rightOpen: true,
-      leftPreferred: leftPanelPreferred.value,
-      rightPreferred: rightPanelPreferred.value,
+      leftPreferred: leftPanelPreferred.value ?? undefined,
+      rightPreferred: rightPanelPreferred.value ?? undefined,
     })
     if (bothOpen.mode !== 'overlay') return
     if (side === 'left') {

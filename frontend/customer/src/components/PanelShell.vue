@@ -240,25 +240,52 @@ const collapseIcon = computed(() => (props.side === 'left' ? ArrowLeft : ArrowRi
   color: #409eff;
 }
 
+/*
+ * 可拖拽边界。
+ *
+ * 命中区必须画在容器「内侧」：aside 是 overflow:hidden，原来用 right:-3px
+ * 把 6px 手柄的一半挂到容器外，结果被裁得只剩 3px，而且正好压在窗口边缘——
+ * 鼠标既难对准，又容易被系统当成窗口缩放，实际表现为「边框拖不动」。
+ * 现在 9px 全部落在内侧，常态不画线，悬停/拖拽时才出现 2px 高亮。
+ */
 .panel-resizer {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 6px;
+  width: 9px;
   cursor: col-resize;
-  z-index: 2;
+  z-index: 3;
   background: transparent;
 }
 
 .side-panel--left .panel-resizer {
-  right: -3px;
+  right: 0;
 }
 
 .side-panel--right .panel-resizer {
-  left: -3px;
+  left: 0;
 }
 
-.panel-resizer:hover {
-  background: rgba(64, 158, 255, 0.25);
+.panel-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: transparent;
+  transition: background-color 0.15s ease;
+}
+
+.side-panel--left .panel-resizer::after {
+  right: 0;
+}
+
+.side-panel--right .panel-resizer::after {
+  left: 0;
+}
+
+.panel-resizer:hover::after,
+.side-panel.is-resizing .panel-resizer::after {
+  background: #409eff;
 }
 </style>

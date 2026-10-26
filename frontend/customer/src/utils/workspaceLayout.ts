@@ -50,16 +50,25 @@ export const WORKSPACE_CONSTRAINTS = {
   centerPref: 560,
   centerFloor: 460,
   leftMin: 420,
-  leftMax: 720,
+  leftMax: 880,
   rightMin: 560,
-  rightMax: 820,
+  rightMax: 900,
   /** 低于该视口宽度时，任何抽屉都走覆盖式 */
   narrowViewport: 1024,
   /** 覆盖式抽屉占视口宽度的比例 */
   overlayRatio: 0.86,
-  /** 单侧抽屉的默认偏好宽度 */
+  /** 单侧抽屉的兜底偏好宽度（视口未知时使用） */
   leftDefault: 520,
   rightDefault: 720,
+  /**
+   * 单开（另一侧折叠）时，抽屉默认占视口的比例。
+   *
+   * 第一性原理：中央内容列的有效宽度上限是 centerMax(900)，超出的像素是纯留白。
+   * 单开时若面板只取 520/720，中央会拿到 1352/1152——其中 452/252 px 什么也不显示，
+   * 屏幕上就是「中间一块 900 的卡片，两边各一片灰」。所以按接近二分来分：
+   * 46% 给面板，剩余 54% 给中央，中央内容列刚好落在 900 附近，留白最小。
+   */
+  singleRatio: 0.46,
   /** 左右抽屉分配剩余空间时的权重（右侧终端更吃宽度） */
   leftWeight: 0.42,
 } as const
@@ -76,6 +85,23 @@ function clamp(value: number, min: number, max: number): number {
  * 再滑出去——现场看到的就是「收窄成一个按钮后凭空消失」，且左右两侧表现不一致。
  * 这里保证任何状态下都给出一个合法宽度，退出动画才能和打开时同一个速度与方向。
  */
+/**
+ * 单侧抽屉的默认偏好宽度（未拖拽时使用）。
+ *
+ * 按视口比例给，而不是写死 520/720：写死会让 1920 屏单开时中央拿走 1400，
+ * 内容列只有 900，剩下 500px 全是空灰。导出给测试与拖拽兜底复用。
+ */
+export function defaultPanelWidth(viewport: number, side: 'left' | 'right'): number {
+  const c = WORKSPACE_CONSTRAINTS
+  const ratioWidth = viewport * c.singleRatio
+  if (side === 'left') {
+    const max = Math.min(c.leftMax, Math.max(c.leftMin, viewport - c.centerPref))
+    return Math.round(clamp(ratioWidth, c.leftMin, max))
+  }
+  const max = Math.min(c.rightMax, Math.max(c.rightMin, viewport - c.centerPref))
+  return Math.round(clamp(ratioWidth, c.rightMin, max))
+}
+
 function standaloneWidth(
   viewport: number,
   side: 'left' | 'right',
@@ -84,10 +110,10 @@ function standaloneWidth(
   const c = WORKSPACE_CONSTRAINTS
   if (side === 'left') {
     const max = Math.min(c.leftMax, Math.max(c.leftMin, viewport - c.centerPref))
-    return Math.round(clamp(preferred ?? c.leftDefault, c.leftMin, max))
+    return Math.round(clamp(preferred ?? defaultPanelWidth(viewport, 'left'), c.leftMin, max))
   }
   const max = Math.min(c.rightMax, Math.max(c.rightMin, viewport - c.centerPref))
-  return Math.round(clamp(preferred ?? c.rightDefault, c.rightMin, max))
+  return Math.round(clamp(preferred ?? defaultPanelWidth(viewport, 'right'), c.rightMin, max))
 }
 
 function overlayLayout(viewport: number): WorkspaceLayout {
@@ -140,8 +166,8 @@ export function resolveWorkspaceLayout(input: WorkspaceLayoutInput): WorkspaceLa
   // 默认偏好（520 / 720）算出来的比例恰好等于 0.42，与设计权重一致。
   if (leftOpen && rightOpen) {
     const available = viewport - c.centerPref
-    const leftPreferred = input.leftPreferred ?? c.leftDefault
-    const rightPreferred = input.rightPreferred ?? c.rightDefault
+    const leftPreferred = input.leftPreferred ?? defaultPanelWidth(viewport, 'left')
+    const rightPreferred = input.rightPreferred ?? defaultPanelWidth(viewport, 'right')
     const share = leftPreferred / Math.max(1, leftPreferred + rightPreferred)
     let left = Math.round(clamp(available * share, c.leftMin, c.leftMax))
     let right = Math.round(clamp(available - left, c.rightMin, c.rightMax))

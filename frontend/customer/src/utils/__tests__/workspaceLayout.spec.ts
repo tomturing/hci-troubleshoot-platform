@@ -10,6 +10,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   WORKSPACE_CONSTRAINTS as C,
+  defaultPanelWidth,
   leftWidthRange,
   resolveWorkspaceLayout,
   rightWidthRange,
@@ -38,17 +39,17 @@ describe('resolveWorkspaceLayout', () => {
       const closed = resolveWorkspaceLayout({ viewport: 1920, leftOpen: false, rightOpen: false })
       expect(closed.leftWidth).toBeGreaterThanOrEqual(C.leftMin)
       expect(closed.rightWidth).toBeGreaterThanOrEqual(C.rightMin)
-      // 关闭态回到各自偏好宽度，仍落在打开态的合法区间内
-      expect(closed.leftWidth).toBe(C.leftDefault)
-      expect(closed.rightWidth).toBe(C.rightDefault)
-      expect(closed.leftWidth + closed.rightWidth).toBeLessThanOrEqual(
-        open.leftWidth + open.rightWidth,
-      )
+      // 关闭态回到各自默认偏好宽度（按视口比例），仍落在合法区间内
+      expect(closed.leftWidth).toBe(defaultPanelWidth(1920, 'left'))
+      expect(closed.rightWidth).toBe(defaultPanelWidth(1920, 'right'))
+      expect(closed.leftWidth).toBeLessThanOrEqual(C.leftMax)
+      expect(closed.rightWidth).toBeLessThanOrEqual(C.rightMax)
+      expect(open.mode).toBe('compressed')
     })
 
     it('只开右侧时左侧宽度仍合法：左抽屉可以用正常动画退出', () => {
       const layout = resolveWorkspaceLayout({ viewport: 1920, leftOpen: false, rightOpen: true })
-      expect(layout.leftWidth).toBe(C.leftDefault)
+      expect(layout.leftWidth).toBe(defaultPanelWidth(1920, 'left'))
       expect(layout.leftOffset).toBe(0)
     })
 
@@ -64,29 +65,49 @@ describe('resolveWorkspaceLayout', () => {
   })
 
   describe('侧滑态（单抽屉）', () => {
-    it('1920px 开左侧：抽屉 520，中央仍是 900', () => {
+    it('1920px 开左侧：抽屉按 46% 拿到 880，中央剩余 1040 但内容列仍 900', () => {
       const layout = resolveWorkspaceLayout({ viewport: 1920, leftOpen: true, rightOpen: false })
       expect(layout.mode).toBe('slide')
-      expect(layout.leftWidth).toBe(C.leftDefault)
-      expect(layout.leftOffset).toBe(C.leftDefault)
+      expect(layout.leftWidth).toBe(defaultPanelWidth(1920, 'left'))
+      expect(layout.leftWidth).toBe(C.leftMax)
+      expect(layout.leftOffset).toBe(layout.leftWidth)
       expect(layout.rightOffset).toBe(0)
-      // 剩余 1400 > 900，中央不该被压
       expect(layout.centerMaxWidth).toBe(C.centerMax)
+      // 中央留白（剩余 - 内容列）不得超过 160，否则单开时看着"两边一片灰"
+      expect(1920 - layout.leftWidth - layout.centerMaxWidth).toBeLessThanOrEqual(160)
     })
 
-    it('1920px 开右侧：终端取 720，中央仍是 900', () => {
+    it('1920px 开右侧：终端取 46% ≈ 883，中央内容列仍 900', () => {
       const layout = resolveWorkspaceLayout({ viewport: 1920, leftOpen: false, rightOpen: true })
       expect(layout.mode).toBe('slide')
-      expect(layout.rightWidth).toBe(C.rightDefault)
+      expect(layout.rightWidth).toBe(defaultPanelWidth(1920, 'right'))
       expect(layout.centerMaxWidth).toBe(C.centerMax)
+      expect(1920 - layout.rightWidth - layout.centerMaxWidth).toBeLessThanOrEqual(160)
     })
 
-    it('1440px 开右侧：终端仍取偏好 720，中央压到剩余 720 而不是被无视', () => {
+    it('1440px 开右侧：终端按比例 662，中央压到剩余 778', () => {
       const layout = resolveWorkspaceLayout({ viewport: 1440, leftOpen: false, rightOpen: true })
       expect(layout.mode).toBe('slide')
-      expect(layout.rightWidth).toBe(C.rightDefault)
-      expect(layout.centerMaxWidth).toBe(1440 - C.rightDefault)
+      expect(layout.rightWidth).toBe(defaultPanelWidth(1440, 'right'))
+      expect(layout.centerMaxWidth).toBe(1440 - layout.rightWidth)
     })
+
+    it.each([1920, 1600, 1440, 1366, 1280, 1100])(
+      '%ipx 单开：面板占视口 35%~55%，中央内容列与剩余宽度差不超过 160',
+      (viewport) => {
+        for (const [leftOpen, rightOpen] of [[true, false], [false, true]] as const) {
+          const layout = resolveWorkspaceLayout({ viewport, leftOpen, rightOpen })
+          if (layout.mode !== 'slide') continue
+          const panel = leftOpen ? layout.leftWidth : layout.rightWidth
+          const ratio = panel / viewport
+          expect(ratio).toBeGreaterThanOrEqual(0.35)
+          expect(ratio).toBeLessThanOrEqual(0.55)
+          const slack = viewport - panel - layout.centerMaxWidth
+          expect(slack).toBeLessThanOrEqual(160)
+          expect(slack).toBeGreaterThanOrEqual(0)
+        }
+      },
+    )
 
     it('1100px 开右侧：终端不许吃穿中央的 560，被压到下限 560', () => {
       const layout = resolveWorkspaceLayout({ viewport: 1100, leftOpen: false, rightOpen: true })
