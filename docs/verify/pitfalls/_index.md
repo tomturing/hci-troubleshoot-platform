@@ -73,7 +73,7 @@ update_trigger: 新增验证坑 / 发现代码/服务类问题 / PIT 编号变�
 | V-031 | python.md | 淘汰一条策略必须「删模块即可」：共享内核不得承载任一策略的专属字段，候选构造下沉到编排层 |
 | V-032 | python.md | 测试替身必须复刻基类同步/异步形态（_build_partial_report 是同步 staticmethod），否则会把 fake 违约误判为产品缺陷 |
 | V-033 | python.md | 测试替身的 `**kwargs` 会吞掉调用契约漂移：删参数后单测仍全绿、真实回放即 TypeError，必须显式签名 + 真实类签名守卫 |
-| V-034 | python.md | 搬移 Markdown 或按「改动集合」扫描时基准一变引用即断：相对链接需按新位置回算，`git diff --name-only` 需 `-c core.quotePath=off` 否则中文名文档静默跳出增量门禁 |
+| V-034 | python.md | 搬移 Markdown 或按「改动集合」扫描时基准一变引用即断：相对链接需按新位置回算，`git diff --name-only` 需 `-z` 否则中文名文档静默跳出增量门禁；纯改名不产生 hunk 头，行号断言需改用 `--numstat -z` 取「有内容变化」集合 |
 | PIT-004 | python.md | Pydantic 验证 |
 | PIT-005 | frontend.md | pnpm workspace |
 | PIT-006 | dispatcher.md | 分布式锁 |

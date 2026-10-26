@@ -253,3 +253,53 @@ def test_changed_lines_file_set_matches_changed_files(tmp_path):
     line_keys = set(module.list_changed_md_lines("HEAD~1", "HEAD", cwd=repo))
 
     assert names == line_keys == {"docs/架构设计.md", "docs/部署设计.md"}
+
+
+# ---------------------------------------------------------------------------
+# 纯改名：不产生 hunk 头，不能因此被判成「丢文件」
+# ---------------------------------------------------------------------------
+
+
+def test_pure_rename_produces_no_hunk_header(tmp_path):
+    """相似度 100% 的改名不产生 hunk 头，这是 git 的正常行为而非解析缺陷。
+
+    回归背景：增量门禁曾用「改动文件全集 == hunk 头文件集」做相等断言。
+    一次「18 个纯改名 + 9 个内容改动」的文档瘦身 PR 因此 fail-closed：
+    改动文件 26 个、hunk 头只有 9 个，看起来像路径 quoting 回归，实际完全正常。
+
+    `list_content_changed_md_files` 用 `--numstat -z` 取「真有几行变化」的集合，
+    纯改名 add/del 恒为 0，因此天然被排除在断言对象之外。
+    """
+    repo = _init_repo(tmp_path, {"docs/旧位置.md": "# 同一份内容\n"})
+    _git(repo, "mv", "docs/旧位置.md", "docs/新位置.md")
+    _git(repo, "commit", "-q", "-m", "纯改名")
+
+    module = _load_module()
+    names = module.list_changed_md_files("HEAD~1", "HEAD", cwd=repo)
+    line_keys = set(module.list_changed_md_lines("HEAD~1", "HEAD", cwd=repo))
+    content = module.list_content_changed_md_files("HEAD~1", "HEAD", cwd=repo)
+
+    # 改名后的新路径仍在扫描范围内（门禁依旧会检查它）
+    assert names == ["docs/新位置.md"]
+    # hunk 头为空——旧断言误报的直接原因
+    assert line_keys == set()
+    # 「有内容变化」同样为空，两者一致，门禁不再误报
+    assert content == set()
+
+
+def test_rename_with_content_edit_counts_as_content_changed(tmp_path):
+    """既改名又改内容：必须计入「有内容变化」集合，且行号归因到新路径。
+
+    场景取「五行改一行」以保证相似度足够高，git 才会按「改名+局部改动」输出；
+    若相似度掉到阈值以下，git 会整文件重写，行号断言就失去意义。
+    """
+    repo = _init_repo(tmp_path, {"docs/旧位置.md": "A1\nA2\nA3\nA4\nA5\n"})
+    _git(repo, "mv", "docs/旧位置.md", "docs/新位置.md")
+    (repo / "docs/新位置.md").write_text("A1\nA2\nA3（改）\nA4\nA5\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "改名并改内容")
+
+    module = _load_module()
+
+    assert module.list_content_changed_md_files("HEAD~1", "HEAD", cwd=repo) == {"docs/新位置.md"}
+    assert module.list_changed_md_lines("HEAD~1", "HEAD", cwd=repo) == {"docs/新位置.md": {3}}
