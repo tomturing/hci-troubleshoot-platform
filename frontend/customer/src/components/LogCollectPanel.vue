@@ -1209,6 +1209,10 @@ async function syncNodeState(
           if (action.action === 'patch_completed') {
             stage.value = 'done'
             nodeSyncHint.value = buildSyncNotice(action)
+            // 与「刷新页面重新进入」保持一致：完成即切结果视图。
+            // 否则页面会停在收集表单上、右下角按钮还写着「开始收集」，
+            // 用户以为没完成（现场 2026-10-26 23:23）。
+            showResult(currentTask.value)
           } else {
             stage.value = 'failed'
             errorMessage.value = action.reason

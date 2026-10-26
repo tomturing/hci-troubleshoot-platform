@@ -676,6 +676,11 @@ describe('LogCollectPanel', () => {
       .mocked(logCollectApi.patchTask)
       .mock.calls.filter(([, body]: any) => body?.status === 'completed')
     expect(completed).toHaveLength(1)
+    // 完成即切结果视图：必须与「刷新页面重新进入」完全一致，
+    // 而不是继续停在收集表单上、按钮还写着「开始收集」
+    expect(wrapper.text()).toContain('该工单已完成日志收集')
+    expect(wrapper.text()).toContain('重新收集')
+    expect(wrapper.text()).not.toContain('开始收集')
     wrapper.unmount()
   })
 
