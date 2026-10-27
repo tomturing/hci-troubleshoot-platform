@@ -185,6 +185,7 @@ export interface TerminalWsMessage {
   | 'ssh_output'
   | 'ssh_error'
   | 'bridge_hello' // 连接握手首包：供端口冲突探测识别对端确为 terminal_bridge
+  | 'delivery_result' // 交付作业结果（submit/status/resume/cancel）
   | 'ping'         // WebSocket 保活心跳（服务端发送）
   | 'pong'
   | 'bridge_ready'
@@ -403,6 +404,51 @@ export function buildLogCollectMessage(
     ips: options.ips || undefined,
     extra_paths: options.extraPaths?.length ? options.extraPaths : undefined,
     remote_url: options.remoteUrl || undefined,
+    source_path: options.sourcePath || undefined,
+    platform_url: options.platformUrl || undefined,
+    upload_token: options.uploadToken || undefined,
+    chunk_size: options.chunkSize || undefined,
+    part_count: options.partCount || undefined,
+    total_size: options.totalSize || undefined,
+    uploaded_parts: options.uploadedParts?.length ? options.uploadedParts : undefined,
+    local_path: options.localPath || undefined,
+  })
+}
+
+/**
+ * 交付作业消息（submit / status / resume / cancel）。
+ *
+ * 与 `log_collect transfer` 的本质差别：submit **立刻返回 job_id**，
+ * 执行权交给 bridge，浏览器关闭也不影响；前端只轮询 status。
+ * 这也意味着旧的「等 2 小时 sendAndWait」不再需要。
+ */
+export interface DeliveryMessageOptions {
+  /** delivery_status/resume/cancel 必填；submit 由 bridge 用 `dj-<task_id>` 生成。 */
+  jobId?: string
+  /** 平台任务 ID（submit 必填，bridge 用它派生 job_id 并作为分片上传路径）。 */
+  execId?: string
+  sourcePath?: string
+  platformUrl?: string
+  uploadToken?: string
+  chunkSize?: number
+  partCount?: number
+  totalSize?: number
+  uploadedParts?: number[]
+  localPath?: string
+  nodeIp?: string
+}
+
+export function buildDeliveryMessage(
+  action: 'submit' | 'status' | 'resume' | 'cancel',
+  caseId: string,
+  options: DeliveryMessageOptions = {},
+): string {
+  return JSON.stringify({
+    type: `delivery_${action}`,
+    case_id: caseId,
+    node_ip: options.nodeIp || undefined,
+    job_id: options.jobId || undefined,
+    exec_id: options.execId || undefined,
     source_path: options.sourcePath || undefined,
     platform_url: options.platformUrl || undefined,
     upload_token: options.uploadToken || undefined,

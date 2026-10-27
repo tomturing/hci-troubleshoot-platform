@@ -391,6 +391,8 @@ type InMessage struct {
 	TransferTotalSize     int64  `json:"total_size,omitempty"`     // 压缩包总大小
 	TransferUploadedParts []int  `json:"uploaded_parts,omitempty"` // 平台已收到的分片（续传跳过）
 	TransferLocalPath     string `json:"local_path,omitempty"`     // 可选：客户机落地路径
+	// JobID 供 delivery_status / resume / cancel 定位作业（作业化后前端不再等待长任务）。
+	JobID string `json:"job_id,omitempty"`
 
 	// ── WebSocket 保活（ping/pong）专用字段 ──
 	Pong int64 `json:"pong,omitempty"` // 客户端回复心跳时间戳（回显服务端 ping 值）
@@ -5005,6 +5007,19 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 		case "acli_sync":
 			go b.handleAcliSync(ws, msg, cui)
 
+		case "delivery_submit":
+			// 交付作业化：立刻返回 job_id，执行权交给 bridge，前端只轮询进度。
+			go b.handleDeliverySubmit(ws, msg, cui)
+
+		case "delivery_status":
+			go b.handleDeliveryStatus(ws, msg, cui)
+
+		case "delivery_resume":
+			go b.handleDeliveryResume(ws, msg, cui)
+
+		case "delivery_cancel":
+			go b.handleDeliveryCancel(ws, msg, cui)
+
 		case "log_collect":
 			go b.handleLogCollect(ws, msg, cui)
 		}
@@ -5416,6 +5431,10 @@ func main() {
 	redirectStderrToFile()
 	// 5 分钟一条资源采样：Atom 级机器上采样本身也必须廉价（一天约 58KB）。
 	startResourceSampler(5 * time.Minute)
+	// 交付执行器：启动即扫描并恢复未完成作业。执行权在 bridge，
+	// 浏览器是否在线不影响；前端只通过 job_status 轮询进度。
+	deliveryRunnerInstance = newDeliveryRunner(bridge)
+	deliveryRunnerInstance.start()
 	blog("INFO", "bridge.startup", "terminal_bridge 已启动", "", "", "", "", map[string]any{
 		"version":         getVersion(),
 		"commit":          CommitID,

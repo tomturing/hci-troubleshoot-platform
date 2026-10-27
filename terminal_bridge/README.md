@@ -146,6 +146,8 @@ terminalBridge:
 | — | `HCI_BRIDGE_LOG_MAX_BYTES` | 单个日志文件最大字节数，默认 64 MiB，超限轮转为 `*.log.1` |
 | — | `HCI_BRIDGE_LOG_TO_DESKTOP` | desktop 模式桌面落盘开关，设为 `false`/`0`/`no` 关闭，默认开启 |
 | — | `HCI_BRIDGE_LOG_LEVEL` | 日志级别阈值 `DEBUG`/`INFO`/`WARN`/`ERROR`，默认 `INFO` |
+| — | `HCI_BRIDGE_DELIVERY_CONCURRENCY` | 任务内分片并发（1–4），默认按可用内存/CPU 自动决策 |
+| — | `HCI_BRIDGE_DELIVERY_TASKS` | 跨任务并发（1–2），默认 1；高配机才允许 2 |
 | — | `HCI_BRIDGE_SSH_KEEPALIVE_SECONDS` | SSH 应用层保活探测间隔（秒），默认 30；设为 `0` 关闭探测，仅保留 TCP keepalive |
 | — | `PLATFORM_ARTIFACT_URL` | 虚拟机控制台截图 PPM 直传的制品服务基址（conversation-service）；**未配置时 `capture_baseline` fail-closed 返回 `artifact_upload_disabled`，不降级 base64 over WS** |
 | — | `PLATFORM_INTERNAL_API_TOKEN` | PPM 直传的内部 Bearer Token（`INTERNAL_API_TOKEN` 对端校验） |
@@ -263,6 +265,11 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | `exec.session_missing` | ERROR | SSH 会话不存在 |
 | `log_collect.session_missing` | ERROR | 日志收集动作找不到 SSH 会话；含 `requested_key`、`active_sessions`、`session_keys` 用于定性 |
 | `log.dropped` | WARN | 回采队列溢出等导致的日志丢弃（限频上报） |
+| `delivery.runner_started` | INFO | 交付执行器启动，含并发决策（`parts`/`tasks`/`reason`/`cpu`/`mem_mb`） |
+| `delivery.submitted` | INFO | 交付作业已提交（`job_id`/`task_id`/`source_path`） |
+| `delivery.recovered` | INFO | 进程重启后恢复未完成作业（含阶段与已拉/已传量） |
+| `delivery.collect_finished` | INFO | 节点采集完成，开始交付（`total`/`archive_path`） |
+| `delivery.job_finished` | INFO | 作业状态更新（`phase`/`attempt`/`needs_reauth`/进度） |
 | `client.error` | ERROR | Custom-UI 浏览器未捕获异常（`service.name=customer-ui`） |
 
 ### 上传本地日志
@@ -285,6 +292,10 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | `vm_console_op` | `operation, capture_id, host_node_id, vm_id, exec_id, case_id, node_ip, timeout?, trace_id?` | 虚拟机控制台截图固定操作（无自由文本 command）；`operation` 仅 `capture_baseline` / `wake_down_key`，入口严格校验，非法输入 fail-closed |
 | `resume` | `case_id` | 重放近期结构化日志 |
 | `ssh_disconnect` | `case_id, node_ip?` | 断开会话 |
+| `delivery_submit` | `case_id, node_ip, exec_id(task_id), source_path, platform_url, upload_token, chunk_size, part_count, total_size, uploaded_parts?` | 提交交付作业，**立即返回 job_id**（执行权在 bridge） |
+| `delivery_status` | `job_id` | 查询作业快照（phase/progress/pulled_bytes/uploaded_parts/needs_reauth） |
+| `delivery_resume` | `job_id` | 重连后唤醒 `needs_reauth` 的作业 |
+| `delivery_cancel` | `job_id` | 取消作业（不碰节点上的 acli 任务） |
 
 ### Bridge → 浏览器
 

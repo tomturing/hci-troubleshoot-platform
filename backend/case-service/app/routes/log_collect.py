@@ -401,3 +401,49 @@ async def upload_part_direct(
         )
     except LogCollectUploadError as exc:
         raise _upload_problem(exc) from exc
+
+
+@upload_router.post("/{task_id}/complete", response_model=UploadCompleteResponse)
+async def complete_upload_direct(
+    task_id: UUID,
+    payload: UploadCompleteRequest,
+    upload_token: str = Header(alias="X-Upload-Token", min_length=8, max_length=256),
+    service: LogCollectService = Depends(get_log_collect_service),
+    upload_service: LogCollectUploadService = Depends(get_upload_service),
+    relay_service: LogCollectRelayService = Depends(get_relay_service),
+):
+    """数据面收尾：bridge 用上传令牌合并分片，并自动触发代传。
+
+    为什么必须由 bridge 收尾：交付作业化后，前端可能早已关闭页面；
+    「合并 + 代传」不能再是整条链里唯一依赖浏览器的一步。
+
+    鉴权：令牌在 init 时已绑定 task_id（见 verify_token），因此不需要客户身份，
+    也不能跨任务使用——这比带客户 Cookie 更安全，且能在浏览器缺席时工作。
+    """
+    if not upload_service.verify_token(str(task_id), upload_token):
+        raise HTTPException(
+            status_code=401,
+            detail=build_problem("LC-TRANSFER-004", "上传 token 无效或已过期"),
+        )
+    try:
+        task = await service.get_task(task_id)
+    except TaskNotFoundError as exc:
+        raise _problem(TaskNotFoundError.code, "Task not found") from exc
+    try:
+        result = await upload_service.complete(
+            task,
+            parts=payload.parts,
+            declared_sha256=payload.sha256,
+            declared_size=payload.size,
+        )
+    except LogCollectUploadError as exc:
+        raise _upload_problem(exc) from exc
+
+    # 合并成功即启动代传：trigger 内部幂等（只有把 relay_status 从非 running 改成
+    # running 的调用者才真正执行），因此重复 complete 不会重复代传。
+    started = await relay_service.trigger(task_id)
+    if started:
+        background = asyncio.create_task(relay_service.run(task_id))
+        _relay_tasks.add(background)
+        background.add_done_callback(_on_relay_done)
+    return result
