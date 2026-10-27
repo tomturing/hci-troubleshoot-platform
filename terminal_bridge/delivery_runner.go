@@ -591,7 +591,7 @@ func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 				_ = r.store.save(job)
 			}
 			r.mu.Unlock()
-			}
+		}
 	}
 
 	wg.Add(parts)
