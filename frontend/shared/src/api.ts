@@ -55,6 +55,71 @@ import type {
   OfflineResourceSyncHistory,
 } from './types'
 
+/** RFC 7807 子集：case-service 的日志收集错误即此结构（见 log_collect_errors.py）。 */
+export interface ApiProblem {
+  code?: string
+  title?: string
+  detail?: string
+  user_hint?: string
+  ops_hint?: string
+  status?: number
+  retryable?: string
+  request_id?: string
+}
+
+/**
+ * 从错误响应中提取结构化 problem。
+ *
+ * 兼容三种后端形态：
+ * - `{"detail": {code,title,detail,user_hint}}`（case-service 业务错误）
+ * - `{"detail": "..."}`（FastAPI 默认）
+ * - `{"error": {code,message,request_id}}`（shared 兜底 500）
+ */
+export function extractApiProblem(data: unknown): ApiProblem | null {
+  if (!data || typeof data !== 'object') return null
+  const payload = data as Record<string, unknown>
+  const candidate = payload.detail ?? payload.error
+  if (typeof candidate === 'string') return { detail: candidate }
+  if (!candidate || typeof candidate !== 'object') return null
+  const problem = candidate as Record<string, unknown>
+  const detail = problem.detail ?? problem.message
+  return {
+    ...(problem as ApiProblem),
+    detail: typeof detail === 'string' ? detail : '',
+  }
+}
+
+/**
+ * 把 problem 格式化成"一眼看出具体问题"的一行文案。
+ *
+ * 现场教训（2026-10-27）：上传接口抛 PermissionError 时前端只显示
+ * `Request failed with status code 500`，工单里无法判断是存储、权限还是网络。
+ * 因此这里固定输出 `[码] 标题；详情；建议：…`，缺什么就省什么，绝不返回空串。
+ */
+export function formatApiProblem(problem: ApiProblem): string {
+  const detail = (problem.detail || '').trim()
+  const title = (problem.title || '').trim()
+  const codeTag = problem.code ? `[${problem.code}]` : ''
+  // detail 往往已经以标题开头（后端为了自解释会重复一次），此时不再拼标题。
+  const showTitle = Boolean(title) && !detail.startsWith(title)
+
+  let text = [codeTag, showTitle ? title : ''].filter(Boolean).join(' ')
+  if (text && detail) {
+    text += (showTitle ? '；' : ' ') + detail
+  } else if (detail) {
+    text = detail
+  }
+
+  const hint = (problem.user_hint || '').trim()
+  if (hint && !detail.includes(hint)) {
+    text = text ? `${text}；建议：${hint}` : `建议：${hint}`
+  }
+  if (!text && problem.request_id) {
+    text = `请求编号 ${problem.request_id}`
+  }
+  return text
+}
+
 /**
  * 创建带通用拦截器的 Axios 实例
  *
@@ -87,9 +152,22 @@ export function createApiClient(
   })
 
   // 响应拦截：统一错误处理
+  //
+  // 关键：把服务端 problem 提升成 error.message。axios 默认消息只有
+  // `Request failed with status code 500`，业务码/原因/建议全部丢失，
+  // 前端各调用点只能原样展示这句空话（2026-10-27 工单现场即此）。
+  // 只做"增强"：拿不到结构化 problem 时保持 axios 原行为，不改变控制流。
   client.interceptors.response.use(
     (res) => res,
     (error) => {
+      const problem = extractApiProblem(error.response?.data)
+      if (problem) {
+        const text = formatApiProblem(problem)
+        if (text) {
+          error.problem = problem
+          error.message = text
+        }
+      }
       console.error('[API Error]', error.response?.status, error.response?.data)
       return Promise.reject(error)
     },

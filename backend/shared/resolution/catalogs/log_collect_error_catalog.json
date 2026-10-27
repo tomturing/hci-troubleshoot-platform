@@ -488,6 +488,28 @@
       "http_status": 503,
       "user_hint": "服务暂时不可用，请稍后重试。",
       "ops_hint": "连接池耗尽或数据库故障；结合健康探针判断。"
+    },
+    {
+      "code": "LC-PLATFORM-007",
+      "layer": "PLATFORM",
+      "stage": "upload",
+      "title_zh": "日志存储目录不可写",
+      "owner": "platform",
+      "retryable": "manual",
+      "http_status": 503,
+      "user_hint": "平台日志存储目录不可写（错误详情已给出目录路径、运行用户与原因），请联系运维确认容器已挂载可写卷后重试。",
+      "ops_hint": "检查 LOG_COLLECT_STORAGE_ROOT 是否指向已挂载卷、Pod fsGroup=1000 是否生效；在容器内用 `id` 与 `touch <dir>/.probe` 可直接复现权限。"
+    },
+    {
+      "code": "LC-PLATFORM-008",
+      "layer": "PLATFORM",
+      "stage": "upload",
+      "title_zh": "日志存储空间不足",
+      "owner": "platform",
+      "retryable": true,
+      "http_status": 503,
+      "user_hint": "平台日志存储空间不足（错误详情已给出所需与可用空间），请清理平台日志存储或扩容后重试。",
+      "ops_hint": "合并阶段需要与包体等量的临时空间（峰值约 2 倍包体）；检查 LOG_COLLECT_STORAGE_ROOT 所在卷剩余容量。"
     }
   ]
 }

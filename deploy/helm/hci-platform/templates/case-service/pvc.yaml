@@ -1,0 +1,29 @@
+{{- if .Values.caseService.logCollectStorage.enabled }}
+{{- /*
+  日志收集制品存储卷。
+
+  第一性原理：P3 分片上传必须把分片落到一个"跨请求、跨 Pod 重启仍存在且
+  运行用户可写"的目录。case-service 以 uid=1000 运行，rootfs 里的 /var/lib
+  属 root:0755，既不能预建目录也不能在运行时 mkdir —— 2026-10-27 工单
+  Q2026102701294 的 500 就是这条路径缺失导致的（PermissionError）。
+
+  因此：默认开启，独立 PVC（RWO，单副本），由 kubelet 按 pod 的
+  fsGroup=1000 调整卷属组，服务进程即可读写。
+*/}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: case-service-log-collect
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.podLabels" (dict "name" "case-service" "Release" .Release "Chart" .Chart) | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.caseService.logCollectStorage.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.caseService.logCollectStorage.size | quote }}
+{{- end }}
