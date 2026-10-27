@@ -33,6 +33,7 @@ import {
   type DeliverySubmitPayload,
 } from '@/utils/logCollectDelivery'
 import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCancel'
+import { pickDisplayTask } from '@/services/logCollectHistory'
 import {
   blocksCreate as blocksCreateAction,
   buildSyncNotice,
@@ -185,6 +186,14 @@ const viewMode = ref<'form' | 'result'>('form')
 const resultTask = ref<LogCollectTask | null>(null)
 // 该工单历史任务总数：用于告知"已完成是既成事实，可以重新收集但不是必须"
 const historyTotal = ref(0)
+/**
+ * 本工单最近的若干条记录（最多 5 条）。
+ *
+ * 只展示"最近一条"是不够的：同一工单经常有多条（本次现场 4 条），用户需要能确认
+ * 面板说的到底是哪一次，并主动切回去看。缺少这个入口时，"展示错了任务"会被
+ * 直接读成"系统判错了交付路径"（Q2026102701193）。
+ */
+const historyTasks = ref<LogCollectTask[]>([])
 const progress = ref<ProgressSnapshot | null>(null)
 /**
  * 本次任务过程中观测到的最大压缩包字节数（0 = 还没量到过）。
@@ -409,6 +418,74 @@ const resultMode = computed<'acli_direct' | 'bridge_relay' | ''>(() => {
   return task.remote_url ? 'acli_direct' : ''
 })
 
+/**
+ * 结果态标题与描述：必须说清"这是哪一次、结果如何"。
+ *
+ * 写死"已完成"会让失败任务的卡片撒谎——而用户正是靠这一行判断"这次到底成没成"。
+ */
+const resultHeadline = computed<{ type: 'success' | 'error' | 'info'; title: string; description: string }>(() => {
+  const task = resultTask.value
+  const when = resultFinishedText.value
+  if (!task) return { type: 'info', title: '', description: '' }
+  if (task.status === 'failed') {
+    return {
+      type: 'error',
+      title: `该工单上次采集失败（${when}）`,
+      description: '以下是平台记录的最近一次采集结果；失败原因见下方错误信息，可点右下角「重新收集」再试一次。',
+    }
+  }
+  if (task.status === 'cancelled') {
+    return {
+      type: 'info',
+      title: `该工单上次采集已取消（${when}）`,
+      description: '以下是平台记录的最近一次采集结果；如需采集请点右下角「重新收集」。',
+    }
+  }
+  return {
+    type: 'success',
+    title: `该工单已完成日志收集（${when}）`,
+    description: '以下是平台记录的最近一次收集结果；如需再次采集，点右下角「重新收集」。',
+  }
+})
+
+const RESULT_STATUS_TEXT: Record<string, string> = {
+  completed: '完成',
+  failed: '失败',
+  cancelled: '已取消',
+}
+
+/**
+ * 历史记录的短标签：时间 + 结论 + 交付路径。
+ *
+ * 三项缺一不可——用户判断"是不是我看的那次"靠时间，判断"该不该重收"靠结论，
+ * 而"我明明选了 P2"这类质疑只能靠路径自证（Q2026102701193）。
+ */
+function historyLabel(task: LogCollectTask): string {
+  const raw = task.finished_at || task.created_at
+  const date = raw ? new Date(raw) : null
+  const time =
+    date && !Number.isNaN(date.getTime())
+      ? `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ` +
+        `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+      : '时间未记录'
+  const path =
+    task.upload_mode === 'acli_direct'
+      ? 'P1'
+      : task.upload_mode === 'bridge_relay'
+        ? 'P2'
+        : '路径未记录'
+  return `${time} · ${RESULT_STATUS_TEXT[task.status] ?? task.status} · ${path}`
+}
+
+/** 切换展示记录：归档状态与上传入口都基于"当前展示的那条"，切换后必须重新对账 */
+function switchDisplayTask(taskId: string) {
+  if (taskId === resultTask.value?.task_id) return
+  const task = historyTasks.value.find((item) => item.task_id === taskId)
+  if (!task) return
+  showResult(task)
+  if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true, source: 'manual' })
+}
+
 const resultDeliveryText = computed(() => {
   if (resultMode.value === 'acli_direct') return 'P1 直传日志服务器'
   if (resultMode.value === 'bridge_relay') return 'P2 经平台中转'
@@ -489,6 +566,10 @@ const resultArchiveText = computed(() => {
   if (!task) return ''
   if (task.relay_status === 'failed') return '归档失败（详见平台任务记录）'
   if (task.delivery_status === 'failed') return '交付失败（可点「上传到平台」重传，无需重新采集）'
+  // queued = 平台已登记一次交付尝试但没走到终态（提交阶段中断/失败）。
+  // 不显式化的话，这里只会显示"采集完成，尚未交付"，用户无从知道已经试过一次、
+  // 试到哪一步了（Q2026102701193 现场库里就有一条 queued 卡了两天）。
+  if (task.delivery_status === 'queued') return '交付已登记但未完成（可点「上传到平台」重试）'
   if (resultDelivered.value) {
     return resultMode.value === 'acli_direct' ? '已由插件直传日志服务器' : '已归档到日志服务器'
   }
@@ -1021,10 +1102,15 @@ async function restoreTaskState(force = false) {
       ElMessage.info('已接管进行中的采集任务，进度每 5 秒自动刷新')
       return
     }
-    // 已完成优先展示：这是用户最需要看到的结果（收了什么、什么时候收的、包在哪）
-    const completed = items.find((item) => item.status === 'completed')
-    if (completed) {
-      showResult(completed)
+    // 展示"最近一条终态任务"，而不是"任意一条 completed"：
+    // 用户刚发起的那次尝试（哪怕失败）才是他要看的结论。取任意 completed 会让
+    // 几小时前的旧任务顶掉刚失败的新任务，连交付路径看起来都"变了"
+    // （Q2026102701193：用户选 P2 建的任务 failed，面板却展示早上那条 P1 的
+    //  "已由插件直传"，于是用户质疑"我明明选的 P2"）。
+    const latest = pickDisplayTask(items)
+    if (latest) {
+      historyTasks.value = items.slice(0, 5)
+      showResult(latest)
       // 完成 ≠ 已交付：结果态也必须对账一次，否则"包还在节点上、平台没产物"
       // 的任务永远拿不到「上传到平台」，用户只剩"重新采集"这一条错路。
       if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true, source: 'open' })
@@ -2529,11 +2615,11 @@ onBeforeUnmount(() => {
       -->
       <div v-if="viewMode === 'result' && resultTask" class="lc-result">
         <el-alert
-          type="success"
+          :type="resultHeadline.type"
           :closable="false"
           show-icon
-          :title="`该工单已完成日志收集（${resultFinishedText}）`"
-          description="以下是平台记录的上一次收集结果；如需再次采集，点右下角「重新收集」。"
+          :title="resultHeadline.title"
+          :description="resultHeadline.description"
         />
         <el-descriptions :column="descColumns" border size="small">
           <el-descriptions-item label="发起节点">{{ resultTask.origin_node_ip }}</el-descriptions-item>
@@ -2551,6 +2637,23 @@ onBeforeUnmount(() => {
         <p class="lc-hint">
           当前客户端在本工单下共 {{ historyTotal }} 条收集记录；已完成的任务不会被覆盖，重新收集会新建一条任务。
         </p>
+        <!--
+          必须能切换查看：同一工单经常有多条记录，用户要能确认"面板说的是哪一次"。
+          只展示一条且不给入口时，展示错了任务会被直接读成"系统判错了交付路径"
+          （Q2026102701193：用户选 P2 建的任务失败，面板却显示早上那条 P1 的结果）。
+        -->
+        <div v-if="historyTasks.length > 1" class="lc-history">
+          <span class="lc-hint">展示记录：</span>
+          <el-button
+            v-for="item in historyTasks"
+            :key="item.task_id"
+            size="small"
+            :type="item.task_id === resultTask.task_id ? 'primary' : 'default'"
+            @click="switchDisplayTask(item.task_id)"
+          >
+            {{ historyLabel(item) }}
+          </el-button>
+        </div>
       </div>
 
       <template v-else>
@@ -2947,6 +3050,13 @@ onBeforeUnmount(() => {
 /* 选择与探测结论冲突时只加色不改文案：提示必须同时说清"劝你别选"和"但你仍可以选" */
 .lc-hint-warn {
   color: var(--el-color-warning);
+}
+/* 历史记录切换：一行内可换行，条数多时不撑破抽屉 */
+.lc-history {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
 }
 /* 探测元信息：时间 / 命中的二进制 / 重新探测，弱化到不抢描述表的注意力 */
 .lc-probe-meta {

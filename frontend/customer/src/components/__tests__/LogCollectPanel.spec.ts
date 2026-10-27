@@ -522,6 +522,53 @@ describe('LogCollectPanel', () => {
     wrapper.unmount()
   })
 
+  /**
+   * 现场回归（Q2026102701193，2026-10-27）：
+   * 用户 16:40 发起 P2 采集（16:45 failed），而更早 10:03 发起的 P1 任务 18:05 才完成。
+   * 面板原先取"任意一条 completed"，于是展示早上那条 P1 的"已由插件直传"，
+   * 用户看到交付路径是 P1，直接质疑"我明明选的 P2，你怎么判的"。
+   *
+   * 契约：展示**最近一次发起**的终态任务；标题按真实结论渲染；给出记录切换入口。
+   */
+  it('最新发起的任务失败时展示失败那条，而不是更早的完成记录', async () => {
+    const oldCompleted = taskFixture({
+      task_id: 'task-old',
+      status: 'completed',
+      created_at: '2026-10-27T10:03:00+08:00',
+      finished_at: '2026-10-27T18:05:00+08:00',
+      upload_mode: 'acli_direct',
+      remote_url: 'http://acli.sangfor.com.cn:5888',
+      delivery_status: 'delivered',
+    } as Partial<LogCollectTask>)
+    const newFailed = taskFixture({
+      task_id: 'task-new',
+      status: 'failed',
+      created_at: '2026-10-27T16:40:00+08:00',
+      finished_at: '2026-10-27T16:45:00+08:00',
+      upload_mode: 'bridge_relay',
+      delivery_status: 'queued',
+    } as Partial<LogCollectTask>)
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 2, items: [oldCompleted, newFailed] })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    const result = wrapper.find('.lc-result')
+    expect(result.exists()).toBe(true)
+    // 标题必须是"失败"，否则用户会以为自己这次成功了
+    expect(result.text()).toContain('该工单上次采集失败')
+    expect(result.text()).not.toContain('已完成日志收集')
+    // 交付路径必须来自最新那条（P2），这正是用户质疑的点
+    expect(result.text()).toContain('P2 经平台中转')
+    // queued 必须显式化，不能只显示"尚未交付"
+    expect(result.text()).toContain('交付已登记但未完成')
+    // 记录切换入口：让用户能确认面板说的到底是哪一次
+    expect(result.text()).toContain('展示记录')
+    expect(wrapper.findAll('button').map((b) => b.text()).join('|')).toContain('P2')
+    wrapper.unmount()
+  })
+
   // 现场反馈：产物位置是长路径，排在右列会把行高撑成两行且右侧留白；
   // 换成「产物位置在左、归档状态在右」后路径靠左读，短文案收口在右。
   it('结果态字段顺序把产物位置排在归档状态之前', async () => {
