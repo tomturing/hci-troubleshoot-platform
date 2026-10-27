@@ -596,28 +596,77 @@ func parseLogCollectProgress(raw string) logCollectProgress {
 	return result
 }
 
-// probeLogCollectArchiveSize 量一次压缩包字节数，量不到返回 0。
+// probeLogCollectArchiveSize 量一次压缩包字节数。
 //
 // 时机敏感：P1 直传成功后插件会立刻删除压缩包，只有上传窗口内的轮询能拿到值。
-// 失败是常态（包还没生成、已被删除、路径未通过规范化），一律返回 0，
-// 由前端显示「未记录」，不产生错误也不阻断进度查询。
-func probeLogCollectArchiveSize(ctx context.Context, s *SSHSession, rawPath string) int64 {
-	if s == nil || strings.TrimSpace(rawPath) == "" {
-		return 0
+// 量不到不报错、不阻断进度查询，返回 0 由前端显示「未记录」。
+//
+// 为什么要做两级降级：staging 实测（case Q2026101401683，85% 上传中、包必然存在）
+// 显示 stat 返回 0——说明在真实节点上 stat 不是"偶尔失败"而是"从来没成功"，
+// 而单命令实现失败时不留下任何可判读信息，只能再猜一轮、再发一版。
+// 所以这里改成「GNU stat → ls -l 解析」，并把每级的 exitCode/stderr 拼成 diag
+// 交给调用方写进 blog：下次现场直接看日志就能定位，不必改代码再发版。
+func probeLogCollectArchiveSize(ctx context.Context, s *SSHSession, rawPath string) (int64, string) {
+	if s == nil {
+		return 0, "no-session"
+	}
+	if strings.TrimSpace(rawPath) == "" {
+		return 0, "empty-path"
 	}
 	path, err := normalizeArchivePath(rawPath)
 	if err != nil {
-		return 0
+		return 0, "path-rejected: " + err.Error()
 	}
-	output, exitCode, cmdErr := s.runQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(path)))
-	if cmdErr != nil || exitCode != 0 {
-		return 0
+	var diags []string
+	// ① GNU coreutils：HCI 节点是 Linux，正常情况走这条
+	if out, code, cmdErr := s.runQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(path))); cmdErr == nil && code == 0 {
+		if size, parseErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64); parseErr == nil && size > 0 {
+			return size, ""
+		}
+		diags = append(diags, fmt.Sprintf("stat:unparsable %q", truncateForDiag(out, 60)))
+	} else {
+		diags = append(diags, fmt.Sprintf("stat:exit=%d err=%v", code, cmdErr))
 	}
-	size, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64)
-	if parseErr != nil || size <= 0 {
-		return 0
+	// ② ls -l 兜底：受限 shell / 裁剪版 busybox 没有 stat 时，第 5 列就是字节数
+	if out, code, cmdErr := s.runQuickCommand(ctx, fmt.Sprintf("ls -l %s", shellQuote(path))); cmdErr == nil && code == 0 {
+		if size, ok := parseLsFieldSize(out); ok {
+			return size, ""
+		}
+		diags = append(diags, fmt.Sprintf("ls:unparsable %q", truncateForDiag(out, 80)))
+	} else {
+		diags = append(diags, fmt.Sprintf("ls:exit=%d err=%v", code, cmdErr))
 	}
-	return size
+	return 0, strings.Join(diags, " | ")
+}
+
+// parseLsFieldSize 从 `ls -l` 的单行输出里取字节数（第 5 列）。
+//
+// 只解析单行、只认正整数：多行说明路径被当成通配符展开过，此时宁可放弃也不猜，
+// 免得把目录里另一个文件的大小当成压缩包大小记下来。
+func parseLsFieldSize(output string) (int64, bool) {
+	trimmed := strings.TrimSpace(output)
+	// 行数不为 1 说明路径被通配符展开、或命令在报错行里也打了内容，此时不猜
+	if trimmed == "" || strings.Count(trimmed, "\n") > 0 {
+		return 0, false
+	}
+	fields := strings.Fields(trimmed)
+	if len(fields) < 5 {
+		return 0, false
+	}
+	size, err := strconv.ParseInt(fields[4], 10, 64)
+	if err != nil || size <= 0 {
+		return 0, false
+	}
+	return size, true
+}
+
+// truncateForDiag 截短命令输出，避免把整段终端噪音塞进日志。
+func truncateForDiag(text string, limit int) string {
+	trimmed := strings.TrimSpace(text)
+	if len(trimmed) <= limit {
+		return trimmed
+	}
+	return trimmed[:limit] + "..."
 }
 
 // fallbackLogCollectArchivePath 在插件还没打印路径时，按约定推导压缩包位置。
@@ -832,7 +881,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		// 刻意不回填 progress.ArchivePath：前端 decideNodeSync 用「节点无任务 + 有 archive_path」
 		// 判定任务已完成，回填一个未经验证的推导路径会让它在"任务被清理但包还在"时误判完成。
 		// 大小是纯展示字段，不参与状态机，因此只补 size。
-		progress.ArchiveSize = probeLogCollectArchiveSize(ctx, s, probePath)
+		progress.ArchiveSize, archiveSizeDiag := probeLogCollectArchiveSize(ctx, s, probePath)
 		status := "ok"
 		code := ""
 		if err != nil || exitCode != 0 {
@@ -857,8 +906,9 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"upload_url": progress.UploadURL, "upload_state": progress.UploadState,
 			"node_state":  progress.NodeState,
 			"hosts_count": len(progress.Hosts), "archive_size": progress.ArchiveSize,
-			"exit_code": exitCode,
-			"error":     errString(err), "raw_len": len(output),
+			"archive_size_diag": archiveSizeDiag,
+			"exit_code":         exitCode,
+			"error":             errString(err), "raw_len": len(output),
 		})
 
 	case "stat":
