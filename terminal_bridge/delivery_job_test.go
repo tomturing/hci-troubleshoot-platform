@@ -127,3 +127,23 @@ func TestChunkConcurrencyForMemoryBudget(t *testing.T) {
 		t.Fatalf("大内存小分片应允许 4，实际 %d", got)
 	}
 }
+
+// 交付模式判定：只有显式声明 direct 才跳过"等采集完成"。
+//
+// 这条开关决定「acli 已采集完成 → 直接上传」能否成立：
+// collect 会进 waitCollect，其中的"包早于本次作业创建即判为上一次任务的产物"
+// （容差 5 分钟）会把补交付必然误杀；而空值/未知值必须回落到 collect，
+// 否则会在采集还在写包时把半截 zip 搬走。
+func TestDeliveryModeIsDirect(t *testing.T) {
+	direct := []string{"direct", "Direct", " DIRECT ", "direct\t"}
+	for _, mode := range direct {
+		if !deliveryModeIsDirect(mode) {
+			t.Fatalf("%q 应判定为补交付", mode)
+		}
+	}
+	for _, mode := range []string{"", "collect", "DIRECTED", "diret"} {
+		if deliveryModeIsDirect(mode) {
+			t.Fatalf("%q 不得判定为补交付（必须回落到 collect）", mode)
+		}
+	}
+}

@@ -35,6 +35,15 @@ const (
 	deliveryModeDirect = "direct"
 )
 
+// deliveryModeIsDirect 判定本次交付是否为"补交付"。
+//
+// 只认显式声明：空值/未知值一律按 collect 处理，因为 collect 会先读一遍 progress
+// 再动手，是更保守的一侧。反过来"猜成 direct"会在采集尚未写完时把半截包搬走。
+// 单独抽成函数是为了让这条约定能被单测锁住——它是"已采集完成可直接上传"的入口开关。
+func deliveryModeIsDirect(mode string) bool {
+	return strings.EqualFold(strings.TrimSpace(mode), deliveryModeDirect)
+}
+
 // deliveryPhase 是交付阶段。顺序即推进顺序，恢复时按它决定从哪继续。
 type deliveryPhase string
 

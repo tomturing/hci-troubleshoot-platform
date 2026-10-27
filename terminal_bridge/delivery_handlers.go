@@ -92,7 +92,7 @@ func (b *Bridge) handleDeliverySubmit(ws *websocket.Conn, msg InMessage, cui str
 		PartCount:     msg.TransferPartCount,
 		SourceSize:    msg.TransferTotalSize,
 		UploadedParts: append([]int(nil), msg.TransferUploadedParts...),
-		Direct:        strings.EqualFold(strings.TrimSpace(msg.TransferDeliveryMode), deliveryModeDirect),
+		Direct:        deliveryModeIsDirect(msg.TransferDeliveryMode),
 		TLSInsecure:   msg.TransferTLSInsecure,
 	}
 	if job.LastError == "" {
