@@ -1,3 +1,11 @@
+---
+status: active
+category: verify
+audience: developer
+last_updated: 2026-08-14
+owner: team
+---
+
 # hci-sim 架构评估与构建机制分析（现行全量）
 
 > 本文从「为什么目录和表众多」的角度，解释 hci-sim 的构建逻辑。所有事实基于 `hci_sim/` 源码、`database/hci-sim-migrations/` 迁移与 `docs/solution/hci-sim`、`docs/task/hci-sim` 事件文档。

@@ -1,3 +1,11 @@
+---
+status: active
+category: meta
+audience: operator
+last_updated: 2026-08-13
+owner: team
+---
+
 # HCI 智能排障平台在线诊断普通用户使用手册
 
 > 适用对象：使用 HCI 智能排障平台提交故障并允许平台通过 SSH 在线采集、分析信息的普通用户。

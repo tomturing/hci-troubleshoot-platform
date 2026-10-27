@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # Bundle 工厂日志选择器变量占位符保留修复
 
 ## 问题

@@ -380,6 +380,7 @@ docker compose logs conversation-service --tail 20 | grep "diagnostic_stage"
 > **关联文档**：
 > - [docs/architecture/完整技术方案.md](../architecture/完整技术方案.md) § 六、Phase 3
 > - [docs/architecture/各层最优设计.md](../architecture/各层最优设计.md) § Layer 2/5
-> - [docs/reference/scp/openapi.yaml](../reference/scp/openapi.yaml)（SCP REST API 完整规范）
+> - SCP REST API 完整契约：本仓无 openapi.yaml（Wave 4 订正：原链接 `../reference/scp/openapi.yaml` 指向的文件不存在、从未入库），
+>   现行工具调用契约以 `backend/agent-service/app/adapters/clients/scp_client.py` 为准
 
 ---

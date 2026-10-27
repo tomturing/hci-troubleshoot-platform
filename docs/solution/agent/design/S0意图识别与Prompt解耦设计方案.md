@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # S0 意图识别与 Prompt 解耦设计方案
 
 ## 1. 核心设计缺陷分析（第一性原理视角）

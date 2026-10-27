@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-07-03
+owner: team
+---
+
 # Raw Graph JSON → SOPNode Tree 转化管道实现方案
 
 ## 背景与目标

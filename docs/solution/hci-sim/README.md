@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-21
+owner: team
+---
+
 # hci-sim 仿真运行时 · 设计导航
 
 > 子模块定位：`hci_sim/` 是强隔离、确定性、带租约鉴权的 HCI 仿真 SSH Runtime，用于在不可触碰真实生产客户环境的前提下，对诊断/排障知识库（KBD）的修复命令做端到端验证。

@@ -409,5 +409,13 @@ curl -X POST "http://localhost:8004/api/admin/sop/{document_id}/approve" \
 |---------|------|
 | `backend/kb-service/app/routes/admin.py` | 审核接口实现 |
 | `backend/kb-service/app/services/sop_parser.py` | 决策树解析器 |
-| `backend/kb-service/app/models/sop_tree.py` | 数据模型 |
+| `backend/kb-service/app/models/sop_tree.py` | 数据模型（已删除，#326 合并入 `backend/kb-service/app/models/sop_document.py`）|
 | `docs/solution/knowledge-base/SOP决策树生产消费流程.md` | 设计文档 |
+
+## 变更历史
+
+> 本节自 2026-10-26 起补建；此前的修订轨迹见 `git log`，规范 §7.1 不要求回溯补齐。
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-10-26 | — | `backend/kb-service/app/models/sop_tree.py` 标注已删除（#326 合并入 `sop_document.py`） | [文档瘦身 Wave 3 现行文档准确性治理](../../solution/events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |

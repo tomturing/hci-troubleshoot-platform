@@ -36,7 +36,7 @@ LogCollectModule = Literal[
     "performance",
     "core",
 ]
-# 交付路径收敛为两条：acli_direct = P1（HCI 直传 5888），bridge_relay = P3（bridge 中转）。
+# 交付路径收敛为两条：acli_direct = P1（HCI 直传 5888），bridge_relay = P2（bridge 中转）。
 # 原 platform_direct（平台直传）对应已废弃的 P2，不再接受。
 UploadMode = Literal["acli_direct", "bridge_relay", "none"]
 
@@ -63,6 +63,15 @@ class LogCollectTaskCreate(BaseModel):
     ips: list[str] = Field(default_factory=lambda: ["all"], description='目标主机；["all"] 表示全部在线节点')
     extra_paths: list[str] = Field(default_factory=list, max_length=20)
     remote_url: str | None = Field(default=None, description="上传目标（仅 http/https 官方日志服务器）")
+    baseline_report_hash: str | None = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "下发前锚定的节点报告指纹（`acli log_collect progress` 原文的 "
+            "`长度-FNV32`）。同一工单重复 create 时插件会先返回上一次任务的报告，"
+            "有该指纹才能判断报告是否已刷新成本次任务。"
+        ),
+    )
     trace_id: str | None = Field(default=None, max_length=64)
 
     @field_validator("origin_node_ip")
@@ -204,7 +213,7 @@ class LogCollectTaskResponse(BaseModel):
     cleanup_state: str = "none"
     cleanup_reason: str | None = None
     archive_deleted: bool = False
-    # P3 段③ 代传状态（与主状态机解耦）
+    # P2 段③ 代传状态（与主状态机解耦）
     relay_status: str = "none"
     relay_chunk_index: int | None = None
     relay_chunk_total: int | None = None
@@ -224,7 +233,7 @@ class LogCollectTaskListResponse(BaseModel):
     items: list[LogCollectTaskResponse]
 
 
-# ── P3 段②：客户 PC → 平台 分块上传 ──────────────────────────────────────────
+# ── P2 段②：客户 PC → 平台 分块上传 ──────────────────────────────────────────
 # 会话标识即 task_id（1 任务 : 1 包 : 1 会话），因此请求/响应均不含独立 upload_id 之外的字段。
 
 

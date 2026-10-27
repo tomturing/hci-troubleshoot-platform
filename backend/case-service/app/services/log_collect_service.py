@@ -30,9 +30,13 @@ _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "collecting": frozenset({"packaging", "uploading", "completed", "failed", "cancelled"}),
     "packaging": frozenset({"uploading", "completed", "failed", "cancelled"}),
     "uploading": frozenset({"completed", "failed", "cancelled"}),
-    "completed": frozenset(),
-    "failed": frozenset(),
-    "cancelled": frozenset(),
+    # 纠正（correct）：平台已归档，但完成判定不可信（典型是同 ticket 的历史任务报告）。
+    # 只在前端判定"完成态不可信"时，由用户显式点击触发，且会清空该任务的产物记录。
+    "completed": frozenset({"collecting"}),
+    # 接管（adopt）：平台已判失败/取消，但节点上任务仍在跑。
+    # 节点是唯一真相源，允许把投影改回收集中，继续跟进；不做自动重试，避免重复采集。
+    "failed": frozenset({"collecting"}),
+    "cancelled": frozenset({"collecting"}),
 }
 
 
@@ -110,7 +114,13 @@ class LogCollectService:
             remote_url=payload.remote_url,
             status="pending",
             progress=0,
-            detail={},
+            # 下发锚定的报告指纹必须随任务落库：前端内存里的基线在关面板、
+            # 换浏览器、重启后会丢失，届时就无法判断"节点报告属于哪一次下发"。
+            detail=(
+                {"baseline_report_hash": payload.baseline_report_hash}
+                if payload.baseline_report_hash
+                else {}
+            ),
             created_by=client_id,
             # trace_id 由平台兜底生成：前端若未传，任务仍必须有一个可贯穿
             # 「平台 → bridge → HCI → 回采日志」的链路 ID，否则远端无法按链路定位。
@@ -146,6 +156,10 @@ class LogCollectService:
         if new_progress is not None and task.status not in TERMINAL_STATUSES and new_progress < task.progress:
             raise InvalidTransitionError(f"进度不能回退：{task.progress} → {new_progress}", code="LC-PLATFORM-004")
 
+        # 必须先把旧状态存下来：下面的 setattr 会把 task.status 直接改成目标值，
+        # 之后再用 task.status 判断"是不是从终态复活"永远为假，接管/纠正分支会变成死代码。
+        previous_status = task.status
+
         for key, value in data.items():
             setattr(task, key, value)
 
@@ -154,6 +168,34 @@ class LogCollectService:
             if target_status == "completed":
                 # 完成即 100%：插件 final 阶段偶发未刷新 progress，平台侧做确定性收敛。
                 task.progress = 100
+        elif target_status == "collecting" and previous_status in TERMINAL_STATUSES:
+            # 接管 / 纠正：终态是"平台投影"，节点仍在跑时可以被覆盖。
+            if previous_status == "completed":
+                # 原完成记录里的产物未必属于本次任务（同 ticket 重复 create 会拿到上一次的报告），
+                # 继续挂着会变成"采集中却显示产物位置"的新误导。清空产物字段，原值留审计；
+                # 注意：只改 DB 投影，节点与日志服务器上的压缩包一律不删。
+                audit = (
+                    f"原完成记录已按节点态纠正：archive_path={task.archive_path}, "
+                    f"archive_size={task.archive_size}, archive_sha256={task.archive_sha256}, "
+                    f"relay_status={task.relay_status}"
+                )
+                task.archive_path = None
+                task.archive_size = None
+                task.archive_sha256 = None
+                task.relay_status = "none"
+                task.relay_chunk_index = None
+                task.relay_chunk_total = None
+                task.relay_restarts = 0
+                task.cleanup_state = "none"
+                task.cleanup_reason = None
+                task.error_code = "corrected_by_node"
+                task.error_message = audit
+            else:
+                # 接管失败/取消的任务：清掉上次的失败痕迹，
+                # 否则界面会一边显示"采集中"一边显示旧错误原因。
+                task.error_code = None
+                task.error_message = None
+            task.finished_at = None
         task.updated_at = datetime.now(UTC)
 
         await self.repository.flush()

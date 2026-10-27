@@ -146,6 +146,7 @@ terminalBridge:
 | — | `HCI_BRIDGE_LOG_MAX_BYTES` | 单个日志文件最大字节数，默认 64 MiB，超限轮转为 `*.log.1` |
 | — | `HCI_BRIDGE_LOG_TO_DESKTOP` | desktop 模式桌面落盘开关，设为 `false`/`0`/`no` 关闭，默认开启 |
 | — | `HCI_BRIDGE_LOG_LEVEL` | 日志级别阈值 `DEBUG`/`INFO`/`WARN`/`ERROR`，默认 `INFO` |
+| — | `HCI_BRIDGE_SSH_KEEPALIVE_SECONDS` | SSH 应用层保活探测间隔（秒），默认 30；设为 `0` 关闭探测，仅保留 TCP keepalive |
 | — | `PLATFORM_ARTIFACT_URL` | 虚拟机控制台截图 PPM 直传的制品服务基址（conversation-service）；**未配置时 `capture_baseline` fail-closed 返回 `artifact_upload_disabled`，不降级 base64 over WS** |
 | — | `PLATFORM_INTERNAL_API_TOKEN` | PPM 直传的内部 Bearer Token（`INTERNAL_API_TOKEN` 对端校验） |
 
@@ -158,6 +159,31 @@ terminalBridge:
   --port=9999 \
   --allowed-origins=same-origin
 ```
+
+## SSH 连接保活
+
+SSH 会话是 Bridge 里唯一有生命周期的外部资源：`sessions` 只是内存 map，键为 `caseID@nodeIP`，
+进程重启或连接断开即全部消失。终端空闲时这条连接上没有任何字节流动，而客户环境普遍存在
+防火墙/NAT/负载均衡的空闲映射老化，链路会被**静默丢弃**（无 FIN/RST）。
+
+因此 Bridge 做两层保活：
+
+| 层次 | 机制 | 失败判据 |
+|---|---|---|
+| TCP | `SetKeepAlive(true)` + 周期 30s | 由内核判定，Bridge 不感知 |
+| SSH | 每 `HCI_BRIDGE_SSH_KEEPALIVE_SECONDS`（默认 30s）发一次 `keepalive@openssh.com` 全局请求 | 返回传输层错误，或 10s 内无响应 |
+
+判定失效后不会静默丢弃：先记 `ssh.keepalive_failed`，再 `close()` 会话。关闭会让 pty 读循环
+立即 EOF，走既有的 `onExit` 清理链路（从 `sessions` 移除并向前端发 `ssh_disconnected`），
+不引入第二条清理路径。
+
+> 注意：`keepalive@openssh.com` 不被服务端支持时回 `REQUEST_FAILURE`（`wantReply` 为 false、
+> `err` 为 `nil`），这是**链路活着**的证据，不算失败。
+
+会话消失的排查顺序（日志事件）：`bridge.disconnected`（浏览器断开连坐）→
+`ssh_disconnected`（远端 shell 退出）→ 重复的 `ssh.connected` 同键（重连覆盖）→ Pod 重启。
+`log_collect.session_missing` 事件现在带 `active_sessions`、`session_keys`、`requested_key`：
+**会话数为 0 说明连接生命周期已结束；会话数 >0 但键对不上说明是路由/键问题**，两者处置完全不同。
 
 ## 健康、状态与指标
 
@@ -217,12 +243,14 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | `bridge.disconnected` | WARN | 浏览器断开（断连窗口内的命令结果会丢失） |
 | `ws.send_failed` | ERROR | 出站消息发送失败（结果回不去浏览器） |
 | `ssh.connected` | INFO | SSH 认证成功 |
+| `ssh.keepalive_failed` | WARN | SSH 保活探测失败，会话判定失效并主动关闭（含 `address`/`error`） |
 | `ssh.output` | INFO | 终端输出回采 |
 | `exec.request` / `exec.start` | INFO | 收到/开始执行命令 |
 | `exec.done` | INFO/ERROR | 执行完成，含 `exit_code`、`error_type`、`stderr_preview` |
 | `exec.timeout` | ERROR | 命令超时（显式事件，可独立检索） |
 | `exec.rejected` | ERROR | 命令被拒绝（缺 `exec_id`/`command` 等，含 `error_type`） |
 | `exec.session_missing` | ERROR | SSH 会话不存在 |
+| `log_collect.session_missing` | ERROR | 日志收集动作找不到 SSH 会话；含 `requested_key`、`active_sessions`、`session_keys` 用于定性 |
 | `log.dropped` | WARN | 回采队列溢出等导致的日志丢弃（限频上报） |
 | `client.error` | ERROR | Custom-UI 浏览器未捕获异常（`service.name=customer-ui`） |
 
@@ -272,4 +300,4 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 - 校验拒绝：未知 `operation` → `operation_invalid`；`host_node_id`（`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`）、
   `vm_id`（纯数字 ≤20 位）、`capture_id`（UUID）任一非法或缺失关键字段 → `target_invalid`，均不执行任何命令。
 
-详细部署与端到端验证见 [K3s 部署指南](docs/deploy/terminal_bridge-K3s双运行形态部署.md)。
+详细部署与端到端验证见 [K3s 部署指南](../docs/deploy/terminal_bridge-K3s双运行形态部署.md)。

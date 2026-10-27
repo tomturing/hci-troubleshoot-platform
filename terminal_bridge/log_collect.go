@@ -88,6 +88,43 @@ var logCollectModuleCatalogOrder = []string{
 // 且插件位于 /sf/data/local/acli，缺一不可。
 const logCollectAcliPathEnv = `export PATH="$PATH:/sf/bin:/sf/sbin:/usr/sbin:/usr/local/bin";`
 
+// logCollectAcliCandidates 是 acli 二进制的解析顺序（HCI 官方入口在前）。
+//
+// 第一性原理：PATH 只能"追加"，而 sshd 非交互会话的默认 PATH
+// （/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin）排在我们的追加项之前。
+// 一旦节点上存在两份 acli（旧版落在 /usr/local/bin 等目录），`acli --version` 命中的是旧版，
+// 于是面板显示的版本与运维在登录 shell 里手敲的结果不一致，且无法自证。
+// 因此版本探测按绝对路径解析，并把真正命中的路径一起回传。
+var logCollectAcliCandidates = []string{"/sf/bin/acli", "/sf/sbin/acli"}
+
+// buildAcliVersionCommand 生成既解析二进制路径、又输出原始版本的两段式命令。
+//
+// 输出契约（parseAcliVersion / parseAcliBinary 依赖）：
+//
+//	__ACLI_BIN__=/sf/bin/acli
+//	1.0.1
+//	build 2026-09-15 21:00:04
+//
+// 候选都不存在时才回落 `command -v acli`，最后输出 __ACLI_ABSENT__，
+// 保证"未安装"的判定口径与旧实现一致（不会被误判成已安装）。
+// probe 与 acli_sync 复用同一命令：显示值与安装判定必须同源，否则会出现
+// "面板显示 1.0.1 但系统判定落后而反复重装"。
+func buildAcliVersionCommand() string {
+	candidates := strings.Join(logCollectAcliCandidates, " ")
+	return logCollectAcliPathEnv + ` for p in ` + candidates + `; do if [ -x "$p" ]; then v=$("$p" --version 2>&1); if [ -n "$v" ]; then printf '__ACLI_BIN__=%s\n' "$p"; printf '%s\n' "$v"; exit 0; fi; fi; done; b=$(command -v acli 2>/dev/null); if [ -n "$b" ]; then printf '__ACLI_BIN__=%s\n' "$b"; acli --version 2>&1; else echo __ACLI_ABSENT__; fi`
+}
+
+// parseAcliBinary 从探测输出中取出实际命中的 acli 路径；取不到返回空串。
+func parseAcliBinary(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "__ACLI_BIN__=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "__ACLI_BIN__="))
+		}
+	}
+	return ""
+}
+
 func builtinLogCollectModules() []logCollectModuleOption {
 	options := make([]logCollectModuleOption, 0, len(logCollectModuleCatalogOrder))
 	for _, value := range logCollectModuleCatalogOrder {
@@ -103,6 +140,9 @@ var (
 	// 额外收集路径只允许绝对路径，并禁止 shell 元字符与空白（插件会直接拼命令）。
 	logCollectPathRe     = regexp.MustCompile(`^/[A-Za-z0-9_./-]+$`)
 	logCollectProgressRe = regexp.MustCompile(`^总进度：(\d+)% - (\d+)/(\d+)`)
+	// logCollectAnsiRe 匹配终端颜色/样式转义。acli 失败时会输出 `\x1b[31mFATA\x1b[0m...`，
+	// 不清洗会让状态行前缀带转义、解析失配，前端也会把乱码直接展示给用户。
+	logCollectAnsiRe     = regexp.MustCompile("\u001b\\[[0-9;]*m")
 	logCollectHostLineRe = regexp.MustCompile(`^(\d{1,3}(?:\.\d{1,3}){3})\s+(收集完成|收集中|收集失败)\s+(\d+%|-)`)
 	// 实机 help 把枚举值按两列排版（同一行出现两个「名称（标签）」），
 	// 因此必须全量扫描而不是逐行只取首个匹配。
@@ -268,10 +308,13 @@ func (s *SSHSession) runCommandPty(ctx context.Context, command string, timeout 
 
 // logCollectProbeResult 是前端确认安装与选择上传方式所需的最小事实集合。
 type logCollectProbeResult struct {
-	Architecture       string `json:"architecture"`
-	AcliInstalled      bool   `json:"acli_installed"`
-	AcliVersion        string `json:"acli_version"`
-	AcliBuildTime      string `json:"acli_build_time"`
+	Architecture  string `json:"architecture"`
+	AcliInstalled bool   `json:"acli_installed"`
+	AcliVersion   string `json:"acli_version"`
+	AcliBuildTime string `json:"acli_build_time"`
+	// AcliBinary 是本次探测真正命中的 acli 路径：多份 acli 共存时，仅凭版本号无法判断
+	// "面板显示的值"与"运维手敲的值"为何不同，路径是唯一可自证的事实。
+	AcliBinary         string `json:"acli_binary,omitempty"`
 	AvailableMB        int64  `json:"available_mb"`
 	LogServerURL       string `json:"log_server_url"`
 	LogServerReachable bool   `json:"log_server_reachable"`
@@ -293,8 +336,9 @@ func (s *SSHSession) probeLogCollectEnv(ctx context.Context, logServerURL string
 	archOut, _, _ := s.runCommandPty(ctx, "uname -m", 10*time.Second)
 	result.Architecture = strings.TrimSpace(archOut)
 
-	versionOut, _, _ := s.runCommandPty(ctx, logCollectAcliPathEnv+" acli --version", 10*time.Second)
+	versionOut, _, _ := s.runCommandPty(ctx, buildAcliVersionCommand(), 10*time.Second)
 	result.AcliVersion, result.AcliBuildTime = parseAcliVersion(versionOut)
+	result.AcliBinary = parseAcliBinary(versionOut)
 	result.AcliInstalled = result.AcliVersion != ""
 
 	// 场景目录与节点清单必须在 curl 之前采集：日志服务器不可达（P3 路径）是常态，
@@ -452,6 +496,48 @@ type logCollectProgress struct {
 	UploadState string           `json:"upload_state,omitempty"`
 	ParseOK     bool             `json:"parse_ok"`
 	Raw         string           `json:"raw"`
+	// NodeState 是归一化后的节点态（none/running/completed/abnormal/unknown）。
+	// 节点是任务状态的唯一真相源，但插件只给中文文案，平台无法直接拿它做状态机判断；
+	// 归一化放在 bridge 侧，避免每个前端各自实现一套字符串匹配。
+	NodeState string `json:"node_state"`
+	// ArchiveSize 是本次探测到的压缩包字节数；0 表示没量到（未生成 / 已被插件删除）。
+	// 纯展示信息，不参与完成判定。
+	ArchiveSize int64 `json:"archive_size,omitempty"`
+}
+
+const (
+	logCollectNodeNone      = "none"
+	logCollectNodeRunning   = "running"
+	logCollectNodeCompleted = "completed"
+	logCollectNodeAbnormal  = "abnormal"
+	logCollectNodeUnknown   = "unknown"
+)
+
+// classifyLogCollectNodeState 把插件的中文状态行归一为可做状态机判断的枚举。
+//
+// 对抗性审查：识别不了的一律 unknown——宁可不动平台状态，也不要按猜测去 cancel 节点任务。
+// 「异常结束」必须单列：它既不含"完成"也不含"失败"，早期前端因此既不判完成也不判失败，
+// 只能空转到 1 小时超时。
+func classifyLogCollectNodeState(progress logCollectProgress) string {
+	status := strings.TrimSpace(progress.Status)
+	switch {
+	case strings.Contains(status, "异常结束"), strings.Contains(status, "失败"), strings.Contains(status, "错误"):
+		return logCollectNodeAbnormal
+	case strings.Contains(status, "完成"):
+		return logCollectNodeCompleted
+	case strings.Contains(status, "进行中"), strings.Contains(status, "收集中"),
+		strings.Contains(status, "上传中"), strings.Contains(status, "打包"), strings.Contains(status, "准备"):
+		return logCollectNodeRunning
+	// 实机无任务文案是「收集任务不存在！」（见 TestParseLogCollectProgress 样本）
+	case strings.Contains(status, "不存在"), strings.Contains(status, "无任务"),
+		strings.Contains(status, "暂无"), strings.Contains(status, "没有正在"):
+		return logCollectNodeNone
+	}
+	// 状态行缺失时用可观测信号兜底：有进度或有节点明细，说明任务存在且仍在推进。
+	if progress.Percent > 0 || len(progress.Hosts) > 0 || progress.Done > 0 {
+		return logCollectNodeRunning
+	}
+	return logCollectNodeUnknown
 }
 
 type logCollectHost struct {
@@ -510,6 +596,38 @@ func parseLogCollectProgress(raw string) logCollectProgress {
 	return result
 }
 
+// probeLogCollectArchiveSize 量一次压缩包字节数，量不到返回 0。
+//
+// 时机敏感：P1 直传成功后插件会立刻删除压缩包，只有上传窗口内的轮询能拿到值。
+// 失败是常态（包还没生成、已被删除、路径未通过规范化），一律返回 0，
+// 由前端显示「未记录」，不产生错误也不阻断进度查询。
+func probeLogCollectArchiveSize(ctx context.Context, s *SSHSession, rawPath string) int64 {
+	if s == nil || strings.TrimSpace(rawPath) == "" {
+		return 0
+	}
+	path, err := normalizeArchivePath(rawPath)
+	if err != nil {
+		return 0
+	}
+	output, exitCode, cmdErr := s.runQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(path)))
+	if cmdErr != nil || exitCode != 0 {
+		return 0
+	}
+	size, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64)
+	if parseErr != nil || size <= 0 {
+		return 0
+	}
+	return size
+}
+
+// stripAnsi 去掉终端转义序列：保留可读文本，避免解析与展示被颜色码污染。
+func stripAnsi(text string) string {
+	if text == "" {
+		return text
+	}
+	return logCollectAnsiRe.ReplaceAllString(text, "")
+}
+
 func errString(err error) string {
 	if err == nil {
 		return ""
@@ -526,6 +644,35 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// resolveLogCollectSession 解析日志收集动作要落到哪条 SSH 会话，并回传命中原因。
+//
+// 顺序不可随意调整：精确键最可信；其次是按节点复用（会话的真实归属是「操作者 + 节点」，
+// 不随工单变化）；最后才是「本工单唯一会话」。
+//
+// 最后一级是 2026-10-26 补的：cancel 这类动作曾经漏传 node_ip，前三级的 node_ip 匹配
+// 全部失效，bridge 直接回 session_missing——表现是平台已标记取消、节点上采集任务仍在跑，
+// 后续 create 被插件互斥一直拒绝。多节点时绝不猜，猜错会取消另一台机器上的任务。
+func (b *Bridge) resolveLogCollectSession(msg InMessage) (session *SSHSession, key string, match string) {
+	if s, k := b.resolveSession(msg); s != nil {
+		return s, k, "exact"
+	}
+	if msg.CaseID != "" {
+		if s := b.get(sessionKey(msg.CaseID, "")); s != nil {
+			return s, sessionKey(msg.CaseID, ""), "default_key"
+		}
+	}
+	if s, k := b.sessionByNodeIP(msg.NodeIP); s != nil {
+		return s, k, "node_ip_suffix"
+	}
+	if s, k := b.sessionByAddressHost(msg.NodeIP); s != nil {
+		return s, k, "address_host"
+	}
+	if s, k := b.onlySessionForCase(msg.CaseID); s != nil {
+		return s, k, "only_session_for_case"
+	}
+	return nil, "", ""
+}
+
 // handleLogCollect 处理 log_collect 消息族。
 func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string) {
 	// 链路 ID 先算：会话缺失这类失败同样要能按链路检索与聚合。
@@ -535,30 +682,12 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 	}
 	msg.TraceID = traceID
 
-	s, key := b.resolveSession(msg)
-	if s == nil && msg.CaseID != "" {
-		s = b.get(sessionKey(msg.CaseID, ""))
-	}
-	// 回退：会话属于「操作者 + 节点」，不随工单变化。
-	// 精确键失配（例如会话是在 SSH 终端/旧工单下建立的）时按节点 IP 复用，
-	// 避免"界面显示已连接、探测却报 LC-ENV-006"的自相矛盾。
-	if s == nil {
-		if fallback, fallbackKey := b.sessionByNodeIP(msg.NodeIP); fallback != nil {
-			s, key = fallback, fallbackKey
-			blog("INFO", "log_collect.session_fallback", "日志收集复用同节点其他工单的 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-				"log_action": msg.LogAction, "session_key": fallbackKey, "match": "node_ip_suffix",
-			})
-		}
-	}
-	// 再回退：会话键可能压根不含 IP（ssh_connect 历史上不带 node_ip，键只剩 caseID），
-	// 此时按会话实际连到的主机地址匹配，"终端里能跑 acli、日志收集却说没会话"才能消除。
-	if s == nil {
-		if fallback, fallbackKey := b.sessionByAddressHost(msg.NodeIP); fallback != nil {
-			s, key = fallback, fallbackKey
-			blog("INFO", "log_collect.session_fallback", "日志收集按会话目标地址复用 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-				"log_action": msg.LogAction, "session_key": fallbackKey, "match": "address_host",
-			})
-		}
+	s, key, match := b.resolveLogCollectSession(msg)
+	// 精确命中是常态，只有回退才留痕：日志要能回答"这条命令为什么落到了这台机器"。
+	if s != nil && match != "exact" {
+		blog("INFO", "log_collect.session_fallback", "日志收集回退复用 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"log_action": msg.LogAction, "session_key": key, "match": match,
+		})
 	}
 	if s == nil {
 		sendMsg(ws, OutMessage{
@@ -568,6 +697,11 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		})
 		blog("ERROR", "log_collect.session_missing", "日志收集动作缺少 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"log_action": msg.LogAction, "task_id": msg.ExecID,
+			// 定性字段：会话数为 0 = 连接生命周期已结束；会话数 >0 但键对不上 = 路由/键问题。
+			// 历史日志只有 action + task_id，两种情况看起来一模一样，只能靠猜。
+			"requested_key":   sessionKey(msg.CaseID, msg.NodeIP),
+			"active_sessions": b.sessionCount(),
+			"session_keys":    b.sessionKeyList(8),
 		})
 		return
 	}
@@ -607,6 +741,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		blog("INFO", "log_collect.probe", "日志收集环境探测完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": probe.Architecture, "acli_installed": probe.AcliInstalled,
 			"acli_version": probe.AcliVersion, "acli_build_time": probe.AcliBuildTime,
+			"acli_binary":    probe.AcliBinary,
 			"available_mb":   probe.AvailableMB,
 			"log_server_url": probe.LogServerURL, "log_server_reachable": probe.LogServerReachable,
 			"http_code": probe.LogServerHTTPCode, "latency_ms": probe.LogServerLatencyMS,
@@ -645,12 +780,21 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		})
 		blog("INFO", "log_collect.create", "日志收集任务下发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"ticket_no": msg.TicketNo, "exit_code": exitCode, "error": errString(err),
-			"command": redactCommand(command), "output_preview": truncateString(output, 512),
+			"command": redactCommand(command), "output_preview": stripAnsi(truncateString(output, 512)),
 		})
 
 	case "progress":
 		output, exitCode, err := s.runCommandPty(ctx, "acli log_collect progress", logCollectProgressTimeout)
 		progress := parseLogCollectProgress(output)
+		progress.NodeState = classifyLogCollectNodeState(progress)
+		// 这里刻意**不用** stat 结果判断"完成归属"：P1 直传成功后插件会自删压缩包，
+		// mtime 在成功路径上必然缺失，拿它当归属证据只会把真完成判成假完成。
+		// 归属改由前端比对"下发前锚定的报告指纹"来判断，不依赖任何文件事实。
+		//
+		// 但压缩包大小没有别的来源：插件 progress 不打印大小，平台侧只有 P2 分片合并时
+		// 才知道字节数，P1 直传的记录因此长期显示「未记录」。这里只补一个纯信息字段，
+		// 量不到就留 0，不参与任何状态判断。
+		progress.ArchiveSize = probeLogCollectArchiveSize(ctx, s, progress.ArchivePath)
 		status := "ok"
 		code := ""
 		if err != nil || exitCode != 0 {
@@ -673,8 +817,10 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"done": progress.Done, "total": progress.Total,
 			"status_text": progress.Status, "archive_path": progress.ArchivePath,
 			"upload_url": progress.UploadURL, "upload_state": progress.UploadState,
-			"hosts_count": len(progress.Hosts), "exit_code": exitCode,
-			"error": errString(err), "raw_len": len(output),
+			"node_state":  progress.NodeState,
+			"hosts_count": len(progress.Hosts), "archive_size": progress.ArchiveSize,
+			"exit_code": exitCode,
+			"error":     errString(err), "raw_len": len(output),
 		})
 
 	case "stat":
@@ -736,7 +882,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		})
 		blog("WARN", "log_collect.cancel", "日志收集任务取消", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"exit_code": exitCode, "error": errString(err),
-			"output_preview": truncateString(output, 512),
+			"output_preview": stripAnsi(truncateString(output, 512)),
 		})
 
 	default:

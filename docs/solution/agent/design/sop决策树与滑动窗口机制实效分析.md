@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # HCI 智能排障平台 — SOP 决策树与滑动窗口机制实效分析
 
 本篇文档从**第一性原理**出发，结合排障平台的 Python 源码实现，对**“SOP 多叉决策树 + 结构化滑动窗口”**的设计是否在 `htp-agent` 中真实生效、运行原理及其在上下文控制和操作安全上的实际成效进行深度分析。

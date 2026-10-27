@@ -1,7 +1,7 @@
 ---
 status: active
-category: architecture
-audience: engineer
+category: solution
+audience: developer
 last_updated: 2026-05-23
 owner: team
 ---

@@ -19,7 +19,8 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
-| 2026-10-24 | v3.75 | **修复多 Agent Prompt 事实源断链与文档门禁失效**：① **Prompt 缺失（生产必崩）**：`signal_orchestrator.py:295` 硬编码加载 `kbd_signal_count_v1`（分类、建模、验证同理），但这 4 个 Prompt 的唯一 SQL 定义长期只存在于 `database/atlas-migrations/`（`atlas.hcl` 无 `migration_dir`，`db-migrate.sh` 全链路不执行该目录，故已于本日整体删除 47 文件），生产库调抽取必抛 `PromptLoadError`；现将 count/classify 迁入 `database/seeds/02_system_prompts.sql`（种子为新库完整基线，存量库走 `data-migrations/`）并补齐 4 条 `prompt_slot`。② **门禁丢失**：`data-migrations/034` 将 `kbd_signal_model_v1`/`kbd_signal_verify_v1` 升到 1.1 时，相对同源 1.0 逐行比对各丢失一条约束（建模缺「JSON 取值路径契约（严苛门禁）」、验证缺「修复 JSON 取值路径错误」），按「已执行迁移永不修改、变更走 Forward Fix」铁律新增 `050_restore_json_extract_path_contract.sql` 升至 1.2 补回，Prompt 契约测试统一指向种子以覆盖四个 Agent 的最终版。③ **文档门禁失效**：`scripts/ci/check_module_doc_sync.py` 的 20 条 ModuleMapping 中 11 条指向不存在的文档（`docs/solution/agent/agent工具设计.md` 漏 `design/` 中间层、`AI助手设计.md` 已改名），这些模块的 docs-governance 长期只能靠 `[skip doc-sync]` 绕过；已全部修正为现存路径。 | [知识库设计](../../solution/knowledge-base/知识库设计.md) |
+| 2026-10-26 | v3.76 | `atlas-migrations/20261013000000_add_kbd_entry_root_signal_json.sql` 标注历史路径，并说明幂等 ALTER 语义由 `database/desired_schema.sql` 承接；`backend/shared/tests/test_root_signal_runtime_cdd.py` 标注曾用名与现行位置 `backend/kb-service/tests/test_root_signal_track.py`（#1173 迁移）（详见 [文档瘦身 Wave 3 现行文档准确性治理](../../solution/events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md)） |
+| 2026-10-24 | v3.75 | **修复多 Agent Prompt 事实源断链与文档门禁失效**：① **Prompt 缺失（生产必崩）**：`signal_orchestrator.py:295` 硬编码加载 `kbd_signal_count_v1`（分类、建模、验证同理），但这 4 个 Prompt 的唯一 SQL 定义长期只存在于 `database/atlas-migrations/`（`atlas.hcl` 无 `migration_dir`，`db-migrate.sh` 全链路不执行该目录，故已于本日整体删除 47 文件），生产库调抽取必抛 `PromptLoadError`；现将 count/classify 迁入 `database/seeds/02_system_prompts.sql`（种子为新库完整基线，存量库走 `data-migrations/`）并补齐 4 条 `prompt_slot`。② **门禁丢失**：`data-migrations/034` 将 `kbd_signal_model_v1`/`kbd_signal_verify_v1` 升到 1.1 时，相对同源 1.0 逐行比对各丢失一条约束（建模缺「JSON 取值路径契约（严苛门禁）」、验证缺「修复 JSON 取值路径错误」），按「已执行迁移永不修改、变更走 Forward Fix」铁律新增 `050_restore_json_extract_path_contract.sql` 升至 1.2 补回，Prompt 契约测试统一指向种子以覆盖四个 Agent 的最终版。③ **文档门禁失效**：`scripts/ci/check_module_doc_sync.py` 的 20 条 ModuleMapping 中 11 条指向不存在的文档（`docs/solution/agent/design/agent工具设计.md` 漏 `design/` 中间层、`AI助手设计.md` 已改名），这些模块的 docs-governance 长期只能靠 `[skip doc-sync]` 绕过；已全部修正为现存路径。 | [知识库设计](../../solution/knowledge-base/知识库设计.md) |
 | 2026-09-20 | v3.74 | **客户端 SSH 与 acli 状态管理安全加固**：`chat.ts` 补充 `typeof localStorage !== 'undefined'` 防御性保护消除单测环境异常；在 SSH 连接就绪后异步触发 `checkAndSyncAcli` 自动就绪自检 | [acli自动检测与安装更新方案](../../solution/custom-ui/events/2026-09-20-acli自动检测与安装更新方案.md) |
 | 2026-08-31 | v3.73 | **完成 SOP 未解决切换 KBD 的生产闭环**：新增继续 SOP/切换 KBD 去向卡、一次性 `request_id`、Conversation/SopExecution 行锁与原子状态迁移；切换后 Agent 读取权威 `aborted` 状态并立即进入同分类 KBD，无可执行 KBD 时保持人工升级。补齐防重放、旧 SOP 快照、阻塞交互、消息顺序、前端点击和刷新协议回归。 | [SOP 未解决切换 KBD 闭环需求](../../requirement/events/2026-08-31-SOP未解决切换KBD闭环需求.md) |
 | 2026-08-20 | v3.72 | **修复 CDD PARTIAL 报告丢失已命中参考案例**：多 KBD 场景下，即使 Conclusion Gate 因其他候选未决而保持 `PARTIAL`，报告也必须明确列出全部必要信号已满足的参考案例及现场证据；禁止泄露根因/解决方案，并从未确认列表中排除已支持候选。 | [仿真诊断等价性与CDD全候选修正任务](events/2026-08-20-仿真诊断等价性与CDD全候选修正任务.md) |
@@ -173,7 +174,7 @@ owner: team
 
 ### T0-2 智能截断替换固定截断 【P0】
 
-- **文件**：`backend/agent-service/app/adapters/executors/executor.py`、`backend/agent-service/app/adapters/agents/htp/kbd_differential.py`
+- **文件**：`backend/agent-service/app/tools/acli/executor.py`、`backend/agent-service/app/adapters/agents/htp/kbd_differential.py`
 - **问题**：`STDOUT_MAX_CHARS = 4000` 固定截断，可能截掉末尾最关键的报错信息
 - **任务**：
   - [x] 实现 `smart_truncate(output, max_chars)` 函数：
@@ -188,7 +189,7 @@ owner: team
 
 ### T0-3 exit_code 语义分类 【P0】
 
-- **文件**：`backend/agent-service/app/adapters/executors/executor.py`
+- **文件**：`backend/agent-service/app/tools/acli/executor.py`
 - **问题**：超时和真实失败都返回 `exit_code=-1`，LLM 无法区分，可能做出错误决策
 - **任务**：
   - [x] 定义 `ExitCodeMeaning` 枚举：`success / timeout / permission_denied / command_not_found / connection_refused / unknown_error`
@@ -676,7 +677,7 @@ owner: team
   `ck_kbd_entry_root_signal_json`（v2：仅允 `NULL` 或 `jsonb_typeof='array'`，拒绝单对象/标量脏写）
   + **GIN 索引** `idx_kbd_entry_root_signal_gin`（`jsonb_path_ops`，替掉 v1 两个对数组失效的标量
   partial 索引）+ `ck_kbd_batch_job_type` 枚举含 `extract_root_signal`；幂等 ALTER 版存
-  `database/atlas-migrations/20261013000000_add_kbd_entry_root_signal_json.sql`。
+  `database/atlas-migrations/20261013000000_add_kbd_entry_root_signal_json.sql`（历史路径，该目录已于 2026-10-24 整体删除，幂等 ALTER 语义由 `database/desired_schema.sql` 承载）。
 - [x] **种子位置纠正（重要）**：根因抽取 Prompt 种子原放在 `database/atlas-migrations/`，本仓库
   `scripts/db-migrate.sh` 只做 `atlas schema apply --to desired_schema.sql` + data-migrations +
   `desired_extras.sql`，**从不应用 atlas-migrations**（与 2026-09-04 条目记录的同一陷阱），而 Prompt
@@ -724,7 +725,7 @@ owner: team
 - [x] **能力判定以并集为准（防“仅根因永不执行”退化）**：`_execution_issues` 与 `diagnosis_capability`/`recommendable` 均读「关键 ∪ executable 根因」并集，避免空 `signals_json` 但携 executable 根因的 KBD 被 `is_reference_only` 误判 reference_only。
 - [x] **轨道二（text）agent 侧报告展示**：`kbd_differential.py` 新增 `_format_root_display_anchors`，在 `_build_diagnostic_report`（命中）与 `_build_partial_report`（部分命中）渲染「根因特征（请人工核对）」小节；与判定/召回完全解耦。
 - [x] **语义边界**：Phase 1 语义/frozen（`guidance_only`/`reference_only`）路径不并入 live 根因，保持按快照可复现。
-- [x] **测试与评估**：`test_kbd_differential.py` 新增 3 例（无锚点返回空串/matched 与 partial 渲染锚点）；`backend/shared/tests/test_root_signal_runtime_cdd.py` 5 例（AND 收紧、anchors 零 SignalRef、无根因恒等）；`test_playbooks_root_signal_runtime.py` 37 例；离线 golden 回放 `evaluation/replay_runner.py` 对比基线 0 回归（分类/工具 100%）。当前评估语料与种子 KBD 均无 executable 根因信号 → 并集为恒等，定论率不漂移（收紧仅对未来填入根因的“两者都有”KBD 生效）。live E2E 定论率对比为发布前 gate，需真实服务栈，非本 PR 环境可跑。
+- [x] **测试与评估**：`test_kbd_differential.py` 新增 3 例（无锚点返回空串/matched 与 partial 渲染锚点）；`backend/shared/tests/test_root_signal_runtime_cdd.py`（曾用名，现位于 `backend/kb-service/tests/test_root_signal_track.py`，#1173）5 例（AND 收紧、anchors 零 SignalRef、无根因恒等）；`test_playbooks_root_signal_runtime.py` 37 例；离线 golden 回放 `evaluation/replay_runner.py` 对比基线 0 回归（分类/工具 100%）。当前评估语料与种子 KBD 均无 executable 根因信号 → 并集为恒等，定论率不漂移（收紧仅对未来填入根因的“两者都有”KBD 生效）。live E2E 定论率对比为发布前 gate，需真实服务栈，非本 PR 环境可跑。
 
 ## 客户端 store 日志收集入口状态收敛（2026-10-22）
 

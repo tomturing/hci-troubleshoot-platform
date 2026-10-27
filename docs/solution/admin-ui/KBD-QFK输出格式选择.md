@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # KBD QFK 输出格式选择
 
 KBD 关键信号编辑器为 `qfk_system`、`qfk_vm`、`qfk_network`、`qfk_storage`、`qfk_hardware` 和 `qfk_platform` 提供统一的输出格式选择。

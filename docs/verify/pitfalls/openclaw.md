@@ -1,3 +1,11 @@
+---
+status: active
+category: verify
+audience: developer
+last_updated: 2026-10-26
+owner: team
+---
+
 # OpenClaw 避坑
 
 ## PIT-010：OpenClaw 返回 401 / 认证 token 不匹配
@@ -226,7 +234,7 @@ kubectl exec -n hci-troubleshoot <openclaw-pod> -- sh -lc \
 3. 不要通过“修改 Clash 全局配置”掩盖容器配置问题。
 
 **防回归：**
-- `scripts/k3s-verify.sh` 已新增 AI 容器配置检查：
+- `scripts/ops/k3s-verify.sh` 已新增 AI 容器配置检查：
   - openclaw 容器模型必须是 `tly/glm-5`
   - productionclaw 容器模型必须是 `tly/glm-5`
   - baseUrl 必须是 `https://open.bigmodel.cn/api/paas/v4`

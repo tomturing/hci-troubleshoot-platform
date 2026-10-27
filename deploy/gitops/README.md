@@ -49,12 +49,12 @@ kubectl apply -f deploy/gitops/argo-apps/local/hci-platform-dev.yaml
 1. 新建独立环境仓库（示例：`hci-platform-env`）
 2. 将 `env-repo-template/` 下内容复制到环境仓库根目录
 3. 修改 `argo-apps/local/*.yaml` 与 `argo-apps/cloud/*.yaml` 中的 `repoURL` 和 `targetRevision`
-4. 配置 ArgoCD 仓库凭据（见 [argo-apps/local/README.md](argo-apps/local/README.md)）
+4. 配置 ArgoCD 仓库凭据（见 [argocd-repo-creds.example.yaml](argocd-repo-creds.example.yaml)）
 
 ## 多环境晋级策略（2026-09-02 修订：恢复 dev + staging 自动晋级）
 
 > **变更记录**：2026-09-01 曾将主干自动晋级收敛为仅 `dev`（PR #989，见
-> [版本封板与手动升级部署方案](docs/deploy/events/2026-09-01-版本封板与Staging和Prod手动升级部署方案.md)）。
+> [版本封板与手动升级部署方案](../../docs/deploy/events/2026-09-01-版本封板与Staging和Prod手动升级部署方案.md）。
 > 现恢复 `dev` + `staging` 双环境自动晋级，`prod` 继续保持手动触发。
 
 | 触发方式 | 影响环境 | 晋级行为 |

@@ -1,6 +1,6 @@
 ---
 status: active
-category: user-guide
+category: meta
 audience: reviewer, operator
 last_updated: 2026-09-23
 owner: team

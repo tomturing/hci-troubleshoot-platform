@@ -122,6 +122,8 @@ jobs:
             docs:
               - 'docs/**'
               - 'scripts/ci/check_docs_naming.py'
+              - 'scripts/ci/check_docs_frontmatter.py'
+              - 'scripts/ci/check_docs_changelog.py'
             module_docs:
               - 'backend/**'
               - 'frontend/**'
@@ -151,6 +153,14 @@ jobs:
               # docs 增量门禁脚本：改动它必须跑其回归测试（中文路径解析曾长期空转）
               - 'scripts/ci/check_docs_rot.py'
               - 'scripts/ci/test_check_docs_rot_changed_only.py'
+              - 'scripts/ci/test_check_docs_rot_semantics.py'
+              - 'scripts/ci/check_docs_naming.py'
+              - 'scripts/ci/test_check_docs_naming.py'
+              - 'scripts/ci/check_docs_frontmatter.py'
+              - 'scripts/ci/test_check_docs_frontmatter.py'
+              # §7.1 变更历史增量门禁脚本（V-036）：改动它必须跑其回归测试
+              - 'scripts/ci/check_docs_changelog.py'
+              - 'scripts/ci/test_check_docs_changelog.py'
               - 'hci_sim/Dockerfile'
               - 'deploy/gitops/argo-apps/local/hci-sim-dev.yaml'
               - 'deploy/gitops/argo-apps/cloud/hci-sim-staging.yaml'
@@ -185,7 +195,14 @@ jobs:
             scripts/ci/test_resolve_pr_fast_test_targets.py \
             scripts/ci/test_env_repo_sync_contract.py \
             scripts/ci/test_check_docs_rot_changed_only.py \
-            scripts/ci/check_docs_rot.py
+            scripts/ci/test_check_docs_rot_semantics.py \
+            scripts/ci/check_docs_rot.py \
+            scripts/ci/check_docs_naming.py \
+            scripts/ci/test_check_docs_naming.py \
+            scripts/ci/check_docs_frontmatter.py \
+            scripts/ci/test_check_docs_frontmatter.py \
+            scripts/ci/check_docs_changelog.py \
+            scripts/ci/test_check_docs_changelog.py
           uvx ruff format --check \
             scripts/ci/resolve_release_baseline.py \
             scripts/ci/resolve_image_build_plan.py \
@@ -204,7 +221,14 @@ jobs:
             scripts/ci/test_resolve_pr_fast_test_targets.py \
             scripts/ci/test_env_repo_sync_contract.py \
             scripts/ci/test_check_docs_rot_changed_only.py \
-            scripts/ci/check_docs_rot.py
+            scripts/ci/test_check_docs_rot_semantics.py \
+            scripts/ci/check_docs_rot.py \
+            scripts/ci/check_docs_naming.py \
+            scripts/ci/test_check_docs_naming.py \
+            scripts/ci/check_docs_frontmatter.py \
+            scripts/ci/test_check_docs_frontmatter.py \
+            scripts/ci/check_docs_changelog.py \
+            scripts/ci/test_check_docs_changelog.py
           uv run --no-project --with pytest --with pytest-xdist pytest \
             scripts/ci/test_resolve_release_baseline.py \
             scripts/ci/test_resolve_image_build_plan.py \
@@ -216,6 +240,10 @@ jobs:
             scripts/ci/test_resolve_pr_fast_test_targets.py \
             scripts/ci/test_env_repo_sync_contract.py \
             scripts/ci/test_check_docs_rot_changed_only.py \
+            scripts/ci/test_check_docs_rot_semantics.py \
+            scripts/ci/test_check_docs_naming.py \
+            scripts/ci/test_check_docs_frontmatter.py \
+            scripts/ci/test_check_docs_changelog.py \
             -q
 
       # 确定性前端改动判定（覆盖 dorny/paths-filter 的 frontend 输出）。
@@ -463,6 +491,17 @@ jobs:
           NAMING_BYPASS: ${{ contains(github.event.pull_request.labels.*.name, 'naming-approved') && '1' || '0' }}
         run: python3 scripts/ci/check_docs_naming.py
 
+      # §7.3 frontmatter 契约的强校验。
+      # 第一性原理：frontmatter 的唯一用途是让读者（含 Agent）按
+      # status / category / audience 机械过滤文档。缺字段或用词表外的值，
+      # 过滤会**静默漏掉**该文档——读者以为已看全，实际少看了几篇。
+      # 所以这里不设建议级通道，不合规即阻断。
+      # 跑 --full 而非增量：全量只有 200 余篇小文件（毫秒级），而增量检查只能
+      # 保证「新改的合规」，从没被碰过的坏文档会永远逃过检查。
+      - name: 文档 frontmatter 规范（阻断）
+        if: github.event_name == 'pull_request' && steps.filter.outputs.docs == 'true'
+        run: python3 scripts/ci/check_docs_frontmatter.py --full
+
       - name: 模块文档同步（信息性）
         if: github.event_name == 'pull_request' && steps.filter.outputs.module_docs == 'true'
         continue-on-error: true
@@ -478,18 +517,37 @@ jobs:
       # 是腐化的硬证据，必须阻断合并。
       # 分级策略：
       #   - C6 密钥泄露：永远阻断（安全红线，不区分存量/增量）
-      #   - C1/C2/C3 失效引用：仅阻断本次 PR 引入的新问题（--changed-only），存量只警告
-      # 对抗性审查：存量问题不阻断，避免现有 PR 永远无法合并导致治理卡死。
+      #   - C1/C2/C3 现行全量文档层（Wave 3 已归零）：不论是否本次改动一律
+      #     阻断（--current-blocking）——读者会照着现行文档动手，该层的一条
+      #     失效引用就是真实故障，不再允许「只警告」漂回存量；
+      #   - C1/C2/C3 事件层/归档层：仍只按本次改动行阻断，存量只警告——它们是
+      #     史料，为 CI 变绿而改写等于伪造历史（规范 §8.3）。
+      # 对抗性审查：现行层升阻断的前提是该层实测为 0，否则本步会让所有 PR
+      # 卡死；归零过程与口径见 docs/solution/events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md。
       - name: 文档腐化硬门禁（失效引用+密钥泄露）
         if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          python3 scripts/ci/check_docs_rot.py --changed-only
+          python3 scripts/ci/check_docs_rot.py --changed-only --current-blocking
           ROT_EXIT=$?
           # 密钥泄露（C6）已在脚本内强制退出 1；此处仅传播失效引用的阻断结果
           exit $ROT_EXIT
+
+      # ── §7.1 变更历史节增量硬门禁（docs changelog gate）──
+      # 第一性原理：变更历史节的唯一增量价值是「关联事件文档」，git log 反推不出，
+      # 只在改动当下写得准；实质改了现行 docs 文档却不留这行，可追溯轨迹就断了（V-036）。
+      # 对抗性审查：机器只抓「漏没漏一行」的结构事实，判不了某行有无意义——凑空行
+      # 骗得过本门禁、骗不过评审，故意义仍归人工，门禁的作用是把「默默忘了」变成
+      # 「必须显式补一行」。扫描范围只含 docs/ 现行文档，不含根 README/AGENTS 与
+      # pitfalls/_index.md（边界明文写进 docs/文档管理规范.md §7.1，不留给机器猜）。
+      - name: 变更历史节增量门禁（§7.1）
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci/check_docs_changelog.py
 
       - name: 文档腐化存量报告（信息性，不阻断）
         if: github.event_name == 'pull_request'

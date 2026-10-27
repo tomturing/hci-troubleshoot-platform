@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { ref, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, nextTick, watch, onMounted } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import MessageBubble from './MessageBubble.vue'
-import TerminalPanel from './TerminalPanel.vue'
 import TerminalReplay from './TerminalReplay.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import InteractiveRequestCard from './InteractiveRequestCard.vue'
@@ -11,51 +10,11 @@ import CaseCreateDialog from './CaseCreateDialog.vue'
 import BridgeLogUploader from './BridgeLogUploader.vue'
 import LogCollectEntryCard from './LogCollectEntryCard.vue'
 import EnvironmentSummary from './EnvironmentSummary.vue'
-// 抽屉宽度算法唯一来源
-import { getDefaultPanelWidth } from '@/utils/panelWidth'
 
 const chatStore = useChatStore()
 const inputText = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
 const assistantInputRef = ref<{ focus: () => void } | null>(null)
-const terminalPinned = ref(false)
-const historyPinned = ref(false)
-const terminalPanelWidth = ref(getDefaultPanelWidth())
-// 历史工单与日志收集共用同一宽度真值（store），拖拽任一侧都对齐
-const showTerminalReplayDialog = ref(false)
-const terminalReplayCaseId = ref<string | null>(null)
-
-// 拖拽调整抽屉宽度
-const startResizeTerminal = (e: MouseEvent) => {
-  e.preventDefault()
-  const startX = e.clientX
-  const startWidth = terminalPanelWidth.value
-  const onMouseMove = (moveE: MouseEvent) => {
-    terminalPanelWidth.value = Math.max(300, Math.min(window.innerWidth * 0.8, startWidth - (moveE.clientX - startX)))
-  }
-  const onMouseUp = () => {
-    document.removeEventListener('mousemove', onMouseMove)
-    document.removeEventListener('mouseup', onMouseUp)
-  }
-  document.addEventListener('mousemove', onMouseMove)
-  document.addEventListener('mouseup', onMouseUp)
-}
-
-const startResizeHistory = (e: MouseEvent) => {
-  e.preventDefault()
-  const startX = e.clientX
-  const startWidth = chatStore.sidePanelWidth
-  const onMouseMove = (moveE: MouseEvent) => {
-    chatStore.sidePanelWidth = Math.max(300, Math.min(window.innerWidth * 0.8, startWidth + (moveE.clientX - startX)))
-  }
-  const onMouseUp = () => {
-    document.removeEventListener('mousemove', onMouseMove)
-    document.removeEventListener('mouseup', onMouseUp)
-  }
-  document.addEventListener('mousemove', onMouseMove)
-  document.addEventListener('mouseup', onMouseUp)
-}
-
 /** 发送消息 */
 async function handleSend() {
   const text = inputText.value.trim()
@@ -107,79 +66,11 @@ watch(
 
 onMounted(scrollToBottom)
 
-onMounted(() => {
-  const onResize = () => {
-    if (!chatStore.showTerminalSidebar) {
-      terminalPanelWidth.value = getDefaultPanelWidth()
-    }
-    if (!chatStore.showHistoryDrawer) {
-      chatStore.sidePanelWidth = getDefaultPanelWidth()
-    }
-  }
-  onResize()
-  window.addEventListener('resize', onResize)
-  ;(window as Window & { __hciPanelResizeHandler?: () => void }).__hciPanelResizeHandler = onResize
-})
-
-onBeforeUnmount(() => {
-  const handler = (window as Window & { __hciPanelResizeHandler?: () => void }).__hciPanelResizeHandler
-  if (handler) window.removeEventListener('resize', handler)
-})
-
-/** 状态中文映射 */
-function statusLabel(status: string): string {
-  const map: Record<string, string> = {
-    created: '待确认', confirmed: '已确认', in_progress: '处理中',
-    resolved: '已解决', closed: '已关闭', cancelled: '已取消',
-  }
-  return map[status] || status
-}
-
-/** 状态颜色映射 */
-function statusType(status: string): '' | 'success' | 'warning' | 'danger' | 'info' {
-  const map: Record<string, '' | 'success' | 'warning' | 'danger' | 'info'> = {
-    created: 'warning', confirmed: '', in_progress: '',
-    resolved: 'success', closed: 'info', cancelled: 'danger',
-  }
-  return map[status] || 'info'
-}
-
-/** 格式化时间 */
-function formatDate(d: string): string {
-  return new Date(d).toLocaleString('zh-CN', {
-    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-  })
-}
-
-/** 打开终端历史回放 */
-function openTerminalReplay() {
-  if (chatStore.historyCase) {
-    terminalReplayCaseId.value = chatStore.historyCase.case_id
-    showTerminalReplayDialog.value = true
-  }
-}
-
-/** 从 TerminalPanel 打开当前工单的终端历史回放 */
-function openCurrentCaseTerminalHistory() {
-  // 优先当前聊天工单，其次日志收集绑定的工单：无聊天工单时用户也能看采集会话的回放
-  const caseId = chatStore.currentCase?.case_id ?? chatStore.logCollectCaseId ?? null
-  if (caseId) {
-    terminalReplayCaseId.value = caseId
-    showTerminalReplayDialog.value = true
-  }
-}
-
-function closeTerminalReplay() {
-  showTerminalReplayDialog.value = false
-  terminalReplayCaseId.value = null
-}
-
-/** 处理从终端回放引用内容到聊天 */
 function handleQuoteToChat(content: string) {
   // 设置助手输入框内容
   chatStore.setAssistantDraftText(`请分析以下终端操作记录：\n${content}`)
-  // 关闭终端回放弹窗
-  closeTerminalReplay()
+  // 关闭终端回放弹窗（状态在 store，右栏终端与历史工单都能触发）
+  chatStore.closeTerminalReplay()
 }
 </script>
 
@@ -297,171 +188,66 @@ function handleQuoteToChat(content: string) {
       </div>
     </div>
 
-    <!-- SSH 终端抽屉 -->
-    <el-drawer
-      v-model="chatStore.showTerminalSidebar"
-      direction="rtl"
-      :size="`${terminalPanelWidth}px`"
-      :append-to-body="true"
-      :modal="true"
-      :lock-scroll="!terminalPinned"
-      :close-on-click-modal="!terminalPinned"
-      :close-on-press-escape="!terminalPinned"
-      :with-header="true"
-      :modal-class="terminalPinned ? 'drawer-unblocked-overlay' : ''"
-      class="workspace-drawer"
-      @close="chatStore.closeTerminalSidebar()"
-    >
-      <div class="drawer-resize-handle drawer-resize-left" @mousedown="startResizeTerminal"></div>
-      <template #header>
-        <div class="drawer-header">
-          <span class="drawer-title">SSH 终端</span>
-          <div class="drawer-actions">
-            <el-button text size="small" @click="terminalPinned = !terminalPinned">
-              {{ terminalPinned ? '取消钉住' : '钉住' }}
-            </el-button>
-          </div>
-        </div>
-      </template>
-      <div class="drawer-body-content terminal-content">
-        <TerminalPanel @open-terminal-history="openCurrentCaseTerminalHistory" />
-      </div>
-    </el-drawer>
-
-    <!-- 历史工单抽屉 -->
-    <el-drawer
-      v-model="chatStore.showHistoryDrawer"
-      direction="ltr"
-      :size="`${chatStore.sidePanelWidth}px`"
-      :append-to-body="true"
-      :modal="true"
-      :lock-scroll="!historyPinned"
-      :close-on-click-modal="!historyPinned"
-      :close-on-press-escape="!historyPinned"
-      :with-header="true"
-      :modal-class="historyPinned ? 'drawer-unblocked-overlay' : ''"
-      class="workspace-drawer"
-      @close="chatStore.closeHistoryDrawer()"
-    >
-      <div class="drawer-resize-handle drawer-resize-right" @mousedown="startResizeHistory"></div>
-      <template #header>
-        <div class="drawer-header">
-          <span class="drawer-title">历史工单</span>
-          <div class="drawer-actions">
-            <el-button text size="small" @click="historyPinned = !historyPinned">
-              {{ historyPinned ? '取消钉住' : '钉住' }}
-            </el-button>
-          </div>
-        </div>
-      </template>
-      <div class="drawer-body-content">
-        <!-- 左右分栏：列表 + 消息预览 -->
-        <div class="history-container">
-        <!-- 工单列表 -->
-        <div class="history-list" v-if="!chatStore.historyCase">
-          <div
-            v-for="c in chatStore.existingCases"
-            :key="c.case_id"
-            class="history-item"
-            @click="chatStore.loadHistoryMessages(c)"
-          >
-            <div class="history-item-header">
-              <span class="history-case-id">{{ c.case_id }}</span>
-              <el-tag :type="statusType(c.status)" size="small">{{ statusLabel(c.status) }}</el-tag>
-            </div>
-            <div class="history-item-title">{{ c.title }}</div>
-            <div class="history-item-time">{{ formatDate(c.created_at) }}</div>
-          </div>
-          <div v-if="chatStore.existingCases.length === 0" class="history-empty">
-            暂无历史工单
-          </div>
-        </div>
-
-        <!-- 消息预览 -->
-        <div class="history-detail" v-else>
-          <div class="history-detail-header">
-            <el-button text size="small" @click="chatStore.historyCase = null; chatStore.historyMessages = []">
-              ← 返回列表
-            </el-button>
-            <div class="history-detail-info">
-              <strong>{{ chatStore.historyCase.case_id }}</strong>
-              <span>{{ chatStore.historyCase.title }}</span>
-              <el-tag :type="statusType(chatStore.historyCase.status)" size="small">
-                {{ statusLabel(chatStore.historyCase.status) }}
-              </el-tag>
-            </div>
-            <el-button size="small" type="primary" plain @click="openTerminalReplay">
-              终端历史
-            </el-button>
-          </div>
-          <div class="history-messages" v-loading="chatStore.historyLoading">
-            <MessageBubble
-              v-for="msg in chatStore.historyMessages"
-              :key="msg.id"
-              :message="msg"
-            />
-          </div>
-          <!-- 如果是活跃工单，允许切换 -->
-          <div
-            v-if="chatStore.historyCase && !['closed', 'cancelled'].includes(chatStore.historyCase.status)"
-            class="history-action"
-          >
-            <el-button type="primary" size="small" @click="chatStore.switchToCase(chatStore.historyCase!)">
-              切换到此工单
-            </el-button>
-          </div>
-        </div>
-        </div>
-      </div>
-    </el-drawer>
-
-    <!-- 终端历史回放弹窗 -->
+    <!-- 终端历史回放弹窗：状态放 store，右栏终端与左侧历史工单都能触发 -->
     <el-dialog
-      v-model="showTerminalReplayDialog"
+      :model-value="chatStore.showTerminalReplay"
       title="终端历史回放"
       width="80%"
       top="5vh"
       :close-on-click-modal="false"
       class="terminal-replay-dialog"
-      @close="closeTerminalReplay"
+      @close="chatStore.closeTerminalReplay()"
     >
       <TerminalReplay
-        v-if="terminalReplayCaseId"
-        :case-id="terminalReplayCaseId"
+        v-if="chatStore.terminalReplayCaseId"
+        :case-id="chatStore.terminalReplayCaseId"
         @quote-to-chat="handleQuoteToChat"
       />
     </el-dialog>
 
-    <!-- 输入区域 -->
-    <div class="input-area">
-      <div class="input-tips" v-if="chatStore.currentCase && chatStore.hasActiveCase">
-        输入 <code>/close</code> 关闭当前工单
+    <!--
+      底部操作区：结构与左右面板完全一致（hint 行 + 36px 控件行 + 按钮组），
+      规范在 styles/panel-composer.css。三块面板并排时底边、输入框、按钮必须齐平。
+    -->
+    <div class="panel-composer">
+      <div class="panel-composer__hint">
+        <template v-if="chatStore.currentCase && !chatStore.hasActiveCase">
+          当前工单已关闭，新建工单后可继续对话
+        </template>
+        <template v-else-if="chatStore.currentCase">
+          输入 <code>/close</code> 关闭当前工单
+        </template>
+        <template v-else>描述您遇到的问题，我会帮您创建工单</template>
       </div>
-      <div v-if="chatStore.currentCase && !chatStore.hasActiveCase" class="closed-bar">
-        <span>当前工单已关闭</span>
-        <el-button type="primary" size="small" @click="chatStore.startNewConversation()">
-          新建工单
-        </el-button>
-      </div>
-      <div class="input-row">
+      <div class="panel-composer__body">
         <el-input
           ref="assistantInputRef"
           v-model="inputText"
+          class="panel-composer__field"
           type="textarea"
-          :autosize="{ minRows: 1, maxRows: 4 }"
+          :rows="1"
           :placeholder="chatStore.isCaseClosed ? '工单已关闭，请点击「新建工单」' : '描述您遇到的问题...'"
           :disabled="chatStore.isStreaming || chatStore.isCaseClosed"
           @keydown="handleKeydown"
         />
-        <el-button
-          type="primary"
-          :loading="chatStore.isStreaming"
-          :disabled="!inputText.trim() || chatStore.isStreaming"
-          @click="handleSend"
-          class="send-btn"
-        >
-          发送
-        </el-button>
+        <div class="panel-composer__actions">
+          <el-button
+            v-if="chatStore.currentCase && !chatStore.hasActiveCase"
+            type="primary"
+            @click="chatStore.startNewConversation()"
+          >
+            新建工单
+          </el-button>
+          <el-button
+            v-else
+            type="primary"
+            :loading="chatStore.isStreaming"
+            :disabled="!inputText.trim() || chatStore.isStreaming"
+            @click="handleSend"
+          >
+            发送
+          </el-button>
+        </div>
       </div>
     </div>
   </div>
@@ -473,6 +259,32 @@ function handleQuoteToChat(content: string) {
   flex-direction: column;
   height: 100%;
   background: #f0f2f5;
+  /* 中央是一列内容，块级子项统一居中到同一条内容列 */
+  align-items: center;
+}
+
+/*
+ * 内容列：引导卡 / 阶段条 / 环境卡 / 告警条与消息气泡共用 860。
+ *
+ * 早先这些块各自通栏（1352）、气泡却 860 居中，同一屏上宽度五花八门，
+ * 视觉上像几块互不相干的板子拼在一起。限宽放在子项上而不是外壳上，
+ * 外壳仍是通栏灰底，不会出现"两侧露页面底色"的空白带。
+ */
+.chat-window > * {
+  width: 100%;
+  max-width: 860px;
+}
+
+/* 消息区自身要滚动、吃掉剩余高度，限宽交给内部气泡 */
+.chat-window > .messages-area {
+  flex: 1;
+  max-width: none;
+  min-height: 0;
+}
+
+/* 底部操作区是通栏底条，内部控件行自己限宽到 860 */
+.chat-window > .panel-composer {
+  max-width: none;
 }
 
 .messages-area {
@@ -481,7 +293,35 @@ function handleQuoteToChat(content: string) {
   padding: 16px;
   display: flex;
   flex-direction: column;
+  /* 背景铺满整个中央区，消息本身限宽居中：留白在气泡两侧而不是「两块白色空白带」 */
+  align-items: center;
   gap: 12px;
+}
+
+/*
+ * 单条消息/卡片限宽。中央区现在会随抽屉让位而变化（900 → 460），
+ * 光靠容器限宽在宽屏上会留下大片空白；限宽放在内容上，
+ * 宽屏保持可读行长，窄屏（<860px）自动退化为自适应。
+ *
+ * 选择器必须带到 .message-bubble：MessageBubble 自身声明了 max-width:100%，
+ * 同权重的 `> *` 会被它按加载顺序压掉，消息又会拉满整行。
+ */
+.messages-area > * {
+  width: 100%;
+}
+
+.messages-area > .message-bubble {
+  max-width: 860px;
+}
+
+/* 系统提示按文字宽度收窄：一句话撑满 860 宽的空灰条会显得整块内容没对齐 */
+.messages-area > .message-bubble.is-system {
+  width: fit-content;
+}
+
+/* 分隔线是"整行"语义，必须保持通栏，上面的 fit-content 不能作用到它 */
+.messages-area > .message-bubble.is-divider {
+  width: 100%;
 }
 
 .loading-indicator {
@@ -516,51 +356,16 @@ function handleQuoteToChat(content: string) {
   font-size: 13px;
 }
 
-.input-area {
-  border-top: 1px solid #e4e7ed;
-  background: #fff;
-  padding: 12px 16px;
-}
-
-.input-tips {
-  font-size: 12px;
-  color: #909399;
-  margin-bottom: 8px;
-}
-
-.input-tips code {
-  background: #f0f2f5;
-  padding: 2px 6px;
-  border-radius: 3px;
-  font-family: monospace;
-  color: #409eff;
-}
-
-.closed-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  padding: 8px 12px;
-  background: #f0f2f5;
-  border-radius: 6px;
-  color: #909399;
-  font-size: 14px;
-}
-
-.input-row {
-  display: flex;
-  gap: 8px;
-  align-items: flex-end;
-}
-
-.input-row :deep(.el-textarea) {
-  flex: 1;
-}
-
-.send-btn {
-  height: 40px;
-  min-width: 72px;
+/*
+ * 底部操作区的结构、高度、字号、按钮规格统一在 styles/panel-composer.css，
+ * 这里只保留「与中央内容列同宽」这一条布局规则（其他面板是通栏，不需要）。
+ */
+.panel-composer .panel-composer__body,
+.panel-composer .panel-composer__hint {
+  width: 100%;
+  max-width: min(var(--ws-center-max, 900px), 860px);
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /* 未关闭工单对话框 */
@@ -583,122 +388,6 @@ function handleQuoteToChat(content: string) {
 }
 
 /* 历史工单抽屉 */
-.history-container {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-.history-list {
-  flex: 1;
-  overflow-y: auto;
-}
-
-.history-item {
-  padding: 12px 16px;
-  border-bottom: 1px solid #f0f2f5;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.history-item:hover {
-  background: #f5f7fa;
-}
-
-.history-item-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 4px;
-}
-
-.history-case-id {
-  font-size: 13px;
-  font-weight: 600;
-  color: #303133;
-  font-family: 'Consolas', monospace;
-}
-
-.history-item-title {
-  font-size: 14px;
-  color: #606266;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-bottom: 4px;
-}
-
-.history-item-time {
-  font-size: 12px;
-  color: #c0c4cc;
-}
-
-.history-empty {
-  padding: 40px 16px;
-  text-align: center;
-  color: #c0c4cc;
-  font-size: 14px;
-}
-
-.history-detail {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-
-.history-detail-header {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 0 0 12px 0;
-  border-bottom: 1px solid #f0f2f5;
-}
-
-.history-detail-header .el-button--primary {
-  margin-top: 4px;
-}
-
-.history-detail-info {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 8px;
-}
-
-.history-detail-info strong {
-  font-size: 14px;
-  color: #303133;
-  font-family: 'Consolas', monospace;
-}
-
-.history-detail-info span {
-  font-size: 13px;
-  color: #606266;
-}
-
-.history-messages {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.history-action {
-  padding: 12px 0 0;
-  border-top: 1px solid #f0f2f5;
-  text-align: center;
-}
-
-/* AI 助手选择器下拉选项（v2.1 增强）*/
-.assistant-option {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  line-height: 1.4;
-}
-
 .assistant-header {
   display: flex;
   align-items: center;
@@ -723,12 +412,6 @@ function handleQuoteToChat(content: string) {
 
 .assistant-capabilities .el-tag {
   font-size: 11px;
-}
-
-/* 终端面板内部布局（其余抽屉外观已抽到 styles/workspace-drawer.css） */
-.terminal-content {
-  display: flex;
-  flex-direction: column;
 }
 
 /* 终端回放弹窗样式 */

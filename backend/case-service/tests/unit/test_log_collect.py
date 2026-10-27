@@ -56,6 +56,11 @@ class TestStatusMachine:
             ("collecting", "completed"),  # 无上传场景允许跳步
             ("collecting", "failed"),
             ("pending", "cancelled"),
+            # 接管：节点仍在跑时，平台的失败/取消投影允许被覆盖回采集中
+            ("failed", "collecting"),
+            ("cancelled", "collecting"),
+            # 纠正：完成判定不可信（历史任务报告）时，允许用户显式改回采集中
+            ("completed", "collecting"),
         ],
     )
     def test_allowed(self, current, target):
@@ -64,9 +69,9 @@ class TestStatusMachine:
     @pytest.mark.parametrize(
         ("current", "target"),
         [
-            ("completed", "collecting"),  # 终态不可复活
+            ("completed", "uploading"),  # 归档后不能退到上传阶段，只能整条纠正
+            ("completed", "failed"),
             ("failed", "pending"),
-            ("cancelled", "collecting"),
             ("pending", "uploading"),  # 不能跳过采集
             ("uploading", "collecting"),  # 不能倒退阶段
         ],
@@ -113,6 +118,30 @@ class TestCreateTask:
 
         task = mock_repo.create.await_args.args[0]
         assert isinstance(task.trace_id, str)
+
+    async def test_baseline_report_hash_persisted_into_detail(self, service, mock_repo):
+        """下发锚定的报告指纹必须随任务落库。
+
+        指纹只存在前端内存里时，关面板/换浏览器/重启后接管任务就无法判断
+        「节点报告属于哪一次下发」，只能靠猜（2026-10-26 现场两次误判的根源）。
+        """
+        mock_repo.get_active_by_case = AsyncMock(return_value=None)
+        mock_repo.create = AsyncMock(return_value=MagicMock(spec=LogCollectTask))
+
+        await service.create_task(make_payload(baseline_report_hash="7843-1a2b3c4d"), "client-1")
+
+        task = mock_repo.create.await_args.args[0]
+        assert task.detail == {"baseline_report_hash": "7843-1a2b3c4d"}
+
+    async def test_detail_empty_when_baseline_absent(self, service, mock_repo):
+        """没有基线时 detail 保持空对象：不写入假指纹，前端据此退化为"按节点态为准"。"""
+        mock_repo.get_active_by_case = AsyncMock(return_value=None)
+        mock_repo.create = AsyncMock(return_value=MagicMock(spec=LogCollectTask))
+
+        await service.create_task(make_payload(), "client-1")
+
+        task = mock_repo.create.await_args.args[0]
+        assert task.detail == {}
         assert len(task.trace_id) == 32  # W3C trace_id：32 位小写 hex
 
     async def test_trace_id_preserved_when_provided(self, service, mock_repo):
@@ -150,14 +179,65 @@ class TestUpdateTask:
         assert result.progress == 100
         assert result.finished_at is not None
 
-    async def test_terminal_task_cannot_revive(self, service, mock_repo):
+    async def test_completed_correction_clears_artifact_projection(self, service, mock_repo):
+        """completed → collecting 只用于"以节点为准纠正"，必须清空上一轮的产物投影。
+
+        原产物可能属于同工单的上一次任务（重复 create 会拿到旧报告），
+        继续挂着会变成"采集中却显示产物位置"的新误导；只改 DB 投影，压缩包一律不删。
+        """
         task = MagicMock(spec=LogCollectTask)
         task.status = "completed"
         task.progress = 100
+        task.archive_path = "/sf/data/local/acli/tasks/Q1.tar.gz"
+        task.archive_size = 1024
+        task.archive_sha256 = "a" * 64
+        task.relay_status = "success"
+        task.relay_chunk_index = 3
+        task.relay_chunk_total = 3
+        task.relay_restarts = 2
+        task.cleanup_state = "done"
+        task.cleanup_reason = "already"
         mock_repo.get_by_id = AsyncMock(return_value=task)
+        mock_repo.flush = AsyncMock()
+        mock_repo.refresh = AsyncMock()
 
-        with pytest.raises(InvalidTransitionError):
-            await service.update_task("11111111-1111-1111-1111-111111111111", LogCollectTaskPatch(status="collecting"))
+        result = await service.update_task(
+            "11111111-1111-1111-1111-111111111111", LogCollectTaskPatch(status="collecting")
+        )
+
+        assert result.archive_path is None
+        assert result.archive_size is None
+        assert result.archive_sha256 is None
+        assert result.relay_status == "none"
+        assert result.relay_restarts == 0
+        assert result.cleanup_state == "none"
+        assert result.finished_at is None
+        # 原产物值必须留在审计文案里，方便事后核对"当时到底归档了什么"
+        assert result.error_code == "corrected_by_node"
+        assert "/sf/data/local/acli/tasks/Q1.tar.gz" in result.error_message
+        assert "success" in result.error_message
+
+    async def test_adopt_clears_failure_traces(self, service, mock_repo):
+        """failed → collecting（接管）必须清掉上次的失败痕迹。
+
+        否则界面会一边显示"采集中"一边显示旧错误原因。
+        """
+        task = MagicMock(spec=LogCollectTask)
+        task.status = "failed"
+        task.progress = 30
+        task.error_code = "LC-PLUGIN-009"
+        task.error_message = "上次采集失败"
+        mock_repo.get_by_id = AsyncMock(return_value=task)
+        mock_repo.flush = AsyncMock()
+        mock_repo.refresh = AsyncMock()
+
+        result = await service.update_task(
+            "11111111-1111-1111-1111-111111111111", LogCollectTaskPatch(status="collecting")
+        )
+
+        assert result.error_code is None
+        assert result.error_message is None
+        assert result.finished_at is None
 
 
 class TestCancelTask:

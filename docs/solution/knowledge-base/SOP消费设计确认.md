@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-05-22
+owner: team
+---
+
 # SOP 知识消费阶段设计确认
 
 > **定位**：SOP 导入（知识生成）阶段与知识消费阶段（Pydantic AI ReAct Agent Loop）的设计对齐文档。

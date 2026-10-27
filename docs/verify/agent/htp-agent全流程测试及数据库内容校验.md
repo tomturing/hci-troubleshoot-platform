@@ -1,3 +1,11 @@
+---
+status: active
+category: verify
+audience: developer
+last_updated: 2026-06-05
+owner: team
+---
+
 # HTP-Agent 全流程测试与数据库内容校验指南
 
 本指南整合了 **HTP-Agent** 诊断全链路测试中发现的典型问题及原因分析，并归档了诊断执行各个阶段在 PostgreSQL 数据库中的内容校验方法。

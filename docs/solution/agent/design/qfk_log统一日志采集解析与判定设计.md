@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # qfk_log 统一日志采集、解析与判定设计
 
 > 状态：已确认并进入实施

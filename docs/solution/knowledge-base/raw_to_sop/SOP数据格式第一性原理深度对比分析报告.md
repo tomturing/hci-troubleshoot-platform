@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-07-03
+owner: team
+---
+
 # SOP 数据格式对比深度报告（第一性原理 · 严谨版）
 
 > **声明**：本报告对上一份对比报告的结论进行重新审视。结论并非非此即彼。

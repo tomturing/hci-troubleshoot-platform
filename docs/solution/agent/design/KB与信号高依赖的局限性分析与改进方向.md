@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-26
+owner: team
+---
+
 # Agent 对 KB 与信号高依赖的局限性分析与改进方向
 
 > 文档版本：V1.1
@@ -9,7 +17,7 @@
 > - [在线与离线诊断模式-KBD信号利用路径对比](../../knowledge-base/KBD证据诊断与CDD闭环设计.md)
 > - [关键信号架构落地设计](../../knowledge-base/关键信号架构设计.md)
 > - [虚拟机控制台视觉生产者信号设计与需求](../虚拟机控制台视觉生产者信号设计与需求.md)
-> - [离线诊断模式业务设计_V3.1](../离线诊断模式业务设计_V3.1.md)
+> - [离线诊断模式业务设计](../../diagnosis/离线诊断模式业务设计.md)
 > - [KBD不可绕过执行门禁与Fail-Closed兜底方案](../../knowledge-base/events/2026-08-04-KBD不可绕过执行门禁与Fail-Closed兜底方案.md)
 > - [QKV_QFK扩展性与配置易用性评估](QKV_QFK扩展性与配置易用性评估.md)（信号模板提案否决依据，见 §5.4）
 > - [关键信号统一解析运行时与Resolver分层方案](../events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md)（SignalIntent 降本解药，见 §5.3）
@@ -73,7 +81,7 @@ Fallback 行为：
 - `_conclusion`：未就绪 → `Insufficient`（confidence ≤ 0.39）；复用在线 CDD 门禁，只有 DEFINITIVE + mandatory 全齐 + 唯一 SUPPORTED 才给 `Confirmed`；
 - **替代路径仅两条**：`offline_signal_collector_mapping`（在线工具→离线 collector 的已审批映射）和 `_create_supplement` 生成的**一次**定向补采计划。没有自由发挥的证据采集。
 
-设计原则（《离线诊断模式业务设计_V3.1》）："离线数据不足时明确缺失证据并转工程师人工补充，不输出确定性根因"。
+设计原则（《离线诊断模式业务设计》）："离线数据不足时明确缺失证据并转工程师人工补充，不输出确定性根因"。
 
 ### 1.4 不存在运行时自学习闭环
 
@@ -258,9 +266,9 @@ KBD 解析/信号抽取历史上修过大量 bug（贪婪解析、截图丢失�
 | 三轨路由查询入口 | `backend/kb-service/app/routes/route.py`（`GET /api/kb/route`） |
 | 未命中升级人工 | `investigation_agent.py` 的 `AgentEscalation` 分支；"系统不会生成知识库外的命令或根因"话术 |
 | 机制推理死代码 | `investigation_agent.py::_process_fallback_mode` / `_build_fallback_prompt`；模板 `s4_fallback_v1`（`backend/shared/utils/prompt_loader.py`）；废弃于 commit `4e1d2474` |
-| SOP 轨道变量门禁 | `backend/agent-service/.../sop_tools.py::SopToolExecutor._check_variable_source_gate` |
-| 工具白名单与命令动态定级 | `tool_registry.load_tool_registry`；`backend/agent-service/.../acli/classifier.py::classify_acli/classify_bash` |
-| KBD 轨道信号 DAG 与结论门禁 | `backend/agent-service/.../kbd_differential.py::KBDDiagnostic`；`backend/shared/cdd/plan_compiler.py`；`backend/shared/cdd/conclusion_gate.py::decide_conclusion` |
+| SOP 轨道变量门禁 | `backend/agent-service/app/adapters/agents/htp/sop_tools.py::SopToolExecutor._check_variable_source_gate` |
+| 工具白名单与命令动态定级 | `tool_registry.load_tool_registry`；`backend/agent-service/app/tools/acli/classifier.py::classify_acli/classify_bash` |
+| KBD 轨道信号 DAG 与结论门禁 | `backend/agent-service/app/adapters/agents/htp/kbd_differential.py::KBDDiagnostic`；`backend/shared/cdd/plan_compiler.py`；`backend/shared/cdd/conclusion_gate.py::decide_conclusion` |
 | 变量置信序 | `backend/shared/models/information.py` |
 | 离线采集失败不中断 | `backend/diagnosis-service/offline-collector/collect.go` |
 | 离线 UNKNOWN / Insufficient / 一次补采 | `backend/diagnosis-service/app/services/offline_analysis_service.py`（`_evaluate_signal` / `_calculate_assessment` / `_conclusion` / `_create_supplement`） |
@@ -276,4 +284,12 @@ KBD 解析/信号抽取历史上修过大量 bug（贪婪解析、截图丢失�
 | 信号复核 Admin UI | `frontend/admin/src/views/KbdReviewView.vue` + `components/editors/`（MatcherEditor / ProducesEditor / TextExtractEditor / ValueExtractEditor / QfkProcessingEditor） |
 | 信号模板提案否决依据 | `./QKV_QFK扩展性与配置易用性评估.md` §3.3 |
 | replay/四态评估设施 | `tests/golden/kbd_cases/`（replay_scenarios 四态）；`backend/agent-service/tests/unit/test_kbd_golden_contracts.py`；`shared.cdd.replay_evaluations`；`hci_sim/testdata/kbd-27123-fixture-manifest.json` |
-| 统一解析运行时提案（proposed） | `docs/solution/agent/events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md`；`backend/shared/resolution/catalogs/{resolution_catalog,acli_command_catalog}.json` |
+| 统一解析运行时提案（proposed） | `docs/solution/agent/events/2026-08-07-关键信号统一解析运行时与Resolver分层方案.md`；`backend/shared/resolution/catalogs/resolution_catalog.json`、`backend/shared/resolution/catalogs/acli_command_catalog.json` |
+
+## 变更历史
+
+> 本节自 2026-10-26 起补建；此前的修订轨迹见 `git log`，规范 §7.1 不要求回溯补齐。
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-10-26 | — | 3 处 `backend/agent-service/.../` 省略写法展开为完整路径；`{resolution_catalog,acli_command_catalog}.json` brace 写法展开为两条完整路径 | [文档瘦身 Wave 3 现行文档准确性治理](../../events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |

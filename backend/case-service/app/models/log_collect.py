@@ -48,10 +48,10 @@ class LogCollectTask(Base, TimestampMixin, TraceableMixin):
     archive_path = Column(Text, nullable=True)
     archive_size = Column(BigInteger, nullable=True)
     archive_sha256 = Column(String(64), nullable=True)
-    # P3 段①：从 HCI 拉取到客户 PC 的进度，rsync/SFTP 断点续传依据
+    # P2 段①：从 HCI 拉取到客户 PC 的进度，rsync/SFTP 断点续传依据
     pull_offset_bytes = Column(BigInteger, nullable=True)
     pull_sha256 = Column(String(64), nullable=True)
-    # P3 段③：日志服务器（5888）分块上传的续传状态，必须逐块写入
+    # P2 段③：日志服务器（5888）分块上传的续传状态，必须逐块写入
     relay_upload_id = Column(Text, nullable=True)
     relay_chunk_index = Column(Integer, nullable=True)
     relay_chunk_total = Column(Integer, nullable=True)

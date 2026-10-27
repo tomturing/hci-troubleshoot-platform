@@ -405,6 +405,86 @@ func TestSessionByNodeIP(t *testing.T) {
 	}
 }
 
+// 回归：cancel 曾经漏传 node_ip，精确键与 node_ip 两级回退全部失效，直接 session_missing，
+// 结果是平台显示已取消、节点上采集任务仍在跑，后续 create 被插件互斥拒绝。
+// 本工单只有一条 SSH 会话时，必须能兜底命中。
+// 回归：acli 失败输出带颜色码（`\x1b[31mFATA\x1b[0m...`），
+// 不清洗会污染状态行匹配，也会把乱码直接展示到面板。
+func TestStripAnsi(t *testing.T) {
+	raw := "\u001b[31mFATA\u001b[0m[0000] execing command in container: command terminated with exit code 1"
+	cleaned := stripAnsi(raw)
+	if strings.Contains(cleaned, "\u001b") {
+		t.Fatalf("转义序列未清除：%q", cleaned)
+	}
+	if !strings.HasPrefix(cleaned, "FATA[0000]") {
+		t.Fatalf("清洗后内容异常：%q", cleaned)
+	}
+
+	// 带颜色的状态行清洗后必须仍能被归一化识别
+	status := stripAnsi("状态：\u001b[31m收集任务异常结束！\u001b[0m")
+	got := classifyLogCollectNodeState(logCollectProgress{Status: strings.TrimPrefix(status, "状态：")})
+	if got != logCollectNodeAbnormal {
+		t.Fatalf("带 ANSI 的状态行应识别为 abnormal，实际 %s", got)
+	}
+}
+
+func TestClassifyLogCollectNodeState(t *testing.T) {
+	cases := []struct {
+		name     string
+		progress logCollectProgress
+		want     string
+	}{
+		{"进行中", logCollectProgress{Status: "收集任务进行中！"}, logCollectNodeRunning},
+		{"已完成", logCollectProgress{Status: "收集任务已完成！", ArchivePath: "/x.zip"}, logCollectNodeCompleted},
+		// 回归：异常结束既不含"完成"也不含"失败"，早期前端因此空转到 1 小时超时
+		{"异常结束", logCollectProgress{Status: "收集任务异常结束！"}, logCollectNodeAbnormal},
+		{"收集失败", logCollectProgress{Status: "收集失败"}, logCollectNodeAbnormal},
+		{"无任务", logCollectProgress{Status: "收集任务不存在！"}, logCollectNodeNone},
+		{"状态行缺失但仍在跑", logCollectProgress{Hosts: []logCollectHost{{IP: "10.0.0.1", Status: "收集中"}}}, logCollectNodeRunning},
+		// 识别不了就不动平台状态，绝不按猜测去 cancel 节点任务
+		{"完全无法识别", logCollectProgress{}, logCollectNodeUnknown},
+	}
+	for _, tc := range cases {
+		if got := classifyLogCollectNodeState(tc.progress); got != tc.want {
+			t.Fatalf("%s: got %s want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestResolveLogCollectSessionFallsBackToOnlySession(t *testing.T) {
+	single := &SSHSession{address: "192.168.33.89:22"}
+	bridge := &Bridge{sessions: map[string]*SSHSession{"Q2026102601505@192.168.33.89": single}}
+
+	got, key, match := bridge.resolveLogCollectSession(InMessage{CaseID: "Q2026102601505", LogAction: "cancel"})
+	if got != single || key != "Q2026102601505@192.168.33.89" || match != "only_session_for_case" {
+		t.Fatalf("唯一会话应被兜底命中，实际 got=%v key=%s match=%s", got, key, match)
+	}
+
+	// 多节点时不猜：猜错会取消另一台机器上的采集任务
+	multi := &Bridge{sessions: map[string]*SSHSession{
+		"Q1@10.0.0.1": {address: "10.0.0.1:22"},
+		"Q1@10.0.0.2": {address: "10.0.0.2:22"},
+	}}
+	if got, _, _ := multi.resolveLogCollectSession(InMessage{CaseID: "Q1", LogAction: "cancel"}); got != nil {
+		t.Fatal("多节点且无 node_ip 时不得兜底，必须返回 nil 由调用方报 session_missing")
+	}
+
+	// 带了 node_ip 就走精确键，命中原因要能被日志区分
+	if got, key, match := multi.resolveLogCollectSession(InMessage{CaseID: "Q1", NodeIP: "10.0.0.2"}); got == nil || key != "Q1@10.0.0.2" || match != "exact" {
+		t.Fatalf("精确键应优先命中，实际 key=%s match=%s", key, match)
+	}
+
+	// 同节点其他工单的会话：按节点复用，不应落到 only_session_for_case
+	reuse := &Bridge{sessions: map[string]*SSHSession{
+		"Q1@10.0.0.1":            {address: "10.0.0.1:22"},
+		"terminal-only@10.9.9.9": {address: "10.9.9.9:22"},
+	}}
+	got2, key2, match2 := reuse.resolveLogCollectSession(InMessage{CaseID: "Q2", NodeIP: "10.9.9.9"})
+	if got2 == nil || key2 != "terminal-only@10.9.9.9" || match2 != "node_ip_suffix" {
+		t.Fatalf("应按节点复用其他工单会话，实际 key=%s match=%s", key2, match2)
+	}
+}
+
 // TestSessionByAddressHost 覆盖"会话键里不含 IP"的存量场景。
 // ssh_connect 历史上不带 node_ip，键只剩 caseID；此时日志收集按 caseID@nodeIP
 // 查不到，必须能回退到"会话实际连的主机地址"。

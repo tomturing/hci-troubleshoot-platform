@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # acli 知识库与采集器目录设计（基于 acli 全量文档）
 
 > 版本：v1.0

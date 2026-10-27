@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-07-03
+owner: team
+---
+
 # 通用 AI Agent 场景下 SOP 数据表达的最优解对比报告
 
 在面向通用 AI Agent（如基于 ReAct、Plan-and-Solve、LangGraph 或 OpenAI Assistants API 的智能体，非本项目定制的 Agent）提供排障指导时，选择何种知识表达格式至关重要。

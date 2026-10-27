@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-06-15
+owner: team
+---
+
 # SOP 发布与变量更新依赖校验设计及修复说明书
 
 本说明书详细阐述了针对超融合基础设施故障排障（SOP）过程中，关于工具与技能可用性校验的整体设计方案、第一性原理推导，以及本次修复的全部修改内容。

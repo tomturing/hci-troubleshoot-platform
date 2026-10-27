@@ -223,10 +223,23 @@ function initTerminal() {
     xterm.write(normalizeTerminalText(fullOutputText.value))
   }
 
+  // 抽屉宽度现在会随三栏布局连续变化（拖拽 / 主区让位过渡），
+  // 每帧都 fit 会让 xterm 反复 reflow 并闪烁；合并到 60ms 一次。
   resizeObserver = new ResizeObserver(() => {
-    fitTerminal()
+    scheduleFit()
   })
   resizeObserver.observe(terminalContainer.value)
+}
+
+let fitTimer: number | null = null
+
+/** 合并连续尺寸变化后再 fit，避免宽度动画期间的逐帧重排 */
+function scheduleFit() {
+  if (fitTimer !== null) window.clearTimeout(fitTimer)
+  fitTimer = window.setTimeout(() => {
+    fitTimer = null
+    fitTerminal()
+  }, 60)
 }
 
 /**
@@ -249,6 +262,10 @@ function fitTerminal() {
 }
 
 function disposeTerminal() {
+  if (fitTimer !== null) {
+    window.clearTimeout(fitTimer)
+    fitTimer = null
+  }
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null
@@ -501,37 +518,40 @@ onBeforeUnmount(() => {
       <div ref="terminalContainer" class="terminal-canvas" />
     </div>
 
-    <!-- 输入区与快捷键提示合并为一块：省下一整行 + 一条分隔线，把高度让给终端本体 -->
-    <div class="terminal-input-area">
-      <div class="terminal-input-row">
-        <span class="prompt-symbol">$</span>
-        <el-input
-          ref="terminalInputRef"
-          v-model="localInput"
-          type="textarea"
-          :autosize="{ minRows: 1, maxRows: 4 }"
-          placeholder="输入命令或从命令卡片发送..."
-          class="terminal-input"
-          @keydown="handleKeydown"
-          :disabled="!isConnected"
-        />
-        <el-button
-          type="primary"
-          size="small"
-          class="execute-btn terminal-action-btn"
-          :disabled="!localInput.trim() || !isConnected"
-          @click="executeCommand"
-        >
-          执行
-        </el-button>
-        <el-button size="small" class="terminal-action-btn" :disabled="!localInput" @click="clearInput">清空</el-button>
-      </div>
-      <div class="terminal-hint">
+    <!--
+      底部操作区：与日志收集、会话输入同构（hint 行 + 36px 控件行 + 按钮组），
+      深色主题只换颜色，尺寸沿用 styles/panel-composer.css 的同一套变量。
+    -->
+    <div class="panel-composer panel-composer--dark">
+      <div class="panel-composer__hint">
         <span v-if="!isConnected">请先点击『连接 SSH』按钮</span>
         <span v-else>
           Enter 执行 · Shift+Enter 换行 ·
           <el-link type="primary" :underline="false" @click="disconnectSsh">断开连接</el-link>
         </span>
+      </div>
+      <div class="panel-composer__body">
+        <span class="panel-composer__prefix">$</span>
+        <el-input
+          ref="terminalInputRef"
+          v-model="localInput"
+          type="textarea"
+          :rows="1"
+          placeholder="输入命令或从命令卡片发送..."
+          class="panel-composer__field"
+          @keydown="handleKeydown"
+          :disabled="!isConnected"
+        />
+        <div class="panel-composer__actions">
+          <el-button
+            type="primary"
+            :disabled="!localInput.trim() || !isConnected"
+            @click="executeCommand"
+          >
+            执行
+          </el-button>
+          <el-button :disabled="!localInput" @click="clearInput">清空</el-button>
+        </div>
       </div>
     </div>
   </div>
@@ -661,61 +681,10 @@ onBeforeUnmount(() => {
   display: none !important;
 }
 
-.terminal-input-area {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px 8px;
-  background: #252526;
-  border-top: 1px solid #333;
-}
-
-.terminal-input-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  /* 窄抽屉下输入框被两枚按钮挤到不足一行字宽，宁可让按钮换行 */
-  flex-wrap: wrap;
-}
-
-.terminal-hint {
-  padding-left: 18px;      /* 与 $ 提示符对齐 */
-  color: #8a8a8a;
-  font-size: 12px;
-  line-height: 16px;
-}
-
-.prompt-symbol {
-  display: flex;
-  align-items: center;
-  height: 32px;
-  color: #67c23a;
-  font-weight: 600;
-  font-family: Consolas, Monaco, monospace;
-  font-size: 14px;
-}
-
-.terminal-input {
-  flex: 1 1 140px;
-  min-width: 0;            /* 允许缩到内容以下，否则长 placeholder 会把按钮顶出抽屉 */
-}
-
-.terminal-input :deep(.el-textarea__inner) {
-  background: #1e1e1e;
-  border-color: #444;
-  color: #d4d4d4;
-  font-family: Consolas, Monaco, monospace;
-}
-
-.execute-btn {
-  height: 32px;
-}
-
-.terminal-action-btn {
-  width: 64px;
-  height: 32px;
-  padding: 0;
-}
+/*
+ * 底部操作区高度/字号/按钮规格统一在 styles/panel-composer.css（全局）；
+ * 深色配色也在那里（.panel-composer--dark），这里不再重复定义。
+ */
 
 /* 终端滚动条：默认样式在深色背景上过亮，收窄并降饱和 */
 .terminal-canvas :deep(.xterm-viewport) {

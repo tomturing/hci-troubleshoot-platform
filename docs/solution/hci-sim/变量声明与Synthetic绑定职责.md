@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-08-24
+owner: team
+---
+
 # KBD 变量声明与 Synthetic 绑定职责
 
 ## 设计结论

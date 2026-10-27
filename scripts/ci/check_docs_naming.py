@@ -34,7 +34,7 @@ DOCS_BASE = Path("docs")
 SKIP_DIRS = {"events", "pitfalls", "archive", ".git"}
 
 # 分支目录名规范：全小写英文字母、数字、连字符
-VALID_DIR_RE = re.compile(r'^[a-z][a-z0-9-]*$')
+VALID_DIR_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 
 # 泛化名称（分支目录下禁止使用）
 FORBIDDEN_GENERIC = {"设计.md", "任务.md"}
@@ -42,10 +42,10 @@ FORBIDDEN_GENERIC = {"设计.md", "任务.md"}
 # 禁止的文件名模式（正则 + 说明）
 FORBIDDEN_PATTERNS = [
     # 带点分隔符：工单.设计.md、架构.任务.md
-    (re.compile(r'[\u4e00-\u9fff\w]+\.[设任]\S+\.md$'), "带点分隔符（如 工单.设计.md）"),
+    (re.compile(r"[\u4e00-\u9fff\w]+\.[设任]\S+\.md$"), "带点分隔符（如 工单.设计.md）"),
     # 带版本号：架构设计v2.md、接口设计_v3.md
-    (re.compile(r'v\d+(?:[._]\d+)*\.md$', re.IGNORECASE), "带版本号（如 架构设计v2.md）"),
-    (re.compile(r'_v\d+\.md$', re.IGNORECASE), "带版本号后缀（如 接口设计_v3.md）"),
+    (re.compile(r"v\d+(?:[._]\d+)*\.md$", re.IGNORECASE), "带版本号（如 架构设计v2.md）"),
+    (re.compile(r"_v\d+\.md$", re.IGNORECASE), "带版本号后缀（如 接口设计_v3.md）"),
 ]
 
 # 分支目录内允许存在的"例外辅助文档"（不受主设计/任务命名约束）
@@ -61,21 +61,38 @@ ALLOWED_EXTRAS = {
 # 规则：统一使用中文模块名，目录名（英文）与文件名（中文）解耦
 # 此白名单是命名规范的机器可读形式，新增分支时同步更新此处
 BRANCH_APPROVED_STEMS: dict[str, list[str]] = {
-    "case":           ["工单"],
-    "conversation":   ["对话"],
-    "agent":          ["AI助手", "agent", "agent基类", "agent记忆", "agent技能", "agent工具"],  # 2026-05-20 由 ai-assistant 重命名，2026-05-24 新增基类设计，2026-06-04 新增记忆专题，2026-06-05 新增技能专题，2026-06-05 新增工具专题
+    "case": ["工单"],
+    "conversation": ["对话"],
+    "agent": [
+        "AI助手",
+        "agent",
+        "agent基类",
+        "agent记忆",
+        "agent技能",
+        "agent工具",
+    ],  # 2026-05-20 由 ai-assistant 重命名，2026-05-24 新增基类设计，2026-06-04 新增记忆专题，2026-06-05 新增技能专题，2026-06-05 新增工具专题
     "knowledge-base": [
-        "知识库", "SOP树",
+        "知识库",
+        "SOP树",
         # 2026-07-27 新增：知识库相关设计文档白名单
-        "KBD证据诊断与CDD闭环", "KBD主动诊断信号", "SOP决策树", "SOP多叉决策树", "SOP消费",
-        "关键信号", "RAG", "图片识别", "评分机制", "SSH终端交互",
+        "KBD证据诊断与CDD闭环",
+        "KBD主动诊断信号",
+        "SOP决策树",
+        "SOP多叉决策树",
+        "SOP消费",
+        "关键信号",
+        "RAG",
+        "图片识别",
+        "评分机制",
+        "SSH终端交互",
     ],
-    "custom-ui":      ["客户端"],
-    "admin-ui":       ["管理台"],
+    "custom-ui": ["客户端"],
+    "admin-ui": ["管理台"],
 }
 
 
 # ─────────────────────────── 工具函数 ───────────────────────────
+
 
 def get_pr_changed_docs() -> list[Path]:
     """获取 PR 中变更的 docs/*.md 文件列表"""
@@ -101,6 +118,7 @@ def should_skip(path: Path) -> bool:
 
 
 # ─────────────────────────── 单文件检查 ───────────────────────────
+
 
 def check_file(path: Path) -> list[str]:
     """
@@ -128,10 +146,7 @@ def check_file(path: Path) -> list[str]:
         dir_name = parts[2]
         approved = BRANCH_APPROVED_STEMS.get(dir_name, [dir_name])
         example = f"{approved[0]}{suffix}.md"
-        errors.append(
-            f"❌ {path}\n"
-            f"   泛化文件名 '{fname}'，应改为 '{example}'"
-        )
+        errors.append(f"❌ {path}\n   泛化文件名 '{fname}'，应改为 '{example}'")
         return errors  # 已泛化，不叠加其他错误
 
     # ② 禁止模式检查（带点分隔符、带版本号）
@@ -144,22 +159,25 @@ def check_file(path: Path) -> list[str]:
     if len(parts) == 4:
         branch_dir = parts[2]
         approved_stems = BRANCH_APPROVED_STEMS.get(branch_dir)
-        if approved_stems is not None and fname not in ALLOWED_EXTRAS:
-            # 只检查以正确后缀结尾的文件（如 *设计.md）
-            if fname.endswith(f"{suffix}.md"):
-                stem = fname[: -len(f"{suffix}.md")]
-                if stem not in approved_stems:
-                    examples = "、".join(f"'{s}{suffix}.md'" for s in approved_stems)
-                    errors.append(
-                        f"⚠️  {path}\n"
-                        f"   文件名干 '{stem}' 不在白名单内，\n"
-                        f"   '{branch_dir}/' 目录允许的主文档名：{examples}"
-                    )
+        suffix_name = f"{suffix}.md"
+        # 只检查以正确后缀结尾的文件（如 *设计.md），且未被 ALLOWED_EXTRAS 显式豁免
+        if (
+            approved_stems is not None
+            and fname not in ALLOWED_EXTRAS
+            and fname.endswith(suffix_name)
+            and fname[: -len(suffix_name)] not in approved_stems
+        ):
+            stem = fname[: -len(suffix_name)]
+            examples = "、".join(f"'{s}{suffix}.md'" for s in approved_stems)
+            errors.append(
+                f"⚠️  {path}\n   文件名干 '{stem}' 不在白名单内，\n   '{branch_dir}/' 目录允许的主文档名：{examples}"
+            )
 
     return errors
 
 
 # ─────────────────────────── 目录名检查 ───────────────────────────
+
 
 def check_dir_names() -> list[str]:
     """检查 solution/ 和 task/ 一级子目录名是否符合规范（全小写英文）"""
@@ -182,6 +200,7 @@ def check_dir_names() -> list[str]:
 
 # ─────────────────────────── 主检查模式 ───────────────────────────
 
+
 def run_pr_check() -> list[str]:
     """PR 模式：仅检查 PR 变更的 docs/*.md 文件 + 全量目录名检查"""
     changed = get_pr_changed_docs()
@@ -203,12 +222,23 @@ def run_full_check() -> list[str]:
 
 # ─────────────────────────── 入口 ───────────────────────────
 
+
+def split_findings(findings: list[str]) -> tuple[list[str], list[str]]:
+    """把检查结果分成（阻断项, 建议项）。
+
+    ❌ 前缀是违规，必须修才能合入；⚠️ 前缀是建议，不阻断。
+    划分必须集中在这一个函数里：一旦让建议项也能触发非零退出，
+    白名单这类天然滞后的清单就会把全量模式永久钉在红灯上，
+    而一条永远失败的门禁与没有门禁等价（没人再跑它）。
+    """
+    blocking = [f for f in findings if f.startswith("❌")]
+    advisory = [f for f in findings if not f.startswith("❌")]
+    return blocking, advisory
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="docs/ 命名规范检查")
-    parser.add_argument(
-        "--full", action="store_true",
-        help="全量检查 docs/（默认仅检查 PR 变更文件）"
-    )
+    parser.add_argument("--full", action="store_true", help="全量检查 docs/（默认仅检查 PR 变更文件）")
     args = parser.parse_args()
 
     # 旁路：PR 含 naming-approved 标签时跳过
@@ -218,14 +248,29 @@ def main() -> None:
 
     errors = run_full_check() if args.full else run_pr_check()
 
+    # 分级：❌ 为违规（阻断），⚠️ 为建议（不阻断）。
+    # 曾把两者混在同一个 errors 列表里一律 exit 1，后果是 `--full`
+    # 在 main 上常年红灯（白名单天然滞后），没人再跑全量检查。
+    blocking, advisory = split_findings(errors)
+
     if not errors:
         print("✅ 文档命名规范检查通过")
+        sys.exit(0)
+
+    if advisory:
+        print("ℹ️  以下为建议级提示（不阻断）：")
+        for e in advisory:
+            print(e)
+        print()
+
+    if not blocking:
+        print(f"✅ 文档命名规范检查通过（{len(advisory)} 条建议级提示）")
         sys.exit(0)
 
     print("=" * 60)
     print("📋 文档命名规范检查 — 发现以下问题：")
     print("=" * 60)
-    for e in errors:
+    for e in blocking:
         print(e)
     print()
     print("─" * 60)

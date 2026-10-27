@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # HCI 智能排障平台 — Prompt 数据库化收敛与动态热生效技术方案
 
 本方案基于**第一性原理**与**代码结构主导原则**，重新设计平台 Prompt 的数据库化收敛及热生效机制。本设计将**运行中且已验证的 Python 代码 Prompts 作为唯一的“真理源”**，以此重构数据库种子，并实现严密的占位符静态验证与“喧闹式报错”（Loud Failing）机制，彻底消除开发与调试中的配置吞噬与隐藏缺陷。

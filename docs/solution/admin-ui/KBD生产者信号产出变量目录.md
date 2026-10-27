@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # KBD 生产者信号产出变量目录
 
 KBD 管理页中的 QKV 生产者信号不再自由输入产出变量名。变量目录由"工具管理"中对应 QKV 工具的"产出变量（produces）"维护，保存后的 `parameters_schema.properties.produces.default` 是唯一数据源。

@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # HCI 智能排障平台 — Skill 调用失效改进后恶化根因与闭环方案
 
 > **第一性原理深度诊断报告**

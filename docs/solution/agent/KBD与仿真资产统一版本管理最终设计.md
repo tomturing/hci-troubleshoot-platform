@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-24
+owner: team
+---
+
 # KBD 与仿真资产统一版本管理最终设计
 
 > 状态：归档版最终方案（2026-08-31）

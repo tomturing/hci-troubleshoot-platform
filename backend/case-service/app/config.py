@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     INTERNAL_API_TOKEN: str = "hci-dev-internal-token"
     KB_PUSH_ENABLED: bool = True  # 环境变量 KB_PUSH_ENABLED=false 可禁用
 
-    # 日志收集制品存储（P3 段②：客户 PC → 平台 分块上传）
+    # 日志收集制品存储（P2 段②：客户 PC → 平台 分块上传）
     # 单任务 2–20 GiB，使用本地共享卷；平台不做自动清理，容量告警由前端展示。
     LOG_COLLECT_STORAGE_ROOT: str = "/var/lib/log-collect"
     LOG_COLLECT_CHUNK_SIZE_BYTES: int = 32 * 1024 * 1024
@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     # 数据面 token 签名密钥；留空时由 INTERNAL_API_TOKEN 派生，避免新增必填配置。
     LOG_COLLECT_UPLOAD_SECRET: str = ""
 
-    # P3 段③：平台代传日志服务器（与 acli 插件一致，插件只认官方域名白名单）。
+    # P2 段③：平台代传日志服务器（与 acli 插件一致，插件只认官方域名白名单）。
     LOG_COLLECT_RELAY_URL: str = "http://acli.sangfor.com.cn:5888"
     LOG_COLLECT_RELAY_ENABLED: bool = True
 

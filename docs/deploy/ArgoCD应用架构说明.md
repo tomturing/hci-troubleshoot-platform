@@ -1,3 +1,11 @@
+---
+status: active
+category: deploy
+audience: operator
+last_updated: 2026-10-20
+owner: team
+---
+
 # ArgoCD App of Apps 架构说明
 
 ## 当前架构

@@ -877,8 +877,8 @@ uv run python -m data-pipeline.kbd.run review-signals --help
 ## 14. 相关设计文档
 
 - [知识库总体设计](../../docs/solution/knowledge-base/知识库设计.md)
-- [关键信号字段级别抽取](docs/solution/agent/design/关键信号字段级分别抽取.md)
-- [qfk_log 统一日志采集、解析与判定设计](docs/solution/agent/design/qfk_log统一日志采集解析与判定设计.md)
-- [HCI 底层目录、日志、容器与 aCLI 知识基线](docs/solution/agent/design/HCI底层目录日志容器与aCLI知识基线.md)
+- [关键信号字段级别抽取](../../docs/solution/agent/design/关键信号字段级分别抽取.md)
+- [qfk_log 统一日志采集、解析与判定设计](../../docs/solution/agent/design/qfk_log统一日志采集解析与判定设计.md)
+- [HCI 底层目录、日志、容器与 aCLI 知识基线](../../docs/solution/agent/design/HCI底层目录日志容器与aCLI知识基线.md)
 
-最后更新：2026-08-06。
+最后更新：2026-10-26。

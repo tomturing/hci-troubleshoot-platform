@@ -1,15 +1,108 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
-import { Finished, FolderOpened, Monitor, Tickets } from '@element-plus/icons-vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { Finished, FirstAidKit, FolderOpened, Monitor, Tickets } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 import { getClientId } from '@/utils/clientId'
 import ChatWindow from '@/components/ChatWindow.vue'
+import HistoryPanel from '@/components/HistoryPanel.vue'
 import LogCollectCaseDialog from '@/components/LogCollectCaseDialog.vue'
 import LogCollectPanel from '@/components/LogCollectPanel.vue'
+import PanelShell from '@/components/PanelShell.vue'
 import SshConnectDialog from '@/components/SshConnectDialog.vue'
+import TerminalPanel from '@/components/TerminalPanel.vue'
 
 const chatStore = useChatStore()
 const clientId = getClientId()
+
+/**
+ * 工作区外壳。
+ *
+ * 三块内容是 flex 兄弟节点（面板 / 会话 / 面板），宽度直接来自求解器：
+ * 没有抽屉、没有主区 padding 让位、没有遮罩穿透的 hack。
+ * 外壳只提供一个变量——中央内容列的可读宽度上限。
+ */
+const shellStyle = computed(() => ({
+  '--ws-center-max': `${chatStore.workspaceLayout.centerMaxWidth}px`,
+}))
+
+/** 窄屏降级：面板改为覆盖式，此时才需要遮罩 */
+const isOverlayMode = computed(() => chatStore.workspaceLayout.mode === 'overlay')
+
+/**
+ * 顶栏紧凑态。
+ *
+ * 只看视口宽度，不看中央会话宽度：顶栏是「应用框架」，横跨三栏、宽度恒定，
+ * 而 centerMaxWidth 会随面板开合在 460~900 之间变化。早先用它做判定，
+ * 结果是打开两个面板（中央 560）时顶栏按钮全部退化成图标——
+ * 明明窗口还有 1920px 可用，纯属把内容列的约束错套到了框架上。
+ */
+const isHeaderCompact = computed(() => chatStore.viewportWidth < 900)
+
+/**
+ * 拖拽调宽：只写"偏好宽度"，由求解器重新算当前宽度。
+ *
+ * 直接写当前宽度会在窗口变窄后留下一个越界固定值，把中央会话挤到不可读；
+ * 写偏好则始终能被 clamp 回合法区间。
+ */
+function startPanelResize(side: 'left' | 'right', e: MouseEvent) {
+  e.preventDefault()
+  const startX = e.clientX
+  const startWidth = side === 'left' ? chatStore.leftPanelWidth : chatStore.rightPanelWidth
+  const apply = side === 'left' ? chatStore.setLeftPanelPreferred : chatStore.setRightPanelPreferred
+  chatStore.setPanelResizing(true)
+  const onMouseUp = () => {
+    chatStore.setPanelResizing(false)
+    document.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('mouseup', onMouseUp)
+  }
+  const onMouseMove = (moveE: MouseEvent) => {
+    // 鼠标在窗口外松开时收不到 mouseup，靠按键状态兜底复位，否则过渡会被永久关闭
+    if (moveE.buttons === 0) {
+      onMouseUp()
+      return
+    }
+    // 左侧手柄往右拖是变宽，右侧手柄往左拖是变宽
+    const delta = side === 'left' ? moveE.clientX - startX : startX - moveE.clientX
+    apply(startWidth + delta)
+  }
+  document.addEventListener('mousemove', onMouseMove)
+  document.addEventListener('mouseup', onMouseUp)
+}
+
+/** 窄屏覆盖态点空白处：先收右侧（终端在上层），没有再收左侧 */
+function collapseOverlayPanel() {
+  if (chatStore.isRightPanelOpen) {
+    chatStore.closeTerminalSidebar()
+    return
+  }
+  chatStore.collapseLeftPanel()
+}
+
+/** 从右栏终端打开当前工单的终端历史回放 */
+function openCurrentCaseTerminalHistory() {
+  // 优先当前聊天工单，其次日志收集绑定的工单：无聊天工单时也能看采集会话的回放
+  const caseId = chatStore.currentCase?.case_id ?? chatStore.logCollectCaseId ?? null
+  chatStore.openTerminalReplay(caseId)
+}
+
+// 视口变化时重新求解；rAF 合并同一帧内的连续 resize，避免布局抖动
+const viewportResizing = ref(false)
+let resizeFrame = 0
+let resizeIdleTimer = 0
+function handleViewportResize() {
+  // 拖动窗口边缘时抽屉宽度是瞬变的（el-drawer 的 size 没有过渡），
+  // 若主区让位仍跑 300ms 过渡，两者会持续错位，所以窗口 resize 期间也关掉过渡。
+  viewportResizing.value = true
+  if (resizeIdleTimer) window.clearTimeout(resizeIdleTimer)
+  resizeIdleTimer = window.setTimeout(() => {
+    viewportResizing.value = false
+  }, 160)
+  if (resizeFrame) return
+  resizeFrame = requestAnimationFrame(() => {
+    resizeFrame = 0
+    chatStore.setViewportWidth(window.innerWidth)
+  })
+}
 // 抽屉开合收敛到 store：建单后的引导卡片也通过同一状态打开面板，
 // 避免 App.vue 与 ChatWindow 各持一份本地 ref 导致两处入口行为不一致。
 const logCollectVisible = computed({
@@ -23,7 +116,16 @@ const BRIDGE_DOWNLOAD_URL =
   import.meta.env.VITE_BRIDGE_DOWNLOAD_URL || '/downloads/terminal_bridge.exe'
 
 onMounted(() => {
+  // 首帧就要有正确的视口宽度，否则抽屉会按 SSR 兜底值布局一次再跳变
+  chatStore.setViewportWidth(window.innerWidth)
   chatStore.initialize()
+  window.addEventListener('resize', handleViewportResize)
+})
+
+onBeforeUnmount(() => {
+  if (resizeFrame) cancelAnimationFrame(resizeFrame)
+  if (resizeIdleTimer) window.clearTimeout(resizeIdleTimer)
+  window.removeEventListener('resize', handleViewportResize)
 })
 
 /**
@@ -46,102 +148,203 @@ function handleDownloadBridge() {
 </script>
 
 <template>
-  <div class="app-container">
-    <header class="app-header">
-      <div class="header-content">
+  <div
+    class="workspace-shell"
+    :class="{ 'is-resizing': chatStore.isPanelResizing || viewportResizing }"
+    :style="shellStyle"
+  >
+    <header class="app-header" :class="{ 'is-compact': isHeaderCompact }">
+      <!-- 品牌区：通栏左对齐。顶栏横跨三栏，不跟随中央内容列限宽 -->
+      <div class="header-brand">
+        <span class="brand-mark"><el-icon><FirstAidKit /></el-icon></span>
         <h1>HCI 故障排查助手</h1>
-        <div class="header-badges">
-          <!-- 工单信息：历史工单入口 + ID/工单号展示 -->
-          <el-popover
-            placement="bottom-end"
-            :width="260"
-            trigger="click"
-          >
-            <template #reference>
-              <el-button
-                size="small"
-                round
-                class="header-btn case-info-btn"
-              >
-                <el-icon><Tickets /></el-icon>
-                工单信息
-              </el-button>
-            </template>
-            <div class="case-info-popover">
-              <div class="case-info-row">
-                <span class="case-info-label">客户端 ID</span>
-                <span class="case-info-value selectable" :title="clientId">{{ clientId }}</span>
-              </div>
-              <div v-if="chatStore.currentCase" class="case-info-row">
-                <span class="case-info-label">当前工单</span>
-                <span class="case-info-value selectable">{{ chatStore.currentCase.case_id }}</span>
-              </div>
-              <div v-else class="case-info-row">
-                <span class="case-info-label">当前工单</span>
-                <span class="case-info-value muted">暂无</span>
-              </div>
-              <el-divider style="margin: 10px 0" />
-              <el-button
-                size="small"
-                style="width: 100%"
-                @click="chatStore.openHistoryDrawer()"
-              >
-                <el-icon><Tickets /></el-icon>
-                查看历史工单
-              </el-button>
+        <span v-if="chatStore.currentCase" class="brand-case">
+          {{ chatStore.currentCase.case_id }}
+        </span>
+      </div>
+      <div class="header-badges">
+        <!-- 工单信息：历史工单入口 + ID/工单号展示 -->
+        <el-popover
+          placement="bottom-end"
+          :width="260"
+          trigger="click"
+        >
+          <template #reference>
+            <el-button
+              size="small"
+              round
+              class="header-btn case-info-btn"
+            >
+              <el-icon><Tickets /></el-icon>
+              工单信息
+            </el-button>
+          </template>
+          <div class="case-info-popover">
+            <div class="case-info-row">
+              <span class="case-info-label">客户端 ID</span>
+              <span class="case-info-value selectable" :title="clientId">{{ clientId }}</span>
             </div>
-          </el-popover>
+            <div v-if="chatStore.currentCase" class="case-info-row">
+              <span class="case-info-label">当前工单</span>
+              <span class="case-info-value selectable">{{ chatStore.currentCase.case_id }}</span>
+            </div>
+            <div v-else class="case-info-row">
+              <span class="case-info-label">当前工单</span>
+              <span class="case-info-value muted">暂无</span>
+            </div>
+            <el-divider style="margin: 10px 0" />
+            <el-button
+              size="small"
+              style="width: 100%"
+              @click="chatStore.openHistoryDrawer()"
+            >
+              <el-icon><Tickets /></el-icon>
+              查看历史工单
+            </el-button>
+          </div>
+        </el-popover>
 
-          <!-- 关闭工单 -->
-          <el-button
-            v-if="chatStore.hasActiveCase"
-            size="small"
-            round
-            class="header-btn close-btn"
-            @click="chatStore.handleCloseCase()"
-          >
-            <el-icon><Finished /></el-icon>
-            关闭工单
-          </el-button>
+        <!-- 关闭工单 -->
+        <el-button
+          v-if="chatStore.hasActiveCase"
+          size="small"
+          round
+          class="header-btn close-btn"
+          @click="chatStore.handleCloseCase()"
+        >
+          <el-icon><Finished /></el-icon>
+          关闭工单
+        </el-button>
 
-          <!-- 日志收集：常驻入口；无活跃工单时由对话框要求手工指定工单号 -->
-          <el-button
-            size="small"
-            round
-            class="header-btn log-collect-btn header-action-btn"
-            @click="chatStore.openLogCollect()"
-          >
-            <el-icon><FolderOpened /></el-icon>
-            日志收集
-          </el-button>
+        <!-- 日志收集：常驻入口；无活跃工单时由对话框要求手工指定工单号 -->
+        <el-button
+          size="small"
+          round
+          class="header-btn log-collect-btn header-action-btn"
+          @click="chatStore.openLogCollect()"
+        >
+          <el-icon><FolderOpened /></el-icon>
+          日志收集
+        </el-button>
 
-          <!-- SSH终端按钮：点击先检测 Bridge -->
-          <el-button
-            size="small"
-            round
-            class="header-btn terminal-btn header-action-btn"
-            :loading="chatStore.bridgeStatus === 'checking'"
-            @click="chatStore.checkAndOpenTerminal()"
-          >
-            <el-icon v-if="chatStore.bridgeStatus !== 'checking'"><Monitor /></el-icon>
-            SSH终端
-          </el-button>
-        </div>
+        <!-- SSH终端按钮：点击先检测 Bridge -->
+        <el-button
+          size="small"
+          round
+          class="header-btn terminal-btn header-action-btn"
+          :loading="chatStore.bridgeStatus === 'checking'"
+          @click="chatStore.checkAndOpenTerminal()"
+        >
+          <el-icon v-if="chatStore.bridgeStatus !== 'checking'"><Monitor /></el-icon>
+          SSH终端
+        </el-button>
       </div>
     </header>
-    <main class="app-main">
-      <ChatWindow />
-    </main>
 
-    <!-- SSH 连接弹框（create-case / terminal-only 统一入口） -->
+    <!-- 三栏：左面板 / 中央会话 / 右终端。全部是 flex 子项，无抽屉、无遮罩穿透 -->
+    <div class="workspace-body">
+      <PanelShell
+        side="left"
+        :open="chatStore.isLeftPanelOpen"
+        :width="chatStore.leftPanelWidth"
+        :overlay="isOverlayMode"
+        :resizing="chatStore.isPanelResizing"
+        @collapse="chatStore.collapseLeftPanel()"
+        @resize-start="startPanelResize('left', $event)"
+      >
+        <template #rail>
+          <el-tooltip content="日志收集" placement="right" :show-after="400">
+            <button
+              type="button"
+              class="rail-btn"
+              :class="{ 'is-active': chatStore.leftPanelTab === 'log' }"
+              @click="chatStore.openLogCollect()"
+            >
+              <el-icon><FolderOpened /></el-icon>
+            </button>
+          </el-tooltip>
+          <el-tooltip content="历史工单" placement="right" :show-after="400">
+            <button
+              type="button"
+              class="rail-btn"
+              :class="{ 'is-active': chatStore.leftPanelTab === 'history' }"
+              @click="chatStore.openHistoryDrawer()"
+            >
+              <el-icon><Tickets /></el-icon>
+            </button>
+          </el-tooltip>
+        </template>
+        <template #title>
+          <el-icon><component :is="chatStore.leftPanelTab === 'log' ? FolderOpened : Tickets" /></el-icon>
+          <span>{{ chatStore.leftPanelTab === 'log' ? '日志收集' : '历史工单' }}</span>
+        </template>
+
+        <!-- v-show 保留实例：收起再展开不该重新探测环境，更不该断开 SSH 会话 -->
+        <LogCollectPanel
+          v-if="chatStore.logCollectCaseId"
+          v-show="chatStore.logCollectVisible"
+          v-model="logCollectVisible"
+          :case-id="chatStore.logCollectCaseId"
+        />
+        <HistoryPanel
+          v-if="chatStore.leftPanelTab === 'history'"
+          v-show="chatStore.showHistoryDrawer"
+        />
+      </PanelShell>
+
+      <main class="app-main">
+        <!--
+          中央会话的标题栏：高度与两侧面板的 panel-head 一致（48px），
+          三栏顶部形成一条贯通的分隔线。之前中央没有这一条，
+          双开时两侧 48px、中间直接是消息区，看起来就是「两边大、中间小」。
+        -->
+        <div class="main-head">
+          <div class="main-head-inner">
+            <span class="main-head-title">
+              {{ chatStore.currentCase?.case_id || '未绑定工单' }}
+            </span>
+            <span v-if="chatStore.currentCase?.title" class="main-head-sub">
+              {{ chatStore.currentCase.title }}
+            </span>
+          </div>
+        </div>
+        <ChatWindow />
+      </main>
+
+      <PanelShell
+        side="right"
+        :open="chatStore.isRightPanelOpen"
+        :width="chatStore.rightPanelWidth"
+        :overlay="isOverlayMode"
+        :resizing="chatStore.isPanelResizing"
+        @collapse="chatStore.closeTerminalSidebar()"
+        @resize-start="startPanelResize('right', $event)"
+      >
+        <template #rail>
+          <el-tooltip content="SSH 终端" placement="left" :show-after="400">
+            <button type="button" class="rail-btn" @click="chatStore.checkAndOpenTerminal()">
+              <el-icon><Monitor /></el-icon>
+            </button>
+          </el-tooltip>
+        </template>
+        <template #title>
+          <el-icon><Monitor /></el-icon>
+          <span>SSH 终端</span>
+        </template>
+
+        <TerminalPanel @open-terminal-history="openCurrentCaseTerminalHistory" />
+      </PanelShell>
+    </div>
+
+    <!-- 窄屏降级：面板覆盖在中央区之上，点空白处收起 -->
+    <div
+      v-if="isOverlayMode && (chatStore.isLeftPanelOpen || chatStore.isRightPanelOpen)"
+      class="panel-scrim"
+      @click="collapseOverlayPanel()"
+    ></div>
+
+<!-- SSH 连接弹框（create-case / terminal-only 统一入口） -->
     <SshConnectDialog :bridge-status="chatStore.sshConnectDialogBridgeStatus" />
-
-    <!-- 日志收集抽屉：复用终端已建立的 SSH 会话执行 acli log_collect -->
-    <LogCollectPanel
-      v-if="chatStore.logCollectCaseId"
-      v-model="logCollectVisible"
-      :case-id="chatStore.logCollectCaseId"
-    />
 
     <!-- 无活跃工单时人工指定归档工单号 -->
     <LogCollectCaseDialog />
@@ -170,7 +373,6 @@ function handleDownloadBridge() {
         </el-button>
       </template>
     </el-dialog>
-
   </div>
 </template>
 
@@ -189,30 +391,174 @@ body {
 </style>
 
 <style scoped>
-.app-container {
+/*
+ * 工作区外壳：顶部通栏应用栏 + 下方三栏。
+ *
+ * 三栏是 flex 兄弟节点，宽度由求解器直接给出；面板收窄/展开走宽度过渡，
+ * 中央区自然吃到剩余空间——不需要再给主区补 padding 去"模拟"推挤。
+ */
+.workspace-shell {
+  height: 100vh;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  max-width: 900px;
-  margin: 0 auto;
+  background: #f5f7fa;
+}
+
+.workspace-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+  align-items: stretch;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #f0f2f5;
+}
+
+/* 与 PanelShell 的 .panel-head 同高，三栏顶部对齐 */
+.main-head {
+  flex: 0 0 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  background: #fff;
+  border-bottom: 1px solid #e4e7ed;
+}
+
+/* 标题栏同属框架条：通栏左对齐，不再跟着内容列在中间'飘' */
+.main-head-inner {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.main-head-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+  white-space: nowrap;
+}
+
+.main-head-sub {
+  font-size: 13px;
+  color: #909399;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 窄屏覆盖态的遮罩：唯一还会出现遮罩的场景 */
+.panel-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 29;
+  background: rgba(0, 0, 0, 0.35);
 }
 
 .app-header {
-  background: linear-gradient(135deg, #409eff, #337ecc);
-  color: #fff;
-  padding: 12px 24px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-}
-
-.header-content {
+  /*
+   * 通栏应用栏 = 应用框架，不是内容列。
+   *
+   * 它横跨三栏、宽度恒定，所以绝不能吃 --ws-center-max：那个变量会随面板开合
+   * 在 460~900 之间跳，顶栏会跟着忽宽忽窄，1920 屏上表现为「一大条蓝带中间
+   * 挤着一段标题+四个小圆点」。框架用固定内边距、两端对齐即可。
+   */
+  flex: 0 0 auto;
+  height: 56px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
+  padding: 0 20px;
+  background: linear-gradient(135deg, #409eff, #337ecc);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  z-index: 1;
 }
 
-.header-content h1 {
-  font-size: 18px;
+/* 品牌区：图标 + 标题 + 当前工单号，始终贴左 */
+.header-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.brand-mark {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.18);
+  font-size: 16px;
+}
+
+.header-brand h1 {
+  font-size: 16px;
   font-weight: 600;
+  letter-spacing: 0.2px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.brand-case {
+  flex: 0 0 auto;
+  padding: 2px 9px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.18);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* 按钮组永不压缩：压缩态优先让标题省略，按钮仍要完整可点 */
+.header-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/*
+ * 压缩态顶栏：只在视口确实窄（<900px）时生效，此时按钮文字会把标题挤到溢出，
+ * 退化为纯图标（图标本体字号要单独设回去，因为它也吃 font-size）。
+ */
+.app-header.is-compact {
+  height: 52px;
+  padding: 0 12px;
+  gap: 8px;
+}
+
+.app-header.is-compact .header-brand h1 {
+  display: none;
+}
+
+.app-header.is-compact .header-badges {
+  gap: 6px;
+}
+
+.app-header.is-compact .header-badges .el-button {
+  font-size: 0 !important;
+  padding: 6px 8px !important;
+}
+
+.app-header.is-compact .header-badges .el-button .el-icon {
+  font-size: 14px !important;
+  margin-right: 0 !important;
 }
 
 .case-badge {
@@ -220,12 +566,6 @@ body {
   padding: 4px 12px;
   border-radius: 12px;
   font-size: 13px;
-}
-
-.header-badges {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .case-info-popover {
@@ -270,6 +610,8 @@ body {
  * 同一个 rgba 值在左右两侧会合成出不同的颜色——即使四个按钮写的是同一个
  * rgba，肉眼看到的仍是四种底色。只有实色才真正一致。
  */
+/* 顶栏按钮：不透明白底。
+   半透明底叠在 #409eff→#337ecc 渐变上，每个按钮会呈现不同深浅——看着像四种颜色。 */
 .header-btn {
   background: #ffffff !important;
   border: 1px solid #ffffff !important;

@@ -1,0 +1,167 @@
+/**
+ * 面板底部操作区（composer）统一规范（全局）。
+ *
+ * 三块面板底部各有一条操作区：日志收集（开始/重新收集）、会话输入（发送）、
+ * SSH 终端（执行/清空）。此前各写一套 padding / 高度 / 字号 / 按钮尺寸，
+ * 并排在同一屏上像三个不同产品的截图拼在一起。
+ *
+ * 统一的是「结构 + 尺寸 + 字号 + 按钮规格」：
+ *
+ *   .panel-composer
+ *   ├── .panel-composer__hint    固定 18px 行高，永远在控件上方
+ *   └── .panel-composer__body    固定 36px 控件行（输入 + 按钮组）
+ *
+ * 只让「颜色」随主题走（浅色 / 深色终端），尺寸不随主题变——
+ * 并排看起来齐，靠的是尺寸同源，不是刚好调成了同一个数值。
+ *
+ * 高度账（三处一致）：10 + 18 + 6 + 36 + 12 = 82px，再加 1px 上边框。
+ */
+
+.panel-composer {
+  --composer-hint-h: 18px;
+  --composer-field-h: 36px;
+  --composer-btn-h: 28px;
+  --composer-gap: 6px;
+  --composer-font: 13px;
+
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  padding: 10px 16px 12px;
+  background: #f0f2f5;
+  border-top: 1px solid #e4e7ed;
+}
+
+/* 提示行：三处都保留这一行（没有提示就放状态文案），高度恒定 */
+.panel-composer__hint {
+  height: var(--composer-hint-h);
+  line-height: var(--composer-hint-h);
+  margin-bottom: var(--composer-gap);
+  font-size: 12px;
+  color: #909399;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-composer__hint code {
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.06);
+  font-family: Consolas, Monaco, monospace;
+  color: #409eff;
+}
+
+.panel-composer__body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--composer-field-h);
+}
+
+/* 终端提示符一类的前置符号，固定占位，不参与压缩 */
+.panel-composer__prefix {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: var(--composer-field-h);
+  font-family: Consolas, Monaco, monospace;
+  font-size: 14px;
+  font-weight: 600;
+  color: #67c23a;
+}
+
+.panel-composer__field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.panel-composer__field .el-textarea,
+.panel-composer__field .el-input {
+  width: 100%;
+}
+
+/*
+ * 输入控件：单行 36px，与右侧按钮组居中对齐。
+ *
+ * 这里刻意不用 el-input 的 :autosize——它是「按 scrollHeight 写内联 height」的实现，
+ * 面板从折叠态（48px）展开的瞬间宽度还很窄，placeholder 被折成 4 行，
+ * autosize 就把 height 写成 88px 并一直保留，直到用户敲第一个字符才重算。
+ * 三块面板并排时，右侧输入框就这样比左边高出一大截。
+ *
+ * 改用 CSS 的 field-sizing: content：高度由内容决定、宽度变化时自动重排，
+ * 初始态稳定落在 min-height，不依赖任何时序。
+ */
+.panel-composer__field .el-textarea__inner {
+  field-sizing: content;
+  height: auto;
+  min-height: var(--composer-field-h);
+  /* 上限 4 行：3 行增量 + 单行高度，超出转内部滚动 */
+  max-height: calc(var(--composer-field-h) + 3 * 18px);
+  overflow-y: auto;
+  /* 9*2 + 18 = 36：单行正好等于控件行高，不再依赖 min-height 兜底 */
+  padding: 9px 10px;
+  border-radius: 8px;
+  border-color: #dcdfe6;
+  box-shadow: none;
+  font-size: var(--composer-font);
+  line-height: 18px;
+  resize: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.panel-composer__field .el-textarea__inner:focus {
+  border-color: #409eff;
+  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.12);
+}
+
+.panel-composer__actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* 主操作统一靠右：没有输入框的面板（日志收集）也要落在同一条右侧基线上 */
+  margin-left: auto;
+}
+
+/*
+ * 按钮规格统一：28px 高、8px 圆角、13px 字号、0 12px 内边距。
+ * margin-left 必须清零——Element Plus 给相邻按钮加了 12px 左边距，
+ * 会和 flex 的 gap 叠加，按钮间距变成 20px，与输入框的 8px 不一致。
+ */
+.panel-composer__actions .el-button {
+  height: var(--composer-btn-h);
+  min-width: 64px;
+  margin-left: 0 !important;
+  padding: 0 12px;
+  font-size: var(--composer-font);
+  border-radius: 8px;
+}
+
+/* ── 深色主题（SSH 终端）──────────────────────────────────────────────
+ * 只换颜色：尺寸、字号、圆角、间距全部沿用上面的变量，
+ * 这样深浅两种底色的操作区并排时高度与节奏仍然一致。
+ */
+.panel-composer--dark {
+  background: #252526;
+  border-top-color: #333;
+}
+
+.panel-composer--dark .panel-composer__hint {
+  color: #8a8a8a;
+}
+
+.panel-composer--dark .panel-composer__field .el-textarea__inner {
+  background: #1e1e1e;
+  border-color: #444;
+  color: #d4d4d4;
+  font-family: Consolas, Monaco, monospace;
+}
+
+.panel-composer--dark .panel-composer__field .el-textarea__inner:focus {
+  border-color: #67c23a;
+  box-shadow: 0 0 0 3px rgba(103, 194, 58, 0.16);
+}
+
+.panel-composer--dark .panel-composer__hint .el-link {
+  vertical-align: baseline;
+}

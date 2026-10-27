@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-10-20
+owner: team
+---
+
 # KBD 信号编译验证时间变量示例值补充
 
 ## 问题

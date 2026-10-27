@@ -42,7 +42,7 @@
 
 ## 执行流程（推荐用附带的 runbook）
 
-`scripts/live_e2e_real_sim.sh` 把下述步骤参数化编排（自动发现服务 ClusterIP、渲染 manifest、trap 清理）。手动等价步骤如下，理解原理后用脚本或直接手敲皆可：
+`.agents/skills/live-e2e-real-sim/scripts/live_e2e_real_sim.sh` 把下述步骤参数化编排（自动发现服务 ClusterIP、渲染 manifest、trap 清理）。手动等价步骤如下，理解原理后用脚本或直接手敲皆可：
 
 ```bash
 # 0) 自动发现平台服务 ClusterIP（staging 上每次部署可能变，勿硬编码）

@@ -1,3 +1,11 @@
+---
+status: active
+category: deploy
+audience: operator
+last_updated: 2026-10-20
+owner: team
+---
+
 # terminal_bridge K3s 双运行形态部署与端到端验证
 
 ## 1. 目标与边界

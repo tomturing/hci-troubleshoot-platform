@@ -5,9 +5,13 @@
 第一性原理：文档的根基使命是"准确反映系统当前状态，可被可靠执行/引用"。
 本脚本从底层事实出发，检测五类腐化：
 
-  C1 失效内部链接  : [text](相对路径) 指向的文件不存在
+  C1 失效内部链接  : [text](相对路径) 指向的文件不存在（指向已存在目录的目录链接视为有效）
   C2 缺失图片资源  : ![alt](path) 引用的图片文件不存在
   C3 失效仓库路径  : 反引号/代码块中形如 backend/、scripts/、deploy/ 的仓库内路径不存在
+                     （同行紧邻处声明「不存在/已删除」等事实的引用不阻断，但显式列出）
+                     被 .gitignore 刻意排除的路径（secrets.env 等）不阻断，但显式列出
+                     行内代码包裹的 markdown 语法示例不参与 C1/C2 判定
+                     frontmatter status=archived 的文档整体豁免 C1/C2/C3（见 §7.3.1，C6 不豁免）
   C4 占位符腐化    : TODO / TBD / 待补充 / 待完善 / FIXME / XXX 等未完成标记
   C5 空/极短文档   : 内容过短或仅剩占位符，无法提供有效信息
   C6 密钥泄露      : 文档中硬编码的真实密钥/凭证（安全红线，永远阻断）
@@ -66,6 +70,203 @@ def is_fenced(line: str, fences: list[tuple[int, int]]) -> bool:
     return any(start <= line <= end for start, end in fences)
 
 
+def inline_code_spans(line: str) -> list[tuple[int, int]]:
+    """给出行内代码（反引号包裹）的字符区间。
+
+    第一性原理：反引号内的内容是被当作**字面文本**呈现的，不是超链接。
+    文档里大量出现「示范禁止写法」的 markdown 语法（如表格中写
+    `` `![截图](URL)` `` 来表示“重写后不得出现这种形式”）。把这
+    类语法示例当失效链接上报，会迫使作者去改一个本身正确的句子。
+    """
+    return [(m.start(), m.end()) for m in re.finditer(r"`[^`]*`", line)]
+
+
+def in_spans(pos: int, spans: list[tuple[int, int]]) -> bool:
+    """判断字符位置是否落在任一行内代码区间内"""
+    return any(start <= pos < end for start, end in spans)
+
+
+# C3 豁免语境：文档在**陈述某路径不存在或已被删除**时，该引用是正确的记录方式。
+# 回归背景：docs/solution/数据库设计.md 变更历史有一行明文写
+#   「`data-pipeline/kbd/ingest.py` 与 `scripts/sop/import.py` 均为不存在的路径」，
+# 这正是本门禁要防止的“把正确的事实断言当缺陷报错”。若为了让门禁变绿而去
+# “修”这句，等于逼文档说谎。
+# 对抗性审查：只扫“同行任意位置”会给出过大的射程——作者在任意行添一
+# 个「已删除」就能让任意坏路径逃过检查。因此要求职词必须**紧邻**该路径
+# （前 30 字符或后 60 字符内），与人类阅读时的修饰关系一致。
+NEGATION_WINDOW_BEFORE = 30
+NEGATION_WINDOW_AFTER = 60
+NEGATION_WORDS = (
+    "不存在",
+    "已删除",
+    "删除了",
+    "已移除",
+    "移除了",
+    "已废弃",
+    "废弃了",
+    "不再存在",
+    "曾用名",
+    "历史路径",
+    "原路径",
+    "旧路径",
+    "已被重命名",
+    "git 历史",
+)
+
+
+def negation_context(line: str, start: int, end: int) -> str | None:
+    """若路径邻近位置出现否定语义词，返回命中的词；否则返回 None。"""
+    window = line[max(0, start - NEGATION_WINDOW_BEFORE) : start] + line[end : end + NEGATION_WINDOW_AFTER]
+    for w in NEGATION_WORDS:
+        if w in window:
+            return w
+    return None
+
+
+# gitignore 判定缓存：仓库相对路径 -> 命中的规则串（未命中为 None）
+_IGNORE_CACHE: dict[str, str | None] = {}
+
+
+def gitignore_rule(rel_path: str) -> str | None:
+    """返回该仓库相对路径命中的 .gitignore 规则（`源:行号:模式`），未命中返回 None。
+
+    第一性原理：C3 的正当性来自「读者能按文档找到该文件」。但仓库里有一批
+    **刻意不入库**的文件——`deploy/env/secrets.env`（.gitignore 显式排除的密钥文件）、
+    `data-pipeline/kbd/.env`、运行期生成的 `logs/`。文档指挥运维「配置 secrets.env」
+    是正确指令，要求它在检出里存在等于逼文档说谎。
+    回归背景：docs/deploy/部署指南.md:938 因该缺陷长期挂红。
+
+    对抗性审查：豁免判据必须来自作者之外。此处由 .gitignore 决定，作者若想借它
+    逃逸就得改 .gitignore——那是会被单独评审的改动；且豁免逐条打印命中的规则，
+    「整目录忽略」这类宽规则人工一眼可辨。非 git 仓库（单测临时目录）返回 None，
+    保守不豁免。
+    """
+    if rel_path in _IGNORE_CACHE:
+        return _IGNORE_CACHE[rel_path]
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(ROOT), "check-ignore", "-v", "--no-index", rel_path],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        rule = None
+    else:
+        rule = proc.stdout.strip() or None
+    _IGNORE_CACHE[rel_path] = rule
+    return rule
+
+
+# §7.3 frontmatter 契约与腐化检测必须共用同一份解析实现，否则两处对 status
+# 的口径会漂移（一个认为 archived、另一个还在按 active 要求引用完整）。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from check_docs_frontmatter import parse_frontmatter  # noqa: E402
+
+
+def is_current_layer(rel_file: str) -> bool:
+    """判断仓库相对路径是否属于「现行全量文档」层。
+
+    口径：不是 `docs/archive/` 下的文档，且路径中不含 `events/` 目录段。
+    这有意包含仓库根的 README.md / AGENTS.md 与 `docs/` 外的现行 md——它们
+    同样是读者会照着行动的现行文档，没有理由豁免。
+
+    第一性原理：门禁为什么要分级？因为不同层的**读者行为**不同：
+      - 现行文档：读者会照着动手，一条失效引用就是真实故障，
+        因此可归零、也应归零；
+      - 事件文档（`*/events/`）：读的是「当时为什么这么决策」，把史料引用
+        「修成现行」等于伪造历史（规范 §8.3）；
+      - 归档（`docs/archive/`）：只读，§12.3 不得被现行文档依赖。
+    所以只有现行层能升为阻断级。
+
+    对抗性审查：
+      - 路径分隔符在 Windows 上可能是反斜杠，先归一化；
+      - `docs/archive/` 只看前缀，而 `events` 只看**目录段**（前后补 `/` 再
+        包含），所以 `docs/solution/events.md` 这类同名文件不会被误剥。
+    """
+    norm = rel_file.replace("\\", "/")
+    if norm.startswith("docs/archive/"):
+        return False
+    return "/events/" not in f"/{norm}"
+
+
+def select_blocking(
+    rot_block: list[dict],
+    changed_lines: dict[str, set[int]] | None,
+    *,
+    changed_only: bool,
+    fail_on_stock: bool,
+    current_blocking: bool,
+) -> tuple[list[dict], list[dict], int]:
+    """从失效引用（C1/C2/C3）清单中挑出应当阻断的条目。
+
+    返回 `(阻断清单, 其中因现行层而阻断的清单, 不阻断的存量数)`，后两者是
+    前者的子集/补集，供 main 打印时分别措辞，判定结果只有一处真源。
+
+    第一性原理：门禁的正当性只来自「读者会照文档行动」。
+      - 现行全量文档层已归零，该层任何一条都是新引入的故障 -> 一律阻断；
+      - 事件层/归档层是史料，为变绿而改写它们等于伪造历史（规范 §8.3）
+        -> 只按「本次改动行」判增量，存量仅警告。
+
+    对抗性审查：
+      - 关闭 `--current-blocking` 时行为必须与旧版完全一致（不得让新开关
+        在默认路径上偷偷收紧或放宽）；
+      - `changed_lines is None` 在现行 `--changed-only` 路径上不可达（取不到
+        diff 已经 fail-closed 退出），但作为纯函数必须对这个入参有定义：此时
+        没有依据区分「本次引入」，非现行层不阻断，现行层命中与来源无关仍阻断；
+      - 用 `file:line:detail` 三元组去重，避免同一命中既算改动行又算现行层
+        而被计两次。
+    """
+    current_hits = [i for i in rot_block if current_blocking and is_current_layer(i["file"])]
+    if changed_only and not fail_on_stock:
+        introduced = [
+            i for i in rot_block if changed_lines is not None and i["line"] in changed_lines.get(i["file"], set())
+        ]
+        merged = {f"{i['file']}:{i['line']}:{i['detail']}" for i in introduced}
+        extra = [i for i in current_hits if f"{i['file']}:{i['line']}:{i['detail']}" not in merged]
+        blocking = introduced + extra
+        return blocking, extra, len(rot_block) - len(blocking)
+    return list(rot_block), list(current_hits), 0
+
+
+def split_archived(files: list[Path]) -> tuple[list[Path], list[Path]]:
+    """按 frontmatter status 拆为（需检查, archived 豁免）。
+
+    第一性原理：检查引用有效性的正当性来自「读者会依文档行动」。
+    §7.3.1 强制 archived 文档首屏写明「已废弃 + 可核实依据」，读者被告知不得据其
+    行动；而它引用的代码正是随废弃一并删除的。此时仍要求路径存在，等于
+    逼一份已声明作废的文档说谎。
+
+    对抗性审查：该豁免可被「随手标 archived」逃逸。三重限制：
+    1. §7.3.1 本身要求 archived 必须给出可复核证据（提交号/实库行数）；
+    2. status 字段受 check_docs_frontmatter 阻断级门禁约束，不能乱写；
+    3. 豁免文档必须逐条显式列出，不做静默跳过。
+    密钥检查（C6）不受此豁免影响，安全红线不区分文档状态。
+    """
+    active, archived = [], []
+    for f in files:
+        try:
+            fm = parse_frontmatter(f.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            fm = None
+        if fm and fm.get("status") == "archived":
+            archived.append(f)
+        else:
+            active.append(f)
+    return active, archived
+
+
+def archived_waiver(f: Path, cat: str) -> dict:
+    """为一篇被豁免的 archived 文档生成一条显式可审计的记录。"""
+    return {
+        "type": cat,
+        "file": str(f.relative_to(ROOT)),
+        "line": 1,
+        "detail": "整篇引用有效性检查豁免",
+        "waived": True,
+        "waive_reason": "frontmatter status=archived（§7.3.1 原地归档，读者不得据其行动）",
+    }
+
+
 def compute_fences(text: str) -> list[tuple[int, int]]:
     """计算代码围栏行范围（奇数行开、偶数行关）"""
     lines = text.splitlines()
@@ -94,6 +295,14 @@ def resolve_target(base_file: Path, target: str) -> Path | None:
         return None
     target = unquote(target)
     if target.endswith("/"):
+        # 目录链接在 GitHub 上会渲染该目录的文件列表页，本身就是可用信源，
+        # 不强求目录里必须有 index.md。
+        # 回归背景：docs/README.md 用 [task/](task/) 形式列目录导航，全部被
+        # 误报为「链接目标不存在: -> docs/task/index.md」，导致门禁失真。
+        # 只放宽到「目录确实存在」，目录本身不存在时仍然报错，不降低检出能力。
+        dir_cand = (base_file.parent / target.rstrip("/")).resolve()
+        if dir_cand.is_dir() and str(dir_cand).startswith(str(ROOT)):
+            return dir_cand
         target = target.rstrip("/") + "/index.md"
     candidate = (base_file.parent / target).resolve()
     # 防止逃逸到仓库外
@@ -106,15 +315,20 @@ def check_internal_links(files: list[Path]) -> list[dict]:
     """C1: 内部链接指向不存在的文件"""
     issues = []
     link_re = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+    files, archived = split_archived(files)
+    for f in archived:
+        issues.append(archived_waiver(f, "C1"))
     for f in files:
         text = f.read_text(encoding="utf-8", errors="replace")
         fences = compute_fences(text)
         for i, line in enumerate(text.splitlines(), 1):
             if is_fenced(i, fences):
                 continue
+            spans = inline_code_spans(line)
             for m in link_re.finditer(line):
+                if in_spans(m.start(), spans):
+                    continue  # 行内代码里的语法示例不是真链接
                 raw = m.group(1)
-                # 跳过代码示例中的链接（带空格/多余符号的不解析）
                 target = resolve_target(f, raw)
                 if target is None:
                     continue
@@ -134,13 +348,19 @@ def check_images(files: list[Path]) -> list[dict]:
     """C2: 图片引用缺失"""
     issues = []
     img_re = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+    files, archived = split_archived(files)
+    for f in archived:
+        issues.append(archived_waiver(f, "C2"))
     for f in files:
         text = f.read_text(encoding="utf-8", errors="replace")
         fences = compute_fences(text)
         for i, line in enumerate(text.splitlines(), 1):
             if is_fenced(i, fences):
                 continue
+            spans = inline_code_spans(line)
             for m in img_re.finditer(line):
+                if in_spans(m.start(), spans):
+                    continue  # 行内代码里的语法示例不是真图片引用
                 raw = m.group(1)
                 target = resolve_target(f, raw)
                 if target is None:
@@ -160,6 +380,9 @@ def check_images(files: list[Path]) -> list[dict]:
 def check_repo_paths(files: list[Path]) -> list[dict]:
     """C3: 反引号中的仓库内路径不存在"""
     issues = []
+    files, archived = split_archived(files)
+    for f in archived:
+        issues.append(archived_waiver(f, "C3"))
     for f in files:
         text = f.read_text(encoding="utf-8", errors="replace")
         fences = compute_fences(text)
@@ -200,6 +423,34 @@ def check_repo_paths(files: list[Path]) -> list[dict]:
                 ):
                     # 忽略带版本号/变量插值的路径
                     if "$" in clean or "{{" in clean:
+                        continue
+                    ignored = gitignore_rule(clean)
+                    if ignored:
+                        # 该路径被 .gitignore 刻意排除，本来就不该出现在检出里
+                        issues.append(
+                            {
+                                "type": "C3",
+                                "file": str(f.relative_to(ROOT)),
+                                "line": i,
+                                "detail": f"仓库路径不存在: `{clean}`",
+                                "waived": True,
+                                "waive_reason": f"被 .gitignore 刻意排除（{ignored}）",
+                            }
+                        )
+                        continue
+                    neg = negation_context(line, m.start(), m.end())
+                    if neg:
+                        # 文档正在陈述该路径不存在/已删除——这是正确记录，不阻断但显式打印
+                        issues.append(
+                            {
+                                "type": "C3",
+                                "file": str(f.relative_to(ROOT)),
+                                "line": i,
+                                "detail": f"仓库路径不存在: `{clean}`",
+                                "waived": True,
+                                "waive_reason": f"邻近否定语义词「{neg}」，判定为删除事实记录",
+                            }
+                        )
                         continue
                     issues.append(
                         {
@@ -564,6 +815,11 @@ def main() -> None:
         action="store_true",
         help="存量问题也阻断（默认仅增量问题阻断，存量只警告）",
     )
+    parser.add_argument(
+        "--current-blocking",
+        action="store_true",
+        help="现行全量文档层（非 docs/archive/ 且不含 events/ 目录段）的失效引用不论增量一律阻断",
+    )
     args = parser.parse_args()
 
     scan_root = ROOT / args.dir
@@ -643,18 +899,30 @@ def main() -> None:
             continue
         # C7 版本一致性检查不依赖 files 参数
         issues = CHECKERS[cat]() if cat == "C7" else CHECKERS[cat](files)
-        print(f"\n[{cat}] 发现 {len(issues)} 个问题")
-        shown = issues[: args.limit] if args.limit else issues
+        waived = [it for it in issues if it.get("waived")]
+        blocking = [it for it in issues if not it.get("waived")]
+        print(f"\n[{cat}] 发现 {len(blocking)} 个问题")
+        shown = blocking[: args.limit] if args.limit else blocking
         for it in shown:
             print(f"  {it['file']}:{it['line']}  {it['detail']}")
+        if waived:
+            # 豁免必须显式列出来：隐式放宽等于把门禁降级为宽松模式，
+            # 修正会因此退化成空转（同一失效在 V-035 里已经记过一笔）。
+            print(f"[{cat}] 另有 {len(waived)} 处经语境/状态判定为豁免，不阻断（逐条列出供人工复核）：")
+            for it in waived:
+                print(f"  ~ {it['file']}:{it['line']}  {it['detail']}  ← {it['waive_reason']}")
         all_issues.extend(issues)
 
     print("\n" + "=" * 60)
     print("汇总：")
+    hard_issues = [i for i in all_issues if not i.get("waived")]
+    n_waived = len(all_issues) - len(hard_issues)
     for cat in enabled:
-        n = len([i for i in all_issues if i["type"] == cat])
+        n = len([i for i in hard_issues if i["type"] == cat])
         print(f"  {cat}: {n}")
-    print(f"  总计: {len(all_issues)}")
+    print(f"  总计: {len(hard_issues)}")
+    if n_waived:
+        print(f"  语境豁免（已显式列出，不计入总计）: {n_waived}")
 
     if args.json:
         print("\nJSON:")
@@ -666,32 +934,42 @@ def main() -> None:
     #    修改行上的新问题；改动文档其他位置的历史腐化属存量，仅警告
     #  - 其余类别（C4/C5/C7）只报告不阻断
     secret_block = [i for i in all_issues if i["type"] == "C6"]
-    rot_block = [i for i in all_issues if i["type"] in ("C1", "C2", "C3")]
+    rot_block = [i for i in all_issues if i["type"] in ("C1", "C2", "C3") and not i.get("waived")]
 
     if secret_block:
         print(f"\n❌ 发现 {len(secret_block)} 个密钥泄露（C6），安全红线，PR 禁止合并")
         sys.exit(1)
 
     if rot_block:
-        if args.changed_only and not args.fail_on_stock:
-            # 按行判断「本次引入」：只有落在新增/修改行上的才阻断。
-            # 若回退全量扫描（changed_lines 为 None），无法区分来源，宁可只警告。
-            introduced = [
-                i for i in rot_block if changed_lines is not None and i["line"] in changed_lines.get(i["file"], set())
-            ]
-            stock = len(rot_block) - len(introduced)
-            if introduced:
-                print(f"\n❌ 本次改动行引入 {len(introduced)} 个阻断级失效引用（C1/C2/C3），PR 禁止合并")
-                for it in introduced:
-                    print(f"   {it['file']}:{it['line']}  {it['detail']}")
-                if stock:
-                    print(f"   另有 {stock} 个位于改动文档的其他行，属存量，本步不阻断")
-                sys.exit(1)
-            print(f"\n⚠️ 发现 {len(rot_block)} 个失效引用（C1/C2/C3），均不在本次改动行，属存量问题，仅警告不阻断")
-            print("   如需阻断存量：运行 --fail-on-stock；治理计划见 docs/ROADMAP 文档腐化专项")
-        else:
-            print(f"\n❌ 发现 {len(rot_block)} 个阻断级失效引用（C1/C2/C3），PR 禁止合并")
+        # 现行层升为阻断级：该层已归零，任何一条都是新引入的故障。
+        # 事件层/归档层继续走增量判定——它们是史料，不得为了变绿而改写。
+        blocking, extra, stock = select_blocking(
+            rot_block,
+            changed_lines,
+            changed_only=args.changed_only,
+            fail_on_stock=args.fail_on_stock,
+            current_blocking=args.current_blocking,
+        )
+        if blocking and not (args.changed_only and not args.fail_on_stock):
+            print(f"\n❌ 发现 {len(blocking)} 个阻断级失效引用（C1/C2/C3），PR 禁止合并")
             sys.exit(1)
+        if blocking:
+            # 归因必须分开写：全部条目都是现行层存量时却报「本次改动行引入」，
+            # 会把一个与 PR 无关的历史缺陷算到作者头上，误导修复方向。
+            from_lines = len(blocking) - len(extra)
+            print(
+                f"\n❌ 发现 {len(blocking)} 个阻断级失效引用（C1/C2/C3）："
+                f"本次改动行 {from_lines} 个、现行层存量 {len(extra)} 个，PR 禁止合并"
+            )
+            for it in blocking:
+                print(f"   {it['file']}:{it['line']}  {it['detail']}")
+            if extra:
+                print("   其中现行全量文档层的条目不论是否本次改动均阻断（该层已归零）")
+            if stock:
+                print(f"   另有 {stock} 个位于事件/归档层的其他行，属史料存量，本步不阻断")
+            sys.exit(1)
+        print(f"\n⚠️ 发现 {len(rot_block)} 个失效引用（C1/C2/C3），均不在本次改动行且不属于现行层，仅警告不阻断")
+        print("   治理口径见 docs/文档管理规范.md §8.3.2（事件层分诊与「不清零」决定）、§九（豁免与阻断分级）")
 
     print("\n✅ 门禁通过（无新增密钥泄露与失效引用）")
     sys.exit(0)

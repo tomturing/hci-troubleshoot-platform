@@ -1,3 +1,11 @@
+---
+status: active
+category: solution
+audience: developer
+last_updated: 2026-08-12
+owner: team
+---
+
 # 关键信号 Catalog 管理与在线热加载方案
 
 ## 1. 背景与目标

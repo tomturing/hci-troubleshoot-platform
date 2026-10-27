@@ -144,7 +144,7 @@ Must 非空、全部满足、Exclude 清除、Should 门槛达到，才成为 SU
 | 离线 | 受控 Evidence 和 AcquisitionProvider | 无证据/缺变量不伪造通过；同修订同输入的处理语义应一致 |
 | 离线参考入口 | 发布正文与用户描述 | 不创建 Collector、映射、采集画像或空计划 |
 
-原可执行案例转为 reference_only 后，资源同步按既有停用机制处理失去引用的采集资源。仿真/离线流程的独立运行条件见 [hci-sim](../../../hci_sim/README.md) 和[离线诊断模式需求](../agent/离线诊断模式需求说明_V3.1.md)。
+原可执行案例转为 reference_only 后，资源同步按既有停用机制处理失去引用的采集资源。仿真/离线流程的独立运行条件见 [hci-sim](../../../hci_sim/README.md) 和[离线诊断模式需求](../diagnosis/离线诊断模式需求说明.md)。
 
 ## 10. 验证与定位
 

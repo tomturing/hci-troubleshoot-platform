@@ -15,6 +15,7 @@ update_trigger: Agent 层功能新增/重构/问题修复任务
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
+| 2026-10-26 | v2.14 | KBD27123 三信号执行闭环方案死链重定向到 `solution/events/2026-07-27-KBD27123三信号执行闭环方案.md` | [文档瘦身 Wave 3 现行文档准确性治理](../../solution/events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |
 | 2026-08-07 | v2.12 | 实施 Shared Resolution Runtime 首个纵向切片：六领域 Resolver、声明式 Runtime Catalog、QFK/QKV preflight、argv/未知命令/只读门禁、Schema 与真实 HCI/aCLI 测评；生产 path-probe 硬门禁、tar.gz Handler 和不可变审计快照仍进行中。 | [关键信号统一解析运行时与 Resolver 分层任务](events/2026-08-07-关键信号统一解析运行时与Resolver分层任务.md) |
 | 2026-08-20 | v2.13 | 纠正 PR #857 的仿真答案泄漏：恢复真实/仿真分类完整候选，删除 revision 候选过滤和错误 SOP 特判，并增加诊断等价性回归 | [仿真诊断等价性与 CDD 全候选修正任务](events/2026-08-20-仿真诊断等价性与CDD全候选修正任务.md) |
 | 2026-08-07 | v2.11 | 收敛实施任务中的 Resolver 正式名称和稳定 `resolver_id`：`log`、`system`、`domain`、`service`、`qkv`、`variable`。 | [关键信号统一解析运行时与 Resolver 分层任务](events/2026-08-07-关键信号统一解析运行时与Resolver分层任务.md) |
@@ -54,6 +55,6 @@ update_trigger: Agent 层功能新增/重构/问题修复任务
 | ✅ 完成（代码级） | T-AGT-KBD-PUBLISH：发布盖章 freshness、END 标准变量、替代 QKV 优先级和 df 阈值解析 | 2026-07-31 | [KBD 发布消费一致性方案](../../solution/agent/events/2026-07-31-KBD发布消费一致性与专家审核易用性方案.md) |
 | 进行中（静态审核与维护发布闭环已完成；可信身份、真实 replay、评估数据闭环待实施；0/126 专家 Gold） | [KBD 专家复核、版本治理与生产消费闭环](./events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) | 2026-07-29 | [完整方案](../../solution/agent/events/2026-07-29-KBD专家复核与全生命周期闭环方案.md) |
 | 进行中（126/126 来源完成；4 条工程 Contract fixture 仅 Decision Replay；0/126 专家 Gold） | [KBD 截图证据与可执行诊断契约](./events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) | 2026-07-28 | [系统级方案](../../solution/agent/events/2026-07-28-KBD截图证据与可执行诊断契约方案.md) |
-| ✅ 已完成 | KBD 27123 三信号执行闭环与 39 MB 大输出边缘筛选 | 2026-07-27 | [KBD27123三信号执行闭环方案](../../solution/hci-sim/events/KBD27123三信号执行闭环方案.md) |
+| ✅ 已完成 | KBD 27123 三信号执行闭环与 39 MB 大输出边缘筛选 | 2026-07-27 | [KBD27123三信号执行闭环方案](../../solution/events/2026-07-27-KBD27123三信号执行闭环方案.md) |
 | 进行中 | [Agent 可靠性改造（4 阶段）](./Agent可靠性改造任务清单.md) | 2026-06-08 | [Agent 可靠性三方案对比分析](../../solution/agent/design/Agent可靠性三方案对比分析.md) |
 | ✅ 已完成 | Skill 调用失效修复（PR #475）：变量门禁盲区 + preferred_next_steps 引导 + 系统提示词规范 | 2026-06-20 | [skill调用失效根因分析与改进方案](../../solution/agent/design/skill调用失效根因分析与改进方案.md) |
