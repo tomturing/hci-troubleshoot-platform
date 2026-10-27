@@ -68,6 +68,12 @@ type logUploader struct {
 	started  bool
 	wake     chan struct{}
 	attempt  int
+	// relaxed 记录"已确认平台使用自签证书、允许跳过校验"的 endpoint。
+	//
+	// 只记忆进程生命周期：重启后第一次会多一次握手失败，随后自愈。
+	// 落盘没有必要——放宽的判据是"这个 endpoint 的证书不受信"，
+	// 每次重新判定比持久化一份信任决定更安全（CA 换了能自动回到严格模式）。
+	relaxed map[string]bool
 }
 
 var logUpload = newLogUploader()
@@ -76,6 +82,7 @@ func newLogUploader() *logUploader {
 	return &logUploader{
 		wake:     make(chan struct{}, 1),
 		maxBytes: int64(envIntOrDefault("HCI_BRIDGE_LOG_OUTBOX_MAX_BYTES", defaultLogOutboxMaxBytes)),
+		relaxed:  make(map[string]bool),
 	}
 }
 
@@ -238,16 +245,7 @@ func (u *logUploader) flushOnce() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return 0, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Content-Encoding", "gzip")
-	request.Header.Set("X-Bridge-Upload-Token", token)
-
-	client := &http.Client{Timeout: logUploadTimeout}
-	response, err := client.Do(request)
+	response, err := u.sendBatch(payload, endpoint, token)
 	if err != nil {
 		return 0, err
 	}
@@ -264,6 +262,64 @@ func (u *logUploader) flushOnce() (int, error) {
 	u.attempt = 0
 	u.mu.Unlock()
 	return size, nil
+}
+
+// sendBatch 发送一批日志；平台使用自签证书时自动放宽一次并记住该 endpoint。
+//
+// 为什么必须自动放宽：客户内网平台普遍自签，客户机的系统根证书库不可能预置这份 CA，
+// 严格校验下这条通道**永远**发不出去。现场（2026-10-27）表现是每批日志都失败、
+// 退避一路涨到 16 秒、队列积压到 28 条，最终交付出问题时平台侧一条桥日志都没有，
+// 排查只能人工拷贝客户机终端。
+//
+// 安全边界：这条通道只写绑定工单的日志、只携带只写令牌，放宽 TLS 不等于放宽鉴权；
+// 放宽范围被限定在**该 endpoint**，不影响交付通道，也不影响其它域名。
+func (u *logUploader) sendBatch(payload []byte, endpoint, token string) (*http.Response, error) {
+	build := func() (*http.Request, error) {
+		request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Content-Encoding", "gzip")
+		request.Header.Set("X-Bridge-Upload-Token", token)
+		return request, nil
+	}
+
+	relaxed := u.isTLSRelaxed(endpoint)
+	request, err := build()
+	if err != nil {
+		return nil, err
+	}
+	response, err := httpClientFor(relaxed, logUploadTimeout).Do(request)
+	if err == nil || relaxed || !isUntrustedCertificateError(err) {
+		return response, err
+	}
+
+	// 命中自签证书：放宽一次重试，并记住该 endpoint，避免每一批都先失败一轮。
+	u.markTLSRelaxed(endpoint)
+	blog("WARN", "log_upload.tls_relaxed", "平台证书不受信，桥日志直传已放宽证书校验", "", "", "", "", map[string]any{
+		"endpoint": endpoint, "reason": "self-signed-certificate",
+	})
+	retry, buildErr := build()
+	if buildErr != nil {
+		return nil, err
+	}
+	return httpClientFor(true, logUploadTimeout).Do(retry)
+}
+
+func (u *logUploader) isTLSRelaxed(endpoint string) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.relaxed[endpoint]
+}
+
+func (u *logUploader) markTLSRelaxed(endpoint string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.relaxed == nil {
+		u.relaxed = make(map[string]bool)
+	}
+	u.relaxed[endpoint] = true
 }
 
 // encodeLogBatch 把事件编码为 gzip 压缩的 JSON。

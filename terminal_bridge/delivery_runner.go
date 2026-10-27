@@ -12,11 +12,12 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -40,6 +41,14 @@ const (
 	// 非凭据类失败的最大尝试次数（含首次）。超过即终态失败，等人介入。
 	// 抽成常量是因为它同时出现在"判定"和"重排"两处，写死两遍必然漂移。
 	maxDeliveryAttempts = 5
+	// 平台"暂时不可用"（5xx / 连接失败）时的最大尝试次数。
+	//
+	// 为什么要单独一个更大的预算：一次 K8s 滚动更新或 ArgoCD 同步的空窗通常
+	// 30~90 秒，慢的时候更久；而普通预算只有 5 次 × 1..16 秒（累计约 31 秒），
+	// 比空窗还短。2026-10-27 现场就是这样：5 次收尾请求全部落在
+	// 18:29:20–18:29:46，而新 Pod 18:29:21 才创建、18:29:41 才启动完成，
+	// 于是"平台发版"把用户的一次上传整成了终态失败。
+	maxDeliveryTransientAttempts = 8
 )
 
 // deliveryRunner 是进程级单例。
@@ -231,6 +240,12 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 	}()
 
 	err := r.advance(ctx, job)
+	// 预算按错误性质分流：平台暂时不可用（5xx/连接失败）值得等，
+	// 业务性失败（分片长度不符、本地缺文件）等再久也不会变好。
+	budget := maxDeliveryAttempts
+	if isDeliveryTransientError(err) {
+		budget = maxDeliveryTransientAttempts
+	}
 	r.mu.Lock()
 	if err != nil {
 		job.Attempt++
@@ -239,8 +254,8 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 		if isDeliveryAuthError(err) {
 			job.NeedsReauth = true
 			job.Phase = phaseFailed
-		} else if job.Attempt < maxDeliveryAttempts {
-			// 非凭据失败：后台会退避重排，因此对外只能表现为 retrying。
+		} else if job.Attempt < budget {
+			// 可恢复失败：后台会退避重排，因此对外只能表现为 retrying。
 			// 写成 phaseFailed 会让前端先于 bridge 把任务判死（并回写平台 failed），
 			// 而字节其实还在继续传——这正是"界面说失败、平台记 failed、包却传完了"的来源。
 			job.Phase = phaseRetrying
@@ -264,11 +279,8 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 	})
 
 	// 可恢复的失败按退避重排，避免弱网下一抖就判死。
-	if err != nil && !needsReauth && finalAttempt < maxDeliveryAttempts {
-		delay := time.Duration(1<<uint(finalAttempt)) * time.Second
-		if delay > 60*time.Second {
-			delay = 60 * time.Second
-		}
+	if err != nil && !needsReauth && finalAttempt < budget {
+		delay := deliveryBackoff(finalAttempt)
 		go func() {
 			time.Sleep(delay)
 			// 阶段归一化交给 advance（按已拉字节/已传分片决定从哪续）。
@@ -543,17 +555,7 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 // 授权随 job 落盘（TLSInsecure），只影响本任务的 client；job 结束即失效，
 // 用户撤销后新 job 自动回到严格校验，不存在"一次放宽永久放宽"。
 func platformHTTPClient(job *deliveryJob, timeout time.Duration) *http.Client {
-	client := &http.Client{Timeout: timeout}
-	if job == nil || !job.TLSInsecure {
-		return client
-	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = &tls.Config{
-		// #nosec G402 -- 自签证书内网平台，由用户按任务显式授权
-		InsecureSkipVerify: true,
-	}
-	client.Transport = transport
-	return client
+	return httpClientFor(job != nil && job.TLSInsecure, timeout)
 }
 
 // upload 分片上传；并发度由资源决定，已传分片自动跳过。
@@ -721,7 +723,7 @@ func (r *deliveryRunner) complete(ctx context.Context, job *deliveryJob) error {
 	client := platformHTTPClient(job, logCollectPartTimeout)
 	response, err := client.Do(request)
 	if err != nil {
-		return err
+		return wrapTransientTransport(err)
 	}
 	defer response.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
@@ -729,7 +731,7 @@ func (r *deliveryRunner) complete(ctx context.Context, job *deliveryJob) error {
 		return &deliveryAuthError{reason: fmt.Sprintf("上传令牌失效（HTTP %d）", response.StatusCode)}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("平台收尾失败 HTTP %d", response.StatusCode)
+		return platformStatusError("平台收尾失败", response.StatusCode)
 	}
 	return nil
 }
@@ -739,9 +741,83 @@ type deliveryAuthError struct{ reason string }
 
 func (e *deliveryAuthError) Error() string { return e.reason }
 
+// deliveryTransientError 表示"平台暂时不可用，等一会儿重试就能成"。
+//
+// 与 deliveryAuthError 的本质差别：这个不需要人，只需要时间。
+// 典型场景是平台正在滚动更新——空窗几十秒，期间所有请求都会拿到 503。
+type deliveryTransientError struct{ reason string }
+
+func (e *deliveryTransientError) Error() string { return e.reason }
+
+// isDeliveryAuthError 用 errors.As 而不是类型断言：错误会被上层用 %w 包装
+// （例如 upload() 返回 "上传中断（已传 3/15 片）: <原始错误>"），
+// 类型断言遇到包装就失效，令牌失效会被当成普通失败盲重试 5 次，
+// 用户永远等不到"请重新认证"。
 func isDeliveryAuthError(err error) bool {
-	_, ok := err.(*deliveryAuthError)
-	return ok
+	var target *deliveryAuthError
+	return errors.As(err, &target)
+}
+
+// isDeliveryTransientError 同上，穿透包装。
+func isDeliveryTransientError(err error) bool {
+	var target *deliveryTransientError
+	return errors.As(err, &target)
+}
+
+// deliveryBackoff 返回第 attempt 次失败后的退避时长：2s→4s→8s→16s→32s→60s。
+//
+// 起点刻意不是 1 秒：从 1 秒起步会把预算全部耗在一次发版空窗内部
+// （2026-10-27 现场：5 次重试挤在 26 秒里，而新 Pod 那一刻刚被创建）。
+func deliveryBackoff(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	if attempt > 6 {
+		attempt = 6
+	}
+	delay := time.Duration(1<<uint(attempt)) * time.Second
+	if delay > 60*time.Second {
+		delay = 60 * time.Second
+	}
+	return delay
+}
+
+// platformStatusError 把非 2xx 的平台响应分类。
+//
+// 5xx/429 = 平台暂时不可用（发版中、过载），值得等；
+// 其余 4xx = 请求本身不合法，重试没有意义，必须原样抛出。
+func platformStatusError(action string, status int) error {
+	message := fmt.Sprintf("%s HTTP %d", action, status)
+	if status == http.StatusTooManyRequests || status >= 500 {
+		return &deliveryTransientError{reason: message + "（平台暂时不可用，将退避重试）"}
+	}
+	return errors.New(message)
+}
+
+// isTransientTransportError 判断是否为"网络层暂时不可用"。
+//
+// 必须先把证书类错误摘出去：url.Error 同时实现了 net.Error，
+// 不排除的话 x509 会被当成可重试，用户白等 3 分钟才看到同样的失败。
+func isTransientTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isUntrustedCertificateError(err) {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	return errors.Is(err, io.EOF)
+}
+
+// wrapTransientTransport 把连接类失败标成"暂时不可用"，其余原样返回。
+func wrapTransientTransport(err error) error {
+	if err == nil || !isTransientTransportError(err) {
+		return err
+	}
+	return &deliveryTransientError{reason: "平台连接失败（暂时不可用，将退避重试）: " + err.Error()}
 }
 
 // sha256Hex 计算分片校验和（与服务端 X-Part-SHA256 对齐）。
@@ -762,12 +838,18 @@ func putPartBytes(ctx context.Context, client *http.Client, target, token, diges
 	request.ContentLength = int64(len(payload))
 	response, err := client.Do(request)
 	if err != nil {
-		return err
+		return wrapTransientTransport(err)
 	}
 	defer response.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
+	// 分片级 401/403 同样是"必须重新认证"，不能当成普通失败盲重试：
+	// 旧实现把它混在"平台返回 HTTP 401"里，5 次退避后判终态，
+	// 用户看到的是"分片 3 上传失败"而不是"令牌失效，请重新认证"。
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		return &deliveryAuthError{reason: fmt.Sprintf("上传令牌失效（HTTP %d）", response.StatusCode)}
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("平台返回 HTTP %d", response.StatusCode)
+		return platformStatusError("平台返回", response.StatusCode)
 	}
 	return nil
 }
