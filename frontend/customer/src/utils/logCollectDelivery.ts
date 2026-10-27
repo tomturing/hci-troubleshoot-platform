@@ -94,6 +94,18 @@ export function buildDeliverySubmitMessage(
 }
 
 /**
+ * 判断交付阶段是否已构成「不可自愈的失败」。
+ *
+ * `retrying` 是 bridge 的**中间态**（后台正在退避重排），不是结论；
+ * 把它当失败会让"本可自愈的作业"被前端提前判死，并回写平台
+ * `delivery_status=failed`，于是界面说失败、字节却还在往上传。
+ * 这条判据被单测锁住，避免以后又有人用 `phase !== 'done'` 之类的近似写法。
+ */
+export function isTerminalDeliveryFailure(phase: string | undefined): boolean {
+  return phase === 'failed'
+}
+
+/**
  * 判断错误是否属于「平台证书不受信」。
  *
  * bridge 把 Go 标准库原文直接回传，例如：

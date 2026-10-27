@@ -196,6 +196,7 @@ class LogCollectUploadService:
         parts = self.storage.existing_parts(upload_id)
         return {
             "upload_id": upload_id,
+            "upload_token": self.issue_token(upload_id),
             "chunk_size": int(meta["chunk_size"]),
             "part_count": part_count,
             "total_size": total_size,

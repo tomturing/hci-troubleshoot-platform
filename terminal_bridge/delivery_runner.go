@@ -37,6 +37,9 @@ const (
 	// 两边时钟不可能严格对齐；5 分钟既足以吸收常见 NTP 漂移，
 	// 又远小于一次真实采集的时长（十几分钟起），不会放过串味的旧包。
 	deliveryClockSkewTolerance = 5 * time.Minute
+	// 非凭据类失败的最大尝试次数（含首次）。超过即终态失败，等人介入。
+	// 抽成常量是因为它同时出现在"判定"和"重排"两处，写死两遍必然漂移。
+	maxDeliveryAttempts = 5
 )
 
 // deliveryRunner 是进程级单例。
@@ -186,6 +189,10 @@ func (r *deliveryRunner) resume(jobID string) bool {
 	}
 	job.NeedsReauth = false
 	job.LastError = ""
+	// 唤醒时必须把阶段从终态里拉出来：needs_reauth 时 phase 是 failed（终态），
+	// 只清标志位会让 advance 立刻以"终态拒绝推进"再次失败——用户点"继续"等于没点。
+	// 归一化成 retrying，由 advance 按已拉字节/已传分片决定从哪续。
+	job.Phase = phaseRetrying
 	r.mu.Unlock()
 	_ = r.store.save(job)
 	r.enqueue(job)
@@ -231,9 +238,12 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 		// 凭据类失败单独标记：它不是"重试能好"的错误，必须等人。
 		if isDeliveryAuthError(err) {
 			job.NeedsReauth = true
-		} else if job.Attempt < 5 {
-			// 非凭据失败自动重排一次，靠退避等待链路恢复。
 			job.Phase = phaseFailed
+		} else if job.Attempt < maxDeliveryAttempts {
+			// 非凭据失败：后台会退避重排，因此对外只能表现为 retrying。
+			// 写成 phaseFailed 会让前端先于 bridge 把任务判死（并回写平台 failed），
+			// 而字节其实还在继续传——这正是"界面说失败、平台记 failed、包却传完了"的来源。
+			job.Phase = phaseRetrying
 		} else {
 			job.Phase = phaseFailed
 		}
@@ -254,30 +264,41 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 	})
 
 	// 可恢复的失败按退避重排，避免弱网下一抖就判死。
-	if err != nil && !needsReauth && finalAttempt < 5 {
+	if err != nil && !needsReauth && finalAttempt < maxDeliveryAttempts {
 		delay := time.Duration(1<<uint(finalAttempt)) * time.Second
 		if delay > 60*time.Second {
 			delay = 60 * time.Second
 		}
 		go func() {
 			time.Sleep(delay)
-			// 重排前把阶段恢复成"可继续"的形态：拉取/上传各自续传，不回到 waiting_collect。
+			// 阶段归一化交给 advance（按已拉字节/已传分片决定从哪续）。
+			// 这里只认 retrying：若期间用户重新提交或作业已被取消/判终态，
+			// 旧协程不得把作业再拽回执行队列（否则同一 job 会被两条流程同时推进）。
 			r.mu.Lock()
-			if job.Phase == phaseFailed && !job.NeedsReauth {
-				if len(job.UploadedParts) > 0 {
-					job.Phase = phaseUploading
-				} else if job.PulledBytes > 0 {
-					job.Phase = phasePulling
-				}
-			}
+			stillRetrying := job.Phase == phaseRetrying && !job.NeedsReauth
 			r.mu.Unlock()
-			r.enqueue(job)
+			if stillRetrying {
+				r.enqueue(job)
+			}
 		}()
 	}
 }
 
 // advance 按阶段推进；每个阶段都可重入。
 func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
+	// 先做与外部资源无关的守卫：把中间态归一化，并拒绝推进终态/未知阶段。
+	// 顺序很关键——放在 sessionFor 之前，既省掉一次无意义的会话解析，
+	// 也让"作业不会被误标成功"这条约束可以被单测直接验证。
+	r.mu.Lock()
+	phase, phaseErr := normalizeDeliveryPhase(job)
+	if phaseErr == nil {
+		job.Phase = phase
+	}
+	r.mu.Unlock()
+	if phaseErr != nil {
+		return phaseErr
+	}
+
 	session := r.sessionFor(job)
 	if session == nil {
 		return &deliveryAuthError{reason: "SSH 会话不存在（需重新连接节点）"}

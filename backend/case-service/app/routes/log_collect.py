@@ -280,7 +280,10 @@ async def deliver_task(
             already_delivered=True,
             delivery_status=task.delivery_status,
             delivery_attempts=task.delivery_attempts or 0,
-            upload=UploadInitResponse(**upload, upload_token=""),
+            # 已交付时故意不签发令牌：这是幂等短路，不该再给出"可以继续传"的凭据。
+            # 用 dict 覆盖而不是同名关键字，避免 status() 也返回 token 后触发
+            # "got multiple values for keyword argument"。
+            upload=UploadInitResponse(**{**upload, "upload_token": ""}),
             source_path=task.archive_path or payload.source_path,
         )
 

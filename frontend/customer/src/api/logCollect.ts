@@ -239,6 +239,13 @@ export const logCollectApi = {
     return data
   },
 
+  /**
+   * 查询上传会话（断点续传/重试前刷新用）。
+   *
+   * 返回体包含**重新签发**的 `upload_token`：续传重提时必须带上它。
+   * 该字段曾经缺失，导致"证书失败→确认信任→重试"这条路必然带空令牌提交
+   * （bridge 回 `task_id 与 upload_token 必填`），现已由服务端补齐。
+   */
   async getUploadStatus(taskId: string): Promise<UploadInitResult> {
     const { data } = await client.get(`/log-collect/tasks/${taskId}/uploads`)
     return data

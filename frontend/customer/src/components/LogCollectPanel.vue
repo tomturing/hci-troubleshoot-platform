@@ -28,6 +28,7 @@ import {
   buildDeliverySubmitMessage,
   buildDeliverySubmitPayload,
   isCertificateUntrusted,
+  isTerminalDeliveryFailure,
   platformCertTrusted,
   rememberPlatformCertTrust,
   type DeliverySubmitPayload,
@@ -2196,10 +2197,21 @@ interface DeliveryJobView {
  *
  * 为什么不订阅：作业在 bridge 里跑，浏览器随时可能断；轮询无状态，
  * 重连后拿 job_id 再查一次就能继续显示，不需要服务端保存订阅关系。
+ *
+ * 时间预算必须与 bridge 的 `deliveryJobTimeout`（6 小时）对齐：以前前端 2 小时就
+ * 放弃并回写 delivery_status=failed，而 bridge 侧作业还在传——于是"界面说失败、
+ * 平台记 failed、包其实传完了"同时成立，比失败本身更难排查。
  */
+const DELIVERY_POLL_FAST_MS = 2000
+const DELIVERY_POLL_SLOW_MS = 10000
+/** 前 2 分钟用短间隔拿快速反馈，之后降频，避免长作业把请求量放大 6 倍。 */
+const DELIVERY_POLL_FAST_ROUNDS = 60
+const DELIVERY_POLL_BUDGET_MS = 6 * 60 * 60 * 1000
+
 async function waitDeliveryJob(ws: WebSocket, jobId: string, token: number) {
-  // 上限 2 小时（3600 次 × 2s）：超过仍未完成交给外层提示，不再无限等待
-  for (let attempt = 0; attempt < 3600; attempt++) {
+  const deadline = Date.now() + DELIVERY_POLL_BUDGET_MS
+  let retryingNotified = false
+  for (let attempt = 0; Date.now() < deadline; attempt++) {
     const result = await sendAndWait(ws, 'delivery_status', { jobId }, 10000)
     if (token !== runToken) return
     if (result.status !== 'ok') {
@@ -2208,7 +2220,9 @@ async function waitDeliveryJob(ws: WebSocket, jobId: string, token: number) {
     }
     const view = (result.log_data || {}) as DeliveryJobView
     if (view.phase === 'pulling') stage.value = 'pulling'
-    if (view.phase === 'uploading' || view.phase === 'completing') stage.value = 'uploading'
+    if (view.phase === 'uploading' || view.phase === 'completing' || view.phase === 'retrying') {
+      stage.value = 'uploading'
+    }
     transfer.percent = view.progress || 0
     transfer.pulled = view.pulled_bytes || 0
     transfer.uploadedParts = view.uploaded_parts || 0
@@ -2218,12 +2232,22 @@ async function waitDeliveryJob(ws: WebSocket, jobId: string, token: number) {
     if (view.needs_reauth) {
       throw new Error('交付需要重新认证：请重新连接 SSH 后继续（作业进度已保留）')
     }
-    if (view.phase === 'failed') {
+    if (view.phase === 'retrying') {
+      // retrying 是 bridge 的**中间态**（后台正在退避重排），不是结论。
+      // 见到它就抛错会让"还能自愈的作业"被提前判死，并污染平台状态。
+      if (!retryingNotified) {
+        retryingNotified = true
+        ElMessage.warning('链路抖动，bridge 正在自动重试（已传分片与进度均保留）')
+      }
+      await sleep(attempt < DELIVERY_POLL_FAST_ROUNDS ? DELIVERY_POLL_FAST_MS : DELIVERY_POLL_SLOW_MS)
+      continue
+    }
+    if (isTerminalDeliveryFailure(view.phase)) {
       throw new Error(view.last_error || '交付失败（作业进度已保留，可重试）')
     }
-    await sleep(2000)
+    await sleep(attempt < DELIVERY_POLL_FAST_ROUNDS ? DELIVERY_POLL_FAST_MS : DELIVERY_POLL_SLOW_MS)
   }
-  throw new Error('交付超过 2 小时仍未完成，作业仍在 bridge 侧继续，可稍后刷新查看')
+  throw new Error('交付超过 6 小时仍未完成，作业仍在 bridge 侧继续，可稍后刷新查看')
 }
 
 /**
@@ -2316,6 +2340,12 @@ async function runDeliveryJob(
       tlsInsecure = true
       // 以平台记录为准刷新已传分片：失败可能发生在第 N 片，续传不能靠旧快照
       args.session = await logCollectApi.getUploadStatus(args.task.task_id)
+      // 硬校验：刷新出来的会话必须带令牌才能重提。缺了它 bridge 会回
+      // "task_id 与 upload_token 必填"，把证书问题伪装成参数问题——2026-10-27
+      // 现场就是在这条重试路径上反复返工，而首次提交一切正常。
+      if (!args.session?.upload_token) {
+        throw new Error('上传会话令牌缺失或已过期，请重新发起上传')
+      }
       stage.value = 'uploading'
     }
   }

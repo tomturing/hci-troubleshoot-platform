@@ -19,6 +19,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -52,13 +53,50 @@ const (
 	phasePulling        deliveryPhase = "pulling"         // HCI → bridge 本地
 	phaseUploading      deliveryPhase = "uploading"       // 本地 → 平台分片
 	phaseCompleting     deliveryPhase = "completing"      // 合并 + 触发代传
-	phaseDone           deliveryPhase = "done"
-	phaseFailed         deliveryPhase = "failed"
+	// phaseRetrying 是"失败但后台会自动重排"的中间态，**不是终态**。
+	//
+	// 为什么必须与 phaseFailed 分开：两者长期共用 failed，而前端拿到 status 后
+	// 「见到 failed 即判死」并回写 delivery_status=failed；与此同时 bridge 正在
+	// 退避重排、把包继续传上去。结果是同一时刻三份状态互相打脸：界面说失败、
+	// 平台记 failed、字节其实已经落盘。中间态必须能被外部看见但不能被当成结论。
+	phaseRetrying deliveryPhase = "retrying"
+	phaseDone     deliveryPhase = "done"
+	phaseFailed   deliveryPhase = "failed"
 )
 
 // terminalPhase 判断是否终态（终态不再自动重试）。
 func (p deliveryPhase) terminal() bool {
 	return p == phaseDone || p == phaseFailed
+}
+
+// normalizeDeliveryPhase 把中间态归一化成"可以继续执行"的阶段，并拒绝推进终态。
+//
+// 抽成纯函数是为了能被单测锁住：它是"作业会不会被误标成功"的唯一闸门。
+// 历史缺陷：phase 为 failed 时 switch 没有任何 case 命中，控制流直接掉到
+// `job.Phase = phaseDone`，于是"还没拉到第一个字节就失败"的作业会被标记成
+// 交付成功——比失败更危险，因为不会再有任何重试。
+func normalizeDeliveryPhase(job *deliveryJob) (deliveryPhase, error) {
+	switch job.Phase {
+	case phaseWaitingCollect, "":
+		return phaseWaitingCollect, nil
+	case phasePulling, phaseUploading, phaseCompleting:
+		return job.Phase, nil
+	case phaseRetrying:
+		// 重排入口不带"上次卡在哪"，按已产生的进度反推：有分片说明已进入上传，
+		// 有字节说明已开始拉取，否则从头再来。三个分支都可重入。
+		switch {
+		case len(job.UploadedParts) > 0:
+			return phaseUploading, nil
+		case job.PulledBytes > 0:
+			return phasePulling, nil
+		default:
+			return phaseWaitingCollect, nil
+		}
+	case phaseDone, phaseFailed:
+		return job.Phase, fmt.Errorf("作业已处于终态 %s，拒绝推进", job.Phase)
+	default:
+		return job.Phase, fmt.Errorf("未知交付阶段 %q，拒绝推进", job.Phase)
+	}
 }
 
 // deliveryJob 是一次交付的完整事实。字段刻意扁平，便于人工 cat 文件排障。
@@ -111,6 +149,16 @@ func (j *deliveryJob) progress() int {
 			return 0
 		}
 		return int(j.PulledBytes * 50 / j.SourceSize)
+	case phaseRetrying:
+		// 重试中保留已有进度：把界面打回 0% 会让用户以为"全丢了"，
+		// 而实际上已传分片在平台侧、已拉字节在本地，都能续。
+		if j.PartCount > 0 && len(j.UploadedParts) > 0 {
+			return 50 + len(j.UploadedParts)*50/j.PartCount
+		}
+		if j.SourceSize > 0 && j.PulledBytes > 0 {
+			return int(j.PulledBytes * 50 / j.SourceSize)
+		}
+		return 0
 	default:
 		return 0
 	}

@@ -313,3 +313,22 @@ async def test_complete_rejects_sha_mismatch_and_drops_parts(service, storage):
 async def test_status_raises_when_session_missing(service):
     with pytest.raises(UploadSessionNotFoundError):
         await service.status(uuid4())
+
+
+async def test_status_returns_usable_token_for_resume(service):
+    """断点续传重提必须能拿到可用令牌。
+
+    历史缺陷：status() 不签发 token，前端"证书失败→确认信任→刷新会话→重试"这条路
+    于是必然带空令牌提交，bridge 回 `task_id 与 upload_token 必填`。前端表现成
+    "参数没传"，真实原因却是会话接口少一个字段——错误信息与根因完全脱节。
+    """
+    task, total, _sha = make_task()
+    await service.init(task, total_size=total, expected_sha256=None)
+
+    snapshot = await service.status(task.task_id)
+
+    assert snapshot["upload_token"], "续传刷新必须返回令牌"
+    # 令牌必须真能通过数据面校验，而不只是"非空字符串"
+    assert service.verify_token(str(task.task_id), snapshot["upload_token"]) is True
+    # 跨任务不可用：令牌绑定 task_id
+    assert service.verify_token(str(uuid4()), snapshot["upload_token"]) is False

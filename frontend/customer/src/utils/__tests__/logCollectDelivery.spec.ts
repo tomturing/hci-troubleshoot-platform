@@ -3,6 +3,7 @@ import {
   buildDeliverySubmitMessage,
   buildDeliverySubmitPayload,
   isCertificateUntrusted,
+  isTerminalDeliveryFailure,
   platformCertTrusted,
   rememberPlatformCertTrust,
 } from '../logCollectDelivery'
@@ -71,6 +72,25 @@ describe('buildDeliverySubmitPayload', () => {
     expect(
       buildDeliverySubmitPayload({ ...baseArgs, mode: 'direct' }, 'https://p', false).delivery_mode,
     ).toBe('direct')
+  })
+})
+
+describe('isTerminalDeliveryFailure', () => {
+  // 现场回归：bridge 在退避重排期间对外报告 retrying。
+  // 若前端把它当失败，就会提前抛错并回写 delivery_status=failed，
+  // 而字节其实还在往平台传 —— 三份状态互相打脸。
+  it('retrying 是中间态，不能判死', () => {
+    expect(isTerminalDeliveryFailure('retrying')).toBe(false)
+  })
+
+  it('只有 failed 是终态失败', () => {
+    expect(isTerminalDeliveryFailure('failed')).toBe(true)
+  })
+
+  it('进行中与已完成都不算失败', () => {
+    for (const phase of ['waiting_collect', 'pulling', 'uploading', 'completing', 'done', '', undefined]) {
+      expect(isTerminalDeliveryFailure(phase)).toBe(false)
+    }
   })
 })
 

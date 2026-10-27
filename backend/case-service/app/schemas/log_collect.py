@@ -341,6 +341,10 @@ class DeliverResponse(BaseModel):
 
 class UploadStatusResponse(BaseModel):
     upload_id: str
+    # 续签的短期令牌：断点续传重试时客户端需要重新携带它。
+    # 以前这个接口不返回 token，于是"续传刷新"那一步必然把 token 丢成空串，
+    # 表现为 bridge 立刻回 "task_id 与 upload_token 必填"（2026-10-27 现场）。
+    upload_token: str = Field(description="数据面直连用的短期 token，绑定 task_id（每次查询重新签发）")
     chunk_size: int
     part_count: int
     total_size: int
