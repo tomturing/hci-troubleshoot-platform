@@ -1089,3 +1089,45 @@ describe('LogCollectPanel 固定提示区', () => {
     expect(rule).toMatch(/overflow-y:\s*auto/)
   })
 })
+
+/**
+ * 滚动容器子项禁止被压缩：现场第三次反馈的真正病灶，也是前两次修复（#1295 底条分层、
+ * #1299 固定提示区）都漏掉的那一层。
+ *
+ * 机制：`.lc-scroll` / `.lc-alerts` 都是 flex 列 + `overflow-y:auto`，内容超出产生负剩余
+ * 空间，由子项 `flex-shrink` 消化。`el-form` 等子项 `overflow:visible`，`min-height:auto`
+ * 等于内容高，压不动；`el-alert` 自带 `overflow:hidden`，自动最小尺寸退化为 0，负空间
+ * 便全部灌到提示条上——64px 被压成 16px，再被 `align-items:center` 上下对半裁。
+ * 盒子整齐堆叠、永不重叠，所以过去"overlap=0"的验收必然通过：指标错了，不是改得不够。
+ *
+ * happy-dom 没有排版引擎，量不出 clientHeight，这里只能当"门铃"：守卫规则 + 它守卫的
+ * 容器结构同时存在，才有意义（去掉任何一半，压缩就会回来）。真正的几何结论由
+ * `scripts/verify/verify_log_collect_alert_layout.py` 在 Chromium 里量 clientHeight ≥
+ * scrollHeight 得出，两者分工不可互相替代。
+ */
+describe('LogCollectPanel 提示条不得被 flex 压缩', () => {
+  const SOURCE = readFileSync(resolve(process.cwd(), 'src/components/LogCollectPanel.vue'), 'utf-8')
+  const ruleOf = (selector: string) =>
+    SOURCE.match(new RegExp(`${selector}\\s*\\{([\\s\\S]*?)\\}`))?.[1] ?? ''
+  const guardRule = SOURCE.match(/\.lc-scroll > \*,[\s\S]*?\{([\s\S]*?)\}/)?.[1] ?? ''
+
+  it('两个容器仍是 flex 列 + 可滚动（压缩的前提还在）', () => {
+    for (const selector of ['.lc-scroll', '.lc-alerts']) {
+      const rule = ruleOf(selector)
+      expect(rule).toMatch(/flex-direction:\s*column/)
+      expect(rule).toMatch(/overflow-y:\s*auto/)
+    }
+  })
+
+  it('两个容器的子项都被禁止收缩', () => {
+    // 一条规则同时覆盖两个容器：只护住其中一个，提示就会在另一个"家"里被压扁
+    expect(SOURCE).toMatch(/\.lc-scroll > \*/)
+    expect(SOURCE).toMatch(/\.lc-alerts > \*/)
+    expect(guardRule).toMatch(/flex-shrink:\s*0/)
+  })
+
+  it('固定提示区里确实有提示条，守卫不是写了个空规则', () => {
+    const alertsBlock = SOURCE.split('class="lc-alerts"')[1]?.split('<div class="lc-scroll">')[0] ?? ''
+    expect(alertsBlock).toContain('el-alert')
+  })
+})
