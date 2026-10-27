@@ -100,6 +100,21 @@ class TestCreateTask:
         assert task.created_by == "client-1"
         assert task.ips == ["all"]
 
+    async def test_probe_facts_persisted(self, service, mock_repo):
+        """探测事实（arch / acli_version）必须随任务落库。
+
+        失败任务事后要能自证运行环境，否则无法区分「acli 版本不支持 log_collect」
+        与「参数/环境错误」；2026-10-27 实测 38/38 任务的这两个字段全为 NULL。
+        """
+        mock_repo.get_active_by_case = AsyncMock(return_value=None)
+        mock_repo.create = AsyncMock(return_value=MagicMock(spec=LogCollectTask))
+
+        await service.create_task(make_payload(arch="x86_64", acli_version="1.0.1"), "client-1")
+
+        task = mock_repo.create.await_args.args[0]
+        assert task.arch == "x86_64"
+        assert task.acli_version == "1.0.1"
+
     async def test_conflict_when_active_task_exists(self, service, mock_repo):
         active = MagicMock(spec=LogCollectTask)
         active.task_id = "11111111-1111-1111-1111-111111111111"

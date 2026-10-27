@@ -54,6 +54,10 @@ export interface LogCollectTaskCreate {
    */
   baseline_report_hash?: string
   trace_id?: string
+  /** 发起节点架构（probe 实测）：随任务落库，失败后可自证运行环境 */
+  arch?: string
+  /** 发起节点 acli 版本（probe 实测）：与 arch 一同回答「哪版 acli 失败」 */
+  acli_version?: string
 }
 
 export interface LogCollectTask {

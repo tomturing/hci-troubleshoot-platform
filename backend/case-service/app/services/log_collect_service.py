@@ -98,7 +98,8 @@ class LogCollectService:
         active = await self.repository.get_active_by_case(payload.case_id)
         if active is not None:
             raise TaskConflictError(
-                f"工单 {payload.case_id} 已有进行中的日志收集任务：{active.task_id}",
+                f"工单 {payload.case_id} 已有进行中的日志收集任务：{active.task_id}"
+                "（若由其他客户端发起，请等待其结束后再试，勿重复下发）",
                 active_task=active,
             )
 
@@ -112,15 +113,15 @@ class LogCollectService:
             ips=list(payload.ips),
             extra_paths=list(payload.extra_paths) or None,
             remote_url=payload.remote_url,
+            # 探测事实随任务落库：失败任务必须能回答"用的哪版 acli / 什么架构"。
+            # 只存前端内存时，关面板或换端后这条证据就没了（2026-10-27 实测 38/38 全空）。
+            arch=payload.arch,
+            acli_version=payload.acli_version,
             status="pending",
             progress=0,
             # 下发锚定的报告指纹必须随任务落库：前端内存里的基线在关面板、
             # 换浏览器、重启后会丢失，届时就无法判断"节点报告属于哪一次下发"。
-            detail=(
-                {"baseline_report_hash": payload.baseline_report_hash}
-                if payload.baseline_report_hash
-                else {}
-            ),
+            detail=({"baseline_report_hash": payload.baseline_report_hash} if payload.baseline_report_hash else {}),
             created_by=client_id,
             # trace_id 由平台兜底生成：前端若未传，任务仍必须有一个可贯穿
             # 「平台 → bridge → HCI → 回采日志」的链路 ID，否则远端无法按链路定位。

@@ -712,6 +712,36 @@ func errString(err error) string {
 	return err.Error()
 }
 
+// logCollectFailureLine 从 acli 输出里提取一条可读的失败原因。
+//
+// 背景：runCommandPty 把 ssh.ExitError 归一化成 exitCode 后返回 nil，单看
+// errString(err) 永远是空串（2026-10-27 实测 19 条失败 create 全部 error=""），
+// 导致桥侧日志、平台任务与前端提示都拿不到原因。
+//
+// 取法：先去终端颜色码，再优先选含失败关键词的行，最后退化为首个非空行。
+// 只取一行并截断，避免把多行 acli 输出整段灌进任务表。
+func logCollectFailureLine(output string) string {
+	cleaned := stripAnsi(output)
+	var fallback string
+	for _, raw := range strings.Split(cleaned, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, "错误") || strings.Contains(line, "失败") ||
+			strings.HasPrefix(line, "FATA") || strings.HasPrefix(line, "Error") {
+			return truncateString(line, 200)
+		}
+		if fallback == "" {
+			fallback = line
+		}
+	}
+	if fallback == "" {
+		return ""
+	}
+	return truncateString(fallback, 200)
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -843,20 +873,26 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		output, exitCode, err := s.runCommandPty(ctx, command, logCollectCreateTimeout)
 		status := "ok"
 		code := ""
+		// 失败原因优先取进程错误，其次取 acli 输出里的首个失败行。
+		// runCommandPty 会把 ssh.ExitError 归一化成 exitCode 后返回 nil，
+		// 只写 errString(err) 会得到空串（2026-10-27 实测 19 条失败 create 的 error 全是 ""），
+		// 平台与桥侧日志都无法定因。
+		failure := errString(err)
 		if err != nil || exitCode != 0 {
 			status = "error"
 			code = execErrorCode(err, exitCode)
+			failure = firstNonEmpty(failure, logCollectFailureLine(output))
 		} else {
 			outcome = "ok"
 		}
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 			Status: status, ExitCode: exitCode, Raw: output, ErrorCode: code,
-			Message: firstNonEmpty(errString(err), strings.TrimSpace(output)),
+			Message: firstNonEmpty(failure, strings.TrimSpace(output)),
 			Detail:  command, TraceID: traceID, CustomUI: cui,
 		})
 		blog("INFO", "log_collect.create", "日志收集任务下发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-			"ticket_no": msg.TicketNo, "exit_code": exitCode, "error": errString(err),
+			"ticket_no": msg.TicketNo, "exit_code": exitCode, "error": failure,
 			"command": redactCommand(command), "output_preview": stripAnsi(truncateString(output, 512)),
 		})
 

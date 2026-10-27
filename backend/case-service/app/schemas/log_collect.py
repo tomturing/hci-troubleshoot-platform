@@ -73,6 +73,10 @@ class LogCollectTaskCreate(BaseModel):
         ),
     )
     trace_id: str | None = Field(default=None, max_length=64)
+    # 探测事实（前端 probe 结果）：失败任务必须能自证运行环境，
+    # 否则无法区分「acli 版本不支持 log_collect」与「参数/环境错误」。
+    arch: str | None = Field(default=None, max_length=16, description="发起节点架构（probe 实测）")
+    acli_version: str | None = Field(default=None, max_length=32, description="发起节点 acli 版本（probe 实测）")
 
     @field_validator("origin_node_ip")
     @classmethod

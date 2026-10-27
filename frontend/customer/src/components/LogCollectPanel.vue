@@ -53,6 +53,16 @@ const formLabelPosition = computed(() => (chatStore.leftPanelWidth < 480 ? 'top'
 
 const RELAY_URL = 'http://acli.sangfor.com.cn:5888'
 const POLL_INTERVAL = 5000
+// 终态任务的低频对账间隔：failed 的节点侧任务可能仍在跑（需要「接管」），
+// 完全停轮询会让接管入口再也不出现；但每 5s 打一次 SSH 也没有必要。
+const TERMINAL_POLL_INTERVAL = 30000
+
+// 最近一次桥侧失败的规范错误码（LC-<LAYER>-<NNN>）。
+//
+// 桥侧 log_collect_result 已经带 error_code（layer/owner/retryable 由 sendMsg 补全），
+// 但失败是以 throw 抛出的，码会在异常链里丢失。落库前用它把码补回平台任务，
+// 否则 error_code 恒为 NULL（2026-10-27 实测 35/38），错误码目录无法统计与分流。
+let lastNodeErrorCode = ''
 
 interface ModuleOption {
   value: LogCollectModule
@@ -713,7 +723,8 @@ async function resumeTask(taskId: string) {
     // 进面板即对账：平台快照可能停在旧投影上（节点仍在跑、或早已异常结束）
     if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true, source: 'open' })
 
-    startAutoSync()
+    // 终态任务仍然对账，但降频：节点可能还在跑（需要「接管」），5s 空转没有意义。
+    startAutoSync(TERMINAL_TASK_STATUSES.includes(task.status) ? TERMINAL_POLL_INTERVAL : POLL_INTERVAL)
   } catch (e: any) {
     ElMessage.error(
       e?.response?.status === 404 ? '任务不存在或不属于当前客户端' : '任务状态加载失败',
@@ -728,12 +739,12 @@ async function resumeTask(taskId: string) {
  * 于是节点早已 100%，面板还停在 0%，"自动刷新"看着像没生效。
  * 统一入口后，自动与手动在任何时刻都得到同一个结论。
  */
-function startAutoSync() {
+function startAutoSync(interval = POLL_INTERVAL) {
   stopAutoSync()
   resumeTimer = setInterval(() => {
     if (!visible.value) return
     void triggerAutoSync()
-  }, POLL_INTERVAL)
+  }, interval)
 }
 
 function stopAutoSync() {
@@ -745,9 +756,10 @@ function stopAutoSync() {
 
 async function triggerAutoSync() {
   const action = await syncNodeState({ applyPatches: true, silent: true, source: 'auto' })
-  // 落终态后停止轮询：节点已无任务可读，继续打就会变成空转
+  // 落终态后降频而不是停摆：平台虽已终态，节点可能仍在跑（需要「接管」）或刚异常，
+  // 完全停轮询会让接管入口再也不出现；30s 一次足以发现节点态翻转。
   if (action && (action.action === 'patch_completed' || action.action === 'patch_failed')) {
-    stopAutoSync()
+    startAutoSync(TERMINAL_POLL_INTERVAL)
   }
 }
 
@@ -825,16 +837,22 @@ async function refreshProgress(silent = false) {
  * 第一性原理：任务状态的真值在平台（log_collect_task 表），不在前端内存。
  * 早先只恢复了"进行中"的任务，完成后一关抽屉再打开就退回空白表单，
  * 用户会以为必须再收一次——这既违背事实，也容易造成重复采集。
- * 因此恢复顺序固定为：进行中 → 最近一次已完成 → 空白表单（可重新收集）。
+ * 因此恢复顺序固定为：进行中 → 最近一次已完成 → 最近一次失败 → 空白表单（可重新收集）。
+ * 失败记录必须恢复：节点侧任务可能仍在跑，接管只能从这条记录发起；退回空白表单
+ * 会让用户以为"没有任务"，只能重新下发并撞插件互斥（2026-10-27 修正）。
  */
 async function restoreTaskState(force = false) {
   if (!force && (currentTask.value || viewMode.value === 'result')) {
     // 同一会话内重开面板：任务与基线都还在，必须把自动刷新接回来。
     // 旧实现这里直接 return，于是「关抽屉 → 再打开」后自动刷新永久失效，
     // 只有手动点「刷新进度」才会动。
-    if (currentTask.value && !TERMINAL_TASK_STATUSES.includes(currentTask.value.status)) {
-      startAutoSync()
+    if (currentTask.value) {
+      // 终态任务同样要恢复对账：failed 的节点任务可能仍在跑，
+      // 「接管」入口依赖这一次对账（同会话重开面板也走这里）。
       if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true, source: 'open' })
+      startAutoSync(
+        TERMINAL_TASK_STATUSES.includes(currentTask.value.status) ? TERMINAL_POLL_INTERVAL : POLL_INTERVAL,
+      )
     }
     return
   }
@@ -853,6 +871,14 @@ async function restoreTaskState(force = false) {
     const completed = items.find((item) => item.status === 'completed')
     if (completed) {
       showResult(completed)
+      return
+    }
+    // 失败记录最后恢复：节点侧任务可能仍在运行，此时唯一正确的下一步是「接管」，
+    // 而不是重新下发（插件单任务互斥会直接拒绝 create）。
+    const failed = items.find((item) => item.status === 'failed')
+    if (failed) {
+      viewMode.value = 'form'
+      await resumeTask(failed.task_id)
       return
     }
     if (viewMode.value === 'result') viewMode.value = 'form'
@@ -953,6 +979,8 @@ async function handleStart() {
   // 新任务从 0 开始记：不继承上一次的峰值
   observedArchiveSize.value = 0
   relayStatus.value = 'none'
+  // 新任务重新开始：上一次失败的规范码不能带进来，否则会把旧码写到新任务上。
+  lastNodeErrorCode = ''
   const token = ++runToken
 
   let ws: WebSocket
@@ -978,6 +1006,22 @@ async function handleStart() {
     }
 
     pathMode.value = probeResult.value.log_server_reachable ? 'P1' : 'P2'
+
+    // 守卫前把「最近一条任务」接回面板：failed 记录若未恢复，平台态为空会把
+    // adopt 误判成 warn_node_busy（文案说"非本平台下发"），用户被引导去取消重试，
+    // 接管入口永远不出现。autoSync=false：对账交给下面的守卫统一做，
+    // 避免并发发两次 progress（syncingNode 互斥会让守卫直接返回 null）。
+    if (!currentTask.value) {
+      try {
+        const latestList = await logCollectApi.listTasks(props.caseId, 1)
+        const latest = latestList.items?.[0]
+        // 只回填任务态，不调 applyTaskToForm：用户可能刚改过场景/时间范围，
+        // 这里再把旧任务参数写回表单，等于静默覆盖用户刚做的选择。
+        if (latest) currentTask.value = await logCollectApi.getTask(latest.task_id)
+      } catch {
+        // 恢复失败不阻断下发：守卫退化为"无平台态"，仍可继续探测节点
+      }
+    }
 
     // 前置守卫：节点上有未结束/游离任务时，create 只会被插件互斥拒绝，
     // 平台还会白留一条 failed 记录。先对账，能自动修正的直接修正，需要用户决策的当场拦住。
@@ -1006,6 +1050,10 @@ async function handleStart() {
         date_to: form.dateRange[1],
         ips: form.ips.split(',').map((s) => s.trim()).filter(Boolean),
         remote_url: pathMode.value === 'P1' ? RELAY_URL : undefined,
+        // 探测事实随任务落库：失败任务必须能回答"哪版 acli / 什么架构"，
+        // 只留在前端内存时，关面板或换端后这条证据就没了。
+        arch: probeResult.value?.architecture || undefined,
+        acli_version: probeResult.value?.acli_version || undefined,
         baseline_report_hash: baseline || undefined,
         trace_id: `lc-${props.caseId}-${Date.now()}`,
       })
@@ -1039,7 +1087,11 @@ async function handleStart() {
       },
       180000,
     )
-    if (created.status !== 'ok') throw new Error(created.message || '任务下发失败')
+    if (created.status !== 'ok') {
+      // 下发失败的规范码必须留住：它是后面 patch failed 写库的唯一来源。
+      lastNodeErrorCode = String(created.error_code || '')
+      throw new Error(created.message || '任务下发失败')
+    }
 
     // 平台任务必须随阶段推进：pending 不能直接跳到终态，否则 PATCH 会被状态机拒绝
     stage.value = 'collecting'
@@ -1048,7 +1100,7 @@ async function handleStart() {
   } catch (error: any) {
     // 用户已取消：后台流程静默退出，不再覆盖任务状态
     if (token !== runToken) return
-    errorMessage.value = stripAnsi(String(error?.message || error)).slice(0, 500)
+    errorMessage.value = normalizeErrorMessage(String(error?.message || error))
     // 必须在改 stage 之前取：stepActive 一旦看到 failed 就会返回 failedStep 本身，
     // 顺序颠倒会让它永远停在第一步。放在这里可同时覆盖"结果未知"与普通失败两条分支。
     failedStep.value = stepActive.value
@@ -1064,6 +1116,8 @@ async function handleStart() {
         .patchTask(currentTask.value.task_id, {
           status: 'failed',
           error_message: errorMessage.value,
+          // 桥侧规范码：没有它，失败原因只能靠读 error_message 文本猜。
+          error_code: lastNodeErrorCode || undefined,
         })
         .catch(() => undefined)
     }
@@ -1109,6 +1163,22 @@ function expectedHostCount(): number {
 function stripAnsi(text: string): string {
   // eslint-disable-next-line no-control-regex
   return text.replace(/\u001b\[[0-9;]*m/g, '')
+}
+
+/**
+ * 把桥侧原始输出整理成可直接落库的一条原因。
+ *
+ * 桥侧 Message 常带两类噪音：终端颜色码，以及 `FATA[0000] execing command in
+ * container` 这类 bridge 自身的包装行。它们对定位没有帮助，却会污染任务列表
+ * 与管理端审计（2026-10-27 实测 error_message 里混着 ANSI 的 FATA 行）。
+ * 只保留首行，避免把多行 acli 输出整段灌进任务表。
+ */
+function normalizeErrorMessage(text: string): string {
+  const lines = stripAnsi(text || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !/^FATA\[\d+\]\s+execing command in container/.test(line))
+  return (lines[0] || '').slice(0, 500)
 }
 
 /**
@@ -1264,7 +1334,11 @@ async function syncNodeState(
                     currentTask.value.archive_size ||
                     undefined,
                 }
-              : { status: 'failed' as const, error_message: action.reason }
+              : {
+                  status: 'failed' as const,
+                  error_message: normalizeErrorMessage(action.reason),
+                  error_code: lastNodeErrorCode || undefined,
+                }
           currentTask.value = await logCollectApi.patchTask(currentTask.value.task_id, patch)
           if (action.action === 'patch_completed') {
             stage.value = 'done'
@@ -1277,8 +1351,9 @@ async function syncNodeState(
             stage.value = 'failed'
             errorMessage.value = action.reason
           }
-          // 已落终态：停止自动刷新，避免对着终态任务每 5s 再发一次 SSH 命令
-          stopAutoSync()
+          // 已落终态：降频继续对账（而不是停摆）——failed 的节点任务可能仍在跑，
+          // 停掉轮询会让「接管」按钮再也不出现。
+          startAutoSync(TERMINAL_POLL_INTERVAL)
           if (!options.silent) ElMessage.success(buildSyncNotice(action))
         } catch (error: any) {
           if (!options.silent) ElMessage.warning(`平台状态同步失败：${error?.message || error}`)
@@ -1340,7 +1415,7 @@ async function adoptNodeTask() {
     await resumeTaskFlow(ws, currentTask.value ?? task, token, readProgressHash())
   } catch (error: any) {
     if (token !== runToken) return
-    errorMessage.value = stripAnsi(String(error?.message || error)).slice(0, 500)
+    errorMessage.value = normalizeErrorMessage(String(error?.message || error))
     failedStep.value = stepActive.value
     stage.value = 'failed'
     ElMessage.error(errorMessage.value)
@@ -1385,7 +1460,7 @@ async function correctFromNode() {
     await resumeTaskFlow(ws, currentTask.value ?? task, token, readProgressHash())
   } catch (error: any) {
     if (token !== runToken) return
-    errorMessage.value = stripAnsi(String(error?.message || error)).slice(0, 500)
+    errorMessage.value = normalizeErrorMessage(String(error?.message || error))
     failedStep.value = stepActive.value
     stage.value = 'failed'
     ElMessage.error(errorMessage.value)
@@ -1434,6 +1509,8 @@ async function pollUntilCollected(
       // bridge 明确报错（如会话已断开）必须立刻上抛：
       // 早先这里只读 log_data，错误结果会被当成"还没有进度"，面板空转一小时仍显示 0%。
       if (result.status === 'error') {
+        // 与 create 失败同样处理：先把规范码留住，再由 catch 统一写库。
+        lastNodeErrorCode = String(result.error_code || '')
         throw new Error(result.message || '节点侧进度查询失败')
       }
       const snapshot = result.log_data as ProgressSnapshot | null

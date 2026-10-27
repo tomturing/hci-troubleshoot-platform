@@ -408,6 +408,44 @@ func TestSessionByNodeIP(t *testing.T) {
 // 回归：cancel 曾经漏传 node_ip，精确键与 node_ip 两级回退全部失效，直接 session_missing，
 // 结果是平台显示已取消、节点上采集任务仍在跑，后续 create 被插件互斥拒绝。
 // 本工单只有一条 SSH 会话时，必须能兜底命中。
+// 回归：runCommandPty 把 ssh.ExitError 归一化成 exitCode 后返回 nil，
+// 只用 errString(err) 时 create 失败原因的 error 字段恒为空（2026-10-27 实测 19/19）。
+func TestLogCollectFailureLine(t *testing.T) {
+	cases := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{
+			name:   "ANSI 颜色码与 FATA 包装行",
+			output: "\u001b[31m错误：未知的命令或者命名空间(log_collect create)\u001b[0m\nFATA[0000] execing command in container: command terminated with exit code 1\n",
+			want:   "错误：未知的命令或者命名空间(log_collect create)",
+		},
+		{
+			name:   "失败行优先于普通首行",
+			output: "Downloading plugin...\n磁盘空间检查失败：可用 1.42GB 小于 6GB\n",
+			want:   "磁盘空间检查失败：可用 1.42GB 小于 6GB",
+		},
+		{
+			name:   "无关键词时回退首个非空行",
+			output: "\n\n日志收集任务下发成功！\n",
+			want:   "日志收集任务下发成功！",
+		},
+		{
+			name:   "空输出",
+			output: "",
+			want:   "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := logCollectFailureLine(c.output); got != c.want {
+				t.Fatalf("期望 %q，实际 %q", c.want, got)
+			}
+		})
+	}
+}
+
 // 回归：acli 失败输出带颜色码（`\x1b[31mFATA\x1b[0m...`），
 // 不清洗会污染状态行匹配，也会把乱码直接展示到面板。
 func TestStripAnsi(t *testing.T) {
