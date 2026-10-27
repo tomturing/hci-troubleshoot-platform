@@ -881,7 +881,9 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		// 刻意不回填 progress.ArchivePath：前端 decideNodeSync 用「节点无任务 + 有 archive_path」
 		// 判定任务已完成，回填一个未经验证的推导路径会让它在"任务被清理但包还在"时误判完成。
 		// 大小是纯展示字段，不参与状态机，因此只补 size。
-		progress.ArchiveSize, archiveSizeDiag := probeLogCollectArchiveSize(ctx, s, probePath)
+		// 诊断信息跟着进度事件一起落库：量不到时必须留下"为什么量不到"。
+		var archiveSizeDiag string
+		progress.ArchiveSize, archiveSizeDiag = probeLogCollectArchiveSize(ctx, s, probePath)
 		status := "ok"
 		code := ""
 		if err != nil || exitCode != 0 {
@@ -907,8 +909,8 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"node_state":  progress.NodeState,
 			"hosts_count": len(progress.Hosts), "archive_size": progress.ArchiveSize,
 			"archive_size_diag": archiveSizeDiag,
-			"exit_code":         exitCode,
-			"error":             errString(err), "raw_len": len(output),
+			"exit_code": exitCode,
+			"error": errString(err), "raw_len": len(output),
 		})
 
 	case "stat":
