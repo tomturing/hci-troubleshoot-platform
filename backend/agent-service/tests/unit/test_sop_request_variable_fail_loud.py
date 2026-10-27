@@ -193,3 +193,74 @@ async def test_declared_user_input_variable_still_offers_input_card():
     assert isinstance(result, VariableRequestResult)
     assert result.needs_input is True
     assert result.variable_name == "disk_dev"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# tool_call 参数模板类型守卫
+# 守护 staging 真实事故（2026-10-26，SOP#3 / conversation a4dd8df1）：
+#   acquisition_args_template 被写成 "stdout"（output_path 的值串到了模板列）
+#   -> 渲染后原样作为 args 传入执行器
+#   -> 执行器内 args.get("node_ip") 抛 AttributeError: 'str' object has no attribute 'get'
+#   -> 被"失败即接管"吞成"人工弹卡"，日志里只剩那句 AttributeError，根因不可见
+#   -> 模型每重试一次再弹一张卡，同一轮重复下发
+# ──────────────────────────────────────────────────────────────────────────────
+
+TOOL_CALL_SCHEMA_TMPL = {
+    "name": "task_logs",
+    "type": "json",
+    "acquisition_strategy": "tool_call",
+    "acquisition_tool": "acli_exec",
+    "output_path": "stdout",
+    "description": "启动虚拟机失败任务原始数据",
+}
+
+
+@pytest.mark.asyncio
+async def test_tool_call_string_args_template_stops_before_executor():
+    """模板为裸字符串时，必须在调用执行器之前就被拦下（不产生 AttributeError）。"""
+    schema = [dict(TOOL_CALL_SCHEMA_TMPL, acquisition_args_template="stdout")]
+    executor = AsyncMock()
+
+    result = await sop_request_variable(
+        "task_logs",
+        reason="获取任务原始数据",
+        conversation_id=CONVERSATION_ID,
+        sop_document_id=3,
+        kb_client=_kb_client(schema),
+        conversation_sop_client=_sop_client(),
+        tool_executor=executor,
+    )
+
+    # 关键：执行器一次都不该被调用——脏参数不允许流到下游
+    executor.execute.assert_not_called()
+    # 降级语义保持"失败即接管"：仍然给用户一张输入卡
+    assert isinstance(result, VariableRequestResult)
+    assert result.needs_input is True
+
+
+@pytest.mark.asyncio
+async def test_tool_call_object_args_template_reaches_executor():
+    """合法对象模板必须真正下发（守住不误伤正常路径）。"""
+    template = {
+        "command": 'acli --formatter json task get -k "启动虚拟机" -s \'failed\'',
+        "reason": "获取所有“虚拟机开机”相关失败任务原始数据",
+    }
+    schema = [dict(TOOL_CALL_SCHEMA_TMPL, acquisition_args_template=template)]
+    executor = AsyncMock()
+    executor.execute.return_value = None
+
+    await sop_request_variable(
+        "task_logs",
+        reason="获取任务原始数据",
+        conversation_id=CONVERSATION_ID,
+        sop_document_id=3,
+        kb_client=_kb_client(schema),
+        conversation_sop_client=_sop_client(),
+        tool_executor=executor,
+    )
+
+    executor.execute.assert_called_once()
+    call = executor.execute.call_args
+    assert call.args[0] == "acli_exec"
+    assert call.args[1] == template
+    assert call.kwargs["conversation_id"] == CONVERSATION_ID

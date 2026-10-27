@@ -1,0 +1,76 @@
+{
+  "scenario_id": "vm_start_failure_q2026102600003",
+  "bind_sop_document_id": 3,
+  "title": "虚拟机开机失败：变量卡片不得出现 schema 外变量，提交后不得重复索要",
+  "description": "Q2026102600003 回归。用户描述「启动虚拟机失败：显卡切分方式不匹配或显卡资源不足」→ 命中 SOP#3。核心判据：①任何变量卡片请求的变量名必须 ∈ variable_schema 声明集（历史缺陷：下发「任务原始数据」这种自然语言伪变量）；②已提交的变量不得在后续轮次被再次索要（历史缺陷：写入野键后 vmid 依旧缺失，形成无限循环）。",
+  "ticket": {
+    "alert_text": "虚拟机 vm-test-1001 启动失败，任务失败原因：显卡切分方式不匹配或显卡资源不足",
+    "user_first_message": "虚拟机启动失败了，提示显卡切分方式不匹配或显卡资源不足，帮忙看下怎么排查"
+  },
+  "seed_environment": {
+    "_comment": "挂真实环境事实，令 S0 能确认到「虚拟机-003」并进 SOP#3。USE_RAW 路径：alert 型为 {\"alerts\":[...]}，cluster 型直接为集群 dict。",
+    "cluster": {
+      "name": "hci-staging-cluster",
+      "cluster_name": "hci-staging-cluster",
+      "node_ip": "172.16.100.13"
+    },
+    "alerts": [
+      {
+        "alarm_name": "虚拟机开机失败",
+        "host": "172.16.100.13",
+        "severity": "major",
+        "message": "虚拟机 vm-test-1001 启动失败，任务失败原因：显卡切分方式不匹配或显卡资源不足"
+      }
+    ]
+  },
+  "expect": {
+    "category_code": "虚拟机-003",
+    "sop_document_id": 3
+  },
+  "variables": {
+    "declared": [
+      "apache2_count",
+      "cert_path",
+      "db_master_host",
+      "exporter_status",
+      "gpu_info_path",
+      "host_ip",
+      "hostname",
+      "kernel_log_path",
+      "lock_name",
+      "master_host",
+      "mysql_status",
+      "pci_address",
+      "platform_db_path",
+      "prometheus_status",
+      "qemu_log_path",
+      "runc_log_path",
+      "statuscenterd_log_path",
+      "storage_id",
+      "task_date",
+      "task_day",
+      "task_description",
+      "task_logs",
+      "upid_pid",
+      "vm_disk_file",
+      "vm_disk_path",
+      "vmid",
+      "vm_name",
+      "vn_manager_log_path",
+      "vn_node_api_log_path",
+      "vtpdaemon_count",
+      "vtpdaemon_log_path"
+    ],
+    "answers": {
+      "vmid": "1001",
+      "vm_name": "vm-test-1001",
+      "hostname": "172.16.100.13",
+      "host_ip": "172.16.100.13",
+      "task_date": "2026-10-26",
+      "task_description": "虚拟机 vm-test-1001 启动失败：显卡切分方式不匹配或显卡资源不足",
+      "task_logs": "{\"task\":\"启动虚拟机\",\"vm\":\"1001\",\"end\":\"2026-10-26\",\"status\":\"failed\",\"des\":\"显卡切分方式不匹配或显卡资源不足\"}"
+    }
+  },
+  "guard_events_expected": [],
+  "_comment": "本场景不打 stub 注入：判据是「卡片变量名必须已声明」+「提交后不重复索要」，由 scripts/verify/vm_start_failure_e2e.py 直接对 events 断言，比中文 token 匹配更可靠（_VAR_TOKEN_RE 只认 ASCII 下划线 token，识别不了「任务原始数据」）。"
+}

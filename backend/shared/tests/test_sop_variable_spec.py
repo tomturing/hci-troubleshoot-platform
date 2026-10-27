@@ -356,3 +356,65 @@ def test_parse_raises_with_report():
     with pytest.raises(SopVariableSchemaError) as exc:
         SopVariableSchema.parse([{"name": "任务原始数据", "acquisition_strategy": "user_input"}])
     assert exc.value.report.has_error
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# tool_call 参数模板类型契约（staging 实测根因：模板被写成裸字符串）
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_tool_call_args_template_bare_string_rejected():
+    """模板写成裸字符串必须在保存期拦截。
+
+    运行时后果：engine 把这个值原样当 args 传给执行器，触发
+    AttributeError: 'str' object has no attribute 'get'，被"失败即接管"
+    降级成人工弹框，表现为同一变量反复弹卡、SOP 永不推进。
+    051 整改把 task_logs/alert_logs 的模板列写成了 output_path 的值 "stdout"，
+    即此形态。
+    """
+    raw = [
+        {
+            "name": "task_logs",
+            "type": "json",
+            "acquisition_strategy": "tool_call",
+            "acquisition_tool": "acli_exec",
+            "output_path": "stdout",
+            "acquisition_args_template": "stdout",
+        }
+    ]
+    report = validate_variable_schema(raw, mode="save")
+    assert "SOP_VAR_ARGS_TEMPLATE_NOT_OBJECT" in {i.code for i in report.errors}
+
+
+def test_tool_call_args_template_object_accepted():
+    """合法的对象模板不得误报。"""
+    raw = [
+        {
+            "name": "task_logs",
+            "type": "json",
+            "acquisition_strategy": "tool_call",
+            "acquisition_tool": "acli_exec",
+            "output_path": "stdout",
+            "acquisition_args_template": {
+                "command": 'acli --formatter json task get -k "启动虚拟机" -s \'failed\'',
+                "reason": "获取所有“虚拟机开机”相关失败任务原始数据",
+            },
+        }
+    ]
+    report = validate_variable_schema(raw, mode="save")
+    assert not report.has_error
+
+
+def test_tool_call_acquisition_args_alias_also_checked():
+    """engine 优先读 acquisition_args，该别名同样受约束。"""
+    raw = [
+        {
+            "name": "task_logs",
+            "type": "json",
+            "acquisition_strategy": "tool_call",
+            "acquisition_tool": "acli_exec",
+            "acquisition_args": "stdout",
+        }
+    ]
+    report = validate_variable_schema(raw, mode="save")
+    assert "SOP_VAR_ARGS_TEMPLATE_NOT_OBJECT" in {i.code for i in report.errors}

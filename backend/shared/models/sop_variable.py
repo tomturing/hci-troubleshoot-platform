@@ -400,6 +400,32 @@ def _collect_single_variable_issues(spec: SopVariableSpec, report: ValidationRep
             f"fallback_strategy '{spec.fallback_strategy}' 无法识别",
         )
 
+    # 4.11 tool_call：参数模板必须是对象（dict）
+    #      engine 会把这个值渲染后**原样**作为工具参数传入
+    #      （CompositeToolExecutor.execute 的签名要求 args: dict），
+    #      写成裸字符串时会在 app/main.py 的 args.get() 处抛
+    #      AttributeError: 'str' object has no attribute 'get'；
+    #      该异常被"失败即接管"捕获后降级为人工弹框，
+    #      表现为同一变量被反复弹卡、SOP 永不推进，且日志里看不到根因。
+    #      051 整改时 task_logs/alert_logs 的模板列被写成 output_path 的值 "stdout"，
+    #      正是踩在这里。
+    if strategy == STRATEGY_TOOL_CALL and tool:
+        for _field in ("acquisition_args", "acquisition_args_template"):
+            _tmpl = getattr(spec, _field, None)
+            if _tmpl is None or isinstance(_tmpl, dict):
+                continue
+            _err(
+                "SOP_VAR_ARGS_TEMPLATE_NOT_OBJECT",
+                f"{_field} 必须是对象，当前为 {type(_tmpl).__name__}（{_tmpl!r}）；"
+                "运行时会被当作工具参数直接传入并抛 'str' object has no attribute 'get'，"
+                "自动采集静默降级为人工弹框",
+                hint=(
+                    '正确写法：{"command": "acli --formatter json task get -k \\"启动虚拟机\\" -s \'failed\'", '
+                    '"reason": "获取失败任务原始数据"}；'
+                    "若该变量只能人工提供，请把策略改成 user_input 而不是留一个跑不通的模板"
+                ),
+            )
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 变量集合

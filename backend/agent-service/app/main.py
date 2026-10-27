@@ -535,6 +535,19 @@ class CompositeToolExecutor:
                 return {"error": "缺少 conversation_id，无法执行 acli 工具"}
 
             # node_ip 优先读 LLM 参数，其次从 SOP context_variables 注入，
+            # args 必须是对象：变量引擎会把渲染后的参数模板原样当 args 传进来，
+            # 若 SOP 变量把 acquisition_args_template 写成裸字符串（历史脏数据），
+            # 直接 .get() 会抛 AttributeError，被上层"失败即接管"吞成人工弹卡，
+            # 现场只看到 'str' object has no attribute 'get'，看不出是配置问题。
+            if not isinstance(args, dict):
+                return {
+                    "error": (
+                        f"工具 {tool_name} 的参数必须是对象（dict），"
+                        f"当前为 {type(args).__name__}：{args!r}；"
+                        "请检查 SOP 变量的 acquisition_args_template 是否误写成字符串"
+                    )
+                }
+
             # 避免 LLM 忘记传 node_ip 导致命令在错误节点执行
             effective_node_ip = args.get("node_ip")
             if not effective_node_ip:

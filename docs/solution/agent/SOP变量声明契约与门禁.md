@@ -2,7 +2,7 @@
 status: active
 category: solution
 audience: developer
-last_updated: 2026-10-26
+last_updated: 2026-10-27
 owner: team
 ---
 
@@ -10,6 +10,13 @@ owner: team
 
 > 起因：Q2026102600003「手动填入之后，还是提示需要手动填」。同一现象已修过两次
 > （#1149 前端已提交态、#1151 后端 `user_questions` 幻觉过滤），仍复发。
+
+## 变更历史
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-10-26 | v1.0 | 初版：变量声明契约、三道闸、变量包与 051~053 数据整改（#1270） | — |
+| 2026-10-27 | v1.1 | 补 `acquisition_args_template` 类型契约：054 数据收敛 + shared/engine/main 三层守卫 + CI 巡检与单测；补充 E2E 真采集命令与两处必踩坑（#1291） | — |
 
 ## 1. 复盘的结论
 
@@ -51,6 +58,13 @@ validate_variable_schema(raw, mode="save"|"publish"|"runtime") -> ValidationRepo
 | `user_input` / `user_confirm` | `description`（publish 态） | `depends_on` / `output_path` / `acquisition_tool` |
 
 - `deprecated` 变量豁免矩阵与依赖校验（不逼着"修一份死配置"），但 publish 态禁止被活跃变量依赖
+- `tool_call` 的 `acquisition_args_template` / `acquisition_args` **必须是对象**（错误码
+  `SOP_VAR_ARGS_TEMPLATE_NOT_OBJECT`）。该值渲染后会被当作工具参数**原样**传给执行器
+  （`CompositeToolExecutor.execute` 签名要求 `args: dict`）；写成裸字符串（典型是把
+  `output_path` 的值 `"stdout"` 串到了模板列）会在运行时抛
+  `AttributeError: 'str' object has no attribute 'get'`，被"失败即接管"吞成人工弹框，
+  表现为同一变量反复弹卡、SOP 永不推进，而日志里只剩那句报错、根因不可见。
+  只能人工提供的变量应当直接声明 `user_input`，不要留一个跑不通的模板。
 
 ## 3. 三道闸
 
@@ -67,6 +81,7 @@ validate_variable_schema(raw, mode="save"|"publish"|"runtime") -> ValidationRepo
 依赖指向未声明  -> sop_schema_invalid_dependency，不再返回 next_tool_call
 SOP 无变量声明  -> sop_variable_schema_missing
 path_template   -> 由变量池渲染（/sf/log/{task_day}/sfvt_qemu_{vmid}.log）
+参数模板非对象  -> 传参前拦下并记 contract_error（不再把 str 当 args 传下去）
 ```
 
 ## 4. 变量包（防止复制粘贴再次漂移）
@@ -116,6 +131,31 @@ path_template   -> 由变量池渲染（/sf/log/{task_day}/sfvt_qemu_{vmid}.log�
 2. **命令类** → `tool_call:acli_exec`，命令取自各 SOP 正文「前置检查」
 3. **无采集定义、只能人工判断** → `user_input`，并补全"用途 + 取值线索"
 
+## 5.1 054：参数模板类型契约收敛
+
+051 在归位日志类变量时写反了 `COALESCE` 优先级：
+
+```sql
+COALESCE(item.v -> 'acquisition_args_template', item.v -> 'expression')
+```
+
+`->` 取到的是列错位遗留的脏值 `"stdout"`（本属于 `output_path`），
+真正的 `{command, reason}` 模板在 `expression` 里却没被优先采用；
+且该段 `UPDATE` 的判据是 `acquisition_strategy <> 'tool_call'`，
+对"策略已对、模板仍错"的存量行**完全漏判**，于是 `"stdout"` 一路留到了运行时。
+
+054 以各 SOP 正文 `prerequisites` 里的前置检查命令为唯一事实源逐条归位：
+
+| SOP | 变量 | 归位后的 `command` |
+|---|---|---|
+| #3 | `task_logs` | `acli --formatter json task get -k "启动虚拟机" -s 'failed'` |
+| #2 | `alert_logs` | `acli --formatter json alert get -k "磁盘"` |
+| #5 | `alert_logs` | `acli --formatter json alert get -k "内存"` |
+| #2 | `task_logs` | 已 `deprecated`、正文无对应命令 → 仅清除非法模板，不再采集 |
+
+迁移末尾带收敛断言（`DO $$ ... RAISE EXCEPTION`）：任何活跃 `tool_call` 变量的模板
+若仍是非对象标量，迁移当场失败，而不是留到运行时降级。回滚快照表 `_backup_20261026_054`。
+
 ## 6. 验收
 
 ```bash
@@ -136,6 +176,33 @@ cd backend/agent-service && PYTHONPATH=.:../.. python -m pytest tests/unit/test_
 sed 's/^COMMIT;$/ROLLBACK;/' database/data-migrations/051_sop_variable_contract_alignment.sql | psql ...
 ```
 
+真 E2E（SOP#3 虚拟机开机失败，含 bridge 真采集）：
+
+```bash
+# 1) 为仿真实例签发 lease，生成 driver 需要的 connection.json
+python evaluation/live_e2e/fixtures/disk_badtrack/make_connection.py \
+  --namespace <sim-ns> --pod <sim-pod> --svc <sim-svc> \
+  --manifest /etc/hci-sim/bundles/<vm-scenario>-fixture-manifest.json \
+  --support-id <id> --out /tmp/vm_connection.json
+
+# 2) 驱动真实会话（--sim 才会起 headless bridge relay，把 SSE 上的
+#    agent_exec_command 真下发到 hci-sim 并回贴 /exec-result）
+python scripts/verify/vm_start_failure_e2e.py \
+  --case-base http://<case>:8001 --conv-base http://<conv>:8002 --agent-base http://<agent>:8005 \
+  --internal-token "$INTERNAL_API_TOKEN" --max-turns 6 \
+  --sim --bridge-url ws://<bridge>:9999 --bridge-origin http://<bridge>:9999 \
+  --connection /tmp/vm_connection.json --dump-dir /tmp/e2e-dump
+```
+
+两个必踩的坑：
+
+- **不启用 `--sim` 会话永远到不了终态**：`on_exec_command` 为 `None` 时命令无人执行，
+  agent-service 只能等 `AGENT_EXEC_RESULT_TIMEOUT_SECONDS`（默认 150s）后重试，SSE 流不结束；
+  而 `run_scenario` 只在正常返回时写 `--dump-dir`，脚本被杀后连事件证据都拿不到。
+- **`--bridge-origin` 必须给且与 Host 同源**：bridge 用 `x/net/websocket` 的 `Handler`，
+  其默认 `checkOrigin` 对**缺失 Origin** 的握手直接 403（日志只有 `bridge.WebSocket_请求 origin=`），
+  部署侧 `HCI_BRIDGE_ALLOWED_ORIGINS=same-origin`，故 Origin 的 host:port 需等于请求 Host。
+
 必须同时满足：
 
 - [ ] 存量扫描 `depends_on ⊄ declared` = 0 行
@@ -155,3 +222,14 @@ sed 's/^COMMIT;$/ROLLBACK;/' database/data-migrations/051_sop_variable_contract_
   若后续要自动化，需由 SOP 作者补充真实采集命令后再改为 `tool_call`。
 - `llm_inference` / `agent_pass` 在引擎中**尚未实现**，契约已禁止其作为自动策略使用；
   若将来实现，需同步加入 `RUNTIME_SUPPORTED_STRATEGIES` 白名单。
+- **hci-sim 的 fixture 命令路由是 argv 精确匹配**，SOP 正文命令与 fixture 注册命令
+  差一个字面量就落空。实测 `kbd-27123`（虚拟机开机失败场景）只注册了
+  `acli --formatter json task get -k 启动虚拟机 -s failed -l 1`（带 `-l 1`），
+  而 SOP 正文的命令不带 `-l 1` → `exit=127`；`ps axuf | grep ...` 则被
+  `policy_denied: 禁止 shell 操作符 '|'` 拒绝。因此当前 E2E 能证明
+  "命令真下发 → 真执行 → 结果回贴" 与变量契约，但要跑出 SOP 的终态结论，
+  需先为 vm 场景补齐 fixture 路由（不要在 SOP 侧加 `-l 1` 迁就 fixture：
+  正文明确要求多任务时用 `user_confirm` 让用户挑，限制条数会改变业务语义）。
+- 直连绑定 SOP 成功后 `sop_document_hit_id` 直接取绑定值。原实现只靠
+  `_scan_terminal_signals` 从终态事件反推，链路提前结束（命令全失败、缺应答停跑）
+  时终态事件不产生，会把"已确定绑定的 SOP"误判成 `hit=None`（假阴性）。
