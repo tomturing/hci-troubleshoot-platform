@@ -817,6 +817,96 @@ describe('LogCollectPanel', () => {
   })
 
   /**
+   * 现场回归（工单 Q2026102701294 / 2026-10-27）：
+   * 节点采集 100%、289 MiB 包仍在盘，平台任务 failed。
+   * #1313 把「失败任务继续交付」的合法边（failed → collecting）走通了，但接管基线取的是
+   * 「接管那一刻这份已完成报告的指纹」。节点任务早已结束、报告定格，reportRefreshed 恒为
+   * false → 判 stale → wait_refresh → 轮询 720 次（60 分钟）后抛「采集未完成」，
+   * 409 死锁被换成了空转死锁。
+   *
+   * 契约：点「继续交付」之后，即便节点报告逐字不变，也必须收敛为完成并进入结果视图。
+   */
+  it('失败任务点「继续交付」后报告不再刷新，也必须收敛为完成', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
+    const failed = taskFixture({
+      task_id: 'task-failed',
+      status: 'failed',
+      progress: 100,
+      archive_path: '/sf/data/local/acli/tmp/data/log_collect/Q2026102701294.zip',
+      upload_mode: 'acli_direct',
+      remote_url: 'http://acli.sangfor.com.cn:5888',
+      ips: ['172.28.25.1'],
+      detail: {},
+    })
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [failed] })
+    // 与接管用例一致：getTask 晚一拍，等 bridge socket 建立后再对账
+    vi.mocked(logCollectApi.getTask).mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      return failed
+    })
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body) => ({
+      ...failed,
+      ...body,
+    }))
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    await flushPromises()
+
+    // 节点侧完成报告：接管前后逐字相同（任务已结束，报告不会再被重写）
+    const frozen = {
+      status: '收集任务已完成！',
+      percent: 100,
+      done: 1,
+      total: 1,
+      node_state: 'completed',
+      archive_path: '/sf/data/local/acli/tmp/data/log_collect/Q2026102701294.zip',
+      upload_state: '发送成功',
+      hosts: [{ ip: '172.28.25.1', status: '收集完成', percent: 100 }],
+      raw: '状态：收集任务已完成！\n总进度：100% - 1/1\n归档状态：发送成功',
+    }
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'progress',
+        status: 'ok',
+        log_data: frozen,
+      }),
+    })
+    await flushPromises()
+
+    // 失败 + 节点已完成 + 包在盘 → 必须给出「继续交付」这个唯一入口
+    const deliver = wrapper.findAll('button').find((item) => item.text() === '继续交付')
+    expect(deliver).toBeTruthy()
+    // 只统计接管动作本身：清掉挂载阶段对账留下的历史记录
+    vi.mocked(logCollectApi.patchTask).mockClear()
+    await deliver!.trigger('click')
+    await flushPromises()
+
+    // 接管后轮询再次读到同一份报告：与接管基线逐字相同
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'progress',
+        status: 'ok',
+        log_data: frozen,
+      }),
+    })
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    await flushPromises()
+
+    const completed = vi
+      .mocked(logCollectApi.patchTask)
+      .mock.calls.filter(([, body]: any) => body?.status === 'completed')
+    expect(completed).toHaveLength(1)
+    expect(wrapper.text()).toContain('该工单已完成日志收集')
+    wrapper.unmount()
+  })
+
+  /**
    * 现场反馈（2026-10-26 22:40）：刷新页面重新登录后接管进行中任务，
    * 只能看到「采集 0%」，表单里的故障场景/时间范围/目标主机全是空默认值，
    * 用户无法确认"这次到底下发了什么"。
