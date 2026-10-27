@@ -208,3 +208,96 @@ async def test_run_marks_failed_when_archive_missing(storage):
 
     assert finished["status"] == "failed"
     assert "平台副本不存在" in finished["error"]
+
+
+# ── 归档文件名契约（5888 只接受 <工单号>.zip）────────────────────────────────
+#
+# 回归护栏：曾用平台内部 task_id（UUID）当 filename，5888 返回 400
+# Invalid filename，导致 P2 段③ 必然失败却只在"代传失败"层面暴露。
+# 因此断言必须落在**服务层实际发出的请求体**上，而不是客户端的入参。
+
+
+def _patch_http_transport(monkeypatch, handler):
+    """把 relay 服务内部 new 出来的 httpx.AsyncClient 换成 MockTransport。"""
+
+    real_client = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        return real_client(transport=httpx.MockTransport(handler), base_url="http://relay")
+
+    monkeypatch.setattr(httpx, "AsyncClient", factory)
+
+
+def _make_task(storage, case_id: str, payload: bytes = b"01234567"):
+    task_id = uuid4()
+    path = storage.object_path(case_id, str(task_id))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    task = SimpleNamespace(
+        task_id=task_id,
+        case_id=case_id,
+        archive_path=f"{case_id}/{task_id}.zip",
+        relay_upload_id=None,
+        relay_chunk_size=None,
+        relay_chunk_total=None,
+        relay_chunk_index=None,
+        relay_restarts=0,
+    )
+    return task, path
+
+
+async def test_run_uses_ticket_number_as_archive_filename(storage, monkeypatch):
+    case_id = "Q2026102700001"
+    task, _ = _make_task(storage, case_id, b"01234567")
+    captured = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/init_upload":
+            captured["init_body"] = request.content
+            return httpx.Response(200, json={"upload_id": "u-1", "chunk_size": CHUNK})
+        if request.url.path == "/upload_chunk":
+            captured["chunk_body"] = request.content
+            return httpx.Response(200, json={"status": "complete"})
+        if request.url.path.startswith("/upload_status/"):
+            # 404 = 会话已被服务端删除 = 归档完成，_await_archive 立即返回
+            return httpx.Response(404, json={"error": "Invalid or expired upload ID"})
+        return httpx.Response(500)
+
+    _patch_http_transport(monkeypatch, handler)
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)), storage, SangforRelayClient("http://relay")
+    )
+    finished = {}
+    service._finish = AsyncMock(
+        side_effect=lambda task_id, status, error=None: finished.update(status=status, error=error)
+    )
+
+    await service.run(task.task_id)
+
+    assert finished["status"] == "success"
+    assert case_id.encode() + b".zip" in captured["init_body"]
+    # 关键否定断言：平台内部 UUID 文件名绝不能再出现
+    assert str(task.task_id).encode() not in captured["init_body"]
+    assert case_id.encode() + b".zip" in captured["chunk_body"]
+
+
+async def test_run_rejects_non_ticket_case_id_before_upload(storage, monkeypatch):
+    task, _ = _make_task(storage, "Q1", b"01234567")
+    called = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        called.append(request.url.path)
+        return httpx.Response(200, json={"upload_id": "u-1", "chunk_size": CHUNK})
+
+    _patch_http_transport(monkeypatch, handler)
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)), storage, SangforRelayClient("http://relay")
+    )
+    service._finish = AsyncMock()
+
+    with pytest.raises(SangforRelayError) as excinfo:
+        await service.run(task.task_id)
+
+    assert "工单号不合法" in str(excinfo.value)
+    # 契约不符时不得先发一轮注定 400 的请求
+    assert called == []
