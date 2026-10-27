@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 import time
 from typing import Any
 from uuid import UUID
@@ -27,6 +28,11 @@ from ..models.log_collect import LogCollectTask
 from .log_collect_storage import LocalLogCollectStorage
 
 RELAY_STATUS_VALUES = ("none", "pending", "running", "success", "failed")
+
+# 5888 归档文件名契约：只接受「工单号 + .zip」。这是服务端硬约束（实测 400
+# Invalid filename），不是平台的命名偏好；缺了它代传在 init_upload 就失败。
+# 注意与归档目录一致：`/sf/log/<工单号>/<工单号>.zip`。
+SANGFOR_ARCHIVE_NAME_RE = re.compile(r"Q\d{13}")
 
 
 class SangforRelayError(Exception):
@@ -181,6 +187,10 @@ class LogCollectRelayService:
         if size <= 0:
             raise SangforRelayError("平台副本为空文件", "LC-TRANSFER-002")
 
+        # 归档名必须由**工单号**构造，不能用平台内部的 task_id（UUID）：
+        # 5888 会直接 400 Invalid filename，而那个错误对排障毫无指向性。
+        archive_name = self.archive_filename(task.case_id)
+
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
             upload_id = (task.relay_upload_id or "").strip()
             chunk_size = int(task.relay_chunk_size or 0)
@@ -197,7 +207,7 @@ class LogCollectRelayService:
                     start_index = int(task.relay_chunk_index or -1) + 1
 
             if not upload_id:
-                upload_id, chunk_size = await self.client.init_upload(client, path.name, size)
+                upload_id, chunk_size = await self.client.init_upload(client, archive_name, size)
                 chunk_total = max(1, math.ceil(size / chunk_size))
                 start_index = 0
                 restarts += 1
@@ -219,7 +229,7 @@ class LogCollectRelayService:
                     upload_id=upload_id,
                     chunk_index=index,
                     chunk_total=chunk_total,
-                    filename=path.name,
+                    filename=archive_name,
                     payload=payload,
                 )
                 # 每块成功后立即持久化：进程崩溃时从这里继续，不重传已完成分片。
@@ -229,6 +239,17 @@ class LogCollectRelayService:
 
             await self._await_archive(client, upload_id)
             await self._finish(task_id, "success")
+
+    @staticmethod
+    def archive_filename(case_id: str | None) -> str:
+        """由工单号构造 5888 归档文件名，并在本地先拦一次契约（避免 400 被吞成笼统失败）。"""
+
+        value = (case_id or "").strip()
+        if not SANGFOR_ARCHIVE_NAME_RE.fullmatch(value):
+            raise SangforRelayError(
+                f"工单号不合法，无法确定归档文件名：{value or '<空>'}", "LC-TRANSFER-001"
+            )
+        return f"{value}.zip"
 
     @staticmethod
     def _read_chunk(path, index: int, chunk_size: int, total: int) -> bytes:
