@@ -678,3 +678,39 @@ func TestParseLsFieldSize(t *testing.T) {
 		}
 	}
 }
+
+// archive_exists 的三种取值必须能区分开：
+//   - true  ：stat 证实包还在（补交付在物理上成立）
+//   - false ：stat 明确说不在（P1 发送成功后插件自删）
+//   - 缺省   ：没探测 / 旧前端 → 前端必须当作"未确认"，不得据此给出补交付入口
+//
+// 用指针而不是 bool 正是为了这个区分：bool 的零值 false 会和"明确不存在"混为一谈，
+// 而这两种情况的处置完全不同（前者提示重新采集，后者提示未确认）。
+func TestLogCollectProgressArchiveExistsJSON(t *testing.T) {
+	yes, no := true, false
+	cases := []struct {
+		name string
+		in   *bool
+		want string
+	}{
+		{"存在", &yes, `"archive_exists":true`},
+		{"明确不存在", &no, `"archive_exists":false`},
+	}
+	for _, c := range cases {
+		b, err := json.Marshal(logCollectProgress{ArchivePath: "/sf/x.zip", ArchiveExists: c.in})
+		if err != nil {
+			t.Fatalf("%s: 序列化失败: %v", c.name, err)
+		}
+		if !strings.Contains(string(b), c.want) {
+			t.Fatalf("%s: 期望包含 %s，实际 %s", c.name, c.want, b)
+		}
+	}
+
+	b, err := json.Marshal(logCollectProgress{ArchivePath: "/sf/x.zip"})
+	if err != nil {
+		t.Fatalf("未探测: 序列化失败: %v", err)
+	}
+	if strings.Contains(string(b), "archive_exists") {
+		t.Fatalf("未探测时不得输出 archive_exists（前端会把 false 误读为已删除）: %s", b)
+	}
+}

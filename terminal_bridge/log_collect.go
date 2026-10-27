@@ -527,8 +527,12 @@ type logCollectProgress struct {
 	// 归一化放在 bridge 侧，避免每个前端各自实现一套字符串匹配。
 	NodeState string `json:"node_state"`
 	// ArchiveSize 是本次探测到的压缩包字节数；0 表示没量到（未生成 / 已被插件删除）。
-	// 纯展示信息，不参与完成判定。
 	ArchiveSize int64 `json:"archive_size,omitempty"`
+	// ArchiveExists 是 stat 的**存在性**结论，必须与 ArchivePath 分开看：
+	// 路径只说明"曾经生成过"，P1 直传成功后插件会立刻删包，报告里却仍带路径
+	// （Q2026102701193，2026-10-27）。用指针是为了区分"明确不存在(false)"与"没探测(缺省)"——
+	// 前端只在明确 true 时才允许"上传到平台"，缺省时一律不提供入口。
+	ArchiveExists *bool `json:"archive_exists,omitempty"`
 }
 
 const (
@@ -632,22 +636,23 @@ func parseLogCollectProgress(raw string) logCollectProgress {
 // 而单命令实现失败时不留下任何可判读信息，只能再猜一轮、再发一版。
 // 所以这里改成「GNU stat → ls -l 解析」，并把每级的 exitCode/stderr 拼成 diag
 // 交给调用方写进 blog：下次现场直接看日志就能定位，不必改代码再发版。
-func probeLogCollectArchiveSize(ctx context.Context, s *SSHSession, rawPath string) (int64, string) {
+func probeLogCollectArchiveSize(ctx context.Context, s *SSHSession, rawPath string) (int64, bool, string) {
 	if s == nil {
-		return 0, "no-session"
+		return 0, false, "no-session"
 	}
 	if strings.TrimSpace(rawPath) == "" {
-		return 0, "empty-path"
+		return 0, false, "empty-path"
 	}
 	path, err := normalizeArchivePath(rawPath)
 	if err != nil {
-		return 0, "path-rejected: " + err.Error()
+		return 0, false, "path-rejected: " + err.Error()
 	}
 	var diags []string
 	// ① GNU coreutils：HCI 节点是 Linux，正常情况走这条
 	if out, code, cmdErr := s.runQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(path))); cmdErr == nil && code == 0 {
-		if size, parseErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64); parseErr == nil && size > 0 {
-			return size, ""
+		// exit 0 本身就是"文件存在"的证据：0 字节包同样存在，不能因 size==0 判不存在
+		if size, parseErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64); parseErr == nil && size >= 0 {
+			return size, true, ""
 		}
 		diags = append(diags, fmt.Sprintf("stat:unparsable %q", truncateForDiag(out, 60)))
 	} else {
@@ -656,13 +661,16 @@ func probeLogCollectArchiveSize(ctx context.Context, s *SSHSession, rawPath stri
 	// ② ls -l 兜底：受限 shell / 裁剪版 busybox 没有 stat 时，第 5 列就是字节数
 	if out, code, cmdErr := s.runQuickCommand(ctx, fmt.Sprintf("ls -l %s", shellQuote(path))); cmdErr == nil && code == 0 {
 		if size, ok := parseLsFieldSize(out); ok {
-			return size, ""
+			return size, true, ""
 		}
+		// ls 成功但解析不出大小：文件确实存在，只是大小未知
 		diags = append(diags, fmt.Sprintf("ls:unparsable %q", truncateForDiag(out, 80)))
+		return 0, true, strings.Join(diags, " | ")
 	} else {
 		diags = append(diags, fmt.Sprintf("ls:exit=%d err=%v", code, cmdErr))
 	}
-	return 0, strings.Join(diags, " | ")
+	// 两级都失败：明确"此刻不存在"，这正是 P1 发送成功后自删的表现
+	return 0, false, strings.Join(diags, " | ")
 }
 
 // parseLsFieldSize 从 `ls -l` 的单行输出里取字节数（第 5 列）。
@@ -991,7 +999,11 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		// 大小是纯展示字段，不参与状态机，因此只补 size。
 		// 诊断信息跟着进度事件一起落库：量不到时必须留下"为什么量不到"。
 		var archiveSizeDiag string
-		progress.ArchiveSize, archiveSizeDiag = probeLogCollectArchiveSize(ctx, s, probePath)
+		var archiveExists bool
+		progress.ArchiveSize, archiveExists, archiveSizeDiag = probeLogCollectArchiveSize(ctx, s, probePath)
+		// 存在性必须跟着进度一起回给前端：判断"能不能补交付"只认这个结论，
+		// 不认报告里的 archive_path（那个字段在包被删后仍然存在）。
+		progress.ArchiveExists = &archiveExists
 		status := "ok"
 		code := ""
 		if err != nil || exitCode != 0 {
@@ -1041,16 +1053,19 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		}
 		output, exitCode, cmdErr := s.runQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(path)))
 		size, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64)
+		// 文件不存在不是"动作失败"：它是补交付的合法结论（P1 发送成功后插件自删）。
+		// 以前这里把 exit 1 当 error 抛出去，用户看到的是 "Process exited with status 1"。
+		exists := cmdErr == nil && exitCode == 0
 		status, code := "ok", ""
-		if cmdErr != nil || exitCode != 0 || parseErr != nil {
-			status, code = "error", ErrTransferArchiveMissing
-		} else {
+		if exists {
 			outcome = "ok"
+		} else {
+			code = ErrTransferArchiveMissing
 		}
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 			Status: status, ExitCode: exitCode, ErrorCode: code,
-			LogData: map[string]any{"path": path, "size": size},
+			LogData: map[string]any{"path": path, "size": size, "exists": exists},
 			Message: firstNonEmpty(errString(cmdErr), errString(parseErr)), TraceID: traceID, CustomUI: cui,
 		})
 		blog("INFO", "log_collect.stat", "日志包大小探测", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
