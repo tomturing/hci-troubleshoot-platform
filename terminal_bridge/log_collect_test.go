@@ -565,7 +565,7 @@ func TestParseLsFieldSize(t *testing.T) {
 		ok     bool
 	}{
 		{"普通文件", "-rw-r--r-- 1 root root 314572800 Oct 27 10:36 /sf/data/local/acli/tmp/data/log_collect/Q1.zip", 314572800, true},
-		{"无组名列", "-rw-r--r-- 1 root 1048576 Oct 27 10:36 /x.zip", 1048576, true},
+		{"文件名含空格", "-rw-r--r-- 1 root root 314572800 Oct 27 10:36 /sf/data/local/acli/tmp/data/log_collect/Q 1.zip", 314572800, true},
 		{"目录统计行", "total 0", 0, false},
 		{"空输出", "", 0, false},
 		{"零字节", "-rw-r--r-- 1 root root 0 Oct 27 10:36 /x.zip", 0, false},
