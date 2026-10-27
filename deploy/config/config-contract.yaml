@@ -49,6 +49,10 @@ helm_equivalents:
   CASE_SERVICE_PORT:
     value_paths: [caseService.port]
     template_env: [SERVICE_PORT]
+  # 日志包分片/成品的落盘根目录：路径必须与挂载点同源，故由 values 驱动。
+  LOG_COLLECT_STORAGE_ROOT:
+    value_paths: [caseService.logCollectStorage.mountPath]
+    template_env: [LOG_COLLECT_STORAGE_ROOT]
   CONVERSATION_SERVICE_PORT:
     value_paths: [conversationService.port]
     template_env: [SERVICE_PORT]
