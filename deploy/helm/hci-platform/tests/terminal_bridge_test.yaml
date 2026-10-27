@@ -50,3 +50,18 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
           value: false
+
+  - it: "SFTP 下载必须显式落在持久卷上"
+    set:
+      terminalBridge.enabled: true
+    asserts:
+      # 未显式指定时，一旦根文件系统只读或 $HOME 不可写，
+      # 下载的取证文件会落到临时目录，Pod 重建即丢。
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HCI_BRIDGE_SFTP_DIR
+            value: /var/lib/terminal-bridge/downloads
+      - matchRegex:
+          path: spec.template.spec.containers[0].volumeMounts[0].mountPath
+          pattern: ^/var/lib/terminal-bridge$

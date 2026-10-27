@@ -14,7 +14,7 @@ import {
   rightWidthRange,
 } from '@/utils/workspaceLayout'
 import { logCollectApi, type ActiveTaskSummary } from '@/api/logCollect'
-import { checkBridgeRunning, checkBridgeBeforeOpen, createBridgeSocket, getBridgeUrl, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, buildVmConsoleOpMessage, parseAgentExecResult, type BridgeStatus, type TerminalWsMessage, type OutputFilterSpec } from '@/api/terminal'
+import { checkBridgeRunning, checkBridgeBeforeOpen, createBridgeSocket, getBridgeUrl, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, buildVmConsoleOpMessage, parseAgentExecResult, buildSftpMessage, parseSftpListPayload, parseSftpTransferPayload, type BridgeStatus, type TerminalWsMessage, type OutputFilterSpec, type SftpEntry, type SftpTransferPayload } from '@/api/terminal'
 import {
   appendExecOutput as appendFilteredExecOutput,
   buildSafeExecResultPayload,
@@ -621,6 +621,34 @@ export const useChatStore = defineStore('chat', () => {
   // bridge 实例号：由握手首包 bridge_hello 的 detail 带回。
   // 日志直传令牌要绑定到"这一台桥"，否则令牌被复制到别的机器也能用。
   const bridgeInstanceId = ref('')
+
+  // === SFTP 文件下载面板状态（SSH 终端下方）===
+  // 语义对齐 Xshell / MobaXterm：文件从远端主机落到 bridge 所在机器，
+  // 不经浏览器中转，因此前端只持有元数据（目录项 / 进度 / 落地路径）。
+  const sftpRemoteDir = ref('')
+  const sftpParentDir = ref('')
+  const sftpEntries = ref<SftpEntry[]>([])
+  const sftpDownloadDir = ref('')
+  const sftpListLoading = ref(false)
+  const sftpListError = ref('')
+  const sftpListTruncated = ref(false)
+  const sftpPanelVisible = ref(false)
+  // 传输状态：存在即表示有一次下载在进行中或刚结束（用于停止按钮与结果展示）
+  const sftpTransfer = ref<{
+    taskId: string
+    remotePath: string
+    phase: SftpTransferPayload['phase']
+    bytes: number
+    totalBytes: number
+    percent: number
+    localPath: string
+    downloadDir: string
+    transport: 'sftp' | 'exec_fallback' | ''
+    status: SftpTransferPayload['status'] | ''
+    errorType: string
+    errorMessage: string
+    sha256: string
+  } | null>(null)
 
   // === Agent 命令执行结果等待队列 ===
   // 用于 waitForExecResult 函数，存储 execId → resolve 回调
@@ -2437,6 +2465,9 @@ export const useChatStore = defineStore('chat', () => {
   /** 清理 SSH WebSocket */
   function cleanupSshWebSocket() {
     clearSshAuthTimer()
+    // 会话断开就清空目录快照：否则重连到另一台主机时，面板会先展示上一台的目录，
+    // 用户误点下载就会把路径发到新主机上去。
+    resetSftpState()
     if (sshWebSocket.value) {
       sshWebSocket.value.onopen = null
       sshWebSocket.value.onmessage = null
@@ -2673,6 +2704,12 @@ export const useChatStore = defineStore('chat', () => {
             pendingVmConsoleCallbacks.delete(vmResult.execId)
             vmCallback.resolve(vmResult)
           }
+        } else if (msg.type === 'sftp_list_result') {
+          handleSftpListResult(msg)
+        } else if (msg.type === 'sftp_transfer_progress') {
+          handleSftpProgress(msg)
+        } else if (msg.type === 'sftp_result') {
+          handleSftpResult(msg)
         }
       }
 
@@ -2997,6 +3034,220 @@ export const useChatStore = defineStore('chat', () => {
       `${command}\n`,
       sshCurrentConfig.value?.host,
     ))
+  }
+
+  // === SFTP 文件下载（SSH 终端下方）===
+
+  /** 目录请求超时：旧版 bridge 不认识 sftp_op 会静默丢弃，不给超时就是无限转圈 */
+  const SFTP_LIST_TIMEOUT = 10000
+  let sftpListTimer: number | null = null
+
+  function clearSftpListTimer() {
+    if (sftpListTimer !== null) {
+      window.clearTimeout(sftpListTimer)
+      sftpListTimer = null
+    }
+  }
+
+  /**
+   * 生成下载任务 ID。
+   *
+   * 由前端生成而非等 bridge 分配：进度与取消都靠它配对，等回包再发取消必然晚一步。
+   */
+  function newSftpTaskId(): string {
+    return `sftp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+  }
+
+  /** 会话键是 caseID@nodeIP，缺了 node_ip 只能靠 bridge 兜底匹配 */
+  function sftpNodeIp(): string | null {
+    return sshCurrentConfig.value?.host || null
+  }
+
+  function resetSftpState() {
+    clearSftpListTimer()
+    sftpRemoteDir.value = ''
+    sftpParentDir.value = ''
+    sftpEntries.value = []
+    sftpDownloadDir.value = ''
+    sftpListError.value = ''
+    sftpListTruncated.value = false
+    sftpListLoading.value = false
+    sftpTransfer.value = null
+  }
+
+  /** 切换面板可见性；首次打开自动列默认目录（由 bridge 解析成远端 home） */
+  async function toggleSftpPanel(visible?: boolean) {
+    const next = typeof visible === 'boolean' ? visible : !sftpPanelVisible.value
+    sftpPanelVisible.value = next
+    if (next && !sftpEntries.value.length && !sftpListLoading.value) {
+      await sftpList('')
+    }
+  }
+
+  /** 列远端目录；path 为空表示让 bridge 给出默认目录 */
+  async function sftpList(remotePath: string) {
+    const socket = sshWebSocket.value
+    const caseId = sshCurrentConfig.value?.caseId || ''
+    if (!socket || sshConnectionState.value !== 'connected' || !caseId) {
+      sftpListError.value = '请先连接 SSH 终端'
+      return
+    }
+    sftpListLoading.value = true
+    sftpListError.value = ''
+    clearSftpListTimer()
+    sftpListTimer = window.setTimeout(() => {
+      sftpListLoading.value = false
+      sftpListError.value = '文件下载请求无响应，请确认 terminal_bridge 已升级到支持 SFTP 下载的版本'
+    }, SFTP_LIST_TIMEOUT)
+    try {
+      socket.send(buildSftpMessage(caseId, 'list', { path: remotePath, nodeIp: sftpNodeIp() }))
+    } catch (e) {
+      clearSftpListTimer()
+      sftpListLoading.value = false
+      sftpListError.value = `目录请求发送失败：${e instanceof Error ? e.message : String(e)}`
+    }
+  }
+
+  /** 下载远端文件到 bridge 所在机器（不经过浏览器） */
+  function sftpDownload(remotePath: string) {
+    const socket = sshWebSocket.value
+    const caseId = sshCurrentConfig.value?.caseId || ''
+    if (!socket || sshConnectionState.value !== 'connected' || !caseId) {
+      sftpListError.value = '请先连接 SSH 终端'
+      return
+    }
+    const path = remotePath.trim()
+    if (!path) {
+      sftpListError.value = '请输入远端文件绝对路径'
+      return
+    }
+    const taskId = newSftpTaskId()
+    sftpTransfer.value = {
+      taskId,
+      remotePath: path,
+      phase: 'preparing',
+      bytes: 0,
+      totalBytes: 0,
+      percent: 0,
+      localPath: '',
+      downloadDir: sftpDownloadDir.value,
+      transport: '',
+      status: '',
+      errorType: '',
+      errorMessage: '',
+      sha256: '',
+    }
+    devLog('SFTP', '开始下载', { remotePath: path, taskId })
+    try {
+      socket.send(buildSftpMessage(caseId, 'download', { path, taskId, nodeIp: sftpNodeIp() }))
+    } catch (e) {
+      sftpTransfer.value = {
+        ...sftpTransfer.value,
+        phase: 'done',
+        status: 'error',
+        errorMessage: `下载请求发送失败：${e instanceof Error ? e.message : String(e)}`,
+      }
+    }
+  }
+
+  /** 取消当前下载；已下载的 .part 由 bridge 保留，重试时自动续传 */
+  function sftpCancelDownload() {
+    const current = sftpTransfer.value
+    const socket = sshWebSocket.value
+    const caseId = sshCurrentConfig.value?.caseId || ''
+    if (!current || current.phase === 'done' || !socket || !caseId) return
+    devLog('SFTP', '取消下载', { taskId: current.taskId })
+    socket.send(buildSftpMessage(caseId, 'cancel', { taskId: current.taskId, nodeIp: sftpNodeIp() }))
+  }
+
+  /** sftp_list_result：目录列表回包 */
+  function handleSftpListResult(msg: TerminalWsMessage) {
+    clearSftpListTimer()
+    sftpListLoading.value = false
+    const payload = parseSftpListPayload(msg)
+    if (!payload) {
+      // 保留上一次列表：结构异常时白屏比旧数据更糟
+      sftpListError.value = '目录回包格式异常，已保留上一次列表'
+      return
+    }
+    sftpRemoteDir.value = payload.path
+    sftpParentDir.value = payload.parent
+    sftpEntries.value = payload.entries
+    sftpListTruncated.value = payload.truncated
+    if (payload.download_dir) {
+      sftpDownloadDir.value = payload.download_dir
+    }
+    sftpListError.value = ''
+  }
+
+  /** sftp_transfer_progress：下载进度（只含元数据，不含文件字节） */
+  function handleSftpProgress(msg: TerminalWsMessage) {
+    const payload = parseSftpTransferPayload(msg)
+    if (!payload) return
+    const current = sftpTransfer.value
+    // 迟到消息防串台：只接受当前任务的进度，旧任务的残留进度不得污染新任务
+    if (current && payload.task_id && current.taskId && payload.task_id !== current.taskId) {
+      devLog('SFTP', '忽略非当前任务的进度', { taskId: payload.task_id })
+      return
+    }
+    const phase = payload.phase
+    const finished = phase === 'done'
+    sftpTransfer.value = {
+      taskId: payload.task_id || current?.taskId || '',
+      remotePath: payload.remote_path || current?.remotePath || '',
+      phase,
+      bytes: payload.bytes,
+      totalBytes: payload.total_bytes || current?.totalBytes || 0,
+      percent: Math.max(0, Math.min(100, payload.percent)),
+      localPath: payload.local_path || current?.localPath || '',
+      downloadDir: payload.download_dir || current?.downloadDir || sftpDownloadDir.value,
+      transport: payload.transport || current?.transport || '',
+      status: payload.status || (finished ? current?.status || '' : ''),
+      errorType: current?.errorType || '',
+      errorMessage: current?.errorMessage || '',
+      sha256: payload.sha256 || current?.sha256 || '',
+    }
+    if (finished && payload.download_dir) {
+      sftpDownloadDir.value = payload.download_dir
+    }
+  }
+
+  /** sftp_result：动作终态；list/download/cancel 的错误都从这里回来 */
+  function handleSftpResult(msg: TerminalWsMessage) {
+    const action = msg.sftp_action || ''
+    if (action === 'list') {
+      clearSftpListTimer()
+      sftpListLoading.value = false
+      sftpListError.value = msg.message || '读取远端目录失败'
+      return
+    }
+    if (action !== 'download') {
+      // cancel 的回执只用来停止“取消中”动画，终态以 download 的 sftp_result 为准
+      return
+    }
+    const payload = parseSftpTransferPayload(msg)
+    const current = sftpTransfer.value
+    const errorType = msg.error_type || ''
+    const cancelled = errorType === 'cancelled' || payload?.status === 'cancelled'
+    sftpTransfer.value = {
+      taskId: payload?.task_id || msg.exec_id || current?.taskId || '',
+      remotePath: payload?.remote_path || current?.remotePath || '',
+      phase: 'done',
+      bytes: payload?.bytes ?? current?.bytes ?? 0,
+      totalBytes: payload?.total_bytes || current?.totalBytes || 0,
+      percent: cancelled ? current?.percent ?? 0 : payload?.percent ?? current?.percent ?? 100,
+      localPath: payload?.local_path || current?.localPath || '',
+      downloadDir: payload?.download_dir || current?.downloadDir || sftpDownloadDir.value,
+      transport: payload?.transport || current?.transport || '',
+      status: errorType ? (cancelled ? 'cancelled' : 'error') : payload?.status || 'ok',
+      errorType,
+      errorMessage: errorType ? msg.message || '下载失败' : '',
+      sha256: payload?.sha256 || current?.sha256 || '',
+    }
+    if (payload?.download_dir) {
+      sftpDownloadDir.value = payload.download_dir
+    }
+    devLog('SFTP', '下载终态', { status: sftpTransfer.value?.status, errorType, remotePath: payload?.remote_path })
   }
 
   /** 采集环境数据（SSH 连接成功后自动调用或手动触发） */
@@ -3999,6 +4250,20 @@ export const useChatStore = defineStore('chat', () => {
     forwardBridgeLog,
     importBridgeLogsToCase,
     sendSSHCommand,
+    // SFTP 文件下载（SSH 终端下方）
+    sftpPanelVisible,
+    sftpRemoteDir,
+    sftpParentDir,
+    sftpEntries,
+    sftpDownloadDir,
+    sftpListLoading,
+    sftpListError,
+    sftpListTruncated,
+    sftpTransfer,
+    toggleSftpPanel,
+    sftpList,
+    sftpDownload,
+    sftpCancelDownload,
     // Agent 模式：高风险操作确认
     pendingConfirm,
     handleConfirmResult,

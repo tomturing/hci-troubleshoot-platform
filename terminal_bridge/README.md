@@ -152,6 +152,8 @@ terminalBridge:
 | — | `HCI_BRIDGE_DELIVERY_CONCURRENCY` | 任务内分片并发（1–4），默认按可用内存/CPU 自动决策 |
 | — | `HCI_BRIDGE_DELIVERY_TASKS` | 跨任务并发（1–2），默认 1；高配机才允许 2 |
 | — | `HCI_BRIDGE_SSH_KEEPALIVE_SECONDS` | SSH 应用层保活探测间隔（秒），默认 30；设为 `0` 关闭探测，仅保留 TCP keepalive |
+| — | `HCI_BRIDGE_SFTP_DIR` | 文件下载的**本机落地目录**，优先级最高；未设置时按 `$HOME/Downloads/hci-sftp` → `/var/lib/terminal-bridge/downloads` → `$TMPDIR/hci-sftp` 探测可写项 |
+| — | `HCI_BRIDGE_SFTP_MAX_BYTES` | 单文件下载上限（字节），默认 5 GiB；超过直接报 `too_large`，不静默截断 |
 | — | `PLATFORM_ARTIFACT_URL` | 虚拟机控制台截图 PPM 直传的制品服务基址（conversation-service）；**未配置时 `capture_baseline` fail-closed 返回 `artifact_upload_disabled`，不降级 base64 over WS** |
 | — | `PLATFORM_INTERNAL_API_TOKEN` | PPM 直传的内部 Bearer Token（`INTERNAL_API_TOKEN` 对端校验） |
 
@@ -267,6 +269,11 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | `exec.rejected` | ERROR | 命令被拒绝（缺 `exec_id`/`command` 等，含 `error_type`） |
 | `exec.session_missing` | ERROR | SSH 会话不存在 |
 | `log_collect.session_missing` | ERROR | 日志收集动作找不到 SSH 会话；含 `requested_key`、`active_sessions`、`session_keys` 用于定性 |
+| `sftp.list` / `sftp.list_failed` | INFO/ERROR | 远端目录读取成功/失败（含 `path`、`entries`、`download_dir`） |
+| `sftp.download_start` / `sftp.download_done` | INFO | 开始/完成下载：含 `remote_path`、`local_path`、`size`、`resume_from`、`transport`、`sha256` |
+| `sftp.download_failed` / `sftp.download_cancelled` | ERROR/INFO | 下载失败（`error_type`）/ 用户取消（保留 `.part` 供续传） |
+| `sftp.session_missing` / `sftp.unavailable` | ERROR | 会话不存在 / 远端未启用 SFTP subsystem（此时改用 `sftp.exec_fallback` 下载） |
+| `sftp.tasks_cancelled_on_disconnect` | INFO | WebSocket 断开时回收本连接发起的下载任务数 |
 | `log.dropped` | WARN | 回采队列溢出等导致的日志丢弃（限频上报） |
 | `log_upload.configured` | INFO | 已收到直传凭据，直传通道启用（含 `endpoint`/`instance`） |
 | `log_upload.token_received` | INFO | 收到前端下发的直传令牌（只记长度，不记内容） |
@@ -310,6 +317,7 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | `ssh_exec_command` | `command, exec_id, case_id, trace_id?` | PTY marker 通道执行 |
 | `ssh_exec_process` | `command, exec_id, case_id, node_ip?, container?, trace_id?` | 独立 SSH Session 执行 |
 | `vm_console_op` | `operation, capture_id, host_node_id, vm_id, exec_id, case_id, node_ip, timeout?, trace_id?` | 虚拟机控制台截图固定操作（无自由文本 command）；`operation` 仅 `capture_baseline` / `wake_down_key`，入口严格校验，非法输入 fail-closed |
+| `sftp_op` | `sftp_action(list\|download\|cancel), sftp_path?, exec_id?, case_id, node_ip?, trace_id?` | 文件下载：`list` 时空 `sftp_path` 表示取登录用户 home；`download`/`cancel` 用 `exec_id` 作为任务 ID。**刻意没有本地落点字段** |
 | `resume` | `case_id` | 重放近期结构化日志 |
 | `ssh_disconnect` | `case_id, node_ip?` | 断开会话 |
 | `bridge_log_token` | `case_id, token, endpoint` | 下发日志直传凭据（短期、绑定工单与实例）；bridge 回 `bridge_log_token_ack` |
@@ -328,6 +336,21 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | `exec_stdout` / `exec_stderr` / `exec_result` | Agent 命令执行生命周期和最终结果 |
 | `vm_console_result` | 虚拟机控制台固定操作元数据结果（`capture_id`、`operation`、`exit_code`、`sha256`、`size_bytes`、`upload_status`、`error_type`、`duration_ms`、`timed_out`）；只含元数据，PPM 原图经 HTTP 直传制品服务 |
 | `bridge_log` | 带 `case_id`、`trace_id`、节点和事件标签的结构化回采日志 |
+| `sftp_list_result` | 目录列表：`sftp_data{path, parent, download_dir, entries[], truncated}` |
+| `sftp_transfer_progress` | 下载进度：`sftp_data{task_id, phase(preparing\|downloading\|done), bytes, total_bytes, percent, transport, status, local_path, sha256, download_dir}`；只含元数据，文件字节不经 WebSocket |
+| `sftp_result` | 动作终态：`error_type` + `message` + 可选 `sftp_data`（成功时 `status=ok`，已存在同大小文件时 `exists`，取消时 `cancelled`） |
+
+### 文件下载通道（`sftp_op`）
+
+设计依据 [SSH 终端 SFTP 文件下载方案](../docs/solution/custom-ui/events/2026-10-27-SSH终端SFTP文件下载方案.md)：
+
+- 文件从远端主机**直接**落到本进程所在机器（桌面模式=工程师本机，集群模式=Pod 持久卷），不经浏览器、不经平台存储。
+- 复用已建立的 SSH 连接开 SFTP subsystem（会话内懒加载缓存），不做二次认证；下载在独立 goroutine 中执行，不阻塞交互式 shell。
+- **本地落点由 Bridge 决定**：桌面模式 Origin 可为 `*`，接受前端传入的本地绝对路径等于把“任意文件写入”开放给所有网页。
+- 文件名一律清洗（路径穿越、控制字符、Windows 保留名 CON/NUL/COM1、结尾点空格、超长截断保留扩展名）；同名文件不覆盖（同大小幂等跳过，不同大小加 `-2`/`-3` 后缀）。
+- 一致性：写 `<name>.part` → 校验大小 → 原子 rename；续传时对已有片段重新摘要，最终回 `sha256`。
+- SFTP subsystem 不可用时降级为 exec 通道 `tail -c +N`（此时目录浏览不可用，只能用路径直下）。
+- 治理：全局并发 2、单文件上限 5 GiB、进度节流 200 ms、列表上限 2000 项、WebSocket 断开即回收任务。
 
 ### 虚拟机控制台截图通道（`vm_console_op`）
 

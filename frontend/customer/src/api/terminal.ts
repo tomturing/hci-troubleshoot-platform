@@ -198,6 +198,9 @@ export interface TerminalWsMessage {
   | 'acli_sync_progress' // acli 检查/安装进度反馈
   | 'acli_sync_result'   // acli 检查/安装最终结果
   | 'ssh_input_rejected' // 输入无法路由到 SSH 会话（bridge 侧已留痕，前端提示用户）
+  | 'sftp_list_result'      // SFTP 目录列表结果
+  | 'sftp_transfer_progress' // SFTP 下载进度（不含文件字节）
+  | 'sftp_result'           // SFTP 动作终态（成功/失败/取消）
   case_id?: string
   output?: string
   message?: string
@@ -236,6 +239,138 @@ export interface TerminalWsMessage {
   custom_ui?: string
   node_ip?: string
   extra?: Record<string, unknown>
+  // SFTP 专用字段：字节不经 WebSocket，这里只有目录项/进度/落地路径等元数据
+  sftp_action?: SftpAction
+  sftp_data?: SftpListPayload | SftpTransferPayload
+}
+
+/** SFTP 面板支持的动作 */
+export type SftpAction = 'list' | 'download' | 'cancel'
+
+/** 远端目录项 */
+export interface SftpEntry {
+  name: string
+  path: string
+  is_dir: boolean
+  size: number
+  mod_time?: string
+  mode?: string
+}
+
+export interface SftpListPayload {
+  path: string
+  /** 上级目录；根目录为空串 */
+  parent: string
+  /** 本机落地目录：本功能唯一的“交付凭据”，必须展示给用户 */
+  download_dir: string
+  entries: SftpEntry[]
+  truncated: boolean
+}
+
+export interface SftpTransferPayload {
+  task_id: string
+  phase: 'preparing' | 'downloading' | 'done'
+  remote_path: string
+  local_path?: string
+  bytes: number
+  total_bytes: number
+  percent: number
+  /** sftp = 走 SFTP 子系统；exec_fallback = 子系统不可用时改走 tail 流 */
+  transport?: 'sftp' | 'exec_fallback'
+  sha256?: string
+  status?: 'ok' | 'error' | 'cancelled' | 'exists'
+  download_dir?: string
+  duration_ms?: number
+}
+
+export interface SftpMessageOptions {
+  /** 远端绝对路径（list 时为目录，download 时为文件） */
+  path?: string
+  /** 目标节点 IP：会话键是 caseID@nodeIP，缺了只能靠兜底匹配 */
+  nodeIp?: string | null
+  /** 下载任务 ID（与 exec_id 同一字段，用于进度/取消配对） */
+  taskId?: string
+  traceId?: string
+}
+
+/**
+ * 构建 sftp_op 消息。
+ *
+ * 刻意不携带本地绝对路径：落盘位置由 Bridge 决定（桌面模式下任意网页都能连
+ * ws://localhost:9999，允许前端指定路径等于把“任意文件写”开放出去）。
+ */
+export function buildSftpMessage(caseId: string, action: SftpAction, options: SftpMessageOptions = {}): string {
+  return JSON.stringify({
+    type: 'sftp_op',
+    case_id: caseId,
+    exec_id: options.taskId || undefined,
+    sftp_action: action,
+    sftp_path: options.path || undefined,
+    node_ip: options.nodeIp || undefined,
+    trace_id: options.traceId || undefined,
+  })
+}
+
+function asNumber(value: unknown, fallback = 0): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
+}
+
+/** 解析 sftp_list_result；结构不合法返回 null（调用方保留旧列表，不白屏） */
+export function parseSftpListPayload(message: unknown): SftpListPayload | null {
+  if (typeof message !== 'object' || message === null) return null
+  const raw = (message as Record<string, unknown>).sftp_data
+  if (typeof raw !== 'object' || raw === null) return null
+  const data = raw as Record<string, unknown>
+  if (!Array.isArray(data.entries)) return null
+
+  const entries: SftpEntry[] = []
+  for (const item of data.entries) {
+    if (typeof item !== 'object' || item === null) continue
+    const entry = item as Record<string, unknown>
+    if (typeof entry.name !== 'string' || typeof entry.path !== 'string') continue
+    entries.push({
+      name: entry.name,
+      path: entry.path,
+      is_dir: entry.is_dir === true,
+      size: asNumber(entry.size),
+      mod_time: typeof entry.mod_time === 'string' ? entry.mod_time : undefined,
+      mode: typeof entry.mode === 'string' ? entry.mode : undefined,
+    })
+  }
+
+  return {
+    path: typeof data.path === 'string' ? data.path : '',
+    parent: typeof data.parent === 'string' ? data.parent : '',
+    download_dir: typeof data.download_dir === 'string' ? data.download_dir : '',
+    entries,
+    truncated: data.truncated === true,
+  }
+}
+
+/** 解析 sftp_transfer_progress / sftp_result 的结构化负载 */
+export function parseSftpTransferPayload(message: unknown): SftpTransferPayload | null {
+  if (typeof message !== 'object' || message === null) return null
+  const raw = (message as Record<string, unknown>).sftp_data
+  if (typeof raw !== 'object' || raw === null) return null
+  const data = raw as Record<string, unknown>
+  const phase = data.phase
+  if (phase !== 'preparing' && phase !== 'downloading' && phase !== 'done') return null
+
+  const status = data.status
+  return {
+    task_id: typeof data.task_id === 'string' ? data.task_id : '',
+    phase,
+    remote_path: typeof data.remote_path === 'string' ? data.remote_path : '',
+    local_path: typeof data.local_path === 'string' ? data.local_path : undefined,
+    bytes: asNumber(data.bytes),
+    total_bytes: asNumber(data.total_bytes),
+    percent: asNumber(data.percent),
+    transport: data.transport === 'sftp' || data.transport === 'exec_fallback' ? data.transport : undefined,
+    sha256: typeof data.sha256 === 'string' ? data.sha256 : undefined,
+    status: status === 'ok' || status === 'error' || status === 'cancelled' || status === 'exists' ? status : undefined,
+    download_dir: typeof data.download_dir === 'string' ? data.download_dir : undefined,
+    duration_ms: typeof data.duration_ms === 'number' ? data.duration_ms : undefined,
+  }
 }
 
 export interface OutputFilterSpec {

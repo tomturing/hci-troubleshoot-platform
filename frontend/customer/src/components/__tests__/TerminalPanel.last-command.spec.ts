@@ -124,13 +124,20 @@ function mountPanel() {
         ElOption: passthrough('ElOption'),
         ElTooltip: passthrough('ElTooltip'),
         ElIcon: passthrough('ElIcon', 'i'),
+        // 终端下方的 SftpPanel 用了进度条；不 stub 会让 Vue 每次挂载都刷
+        // 「Failed to resolve component: el-progress」，把真实解析失败混进噪音里。
+        ElProgress: passthrough('ElProgress', 'div'),
       },
     },
   })
 }
 
 const fieldValue = (wrapper: any) =>
-  (wrapper.find('textarea.composer-field-stub').element as HTMLTextAreaElement).value
+  (composerField(wrapper).element as HTMLTextAreaElement).value
+
+// 限缩到 .panel-composer 内：终端下方的 SFTP 面板也用 el-input，
+// 全局找 textarea 会先命中它的目录/路径输入框。
+const composerField = (wrapper: any) => wrapper.find('.panel-composer textarea.composer-field-stub')
 
 function findLink(wrapper: any, text: string) {
   return wrapper.findAll('a.link-stub').find((link: any) => link.text() === text)
@@ -162,6 +169,21 @@ describe('TerminalPanel「上条命令」', () => {
       sshTerminalOutputEvent: '',
       sshTerminalNotice: null,
       sshCommandConsumer: 'terminal',
+      // SFTP 面板：已连接时 TerminalPanel 会渲染 SftpPanel，store mock 需覆盖其依赖状态
+      // （默认收起：本用例集不关心文件下载，不展开就不发任何 sftp_op 请求）
+      sftpPanelVisible: false,
+      sftpRemoteDir: '',
+      sftpParentDir: '',
+      sftpEntries: [],
+      sftpDownloadDir: '',
+      sftpListLoading: false,
+      sftpListError: '',
+      sftpListTruncated: false,
+      sftpTransfer: null,
+      toggleSftpPanel: vi.fn(),
+      sftpList: vi.fn(),
+      sftpDownload: vi.fn(),
+      sftpCancelDownload: vi.fn(),
     })
   })
 
@@ -179,7 +201,7 @@ describe('TerminalPanel「上条命令」', () => {
     const wrapper = mountPanel()
     await flushPromises()
 
-    const field = wrapper.find('textarea.composer-field-stub')
+    const field = composerField(wrapper)
     await field.setValue('acli log_collect progress')
     await field.trigger('keydown', { key: 'Enter' })
 
@@ -201,7 +223,7 @@ describe('TerminalPanel「上条命令」', () => {
     const wrapper = mountPanel()
     await flushPromises()
 
-    const field = wrapper.find('textarea.composer-field-stub')
+    const field = composerField(wrapper)
     await field.setValue('acli log_collect status')
     await field.trigger('keydown', { key: 'Enter' })
     await field.setValue('acli log_collect progress')
@@ -216,7 +238,7 @@ describe('TerminalPanel「上条命令」', () => {
     const wrapper = mountPanel()
     await flushPromises()
 
-    const field = wrapper.find('textarea.composer-field-stub')
+    const field = composerField(wrapper)
     await field.setValue('rm -rf /sf/data/local/tmp')
     await field.trigger('keydown', { key: 'Enter' })
     expect(findLink(wrapper, '上条命令')).toBeTruthy()

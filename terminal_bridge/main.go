@@ -400,6 +400,12 @@ type InMessage struct {
 	// JobID 供 delivery_status / resume / cancel 定位作业（作业化后前端不再等待长任务）。
 	JobID string `json:"job_id,omitempty"`
 
+	// ── sftp_op（远端文件下载）专用字段 ──
+	// 只传动作与远端路径：本地落点由 bridge 自行决定，绝不接受浏览器指定的绝对路径
+	// （桌面模式 Origin=*，任意页面都能连 ws://localhost:9999）。
+	SftpAction string `json:"sftp_action,omitempty"` // list | download | cancel
+	SftpPath   string `json:"sftp_path,omitempty"`   // 远端绝对路径
+
 	// ── WebSocket 保活（ping/pong）专用字段 ──
 	Pong int64 `json:"pong,omitempty"` // 客户端回复心跳时间戳（回显服务端 ping 值）
 
@@ -487,6 +493,11 @@ type OutMessage struct {
 	ErrorLayer     string `json:"error_layer,omitempty"`
 	ErrorOwner     string `json:"error_owner,omitempty"`
 	ErrorRetryable string `json:"error_retryable,omitempty"`
+
+	// ── sftp_list_result / sftp_transfer_progress / sftp_result 专用字段 ──
+	// 字节不经 WebSocket：这里只有目录项、进度与落地路径等元数据。
+	SftpAction string `json:"sftp_action,omitempty"`
+	SftpData   any    `json:"sftp_data,omitempty"`
 
 	// ── WebSocket 保活（ping/pong）专用字段 ──
 	Ping int64 `json:"ping,omitempty"` // 服务端发送心跳时间戳（Unix毫秒），客户端需回复 pong
@@ -622,6 +633,10 @@ type SSHSession struct {
 	// 事后无法回答"谁建的、活了多久、被谁销毁"（2026-10-27 现场教训）。
 	ownerConn string
 	createdAt time.Time
+	// sftp 是懒加载的只读 SFTP 通道：与交互式 shell 共用同一条 SSH 连接，
+	// 但走独立 channel，互不阻塞。由 sftpMu 保护，close() 时一并回收。
+	sftpMu sync.Mutex
+	sftp   sftpRemote
 }
 
 func isSimulationLeaseCredential(msg InMessage) bool {
@@ -1924,6 +1939,16 @@ func (s *SSHSession) close() {
 	client := s.client
 	s.client = nil
 	s.mu.Unlock()
+
+	// SFTP 通道必须先于 SSH 连接关闭：它的生命周期挂在同一条连接上，
+	// 反过来关会让 sftp.Client 在已失效的 transport 上等超时。
+	s.sftpMu.Lock()
+	remote := s.sftp
+	s.sftp = nil
+	s.sftpMu.Unlock()
+	if remote != nil {
+		_ = remote.Close()
+	}
 
 	if stdin != nil {
 		_ = stdin.Close()
@@ -4116,12 +4141,17 @@ type Bridge struct {
 	sessions map[string]*SSHSession // key: caseID@nodeIP
 	// 保存每个 caseID 最近一次 ssh_connect 的认证信息，用于自动连接新节点
 	lastAuth map[string]InMessage // key: caseID
+	// sftpTasks 登记进行中的文件下载任务（key: caseID|taskID），
+	// 用于取消、去重与并发上限；由 sftpTasksMu 保护。
+	sftpTasksMu sync.Mutex
+	sftpTasks   map[string]*sftpTask
 }
 
 func newBridge() *Bridge {
 	return &Bridge{
-		sessions: make(map[string]*SSHSession),
-		lastAuth: make(map[string]InMessage),
+		sessions:  make(map[string]*SSHSession),
+		lastAuth:  make(map[string]InMessage),
+		sftpTasks: make(map[string]*sftpTask),
 	}
 }
 
@@ -4578,6 +4608,12 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 		websocketWriteLocks.Delete(ws)
 		// 浏览器断开后立即清理凭据缓存，缩短密码/私钥在内存中的生命周期。
 		b.clearLastAuth(sub.caseID)
+		// 本连接发起的下载一并取消：浏览器都关了还继续拉完整个文件，白占客户带宽。
+		if cancelled := b.cancelSftpTasksForConn(connID); cancelled > 0 {
+			blog("INFO", "sftp.tasks_cancelled_on_disconnect", "连接断开，已取消未完成的下载任务", "", sub.caseID, "", cui, map[string]any{
+				"conn_id": connID, "cancelled": cancelled,
+			})
+		}
 	}()
 
 	// activeKey 记录本连接最近一次 ssh_connect 建立的会话键（含 @nodeIP）。
@@ -5044,6 +5080,10 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 
 		case "log_collect":
 			go b.handleLogCollect(ws, msg, cui)
+
+		case "sftp_op":
+			// 下载在独立 goroutine 里跑：一个 5 GiB 的流不能把交互式 shell 的消息循环堵住。
+			go b.handleSftpOp(ws, msg, cui, connID)
 		}
 	}
 }
@@ -5148,6 +5188,8 @@ var (
 		SshConnectionErrors uint64
 		VmConsoleOpsTotal   uint64
 		VmConsoleOpErrors   uint64
+		SftpDownloadsTotal  uint64
+		SftpDownloadErrors  uint64
 	}{}
 	activeWebSockets int64
 )
@@ -5201,6 +5243,14 @@ bridge_vm_console_ops_total %d
 # TYPE bridge_vm_console_op_errors_total counter
 bridge_vm_console_op_errors_total %d
 
+# HELP bridge_sftp_downloads_total Total remote file downloads started via SFTP panel
+# TYPE bridge_sftp_downloads_total counter
+bridge_sftp_downloads_total %d
+
+# HELP bridge_sftp_download_errors_total Total remote file downloads that ended in error
+# TYPE bridge_sftp_download_errors_total counter
+bridge_sftp_download_errors_total %d
+
 # HELP bridge_process_up Whether the terminal_bridge process is serving requests
 # TYPE bridge_process_up gauge
 bridge_process_up 1
@@ -5243,6 +5293,8 @@ bridge_log_file_bytes %d
 		atomic.LoadUint64(&promMetrics.SshConnectionErrors),
 		atomic.LoadUint64(&promMetrics.VmConsoleOpsTotal),
 		atomic.LoadUint64(&promMetrics.VmConsoleOpErrors),
+		atomic.LoadUint64(&promMetrics.SftpDownloadsTotal),
+		atomic.LoadUint64(&promMetrics.SftpDownloadErrors),
 		prometheusLabelValue(getVersion()),
 		prometheusLabelValue(CommitID),
 		prometheusLabelValue(config.Mode),

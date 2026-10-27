@@ -47,6 +47,11 @@ spec:
               value: {{ .Values.terminalBridge.allowedOrigins | quote }}
             - name: HCI_BRIDGE_LOG_DIR
               value: "/var/lib/terminal-bridge"
+            # SFTP 文件下载的本机落地目录：显式钉在持久卷上。
+            # 集群模式下 Pod 为非 root 且根文件系统只读，靠自动探测也能落到这里，
+            # 但显式指定可保证 Pod 重建后已下载的取证文件不会因卷挂载路径变化而丢失。
+            - name: HCI_BRIDGE_SFTP_DIR
+              value: "/var/lib/terminal-bridge/downloads"
             - name: HCI_BRIDGE_LOG_MAX_BYTES
               value: {{ .Values.terminalBridge.logFileMaxBytes | quote }}
             - name: HCI_BRIDGE_LOG_LEVEL
