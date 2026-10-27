@@ -34,13 +34,23 @@ def _request_context(request: Request) -> dict[str, str]:
 
 
 def _error_response(code: str, message: str, status: int, context: dict[str, str]) -> JSONResponse:
-    """生成统一格式的错误响应"""
+    """生成统一格式的错误响应。
+
+    ``request_id`` 同时放进 body 与响应头：前端只拿到错误对象时也能把编号展示给
+    用户，运维凭编号可在日志中定位到唯一一条记录，避免"500 + 请稍后重试"无法追查。
+    """
     headers = {"X-Request-ID": context["request_id"]}
     if context.get("trace_id"):
         headers["X-Trace-Id"] = context["trace_id"]
     return JSONResponse(
         status_code=status,
-        content={"error": {"code": code, "message": message}},
+        content={
+            "error": {
+                "code": code,
+                "message": message,
+                "request_id": context["request_id"],
+            }
+        },
         headers=headers,
     )
 
@@ -118,9 +128,12 @@ def register_exception_handlers(app: FastAPI) -> None:
             traceback=traceback.format_exc(),
             **context,
         )
+        # 未知异常无法诚实地映射成"具体原因"（乱猜会误导排障），但至少要给出
+        # "哪个请求、用哪个编号去查"：裸的「服务内部错误，请稍后重试」在现场等于没有信息。
         return _error_response(
             ErrorCode.INTERNAL_ERROR.value,
-            "服务内部错误，请稍后重试",
+            f"服务内部错误（{context['method']} {context['path']}，请求编号 {context['request_id']}）。"
+            "请稍后重试；若持续失败，请把该请求编号提供给管理员定位。",
             500,
             context,
         )

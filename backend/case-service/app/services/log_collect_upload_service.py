@@ -27,6 +27,8 @@ from ..repositories.log_collect_repo import LogCollectTaskRepository
 from .log_collect_storage import (
     ArchiveTooLargeError,
     LocalLogCollectStorage,
+    LogCollectStorageInsufficientError,
+    LogCollectStorageUnavailableError,
     PartHashMismatchError,
     PartMissingError,
     PartSizeMismatchError,
@@ -135,6 +137,16 @@ class LogCollectUploadService:
             raise ArchiveSizeExceededError(
                 f"日志包大小 {total_size} 超过平台上限 {self.max_archive_bytes}"
             )
+
+        # 合并阶段要在分片之外再写一份等大的 .tmp，峰值约 2 倍包体。
+        # 在这里先算清楚，容量不足时直接给出"需要/可用"的具体数字，
+        # 而不是等写完一半再抛 ENOSPC 变成未知 500。
+        try:
+            self.storage.check_capacity(total_size * 2)
+        except LogCollectStorageInsufficientError as exc:
+            raise LogCollectUploadError(str(exc), code="LC-PLATFORM-008", status=503) from exc
+        except LogCollectStorageUnavailableError as exc:
+            raise LogCollectUploadError(str(exc), code="LC-PLATFORM-007", status=503) from exc
 
         upload_id = str(task.task_id)
         meta = self.storage.read_meta(upload_id)
@@ -292,6 +304,11 @@ class LogCollectUploadService:
             raise LogCollectUploadError(str(exc), code="LC-TRANSFER-003", status=409) from exc
         except ArchiveTooLargeError as exc:
             raise ArchiveSizeExceededError(str(exc)) from exc
+        except LogCollectStorageInsufficientError as exc:
+            # 合并过程中被写满（init 时的预算被其它并发上传吃掉）：同样是容量问题。
+            raise LogCollectUploadError(str(exc), code="LC-PLATFORM-008", status=503) from exc
+        except LogCollectStorageUnavailableError as exc:
+            raise LogCollectUploadError(str(exc), code="LC-PLATFORM-007", status=503) from exc
 
         if declared_size is not None and declared_size != size:
             await self.storage.delete_multipart(upload_id)

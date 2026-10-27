@@ -14,9 +14,12 @@
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import hashlib
 import json
 import os
+import shutil
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -46,6 +49,49 @@ class ArchiveTooLargeError(Exception):
     """合并后大小超过上限。"""
 
 
+def format_bytes(value: int) -> str:
+    """人类可读的字节数（错误文案用，保留 1 位小数）。"""
+
+    size = float(max(value, 0))
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024:
+            return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
+class LogCollectStorageUnavailableError(Exception):
+    """存储根目录不可用（无法创建或不可写）。
+
+    必须是可定因异常：文案里带目录、运行用户、系统原因，
+    否则调用方只能把一个裸 ``PermissionError`` 变成 500，现场无从下手。
+    """
+
+    def __init__(self, root: Path, exc: OSError):
+        self.root = root
+        self.reason = exc.strerror or str(exc) or type(exc).__name__
+        self.uid = os.getuid()
+        super().__init__(
+            f"日志存储目录不可写：{root}（运行用户 uid={self.uid}，原因：{self.reason}）。"
+            "平台需要该目录保存日志包分片与成品；请确认容器已挂载可写卷、"
+            "目录属主与权限（fsGroup=1000）正确后重试。"
+        )
+
+
+class LogCollectStorageInsufficientError(Exception):
+    """存储剩余空间不足以完成本次上传（含合并阶段的临时文件）。"""
+
+    def __init__(self, root: Path, required_bytes: int, free_bytes: int):
+        self.root = root
+        self.required_bytes = required_bytes
+        self.free_bytes = free_bytes
+        super().__init__(
+            f"日志存储空间不足：需要 {format_bytes(required_bytes)}"
+            f"（含合并临时文件），当前可用 {format_bytes(free_bytes)}（目录 {root}）。"
+            "请清理平台日志存储或扩容后重试。"
+        )
+
+
 class LocalLogCollectStorage:
     """本地共享卷实现，限定单机/K3s 单副本部署。"""
 
@@ -53,8 +99,36 @@ class LocalLogCollectStorage:
         self.root = Path(root).resolve()
         self.multipart_root = self.root / "multipart"
         self.objects_root = self.root / "objects"
-        for path in (self.multipart_root, self.objects_root):
-            path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            for path in (self.multipart_root, self.objects_root):
+                path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        except OSError as exc:
+            raise LogCollectStorageUnavailableError(self.root, exc) from exc
+        # mkdir 成功不等于可写：目录已存在但只读、只读文件系统、ACL 拒绝都会在
+        # 第一次真正写入时才暴露。启动时就落一个探针文件，把故障前移到"依赖解析"
+        # 阶段，避免上传到一半才 500。
+        self._assert_writable()
+
+    def _assert_writable(self) -> None:
+        probe = self.root / f".write-probe-{os.getpid()}"
+        try:
+            probe.write_bytes(b"")
+        except OSError as exc:
+            raise LogCollectStorageUnavailableError(self.root, exc) from exc
+        finally:
+            # 清理失败不得覆盖真正的权限异常（只读文件系统上 unlink 也会失败）。
+            with contextlib.suppress(OSError):
+                probe.unlink(missing_ok=True)
+
+    def check_capacity(self, required_bytes: int) -> None:
+        """上传前校验容量；required 应包含合并临时文件（峰值约 2 倍包体）。"""
+
+        try:
+            free = int(shutil.disk_usage(self.root).free)
+        except OSError as exc:
+            raise LogCollectStorageUnavailableError(self.root, exc) from exc
+        if free < required_bytes:
+            raise LogCollectStorageInsufficientError(self.root, required_bytes, free)
 
     # ── 路径 ────────────────────────────────────────────────────────────────
 
@@ -187,6 +261,13 @@ class LocalLogCollectStorage:
                                 )
                             digest.update(block)
                             await output.write(block)
+        except OSError as exc:
+            temporary.unlink(missing_ok=True)
+            # ENOSPC 是可定因的容量问题：必须在合并阶段也保持同一错误码，
+            # 不能让它退化成"未知 500"。
+            if exc.errno == errno.ENOSPC:
+                raise LogCollectStorageInsufficientError(self.root, total, 0) from exc
+            raise
         except BaseException:
             temporary.unlink(missing_ok=True)
             raise
