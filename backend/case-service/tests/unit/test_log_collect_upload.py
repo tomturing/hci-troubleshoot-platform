@@ -13,8 +13,6 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from pydantic import ValidationError
-
 from app.schemas.log_collect import UploadCompleteRequest
 from app.services.log_collect_storage import (
     ArchiveTooLargeError,
@@ -30,6 +28,7 @@ from app.services.log_collect_upload_service import (
     PartValidationError,
     UploadSessionNotFoundError,
 )
+from pydantic import ValidationError
 
 CHUNK = 8
 
