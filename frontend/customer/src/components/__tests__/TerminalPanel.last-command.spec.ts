@@ -124,6 +124,9 @@ function mountPanel() {
         ElOption: passthrough('ElOption'),
         ElTooltip: passthrough('ElTooltip'),
         ElIcon: passthrough('ElIcon', 'i'),
+        // 终端下方的 SftpPanel 用了进度条；不 stub 会让 Vue 每次挂载都刷
+        // 「Failed to resolve component: el-progress」，把真实解析失败混进噪音里。
+        ElProgress: passthrough('ElProgress', 'div'),
       },
     },
   })
