@@ -63,16 +63,13 @@ export interface SyncInput {
   /** 本次任务的目标主机（`ips` 展开后的实际 IP 列表） */
   targetHosts?: string[]
   /**
-   * 当前判定是否发生在「用户已点『继续交付』之后」的接管流程里。
+   * 平台侧是否已有**交付证据**（`delivery_status=delivered` 或 `relay_status=success`）。
    *
-   * 为什么必须单独开关：归属判据的灵魂是「报告相对下发基线刷新过吗」，
-   * 它成立的前提是**任务还在跑、报告还会被重写**。接管场景恰好把这个前提打掉——
-   * 节点任务早已结束，报告定格，`reportRefreshed` 恒为 false，于是被判 stale →
-   * wait_refresh → 轮询空转 60 分钟后再失败（Q2026102701294 的第二层死锁）。
-   * 接管是用户看过这份报告后显式点的，归属已由用户确认，此时不该再用
-   * 「报告没刷新」去否决它。只对 completed 放行，running/abnormal 一律照旧。
+   * 为什么不能用 `platformStatus==='completed'` 代替：`completed` 只说明 acli 报采集结束，
+   * 与"包是否到了日志服务器"没有因果关系（2026-10-27 现场：completed + 平台零产物）。
+   * 省略时按"未交付"处理——宁可多给一次上传入口，也不要把没交付的任务说成已归档。
    */
-  adoptedDeliver?: boolean
+  platformDelivered?: boolean
 }
 
 /** 报告归属：本次任务 / 上一次任务的旧报告 / 无从判断 */
@@ -176,20 +173,10 @@ export function decideNodeSync(input: SyncInput): SyncAction {
     return { action: 'none', reason: '节点状态无法识别，保持平台现状', ownership: 'unknown' }
   }
 
-  // 接管交付：用户已显式点过「继续交付」，且此刻节点报的就是「已完成」。
-  //
-  // 必须绕过归属判定，原因不是"放宽标准"，而是它的前提已经不成立：
-  // 归属判定靠"报告是否相对下发基线刷新过"，而接管时节点任务早已结束、
-  // 报告定格，`reportRefreshed` 恒 false → 必判 stale → wait_refresh →
-  // 轮询 720 次（60 分钟）后抛「采集未完成」，把 409 死锁换成了空转死锁。
-  // 只放行 completed：节点仍在跑或异常结束时，接管者仍需按常规判据走。
-  if (input.adoptedDeliver && nodeState === 'completed') {
-    return {
-      action: 'patch_completed',
-      reason: '接管场景：用户已确认节点任务完成，直接收敛并继续交付',
-      ownership: 'current',
-    }
-  }
+  // 曾经这里有一个 `adoptedDeliver` 绕过口：接管交付时跳过归属判定直接 patch_completed。
+  // 它已随"补交付不再轮询 progress"一起删除——那个绕过口存在的前提是
+  // "补交付要先走一遍采集等待"，而现在的补交付只读物理事实（包在不在、多大、完整否），
+  // 归属判定对它没有任何输入。保留一个没人需要的绕过口，只会成为下次误判的入口。
 
   const { ownership, reason: ownershipReason } = resolveOwnership(input)
   if (ownership === 'stale') {
@@ -243,6 +230,33 @@ export function decideNodeSync(input: SyncInput): SyncAction {
         action: 'warn_completed_conflict',
         canCorrect: false,
         reason: '平台已归档，但节点任务异常结束，建议核对归档产物',
+        ownership,
+      }
+    }
+
+    // 「采集完成」≠「已交付」：completed 只是 acli 的报告，产物可能一个字节都没出去。
+    // 交付的物理前提只有两条——节点上有完整包、平台有上传会话，因此这里只看这两条，
+    // 不要求先把状态改回采集中（那会抹掉"采集已完成"这个真实结论）。
+    if (!input.platformDelivered) {
+      if (nodeState === 'completed' && input.archivePath) {
+        return {
+          action: 'adopt',
+          reason: '平台已完成采集但日志尚未交付（压缩包仍在节点）；可经平台中转直接上传，不会重新采集',
+          ownership,
+          adoptMode: 'deliver',
+        }
+      }
+      if (nodeState === 'completed') {
+        // 包已不在：P1 直传成功后插件会自删，此时没有可交付的物证。
+        return {
+          action: 'none',
+          reason: '节点已采集完成但压缩包已被移除（P1 直传成功会自删），平台无需再上传；如需产物请重新采集',
+          ownership,
+        }
+      }
+      return {
+        action: 'none',
+        reason: '平台已完成采集但无交付记录，节点上也没有可交付的压缩包；如需归档请重新采集',
         ownership,
       }
     }
@@ -341,8 +355,10 @@ export function buildSyncNotice(action: SyncAction): string {
     case 'wait_refresh':
       return `${action.reason}（进度与状态暂不更新，自动刷新会继续跟进）`
     case 'adopt':
+      // 补交付只有一条物理路径（acli 没有独立重传接口，只能经平台中转），
+      // 因此这里不再给"重新采集"的选项：包已经在盘上，重采是纯粹的浪费。
       return action.adoptMode === 'deliver'
-        ? `${action.reason}。请点「继续交付」完成上传，或「取消并重试」重新采集。`
+        ? `${action.reason}。请点「上传到平台」经平台中转交付（不会重新采集）。`
         : `${action.reason}。可点「接管」继续采集，或「取消并重试」重新开始。`
     case 'cancel_retry':
       return `${action.reason}。请点「取消并重试」清理节点任务后重新采集。`

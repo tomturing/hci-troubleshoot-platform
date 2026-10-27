@@ -34,6 +34,21 @@ export type LogCollectStatus =
 
 export type RelayStatus = 'none' | 'pending' | 'running' | 'success' | 'failed'
 
+/**
+ * 交付状态：描述「产物是否真的从节点到达了日志服务器」。
+ *
+ * 与采集 `status` 正交，不能互相替代：`status=completed` 只说明 acli 报采集结束，
+ * 平台可能一个字节都没收到（2026-10-27 现场即 completed + 零产物）。
+ */
+export type DeliveryStatus =
+  | 'none'
+  | 'queued'
+  | 'pulling'
+  | 'uploading'
+  | 'relaying'
+  | 'delivered'
+  | 'failed'
+
 export interface LogCollectTaskCreate {
   case_id: string
   /** 工单号只有一套：省略时服务端自动取 case_id；传了不一致的值会被 422 拒绝 */
@@ -45,6 +60,14 @@ export interface LogCollectTaskCreate {
   ips: string[]
   extra_paths?: string[]
   remote_url?: string
+  /**
+   * 交付路径（创建时确定，创建即落库）：
+   * - `acli_direct`（P1）：acli 带 `-u` 直传日志服务器，必须同时给 `remote_url`；
+   * - `bridge_relay`（P2）：由客户机经平台中转，不得给 `remote_url`。
+   *
+   * 省略时服务端按 `remote_url` 是否提供推断（兼容未升级客户端）。
+   */
+  upload_mode?: 'acli_direct' | 'bridge_relay'
   /**
    * 下发前锚定的节点报告指纹。
    *
@@ -83,6 +106,9 @@ export interface LogCollectTask {
   cleanup_reason?: string | null
   archive_deleted: boolean
   relay_status: RelayStatus
+  /** 交付状态（与 status 正交）：判断"采完了但没传上去"的唯一权威字段 */
+  delivery_status?: DeliveryStatus | null
+  delivery_error?: string | null
   relay_chunk_index?: number | null
   relay_chunk_total?: number | null
   relay_restarts: number

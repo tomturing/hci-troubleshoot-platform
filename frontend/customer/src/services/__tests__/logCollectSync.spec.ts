@@ -130,21 +130,52 @@ describe('decideNodeSync 节点态直映射', () => {
     expect(action.reason).toContain('重新采集')
   })
 
-  // 回归护栏（Q2026102701294 第二层死锁，2026-10-27）：#1313 把 failed→collecting 的合法边
-  // 走通了，但接管后前端仍拿"当前已完成报告的指纹"当对账基线。节点任务早已结束、报告定格，
-  // reportRefreshed 恒为 false → 判 stale → wait_refresh → 轮询 720 次（60 分钟）后抛
-  // 「采集未完成」，409 死锁被换成了空转死锁。接管必须绕过归属判定。
-  it('接管交付：报告不再刷新也必须收敛为完成，不得空转', () => {
+  // 回归护栏（#1323，2026-10-27）：「采集完成」不等于「已交付」。
+  // completed 只是 acli 的报告，平台可能一个字节都没收到；此时包还在节点上，
+  // 唯一正确的出口是经平台中转补交付，而不是只给"重新收集"。
+  it('平台已完成但未交付 + 节点已完成且包仍在 → 上传到平台，不重新采集', () => {
     const action = decideNodeSync({
-      platformStatus: 'collecting',
+      platformStatus: 'completed',
       nodeState: 'completed',
-      // 接管场景的现实输入：报告与"接管瞬间的基线"逐字相同
-      reportRefreshed: false,
+      reportRefreshed: true,
       archivePath: '/sf/data/local/acli/tmp/data/log_collect/Q2026102701294.zip',
-      adoptedDeliver: true,
+      platformDelivered: false,
     })
-    expect(action.action).toBe('patch_completed')
-    expect(action.action).not.toBe('wait_refresh')
+    expect(action.action).toBe('adopt')
+    expect(action.adoptMode).toBe('deliver')
+    expect(action.reason).toContain('不会重新采集')
+  })
+
+  it('平台已完成且已交付 + 节点包仍在（P2 不删包）→ 不再提示上传', () => {
+    const action = decideNodeSync({
+      platformStatus: 'completed',
+      nodeState: 'completed',
+      reportRefreshed: true,
+      archivePath: '/sf/data/local/acli/tmp/data/log_collect/Q2026102701294.zip',
+      platformDelivered: true,
+    })
+    expect(action.action).toBe('none')
+    expect(action.action).not.toBe('adopt')
+  })
+
+  it('平台已完成但未交付 + 包已被移除（P1 成功后自删）→ 只提示，不造出空交付', () => {
+    const action = decideNodeSync({
+      platformStatus: 'completed',
+      nodeState: 'completed',
+      reportRefreshed: true,
+      platformDelivered: false,
+    })
+    expect(action.action).toBe('none')
+    expect(action.reason).toContain('重新采集')
+  })
+
+  it('平台已完成但未交付 + 节点无任务 → 没有可交付的物证，不提供上传入口', () => {
+    const action = decideNodeSync({
+      platformStatus: 'completed',
+      nodeState: 'none',
+      platformDelivered: false,
+    })
+    expect(action.action).toBe('none')
   })
 
   it('未接管时旧报告仍必须拦下（放行范围不能过宽）', () => {
@@ -156,12 +187,11 @@ describe('decideNodeSync 节点态直映射', () => {
     expect(action.action).toBe('wait_refresh')
   })
 
-  it('接管交付时节点仍在跑 → 不得误判为完成', () => {
+  it('接管时节点仍在跑 → 不得误判为完成', () => {
     const action = decideNodeSync({
       platformStatus: 'collecting',
       nodeState: 'running',
       reportRefreshed: false,
-      adoptedDeliver: true,
     })
     expect(action.action).not.toBe('patch_completed')
   })

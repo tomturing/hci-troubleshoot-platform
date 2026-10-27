@@ -74,6 +74,9 @@ vi.mock('@/api/terminal', () => ({
       log_action: action,
       node_ip: options.nodeIp,
     }),
+  // 交付动作走独立消息类型：载荷字段原样透传，用例才能断言 delivery_mode 是否送到 bridge
+  buildDeliveryMessage: (action: string, caseId: string, options: any = {}) =>
+    JSON.stringify({ type: 'delivery', case_id: caseId, log_action: action, ...options }),
 }))
 
 vi.mock('@/api/logCollect', () => ({
@@ -83,6 +86,9 @@ vi.mock('@/api/logCollect', () => ({
     cancelTask: vi.fn(),
     listTasks: vi.fn(),
     patchTask: vi.fn(),
+    deliverTask: vi.fn(),
+    getRelay: vi.fn(),
+    getUploadStatus: vi.fn(),
   },
 }))
 
@@ -818,90 +824,141 @@ describe('LogCollectPanel', () => {
 
   /**
    * 现场回归（工单 Q2026102701294 / 2026-10-27）：
-   * 节点采集 100%、289 MiB 包仍在盘，平台任务 failed。
-   * #1313 把「失败任务继续交付」的合法边（failed → collecting）走通了，但接管基线取的是
-   * 「接管那一刻这份已完成报告的指纹」。节点任务早已结束、报告定格，reportRefreshed 恒为
-   * false → 判 stale → wait_refresh → 轮询 720 次（60 分钟）后抛「采集未完成」，
-   * 409 死锁被换成了空转死锁。
+   * 节点采集 100%、289 MiB 包仍在盘，平台侧却是终态且零产物。
    *
-   * 契约：点「继续交付」之后，即便节点报告逐字不变，也必须收敛为完成并进入结果视图。
+   * 契约（本轮改造）：点「上传到平台」只做搬运——
+   *   1. 不重新下发 create、不再轮询 progress；
+   *   2. bridge 侧用 delivery_mode=direct（collect 模式会因"包早于本次作业创建"
+   *      被判成上一次任务的产物，包采集完超过 5 分钟就必然失败）；
+   *   3. 采集状态不被改写（completed 原样保留，failed/cancelled 才走唯一合法边）。
    */
-  it('失败任务点「继续交付」后报告不再刷新，也必须收敛为完成', async () => {
+  it('已采集完成但未交付时点「上传到平台」走 direct 补交付，不重新采集', async () => {
     mockStore.sshConnectionState = 'connected'
     mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
-    const failed = taskFixture({
-      task_id: 'task-failed',
-      status: 'failed',
+    const archivePath = '/sf/data/local/acli/tmp/data/log_collect/Q2026102701294.zip'
+    const done = taskFixture({
+      task_id: 'task-done',
+      status: 'completed',
       progress: 100,
-      archive_path: '/sf/data/local/acli/tmp/data/log_collect/Q2026102701294.zip',
+      archive_path: archivePath,
       upload_mode: 'acli_direct',
       remote_url: 'http://acli.sangfor.com.cn:5888',
+      relay_status: 'none',
+      delivery_status: 'none',
       ips: ['172.28.25.1'],
       detail: {},
     })
-    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [failed] })
-    // 与接管用例一致：getTask 晚一拍，等 bridge socket 建立后再对账
-    vi.mocked(logCollectApi.getTask).mockImplementation(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20))
-      return failed
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [done] })
+    vi.mocked(logCollectApi.getTask).mockResolvedValue(done)
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
+    vi.mocked(logCollectApi.deliverTask).mockResolvedValue({
+      already_delivered: false,
+      delivery_status: 'queued',
+      delivery_attempts: 1,
+      source_path: archivePath,
+      upload: {
+        upload_id: 'up-1',
+        upload_token: 'token-123456',
+        chunk_size: 33554432,
+        part_count: 1,
+        total_size: 303104000,
+        uploaded_parts: [],
+        missing_parts: [1],
+      },
     })
-    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body) => ({
-      ...failed,
-      ...body,
-    }))
+    vi.mocked(logCollectApi.getRelay).mockResolvedValue({ relay_status: 'success' } as any)
 
     const wrapper = mountPanel()
     await flushPromises()
-    await new Promise((resolve) => setTimeout(resolve, 40))
+    // bridge socket 的 onopen 是延后一拍触发的：不等它，progress 请求根本发不出去
+    await new Promise((resolve) => setTimeout(resolve, 30))
     await flushPromises()
 
-    // 节点侧完成报告：接管前后逐字相同（任务已结束，报告不会再被重写）
+    // 节点侧：采集已完成、包仍在（P1 没传出去）
     const frozen = {
       status: '收集任务已完成！',
       percent: 100,
       done: 1,
       total: 1,
       node_state: 'completed',
-      archive_path: '/sf/data/local/acli/tmp/data/log_collect/Q2026102701294.zip',
-      upload_state: '发送成功',
+      archive_path: archivePath,
+      upload_state: '发送失败',
       hosts: [{ ip: '172.28.25.1', status: '收集完成', percent: 100 }],
-      raw: '状态：收集任务已完成！\n总进度：100% - 1/1\n归档状态：发送成功',
+      raw: '状态：收集任务已完成！\n总进度：100% - 1/1\n归档状态：发送失败',
     }
     fakeSocket.onmessage?.({
-      data: JSON.stringify({
-        type: 'log_collect_result',
-        log_action: 'progress',
-        status: 'ok',
-        log_data: frozen,
-      }),
+      data: JSON.stringify({ type: 'log_collect_result', log_action: 'progress', status: 'ok', log_data: frozen }),
     })
     await flushPromises()
 
-    // 失败 + 节点已完成 + 包在盘 → 必须给出「继续交付」这个唯一入口
-    const deliver = wrapper.findAll('button').find((item) => item.text() === '继续交付')
-    expect(deliver).toBeTruthy()
-    // 只统计接管动作本身：清掉挂载阶段对账留下的历史记录
+    // 平台已完成但未交付 + 节点有包 → 必须给出「上传到平台」这个入口
+    const upload = wrapper.findAll('button').find((item) => item.text() === '上传到平台')
+    expect(upload).toBeTruthy()
+
+    // 只统计本次动作本身：清掉挂载阶段对账留下的历史记录
     vi.mocked(logCollectApi.patchTask).mockClear()
-    await deliver!.trigger('click')
+    sentMessages.length = 0
+    await upload!.trigger('click')
     await flushPromises()
 
-    // 接管后轮询再次读到同一份报告：与接管基线逐字相同
+    // 1) 先量包大小
+    expect(sentMessages.some((m) => m.includes('"log_action":"stat"'))).toBe(true)
     fakeSocket.onmessage?.({
       data: JSON.stringify({
         type: 'log_collect_result',
-        log_action: 'progress',
+        log_action: 'stat',
         status: 'ok',
-        log_data: frozen,
+        log_data: { size: 303104000 },
       }),
     })
     await flushPromises()
-    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    // 2) 平台签发会话：必须是 /deliver（补交付），且不改采集状态
+    await vi.waitFor(() => expect(logCollectApi.deliverTask).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(logCollectApi.deliverTask).mock.calls[0][0]).toBe('task-done')
+    expect(vi.mocked(logCollectApi.patchTask).mock.calls.some(([, body]: any) => body?.status)).toBe(false)
+
+    // 3) 交付作业以 direct 模式下发（不是 collect）
+    await vi.waitFor(() =>
+      expect(sentMessages.some((m) => m.includes('"delivery_mode":"direct"'))).toBe(true),
+    )
+    expect(sentMessages.some((m) => m.includes('"delivery_mode":"collect"'))).toBe(false)
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'delivery_result',
+        log_action: 'submit',
+        status: 'ok',
+        log_data: { job_id: 'dj-task-done' },
+      }),
+    })
     await flushPromises()
 
+    // 4) 作业完成后等代传终态
+    await vi.waitFor(() => expect(sentMessages.some((m) => m.includes('"log_action":"status"'))).toBe(true))
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'delivery_result',
+        log_action: 'status',
+        status: 'ok',
+        log_data: { job_id: 'dj-task-done', phase: 'done' },
+      }),
+    })
+    await flushPromises()
+    await vi.waitFor(() => expect(logCollectApi.getRelay).toHaveBeenCalled())
+
+    // 5) 归档成功才收敛为完成，并登记实际交付路径
     const completed = vi
       .mocked(logCollectApi.patchTask)
       .mock.calls.filter(([, body]: any) => body?.status === 'completed')
     expect(completed).toHaveLength(1)
+    expect(completed[0][1]).toMatchObject({
+      upload_mode: 'bridge_relay',
+      delivery_status: 'delivered',
+    })
+
+    // 全程没有重新下发采集、也没有再轮询 progress
+    expect(sentMessages.some((m) => m.includes('"log_action":"create"'))).toBe(false)
+    expect(sentMessages.some((m) => m.includes('"log_action":"progress"'))).toBe(false)
     expect(wrapper.text()).toContain('该工单已完成日志收集')
     wrapper.unmount()
   })

@@ -18,6 +18,7 @@ import {
 } from '@/api/terminal'
 import {
   logCollectApi,
+  type DeliveryStatus,
   type LogCollectModule,
   type LogCollectTask,
   type RelayStatus,
@@ -198,6 +199,9 @@ const observedArchiveSize = ref(0)
 const baselineReportHash = ref('')
 // 对账提示：用于告诉用户"节点态与平台态不一致、下一步该做什么"
 const nodeSyncHint = ref('')
+// 对账时读到的节点压缩包路径：补交付必须用「节点实际报告的那一份」，
+// 不能用 task.archive_path（P2 补交付场景里平台侧可能压根没记过）。
+const nodeArchivePath = ref('')
 // 僵尸任务/游离任务的一键动作（取消并重试 / 接管），空串表示无需处理
 const nodeAction = ref<'' | 'cancel_retry' | 'adopt' | 'correct'>('')
 // 接管按钮语义：resume=节点还在跑，接上进度；deliver=节点已采完，接着交付
@@ -439,12 +443,35 @@ const resultSizeText = computed(() => {
   return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb.toFixed(1)} MB`
 })
 
+/**
+ * 平台是否已有交付证据。
+ *
+ * 判据只能是交付证据，不能是采集状态：`status=completed` 只说明 acli 报采集结束，
+ * 平台可能一个字节都没收到（2026-10-27 现场）。证据有三类：
+ *   - P2：`relay_status=success` 或 `delivery_status=delivered`；
+ *   - P1：`delivery_status=delivered`（由 upload_state「发送成功」回写）；
+ *   - 老记录（upload_mode 是后补字段）：没有交付状态可比，按 P1 的口径兜底。
+ */
+const resultDelivered = computed(() => {
+  const task = resultTask.value
+  if (!task) return false
+  if (task.relay_status === 'success' || task.delivery_status === 'delivered') return true
+  if (resultMode.value === 'acli_direct') {
+    // P1 成功后插件会自删压缩包：包被清理是直传成功的间接证据
+    return !task.upload_mode || task.archive_deleted
+  }
+  return false
+})
+
 const resultArchiveText = computed(() => {
   const task = resultTask.value
   if (!task) return ''
-  if (resultMode.value === 'acli_direct') return '已由插件直传日志服务器'
-  if (task.relay_status === 'success') return '已归档到日志服务器'
   if (task.relay_status === 'failed') return '归档失败（详见平台任务记录）'
+  if (task.delivery_status === 'failed') return '交付失败（可点「上传到平台」重传，无需重新采集）'
+  if (resultDelivered.value) {
+    return resultMode.value === 'acli_direct' ? '已由插件直传日志服务器' : '已归档到日志服务器'
+  }
+  if (task.status === 'completed') return '采集完成，尚未交付'
   return '未记录'
 })
 
@@ -460,6 +487,10 @@ const resultCleanupTip = computed(() => {
   const task = resultTask.value
   if (!task || task.archive_deleted) return ''
   if (resultMode.value === 'acli_direct') {
+    // 未交付的 P1 任务包还在节点上，说"无需清理"是错的：它要么等着补交付，要么需人工删。
+    if (!resultDelivered.value) {
+      return '压缩包仍在节点上且尚未交付：可点「上传到平台」经平台中转归档，或自行删除该包。'
+    }
     return 'P1 由插件直传日志服务器，上传成功后插件会自动删除 HCI 上的压缩包，无需人工清理。'
   }
   if (resultMode.value === 'bridge_relay' && task.archive_path) {
@@ -467,6 +498,16 @@ const resultCleanupTip = computed(() => {
   }
   return ''
 })
+
+/**
+ * 结果态是否该出现「上传到平台」。
+ *
+ * 只认对账结论（`adopt` + `deliver`），不自己再判一次"包在不在"：
+ * 两处各判一次必然分叉，而"包是否仍在"只有 bridge stat 的结果可信。
+ */
+const canUploadFromNode = computed(
+  () => nodeAction.value === 'adopt' && nodeAdoptMode.value === 'deliver',
+)
 
 /**
  * 固定提示区是否要占一行。
@@ -959,6 +1000,10 @@ async function restoreTaskState(force = false) {
     const completed = items.find((item) => item.status === 'completed')
     if (completed) {
       showResult(completed)
+      // 完成 ≠ 已交付：结果态也必须对账一次，否则"包还在节点上、平台没产物"
+      // 的任务永远拿不到「上传到平台」，用户只剩"重新采集"这一条错路。
+      if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true, source: 'open' })
+      startAutoSync(TERMINAL_POLL_INTERVAL)
       return
     }
     // 失败记录最后恢复：节点侧任务可能仍在运行，此时唯一正确的下一步是「接管」，
@@ -1143,6 +1188,9 @@ async function handleStart() {
         date_to: form.dateRange[1],
         ips: form.ips.split(',').map((s) => s.trim()).filter(Boolean),
         remote_url: pathMode.value === 'P1' ? RELAY_URL : undefined,
+        // 交付路径必须随任务落库：只放在前端内存里的话，采集中的任务、以及
+        // P1 失败降级后的任务都无法回答"当初选的是哪条路"。
+        upload_mode: pathMode.value === 'P1' ? 'acli_direct' : 'bridge_relay',
         // 探测事实随任务落库：失败任务必须能回答"哪版 acli / 什么架构"，
         // 只留在前端内存时，关面板或换端后这条证据就没了。
         arch: probeResult.value?.architecture || undefined,
@@ -1300,10 +1348,21 @@ function readProgressHash(): string {
  * 需要绕过 `pollingBridgeProgress` 的互斥保护；其余入口一律走互斥。
  */
 async function readNodeSnapshot(timeoutMs = 20000, force = false): Promise<ProgressSnapshot | null> {
-  if (!sshConnected.value || !socket || socket.readyState !== WebSocket.OPEN) return null
+  if (!sshConnected.value) return null
   if (pollingBridgeProgress && !force) return null
+  // 通道要自己确保可用：对账会被「打开面板 / 自动刷新 / 手动刷新」从不同时机触发，
+  // 若依赖调用方先开好连接，先到的那次对账会被静默丢弃——表现就是完成态任务
+  // 打开面板后永远没有对账结论，补交付入口也就永远不出现。
+  let ws = socket
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    try {
+      ws = await openSocket()
+    } catch {
+      return null
+    }
+  }
   try {
-    const result = await sendAndWait(socket, 'progress', {}, timeoutMs)
+    const result = await sendAndWait(ws, 'progress', {}, timeoutMs)
     if (result.status === 'error') return null
     const snapshot = (result.log_data as ProgressSnapshot | null) ?? null
     // 打开面板对账 / 自动刷新 / 手动刷新 全部经过这里：统一记录压缩包大小，
@@ -1361,6 +1420,27 @@ function reportRefreshedOf(snapshot: ProgressSnapshot): boolean | undefined {
 }
 
 /**
+ * 由节点快照推断交付证据（只对 P1 有意义）。
+ *
+ * P1 的上传发生在 acli 内部，平台看不到任何字节或分片，唯一可读的证据是
+ * progress 里的 `upload_state` 文本（"发送成功"/"发送失败"）。
+ * P2 一律返回 undefined：它的交付结果由数据面合并与代传写进 DB，
+ * 用节点态去覆盖只会把"平台已交付"改成"未知"。
+ */
+function deliveryEvidenceOf(
+  snapshot: ProgressSnapshot,
+  task: LogCollectTask | null,
+): DeliveryStatus | undefined {
+  if (!task) return undefined
+  const isP1 = task.upload_mode === 'acli_direct' || Boolean(task.remote_url)
+  if (!isP1) return undefined
+  const state = snapshot.upload_state || ''
+  if (state.includes('成功')) return 'delivered'
+  if (state.includes('失败')) return 'failed'
+  return undefined
+}
+
+/**
  * 统一对账入口：打开面板 / 自动刷新 / 手动刷新 / 开始收集前守卫，全部走这里。
  *
  * 第一性原理：节点是唯一真相，平台只是投影。先判「报告归属」，
@@ -1384,6 +1464,10 @@ async function syncNodeState(
     }
 
     const nodeState = snapshot.node_state ?? fallbackNodeState(snapshot)
+    // 交付证据：只有这两项能证明"包真的到了日志服务器"。
+    // 不能用 status==='completed' 代替——它只说明 acli 报采集结束（见 logCollectSync 注释）。
+    const platformDelivered =
+      currentTask.value?.delivery_status === 'delivered' || currentTask.value?.relay_status === 'success'
     const action = decideNodeSync({
       platformStatus: currentTask.value?.status ?? null,
       nodeState,
@@ -1393,7 +1477,10 @@ async function syncNodeState(
       reportRefreshed: reportRefreshedOf(snapshot),
       reportHosts: (snapshot.hosts ?? []).map((host) => host.ip),
       targetHosts: targetHostList(),
+      platformDelivered,
     })
+    // 节点报告的包路径就是补交付的源：平台侧的 archive_path 在"从未交付"的任务上是空的。
+    nodeArchivePath.value = snapshot.archive_path || ''
 
     // 旧报告不能拿来当展示数据：上一轮的「已完成 100%」会让面板与平台再次显示矛盾。
     // 只刷新时间戳（证明自动刷新在跑），进度沿用上一次归属确认过的快照。
@@ -1429,6 +1516,9 @@ async function syncNodeState(
                   // 避免"已完成但 upload_mode 为空"在结果页显示成"未记录"
                   upload_mode:
                     currentTask.value.upload_mode ?? (currentTask.value.remote_url ? 'acli_direct' : undefined),
+                  // 采集完成不等于已交付：只有能拿出证据时才写 delivered，
+                  // 否则留空由补交付入口补齐（写成 delivered 会让"上传到平台"永远不出现）。
+                  delivery_status: deliveryEvidenceOf(snapshot, currentTask.value),
                   archive_path: snapshot.archive_path || currentTask.value.archive_path || undefined,
                   // 节点侧只在包还在时量得到；已有值优先保留，避免 P2 的记录被 0 覆盖。
                   // 兜底顺序里必须有 observedArchiveSize：判"完成"的那份快照必然量不到
@@ -1529,7 +1619,7 @@ async function resumeTaskFlow(
     throw new Error('平台任务处于交付阶段，但 bridge 侧没有对应作业（可能已重启且记录丢失），请使用「取消并重试」')
   }
 
-  const collected = await pollUntilCollected(ws, token, baseline, adoptedDeliver)
+  const collected = await pollUntilCollected(ws, token, baseline)
   if (token !== runToken) return
   if (!collected) throw new Error('采集未完成')
   const isDirect = task.upload_mode === 'acli_direct' || Boolean(task.remote_url)
@@ -1570,12 +1660,30 @@ async function fallbackToP2(
   ElMessage.warning(`直传日志服务器失败（${reason}），已自动切换平台中转续传`)
   nodeSyncHint.value = '直传失败，已自动切换平台中转续传'
   stage.value = 'pulling'
-  currentTask.value = await logCollectApi.patchTask(task.task_id, { upload_mode: 'bridge_relay' })
+  // 降级必须留痕：只写 upload_mode=bridge_relay 会让"用户本来选 P2"与
+  // "P1 失败被迫改 P2"在库里长得一模一样，事后无法解释包为什么没走直传。
+  // detail 由服务端合并写入，不会覆盖下发时锚定的报告指纹。
+  currentTask.value = await logCollectApi.patchTask(task.task_id, {
+    upload_mode: 'bridge_relay',
+    detail: { upload_mode_switched_from: 'acli_direct', upload_mode_switched_reason: reason.slice(0, 500) },
+  })
   await runP2(ws, task, token)
   return true
 }
 
-/** 一键「接管」：平台终态改回采集中，继续跟进节点上仍在跑的任务 */
+/**
+ * 一键「接管」。
+ *
+ * 两种语义，前提完全不同，因此代码也分开：
+ * - `resume`：节点任务还在跑 → 平台终态改回采集中，继续跟进进度；
+ * - `deliver`：节点采集已完成、包还在 → **只做搬运**，不碰采集状态机。
+ *
+ * 为什么 deliver 不能再复用 resume 的那条路：改回 collecting 对 completed 任务会
+ * 触发服务端"清空产物字段"（那是纠正语义），而且接下来要再轮询一遍已经定格的
+ * progress；bridge 侧还会因为"包早于本次作业创建"被判成上一次任务的产物
+ * （delivery_runner.go 的串味判定，超过 5 分钟必然误杀）。补交付的充分必要条件
+ * 只有"包在节点上 + 平台有会话"，与采集状态没有因果关系。
+ */
 async function adoptNodeTask() {
   const task = currentTask.value
   if (!task) return
@@ -1587,25 +1695,39 @@ async function adoptNodeTask() {
     return
   }
   const token = ++runToken
+  // 用户显式接管：解除自动对账的写库熔断，按真实状态重新推进
+  syncPatchBlocked = false
+  nodeAction.value = ''
+  nodeSyncHint.value = ''
+
+  if (nodeAdoptMode.value === 'deliver') {
+    stage.value = 'pulling'
+    ElMessage.success('正在经平台中转上传节点上已有的压缩包（不会重新采集）')
+    try {
+      await uploadExistingPackage(ws, task, token)
+    } catch (error: any) {
+      if (token !== runToken) return
+      errorMessage.value = normalizeErrorMessage(String(error?.message || error))
+      failedStep.value = stepActive.value
+      stage.value = 'failed'
+      ElMessage.error(errorMessage.value)
+      // 交付失败不写 status=failed：采集完成是真实结论，抹掉它会让用户
+      // 既看不到包在哪、也找不到重试入口。失败只落在 delivery_* 上。
+      await logCollectApi
+        .patchTask(task.task_id, {
+          delivery_status: 'failed',
+          delivery_error: errorMessage.value.slice(0, 500),
+        })
+        .catch(() => undefined)
+    }
+    return
+  }
+
   try {
-    // 用户显式接管：解除自动对账的写库熔断，按真实状态重新推进
-    syncPatchBlocked = false
     stage.value = 'collecting'
     currentTask.value = await logCollectApi.patchTask(task.task_id, { status: 'collecting' })
-    const delivering = nodeAdoptMode.value === 'deliver'
-    nodeAction.value = ''
-    nodeSyncHint.value = ''
-    ElMessage.success(
-      delivering ? '已接管节点任务，正在继续交付（不会重新采集）' : '已接管节点任务，继续跟进进度',
-    )
-    await resumeTaskFlow(
-      ws,
-      currentTask.value ?? task,
-      token,
-      // 接管交付时报告已定格：基线必须置空，否则会与"当下这份报告"逐字相同而判 stale。
-      delivering ? '' : readProgressHash(),
-      delivering,
-    )
+    ElMessage.success('已接管节点任务，继续跟进进度')
+    await resumeTaskFlow(ws, currentTask.value ?? task, token, readProgressHash())
   } catch (error: any) {
     if (token !== runToken) return
     errorMessage.value = normalizeErrorMessage(String(error?.message || error))
@@ -1692,7 +1814,6 @@ async function pollUntilCollected(
   ws: WebSocket,
   token: number,
   baseline = '',
-  adoptedDeliver = false,
 ): Promise<ProgressSnapshot | null> {
   // 采集上限 1 小时（720 次 × 5s）：超时明确失败，避免面板无限转圈。
   pollingBridgeProgress = true
@@ -1725,9 +1846,6 @@ async function pollUntilCollected(
           reportRefreshed: baselineHash ? hashReport(snapshot.raw ?? '') !== baselineHash : undefined,
           reportHosts: (snapshot.hosts ?? []).map((host) => host.ip),
           targetHosts: targetHostList(),
-          // 接管交付：报告在接管那一刻已定格，reportRefreshed 恒为 false，
-          // 必须显式放行，否则会判 stale 后空转到 60 分钟超时。
-          adoptedDeliver,
         })
         // 旧报告同样不能当展示数据（否则会显示上一轮的 100%）
         if (action.action !== 'wait_refresh') {
@@ -1767,6 +1885,8 @@ async function finishP1(task: LogCollectTask, snapshot: ProgressSnapshot | null)
   }
   await markCompleted(task.task_id, {
     upload_mode: 'acli_direct',
+    // 走到这里说明 upload_state 已确认"成功"，这是 P1 唯一能拿到的交付证据。
+    delivery_status: 'delivered',
     archive_path: snapshot?.archive_path || undefined,
     // 大小来自 bridge 的 stat（插件 progress 不打印大小）。这里的 snapshot 是
     // "上传成功"那一份——包已被插件自删，size 必然为 0，所以必须回退到过程中记录的峰值，
@@ -1799,8 +1919,21 @@ async function markCompleted(taskId: string, extra: Partial<LogCollectTask> = {}
   }
 }
 
-async function runP2(ws: WebSocket, task: LogCollectTask, token: number) {
-  const archivePath = progress.value?.archive_path || ''
+/**
+ * P2 中转交付。
+ *
+ * `mode` 决定 bridge 侧怎么起作业：
+ * - `collect`：采集刚完成、由主流程衔接而来，允许 bridge 等采集写完再搬；
+ * - `direct`：包早就采好了（补交付），直接读盘搬运，**不得**再等 progress。
+ * 两种模式对应两种不同前提，不能合并成一个"大概已经采完了吧"。
+ */
+async function runP2(
+  ws: WebSocket,
+  task: LogCollectTask,
+  token: number,
+  options: { mode: 'collect' | 'direct'; sourcePath?: string } = { mode: 'collect' },
+) {
+  const archivePath = options.sourcePath || progress.value?.archive_path || task.archive_path || ''
   if (!archivePath) throw new Error('未获取到压缩包路径，无法中转')
 
   // 1) 取包大小（init 需要 total_size）
@@ -1816,17 +1949,38 @@ async function runP2(ws: WebSocket, task: LogCollectTask, token: number) {
     total_size: totalSize,
     source_path: archivePath,
   })
+  if (delivered.already_delivered) {
+    // 幂等短路：服务端没有再开会话。不要继续下发作业去"再传一次"。
+    await markCompleted(task.task_id, {
+      upload_mode: 'bridge_relay',
+      delivery_status: 'delivered',
+      archive_path: archivePath,
+      archive_size: totalSize,
+    })
+    stage.value = 'done'
+    ElMessage.success('日志包此前已交付，无需重复上传')
+    return
+  }
 
   // 3) 交付作业化：submit 立刻返回 job_id，执行权交给 bridge。
   //    这一步之后浏览器关掉也不影响交付；旧实现要在这里挂 2 小时等 transfer 回包。
   stage.value = 'pulling'
-  currentTask.value = await logCollectApi.patchTask(task.task_id, { status: 'uploading' })
-  await runDeliveryJob(ws, token, {
-    task,
-    sourcePath: archivePath,
-    totalSize,
-    session: delivered.upload,
-  })
+  // 只有"采集刚完成"的流程才把任务推进到 uploading：补交付时任务可能已是
+  // completed（终态），PATCH uploading 会被状态机拒绝，且会抹掉采集结论。
+  if (options.mode === 'collect') {
+    currentTask.value = await logCollectApi.patchTask(task.task_id, { status: 'uploading' })
+  }
+  await runDeliveryJob(
+    ws,
+    token,
+    {
+      task,
+      sourcePath: archivePath,
+      totalSize,
+      session: delivered.upload,
+    },
+    options.mode,
+  )
 
   // 5) 合并与代传由平台在数据面 complete 后自动触发（bridge 用上传令牌收尾），
   //    前端只等 relay 终态：这最后一步也不再依赖浏览器一直在线。
@@ -1837,6 +1991,7 @@ async function runP2(ws: WebSocket, task: LogCollectTask, token: number) {
   // 归档成功才推进任务终态：否则任务会永久停在 uploading，并占住该工单的进行中名额
   await markCompleted(task.task_id, {
     upload_mode: 'bridge_relay',
+    delivery_status: 'delivered',
     archive_path: archivePath,
     archive_size: totalSize,
   })
@@ -1847,6 +2002,29 @@ async function runP2(ws: WebSocket, task: LogCollectTask, token: number) {
     `rm -f ${archivePath}\n` +
     '注意：不要删除 /sf/data/local/acli/plugins 与 tasks 目录。'
   ElMessage.success('日志已上传平台并归档到日志服务器')
+}
+
+/**
+ * 「上传到平台」：把节点上**已有的**压缩包经平台中转交付。
+ *
+ * 与 runP2 的唯一区别是前提：这里认定采集已经结束（节点报 completed、包在盘上），
+ * 所以既不轮询 progress、也不把平台状态改回采集中，bridge 侧用 direct 模式跳过
+ * waitCollect —— 那条路径里的"串味判定"会把早于本次作业创建的包判成上一次任务的
+ * 产物，补交付场景下必然误杀（包本来就是过去采的）。
+ */
+async function uploadExistingPackage(ws: WebSocket, task: LogCollectTask, token: number) {
+  const archivePath = nodeArchivePath.value || progress.value?.archive_path || task.archive_path || ''
+  if (!archivePath) {
+    throw new Error('节点上没有可交付的压缩包路径（包可能已被移除）；如需产物请重新采集')
+  }
+
+  // failed / cancelled → completed 在状态机里没有直连边，唯一合法出口是回到 collecting。
+  // 这里走它只是为了"能落完成后态"，与重新采集无关：不发 create、不轮询 progress。
+  if (task.status === 'failed' || task.status === 'cancelled') {
+    currentTask.value = await logCollectApi.patchTask(task.task_id, { status: 'collecting' })
+  }
+
+  await runP2(ws, task, token, { mode: 'direct', sourcePath: archivePath })
 }
 
 /** 交付作业视图（与 bridge `deliveryJobView` 对齐）。 */
@@ -1932,6 +2110,7 @@ async function submitDeliveryJob(
   ws: WebSocket,
   args: { task: LogCollectTask; sourcePath: string; totalSize: number; session: UploadInitResult },
   tlsInsecure: boolean,
+  mode: 'collect' | 'direct',
 ): Promise<string> {
   const payload = buildDeliverySubmitPayload(
     {
@@ -1939,7 +2118,7 @@ async function submitDeliveryJob(
       sourcePath: args.sourcePath,
       totalSize: args.totalSize,
       session: args.session,
-      mode: 'collect',
+      mode,
     },
     window.location.origin,
     tlsInsecure,
@@ -1966,12 +2145,13 @@ async function runDeliveryJob(
   ws: WebSocket,
   token: number,
   args: { task: LogCollectTask; sourcePath: string; totalSize: number; session: UploadInitResult },
+  mode: 'collect' | 'direct',
 ): Promise<void> {
   const origin = window.location.origin
   let tlsInsecure = platformCertTrusted(origin)
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const jobId = await submitDeliveryJob(ws, args, tlsInsecure)
+    const jobId = await submitDeliveryJob(ws, args, tlsInsecure, mode)
     try {
       await waitDeliveryJob(ws, jobId, token)
       return
@@ -2101,6 +2281,10 @@ watch(
     stage.value = 'idle'
     cleanupTip.value = ''
     errorMessage.value = ''
+    // 节点包路径属于上一单的节点视图，必须一起清掉，否则补交付可能拿着 A 单的路径去 stat
+    nodeArchivePath.value = ''
+    nodeAction.value = ''
+    nodeSyncHint.value = ''
     if (visible.value) void restoreTaskState(true)
   },
 )
@@ -2216,7 +2400,7 @@ onBeforeUnmount(() => {
       >
         <div v-if="nodeAction" class="lc-sync-actions">
           <el-button v-if="nodeAction === 'adopt'" size="small" type="primary" @click="adoptNodeTask">
-            {{ nodeAdoptMode === 'deliver' ? '继续交付' : '接管继续' }}
+            {{ nodeAdoptMode === 'deliver' ? '上传到平台' : '接管继续' }}
           </el-button>
           <el-button v-if="nodeAction === 'cancel_retry'" size="small" type="danger" plain @click="cancelAndRetry">
             取消并重试
@@ -2524,7 +2708,14 @@ onBeforeUnmount(() => {
       <div class="panel-composer__body">
         <div class="panel-composer__actions">
           <template v-if="viewMode === 'result'">
-            <el-button type="primary" @click="startRecollect">重新收集</el-button>
+            <!--
+              采集已完成但产物没到日志服务器时，「重新收集」是唯一的旧出口——
+              而包就在节点上，重采一遍是纯粹的浪费。这里把补交付提为主操作。
+            -->
+            <el-button v-if="canUploadFromNode" type="primary" @click="adoptNodeTask">上传到平台</el-button>
+            <el-button :type="canUploadFromNode ? 'default' : 'primary'" @click="startRecollect">
+              重新收集
+            </el-button>
           </template>
           <template v-else>
             <el-button
